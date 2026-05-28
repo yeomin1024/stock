@@ -8997,7 +8997,7 @@ def auto_compute_anchor_dates(dates, close, *,
 # ════════════════════════════════════════════════════════════════
 #         JIT 평가
 # ════════════════════════════════════════════════════════════════
-@njit(cache=True)
+@njit
 def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
     n = close_arr.shape[0]
     use_anchor = anchor_buy_arr.shape[0] == n
