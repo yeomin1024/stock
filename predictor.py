@@ -5767,8 +5767,7 @@ def compute_features(ohlcv, closes, fred_df=None):
             if _best_sec29 in _sec_rank.columns:
                 feat['ssp_sector_rank_pct'] = _sec_rank[_best_sec29]
                 feat['ssp_sector_bottom_quartile'] = (_sec_rank[_best_sec29] < 0.25).astype(float)
-        feat['ssp_dispersion_falling'] = (_sec_ret20.std(axis=1) 
-                                          _sec_ret20.std(axis=1).shift(10)).astype(float)
+        feat['ssp_dispersion_falling'] = (_sec_ret20.std(axis=1) < _sec_ret20.std(axis=1).shift(10)).astype(float)
 
     # ── 29F. 선도-후행 (경기 사이클 ETF 선행 신호) ──────────────
     _lead_signals = pd.Series(0.0, index=_c29.index)
