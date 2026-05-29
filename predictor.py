@@ -9011,7 +9011,138 @@ def write_daily_prediction_sheet(wb, daily, top_k_res, best_nm, summary,
     ws.row_dimensions[4].height = 38
     ws.freeze_panes = 'B5'
 
+# ══════════════════════════════════════════════════════════════════
+#  지표 검증 도구 (워크포워드 + 다중검정 보정 + 상관 중복제거)
+#  ※ 원본 코드는 한 줄도 수정 안 함. 이 블록을 파일 맨 아래에 붙이기만.
+#    원본이 만든 feat / ohlcv / closes / TICKER 를 자동으로 찾아 실행.
+# ══════════════════════════════════════════════════════════════════
+import numpy as np
+import pandas as pd
 
+def _iv_make_target(close, horizon=5):
+    return close.shift(-horizon) / close - 1
+
+def _iv_ic(x, y):
+    d = pd.concat([x, y], axis=1).dropna()
+    if len(d) < 30 or d.iloc[:, 0].nunique() < 5:
+        return np.nan, np.nan, 0
+    xr = d.iloc[:, 0].rank(); yr = d.iloc[:, 1].rank()
+    ic = np.corrcoef(xr, yr)[0, 1]
+    n = len(d)
+    t = ic * np.sqrt((n - 2) / max(1 - ic**2, 1e-9)) if abs(ic) < 1 else np.nan
+    return ic, t, n
+
+def _iv_fdr_bh(pvals, alpha=0.10):
+    p = pvals.dropna().sort_values(); m = len(p)
+    if m == 0: return pd.Series(dtype=bool)
+    thresh = np.arange(1, m + 1) / m * alpha
+    passed = p.values <= thresh
+    keep = p.index[:np.max(np.where(passed)[0]) + 1] if passed.any() else pd.Index([])
+    out = pd.Series(False, index=pvals.index); out.loc[keep] = True
+    return out
+
+def _iv_walk_forward(feat, target, n_splits=4):
+    df = feat.loc[target.dropna().index.intersection(feat.index)]
+    tgt = target.reindex(df.index); n = len(df)
+    if n < (n_splits + 1) * 40:
+        n_splits = max(2, n // 40 - 1)
+    fold = n // (n_splits + 1); rows = {}
+    for col in df.columns:
+        is_ics, oos_ics = [], []
+        for k in range(1, n_splits + 1):
+            x_is, y_is = df[col].iloc[:fold*k], tgt.iloc[:fold*k]
+            x_oos, y_oos = df[col].iloc[fold*k:fold*(k+1)], tgt.iloc[fold*k:fold*(k+1)]
+            ic_is, _, _ = _iv_ic(x_is, y_is)
+            ic_oos, _, n_oos = _iv_ic(x_oos, y_oos)
+            if pd.notna(ic_is) and pd.notna(ic_oos) and n_oos >= 20:
+                is_ics.append(ic_is); oos_ics.append(ic_oos)
+        if len(oos_ics) >= 2:
+            rows[col] = {'is_ic': np.mean(is_ics), 'oos_ic': np.mean(oos_ics),
+                         'sign_consistency': np.mean(np.sign(is_ics) == np.sign(oos_ics)),
+                         'n_folds': len(oos_ics)}
+    return pd.DataFrame(rows).T
+
+def _iv_dedup(feat, ranking, thresh=0.7):
+    cols = [c for c in ranking.sort_values(ascending=False).index if c in feat.columns]
+    sub = feat[cols].dropna()
+    if len(sub) < 20 or len(cols) < 2: return cols
+    cm = sub.corr().abs(); selected, removed = [], set()
+    for c in cols:
+        if c in removed: continue
+        selected.append(c)
+        removed.update(cm.index[(cm[c] > thresh) & (cm.index != c)])
+    return selected
+
+def validate_indicators(feat, close, horizon=5, alpha_fdr=0.10,
+                        min_oos_ic=0.02, min_sign_consistency=0.75, corr_thresh=0.7):
+    from math import erfc
+    target = _iv_make_target(close, horizon)
+    valid = [c for c in feat.columns
+             if feat[c].notna().sum() >= 60 and feat[c].dropna().nunique() >= 5]
+    feat = feat[valid]
+    rows = {}
+    for col in feat.columns:
+        ic, t, n = _iv_ic(feat[col], target.reindex(feat.index))
+        if pd.notna(ic) and n > 0:
+            p = erfc(abs(t) / np.sqrt(2)) if pd.notna(t) else np.nan
+            rows[col] = {'ic': ic, 'p': p, 'n': n}
+    ic_tbl = pd.DataFrame(rows).T
+    if len(ic_tbl) == 0:
+        return {'n_input': len(feat.columns), 'n_fdr_pass': 0, 'n_robust': 0,
+                'n_final': 0, 'final_indicators': [], 'survivors_table': pd.DataFrame()}
+    ic_tbl['fdr_pass'] = _iv_fdr_bh(ic_tbl['p'], alpha_fdr)
+    wf = _iv_walk_forward(feat, target)
+    merged = ic_tbl.join(wf, how='inner')
+    merged['robust'] = (merged['fdr_pass'] & (merged['oos_ic'].abs() >= min_oos_ic) &
+                        (merged['sign_consistency'] >= min_sign_consistency) &
+                        (np.sign(merged['is_ic']) == np.sign(merged['oos_ic'])))
+    surv = merged[merged['robust']].copy()
+    if len(surv) > 0:
+        kept = [c for c in _iv_dedup(feat, surv['oos_ic'].abs(), corr_thresh) if c in surv.index]
+        surv['kept'] = surv.index.isin(kept)
+    else:
+        kept = []
+    surv = surv.sort_values('oos_ic', key=lambda s: s.abs(), ascending=False)
+    return {'n_input': len(feat.columns), 'n_fdr_pass': int(ic_tbl['fdr_pass'].sum()),
+            'n_robust': int(merged['robust'].sum()), 'n_final': len(kept),
+            'final_indicators': kept, 'survivors_table': surv}
+
+def _iv_autorun():
+    g = globals()
+    _feat = g.get('feat')
+    if _feat is None or not isinstance(_feat, pd.DataFrame):
+        print("[검증] feat(지표 DataFrame)를 못 찾음 — 원본에서 지표를 담은 변수명을 확인하세요.")
+        print("       예: feat = compute_features(...) 로 받았다면 그 변수명이 'feat'이어야 함.")
+        return
+    _close = None
+    if 'ohlcv' in g and isinstance(g['ohlcv'], pd.DataFrame) and 'Close' in g['ohlcv']:
+        _close = g['ohlcv']['Close']
+    elif 'closes' in g and 'TICKER' in g and g['TICKER'] in g['closes']:
+        _close = g['closes'][g['TICKER']]
+    if _close is None:
+        print("[검증] 종가 시계열을 못 찾음 — ohlcv['Close'] 또는 closes[TICKER] 를 확인하세요.")
+        return
+    print("=" * 60)
+    print("지표 검증 (워크포워드 + 다중검정 보정 + 상관 중복제거)")
+    print("=" * 60)
+    for h in [1, 5, 10]:
+        r = validate_indicators(_feat, _close, horizon=h)
+        print(f"\n[{h}일 예측] 입력 {r['n_input']} → FDR통과 {r['n_fdr_pass']} "
+              f"→ 강건 {r['n_robust']} → 최종 {r['n_final']}")
+        if r['n_final'] > 0:
+            print(f"  최종 채택: {r['final_indicators'][:15]}")
+            st = r['survivors_table']
+            show = [c for c in ['ic', 'oos_ic', 'sign_consistency', 'kept'] if c in st.columns]
+            print(st[show].head(12).round(4).to_string())
+            try:
+                st.to_csv(f"survivors_h{h}.csv")
+            except Exception:
+                pass
+    print("\n" + "=" * 60)
+    print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
+    print("=" * 60)
+
+_iv_autorun()
 
 
 # @title
