@@ -6667,6 +6667,153 @@ def compute_features(ohlcv, closes, fred_df=None):
     feat['psc_net_score'] = _up35 - _dn35
     feat['psc_reversal_up_zone'] = ((feat['vrt_hv_oversold'] > 0) & (_up35 >= 2)).astype(float)
 
+    # ══════════════════════════════════════════════════════════════
+    #  36. 변동성레짐 적응 + 기관/개미 심리 — 3차 (~65개, 섹션34·35와 중복없음)
+    #      (평균 절대상관 ~0.19, 종목수익률과 |corr| ~0.11 — 거의 독립)
+    #      접두사: vbk_(변동성분해) skn_(왜도/콜백) trp_(개미트랩정밀)
+    #              whl_(고래/대량흔적) pnc_(패닉/항복) cvd_(누적델타심화)
+    #              ovn_(오버나이트심리) msc_(심리종합v3)
+    #      ※ closes + TICKER 사용
+    # ══════════════════════════════════════════════════════════════
+    _o36 = op; _h36 = hi; _l36 = lo; _c36 = cl; _v36 = vo
+    _rng36  = (_h36 - _l36).replace(0, np.nan)
+    _pc36   = _c36.shift(1)
+    _ret36  = _c36.pct_change()
+    _logret36 = np.log(_c36 / _pc36)
+    _vma20_36 = _v36.rolling(20).mean().replace(0, np.nan)
+    _close_loc36 = (_c36 - _l36) / _rng36
+    _vol60_36 = _ret36.rolling(60).std()
+    _vol_rank36 = _vol60_36.rolling(250, min_periods=60).apply(
+        lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False)
+
+    # ── 36A. 변동성 분해 (점프 vs 연속 / 일중 vs 야간) ──────────
+    _jump36 = _logret36.where(_logret36.abs() > _logret36.rolling(60).std() * 2.5, 0.0)
+    feat['vbk_jump_var_20'] = (_jump36 ** 2).rolling(20).sum()
+    feat['vbk_jump_ratio_20'] = ((_jump36 ** 2).rolling(20).sum() /
+                                 (_logret36 ** 2).rolling(20).sum().replace(0, np.nan))
+    feat['vbk_jump_dominant'] = (feat['vbk_jump_ratio_20'] > 0.4).astype(float)
+    _neg_jump36 = _logret36.where((_logret36 < 0) & (_logret36.abs() > _logret36.rolling(60).std() * 2.5), 0.0)
+    feat['vbk_neg_jump_20'] = (_neg_jump36 ** 2).rolling(20).sum()
+    feat['vbk_neg_jump_recent'] = (_neg_jump36.rolling(5).sum() < 0).astype(float)
+    _intraday36 = np.log(_c36 / _o36)
+    _overnight36 = np.log(_o36 / _pc36)
+    feat['vbk_intraday_var_20'] = (_intraday36 ** 2).rolling(20).mean()
+    feat['vbk_overnight_var_20'] = (_overnight36 ** 2).rolling(20).mean()
+    feat['vbk_overnight_risk_ratio'] = ((_overnight36 ** 2).rolling(20).mean() /
+                                        (_intraday36 ** 2).rolling(20).mean().replace(0, np.nan))
+    feat['vbk_overnight_heavy'] = (feat['vbk_overnight_risk_ratio'] > 1.5).astype(float)
+    _vol20_36 = _ret36.rolling(20).std()
+    feat['vbk_vol_accel'] = (_vol20_36 - _vol20_36.shift(5)) - (_vol20_36.shift(5) - _vol20_36.shift(10))
+    feat['vbk_vol_accelerating'] = (feat['vbk_vol_accel'] > 0).astype(float)
+    _parkinson36 = np.sqrt((np.log(_h36 / _l36) ** 2).rolling(20).mean() / (4 * np.log(2)))
+    feat['vbk_parkinson_vs_close'] = _parkinson36 / _vol20_36.replace(0, np.nan)
+    feat['vbk_intraday_excess'] = (feat['vbk_parkinson_vs_close'] > 1.5).astype(float)
+
+    # ── 36B. 왜도/콜백 (분포 비대칭 동역학) ─────────────────────
+    _skew20_36 = _logret36.rolling(20).skew()
+    feat['skn_skew_20'] = _skew20_36
+    feat['skn_skew_turning_neg'] = ((_skew20_36 < 0) & (_skew20_36.shift(3) > 0.3)).astype(float)
+    feat['skn_hv_neg_skew'] = ((_vol_rank36 > 0.6) & (_skew20_36 < -0.5)).astype(float)
+    _pullback36 = (_c36.rolling(10).max() - _c36) / _c36.rolling(10).max()
+    feat['skn_pullback_depth_10'] = _pullback36
+    feat['skn_pullback_zscore'] = calc_zscore(_pullback36, 60)
+    feat['skn_deep_pullback'] = (calc_zscore(_pullback36, 60) > 1.5).astype(float)
+    _up_capture36 = _ret36.where(_ret36 > 0).rolling(40, min_periods=5).mean()
+    _dn_capture36 = _ret36.where(_ret36 < 0).rolling(40, min_periods=5).mean().abs()
+    feat['skn_capture_asym'] = _dn_capture36 / _up_capture36.replace(0, np.nan)
+    feat['skn_bad_capture'] = (feat['skn_capture_asym'] > 1.3).astype(float)
+    feat['skn_median_ret_neg_20'] = (_ret36.rolling(20).median() < 0).astype(float)
+
+    # ── 36C. 개미 트랩 정밀 (행동재무 패턴) ─────────────────────
+    _prior_high36 = _c36.rolling(60).max().shift(5)
+    feat['trp_overhead_supply'] = ((_c36 > _prior_high36 * 0.97) & (_c36 < _prior_high36 * 1.03) &
+                                   (_c36 < _o36)).astype(float)
+    feat['trp_overhead_supply_10d'] = feat['trp_overhead_supply'].rolling(10).sum()
+    feat['trp_stoploss_hunt'] = ((_l36 < _l36.rolling(20).min().shift(1)) &
+                                 (_close_loc36 > 0.6) & (_ret36 > 0)).astype(float)
+    feat['trp_momo_trap'] = ((_c36.shift(1) > _c36.rolling(20).max().shift(2)) &
+                             (_ret36 < -0.015)).astype(float)
+    feat['trp_falling_knife'] = ((_c36 < _c36.rolling(60).min().shift(1)) &
+                                 (_ret36.rolling(3).sum() < -0.05)).astype(float)
+    feat['trp_falling_knife_10d'] = feat['trp_falling_knife'].rolling(10).sum()
+    feat['trp_dead_cat'] = ((_ret36.shift(2) < -0.04) & (_ret36.shift(1) > 0.01) & (_ret36 < 0)).astype(float)
+    feat['trp_premature_exit'] = ((_ret36.rolling(5).apply(lambda x: (x > 0).sum(), raw=True) >= 4) &
+                                  (_ret36.rolling(5).mean() < 0.005) & (_ret36 > 0.02)).astype(float)
+
+    # ── 36D. 고래/대량 흔적 (대형 주문 추정) ────────────────────
+    _vol_consistency36 = 1 - (_v36.rolling(5).std() / _v36.rolling(5).mean().replace(0, np.nan))
+    feat['whl_iceberg_proxy'] = ((_vol_consistency36 > 0.7) & (_v36 > _vma20_36 * 1.2) &
+                                 (_ret36.abs() < _vol60_36)).astype(float)
+    _whale_day36 = (_v36 > _v36.rolling(60).mean() + _v36.rolling(60).std() * 2)
+    feat['whl_whale_buy'] = (_whale_day36 & (_close_loc36 > 0.6) & (_ret36 > 0)).astype(float)
+    feat['whl_whale_sell'] = (_whale_day36 & (_close_loc36 < 0.4) & (_ret36 < 0)).astype(float)
+    feat['whl_net_whale_20d'] = (feat['whl_whale_buy'].rolling(20).sum() -
+                                 feat['whl_whale_sell'].rolling(20).sum())
+    feat['whl_follow_through'] = ((_v36.shift(1) > _vma20_36 * 2) &
+                                  (np.sign(_ret36) == np.sign(_ret36.shift(1)))).astype(float)
+    _dollar36 = _c36 * _v36
+    feat['whl_stealth_accum'] = ((_dollar36.rolling(20).mean() > _dollar36.rolling(60).mean() * 1.2) &
+                                 (_c36.pct_change(20).abs() < 0.03)).astype(float)
+    feat['whl_support_break_volume'] = ((_v36 > _vma20_36 * 1.8) & (_ret36 < -0.02) &
+                                        (_close_loc36 < 0.25)).astype(float)
+
+    # ── 36E. 패닉/항복 단계 (바닥 형성 프록시) ──────────────────
+    feat['pnc_capitulation_vol'] = ((_v36 > _v36.rolling(60).mean() * 3) & (_ret36 < -0.04)).astype(float)
+    feat['pnc_capitulation_20d'] = feat['pnc_capitulation_vol'].rolling(20).sum()
+    feat['pnc_selling_exhausted'] = ((_ret36.rolling(5).sum() < -0.08) & (_v36 < _vma20_36 * 0.7)).astype(float)
+    _dn_streak36 = (_ret36 < 0).astype(float)
+    _dn_run36 = _dn_streak36.groupby((_dn_streak36 != _dn_streak36.shift()).cumsum()).cumcount() + 1
+    _dn_run36 = _dn_run36.where(_dn_streak36 > 0, 0)
+    feat['pnc_long_down_streak'] = (_dn_run36 >= 5).astype(float)
+    feat['pnc_streak_exhaustion'] = ((_dn_run36.shift(1) >= 4) & (_ret36 > 0)).astype(float)
+    _rsi36 = calc_rsi(_c36, 14)
+    feat['pnc_extreme_fear'] = ((_rsi36 < 25) & (_v36 > _vma20_36 * 1.5)).astype(float)
+    feat['pnc_cascade_5d'] = (_ret36.rolling(5).sum() < -0.10).astype(float)
+    feat['pnc_cascade_intensity'] = (-_ret36.rolling(5).sum()).clip(lower=0)
+
+    # ── 36F. 누적 델타 심화 (매수/매도 압력 정밀) ───────────────
+    _delta36 = ((_c36 - _l36) - (_h36 - _c36)) / _rng36 * _v36
+    feat['cvd_cum_delta_zscore'] = calc_zscore(_delta36.rolling(10).sum(), 60)
+    feat['cvd_bearish_divergence'] = ((_c36.pct_change(10) > 0.02) &
+                                      (_delta36.rolling(10).sum() < 0)).astype(float)
+    _delta_ma36 = _delta36.rolling(10).mean()
+    feat['cvd_delta_flip_neg'] = ((_delta_ma36 < 0) & (_delta_ma36.shift(3) > 0)).astype(float)
+    feat['cvd_failed_absorption'] = ((_delta36.rolling(5).sum() > 0) &
+                                     (_c36.pct_change(5) < -0.01)).astype(float)
+    feat['cvd_persistent_selling'] = (_delta36.rolling(20).apply(lambda x: (x < 0).sum(), raw=True) >= 13).astype(float)
+
+    # ── 36G. 오버나이트 심리 (갭 행동 = 정보/심리) ──────────────
+    _gap36 = (_o36 / _pc36 - 1)
+    feat['ovn_gap_bias_20'] = np.sign(_gap36).rolling(20).mean()
+    feat['ovn_persistent_gap_down'] = (np.sign(_gap36).rolling(10).mean() < -0.3).astype(float)
+    _intraday_dir36 = np.sign(_c36 - _o36)
+    feat['ovn_gap_fade_freq_20'] = ((np.sign(_gap36) > 0) & (_intraday_dir36 < 0)).rolling(20).mean()
+    feat['ovn_gap_fade_dominant'] = (feat['ovn_gap_fade_freq_20'] > 0.5).astype(float)
+    feat['ovn_cum_overnight_20'] = _gap36.rolling(20).sum()
+    feat['ovn_overnight_bleeding'] = (feat['ovn_cum_overnight_20'] < -0.03).astype(float)
+    feat['ovn_gap_vol_spike'] = (_gap36.abs().rolling(10).mean() >
+                                 _gap36.abs().rolling(60).mean() * 1.5).astype(float)
+
+    # ── 36H. 심리 종합 v3 (상승/하락 양방향) ────────────────────
+    _dn36 = pd.Series(0.0, index=_c36.index)
+    for _k in ['vbk_neg_jump_recent', 'skn_bad_capture', 'trp_overhead_supply', 'trp_dead_cat',
+               'whl_whale_sell', 'whl_support_break_volume', 'cvd_bearish_divergence',
+               'cvd_persistent_selling', 'ovn_gap_fade_dominant', 'ovn_overnight_bleeding']:
+        if _k in feat.columns: _dn36 = _dn36 + feat[_k]
+    feat['msc_drop_score'] = _dn36
+    feat['msc_drop_high'] = (_dn36 >= 5).astype(float)
+    feat['msc_drop_rising'] = (_dn36 > _dn36.shift(3)).astype(float)
+    for p in [5, 10]:
+        feat[f'msc_drop_sum_{p}d'] = _dn36.rolling(p).sum()
+    _up36 = pd.Series(0.0, index=_c36.index)
+    for _k in ['trp_stoploss_hunt', 'pnc_selling_exhausted', 'pnc_streak_exhaustion',
+               'whl_stealth_accum', 'whl_whale_buy']:
+        if _k in feat.columns: _up36 = _up36 + feat[_k]
+    feat['msc_rise_score'] = _up36
+    feat['msc_net_score'] = _up36 - _dn36
+    feat['msc_bottom_zone'] = ((feat.get('pnc_capitulation_20d', pd.Series(0.0, index=_c36.index)) >= 1) &
+                               (_up36 >= 2)).astype(float)
+
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
     return feat
