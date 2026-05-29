@@ -6518,6 +6518,155 @@ def compute_features(ohlcv, closes, fred_df=None):
     feat['pmix_capitulation_zone'] = ((_dn34 >= 3) & (feat.get('reta_panic_sell_20d',
                                        pd.Series(0.0, index=_c34.index)) >= 2)).astype(float)
 
+# ══════════════════════════════════════════════════════════════
+    #  35. 변동성레짐 적응 + 기관/개미 심리 — 2차 확장 (~67개, 섹션34와 중복없음)
+    #      (평균 절대상관 ~0.28, 종목수익률과 |corr| ~0.10 — 거의 독립)
+    #      접두사: vrt_(변동성타입별룰) bpc_(돌파/거짓돌파) acc_(매집/분산 Wyckoff)
+    #              ord_(주문흐름프록시) crw_(군중쏠림) liq_(유동성심리)
+    #              flt_(자금이탈) psc_(심리종합v2)
+    #      ※ closes + TICKER 사용
+    # ══════════════════════════════════════════════════════════════
+    _o35 = op; _h35 = hi; _l35 = lo; _c35 = cl; _v35 = vo
+    _rng35  = (_h35 - _l35).replace(0, np.nan)
+    _pc35   = _c35.shift(1)
+    _ret35  = _c35.pct_change()
+    _vma20_35 = _v35.rolling(20).mean().replace(0, np.nan)
+    _vma50_35 = _v35.rolling(50).mean().replace(0, np.nan)
+    _close_loc35 = (_c35 - _l35) / _rng35
+    _atr14_35 = _rng35.ewm(com=13, adjust=False).mean()
+    _vol60_35 = _ret35.rolling(60).std()
+    _vol_rank35 = _vol60_35.rolling(250, min_periods=60).apply(
+        lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False)
+
+    # ── 35A. 변동성 타입별 차별화 규칙 (레짐 조건부 신호) ───────
+    _zc35 = (_c35 - _c35.rolling(20).mean()) / _c35.rolling(20).std().replace(0, np.nan)
+    feat['vrt_hv_oversold'] = ((_vol_rank35 > 0.6) & (_zc35 < -2.0)).astype(float)       # 고변동 과매도 반등
+    feat['vrt_lv_trend_break'] = ((_vol_rank35 < 0.4) & (_c35 < _c35.rolling(50).mean()) &
+                                  (_pc35 >= _c35.rolling(50).mean().shift(1))).astype(float)  # 저변동 추세이탈
+    feat['vrt_regime_flip_down'] = ((_vol_rank35 > 0.5) & (_vol_rank35.shift(20) < 0.3) &
+                                    (_ret35.rolling(5).mean() < 0)).astype(float)
+    for p in [20, 60]:
+        feat[f'vrt_return_per_risk_{p}'] = _c35.pct_change(p) / (_vol60_35 * np.sqrt(p)).replace(0, np.nan)
+    _dd35 = _c35 / _c35.rolling(60).max() - 1
+    feat['vrt_vol_norm_drawdown'] = _dd35 / (_vol60_35 * np.sqrt(60)).replace(0, np.nan)
+    feat['vrt_vol_norm_dd_extreme'] = (feat['vrt_vol_norm_drawdown'] < -1.0).astype(float)
+    feat['vrt_hv_vol_peak'] = ((_vol_rank35 > 0.7) & (_vol60_35 < _vol60_35.shift(3)) &
+                               (_vol60_35.shift(3) > _vol60_35.rolling(60).mean() * 1.5)).astype(float)
+    _dn_vol35 = _ret35.where(_ret35 < 0).rolling(40, min_periods=5).std()
+    _up_vol35 = _ret35.where(_ret35 > 0).rolling(40, min_periods=5).std()
+    feat['vrt_leverage_effect'] = _dn_vol35 / _up_vol35.replace(0, np.nan)               # 하락시 변동성↑
+    feat['vrt_high_leverage_eff'] = (feat['vrt_leverage_effect'] > 1.4).astype(float)
+
+    # ── 35B. 돌파/거짓돌파 (개미가 당하는 패턴) ─────────────────
+    _hi20_35 = _h35.rolling(20).max()
+    feat['bpc_false_breakout_up'] = ((_h35 > _hi20_35.shift(1)) & (_c35 < _hi20_35.shift(1)) &
+                                     (_c35 < _o35)).astype(float)
+    feat['bpc_false_breakout_10d'] = feat['bpc_false_breakout_up'].rolling(10).sum()
+    _lo20_35 = _l35.rolling(20).min()
+    feat['bpc_false_breakdown'] = ((_l35 < _lo20_35.shift(1)) & (_c35 > _lo20_35.shift(1)) &
+                                   (_c35 > _o35)).astype(float)
+    feat['bpc_breakout_no_volume'] = ((_c35 > _hi20_35.shift(1)) & (_v35 < _vma20_35)).astype(float)
+    feat['bpc_resistance_reject_20d'] = ((_h35 >= _hi20_35.shift(1) * 0.99) & (_c35 < _o35)).rolling(20).sum()
+    feat['bpc_newhigh_reversal'] = ((_c35.shift(1) >= _c35.rolling(60).max().shift(1) - 1e-9) &
+                                    (_ret35 < -0.01)).astype(float)
+    _gap35 = (_o35 / _pc35 - 1)
+    feat['bpc_gap_down_continuation'] = ((_gap35 < -0.01) & (_c35 < _o35) & (_h35 < _pc35)).astype(float)
+
+    # ── 35C. 매집/분산 정밀 (Wyckoff 단계 프록시) ───────────────
+    feat['acc_accumulation'] = ((_ret35.rolling(10).mean().abs() < _vol60_35 * 0.3) &
+                                (_v35.rolling(10).mean() < _vma50_35 * 0.9) &
+                                (_c35 < _c35.rolling(60).mean())).astype(float)
+    feat['acc_accumulation_20d'] = feat['acc_accumulation'].rolling(20).sum()
+    feat['acc_distribution'] = ((_ret35.rolling(10).mean().abs() < _vol60_35 * 0.3) &
+                                (_v35.rolling(10).mean() > _vma50_35 * 1.1) &
+                                (_c35 > _c35.rolling(60).mean())).astype(float)
+    feat['acc_distribution_20d'] = feat['acc_distribution'].rolling(20).sum()
+    feat['acc_spring'] = ((_l35 < _l35.rolling(30).min().shift(1)) & (_c35 > _l35.rolling(30).min().shift(1)) &
+                          (_close_loc35 > 0.6)).astype(float)
+    feat['acc_upthrust'] = ((_h35 > _h35.rolling(30).max().shift(1)) & (_c35 < _h35.rolling(30).max().shift(1)) &
+                            (_close_loc35 < 0.4)).astype(float)
+    feat['acc_upthrust_10d'] = feat['acc_upthrust'].rolling(10).sum()
+    _effort_result35 = (_ret35.abs()) / ((_v35 / _vma20_35).replace(0, np.nan))
+    feat['acc_effort_no_result'] = (_effort_result35 < _effort_result35.rolling(60).quantile(0.2)).astype(float)
+    feat['acc_selling_absorbed'] = ((_v35 > _vma20_35 * 1.5) & (_ret35 > -0.005) & (_close_loc35 > 0.5)).astype(float)
+
+    # ── 35D. 주문흐름 프록시 (체결 방향 추정) ───────────────────
+    _mid35 = (_h35 + _l35) / 2
+    _tick_dir35 = np.sign(_c35 - _mid35)
+    feat['ord_tick_pressure_10'] = pd.Series(_tick_dir35, index=_c35.index).rolling(10).mean()
+    feat['ord_sell_pressure_dominant'] = (feat['ord_tick_pressure_10'] < -0.3).astype(float)
+    _vw_dir35 = _tick_dir35 * (_v35 / _vma20_35)
+    feat['ord_vw_flow_20'] = pd.Series(_vw_dir35, index=_c35.index).rolling(20).sum()
+    feat['ord_vw_flow_negative'] = (feat['ord_vw_flow_20'] < 0).astype(float)
+    _delta35 = (_c35 - _o35) / _rng35 * _v35
+    feat['ord_cum_delta_20'] = _delta35.rolling(20).sum() / _v35.rolling(20).sum().replace(0, np.nan)
+    feat['ord_delta_falling'] = (feat['ord_cum_delta_20'] < feat['ord_cum_delta_20'].shift(5)).astype(float)
+    feat['ord_buy_into_resistance'] = ((feat['ord_tick_pressure_10'] > 0.2) &
+                                       (_c35.pct_change(10) < 0.01)).astype(float)
+    feat['ord_closing_strength_10'] = _close_loc35.rolling(10).mean()
+    feat['ord_weak_closing_trend'] = (_close_loc35.rolling(5).mean() < _close_loc35.rolling(20).mean()).astype(float)
+
+    # ── 35E. 군중 쏠림 (과도한 한쪽 = 역방향 위험) ──────────────
+    _up_days35 = (_ret35 > 0).rolling(10).sum()
+    feat['crw_one_sided_up'] = (_up_days35 >= 8).astype(float)
+    feat['crw_one_sided_down'] = (_up_days35 <= 2).astype(float)
+    _rsi35 = calc_rsi(_c35, 14)
+    feat['crw_rsi_extreme_high_5d'] = (_rsi35 > 70).rolling(5).sum()
+    feat['crw_rsi_extreme_low_5d'] = (_rsi35 < 30).rolling(5).sum()
+    feat['crw_rsi_stuck_high'] = ((_rsi35 > 70).rolling(5).sum() >= 4).astype(float)
+    feat['crw_euphoric_volume'] = ((_ret35 > 0.03) & (_v35 > _vma20_35 * 2)).astype(float)
+    feat['crw_euphoric_20d'] = feat['crw_euphoric_volume'].rolling(20).sum()
+    feat['crw_optimism_crack'] = ((_up_days35.shift(1) >= 8) & (_ret35 < 0)).astype(float)
+    feat['crw_extreme_move'] = (_ret35.abs() > _vol60_35 * 3).astype(float)
+    feat['crw_extreme_move_20d'] = feat['crw_extreme_move'].rolling(20).sum()
+
+    # ── 35F. 유동성 심리 (거래 활발도와 심리) ───────────────────
+    _dollar35 = _c35 * _v35
+    feat['liq_dollar_vol_zscore'] = calc_zscore(_dollar35, 60)
+    feat['liq_interest_surge'] = (_dollar35 > _dollar35.rolling(60).mean() * 2).astype(float)
+    feat['liq_interest_fading'] = (_dollar35.rolling(10).mean() < _dollar35.rolling(60).mean() * 0.7).astype(float)
+    feat['liq_rally_no_interest'] = ((_c35.pct_change(10) > 0.05) & (_v35.rolling(10).mean() < _vma50_35)).astype(float)
+    feat['liq_volume_breakout'] = ((_v35 > _vma20_35 * 2.5) &
+                                   (_v35.shift(1).rolling(10).mean() < _vma50_35 * 0.8)).astype(float)
+    feat['liq_thin_drop'] = ((_ret35 < -0.02) & (_v35 < _vma20_35 * 0.7)).astype(float)
+    feat['liq_thin_drop_10d'] = feat['liq_thin_drop'].rolling(10).sum()
+
+    # ── 35G. 자금 이탈 (스마트머니 발 빼기 정밀) ────────────────
+    _obv35 = (np.sign(_c35.diff()).fillna(0) * _v35).cumsum()
+    _price_hh35 = (_c35 >= _c35.rolling(20).max() - 1e-9)
+    _obv_hh35 = (_obv35 >= _obv35.rolling(20).max() - 1e-9)
+    feat['flt_obv_divergence'] = (_price_hh35 & ~_obv_hh35).astype(float)
+    feat['flt_obv_divergence_20d'] = feat['flt_obv_divergence'].rolling(20).sum()
+    _vwap50_35 = (_c35 * _v35).rolling(50).sum() / _v35.rolling(50).sum().replace(0, np.nan)
+    feat['flt_below_vwap50'] = (_c35 < _vwap50_35).astype(float)
+    feat['flt_vwap50_breakdown'] = ((_c35 < _vwap50_35) & (_pc35 >= _vwap50_35.shift(1))).astype(float)
+    _up_vol_avg35 = _v35.where(_ret35 > 0).rolling(20, min_periods=3).mean()
+    _dn_vol_avg35 = _v35.where(_ret35 < 0).rolling(20, min_periods=3).mean()
+    feat['flt_vol_flow_bearish'] = (_dn_vol_avg35 > _up_vol_avg35 * 1.2).astype(float)
+    feat['flt_heavy_red_20d'] = ((_v35 > _vma20_35 * 1.3) & (_ret35 < -0.01)).rolling(20).sum()
+    _smart_flow35 = pd.Series(np.where(_v35 > _vma20_35 * 1.3, np.sign(_ret35), 0),
+                              index=_c35.index).rolling(20).sum()
+    feat['flt_flow_turning_neg'] = ((_smart_flow35 < 0) & (_smart_flow35.shift(5) > 0)).astype(float)
+
+    # ── 35H. 심리 종합 v2 (상승/하락 양방향) ────────────────────
+    _dn35 = pd.Series(0.0, index=_c35.index)
+    for _k in ['bpc_false_breakout_up', 'acc_distribution', 'acc_upthrust', 'ord_vw_flow_negative',
+               'crw_one_sided_up', 'crw_optimism_crack', 'liq_rally_no_interest',
+               'flt_obv_divergence', 'flt_vol_flow_bearish']:
+        if _k in feat.columns: _dn35 = _dn35 + feat[_k]
+    feat['psc_drop_score'] = _dn35
+    feat['psc_drop_high'] = (_dn35 >= 5).astype(float)
+    feat['psc_drop_rising'] = (_dn35 > _dn35.shift(3)).astype(float)
+    for p in [5, 10]:
+        feat[f'psc_drop_sum_{p}d'] = _dn35.rolling(p).sum()
+    _up35 = pd.Series(0.0, index=_c35.index)
+    for _k in ['bpc_false_breakdown', 'acc_accumulation', 'acc_spring', 'acc_selling_absorbed',
+               'crw_one_sided_down']:
+        if _k in feat.columns: _up35 = _up35 + feat[_k]
+    feat['psc_rise_score'] = _up35
+    feat['psc_net_score'] = _up35 - _dn35
+    feat['psc_reversal_up_zone'] = ((feat['vrt_hv_oversold'] > 0) & (_up35 >= 2)).astype(float)
+
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
     return feat
