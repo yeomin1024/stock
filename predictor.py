@@ -6375,6 +6375,149 @@ def compute_features(ohlcv, closes, fred_df=None):
     feat['sny_rise_score'] = _up33
     feat['sny_net_score'] = _up33 - _dn33
 
+# ══════════════════════════════════════════════════════════════
+    #  34. 변동성레짐 적응 + 기관/개미 심리 프록시 (~74개, 중복없음·저상관)
+    #      (평균 절대상관 ~0.23, 종목수익률과 |corr| ~0.14)
+    #      접두사: vreg_(변동성레짐분류) hva_(고변동적응) lva_(저변동적응)
+    #              inst_(기관흔적) reta_(개미심리) sent_(파생/공포탐욕)
+    #              smt_(스마트머니) pmix_(심리종합)
+    #      ※ closes + TICKER 사용 (^VIX/^VVIX 있으면 파생심리 활성)
+    # ══════════════════════════════════════════════════════════════
+    _o34 = op; _h34 = hi; _l34 = lo; _c34 = cl; _v34 = vo
+    _rng34  = (_h34 - _l34).replace(0, np.nan)
+    _pc34   = _c34.shift(1)
+    _ret34  = _c34.pct_change()
+    _vma20_34 = _v34.rolling(20).mean().replace(0, np.nan)
+    _atr_pct34 = ((_h34 - _l34) / _c34).rolling(14).mean()
+    _close_loc34 = (_c34 - _l34) / _rng34
+
+    # ── 34A. 변동성 레짐 분류 (종목 타입 자동 식별) ─────────────
+    _vol60_34 = _ret34.rolling(60).std()
+    _vol_pctrank34 = _vol60_34.rolling(250, min_periods=60).apply(
+        lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False)
+    feat['vreg_vol_level_pctrank'] = _vol_pctrank34
+    feat['vreg_is_high_vol'] = (_vol_pctrank34 > 0.7).astype(float)        # 고변동 종목 국면
+    feat['vreg_is_low_vol'] = (_vol_pctrank34 < 0.3).astype(float)         # 저변동 종목 국면
+    feat['vreg_vol_expanding'] = (_vol60_34 > _vol60_34.shift(20) * 1.3).astype(float)
+    feat['vreg_vol_contracting'] = (_vol60_34 < _vol60_34.shift(20) * 0.7).astype(float)
+    feat['vreg_vol_zscore_120'] = calc_zscore(_vol60_34, 120)
+    _hv34 = (_vol_pctrank34 > 0.6).astype(float)
+    feat['vreg_high_vol_persist'] = _hv34.rolling(20).sum()
+    feat['vreg_atr_pct_level'] = _atr_pct34
+    feat['vreg_atr_pct_zscore'] = calc_zscore(_atr_pct34, 120)
+
+    # ── 34B. 고변동성 종목 적응 규칙 (ATR 정규화 신호) ──────────
+    _atr14_34 = _rng34.ewm(com=13, adjust=False).mean()
+    _ret_in_atr34 = (_c34 - _pc34) / _atr14_34.replace(0, np.nan)
+    feat['hva_ret_in_atr'] = _ret_in_atr34
+    feat['hva_big_drop_atr'] = (_ret_in_atr34 < -1.5).astype(float)        # ATR 1.5배 하락
+    feat['hva_big_drop_atr_10d'] = (_ret_in_atr34 < -1.5).rolling(10).sum()
+    feat['hva_trend_confirmed_dn'] = ((_c34 < _c34.rolling(30).mean()) &
+                                      (_c34.rolling(5).mean() < _c34.rolling(30).mean())).astype(float)
+    for p in [10, 20]:
+        feat[f'hva_vol_adj_mom_{p}'] = _c34.pct_change(p) / (_vol60_34 * np.sqrt(p)).replace(0, np.nan)
+    feat['hva_vol_blowup_down'] = ((_vol60_34 > _vol60_34.rolling(60).mean() * 1.5) &
+                                   (_ret34.rolling(5).mean() < 0)).astype(float)
+    feat['hva_vol_cluster'] = (_ret34.abs() > _ret34.abs().rolling(20).mean() * 2).rolling(5).sum()
+
+    # ── 34C. 저변동성 종목 적응 규칙 (작은 변화도 신호) ─────────
+    _small_z34 = (_c34 - _c34.rolling(20).mean()) / _c34.rolling(20).std().replace(0, np.nan)
+    feat['lva_small_breakdown'] = (_small_z34 < -1.0).astype(float)        # 저변동엔 1σ도 신호
+    feat['lva_quiet_then_drop'] = ((_vol60_34 < _vol60_34.rolling(120).median()) &
+                                   (_ret34 < -_vol60_34)).astype(float)
+    feat['lva_first_crack'] = ((_atr_pct34.shift(1) < _atr_pct34.rolling(60).median()) &
+                               (_rng34 / _c34 > _atr_pct34.rolling(60).median() * 2)).astype(float)
+    feat['lva_volume_awakening'] = ((_vol60_34 < _vol60_34.rolling(120).median()) &
+                                    (_v34 > _vma20_34 * 2)).astype(float)
+    feat['lva_volume_awakening_10d'] = feat['lva_volume_awakening'].rolling(10).sum()
+    _bb_width34 = (_c34.rolling(20).std() * 4) / _c34.rolling(20).mean()
+    feat['lva_squeeze_extreme'] = (_bb_width34 < _bb_width34.rolling(120).quantile(0.1)).astype(float)
+    feat['lva_squeeze_then_dn'] = (feat['lva_squeeze_extreme'].shift(1).astype(bool) & (_ret34 < 0)).astype(float)
+
+    # ── 34D. 기관 흔적 (대량거래/체결 패턴 추정) ────────────────
+    feat['inst_absorption'] = ((_v34 > _vma20_34 * 1.5) & (_ret34.abs() < _atr_pct34 * 0.5)).astype(float)
+    feat['inst_absorption_10d'] = feat['inst_absorption'].rolling(10).sum()
+    feat['inst_buy_close_heavy'] = ((_v34 > _vma20_34 * 1.3) & (_close_loc34 > 0.7)).astype(float)
+    feat['inst_sell_close_heavy'] = ((_v34 > _vma20_34 * 1.3) & (_close_loc34 < 0.3)).astype(float)
+    feat['inst_net_close_pressure_10d'] = (feat['inst_buy_close_heavy'].rolling(10).sum() -
+                                           feat['inst_sell_close_heavy'].rolling(10).sum())
+    feat['inst_block_trade'] = (_v34 > _v34.rolling(60).mean() + _v34.rolling(60).std() * 2).astype(float)
+    feat['inst_block_down_10d'] = ((feat['inst_block_trade'] > 0) & (_ret34 < 0)).rolling(10).sum()
+    _heavy_signed34 = np.where(_v34 > _vma20_34 * 1.5, np.sign(_ret34), 0)
+    feat['inst_smart_flow_20d'] = pd.Series(_heavy_signed34, index=_c34.index).rolling(20).sum()
+    feat['inst_distribution_flag'] = (feat['inst_smart_flow_20d'] < -3).astype(float)
+    _vwap34 = (_c34 * _v34).rolling(20).sum() / _v34.rolling(20).sum().replace(0, np.nan)
+    feat['inst_above_vwap_streak'] = ((_c34 > _vwap34).astype(float).groupby(
+        ((_c34 > _vwap34) != (_c34 > _vwap34).shift()).cumsum()).cumcount() + 1).where(_c34 > _vwap34, 0)
+
+    # ── 34E. 개미(리테일) 심리 프록시 ───────────────────────────
+    _gap34 = (_o34 / _pc34 - 1)
+    feat['reta_fomo_chase'] = ((_gap34 > 0.02) & (_v34 > _vma20_34 * 1.5)).astype(float)
+    feat['reta_fomo_chase_10d'] = feat['reta_fomo_chase'].rolling(10).sum()
+    feat['reta_buy_exhaustion'] = ((_c34.shift(1) / _c34.shift(2) - 1 > 0.03) &
+                                   (_v34.shift(1) > _vma20_34 * 1.5) & (_ret34 < 0)).astype(float)
+    feat['reta_panic_sell'] = ((_ret34 < -0.03) & (_v34 > _vma20_34 * 2) & (_close_loc34 < 0.3)).astype(float)
+    feat['reta_panic_sell_20d'] = feat['reta_panic_sell'].rolling(20).sum()
+    feat['reta_capitulation_bounce'] = (feat['reta_panic_sell'].shift(1).astype(bool) & (_ret34 > 0)).astype(float)
+    feat['reta_overheated_20d'] = ((_gap34 > 0.01) & (_v34 > _vma20_34 * 1.3)).rolling(20).sum()
+    feat['reta_euphoria_flag'] = (feat['reta_overheated_20d'] > 5).astype(float)
+    _small_up34 = ((_ret34 > 0) & (_ret34 < 0.01)).astype(float)
+    feat['reta_retail_dca_20d'] = _small_up34.rolling(20).sum()
+
+    # ── 34F. 파생/공포탐욕 (VIX 등 시장 심리) ───────────────────
+    _vix34 = closes.get('^VIX')
+    if _vix34 is not None:
+        feat['sent_vix_level'] = _vix34
+        feat['sent_vix_zscore_60'] = calc_zscore(_vix34, 60)
+        feat['sent_vix_spike'] = (_vix34 > _vix34.rolling(20).mean() + _vix34.rolling(20).std() * 1.5).astype(float)
+        feat['sent_fear_regime'] = (_vix34 > 25).astype(float)
+        feat['sent_extreme_fear'] = (_vix34 > 35).astype(float)
+        feat['sent_complacency'] = (_vix34 < 14).astype(float)
+        feat['sent_complacency_at_high'] = ((_vix34 < 15) & (_c34 > _c34.rolling(60).max() * 0.97)).astype(float)
+        feat['sent_vix_roc_5'] = _vix34.pct_change(5)
+        feat['sent_vix_surging'] = (_vix34.pct_change(5) > 0.2).astype(float)
+        feat['sent_vix_stock_both_up'] = ((_vix34.pct_change(5) > 0.05) & (_c34.pct_change(5) > 0)).astype(float)
+    _vvix34 = closes.get('^VVIX') if closes.get('^VVIX') is not None else closes.get('VVIX')
+    if _vvix34 is not None:
+        feat['sent_vvix_zscore'] = calc_zscore(_vvix34, 60)
+        feat['sent_vol_uncertainty'] = (_vvix34 > _vvix34.rolling(60).mean() * 1.2).astype(float)
+    if _vix34 is not None:
+        _realized34 = _ret34.rolling(20).std() * np.sqrt(252) * 100
+        feat['sent_iv_rv_ratio'] = _vix34 / _realized34.replace(0, np.nan)
+        feat['sent_hedging_demand'] = (feat['sent_iv_rv_ratio'] > 1.3).astype(float)
+        feat['sent_low_hedge_complacent'] = (feat['sent_iv_rv_ratio'] < 0.9).astype(float)
+
+    # ── 34G. 스마트머니 vs 개미 (장중 vs 오버나이트) ────────────
+    _open_ret34 = (_o34 - _pc34) / _pc34.replace(0, np.nan)      # 오버나이트(갭, 개미 영향)
+    _close_ret34 = (_c34 - _o34) / _o34.replace(0, np.nan)       # 장중(스마트머니 가설)
+    feat['smt_intraday_strength_10'] = _close_ret34.rolling(10).mean()
+    feat['smt_overnight_strength_10'] = _open_ret34.rolling(10).mean()
+    feat['smt_smart_dumb_spread_20'] = (_close_ret34.rolling(20).sum() - _open_ret34.rolling(20).sum())
+    feat['smt_smart_money_selling'] = (feat['smt_intraday_strength_10'] < 0).astype(float)
+    feat['smt_dumb_buy_smart_sell'] = ((_open_ret34 > 0) & (_close_ret34 < 0)).astype(float)
+    feat['smt_dumb_buy_smart_sell_10d'] = feat['smt_dumb_buy_smart_sell'].rolling(10).sum()
+    feat['smt_smart_accumulation'] = ((_open_ret34 < 0) & (_close_ret34 > 0)).astype(float)
+    feat['smt_smart_accum_10d'] = feat['smt_smart_accumulation'].rolling(10).sum()
+
+    # ── 34H. 심리 종합 (상승/하락 양방향) ───────────────────────
+    _dn34 = pd.Series(0.0, index=_c34.index)
+    for _k in ['inst_distribution_flag', 'reta_euphoria_flag', 'reta_buy_exhaustion',
+               'sent_complacency_at_high', 'smt_smart_money_selling', 'hva_vol_blowup_down',
+               'inst_sell_close_heavy']:
+        if _k in feat.columns: _dn34 = _dn34 + feat[_k]
+    feat['pmix_drop_score'] = _dn34
+    feat['pmix_drop_high'] = (_dn34 >= 4).astype(float)
+    feat['pmix_drop_rising'] = (_dn34 > _dn34.shift(3)).astype(float)
+    for p in [5, 10]:
+        feat[f'pmix_drop_sum_{p}d'] = _dn34.rolling(p).sum()
+    _up34 = pd.Series(0.0, index=_c34.index)
+    for _k in ['smt_smart_accumulation', 'reta_capitulation_bounce', 'inst_buy_close_heavy']:
+        if _k in feat.columns: _up34 = _up34 + feat[_k]
+    feat['pmix_rise_score'] = _up34
+    feat['pmix_net_score'] = _up34 - _dn34
+    feat['pmix_capitulation_zone'] = ((_dn34 >= 3) & (feat.get('reta_panic_sell_20d',
+                                       pd.Series(0.0, index=_c34.index)) >= 2)).astype(float)
+
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
     return feat
