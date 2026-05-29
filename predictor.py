@@ -389,6 +389,237 @@ def calc_psar(hi_arr, lo_arr, cl_arr):
         psar[i] = sar
     return pd.Series(psar, index=pd.RangeIndex(len(cl_arr)))
 
+def fetch_intraday(ticker, interval='5m', period='60d', tries=3):
+    """야후에서 일중 OHLCV를 받아온다 (무료: 5분봉 최근 60일). 실패 시 빈 DataFrame."""
+    import yfinance as yf
+    import time
+    for k in range(tries):
+        try:
+            df = yf.download(ticker, period=period, interval=interval,
+                             progress=False, auto_adjust=True, prepost=False)
+            if df is not None and len(df) > 0:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df = df.rename(columns=str.title)
+                return df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        except Exception as e:
+            if k == tries - 1:
+                print(f"[intraday] {ticker} 수집 실패: {e}")
+            time.sleep(1.5)
+    return pd.DataFrame()
+
+
+def intraday_daily_features(intraday):
+    """5분봉 → 거래일별 미시구조 피처 (확장판 42개). 일별 인덱스로 반환."""
+    if intraday is None or len(intraday) == 0:
+        return pd.DataFrame()
+    df = intraday.copy()
+    try:
+        if df.index.tz is not None:
+            df.index = df.index.tz_convert('America/New_York')
+    except Exception:
+        pass
+    df['date'] = df.index.normalize()
+    df['hm'] = df.index.hour * 60 + df.index.minute
+    df['bar_ret'] = df['Close'].pct_change()
+    _daily_close = df['Close'].groupby(df['date']).last()
+    _prev_close_map = _daily_close.shift(1)
+    out = {}
+    for d, g in df.groupby('date'):
+        g = g.sort_index()
+        if len(g) < 12:
+            continue
+        o = g['Open'].iloc[0]; c = g['Close'].iloc[-1]
+        hi = g['High'].max(); lo = g['Low'].min()
+        rng = (hi - lo) if (hi - lo) != 0 else np.nan
+        vsum = g['Volume'].sum()
+        vv = g['Volume'].values.astype(float)
+        cl = g['Close'].values.astype(float)
+        br = g['bar_ret'].dropna().values
+        n = len(g)
+        tp = (g['High'] + g['Low'] + g['Close']) / 3
+        vwap = (tp * g['Volume']).sum() / (vsum if vsum > 0 else np.nan)
+        hm = g['hm'].values
+        rec = {}
+
+        # ── 기존 15개 (id_) ──────────────────────────────────────
+        rec['id_close_loc'] = (c - lo) / rng
+        rec['id_close_vs_vwap'] = (c / vwap - 1) if (vwap and vwap > 0) else np.nan
+        path = np.abs(np.diff(cl)).sum()
+        rec['id_trend_efficiency'] = (c - o) / path if path > 0 else 0.0
+        first = cl[min(6, n - 1)] / o - 1
+        last = c / cl[max(0, n - 7)] - 1
+        rec['id_open_drive'] = first
+        rec['id_close_drive'] = last
+        rec['id_smart_dumb'] = last - first
+        early_v = vv[:6].sum(); late_v = vv[-6:].sum()
+        rec['id_late_vol_ratio'] = late_v / vsum if vsum > 0 else np.nan
+        rec['id_vol_smile'] = (early_v + late_v) / vsum if vsum > 0 else np.nan
+        rec['id_realized_vol'] = np.sqrt(np.nansum(br ** 2)) if len(br) else np.nan
+        rec['id_intraday_skew'] = pd.Series(br).skew() if len(br) > 3 else np.nan
+        cummax = np.maximum.accumulate(cl)
+        rec['id_intraday_maxdd'] = float(np.min(cl / cummax - 1))
+        rec['id_up_bar_ratio'] = float((br > 0).mean()) if len(br) else np.nan
+        mid = (g['High'] + g['Low']) / 2
+        tick = np.sign(g['Close'] - mid)
+        rec['id_vw_order_flow'] = float((tick * g['Volume']).sum() / (vsum if vsum > 0 else np.nan))
+        rec['id_closing_vol'] = (np.std(br[-3:]) / (np.std(br) + 1e-9)) if len(br) > 5 else np.nan
+        rec['id_above_vwap_ratio'] = float((g['Close'] > vwap).mean()) if (vwap and vwap > 0) else np.nan
+
+        # ── 신규 A. 시간대별 수익 분해 (세션 구간) ───────────────
+        def seg_ret(lo_m, hi_m):
+            m = (hm >= lo_m) & (hm < hi_m)
+            if m.sum() < 2: return np.nan
+            seg = cl[m]
+            return seg[-1] / seg[0] - 1
+        rec['idx_ret_open30'] = seg_ret(570, 600)      # 09:30~10:00
+        rec['idx_ret_morning'] = seg_ret(600, 720)     # 10:00~12:00
+        rec['idx_ret_lunch'] = seg_ret(720, 810)       # 12:00~13:30
+        rec['idx_ret_afternoon'] = seg_ret(810, 930)   # 13:30~15:30
+        rec['idx_ret_close30'] = seg_ret(930, 960)     # 15:30~16:00
+        _am = seg_ret(570, 720); _pm = seg_ret(810, 960)
+        rec['idx_pm_minus_am'] = (_pm - _am) if (pd.notna(_pm) and pd.notna(_am)) else np.nan
+
+        # ── 신규 B. 일중 추세 반전/지속 ──────────────────────────
+        rec['idx_open_close_align'] = float(np.sign(_am) == np.sign(c - o)) if pd.notna(_am) else np.nan
+        rec['idx_reversal_down'] = float(pd.notna(_am) and pd.notna(_pm) and _am > 0 and _pm < 0)
+        rec['idx_reversal_up'] = float(pd.notna(_am) and pd.notna(_pm) and _am < 0 and _pm > 0)
+        hi_idx = int(np.argmax(g['High'].values)); lo_idx = int(np.argmin(g['Low'].values))
+        rec['idx_high_time_frac'] = hi_idx / n          # 0=장초 1=장마감
+        rec['idx_low_time_frac'] = lo_idx / n
+        rec['idx_high_after_low'] = float(hi_idx > lo_idx)   # 저점먼저→고점(장중 상승)
+
+        # ── 신규 C. 갭/시가 위치 동역학 ──────────────────────────
+        rec['idx_open_loc_in_day'] = (o - lo) / rng
+        rec['idx_close_above_open'] = float(c > o)
+        rec['idx_intraday_return'] = c / o - 1
+
+        # ── 신규 D. 누적 델타 곡선 ───────────────────────────────
+        bar_mid = (g['High'].values + g['Low'].values) / 2
+        bar_dir = np.sign(g['Close'].values - bar_mid)
+        signed_v = bar_dir * vv
+        cum_delta = np.cumsum(signed_v)
+        rec['idx_cum_delta_end'] = cum_delta[-1] / (vsum if vsum > 0 else np.nan)
+        rec['idx_delta_late_vs_early'] = (signed_v[-n//3:].sum() - signed_v[:n//3].sum()) / (vsum if vsum > 0 else np.nan)
+        rec['idx_price_delta_diverge'] = float((c > o) and (cum_delta[-1] < 0))
+
+        # ── 신규 E. 변동성 일중 분포 ─────────────────────────────
+        if len(br) > 12:
+            rec['idx_vol_open_vs_close'] = (np.std(br[:n//4]) / (np.std(br[-n//4:]) + 1e-9))
+        else:
+            rec['idx_vol_open_vs_close'] = np.nan
+        rec['idx_max_bar_move'] = float(np.max(np.abs(br))) if len(br) else np.nan
+        if len(br) > 5:
+            sq = np.sort(br ** 2)[::-1]
+            rec['idx_vol_concentration'] = sq[:3].sum() / (np.sum(br ** 2) + 1e-12)
+        else:
+            rec['idx_vol_concentration'] = np.nan
+
+        # ── 신규 F. 거래량-가격 일중 관계 ────────────────────────
+        simple_mean = cl.mean()
+        rec['idx_vwap_vs_mean'] = (vwap / simple_mean - 1) if simple_mean > 0 else np.nan
+        big = vv > (vv.mean() + vv.std())
+        if big.sum() > 0:
+            rec['idx_big_bar_dir'] = float(np.sign(g['Close'].values - g['Open'].values)[big].mean())
+        else:
+            rec['idx_big_bar_dir'] = np.nan
+        rec['idx_volume_trend'] = float(np.corrcoef(np.arange(n), vv)[0, 1]) if n > 3 else np.nan
+
+        # ── 신규 G. 종가 무렵 행동 (마감 경매 프록시) ────────────
+        rec['idx_closing_flow'] = signed_v[-6:].sum() / (vv[-6:].sum() + 1e-9)
+        rec['idx_close_at_high'] = float(c >= hi * 0.999)
+        rec['idx_close_at_low'] = float(c <= lo * 1.001)
+
+        # ── v3 신뢰성 신규: 일중모멘텀/점프분해/자기상관/오버나이트/VWAP정밀/유동성 ──
+        _pc = _prev_close_map.get(d, np.nan)
+        def _seg(a, b):
+            m = (hm >= a) & (hm < b)
+            if m.sum() < 2: return np.nan
+            s = cl[m]; return s[-1] / s[0] - 1
+        # H. 일중 모멘텀 (마지막 30분 = 익일 예측: 학술 검증된 신호)
+        _last30 = _seg(930, 960)
+        rec['idm_last30_ret'] = _last30
+        rec['idm_first30_ret'] = _seg(570, 600)
+        rec['idm_first_last_sum'] = (rec['idm_first30_ret'] + _last30
+                                     if pd.notna(rec['idm_first30_ret']) and pd.notna(_last30) else np.nan)
+        rec['idm_last30_vol_share'] = vv[hm >= 930].sum() / (vsum if vsum > 0 else np.nan)
+        # I. 점프 vs 연속 변동성 분해 (바이파워 변동)
+        if len(br) > 5:
+            _bv = np.sum(br ** 2)
+            _bp = (np.pi / 2) * np.sum(np.abs(br[1:]) * np.abs(br[:-1]))
+            _jump = max(_bv - _bp, 0.0)
+            rec['idm_jump_share'] = _jump / (_bv + 1e-12)
+            rec['idm_continuous_vol'] = np.sqrt(max(_bp, 0))
+            _neg = br[br < 0]
+            rec['idm_neg_semivar'] = np.sum(_neg ** 2) / (_bv + 1e-12)
+            rec['idm_signed_jump'] = (np.sum(br[br > 0] ** 2) - np.sum(_neg ** 2)) / (_bv + 1e-12)
+        else:
+            rec['idm_jump_share'] = rec['idm_continuous_vol'] = np.nan
+            rec['idm_neg_semivar'] = rec['idm_signed_jump'] = np.nan
+        # J. 일중 자기상관 (평균회귀 vs 추세)
+        if len(br) > 10:
+            _b1 = br[1:]; _b0 = br[:-1]; _sd = np.std(_b1) * np.std(_b0)
+            rec['idm_autocorr1'] = float(np.mean((_b1 - _b1.mean()) * (_b0 - _b0.mean())) / (_sd + 1e-12)) if _sd > 0 else np.nan
+        else:
+            rec['idm_autocorr1'] = np.nan
+        rec['idm_run_persistence'] = float(np.mean(np.sign(br[1:]) == np.sign(br[:-1]))) if len(br) > 3 else np.nan
+        # K. 오버나이트 vs 인트라데이 분해
+        if pd.notna(_pc) and _pc > 0:
+            rec['idm_overnight_ret'] = o / _pc - 1
+            rec['idm_intraday_ret'] = c / o - 1
+            rec['idm_overnight_faded'] = float((o / _pc - 1) > 0 and (c / o - 1) < 0)
+            rec['idm_on_id_same_dir'] = float(np.sign(o / _pc - 1) == np.sign(c / o - 1))
+        else:
+            rec['idm_overnight_ret'] = rec['idm_intraday_ret'] = np.nan
+            rec['idm_overnight_faded'] = rec['idm_on_id_same_dir'] = np.nan
+        # L. VWAP 정밀 (시간가중 체류 / 재탈환 / z밴드)
+        if vwap and vwap > 0:
+            _w = np.linspace(0.5, 1.5, n)
+            rec['idm_vwap_time_weighted'] = float(np.sum((cl > vwap) * _w) / np.sum(_w))
+            rec['idm_close_reclaim_vwap'] = float(cl[-1] > vwap and cl[max(0, n-6)] < vwap)
+            rec['idm_close_lose_vwap'] = float(cl[-1] < vwap and cl[max(0, n-6)] > vwap)
+            _vwstd = np.sqrt(((((tp.values - vwap) ** 2) * vv).sum()) / (vsum if vsum > 0 else np.nan))
+            rec['idm_close_vwap_z'] = (c - vwap) / (_vwstd + 1e-9) if _vwstd > 0 else np.nan
+        else:
+            rec['idm_vwap_time_weighted'] = rec['idm_close_reclaim_vwap'] = np.nan
+            rec['idm_close_lose_vwap'] = rec['idm_close_vwap_z'] = np.nan
+        # M. 일중 유동성/충격 (Amihud 일중판)
+        if len(br) > 5:
+            _dbar = np.abs(cl) * vv
+            _brf = g['bar_ret'].values
+            _illiq = np.abs(_brf[1:]) / (_dbar[1:] + 1e-9)
+            rec['idm_intraday_illiq'] = float(np.nanmean(_illiq) * 1e9)
+            _ui = np.abs(br[br > 0]).mean() if (br > 0).any() else np.nan
+            _di = np.abs(br[br < 0]).mean() if (br < 0).any() else np.nan
+            rec['idm_impact_asym'] = (_di / _ui) if (pd.notna(_ui) and _ui > 0) else np.nan
+        else:
+            rec['idm_intraday_illiq'] = rec['idm_impact_asym'] = np.nan
+
+        out[d] = rec
+
+    if not out:
+        return pd.DataFrame()
+    res = pd.DataFrame(out).T
+    res.index = pd.to_datetime(res.index).tz_localize(None).normalize()
+    res = res.sort_index()
+
+    # ── N. 다일 집계로 신뢰성 강화 (단일일 노이즈 완화 — 핵심) ──
+    for _base in ['idm_last30_ret', 'idm_signed_jump', 'idm_autocorr1', 'idm_intraday_ret',
+                  'idm_close_vwap_z', 'idm_neg_semivar']:
+        if _base in res.columns:
+            res[f'{_base}_5davg'] = res[_base].rolling(5).mean()
+            res[f'{_base}_10davg'] = res[_base].rolling(10).mean()
+    if 'idm_last30_ret' in res.columns:
+        res['idm_last30_consistency_5d'] = np.sign(res['idm_last30_ret']).rolling(5).mean()
+    if 'idm_intraday_ret' in res.columns:
+        res['idm_intraday_cum_5d'] = res['idm_intraday_ret'].rolling(5).sum()
+    if 'idm_jump_share' in res.columns:
+        res['idm_jump_freq_10d'] = (res['idm_jump_share'] > 0.3).rolling(10).mean()
+    if 'idm_close_vwap_z' in res.columns:
+        res['idm_above_vwap_freq_5d'] = (res['idm_close_vwap_z'] > 0).rolling(5).mean()
+    return res
+
+
 
 # ════════════════════════════════════════════════════════════════
 #                  지표 계산 (~450개)
@@ -6814,6 +7045,48 @@ def compute_features(ohlcv, closes, fred_df=None):
     feat['msc_bottom_zone'] = ((feat.get('pnc_capitulation_20d', pd.Series(0.0, index=_c36.index)) >= 1) &
                                (_up36 >= 2)).astype(float)
 
+    # ══════════════════════════════════════════════════════════════
+    #  38. 일중(5분봉) 미시구조 피처 결합 (확장 42개, 최근 60일만 값 / 그외 NaN)
+    #      접두사: id_(기존15) idx_(신규27)  ※ 야후 무료 5분봉 60일 한계
+    # ══════════════════════════════════════════════════════════════
+    _ID_COLS = ['id_close_loc','id_close_vs_vwap','id_trend_efficiency','id_open_drive',
+                'id_close_drive','id_smart_dumb','id_late_vol_ratio','id_vol_smile',
+                'id_realized_vol','id_intraday_skew','id_intraday_maxdd','id_up_bar_ratio',
+                'id_vw_order_flow','id_closing_vol','id_above_vwap_ratio',
+                'idx_ret_open30','idx_ret_morning','idx_ret_lunch','idx_ret_afternoon',
+                'idx_ret_close30','idx_pm_minus_am','idx_open_close_align','idx_reversal_down',
+                'idx_reversal_up','idx_high_time_frac','idx_low_time_frac','idx_high_after_low',
+                'idx_open_loc_in_day','idx_close_above_open','idx_intraday_return',
+                'idx_cum_delta_end','idx_delta_late_vs_early','idx_price_delta_diverge',
+                'idx_vol_open_vs_close','idx_max_bar_move','idx_vol_concentration',
+                'idx_vwap_vs_mean','idx_big_bar_dir','idx_volume_trend',
+                'idx_closing_flow','idx_close_at_high','idx_close_at_low']
+
+    _ID_COLS += ['idm_last30_ret','idm_first30_ret','idm_first_last_sum','idm_last30_vol_share',
+                 'idm_jump_share','idm_continuous_vol','idm_neg_semivar','idm_signed_jump',
+                 'idm_autocorr1','idm_run_persistence','idm_overnight_ret','idm_intraday_ret',
+                 'idm_overnight_faded','idm_on_id_same_dir','idm_vwap_time_weighted',
+                 'idm_close_reclaim_vwap','idm_close_lose_vwap','idm_close_vwap_z',
+                 'idm_intraday_illiq','idm_impact_asym',
+                 'idm_last30_ret_5davg','idm_last30_ret_10davg','idm_signed_jump_5davg',
+                 'idm_signed_jump_10davg','idm_autocorr1_5davg','idm_autocorr1_10davg',
+                 'idm_intraday_ret_5davg','idm_intraday_ret_10davg','idm_close_vwap_z_5davg',
+                 'idm_close_vwap_z_10davg','idm_neg_semivar_5davg','idm_neg_semivar_10davg',
+                 'idm_last30_consistency_5d','idm_intraday_cum_5d','idm_jump_freq_10d',
+                 'idm_above_vwap_freq_5d']
+    try:
+        _intra = fetch_intraday(TICKER, interval='5m', period='60d')
+        _idf = intraday_daily_features(_intra)
+        if _idf is not None and len(_idf) > 0:
+            _idf = _idf.reindex(feat.index)
+            for _col in _ID_COLS:
+                feat[_col] = _idf[_col].values if _col in _idf.columns else np.nan
+        else:
+            for _col in _ID_COLS:
+                feat[_col] = np.nan
+    except Exception as _e:
+        print(f"[intraday] 결합 건너뜀: {_e}")
+        
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
     return feat
