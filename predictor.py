@@ -12015,12 +12015,22 @@ def staged_meta_tune(*, base_meta_grid=None,
                       stage_wilson_z=None,
                       stage_wilson_refine_step=None,
                       stage_corr_limit=None,
+                      selection_tolerance=None,
                       **run_kwargs):
+    """
+    ★ 단계적 메타 변수 자동 튜닝.
+    각 단계(pct_range / wilson_z / corr_limit)에서 후보들을 모두 실행한 뒤
+    아래 우선순위로 best를 고른다 (요청 반영):
+        1차 매도성공률(top - tol 밴드)  →  2차 평균성공률(top - tol 밴드)
+        →  3차 누적수익률 최대
+    (누적수익률 단독 비교 아님)
+    """
     if base_meta_grid is None:            base_meta_grid = META_GRID
     if stage_pct_range is None:           stage_pct_range = STAGE_PCT_RANGE
     if stage_wilson_z is None:            stage_wilson_z = STAGE_WILSON_Z
     if stage_wilson_refine_step is None:  stage_wilson_refine_step = STAGE_WILSON_REFINE_STEP
     if stage_corr_limit is None:          stage_corr_limit = STAGE_CORR_LIMIT
+    if selection_tolerance is None:       selection_tolerance = SELECTION_TOLERANCE
 
     base_ms   = base_meta_grid.get('min_signals', [10])[0]
     base_pool = base_meta_grid.get('top_n_pool', [100])[0]
@@ -12029,74 +12039,104 @@ def staged_meta_tune(*, base_meta_grid=None,
     base_corr = base_meta_grid.get('corr_limit', [0.8])[0]
 
     output_file = run_kwargs.pop('output_file', None)
+    tol = selection_tolerance
 
     def _mk_grid(wz, pct, corr):
         return {'wilson_z': [wz], 'pct_range': [pct], 'min_signals': [base_ms],
                 'corr_limit': [corr], 'top_n_pool': [base_pool]}
 
     def _run_once(wz, pct, corr, *, write_output=False, file=None):
+        """실행 후 (매도성공률, 평균성공률, 누적수익률%, 결과튜플) 반환."""
         res = run_ensemble_search(
             meta_grid=_mk_grid(wz, pct, corr),
             write_output=write_output,
             output_file=file,
             **run_kwargs)
         cur = res[-1]
-        return float(cur.get('cum_return_pct', float('-inf'))), res
+        sell_sr = float(cur.get('sell_success_rate', 0.0))
+        avg_sr  = float(cur.get('avg_success_rate', 0.0))
+        ret     = float(cur.get('cum_return_pct', float('-inf')))
+        return sell_sr, avg_sr, ret, res
+
+    def _pick_best_stage(cands):
+        """cands: list of (label, sell_sr, avg_sr, ret). 우선순위:
+           1차 매도성공률 밴드 → 2차 평균성공률 밴드 → 3차 수익률 최대.
+           반환: 선택된 cand 튜플."""
+        if not cands:
+            return None
+        # 1차: 매도성공률 최댓값 기준 밴드
+        best_sell = max(c[1] for c in cands)
+        band1 = [c for c in cands if c[1] >= best_sell - tol]
+        # 2차: 그 안에서 평균성공률 최댓값 기준 밴드
+        best_avg = max(c[2] for c in band1)
+        band2 = [c for c in band1 if c[2] >= best_avg - tol]
+        # 3차: 누적수익 최대 (동률 시 매도성공률, 평균성공률 높은 순)
+        band2.sort(key=lambda c: (c[3], c[1], c[2]), reverse=True)
+        return band2[0]
 
     print('\n' + '█' * 72)
-    print('  ★★★  단계적 메타 변수 자동 튜닝 시작 (누적 합산 수익률 기준)  ★★★')
+    print('  ★★★  단계적 메타 변수 자동 튜닝 시작  ★★★')
+    print(f'  ★ 선정 우선순위: 매도성공률 → 평균성공률 → 누적수익 (밴드 {tol*100:.1f}%p)')
     print(f'    1단계 pct_range {len(stage_pct_range)}개 → '
           f'2단계 wilson_z {len(stage_wilson_z)}개(+재확인 1) → '
           f'3단계 corr_limit {len(stage_corr_limit)}개')
     print('  ※ 첫 실행부터 1.65~1.95 단계 탐색 (초기 단일값 단독 실행 없음)')
     print('█' * 72)
 
+    def _fmt(c):
+        return f'매도 {c[1]*100:.1f}% / 평균 {c[2]*100:.1f}% / 수익 {c[3]:+.2f}%'
+
+    # ─────────── 1단계: pct_range ───────────
     print(f'\n┌─ [1단계/3] pct_range 탐색 — 후보 {len(stage_pct_range)}개 '
           f'(wilson_z={base_wz}, corr_limit={base_corr} 고정) ─┐')
-    best_pct = base_pct; best_pct_ret = float('-inf')
+    cands1 = []
     for i, pct in enumerate(stage_pct_range, 1):
         print(f'│  ▸ [1단계] {i}/{len(stage_pct_range)}  pct_range={pct} 실행 중...')
-        ret, _ = _run_once(base_wz, pct, base_corr)
-        flag = ''
-        if ret > best_pct_ret:
-            best_pct_ret = ret; best_pct = pct; flag = '  ← 현재 best'
-        print(f'│    [1단계] {i}/{len(stage_pct_range)} 완료 — 누적수익 {ret:+.2f}%{flag}')
-    print(f'└─ [1단계 완료] best pct_range = {best_pct}  (누적 {best_pct_ret:+.2f}%) ─┘')
+        ssr, asr, ret, _ = _run_once(base_wz, pct, base_corr)
+        cands1.append((pct, ssr, asr, ret))
+        print(f'│    [1단계] {i}/{len(stage_pct_range)} 완료 — 매도 {ssr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}%')
+    best_c1 = _pick_best_stage(cands1)
+    best_pct = best_c1[0]
+    print(f'└─ [1단계 완료] best pct_range = {best_pct}  ({_fmt(best_c1)}) ─┘')
 
+    # ─────────── 2단계: wilson_z ───────────
     print(f'\n┌─ [2단계/3] wilson_z 탐색 — 후보 {len(stage_wilson_z)}개 '
           f'(pct_range={best_pct} 고정) ─┐')
-    best_wz = base_wz; best_wz_ret = float('-inf')
+    cands2 = []
     for i, wz in enumerate(stage_wilson_z, 1):
         print(f'│  ▸ [2단계] {i}/{len(stage_wilson_z)}  wilson_z={wz} 실행 중...')
-        ret, _ = _run_once(wz, best_pct, base_corr)
-        flag = ''
-        if ret > best_wz_ret:
-            best_wz_ret = ret; best_wz = wz; flag = '  ← 현재 best'
-        print(f'│    [2단계] {i}/{len(stage_wilson_z)} 완료 — 누적수익 {ret:+.2f}%{flag}')
+        ssr, asr, ret, _ = _run_once(wz, best_pct, base_corr)
+        cands2.append((wz, ssr, asr, ret))
+        print(f'│    [2단계] {i}/{len(stage_wilson_z)} 완료 — 매도 {ssr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}%')
+    best_c2 = _pick_best_stage(cands2)
+    best_wz = best_c2[0]
+    # 재확인 — best_wz - step
     refine_wz = round(best_wz - stage_wilson_refine_step, 4)
     print(f'│  ▸ [2단계 재확인] best({best_wz}) - {stage_wilson_refine_step} = {refine_wz} 실행 중...')
-    ret_refine, _ = _run_once(refine_wz, best_pct, base_corr)
-    print(f'│    [2단계 재확인] wilson_z={refine_wz} — 누적수익 {ret_refine:+.2f}% '
-          f'(vs best {best_wz}={best_wz_ret:+.2f}%)')
-    if ret_refine > best_wz_ret:
-        print(f'│    → 재확인값 {refine_wz}이 더 좋음 → 채택')
-        best_wz = refine_wz; best_wz_ret = ret_refine
+    ssr_r, asr_r, ret_r, _ = _run_once(refine_wz, best_pct, base_corr)
+    cands2_refine = [best_c2, (refine_wz, ssr_r, asr_r, ret_r)]
+    best_c2b = _pick_best_stage(cands2_refine)
+    if best_c2b[0] == refine_wz:
+        print(f'│    [2단계 재확인] {refine_wz} 채택 (매도 {ssr_r*100:.1f}% / 평균 {asr_r*100:.1f}% / 수익 {ret_r:+.2f}%)')
+        best_wz = refine_wz; best_c2 = best_c2b
     else:
-        print(f'│    → 기존 {best_wz} 유지')
-    print(f'└─ [2단계 완료] best wilson_z = {best_wz}  (누적 {best_wz_ret:+.2f}%) ─┘')
+        print(f'│    [2단계 재확인] 기존 {best_wz} 유지')
+    print(f'└─ [2단계 완료] best wilson_z = {best_wz}  ({_fmt(best_c2)}) ─┘')
 
+    # ─────────── 3단계: corr_limit ───────────
     print(f'\n┌─ [3단계/3] corr_limit 탐색 — 후보 {len(stage_corr_limit)}개 '
           f'(pct_range={best_pct}, wilson_z={best_wz} 고정) ─┐')
-    best_corr = base_corr; best_corr_ret = float('-inf')
+    cands3 = []
     for i, corr in enumerate(stage_corr_limit, 1):
         print(f'│  ▸ [3단계] {i}/{len(stage_corr_limit)}  corr_limit={corr} 실행 중...')
-        ret, _ = _run_once(best_wz, best_pct, corr)
-        flag = ''
-        if ret > best_corr_ret:
-            best_corr_ret = ret; best_corr = corr; flag = '  ← 현재 best'
-        print(f'│    [3단계] {i}/{len(stage_corr_limit)} 완료 — 누적수익 {ret:+.2f}%{flag}')
-    print(f'└─ [3단계 완료] best corr_limit = {best_corr}  (누적 {best_corr_ret:+.2f}%) ─┘')
+        ssr, asr, ret, _ = _run_once(best_wz, best_pct, corr)
+        cands3.append((corr, ssr, asr, ret))
+        print(f'│    [3단계] {i}/{len(stage_corr_limit)} 완료 — 매도 {ssr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}%')
+    best_c3 = _pick_best_stage(cands3)
+    best_corr = best_c3[0]
+    print(f'└─ [3단계 완료] best corr_limit = {best_corr}  ({_fmt(best_c3)}) ─┘')
 
+    # ─────────── 최종 실행 (Excel 생성) ───────────
     print('\n' + '█' * 72)
     print('  ★ 단계 튜닝 최종 결과 — 최적 메타 변수로 1회 더 실행 (Excel 생성)')
     print(f'    pct_range  = {best_pct}')
@@ -12104,10 +12144,10 @@ def staged_meta_tune(*, base_meta_grid=None,
     print(f'    corr_limit = {best_corr}')
     print(f'    min_signals= {base_ms}  /  top_n_pool = {base_pool}')
     print('█' * 72)
-    final_ret, final_res = _run_once(best_wz, best_pct, best_corr,
-                                      write_output=True, file=output_file)
+    f_ssr, f_asr, f_ret, final_res = _run_once(best_wz, best_pct, best_corr,
+                                                write_output=True, file=output_file)
     print('\n' + '█' * 72)
-    print(f'  ✅ 단계 튜닝 최종 누적 합산 수익률: {final_ret:+.2f}%')
+    print(f'  ✅ 단계 튜닝 최종: 매도성공 {f_ssr*100:.1f}% / 평균성공 {f_asr*100:.1f}% / 누적수익 {f_ret:+.2f}%')
     print(f'     (pct_range={best_pct}, wilson_z={best_wz}, corr_limit={best_corr})')
     print('█' * 72 + '\n')
     return final_res
@@ -12775,16 +12815,33 @@ def run_multi_ticker_analysis(tickers=None, *,
                 'volatility_stats': stats,
             }
 
-            prev_ret = None
-            if ticker in summary_records:
-                prev_ret = summary_records[ticker].get('cum_return_pct')
+            # ★ 동일 티커 재실행 비교 — 그리드 선정과 같은 우선순위:
+            #   매도성공률 → 평균성공률 → 누적수익 (밴드 SELECTION_TOLERANCE)
+            prev = summary_records.get(ticker)
+            _tol = SELECTION_TOLERANCE
+            def _is_new_better(prev_rec, new_rec, tol=_tol):
+                if prev_rec is None:
+                    return True
+                ps = prev_rec.get('sell_balacc_pct'); pa = prev_rec.get('balacc_pct'); pr = prev_rec.get('cum_return_pct')
+                ns = new_rec.get('sell_balacc_pct');  na = new_rec.get('balacc_pct');  nr = new_rec.get('cum_return_pct')
+                if ps is None or pa is None or pr is None:
+                    return True
+                if ns is None or na is None or nr is None:
+                    return False
+                tolp = tol * 100.0
+                if ns > ps + tolp: return True
+                if ns < ps - tolp: return False
+                if na > pa + tolp: return True
+                if na < pa - tolp: return False
+                return nr > pr
+            prev_ret = prev.get('cum_return_pct') if prev else None
             new_ret = new_record['cum_return_pct']
-            if (prev_ret is not None and new_ret is not None and prev_ret >= new_ret):
-                print(f"  ℹ {ticker}: 기존 수익률 {prev_ret:+.2f}% ≥ 신규 {new_ret:+.2f}% → 기존 유지 (덮어쓰지 않음)")
+            if not _is_new_better(prev, new_record):
+                print(f"  ℹ {ticker}: 기존(매도 {prev.get('sell_balacc_pct',0):.1f}%/평균 {prev.get('balacc_pct',0):.1f}%/수익 {prev_ret:+.2f}%) 우선 → 기존 유지")
                 summary_records[ticker]['analyzed_at'] = new_record['analyzed_at']
             else:
                 if prev_ret is not None:
-                    print(f"  ✓ {ticker}: 신규 수익률 {new_ret:+.2f}% > 기존 {prev_ret:+.2f}% → 갱신")
+                    print(f"  ✓ {ticker}: 신규(매도 {new_record.get('sell_balacc_pct',0):.1f}%/평균 {new_record.get('balacc_pct',0):.1f}%/수익 {new_ret:+.2f}%) 우선순위상 더 나음 → 갱신")
                 summary_records[ticker] = new_record
             el = time.time() - t_start
             print(f"\n  ✓ {ticker} 완료 — {el:.1f}초, 수익 {cur['cum_return_pct']:+.2f}%, 신호 {signal}")
@@ -13168,6 +13225,5 @@ if __name__ == '__main__':
         per_ticker_overrides=overrides,
         resume=False,
     )
-
 
 
