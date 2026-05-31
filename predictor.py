@@ -9230,14 +9230,21 @@ VOTE_RATIO_SELL     = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.42, 0.43, 0
 COST_PER_TRADE      = 0.004
 
 MIN_TRADES_DAILY    = 10
-MAX_DRAWDOWN_LIMIT_PCT = None
+MAX_DRAWDOWN_LIMIT_PCT = 5.0
 
-STOP_LOSS_PCT       = 0.05
+STOP_LOSS_PCT       = 0.10
 
-# ★ 선정 우선순위 (변경1)
-#   'sell_buy_return' : 매도성공률 → 매수성공률 → 누적수익 순 (요청)
+# ★ 선정 우선순위
+#   'stability'       : 매도성공·매수성공·누적수익·MDD방어를 종합한 안정성 점수 최대 (요청, 권장)
+#   'sell_buy_return' : 매도성공률 → 매수성공률 → 누적수익 순 (밴드 줄세우기)
 #   'balacc_return'   : 기존 (평균 BalAcc → 수익률)
-SELECTION_PRIORITY = 'sell_buy_return'
+SELECTION_PRIORITY = 'stability'
+
+# ★ 안정성 종합 점수 가중치 (SELECTION_PRIORITY='stability'일 때 사용)
+#   (매도성공률, 매수성공률, 누적수익, MDD방어) — 합이 1이 되도록 자동 정규화됨.
+#   가중 기하평균이라 한 요소라도 후보군 내 최저면 점수가 크게 깎임 → 골고루 좋은 조합 선호.
+#   하락 회피 강화하려면 매도성공률(첫째)·MDD방어(넷째) 비중을 올리세요.
+STABILITY_WEIGHTS = (0.30, 0.25, 0.20, 0.25)
 
 # ★ 가중 투표 (변경2) — 지표 성공률(Wilson)에 비례해 표 가중
 #   USE_WEIGHTED_VOTE=False면 기존 일반 투표(모두 1표)
@@ -9272,7 +9279,7 @@ META_GRID = {
     'wilson_z':    [1.65],
     'pct_range':   [(5, 95)],
     'min_signals': [10],
-    'corr_limit':  [0.2],
+    'corr_limit':  [0.25],
     'top_n_pool':  [100],
 }
 
@@ -9280,7 +9287,7 @@ STAGED_META_TUNE = True
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.3, 0.5, 0.6]
+STAGE_CORR_LIMIT  = [0.2, 0.3, 0.6, 0.8]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -9316,6 +9323,46 @@ def compute_vote_weights(scores, max_ratio=1.6):
     w = 1.0 + z * (max_ratio - 1.0) * beta
     w = w / w.mean()
     return w.astype(np.float64)
+
+
+def compute_stability_scores(df, weights=None):
+    """후보 DataFrame에 '안정성 종합 점수'(stability_score) 컬럼을 붙여 반환.
+       구성: 매도성공률, 매수성공률, 누적수익(후보군 min-max), MDD방어(후보군 min-max).
+       가중 기하평균 — 한 요소라도 후보군 내 최저 수준이면 점수가 크게 깎여
+       '종합적으로 안정적인'(골고루 좋은) 조합이 상위로 온다.
+       거래수는 별도 MIN_TRADES_DAILY 필터로 이미 보장되므로 점수에는 안 넣음."""
+    import numpy as np
+    if weights is None:
+        weights = globals().get('STABILITY_WEIGHTS', (0.30, 0.25, 0.20, 0.25))
+    w = np.asarray(weights, dtype=np.float64)
+    w = w / w.sum()
+    out = df.copy()
+    if len(out) == 0:
+        out['stability_score'] = []
+        return out
+    ret_col = 'total_return' if 'total_return' in out.columns else 'combined_return'
+    rets = out[ret_col].astype(float).values
+    mdds = out['max_drawdown'].astype(float).values   # 음수, 0에 가까울수록 좋음
+    ret_lo, ret_hi = float(np.min(rets)), float(np.max(rets))
+    mdd_worst, mdd_best = float(np.min(mdds)), float(np.max(mdds))
+
+    def _nrm(x, lo, hi):
+        if hi - lo < 1e-12: return 0.5
+        return min(1.0, max(0.0, (x - lo) / (hi - lo)))
+
+    eps = 1e-6
+    scores = np.zeros(len(out), dtype=np.float64)
+    sell = out['sell_success_rate'].astype(float).values
+    buy  = out['buy_success_rate'].astype(float).values
+    for i in range(len(out)):
+        s = min(1.0, max(0.0, sell[i]))
+        b = min(1.0, max(0.0, buy[i]))
+        r = _nrm(rets[i], ret_lo, ret_hi)
+        m = _nrm(mdds[i], mdd_worst, mdd_best)   # MDD 방어력 (0근처=1, 최악=0)
+        comps = (max(s, eps), max(b, eps), max(r, eps), max(m, eps))
+        scores[i] = float(np.prod([c ** wi for c, wi in zip(comps, w)]))
+    out['stability_score'] = scores
+    return out
 
 
 def _bh_sum_return(close_arr):
@@ -9875,7 +9922,17 @@ def _select_with_tolerance(df, tolerance,
     if secondary not in df.columns:
         secondary = 'total_return'
 
-    if globals().get('SELECTION_PRIORITY', 'balacc_return') == 'sell_buy_return' \
+    prio = globals().get('SELECTION_PRIORITY', 'balacc_return')
+
+    # ★ 안정성 종합 점수 모드 — 매도·매수성공·수익·MDD방어 가중 기하평균 최대
+    if prio == 'stability' and 'sell_success_rate' in df.columns \
+       and 'buy_success_rate' in df.columns and 'max_drawdown' in df.columns:
+        scored = compute_stability_scores(df)
+        scored = scored.sort_values(
+            ['stability_score', 'sell_success_rate', secondary], ascending=False)
+        return scored.index[0]
+
+    if prio == 'sell_buy_return' \
        and 'sell_success_rate' in df.columns and 'buy_success_rate' in df.columns:
         best_sell = df['sell_success_rate'].max()
         b1 = df[df['sell_success_rate'] >= best_sell - tolerance]
@@ -10172,7 +10229,10 @@ def meta_grid_search(feat, close, *,
     ))
     total = len(combos)
     print(f"  메타 그리드 총 {total}개 조합")
-    if globals().get('SELECTION_PRIORITY', 'balacc_return') == 'sell_buy_return':
+    _prio_p = globals().get('SELECTION_PRIORITY', 'balacc_return')
+    if _prio_p == 'stability':
+        print(f"  ★ 선정: 안정성 종합점수(매도·매수성공·수익·MDD방어 가중 기하평균) 최대")
+    elif _prio_p == 'sell_buy_return':
         print(f"  ★ 선정 우선순위: 매도성공률 → 매수성공률 → 누적수익 (밴드 {selection_tolerance*100:.2f}%p)")
     elif selection_tolerance > 0:
         print(f"  ★ Tolerance Band: 평균 BalAcc top - {selection_tolerance*100:.2f}%p 이내 중 수익률 최대")
@@ -10282,8 +10342,30 @@ def meta_grid_search(feat, close, *,
                         if this_return > best_overall_return:
                             update = True
             else:
-                # ★ SELECTION_PRIORITY 반영 (변경1)
-                if globals().get('SELECTION_PRIORITY', 'balacc_return') == 'sell_buy_return':
+                _prio = globals().get('SELECTION_PRIORITY', 'balacc_return')
+                # ★ 안정성 모드 — meta 레벨은 정규화 기준이 없어, best_inner의
+                #   매도성공 → 평균성공 → MDD방어 → 수익 순 밴드 비교로 stability에 준해 갱신
+                if _prio == 'stability':
+                    this_sell = best_in['sell_success_rate']
+                    this_avg  = best_in['avg_success_rate']
+                    this_mdd  = best_in['max_drawdown']     # 음수, 클수록(0근처) 방어 좋음
+                    bs = best_state[3] if best_state else None
+                    bs_sell = bs['sell_success_rate'] if bs else -np.inf
+                    bs_avg  = bs['avg_success_rate']  if bs else -np.inf
+                    bs_mdd  = bs['max_drawdown']      if bs else -np.inf
+                    if this_sell > bs_sell + selection_tolerance:
+                        update = True
+                    elif this_sell >= bs_sell - selection_tolerance:
+                        if this_avg > bs_avg + selection_tolerance:
+                            update = True
+                        elif this_avg >= bs_avg - selection_tolerance:
+                            # MDD 방어가 뚜렷이 좋으면 갱신, 비슷하면 수익으로
+                            if this_mdd > bs_mdd + 0.01:        # 1%p 이상 덜 빠짐
+                                update = True
+                            elif this_mdd >= bs_mdd - 0.01:
+                                if this_return > best_overall_return:
+                                    update = True
+                elif _prio == 'sell_buy_return':
                     this_sell = best_in['sell_success_rate']
                     this_buy  = best_in['buy_success_rate']
                     bs_sell = best_state[3]['sell_success_rate'] if best_state else -np.inf
@@ -11777,7 +11859,10 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         print(f"  ★ 투표 방식: 가중 투표 (성공률 비례, 상한 {globals().get('WEIGHT_MAX_RATIO',1.6)}배)")
     else:
         print(f"  ★ 투표 방식: 일반 투표 (모두 1표)")
-    if globals().get('SELECTION_PRIORITY', 'balacc_return') == 'sell_buy_return':
+    _prio_re = globals().get('SELECTION_PRIORITY', 'balacc_return')
+    if _prio_re == 'stability':
+        print(f"  ★ 선정: 안정성 종합점수(매도·매수성공·수익·MDD방어 가중 기하평균) 최대")
+    elif _prio_re == 'sell_buy_return':
         print(f"  ★ 선정 우선순위: 매도성공률 → 매수성공률 → 누적수익 (밴드 {selection_tolerance*100:.2f}%p)")
     elif selection_tolerance > 0:
         print(f"  ★ 선정 기준: 평균 BalAcc top - {selection_tolerance*100:.2f}%p 이내 중 수익률 최대 (Tolerance Band)")
@@ -12107,7 +12192,7 @@ def staged_meta_tune(*, base_meta_grid=None,
                 'corr_limit': [corr], 'top_n_pool': [base_pool]}
 
     def _run_once(wz, pct, corr, *, write_output=False, file=None):
-        """실행 후 (매도성공률, 평균성공률, 누적수익률%, 결과튜플) 반환."""
+        """실행 후 (매도성공률, 평균성공률, 누적수익률%, MDD%, 매수성공률, 결과튜플) 반환."""
         res = run_ensemble_search(
             meta_grid=_mk_grid(wz, pct, corr),
             write_output=write_output,
@@ -12115,29 +12200,45 @@ def staged_meta_tune(*, base_meta_grid=None,
             **run_kwargs)
         cur = res[-1]
         sell_sr = float(cur.get('sell_success_rate', 0.0))
+        buy_sr  = float(cur.get('buy_success_rate', 0.0))
         avg_sr  = float(cur.get('avg_success_rate', 0.0))
         ret     = float(cur.get('cum_return_pct', float('-inf')))
-        return sell_sr, avg_sr, ret, res
+        mdd     = float(cur.get('max_drawdown', -1.0))      # 음수, 0근처=방어 좋음
+        return sell_sr, avg_sr, ret, mdd, buy_sr, res
+
+    import numpy as _np
+    _swt = globals().get('STABILITY_WEIGHTS', (0.30, 0.25, 0.20, 0.25))
+    _swt = _np.asarray(_swt, dtype=float); _swt = _swt / _swt.sum()
 
     def _pick_best_stage(cands):
-        """cands: list of (label, sell_sr, avg_sr, ret). 우선순위:
-           1차 매도성공률 밴드 → 2차 평균성공률 밴드 → 3차 수익률 최대.
-           반환: 선택된 cand 튜플."""
+        """cands: list of (label, sell_sr, avg_sr, ret, mdd, buy_sr).
+           ★ 안정성 종합 점수(매도·매수성공·수익·MDD방어 가중 기하평균) 최대를 고름.
+           후보군 내 min-max 정규화 — 한 요소라도 최저면 점수가 크게 깎임."""
         if not cands:
             return None
-        # 1차: 매도성공률 최댓값 기준 밴드
-        best_sell = max(c[1] for c in cands)
-        band1 = [c for c in cands if c[1] >= best_sell - tol]
-        # 2차: 그 안에서 평균성공률 최댓값 기준 밴드
-        best_avg = max(c[2] for c in band1)
-        band2 = [c for c in band1 if c[2] >= best_avg - tol]
-        # 3차: 누적수익 최대 (동률 시 매도성공률, 평균성공률 높은 순)
-        band2.sort(key=lambda c: (c[3], c[1], c[2]), reverse=True)
-        return band2[0]
+        if len(cands) == 1:
+            return cands[0]
+        rets = [c[3] for c in cands]; mdds = [c[4] for c in cands]
+        ret_lo, ret_hi = min(rets), max(rets)
+        mdd_worst, mdd_best = min(mdds), max(mdds)
+        def _nrm(x, lo, hi):
+            if hi - lo < 1e-12: return 0.5
+            return min(1.0, max(0.0, (x - lo) / (hi - lo)))
+        eps = 1e-6
+        best = None; best_sc = -1.0
+        for c in cands:
+            sell, avg, ret, mdd, buy = c[1], c[2], c[3], c[4], c[5]
+            s = min(1.0, max(0.0, sell)); b = min(1.0, max(0.0, buy))
+            r = _nrm(ret, ret_lo, ret_hi); m = _nrm(mdd, mdd_worst, mdd_best)
+            comps = (max(s,eps), max(b,eps), max(r,eps), max(m,eps))
+            sc = float(_np.prod([cc ** wi for cc, wi in zip(comps, _swt)]))
+            if sc > best_sc:
+                best_sc = sc; best = c
+        return best
 
     print('\n' + '█' * 72)
     print('  ★★★  단계적 메타 변수 자동 튜닝 시작  ★★★')
-    print(f'  ★ 선정 우선순위: 매도성공률 → 평균성공률 → 누적수익 (밴드 {tol*100:.1f}%p)')
+    print(f'  ★ 선정: 안정성 종합점수(매도·매수성공·수익·MDD방어 가중 기하평균) 최대 — 단계별 후보 중 종합 1등')
     print(f'    1단계 pct_range {len(stage_pct_range)}개 → '
           f'2단계 wilson_z {len(stage_wilson_z)}개(+재확인 1) → '
           f'3단계 corr_limit {len(stage_corr_limit)}개')
@@ -12145,7 +12246,7 @@ def staged_meta_tune(*, base_meta_grid=None,
     print('█' * 72)
 
     def _fmt(c):
-        return f'매도 {c[1]*100:.1f}% / 평균 {c[2]*100:.1f}% / 수익 {c[3]:+.2f}%'
+        return f'매도 {c[1]*100:.1f}% / 매수 {c[5]*100:.1f}% / 평균 {c[2]*100:.1f}% / 수익 {c[3]:+.2f}% / MDD {c[4]*100:.2f}%'
 
     # ─────────── 1단계: pct_range ───────────
     print(f'\n┌─ [1단계/3] pct_range 탐색 — 후보 {len(stage_pct_range)}개 '
@@ -12153,9 +12254,9 @@ def staged_meta_tune(*, base_meta_grid=None,
     cands1 = []
     for i, pct in enumerate(stage_pct_range, 1):
         print(f'│  ▸ [1단계] {i}/{len(stage_pct_range)}  pct_range={pct} 실행 중...')
-        ssr, asr, ret, _ = _run_once(base_wz, pct, base_corr)
-        cands1.append((pct, ssr, asr, ret))
-        print(f'│    [1단계] {i}/{len(stage_pct_range)} 완료 — 매도 {ssr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}%')
+        ssr, asr, ret, mdd, bsr, _ = _run_once(base_wz, pct, base_corr)
+        cands1.append((pct, ssr, asr, ret, mdd, bsr))
+        print(f'│    [1단계] {i}/{len(stage_pct_range)} 완료 — 매도 {ssr*100:.1f}% / 매수 {bsr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}% / MDD {mdd*100:.2f}%')
     best_c1 = _pick_best_stage(cands1)
     best_pct = best_c1[0]
     print(f'└─ [1단계 완료] best pct_range = {best_pct}  ({_fmt(best_c1)}) ─┘')
@@ -12166,19 +12267,19 @@ def staged_meta_tune(*, base_meta_grid=None,
     cands2 = []
     for i, wz in enumerate(stage_wilson_z, 1):
         print(f'│  ▸ [2단계] {i}/{len(stage_wilson_z)}  wilson_z={wz} 실행 중...')
-        ssr, asr, ret, _ = _run_once(wz, best_pct, base_corr)
-        cands2.append((wz, ssr, asr, ret))
-        print(f'│    [2단계] {i}/{len(stage_wilson_z)} 완료 — 매도 {ssr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}%')
+        ssr, asr, ret, mdd, bsr, _ = _run_once(wz, best_pct, base_corr)
+        cands2.append((wz, ssr, asr, ret, mdd, bsr))
+        print(f'│    [2단계] {i}/{len(stage_wilson_z)} 완료 — 매도 {ssr*100:.1f}% / 매수 {bsr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}% / MDD {mdd*100:.2f}%')
     best_c2 = _pick_best_stage(cands2)
     best_wz = best_c2[0]
     # 재확인 — best_wz - step
     refine_wz = round(best_wz - stage_wilson_refine_step, 4)
     print(f'│  ▸ [2단계 재확인] best({best_wz}) - {stage_wilson_refine_step} = {refine_wz} 실행 중...')
-    ssr_r, asr_r, ret_r, _ = _run_once(refine_wz, best_pct, base_corr)
-    cands2_refine = [best_c2, (refine_wz, ssr_r, asr_r, ret_r)]
+    ssr_r, asr_r, ret_r, mdd_r, bsr_r, _ = _run_once(refine_wz, best_pct, base_corr)
+    cands2_refine = [best_c2, (refine_wz, ssr_r, asr_r, ret_r, mdd_r, bsr_r)]
     best_c2b = _pick_best_stage(cands2_refine)
     if best_c2b[0] == refine_wz:
-        print(f'│    [2단계 재확인] {refine_wz} 채택 (매도 {ssr_r*100:.1f}% / 평균 {asr_r*100:.1f}% / 수익 {ret_r:+.2f}%)')
+        print(f'│    [2단계 재확인] {refine_wz} 채택 (매도 {ssr_r*100:.1f}% / 매수 {bsr_r*100:.1f}% / 평균 {asr_r*100:.1f}% / 수익 {ret_r:+.2f}% / MDD {mdd_r*100:.2f}%)')
         best_wz = refine_wz; best_c2 = best_c2b
     else:
         print(f'│    [2단계 재확인] 기존 {best_wz} 유지')
@@ -12190,9 +12291,9 @@ def staged_meta_tune(*, base_meta_grid=None,
     cands3 = []
     for i, corr in enumerate(stage_corr_limit, 1):
         print(f'│  ▸ [3단계] {i}/{len(stage_corr_limit)}  corr_limit={corr} 실행 중...')
-        ssr, asr, ret, _ = _run_once(best_wz, best_pct, corr)
-        cands3.append((corr, ssr, asr, ret))
-        print(f'│    [3단계] {i}/{len(stage_corr_limit)} 완료 — 매도 {ssr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}%')
+        ssr, asr, ret, mdd, bsr, _ = _run_once(best_wz, best_pct, corr)
+        cands3.append((corr, ssr, asr, ret, mdd, bsr))
+        print(f'│    [3단계] {i}/{len(stage_corr_limit)} 완료 — 매도 {ssr*100:.1f}% / 매수 {bsr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}% / MDD {mdd*100:.2f}%')
     best_c3 = _pick_best_stage(cands3)
     best_corr = best_c3[0]
     print(f'└─ [3단계 완료] best corr_limit = {best_corr}  ({_fmt(best_c3)}) ─┘')
@@ -12205,10 +12306,10 @@ def staged_meta_tune(*, base_meta_grid=None,
     print(f'    corr_limit = {best_corr}')
     print(f'    min_signals= {base_ms}  /  top_n_pool = {base_pool}')
     print('█' * 72)
-    f_ssr, f_asr, f_ret, final_res = _run_once(best_wz, best_pct, best_corr,
+    f_ssr, f_asr, f_ret, f_mdd, f_bsr, final_res = _run_once(best_wz, best_pct, best_corr,
                                                 write_output=True, file=output_file)
     print('\n' + '█' * 72)
-    print(f'  ✅ 단계 튜닝 최종: 매도성공 {f_ssr*100:.1f}% / 평균성공 {f_asr*100:.1f}% / 누적수익 {f_ret:+.2f}%')
+    print(f'  ✅ 단계 튜닝 최종(안정성 종합): 매도 {f_ssr*100:.1f}% / 매수 {f_bsr*100:.1f}% / 평균 {f_asr*100:.1f}% / 수익 {f_ret:+.2f}% / MDD {f_mdd*100:.2f}%')
     print(f'     (pct_range={best_pct}, wilson_z={best_wz}, corr_limit={best_corr})')
     print('█' * 72 + '\n')
     return final_res
