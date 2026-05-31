@@ -9220,19 +9220,19 @@ RUNUP_LIMIT_SELL    = 0.01
 N_THRESHOLDS        = 400
 MAX_INDICATORS      = 600
 
-K_BUY_RANGE         = [i for i in range(1, 100)]
-K_SELL_RANGE        = [i for i in range(1, 100)]
-VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
-VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
+K_BUY_RANGE         = [i for i in range(1, 200)]
+K_SELL_RANGE        = [i for i in range(1, 200)]
+VOTE_RATIO_BUY      = [0.05, 0.1, 0.15, 0.2, 0.22, 0.25, 0.27, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
+VOTE_RATIO_SELL     = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.42, 0.43, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
 
 COST_PER_TRADE      = 0.004
 
 MIN_TRADES_DAILY    = 10
 MAX_DRAWDOWN_LIMIT_PCT = 5.0
 
-STOP_LOSS_PCT       = 0.10
+STOP_LOSS_PCT       = 0.05
 
 # ★ 선정 우선순위
 #   'stability'       : 매도성공·매수성공·누적수익·MDD방어를 종합한 안정성 점수 최대 (요청, 권장)
@@ -9244,7 +9244,7 @@ SELECTION_PRIORITY = 'stability'
 #   (매도성공률, 매수성공률, 누적수익, MDD방어) — 합이 1이 되도록 자동 정규화됨.
 #   가중 기하평균이라 한 요소라도 후보군 내 최저면 점수가 크게 깎임 → 골고루 좋은 조합 선호.
 #   하락 회피 강화하려면 매도성공률(첫째)·MDD방어(넷째) 비중을 올리세요.
-STABILITY_WEIGHTS = (0.30, 0.25, 0.20, 0.25)
+STABILITY_WEIGHTS = (0.30, 0.25, 0.15, 0.30)
 
 # ★ 가중 투표 (변경2) — 지표 성공률(Wilson)에 비례해 표 가중
 #   USE_WEIGHTED_VOTE=False면 기존 일반 투표(모두 1표)
@@ -9279,7 +9279,7 @@ META_GRID = {
     'wilson_z':    [1.65],
     'pct_range':   [(5, 95)],
     'min_signals': [10],
-    'corr_limit':  [0.25],
+    'corr_limit':  [0.2],
     'top_n_pool':  [100],
 }
 
@@ -9287,7 +9287,7 @@ STAGED_META_TUNE = True
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.3, 0.6, 0.8]
+STAGE_CORR_LIMIT  = [0.2, 0.25, 0.55, 0.8]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -11790,7 +11790,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          vote_ratio_buy=VOTE_RATIO_BUY,
                          vote_ratio_sell=VOTE_RATIO_SELL,
                          min_trades_daily=MIN_TRADES_DAILY,
-                         max_drawdown_limit_pct=MAX_DRAWDOWN_LIMIT_PCT,
+                         max_drawdown_limit_pct='__USE_GLOBAL__',
                          stop_loss_pct=STOP_LOSS_PCT,
                          selection_tolerance=SELECTION_TOLERANCE,
                          anchor_match_priority=ANCHOR_MATCH_PRIORITY,
@@ -11814,6 +11814,11 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     print('=' * 72)
     print('  매수/매도 앙상블 — 메타 그리드 자동 튜닝')
     print('=' * 72)
+
+    # ★ MDD 한도 — sentinel이면 호출 시점의 전역 MAX_DRAWDOWN_LIMIT_PCT를 다시 읽음
+    #   (Colab에서 변수만 바꾸고 함수 재정의 안 해도 최신값 반영되도록)
+    if max_drawdown_limit_pct == '__USE_GLOBAL__':
+        max_drawdown_limit_pct = globals().get('MAX_DRAWDOWN_LIMIT_PCT', None)
 
     if anchor_buy_dates is None:  anchor_buy_dates  = list(ANCHOR_BUY_DATES)
     if anchor_sell_dates is None: anchor_sell_dates = list(ANCHOR_SELL_DATES)
@@ -12164,12 +12169,12 @@ def staged_meta_tune(*, base_meta_grid=None,
                       selection_tolerance=None,
                       **run_kwargs):
     """
-    ★ 단계적 메타 변수 자동 튜닝.
-    각 단계(pct_range / wilson_z / corr_limit)에서 후보들을 모두 실행한 뒤
-    아래 우선순위로 best를 고른다 (요청 반영):
-        1차 매도성공률(top - tol 밴드)  →  2차 평균성공률(top - tol 밴드)
-        →  3차 누적수익률 최대
-    (누적수익률 단독 비교 아님)
+    ★ 단계적 메타 변수 자동 튜닝 (중복 실행 제거 버전).
+    각 단계(pct_range / wilson_z / corr_limit)에서 후보를 실행하되,
+    이미 돌린 (wz,pct,corr) 조합은 캐시에서 꺼내 재실행하지 않는다.
+    선정 기준: 안정성 종합 점수(매도·매수성공·수익·MDD방어 가중 기하평균) 최대.
+    ★ 최종 결과는 '다시 안 돌리고' 단계에서 이미 돌린 best 조합의 결과를 그대로 쓰고,
+       Excel만 그 결과로 1회 저장한다 (중복 실행 0).
     """
     if base_meta_grid is None:            base_meta_grid = META_GRID
     if stage_pct_range is None:           stage_pct_range = STAGE_PCT_RANGE
@@ -12185,40 +12190,44 @@ def staged_meta_tune(*, base_meta_grid=None,
     base_corr = base_meta_grid.get('corr_limit', [0.8])[0]
 
     output_file = run_kwargs.pop('output_file', None)
-    tol = selection_tolerance
-
-    def _mk_grid(wz, pct, corr):
-        return {'wilson_z': [wz], 'pct_range': [pct], 'min_signals': [base_ms],
-                'corr_limit': [corr], 'top_n_pool': [base_pool]}
-
-    def _run_once(wz, pct, corr, *, write_output=False, file=None):
-        """실행 후 (매도성공률, 평균성공률, 누적수익률%, MDD%, 매수성공률, 결과튜플) 반환."""
-        res = run_ensemble_search(
-            meta_grid=_mk_grid(wz, pct, corr),
-            write_output=write_output,
-            output_file=file,
-            **run_kwargs)
-        cur = res[-1]
-        sell_sr = float(cur.get('sell_success_rate', 0.0))
-        buy_sr  = float(cur.get('buy_success_rate', 0.0))
-        avg_sr  = float(cur.get('avg_success_rate', 0.0))
-        ret     = float(cur.get('cum_return_pct', float('-inf')))
-        mdd     = float(cur.get('max_drawdown', -1.0))      # 음수, 0근처=방어 좋음
-        return sell_sr, avg_sr, ret, mdd, buy_sr, res
 
     import numpy as _np
     _swt = globals().get('STABILITY_WEIGHTS', (0.30, 0.25, 0.20, 0.25))
     _swt = _np.asarray(_swt, dtype=float); _swt = _swt / _swt.sum()
 
-    def _pick_best_stage(cands):
-        """cands: list of (label, sell_sr, avg_sr, ret, mdd, buy_sr).
-           ★ 안정성 종합 점수(매도·매수성공·수익·MDD방어 가중 기하평균) 최대를 고름.
-           후보군 내 min-max 정규화 — 한 요소라도 최저면 점수가 크게 깎임."""
-        if not cands:
-            return None
-        if len(cands) == 1:
-            return cands[0]
-        rets = [c[3] for c in cands]; mdds = [c[4] for c in cands]
+    def _mk_grid(wz, pct, corr):
+        return {'wilson_z': [wz], 'pct_range': [pct], 'min_signals': [base_ms],
+                'corr_limit': [corr], 'top_n_pool': [base_pool]}
+
+    # ★ 결과 캐시 — 같은 (wz,pct,corr)는 한 번만 실행
+    _cache = {}
+    def _run_cached(wz, pct, corr):
+        """캐시에 있으면 재사용, 없으면 실행(Excel 저장 안 함).
+           반환: dict(sell, buy, avg, ret, mdd, res)"""
+        key = (round(float(wz), 6), tuple(pct), round(float(corr), 6))
+        if key in _cache:
+            return _cache[key]
+        res = run_ensemble_search(
+            meta_grid=_mk_grid(wz, pct, corr),
+            write_output=False, output_file=None,
+            **run_kwargs)
+        cur = res[-1]
+        rec = {
+            'sell': float(cur.get('sell_success_rate', 0.0)),
+            'buy':  float(cur.get('buy_success_rate', 0.0)),
+            'avg':  float(cur.get('avg_success_rate', 0.0)),
+            'ret':  float(cur.get('cum_return_pct', float('-inf'))),
+            'mdd':  float(cur.get('max_drawdown', -1.0)),
+            'res':  res, 'wz': wz, 'pct': pct, 'corr': corr,
+        }
+        _cache[key] = rec
+        return rec
+
+    def _pick_best(recs):
+        """recs: list of dict. 안정성 종합점수(후보군 min-max 정규화) 최대 선택."""
+        if not recs: return None
+        if len(recs) == 1: return recs[0]
+        rets = [r['ret'] for r in recs]; mdds = [r['mdd'] for r in recs]
         ret_lo, ret_hi = min(rets), max(rets)
         mdd_worst, mdd_best = min(mdds), max(mdds)
         def _nrm(x, lo, hi):
@@ -12226,91 +12235,103 @@ def staged_meta_tune(*, base_meta_grid=None,
             return min(1.0, max(0.0, (x - lo) / (hi - lo)))
         eps = 1e-6
         best = None; best_sc = -1.0
-        for c in cands:
-            sell, avg, ret, mdd, buy = c[1], c[2], c[3], c[4], c[5]
-            s = min(1.0, max(0.0, sell)); b = min(1.0, max(0.0, buy))
-            r = _nrm(ret, ret_lo, ret_hi); m = _nrm(mdd, mdd_worst, mdd_best)
-            comps = (max(s,eps), max(b,eps), max(r,eps), max(m,eps))
-            sc = float(_np.prod([cc ** wi for cc, wi in zip(comps, _swt)]))
+        for r in recs:
+            s = min(1.0, max(0.0, r['sell'])); b = min(1.0, max(0.0, r['buy']))
+            rr = _nrm(r['ret'], ret_lo, ret_hi); m = _nrm(r['mdd'], mdd_worst, mdd_best)
+            comps = (max(s,eps), max(b,eps), max(rr,eps), max(m,eps))
+            sc = float(_np.prod([c ** wi for c, wi in zip(comps, _swt)]))
+            r['_score'] = sc
             if sc > best_sc:
-                best_sc = sc; best = c
+                best_sc = sc; best = r
         return best
 
+    def _fmt(r):
+        return (f"매도 {r['sell']*100:.1f}% / 매수 {r['buy']*100:.1f}% / 평균 {r['avg']*100:.1f}% "
+                f"/ 수익 {r['ret']:+.2f}% / MDD {r['mdd']*100:.2f}%")
+
     print('\n' + '█' * 72)
-    print('  ★★★  단계적 메타 변수 자동 튜닝 시작  ★★★')
-    print(f'  ★ 선정: 안정성 종합점수(매도·매수성공·수익·MDD방어 가중 기하평균) 최대 — 단계별 후보 중 종합 1등')
+    print('  ★★★  단계적 메타 변수 자동 튜닝 시작 (중복 실행 없음)  ★★★')
+    print(f'  ★ 선정: 안정성 종합점수(매도·매수성공·수익·MDD방어) 최대')
     print(f'    1단계 pct_range {len(stage_pct_range)}개 → '
-          f'2단계 wilson_z {len(stage_wilson_z)}개(+재확인 1) → '
+          f'2단계 wilson_z {len(stage_wilson_z)}개(+재확인) → '
           f'3단계 corr_limit {len(stage_corr_limit)}개')
-    print('  ※ 첫 실행부터 1.65~1.95 단계 탐색 (초기 단일값 단독 실행 없음)')
     print('█' * 72)
 
-    def _fmt(c):
-        return f'매도 {c[1]*100:.1f}% / 매수 {c[5]*100:.1f}% / 평균 {c[2]*100:.1f}% / 수익 {c[3]:+.2f}% / MDD {c[4]*100:.2f}%'
-
-    # ─────────── 1단계: pct_range ───────────
-    print(f'\n┌─ [1단계/3] pct_range 탐색 — 후보 {len(stage_pct_range)}개 '
-          f'(wilson_z={base_wz}, corr_limit={base_corr} 고정) ─┐')
-    cands1 = []
+    # ─── 1단계: pct_range ───
+    print(f'\n┌─ [1단계/3] pct_range — 후보 {len(stage_pct_range)}개 '
+          f'(wilson_z={base_wz}, corr_limit={base_corr}) ─┐')
+    recs1 = []
     for i, pct in enumerate(stage_pct_range, 1):
-        print(f'│  ▸ [1단계] {i}/{len(stage_pct_range)}  pct_range={pct} 실행 중...')
-        ssr, asr, ret, mdd, bsr, _ = _run_once(base_wz, pct, base_corr)
-        cands1.append((pct, ssr, asr, ret, mdd, bsr))
-        print(f'│    [1단계] {i}/{len(stage_pct_range)} 완료 — 매도 {ssr*100:.1f}% / 매수 {bsr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}% / MDD {mdd*100:.2f}%')
-    best_c1 = _pick_best_stage(cands1)
-    best_pct = best_c1[0]
-    print(f'└─ [1단계 완료] best pct_range = {best_pct}  ({_fmt(best_c1)}) ─┘')
+        print(f'│  ▸ [1단계] {i}/{len(stage_pct_range)} pct={pct} ...')
+        r = _run_cached(base_wz, pct, base_corr)
+        recs1.append(r)
+        print(f'│    완료 — {_fmt(r)}')
+    best1 = _pick_best(recs1); best_pct = best1['pct']
+    print(f'└─ [1단계 완료] best pct_range = {best_pct}  ({_fmt(best1)}) ─┘')
 
-    # ─────────── 2단계: wilson_z ───────────
-    print(f'\n┌─ [2단계/3] wilson_z 탐색 — 후보 {len(stage_wilson_z)}개 '
-          f'(pct_range={best_pct} 고정) ─┐')
-    cands2 = []
+    # ─── 2단계: wilson_z (best_pct 고정) ───
+    print(f'\n┌─ [2단계/3] wilson_z — 후보 {len(stage_wilson_z)}개 (pct={best_pct}) ─┐')
+    recs2 = []
     for i, wz in enumerate(stage_wilson_z, 1):
-        print(f'│  ▸ [2단계] {i}/{len(stage_wilson_z)}  wilson_z={wz} 실행 중...')
-        ssr, asr, ret, mdd, bsr, _ = _run_once(wz, best_pct, base_corr)
-        cands2.append((wz, ssr, asr, ret, mdd, bsr))
-        print(f'│    [2단계] {i}/{len(stage_wilson_z)} 완료 — 매도 {ssr*100:.1f}% / 매수 {bsr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}% / MDD {mdd*100:.2f}%')
-    best_c2 = _pick_best_stage(cands2)
-    best_wz = best_c2[0]
-    # 재확인 — best_wz - step
+        dup = ' (캐시 재사용)' if (round(float(wz),6),tuple(best_pct),round(float(base_corr),6)) in _cache else ''
+        print(f'│  ▸ [2단계] {i}/{len(stage_wilson_z)} wz={wz}{dup} ...')
+        r = _run_cached(wz, best_pct, base_corr)
+        recs2.append(r)
+        print(f'│    완료 — {_fmt(r)}')
+    best2 = _pick_best(recs2); best_wz = best2['wz']
+    # 재확인 — best_wz - step (새 값일 때만 실행)
     refine_wz = round(best_wz - stage_wilson_refine_step, 4)
-    print(f'│  ▸ [2단계 재확인] best({best_wz}) - {stage_wilson_refine_step} = {refine_wz} 실행 중...')
-    ssr_r, asr_r, ret_r, mdd_r, bsr_r, _ = _run_once(refine_wz, best_pct, base_corr)
-    cands2_refine = [best_c2, (refine_wz, ssr_r, asr_r, ret_r, mdd_r, bsr_r)]
-    best_c2b = _pick_best_stage(cands2_refine)
-    if best_c2b[0] == refine_wz:
-        print(f'│    [2단계 재확인] {refine_wz} 채택 (매도 {ssr_r*100:.1f}% / 매수 {bsr_r*100:.1f}% / 평균 {asr_r*100:.1f}% / 수익 {ret_r:+.2f}% / MDD {mdd_r*100:.2f}%)')
-        best_wz = refine_wz; best_c2 = best_c2b
-    else:
-        print(f'│    [2단계 재확인] 기존 {best_wz} 유지')
-    print(f'└─ [2단계 완료] best wilson_z = {best_wz}  ({_fmt(best_c2)}) ─┘')
+    rkey = (round(float(refine_wz),6), tuple(best_pct), round(float(base_corr),6))
+    if rkey not in _cache:
+        print(f'│  ▸ [2단계 재확인] {best_wz} - {stage_wilson_refine_step} = {refine_wz} ...')
+        rr = _run_cached(refine_wz, best_pct, base_corr)
+        best2b = _pick_best([best2, rr])
+        if best2b['wz'] == refine_wz:
+            print(f'│    재확인값 {refine_wz} 채택 — {_fmt(rr)}')
+            best_wz = refine_wz; best2 = best2b
+        else:
+            print(f'│    기존 {best_wz} 유지')
+    print(f'└─ [2단계 완료] best wilson_z = {best_wz}  ({_fmt(best2)}) ─┘')
 
-    # ─────────── 3단계: corr_limit ───────────
-    print(f'\n┌─ [3단계/3] corr_limit 탐색 — 후보 {len(stage_corr_limit)}개 '
-          f'(pct_range={best_pct}, wilson_z={best_wz} 고정) ─┐')
-    cands3 = []
+    # ─── 3단계: corr_limit (best_pct, best_wz 고정) ───
+    print(f'\n┌─ [3단계/3] corr_limit — 후보 {len(stage_corr_limit)}개 '
+          f'(pct={best_pct}, wz={best_wz}) ─┐')
+    recs3 = []
     for i, corr in enumerate(stage_corr_limit, 1):
-        print(f'│  ▸ [3단계] {i}/{len(stage_corr_limit)}  corr_limit={corr} 실행 중...')
-        ssr, asr, ret, mdd, bsr, _ = _run_once(best_wz, best_pct, corr)
-        cands3.append((corr, ssr, asr, ret, mdd, bsr))
-        print(f'│    [3단계] {i}/{len(stage_corr_limit)} 완료 — 매도 {ssr*100:.1f}% / 매수 {bsr*100:.1f}% / 평균 {asr*100:.1f}% / 수익 {ret:+.2f}% / MDD {mdd*100:.2f}%')
-    best_c3 = _pick_best_stage(cands3)
-    best_corr = best_c3[0]
-    print(f'└─ [3단계 완료] best corr_limit = {best_corr}  ({_fmt(best_c3)}) ─┘')
+        dup = ' (캐시 재사용)' if (round(float(best_wz),6),tuple(best_pct),round(float(corr),6)) in _cache else ''
+        print(f'│  ▸ [3단계] {i}/{len(stage_corr_limit)} corr={corr}{dup} ...')
+        r = _run_cached(best_wz, best_pct, corr)
+        recs3.append(r)
+        print(f'│    완료 — {_fmt(r)}')
+    best3 = _pick_best(recs3); best_corr = best3['corr']
+    print(f'└─ [3단계 완료] best corr_limit = {best_corr}  ({_fmt(best3)}) ─┘')
 
-    # ─────────── 최종 실행 (Excel 생성) ───────────
+    # ─── 최종 선정 — 돌린 모든 조합 중 안정성 종합 1등 (재실행 X) ───
+    all_recs = list(_cache.values())
+    final_best = _pick_best(all_recs)
+    fb = final_best
     print('\n' + '█' * 72)
-    print('  ★ 단계 튜닝 최종 결과 — 최적 메타 변수로 1회 더 실행 (Excel 생성)')
-    print(f'    pct_range  = {best_pct}')
-    print(f'    wilson_z   = {best_wz}')
-    print(f'    corr_limit = {best_corr}')
+    print(f'  ★ 최종 선정 (돌린 {len(all_recs)}개 조합 중 안정성 종합 1등) — 재실행 없음')
+    print(f'    pct_range  = {fb["pct"]}')
+    print(f'    wilson_z   = {fb["wz"]}')
+    print(f'    corr_limit = {fb["corr"]}')
     print(f'    min_signals= {base_ms}  /  top_n_pool = {base_pool}')
+    print(f'    {_fmt(fb)}')
     print('█' * 72)
-    f_ssr, f_asr, f_ret, f_mdd, f_bsr, final_res = _run_once(best_wz, best_pct, best_corr,
-                                                write_output=True, file=output_file)
+
+    # ★ Excel 저장 — 최종 best 조합 '단 1회'만 write_output=True로 실행.
+    #   단계 탐색은 모두 write_output=False(캐시)였으므로 단계별 중복 실행은 0.
+    #   최종 Excel 생성을 위한 이 1회만 추가 실행된다(피할 수 없는 1회).
+    print(f'\n  📊 최종 조합으로 Excel 생성 (단 1회 실행, 단계 중복 없음)...')
+    final_res = run_ensemble_search(
+        meta_grid=_mk_grid(fb['wz'], fb['pct'], fb['corr']),
+        write_output=True, output_file=output_file,
+        **run_kwargs)
+
     print('\n' + '█' * 72)
-    print(f'  ✅ 단계 튜닝 최종(안정성 종합): 매도 {f_ssr*100:.1f}% / 매수 {f_bsr*100:.1f}% / 평균 {f_asr*100:.1f}% / 수익 {f_ret:+.2f}% / MDD {f_mdd*100:.2f}%')
-    print(f'     (pct_range={best_pct}, wilson_z={best_wz}, corr_limit={best_corr})')
+    print(f'  ✅ 단계 튜닝 최종(안정성 종합): {_fmt(fb)}')
+    print(f'     (pct_range={fb["pct"]}, wilson_z={fb["wz"]}, corr_limit={fb["corr"]})')
+    print(f'     ※ 총 실행 횟수: 단계 탐색 {len(all_recs)}회(중복 제거됨) + 최종 Excel 1회')
     print('█' * 72 + '\n')
     return final_res
 
