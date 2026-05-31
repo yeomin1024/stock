@@ -9280,7 +9280,7 @@ STAGED_META_TUNE = True
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.3, 0.5, 0.6, 0.8, 0.9]
+STAGE_CORR_LIMIT  = [0.2, 0.3, 0.5, 0.6]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -9453,27 +9453,51 @@ def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr
 
 @njit(cache=True)
 def _compute_safe_arrays(close_arr, horizon, dd_limit, ru_limit):
+    """
+    ★ First-Touch 방식 성공 판정 (변경됨).
+    각 날 i의 정답을 '익일 종가(close[i+1]) 진입 기준, 이후 horizon일 내에
+    +dd_limit(상승목표)와 -dd_limit(하락목표) 중 어느 쪽을 먼저 터치하는가'로 정한다.
+
+      safe_buy[i]=1  : 위(+dd_limit)를 먼저 터치 → '올랐어야 할 자리'(매수 정답)
+      safe_sell[i]=1 : 아래(-ru_limit)를 먼저 터치 → '내렸어야 할 자리'(매도 정답)
+      어느 쪽도 기간 내 미터치 시: 기간끝 종가 부호로 결정(>=0이면 up, <0이면 dn)
+
+    ※ dd_limit는 매수 상승목표(+) 겸 매도의 반대선, ru_limit는 매도 하락목표(-) 겸 매수 반대선.
+      기존 코드 호환 위해 인자 이름(dd_limit, ru_limit) 유지.
+      매수 판정에는 +dd_limit(목표) / -ru_limit(손절) 사용,
+      매도 판정에는 -ru_limit(목표) / +dd_limit(손절) 사용 — 대칭.
+    """
     n = close_arr.shape[0]
     safe_buy  = np.zeros(n, dtype=np.uint8)
     safe_sell = np.zeros(n, dtype=np.uint8)
     evaluable = np.zeros(n, dtype=np.uint8)
     for i in range(n - 1):
-        start_p = close_arr[i + 1]
-        if start_p <= 0.0: continue
+        base = close_arr[i + 1]          # 익일 종가 = 진입 기준가
+        if base <= 0.0: continue
         end = i + 1 + horizon
         if end >= n: end = n - 1
         if end <= i + 1: continue
         evaluable[i] = 1
-        min_p = start_p
-        max_p = start_p
+        # first-touch: +dd_limit(위) 와 -ru_limit(아래) 중 먼저 닿는 쪽
+        hit_up = 0
+        hit_dn = 0
         for j in range(i + 2, end + 1):
-            if close_arr[j] < min_p: min_p = close_arr[j]
-            if close_arr[j] > max_p: max_p = close_arr[j]
-        max_dd = min_p / start_p - 1.0
-        max_ru = max_p / start_p - 1.0
-        if max_dd >= -dd_limit:
+            r = close_arr[j] / base - 1.0
+            if r >= dd_limit:
+                hit_up = 1; break
+            if r <= -ru_limit:
+                hit_dn = 1; break
+        if hit_up == 0 and hit_dn == 0:
+            # 기간 내 어느 목표도 미터치 → 기간끝 종가 부호
+            last_r = close_arr[end] / base - 1.0
+            if last_r >= 0.0:
+                hit_up = 1
+            else:
+                hit_dn = 1
+        # 위를 먼저 터치 = 매수 정답(올랐어야), 아래 먼저 = 매도 정답(내렸어야)
+        if hit_up == 1:
             safe_buy[i] = 1
-        if max_ru <= ru_limit:
+        if hit_dn == 1:
             safe_sell[i] = 1
     return safe_buy, safe_sell, evaluable
 
@@ -10397,9 +10421,12 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     pos_post = np.zeros(n, dtype=np.int8)
     prev_close = np.nan
 
-    # ★ 변경4: 전체 매수/매도 성공·실패 집계 카운터
-    n_buy_on_total = 0; n_buy_success = 0; n_buy_fail = 0
+    # ★ 전체 매수/매도 성공·실패 집계 카운터
+    #   신호 ON 적중(TP) + 신호 OFF 올바른 미진입(TN) 모두 '성공'으로 집계 (OFF 포함)
+    n_buy_on_total = 0; n_buy_success = 0; n_buy_fail = 0          # 신호 ON만 (적중률용)
     n_sell_on_total = 0; n_sell_success = 0; n_sell_fail = 0
+    n_buy_eval_all = 0; n_buy_correct_all = 0                      # ON+OFF 전체 (정확도용)
+    n_sell_eval_all = 0; n_sell_correct_all = 0
 
     for i in range(n):
         d = dates[i]; price = float(cl.iloc[i])
@@ -10428,19 +10455,33 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
             b_formula = f"단순합 {int(b_count)} (신호 {b_raw}/{K_buy} × 1표) {'≥' if b_on else '<'} {vote_buy}"
             s_formula = f"단순합 {int(s_count)} (신호 {s_raw}/{K_sell} × 1표) {'≥' if s_on else '<'} {vote_sell}"
 
-        # ★ 변경4: 이 날 매수/매도 신호의 성공·실패 판정
+        # ★ 이 날 매수/매도 신호의 성공·실패 판정 (first-touch 정답 기준)
+        #   신호 ON & 정답(올랐어야)  → 적중 성공  ✓성공
+        #   신호 ON & 오답            → 실패        ✗실패
+        #   신호 OFF & 정답이 아니었음 → 올바른 미진입 ✓미진입(OFF 포함 성공)
+        #   신호 OFF & 정답이었는데 놓침 → 놓침       ✗놓침
         buy_result = ''; sell_result = ''
         if eval0[i] == 1:
-            sb = safe_buy0[i] == 1
-            ss = safe_sell0[i] == 1
+            sb = safe_buy0[i] == 1     # 매수 정답일(올랐어야)
+            ss = safe_sell0[i] == 1    # 매도 정답일(내렸어야)
+            # ── 매수 ──
+            n_buy_eval_all += 1
             if b_on:
                 n_buy_on_total += 1
-                if sb: buy_result = '✓성공'; n_buy_success += 1
+                if sb: buy_result = '✓성공'; n_buy_success += 1; n_buy_correct_all += 1
                 else:  buy_result = '✗실패'; n_buy_fail += 1
+            else:
+                if not sb: buy_result = '✓미진입'; n_buy_correct_all += 1   # 안 떠야 했고 안 뜸
+                else:      buy_result = '✗놓침'                            # 떴어야 했는데 안 뜸
+            # ── 매도 ──
+            n_sell_eval_all += 1
             if s_on:
                 n_sell_on_total += 1
-                if ss: sell_result = '✓성공'; n_sell_success += 1
+                if ss: sell_result = '✓성공'; n_sell_success += 1; n_sell_correct_all += 1
                 else:  sell_result = '✗실패'; n_sell_fail += 1
+            else:
+                if not ss: sell_result = '✓미진입'; n_sell_correct_all += 1
+                else:      sell_result = '✗놓침'
 
         stopped_today = False
         stop_ret_pct = np.nan
@@ -10752,6 +10793,13 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     cur['n_sell_fail_cnt']    = n_sell_fail
     cur['buy_signal_hit_rate']  = n_buy_success  / n_buy_on_total  if n_buy_on_total  > 0 else 0.0
     cur['sell_signal_hit_rate'] = n_sell_success / n_sell_on_total if n_sell_on_total > 0 else 0.0
+    # ★ OFF 포함 전체 정확도 (신호 안 뜬 날의 올바른 미진입도 성공으로 집계)
+    cur['n_buy_eval_all']     = n_buy_eval_all
+    cur['n_buy_correct_all']  = n_buy_correct_all
+    cur['n_sell_eval_all']    = n_sell_eval_all
+    cur['n_sell_correct_all'] = n_sell_correct_all
+    cur['buy_acc_all']  = n_buy_correct_all  / n_buy_eval_all  if n_buy_eval_all  > 0 else 0.0
+    cur['sell_acc_all'] = n_sell_correct_all / n_sell_eval_all if n_sell_eval_all > 0 else 0.0
     return daily, trades_df, cur, buy_used, sell_used
 
 
@@ -10832,11 +10880,11 @@ def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
         c.alignment = Alignment(horizontal='center'); c.border = _TH
         # 매수성공 (변경4)
         c = ws.cell(r, 5)
-        br = row.get('buy_result', '')
+        br = str(row.get('buy_result', ''))
         c.value = br if br else '-'
-        if '성공' in str(br):
+        if '✓' in br:        # ✓성공(ON적중) 또는 ✓미진입(OFF올바름)
             c.fill = _GOOD; c.font = Font(bold=True, size=10, color='006100')
-        elif '실패' in str(br):
+        elif '✗' in br:      # ✗실패(ON오답) 또는 ✗놓침(OFF놓침)
             c.fill = _BAD;  c.font = Font(bold=True, size=10, color='C00000')
         else:
             c.font = Font(size=9, color='888888')
@@ -10853,11 +10901,11 @@ def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
         c.alignment = Alignment(horizontal='center'); c.border = _TH
         # 매도성공 (변경4)
         c = ws.cell(r, 8)
-        sr = row.get('sell_result', '')
+        sr = str(row.get('sell_result', ''))
         c.value = sr if sr else '-'
-        if '성공' in str(sr):
+        if '✓' in sr:
             c.fill = _GOOD; c.font = Font(bold=True, size=10, color='006100')
-        elif '실패' in str(sr):
+        elif '✗' in sr:
             c.fill = _BAD;  c.font = Font(bold=True, size=10, color='C00000')
         else:
             c.font = Font(size=9, color='888888')
@@ -11023,12 +11071,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     # ★ 변경4: 전체 매수/매도 성공·실패 집계 + 투표 방식
     details += [
         ('', ''),
-        ('★ 매수신호 성공/실패 (전체)',
+        ('★ 매수신호 성공/실패 (ON만)',
           f"{cur.get('n_buy_success_cnt',0)} 성공 / {cur.get('n_buy_fail_cnt',0)} 실패 "
           f"(신호 {cur.get('n_buy_on_total',0)}회, 적중 {cur.get('buy_signal_hit_rate',0)*100:.1f}%)"),
-        ('★ 매도신호 성공/실패 (전체)',
+        ('★ 매수 정확도 (OFF 포함)',
+          f"{cur.get('buy_acc_all',0)*100:.1f}% "
+          f"({cur.get('n_buy_correct_all',0)}/{cur.get('n_buy_eval_all',0)}일 — 미진입 포함)"),
+        ('★ 매도신호 성공/실패 (ON만)',
           f"{cur.get('n_sell_success_cnt',0)} 성공 / {cur.get('n_sell_fail_cnt',0)} 실패 "
           f"(신호 {cur.get('n_sell_on_total',0)}회, 적중 {cur.get('sell_signal_hit_rate',0)*100:.1f}%)"),
+        ('★ 매도 정확도 (OFF 포함)',
+          f"{cur.get('sell_acc_all',0)*100:.1f}% "
+          f"({cur.get('n_sell_correct_all',0)}/{cur.get('n_sell_eval_all',0)}일 — 미진입 포함)"),
+        ('★ 성공 판정 방식',
+          'First-Touch (익일진입, 기간내 +목표/-손절 먼저 닿는 쪽)'),
         ('★ 투표 방식',
           '가중 투표 (성공률 비례)' if cur.get('weighted_vote') else '일반 투표 (모두 1표)'),
     ]
@@ -11941,11 +11997,16 @@ def run_ensemble_search(*, eval_start=EVAL_START,
           f'MDD {cur["max_drawdown"]*100:.2f}%   거래 {cur["n_trades"]}회 (손절매 {cur["n_stop_triggered"]}회)')
     print(f'    📈 상승일만 합산: 전략 {cur["up_cum_return_pct"]:+.2f}%   B&H {bh_up_ret*100:+.2f}%  '
           f'(보유 중 양(+)의 일별 변동률만 합산)')
-    # ★ 변경4: 성공/실패 집계 출력
-    print(f'    ✅ 매수신호 성공/실패: {cur.get("n_buy_success_cnt",0)}/{cur.get("n_buy_fail_cnt",0)} '
-          f'(신호 {cur.get("n_buy_on_total",0)}회, 적중 {cur.get("buy_signal_hit_rate",0)*100:.1f}%)   '
-          f'매도: {cur.get("n_sell_success_cnt",0)}/{cur.get("n_sell_fail_cnt",0)} '
-          f'(신호 {cur.get("n_sell_on_total",0)}회, 적중 {cur.get("sell_signal_hit_rate",0)*100:.1f}%)')
+    # ★ 성공/실패 집계 출력 (first-touch, OFF 포함)
+    print(f'    ✅ [ON만 적중률] 매수 {cur.get("n_buy_success_cnt",0)}/{cur.get("n_buy_on_total",0)} '
+          f'({cur.get("buy_signal_hit_rate",0)*100:.1f}%)   '
+          f'매도 {cur.get("n_sell_success_cnt",0)}/{cur.get("n_sell_on_total",0)} '
+          f'({cur.get("sell_signal_hit_rate",0)*100:.1f}%)')
+    print(f'    ✅ [OFF 포함 정확도] 매수 {cur.get("buy_acc_all",0)*100:.1f}% '
+          f'({cur.get("n_buy_correct_all",0)}/{cur.get("n_buy_eval_all",0)}일)   '
+          f'매도 {cur.get("sell_acc_all",0)*100:.1f}% '
+          f'({cur.get("n_sell_correct_all",0)}/{cur.get("n_sell_eval_all",0)}일)  '
+          f'※ first-touch 판정, 신호 안 뜬 날의 올바른 미진입도 포함')
     succ_label = ' (⚓ANCHOR 보정)' if anchor_mode else ''
     print(f'    매수신호 BalAcc{succ_label} {cur["buy_success_rate"]*100:.1f}% (plain {cur["buy_accuracy_plain"]*100:.1f}%, ON {cur["n_buy_signal_on"]})  '
           f'매도신호 BalAcc {cur["sell_success_rate"]*100:.1f}% (plain {cur["sell_accuracy_plain"]*100:.1f}%, ON {cur["n_sell_signal_on"]})  '
