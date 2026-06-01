@@ -9248,7 +9248,7 @@ SELECTION_PRIORITY = 'avgband_mdd_return'
 #   (매도성공률, 매수성공률, 누적수익, MDD방어) — 합이 1이 되도록 자동 정규화됨.
 #   가중 기하평균이라 한 요소라도 후보군 내 최저면 점수가 크게 깎임 → 골고루 좋은 조합 선호.
 #   하락 회피 강화하려면 매도성공률(첫째)·MDD방어(넷째) 비중을 올리세요.
-STABILITY_WEIGHTS = (0.30, 0.05, 0.25, 0.45)
+STABILITY_WEIGHTS = (0.35, 0.05, 0.20, 0.50)
 
 # ★ 가중 투표 (변경2) — 지표 성공률(Wilson)에 비례해 표 가중
 #   USE_WEIGHTED_VOTE=False면 기존 일반 투표(모두 1표)
