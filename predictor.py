@@ -9235,13 +9235,14 @@ MAX_DRAWDOWN_LIMIT_PCT = 5.0
 STOP_LOSS_PCT       = 0.05
 
 # ★ 선정 우선순위
-#   'independent'     : 매수성공률 최고 설정 + 매도성공률 최고 설정을 따로 찾아 합침 (요청).
+#   'avgband_mdd_return' : 평균성공률 top band 안에서 → MDD 가장 낮은(0.1%p 단위 동률이면 수익) (요청, 기본)
+#   'independent'     : 매수성공률 최고 설정 + 매도성공률 최고 설정을 따로 찾아 합침.
 #                       성공률은 매수/매도가 독립이므로 각각 최댓값을 동시 달성. 수익·MDD는 따라옴.
 #                       (MDD 한도가 켜져 있으면 '한도 통과분 중' 각각 최고를 찾음)
 #   'stability'       : 매도성공·매수성공·누적수익·MDD방어를 종합한 안정성 점수 최대
 #   'sell_buy_return' : 매도성공률 → 매수성공률 → 누적수익 순 (밴드 줄세우기)
 #   'balacc_return'   : 기존 (평균 BalAcc → 수익률)
-SELECTION_PRIORITY = 'independent'
+SELECTION_PRIORITY = 'avgband_mdd_return'
 
 # ★ 안정성 종합 점수 가중치 (SELECTION_PRIORITY='stability'일 때 사용)
 #   (매도성공률, 매수성공률, 누적수익, MDD방어) — 합이 1이 되도록 자동 정규화됨.
@@ -9257,10 +9258,10 @@ WEIGHT_MAX_RATIO  = 1.6   # 최고점수 지표가 최저점수 지표의 최대
 
 SELECTION_TOLERANCE = 0.04
 
-ANCHOR_MATCH_PRIORITY = True
+ANCHOR_MATCH_PRIORITY = False   # ★ 선정은 평균성공+MDD+수익 기준으로. 매칭 우선이 그걸 덮지 않도록 OFF
 ANCHOR_MATCH_TOLERANCE = 0.10
 
-ANCHOR_MODE = True
+ANCHOR_MODE = False
 
 AUTO_ANCHOR = True
 AUTO_ANCHOR_WINDOW     = 1
@@ -9286,7 +9287,7 @@ META_GRID = {
     'top_n_pool':  [100],
 }
 
-STAGED_META_TUNE = False
+STAGED_META_TUNE = True
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
@@ -9927,6 +9928,23 @@ def _select_with_tolerance(df, tolerance,
 
     prio = globals().get('SELECTION_PRIORITY', 'balacc_return')
 
+    # ★ 평균성공 밴드 → MDD최저 → 수익최대 모드 (요청, 기본).
+    #   1) 평균성공률 최고에서 tolerance(밴드) 안의 후보를 모음
+    #   2) 그중 MDD가 가장 낮은(0에 가까운) 것 — 0.1%p 단위로 같으면 '비슷'으로 보고
+    #   3) 그 동률 그룹에서 누적수익이 가장 높은 것
+    if prio == 'avgband_mdd_return' and 'avg_success_rate' in df.columns \
+       and 'max_drawdown' in df.columns:
+        best_avg = df['avg_success_rate'].max()
+        band = df[df['avg_success_rate'] >= best_avg - tolerance].copy()
+        if len(band) == 0:
+            band = df[df['avg_success_rate'] == best_avg].copy()
+        band['_mdd_r'] = band['max_drawdown'].round(3)   # 0.1%p 단위
+        best_mdd_r = band['_mdd_r'].max()                # 가장 0에 가까운(덜 빠진)
+        mdd_grp = band[band['_mdd_r'] == best_mdd_r]
+        ret_col = 'total_return' if 'total_return' in mdd_grp.columns else 'combined_return'
+        mdd_grp = mdd_grp.sort_values([ret_col, 'avg_success_rate'], ascending=False)
+        return mdd_grp.index[0]
+
     # ★ 독립 최적화 모드 — 매수성공률 최고 설정 + 매도성공률 최고 설정을 따로 찾아 합침.
     #   (매수성공률은 K_buy/vote_buy만으로, 매도성공률은 K_sell/vote_sell만으로 결정되므로
     #    둘은 독립. 각각 최고를 골라 한 조합으로 합치면 매수·매도 성공률 모두 최댓값 달성.)
@@ -10261,7 +10279,9 @@ def meta_grid_search(feat, close, *,
     total = len(combos)
     print(f"  메타 그리드 총 {total}개 조합")
     _prio_p = globals().get('SELECTION_PRIORITY', 'balacc_return')
-    if _prio_p == 'independent':
+    if _prio_p == 'avgband_mdd_return':
+        print(f"  ★ 선정: 평균성공률 top band({selection_tolerance*100:.1f}%p) 내 → MDD 최저(동률시 수익 최대)")
+    elif _prio_p == 'independent':
         print(f"  ★ 선정: 매수성공률 최고 설정 + 매도성공률 최고 설정 따로 찾아 합침 (독립 최적화)")
     elif _prio_p == 'stability':
         print(f"  ★ 선정: 안정성 종합점수(매도·매수성공·수익·MDD방어 가중 기하평균) 최대")
@@ -10376,9 +10396,27 @@ def meta_grid_search(feat, close, *,
                             update = True
             else:
                 _prio = globals().get('SELECTION_PRIORITY', 'balacc_return')
+                # ★ 평균성공 밴드 → MDD최저 → 수익 (요청). meta 레벨도 동일 우선순위.
+                if _prio == 'avgband_mdd_return':
+                    this_avg = best_in['avg_success_rate']
+                    this_mdd = best_in['max_drawdown']
+                    bs = best_state[3] if best_state else None
+                    bs_avg = bs['avg_success_rate'] if bs else -np.inf
+                    bs_mdd = bs['max_drawdown']     if bs else -np.inf
+                    # 1차 평균성공률 밴드
+                    if this_avg > bs_avg + selection_tolerance:
+                        update = True
+                    elif this_avg >= bs_avg - selection_tolerance:
+                        # 2차 MDD (0.1%p 단위로 비교) — 덜 빠진 쪽
+                        if round(this_mdd, 3) > round(bs_mdd, 3):
+                            update = True
+                        elif round(this_mdd, 3) == round(bs_mdd, 3):
+                            # 3차 수익
+                            if this_return > best_overall_return:
+                                update = True
                 # ★ 독립 최적화 — meta 레벨은 best_inner의 (매수성공+매도성공) 합이
                 #   가장 큰 메타 조합을 채택. 동률이면 수익으로.
-                if _prio == 'independent':
+                elif _prio == 'independent':
                     this_pair = best_in['buy_success_rate'] + best_in['sell_success_rate']
                     bs = best_state[3] if best_state else None
                     bs_pair = (bs['buy_success_rate'] + bs['sell_success_rate']) if bs else -np.inf
@@ -12275,6 +12313,15 @@ def staged_meta_tune(*, base_meta_grid=None,
            그 외(stability): 안정성 종합점수 최대."""
         if not recs: return None
         if len(recs) == 1: return recs[0]
+        tol = globals().get('SELECTION_TOLERANCE', 0.04)
+        # ★ 평균성공 밴드 → MDD최저(0.1%p 동률시 수익) — 요청, 기본
+        if _prio_st == 'avgband_mdd_return':
+            best_avg = max(r['avg'] for r in recs)
+            band = [r for r in recs if r['avg'] >= best_avg - tol]
+            best_mdd_r = max(round(r['mdd'], 3) for r in band)   # 덜 빠진 쪽
+            grp = [r for r in band if round(r['mdd'], 3) == best_mdd_r]
+            grp.sort(key=lambda r: (r['ret'], r['avg']), reverse=True)
+            return grp[0]
         # ★ 독립 최적화 — 매수성공+매도성공 합이 최대인 변수조합
         if _prio_st == 'independent':
             best = None; best_key = None
@@ -12307,7 +12354,10 @@ def staged_meta_tune(*, base_meta_grid=None,
 
     print('\n' + '█' * 72)
     print('  ★★★  단계적 메타 변수 자동 튜닝 시작 (중복 실행 없음)  ★★★')
-    if globals().get('SELECTION_PRIORITY','')=='independent':
+    _ps = globals().get('SELECTION_PRIORITY','')
+    if _ps == 'avgband_mdd_return':
+        print(f'  ★ 선정: 평균성공률 top band 내 → MDD 최저(동률시 수익 최대)')
+    elif _ps == 'independent':
         print(f'  ★ 선정: 매수성공률 최고 + 매도성공률 최고 설정 따로 찾아 합침 (독립 최적화)')
     else:
         print(f'  ★ 선정: 안정성 종합점수(매도·매수성공·수익·MDD방어) 최대')
@@ -13467,5 +13517,3 @@ if __name__ == '__main__':
         per_ticker_overrides=overrides,
         resume=False,
     )
-
-
