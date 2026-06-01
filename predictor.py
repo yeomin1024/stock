@@ -9258,7 +9258,7 @@ WEIGHT_MAX_RATIO  = 1.6   # 최고점수 지표가 최저점수 지표의 최대
 
 SELECTION_TOLERANCE = 0.04
 
-ANCHOR_MATCH_PRIORITY = True   # ★ 선정은 평균성공+MDD+수익 기준으로. 매칭 우선이 그걸 덮지 않도록 OFF
+ANCHOR_MATCH_PRIORITY = False   # ★ 선정은 평균성공+MDD+수익 기준으로. 매칭 우선이 그걸 덮지 않도록 OFF
 ANCHOR_MATCH_TOLERANCE = 0.10
 
 ANCHOR_MODE = True
