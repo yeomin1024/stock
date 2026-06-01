@@ -9287,7 +9287,7 @@ META_GRID = {
     'top_n_pool':  [100],
 }
 
-STAGED_META_TUNE = False
+STAGED_META_TUNE = True
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
