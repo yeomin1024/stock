@@ -9244,7 +9244,7 @@ SELECTION_PRIORITY = 'stability'
 #   (매도성공률, 매수성공률, 누적수익, MDD방어) — 합이 1이 되도록 자동 정규화됨.
 #   가중 기하평균이라 한 요소라도 후보군 내 최저면 점수가 크게 깎임 → 골고루 좋은 조합 선호.
 #   하락 회피 강화하려면 매도성공률(첫째)·MDD방어(넷째) 비중을 올리세요.
-STABILITY_WEIGHTS = (0.30, 0.25, 0.15, 0.30)
+STABILITY_WEIGHTS = (0.35, 0.15, 0.05, 0.40)
 
 # ★ 가중 투표 (변경2) — 지표 성공률(Wilson)에 비례해 표 가중
 #   USE_WEIGHTED_VOTE=False면 기존 일반 투표(모두 1표)
@@ -9283,7 +9283,7 @@ META_GRID = {
     'top_n_pool':  [100],
 }
 
-STAGED_META_TUNE = True
+STAGED_META_TUNE = False
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
