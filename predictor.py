@@ -9235,20 +9235,21 @@ MAX_DRAWDOWN_LIMIT_PCT = 5.0
 STOP_LOSS_PCT       = 0.05
 
 # ★ 선정 우선순위
-#   'avgband_mdd_return' : 평균성공률 top band 안에서 → MDD 가장 낮은(0.1%p 단위 동률이면 수익) (요청, 기본)
+#   'sell_mdd_return'    : 매도성공률 최고 -2%p 밴드 → MDD 최저 -1%p 밴드 → 누적수익 최고 (요청, 기본)
+#   'avgband_mdd_return' : 평균성공률 top band 안에서 → MDD 가장 낮은(0.1%p 단위 동률이면 수익)
 #   'independent'     : 매수성공률 최고 설정 + 매도성공률 최고 설정을 따로 찾아 합침.
 #                       성공률은 매수/매도가 독립이므로 각각 최댓값을 동시 달성. 수익·MDD는 따라옴.
 #                       (MDD 한도가 켜져 있으면 '한도 통과분 중' 각각 최고를 찾음)
 #   'stability'       : 매도성공·매수성공·누적수익·MDD방어를 종합한 안정성 점수 최대
 #   'sell_buy_return' : 매도성공률 → 매수성공률 → 누적수익 순 (밴드 줄세우기)
 #   'balacc_return'   : 기존 (평균 BalAcc → 수익률)
-SELECTION_PRIORITY = 'avgband_mdd_return'
+SELECTION_PRIORITY = 'sell_mdd_return'
 
 # ★ 안정성 종합 점수 가중치 (SELECTION_PRIORITY='stability'일 때 사용)
 #   (매도성공률, 매수성공률, 누적수익, MDD방어) — 합이 1이 되도록 자동 정규화됨.
 #   가중 기하평균이라 한 요소라도 후보군 내 최저면 점수가 크게 깎임 → 골고루 좋은 조합 선호.
 #   하락 회피 강화하려면 매도성공률(첫째)·MDD방어(넷째) 비중을 올리세요.
-STABILITY_WEIGHTS = (0.35, 0.05, 0.20, 0.50)
+STABILITY_WEIGHTS = (0.30, 0.25, 0.20, 0.25)
 
 # ★ 가중 투표 (변경2) — 지표 성공률(Wilson)에 비례해 표 가중
 #   USE_WEIGHTED_VOTE=False면 기존 일반 투표(모두 1표)
@@ -9257,6 +9258,10 @@ USE_WEIGHTED_VOTE = True
 WEIGHT_MAX_RATIO  = 1.6   # 최고점수 지표가 최저점수 지표의 최대 몇 배 표
 
 SELECTION_TOLERANCE = 0.04
+
+# ★ 'sell_mdd_return' 모드 밴드 폭 (요청)
+SELL_SUCCESS_TOLERANCE = 0.02   # 매도성공률 최고에서 이 차이(2%p)까지 후보
+MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 (그중 수익 최고 선택)
 
 ANCHOR_MATCH_PRIORITY = False   # ★ 선정은 평균성공+MDD+수익 기준으로. 매칭 우선이 그걸 덮지 않도록 OFF
 ANCHOR_MATCH_TOLERANCE = 0.10
@@ -9280,7 +9285,7 @@ SELECT_BY           = 'total_return'
 TOP_N_GRID_OUT      = 700
 
 META_GRID = {
-    'wilson_z':    [1.85],
+    'wilson_z':    [1.65],
     'pct_range':   [(5, 95)],
     'min_signals': [10],
     'corr_limit':  [0.2],
@@ -9928,6 +9933,26 @@ def _select_with_tolerance(df, tolerance,
 
     prio = globals().get('SELECTION_PRIORITY', 'balacc_return')
 
+    # ★ 매도성공 밴드(-2%p) → MDD최저 밴드(-1%p) → 누적수익 최고 (요청, 기본)
+    #   1) 매도성공률 최고에서 2%p 안의 후보
+    #   2) 그중 MDD 가장 낮은(0에 가까운)에서 1%p 안의 후보 (비슷한 낙폭은 묶음)
+    #   3) 그중 누적수익이 가장 높은 것
+    if prio == 'sell_mdd_return' and 'sell_success_rate' in df.columns \
+       and 'max_drawdown' in df.columns:
+        sell_tol = globals().get('SELL_SUCCESS_TOLERANCE', 0.02)
+        mdd_tol  = globals().get('MDD_TOLERANCE', 0.01)
+        best_sell = df['sell_success_rate'].max()
+        b1 = df[df['sell_success_rate'] >= best_sell - sell_tol].copy()
+        if len(b1) == 0:
+            b1 = df[df['sell_success_rate'] == best_sell].copy()
+        best_mdd = b1['max_drawdown'].max()           # 가장 0에 가까운(덜 빠진)
+        b2 = b1[b1['max_drawdown'] >= best_mdd - mdd_tol].copy()
+        if len(b2) == 0:
+            b2 = b1
+        ret_col = 'total_return' if 'total_return' in b2.columns else 'combined_return'
+        b2 = b2.sort_values([ret_col, 'sell_success_rate'], ascending=False)
+        return b2.index[0]
+
     # ★ 평균성공 밴드 → MDD최저 → 수익최대 모드 (요청, 기본).
     #   1) 평균성공률 최고에서 tolerance(밴드) 안의 후보를 모음
     #   2) 그중 MDD가 가장 낮은(0에 가까운) 것 — 0.1%p 단위로 같으면 '비슷'으로 보고
@@ -10279,7 +10304,10 @@ def meta_grid_search(feat, close, *,
     total = len(combos)
     print(f"  메타 그리드 총 {total}개 조합")
     _prio_p = globals().get('SELECTION_PRIORITY', 'balacc_return')
-    if _prio_p == 'avgband_mdd_return':
+    if _prio_p == 'sell_mdd_return':
+        _st = globals().get('SELL_SUCCESS_TOLERANCE', 0.02); _mt = globals().get('MDD_TOLERANCE', 0.01)
+        print(f"  ★ 선정: 매도성공률 -{_st*100:.0f}%p 밴드 → MDD 최저 -{_mt*100:.0f}%p 밴드 → 누적수익 최고")
+    elif _prio_p == 'avgband_mdd_return':
         print(f"  ★ 선정: 평균성공률 top band({selection_tolerance*100:.1f}%p) 내 → MDD 최저(동률시 수익 최대)")
     elif _prio_p == 'independent':
         print(f"  ★ 선정: 매수성공률 최고 설정 + 매도성공률 최고 설정 따로 찾아 합침 (독립 최적화)")
@@ -10396,8 +10424,28 @@ def meta_grid_search(feat, close, *,
                             update = True
             else:
                 _prio = globals().get('SELECTION_PRIORITY', 'balacc_return')
+                # ★ 매도성공 밴드 → MDD최저 밴드 → 수익 (요청). meta 레벨도 동일 우선순위.
+                if _prio == 'sell_mdd_return':
+                    _stol = globals().get('SELL_SUCCESS_TOLERANCE', 0.02)
+                    _mtol = globals().get('MDD_TOLERANCE', 0.01)
+                    this_sell = best_in['sell_success_rate']
+                    this_mdd  = best_in['max_drawdown']
+                    bs = best_state[3] if best_state else None
+                    bs_sell = bs['sell_success_rate'] if bs else -np.inf
+                    bs_mdd  = bs['max_drawdown']      if bs else -np.inf
+                    # 1차 매도성공률 밴드(-2%p)
+                    if this_sell > bs_sell + _stol:
+                        update = True
+                    elif this_sell >= bs_sell - _stol:
+                        # 2차 MDD 밴드(-1%p) — 덜 빠진 쪽
+                        if this_mdd > bs_mdd + _mtol:
+                            update = True
+                        elif this_mdd >= bs_mdd - _mtol:
+                            # 3차 수익
+                            if this_return > best_overall_return:
+                                update = True
                 # ★ 평균성공 밴드 → MDD최저 → 수익 (요청). meta 레벨도 동일 우선순위.
-                if _prio == 'avgband_mdd_return':
+                elif _prio == 'avgband_mdd_return':
                     this_avg = best_in['avg_success_rate']
                     this_mdd = best_in['max_drawdown']
                     bs = best_state[3] if best_state else None
@@ -12314,7 +12362,17 @@ def staged_meta_tune(*, base_meta_grid=None,
         if not recs: return None
         if len(recs) == 1: return recs[0]
         tol = globals().get('SELECTION_TOLERANCE', 0.04)
-        # ★ 평균성공 밴드 → MDD최저(0.1%p 동률시 수익) — 요청, 기본
+        # ★ 매도성공 밴드(-2%p) → MDD최저 밴드(-1%p) → 누적수익 최고 — 요청, 기본
+        if _prio_st == 'sell_mdd_return':
+            stol = globals().get('SELL_SUCCESS_TOLERANCE', 0.02)
+            mtol = globals().get('MDD_TOLERANCE', 0.01)
+            best_sell = max(r['sell'] for r in recs)
+            b1 = [r for r in recs if r['sell'] >= best_sell - stol]
+            best_mdd = max(r['mdd'] for r in b1)
+            b2 = [r for r in b1 if r['mdd'] >= best_mdd - mtol]
+            b2.sort(key=lambda r: (r['ret'], r['sell']), reverse=True)
+            return b2[0]
+        # ★ 평균성공 밴드 → MDD최저(0.1%p 동률시 수익) — 요청
         if _prio_st == 'avgband_mdd_return':
             best_avg = max(r['avg'] for r in recs)
             band = [r for r in recs if r['avg'] >= best_avg - tol]
@@ -12355,7 +12413,10 @@ def staged_meta_tune(*, base_meta_grid=None,
     print('\n' + '█' * 72)
     print('  ★★★  단계적 메타 변수 자동 튜닝 시작 (중복 실행 없음)  ★★★')
     _ps = globals().get('SELECTION_PRIORITY','')
-    if _ps == 'avgband_mdd_return':
+    if _ps == 'sell_mdd_return':
+        _st=globals().get('SELL_SUCCESS_TOLERANCE',0.02); _mt=globals().get('MDD_TOLERANCE',0.01)
+        print(f'  ★ 선정: 매도성공률 -{_st*100:.0f}%p 밴드 → MDD 최저 -{_mt*100:.0f}%p 밴드 → 누적수익 최고')
+    elif _ps == 'avgband_mdd_return':
         print(f'  ★ 선정: 평균성공률 top band 내 → MDD 최저(동률시 수익 최대)')
     elif _ps == 'independent':
         print(f'  ★ 선정: 매수성공률 최고 + 매도성공률 최고 설정 따로 찾아 합침 (독립 최적화)')
@@ -12443,6 +12504,214 @@ def staged_meta_tune(*, base_meta_grid=None,
     print(f'     ※ 총 실행 횟수: 단계 탐색 {len(all_recs)}회(중복 제거됨) + 최종 Excel 1회')
     print('█' * 72 + '\n')
     return final_res
+
+
+# ════════════════════════════════════════════════════════════════════════
+#   ★ 그리드 번호로 특정 조합 재현 → 일별 거래 Excel 생성
+#     경로는 OUTPUT_DIR 고정, 파일명 + 그리드 번호만 입력.
+#     '사용된 설정' 시트의 설정값(Horizon/손실한도/비용/메타변수 등)을 그대로 사용.
+# ════════════════════════════════════════════════════════════════════════
+def _parse_used_settings(wb):
+    """'사용된 설정' 시트에서 백테스트/메타 설정값을 읽어 dict로 반환."""
+    out = {}
+    if '사용된 설정' not in wb.sheetnames:
+        return out
+    ws = wb['사용된 설정']
+    kv = {}
+    for r in range(1, ws.max_row + 1):
+        k = ws.cell(r, 1).value; v = ws.cell(r, 2).value
+        if k is None or v is None: continue
+        kv[str(k).strip()] = str(v).strip()
+
+    def _num(s):
+        """문자열에서 첫 번째 숫자(부호·소수점 포함)만 추출."""
+        if s is None: return None
+        import re as _re
+        m = _re.search(r'[-+]?\d+(?:\.\d+)?', str(s))
+        if not m: return None
+        try: return float(m.group(0))
+        except Exception: return None
+
+    for k, v in kv.items():
+        kl = k.replace(' ', '')
+        if 'Horizon' in k:
+            n = _num(v);  out['horizon'] = int(n) if n is not None else None
+        elif '매수손실한도' in kl:
+            n = _num(v);  out['dd_limit'] = abs(n)/100.0 if n is not None else None
+        elif '매도상승한도' in kl:
+            n = _num(v);  out['ru_limit'] = abs(n)/100.0 if n is not None else None
+        elif '거래비용' in kl:
+            n = _num(v);  out['cost'] = n/100.0 if n is not None else None
+        elif 'WILSON_Z' in k:
+            out['wilson_z'] = _num(v)
+        elif 'PCT' in k and '범위' in k:
+            s = v.replace('(', '').replace(')', '').replace('[', '').replace(']', '')
+            try:
+                ps = [int(float(x.strip())) for x in s.split(',') if x.strip()]
+                if len(ps) == 2: out['pct_range'] = tuple(ps)
+            except Exception: pass
+        elif 'MIN_SIGNALS' in k:
+            n = _num(v);  out['min_signals'] = int(n) if n is not None else None
+        elif 'DIVERSITY_CORR_LIMIT' in k or 'CORR_LIMIT' in k:
+            out['corr_limit'] = _num(v)
+        elif 'TOP_N_POOL_BUY' in k:
+            n = _num(v);  out['top_n_pool'] = int(n) if n is not None else None
+        elif 'MDD한도' in kl:
+            n = _num(v);  out['mdd_limit_pct'] = abs(n) if n is not None else None
+        elif '최소거래수' in kl:
+            n = _num(v);  out['min_trades_daily'] = int(n) if n is not None else None
+        elif '손절매한도' in kl:
+            n = _num(v);  out['stop_loss_pct'] = abs(n)/100.0 if n is not None else None
+        elif k.strip() == '티커' or kl == '티커':
+            out['ticker'] = str(v).strip()
+    return out
+
+
+def replay_grid_combo(filename, grid_number, *,
+                       feat=None, close=None,
+                       output_dir=None,
+                       **override_kwargs):
+    """
+    OUTPUT_DIR 안의 결과 Excel(filename)에서 grid_number 조합을 재현해
+    일별 거래 Excel을 생성한다. 경로는 OUTPUT_DIR 고정 — 파일명과 번호만 입력.
+
+    '사용된 설정' 시트의 설정값(Horizon, 손실/상승 한도, 거래비용, 메타변수,
+    MDD 한도, 최소거래수, 손절매)을 그대로 읽어 그 조건으로 재현한다.
+
+    Parameters
+    ----------
+    filename : str       OUTPUT_DIR 안의 결과 Excel 파일명 (예: 'ensemble_search_VRT_2026-06-01.xlsx')
+                         전체 경로를 줘도 됨.
+    grid_number : int|str  재현할 그리드 번호 ('14', '17●' 등 — 숫자만 인식)
+    feat, close : 선택    원본 지표/종가. None이면 글로벌(_pair_feat/_pair_close)에서 탐색.
+    output_dir : 선택     기본 OUTPUT_DIR. 다른 폴더 쓰려면 지정.
+    override_kwargs       읽은 설정을 덮어쓸 인자.
+    """
+    from openpyxl import load_workbook
+
+    base_dir = output_dir if output_dir is not None else OUTPUT_DIR
+    # filename이 전체 경로면 그대로, 아니면 OUTPUT_DIR과 결합
+    if os.path.isabs(filename) or os.path.dirname(filename):
+        excel_path = filename
+    else:
+        excel_path = os.path.join(base_dir, filename)
+    if not os.path.exists(excel_path):
+        raise RuntimeError(f"파일을 찾을 수 없습니다: {excel_path}\n"
+                           f"  OUTPUT_DIR={base_dir} 안에 파일명이 맞는지 확인하세요.")
+
+    gn_clean = ''.join(ch for ch in str(grid_number) if ch.isdigit())
+    if not gn_clean:
+        raise ValueError(f"그리드 번호를 해석할 수 없습니다: {grid_number!r}")
+    gn = int(gn_clean)
+
+    wb = load_workbook(excel_path, data_only=True)
+    if '내부_그리드_통과' not in wb.sheetnames:
+        raise RuntimeError("'내부_그리드_통과' 시트가 없습니다.")
+    ws = wb['내부_그리드_통과']
+
+    hdr = {}
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(3, c).value
+        if v is not None: hdr[str(v).strip()] = c
+    for k in ['#', 'K_buy', 'vote_buy', 'K_sell', 'vote_sell']:
+        if k not in hdr:
+            raise RuntimeError(f"'내부_그리드_통과'에 '{k}' 컬럼이 없습니다. (헤더: {list(hdr)})")
+
+    target = None
+    for r in range(4, ws.max_row + 1):
+        cell = ws.cell(r, hdr['#']).value
+        if cell is None: continue
+        digits = ''.join(ch for ch in str(cell) if ch.isdigit())
+        if digits and int(digits) == gn:
+            target = r; break
+    if target is None:
+        raise RuntimeError(f"#{gn} 번호를 찾지 못했습니다.")
+
+    K_buy   = int(float(ws.cell(target, hdr['K_buy']).value))
+    vote_buy = int(float(ws.cell(target, hdr['vote_buy']).value))
+    K_sell  = int(float(ws.cell(target, hdr['K_sell']).value))
+    vote_sell = int(float(ws.cell(target, hdr['vote_sell']).value))
+
+    # ★ 사용된 설정 그대로 읽기
+    used = _parse_used_settings(wb)
+
+    mg = dict(META_GRID)
+    if used.get('wilson_z')   is not None: mg['wilson_z']   = [used['wilson_z']]
+    if used.get('pct_range')  is not None: mg['pct_range']  = [used['pct_range']]
+    if used.get('corr_limit') is not None: mg['corr_limit'] = [used['corr_limit']]
+    if used.get('min_signals')is not None: mg['min_signals']= [used['min_signals']]
+    if used.get('top_n_pool') is not None: mg['top_n_pool'] = [used['top_n_pool']]
+
+    g = globals()
+    if feat is None:  feat  = g.get('_pair_feat')  or g.get('feat')
+    if close is None: close = g.get('_pair_close') or g.get('close')
+    # ★ 메모리에 없으면 티커로 데이터 자동 확보 (다운로드 함수/yfinance 등 사용)
+    if feat is None or close is None:
+        ticker = used.get('ticker')
+        if ticker is None:
+            # 파일명에서 티커 추출 시도 (ensemble_search_VRT_... → VRT)
+            import re as _re
+            mtk = _re.search(r'ensemble_search_([A-Za-z0-9.\-]+)_', os.path.basename(excel_path))
+            if mtk: ticker = mtk.group(1)
+        if ticker is not None and '_resolve_data_for_ticker' in g and callable(g['_resolve_data_for_ticker']):
+            print(f"  ℹ 메모리에 데이터 없음 → 티커 '{ticker}'로 자동 로드 시도...")
+            try:
+                feat, close = g['_resolve_data_for_ticker'](ticker)
+                print(f"  ✓ '{ticker}' 데이터 로드 성공 ({len(close)}일)")
+            except Exception as _e:
+                raise RuntimeError(
+                    f"티커 '{ticker}' 데이터 자동 로드 실패: {_e}\n"
+                    f"  download_data/compute_features 함수가 정의돼 있거나 yfinance가 설치돼 있어야 합니다.\n"
+                    f"  또는 replay_grid_combo(..., feat=내_feat, close=내_close)로 직접 전달하세요.")
+        else:
+            raise RuntimeError(
+                "원본 데이터(feat, close)를 찾을 수 없고 자동 로드도 불가합니다.\n"
+                f"  티커={ticker}, 다운로드 함수 존재={'_resolve_data_for_ticker' in g}\n"
+                "  feat=, close= 로 직접 전달하거나 download_data/compute_features를 준비하세요.")
+
+    base = os.path.splitext(os.path.basename(excel_path))[0]
+    output_file = os.path.join(base_dir, f"{base}__replay_grid{gn}.xlsx")
+
+    print('═' * 72)
+    print(f'  ★ 그리드 #{gn} 재현 → 일별 거래 Excel')
+    print(f'    파일: {excel_path}')
+    print(f'    티커: {used.get("ticker", "(파일명에서 추출)")}')
+    print(f'    조합: K_buy={K_buy}/vote={vote_buy}, K_sell={K_sell}/vote={vote_sell}')
+    print(f'    설정(사용된 설정 시트 그대로):')
+    print(f'      Horizon={used.get("horizon")}, dd_limit={used.get("dd_limit")}, '
+          f'ru_limit={used.get("ru_limit")}, cost={used.get("cost")}')
+    print(f'      WILSON_Z={used.get("wilson_z")}, PCT={used.get("pct_range")}, '
+          f'CORR={used.get("corr_limit")}, MIN_SIG={used.get("min_signals")}')
+    print(f'      MDD한도={used.get("mdd_limit_pct")}, 최소거래={used.get("min_trades_daily")}, '
+          f'손절매={used.get("stop_loss_pct")}')
+    print(f'    출력: {output_file}')
+    print('═' * 72)
+
+    kwargs = dict(
+        meta_grid=mg,
+        k_buy_range=[K_buy], k_sell_range=[K_sell],
+        vote_ratio_buy=[vote_buy / K_buy] if K_buy > 0 else [1.0],
+        vote_ratio_sell=[vote_sell / K_sell] if K_sell > 0 else [1.0],
+        write_output=True, output_file=output_file,
+    )
+    # 읽은 설정 반영 (run_ensemble_search 인자명에 맞춰)
+    for src_k, dst_k in [('horizon','horizon'), ('dd_limit','dd_limit'),
+                          ('ru_limit','ru_limit'), ('cost','cost'),
+                          ('mdd_limit_pct','max_drawdown_limit_pct'),
+                          ('min_trades_daily','min_trades_daily'),
+                          ('stop_loss_pct','stop_loss_pct')]:
+        if used.get(src_k) is not None:
+            kwargs[dst_k] = used[src_k]
+    kwargs.update(override_kwargs)
+
+    g['_pair_feat'] = feat
+    g['_pair_close'] = close
+
+    result = run_ensemble_search(**kwargs)
+    print(f'\n  ✅ 그리드 #{gn} 일별 Excel 생성 완료 → {output_file}')
+    if AUTO_DOWNLOAD_EXCEL:
+        _auto_download_excels([output_file])
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -13480,6 +13749,23 @@ def _resolve_data_for_ticker(ticker):
 
 
 if __name__ == '__main__':
+    # ★ 그리드 재현 모드 — 기존 결과 Excel의 특정 그리드 번호로 일별 거래 Excel 생성
+    print("\n[모드 선택]  1=새 분석 실행(기본)   2=기존 결과의 그리드 번호로 일별 Excel 재현")
+    _mode = input("모드 (1/2, Enter=1): ").strip()
+    if _mode == '2':
+        print(f"\n  파일 경로는 OUTPUT_DIR 고정: {OUTPUT_DIR}")
+        _fn = input("  결과 Excel 파일명 (예: ensemble_search_VRT_2026-06-01.xlsx): ").strip().strip('"').strip("'")
+        _gn = input("  재현할 그리드 번호 (예: 14): ").strip()
+        print("\n  ℹ 데이터가 메모리에 없으면 티커로 자동 다운로드를 시도합니다")
+        print("     (download_data/compute_features 함수 또는 yfinance 필요).")
+        try:
+            replay_grid_combo(_fn, _gn)
+        except Exception as _e:
+            print(f"\n  ✗ 재현 실패: {_e}")
+            print("    feat/close가 메모리에 있는지 확인하세요. 예:")
+            print("      replay_grid_combo('파일명.xlsx', 14, feat=내_feat, close=내_close)")
+        import sys as _sys; _sys.exit(0)
+
     print(f"\n분석할 티커 입력 (쉼표 또는 공백 구분, Enter=기본값 {TICKERS})")
     user_input = input("티커: ").strip()
 
