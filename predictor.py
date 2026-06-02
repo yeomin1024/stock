@@ -9230,7 +9230,7 @@ VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
 COST_PER_TRADE      = 0.004
 
 MIN_TRADES_DAILY    = 10
-MAX_DRAWDOWN_LIMIT_PCT = 5.0
+MAX_DRAWDOWN_LIMIT_PCT = 3.0
 
 STOP_LOSS_PCT       = 0.05
 
@@ -9243,7 +9243,7 @@ STOP_LOSS_PCT       = 0.05
 #   'stability'       : 매도성공·매수성공·누적수익·MDD방어를 종합한 안정성 점수 최대
 #   'sell_buy_return' : 매도성공률 → 매수성공률 → 누적수익 순 (밴드 줄세우기)
 #   'balacc_return'   : 기존 (평균 BalAcc → 수익률)
-SELECTION_PRIORITY = 'sell_mdd_return'
+SELECTION_PRIORITY = 'balacc_return'
 
 # ★ 안정성 종합 점수 가중치 (SELECTION_PRIORITY='stability'일 때 사용)
 #   (매도성공률, 매수성공률, 누적수익, MDD방어) — 합이 1이 되도록 자동 정규화됨.
@@ -10719,7 +10719,8 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     prev_close = np.nan
 
     # ★ 전체 매수/매도 성공·실패 집계 카운터
-    #   신호 ON 적중(TP) + 신호 OFF 올바른 미진입(TN) 모두 '성공'으로 집계 (OFF 포함)
+    #   [정답인 날만 평가] 매수: 올랐어야 하는 날 중 신호 ON으로 맞춘 비율(놓침은 실패).
+    #   '안 올랐는데 신호 없음'은 평가에서 제외 — 상승장 무임승차 방지(요청).
     n_buy_on_total = 0; n_buy_success = 0; n_buy_fail = 0          # 신호 ON만 (적중률용)
     n_sell_on_total = 0; n_sell_success = 0; n_sell_fail = 0
     n_buy_eval_all = 0; n_buy_correct_all = 0                      # ON+OFF 전체 (정확도용)
@@ -10753,32 +10754,42 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
             s_formula = f"단순합 {int(s_count)} (신호 {s_raw}/{K_sell} × 1표) {'≥' if s_on else '<'} {vote_sell}"
 
         # ★ 이 날 매수/매도 신호의 성공·실패 판정 (first-touch 정답 기준)
-        #   신호 ON & 정답(올랐어야)  → 적중 성공  ✓성공
-        #   신호 ON & 오답            → 실패        ✗실패
-        #   신호 OFF & 정답이 아니었음 → 올바른 미진입 ✓미진입(OFF 포함 성공)
-        #   신호 OFF & 정답이었는데 놓침 → 놓침       ✗놓침
+        #   [정답인 날만 평가 — 요청 반영]
+        #   매수 정답일(올랐어야): 신호 ON → ✓성공 / 신호 OFF → ✗놓침
+        #   매수 정답 아닌 날(안 올랐음): 신호 ON → ✗실패 / 신호 OFF → 평가 제외(공란)
+        #   매도도 대칭. '안 내렸는데 매도 안 함'을 성공으로 치지 않는다(부풀리기 방지).
         buy_result = ''; sell_result = ''
         if eval0[i] == 1:
             sb = safe_buy0[i] == 1     # 매수 정답일(올랐어야)
             ss = safe_sell0[i] == 1    # 매도 정답일(내렸어야)
             # ── 매수 ──
-            n_buy_eval_all += 1
             if b_on:
                 n_buy_on_total += 1
-                if sb: buy_result = '✓성공'; n_buy_success += 1; n_buy_correct_all += 1
-                else:  buy_result = '✗실패'; n_buy_fail += 1
+                if sb:
+                    buy_result = '✓성공'; n_buy_success += 1
+                    n_buy_correct_all += 1; n_buy_eval_all += 1
+                else:
+                    buy_result = '✗실패'; n_buy_fail += 1
+                    n_buy_eval_all += 1
             else:
-                if not sb: buy_result = '✓미진입'; n_buy_correct_all += 1   # 안 떠야 했고 안 뜸
-                else:      buy_result = '✗놓침'                            # 떴어야 했는데 안 뜸
+                if sb:
+                    buy_result = '✗놓침'                    # 올랐어야 했는데 신호 없음
+                    n_buy_eval_all += 1
+                # else: 안 올랐고 신호도 없음 → 평가 제외(카운트 안 함)
             # ── 매도 ──
-            n_sell_eval_all += 1
             if s_on:
                 n_sell_on_total += 1
-                if ss: sell_result = '✓성공'; n_sell_success += 1; n_sell_correct_all += 1
-                else:  sell_result = '✗실패'; n_sell_fail += 1
+                if ss:
+                    sell_result = '✓성공'; n_sell_success += 1
+                    n_sell_correct_all += 1; n_sell_eval_all += 1
+                else:
+                    sell_result = '✗실패'; n_sell_fail += 1
+                    n_sell_eval_all += 1
             else:
-                if not ss: sell_result = '✓미진입'; n_sell_correct_all += 1
-                else:      sell_result = '✗놓침'
+                if ss:
+                    sell_result = '✗놓침'                   # 내렸어야 했는데 신호 없음
+                    n_sell_eval_all += 1
+                # else: 안 내렸고 신호도 없음 → 평가 제외(카운트 안 함)
 
         stopped_today = False
         stop_ret_pct = np.nan
@@ -11090,7 +11101,7 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     cur['n_sell_fail_cnt']    = n_sell_fail
     cur['buy_signal_hit_rate']  = n_buy_success  / n_buy_on_total  if n_buy_on_total  > 0 else 0.0
     cur['sell_signal_hit_rate'] = n_sell_success / n_sell_on_total if n_sell_on_total > 0 else 0.0
-    # ★ OFF 포함 전체 정확도 (신호 안 뜬 날의 올바른 미진입도 성공으로 집계)
+    # ★ 정답일 적중률 (정답인 날만 분모. ON적중=성공, OFF=놓침(실패). 안정답인 날 제외)
     cur['n_buy_eval_all']     = n_buy_eval_all
     cur['n_buy_correct_all']  = n_buy_correct_all
     cur['n_sell_eval_all']    = n_sell_eval_all
@@ -11179,9 +11190,9 @@ def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
         c = ws.cell(r, 5)
         br = str(row.get('buy_result', ''))
         c.value = br if br else '-'
-        if '✓' in br:        # ✓성공(ON적중) 또는 ✓미진입(OFF올바름)
+        if '✓' in br:        # ✓성공(ON적중)
             c.fill = _GOOD; c.font = Font(bold=True, size=10, color='006100')
-        elif '✗' in br:      # ✗실패(ON오답) 또는 ✗놓침(OFF놓침)
+        elif '✗' in br:      # ✗실패(ON오답) 또는 ✗놓침(정답인데 신호없음)
             c.fill = _BAD;  c.font = Font(bold=True, size=10, color='C00000')
         else:
             c.font = Font(size=9, color='888888')
@@ -11371,15 +11382,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ('★ 매수신호 성공/실패 (ON만)',
           f"{cur.get('n_buy_success_cnt',0)} 성공 / {cur.get('n_buy_fail_cnt',0)} 실패 "
           f"(신호 {cur.get('n_buy_on_total',0)}회, 적중 {cur.get('buy_signal_hit_rate',0)*100:.1f}%)"),
-        ('★ 매수 정확도 (OFF 포함)',
+        ('★ 매수 정답일 적중률',
           f"{cur.get('buy_acc_all',0)*100:.1f}% "
-          f"({cur.get('n_buy_correct_all',0)}/{cur.get('n_buy_eval_all',0)}일 — 미진입 포함)"),
+          f"({cur.get('n_buy_correct_all',0)}/{cur.get('n_buy_eval_all',0)}일 — 올랐어야 한 날 중 적중, 놓침=실패)"),
         ('★ 매도신호 성공/실패 (ON만)',
           f"{cur.get('n_sell_success_cnt',0)} 성공 / {cur.get('n_sell_fail_cnt',0)} 실패 "
           f"(신호 {cur.get('n_sell_on_total',0)}회, 적중 {cur.get('sell_signal_hit_rate',0)*100:.1f}%)"),
-        ('★ 매도 정확도 (OFF 포함)',
+        ('★ 매도 정답일 적중률',
           f"{cur.get('sell_acc_all',0)*100:.1f}% "
-          f"({cur.get('n_sell_correct_all',0)}/{cur.get('n_sell_eval_all',0)}일 — 미진입 포함)"),
+          f"({cur.get('n_sell_correct_all',0)}/{cur.get('n_sell_eval_all',0)}일 — 내렸어야 한 날 중 적중, 놓침=실패)"),
         ('★ 성공 판정 방식',
           'First-Touch (익일진입, 기간내 +목표/-손절 먼저 닿는 쪽)'),
         ('★ 투표 방식',
@@ -11724,12 +11735,30 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         except Exception: return default
     for ri, row in disp.iterrows():
         r = ri + 4
+        # ★ K/vote + 메타변수(wilson_z·corr·pct)까지 모두 일치해야 best (같은 K/vote라도
+        #   메타변수 다르면 풀이 달라 수익이 다름 — 메타변수 무시하면 엉뚱한 행에 ★가 찍힘)
+        def _bi(k):
+            try:
+                v = best_inner[k]
+                return v
+            except Exception:
+                try: return best_inner.get(k)
+                except Exception: return None
+        _bi_wz = _bi('meta_wilson_z'); _bi_cl = _bi('meta_corr_limit')
+        _bi_pl = _bi('meta_pct_low');  _bi_ph = _bi('meta_pct_high')
+        _row_wz = _g(row,'meta_wilson_z'); _row_cl = _g(row,'meta_corr_limit')
+        _row_pl = _g(row,'meta_pct_low'); _row_ph = _g(row,'meta_pct_high')
+        _meta_match = True
+        if _bi_wz is not None and pd.notna(_row_wz):
+            _meta_match = (abs(float(_row_wz)-float(_bi_wz))<1e-9 and
+                           (_bi_cl is None or abs(float(_row_cl)-float(_bi_cl))<1e-9) and
+                           (_bi_pl is None or int(_row_pl)==int(_bi_pl)) and
+                           (_bi_ph is None or int(_row_ph)==int(_bi_ph)))
         is_best = (int(row['K_buy']) == int(best_inner['K_buy']) and
                    int(row['K_sell']) == int(best_inner['K_sell']) and
                    int(row['vote_buy']) == int(best_inner['vote_buy']) and
                    int(row['vote_sell']) == int(best_inner['vote_sell']) and
-                   (pd.isna(_g(row,'meta_wilson_z')) or
-                    abs(float(_g(row,'meta_wilson_z',0)) - float(best_inner.get('_meta_wilson_z', _g(row,'meta_wilson_z',0)))) < 1e-9))
+                   _meta_match)
         marker = '★' if is_best else ''
         wz_v   = _g(row, 'meta_wilson_z')
         pl_v   = _g(row, 'meta_pct_low')
@@ -12002,7 +12031,8 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          oos_start=OOS_START,
                          write_output=True,
                          output_file=None,
-                         inject_combined_table=None):
+                         inject_combined_table=None,
+                         force_best_combo=None):
     print('=' * 72)
     print('  매수/매도 앙상블 — 메타 그리드 자동 튜닝')
     print('=' * 72)
@@ -12160,6 +12190,25 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         exclude_below_bh=globals().get('EXCLUDE_BELOW_BH', True),
     )
 
+    # ★ staged가 통합 테이블에서 고른 정확한 조합을 강제 (현재 포지션=★1등 일치 보장).
+    #   meta_grid_search가 자체 선정한 best_inner와 staged의 최종 선택이 어긋나는 것을 방지.
+    if force_best_combo is not None:
+        fb_kb = int(force_best_combo['K_buy']); fb_vb = int(force_best_combo['vote_buy'])
+        fb_ks = int(force_best_combo['K_sell']); fb_vs = int(force_best_combo['vote_sell'])
+        src_tbl = inject_combined_table if inject_combined_table is not None else inner_passed
+        matched = None
+        if src_tbl is not None and len(src_tbl) > 0:
+            m = src_tbl[(src_tbl['K_buy']==fb_kb) & (src_tbl['vote_buy']==fb_vb) &
+                        (src_tbl['K_sell']==fb_ks) & (src_tbl['vote_sell']==fb_vs)]
+            if len(m) > 0:
+                matched = m.iloc[0].to_dict()
+        if matched is not None:
+            best_inner = matched
+            print(f"  ★ 최종 조합 강제 적용: K_buy={fb_kb}/v{fb_vb}, K_sell={fb_ks}/v{fb_vs} "
+                  f"(현재 포지션이 ★1등과 동일하게 계산됨)")
+        else:
+            print(f"  ⚠ force_best_combo({fb_kb}/{fb_vb}, {fb_ks}/{fb_vs})를 테이블에서 못 찾음 — meta 자체 best 사용")
+
     bh_ret  = _bh_sum_return(close_arr)
     bh_up_ret = _bh_up_sum_return(close_arr)
     bh_cagr = (1 + bh_ret) ** (252 / len(close_arr)) - 1 if (1 + bh_ret) > 0 else bh_ret
@@ -12287,16 +12336,16 @@ def run_ensemble_search(*, eval_start=EVAL_START,
           f'MDD {cur["max_drawdown"]*100:.2f}%   거래 {cur["n_trades"]}회 (손절매 {cur["n_stop_triggered"]}회)')
     print(f'    📈 상승일만 합산: 전략 {cur["up_cum_return_pct"]:+.2f}%   B&H {bh_up_ret*100:+.2f}%  '
           f'(보유 중 양(+)의 일별 변동률만 합산)')
-    # ★ 성공/실패 집계 출력 (first-touch, OFF 포함)
+    # ★ 성공/실패 집계 출력 (first-touch, 정답인 날만 평가)
     print(f'    ✅ [ON만 적중률] 매수 {cur.get("n_buy_success_cnt",0)}/{cur.get("n_buy_on_total",0)} '
           f'({cur.get("buy_signal_hit_rate",0)*100:.1f}%)   '
           f'매도 {cur.get("n_sell_success_cnt",0)}/{cur.get("n_sell_on_total",0)} '
           f'({cur.get("sell_signal_hit_rate",0)*100:.1f}%)')
-    print(f'    ✅ [OFF 포함 정확도] 매수 {cur.get("buy_acc_all",0)*100:.1f}% '
+    print(f'    ✅ [정답일 적중률] 매수 {cur.get("buy_acc_all",0)*100:.1f}% '
           f'({cur.get("n_buy_correct_all",0)}/{cur.get("n_buy_eval_all",0)}일)   '
           f'매도 {cur.get("sell_acc_all",0)*100:.1f}% '
           f'({cur.get("n_sell_correct_all",0)}/{cur.get("n_sell_eval_all",0)}일)  '
-          f'※ first-touch 판정, 신호 안 뜬 날의 올바른 미진입도 포함')
+          f'※ 올라야/내려야 했던 날만 분모, 놓침=실패 (무임승차 제외)')
     succ_label = ' (⚓ANCHOR 보정)' if anchor_mode else ''
     print(f'    매수신호 BalAcc{succ_label} {cur["buy_success_rate"]*100:.1f}% (plain {cur["buy_accuracy_plain"]*100:.1f}%, ON {cur["n_buy_signal_on"]})  '
           f'매도신호 BalAcc {cur["sell_success_rate"]*100:.1f}% (plain {cur["sell_accuracy_plain"]*100:.1f}%, ON {cur["n_sell_signal_on"]})  '
@@ -12404,14 +12453,22 @@ def staged_meta_tune(*, base_meta_grid=None,
     _cache = {}
     def _run_cached(wz, pct, corr):
         """캐시에 있으면 재사용, 없으면 실행(Excel 저장 안 함).
-           반환: dict(sell, buy, avg, ret, mdd, res)"""
+           반환: dict(...) 또는 None(통과 조합 0개 → 스킵).
+           ★ 통과 조합이 없어 meta_grid_search가 에러를 내면, 멈추지 말고
+             이 조합만 스킵(None)하고 나머지 단계는 계속 진행한다."""
         key = (round(float(wz), 6), tuple(pct), round(float(corr), 6))
         if key in _cache:
             return _cache[key]
-        res = run_ensemble_search(
-            meta_grid=_mk_grid(wz, pct, corr),
-            write_output=False, output_file=None,
-            **run_kwargs)
+        try:
+            res = run_ensemble_search(
+                meta_grid=_mk_grid(wz, pct, corr),
+                write_output=False, output_file=None,
+                **run_kwargs)
+        except RuntimeError as _e:
+            # MDD 한도/거래수/B&H 미달 등으로 통과 조합이 하나도 없는 경우
+            print(f'    ⚠ (wz={wz}, pct={pct}, corr={corr}) 통과 조합 없음 → 이 조합 스킵')
+            _cache[key] = None
+            return None
         cur = res[-1]
         # res[2] = 이 메타조합의 통합 그리드 테이블(메타변수·B&H필터 포함)
         combined_tbl = res[2] if len(res) > 2 else None
@@ -12430,9 +12487,10 @@ def staged_meta_tune(*, base_meta_grid=None,
     _prio_st = globals().get('SELECTION_PRIORITY', 'balacc_return')
 
     def _pick_best(recs):
-        """recs: list of dict.
+        """recs: list of dict (None은 스킵된 조합 → 제외).
            independent: (매수성공+매도성공) 합 최대(동률시 수익).
            그 외(stability): 안정성 종합점수 최대."""
+        recs = [r for r in recs if r is not None]   # ★ 스킵된 조합 제외
         if not recs: return None
         if len(recs) == 1: return recs[0]
         tol = globals().get('SELECTION_TOLERANCE', 0.04)
@@ -12481,6 +12539,8 @@ def staged_meta_tune(*, base_meta_grid=None,
         return best
 
     def _fmt(r):
+        if r is None:
+            return "(통과 조합 없음 — 스킵)"
         return (f"매도 {r['sell']*100:.1f}% / 매수 {r['buy']*100:.1f}% / 평균 {r['avg']*100:.1f}% "
                 f"/ 수익 {r['ret']:+.2f}% / MDD {r['mdd']*100:.2f}%")
 
@@ -12510,8 +12570,13 @@ def staged_meta_tune(*, base_meta_grid=None,
         r = _run_cached(base_wz, pct, base_corr)
         recs1.append(r)
         print(f'│    완료 — {_fmt(r)}')
-    best1 = _pick_best(recs1); best_pct = best1['pct']
-    print(f'└─ [1단계 완료] best pct_range = {best_pct}  ({_fmt(best1)}) ─┘')
+    best1 = _pick_best(recs1)
+    if best1 is None:
+        best_pct = base_pct
+        print(f'└─ [1단계] 통과 조합 없음 → 시작 pct_range={base_pct} 유지하고 계속 ─┘')
+    else:
+        best_pct = best1['pct']
+        print(f'└─ [1단계 완료] best pct_range = {best_pct}  ({_fmt(best1)}) ─┘')
 
     # ─── 2단계: wilson_z (best_pct 고정) ───
     print(f'\n┌─ [2단계/3] wilson_z — 후보 {len(stage_wilson_z)}개 (pct={best_pct}) ─┐')
@@ -12522,20 +12587,25 @@ def staged_meta_tune(*, base_meta_grid=None,
         r = _run_cached(wz, best_pct, base_corr)
         recs2.append(r)
         print(f'│    완료 — {_fmt(r)}')
-    best2 = _pick_best(recs2); best_wz = best2['wz']
-    # 재확인 — best_wz - step (새 값일 때만 실행)
-    refine_wz = round(best_wz - stage_wilson_refine_step, 4)
-    rkey = (round(float(refine_wz),6), tuple(best_pct), round(float(base_corr),6))
-    if rkey not in _cache:
-        print(f'│  ▸ [2단계 재확인] {best_wz} - {stage_wilson_refine_step} = {refine_wz} ...')
-        rr = _run_cached(refine_wz, best_pct, base_corr)
-        best2b = _pick_best([best2, rr])
-        if best2b['wz'] == refine_wz:
-            print(f'│    재확인값 {refine_wz} 채택 — {_fmt(rr)}')
-            best_wz = refine_wz; best2 = best2b
-        else:
-            print(f'│    기존 {best_wz} 유지')
-    print(f'└─ [2단계 완료] best wilson_z = {best_wz}  ({_fmt(best2)}) ─┘')
+    best2 = _pick_best(recs2)
+    if best2 is None:
+        best_wz = base_wz
+        print(f'└─ [2단계] 통과 조합 없음 → 시작 wilson_z={base_wz} 유지하고 계속 ─┘')
+    else:
+        best_wz = best2['wz']
+        # 재확인 — best_wz - step (새 값일 때만 실행)
+        refine_wz = round(best_wz - stage_wilson_refine_step, 4)
+        rkey = (round(float(refine_wz),6), tuple(best_pct), round(float(base_corr),6))
+        if rkey not in _cache:
+            print(f'│  ▸ [2단계 재확인] {best_wz} - {stage_wilson_refine_step} = {refine_wz} ...')
+            rr = _run_cached(refine_wz, best_pct, base_corr)
+            best2b = _pick_best([best2, rr])
+            if best2b is not None and best2b['wz'] == refine_wz:
+                print(f'│    재확인값 {refine_wz} 채택 — {_fmt(rr)}')
+                best_wz = refine_wz; best2 = best2b
+            else:
+                print(f'│    기존 {best_wz} 유지')
+        print(f'└─ [2단계 완료] best wilson_z = {best_wz}  ({_fmt(best2)}) ─┘')
 
     # ─── 3단계: corr_limit (best_pct, best_wz 고정) ───
     print(f'\n┌─ [3단계/3] corr_limit — 후보 {len(stage_corr_limit)}개 '
@@ -12547,16 +12617,20 @@ def staged_meta_tune(*, base_meta_grid=None,
         r = _run_cached(best_wz, best_pct, corr)
         recs3.append(r)
         print(f'│    완료 — {_fmt(r)}')
-    best3 = _pick_best(recs3); best_corr = best3['corr']
-    print(f'└─ [3단계 완료] best corr_limit = {best_corr}  ({_fmt(best3)}) ─┘')
+    best3 = _pick_best(recs3)
+    if best3 is None:
+        best_corr = base_corr
+        print(f'└─ [3단계] 통과 조합 없음 → 시작 corr_limit={base_corr} 유지 ─┘')
+    else:
+        best_corr = best3['corr']
+        print(f'└─ [3단계 완료] best corr_limit = {best_corr}  ({_fmt(best3)}) ─┘')
 
-    # ─── 단계에서 돌린 모든 결과를 하나의 통합 테이블로 합침 ───
-    all_recs = list(_cache.values())
+    # ─── 단계에서 돌린 모든 결과를 하나의 통합 테이블로 합침 (None=스킵 제외) ───
+    all_recs = [r for r in _cache.values() if r is not None]
     combined_parts = [r['combined'] for r in all_recs
                       if r.get('combined') is not None and len(r['combined']) > 0]
     if combined_parts:
         merged_table = pd.concat(combined_parts, ignore_index=True)
-        # 동일 (메타변수+K/vote) 중복 제거
         dedup_keys = [c for c in ['meta_wilson_z','meta_pct_low','meta_pct_high',
                                    'meta_corr_limit','meta_min_signals','meta_top_n_pool',
                                    'K_buy','vote_buy','K_sell','vote_sell']
@@ -12567,43 +12641,65 @@ def staged_meta_tune(*, base_meta_grid=None,
     else:
         merged_table = None
 
-    # ─── 합친 테이블에서 최종 선정 (재실행 없이, 선정기준 그대로) ───
-    if merged_table is not None and len(merged_table) > 0:
-        sel_idx = _select_with_tolerance(merged_table, selection_tolerance,
-                                          primary='avg_success_rate', secondary='combined_return')
-        sel = merged_table.loc[sel_idx]
-        fb = {'wz': float(sel['meta_wilson_z']),
-              'pct': (int(sel['meta_pct_low']), int(sel['meta_pct_high'])),
-              'corr': float(sel['meta_corr_limit']),
-              'sell': float(sel['sell_success_rate']), 'buy': float(sel['buy_success_rate']),
-              'avg': float(sel['avg_success_rate']), 'ret': float(sel['total_return']*100),
-              'mdd': float(sel['max_drawdown'])}
-    else:
-        # 폴백 — 캐시 rec 기준
-        fb = _pick_best(all_recs)
+    # ─── 통과 조합이 하나도 없으면: 에러로 멈추지 말고 안내 후 종료 ───
+    if merged_table is None or len(merged_table) == 0:
+        print('\n' + '█' * 72)
+        print('  ⚠ 모든 메타조합에서 통과 조합이 없습니다 (MDD 한도/거래수/B&H 미달).')
+        print('     → 엑셀 생성을 건너뜁니다. 다음을 완화해 다시 시도하세요:')
+        print(f'        - MAX_DRAWDOWN_LIMIT_PCT (현재 {globals().get("MAX_DRAWDOWN_LIMIT_PCT")})')
+        print(f'        - MIN_TRADES_DAILY (현재 {globals().get("MIN_TRADES_DAILY")})')
+        print(f'        - EXCLUDE_BELOW_BH (현재 {globals().get("EXCLUDE_BELOW_BH")}) — B&H 미달 제외 끄기')
+        print('█' * 72 + '\n')
+        # RuntimeError 대신 None 반환 → 상위(run_multi)에서 다음 티커로 계속
+        return None
 
+    # ─── 합친 테이블에서 최종 선정 ───
+    sel_idx = _select_with_tolerance(merged_table, selection_tolerance,
+                                      primary='avg_success_rate', secondary='combined_return')
+    sel = merged_table.loc[sel_idx]
+    fb = {'wz': float(sel['meta_wilson_z']),
+          'pct': (int(sel['meta_pct_low']), int(sel['meta_pct_high'])),
+          'corr': float(sel['meta_corr_limit']),
+          'sell': float(sel['sell_success_rate']), 'buy': float(sel['buy_success_rate']),
+          'avg': float(sel['avg_success_rate']), 'ret': float(sel['total_return']*100),
+          'mdd': float(sel['max_drawdown'])}
+
+    n_skipped = sum(1 for v in _cache.values() if v is None)
     print('\n' + '█' * 72)
     print(f'  ★ 최종 선정 — 단계에서 돌린 {len(combined_parts)}개 메타조합의 '
-          f'통합 테이블({len(merged_table) if merged_table is not None else 0}개 그리드)에서 1등')
+          f'통합 테이블({len(merged_table)}개 그리드)에서 1등')
+    if n_skipped > 0:
+        print(f'     (통과 조합 없어 스킵된 메타조합 {n_skipped}개 제외)')
     print(f'    pct_range  = {fb["pct"]}')
     print(f'    wilson_z   = {fb["wz"]}')
     print(f'    corr_limit = {fb["corr"]}')
     print(f'    {_fmt(fb)}')
     print('█' * 72)
 
-    # ★ Excel 저장 — 최종 best 조합으로 1회 실행하되, 그리드 시트엔
-    #   '단계에서 돌린 모든 결과(merged_table)'를 주입해 한 엑셀에 다 담는다.
+    # ★ Excel 저장 — 최종 best 조합으로 1회 실행, 그리드 시트엔 merged_table 주입
     print(f'\n  📊 최종 조합으로 Excel 생성 (그리드 시트=단계 전 결과 통합)...')
-    final_res = run_ensemble_search(
-        meta_grid=_mk_grid(fb['wz'], fb['pct'], fb['corr']),
-        write_output=True, output_file=output_file,
-        inject_combined_table=merged_table,
-        **run_kwargs)
+    try:
+        final_res = run_ensemble_search(
+            meta_grid=_mk_grid(fb['wz'], fb['pct'], fb['corr']),
+            write_output=True, output_file=output_file,
+            inject_combined_table=merged_table,
+            force_best_combo={
+                'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
+                'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell']),
+            },
+            **run_kwargs)
+    except RuntimeError as _e:
+        # 만약 최종 best 조합조차 단독으로는 통과 못 하는 경우(드묾):
+        # merged_table은 이미 있으니, 통과 조합 1개를 강제로 쓰도록 안내
+        print(f'  ⚠ 최종 조합 단독 실행 실패: {_e}')
+        print(f'     merged_table({len(merged_table)}개)은 유효하나 best 조합 재실행이 막힘.')
+        print(f'     MAX_DRAWDOWN_LIMIT_PCT을 약간 완화해 재시도하세요.')
+        return None
 
     print('\n' + '█' * 72)
     print(f'  ✅ 단계 튜닝 최종: {_fmt(fb)}')
     print(f'     (pct_range={fb["pct"]}, wilson_z={fb["wz"]}, corr_limit={fb["corr"]})')
-    print(f'     ※ 단계 탐색 {len(all_recs)}회(중복 제거) + 최종 Excel 1회')
+    print(f'     ※ 단계 탐색 {len(_cache)}회 (스킵 {n_skipped}) + 최종 Excel 1회')
     print(f'     ※ 엑셀의 내부_그리드_통과 시트에 단계 전 결과가 모두 담김')
     print('█' * 72 + '\n')
     return final_res
@@ -12821,10 +12917,14 @@ def replay_grid_combo(filename, grid_number, *,
         vote_ratio_buy=[vote_buy / K_buy] if K_buy > 0 else [1.0],
         vote_ratio_sell=[vote_sell / K_sell] if K_sell > 0 else [1.0],
         write_output=True, output_file=output_file,
+        # ★ 이 그리드의 정확한 조합을 강제 → 현재 포지션 = 재현 조합 일치
+        force_best_combo={'K_buy': K_buy, 'vote_buy': vote_buy,
+                          'K_sell': K_sell, 'vote_sell': vote_sell},
     )
-    # 읽은 설정 반영 (run_ensemble_search 인자명에 맞춰)
+    # 읽은 설정 반영 (run_ensemble_search 인자명에 맞춰).
+    #   ※ cost는 run_ensemble_search 인자가 아니라 전역 COST_PER_TRADE를 쓰므로 따로 처리.
     for src_k, dst_k in [('horizon','horizon'), ('dd_limit','dd_limit'),
-                          ('ru_limit','ru_limit'), ('cost','cost'),
+                          ('ru_limit','ru_limit'),
                           ('mdd_limit_pct','max_drawdown_limit_pct'),
                           ('min_trades_daily','min_trades_daily'),
                           ('stop_loss_pct','stop_loss_pct')]:
@@ -12835,7 +12935,17 @@ def replay_grid_combo(filename, grid_number, *,
     g['_pair_feat'] = feat
     g['_pair_close'] = close
 
-    result = run_ensemble_search(**kwargs)
+    # 거래비용은 전역 COST_PER_TRADE 사용 → 재현 시 사용된 설정값으로 임시 교체 후 복원
+    _cost_saved = globals().get('COST_PER_TRADE')
+    _cost_used = used.get('cost')
+    try:
+        if _cost_used is not None:
+            globals()['COST_PER_TRADE'] = _cost_used
+        result = run_ensemble_search(**kwargs)
+    finally:
+        if _cost_used is not None:
+            globals()['COST_PER_TRADE'] = _cost_saved
+
     print(f'\n  ✅ 그리드 #{gn} 일별 Excel 생성 완료 → {output_file}')
     if AUTO_DOWNLOAD_EXCEL:
         _auto_download_excels([output_file])
@@ -13427,6 +13537,25 @@ def run_multi_ticker_analysis(tickers=None, *,
                 result = staged_meta_tune(base_meta_grid=base_mg, **kwargs)
             else:
                 result = run_ensemble_search(**kwargs)
+
+            # ★ 통과 조합이 없어 staged가 None을 반환하면: 에러 없이 이 티커 스킵
+            if result is None:
+                print(f"  ⏭ {ticker}: 통과 조합 없음 → 엑셀 생성 스킵, 다음 티커로 진행")
+                prev = summary_records.get(ticker)
+                if prev is not None and prev.get('status') == '완료':
+                    print(f"     (기존 완료 기록 유지)")
+                else:
+                    summary_records[ticker] = {
+                        'status': '통과없음', 'signal': '— 통과조합없음', 'position': '—',
+                        'close': None, 'analyzed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'tuned_vars': {}, 'tuning_applied': False, 'volatility_stats': {},
+                    }
+                try:
+                    _save_summary_excel(summary_records, summary_file, all_tickers_acc)
+                except Exception:
+                    pass
+                continue
+
             (meta_results_df, inner_all, inner_passed,
              best_meta, best_inner, buy_pool, sell_pool,
              daily, trades, cur) = result
