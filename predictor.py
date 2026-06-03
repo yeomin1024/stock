@@ -9264,7 +9264,7 @@ SELL_SUCCESS_TOLERANCE = 0.02   # 매도성공률 최고에서 이 차이(2%p)�
 MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 (그중 수익 최고 선택)
 
 # ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림) — 요청
-EXCLUDE_BELOW_BH = True
+EXCLUDE_BELOW_BH = False
 
 ANCHOR_MATCH_PRIORITY = False   # ★ 선정은 평균성공+MDD+수익 기준으로. 매칭 우선이 그걸 덮지 않도록 OFF
 ANCHOR_MATCH_TOLERANCE = 0.10
