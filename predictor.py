@@ -9142,7 +9142,6 @@ def _iv_autorun():
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
     print("=" * 60)
 
-
 # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
@@ -9236,7 +9235,8 @@ MAX_DRAWDOWN_LIMIT_PCT = None
 STOP_LOSS_PCT       = 0.05
 
 # ★ 선정 우선순위
-#   'sell_mdd_return'    : 매도성공률 최고 -2%p 밴드 → MDD 최저 -1%p 밴드 → 누적수익 최고 (요청, 기본)
+#   'winrate_return'     : 일별거래 승률 최고 -10%p 밴드 → 그중 누적수익 최고 (요청, 기본)
+#   'sell_mdd_return'    : 매도성공률 최고 -2%p 밴드 → MDD 최저 -1%p 밴드 → 누적수익 최고
 #   'avgband_mdd_return' : 평균성공률 top band 안에서 → MDD 가장 낮은(0.1%p 단위 동률이면 수익)
 #   'independent'     : 매수성공률 최고 설정 + 매도성공률 최고 설정을 따로 찾아 합침.
 #                       성공률은 매수/매도가 독립이므로 각각 최댓값을 동시 달성. 수익·MDD는 따라옴.
@@ -9244,7 +9244,7 @@ STOP_LOSS_PCT       = 0.05
 #   'stability'       : 매도성공·매수성공·누적수익·MDD방어를 종합한 안정성 점수 최대
 #   'sell_buy_return' : 매도성공률 → 매수성공률 → 누적수익 순 (밴드 줄세우기)
 #   'balacc_return'   : 기존 (평균 BalAcc → 수익률)
-SELECTION_PRIORITY = 'balacc_return'
+SELECTION_PRIORITY = 'winrate_return'
 
 # ★ 안정성 종합 점수 가중치 (SELECTION_PRIORITY='stability'일 때 사용)
 #   (매도성공률, 매수성공률, 누적수익, MDD방어) — 합이 1이 되도록 자동 정규화됨.
@@ -9260,11 +9260,14 @@ WEIGHT_MAX_RATIO  = 1.6   # 최고점수 지표가 최저점수 지표의 최대
 
 SELECTION_TOLERANCE = 0.04
 
-# ★ 'sell_mdd_return' 모드 밴드 폭 (요청)
+# ★ 'sell_mdd_return' 모드 밴드 폭
 SELL_SUCCESS_TOLERANCE = 0.02   # 매도성공률 최고에서 이 차이(2%p)까지 후보
 MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 (그중 수익 최고 선택)
 
-# ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림) — 요청
+# ★ 'winrate_return' 모드 밴드 폭 (요청) — 일별거래 승률 최고에서 이 차이(10%p)까지 후보
+WINRATE_TOLERANCE      = 0.10
+
+# ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림)
 EXCLUDE_BELOW_BH = False
 
 ANCHOR_MATCH_PRIORITY = False   # ★ 선정은 평균성공+MDD+수익 기준으로. 매칭 우선이 그걸 덮지 않도록 OFF
@@ -9937,6 +9940,19 @@ def _select_with_tolerance(df, tolerance,
 
     prio = globals().get('SELECTION_PRIORITY', 'balacc_return')
 
+    # ★ 일별거래 승률 밴드(-10%p) → 그중 누적수익 최고 (요청)
+    #   1) 거래 승률(수익 낸 거래 비율) 최고에서 10%p 안의 후보
+    #   2) 그중 누적수익이 가장 높은 것
+    if prio == 'winrate_return' and 'win_rate' in df.columns:
+        win_tol = globals().get('WINRATE_TOLERANCE', 0.10)
+        best_win = df['win_rate'].max()
+        band = df[df['win_rate'] >= best_win - win_tol].copy()
+        if len(band) == 0:
+            band = df[df['win_rate'] == best_win].copy()
+        ret_col = 'total_return' if 'total_return' in band.columns else 'combined_return'
+        band = band.sort_values([ret_col, 'win_rate'], ascending=False)
+        return band.index[0]
+
     # ★ 매도성공 밴드(-2%p) → MDD최저 밴드(-1%p) → 누적수익 최고 (요청, 기본)
     #   1) 매도성공률 최고에서 2%p 안의 후보
     #   2) 그중 MDD 가장 낮은(0에 가까운)에서 1%p 안의 후보 (비슷한 낙폭은 묶음)
@@ -10310,7 +10326,10 @@ def meta_grid_search(feat, close, *,
     total = len(combos)
     print(f"  메타 그리드 총 {total}개 조합")
     _prio_p = globals().get('SELECTION_PRIORITY', 'balacc_return')
-    if _prio_p == 'sell_mdd_return':
+    if _prio_p == 'winrate_return':
+        _wt = globals().get('WINRATE_TOLERANCE', 0.10)
+        print(f"  ★ 선정: 일별거래 승률 -{_wt*100:.0f}%p 밴드 → 누적수익 최고")
+    elif _prio_p == 'sell_mdd_return':
         _st = globals().get('SELL_SUCCESS_TOLERANCE', 0.02); _mt = globals().get('MDD_TOLERANCE', 0.01)
         print(f"  ★ 선정: 매도성공률 -{_st*100:.0f}%p 밴드 → MDD 최저 -{_mt*100:.0f}%p 밴드 → 누적수익 최고")
     elif _prio_p == 'avgband_mdd_return':
@@ -10449,8 +10468,19 @@ def meta_grid_search(feat, close, *,
                             update = True
             else:
                 _prio = globals().get('SELECTION_PRIORITY', 'balacc_return')
+                # ★ 일별거래 승률 밴드(-10%p) → 수익 (요청). meta 레벨도 동일.
+                if _prio == 'winrate_return':
+                    _wtol = globals().get('WINRATE_TOLERANCE', 0.10)
+                    this_win = best_in.get('win_rate', 0.0)
+                    bs = best_state[3] if best_state else None
+                    bs_win = bs.get('win_rate', -np.inf) if bs else -np.inf
+                    if this_win > bs_win + _wtol:
+                        update = True
+                    elif this_win >= bs_win - _wtol:
+                        if this_return > best_overall_return:
+                            update = True
                 # ★ 매도성공 밴드 → MDD최저 밴드 → 수익 (요청). meta 레벨도 동일 우선순위.
-                if _prio == 'sell_mdd_return':
+                elif _prio == 'sell_mdd_return':
                     _stol = globals().get('SELL_SUCCESS_TOLERANCE', 0.02)
                     _mtol = globals().get('MDD_TOLERANCE', 0.01)
                     this_sell = best_in['sell_success_rate']
@@ -10634,7 +10664,9 @@ def _sort_combined_table(df, tol):
     d = df.copy()
     ret_col = 'total_return' if 'total_return' in d.columns else 'combined_return'
     try:
-        if prio == 'sell_mdd_return':
+        if prio == 'winrate_return':
+            d = d.sort_values(['win_rate', ret_col], ascending=[False, False])
+        elif prio == 'sell_mdd_return':
             d = d.sort_values(['sell_success_rate', 'max_drawdown', ret_col],
                               ascending=[False, False, False])
         elif prio == 'avgband_mdd_return':
@@ -10668,13 +10700,16 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     if dd_limit is None:  dd_limit  = DRAWDOWN_LIMIT_BUY
     if ru_limit is None:  ru_limit  = RUNUP_LIMIT_SELL
 
-    # ★ 거래하지 않는 날(공휴일 등 종가 NaN) 제외 — ffill로 가짜 변동 만들지 않음(요청).
-    #   close가 유효한 날만 남기고 feat도 같은 날짜로 정렬.
-    if isinstance(close, pd.Series):
-        valid_mask = close.notna()
-        if valid_mask.sum() < len(close):
-            close = close[valid_mask]
-            feat = feat.reindex(close.index)
+    # ★ 거래일 필터는 run_ensemble_search 진입 시 이미 수행됨(공휴일 제외).
+    #   여기서는 들어온 close를 그대로 사용. 단, 단독 호출 대비 잔여 NaN만 안전 처리.
+    if isinstance(close, pd.Series) and close.isna().any():
+        valid_mask = close.notna().values
+        close = close[valid_mask]
+        feat = feat.iloc[valid_mask]
+        if anchor_safe_buy is not None and len(anchor_safe_buy) == len(valid_mask):
+            anchor_safe_buy = np.asarray(anchor_safe_buy)[valid_mask]
+        if anchor_safe_sell is not None and len(anchor_safe_sell) == len(valid_mask):
+            anchor_safe_sell = np.asarray(anchor_safe_sell)[valid_mask]
     cl = close
     n  = len(feat); dates = feat.index
     buy_used  = buy_pool.iloc[:K_buy].reset_index(drop=True)
@@ -12045,7 +12080,8 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          write_output=True,
                          output_file=None,
                          inject_combined_table=None,
-                         force_best_combo=None):
+                         force_best_combo=None,
+                         inject_pools=None):
     print('=' * 72)
     print('  매수/매도 앙상블 — 메타 그리드 자동 튜닝')
     print('=' * 72)
@@ -12061,7 +12097,16 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     feat, close, ticker = _resolve_data()
     mask = feat.index >= pd.Timestamp(eval_start)
     feat = feat.loc[mask]
-    close = close.reindex(feat.index).ffill()
+    close = close.reindex(feat.index)
+    # ★ 거래하지 않는 날(공휴일 등 종가 NaN) 제거 — ffill로 가짜 변동 만들지 않음(요청).
+    #   여기서 한 번 제거하면 anchor·grid·daily 모든 단계가 같은 길이의 거래일만 사용
+    #   → 신규상장 종목(CRWV 등) 길이 불일치/broadcast 충돌 방지.
+    _valid = close.notna()
+    if _valid.sum() < len(close):
+        _removed = len(close) - int(_valid.sum())
+        feat = feat[_valid.values]
+        close = close[_valid.values]
+        print(f"  ℹ 거래 없는 날(종가 결측) {_removed}일 제외 → {len(close)}일")
     print(f"  기간: {feat.index[0].date()} ~ {feat.index[-1].date()}  ({len(feat)}일)")
 
     oos_start_idx = None
@@ -12180,32 +12225,62 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         bh_ret_for_filter = _bh_sum_return(close_arr)
 
     print(f"\n[메타 그리드 탐색]   (B&H 미달 조합 제외, 기준 B&H={bh_ret_for_filter*100:+.2f}%)")
-    meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = meta_grid_search(
-        feat, close,
-        meta_grid=meta_grid, indicators=indicators,
-        n_thresholds=n_thresholds, horizon=horizon,
-        dd_limit=dd_limit, ru_limit=ru_limit,
-        k_buy_range=k_buy_range, k_sell_range=k_sell_range,
-        vote_ratio_buy=vote_ratio_buy, vote_ratio_sell=vote_ratio_sell,
-        cost=COST_PER_TRADE,
-        min_trades_daily=min_trades_daily,
-        mdd_limit_pct=max_drawdown_limit_pct,
-        select_by=select_by,
-        stop_loss_pct=stop_loss_pct,
-        selection_tolerance=selection_tolerance,
-        anchor_match_priority=anchor_match_priority,
-        anchor_match_tolerance=anchor_match_tolerance,
-        anchor_mode=anchor_mode,
-        anchor_safe_buy=anchor_safe_buy,
-        anchor_safe_sell=anchor_safe_sell,
-        oos_start_idx=oos_start_idx if oos_enabled else None,
-        bh_ret=bh_ret_for_filter,
-        exclude_below_bh=globals().get('EXCLUDE_BELOW_BH', True),
-    )
+    if inject_pools is not None:
+        # ★ 재현 모드 — 엑셀에서 읽은 지표 풀을 그대로 사용 (지표 재선별 안 함).
+        #   meta_grid_search(지표 선별·그리드 탐색) 전체를 건너뛰고, 주입된 풀 +
+        #   force_best_combo의 K/vote로 곧장 daily 백테스트 → 원본과 동일 지표·조합 재현.
+        buy_pool, sell_pool = inject_pools
+        print(f"  ♻ 재현 모드 — 엑셀의 지표 풀 그대로 사용 "
+              f"(매수 {len(buy_pool)}개 / 매도 {len(sell_pool)}개 지표, 재선별 안 함)")
+        if force_best_combo is not None:
+            best_inner = {
+                'K_buy': int(force_best_combo['K_buy']),
+                'vote_buy': int(force_best_combo['vote_buy']),
+                'K_sell': int(force_best_combo['K_sell']),
+                'vote_sell': int(force_best_combo['vote_sell']),
+            }
+        else:
+            best_inner = {'K_buy': k_buy_range[0], 'vote_buy': int(k_buy_range[0]*vote_ratio_buy[0]),
+                          'K_sell': k_sell_range[0], 'vote_sell': int(k_sell_range[0]*vote_ratio_sell[0])}
+        # best_meta는 주입된 메타 그리드값으로 채움(엑셀 표시용)
+        _mg0 = meta_grid
+        best_meta = {
+            'wilson_z': _mg0['wilson_z'][0],
+            'pct_low': _mg0['pct_range'][0][0], 'pct_high': _mg0['pct_range'][0][1],
+            'min_signals': _mg0['min_signals'][0], 'corr_limit': _mg0['corr_limit'][0],
+            'top_n_pool_buy': len(buy_pool), 'top_n_pool_sell': len(sell_pool),
+        }
+        meta_results_df = pd.DataFrame()
+        inner_all = pd.DataFrame()
+        inner_passed = inject_combined_table if inject_combined_table is not None else pd.DataFrame()
+    else:
+        meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = meta_grid_search(
+            feat, close,
+            meta_grid=meta_grid, indicators=indicators,
+            n_thresholds=n_thresholds, horizon=horizon,
+            dd_limit=dd_limit, ru_limit=ru_limit,
+            k_buy_range=k_buy_range, k_sell_range=k_sell_range,
+            vote_ratio_buy=vote_ratio_buy, vote_ratio_sell=vote_ratio_sell,
+            cost=COST_PER_TRADE,
+            min_trades_daily=min_trades_daily,
+            mdd_limit_pct=max_drawdown_limit_pct,
+            select_by=select_by,
+            stop_loss_pct=stop_loss_pct,
+            selection_tolerance=selection_tolerance,
+            anchor_match_priority=anchor_match_priority,
+            anchor_match_tolerance=anchor_match_tolerance,
+            anchor_mode=anchor_mode,
+            anchor_safe_buy=anchor_safe_buy,
+            anchor_safe_sell=anchor_safe_sell,
+            oos_start_idx=oos_start_idx if oos_enabled else None,
+            bh_ret=bh_ret_for_filter,
+            exclude_below_bh=globals().get('EXCLUDE_BELOW_BH', True),
+        )
 
     # ★ staged가 통합 테이블에서 고른 정확한 조합을 강제 (현재 포지션=★1등 일치 보장).
     #   meta_grid_search가 자체 선정한 best_inner와 staged의 최종 선택이 어긋나는 것을 방지.
-    if force_best_combo is not None:
+    #   (inject_pools 재현 모드에서는 위에서 이미 best_inner를 force값으로 설정했으므로 건너뜀)
+    if force_best_combo is not None and inject_pools is None:
         fb_kb = int(force_best_combo['K_buy']); fb_vb = int(force_best_combo['vote_buy'])
         fb_ks = int(force_best_combo['K_sell']); fb_vs = int(force_best_combo['vote_sell'])
         src_tbl = inject_combined_table if inject_combined_table is not None else inner_passed
@@ -12226,40 +12301,45 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     bh_up_ret = _bh_up_sum_return(close_arr)
     bh_cagr = (1 + bh_ret) ** (252 / len(close_arr)) - 1 if (1 + bh_ret) > 0 else bh_ret
 
-    print(f"\n  ─ 메타 그리드 Top 10 ─")
-    print(f"  {'#':>2} {'w_z':>5}  {'pct':>8}  {'min_s':>5} {'corr':>5} {'pool':>4}  "
-          f"{'평균성공':>8} {'매수':>6} {'매도':>6}  {'수익%':>8}  {'MDD%':>7}  {'거래':>4}")
-    for i, r in meta_results_df.head(10).iterrows():
-        ret_s = f"{r['best_return']*100:+.2f}" if pd.notna(r['best_return']) else "  —  "
-        mdd_s = f"{r['best_mdd']*100:.2f}" if pd.notna(r['best_mdd']) else "  —  "
-        nt_s  = f"{int(r['best_n_trades'])}" if pd.notna(r['best_mdd']) else "—"
-        avg_s = f"{r['best_avg_sr']*100:.1f}%"  if pd.notna(r['best_avg_sr'])  else "  —  "
-        b_s   = f"{r['best_buy_sr']*100:.1f}%"  if pd.notna(r['best_buy_sr'])  else "  —  "
-        s_s   = f"{r['best_sell_sr']*100:.1f}%" if pd.notna(r['best_sell_sr']) else "  —  "
-        print(f"  {i+1:>2}  {r['wilson_z']:>5}  "
-              f"({int(r['pct_low']):>2},{int(r['pct_high']):>2})  "
-              f"{int(r['min_signals']):>5}  {r['corr_limit']:>5}  "
-              f"{int(r['top_n_pool_buy']):>4}  "
-              f"{avg_s:>8} {b_s:>6} {s_s:>6}  "
-              f"{ret_s:>8}  {mdd_s:>7}  {nt_s:>4}")
+    if inject_pools is None:
+        print(f"\n  ─ 메타 그리드 Top 10 ─")
+        print(f"  {'#':>2} {'w_z':>5}  {'pct':>8}  {'min_s':>5} {'corr':>5} {'pool':>4}  "
+              f"{'평균성공':>8} {'매수':>6} {'매도':>6}  {'수익%':>8}  {'MDD%':>7}  {'거래':>4}")
+        for i, r in meta_results_df.head(10).iterrows():
+            ret_s = f"{r['best_return']*100:+.2f}" if pd.notna(r['best_return']) else "  —  "
+            mdd_s = f"{r['best_mdd']*100:.2f}" if pd.notna(r['best_mdd']) else "  —  "
+            nt_s  = f"{int(r['best_n_trades'])}" if pd.notna(r['best_mdd']) else "—"
+            avg_s = f"{r['best_avg_sr']*100:.1f}%"  if pd.notna(r['best_avg_sr'])  else "  —  "
+            b_s   = f"{r['best_buy_sr']*100:.1f}%"  if pd.notna(r['best_buy_sr'])  else "  —  "
+            s_s   = f"{r['best_sell_sr']*100:.1f}%" if pd.notna(r['best_sell_sr']) else "  —  "
+            print(f"  {i+1:>2}  {r['wilson_z']:>5}  "
+                  f"({int(r['pct_low']):>2},{int(r['pct_high']):>2})  "
+                  f"{int(r['min_signals']):>5}  {r['corr_limit']:>5}  "
+                  f"{int(r['top_n_pool_buy']):>4}  "
+                  f"{avg_s:>8} {b_s:>6} {s_s:>6}  "
+                  f"{ret_s:>8}  {mdd_s:>7}  {nt_s:>4}")
 
-    print(f"\n  ★ 1등 메타: WILSON_Z={best_meta['wilson_z']}, "
-          f"PCT=({best_meta['pct_low']:.0f},{best_meta['pct_high']:.0f}), "
-          f"MIN_SIG={best_meta['min_signals']}, CORR={best_meta['corr_limit']}, "
-          f"POOL={best_meta['top_n_pool_buy']}")
-    print(f"  ★ 1등 앙상블: K_buy={int(best_inner['K_buy'])}/v={int(best_inner['vote_buy'])}, "
-          f"K_sell={int(best_inner['K_sell'])}/v={int(best_inner['vote_sell'])}")
-    print(f"     평균성공 {best_inner['avg_success_rate']*100:.1f}% "
-          f"(매수 {best_inner['buy_success_rate']*100:.1f}% / 매도 {best_inner['sell_success_rate']*100:.1f}%)")
-    has_match = ('anchor_avg_match_rate' in best_inner)
-    if has_match:
-        match_v = best_inner.get('anchor_avg_match_rate', np.nan) if hasattr(best_inner, 'get') else best_inner['anchor_avg_match_rate']
-        if pd.notna(match_v):
-            print(f"     ⚓ 매칭률 {match_v*100:.1f}%")
-    print(f"     누적 {best_inner['total_return']*100:+.2f}%  vs B&H {bh_ret*100:+.2f}% "
-          f"({(best_inner['total_return']-bh_ret)*100:+.2f}%p)")
-    print(f"     MDD {best_inner['max_drawdown']*100:.2f}%, "
-          f"거래 {int(best_inner['n_trades'])}회, 승률 {best_inner['win_rate']*100:.1f}%")
+        print(f"\n  ★ 1등 메타: WILSON_Z={best_meta['wilson_z']}, "
+              f"PCT=({best_meta['pct_low']:.0f},{best_meta['pct_high']:.0f}), "
+              f"MIN_SIG={best_meta['min_signals']}, CORR={best_meta['corr_limit']}, "
+              f"POOL={best_meta['top_n_pool_buy']}")
+        print(f"  ★ 1등 앙상블: K_buy={int(best_inner['K_buy'])}/v={int(best_inner['vote_buy'])}, "
+              f"K_sell={int(best_inner['K_sell'])}/v={int(best_inner['vote_sell'])}")
+        print(f"     평균성공 {best_inner['avg_success_rate']*100:.1f}% "
+              f"(매수 {best_inner['buy_success_rate']*100:.1f}% / 매도 {best_inner['sell_success_rate']*100:.1f}%)")
+        has_match = ('anchor_avg_match_rate' in best_inner)
+        if has_match:
+            match_v = best_inner.get('anchor_avg_match_rate', np.nan) if hasattr(best_inner, 'get') else best_inner['anchor_avg_match_rate']
+            if pd.notna(match_v):
+                print(f"     ⚓ 매칭률 {match_v*100:.1f}%")
+        print(f"     누적 {best_inner['total_return']*100:+.2f}%  vs B&H {bh_ret*100:+.2f}% "
+              f"({(best_inner['total_return']-bh_ret)*100:+.2f}%p)")
+        print(f"     MDD {best_inner['max_drawdown']*100:.2f}%, "
+              f"거래 {int(best_inner['n_trades'])}회, 승률 {best_inner['win_rate']*100:.1f}%")
+    else:
+        print(f"  ★ 재현 조합: K_buy={int(best_inner['K_buy'])}/v={int(best_inner['vote_buy'])}, "
+              f"K_sell={int(best_inner['K_sell'])}/v={int(best_inner['vote_sell'])} "
+              f"(엑셀 지표 풀 그대로, 일별 백테스트로 재현)")
 
     if len(inner_passed) > 0:
         cand = inner_passed.copy()
@@ -12491,6 +12571,7 @@ def staged_meta_tune(*, base_meta_grid=None,
             'avg':  float(cur.get('avg_success_rate', 0.0)),
             'ret':  float(cur.get('cum_return_pct', float('-inf'))),
             'mdd':  float(cur.get('max_drawdown', -1.0)),
+            'win':  float(cur.get('win_rate', 0.0)),
             'res':  res, 'wz': wz, 'pct': pct, 'corr': corr,
             'combined': combined_tbl,
         }
@@ -12507,6 +12588,13 @@ def staged_meta_tune(*, base_meta_grid=None,
         if not recs: return None
         if len(recs) == 1: return recs[0]
         tol = globals().get('SELECTION_TOLERANCE', 0.04)
+        # ★ 일별거래 승률 밴드(-10%p) → 누적수익 최고 — 요청
+        if _prio_st == 'winrate_return':
+            wtol = globals().get('WINRATE_TOLERANCE', 0.10)
+            best_win = max(r['win'] for r in recs)
+            b1 = [r for r in recs if r['win'] >= best_win - wtol]
+            b1.sort(key=lambda r: (r['ret'], r['win']), reverse=True)
+            return b1[0]
         # ★ 매도성공 밴드(-2%p) → MDD최저 밴드(-1%p) → 누적수익 최고 — 요청, 기본
         if _prio_st == 'sell_mdd_return':
             stol = globals().get('SELL_SUCCESS_TOLERANCE', 0.02)
@@ -12560,7 +12648,10 @@ def staged_meta_tune(*, base_meta_grid=None,
     print('\n' + '█' * 72)
     print('  ★★★  단계적 메타 변수 자동 튜닝 시작 (중복 실행 없음)  ★★★')
     _ps = globals().get('SELECTION_PRIORITY','')
-    if _ps == 'sell_mdd_return':
+    if _ps == 'winrate_return':
+        _wt=globals().get('WINRATE_TOLERANCE',0.10)
+        print(f'  ★ 선정: 일별거래 승률 -{_wt*100:.0f}%p 밴드 → 누적수익 최고')
+    elif _ps == 'sell_mdd_return':
         _st=globals().get('SELL_SUCCESS_TOLERANCE',0.02); _mt=globals().get('MDD_TOLERANCE',0.01)
         print(f'  ★ 선정: 매도성공률 -{_st*100:.0f}%p 밴드 → MDD 최저 -{_mt*100:.0f}%p 밴드 → 누적수익 최고')
     elif _ps == 'avgband_mdd_return':
@@ -12933,6 +13024,7 @@ def replay_grid_combo(filename, grid_number, *,
         # ★ 이 그리드의 정확한 조합을 강제 → 현재 포지션 = 재현 조합 일치
         force_best_combo={'K_buy': K_buy, 'vote_buy': vote_buy,
                           'K_sell': K_sell, 'vote_sell': vote_sell},
+        # inject_pools는 아래에서 엑셀 지표 풀을 구성한 뒤 추가함
         # ★ 재현은 '이미 선정된 그 조합 하나'를 그대로 다시 계산하는 것.
         #   선정용 필터(MDD 한도·최소거래수)를 끄지 않으면, 재현 결과가 원본과 미세하게
         #   달라(데이터 갱신 등) 그 조합이 필터에 걸려 '통과 0개'로 재현 실패함.
@@ -12951,6 +13043,77 @@ def replay_grid_combo(filename, grid_number, *,
 
     g['_pair_feat'] = feat
     g['_pair_close'] = close
+
+    # ★ 엑셀의 매수/매도 앙상블 지표 시트를 읽어 '그 지표 그대로' 풀 구성 → 재현 정확도 보장.
+    #   (메타변수로 지표를 다시 선별하지 않고, 원본이 쓴 지표를 그대로 사용)
+    def _read_pool(sheet_name):
+        if sheet_name not in wb.sheetnames:
+            return None
+        wsp = wb[sheet_name]
+        # 헤더(3행): #, 지표, 방향, 임계치, 분위, 신호수, 성공수, 성공률, 점수
+        h = {}
+        for c in range(1, wsp.max_column + 1):
+            v = wsp.cell(3, c).value
+            if v is not None: h[str(v).strip()] = c
+        need = ['지표', '방향', '임계치']
+        if not all(k in h for k in need):
+            return None
+        rows = []
+        for r in range(4, wsp.max_row + 1):
+            ind = wsp.cell(r, h['지표']).value
+            if ind is None or str(ind).strip() == '':
+                continue
+            def _gv(col, default=None):
+                if col in h:
+                    return wsp.cell(r, h[col]).value
+                return default
+            def _gf(col, default=0.0):
+                v = _gv(col)
+                try: return float(str(v).replace('%','').strip())
+                except Exception: return default
+            n_sig = _gf('신호수', 0.0)
+            n_suc = _gf('성공수', 0.0)
+            sr = _gf('성공률', 0.0)
+            if sr > 1.5: sr = sr / 100.0   # '96.00%' → 0.96
+            rows.append({
+                'indicator': str(ind).strip(),
+                'direction': str(_gv('방향', '>=')).strip(),
+                'threshold': _gf('임계치', 0.0),
+                'pct_label': _gf('분위', 50.0),
+                'n_signals': n_sig,
+                'n_success': n_suc,
+                'success_rate': sr,
+                'avg_extreme': 0.01,
+                'score': _gf('점수', sr),
+            })
+        if not rows:
+            return None
+        return pd.DataFrame(rows)
+
+    buy_pool_xl  = _read_pool('매수_앙상블_지표')
+    sell_pool_xl = _read_pool('매도_앙상블_지표')
+
+    inject_pools = None
+    if buy_pool_xl is not None and sell_pool_xl is not None \
+       and len(buy_pool_xl) > 0 and len(sell_pool_xl) > 0:
+        # 엑셀 지표 중 현재 feat에 존재하는 것만 사용 (데이터 갱신으로 사라진 지표 방어)
+        bcols = set(feat.columns)
+        bp_use = buy_pool_xl[buy_pool_xl['indicator'].isin(bcols)].reset_index(drop=True)
+        sp_use = sell_pool_xl[sell_pool_xl['indicator'].isin(bcols)].reset_index(drop=True)
+        miss_b = len(buy_pool_xl) - len(bp_use)
+        miss_s = len(sell_pool_xl) - len(sp_use)
+        if len(bp_use) >= K_buy and len(sp_use) >= K_sell:
+            inject_pools = (bp_use, sp_use)
+            print(f"  ♻ 엑셀 지표 그대로 사용 — 매수풀 {len(bp_use)}개, 매도풀 {len(sp_use)}개")
+            if miss_b or miss_s:
+                print(f"     (현재 데이터에 없는 지표 제외: 매수 {miss_b}, 매도 {miss_s})")
+        else:
+            print(f"  ⚠ 엑셀 지표가 K값보다 적음(매수 {len(bp_use)}<{K_buy} 또는 매도 {len(sp_use)}<{K_sell})")
+            print(f"     → 지표를 메타변수로 다시 선별해 재현(정확도 다소 하락 가능)")
+    else:
+        print(f"  ⚠ 앙상블 지표 시트를 읽지 못함 → 메타변수로 지표 재선별")
+
+    kwargs['inject_pools'] = inject_pools   # ★ 엑셀 지표 풀 (None이면 메타변수로 재선별)
 
     # ★ B&H 미달 제외도 재현 중에는 끈다 (그 조합이 B&H 미달이어도 그대로 봐야 함)
     _exbh_saved = globals().get('EXCLUDE_BELOW_BH')
