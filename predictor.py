@@ -9142,6 +9142,7 @@ def _iv_autorun():
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
     print("=" * 60)
 
+
 # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
@@ -9302,7 +9303,7 @@ STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순�
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.25, 0.55, 0.8]
+STAGE_CORR_LIMIT  = [0.15, 0.2, 0.25, 0.3]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -9539,7 +9540,6 @@ def _compute_safe_arrays(close_arr, horizon, dd_limit, ru_limit):
         end = i + 1 + horizon
         if end >= n: end = n - 1
         if end <= i + 1: continue
-        evaluable[i] = 1
         # first-touch: +dd_limit(위) 와 -ru_limit(아래) 중 먼저 닿는 쪽
         hit_up = 0
         hit_dn = 0
@@ -9549,13 +9549,11 @@ def _compute_safe_arrays(close_arr, horizon, dd_limit, ru_limit):
                 hit_up = 1; break
             if r <= -ru_limit:
                 hit_dn = 1; break
+        # ★ 기간 내 ±목표(±1%) 어느 쪽도 안 닿으면 → 변동이 미미한 날.
+        #   성공/실패 평가에서 아예 제외(evaluable=0). 기간끝 부호로 강제배정하지 않음(요청).
         if hit_up == 0 and hit_dn == 0:
-            # 기간 내 어느 목표도 미터치 → 기간끝 종가 부호
-            last_r = close_arr[end] / base - 1.0
-            if last_r >= 0.0:
-                hit_up = 1
-            else:
-                hit_dn = 1
+            continue                      # evaluable[i] 그대로 0 → 평가 제외
+        evaluable[i] = 1
         # 위를 먼저 터치 = 매수 정답(올랐어야), 아래 먼저 = 매도 정답(내렸어야)
         if hit_up == 1:
             safe_buy[i] = 1
@@ -10670,7 +10668,14 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     if dd_limit is None:  dd_limit  = DRAWDOWN_LIMIT_BUY
     if ru_limit is None:  ru_limit  = RUNUP_LIMIT_SELL
 
-    cl = close.ffill()
+    # ★ 거래하지 않는 날(공휴일 등 종가 NaN) 제외 — ffill로 가짜 변동 만들지 않음(요청).
+    #   close가 유효한 날만 남기고 feat도 같은 날짜로 정렬.
+    if isinstance(close, pd.Series):
+        valid_mask = close.notna()
+        if valid_mask.sum() < len(close):
+            close = close[valid_mask]
+            feat = feat.reindex(close.index)
+    cl = close
     n  = len(feat); dates = feat.index
     buy_used  = buy_pool.iloc[:K_buy].reset_index(drop=True)
     sell_used = sell_pool.iloc[:K_sell].reset_index(drop=True)
@@ -11163,10 +11168,10 @@ def _success_fill(rate):
 
 
 def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
-    """변경3·4 반영한 일별 행 작성 (8번 일별 시트 / 9번 OOS 시트 공통).
+    """일별 행 작성 (일별 시트 / OOS 시트 공통).
        컬럼: 날짜,종가,매수카운트,매수ON,매수성공,매도카운트,매도ON,매도성공,
-            포지션,진입가,손절가,보유일,미실현%,실현%,누적자산,누적수익%,진행MDD%,
-            매수공식,매도공식,액션 (총 20열)"""
+            포지션,액션,진입가,손절가,보유일,미실현%,실현%,누적자산,누적수익%,진행MDD%,
+            매수공식,매도공식 (총 20열) — 액션을 포지션 다음으로 이동(요청)"""
     for ri, row in daily.iterrows():
         r = ri + 5
         c = ws.cell(r, 1); c.value = row['date'].date()
@@ -11224,51 +11229,8 @@ def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
         else:
             c.value = '현금'; c.fill = _CASH; c.font = Font(size=9, color='606060')
         c.alignment = Alignment(horizontal='center'); c.border = _TH
+        # ★ 액션 (포지션 다음으로 이동)
         c = ws.cell(r, 10)
-        if pd.notna(row['entry_price']):
-            c.value = round(row['entry_price'], 2); c.number_format = '#,##0.00'
-        c.alignment = Alignment(horizontal='right'); c.border = _TH; c.font = Font(size=9)
-        c = ws.cell(r, 11)
-        if pd.notna(row.get('stop_price', np.nan)):
-            c.value = round(float(row['stop_price']), 2); c.number_format = '#,##0.00'
-            c.font = Font(size=9, color='C00000', bold=True)
-        c.alignment = Alignment(horizontal='right'); c.border = _TH
-        c = ws.cell(r, 12)
-        c.value = int(row['days_held']) if row['days_held'] > 0 else ''
-        c.alignment = Alignment(horizontal='center'); c.border = _TH; c.font = Font(size=9)
-        c = ws.cell(r, 13)
-        if pd.notna(row['unrealized_pct']):
-            v = float(row['unrealized_pct'])
-            c.value = round(v, 2); c.number_format = '0.00"%"'
-            c.font = Font(size=9, color='006100' if v > 0 else 'C00000')
-        c.alignment = Alignment(horizontal='right'); c.border = _TH
-        c = ws.cell(r, 14)
-        if pd.notna(row['realized_pct']):
-            v = float(row['realized_pct'])
-            c.value = round(v, 2); c.number_format = '0.00"%"'
-            c.font = Font(bold=True, size=10, color='006100' if v > 0 else 'C00000')
-        c.alignment = Alignment(horizontal='right'); c.border = _TH
-        c = ws.cell(r, 15); c.value = round(row['equity'], 4)
-        c.number_format = '0.0000'
-        c.alignment = Alignment(horizontal='right'); c.border = _TH; c.font = Font(size=9)
-        c = ws.cell(r, 16)
-        v = float(row['cum_return_pct'])
-        c.value = round(v, 2); c.number_format = '0.00"%"'
-        c.alignment = Alignment(horizontal='right'); c.border = _TH
-        c.font = Font(bold=True, size=9, color='006100' if v > 0 else 'C00000')
-        c = ws.cell(r, 17)
-        v = float(row['running_mdd_pct'])
-        c.value = round(v, 2); c.number_format = '0.00"%"'
-        c.alignment = Alignment(horizontal='right'); c.border = _TH
-        c.font = Font(size=9, color='C00000' if v < 0 else '888888')
-        if mdd_limit_pct is not None and v < -abs(mdd_limit_pct):
-            c.fill = _BAD; c.font = Font(bold=True, size=9, color='C00000')
-        # 매수공식/매도공식 (변경3)
-        c = ws.cell(r, 18); c.value = row.get('buy_formula', '')
-        c.alignment = Alignment(horizontal='left'); c.border = _TH; c.font = Font(size=8)
-        c = ws.cell(r, 19); c.value = row.get('sell_formula', '')
-        c.alignment = Alignment(horizontal='left'); c.border = _TH; c.font = Font(size=8)
-        c = ws.cell(r, 20)
         if row['action']:
             c.value = row['action']
             if '손절매' in row['action']:
@@ -11282,7 +11244,51 @@ def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
             elif '매도' in row['action'] or '청산' in row['action']:
                 c.fill = _SELL; c.font = Font(bold=True, size=9, color='C00000')
         c.alignment = Alignment(horizontal='left'); c.border = _TH
-    widths = [12, 10, 13, 8, 9, 13, 8, 9, 8, 10, 10, 8, 10, 10, 10, 12, 10, 30, 30, 34]
+        c = ws.cell(r, 11)
+        if pd.notna(row['entry_price']):
+            c.value = round(row['entry_price'], 2); c.number_format = '#,##0.00'
+        c.alignment = Alignment(horizontal='right'); c.border = _TH; c.font = Font(size=9)
+        c = ws.cell(r, 12)
+        if pd.notna(row.get('stop_price', np.nan)):
+            c.value = round(float(row['stop_price']), 2); c.number_format = '#,##0.00'
+            c.font = Font(size=9, color='C00000', bold=True)
+        c.alignment = Alignment(horizontal='right'); c.border = _TH
+        c = ws.cell(r, 13)
+        c.value = int(row['days_held']) if row['days_held'] > 0 else ''
+        c.alignment = Alignment(horizontal='center'); c.border = _TH; c.font = Font(size=9)
+        c = ws.cell(r, 14)
+        if pd.notna(row['unrealized_pct']):
+            v = float(row['unrealized_pct'])
+            c.value = round(v, 2); c.number_format = '0.00"%"'
+            c.font = Font(size=9, color='006100' if v > 0 else 'C00000')
+        c.alignment = Alignment(horizontal='right'); c.border = _TH
+        c = ws.cell(r, 15)
+        if pd.notna(row['realized_pct']):
+            v = float(row['realized_pct'])
+            c.value = round(v, 2); c.number_format = '0.00"%"'
+            c.font = Font(bold=True, size=10, color='006100' if v > 0 else 'C00000')
+        c.alignment = Alignment(horizontal='right'); c.border = _TH
+        c = ws.cell(r, 16); c.value = round(row['equity'], 4)
+        c.number_format = '0.0000'
+        c.alignment = Alignment(horizontal='right'); c.border = _TH; c.font = Font(size=9)
+        c = ws.cell(r, 17)
+        v = float(row['cum_return_pct'])
+        c.value = round(v, 2); c.number_format = '0.00"%"'
+        c.alignment = Alignment(horizontal='right'); c.border = _TH
+        c.font = Font(bold=True, size=9, color='006100' if v > 0 else 'C00000')
+        c = ws.cell(r, 18)
+        v = float(row['running_mdd_pct'])
+        c.value = round(v, 2); c.number_format = '0.00"%"'
+        c.alignment = Alignment(horizontal='right'); c.border = _TH
+        c.font = Font(size=9, color='C00000' if v < 0 else '888888')
+        if mdd_limit_pct is not None and v < -abs(mdd_limit_pct):
+            c.fill = _BAD; c.font = Font(bold=True, size=9, color='C00000')
+        # 매수공식/매도공식
+        c = ws.cell(r, 19); c.value = row.get('buy_formula', '')
+        c.alignment = Alignment(horizontal='left'); c.border = _TH; c.font = Font(size=8)
+        c = ws.cell(r, 20); c.value = row.get('sell_formula', '')
+        c.alignment = Alignment(horizontal='left'); c.border = _TH; c.font = Font(size=8)
+    widths = [12, 10, 13, 8, 9, 13, 8, 9, 8, 34, 10, 10, 8, 10, 10, 10, 12, 10, 30, 30]
     for ci, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.row_dimensions[4].height = 32
@@ -11722,10 +11728,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = (f'전체 그리드 통합 (모든 메타변수 조합) — {mdd_t2}, 거래수 ≥ {min_trades_daily}회, B&H 초과만  '
                            f'({len(inner_passed)}개) — {inner_sort_label}')
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:Y1')
+    ws.merge_cells('A1:AA1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
                  '평균성공', '매수성공', '매도성공',
+                 '⚓매수매칭', '⚓매도매칭',
                  '★ 누적수익', 'CAGR', '거래수', '승률', 'Sharpe', '최대낙폭'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
@@ -11766,6 +11773,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         cl_v   = _g(row, 'meta_corr_limit')
         ms_v   = _g(row, 'meta_min_signals')
         pool_v = _g(row, 'meta_top_n_pool')
+        bm_v   = _g(row, 'anchor_buy_match_rate')
+        sm_v   = _g(row, 'anchor_sell_match_rate')
         vals = [
             f"{ri+1}{marker}",
             f"{wz_v:.2f}"  if pd.notna(wz_v)  else '—',
@@ -11779,6 +11788,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             f"{row['avg_success_rate']*100:.1f}%",
             f"{row['buy_success_rate']*100:.1f}%",
             f"{row['sell_success_rate']*100:.1f}%",
+            f"{bm_v*100:.1f}%"  if pd.notna(bm_v) else '—',
+            f"{sm_v*100:.1f}%"  if pd.notna(sm_v) else '—',
             f"{row['total_return']*100:+.2f}%",
             f"{row['cagr']*100:+.2f}%",
             int(row['n_trades']),
@@ -11797,13 +11808,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ws.cell(r, 12).fill = _success_fill(row['avg_success_rate'])
         ws.cell(r, 13).fill = _success_fill(row['buy_success_rate'])
         ws.cell(r, 14).fill = _success_fill(row['sell_success_rate'])
-        ws.cell(r, 15).fill = _ret_fill(row['total_return'], bh_ret)
-        ws.cell(r, 20).fill = _mdd_fill(row['max_drawdown'], mdd_limit_pct)
+        if pd.notna(bm_v): ws.cell(r, 15).fill = _success_fill(bm_v)
+        if pd.notna(sm_v): ws.cell(r, 16).fill = _success_fill(sm_v)
+        ws.cell(r, 17).fill = _ret_fill(row['total_return'], bh_ret)
+        ws.cell(r, 22).fill = _mdd_fill(row['max_drawdown'], mdd_limit_pct)
         if is_best:
             for cc in (12, 13, 14):
                 ws.cell(r, cc).font = Font(bold=True, color='C00000', size=11)
-            ws.cell(r, 15).font = Font(bold=True, color='C00000', size=12)
-    for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 12, 10, 8, 8, 10, 10], 1):
+            ws.cell(r, 17).font = Font(bold=True, color='C00000', size=12)
+    for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 10], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -11925,17 +11938,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.freeze_panes = 'A8'
 
-    # 8. 일별 백테스트 (변경3·4: _write_daily_rows 사용)
-    ws = wb.create_sheet('일별 백테스트'); ws.sheet_view.showGridLines = False
+    # 8. 일별 백테스트 (맨 앞 시트로 배치 — 요청)
+    ws = wb.create_sheet('일별 백테스트', 0); ws.sheet_view.showGridLines = False
     ws.cell(1, 1).value = f'일별 백테스트 — {len(daily)}일'
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
     ws.merge_cells('A1:T1')
     _hdr(ws, 4, ['날짜', f'{ticker}종가',
                  f'매수카운트(/{cur["K_buy"]})', '매수ON', '매수성공',
                  f'매도카운트(/{cur["K_sell"]})', '매도ON', '매도성공',
-                 '포지션', '진입가', '⛔ 손절가', '보유일',
+                 '포지션', '액션', '진입가', '⛔ 손절가', '보유일',
                  '미실현%', '실현%', '누적자산', '누적수익%', '진행MDD%',
-                 '매수공식', '매도공식', '액션'])
+                 '매수공식', '매도공식'])
     _write_daily_rows(ws, daily, cur, mdd_limit_pct)
 
     # 9. ★ OOS 일별 거래
@@ -12920,13 +12933,17 @@ def replay_grid_combo(filename, grid_number, *,
         # ★ 이 그리드의 정확한 조합을 강제 → 현재 포지션 = 재현 조합 일치
         force_best_combo={'K_buy': K_buy, 'vote_buy': vote_buy,
                           'K_sell': K_sell, 'vote_sell': vote_sell},
+        # ★ 재현은 '이미 선정된 그 조합 하나'를 그대로 다시 계산하는 것.
+        #   선정용 필터(MDD 한도·최소거래수)를 끄지 않으면, 재현 결과가 원본과 미세하게
+        #   달라(데이터 갱신 등) 그 조합이 필터에 걸려 '통과 0개'로 재현 실패함.
+        max_drawdown_limit_pct=None,   # MDD 한도 무력화 (그 조합 그대로 봐야 함)
+        min_trades_daily=1,            # 최소거래수 무력화
     )
     # 읽은 설정 반영 (run_ensemble_search 인자명에 맞춰).
-    #   ※ cost는 run_ensemble_search 인자가 아니라 전역 COST_PER_TRADE를 쓰므로 따로 처리.
+    #   ※ cost는 전역 COST_PER_TRADE로 따로 처리.
+    #   ※ mdd_limit / min_trades는 위에서 의도적으로 껐으므로 여기서 덮어쓰지 않음(목록 제외).
     for src_k, dst_k in [('horizon','horizon'), ('dd_limit','dd_limit'),
                           ('ru_limit','ru_limit'),
-                          ('mdd_limit_pct','max_drawdown_limit_pct'),
-                          ('min_trades_daily','min_trades_daily'),
                           ('stop_loss_pct','stop_loss_pct')]:
         if used.get(src_k) is not None:
             kwargs[dst_k] = used[src_k]
@@ -12935,14 +12952,18 @@ def replay_grid_combo(filename, grid_number, *,
     g['_pair_feat'] = feat
     g['_pair_close'] = close
 
+    # ★ B&H 미달 제외도 재현 중에는 끈다 (그 조합이 B&H 미달이어도 그대로 봐야 함)
+    _exbh_saved = globals().get('EXCLUDE_BELOW_BH')
     # 거래비용은 전역 COST_PER_TRADE 사용 → 재현 시 사용된 설정값으로 임시 교체 후 복원
     _cost_saved = globals().get('COST_PER_TRADE')
     _cost_used = used.get('cost')
     try:
+        globals()['EXCLUDE_BELOW_BH'] = False
         if _cost_used is not None:
             globals()['COST_PER_TRADE'] = _cost_used
         result = run_ensemble_search(**kwargs)
     finally:
+        globals()['EXCLUDE_BELOW_BH'] = _exbh_saved
         if _cost_used is not None:
             globals()['COST_PER_TRADE'] = _cost_saved
 
@@ -14021,42 +14042,42 @@ if __name__ == '__main__':
             print(f"\n  ✗ 재현 실패: {_e}")
             print("    feat/close가 메모리에 있는지 확인하세요. 예:")
             print("      replay_grid_combo('파일명.xlsx', 14, feat=내_feat, close=내_close)")
-        import sys as _sys; _sys.exit(0)
 
-    print(f"\n분석할 티커 입력 (쉼표 또는 공백 구분, Enter=기본값 {TICKERS})")
-    user_input = input("티커: ").strip()
-
-    if user_input:
-        import re
-        tickers_to_run = [t.strip().upper() for t in re.split(r'[,;\s]+', user_input) if t.strip()]
-        print(f"→ 분석 대상: {tickers_to_run}")
     else:
-        tickers_to_run = TICKERS
-        print(f"→ 기본값 사용: {tickers_to_run}")
+        print(f"\n분석할 티커 입력 (쉼표 또는 공백 구분, Enter=기본값 {TICKERS})")
+        user_input = input("티커: ").strip()
 
-    summary_path = os.path.join(SCRIPT_DIR, MULTI_SUMMARY_FILE)
-    overrides = None
-    if os.path.exists(summary_path):
-        print(f"\n기존 요약 파일 발견: {summary_path}")
-        ans = input("엑셀 파일에 기록된 변수값을 사용하시겠습니까? (y/n, 기본 n): ").strip().lower()
-        if ans in ('y', 'yes', 'ㅇ', '예'):
-            overrides = _parse_overrides_from_excel(summary_path, tickers_to_run)
-            if overrides:
-                found = list(overrides.keys())
-                missing = [t for t in tickers_to_run if t not in overrides]
-                print(f"  ✓ Excel 변수값 적용: {found}")
-                if missing:
-                    print(f"  ℹ Excel에 없는 티커 (기본값 사용): {missing}")
-            else:
-                print(f"  ⚠ Excel에서 사용 가능한 변수값 못 찾음 → 기본값 사용")
-                overrides = None
+        if user_input:
+            import re
+            tickers_to_run = [t.strip().upper() for t in re.split(r'[,;\s]+', user_input) if t.strip()]
+            print(f"→ 분석 대상: {tickers_to_run}")
         else:
-            print(f"→ 코드 상단 변수값(또는 AUTO_TUNE) 사용")
-    else:
-        print(f"\n요약 파일 없음 — 코드 변수값으로 첫 실행 (변수값 자동 기록됨)")
+            tickers_to_run = TICKERS
+            print(f"→ 기본값 사용: {tickers_to_run}")
 
-    run_multi_ticker_analysis(
-        tickers=tickers_to_run,
-        per_ticker_overrides=overrides,
-        resume=False,
-    )
+        summary_path = os.path.join(SCRIPT_DIR, MULTI_SUMMARY_FILE)
+        overrides = None
+        if os.path.exists(summary_path):
+            print(f"\n기존 요약 파일 발견: {summary_path}")
+            ans = input("엑셀 파일에 기록된 변수값을 사용하시겠습니까? (y/n, 기본 n): ").strip().lower()
+            if ans in ('y', 'yes', 'ㅇ', '예'):
+                overrides = _parse_overrides_from_excel(summary_path, tickers_to_run)
+                if overrides:
+                    found = list(overrides.keys())
+                    missing = [t for t in tickers_to_run if t not in overrides]
+                    print(f"  ✓ Excel 변수값 적용: {found}")
+                    if missing:
+                        print(f"  ℹ Excel에 없는 티커 (기본값 사용): {missing}")
+                else:
+                    print(f"  ⚠ Excel에서 사용 가능한 변수값 못 찾음 → 기본값 사용")
+                    overrides = None
+            else:
+                print(f"→ 코드 상단 변수값(또는 AUTO_TUNE) 사용")
+        else:
+            print(f"\n요약 파일 없음 — 코드 변수값으로 첫 실행 (변수값 자동 기록됨)")
+
+        run_multi_ticker_analysis(
+            tickers=tickers_to_run,
+            per_ticker_overrides=overrides,
+            resume=False,
+        )
