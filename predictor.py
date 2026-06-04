@@ -201,11 +201,11 @@ def download_data(start='2020-01-01'):
 # ════════════════════════════════════════════════════════════════
 #            FRED 경제지표 다운로드 (신규 추가)
 # ════════════════════════════════════════════════════════════════
-def download_fred_data(start='2020-01-01'):
+def download_fred_data(start='2020-01-01', max_retries=2, retry_wait=1.0):
     """
     FRED에서 실물 경제지표 다운로드 후 거래일 기준 일별로 forward-fill.
+    실패한 시리즈는 ID·설명·이유를 함께 표시하고, 일시적 실패는 재시도한다.
     pandas_datareader 없으면 빈 DataFrame 반환 (지표 계산 건너뜀).
-
     설치: pip install pandas-datareader
     """
     try:
@@ -214,7 +214,6 @@ def download_fred_data(start='2020-01-01'):
         print("  ⚠ pandas_datareader 미설치 → FRED 경제지표 건너뜀")
         print("    (설치 후 재실행: pip install pandas-datareader)")
         return pd.DataFrame()
-
     daily_series = {
         'T10Y2Y':           '10Y-2Y 수익률 스프레드',
         'T10Y3M':           '10Y-3M 수익률 스프레드',
@@ -222,18 +221,15 @@ def download_fred_data(start='2020-01-01'):
         'T10YIE':           '10년 BEI 기대인플레이션',
         'BAMLH0A0HYM2':     'HY 신용 OAS 스프레드',
         'BAMLC0A0CM':       'IG 신용 OAS 스프레드',
-        # 'BAMLH0A0HYM2EY' → 접근 불안정, 아래 대체
-        'BAMLHYH0A0HYM2TRIV': 'HY 채권 총수익 지수',  # 대체
+        'BAMLHYH0A0HYM2TRIV': 'HY 채권 총수익 지수',
         'EFFR':             '실효연방기금금리',
-        'SOFR':         'SOFR (단기금리)',
+        'SOFR':             'SOFR (단기금리)',
     }
-
     weekly_series = {
         'ICSA':     '주간 신규 실업수당 청구',
         'CCSA':     '계속 실업수당 청구',
-        'WRMFSL':   '연준 지급준비금 잔액',  # WRESBAL 대체
+        'WRMFSL':   '연준 지급준비금 잔액',
     }
-
     monthly_series = {
         'UNRATE':      '실업률',
         'U6RATE':      'U6 광의실업률',
@@ -241,13 +237,12 @@ def download_fred_data(start='2020-01-01'):
         'CPILFESL':    'Core CPI',
         'PCEPI':       'PCE 인플레이션',
         'PCEPILFE':    'Core PCE',
-# ─ ISM 4개(NAPM/NAPMNOI/NAPMEI/NAPMPI) 2016년 FRED에서 제거 → 유사 지표로 대체
         'CFNAI':       '시카고 연준 국가활동지수 (구 NAPM 대체)',
         'NEWORDER':    '비국방 자본재 신규주문 (구 NAPMNOI 대체)',
         'MANEMP':      '제조업 고용자수 (구 NAPMEI 대체)',
         'PPIACO':      '생산자물가지수 전체 (구 NAPMPI 대체)',
         'UMCSENT':     '미시간 소비자신뢰',
-        'MICH':        '미시간 1년 기대인플레이션',   # UMCSENTPX → MICH (수정)
+        'MICH':        '미시간 1년 기대인플레이션',
         'HOUST':       '주택착공',
         'PERMIT':      '주택건설허가',
         'INDPRO':      '산업생산지수',
@@ -255,32 +250,48 @@ def download_fred_data(start='2020-01-01'):
         'PAYEMS':      '비농업 취업자',
         'JTSJOL':      'JOLTS 구인건수',
         'TOTALSL':     '소비자 신용 총액',
-        'RSAFS':       '소매판매 (계절조정)',         # RETAILSMNSA → RSAFS (수정)
+        'RSAFS':       '소매판매 (계절조정)',
         'DSPIC96':     '실질 가처분소득',
         'PSAVERT':     '개인저축률',
-        'CSUSHPINSA':  'Case-Shiller 주택가격',      # CSUSHPISA → CSUSHPINSA (수정)
+        'CSUSHPINSA':  'Case-Shiller 주택가격',
         'TWEXBGSMTH':  '달러지수 (Fed 무역가중)',
         'M2SL':        'M2 통화량',
         'WALCL':       '연준 자산총액',
     }
-
     frames = {}
     all_series = {**daily_series, **weekly_series, **monthly_series}
-    ok, fail = 0, 0
+    ok = 0
+    fail_list = []   # (series_id, desc, 이유)
     for series_id, desc in all_series.items():
-        try:
-            s = pdr.DataReader(series_id, 'fred', start=start)
-            frames[series_id] = s[series_id]
+        last_err = None
+        for attempt in range(max_retries + 1):
+            try:
+                s = pdr.DataReader(series_id, 'fred', start=start)
+                if s is None or series_id not in s.columns or s[series_id].dropna().empty:
+                    last_err = '데이터 없음(빈 시리즈)'
+                    break   # 빈 데이터는 재시도해도 동일 → 중단
+                frames[series_id] = s[series_id]
+                last_err = None
+                break
+            except Exception as e:
+                last_err = f'{type(e).__name__}: {str(e)[:70]}'
+                if attempt < max_retries:
+                    time.sleep(retry_wait)   # 일시적 실패(rate limit 등) 재시도
+                    continue
+        if last_err is None:
             ok += 1
-        except Exception:
-            fail += 1
-    print(f"  FRED: 성공 {ok}개 / 실패 {fail}개 (총 {len(all_series)}개 시도)")
-
+        else:
+            fail_list.append((series_id, desc, last_err))
+ 
+    print(f"  FRED: 성공 {ok}개 / 실패 {len(fail_list)}개 (총 {len(all_series)}개 시도)")
+    if fail_list:
+        print(f"  ── FRED 실패 목록 ──")
+        for series_id, desc, reason in fail_list:
+            print(f"     ✗ {series_id} ({desc}): {reason}")
+ 
     if not frames:
         return pd.DataFrame()
-
     raw = pd.DataFrame(frames)
-    # 거래일 기준 리인덱스 + forward-fill (월별 지표도 일별로 확장)
     biz_idx = pd.bdate_range(start=start, end=pd.Timestamp.today())
     fred = raw.reindex(biz_idx).ffill().bfill()
     fred.index.name = 'Date'
