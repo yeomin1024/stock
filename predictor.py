@@ -9267,10 +9267,10 @@ MAX_INDICATORS      = 600
 
 K_BUY_RANGE         = [i for i in range(1, 100)]
 K_SELL_RANGE        = [i for i in range(1, 100)]
-VOTE_RATIO_BUY      = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
-VOTE_RATIO_SELL     = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
+VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 
 COST_PER_TRADE      = 0.004
 
@@ -11616,6 +11616,22 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         anchor_method = (f"ON ⚓ AUTO 자동계산 (매수 {len(anchor_buy_dates or [])}일, 매도 {len(anchor_sell_dates or [])}일)"
                          if auto_anchor else
                          f"ON ⚓ 수동입력 (매수 {len(anchor_buy_dates or [])}일, 매도 {len(anchor_sell_dates or [])}일)")
+    def _bi_get(k, default=None):
+        """best_inner에서 키를 안전하게 추출 (재현 모드는 일부 키가 없을 수 있음)."""
+        try:
+            if hasattr(best_inner, 'get'):
+                v = best_inner.get(k, default)
+            else:
+                v = best_inner[k] if k in best_inner else default
+        except Exception:
+            return default
+        try:
+            if v is None or (pd.notna(v) is False):
+                return default
+        except Exception:
+            pass
+        return v
+
     info = [
         ('티커', ticker),
         ('백테스트 기간', f"{daily['date'].iloc[0].date()} ~ {daily['date'].iloc[-1].date()}"),
@@ -11658,7 +11674,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ('  📈 상승일만 합산 (B&H)', f"{bh_up_ret*100:+.2f}%" if bh_up_ret is not None else '—'),
         ('  거래 / 승률', f"{cur['n_trades']}회 / {cur['win_rate']*100:.1f}%"),
         ('  손절매 발동', f"{cur['n_stop_triggered']}회"),
-        ('  Sharpe-like', f"{best_inner['sharpe_like']:.2f}"),
+        ('  Sharpe-like', (f"{_bi_get('sharpe_like'):.2f}"
+                            if _bi_get('sharpe_like') is not None else '—')),
         ('  최대낙폭', f"{cur['max_drawdown']*100:.2f}%"),
         ('', ''),
         ('★ 선정 우선순위', sel_method),
