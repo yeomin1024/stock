@@ -9184,9 +9184,9 @@ def _iv_autorun():
                 pass
     print("\n" + "=" * 60)
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
-    print("=" * 60)
 
-# @title
+
+    # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
 ====================================================================
@@ -9311,6 +9311,12 @@ MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 
 # ★ 'winrate_return' 모드 밴드 폭 (요청) — 일별거래 승률 최고에서 이 차이(10%p)까지 후보
 WINRATE_TOLERANCE      = 0.10
 
+# ★ 승률 후보 실거래 검증 (요청) — 그리드는 빠른 근사라 실제 일별거래와 MDD·승률·수익이
+#   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
+#   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
+VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
+VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+
 # ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림)
 EXCLUDE_BELOW_BH = False
 
@@ -9333,7 +9339,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 700
+TOP_N_GRID_OUT      = 10000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -9350,7 +9356,7 @@ STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순�
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.15, 0.2, 0.25, 0.3]
+STAGE_CORR_LIMIT  = [0.2, 0.25, 0.3]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -10795,6 +10801,7 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     equity = 1.0; n_trades = 0; n_wins = 0
     rows = []; trades = []
     peak = 1.0; mdd = 0.0
+    worst_trade_so_far = 0.0   # ★ 그 시점까지 발생한 개별 거래 최대 손실(소수, 음수)
     n_conflicts = 0
     n_conflict_buy_won = 0
     n_conflict_sell_won = 0
@@ -10885,6 +10892,7 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
                 equity = 1.0 + sum_daily
                 n_trades += 1
                 n_stop_triggered += 1
+                if ret_net < worst_trade_so_far: worst_trade_so_far = ret_net  # ★ 최대 거래손실 갱신
                 if ret_net > 0: n_wins += 1
                 trades.append({
                     'trade_no': n_trades,
@@ -10970,7 +10978,7 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
             'realized_pct': stop_ret_pct if stopped_today else np.nan,
             'equity': unr_eq,
             'cum_return_pct': sum_daily * 100,
-            'running_mdd_pct': mdd * 100,
+            'running_mdd_pct': worst_trade_so_far * 100,   # ★ 그 시점까지 최대 거래손실
             'action': action,
         })
 
@@ -10991,6 +10999,7 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
             equity = 1.0 + sum_daily
             n_trades += 1
             if ret_net > 0: n_wins += 1
+            if ret_net < worst_trade_so_far: worst_trade_so_far = ret_net  # ★ 최대 거래손실 갱신
             trades.append({
                 'trade_no': n_trades,
                 'entry_date': entry_date, 'entry_price': entry_price,
@@ -11173,7 +11182,19 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     cur['last_date'] = last['date']
     cur['K_buy'] = K_buy; cur['K_sell'] = K_sell
     cur['vote_buy'] = vote_buy; cur['vote_sell'] = vote_sell
-    cur['max_drawdown'] = mdd
+    # ★ 최대 낙폭 정의 변경 (요청) — 자산곡선 고점대비 하락이 아니라,
+    #   '개별 일별 거래에서 발생한 최대 손실'을 최대 낙폭으로 사용.
+    #   (처음 투자 시작하는 입장에선 쌓아둔 이익이 없어, 한 거래의 손실이 곧 계좌 위험)
+    #   거래가 1건도 없으면 0.0.
+    if len(trades) > 0:
+        _trade_rets = [t['net_return_%'] / 100.0 for t in trades]   # 각 거래 실현손익(소수)
+        worst_trade = min(_trade_rets)                # 가장 큰 손실 (음수)
+        max_trade_loss = worst_trade if worst_trade < 0 else 0.0
+    else:
+        max_trade_loss = 0.0
+    cur['max_drawdown']      = max_trade_loss   # ★ 이제 '최대 거래 손실' 의미
+    cur['equity_mdd']        = mdd              # (참고) 자산곡선 고점대비 하락 — 보존
+    cur['max_trade_loss']    = max_trade_loss   # 명시적 키
     cur['up_cum_return_pct'] = up_sum_daily * 100.0
     cur['weighted_vote'] = weighted     # ★ 변경2
     # ★ 변경4: 전체 매수/매도 성공·실패 집계
@@ -11249,7 +11270,7 @@ def _success_fill(rate):
 def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
     """일별 행 작성 (일별 시트 / OOS 시트 공통).
        컬럼: 날짜,종가,매수카운트,매수ON,매수성공,매도카운트,매도ON,매도성공,
-            포지션,액션,진입가,손절가,보유일,미실현%,실현%,누적자산,누적수익%,진행MDD%,
+            포지션,액션,진입가,손절가,보유일,미실현%,실현%,누적자산,누적수익%,진행최대손실%,
             매수공식,매도공식 (총 20열) — 액션을 포지션 다음으로 이동(요청)"""
     for ri, row in daily.iterrows():
         r = ri + 5
@@ -11440,7 +11461,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ('📈 상승일만 합산 (B&H)', f"{bh_up_ret*100:+.2f}%" if bh_up_ret is not None else '—'),
         ('총 거래 수', f"{cur['n_trades']}회"),
         ('승률 (수익 거래)', f"{cur['win_rate']*100:.1f}% ({cur['n_wins']}/{cur['n_trades']})"),
-        ('최대 낙폭 (일별)', f"{cur['max_drawdown']*100:.2f}%"),
+        ('최대 거래손실 (단일거래)', f"{cur['max_drawdown']*100:.2f}%"),
     ]
     label_buy  = f'★ 매수신호 Balanced Acc (-{dd_limit*100:.1f}% 회피'
     label_sell = f'★ 매도신호 Balanced Acc (+{ru_limit*100:.1f}% 회피'
@@ -11675,7 +11696,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ('  손절매 발동', f"{cur['n_stop_triggered']}회"),
         ('  Sharpe-like', (f"{_bi_get('sharpe_like'):.2f}"
                             if _bi_get('sharpe_like') is not None else '—')),
-        ('  최대낙폭', f"{cur['max_drawdown']*100:.2f}%"),
+        ('  최대 거래손실', f"{cur['max_drawdown']*100:.2f}%"),
         ('', ''),
         ('★ 선정 우선순위', sel_method),
         ('★ ANCHOR 보정', anchor_method),
@@ -11824,12 +11845,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = (f'전체 그리드 통합 (모든 메타변수 조합) — {mdd_t2}, 거래수 ≥ {min_trades_daily}회, B&H 초과만  '
                            f'({len(inner_passed)}개) — {inner_sort_label}')
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:AA1')
+    ws.merge_cells('A1:AD1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
                  '평균성공', '매수성공', '매도성공',
                  '⚓매수매칭', '⚓매도매칭',
-                 '★ 누적수익', 'CAGR', '거래수', '승률', 'Sharpe', '최대낙폭'])
+                 '★ 누적수익', 'CAGR', '거래수', '승률', 'Sharpe', '최대거래손실',
+                 '✅실제승률', '✅실제최대손실', '✅실제누적수익'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -11892,6 +11914,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             f"{row['win_rate']*100:.1f}%",
             f"{row['sharpe_like']:.2f}",
             f"{row['max_drawdown']*100:.2f}%",
+            (f"{_g(row,'real_win_rate')*100:.1f}%"     if pd.notna(_g(row,'real_win_rate'))     else '—'),
+            (f"{_g(row,'real_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'real_max_drawdown')) else '—'),
+            (f"{_g(row,'real_total_return')*100:+.2f}%" if pd.notna(_g(row,'real_total_return')) else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -11908,11 +11933,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if pd.notna(sm_v): ws.cell(r, 16).fill = _success_fill(sm_v)
         ws.cell(r, 17).fill = _ret_fill(row['total_return'], bh_ret)
         ws.cell(r, 22).fill = _mdd_fill(row['max_drawdown'], mdd_limit_pct)
+        # 실제 수치 컬럼(검증 시) 색칠 — 23 실제승률, 24 실제MDD, 25 실제누적수익
+        _rw = _g(row, 'real_win_rate'); _rm = _g(row, 'real_max_drawdown'); _rt = _g(row, 'real_total_return')
+        if pd.notna(_rw): ws.cell(r, 23).fill = _success_fill(_rw)
+        if pd.notna(_rm): ws.cell(r, 24).fill = _mdd_fill(_rm, mdd_limit_pct)
+        if pd.notna(_rt): ws.cell(r, 25).fill = _ret_fill(_rt, bh_ret)
         if is_best:
             for cc in (12, 13, 14):
                 ws.cell(r, cc).font = Font(bold=True, color='C00000', size=11)
             ws.cell(r, 17).font = Font(bold=True, color='C00000', size=12)
-    for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 10], 1):
+            if pd.notna(_rt):
+                ws.cell(r, 25).font = Font(bold=True, color='C00000', size=12)
+    for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 10, 11, 11, 13], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -12043,7 +12075,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  f'매수카운트(/{cur["K_buy"]})', '매수ON', '매수성공',
                  f'매도카운트(/{cur["K_sell"]})', '매도ON', '매도성공',
                  '포지션', '액션', '진입가', '⛔ 손절가', '보유일',
-                 '미실현%', '실현%', '누적자산', '누적수익%', '진행MDD%',
+                 '미실현%', '실현%', '누적자산', '누적수익%', '진행최대손실%',
                  '매수공식', '매도공식'])
     _write_daily_rows(ws, daily, cur, mdd_limit_pct)
 
@@ -12072,7 +12104,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                      f'매수카운트(/{oc["K_buy"]})', '매수ON', '매수성공',
                      f'매도카운트(/{oc["K_sell"]})', '매도ON', '매도성공',
                      '포지션', '진입가', '⛔ 손절가', '보유일',
-                     '미실현%', '실현%', '누적자산', '누적수익%', '진행MDD%',
+                     '미실현%', '실현%', '누적자산', '누적수익%', '진행최대손실%',
                      '매수공식', '매도공식', '액션'])
         _write_daily_rows(ws, oos_daily, oc, mdd_limit_pct)
 
@@ -12363,6 +12395,76 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     bh_ret  = _bh_sum_return(close_arr)
     bh_up_ret = _bh_up_sum_return(close_arr)
     bh_cagr = (1 + bh_ret) ** (252 / len(close_arr)) - 1 if (1 + bh_ret) > 0 else bh_ret
+
+    # ★ 승률 후보 실거래 검증 (요청) — 그리드는 빠른 근사라 실제 일별거래와 차이날 수 있음.
+    #   1) 그리드 '승률' 상위 N개(기본 10000)를 골라 실제 일별 백테스트로 재계산
+    #   2) 실제 승률 최고에서 -10%p 범위로 후보를 잡고
+    #   3) 그 안에서 실제 수익률 높은 순으로 정렬 → 1등을 최종 선정
+    #   (force_best_combo / inject_pools 모드는 이미 조합이 정해졌으므로 건너뜀)
+    _verify = (globals().get('VERIFY_BY_DAILY_BACKTEST', False)
+               and force_best_combo is None and inject_pools is None
+               and inner_passed is not None and len(inner_passed) > 0)
+    if _verify:
+        win_tol = globals().get('WINRATE_TOLERANCE', 0.10)
+        top_n   = int(globals().get('VERIFY_TOP_N', 10000))
+        cand = inner_passed.copy()
+        # 1) 그리드 승률 상위 top_n개 선택 (밴드 아님 — 승률순 상위 N개를 실제로 돌림)
+        if 'win_rate' in cand.columns:
+            cand = cand.sort_values('win_rate', ascending=False).head(top_n).reset_index(drop=True)
+        else:
+            cand = cand.head(top_n).reset_index(drop=True)
+        print(f"\n  🔬 승률 후보 실거래 검증 — 그리드 승률 상위 {len(cand)}개를 "
+              f"실제 일별 백테스트로 재계산 (시간이 걸릴 수 있음)")
+        real_rows = []
+        _t_start = time.time()
+        for _i, _r in cand.iterrows():
+            _kb, _vb = int(_r['K_buy']), int(_r['vote_buy'])
+            _ks, _vs = int(_r['K_sell']), int(_r['vote_sell'])
+            try:
+                _d, _t, _cur, _bu, _su = daily_ensemble_backtest(
+                    feat, close, buy_pool, sell_pool,
+                    K_buy=_kb, K_sell=_ks, vote_buy=_vb, vote_sell=_vs,
+                    cost=COST_PER_TRADE, horizon=horizon,
+                    dd_limit=dd_limit, ru_limit=ru_limit,
+                    stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                    anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell)
+            except Exception as _e:
+                continue
+            row = _r.to_dict()
+            row['real_win_rate']     = float(_cur.get('win_rate', 0.0))
+            row['real_max_drawdown'] = float(_cur.get('max_drawdown', 0.0))
+            row['real_total_return'] = float(_cur.get('cum_return_pct', 0.0)) / 100.0
+            row['real_n_trades']     = int(_cur.get('n_trades', 0))
+            real_rows.append(row)
+            # 진행 표시 (1000개마다)
+            if (_i + 1) % 1000 == 0:
+                _el = time.time() - _t_start
+                print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {_el:.0f}초)")
+        if real_rows:
+            verified = pd.DataFrame(real_rows)
+            # 2) 실제 승률 최고 -10%p 범위로 후보 압축
+            best_rw = verified['real_win_rate'].max()
+            band = verified[verified['real_win_rate'] >= best_rw - win_tol].copy()
+            # 3) 그 안에서 실제 수익률 높은 순 정렬 → 1등 선정
+            band = band.sort_values(['real_total_return', 'real_win_rate'],
+                                    ascending=[False, False]).reset_index(drop=True)
+            sel = band.iloc[0]
+            best_inner = sel.to_dict()
+            # 시트에는 검증결과 전체를 실제수익 순으로 정렬해 표시 (실제 컬럼 포함)
+            inner_passed = verified.sort_values(
+                ['real_total_return'], ascending=False).reset_index(drop=True)
+            print(f"  ✓ 실거래 검증 완료 — 검증 {len(verified)}개 중 "
+                  f"실제 승률 최고 {best_rw*100:.1f}%, -{win_tol*100:.0f}%p 범위 {len(band)}개에서 수익 최고 선정")
+            print(f"     최종: K_buy={int(sel['K_buy'])}/v{int(sel['vote_buy'])}, "
+                  f"K_sell={int(sel['K_sell'])}/v{int(sel['vote_sell'])}")
+            print(f"     실제 승률 {sel['real_win_rate']*100:.1f}%, "
+                  f"실제 MDD {sel['real_max_drawdown']*100:.2f}%, "
+                  f"실제 누적수익 {sel['real_total_return']*100:+.2f}%")
+            _approx_mdd = sel.get('max_drawdown')
+            if _approx_mdd is not None and pd.notna(_approx_mdd):
+                print(f"     (그리드 근사 MDD {_approx_mdd*100:.2f}% → 실제 {sel['real_max_drawdown']*100:.2f}%)")
+        else:
+            print(f"  ⚠ 실거래 검증 후보가 모두 실패 → 그리드 근사 기준 사용")
 
     if inject_pools is None:
         print(f"\n  ─ 메타 그리드 Top 10 ─")
@@ -14307,9 +14409,5 @@ if __name__ == '__main__':
             per_ticker_overrides=overrides,
             resume=False,
         )
-        close = ohlcv['STX']['Close']
-        feat = compute_features(ohlcv, closes, fred_df=fred_df, ticker='STX')
-        print("close 마지막:", close.index[-1].date())
-        print("feat 마지막:", feat.index[-1].date())
-
+    print("=" * 60)
 
