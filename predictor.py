@@ -201,19 +201,52 @@ def download_data(start='2020-01-01'):
 # ════════════════════════════════════════════════════════════════
 #            FRED 경제지표 다운로드 (신규 추가)
 # ════════════════════════════════════════════════════════════════
-def download_fred_data(start='2020-01-01', max_retries=2, retry_wait=1.0):
+import pandas as pd
+import time
+import os
+
+def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f5da4', max_retries=2, retry_wait=1.0):
     """
-    FRED에서 실물 경제지표 다운로드 후 거래일 기준 일별로 forward-fill.
+    FRED 경제지표 다운로드 (fredapi 공식 API 사용 — pandas_datareader보다 안정적·빠름).
     실패한 시리즈는 ID·설명·이유를 함께 표시하고, 일시적 실패는 재시도한다.
-    pandas_datareader 없으면 빈 DataFrame 반환 (지표 계산 건너뜀).
-    설치: pip install pandas-datareader
+
+    API 키 준비 (셋 중 하나):
+      1) 함수 인자:        download_fred_data(api_key='발급받은키')
+      2) 환경변수:         os.environ['FRED_API_KEY'] = '발급받은키'
+      3) Colab 비밀변수:   from google.colab import userdata; userdata.get('FRED_API_KEY')
+    키 발급(무료, 즉시): https://fredaccount.stlouisfed.org/apikeys
+
+    fredapi 미설치 또는 키 없으면 빈 DataFrame 반환 (지표 계산 건너뜀).
+    설치: pip install fredapi
     """
     try:
-        from pandas_datareader import data as pdr
+        from fredapi import Fred
     except ImportError:
-        print("  ⚠ pandas_datareader 미설치 → FRED 경제지표 건너뜀")
-        print("    (설치 후 재실행: pip install pandas-datareader)")
+        print("  ⚠ fredapi 미설치 → FRED 경제지표 건너뜀")
+        print("    (설치 후 재실행: pip install fredapi)")
         return pd.DataFrame()
+
+    # API 키 확보 — 인자 > 환경변수 > Colab userdata 순
+    if api_key is None:
+        api_key = os.environ.get('FRED_API_KEY')
+    if api_key is None:
+        try:
+            from google.colab import userdata
+            api_key = userdata.get('FRED_API_KEY')
+        except Exception:
+            pass
+    if not api_key:
+        print("  ⚠ FRED API 키 없음 → FRED 경제지표 건너뜀")
+        print("    키 발급(무료): https://fredaccount.stlouisfed.org/apikeys")
+        print("    설정 예: download_fred_data(api_key='발급받은키')")
+        return pd.DataFrame()
+
+    try:
+        fred = Fred(api_key=api_key)
+    except Exception as e:
+        print(f"  ⚠ FRED 초기화 실패: {e} → FRED 경제지표 건너뜀")
+        return pd.DataFrame()
+
     daily_series = {
         'T10Y2Y':           '10Y-2Y 수익률 스프레드',
         'T10Y3M':           '10Y-3M 수익률 스프레드',
@@ -266,36 +299,36 @@ def download_fred_data(start='2020-01-01', max_retries=2, retry_wait=1.0):
         last_err = None
         for attempt in range(max_retries + 1):
             try:
-                s = pdr.DataReader(series_id, 'fred', start=start)
-                if s is None or series_id not in s.columns or s[series_id].dropna().empty:
+                s = fred.get_series(series_id, observation_start=start)
+                if s is None or s.dropna().empty:
                     last_err = '데이터 없음(빈 시리즈)'
                     break   # 빈 데이터는 재시도해도 동일 → 중단
-                frames[series_id] = s[series_id]
+                frames[series_id] = s
                 last_err = None
                 break
             except Exception as e:
                 last_err = f'{type(e).__name__}: {str(e)[:70]}'
                 if attempt < max_retries:
-                    time.sleep(retry_wait)   # 일시적 실패(rate limit 등) 재시도
+                    time.sleep(retry_wait)   # 일시적 실패 재시도
                     continue
         if last_err is None:
             ok += 1
         else:
             fail_list.append((series_id, desc, last_err))
- 
+
     print(f"  FRED: 성공 {ok}개 / 실패 {len(fail_list)}개 (총 {len(all_series)}개 시도)")
     if fail_list:
         print(f"  ── FRED 실패 목록 ──")
         for series_id, desc, reason in fail_list:
             print(f"     ✗ {series_id} ({desc}): {reason}")
- 
+
     if not frames:
         return pd.DataFrame()
     raw = pd.DataFrame(frames)
     biz_idx = pd.bdate_range(start=start, end=pd.Timestamp.today())
-    fred = raw.reindex(biz_idx).ffill().bfill()
-    fred.index.name = 'Date'
-    return fred
+    fred_df = raw.reindex(biz_idx).ffill().bfill()
+    fred_df.index.name = 'Date'
+    return fred_df
 
 # ════════════════════════════════════════════════════════════════
 #                  기술적 지표 헬퍼 함수
@@ -9233,10 +9266,10 @@ MAX_INDICATORS      = 600
 
 K_BUY_RANGE         = [i for i in range(1, 100)]
 K_SELL_RANGE        = [i for i in range(1, 100)]
-VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
-VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
+VOTE_RATIO_BUY      = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+VOTE_RATIO_SELL     = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
 
 COST_PER_TRADE      = 0.004
 
@@ -12198,7 +12231,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     for k, v in meta_grid.items():
         print(f"    {k:14}: {v}")
 
-    if PREFILTER_ENABLED:
+    if PREFILTER_ENABLED and inject_pools is None:
         feat_filtered = prefilter_indicators(
             feat, close, horizon=horizon,
             min_corr=PREFILTER_MIN_CORR,
@@ -12209,6 +12242,8 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             print(f"     ⚠ 필터 후 지표 {len(feat_filtered.columns)}개 < 30 → 원본 {len(feat.columns)}개 그대로 사용")
         else:
             feat = feat_filtered
+    elif inject_pools is not None:
+        print(f"  ♻ 재현 모드 — 사전 필터 건너뜀 (엑셀 지표 풀의 지표를 그대로 사용)")
     else:
         print(f"  ℹ 사전 필터 비활성화 — 전체 {len(feat.columns)}개 지표 사용")
 
@@ -14255,3 +14290,5 @@ if __name__ == '__main__':
             per_ticker_overrides=overrides,
             resume=False,
         )
+
+
