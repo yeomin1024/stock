@@ -14307,5 +14307,9 @@ if __name__ == '__main__':
             per_ticker_overrides=overrides,
             resume=False,
         )
+        close = ohlcv['STX']['Close']
+        feat = compute_features(ohlcv, closes, fred_df=fred_df, ticker='STX')
+        print("close 마지막:", close.index[-1].date())
+        print("feat 마지막:", feat.index[-1].date())
 
 
