@@ -1,4 +1,3 @@
-pip install fredapi
 # @title
 """
 XLK 하락 예측 임계치 탐색기 (완전 독립 실행)
