@@ -9186,7 +9186,7 @@ def _iv_autorun():
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
 
 
-    # @title
+# @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
 ====================================================================
@@ -9339,7 +9339,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 10000
+TOP_N_GRID_OUT      = 700
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -9356,7 +9356,7 @@ STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순�
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.25, 0.3]
+STAGE_CORR_LIMIT  = [0.15, 0.2, 0.25, 0.3]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -9364,6 +9364,10 @@ PREFILTER_MIN_VARIANCE_REL = 1e-6
 PREFILTER_MAX_NAN_RATIO    = 0.5
 
 AUTO_DOWNLOAD_EXCEL = True
+
+# ★ summary(전체 티커 요약) 파일 생성 여부 — 요청으로 기본 OFF.
+#   끄면 종목별 분석 엑셀만 만들고, ensemble_summary_all_tickers.xlsx는 안 만든다.
+WRITE_SUMMARY_FILE = False
 
 
 def wilson_lower(k, n, z):
@@ -13030,12 +13034,20 @@ def _parse_used_settings(wb):
             n = _num(v);  out['min_trades_daily'] = int(n) if n is not None else None
         elif '손절매한도' in kl:
             n = _num(v);  out['stop_loss_pct'] = abs(n)/100.0 if n is not None else None
+        elif kl == 'K_buy':
+            n = _num(v);  out['K_buy'] = int(n) if n is not None else None
+        elif kl == 'vote_buy':
+            n = _num(v);  out['vote_buy'] = int(n) if n is not None else None
+        elif kl == 'K_sell':
+            n = _num(v);  out['K_sell'] = int(n) if n is not None else None
+        elif kl == 'vote_sell':
+            n = _num(v);  out['vote_sell'] = int(n) if n is not None else None
         elif k.strip() == '티커' or kl == '티커':
             out['ticker'] = str(v).strip()
     return out
 
 
-def replay_grid_combo(filename, grid_number, *,
+def replay_grid_combo(filename, grid_number=None, *,
                        feat=None, close=None,
                        output_dir=None,
                        **override_kwargs):
@@ -13067,46 +13079,61 @@ def replay_grid_combo(filename, grid_number, *,
         raise RuntimeError(f"파일을 찾을 수 없습니다: {excel_path}\n"
                            f"  OUTPUT_DIR={base_dir} 안에 파일명이 맞는지 확인하세요.")
 
-    gn_clean = ''.join(ch for ch in str(grid_number) if ch.isdigit())
-    if not gn_clean:
-        raise ValueError(f"그리드 번호를 해석할 수 없습니다: {grid_number!r}")
-    gn = int(gn_clean)
-
     wb = load_workbook(excel_path, data_only=True)
-    if '내부_그리드_통과' not in wb.sheetnames:
-        raise RuntimeError("'내부_그리드_통과' 시트가 없습니다.")
-    ws = wb['내부_그리드_통과']
 
-    hdr = {}
-    for c in range(1, ws.max_column + 1):
-        v = ws.cell(3, c).value
-        if v is not None: hdr[str(v).strip()] = c
-    for k in ['#', 'K_buy', 'vote_buy', 'K_sell', 'vote_sell']:
-        if k not in hdr:
-            raise RuntimeError(f"'내부_그리드_통과'에 '{k}' 컬럼이 없습니다. (헤더: {list(hdr)})")
-
-    target = None
-    for r in range(4, ws.max_row + 1):
-        cell = ws.cell(r, hdr['#']).value
-        if cell is None: continue
-        digits = ''.join(ch for ch in str(cell) if ch.isdigit())
-        if digits and int(digits) == gn:
-            target = r; break
-    if target is None:
-        raise RuntimeError(f"#{gn} 번호를 찾지 못했습니다.")
-
-    K_buy   = int(float(ws.cell(target, hdr['K_buy']).value))
-    vote_buy = int(float(ws.cell(target, hdr['vote_buy']).value))
-    K_sell  = int(float(ws.cell(target, hdr['K_sell']).value))
-    vote_sell = int(float(ws.cell(target, hdr['vote_sell']).value))
-
-    # ★ 사용된 설정 (백테스트 조건: horizon/dd_limit/cost 등)
+    # ★ 사용된 설정 (백테스트 조건 + ★최적 K/vote)
     used = _parse_used_settings(wb)
 
-    # ★ 메타변수 — 그 행에 직접 기록된 값을 우선 사용 (행마다 다를 수 있음).
-    #   통합 시트엔 행별 wilson_z/pct_low/pct_high/corr_limit/min_sig/pool 컬럼이 있음.
+    # ─── grid_number 가 None 이면: '사용된 설정'의 ★최적 선정 조합을 그대로 재현 ───
+    #   (일반 분석 엑셀의 최적 변수·지표를 자동 재현하는 모드)
+    if grid_number is None:
+        for _k in ('K_buy', 'vote_buy', 'K_sell', 'vote_sell'):
+            if used.get(_k) is None:
+                raise RuntimeError(f"'사용된 설정'에서 {_k}를 읽지 못했습니다 — 이 엑셀은 자동 재현 불가.")
+        K_buy   = int(used['K_buy']);  vote_buy = int(used['vote_buy'])
+        K_sell  = int(used['K_sell']); vote_sell = int(used['vote_sell'])
+        target = None   # 그리드 행 없음 → 메타변수는 used에서
+        ws = None
+        hdr = {}
+        print(f"  ♻ 자동 재현 — '{os.path.basename(excel_path)}'의 ★최적 조합 사용 "
+              f"(K_buy={K_buy}/v{vote_buy}, K_sell={K_sell}/v{vote_sell})")
+    else:
+        gn_clean = ''.join(ch for ch in str(grid_number) if ch.isdigit())
+        if not gn_clean:
+            raise ValueError(f"그리드 번호를 해석할 수 없습니다: {grid_number!r}")
+        gn = int(gn_clean)
+
+        if '내부_그리드_통과' not in wb.sheetnames:
+            raise RuntimeError("'내부_그리드_통과' 시트가 없습니다.")
+        ws = wb['내부_그리드_통과']
+
+        hdr = {}
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(3, c).value
+            if v is not None: hdr[str(v).strip()] = c
+        for k in ['#', 'K_buy', 'vote_buy', 'K_sell', 'vote_sell']:
+            if k not in hdr:
+                raise RuntimeError(f"'내부_그리드_통과'에 '{k}' 컬럼이 없습니다. (헤더: {list(hdr)})")
+
+        target = None
+        for r in range(4, ws.max_row + 1):
+            cell = ws.cell(r, hdr['#']).value
+            if cell is None: continue
+            digits = ''.join(ch for ch in str(cell) if ch.isdigit())
+            if digits and int(digits) == gn:
+                target = r; break
+        if target is None:
+            raise RuntimeError(f"#{gn} 번호를 찾지 못했습니다.")
+
+        K_buy   = int(float(ws.cell(target, hdr['K_buy']).value))
+        vote_buy = int(float(ws.cell(target, hdr['vote_buy']).value))
+        K_sell  = int(float(ws.cell(target, hdr['K_sell']).value))
+        vote_sell = int(float(ws.cell(target, hdr['vote_sell']).value))
+
+    # ★ 메타변수 — 그리드 행에 직접 기록된 값을 우선 사용 (행마다 다를 수 있음).
+    #   자동 재현 모드(target=None)면 _cellf는 None을 돌려주고 used 값으로 폴백.
     def _cellf(colname):
-        if colname in hdr:
+        if target is not None and colname in hdr:
             v = ws.cell(target, hdr[colname]).value
             try: return float(str(v).replace('%','').strip())
             except Exception: return None
@@ -13133,7 +13160,8 @@ def replay_grid_combo(filename, grid_number, *,
     if cl_use   is not None: mg['corr_limit'] = [cl_use]
     if ms_use   is not None: mg['min_signals']= [int(ms_use)]
     if pool_use is not None: mg['top_n_pool'] = [int(pool_use)]
-    print(f"    (그리드 #{gn} 메타변수: wilson_z={wz_use}, pct={pct_use}, corr={cl_use}, min_sig={ms_use}, pool={pool_use})")
+    _gn_label = f"#{gn} " if grid_number is not None else "★최적 "
+    print(f"    ({_gn_label}메타변수: wilson_z={wz_use}, pct={pct_use}, corr={cl_use}, min_sig={ms_use}, pool={pool_use})")
 
     g = globals()
     if feat is None:  feat  = g.get('_pair_feat')  or g.get('feat')
@@ -13163,10 +13191,16 @@ def replay_grid_combo(filename, grid_number, *,
                 "  feat=, close= 로 직접 전달하거나 download_data/compute_features를 준비하세요.")
 
     base = os.path.splitext(os.path.basename(excel_path))[0]
-    output_file = os.path.join(base_dir, f"{base}__replay_grid{gn}.xlsx")
+    if grid_number is None:
+        output_file = os.path.join(base_dir, f"{base}__replay_best.xlsx")
+    else:
+        output_file = os.path.join(base_dir, f"{base}__replay_grid{gn}.xlsx")
 
     print('═' * 72)
-    print(f'  ★ 그리드 #{gn} 재현 → 일별 거래 Excel')
+    if grid_number is None:
+        print(f'  ★ 최적 조합 자동 재현 → 일별 거래 Excel')
+    else:
+        print(f'  ★ 그리드 #{gn} 재현 → 일별 거래 Excel')
     print(f'    파일: {excel_path}')
     print(f'    티커: {used.get("ticker", "(파일명에서 추출)")}')
     print(f'    조합: K_buy={K_buy}/vote={vote_buy}, K_sell={K_sell}/vote={vote_sell}')
@@ -13295,10 +13329,49 @@ def replay_grid_combo(filename, grid_number, *,
         if _cost_used is not None:
             globals()['COST_PER_TRADE'] = _cost_saved
 
-    print(f'\n  ✅ 그리드 #{gn} 일별 Excel 생성 완료 → {output_file}')
+    _done_label = f'그리드 #{gn}' if grid_number is not None else '★최적 조합'
+    print(f'\n  ✅ {_done_label} 일별 Excel 생성 완료 → {output_file}')
     if AUTO_DOWNLOAD_EXCEL:
         _auto_download_excels([output_file])
     return result
+
+def find_latest_excel(ticker, *, output_dir=None):
+    """해당 티커의 '가장 최근 날짜' 일반 분석 엑셀을 찾는다.
+       - 파일명 형식: ensemble_search_{TICKER}_{YYYY-MM-DD}.xlsx
+       - '__replay'가 들어간 재현본은 제외 (요청: 2번 그리드/재현 파일 아님)
+       - 날짜가 가장 늦은 파일을 반환. 없으면 None.
+    """
+    import glob, re as _re
+    base_dir = output_dir if output_dir is not None else OUTPUT_DIR
+    pat = os.path.join(base_dir, f"ensemble_search_{ticker}_*.xlsx")
+    cands = []
+    for p in glob.glob(pat):
+        name = os.path.basename(p)
+        if '__replay' in name:        # 재현본 제외
+            continue
+        m = _re.search(rf"ensemble_search_{_re.escape(ticker)}_(\d{{4}}-\d{{2}}-\d{{2}})\.xlsx$", name)
+        if not m:
+            continue
+        cands.append((m.group(1), p))   # (날짜문자열, 경로)
+    if not cands:
+        return None
+    cands.sort(key=lambda x: x[0])      # 날짜 오름차순
+    return cands[-1][1]                 # 가장 최근
+
+
+def replay_latest_best(ticker, *, output_dir=None, feat=None, close=None, **override_kwargs):
+    """티커의 가장 최근 일반 분석 엑셀을 자동으로 찾아, 그 엑셀의 ★최적 조합·지표를
+       그대로 재현한다. (엑셀 기간까지 동일, 그 이후 새 거래일은 같은 로직으로 이어 계산)"""
+    latest = find_latest_excel(ticker, output_dir=output_dir)
+    if latest is None:
+        raise RuntimeError(
+            f"'{ticker}'의 일반 분석 엑셀을 찾지 못했습니다.\n"
+            f"  {output_dir or OUTPUT_DIR} 안에 ensemble_search_{ticker}_YYYY-MM-DD.xlsx 가 있어야 합니다.\n"
+            f"  (먼저 새 분석을 1회 실행해 엑셀을 만들어야 재현할 수 있습니다.)")
+    print(f"  📂 '{ticker}' 가장 최근 분석 엑셀: {os.path.basename(latest)}")
+    # grid_number=None → ★최적 조합 자동 재현
+    return replay_grid_combo(latest, None, feat=feat, close=close,
+                             output_dir=output_dir, **override_kwargs)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -13899,10 +13972,11 @@ def run_multi_ticker_analysis(tickers=None, *,
                         'close': None, 'analyzed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'tuned_vars': {}, 'tuning_applied': False, 'volatility_stats': {},
                     }
-                try:
-                    _save_summary_excel(summary_records, summary_file, all_tickers_acc)
-                except Exception:
-                    pass
+                if globals().get('WRITE_SUMMARY_FILE', False):
+                    try:
+                        _save_summary_excel(summary_records, summary_file, all_tickers_acc)
+                    except Exception:
+                        pass
                 continue
 
             (meta_results_df, inner_all, inner_passed,
@@ -14033,12 +14107,15 @@ def run_multi_ticker_analysis(tickers=None, *,
                     'volatility_stats': {},
                 }
 
-        try:
-            _save_summary_excel(summary_records, summary_file, all_tickers_acc)
+        if globals().get('WRITE_SUMMARY_FILE', False):
+            try:
+                _save_summary_excel(summary_records, summary_file, all_tickers_acc)
+                n_done += 1
+                print(f"  💾 요약 저장됨 ({summary_file}) — {n_done}/{n_total} 진행")
+            except Exception as e:
+                print(f"  ⚠ 요약 저장 실패: {e}")
+        else:
             n_done += 1
-            print(f"  💾 요약 저장됨 ({summary_file}) — {n_done}/{n_total} 진행")
-        except Exception as e:
-            print(f"  ⚠ 요약 저장 실패: {e}")
 
     t_el = time.time() - t_total
     n_done_total = len([r for r in summary_records.values() if r.get('status') == '완료'])
@@ -14355,15 +14432,17 @@ def _resolve_data_for_ticker(ticker):
 
 
 if __name__ == '__main__':
-    # ★ 그리드 재현 모드 — 기존 결과 Excel의 특정 그리드 번호로 일별 거래 Excel 생성
-    print("\n[모드 선택]  1=새 분석 실행(기본)   2=기존 결과의 그리드 번호로 일별 Excel 재현")
-    _mode = input("모드 (1/2, Enter=1): ").strip()
+    print("\n[모드 선택]")
+    print("  1 = 새 분석 실행")
+    print("  2 = 기존 결과의 '그리드 번호'로 일별 Excel 재현")
+    print("  3 = 티커의 '가장 최근 분석 엑셀'에서 ★최적 조합 자동 재현 (지표·변수 그대로)")
+    _mode = input("모드 (1/2/3, Enter=3): ").strip()
+
     if _mode == '2':
         print(f"\n  파일 경로는 OUTPUT_DIR 고정: {OUTPUT_DIR}")
         _fn = input("  결과 Excel 파일명 (예: ensemble_search_VRT_2026-06-01.xlsx): ").strip().strip('"').strip("'")
         _gn = input("  재현할 그리드 번호 (예: 14): ").strip()
         print("\n  ℹ 데이터가 메모리에 없으면 티커로 자동 다운로드를 시도합니다")
-        print("     (download_data/compute_features 함수 또는 yfinance 필요).")
         try:
             replay_grid_combo(_fn, _gn)
         except Exception as _e:
@@ -14371,7 +14450,7 @@ if __name__ == '__main__':
             print("    feat/close가 메모리에 있는지 확인하세요. 예:")
             print("      replay_grid_combo('파일명.xlsx', 14, feat=내_feat, close=내_close)")
 
-    else:
+    elif _mode == '1':
         print(f"\n분석할 티커 입력 (쉼표 또는 공백 구분, Enter=기본값 {TICKERS})")
         user_input = input("티커: ").strip()
 
@@ -14409,5 +14488,20 @@ if __name__ == '__main__':
             per_ticker_overrides=overrides,
             resume=False,
         )
+
+    else:
+        # ── 모드 3 (기본) — 티커의 가장 최근 분석 엑셀에서 ★최적 조합 자동 재현 ──
+        print(f"\n  엑셀 폴더(OUTPUT_DIR): {OUTPUT_DIR}")
+        print(f"  티커를 입력하면, 그 티커의 '가장 최근 일반 분석 엑셀'을 자동으로 찾아")
+        print(f"  ★최적으로 선정된 변수·지표를 그대로 재현합니다 (재현본 __replay 파일은 제외).")
+        _tk = input("\n  재현할 티커 (예: STX): ").strip().upper()
+        if not _tk:
+            print("  ⚠ 티커가 비어 종료합니다.")
+        else:
+            print("\n  ℹ 데이터가 메모리에 없으면 티커로 자동 다운로드를 시도합니다.")
+            try:
+                replay_latest_best(_tk)
+            except Exception as _e:
+                print(f"\n  ✗ 재현 실패: {_e}")
     print("=" * 60)
 
