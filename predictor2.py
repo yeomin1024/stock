@@ -9357,7 +9357,7 @@ STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순�
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.25]
+STAGE_CORR_LIMIT  = [0.2, 0.23, 0.25]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -14009,7 +14009,6 @@ def run_multi_ticker_analysis(tickers=None, *,
     print('═' * 72)
     print(f'  ★ 다중 티커 분석 — {len(tickers)}개 종목')
     print(f'    티커: {tickers}')
-    print(f'    요약 파일: {summary_file}')
     print(f'    이어서 진행: {resume}')
     on_vars = [k for k, v in auto_tune_flags.items() if v]
     off_vars = [k for k, v in auto_tune_flags.items() if not v]
@@ -14306,13 +14305,12 @@ def run_multi_ticker_analysis(tickers=None, *,
     n_done_total = len([r for r in summary_records.values() if r.get('status') == '완료'])
     print(f"\n{'═' * 72}")
     print(f"  ★ 이번 실행 완료 — {n_total}개 처리  ({t_el/60:.1f}분 소요)")
-    print(f"    요약 누적: 전체 {len(all_tickers_acc)}개 티커 중 완료 {n_done_total}개")
-    print(f"    요약 파일: {summary_file}")
+    print(f"    완료: 전체 {len(all_tickers_acc)}개 티커 중 {n_done_total}개")
     print('═' * 72)
 
     if AUTO_DOWNLOAD_EXCEL:
         today_str = datetime.now().strftime('%Y-%m-%d')
-        files_to_download = [summary_file]
+        files_to_download = []   # ★ summary 파일 안 만듦 → 종목별 엑셀만
         for ticker in tickers:
             candidate = os.path.join(SCRIPT_DIR, f'ensemble_search_{ticker}_{today_str}.xlsx')
             if os.path.exists(candidate):
@@ -14329,6 +14327,14 @@ def run_multi_ticker_analysis(tickers=None, *,
 
 
 def _auto_download_excels(file_paths, *, verbose=True):
+    # 생성된 파일 경로를 전역에 누적 (노트북 셀에서 직접 다운로드할 수 있도록)
+    g = globals()
+    if '_GENERATED_FILES' not in g:
+        g['_GENERATED_FILES'] = []
+    for fp in file_paths:
+        if fp and os.path.exists(fp) and fp not in g['_GENERATED_FILES']:
+            g['_GENERATED_FILES'].append(fp)
+
     if not AUTO_DOWNLOAD_EXCEL:
         if verbose:
             print("  ℹ AUTO_DOWNLOAD_EXCEL=False — 자동 다운로드 건너뜀")
@@ -14620,6 +14626,7 @@ def main():
     """RUN_* 변수(코드 상단 또는 노트북 셀에서 mod.RUN_MODE=... 로 변경)에 따라 실행.
        노트북에서: 모듈 로드 → mod.RUN_MODE 등 설정 → mod.main() 호출."""
     g = globals()
+    g['_GENERATED_FILES'] = []   # 이번 실행에서 만든 엑셀 경로 누적
     _mode = str(g.get('RUN_MODE', 3)).strip()
     print(f"\n[실행 모드] RUN_MODE = {_mode}")
     print("  1=새 분석  /  2=그리드 번호 재현  /  3=최근 엑셀 ★최적 자동 재현")
@@ -14684,8 +14691,24 @@ def main():
             except Exception as _e:
                 print(f"\n  ✗ 재현 실패: {_e}")
 
+    # ── 생성된 파일 안내 + 셀에서 직접 다운로드할 수 있도록 경로 반환 ──
+    made = g.get('_GENERATED_FILES', [])
+    if made:
+        print(f"\n{'═'*72}")
+        print(f"  📦 생성된 엑셀 {len(made)}개:")
+        for fp in made:
+            print(f"     • {fp}")
+        print(f"  💡 자동 다운로드가 안 뜨면, 노트북에서 아래로 직접 받으세요:")
+        print(f"       from google.colab import files")
+        print(f"       for f in mod.get_generated_files(): files.download(f)")
+        print(f"{'═'*72}")
+    return made
+
+
+def get_generated_files():
+    """이번 실행에서 만든 엑셀 파일 경로 목록 (노트북 셀에서 직접 다운로드용)."""
+    return list(globals().get('_GENERATED_FILES', []))
+
 
 if __name__ == '__main__':
     main()
-
-
