@@ -14449,16 +14449,18 @@ def _resolve_data_for_ticker(ticker):
         f"  3. download_data / compute_features 함수 (기존 파이프라인)")
 
 
-if __name__ == '__main__':
-    # ★ 입력(input) 대신 코드 상단 RUN_* 변수로 동작을 고른다 (요청).
-    _mode = str(RUN_MODE).strip()
+def main():
+    """RUN_* 변수(코드 상단 또는 노트북 셀에서 mod.RUN_MODE=... 로 변경)에 따라 실행.
+       노트북에서: 모듈 로드 → mod.RUN_MODE 등 설정 → mod.main() 호출."""
+    g = globals()
+    _mode = str(g.get('RUN_MODE', 3)).strip()
     print(f"\n[실행 모드] RUN_MODE = {_mode}")
     print("  1=새 분석  /  2=그리드 번호 재현  /  3=최근 엑셀 ★최적 자동 재현")
 
     if _mode == '2':
         print(f"\n  파일 경로는 OUTPUT_DIR 고정: {OUTPUT_DIR}")
-        _fn = str(RUN_REPLAY_FILE).strip().strip('"').strip("'")
-        _gn = str(RUN_REPLAY_GRID_NUMBER).strip()
+        _fn = str(g.get('RUN_REPLAY_FILE', '')).strip().strip('"').strip("'")
+        _gn = str(g.get('RUN_REPLAY_GRID_NUMBER', '')).strip()
         print(f"  재현 파일: {_fn}  /  그리드 번호: {_gn}")
         print("  ℹ 데이터가 메모리에 없으면 티커로 자동 다운로드를 시도합니다")
         try:
@@ -14470,15 +14472,16 @@ if __name__ == '__main__':
 
     elif _mode == '1':
         # 분석 대상 티커 — RUN_TICKERS 가 있으면 그것, 없으면 기본 TICKERS
-        if RUN_TICKERS:
-            tickers_to_run = [str(t).strip().upper() for t in RUN_TICKERS if str(t).strip()]
+        _run_tickers = g.get('RUN_TICKERS', None)
+        if _run_tickers:
+            tickers_to_run = [str(t).strip().upper() for t in _run_tickers if str(t).strip()]
         else:
             tickers_to_run = TICKERS
         print(f"\n→ 분석 대상: {tickers_to_run}")
 
         summary_path = os.path.join(SCRIPT_DIR, MULTI_SUMMARY_FILE)
         overrides = None
-        if RUN_USE_EXCEL_OVERRIDES and os.path.exists(summary_path):
+        if g.get('RUN_USE_EXCEL_OVERRIDES', False) and os.path.exists(summary_path):
             print(f"\n기존 요약 파일에서 변수값 사용 시도: {summary_path}")
             overrides = _parse_overrides_from_excel(summary_path, tickers_to_run)
             if overrides:
@@ -14502,9 +14505,9 @@ if __name__ == '__main__':
     else:
         # ── 모드 3 (기본) — 티커의 가장 최근 분석 엑셀에서 ★최적 조합 자동 재현 ──
         print(f"\n  엑셀 폴더(OUTPUT_DIR): {OUTPUT_DIR}")
-        print(f"  '{RUN_REPLAY_TICKER}'의 '가장 최근 일반 분석 엑셀'을 자동으로 찾아")
+        _tk = str(g.get('RUN_REPLAY_TICKER', '')).strip().upper()
+        print(f"  '{_tk}'의 '가장 최근 일반 분석 엑셀'을 자동으로 찾아")
         print(f"  ★최적으로 선정된 변수·지표를 그대로 재현합니다 (재현본 __replay 파일은 제외).")
-        _tk = str(RUN_REPLAY_TICKER).strip().upper()
         if not _tk:
             print("  ⚠ RUN_REPLAY_TICKER 가 비어 종료합니다.")
         else:
@@ -14513,5 +14516,9 @@ if __name__ == '__main__':
                 replay_latest_best(_tk)
             except Exception as _e:
                 print(f"\n  ✗ 재현 실패: {_e}")
+
+
+if __name__ == '__main__':
+    main()
 
 
