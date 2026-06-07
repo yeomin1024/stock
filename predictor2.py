@@ -9312,12 +9312,12 @@ WINRATE_TOLERANCE      = 0.05
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
 #   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
 VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
-VERIFY_TOP_N             = 20000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
 
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
 #   None 이면 이 필터를 끈다. (단, 필터로 후보가 0개면 자동으로 필터를 완화해 최선을 고름)
-VERIFY_MAX_DRAWDOWN_LIMIT = -0.05
+VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
 #   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
@@ -9345,7 +9345,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 700
+TOP_N_GRID_OUT      = 10000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -9362,7 +9362,7 @@ STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순�
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.23, 0.25]
+STAGE_CORR_LIMIT  = [0.2, 0.25]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -12219,8 +12219,41 @@ def _final_pick_by_real(pool, win_tol):
     return best_inner, sel
 
 
+def _pick_verify_candidates(tbl, bh_ret=None):
+    """실거래 검증 대상 후보를 고른다 (요청):
+       - 그리드 최고 수익률과 B&H 수익률 '사이'에 있는 후보 (B&H ≤ 그리드수익 ≤ 최고)
+       - 그중 그리드 수익 높은 순으로 정렬 → 상위 '절반'만 검증
+       - VERIFY_TOP_N 으로 상한도 둔다 (절반이 너무 많으면 컷).
+    """
+    top_n = int(globals().get('VERIFY_TOP_N', 10000))
+    ret_col = 'total_return' if 'total_return' in tbl.columns else (
+              'combined_return' if 'combined_return' in tbl.columns else None)
+    cand = tbl.copy()
+    if ret_col is None:
+        return cand.head(top_n).reset_index(drop=True), "수익컬럼 없음 → 상위"
+
+    # 그리드 최고 수익과 B&H 사이 구간만
+    grid_max = cand[ret_col].max()
+    note = ""
+    if bh_ret is not None and pd.notna(bh_ret):
+        lo, hi = min(bh_ret, grid_max), max(bh_ret, grid_max)
+        band = cand[(cand[ret_col] >= lo) & (cand[ret_col] <= hi)]
+        if len(band) > 0:
+            cand = band
+            note = f"B&H({bh_ret*100:+.1f}%)~최고({grid_max*100:+.1f}%) 구간"
+        else:
+            note = "구간 후보 없음 → 전체"
+    # 수익 높은 순 → 절반만
+    cand = cand.sort_values(ret_col, ascending=False).reset_index(drop=True)
+    half = max(1, len(cand) // 2)
+    cand = cand.head(min(half, top_n)).reset_index(drop=True)
+    note = (note + f", 수익 상위 절반 {len(cand)}개").strip(', ')
+    return cand, note
+
+
 def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
-                              horizon, dd_limit, ru_limit, stop_loss_pct, anchor_mode):
+                              horizon, dd_limit, ru_limit, stop_loss_pct, anchor_mode,
+                              bh_ret=None):
     """staged merged_table의 후보를 각 메타조합 풀로 실제 일별 백테스트.
        실제 MDD 기준 통과분 중 실제승률 -10%p 범위에서 수익 최고 선정.
        반환: (best_inner, merged_table_with_real_cols)"""
@@ -12228,12 +12261,8 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
     top_n   = int(globals().get('VERIFY_TOP_N', 10000))
     mdd_lim = globals().get('VERIFY_MAX_DRAWDOWN_LIMIT', None)
 
-    cand = merged_table.copy()
-    if 'win_rate' in cand.columns:
-        cand = cand.sort_values('win_rate', ascending=False).head(top_n).reset_index(drop=True)
-    else:
-        cand = cand.head(top_n).reset_index(drop=True)
-    print(f"\n  🔬 실거래 검증 — 통합 테이블 승률 상위 {len(cand)}개를 실제 일별 백테스트로 재계산 "
+    cand, _note = _pick_verify_candidates(merged_table, bh_ret=bh_ret)
+    print(f"\n  🔬 실거래 검증 — {_note} → {len(cand)}개를 실제 일별 백테스트로 재계산 "
           f"(모든 변수 반복 끝난 뒤 1회)")
 
     real_rows = []
@@ -12301,7 +12330,7 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
 def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, *,
                                 horizon, dd_limit, ru_limit, stop_loss_pct,
                                 anchor_mode, anchor_safe_buy, anchor_safe_sell,
-                                best_inner_fallback=None):
+                                best_inner_fallback=None, bh_ret=None):
     """그리드 승률 상위 후보들을 '실제 일별 백테스트'로 한 번에 재계산하고,
        실제 최대거래손실(MDD) 기준을 통과한 것 중 실제 승률 -10%p 범위에서 수익 최고를 선정.
        반환: (best_inner, inner_passed_with_real_cols)
@@ -12310,12 +12339,8 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
     top_n   = int(globals().get('VERIFY_TOP_N', 10000))
     mdd_lim = globals().get('VERIFY_MAX_DRAWDOWN_LIMIT', None)
 
-    cand = inner_passed.copy()
-    if 'win_rate' in cand.columns:
-        cand = cand.sort_values('win_rate', ascending=False).head(top_n).reset_index(drop=True)
-    else:
-        cand = cand.head(top_n).reset_index(drop=True)
-    print(f"\n  🔬 실거래 검증 — 그리드 승률 상위 {len(cand)}개를 실제 일별 백테스트로 재계산 "
+    cand, _note = _pick_verify_candidates(inner_passed, bh_ret=bh_ret)
+    print(f"\n  🔬 실거래 검증 — {_note} → {len(cand)}개를 실제 일별 백테스트로 재계산 "
           f"(모든 변수 반복 끝난 뒤 1회)")
     real_rows = []
     _t_start = time.time()
@@ -12651,7 +12676,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
             stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
             anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell,
-            best_inner_fallback=best_inner)
+            best_inner_fallback=best_inner, bh_ret=bh_ret)
 
     if inject_pools is None:
         print(f"\n  ─ 메타 그리드 Top 10 ─")
@@ -13131,13 +13156,15 @@ def staged_meta_tune(*, base_meta_grid=None,
                 _key = (round(float(_rec['wz']),4), int(_rec['pct'][0]), int(_rec['pct'][1]),
                         round(float(_rec['corr']),4))
                 pool_map[_key] = (_res[5], _res[6])   # buy_pool, sell_pool
+            _bh_v = _bh_sum_return(_close_v.values.astype(np.float64))
             best_inner_v, verified_tbl = _verify_staged_candidates(
                 merged_table, _feat_v, _close_v, pool_map,
                 horizon=run_kwargs.get('horizon', HORIZON_DAYS),
                 dd_limit=run_kwargs.get('dd_limit', DRAWDOWN_LIMIT_BUY),
                 ru_limit=run_kwargs.get('ru_limit', RUNUP_LIMIT_SELL),
                 stop_loss_pct=run_kwargs.get('stop_loss_pct', STOP_LOSS_PCT),
-                anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE))
+                anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE),
+                bh_ret=_bh_v)
             if best_inner_v is not None:
                 merged_table = verified_tbl   # 실제 컬럼 포함 + 실제수익 정렬
                 # best_inner_v와 일치하는 merged_table 행을 sel로
