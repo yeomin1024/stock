@@ -9185,6 +9185,7 @@ def _iv_autorun():
     print("\n" + "=" * 60)
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
 
+
 # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
@@ -9311,12 +9312,16 @@ WINRATE_TOLERANCE      = 0.05
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
 #   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
 VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
-VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+VERIFY_TOP_N             = 20000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
 
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
 #   None 이면 이 필터를 끈다. (단, 필터로 후보가 0개면 자동으로 필터를 완화해 최선을 고름)
-VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
+VERIFY_MAX_DRAWDOWN_LIMIT = -0.05
+
+# ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
+#   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
+VERIFY_AVG_SUCCESS_TOLERANCE = 0.03
 
 # ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림)
 EXCLUDE_BELOW_BH = False
@@ -11872,13 +11877,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = (f'전체 그리드 통합 (모든 메타변수 조합) — {mdd_t2}, 거래수 ≥ {min_trades_daily}회, B&H 초과만  '
                            f'({len(inner_passed)}개) — {inner_sort_label}')
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:AD1')
+    ws.merge_cells('A1:AF1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
                  '평균성공', '매수성공', '매도성공',
                  '⚓매수매칭', '⚓매도매칭',
                  '★ 누적수익', 'CAGR', '거래수', '승률', 'Sharpe', '최대거래손실',
-                 '✅실제승률', '✅실제최대손실', '✅실제누적수익'])
+                 '✅실제승률', '✅실제최대손실', '✅실제누적수익',
+                 '✅실제매수성공', '✅실제매도성공', '✅실제평균성공'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -11944,6 +11950,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'real_win_rate')*100:.1f}%"     if pd.notna(_g(row,'real_win_rate'))     else '—'),
             (f"{_g(row,'real_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'real_max_drawdown')) else '—'),
             (f"{_g(row,'real_total_return')*100:+.2f}%" if pd.notna(_g(row,'real_total_return')) else '—'),
+            (f"{_g(row,'real_buy_success')*100:.1f}%"  if pd.notna(_g(row,'real_buy_success'))  else '—'),
+            (f"{_g(row,'real_sell_success')*100:.1f}%" if pd.notna(_g(row,'real_sell_success')) else '—'),
+            (f"{_g(row,'real_avg_success')*100:.1f}%"  if pd.notna(_g(row,'real_avg_success'))  else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -11965,13 +11974,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if pd.notna(_rw): ws.cell(r, 23).fill = _success_fill(_rw)
         if pd.notna(_rm): ws.cell(r, 24).fill = _mdd_fill(_rm, mdd_limit_pct)
         if pd.notna(_rt): ws.cell(r, 25).fill = _ret_fill(_rt, bh_ret)
+        # 실제 매수/매도/평균 성공 색칠 (26,27,28)
+        _rb = _g(row, 'real_buy_success'); _rs2 = _g(row, 'real_sell_success'); _ra = _g(row, 'real_avg_success')
+        if pd.notna(_rb):  ws.cell(r, 26).fill = _success_fill(_rb)
+        if pd.notna(_rs2): ws.cell(r, 27).fill = _success_fill(_rs2)
+        if pd.notna(_ra):  ws.cell(r, 28).fill = _success_fill(_ra)
         if is_best:
             for cc in (12, 13, 14):
                 ws.cell(r, cc).font = Font(bold=True, color='C00000', size=11)
             ws.cell(r, 17).font = Font(bold=True, color='C00000', size=12)
             if pd.notna(_rt):
                 ws.cell(r, 25).font = Font(bold=True, color='C00000', size=12)
-    for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 10, 11, 11, 13], 1):
+    for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 11,
+                            11, 11, 13, 12, 12, 12], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -12167,6 +12182,43 @@ def _resolve_data():
 # ════════════════════════════════════════════════════════════════
 #                       메인 진입
 # ════════════════════════════════════════════════════════════════
+def _final_pick_by_real(pool, win_tol):
+    """실거래 검증 결과 pool에서 최종 1개 선정 (요청):
+       1) 실제 승률 최고 -win_tol(10%p) 범위로 1차 후보
+       2) 그 안에서 실제 평균성공률 최고 -AVG_TOL(3%p) 범위로 2차 후보
+       3) 그중 실제 수익률 최고 선정.
+       반환: (best_inner_dict, sel_row)"""
+    avg_tol = globals().get('VERIFY_AVG_SUCCESS_TOLERANCE', 0.03)
+    # 1) 실제 승률 밴드
+    best_rw = pool['real_win_rate'].max()
+    b1 = pool[pool['real_win_rate'] >= best_rw - win_tol].copy()
+    # 2) 그 안에서 실제 평균성공률 밴드
+    if 'real_avg_success' in b1.columns and len(b1) > 0:
+        best_avg = b1['real_avg_success'].max()
+        b2 = b1[b1['real_avg_success'] >= best_avg - avg_tol].copy()
+        if len(b2) == 0:
+            b2 = b1
+    else:
+        best_avg = float('nan'); b2 = b1
+    # 3) 실제 수익 최고
+    b2 = b2.sort_values(['real_total_return', 'real_win_rate'],
+                        ascending=[False, False]).reset_index(drop=True)
+    sel = b2.iloc[0]
+    best_inner = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
+                  'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
+    # (정보용 키도 같이 — 단독 모드 best_inner에 성공률 채워 엑셀 표시에 활용)
+    for _k in ('sharpe_like', 'total_return', 'avg_success_rate',
+               'buy_success_rate', 'sell_success_rate', 'win_rate',
+               'max_drawdown', 'n_trades'):
+        if _k in sel.index:
+            best_inner[_k] = sel[_k]
+    print(f"  ✓ 실거래 검증 완료 — ①승률 최고 {best_rw*100:.1f}% -{win_tol*100:.0f}%p ({len(b1)}개) "
+          f"→ ②평균성공 최고 {best_avg*100:.1f}% -{avg_tol*100:.0f}%p ({len(b2)}개) → ③수익 최고 선정")
+    print(f"     최종: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
+          f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}")
+    return best_inner, sel
+
+
 def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
                               horizon, dd_limit, ru_limit, stop_loss_pct, anchor_mode):
     """staged merged_table의 후보를 각 메타조합 풀로 실제 일별 백테스트.
@@ -12207,10 +12259,13 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
         except Exception:
             continue
         row = _r.to_dict()
-        row['real_win_rate']     = float(_cur.get('win_rate', 0.0))
-        row['real_max_drawdown'] = float(_cur.get('max_drawdown', 0.0))
-        row['real_total_return'] = float(_cur.get('cum_return_pct', 0.0)) / 100.0
-        row['real_n_trades']     = int(_cur.get('n_trades', 0))
+        row['real_win_rate']      = float(_cur.get('win_rate', 0.0))
+        row['real_max_drawdown']  = float(_cur.get('max_drawdown', 0.0))
+        row['real_total_return']  = float(_cur.get('cum_return_pct', 0.0)) / 100.0
+        row['real_n_trades']      = int(_cur.get('n_trades', 0))
+        row['real_buy_success']   = float(_cur.get('buy_success_rate', 0.0))
+        row['real_sell_success']  = float(_cur.get('sell_success_rate', 0.0))
+        row['real_avg_success']   = float(_cur.get('avg_success_rate', 0.0))
         real_rows.append(row)
         if (_i + 1) % 1000 == 0:
             print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {time.time()-_t0:.0f}초)")
@@ -12233,20 +12288,13 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
             print(f"  ⚠ 실제 최대 거래손실 {mdd_lim*100:.1f}% 이하 후보 없음 → 가장 손실 얕은 조합 선정")
             pool = verified.sort_values('real_max_drawdown', ascending=False)
 
-    best_rw = pool['real_win_rate'].max()
-    band = pool[pool['real_win_rate'] >= best_rw - win_tol].copy()
-    band = band.sort_values(['real_total_return', 'real_win_rate'],
-                            ascending=[False, False]).reset_index(drop=True)
-    sel = band.iloc[0]
-    best_inner = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
-                  'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
+    best_inner, sel = _final_pick_by_real(pool, win_tol)
     out = verified.sort_values('real_total_return', ascending=False).reset_index(drop=True)
-    print(f"  ✓ 실거래 검증 완료 — 실제 승률 최고 {best_rw*100:.1f}%, "
-          f"-{win_tol*100:.0f}%p 범위 {len(band)}개에서 수익 최고 선정")
-    print(f"     최종: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
-          f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
-          f"실제승률 {sel['real_win_rate']*100:.1f}%, 실제최대손실 {sel['real_max_drawdown']*100:.2f}%, "
-          f"실제수익 {sel['real_total_return']*100:+.2f}%")
+    print(f"     실제 승률 {sel['real_win_rate']*100:.1f}%, "
+          f"실제 평균성공 {sel['real_avg_success']*100:.1f}% "
+          f"(매수 {sel['real_buy_success']*100:.1f}% / 매도 {sel['real_sell_success']*100:.1f}%), "
+          f"실제 최대손실 {sel['real_max_drawdown']*100:.2f}%, "
+          f"실제 수익 {sel['real_total_return']*100:+.2f}%")
     return best_inner, out
 
 
@@ -12285,10 +12333,13 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
         except Exception:
             continue
         row = _r.to_dict()
-        row['real_win_rate']     = float(_cur.get('win_rate', 0.0))
-        row['real_max_drawdown'] = float(_cur.get('max_drawdown', 0.0))
-        row['real_total_return'] = float(_cur.get('cum_return_pct', 0.0)) / 100.0
-        row['real_n_trades']     = int(_cur.get('n_trades', 0))
+        row['real_win_rate']      = float(_cur.get('win_rate', 0.0))
+        row['real_max_drawdown']  = float(_cur.get('max_drawdown', 0.0))
+        row['real_total_return']  = float(_cur.get('cum_return_pct', 0.0)) / 100.0
+        row['real_n_trades']      = int(_cur.get('n_trades', 0))
+        row['real_buy_success']   = float(_cur.get('buy_success_rate', 0.0))
+        row['real_sell_success']  = float(_cur.get('sell_success_rate', 0.0))
+        row['real_avg_success']   = float(_cur.get('avg_success_rate', 0.0))
         real_rows.append(row)
         if (_i + 1) % 1000 == 0:
             print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {time.time()-_t_start:.0f}초)")
@@ -12308,25 +12359,16 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
             print(f"  🛡 실제 최대 거래손실 {mdd_lim*100:.1f}% 이하(안전) 후보 {len(safe)}개로 선정 "
                   f"(전체 검증 {len(verified)}개 중)")
         else:
-            # 기준 통과가 없으면 — 가장 손실 얕은 순으로 최선을 고름 (강제 0개 방지)
             print(f"  ⚠ 실제 최대 거래손실 {mdd_lim*100:.1f}% 이하 후보가 없음 "
                   f"→ 가장 손실 얕은 조합으로 선정 (기준 완화)")
             pool = verified.sort_values('real_max_drawdown', ascending=False)
 
-    # ★ 2) 실제 승률 최고 -10%p 범위 → 3) 그 안에서 실제 수익 최고
-    best_rw = pool['real_win_rate'].max()
-    band = pool[pool['real_win_rate'] >= best_rw - win_tol].copy()
-    band = band.sort_values(['real_total_return', 'real_win_rate'],
-                            ascending=[False, False]).reset_index(drop=True)
-    sel = band.iloc[0]
-    best_inner = sel.to_dict()
+    best_inner, sel = _final_pick_by_real(pool, win_tol)
     inner_passed_out = verified.sort_values('real_total_return', ascending=False).reset_index(drop=True)
 
-    print(f"  ✓ 실거래 검증 완료 — 실제 승률 최고 {best_rw*100:.1f}%, "
-          f"-{win_tol*100:.0f}%p 범위 {len(band)}개에서 수익 최고 선정")
-    print(f"     최종: K_buy={int(sel['K_buy'])}/v{int(sel['vote_buy'])}, "
-          f"K_sell={int(sel['K_sell'])}/v{int(sel['vote_sell'])}")
     print(f"     실제 승률 {sel['real_win_rate']*100:.1f}%, "
+          f"실제 평균성공 {sel['real_avg_success']*100:.1f}% "
+          f"(매수 {sel['real_buy_success']*100:.1f}% / 매도 {sel['real_sell_success']*100:.1f}%), "
           f"실제 최대거래손실 {sel['real_max_drawdown']*100:.2f}%, "
           f"실제 누적수익 {sel['real_total_return']*100:+.2f}%")
     return best_inner, inner_passed_out
