@@ -9263,10 +9263,10 @@ MAX_INDICATORS      = 600
 
 K_BUY_RANGE         = [i for i in range(1, 100)]
 K_SELL_RANGE        = [i for i in range(1, 100)]
-VOTE_RATIO_BUY      = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
-VOTE_RATIO_SELL     = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
+VOTE_RATIO_BUY      = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
+VOTE_RATIO_SELL     = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
 
 COST_PER_TRADE      = 0.004
 
@@ -9312,7 +9312,7 @@ WINRATE_TOLERANCE      = 0.05
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
 #   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
 VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
-VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+VERIFY_TOP_N             = 50000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
 
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
@@ -9322,6 +9322,14 @@ VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
 #   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
 VERIFY_AVG_SUCCESS_TOLERANCE = 0.03
+
+# ★ 수익 동률 판정 (요청) — 실제 수익률 차이가 이 값(3%p) 이내면 '동률'로 보고,
+#   그중 실제 평균 성공률이 더 높은 조합을 선정.
+VERIFY_RETURN_TIE = 0.03
+
+# ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 매칭률'(매수·매도 앵커 매칭)
+#   최고에서 이 값(2%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
+VERIFY_MATCH_TOLERANCE = 0.02
 
 # ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림)
 EXCLUDE_BELOW_BH = False
@@ -9345,7 +9353,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 5000
+TOP_N_GRID_OUT      = 10000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -11204,6 +11212,25 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     cur['n_anchor_buy_caught'] = n_anchor_buy_caught
     cur['n_anchor_sell']       = n_anchor_sell
     cur['n_anchor_sell_caught']= n_anchor_sell_caught
+    # ★ 실제 거래 기준 앵커 매칭률 (요청) — 비율로 저장
+    cur['anchor_buy_match_rate']  = (n_anchor_buy_caught / n_anchor_buy) if n_anchor_buy > 0 else 0.0
+    cur['anchor_sell_match_rate'] = (n_anchor_sell_caught / n_anchor_sell) if n_anchor_sell > 0 else 0.0
+    cur['anchor_avg_match_rate']  = (cur['anchor_buy_match_rate'] + cur['anchor_sell_match_rate']) / 2.0
+    # ★ 앵커대로만 매매했을 때의 수익률 (요청) — 앵커 매수정답일에 사서 매도정답일에 파는
+    #   '이상적' 전략의 단순합산 수익. 신호가 아니라 앵커 정답 그대로 따라간 경우.
+    _a_pos = 0; _a_entry = np.nan; _a_sum = 0.0; _a_prev = np.nan
+    for _i in range(n):
+        _p = float(cl.iloc[_i])
+        if _a_pos == 1 and _i > 0 and pd.notna(_a_prev) and _a_prev > 0:
+            _a_sum += (_p / _a_prev - 1.0)
+        # 앵커 정답일 신호로 매매 (매수정답일=보유 진입, 매도정답일=청산)
+        if _i < len(safe_buy_arr):
+            if safe_buy_arr[_i] == 1 and _a_pos == 0:
+                _a_pos = 1
+            elif safe_sell_arr[_i] == 1 and _a_pos == 1:
+                _a_pos = 0
+        _a_prev = _p
+    cur['anchor_strategy_return'] = _a_sum   # 앵커대로 매매 시 누적수익(소수, 단순합산)
     cur['anchor_buy_diagnosis']  = anchor_buy_diagnosis
     cur['anchor_sell_diagnosis'] = anchor_sell_diagnosis
     cur['buy_accuracy_plain']  = buy_acc_plain
@@ -11877,14 +11904,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = (f'전체 그리드 통합 (모든 메타변수 조합) — {mdd_t2}, 거래수 ≥ {min_trades_daily}회, B&H 초과만  '
                            f'({len(inner_passed)}개) — {inner_sort_label}')
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:AF1')
+    ws.merge_cells('A1:AI1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
                  '평균성공', '매수성공', '매도성공',
                  '⚓매수매칭', '⚓매도매칭',
                  '★ 누적수익', 'CAGR', '거래수', '승률', 'Sharpe', '최대거래손실',
                  '✅실제승률', '✅실제최대손실', '✅실제누적수익',
-                 '✅실제매수성공', '✅실제매도성공', '✅실제평균성공'])
+                 '✅실제매수성공', '✅실제매도성공', '✅실제평균성공',
+                 '✅실제매수매칭', '✅실제매도매칭', '✅앵커수익'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -11953,6 +11981,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'real_buy_success')*100:.1f}%"  if pd.notna(_g(row,'real_buy_success'))  else '—'),
             (f"{_g(row,'real_sell_success')*100:.1f}%" if pd.notna(_g(row,'real_sell_success')) else '—'),
             (f"{_g(row,'real_avg_success')*100:.1f}%"  if pd.notna(_g(row,'real_avg_success'))  else '—'),
+            (f"{_g(row,'real_buy_match')*100:.1f}%"   if pd.notna(_g(row,'real_buy_match'))   else '—'),
+            (f"{_g(row,'real_sell_match')*100:.1f}%"  if pd.notna(_g(row,'real_sell_match'))  else '—'),
+            (f"{_g(row,'real_anchor_return')*100:+.2f}%" if pd.notna(_g(row,'real_anchor_return')) else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -11979,6 +12010,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if pd.notna(_rb):  ws.cell(r, 26).fill = _success_fill(_rb)
         if pd.notna(_rs2): ws.cell(r, 27).fill = _success_fill(_rs2)
         if pd.notna(_ra):  ws.cell(r, 28).fill = _success_fill(_ra)
+        # 실제 매수/매도 매칭 색칠 (29,30), 앵커수익 (31)
+        _rbm = _g(row, 'real_buy_match'); _rsm = _g(row, 'real_sell_match'); _rar = _g(row, 'real_anchor_return')
+        if pd.notna(_rbm): ws.cell(r, 29).fill = _success_fill(_rbm)
+        if pd.notna(_rsm): ws.cell(r, 30).fill = _success_fill(_rsm)
+        if pd.notna(_rar): ws.cell(r, 31).fill = _ret_fill(_rar, bh_ret)
         if is_best:
             for cc in (12, 13, 14):
                 ws.cell(r, cc).font = Font(bold=True, color='C00000', size=11)
@@ -11986,7 +12022,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if pd.notna(_rt):
                 ws.cell(r, 25).font = Font(bold=True, color='C00000', size=12)
     for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 11,
-                            11, 11, 13, 12, 12, 12], 1):
+                            11, 11, 13, 12, 12, 12, 12, 12, 11], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -12150,6 +12186,45 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                      '매수공식', '매도공식', '액션'])
         _write_daily_rows(ws, oos_daily, oc, mdd_limit_pct)
 
+    # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
+    #   각 메타조합(wilson_z/pct/corr)이 선별한 매수·매도 지표 전체를 저장.
+    #   그리드 번호 재현 시, 그 번호의 메타조합 풀을 여기서 읽어 '그대로' 사용 → 정확히 재현.
+    _pool_map = globals().get('_LAST_POOL_MAP', None)
+    if _pool_map:
+        try:
+            ws = wb.create_sheet('메타조합별_지표'); ws.sheet_view.showGridLines = False
+            ws.cell(1, 1).value = ('메타조합별 지표 풀 — 그리드 번호 재현 시 그 조합의 메타변수에 맞는 '
+                                   '지표를 여기서 읽어 정확히 재현합니다 (지표 재선별 안 함)')
+            ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
+            r = 3
+            for (wz, pl, ph, corr), (bp, sp) in _pool_map.items():
+                ws.cell(r, 1).value = f'★ wilson_z={wz} / pct=({pl},{ph}) / corr={corr}'
+                ws.cell(r, 1).font = Font(bold=True, size=11, color='C00000')
+                r += 1
+                for side, pool in [('매수', bp), ('매도', sp)]:
+                    if pool is None or len(pool) == 0: continue
+                    ws.cell(r, 1).value = f'  [{side}] {len(pool)}개'
+                    ws.cell(r, 1).font = Font(bold=True, size=10)
+                    r += 1
+                    _hdr(ws, r, ['side', '지표', '방향', '임계치', '분위', '신호수', '성공수', '성공률', '점수'])
+                    r += 1
+                    for _, prow in pool.iterrows():
+                        ws.cell(r, 1).value = side
+                        ws.cell(r, 2).value = str(prow.get('indicator', ''))
+                        ws.cell(r, 3).value = str(prow.get('direction', '>='))
+                        ws.cell(r, 4).value = float(prow.get('threshold', 0.0))
+                        ws.cell(r, 5).value = float(prow.get('pct_label', 50.0)) if 'pct_label' in prow else ''
+                        ws.cell(r, 6).value = float(prow.get('n_signals', 0))
+                        ws.cell(r, 7).value = float(prow.get('n_success', 0))
+                        ws.cell(r, 8).value = float(prow.get('success_rate', 0.0))
+                        ws.cell(r, 9).value = float(prow.get('score', 0.0))
+                        r += 1
+                    r += 1
+            for ci, w in enumerate([8, 28, 6, 12, 8, 8, 8, 10, 10], 1):
+                ws.column_dimensions[get_column_letter(ci)].width = w
+        except Exception as _e:
+            print(f"  ⚠ 메타조합별_지표 시트 작성 실패: {_e}")
+
     wb.save(output_file)
 
 
@@ -12184,28 +12259,38 @@ def _resolve_data():
 # ════════════════════════════════════════════════════════════════
 def _final_pick_by_real(pool, win_tol):
     """실거래 검증 결과 pool에서 최종 1개 선정 (요청):
-       1) 실제 승률 최고 -win_tol(10%p) 범위로 후보
-       2) 그중 실제 수익률 최고 선정.
+       1) 실제 승률 최고 -win_tol(10%p) 범위로 1차 후보
+       2) 그 안에서 실제 '평균 매칭률'(매수·매도 앵커 매칭) 최고 -MATCH_TOL(2%p) 범위로 2차 후보
+       3) 그중 실제 수익률 최고 선정.
        반환: (best_inner_dict, sel_row)"""
+    match_tol = globals().get('VERIFY_MATCH_TOLERANCE', 0.02)
     # 1) 실제 승률 밴드
     best_rw = pool['real_win_rate'].max()
     b1 = pool[pool['real_win_rate'] >= best_rw - win_tol].copy()
-    # 2) 그 안에서 실제 수익 최고
-    b1 = b1.sort_values(['real_total_return', 'real_win_rate'],
+    # 2) 그 안에서 실제 평균 매칭률 밴드 (-2%p)
+    if 'real_avg_match' in b1.columns and len(b1) > 0:
+        best_match = b1['real_avg_match'].max()
+        b2 = b1[b1['real_avg_match'] >= best_match - match_tol].copy()
+        if len(b2) == 0:
+            b2 = b1
+    else:
+        best_match = float('nan'); b2 = b1
+    # 3) 그중 실제 수익 최고
+    b2 = b2.sort_values(['real_total_return', 'real_win_rate'],
                         ascending=[False, False]).reset_index(drop=True)
-    sel = b1.iloc[0]
+    sel = b2.iloc[0]
     best_inner = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
                   'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
-    # (정보용 키도 같이 — 단독 모드 best_inner에 성공률 채워 엑셀 표시에 활용)
     for _k in ('sharpe_like', 'total_return', 'avg_success_rate',
                'buy_success_rate', 'sell_success_rate', 'win_rate',
                'max_drawdown', 'n_trades'):
         if _k in sel.index:
             best_inner[_k] = sel[_k]
     print(f"  ✓ 실거래 검증 완료 — ①승률 최고 {best_rw*100:.1f}% -{win_tol*100:.0f}%p ({len(b1)}개) "
-          f"→ ②수익 최고 선정")
+          f"→ ②평균매칭 최고 {best_match*100:.1f}% -{match_tol*100:.0f}%p ({len(b2)}개) → ③수익 최고 선정")
     print(f"     최종: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
-          f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}")
+          f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
+          f"(실제수익 {sel['real_total_return']*100:+.2f}%, 평균매칭 {sel.get('real_avg_match', float('nan'))*100:.1f}%)")
     return best_inner, sel
 
 
@@ -12285,6 +12370,10 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
         row['real_buy_success']   = float(_cur.get('buy_success_rate', 0.0))
         row['real_sell_success']  = float(_cur.get('sell_success_rate', 0.0))
         row['real_avg_success']   = float(_cur.get('avg_success_rate', 0.0))
+        row['real_buy_match']     = float(_cur.get('anchor_buy_match_rate', 0.0))
+        row['real_sell_match']    = float(_cur.get('anchor_sell_match_rate', 0.0))
+        row['real_avg_match']     = float(_cur.get('anchor_avg_match_rate', 0.0))
+        row['real_anchor_return'] = float(_cur.get('anchor_strategy_return', 0.0))
         real_rows.append(row)
         if (_i + 1) % 1000 == 0:
             print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {time.time()-_t0:.0f}초)")
@@ -12355,6 +12444,10 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
         row['real_buy_success']   = float(_cur.get('buy_success_rate', 0.0))
         row['real_sell_success']  = float(_cur.get('sell_success_rate', 0.0))
         row['real_avg_success']   = float(_cur.get('avg_success_rate', 0.0))
+        row['real_buy_match']     = float(_cur.get('anchor_buy_match_rate', 0.0))
+        row['real_sell_match']    = float(_cur.get('anchor_sell_match_rate', 0.0))
+        row['real_avg_match']     = float(_cur.get('anchor_avg_match_rate', 0.0))
+        row['real_anchor_return'] = float(_cur.get('anchor_strategy_return', 0.0))
         real_rows.append(row)
         if (_i + 1) % 1000 == 0:
             print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {time.time()-_t_start:.0f}초)")
@@ -13146,6 +13239,7 @@ def staged_meta_tune(*, base_meta_grid=None,
                 _key = (round(float(_rec['wz']),4), int(_rec['pct'][0]), int(_rec['pct'][1]),
                         round(float(_rec['corr']),4))
                 pool_map[_key] = (_res[5], _res[6])   # buy_pool, sell_pool
+            globals()['_LAST_POOL_MAP'] = pool_map   # ★ 엑셀 '메타조합별_지표' 시트 작성용
             _bh_v = _bh_sum_return(_close_v.values.astype(np.float64))
             best_inner_v, verified_tbl = _verify_staged_candidates(
                 merged_table, _feat_v, _close_v, pool_map,
@@ -13533,8 +13627,72 @@ def replay_grid_combo(filename, grid_number=None, *,
             return None
         return pd.DataFrame(rows)
 
-    buy_pool_xl  = _read_pool('매수_앙상블_지표')
-    sell_pool_xl = _read_pool('매도_앙상블_지표')
+    def _read_meta_pool(wz, pl, ph, corr):
+        """메타조합별_지표 시트에서 (wz,pct,corr)에 맞는 매수/매도 풀을 읽는다.
+           그리드 번호 재현 시, 그 번호의 메타조합 지표를 '그대로' 쓰기 위함."""
+        sn = '메타조합별_지표'
+        if sn not in wb.sheetnames:
+            return None, None
+        wsp = wb[sn]
+        # 블록 헤더 '★ wilson_z=... / pct=(..) / corr=..' 를 찾아 매칭
+        target_hdr = None
+        rows_by_block = {}
+        cur_block = None; cur_side = None; cols = None
+        bp_rows = []; sp_rows = []
+        def _close(s):
+            try: return float(str(s).replace('%','').strip())
+            except Exception: return 0.0
+        import re as _re
+        for r in range(1, wsp.max_row + 1):
+            a = wsp.cell(r, 1).value
+            if a is None: continue
+            s = str(a)
+            if s.startswith('★ wilson_z='):
+                m = _re.search(r'wilson_z=([\d.]+).*pct=\((\d+),(\d+)\).*corr=([\d.]+)', s)
+                if m:
+                    bwz, bpl, bph, bcorr = float(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4))
+                    cur_block = (round(bwz,4)==round(float(wz),4) and bpl==int(pl)
+                                 and bph==int(ph) and round(bcorr,4)==round(float(corr),4))
+                cur_side = None
+                continue
+            if not cur_block:
+                continue
+            if s.strip().startswith('[매수]'): cur_side = 'buy'; continue
+            if s.strip().startswith('[매도]'): cur_side = 'sell'; continue
+            if s == 'side':   # 헤더행
+                continue
+            # 데이터행: side, 지표, 방향, 임계치, 분위, 신호수, 성공수, 성공률, 점수
+            side = s.strip()
+            ind = wsp.cell(r, 2).value
+            if ind is None or str(ind).strip() == '': continue
+            rec = {'indicator': str(ind).strip(),
+                   'direction': str(wsp.cell(r,3).value or '>=').strip(),
+                   'threshold': _close(wsp.cell(r,4).value),
+                   'pct_label': _close(wsp.cell(r,5).value),
+                   'n_signals': _close(wsp.cell(r,6).value),
+                   'n_success': _close(wsp.cell(r,7).value),
+                   'success_rate': _close(wsp.cell(r,8).value),
+                   'avg_extreme': 0.01,
+                   'score': _close(wsp.cell(r,9).value)}
+            if side == '매수': bp_rows.append(rec)
+            elif side == '매도': sp_rows.append(rec)
+        bp = pd.DataFrame(bp_rows) if bp_rows else None
+        sp = pd.DataFrame(sp_rows) if sp_rows else None
+        return bp, sp
+
+    # ★ 그리드 번호 재현이면, 그 번호의 메타조합 풀을 '메타조합별_지표' 시트에서 우선 읽음.
+    #   (없으면 ★최적의 매수/매도_앙상블_지표 시트로 폴백)
+    buy_pool_xl = sell_pool_xl = None
+    if grid_number is not None:
+        _mb, _ms = _read_meta_pool(wz_use, pct_use[0] if pct_use else 5,
+                                   pct_use[1] if pct_use else 95, cl_use if cl_use is not None else 0.2)
+        if _mb is not None and _ms is not None and len(_mb) > 0 and len(_ms) > 0:
+            buy_pool_xl, sell_pool_xl = _mb, _ms
+            print(f"  ♻ 그리드 #{grid_number}의 메타조합 지표를 '메타조합별_지표' 시트에서 정확히 읽음 "
+                  f"(매수 {len(_mb)} / 매도 {len(_ms)})")
+    if buy_pool_xl is None or sell_pool_xl is None:
+        buy_pool_xl  = _read_pool('매수_앙상블_지표')
+        sell_pool_xl = _read_pool('매도_앙상블_지표')
 
     inject_pools = None
     if buy_pool_xl is not None and sell_pool_xl is not None \
