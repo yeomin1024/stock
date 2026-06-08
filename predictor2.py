@@ -9263,10 +9263,10 @@ MAX_INDICATORS      = 600
 
 K_BUY_RANGE         = [i for i in range(1, 100)]
 K_SELL_RANGE        = [i for i in range(1, 100)]
-VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
-VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
+VOTE_RATIO_BUY      = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
+VOTE_RATIO_SELL     = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
 
 COST_PER_TRADE      = 0.004
 
@@ -9345,7 +9345,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 10000
+TOP_N_GRID_OUT      = 5000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -12184,26 +12184,16 @@ def _resolve_data():
 # ════════════════════════════════════════════════════════════════
 def _final_pick_by_real(pool, win_tol):
     """실거래 검증 결과 pool에서 최종 1개 선정 (요청):
-       1) 실제 승률 최고 -win_tol(10%p) 범위로 1차 후보
-       2) 그 안에서 실제 평균성공률 최고 -AVG_TOL(3%p) 범위로 2차 후보
-       3) 그중 실제 수익률 최고 선정.
+       1) 실제 승률 최고 -win_tol(10%p) 범위로 후보
+       2) 그중 실제 수익률 최고 선정.
        반환: (best_inner_dict, sel_row)"""
-    avg_tol = globals().get('VERIFY_AVG_SUCCESS_TOLERANCE', 0.03)
     # 1) 실제 승률 밴드
     best_rw = pool['real_win_rate'].max()
     b1 = pool[pool['real_win_rate'] >= best_rw - win_tol].copy()
-    # 2) 그 안에서 실제 평균성공률 밴드
-    if 'real_avg_success' in b1.columns and len(b1) > 0:
-        best_avg = b1['real_avg_success'].max()
-        b2 = b1[b1['real_avg_success'] >= best_avg - avg_tol].copy()
-        if len(b2) == 0:
-            b2 = b1
-    else:
-        best_avg = float('nan'); b2 = b1
-    # 3) 실제 수익 최고
-    b2 = b2.sort_values(['real_total_return', 'real_win_rate'],
+    # 2) 그 안에서 실제 수익 최고
+    b1 = b1.sort_values(['real_total_return', 'real_win_rate'],
                         ascending=[False, False]).reset_index(drop=True)
-    sel = b2.iloc[0]
+    sel = b1.iloc[0]
     best_inner = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
                   'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
     # (정보용 키도 같이 — 단독 모드 best_inner에 성공률 채워 엑셀 표시에 활용)
@@ -12213,7 +12203,7 @@ def _final_pick_by_real(pool, win_tol):
         if _k in sel.index:
             best_inner[_k] = sel[_k]
     print(f"  ✓ 실거래 검증 완료 — ①승률 최고 {best_rw*100:.1f}% -{win_tol*100:.0f}%p ({len(b1)}개) "
-          f"→ ②평균성공 최고 {best_avg*100:.1f}% -{avg_tol*100:.0f}%p ({len(b2)}개) → ③수익 최고 선정")
+          f"→ ②수익 최고 선정")
     print(f"     최종: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
           f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}")
     return best_inner, sel
@@ -14369,6 +14359,20 @@ def run_multi_ticker_analysis(tickers=None, *,
                 print(f"  ⚠ 요약 저장 실패: {e}")
         else:
             n_done += 1
+
+        # ★ 메모리 정리 — 한 종목이 끝나면 큰 객체를 비워 RAM 누적/폭증 방지.
+        #   (73개 × 2800피처를 연속 돌리면 정리 없이는 RAM이 계속 쌓여 끊김)
+        try: del result
+        except Exception: pass
+        try: del meta_results_df, inner_all, inner_passed, buy_pool, sell_pool, daily, trades
+        except Exception: pass
+        try: del feat_t, close_t
+        except Exception: pass
+        for _gk in ('_pair_feat', '_pair_close'):
+            if _gk in globals():
+                globals()[_gk] = None
+        import gc as _gc
+        _gc.collect()
 
     t_el = time.time() - t_total
     n_done_total = len([r for r in summary_records.values() if r.get('status') == '완료'])
