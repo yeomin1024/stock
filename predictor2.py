@@ -9261,12 +9261,12 @@ RUNUP_LIMIT_SELL    = 0.01
 N_THRESHOLDS        = 400
 MAX_INDICATORS      = 600
 
-K_BUY_RANGE         = [i for i in range(10, 100)]
-K_SELL_RANGE        = [i for i in range(10, 100)]
-VOTE_RATIO_BUY      = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
-VOTE_RATIO_SELL     = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
+K_BUY_RANGE         = [i for i in range(1, 100)]
+K_SELL_RANGE        = [i for i in range(1, 100)]
+VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
+VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                       0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 
 COST_PER_TRADE      = 0.004
 
@@ -9312,7 +9312,7 @@ WINRATE_TOLERANCE      = 0.03
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
 #   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
 VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
-VERIFY_TOP_N             = 20000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+VERIFY_TOP_N             = 30000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
 
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
@@ -11155,18 +11155,27 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
                 })
             if anchor_safe_sell[i] == 1:
                 n_anchor_sell += 1
-                # ★ 타이밍 반영 — 정답일 당일 ~ +W일 중 하루라도 실제 현금이면 매칭
+                # ★ 매도 매칭 = '고점 근처에서 팔았나' (요청, 엄격):
+                #   단순히 고점일에 현금이면 안 됨 (스윙 도중 일찍 팔아도 현금일 수 있음).
+                #   진짜 고점 매도 = 고점 직전까지 '보유'하다가 고점 직후 '현금'으로 전환.
+                #   - held_before: 고점 전 W일 중 보유한 적 있나 (고점까지 들고 왔나)
+                #   - cash_after : 고점 당일~+W일 중 현금이 됐나 (고점에서 청산했나)
                 _w = int(globals().get('ANCHOR_MATCH_WINDOW', 1))
-                caught = any(pos_post[i+dd] == 0
-                             for dd in range(0, _w+1) if i+dd < n_days_total)
+                held_before = any(pos_post[i-dd] == 1
+                                  for dd in range(1, _w+1) if i-dd >= 0)
+                cash_after  = any(pos_post[i+dd] == 0
+                                  for dd in range(0, _w+1) if i+dd < n_days_total)
+                caught = held_before and cash_after
                 if caught: n_anchor_sell_caught += 1
                 target_date = dates[i+1] if i+1 < n_days_total else dates[i]
                 if caught:
-                    status = '✓ 잡힘 (cash 포지션)'
+                    status = '✓ 잡힘 (고점 근처에서 청산)'
+                elif not held_before:
+                    status = '✗ 고점 전에 이미 청산 (스윙 일찍 빠짐) — 큰 상승 놓침'
                 elif s_on_i and b_on_i:
                     status = f'✗ 매도신호 떴으나 매수가 더 강해 unmatched (S={s_count_i:.2f}/{vote_sell}, B={b_count_i:.2f}/{vote_buy})'
                 elif s_on_i:
-                    status = f'✗ 매도신호 떴으나 거래 안 됨 — 현재 long'
+                    status = f'✗ 매도신호 떴으나 청산 안 됨'
                 else:
                     status = f'✗ 신호 안 뜸 (sell {s_count_i:.2f} < {vote_sell})'
                 anchor_sell_diagnosis.append({
