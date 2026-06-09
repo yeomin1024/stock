@@ -9263,9 +9263,9 @@ MAX_INDICATORS      = 600
 
 K_BUY_RANGE         = [i for i in range(1, 100)]
 K_SELL_RANGE        = [i for i in range(1, 100)]
-VOTE_RATIO_BUY      = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+VOTE_RATIO_BUY      = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
-VOTE_RATIO_SELL     = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+VOTE_RATIO_SELL     = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
 
 COST_PER_TRADE      = 0.004
@@ -9312,7 +9312,7 @@ WINRATE_TOLERANCE      = 0.05
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
 #   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
 VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
-VERIFY_TOP_N             = 50000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+VERIFY_TOP_N             = 30000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
 
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
@@ -9347,13 +9347,19 @@ AUTO_ANCHOR_MIN_DROP   = 0.01
 AUTO_ANCHOR_PRICE_TOLERANCE = 0.01
 AUTO_ANCHOR_MAX_DATES  = None
 
+# ★ 앵커 매칭 타이밍 윈도우 (요청) — 신호는 정답일보다 먼저 떠야 정답일에 포지션이 맞음.
+#   매칭 판정 시 '정답일 당일 ~ +N일' 사이에 실제 포지션이 맞으면 매칭으로 인정.
+#   신호→익일체결 지연 + 앵커 정답일이 며칠에 걸친 바닥/천장 구간인 점을 반영.
+#   0이면 당일만, 1이면 당일+익일, 2면 +2일까지. (충돌·실제매매는 그대로 반영)
+ANCHOR_MATCH_WINDOW = 1
+
 ANCHOR_BUY_DATES = [
 ]
 ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 10000
+TOP_N_GRID_OUT      = 50000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -11125,7 +11131,13 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
         if anchor_mode and anchor_safe_buy is not None:
             if anchor_safe_buy[i] == 1:
                 n_anchor_buy += 1
-                caught = (pos_post[i] == 1)
+                # ★ 타이밍 반영 (요청): 신호는 정답일보다 먼저 떠야 정답일에 포지션이 맞음.
+                #   신호→익일매수 구조 + 앵커 정답일이 며칠에 걸친 바닥 구간인 점을 반영해,
+                #   '정답일 당일 ~ +W일' 중 하루라도 실제 보유면 매칭.
+                #   (충돌·실제 매매가 모두 반영된 pos_post 기준 — 신호만 보는 게 아님)
+                _w = int(globals().get('ANCHOR_MATCH_WINDOW', 1))
+                caught = any(pos_post[i+dd] == 1
+                             for dd in range(0, _w+1) if i+dd < n_days_total)
                 if caught: n_anchor_buy_caught += 1
                 target_date = dates[i+1] if i+1 < n_days_total else dates[i]
                 if caught:
@@ -11143,7 +11155,10 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
                 })
             if anchor_safe_sell[i] == 1:
                 n_anchor_sell += 1
-                caught = (pos_post[i] == 0)
+                # ★ 타이밍 반영 — 정답일 당일 ~ +W일 중 하루라도 실제 현금이면 매칭
+                _w = int(globals().get('ANCHOR_MATCH_WINDOW', 1))
+                caught = any(pos_post[i+dd] == 0
+                             for dd in range(0, _w+1) if i+dd < n_days_total)
                 if caught: n_anchor_sell_caught += 1
                 target_date = dates[i+1] if i+1 < n_days_total else dates[i]
                 if caught:
@@ -12328,7 +12343,7 @@ def _pick_verify_candidates(tbl, bh_ret=None):
 
 def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
                               horizon, dd_limit, ru_limit, stop_loss_pct, anchor_mode,
-                              bh_ret=None):
+                              bh_ret=None, anchor_safe_buy=None, anchor_safe_sell=None):
     """staged merged_table의 후보를 각 메타조합 풀로 실제 일별 백테스트.
        실제 MDD 기준 통과분 중 실제승률 -10%p 범위에서 수익 최고 선정.
        반환: (best_inner, merged_table_with_real_cols)"""
@@ -12359,7 +12374,8 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
                 vote_buy=int(_r['vote_buy']), vote_sell=int(_r['vote_sell']),
                 cost=COST_PER_TRADE, horizon=horizon,
                 dd_limit=dd_limit, ru_limit=ru_limit,
-                stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode)
+                stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell)
         except Exception:
             continue
         row = _r.to_dict()
@@ -13241,14 +13257,36 @@ def staged_meta_tune(*, base_meta_grid=None,
                 pool_map[_key] = (_res[5], _res[6])   # buy_pool, sell_pool
             globals()['_LAST_POOL_MAP'] = pool_map   # ★ 엑셀 '메타조합별_지표' 시트 작성용
             _bh_v = _bh_sum_return(_close_v.values.astype(np.float64))
+            # ★ 앵커 배열 생성 — 검증 daily 백테스트에서 매칭률·앵커수익을 계산하려면 필수.
+            #   (이게 없으면 daily 내부에서 매칭 집계가 통째로 스킵돼 매칭률이 0%로 나옴)
+            _asb_v = _ass_v = None
+            _amode_v = run_kwargs.get('anchor_mode', ANCHOR_MODE)
+            if _amode_v and globals().get('AUTO_ANCHOR', True):
+                try:
+                    _abd, _asd = auto_compute_anchor_dates(
+                        _feat_v.index, _close_v,
+                        window=globals().get('AUTO_ANCHOR_WINDOW', 1),
+                        lookforward=globals().get('AUTO_ANCHOR_LOOKFORWARD', 1),
+                        min_rise_after_buy=globals().get('AUTO_ANCHOR_MIN_RISE', 0.01),
+                        min_drop_after_sell=globals().get('AUTO_ANCHOR_MIN_DROP', 0.01),
+                        price_tolerance=globals().get('AUTO_ANCHOR_PRICE_TOLERANCE', 0.01),
+                        max_dates=globals().get('AUTO_ANCHOR_MAX_DATES', None))
+                    _asb_v, _ass_v = _compute_anchor_arrays(_feat_v.index, _abd, _asd)
+                    if int(_asb_v.sum()) == 0 and int(_ass_v.sum()) == 0:
+                        _asb_v = _ass_v = None
+                    else:
+                        print(f"  ⚓ 검증용 ANCHOR 매칭 — 매수 {int(_asb_v.sum())}일, 매도 {int(_ass_v.sum())}일")
+                except Exception as _ae:
+                    print(f"  ⚠ 검증용 ANCHOR 배열 생성 실패 ({_ae}) → 매칭률은 0으로 표시될 수 있음")
+                    _asb_v = _ass_v = None
             best_inner_v, verified_tbl = _verify_staged_candidates(
                 merged_table, _feat_v, _close_v, pool_map,
                 horizon=run_kwargs.get('horizon', HORIZON_DAYS),
                 dd_limit=run_kwargs.get('dd_limit', DRAWDOWN_LIMIT_BUY),
                 ru_limit=run_kwargs.get('ru_limit', RUNUP_LIMIT_SELL),
                 stop_loss_pct=run_kwargs.get('stop_loss_pct', STOP_LOSS_PCT),
-                anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE),
-                bh_ret=_bh_v)
+                anchor_mode=_amode_v,
+                bh_ret=_bh_v, anchor_safe_buy=_asb_v, anchor_safe_sell=_ass_v)
             if best_inner_v is not None:
                 merged_table = verified_tbl   # 실제 컬럼 포함 + 실제수익 정렬
                 # best_inner_v와 일치하는 merged_table 행을 sel로
@@ -14941,5 +14979,7 @@ def get_generated_files():
     return list(globals().get('_GENERATED_FILES', []))
 
 
+if __name__ == '__main__':
+    main()
 if __name__ == '__main__':
     main()
