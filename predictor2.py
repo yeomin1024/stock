@@ -9261,8 +9261,8 @@ RUNUP_LIMIT_SELL    = 0.01
 N_THRESHOLDS        = 400
 MAX_INDICATORS      = 600
 
-K_BUY_RANGE         = [i for i in range(1, 100)]
-K_SELL_RANGE        = [i for i in range(1, 100)]
+K_BUY_RANGE         = [i for i in range(10, 100)]
+K_SELL_RANGE        = [i for i in range(10, 100)]
 VOTE_RATIO_BUY      = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
 VOTE_RATIO_SELL     = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
@@ -9306,7 +9306,7 @@ SELL_SUCCESS_TOLERANCE = 0.02   # 매도성공률 최고에서 이 차이(2%p)�
 MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 (그중 수익 최고 선택)
 
 # ★ 'winrate_return' 모드 밴드 폭 (요청) — 일별거래 승률 최고에서 이 차이(10%p)까지 후보
-WINRATE_TOLERANCE      = 0.05
+WINRATE_TOLERANCE      = 0.03
 
 # ★ 승률 후보 실거래 검증 (요청) — 그리드는 빠른 근사라 실제 일별거래와 MDD·승률·수익이
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
@@ -9359,7 +9359,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 50000
+TOP_N_GRID_OUT      = 30000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -11231,21 +11231,32 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     cur['anchor_buy_match_rate']  = (n_anchor_buy_caught / n_anchor_buy) if n_anchor_buy > 0 else 0.0
     cur['anchor_sell_match_rate'] = (n_anchor_sell_caught / n_anchor_sell) if n_anchor_sell > 0 else 0.0
     cur['anchor_avg_match_rate']  = (cur['anchor_buy_match_rate'] + cur['anchor_sell_match_rate']) / 2.0
-    # ★ 앵커대로만 매매했을 때의 수익률 (요청) — 앵커 매수정답일에 사서 매도정답일에 파는
-    #   '이상적' 전략의 단순합산 수익. 신호가 아니라 앵커 정답 그대로 따라간 경우.
-    _a_pos = 0; _a_entry = np.nan; _a_sum = 0.0; _a_prev = np.nan
-    for _i in range(n):
-        _p = float(cl.iloc[_i])
-        if _a_pos == 1 and _i > 0 and pd.notna(_a_prev) and _a_prev > 0:
-            _a_sum += (_p / _a_prev - 1.0)
-        # 앵커 정답일 신호로 매매 (매수정답일=보유 진입, 매도정답일=청산)
-        if _i < len(safe_buy_arr):
-            if safe_buy_arr[_i] == 1 and _a_pos == 0:
-                _a_pos = 1
-            elif safe_sell_arr[_i] == 1 and _a_pos == 1:
-                _a_pos = 0
-        _a_prev = _p
-    cur['anchor_strategy_return'] = _a_sum   # 앵커대로 매매 시 누적수익(소수, 단순합산)
+    # ★ 앵커 전략 수익 (요청) — '단기 최저점에서 매수, 단기 최고점에서 매도'로 얻을 수 있는
+    #   사후적 최대 수익. 과거 차트가 다 있으므로, 거래비용을 넘어서는 모든 상승 구간을
+    #   포착하는 최적 스윙 매매로 계산한다 (B&H보다 훨씬 높아야 정상).
+    #   방법: 거래비용(cost) 이상 오르는 연속 구간만 매매 → 그 구간들의 상승률 합(복리).
+    _cost = float(globals().get('COST_PER_TRADE', 0.0)) if 'cost' not in dir() else float(cost)
+    _ap = cl.values.astype(np.float64)
+    _equity = 1.0
+    _i2 = 0
+    _nn = len(_ap)
+    while _i2 < _nn - 1:
+        # 다음 거래일부터 '오르는 한' 계속 보유 (단기 저점→고점)
+        if _ap[_i2+1] > _ap[_i2]:
+            j = _i2
+            # j가 국소 저점: 여기서 매수, 가격이 더 안 오를 때까지(국소 고점) 보유
+            k = j
+            while k < _nn - 1 and _ap[k+1] >= _ap[k]:
+                k += 1
+            # j에서 사서 k에서 팜 (단기 저점→단기 고점)
+            gain = _ap[k] / _ap[j] - 1.0
+            net = (1.0 - _cost) * (1.0 + gain) * (1.0 - _cost) - 1.0  # 매수·매도 비용 차감
+            if net > 0:
+                _equity *= (1.0 + net)
+            _i2 = k + 1
+        else:
+            _i2 += 1
+    cur['anchor_strategy_return'] = _equity - 1.0   # 사후 최적 스윙 누적수익(복리, 소수)
     cur['anchor_buy_diagnosis']  = anchor_buy_diagnosis
     cur['anchor_sell_diagnosis'] = anchor_sell_diagnosis
     cur['buy_accuracy_plain']  = buy_acc_plain
@@ -11919,7 +11930,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = (f'전체 그리드 통합 (모든 메타변수 조합) — {mdd_t2}, 거래수 ≥ {min_trades_daily}회, B&H 초과만  '
                            f'({len(inner_passed)}개) — {inner_sort_label}')
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:AI1')
+    ws.merge_cells('A1:AJ1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
                  '평균성공', '매수성공', '매도성공',
@@ -11927,7 +11938,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  '★ 누적수익', 'CAGR', '거래수', '승률', 'Sharpe', '최대거래손실',
                  '✅실제승률', '✅실제최대손실', '✅실제누적수익',
                  '✅실제매수성공', '✅실제매도성공', '✅실제평균성공',
-                 '✅실제매수매칭', '✅실제매도매칭', '✅앵커수익'])
+                 '✅실제매수매칭', '✅실제매도매칭', '✅실제평균매칭', '✅앵커수익'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -11998,6 +12009,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'real_avg_success')*100:.1f}%"  if pd.notna(_g(row,'real_avg_success'))  else '—'),
             (f"{_g(row,'real_buy_match')*100:.1f}%"   if pd.notna(_g(row,'real_buy_match'))   else '—'),
             (f"{_g(row,'real_sell_match')*100:.1f}%"  if pd.notna(_g(row,'real_sell_match'))  else '—'),
+            (f"{_g(row,'real_avg_match')*100:.1f}%"   if pd.notna(_g(row,'real_avg_match'))   else '—'),
             (f"{_g(row,'real_anchor_return')*100:+.2f}%" if pd.notna(_g(row,'real_anchor_return')) else '—'),
         ]
         for ci, v in enumerate(vals, 1):
@@ -12025,11 +12037,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if pd.notna(_rb):  ws.cell(r, 26).fill = _success_fill(_rb)
         if pd.notna(_rs2): ws.cell(r, 27).fill = _success_fill(_rs2)
         if pd.notna(_ra):  ws.cell(r, 28).fill = _success_fill(_ra)
-        # 실제 매수/매도 매칭 색칠 (29,30), 앵커수익 (31)
-        _rbm = _g(row, 'real_buy_match'); _rsm = _g(row, 'real_sell_match'); _rar = _g(row, 'real_anchor_return')
-        if pd.notna(_rbm): ws.cell(r, 29).fill = _success_fill(_rbm)
-        if pd.notna(_rsm): ws.cell(r, 30).fill = _success_fill(_rsm)
-        if pd.notna(_rar): ws.cell(r, 31).fill = _ret_fill(_rar, bh_ret)
+        # 실제 매수/매도/평균 매칭 색칠 (29,30,31), 앵커수익 (32)
+        _rbm = _g(row, 'real_buy_match'); _rsm = _g(row, 'real_sell_match')
+        _ravm = _g(row, 'real_avg_match'); _rar = _g(row, 'real_anchor_return')
+        if pd.notna(_rbm):  ws.cell(r, 29).fill = _success_fill(_rbm)
+        if pd.notna(_rsm):  ws.cell(r, 30).fill = _success_fill(_rsm)
+        if pd.notna(_ravm): ws.cell(r, 31).fill = _success_fill(_ravm)
+        if pd.notna(_rar):  ws.cell(r, 32).fill = _ret_fill(_rar, bh_ret)
         if is_best:
             for cc in (12, 13, 14):
                 ws.cell(r, cc).font = Font(bold=True, color='C00000', size=11)
@@ -12037,7 +12051,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if pd.notna(_rt):
                 ws.cell(r, 25).font = Font(bold=True, color='C00000', size=12)
     for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 11,
-                            11, 11, 13, 12, 12, 12, 12, 12, 11], 1):
+                            11, 11, 13, 12, 12, 12, 12, 12, 12, 11], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -14979,7 +14993,5 @@ def get_generated_files():
     return list(globals().get('_GENERATED_FILES', []))
 
 
-if __name__ == '__main__':
-    main()
 if __name__ == '__main__':
     main()
