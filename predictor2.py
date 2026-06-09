@@ -9261,8 +9261,8 @@ RUNUP_LIMIT_SELL    = 0.01
 N_THRESHOLDS        = 400
 MAX_INDICATORS      = 600
 
-K_BUY_RANGE         = [i for i in range(1, 100)]
-K_SELL_RANGE        = [i for i in range(1, 100)]
+K_BUY_RANGE         = [i for i in range(10, 100)]
+K_SELL_RANGE        = [i for i in range(10, 100)]
 VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
@@ -9306,7 +9306,7 @@ SELL_SUCCESS_TOLERANCE = 0.02   # 매도성공률 최고에서 이 차이(2%p)�
 MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 (그중 수익 최고 선택)
 
 # ★ 'winrate_return' 모드 밴드 폭 (요청) — 일별거래 승률 최고에서 이 차이(10%p)까지 후보
-WINRATE_TOLERANCE      = 0.03
+WINRATE_TOLERANCE      = 0.05
 
 # ★ 승률 후보 실거래 검증 (요청) — 그리드는 빠른 근사라 실제 일별거래와 MDD·승률·수익이
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
@@ -9329,7 +9329,7 @@ VERIFY_RETURN_TIE = 0.03
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 매칭률'(매수·매도 앵커 매칭)
 #   최고에서 이 값(2%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
-VERIFY_MATCH_TOLERANCE = 0.02
+VERIFY_MATCH_TOLERANCE = 0.1
 
 # ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림)
 EXCLUDE_BELOW_BH = False
@@ -9351,7 +9351,25 @@ AUTO_ANCHOR_MAX_DATES  = None
 #   매칭 판정 시 '정답일 당일 ~ +N일' 사이에 실제 포지션이 맞으면 매칭으로 인정.
 #   신호→익일체결 지연 + 앵커 정답일이 며칠에 걸친 바닥/천장 구간인 점을 반영.
 #   0이면 당일만, 1이면 당일+익일, 2면 +2일까지. (충돌·실제매매는 그대로 반영)
-ANCHOR_MATCH_WINDOW = 1
+ANCHOR_MATCH_WINDOW = 2
+
+# ★ 매도 매칭의 '고점 전 보유' 조회 범위 (요청) — 고점 직전 W일만 보면 너무 빡빡해
+#   매도매칭이 50%대로 낮게 나옴. 고점까지 오는 과정 최근 N일 중 보유한 적 있으면
+#   '고점까지 들고 왔다'로 인정 (그 뒤 고점 근처 청산이면 매칭).
+ANCHOR_SELL_HOLD_LOOKBACK = 5
+
+# ★ 충돌 처리 정책 (요청) — '매도 우선':
+#   True: 매수·매도 신호 충돌 시, 현금이면 매수 보류(잘못된 매수 상쇄),
+#         보유면 청산(올바른 매도는 안 상쇄). 위험회피적, 손실 방지 우선.
+#   False: 기존 강도 비교(b_strength vs s_strength).
+CONFLICT_SELL_PRIORITY = True
+
+# ★ 최종 선정 우선순위 (요청) — 매도 정확도 우선 → 매수 정확도 → 수익:
+#   1) 실제 매도 성공률(정확도) 최고에서 -SELL_ACC_TOL 범위
+#   2) 그중 실제 매수 성공률 최고에서 -BUY_ACC_TOL 범위
+#   3) 그중 실제 수익 최고
+VERIFY_SELL_ACC_TOLERANCE = 0.03   # 매도 정확도 1차 밴드 (3%p)
+VERIFY_BUY_ACC_TOLERANCE  = 0.03   # 매수 정확도 2차 밴드 (3%p)
 
 ANCHOR_BUY_DATES = [
 ]
@@ -9359,7 +9377,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 30000
+TOP_N_GRID_OUT      = 10000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -10985,9 +11003,13 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
         if stopped_today:
             action = f'⛔ 손절매 ({stop_ret_pct:+.2f}%, 종가청산)'
         elif (i + 1) < n:
+            # ★ 충돌 처리 정책 (요청): '매도 우선'
+            #   - 현금 중 매수신호인데 매도신호도 같이 뜨면(충돌) → 매수 보류 (잘못된 매수 상쇄)
+            #   - 보유 중 매도신호면, 매수신호가 같이 떠도(충돌) → 청산 (올바른 매도는 안 상쇄)
+            _sell_priority = globals().get('CONFLICT_SELL_PRIORITY', True)
             if pos == 0 and b_on:
-                if conflict and s_strength > b_strength:
-                    action = f'⚔ 충돌 S={s_strength:.0%}>B={b_strength:.0%} → 매수 보류'
+                if conflict and (_sell_priority or s_strength > b_strength):
+                    action = f'⚔ 충돌 → 매수 보류 (매도 우선, S={s_strength:.0%}/B={b_strength:.0%})'
                     n_conflict_sell_won += 1
                 else:
                     do_buy = True
@@ -10997,13 +11019,13 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
                     else:
                         action = '매수신호 → 익일 매수'
             elif pos == 1 and s_on:
-                if conflict and b_strength > s_strength:
+                if conflict and (not _sell_priority) and b_strength > s_strength:
                     action = f'⚔ 충돌 B={b_strength:.0%}>S={s_strength:.0%} → 청산 보류'
                     n_conflict_buy_won += 1
                 else:
                     do_sell = True
                     if conflict:
-                        action = f'⚔ 충돌 S={s_strength:.0%}≥B={b_strength:.0%} → 청산'
+                        action = f'⚔ 충돌 → 청산 (매도 우선, S={s_strength:.0%}/B={b_strength:.0%})'
                         n_conflict_sell_won += 1
                     else:
                         action = '매도신호 → 익일 청산'
@@ -11155,14 +11177,14 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
                 })
             if anchor_safe_sell[i] == 1:
                 n_anchor_sell += 1
-                # ★ 매도 매칭 = '고점 근처에서 팔았나' (요청, 엄격):
-                #   단순히 고점일에 현금이면 안 됨 (스윙 도중 일찍 팔아도 현금일 수 있음).
-                #   진짜 고점 매도 = 고점 직전까지 '보유'하다가 고점 직후 '현금'으로 전환.
-                #   - held_before: 고점 전 W일 중 보유한 적 있나 (고점까지 들고 왔나)
+                # ★ 매도 매칭 = '고점 근처에서 팔았나' (요청, 엄격하되 현실적):
+                #   - held_before: 고점 전 최근 LB일 중 보유한 적 있나 (고점까지 들고 왔나)
                 #   - cash_after : 고점 당일~+W일 중 현금이 됐나 (고점에서 청산했나)
+                #   고점 직전 1일만 보면 추세 중 잠깐 빠짐에도 실패 처리돼 너무 낮음 → LB로 완화.
                 _w = int(globals().get('ANCHOR_MATCH_WINDOW', 1))
+                _lb = int(globals().get('ANCHOR_SELL_HOLD_LOOKBACK', 5))
                 held_before = any(pos_post[i-dd] == 1
-                                  for dd in range(1, _w+1) if i-dd >= 0)
+                                  for dd in range(1, _lb+1) if i-dd >= 0)
                 cash_after  = any(pos_post[i+dd] == 0
                                   for dd in range(0, _w+1) if i+dd < n_days_total)
                 caught = held_before and cash_after
@@ -12297,22 +12319,24 @@ def _resolve_data():
 # ════════════════════════════════════════════════════════════════
 def _final_pick_by_real(pool, win_tol):
     """실거래 검증 결과 pool에서 최종 1개 선정 (요청):
-       1) 실제 승률 최고 -win_tol(10%p) 범위로 1차 후보
-       2) 그 안에서 실제 '평균 매칭률'(매수·매도 앵커 매칭) 최고 -MATCH_TOL(2%p) 범위로 2차 후보
-       3) 그중 실제 수익률 최고 선정.
+       우선순위 = (1) 매도 정확도(성공률) 최대 → (2) 매수 정확도 최대 → (3) 실제 수익 최대.
+       매도 신호의 정확도(적중 많고 오신호 적음)를 가장 중시한다.
        반환: (best_inner_dict, sel_row)"""
-    match_tol = globals().get('VERIFY_MATCH_TOLERANCE', 0.02)
-    # 1) 실제 승률 밴드
-    best_rw = pool['real_win_rate'].max()
-    b1 = pool[pool['real_win_rate'] >= best_rw - win_tol].copy()
-    # 2) 그 안에서 실제 평균 매칭률 밴드 (-2%p)
-    if 'real_avg_match' in b1.columns and len(b1) > 0:
-        best_match = b1['real_avg_match'].max()
-        b2 = b1[b1['real_avg_match'] >= best_match - match_tol].copy()
-        if len(b2) == 0:
-            b2 = b1
+    sell_tol = globals().get('VERIFY_SELL_ACC_TOLERANCE', 0.03)
+    buy_tol  = globals().get('VERIFY_BUY_ACC_TOLERANCE', 0.03)
+    # 1) 실제 매도 정확도(성공률) 최고 밴드
+    if 'real_sell_success' in pool.columns and len(pool) > 0:
+        best_sell = pool['real_sell_success'].max()
+        b1 = pool[pool['real_sell_success'] >= best_sell - sell_tol].copy()
     else:
-        best_match = float('nan'); b2 = b1
+        best_sell = float('nan'); b1 = pool.copy()
+    # 2) 그중 실제 매수 정확도 최고 밴드
+    if 'real_buy_success' in b1.columns and len(b1) > 0:
+        best_buy = b1['real_buy_success'].max()
+        b2 = b1[b1['real_buy_success'] >= best_buy - buy_tol].copy()
+        if len(b2) == 0: b2 = b1
+    else:
+        best_buy = float('nan'); b2 = b1
     # 3) 그중 실제 수익 최고
     b2 = b2.sort_values(['real_total_return', 'real_win_rate'],
                         ascending=[False, False]).reset_index(drop=True)
@@ -12324,11 +12348,13 @@ def _final_pick_by_real(pool, win_tol):
                'max_drawdown', 'n_trades'):
         if _k in sel.index:
             best_inner[_k] = sel[_k]
-    print(f"  ✓ 실거래 검증 완료 — ①승률 최고 {best_rw*100:.1f}% -{win_tol*100:.0f}%p ({len(b1)}개) "
-          f"→ ②평균매칭 최고 {best_match*100:.1f}% -{match_tol*100:.0f}%p ({len(b2)}개) → ③수익 최고 선정")
+    print(f"  ✓ 실거래 검증 완료 — ①매도정확도 최고 {best_sell*100:.1f}% -{sell_tol*100:.0f}%p ({len(b1)}개) "
+          f"→ ②매수정확도 최고 {best_buy*100:.1f}% -{buy_tol*100:.0f}%p ({len(b2)}개) → ③수익 최고 선정")
     print(f"     최종: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
           f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
-          f"(실제수익 {sel['real_total_return']*100:+.2f}%, 평균매칭 {sel.get('real_avg_match', float('nan'))*100:.1f}%)")
+          f"(매도정확도 {sel.get('real_sell_success', float('nan'))*100:.1f}%, "
+          f"매수정확도 {sel.get('real_buy_success', float('nan'))*100:.1f}%, "
+          f"실제수익 {sel['real_total_return']*100:+.2f}%)")
     return best_inner, sel
 
 
