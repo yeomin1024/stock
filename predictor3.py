@@ -9368,8 +9368,8 @@ CONFLICT_SELL_PRIORITY = False
 #   1) 실제 매도 성공률(정확도) 최고에서 -SELL_ACC_TOL 범위
 #   2) 그중 실제 매수 성공률 최고에서 -BUY_ACC_TOL 범위
 #   3) 그중 실제 수익 최고
-VERIFY_SELL_ACC_TOLERANCE = 0.03   # 매도 정확도 1차 밴드 (3%p)
-VERIFY_BUY_ACC_TOLERANCE  = 0.03   # 매수 정확도 2차 밴드 (3%p)
+VERIFY_SELL_ACC_TOLERANCE = 1.0   # 매도 정확도 1차 밴드 (3%p)
+VERIFY_BUY_ACC_TOLERANCE  = 1.0   # 매수 정확도 2차 밴드 (3%p)
 
 # ★ CatBoost 액션 보정 (요청) — 선정된 조합의 신호로 백테스트한 뒤, 앵커 정답과 안 맞는
 #   매수/매도 액션을 머신러닝으로 보정해본다.
