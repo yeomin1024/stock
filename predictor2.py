@@ -186,7 +186,22 @@ def download_data(start='2020-01-01'):
         removed = set(PEERS) - set(peers_clean) - {TICKER}
         print(f"  ℹ TICKER({TICKER})와 동의어/자기비교 자산 제거: {sorted(removed) if removed else 'TICKER만'}")
     print(f"  다운로드: {all_tickers}")
-    raw = yf.download(all_tickers, start=start, auto_adjust=True, progress=False)
+    from datetime import datetime, timedelta
+    _end = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
+    raw = yf.download(all_tickers, start=start, end=_end,
+                      auto_adjust=True, progress=False)
+    # 최신 거래일 누락 점검
+    try:
+        _last = raw.index[-1]
+        _today = pd.Timestamp(datetime.now().date())
+        _bd = len(pd.bdate_range(_last.normalize(), _today)) - 1
+        if _bd >= 1:
+            print(f"  ⚠ 최신 거래일 누락 가능 — 마지막 데이터 {str(_last)[:10]}, "
+                  f"오늘({_today.date()})보다 {_bd}영업일 전")
+            print(f"     yfinance가 당일 임시데이터를 재정비 중일 수 있음. "
+                  f"몇 분~몇 시간 뒤 다시 받으면 포함됩니다.")
+    except Exception:
+        pass
     ohlcv = {}
     for tk in all_tickers:
         try:
