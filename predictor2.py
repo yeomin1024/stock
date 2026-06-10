@@ -9204,7 +9204,7 @@ def _iv_autorun():
 
 import warnings; warnings.filterwarnings('ignore')
 import os, math, time, itertools
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from openpyxl import Workbook
@@ -9261,8 +9261,8 @@ RUNUP_LIMIT_SELL    = 0.01
 N_THRESHOLDS        = 400
 MAX_INDICATORS      = 600
 
-K_BUY_RANGE         = [i for i in range(10, 100)]
-K_SELL_RANGE        = [i for i in range(10, 100)]
+K_BUY_RANGE         = [i for i in range(1, 100)]
+K_SELL_RANGE        = [i for i in range(1, 100)]
 VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
@@ -9306,7 +9306,7 @@ SELL_SUCCESS_TOLERANCE = 0.02   # 매도성공률 최고에서 이 차이(2%p)�
 MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 (그중 수익 최고 선택)
 
 # ★ 'winrate_return' 모드 밴드 폭 (요청) — 일별거래 승률 최고에서 이 차이(10%p)까지 후보
-WINRATE_TOLERANCE      = 0.2
+WINRATE_TOLERANCE      = 0.05
 
 # ★ 승률 후보 실거래 검증 (요청) — 그리드는 빠른 근사라 실제 일별거래와 MDD·승률·수익이
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
@@ -9325,11 +9325,11 @@ VERIFY_AVG_SUCCESS_TOLERANCE = 0.2
 
 # ★ 수익 동률 판정 (요청) — 실제 수익률 차이가 이 값(3%p) 이내면 '동률'로 보고,
 #   그중 실제 평균 성공률이 더 높은 조합을 선정.
-VERIFY_RETURN_TIE = 0.005
+VERIFY_RETURN_TIE = 0.02
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 매칭률'(매수·매도 앵커 매칭)
 #   최고에서 이 값(2%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
-VERIFY_MATCH_TOLERANCE = 0.2
+VERIFY_MATCH_TOLERANCE = 0.3
 
 # ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림)
 EXCLUDE_BELOW_BH = False
@@ -9368,8 +9368,8 @@ CONFLICT_SELL_PRIORITY = False
 #   1) 실제 매도 성공률(정확도) 최고에서 -SELL_ACC_TOL 범위
 #   2) 그중 실제 매수 성공률 최고에서 -BUY_ACC_TOL 범위
 #   3) 그중 실제 수익 최고
-VERIFY_SELL_ACC_TOLERANCE = 1.0   # 매도 정확도 1차 밴드 (3%p)
-VERIFY_BUY_ACC_TOLERANCE  = 1.0   # 매수 정확도 2차 밴드 (3%p)
+VERIFY_SELL_ACC_TOLERANCE = 0.01   # 매도 정확도 1차 밴드 (3%p)
+VERIFY_BUY_ACC_TOLERANCE  = 0.01   # 매수 정확도 2차 밴드 (3%p)
 
 # ★ CatBoost 액션 보정 (요청) — 선정된 조합의 신호로 백테스트한 뒤, 앵커 정답과 안 맞는
 #   매수/매도 액션을 머신러닝으로 보정해본다.
@@ -9382,6 +9382,17 @@ CATBOOST_MIN_TRAIN_DAYS = 120    # 최소 학습일수 (이만큼 쌓인 뒤부�
 CATBOOST_PROB_THRESHOLD = 0.5    # 보유 확률이 이 값 이상이면 '보유'로 보정
 CATBOOST_TARGET_HORIZON = 5      # ★ 타겟: 미래 N일 수익 (앵커 아님 — 실전 검증 가능한 라벨)
 CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진짜 미래'로 성능 측정
+
+# ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
+#   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
+#   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
+OOS_MONTHS = 0                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_SELECT_BY_OOS_RETURN = False  # True면 OOS 수익률 최고로 선정 (전체수익 무시)
+
+# ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
+#   충돌 패배·간발의 차로 앵커와 안 맞은 매수/매도를 '지표 가중치 조정'으로 보정.
+#   단, 조정 후 수익이 떨어지면 롤백(기존 그리드 유지) → 미매칭만 보정, 수익 손해 없음.
+USE_ANCHOR_MATCH_CORRECTION = True
 
 ANCHOR_BUY_DATES = [
 ]
@@ -10817,7 +10828,9 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
                               stop_loss_pct=None,
                               anchor_mode=False,
                               anchor_safe_buy=None,
-                              anchor_safe_sell=None):
+                              anchor_safe_sell=None,
+                              buy_w_override=None,
+                              sell_w_override=None):
     import numpy as np
     import pandas as pd
     # 기본값 — 원본 전역 상수 사용
@@ -10858,6 +10871,14 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
         buy_w  = np.ones(K_buy,  dtype=np.float64)
         sell_w = np.ones(K_sell, dtype=np.float64)
         weighted = False
+    # ★ 앵커 미매칭 보정 (요청) — 외부에서 지표 가중치를 주입하면 그걸 사용.
+    #   특정 지표 점수(가중치)를 조정해 충돌 패배·간발의 차 미매칭을 보정하기 위함.
+    if buy_w_override is not None and len(buy_w_override) == K_buy:
+        buy_w = np.asarray(buy_w_override, dtype=np.float64)
+        weighted = True
+    if sell_w_override is not None and len(sell_w_override) == K_sell:
+        sell_w = np.asarray(sell_w_override, dtype=np.float64)
+        weighted = True
 
     sl_active = stop_loss_pct is not None and stop_loss_pct > 0
     sl = float(stop_loss_pct) if sl_active else 0.0
@@ -11973,7 +11994,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = (f'전체 그리드 통합 (모든 메타변수 조합) — {mdd_t2}, 거래수 ≥ {min_trades_daily}회, B&H 초과만  '
                            f'({len(inner_passed)}개) — {inner_sort_label}')
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:AJ1')
+    ws.merge_cells('A1:AM1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
                  '평균성공', '매수성공', '매도성공',
@@ -11981,7 +12002,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  '★ 누적수익', 'CAGR', '거래수', '승률', 'Sharpe', '최대거래손실',
                  '✅실제승률', '✅실제최대손실', '✅실제누적수익',
                  '✅실제매수성공', '✅실제매도성공', '✅실제평균성공',
-                 '✅실제매수매칭', '✅실제매도매칭', '✅실제평균매칭', '✅앵커수익'])
+                 '✅실제매수매칭', '✅실제매도매칭', '✅실제평균매칭', '✅앵커수익',
+                 '🔮OOS수익', '🔮OOS매수정확도', '🔮OOS매도정확도'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -12054,6 +12076,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'real_sell_match')*100:.1f}%"  if pd.notna(_g(row,'real_sell_match'))  else '—'),
             (f"{_g(row,'real_avg_match')*100:.1f}%"   if pd.notna(_g(row,'real_avg_match'))   else '—'),
             (f"{_g(row,'real_anchor_return')*100:+.2f}%" if pd.notna(_g(row,'real_anchor_return')) else '—'),
+            (f"{_g(row,'oos_total_return')*100:+.2f}%" if pd.notna(_g(row,'oos_total_return')) else '—'),
+            (f"{_g(row,'oos_buy_success')*100:.1f}%"  if pd.notna(_g(row,'oos_buy_success'))  else '—'),
+            (f"{_g(row,'oos_sell_success')*100:.1f}%" if pd.notna(_g(row,'oos_sell_success')) else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -12087,14 +12112,21 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if pd.notna(_rsm):  ws.cell(r, 30).fill = _success_fill(_rsm)
         if pd.notna(_ravm): ws.cell(r, 31).fill = _success_fill(_ravm)
         if pd.notna(_rar):  ws.cell(r, 32).fill = _ret_fill(_rar, bh_ret)
+        # OOS 수익(33) 색칠, OOS 매수/매도 정확도(34,35)
+        _or = _g(row, 'oos_total_return'); _obs = _g(row, 'oos_buy_success'); _oss = _g(row, 'oos_sell_success')
+        if pd.notna(_or):  ws.cell(r, 33).fill = _ret_fill(_or, bh_ret)
+        if pd.notna(_obs): ws.cell(r, 34).fill = _success_fill(_obs)
+        if pd.notna(_oss): ws.cell(r, 35).fill = _success_fill(_oss)
         if is_best:
             for cc in (12, 13, 14):
                 ws.cell(r, cc).font = Font(bold=True, color='C00000', size=11)
             ws.cell(r, 17).font = Font(bold=True, color='C00000', size=12)
             if pd.notna(_rt):
                 ws.cell(r, 25).font = Font(bold=True, color='C00000', size=12)
+            if pd.notna(_or):
+                ws.cell(r, 33).font = Font(bold=True, color='C00000', size=12)
     for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 11,
-                            11, 11, 13, 12, 12, 12, 12, 12, 12, 11], 1):
+                            11, 11, 13, 12, 12, 12, 12, 12, 12, 11, 12, 13, 13], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -12331,28 +12363,20 @@ def _resolve_data():
 # ════════════════════════════════════════════════════════════════
 def _final_pick_by_real(pool, win_tol):
     """실거래 검증 결과 pool에서 최종 1개 선정 (요청):
-       우선순위 = (1) 매도 정확도(성공률) 최대 → (2) 매수 정확도 최대 → (3) 실제 수익 최대.
-       매도 신호의 정확도(적중 많고 오신호 적음)를 가장 중시한다.
+       OOS_SELECT_BY_OOS_RETURN=True면 'OOS 수익률'이 가장 높은 조합을 선정 (미래 일반화 우선).
+       OOS 수익이 없으면(컬럼 없거나 전부 NaN) 전체 실제 수익으로 폴백.
        반환: (best_inner_dict, sel_row)"""
-    sell_tol = globals().get('VERIFY_SELL_ACC_TOLERANCE', 0.03)
-    buy_tol  = globals().get('VERIFY_BUY_ACC_TOLERANCE', 0.03)
-    # 1) 실제 매도 정확도(성공률) 최고 밴드
-    if 'real_sell_success' in pool.columns and len(pool) > 0:
-        best_sell = pool['real_sell_success'].max()
-        b1 = pool[pool['real_sell_success'] >= best_sell - sell_tol].copy()
+    use_oos = globals().get('OOS_SELECT_BY_OOS_RETURN', True)
+    if use_oos and 'oos_total_return' in pool.columns and pool['oos_total_return'].notna().any():
+        b = pool[pool['oos_total_return'].notna()].sort_values(
+            ['oos_total_return', 'oos_win_rate' if 'oos_win_rate' in pool.columns else 'real_win_rate'],
+            ascending=[False, False]).reset_index(drop=True)
+        _by = 'OOS'
     else:
-        best_sell = float('nan'); b1 = pool.copy()
-    # 2) 그중 실제 매수 정확도 최고 밴드
-    if 'real_buy_success' in b1.columns and len(b1) > 0:
-        best_buy = b1['real_buy_success'].max()
-        b2 = b1[b1['real_buy_success'] >= best_buy - buy_tol].copy()
-        if len(b2) == 0: b2 = b1
-    else:
-        best_buy = float('nan'); b2 = b1
-    # 3) 그중 실제 수익 최고
-    b2 = b2.sort_values(['real_total_return', 'real_win_rate'],
-                        ascending=[False, False]).reset_index(drop=True)
-    sel = b2.iloc[0]
+        b = pool.sort_values(['real_total_return', 'real_win_rate'],
+                             ascending=[False, False]).reset_index(drop=True)
+        _by = '\uc804\uccb4'
+    sel = b.iloc[0]
     best_inner = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
                   'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
     for _k in ('sharpe_like', 'total_return', 'avg_success_rate',
@@ -12360,13 +12384,13 @@ def _final_pick_by_real(pool, win_tol):
                'max_drawdown', 'n_trades'):
         if _k in sel.index:
             best_inner[_k] = sel[_k]
-    print(f"  ✓ 실거래 검증 완료 — ①매도정확도 최고 {best_sell*100:.1f}% -{sell_tol*100:.0f}%p ({len(b1)}개) "
-          f"→ ②매수정확도 최고 {best_buy*100:.1f}% -{buy_tol*100:.0f}%p ({len(b2)}개) → ③수익 최고 선정")
-    print(f"     최종: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
+    _oosr = sel.get('oos_total_return', float('nan'))
+    print(f"  \u2713 \uc2e4\uac70\ub798 \uac80\uc99d \uc644\ub8cc \u2014 {_by} \uc218\uc775\ub960 \ucd5c\uace0 \uc870\ud569 \uc120\uc815")
+    print(f"     \ucd5c\uc885: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
           f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
-          f"(매도정확도 {sel.get('real_sell_success', float('nan'))*100:.1f}%, "
-          f"매수정확도 {sel.get('real_buy_success', float('nan'))*100:.1f}%, "
-          f"실제수익 {sel['real_total_return']*100:+.2f}%)")
+          f"(OOS\uc218\uc775 {_oosr*100:+.2f}%, OOS\ub9e4\ub3c4\uc815\ud655\ub3c4 {sel.get('oos_sell_success', float('nan'))*100:.1f}%, "
+          f"OOS\ub9e4\uc218\uc815\ud655\ub3c4 {sel.get('oos_buy_success', float('nan'))*100:.1f}%, "
+          f"\uc804\uccb4\uc218\uc775 {sel['real_total_return']*100:+.2f}%)")
     return best_inner, sel
 
 
@@ -12451,6 +12475,39 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
         row['real_sell_match']    = float(_cur.get('anchor_sell_match_rate', 0.0))
         row['real_avg_match']     = float(_cur.get('anchor_avg_match_rate', 0.0))
         row['real_anchor_return'] = float(_cur.get('anchor_strategy_return', 0.0))
+        # ★ OOS 기간(최근 N개월)만 잘라 백테스트 — OOS 수익/정확도 (요청)
+        try:
+            _oos_m = int(globals().get('OOS_MONTHS', 1))
+            _last_dt = feat.index.max()
+            _oos_start = _last_dt - pd.DateOffset(months=_oos_m)
+            _omask = feat.index >= _oos_start
+            _omask = np.asarray(_omask)
+            _feat_oos = feat.loc[_omask]
+            _close_oos = close.reindex(_feat_oos.index)
+            _asb_o = (anchor_safe_buy[_omask] if (anchor_safe_buy is not None and len(anchor_safe_buy)==len(_omask)) else None)
+            _ass_o = (anchor_safe_sell[_omask] if (anchor_safe_sell is not None and len(anchor_safe_sell)==len(_omask)) else None)
+            if len(_feat_oos) >= 5:
+                _do, _to, _curo, _buo, _suo = daily_ensemble_backtest(
+                    _feat_oos, _close_oos, bp, sp,
+                    K_buy=int(_r['K_buy']), K_sell=int(_r['K_sell']),
+                    vote_buy=int(_r['vote_buy']), vote_sell=int(_r['vote_sell']),
+                    cost=COST_PER_TRADE, horizon=horizon,
+                    dd_limit=dd_limit, ru_limit=ru_limit,
+                    stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                    anchor_safe_buy=_asb_o, anchor_safe_sell=_ass_o)
+                row['oos_total_return'] = float(_curo.get('cum_return_pct', 0.0)) / 100.0
+                row['oos_buy_success']  = float(_curo.get('buy_success_rate', 0.0))
+                row['oos_sell_success'] = float(_curo.get('sell_success_rate', 0.0))
+                row['oos_win_rate']     = float(_curo.get('win_rate', 0.0))
+                row['oos_n_trades']     = int(_curo.get('n_trades', 0))
+            else:
+                row['oos_total_return'] = float('nan')
+                row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
+                row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
+        except Exception:
+            row['oos_total_return'] = float('nan')
+            row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
+            row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
         real_rows.append(row)
         if (_i + 1) % 1000 == 0:
             print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {time.time()-_t0:.0f}초)")
@@ -12525,6 +12582,39 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
         row['real_sell_match']    = float(_cur.get('anchor_sell_match_rate', 0.0))
         row['real_avg_match']     = float(_cur.get('anchor_avg_match_rate', 0.0))
         row['real_anchor_return'] = float(_cur.get('anchor_strategy_return', 0.0))
+        # ★ OOS 기간(최근 N개월)만 잘라 백테스트 — OOS 수익/정확도 (요청)
+        try:
+            _oos_m = int(globals().get('OOS_MONTHS', 1))
+            _last_dt = feat.index.max()
+            _oos_start = _last_dt - pd.DateOffset(months=_oos_m)
+            _omask = feat.index >= _oos_start
+            _omask = np.asarray(_omask)
+            _feat_oos = feat.loc[_omask]
+            _close_oos = close.reindex(_feat_oos.index)
+            _asb_o = (anchor_safe_buy[_omask] if (anchor_safe_buy is not None and len(anchor_safe_buy)==len(_omask)) else None)
+            _ass_o = (anchor_safe_sell[_omask] if (anchor_safe_sell is not None and len(anchor_safe_sell)==len(_omask)) else None)
+            if len(_feat_oos) >= 5:
+                _do, _to, _curo, _buo, _suo = daily_ensemble_backtest(
+                    _feat_oos, _close_oos, buy_pool, sell_pool,
+                    K_buy=int(_r['K_buy']), K_sell=int(_r['K_sell']),
+                    vote_buy=int(_r['vote_buy']), vote_sell=int(_r['vote_sell']),
+                    cost=COST_PER_TRADE, horizon=horizon,
+                    dd_limit=dd_limit, ru_limit=ru_limit,
+                    stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                    anchor_safe_buy=_asb_o, anchor_safe_sell=_ass_o)
+                row['oos_total_return'] = float(_curo.get('cum_return_pct', 0.0)) / 100.0
+                row['oos_buy_success']  = float(_curo.get('buy_success_rate', 0.0))
+                row['oos_sell_success'] = float(_curo.get('sell_success_rate', 0.0))
+                row['oos_win_rate']     = float(_curo.get('win_rate', 0.0))
+                row['oos_n_trades']     = int(_curo.get('n_trades', 0))
+            else:
+                row['oos_total_return'] = float('nan')
+                row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
+                row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
+        except Exception:
+            row['oos_total_return'] = float('nan')
+            row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
+            row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
         real_rows.append(row)
         if (_i + 1) % 1000 == 0:
             print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {time.time()-_t_start:.0f}초)")
@@ -13415,24 +13505,43 @@ def staged_meta_tune(*, base_meta_grid=None,
 
     # ★ CatBoost 액션 보정 (요청) — 선정 조합에 대해 자동 실행 (predictor2.py 내부에서 처리).
     #   미래 수익 타겟 + OOS 검증으로, 미래 판단에 도움 되는지까지 같이 평가.
-    if globals().get('USE_CATBOOST_CORRECTION', False):
+    # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
+    #   충돌 패배·간발의 차로 앵커와 안 맞은 매수/매도를 지표 가중치 조정으로 보정.
+    #   단, 수익이 떨어지면 롤백 (기존 그리드 결과 유지).
+    _corr_bw = _corr_sw = None
+    if globals().get('USE_CATBOOST_CORRECTION', False) or globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
         try:
-            _bsel = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
-                     'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
-            # 최종 조합의 지표 풀을 pool_map에서 가져옴 (그 메타조합)
-            _pm = globals().get('_LAST_POOL_MAP', {})
-            _key = (round(float(fb['wz']),4), int(fb['pct'][0]), int(fb['pct'][1]), round(float(fb['corr']),4))
-            _pools = _pm.get(_key)
-            if _pools is not None:
-                _bp_c, _sp_c = _pools
-                _ff, _cc, _tk = _resolve_data()
-                _mask = _ff.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
-                _ff = _ff.loc[_mask]; _cc = _cc.reindex(_ff.index)
-                _vmask = _cc.notna(); _ff = _ff[_vmask.values]; _cc = _cc[_vmask.values]
-                catboost_correct_actions(_ff, _cc, _bp_c, _sp_c, _bsel,
-                                         anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE))
+            _bsel0 = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
+                      'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
+            _pm0 = globals().get('_LAST_POOL_MAP', {})
+            _key0 = (round(float(fb['wz']),4), int(fb['pct'][0]), int(fb['pct'][1]), round(float(fb['corr']),4))
+            _pools0 = _pm0.get(_key0)
+            if _pools0 is not None:
+                _bp0, _sp0 = _pools0
+                _ff0, _cc0, _tk0 = _resolve_data()
+                _m0 = _ff0.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
+                _ff0 = _ff0.loc[_m0]; _cc0 = _cc0.reindex(_ff0.index)
+                _vm0 = _cc0.notna(); _ff0 = _ff0[_vm0.values]; _cc0 = _cc0[_vm0.values]
+                # 앵커 배열
+                _abd0, _asd0 = auto_compute_anchor_dates(
+                    _ff0.index, _cc0, window=globals().get('AUTO_ANCHOR_WINDOW',1),
+                    lookforward=globals().get('AUTO_ANCHOR_LOOKFORWARD',1),
+                    min_rise_after_buy=globals().get('AUTO_ANCHOR_MIN_RISE',0.01),
+                    min_drop_after_sell=globals().get('AUTO_ANCHOR_MIN_DROP',0.01),
+                    price_tolerance=globals().get('AUTO_ANCHOR_PRICE_TOLERANCE',0.01),
+                    max_dates=globals().get('AUTO_ANCHOR_MAX_DATES',None))
+                _asb0, _ass0 = _compute_anchor_arrays(_ff0.index, _abd0, _asd0)
+                if globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
+                    _corr_bw, _corr_sw, _mc = anchor_match_correct_weights(
+                        _ff0, _cc0, _bp0, _sp0, _bsel0,
+                        anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE),
+                        anchor_safe_buy=_asb0, anchor_safe_sell=_ass0)
+                # CatBoost 보정 (앵커 보정된 가중치 반영)
+                if globals().get('USE_CATBOOST_CORRECTION', False):
+                    catboost_correct_actions(_ff0, _cc0, _bp0, _sp0, _bsel0,
+                                             anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE))
         except Exception as _ce:
-            print(f"  ⚠ CatBoost 보정 자동 실행 실패: {_ce}")
+            print(f"  ⚠ 보정 자동 실행 실패: {_ce}")
 
     return final_res
 
@@ -13970,8 +14079,15 @@ def catboost_correct_actions(feat, close, buy_pool, sell_pool, best_inner, *,
                  if 'position_pre' in daily else _np.zeros(n))
 
     # 4) OOS 분할 — 마지막 20%는 학습에 안 쓰고 '진짜 미래'로 평가
-    oos_frac = float(globals().get('CATBOOST_OOS_FRACTION', 0.2))
-    split = int(n * (1 - oos_frac))
+    # OOS 분할 — OOS_MONTHS(최근 N개월)를 우선 사용, 없으면 OOS_FRACTION
+    _oos_m = int(globals().get('OOS_MONTHS', 0))
+    if _oos_m > 0:
+        _oos_start = feat.index.max() - pd.DateOffset(months=_oos_m)
+        split = int((feat.index < _oos_start).sum())
+        oos_frac = (n - split) / n if n > 0 else 0.2
+    else:
+        oos_frac = float(globals().get('CATBOOST_OOS_FRACTION', 0.2))
+        split = int(n * (1 - oos_frac))
     min_train = int(globals().get('CATBOOST_MIN_TRAIN_DAYS', 120))
     thr = float(globals().get('CATBOOST_PROB_THRESHOLD', 0.5))
     if split <= min_train or (n - H) <= split:
@@ -14103,6 +14219,110 @@ def catboost_correct_from_excel(filename, *, feat=None, close=None, output_dir=N
         feat, close, _tk = _resolve_data()
     g = globals(); g['USE_CATBOOST_CORRECTION'] = True
     return catboost_correct_actions(feat, close, bp, sp, best, anchor_mode=g.get('ANCHOR_MODE', True))
+
+
+def anchor_match_correct_weights(feat, close, buy_pool, sell_pool, best_inner, *,
+                                 horizon=None, dd_limit=None, ru_limit=None,
+                                 stop_loss_pct=None, anchor_mode=True,
+                                 anchor_safe_buy=None, anchor_safe_sell=None,
+                                 max_boost=0.5, step=0.1):
+    """앵커 미매칭(충돌 패배·간발의 차)을 '지표 가중치 조정'으로 보정한다 (요청).
+       - 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
+       - 앵커 매수정답일에 매수신호가 떴으나 매도가 더 강해 진 경우 등 → 그 정답일에
+         켜진 매수 지표의 가중치를 조금 올려(또는 매도 지표를 내려) 매수가 이기게.
+       - ★ 단, 조정 후 재백테스트해서 '수익이 떨어지면 롤백'(기존 결과 유지).
+         수익이 같거나 오를 때만 채택. → 미매칭만 보정, 수익 손해 없음.
+       반환: (조정된 buy_w, sell_w, 결과 dict) — 채택 안 되면 (None, None, dict)
+    """
+    import numpy as _np
+    horizon = horizon if horizon is not None else globals().get('HORIZON_DAYS', 1)
+    dd_limit = dd_limit if dd_limit is not None else globals().get('DRAWDOWN_LIMIT_BUY', 0.01)
+    ru_limit = ru_limit if ru_limit is not None else globals().get('RUNUP_LIMIT_SELL', 0.01)
+    stop_loss_pct = stop_loss_pct if stop_loss_pct is not None else globals().get('STOP_LOSS_PCT', 0.05)
+    cost = globals().get('COST_PER_TRADE', 0.004)
+    Kb = int(best_inner['K_buy']); Ks = int(best_inner['K_sell'])
+    vb = int(best_inner['vote_buy']); vs = int(best_inner['vote_sell'])
+
+    def _run(bwo=None, swo=None):
+        return daily_ensemble_backtest(
+            feat, close, buy_pool, sell_pool, K_buy=Kb, K_sell=Ks,
+            vote_buy=vb, vote_sell=vs, cost=cost, horizon=horizon,
+            dd_limit=dd_limit, ru_limit=ru_limit, stop_loss_pct=stop_loss_pct,
+            anchor_mode=anchor_mode, anchor_safe_buy=anchor_safe_buy,
+            anchor_safe_sell=anchor_safe_sell, buy_w_override=bwo, sell_w_override=swo)
+
+    # 0) 기준(보정 전) 백테스트
+    d0, t0, cur0, bu0, su0 = _run()
+    ret0 = float(cur0.get('cum_return_pct', 0.0))
+    bm0 = float(cur0.get('anchor_buy_match_rate', 0.0))
+    sm0 = float(cur0.get('anchor_sell_match_rate', 0.0))
+
+    # 기본 가중치 (현재 score 기반)
+    buy_used = buy_pool.iloc[:Kb].reset_index(drop=True)
+    sell_used = sell_pool.iloc[:Ks].reset_index(drop=True)
+    if globals().get('USE_WEIGHTED_VOTE', False):
+        bw_base = compute_vote_weights(buy_used['score'].values, globals().get('WEIGHT_MAX_RATIO', 1.6))
+        sw_base = compute_vote_weights(sell_used['score'].values, globals().get('WEIGHT_MAX_RATIO', 1.6))
+    else:
+        bw_base = _np.ones(Kb); sw_base = _np.ones(Ks)
+
+    # 1) 미매칭 앵커일에 켜진 지표 식별 — 그 지표 가중치를 boost
+    cl = close.reindex(feat.index).astype(float)
+    px = cl.values.astype(_np.float64); n = len(px)
+    buy_mat = _np.zeros((n, Kb), dtype=_np.uint8)
+    sell_mat = _np.zeros((n, Ks), dtype=_np.uint8)
+    for k, (_, row) in enumerate(buy_used.iterrows()):
+        buy_mat[:, k] = _to_signal_array(feat, row)
+    for k, (_, row) in enumerate(sell_used.iterrows()):
+        sell_mat[:, k] = _to_signal_array(feat, row)
+    sba = anchor_safe_buy; ssa = anchor_safe_sell
+    if sba is None or ssa is None:
+        print("  ⚠ 앵커 배열 없음 — 매칭 보정 건너뜀")
+        return None, None, {'adopted': False, 'reason': 'no_anchor'}
+
+    # 미매칭 매수정답일: 앵커 매수=1인데 실제 보유 못 한 날 → 그날 켜진 매수 지표 카운트
+    pos_post = d0['position_pre'].values.astype(int)[:n] if 'position_pre' in d0 else _np.zeros(n, dtype=int)
+    buy_hit = _np.zeros(Kb); sell_hit = _np.zeros(Ks)
+    W = int(globals().get('ANCHOR_MATCH_WINDOW', 2))
+    for i in range(n):
+        if i < len(sba) and sba[i] == 1:
+            matched = any(pos_post[i+dd] == 1 for dd in range(0, W+1) if i+dd < n)
+            if not matched:
+                buy_hit += buy_mat[i]      # 그날 켜진 매수 지표에 점수
+        if i < len(ssa) and ssa[i] == 1:
+            matched = any(pos_post[i+dd] == 0 for dd in range(0, W+1) if i+dd < n)
+            if not matched:
+                sell_hit += sell_mat[i]
+
+    # 2) 미매칭에 자주 켜진 지표일수록 가중치 boost — 단계적으로 키우며 수익 안 떨어지는 최대 채택
+    best = {'adopted': False, 'ret': ret0, 'bw': None, 'sw': None,
+            'ret_before': ret0, 'bm_before': bm0, 'sm_before': sm0,
+            'ret_after': ret0, 'bm_after': bm0, 'sm_after': sm0}
+    bh_norm = buy_hit / buy_hit.max() if buy_hit.max() > 0 else buy_hit
+    sh_norm = sell_hit / sell_hit.max() if sell_hit.max() > 0 else sell_hit
+    boost = step
+    while boost <= max_boost + 1e-9:
+        bw = bw_base * (1.0 + boost * bh_norm)   # 매수 미매칭 기여 지표 ↑
+        sw = sw_base * (1.0 + boost * sh_norm)   # 매도 미매칭 기여 지표 ↑
+        d1, t1, cur1, _b1, _s1 = _run(bw, sw)
+        ret1 = float(cur1.get('cum_return_pct', 0.0))
+        bm1 = float(cur1.get('anchor_buy_match_rate', 0.0))
+        sm1 = float(cur1.get('anchor_sell_match_rate', 0.0))
+        # ★ 수익이 기준 이상이고, 매칭이 개선될 때만 채택 후보
+        if ret1 >= ret0 - 1e-9 and (bm1 + sm1) > (best['bm_after'] + best['sm_after']):
+            best.update({'adopted': True, 'ret': ret1, 'bw': bw.copy(), 'sw': sw.copy(),
+                         'ret_after': ret1, 'bm_after': bm1, 'sm_after': sm1})
+        boost += step
+
+    if best['adopted']:
+        print(f"  🎯 앵커 미매칭 보정 (지표 가중치 조정) — 수익 유지하며 매칭 개선:")
+        print(f"     매수매칭 {best['bm_before']*100:.1f}% → {best['bm_after']*100:.1f}%, "
+              f"매도매칭 {best['sm_before']*100:.1f}% → {best['sm_after']*100:.1f}%")
+        print(f"     수익 {best['ret_before']:+.1f}% → {best['ret_after']:+.1f}% (떨어지지 않음 — 채택)")
+        return best['bw'], best['sw'], best
+    else:
+        print(f"  ℹ 앵커 미매칭 보정 — 수익 유지하며 매칭 개선되는 조정 없음 → 기존 그리드 유지")
+        return None, None, best
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -15140,14 +15360,26 @@ def _resolve_data_for_ticker(ticker):
                 print(f"  ⚠ {ticker}가 download_data 결과에 없음 — yfinance 직접 호출")
                 try:
                     import yfinance as yf
-                    df = yf.download(ticker, start=start, progress=False, auto_adjust=False)
+                    # ★ end를 '내일'로 명시 — yfinance는 end 미지정 시 당일을 빠뜨릴 수 있음.
+                    #   (특히 장 마감 전/시간대 차이로 전날까지만 받아지는 문제 완화)
+                    _end = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+                    df = yf.download(ticker, start=start, end=_end,
+                                     progress=False, auto_adjust=False)
                     if df is None or len(df) == 0:
                         raise RuntimeError(f"yfinance에서 {ticker} 데이터 0건")
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = df.columns.get_level_values(0)
                     ohlcv[ticker] = df
                     closes[ticker] = df['Close'] if 'Close' in df.columns else df.iloc[:, 0]
-                    print(f"  ✓ yfinance로 {ticker} 다운로드 성공 ({len(df)}일)")
+                    _last = df.index[-1]
+                    _today = pd.Timestamp(datetime.now().date())
+                    _bdays = len(pd.bdate_range(_last.normalize(), _today)) - 1
+                    print(f"  ✓ yfinance로 {ticker} 다운로드 성공 ({len(df)}일, 마지막 {str(_last)[:10]})")
+                    if _bdays >= 1:
+                        print(f"  ⚠ 최신 거래일 누락 가능 — 마지막 데이터가 {str(_last)[:10]}로 "
+                              f"오늘({_today.date()})보다 {_bdays}영업일 전입니다.")
+                        print(f"     원인: 미국장 마감 전 실행 or yfinance 반영 지연. "
+                              f"장 마감 후(한국시간 다음날 오전 이후) 다시 받으면 최신일이 포함됩니다.")
                 except ImportError:
                     raise RuntimeError(
                         f"{ticker}가 download_data 결과에 없습니다.\n"
