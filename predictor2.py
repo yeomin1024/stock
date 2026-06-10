@@ -9306,7 +9306,7 @@ SELL_SUCCESS_TOLERANCE = 0.02   # 매도성공률 최고에서 이 차이(2%p)�
 MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 (그중 수익 최고 선택)
 
 # ★ 'winrate_return' 모드 밴드 폭 (요청) — 일별거래 승률 최고에서 이 차이(10%p)까지 후보
-WINRATE_TOLERANCE      = 0.05
+WINRATE_TOLERANCE      = 0.2
 
 # ★ 승률 후보 실거래 검증 (요청) — 그리드는 빠른 근사라 실제 일별거래와 MDD·승률·수익이
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
@@ -9317,19 +9317,19 @@ VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
 #   None 이면 이 필터를 끈다. (단, 필터로 후보가 0개면 자동으로 필터를 완화해 최선을 고름)
-VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
+VERIFY_MAX_DRAWDOWN_LIMIT = None
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
 #   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
-VERIFY_AVG_SUCCESS_TOLERANCE = 0.03
+VERIFY_AVG_SUCCESS_TOLERANCE = 0.2
 
 # ★ 수익 동률 판정 (요청) — 실제 수익률 차이가 이 값(3%p) 이내면 '동률'로 보고,
 #   그중 실제 평균 성공률이 더 높은 조합을 선정.
-VERIFY_RETURN_TIE = 0.03
+VERIFY_RETURN_TIE = 0.005
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 매칭률'(매수·매도 앵커 매칭)
 #   최고에서 이 값(2%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
-VERIFY_MATCH_TOLERANCE = 0.1
+VERIFY_MATCH_TOLERANCE = 0.2
 
 # ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림)
 EXCLUDE_BELOW_BH = False
@@ -9362,7 +9362,7 @@ ANCHOR_SELL_HOLD_LOOKBACK = 5
 #   True: 매수·매도 신호 충돌 시, 현금이면 매수 보류(잘못된 매수 상쇄),
 #         보유면 청산(올바른 매도는 안 상쇄). 위험회피적, 손실 방지 우선.
 #   False: 기존 강도 비교(b_strength vs s_strength).
-CONFLICT_SELL_PRIORITY = True
+CONFLICT_SELL_PRIORITY = False
 
 # ★ 최종 선정 우선순위 (요청) — 매도 정확도 우선 → 매수 정확도 → 수익:
 #   1) 실제 매도 성공률(정확도) 최고에서 -SELL_ACC_TOL 범위
