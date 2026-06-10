@@ -9321,7 +9321,7 @@ VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
 #   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
-VERIFY_AVG_SUCCESS_TOLERANCE = 0.2
+VERIFY_AVG_SUCCESS_TOLERANCE = 0.3
 
 # ★ 수익 동률 판정 (요청) — 실제 수익률 차이가 이 값(3%p) 이내면 '동률'로 보고,
 #   그중 실제 평균 성공률이 더 높은 조합을 선정.
