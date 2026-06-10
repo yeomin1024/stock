@@ -220,7 +220,7 @@ import pandas as pd
 import time
 import os
 
-def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f5da4', max_retries=2, retry_wait=1.0):
+def download_fred_data(start='2020-01-01', api_key='c51a57ed1c1fc96f7e70561f252d1b9b', max_retries=2, retry_wait=1.0):
     """
     FRED 경제지표 다운로드 (fredapi 공식 API 사용 — pandas_datareader보다 안정적·빠름).
     실패한 시리즈는 ID·설명·이유를 함께 표시하고, 일시적 실패는 재시도한다.
