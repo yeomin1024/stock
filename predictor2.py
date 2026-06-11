@@ -9325,7 +9325,7 @@ VERIFY_AVG_SUCCESS_TOLERANCE = 0.4
 
 # ★ 수익 동률 판정 (요청) — 실제 수익률 차이가 이 값(3%p) 이내면 '동률'로 보고,
 #   그중 실제 평균 성공률이 더 높은 조합을 선정.
-VERIFY_RETURN_TIE = 0.02
+VERIFY_RETURN_TIE = 0.03
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 매칭률'(매수·매도 앵커 매칭)
 #   최고에서 이 값(2%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
@@ -9386,13 +9386,19 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 0                   # 최근 N개월을 OOS로 (이전달~현재)
-OOS_SELECT_BY_OOS_RETURN = False  # True면 OOS 수익률 최고로 선정 (전체수익 무시)
+OOS_MONTHS = 1                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_SELECT_BY_OOS_RETURN = True  # True면 OOS 수익률 최고로 선정 (전체수익 무시)
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
 #   충돌 패배·간발의 차로 앵커와 안 맞은 매수/매도를 '지표 가중치 조정'으로 보정.
 #   단, 조정 후 수익이 떨어지면 롤백(기존 그리드 유지) → 미매칭만 보정, 수익 손해 없음.
 USE_ANCHOR_MATCH_CORRECTION = True
+# ★ 검증 후보 보정 통합 (요청) — 실거래 검증 후보 중 수익 상위 N개에 지표 가중치 보정을
+#   적용하고, 보정 후 수익/손실/승률을 재계산. 보정 후 수익이 가장 높은 조합을 선정.
+#   (모든 후보에 보정하면 너무 느려서 수익 상위 N개로 제한)
+CORRECT_VERIFY_TOP_N = 20        # 수익 상위 몇 개 후보에 보정을 적용할지
+CORRECT_PROFIT_FLOOR = 0.01      # 거래 진단: 수익 이 값(1%) 이하 + 손실 거래를 '틀린 거래'로
+SELECT_BY_CORRECTED_RETURN = True  # True면 보정 후 수익 최고로 선정
 
 ANCHOR_BUY_DATES = [
 ]
@@ -9414,10 +9420,10 @@ META_GRID = {
 
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
-STAGE_PCT_RANGE   = [(5, 95)]
+STAGE_PCT_RANGE   = [(10, 90)]
 STAGE_WILSON_Z    = [1.75]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.25]
+STAGE_CORR_LIMIT  = [0.2]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -11617,7 +11623,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 auto_anchor=False,
                 oos_enabled=False,
                 oos_daily=None, oos_trades=None, oos_cur=None,
-                bh_up_ret=None):
+                bh_up_ret=None, anchor_prio=None):
     wb = Workbook(); wb.remove(wb.active)
 
     # 1. 현재 포지션
@@ -12054,7 +12060,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = (f'전체 그리드 통합 (모든 메타변수 조합) — {mdd_t2}, 거래수 ≥ {min_trades_daily}회, B&H 초과만  '
                            f'({len(inner_passed)}개) — {inner_sort_label}')
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:AM1')
+    ws.merge_cells('A1:AV1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
                  '평균성공', '매수성공', '매도성공',
@@ -12063,7 +12069,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  '✅실제승률', '✅실제최대손실', '✅실제누적수익',
                  '✅실제매수성공', '✅실제매도성공', '✅실제평균성공',
                  '✅실제매수매칭', '✅실제매도매칭', '✅실제평균매칭', '✅앵커수익',
-                 '🔮OOS수익', '🔮OOS매수정확도', '🔮OOS매도정확도'])
+                 '🔮OOS수익', '🔮OOS매수정확도', '🔮OOS매도정확도',
+                 '🔧보정후수익', '🔧보정후최대손실', '🔧보정후승률',
+                 '🔧보정후매수성공', '🔧보정후매도성공',
+                 '🔧보정후매수매칭', '🔧보정후매도매칭',
+                 '🔧보정채택', '🔧추가지표수'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -12139,6 +12149,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'oos_total_return')*100:+.2f}%" if pd.notna(_g(row,'oos_total_return')) else '—'),
             (f"{_g(row,'oos_buy_success')*100:.1f}%"  if pd.notna(_g(row,'oos_buy_success'))  else '—'),
             (f"{_g(row,'oos_sell_success')*100:.1f}%" if pd.notna(_g(row,'oos_sell_success')) else '—'),
+            (f"{_g(row,'corr_total_return')*100:+.2f}%" if pd.notna(_g(row,'corr_total_return')) else '—'),
+            (f"{_g(row,'corr_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'corr_max_drawdown')) else '—'),
+            (f"{_g(row,'corr_win_rate')*100:.1f}%" if pd.notna(_g(row,'corr_win_rate')) else '—'),
+            (f"{_g(row,'corr_buy_success')*100:.1f}%" if pd.notna(_g(row,'corr_buy_success')) else '—'),
+            (f"{_g(row,'corr_sell_success')*100:.1f}%" if pd.notna(_g(row,'corr_sell_success')) else '—'),
+            (f"{_g(row,'corr_buy_match')*100:.1f}%" if pd.notna(_g(row,'corr_buy_match')) else '—'),
+            (f"{_g(row,'corr_sell_match')*100:.1f}%" if pd.notna(_g(row,'corr_sell_match')) else '—'),
+            ('채택' if bool(_g(row,'corr_applied', False)) else '—'),
+            (f"매수+{int(_g(row,'corr_n_added_buy',0))}/매도+{int(_g(row,'corr_n_added_sell',0))}"
+                 if (pd.notna(_g(row,'corr_n_added_buy')) and (_g(row,'corr_n_added_buy',0) or _g(row,'corr_n_added_sell',0))) else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -12177,6 +12197,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if pd.notna(_or):  ws.cell(r, 33).fill = _ret_fill(_or, bh_ret)
         if pd.notna(_obs): ws.cell(r, 34).fill = _success_fill(_obs)
         if pd.notna(_oss): ws.cell(r, 35).fill = _success_fill(_oss)
+        # 보정후 컬럼 색칠 (36 수익, 37 MDD, 38 승률, 39 매수성공, 40 매도성공, 41 매수매칭, 42 매도매칭)
+        _cr = _g(row, 'corr_total_return'); _cm = _g(row, 'corr_max_drawdown'); _cw = _g(row, 'corr_win_rate')
+        _cbs = _g(row, 'corr_buy_success'); _css = _g(row, 'corr_sell_success')
+        _cbm = _g(row, 'corr_buy_match'); _csm = _g(row, 'corr_sell_match')
+        _capplied = bool(_g(row, 'corr_applied', False))
+        if pd.notna(_cr):  ws.cell(r, 36).fill = _ret_fill(_cr, bh_ret)
+        if pd.notna(_cm):  ws.cell(r, 37).fill = _mdd_fill(_cm, mdd_limit_pct)
+        if pd.notna(_cw):  ws.cell(r, 38).fill = _success_fill(_cw)
+        if pd.notna(_cbs): ws.cell(r, 39).fill = _success_fill(_cbs)
+        if pd.notna(_css): ws.cell(r, 40).fill = _success_fill(_css)
+        if pd.notna(_cbm): ws.cell(r, 41).fill = _success_fill(_cbm)
+        if pd.notna(_csm): ws.cell(r, 42).fill = _success_fill(_csm)
+        if _capplied:      ws.cell(r, 43).fill = _HL
         if is_best:
             for cc in (12, 13, 14):
                 ws.cell(r, cc).font = Font(bold=True, color='C00000', size=11)
@@ -12185,8 +12218,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.cell(r, 25).font = Font(bold=True, color='C00000', size=12)
             if pd.notna(_or):
                 ws.cell(r, 33).font = Font(bold=True, color='C00000', size=12)
+            if pd.notna(_cr):
+                ws.cell(r, 36).font = Font(bold=True, color='C00000', size=12)
     for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 11,
-                            11, 11, 13, 12, 12, 12, 12, 12, 12, 11, 12, 13, 13], 1):
+                            11, 11, 13, 12, 12, 12, 12, 12, 12, 11, 12, 13, 13,
+                            13, 14, 12, 13, 13, 13, 13, 10, 14], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -12231,7 +12267,46 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
-    # 7-2. ⚓ ANCHOR 진단
+    # 7-1. 🔧 거래 진단 (요청) — 앵커 외 거래 포함, 손실·1%이하 수익 거래를 '보정 대상'으로 식별
+    try:
+        _pf = float(globals().get('CORRECT_PROFIT_FLOOR', 0.01))
+        _fidx = daily['date'] if (daily is not None and hasattr(daily, 'columns') and 'date' in daily.columns) else []
+        diag_df = diagnose_trades(trades, close=None, feat_index=_fidx,
+                                  anchor_prio=anchor_prio, profit_floor=_pf)
+    except Exception as _de:
+        diag_df = None
+    if diag_df is not None and len(diag_df) > 0:
+        ws = wb.create_sheet('🔧 거래 진단'); ws.sheet_view.showGridLines = False
+        n_wrong = int(diag_df['보정대상'].sum())
+        ws.cell(1, 1).value = (f'거래 진단 — 총 {len(diag_df)}건 중 보정 대상(손실 또는 +{_pf*100:.0f}% 이하 수익) {n_wrong}건  '
+                               f'※ 앵커(우선순위1 최대수익스윙 / 우선순위2 {_pf*100:.0f}%이상)와 매칭 진단')
+        ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
+        ws.merge_cells('A1:K1')
+        _hdr(ws, 3, ['#', '진입일', '청산일', '비용후수익%', '보유일', '청산사유',
+                     '매수 진단', '매도 진단', '매수앵커일치', '매도앵커일치', '판정'])
+        for ri, drow in diag_df.iterrows():
+            r = ri + 4
+            _ed = drow['entry_date']; _xd = drow['exit_date']
+            vals = [int(drow['trade_no']),
+                    (_ed.date() if pd.notna(_ed) else '—'),
+                    (_xd.date() if pd.notna(_xd) else '—'),
+                    f"{drow['net_return_%']:+.2f}%",
+                    int(drow['days_held']), drow['exit_reason'],
+                    drow['매수_진단'], drow['매도_진단'],
+                    ('✓' if drow['매수_앵커일치'] else '✗'),
+                    ('✓' if drow['매도_앵커일치'] else '✗'),
+                    drow['판정']]
+            for ci, v in enumerate(vals, 1):
+                c = ws.cell(r, ci); c.value = v; c.border = _TH
+                c.alignment = Alignment(horizontal='center'); c.font = Font(size=10)
+                if ri % 2 == 1: c.fill = _ALT
+            if bool(drow['보정대상']):
+                for ci in range(1, 12):
+                    ws.cell(r, ci).fill = PatternFill('solid', fgColor='FCE4D6')
+                ws.cell(r, 4).font = Font(bold=True, color='C00000', size=10)
+        for ci, w in enumerate([6, 13, 13, 12, 8, 12, 22, 22, 12, 12, 28], 1):
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        ws.freeze_panes = 'A4'
     if anchor_mode and (cur.get('anchor_buy_diagnosis') or cur.get('anchor_sell_diagnosis')):
         ws = wb.create_sheet('⚓ ANCHOR 진단'); ws.sheet_view.showGridLines = False
         buy_diag = cur.get('anchor_buy_diagnosis', [])
@@ -12422,12 +12497,19 @@ def _resolve_data():
 #                       메인 진입
 # ════════════════════════════════════════════════════════════════
 def _final_pick_by_real(pool, win_tol):
-    """실거래 검증 결과 pool에서 최종 1개 선정 (요청):
-       OOS_SELECT_BY_OOS_RETURN=True면 'OOS 수익률'이 가장 높은 조합을 선정 (미래 일반화 우선).
-       OOS 수익이 없으면(컬럼 없거나 전부 NaN) 전체 실제 수익으로 폴백.
+    """실거래 검증 결과 pool에서 최종 1개 선정 (요청 개정):
+       SELECT_BY_CORRECTED_RETURN=True이고 corr_total_return 컬럼이 있으면
+         → '보정 후 수익률'이 가장 높은 조합을 선정 (동률 시 보정후 승률).
+       아니면 OOS_SELECT_BY_OOS_RETURN=True → OOS 수익, 그것도 없으면 전체 실제 수익.
        반환: (best_inner_dict, sel_row)"""
-    use_oos = globals().get('OOS_SELECT_BY_OOS_RETURN', True)
-    if use_oos and 'oos_total_return' in pool.columns and pool['oos_total_return'].notna().any():
+    use_corr = globals().get('SELECT_BY_CORRECTED_RETURN', True)
+    use_oos  = globals().get('OOS_SELECT_BY_OOS_RETURN', True)
+    if use_corr and 'corr_total_return' in pool.columns and pool['corr_total_return'].notna().any():
+        _wcol = 'corr_win_rate' if 'corr_win_rate' in pool.columns else 'real_win_rate'
+        b = pool[pool['corr_total_return'].notna()].sort_values(
+            ['corr_total_return', _wcol], ascending=[False, False]).reset_index(drop=True)
+        _by = '\ubcf4\uc815\ud6c4'
+    elif use_oos and 'oos_total_return' in pool.columns and pool['oos_total_return'].notna().any():
         b = pool[pool['oos_total_return'].notna()].sort_values(
             ['oos_total_return', 'oos_win_rate' if 'oos_win_rate' in pool.columns else 'real_win_rate'],
             ascending=[False, False]).reset_index(drop=True)
@@ -12446,11 +12528,20 @@ def _final_pick_by_real(pool, win_tol):
             best_inner[_k] = sel[_k]
     _oosr = sel.get('oos_total_return', float('nan'))
     print(f"  \u2713 \uc2e4\uac70\ub798 \uac80\uc99d \uc644\ub8cc \u2014 {_by} \uc218\uc775\ub960 \ucd5c\uace0 \uc870\ud569 \uc120\uc815")
-    print(f"     \ucd5c\uc885: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
-          f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
-          f"(OOS\uc218\uc775 {_oosr*100:+.2f}%, OOS\ub9e4\ub3c4\uc815\ud655\ub3c4 {sel.get('oos_sell_success', float('nan'))*100:.1f}%, "
-          f"OOS\ub9e4\uc218\uc815\ud655\ub3c4 {sel.get('oos_buy_success', float('nan'))*100:.1f}%, "
-          f"\uc804\uccb4\uc218\uc775 {sel['real_total_return']*100:+.2f}%)")
+    if _by == '\ubcf4\uc815\ud6c4':
+        _cr = sel.get('corr_total_return', float('nan'))
+        _applied = bool(sel.get('corr_applied', False))
+        print(f"     \ucd5c\uc885: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
+              f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
+              f"(\ubcf4\uc815\ud6c4\uc218\uc775 {_cr*100:+.2f}%{'(\ubcf4\uc815\ucc44\ud0dd)' if _applied else '(\ubcf4\uc815\uc548\ub428)'}, "
+              f"\uc6d0\ub798\uc218\uc775 {sel['real_total_return']*100:+.2f}%, "
+              f"\ubcf4\uc815\ud6c4\uc2b9\ub960 {sel.get('corr_win_rate', float('nan'))*100:.1f}%)")
+    else:
+        print(f"     \ucd5c\uc885: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
+              f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
+              f"(OOS\uc218\uc775 {_oosr*100:+.2f}%, OOS\ub9e4\ub3c4\uc815\ud655\ub3c4 {sel.get('oos_sell_success', float('nan'))*100:.1f}%, "
+              f"OOS\ub9e4\uc218\uc815\ud655\ub3c4 {sel.get('oos_buy_success', float('nan'))*100:.1f}%, "
+              f"\uc804\uccb4\uc218\uc775 {sel['real_total_return']*100:+.2f}%)")
     return best_inner, sel
 
 
@@ -12579,6 +12670,16 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
         return None, merged_table
 
     verified = pd.DataFrame(real_rows)
+
+    # ★ 보정 통합 (요청) — 수익 상위 N개 후보에 지표 가중치 보정 적용 후 재백테스트.
+    #   보정 후 수익/손실/승률을 corr_* 컬럼에 기록. 보정 후 수익으로 최종 선정.
+    if globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
+        verified = _apply_correction_to_candidates(
+            verified, feat, close, pool_map,
+            horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
+            stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+            anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell)
+
     pool = verified
     if mdd_lim is not None:
         safe = verified[verified['real_max_drawdown'] >= mdd_lim]
@@ -12684,6 +12785,27 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
         return best_inner_fallback, inner_passed
 
     verified = pd.DataFrame(real_rows)
+
+    # ★ 보정 통합 (요청) — 일반 경로(STAGED OFF)도 보정 적용. 단일 풀을 키 dict로 감싼다.
+    if globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
+        try:
+            _single_map = {}
+            for _idx, _vr in verified.iterrows():
+                _k = (round(float(_vr.get('meta_wilson_z', 0)),4),
+                      int(_vr.get('meta_pct_low', 0)), int(_vr.get('meta_pct_high', 0)),
+                      round(float(_vr.get('meta_corr_limit', 0)),4))
+                _single_map[_k] = (buy_pool, sell_pool)
+            if not _single_map:  # 메타 컬럼이 없으면 더미 키
+                _single_map = {(0.0,0,0,0.0): (buy_pool, sell_pool)}
+                verified['meta_wilson_z'] = 0.0; verified['meta_pct_low'] = 0
+                verified['meta_pct_high'] = 0; verified['meta_corr_limit'] = 0.0
+            verified = _apply_correction_to_candidates(
+                verified, feat, close, _single_map,
+                horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
+                stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell)
+        except Exception as _ce:
+            print(f"  ⚠ 보정 적용 실패(일반 경로): {_ce}")
 
     # ★ 1) 실제 최대 거래손실(MDD) 기준 필터 — 이 값 이하로 안전한 후보만 (요청)
     pool = verified
@@ -12818,13 +12940,14 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     if anchor_match_priority and anchor_mode:
         print(f"  ⚓ 매칭률 우선순위 ON — 매칭률 ±{anchor_match_tolerance*100:.1f}%p → BalAcc → 수익률")
 
+    _anchor_prio = None
     if anchor_mode and auto_anchor:
         print(f"  ⚓ AUTO ANCHOR 자동 계산:")
         print(f"     window={auto_anchor_window}일, lookforward={auto_anchor_lookforward}일")
         print(f"     매수 정답: 좌우 {auto_anchor_window}일 local min + 그 후 +{auto_anchor_min_rise*100:.1f}% 이상 상승")
         print(f"     매도 정답: 좌우 {auto_anchor_window}일 local max + 그 후 -{auto_anchor_min_drop*100:.1f}% 이상 하락")
         print(f"     가격 근접 확장: base ±{auto_anchor_price_tolerance*100:.2f}% 이내 모든 날 포함")
-        anchor_buy_dates, anchor_sell_dates = auto_compute_anchor_dates(
+        anchor_buy_dates, anchor_sell_dates, _anchor_prio = auto_compute_anchor_dates(
             feat.index, close,
             window=auto_anchor_window,
             lookforward=auto_anchor_lookforward,
@@ -12832,6 +12955,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             min_drop_after_sell=auto_anchor_min_drop,
             price_tolerance=auto_anchor_price_tolerance,
             max_dates=auto_anchor_max_dates,
+            return_priority=True,
         )
         print(f"     ▷ 자동 계산 결과: 매수 정답 {len(anchor_buy_dates)}일, 매도 정답 {len(anchor_sell_dates)}일")
         if len(anchor_buy_dates) > 0:
@@ -13176,7 +13300,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                 auto_anchor=auto_anchor,
                 oos_enabled=oos_enabled,
                 oos_daily=oos_daily, oos_trades=oos_trades, oos_cur=oos_cur,
-                bh_up_ret=bh_up_ret)
+                bh_up_ret=bh_up_ret, anchor_prio=_anchor_prio)
     print('  ✓ 완료\n')
     print('=' * 72)
 
@@ -14280,11 +14404,95 @@ def catboost_correct_from_excel(filename, *, feat=None, close=None, output_dir=N
     return catboost_correct_actions(feat, close, bp, sp, best, anchor_mode=g.get('ANCHOR_MODE', True))
 
 
+def _apply_correction_to_candidates(verified, feat, close, pool_map, *,
+                                    horizon, dd_limit, ru_limit, stop_loss_pct,
+                                    anchor_mode, anchor_safe_buy, anchor_safe_sell):
+    """수익 상위 N개 검증 후보에 지표 가중치 보정을 적용하고 보정 후 지표를 재계산 (요청).
+       corr_* 컬럼 추가: corr_total_return / corr_max_drawdown / corr_win_rate /
+       corr_buy_success / corr_sell_success / corr_buy_match / corr_sell_match /
+       corr_applied(보정 채택 여부). 보정 안 한 후보는 real_* 값을 그대로 corr_*에 복사.
+    """
+    import numpy as _np
+    topn = int(globals().get('CORRECT_VERIFY_TOP_N', 20))
+    # 기본: corr_* = real_* (보정 안 됨)
+    verified = verified.copy()
+    verified['corr_total_return'] = verified['real_total_return']
+    verified['corr_max_drawdown'] = verified['real_max_drawdown']
+    verified['corr_win_rate']     = verified['real_win_rate']
+    verified['corr_buy_success']  = verified['real_buy_success']
+    verified['corr_sell_success'] = verified['real_sell_success']
+    verified['corr_buy_match']    = verified['real_buy_match']
+    verified['corr_sell_match']   = verified['real_sell_match']
+    verified['corr_applied']      = False
+    verified['corr_n_added_buy']  = 0
+    verified['corr_n_added_sell'] = 0
+
+    # 수익 상위 N개만 보정
+    order = verified.sort_values('real_total_return', ascending=False).index[:topn]
+    print(f"\n  🔧 보정 적용 — 수익 상위 {len(order)}개 후보에 지표 가중치 보정 시도 "
+          f"(보정 후 수익/손실/승률 재계산)")
+    _t0 = time.time()
+    n_adopted = 0
+    for cnt, idx in enumerate(order):
+        _r = verified.loc[idx]
+        _key = (round(float(_r.get('meta_wilson_z', 0)),4),
+                int(_r.get('meta_pct_low', 0)), int(_r.get('meta_pct_high', 0)),
+                round(float(_r.get('meta_corr_limit', 0)),4))
+        pools = pool_map.get(_key)
+        if pools is None:
+            continue
+        bp, sp = pools
+        best_inner = {'K_buy': int(_r['K_buy']), 'vote_buy': int(_r['vote_buy']),
+                      'K_sell': int(_r['K_sell']), 'vote_sell': int(_r['vote_sell'])}
+        try:
+            aug_bp, aug_sp, bw, sw, mc = anchor_match_correct_weights(
+                feat, close, bp, sp, best_inner,
+                horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
+                stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell,
+                verbose=False)
+        except Exception:
+            continue
+        if not mc.get('adopted', False) or bw is None:
+            continue
+        # 보정된 가중치로 재백테스트해서 보정 후 전체 지표 산출
+        try:
+            _d, _t, _cur, _bu, _su = daily_ensemble_backtest(
+                feat, close, aug_bp, aug_sp,
+                K_buy=len(aug_bp), K_sell=len(aug_sp),
+                vote_buy=int(_r['vote_buy']), vote_sell=int(_r['vote_sell']),
+                cost=COST_PER_TRADE, horizon=horizon,
+                dd_limit=dd_limit, ru_limit=ru_limit,
+                stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell,
+                buy_w_override=bw, sell_w_override=sw)
+        except Exception:
+            continue
+        _cr = float(_cur.get('cum_return_pct', 0.0)) / 100.0
+        # 보정 후 수익이 원래보다 낮으면 채택 안 함 (수익 손해 방지)
+        if _cr < float(_r['real_total_return']) - 1e-9:
+            continue
+        verified.at[idx, 'corr_total_return'] = _cr
+        verified.at[idx, 'corr_max_drawdown'] = float(_cur.get('max_drawdown', 0.0))
+        verified.at[idx, 'corr_win_rate']     = float(_cur.get('win_rate', 0.0))
+        verified.at[idx, 'corr_buy_success']  = float(_cur.get('buy_success_rate', 0.0))
+        verified.at[idx, 'corr_sell_success'] = float(_cur.get('sell_success_rate', 0.0))
+        verified.at[idx, 'corr_buy_match']    = float(_cur.get('anchor_buy_match_rate', 0.0))
+        verified.at[idx, 'corr_sell_match']   = float(_cur.get('anchor_sell_match_rate', 0.0))
+        verified.at[idx, 'corr_applied']      = True
+        verified.at[idx, 'corr_n_added_buy']  = int(mc.get('n_added_buy', 0))
+        verified.at[idx, 'corr_n_added_sell'] = int(mc.get('n_added_sell', 0))
+        n_adopted += 1
+    print(f"     ✓ 보정 채택 {n_adopted}/{len(order)}개 "
+          f"(수익 떨어지면 미채택, 경과 {time.time()-_t0:.0f}초)")
+    return verified
+
+
 def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, best_inner, *,
                                  horizon=None, dd_limit=None, ru_limit=None,
                                  stop_loss_pct=None, anchor_mode=True,
                                  anchor_safe_buy=None, anchor_safe_sell=None,
-                                 max_boost=0.6, step=0.1, max_add=10):
+                                 max_boost=0.6, step=0.1, max_add=10, verbose=True):
     """앵커 미매칭(충돌 패배·간발의 차)을 '지표 점수(가중치) 조정'으로만 보정한다 (요청).
        ★ 앵커 날짜는 확장하지 않음. 오직 지표 가중치만 건드림.
        ★ 제외된 지표(K 밖)도 후보 — 미매칭에 도움 되면 풀에 추가해 점수를 준다.
@@ -14323,7 +14531,8 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
 
     sba = anchor_safe_buy; ssa = anchor_safe_sell
     if sba is None or ssa is None:
-        print("  \u26a0 \uc575\ucee4 \ubc30\uc5f4 \uc5c6\uc74c \u2014 \ub9e4\uce6d \ubcf4\uc815 \uac74\ub108\ub700")
+        if verbose:
+            print("  \u26a0 \uc575\ucee4 \ubc30\uc5f4 \uc5c6\uc74c \u2014 \ub9e4\uce6d \ubcf4\uc815 \uac74\ub108\ub700")
         return base_buy, base_sell, None, None, {'adopted': False, 'reason': 'no_anchor'}
 
     cl = close.reindex(feat.index).astype(float)
@@ -14396,15 +14605,17 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
         boost += step
 
     if best['adopted']:
-        print(f"  \U0001f3af \uc575\ucee4 \ubbf8\ub9e4\uce6d \ubcf4\uc815 (\uc9c0\ud45c \uc810\uc218\ub9cc \uc870\uc815, \ub0a0\uc9dc \ud655\uc7a5 \uc548\ud568):")
-        print(f"     \ub9e4\uc218\ub9e4\uce6d {best['bm_before']*100:.1f}% \u2192 {best['bm_after']*100:.1f}%, "
-              f"\ub9e4\ub3c4\ub9e4\uce6d {best['sm_before']*100:.1f}% \u2192 {best['sm_after']*100:.1f}%")
-        print(f"     \uc218\uc775 {best['ret_before']:+.1f}% \u2192 {best['ret_after']:+.1f}% (\ub5a8\uc5b4\uc9c0\uc9c0 \uc54a\uc74c \u2014 \ucc44\ud0dd)")
-        if best['n_added_buy'] or best['n_added_sell']:
-            print(f"     \uc81c\uc678\ub410\ub358 \uc9c0\ud45c \ucd94\uac00: \ub9e4\uc218 {best['n_added_buy']}\uac1c, \ub9e4\ub3c4 {best['n_added_sell']}\uac1c (\ubcf4\uc815\uc5d0 \ub3c4\uc6c0)")
+        if verbose:
+            print(f"  \U0001f3af \uc575\ucee4 \ubbf8\ub9e4\uce6d \ubcf4\uc815 (\uc9c0\ud45c \uc810\uc218\ub9cc \uc870\uc815, \ub0a0\uc9dc \ud655\uc7a5 \uc548\ud568):")
+            print(f"     \ub9e4\uc218\ub9e4\uce6d {best['bm_before']*100:.1f}% \u2192 {best['bm_after']*100:.1f}%, "
+                  f"\ub9e4\ub3c4\ub9e4\uce6d {best['sm_before']*100:.1f}% \u2192 {best['sm_after']*100:.1f}%")
+            print(f"     \uc218\uc775 {best['ret_before']:+.1f}% \u2192 {best['ret_after']:+.1f}% (\ub5a8\uc5b4\uc9c0\uc9c0 \uc54a\uc74c \u2014 \ucc44\ud0dd)")
+            if best['n_added_buy'] or best['n_added_sell']:
+                print(f"     \uc81c\uc678\ub410\ub358 \uc9c0\ud45c \ucd94\uac00: \ub9e4\uc218 {best['n_added_buy']}\uac1c, \ub9e4\ub3c4 {best['n_added_sell']}\uac1c (\ubcf4\uc815\uc5d0 \ub3c4\uc6c0)")
         return aug_buy, aug_sell, best['bw'], best['sw'], best
     else:
-        print(f"  \u2139 \uc575\ucee4 \ubbf8\ub9e4\uce6d \ubcf4\uc815 \u2014 \uc218\uc775 \uc720\uc9c0\ud558\uba70 \uac1c\uc120\ub418\ub294 \uc870\uc815 \uc5c6\uc74c \u2192 \uae30\uc874 \uadf8\ub9ac\ub4dc \uc720\uc9c0")
+        if verbose:
+            print(f"  \u2139 \uc575\ucee4 \ubbf8\ub9e4\uce6d \ubcf4\uc815 \u2014 \uc218\uc775 \uc720\uc9c0\ud558\uba70 \uac1c\uc120\ub418\ub294 \uc870\uc815 \uc5c6\uc74c \u2192 \uae30\uc874 \uadf8\ub9ac\ub4dc \uc720\uc9c0")
         return base_buy, base_sell, None, None, best
 
 
