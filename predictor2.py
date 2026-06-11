@@ -9306,7 +9306,7 @@ SELL_SUCCESS_TOLERANCE = 0.02   # 매도성공률 최고에서 이 차이(2%p)�
 MDD_TOLERANCE          = 0.01   # MDD 최저에서 이 차이(1%p)까지 후보 (그중 수익 최고 선택)
 
 # ★ 'winrate_return' 모드 밴드 폭 (요청) — 일별거래 승률 최고에서 이 차이(10%p)까지 후보
-WINRATE_TOLERANCE      = 0.05
+WINRATE_TOLERANCE      = 0.04
 
 # ★ 승률 후보 실거래 검증 (요청) — 그리드는 빠른 근사라 실제 일별거래와 MDD·승률·수익이
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
@@ -9377,7 +9377,7 @@ VERIFY_BUY_ACC_TOLERANCE  = 0.01   # 매수 정확도 2차 밴드 (3%p)
 #   - 타겟: 앵커 정답(올라야 할 날=보유, 내려야 할 날=현금)
 #   - walk-forward(시계열 분할)로 학습→이후구간 적용. 미래참조를 피하려 과거로만 학습.
 #   ⚠ 앵커는 사후적 정답이라, 보정 결과는 '참고용'. 실전 일반화는 별도 검증 필요.
-USE_CATBOOST_CORRECTION = True   # True면 선정 조합에 대해 보정 시트를 추가 생성
+USE_CATBOOST_CORRECTION = False  # ★ 요청: CatBoost 보정 제거 — 앵커 기반 가중치 보정만 사용
 CATBOOST_MIN_TRAIN_DAYS = 120    # 최소 학습일수 (이만큼 쌓인 뒤부터 보정 적용)
 CATBOOST_PROB_THRESHOLD = 0.5    # 보유 확률이 이 값 이상이면 '보유'로 보정
 CATBOOST_TARGET_HORIZON = 5      # ★ 타겟: 미래 N일 수익 (앵커 아님 — 실전 검증 가능한 라벨)
@@ -9415,9 +9415,9 @@ META_GRID = {
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(5, 95)]
-STAGE_WILSON_Z    = [1.65]
+STAGE_WILSON_Z    = [1.75]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2]
+STAGE_CORR_LIMIT  = [0.2, 0.25]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -9539,16 +9539,64 @@ def _bh_up_sum_return(close_arr):
     return float(np.sum(rets[rets > 0.0]))
 
 
+def _optimal_swing_points(prices, cost, price_tolerance=0.01):
+    """진짜 최대 수익 스윙의 저점(매수)/고점(매도)을 찾는다 (요청).
+       anchor_strategy_return과 동일한 로직: 단기 저점에서 사서 오르는 한 보유,
+       단기 고점에서 청산. 단 거래비용(2*cost)을 넘는 상승 구간만 채택.
+       그 저점/고점 직전 ±price_tolerance 이내 가격이면 같은 앵커로 포함.
+       반환: (buy_idx_set, sell_idx_set) — 우선순위 1 (최우선 매칭 대상)
+    """
+    n = len(prices)
+    buy_idx = set(); sell_idx = set()
+    i = 0
+    while i < n - 1:
+        if prices[i+1] > prices[i]:
+            j = i                      # j = 국소 저점
+            k = j
+            while k < n - 1 and prices[k+1] >= prices[k]:
+                k += 1                 # k = 국소 고점
+            gain = prices[k] / prices[j] - 1.0
+            net = (1.0 - cost) * (1.0 + gain) * (1.0 - cost) - 1.0
+            if net > 0:                # 비용 넘는 상승 구간만 채택
+                base_b = prices[j]
+                base_s = prices[k]
+                # 저점 j + 직전 ±tol 이내 (j 주변, 같은 가격대)
+                for m in range(max(0, j - 5), j + 1):
+                    if base_b > 0 and abs(prices[m] / base_b - 1.0) <= price_tolerance:
+                        buy_idx.add(m)
+                # 고점 k + 직전 ±tol 이내
+                for m in range(max(0, k - 5), k + 1):
+                    if base_s > 0 and abs(prices[m] / base_s - 1.0) <= price_tolerance:
+                        sell_idx.add(m)
+            i = k + 1
+        else:
+            i += 1
+    return buy_idx, sell_idx
+
+
 def auto_compute_anchor_dates(dates, close, *,
                                 window=5,
                                 lookforward=5,
                                 min_rise_after_buy=0.03,
                                 min_drop_after_sell=0.03,
                                 price_tolerance=0.005,
-                                max_dates=None):
+                                max_dates=None,
+                                return_priority=False):
+    """앵커 정답일 생성 (요청 개정):
+       (우선순위1) 진짜 최대 수익 스윙의 저점(매수)/고점(매도) + 직전 ±tol 이내.
+       (우선순위2) 기존 방식: 좌우 window 최저/최고 & lookforward 내 min_rise/drop 이상.
+       두 종류를 합치되, 우선순위1을 최우선 매칭 대상으로 표시한다.
+       return_priority=True면 (buy_dates, sell_dates, prio_dict) 반환.
+       prio_dict: {'buy_p1':set, 'sell_p1':set, 'buy_p2':set, 'sell_p2':set} (날짜 문자열)
+    """
     prices = close.values.astype(np.float64)
     n = len(prices)
+    cost = float(globals().get('COST_PER_TRADE', 0.004))
 
+    # ── 우선순위1: 최대 수익 스윙 저점/고점 (+ 직전 ±tol) ──
+    sw_buy_idx, sw_sell_idx = _optimal_swing_points(prices, cost, price_tolerance)
+
+    # ── 우선순위2: 기존 1% 이상 앵커 ──
     base_buys = []
     base_sells = []
     for j in range(window, n - lookforward):
@@ -9557,50 +9605,62 @@ def auto_compute_anchor_dates(dates, close, *,
         win = prices[win_lo:win_hi + 1]
         cur = prices[j]
         future = prices[j:j + lookforward + 1]
-
         if cur == win.min() and len(future) > 1:
             max_rise = future.max() / cur - 1.0
             if max_rise >= min_rise_after_buy:
                 base_buys.append((j, max_rise))
-
         if cur == win.max() and len(future) > 1:
             max_drop = future.min() / cur - 1.0
             if max_drop <= -min_drop_after_sell:
                 base_sells.append((j, -max_drop))
-
     base_buys.sort(key=lambda p: -p[1])
     base_sells.sort(key=lambda p: -p[1])
     if max_dates is not None:
         base_buys  = base_buys[:max_dates]
         base_sells = base_sells[:max_dates]
 
-    buy_idx_set = set()
-    n_buy_base = 0
+    p2_buy_idx = set(); p2_sell_idx = set()
+    n_buy_base = 0; n_sell_base = 0
     for j, _ in base_buys:
         base_p = prices[j]
         if base_p <= 0: continue
         n_buy_base += 1
         for k in range(max(0, j - window), min(n, j + window + 1)):
             if prices[k] > 0 and abs(prices[k] / base_p - 1.0) <= price_tolerance:
-                buy_idx_set.add(k)
-
-    sell_idx_set = set()
-    n_sell_base = 0
+                p2_buy_idx.add(k)
     for j, _ in base_sells:
         base_p = prices[j]
         if base_p <= 0: continue
         n_sell_base += 1
         for k in range(max(0, j - window), min(n, j + window + 1)):
             if prices[k] > 0 and abs(prices[k] / base_p - 1.0) <= price_tolerance:
-                sell_idx_set.add(k)
+                p2_sell_idx.add(k)
 
-    buy_dates  = sorted([dates[k].strftime('%Y-%m-%d') for k in buy_idx_set])
-    sell_dates = sorted([dates[k].strftime('%Y-%m-%d') for k in sell_idx_set])
+    # 우선순위1이 우선 — p2에서 p1과 겹치는 건 p1로 귀속
+    p2_buy_only  = p2_buy_idx  - sw_buy_idx
+    p2_sell_only = p2_sell_idx - sw_sell_idx
 
-    if n_buy_base > 0 or n_sell_base > 0:
-        print(f"     base anchor → 확장: 매수 {n_buy_base}개 → {len(buy_dates)}일,  "
-              f"매도 {n_sell_base}개 → {len(sell_dates)}일  "
-              f"(가격 ±{price_tolerance*100:.1f}% 근접)")
+    all_buy_idx  = sw_buy_idx  | p2_buy_only
+    all_sell_idx = sw_sell_idx | p2_sell_only
+
+    def _to_dates(idx_set):
+        return sorted([dates[k].strftime('%Y-%m-%d') for k in idx_set])
+
+    buy_dates  = _to_dates(all_buy_idx)
+    sell_dates = _to_dates(all_sell_idx)
+
+    print(f"     앵커: [우선순위1 최대수익스윙] 매수 {len(sw_buy_idx)}일 / 매도 {len(sw_sell_idx)}일,  "
+          f"[우선순위2 {min_rise_after_buy*100:.0f}%이상] 매수 +{len(p2_buy_only)}일 / 매도 +{len(p2_sell_only)}일  "
+          f"(직전 ±{price_tolerance*100:.1f}% 포함)")
+
+    if return_priority:
+        prio = {
+            'buy_p1':  set(_to_dates(sw_buy_idx)),
+            'sell_p1': set(_to_dates(sw_sell_idx)),
+            'buy_p2':  set(_to_dates(p2_buy_only)),
+            'sell_p2': set(_to_dates(p2_sell_only)),
+        }
+        return buy_dates, sell_dates, prio
     return buy_dates, sell_dates
 
 
@@ -13538,13 +13598,7 @@ def staged_meta_tune(*, base_meta_grid=None,
                         anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE),
                         anchor_safe_buy=_asb0, anchor_safe_sell=_ass0)
                     _anchor_corr_ok = bool(_mc.get('adopted', False))
-                # CatBoost — 앵커 보정에 '도움 될 때만' 사용 (요청).
-                #   여기선 CatBoost가 OOS에서 개선될 때만 채택 → 도움 안 되면 자동으로 안 씀.
-                if globals().get('USE_CATBOOST_CORRECTION', False):
-                    _cbres = catboost_correct_actions(_ff0, _cc0, _bp0, _sp0, _bsel0,
-                                             anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE))
-                    if _cbres is not None and not _cbres.get('oos_improved', False):
-                        print(f"  \u2139 CatBoost\uac00 OOS\uc5d0\uc11c \uac1c\uc120 \uc5c6\uc74c \u2192 \uc774 \uc885\ubaa9\uc5d4 CatBoost \ubbf8\uc801\uc6a9 (\uc575\ucee4 \ubcf4\uc815\ub9cc \uc0ac\uc6a9)")
+                # ★ CatBoost 보정 제거 (요청) — 앵커 기반 지표 가중치 보정만 사용.
         except Exception as _ce:
             print(f"  ⚠ 보정 자동 실행 실패: {_ce}")
 
@@ -14352,6 +14406,64 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
     else:
         print(f"  \u2139 \uc575\ucee4 \ubbf8\ub9e4\uce6d \ubcf4\uc815 \u2014 \uc218\uc775 \uc720\uc9c0\ud558\uba70 \uac1c\uc120\ub418\ub294 \uc870\uc815 \uc5c6\uc74c \u2192 \uae30\uc874 \uadf8\ub9ac\ub4dc \uc720\uc9c0")
         return base_buy, base_sell, None, None, best
+
+
+def diagnose_trades(trades_df, close, feat_index, anchor_prio=None, *, profit_floor=0.01):
+    """실제 거래 내역을 진단한다 (요청) — 앵커 날짜 외의 거래도 포함.
+       각 거래에 대해:
+        - net_return이 손실(<0)이거나 profit_floor(1%) 이하면 '틀린 거래' 후보
+        - 매수일/매도일이 앵커(우선순위1 최대수익스윙 / 우선순위2 1%이상)와 맞는지
+        - 잘못된 매수(저점 아닌 곳에서 삼) / 잘못된 매도(고점 아닌 곳에서 팜) 진단
+       반환: 진단 DataFrame (거래별 1행) — Excel '거래_진단' 시트 + 보정 대상 식별용
+    """
+    import numpy as _np
+    if trades_df is None or len(trades_df) == 0:
+        return pd.DataFrame()
+    norm_idx = pd.DatetimeIndex(feat_index).normalize()
+    # 앵커 우선순위 집합 (날짜 문자열)
+    ap = anchor_prio or {}
+    buy_p1  = set(pd.Timestamp(d).normalize() for d in ap.get('buy_p1', set()))
+    sell_p1 = set(pd.Timestamp(d).normalize() for d in ap.get('sell_p1', set()))
+    buy_p2  = set(pd.Timestamp(d).normalize() for d in ap.get('buy_p2', set()))
+    sell_p2 = set(pd.Timestamp(d).normalize() for d in ap.get('sell_p2', set()))
+
+    rows = []
+    for _, tr in trades_df.iterrows():
+        ed = pd.Timestamp(tr['entry_date']).normalize() if pd.notna(tr.get('entry_date')) else None
+        xd = pd.Timestamp(tr['exit_date']).normalize()  if pd.notna(tr.get('exit_date'))  else None
+        ret = float(tr.get('net_return_%', 0.0)) / 100.0
+        is_loss = ret < 0
+        is_thin = (ret >= 0) and (ret <= profit_floor)   # 1% 이하 수익
+        is_wrong = is_loss or is_thin
+
+        # 매수일 진단
+        if ed in buy_p1:    buy_status = '✓ 최대수익스윙 저점(P1)'
+        elif ed in buy_p2:  buy_status = '○ 1%이상 저점(P2)'
+        else:               buy_status = '✗ 앵커 아닌 곳에서 매수'
+        # 매도일 진단
+        if xd in sell_p1:    sell_status = '✓ 최대수익스윙 고점(P1)'
+        elif xd in sell_p2:  sell_status = '○ 1%이상 고점(P2)'
+        else:                sell_status = '✗ 앵커 아닌 곳에서 매도'
+
+        buy_ok  = (ed in buy_p1) or (ed in buy_p2)
+        sell_ok = (xd in sell_p1) or (xd in sell_p2)
+
+        if is_loss:        verdict = '손실 거래 → 보정 대상'
+        elif is_thin:      verdict = f'수익 {ret*100:.1f}%(≤{profit_floor*100:.0f}%) → 보정 대상'
+        else:              verdict = '정상(수익)'
+
+        rows.append({
+            'trade_no': int(tr.get('trade_no', 0)),
+            'entry_date': ed, 'exit_date': xd,
+            'net_return_%': ret * 100.0,
+            'days_held': int(tr.get('days_held', 0)),
+            'exit_reason': tr.get('exit_reason', ''),
+            '매수_진단': buy_status, '매도_진단': sell_status,
+            '매수_앵커일치': buy_ok, '매도_앵커일치': sell_ok,
+            '판정': verdict,
+            '보정대상': is_wrong,
+        })
+    return pd.DataFrame(rows)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -15533,4 +15645,3 @@ def get_generated_files():
 
 if __name__ == '__main__':
     main()
-
