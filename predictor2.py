@@ -186,22 +186,7 @@ def download_data(start='2020-01-01'):
         removed = set(PEERS) - set(peers_clean) - {TICKER}
         print(f"  ℹ TICKER({TICKER})와 동의어/자기비교 자산 제거: {sorted(removed) if removed else 'TICKER만'}")
     print(f"  다운로드: {all_tickers}")
-    from datetime import datetime, timedelta
-    _end = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
-    raw = yf.download(all_tickers, start=start, end=_end,
-                      auto_adjust=True, progress=False)
-    # 최신 거래일 누락 점검
-    try:
-        _last = raw.index[-1]
-        _today = pd.Timestamp(datetime.now().date())
-        _bd = len(pd.bdate_range(_last.normalize(), _today)) - 1
-        if _bd >= 1:
-            print(f"  ⚠ 최신 거래일 누락 가능 — 마지막 데이터 {str(_last)[:10]}, "
-                  f"오늘({_today.date()})보다 {_bd}영업일 전")
-            print(f"     yfinance가 당일 임시데이터를 재정비 중일 수 있음. "
-                  f"몇 분~몇 시간 뒤 다시 받으면 포함됩니다.")
-    except Exception:
-        pass
+    raw = yf.download(all_tickers, start=start, auto_adjust=True, progress=False)
     ohlcv = {}
     for tk in all_tickers:
         try:
@@ -220,7 +205,7 @@ import pandas as pd
 import time
 import os
 
-def download_fred_data(start='2020-01-01', api_key='c51a57ed1c1fc96f7e70561f252d1b9b', max_retries=2, retry_wait=1.0):
+def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f5da4', max_retries=2, retry_wait=1.0):
     """
     FRED 경제지표 다운로드 (fredapi 공식 API 사용 — pandas_datareader보다 안정적·빠름).
     실패한 시리즈는 ID·설명·이유를 함께 표시하고, 일시적 실패는 재시도한다.
@@ -9276,8 +9261,8 @@ RUNUP_LIMIT_SELL    = 0.01
 N_THRESHOLDS        = 400
 MAX_INDICATORS      = 600
 
-K_BUY_RANGE         = [i for i in range(1, 100)]
-K_SELL_RANGE        = [i for i in range(1, 100)]
+K_BUY_RANGE         = [i for i in range(10, 100)]
+K_SELL_RANGE        = [i for i in range(10, 100)]
 VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
@@ -9336,7 +9321,7 @@ VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
 #   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
-VERIFY_AVG_SUCCESS_TOLERANCE = 0.3
+VERIFY_AVG_SUCCESS_TOLERANCE = 0.4
 
 # ★ 수익 동률 판정 (요청) — 실제 수익률 차이가 이 값(3%p) 이내면 '동률'로 보고,
 #   그중 실제 평균 성공률이 더 높은 조합을 선정.
@@ -9344,7 +9329,7 @@ VERIFY_RETURN_TIE = 0.02
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 매칭률'(매수·매도 앵커 매칭)
 #   최고에서 이 값(2%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
-VERIFY_MATCH_TOLERANCE = 0.3
+VERIFY_MATCH_TOLERANCE = 0.4
 
 # ★ Buy&Hold 미달 조합 제외 (전략 누적수익이 B&H 이하면 후보에서 버림)
 EXCLUDE_BELOW_BH = False
@@ -9420,14 +9405,14 @@ TOP_N_GRID_OUT      = 10000
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
-    'wilson_z':    [1.65],
-    'pct_range':   [(5, 95)],
+    'wilson_z':    [1.75],
+    'pct_range':   [(10, 90)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
 }
 
-STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
+STAGED_META_TUNE = False   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
@@ -13546,15 +13531,20 @@ def staged_meta_tune(*, base_meta_grid=None,
                     price_tolerance=globals().get('AUTO_ANCHOR_PRICE_TOLERANCE',0.01),
                     max_dates=globals().get('AUTO_ANCHOR_MAX_DATES',None))
                 _asb0, _ass0 = _compute_anchor_arrays(_ff0.index, _abd0, _asd0)
+                _anchor_corr_ok = False
                 if globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
-                    _corr_bw, _corr_sw, _mc = anchor_match_correct_weights(
+                    _ab, _as, _corr_bw, _corr_sw, _mc = anchor_match_correct_weights(
                         _ff0, _cc0, _bp0, _sp0, _bsel0,
                         anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE),
                         anchor_safe_buy=_asb0, anchor_safe_sell=_ass0)
-                # CatBoost 보정 (앵커 보정된 가중치 반영)
+                    _anchor_corr_ok = bool(_mc.get('adopted', False))
+                # CatBoost — 앵커 보정에 '도움 될 때만' 사용 (요청).
+                #   여기선 CatBoost가 OOS에서 개선될 때만 채택 → 도움 안 되면 자동으로 안 씀.
                 if globals().get('USE_CATBOOST_CORRECTION', False):
-                    catboost_correct_actions(_ff0, _cc0, _bp0, _sp0, _bsel0,
+                    _cbres = catboost_correct_actions(_ff0, _cc0, _bp0, _sp0, _bsel0,
                                              anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE))
+                    if _cbres is not None and not _cbres.get('oos_improved', False):
+                        print(f"  \u2139 CatBoost\uac00 OOS\uc5d0\uc11c \uac1c\uc120 \uc5c6\uc74c \u2192 \uc774 \uc885\ubaa9\uc5d4 CatBoost \ubbf8\uc801\uc6a9 (\uc575\ucee4 \ubcf4\uc815\ub9cc \uc0ac\uc6a9)")
         except Exception as _ce:
             print(f"  ⚠ 보정 자동 실행 실패: {_ce}")
 
@@ -14236,18 +14226,16 @@ def catboost_correct_from_excel(filename, *, feat=None, close=None, output_dir=N
     return catboost_correct_actions(feat, close, bp, sp, best, anchor_mode=g.get('ANCHOR_MODE', True))
 
 
-def anchor_match_correct_weights(feat, close, buy_pool, sell_pool, best_inner, *,
+def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, best_inner, *,
                                  horizon=None, dd_limit=None, ru_limit=None,
                                  stop_loss_pct=None, anchor_mode=True,
                                  anchor_safe_buy=None, anchor_safe_sell=None,
-                                 max_boost=0.5, step=0.1):
-    """앵커 미매칭(충돌 패배·간발의 차)을 '지표 가중치 조정'으로 보정한다 (요청).
-       - 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
-       - 앵커 매수정답일에 매수신호가 떴으나 매도가 더 강해 진 경우 등 → 그 정답일에
-         켜진 매수 지표의 가중치를 조금 올려(또는 매도 지표를 내려) 매수가 이기게.
-       - ★ 단, 조정 후 재백테스트해서 '수익이 떨어지면 롤백'(기존 결과 유지).
-         수익이 같거나 오를 때만 채택. → 미매칭만 보정, 수익 손해 없음.
-       반환: (조정된 buy_w, sell_w, 결과 dict) — 채택 안 되면 (None, None, dict)
+                                 max_boost=0.6, step=0.1, max_add=10):
+    """앵커 미매칭(충돌 패배·간발의 차)을 '지표 점수(가중치) 조정'으로만 보정한다 (요청).
+       ★ 앵커 날짜는 확장하지 않음. 오직 지표 가중치만 건드림.
+       ★ 제외된 지표(K 밖)도 후보 — 미매칭에 도움 되면 풀에 추가해 점수를 준다.
+       ★ 조정 후 수익이 떨어지면 롤백 (기존 그리드 결과 유지). 수익 유지/개선 시만 채택.
+       반환: (buy_pool_used, sell_pool_used, buy_w, sell_w, 결과dict) — 미채택 시 가중치 None.
     """
     import numpy as _np
     horizon = horizon if horizon is not None else globals().get('HORIZON_DAYS', 1)
@@ -14258,86 +14246,112 @@ def anchor_match_correct_weights(feat, close, buy_pool, sell_pool, best_inner, *
     Kb = int(best_inner['K_buy']); Ks = int(best_inner['K_sell'])
     vb = int(best_inner['vote_buy']); vs = int(best_inner['vote_sell'])
 
-    def _run(bwo=None, swo=None):
+    # 선정 조합이 실제로 쓰는 지표 = 풀 상위 K개
+    base_buy = full_buy_pool.iloc[:Kb].reset_index(drop=True)
+    base_sell = full_sell_pool.iloc[:Ks].reset_index(drop=True)
+    # 제외된 지표 (K 밖) — 보정에 추가 후보
+    extra_buy = full_buy_pool.iloc[Kb:].reset_index(drop=True)
+    extra_sell = full_sell_pool.iloc[Ks:].reset_index(drop=True)
+
+    def _run(bpool, spool, bwo=None, swo=None):
         return daily_ensemble_backtest(
-            feat, close, buy_pool, sell_pool, K_buy=Kb, K_sell=Ks,
+            feat, close, bpool, spool, K_buy=len(bpool), K_sell=len(spool),
             vote_buy=vb, vote_sell=vs, cost=cost, horizon=horizon,
             dd_limit=dd_limit, ru_limit=ru_limit, stop_loss_pct=stop_loss_pct,
             anchor_mode=anchor_mode, anchor_safe_buy=anchor_safe_buy,
             anchor_safe_sell=anchor_safe_sell, buy_w_override=bwo, sell_w_override=swo)
 
-    # 0) 기준(보정 전) 백테스트
-    d0, t0, cur0, bu0, su0 = _run()
+    # 0) 기준(보정 전) — 선정 그대로
+    d0, t0, cur0, bu0, su0 = _run(base_buy, base_sell)
     ret0 = float(cur0.get('cum_return_pct', 0.0))
     bm0 = float(cur0.get('anchor_buy_match_rate', 0.0))
     sm0 = float(cur0.get('anchor_sell_match_rate', 0.0))
 
-    # 기본 가중치 (현재 score 기반)
-    buy_used = buy_pool.iloc[:Kb].reset_index(drop=True)
-    sell_used = sell_pool.iloc[:Ks].reset_index(drop=True)
-    if globals().get('USE_WEIGHTED_VOTE', False):
-        bw_base = compute_vote_weights(buy_used['score'].values, globals().get('WEIGHT_MAX_RATIO', 1.6))
-        sw_base = compute_vote_weights(sell_used['score'].values, globals().get('WEIGHT_MAX_RATIO', 1.6))
-    else:
-        bw_base = _np.ones(Kb); sw_base = _np.ones(Ks)
-
-    # 1) 미매칭 앵커일에 켜진 지표 식별 — 그 지표 가중치를 boost
-    cl = close.reindex(feat.index).astype(float)
-    px = cl.values.astype(_np.float64); n = len(px)
-    buy_mat = _np.zeros((n, Kb), dtype=_np.uint8)
-    sell_mat = _np.zeros((n, Ks), dtype=_np.uint8)
-    for k, (_, row) in enumerate(buy_used.iterrows()):
-        buy_mat[:, k] = _to_signal_array(feat, row)
-    for k, (_, row) in enumerate(sell_used.iterrows()):
-        sell_mat[:, k] = _to_signal_array(feat, row)
     sba = anchor_safe_buy; ssa = anchor_safe_sell
     if sba is None or ssa is None:
-        print("  ⚠ 앵커 배열 없음 — 매칭 보정 건너뜀")
-        return None, None, {'adopted': False, 'reason': 'no_anchor'}
+        print("  \u26a0 \uc575\ucee4 \ubc30\uc5f4 \uc5c6\uc74c \u2014 \ub9e4\uce6d \ubcf4\uc815 \uac74\ub108\ub700")
+        return base_buy, base_sell, None, None, {'adopted': False, 'reason': 'no_anchor'}
 
-    # 미매칭 매수정답일: 앵커 매수=1인데 실제 보유 못 한 날 → 그날 켜진 매수 지표 카운트
+    cl = close.reindex(feat.index).astype(float)
+    n = len(cl)
     pos_post = d0['position_pre'].values.astype(int)[:n] if 'position_pre' in d0 else _np.zeros(n, dtype=int)
-    buy_hit = _np.zeros(Kb); sell_hit = _np.zeros(Ks)
     W = int(globals().get('ANCHOR_MATCH_WINDOW', 2))
+
+    # 미매칭 마스크
+    buy_unmatch = _np.zeros(n, dtype=bool); sell_unmatch = _np.zeros(n, dtype=bool)
     for i in range(n):
         if i < len(sba) and sba[i] == 1:
-            matched = any(pos_post[i+dd] == 1 for dd in range(0, W+1) if i+dd < n)
-            if not matched:
-                buy_hit += buy_mat[i]      # 그날 켜진 매수 지표에 점수
+            if not any(pos_post[i+dd] == 1 for dd in range(0, W+1) if i+dd < n):
+                buy_unmatch[i] = True
         if i < len(ssa) and ssa[i] == 1:
-            matched = any(pos_post[i+dd] == 0 for dd in range(0, W+1) if i+dd < n)
-            if not matched:
-                sell_hit += sell_mat[i]
+            if not any(pos_post[i+dd] == 0 for dd in range(0, W+1) if i+dd < n):
+                sell_unmatch[i] = True
 
-    # 2) 미매칭에 자주 켜진 지표일수록 가중치 boost — 단계적으로 키우며 수익 안 떨어지는 최대 채택
-    best = {'adopted': False, 'ret': ret0, 'bw': None, 'sw': None,
-            'ret_before': ret0, 'bm_before': bm0, 'sm_before': sm0,
-            'ret_after': ret0, 'bm_after': bm0, 'sm_after': sm0}
-    bh_norm = buy_hit / buy_hit.max() if buy_hit.max() > 0 else buy_hit
-    sh_norm = sell_hit / sell_hit.max() if sell_hit.max() > 0 else sell_hit
+    def _sig_hits(pool, unmatch_mask):
+        # 각 지표가 미매칭일에 얼마나 켜지는지 (그 지표가 보정에 도움될 잠재력)
+        hits = []
+        for _, prow in pool.iterrows():
+            arr = _to_signal_array(feat, prow).astype(bool)
+            hits.append(int((arr & unmatch_mask).sum()))
+        return _np.array(hits, dtype=float)
+
+    # 1) 제외 지표 중 미매칭일에 잘 켜지는 것 top max_add개를 풀에 추가 (점수 조정 = 가중치 부여)
+    def _augment(base_pool, extra_pool, unmatch_mask):
+        if len(extra_pool) == 0:
+            return base_pool, _np.array([], dtype=int)
+        eh = _sig_hits(extra_pool, unmatch_mask)
+        order = _np.argsort(-eh)
+        pick = [int(o) for o in order if eh[o] > 0][:max_add]
+        if not pick:
+            return base_pool, _np.array([], dtype=int)
+        add_df = extra_pool.iloc[pick].reset_index(drop=True)
+        aug = pd.concat([base_pool, add_df], ignore_index=True)
+        added_idx = _np.arange(len(base_pool), len(aug))
+        return aug, added_idx
+
+    aug_buy, added_b = _augment(base_buy, extra_buy, buy_unmatch)
+    aug_sell, added_s = _augment(base_sell, extra_sell, sell_unmatch)
+
+    # 기본 가중치 (score 기반) — 추가분 포함
+    def _wbase(pool):
+        if globals().get('USE_WEIGHTED_VOTE', False):
+            return compute_vote_weights(pool['score'].values, globals().get('WEIGHT_MAX_RATIO', 1.6))
+        return _np.ones(len(pool))
+    bw_base = _wbase(aug_buy); sw_base = _wbase(aug_sell)
+
+    # 미매칭 기여도 (증강 풀 기준) — boost 분배용
+    bh = _sig_hits(aug_buy, buy_unmatch);  bh = bh/bh.max() if bh.max()>0 else bh
+    sh = _sig_hits(aug_sell, sell_unmatch); sh = sh/sh.max() if sh.max()>0 else sh
+
+    # 2) boost 단계적으로 — 수익 안 떨어지고 매칭 개선되는 최대 채택
+    best = {'adopted': False, 'ret_before': ret0, 'bm_before': bm0, 'sm_before': sm0,
+            'ret_after': ret0, 'bm_after': bm0, 'sm_after': sm0,
+            'bw': None, 'sw': None, 'n_added_buy': 0, 'n_added_sell': 0}
     boost = step
     while boost <= max_boost + 1e-9:
-        bw = bw_base * (1.0 + boost * bh_norm)   # 매수 미매칭 기여 지표 ↑
-        sw = sw_base * (1.0 + boost * sh_norm)   # 매도 미매칭 기여 지표 ↑
-        d1, t1, cur1, _b1, _s1 = _run(bw, sw)
+        bw = bw_base * (1.0 + boost * bh)
+        sw = sw_base * (1.0 + boost * sh)
+        d1, t1, cur1, _b1, _s1 = _run(aug_buy, aug_sell, bw, sw)
         ret1 = float(cur1.get('cum_return_pct', 0.0))
         bm1 = float(cur1.get('anchor_buy_match_rate', 0.0))
         sm1 = float(cur1.get('anchor_sell_match_rate', 0.0))
-        # ★ 수익이 기준 이상이고, 매칭이 개선될 때만 채택 후보
         if ret1 >= ret0 - 1e-9 and (bm1 + sm1) > (best['bm_after'] + best['sm_after']):
-            best.update({'adopted': True, 'ret': ret1, 'bw': bw.copy(), 'sw': sw.copy(),
-                         'ret_after': ret1, 'bm_after': bm1, 'sm_after': sm1})
+            best.update({'adopted': True, 'ret_after': ret1, 'bm_after': bm1, 'sm_after': sm1,
+                         'bw': bw.copy(), 'sw': sw.copy(),
+                         'n_added_buy': int(len(added_b)), 'n_added_sell': int(len(added_s))})
         boost += step
 
     if best['adopted']:
-        print(f"  🎯 앵커 미매칭 보정 (지표 가중치 조정) — 수익 유지하며 매칭 개선:")
-        print(f"     매수매칭 {best['bm_before']*100:.1f}% → {best['bm_after']*100:.1f}%, "
-              f"매도매칭 {best['sm_before']*100:.1f}% → {best['sm_after']*100:.1f}%")
-        print(f"     수익 {best['ret_before']:+.1f}% → {best['ret_after']:+.1f}% (떨어지지 않음 — 채택)")
-        return best['bw'], best['sw'], best
+        print(f"  \U0001f3af \uc575\ucee4 \ubbf8\ub9e4\uce6d \ubcf4\uc815 (\uc9c0\ud45c \uc810\uc218\ub9cc \uc870\uc815, \ub0a0\uc9dc \ud655\uc7a5 \uc548\ud568):")
+        print(f"     \ub9e4\uc218\ub9e4\uce6d {best['bm_before']*100:.1f}% \u2192 {best['bm_after']*100:.1f}%, "
+              f"\ub9e4\ub3c4\ub9e4\uce6d {best['sm_before']*100:.1f}% \u2192 {best['sm_after']*100:.1f}%")
+        print(f"     \uc218\uc775 {best['ret_before']:+.1f}% \u2192 {best['ret_after']:+.1f}% (\ub5a8\uc5b4\uc9c0\uc9c0 \uc54a\uc74c \u2014 \ucc44\ud0dd)")
+        if best['n_added_buy'] or best['n_added_sell']:
+            print(f"     \uc81c\uc678\ub410\ub358 \uc9c0\ud45c \ucd94\uac00: \ub9e4\uc218 {best['n_added_buy']}\uac1c, \ub9e4\ub3c4 {best['n_added_sell']}\uac1c (\ubcf4\uc815\uc5d0 \ub3c4\uc6c0)")
+        return aug_buy, aug_sell, best['bw'], best['sw'], best
     else:
-        print(f"  ℹ 앵커 미매칭 보정 — 수익 유지하며 매칭 개선되는 조정 없음 → 기존 그리드 유지")
-        return None, None, best
+        print(f"  \u2139 \uc575\ucee4 \ubbf8\ub9e4\uce6d \ubcf4\uc815 \u2014 \uc218\uc775 \uc720\uc9c0\ud558\uba70 \uac1c\uc120\ub418\ub294 \uc870\uc815 \uc5c6\uc74c \u2192 \uae30\uc874 \uadf8\ub9ac\ub4dc \uc720\uc9c0")
+        return base_buy, base_sell, None, None, best
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -15519,3 +15533,4 @@ def get_generated_files():
 
 if __name__ == '__main__':
     main()
+
