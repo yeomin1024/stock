@@ -14492,15 +14492,14 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
                                  horizon=None, dd_limit=None, ru_limit=None,
                                  stop_loss_pct=None, anchor_mode=True,
                                  anchor_safe_buy=None, anchor_safe_sell=None,
-                                 max_boost=0.8, step=0.1, max_add=10, verbose=True):
-    """지표 가중치 조정으로 '수익률을 직접 끌어올리는' 보정 (요청 개편).
-       핵심 변화:
-        (1) 목표 = 수익률 증가 그 자체 (매칭 개선을 필수 조건으로 걸지 않음).
-        (2) 손실·저수익(<=PROFIT_FLOOR) 거래의 매수/매도일에 켜진 지표 가중치는 내림(벌점),
-            고수익 거래에 켜진 지표는 올림(가점) - 양방향 조정.
-        (3) 미사용(K 밖) 지표도 후보로 추가해 가점.
-        (4) 여러 강도(boost)를 시도해 '실제 수익이 최대로 오르는' 가중치를 채택.
-            수익이 원래보다 낮으면 미채택(롤백).
+                                 max_boost=0.8, step=0.1, max_add=15, verbose=True):
+    """앵커 미매칭을 '미사용 지표 추가 + 큰 가중치 부여'로 보정 (요청 개편).
+       철학(사용자 제안): 기존에 잘 맞은 날엔 영향을 주지 않으면서,
+         '간발의 차로 미달(신호 안 뜸)'·'충돌 패배'한 미매칭일에만 그날 켜지는
+         미사용(K 밖) 지표를 풀에 추가하고 충분한 가중치를 줘서 vote 임계를 넘긴다.
+       - 추가 지표는 '미매칭일에 자주 켜지고, 기존 매칭/정상일엔 덜 켜지는' 것 우선.
+       - 추가 후 여러 가중치 크기를 시도해 '실제 수익이 가장 높아지는' 조합 채택.
+       - 수익이 기존보다 낮으면 미채택(롤백).
        반환: (buy_pool_used, sell_pool_used, buy_w, sell_w, 결과dict)
     """
     import numpy as _np
@@ -14509,7 +14508,6 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
     ru_limit = ru_limit if ru_limit is not None else globals().get('RUNUP_LIMIT_SELL', 0.01)
     stop_loss_pct = stop_loss_pct if stop_loss_pct is not None else globals().get('STOP_LOSS_PCT', 0.05)
     cost = globals().get('COST_PER_TRADE', 0.004)
-    pfloor = float(globals().get('CORRECT_PROFIT_FLOOR', 0.01))
     Kb = int(best_inner['K_buy']); Ks = int(best_inner['K_sell'])
     vb = int(best_inner['vote_buy']); vs = int(best_inner['vote_sell'])
 
@@ -14532,109 +14530,124 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
     bm0 = float(cur0.get('anchor_buy_match_rate', 0.0))
     sm0 = float(cur0.get('anchor_sell_match_rate', 0.0))
 
-    cl = close.reindex(feat.index).astype(float)
-    n = len(cl)
-    px = cl.values.astype(float)
-
-    # ── 신호 '사후 적중률' 기반 방향 (핵심) ──
-    #   매수지표: 켜진 날 이후 horizon일 평균 미래수익이 +면 좋은 신호 → 가중치↑, -면 ↓
-    #   매도지표: 켜진 날 이후 평균 미래수익이 -면 좋은 매도 → ↑, +면 ↓ (부호 반대)
-    H = max(1, int(horizon))
-    fwd = _np.full(n, _np.nan)
-    for i in range(n - H):
-        if px[i] > 0:
-            fwd[i] = px[i + H] / px[i] - 1.0
-    fwd_valid = ~_np.isnan(fwd)
-
-    def _sig_arr(pool):
-        out = []
-        for _, prow in pool.iterrows():
-            out.append(_to_signal_array(feat, prow).astype(bool))
-        return out
-
-    def _edge(sig_list, is_sell):
-        """각 지표의 사후 엣지: 켜진 날 평균 미래수익 (매도는 부호 반전).
-           양수=좋은 신호, 음수=나쁜 신호. 켜진 날이 적으면 신뢰도↓로 축소."""
-        sc = []
-        for arr in sig_list:
-            on = arr & fwd_valid
-            cnt = int(on.sum())
-            if cnt < 3:
-                sc.append(0.0); continue
-            avg = float(_np.nanmean(fwd[on]))
-            edge = -avg if is_sell else avg
-            # 표본 신뢰도 가중 (켜진 날 많을수록 신뢰)
-            conf = min(1.0, cnt / 20.0)
-            sc.append(edge * conf)
-        return _np.array(sc, dtype=float)
-
-    # 앵커 미매칭일 (참고용 — 추가지표 선정 시 약한 가점)
+    n = len(feat)
+    W = int(globals().get('ANCHOR_MATCH_WINDOW', 2))
     sba = anchor_safe_buy; ssa = anchor_safe_sell
     pos_post = d0['position_pre'].values.astype(int)[:n] if 'position_pre' in d0 else _np.zeros(n, dtype=int)
 
-    # 1) 미사용 지표 중 '사후 엣지 양(+)' 상위를 풀에 추가
-    def _augment(base_pool, extra_pool, is_sell):
-        if len(extra_pool) == 0:
-            return base_pool, _np.array([], dtype=int)
-        es = _edge(_sig_arr(extra_pool), is_sell)
-        order = _np.argsort(-es)
-        pick = [int(o) for o in order if es[o] > 0][:max_add]
-        if not pick:
-            return base_pool, _np.array([], dtype=int)
-        add_df = extra_pool.iloc[pick].reset_index(drop=True)
-        aug = pd.concat([base_pool, add_df], ignore_index=True)
-        return aug, _np.arange(len(base_pool), len(aug))
+    # ── 미매칭일 마스크 (앵커 정답인데 포지션 못 맞춘 날) ──
+    miss_buy = _np.zeros(n, dtype=bool); miss_sell = _np.zeros(n, dtype=bool)
+    matched_buy = _np.zeros(n, dtype=bool); matched_sell = _np.zeros(n, dtype=bool)
+    if sba is not None and ssa is not None:
+        for i in range(n):
+            if i < len(sba) and sba[i] == 1:
+                if any(pos_post[i+dd] == 1 for dd in range(0, W+1) if i+dd < n):
+                    matched_buy[i] = True
+                else:
+                    miss_buy[i] = True
+            if i < len(ssa) and ssa[i] == 1:
+                if any(pos_post[i+dd] == 0 for dd in range(0, W+1) if i+dd < n):
+                    matched_sell[i] = True
+                else:
+                    miss_sell[i] = True
 
-    aug_buy, added_b  = _augment(base_buy, extra_buy, False)
-    aug_sell, added_s = _augment(base_sell, extra_sell, True)
+    no_anchor = (sba is None or ssa is None or (miss_buy.sum()+miss_sell.sum()) == 0)
 
-    # 2) 증강 풀의 사후 엣지 → [-1,1] 정규화 (양방향 가중치 조정 방향)
-    def _norm_dir(sig_list, is_sell):
-        sc = _edge(sig_list, is_sell)
-        mx = float(_np.abs(sc).max())
-        return sc / mx if mx > 0 else sc
-    bdir = _norm_dir(_sig_arr(aug_buy),  False)
-    sdir = _norm_dir(_sig_arr(aug_sell), True)
+    def _sig_arr(pool):
+        return [_to_signal_array(feat, prow).astype(bool) for _, prow in pool.iterrows()]
 
+    # ── 추가 지표 선택: 미매칭일에 자주 켜지고, 매칭/정상일엔 덜 켜지는 것 ──
+    #   targeting score = (미매칭일 켜짐 비율) - 0.5*(매칭일 켜짐 비율)
+    def _pick_extra(extra_pool, miss_mask, matched_mask):
+        if len(extra_pool) == 0 or miss_mask.sum() == 0:
+            return [], _np.array([])
+        sigs = _sig_arr(extra_pool)
+        nmiss = max(1, int(miss_mask.sum()))
+        nmat = max(1, int(matched_mask.sum()))
+        scores = []
+        for arr in sigs:
+            hit_miss = int((arr & miss_mask).sum()) / nmiss
+            hit_mat  = int((arr & matched_mask).sum()) / nmat
+            scores.append(hit_miss - 0.5*hit_mat)
+        scores = _np.array(scores)
+        order = _np.argsort(-scores)
+        pick = [int(o) for o in order if scores[o] > 0][:max_add]
+        return pick, scores
+
+    pick_b, _ = _pick_extra(extra_buy, miss_buy, matched_buy)
+    pick_s, _ = _pick_extra(extra_sell, miss_sell, matched_sell)
+
+    add_buy  = extra_buy.iloc[pick_b].reset_index(drop=True) if pick_b else extra_buy.iloc[[]].reset_index(drop=True)
+    add_sell = extra_sell.iloc[pick_s].reset_index(drop=True) if pick_s else extra_sell.iloc[[]].reset_index(drop=True)
+    aug_buy  = pd.concat([base_buy, add_buy], ignore_index=True)
+    aug_sell = pd.concat([base_sell, add_sell], ignore_index=True)
+
+    # 기본 가중치 (기존 K개) — score 기반 또는 1.0
     def _wbase(pool):
         if globals().get('USE_WEIGHTED_VOTE', False):
             return compute_vote_weights(pool['score'].values, globals().get('WEIGHT_MAX_RATIO', 1.6))
         return _np.ones(len(pool))
-    bw_base = _wbase(aug_buy); sw_base = _wbase(aug_sell)
+    bw_core = _wbase(base_buy); sw_core = _wbase(base_sell)
 
-    # 3) 여러 강도로 양방향 조정 → 실제 수익 최대 채택 (수익 떨어지면 미채택)
+    # ── 추가 지표에 줄 가중치를 여러 크기로 시도 (vote 임계를 넘기게) ──
+    #   add_w 후보: 추가 지표 1개당 가중치. 충분히 커야 간발 미달(1~2점차)을 넘긴다.
     best = {'adopted': False, 'ret_before': ret0, 'bm_before': bm0, 'sm_before': sm0,
             'ret_after': ret0, 'bm_after': bm0, 'sm_after': sm0,
-            'bw': None, 'sw': None, 'n_added_buy': 0, 'n_added_sell': 0}
-    # boost를 충분히 크게: 좋은 지표는 (1+boost)배까지 강화, 나쁜 지표는 0.05까지 억제.
-    #   양의 방향엔 boost를, 음의 방향엔 더 센 억제(boost*1.5)를 적용해 노이즈를 확실히 누른다.
-    for boost in (0.3, 0.6, 1.0, 1.5, 2.0, 3.0):
-        b_mult = _np.where(bdir >= 0, 1.0 + boost * bdir, 1.0 + (boost * 1.5) * bdir)
-        s_mult = _np.where(sdir >= 0, 1.0 + boost * sdir, 1.0 + (boost * 1.5) * sdir)
-        bw = _np.clip(bw_base * b_mult, 0.05, None)
-        sw = _np.clip(sw_base * s_mult, 0.05, None)
-        d1, t1, cur1, _b1, _s1 = _run(aug_buy, aug_sell, bw, sw)
-        ret1 = float(cur1.get('cum_return_pct', 0.0))
-        bm1 = float(cur1.get('anchor_buy_match_rate', 0.0))
-        sm1 = float(cur1.get('anchor_sell_match_rate', 0.0))
-        if ret1 > best['ret_after'] + 1e-9:
-            best.update({'adopted': True, 'ret_after': ret1, 'bm_after': bm1, 'sm_after': sm1,
-                         'bw': bw.copy(), 'sw': sw.copy(),
-                         'n_added_buy': int(len(added_b)), 'n_added_sell': int(len(added_s))})
+            'bw': None, 'sw': None, 'n_added_buy': int(len(add_buy)), 'n_added_sell': int(len(add_sell))}
+
+    if no_anchor or (len(add_buy) == 0 and len(add_sell) == 0):
+        if verbose:
+            print(f"  \u2139 \uc218\uc775 \ubcf4\uc815 \u2014 \ucd94\uac00\ud560 \ubbf8\uc0ac\uc6a9 \uc9c0\ud45c \uc5c6\uc74c \u2192 \uae30\uc874 \uadf8\ub9ac\ub4dc \uc720\uc9c0")
+        return base_buy, base_sell, None, None, best
+
+    nb = len(add_buy); ns = len(add_sell)
+    # 추가 가중치: 작게(0.2)부터 — 기존 매매 영향 최소화하며 미달일만 살짝 밀어줌.
+    #   촘촘히 올려 '수익 안 떨어지고 매칭 느는' 지점을 찾는다.
+
+    # 기존 풀 내 지표 중 '미매칭일에 켜지는' 것 = 충돌일에 밀어줄 후보 (가중치 상향용)
+    def _core_boost_dir(base_pool, miss_mask, matched_mask):
+        if miss_mask.sum() == 0:
+            return _np.zeros(len(base_pool))
+        sigs = _sig_arr(base_pool)
+        nmiss = max(1, int(miss_mask.sum())); nmat = max(1, int(matched_mask.sum()))
+        d = []
+        for arr in sigs:
+            hm = int((arr & miss_mask).sum())/nmiss
+            ht = int((arr & matched_mask).sum())/nmat
+            d.append(max(0.0, hm - 0.5*ht))   # 미매칭일에 자주 켜지면 +
+        d = _np.array(d)
+        return d/d.max() if d.max() > 0 else d
+    bcore_dir = _core_boost_dir(base_buy, miss_buy, matched_buy)
+    score_dir = _core_boost_dir(base_sell, miss_sell, matched_sell)
+
+    for add_w in (0.2, 0.3, 0.5, 0.8, 1.2, 1.8, 2.5):
+        for core_boost in (0.0, 0.3, 0.6):
+            bcore_w = bw_core * (1.0 + core_boost * bcore_dir)
+            score_w = sw_core * (1.0 + core_boost * score_dir)
+            bw = _np.concatenate([bcore_w, _np.full(nb, add_w)]) if nb > 0 else bcore_w
+            sw = _np.concatenate([score_w, _np.full(ns, add_w)]) if ns > 0 else score_w
+            d1, t1, cur1, _b1, _s1 = _run(aug_buy, aug_sell, bw, sw)
+            ret1 = float(cur1.get('cum_return_pct', 0.0))
+            bm1 = float(cur1.get('anchor_buy_match_rate', 0.0))
+            sm1 = float(cur1.get('anchor_sell_match_rate', 0.0))
+            better_ret = ret1 > best['ret_after'] + 1e-9
+            keep_ret_more_match = (ret1 >= ret0 - 1e-9) and ((bm1+sm1) > (best['bm_after']+best['sm_after']) + 1e-9)
+            if better_ret or keep_ret_more_match:
+                best.update({'adopted': True, 'ret_after': ret1, 'bm_after': bm1, 'sm_after': sm1,
+                             'bw': bw.copy(), 'sw': sw.copy()})
 
     if best['adopted']:
         if verbose:
-            print(f"  \U0001f3af \uc218\uc775 \ubcf4\uc815 (\uc9c0\ud45c \uac00\uc911\uce58 \uc591\ubc29\ud5a5 \uc870\uc815, \ub0a0\uc9dc \ud655\uc7a5 \uc548\ud568):")
+            print(f"  \U0001f3af \uc218\uc775 \ubcf4\uc815 (\ubbf8\uc0ac\uc6a9 \uc9c0\ud45c \ucd94\uac00 + \uac00\uc911\uce58 \ubd80\uc5ec, \ub0a0\uc9dc \ud655\uc7a5 \uc548\ud568):")
             print(f"     \uc218\uc775 {best['ret_before']:+.1f}% \u2192 {best['ret_after']:+.1f}% "
-                  f"(+{best['ret_after']-best['ret_before']:.1f}%p \u2014 \ucc44\ud0dd)")
+                  f"(+{best['ret_after']-best['ret_before']:.1f}%p)")
             print(f"     \ub9e4\uc218\ub9e4\uce6d {best['bm_before']*100:.1f}% \u2192 {best['bm_after']*100:.1f}%, "
                   f"\ub9e4\ub3c4\ub9e4\uce6d {best['sm_before']*100:.1f}% \u2192 {best['sm_after']*100:.1f}%")
-            if best['n_added_buy'] or best['n_added_sell']:
-                print(f"     \uc81c\uc678\ub410\ub358 \uc9c0\ud45c \ucd94\uac00: \ub9e4\uc218 {best['n_added_buy']}\uac1c, \ub9e4\ub3c4 {best['n_added_sell']}\uac1c")
+            print(f"     \ucd94\uac00\ub41c \ubbf8\uc0ac\uc6a9 \uc9c0\ud45c: \ub9e4\uc218 {best['n_added_buy']}\uac1c, \ub9e4\ub3c4 {best['n_added_sell']}\uac1c")
         return aug_buy, aug_sell, best['bw'], best['sw'], best
     else:
         if verbose:
-            print(f"  \u2139 \uc218\uc775 \ubcf4\uc815 \u2014 \uc218\uc775\uc774 \uc624\ub974\ub294 \uc870\uc815 \uc5c6\uc74c \u2192 \uae30\uc874 \uadf8\ub9ac\ub4dc \uc720\uc9c0")
+            print(f"  \u2139 \uc218\uc775 \ubcf4\uc815 \u2014 \uac1c\uc120\ub418\ub294 \ucd94\uac00 \uc5c6\uc74c \u2192 \uae30\uc874 \uadf8\ub9ac\ub4dc \uc720\uc9c0")
         return base_buy, base_sell, None, None, best
 
 
