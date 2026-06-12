@@ -9420,10 +9420,10 @@ META_GRID = {
 
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
-STAGE_PCT_RANGE   = [(10, 90)]
-STAGE_WILSON_Z    = [1.75]
+STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
+STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2]
+STAGE_CORR_LIMIT  = [0.2, 0.25]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
