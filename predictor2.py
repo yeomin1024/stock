@@ -10575,6 +10575,16 @@ def meta_grid_search(feat, close, *,
         buy_pool  = diversify_candidates(feat_score, buy_df,  top_n=tnp, corr_limit=cl)
         sell_pool = diversify_candidates(feat_score, sell_df, top_n=tnp, corr_limit=cl)
 
+        # ★ 보정용 전체 후보 풀 저장 (요청) — top_n_pool은 그대로 100, 보정만 전체 탐색.
+        #   diversify로 100개 추리기 전의 '점수 매긴 전체 후보(buy_df/sell_df)'를 메타키별 보관.
+        #   보정 함수가 이 큰 풀에서 미매칭일 보정에 쓸 미사용 지표를 찾는다 (그리드 속도 영향 없음).
+        try:
+            _fc_key = (round(float(wz),4), int(pr[0]), int(pr[1]), round(float(cl),4))
+            globals().setdefault('_LAST_FULL_CAND_MAP', {})[_fc_key] = (
+                buy_df.reset_index(drop=True), sell_df.reset_index(drop=True))
+        except Exception:
+            pass
+
         inner_df = grid_search_ensemble(
             feat, close, buy_pool, sell_pool,
             k_buy_range=k_buy_range, k_sell_range=k_sell_range,
@@ -13338,7 +13348,7 @@ def staged_meta_tune(*, base_meta_grid=None,
     if selection_tolerance is None:       selection_tolerance = SELECTION_TOLERANCE
 
     base_ms   = base_meta_grid.get('min_signals', [10])[0]
-    base_pool = base_meta_grid.get('top_n_pool', [100])[0]
+    base_pool = base_meta_grid.get('top_n_pool', [150])[0]
     base_wz   = base_meta_grid.get('wilson_z', [1.7])[0]
     base_pct  = base_meta_grid.get('pct_range', [(10, 90)])[0]
     base_corr = base_meta_grid.get('corr_limit', [0.8])[0]
@@ -13717,10 +13727,12 @@ def staged_meta_tune(*, base_meta_grid=None,
                 _asb0, _ass0 = _compute_anchor_arrays(_ff0.index, _abd0, _asd0)
                 _anchor_corr_ok = False
                 if globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
+                    _fc0 = globals().get('_LAST_FULL_CAND_MAP', {}).get(_key0, (None, None))
                     _ab, _as, _corr_bw, _corr_sw, _mc = anchor_match_correct_weights(
                         _ff0, _cc0, _bp0, _sp0, _bsel0,
                         anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE),
-                        anchor_safe_buy=_asb0, anchor_safe_sell=_ass0)
+                        anchor_safe_buy=_asb0, anchor_safe_sell=_ass0,
+                        full_cand_buy=_fc0[0], full_cand_sell=_fc0[1])
                     _anchor_corr_ok = bool(_mc.get('adopted', False))
                 # ★ CatBoost 보정 제거 (요청) — 앵커 기반 지표 가중치 보정만 사용.
         except Exception as _ce:
@@ -14444,6 +14456,10 @@ def _apply_correction_to_candidates(verified, feat, close, pool_map, *,
                 print(f"     ⚠ 풀 매칭 실패 — key={_key}, 사용가능 keys={list(pool_map.keys())[:3]}")
             continue
         bp, sp = pools
+        # ★ 보정용 전체 후보 풀 (top_n_pool 100 무관, 전체 2800개 기반 점수 후보)
+        _fcmap = globals().get('_LAST_FULL_CAND_MAP', {})
+        _fc = _fcmap.get(_key, (None, None))
+        _fcb, _fcs = _fc if _fc else (None, None)
         best_inner = {'K_buy': int(_r['K_buy']), 'vote_buy': int(_r['vote_buy']),
                       'K_sell': int(_r['K_sell']), 'vote_sell': int(_r['vote_sell'])}
         try:
@@ -14452,6 +14468,7 @@ def _apply_correction_to_candidates(verified, feat, close, pool_map, *,
                 horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
                 stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
                 anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell,
+                full_cand_buy=_fcb, full_cand_sell=_fcs,
                 verbose=(cnt == 0))
         except Exception as _e1:
             if cnt < 3:
@@ -14500,12 +14517,15 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
                                  horizon=None, dd_limit=None, ru_limit=None,
                                  stop_loss_pct=None, anchor_mode=True,
                                  anchor_safe_buy=None, anchor_safe_sell=None,
+                                 full_cand_buy=None, full_cand_sell=None,
                                  max_boost=0.8, step=0.1, max_add=15, verbose=True):
     """앵커 미매칭을 '미사용 지표 추가 + 큰 가중치 부여'로 보정 (요청 개편).
        철학(사용자 제안): 기존에 잘 맞은 날엔 영향을 주지 않으면서,
          '간발의 차로 미달(신호 안 뜸)'·'충돌 패배'한 미매칭일에만 그날 켜지는
-         미사용(K 밖) 지표를 풀에 추가하고 충분한 가중치를 줘서 vote 임계를 넘긴다.
-       - 추가 지표는 '미매칭일에 자주 켜지고, 기존 매칭/정상일엔 덜 켜지는' 것 우선.
+         미사용 지표를 풀에 추가하고 충분한 가중치를 줘서 vote 임계를 넘긴다.
+       ★ 보정 후보는 top_n_pool(100) 풀이 아니라 '점수 매긴 전체 후보(2800개 기반)'에서
+         찾는다 (full_cand_buy/sell). top_n_pool은 그대로 두고 보정만 전체 탐색 (사용자 제안).
+       - 추가 지표는 표적성(미매칭일 선택적 발화) 높은 것 우선 → 미래 일반화 + 다른날 영향 최소.
        - 추가 후 여러 가중치 크기를 시도해 '실제 수익이 가장 높아지는' 조합 채택.
        - 수익이 기존보다 낮으면 미채택(롤백).
        반환: (buy_pool_used, sell_pool_used, buy_w, sell_w, 결과dict)
@@ -14521,8 +14541,23 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
 
     base_buy  = full_buy_pool.iloc[:Kb].reset_index(drop=True)
     base_sell = full_sell_pool.iloc[:Ks].reset_index(drop=True)
-    extra_buy  = full_buy_pool.iloc[Kb:].reset_index(drop=True)
-    extra_sell = full_sell_pool.iloc[Ks:].reset_index(drop=True)
+
+    # ★ extra(보정 후보) = 전체 후보 풀에서 'base에 없는 지표'. 전체가 없으면 작은 풀에서 폴백.
+    def _make_extra(base_pool, small_full, big_cand):
+        if big_cand is not None and len(big_cand) > 0:
+            used = set(zip(base_pool['indicator'], base_pool['direction'],
+                           _np.round(base_pool['threshold'].astype(float), 8)))
+            keep = []
+            for _, r in big_cand.iterrows():
+                kkey = (r['indicator'], r['direction'], round(float(r['threshold']), 8))
+                if kkey not in used:
+                    keep.append(r)
+            if keep:
+                return pd.DataFrame(keep).reset_index(drop=True)
+        return small_full.iloc[len(base_pool):].reset_index(drop=True)
+
+    extra_buy  = _make_extra(base_buy,  full_buy_pool,  full_cand_buy)
+    extra_sell = _make_extra(base_sell, full_sell_pool, full_cand_sell)
 
     def _run(bpool, spool, bwo=None, swo=None):
         return daily_ensemble_backtest(
@@ -14571,30 +14606,47 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
     # ── 추가 지표 선택: 미매칭일에 자주 켜지고, 매칭/정상일엔 덜 켜지는 것 ──
     #   targeting score = (미매칭일 켜짐 비율) - 0.5*(매칭일 켜짐 비율)
     def _pick_extra(extra_pool, miss_mask, matched_mask):
+        """표적성(competence) 점수로 추가 지표 선택 (요청: 미래 적용 가능 + 다른 날 영향 최소).
+           표적성 = (미매칭일 켜짐 비율) / (그 외 모든 날 켜짐 비율 + eps)
+             → 높을수록 '미매칭 같은 상황'에서만 선택적으로 켜지는 지표.
+             → 미래에 비슷한 상황이 오면 같은 지표가 켜져 매도/매수를 밀어줌 (일반화).
+             → 다른 날엔 거의 안 켜지므로 기존 매매(수익)를 거의 안 건드림.
+        """
         if len(extra_pool) == 0 or miss_mask.sum() == 0:
             return [], _np.array([])
         sigs = _sig_arr(extra_pool)
         nmiss = max(1, int(miss_mask.sum()))
+        other_mask = ~miss_mask                     # 미매칭이 아닌 모든 날 (보존 대상)
+        nother = max(1, int(other_mask.sum()))
         scores = []
         for arr in sigs:
-            # 미매칭일에 켜지는 횟수 = 그 지표가 미매칭을 살릴 잠재력. 많을수록 좋다.
-            #   (매칭일에도 켜지는지는 감점하지 않음 — 그날은 이미 맞았으니 무해)
-            scores.append(int((arr & miss_mask).sum()))
+            hit_miss  = int((arr & miss_mask).sum()) / nmiss     # 미매칭일 적중률
+            hit_other = int((arr & other_mask).sum()) / nother   # 그 외 날 발화율(낮을수록 좋음)
+            if hit_miss <= 0:
+                scores.append(0.0); continue
+            # 표적성 = 미매칭일 적중 / (그외 발화 + eps). 미매칭에 자주·다른날 드물게 → 높음
+            targeting = hit_miss / (hit_other + 0.05)
+            scores.append(targeting)
         scores = _np.array(scores, dtype=float)
         order = _np.argsort(-scores)
-        # 미매칭일에 1번이라도 켜지는 지표는 모두 후보 (최대 max_add개)
-        pick = [int(o) for o in order if scores[o] > 0][:max_add]
+        # 표적성이 충분히 높은(미매칭에 선택적인) 지표만 — 임계 1.0 이상 + 미매칭 적중 있음
+        pick = [int(o) for o in order if scores[o] >= 1.0][:max_add]
+        if not pick:  # 임계 넘는 게 없으면 표적성 상위 몇 개라도
+            pick = [int(o) for o in order if scores[o] > 0][:max(3, max_add//3)]
         return pick, scores
 
-    pick_b, _ = _pick_extra(extra_buy, miss_buy, matched_buy)
-    pick_s, _ = _pick_extra(extra_sell, miss_sell, matched_sell)
+    pick_b, bsc = _pick_extra(extra_buy, miss_buy, matched_buy)
+    pick_s, ssc = _pick_extra(extra_sell, miss_sell, matched_sell)
 
     add_buy  = extra_buy.iloc[pick_b].reset_index(drop=True) if pick_b else extra_buy.iloc[[]].reset_index(drop=True)
     add_sell = extra_sell.iloc[pick_s].reset_index(drop=True) if pick_s else extra_sell.iloc[[]].reset_index(drop=True)
     aug_buy  = pd.concat([base_buy, add_buy], ignore_index=True)
     aug_sell = pd.concat([base_sell, add_sell], ignore_index=True)
     if verbose:
-        print(f"     [보정진단] 추가 후보 지표 — 매수 {len(add_buy)}개, 매도 {len(add_sell)}개 선택됨")
+        _bt = f"{max(bsc[pick_b]):.1f}" if len(pick_b) else "-"
+        _st = f"{max(ssc[pick_s]):.1f}" if len(pick_s) else "-"
+        print(f"     [보정진단] 추가 후보 지표(표적성≥1.0) — 매수 {len(add_buy)}개(최고표적성 {_bt}), "
+              f"매도 {len(add_sell)}개(최고표적성 {_st})")
 
     # 기본 가중치 (기존 K개) — score 기반 또는 1.0
     def _wbase(pool):
