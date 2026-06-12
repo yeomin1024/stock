@@ -9386,8 +9386,8 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 1                   # 최근 N개월을 OOS로 (이전달~현재)
-OOS_SELECT_BY_OOS_RETURN = True  # True면 OOS 수익률 최고로 선정 (전체수익 무시)
+OOS_MONTHS = 0                  # 최근 N개월을 OOS로 (이전달~현재)
+OOS_SELECT_BY_OOS_RETURN = False  # True면 OOS 수익률 최고로 선정 (전체수익 무시)
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
 #   충돌 패배·간발의 차로 앵커와 안 맞은 매수/매도를 '지표 가중치 조정'으로 보정.
@@ -12875,6 +12875,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          output_file=None,
                          inject_combined_table=None,
                          force_best_combo=None,
+                         force_corr=None,
                          inject_pools=None):
     print('=' * 72)
     print('  매수/매도 앙상블 — 메타 그리드 자동 튜닝')
@@ -13189,10 +13190,20 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             print(f"  ※ 수익률 비중을 더 두고 싶다면 SELECTION_TOLERANCE를 키우세요 (현재 {selection_tolerance*100:.1f}%p)")
 
     print(f"\n[일별 백테스트]")
+    # ★ 보정 채택된 조합이면 보정된 풀+가중치로 백테스트 → 일별/거래내역/현재포지션 모두 보정 반영 (요청)
+    _bt_buy_pool, _bt_sell_pool = buy_pool, sell_pool
+    _bt_Kb = int(best_inner['K_buy']); _bt_Ks = int(best_inner['K_sell'])
+    _bt_bw = _bt_sw = None
+    if force_corr is not None and force_corr.get('buy_pool') is not None:
+        _bt_buy_pool = force_corr['buy_pool']; _bt_sell_pool = force_corr['sell_pool']
+        _bt_Kb = len(_bt_buy_pool); _bt_Ks = len(_bt_sell_pool)
+        _bt_bw = force_corr.get('buy_w'); _bt_sw = force_corr.get('sell_w')
+        print(f"  🔧 보정 적용된 풀로 백테스트 — 매수 {_bt_Kb}개(추가 {force_corr.get('n_added_buy',0)}), "
+              f"매도 {_bt_Ks}개(추가 {force_corr.get('n_added_sell',0)}) + 가중치 보정")
     daily, trades, cur, buy_used, sell_used = daily_ensemble_backtest(
-        feat, close, buy_pool, sell_pool,
-        K_buy=int(best_inner['K_buy']),
-        K_sell=int(best_inner['K_sell']),
+        feat, close, _bt_buy_pool, _bt_sell_pool,
+        K_buy=_bt_Kb,
+        K_sell=_bt_Ks,
         vote_buy=int(best_inner['vote_buy']),
         vote_sell=int(best_inner['vote_sell']),
         horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
@@ -13200,6 +13211,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         anchor_mode=anchor_mode,
         anchor_safe_buy=anchor_safe_buy,
         anchor_safe_sell=anchor_safe_sell,
+        buy_w_override=_bt_bw, sell_w_override=_bt_sw,
     )
 
     oos_daily = oos_trades = oos_cur = None
@@ -13672,6 +13684,47 @@ def staged_meta_tune(*, base_meta_grid=None,
 
     # ★ Excel 저장 — 최종 best 조합으로 1회 실행, 그리드 시트엔 merged_table 주입
     print(f'\n  📊 최종 조합으로 Excel 생성 (그리드 시트=단계 전 결과 통합)...')
+
+    # ★ 선정 조합이 보정 채택됐으면, 보정 가중치를 재계산해 최종 백테스트에 주입 (요청).
+    #   → 일별 백테스트·거래내역·현재포지션 시트가 모두 '보정된 결과'로 그려진다.
+    _force_corr = None
+    if bool(sel.get('corr_applied', False)) and globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
+        try:
+            _bselC = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
+                      'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
+            _keyC = (round(float(fb['wz']),4), int(fb['pct'][0]), int(fb['pct'][1]), round(float(fb['corr']),4))
+            _poolsC = globals().get('_LAST_POOL_MAP', {}).get(_keyC)
+            _fcC = globals().get('_LAST_FULL_CAND_MAP', {}).get(_keyC, (None, None))
+            if _poolsC is not None:
+                _bpC, _spC = _poolsC
+                _ffC, _ccC, _tkC = _resolve_data()
+                _mC = _ffC.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
+                _ffC = _ffC.loc[_mC]; _ccC = _ccC.reindex(_ffC.index)
+                _vmC = _ccC.notna(); _ffC = _ffC[_vmC.values]; _ccC = _ccC[_vmC.values]
+                _abdC, _asdC = auto_compute_anchor_dates(
+                    _ffC.index, _ccC, window=globals().get('AUTO_ANCHOR_WINDOW',1),
+                    lookforward=globals().get('AUTO_ANCHOR_LOOKFORWARD',1),
+                    min_rise_after_buy=globals().get('AUTO_ANCHOR_MIN_RISE',0.01),
+                    min_drop_after_sell=globals().get('AUTO_ANCHOR_MIN_DROP',0.01),
+                    price_tolerance=globals().get('AUTO_ANCHOR_PRICE_TOLERANCE',0.01),
+                    max_dates=globals().get('AUTO_ANCHOR_MAX_DATES',None))
+                _asbC, _assC = _compute_anchor_arrays(_ffC.index, _abdC, _asdC)
+                _augBC, _augSC, _bwC, _swC, _mcC = anchor_match_correct_weights(
+                    _ffC, _ccC, _bpC, _spC, _bselC,
+                    anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE),
+                    anchor_safe_buy=_asbC, anchor_safe_sell=_assC,
+                    full_cand_buy=_fcC[0], full_cand_sell=_fcC[1], verbose=False)
+                if _mcC.get('adopted', False) and _bwC is not None:
+                    _force_corr = {'buy_pool': _augBC, 'sell_pool': _augSC,
+                                   'buy_w': _bwC, 'sell_w': _swC,
+                                   'n_added_buy': _mcC.get('n_added_buy', 0),
+                                   'n_added_sell': _mcC.get('n_added_sell', 0)}
+                    print(f"  🔧 선정 조합 보정 재계산 완료 → 최종 시트에 보정 결과 반영 "
+                          f"(수익 {_mcC['ret_before']:+.1f}%→{_mcC['ret_after']:+.1f}%, "
+                          f"MDD {_mcC['mdd_before']*100:.2f}%→{_mcC['mdd_after']*100:.2f}%)")
+        except Exception as _ce:
+            print(f"  ⚠ 선정 조합 보정 재계산 실패(기존 결과로 출력): {_ce}")
+
     try:
         final_res = run_ensemble_search(
             meta_grid=_mk_grid(fb['wz'], fb['pct'], fb['corr']),
@@ -13681,6 +13734,7 @@ def staged_meta_tune(*, base_meta_grid=None,
                 'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
                 'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell']),
             },
+            force_corr=_force_corr,
             **run_kwargs)
     except RuntimeError as _e:
         # 만약 최종 best 조합조차 단독으로는 통과 못 하는 경우(드묾):
@@ -13696,47 +13750,6 @@ def staged_meta_tune(*, base_meta_grid=None,
     print(f'     ※ 단계 탐색 {len(_cache)}회 (스킵 {n_skipped}) + 최종 Excel 1회')
     print(f'     ※ 엑셀의 내부_그리드_통과 시트에 단계 전 결과가 모두 담김')
     print('█' * 72 + '\n')
-
-    # ★ CatBoost 액션 보정 (요청) — 선정 조합에 대해 자동 실행 (predictor2.py 내부에서 처리).
-    #   미래 수익 타겟 + OOS 검증으로, 미래 판단에 도움 되는지까지 같이 평가.
-    # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
-    #   충돌 패배·간발의 차로 앵커와 안 맞은 매수/매도를 지표 가중치 조정으로 보정.
-    #   단, 수익이 떨어지면 롤백 (기존 그리드 결과 유지).
-    _corr_bw = _corr_sw = None
-    if globals().get('USE_CATBOOST_CORRECTION', False) or globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
-        try:
-            _bsel0 = {'K_buy': int(sel['K_buy']), 'vote_buy': int(sel['vote_buy']),
-                      'K_sell': int(sel['K_sell']), 'vote_sell': int(sel['vote_sell'])}
-            _pm0 = globals().get('_LAST_POOL_MAP', {})
-            _key0 = (round(float(fb['wz']),4), int(fb['pct'][0]), int(fb['pct'][1]), round(float(fb['corr']),4))
-            _pools0 = _pm0.get(_key0)
-            if _pools0 is not None:
-                _bp0, _sp0 = _pools0
-                _ff0, _cc0, _tk0 = _resolve_data()
-                _m0 = _ff0.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
-                _ff0 = _ff0.loc[_m0]; _cc0 = _cc0.reindex(_ff0.index)
-                _vm0 = _cc0.notna(); _ff0 = _ff0[_vm0.values]; _cc0 = _cc0[_vm0.values]
-                # 앵커 배열
-                _abd0, _asd0 = auto_compute_anchor_dates(
-                    _ff0.index, _cc0, window=globals().get('AUTO_ANCHOR_WINDOW',1),
-                    lookforward=globals().get('AUTO_ANCHOR_LOOKFORWARD',1),
-                    min_rise_after_buy=globals().get('AUTO_ANCHOR_MIN_RISE',0.01),
-                    min_drop_after_sell=globals().get('AUTO_ANCHOR_MIN_DROP',0.01),
-                    price_tolerance=globals().get('AUTO_ANCHOR_PRICE_TOLERANCE',0.01),
-                    max_dates=globals().get('AUTO_ANCHOR_MAX_DATES',None))
-                _asb0, _ass0 = _compute_anchor_arrays(_ff0.index, _abd0, _asd0)
-                _anchor_corr_ok = False
-                if globals().get('USE_ANCHOR_MATCH_CORRECTION', True):
-                    _fc0 = globals().get('_LAST_FULL_CAND_MAP', {}).get(_key0, (None, None))
-                    _ab, _as, _corr_bw, _corr_sw, _mc = anchor_match_correct_weights(
-                        _ff0, _cc0, _bp0, _sp0, _bsel0,
-                        anchor_mode=run_kwargs.get('anchor_mode', ANCHOR_MODE),
-                        anchor_safe_buy=_asb0, anchor_safe_sell=_ass0,
-                        full_cand_buy=_fc0[0], full_cand_sell=_fc0[1])
-                    _anchor_corr_ok = bool(_mc.get('adopted', False))
-                # ★ CatBoost 보정 제거 (요청) — 앵커 기반 지표 가중치 보정만 사용.
-        except Exception as _ce:
-            print(f"  ⚠ 보정 자동 실행 실패: {_ce}")
 
     return final_res
 
@@ -14494,8 +14507,13 @@ def _apply_correction_to_candidates(verified, feat, close, pool_map, *,
                 print(f"     ⚠ 보정후 재백테스트 에러(후보 {cnt}): {_e2}")
             continue
         _cr = float(_cur.get('cum_return_pct', 0.0)) / 100.0
+        _cmdd = float(_cur.get('max_drawdown', 0.0))
+        _real_mdd = float(_r.get('real_max_drawdown', 0.0))
         # 보정 후 수익이 원래보다 낮으면 채택 안 함 (수익 손해 방지)
         if _cr < float(_r['real_total_return']) - 1e-9:
+            continue
+        # ★ 보정 후 최대손실(MDD)이 원래보다 깊으면 채택 안 함 (요청: MDD 악화 금지)
+        if _cmdd < _real_mdd - 1e-9:
             continue
         verified.at[idx, 'corr_total_return'] = _cr
         verified.at[idx, 'corr_max_drawdown'] = float(_cur.get('max_drawdown', 0.0))
@@ -14572,6 +14590,7 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
     ret0 = float(cur0.get('cum_return_pct', 0.0))
     bm0 = float(cur0.get('anchor_buy_match_rate', 0.0))
     sm0 = float(cur0.get('anchor_sell_match_rate', 0.0))
+    mdd0 = float(cur0.get('max_drawdown', 0.0))   # 기준 최대손실 (음수). 보정 후 이보다 깊으면 미채택.
 
     n = len(feat)
     W = int(globals().get('ANCHOR_MATCH_WINDOW', 2))
@@ -14659,6 +14678,7 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
     #   add_w 후보: 추가 지표 1개당 가중치. 충분히 커야 간발 미달(1~2점차)을 넘긴다.
     best = {'adopted': False, 'ret_before': ret0, 'bm_before': bm0, 'sm_before': sm0,
             'ret_after': ret0, 'bm_after': bm0, 'sm_after': sm0,
+            'mdd_before': mdd0, 'mdd_after': mdd0,
             'bw': None, 'sw': None, 'n_added_buy': int(len(add_buy)), 'n_added_sell': int(len(add_sell))}
 
     if no_anchor or (len(add_buy) == 0 and len(add_sell) == 0):
@@ -14695,21 +14715,35 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
             ret1 = float(cur1.get('cum_return_pct', 0.0))
             bm1 = float(cur1.get('anchor_buy_match_rate', 0.0))
             sm1 = float(cur1.get('anchor_sell_match_rate', 0.0))
-            _tried.append(ret1)
-            # ★ 채택 = 수익이 기존(ret0)보다 오르면 (수익 최대화가 목적). 수익 떨어지면 절대 미채택.
-            if ret1 > ret0 + 1e-9 and ret1 > best['ret_after'] + 1e-9:
+            mdd1 = float(cur1.get('max_drawdown', 0.0))
+            _tried.append((ret1, mdd1))
+            # ★ 채택 조건 (요청):
+            #   1) 수익이 기존(ret0)보다 오를 것 (수익 최대화)
+            #   2) 최대손실(MDD)이 기존(mdd0)보다 깊지 않을 것 — 같거나 더 얕아야 함
+            #   둘 다 만족할 때만 채택. 수익만 오르고 손실이 깊어지면 미채택.
+            mdd_ok = (mdd1 >= mdd0 - 1e-9)   # mdd는 음수: -2%보다 -6%가 작음 → mdd1>=mdd0이면 안 깊어짐
+            if ret1 > ret0 + 1e-9 and mdd_ok and ret1 > best['ret_after'] + 1e-9:
                 best.update({'adopted': True, 'ret_after': ret1, 'bm_after': bm1, 'sm_after': sm1,
-                             'bw': bw.copy(), 'sw': sw.copy()})
+                             'mdd_after': mdd1, 'bw': bw.copy(), 'sw': sw.copy()})
     if verbose and _tried:
-        _mx = max(_tried)
-        print(f"     [보정진단] {len(_tried)}회 시도 — 최고수익 {_mx:+.1f}% (기준 {ret0:+.1f}%), "
-              f"{'개선됨✓' if _mx > ret0 else '개선 없음(모두 ≤기준)'}")
+        # MDD 제약(악화 안 됨)을 만족하는 시도 중 최고수익
+        _ok = [r for (r, m) in _tried if m >= mdd0 - 1e-9]
+        _mx_all = max(r for (r, m) in _tried)
+        _mx_ok = max(_ok) if _ok else None
+        if _mx_ok is not None and _mx_ok > ret0:
+            print(f"     [보정진단] {len(_tried)}회 시도 — MDD유지하며 최고수익 {_mx_ok:+.1f}% "
+                  f"(기준 {ret0:+.1f}%, MDD {mdd0*100:.2f}%) 개선됨✓")
+        else:
+            print(f"     [보정진단] {len(_tried)}회 시도 — 최고수익 {_mx_all:+.1f}%지만 "
+                  f"MDD 악화로 미채택 (기준수익 {ret0:+.1f}%, 기준MDD {mdd0*100:.2f}%)")
 
     if best['adopted']:
         if verbose:
             print(f"  \U0001f3af \uc218\uc775 \ubcf4\uc815 (\ubbf8\uc0ac\uc6a9 \uc9c0\ud45c \ucd94\uac00 + \uac00\uc911\uce58 \ubd80\uc5ec, \ub0a0\uc9dc \ud655\uc7a5 \uc548\ud568):")
             print(f"     \uc218\uc775 {best['ret_before']:+.1f}% \u2192 {best['ret_after']:+.1f}% "
                   f"(+{best['ret_after']-best['ret_before']:.1f}%p)")
+            print(f"     \ucd5c\ub300\uc190\uc2e4 {best['mdd_before']*100:.2f}% \u2192 {best['mdd_after']*100:.2f}% "
+                  f"(\uc545\ud654 \uc5c6\uc74c \u2014 \uc870\uac74 \ucda9\uc871)")
             print(f"     \ub9e4\uc218\ub9e4\uce6d {best['bm_before']*100:.1f}% \u2192 {best['bm_after']*100:.1f}%, "
                   f"\ub9e4\ub3c4\ub9e4\uce6d {best['sm_before']*100:.1f}% \u2192 {best['sm_after']*100:.1f}%")
             print(f"     \ucd94\uac00\ub41c \ubbf8\uc0ac\uc6a9 \uc9c0\ud45c: \ub9e4\uc218 {best['n_added_buy']}\uac1c, \ub9e4\ub3c4 {best['n_added_sell']}\uac1c")
