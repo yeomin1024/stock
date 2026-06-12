@@ -14440,6 +14440,8 @@ def _apply_correction_to_candidates(verified, feat, close, pool_map, *,
                 round(float(_r.get('meta_corr_limit', 0)),4))
         pools = pool_map.get(_key)
         if pools is None:
+            if cnt == 0:
+                print(f"     ⚠ 풀 매칭 실패 — key={_key}, 사용가능 keys={list(pool_map.keys())[:3]}")
             continue
         bp, sp = pools
         best_inner = {'K_buy': int(_r['K_buy']), 'vote_buy': int(_r['vote_buy']),
@@ -14450,8 +14452,12 @@ def _apply_correction_to_candidates(verified, feat, close, pool_map, *,
                 horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
                 stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
                 anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell,
-                verbose=False)
-        except Exception:
+                verbose=(cnt == 0))
+        except Exception as _e1:
+            if cnt < 3:
+                import traceback
+                print(f"     ⚠ 보정 함수 에러(후보 {cnt}): {_e1}")
+                traceback.print_exc()
             continue
         if not mc.get('adopted', False) or bw is None:
             continue
@@ -14466,7 +14472,9 @@ def _apply_correction_to_candidates(verified, feat, close, pool_map, *,
                 stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
                 anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell,
                 buy_w_override=bw, sell_w_override=sw)
-        except Exception:
+        except Exception as _e2:
+            if cnt < 3:
+                print(f"     ⚠ 보정후 재백테스트 에러(후보 {cnt}): {_e2}")
             continue
         _cr = float(_cur.get('cum_return_pct', 0.0)) / 100.0
         # 보정 후 수익이 원래보다 낮으면 채택 안 함 (수익 손해 방지)
@@ -14552,6 +14560,10 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
                     miss_sell[i] = True
 
     no_anchor = (sba is None or ssa is None or (miss_buy.sum()+miss_sell.sum()) == 0)
+    if verbose:
+        print(f"     [보정진단] 미매칭 매수 {int(miss_buy.sum())}일 / 매도 {int(miss_sell.sum())}일, "
+              f"매칭 매수 {int(matched_buy.sum())} / 매도 {int(matched_sell.sum())}, "
+              f"extra 매수 {len(extra_buy)} / 매도 {len(extra_sell)}, 기준수익 {ret0:+.1f}%")
 
     def _sig_arr(pool):
         return [_to_signal_array(feat, prow).astype(bool) for _, prow in pool.iterrows()]
@@ -14563,14 +14575,14 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
             return [], _np.array([])
         sigs = _sig_arr(extra_pool)
         nmiss = max(1, int(miss_mask.sum()))
-        nmat = max(1, int(matched_mask.sum()))
         scores = []
         for arr in sigs:
-            hit_miss = int((arr & miss_mask).sum()) / nmiss
-            hit_mat  = int((arr & matched_mask).sum()) / nmat
-            scores.append(hit_miss - 0.5*hit_mat)
-        scores = _np.array(scores)
+            # 미매칭일에 켜지는 횟수 = 그 지표가 미매칭을 살릴 잠재력. 많을수록 좋다.
+            #   (매칭일에도 켜지는지는 감점하지 않음 — 그날은 이미 맞았으니 무해)
+            scores.append(int((arr & miss_mask).sum()))
+        scores = _np.array(scores, dtype=float)
         order = _np.argsort(-scores)
+        # 미매칭일에 1번이라도 켜지는 지표는 모두 후보 (최대 max_add개)
         pick = [int(o) for o in order if scores[o] > 0][:max_add]
         return pick, scores
 
@@ -14581,6 +14593,8 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
     add_sell = extra_sell.iloc[pick_s].reset_index(drop=True) if pick_s else extra_sell.iloc[[]].reset_index(drop=True)
     aug_buy  = pd.concat([base_buy, add_buy], ignore_index=True)
     aug_sell = pd.concat([base_sell, add_sell], ignore_index=True)
+    if verbose:
+        print(f"     [보정진단] 추가 후보 지표 — 매수 {len(add_buy)}개, 매도 {len(add_sell)}개 선택됨")
 
     # 기본 가중치 (기존 K개) — score 기반 또는 1.0
     def _wbase(pool):
@@ -14609,17 +14623,16 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
         if miss_mask.sum() == 0:
             return _np.zeros(len(base_pool))
         sigs = _sig_arr(base_pool)
-        nmiss = max(1, int(miss_mask.sum())); nmat = max(1, int(matched_mask.sum()))
+        nmiss = max(1, int(miss_mask.sum()))
         d = []
         for arr in sigs:
-            hm = int((arr & miss_mask).sum())/nmiss
-            ht = int((arr & matched_mask).sum())/nmat
-            d.append(max(0.0, hm - 0.5*ht))   # 미매칭일에 자주 켜지면 +
+            d.append(int((arr & miss_mask).sum()) / nmiss)   # 미매칭일에 켜지는 비율
         d = _np.array(d)
         return d/d.max() if d.max() > 0 else d
     bcore_dir = _core_boost_dir(base_buy, miss_buy, matched_buy)
     score_dir = _core_boost_dir(base_sell, miss_sell, matched_sell)
 
+    _tried = []
     for add_w in (0.2, 0.3, 0.5, 0.8, 1.2, 1.8, 2.5):
         for core_boost in (0.0, 0.3, 0.6):
             bcore_w = bw_core * (1.0 + core_boost * bcore_dir)
@@ -14630,11 +14643,15 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
             ret1 = float(cur1.get('cum_return_pct', 0.0))
             bm1 = float(cur1.get('anchor_buy_match_rate', 0.0))
             sm1 = float(cur1.get('anchor_sell_match_rate', 0.0))
-            better_ret = ret1 > best['ret_after'] + 1e-9
-            keep_ret_more_match = (ret1 >= ret0 - 1e-9) and ((bm1+sm1) > (best['bm_after']+best['sm_after']) + 1e-9)
-            if better_ret or keep_ret_more_match:
+            _tried.append(ret1)
+            # ★ 채택 = 수익이 기존(ret0)보다 오르면 (수익 최대화가 목적). 수익 떨어지면 절대 미채택.
+            if ret1 > ret0 + 1e-9 and ret1 > best['ret_after'] + 1e-9:
                 best.update({'adopted': True, 'ret_after': ret1, 'bm_after': bm1, 'sm_after': sm1,
                              'bw': bw.copy(), 'sw': sw.copy()})
+    if verbose and _tried:
+        _mx = max(_tried)
+        print(f"     [보정진단] {len(_tried)}회 시도 — 최고수익 {_mx:+.1f}% (기준 {ret0:+.1f}%), "
+              f"{'개선됨✓' if _mx > ret0 else '개선 없음(모두 ≤기준)'}")
 
     if best['adopted']:
         if verbose:
