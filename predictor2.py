@@ -7130,7 +7130,331 @@ def compute_features(ohlcv, closes, fred_df=None):
                 feat[_col] = np.nan
     except Exception as _e:
         print(f"[intraday] 결합 건너뜀: {_e}")
-        
+
+# ══════════════════════════════════════════════════════════════
+    #  39. 매수/바닥 진입 + 추세 전환 타이밍 (~56개, 기존과 중복 없음)
+    #      기존 지표는 '하락 경고'에 집중되어 있어 '언제 사는가(상승 진입)'가 비어 있었음.
+    #      이 섹션은 미래 '매수 시점' 예측을 직접 겨냥한다.
+    #      접두사: bacc_(바닥매집완료) rev_(반전확인) tcyc_(추세사이클위치)
+    #              vexp_(변동성팽창방향) mtf_(다중기간정렬) sqz_(스퀴즈해소방향)
+    #      ※ 다른 섹션과 동일하게 op/hi/lo/cl/vo + calc_* 헬퍼만 사용. 새 외부데이터 불필요.
+    _o = op; _h = hi; _l = lo; _c = cl; _v = vo
+    _rng = (_h - _l).replace(0, np.nan)
+    _body = (_c - _o)
+    _pc = _c.shift(1)
+    _ret1 = _c.pct_change()
+    _rsi14 = calc_rsi(_c, 14)
+    _atr14, _tr = calc_atr(_h, _l, _c, 14)
+    _vma20 = _v.rolling(20).mean().replace(0, np.nan)
+    _close_loc = (_c - _l) / _rng
+
+    # ── 39A. 바닥 매집 완료 신호 (하락 끝 → 매수 준비) ────────────
+    # 하락 후 변동성 수축 + 거래량 감소 + 가격 안정 = 매집 완료 임박
+    _in_downtrend = (_c < _c.rolling(50).mean()).astype(float)
+    _vol_dropping = (_v.rolling(10).mean() < _v.rolling(40).mean() * 0.8).astype(float)
+    _range_settling = (_rng.rolling(10).mean() / _c < (_rng / _c).rolling(60).median() * 0.8).astype(float)
+    feat['bacc_accumulation_setup'] = (_in_downtrend * _vol_dropping * _range_settling)
+    feat['bacc_accumulation_20d'] = feat['bacc_accumulation_setup'].rolling(20).sum()
+    # 저점 higher-low 형성 (바닥 다지기)
+    _local_low = _l.rolling(10).min()
+    feat['bacc_higher_low_form'] = ((_local_low > _local_low.shift(10)) & (_c < _c.rolling(50).mean())).astype(float)
+    feat['bacc_higher_low_10d'] = feat['bacc_higher_low_form'].rolling(10).sum()
+    # 매도 소진: 큰 음봉 뒤 거래량 동반 양봉 (반전 캔들)
+    feat['bacc_selling_climax_reversal'] = (
+        (_ret1.shift(1) < -0.025) & (_v.shift(1) > _vma20 * 1.5) &
+        (_ret1 > 0.01) & (_close_loc > 0.6)
+    ).astype(float)
+    # RSI 강세 다이버전스: 가격 신저점 but RSI 더 높음 (하락 동력 소진)
+    _price_ll = (_c <= _c.rolling(20).min() + 1e-9)
+    _rsi_higher = (_rsi14 > _rsi14.rolling(20).min().shift(3))
+    feat['bacc_bullish_divergence'] = (_price_ll & _rsi_higher).astype(float)
+    feat['bacc_bullish_div_20d'] = feat['bacc_bullish_divergence'].rolling(20).sum()
+    # 거래량 마름 후 첫 대량 양봉 (관심 복귀)
+    feat['bacc_volume_revival'] = (
+        (_v.shift(1).rolling(10).mean() < _vma20 * 0.7) &
+        (_v > _vma20 * 1.5) & (_ret1 > 0)
+    ).astype(float)
+    # 매집 종합 점수
+    feat['bacc_accum_score'] = (
+        feat['bacc_higher_low_form'] + feat['bacc_selling_climax_reversal'] +
+        feat['bacc_bullish_divergence'] + feat['bacc_volume_revival']
+    )
+    feat['bacc_accum_ready'] = (feat['bacc_accum_score'] >= 2).astype(float)
+
+    # ── 39B. 반전 확인 (하락→상승 전환의 '확정' 신호) ───────────
+    # 50일선 회복 (추세 전환 1차 확인)
+    _sma50 = _c.rolling(50).mean()
+    feat['rev_reclaim_sma50'] = ((_c > _sma50) & (_pc <= _sma50.shift(1))).astype(float)
+    feat['rev_above_sma50_streak'] = (
+        (_c > _sma50).astype(float).groupby(((_c > _sma50) != (_c > _sma50).shift()).cumsum()).cumcount() + 1
+    ).where(_c > _sma50, 0)
+    # 20일 고점 돌파 (단기 추세 전환)
+    feat['rev_break_20d_high'] = ((_c > _c.rolling(20).max().shift(1)) & (_c.shift(1) < _c.rolling(20).max().shift(2))).astype(float)
+    # 연속 상승일 + 거래량 증가 (follow-through)
+    _up_days_5 = (_ret1 > 0).rolling(5).sum()
+    feat['rev_followthrough'] = ((_up_days_5 >= 4) & (_v.rolling(5).mean() > _vma20)).astype(float)
+    # MACD 골든크로스 + 0선 상향 (모멘텀 전환)
+    _macd = _c.ewm(span=12, adjust=False).mean() - _c.ewm(span=26, adjust=False).mean()
+    _macd_sig = _macd.ewm(span=9, adjust=False).mean()
+    feat['rev_macd_bull_cross'] = ((_macd > _macd_sig) & (_macd.shift(1) <= _macd_sig.shift(1))).astype(float)
+    feat['rev_macd_zero_cross_up'] = ((_macd > 0) & (_macd.shift(1) <= 0)).astype(float)
+    # RSI 50 상향 돌파 (약세→강세 전환)
+    feat['rev_rsi_cross_50_up'] = ((_rsi14 > 50) & (_rsi14.shift(1) <= 50)).astype(float)
+    # 반전 종합 점수
+    feat['rev_confirm_score'] = (
+        feat['rev_reclaim_sma50'] + feat['rev_break_20d_high'] + feat['rev_followthrough'] +
+        feat['rev_macd_bull_cross'] + feat['rev_rsi_cross_50_up']
+    )
+    feat['rev_confirmed'] = (feat['rev_confirm_score'] >= 2).astype(float)
+
+    # ── 39C. 추세 사이클 위치 (상승 추세의 '나이'와 신선도) ──────
+    # 상승 추세 시작 후 경과일 (신선한 추세 = 매수 유리)
+    _uptrend = (_c > _sma50).astype(float)
+    feat['tcyc_uptrend_age'] = _uptrend.groupby((_uptrend != _uptrend.shift()).cumsum()).cumcount().where(_uptrend > 0, 0)
+    feat['tcyc_fresh_uptrend'] = ((feat['tcyc_uptrend_age'] > 0) & (feat['tcyc_uptrend_age'] <= 10)).astype(float)
+    # 눌림목(pullback) in 상승추세 = 매수 기회
+    _in_uptrend = (_c > _sma50) & (_sma50 > _sma50.shift(10))
+    feat['tcyc_pullback_in_uptrend'] = (_in_uptrend & (_c < _c.rolling(10).max() * 0.97) & (_rsi14 < 50)).astype(float)
+    feat['tcyc_pullback_10d'] = feat['tcyc_pullback_in_uptrend'].rolling(10).sum()
+    # 추세 강도 (ADX 유사: 방향성 효율)
+    _dir_move = (_c - _c.shift(20)).abs()
+    _path = _c.diff().abs().rolling(20).sum().replace(0, np.nan)
+    feat['tcyc_trend_strength_20'] = _dir_move / _path
+    feat['tcyc_strong_trend'] = (feat['tcyc_trend_strength_20'] > 0.4).astype(float)
+    # 추세 가속 (상승이 빨라짐)
+    _mom20 = _c.pct_change(20)
+    feat['tcyc_trend_accelerating'] = ((_mom20 > 0) & (_mom20 > _mom20.shift(10))).astype(float)
+    # 황금 눌림목: 상승추세 + 50일선 근처 되돌림 + 반등 시작
+    feat['tcyc_golden_pullback'] = (
+        _in_uptrend & (_c <= _sma50 * 1.03) & (_c >= _sma50 * 0.98) & (_ret1 > 0)
+    ).astype(float)
+
+    # ── 39D. 변동성 팽창 방향 (압축→팽창 시 어느 쪽으로?) ────────
+    _vol5 = _ret1.rolling(5).std()
+    _vol20 = _ret1.rolling(20).std()
+    _bb_width = (_c.rolling(20).std() * 4) / _c.rolling(20).mean()
+    # 변동성 압축 후 팽창 시작 + 상승 방향
+    _was_compressed = (_bb_width.shift(1) < _bb_width.rolling(60).quantile(0.25).shift(1))
+    feat['vexp_bullish_expansion'] = (_was_compressed & (_ret1 > _vol20) & (_close_loc > 0.6)).astype(float)
+    feat['vexp_bearish_expansion'] = (_was_compressed & (_ret1 < -_vol20) & (_close_loc < 0.4)).astype(float)
+    # 변동성 팽창 순방향 점수 (양수=상승팽창)
+    feat['vexp_expansion_dir'] = feat['vexp_bullish_expansion'] - feat['vexp_bearish_expansion']
+    feat['vexp_expansion_dir_10d'] = feat['vexp_expansion_dir'].rolling(10).sum()
+    # ATR 확장 + 상승 (추세 시작의 에너지)
+    feat['vexp_atr_expand_up'] = ((_atr14 > _atr14.shift(5) * 1.2) & (_c.pct_change(5) > 0)).astype(float)
+    # 범위 확장 양봉 (강한 매수)
+    feat['vexp_wide_range_bull'] = ((_rng / _c > (_rng / _c).rolling(20).mean() * 1.5) & (_body > 0) & (_close_loc > 0.7)).astype(float)
+    feat['vexp_wide_range_bull_10d'] = feat['vexp_wide_range_bull'].rolling(10).sum()
+
+    # ── 39E. 다중 시간프레임 정렬 (단기·중기·장기 동시 상승) ─────
+    _sma10 = _c.rolling(10).mean(); _sma20 = _c.rolling(20).mean()
+    _sma100 = _c.rolling(100).mean()
+    # 정배열 (10>20>50>100)
+    feat['mtf_bullish_alignment'] = ((_sma10 > _sma20) & (_sma20 > _sma50) & (_sma50 > _sma100)).astype(float)
+    # 정배열 막 시작 (전환점)
+    feat['mtf_alignment_start'] = (
+        feat['mtf_bullish_alignment'].astype(bool) & ~feat['mtf_bullish_alignment'].shift(1).astype(bool)
+    ).astype(float)
+    # 다중 기간 모멘텀 동시 양수
+    _mom_sum = (np.sign(_c.pct_change(5)) + np.sign(_c.pct_change(10)) +
+                np.sign(_c.pct_change(20)) + np.sign(_c.pct_change(60)))
+    feat['mtf_all_timeframe_up'] = (_mom_sum == 4).astype(float)
+    feat['mtf_mom_alignment_score'] = _mom_sum
+    # 가격이 모든 주요 이평 위
+    _above_count = ((_c > _sma10).astype(float) + (_c > _sma20).astype(float) +
+                    (_c > _sma50).astype(float) + (_c > _sma100).astype(float))
+    feat['mtf_above_all_ma'] = (_above_count == 4).astype(float)
+    feat['mtf_above_ma_count'] = _above_count
+    feat['mtf_above_ma_rising'] = (_above_count > _above_count.shift(5)).astype(float)
+
+    # ── 39F. 스퀴즈 해소 방향 (TTM 스퀴즈 유사) ─────────────────
+    _atr20, _ = calc_atr(_h, _l, _c, 20)
+    _kc_upper = _c.ewm(span=20, adjust=False).mean() + 1.5 * _atr20
+    _kc_lower = _c.ewm(span=20, adjust=False).mean() - 1.5 * _atr20
+    _bb_upper = _c.rolling(20).mean() + 2 * _c.rolling(20).std()
+    _bb_lower = _c.rolling(20).mean() - 2 * _c.rolling(20).std()
+    _in_squeeze = (_bb_upper < _kc_upper) & (_bb_lower > _kc_lower)
+    feat['sqz_in_squeeze'] = _in_squeeze.astype(float)
+    feat['sqz_squeeze_count'] = _in_squeeze.astype(float).rolling(20).sum()
+    # 스퀴즈 해소 (압축 끝) + 방향
+    _squeeze_fired = _in_squeeze.shift(1) & ~_in_squeeze
+    _mom_dir = _c - (_h.rolling(20).max() + _l.rolling(20).min()) / 2
+    feat['sqz_fired_bullish'] = (_squeeze_fired & (_mom_dir > 0)).astype(float)
+    feat['sqz_fired_bearish'] = (_squeeze_fired & (_mom_dir < 0)).astype(float)
+    feat['sqz_fired_dir_10d'] = (feat['sqz_fired_bullish'] - feat['sqz_fired_bearish']).rolling(10).sum()
+    # 스퀴즈 모멘텀 (압축 중 방향 기울기)
+    feat['sqz_momentum'] = calc_linreg_slope(_mom_dir, 5)
+    feat['sqz_momentum_positive'] = (feat['sqz_momentum'] > 0).astype(float)
+
+    # ── 39G. 매수 타이밍 종합 점수 (상승 진입 신호) ──────────────
+    _buy_score = (
+        feat['bacc_accum_ready'] +
+        feat['rev_confirmed'] +
+        feat['tcyc_golden_pullback'] +
+        feat['vexp_bullish_expansion'] +
+        feat['mtf_alignment_start'] +
+        feat['sqz_fired_bullish'] +
+        feat['rev_macd_bull_cross'] +
+        feat['tcyc_fresh_uptrend']
+    )
+    feat['mtf_buy_timing_score'] = _buy_score
+    feat['mtf_buy_signal_high'] = (_buy_score >= 3).astype(float)
+    feat['mtf_buy_signal_strong'] = (_buy_score >= 5).astype(float)
+    feat['mtf_buy_score_rising'] = (_buy_score > _buy_score.shift(3)).astype(float)
+    for p in [3, 5, 10]:
+        feat[f'mtf_buy_score_sum_{p}d'] = _buy_score.rolling(p).sum()
+    feat['mtf_buy_score_zscore60'] = calc_zscore(_buy_score, 60)     
+
+# ══════════════════════════════════════════════════════════════
+    #  40. 캔들 패턴 대량 확장 (~76개, 섹션 20·21·22와 중복 없음)
+    #      고전 캔들스틱 패턴 중 아직 없는 것 + 강세/약세 방향 종합점수.
+    #      접두사: cx_ (candle extended) — 기존 cdl_ 과 이름 완전 분리.
+    #      ※ 다른 섹션과 동일하게 op/hi/lo/cl/vo 만 사용. 새 외부데이터 불필요.
+    # ══════════════════════════════════════════════════════════════
+    _o = op; _h = hi; _l = lo; _c = cl; _v = vo
+    _rng  = (_h - _l).replace(0, np.nan)
+    _body = (_c - _o)
+    _abs  = _body.abs()
+    _uw   = _h - pd.concat([_c, _o], axis=1).max(axis=1)   # 위꼬리
+    _lw   = pd.concat([_c, _o], axis=1).min(axis=1) - _l   # 아래꼬리
+    # 전일/2~4일 전
+    _pc, _po, _ph, _pl = _c.shift(1), _o.shift(1), _h.shift(1), _l.shift(1)
+    _pb = _body.shift(1); _pabs = _abs.shift(1)
+    _c2, _o2, _h2, _l2 = _c.shift(2), _o.shift(2), _h.shift(2), _l.shift(2)
+    _b2 = _body.shift(2)
+    _c3, _o3 = _c.shift(3), _o.shift(3); _b3 = _body.shift(3)
+    _c4 = _c.shift(4); _b4 = _body.shift(4)
+    # 몸통 상/하단
+    _tbody = pd.concat([_c, _o], axis=1).max(axis=1)
+    _bbody = pd.concat([_c, _o], axis=1).min(axis=1)
+    _doji  = (_abs <= _rng * 0.1)
+
+    # ── 40A. 스타 계열 (갭 + 작은 몸통 반전) ───────────────────────
+    feat['cx_doji_star_bull'] = ((_pb < 0) & (_pabs > _rng.shift(1) * 0.5) & _doji & (_tbody < _bbody.shift(1))).astype(float)
+    feat['cx_doji_star_bear'] = ((_pb > 0) & (_pabs > _rng.shift(1) * 0.5) & _doji & (_bbody > _tbody.shift(1))).astype(float)
+    feat['cx_morning_doji_star'] = ((_b2 < 0) & (_abs.shift(1) <= _rng.shift(1) * 0.1) & (_body > 0) & (_c > (_c2 + _o2) / 2)).astype(float)
+    feat['cx_evening_doji_star'] = ((_b2 > 0) & (_abs.shift(1) <= _rng.shift(1) * 0.1) & (_body < 0) & (_c < (_c2 + _o2) / 2)).astype(float)
+    feat['cx_tri_star_bull'] = (_doji & (_abs.shift(1) <= _rng.shift(1) * 0.1) & (_abs.shift(2) <= _rng.shift(2) * 0.1) & (_l < _l.shift(1))).astype(float)
+    feat['cx_tri_star_bear'] = (_doji & (_abs.shift(1) <= _rng.shift(1) * 0.1) & (_abs.shift(2) <= _rng.shift(2) * 0.1) & (_h > _h.shift(1))).astype(float)
+    feat['cx_abandoned_baby_bull'] = ((_b2 < 0) & (_abs.shift(1) <= _rng.shift(1) * 0.1) & (_h.shift(1) < _l2) & (_l > _h.shift(1)) & (_body > 0)).astype(float)
+    feat['cx_abandoned_baby_bear'] = ((_b2 > 0) & (_abs.shift(1) <= _rng.shift(1) * 0.1) & (_l.shift(1) > _h2) & (_h < _l.shift(1)) & (_body < 0)).astype(float)
+
+    # ── 40B. 도지 변형 ─────────────────────────────────────────────
+    feat['cx_long_legged_doji'] = (_doji & (_uw > _rng * 0.35) & (_lw > _rng * 0.35)).astype(float)
+    feat['cx_rickshaw_man'] = (_doji & (_uw > _rng * 0.4) & (_lw > _rng * 0.4) &
+                               (((_tbody + _bbody) / 2 - _l) / _rng).between(0.4, 0.6)).astype(float)
+    feat['cx_high_wave_doji'] = (_doji & (_rng > _rng.rolling(20).mean() * 1.3)).astype(float)
+
+    # ── 40C. 마루보즈 변형 (꼬리 없는 강한 봉) ─────────────────────
+    feat['cx_closing_marubozu_bull'] = ((_body > 0) & (_uw <= _rng * 0.03) & (_lw > _rng * 0.03)).astype(float)
+    feat['cx_closing_marubozu_bear'] = ((_body < 0) & (_lw <= _rng * 0.03) & (_uw > _rng * 0.03)).astype(float)
+    feat['cx_opening_marubozu_bull'] = ((_body > 0) & (_lw <= _rng * 0.03) & (_uw > _rng * 0.03)).astype(float)
+    feat['cx_opening_marubozu_bear'] = ((_body < 0) & (_uw <= _rng * 0.03) & (_lw > _rng * 0.03)).astype(float)
+
+    # ── 40D. 갭 연속 패턴 (Tasuki / Side-by-side) ──────────────────
+    feat['cx_tasuki_gap_up'] = ((_pb > 0) & (_po > _c2) & (_body < 0) & (_o < _pc) & (_o > _po) & (_c > _po)).astype(float)
+    feat['cx_tasuki_gap_down'] = ((_pb < 0) & (_po < _c2) & (_body > 0) & (_o > _pc) & (_o < _po) & (_c < _po)).astype(float)
+    feat['cx_side_by_side_white'] = ((_pb > 0) & (_body > 0) & (_po > _c2) & (_o > _pc * 0.99) & (_o < _pc * 1.01)).astype(float)
+
+    # ── 40E. 넥라인 계열 (On-neck/In-neck/Thrusting) ───────────────
+    feat['cx_on_neck'] = ((_pb < 0) & (_body > 0) & (_o < _pl) & ((_c - _pl).abs() < _rng * 0.05)).astype(float)
+    feat['cx_in_neck'] = ((_pb < 0) & (_body > 0) & (_o < _pl) & (_c > _pc) & (_c < _pc + _rng * 0.1)).astype(float)
+    feat['cx_thrusting'] = ((_pb < 0) & (_body > 0) & (_o < _pl) & (_c > (_po + _pc) / 2 * 0.5) & (_c < (_po + _pc) / 2)).astype(float)
+
+    # ── 40F. 카운터어택 / 세퍼레이팅 (종가·시가 일치) ──────────────
+    feat['cx_counterattack_bull'] = ((_pb < 0) & (_body > 0) & ((_c - _pc).abs() < _rng * 0.05)).astype(float)
+    feat['cx_counterattack_bear'] = ((_pb > 0) & (_body < 0) & ((_c - _pc).abs() < _rng * 0.05)).astype(float)
+    feat['cx_separating_lines_bull'] = ((_pb < 0) & (_body > 0) & ((_o - _po).abs() < _rng * 0.05)).astype(float)
+    feat['cx_separating_lines_bear'] = ((_pb > 0) & (_body < 0) & ((_o - _po).abs() < _rng * 0.05)).astype(float)
+
+    # ── 40G. 매칭 / 호밍 (저점·고점 일치) ──────────────────────────
+    feat['cx_matching_low'] = ((_pb < 0) & (_body < 0) & ((_c - _pc).abs() < _rng * 0.03)).astype(float)
+    feat['cx_matching_high'] = ((_pb > 0) & (_body > 0) & ((_c - _pc).abs() < _rng * 0.03)).astype(float)
+    feat['cx_homing_pigeon'] = ((_pb < 0) & (_body < 0) & (_h <= _ph) & (_l >= _pl) & (_pabs > _abs)).astype(float)
+
+    # ── 40H. 3봉 반전 (Three Outside, Two Crows) ───────────────────
+    feat['cx_three_outside_up'] = ((_pb < 0) & (_body > 0) & (_o <= _pc) & (_c >= _po) & (_c > _pc)).astype(float)
+    feat['cx_three_outside_down'] = ((_pb > 0) & (_body < 0) & (_o >= _pc) & (_c <= _po)).astype(float)
+    feat['cx_two_crows'] = ((_b2 > 0) & (_b2.abs() > _rng.shift(2) * 0.5) & (_pb < 0) & (_po > _c2) & (_body < 0) & (_o < _po) & (_o > _pc) & (_c < _c2) & (_c > _o2)).astype(float)
+    feat['cx_upside_gap_two_crows'] = ((_b2 > 0) & (_pb < 0) & (_po > _c2) & (_body < 0) & (_c < _pc) & (_o > _po)).astype(float)
+
+    # ── 40I. 3선 타격 / 매트홀드 (지속 패턴) ───────────────────────
+    feat['cx_three_line_strike_bull'] = ((_b3 > 0) & (_b2 > 0) & (_pb > 0) & (_c3 < _c2) & (_c2 < _pc) & (_body < 0) & (_o > _pc) & (_c < _c3)).astype(float)
+    feat['cx_three_line_strike_bear'] = ((_b3 < 0) & (_b2 < 0) & (_pb < 0) & (_c3 > _c2) & (_c2 > _pc) & (_body > 0) & (_o < _pc) & (_c > _c3)).astype(float)
+    feat['cx_mat_hold'] = ((_b3 > 0) & (_b3.abs() > _rng.shift(3) * 0.5) & (_body > 0) & (_c > _h.shift(1)) & (_c > _h2) & (_c2 < _c3) & (_pc < _c3)).astype(float)
+
+    # ── 40J. 사다리 / 딜리버레이션 / 어드밴스블록 (소진) ───────────
+    feat['cx_ladder_bottom'] = ((_b4 < 0) & (_b3 < 0) & (_b2 < 0) & (_pb < 0) & (_body > 0) & (_o > _po)).astype(float)
+    feat['cx_ladder_top'] = ((_b4 > 0) & (_b3 > 0) & (_b2 > 0) & (_pb > 0) & (_body < 0) & (_o < _po)).astype(float)
+    feat['cx_deliberation'] = ((_b2 > 0) & (_pb > 0) & (_body > 0) & (_pabs > _rng.shift(1) * 0.5) & (_abs < _pabs * 0.5) & (_o > _pc)).astype(float)
+    feat['cx_advance_block'] = ((_b2 > 0) & (_pb > 0) & (_body > 0) & (_abs < _pabs) & (_pabs < _b2.abs()) & (_uw > _abs * 0.5)).astype(float)
+    feat['cx_concealing_baby'] = ((_b3 < 0) & (_b2 < 0) & (_pb < 0) & (_body < 0) & (_h > _ph)).astype(float)
+
+    # ── 40K. 브레이크어웨이 (갭 추세 시작) ─────────────────────────
+    feat['cx_breakaway_bull'] = ((_b4 < 0) & (_o3 < _c4) & (_b2 < 0) & (_pb < 0) & (_body > 0) & (_c > _o3)).astype(float)
+    feat['cx_breakaway_bear'] = ((_b4 > 0) & (_o3 > _c4) & (_b2 > 0) & (_pb > 0) & (_body < 0) & (_c < _o3)).astype(float)
+
+    # ── 40L. 타워 / 프라이팬 / 덤플링 (라운딩 반전) ────────────────
+    feat['cx_tower_bottom'] = ((_c.shift(5) > _c.shift(4)) & (_c.rolling(3).mean() < _c.shift(4)) & (_body > 0) & (_c > _c.shift(5) * 0.98)).astype(float)
+    feat['cx_tower_top'] = ((_c.shift(5) < _c.shift(4)) & (_c.rolling(3).mean() > _c.shift(4)) & (_body < 0) & (_c < _c.shift(5) * 1.02)).astype(float)
+    _min10 = _l.rolling(10).min()
+    feat['cx_fry_pan_bottom'] = ((_c > _c.rolling(10).mean()) & (_min10 == _min10.shift(3)) & (_c.pct_change(10) > 0) & (_l > _min10 * 1.01)).astype(float)
+    _max10 = _h.rolling(10).max()
+    feat['cx_dumpling_top'] = ((_c < _c.rolling(10).mean()) & (_max10 == _max10.shift(3)) & (_c.pct_change(10) < 0) & (_h < _max10 * 0.99)).astype(float)
+
+    # ── 40M. 키 / 아웃사이드 / 2봉 리버설 ──────────────────────────
+    feat['cx_key_reversal_up'] = ((_l < _pl) & (_o < _pc) & (_c > _pc) & (_c > _po)).astype(float)
+    feat['cx_key_reversal_down'] = ((_h > _ph) & (_o > _pc) & (_c < _pc) & (_c < _po)).astype(float)
+    feat['cx_outside_reversal_up'] = ((_h > _ph) & (_l < _pl) & (_c > _pc) & (_body > 0)).astype(float)
+    feat['cx_outside_reversal_down'] = ((_h > _ph) & (_l < _pl) & (_c < _pc) & (_body < 0)).astype(float)
+    feat['cx_two_bar_reversal_up'] = ((_pb < 0) & (_pabs > _rng.shift(1) * 0.6) & (_body > 0) & (_abs > _rng * 0.6) & (_c > _po)).astype(float)
+    feat['cx_two_bar_reversal_down'] = ((_pb > 0) & (_pabs > _rng.shift(1) * 0.6) & (_body < 0) & (_abs > _rng * 0.6) & (_c < _po)).astype(float)
+
+    # ── 40N. 3봉 플레이 / 히카케 (변형 패턴) ───────────────────────
+    feat['cx_three_bar_play_bull'] = ((_b2 > 0) & (_b2.abs() > _rng.shift(2) * 0.6) & (_abs.shift(1) < _b2.abs() * 0.5) & (_body > 0) & (_c > _h2)).astype(float)
+    feat['cx_three_bar_play_bear'] = ((_b2 < 0) & (_b2.abs() > _rng.shift(2) * 0.6) & (_abs.shift(1) < _b2.abs() * 0.5) & (_body < 0) & (_c < _l2)).astype(float)
+    _inside1 = (_ph <= _h2) & (_pl >= _l2)
+    feat['cx_hikkake_bull'] = (_inside1.shift(1) & (_l.shift(1) < _pl) & (_c > _ph)).astype(float)
+    feat['cx_hikkake_bear'] = (_inside1.shift(1) & (_h.shift(1) > _ph) & (_c < _pl)).astype(float)
+
+    # ── 40O. 유니크 3리버 / 라스트 엔걸핑 / 스틱 리버설 ────────────
+    feat['cx_unique_three_river'] = ((_b2 < 0) & (_b2.abs() > _rng.shift(2) * 0.5) & (_pb < 0) & (_l.shift(1) < _l2) & (_pc > _c2) & (_body > 0) & (_abs < _rng * 0.3)).astype(float)
+    feat['cx_last_engulf_bottom'] = ((_pb < 0) & (_body < 0) & (_o >= _pc) & (_c <= _po) & (_c < _c.rolling(20).min().shift(1) * 1.02)).astype(float)
+    feat['cx_last_engulf_top'] = ((_pb > 0) & (_body > 0) & (_o <= _pc) & (_c >= _po) & (_c > _c.rolling(20).max().shift(1) * 0.98)).astype(float)
+    feat['cx_stick_reversal_up'] = ((_c.shift(1) < _c.shift(2)) & (_c.shift(2) < _c.shift(3)) & (_body > 0) & (_c > _o.shift(2))).astype(float)
+    feat['cx_stick_reversal_down'] = ((_c.shift(1) > _c.shift(2)) & (_c.shift(2) > _c.shift(3)) & (_body < 0) & (_c < _o.shift(2))).astype(float)
+
+    # ── 40P. 레코드 세션 (연속 신고가/신저가 = 소진) ───────────────
+    _new_high = (_h > _h.shift(1))
+    _new_low = (_l < _l.shift(1))
+    feat['cx_record_high_sessions'] = _new_high.rolling(8).sum()
+    feat['cx_eight_new_highs'] = (_new_high.rolling(8).sum() >= 7).astype(float)
+    feat['cx_record_low_sessions'] = _new_low.rolling(8).sum()
+    feat['cx_eight_new_lows'] = (_new_low.rolling(8).sum() >= 7).astype(float)
+
+    # ── 40Q. 패턴 종합 점수 (강세/약세 결합) ───────────────────────
+    _cx_bull_cols = ['cx_doji_star_bull', 'cx_morning_doji_star', 'cx_tri_star_bull', 'cx_abandoned_baby_bull',
+                     'cx_closing_marubozu_bull', 'cx_tasuki_gap_down', 'cx_counterattack_bull', 'cx_matching_low',
+                     'cx_homing_pigeon', 'cx_three_outside_up', 'cx_three_line_strike_bull', 'cx_ladder_bottom',
+                     'cx_breakaway_bull', 'cx_tower_bottom', 'cx_fry_pan_bottom', 'cx_key_reversal_up',
+                     'cx_outside_reversal_up', 'cx_two_bar_reversal_up', 'cx_three_bar_play_bull', 'cx_hikkake_bull',
+                     'cx_unique_three_river', 'cx_last_engulf_bottom', 'cx_stick_reversal_up', 'cx_separating_lines_bull']
+    _cx_bear_cols = ['cx_doji_star_bear', 'cx_evening_doji_star', 'cx_tri_star_bear', 'cx_abandoned_baby_bear',
+                     'cx_closing_marubozu_bear', 'cx_tasuki_gap_up', 'cx_counterattack_bear', 'cx_matching_high',
+                     'cx_two_crows', 'cx_upside_gap_two_crows', 'cx_three_outside_down', 'cx_three_line_strike_bear',
+                     'cx_ladder_top', 'cx_breakaway_bear', 'cx_tower_top', 'cx_dumpling_top', 'cx_key_reversal_down',
+                     'cx_outside_reversal_down', 'cx_two_bar_reversal_down', 'cx_three_bar_play_bear', 'cx_hikkake_bear',
+                     'cx_deliberation', 'cx_advance_block', 'cx_last_engulf_top', 'cx_stick_reversal_down', 'cx_separating_lines_bear']
+    feat['cx_bull_pattern_score'] = feat[[c for c in _cx_bull_cols if c in feat.columns]].sum(axis=1)
+    feat['cx_bear_pattern_score'] = feat[[c for c in _cx_bear_cols if c in feat.columns]].sum(axis=1)
+    feat['cx_net_pattern_score'] = feat['cx_bull_pattern_score'] - feat['cx_bear_pattern_score']
+    for p in [5, 10]:
+        feat[f'cx_bull_score_sum_{p}d'] = feat['cx_bull_pattern_score'].rolling(p).sum()
+        feat[f'cx_bear_score_sum_{p}d'] = feat['cx_bear_pattern_score'].rolling(p).sum()
+        feat[f'cx_net_score_sum_{p}d'] = feat['cx_net_pattern_score'].rolling(p).sum()
+    feat['cx_strong_bull_signal'] = (feat['cx_bull_pattern_score'] >= 2).astype(float)
+    feat['cx_strong_bear_signal'] = (feat['cx_bear_pattern_score'] >= 2).astype(float)
+
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
     return feat
@@ -9185,7 +9509,6 @@ def _iv_autorun():
     print("\n" + "=" * 60)
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
 
-
 # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
@@ -9260,6 +9583,18 @@ RUNUP_LIMIT_SELL    = 0.01
 
 N_THRESHOLDS        = 400
 MAX_INDICATORS      = 600
+
+# ★ 미래 예측 정확도 강화 (요청) — 지표 신호 생성·평가 방식 보강.
+#   목적: 과거 적합이 아니라 '미래에도 유지되는 신호'를 우대해 매수/매도 시점 예측력↑.
+# (1) z-스코어 신호: 절대 임계 대신 롤링 z=(x-평균)/표준편차에도 임계를 걸어 신호 생성.
+#     시장 레짐이 바뀌어도 '평균 대비 몇 시그마'는 의미가 유지됨 → 미래 일반화에 강함.
+USE_ZSCORE_SIGNAL   = True    # True면 각 지표를 절대임계 + z스코어임계 두 방식으로 평가
+ZSCORE_WINDOW       = 60      # z스코어 롤링 창(거래일). 약 3개월.
+ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
+# (2) OOS 안정성 가중: 지표 점수를 '전체기간 Wilson'에만 의존하지 말고,
+#     기간을 앞/뒤로 나눠 둘 다 좋은 지표(시간적으로 안정)에 가산점 → 과최적화 억제.
+USE_OOS_STABILITY   = True    # True면 앞/뒤 절반 성공률의 일관성을 점수에 반영
+OOS_STABILITY_WEIGHT = 0.3    # 안정성 가중 강도 (0=기존과 동일, 1=안정성 절반 반영)
 
 K_BUY_RANGE         = [i for i in range(10, 100)]
 K_SELL_RANGE        = [i for i in range(10, 100)]
@@ -9386,8 +9721,8 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 0                  # 최근 N개월을 OOS로 (이전달~현재)
-OOS_SELECT_BY_OOS_RETURN = False  # True면 OOS 수익률 최고로 선정 (전체수익 무시)
+OOS_MONTHS = 1                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_SELECT_BY_OOS_RETURN = True  # True면 OOS 수익률 최고로 선정 (전체수익 무시)
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
 #   충돌 패배·간발의 차로 앵커와 안 맞은 매수/매도를 '지표 가중치 조정'으로 보정.
@@ -9420,10 +9755,10 @@ META_GRID = {
 
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
-STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
-STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
+STAGE_PCT_RANGE   = [(10, 90)]
+STAGE_WILSON_Z    = [1.75]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.25]
+STAGE_CORR_LIMIT  = [0.2]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -10043,6 +10378,47 @@ def _select_indicators(feat, max_n=None):
     return [c for c, _ in valid]
 
 
+def _rolling_zscore(x, window):
+    """롤링 z-스코어 = (x - 이동평균) / 이동표준편차. 미래참조 없음(과거 window만)."""
+    s = pd.Series(x)
+    mu = s.rolling(window, min_periods=max(10, window//3)).mean()
+    sd = s.rolling(window, min_periods=max(10, window//3)).std(ddof=0)
+    z = ((s - mu) / sd.replace(0.0, np.nan)).values
+    return z
+
+
+def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
+                              wilson_z, is_buy, min_signals):
+    """지표 신호의 점수 = Wilson 하한 × (1 + w·시간안정성).
+       시간안정성: 신호일을 앞/뒤 절반으로 나눠 각각 성공률을 구하고,
+         둘 다 좋고 서로 비슷할수록(미래에도 유지될 가능성↑) 가산점.
+       반환: (n, ok, sum, score). 신호 부족 시 score=음수로 사실상 제외.
+    """
+    evalf = _eval_buy_signals if is_buy else _eval_sell_signals
+    n_all, ok_all, sum_all = evalf(close_arr, sig_arr, horizon, limit, anchor_arr)
+    if n_all < min_signals:
+        return n_all, ok_all, sum_all, -1.0
+    base = wilson_lower(ok_all, n_all, wilson_z)
+    if not globals().get('USE_OOS_STABILITY', False):
+        return n_all, ok_all, sum_all, base
+    # 앞/뒤 절반으로 신호 분할 (시간 순)
+    nd = len(sig_arr); half = nd // 2
+    sig_a = sig_arr.copy(); sig_a[half:] = 0     # 앞 절반만
+    sig_b = sig_arr.copy(); sig_b[:half] = 0     # 뒤 절반만
+    na, oka, _ = evalf(close_arr, sig_a, horizon, limit, anchor_arr)
+    nb, okb, _ = evalf(close_arr, sig_b, horizon, limit, anchor_arr)
+    if na < 3 or nb < 3:
+        return n_all, ok_all, sum_all, base   # 한쪽 표본 부족 → 안정성 평가 불가, 기본점수
+    ra = oka / na; rb = okb / nb
+    # 안정성 = 두 기간 모두 0.5 넘고 + 서로 가까움. [0,1] 정규화.
+    both_good = min(ra, rb)                       # 둘 중 나쁜 쪽 (낮으면 불안정)
+    consistency = 1.0 - min(1.0, abs(ra - rb) / 0.5)  # 차이 작을수록 1
+    stability = max(0.0, (both_good - 0.5) * 2.0) * consistency  # 0~1
+    w = float(globals().get('OOS_STABILITY_WEIGHT', 0.3))
+    score = base * (1.0 + w * stability)
+    return n_all, ok_all, sum_all, score
+
+
 def evaluate_buy_sell_scores(feat, close, *, indicators,
                               n_thresholds, pct_low, pct_high,
                               horizon, dd_limit, ru_limit,
@@ -10051,6 +10427,9 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
     close_arr = close.values.astype(np.float64)
     n_days    = len(close_arr)
     pcts      = np.linspace(pct_low, pct_high, n_thresholds)
+    use_z     = globals().get('USE_ZSCORE_SIGNAL', False)
+    z_window  = int(globals().get('ZSCORE_WINDOW', 60))
+    z_thrs    = globals().get('ZSCORE_THRESHOLDS', [-2.0, 2.0])
 
     if anchor_buy_arr is None:
         anchor_buy_arr = np.zeros(0, dtype=np.uint8)
@@ -10067,27 +10446,41 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
         x = feat[col].values.astype(np.float64)
         valid = ~np.isnan(x)
         if valid.sum() < 100: continue
+
+        # ── 신호 후보 목록: (방향라벨, 임계라벨, 임계값, 신호배열) ──
+        sig_specs = []
+        # (a) 기존 절대 임계 (백분위 기반)
         for p in pcts:
             thr = float(np.nanpercentile(x, p))
-            for direction, sig_arr in (
-                ('>=', ((x >= thr) & valid).astype(np.uint8)),
-                ('<=', ((x <= thr) & valid).astype(np.uint8)),
-            ):
-                if int(sig_arr.sum()) < min_signals: continue
-                bn, bok, bsum = _eval_buy_signals(close_arr, sig_arr, horizon, dd_limit, anchor_buy_arr)
-                if bn >= min_signals:
-                    rate = bok / bn
-                    score = wilson_lower(bok, bn, wilson_z)
-                    buy_rows.append((col, direction, float(p), thr,
-                                      bn, bok, rate,
-                                      float(bsum / bn) if bn else 0.0, score))
-                sn, sok, ssum = _eval_sell_signals(close_arr, sig_arr, horizon, ru_limit, anchor_sell_arr)
-                if sn >= min_signals:
-                    rate = sok / sn
-                    score = wilson_lower(sok, sn, wilson_z)
-                    sell_rows.append((col, direction, float(p), thr,
-                                       sn, sok, rate,
-                                       float(ssum / sn) if sn else 0.0, score))
+            sig_specs.append(('>=', float(p), thr, ((x >= thr) & valid).astype(np.uint8)))
+            sig_specs.append(('<=', float(p), thr, ((x <= thr) & valid).astype(np.uint8)))
+        # (b) z-스코어 임계 (롤링 정규화) — 미래 일반화에 강함 (요청)
+        if use_z:
+            z = _rolling_zscore(x, z_window)
+            zvalid = ~np.isnan(z)
+            for zt in z_thrs:
+                if zt >= 0:
+                    s = ((z >= zt) & zvalid).astype(np.uint8); d = 'z>='
+                else:
+                    s = ((z <= zt) & zvalid).astype(np.uint8); d = 'z<='
+                sig_specs.append((d, float(zt), float(zt), s))
+
+        for direction, plabel, thr, sig_arr in sig_specs:
+            if int(sig_arr.sum()) < min_signals: continue
+            bn, bok, bsum, bscore = _stability_adjusted_score(
+                close_arr, sig_arr, horizon, dd_limit, anchor_buy_arr,
+                wilson_z, True, min_signals)
+            if bn >= min_signals and bscore >= 0:
+                buy_rows.append((col, direction, plabel, thr,
+                                  bn, bok, bok / bn,
+                                  float(bsum / bn) if bn else 0.0, bscore))
+            sn, sok, ssum, sscore = _stability_adjusted_score(
+                close_arr, sig_arr, horizon, ru_limit, anchor_sell_arr,
+                wilson_z, False, min_signals)
+            if sn >= min_signals and sscore >= 0:
+                sell_rows.append((col, direction, plabel, thr,
+                                   sn, sok, sok / sn,
+                                   float(ssum / sn) if sn else 0.0, sscore))
 
     cols = ['indicator', 'direction', 'pct_label', 'threshold',
             'n_signals', 'n_success', 'success_rate', 'avg_extreme', 'score']
@@ -10096,10 +10489,56 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
     return buy_df, sell_df
 
 
+_ZCACHE = {}
+
+def _free_global_caches(*, keep_pool_map=False):
+    """전역 캐시·맵을 비워 메모리 누적을 막는다 (Colab 여러 번 실행 시 끊김 방지).
+       - _ZCACHE: z-스코어 캐시 (지표×기간 배열 — 가장 큼)
+       - _LAST_FULL_CAND_MAP: 메타조합별 전체 후보 풀 (수천 행 × 메타키 — 큼)
+       - _LAST_POOL_MAP: 메타조합별 선정 풀 (엑셀 재현용 — keep_pool_map이면 유지)
+       각 티커/분석 시작 시 호출. gc까지 강제해 즉시 회수."""
+    import gc
+    g = globals()
+    if '_ZCACHE' in g:
+        g['_ZCACHE'].clear()
+    if '_LAST_FULL_CAND_MAP' in g:
+        g['_LAST_FULL_CAND_MAP'].clear()
+    if not keep_pool_map and '_LAST_POOL_MAP' in g:
+        g['_LAST_POOL_MAP'].clear()
+    gc.collect()
+
+
+def _get_zscore_cached(feat, col, window):
+    """feat[col]의 z-스코어를 캐싱해 반환. 키=(feat식별, 지표명, window).
+       feat은 백테스트 한 회 동안 불변이므로 안전. feat 바뀌면 키 달라짐."""
+    fid = id(feat)
+    key = (fid, col, window)
+    c = _ZCACHE.get(key)
+    if c is not None:
+        return c
+    z = _rolling_zscore(feat[col].values.astype(np.float64), window)
+    # 캐시 폭주 방지: feat이 바뀌면(id 변경) 옛 항목 정리
+    if len(_ZCACHE) > 0:
+        any_key = next(iter(_ZCACHE))
+        if any_key[0] != fid and len(_ZCACHE) > 6000:
+            _ZCACHE.clear()
+    _ZCACHE[key] = z
+    return z
+
+
 def _to_signal_array(feat, row):
+    d = row['direction']
+    # z-스코어 신호 (롤링 정규화) — 절대임계와 달리 분포 적응적, 미래 일반화에 강함
+    if d == 'z>=' or d == 'z<=':
+        z = _get_zscore_cached(feat, row['indicator'], int(globals().get('ZSCORE_WINDOW', 60)))
+        zvalid = ~np.isnan(z)
+        if d == 'z>=':
+            return ((z >= row['threshold']) & zvalid).astype(np.uint8)
+        return ((z <= row['threshold']) & zvalid).astype(np.uint8)
+    # 기존 절대 임계
     x = feat[row['indicator']].values.astype(np.float64)
     valid = ~np.isnan(x)
-    if row['direction'] == '>=':
+    if d == '>=':
         return ((x >= row['threshold']) & valid).astype(np.uint8)
     return ((x <= row['threshold']) & valid).astype(np.uint8)
 
@@ -15323,6 +15762,7 @@ def run_multi_ticker_analysis(tickers=None, *,
         if resume and ticker in existing:
             print(f"  ⏩ 이미 완료됨 — 스킵")
             continue
+        _free_global_caches()   # ★ 메모리 누적 방지 (Colab 여러 번 실행 끊김 예방)
         t_start = time.time()
         try:
             feat_t, close_t = data_resolver(ticker)
@@ -15906,6 +16346,7 @@ def main():
        노트북에서: 모듈 로드 → mod.RUN_MODE 등 설정 → mod.main() 호출."""
     g = globals()
     g['_GENERATED_FILES'] = []   # 이번 실행에서 만든 엑셀 경로 누적
+    _free_global_caches()        # ★ 이전 실행의 캐시 정리 (Colab 반복 실행 시 메모리 누적·끊김 방지)
     _mode = str(g.get('RUN_MODE', 3)).strip()
     print(f"\n[실행 모드] RUN_MODE = {_mode}")
     print("  1=새 분석  /  2=그리드 번호 재현  /  3=최근 엑셀 ★최적 자동 재현")
