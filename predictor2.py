@@ -9509,6 +9509,7 @@ def _iv_autorun():
     print("\n" + "=" * 60)
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
 
+
 # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
@@ -9593,8 +9594,15 @@ ZSCORE_WINDOW       = 60      # z스코어 롤링 창(거래일). 약 3개월.
 ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
 # (2) OOS 안정성 가중: 지표 점수를 '전체기간 Wilson'에만 의존하지 말고,
 #     기간을 앞/뒤로 나눠 둘 다 좋은 지표(시간적으로 안정)에 가산점 → 과최적화 억제.
-USE_OOS_STABILITY   = True    # True면 앞/뒤 절반 성공률의 일관성을 점수에 반영
+USE_OOS_STABILITY   = False   # ★ 요청: OOS 관련 기능 전부 OFF
 OOS_STABILITY_WEIGHT = 0.3    # 안정성 가중 강도 (0=기존과 동일, 1=안정성 절반 반영)
+
+# ★ 큰 상승/하락 적중 가산점 (요청) — 지표 신호 중 '큰 움직임'을 맞춘 비율이 높을수록
+#   점수에 가산. 매수지표: 신호 뒤 큰 상승을 맞춘 비율, 매도지표: 큰 하락을 맞춘 비율.
+#   목적: 자잘한 적중만 많은 지표보다 '굵직한 변동을 잡는' 지표를 우대 → 실전 수익 직결.
+USE_BIG_MOVE_BONUS   = True   # True면 큰움직임 적중비율을 점수에 가산
+BIG_MOVE_THRESHOLD   = 0.03   # 신호 뒤 horizon 내 유리방향 최대변동이 이 값(3%) 이상이면 '큰 움직임'
+BIG_MOVE_BONUS_WEIGHT = 0.5   # 가산 강도: score *= (1 + W * 큰움직임적중비율)
 
 K_BUY_RANGE         = [i for i in range(10, 100)]
 K_SELL_RANGE        = [i for i in range(10, 100)]
@@ -9632,7 +9640,17 @@ STABILITY_WEIGHTS = (0.30, 0.25, 0.20, 0.25)
 #   USE_WEIGHTED_VOTE=False면 기존 일반 투표(모두 1표)
 #   가중 강도는 점수 분포 편차에 따라 자동 조절(데이터가 결정), 상한 WEIGHT_MAX_RATIO
 USE_WEIGHTED_VOTE = True
-WEIGHT_MAX_RATIO  = 1.6   # 최고점수 지표가 최저점수 지표의 최대 몇 배 표
+WEIGHT_MAX_RATIO  = 1.6   # (구) 선형 가중 상한 — 아래 희석방지 장치가 켜지면 보조 역할
+
+# ★ 점수 희석 방지 장치 (요청) — 자잘한 다수 지표가 합쳐져 강한 소수 지표를 덮지 않도록,
+#   가중치를 '절대 점수 차이'에 지수적으로 반응시킨다(소프트맥스형). 강한 지표일수록 표가
+#   급증해 합산에서 살아남는다. 단 한 지표가 전부를 지배하지 않게 상·하한으로 '적당히' 제한.
+#     - VOTE_WEIGHT_TEMP: 온도(작을수록 강한지표에 표 더 몰림). 0.15≈적당.
+#     - VOTE_STRONG_CAP : 최고지표가 가질 수 있는 표 상한(평균=1 기준 배수). 과도지배 방지.
+#   끄려면 USE_ANTIDILUTION=False (그러면 기존 선형 WEIGHT_MAX_RATIO 가중).
+USE_ANTIDILUTION  = True
+VOTE_WEIGHT_TEMP  = 0.15
+VOTE_STRONG_CAP   = 4.0
 
 SELECTION_TOLERANCE = 0.04
 
@@ -9652,7 +9670,7 @@ VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
 #   None 이면 이 필터를 끈다. (단, 필터로 후보가 0개면 자동으로 필터를 완화해 최선을 고름)
-VERIFY_MAX_DRAWDOWN_LIMIT = -0.04
+VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
 #   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
@@ -9721,8 +9739,8 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 1                   # 최근 N개월을 OOS로 (이전달~현재)
-OOS_SELECT_BY_OOS_RETURN = True  # True면 OOS 수익률 최고로 선정 (전체수익 무시)
+OOS_MONTHS = 0                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_SELECT_BY_OOS_RETURN = False # ★ 요청: OOS 관련 기능 전부 OFF
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
 #   충돌 패배·간발의 차로 앵커와 안 맞은 매수/매도를 '지표 가중치 조정'으로 보정.
@@ -9734,6 +9752,9 @@ USE_ANCHOR_MATCH_CORRECTION = True
 CORRECT_VERIFY_TOP_N = 20        # 수익 상위 몇 개 후보에 보정을 적용할지
 CORRECT_PROFIT_FLOOR = 0.01      # 거래 진단: 수익 이 값(1%) 이하 + 손실 거래를 '틀린 거래'로
 SELECT_BY_CORRECTED_RETURN = True  # True면 보정 후 수익 최고로 선정
+# ★ 후보 선정 필터를 '보정 후' 수치로 (요청) — 최대거래손실 한도·승률 밴드를 보정 적용된
+#   조합은 보정후 수치로 판정. 보정 안 된 조합은 실제 수치 그대로. SELECT_BY_CORRECTED_RETURN과 짝.
+SELECT_FILTER_BY_CORRECTED = True
 
 ANCHOR_BUY_DATES = [
 ]
@@ -9815,6 +9836,19 @@ def compute_vote_weights(scores, max_ratio=1.6):
     spread = float(s.max() - s.min())
     if spread < 1e-9:
         return np.ones(n, dtype=np.float64)
+
+    # ★ 희석 방지 장치 (요청) — 절대 점수차에 지수 반응(소프트맥스형). 강한 지표 표가 급증해
+    #   자잘한 다수에 묻히지 않음. 상·하한으로 단일 지표의 과도지배만 막는다(적당히).
+    if globals().get('USE_ANTIDILUTION', False):
+        T   = max(float(globals().get('VOTE_WEIGHT_TEMP', 0.15)), 1e-6)
+        cap = float(globals().get('VOTE_STRONG_CAP', 4.0))
+        w = np.exp((s - s.max()) / T)      # 0<w<=1, 최고점수=1 (수치 안정)
+        w = w / w.mean()                   # 평균 1 정규화 (vote 비율 스케일 호환)
+        w = np.clip(w, 1.0 / cap, cap)     # 과도지배/과도소멸 방지
+        w = w / w.mean()
+        return w.astype(np.float64)
+
+    # (기존) 선형 가중 — 최고/최저 비율 max_ratio 이하
     z = (s - s.min()) / spread
     beta = min(1.0, float(np.std(s)) / 0.10)
     w = 1.0 + z * (max_ratio - 1.0) * beta
@@ -10053,6 +10087,38 @@ def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr
             is_safe = True
         if is_safe: ok += 1
     return ns, ok, sum_ru
+
+
+@njit(cache=True)
+def _eval_big_move_hits(close_arr, signal_arr, horizon, big_thr, is_buy):
+    """신호 중 '큰 움직임'을 맞춘 비율 계산용 (요청).
+       매수신호(is_buy=1): 익일 진입가 대비 이후 horizon 내 최대 상승률이 big_thr 이상이면 적중.
+       매도신호(is_buy=0): 익일 기준가 대비 이후 horizon 내 최대 하락률이 -big_thr 이하면 적중
+         (= 매도해서 큰 하락을 피했다).
+       반환: (n_signals, n_big_hits)."""
+    n = close_arr.shape[0]
+    ns = 0; hit = 0
+    for i in range(n - 1):
+        if signal_arr[i] != 1: continue
+        if i + 1 >= n: break
+        base_p = close_arr[i + 1]
+        if base_p <= 0.0: continue
+        end = i + 1 + horizon
+        if end >= n: end = n - 1
+        if end <= i + 1: continue
+        if is_buy == 1:
+            mx = base_p
+            for j in range(i + 2, end + 1):
+                if close_arr[j] > mx: mx = close_arr[j]
+            ns += 1
+            if mx / base_p - 1.0 >= big_thr: hit += 1
+        else:
+            mn = base_p
+            for j in range(i + 2, end + 1):
+                if close_arr[j] < mn: mn = close_arr[j]
+            ns += 1
+            if mn / base_p - 1.0 <= -big_thr: hit += 1
+    return ns, hit
 
 
 @njit(cache=True)
@@ -10399,6 +10465,18 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
     if n_all < min_signals:
         return n_all, ok_all, sum_all, -1.0
     base = wilson_lower(ok_all, n_all, wilson_z)
+
+    # ★ 큰 움직임 적중 가산 (요청) — 신호 중 '큰 상승/하락'을 맞춘 비율이 높을수록 점수↑.
+    #   자잘한 적중만 많은 지표보다 굵직한 변동을 잡는 지표를 우대 → 실전 수익 직결.
+    if globals().get('USE_BIG_MOVE_BONUS', False):
+        big_thr = float(globals().get('BIG_MOVE_THRESHOLD', 0.03))
+        bw      = float(globals().get('BIG_MOVE_BONUS_WEIGHT', 0.5))
+        bn, bhit = _eval_big_move_hits(close_arr, sig_arr, horizon, big_thr,
+                                       1 if is_buy else 0)
+        if bn > 0:
+            big_ratio = bhit / bn          # 0~1
+            base = base * (1.0 + bw * big_ratio)
+
     if not globals().get('USE_OOS_STABILITY', False):
         return n_all, ok_all, sum_all, base
     # 앞/뒤 절반으로 신호 분할 (시간 순)
@@ -12512,17 +12590,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.merge_cells('A1:AV1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
-                 '평균성공', '매수성공', '매도성공',
-                 '⚓매수매칭', '⚓매도매칭',
-                 '★ 누적수익', 'CAGR', '거래수', '승률', 'Sharpe', '최대거래손실',
                  '✅실제승률', '✅실제최대손실', '✅실제누적수익',
                  '✅실제매수성공', '✅실제매도성공', '✅실제평균성공',
                  '✅실제매수매칭', '✅실제매도매칭', '✅실제평균매칭', '✅앵커수익',
-                 '🔮OOS수익', '🔮OOS매수정확도', '🔮OOS매도정확도',
                  '🔧보정후수익', '🔧보정후최대손실', '🔧보정후승률',
                  '🔧보정후매수성공', '🔧보정후매도성공',
                  '🔧보정후매수매칭', '🔧보정후매도매칭',
-                 '🔧보정채택', '🔧추가지표수'])
+                 '🔧보정채택', '🔧추가지표수',
+                 '📍실행일포지션', '📍매수점수', '📍매도점수',
+                 '📅최근매수일', '💲진입가', '📅최근매도일', '💲매도가'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -12574,17 +12650,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             int(pool_v)    if pd.notna(pool_v)else '—',
             int(row['K_buy']), int(row['vote_buy']),
             int(row['K_sell']), int(row['vote_sell']),
-            f"{row['avg_success_rate']*100:.1f}%",
-            f"{row['buy_success_rate']*100:.1f}%",
-            f"{row['sell_success_rate']*100:.1f}%",
-            f"{bm_v*100:.1f}%"  if pd.notna(bm_v) else '—',
-            f"{sm_v*100:.1f}%"  if pd.notna(sm_v) else '—',
-            f"{row['total_return']*100:+.2f}%",
-            f"{row['cagr']*100:+.2f}%",
-            int(row['n_trades']),
-            f"{row['win_rate']*100:.1f}%",
-            f"{row['sharpe_like']:.2f}",
-            f"{row['max_drawdown']*100:.2f}%",
             (f"{_g(row,'real_win_rate')*100:.1f}%"     if pd.notna(_g(row,'real_win_rate'))     else '—'),
             (f"{_g(row,'real_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'real_max_drawdown')) else '—'),
             (f"{_g(row,'real_total_return')*100:+.2f}%" if pd.notna(_g(row,'real_total_return')) else '—'),
@@ -12595,9 +12660,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'real_sell_match')*100:.1f}%"  if pd.notna(_g(row,'real_sell_match'))  else '—'),
             (f"{_g(row,'real_avg_match')*100:.1f}%"   if pd.notna(_g(row,'real_avg_match'))   else '—'),
             (f"{_g(row,'real_anchor_return')*100:+.2f}%" if pd.notna(_g(row,'real_anchor_return')) else '—'),
-            (f"{_g(row,'oos_total_return')*100:+.2f}%" if pd.notna(_g(row,'oos_total_return')) else '—'),
-            (f"{_g(row,'oos_buy_success')*100:.1f}%"  if pd.notna(_g(row,'oos_buy_success'))  else '—'),
-            (f"{_g(row,'oos_sell_success')*100:.1f}%" if pd.notna(_g(row,'oos_sell_success')) else '—'),
             (f"{_g(row,'corr_total_return')*100:+.2f}%" if pd.notna(_g(row,'corr_total_return')) else '—'),
             (f"{_g(row,'corr_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'corr_max_drawdown')) else '—'),
             (f"{_g(row,'corr_win_rate')*100:.1f}%" if pd.notna(_g(row,'corr_win_rate')) else '—'),
@@ -12608,6 +12670,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ('채택' if bool(_g(row,'corr_applied', False)) else '—'),
             (f"매수+{int(_g(row,'corr_n_added_buy',0))}/매도+{int(_g(row,'corr_n_added_sell',0))}"
                  if (pd.notna(_g(row,'corr_n_added_buy')) and (_g(row,'corr_n_added_buy',0) or _g(row,'corr_n_added_sell',0))) else '—'),
+            # ★ 실행일 실제 포지션·점수 + 최근 매수/매도 (요청)
+            ('보유' if _g(row,'run_pos')==1 else ('현금' if pd.notna(_g(row,'run_pos')) else '—')),
+            (f"{_g(row,'run_buy_score'):.2f}"  if pd.notna(_g(row,'run_buy_score'))  else '—'),
+            (f"{_g(row,'run_sell_score'):.2f}" if pd.notna(_g(row,'run_sell_score')) else '—'),
+            (pd.Timestamp(_g(row,'recent_buy_date')).date()  if pd.notna(_g(row,'recent_buy_date'))  else '—'),
+            (f"{_g(row,'recent_buy_price'):.2f}"  if pd.notna(_g(row,'recent_buy_price'))  else '—'),
+            (pd.Timestamp(_g(row,'recent_sell_date')).date() if pd.notna(_g(row,'recent_sell_date')) else '—'),
+            (f"{_g(row,'recent_sell_price'):.2f}" if pd.notna(_g(row,'recent_sell_price')) else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -12617,61 +12687,45 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 c.font = Font(bold=True, color='C00000', size=11)
             elif ri % 2 == 1:
                 c.fill = _ALT
-        ws.cell(r, 12).fill = _success_fill(row['avg_success_rate'])
-        ws.cell(r, 13).fill = _success_fill(row['buy_success_rate'])
-        ws.cell(r, 14).fill = _success_fill(row['sell_success_rate'])
-        if pd.notna(bm_v): ws.cell(r, 15).fill = _success_fill(bm_v)
-        if pd.notna(sm_v): ws.cell(r, 16).fill = _success_fill(sm_v)
-        ws.cell(r, 17).fill = _ret_fill(row['total_return'], bh_ret)
-        ws.cell(r, 22).fill = _mdd_fill(row['max_drawdown'], mdd_limit_pct)
-        # 실제 수치 컬럼(검증 시) 색칠 — 23 실제승률, 24 실제MDD, 25 실제누적수익
+        # 실제 수치 색칠 (12승률,13MDD,14수익,15매수성공,16매도성공,17평균성공,18매수매칭,19매도매칭,20평균매칭,21앵커수익)
         _rw = _g(row, 'real_win_rate'); _rm = _g(row, 'real_max_drawdown'); _rt = _g(row, 'real_total_return')
-        if pd.notna(_rw): ws.cell(r, 23).fill = _success_fill(_rw)
-        if pd.notna(_rm): ws.cell(r, 24).fill = _mdd_fill(_rm, mdd_limit_pct)
-        if pd.notna(_rt): ws.cell(r, 25).fill = _ret_fill(_rt, bh_ret)
-        # 실제 매수/매도/평균 성공 색칠 (26,27,28)
+        if pd.notna(_rw): ws.cell(r, 12).fill = _success_fill(_rw)
+        if pd.notna(_rm): ws.cell(r, 13).fill = _mdd_fill(_rm, mdd_limit_pct)
+        if pd.notna(_rt): ws.cell(r, 14).fill = _ret_fill(_rt, bh_ret)
         _rb = _g(row, 'real_buy_success'); _rs2 = _g(row, 'real_sell_success'); _ra = _g(row, 'real_avg_success')
-        if pd.notna(_rb):  ws.cell(r, 26).fill = _success_fill(_rb)
-        if pd.notna(_rs2): ws.cell(r, 27).fill = _success_fill(_rs2)
-        if pd.notna(_ra):  ws.cell(r, 28).fill = _success_fill(_ra)
-        # 실제 매수/매도/평균 매칭 색칠 (29,30,31), 앵커수익 (32)
+        if pd.notna(_rb):  ws.cell(r, 15).fill = _success_fill(_rb)
+        if pd.notna(_rs2): ws.cell(r, 16).fill = _success_fill(_rs2)
+        if pd.notna(_ra):  ws.cell(r, 17).fill = _success_fill(_ra)
         _rbm = _g(row, 'real_buy_match'); _rsm = _g(row, 'real_sell_match')
         _ravm = _g(row, 'real_avg_match'); _rar = _g(row, 'real_anchor_return')
-        if pd.notna(_rbm):  ws.cell(r, 29).fill = _success_fill(_rbm)
-        if pd.notna(_rsm):  ws.cell(r, 30).fill = _success_fill(_rsm)
-        if pd.notna(_ravm): ws.cell(r, 31).fill = _success_fill(_ravm)
-        if pd.notna(_rar):  ws.cell(r, 32).fill = _ret_fill(_rar, bh_ret)
-        # OOS 수익(33) 색칠, OOS 매수/매도 정확도(34,35)
-        _or = _g(row, 'oos_total_return'); _obs = _g(row, 'oos_buy_success'); _oss = _g(row, 'oos_sell_success')
-        if pd.notna(_or):  ws.cell(r, 33).fill = _ret_fill(_or, bh_ret)
-        if pd.notna(_obs): ws.cell(r, 34).fill = _success_fill(_obs)
-        if pd.notna(_oss): ws.cell(r, 35).fill = _success_fill(_oss)
-        # 보정후 컬럼 색칠 (36 수익, 37 MDD, 38 승률, 39 매수성공, 40 매도성공, 41 매수매칭, 42 매도매칭)
+        if pd.notna(_rbm):  ws.cell(r, 18).fill = _success_fill(_rbm)
+        if pd.notna(_rsm):  ws.cell(r, 19).fill = _success_fill(_rsm)
+        if pd.notna(_ravm): ws.cell(r, 20).fill = _success_fill(_ravm)
+        if pd.notna(_rar):  ws.cell(r, 21).fill = _ret_fill(_rar, bh_ret)
+        # 보정후 색칠 (22수익,23MDD,24승률,25매수성공,26매도성공,27매수매칭,28매도매칭,29채택)
         _cr = _g(row, 'corr_total_return'); _cm = _g(row, 'corr_max_drawdown'); _cw = _g(row, 'corr_win_rate')
         _cbs = _g(row, 'corr_buy_success'); _css = _g(row, 'corr_sell_success')
         _cbm = _g(row, 'corr_buy_match'); _csm = _g(row, 'corr_sell_match')
         _capplied = bool(_g(row, 'corr_applied', False))
-        if pd.notna(_cr):  ws.cell(r, 36).fill = _ret_fill(_cr, bh_ret)
-        if pd.notna(_cm):  ws.cell(r, 37).fill = _mdd_fill(_cm, mdd_limit_pct)
-        if pd.notna(_cw):  ws.cell(r, 38).fill = _success_fill(_cw)
-        if pd.notna(_cbs): ws.cell(r, 39).fill = _success_fill(_cbs)
-        if pd.notna(_css): ws.cell(r, 40).fill = _success_fill(_css)
-        if pd.notna(_cbm): ws.cell(r, 41).fill = _success_fill(_cbm)
-        if pd.notna(_csm): ws.cell(r, 42).fill = _success_fill(_csm)
-        if _capplied:      ws.cell(r, 43).fill = _HL
+        if pd.notna(_cr):  ws.cell(r, 22).fill = _ret_fill(_cr, bh_ret)
+        if pd.notna(_cm):  ws.cell(r, 23).fill = _mdd_fill(_cm, mdd_limit_pct)
+        if pd.notna(_cw):  ws.cell(r, 24).fill = _success_fill(_cw)
+        if pd.notna(_cbs): ws.cell(r, 25).fill = _success_fill(_cbs)
+        if pd.notna(_css): ws.cell(r, 26).fill = _success_fill(_css)
+        if pd.notna(_cbm): ws.cell(r, 27).fill = _success_fill(_cbm)
+        if pd.notna(_csm): ws.cell(r, 28).fill = _success_fill(_csm)
+        if _capplied:      ws.cell(r, 29).fill = _HL
+        # 실행일 포지션(31) 색칠 — 보유/현금
+        if _g(row,'run_pos') == 1: ws.cell(r, 31).fill = _HOLD
+        elif pd.notna(_g(row,'run_pos')): ws.cell(r, 31).fill = _CASH
         if is_best:
-            for cc in (12, 13, 14):
-                ws.cell(r, cc).font = Font(bold=True, color='C00000', size=11)
-            ws.cell(r, 17).font = Font(bold=True, color='C00000', size=12)
-            if pd.notna(_rt):
-                ws.cell(r, 25).font = Font(bold=True, color='C00000', size=12)
-            if pd.notna(_or):
-                ws.cell(r, 33).font = Font(bold=True, color='C00000', size=12)
+            ws.cell(r, 14).font = Font(bold=True, color='C00000', size=12)
             if pd.notna(_cr):
-                ws.cell(r, 36).font = Font(bold=True, color='C00000', size=12)
-    for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9, 10, 10, 10, 11, 11, 12, 10, 8, 8, 10, 11,
-                            11, 11, 13, 12, 12, 12, 12, 12, 12, 11, 12, 13, 13,
-                            13, 14, 12, 13, 13, 13, 13, 10, 14], 1):
+                ws.cell(r, 22).font = Font(bold=True, color='C00000', size=12)
+    for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9,
+                            11, 11, 11, 13, 12, 12, 12, 12, 12, 12,
+                            12, 13, 12, 13, 13, 13, 13, 10, 14,
+                            12, 10, 10, 13, 10, 13, 10], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -12953,7 +13007,17 @@ def _final_pick_by_real(pool, win_tol):
        반환: (best_inner_dict, sel_row)"""
     use_corr = globals().get('SELECT_BY_CORRECTED_RETURN', True)
     use_oos  = globals().get('OOS_SELECT_BY_OOS_RETURN', True)
-    if use_corr and 'corr_total_return' in pool.columns and pool['corr_total_return'].notna().any():
+    # ★ 승률 밴드 적용 (요청) — 선정 유효승률(sel_win_rate, 보정 적용시 보정후) 최고에서
+    #   win_tol 이내 후보로 1차 압축 → 그중 유효수익(sel_total_return) 최고 선정.
+    if 'sel_win_rate' in pool.columns and 'sel_total_return' in pool.columns and len(pool) > 0:
+        _wmax = float(pool['sel_win_rate'].max())
+        band = pool[pool['sel_win_rate'] >= _wmax - win_tol]
+        if len(band) == 0:
+            band = pool
+        b = band.sort_values(['sel_total_return', 'sel_win_rate'],
+                             ascending=[False, False]).reset_index(drop=True)
+        _by = '\ubcf4\uc815\ud6c4\uc2b9\ub960\ubc34\ub4dc'
+    elif use_corr and 'corr_total_return' in pool.columns and pool['corr_total_return'].notna().any():
         _wcol = 'corr_win_rate' if 'corr_win_rate' in pool.columns else 'real_win_rate'
         b = pool[pool['corr_total_return'].notna()].sort_values(
             ['corr_total_return', _wcol], ascending=[False, False]).reset_index(drop=True)
@@ -12977,14 +13041,16 @@ def _final_pick_by_real(pool, win_tol):
             best_inner[_k] = sel[_k]
     _oosr = sel.get('oos_total_return', float('nan'))
     print(f"  \u2713 \uc2e4\uac70\ub798 \uac80\uc99d \uc644\ub8cc \u2014 {_by} \uc218\uc775\ub960 \ucd5c\uace0 \uc870\ud569 \uc120\uc815")
-    if _by == '\ubcf4\uc815\ud6c4':
-        _cr = sel.get('corr_total_return', float('nan'))
+    if _by.startswith('\ubcf4\uc815\ud6c4'):
+        _cr = sel.get('sel_total_return', sel.get('corr_total_return', float('nan')))
         _applied = bool(sel.get('corr_applied', False))
+        _sw = sel.get('sel_win_rate', sel.get('real_win_rate', float('nan')))
         print(f"     \ucd5c\uc885: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
               f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
-              f"(\ubcf4\uc815\ud6c4\uc218\uc775 {_cr*100:+.2f}%{'(\ubcf4\uc815\ucc44\ud0dd)' if _applied else '(\ubcf4\uc815\uc548\ub428)'}, "
+              f"(\uc120\uc815\uc218\uc775 {_cr*100:+.2f}%{'(\ubcf4\uc815\ucc44\ud0dd)' if _applied else '(\ubcf4\uc815\uc548\ub428)'}, "
               f"\uc6d0\ub798\uc218\uc775 {sel['real_total_return']*100:+.2f}%, "
-              f"\ubcf4\uc815\ud6c4\uc2b9\ub960 {sel.get('corr_win_rate', float('nan'))*100:.1f}%)")
+              f"\uc120\uc815\uc2b9\ub960 {_sw*100:.1f}%, "
+              f"\uc120\uc815\ucd5c\ub300\uc190\uc2e4 {sel.get('sel_max_drawdown', sel['real_max_drawdown'])*100:.2f}%)")
     else:
         print(f"     \ucd5c\uc885: K_buy={best_inner['K_buy']}/v{best_inner['vote_buy']}, "
               f"K_sell={best_inner['K_sell']}/v{best_inner['vote_sell']}  "
@@ -13024,6 +13090,40 @@ def _pick_verify_candidates(tbl, bh_ret=None):
     cand = cand.head(min(half, top_n)).reset_index(drop=True)
     note = (note + f", 수익 상위 절반 {len(cand)}개").strip(', ')
     return cand, note
+
+
+def _extract_runday_info(_d, _t):
+    """실행일(가장 최근 거래일) 기준 실제 포지션·점수와 최근 매수/매도 정보 추출 (요청).
+       반환 키: run_pos(1보유/0현금), run_buy_score, run_sell_score,
+                recent_buy_date, recent_buy_price, recent_sell_date, recent_sell_price."""
+    info = {'run_pos': np.nan, 'run_buy_score': np.nan, 'run_sell_score': np.nan,
+            'recent_buy_date': None, 'recent_buy_price': np.nan,
+            'recent_sell_date': None, 'recent_sell_price': np.nan}
+    try:
+        if _d is not None and len(_d) > 0:
+            last = _d.iloc[-1]
+            info['run_pos']        = int(last.get('position_pre', 0))
+            info['run_buy_score']  = float(last.get('buy_count', np.nan))
+            info['run_sell_score'] = float(last.get('sell_count', np.nan))
+            # 현재 보유 중이면 '열린 포지션' 진입가/매수일
+            if info['run_pos'] == 1 and pd.notna(last.get('entry_price', np.nan)):
+                info['recent_buy_price'] = float(last['entry_price'])
+                if 'action' in _d.columns:
+                    _bm = _d['action'].astype(str).str.contains('매수', na=False)
+                    if _bm.any():
+                        info['recent_buy_date'] = _d.loc[_bm, 'date'].iloc[-1]
+        if _t is not None and len(_t) > 0:
+            lt = _t.iloc[-1]
+            # 가장 최근 청산(매도)
+            info['recent_sell_date']  = lt.get('exit_date', None)
+            info['recent_sell_price'] = float(lt.get('exit_price', np.nan))
+            # 현금 상태면 최근 매수 = 마지막으로 청산된 거래의 진입
+            if info['run_pos'] != 1:
+                info['recent_buy_date']  = lt.get('entry_date', None)
+                info['recent_buy_price'] = float(lt.get('entry_price', np.nan))
+    except Exception:
+        pass
+    return info
 
 
 def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
@@ -13075,39 +13175,43 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
         row['real_sell_match']    = float(_cur.get('anchor_sell_match_rate', 0.0))
         row['real_avg_match']     = float(_cur.get('anchor_avg_match_rate', 0.0))
         row['real_anchor_return'] = float(_cur.get('anchor_strategy_return', 0.0))
-        # ★ OOS 기간(최근 N개월)만 잘라 백테스트 — OOS 수익/정확도 (요청)
-        try:
-            _oos_m = int(globals().get('OOS_MONTHS', 1))
-            _last_dt = feat.index.max()
-            _oos_start = _last_dt - pd.DateOffset(months=_oos_m)
-            _omask = feat.index >= _oos_start
-            _omask = np.asarray(_omask)
-            _feat_oos = feat.loc[_omask]
-            _close_oos = close.reindex(_feat_oos.index)
-            _asb_o = (anchor_safe_buy[_omask] if (anchor_safe_buy is not None and len(anchor_safe_buy)==len(_omask)) else None)
-            _ass_o = (anchor_safe_sell[_omask] if (anchor_safe_sell is not None and len(anchor_safe_sell)==len(_omask)) else None)
-            if len(_feat_oos) >= 5:
-                _do, _to, _curo, _buo, _suo = daily_ensemble_backtest(
-                    _feat_oos, _close_oos, bp, sp,
-                    K_buy=int(_r['K_buy']), K_sell=int(_r['K_sell']),
-                    vote_buy=int(_r['vote_buy']), vote_sell=int(_r['vote_sell']),
-                    cost=COST_PER_TRADE, horizon=horizon,
-                    dd_limit=dd_limit, ru_limit=ru_limit,
-                    stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
-                    anchor_safe_buy=_asb_o, anchor_safe_sell=_ass_o)
-                row['oos_total_return'] = float(_curo.get('cum_return_pct', 0.0)) / 100.0
-                row['oos_buy_success']  = float(_curo.get('buy_success_rate', 0.0))
-                row['oos_sell_success'] = float(_curo.get('sell_success_rate', 0.0))
-                row['oos_win_rate']     = float(_curo.get('win_rate', 0.0))
-                row['oos_n_trades']     = int(_curo.get('n_trades', 0))
-            else:
+        # ★ 실행일(가장 최근일) 실제 포지션·점수 + 최근 매수/매도 정보 (요청)
+        _ri = _extract_runday_info(_d, _t)
+        row.update(_ri)
+        # ★ OOS 기능 OFF (요청) — OOS 백테스트 생략, 컬럼은 NaN
+        if globals().get('OOS_SELECT_BY_OOS_RETURN', False):
+            try:
+                _oos_m = int(globals().get('OOS_MONTHS', 1))
+                _last_dt = feat.index.max()
+                _oos_start = _last_dt - pd.DateOffset(months=_oos_m)
+                _omask = feat.index >= _oos_start
+                _omask = np.asarray(_omask)
+                _feat_oos = feat.loc[_omask]
+                _close_oos = close.reindex(_feat_oos.index)
+                _asb_o = (anchor_safe_buy[_omask] if (anchor_safe_buy is not None and len(anchor_safe_buy)==len(_omask)) else None)
+                _ass_o = (anchor_safe_sell[_omask] if (anchor_safe_sell is not None and len(anchor_safe_sell)==len(_omask)) else None)
+                if len(_feat_oos) >= 5:
+                    _do, _to, _curo, _buo, _suo = daily_ensemble_backtest(
+                        _feat_oos, _close_oos, bp, sp,
+                        K_buy=int(_r['K_buy']), K_sell=int(_r['K_sell']),
+                        vote_buy=int(_r['vote_buy']), vote_sell=int(_r['vote_sell']),
+                        cost=COST_PER_TRADE, horizon=horizon,
+                        dd_limit=dd_limit, ru_limit=ru_limit,
+                        stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                        anchor_safe_buy=_asb_o, anchor_safe_sell=_ass_o)
+                    row['oos_total_return'] = float(_curo.get('cum_return_pct', 0.0)) / 100.0
+                    row['oos_buy_success']  = float(_curo.get('buy_success_rate', 0.0))
+                    row['oos_sell_success'] = float(_curo.get('sell_success_rate', 0.0))
+                    row['oos_win_rate']     = float(_curo.get('win_rate', 0.0))
+                    row['oos_n_trades']     = int(_curo.get('n_trades', 0))
+                else:
+                    row['oos_total_return'] = float('nan')
+                    row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
+                    row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
+            except Exception:
                 row['oos_total_return'] = float('nan')
                 row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
                 row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
-        except Exception:
-            row['oos_total_return'] = float('nan')
-            row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
-            row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
         real_rows.append(row)
         if (_i + 1) % 1000 == 0:
             print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {time.time()-_t0:.0f}초)")
@@ -13129,19 +13233,34 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
             stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
             anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell)
 
+    # ★ 선정 필터 수치를 '보정 후'로 (요청) — 보정 적용된 조합은 corr_*, 아니면 real_* 사용.
+    #   sel_mdd / sel_win / sel_ret = 선정에 쓸 '유효 수치'.
+    _use_corr_sel = globals().get('SELECT_FILTER_BY_CORRECTED', True)
+    def _eff_col(colc, colr):
+        base = verified[colr].astype(float).values
+        if _use_corr_sel and colc in verified.columns:
+            _ca = verified.get('corr_applied', pd.Series(False, index=verified.index))
+            _ca = _ca.fillna(False).astype(bool).values
+            cval = verified[colc].astype(float).values
+            return np.where(_ca & ~np.isnan(cval), cval, base)
+        return base
+    verified['sel_max_drawdown'] = _eff_col('corr_max_drawdown', 'real_max_drawdown')
+    verified['sel_win_rate']     = _eff_col('corr_win_rate',     'real_win_rate')
+    verified['sel_total_return'] = _eff_col('corr_total_return', 'real_total_return')
+
     pool = verified
     if mdd_lim is not None:
-        safe = verified[verified['real_max_drawdown'] >= mdd_lim]
+        safe = verified[verified['sel_max_drawdown'] >= mdd_lim]    # ★ 보정후 최대손실로 필터
         if len(safe) > 0:
             pool = safe
-            print(f"  🛡 실제 최대 거래손실 {mdd_lim*100:.1f}% 이하(안전) 후보 {len(safe)}개로 선정 "
+            print(f"  🛡 (보정후) 최대 거래손실 {mdd_lim*100:.1f}% 이하(안전) 후보 {len(safe)}개로 선정 "
                   f"(전체 검증 {len(verified)}개 중)")
         else:
-            print(f"  ⚠ 실제 최대 거래손실 {mdd_lim*100:.1f}% 이하 후보 없음 → 가장 손실 얕은 조합 선정")
-            pool = verified.sort_values('real_max_drawdown', ascending=False)
+            print(f"  ⚠ (보정후) 최대 거래손실 {mdd_lim*100:.1f}% 이하 후보 없음 → 가장 손실 얕은 조합 선정")
+            pool = verified.sort_values('sel_max_drawdown', ascending=False)
 
     best_inner, sel = _final_pick_by_real(pool, win_tol)
-    out = verified.sort_values('real_total_return', ascending=False).reset_index(drop=True)
+    out = verified.sort_values('sel_total_return', ascending=False).reset_index(drop=True)
     print(f"     실제 승률 {sel['real_win_rate']*100:.1f}%, "
           f"실제 평균성공 {sel['real_avg_success']*100:.1f}% "
           f"(매수 {sel['real_buy_success']*100:.1f}% / 매도 {sel['real_sell_success']*100:.1f}%), "
@@ -13192,39 +13311,42 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
         row['real_sell_match']    = float(_cur.get('anchor_sell_match_rate', 0.0))
         row['real_avg_match']     = float(_cur.get('anchor_avg_match_rate', 0.0))
         row['real_anchor_return'] = float(_cur.get('anchor_strategy_return', 0.0))
-        # ★ OOS 기간(최근 N개월)만 잘라 백테스트 — OOS 수익/정확도 (요청)
-        try:
-            _oos_m = int(globals().get('OOS_MONTHS', 1))
-            _last_dt = feat.index.max()
-            _oos_start = _last_dt - pd.DateOffset(months=_oos_m)
-            _omask = feat.index >= _oos_start
-            _omask = np.asarray(_omask)
-            _feat_oos = feat.loc[_omask]
-            _close_oos = close.reindex(_feat_oos.index)
-            _asb_o = (anchor_safe_buy[_omask] if (anchor_safe_buy is not None and len(anchor_safe_buy)==len(_omask)) else None)
-            _ass_o = (anchor_safe_sell[_omask] if (anchor_safe_sell is not None and len(anchor_safe_sell)==len(_omask)) else None)
-            if len(_feat_oos) >= 5:
-                _do, _to, _curo, _buo, _suo = daily_ensemble_backtest(
-                    _feat_oos, _close_oos, buy_pool, sell_pool,
-                    K_buy=int(_r['K_buy']), K_sell=int(_r['K_sell']),
-                    vote_buy=int(_r['vote_buy']), vote_sell=int(_r['vote_sell']),
-                    cost=COST_PER_TRADE, horizon=horizon,
-                    dd_limit=dd_limit, ru_limit=ru_limit,
-                    stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
-                    anchor_safe_buy=_asb_o, anchor_safe_sell=_ass_o)
-                row['oos_total_return'] = float(_curo.get('cum_return_pct', 0.0)) / 100.0
-                row['oos_buy_success']  = float(_curo.get('buy_success_rate', 0.0))
-                row['oos_sell_success'] = float(_curo.get('sell_success_rate', 0.0))
-                row['oos_win_rate']     = float(_curo.get('win_rate', 0.0))
-                row['oos_n_trades']     = int(_curo.get('n_trades', 0))
-            else:
+        # ★ 실행일 실제 포지션·점수 + 최근 매수/매도 정보 (요청)
+        row.update(_extract_runday_info(_d, _t))
+        # ★ OOS 기능 OFF (요청) — OOS 백테스트 생략, 컬럼 NaN
+        if globals().get('OOS_SELECT_BY_OOS_RETURN', False):
+            try:
+                _oos_m = int(globals().get('OOS_MONTHS', 1))
+                _last_dt = feat.index.max()
+                _oos_start = _last_dt - pd.DateOffset(months=_oos_m)
+                _omask = feat.index >= _oos_start
+                _omask = np.asarray(_omask)
+                _feat_oos = feat.loc[_omask]
+                _close_oos = close.reindex(_feat_oos.index)
+                _asb_o = (anchor_safe_buy[_omask] if (anchor_safe_buy is not None and len(anchor_safe_buy)==len(_omask)) else None)
+                _ass_o = (anchor_safe_sell[_omask] if (anchor_safe_sell is not None and len(anchor_safe_sell)==len(_omask)) else None)
+                if len(_feat_oos) >= 5:
+                    _do, _to, _curo, _buo, _suo = daily_ensemble_backtest(
+                        _feat_oos, _close_oos, buy_pool, sell_pool,
+                        K_buy=int(_r['K_buy']), K_sell=int(_r['K_sell']),
+                        vote_buy=int(_r['vote_buy']), vote_sell=int(_r['vote_sell']),
+                        cost=COST_PER_TRADE, horizon=horizon,
+                        dd_limit=dd_limit, ru_limit=ru_limit,
+                        stop_loss_pct=stop_loss_pct, anchor_mode=anchor_mode,
+                        anchor_safe_buy=_asb_o, anchor_safe_sell=_ass_o)
+                    row['oos_total_return'] = float(_curo.get('cum_return_pct', 0.0)) / 100.0
+                    row['oos_buy_success']  = float(_curo.get('buy_success_rate', 0.0))
+                    row['oos_sell_success'] = float(_curo.get('sell_success_rate', 0.0))
+                    row['oos_win_rate']     = float(_curo.get('win_rate', 0.0))
+                    row['oos_n_trades']     = int(_curo.get('n_trades', 0))
+                else:
+                    row['oos_total_return'] = float('nan')
+                    row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
+                    row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
+            except Exception:
                 row['oos_total_return'] = float('nan')
                 row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
                 row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
-        except Exception:
-            row['oos_total_return'] = float('nan')
-            row['oos_buy_success'] = row['oos_sell_success'] = float('nan')
-            row['oos_win_rate'] = float('nan'); row['oos_n_trades'] = 0
         real_rows.append(row)
         if (_i + 1) % 1000 == 0:
             print(f"     ... {_i+1}/{len(cand)} 검증  (경과 {time.time()-_t_start:.0f}초)")
@@ -13256,21 +13378,35 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
         except Exception as _ce:
             print(f"  ⚠ 보정 적용 실패(일반 경로): {_ce}")
 
-    # ★ 1) 실제 최대 거래손실(MDD) 기준 필터 — 이 값 이하로 안전한 후보만 (요청)
+    # ★ 선정 필터 수치를 '보정 후'로 (요청) — 보정 적용된 조합은 corr_*, 아니면 real_*.
+    _use_corr_sel = globals().get('SELECT_FILTER_BY_CORRECTED', True)
+    def _eff_col(colc, colr):
+        base = verified[colr].astype(float).values
+        if _use_corr_sel and colc in verified.columns:
+            _ca = verified.get('corr_applied', pd.Series(False, index=verified.index))
+            _ca = _ca.fillna(False).astype(bool).values
+            cval = verified[colc].astype(float).values
+            return np.where(_ca & ~np.isnan(cval), cval, base)
+        return base
+    verified['sel_max_drawdown'] = _eff_col('corr_max_drawdown', 'real_max_drawdown')
+    verified['sel_win_rate']     = _eff_col('corr_win_rate',     'real_win_rate')
+    verified['sel_total_return'] = _eff_col('corr_total_return', 'real_total_return')
+
+    # ★ 1) (보정 후) 최대 거래손실(MDD) 기준 필터 (요청)
     pool = verified
     if mdd_lim is not None:
-        safe = verified[verified['real_max_drawdown'] >= mdd_lim]  # 손실이 -3%보다 얕음
+        safe = verified[verified['sel_max_drawdown'] >= mdd_lim]
         if len(safe) > 0:
             pool = safe
-            print(f"  🛡 실제 최대 거래손실 {mdd_lim*100:.1f}% 이하(안전) 후보 {len(safe)}개로 선정 "
+            print(f"  🛡 (보정후) 최대 거래손실 {mdd_lim*100:.1f}% 이하(안전) 후보 {len(safe)}개로 선정 "
                   f"(전체 검증 {len(verified)}개 중)")
         else:
-            print(f"  ⚠ 실제 최대 거래손실 {mdd_lim*100:.1f}% 이하 후보가 없음 "
+            print(f"  ⚠ (보정후) 최대 거래손실 {mdd_lim*100:.1f}% 이하 후보가 없음 "
                   f"→ 가장 손실 얕은 조합으로 선정 (기준 완화)")
-            pool = verified.sort_values('real_max_drawdown', ascending=False)
+            pool = verified.sort_values('sel_max_drawdown', ascending=False)
 
     best_inner, sel = _final_pick_by_real(pool, win_tol)
-    inner_passed_out = verified.sort_values('real_total_return', ascending=False).reset_index(drop=True)
+    inner_passed_out = verified.sort_values('sel_total_return', ascending=False).reset_index(drop=True)
 
     print(f"     실제 승률 {sel['real_win_rate']*100:.1f}%, "
           f"실제 평균성공 {sel['real_avg_success']*100:.1f}% "
