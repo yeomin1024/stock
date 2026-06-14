@@ -9739,7 +9739,7 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 0                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_MONTHS = 1                   # 최근 N개월을 OOS로 (이전달~현재)
 OOS_SELECT_BY_OOS_RETURN = False # ★ 요청: OOS 관련 기능 전부 OFF
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
@@ -9755,6 +9755,9 @@ SELECT_BY_CORRECTED_RETURN = True  # True면 보정 후 수익 최고로 선정
 # ★ 후보 선정 필터를 '보정 후' 수치로 (요청) — 최대거래손실 한도·승률 밴드를 보정 적용된
 #   조합은 보정후 수치로 판정. 보정 안 된 조합은 실제 수치 그대로. SELECT_BY_CORRECTED_RETURN과 짝.
 SELECT_FILTER_BY_CORRECTED = True
+# ★ 보정후 승률 하한 (요청) — 보정후 실제 거래 승률이 이 값 이상인 조합 중 보정후 수익 최고를
+#   1차 선정. 이후 그 승률에서 WINRATE_TOLERANCE 이내 후보와 수익 비교해 더 높으면 재선정.
+SELECT_WIN_FLOOR = 0.90
 
 ANCHOR_BUY_DATES = [
 ]
@@ -9762,7 +9765,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 10000
+TOP_N_GRID_OUT      = 20000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -11473,6 +11476,14 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
         sell_w = np.asarray(sell_w_override, dtype=np.float64)
         weighted = True
 
+    # ★ 재현용 (요청) — 실제 사용된 투표 가중치를 풀에 부착해 두면 엑셀에 저장 가능.
+    #   재현 시 이 가중치를 그대로 주입하면 보정(추가지표+가중치)이 정확히 재현된다.
+    try:
+        buy_used  = buy_used.copy();  buy_used['vote_weight']  = np.asarray(buy_w, dtype=np.float64)
+        sell_used = sell_used.copy(); sell_used['vote_weight'] = np.asarray(sell_w, dtype=np.float64)
+    except Exception:
+        pass
+
     sl_active = stop_loss_pct is not None and stop_loss_pct > 0
     sl = float(stop_loss_pct) if sl_active else 0.0
 
@@ -12542,19 +12553,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws = wb.create_sheet('매수_앙상블_지표'); ws.sheet_view.showGridLines = False
     ws.cell(1, 1).value = f'매수 앙상블 {len(buy_used)}개 지표'
     ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864')
-    ws.merge_cells('A1:I1')
-    _hdr(ws, 3, ['#', '지표', '방향', '임계치', '분위', '신호수', '성공수', '성공률', '점수'])
+    ws.merge_cells('A1:J1')
+    _hdr(ws, 3, ['#', '지표', '방향', '임계치', '분위', '신호수', '성공수', '성공률', '점수', '🔁가중치'])
     for ri, row in buy_used.reset_index(drop=True).iterrows():
         r = ri + 4
         vals = [ri + 1, row['indicator'], row['direction'],
                 round(row['threshold'], 6), f"{row['pct_label']:.0f}%",
                 int(row['n_signals']), int(row['n_success']),
-                f"{row['success_rate']*100:.2f}%", round(row['score'], 4)]
+                f"{row['success_rate']*100:.2f}%", round(row['score'], 4),
+                round(float(row['vote_weight']), 6) if 'vote_weight' in row.index and pd.notna(row.get('vote_weight')) else '—']
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
             c.alignment = Alignment(horizontal='center'); c.font = Font(size=10)
             if ri % 2 == 1: c.fill = _ALT
-    for ci, w in enumerate([5, 32, 8, 14, 8, 10, 10, 10, 10], 1):
+    for ci, w in enumerate([5, 32, 8, 14, 8, 10, 10, 10, 10, 11], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -12562,19 +12574,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws = wb.create_sheet('매도_앙상블_지표'); ws.sheet_view.showGridLines = False
     ws.cell(1, 1).value = f'매도 앙상블 {len(sell_used)}개 지표'
     ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864')
-    ws.merge_cells('A1:I1')
-    _hdr(ws, 3, ['#', '지표', '방향', '임계치', '분위', '신호수', '성공수', '성공률', '점수'])
+    ws.merge_cells('A1:J1')
+    _hdr(ws, 3, ['#', '지표', '방향', '임계치', '분위', '신호수', '성공수', '성공률', '점수', '🔁가중치'])
     for ri, row in sell_used.reset_index(drop=True).iterrows():
         r = ri + 4
         vals = [ri + 1, row['indicator'], row['direction'],
                 round(row['threshold'], 6), f"{row['pct_label']:.0f}%",
                 int(row['n_signals']), int(row['n_success']),
-                f"{row['success_rate']*100:.2f}%", round(row['score'], 4)]
+                f"{row['success_rate']*100:.2f}%", round(row['score'], 4),
+                round(float(row['vote_weight']), 6) if 'vote_weight' in row.index and pd.notna(row.get('vote_weight')) else '—']
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
             c.alignment = Alignment(horizontal='center'); c.font = Font(size=10)
             if ri % 2 == 1: c.fill = _ALT
-    for ci, w in enumerate([5, 32, 8, 14, 8, 10, 10, 10, 10], 1):
+    for ci, w in enumerate([5, 32, 8, 14, 8, 10, 10, 10, 10, 11], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -13007,16 +13020,28 @@ def _final_pick_by_real(pool, win_tol):
        반환: (best_inner_dict, sel_row)"""
     use_corr = globals().get('SELECT_BY_CORRECTED_RETURN', True)
     use_oos  = globals().get('OOS_SELECT_BY_OOS_RETURN', True)
-    # ★ 승률 밴드 적용 (요청) — 선정 유효승률(sel_win_rate, 보정 적용시 보정후) 최고에서
-    #   win_tol 이내 후보로 1차 압축 → 그중 유효수익(sel_total_return) 최고 선정.
+    # ★ 보정후 승률 하한 + 허용오차 비교 선정 (요청):
+    #   1) 보정후 실제 승률(sel_win_rate) ≥ SELECT_WIN_FLOOR(90%) 중 보정후 수익(sel_total_return) 최고 = 1차 선정.
+    #   2) 그 1차 선정의 승률에서 WINRATE_TOLERANCE 이내(승률이 최대 그만큼 낮아도 됨) 후보와 비교해,
+    #      보정후 수익이 더 높은 게 있으면 그것으로 재선정. (90% 못 넘는 후보 없으면 최고승률 기준 폴백)
     if 'sel_win_rate' in pool.columns and 'sel_total_return' in pool.columns and len(pool) > 0:
-        _wmax = float(pool['sel_win_rate'].max())
-        band = pool[pool['sel_win_rate'] >= _wmax - win_tol]
-        if len(band) == 0:
-            band = pool
-        b = band.sort_values(['sel_total_return', 'sel_win_rate'],
-                             ascending=[False, False]).reset_index(drop=True)
-        _by = '\ubcf4\uc815\ud6c4\uc2b9\ub960\ubc34\ub4dc'
+        floor = float(globals().get('SELECT_WIN_FLOOR', 0.90))
+        above = pool[pool['sel_win_rate'] >= floor]
+        if len(above) > 0:
+            b0 = above.sort_values(['sel_total_return', 'sel_win_rate'],
+                                   ascending=[False, False]).reset_index(drop=True)
+            w0 = float(b0.iloc[0]['sel_win_rate'])          # 1차 선정의 보정후 승률
+            band = pool[pool['sel_win_rate'] >= w0 - win_tol]  # 승률 허용오차 이내(아래로) 후보
+            b = band.sort_values(['sel_total_return', 'sel_win_rate'],
+                                 ascending=[False, False]).reset_index(drop=True)
+            _by = '\ubcf4\uc815\ud6c4\uc2b9\ub960\ud558\ud55c+\ud5c8\uc6a9\uc624\ucc28'
+        else:
+            # 90% 넘는 후보 없음 → 최고승률 -win_tol 밴드 내 수익 최고
+            wmax = float(pool['sel_win_rate'].max())
+            band = pool[pool['sel_win_rate'] >= wmax - win_tol]
+            b = band.sort_values(['sel_total_return', 'sel_win_rate'],
+                                 ascending=[False, False]).reset_index(drop=True)
+            _by = '\ubcf4\uc815\ud6c4\ucd5c\uace0\uc2b9\ub960\ubc34\ub4dc(90%\ubbf8\ub2ec)'
     elif use_corr and 'corr_total_return' in pool.columns and pool['corr_total_return'].notna().any():
         _wcol = 'corr_win_rate' if 'corr_win_rate' in pool.columns else 'real_win_rate'
         b = pool[pool['corr_total_return'].notna()].sort_values(
@@ -14420,6 +14445,10 @@ def replay_grid_combo(filename, grid_number=None, *,
     """
     from openpyxl import load_workbook
 
+    # ★ 재현 대상이 ★최적 행이면 '보정 적용 풀(앙상블 시트)'을 쓰고, 아니면 base 메타풀 사용.
+    #   자동재현(grid_number=None)은 항상 ★최적이므로 True.
+    _is_best_row = (grid_number is None)
+
     base_dir = output_dir if output_dir is not None else OUTPUT_DIR
     # filename이 전체 경로면 그대로, 아니면 OUTPUT_DIR과 결합
     if os.path.isabs(filename) or os.path.dirname(filename):
@@ -14472,7 +14501,7 @@ def replay_grid_combo(filename, grid_number=None, *,
             if cell is None: continue
             digits = ''.join(ch for ch in str(cell) if ch.isdigit())
             if digits and int(digits) == gn:
-                target = r; break
+                target = r; _is_best_row = ('★' in str(cell)); break
         if target is None:
             raise RuntimeError(f"#{gn} 번호를 찾지 못했습니다.")
 
@@ -14625,6 +14654,9 @@ def replay_grid_combo(filename, grid_number=None, *,
             n_suc = _gf('성공수', 0.0)
             sr = _gf('성공률', 0.0)
             if sr > 1.5: sr = sr / 100.0   # '96.00%' → 0.96
+            _vw = _gv('🔁가중치')
+            try: _vwf = float(str(_vw).replace('%','').strip())
+            except Exception: _vwf = np.nan
             rows.append({
                 'indicator': str(ind).strip(),
                 'direction': str(_gv('방향', '>=')).strip(),
@@ -14635,6 +14667,7 @@ def replay_grid_combo(filename, grid_number=None, *,
                 'success_rate': sr,
                 'avg_extreme': 0.01,
                 'score': _gf('점수', sr),
+                'vote_weight': _vwf,   # ★ 재현용 저장 가중치 (없으면 NaN)
             })
         if not rows:
             return None
@@ -14695,17 +14728,21 @@ def replay_grid_combo(filename, grid_number=None, *,
 
     # ★ 그리드 번호 재현이면, 그 번호의 메타조합 풀을 '메타조합별_지표' 시트에서 우선 읽음.
     #   (없으면 ★최적의 매수/매도_앙상블_지표 시트로 폴백)
+    #   단, ★최적 행 재현이면 보정 적용된 '앙상블 시트(가중치 포함)'를 우선 사용해 보정까지 정확 재현.
     buy_pool_xl = sell_pool_xl = None
-    if grid_number is not None:
+    if grid_number is not None and not _is_best_row:
         _mb, _ms = _read_meta_pool(wz_use, pct_use[0] if pct_use else 5,
                                    pct_use[1] if pct_use else 95, cl_use if cl_use is not None else 0.2)
         if _mb is not None and _ms is not None and len(_mb) > 0 and len(_ms) > 0:
             buy_pool_xl, sell_pool_xl = _mb, _ms
-            print(f"  ♻ 그리드 #{grid_number}의 메타조합 지표를 '메타조합별_지표' 시트에서 정확히 읽음 "
-                  f"(매수 {len(_mb)} / 매도 {len(_ms)})")
+            print(f"  ♻ 그리드 #{grid_number}(비최적)의 메타조합 지표를 '메타조합별_지표' 시트에서 읽음 "
+                  f"(매수 {len(_mb)} / 매도 {len(_ms)}) — 보정 전 base 풀")
     if buy_pool_xl is None or sell_pool_xl is None:
+        # ★최적 행 또는 자동재현 → 앙상블 시트(보정 적용 풀 + 🔁가중치)로 정확 재현
         buy_pool_xl  = _read_pool('매수_앙상블_지표')
         sell_pool_xl = _read_pool('매도_앙상블_지표')
+        if _is_best_row and buy_pool_xl is not None:
+            print(f"  ♻ ★최적 조합 재현 — 앙상블 시트(보정 적용 풀 + 가중치) 사용")
 
     inject_pools = None
     if buy_pool_xl is not None and sell_pool_xl is not None \
@@ -14728,6 +14765,30 @@ def replay_grid_combo(filename, grid_number=None, *,
         print(f"  ⚠ 앙상블 지표 시트를 읽지 못함 → 메타변수로 지표 재선별")
 
     kwargs['inject_pools'] = inject_pools   # ★ 엑셀 지표 풀 (None이면 메타변수로 재선별)
+
+    # ★ 보정 정확 재현 (요청) — 엑셀 앙상블 시트에 저장된 '🔁가중치'가 있으면, 그 풀과 가중치를
+    #   force_corr로 넘겨 최종 백테스트가 '저장된 그대로'(추가지표+보정가중치) 재현되게 한다.
+    #   (재현 중에는 보정을 다시 돌리지 않음 — 결정성/데이터 갱신 무관하게 원본 일치)
+    _replay_force_corr = None
+    if inject_pools is not None:
+        _bp_inj, _sp_inj = inject_pools
+        _has_w = ('vote_weight' in _bp_inj.columns and _bp_inj['vote_weight'].notna().any()
+                  and 'vote_weight' in _sp_inj.columns and _sp_inj['vote_weight'].notna().any())
+        if _has_w:
+            _bw_arr = _bp_inj['vote_weight'].astype(float).values
+            _sw_arr = _sp_inj['vote_weight'].astype(float).values
+            # 풀 크기 = 저장된 전체(=보정 후 augmented). K도 그 길이로 강제.
+            _replay_force_corr = {'buy_pool': _bp_inj, 'sell_pool': _sp_inj,
+                                  'buy_w': _bw_arr, 'sell_w': _sw_arr,
+                                  'n_added_buy': 0, 'n_added_sell': 0}
+            kwargs['force_corr'] = _replay_force_corr
+            kwargs['force_best_combo'] = {'K_buy': len(_bp_inj), 'vote_buy': vote_buy,
+                                          'K_sell': len(_sp_inj), 'vote_sell': vote_sell}
+            print(f"  ♻ 저장된 보정 가중치로 정확 재현 — 매수풀 {len(_bp_inj)}개 / 매도풀 {len(_sp_inj)}개 "
+                  f"(가중치 그대로 주입, 보정 재실행 안 함)")
+        else:
+            print(f"  ℹ 엑셀에 '🔁가중치'가 없어(구버전 파일) 점수로 가중치 재계산 — "
+                  f"보정 가중치는 정확 재현 안 될 수 있음")
 
     # ★ B&H 미달 제외도 재현 중에는 끈다 (그 조합이 B&H 미달이어도 그대로 봐야 함)
     _exbh_saved = globals().get('EXCLUDE_BELOW_BH')
@@ -15200,33 +15261,45 @@ def anchor_match_correct_weights(feat, close, full_buy_pool, full_sell_pool, bes
     # ── 추가 지표 선택: 미매칭일에 자주 켜지고, 매칭/정상일엔 덜 켜지는 것 ──
     #   targeting score = (미매칭일 켜짐 비율) - 0.5*(매칭일 켜짐 비율)
     def _pick_extra(extra_pool, miss_mask, matched_mask):
-        """표적성(competence) 점수로 추가 지표 선택 (요청: 미래 적용 가능 + 다른 날 영향 최소).
-           표적성 = (미매칭일 켜짐 비율) / (그 외 모든 날 켜짐 비율 + eps)
-             → 높을수록 '미매칭 같은 상황'에서만 선택적으로 켜지는 지표.
-             → 미래에 비슷한 상황이 오면 같은 지표가 켜져 매도/매수를 밀어줌 (일반화).
-             → 다른 날엔 거의 안 켜지므로 기존 매매(수익)를 거의 안 건드림.
+        """미매칭일을 '실제로 덮는' 최소 지표만 선택 (요청: 항상 15개 추가 방지).
+           표적성(미매칭에 선택적 발화) 높은 순으로 보되, '새 미매칭일을 추가로 덮는'
+           지표만 채택하고 모든 미매칭일이 덮이면 멈춘다 → 추가 수가 +1, +2 처럼 가변.
+           표적성 = 미매칭일 적중 / (그 외 날 발화 + eps).
         """
         if len(extra_pool) == 0 or miss_mask.sum() == 0:
             return [], _np.array([])
         sigs = _sig_arr(extra_pool)
         nmiss = max(1, int(miss_mask.sum()))
-        other_mask = ~miss_mask                     # 미매칭이 아닌 모든 날 (보존 대상)
+        other_mask = ~miss_mask
         nother = max(1, int(other_mask.sum()))
         scores = []
         for arr in sigs:
-            hit_miss  = int((arr & miss_mask).sum()) / nmiss     # 미매칭일 적중률
-            hit_other = int((arr & other_mask).sum()) / nother   # 그 외 날 발화율(낮을수록 좋음)
+            hit_miss  = int((arr & miss_mask).sum()) / nmiss
+            hit_other = int((arr & other_mask).sum()) / nother
             if hit_miss <= 0:
                 scores.append(0.0); continue
-            # 표적성 = 미매칭일 적중 / (그외 발화 + eps). 미매칭에 자주·다른날 드물게 → 높음
-            targeting = hit_miss / (hit_other + 0.05)
-            scores.append(targeting)
+            scores.append(hit_miss / (hit_other + 0.05))
         scores = _np.array(scores, dtype=float)
         order = _np.argsort(-scores)
-        # 표적성이 충분히 높은(미매칭에 선택적인) 지표만 — 임계 1.0 이상 + 미매칭 적중 있음
-        pick = [int(o) for o in order if scores[o] >= 1.0][:max_add]
-        if not pick:  # 임계 넘는 게 없으면 표적성 상위 몇 개라도
-            pick = [int(o) for o in order if scores[o] > 0][:max(3, max_add//3)]
+        # ★ 그리디 셋커버: 표적성 높은 순으로, '새 미매칭일을 덮는' 지표만 채택.
+        #   모든 미매칭일이 덮이거나 max_add에 도달하면 중단 → 최소 개수만 추가.
+        covered = _np.zeros_like(miss_mask, dtype=bool)
+        total_miss = int(miss_mask.sum())
+        pick = []
+        for o in order:
+            if scores[o] < 1.0:
+                break                       # 표적성 미달이면 더 안 봄
+            new_cover = sigs[o] & miss_mask & ~covered
+            if int(new_cover.sum()) == 0:
+                continue                    # 새로 덮는 미매칭일 없음 → 불필요, 건너뜀
+            pick.append(int(o))
+            covered |= (sigs[o] & miss_mask)
+            if int(covered.sum()) >= total_miss:
+                break                       # 미매칭일 전부 덮음 → 종료
+            if len(pick) >= max_add:
+                break                       # 안전 상한
+        if not pick:  # 표적성 1.0 넘는 게 없으면 표적성 상위 소수라도 (최대 3개)
+            pick = [int(o) for o in order if scores[o] > 0][:3]
         return pick, scores
 
     pick_b, bsc = _pick_extra(extra_buy, miss_buy, matched_buy)
