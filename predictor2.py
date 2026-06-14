@@ -13929,7 +13929,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     import inspect
     caller_frame = inspect.stack()[1]
     caller_name = caller_frame.function if caller_frame else ''
-    if caller_name not in ('run_multi_ticker_analysis', 'staged_meta_tune') and AUTO_DOWNLOAD_EXCEL:
+    if caller_name not in ('run_multi_ticker_analysis', 'staged_meta_tune', , 'replay_grid_combo') and AUTO_DOWNLOAD_EXCEL:
         _auto_download_excels([output_file])
 
     return (meta_results_df, inner_all, inner_passed,
