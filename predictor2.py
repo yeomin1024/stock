@@ -9818,6 +9818,9 @@ RUN_REPLAY_GRID_NUMBER = 14                                # 재현할 그리드
 RUN_REPLAY_TICKER = 'STX'          # 재현할 티커 (가장 최근 일반 분석 엑셀을 자동으로 찾음)
 
 
+
+
+
 def wilson_lower(k, n, z):
     if n == 0: return 0.0
     p = k / n
@@ -12610,7 +12613,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  '🔧보정후매수성공', '🔧보정후매도성공',
                  '🔧보정후매수매칭', '🔧보정후매도매칭',
                  '🔧보정채택', '🔧추가지표수',
-                 '📍실행일포지션', '📍매수점수', '📍매도점수',
+                 '📍실행일포지션', '🎬실행일액션', '📍매수점수', '📍매도점수',
                  '📅최근매수일', '💲진입가', '📅최근매도일', '💲매도가'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
@@ -12685,6 +12688,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  if (pd.notna(_g(row,'corr_n_added_buy')) and (_g(row,'corr_n_added_buy',0) or _g(row,'corr_n_added_sell',0))) else '—'),
             # ★ 실행일 실제 포지션·점수 + 최근 매수/매도 (요청)
             ('보유' if _g(row,'run_pos')==1 else ('현금' if pd.notna(_g(row,'run_pos')) else '—')),
+            (str(_g(row,'run_action')) if (_g(row,'run_action') is not None and pd.notna(_g(row,'run_action'))) else '—'),
             (f"{_g(row,'run_buy_score'):.2f}"  if pd.notna(_g(row,'run_buy_score'))  else '—'),
             (f"{_g(row,'run_sell_score'):.2f}" if pd.notna(_g(row,'run_sell_score')) else '—'),
             (pd.Timestamp(_g(row,'recent_buy_date')).date()  if pd.notna(_g(row,'recent_buy_date'))  else '—'),
@@ -12738,7 +12742,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9,
                             11, 11, 11, 13, 12, 12, 12, 12, 12, 12,
                             12, 13, 12, 13, 13, 13, 13, 10, 14,
-                            12, 10, 10, 13, 10, 13, 10], 1):
+                            12, 18, 10, 10, 13, 10, 13, 10], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -13118,16 +13122,19 @@ def _pick_verify_candidates(tbl, bh_ret=None):
 
 
 def _extract_runday_info(_d, _t):
-    """실행일(가장 최근 거래일) 기준 실제 포지션·점수와 최근 매수/매도 정보 추출 (요청).
-       반환 키: run_pos(1보유/0현금), run_buy_score, run_sell_score,
+    """실행일(가장 최근 거래일) 기준 실제 포지션·액션·점수와 최근 매수/매도 정보 추출 (요청).
+       반환 키: run_pos(1보유/0현금), run_action(일별 백테스트 액션), run_buy_score, run_sell_score,
                 recent_buy_date, recent_buy_price, recent_sell_date, recent_sell_price."""
-    info = {'run_pos': np.nan, 'run_buy_score': np.nan, 'run_sell_score': np.nan,
+    info = {'run_pos': np.nan, 'run_action': None,
+            'run_buy_score': np.nan, 'run_sell_score': np.nan,
             'recent_buy_date': None, 'recent_buy_price': np.nan,
             'recent_sell_date': None, 'recent_sell_price': np.nan}
     try:
         if _d is not None and len(_d) > 0:
             last = _d.iloc[-1]
             info['run_pos']        = int(last.get('position_pre', 0))
+            _act = last.get('action', '')
+            info['run_action']     = str(_act).strip() if (_act is not None and str(_act).strip()) else '관망'
             info['run_buy_score']  = float(last.get('buy_count', np.nan))
             info['run_sell_score'] = float(last.get('sell_count', np.nan))
             # 현재 보유 중이면 '열린 포지션' 진입가/매수일
@@ -13929,7 +13936,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     import inspect
     caller_frame = inspect.stack()[1]
     caller_name = caller_frame.function if caller_frame else ''
-    if caller_name not in ('run_multi_ticker_analysis', 'staged_meta_tune', , 'replay_grid_combo') and AUTO_DOWNLOAD_EXCEL:
+    if caller_name not in ('run_multi_ticker_analysis', 'staged_meta_tune') and AUTO_DOWNLOAD_EXCEL:
         _auto_download_excels([output_file])
 
     return (meta_results_df, inner_all, inner_passed,
