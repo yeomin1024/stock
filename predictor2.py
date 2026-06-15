@@ -9665,12 +9665,12 @@ WINRATE_TOLERANCE      = 0.04
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
 #   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
 VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
-VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+VERIFY_TOP_N             = 20000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
 
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
 #   None 이면 이 필터를 끈다. (단, 필터로 후보가 0개면 자동으로 필터를 완화해 최선을 고름)
-VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
+VERIFY_MAX_DRAWDOWN_LIMIT = -0.04
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
 #   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
@@ -9739,7 +9739,7 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 1                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_MONTHS = 0                   # 최근 N개월을 OOS로 (이전달~현재)
 OOS_SELECT_BY_OOS_RETURN = False # ★ 요청: OOS 관련 기능 전부 OFF
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
@@ -9816,9 +9816,6 @@ RUN_REPLAY_GRID_NUMBER = 14                                # 재현할 그리드
 
 # ── 모드 3 (최근 엑셀 ★최적 자동 재현) 설정 ──
 RUN_REPLAY_TICKER = 'STX'          # 재현할 티커 (가장 최근 일반 분석 엑셀을 자동으로 찾음)
-
-
-
 
 
 def wilson_lower(k, n, z):
@@ -10593,19 +10590,30 @@ def _free_global_caches(*, keep_pool_map=False):
 
 
 def _get_zscore_cached(feat, col, window):
-    """feat[col]의 z-스코어를 캐싱해 반환. 키=(feat식별, 지표명, window).
-       feat은 백테스트 한 회 동안 불변이므로 안전. feat 바뀌면 키 달라짐."""
-    fid = id(feat)
-    key = (fid, col, window)
+    """feat[col]의 z-스코어를 캐싱해 반환.
+       ★ 키를 '내용 기반'으로 (요청) — 예전엔 id(feat)였는데, 파이썬 객체 id는 GC 후
+       재사용돼 '다른 feat'인데 같은 키가 되어 stale z-스코어를 반환할 수 있었다(검증≠최종 원인).
+       이제 (길이, 시작/끝 인덱스, 해당 컬럼 첫/끝값, 지표명, window)로 키를 만들어,
+       데이터가 같으면 재사용·다르면 반드시 새로 계산한다."""
+    try:
+        idx = feat.index
+        col_vals = feat[col].values
+        n = len(col_vals)
+        # 내용 식별자 — 동일 데이터면 동일, 한 행만 달라도 달라짐
+        ckey = (n,
+                (idx[0] if n else None), (idx[-1] if n else None),
+                (float(col_vals[0]) if n and col_vals[0] == col_vals[0] else None),
+                (float(col_vals[-1]) if n and col_vals[-1] == col_vals[-1] else None))
+    except Exception:
+        ckey = (id(feat),)   # 안전 폴백
+    key = (ckey, col, window)
     c = _ZCACHE.get(key)
-    if c is not None:
+    if c is not None and len(c) == len(feat):
         return c
     z = _rolling_zscore(feat[col].values.astype(np.float64), window)
-    # 캐시 폭주 방지: feat이 바뀌면(id 변경) 옛 항목 정리
-    if len(_ZCACHE) > 0:
-        any_key = next(iter(_ZCACHE))
-        if any_key[0] != fid and len(_ZCACHE) > 6000:
-            _ZCACHE.clear()
+    # 캐시 폭주 방지: 항목이 너무 많으면 비움
+    if len(_ZCACHE) > 6000:
+        _ZCACHE.clear()
     _ZCACHE[key] = z
     return z
 
@@ -13171,6 +13179,8 @@ def _verify_staged_candidates(merged_table, feat, close, pool_map, *,
     cand, _note = _pick_verify_candidates(merged_table, bh_ret=bh_ret)
     print(f"\n  🔬 실거래 검증 — {_note} → {len(cand)}개를 실제 일별 백테스트로 재계산 "
           f"(모든 변수 반복 끝난 뒤 1회)")
+    try: _ZCACHE.clear()   # ★ 검증 전 z-캐시 정리 (요청)
+    except Exception: pass
 
     real_rows = []
     _t0 = time.time()
@@ -13316,6 +13326,8 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
     cand, _note = _pick_verify_candidates(inner_passed, bh_ret=bh_ret)
     print(f"\n  🔬 실거래 검증 — {_note} → {len(cand)}개를 실제 일별 백테스트로 재계산 "
           f"(모든 변수 반복 끝난 뒤 1회)")
+    try: _ZCACHE.clear()   # ★ 검증 전 z-캐시 정리 (요청)
+    except Exception: pass
     real_rows = []
     _t_start = time.time()
     for _i, _r in cand.iterrows():
@@ -13797,6 +13809,10 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             print(f"  ※ 수익률 비중을 더 두고 싶다면 SELECTION_TOLERANCE를 키우세요 (현재 {selection_tolerance*100:.1f}%p)")
 
     print(f"\n[일별 백테스트]")
+    # ★ 방어 (요청) — 검증 루프에서 쌓인 z-스코어 캐시를 비우고 최종 백테스트를 돌린다.
+    #   (키는 이미 내용 기반이라 stale 위험은 없지만, 검증=최종 일치를 한 번 더 보장)
+    try: _ZCACHE.clear()
+    except Exception: pass
     # ★ 보정 채택된 조합이면 보정된 풀+가중치로 백테스트 → 일별/거래내역/현재포지션 모두 보정 반영 (요청)
     _bt_buy_pool, _bt_sell_pool = buy_pool, sell_pool
     _bt_Kb = int(best_inner['K_buy']); _bt_Ks = int(best_inner['K_sell'])
@@ -13912,6 +13928,62 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         output_file = os.path.join(SCRIPT_DIR, f'ensemble_search_{ticker}_{today_str}.xlsx')
     print(f"\n  Excel 저장: {output_file}")
     _grid_table_for_excel = inject_combined_table if inject_combined_table is not None else inner_passed
+    # ★ 보증 (요청) — 최종 백테스트 cur로 ★(선정) 행의 실제*/sel_*(/보정후*)를 덮어써서,
+    #   그리드 선정 행이 '일별 백테스트 시트와 정확히 같은 수치'가 되게 한다.
+    #   (검증 백테스트와 최종 백테스트가 어떤 이유로든 어긋나도, 표시·기록은 최종 기준으로 통일)
+    try:
+        _gt = _grid_table_for_excel
+        if _gt is not None and len(_gt) > 0 and best_inner is not None and \
+           all(k in _gt.columns for k in ('K_buy','vote_buy','K_sell','vote_sell')):
+            _m = ((_gt['K_buy'].astype(float).round().astype(int) == int(best_inner['K_buy'])) &
+                  (_gt['vote_buy'].astype(float).round().astype(int) == int(best_inner['vote_buy'])) &
+                  (_gt['K_sell'].astype(float).round().astype(int) == int(best_inner['K_sell'])) &
+                  (_gt['vote_sell'].astype(float).round().astype(int) == int(best_inner['vote_sell'])))
+            if _m.any():
+                _fin = {
+                    'real_win_rate':      float(cur.get('win_rate', 0.0)),
+                    'real_max_drawdown':  float(cur.get('max_drawdown', 0.0)),
+                    'real_total_return':  float(cur.get('cum_return_pct', 0.0)) / 100.0,
+                    'real_n_trades':      int(cur.get('n_trades', 0)),
+                    'real_buy_success':   float(cur.get('buy_success_rate', 0.0)),
+                    'real_sell_success':  float(cur.get('sell_success_rate', 0.0)),
+                    'real_avg_success':   float(cur.get('avg_success_rate', 0.0)),
+                    'real_buy_match':     float(cur.get('anchor_buy_match_rate', 0.0)),
+                    'real_sell_match':    float(cur.get('anchor_sell_match_rate', 0.0)),
+                    'real_avg_match':     float(cur.get('anchor_avg_match_rate', 0.0)),
+                    'real_anchor_return': float(cur.get('anchor_strategy_return', 0.0)),
+                }
+                for _c, _v in _fin.items():
+                    if _c in _gt.columns:
+                        _gt.loc[_m, _c] = _v
+                for _sc, _k in [('sel_win_rate', 'real_win_rate'),
+                                ('sel_max_drawdown', 'real_max_drawdown'),
+                                ('sel_total_return', 'real_total_return')]:
+                    if _sc in _gt.columns:
+                        _gt.loc[_m, _sc] = _fin[_k]
+                _corrected = force_corr is not None and force_corr.get('buy_pool') is not None
+                if _corrected:
+                    for _cc, _k in [('corr_total_return', 'real_total_return'),
+                                    ('corr_max_drawdown', 'real_max_drawdown'),
+                                    ('corr_win_rate', 'real_win_rate'),
+                                    ('corr_buy_success', 'real_buy_success'),
+                                    ('corr_sell_success', 'real_sell_success'),
+                                    ('corr_buy_match', 'real_buy_match'),
+                                    ('corr_sell_match', 'real_sell_match')]:
+                        if _cc in _gt.columns:
+                            _gt.loc[_m, _cc] = _fin[_k]
+                # 실행일 포지션·액션·최근매매도 최종 일별/거래 기준으로 갱신
+                try:
+                    for _rk, _rv in _extract_runday_info(daily, trades).items():
+                        if _rk in _gt.columns:
+                            _gt.loc[_m, _rk] = _rv
+                except Exception:
+                    pass
+                print(f"  🔗 선정(★) 행 수치를 최종 일별 백테스트와 동기화 "
+                      f"(승률 {_fin['real_win_rate']*100:.1f}%, 최대손실 {_fin['real_max_drawdown']*100:.2f}%, "
+                      f"수익 {_fin['real_total_return']*100:+.2f}%)")
+    except Exception as _sync_e:
+        print(f"  ⚠ 선정행 최종수치 동기화 실패(무시): {_sync_e}")
     write_excel(meta_results_df, inner_all, _grid_table_for_excel,
                 best_meta, best_inner, buy_pool, sell_pool,
                 daily, trades, cur, buy_used, sell_used, bh_ret, bh_cagr,
