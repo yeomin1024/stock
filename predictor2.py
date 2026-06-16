@@ -16633,7 +16633,7 @@ def _resolve_data_for_ticker(ticker):
         f"  3. download_data / compute_features 함수 (기존 파이프라인)")
 
 # ════════════════════════════════════════════════════════════════════════════
-#  모드 4 추가 패치 — 아래 3곳을 본인 xlk_drop_predictor.py 에 넣으세요.
+#  모드 4 추가 패치 (v2 — 티커마다 '현재 날짜까지' 새 데이터 받도록 캐시 비우기 포함)
 #  ────────────────────────────────────────────────────────────────────────
 #  [1] 설정: 모드 3 설정 끝(RUN_REPLAY_TICKER 줄) 바로 아래에 ↓ 두 줄 추가
 #
@@ -16642,6 +16642,7 @@ def _resolve_data_for_ticker(ticker):
 #      RUN_MODE4_DATE_FOLDER = None   # 출력 날짜 폴더명. None=오늘 날짜 자동
 #
 #  [2] 함수: 아래 두 함수를 'def main():' 바로 위에 붙여넣기
+#            (이미 v1을 넣었다면 run_mode4_drive_reproduce_all 를 이걸로 '교체')
 #
 #  [3] main() 디스패치: 'elif _mode == "1":' 블록과 'else:'(모드3) 사이에 추가
 #
@@ -16650,7 +16651,9 @@ def _resolve_data_for_ticker(ticker):
 #              g.get('RUN_MODE4_DRIVE_DIR', None),
 #              date_subfolder=g.get('RUN_MODE4_DATE_FOLDER', None))
 #
-#      (그리고 안내 print 줄에 '  /  4=드라이브 일괄 재현+요약' 을 덧붙이면 보기 좋음)
+#  ※ v1에서 바뀐 곳: run_mode4_drive_reproduce_all 의 티커 루프에서, 재현 직전에
+#    _pair_feat/_pair_close/_multi_ticker_cache 등을 비워 '매 티커 현재날짜까지 새로'
+#    데이터를 받게 함. (안 비우면 옛 데이터 재사용→원본과 같은 날짜까지만 나옴)
 # ════════════════════════════════════════════════════════════════════════════
 
 
@@ -16777,8 +16780,21 @@ def run_mode4_drive_reproduce_all(drive_dir=None, *, date_subfolder=None, **over
     # 각 티커 ★최적 조합을 '현재까지' 재현 → 날짜 폴더에 엑셀 생성
     for tk, (dt, path) in sorted(latest.items()):
         print(f"  ─ [{tk}] {os.path.basename(path)} → 현재까지 재현 ─")
+        # ★ 핵심 (요청) — 티커마다 '현재 날짜까지' 데이터를 새로 받도록 메모리 캐시를 비운다.
+        #   안 비우면 이전 실행/이전 티커의 옛 데이터를 재사용해 원본과 같은 날짜까지만 나옴.
+        for _k in ('_pair_feat', '_pair_close', '_pair_ticker'):
+            g[_k] = None
+        _mc = g.get('_multi_ticker_cache')
+        if isinstance(_mc, dict):
+            _mc.pop(tk, None)
+        _pdm = g.get('_pair_data_map')
+        if isinstance(_pdm, dict):
+            _pdm.pop(tk, None)
+        _free_global_caches(keep_pool_map=False)   # z-캐시 등도 정리
         try:
-            replay_grid_combo(path, None, output_dir=out_dir, **override_kwargs)
+            # feat=None,close=None 명시 → 반드시 티커로 '신선한' 데이터를 새로 확보
+            replay_grid_combo(path, None, output_dir=out_dir,
+                              feat=None, close=None, **override_kwargs)
         except Exception as e:
             print(f"    ⚠ {tk} 재현 실패(건너뜀): {e}")
 
