@@ -16575,7 +16575,17 @@ def _resolve_data_for_ticker(ticker):
             except TypeError:
                 closes, ohlcv = dl_func(start=start)
 
-            if ticker not in ohlcv:
+            _need_yf = ticker not in ohlcv
+            if not _need_yf:
+                try:
+                    _last0 = ohlcv[ticker].index[-1]
+                    _today0 = pd.Timestamp(datetime.now().date())
+                    if len(pd.bdate_range(_last0.normalize(), _today0)) - 1 >= 1:
+                        _need_yf = True
+                        print(f"  ℹ {ticker} download_data 데이터가 {str(_last0)[:10]}까지 — 최신 거래일 보충 위해 yfinance 재조회")
+                except Exception:
+                    pass
+            if _need_yf:
                 print(f"  ⚠ {ticker}가 download_data 결과에 없음 — yfinance 직접 호출")
                 try:
                     import yfinance as yf
