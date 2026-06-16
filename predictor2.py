@@ -9817,6 +9817,10 @@ RUN_REPLAY_GRID_NUMBER = 14                                # 재현할 그리드
 # ── 모드 3 (최근 엑셀 ★최적 자동 재현) 설정 ──
 RUN_REPLAY_TICKER = 'STX'          # 재현할 티커 (가장 최근 일반 분석 엑셀을 자동으로 찾음)
 
+# ── 모드 4 (드라이브 폴더 일괄 ★재현 + 요약) 설정 ──
+RUN_MODE4_DRIVE_DIR   = '/content/drive/MyDrive/ensemble_analysis'  # 드라이브 폴더
+RUN_MODE4_DATE_FOLDER = None   # 출력 날짜 폴더명. None=오늘 날짜 자동
+
 
 def wilson_lower(k, n, z):
     if n == 0: return 0.0
@@ -16628,6 +16632,161 @@ def _resolve_data_for_ticker(ticker):
         f"  2. def load_ticker_data(ticker): return feat, close  # 글로벌 함수\n"
         f"  3. download_data / compute_features 함수 (기존 파이프라인)")
 
+# ════════════════════════════════════════════════════════════════════════════
+#  모드 4 추가 패치 — 아래 3곳을 본인 xlk_drop_predictor.py 에 넣으세요.
+#  ────────────────────────────────────────────────────────────────────────
+#  [1] 설정: 모드 3 설정 끝(RUN_REPLAY_TICKER 줄) 바로 아래에 ↓ 두 줄 추가
+#
+#      # ── 모드 4 (드라이브 폴더 일괄 ★재현 + 요약) 설정 ──
+#      RUN_MODE4_DRIVE_DIR   = '/content/drive/MyDrive/ensemble_analysis'  # 드라이브 폴더
+#      RUN_MODE4_DATE_FOLDER = None   # 출력 날짜 폴더명. None=오늘 날짜 자동
+#
+#  [2] 함수: 아래 두 함수를 'def main():' 바로 위에 붙여넣기
+#
+#  [3] main() 디스패치: 'elif _mode == "1":' 블록과 'else:'(모드3) 사이에 추가
+#
+#      elif _mode == '4':
+#          run_mode4_drive_reproduce_all(
+#              g.get('RUN_MODE4_DRIVE_DIR', None),
+#              date_subfolder=g.get('RUN_MODE4_DATE_FOLDER', None))
+#
+#      (그리고 안내 print 줄에 '  /  4=드라이브 일괄 재현+요약' 을 덧붙이면 보기 좋음)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+#   ★ 모드 4 — 드라이브 폴더의 티커별 ★최적 조합을 '현재까지' 일괄 재현 + 요약 (요청)
+# ════════════════════════════════════════════════════════════════
+def _build_selected_summary(source_paths, out_dir, date_label, *, sheet_name='내부_그리드_통과'):
+    """각 소스 엑셀의 내부 그리드 ★(선정) 행을 읽어 티커별 요약 엑셀을 만든다.
+       (summary_selected_rows.py 와 동일 로직 — 스트리밍 읽기, ★ 없으면 건너뜀)."""
+    import re as _re
+    from openpyxl import load_workbook, Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    FRE = _re.compile(r'ensemble_search_(.+)_(\d{4}-\d{2}-\d{2})\.xlsx$')
+
+    def _read_star(path):
+        try:
+            wb = load_workbook(path, read_only=True, data_only=True)
+        except Exception as e:
+            print(f"    ⚠ 열기 실패: {os.path.basename(path)} — {e}"); return None, None
+        if sheet_name not in wb.sheetnames:
+            print(f"    ⚠ '{sheet_name}' 시트 없음: {os.path.basename(path)}"); wb.close(); return None, None
+        ws = wb[sheet_name]; header = None; sel = None; saw = False
+        for row in ws.iter_rows(values_only=True):
+            if header is None:
+                sv = [str(v).strip() if v is not None else '' for v in row]
+                if '#' in sv and 'K_buy' in sv:
+                    header = [s if s else f'col{i+1}' for i, s in enumerate(sv)]
+                continue
+            c0 = row[0] if row else None
+            if c0 is None: continue
+            saw = True
+            if '★' in str(c0): sel = list(row); break
+        wb.close()
+        if sel is None:
+            print(f"    – ★ 없음 — 건너뜀: {os.path.basename(path)}" if (header and saw)
+                  else f"    ⚠ 헤더/데이터 없음 — 건너뜀: {os.path.basename(path)}")
+            return None, None
+        return header, sel
+
+    rows = []; master = None
+    for p in source_paths:
+        m = FRE.search(os.path.basename(p)); tk = m.group(1) if m else os.path.basename(p)
+        dt = m.group(2) if m else ''
+        header, vals = _read_star(p)
+        if header is None: continue
+        if master is None: master = header
+        rec = {'티커': tk, '실행일': dt}
+        rec.update({h: v for h, v in zip(header, vals)})
+        rows.append(rec)
+        print(f"    ✓ {tk:<6} ★행 읽음 (그리드 #{str(vals[0]).replace('★','').strip()})")
+    if not rows:
+        print("    ❌ 요약할 ★행이 없습니다."); return None
+
+    out_cols = ['티커', '실행일'] + master
+    wb = Workbook(); ws = wb.active; ws.title = '티커별_선정요약'; ws.sheet_view.showGridLines = False
+    THIN = Side(style='thin', color='D9D9D9'); BRD = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    HF = PatternFill('solid', fgColor='1F3864'); ALT = PatternFill('solid', fgColor='F2F2F2')
+    POS = PatternFill('solid', fgColor='E8F5E9'); NEG = PatternFill('solid', fgColor='FFEBEE')
+    ws.cell(1, 1).value = f'티커별 선정(★) 요약 — {date_label} — {len(rows)}개 티커'
+    ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(out_cols))
+    for ci, h in enumerate(out_cols, 1):
+        c = ws.cell(3, ci); c.value = h; c.font = Font(bold=True, color='FFFFFF', size=10)
+        c.fill = HF; c.border = BRD; c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    pos_i = out_cols.index('📍실행일포지션') + 1 if '📍실행일포지션' in out_cols else None
+    ret_i = [out_cols.index(c) + 1 for c in ('🔧보정후수익', '✅실제누적수익') if c in out_cols]
+    for ri, rec in enumerate(rows):
+        r = ri + 4
+        for ci, h in enumerate(out_cols, 1):
+            c = ws.cell(r, ci); c.value = rec.get(h, '—'); c.border = BRD; c.font = Font(size=10)
+            c.alignment = Alignment(horizontal='center')
+            if ri % 2 == 1: c.fill = ALT
+        ws.cell(r, 1).font = Font(bold=True, size=11, color='1F3864')
+        if pos_i is not None:
+            pv = str(rec.get('📍실행일포지션', ''))
+            if '보유' in pv: ws.cell(r, pos_i).fill = POS
+            elif '현금' in pv: ws.cell(r, pos_i).fill = NEG
+        for rx in ret_i: ws.cell(r, rx).font = Font(bold=True, size=10, color='C00000')
+    for ci, h in enumerate(out_cols, 1):
+        w = 8 if h == '티커' else (12 if h == '실행일' else 12)
+        if h in ('🎬실행일액션', '📅최근매수일', '📅최근매도일', '🔧추가지표수'): w = 14
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.row_dimensions[3].height = 34; ws.freeze_panes = 'C4'
+    out_path = os.path.join(out_dir, f'summary_selected_{date_label}.xlsx')
+    wb.save(out_path)
+    print(f"  ✅ 요약 저장: {out_path}  ({len(rows)}개 티커)")
+    globals().setdefault('_GENERATED_FILES', []).append(out_path)
+    return out_path
+
+
+def run_mode4_drive_reproduce_all(drive_dir=None, *, date_subfolder=None, **override_kwargs):
+    """모드 4 — 드라이브 ensemble_analysis 폴더에서 '티커별 가장 최근' 분석 엑셀을 모두 찾아,
+       각 엑셀의 ★최적(내부 그리드 별표) 조합을 '현재까지' 일별 백테스트로 그대로 재현해
+       새 엑셀을 만들고, 티커별 선정행 요약 엑셀도 만든다. 모든 결과물은 '날짜 폴더'에 저장."""
+    import glob, re as _re
+    g = globals()
+    src = drive_dir or g.get('RUN_MODE4_DRIVE_DIR', '/content/drive/MyDrive/ensemble_analysis')
+    if not os.path.isdir(src):
+        print(f"  ✗ 드라이브 폴더를 찾을 수 없습니다: {src}")
+        print(f"    먼저 드라이브 마운트: from google.colab import drive; drive.mount('/content/drive')")
+        return []
+    # 티커별 가장 최근 파일 (재현본 __replay 제외)
+    latest = {}
+    for p in glob.glob(os.path.join(src, "ensemble_search_*_*.xlsx")):
+        name = os.path.basename(p)
+        if '__replay' in name: continue
+        m = _re.search(r"ensemble_search_(.+)_(\d{4}-\d{2}-\d{2})\.xlsx$", name)
+        if not m: continue
+        tk, dt = m.group(1), m.group(2)
+        if tk not in latest or dt > latest[tk][0]:
+            latest[tk] = (dt, p)
+    if not latest:
+        print(f"  ✗ {src} 에서 ensemble_search_<티커>_<날짜>.xlsx 형식 파일을 못 찾았습니다.")
+        return []
+    print(f"  📂 드라이브 폴더: {src}  — 티커 {len(latest)}개")
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    sub = date_subfolder or today
+    out_dir = os.path.join(src, sub)            # ★ 드라이브 안에 '날짜 폴더' 생성
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"  📁 출력 날짜 폴더: {out_dir}\n")
+
+    # 각 티커 ★최적 조합을 '현재까지' 재현 → 날짜 폴더에 엑셀 생성
+    for tk, (dt, path) in sorted(latest.items()):
+        print(f"  ─ [{tk}] {os.path.basename(path)} → 현재까지 재현 ─")
+        try:
+            replay_grid_combo(path, None, output_dir=out_dir, **override_kwargs)
+        except Exception as e:
+            print(f"    ⚠ {tk} 재현 실패(건너뜀): {e}")
+
+    # 티커별 선정행 요약 엑셀 (소스 ★행 기준) — 날짜 폴더에 저장
+    print(f"\n  📑 티커별 선정행 요약 생성...")
+    _build_selected_summary([p for _, (_, p) in sorted(latest.items())], out_dir, today)
+    return g.get('_GENERATED_FILES', [])
+
 
 def main():
     """RUN_* 변수(코드 상단 또는 노트북 셀에서 mod.RUN_MODE=... 로 변경)에 따라 실행.
@@ -16651,7 +16810,10 @@ def main():
             print(f"\n  ✗ 재현 실패: {_e}")
             print("    feat/close가 메모리에 있는지 확인하세요. 예:")
             print("      replay_grid_combo('파일명.xlsx', 14, feat=내_feat, close=내_close)")
-
+    elif _mode == '4':
+        run_mode4_drive_reproduce_all(
+            g.get('RUN_MODE4_DRIVE_DIR', None),
+            date_subfolder=g.get('RUN_MODE4_DATE_FOLDER', None))
     elif _mode == '1':
         # 분석 대상 티커 — RUN_TICKERS 가 있으면 그것, 없으면 기본 TICKERS
         _run_tickers = g.get('RUN_TICKERS', None)
