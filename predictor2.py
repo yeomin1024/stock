@@ -9822,6 +9822,7 @@ RUN_MODE4_DRIVE_DIR   = '/content/drive/MyDrive/ensemble_analysis'  # 드라이�
 RUN_MODE4_DATE_FOLDER = None   # 출력 날짜 폴더명. None=오늘 날짜 자동
 
 
+
 def wilson_lower(k, n, z):
     if n == 0: return 0.0
     p = k / n
@@ -14012,7 +14013,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     import inspect
     caller_frame = inspect.stack()[1]
     caller_name = caller_frame.function if caller_frame else ''
-    if caller_name not in ('run_multi_ticker_analysis', 'staged_meta_tune') and AUTO_DOWNLOAD_EXCEL:
+    if caller_name not in ('run_multi_ticker_analysis', 'staged_meta_tune', 'replay_grid_combo') and AUTO_DOWNLOAD_EXCEL:
         _auto_download_excels([output_file])
 
     return (meta_results_df, inner_all, inner_passed,
@@ -16575,6 +16576,9 @@ def _resolve_data_for_ticker(ticker):
             except TypeError:
                 closes, ohlcv = dl_func(start=start)
 
+            # ★ 최신 거래일 보충 (요청) — download_data가 티커를 줬더라도 데이터가 오래됐으면
+            #   (오늘보다 1영업일 이상 전까지면) yfinance로 '오늘까지' 다시 받아 교체한다.
+            #   안 그러면 16일에 돌려도 download_data가 12일까지면 12일까지만 재현됨.
             _need_yf = ticker not in ohlcv
             if not _need_yf:
                 try:
@@ -16582,11 +16586,13 @@ def _resolve_data_for_ticker(ticker):
                     _today0 = pd.Timestamp(datetime.now().date())
                     if len(pd.bdate_range(_last0.normalize(), _today0)) - 1 >= 1:
                         _need_yf = True
-                        print(f"  ℹ {ticker} download_data 데이터가 {str(_last0)[:10]}까지 — 최신 거래일 보충 위해 yfinance 재조회")
+                        print(f"  ℹ {ticker} download_data 데이터가 {str(_last0)[:10]}까지 — "
+                              f"최신 거래일 보충 위해 yfinance 재조회")
                 except Exception:
                     pass
             if _need_yf:
-                print(f"  ⚠ {ticker}가 download_data 결과에 없음 — yfinance 직접 호출")
+                if ticker not in ohlcv:
+                    print(f"  ⚠ {ticker}가 download_data 결과에 없음 — yfinance 직접 호출")
                 try:
                     import yfinance as yf
                     # ★ end를 '내일'로 명시 — yfinance는 end 미지정 시 당일을 빠뜨릴 수 있음.
@@ -16609,11 +16615,15 @@ def _resolve_data_for_ticker(ticker):
                               f"오늘({_today.date()})보다 {_bdays}영업일 전입니다.")
                         print(f"     원인: 미국장 마감 전 실행 or yfinance 반영 지연. "
                               f"장 마감 후(한국시간 다음날 오전 이후) 다시 받으면 최신일이 포함됩니다.")
-                except ImportError:
-                    raise RuntimeError(
-                        f"{ticker}가 download_data 결과에 없습니다.\n"
-                        f"  download_data 함수의 티커 리스트에 '{ticker}'를 추가하거나,\n"
-                        f"  yfinance 설치: pip install yfinance")
+                except Exception as _yf_e:
+                    if ticker not in ohlcv:
+                        raise RuntimeError(
+                            f"{ticker}가 download_data 결과에 없고 yfinance 보충도 실패했습니다: {_yf_e}\n"
+                            f"  download_data 함수의 티커 리스트에 '{ticker}'를 추가하거나,\n"
+                            f"  yfinance 설치: pip install yfinance")
+                    else:
+                        print(f"  ⚠ 최신 거래일 보충 실패({_yf_e}) — "
+                              f"download_data 데이터({str(ohlcv[ticker].index[-1])[:10]}까지)로 진행")
 
             fred_df = None
             if 'download_fred_data' in g:
@@ -16642,37 +16652,13 @@ def _resolve_data_for_ticker(ticker):
         f"  2. def load_ticker_data(ticker): return feat, close  # 글로벌 함수\n"
         f"  3. download_data / compute_features 함수 (기존 파이프라인)")
 
-# ════════════════════════════════════════════════════════════════════════════
-#  모드 4 추가 패치 (v2 — 티커마다 '현재 날짜까지' 새 데이터 받도록 캐시 비우기 포함)
-#  ────────────────────────────────────────────────────────────────────────
-#  [1] 설정: 모드 3 설정 끝(RUN_REPLAY_TICKER 줄) 바로 아래에 ↓ 두 줄 추가
-#
-#      # ── 모드 4 (드라이브 폴더 일괄 ★재현 + 요약) 설정 ──
-#      RUN_MODE4_DRIVE_DIR   = '/content/drive/MyDrive/ensemble_analysis'  # 드라이브 폴더
-#      RUN_MODE4_DATE_FOLDER = None   # 출력 날짜 폴더명. None=오늘 날짜 자동
-#
-#  [2] 함수: 아래 두 함수를 'def main():' 바로 위에 붙여넣기
-#            (이미 v1을 넣었다면 run_mode4_drive_reproduce_all 를 이걸로 '교체')
-#
-#  [3] main() 디스패치: 'elif _mode == "1":' 블록과 'else:'(모드3) 사이에 추가
-#
-#      elif _mode == '4':
-#          run_mode4_drive_reproduce_all(
-#              g.get('RUN_MODE4_DRIVE_DIR', None),
-#              date_subfolder=g.get('RUN_MODE4_DATE_FOLDER', None))
-#
-#  ※ v1에서 바뀐 곳: run_mode4_drive_reproduce_all 의 티커 루프에서, 재현 직전에
-#    _pair_feat/_pair_close/_multi_ticker_cache 등을 비워 '매 티커 현재날짜까지 새로'
-#    데이터를 받게 함. (안 비우면 옛 데이터 재사용→원본과 같은 날짜까지만 나옴)
-# ════════════════════════════════════════════════════════════════════════════
-
 
 # ════════════════════════════════════════════════════════════════
 #   ★ 모드 4 — 드라이브 폴더의 티커별 ★최적 조합을 '현재까지' 일괄 재현 + 요약 (요청)
 # ════════════════════════════════════════════════════════════════
 def _build_selected_summary(source_paths, out_dir, date_label, *, sheet_name='내부_그리드_통과'):
     """각 소스 엑셀의 내부 그리드 ★(선정) 행을 읽어 티커별 요약 엑셀을 만든다.
-       (summary_selected_rows.py 와 동일 로직 — 스트리밍 읽기, ★ 없으면 건너뜀)."""
+       (스트리밍 읽기 + ★ 없으면 건너뜀)."""
     import re as _re
     from openpyxl import load_workbook, Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -16790,7 +16776,7 @@ def run_mode4_drive_reproduce_all(drive_dir=None, *, date_subfolder=None, **over
     # 각 티커 ★최적 조합을 '현재까지' 재현 → 날짜 폴더에 엑셀 생성
     for tk, (dt, path) in sorted(latest.items()):
         print(f"  ─ [{tk}] {os.path.basename(path)} → 현재까지 재현 ─")
-        # ★ 핵심 (요청) — 티커마다 '현재 날짜까지' 데이터를 새로 받도록 메모리 캐시를 비운다.
+        # ★ 핵심 — 티커마다 '현재 날짜까지' 데이터를 새로 받도록 메모리 캐시를 비운다.
         #   안 비우면 이전 실행/이전 티커의 옛 데이터를 재사용해 원본과 같은 날짜까지만 나옴.
         for _k in ('_pair_feat', '_pair_close', '_pair_ticker'):
             g[_k] = None
@@ -16836,10 +16822,7 @@ def main():
             print(f"\n  ✗ 재현 실패: {_e}")
             print("    feat/close가 메모리에 있는지 확인하세요. 예:")
             print("      replay_grid_combo('파일명.xlsx', 14, feat=내_feat, close=내_close)")
-    elif _mode == '4':
-        run_mode4_drive_reproduce_all(
-            g.get('RUN_MODE4_DRIVE_DIR', None),
-            date_subfolder=g.get('RUN_MODE4_DATE_FOLDER', None))
+
     elif _mode == '1':
         # 분석 대상 티커 — RUN_TICKERS 가 있으면 그것, 없으면 기본 TICKERS
         _run_tickers = g.get('RUN_TICKERS', None)
@@ -16871,6 +16854,18 @@ def main():
             per_ticker_overrides=overrides,
             resume=False,
         )
+
+    elif _mode == '4':
+        # ── 모드 4 — 드라이브 폴더의 티커별 ★최적 조합을 '현재까지' 일괄 재현 + 요약 ──
+        print(f"\n  드라이브 폴더의 티커별 가장 최근 분석 엑셀을 모두 찾아,")
+        print(f"  각 ★최적 조합을 '현재까지' 재현하고 티커별 요약 엑셀을 만듭니다 (날짜 폴더에 저장).")
+        print(f"  ℹ 드라이브가 마운트돼 있어야 합니다: from google.colab import drive; drive.mount('/content/drive')")
+        try:
+            run_mode4_drive_reproduce_all(
+                g.get('RUN_MODE4_DRIVE_DIR', None),
+                date_subfolder=g.get('RUN_MODE4_DATE_FOLDER', None))
+        except Exception as _e:
+            print(f"\n  ✗ 모드 4 실패: {_e}")
 
     else:
         # ── 모드 3 (기본) — 티커의 가장 최근 분석 엑셀에서 ★최적 조합 자동 재현 ──
