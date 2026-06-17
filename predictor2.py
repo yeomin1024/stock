@@ -9795,6 +9795,7 @@ AUTO_DOWNLOAD_EXCEL = True
 #   끄면 종목별 분석 엑셀만 만들고, ensemble_summary_all_tickers.xlsx는 안 만든다.
 WRITE_SUMMARY_FILE = False
 
+
 # ════════════════════════════════════════════════════════════════
 #   ★ 실행 모드 — input() 대신 여기서 직접 지정 (요청)
 #     RUN_MODE 로 동작을 고른다. Colab에서 이 값만 바꿔 실행하면 됨.
@@ -9802,6 +9803,7 @@ WRITE_SUMMARY_FILE = False
 #   RUN_MODE = 1 : 새 분석 실행
 #            = 2 : 기존 결과의 '그리드 번호'로 일별 Excel 재현
 #            = 3 : 티커의 '가장 최근 분석 엑셀'에서 ★최적 조합 자동 재현 (지표·변수 그대로)
+#            = 4 : 드라이브 폴더의 '티커별 가장 최근' 엑셀들을 모두 ★최적 재현(현재까지) + 요약
 RUN_MODE = 3
 
 # ── 모드 1 (새 분석) 설정 ──
@@ -9818,9 +9820,11 @@ RUN_REPLAY_GRID_NUMBER = 14                                # 재현할 그리드
 RUN_REPLAY_TICKER = 'STX'          # 재현할 티커 (가장 최근 일반 분석 엑셀을 자동으로 찾음)
 
 # ── 모드 4 (드라이브 폴더 일괄 ★재현 + 요약) 설정 ──
+#   드라이브의 ensemble_analysis 폴더에서 '티커별 가장 최근' 분석 엑셀을 모두 찾아,
+#   각 ★최적 조합을 '현재까지' 일별 백테스트로 재현하고 티커별 요약 엑셀까지 만든다.
+#   결과물은 '날짜 폴더'(드라이브폴더/오늘날짜)에 저장. (먼저 drive.mount 필요)
 RUN_MODE4_DRIVE_DIR   = '/content/drive/MyDrive/ensemble_analysis'  # 드라이브 폴더
-RUN_MODE4_DATE_FOLDER = None   # 출력 날짜 폴더명. None=오늘 날짜 자동
-
+RUN_MODE4_DATE_FOLDER = None       # 출력 날짜 폴더명. None=오늘 날짜 자동
 
 
 def wilson_lower(k, n, z):
@@ -16576,15 +16580,19 @@ def _resolve_data_for_ticker(ticker):
             except TypeError:
                 closes, ohlcv = dl_func(start=start)
 
-            # ★ 최신 거래일 보충 (요청) — download_data가 티커를 줬더라도 데이터가 오래됐으면
-            #   (오늘보다 1영업일 이상 전까지면) yfinance로 '오늘까지' 다시 받아 교체한다.
-            #   안 그러면 16일에 돌려도 download_data가 12일까지면 12일까지만 재현됨.
+            # ★ 최신 거래일 보충 (요청) — download_data 데이터가 '완료된 세션을 빠뜨릴 만큼'
+            #   오래됐을 때만(오늘보다 2영업일 이상 전) yfinance로 다시 받는다.
+            #   오늘 17일에 데이터가 16일까지면 = 어제(최신 완료 세션)이므로 정상 → 재조회 안 함.
+            #   (1영업일 전은 '오늘장 미마감'이라 정상이므로 건드리지 않음)
+            _did_yf_refetch = False
+            _orig_ohlcv_t = ohlcv.get(ticker)      # 보충 실패 시 되돌릴 원본
+            _orig_close_t = closes.get(ticker) if hasattr(closes, 'get') else None
             _need_yf = ticker not in ohlcv
             if not _need_yf:
                 try:
                     _last0 = ohlcv[ticker].index[-1]
                     _today0 = pd.Timestamp(datetime.now().date())
-                    if len(pd.bdate_range(_last0.normalize(), _today0)) - 1 >= 1:
+                    if len(pd.bdate_range(_last0.normalize(), _today0)) - 1 >= 2:
                         _need_yf = True
                         print(f"  ℹ {ticker} download_data 데이터가 {str(_last0)[:10]}까지 — "
                               f"최신 거래일 보충 위해 yfinance 재조회")
@@ -16606,6 +16614,7 @@ def _resolve_data_for_ticker(ticker):
                         df.columns = df.columns.get_level_values(0)
                     ohlcv[ticker] = df
                     closes[ticker] = df['Close'] if 'Close' in df.columns else df.iloc[:, 0]
+                    _did_yf_refetch = True
                     _last = df.index[-1]
                     _today = pd.Timestamp(datetime.now().date())
                     _bdays = len(pd.bdate_range(_last.normalize(), _today)) - 1
@@ -16632,10 +16641,26 @@ def _resolve_data_for_ticker(ticker):
                 if fred_df is not None and len(fred_df) == 0: fred_df = None
 
             cf_func = g['compute_features']
+            def _call_cf():
+                try:
+                    return cf_func(ohlcv, closes, fred_df=fred_df, ticker=ticker)
+                except TypeError:
+                    return cf_func(ohlcv, closes, fred_df=fred_df)
             try:
-                feat = cf_func(ohlcv, closes, fred_df=fred_df, ticker=ticker)
-            except TypeError:
-                feat = cf_func(ohlcv, closes, fred_df=fred_df)
+                feat = _call_cf()
+            except Exception as _cf_e:
+                # ★ yfinance 보충 데이터가 타 종목(download_data)과 인덱스가 안 맞아 깨진 경우
+                #   ('Can only compare identically-labeled Series' 등) → 원본으로 되돌려 재계산.
+                if _did_yf_refetch and _orig_ohlcv_t is not None:
+                    print(f"  ⚠ yfinance 보충 데이터로 피처 계산 실패 — "
+                          f"download_data 원본({str(_orig_ohlcv_t.index[-1])[:10]}까지)으로 되돌려 재계산")
+                    print(f"     (사유: {_cf_e})")
+                    ohlcv[ticker] = _orig_ohlcv_t
+                    if _orig_close_t is not None:
+                        closes[ticker] = _orig_close_t
+                    feat = _call_cf()
+                else:
+                    raise
 
             if ticker not in ohlcv:
                 raise RuntimeError(f"{ticker} OHLCV 없음 (yfinance fallback 실패)")
@@ -16900,6 +16925,9 @@ def get_generated_files():
     """이번 실행에서 만든 엑셀 파일 경로 목록 (노트북 셀에서 직접 다운로드용)."""
     return list(globals().get('_GENERATED_FILES', []))
 
+
+if __name__ == '__main__':
+    main()
 
 if __name__ == '__main__':
     main()
