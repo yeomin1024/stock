@@ -9793,6 +9793,8 @@ AUTO_DOWNLOAD_EXCEL = True
 
 
 
+
+
 # ★ 재현 방식 (요청) — 모드 2/3가 예전에 정확히 맞던 방식과 동일하게.
 #   재현 때 '원본 엑셀의 마지막 날짜까지'로 데이터를 잘라 compute_features에 넘긴다.
 #   → 전체구간 순위(rank)·정규화 지표가 원본과 '같은 범위'로 계산돼 신호가 정확히 일치.
@@ -14594,19 +14596,47 @@ def replay_grid_combo(filename, grid_number=None, *,
         except Exception:
             _orig_last_date = None
 
-    # ─── grid_number 가 None 이면: '사용된 설정'의 ★최적 선정 조합을 그대로 재현 ───
-    #   (일반 분석 엑셀의 최적 변수·지표를 자동 재현하는 모드)
+    # ─── grid_number 가 None 이면: '내부_그리드_통과' 시트의 ★표시 행을 읽어 재현 ───
+    #   (요청) ★를 어느 행에 넣든 그 행으로 재현. ★가 없고 데이터가 한 줄뿐이면 그 행으로.
+    #   이 경우 '사용된 설정' 시트로는 절대 재현하지 않는다.
     if grid_number is None:
-        for _k in ('K_buy', 'vote_buy', 'K_sell', 'vote_sell'):
-            if used.get(_k) is None:
-                raise RuntimeError(f"'사용된 설정'에서 {_k}를 읽지 못했습니다 — 이 엑셀은 자동 재현 불가.")
-        K_buy   = int(used['K_buy']);  vote_buy = int(used['vote_buy'])
-        K_sell  = int(used['K_sell']); vote_sell = int(used['vote_sell'])
-        target = None   # 그리드 행 없음 → 메타변수는 used에서
-        ws = None
+        if '내부_그리드_통과' not in wb.sheetnames:
+            raise RuntimeError("'내부_그리드_통과' 시트가 없습니다 — 자동 재현 불가.")
+        ws = wb['내부_그리드_통과']
         hdr = {}
-        print(f"  ♻ 자동 재현 — '{os.path.basename(excel_path)}'의 ★최적 조합 사용 "
-              f"(K_buy={K_buy}/v{vote_buy}, K_sell={K_sell}/v{vote_sell})")
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(3, c).value
+            if v is not None: hdr[str(v).strip()] = c
+        for k in ['#', 'K_buy', 'vote_buy', 'K_sell', 'vote_sell']:
+            if k not in hdr:
+                raise RuntimeError(f"'내부_그리드_통과'에 '{k}' 컬럼이 없습니다. (헤더: {list(hdr)})")
+        data_rows = []; star_row = None
+        for r in range(4, ws.max_row + 1):
+            cell = ws.cell(r, hdr['#']).value
+            if cell is None: continue
+            if ws.cell(r, hdr['K_buy']).value in (None, ''): continue   # 데이터 행만
+            data_rows.append(r)
+            if '★' in str(cell): star_row = r
+        if star_row is not None:
+            target = star_row
+            print(f"  ♻ 자동 재현 — '내부_그리드_통과'의 ★표시 행 사용 "
+                  f"(#{str(ws.cell(target, hdr['#']).value).strip()})")
+        elif len(data_rows) == 1:
+            target = data_rows[0]
+            print(f"  ♻ 자동 재현 — ★ 없음, 데이터가 한 줄뿐 → 그 행 사용 "
+                  f"(#{str(ws.cell(target, hdr['#']).value).strip()})")
+        else:
+            raise RuntimeError(
+                f"'내부_그리드_통과'에 ★표시 행이 없고 데이터가 {len(data_rows)}줄입니다.\n"
+                f"  ★를 원하는 행의 # 옆에 넣거나, 필터링으로 한 줄만 남겨 주세요.\n"
+                f"  (요청대로 '사용된 설정' 시트로는 재현하지 않습니다.)")
+        _is_best_row = ('★' in str(ws.cell(target, hdr['#']).value))
+        K_buy    = int(float(ws.cell(target, hdr['K_buy']).value))
+        vote_buy = int(float(ws.cell(target, hdr['vote_buy']).value))
+        K_sell   = int(float(ws.cell(target, hdr['K_sell']).value))
+        vote_sell = int(float(ws.cell(target, hdr['vote_sell']).value))
+        print(f"     (K_buy={K_buy}/v{vote_buy}, K_sell={K_sell}/v{vote_sell}, "
+              f"보정풀={'사용' if _is_best_row else '미사용(base)'})")
     else:
         gn_clean = ''.join(ch for ch in str(grid_number) if ch.isdigit())
         if not gn_clean:
