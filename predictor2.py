@@ -9791,10 +9791,27 @@ PREFILTER_MAX_NAN_RATIO    = 0.5
 
 AUTO_DOWNLOAD_EXCEL = True
 
+
+
+# ★ 재현 방식 (요청) — 모드 2/3가 예전에 정확히 맞던 방식과 동일하게.
+#   재현 때 '원본 엑셀의 마지막 날짜까지'로 데이터를 잘라 compute_features에 넘긴다.
+#   → 전체구간 순위(rank)·정규화 지표가 원본과 '같은 범위'로 계산돼 신호가 정확히 일치.
+#   (재현이 하루 더 받아 순위가 다시 매겨지던 문제 해결. 연장은 안 함 = 원본 날짜까지 정확 재현)
+REPLAY_MATCH_ORIGINAL_RANGE = True
+
+# ★ 재현 후 새 거래일 연장 (요청) — 과거(원본 마지막날)까지는 '정확 재현'하고,
+#   그 이후 새 거래일(예: 17일)은 '같은 로직으로 이어서' 계산해 덧붙인다.
+#   → 16일까지 원본과 100% 동일 + 17일 새 결과까지. (False면 원본 날짜까지만)
+REPLAY_EXTEND_TO_TODAY = True
+
+# 데이터 스냅샷(.pkl 저장) 방식 — 기본 끔. (원본 범위 자르기로 충분)
+#   True로 켜면 분석 때 feat/close를 ..._data.pkl로 저장하고 재현 때 그걸 그대로 사용.
+SAVE_DATA_SNAPSHOT  = False
+REPLAY_USE_SNAPSHOT = False
+
 # ★ summary(전체 티커 요약) 파일 생성 여부 — 요청으로 기본 OFF.
 #   끄면 종목별 분석 엑셀만 만들고, ensemble_summary_all_tickers.xlsx는 안 만든다.
 WRITE_SUMMARY_FILE = False
-
 
 # ════════════════════════════════════════════════════════════════
 #   ★ 실행 모드 — input() 대신 여기서 직접 지정 (요청)
@@ -13936,6 +13953,17 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         today_str = datetime.now().strftime('%Y-%m-%d')
         output_file = os.path.join(SCRIPT_DIR, f'ensemble_search_{ticker}_{today_str}.xlsx')
     print(f"\n  Excel 저장: {output_file}")
+    # ★ 데이터 스냅샷 저장 (요청) — 재현 정확도용. 재현 때 이 데이터를 그대로 쓰면
+    #   FRED 수정·vintage·하루 더 받음 등으로 외부데이터가 달라지는 문제가 사라진다.
+    #   (재현 실행(inject_pools 있음)에서는 저장 안 함 — 원본 분석에서만)
+    if globals().get('SAVE_DATA_SNAPSHOT', True) and inject_pools is None:
+        try:
+            _snap = os.path.splitext(output_file)[0] + '_data.pkl'
+            pd.to_pickle({'feat': feat, 'close': close, 'ticker': ticker}, _snap)
+            print(f"  💾 데이터 스냅샷 저장: {os.path.basename(_snap)} "
+                  f"({len(close)}일, 마지막 {str(close.index[-1])[:10]}) — 재현 정확도용")
+        except Exception as _se:
+            print(f"  ⚠ 데이터 스냅샷 저장 실패(무시): {_se}")
     _grid_table_for_excel = inject_combined_table if inject_combined_table is not None else inner_passed
     # ★ 보증 (요청) — 최종 백테스트 cur로 ★(선정) 행의 실제*/sel_*(/보정후*)를 덮어써서,
     #   그리드 선정 행이 '일별 백테스트 시트와 정확히 같은 수치'가 되게 한다.
@@ -14552,6 +14580,20 @@ def replay_grid_combo(filename, grid_number=None, *,
     # ★ 사용된 설정 (백테스트 조건 + ★최적 K/vote)
     used = _parse_used_settings(wb)
 
+    # ★ 원본 엑셀의 마지막 백테스트 날짜 — 재현 시 '같은 범위'로 잘라 정확 재현 (요청)
+    _orig_last_date = None
+    if globals().get('REPLAY_MATCH_ORIGINAL_RANGE', True) and '일별 백테스트' in wb.sheetnames:
+        try:
+            _wsd = wb['일별 백테스트']
+            for _r in range(_wsd.max_row, 4, -1):
+                _dv = _wsd.cell(_r, 1).value
+                if _dv is not None:
+                    _orig_last_date = pd.Timestamp(_dv); break
+            if _orig_last_date is not None:
+                print(f"  📅 원본 마지막 날짜 = {str(_orig_last_date)[:10]} → 재현도 이 날짜까지(같은 범위)")
+        except Exception:
+            _orig_last_date = None
+
     # ─── grid_number 가 None 이면: '사용된 설정'의 ★최적 선정 조합을 그대로 재현 ───
     #   (일반 분석 엑셀의 최적 변수·지표를 자동 재현하는 모드)
     if grid_number is None:
@@ -14635,6 +14677,27 @@ def replay_grid_combo(filename, grid_number=None, *,
     if feat is None:  feat  = g.get('_pair_feat')  or g.get('feat')
     if close is None: close = g.get('_pair_close') or g.get('close')
     # ★ 메모리에 없으면 티커로 데이터 자동 확보 (다운로드 함수/yfinance 등 사용)
+    # ★ 데이터 스냅샷 우선 (요청) — 원본 분석이 남긴 '..._data.pkl'이 같은 폴더에 있으면
+    #   그걸 써서 '완전히 동일한 데이터'로 정확 재현 (재다운로드 안 함 → FRED수정/vintage 차단).
+    #   스냅샷이 없거나 REPLAY_USE_SNAPSHOT=False면 기존처럼 재다운로드(연장 가능, 미세차이 가능).
+    if (feat is None or close is None) and globals().get('REPLAY_USE_SNAPSHOT', True):
+        _snap = os.path.splitext(excel_path)[0] + '_data.pkl'
+        if os.path.exists(_snap):
+            try:
+                _dsnap = pd.read_pickle(_snap)
+                feat = _dsnap.get('feat'); close = _dsnap.get('close')
+                if feat is not None and close is not None and len(close) > 0:
+                    print(f"  💾 데이터 스냅샷 사용: {os.path.basename(_snap)} "
+                          f"({len(close)}일, 마지막 {str(close.index[-1])[:10]}) — 재다운로드 없이 정확 재현")
+                else:
+                    feat = close = None
+            except Exception as _le:
+                print(f"  ⚠ 스냅샷 로드 실패({_le}) — 재다운로드로 진행")
+                feat = close = None
+        else:
+            print(f"  ℹ 데이터 스냅샷 없음({os.path.basename(_snap)}) — 재다운로드로 진행 "
+                  f"(외부데이터 차이로 미세하게 다를 수 있음)")
+
     if feat is None or close is None:
         ticker = used.get('ticker')
         if ticker is None:
@@ -14645,7 +14708,7 @@ def replay_grid_combo(filename, grid_number=None, *,
         if ticker is not None and '_resolve_data_for_ticker' in g and callable(g['_resolve_data_for_ticker']):
             print(f"  ℹ 메모리에 데이터 없음 → 티커 '{ticker}'로 자동 로드 시도...")
             try:
-                feat, close = g['_resolve_data_for_ticker'](ticker)
+                feat, close = g['_resolve_data_for_ticker'](ticker, end_date=_orig_last_date)
                 print(f"  ✓ '{ticker}' 데이터 로드 성공 ({len(close)}일)")
             except Exception as _e:
                 raise RuntimeError(
@@ -16540,7 +16603,7 @@ def _parse_overrides_from_excel(summary_file, tickers, *, verbose=True):
         return {}
 
 
-def _resolve_data_for_ticker(ticker):
+def _resolve_data_for_ticker(ticker, end_date=None):
     g = globals()
     pdm = g.get('_pair_data_map')
     if isinstance(pdm, dict) and ticker in pdm:
@@ -16588,7 +16651,7 @@ def _resolve_data_for_ticker(ticker):
             _orig_ohlcv_t = ohlcv.get(ticker)      # 보충 실패 시 되돌릴 원본
             _orig_close_t = closes.get(ticker) if hasattr(closes, 'get') else None
             _need_yf = ticker not in ohlcv
-            if not _need_yf:
+            if not _need_yf and end_date is None:
                 try:
                     _last0 = ohlcv[ticker].index[-1]
                     _today0 = pd.Timestamp(datetime.now().date())
@@ -16646,6 +16709,42 @@ def _resolve_data_for_ticker(ticker):
                     return cf_func(ohlcv, closes, fred_df=fred_df, ticker=ticker)
                 except TypeError:
                     return cf_func(ohlcv, closes, fred_df=fred_df)
+
+            # ★ 연장용 전체 계산 (요청) — 자르기 '전'에 download_data 전체 범위로 한 번 계산해
+            #   새 거래일(원본 이후) 행을 확보한다. (모든 티커가 같은 범위라 cross-ticker 안전)
+            feat_full = close_full = None
+            if end_date is not None and globals().get('REPLAY_EXTEND_TO_TODAY', True):
+                try:
+                    feat_full = _call_cf()
+                    if ticker in ohlcv:
+                        close_full = ohlcv[ticker]['Close'].reindex(feat_full.index)
+                    else:
+                        feat_full = None
+                except Exception as _fe:
+                    print(f"  ⚠ 연장용 전체 계산 실패(연장 생략): {_fe}")
+                    feat_full = close_full = None
+
+            # ★ 원본 범위로 자르기 (요청) — end_date까지로 잘라 '정확 재현'. 전체구간 순위/정규화
+            #   지표가 원본과 '같은 범위'로 계산돼 신호가 정확히 일치 (하루 더 받아 순위 바뀌던 문제 해결).
+            if end_date is not None:
+                try:
+                    _ed = pd.Timestamp(end_date)
+                    for _t in list(ohlcv.keys()):
+                        try: ohlcv[_t] = ohlcv[_t].loc[ohlcv[_t].index <= _ed]
+                        except Exception: pass
+                    if hasattr(closes, 'columns'):              # DataFrame
+                        closes = closes.loc[closes.index <= _ed]
+                    elif isinstance(closes, dict):
+                        for _t in list(closes.keys()):
+                            try: closes[_t] = closes[_t].loc[closes[_t].index <= _ed]
+                            except Exception: pass
+                    if fred_df is not None:
+                        try: fred_df = fred_df.loc[fred_df.index <= _ed]
+                        except Exception: pass
+                    print(f"  ✂ 원본 범위로 자름: {str(_ed)[:10]}까지 — 같은 범위로 계산해 정확 재현")
+                except Exception as _te:
+                    print(f"  ⚠ 원본 범위 자르기 실패(무시): {_te}")
+
             try:
                 feat = _call_cf()
             except Exception as _cf_e:
@@ -16665,6 +16764,22 @@ def _resolve_data_for_ticker(ticker):
             if ticker not in ohlcv:
                 raise RuntimeError(f"{ticker} OHLCV 없음 (yfinance fallback 실패)")
             close = ohlcv[ticker]['Close'].reindex(feat.index)
+
+            # ★ 새 거래일 덧붙이기 (요청) — 원본 마지막날 '이후' 행을 전체계산본에서 가져와 이어붙인다.
+            #   → 과거는 정확 재현(자른 것), 새 거래일은 같은 로직으로 계산한 결과.
+            if feat_full is not None and close_full is not None and end_date is not None:
+                try:
+                    _ed = pd.Timestamp(end_date)
+                    _newidx = feat_full.index[feat_full.index > _ed]
+                    if len(_newidx) > 0:
+                        feat = pd.concat([feat, feat_full.reindex(columns=feat.columns).loc[_newidx]])
+                        close = pd.concat([close, close_full.loc[_newidx]])
+                        print(f"  ➕ 원본 이후 {len(_newidx)}일({str(_newidx[0])[:10]}~{str(_newidx[-1])[:10]}) "
+                              f"같은 로직으로 이어 계산 → 최종 {str(feat.index[-1])[:10]}까지")
+                    else:
+                        print(f"  ℹ 원본 이후 새 거래일이 데이터에 없음 — 원본 날짜까지만 (연장할 데이터 없음)")
+                except Exception as _xe:
+                    print(f"  ⚠ 새 거래일 덧붙이기 실패(무시): {_xe}")
 
             cache[ticker] = (feat, close)
             return feat, close
@@ -16925,9 +17040,6 @@ def get_generated_files():
     """이번 실행에서 만든 엑셀 파일 경로 목록 (노트북 셀에서 직접 다운로드용)."""
     return list(globals().get('_GENERATED_FILES', []))
 
-
-if __name__ == '__main__':
-    main()
 
 if __name__ == '__main__':
     main()
