@@ -9789,11 +9789,9 @@ PREFILTER_MIN_CORR         = 0.005
 PREFILTER_MIN_VARIANCE_REL = 1e-6
 PREFILTER_MAX_NAN_RATIO    = 0.5
 
+
+
 AUTO_DOWNLOAD_EXCEL = True
-
-
-
-
 
 # ★ 재현 방식 (요청) — 모드 2/3가 예전에 정확히 맞던 방식과 동일하게.
 #   재현 때 '원본 엑셀의 마지막 날짜까지'로 데이터를 잘라 compute_features에 넘긴다.
@@ -9801,10 +9799,11 @@ AUTO_DOWNLOAD_EXCEL = True
 #   (재현이 하루 더 받아 순위가 다시 매겨지던 문제 해결. 연장은 안 함 = 원본 날짜까지 정확 재현)
 REPLAY_MATCH_ORIGINAL_RANGE = True
 
-# ★ 재현 후 새 거래일 연장 (요청) — 과거(원본 마지막날)까지는 '정확 재현'하고,
-#   그 이후 새 거래일(예: 17일)은 '같은 로직으로 이어서' 계산해 덧붙인다.
-#   → 16일까지 원본과 100% 동일 + 17일 새 결과까지. (False면 원본 날짜까지만)
-REPLAY_EXTEND_TO_TODAY = True
+# ★ 재현 후 새 거래일 연장 (요청) — 기본 끔(OFF). 정확 재현이 우선.
+#   켜면(True) 과거(원본 마지막날)까지는 정확 재현 + 그 이후 새 거래일을 이어 계산해 덧붙인다.
+#   ⚠ 단, 전체구간 순위 지표가 있으면 '정확 재현'과 '연장'을 100% 동시 보장하기 어렵다.
+#   새 데이터까지 보려면 '새 분석'을 한 번 더 돌리는 것이 가장 정확하다.
+REPLAY_EXTEND_TO_TODAY = False
 
 # 데이터 스냅샷(.pkl 저장) 방식 — 기본 끔. (원본 범위 자르기로 충분)
 #   True로 켜면 분석 때 feat/close를 ..._data.pkl로 저장하고 재현 때 그걸 그대로 사용.
@@ -16740,14 +16739,21 @@ def _resolve_data_for_ticker(ticker, end_date=None):
                 except TypeError:
                     return cf_func(ohlcv, closes, fred_df=fred_df)
 
-            # ★ 연장용 전체 계산 (요청) — 자르기 '전'에 download_data 전체 범위로 한 번 계산해
-            #   새 거래일(원본 이후) 행을 확보한다. (모든 티커가 같은 범위라 cross-ticker 안전)
+            # ★ 연장용 전체 계산 (요청, 기본 OFF) — 자르기 '전'에 새 거래일 행을 확보.
+            #   ⚠ 반드시 '복사본'으로 계산한다. 그래야 compute_features가 입력을 건드려도
+            #   아래 '자른 정확 재현' 계산이 오염되지 않는다 (과거 신호가 어긋나던 문제 차단).
             feat_full = close_full = None
-            if end_date is not None and globals().get('REPLAY_EXTEND_TO_TODAY', True):
+            if end_date is not None and globals().get('REPLAY_EXTEND_TO_TODAY', False):
                 try:
-                    feat_full = _call_cf()
-                    if ticker in ohlcv:
-                        close_full = ohlcv[ticker]['Close'].reindex(feat_full.index)
+                    _oh = {t: (df.copy() if hasattr(df, 'copy') else df) for t, df in ohlcv.items()}
+                    _cl = closes.copy() if hasattr(closes, 'copy') else dict(closes)
+                    _fr = fred_df.copy() if fred_df is not None else None
+                    try:
+                        feat_full = cf_func(_oh, _cl, fred_df=_fr, ticker=ticker)
+                    except TypeError:
+                        feat_full = cf_func(_oh, _cl, fred_df=_fr)
+                    if ticker in _oh:
+                        close_full = _oh[ticker]['Close'].reindex(feat_full.index)
                     else:
                         feat_full = None
                 except Exception as _fe:
