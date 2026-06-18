@@ -9791,6 +9791,7 @@ PREFILTER_MAX_NAN_RATIO    = 0.5
 
 
 
+
 AUTO_DOWNLOAD_EXCEL = True
 
 # ★ 재현 방식 (요청) — 모드 2/3가 예전에 정확히 맞던 방식과 동일하게.
@@ -14629,13 +14630,19 @@ def replay_grid_combo(filename, grid_number=None, *,
                 f"'내부_그리드_통과'에 ★표시 행이 없고 데이터가 {len(data_rows)}줄입니다.\n"
                 f"  ★를 원하는 행의 # 옆에 넣거나, 필터링으로 한 줄만 남겨 주세요.\n"
                 f"  (요청대로 '사용된 설정' 시트로는 재현하지 않습니다.)")
-        _is_best_row = ('★' in str(ws.cell(target, hdr['#']).value))
+        # ★ 보정이 '채택'된 행이면 보정 앙상블 풀(매수/매도_앙상블_지표)을, 아니면 base 메타풀
+        #   ('메타조합별_지표'의 그 행 메타조합 풀)을 K로 잘라 그리드 평가를 그대로 재현.
+        #   (#5211처럼 보정채택='—'이면 그리드에서 쓴 그 메타풀+K+vote 그대로여야 일치)
+        _corr_col = hdr.get('🔧보정채택')
+        _corr_val = ws.cell(target, _corr_col).value if _corr_col else None
+        _corr_str = str(_corr_val).strip() if _corr_val is not None else ''
+        _is_best_row = _corr_str not in ('', '—', '–', '-', 'None', 'nan')
         K_buy    = int(float(ws.cell(target, hdr['K_buy']).value))
         vote_buy = int(float(ws.cell(target, hdr['vote_buy']).value))
         K_sell   = int(float(ws.cell(target, hdr['K_sell']).value))
         vote_sell = int(float(ws.cell(target, hdr['vote_sell']).value))
         print(f"     (K_buy={K_buy}/v{vote_buy}, K_sell={K_sell}/v{vote_sell}, "
-              f"보정풀={'사용' if _is_best_row else '미사용(base)'})")
+              f"보정채택='{_corr_str or '—'}' → {'보정 앙상블 풀' if _is_best_row else 'base 메타풀(그리드 그대로)'})")
     else:
         gn_clean = ''.join(ch for ch in str(grid_number) if ch.isdigit())
         if not gn_clean:
@@ -14910,13 +14917,14 @@ def replay_grid_combo(filename, grid_number=None, *,
     #   (없으면 ★최적의 매수/매도_앙상블_지표 시트로 폴백)
     #   단, ★최적 행 재현이면 보정 적용된 '앙상블 시트(가중치 포함)'를 우선 사용해 보정까지 정확 재현.
     buy_pool_xl = sell_pool_xl = None
-    if grid_number is not None and not _is_best_row:
+    if not _is_best_row:
         _mb, _ms = _read_meta_pool(wz_use, pct_use[0] if pct_use else 5,
                                    pct_use[1] if pct_use else 95, cl_use if cl_use is not None else 0.2)
         if _mb is not None and _ms is not None and len(_mb) > 0 and len(_ms) > 0:
             buy_pool_xl, sell_pool_xl = _mb, _ms
-            print(f"  ♻ 그리드 #{grid_number}(비최적)의 메타조합 지표를 '메타조합별_지표' 시트에서 읽음 "
-                  f"(매수 {len(_mb)} / 매도 {len(_ms)}) — 보정 전 base 풀")
+            _gnlbl = f"#{grid_number}" if grid_number is not None else "★행"
+            print(f"  ♻ {_gnlbl}(보정 미채택)의 메타조합 지표를 '메타조합별_지표' 시트에서 읽음 "
+                  f"(매수 {len(_mb)} / 매도 {len(_ms)}) — base 풀, K로 잘라 그리드 그대로 재현")
     if buy_pool_xl is None or sell_pool_xl is None:
         # ★최적 행 또는 자동재현 → 앙상블 시트(보정 적용 풀 + 🔁가중치)로 정확 재현
         buy_pool_xl  = _read_pool('매수_앙상블_지표')
