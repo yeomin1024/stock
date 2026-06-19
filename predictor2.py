@@ -11707,6 +11707,27 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
                         action = '매도신호 → 익일 청산'
             elif neutral_note:
                 action = neutral_note   # ★ 중립일 때 공식 표시
+        else:
+            # ★ 마지막 날(실행일, 요청) — 다음날이 없어 '실행'은 못 하지만, 그날의 신호 판정
+            #   (충돌/매수/매도/중립)을 일별 백테스트와 '똑같은 문구'로 표시한다.
+            #   do_buy/do_sell·카운터·실제매매는 건드리지 않음(통계·결과 불변).
+            _sp_last = globals().get('CONFLICT_SELL_PRIORITY', True)
+            if pos == 0 and b_on:
+                if conflict and (_sp_last or s_strength > b_strength):
+                    action = f'⚔ 충돌 → 매수 보류 (매도 우선, S={s_strength:.0%}/B={b_strength:.0%})'
+                elif conflict:
+                    action = f'⚔ 충돌 B={b_strength:.0%}≥S={s_strength:.0%} → 매수'
+                else:
+                    action = '매수신호 → 익일 매수'
+            elif pos == 1 and s_on:
+                if conflict and (not _sp_last) and b_strength > s_strength:
+                    action = f'⚔ 충돌 B={b_strength:.0%}>S={s_strength:.0%} → 청산 보류'
+                elif conflict:
+                    action = f'⚔ 충돌 → 청산 (매도 우선, S={s_strength:.0%}/B={b_strength:.0%})'
+                else:
+                    action = '매도신호 → 익일 청산'
+            elif neutral_note:
+                action = neutral_note
 
         rows.append({
             'date': d, 'close': price,
