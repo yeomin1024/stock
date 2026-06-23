@@ -119,6 +119,8 @@ PEERS          = [
     'BKLN',   # 레버리지 론 ETF (shadow banking)
     'TQQQ',   # 3× QQQ (레버리지 투자자 심리)
     'MCHI',   # MSCI China (FXI 보완)
+    '^VIX9D', '^VIX3M', '^VIX6M', '^SKEW', '^MOVE',   # ^MOVE는 야후에서 누락 잦음(없어도 됨)
+    'GOOGL', 'META', 'TSLA'                            # NVDA/MSFT/AAPL/AMZN은 대개 이미 있음
 ]
 
 EVAL_START     = '2022-01-01'         # 평가 시작일
@@ -7454,6 +7456,282 @@ def compute_features(ohlcv, closes, fred_df=None):
         feat[f'cx_net_score_sum_{p}d'] = feat['cx_net_pattern_score'].rolling(p).sum()
     feat['cx_strong_bull_signal'] = (feat['cx_bull_pattern_score'] >= 2).astype(float)
     feat['cx_strong_bear_signal'] = (feat['cx_bear_pattern_score'] >= 2).astype(float)
+
+# ══════════════════════════════════════════════════════════════
+    #  41. 1일 선행 하락 경보 — 기존 미포함 정밀 지표 (54개, 중복 없음)
+    #  ※ 신규 티커 필요(없으면 .get()이 None→해당 지표만 건너뜀, 에러 없음):
+    #     ^VIX9D, ^VIX3M(구 ^VXV), ^VIX6M, ^SKEW, ^MOVE(선택),
+    #     GOOGL, META, TSLA, AMZN  (NVDA/MSFT/AAPL은 이미 사용)
+    #  ※ 역사 한계: ^VIX3M~2007, ^VIX9D~2011 — 그 이전 연도는 NaN(정상).
+    #     ^SKEW는 1990+라 닷컴까지 커버. 메가캡 상관은 가용 종목이
+    #     4개 이상일 때만 계산(초기엔 NVDA/MSFT/AAPL/AMZN으로 동작).
+    #  접두사: vts_(VIX기간구조) skw_(SKEW) mcc_(메가캡상관)
+    #          hbg_(브레드스churn) bvol_(국채변동성) pre1_(종합)
+    # ══════════════════════════════════════════════════════════════
+    _c41 = cl
+    _ret41 = _c41.pct_change()
+
+    # ── 41A. VIX 실제 기간구조 (백워데이션 = 가장 강한 1일 선행) ──
+    _vix9d = closes.get('^VIX9D')
+    _vix1m = closes.get('^VIX')
+    _vix3m = closes.get('^VIX3M')
+    if _vix3m is None:
+        _vix3m = closes.get('^VXV')
+    _vix6m = closes.get('^VIX6M')
+    if _vix9d is not None and _vix1m is not None:
+        _r91 = _vix9d / _vix1m.replace(0, np.nan)
+        feat['vts_vix9d_1m_ratio'] = _r91
+        feat['vts_backwardation_9d'] = (_r91 > 1.0).astype(float)
+        feat['vts_backwardation_9d_strong'] = (_r91 > 1.05).astype(float)
+        feat['vts_9d_1m_zscore_60'] = calc_zscore(_r91, 60)
+        feat['vts_9d_1m_spike'] = (_r91 > _r91.rolling(60).mean() + _r91.rolling(60).std() * 1.5).astype(float)
+    if _vix1m is not None and _vix3m is not None:
+        _r13 = _vix1m / _vix3m.replace(0, np.nan)
+        feat['vts_vix1m_3m_ratio'] = _r13
+        feat['vts_backwardation_1m_3m'] = (_r13 > 1.0).astype(float)
+        feat['vts_1m_3m_zscore_60'] = calc_zscore(_r13, 60)
+        feat['vts_term_slope_chg5'] = _r13 - _r13.shift(5)
+        feat['vts_flip_to_backward'] = ((_r13 > 1.0) & (_r13.shift(1) <= 1.0)).astype(float)
+    if _vix3m is not None and _vix6m is not None:
+        feat['vts_vix3m_6m_ratio'] = _vix3m / _vix6m.replace(0, np.nan)
+    if _vix9d is not None and _vix1m is not None and _vix3m is not None:
+        feat['vts_full_backwardation'] = ((_vix9d > _vix1m) & (_vix1m > _vix3m)).astype(float)
+        feat['vts_full_backward_3d'] = feat['vts_full_backwardation'].rolling(3).sum()
+
+    # ── 41B. CBOE SKEW (꼬리위험 가격 = 기관 대형 풋 수요) ──────────
+    _skew = closes.get('^SKEW')
+    if _skew is not None:
+        feat['skw_level'] = _skew
+        feat['skw_zscore_60'] = calc_zscore(_skew, 60)
+        feat['skw_pctrank_252'] = calc_pctrank(_skew, 252)
+        feat['skw_above_145'] = (_skew > 145).astype(float)
+        feat['skw_above_150'] = (_skew > 150).astype(float)
+        feat['skw_spike_5d'] = (_skew.diff(5) > _skew.diff(5).rolling(60).std() * 2).astype(float)
+        if _vix1m is not None:
+            feat['skw_complacent_tail'] = ((_skew > 140) & (_vix1m < 16)).astype(float)
+            feat['skw_vix_ratio'] = _skew / _vix1m.replace(0, np.nan)
+            feat['skw_vix_ratio_z60'] = calc_zscore(_skew / _vix1m.replace(0, np.nan), 60)
+
+    # ── 41C. 메가캡 내부 상관 급등 (동반청산 = 시스템 위험) ─────────
+    _megas = {}
+    for _m in ['NVDA', 'MSFT', 'AAPL', 'AMZN', 'GOOGL', 'META', 'TSLA']:
+        _s = closes.get(_m)
+        if _s is not None and _m != TICKER:
+            _megas[_m] = _s.pct_change()
+    if len(_megas) >= 4:
+        _mdf = pd.DataFrame(_megas)
+        _mmean = _mdf.mean(axis=1)
+        _corrs = pd.DataFrame({k: _mdf[k].rolling(20).corr(_mmean) for k in _mdf.columns})
+        _avgc = _corrs.mean(axis=1)
+        feat['mcc_avg_corr_20'] = _avgc
+        feat['mcc_corr_high'] = (_avgc > 0.8).astype(float)
+        feat['mcc_corr_spike'] = (_avgc > _avgc.rolling(60).mean() + _avgc.rolling(60).std() * 1.5).astype(float)
+        feat['mcc_corr_zscore_60'] = calc_zscore(_avgc, 60)
+        feat['mcc_corr_up_megas_dn'] = ((_avgc > 0.75) & (_mmean.rolling(3).mean() < 0)).astype(float)
+        feat['mcc_breadth_neg_5d'] = (_mdf < 0).sum(axis=1).rolling(5).mean()
+        feat['mcc_all_red'] = ((_mdf < 0).sum(axis=1) >= len(_megas)).astype(float)
+        feat['mcc_all_red_3d'] = feat['mcc_all_red'].rolling(3).sum()
+
+    # ── 41D. 브레드스 churn (Hindenburg / Titanic = 천장 혼조) ─────
+    SEC41 = ['XLK', 'XLV', 'XLF', 'XLY', 'XLP', 'XLE', 'XLI', 'XLB', 'XLU', 'XLRE', 'XLC']
+    _sa41 = [s for s in SEC41 if s in closes.columns and s != TICKER]
+    if len(_sa41) >= 7:
+        _sd41 = pd.DataFrame({s: closes[s] for s in _sa41})
+        _nh = pd.DataFrame({s: (_sd41[s] >= _sd41[s].rolling(252, min_periods=60).max() * 0.999).astype(float)
+                            for s in _sa41}).sum(axis=1)
+        _nl = pd.DataFrame({s: (_sd41[s] <= _sd41[s].rolling(252, min_periods=60).min() * 1.001).astype(float)
+                            for s in _sa41}).sum(axis=1)
+        _n41 = len(_sa41)
+        _chg41 = _sd41.pct_change()
+        _adv41 = (_chg41 > 0).sum(axis=1) - (_chg41 < 0).sum(axis=1)
+        _mcl41 = _adv41.ewm(span=19, adjust=False).mean() - _adv41.ewm(span=39, adjust=False).mean()
+        _mkt41 = _sd41.mean(axis=1)
+        _mkt_up41 = (_mkt41 > _mkt41.rolling(50).mean()).astype(float)
+        feat['hbg_new_high_cnt'] = _nh
+        feat['hbg_new_low_cnt'] = _nl
+        feat['hbg_both_elevated'] = ((_nh >= max(2, _n41 * 0.2)) & (_nl >= max(2, _n41 * 0.2))).astype(float)
+        feat['hbg_hindenburg_flag'] = (feat['hbg_both_elevated'].astype(bool) & (_mkt_up41 > 0) & (_mcl41 < 0)).astype(float)
+        feat['hbg_hindenburg_10d'] = feat['hbg_hindenburg_flag'].rolling(10).sum()
+        feat['hbg_titanic_flag'] = ((_nl > _nh) & (_mkt_up41 > 0) &
+                                    (_mkt41 >= _mkt41.rolling(60).max() * 0.97)).astype(float)
+        feat['hbg_nl_minus_nh'] = (_nl - _nh) / _n41
+        feat['hbg_churn_score'] = feat['hbg_both_elevated'] + feat['hbg_titanic_flag'] + (_mcl41 < 0).astype(float)
+
+    # ── 41E. 국채 변동성 (MOVE = 채권發 선행; 금리'수준'·'수익률변동성'과 다른 각도) ──
+    _move = closes.get('^MOVE')
+    if _move is not None:
+        feat['bvol_move_level'] = _move
+        feat['bvol_move_zscore_60'] = calc_zscore(_move, 60)
+        feat['bvol_move_spike'] = (_move > _move.rolling(60).mean() + _move.rolling(60).std() * 1.5).astype(float)
+        feat['bvol_move_above_120'] = (_move > 120).astype(float)
+        feat['bvol_move_5d_chg'] = _move.pct_change(5)
+    _tlt41 = closes.get('TLT')
+    if _tlt41 is not None:
+        _tltvol = _tlt41.pct_change().rolling(20).std() * np.sqrt(252)
+        feat['bvol_tlt_realvol_20'] = _tltvol
+        feat['bvol_tlt_vol_zscore'] = calc_zscore(_tltvol, 120)
+        feat['bvol_tlt_vol_spike'] = (_tltvol > _tltvol.rolling(120).mean() + _tltvol.rolling(120).std() * 1.5).astype(float)
+        feat['bvol_bondvol_stock_calm'] = ((_tltvol > _tltvol.rolling(60).mean() * 1.3) &
+                                           (_ret41.rolling(5).mean() > -0.005)).astype(float)
+
+    # ── 41F. 1일 선행 하락 종합 경보 (위 신호 결합) ────────────────
+    _pre1 = pd.Series(0.0, index=_c41.index)
+    for _k in ['vts_backwardation_1m_3m', 'vts_full_backwardation', 'skw_complacent_tail',
+               'mcc_corr_up_megas_dn', 'hbg_hindenburg_flag', 'hbg_titanic_flag',
+               'bvol_tlt_vol_spike', 'bvol_move_spike']:
+        if _k in feat.columns:
+            _pre1 = _pre1 + feat[_k].fillna(0)
+    feat['pre1_predrop_score'] = _pre1
+    feat['pre1_predrop_high'] = (_pre1 >= 3).astype(float)
+    feat['pre1_predrop_extreme'] = (_pre1 >= 5).astype(float)
+    feat['pre1_predrop_rising'] = (_pre1 > _pre1.shift(3)).astype(float)
+    for _p in [3, 5]:
+        feat[f'pre1_predrop_sum_{_p}d'] = _pre1.rolling(_p).sum()
+    feat['pre1_predrop_zscore_60'] = calc_zscore(_pre1, 60)
+
+# ══════════════════════════════════════════════════════════════
+    #  42. 하락 '유형'별 1일 선행 경보 — 기존 미포함 카테고리 (70개, 중복 없음)
+    #  ※ 추가 데이터 필요(없으면 .get()/columns 체크로 해당 블록만 건너뜀):
+    #     FRED: 'NFCI','ANFCI','STLFSI4','TEDRATE','DCPF3M','DTB3'
+    #     티커: '^CPC','^CPCE'(풋콜), 'BTC-USD'
+    #  접두사: fnd_(자금경색) pcr_(풋콜) xast_(크로스에셋) btc_(크립토)
+    #          mga_(메가캡에어포켓) pre2_(유형별종합)
+    # ══════════════════════════════════════════════════════════════
+    _c42 = cl
+    _ret42 = _c42.pct_change()
+
+    # ── 42A. [금융위기형] 단기자금 경색 + 금융스트레스지수 (FRED) ──
+    if fred_df is not None and len(fred_df) > 0:
+        _fa = fred_df.reindex(feat.index).ffill().bfill()
+        def _f42(c):
+            return _fa[c] if c in _fa.columns else None
+        _nfci = _f42('NFCI'); _anfci = _f42('ANFCI'); _stl = _f42('STLFSI4')
+        if _nfci is not None:
+            feat['fnd_nfci_level'] = _nfci
+            feat['fnd_nfci_tight'] = (_nfci > 0).astype(float)
+            feat['fnd_nfci_zscore_252'] = calc_zscore(_nfci, 252)
+            feat['fnd_nfci_rising_4w'] = (_nfci.diff(20) > 0).astype(float)
+            feat['fnd_nfci_jump'] = (_nfci.diff(5) > _nfci.diff(5).rolling(120).std() * 2).astype(float)
+        if _anfci is not None:
+            feat['fnd_anfci_level'] = _anfci
+            feat['fnd_anfci_positive'] = (_anfci > 0).astype(float)
+            feat['fnd_anfci_rising'] = (_anfci.diff(20) > 0).astype(float)
+        if _stl is not None:
+            feat['fnd_stlfsi_level'] = _stl
+            feat['fnd_stlfsi_positive'] = (_stl > 0).astype(float)
+            feat['fnd_stlfsi_zscore_252'] = calc_zscore(_stl, 252)
+            feat['fnd_stlfsi_spike'] = (_stl > _stl.rolling(252).mean() + _stl.rolling(252).std() * 1.5).astype(float)
+        _ted = _f42('TEDRATE')
+        if _ted is not None:
+            feat['fnd_ted_level'] = _ted
+            feat['fnd_ted_above_50bp'] = (_ted > 0.5).astype(float)
+            feat['fnd_ted_zscore_252'] = calc_zscore(_ted, 252)
+            feat['fnd_ted_widening_5d'] = (_ted.diff(5) > 0.1).astype(float)
+            feat['fnd_ted_spike'] = (_ted > _ted.rolling(120).mean() + _ted.rolling(120).std() * 2).astype(float)
+        _cpf = _f42('DCPF3M'); _tb3 = _f42('DTB3')
+        if _cpf is not None and _tb3 is not None:
+            _cpspr = _cpf - _tb3
+            feat['fnd_cp_bill_spread'] = _cpspr
+            feat['fnd_cp_bill_zscore_252'] = calc_zscore(_cpspr, 252)
+            feat['fnd_cp_bill_widening'] = (_cpspr.diff(5) > 0.1).astype(float)
+            feat['fnd_cp_stress_flag'] = (_cpspr > _cpspr.rolling(252).mean() + _cpspr.rolling(252).std() * 2).astype(float)
+        _fndsc = pd.Series(0.0, index=feat.index)
+        for _k in ['fnd_nfci_tight', 'fnd_anfci_positive', 'fnd_stlfsi_positive',
+                   'fnd_ted_above_50bp', 'fnd_cp_stress_flag']:
+            if _k in feat.columns:
+                _fndsc = _fndsc + feat[_k].fillna(0)
+        feat['fnd_funding_stress_score'] = _fndsc
+        feat['fnd_funding_stress_high'] = (_fndsc >= 2).astype(float)
+        feat['fnd_stress_rising_stock_calm'] = ((_fndsc > _fndsc.shift(10)) &
+                                                (_ret42.rolling(5).mean() > -0.005)).astype(float)
+
+    # ── 42B. [심리극단형] 실제 CBOE 풋/콜 비율 ──
+    _pc_tot = closes.get('^CPC'); _pc_eq = closes.get('^CPCE')
+    for _pcser, _lbl in [(_pc_tot, 'cpc'), (_pc_eq, 'cpce')]:
+        if _pcser is not None:
+            feat[f'pcr_{_lbl}_level'] = _pcser
+            feat[f'pcr_{_lbl}_zscore_60'] = calc_zscore(_pcser, 60)
+            feat[f'pcr_{_lbl}_pctrank_252'] = calc_pctrank(_pcser, 252)
+            feat[f'pcr_{_lbl}_ma5'] = _pcser.rolling(5).mean()
+            feat[f'pcr_{_lbl}_complacent_low'] = (calc_pctrank(_pcser, 252) < 0.15).astype(float)
+            feat[f'pcr_{_lbl}_fear_high'] = (calc_pctrank(_pcser, 252) > 0.90).astype(float)
+            feat[f'pcr_{_lbl}_rising_5d'] = (_pcser.rolling(5).mean() > _pcser.rolling(20).mean()).astype(float)
+    if _pc_eq is not None:
+        feat['pcr_complacency_at_high'] = ((calc_pctrank(_pc_eq, 252) < 0.15) &
+                                           (_c42 >= _c42.rolling(60).max() * 0.97)).astype(float)
+
+    # ── 42C. [시스템/분산실패형] 크로스에셋 동반붕괴 ──
+    _ASSETS42 = {'SPY': closes.get('SPY'), 'TLT': closes.get('TLT'), 'GLD': closes.get('GLD'),
+                 'DBC': closes.get('DBC'), 'EEM': closes.get('EEM'), 'HYG': closes.get('HYG')}
+    _av42 = {k: v.pct_change() for k, v in _ASSETS42.items() if v is not None and k != TICKER}
+    if len(_av42) >= 4:
+        _adf42 = pd.DataFrame(_av42)
+        _amean42 = _adf42.mean(axis=1)
+        _acorr42 = pd.DataFrame({k: _adf42[k].rolling(20).corr(_amean42) for k in _adf42.columns}).mean(axis=1)
+        feat['xast_avg_corr_20'] = _acorr42
+        feat['xast_corr_high'] = (_acorr42 > 0.6).astype(float)
+        feat['xast_corr_zscore_60'] = calc_zscore(_acorr42, 60)
+        _ndown42 = (_adf42.rolling(5).sum() < 0).sum(axis=1)
+        feat['xast_assets_down_5d'] = _ndown42
+        feat['xast_no_hiding_place'] = (_ndown42 >= max(4, len(_av42) - 1)).astype(float)
+        _safe_down = pd.Series(0.0, index=feat.index)
+        if 'TLT' in _adf42.columns:
+            _safe_down = _safe_down + (_adf42['TLT'].rolling(5).sum() < 0).astype(float)
+        if 'GLD' in _adf42.columns:
+            _safe_down = _safe_down + (_adf42['GLD'].rolling(5).sum() < 0).astype(float)
+        feat['xast_safe_assets_down'] = _safe_down
+        feat['xast_correlation_breakdown'] = ((_acorr42 > 0.55) & (_amean42.rolling(5).mean() < 0)).astype(float)
+
+    # ── 42D. [위험선호 카나리아형] 크립토 (BTC) ──
+    _btc = closes.get('BTC-USD')
+    if _btc is not None:
+        _btcr = _btc.pct_change()
+        feat['btc_ret_5d'] = _btc.pct_change(5)
+        feat['btc_drawdown_20d'] = _btc / _btc.rolling(20).max() - 1
+        feat['btc_below_sma50'] = (_btc < _btc.rolling(50).mean()).astype(float)
+        feat['btc_realvol_20'] = _btcr.rolling(20).std() * np.sqrt(365)
+        feat['btc_vol_spike'] = (_btcr.rolling(10).std() > _btcr.rolling(60).std() * 1.5).astype(float)
+        feat['btc_crash_5d'] = (_btc.pct_change(5) < -0.12).astype(float)
+        feat['btc_leads_equity_down'] = ((_btc.pct_change(5) < -0.08) & (_c42.pct_change(5) > -0.01)).astype(float)
+        feat['btc_equity_both_down'] = ((_btc.pct_change(3) < -0.05) & (_c42.pct_change(3) < 0)).astype(float)
+
+    # ── 42E. [집중도/메가캡 에어포켓형] ──
+    _megas42 = {}
+    for _m in ['NVDA', 'MSFT', 'AAPL', 'AMZN', 'GOOGL', 'META', 'TSLA']:
+        _sm = closes.get(_m)
+        if _sm is not None and _m != TICKER:
+            _megas42[_m] = _sm
+    if len(_megas42) >= 4:
+        _mc42 = pd.DataFrame(_megas42)
+        _mr42 = _mc42.pct_change()
+        _ngap = pd.DataFrame({k: ((_mc42[k] / _mc42[k].shift(1) - 1) < -0.015).astype(float) for k in _mc42.columns}).sum(axis=1)
+        feat['mga_gapdown_count'] = _ngap
+        feat['mga_gapdown_cluster'] = (_ngap >= max(3, len(_megas42) // 2)).astype(float)
+        feat['mga_single_airpocket'] = (_mr42.min(axis=1) < -0.04).astype(float)
+        feat['mga_single_airpocket_5d'] = feat['mga_single_airpocket'].rolling(5).sum()
+        feat['mga_worst_mega_ret'] = _mr42.min(axis=1)
+        _below20 = pd.DataFrame({k: (_mc42[k] < _mc42[k].rolling(20).mean()).astype(float) for k in _mc42.columns}).sum(axis=1)
+        feat['mga_below_sma20_count'] = _below20
+        feat['mga_leadership_break'] = (_below20 >= max(4, int(len(_megas42) * 0.6))).astype(float)
+        feat['mga_mega_weak_index_firm'] = ((_mr42.mean(axis=1).rolling(5).mean() < 0) &
+                                            (_c42.pct_change(5) > 0)).astype(float)
+        _all_up_prev = (_mr42.shift(1) > 0).sum(axis=1) >= len(_megas42) - 1
+        feat['mga_blowoff_then_red'] = (_all_up_prev & ((_mr42 < 0).sum(axis=1) >= len(_megas42) - 1)).astype(float)
+
+    # ── 42F. 유형별 1일 선행 종합 경보 v2 ──
+    _pre2 = pd.Series(0.0, index=_c42.index)
+    for _k in ['fnd_funding_stress_high', 'fnd_cp_stress_flag', 'pcr_complacency_at_high',
+               'xast_no_hiding_place', 'xast_correlation_breakdown', 'btc_leads_equity_down',
+               'mga_gapdown_cluster', 'mga_single_airpocket', 'mga_leadership_break']:
+        if _k in feat.columns:
+            _pre2 = _pre2 + feat[_k].fillna(0)
+    feat['pre2_bytype_score'] = _pre2
+    feat['pre2_bytype_high'] = (_pre2 >= 3).astype(float)
+    feat['pre2_bytype_extreme'] = (_pre2 >= 5).astype(float)
+    feat['pre2_bytype_rising'] = (_pre2 > _pre2.shift(3)).astype(float)
+    for _p in [3, 5]:
+        feat[f'pre2_bytype_sum_{_p}d'] = _pre2.rolling(_p).sum()
+    feat['pre2_bytype_zscore_60'] = calc_zscore(_pre2, 60)
 
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
