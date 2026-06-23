@@ -9853,8 +9853,8 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 EVAL_START          = '2025-01-01'
 
-OOS_ENABLED         = False          # OOS 검증 on/off
-OOS_START           = '2025-10-01'   # 이 날부터 현재까지 = OOS 검증구간
+OOS_ENABLED         = True          # OOS 검증 on/off
+OOS_START           = '2026-01-01'   # 이 날부터 현재까지 = OOS 검증구간
 
 HORIZON_DAYS        = 1
 DRAWDOWN_LIMIT_BUY  = 0.01
@@ -9872,7 +9872,7 @@ ZSCORE_WINDOW       = 60      # z스코어 롤링 창(거래일). 약 3개월.
 ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
 # (2) OOS 안정성 가중: 지표 점수를 '전체기간 Wilson'에만 의존하지 말고,
 #     기간을 앞/뒤로 나눠 둘 다 좋은 지표(시간적으로 안정)에 가산점 → 과최적화 억제.
-USE_OOS_STABILITY   = False   # ★ 요청: OOS 관련 기능 전부 OFF
+USE_OOS_STABILITY   = True   # ★ 요청: OOS 관련 기능 전부 OFF
 OOS_STABILITY_WEIGHT = 0.3    # 안정성 가중 강도 (0=기존과 동일, 1=안정성 절반 반영)
 
 # ★ 큰 상승/하락 적중 가산점 (요청) — 지표 신호 중 '큰 움직임'을 맞춘 비율이 높을수록
@@ -10017,8 +10017,8 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 0                   # 최근 N개월을 OOS로 (이전달~현재)
-OOS_SELECT_BY_OOS_RETURN = False # ★ 요청: OOS 관련 기능 전부 OFF
+OOS_MONTHS = 6                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_SELECT_BY_OOS_RETURN = True # ★ 요청: OOS 관련 기능 전부 OFF
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
 #   충돌 패배·간발의 차로 앵커와 안 맞은 매수/매도를 '지표 가중치 조정'으로 보정.
