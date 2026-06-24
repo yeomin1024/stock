@@ -10017,7 +10017,7 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 6                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_MONTHS = 2                   # 최근 N개월을 OOS로 (이전달~현재)
 OOS_SELECT_BY_OOS_RETURN = True # ★ 요청: OOS 관련 기능 전부 OFF
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
@@ -10122,6 +10122,9 @@ RUN_REPLAY_TICKER = 'STX'          # 재현할 티커 (가장 최근 일반 분�
 #   결과물은 '날짜 폴더'(드라이브폴더/오늘날짜)에 저장. (먼저 drive.mount 필요)
 RUN_MODE4_DRIVE_DIR   = '/content/drive/MyDrive/ensemble_analysis'  # 드라이브 폴더
 RUN_MODE4_DATE_FOLDER = None       # 출력 날짜 폴더명. None=오늘 날짜 자동
+
+
+
 
 
 def wilson_lower(k, n, z):
@@ -11229,18 +11232,22 @@ def grid_search_ensemble(feat, close, buy_pool, sell_pool, *,
                         anc_buy_is, anc_sell_is, buy_w_k, sell_w_k)
                     if nt < min_trades: continue
                     if use_oos:
-                        (oos_tr, oos_nt, _onw, _osr, _osqr, _omdd,
+                        (oos_tr, oos_nt, oos_nw, _osr, _osqr, oos_mdd,
                          _one, _obc, _osc, _ostop,
                          _b1,_b2,_b3,_s1,_s2,_s3,
                          _x1,_x2,_x3,_x4) = _simulate_ensemble(
                             close_oos, buy_mat_oos, sell_mat_oos, v_b, v_s, cost,
                             safe_buy_oos, safe_sell_oos, eval_oos, sl_pct,
                             empty_anc, empty_anc, buy_w_k, sell_w_k)
-                        oos_return   = oos_tr
-                        oos_n_trades = oos_nt
+                        oos_return    = oos_tr
+                        oos_n_trades  = oos_nt
+                        oos_win_rate  = (oos_nw / oos_nt) if oos_nt > 0 else np.nan
+                        oos_max_dd    = oos_mdd
                     else:
-                        oos_return   = np.nan
-                        oos_n_trades = 0
+                        oos_return    = np.nan
+                        oos_n_trades  = 0
+                        oos_win_rate  = np.nan
+                        oos_max_dd    = np.nan
                     wr = nw / nt
                     avg = srr / nt
                     if nt > 1:
@@ -11284,7 +11291,8 @@ def grid_search_ensemble(feat, close, buy_pool, sell_pool, *,
                                   buy_sr, sell_sr, avg_sr, n_eval, n_stop,
                                   buy_acc, sell_acc,
                                   buy_match, sell_match, avg_match,
-                                  oos_return, oos_n_trades, combined_return))
+                                  oos_return, oos_n_trades,
+                                  oos_win_rate, oos_max_dd, combined_return))
 
     return pd.DataFrame(rows, columns=[
         'K_buy', 'K_sell', 'vote_buy', 'vote_sell',
@@ -11296,7 +11304,8 @@ def grid_search_ensemble(feat, close, buy_pool, sell_pool, *,
         'n_eval_days', 'n_stop_triggered',
         'buy_accuracy_plain', 'sell_accuracy_plain',
         'anchor_buy_match_rate', 'anchor_sell_match_rate', 'anchor_avg_match_rate',
-        'oos_return', 'oos_n_trades', 'combined_return',
+        'oos_return', 'oos_n_trades',
+        'oos_win_rate', 'oos_max_drawdown', 'combined_return',
     ])
 
 
@@ -12949,7 +12958,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  '🔧보정후매수매칭', '🔧보정후매도매칭',
                  '🔧보정채택', '🔧추가지표수',
                  '📍실행일포지션', '🎬실행일액션', '📍매수점수', '📍매도점수',
-                 '📅최근매수일', '💲진입가', '📅최근매도일', '💲매도가'])
+                 '📅최근매수일', '💲진입가', '📅최근매도일', '💲매도가',
+                 '🔬OOS승률', '🔬OOS최대손실', '🔬OOS수익률'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -13030,6 +13040,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'recent_buy_price'):.2f}"  if pd.notna(_g(row,'recent_buy_price'))  else '—'),
             (pd.Timestamp(_g(row,'recent_sell_date')).date() if pd.notna(_g(row,'recent_sell_date')) else '—'),
             (f"{_g(row,'recent_sell_price'):.2f}" if pd.notna(_g(row,'recent_sell_price')) else '—'),
+            (f"{_g(row,'oos_win_rate')*100:.1f}%"     if pd.notna(_g(row,'oos_win_rate'))     else '—'),
+            (f"{_g(row,'oos_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'oos_max_drawdown')) else '—'),
+            (f"{_g(row,'oos_return')*100:+.2f}%"      if pd.notna(_g(row,'oos_return'))      else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -13067,6 +13080,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if pd.notna(_cbm): ws.cell(r, 27).fill = _success_fill(_cbm)
         if pd.notna(_csm): ws.cell(r, 28).fill = _success_fill(_csm)
         if _capplied:      ws.cell(r, 29).fill = _HL
+        # 🔬 OOS 색칠 (39승률, 40최대손실, 41수익) — 맨 끝 3개 컬럼
+        _ow = _g(row, 'oos_win_rate'); _omd = _g(row, 'oos_max_drawdown'); _ortn = _g(row, 'oos_return')
+        if pd.notna(_ow):   ws.cell(r, 39).fill = _success_fill(_ow)
+        if pd.notna(_omd):  ws.cell(r, 40).fill = _mdd_fill(_omd, mdd_limit_pct)
+        if pd.notna(_ortn): ws.cell(r, 41).fill = _ret_fill(_ortn, bh_ret)
         # 실행일 포지션(31) 색칠 — 보유/현금
         if _g(row,'run_pos') == 1: ws.cell(r, 31).fill = _HOLD
         elif pd.notna(_g(row,'run_pos')): ws.cell(r, 31).fill = _CASH
@@ -13077,7 +13095,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9,
                             11, 11, 11, 13, 12, 12, 12, 12, 12, 12,
                             12, 13, 12, 13, 13, 13, 13, 10, 14,
-                            12, 18, 10, 10, 13, 10, 13, 10], 1):
+                            12, 18, 10, 10, 13, 10, 13, 10,
+                            11, 13, 12], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -13275,9 +13294,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _hdr(ws, 4, ['날짜', f'{ticker}종가',
                      f'매수카운트(/{oc["K_buy"]})', '매수ON', '매수성공',
                      f'매도카운트(/{oc["K_sell"]})', '매도ON', '매도성공',
-                     '포지션', '진입가', '⛔ 손절가', '보유일',
+                     '포지션', '액션', '진입가', '⛔ 손절가', '보유일',
                      '미실현%', '실현%', '누적자산', '누적수익%', '진행최대손실%',
-                     '매수공식', '매도공식', '액션'])
+                     '매수공식', '매도공식'])
         _write_daily_rows(ws, oos_daily, oc, mdd_limit_pct)
 
     # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
@@ -17383,6 +17402,9 @@ def get_generated_files():
     """이번 실행에서 만든 엑셀 파일 경로 목록 (노트북 셀에서 직접 다운로드용)."""
     return list(globals().get('_GENERATED_FILES', []))
 
+
+if __name__ == '__main__':
+    main()
 
 if __name__ == '__main__':
     main()
