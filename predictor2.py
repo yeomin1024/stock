@@ -9854,7 +9854,7 @@ except ImportError:
 EVAL_START          = '2025-01-01'
 
 OOS_ENABLED         = True          # OOS 검증 on/off
-OOS_START           = '2026-01-01'   # 이 날부터 현재까지 = OOS 검증구간
+OOS_START           = '2026-04-01'   # 이 날부터 현재까지 = OOS 검증구간
 
 HORIZON_DAYS        = 1
 DRAWDOWN_LIMIT_BUY  = 0.01
