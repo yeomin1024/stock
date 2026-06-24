@@ -14928,17 +14928,42 @@ def replay_grid_combo(filename, grid_number=None, *,
         for k in ['#', 'K_buy', 'vote_buy', 'K_sell', 'vote_sell']:
             if k not in hdr:
                 raise RuntimeError(f"'내부_그리드_통과'에 '{k}' 컬럼이 없습니다. (헤더: {list(hdr)})")
-        data_rows = []; star_row = None
+data_rows = []; star_rows = []
         for r in range(4, ws.max_row + 1):
             cell = ws.cell(r, hdr['#']).value
             if cell is None: continue
             if ws.cell(r, hdr['K_buy']).value in (None, ''): continue   # 데이터 행만
             data_rows.append(r)
-            if '★' in str(cell): star_row = r
-        if star_row is not None:
-            target = star_row
-            print(f"  ♻ 자동 재현 — '내부_그리드_통과'의 ★표시 행 사용 "
+            if '★' in str(cell): star_rows.append(r)
+
+        # 자동 ★(최적행)은 # 셀이 '굵은 빨강(C00000)'으로 강조됨 → 자동/수동 구분해 '수동 ★' 우선
+        def _is_auto_star(r):
+            try:
+                fnt = ws.cell(r, hdr['#']).font
+                col = (fnt.color.rgb if (fnt and fnt.color) else '') or ''
+                return bool(fnt and fnt.bold) and str(col).endswith('C00000')
+            except Exception:
+                return False
+        manual_stars = [r for r in star_rows if not _is_auto_star(r)]
+
+        if len(manual_stars) == 1:
+            target = manual_stars[0]
+            print(f"  ♻ 자동 재현 — 사용자가 찍은 ★행 사용 "
                   f"(#{str(ws.cell(target, hdr['#']).value).strip()})")
+        elif len(manual_stars) > 1:
+            _nums = [str(ws.cell(r, hdr['#']).value).strip() for r in manual_stars]
+            raise RuntimeError(
+                f"사용자가 찍은 ★가 {len(manual_stars)}개입니다: {', '.join(_nums)}\n"
+                f"  재현할 행 하나에만 ★를 남기고 나머지는 지운 뒤 다시 실행하세요.")
+        elif len(star_rows) == 1:
+            target = star_rows[0]
+            print(f"  ♻ 자동 재현 — ★표시(최적)행 사용 "
+                  f"(#{str(ws.cell(target, hdr['#']).value).strip()})")
+        elif len(star_rows) > 1:
+            _nums = [str(ws.cell(r, hdr['#']).value).strip() for r in star_rows]
+            raise RuntimeError(
+                f"'내부_그리드_통과'에 ★가 {len(star_rows)}개인데 자동/수동 구분이 안 됩니다: {', '.join(_nums)}\n"
+                f"  재현할 행 하나만 ★로 남기고 나머지는 지운 뒤 다시 실행하세요.")
         elif len(data_rows) == 1:
             target = data_rows[0]
             print(f"  ♻ 자동 재현 — ★ 없음, 데이터가 한 줄뿐 → 그 행 사용 "
