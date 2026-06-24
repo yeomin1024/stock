@@ -14928,7 +14928,7 @@ def replay_grid_combo(filename, grid_number=None, *,
         for k in ['#', 'K_buy', 'vote_buy', 'K_sell', 'vote_sell']:
             if k not in hdr:
                 raise RuntimeError(f"'내부_그리드_통과'에 '{k}' 컬럼이 없습니다. (헤더: {list(hdr)})")
-data_rows = []; star_rows = []
+        data_rows = []; star_rows = []
         for r in range(4, ws.max_row + 1):
             cell = ws.cell(r, hdr['#']).value
             if cell is None: continue
