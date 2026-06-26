@@ -10423,48 +10423,27 @@ def _eval_big_move_hits(close_arr, signal_arr, horizon, big_thr, is_buy):
 @njit(cache=True)
 def _compute_safe_arrays(close_arr, horizon, dd_limit, ru_limit):
     """
-    ★ First-Touch 방식 성공 판정 (변경됨).
-    각 날 i의 정답을 '익일 종가(close[i+1]) 진입 기준, 이후 horizon일 내에
-    +dd_limit(상승목표)와 -dd_limit(하락목표) 중 어느 쪽을 먼저 터치하는가'로 정한다.
-
-      safe_buy[i]=1  : 위(+dd_limit)를 먼저 터치 → '올랐어야 할 자리'(매수 정답)
-      safe_sell[i]=1 : 아래(-ru_limit)를 먼저 터치 → '내렸어야 할 자리'(매도 정답)
-      어느 쪽도 기간 내 미터치 시: 기간끝 종가 부호로 결정(>=0이면 up, <0이면 dn)
-
-    ※ dd_limit는 매수 상승목표(+) 겸 매도의 반대선, ru_limit는 매도 하락목표(-) 겸 매수 반대선.
-      기존 코드 호환 위해 인자 이름(dd_limit, ru_limit) 유지.
-      매수 판정에는 +dd_limit(목표) / -ru_limit(손절) 사용,
-      매도 판정에는 -ru_limit(목표) / +dd_limit(손절) 사용 — 대칭.
+    ★ 기준 변경(요청) — 정답일을 '신호 다음날 종가' 기준으로.
+      safe_buy[i]=1  : 다음날 종가가 신호일 종가 대비 +dd_limit(=1%) 이상 상승 → '올랐어야'(매수 정답)
+      safe_sell[i]=1 : 다음날 종가가 -ru_limit(=1%) 이상 하락 → '내렸어야'(매도 정답)
+      둘 다 아니면(미미한 변동) evaluable=0 → 성공/실패 평가에서 제외(부풀리기 방지).
+    ※ horizon 인자는 기존 호출 호환 위해 남겨두나 더는 사용하지 않음(다음날만 본다).
+      dd_limit=매수 상승목표(+1%), ru_limit=매도 하락목표(-1%).
     """
     n = close_arr.shape[0]
     safe_buy  = np.zeros(n, dtype=np.uint8)
     safe_sell = np.zeros(n, dtype=np.uint8)
     evaluable = np.zeros(n, dtype=np.uint8)
     for i in range(n - 1):
-        base = close_arr[i + 1]          # 익일 종가 = 진입 기준가
-        if base <= 0.0: continue
-        end = i + 1 + horizon
-        if end >= n: end = n - 1
-        if end <= i + 1: continue
-        # first-touch: +dd_limit(위) 와 -ru_limit(아래) 중 먼저 닿는 쪽
-        hit_up = 0
-        hit_dn = 0
-        for j in range(i + 2, end + 1):
-            r = close_arr[j] / base - 1.0
-            if r >= dd_limit:
-                hit_up = 1; break
-            if r <= -ru_limit:
-                hit_dn = 1; break
-        # ★ 기간 내 ±목표(±1%) 어느 쪽도 안 닿으면 → 변동이 미미한 날.
-        #   성공/실패 평가에서 아예 제외(evaluable=0). 기간끝 부호로 강제배정하지 않음(요청).
-        if hit_up == 0 and hit_dn == 0:
-            continue                      # evaluable[i] 그대로 0 → 평가 제외
-        evaluable[i] = 1
-        # 위를 먼저 터치 = 매수 정답(올랐어야), 아래 먼저 = 매도 정답(내렸어야)
-        if hit_up == 1:
-            safe_buy[i] = 1
-        if hit_dn == 1:
-            safe_sell[i] = 1
+        base = close_arr[i]
+        if base <= 0.0:
+            continue
+        ret = close_arr[i + 1] / base - 1.0
+        if ret >= dd_limit:
+            safe_buy[i] = 1; evaluable[i] = 1
+        elif ret <= -ru_limit:
+            safe_sell[i] = 1; evaluable[i] = 1
+        # else: 미미한 변동 → evaluable[i] 그대로 0 (평가 제외)
     return safe_buy, safe_sell, evaluable
 
 
