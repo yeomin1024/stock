@@ -9943,7 +9943,7 @@ WINRATE_TOLERANCE      = 0.04
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
 #   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
 VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
-VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+VERIFY_TOP_N             = 20000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
 
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
@@ -10017,7 +10017,7 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 1                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_MONTHS = 0                   # 최근 N개월을 OOS로 (이전달~현재)
 OOS_SELECT_BY_OOS_RETURN = False # ★ 요청: OOS 관련 기능 전부 OFF
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
@@ -10043,7 +10043,7 @@ ANCHOR_SELL_DATES = [
 ]
 
 SELECT_BY           = 'total_return'
-TOP_N_GRID_OUT      = 10000
+TOP_N_GRID_OUT      = 20000
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -10057,10 +10057,10 @@ META_GRID = {
 
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
-STAGE_PCT_RANGE   = [(10, 90)]
-STAGE_WILSON_Z    = [1.75]
+STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
+STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2]
+STAGE_CORR_LIMIT  = [0.2, 0.25]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
