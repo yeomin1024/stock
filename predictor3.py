@@ -9869,7 +9869,7 @@ MAX_INDICATORS      = 600
 #     시장 레짐이 바뀌어도 '평균 대비 몇 시그마'는 의미가 유지됨 → 미래 일반화에 강함.
 USE_ZSCORE_SIGNAL   = True    # True면 각 지표를 절대임계 + z스코어임계 두 방식으로 평가
 ZSCORE_WINDOW       = 60      # z스코어 롤링 창(거래일). 약 3개월.
-ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
+ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
 # (2) OOS 안정성 가중: 지표 점수를 '전체기간 Wilson'에만 의존하지 말고,
 #     기간을 앞/뒤로 나눠 둘 다 좋은 지표(시간적으로 안정)에 가산점 → 과최적화 억제.
 USE_OOS_STABILITY   = False   # ★ 요청: OOS 관련 기능 전부 OFF
@@ -10347,11 +10347,11 @@ def auto_compute_anchor_dates(dates, close, *,
 
 @njit
 def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
-    # ★ 기준 변경(요청): 매수신호 적중 = '신호 다음날 종가'가 '신호일 종가' 대비
-    #   +dd_limit(=1%) 이상 상승. (기존: 익일진입 후 horizon 낙폭 기준 → 다음날 종가 기준)
-    #   horizon 인자는 호환 위해 남겨두나 더는 사용하지 않음(다음날만 본다).
+    # ★ 기준(요청): 매수신호 적중 = '신호 다음날 종가'가 '신호일 종가' 대비 +dd_limit(=1%) 이상 상승.
+    #   ★ 앵커 오버라이드 제거(요청 A) — 앵커일이라도 다음날 +1% 못 오르면 '실패'.
+    #     → 성공률 100%면 '모든 신호가 실제로 다음날 +1% 상승'을 의미.
+    #   anchor_buy_arr / horizon 인자는 호출 호환 위해 남겨두나 더는 사용하지 않음.
     n = close_arr.shape[0]
-    use_anchor = anchor_buy_arr.shape[0] == n
     ns = 0; ok = 0; sum_ret = 0.0
     for i in range(n - 1):
         if signal_arr[i] != 1: continue
@@ -10360,19 +10360,17 @@ def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
         nxt_p = close_arr[i + 1]
         ret = nxt_p / base_p - 1.0
         ns += 1; sum_ret += ret
-        is_hit = ret >= dd_limit
-        if use_anchor and anchor_buy_arr[i] == 1:
-            is_hit = True
-        if is_hit: ok += 1
+        if ret >= dd_limit:
+            ok += 1
     return ns, ok, sum_ret
 
 
 @njit(cache=True)
 def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr):
-    # ★ 기준 변경(요청): 매도신호 적중 = '신호 다음날 종가'가 '신호일 종가' 대비
-    #   -ru_limit(=1%) 이상 하락. horizon 인자는 호환 위해 남겨두나 미사용.
+    # ★ 기준(요청): 매도신호 적중 = '신호 다음날 종가'가 '신호일 종가' 대비 -ru_limit(=1%) 이상 하락.
+    #   ★ 앵커 오버라이드 제거(요청 A) — 앵커일이라도 다음날 -1% 못 내리면 '실패'.
+    #   anchor_sell_arr / horizon 인자는 호출 호환 위해 남겨두나 미사용.
     n = close_arr.shape[0]
-    use_anchor = anchor_sell_arr.shape[0] == n
     ns = 0; ok = 0; sum_ret = 0.0
     for i in range(n - 1):
         if signal_arr[i] != 1: continue
@@ -10381,10 +10379,8 @@ def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr
         nxt_p = close_arr[i + 1]
         ret = nxt_p / base_p - 1.0
         ns += 1; sum_ret += ret
-        is_hit = ret <= -ru_limit
-        if use_anchor and anchor_sell_arr[i] == 1:
-            is_hit = True
-        if is_hit: ok += 1
+        if ret <= -ru_limit:
+            ok += 1
     return ns, ok, sum_ret
 
 
