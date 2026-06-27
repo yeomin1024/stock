@@ -9863,13 +9863,21 @@ RUNUP_LIMIT_SELL    = 0.01
 N_THRESHOLDS        = 400
 MAX_INDICATORS      = 600
 
+# ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
+#   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
+#         선발 기준을 점수(Wilson)→성공률 우선으로 바꿈. 가짜 100% 방지 위해 표본 가드 둠.
+POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
+POOL_SUCCESS_MIN_RATE  = 0.70      # 성공률 컷오프 — 이 이상만 풀 후보 (요청: 70%)
+POOL_SUCCESS_MIN_SIG   = 10        # 최소 신호수 — 소표본 가짜 100% 방지 (요청: 10)
+POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 넓은 분위 — pct 누락 방지(z스코어는 원래 pct무관).
+
 # ★ 미래 예측 정확도 강화 (요청) — 지표 신호 생성·평가 방식 보강.
 #   목적: 과거 적합이 아니라 '미래에도 유지되는 신호'를 우대해 매수/매도 시점 예측력↑.
 # (1) z-스코어 신호: 절대 임계 대신 롤링 z=(x-평균)/표준편차에도 임계를 걸어 신호 생성.
 #     시장 레짐이 바뀌어도 '평균 대비 몇 시그마'는 의미가 유지됨 → 미래 일반화에 강함.
 USE_ZSCORE_SIGNAL   = True    # True면 각 지표를 절대임계 + z스코어임계 두 방식으로 평가
 ZSCORE_WINDOW       = 60      # z스코어 롤링 창(거래일). 약 3개월.
-ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
+ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, -1.0, 1.0, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
 # (2) OOS 안정성 가중: 지표 점수를 '전체기간 Wilson'에만 의존하지 말고,
 #     기간을 앞/뒤로 나눠 둘 다 좋은 지표(시간적으로 안정)에 가산점 → 과최적화 억제.
 USE_OOS_STABILITY   = False   # ★ 요청: OOS 관련 기능 전부 OFF
@@ -10057,10 +10065,10 @@ META_GRID = {
 
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
-STAGE_PCT_RANGE   = [(5, 95), (10, 90)]
+STAGE_PCT_RANGE   = [(1, 99)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.25]
+STAGE_CORR_LIMIT  = [0.2]
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -10841,6 +10849,46 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
     return buy_df, sell_df
 
 
+def select_pool_by_success(feat, close, *, indicators, n_thresholds,
+                           horizon, dd_limit, ru_limit, wilson_z=1.0):
+    """★ 성공률 우선 풀 선출 (요청).
+       - 넓은 분위(POOL_SUCCESS_WIDE_PCT) + z-스코어 후보 전체로 모든 지표를 평가 →
+         pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 번에 평가(z스코어는 pct무관).
+       - 표본 가드: 신호수 >= POOL_SUCCESS_MIN_SIG (가짜 100% 방지).
+       - 성공률 >= POOL_SUCCESS_MIN_RATE 만 후보로.
+       - 성공률 내림차순 정렬(동률은 점수=Wilson 하한으로 타이브레이크).
+       - 지표당 1행(최고 성공률)만 남긴 dedup 버전도 함께 반환(시트/표시용).
+       반환: (buy_full, sell_full, buy_dedup, sell_dedup)
+         *_full   : 성공률순 정렬된 전체 후보행 (diversify_candidates에 그대로 투입 → 풀)
+         *_dedup  : 지표당 최고성공 1행 (성공률 우선 선출 시트용)
+    """
+    lo, hi = POOL_SUCCESS_WIDE_PCT
+    bdf, sdf = evaluate_buy_sell_scores(
+        feat, close, indicators=indicators, n_thresholds=n_thresholds,
+        pct_low=lo, pct_high=hi, horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
+        min_signals=POOL_SUCCESS_MIN_SIG, wilson_z=wilson_z,
+        anchor_buy_arr=None, anchor_sell_arr=None,   # 오버라이드 제거됨 → 앵커 무관(순수 다음날 ±1%)
+    )
+
+    def _filt(df):
+        if df is None or len(df) == 0:
+            return df.copy() if df is not None else df
+        d = df[(df['n_signals'] >= POOL_SUCCESS_MIN_SIG) &
+               (df['success_rate'] >= POOL_SUCCESS_MIN_RATE)].copy()
+        # 성공률 우선, 동률이면 점수(Wilson 하한)로 — 가짜 100% 강등
+        d = d.sort_values(['success_rate', 'score'], ascending=[False, False]).reset_index(drop=True)
+        return d
+
+    buy_full  = _filt(bdf)
+    sell_full = _filt(sdf)
+    # 지표당 1행(성공률 최고) — 이미 성공률순 정렬이라 first가 최고
+    buy_dedup  = (buy_full.drop_duplicates('indicator', keep='first').reset_index(drop=True)
+                  if buy_full is not None and len(buy_full) else buy_full)
+    sell_dedup = (sell_full.drop_duplicates('indicator', keep='first').reset_index(drop=True)
+                  if sell_full is not None and len(sell_full) else sell_full)
+    return buy_full, sell_full, buy_dedup, sell_dedup
+
+
 _ZCACHE = {}
 
 def _free_global_caches(*, keep_pool_map=False):
@@ -11327,6 +11375,27 @@ def meta_grid_search(feat, close, *,
         score_cache[key] = (buy_df, sell_df)
         return buy_df, sell_df
 
+    # ★ 성공률 우선 풀 (요청) — pct무관하게 1회만 계산해 모든 메타조합에서 공용.
+    succ_buy_full = succ_sell_full = succ_buy_dedup = succ_sell_dedup = None
+    if POOL_SELECT_BY_SUCCESS:
+        print(f"  ★ 성공률 우선 풀 선출 ON — 컷오프 {POOL_SUCCESS_MIN_RATE*100:.0f}%, "
+              f"최소신호 {POOL_SUCCESS_MIN_SIG}, 분위 {POOL_SUCCESS_WIDE_PCT}")
+        succ_buy_full, succ_sell_full, succ_buy_dedup, succ_sell_dedup = select_pool_by_success(
+            feat_score, close_score, indicators=indicators, n_thresholds=n_thresholds,
+            horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit, wilson_z=1.0)
+        _nb = 0 if succ_buy_dedup is None else len(succ_buy_dedup)
+        _ns = 0 if succ_sell_dedup is None else len(succ_sell_dedup)
+        print(f"     ▷ 성공률 {POOL_SUCCESS_MIN_RATE*100:.0f}%+ 지표: 매수 {_nb}개, 매도 {_ns}개")
+        # 시트용으로 전역 저장 (write_excel에서 읽음) — 기존 _LAST_*_MAP 패턴과 동일.
+        try:
+            globals()['_LAST_SUCCESS_POOL'] = (
+                succ_buy_dedup.copy()  if succ_buy_dedup  is not None else None,
+                succ_sell_dedup.copy() if succ_sell_dedup is not None else None)
+        except Exception:
+            globals()['_LAST_SUCCESS_POOL'] = (succ_buy_dedup, succ_sell_dedup)
+    else:
+        globals()['_LAST_SUCCESS_POOL'] = (None, None)
+
     combos = list(itertools.product(
         meta_grid['wilson_z'],
         meta_grid['pct_range'],
@@ -11380,8 +11449,15 @@ def meta_grid_search(feat, close, *,
             top_n_pool_buy=tnp, top_n_pool_sell=tnp,
         )
         buy_df, sell_df = get_scores(wz, pr, ms)
-        buy_pool  = diversify_candidates(feat_score, buy_df,  top_n=tnp, corr_limit=cl)
-        sell_pool = diversify_candidates(feat_score, sell_df, top_n=tnp, corr_limit=cl)
+        # ★ 성공률 우선 풀(요청): 켜져 있으면 점수순 대신 성공률순 후보를 풀 소스로 사용.
+        #   pct무관 공용 풀이라 어느 메타조합이든 같은 고성공 지표 집합에서 corr/top_n만 적용.
+        if POOL_SELECT_BY_SUCCESS and succ_buy_full is not None:
+            _src_buy  = succ_buy_full  if len(succ_buy_full)  else buy_df
+            _src_sell = succ_sell_full if len(succ_sell_full) else sell_df
+        else:
+            _src_buy, _src_sell = buy_df, sell_df
+        buy_pool  = diversify_candidates(feat_score, _src_buy,  top_n=tnp, corr_limit=cl)
+        sell_pool = diversify_candidates(feat_score, _src_sell, top_n=tnp, corr_limit=cl)
 
         # ★ 보정용 전체 후보 풀 저장 (요청) — top_n_pool은 그대로 100, 보정만 전체 탐색.
         #   diversify로 100개 추리기 전의 '점수 매긴 전체 후보(buy_df/sell_df)'를 메타키별 보관.
@@ -12381,7 +12457,7 @@ def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
         feat_vals[nm] = feat[nm].values if nm in feat.columns else np.full(len(dates), np.nan)
     ws.cell(1, 1).value = (f'{ticker} — {kind_label} 지표 신호 매트릭스 '
                            f'({len(inds)}개 지표 × {len(dates)}일)  '
-                           f'｜ 노랑=신호 충족, 초록행=앵커매수, 빨강행=앵커매도')
+                           f'｜ 노랑=신호(마지막날 제외·평가불가), 행 초록=전날대비+1%↑, 빨강=전날대비-1%↓')
     ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
     _hdr(ws, 3, ['날짜', f'{ticker}종가'] + inds)
     close_vals = (close_ser.reindex(dates).values if close_ser is not None
@@ -12389,8 +12465,15 @@ def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
     for di in range(len(dates)):
         r = di + 4
         dt = dates[di]
-        dtn = pd.Timestamp(dt).normalize()
-        row_fill = _BUY if dtn in anchor_buy_set else (_SELL if dtn in anchor_sell_set else None)
+        # ★ 행 색(요청): 앵커 무시 — '전날 대비' 종가 변동으로 색칠.
+        #   전날보다 +1% 이상 상승 → 초록 / -1% 이상 하락 → 빨강 / 그 사이 → 무색.
+        row_fill = None
+        if di >= 1 and pd.notna(close_vals[di]) and pd.notna(close_vals[di - 1]) and close_vals[di - 1] > 0:
+            _chg = close_vals[di] / close_vals[di - 1] - 1.0
+            if _chg >= 0.01:
+                row_fill = _BUY      # 전날 대비 +1%↑ → 초록
+            elif _chg <= -0.01:
+                row_fill = _SELL     # 전날 대비 -1%↓ → 빨강
         c = ws.cell(r, 1)
         c.value = dt.date() if hasattr(dt, 'date') else dt
         c.number_format = 'YYYY-MM-DD'; c.font = Font(size=8); c.border = _TH
@@ -12407,8 +12490,8 @@ def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
             if pd.notna(v):
                 cc.value = round(float(v), 4); cc.number_format = '0.0000'
             cc.font = Font(size=8); cc.border = _TH; cc.alignment = Alignment(horizontal='right')
-            if sig_cols[k][di] == 1:
-                cc.fill = _SIGY            # 신호 충족 → 노란색 (앵커행보다 우선)
+            if sig_cols[k][di] == 1 and di < len(dates) - 1:
+                cc.fill = _SIGY            # 신호 충족 → 노란색 (마지막 날은 다음날 없어 평가불가 → 제외, 앙상블과 일치)
             elif row_fill is not None:
                 cc.fill = row_fill
     widths = [12, 11] + [13] * len(inds)
@@ -13375,6 +13458,46 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                       _abset, _asset, ticker, '매도')
     except Exception as _eim:
         print(f"  ⚠ 지표 신호 매트릭스 시트 작성 실패(무시): {_eim}")
+
+    # ─── 7b. 성공률 우선 선출 시트 (요청) — 성공률로 먼저 뽑은 지표 정리 ───
+    try:
+        _sp = globals().get('_LAST_SUCCESS_POOL', (None, None))
+        _spb, _sps = (_sp if isinstance(_sp, (tuple, list)) and len(_sp) == 2 else (None, None))
+
+        def _write_success_sheet(ws, df, kind_label):
+            ws.cell(1, 1).value = (f'{ticker} — {kind_label} 성공률 우선 선출 '
+                                   f'(성공률 {POOL_SUCCESS_MIN_RATE*100:.0f}%+ · 최소신호 {POOL_SUCCESS_MIN_SIG} · '
+                                   f'분위 {POOL_SUCCESS_WIDE_PCT})  ※성공률 내림차순, 동률은 점수(Wilson)')
+            ws.cell(1, 1).font = Font(bold=True, size=11)
+            heads = ['순위', '지표', '방향', '임계치', '분위', '신호수', '성공수', '성공률', '점수']
+            _hdr(ws, 3, heads)
+            if df is None or len(df) == 0:
+                ws.cell(4, 1).value = '조건(성공률/최소신호)을 만족하는 지표 없음'
+                return
+            for i, (_, r) in enumerate(df.iterrows(), start=1):
+                rr = 3 + i
+                vals = [i, r['indicator'], r['direction'],
+                        round(float(r['threshold']), 6),
+                        (f"{float(r['pct_label']):.2f}" if r['direction'] in ('>=', '<=')
+                         else f"z{r['direction'][1:]}{r['pct_label']:g}"),
+                        int(r['n_signals']), int(r['n_success']),
+                        f"{float(r['success_rate'])*100:.2f}%",
+                        round(float(r['score']), 4)]
+                for ci, v in enumerate(vals, 1):
+                    c = ws.cell(rr, ci); c.value = v
+                    if ci == 8:  # 성공률 강조
+                        c.font = Font(bold=True)
+            widths = [6, 30, 8, 12, 12, 9, 9, 10, 10]
+            for ci, w in enumerate(widths, 1):
+                ws.column_dimensions[get_column_letter(ci)].width = w
+            ws.freeze_panes = 'A4'
+
+        ws = wb.create_sheet('성공률 우선 매수'); ws.sheet_view.showGridLines = False
+        _write_success_sheet(ws, _spb, '매수')
+        ws = wb.create_sheet('성공률 우선 매도'); ws.sheet_view.showGridLines = False
+        _write_success_sheet(ws, _sps, '매도')
+    except Exception as _esp:
+        print(f"  ⚠ 성공률 우선 선출 시트 작성 실패(무시): {_esp}")
 
     # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
     #   각 메타조합(wilson_z/pct/corr)이 선별한 매수·매도 지표 전체를 저장.
