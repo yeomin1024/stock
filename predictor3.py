@@ -9867,7 +9867,7 @@ MAX_INDICATORS      = 600
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
 #         선발 기준을 점수(Wilson)→성공률 우선으로 바꿈. 가짜 100% 방지 위해 표본 가드 둠.
 POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
-POOL_SUCCESS_MIN_RATE  = 0.70      # 성공률 컷오프 — 이 이상만 풀 후보 (요청: 70%)
+POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 — 이 이상만 풀 후보 (요청: 70%)
 POOL_SUCCESS_MIN_SIG   = 10        # 최소 신호수 — 소표본 가짜 100% 방지 (요청: 10)
 POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 넓은 분위 — pct 누락 방지(z스코어는 원래 pct무관).
 
