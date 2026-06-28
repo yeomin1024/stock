@@ -9860,16 +9860,18 @@ HORIZON_DAYS        = 1
 DRAWDOWN_LIMIT_BUY  = 0.01
 RUNUP_LIMIT_SELL    = 0.01
 
-N_THRESHOLDS        = 400
-MAX_INDICATORS      = 600
+N_THRESHOLDS        = 600
+MAX_INDICATORS      = 700
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
 #         선발 기준을 점수(Wilson)→성공률 우선으로 바꿈. 가짜 100% 방지 위해 표본 가드 둠.
 POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
-POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 — 이 이상만 풀 후보 (요청: 70%)
+POOL_SUCCESS_MIN_RATE  = 0.70      # 성공률 컷오프 — 이 이상만 풀 후보 (요청: 70%)
 POOL_SUCCESS_MIN_SIG   = 10        # 최소 신호수 — 소표본 가짜 100% 방지 (요청: 10)
-POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 넓은 분위 — pct 누락 방지(z스코어는 원래 pct무관).
+POOL_SUCCESS_WIDE_PCT  = (5, 95)   # 풀 평가용 분위 — 너무 극단(1,99)이면 신호 희소→거래 안 남. (5,95)로 완화.
+POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
+                                   #   (기존 K_BUY_RANGE는 10부터라 정예풀에선 거래 0 → 자동으로 이 값까지 낮춤)
 
 # ★ 미래 예측 정확도 강화 (요청) — 지표 신호 생성·평가 방식 보강.
 #   목적: 과거 적합이 아니라 '미래에도 유지되는 신호'를 우대해 매수/매도 시점 예측력↑.
@@ -9877,7 +9879,7 @@ POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 넓은 분위 — pct 누락 
 #     시장 레짐이 바뀌어도 '평균 대비 몇 시그마'는 의미가 유지됨 → 미래 일반화에 강함.
 USE_ZSCORE_SIGNAL   = True    # True면 각 지표를 절대임계 + z스코어임계 두 방식으로 평가
 ZSCORE_WINDOW       = 60      # z스코어 롤링 창(거래일). 약 3개월.
-ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, -1.0, 1.0, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
+ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
 # (2) OOS 안정성 가중: 지표 점수를 '전체기간 Wilson'에만 의존하지 말고,
 #     기간을 앞/뒤로 나눠 둘 다 좋은 지표(시간적으로 안정)에 가산점 → 과최적화 억제.
 USE_OOS_STABILITY   = False   # ★ 요청: OOS 관련 기능 전부 OFF
@@ -9890,8 +9892,8 @@ USE_BIG_MOVE_BONUS   = True   # True면 큰움직임 적중비율을 점수에 �
 BIG_MOVE_THRESHOLD   = 0.03   # 신호 뒤 horizon 내 유리방향 최대변동이 이 값(3%) 이상이면 '큰 움직임'
 BIG_MOVE_BONUS_WEIGHT = 0.5   # 가산 강도: score *= (1 + W * 큰움직임적중비율)
 
-K_BUY_RANGE         = [i for i in range(10, 100)]
-K_SELL_RANGE        = [i for i in range(10, 100)]
+K_BUY_RANGE         = [i for i in range(1, 100)]
+K_SELL_RANGE        = [i for i in range(1, 100)]
 VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
@@ -9899,7 +9901,7 @@ VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
 
 COST_PER_TRADE      = 0.004
 
-MIN_TRADES_DAILY    = 10
+MIN_TRADES_DAILY    = 2
 MAX_DRAWDOWN_LIMIT_PCT = None
 
 STOP_LOSS_PCT       = 0.05
@@ -9956,7 +9958,7 @@ VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
 #   None 이면 이 필터를 끈다. (단, 필터로 후보가 0개면 자동으로 필터를 완화해 최선을 고름)
-VERIFY_MAX_DRAWDOWN_LIMIT = None
+VERIFY_MAX_DRAWDOWN_LIMIT = -0.03
 
 # ★ 최종 선정 2차 밴드 (요청) — 실제 승률 밴드 후보 중, 실제 '평균 성공률' 최고에서
 #   이 값(3%p) 이내를 다시 후보로 두고, 그중 실제 수익률 최고를 선정.
@@ -10065,7 +10067,7 @@ META_GRID = {
 
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
-STAGE_PCT_RANGE   = [(1, 99)]
+STAGE_PCT_RANGE   = [(5, 95)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
 STAGE_CORR_LIMIT  = [0.2]
@@ -11393,6 +11395,21 @@ def meta_grid_search(feat, close, *,
                 succ_sell_dedup.copy() if succ_sell_dedup is not None else None)
         except Exception:
             globals()['_LAST_SUCCESS_POOL'] = (succ_buy_dedup, succ_sell_dedup)
+
+        # ★ K 하한 자동 인하 (요청) — 정예(희소) 풀은 K가 10부터면 동의 임계(K×vote)를 못 채워 거래 0.
+        #   K 하한을 POOL_SUCCESS_K_FLOOR까지 낮춰 소수 동의로도 신호가 나게 함(상한은 유지).
+        _kf = int(POOL_SUCCESS_K_FLOOR)
+        try:
+            _kbmax = max(k_buy_range)  if len(k_buy_range)  else 30
+            _ksmax = max(k_sell_range) if len(k_sell_range) else 30
+            if min(k_buy_range) > _kf:
+                k_buy_range  = list(range(_kf, _kbmax + 1))
+            if min(k_sell_range) > _kf:
+                k_sell_range = list(range(_kf, _ksmax + 1))
+            print(f"     ▷ 성공률 우선 풀 → K 하한 {_kf}로 인하 "
+                  f"(K_buy {min(k_buy_range)}~{max(k_buy_range)}, K_sell {min(k_sell_range)}~{max(k_sell_range)})")
+        except Exception as _ek:
+            print(f"     ⚠ K 하한 인하 실패(무시): {_ek}")
     else:
         globals()['_LAST_SUCCESS_POOL'] = (None, None)
 
