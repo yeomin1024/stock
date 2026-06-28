@@ -9857,19 +9857,19 @@ OOS_ENABLED         = False          # OOS 검증 on/off
 OOS_START           = '2025-10-01'   # 이 날부터 현재까지 = OOS 검증구간
 
 HORIZON_DAYS        = 1
-DRAWDOWN_LIMIT_BUY  = 0.01
-RUNUP_LIMIT_SELL    = 0.01
+DRAWDOWN_LIMIT_BUY  = 0.02
+RUNUP_LIMIT_SELL    = 0.02
 
-N_THRESHOLDS        = 600
-MAX_INDICATORS      = 700
+N_THRESHOLDS        = 800
+MAX_INDICATORS      = 1000
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
 #         선발 기준을 점수(Wilson)→성공률 우선으로 바꿈. 가짜 100% 방지 위해 표본 가드 둠.
 POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
-POOL_SUCCESS_MIN_RATE  = 0.70      # 성공률 컷오프 — 이 이상만 풀 후보 (요청: 70%)
+POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 — 이 이상만 풀 후보 (요청: 70%)
 POOL_SUCCESS_MIN_SIG   = 10        # 최소 신호수 — 소표본 가짜 100% 방지 (요청: 10)
-POOL_SUCCESS_WIDE_PCT  = (5, 95)   # 풀 평가용 분위 — 너무 극단(1,99)이면 신호 희소→거래 안 남. (5,95)로 완화.
+POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 분위 — 너무 극단(1,99)이면 신호 희소→거래 안 남. (5,95)로 완화.
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
                                    #   (기존 K_BUY_RANGE는 10부터라 정예풀에선 거래 0 → 자동으로 이 값까지 낮춤)
 
@@ -9983,8 +9983,8 @@ ANCHOR_MODE = True
 AUTO_ANCHOR = True
 AUTO_ANCHOR_WINDOW     = 1
 AUTO_ANCHOR_LOOKFORWARD = 1
-AUTO_ANCHOR_MIN_RISE   = 0.01
-AUTO_ANCHOR_MIN_DROP   = 0.01
+AUTO_ANCHOR_MIN_RISE   = 0.02
+AUTO_ANCHOR_MIN_DROP   = 0.02
 AUTO_ANCHOR_PRICE_TOLERANCE = 0.01
 AUTO_ANCHOR_MAX_DATES  = None
 
