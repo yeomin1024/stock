@@ -9856,9 +9856,9 @@ EVAL_START          = '2025-01-01'
 OOS_ENABLED         = False          # OOS 검증 on/off
 OOS_START           = '2026-04-01'   # ★ 순신호 K OOS 검증 시작 (올해 4월 이후=검증, 이전=학습)
 
-HORIZON_DAYS        = 1
-DRAWDOWN_LIMIT_BUY  = 0.02
-RUNUP_LIMIT_SELL    = 0.02
+HORIZON_DAYS        = 5
+DRAWDOWN_LIMIT_BUY  = 0.025
+RUNUP_LIMIT_SELL    = 0.025
 
 N_THRESHOLDS        = 800
 MAX_INDICATORS      = 1000
