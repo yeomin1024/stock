@@ -9855,9 +9855,9 @@ EVAL_START          = '2025-01-01'
 OOS_ENABLED         = False          # OOS 검증 on/off
 OOS_START           = '2025-10-01'   # 이 날부터 현재까지 = OOS 검증구간
 
-HORIZON_DAYS        = 5
-DRAWDOWN_LIMIT_BUY  = 0.25
-RUNUP_LIMIT_SELL    = 0.25
+HORIZON_DAYS        = 1
+DRAWDOWN_LIMIT_BUY  = 0.02
+RUNUP_LIMIT_SELL    = 0.02
 
 N_THRESHOLDS        = 800
 MAX_INDICATORS      = 1000
@@ -10356,39 +10356,51 @@ def auto_compute_anchor_dates(dates, close, *,
 
 @njit
 def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
-    # ★ 기준(요청): 매수신호 적중 = '신호 다음날 종가'가 '신호일 종가' 대비 +dd_limit(=1%) 이상 상승.
-    #   ★ 앵커 오버라이드 제거(요청 A) — 앵커일이라도 다음날 +1% 못 오르면 '실패'.
-    #     → 성공률 100%면 '모든 신호가 실제로 다음날 +1% 상승'을 의미.
-    #   anchor_buy_arr / horizon 인자는 호출 호환 위해 남겨두나 더는 사용하지 않음.
+    # ★ 기준(요청): 매수신호 적중 = 신호 후 'horizon일 이내'에 종가가 신호일 종가 대비
+    #   +dd_limit 이상 상승(기간 내 최고가 기준). horizon=1이면 '다음날', 5면 '5일 이내 어느 날이든 도달'.
+    #   ★ 앵커 오버라이드 없음 — 실제 도달 여부만으로 판정.
+    #   anchor_buy_arr 인자는 호출 호환 위해 남겨두나 미사용.
     n = close_arr.shape[0]
+    h = horizon if horizon >= 1 else 1
     ns = 0; ok = 0; sum_ret = 0.0
     for i in range(n - 1):
         if signal_arr[i] != 1: continue
         base_p = close_arr[i]
         if base_p <= 0.0: continue
-        nxt_p = close_arr[i + 1]
-        ret = nxt_p / base_p - 1.0
-        ns += 1; sum_ret += ret
-        if ret >= dd_limit:
+        end = i + h
+        if end > n - 1: end = n - 1
+        if end <= i: continue
+        max_ret = -1.0e18
+        for j in range(i + 1, end + 1):
+            r = close_arr[j] / base_p - 1.0
+            if r > max_ret: max_ret = r
+        ns += 1; sum_ret += max_ret
+        if max_ret >= dd_limit:
             ok += 1
     return ns, ok, sum_ret
 
 
 @njit(cache=True)
 def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr):
-    # ★ 기준(요청): 매도신호 적중 = '신호 다음날 종가'가 '신호일 종가' 대비 -ru_limit(=1%) 이상 하락.
-    #   ★ 앵커 오버라이드 제거(요청 A) — 앵커일이라도 다음날 -1% 못 내리면 '실패'.
-    #   anchor_sell_arr / horizon 인자는 호출 호환 위해 남겨두나 미사용.
+    # ★ 기준(요청): 매도신호 적중 = 신호 후 'horizon일 이내'에 종가가 신호일 종가 대비
+    #   -ru_limit 이상 하락(기간 내 최저가 기준). horizon=1이면 '다음날', 5면 '5일 이내'.
+    #   anchor_sell_arr 인자는 호출 호환 위해 남겨두나 미사용.
     n = close_arr.shape[0]
+    h = horizon if horizon >= 1 else 1
     ns = 0; ok = 0; sum_ret = 0.0
     for i in range(n - 1):
         if signal_arr[i] != 1: continue
         base_p = close_arr[i]
         if base_p <= 0.0: continue
-        nxt_p = close_arr[i + 1]
-        ret = nxt_p / base_p - 1.0
-        ns += 1; sum_ret += ret
-        if ret <= -ru_limit:
+        end = i + h
+        if end > n - 1: end = n - 1
+        if end <= i: continue
+        min_ret = 1.0e18
+        for j in range(i + 1, end + 1):
+            r = close_arr[j] / base_p - 1.0
+            if r < min_ret: min_ret = r
+        ns += 1; sum_ret += min_ret
+        if min_ret <= -ru_limit:
             ok += 1
     return ns, ok, sum_ret
 
@@ -10428,14 +10440,15 @@ def _eval_big_move_hits(close_arr, signal_arr, horizon, big_thr, is_buy):
 @njit(cache=True)
 def _compute_safe_arrays(close_arr, horizon, dd_limit, ru_limit):
     """
-    ★ 기준 변경(요청) — 정답일을 '신호 다음날 종가' 기준으로.
-      safe_buy[i]=1  : 다음날 종가가 신호일 종가 대비 +dd_limit(=1%) 이상 상승 → '올랐어야'(매수 정답)
-      safe_sell[i]=1 : 다음날 종가가 -ru_limit(=1%) 이상 하락 → '내렸어야'(매도 정답)
-      둘 다 아니면(미미한 변동) evaluable=0 → 성공/실패 평가에서 제외(부풀리기 방지).
-    ※ horizon 인자는 기존 호출 호환 위해 남겨두나 더는 사용하지 않음(다음날만 본다).
-      dd_limit=매수 상승목표(+1%), ru_limit=매도 하락목표(-1%).
+    ★ 정답일 — 신호 후 'horizon일 이내' 종가 변동 기준.
+      safe_buy[i]=1  : horizon일 이내 최고가가 신호일 종가 대비 +dd_limit 이상 상승 → '올랐어야'(매수 정답)
+      safe_sell[i]=1 : horizon일 이내 최저가가 -ru_limit 이상 하락 → '내렸어야'(매도 정답)
+      둘 다 아니면 evaluable=0 → 성공/실패 평가에서 제외.
+      (매수·매도 둘 다 가능하면 둘 다 1 — 변동성 큰 구간)
+      horizon=1이면 다음날만, 5면 5일 이내.
     """
     n = close_arr.shape[0]
+    h = horizon if horizon >= 1 else 1
     safe_buy  = np.zeros(n, dtype=np.uint8)
     safe_sell = np.zeros(n, dtype=np.uint8)
     evaluable = np.zeros(n, dtype=np.uint8)
@@ -10443,12 +10456,20 @@ def _compute_safe_arrays(close_arr, horizon, dd_limit, ru_limit):
         base = close_arr[i]
         if base <= 0.0:
             continue
-        ret = close_arr[i + 1] / base - 1.0
-        if ret >= dd_limit:
+        end = i + h
+        if end > n - 1: end = n - 1
+        if end <= i: continue
+        max_ret = -1.0e18
+        min_ret = 1.0e18
+        for j in range(i + 1, end + 1):
+            r = close_arr[j] / base - 1.0
+            if r > max_ret: max_ret = r
+            if r < min_ret: min_ret = r
+        if max_ret >= dd_limit:
             safe_buy[i] = 1; evaluable[i] = 1
-        elif ret <= -ru_limit:
+        if min_ret <= -ru_limit:
             safe_sell[i] = 1; evaluable[i] = 1
-        # else: 미미한 변동 → evaluable[i] 그대로 0 (평가 제외)
+        # 둘 다 미달이면 evaluable 0 (평가 제외)
     return safe_buy, safe_sell, evaluable
 
 
@@ -12464,6 +12485,78 @@ def _norm_date_set(dlist):
     return s
 
 
+def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
+                         ticker='', max_k_candidates=400):
+    """★ 순신호 K 최적화 (요청):
+       b(순신호) = 매수카운트 − 매도카운트 (그날 풀 지표 중 신호 켜진 개수의 차).
+       규칙: net > K 이면 롱(매수/보유), net ≤ K 이면 청산(현금).  신호는 다음날 반영.
+       K는 '누적수익률 최고'로 선택. (단순 롱/현금 백테스트 — 손절 미적용, 비교용)
+       반환 dict(best_k, best_cum, best_days_long, k_table, daily, bh_cum, ...)
+    """
+    if feat is None or close_ser is None or buy_pool is None or sell_pool is None:
+        return None
+    try:
+        dates = list(feat.index)
+        n = len(dates)
+        if n < 5 or len(buy_pool) == 0 or len(sell_pool) == 0:
+            return None
+        close = pd.Series(close_ser).reindex(dates).values.astype(float)
+
+        buy_count  = np.zeros(n); sell_count = np.zeros(n)
+        for _, row in buy_pool.iterrows():
+            try:    buy_count  += np.nan_to_num(_to_signal_array(feat, row).astype(float))
+            except Exception: pass
+        for _, row in sell_pool.iterrows():
+            try:    sell_count += np.nan_to_num(_to_signal_array(feat, row).astype(float))
+            except Exception: pass
+        net = buy_count - sell_count
+
+        r = np.zeros(n)
+        for t in range(1, n):
+            p0 = close[t-1]; p1 = close[t]
+            if p0 and p0 > 0 and not np.isnan(p1) and not np.isnan(p0):
+                r[t] = p1 / p0 - 1.0
+        bh_cum = float(np.prod(1.0 + r) - 1.0)   # Buy&Hold (항상 롱)
+
+        kmin = int(np.floor(np.nanmin(net))); kmax = int(np.ceil(np.nanmax(net)))
+        if kmax <= kmin: kmax = kmin + 1
+        if (kmax - kmin) > max_k_candidates:
+            ks = sorted(set(np.linspace(kmin, kmax, max_k_candidates).astype(int).tolist()))
+        else:
+            ks = list(range(kmin, kmax + 1))
+
+        table = []; best = None
+        for K in ks:
+            pos = np.zeros(n)
+            for t in range(1, n):
+                if net[t-1] > K: pos[t] = 1.0
+            sret = pos * r
+            cum = float(np.prod(1.0 + sret) - 1.0)
+            days_long = int(pos.sum())
+            table.append((int(K), cum, days_long))
+            if best is None or cum > best[1]:
+                best = (int(K), cum, days_long)
+
+        best_k = best[0]
+        pos = np.zeros(n)
+        for t in range(1, n):
+            if net[t-1] > best_k: pos[t] = 1.0
+        daily = pd.DataFrame({
+            'date': dates, 'price': close,
+            'buy_count':  buy_count.astype(int),
+            'sell_count': sell_count.astype(int),
+            'net':        net.astype(int),
+            'position':   pos.astype(int),
+        })
+        return {'best_k': best_k, 'best_cum': best[1], 'best_days_long': best[2],
+                'k_table': table, 'daily': daily, 'bh_cum': bh_cum,
+                'buy_pool_n': len(buy_pool), 'sell_pool_n': len(sell_pool),
+                'net_min': kmin, 'net_max': kmax}
+    except Exception as _e:
+        print(f"  ⚠ 순신호 K 최적화 실패(무시): {_e}")
+        return None
+
+
 def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
                                    anchor_buy_set, anchor_sell_set,
                                    ticker, kind_label):
@@ -12493,20 +12586,28 @@ def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
     for di in range(len(dates)):
         r = di + 4
         dt = dates[di]
-        # ★ 행 색(요청): 앵커 무시 — '다음날 기준' 으로 색칠.
-        #   다음날 종가가 이 날 대비 +DRAWDOWN_LIMIT_BUY 이상 상승 → 이 날이 '매수자리' → 초록
-        #   다음날 종가가 -RUNUP_LIMIT_SELL 이상 하락 → 이 날이 '매도자리' → 빨강
-        #   (= 그 날 신호의 정답. 매수신호가 초록행이면 다음날 올라 성공, 매도신호가 빨강행이면 성공)
-        #   마지막 날은 다음날이 없어 무색.
+        # ★ 행 색(요청): 앵커 무시 — '신호 후 horizon일 이내' 종가 변동으로 색칠.
+        #   horizon일 이내 최고가가 +DRAWDOWN_LIMIT_BUY 이상 → 이 날이 매수자리 → 초록
+        #   horizon일 이내 최저가가 -RUNUP_LIMIT_SELL 이상 하락 → 매도자리 → 빨강
+        #   (= 그 날 신호의 정답. horizon=1이면 다음날, 5면 5일 이내)
         _ddb = float(globals().get('DRAWDOWN_LIMIT_BUY', 0.01))
         _rus = float(globals().get('RUNUP_LIMIT_SELL', 0.01))
+        _hz = int(globals().get('HORIZON_DAYS', 1)); _hz = _hz if _hz >= 1 else 1
         row_fill = None
-        if di < len(dates) - 1 and pd.notna(close_vals[di]) and pd.notna(close_vals[di + 1]) and close_vals[di] > 0:
-            _ret = close_vals[di + 1] / close_vals[di] - 1.0
-            if _ret >= _ddb:
-                row_fill = _BUY      # 다음날 +상승 → 이 날이 매수자리 → 초록
-            elif _ret <= -_rus:
-                row_fill = _SELL     # 다음날 -하락 → 이 날이 매도자리 → 빨강
+        if di < len(dates) - 1 and pd.notna(close_vals[di]) and close_vals[di] > 0:
+            _base = close_vals[di]
+            _end = di + _hz
+            if _end > len(dates) - 1: _end = len(dates) - 1
+            _mx = -1.0e18; _mn = 1.0e18
+            for _j in range(di + 1, _end + 1):
+                if pd.notna(close_vals[_j]):
+                    _r = close_vals[_j] / _base - 1.0
+                    if _r > _mx: _mx = _r
+                    if _r < _mn: _mn = _r
+            if _mx >= _ddb:
+                row_fill = _BUY      # horizon 내 +상승 도달 → 매수자리 → 초록
+            elif _mn <= -_rus:
+                row_fill = _SELL     # horizon 내 -하락 도달 → 매도자리 → 빨강
         c = ws.cell(r, 1)
         c.value = dt.date() if hasattr(dt, 'date') else dt
         c.number_format = 'YYYY-MM-DD'; c.font = Font(size=8); c.border = _TH
@@ -13531,6 +13632,64 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _write_success_sheet(ws, _sps, '매도')
     except Exception as _esp:
         print(f"  ⚠ 성공률 우선 선출 시트 작성 실패(무시): {_esp}")
+
+    # ─── 7c. 순신호 K 최적화 시트 (요청) — net=매수카운트−매도카운트, net>K면 롱 ───
+    try:
+        _ns = _net_signal_k_search(feat, close_full, buy_pool, sell_pool, ticker=ticker)
+        if _ns is not None:
+            ws = wb.create_sheet('순신호 K최적화'); ws.sheet_view.showGridLines = False
+            ws.cell(1, 1).value = (
+                f'{ticker} — 순신호 K 최적화  '
+                f'｜ net=매수카운트−매도카운트, net>K면 롱·아니면 현금(다음날 반영), K=누적수익 최고로 선택')
+            ws.cell(1, 1).font = Font(bold=True, size=11)
+            # 요약
+            ws.cell(3, 1).value = '★ 최적 K';            ws.cell(3, 2).value = _ns['best_k']
+            ws.cell(3, 1).font = Font(bold=True); ws.cell(3, 2).font = Font(bold=True, color='C00000')
+            ws.cell(4, 1).value = '전략 누적수익률';      ws.cell(4, 2).value = f"{_ns['best_cum']*100:+.2f}%"
+            ws.cell(5, 1).value = 'Buy&Hold 누적수익률';  ws.cell(5, 2).value = f"{_ns['bh_cum']*100:+.2f}%"
+            ws.cell(6, 1).value = '롱 보유일수';          ws.cell(6, 2).value = f"{_ns['best_days_long']}일"
+            ws.cell(7, 1).value = '풀 크기(매수/매도)';   ws.cell(7, 2).value = f"{_ns['buy_pool_n']} / {_ns['sell_pool_n']}"
+            ws.cell(8, 1).value = 'net 범위';             ws.cell(8, 2).value = f"{_ns['net_min']} ~ {_ns['net_max']}"
+
+            # K vs 수익 곡선 표 (왼쪽)
+            _hdr(ws, 10, ['K', '누적수익%', '롱일수'])
+            for i, (K, cum, dl) in enumerate(_ns['k_table']):
+                rr = 11 + i
+                ws.cell(rr, 1).value = K
+                ws.cell(rr, 2).value = round(cum * 100, 2)
+                ws.cell(rr, 3).value = dl
+                if K == _ns['best_k']:
+                    for cc in (1, 2, 3):
+                        ws.cell(rr, cc).fill = PatternFill('solid', fgColor='FFF2CC')
+                        ws.cell(rr, cc).font = Font(bold=True)
+
+            # 일별 a(주가)/b(순신호)/포지션 표 (오른쪽, col5~)
+            d = _ns['daily']
+            _hdr2_cols = ['날짜', f'{ticker}종가(a)', '매수카운트', '매도카운트', '순신호 net(b)', f'포지션(net>{_ns["best_k"]})']
+            for ci, h in enumerate(_hdr2_cols, start=5):
+                c = ws.cell(10, ci); c.value = h; c.fill = _HDR; c.font = _WB_
+            for i in range(len(d)):
+                rr = 11 + i
+                row = d.iloc[i]
+                ws.cell(rr, 5).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+                ws.cell(rr, 6).value = (round(float(row['price']), 2) if pd.notna(row['price']) else None)
+                ws.cell(rr, 7).value = int(row['buy_count'])
+                ws.cell(rr, 8).value = int(row['sell_count'])
+                ws.cell(rr, 9).value = int(row['net'])
+                ws.cell(rr, 10).value = int(row['position'])
+                # 롱 포지션이면 연초록, 순신호 부호로 net 셀 색
+                if int(row['position']) == 1:
+                    ws.cell(rr, 10).fill = PatternFill('solid', fgColor='C6EFCE')
+                if int(row['net']) > _ns['best_k']:
+                    ws.cell(rr, 9).fill = PatternFill('solid', fgColor='C6EFCE')
+                elif int(row['net']) < _ns['best_k']:
+                    ws.cell(rr, 9).fill = PatternFill('solid', fgColor='FFC7CE')
+            for ci, w in enumerate([6, 12, 8, 2, 12, 13, 12, 12, 13, 16], 1):
+                ws.column_dimensions[get_column_letter(ci)].width = w
+            ws.freeze_panes = 'A11'
+            print(f"  ✓ 순신호 K최적화: 최적 K={_ns['best_k']}, 전략 {_ns['best_cum']*100:+.1f}% vs B&H {_ns['bh_cum']*100:+.1f}%")
+    except Exception as _ek:
+        print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
 
     # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
     #   각 메타조합(wilson_z/pct/corr)이 선별한 매수·매도 지표 전체를 저장.
