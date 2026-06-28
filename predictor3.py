@@ -9787,7 +9787,6 @@ def _iv_autorun():
     print("\n" + "=" * 60)
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
 
-
 # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
@@ -9867,9 +9866,9 @@ MAX_INDICATORS      = 1000
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
 #         선발 기준을 점수(Wilson)→성공률 우선으로 바꿈. 가짜 100% 방지 위해 표본 가드 둠.
 POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
-POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 — 이 이상만 풀 후보 (요청: 70%)
+POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 (요청: 0.60)
 POOL_SUCCESS_MIN_SIG   = 10        # 최소 신호수 — 소표본 가짜 100% 방지 (요청: 10)
-POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 분위 — 너무 극단(1,99)이면 신호 희소→거래 안 남. (5,95)로 완화.
+POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 분위 (요청: 1,99)
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
                                    #   (기존 K_BUY_RANGE는 10부터라 정예풀에선 거래 0 → 자동으로 이 값까지 낮춤)
 
@@ -9879,7 +9878,7 @@ POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정�
 #     시장 레짐이 바뀌어도 '평균 대비 몇 시그마'는 의미가 유지됨 → 미래 일반화에 강함.
 USE_ZSCORE_SIGNAL   = True    # True면 각 지표를 절대임계 + z스코어임계 두 방식으로 평가
 ZSCORE_WINDOW       = 60      # z스코어 롤링 창(거래일). 약 3개월.
-ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5]  # z 임계 후보 (음수=하단이탈, 양수=상단)
+ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5]  # z 임계 후보 (요청 확장)
 # (2) OOS 안정성 가중: 지표 점수를 '전체기간 Wilson'에만 의존하지 말고,
 #     기간을 앞/뒤로 나눠 둘 다 좋은 지표(시간적으로 안정)에 가산점 → 과최적화 억제.
 USE_OOS_STABILITY   = False   # ★ 요청: OOS 관련 기능 전부 OFF
@@ -9892,8 +9891,8 @@ USE_BIG_MOVE_BONUS   = True   # True면 큰움직임 적중비율을 점수에 �
 BIG_MOVE_THRESHOLD   = 0.03   # 신호 뒤 horizon 내 유리방향 최대변동이 이 값(3%) 이상이면 '큰 움직임'
 BIG_MOVE_BONUS_WEIGHT = 0.5   # 가산 강도: score *= (1 + W * 큰움직임적중비율)
 
-K_BUY_RANGE         = [i for i in range(1, 100)]
-K_SELL_RANGE        = [i for i in range(1, 100)]
+K_BUY_RANGE         = [i for i in range(10, 100)]
+K_SELL_RANGE        = [i for i in range(10, 100)]
 VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
@@ -9901,7 +9900,7 @@ VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
 
 COST_PER_TRADE      = 0.004
 
-MIN_TRADES_DAILY    = 2
+MIN_TRADES_DAILY    = 10
 MAX_DRAWDOWN_LIMIT_PCT = None
 
 STOP_LOSS_PCT       = 0.05
@@ -9983,8 +9982,8 @@ ANCHOR_MODE = True
 AUTO_ANCHOR = True
 AUTO_ANCHOR_WINDOW     = 1
 AUTO_ANCHOR_LOOKFORWARD = 1
-AUTO_ANCHOR_MIN_RISE   = 0.02
-AUTO_ANCHOR_MIN_DROP   = 0.02
+AUTO_ANCHOR_MIN_RISE   = 0.01
+AUTO_ANCHOR_MIN_DROP   = 0.01
 AUTO_ANCHOR_PRICE_TOLERANCE = 0.01
 AUTO_ANCHOR_MAX_DATES  = None
 
@@ -10027,7 +10026,7 @@ CATBOOST_OOS_FRACTION   = 0.2    # ★ 마지막 N%는 학습에서 빼고 '진�
 # ★ OOS(out-of-sample) 검증 기간 (요청) — 최근 이 개월은 학습/탐색에서 빼고,
 #   후보 그리드를 이 기간에서만 백테스트해 'OOS 수익/정확도'를 측정.
 #   OOS 수익이 가장 높은 조합을 최종 선정 → 미래 일반화에 가까운 선택.
-OOS_MONTHS = 0                   # 최근 N개월을 OOS로 (이전달~현재)
+OOS_MONTHS = 1                   # 최근 N개월을 OOS로 (이전달~현재)
 OOS_SELECT_BY_OOS_RETURN = False # ★ 요청: OOS 관련 기능 전부 OFF
 
 # ★ 앵커 미매칭 보정 (요청) — 최적 그리드 선정 후, CatBoost 보정 '전'에 실행.
@@ -10846,8 +10845,25 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
 
     cols = ['indicator', 'direction', 'pct_label', 'threshold',
             'n_signals', 'n_success', 'success_rate', 'avg_extreme', 'score']
-    buy_df  = pd.DataFrame(buy_rows,  columns=cols).sort_values('score', ascending=False).reset_index(drop=True)
-    sell_df = pd.DataFrame(sell_rows, columns=cols).sort_values('score', ascending=False).reset_index(drop=True)
+    buy_df  = pd.DataFrame(buy_rows,  columns=cols)
+    sell_df = pd.DataFrame(sell_rows, columns=cols)
+    if globals().get('POOL_SELECT_BY_SUCCESS', False):
+        # ★ 성공률 우선(요청) — 모든 풀 경로 공통 처리:
+        #   ① 지표당 '최고 성공률' 1행만 남김(중복 임계 제거) ② 성공률 내림차순 정렬(동률은 점수).
+        #   하드 컷오프(70%)는 여기 두지 않음 — 풀이 비어 거래 0이 되지 않게 best-available로 채움.
+        #   (70% 컷오프는 '성공률 우선' 시트 표시용으로만 적용)
+        def _succ_rank(df):
+            if df is None or len(df) == 0:
+                return (df.sort_values('score', ascending=False).reset_index(drop=True)
+                        if df is not None else df)
+            d = df.sort_values(['success_rate', 'score'], ascending=[False, False])
+            d = d.drop_duplicates('indicator', keep='first').reset_index(drop=True)
+            return d
+        buy_df  = _succ_rank(buy_df)
+        sell_df = _succ_rank(sell_df)
+    else:
+        buy_df  = buy_df.sort_values('score', ascending=False).reset_index(drop=True)
+        sell_df = sell_df.sort_values('score', ascending=False).reset_index(drop=True)
     return buy_df, sell_df
 
 
@@ -11466,15 +11482,10 @@ def meta_grid_search(feat, close, *,
             top_n_pool_buy=tnp, top_n_pool_sell=tnp,
         )
         buy_df, sell_df = get_scores(wz, pr, ms)
-        # ★ 성공률 우선 풀(요청): 켜져 있으면 점수순 대신 성공률순 후보를 풀 소스로 사용.
-        #   pct무관 공용 풀이라 어느 메타조합이든 같은 고성공 지표 집합에서 corr/top_n만 적용.
-        if POOL_SELECT_BY_SUCCESS and succ_buy_full is not None:
-            _src_buy  = succ_buy_full  if len(succ_buy_full)  else buy_df
-            _src_sell = succ_sell_full if len(succ_sell_full) else sell_df
-        else:
-            _src_buy, _src_sell = buy_df, sell_df
-        buy_pool  = diversify_candidates(feat_score, _src_buy,  top_n=tnp, corr_limit=cl)
-        sell_pool = diversify_candidates(feat_score, _src_sell, top_n=tnp, corr_limit=cl)
+        # ★ buy_df/sell_df는 (성공률 우선 ON이면) evaluate_buy_sell_scores에서
+        #   이미 '지표당 1행·성공률 내림차순'으로 정리됨 → diversify가 성공률 우선 풀을 만듦.
+        buy_pool  = diversify_candidates(feat_score, buy_df,  top_n=tnp, corr_limit=cl)
+        sell_pool = diversify_candidates(feat_score, sell_df, top_n=tnp, corr_limit=cl)
 
         # ★ 보정용 전체 후보 풀 저장 (요청) — top_n_pool은 그대로 100, 보정만 전체 탐색.
         #   diversify로 100개 추리기 전의 '점수 매긴 전체 후보(buy_df/sell_df)'를 메타키별 보관.
@@ -12474,7 +12485,7 @@ def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
         feat_vals[nm] = feat[nm].values if nm in feat.columns else np.full(len(dates), np.nan)
     ws.cell(1, 1).value = (f'{ticker} — {kind_label} 지표 신호 매트릭스 '
                            f'({len(inds)}개 지표 × {len(dates)}일)  '
-                           f'｜ 노랑=신호(마지막날 제외·평가불가), 행 초록=전날대비+1%↑, 빨강=전날대비-1%↓')
+                           f'｜ 노랑=신호(마지막날 제외·평가불가), 행 초록=다음날↑(매수자리), 빨강=다음날↓(매도자리)')
     ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
     _hdr(ws, 3, ['날짜', f'{ticker}종가'] + inds)
     close_vals = (close_ser.reindex(dates).values if close_ser is not None
@@ -12482,15 +12493,20 @@ def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
     for di in range(len(dates)):
         r = di + 4
         dt = dates[di]
-        # ★ 행 색(요청): 앵커 무시 — '전날 대비' 종가 변동으로 색칠.
-        #   전날보다 +1% 이상 상승 → 초록 / -1% 이상 하락 → 빨강 / 그 사이 → 무색.
+        # ★ 행 색(요청): 앵커 무시 — '다음날 기준' 으로 색칠.
+        #   다음날 종가가 이 날 대비 +DRAWDOWN_LIMIT_BUY 이상 상승 → 이 날이 '매수자리' → 초록
+        #   다음날 종가가 -RUNUP_LIMIT_SELL 이상 하락 → 이 날이 '매도자리' → 빨강
+        #   (= 그 날 신호의 정답. 매수신호가 초록행이면 다음날 올라 성공, 매도신호가 빨강행이면 성공)
+        #   마지막 날은 다음날이 없어 무색.
+        _ddb = float(globals().get('DRAWDOWN_LIMIT_BUY', 0.01))
+        _rus = float(globals().get('RUNUP_LIMIT_SELL', 0.01))
         row_fill = None
-        if di >= 1 and pd.notna(close_vals[di]) and pd.notna(close_vals[di - 1]) and close_vals[di - 1] > 0:
-            _chg = close_vals[di] / close_vals[di - 1] - 1.0
-            if _chg >= 0.01:
-                row_fill = _BUY      # 전날 대비 +1%↑ → 초록
-            elif _chg <= -0.01:
-                row_fill = _SELL     # 전날 대비 -1%↓ → 빨강
+        if di < len(dates) - 1 and pd.notna(close_vals[di]) and pd.notna(close_vals[di + 1]) and close_vals[di] > 0:
+            _ret = close_vals[di + 1] / close_vals[di] - 1.0
+            if _ret >= _ddb:
+                row_fill = _BUY      # 다음날 +상승 → 이 날이 매수자리 → 초록
+            elif _ret <= -_rus:
+                row_fill = _SELL     # 다음날 -하락 → 이 날이 매도자리 → 빨강
         c = ws.cell(r, 1)
         c.value = dt.date() if hasattr(dt, 'date') else dt
         c.number_format = 'YYYY-MM-DD'; c.font = Font(size=8); c.border = _TH
@@ -17646,3 +17662,4 @@ def get_generated_files():
 
 if __name__ == '__main__':
     main()
+
