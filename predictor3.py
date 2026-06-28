@@ -9855,9 +9855,9 @@ EVAL_START          = '2025-01-01'
 OOS_ENABLED         = False          # OOS 검증 on/off
 OOS_START           = '2025-10-01'   # 이 날부터 현재까지 = OOS 검증구간
 
-HORIZON_DAYS        = 5
-DRAWDOWN_LIMIT_BUY  = 0.025
-RUNUP_LIMIT_SELL    = 0.025
+HORIZON_DAYS        = 1
+DRAWDOWN_LIMIT_BUY  = 0.02
+RUNUP_LIMIT_SELL    = 0.02
 
 N_THRESHOLDS        = 800
 MAX_INDICATORS      = 1000
