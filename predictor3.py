@@ -10870,16 +10870,33 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
     buy_df  = pd.DataFrame(buy_rows,  columns=cols)
     sell_df = pd.DataFrame(sell_rows, columns=cols)
     if globals().get('POOL_SELECT_BY_SUCCESS', False):
-        # ★ 성공률 우선(요청) — 모든 풀 경로 공통 처리:
-        #   ① 지표당 '최고 성공률' 1행만 남김(중복 임계 제거) ② 성공률 내림차순 정렬(동률은 점수).
-        #   하드 컷오프(70%)는 여기 두지 않음 — 풀이 비어 거래 0이 되지 않게 best-available로 채움.
-        #   (70% 컷오프는 '성공률 우선' 시트 표시용으로만 적용)
+        # ★ 성공률 우선(요청) + 절충(요청) — 메타조합(wilson_z)마다 풀이 달라지도록:
+        #   ① 지표당 '최고 성공률' 1행만 남김(중복 임계 제거).
+        #   ② 성공률 컷(POOL_SUCCESS_MIN_RATE) 통과 지표를 '우선' 묶음으로 (컷 유지).
+        #   ③ 각 묶음 안 정렬을 'Wilson 하한(wilson_z 반영)'으로 → 표본 적은 고성공 지표는
+        #      wilson_z가 높을수록 뒤로 밀려 top_n 멤버가 조합마다 달라짐.
+        #   하드 컷오프는 두지 않음(풀이 비어 거래 0 되지 않게 best-available).
         def _succ_rank(df):
             if df is None or len(df) == 0:
                 return (df.sort_values('score', ascending=False).reset_index(drop=True)
                         if df is not None else df)
             d = df.sort_values(['success_rate', 'score'], ascending=[False, False])
             d = d.drop_duplicates('indicator', keep='first').reset_index(drop=True)
+            try:
+                _z = float(wilson_z)
+                p = d['success_rate'].values.astype(float)
+                nn = np.maximum(d['n_signals'].values.astype(float), 1.0)
+                denom  = 1.0 + _z * _z / nn
+                center = p + _z * _z / (2.0 * nn)
+                margin = _z * np.sqrt(np.clip(p * (1.0 - p) / nn + _z * _z / (4.0 * nn * nn), 0.0, None))
+                _cut = float(globals().get('POOL_SUCCESS_MIN_RATE', 0.6))
+                d = d.assign(_wlb=(center - margin) / denom,
+                             _above=(d['success_rate'].values >= _cut).astype(int))
+                d = d.sort_values(['_above', '_wlb', 'success_rate'],
+                                  ascending=[False, False, False]).reset_index(drop=True)
+                d = d.drop(columns=['_wlb', '_above'])
+            except Exception:
+                pass
             return d
         buy_df  = _succ_rank(buy_df)
         sell_df = _succ_rank(sell_df)
@@ -12490,10 +12507,10 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                          ticker='', max_k_candidates=600, oos_start=None):
     """★ 순신호 K 최적화 + OOS 검증 (요청):
        b(순신호) = 매수카운트 − 매도카운트. net > K → 롱(매수/보유), net ≤ K → 현금(매도). 신호는 다음날 반영.
-       ★ K는 'OOS 시작 이전(학습구간)' 데이터에서만 '누적수익 최고'로 선택 → 과최적화 방지.
-         OOS 구간(oos_start 이후)은 그 K로 '검증만' 하고 K 선택엔 안 씀.
-       풀은 호출부에서 넘어온 '보정 적용된 최종 풀' → '보정 후 수익률'로 K 선정.
-       (단순 롱/현금 백테스트 — 손절 미적용)
+       ★ K 선택 = 'OOS 수익 최고'(요청). OOS 없으면 학습수익으로 폴백.
+         주의: K를 OOS로 고르면 OOS도 K 맞춤이라 그만큼 낙관적(진짜 미래검증은 별개).
+       풀은 호출부에서 넘어온 '보정 적용된 최종 풀'.
+       (단순 롱/현금 백테스트 — 손절 미적용, 수익은 상승·하락률 단순 합산)
     """
     if feat is None or close_ser is None or buy_pool is None or sell_pool is None:
         return None
@@ -12552,8 +12569,9 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         else:
             ks = list(range(kmin, kmax + 1))
 
-        # ★ K 선택은 '학습구간 수익' 최고로만
-        table = []; best = None
+        # ★ K 선택 기준 (요청): OOS 수익 최고로 K 선정. (OOS 없으면 학습수익으로 폴백)
+        #   주의: K를 OOS로 고르면 OOS도 'K 맞춤'이 되어 그만큼 낙관적 — 진짜 미래검증은 별개.
+        table = []; best = None; best_sel = None
         for K in ks:
             pos = _pos_for_k(K)
             tr  = _cumret(pos, 0, train_hi)
@@ -12561,8 +12579,9 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             fu  = _cumret(pos, 0, n)
             dl  = int(pos[1:train_hi].sum())
             table.append((int(K), tr, oo, fu, dl))
-            if best is None or tr > best[1]:
-                best = (int(K), tr, oo, fu, dl)
+            _sel = oo if (has_oos and oo is not None) else tr   # ★ OOS로 K 선택
+            if best_sel is None or _sel > best_sel:
+                best_sel = _sel; best = (int(K), tr, oo, fu, dl)
 
         best_k = best[0]
         pos = _pos_for_k(best_k)
@@ -13296,7 +13315,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  '📍실행일포지션', '🎬실행일액션', '📍매수점수', '📍매도점수',
                  '📅최근매수일', '💲진입가', '📅최근매도일', '💲매도가',
                  '🔬OOS승률', '🔬OOS최대손실', '🔬OOS수익률',
-                 '🎯K최적값', '🎯K기준수익(합산)', '🎯K거래수', '🎯K기준OOS수익'])
+                 '🎯K최적값', '🎯K기준수익(합산)', '🎯K거래수', '🎯K기준OOS수익',
+                 '🎯보유중하락(학습)', '🎯보유중하락(OOS)'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
@@ -13336,17 +13356,21 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             except Exception:
                 _knet_by_meta[_k] = None
         # 각 행에 K기준 값 부여
-        _kret = []; _ktr = []; _koos = []; _kk = []
+        _kret = []; _ktr = []; _koos = []; _kk = []; _khd_tr = []; _khd_oos = []
         for _, _row in disp.iterrows():
             _r = _knet_by_meta.get(_meta_key_of(_row))
             if _r is None:
                 _kret.append(np.nan); _ktr.append(np.nan); _koos.append(np.nan); _kk.append(np.nan)
+                _khd_tr.append(np.nan); _khd_oos.append(np.nan)
             else:
                 _kret.append(_r['full_cum']); _ktr.append(_r['n_trades'])
                 _koos.append(_r['oos_cum'] if _r['oos_cum'] is not None else np.nan)
                 _kk.append(_r['best_k'])
+                _khd_tr.append(_r.get('held_down_train', np.nan))
+                _khd_oos.append(_r['held_down_oos'] if _r.get('held_down_oos') is not None else np.nan)
         disp['knet_ret'] = _kret; disp['knet_trades'] = _ktr
         disp['knet_oos'] = _koos; disp['knet_k'] = _kk
+        disp['knet_hd_train'] = _khd_tr; disp['knet_hd_oos'] = _khd_oos
         # ★ 요청: 최적 그리드 = 'K기준 OOS 수익' 최고 (과최적화 방지 — 학습/전체수익 아님).
         #   OOS가 전부 NaN(데이터에 OOS구간 없음)이면 전체 K수익으로 폴백.
         _sort_col = 'knet_oos' if disp['knet_oos'].notna().any() else 'knet_ret'
@@ -13450,6 +13474,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'knet_ret')*100:+.2f}%"        if pd.notna(_g(row,'knet_ret')) else '—'),
             (int(_g(row,'knet_trades'))               if pd.notna(_g(row,'knet_trades')) else '—'),
             (f"{_g(row,'knet_oos')*100:+.2f}%"        if pd.notna(_g(row,'knet_oos')) else '—'),
+            (f"{_g(row,'knet_hd_train')*100:+.2f}%"   if pd.notna(_g(row,'knet_hd_train')) else '—'),
+            (f"{_g(row,'knet_hd_oos')*100:+.2f}%"     if pd.notna(_g(row,'knet_hd_oos'))   else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -13779,24 +13805,32 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(1, 1).value = (
                 f'{ticker} — 순신호 K 최적화  '
                 f'｜ net=매수카운트−매도카운트, net>K면 롱·아니면 현금(다음날 반영). '
-                f'K는 {"학습구간(OOS 이전)에서만 수익최고로 선정 → OOS로 검증" if _hoos else "전체구간 수익최고로 선정(OOS 없음)"}')
+                f'K는 {"OOS 수익 최고로 선정" if _hoos else "전체구간 수익최고로 선정(OOS 없음)"} (수익=상승·하락률 합산)')
             ws.cell(1, 1).font = Font(bold=True, size=11)
             # 요약
             def _pct(x): return (f"{x*100:+.2f}%" if x is not None else '—')
-            ws.cell(3, 1).value = '★ 최적 K (학습구간 기준)'; ws.cell(3, 2).value = _ns['best_k']
+            ws.cell(3, 1).value = '★ 최적 K (OOS 수익 기준)'; ws.cell(3, 2).value = _ns['best_k']
             ws.cell(3, 1).font = Font(bold=True); ws.cell(3, 2).font = Font(bold=True, color='C00000')
             ws.cell(4, 1).value = 'OOS 검증 시작';        ws.cell(4, 2).value = (_ns['oos_start_date'] if _hoos else '— (없음)')
-            ws.cell(5, 1).value = '학습 수익률 (전략 / B&H)'; ws.cell(5, 2).value = f"{_pct(_ns['train_cum'])}  /  {_pct(_ns['bh_train'])}"
-            ws.cell(6, 1).value = '★ OOS 수익률 (전략 / B&H)'; ws.cell(6, 2).value = f"{_pct(_ns['oos_cum'])}  /  {_pct(_ns['bh_oos'])}"
-            ws.cell(6, 1).font = Font(bold=True); ws.cell(6, 2).font = Font(bold=True, color='1F6F1F')
-            ws.cell(7, 1).value = '전체 수익률 (전략 / B&H)'; ws.cell(7, 2).value = f"{_pct(_ns['full_cum'])}  /  {_pct(_ns['bh_full'])}"
-            ws.cell(8, 1).value = '★ 보유중 하락 합산 (전체/OOS)'
-            ws.cell(8, 2).value = f"{_pct(_ns['held_down_full'])}  /  {_pct(_ns['held_down_oos'])}"
-            ws.cell(8, 1).font = Font(bold=True); ws.cell(8, 2).font = Font(bold=True, color='C00000')
+            # 구간 | 전략수익 | B&H | 보유중하락(전체수익 옆)  ← 요청
+            _hh = ws.cell(5, 1); _hh.value = '구간'; _hh.font = Font(bold=True)
+            for _cc, _lab in [(2, '전략수익(합산)'), (3, 'B&H'), (4, '보유중하락 누적')]:
+                ws.cell(5, _cc).value = _lab; ws.cell(5, _cc).font = Font(bold=True)
+            ws.cell(6, 1).value = '학습'
+            ws.cell(6, 2).value = _pct(_ns['train_cum']); ws.cell(6, 3).value = _pct(_ns['bh_train'])
+            ws.cell(6, 4).value = _pct(_ns['held_down_train'])
+            ws.cell(7, 1).value = '★ OOS'; ws.cell(7, 1).font = Font(bold=True)
+            ws.cell(7, 2).value = _pct(_ns['oos_cum']); ws.cell(7, 3).value = _pct(_ns['bh_oos'])
+            ws.cell(7, 4).value = _pct(_ns['held_down_oos'])
+            for _cc in (1, 2, 3, 4): ws.cell(7, _cc).font = Font(bold=True, color='1F6F1F')
+            ws.cell(8, 1).value = '전체'
+            ws.cell(8, 2).value = _pct(_ns['full_cum']); ws.cell(8, 3).value = _pct(_ns['bh_full'])
+            ws.cell(8, 4).value = _pct(_ns['held_down_full'])
+            ws.cell(8, 4).font = Font(bold=True, color='C00000')
             ws.cell(9, 1).value = '거래 횟수 (전체/OOS)'; ws.cell(9, 2).value = f"{_ns['n_trades']}회 / {_ns['n_trades_oos']}회"
             ws.cell(10, 1).value = '풀 크기(매수/매도)';   ws.cell(10, 2).value = f"{_ns['buy_pool_n']} / {_ns['sell_pool_n']}"
             ws.cell(11, 1).value = 'net 범위';             ws.cell(11, 2).value = f"{_ns['net_min']} ~ {_ns['net_max']}"
-            ws.cell(11, 3).value = '⚠ OOS 수익률이 실전 추정치 (학습은 K 맞춤이라 부풀려짐)'
+            ws.cell(11, 3).value = '⚠ K를 OOS로 골라 OOS도 다소 낙관적'
             ws.cell(11, 3).font = Font(italic=True, color='888888')
 
             # K vs 수익 표 (왼쪽) — 학습/OOS 둘 다
