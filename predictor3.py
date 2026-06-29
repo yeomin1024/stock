@@ -12572,6 +12572,22 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         # 거래 횟수 = 포지션 전환 수 (현금↔롱)
         n_trades = int(np.sum(np.abs(np.diff(pos)) > 0)) if n > 1 else 0
         n_trades_oos = int(np.sum(np.abs(np.diff(pos[oos_idx:])) > 0)) if (has_oos and n - oos_idx > 1) else 0
+        # ★ 요청: '보유 중일 때 맞은 하락' 합산 — pos=1인 날의 음(-)수익만 합산 (전체/학습/OOS)
+        _held_r = pos * r
+        held_down_full  = float(np.sum(_held_r[_held_r < 0]))
+        held_down_train = float(np.sum(_held_r[:train_hi][_held_r[:train_hi] < 0]))
+        held_down_oos   = (float(np.sum(_held_r[oos_idx:][_held_r[oos_idx:] < 0])) if has_oos else None)
+        # 일별 누적(합산식) + 보유중하락 러닝 + 액션
+        daily_ret = pos * r
+        cum_run = np.cumsum(daily_ret)
+        held_down_run = np.cumsum(np.where(daily_ret < 0, daily_ret, 0.0))
+        action = []
+        for t in range(n):
+            if t == 0: action.append('—'); continue
+            if pos[t] == 1 and pos[t-1] == 0:   action.append('매수')
+            elif pos[t] == 0 and pos[t-1] == 1: action.append('매도')
+            elif pos[t] == 1:                    action.append('보유')
+            else:                                action.append('현금')
 
         oos_flag = np.zeros(n, dtype=int)
         if has_oos: oos_flag[oos_idx:] = 1
@@ -12579,11 +12595,15 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             'date': dates, 'price': close,
             'buy_count': buy_count.astype(int), 'sell_count': sell_count.astype(int),
             'net': net.astype(int), 'position': pos.astype(int), 'is_oos': oos_flag,
+            'day_ret': daily_ret, 'cum_ret': cum_run,
+            'held_down_run': held_down_run, 'action': action,
         })
         return {
             'best_k': best_k,
             'train_cum': best[1], 'oos_cum': best[2], 'full_cum': best[3],
             'best_days_long': best[4], 'n_trades': n_trades, 'n_trades_oos': n_trades_oos,
+            'held_down_full': held_down_full, 'held_down_train': held_down_train,
+            'held_down_oos': held_down_oos,
             'bh_train': bh_train, 'bh_oos': bh_oos, 'bh_full': bh_full,
             'has_oos': has_oos, 'oos_idx': oos_idx,
             'oos_start_date': (pd.Timestamp(dates[oos_idx]).strftime('%Y-%m-%d') if has_oos else None),
@@ -13327,10 +13347,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _kk.append(_r['best_k'])
         disp['knet_ret'] = _kret; disp['knet_trades'] = _ktr
         disp['knet_oos'] = _koos; disp['knet_k'] = _kk
-        # ★ K기준 수익(합산) 높은 순으로 정렬 → 최적 그리드 = 1행
-        if disp['knet_ret'].notna().any():
-            disp = disp.sort_values('knet_ret', ascending=False, na_position='last').reset_index(drop=True)
-            ws.cell(1, 1).value = (f'전체 그리드 통합 — ★ K기준 수익(상승·하락률 합산) 높은 순 정렬·선정  '
+        # ★ 요청: 최적 그리드 = 'K기준 OOS 수익' 최고 (과최적화 방지 — 학습/전체수익 아님).
+        #   OOS가 전부 NaN(데이터에 OOS구간 없음)이면 전체 K수익으로 폴백.
+        _sort_col = 'knet_oos' if disp['knet_oos'].notna().any() else 'knet_ret'
+        if disp[_sort_col].notna().any():
+            disp = disp.sort_values(_sort_col, ascending=False, na_position='last').reset_index(drop=True)
+            _sort_kor = 'K기준 OOS수익' if _sort_col == 'knet_oos' else 'K기준 전체수익(합산)'
+            ws.cell(1, 1).value = (f'전체 그리드 통합 — ★ {_sort_kor} 높은 순 정렬·선정  '
                                    f'({len(inner_passed)}개)')
             # 최적 그리드(1행)의 메타조합 풀을 순신호 시트가 쓰도록 저장 (일관성)
             try:
@@ -13767,15 +13790,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(6, 1).value = '★ OOS 수익률 (전략 / B&H)'; ws.cell(6, 2).value = f"{_pct(_ns['oos_cum'])}  /  {_pct(_ns['bh_oos'])}"
             ws.cell(6, 1).font = Font(bold=True); ws.cell(6, 2).font = Font(bold=True, color='1F6F1F')
             ws.cell(7, 1).value = '전체 수익률 (전략 / B&H)'; ws.cell(7, 2).value = f"{_pct(_ns['full_cum'])}  /  {_pct(_ns['bh_full'])}"
-            ws.cell(8, 1).value = '풀 크기(매수/매도)';   ws.cell(8, 2).value = f"{_ns['buy_pool_n']} / {_ns['sell_pool_n']}"
-            ws.cell(9, 1).value = 'net 범위';             ws.cell(9, 2).value = f"{_ns['net_min']} ~ {_ns['net_max']}"
-            ws.cell(10, 1).value = '⚠ 주의'; ws.cell(10, 2).value = 'OOS 수익률이 실전 추정치. 학습 수익률은 K를 맞춰 부풀려짐(참고용).'
-            ws.cell(10, 2).font = Font(italic=True, color='888888')
+            ws.cell(8, 1).value = '★ 보유중 하락 합산 (전체/OOS)'
+            ws.cell(8, 2).value = f"{_pct(_ns['held_down_full'])}  /  {_pct(_ns['held_down_oos'])}"
+            ws.cell(8, 1).font = Font(bold=True); ws.cell(8, 2).font = Font(bold=True, color='C00000')
+            ws.cell(9, 1).value = '거래 횟수 (전체/OOS)'; ws.cell(9, 2).value = f"{_ns['n_trades']}회 / {_ns['n_trades_oos']}회"
+            ws.cell(10, 1).value = '풀 크기(매수/매도)';   ws.cell(10, 2).value = f"{_ns['buy_pool_n']} / {_ns['sell_pool_n']}"
+            ws.cell(11, 1).value = 'net 범위';             ws.cell(11, 2).value = f"{_ns['net_min']} ~ {_ns['net_max']}"
+            ws.cell(11, 3).value = '⚠ OOS 수익률이 실전 추정치 (학습은 K 맞춤이라 부풀려짐)'
+            ws.cell(11, 3).font = Font(italic=True, color='888888')
 
             # K vs 수익 표 (왼쪽) — 학습/OOS 둘 다
-            _hdr(ws, 12, ['K', '학습수익%', 'OOS수익%', '전체수익%', '학습롱일'])
+            _hdr(ws, 13, ['K', '학습수익%', 'OOS수익%', '전체수익%', '학습롱일'])
             for i, (K, tr, oo, fu, dl) in enumerate(_ns['k_table']):
-                rr = 13 + i
+                rr = 14 + i
                 ws.cell(rr, 1).value = K
                 ws.cell(rr, 2).value = round(tr * 100, 2)
                 ws.cell(rr, 3).value = (round(oo * 100, 2) if oo is not None else None)
@@ -13786,14 +13813,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         ws.cell(rr, cc).fill = PatternFill('solid', fgColor='FFF2CC')
                         ws.cell(rr, cc).font = Font(bold=True)
 
-            # 일별 a(주가)/b(순신호)/포지션 표 (오른쪽, col7~)
+            # 일별 백테스트 표 (오른쪽, col7~) — net>K 매수/보유/매도, 합산수익
             d = _ns['daily']
             _hdr2_cols = ['날짜', f'{ticker}종가(a)', '매수카운트', '매도카운트', '순신호 net(b)',
-                          f'포지션(net>{_ns["best_k"]})', '구간']
+                          f'포지션(net>{_ns["best_k"]})', '액션', '일별수익%', '누적수익%(합산)',
+                          '보유중하락 누적%', '구간']
             for ci, h in enumerate(_hdr2_cols, start=7):
-                c = ws.cell(12, ci); c.value = h; c.fill = _HDR; c.font = _WB_
+                c = ws.cell(13, ci); c.value = h; c.fill = _HDR; c.font = _WB_
             for i in range(len(d)):
-                rr = 13 + i
+                rr = 14 + i
                 row = d.iloc[i]
                 ws.cell(rr, 7).value  = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
                 ws.cell(rr, 8).value  = (round(float(row['price']), 2) if pd.notna(row['price']) else None)
@@ -13801,20 +13829,26 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.cell(rr, 10).value = int(row['sell_count'])
                 ws.cell(rr, 11).value = int(row['net'])
                 ws.cell(rr, 12).value = int(row['position'])
-                ws.cell(rr, 13).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
+                ws.cell(rr, 13).value = str(row['action'])
+                ws.cell(rr, 14).value = round(float(row['day_ret']) * 100, 3)
+                ws.cell(rr, 15).value = round(float(row['cum_ret']) * 100, 2)
+                ws.cell(rr, 16).value = round(float(row['held_down_run']) * 100, 2)
+                ws.cell(rr, 17).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
                 if int(row['position']) == 1:
                     ws.cell(rr, 12).fill = PatternFill('solid', fgColor='C6EFCE')
-                if int(row['net']) > _ns['best_k']:
-                    ws.cell(rr, 11).fill = PatternFill('solid', fgColor='C6EFCE')
-                elif int(row['net']) < _ns['best_k']:
-                    ws.cell(rr, 11).fill = PatternFill('solid', fgColor='FFC7CE')
-                if int(row['is_oos']) == 1:    # OOS 구간은 날짜셀 옅은 파랑
+                _act = str(row['action'])
+                if _act == '매수':   ws.cell(rr, 13).fill = PatternFill('solid', fgColor='C6EFCE')
+                elif _act == '매도': ws.cell(rr, 13).fill = PatternFill('solid', fgColor='FFC7CE')
+                if pd.notna(row['day_ret']) and float(row['day_ret']) < 0 and int(row['position']) == 1:
+                    ws.cell(rr, 14).fill = PatternFill('solid', fgColor='FFC7CE')  # 보유중 하락일 빨강
+                if int(row['is_oos']) == 1:
                     ws.cell(rr, 7).fill = PatternFill('solid', fgColor='DDEBF7')
-            for ci, w in enumerate([22, 16, 11, 11, 11, 9, 12, 13, 11, 11, 13, 15, 7], 1):
+            for ci, w in enumerate([6, 11, 11, 11, 9, 12, 13, 11, 11, 11, 7, 12, 13, 9, 11, 13, 13, 7], 1):
                 ws.column_dimensions[get_column_letter(ci)].width = w
-            ws.freeze_panes = 'A13'
+            ws.freeze_panes = 'A14'
             print(f"  ✓ 순신호 K최적화: 최적 K={_ns['best_k']} (학습) | "
-                  f"학습 {_pct(_ns['train_cum'])} / OOS {_pct(_ns['oos_cum'])} / B&H(OOS) {_pct(_ns['bh_oos'])}")
+                  f"학습 {_pct(_ns['train_cum'])} / OOS {_pct(_ns['oos_cum'])} / B&H(OOS) {_pct(_ns['bh_oos'])} "
+                  f"| 보유중하락 {_pct(_ns['held_down_full'])} | 거래 {_ns['n_trades']}회")
     except Exception as _ek:
         print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
 
