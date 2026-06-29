@@ -10073,7 +10073,7 @@ META_GRID = {
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(5, 95)]
-STAGE_WILSON_Z    = [1.75]
+STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
 STAGE_CORR_LIMIT  = [0.2]
 
@@ -12576,9 +12576,10 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         if not has_oos: oos_idx = n
         train_hi = oos_idx if has_oos else n
 
-        # ── threshold(K) 탐색 (벡터화) ──
+        # ── threshold(K) 탐색 (벡터화) ── ★ 신호 후 '다음날 종가' 거래:
+        #   net[t] 신호 → close[t+1]에 매수 → 수익은 ret[t+2]부터 포착. 따라서 pos[s]=1 ⇔ net[s-2]>K.
         def _search_threshold(net):
-            net_prev = np.empty(n); net_prev[0] = net[0]; net_prev[1:] = net[:-1]
+            net_lag = np.full(n, -1.0e18); net_lag[2:] = net[:-2]   # 2일 지연(다음날 종가 진입)
             kmin = float(np.nanmin(net)); kmax = float(np.nanmax(net))
             if kmax <= kmin: kmax = kmin + 1.0
             if _net_is_float:
@@ -12591,15 +12592,16 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                       if (_kh - _kl) > max_k_candidates else list(range(_kl, _kh + 1)))
             best = None; best_sel = None; table = []
             for K in ks:
-                pos = (net_prev > K).astype(float); pos[0] = 0.0
+                pos = (net_lag > K).astype(float)
                 _hr = pos * r
                 tr = float(np.sum(pos[:train_hi] * r[:train_hi]))
                 oo = float(np.sum(pos[oos_idx:] * r[oos_idx:])) if has_oos else None
                 fu = float(np.sum(_hr))
-                hd = float(np.sum(_hr[_hr < 0]))   # K값별 보유중하락(전체)
-                dl = int(pos[1:train_hi].sum())
+                hd = float(np.sum(_hr[_hr < 0]))                          # 보유중하락 전체
+                hd_oos = (float(np.sum(_hr[oos_idx:][_hr[oos_idx:] < 0])) if has_oos else None)  # OOS
+                dl = int(pos[:train_hi].sum())
                 _Kv = (round(float(K), 4) if _net_is_float else int(K))
-                table.append((_Kv, tr, oo, fu, dl, hd))
+                table.append((_Kv, tr, oo, fu, dl, hd, hd_oos))
                 _sel = oo if (has_oos and oo is not None) else tr
                 if best_sel is None or _sel > best_sel:
                     best_sel = _sel; best = (_Kv, tr, oo, fu, dl)
@@ -12631,8 +12633,8 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         buy_count = buy_cum[n_buy_opt-1]; sell_count = sell_cum[n_sell_opt-1]
 
         best_k = best[0]
-        net_prev = np.empty(n); net_prev[0] = net[0]; net_prev[1:] = net[:-1]
-        pos = (net_prev > best_k).astype(float); pos[0] = 0.0
+        net_lag = np.full(n, -1.0e18); net_lag[2:] = net[:-2]   # 신호 후 다음날 종가 진입(2일 지연)
+        pos = (net_lag > best_k).astype(float)
         bh_full  = float(np.sum(r)); bh_train = float(np.sum(r[:train_hi]))
         bh_oos   = float(np.sum(r[oos_idx:])) if has_oos else None
         n_trades = int(np.sum(np.abs(np.diff(pos)) > 0)) if n > 1 else 0
@@ -13762,7 +13764,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _wtd = _nsd.get('weighted')
         _bk = (round(_nsd['best_k'], 3) if _wtd else _nsd['best_k'])
         _wtag = '점수가중' if _wtd else '단순개수'
-        ws.cell(1, 1).value = f'일별 백테스트 — net({_wtag})>K({_bk})면 매수·보유, net≤K면 매도. 수익=상승·하락률 합산'
+        ws.cell(1, 1).value = (f'일별 백테스트 — net({_wtag})>K({_bk}) 신호 → ★다음날 종가에 매수/매도 (익일 거래). '
+                               f'수익=상승·하락률 합산. (매수ON/매도ON=당일신호, 액션/포지션=익일 체결결과)')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:P1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         ws.cell(2, 1).value = (f"★최적K={_bk} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
@@ -13923,7 +13926,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _hoos = _ns['has_oos']
             ws.cell(1, 1).value = (
                 f'{ticker} — 순신호 K 최적화  '
-                f'｜ net=매수카운트−매도카운트, net>K면 롱·아니면 현금(다음날 반영). '
+                f'｜ net=매수카운트−매도카운트, net>K 신호→다음날 종가 매수/매도(익일 거래). '
                 f'K는 {"OOS 수익 최고로 선정" if _hoos else "전체구간 수익최고로 선정(OOS 없음)"} (수익=상승·하락률 합산)')
             ws.cell(1, 1).font = Font(bold=True, size=11)
             # 요약
@@ -13953,20 +13956,29 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(11, 3).font = Font(italic=True, color='888888')
 
             # K vs 수익 표 (왼쪽) — 학습/OOS 둘 다
-            _hdr(ws, 13, ['K', '학습수익%', 'OOS수익%', '전체수익%', '보유중하락%(전체)', '학습롱일'])
+            _hdr(ws, 13, ['K', '학습수익%', 'OOS수익%', '전체수익%', '보유중하락%(전체)',
+                          'OOS보유중하락%', '전체 수익/하락비', 'OOS 수익/하락비', '학습롱일'])
             for i, _trow in enumerate(_ns['k_table']):
                 K, tr, oo, fu, dl = _trow[0], _trow[1], _trow[2], _trow[3], _trow[4]
-                hd = _trow[5] if len(_trow) > 5 else None
+                hd     = _trow[5] if len(_trow) > 5 else None
+                hd_oos = _trow[6] if len(_trow) > 6 else None
+                # 비율: 수익 / |보유중하락| (클수록 하락 대비 수익 큼). 하락 0이면 '—'
+                _rt_full = (fu / abs(hd)) if (hd is not None and abs(hd) > 1e-9) else None
+                _rt_oos  = (oo / abs(hd_oos)) if (oo is not None and hd_oos is not None and abs(hd_oos) > 1e-9) else None
                 rr = 14 + i
                 ws.cell(rr, 1).value = K
                 ws.cell(rr, 2).value = round(tr * 100, 2)
                 ws.cell(rr, 3).value = (round(oo * 100, 2) if oo is not None else None)
                 ws.cell(rr, 4).value = round(fu * 100, 2)
-                ws.cell(rr, 5).value = (round(hd * 100, 2) if hd is not None else None)   # ★ K값별 보유중하락 (전체수익 옆)
-                ws.cell(rr, 6).value = dl
+                ws.cell(rr, 5).value = (round(hd * 100, 2) if hd is not None else None)
+                ws.cell(rr, 6).value = (round(hd_oos * 100, 2) if hd_oos is not None else None)
+                ws.cell(rr, 7).value = (round(_rt_full, 2) if _rt_full is not None else '—')
+                ws.cell(rr, 8).value = (round(_rt_oos, 2) if _rt_oos is not None else '—')
+                ws.cell(rr, 9).value = dl
                 if hd is not None: ws.cell(rr, 5).font = Font(color='C00000')
+                if hd_oos is not None: ws.cell(rr, 6).font = Font(color='C00000')
                 if K == _ns['best_k']:
-                    for cc in range(1, 7):
+                    for cc in range(1, 10):
                         ws.cell(rr, cc).fill = PatternFill('solid', fgColor='FFF2CC')
                         ws.cell(rr, cc).font = Font(bold=True)
 
