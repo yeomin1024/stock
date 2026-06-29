@@ -9871,6 +9871,11 @@ POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 (요청: 0.60)
 POOL_SUCCESS_MIN_SIG   = 10        # 최소 신호수 — 소표본 가짜 100% 방지 (요청: 10)
 POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 분위 (요청: 1,99)
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
+# ★ ⓑ 순신호 점수가중 (요청) — net을 '단순 개수' 대신 '지표 점수(성공률) 가중합'으로.
+#   True면 net = Σ(매수지표 성공률×신호) − Σ(매도지표 성공률×신호) (실수값, K도 실수 탐색).
+#   False면 기존 단순 개수. 단순개수 vs 가중을 OOS로 비교해 더 나은 쪽 채택 권장.
+NET_SIGNAL_WEIGHTED    = True
+NET_SIGNAL_WEIGHT_COL  = 'success_rate'   # 가중치로 쓸 컬럼: 'success_rate'(성공률) 또는 'score'(Wilson점수)
                                    #   (기존 K_BUY_RANGE는 10부터라 정예풀에선 거래 0 → 자동으로 이 값까지 낮춤)
 
 # ★ 미래 예측 정확도 강화 (요청) — 지표 신호 생성·평가 방식 보강.
@@ -12522,13 +12527,24 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         close = pd.Series(close_ser).reindex(dates).values.astype(float)
 
         buy_count = np.zeros(n); sell_count = np.zeros(n)
+        _wtd = bool(globals().get('NET_SIGNAL_WEIGHTED', False))
+        _wcol = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
+        def _wt_of(row):
+            if not _wtd: return 1.0
+            try:
+                v = row.get(_wcol)
+                if v is None or (isinstance(v, float) and np.isnan(v)): return 1.0
+                return float(v)
+            except Exception:
+                return 1.0
         for _, row in buy_pool.iterrows():
-            try: buy_count += np.nan_to_num(_to_signal_array(feat, row).astype(float))
+            try: buy_count += _wt_of(row) * np.nan_to_num(_to_signal_array(feat, row).astype(float))
             except Exception: pass
         for _, row in sell_pool.iterrows():
-            try: sell_count += np.nan_to_num(_to_signal_array(feat, row).astype(float))
+            try: sell_count += _wt_of(row) * np.nan_to_num(_to_signal_array(feat, row).astype(float))
             except Exception: pass
         net = buy_count - sell_count
+        _net_is_float = _wtd
 
         r = np.zeros(n)
         for t in range(1, n):
@@ -12562,12 +12578,19 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                 if net[t-1] > K: pos[t] = 1.0
             return pos
 
-        kmin = int(np.floor(np.nanmin(net))); kmax = int(np.ceil(np.nanmax(net)))
-        if kmax <= kmin: kmax = kmin + 1
-        if (kmax - kmin) > max_k_candidates:
-            ks = sorted(set(np.linspace(kmin, kmax, max_k_candidates).astype(int).tolist()))
+        kmin = float(np.nanmin(net)); kmax = float(np.nanmax(net))
+        if kmax <= kmin: kmax = kmin + 1.0
+        if _net_is_float:
+            # 가중 net은 실수 → 후보를 net 분위 + 등간격 실수로 (중복 제거)
+            _grid = np.linspace(kmin, kmax, min(max_k_candidates, 300))
+            _qs = np.unique(np.nanpercentile(net, np.linspace(1, 99, 60)))
+            ks = sorted(set(np.round(np.concatenate([_grid, _qs]), 4).tolist()))
         else:
-            ks = list(range(kmin, kmax + 1))
+            kmin = int(np.floor(kmin)); kmax = int(np.ceil(kmax))
+            if (kmax - kmin) > max_k_candidates:
+                ks = sorted(set(np.linspace(kmin, kmax, max_k_candidates).astype(int).tolist()))
+            else:
+                ks = list(range(kmin, kmax + 1))
 
         # ★ K 선택 기준 (요청): OOS 수익 최고로 K 선정. (OOS 없으면 학습수익으로 폴백)
         #   주의: K를 OOS로 고르면 OOS도 'K 맞춤'이 되어 그만큼 낙관적 — 진짜 미래검증은 별개.
@@ -12578,10 +12601,11 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             oo  = _cumret(pos, oos_idx, n) if has_oos else None
             fu  = _cumret(pos, 0, n)
             dl  = int(pos[1:train_hi].sum())
-            table.append((int(K), tr, oo, fu, dl))
+            _Kv = (round(float(K), 4) if _net_is_float else int(K))
+            table.append((_Kv, tr, oo, fu, dl))
             _sel = oo if (has_oos and oo is not None) else tr   # ★ OOS로 K 선택
             if best_sel is None or _sel > best_sel:
-                best_sel = _sel; best = (int(K), tr, oo, fu, dl)
+                best_sel = _sel; best = (_Kv, tr, oo, fu, dl)
 
         best_k = best[0]
         pos = _pos_for_k(best_k)
@@ -12613,7 +12637,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         daily = pd.DataFrame({
             'date': dates, 'price': close,
             'buy_count': buy_count.astype(int), 'sell_count': sell_count.astype(int),
-            'net': net.astype(int), 'position': pos.astype(int), 'is_oos': oos_flag,
+            'net': (np.round(net, 4) if _net_is_float else net.astype(int)), 'position': pos.astype(int), 'is_oos': oos_flag,
             'day_ret': daily_ret, 'cum_ret': cum_run,
             'held_down_run': held_down_run, 'action': action,
         })
@@ -12628,7 +12652,8 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             'oos_start_date': (pd.Timestamp(dates[oos_idx]).strftime('%Y-%m-%d') if has_oos else None),
             'k_table': table, 'daily': daily,
             'buy_pool_n': len(buy_pool), 'sell_pool_n': len(sell_pool),
-            'net_min': kmin, 'net_max': kmax,
+            'net_min': (round(float(kmin),2) if _net_is_float else int(kmin)), 'net_max': (round(float(kmax),2) if _net_is_float else int(kmax)),
+            'weighted': _net_is_float,
         }
     except Exception as _e:
         print(f"  ⚠ 순신호 K 최적화 실패(무시): {_e}")
@@ -13470,7 +13495,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'oos_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'oos_max_drawdown')) else '—'),
             (f"{_g(row,'oos_return')*100:+.2f}%"      if pd.notna(_g(row,'oos_return'))      else '—'),
             # 🎯 K기준 (순신호 net>K, 상승·하락률 합산)
-            (int(_g(row,'knet_k'))                    if pd.notna(_g(row,'knet_k'))    else '—'),
+            (round(float(_g(row,'knet_k')),3) if pd.notna(_g(row,'knet_k')) else '—'),
             (f"{_g(row,'knet_ret')*100:+.2f}%"        if pd.notna(_g(row,'knet_ret')) else '—'),
             (int(_g(row,'knet_trades'))               if pd.notna(_g(row,'knet_trades')) else '—'),
             (f"{_g(row,'knet_oos')*100:+.2f}%"        if pd.notna(_g(row,'knet_oos')) else '—'),
@@ -13690,20 +13715,71 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.freeze_panes = 'A8'
 
-    # 8. 일별 백테스트 (맨 앞 시트로 배치 — 요청)
+    # 8. 일별 백테스트 (맨 앞 시트로 배치 — 요청) ★ K값 기준(순신호 net>K)으로 교체
     ws = wb.create_sheet('일별 백테스트', 0); ws.sheet_view.showGridLines = False
-    ws.cell(1, 1).value = f'일별 백테스트 — {len(daily)}일'
-    ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:T1')
-    _ind_hdr = [(('매수:' if _k == 'BUY' else '매도:') + _nm)
-                for (_k, _nm, _vc, _sc) in cur.get('used_ind_cols', [])]
-    _hdr(ws, 4, ['날짜', f'{ticker}종가',
-                 f'매수카운트(/{cur["K_buy"]})', '매수ON', '매수성공',
-                 f'매도카운트(/{cur["K_sell"]})', '매도ON', '매도성공',
-                 '포지션', '액션', '진입가', '⛔ 손절가', '보유일',
-                 '미실현%', '실현%', '누적자산', '누적수익%', '진행최대손실%']
-                + _ind_hdr)
-    _write_daily_rows(ws, daily, cur, mdd_limit_pct)
+    _knet_pool_d = globals().get('_KNET_BEST_POOL')
+    if _knet_pool_d and _knet_pool_d[0] is not None and _knet_pool_d[1] is not None:
+        _dbp, _dsp = _knet_pool_d
+    else:
+        _dbp, _dsp = buy_pool, sell_pool
+    _nsd = None
+    try:
+        _nsd = _net_signal_k_search(feat, close_full, _dbp, _dsp, ticker=ticker,
+                                    oos_start=globals().get('OOS_START'))
+    except Exception as _ed:
+        print(f"  ⚠ 일별 백테스트(K기준) 계산 실패 → 레거시로 폴백: {_ed}")
+    if _nsd is None:
+        # 폴백: 기존 레거시 일별
+        ws.cell(1, 1).value = f'일별 백테스트 — {len(daily)}일'
+        ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864'); ws.merge_cells('A1:T1')
+        _ind_hdr = [(('매수:' if _k == 'BUY' else '매도:') + _nm)
+                    for (_k, _nm, _vc, _sc) in cur.get('used_ind_cols', [])]
+        _hdr(ws, 4, ['날짜', f'{ticker}종가',
+                     f'매수카운트(/{cur["K_buy"]})', '매수ON', '매수성공',
+                     f'매도카운트(/{cur["K_sell"]})', '매도ON', '매도성공',
+                     '포지션', '액션', '진입가', '⛔ 손절가', '보유일',
+                     '미실현%', '실현%', '누적자산', '누적수익%', '진행최대손실%'] + _ind_hdr)
+        _write_daily_rows(ws, daily, cur, mdd_limit_pct)
+    else:
+        _wtag = '점수가중' if _nsd.get('weighted') else '단순개수'
+        _bk = (round(_nsd['best_k'], 3) if _nsd.get('weighted') else _nsd['best_k'])
+        ws.cell(1, 1).value = (f'일별 백테스트 (K값 기준) — net={_wtag} 매수카운트−매도카운트, '
+                               f'net>K({_bk})면 매수·보유, net≤K면 매도. 수익=상승·하락률 합산')
+        ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864'); ws.merge_cells('A1:R1')
+        def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
+        # 요약 줄
+        ws.cell(2, 1).value = (f"★최적K={_bk} | 전체수익 {_p2(_nsd['full_cum'])} (B&H {_p2(_nsd['bh_full'])}) | "
+                               f"OOS {_p2(_nsd['oos_cum'])} (B&H {_p2(_nsd['bh_oos'])}) | "
+                               f"거래 {_nsd['n_trades']}회 | 보유중하락 {_p2(_nsd['held_down_full'])}")
+        ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:R2')
+        _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', '매도카운트', f'순신호 net',
+                     f'포지션(net>{_bk})', '액션', '일별수익%', '누적수익%(합산)',
+                     '보유중하락 누적%', '구간'])
+        d = _nsd['daily']
+        for i in range(len(d)):
+            r = 5 + i; row = d.iloc[i]
+            ws.cell(r, 1).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+            ws.cell(r, 2).value = (round(float(row['price']), 2) if pd.notna(row['price']) else None)
+            ws.cell(r, 3).value = (round(float(row['buy_count']), 2) if _nsd.get('weighted') else int(row['buy_count']))
+            ws.cell(r, 4).value = (round(float(row['sell_count']), 2) if _nsd.get('weighted') else int(row['sell_count']))
+            ws.cell(r, 5).value = (round(float(row['net']), 3) if _nsd.get('weighted') else int(row['net']))
+            ws.cell(r, 6).value = int(row['position'])
+            ws.cell(r, 7).value = str(row['action'])
+            ws.cell(r, 8).value = round(float(row['day_ret']) * 100, 3)
+            ws.cell(r, 9).value = round(float(row['cum_ret']) * 100, 2)
+            ws.cell(r, 10).value = round(float(row['held_down_run']) * 100, 2)
+            ws.cell(r, 11).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
+            if int(row['position']) == 1: ws.cell(r, 6).fill = PatternFill('solid', fgColor='C6EFCE')
+            _ac = str(row['action'])
+            if _ac == '매수':   ws.cell(r, 7).fill = PatternFill('solid', fgColor='C6EFCE')
+            elif _ac == '매도': ws.cell(r, 7).fill = PatternFill('solid', fgColor='FFC7CE')
+            if pd.notna(row['day_ret']) and float(row['day_ret']) < 0 and int(row['position']) == 1:
+                ws.cell(r, 8).fill = PatternFill('solid', fgColor='FFC7CE')
+            if int(row['is_oos']) == 1: ws.cell(r, 1).fill = PatternFill('solid', fgColor='DDEBF7')
+        for ci, w in enumerate([12, 11, 11, 11, 11, 14, 9, 11, 14, 14, 7], 1):
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        ws.freeze_panes = 'A5'
+        print(f"  ✓ 일별 백테스트(K기준): 최적K={_bk}, 전체 {_p2(_nsd['full_cum'])} / OOS {_p2(_nsd['oos_cum'])} / 거래 {_nsd['n_trades']}회")
 
     # 9. ★ OOS 일별 거래
     if oos_enabled and oos_daily is not None and len(oos_daily) > 0:
@@ -13850,7 +13926,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             # 일별 백테스트 표 (오른쪽, col7~) — net>K 매수/보유/매도, 합산수익
             d = _ns['daily']
             _hdr2_cols = ['날짜', f'{ticker}종가(a)', '매수카운트', '매도카운트', '순신호 net(b)',
-                          f'포지션(net>{_ns["best_k"]})', '액션', '일별수익%', '누적수익%(합산)',
+                          f'포지션(net>{(round(_ns["best_k"],3) if _ns.get("weighted") else _ns["best_k"])})', '액션', '일별수익%', '누적수익%(합산)',
                           '보유중하락 누적%', '구간']
             for ci, h in enumerate(_hdr2_cols, start=7):
                 c = ws.cell(13, ci); c.value = h; c.fill = _HDR; c.font = _WB_
@@ -13861,7 +13937,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.cell(rr, 8).value  = (round(float(row['price']), 2) if pd.notna(row['price']) else None)
                 ws.cell(rr, 9).value  = int(row['buy_count'])
                 ws.cell(rr, 10).value = int(row['sell_count'])
-                ws.cell(rr, 11).value = int(row['net'])
+                ws.cell(rr, 11).value = (round(float(row['net']), 3) if _ns.get('weighted') else int(row['net']))
                 ws.cell(rr, 12).value = int(row['position'])
                 ws.cell(rr, 13).value = str(row['action'])
                 ws.cell(rr, 14).value = round(float(row['day_ret']) * 100, 3)
