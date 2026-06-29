@@ -9856,9 +9856,9 @@ EVAL_START          = '2025-01-01'
 OOS_ENABLED         = False          # OOS 검증 on/off
 OOS_START           = '2026-04-01'   # ★ 순신호 K OOS 검증 시작 (올해 4월 이후=검증, 이전=학습)
 
-HORIZON_DAYS        = 5
-DRAWDOWN_LIMIT_BUY  = 0.025
-RUNUP_LIMIT_SELL    = 0.025
+HORIZON_DAYS        = 1
+DRAWDOWN_LIMIT_BUY  = 0.02
+RUNUP_LIMIT_SELL    = 0.02
 
 N_THRESHOLDS        = 800
 MAX_INDICATORS      = 1000
@@ -12535,8 +12535,9 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         train_hi = oos_idx if has_oos else n
 
         def _cumret(pos, lo, hi):
+            # ★ 요청: 복리(Π(1+r)) 아님 — '상승·하락률 단순 합산' (Σ 포지션×일별수익률)
             if hi <= lo: return 0.0
-            return float(np.prod(1.0 + pos[lo:hi] * r[lo:hi]) - 1.0)
+            return float(np.sum(pos[lo:hi] * r[lo:hi]))
 
         def _pos_for_k(K):
             pos = np.zeros(n)
@@ -12568,6 +12569,9 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         bh_full  = _cumret(np.ones(n), 0, n)
         bh_train = _cumret(np.ones(n), 0, train_hi)
         bh_oos   = _cumret(np.ones(n), oos_idx, n) if has_oos else None
+        # 거래 횟수 = 포지션 전환 수 (현금↔롱)
+        n_trades = int(np.sum(np.abs(np.diff(pos)) > 0)) if n > 1 else 0
+        n_trades_oos = int(np.sum(np.abs(np.diff(pos[oos_idx:])) > 0)) if (has_oos and n - oos_idx > 1) else 0
 
         oos_flag = np.zeros(n, dtype=int)
         if has_oos: oos_flag[oos_idx:] = 1
@@ -12579,7 +12583,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         return {
             'best_k': best_k,
             'train_cum': best[1], 'oos_cum': best[2], 'full_cum': best[3],
-            'best_days_long': best[4],
+            'best_days_long': best[4], 'n_trades': n_trades, 'n_trades_oos': n_trades_oos,
             'bh_train': bh_train, 'bh_oos': bh_oos, 'bh_full': bh_full,
             'has_oos': has_oos, 'oos_idx': oos_idx,
             'oos_start_date': (pd.Timestamp(dates[oos_idx]).strftime('%Y-%m-%d') if has_oos else None),
@@ -13271,13 +13275,73 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                  '🔧보정채택', '🔧추가지표수',
                  '📍실행일포지션', '🎬실행일액션', '📍매수점수', '📍매도점수',
                  '📅최근매수일', '💲진입가', '📅최근매도일', '💲매도가',
-                 '🔬OOS승률', '🔬OOS최대손실', '🔬OOS수익률'])
+                 '🔬OOS승률', '🔬OOS최대손실', '🔬OOS수익률',
+                 '🎯K최적값', '🎯K기준수익(합산)', '🎯K거래수', '🎯K기준OOS수익'])
     # 통합 테이블은 meta_grid_search에서 이미 선정기준대로 정렬돼 옴 → 그대로 표시
     disp = inner_passed.head(TOP_N_GRID_OUT).reset_index(drop=True)
     n_in_band = 0
     def _g(row, k, default=np.nan):
         try: return row[k]
         except Exception: return default
+
+    # ★★ 요청: 각 그리드 행에 '순신호 K 기준' 수익(합산)·거래·OOS수익 컬럼 추가 + K수익 높은 순 정렬 + ★선정.
+    #   같은 메타조합(wz,pct,corr)은 풀이 같아 순신호 K 결과도 동일 → 메타조합별 1회만 계산해 매핑(빠름).
+    globals().pop('_KNET_BEST_POOL', None); globals().pop('_KNET_BEST_K', None)  # 이전 실행 잔존 방지
+    _knet_by_meta = {}
+    _pool_map_k = globals().get('_LAST_POOL_MAP', None)
+    def _meta_key_of(row):
+        try:
+            return (round(float(_g(row, 'meta_wilson_z')), 4),
+                    int(_g(row, 'meta_pct_low')), int(_g(row, 'meta_pct_high')),
+                    round(float(_g(row, 'meta_corr_limit')), 4))
+        except Exception:
+            return None
+    if feat is not None and close_full is not None and _pool_map_k:
+        _uniq_keys = []
+        for _, _row in disp.iterrows():
+            _k = _meta_key_of(_row)
+            if _k is not None and _k not in _knet_by_meta:
+                _uniq_keys.append(_k)
+                _knet_by_meta[_k] = None
+        _oos_k = globals().get('OOS_START')
+        for _k in _uniq_keys:
+            _pools = _pool_map_k.get(_k)
+            if not _pools:
+                continue
+            _bp, _sp = _pools
+            try:
+                _r = _net_signal_k_search(feat, close_full, _bp, _sp,
+                                          ticker=ticker, oos_start=_oos_k)
+                _knet_by_meta[_k] = _r
+            except Exception:
+                _knet_by_meta[_k] = None
+        # 각 행에 K기준 값 부여
+        _kret = []; _ktr = []; _koos = []; _kk = []
+        for _, _row in disp.iterrows():
+            _r = _knet_by_meta.get(_meta_key_of(_row))
+            if _r is None:
+                _kret.append(np.nan); _ktr.append(np.nan); _koos.append(np.nan); _kk.append(np.nan)
+            else:
+                _kret.append(_r['full_cum']); _ktr.append(_r['n_trades'])
+                _koos.append(_r['oos_cum'] if _r['oos_cum'] is not None else np.nan)
+                _kk.append(_r['best_k'])
+        disp['knet_ret'] = _kret; disp['knet_trades'] = _ktr
+        disp['knet_oos'] = _koos; disp['knet_k'] = _kk
+        # ★ K기준 수익(합산) 높은 순으로 정렬 → 최적 그리드 = 1행
+        if disp['knet_ret'].notna().any():
+            disp = disp.sort_values('knet_ret', ascending=False, na_position='last').reset_index(drop=True)
+            ws.cell(1, 1).value = (f'전체 그리드 통합 — ★ K기준 수익(상승·하락률 합산) 높은 순 정렬·선정  '
+                                   f'({len(inner_passed)}개)')
+            # 최적 그리드(1행)의 메타조합 풀을 순신호 시트가 쓰도록 저장 (일관성)
+            try:
+                _bk = _meta_key_of(disp.iloc[0])
+                if _bk and _pool_map_k and _pool_map_k.get(_bk):
+                    globals()['_KNET_BEST_POOL'] = _pool_map_k[_bk]
+                    globals()['_KNET_BEST_K'] = (_knet_by_meta.get(_bk) or {}).get('best_k')
+            except Exception:
+                pass
+    _has_knet = ('knet_ret' in disp.columns and disp['knet_ret'].notna().any())
+
     for ri, row in disp.iterrows():
         r = ri + 4
         # ★ K/vote + 메타변수(wilson_z·corr·pct)까지 모두 일치해야 best (같은 K/vote라도
@@ -13304,6 +13368,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                    int(row['vote_buy']) == int(best_inner['vote_buy']) and
                    int(row['vote_sell']) == int(best_inner['vote_sell']) and
                    _meta_match)
+        # ★ 요청: K기준 수익 정렬이 적용됐으면 ★ = 1행(K기준 수익 최고) = 최적 그리드
+        if _has_knet:
+            is_best = (ri == 0)
         marker = '★' if is_best else ''
         wz_v   = _g(row, 'meta_wilson_z')
         pl_v   = _g(row, 'meta_pct_low')
@@ -13355,6 +13422,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'oos_win_rate')*100:.1f}%"     if pd.notna(_g(row,'oos_win_rate'))     else '—'),
             (f"{_g(row,'oos_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'oos_max_drawdown')) else '—'),
             (f"{_g(row,'oos_return')*100:+.2f}%"      if pd.notna(_g(row,'oos_return'))      else '—'),
+            # 🎯 K기준 (순신호 net>K, 상승·하락률 합산)
+            (int(_g(row,'knet_k'))                    if pd.notna(_g(row,'knet_k'))    else '—'),
+            (f"{_g(row,'knet_ret')*100:+.2f}%"        if pd.notna(_g(row,'knet_ret')) else '—'),
+            (int(_g(row,'knet_trades'))               if pd.notna(_g(row,'knet_trades')) else '—'),
+            (f"{_g(row,'knet_oos')*100:+.2f}%"        if pd.notna(_g(row,'knet_oos')) else '—'),
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
@@ -13670,7 +13742,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
     # ─── 7c. 순신호 K 최적화 시트 (요청) — net=매수카운트−매도카운트, net>K면 롱. K는 학습구간에서만 선정, OOS 검증 ───
     try:
-        _ns = _net_signal_k_search(feat, close_full, buy_pool, sell_pool, ticker=ticker,
+        # ★ K기준 최적 그리드의 풀이 있으면 그걸 사용(내부그리드 ★와 일관) — 없으면 기본 풀
+        _knet_pool = globals().get('_KNET_BEST_POOL')
+        if _knet_pool and _knet_pool[0] is not None and _knet_pool[1] is not None:
+            _ns_bp, _ns_sp = _knet_pool
+        else:
+            _ns_bp, _ns_sp = buy_pool, sell_pool
+        _ns = _net_signal_k_search(feat, close_full, _ns_bp, _ns_sp, ticker=ticker,
                                    oos_start=globals().get('OOS_START'))
         if _ns is not None:
             ws = wb.create_sheet('순신호 K최적화'); ws.sheet_view.showGridLines = False
