@@ -13599,93 +13599,44 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _em:
         print(f"  ⚠ 순신호 K 공유계산 실패(무시): {_em}")
 
-    # 7. 거래 내역
+    # 7. 거래 내역 — ★ K값 거래만 (요청: net>K 매수 → net≤K 매도 라운드트립). 레거시 거래 제외.
     ws = wb.create_sheet('거래 내역'); ws.sheet_view.showGridLines = False
-    n_stop = int(cur.get('n_stop_triggered', 0))
-    ws.cell(1, 1).value = f'완결된 거래 — 총 {len(trades)}건 (손절매 {n_stop}건 포함)'
-    ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:L1')
-    _hdr(ws, 3, ['#', '진입일', '진입가', '⛔ 손절가', '청산사유',
-                 '청산일', '청산가', '보유일',
-                 '총수익%', '비용후수익%', '누적자산', '누적수익%'])
-    for ri, row in trades.iterrows():
-        r = ri + 4
-        exit_reason = row.get('exit_reason', '매도신호')
-        stop_p = row.get('stop_price', np.nan)
-        sp_str = f"${stop_p:.2f}" if pd.notna(stop_p) else '-'
-        vals = [int(row['trade_no']),
-                row['entry_date'].date(), f"${row['entry_price']:.2f}",
-                sp_str, exit_reason,
-                row['exit_date'].date(),  f"${row['exit_price']:.2f}",
-                int(row['days_held']),
-                f"{row['gross_return_%']:+.2f}%",
-                f"{row['net_return_%']:+.2f}%",
-                f"{row['cum_equity']:.4f}",
-                f"{row['cum_return_%']:+.2f}%"]
-        is_stop = (exit_reason == '손절매')
+    _ntr = []
+    if _nsd_main is not None:
+        d = _nsd_main['daily']
+        pos = d['position'].values.astype(int)
+        prices = d['price'].values.astype(float)
+        dts = list(d['date']); rets = d['day_ret'].values.astype(float)
+        ent_i = None
+        for t in range(1, len(pos)):
+            if pos[t] == 1 and pos[t-1] == 0:
+                ent_i = t
+            elif pos[t] == 0 and pos[t-1] == 1 and ent_i is not None:
+                _ex = '매도신호'
+                _ioos = int(d.iloc[ent_i]['is_oos']) == 1
+                _ntr.append((ent_i, t, float(np.sum(rets[ent_i:t+1])), _ex, _ioos)); ent_i = None
+        if ent_i is not None:
+            _ntr.append((ent_i, len(pos)-1, float(np.sum(rets[ent_i:len(pos)])), '보유중', int(d.iloc[ent_i]['is_oos'])==1))
+    _bk_t = (round(_nsd_main['best_k'],3) if (_nsd_main and _nsd_main.get('weighted')) else (_nsd_main['best_k'] if _nsd_main else '-'))
+    ws.cell(1, 1).value = f'K값 거래 내역 — 총 {len(_ntr)}건 (net>K({_bk_t}) 매수 → net≤K 매도, 수익=구간 일별수익 합산)'
+    ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864'); ws.merge_cells('A1:I1')
+    _hdr(ws, 3, ['#', '진입일', '진입가', '청산일', '청산가', '보유일', '수익%(합산)', '누적수익%', '구간'])
+    _cum = 0.0
+    for _ix, (ei, xi, segret, exr, ioos) in enumerate(_ntr):
+        r = _ix + 4; _cum += segret
+        vals = [_ix+1, pd.Timestamp(dts[ei]).strftime('%Y-%m-%d'), f"${prices[ei]:.2f}",
+                pd.Timestamp(dts[xi]).strftime('%Y-%m-%d'), f"${prices[xi]:.2f}",
+                int(xi-ei), f"{segret*100:+.2f}%", f"{_cum*100:+.2f}%", 'OOS' if ioos else '학습']
         for ci, v in enumerate(vals, 1):
             c = ws.cell(r, ci); c.value = v; c.border = _TH
             c.alignment = Alignment(horizontal='center'); c.font = Font(size=10)
-            if ri % 2 == 1: c.fill = _ALT
-        if is_stop:
-            ws.cell(r, 5).fill = _BAD
-            ws.cell(r, 5).font = Font(bold=True, size=10, color='C00000')
-        if row['net_return_%'] > 0:
-            ws.cell(r, 10).fill = _GOOD
-            ws.cell(r, 10).font = Font(bold=True, size=10, color='006100')
-        else:
-            ws.cell(r, 10).fill = _BAD
-            ws.cell(r, 10).font = Font(bold=True, size=10, color='C00000')
-    for ci, w in enumerate([5, 12, 10, 11, 11, 12, 10, 8, 10, 12, 10, 12], 1):
+            if _ix % 2 == 1: c.fill = _ALT
+        ws.cell(r, 7).fill = _GOOD if segret > 0 else _BAD
+        ws.cell(r, 7).font = Font(bold=True, size=10, color='006100' if segret > 0 else 'C00000')
+    for ci, w in enumerate([5, 12, 11, 12, 11, 8, 13, 13, 7], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
-
-    # 7b. ★ 순신호 K 거래 내역 (요청 — 일별 백테스트의 net>K 매수/매도와 동기화)
-    try:
-        if _nsd_main is not None:
-            d = _nsd_main['daily']
-            pos = d['position'].values.astype(int)
-            prices = d['price'].values.astype(float)
-            dts = list(d['date'])
-            rets = d['day_ret'].values.astype(float)
-            # 라운드트립 추출: 매수(0→1)에서 진입, 매도(1→0)에서 청산
-            ntr = []
-            ent_i = None
-            for t in range(1, len(pos)):
-                if pos[t] == 1 and pos[t-1] == 0:
-                    ent_i = t
-                elif pos[t] == 0 and pos[t-1] == 1 and ent_i is not None:
-                    seg = rets[ent_i:t+1]        # 보유 구간 일별수익(합산)
-                    ntr.append((ent_i, t, float(np.sum(seg))))
-                    ent_i = None
-            if ent_i is not None:                # 마지막까지 보유중
-                seg = rets[ent_i:len(pos)]
-                ntr.append((ent_i, len(pos)-1, float(np.sum(seg))))
-            _br = ws.max_row + 3
-            ws.cell(_br, 1).value = (f'★ 순신호 K 거래 내역 — 총 {len(ntr)}건 '
-                                     f'(net>K 매수 → net≤K 매도, 수익=구간 일별수익 합산)')
-            ws.cell(_br, 1).font = Font(bold=True, size=13, color='C00000'); ws.merge_cells(f'A{_br}:I{_br}')
-            _hh = _br + 1
-            _hdr(ws, _hh, ['#', '진입일', '진입가', '청산일', '청산가', '보유일', '수익%(합산)', '누적수익%', '구간'])
-            _cum = 0.0
-            for _ix, (ei, xi, segret) in enumerate(ntr):
-                rr = _hh + 1 + _ix
-                _cum += segret
-                _isoos = int(d.iloc[ei]['is_oos']) == 1
-                vals = [_ix+1,
-                        pd.Timestamp(dts[ei]).strftime('%Y-%m-%d'), f"${prices[ei]:.2f}",
-                        pd.Timestamp(dts[xi]).strftime('%Y-%m-%d'), f"${prices[xi]:.2f}",
-                        int(xi - ei), f"{segret*100:+.2f}%", f"{_cum*100:+.2f}%",
-                        'OOS' if _isoos else '학습']
-                for ci, v in enumerate(vals, 1):
-                    c = ws.cell(rr, ci); c.value = v; c.border = _TH
-                    c.alignment = Alignment(horizontal='center'); c.font = Font(size=10)
-                ws.cell(rr, 7).fill = _GOOD if segret > 0 else _BAD
-                ws.cell(rr, 7).font = Font(bold=True, size=10,
-                                           color='006100' if segret > 0 else 'C00000')
-            print(f"  ✓ 거래내역: 순신호 K 거래 {len(ntr)}건 동기화 추가")
-    except Exception as _et:
-        print(f"  ⚠ 순신호 거래내역 추가 실패(무시): {_et}")
+    print(f"  ✓ 거래 내역: K값 거래 {len(_ntr)}건")
     try:
         _pf = float(globals().get('CORRECT_PROFIT_FLOOR', 0.01))
         _fidx = daily['date'] if (daily is not None and hasattr(daily, 'columns') and 'date' in daily.columns) else []
@@ -13801,68 +13752,52 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.freeze_panes = 'A8'
 
-    # 8. 일별 백테스트 — ★ 레거시 형식 유지(요청) + 순신호 K 컬럼을 오른쪽에 '추가만'.
+    # 8. 일별 백테스트 — ★ K값 매수/매도가 메인 (요청). 형식 유지, 내용은 net>K 기준. 레거시/지표 컬럼 제외.
     ws = wb.create_sheet('일별 백테스트', 0); ws.sheet_view.showGridLines = False
-    ws.cell(1, 1).value = f'일별 백테스트 — {len(daily)}일'
-    ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864'); ws.merge_cells('A1:T1')
-    _ind_hdr = [(('매수:' if _k == 'BUY' else '매도:') + _nm)
-                for (_k, _nm, _vc, _sc) in cur.get('used_ind_cols', [])]
-    _legacy_hdr = ['날짜', f'{ticker}종가',
-                   f'매수카운트(/{cur["K_buy"]})', '매수ON', '매수성공',
-                   f'매도카운트(/{cur["K_sell"]})', '매도ON', '매도성공',
-                   '포지션', '액션', '진입가', '⛔ 손절가', '보유일',
-                   '미실현%', '실현%', '누적자산', '누적수익%', '진행최대손실%'] + _ind_hdr
-    _hdr(ws, 4, _legacy_hdr)
-    _write_daily_rows(ws, daily, cur, mdd_limit_pct)
-    # ── 순신호 K 컬럼을 오른쪽에 추가 (날짜로 매칭) ──
-    try:
-        _knet_pool_d = globals().get('_KNET_BEST_POOL')
-        if _knet_pool_d and _knet_pool_d[0] is not None and _knet_pool_d[1] is not None:
-            _dbp, _dsp = _knet_pool_d
-        else:
-            _dbp, _dsp = buy_pool, sell_pool
-        _nsd = _nsd_main if _nsd_main is not None else _net_signal_k_search(
-            feat, close_full, _dbp, _dsp, ticker=ticker, oos_start=globals().get('OOS_START'),
-            n_buy=globals().get('_KNET_BEST_NB'), n_sell=globals().get('_KNET_BEST_NS'))
-        if _nsd is not None:
-            _bk = (round(_nsd['best_k'], 3) if _nsd.get('weighted') else _nsd['best_k'])
-            _wtag = '점수가중' if _nsd.get('weighted') else '단순개수'
-            _cb = len(_legacy_hdr) + 1   # 추가 컬럼 시작
-            _add_hdr = ['순신호 net', f'net포지션(>{_bk})', 'net액션',
-                        'net누적수익%(합산)', 'net보유중하락%', '구간']
-            for _j, _h in enumerate(_add_hdr):
-                c = ws.cell(4, _cb + _j); c.value = _h; c.fill = _HDR; c.font = _WB_
-            ws.cell(2, 1).value = (f'➕ 순신호 K({_wtag}) 컬럼 추가: net>K({_bk})면 매수·보유. '
-                                   f'전체 {_nsd["full_cum"]*100:+.1f}% / OOS {(_nsd["oos_cum"] or 0)*100:+.1f}% '
-                                   f'/ 거래 {_nsd["n_trades"]}회 | 지표수 {_nsd["n_buy_opt"]}/{_nsd["n_sell_opt"]}')
-            ws.cell(2, 1).font = Font(bold=True, color='C00000')
-            d = _nsd['daily']
-            _nmap = {}
-            for _i in range(len(d)):
-                _row = d.iloc[_i]
-                _nmap[pd.Timestamp(_row['date']).strftime('%Y-%m-%d')] = _row
-            # 데이터 행(5~) 날짜 읽어 매칭
-            for _r in range(5, ws.max_row + 1):
-                _dv = ws.cell(_r, 1).value
-                if _dv is None: continue
-                try: _key = pd.Timestamp(_dv).strftime('%Y-%m-%d')
-                except Exception: continue
-                _nr = _nmap.get(_key)
-                if _nr is None: continue
-                ws.cell(_r, _cb + 0).value = (round(float(_nr['net']), 3) if _nsd.get('weighted') else int(_nr['net']))
-                ws.cell(_r, _cb + 1).value = int(_nr['position'])
-                ws.cell(_r, _cb + 2).value = str(_nr['action'])
-                ws.cell(_r, _cb + 3).value = round(float(_nr['cum_ret']) * 100, 2)
-                ws.cell(_r, _cb + 4).value = round(float(_nr['held_down_run']) * 100, 2)
-                ws.cell(_r, _cb + 5).value = ('OOS' if int(_nr['is_oos']) == 1 else '학습')
-                if int(_nr['position']) == 1: ws.cell(_r, _cb + 1).fill = PatternFill('solid', fgColor='C6EFCE')
-                _ac = str(_nr['action'])
-                if _ac == '매수':   ws.cell(_r, _cb + 2).fill = PatternFill('solid', fgColor='C6EFCE')
-                elif _ac == '매도': ws.cell(_r, _cb + 2).fill = PatternFill('solid', fgColor='FFC7CE')
-            print(f"  ✓ 일별 백테스트: 레거시 형식 + 순신호 K컬럼 추가 (K={_bk}, 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']})")
-            globals()['_KNET_DAILY_FOR_TRADES'] = _nsd   # 거래내역 동기화용
-    except Exception as _ek:
-        print(f"  ⚠ 일별 순신호 컬럼 추가 실패(무시): {_ek}")
+    if _nsd_main is not None:
+        _nsd = _nsd_main
+        _bk = (round(_nsd['best_k'], 3) if _nsd.get('weighted') else _nsd['best_k'])
+        _wtag = '점수가중' if _nsd.get('weighted') else '단순개수'
+        ws.cell(1, 1).value = (f'일별 백테스트 (K값 매수/매도) — net={_wtag}, net>K({_bk})면 매수·보유, net≤K면 매도. '
+                               f'수익=상승·하락률 합산')
+        ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:K1')
+        def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
+        ws.cell(2, 1).value = (f"★최적K={_bk} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
+                               f"전체 {_p2(_nsd['full_cum'])} (B&H {_p2(_nsd['bh_full'])}) | "
+                               f"OOS {_p2(_nsd['oos_cum'])} (B&H {_p2(_nsd['bh_oos'])}) | "
+                               f"거래 {_nsd['n_trades']}회 | 보유중하락 {_p2(_nsd['held_down_full'])}")
+        ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:K2')
+        _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', '매도카운트', '순신호 net',
+                     f'포지션(net>{_bk})', '액션', '일별수익%', '누적수익%(합산)',
+                     '보유중하락 누적%', '구간'])
+        d = _nsd['daily']
+        for i in range(len(d)):
+            r = 5 + i; row = d.iloc[i]
+            ws.cell(r, 1).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+            ws.cell(r, 2).value = (round(float(row['price']), 2) if pd.notna(row['price']) else None)
+            ws.cell(r, 3).value = (round(float(row['buy_count']), 2) if _nsd.get('weighted') else int(row['buy_count']))
+            ws.cell(r, 4).value = (round(float(row['sell_count']), 2) if _nsd.get('weighted') else int(row['sell_count']))
+            ws.cell(r, 5).value = (round(float(row['net']), 3) if _nsd.get('weighted') else int(row['net']))
+            ws.cell(r, 6).value = int(row['position'])
+            ws.cell(r, 7).value = str(row['action'])
+            ws.cell(r, 8).value = round(float(row['day_ret']) * 100, 3)
+            ws.cell(r, 9).value = round(float(row['cum_ret']) * 100, 2)
+            ws.cell(r, 10).value = round(float(row['held_down_run']) * 100, 2)
+            ws.cell(r, 11).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
+            if int(row['position']) == 1: ws.cell(r, 6).fill = PatternFill('solid', fgColor='C6EFCE')
+            _ac = str(row['action'])
+            if _ac == '매수':   ws.cell(r, 7).fill = PatternFill('solid', fgColor='C6EFCE')
+            elif _ac == '매도': ws.cell(r, 7).fill = PatternFill('solid', fgColor='FFC7CE')
+            if pd.notna(row['day_ret']) and float(row['day_ret']) < 0 and int(row['position']) == 1:
+                ws.cell(r, 8).fill = PatternFill('solid', fgColor='FFC7CE')
+            if int(row['is_oos']) == 1: ws.cell(r, 1).fill = PatternFill('solid', fgColor='DDEBF7')
+        for ci, w in enumerate([12, 11, 11, 11, 11, 15, 9, 11, 15, 15, 7], 1):
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        ws.freeze_panes = 'A5'
+        print(f"  ✓ 일별 백테스트(K값 메인): K={_bk}, 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']}, 거래 {_nsd['n_trades']}회")
+    else:
+        ws.cell(1, 1).value = '일별 백테스트 — 순신호 K 계산 실패'
+        ws.cell(1, 1).font = Font(bold=True, size=12, color='C00000')
 
     # 9. ★ OOS 일별 거래
     if oos_enabled and oos_daily is not None and len(oos_daily) > 0:
