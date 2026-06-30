@@ -10042,7 +10042,7 @@ USE_ANCHOR_MATCH_CORRECTION = True
 # ★ 검증 후보 보정 통합 (요청) — 실거래 검증 후보 중 수익 상위 N개에 지표 가중치 보정을
 #   적용하고, 보정 후 수익/손실/승률을 재계산. 보정 후 수익이 가장 높은 조합을 선정.
 #   (모든 후보에 보정하면 너무 느려서 수익 상위 N개로 제한)
-CORRECT_VERIFY_TOP_N = 20        # 수익 상위 몇 개 후보에 보정을 적용할지
+CORRECT_VERIFY_TOP_N = 0         # 수익 상위 몇 개 후보에 보정을 적용할지
 CORRECT_PROFIT_FLOOR = 0.01      # 거래 진단: 수익 이 값(1%) 이하 + 손실 거래를 '틀린 거래'로
 SELECT_BY_CORRECTED_RETURN = True  # True면 보정 후 수익 최고로 선정
 # ★ 후보 선정 필터를 '보정 후' 수치로 (요청) — 최대거래손실 한도·승률 밴드를 보정 적용된
@@ -12576,10 +12576,9 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         if not has_oos: oos_idx = n
         train_hi = oos_idx if has_oos else n
 
-        # ── threshold(K) 탐색 (벡터화) ── ★ 신호 후 '다음날 종가' 거래:
-        #   net[t] 신호 → close[t+1]에 매수 → 수익은 ret[t+2]부터 포착. 따라서 pos[s]=1 ⇔ net[s-2]>K.
+        # ── threshold(K) 탐색 (벡터화) ── 기존 방식: net[s-1]>K면 그날(s) 포지션 → ret[s] 포착.
         def _search_threshold(net):
-            net_lag = np.full(n, -1.0e18); net_lag[2:] = net[:-2]   # 2일 지연(다음날 종가 진입)
+            net_prev = np.empty(n); net_prev[0] = net[0]; net_prev[1:] = net[:-1]   # 1일 지연(기존)
             kmin = float(np.nanmin(net)); kmax = float(np.nanmax(net))
             if kmax <= kmin: kmax = kmin + 1.0
             if _net_is_float:
@@ -12592,13 +12591,13 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                       if (_kh - _kl) > max_k_candidates else list(range(_kl, _kh + 1)))
             best = None; best_sel = None; table = []
             for K in ks:
-                pos = (net_lag > K).astype(float)
+                pos = (net_prev > K).astype(float); pos[0] = 0.0
                 _hr = pos * r
                 tr = float(np.sum(pos[:train_hi] * r[:train_hi]))
                 oo = float(np.sum(pos[oos_idx:] * r[oos_idx:])) if has_oos else None
                 fu = float(np.sum(_hr))
-                hd = float(np.sum(_hr[_hr < 0]))                          # 보유중하락 전체
-                hd_oos = (float(np.sum(_hr[oos_idx:][_hr[oos_idx:] < 0])) if has_oos else None)  # OOS
+                hd = float(np.sum(_hr[_hr < 0]))
+                hd_oos = (float(np.sum(_hr[oos_idx:][_hr[oos_idx:] < 0])) if has_oos else None)
                 dl = int(pos[:train_hi].sum())
                 _Kv = (round(float(K), 4) if _net_is_float else int(K))
                 table.append((_Kv, tr, oo, fu, dl, hd, hd_oos))
@@ -12633,8 +12632,8 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         buy_count = buy_cum[n_buy_opt-1]; sell_count = sell_cum[n_sell_opt-1]
 
         best_k = best[0]
-        net_lag = np.full(n, -1.0e18); net_lag[2:] = net[:-2]   # 신호 후 다음날 종가 진입(2일 지연)
-        pos = (net_lag > best_k).astype(float)
+        net_prev = np.empty(n); net_prev[0] = net[0]; net_prev[1:] = net[:-1]   # 기존: net[s-1]>K → 그날 포지션
+        pos = (net_prev > best_k).astype(float); pos[0] = 0.0
         bh_full  = float(np.sum(r)); bh_train = float(np.sum(r[:train_hi]))
         bh_oos   = float(np.sum(r[oos_idx:])) if has_oos else None
         n_trades = int(np.sum(np.abs(np.diff(pos)) > 0)) if n > 1 else 0
@@ -13352,17 +13351,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = (f'전체 그리드 통합 (모든 메타변수 조합) — {mdd_t2}, 거래수 ≥ {min_trades_daily}회, B&H 초과만  '
                            f'({len(inner_passed)}개) — {inner_sort_label}')
     ws.cell(1, 1).font = Font(bold=True, size=14, color='1F3864')
-    ws.merge_cells('A1:AV1')
+    ws.merge_cells('A1:AF1')
     _hdr(ws, 3, ['#', 'wilson_z', 'pct_low', 'pct_high', 'corr_limit', 'min_sig', 'pool',
                  'K_buy', 'vote_buy', 'K_sell', 'vote_sell',
                  '✅실제승률', '✅실제최대손실', '✅실제누적수익',
-                 '✅실제매수성공', '✅실제매도성공', '✅실제평균성공',
-                 '✅실제매수매칭', '✅실제매도매칭', '✅실제평균매칭', '✅앵커수익',
-                 '🔧보정후수익', '🔧보정후최대손실', '🔧보정후승률',
-                 '🔧보정후매수성공', '🔧보정후매도성공',
-                 '🔧보정후매수매칭', '🔧보정후매도매칭',
-                 '🔧보정채택', '🔧추가지표수',
-                 '📍실행일포지션', '🎬실행일액션', '📍매수점수', '📍매도점수',
+                 '📍실행일포지션', '🎬실행일액션', '📍매수카운트', '📍매도카운트',
                  '📅최근매수일', '💲진입가', '📅최근매도일', '💲매도가',
                  '🔬OOS승률', '🔬OOS최대손실', '🔬OOS수익률',
                  '🎯K최적값', '🎯K기준수익(합산)', '🎯K거래수', '🎯K기준OOS수익',
@@ -13394,13 +13387,34 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     if feat is not None and close_full is not None and _pool_map_k:
         _oos_k = globals().get('OOS_START')
         _kret = []; _ktr = []; _koos = []; _kk = []; _khd_tr = []; _khd_oos = []; _knb = []
+        # ★ K값 실행 상태 (col31-38 채움용): 마지막날 포지션/액션/카운트 + 최근 매수/매도
+        _rpos = []; _ract = []; _rbs = []; _rss = []; _rbd = []; _rbp = []; _rsd = []; _rsp = []
+        def _knet_exec_state(_r):
+            try:
+                d = _r['daily']; m = len(d)
+                last = d.iloc[m-1]
+                rpos = '롱' if int(last['position']) == 1 else '현금'
+                ract = str(last['action'])
+                rbs = float(last['buy_count']); rss = float(last['sell_count'])
+                # 최근 매수(0→1 진입=익일 체결) / 매도(1→0)
+                pos = d['position'].values.astype(int)
+                dts = list(d['date']); px = d['price'].values.astype(float)
+                lbd = lbp = lsd = lsp = None
+                for t in range(1, m):
+                    if pos[t] == 1 and pos[t-1] == 0: lbd = dts[t]; lbp = px[t]
+                    elif pos[t] == 0 and pos[t-1] == 1: lsd = dts[t]; lsp = px[t]
+                return rpos, ract, rbs, rss, lbd, lbp, lsd, lsp
+            except Exception:
+                return None, None, None, None, None, None, None, None
+        def _push_empty():
+            _kret.append(np.nan); _ktr.append(np.nan); _koos.append(np.nan)
+            _kk.append(np.nan); _khd_tr.append(np.nan); _khd_oos.append(np.nan); _knb.append(np.nan)
+            for _L in (_rpos, _ract, _rbs, _rss, _rbd, _rbp, _rsd, _rsp): _L.append(None)
         for _, _row in disp.iterrows():
             _mk = _meta_key_of(_row); _kb, _ks = _row_kbuy_ksell(_row)
             _pools = _pool_map_k.get(_mk) if _mk else None
             if not _pools or _kb is None:
-                _kret.append(np.nan); _ktr.append(np.nan); _koos.append(np.nan)
-                _kk.append(np.nan); _khd_tr.append(np.nan); _khd_oos.append(np.nan); _knb.append(np.nan)
-                continue
+                _push_empty(); continue
             _ck = (_mk, _kb, _ks)
             if _ck not in _knet_cache:
                 _bp, _sp = _pools
@@ -13412,8 +13426,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _knet_cache[_ck] = None
             _r = _knet_cache[_ck]
             if _r is None:
-                _kret.append(np.nan); _ktr.append(np.nan); _koos.append(np.nan)
-                _kk.append(np.nan); _khd_tr.append(np.nan); _khd_oos.append(np.nan); _knb.append(np.nan)
+                _push_empty()
             else:
                 _kret.append(_r['full_cum']); _ktr.append(_r['n_trades'])
                 _koos.append(_r['oos_cum'] if _r['oos_cum'] is not None else np.nan)
@@ -13421,10 +13434,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _khd_tr.append(_r.get('held_down_train', np.nan))
                 _khd_oos.append(_r['held_down_oos'] if _r.get('held_down_oos') is not None else np.nan)
                 _knb.append(f"{_r['n_buy_opt']}/{_r['n_sell_opt']}")
+                _es = _knet_exec_state(_r)
+                _rpos.append(_es[0]); _ract.append(_es[1]); _rbs.append(_es[2]); _rss.append(_es[3])
+                _rbd.append(_es[4]); _rbp.append(_es[5]); _rsd.append(_es[6]); _rsp.append(_es[7])
         disp['knet_ret'] = _kret; disp['knet_trades'] = _ktr
         disp['knet_oos'] = _koos; disp['knet_k'] = _kk
         disp['knet_hd_train'] = _khd_tr; disp['knet_hd_oos'] = _khd_oos
         disp['knet_nbns'] = _knb
+        disp['knet_rpos'] = _rpos; disp['knet_ract'] = _ract
+        disp['knet_rbs'] = _rbs; disp['knet_rss'] = _rss
+        disp['knet_lbd'] = _rbd; disp['knet_lbp'] = _rbp
+        disp['knet_lsd'] = _rsd; disp['knet_lsp'] = _rsp
         # ★ 최적 그리드 = 'K기준 OOS 수익' 최고
         _sort_col = 'knet_oos' if disp['knet_oos'].notna().any() else 'knet_ret'
         if disp[_sort_col].notna().any():
@@ -13497,32 +13517,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             (f"{_g(row,'real_win_rate')*100:.1f}%"     if pd.notna(_g(row,'real_win_rate'))     else '—'),
             (f"{_g(row,'real_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'real_max_drawdown')) else '—'),
             (f"{_g(row,'real_total_return')*100:+.2f}%" if pd.notna(_g(row,'real_total_return')) else '—'),
-            (f"{_g(row,'real_buy_success')*100:.1f}%"  if pd.notna(_g(row,'real_buy_success'))  else '—'),
-            (f"{_g(row,'real_sell_success')*100:.1f}%" if pd.notna(_g(row,'real_sell_success')) else '—'),
-            (f"{_g(row,'real_avg_success')*100:.1f}%"  if pd.notna(_g(row,'real_avg_success'))  else '—'),
-            (f"{_g(row,'real_buy_match')*100:.1f}%"   if pd.notna(_g(row,'real_buy_match'))   else '—'),
-            (f"{_g(row,'real_sell_match')*100:.1f}%"  if pd.notna(_g(row,'real_sell_match'))  else '—'),
-            (f"{_g(row,'real_avg_match')*100:.1f}%"   if pd.notna(_g(row,'real_avg_match'))   else '—'),
-            (f"{_g(row,'real_anchor_return')*100:+.2f}%" if pd.notna(_g(row,'real_anchor_return')) else '—'),
-            (f"{_g(row,'corr_total_return')*100:+.2f}%" if pd.notna(_g(row,'corr_total_return')) else '—'),
-            (f"{_g(row,'corr_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'corr_max_drawdown')) else '—'),
-            (f"{_g(row,'corr_win_rate')*100:.1f}%" if pd.notna(_g(row,'corr_win_rate')) else '—'),
-            (f"{_g(row,'corr_buy_success')*100:.1f}%" if pd.notna(_g(row,'corr_buy_success')) else '—'),
-            (f"{_g(row,'corr_sell_success')*100:.1f}%" if pd.notna(_g(row,'corr_sell_success')) else '—'),
-            (f"{_g(row,'corr_buy_match')*100:.1f}%" if pd.notna(_g(row,'corr_buy_match')) else '—'),
-            (f"{_g(row,'corr_sell_match')*100:.1f}%" if pd.notna(_g(row,'corr_sell_match')) else '—'),
-            ('채택' if bool(_g(row,'corr_applied', False)) else '—'),
-            (f"매수+{int(_g(row,'corr_n_added_buy',0))}/매도+{int(_g(row,'corr_n_added_sell',0))}"
-                 if (pd.notna(_g(row,'corr_n_added_buy')) and (_g(row,'corr_n_added_buy',0) or _g(row,'corr_n_added_sell',0))) else '—'),
-            # ★ 실행일 실제 포지션·점수 + 최근 매수/매도 (요청)
-            ('보유' if _g(row,'run_pos')==1 else ('현금' if pd.notna(_g(row,'run_pos')) else '—')),
-            (str(_g(row,'run_action')) if (_g(row,'run_action') is not None and pd.notna(_g(row,'run_action'))) else '—'),
-            (f"{_g(row,'run_buy_score'):.2f}"  if pd.notna(_g(row,'run_buy_score'))  else '—'),
-            (f"{_g(row,'run_sell_score'):.2f}" if pd.notna(_g(row,'run_sell_score')) else '—'),
-            (pd.Timestamp(_g(row,'recent_buy_date')).date()  if pd.notna(_g(row,'recent_buy_date'))  else '—'),
-            (f"{_g(row,'recent_buy_price'):.2f}"  if pd.notna(_g(row,'recent_buy_price'))  else '—'),
-            (pd.Timestamp(_g(row,'recent_sell_date')).date() if pd.notna(_g(row,'recent_sell_date')) else '—'),
-            (f"{_g(row,'recent_sell_price'):.2f}" if pd.notna(_g(row,'recent_sell_price')) else '—'),
+            # ★ 실행일 K값 상태 + 최근 K값 매수/매도 (요청: net>K 기준)
+            (str(_g(row,'knet_rpos')) if (_g(row,'knet_rpos') is not None and str(_g(row,'knet_rpos'))!='nan') else '—'),
+            (str(_g(row,'knet_ract')) if (_g(row,'knet_ract') is not None and str(_g(row,'knet_ract'))!='nan') else '—'),
+            (f"{float(_g(row,'knet_rbs')):.2f}"  if pd.notna(_g(row,'knet_rbs'))  else '—'),
+            (f"{float(_g(row,'knet_rss')):.2f}"  if pd.notna(_g(row,'knet_rss'))  else '—'),
+            (pd.Timestamp(_g(row,'knet_lbd')).date()  if pd.notna(_g(row,'knet_lbd'))  else '—'),
+            (f"{float(_g(row,'knet_lbp')):.2f}"  if pd.notna(_g(row,'knet_lbp'))  else '—'),
+            (pd.Timestamp(_g(row,'knet_lsd')).date()  if pd.notna(_g(row,'knet_lsd'))  else '—'),
+            (f"{float(_g(row,'knet_lsp')):.2f}"  if pd.notna(_g(row,'knet_lsp'))  else '—'),
             (f"{_g(row,'oos_win_rate')*100:.1f}%"     if pd.notna(_g(row,'oos_win_rate'))     else '—'),
             (f"{_g(row,'oos_max_drawdown')*100:.2f}%" if pd.notna(_g(row,'oos_max_drawdown')) else '—'),
             (f"{_g(row,'oos_return')*100:+.2f}%"      if pd.notna(_g(row,'oos_return'))      else '—'),
@@ -13543,51 +13546,31 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 c.font = Font(bold=True, color='C00000', size=11)
             elif ri % 2 == 1:
                 c.fill = _ALT
-        # 실제 수치 색칠 (12승률,13MDD,14수익,15매수성공,16매도성공,17평균성공,18매수매칭,19매도매칭,20평균매칭,21앵커수익)
+        # 실제 수치 색칠 (12승률, 13최대손실, 14누적수익)
         _rw = _g(row, 'real_win_rate'); _rm = _g(row, 'real_max_drawdown'); _rt = _g(row, 'real_total_return')
         if pd.notna(_rw): ws.cell(r, 12).fill = _success_fill(_rw)
         if pd.notna(_rm): ws.cell(r, 13).fill = _mdd_fill(_rm, mdd_limit_pct)
         if pd.notna(_rt): ws.cell(r, 14).fill = _ret_fill(_rt, bh_ret)
-        _rb = _g(row, 'real_buy_success'); _rs2 = _g(row, 'real_sell_success'); _ra = _g(row, 'real_avg_success')
-        if pd.notna(_rb):  ws.cell(r, 15).fill = _success_fill(_rb)
-        if pd.notna(_rs2): ws.cell(r, 16).fill = _success_fill(_rs2)
-        if pd.notna(_ra):  ws.cell(r, 17).fill = _success_fill(_ra)
-        _rbm = _g(row, 'real_buy_match'); _rsm = _g(row, 'real_sell_match')
-        _ravm = _g(row, 'real_avg_match'); _rar = _g(row, 'real_anchor_return')
-        if pd.notna(_rbm):  ws.cell(r, 18).fill = _success_fill(_rbm)
-        if pd.notna(_rsm):  ws.cell(r, 19).fill = _success_fill(_rsm)
-        if pd.notna(_ravm): ws.cell(r, 20).fill = _success_fill(_ravm)
-        if pd.notna(_rar):  ws.cell(r, 21).fill = _ret_fill(_rar, bh_ret)
-        # 보정후 색칠 (22수익,23MDD,24승률,25매수성공,26매도성공,27매수매칭,28매도매칭,29채택)
-        _cr = _g(row, 'corr_total_return'); _cm = _g(row, 'corr_max_drawdown'); _cw = _g(row, 'corr_win_rate')
-        _cbs = _g(row, 'corr_buy_success'); _css = _g(row, 'corr_sell_success')
-        _cbm = _g(row, 'corr_buy_match'); _csm = _g(row, 'corr_sell_match')
-        _capplied = bool(_g(row, 'corr_applied', False))
-        if pd.notna(_cr):  ws.cell(r, 22).fill = _ret_fill(_cr, bh_ret)
-        if pd.notna(_cm):  ws.cell(r, 23).fill = _mdd_fill(_cm, mdd_limit_pct)
-        if pd.notna(_cw):  ws.cell(r, 24).fill = _success_fill(_cw)
-        if pd.notna(_cbs): ws.cell(r, 25).fill = _success_fill(_cbs)
-        if pd.notna(_css): ws.cell(r, 26).fill = _success_fill(_css)
-        if pd.notna(_cbm): ws.cell(r, 27).fill = _success_fill(_cbm)
-        if pd.notna(_csm): ws.cell(r, 28).fill = _success_fill(_csm)
-        if _capplied:      ws.cell(r, 29).fill = _HL
-        # 🔬 OOS 색칠 (39승률, 40최대손실, 41수익) — 맨 끝 3개 컬럼
+        # 실행일 K값 포지션(15) 색칠 — 롱/현금
+        _rp = _g(row, 'knet_rpos')
+        if isinstance(_rp, str) and _rp == '롱':   ws.cell(r, 15).fill = _HOLD
+        elif isinstance(_rp, str) and _rp == '현금': ws.cell(r, 15).fill = _CASH
+        # 🔬 OOS 색칠 (23승률, 24최대손실, 25수익)
         _ow = _g(row, 'oos_win_rate'); _omd = _g(row, 'oos_max_drawdown'); _ortn = _g(row, 'oos_return')
-        if pd.notna(_ow):   ws.cell(r, 39).fill = _success_fill(_ow)
-        if pd.notna(_omd):  ws.cell(r, 40).fill = _mdd_fill(_omd, mdd_limit_pct)
-        if pd.notna(_ortn): ws.cell(r, 41).fill = _ret_fill(_ortn, bh_ret)
-        # 실행일 포지션(31) 색칠 — 보유/현금
-        if _g(row,'run_pos') == 1: ws.cell(r, 31).fill = _HOLD
-        elif pd.notna(_g(row,'run_pos')): ws.cell(r, 31).fill = _CASH
+        if pd.notna(_ow):   ws.cell(r, 23).fill = _success_fill(_ow)
+        if pd.notna(_omd):  ws.cell(r, 24).fill = _mdd_fill(_omd, mdd_limit_pct)
+        if pd.notna(_ortn): ws.cell(r, 25).fill = _ret_fill(_ortn, bh_ret)
+        # 🎯 K 색칠 (27 전체수익, 29 OOS수익)
+        if pd.notna(_g(row,'knet_ret')): ws.cell(r, 27).fill = _ret_fill(_g(row,'knet_ret'), bh_ret)
+        if pd.notna(_g(row,'knet_oos')): ws.cell(r, 29).fill = _ret_fill(_g(row,'knet_oos'), 0.0)
         if is_best:
             ws.cell(r, 14).font = Font(bold=True, color='C00000', size=12)
-            if pd.notna(_cr):
-                ws.cell(r, 22).font = Font(bold=True, color='C00000', size=12)
+            ws.cell(r, 26).font = Font(bold=True, color='C00000', size=12)
     for ci, w in enumerate([6, 9, 8, 8, 9, 8, 7, 8, 9, 8, 9,
-                            11, 11, 11, 13, 12, 12, 12, 12, 12, 12,
-                            12, 13, 12, 13, 13, 13, 13, 10, 14,
-                            12, 18, 10, 10, 13, 10, 13, 10,
-                            11, 13, 12], 1):
+                            11, 13, 13,
+                            12, 14, 11, 11, 13, 10, 13, 10,
+                            11, 13, 12,
+                            10, 15, 10, 15, 14, 14, 14], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
@@ -13764,7 +13747,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _wtd = _nsd.get('weighted')
         _bk = (round(_nsd['best_k'], 3) if _wtd else _nsd['best_k'])
         _wtag = '점수가중' if _wtd else '단순개수'
-        ws.cell(1, 1).value = (f'일별 백테스트 — net({_wtag})>K({_bk}) 신호 → ★다음날 종가에 매수/매도 (익일 거래). '
+        ws.cell(1, 1).value = (f'일별 백테스트 — net({_wtag})>K({_bk})면 매수·보유, net≤K면 매도 (신호일 종가 기준). '
                                f'수익=상승·하락률 합산. (매수ON/매도ON=당일신호, 액션/포지션=익일 체결결과)')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:P1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
@@ -13926,7 +13909,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _hoos = _ns['has_oos']
             ws.cell(1, 1).value = (
                 f'{ticker} — 순신호 K 최적화  '
-                f'｜ net=매수카운트−매도카운트, net>K 신호→다음날 종가 매수/매도(익일 거래). '
+                f'｜ net=매수카운트−매도카운트, net>K면 롱·아니면 현금(신호일 종가 기준). '
                 f'K는 {"OOS 수익 최고로 선정" if _hoos else "전체구간 수익최고로 선정(OOS 없음)"} (수익=상승·하락률 합산)')
             ws.cell(1, 1).font = Font(bold=True, size=11)
             # 요약
