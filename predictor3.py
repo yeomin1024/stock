@@ -9860,6 +9860,12 @@ HORIZON_DAYS        = 1
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
+# ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
+#   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
+#   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10]
+SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
+
 N_THRESHOLDS        = 800
 MAX_INDICATORS      = 1000
 
@@ -9868,15 +9874,19 @@ MAX_INDICATORS      = 1000
 #         선발 기준을 점수(Wilson)→성공률 우선으로 바꿈. 가짜 100% 방지 위해 표본 가드 둠.
 POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
 POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 (요청: 0.60)
-POOL_SUCCESS_MIN_SIG   = 10        # 최소 신호수 — 소표본 가짜 100% 방지 (요청: 10)
-POOL_SUCCESS_WIDE_PCT  = (1, 99)   # 풀 평가용 분위 (요청: 1,99)
+POOL_SUCCESS_MIN_SIG   = 10        # ★ 최소 신호수(요청: 신호 10개 '초과') — 소표본 가짜 100% 방지
+POOL_SUCCESS_WIDE_PCT  = (0, 100)  # ★ 풀 평가용 분위 (요청: 0,100 전체 탐색)
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
 # ★ ⓑ 순신호 점수가중 (요청) — net을 '단순 개수' 대신 '지표 점수(성공률) 가중합'으로.
-#   True면 net = Σ(매수지표 성공률×신호) − Σ(매도지표 성공률×신호) (실수값, K도 실수 탐색).
-#   False면 기존 단순 개수. 단순개수 vs 가중을 OOS로 비교해 더 나은 쪽 채택 권장.
 NET_SIGNAL_WEIGHTED    = True
 NET_SIGNAL_WEIGHT_COL  = 'success_rate'   # 가중치로 쓸 컬럼: 'success_rate'(성공률) 또는 'score'(Wilson점수)
-                                   #   (기존 K_BUY_RANGE는 10부터라 정예풀에선 거래 0 → 자동으로 이 값까지 낮춤)
+# ★ 요청: 윌슨 최적값 정해진 뒤, '성공률 비례 점수 가중치'도 몇 개 정해서 윌슨처럼 반복 탐색.
+#   각 스킴은 성공률 p를 가중치로 변환하는 지수 g: weight = p**g (g=1이면 성공률 그대로, 클수록 고성공 더 강조).
+NET_WEIGHT_SCHEMES   = [1.0, 1.5, 2.0, 3.0]
+SEARCH_WEIGHT_SCHEME = True        # True면 위 스킴 전부 탐색해 최적 가중 선정
+# ★ 요청: 한 지표가 임계치별로 여러 성공률을 가지면, '그날 켜진 것 중 가장 높은 성공률'을 그 지표 점수로 적용.
+#   (예: 임계 T1→90%, T2→80%. 90% 신호 뜨면 90% 적용, 90% 꺼지고 80% 켜지면 80% 적용)
+NET_MULTI_THRESHOLD_WEIGHT = True
 
 # ★ 미래 예측 정확도 강화 (요청) — 지표 신호 생성·평가 방식 보강.
 #   목적: 과거 적합이 아니라 '미래에도 유지되는 신호'를 우대해 매수/매도 시점 예측력↑.
@@ -10072,7 +10082,7 @@ META_GRID = {
 
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
-STAGE_PCT_RANGE   = [(5, 95)]
+STAGE_PCT_RANGE   = [(0, 100)]
 STAGE_WILSON_Z    = [1.95]
 STAGE_WILSON_REFINE_STEP = 0
 STAGE_CORR_LIMIT  = [0.2]
@@ -14549,6 +14559,22 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          inject_pools=None):
     print('=' * 72)
     print('  매수/매도 앙상블 — 메타 그리드 자동 튜닝')
+    print('=' * 72)
+    # ★ 요청: 적용된 탐색 설정 로그 (확인용)
+    print('  [탐색 설정]')
+    print(f'    · 성공 판정: 신호 다음날(HORIZON={HORIZON_DAYS}일 이내) 종가 ±한도 도달')
+    if globals().get('SEARCH_SUCCESS_LIMIT', False):
+        _sl = globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY])
+        print(f'    · 상승/하락률 한도 탐색: {[f"{x*100:.0f}%" for x in _sl]} (각 한도로 성공률 계산 → 최적 선정)')
+    else:
+        print(f'    · 상승/하락률 한도: 고정 {DRAWDOWN_LIMIT_BUY*100:.0f}%')
+    print(f'    · 분위(pct) 탐색: {STAGE_PCT_RANGE}  (0,100=전체)')
+    print(f'    · 윌슨 z 탐색: {STAGE_WILSON_Z}')
+    print(f'    · 풀 조건: 신호수 > {POOL_SUCCESS_MIN_SIG}개  &  성공률 ≥ 사용지표 최소성공률(컷 {POOL_SUCCESS_MIN_RATE*100:.0f}%)')
+    if globals().get('SEARCH_WEIGHT_SCHEME', False):
+        print(f'    · 가중 스킴 탐색(윌슨 후): weight=p**g, g∈{globals().get("NET_WEIGHT_SCHEMES", [1.0])}')
+    print(f'    · 임계치별 다중 성공률 가중: {globals().get("NET_MULTI_THRESHOLD_WEIGHT", False)} '
+          f'(그날 켜진 임계 중 최고 성공률 적용)')
     print('=' * 72)
 
     # ★ MDD 한도 — sentinel이면 호출 시점의 전역 MAX_DRAWDOWN_LIMIT_PCT를 다시 읽음
