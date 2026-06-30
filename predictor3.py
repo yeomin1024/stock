@@ -10073,8 +10073,8 @@ TOP_N_GRID_OUT      = 10000
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
-    'wilson_z':    [1.65],
-    'pct_range':   [(5, 95)],
+    'wilson_z':    [1.95],
+    'pct_range':   [(0, 100)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
@@ -10083,8 +10083,8 @@ META_GRID = {
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
-STAGE_WILSON_REFINE_STEP = 0.05
+STAGE_WILSON_Z    = [1.95]
+STAGE_WILSON_REFINE_STEP = 0
 STAGE_CORR_LIMIT  = [0.2]
 
 PREFILTER_ENABLED          = True
