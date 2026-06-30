@@ -10093,8 +10093,8 @@ STAGE_CORR_LIMIT  = [0.2]
 # ============================================================
 TEST_MODE = True
 if TEST_MODE:
-    MAX_INDICATORS      = 150          # 1000 → 150 (후보 지표 대폭 축소)
-    N_THRESHOLDS        = 120          # 800 → 120 (임계 후보 축소)
+    MAX_INDICATORS      = 3000          # 1000 → 150 (후보 지표 대폭 축소)
+    N_THRESHOLDS        = 1000          # 800 → 120 (임계 후보 축소)
     STAGE_SUCCESS_LIMIT = [0.02, 0.03] # 1~5% → 2개만 (한도 탐색 빠르게)
     STAGE_WILSON_Z      = [1.95]       # 윌슨 1개
     STAGE_PCT_RANGE     = [(0, 100)]
