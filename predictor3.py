@@ -9863,11 +9863,11 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ 1~5% (요청: 1~10%에서 축소)
+STAGE_SUCCESS_LIMIT = [0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
-N_THRESHOLDS        = 800
-MAX_INDICATORS      = 1000
+N_THRESHOLDS        = 1000
+MAX_INDICATORS      = 3000
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
@@ -9882,7 +9882,7 @@ NET_SIGNAL_WEIGHTED    = True
 NET_SIGNAL_WEIGHT_COL  = 'success_rate'   # 가중치로 쓸 컬럼: 'success_rate'(성공률) 또는 'score'(Wilson점수)
 # ★ 요청: 윌슨 최적값 정해진 뒤, '성공률 비례 점수 가중치'도 몇 개 정해서 윌슨처럼 반복 탐색.
 #   각 스킴은 성공률 p를 가중치로 변환하는 지수 g: weight = p**g (g=1이면 성공률 그대로, 클수록 고성공 더 강조).
-NET_WEIGHT_SCHEMES   = [1.0, 1.5, 2.0, 3.0]
+NET_WEIGHT_SCHEMES   = [1.0, 1.5, 2.0, 2.5, 3.0]
 SEARCH_WEIGHT_SCHEME = True        # True면 위 스킴 전부 탐색해 최적 가중 선정
 # ★ 요청: 한 지표가 임계치별로 여러 성공률을 가지면, '그날 켜진 것 중 가장 높은 성공률'을 그 지표 점수로 적용.
 #   (예: 임계 T1→90%, T2→80%. 90% 신호 뜨면 90% 적용, 90% 꺼지고 80% 켜지면 80% 적용)
@@ -9967,8 +9967,8 @@ WINRATE_TOLERANCE      = 0.04
 # ★ 승률 후보 실거래 검증 (요청) — 그리드는 빠른 근사라 실제 일별거래와 MDD·승률·수익이
 #   다를 수 있음. 그래서 승률 상위 후보만 골라 '실제 일별 백테스트'를 돌려 진짜 수치를
 #   구하고, 그중 실제 누적수익이 가장 높은 조합을 최종 선정한다.
-VERIFY_BY_DAILY_BACKTEST = True   # True: 후보들을 실제 일별백테스트로 재검증 후 선정
-VERIFY_TOP_N             = 10000  # 그리드 승률 상위 몇 개를 실제로 돌릴지 (많을수록 정확·느림)
+VERIFY_BY_DAILY_BACKTEST = False  # ★ 끔(요청): net>K 시스템 사용 → 그리드 실거래검증(수십분) 불필요. 폴백 선정 사용.
+VERIFY_TOP_N             = 0      # ★ 실거래검증 OFF라 미사용(죽은 값)
 
 # ★ 실거래 검증 후, '실제 최대 거래손실'이 이 값 이하(더 안전)인 후보만 선정 대상으로 (요청).
 #   예: -0.03 이면 실제 단일거래 최대손실이 -3%보다 깊지 않은 조합만 후보.
@@ -9993,9 +9993,9 @@ EXCLUDE_BELOW_BH = False
 ANCHOR_MATCH_PRIORITY = False   # ★ 선정은 평균성공+MDD+수익 기준으로. 매칭 우선이 그걸 덮지 않도록 OFF
 ANCHOR_MATCH_TOLERANCE = 0.10
 
-ANCHOR_MODE = True
+ANCHOR_MODE = False   # ★ 끔(요청): 앵커 미사용 → plain BalAcc로 선정
 
-AUTO_ANCHOR = True
+AUTO_ANCHOR = False   # ★ 끔(요청): 앵커 정답일 자동계산 안 함
 AUTO_ANCHOR_WINDOW     = 1
 AUTO_ANCHOR_LOOKFORWARD = 1
 AUTO_ANCHOR_MIN_RISE   = 0.01
@@ -10073,7 +10073,7 @@ TOP_N_GRID_OUT      = 10000
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
-    'wilson_z':    [1.65],
+    'wilson_z':    [1.95],
     'pct_range':   [(5, 95)],
     'min_signals': [10],
     'corr_limit':  [0.2],
@@ -10091,10 +10091,10 @@ STAGE_CORR_LIMIT  = [0.2]
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
 #   지표수·임계수·한도수·윌슨후보를 줄여 수 분 내로 1회 돌게 함.
 # ============================================================
-TEST_MODE = True
+TEST_MODE = False
 if TEST_MODE:
-    MAX_INDICATORS      = 3000          # 1000 → 150 (후보 지표 대폭 축소)
-    N_THRESHOLDS        = 1000          # 800 → 120 (임계 후보 축소)
+    MAX_INDICATORS      = 150          # 1000 → 150 (후보 지표 대폭 축소)
+    N_THRESHOLDS        = 120          # 800 → 120 (임계 후보 축소)
     STAGE_SUCCESS_LIMIT = [0.02, 0.03] # 1~5% → 2개만 (한도 탐색 빠르게)
     STAGE_WILSON_Z      = [1.95]       # 윌슨 1개
     STAGE_PCT_RANGE     = [(0, 100)]
@@ -12673,26 +12673,31 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         buy_count = buy_cum[n_buy_opt-1]; sell_count = sell_cum[n_sell_opt-1]
 
         best_k = best[0]
-        net_prev = np.empty(n); net_prev[0] = net[0]; net_prev[1:] = net[:-1]   # 기존: net[s-1]>K → 그날 포지션
-        pos = (net_prev > best_k).astype(float); pos[0] = 0.0
+        # ★ 매수·매도 둘 다 '신호 본 날 종가'에 체결 (요청 A):
+        #   net[s]>K 본 날(s) 종가에 매수 → 소유 pos_own[s]=net[s]>K.  net[s]≤K 본 날 종가에 매도.
+        #   수익은 '전일 소유분'이 당일 등락 포착: daily_ret[s]=pos_own[s-1]*r[s].
+        #   → 진입가=매수신호일 종가, 청산가=매도신호일 종가, 실현%=(청산가/진입가-1) 로 정확히 일치.
+        pos_own = (net > best_k).astype(float); pos_own[0] = 0.0   # 표시·체결일·체결가
+        pos_ret = np.zeros(n); pos_ret[1:] = pos_own[:-1]          # 수익 포착(전일 소유)
+        pos = pos_own
         bh_full  = float(np.sum(r)); bh_train = float(np.sum(r[:train_hi]))
         bh_oos   = float(np.sum(r[oos_idx:])) if has_oos else None
-        n_trades = int(np.sum(np.abs(np.diff(pos)) > 0)) if n > 1 else 0
-        n_trades_oos = int(np.sum(np.abs(np.diff(pos[oos_idx:])) > 0)) if (has_oos and n - oos_idx > 1) else 0
-        _held_r = pos * r
+        n_trades = int(np.sum(np.abs(np.diff(pos_own)) > 0)) if n > 1 else 0
+        n_trades_oos = int(np.sum(np.abs(np.diff(pos_own[oos_idx:])) > 0)) if (has_oos and n - oos_idx > 1) else 0
+        _held_r = pos_ret * r
         held_down_full  = float(np.sum(_held_r[_held_r < 0]))
         held_down_train = float(np.sum(_held_r[:train_hi][_held_r[:train_hi] < 0]))
         held_down_oos   = (float(np.sum(_held_r[oos_idx:][_held_r[oos_idx:] < 0])) if has_oos else None)
-        daily_ret = pos * r
+        daily_ret = pos_ret * r
         cum_run = np.cumsum(daily_ret)
         held_down_run = np.cumsum(np.where(daily_ret < 0, daily_ret, 0.0))
         action = []
         for t in range(n):
             if t == 0: action.append('—'); continue
-            if pos[t] == 1 and pos[t-1] == 0:   action.append('매수')
-            elif pos[t] == 0 and pos[t-1] == 1: action.append('매도')
-            elif pos[t] == 1:                    action.append('보유')
-            else:                                action.append('현금')
+            if pos_own[t] == 1 and pos_own[t-1] == 0:   action.append('매수')   # 신호 본 날 종가 체결
+            elif pos_own[t] == 0 and pos_own[t-1] == 1: action.append('매도')
+            elif pos_own[t] == 1:                        action.append('보유')
+            else:                                        action.append('현금')
 
         oos_flag = np.zeros(n, dtype=int)
         if has_oos: oos_flag[oos_idx:] = 1
