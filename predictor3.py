@@ -9863,7 +9863,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10]
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 800
@@ -10073,8 +10073,8 @@ TOP_N_GRID_OUT      = 10000
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
-    'wilson_z':    [1.95],
-    'pct_range':   [(0, 100)],
+    'wilson_z':    [1.65],
+    'pct_range':   [(5, 95)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
@@ -10083,9 +10083,25 @@ META_GRID = {
 STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.95]
-STAGE_WILSON_REFINE_STEP = 0
+STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
+STAGE_WILSON_REFINE_STEP = 0.05
 STAGE_CORR_LIMIT  = [0.2]
+
+# ============================================================
+# ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
+#   지표수·임계수·한도수·윌슨후보를 줄여 수 분 내로 1회 돌게 함.
+# ============================================================
+TEST_MODE = True
+if TEST_MODE:
+    MAX_INDICATORS      = 150          # 1000 → 150 (후보 지표 대폭 축소)
+    N_THRESHOLDS        = 120          # 800 → 120 (임계 후보 축소)
+    STAGE_SUCCESS_LIMIT = [0.02, 0.03] # 1~5% → 2개만 (한도 탐색 빠르게)
+    STAGE_WILSON_Z      = [1.95]       # 윌슨 1개
+    STAGE_PCT_RANGE     = [(0, 100)]
+    STAGE_CORR_LIMIT    = [0.2]
+    CORRECT_VERIFY_TOP_N = 0           # 보정 검증 끔(이미 0)
+    print("⚡ TEST_MODE ON — 축소 설정(지표150/임계120/한도2개/윌슨1개)로 빠른 확인용 실행")
+# ============================================================
 
 PREFILTER_ENABLED          = True
 PREFILTER_MIN_CORR         = 0.005
@@ -14776,30 +14792,41 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                 exclude_below_bh=globals().get('EXCLUDE_BELOW_BH', True),
             )
 
-        # ★ 요청: 상승/하락률 한도(1~10%) 탐색 — 각 한도로 풀 만들어 '순신호 전체수익' 최고 한도 선정.
-        _limits = (list(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]))
-                   if globals().get('SEARCH_SUCCESS_LIMIT', False) else [dd_limit])
-        if len(_limits) > 1:
-            print(f"\n  ── 상승/하락률 한도 탐색 (총 {len(_limits)}개, 각 한도로 전체 그리드 1회씩 — 다소 느릴 수 있음) ──")
-        _best_lim = dd_limit; _best_lim_score = -1e18
-        for _li, _lim in enumerate(_limits):
-            try:
-                _res = _run_meta(_lim, _lim)
-                _bp, _sp = _res[5], _res[6]
-                _nsd_lim = _net_signal_k_search(feat, close, _bp, _sp, ticker=ticker, oos_start=None)
-                _sc = _nsd_lim['full_cum'] if _nsd_lim else -1e18
-                _np = len(_bp) if _bp is not None else 0
-                _ns = len(_sp) if _sp is not None else 0
-                print(f"    [한도 {_lim*100:>4.0f}%] 순신호 전체수익 {_sc*100:+8.2f}%  | 풀 매수{_np}/매도{_ns}"
-                      f"{'  ★현재최고' if _sc > _best_lim_score else ''}")
-                if _sc > _best_lim_score:
-                    _best_lim_score = _sc; _best_lim = _lim
-            except Exception as _ele:
-                print(f"    [한도 {_lim*100:.0f}%] 평가 실패(무시): {_ele}")
-        if len(_limits) > 1:
-            print(f"  ★ 최적 상승/하락률 한도 = {_best_lim*100:.0f}%  (순신호 전체수익 {_best_lim_score*100:+.2f}%)")
+        # ★ 상승/하락률 한도 탐색 — '성공률 풀 선출'만 1~5% 반복(그리드 미실행).
+        #   결과를 티커별 캐시 → 단계적 튜닝(pct→wilson→corr)이 재호출해도 '처음 1회'만 탐색.
+        _cache = globals().get('_BEST_SUCCESS_LIMIT')
+        if _cache is not None and isinstance(_cache, tuple) and _cache[0] == ticker:
+            _best_lim = _cache[1]
+            print(f"\n  ── 상승/하락률 한도: 캐시 재사용 = {_best_lim*100:.0f}% (재탐색 생략) ──")
+        else:
+            _limits = (list(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]))
+                       if globals().get('SEARCH_SUCCESS_LIMIT', False) else [dd_limit])
+            _wz_pool = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
+            if len(_limits) > 1:
+                print(f"\n  ── 상승/하락률 한도 탐색 (풀 선출만, 총 {len(_limits)}개 — 그리드 미실행, 빠름) ──")
+            _best_lim = dd_limit; _best_lim_score = -1e18
+            for _lim in _limits:
+                try:
+                    _bf, _sf, _bd, _sd = select_pool_by_success(
+                        feat, close, indicators=indicators, n_thresholds=n_thresholds,
+                        horizon=horizon, dd_limit=_lim, ru_limit=_lim, wilson_z=_wz_pool)
+                    _nb = 0 if _bd is None else len(_bd); _nss = 0 if _sd is None else len(_sd)
+                    if _nb == 0 or _nss == 0:
+                        print(f"    [한도 {_lim*100:>4.0f}%] 풀 부족(매수{_nb}/매도{_nss}) — 건너뜀")
+                        continue
+                    _nsd_lim = _net_signal_k_search(feat, close, _bd, _sd, ticker=ticker, oos_start=None)
+                    _sc = _nsd_lim['full_cum'] if _nsd_lim else -1e18
+                    print(f"    [한도 {_lim*100:>4.0f}%] 순신호 전체수익 {_sc*100:+8.2f}%  | 풀 매수{_nb}/매도{_nss}"
+                          f"{'  ★현재최고' if _sc > _best_lim_score else ''}")
+                    if _sc > _best_lim_score:
+                        _best_lim_score = _sc; _best_lim = _lim
+                except Exception as _ele:
+                    print(f"    [한도 {_lim*100:.0f}%] 평가 실패(무시): {_ele}")
+            if len(_limits) > 1:
+                print(f"  ★ 최적 상승/하락률 한도 = {_best_lim*100:.0f}%  (순신호 전체수익 {_best_lim_score*100:+.2f}%)")
+            globals()['_BEST_SUCCESS_LIMIT'] = (ticker, _best_lim)   # 티커별 캐시
         dd_limit = ru_limit = _best_lim   # 이후 전 단계가 최적 한도 사용
-        # 최적 한도로 최종 1회 (전역 _LAST_POOL_MAP 등 일관성 보장)
+        # ★ 최적 한도로 그리드 딱 1회 (윌슨/그리드는 여기서만)
         meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = _run_meta(_best_lim, _best_lim)
 
     # ★ staged가 통합 테이블에서 고른 정확한 조합을 강제 (현재 포지션=★1등 일치 보장).
