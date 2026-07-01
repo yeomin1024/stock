@@ -9787,7 +9787,6 @@ def _iv_autorun():
     print("\n" + "=" * 60)
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
 
-
 # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
@@ -10069,6 +10068,9 @@ ANCHOR_SELL_DATES = [
 
 SELECT_BY           = 'total_return'
 TOP_N_GRID_OUT      = 10000
+# ★ 그리드 행별 net>K를 상위 몇 행만 계산할지 (메모리/시간 보호). net>K 시트는 합친 풀로 별도 계산되므로
+#   이 값은 '그리드 시트 🎯K 표시'용일 뿐. 낮출수록 빠르고 가벼움. 0이면 그리드 net>K 완전 생략.
+KNET_GRID_ROW_CAP   = 100
 
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
@@ -13483,7 +13485,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _kret.append(np.nan); _ktr.append(np.nan); _koos.append(np.nan)
             _kk.append(np.nan); _khd_tr.append(np.nan); _khd_oos.append(np.nan); _knb.append(np.nan)
             for _L in (_rpos, _ract, _rbs, _rss, _rbd, _rbp, _rsd, _rsp): _L.append(None)
-        for _, _row in disp.iterrows():
+        # ★ 메모리/시간 보호: 그리드 행별 net>K는 상위 N행만 계산 (나머지 '—').
+        #   net>K 시트는 합친 풀(_KNET_MULTI_POOL)로 별도 계산하므로 여기는 그리드 시트 표시·폴백용일 뿐.
+        _KNET_ROW_CAP = int(globals().get('KNET_GRID_ROW_CAP', 100))
+        for _ri, (_, _row) in enumerate(disp.iterrows()):
+            if _ri >= _KNET_ROW_CAP:      # 캡 초과 → 계산 생략(빈값)
+                _push_empty(); continue
             _mk = _meta_key_of(_row); _kb, _ks = _row_kbuy_ksell(_row)
             _pools = _pool_map_k.get(_mk) if _mk else None
             if not _pools or _kb is None:
@@ -13537,6 +13544,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     globals()['_KNET_BEST_K'] = _bestrow_k
             except Exception:
                 pass
+    _knet_cache.clear()   # ★ daily 표까지 담긴 캐시 즉시 비움 (메모리 회수)
     _has_knet = ('knet_ret' in disp.columns and disp['knet_ret'].notna().any())
 
     for ri, row in disp.iterrows():
