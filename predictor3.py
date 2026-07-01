@@ -11013,7 +11013,7 @@ def _diversify_keep_thresholds(feat, score_df, *, top_n, corr_limit):
     return pd.DataFrame(kept)
 
 
-def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0):
+def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0, corr_limit=None):
     """★ 요청: 1~5% 각 한도로 성공풀 선출 → 하나로 합친 '다중임계' 풀.
        각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
        → 상관 다변화(같은 지표 여러 임계 유지, 다른 상관 지표만 제거)로 수정전처럼 정예화.
@@ -11041,7 +11041,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
     buy_all = _comb(bparts); sell_all = _comb(sparts)
     # ★ 상관 다변화 (수정전과 동일 기준) — 고성공 지표는 다 남기되 중복 상관만 제거
     _tn = int(globals().get('TOP_N_POOL', globals().get('MAX_POOL', 100)) or 100)
-    _cl = float((globals().get('STAGE_CORR_LIMIT') or [0.2])[0])
+    _cl = float(corr_limit if corr_limit is not None else (globals().get('STAGE_CORR_LIMIT') or [0.2])[0])
     buy_c = _diversify_keep_thresholds(feat, buy_all, top_n=_tn, corr_limit=_cl)
     sell_c = _diversify_keep_thresholds(feat, sell_all, top_n=_tn, corr_limit=_cl)
     return buy_c, sell_c
@@ -14893,21 +14893,36 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         else:
             _limits = (list(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]))
                        if globals().get('SEARCH_SUCCESS_LIMIT', False) else [dd_limit])
-            _wz_pool = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
-            print(f"\n  ── 1~5% 한도 통합 풀 선출 (그리드 미실행) — 한도 "
-                  f"{[f'{x*100:.0f}%' for x in _limits]} 전부 '하나의 풀'로 합침 ──")
-            try:
-                _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
-                                                n_thresholds=n_thresholds, horizon=horizon, wilson_z=_wz_pool)
-                globals()['_KNET_MULTI_POOL'] = (ticker, _cb, _cs)
-                _ub = _cb['indicator'].nunique() if _cb is not None else 0
-                _us = _cs['indicator'].nunique() if _cs is not None else 0
-                _rb = 0 if _cb is None else len(_cb); _rs = 0 if _cs is None else len(_cs)
-                print(f"  ★ 합친 다중임계 풀(1~5% 통합): 매수 {_rb}행(지표 {_ub}개) / 매도 {_rs}행(지표 {_us}개) "
-                      f"— 지표당 여러 임계 = 다중임계 가중 적용")
-            except Exception as _ce:
+            _wzs = list(globals().get('STAGE_WILSON_Z') or [1.95])
+            _cls = list(globals().get('STAGE_CORR_LIMIT') or [0.2])
+            print(f"\n  ── 1~5% 통합 풀 선출 + (wilson×corr) 조합에서 'k순신호 전체수익 최고' 선택 "
+                  f"— 한도 {[f'{x*100:.0f}%' for x in _limits]} 통합 ──")
+            _best = None; _best_sc = -1e18; _best_wz = _wzs[0]; _best_cl = _cls[0]
+            for _wz in _wzs:
+                for _cl in _cls:
+                    try:
+                        _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
+                                                        n_thresholds=n_thresholds, horizon=horizon,
+                                                        wilson_z=_wz, corr_limit=_cl)
+                        if _cb is None or _cs is None or len(_cb) == 0 or len(_cs) == 0:
+                            print(f"    [wilson={_wz}, corr={_cl}] 풀 부족 — 건너뜀"); continue
+                        _nsd = _net_signal_k_search(feat, close, _cb, _cs, ticker=ticker,
+                                                    oos_start=None, search_counts=True)
+                        _sc = _nsd['full_cum'] if _nsd else -1e18
+                        print(f"    [wilson={_wz}, corr={_cl}] k순신호 전체수익 {_sc*100:+8.2f}% "
+                              f"| 풀 매수{_cb['indicator'].nunique()}/매도{_cs['indicator'].nunique()}"
+                              f"{'  ★최고' if _sc > _best_sc else ''}")
+                        if _sc > _best_sc:
+                            _best_sc = _sc; _best = (_cb, _cs); _best_wz = _wz; _best_cl = _cl
+                    except Exception as _ce:
+                        print(f"    [wilson={_wz}, corr={_cl}] 실패(무시): {_ce}")
+            if _best is not None:
+                globals()['_KNET_MULTI_POOL'] = (ticker, _best[0], _best[1])
+                print(f"  ★ k순신호 최적 조합: wilson={_best_wz}, corr={_best_cl} → 전체수익 {_best_sc*100:+.2f}% "
+                      f"(매수 {_best[0]['indicator'].nunique()}지표 / 매도 {_best[1]['indicator'].nunique()}지표, 다중임계)")
+            else:
                 globals()['_KNET_MULTI_POOL'] = (ticker, None, None)
-                print(f"  ⚠ 합친 풀 생성 실패(단일한도로 대체): {_ce}")
+                print(f"  ⚠ 합친 풀 생성 실패 — 그리드 폴백")
         # 그리드 내부 성공평가용 대표 한도 = 리스트 중앙값 (net>K는 합친 풀 사용 → 그리드-투표 시트에만 영향)
         _reps = sorted(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]) or [dd_limit])
         dd_limit = ru_limit = _reps[len(_reps) // 2]
