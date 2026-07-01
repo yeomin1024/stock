@@ -9863,7 +9863,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축소)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
@@ -11003,6 +11003,9 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
         return allp
     return _comb(bparts), _comb(sparts)
+
+
+_ZCACHE = {}
 
 def _free_global_caches(*, keep_pool_map=False):
     """전역 캐시·맵을 비워 메모리 누적을 막는다 (Colab 여러 번 실행 시 끊김 방지).
@@ -14835,41 +14838,16 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             )
 
         # ★ 상승/하락률 한도 탐색 — '성공률 풀 선출'만 1~5% 반복(그리드 미실행).
-        #   결과를 티커별 캐시 → 단계적 튜닝(pct→wilson→corr)이 재호출해도 '처음 1회'만 탐색.
-        _cache = globals().get('_BEST_SUCCESS_LIMIT')
+        #   결과를 티커별 캐시 → 단계적 튜닝(pct→wilson→corr)이 재호출해도 '처음 1회'만.
         _mpc = globals().get('_KNET_MULTI_POOL')
-        if (_cache is not None and isinstance(_cache, tuple) and _cache[0] == ticker
-                and _mpc is not None and isinstance(_mpc, tuple) and _mpc[0] == ticker):
-            _best_lim = _cache[1]
-            print(f"\n  ── 상승/하락률 한도: 캐시 재사용 = {_best_lim*100:.0f}% + 합친 풀 재사용 (재탐색 생략) ──")
+        if (_mpc is not None and isinstance(_mpc, tuple) and _mpc[0] == ticker and _mpc[1] is not None):
+            print(f"\n  ── 1~5% 통합 다중임계 풀: 캐시 재사용 (재탐색 생략) ──")
         else:
             _limits = (list(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]))
                        if globals().get('SEARCH_SUCCESS_LIMIT', False) else [dd_limit])
             _wz_pool = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
-            if len(_limits) > 1:
-                print(f"\n  ── 상승/하락률 한도 탐색 (풀 선출만, 총 {len(_limits)}개 — 그리드 미실행, 빠름) ──")
-            _best_lim = dd_limit; _best_lim_score = -1e18
-            for _lim in _limits:
-                try:
-                    _bf, _sf, _bd, _sd = select_pool_by_success(
-                        feat, close, indicators=indicators, n_thresholds=n_thresholds,
-                        horizon=horizon, dd_limit=_lim, ru_limit=_lim, wilson_z=_wz_pool)
-                    _nb = 0 if _bd is None else len(_bd); _nss = 0 if _sd is None else len(_sd)
-                    if _nb == 0 or _nss == 0:
-                        print(f"    [한도 {_lim*100:>4.0f}%] 풀 부족(매수{_nb}/매도{_nss}) — 건너뜀")
-                        continue
-                    _nsd_lim = _net_signal_k_search(feat, close, _bd, _sd, ticker=ticker, oos_start=None)
-                    _sc = _nsd_lim['full_cum'] if _nsd_lim else -1e18
-                    print(f"    [한도 {_lim*100:>4.0f}%] 순신호 전체수익 {_sc*100:+8.2f}%  | 풀 매수{_nb}/매도{_nss}"
-                          f"{'  ★현재최고' if _sc > _best_lim_score else ''}")
-                    if _sc > _best_lim_score:
-                        _best_lim_score = _sc; _best_lim = _lim
-                except Exception as _ele:
-                    print(f"    [한도 {_lim*100:.0f}%] 평가 실패(무시): {_ele}")
-            if len(_limits) > 1:
-                print(f"  ★ 최적 상승/하락률 한도 = {_best_lim*100:.0f}% (그리드용) (순신호 전체수익 {_best_lim_score*100:+.2f}%)")
-            globals()['_BEST_SUCCESS_LIMIT'] = (ticker, _best_lim)
-            # ★ 요청: 1~5% 각 한도 선출을 '하나의 다중임계 풀'로 합침 → net>K가 이걸 사용.
+            print(f"\n  ── 1~5% 한도 통합 풀 선출 (그리드 미실행) — 한도 "
+                  f"{[f'{x*100:.0f}%' for x in _limits]} 전부 '하나의 풀'로 합침 ──")
             try:
                 _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
                                                 n_thresholds=n_thresholds, horizon=horizon, wilson_z=_wz_pool)
@@ -14882,9 +14860,11 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             except Exception as _ce:
                 globals()['_KNET_MULTI_POOL'] = (ticker, None, None)
                 print(f"  ⚠ 합친 풀 생성 실패(단일한도로 대체): {_ce}")
-        dd_limit = ru_limit = _best_lim   # 그리드 내부 성공평가용 대표 한도
+        # 그리드 내부 성공평가용 대표 한도 = 리스트 중앙값 (net>K는 합친 풀 사용 → 그리드-투표 시트에만 영향)
+        _reps = sorted(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]) or [dd_limit])
+        dd_limit = ru_limit = _reps[len(_reps) // 2]
         # ★ 그리드 딱 1회 (윌슨/그리드는 여기서만) — 그리드-투표 시트용. net>K는 합친 풀 사용.
-        meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = _run_meta(_best_lim, _best_lim)
+        meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = _run_meta(dd_limit, dd_limit)
 
     # ★ staged가 통합 테이블에서 고른 정확한 조합을 강제 (현재 포지션=★1등 일치 보장).
     #   meta_grid_search가 자체 선정한 best_inner와 staged의 최종 선택이 어긋나는 것을 방지.
