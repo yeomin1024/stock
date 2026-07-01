@@ -9787,6 +9787,7 @@ def _iv_autorun():
     print("\n" + "=" * 60)
     print("주의: 통과한 지표도 미래 수익을 보장하지 않습니다. 소액·모의로 반드시 추가 검증하세요.")
 
+
 # @title
 """
 매수/매도 앙상블 — 메타 그리드 자동 튜닝 + MDD 제한 + 손절매 + ANCHOR 보정
@@ -10979,10 +10980,44 @@ def select_pool_by_success(feat, close, *, indicators, n_thresholds,
     return buy_full, sell_full, buy_dedup, sell_dedup
 
 
+def _diversify_keep_thresholds(feat, score_df, *, top_n, corr_limit):
+    """상관 다변화 — 단, '같은 지표의 여러 임계'는 유지(다중임계), 서로 다른 상관 지표만 제거.
+       score_df는 success_rate 내림차순 가정. 유니크 지표 top_n개까지."""
+    if score_df is None or len(score_df) == 0:
+        return score_df
+    kept = []; seen_sig = {}; seen_order = []; rejected = set()
+    for _, row in score_df.iterrows():
+        ind = row['indicator']
+        if ind in seen_sig:              # 같은 지표 다른 임계 → 유지 (다중임계)
+            kept.append(row.to_dict()); continue
+        if ind in rejected:              # 이미 상관중복으로 버린 지표 → 스킵
+            continue
+        if len(seen_order) >= top_n:     # 유니크 지표 수 상한
+            rejected.add(ind); continue
+        try:
+            sig = _to_signal_array(feat, row).astype(np.float64)
+        except Exception:
+            continue
+        redundant = False
+        for pind in seen_order:
+            ps = seen_sig[pind]
+            mask = ~np.isnan(sig) & ~np.isnan(ps)
+            if mask.sum() < 10: continue
+            a = sig[mask]; b = ps[mask]
+            if a.std() < 1e-9 or b.std() < 1e-9: continue
+            if abs(float(np.corrcoef(a, b)[0, 1])) >= corr_limit:
+                redundant = True; break
+        if redundant:
+            rejected.add(ind); continue
+        kept.append(row.to_dict()); seen_sig[ind] = sig; seen_order.append(ind)
+    return pd.DataFrame(kept)
+
+
 def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0):
     """★ 요청: 1~5% 각 한도로 성공풀 선출 → 하나로 합친 '다중임계' 풀.
-       각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행.
-       성공률 컷·최소신호는 select_pool_by_success가 이미 적용. 반환 (buy_combined, sell_combined)."""
+       각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
+       → 상관 다변화(같은 지표 여러 임계 유지, 다른 상관 지표만 제거)로 수정전처럼 정예화.
+       반환 (buy_combined, sell_combined)."""
     limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
     bparts, sparts = [], []
     for L in limits:
@@ -11001,10 +11036,15 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             return None
         allp = pd.concat(parts, ignore_index=True)
         allp = allp.sort_values('success_rate', ascending=False)
-        # 같은 (지표,임계)는 최고성공 1행만 (한도 달라도 신호는 동일하니 점수 최고로)
         allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
         return allp
-    return _comb(bparts), _comb(sparts)
+    buy_all = _comb(bparts); sell_all = _comb(sparts)
+    # ★ 상관 다변화 (수정전과 동일 기준) — 고성공 지표는 다 남기되 중복 상관만 제거
+    _tn = int(globals().get('TOP_N_POOL', globals().get('MAX_POOL', 100)) or 100)
+    _cl = float((globals().get('STAGE_CORR_LIMIT') or [0.2])[0])
+    buy_c = _diversify_keep_thresholds(feat, buy_all, top_n=_tn, corr_limit=_cl)
+    sell_c = _diversify_keep_thresholds(feat, sell_all, top_n=_tn, corr_limit=_cl)
+    return buy_c, sell_c
 
 
 _ZCACHE = {}
