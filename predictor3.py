@@ -9907,8 +9907,8 @@ USE_BIG_MOVE_BONUS   = True   # True면 큰움직임 적중비율을 점수에 �
 BIG_MOVE_THRESHOLD   = 0.03   # 신호 뒤 horizon 내 유리방향 최대변동이 이 값(3%) 이상이면 '큰 움직임'
 BIG_MOVE_BONUS_WEIGHT = 0.5   # 가산 강도: score *= (1 + W * 큰움직임적중비율)
 
-K_BUY_RANGE         = [i for i in range(1, 100)]
-K_SELL_RANGE        = [i for i in range(1, 100)]
+K_BUY_RANGE         = [i for i in range(10, 100)]
+K_SELL_RANGE        = [i for i in range(10, 100)]
 VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
