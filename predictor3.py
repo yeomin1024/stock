@@ -9907,8 +9907,8 @@ USE_BIG_MOVE_BONUS   = True   # True면 큰움직임 적중비율을 점수에 �
 BIG_MOVE_THRESHOLD   = 0.03   # 신호 뒤 horizon 내 유리방향 최대변동이 이 값(3%) 이상이면 '큰 움직임'
 BIG_MOVE_BONUS_WEIGHT = 0.5   # 가산 강도: score *= (1 + W * 큰움직임적중비율)
 
-K_BUY_RANGE         = [i for i in range(10, 100)]
-K_SELL_RANGE        = [i for i in range(10, 100)]
+K_BUY_RANGE         = [i for i in range(1, 100)]
+K_SELL_RANGE        = [i for i in range(1, 100)]
 VOTE_RATIO_BUY      = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                        0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
@@ -10085,7 +10085,7 @@ STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순�
 STAGE_PCT_RANGE   = [(0, 100)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2]
+STAGE_CORR_LIMIT  = [0.2, 0.25]
 
 # ============================================================
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
@@ -10977,7 +10977,32 @@ def select_pool_by_success(feat, close, *, indicators, n_thresholds,
     return buy_full, sell_full, buy_dedup, sell_dedup
 
 
-_ZCACHE = {}
+def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0):
+    """★ 요청: 1~5% 각 한도로 성공풀 선출 → 하나로 합친 '다중임계' 풀.
+       각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행.
+       성공률 컷·최소신호는 select_pool_by_success가 이미 적용. 반환 (buy_combined, sell_combined)."""
+    limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
+    bparts, sparts = [], []
+    for L in limits:
+        try:
+            bf, sf, _, _ = select_pool_by_success(
+                feat, close, indicators=indicators, n_thresholds=n_thresholds,
+                horizon=horizon, dd_limit=L, ru_limit=L, wilson_z=wilson_z)
+        except Exception:
+            continue
+        if bf is not None and len(bf):
+            bf = bf.copy(); bf['sel_limit'] = L; bparts.append(bf)
+        if sf is not None and len(sf):
+            sf = sf.copy(); sf['sel_limit'] = L; sparts.append(sf)
+    def _comb(parts):
+        if not parts:
+            return None
+        allp = pd.concat(parts, ignore_index=True)
+        allp = allp.sort_values('success_rate', ascending=False)
+        # 같은 (지표,임계)는 최고성공 1행만 (한도 달라도 신호는 동일하니 점수 최고로)
+        allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
+        return allp
+    return _comb(bparts), _comb(sparts)
 
 def _free_global_caches(*, keep_pool_map=False):
     """전역 캐시·맵을 비워 메모리 누적을 막는다 (Colab 여러 번 실행 시 끊김 방지).
@@ -13610,9 +13635,21 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     # ★ 순신호 K 결과 1회 계산 (거래내역·일별·순신호 시트 공유) — K기준 최적 그리드의 풀+지표수 사용
     _nsd_main = None
     try:
-        _kp = globals().get('_KNET_BEST_POOL')
-        _mbp, _msp = (_kp if (_kp and _kp[0] is not None and _kp[1] is not None) else (buy_pool, sell_pool))
-        _nb = globals().get('_KNET_BEST_NB'); _ns = globals().get('_KNET_BEST_NS')
+        # ★ 요청: net>K는 '1~5% 합친 다중임계 풀'을 사용 (있으면). 지표수는 재탐색(search_counts).
+        _mp = globals().get('_KNET_MULTI_POOL')
+        _use_multi = (_mp and isinstance(_mp, tuple) and _mp[0] == ticker
+                      and _mp[1] is not None and _mp[2] is not None
+                      and len(_mp[1]) > 0 and len(_mp[2]) > 0)
+        if _use_multi:
+            _mbp, _msp = _mp[1], _mp[2]
+            _nb = _ns = None          # 합친 풀에선 지표수 재탐색
+            _sc_cnt = True
+            print(f"  ★ net>K = 합친 다중임계 풀 사용 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행, 지표수 재탐색)")
+        else:
+            _kp = globals().get('_KNET_BEST_POOL')
+            _mbp, _msp = (_kp if (_kp and _kp[0] is not None and _kp[1] is not None) else (buy_pool, sell_pool))
+            _nb = globals().get('_KNET_BEST_NB'); _ns = globals().get('_KNET_BEST_NS')
+            _sc_cnt = False
         # ★ 요청: 윌슨 후 '성공률 비례 점수 가중치' 스킴(weight=p**g) 탐색 → 전체수익 최고 g 선정.
         _gs = (list(globals().get('NET_WEIGHT_SCHEMES', [1.0]))
                if (globals().get('SEARCH_WEIGHT_SCHEME', False) and globals().get('NET_SIGNAL_WEIGHTED', False))
@@ -13623,7 +13660,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         for _g_ in _gs:
             _cand = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
                                          oos_start=globals().get('OOS_START'),
-                                         n_buy=_nb, n_sell=_ns, weight_exp=_g_)
+                                         n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt, weight_exp=_g_)
             _sc = _cand['full_cum'] if _cand else -1e18
             if len(_gs) > 1:
                 print(f"    [g={_g_}] 전체수익 {_sc*100:+.2f}%{'  ★최고' if _sc > _best_g_sc else ''}")
@@ -13632,7 +13669,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if _nsd_main is None:
             _nsd_main = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
                                              oos_start=globals().get('OOS_START'),
-                                             n_buy=_nb, n_sell=_ns)
+                                             n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt)
         if len(_gs) > 1:
             print(f"  ★ 최적 가중 스킴 g = {_best_g}  (전체수익 {_best_g_sc*100:+.2f}%)")
         globals()['_KNET_BEST_WEXP'] = _best_g
@@ -14800,9 +14837,11 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         # ★ 상승/하락률 한도 탐색 — '성공률 풀 선출'만 1~5% 반복(그리드 미실행).
         #   결과를 티커별 캐시 → 단계적 튜닝(pct→wilson→corr)이 재호출해도 '처음 1회'만 탐색.
         _cache = globals().get('_BEST_SUCCESS_LIMIT')
-        if _cache is not None and isinstance(_cache, tuple) and _cache[0] == ticker:
+        _mpc = globals().get('_KNET_MULTI_POOL')
+        if (_cache is not None and isinstance(_cache, tuple) and _cache[0] == ticker
+                and _mpc is not None and isinstance(_mpc, tuple) and _mpc[0] == ticker):
             _best_lim = _cache[1]
-            print(f"\n  ── 상승/하락률 한도: 캐시 재사용 = {_best_lim*100:.0f}% (재탐색 생략) ──")
+            print(f"\n  ── 상승/하락률 한도: 캐시 재사용 = {_best_lim*100:.0f}% + 합친 풀 재사용 (재탐색 생략) ──")
         else:
             _limits = (list(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]))
                        if globals().get('SEARCH_SUCCESS_LIMIT', False) else [dd_limit])
@@ -14828,10 +14867,23 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                 except Exception as _ele:
                     print(f"    [한도 {_lim*100:.0f}%] 평가 실패(무시): {_ele}")
             if len(_limits) > 1:
-                print(f"  ★ 최적 상승/하락률 한도 = {_best_lim*100:.0f}%  (순신호 전체수익 {_best_lim_score*100:+.2f}%)")
-            globals()['_BEST_SUCCESS_LIMIT'] = (ticker, _best_lim)   # 티커별 캐시
-        dd_limit = ru_limit = _best_lim   # 이후 전 단계가 최적 한도 사용
-        # ★ 최적 한도로 그리드 딱 1회 (윌슨/그리드는 여기서만)
+                print(f"  ★ 최적 상승/하락률 한도 = {_best_lim*100:.0f}% (그리드용) (순신호 전체수익 {_best_lim_score*100:+.2f}%)")
+            globals()['_BEST_SUCCESS_LIMIT'] = (ticker, _best_lim)
+            # ★ 요청: 1~5% 각 한도 선출을 '하나의 다중임계 풀'로 합침 → net>K가 이걸 사용.
+            try:
+                _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
+                                                n_thresholds=n_thresholds, horizon=horizon, wilson_z=_wz_pool)
+                globals()['_KNET_MULTI_POOL'] = (ticker, _cb, _cs)
+                _ub = _cb['indicator'].nunique() if _cb is not None else 0
+                _us = _cs['indicator'].nunique() if _cs is not None else 0
+                _rb = 0 if _cb is None else len(_cb); _rs = 0 if _cs is None else len(_cs)
+                print(f"  ★ 합친 다중임계 풀(1~5% 통합): 매수 {_rb}행(지표 {_ub}개) / 매도 {_rs}행(지표 {_us}개) "
+                      f"— 지표당 여러 임계 = 다중임계 가중 적용")
+            except Exception as _ce:
+                globals()['_KNET_MULTI_POOL'] = (ticker, None, None)
+                print(f"  ⚠ 합친 풀 생성 실패(단일한도로 대체): {_ce}")
+        dd_limit = ru_limit = _best_lim   # 그리드 내부 성공평가용 대표 한도
+        # ★ 그리드 딱 1회 (윌슨/그리드는 여기서만) — 그리드-투표 시트용. net>K는 합친 풀 사용.
         meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = _run_meta(_best_lim, _best_lim)
 
     # ★ staged가 통합 테이블에서 고른 정확한 조합을 강제 (현재 포지션=★1등 일치 보장).
