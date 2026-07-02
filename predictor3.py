@@ -11050,6 +11050,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
 def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon, ticker):
     """★ (wilson×corr) 조합에서 'k순신호 전체수익' 최고인 1~5% 통합 다중임계 풀 선택.
        globals()['_KNET_MULTI_POOL']=(ticker, buy, sell) 설정. 재현/분석 양쪽에서 동일 호출 → 같은 데이터면 같은 결과."""
+    globals().pop('_KNET_REPLAY_FIXED', None)   # 새로 계산 = 재현 고정값 아님
     _limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
     _wzs = list(globals().get('STAGE_WILSON_Z') or [1.95])
     _cls = list(globals().get('STAGE_CORR_LIMIT') or [0.2])
@@ -12643,7 +12644,7 @@ def _norm_date_set(dlist):
 
 def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                          ticker='', max_k_candidates=600, oos_start=None,
-                         n_buy=None, n_sell=None, search_counts=False, weight_exp=1.0):
+                         n_buy=None, n_sell=None, search_counts=False, weight_exp=1.0, fixed_k=None):
     """★ 순신호 K 최적화 + OOS 검증 (요청):
        b(순신호) = (상위 n_buy 매수지표 가중합) − (상위 n_sell 매도지표 가중합).
        net > K → 롱(매수/보유), net ≤ K → 현금(매도). 신호는 다음날 반영.
@@ -12780,6 +12781,8 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         buy_count = buy_cum[n_buy_opt-1]; sell_count = sell_cum[n_sell_opt-1]
 
         best_k = best[0]
+        if fixed_k is not None:      # ★ 재현: 원본 K 그대로 (탐색 안 함)
+            best_k = float(fixed_k)
         # ★ 매수·매도 둘 다 '신호 본 날 종가'에 체결 (요청 A):
         #   net[s]>K 본 날(s) 종가에 매수 → 소유 pos_own[s]=net[s]>K.  net[s]≤K 본 날 종가에 매도.
         #   수익은 '전일 소유분'이 당일 등락 포착: daily_ret[s]=pos_own[s-1]*r[s].
@@ -13724,43 +13727,59 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     _nsd_main = None
     try:
         # ★ 요청: net>K는 '1~5% 합친 다중임계 풀'을 사용 (있으면). 지표수는 재탐색(search_counts).
+        _replay_fixed_done = False
         _mp = globals().get('_KNET_MULTI_POOL')
         _use_multi = (_mp and isinstance(_mp, tuple) and _mp[0] == ticker
                       and _mp[1] is not None and _mp[2] is not None
                       and len(_mp[1]) > 0 and len(_mp[2]) > 0)
         if _use_multi:
             _mbp, _msp = _mp[1], _mp[2]
-            _nb = _ns = None          # 합친 풀에선 지표수 재탐색
-            _sc_cnt = True
-            print(f"  ★ net>K = 합친 다중임계 풀 사용 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행, 지표수 재탐색)")
+            _fixed = globals().get('_KNET_REPLAY_FIXED')
+            if _fixed and _fixed[0] is not None:
+                # ★ 재현: 원본 K/지표수/g 그대로 (탐색 0)
+                _K_fix, _nb_fix, _ns_fix, _g_fix = _fixed
+                print(f"  ♻ 재현: 원본 K={_K_fix}, 지표수 매수{_nb_fix}/매도{_ns_fix}, g={_g_fix} 그대로 적용")
+                _nsd_main = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
+                                                 oos_start=globals().get('OOS_START'),
+                                                 n_buy=_nb_fix, n_sell=_ns_fix,
+                                                 search_counts=False, weight_exp=(_g_fix or 1.0),
+                                                 fixed_k=_K_fix)
+                globals()['_KNET_BEST_WEXP'] = (_g_fix or 1.0)
+                _replay_fixed_done = True   # g 탐색 건너뜀
+            else:
+                _nb = _ns = None          # 합친 풀에선 지표수 재탐색
+                _sc_cnt = True
+                print(f"  ★ net>K = 합친 다중임계 풀 사용 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행, 지표수 재탐색)")
         else:
             _kp = globals().get('_KNET_BEST_POOL')
             _mbp, _msp = (_kp if (_kp and _kp[0] is not None and _kp[1] is not None) else (buy_pool, sell_pool))
             _nb = globals().get('_KNET_BEST_NB'); _ns = globals().get('_KNET_BEST_NS')
             _sc_cnt = False
         # ★ 요청: 윌슨 후 '성공률 비례 점수 가중치' 스킴(weight=p**g) 탐색 → 전체수익 최고 g 선정.
-        _gs = (list(globals().get('NET_WEIGHT_SCHEMES', [1.0]))
-               if (globals().get('SEARCH_WEIGHT_SCHEME', False) and globals().get('NET_SIGNAL_WEIGHTED', False))
-               else [1.0])
-        if len(_gs) > 1:
-            print(f"  ── 가중 스킴 탐색 (weight=성공률^g, g∈{_gs}) ──")
-        _best_g = 1.0; _best_g_sc = -1e18
-        for _g_ in _gs:
-            _cand = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
-                                         oos_start=globals().get('OOS_START'),
-                                         n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt, weight_exp=_g_)
-            _sc = _cand['full_cum'] if _cand else -1e18
+        #   (재현 고정 모드면 이미 _nsd_main 확정 → 건너뜀)
+        if not _replay_fixed_done:
+            _gs = (list(globals().get('NET_WEIGHT_SCHEMES', [1.0]))
+                   if (globals().get('SEARCH_WEIGHT_SCHEME', False) and globals().get('NET_SIGNAL_WEIGHTED', False))
+                   else [1.0])
             if len(_gs) > 1:
-                print(f"    [g={_g_}] 전체수익 {_sc*100:+.2f}%{'  ★최고' if _sc > _best_g_sc else ''}")
-            if _sc > _best_g_sc:
-                _best_g_sc = _sc; _best_g = _g_; _nsd_main = _cand
-        if _nsd_main is None:
-            _nsd_main = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
+                print(f"  ── 가중 스킴 탐색 (weight=성공률^g, g∈{_gs}) ──")
+            _best_g = 1.0; _best_g_sc = -1e18
+            for _g_ in _gs:
+                _cand = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
                                              oos_start=globals().get('OOS_START'),
-                                             n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt)
-        if len(_gs) > 1:
-            print(f"  ★ 최적 가중 스킴 g = {_best_g}  (전체수익 {_best_g_sc*100:+.2f}%)")
-        globals()['_KNET_BEST_WEXP'] = _best_g
+                                             n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt, weight_exp=_g_)
+                _sc = _cand['full_cum'] if _cand else -1e18
+                if len(_gs) > 1:
+                    print(f"    [g={_g_}] 전체수익 {_sc*100:+.2f}%{'  ★최고' if _sc > _best_g_sc else ''}")
+                if _sc > _best_g_sc:
+                    _best_g_sc = _sc; _best_g = _g_; _nsd_main = _cand
+            if _nsd_main is None:
+                _nsd_main = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
+                                                 oos_start=globals().get('OOS_START'),
+                                                 n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt)
+            if len(_gs) > 1:
+                print(f"  ★ 최적 가중 스킴 g = {_best_g}  (전체수익 {_best_g_sc*100:+.2f}%)")
+            globals()['_KNET_BEST_WEXP'] = _best_g
     except Exception as _em:
         print(f"  ⚠ 순신호 K 공유계산 실패(무시): {_em}")
 
@@ -14876,13 +14895,17 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         buy_pool, sell_pool = inject_pools
         print(f"  ♻ 재현 모드 — 엑셀의 지표 풀 그대로 사용 "
               f"(매수 {len(buy_pool)}개 / 매도 {len(sell_pool)}개 지표, 재선별 안 함)")
-        # ★ 재현에서도 k순신호 합친 풀을 동일 로직으로 재구성 (같은 데이터면 같은 K/거래 재현).
-        #   REPLAY가 데이터를 원본 마지막날까지로 자르면 → 정확 재현. 연장 시엔 성공률 창이 늘어 미세 차이 가능.
-        try:
-            _build_and_pick_knet_pool(feat, close, indicators=indicators,
-                                      n_thresholds=n_thresholds, horizon=horizon, ticker=ticker)
-        except Exception as _re:
-            print(f"  ⚠ 재현용 합친 풀 생성 실패(폴백): {_re}")
+        # ★ 재현: 원본 스냅샷에 k순신호 풀이 있으면 그대로 사용(탐색 0). 없을 때만 재구성.
+        _mp0 = globals().get('_KNET_MULTI_POOL')
+        if _mp0 and _mp0[0] == ticker and _mp0[1] is not None:
+            print(f"  ♻ 재현: 원본 k순신호 풀 그대로 사용 (탐색 생략) "
+                  f"— 매수 {_mp0[1]['indicator'].nunique()} / 매도 {_mp0[2]['indicator'].nunique()}지표")
+        else:
+            try:
+                _build_and_pick_knet_pool(feat, close, indicators=indicators,
+                                          n_thresholds=n_thresholds, horizon=horizon, ticker=ticker)
+            except Exception as _re:
+                print(f"  ⚠ 재현용 합친 풀 생성 실패(폴백): {_re}")
         if force_best_combo is not None:
             best_inner = {
                 'K_buy': int(force_best_combo['K_buy']),
@@ -15181,9 +15204,23 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     if globals().get('SAVE_DATA_SNAPSHOT', True) and inject_pools is None:
         try:
             _snap = os.path.splitext(output_file)[0] + '_data.pkl'
-            pd.to_pickle({'feat': feat, 'close': close, 'ticker': ticker}, _snap)
+            _kd = {'feat': feat, 'close': close, 'ticker': ticker}
+            # ★ k순신호 재현용: 원본이 고른 합친 풀 + K + 지표수 + 가중g 를 함께 저장 → 재현 때 탐색 없이 그대로.
+            try:
+                _mp = globals().get('_KNET_MULTI_POOL')
+                if _mp and _mp[0] == ticker and _mp[1] is not None:
+                    _kd['knet_buy'] = _mp[1]; _kd['knet_sell'] = _mp[2]
+                if _nsd_main:
+                    _kd['knet_k'] = _nsd_main.get('best_k')
+                    _kd['knet_nb'] = _nsd_main.get('n_buy_opt')
+                    _kd['knet_ns'] = _nsd_main.get('n_sell_opt')
+                _kd['knet_g'] = globals().get('_KNET_BEST_WEXP', 1.0)
+            except Exception:
+                pass
+            pd.to_pickle(_kd, _snap)
             print(f"  💾 데이터 스냅샷 저장: {os.path.basename(_snap)} "
-                  f"({len(close)}일, 마지막 {str(close.index[-1])[:10]}) — 재현 정확도용")
+                  f"({len(close)}일, 마지막 {str(close.index[-1])[:10]}) — 재현 정확도용"
+                  f"{' +k순신호 풀/K' if 'knet_buy' in _kd else ''}")
         except Exception as _se:
             print(f"  ⚠ 데이터 스냅샷 저장 실패(무시): {_se}")
     _grid_table_for_excel = inject_combined_table if inject_combined_table is not None else inner_passed
@@ -15972,6 +16009,15 @@ def replay_grid_combo(filename, grid_number=None, *,
                 if feat is not None and close is not None and len(close) > 0:
                     print(f"  💾 데이터 스냅샷 사용: {os.path.basename(_snap)} "
                           f"({len(close)}일, 마지막 {str(close.index[-1])[:10]}) — 재다운로드 없이 정확 재현")
+                    # ★ 원본 k순신호 풀·K·지표수·g 로드 → 재현 때 (wilson×corr) 탐색 안 하고 그대로 사용
+                    if _dsnap.get('knet_buy') is not None and _dsnap.get('knet_sell') is not None:
+                        _tk = _dsnap.get('ticker')
+                        globals()['_KNET_MULTI_POOL'] = (_tk, _dsnap['knet_buy'], _dsnap['knet_sell'])
+                        globals()['_KNET_REPLAY_FIXED'] = (_dsnap.get('knet_k'), _dsnap.get('knet_nb'),
+                                                           _dsnap.get('knet_ns'), _dsnap.get('knet_g', 1.0))
+                        print(f"  ♻ 원본 k순신호 풀·K 로드 — 재현 시 탐색 없이 그대로 사용 "
+                              f"(K={_dsnap.get('knet_k')}, 매수{_dsnap['knet_buy']['indicator'].nunique()}"
+                              f"/매도{_dsnap['knet_sell']['indicator'].nunique()}지표)")
                 else:
                     feat = close = None
             except Exception as _le:
