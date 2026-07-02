@@ -10077,7 +10077,7 @@ META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
     'wilson_z':    [1.65],
-    'pct_range':   [(0, 100)],
+    'pct_range':   [(5, 95)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
@@ -11062,15 +11062,20 @@ def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon,
     print(f"\n  ── 1~5% 통합 풀 선출 + (wilson 순차→corr) 'k순신호 전체수익 최고' 선택 "
           f"— 한도 {[f'{x*100:.0f}%' for x in _limits]} 통합 ──")
 
+    _score_cache = {}
     def _score(_wz, _cl):
+        _ck = (round(float(_wz), 4), round(float(_cl), 4))
+        if _ck in _score_cache:
+            return _score_cache[_ck]          # ★ 중복 조합 재계산 안 함
         _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
                                         n_thresholds=n_thresholds, horizon=horizon,
                                         wilson_z=_wz, corr_limit=_cl)
         if _cb is None or _cs is None or len(_cb) == 0 or len(_cs) == 0:
-            return None, None, -1e18
+            _score_cache[_ck] = (None, None, -1e18); return _score_cache[_ck]
         _nsd = _net_signal_k_search(feat, close, _cb, _cs, ticker=ticker,
                                     oos_start=None, search_counts=True)
-        return _cb, _cs, (_nsd['full_cum'] if _nsd else -1e18)
+        _score_cache[_ck] = (_cb, _cs, (_nsd['full_cum'] if _nsd else -1e18))
+        return _score_cache[_ck]
 
     # 1) wilson 순차 (corr = 첫 값 고정)
     _cl0 = _cls[0]; _best_wz = _wzs[0]; _wz_sc = -1e18
@@ -12779,7 +12784,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         # ── 지표개수(n_buy, n_sell) 후보 ──
         if search_counts:
             def _cand(mx):
-                return list(range(1, int(mx) + 1))
+                return list(range(1, int(mx) + 1))   # 1~풀크기(최대 100) 전부 탐색
             nb_list = _cand(nB); ns_list = _cand(nS)
         elif (n_buy is not None) or (n_sell is not None):
             nb_list = [int(n_buy) if n_buy else nB]; ns_list = [int(n_sell) if n_sell else nS]
@@ -12787,13 +12792,30 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             nb_list = [nB]; ns_list = [nS]
 
         overall = None
-        for nb in nb_list:
-            for ns in ns_list:
-                net_c, nbu, nsu = _net_for(nb, ns)
-                best_c, table_c, sel_c, krng = _search_threshold(net_c)
-                if overall is None or sel_c > overall['sel']:
-                    overall = dict(sel=sel_c, best=best_c, table=table_c, net=net_c,
-                                   nb=nbu, ns=nsu, krng=krng)
+        def _eval(nb, ns, ov):
+            net_c, nbu, nsu = _net_for(nb, ns)
+            best_c, table_c, sel_c, krng = _search_threshold(net_c)
+            if ov is None or sel_c > ov['sel']:
+                ov = dict(sel=sel_c, best=best_c, table=table_c, net=net_c,
+                          nb=nbu, ns=nsu, krng=krng)
+            return ov, sel_c
+        if search_counts and len(nb_list) * len(ns_list) > 400:
+            # ★ 독립(좌표하강) 탐색 — 100×100=10000 → (100+100+100)≈300. 1~100 범위 그대로.
+            _bns = ns_list[len(ns_list) // 2]        # ns 초기값(중앙)
+            _best_nb = nb_list[0]; _bsc = -1e18
+            for nb in nb_list:                       # ① nb 훑기 (ns 고정)
+                overall, _sc = _eval(nb, _bns, overall)
+                if _sc > _bsc: _bsc = _sc; _best_nb = nb
+            _best_ns = _bns; _bsc = -1e18
+            for ns in ns_list:                       # ② ns 훑기 (best nb 고정)
+                overall, _sc = _eval(_best_nb, ns, overall)
+                if _sc > _bsc: _bsc = _sc; _best_ns = ns
+            for nb in nb_list:                       # ③ nb 재훑기 (best ns 고정) — 마무리
+                overall, _sc = _eval(nb, _best_ns, overall)
+        else:
+            for nb in nb_list:
+                for ns in ns_list:
+                    overall, _ = _eval(nb, ns, overall)
 
         net = overall['net']; best = overall['best']; table = overall['table']
         n_buy_opt = overall['nb']; n_sell_opt = overall['ns']
