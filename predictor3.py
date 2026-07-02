@@ -9853,8 +9853,8 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 EVAL_START          = '2025-01-01'
 
-OOS_ENABLED         = True           # OOS 검증 on/off
-OOS_START           = '2026-04-01'   # ★ OOS 검증 시작 (4월 이후=검증). K는 전체용/OOS용 2개 선정.
+OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
+OOS_START           = None           # OOS 미사용
 
 HORIZON_DAYS        = 1
 DRAWDOWN_LIMIT_BUY  = 0.02
@@ -9873,7 +9873,7 @@ MAX_INDICATORS      = 3000
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
 #         선발 기준을 점수(Wilson)→성공률 우선으로 바꿈. 가짜 100% 방지 위해 표본 가드 둠.
 POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
-POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 (요청: 0.60)
+POOL_SUCCESS_MIN_RATE  = 0.70      # 성공률 컷오프 (요청: 0.60)
 POOL_SUCCESS_MIN_SIG   = 10        # ★ 최소 신호수(요청: 신호 10개 '초과') — 소표본 가짜 100% 방지
 POOL_SUCCESS_WIDE_PCT  = (0, 100)  # ★ 풀 평가용 분위 (요청: 0,100 전체 탐색)
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
@@ -10076,8 +10076,8 @@ KNET_GRID_ROW_CAP   = 100
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
-    'wilson_z':    [1.95],
-    'pct_range':   [(5, 95)],
+    'wilson_z':    [1.65],
+    'pct_range':   [(0, 100)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
@@ -10089,9 +10089,9 @@ STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-�
 SKIP_GRID_VOTE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
+STAGE_WILSON_Z    = [1.65]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.25]
+STAGE_CORR_LIMIT  = [0.15, 0.2, 0.25, 0.3]
 
 # ============================================================
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
@@ -10109,7 +10109,7 @@ if TEST_MODE:
     print("⚡ TEST_MODE ON — 축소 설정(지표150/임계120/한도2개/윌슨1개)로 빠른 확인용 실행")
 # ============================================================
 
-PREFILTER_ENABLED          = True
+PREFILTER_ENABLED          = False
 PREFILTER_MIN_CORR         = 0.005
 PREFILTER_MIN_VARIANCE_REL = 1e-6
 PREFILTER_MAX_NAN_RATIO    = 0.5
@@ -12779,8 +12779,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         # ── 지표개수(n_buy, n_sell) 후보 ──
         if search_counts:
             def _cand(mx):
-                base = [3, 5, 8, 12, 16, 20, 30, 40, 60, 80, 100]
-                return sorted(set([min(v, mx) for v in base if v <= mx] + [mx]))
+                return list(range(1, int(mx) + 1))
             nb_list = _cand(nB); ns_list = _cand(nS)
         elif (n_buy is not None) or (n_sell is not None):
             nb_list = [int(n_buy) if n_buy else nB]; ns_list = [int(n_sell) if n_sell else nS]
@@ -13967,18 +13966,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
     # 8. 일별 백테스트 — ★ 레거시 형식(컬럼/서식) 유지 + 값은 K값 순신호(net>K)로 채움 (요청).
     #    매수카운트/매수ON/매도카운트/매도ON/포지션/액션/진입가/보유일/미실현/실현/누적수익 = K값 기준.
-    for _si, (_shname, _nsd) in enumerate([('일별 백테스트 (전체)', globals().get('_KNET_FULL') or _nsd_main),
-                                           ('일별 백테스트 (OOS)',  globals().get('_KNET_OOS'))]):
+    for _si, (_shname, _nsd) in enumerate([('일별 백테스트', globals().get('_KNET_FULL') or _nsd_main)]):
         ws = wb.create_sheet(_shname, _si); ws.sheet_view.showGridLines = False
         if _nsd is None:
-            ws.cell(1, 1).value = f'{_shname} — 해당 K 없음(OOS 미사용 등)'
-            ws.cell(1, 1).font = Font(bold=True, size=12, color='888888'); continue
+            ws.cell(1, 1).value = f'{_shname} — 순신호 K 계산 실패'
+            ws.cell(1, 1).font = Font(bold=True, size=12, color='C00000'); continue
         _wtd = _nsd.get('weighted')
         _bk = (round(_nsd['best_k'], 3) if _wtd else _nsd['best_k'])
         _wtag = '점수가중' if _wtd else '단순개수'
-        _basis = 'OOS수익' if 'OOS' in _shname else '전체수익'
         ws.cell(1, 1).value = (f'{_shname} — net({_wtag})>K({_bk})면 매수·보유, net≤K면 매도 (신호일 종가). '
-                               f'K는 [{_basis}] 최고. 수익=상승·하락률 합산.')
+                               f'K는 전체수익 최고. 수익=상승·하락률 합산.')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:P1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         ws.cell(2, 1).value = (f"★최적K={_bk} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
@@ -14116,8 +14113,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
     # ─── 7c. 순신호 K 최적화 시트 — 전체수익 최고 K / OOS수익 최고 K 2벌 ───
     try:
-        _sheets = [('순신호 K최적화 (전체)', globals().get('_KNET_FULL') or _nsd_main, '전체'),
-                   ('순신호 K최적화 (OOS)',  globals().get('_KNET_OOS'),  'OOS')]
+        _sheets = [('순신호 K최적화', globals().get('_KNET_FULL') or _nsd_main, '전체')]
         def _pct(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         for _shname, _ns, _basis in _sheets:
             if _ns is None:
