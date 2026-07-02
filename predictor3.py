@@ -9853,8 +9853,8 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 EVAL_START          = '2025-01-01'
 
-OOS_ENABLED         = False          # OOS 검증 on/off
-OOS_START           = None           # ★ OOS 미사용(요청) — K는 전체수익 최고로 선정
+OOS_ENABLED         = True           # OOS 검증 on/off
+OOS_START           = '2026-04-01'   # ★ OOS 검증 시작 (4월 이후=검증). K는 전체용/OOS용 2개 선정.
 
 HORIZON_DAYS        = 1
 DRAWDOWN_LIMIT_BUY  = 0.02
@@ -10083,7 +10083,10 @@ META_GRID = {
     'top_n_pool':  [100],
 }
 
-STAGED_META_TUNE = True   # ★ True: pct_range → wilson_z → corr_limit 순으로 단계적 결정 (요청).
+STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-투표용 → 그리드 8회 재실행 낭비. k순신호는 corr만 자체 탐색.
+# ★ 그리드-투표 K탐색 최소화 (요청) — k순신호만 사용 시 True. K_buy×K_sell 99×99(≈700초) → 1×1로 축소.
+#   그리드-투표 시트(현재 포지션 등)는 대략값이 되지만, net>K 시트는 합친 풀로 정확. 실행 대폭 단축.
+SKIP_GRID_VOTE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
@@ -11048,40 +11051,57 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
 
 
 def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon, ticker):
-    """★ (wilson×corr) 조합에서 'k순신호 전체수익' 최고인 1~5% 통합 다중임계 풀 선택.
-       globals()['_KNET_MULTI_POOL']=(ticker, buy, sell) 설정. 재현/분석 양쪽에서 동일 호출 → 같은 데이터면 같은 결과."""
-    globals().pop('_KNET_REPLAY_FIXED', None)   # 새로 계산 = 재현 고정값 아님
+    """★ 1~5% 통합 다중임계 풀 선택.
+       순차 탐색: (corr 고정) wilson 훑어 k순신호 전체수익 최고 wilson 결정 → 그 wilson으로 corr 훑기.
+       전체수익 기준으로 (wilson,corr) 최적 풀 확정. globals()['_KNET_MULTI_POOL']=(ticker, buy, sell).
+       (OOS용 K는 이 동일 풀에서 select_by='oos'로 따로 뽑음 — 풀은 공유, K만 2개)"""
+    globals().pop('_KNET_REPLAY_FIXED', None)
     _limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
     _wzs = list(globals().get('STAGE_WILSON_Z') or [1.95])
     _cls = list(globals().get('STAGE_CORR_LIMIT') or [0.2])
-    print(f"\n  ── 1~5% 통합 풀 선출 + (wilson×corr)에서 'k순신호 전체수익 최고' 선택 "
+    print(f"\n  ── 1~5% 통합 풀 선출 + (wilson 순차→corr) 'k순신호 전체수익 최고' 선택 "
           f"— 한도 {[f'{x*100:.0f}%' for x in _limits]} 통합 ──")
-    _best = None; _best_sc = -1e18; _bwz = _wzs[0]; _bcl = _cls[0]
+
+    def _score(_wz, _cl):
+        _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
+                                        n_thresholds=n_thresholds, horizon=horizon,
+                                        wilson_z=_wz, corr_limit=_cl)
+        if _cb is None or _cs is None or len(_cb) == 0 or len(_cs) == 0:
+            return None, None, -1e18
+        _nsd = _net_signal_k_search(feat, close, _cb, _cs, ticker=ticker,
+                                    oos_start=None, search_counts=True)
+        return _cb, _cs, (_nsd['full_cum'] if _nsd else -1e18)
+
+    # 1) wilson 순차 (corr = 첫 값 고정)
+    _cl0 = _cls[0]; _best_wz = _wzs[0]; _wz_sc = -1e18
     for _wz in _wzs:
-        for _cl in _cls:
-            try:
-                _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
-                                                n_thresholds=n_thresholds, horizon=horizon,
-                                                wilson_z=_wz, corr_limit=_cl)
-                if _cb is None or _cs is None or len(_cb) == 0 or len(_cs) == 0:
-                    print(f"    [wilson={_wz}, corr={_cl}] 풀 부족 — 건너뜀"); continue
-                _nsd = _net_signal_k_search(feat, close, _cb, _cs, ticker=ticker,
-                                            oos_start=None, search_counts=True)
-                _sc = _nsd['full_cum'] if _nsd else -1e18
-                print(f"    [wilson={_wz}, corr={_cl}] k순신호 전체수익 {_sc*100:+8.2f}% "
-                      f"| 풀 매수{_cb['indicator'].nunique()}/매도{_cs['indicator'].nunique()}"
-                      f"{'  ★최고' if _sc > _best_sc else ''}")
-                if _sc > _best_sc:
-                    _best_sc = _sc; _best = (_cb, _cs); _bwz = _wz; _bcl = _cl
-            except Exception as _e:
-                print(f"    [wilson={_wz}, corr={_cl}] 실패(무시): {_e}")
+        _cb, _cs, _sc = _score(_wz, _cl0)
+        _np = _cb['indicator'].nunique() if _cb is not None else 0
+        _ns = _cs['indicator'].nunique() if _cs is not None else 0
+        print(f"    [wilson={_wz}, corr={_cl0}] 전체수익 {_sc*100:+8.2f}% | 매수{_np}/매도{_ns}"
+              f"{'  ★최고' if _sc > _wz_sc else ''}")
+        if _sc > _wz_sc:
+            _wz_sc = _sc; _best_wz = _wz
+    print(f"    → 최고 wilson = {_best_wz} (전체수익 {_wz_sc*100:+.2f}%)")
+
+    # 2) corr 순차 (wilson = 위에서 정한 값)
+    _best = None; _best_sc = -1e18; _bcl = _cls[0]
+    for _cl in _cls:
+        _cb, _cs, _sc = _score(_best_wz, _cl)
+        _np = _cb['indicator'].nunique() if _cb is not None else 0
+        _ns = _cs['indicator'].nunique() if _cs is not None else 0
+        print(f"    [wilson={_best_wz}, corr={_cl}] 전체수익 {_sc*100:+8.2f}% | 매수{_np}/매도{_ns}"
+              f"{'  ★최고' if _sc > _best_sc else ''}")
+        if _sc > _best_sc:
+            _best_sc = _sc; _best = (_cb, _cs); _bcl = _cl
+
     if _best is not None:
         globals()['_KNET_MULTI_POOL'] = (ticker, _best[0], _best[1])
-        print(f"  ★ k순신호 최적 조합: wilson={_bwz}, corr={_bcl} → 전체수익 {_best_sc*100:+.2f}% "
+        print(f"  ★ k순신호 최적: wilson={_best_wz}, corr={_bcl} → 전체수익 {_best_sc*100:+.2f}% "
               f"(매수 {_best[0]['indicator'].nunique()}지표 / 매도 {_best[1]['indicator'].nunique()}지표, 다중임계)")
     else:
         globals()['_KNET_MULTI_POOL'] = (ticker, None, None)
-        print(f"  ⚠ 합친 풀 생성 실패 — 그리드 폴백")
+        print(f"  ⚠ 합친 풀 생성 실패")
     return globals()['_KNET_MULTI_POOL']
 
 
@@ -12644,7 +12664,8 @@ def _norm_date_set(dlist):
 
 def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                          ticker='', max_k_candidates=600, oos_start=None,
-                         n_buy=None, n_sell=None, search_counts=False, weight_exp=1.0, fixed_k=None):
+                         n_buy=None, n_sell=None, search_counts=False, weight_exp=1.0, fixed_k=None,
+                         select_by='full'):
     """★ 순신호 K 최적화 + OOS 검증 (요청):
        b(순신호) = (상위 n_buy 매수지표 가중합) − (상위 n_sell 매도지표 가중합).
        net > K → 롱(매수/보유), net ≤ K → 현금(매도). 신호는 다음날 반영.
@@ -12750,7 +12771,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                 dl = int(pos[:train_hi].sum())
                 _Kv = (round(float(K), 4) if _net_is_float else int(K))
                 table.append((_Kv, tr, oo, fu, dl, hd, hd_oos))
-                _sel = fu   # ★ 요청: K는 '전체 수익' 최고로 선정 (OOS 미사용)
+                _sel = (oo if (select_by == 'oos' and has_oos and oo is not None) else fu)   # 전체 or OOS 기준
                 if best_sel is None or _sel > best_sel:
                     best_sel = _sel; best = (_Kv, tr, oo, fu, dl)
             return best, table, (best_sel if best_sel is not None else -1e18), (kmin, kmax)
@@ -13723,65 +13744,73 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
-    # ★ 순신호 K 결과 1회 계산 (거래내역·일별·순신호 시트 공유) — K기준 최적 그리드의 풀+지표수 사용
-    _nsd_main = None
+    # ★ 순신호 K 결과 — 전체수익 최고 K / OOS수익 최고 K 2개 계산 (풀은 공유).
+    _nsd_main = None; _nsd_full = None; _nsd_oos = None
     try:
-        # ★ 요청: net>K는 '1~5% 합친 다중임계 풀'을 사용 (있으면). 지표수는 재탐색(search_counts).
         _replay_fixed_done = False
         _mp = globals().get('_KNET_MULTI_POOL')
         _use_multi = (_mp and isinstance(_mp, tuple) and _mp[0] == ticker
                       and _mp[1] is not None and _mp[2] is not None
                       and len(_mp[1]) > 0 and len(_mp[2]) > 0)
         if _use_multi:
-            _mbp, _msp = _mp[1], _mp[2]
-            _fixed = globals().get('_KNET_REPLAY_FIXED')
-            if _fixed and _fixed[0] is not None:
-                # ★ 재현: 원본 K/지표수/g 그대로 (탐색 0)
-                _K_fix, _nb_fix, _ns_fix, _g_fix = _fixed
-                print(f"  ♻ 재현: 원본 K={_K_fix}, 지표수 매수{_nb_fix}/매도{_ns_fix}, g={_g_fix} 그대로 적용")
-                _nsd_main = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
-                                                 oos_start=globals().get('OOS_START'),
-                                                 n_buy=_nb_fix, n_sell=_ns_fix,
-                                                 search_counts=False, weight_exp=(_g_fix or 1.0),
-                                                 fixed_k=_K_fix)
-                globals()['_KNET_BEST_WEXP'] = (_g_fix or 1.0)
-                _replay_fixed_done = True   # g 탐색 건너뜀
-            else:
-                _nb = _ns = None          # 합친 풀에선 지표수 재탐색
-                _sc_cnt = True
-                print(f"  ★ net>K = 합친 다중임계 풀 사용 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행, 지표수 재탐색)")
+            _mbp, _msp = _mp[1], _mp[2]; _nb = _ns = None; _sc_cnt = True
+            print(f"  ★ net>K = 합친 다중임계 풀 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행)")
         else:
             _kp = globals().get('_KNET_BEST_POOL')
             _mbp, _msp = (_kp if (_kp and _kp[0] is not None and _kp[1] is not None) else (buy_pool, sell_pool))
-            _nb = globals().get('_KNET_BEST_NB'); _ns = globals().get('_KNET_BEST_NS')
-            _sc_cnt = False
-        # ★ 요청: 윌슨 후 '성공률 비례 점수 가중치' 스킴(weight=p**g) 탐색 → 전체수익 최고 g 선정.
-        #   (재현 고정 모드면 이미 _nsd_main 확정 → 건너뜀)
-        if not _replay_fixed_done:
+            _nb = globals().get('_KNET_BEST_NB'); _ns = globals().get('_KNET_BEST_NS'); _sc_cnt = False
+        _has_oos_now = (globals().get('OOS_START') is not None)
+        _fixed = globals().get('_KNET_REPLAY_FIXED')
+
+        def _compute(sel_by, fk=None, fnb=None, fns=None, fg=None):
+            """sel_by='full'|'oos'. fk 있으면 고정(재현), 없으면 g 탐색."""
+            if fk is not None:
+                c = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
+                                         oos_start=globals().get('OOS_START'),
+                                         n_buy=fnb, n_sell=fns, search_counts=False,
+                                         weight_exp=(fg or 1.0), fixed_k=fk, select_by=sel_by)
+                return c, (fg or 1.0)
             _gs = (list(globals().get('NET_WEIGHT_SCHEMES', [1.0]))
                    if (globals().get('SEARCH_WEIGHT_SCHEME', False) and globals().get('NET_SIGNAL_WEIGHTED', False))
                    else [1.0])
-            if len(_gs) > 1:
-                print(f"  ── 가중 스킴 탐색 (weight=성공률^g, g∈{_gs}) ──")
-            _best_g = 1.0; _best_g_sc = -1e18
+            _bg = 1.0; _bsc = -1e18; _bc = None
             for _g_ in _gs:
-                _cand = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
-                                             oos_start=globals().get('OOS_START'),
-                                             n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt, weight_exp=_g_)
-                _sc = _cand['full_cum'] if _cand else -1e18
-                if len(_gs) > 1:
-                    print(f"    [g={_g_}] 전체수익 {_sc*100:+.2f}%{'  ★최고' if _sc > _best_g_sc else ''}")
-                if _sc > _best_g_sc:
-                    _best_g_sc = _sc; _best_g = _g_; _nsd_main = _cand
-            if _nsd_main is None:
-                _nsd_main = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
-                                                 oos_start=globals().get('OOS_START'),
-                                                 n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt)
-            if len(_gs) > 1:
-                print(f"  ★ 최적 가중 스킴 g = {_best_g}  (전체수익 {_best_g_sc*100:+.2f}%)")
-            globals()['_KNET_BEST_WEXP'] = _best_g
+                c = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
+                                         oos_start=globals().get('OOS_START'),
+                                         n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt,
+                                         weight_exp=_g_, select_by=sel_by)
+                _m = ((c.get('oos_cum') if sel_by == 'oos' else c.get('full_cum')) if c else None)
+                _m = -1e18 if _m is None else _m
+                if _m > _bsc: _bsc = _m; _bg = _g_; _bc = c
+            if _bc is None:
+                _bc = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
+                                           oos_start=globals().get('OOS_START'),
+                                           n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt, select_by=sel_by)
+            return _bc, _bg
+
+        if _fixed and isinstance(_fixed, dict) and _fixed.get('k_full') is not None:
+            # ★ 재현: 저장된 전체/OOS K 그대로 (탐색 0)
+            _nsd_full, _gf = _compute('full', _fixed.get('k_full'), _fixed.get('nb_full'),
+                                      _fixed.get('ns_full'), _fixed.get('g_full'))
+            if _has_oos_now and _fixed.get('k_oos') is not None:
+                _nsd_oos, _go = _compute('oos', _fixed.get('k_oos'), _fixed.get('nb_oos'),
+                                         _fixed.get('ns_oos'), _fixed.get('g_oos'))
+            print(f"  ♻ 재현: 저장된 K(전체={_fixed.get('k_full')}, OOS={_fixed.get('k_oos')}) 그대로 적용")
+            _replay_fixed_done = True
+            globals()['_KNET_BEST_WEXP'] = (_fixed.get('g_full') or 1.0)
+        else:
+            _nsd_full, _gf = _compute('full')
+            globals()['_KNET_BEST_WEXP'] = _gf
+            print(f"  ★ 전체수익 최고 K = {_nsd_full['best_k'] if _nsd_full else '—'} "
+                  f"(전체 {(_nsd_full['full_cum']*100 if _nsd_full else 0):+.1f}%)")
+            if _has_oos_now:
+                _nsd_oos, _go = _compute('oos')
+                print(f"  ★ OOS수익 최고 K = {_nsd_oos['best_k'] if _nsd_oos else '—'} "
+                      f"(OOS {(_nsd_oos['oos_cum']*100 if (_nsd_oos and _nsd_oos.get('oos_cum') is not None) else 0):+.1f}%)")
+        _nsd_main = _nsd_full   # 기본(하위호환)
+        globals()['_KNET_FULL'] = _nsd_full; globals()['_KNET_OOS'] = _nsd_oos
     except Exception as _em:
-        print(f"  ⚠ 순신호 K 공유계산 실패(무시): {_em}")
+        print(f"  ⚠ 순신호 K 계산 실패(무시): {_em}")
 
     # 7. 거래 내역 — ★ K값 거래만 (요청: net>K 매수 → net≤K 매도 라운드트립). 레거시 거래 제외.
     ws = wb.create_sheet('거래 내역'); ws.sheet_view.showGridLines = False
@@ -13938,21 +13967,24 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
     # 8. 일별 백테스트 — ★ 레거시 형식(컬럼/서식) 유지 + 값은 K값 순신호(net>K)로 채움 (요청).
     #    매수카운트/매수ON/매도카운트/매도ON/포지션/액션/진입가/보유일/미실현/실현/누적수익 = K값 기준.
-    ws = wb.create_sheet('일별 백테스트', 0); ws.sheet_view.showGridLines = False
-    if _nsd_main is not None:
-        _nsd = _nsd_main
+    for _si, (_shname, _nsd) in enumerate([('일별 백테스트 (전체)', globals().get('_KNET_FULL') or _nsd_main),
+                                           ('일별 백테스트 (OOS)',  globals().get('_KNET_OOS'))]):
+        ws = wb.create_sheet(_shname, _si); ws.sheet_view.showGridLines = False
+        if _nsd is None:
+            ws.cell(1, 1).value = f'{_shname} — 해당 K 없음(OOS 미사용 등)'
+            ws.cell(1, 1).font = Font(bold=True, size=12, color='888888'); continue
         _wtd = _nsd.get('weighted')
         _bk = (round(_nsd['best_k'], 3) if _wtd else _nsd['best_k'])
         _wtag = '점수가중' if _wtd else '단순개수'
-        ws.cell(1, 1).value = (f'일별 백테스트 — net({_wtag})>K({_bk})면 매수·보유, net≤K면 매도 (신호일 종가 기준). '
-                               f'수익=상승·하락률 합산. (매수ON/매도ON=당일신호, 액션/포지션=익일 체결결과)')
+        _basis = 'OOS수익' if 'OOS' in _shname else '전체수익'
+        ws.cell(1, 1).value = (f'{_shname} — net({_wtag})>K({_bk})면 매수·보유, net≤K면 매도 (신호일 종가). '
+                               f'K는 [{_basis}] 최고. 수익=상승·하락률 합산.')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:P1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         ws.cell(2, 1).value = (f"★최적K={_bk} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
-                               f"전체수익 {_p2(_nsd['full_cum'])} (B&H {_p2(_nsd['bh_full'])}) | "
+                               f"전체 {_p2(_nsd['full_cum'])} / OOS {_p2(_nsd.get('oos_cum'))} (B&H {_p2(_nsd['bh_full'])}) | "
                                f"거래 {_nsd['n_trades']}회 | 보유중하락 {_p2(_nsd['held_down_full'])}")
         ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:P2')
-        # 레거시형 헤더 + 추가(net, 보유중하락)
         _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
                      '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간'])
@@ -13964,7 +13996,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         for i in range(len(d)):
             r = 5 + i; row = d.iloc[i]
             _p = pos[i]; _act = str(row['action'])
-            # 진입/청산 추적
             if _act == '매수': _entry_px = prices[i]; _entry_i = i
             _held = (i - _entry_i) if (_p == 1 and _entry_i is not None) else None
             _unreal = ((prices[i] / _entry_px - 1.0) if (_p == 1 and _entry_px) else None)
@@ -13975,7 +14006,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(r, 1).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
             ws.cell(r, 2).value = (round(float(prices[i]), 2) if pd.notna(prices[i]) else None)
             ws.cell(r, 3).value = (round(float(row['buy_count']), 2) if _wtd else int(row['buy_count']))
-            ws.cell(r, 4).value = ('✓' if int(row['net']) > _bk or float(row['net']) > _bk else '')
+            ws.cell(r, 4).value = ('✓' if float(row['net']) > _bk else '')
             ws.cell(r, 5).value = (round(float(row['sell_count']), 2) if _wtd else int(row['sell_count']))
             ws.cell(r, 6).value = ('✓' if not (float(row['net']) > _bk) else '')
             ws.cell(r, 7).value = ('롱' if _p == 1 else '현금')
@@ -13997,10 +14028,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         for ci, w in enumerate([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14, 11, 14, 7], 1):
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.freeze_panes = 'A5'
-        print(f"  ✓ 일별 백테스트(레거시형식+K값): K={_bk}, 거래 {_nsd['n_trades']}회")
-    else:
-        ws.cell(1, 1).value = '일별 백테스트 — 순신호 K 계산 실패'
-        ws.cell(1, 1).font = Font(bold=True, size=12, color='C00000')
+        print(f"  ✓ {_shname}: K={_bk}, 거래 {_nsd['n_trades']}회")
 
     # 9. ★ OOS 일별 거래
     if oos_enabled and oos_daily is not None and len(oos_daily) > 0:
@@ -14086,101 +14114,102 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _esp:
         print(f"  ⚠ 성공률 우선 선출 시트 작성 실패(무시): {_esp}")
 
-    # ─── 7c. 순신호 K 최적화 시트 — 그리드 ★(K기준 OOS최고)의 풀+지표수+K와 동일하게 표시 ───
+    # ─── 7c. 순신호 K 최적화 시트 — 전체수익 최고 K / OOS수익 최고 K 2벌 ───
     try:
-        if _nsd_main is not None:
-            _ns = _nsd_main
-        else:
-            _knet_pool = globals().get('_KNET_BEST_POOL')
-            if _knet_pool and _knet_pool[0] is not None and _knet_pool[1] is not None:
-                _ns_bp, _ns_sp = _knet_pool
-            else:
-                _ns_bp, _ns_sp = buy_pool, sell_pool
-            _ns = _net_signal_k_search(feat, close_full, _ns_bp, _ns_sp, ticker=ticker,
-                                       oos_start=globals().get('OOS_START'),
-                                       n_buy=globals().get('_KNET_BEST_NB'),
-                                       n_sell=globals().get('_KNET_BEST_NS'))
-        if _ns is not None:
-            ws = wb.create_sheet('순신호 K최적화'); ws.sheet_view.showGridLines = False
+        _sheets = [('순신호 K최적화 (전체)', globals().get('_KNET_FULL') or _nsd_main, '전체'),
+                   ('순신호 K최적화 (OOS)',  globals().get('_KNET_OOS'),  'OOS')]
+        def _pct(x): return (f"{x*100:+.2f}%" if x is not None else '—')
+        for _shname, _ns, _basis in _sheets:
+            if _ns is None:
+                continue
+            ws = wb.create_sheet(_shname); ws.sheet_view.showGridLines = False
             _hoos = _ns['has_oos']
             ws.cell(1, 1).value = (
-                f'{ticker} — 순신호 K 최적화  '
-                f'｜ net=매수카운트−매도카운트, net>K면 롱·아니면 현금(신호일 종가 기준). '
-                f'K는 전체 수익 최고로 선정 (OOS 미사용, 수익=상승·하락률 합산)')
+                f'{ticker} — 순신호 K 최적화  ｜ net=매수카운트−매도카운트, net>K면 롱·아니면 현금(신호일 종가 기준). '
+                f'K는 [{_basis} 수익] 최고로 선정 (수익=상승·하락률 합산)')
             ws.cell(1, 1).font = Font(bold=True, size=11)
-            # 요약
-            def _pct(x): return (f"{x*100:+.2f}%" if x is not None else '—')
-            ws.cell(3, 1).value = '★ 최적 K (전체 수익 기준)'; ws.cell(3, 2).value = _ns['best_k']
+            ws.cell(3, 1).value = f'★ 최적 K ({_basis} 수익 기준)'; ws.cell(3, 2).value = _ns['best_k']
             ws.cell(3, 1).font = Font(bold=True); ws.cell(3, 2).font = Font(bold=True, color='C00000')
-            # 구간 | 전략수익 | B&H | 보유중하락
+            # 구간별 요약 (학습/OOS/전체) — OOS 복원
             _hh = ws.cell(5, 1); _hh.value = '구간'; _hh.font = Font(bold=True)
             for _cc, _lab in [(2, '전략수익(합산)'), (3, 'B&H'), (4, '보유중하락 누적')]:
                 ws.cell(5, _cc).value = _lab; ws.cell(5, _cc).font = Font(bold=True)
-            ws.cell(6, 1).value = '전체'; ws.cell(6, 1).font = Font(bold=True)
-            ws.cell(6, 2).value = _pct(_ns['full_cum']); ws.cell(6, 3).value = _pct(_ns['bh_full'])
-            ws.cell(6, 4).value = _pct(_ns['held_down_full'])
-            for _cc in (1, 2, 3, 4): ws.cell(6, _cc).font = Font(bold=True, color='1F6F1F')
-            ws.cell(6, 4).font = Font(bold=True, color='C00000')
-            ws.cell(8, 1).value = '거래 횟수'; ws.cell(8, 2).value = f"{_ns['n_trades']}회"
-            ws.cell(9, 1).value = '풀 크기(매수/매도)';   ws.cell(9, 2).value = f"{_ns['buy_pool_n']} / {_ns['sell_pool_n']}"
-            ws.cell(10, 1).value = 'net 범위';            ws.cell(10, 2).value = f"{_ns['net_min']} ~ {_ns['net_max']}"
+            ws.cell(6, 1).value = '학습'
+            ws.cell(6, 2).value = _pct(_ns.get('train_cum')); ws.cell(6, 3).value = _pct(_ns.get('bh_train'))
+            ws.cell(6, 4).value = _pct(_ns.get('held_down_train'))
+            ws.cell(7, 1).value = '★ OOS'; ws.cell(7, 1).font = Font(bold=True, color='1F6F1F')
+            ws.cell(7, 2).value = _pct(_ns.get('oos_cum')); ws.cell(7, 3).value = _pct(_ns.get('bh_oos'))
+            ws.cell(7, 4).value = _pct(_ns.get('held_down_oos'))
+            for _cc in (2, 3, 4): ws.cell(7, _cc).font = Font(bold=True, color='1F6F1F')
+            ws.cell(8, 1).value = '전체'; ws.cell(8, 1).font = Font(bold=True)
+            ws.cell(8, 2).value = _pct(_ns.get('full_cum')); ws.cell(8, 3).value = _pct(_ns.get('bh_full'))
+            ws.cell(8, 4).value = _pct(_ns.get('held_down_full'))
+            ws.cell(8, 4).font = Font(bold=True, color='C00000')
+            ws.cell(9, 1).value = '거래 횟수(전체/OOS)'; ws.cell(9, 2).value = f"{_ns['n_trades']}회 / {_ns.get('n_trades_oos','—')}회"
+            ws.cell(10, 1).value = '풀 크기(매수/매도)'; ws.cell(10, 2).value = f"{_ns['buy_pool_n']} / {_ns['sell_pool_n']}"
+            ws.cell(11, 1).value = 'net 범위'; ws.cell(11, 2).value = f"{_ns['net_min']} ~ {_ns['net_max']}"
 
-            # K vs 수익 표 (왼쪽) — 전체수익 기준 (OOS 미사용)
-            _hdr(ws, 13, ['K', '전체수익%', '보유중하락%(전체)', '전체 수익/하락비', '롱일수'])
+            # K vs 수익 표 (왼쪽) — 학습/OOS/전체 + 비율 (OOS 컬럼 복원)
+            _hdr(ws, 13, ['K', '학습수익%', 'OOS수익%', '전체수익%', '보유중하락%(전체)',
+                          'OOS보유중하락%', '전체 수익/하락비', 'OOS 수익/하락비', '롱일수'])
             for i, _trow in enumerate(_ns['k_table']):
                 K, tr, oo, fu, dl = _trow[0], _trow[1], _trow[2], _trow[3], _trow[4]
                 hd = _trow[5] if len(_trow) > 5 else None
+                hd_oos = _trow[6] if len(_trow) > 6 else None
                 _rt_full = (fu / abs(hd)) if (hd is not None and abs(hd) > 1e-9) else None
+                _rt_oos = (oo / abs(hd_oos)) if (oo is not None and hd_oos is not None and abs(hd_oos) > 1e-9) else None
                 rr = 14 + i
                 ws.cell(rr, 1).value = K
-                ws.cell(rr, 2).value = round(fu * 100, 2)
-                ws.cell(rr, 3).value = (round(hd * 100, 2) if hd is not None else None)
-                ws.cell(rr, 4).value = (round(_rt_full, 2) if _rt_full is not None else '—')
-                ws.cell(rr, 5).value = dl
-                if hd is not None: ws.cell(rr, 3).font = Font(color='C00000')
+                ws.cell(rr, 2).value = (round(tr * 100, 2) if tr is not None else None)
+                ws.cell(rr, 3).value = (round(oo * 100, 2) if oo is not None else None)
+                ws.cell(rr, 4).value = round(fu * 100, 2)
+                ws.cell(rr, 5).value = (round(hd * 100, 2) if hd is not None else None)
+                ws.cell(rr, 6).value = (round(hd_oos * 100, 2) if hd_oos is not None else None)
+                ws.cell(rr, 7).value = (round(_rt_full, 2) if _rt_full is not None else '—')
+                ws.cell(rr, 8).value = (round(_rt_oos, 2) if _rt_oos is not None else '—')
+                ws.cell(rr, 9).value = dl
+                if hd is not None: ws.cell(rr, 5).font = Font(color='C00000')
+                if hd_oos is not None: ws.cell(rr, 6).font = Font(color='C00000')
                 if K == _ns['best_k']:
-                    for cc in range(1, 6):
+                    for cc in range(1, 10):
                         ws.cell(rr, cc).fill = PatternFill('solid', fgColor='FFF2CC')
                         ws.cell(rr, cc).font = Font(bold=True)
 
-            # 일별 백테스트 표 (오른쪽, col7~) — net>K 매수/보유/매도, 합산수익
+            # 일별 백테스트 표 (오른쪽, col11~)
             d = _ns['daily']
-            _hdr2_cols = ['날짜', f'{ticker}종가(a)', '매수카운트', '매도카운트', '순신호 net(b)',
-                          f'포지션(net>{(round(_ns["best_k"],3) if _ns.get("weighted") else _ns["best_k"])})', '액션', '일별수익%', '누적수익%(합산)',
-                          '보유중하락 누적%', '구간']
-            for ci, h in enumerate(_hdr2_cols, start=7):
+            _hdr2 = ['날짜', f'{ticker}종가', '매수카운트', '매도카운트', 'net',
+                     f'포지션(net>{(round(_ns["best_k"],3) if _ns.get("weighted") else _ns["best_k"])})',
+                     '액션', '일별수익%', '누적수익%(합산)', '보유중하락%', '구간']
+            _c0 = 11
+            for ci, h in enumerate(_hdr2, start=_c0):
                 c = ws.cell(13, ci); c.value = h; c.fill = _HDR; c.font = _WB_
             for i in range(len(d)):
-                rr = 14 + i
-                row = d.iloc[i]
-                ws.cell(rr, 7).value  = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
-                ws.cell(rr, 8).value  = (round(float(row['price']), 2) if pd.notna(row['price']) else None)
-                ws.cell(rr, 9).value  = int(row['buy_count'])
-                ws.cell(rr, 10).value = int(row['sell_count'])
-                ws.cell(rr, 11).value = (round(float(row['net']), 3) if _ns.get('weighted') else int(row['net']))
-                ws.cell(rr, 12).value = int(row['position'])
-                ws.cell(rr, 13).value = str(row['action'])
-                ws.cell(rr, 14).value = round(float(row['day_ret']) * 100, 3)
-                ws.cell(rr, 15).value = round(float(row['cum_ret']) * 100, 2)
-                ws.cell(rr, 16).value = round(float(row['held_down_run']) * 100, 2)
-                ws.cell(rr, 17).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
-                if int(row['position']) == 1:
-                    ws.cell(rr, 12).fill = PatternFill('solid', fgColor='C6EFCE')
+                rr = 14 + i; row = d.iloc[i]
+                ws.cell(rr, _c0).value   = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+                ws.cell(rr, _c0+1).value = (round(float(row['price']), 2) if pd.notna(row['price']) else None)
+                ws.cell(rr, _c0+2).value = int(row['buy_count'])
+                ws.cell(rr, _c0+3).value = int(row['sell_count'])
+                ws.cell(rr, _c0+4).value = (round(float(row['net']), 3) if _ns.get('weighted') else int(row['net']))
+                ws.cell(rr, _c0+5).value = int(row['position'])
+                ws.cell(rr, _c0+6).value = str(row['action'])
+                ws.cell(rr, _c0+7).value = round(float(row['day_ret']) * 100, 3)
+                ws.cell(rr, _c0+8).value = round(float(row['cum_ret']) * 100, 2)
+                ws.cell(rr, _c0+9).value = round(float(row['held_down_run']) * 100, 2)
+                ws.cell(rr, _c0+10).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
+                if int(row['position']) == 1: ws.cell(rr, _c0+5).fill = PatternFill('solid', fgColor='C6EFCE')
                 _act = str(row['action'])
-                if _act == '매수':   ws.cell(rr, 13).fill = PatternFill('solid', fgColor='C6EFCE')
-                elif _act == '매도': ws.cell(rr, 13).fill = PatternFill('solid', fgColor='FFC7CE')
+                if _act == '매수':   ws.cell(rr, _c0+6).fill = PatternFill('solid', fgColor='C6EFCE')
+                elif _act == '매도': ws.cell(rr, _c0+6).fill = PatternFill('solid', fgColor='FFC7CE')
                 if pd.notna(row['day_ret']) and float(row['day_ret']) < 0 and int(row['position']) == 1:
-                    ws.cell(rr, 14).fill = PatternFill('solid', fgColor='FFC7CE')  # 보유중 하락일 빨강
-                if int(row['is_oos']) == 1:
-                    ws.cell(rr, 7).fill = PatternFill('solid', fgColor='DDEBF7')
-            for ci, w in enumerate([6, 11, 11, 11, 9, 12, 13, 11, 11, 11, 7, 12, 13, 9, 11, 13, 13, 7], 1):
+                    ws.cell(rr, _c0+7).fill = PatternFill('solid', fgColor='FFC7CE')
+                if int(row['is_oos']) == 1: ws.cell(rr, _c0).fill = PatternFill('solid', fgColor='DDEBF7')
+            for ci, w in enumerate([6, 11, 11, 11, 13, 11, 13, 12, 11, 12, 13, 11, 11, 12, 13, 9], 1):
                 ws.column_dimensions[get_column_letter(ci)].width = w
             ws.freeze_panes = 'A14'
-            print(f"  ✓ 순신호 K최적화: 최적 K={_ns['best_k']} (학습) | "
-                  f"학습 {_pct(_ns['train_cum'])} / OOS {_pct(_ns['oos_cum'])} / B&H(OOS) {_pct(_ns['bh_oos'])} "
-                  f"| 보유중하락 {_pct(_ns['held_down_full'])} | 거래 {_ns['n_trades']}회")
+            print(f"  ✓ {_shname}: 최적 K={_ns['best_k']} | 전체 {_pct(_ns.get('full_cum'))} / OOS {_pct(_ns.get('oos_cum'))} "
+                  f"| 거래 {_ns['n_trades']}회")
     except Exception as _ek:
-        print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
+        import traceback; print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
 
     # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
     #   각 메타조합(wilson_z/pct/corr)이 선별한 매수·매도 지표 전체를 저장.
@@ -14220,6 +14249,52 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.column_dimensions[get_column_letter(ci)].width = w
         except Exception as _e:
             print(f"  ⚠ 메타조합별_지표 시트 작성 실패: {_e}")
+
+    # ★ k순신호 재현풀 시트 — 엑셀만으로 정확 재현 (별도 pkl 불필요).
+    #   net>K가 쓴 '합친 다중임계 풀'(지표·방향·임계·성공률) + K/지표수/g 를 그대로 기록.
+    try:
+        _mp = globals().get('_KNET_MULTI_POOL')
+        if _mp and _mp[0] == ticker and _mp[1] is not None and _nsd_main:
+            wsr = wb.create_sheet('k순신호 재현풀'); wsr.sheet_view.showGridLines = False
+            wsr.cell(1, 1).value = (f'{ticker} — k순신호 재현용 풀/설정 (이 시트만 있으면 재현모드가 그대로 복원). '
+                                    f'수정 금지.')
+            wsr.cell(1, 1).font = Font(bold=True, size=11, color='1F3864')
+            # 고정 파라미터 (2~3행) — 전체수익K / OOS수익K 2개
+            _nf = globals().get('_KNET_FULL'); _no = globals().get('_KNET_OOS')
+            wsr.cell(2, 1).value = 'PARAM'
+            for c, h in enumerate(['k_full', 'nb_full', 'ns_full', 'g_full',
+                                   'k_oos', 'nb_oos', 'ns_oos', 'g_oos'], 2):
+                wsr.cell(2, c).value = h
+            wsr.cell(3, 1).value = 'VALUE'
+            def _pv(d, key):
+                return (d.get(key) if (d and d.get(key) is not None) else None)
+            _gf = float(globals().get('_KNET_BEST_WEXP', 1.0))
+            wsr.cell(3, 2).value = _pv(_nf, 'best_k'); wsr.cell(3, 3).value = _pv(_nf, 'n_buy_opt')
+            wsr.cell(3, 4).value = _pv(_nf, 'n_sell_opt'); wsr.cell(3, 5).value = _gf
+            wsr.cell(3, 6).value = _pv(_no, 'best_k'); wsr.cell(3, 7).value = _pv(_no, 'n_buy_opt')
+            wsr.cell(3, 8).value = _pv(_no, 'n_sell_opt'); wsr.cell(3, 9).value = _gf
+            for c in range(1, 10):
+                wsr.cell(2, c).font = Font(bold=True, color='FFFFFF'); wsr.cell(2, c).fill = PatternFill('solid', fgColor='1F3864')
+            # 풀 테이블 (5행 헤더~)
+            hr = 5
+            for c, h in enumerate(['구분', '지표(indicator)', '방향(direction)', '임계치(threshold)', '성공률(success_rate)'], 1):
+                cell = wsr.cell(hr, c); cell.value = h
+                cell.font = Font(bold=True, color='FFFFFF'); cell.fill = PatternFill('solid', fgColor='548235')
+            _rr = hr + 1
+            for _side, _pool in [('매수', _mp[1]), ('매도', _mp[2])]:
+                if _pool is None: continue
+                for _, prow in _pool.iterrows():
+                    wsr.cell(_rr, 1).value = _side
+                    wsr.cell(_rr, 2).value = str(prow.get('indicator'))
+                    wsr.cell(_rr, 3).value = str(prow.get('direction'))
+                    wsr.cell(_rr, 4).value = float(prow.get('threshold')) if pd.notna(prow.get('threshold')) else None
+                    wsr.cell(_rr, 5).value = float(prow.get('success_rate')) if pd.notna(prow.get('success_rate')) else None
+                    _rr += 1
+            for ci, w in enumerate([6, 30, 12, 12, 14], 1):
+                wsr.column_dimensions[get_column_letter(ci)].width = w
+            print(f"  💾 'k순신호 재현풀' 시트 저장 — 엑셀만으로 재현 가능 (매수 {len(_mp[1])}행 / 매도 {len(_mp[2])}행)")
+    except Exception as _pe:
+        print(f"  ⚠ k순신호 재현풀 시트 저장 실패(무시): {_pe}")
 
     wb.save(output_file)
 
@@ -14964,7 +15039,17 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         _reps = sorted(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]) or [dd_limit])
         dd_limit = ru_limit = _reps[len(_reps) // 2]
         # ★ 그리드 딱 1회 (윌슨/그리드는 여기서만) — 그리드-투표 시트용. net>K는 합친 풀 사용.
-        meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = _run_meta(dd_limit, dd_limit)
+        if globals().get('SKIP_GRID_VOTE', False):
+            print("  ⚡ SKIP_GRID_VOTE — 그리드-투표 K탐색 최소화(1×1). net>K는 합친 풀로 정확 계산됨.")
+            _kb_save, _ks_save = k_buy_range, k_sell_range
+            k_buy_range = [k_buy_range[0] if k_buy_range else 2]
+            k_sell_range = [k_sell_range[0] if k_sell_range else 2]
+            try:
+                meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = _run_meta(dd_limit, dd_limit)
+            finally:
+                k_buy_range, k_sell_range = _kb_save, _ks_save
+        else:
+            meta_results_df, inner_all, inner_passed, best_meta, best_inner, buy_pool, sell_pool = _run_meta(dd_limit, dd_limit)
 
     # ★ staged가 통합 테이블에서 고른 정확한 조합을 강제 (현재 포지션=★1등 일치 보장).
     #   meta_grid_search가 자체 선정한 best_inner와 staged의 최종 선택이 어긋나는 것을 방지.
@@ -15210,11 +15295,13 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                 _mp = globals().get('_KNET_MULTI_POOL')
                 if _mp and _mp[0] == ticker and _mp[1] is not None:
                     _kd['knet_buy'] = _mp[1]; _kd['knet_sell'] = _mp[2]
-                if _nsd_main:
-                    _kd['knet_k'] = _nsd_main.get('best_k')
-                    _kd['knet_nb'] = _nsd_main.get('n_buy_opt')
-                    _kd['knet_ns'] = _nsd_main.get('n_sell_opt')
+                _nf = globals().get('_KNET_FULL'); _no = globals().get('_KNET_OOS')
+                if _nf:
+                    _kd['knet_k'] = _nf.get('best_k'); _kd['knet_nb'] = _nf.get('n_buy_opt'); _kd['knet_ns'] = _nf.get('n_sell_opt')
+                if _no:
+                    _kd['knet_k_oos'] = _no.get('best_k'); _kd['knet_nb_oos'] = _no.get('n_buy_opt'); _kd['knet_ns_oos'] = _no.get('n_sell_opt')
                 _kd['knet_g'] = globals().get('_KNET_BEST_WEXP', 1.0)
+                _kd['knet_g_oos'] = globals().get('_KNET_BEST_WEXP', 1.0)
             except Exception:
                 pass
             pd.to_pickle(_kd, _snap)
@@ -16013,8 +16100,11 @@ def replay_grid_combo(filename, grid_number=None, *,
                     if _dsnap.get('knet_buy') is not None and _dsnap.get('knet_sell') is not None:
                         _tk = _dsnap.get('ticker')
                         globals()['_KNET_MULTI_POOL'] = (_tk, _dsnap['knet_buy'], _dsnap['knet_sell'])
-                        globals()['_KNET_REPLAY_FIXED'] = (_dsnap.get('knet_k'), _dsnap.get('knet_nb'),
-                                                           _dsnap.get('knet_ns'), _dsnap.get('knet_g', 1.0))
+                        globals()['_KNET_REPLAY_FIXED'] = {
+                            'k_full': _dsnap.get('knet_k'), 'nb_full': _dsnap.get('knet_nb'),
+                            'ns_full': _dsnap.get('knet_ns'), 'g_full': _dsnap.get('knet_g', 1.0),
+                            'k_oos': _dsnap.get('knet_k_oos'), 'nb_oos': _dsnap.get('knet_nb_oos'),
+                            'ns_oos': _dsnap.get('knet_ns_oos'), 'g_oos': _dsnap.get('knet_g_oos', 1.0)}
                         print(f"  ♻ 원본 k순신호 풀·K 로드 — 재현 시 탐색 없이 그대로 사용 "
                               f"(K={_dsnap.get('knet_k')}, 매수{_dsnap['knet_buy']['indicator'].nunique()}"
                               f"/매도{_dsnap['knet_sell']['indicator'].nunique()}지표)")
@@ -16246,6 +16336,59 @@ def replay_grid_combo(filename, grid_number=None, *,
         print(f"  ⚠ 앙상블 지표 시트를 읽지 못함 → 메타변수로 지표 재선별")
 
     kwargs['inject_pools'] = inject_pools   # ★ 엑셀 지표 풀 (None이면 메타변수로 재선별)
+
+    # ★ 'k순신호 재현풀' 시트 읽기 → net>K를 원본 K/풀/지표수/g 그대로 재현 (탐색 0, pkl 불필요).
+    try:
+        import openpyxl as _oxl
+        _wbk = _oxl.load_workbook(excel_path, read_only=True, data_only=True)
+        if 'k순신호 재현풀' in _wbk.sheetnames:
+            _wsk = _wbk['k순신호 재현풀']
+            _rows = list(_wsk.iter_rows(values_only=True))
+            # PARAM 헤더(2행)+VALUE(3행) → 헤더명으로 매핑 (전체K/OOS K)
+            _hdrp = None; _valp = None
+            for _r in _rows[:5]:
+                if not _r: continue
+                if str(_r[0]).strip() == 'PARAM': _hdrp = _r
+                elif str(_r[0]).strip() == 'VALUE': _valp = _r
+            _pm = {}
+            if _hdrp and _valp:
+                for _c in range(1, min(len(_hdrp), len(_valp))):
+                    _k = _hdrp[_c]
+                    if _k is not None: _pm[str(_k).strip()] = _valp[_c]
+            _hi = None
+            for _i, _r in enumerate(_rows):
+                sv = [str(v).strip() if v is not None else '' for v in _r]
+                if any('indicator' in s for s in sv) and '구분' in sv:
+                    _hi = _i; break
+            _bb = []; _ss = []
+            if _hi is not None:
+                for _r in _rows[_hi + 1:]:
+                    if not _r or _r[0] is None or _r[1] is None: continue
+                    side = str(_r[0]).strip()
+                    rec = {'indicator': _r[1], 'direction': _r[2],
+                           'threshold': _r[3], 'success_rate': _r[4]}
+                    if '매수' in side: _bb.append(rec)
+                    elif '매도' in side: _ss.append(rec)
+            if _bb and _ss:
+                _tkr = used.get('ticker') or (ticker if 'ticker' in dir() else None)
+                _bdf = pd.DataFrame(_bb); _sdf = pd.DataFrame(_ss)
+                if feat is not None:
+                    _cols = set(feat.columns)
+                    _bdf = _bdf[_bdf['indicator'].isin(_cols)].reset_index(drop=True)
+                    _sdf = _sdf[_sdf['indicator'].isin(_cols)].reset_index(drop=True)
+                globals()['_KNET_MULTI_POOL'] = (_tkr, _bdf, _sdf)
+                # 구버전(best_k 단일) 호환: k_full 없으면 best_k 사용
+                _kf = _pm.get('k_full', _pm.get('best_k'))
+                globals()['_KNET_REPLAY_FIXED'] = {
+                    'k_full': _kf, 'nb_full': _pm.get('nb_full', _pm.get('n_buy')),
+                    'ns_full': _pm.get('ns_full', _pm.get('n_sell')), 'g_full': _pm.get('g_full', _pm.get('weight_g', 1.0)),
+                    'k_oos': _pm.get('k_oos'), 'nb_oos': _pm.get('nb_oos'),
+                    'ns_oos': _pm.get('ns_oos'), 'g_oos': _pm.get('g_oos', 1.0)}
+                print(f"  ♻ 'k순신호 재현풀' 시트 로드 — 탐색 없이 그대로 재현 "
+                      f"(K전체={_kf}, K_OOS={_pm.get('k_oos')}, 매수 {len(_bdf)}행 / 매도 {len(_sdf)}행)")
+        _wbk.close()
+    except Exception as _ke:
+        print(f"  ⚠ k순신호 재현풀 시트 읽기 실패(재구성으로 진행): {_ke}")
 
     # ★ 보정 정확 재현 (요청) — 엑셀 앙상블 시트에 저장된 '🔁가중치'가 있으면, 그 풀과 가중치를
     #   force_corr로 넘겨 최종 백테스트가 '저장된 그대로'(추가지표+보정가중치) 재현되게 한다.
