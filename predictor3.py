@@ -10089,7 +10089,7 @@ STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-�
 SKIP_GRID_VOTE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.65]
+STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
 STAGE_CORR_LIMIT  = [0.15, 0.2, 0.25, 0.3]
 
@@ -11056,6 +11056,7 @@ def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon,
        전체수익 기준으로 (wilson,corr) 최적 풀 확정. globals()['_KNET_MULTI_POOL']=(ticker, buy, sell).
        (OOS용 K는 이 동일 풀에서 select_by='oos'로 따로 뽑음 — 풀은 공유, K만 2개)"""
     globals().pop('_KNET_REPLAY_FIXED', None)
+    globals().pop('_KNET_KL_FIXED', None)   # 새로 계산 = K/L도 재현 고정 아님
     _limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
     _wzs = list(globals().get('STAGE_WILSON_Z') or [1.95])
     _cls = list(globals().get('STAGE_CORR_LIMIT') or [0.2])
@@ -11089,14 +11090,17 @@ def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon,
             _wz_sc = _sc; _best_wz = _wz
     print(f"    → 최고 wilson = {_best_wz} (전체수익 {_wz_sc*100:+.2f}%)")
 
-    # 2) corr 순차 (wilson = 위에서 정한 값)
+    # 2) corr 순차 (wilson = 위에서 정한 값) — wilson단계서 이미 본 조합은 재출력 안 함
     _best = None; _best_sc = -1e18; _bcl = _cls[0]
+    _shown = {(round(float(_best_wz), 4), round(float(_cl0), 4))}
     for _cl in _cls:
         _cb, _cs, _sc = _score(_best_wz, _cl)
         _np = _cb['indicator'].nunique() if _cb is not None else 0
         _ns = _cs['indicator'].nunique() if _cs is not None else 0
-        print(f"    [wilson={_best_wz}, corr={_cl}] 전체수익 {_sc*100:+8.2f}% | 매수{_np}/매도{_ns}"
-              f"{'  ★최고' if _sc > _best_sc else ''}")
+        if (round(float(_best_wz), 4), round(float(_cl), 4)) not in _shown:
+            print(f"    [wilson={_best_wz}, corr={_cl}] 전체수익 {_sc*100:+8.2f}% | 매수{_np}/매도{_ns}"
+                  f"{'  ★최고' if _sc > _best_sc else ''}")
+            _shown.add((round(float(_best_wz), 4), round(float(_cl), 4)))
         if _sc > _best_sc:
             _best_sc = _sc; _best = (_cb, _cs); _bcl = _cl
 
@@ -12882,6 +12886,66 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         return None
 
 
+def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_kl_mdd=None):
+    """★ K/L 2임계 히스테리시스. net_prev≥K → 매수(롱), net_prev≤L → 매도(현금), 사이는 직전 포지션 유지 (K≥L).
+       (K,L) 격자를 훑어 ① 전체수익 최고 ② MDD 한도 지키는 수익 최고 를 둘 다 찾는다.
+       fixed_kl=(K,L) 주면 탐색 없이 그 값 그대로(재현). fixed_kl_mdd=(K,L)은 ②행 재현용.
+       반환: dict{best_ret:(K,L,ret,mdd,dl,daily_pos), best_mdd:(...) or None, grid_n}."""
+    net = np.asarray(net, float); r = np.asarray(r, float)
+    n = len(net)
+    net_prev = np.empty(n); net_prev[0] = net[0]; net_prev[1:] = net[:-1]
+
+    def _run(K, L):
+        pos = np.zeros(n); cur = 0.0
+        for s in range(n):
+            v = net_prev[s]
+            if v >= K: cur = 1.0
+            elif v <= L: cur = 0.0
+            pos[s] = cur
+        pos[0] = 0.0
+        hr = pos * r
+        ret = float(np.sum(hr))
+        cum = np.cumsum(hr); run_max = np.maximum.accumulate(cum)
+        mdd = float(np.min(cum - run_max)) if n else 0.0
+        return ret, mdd, int(pos.sum()), pos
+
+    if fixed_kl is not None:      # ★ 재현: 원본 (K,L) 그대로
+        _K, _L = float(fixed_kl[0]), float(fixed_kl[1])
+        ret, mdd, dl, pos = _run(_K, _L)
+        _br = (_K, _L, ret, mdd, dl, pos)
+        _bm = None
+        if fixed_kl_mdd is not None:
+            _Km, _Lm = float(fixed_kl_mdd[0]), float(fixed_kl_mdd[1])
+            r2, m2, d2, p2 = _run(_Km, _Lm)
+            _bm = (_Km, _Lm, r2, m2, d2, p2)
+        return {'best_ret': _br, 'best_mdd': _bm, 'grid_n': 1}
+
+    if k_grid is None:
+        lo = float(np.nanmin(net)); hi = float(np.nanmax(net))
+        if hi <= lo: hi = lo + 1.0
+        _is_int = np.allclose(net, np.round(net))
+        if _is_int:
+            k_grid = list(range(int(np.floor(lo)), int(np.ceil(hi)) + 1))
+        else:
+            k_grid = sorted(set(np.round(np.concatenate([
+                np.linspace(lo, hi, 60), np.nanpercentile(net, np.linspace(1, 99, 40))]), 4).tolist()))
+    kg = sorted(k_grid)
+
+    best_ret = None; best_mdd = None; cnt = 0
+    for K in kg:
+        for L in kg:
+            if L > K:
+                continue
+            cnt += 1
+            ret, mdd, dl, pos = _run(K, L)
+            if best_ret is None or ret > best_ret[2]:
+                best_ret = (K, L, ret, mdd, dl, pos)
+            if mdd_limit is not None and mdd >= -abs(mdd_limit):
+                if best_mdd is None or ret > best_mdd[2]:
+                    best_mdd = (K, L, ret, mdd, dl, pos)
+    return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt}
+
+
 def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
                                    anchor_buy_set, anchor_sell_set,
                                    ticker, kind_label):
@@ -14229,6 +14293,74 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ek:
         import traceback; print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
 
+    # ─── 7d. 순신호 K/L 2임계 최적화 시트 (net≥K 매수 / net≤L 매도 / 사이 유지) ───
+    try:
+        _kln = globals().get('_KNET_FULL') or _nsd_main
+        if _kln is not None and _kln.get('daily') is not None:
+            _d = _kln['daily']
+            _net = _d['net'].values.astype(float)
+            _price = _d['price'].values.astype(float)
+            _rr = np.zeros(len(_price)); _rr[1:] = _price[1:] / _price[:-1] - 1.0
+            _rr[~np.isfinite(_rr)] = 0.0
+            _mddlim = globals().get('MAX_DRAWDOWN_LIMIT_PCT')
+            _klfix = globals().get('_KNET_KL_FIXED')
+            if _klfix and _klfix.get('kl_k') is not None:   # ★ 재현: 원본 K/L 그대로
+                _kl = _net_kl_search(_net, _rr,
+                                     fixed_kl=(_klfix['kl_k'], _klfix['kl_l']),
+                                     fixed_kl_mdd=((_klfix['kl_k_mdd'], _klfix['kl_l_mdd'])
+                                                   if _klfix.get('kl_k_mdd') is not None else None))
+                print(f"  ♻ 재현: 원본 K/L(K={_klfix['kl_k']}, L={_klfix['kl_l']}) 그대로")
+            else:
+                _kl = _net_kl_search(_net, _rr, mdd_limit=_mddlim)
+            globals()['_KNET_KL'] = _kl   # 재현 저장용
+            ws = wb.create_sheet('순신호 K/L 최적화'); ws.sheet_view.showGridLines = False
+            ws.cell(1, 1).value = (f'{ticker} — 순신호 K/L 2임계 최적화  ｜ net≥K면 매수(롱), net≤L면 매도(현금), '
+                                   f'사이는 직전 유지 (K≥L). 수익=상승·하락률 합산.')
+            ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864'); ws.merge_cells('A1:H1')
+            _hd = ['구분', 'K(매수 임계)', 'L(매도 임계)', '전체수익%', '최대낙폭(MDD)%', '롱일수', '비고']
+            for c, h in enumerate(_hd, 1):
+                cell = ws.cell(3, c); cell.value = h
+                cell.font = Font(bold=True, color='FFFFFF'); cell.fill = PatternFill('solid', fgColor='1F3864')
+            def _row_kl(rr, tag, tup, note):
+                if tup is None:
+                    ws.cell(rr, 1).value = tag; ws.cell(rr, 2).value = '— (해당 없음)'; return
+                K, L, ret, mdd, dl, _ = tup
+                ws.cell(rr, 1).value = tag; ws.cell(rr, 1).font = Font(bold=True)
+                ws.cell(rr, 2).value = round(float(K), 3); ws.cell(rr, 3).value = round(float(L), 3)
+                ws.cell(rr, 4).value = round(ret * 100, 2); ws.cell(rr, 4).font = Font(bold=True, color='C00000')
+                ws.cell(rr, 5).value = round(mdd * 100, 2); ws.cell(rr, 5).font = Font(color='C00000')
+                ws.cell(rr, 6).value = dl; ws.cell(rr, 7).value = note
+            _row_kl(4, '① 최대수익', _kl['best_ret'], '수익 최고 (낙폭 무관)')
+            _row_kl(5, '② MDD한도 내 최대수익', _kl['best_mdd'],
+                    (f'MDD ≤ {_mddlim*100:.0f}% 지키며 수익 최고' if _mddlim is not None else 'MDD 한도 미설정(None)'))
+            if _mddlim is None:
+                ws.cell(6, 1).value = '※ MAX_DRAWDOWN_LIMIT_PCT=None → ② 미탐색. 값 설정 시(예 0.30) MDD 지키는 K/L 나옴.'
+                ws.cell(6, 1).font = Font(italic=True, size=9, color='888888')
+            # 최대수익 K/L의 일별 표
+            _bt = _kl['best_ret']
+            if _bt is not None:
+                _pos = _bt[5]
+                _hdr(ws, 8, ['날짜', f'{ticker}종가', 'net', 'K', 'L', '포지션', '일별수익%', '누적수익%'])
+                _K, _L = _bt[0], _bt[1]; _cum = 0.0
+                for i in range(len(_d)):
+                    r0 = 9 + i; row = _d.iloc[i]
+                    _dr = float(_pos[i]) * _rr[i]; _cum += _dr
+                    ws.cell(r0, 1).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+                    ws.cell(r0, 2).value = round(float(_price[i]), 2)
+                    ws.cell(r0, 3).value = (round(float(_net[i]), 3) if _kln.get('weighted') else int(_net[i]))
+                    ws.cell(r0, 4).value = round(float(_K), 3); ws.cell(r0, 5).value = round(float(_L), 3)
+                    ws.cell(r0, 6).value = ('롱' if _pos[i] == 1 else '현금')
+                    ws.cell(r0, 7).value = round(_dr * 100, 3); ws.cell(r0, 8).value = round(_cum * 100, 2)
+                    if _pos[i] == 1: ws.cell(r0, 6).fill = PatternFill('solid', fgColor='C6EFCE')
+                ws.freeze_panes = 'A9'
+            for ci, w in enumerate([18, 13, 13, 12, 15, 9, 30], 1):
+                ws.column_dimensions[get_column_letter(ci)].width = w
+            _bm = _kl['best_mdd']
+            print(f"  ✓ 순신호 K/L 최적화: 최대수익 K={_bt[0]:.2f}/L={_bt[1]:.2f} ({_bt[2]*100:+.1f}%, MDD {_bt[3]*100:.1f}%)"
+                  + (f" | MDD한도내 K={_bm[0]:.2f}/L={_bm[1]:.2f} ({_bm[2]*100:+.1f}%)" if _bm else ""))
+    except Exception as _ekl:
+        print(f"  ⚠ 순신호 K/L 최적화 시트 작성 실패(무시): {_ekl}")
+
     # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
     #   각 메타조합(wilson_z/pct/corr)이 선별한 매수·매도 지표 전체를 저장.
     #   그리드 번호 재현 시, 그 번호의 메타조합 풀을 여기서 읽어 '그대로' 사용 → 정확히 재현.
@@ -14291,7 +14423,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             wsr.cell(3, 4).value = _pv(_nf, 'n_sell_opt'); wsr.cell(3, 5).value = _gf
             wsr.cell(3, 6).value = _pv(_no, 'best_k'); wsr.cell(3, 7).value = _pv(_no, 'n_buy_opt')
             wsr.cell(3, 8).value = _pv(_no, 'n_sell_opt'); wsr.cell(3, 9).value = _gf
-            for c in range(1, 10):
+            # K/L 2임계 재현값 (10~13열)
+            for c, h in enumerate(['kl_k', 'kl_l', 'kl_k_mdd', 'kl_l_mdd'], 10):
+                wsr.cell(2, c).value = h
+            _klr = globals().get('_KNET_KL')
+            if _klr and _klr.get('best_ret'):
+                wsr.cell(3, 10).value = round(float(_klr['best_ret'][0]), 4)
+                wsr.cell(3, 11).value = round(float(_klr['best_ret'][1]), 4)
+            if _klr and _klr.get('best_mdd'):
+                wsr.cell(3, 12).value = round(float(_klr['best_mdd'][0]), 4)
+                wsr.cell(3, 13).value = round(float(_klr['best_mdd'][1]), 4)
+            for c in range(1, 14):
                 wsr.cell(2, c).font = Font(bold=True, color='FFFFFF'); wsr.cell(2, c).fill = PatternFill('solid', fgColor='1F3864')
             # 풀 테이블 (5행 헤더~)
             hr = 5
@@ -16402,8 +16544,16 @@ def replay_grid_combo(filename, grid_number=None, *,
                     'ns_full': _pm.get('ns_full', _pm.get('n_sell')), 'g_full': _pm.get('g_full', _pm.get('weight_g', 1.0)),
                     'k_oos': _pm.get('k_oos'), 'nb_oos': _pm.get('nb_oos'),
                     'ns_oos': _pm.get('ns_oos'), 'g_oos': _pm.get('g_oos', 1.0)}
+                # ★ K/L 2임계 재현값
+                if _pm.get('kl_k') is not None:
+                    globals()['_KNET_KL_FIXED'] = {
+                        'kl_k': _pm.get('kl_k'), 'kl_l': _pm.get('kl_l'),
+                        'kl_k_mdd': _pm.get('kl_k_mdd'), 'kl_l_mdd': _pm.get('kl_l_mdd')}
+                else:
+                    globals().pop('_KNET_KL_FIXED', None)
                 print(f"  ♻ 'k순신호 재현풀' 시트 로드 — 탐색 없이 그대로 재현 "
-                      f"(K전체={_kf}, K_OOS={_pm.get('k_oos')}, 매수 {len(_bdf)}행 / 매도 {len(_sdf)}행)")
+                      f"(K전체={_kf}, K_OOS={_pm.get('k_oos')}, K/L={_pm.get('kl_k')}/{_pm.get('kl_l')}, "
+                      f"매수 {len(_bdf)}행 / 매도 {len(_sdf)}행)")
         _wbk.close()
     except Exception as _ke:
         print(f"  ⚠ k순신호 재현풀 시트 읽기 실패(재구성으로 진행): {_ke}")
