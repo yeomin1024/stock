@@ -11047,6 +11047,43 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
     return buy_c, sell_c
 
 
+def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon, ticker):
+    """★ (wilson×corr) 조합에서 'k순신호 전체수익' 최고인 1~5% 통합 다중임계 풀 선택.
+       globals()['_KNET_MULTI_POOL']=(ticker, buy, sell) 설정. 재현/분석 양쪽에서 동일 호출 → 같은 데이터면 같은 결과."""
+    _limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
+    _wzs = list(globals().get('STAGE_WILSON_Z') or [1.95])
+    _cls = list(globals().get('STAGE_CORR_LIMIT') or [0.2])
+    print(f"\n  ── 1~5% 통합 풀 선출 + (wilson×corr)에서 'k순신호 전체수익 최고' 선택 "
+          f"— 한도 {[f'{x*100:.0f}%' for x in _limits]} 통합 ──")
+    _best = None; _best_sc = -1e18; _bwz = _wzs[0]; _bcl = _cls[0]
+    for _wz in _wzs:
+        for _cl in _cls:
+            try:
+                _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
+                                                n_thresholds=n_thresholds, horizon=horizon,
+                                                wilson_z=_wz, corr_limit=_cl)
+                if _cb is None or _cs is None or len(_cb) == 0 or len(_cs) == 0:
+                    print(f"    [wilson={_wz}, corr={_cl}] 풀 부족 — 건너뜀"); continue
+                _nsd = _net_signal_k_search(feat, close, _cb, _cs, ticker=ticker,
+                                            oos_start=None, search_counts=True)
+                _sc = _nsd['full_cum'] if _nsd else -1e18
+                print(f"    [wilson={_wz}, corr={_cl}] k순신호 전체수익 {_sc*100:+8.2f}% "
+                      f"| 풀 매수{_cb['indicator'].nunique()}/매도{_cs['indicator'].nunique()}"
+                      f"{'  ★최고' if _sc > _best_sc else ''}")
+                if _sc > _best_sc:
+                    _best_sc = _sc; _best = (_cb, _cs); _bwz = _wz; _bcl = _cl
+            except Exception as _e:
+                print(f"    [wilson={_wz}, corr={_cl}] 실패(무시): {_e}")
+    if _best is not None:
+        globals()['_KNET_MULTI_POOL'] = (ticker, _best[0], _best[1])
+        print(f"  ★ k순신호 최적 조합: wilson={_bwz}, corr={_bcl} → 전체수익 {_best_sc*100:+.2f}% "
+              f"(매수 {_best[0]['indicator'].nunique()}지표 / 매도 {_best[1]['indicator'].nunique()}지표, 다중임계)")
+    else:
+        globals()['_KNET_MULTI_POOL'] = (ticker, None, None)
+        print(f"  ⚠ 합친 풀 생성 실패 — 그리드 폴백")
+    return globals()['_KNET_MULTI_POOL']
+
+
 _ZCACHE = {}
 
 def _free_global_caches(*, keep_pool_map=False):
@@ -14839,6 +14876,13 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         buy_pool, sell_pool = inject_pools
         print(f"  ♻ 재현 모드 — 엑셀의 지표 풀 그대로 사용 "
               f"(매수 {len(buy_pool)}개 / 매도 {len(sell_pool)}개 지표, 재선별 안 함)")
+        # ★ 재현에서도 k순신호 합친 풀을 동일 로직으로 재구성 (같은 데이터면 같은 K/거래 재현).
+        #   REPLAY가 데이터를 원본 마지막날까지로 자르면 → 정확 재현. 연장 시엔 성공률 창이 늘어 미세 차이 가능.
+        try:
+            _build_and_pick_knet_pool(feat, close, indicators=indicators,
+                                      n_thresholds=n_thresholds, horizon=horizon, ticker=ticker)
+        except Exception as _re:
+            print(f"  ⚠ 재현용 합친 풀 생성 실패(폴백): {_re}")
         if force_best_combo is not None:
             best_inner = {
                 'K_buy': int(force_best_combo['K_buy']),
@@ -14891,38 +14935,8 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         if (_mpc is not None and isinstance(_mpc, tuple) and _mpc[0] == ticker and _mpc[1] is not None):
             print(f"\n  ── 1~5% 통합 다중임계 풀: 캐시 재사용 (재탐색 생략) ──")
         else:
-            _limits = (list(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]))
-                       if globals().get('SEARCH_SUCCESS_LIMIT', False) else [dd_limit])
-            _wzs = list(globals().get('STAGE_WILSON_Z') or [1.95])
-            _cls = list(globals().get('STAGE_CORR_LIMIT') or [0.2])
-            print(f"\n  ── 1~5% 통합 풀 선출 + (wilson×corr) 조합에서 'k순신호 전체수익 최고' 선택 "
-                  f"— 한도 {[f'{x*100:.0f}%' for x in _limits]} 통합 ──")
-            _best = None; _best_sc = -1e18; _best_wz = _wzs[0]; _best_cl = _cls[0]
-            for _wz in _wzs:
-                for _cl in _cls:
-                    try:
-                        _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
-                                                        n_thresholds=n_thresholds, horizon=horizon,
-                                                        wilson_z=_wz, corr_limit=_cl)
-                        if _cb is None or _cs is None or len(_cb) == 0 or len(_cs) == 0:
-                            print(f"    [wilson={_wz}, corr={_cl}] 풀 부족 — 건너뜀"); continue
-                        _nsd = _net_signal_k_search(feat, close, _cb, _cs, ticker=ticker,
-                                                    oos_start=None, search_counts=True)
-                        _sc = _nsd['full_cum'] if _nsd else -1e18
-                        print(f"    [wilson={_wz}, corr={_cl}] k순신호 전체수익 {_sc*100:+8.2f}% "
-                              f"| 풀 매수{_cb['indicator'].nunique()}/매도{_cs['indicator'].nunique()}"
-                              f"{'  ★최고' if _sc > _best_sc else ''}")
-                        if _sc > _best_sc:
-                            _best_sc = _sc; _best = (_cb, _cs); _best_wz = _wz; _best_cl = _cl
-                    except Exception as _ce:
-                        print(f"    [wilson={_wz}, corr={_cl}] 실패(무시): {_ce}")
-            if _best is not None:
-                globals()['_KNET_MULTI_POOL'] = (ticker, _best[0], _best[1])
-                print(f"  ★ k순신호 최적 조합: wilson={_best_wz}, corr={_best_cl} → 전체수익 {_best_sc*100:+.2f}% "
-                      f"(매수 {_best[0]['indicator'].nunique()}지표 / 매도 {_best[1]['indicator'].nunique()}지표, 다중임계)")
-            else:
-                globals()['_KNET_MULTI_POOL'] = (ticker, None, None)
-                print(f"  ⚠ 합친 풀 생성 실패 — 그리드 폴백")
+            _build_and_pick_knet_pool(feat, close, indicators=indicators,
+                                      n_thresholds=n_thresholds, horizon=horizon, ticker=ticker)
         # 그리드 내부 성공평가용 대표 한도 = 리스트 중앙값 (net>K는 합친 풀 사용 → 그리드-투표 시트에만 영향)
         _reps = sorted(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]) or [dd_limit])
         dd_limit = ru_limit = _reps[len(_reps) // 2]
