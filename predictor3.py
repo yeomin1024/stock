@@ -9863,7 +9863,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축소)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
@@ -9917,7 +9917,7 @@ VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
 COST_PER_TRADE      = 0.004
 
 MIN_TRADES_DAILY    = 10
-MAX_DRAWDOWN_LIMIT_PCT = 0.30
+MAX_DRAWDOWN_LIMIT_PCT = 0.03   # ★ 분수(0.03=3%). 최대낙폭 3% 이내
 
 STOP_LOSS_PCT       = 0.05
 
@@ -10076,8 +10076,8 @@ KNET_GRID_ROW_CAP   = 100
 META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
-    'wilson_z':    [1.65],
-    'pct_range':   [(0, 100)],
+    'wilson_z':    [1.95],
+    'pct_range':   [(5, 95)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
@@ -10091,7 +10091,7 @@ SKIP_GRID_VOTE = True
 STAGE_PCT_RANGE   = [(0, 100)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2]
+STAGE_CORR_LIMIT  = [0.2, 0.25]
 
 # ============================================================
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
@@ -11038,8 +11038,22 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         if not parts:
             return None
         allp = pd.concat(parts, ignore_index=True)
-        allp = allp.sort_values('success_rate', ascending=False)
-        allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
+        # ★ wilson_z 실제 적용: raw 성공률이 아니라 'Wilson 하한'으로 정렬
+        #   (표본 적은 고성공 지표는 wilson_z 클수록 뒤로 밀림 → wilson 바꾸면 풀 순위·멤버가 달라짐)
+        try:
+            _z = float(wilson_z)
+            _p = allp['success_rate'].values.astype(float)
+            _nn = np.maximum(allp['n_signals'].values.astype(float), 1.0)
+            _denom = 1.0 + _z * _z / _nn
+            _center = _p + _z * _z / (2.0 * _nn)
+            _margin = _z * np.sqrt(np.clip(_p * (1.0 - _p) / _nn + _z * _z / (4.0 * _nn * _nn), 0.0, None))
+            allp = allp.assign(_wlb=(_center - _margin) / _denom)
+            allp = allp.sort_values(['_wlb', 'success_rate'], ascending=[False, False])
+            allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
+            allp = allp.drop(columns=['_wlb'])
+        except Exception:
+            allp = allp.sort_values('success_rate', ascending=False)
+            allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
         return allp
     buy_all = _comb(bparts); sell_all = _comb(sparts)
     # ★ 상관 다변화 (수정전과 동일 기준) — 고성공 지표는 다 남기되 중복 상관만 제거
@@ -11544,12 +11558,25 @@ def grid_search_ensemble(feat, close, buy_pool, sell_pool, *,
     ])
 
 
-def apply_mdd_and_trade_filters(grid_df, mdd_limit_pct, min_trades_daily):
+def apply_mdd_and_trade_filters(grid_df, mdd_limit_pct, min_trades_daily, allow_fallback=True):
+    """MDD 한도·최소거래수 필터. 만족 조합이 없으면(요청) 에러 대신
+       ① 거래수 조건 만족분 중, ② 최대낙폭(0에 가까운) 가장 낮은 것들로 폴백한다."""
     df = grid_df.copy()
-    df = df[df['n_trades'] >= min_trades_daily]
+    if len(df) == 0:
+        return df
+    df_t = df[df['n_trades'] >= min_trades_daily]
+    base = df_t if len(df_t) > 0 else (df if allow_fallback else df_t)   # 거래수 만족 없으면 전체로 폴백
     if mdd_limit_pct is not None:
-        df = df[df['max_drawdown'] >= -abs(mdd_limit_pct) / 100.0]
-    return df
+        ok = base[base['max_drawdown'] >= -abs(mdd_limit_pct)]
+        if len(ok) > 0:
+            return ok
+        # ★ MDD 한도 만족 조합 없음 → 최대낙폭 가장 낮은(0에 가까운) 조합으로 폴백
+        if allow_fallback and len(base) > 0:
+            _fb = base.sort_values('max_drawdown', ascending=False).head(max(5, min(20, len(base))))
+            globals()['_MDD_FALLBACK_USED'] = True
+            return _fb
+        return ok
+    return base
 
 
 def meta_grid_search(feat, close, *,
@@ -11927,11 +11954,23 @@ def meta_grid_search(feat, close, *,
                   f"경과 {el:>4.0f}s / 예상 {est:>4.0f}s  "
                   f"현재 best: {cur}  (통과없음 {n_no_pass}건)")
 
+    if globals().get('_MDD_FALLBACK_USED'):
+        print("  ⚠ MDD 한도 만족 조합 없음 → 최대낙폭 가장 낮은 조합으로 폴백 진행 (에러 대신).")
+        globals().pop('_MDD_FALLBACK_USED', None)
+
     if best_state is None:
-        raise RuntimeError(
-            f"MDD 한도 또는 거래수 ≥ {min_trades_daily} 인 조합을 찾지 못함.\n"
-            f"MAX_DRAWDOWN_LIMIT_PCT 완화 또는 MIN_TRADES_DAILY 낮추세요."
-        )
+        # 여기까지 오면 통과 조합이 전무(=inner 그리드 자체가 빈 경우). MDD 미달은 위 필터에서 폴백됨.
+        if all_passed_list:
+            _cat = pd.concat(all_passed_list, ignore_index=True)
+            _pick = _cat.sort_values('max_drawdown', ascending=False).head(1)
+            print("  ⚠ 통과 조합 전무 → 최대낙폭 최저 1개로 폴백 진행.")
+            best_state = ({}, _cat, _pick, _pick.iloc[0].to_dict(),
+                          float(_pick.iloc[0].get('avg_success_rate', 0.0) or 0.0),
+                          float(_pick.iloc[0].get('total_return', 0.0) or 0.0), 1.0)
+        else:
+            raise RuntimeError(
+                "그리드 결과가 비었습니다 (지표/신호 없음). 풀·MIN_TRADES 설정을 확인하세요."
+            )
 
     all_meta_df = pd.DataFrame(meta_rows)
     valid = all_meta_df.dropna(subset=['best_avg_sr']).copy()
@@ -12650,7 +12689,7 @@ def _mdd_fill(mdd, mdd_limit_pct):
         if mdd > -0.05: return _GOOD
         if mdd > -0.15: return _MID
         return _BAD
-    limit = -abs(mdd_limit_pct) / 100.0
+    limit = -abs(mdd_limit_pct)
     if mdd >= limit / 2: return _GOOD
     if mdd >= limit:     return _MID
     return _BAD
@@ -13182,7 +13221,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = f'{ticker} — 앙상블 현재 포지션  ({cur["last_date"].date()})'
     ws.cell(1, 1).font = Font(bold=True, size=18, color='1F3864')
     ws.merge_cells('A1:D1')
-    mdd_t = f"제한 -{abs(mdd_limit_pct):.1f}%" if mdd_limit_pct is not None else "제한 없음"
+    mdd_t = f"제한 -{abs(mdd_limit_pct)*100:.1f}%" if mdd_limit_pct is not None else "제한 없음"
     ws.cell(2, 1).value = (f'★ 매수 Top-{cur["K_buy"]}/{cur["vote_buy"]}투표  '
                             f'/ 매도 Top-{cur["K_sell"]}/{cur["vote_sell"]}투표  '
                             f'/ MDD {mdd_t}  / 최소거래 {min_trades_daily}회')
@@ -13284,7 +13323,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
           f"{cur['n_stop_triggered']}회"
           + (f" (한도 -{stop_loss_pct*100:.1f}%)" if stop_loss_pct else " (손절매 비활성)")),
         ('', ''),
-        ('★ MDD 한도', f"-{abs(mdd_limit_pct):.2f}%" if mdd_limit_pct is not None else "없음"),
+        ('★ MDD 한도', f"-{abs(mdd_limit_pct)*100:.2f}%" if mdd_limit_pct is not None else "없음"),
         ('★ 최소 거래수', f"{min_trades_daily}회"),
         ('★ 손절매 한도', f"-{stop_loss_pct*100:.2f}%" if (stop_loss_pct is not None and stop_loss_pct > 0) else "없음"),
         ('★ Tolerance Band', f"{selection_tolerance*100:.2f}%p" if selection_tolerance > 0 else "OFF (strict)"),
@@ -13447,7 +13486,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ('★ 충돌 해결 규칙', '둘 다 ON 시 count/K 비율 큰 쪽 우선'),
         ('', ''),
         ('★ 필터 제약', ''),
-        ('  MDD 한도', f"-{abs(mdd_limit_pct):.2f}%" if mdd_limit_pct is not None else "없음"),
+        ('  MDD 한도', f"-{abs(mdd_limit_pct)*100:.2f}%" if mdd_limit_pct is not None else "없음"),
         ('  최소 거래수', f"{min_trades_daily}회"),
         ('  손절매 한도', f"-{stop_loss_pct*100:.2f}%" if (stop_loss_pct is not None and stop_loss_pct > 0) else "없음"),
         ('', ''),
@@ -13606,7 +13645,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
     # 6. 내부 그리드 통과
     ws = wb.create_sheet('내부_그리드_통과'); ws.sheet_view.showGridLines = False
-    mdd_t2 = f"MDD ≥ -{abs(mdd_limit_pct):.1f}%" if mdd_limit_pct is not None else "MDD 제한 없음"
+    mdd_t2 = f"MDD ≥ -{abs(mdd_limit_pct)*100:.1f}%" if mdd_limit_pct is not None else "MDD 제한 없음"
     use_match_p = bool(anchor_match_priority_arg and anchor_mode and 'anchor_avg_match_rate' in inner_passed.columns)
     inner_sort_label = (f'매칭률 ±{anchor_match_tolerance_arg*100:.1f}%p → BalAcc → 수익률'
                          if use_match_p else sort_label)
