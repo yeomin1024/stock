@@ -9917,7 +9917,7 @@ VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
 COST_PER_TRADE      = 0.004
 
 MIN_TRADES_DAILY    = 10
-MAX_DRAWDOWN_LIMIT_PCT = None
+MAX_DRAWDOWN_LIMIT_PCT = 0.30
 
 STOP_LOSS_PCT       = 0.05
 
@@ -10077,7 +10077,7 @@ META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
     'wilson_z':    [1.65],
-    'pct_range':   [(5, 95)],
+    'pct_range':   [(0, 100)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
@@ -10091,7 +10091,7 @@ SKIP_GRID_VOTE = True
 STAGE_PCT_RANGE   = [(0, 100)]
 STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.15, 0.2, 0.25, 0.3]
+STAGE_CORR_LIMIT  = [0.2]
 
 # ============================================================
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
@@ -14293,18 +14293,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ek:
         import traceback; print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
 
-    # ─── 7d. 순신호 K/L 2임계 최적화 시트 (net≥K 매수 / net≤L 매도 / 사이 유지) ───
+    # ─── 7d. 순신호 K/L 2임계 최적화 (net≥K 매수 / net≤L 매도 / 사이 유지) ───
     try:
         _kln = globals().get('_KNET_FULL') or _nsd_main
         if _kln is not None and _kln.get('daily') is not None:
             _d = _kln['daily']
             _net = _d['net'].values.astype(float)
             _price = _d['price'].values.astype(float)
+            _dates = list(_d['date'])
+            _wtd_kl = _kln.get('weighted')
             _rr = np.zeros(len(_price)); _rr[1:] = _price[1:] / _price[:-1] - 1.0
             _rr[~np.isfinite(_rr)] = 0.0
             _mddlim = globals().get('MAX_DRAWDOWN_LIMIT_PCT')
             _klfix = globals().get('_KNET_KL_FIXED')
-            if _klfix and _klfix.get('kl_k') is not None:   # ★ 재현: 원본 K/L 그대로
+            if _klfix and _klfix.get('kl_k') is not None:
                 _kl = _net_kl_search(_net, _rr,
                                      fixed_kl=(_klfix['kl_k'], _klfix['kl_l']),
                                      fixed_kl_mdd=((_klfix['kl_k_mdd'], _klfix['kl_l_mdd'])
@@ -14312,53 +14314,108 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 print(f"  ♻ 재현: 원본 K/L(K={_klfix['kl_k']}, L={_klfix['kl_l']}) 그대로")
             else:
                 _kl = _net_kl_search(_net, _rr, mdd_limit=_mddlim)
-            globals()['_KNET_KL'] = _kl   # 재현 저장용
-            ws = wb.create_sheet('순신호 K/L 최적화'); ws.sheet_view.showGridLines = False
-            ws.cell(1, 1).value = (f'{ticker} — 순신호 K/L 2임계 최적화  ｜ net≥K면 매수(롱), net≤L면 매도(현금), '
-                                   f'사이는 직전 유지 (K≥L). 수익=상승·하락률 합산.')
+            globals()['_KNET_KL'] = _kl
+
+            # (A) 요약 시트 = 'k/l 순신호'
+            ws = wb.create_sheet('순신호 KL 최적화'); ws.sheet_view.showGridLines = False
+            ws.cell(1, 1).value = (f'{ticker} — 순신호 K/L 2임계  ｜ net≥K면 매수(롱), net≤L면 매도(현금), '
+                                   f'사이는 직전 유지 (K≥L). K=L이면 홀드존 없이 단일임계가 최적이란 뜻.')
             ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864'); ws.merge_cells('A1:H1')
-            _hd = ['구분', 'K(매수 임계)', 'L(매도 임계)', '전체수익%', '최대낙폭(MDD)%', '롱일수', '비고']
-            for c, h in enumerate(_hd, 1):
+            for c, h in enumerate(['구분', 'K (매수 임계)', 'L (매도 임계)', '전체수익%', '최대낙폭(MDD)%', '롱일수', '비고'], 1):
                 cell = ws.cell(3, c); cell.value = h
                 cell.font = Font(bold=True, color='FFFFFF'); cell.fill = PatternFill('solid', fgColor='1F3864')
             def _row_kl(rr, tag, tup, note):
                 if tup is None:
-                    ws.cell(rr, 1).value = tag; ws.cell(rr, 2).value = '— (해당 없음)'; return
+                    ws.cell(rr, 1).value = tag; ws.cell(rr, 1).font = Font(bold=True)
+                    ws.cell(rr, 2).value = '—'; ws.cell(rr, 3).value = '—'; ws.cell(rr, 7).value = note; return
                 K, L, ret, mdd, dl, _ = tup
                 ws.cell(rr, 1).value = tag; ws.cell(rr, 1).font = Font(bold=True)
-                ws.cell(rr, 2).value = round(float(K), 3); ws.cell(rr, 3).value = round(float(L), 3)
+                ws.cell(rr, 2).value = f"K = {round(float(K),3)}"
+                ws.cell(rr, 3).value = f"L = {round(float(L),3)}"
+                ws.cell(rr, 2).font = Font(bold=True, color='1F6F1F'); ws.cell(rr, 3).font = Font(bold=True, color='C00000')
                 ws.cell(rr, 4).value = round(ret * 100, 2); ws.cell(rr, 4).font = Font(bold=True, color='C00000')
-                ws.cell(rr, 5).value = round(mdd * 100, 2); ws.cell(rr, 5).font = Font(color='C00000')
-                ws.cell(rr, 6).value = dl; ws.cell(rr, 7).value = note
-            _row_kl(4, '① 최대수익', _kl['best_ret'], '수익 최고 (낙폭 무관)')
+                ws.cell(rr, 5).value = round(mdd * 100, 2)
+                ws.cell(rr, 6).value = dl
+                ws.cell(rr, 7).value = note + (' ｜ K=L(홀드존 없음)' if abs(float(K) - float(L)) < 1e-9 else ' ｜ K>L(홀드존 있음)')
+            _row_kl(4, '① 최대수익', _kl['best_ret'], '낙폭 무관 수익 최고')
             _row_kl(5, '② MDD한도 내 최대수익', _kl['best_mdd'],
                     (f'MDD ≤ {_mddlim*100:.0f}% 지키며 수익 최고' if _mddlim is not None else 'MDD 한도 미설정(None)'))
             if _mddlim is None:
-                ws.cell(6, 1).value = '※ MAX_DRAWDOWN_LIMIT_PCT=None → ② 미탐색. 값 설정 시(예 0.30) MDD 지키는 K/L 나옴.'
-                ws.cell(6, 1).font = Font(italic=True, size=9, color='888888')
-            # 최대수익 K/L의 일별 표
-            _bt = _kl['best_ret']
-            if _bt is not None:
-                _pos = _bt[5]
-                _hdr(ws, 8, ['날짜', f'{ticker}종가', 'net', 'K', 'L', '포지션', '일별수익%', '누적수익%'])
-                _K, _L = _bt[0], _bt[1]; _cum = 0.0
-                for i in range(len(_d)):
-                    r0 = 9 + i; row = _d.iloc[i]
-                    _dr = float(_pos[i]) * _rr[i]; _cum += _dr
-                    ws.cell(r0, 1).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
-                    ws.cell(r0, 2).value = round(float(_price[i]), 2)
-                    ws.cell(r0, 3).value = (round(float(_net[i]), 3) if _kln.get('weighted') else int(_net[i]))
-                    ws.cell(r0, 4).value = round(float(_K), 3); ws.cell(r0, 5).value = round(float(_L), 3)
-                    ws.cell(r0, 6).value = ('롱' if _pos[i] == 1 else '현금')
-                    ws.cell(r0, 7).value = round(_dr * 100, 3); ws.cell(r0, 8).value = round(_cum * 100, 2)
-                    if _pos[i] == 1: ws.cell(r0, 6).fill = PatternFill('solid', fgColor='C6EFCE')
-                ws.freeze_panes = 'A9'
-            for ci, w in enumerate([18, 13, 13, 12, 15, 9, 30], 1):
+                ws.cell(6, 1).value = '※ MAX_DRAWDOWN_LIMIT_PCT=None → ②는 ①과 동일(한도 없음). 값 설정 시(예 0.30) MDD 지키는 K/L 별도 산출.'
+                ws.cell(6, 1).font = Font(italic=True, size=9, color='888888'); ws.merge_cells('A6:H6')
+            for ci, w in enumerate([22, 15, 15, 12, 15, 9, 40], 1):
                 ws.column_dimensions[get_column_letter(ci)].width = w
-            _bm = _kl['best_mdd']
-            print(f"  ✓ 순신호 K/L 최적화: 최대수익 K={_bt[0]:.2f}/L={_bt[1]:.2f} ({_bt[2]*100:+.1f}%, MDD {_bt[3]*100:.1f}%)"
-                  + (f" | MDD한도내 K={_bm[0]:.2f}/L={_bm[1]:.2f} ({_bm[2]*100:+.1f}%)" if _bm else ""))
+
+            # (B) 특정 (K,L)의 일별 백테스트 + 거래내역 시트 쓰기
+            def _write_kl_daily_trades(_label, _tup):
+                if _tup is None: return
+                K, L, ret, mdd, dl, pos = _tup
+                # 일별
+                w1 = wb.create_sheet(f'{_label} 일별'); w1.sheet_view.showGridLines = False
+                w1.cell(1, 1).value = f'{ticker} — {_label} 일별 (K={round(float(K),3)}, L={round(float(L),3)}) | 수익 {ret*100:+.2f}%, MDD {mdd*100:.2f}%'
+                w1.cell(1, 1).font = Font(bold=True, size=12, color='1F3864'); w1.merge_cells('A1:I1')
+                _hdr(w1, 3, ['날짜', f'{ticker}종가', 'net', 'K', 'L', '포지션', '액션', '일별수익%', '누적수익%'])
+                _cum = 0.0; _prev = 0.0
+                for i in range(len(_d)):
+                    r0 = 4 + i; _dr = float(pos[i]) * _rr[i]; _cum += _dr
+                    _act = '매수' if (pos[i] == 1 and _prev == 0) else ('매도' if (pos[i] == 0 and _prev == 1) else '')
+                    w1.cell(r0, 1).value = pd.Timestamp(_dates[i]).strftime('%Y-%m-%d')
+                    w1.cell(r0, 2).value = round(float(_price[i]), 2)
+                    w1.cell(r0, 3).value = (round(float(_net[i]), 3) if _wtd_kl else int(_net[i]))
+                    w1.cell(r0, 4).value = round(float(K), 3); w1.cell(r0, 5).value = round(float(L), 3)
+                    w1.cell(r0, 6).value = ('롱' if pos[i] == 1 else '현금'); w1.cell(r0, 7).value = _act
+                    w1.cell(r0, 8).value = round(_dr * 100, 3); w1.cell(r0, 9).value = round(_cum * 100, 2)
+                    if pos[i] == 1: w1.cell(r0, 6).fill = PatternFill('solid', fgColor='C6EFCE')
+                    if _act == '매수': w1.cell(r0, 7).fill = PatternFill('solid', fgColor='C6EFCE')
+                    elif _act == '매도': w1.cell(r0, 7).fill = PatternFill('solid', fgColor='FFC7CE')
+                    _prev = pos[i]
+                for ci, w in enumerate([12, 11, 10, 9, 9, 8, 8, 11, 12], 1):
+                    w1.column_dimensions[get_column_letter(ci)].width = w
+                w1.freeze_panes = 'A4'
+                # 거래내역
+                w2 = wb.create_sheet(f'{_label} 거래내역'); w2.sheet_view.showGridLines = False
+                w2.cell(1, 1).value = f'{ticker} — {_label} 거래내역 (K={round(float(K),3)}, L={round(float(L),3)})'
+                w2.cell(1, 1).font = Font(bold=True, size=12, color='1F3864'); w2.merge_cells('A1:G1')
+                _hdr(w2, 3, ['#', '진입일', '진입가', '청산일', '청산가', '보유일', '수익%'])
+                _tr = []; _ei = None
+                for i in range(len(pos)):
+                    if pos[i] == 1 and (i == 0 or pos[i-1] == 0): _ei = i
+                    if pos[i] == 0 and i > 0 and pos[i-1] == 1 and _ei is not None:
+                        _ret = float(np.sum(_rr[_ei+1:i+1]))
+                        _tr.append((_ei, i, _ret)); _ei = None
+                if _ei is not None:   # 마지막까지 보유중
+                    _ret = float(np.sum(_rr[_ei+1:]))
+                    _tr.append((_ei, len(pos)-1, _ret))
+                for ti, (_e, _x, _rt) in enumerate(_tr):
+                    r0 = 4 + ti
+                    w2.cell(r0, 1).value = ti + 1
+                    w2.cell(r0, 2).value = pd.Timestamp(_dates[_e]).strftime('%Y-%m-%d')
+                    w2.cell(r0, 3).value = round(float(_price[_e]), 2)
+                    w2.cell(r0, 4).value = pd.Timestamp(_dates[_x]).strftime('%Y-%m-%d')
+                    w2.cell(r0, 5).value = round(float(_price[_x]), 2)
+                    w2.cell(r0, 6).value = int(_x - _e)
+                    w2.cell(r0, 7).value = round(_rt * 100, 2)
+                    w2.cell(r0, 7).fill = (_GOOD if _rt > 0 else _BAD)
+                w2.cell(len(_tr) + 5, 1).value = f'총 {len(_tr)}회 거래, 합산수익 {sum(t[2] for t in _tr)*100:+.2f}%'
+                w2.cell(len(_tr) + 5, 1).font = Font(bold=True)
+                for ci, w in enumerate([5, 12, 10, 12, 10, 8, 10], 1):
+                    w2.column_dimensions[get_column_letter(ci)].width = w
+                w2.freeze_panes = 'A4'
+
+            # ★ MDD 지키는 K/L → 일별·거래내역 (없으면 최대수익으로 대체)
+            _target = _kl['best_mdd'] if _kl.get('best_mdd') else _kl['best_ret']
+            _tlabel = 'KL(MDD)' if _kl.get('best_mdd') else 'KL(최대수익)'
+            _write_kl_daily_trades(_tlabel, _target)
+            # 최대수익 K/L도 별도로 (MDD와 다를 때만)
+            if _kl.get('best_mdd') and _kl['best_ret'] and \
+               (abs(_kl['best_ret'][0] - _kl['best_mdd'][0]) > 1e-9 or abs(_kl['best_ret'][1] - _kl['best_mdd'][1]) > 1e-9):
+                _write_kl_daily_trades('KL(최대수익)', _kl['best_ret'])
+
+            _bt = _kl['best_ret']; _bm = _kl['best_mdd']
+            print(f"  ✓ 순신호 K/L: 최대수익 K={_bt[0]:.3f}/L={_bt[1]:.3f} ({_bt[2]*100:+.1f}%, MDD {_bt[3]*100:.1f}%)"
+                  + (f" | MDD한도내 K={_bm[0]:.3f}/L={_bm[1]:.3f} ({_bm[2]*100:+.1f}%)" if _bm else " | (MDD한도 미설정)"))
     except Exception as _ekl:
+        import traceback; traceback.print_exc()
         print(f"  ⚠ 순신호 K/L 최적화 시트 작성 실패(무시): {_ekl}")
 
     # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
