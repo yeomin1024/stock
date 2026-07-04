@@ -9917,7 +9917,7 @@ VOTE_RATIO_SELL     = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
 COST_PER_TRADE      = 0.004
 
 MIN_TRADES_DAILY    = 10
-MAX_DRAWDOWN_LIMIT_PCT = 0.03   # ★ 분수(0.03=3%). 최대낙폭 3% 이내
+MAX_DRAWDOWN_LIMIT_PCT = None
 
 STOP_LOSS_PCT       = 0.05
 
@@ -10077,7 +10077,7 @@ META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
     'wilson_z':    [1.65],
-    'pct_range':   [(0, 100)],
+    'pct_range':   [(5, 95)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
@@ -10089,7 +10089,7 @@ STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-�
 SKIP_GRID_VOTE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.65]
+STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
 STAGE_CORR_LIMIT  = [0.15, 0.2, 0.25, 0.3]
 
@@ -11038,7 +11038,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         if not parts:
             return None
         allp = pd.concat(parts, ignore_index=True)
-        allp = allp.sort_values('success_rate', ascending=False)   # 수정전: raw 성공률 정렬
+        allp = allp.sort_values('success_rate', ascending=False)
         allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
         return allp
     buy_all = _comb(bparts); sell_all = _comb(sparts)
@@ -11544,25 +11544,12 @@ def grid_search_ensemble(feat, close, buy_pool, sell_pool, *,
     ])
 
 
-def apply_mdd_and_trade_filters(grid_df, mdd_limit_pct, min_trades_daily, allow_fallback=True):
-    """MDD 한도·최소거래수 필터. 만족 조합이 없으면(요청) 에러 대신
-       ① 거래수 조건 만족분 중, ② 최대낙폭(0에 가까운) 가장 낮은 것들로 폴백한다."""
+def apply_mdd_and_trade_filters(grid_df, mdd_limit_pct, min_trades_daily):
     df = grid_df.copy()
-    if len(df) == 0:
-        return df
-    df_t = df[df['n_trades'] >= min_trades_daily]
-    base = df_t if len(df_t) > 0 else (df if allow_fallback else df_t)   # 거래수 만족 없으면 전체로 폴백
+    df = df[df['n_trades'] >= min_trades_daily]
     if mdd_limit_pct is not None:
-        ok = base[base['max_drawdown'] >= -abs(mdd_limit_pct)]
-        if len(ok) > 0:
-            return ok
-        # ★ MDD 한도 만족 조합 없음 → 최대낙폭 가장 낮은(0에 가까운) 조합으로 폴백
-        if allow_fallback and len(base) > 0:
-            _fb = base.sort_values('max_drawdown', ascending=False).head(max(5, min(20, len(base))))
-            globals()['_MDD_FALLBACK_USED'] = True
-            return _fb
-        return ok
-    return base
+        df = df[df['max_drawdown'] >= -abs(mdd_limit_pct) / 100.0]
+    return df
 
 
 def meta_grid_search(feat, close, *,
@@ -11940,23 +11927,11 @@ def meta_grid_search(feat, close, *,
                   f"경과 {el:>4.0f}s / 예상 {est:>4.0f}s  "
                   f"현재 best: {cur}  (통과없음 {n_no_pass}건)")
 
-    if globals().get('_MDD_FALLBACK_USED'):
-        print("  ⚠ MDD 한도 만족 조합 없음 → 최대낙폭 가장 낮은 조합으로 폴백 진행 (에러 대신).")
-        globals().pop('_MDD_FALLBACK_USED', None)
-
     if best_state is None:
-        # 여기까지 오면 통과 조합이 전무(=inner 그리드 자체가 빈 경우). MDD 미달은 위 필터에서 폴백됨.
-        if all_passed_list:
-            _cat = pd.concat(all_passed_list, ignore_index=True)
-            _pick = _cat.sort_values('max_drawdown', ascending=False).head(1)
-            print("  ⚠ 통과 조합 전무 → 최대낙폭 최저 1개로 폴백 진행.")
-            best_state = ({}, _cat, _pick, _pick.iloc[0].to_dict(),
-                          float(_pick.iloc[0].get('avg_success_rate', 0.0) or 0.0),
-                          float(_pick.iloc[0].get('total_return', 0.0) or 0.0), 1.0)
-        else:
-            raise RuntimeError(
-                "그리드 결과가 비었습니다 (지표/신호 없음). 풀·MIN_TRADES 설정을 확인하세요."
-            )
+        raise RuntimeError(
+            f"MDD 한도 또는 거래수 ≥ {min_trades_daily} 인 조합을 찾지 못함.\n"
+            f"MAX_DRAWDOWN_LIMIT_PCT 완화 또는 MIN_TRADES_DAILY 낮추세요."
+        )
 
     all_meta_df = pd.DataFrame(meta_rows)
     valid = all_meta_df.dropna(subset=['best_avg_sr']).copy()
@@ -12675,7 +12650,7 @@ def _mdd_fill(mdd, mdd_limit_pct):
         if mdd > -0.05: return _GOOD
         if mdd > -0.15: return _MID
         return _BAD
-    limit = -abs(mdd_limit_pct)
+    limit = -abs(mdd_limit_pct) / 100.0
     if mdd >= limit / 2: return _GOOD
     if mdd >= limit:     return _MID
     return _BAD
@@ -12943,8 +12918,7 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             _Km, _Lm = float(fixed_kl_mdd[0]), float(fixed_kl_mdd[1])
             r2, m2, d2, p2 = _run(_Km, _Lm)
             _bm = (_Km, _Lm, r2, m2, d2, p2)
-        return {'best_ret': _br, 'best_mdd': _bm, 'grid_n': 1,
-                'top': [{'K': _br[0], 'L': _br[1], 'ret': _br[2], 'mdd': _br[3], 'dl': _br[4], 'pos': _br[5]}]}
+        return {'best_ret': _br, 'best_mdd': _bm, 'grid_n': 1}
 
     if k_grid is None:
         lo = float(np.nanmin(net)); hi = float(np.nanmax(net))
@@ -12957,23 +12931,19 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
                 np.linspace(lo, hi, 60), np.nanpercentile(net, np.linspace(1, 99, 40))]), 4).tolist()))
     kg = sorted(k_grid)
 
-    best_ret = None; best_mdd = None; cnt = 0; _all = []
+    best_ret = None; best_mdd = None; cnt = 0
     for K in kg:
         for L in kg:
             if L > K:
                 continue
             cnt += 1
             ret, mdd, dl, pos = _run(K, L)
-            _all.append((ret, mdd, dl, K, L, pos))
             if best_ret is None or ret > best_ret[2]:
                 best_ret = (K, L, ret, mdd, dl, pos)
             if mdd_limit is not None and mdd >= -abs(mdd_limit):
                 if best_mdd is None or ret > best_mdd[2]:
                     best_mdd = (K, L, ret, mdd, dl, pos)
-    # 상위 (K,L) 조합 순위표 (수익 내림차순, 최대 40개)
-    _all.sort(key=lambda x: x[0], reverse=True)
-    top = [{'K': a[3], 'L': a[4], 'ret': a[0], 'mdd': a[1], 'dl': a[2], 'pos': a[5]} for a in _all[:40]]
-    return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt, 'top': top}
+    return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt}
 
 
 def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
@@ -13212,7 +13182,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(1, 1).value = f'{ticker} — 앙상블 현재 포지션  ({cur["last_date"].date()})'
     ws.cell(1, 1).font = Font(bold=True, size=18, color='1F3864')
     ws.merge_cells('A1:D1')
-    mdd_t = f"제한 -{abs(mdd_limit_pct)*100:.1f}%" if mdd_limit_pct is not None else "제한 없음"
+    mdd_t = f"제한 -{abs(mdd_limit_pct):.1f}%" if mdd_limit_pct is not None else "제한 없음"
     ws.cell(2, 1).value = (f'★ 매수 Top-{cur["K_buy"]}/{cur["vote_buy"]}투표  '
                             f'/ 매도 Top-{cur["K_sell"]}/{cur["vote_sell"]}투표  '
                             f'/ MDD {mdd_t}  / 최소거래 {min_trades_daily}회')
@@ -13314,7 +13284,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
           f"{cur['n_stop_triggered']}회"
           + (f" (한도 -{stop_loss_pct*100:.1f}%)" if stop_loss_pct else " (손절매 비활성)")),
         ('', ''),
-        ('★ MDD 한도', f"-{abs(mdd_limit_pct)*100:.2f}%" if mdd_limit_pct is not None else "없음"),
+        ('★ MDD 한도', f"-{abs(mdd_limit_pct):.2f}%" if mdd_limit_pct is not None else "없음"),
         ('★ 최소 거래수', f"{min_trades_daily}회"),
         ('★ 손절매 한도', f"-{stop_loss_pct*100:.2f}%" if (stop_loss_pct is not None and stop_loss_pct > 0) else "없음"),
         ('★ Tolerance Band', f"{selection_tolerance*100:.2f}%p" if selection_tolerance > 0 else "OFF (strict)"),
@@ -13477,7 +13447,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ('★ 충돌 해결 규칙', '둘 다 ON 시 count/K 비율 큰 쪽 우선'),
         ('', ''),
         ('★ 필터 제약', ''),
-        ('  MDD 한도', f"-{abs(mdd_limit_pct)*100:.2f}%" if mdd_limit_pct is not None else "없음"),
+        ('  MDD 한도', f"-{abs(mdd_limit_pct):.2f}%" if mdd_limit_pct is not None else "없음"),
         ('  최소 거래수', f"{min_trades_daily}회"),
         ('  손절매 한도', f"-{stop_loss_pct*100:.2f}%" if (stop_loss_pct is not None and stop_loss_pct > 0) else "없음"),
         ('', ''),
@@ -13636,7 +13606,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
     # 6. 내부 그리드 통과
     ws = wb.create_sheet('내부_그리드_통과'); ws.sheet_view.showGridLines = False
-    mdd_t2 = f"MDD ≥ -{abs(mdd_limit_pct)*100:.1f}%" if mdd_limit_pct is not None else "MDD 제한 없음"
+    mdd_t2 = f"MDD ≥ -{abs(mdd_limit_pct):.1f}%" if mdd_limit_pct is not None else "MDD 제한 없음"
     use_match_p = bool(anchor_match_priority_arg and anchor_mode and 'anchor_avg_match_rate' in inner_passed.columns)
     inner_sort_label = (f'매칭률 ±{anchor_match_tolerance_arg*100:.1f}%p → BalAcc → 수익률'
                          if use_match_p else sort_label)
@@ -14227,9 +14197,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _esp:
         print(f"  ⚠ 성공률 우선 선출 시트 작성 실패(무시): {_esp}")
 
-    # ─── 7c. (요청) 단일-K 순신호 K최적화 시트는 KL 순신호로 대체 → 생성 안 함 ───
+    # ─── 7c. 순신호 K 최적화 시트 — 전체수익 최고 K / OOS수익 최고 K 2벌 ───
     try:
-        _sheets = []   # 비움 → 단일-K 시트 미생성 (KL 순신호로 대체)
+        _sheets = [('순신호 K최적화', globals().get('_KNET_FULL') or _nsd_main, '전체')]
         def _pct(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         for _shname, _ns, _basis in _sheets:
             if _ns is None:
@@ -14323,20 +14293,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ek:
         import traceback; print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
 
-    # ─── 7d. 순신호 K/L 2임계 최적화 (net≥K 매수 / net≤L 매도 / 사이 유지) ───
+    # ─── 7d. 순신호 K/L 2임계 최적화 시트 (net≥K 매수 / net≤L 매도 / 사이 유지) ───
     try:
         _kln = globals().get('_KNET_FULL') or _nsd_main
         if _kln is not None and _kln.get('daily') is not None:
             _d = _kln['daily']
             _net = _d['net'].values.astype(float)
             _price = _d['price'].values.astype(float)
-            _dates = list(_d['date'])
-            _wtd_kl = _kln.get('weighted')
             _rr = np.zeros(len(_price)); _rr[1:] = _price[1:] / _price[:-1] - 1.0
             _rr[~np.isfinite(_rr)] = 0.0
             _mddlim = globals().get('MAX_DRAWDOWN_LIMIT_PCT')
             _klfix = globals().get('_KNET_KL_FIXED')
-            if _klfix and _klfix.get('kl_k') is not None:
+            if _klfix and _klfix.get('kl_k') is not None:   # ★ 재현: 원본 K/L 그대로
                 _kl = _net_kl_search(_net, _rr,
                                      fixed_kl=(_klfix['kl_k'], _klfix['kl_l']),
                                      fixed_kl_mdd=((_klfix['kl_k_mdd'], _klfix['kl_l_mdd'])
@@ -14344,74 +14312,53 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 print(f"  ♻ 재현: 원본 K/L(K={_klfix['kl_k']}, L={_klfix['kl_l']}) 그대로")
             else:
                 _kl = _net_kl_search(_net, _rr, mdd_limit=_mddlim)
-            globals()['_KNET_KL'] = _kl
-
-            # (요청) KL 순신호 시트 — (K,L) 조합별 컬럼 결과. 일별 백테스트 옆(index 1)에 배치.
-            ws = wb.create_sheet('KL 순신호', 1); ws.sheet_view.showGridLines = False
-            _mtxt = (f'MDD 한도 {_mddlim*100:.0f}% 이내' if _mddlim is not None else 'MDD 한도 없음')
-            ws.cell(1, 1).value = (f'{ticker} — KL 순신호 (net≥K 매수·롱 / net≤L 매도·현금 / 사이 유지, K≥L). '
-                                   f'수익=상승·하락률 합산. {_mtxt}. ★=대표조합')
-            ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864'); ws.merge_cells('A1:L1')
-
-            def _kl_stats(pos):
-                tr = []; ei = None; last_buy = None; last_sell = None
-                for i in range(len(pos)):
-                    if pos[i] == 1 and (i == 0 or pos[i-1] == 0):
-                        ei = i; last_buy = i
-                    if pos[i] == 0 and i > 0 and pos[i-1] == 1:
-                        last_sell = i
-                        if ei is not None:
-                            tr.append(float(np.sum(_rr[ei+1:i+1]))); ei = None
-                if ei is not None:
-                    tr.append(float(np.sum(_rr[ei+1:])))
-                nt = len(tr); wins = sum(1 for t in tr if t > 0)
-                wr = (wins / nt * 100) if nt else 0.0
-                lb = (pd.Timestamp(_dates[last_buy]).strftime('%Y-%m-%d') if last_buy is not None else '-')
-                ls = (pd.Timestamp(_dates[last_sell]).strftime('%Y-%m-%d') if last_sell is not None else '-')
-                lbp = (round(float(_price[last_buy]), 2) if last_buy is not None else '-')
-                lsp = (round(float(_price[last_sell]), 2) if last_sell is not None else '-')
-                return nt, wr, lb, lbp, ls, lsp
-
-            _hdr(ws, 3, ['순위', 'K(매수임계)', 'L(매도임계)', '전체수익%', '최대낙폭%', '거래횟수', '승률%',
-                         '최근매수일', '매수가', '최근매도일', '매도가', '비고'])
-            _br = _kl.get('best_ret'); _bm = _kl.get('best_mdd')
-            # 대표조합(최대수익·MDD내최고)을 항상 맨 위에 + 나머지 상위조합 (중복 제거)
-            _disp = []
-            def _as_t(tup):
-                return {'K':tup[0],'L':tup[1],'ret':tup[2],'mdd':tup[3],'dl':tup[4],'pos':tup[5]}
-            if _br is not None: _disp.append(_as_t(_br))
-            if _bm is not None and (_br is None or abs(_bm[0]-_br[0])>1e-9 or abs(_bm[1]-_br[1])>1e-9):
-                _disp.append(_as_t(_bm))
-            _seen={(round(x['K'],4),round(x['L'],4)) for x in _disp}
-            for t in _kl.get('top', []):
-                if (round(t['K'],4),round(t['L'],4)) not in _seen:
-                    _disp.append(t); _seen.add((round(t['K'],4),round(t['L'],4)))
-            for ti, t in enumerate(_disp):
-                r = 4 + ti
-                nt, wr, lb, lbp, ls, lsp = _kl_stats(t['pos'])
-                _tag = ''
-                if _br and abs(t['K']-_br[0])<1e-9 and abs(t['L']-_br[1])<1e-9: _tag = '★최대수익'
-                if _bm and abs(t['K']-_bm[0])<1e-9 and abs(t['L']-_bm[1])<1e-9: _tag = (_tag+' ★MDD내최고').strip()
-                ws.cell(r,1).value = ti+1
-                ws.cell(r,2).value = round(float(t['K']),3); ws.cell(r,3).value = round(float(t['L']),3)
-                ws.cell(r,4).value = round(t['ret']*100,2); ws.cell(r,4).font = Font(bold=True, color='C00000')
-                ws.cell(r,5).value = round(t['mdd']*100,2)
-                ws.cell(r,6).value = nt; ws.cell(r,7).value = round(wr,1)
-                ws.cell(r,8).value = lb; ws.cell(r,9).value = lbp
-                ws.cell(r,10).value = ls; ws.cell(r,11).value = lsp
-                ws.cell(r,12).value = (_tag + (' K=L' if abs(t['K']-t['L'])<1e-9 else '')).strip()
-                if _tag:
-                    for c in range(1,13): ws.cell(r,c).fill = PatternFill('solid', fgColor='FFF2CC')
-                    ws.cell(r,12).font = Font(bold=True, color='1F6F1F')
-            for ci, w in enumerate([5,12,12,11,11,9,8,13,10,13,10,20], 1):
+            globals()['_KNET_KL'] = _kl   # 재현 저장용
+            ws = wb.create_sheet('순신호 K/L 최적화'); ws.sheet_view.showGridLines = False
+            ws.cell(1, 1).value = (f'{ticker} — 순신호 K/L 2임계 최적화  ｜ net≥K면 매수(롱), net≤L면 매도(현금), '
+                                   f'사이는 직전 유지 (K≥L). 수익=상승·하락률 합산.')
+            ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864'); ws.merge_cells('A1:H1')
+            _hd = ['구분', 'K(매수 임계)', 'L(매도 임계)', '전체수익%', '최대낙폭(MDD)%', '롱일수', '비고']
+            for c, h in enumerate(_hd, 1):
+                cell = ws.cell(3, c); cell.value = h
+                cell.font = Font(bold=True, color='FFFFFF'); cell.fill = PatternFill('solid', fgColor='1F3864')
+            def _row_kl(rr, tag, tup, note):
+                if tup is None:
+                    ws.cell(rr, 1).value = tag; ws.cell(rr, 2).value = '— (해당 없음)'; return
+                K, L, ret, mdd, dl, _ = tup
+                ws.cell(rr, 1).value = tag; ws.cell(rr, 1).font = Font(bold=True)
+                ws.cell(rr, 2).value = round(float(K), 3); ws.cell(rr, 3).value = round(float(L), 3)
+                ws.cell(rr, 4).value = round(ret * 100, 2); ws.cell(rr, 4).font = Font(bold=True, color='C00000')
+                ws.cell(rr, 5).value = round(mdd * 100, 2); ws.cell(rr, 5).font = Font(color='C00000')
+                ws.cell(rr, 6).value = dl; ws.cell(rr, 7).value = note
+            _row_kl(4, '① 최대수익', _kl['best_ret'], '수익 최고 (낙폭 무관)')
+            _row_kl(5, '② MDD한도 내 최대수익', _kl['best_mdd'],
+                    (f'MDD ≤ {_mddlim*100:.0f}% 지키며 수익 최고' if _mddlim is not None else 'MDD 한도 미설정(None)'))
+            if _mddlim is None:
+                ws.cell(6, 1).value = '※ MAX_DRAWDOWN_LIMIT_PCT=None → ② 미탐색. 값 설정 시(예 0.30) MDD 지키는 K/L 나옴.'
+                ws.cell(6, 1).font = Font(italic=True, size=9, color='888888')
+            # 최대수익 K/L의 일별 표
+            _bt = _kl['best_ret']
+            if _bt is not None:
+                _pos = _bt[5]
+                _hdr(ws, 8, ['날짜', f'{ticker}종가', 'net', 'K', 'L', '포지션', '일별수익%', '누적수익%'])
+                _K, _L = _bt[0], _bt[1]; _cum = 0.0
+                for i in range(len(_d)):
+                    r0 = 9 + i; row = _d.iloc[i]
+                    _dr = float(_pos[i]) * _rr[i]; _cum += _dr
+                    ws.cell(r0, 1).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+                    ws.cell(r0, 2).value = round(float(_price[i]), 2)
+                    ws.cell(r0, 3).value = (round(float(_net[i]), 3) if _kln.get('weighted') else int(_net[i]))
+                    ws.cell(r0, 4).value = round(float(_K), 3); ws.cell(r0, 5).value = round(float(_L), 3)
+                    ws.cell(r0, 6).value = ('롱' if _pos[i] == 1 else '현금')
+                    ws.cell(r0, 7).value = round(_dr * 100, 3); ws.cell(r0, 8).value = round(_cum * 100, 2)
+                    if _pos[i] == 1: ws.cell(r0, 6).fill = PatternFill('solid', fgColor='C6EFCE')
+                ws.freeze_panes = 'A9'
+            for ci, w in enumerate([18, 13, 13, 12, 15, 9, 30], 1):
                 ws.column_dimensions[get_column_letter(ci)].width = w
-            ws.freeze_panes = 'A4'
-
-            _bt = _kl['best_ret']; _bm = _kl['best_mdd']
-            print(f"  ✓ KL 순신호: 최대수익 K={_bt[0]:.3f}/L={_bt[1]:.3f} ({_bt[2]*100:+.1f}%, MDD {_bt[3]*100:.1f}%)"
-                  + (f" | MDD한도내 K={_bm[0]:.3f}/L={_bm[1]:.3f}" if _bm else " | (MDD 폴백)"))
+            _bm = _kl['best_mdd']
+            print(f"  ✓ 순신호 K/L 최적화: 최대수익 K={_bt[0]:.2f}/L={_bt[1]:.2f} ({_bt[2]*100:+.1f}%, MDD {_bt[3]*100:.1f}%)"
+                  + (f" | MDD한도내 K={_bm[0]:.2f}/L={_bm[1]:.2f} ({_bm[2]*100:+.1f}%)" if _bm else ""))
     except Exception as _ekl:
-        import traceback; traceback.print_exc()
         print(f"  ⚠ 순신호 K/L 최적화 시트 작성 실패(무시): {_ekl}")
 
     # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
