@@ -10089,9 +10089,9 @@ STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-�
 SKIP_GRID_VOTE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
+STAGE_WILSON_Z    = [1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.15, 0.2, 0.25, 0.3]
+STAGE_CORR_LIMIT  = [0.20]
 
 # ============================================================
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
