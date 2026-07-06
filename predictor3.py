@@ -9851,7 +9851,7 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 #                            설정
 # ════════════════════════════════════════════════════════════════
-EVAL_START          = '2022-01-01'
+EVAL_START          = '2024-01-01'
 
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
@@ -10077,21 +10077,21 @@ META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
     'wilson_z':    [1.65],
-    'pct_range':   [(5, 95)],
+    'pct_range':   [(0, 100)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
 }
 
-STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-투표용 → 그리드 8회 재실행 낭비. k순신호는 corr만 자체 탐색.
+STAGED_META_TUNE = True  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-투표용 → 그리드 8회 재실행 낭비. k순신호는 corr만 자체 탐색.
 # ★ 그리드-투표 K탐색 최소화 (요청) — k순신호만 사용 시 True. K_buy×K_sell 99×99(≈700초) → 1×1로 축소.
 #   그리드-투표 시트(현재 포지션 등)는 대략값이 되지만, net>K 시트는 합친 풀로 정확. 실행 대폭 단축.
 SKIP_GRID_VOTE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.95]
+STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
 STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.20]
+STAGE_CORR_LIMIT  = [0.20, 0.25]
 
 # ============================================================
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
