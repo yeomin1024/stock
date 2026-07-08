@@ -10132,7 +10132,7 @@ META_GRID = {
     # ★ staged 방식의 '시작값'. 단계 탐색은 STAGE_PCT_RANGE / STAGE_WILSON_Z /
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
     'wilson_z':    [1.95],
-    'pct_range':   [(5, 95)],
+    'pct_range':   [(0, 100)],
     'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
@@ -10144,15 +10144,15 @@ STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-�
 SKIP_GRID_VOTE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.65, 1.75, 1.85, 1.95]
-STAGE_WILSON_REFINE_STEP = 0.05
-STAGE_CORR_LIMIT  = [0.2, 0.25]
+STAGE_WILSON_Z    = [1.95]
+STAGE_WILSON_REFINE_STEP = 0
+STAGE_CORR_LIMIT  = [0.2]
 
 # ============================================================
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
 #   지표수·임계수·한도수·윌슨후보를 줄여 수 분 내로 1회 돌게 함.
 # ============================================================
-TEST_MODE = False
+TEST_MODE = True
 if TEST_MODE:
     MAX_INDICATORS      = 150          # 1000 → 150 (후보 지표 대폭 축소)
     N_THRESHOLDS        = 120          # 800 → 120 (임계 후보 축소)
