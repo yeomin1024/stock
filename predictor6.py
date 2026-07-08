@@ -14054,8 +14054,10 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
         _ss = g.get('_SHIFT_STATS') or {}
         _det = (f"지연 {len(_shifted)}행 중 홀드아웃 신호<{_min_ho}개: {len(_few)}행"
                 + (f" (예: {', '.join(m['ind'][:22] for m in _few[:3])})" if _few else '')
-                + (f" ｜ 탐색 통계: 채택 {_ss.get('adopt','—')} / 신호부족 기각 {_ss.get('reject_ho_few','—')} / "
-                   f"스킬하락 기각 {_ss.get('reject_ho_drop','—')}" if _ss else ''))
+                + (f" ｜ 지연 탐색 카운터(지표×임계 조합 누적): 채택 {_ss.get('adopt','—'):,} / "
+                   f"신호부족 기각 {_ss.get('reject_ho_few','—'):,} / "
+                   f"스킬하락 기각 {_ss.get('reject_ho_drop','—'):,}"
+                   if _ss else ''))
         if _req_ho:
             _put_check(f'지연 채택 홀드아웃 증거 (신호≥{_min_ho}개 & 스킬 유지 요건)', _det,
                        len(_few) == 0, warn_txt='⚠ 홀드아웃 증거 부족 행 존재')
@@ -14184,11 +14186,79 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
             ws.cell(r, 1).value = f'… 외 {len(metrics)-_cap}행 (성공률 하위 생략)'; r += 1
         r += 1
 
-    _write_pool_table(f'③ 매수 풀 지표별 예측력 검증 (체결 지평 {hz}일 · 실거래 신호=지연 적용 기준 독립 재계산)', buy_m)
-    _write_pool_table(f'④ 매도 풀 지표별 예측력 검증 (체결 지평 {hz}일)', sell_m)
+    # ════ ③ 전략 성적 비교 (WDC 실데이터 점검 후 신설) ════
+    # 같은 지표 풀을 세 가지 매매 규칙으로 돌린 결과를 나란히 표시.
+    # (사용자 관점: '★ 현재 포지션' 시트의 그리드 앙상블 성적이 KL·net>K보다 크게 나쁘면,
+    #  실전 매매는 이 표를 보고 판단할 것)
+    try:
+        ws.cell(r, 1).value = '③ 전략 성적 비교 (같은 지표 풀, 매매 규칙만 다름)'
+        ws.cell(r, 1).font = Font(bold=True, size=12, color='1F3864'); r += 1
+        ws.cell(r, 1).value = ('※ 지연 정렬로 매수·매도 신호 동시성이 낮아지면 그리드 앙상블(투표)이 '
+                               'net>K·KL보다 뒤질 수 있음 (지표별 최적 지연이 다르기 때문). '
+                               '아래 표에서 가장 좋은 전략을 실전 매매에 사용하세요.')
+        ws.cell(r, 1).font = Font(italic=True, size=10, color='808080')
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6); r += 1
+        _hdr(ws, r, ['전략', '누적수익%', 'B&H대비%p', '거래', '승률', '최악거래/MDD']); r += 1
+        _cur = g.get('_KNET_KL')   # 참고: KL top1
+        _nsd = g.get('_KNET_FULL')
+        _bh_pct = (bh_ret_ext if False else None)  # ★ bh_ret 접근 위해 로컬 시도
+        try:
+            _bh_pct = float(g.get('_LAST_BH_RET', np.nan))
+        except Exception:
+            _bh_pct = np.nan
+        # 그리드 앙상블 (일별 백테스트 cur)
+        _cur_ens = g.get('_LAST_ENSEMBLE_CUR') or {}
+        _rows = []
+        if _cur_ens:
+            _r = float(_cur_ens.get('cum_return_pct', 0.0)) / 100.0
+            _rows.append(('그리드 앙상블 (K/v 투표) ← ★현재 포지션',
+                          _r, int(_cur_ens.get('n_trades', 0)),
+                          float(_cur_ens.get('win_rate', 0.0)),
+                          float(_cur_ens.get('max_drawdown', 0.0))))
+        if _nsd is not None:
+            _rows.append((f"net>K (K={round(_nsd['best_k'],3)}) ← 일별 백테스트 시트",
+                          _nsd.get('full_cum'), _nsd.get('n_trades'), None,
+                          _nsd.get('held_down_full')))
+        if _cur and _cur.get('best_ret'):
+            K, L, ret, mdd, ntr, wr = _cur['best_ret'][:6]
+            _rows.append((f"KL 히스테리시스 (K={round(K,3)}/L={round(L,3)}) ← KL 순신호 시트",
+                          float(ret)/100.0, int(ntr), float(wr)/100.0, float(mdd)/100.0))
+        if np.isfinite(_bh_pct):
+            _rows.append(('Buy & Hold', _bh_pct, None, None, None))
+        # 판정 결과 계산 — 그리드가 KL/net>K보다 크게 뒤지면 경고
+        _grid = next((x for x in _rows if '그리드' in x[0]), None)
+        _knet = next((x for x in _rows if 'net>K' in x[0]), None)
+        _kl_r = next((x for x in _rows if 'KL' in x[0]), None)
+        for _row in _rows:
+            lb, ret, ntr, wr, mdd = _row
+            ws.cell(r, 1).value = lb
+            ws.cell(r, 2).value = f"{ret*100:+.2f}%" if ret is not None else '—'
+            ws.cell(r, 3).value = (f"{(ret-_bh_pct)*100:+.2f}%p"
+                                    if (ret is not None and np.isfinite(_bh_pct)) else '—')
+            ws.cell(r, 4).value = f"{ntr}회" if ntr is not None else '—'
+            ws.cell(r, 5).value = f"{wr*100:.1f}%" if wr is not None else '—'
+            ws.cell(r, 6).value = f"{mdd*100:.2f}%" if mdd is not None else '—'
+            for _c in range(1, 7):
+                ws.cell(r, _c).border = _TH
+                ws.cell(r, _c).alignment = Alignment(horizontal='center' if _c > 1 else 'left')
+            r += 1
+        # 판정 로그
+        if _grid and _knet:
+            _gap = (_knet[1] - _grid[1]) if (_grid[1] is not None and _knet[1] is not None) else 0
+            _put_check('그리드 앙상블 vs net>K 격차',
+                       f"net>K가 그리드 대비 {_gap*100:+.2f}%p 우세" +
+                       (" — 실전 매매는 net>K(일별 백테스트 시트) 권장"
+                        if _gap > 0.20 else " — 그리드 앙상블도 경쟁력 있음"),
+                       _gap < 0.20, warn_txt='⚠ 그리드가 크게 뒤짐(net>K 사용 권장)')
+        r += 1
+    except Exception as _sce:
+        r += 1
 
-    # ════ ⑤ 종합 판정 ════
-    ws.cell(r, 1).value = '⑤ 종합 판정'
+    _write_pool_table(f'④ 매수 풀 지표별 예측력 검증 (체결 지평 {hz}일 · 실거래 신호=지연 적용 기준 독립 재계산)', buy_m)
+    _write_pool_table(f'⑤ 매도 풀 지표별 예측력 검증 (체결 지평 {hz}일)', sell_m)
+
+    # ════ ⑥ 종합 판정 ════
+    ws.cell(r, 1).value = '⑥ 종합 판정'
     ws.cell(r, 1).font = Font(bold=True, size=12, color='1F3864'); r += 1
     def _med(vals):
         v = [x for x in vals if np.isfinite(x)]
@@ -14249,6 +14319,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 oos_daily=None, oos_trades=None, oos_cur=None,
                 bh_up_ret=None, anchor_prio=None,
                 feat=None, close_full=None):
+    # ★ 전략 비교 표(현재 포지션 시트 + 검증 시트)에서 접근하도록 전역에 스냅샷
+    try:
+        globals()['_LAST_ENSEMBLE_CUR'] = dict(cur) if isinstance(cur, dict) else cur
+        globals()['_LAST_BH_RET'] = float(bh_ret) if bh_ret is not None else np.nan
+    except Exception:
+        pass
     wb = Workbook(); wb.remove(wb.active)
 
     # 1. 현재 포지션
@@ -14454,6 +14530,69 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.cell(ar, 2).fill = _HL
     ws.merge_cells(start_row=ar, start_column=2, end_row=ar, end_column=4)
     ws.row_dimensions[ar].height = 25
+
+    # ★ 전략 비교 표 (WDC 실데이터 점검 후 신설) — 사용자가 3개 전략 성적을 한눈에 보고
+    #   어느 걸 실제 매매에 쓸지 판단할 수 있게 함. (그리드 앙상블/net>K/K·L 병기)
+    try:
+        _nsd = globals().get('_KNET_FULL')
+        _kl  = globals().get('_KNET_KL')
+        cr = ar + 2
+        ws.cell(cr, 1).value = '📊 전략 성적 비교 (같은 데이터·같은 기간)'
+        ws.cell(cr, 1).font = Font(bold=True, size=13, color='1F3864')
+        ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=4)
+        cr += 1
+        _hdr(ws, cr, ['전략', '누적수익%', '거래', '승률/MDD', '오늘 신호'])
+        cr += 1
+        _bh_txt = f"B&H {bh_ret*100:+.2f}%"
+        # 그리드 앙상블 (현재 '★ 현재 포지션' 대표값)
+        _grid_today = ('🔴 매도' if cur.get('sell_on_now') else
+                       ('🟢 매수' if cur.get('buy_on_now') else '⚪ 유지'))
+        _put_bt = lambda r, label, ret, n, wr, mdd, sig: [
+            ws.cell(r, 1, label), ws.cell(r, 2, f"{ret*100:+.2f}%" if ret is not None else '—'),
+            ws.cell(r, 3, f"{n}회" if n is not None else '—'),
+            ws.cell(r, 4, (f"{wr*100:.1f}% / {mdd*100:.2f}%" if (wr is not None and mdd is not None) else '—')),
+            ws.cell(r, 5, sig)]
+        _put_bt(cr, '그리드 앙상블 (K/v 투표) ← 이 시트 대표값',
+                float(cur.get('cum_return_pct', 0.0)) / 100.0,
+                int(cur.get('n_trades', 0)),
+                float(cur.get('win_rate', 0.0)),
+                float(cur.get('max_drawdown', 0.0)), _grid_today)
+        cr += 1
+        # net>K (일별 백테스트 시트)
+        if _nsd is not None:
+            _knet_today = ('🟢 매수' if float(_nsd['daily'].iloc[-1]['net']) > _nsd['best_k'] else '🔴 매도')
+            _put_bt(cr, f"net>K (K={round(_nsd['best_k'],3)}) ← '일별 백테스트' 시트",
+                    _nsd.get('full_cum'), _nsd.get('n_trades'), None, None, _knet_today)
+            ws.cell(cr, 4).value = f"보유중하락 {(_nsd.get('held_down_full') or 0)*100:.2f}%"
+            cr += 1
+        # KL 히스테리시스 (KL 순신호 시트 top1)
+        if _kl and _kl.get('best_ret'):
+            K, L, ret, mdd, ntr, wr = _kl['best_ret'][:6]
+            _kl_last = _kl.get('last_net')
+            if _kl_last is not None:
+                _kl_today = ('🟢 매수' if _kl_last >= K else ('🔴 매도' if _kl_last <= L else '⚪ 유지'))
+            else:
+                _kl_today = '—'
+            _put_bt(cr, f"KL 히스테리시스 (K={round(K,3)}/L={round(L,3)}) ← 'KL 순신호' 시트",
+                    float(ret)/100.0, int(ntr), float(wr)/100.0, float(mdd)/100.0, _kl_today)
+            cr += 1
+        # 벤치마크
+        _put_bt(cr, 'Buy & Hold', bh_ret, None, None, None, '📊 벤치마크')
+        for r in range(cr - 3, cr + 1):
+            for c in range(1, 6):
+                _cell = ws.cell(r, c)
+                _cell.border = _TH; _cell.alignment = Alignment(horizontal='center')
+        # 헤더 서식
+        for c in range(1, 6):
+            ws.cell(cr - 4, c).font = Font(bold=True); ws.cell(cr - 4, c).fill = _HL
+        cr += 1
+        ws.cell(cr, 1).value = ('※ 세 전략은 같은 지표 풀에서 나오지만 매매 규칙이 달라 결과가 다릅니다. '
+                                '이 시트의 "현재 포지션·다음 액션"은 그리드 앙상블(투표) 기준입니다 — '
+                                '다른 전략을 쓰려면 위 표에서 각 시트를 확인하세요.')
+        ws.cell(cr, 1).font = Font(italic=True, size=9, color='808080')
+        ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=5)
+    except Exception as _sc:
+        pass
 
     ws.column_dimensions['A'].width = 38
     ws.column_dimensions['B'].width = 50
@@ -15157,14 +15296,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _bk = (round(_nsd['best_k'], 3) if _wtd else _nsd['best_k'])
         _wtag = '점수가중' if _wtd else '단순개수'
         ws.cell(1, 1).value = (f'{_shname} — net({_wtag})>K({_bk})면 매수·보유, net≤K면 매도 (신호일 종가). '
-                               f'K는 전체수익 최고. 수익=상승·하락률 합산.')
+                               f'K는 전체수익 최고. 수익=상승·하락률 합산. '
+                               f'※ 매수ON/매도ON 컬럼은 net vs K 기준이며 매수/매도 카운트가 0이라도 ON될 수 있음 '
+                               f'(예: 매수카운트 0.5·매도카운트 0 → net=0.5, K보다 낮으면 매도ON)')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:P1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         ws.cell(2, 1).value = (f"★최적K={_bk} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
                                f"전체 {_p2(_nsd['full_cum'])} / OOS {_p2(_nsd.get('oos_cum'))} (B&H {_p2(_nsd['bh_full'])}) | "
                                f"거래 {_nsd['n_trades']}회 | 보유중하락 {_p2(_nsd['held_down_full'])}")
         ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:P2')
-        _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
+        _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', 'net>K(매수)', '매도카운트', 'net≤K(매도)',
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
                      '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간'])
         d = _nsd['daily']
@@ -15320,6 +15461,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 print(f"  ♻ 재현: 원본 K/L(K={_klfix['kl_k']}, L={_klfix['kl_l']}) 그대로")
             else:
                 _kl = _net_kl_search(_net, _rr, mdd_limit=_mddlim)
+            try:
+                _kl['last_net'] = float(_net[-1]) if len(_net) else None
+            except Exception:
+                pass
             globals()['_KNET_KL'] = _kl
 
             # (요청) KL 순신호 시트 — (K,L) 조합별 컬럼 결과. 일별 백테스트 옆(index 1)에 배치.
