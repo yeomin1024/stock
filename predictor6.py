@@ -328,7 +328,10 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
         return pd.DataFrame()
     raw = pd.DataFrame(frames)
     biz_idx = pd.bdate_range(start=start, end=pd.Timestamp.today())
-    fred_df = raw.reindex(biz_idx).ffill().bfill()
+    # ★ 룩어헤드 방지 (수정): 원본은 .ffill().bfill()이라 초기 구간에서 미래 값이 과거로
+    #   채워지는 look-ahead였음. ffill만 사용하여 실행 시점에 알 수 없는 값은 NaN 유지.
+    #   후속 지표 계산 시 NaN이면 지표도 NaN이 되므로 안전.
+    fred_df = raw.reindex(biz_idx).ffill()
     fred_df.index.name = 'Date'
     return fred_df
 
@@ -668,9 +671,456 @@ def intraday_daily_features(intraday):
 
 
 # ════════════════════════════════════════════════════════════════
+#            ★ 데이터 검증 (요청 반영)
+#     다운로드된 티커/FRED가 올바른 값으로 들어왔는지 자동 점검.
+#     엑셀에 '데이터 검증' 시트로 기록해 실행 후 바로 확인 가능.
+# ════════════════════════════════════════════════════════════════
+def validate_downloaded_data(closes, ohlcv, fred_df=None, *, min_days=100,
+                             price_jump_threshold=0.20, stale_days_limit=7):
+    """다운로드된 시장 데이터/FRED를 검증한다.
+
+    검사 항목 (티커별):
+      · 데이터 시작일 / 종료일 / 총 거래일수
+      · 결측치 개수·비율
+      · 최근값 (콘솔 확인용)
+      · 이상치: 일 수익률 |price_jump_threshold| 초과 회수
+      · 마지막 신선도: 마지막 값이 며칠 전인가 (stale_days_limit 초과 시 경고)
+      · 초기 구간 유효성 (min_days 미만이면 사용 지표 계산 불가)
+    검사 항목 (FRED):
+      · 시리즈별 시작·종료·결측률·최근값·발표주기 감지 (일/주/월 여부)
+
+    반환: dict {'market': DataFrame, 'fred': DataFrame, 'issues': list[str],
+                'summary': dict}
+    """
+    market_rows = []; fred_rows = []; issues = []
+    today = pd.Timestamp.today().normalize()
+
+    if closes is None or len(closes) == 0:
+        issues.append('❌ 시장 데이터 다운로드 결과가 비어 있음')
+    else:
+        for tk in closes.columns:
+            s = closes[tk].dropna()
+            n = len(s); nnan_col = closes[tk].isna().sum()
+            if n < min_days:
+                issues.append(f"⚠ {tk}: 유효 데이터 {n}일 < {min_days}일 (지표 계산 신뢰도 낮음)")
+            first_dt = s.index.min() if n else pd.NaT
+            last_dt  = s.index.max() if n else pd.NaT
+            days_stale = (today - last_dt).days if pd.notna(last_dt) else -1
+            if 0 <= days_stale > stale_days_limit:
+                issues.append(f"⚠ {tk}: 마지막 값 {days_stale}일 전 (신선도 낮음)")
+            # 이상치: 일 수익률 극단값
+            r = s.pct_change().dropna()
+            n_jump = int((r.abs() > price_jump_threshold).sum()) if len(r) else 0
+            if n_jump > 0 and tk not in ['^VIX', '^VIX9D', '^VIX3M', '^VIX6M',
+                                          '^SKEW', '^MOVE', 'UVXY', 'VXX', 'VIXY']:
+                # VIX 계열은 자연스럽게 큰 점프 발생
+                issues.append(f"⚠ {tk}: 일 수익률 |{price_jump_threshold*100:.0f}%| 초과 {n_jump}회 (데이터 오염 의심)")
+            # OHLCV 볼륨 유효성
+            has_ohlcv = (ohlcv is not None and tk in ohlcv)
+            vol_valid = ''
+            if has_ohlcv:
+                vv = ohlcv[tk]['Volume']
+                n_zero_vol = int((vv == 0).sum())
+                if n_zero_vol > n * 0.10:
+                    vol_valid = f"⚠ 거래량 0 {n_zero_vol}일"
+                    issues.append(f"⚠ {tk}: 거래량 0인 날이 {n_zero_vol}일 ({n_zero_vol/n*100:.1f}%)")
+                else:
+                    vol_valid = f"OK (0 거래량 {n_zero_vol}일)"
+            market_rows.append({
+                '티커': tk,
+                '시작일': first_dt.strftime('%Y-%m-%d') if pd.notna(first_dt) else '—',
+                '종료일': last_dt.strftime('%Y-%m-%d') if pd.notna(last_dt) else '—',
+                '거래일수': int(n),
+                '결측(원본)': int(nnan_col),
+                '최근값': round(float(s.iloc[-1]), 4) if n else None,
+                '20일 변화': f"{(s.iloc[-1]/s.iloc[-21]-1)*100:+.2f}%" if n >= 21 else '—',
+                '이상치(±20%↑)': int(n_jump),
+                '경과일수': int(days_stale) if days_stale >= 0 else -1,
+                '볼륨체크': vol_valid,
+                '상태': ('✓' if (n >= min_days and days_stale <= stale_days_limit) else '⚠'),
+            })
+
+    if fred_df is not None and len(fred_df) > 0:
+        for col in fred_df.columns:
+            s = fred_df[col].dropna()
+            if len(s) == 0:
+                issues.append(f"⚠ FRED {col}: 완전히 비어있음")
+                fred_rows.append({'시리즈': col, '시작일': '—', '종료일': '—',
+                                   '유효값수': 0, '결측': int(fred_df[col].isna().sum()),
+                                   '최근값': None, '주기': '—', '상태': '✗'})
+                continue
+            first_dt = s.index.min(); last_dt = s.index.max()
+            # 발표주기 감지: 유효값의 diff 중앙값으로 판단
+            uniq_dates = s.index[s.diff().fillna(1) != 0]     # 값 변화 있는 날만
+            if len(uniq_dates) >= 3:
+                interval = int(pd.Series(uniq_dates).diff().dropna().dt.days.median())
+                freq_lbl = ('일' if interval <= 3 else ('주' if interval <= 10 else
+                           ('월' if interval <= 40 else '분기')))
+            else:
+                freq_lbl = '판정불가'
+            days_stale = (today - last_dt).days
+            fred_rows.append({
+                '시리즈': col,
+                '시작일': first_dt.strftime('%Y-%m-%d'),
+                '종료일': last_dt.strftime('%Y-%m-%d'),
+                '유효값수': int(len(s)),
+                '결측': int(fred_df[col].isna().sum()),
+                '최근값': round(float(s.iloc[-1]), 4),
+                '주기': freq_lbl,
+                '경과일수': int(days_stale),
+                '상태': ('✓' if days_stale < 90 else '⚠ stale'),
+            })
+
+    market_df = pd.DataFrame(market_rows)
+    fred_df_out = pd.DataFrame(fred_rows)
+    summary = {
+        'total_tickers': len(market_rows),
+        'ok_tickers': int((market_df.get('상태', pd.Series('')) == '✓').sum()) if len(market_df) else 0,
+        'warn_tickers': int((market_df.get('상태', pd.Series('')) == '⚠').sum()) if len(market_df) else 0,
+        'fred_series': len(fred_rows),
+        'total_issues': len(issues),
+    }
+    # 콘솔 출력 (요약)
+    print("\n" + "═" * 68)
+    print("  📋 다운로드 데이터 검증 결과")
+    print("═" * 68)
+    print(f"  · 시장 티커: {summary['total_tickers']}개 "
+          f"(정상 {summary['ok_tickers']} / 경고 {summary['warn_tickers']})")
+    print(f"  · FRED 시리즈: {summary['fred_series']}개")
+    if issues:
+        print(f"  · 이슈 {len(issues)}건:")
+        for msg in issues[:15]:
+            print(f"     {msg}")
+        if len(issues) > 15:
+            print(f"     ... 외 {len(issues) - 15}건 (엑셀 '데이터 검증' 시트 참조)")
+    else:
+        print("  · 이슈 없음 ✓")
+    print("═" * 68 + "\n")
+
+    return {'market': market_df, 'fred': fred_df_out, 'issues': issues, 'summary': summary}
+
+
+def write_data_validation_sheet(wb, validation_result):
+    """검증 결과를 엑셀 '데이터 검증' 시트로 저장.
+       상단 요약 → 이슈 목록 → 시장 티커 표 → FRED 시리즈 표."""
+    ws = wb.create_sheet('데이터 검증')
+    try:
+        ws.sheet_view.showGridLines = False
+    except Exception:
+        pass
+    HDR = PatternFill('solid', fgColor='1F3864')
+    OK  = PatternFill('solid', fgColor='C6EFCE')
+    WRN = PatternFill('solid', fgColor='FFC7CE')
+    ALT = PatternFill('solid', fgColor='F2F2F2')
+    def _bold_cell(r, c, val, size=12, color='FFFFFF', fill=None):
+        cell = ws.cell(r, c); cell.value = val
+        cell.font = Font(bold=True, size=size, color=color)
+        if fill: cell.fill = fill
+
+    summ = validation_result.get('summary', {})
+    _bold_cell(1, 1, '📋 데이터 검증 리포트 — 다운로드된 시장/FRED 데이터가 올바르게 들어왔는지 자동 점검',
+               size=13, color='1F3864')
+    ws.merge_cells('A1:H1')
+    ws.cell(2, 1).value = (f"시장 티커: {summ.get('total_tickers',0)}개 "
+                           f"(정상 {summ.get('ok_tickers',0)} / 경고 {summ.get('warn_tickers',0)}) "
+                           f"｜ FRED: {summ.get('fred_series',0)}개 "
+                           f"｜ 이슈 {summ.get('total_issues',0)}건")
+    ws.cell(2, 1).font = Font(italic=True, size=10, color='606060'); ws.merge_cells('A2:H2')
+
+    r = 4
+    # 이슈 목록
+    issues = validation_result.get('issues', [])
+    if issues:
+        _bold_cell(r, 1, f'⚠ 이슈 목록 ({len(issues)}건)', size=11, color='C00000'); r += 1
+        for msg in issues:
+            ws.cell(r, 1).value = msg
+            ws.cell(r, 1).font = Font(size=10)
+            r += 1
+        r += 1
+    else:
+        _bold_cell(r, 1, '✓ 이슈 없음 — 모든 데이터 정상 확인', size=11, color='006100'); r += 2
+
+    # 시장 티커 표
+    market_df = validation_result.get('market')
+    if market_df is not None and len(market_df) > 0:
+        _bold_cell(r, 1, '📊 시장 티커 상태', size=11, color='1F3864'); r += 1
+        cols = list(market_df.columns)
+        for ci, h in enumerate(cols, 1):
+            c = ws.cell(r, ci); c.value = h
+            c.font = Font(bold=True, color='FFFFFF'); c.fill = HDR
+            c.alignment = Alignment(horizontal='center')
+        r += 1
+        for ri, (_, row) in enumerate(market_df.iterrows()):
+            for ci, h in enumerate(cols, 1):
+                c = ws.cell(r + ri, ci); c.value = row[h]
+                c.alignment = Alignment(horizontal='center'); c.font = Font(size=10)
+                if ri % 2 == 1: c.fill = ALT
+                if h == '상태':
+                    c.fill = OK if row[h] == '✓' else WRN
+                    c.font = Font(bold=True, size=10,
+                                   color='006100' if row[h] == '✓' else '9C0006')
+        r += len(market_df) + 2
+
+    # FRED 표
+    fred_df_out = validation_result.get('fred')
+    if fred_df_out is not None and len(fred_df_out) > 0:
+        _bold_cell(r, 1, '📈 FRED 시리즈 상태', size=11, color='1F3864'); r += 1
+        cols = list(fred_df_out.columns)
+        for ci, h in enumerate(cols, 1):
+            c = ws.cell(r, ci); c.value = h
+            c.font = Font(bold=True, color='FFFFFF'); c.fill = HDR
+            c.alignment = Alignment(horizontal='center')
+        r += 1
+        for ri, (_, row) in enumerate(fred_df_out.iterrows()):
+            for ci, h in enumerate(cols, 1):
+                c = ws.cell(r + ri, ci); c.value = row[h]
+                c.alignment = Alignment(horizontal='center'); c.font = Font(size=10)
+                if ri % 2 == 1: c.fill = ALT
+                if h == '상태':
+                    is_ok = row[h] == '✓'
+                    c.fill = OK if is_ok else WRN
+                    c.font = Font(bold=True, size=10,
+                                   color='006100' if is_ok else '9C0006')
+        r += len(fred_df_out) + 2
+
+    # 컬럼 너비
+    for ci, w in enumerate([16, 12, 12, 10, 12, 14, 12, 16, 12, 20, 8], 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.freeze_panes = 'A4'
+
+def log_indicator_data_availability(closes, ohlcv=None, fred_df=None, *, verbose=True):
+    """★ 지표 데이터 준비 상태 실행 로그 (요청 반영).
+
+    각 지표 그룹의 데이터 의존성을 점검해 어느 그룹이 계산 가능한지 즉시 확인.
+    - ✓ = 필수 데이터 전부 있음 → 지표 정상 생성됨
+    - ⚠ = 일부 있음/부분 계산 → 확장 지표는 skip
+    - ✗ = 필수 데이터 없음 → 그룹 통째로 skip
+
+    반환: dict {'groups': [...], 'summary': {ready, partial, missing, expected_total}}
+          (엑셀 데이터 검증 시트에도 활용 가능)
+    """
+    cols = set(closes.columns) if (closes is not None and hasattr(closes, 'columns')) else set()
+    fred_cols = set(fred_df.columns) if (fred_df is not None and len(fred_df) > 0
+                                          and hasattr(fred_df, 'columns')) else set()
+    # 섹터 가용 개수 (섹터 브레드스/베타 수렴 등의 조건)
+    SEC11 = ['XLK','XLV','XLF','XLY','XLP','XLE','XLI','XLB','XLU','XLRE','XLC']
+    sec_ok_n = sum(1 for s in SEC11 if s in cols)
+
+    def _check(required, optional=None, any_of=None, min_sector=0, extra=None):
+        """필수 다 있고 (any_of 지정 시 그 중 하나 이상 있고, min_sector≥ 조건도 통과)"""
+        missing_req = [k for k in required if k not in cols and k not in fred_cols]
+        opt_present = [k for k in (optional or []) if k in cols or k in fred_cols]
+        opt_missing = [k for k in (optional or []) if k not in cols and k not in fred_cols]
+        anyof_present = [k for k in (any_of or []) if k in cols or k in fred_cols]
+        anyof_ok = (not any_of) or len(anyof_present) >= 1
+        sec_ok = sec_ok_n >= min_sector
+        # 상태 결정
+        if missing_req or not anyof_ok or not sec_ok:
+            state = '✗'
+        elif opt_missing:
+            state = '⚠'
+        else:
+            state = '✓'
+        return state, missing_req, opt_missing, anyof_present, sec_ok_n
+
+    groups = [
+        # (그룹번호, 이름, 필수, 선택, any_of, 최소섹터, 예상지표수, 설명)
+        ('17.5A', 'VIX Term Structure',
+            ['^VIX'], None, ['^VIX9D', '^VIX3M', '^VIX6M'], 0, 12,
+            '백워데이션 감지 — 콘탱고 붕괴 = 임박 위기'),
+        ('17.5B', 'SKEW 꼬리위험',
+            ['^SKEW'], ['^VIX'], None, 0, 11,
+            '스마트머니 조용한 헤지 프리미엄'),
+        ('17.5C', 'MOVE 채권 변동성',
+            ['^MOVE'], ['^VIX'], None, 0, 11,
+            '채권시장이 먼저 위험 감지 (VIX 선행)'),
+        ('17.5D', '200일선 fatigue',
+            [], None, None, 0, 5,
+            '200일선 위 거주기간 (평균회귀 압력) — 종가만 있으면 항상 계산'),
+        ('17.5E', 'Yield curve 3D twist',
+            ['^TNX', '^IRX', '^TYX'], None, None, 0, 8,
+            'Level/Slope/Curvature 동시 변화 — Bear steepener 감지'),
+        ('17.5F', '채권-주식 상관 레짐',
+            ['TLT'], None, None, 0, 5,
+            '음→양 상관 전환 = 균형 붕괴 (인플레 쇼크 유형)'),
+        ('17.5G', 'VIX 스파이크 반감기',
+            ['^VIX'], None, None, 0, 5,
+            '회복 속도 = 시장 스트레스 지속성'),
+        ('17.5H', 'HYG-LQD 스프레드 확대속도',
+            ['HYG', 'LQD'], None, None, 0, 4,
+            '신용 조기경보 — 확대 속도 초점'),
+        ('17.5I', 'FXY+UUP 동시 강세',
+            ['FXY', 'UUP'], None, None, 0, 3,
+            '엔+달러 동시 강세 = 글로벌 위험자산 청산'),
+        ('17.5J', '섹터 베타 수렴',
+            ['SPY'], None, None, 5, 4,
+            '위기 시 섹터 베타 표준편차 급감 (모두 함께 움직임)'),
+        # ── 기존 주요 그룹들도 함께 점검 (사용자 워크플로 안정성) ──
+        ('FRED-A', 'FRED 수익률 곡선',
+            ['T10Y2Y', 'T10Y3M'], None, None, 0, 12,
+            '2s10s / 3m10y 역전 시그널'),
+        ('FRED-B', 'FRED 신용 스프레드 OAS',
+            ['BAMLH0A0HYM2', 'BAMLC0A0CM'], None, None, 0, 12,
+            'HY/IG OAS 실측 스프레드'),
+        ('FRED-C', 'FRED 인플레·기대',
+            [], ['T5YIE', 'T10YIE', 'CPIAUCSL', 'CPILFESL', 'PCEPI', 'PCEPILFE'], None, 0, 15,
+            '기대인플레·CPI·PCE'),
+        ('FRED-D', 'FRED 실업·소비',
+            [], ['UNRATE', 'U6RATE', 'ICSA', 'CCSA', 'UMCSENT', 'MICH'], None, 0, 20,
+            'Sahm rule / 청구건수 / 소비자신뢰'),
+        ('FRED-E', 'FRED PMI 대체 (CFNAI/NEWORDER/MANEMP/PPIACO)',
+            [], ['CFNAI', 'NEWORDER', 'MANEMP', 'PPIACO'], None, 0, 15,
+            '★ 이번 개선: NAPM 폐기 → 대체 시리즈로 활성화'),
+        ('SEC-A', '11개 섹터 브레드스',
+            [], None, None, 5, 45,
+            'McClellan/AD-line/신고가 카운트 등 (섹터 5개 이상 필요)'),
+        ('SEC-B', '방어 vs 공격 로테이션',
+            [], ['XLU', 'XLP', 'XLV', 'XLK', 'XLY', 'XLF', 'XLC'], None, 0, 12,
+            'Rotation to defensive 스코어'),
+        ('BIG3', 'NVDA/MSFT/AAPL/AVGO 내부',
+            [], ['NVDA', 'MSFT', 'AAPL', 'AVGO'], None, 0, 30,
+            'XLK 대형주 분배일/약화 신호'),
+        ('SM-A', '스마트머니 인버스 ETF',
+            [], ['SQQQ', 'SH'], None, 0, 15,
+            'SQQQ/SH 기관 숏 포지션 추적'),
+        ('SM-B', '엔화 캐리 언와인드',
+            ['FXY'], ['GLD', 'TLT'], None, 0, 12,
+            '캐리 언와인드 = 가장 빠른 위기 선행'),
+        ('SM-C', 'GDX 골드 마이너',
+            ['GDX'], ['GLD'], None, 0, 10,
+            '금 레버리지 자산 조기 강세'),
+        ('SM-D', 'EEM 글로벌 위험선호',
+            ['EEM'], ['SPY'], None, 0, 8,
+            '이머징 위기 미국 전이 프록시'),
+        ('SM-E', 'RSP vs SPY 집중도',
+            ['RSP', 'SPY'], None, None, 0, 7,
+            '소수 대형주 의존도 = 취약한 상승'),
+        ('VOL-A', 'VIX 파생 (VXX/UVXY/SVXY/VIXY)',
+            [], ['VXX', 'UVXY', 'SVXY', 'VIXY'], None, 0, 12,
+            'VIX 선물 구조·백워데이션'),
+        ('MTUM', '팩터 로테이션 (MTUM)',
+            ['MTUM'], ['SPLV', 'SPHB'], None, 0, 10,
+            '헤지펀드 디레버리징 첫 신호'),
+        ('MACRO', '경기민감 ETF (KRE/IYT/XHB/XRT/CPER)',
+            [], ['KRE', 'IYT', 'XHB', 'XRT', 'CPER', 'XME'], None, 0, 22,
+            '실물경기 온도계'),
+        ('BOND', '장·중·단기 채권 (^FVX/^TYX/TIP/IEF/BIL)',
+            [], ['^FVX', '^TYX', 'TIP', 'IEF', 'BIL', 'SHY'], None, 0, 15,
+            '커브 twist / 실질금리 프록시'),
+        ('INFL', '인플레·원자재 (USO/DBC/CPER/GLD)',
+            [], ['USO', 'DBC', 'CPER', 'GLD', 'RINF', 'PDBC', 'UUP'], None, 0, 20,
+            '스태그플레이션 종합'),
+    ]
+
+    rows = []; n_ok = n_warn = n_bad = 0; n_expected_ok = 0
+    for grp_no, name, req, opt, any_of, min_sec, exp_n, desc in groups:
+        state, m_req, m_opt, aof, sec_n = _check(req, opt, any_of, min_sec)
+        rows.append({
+            '그룹': grp_no, '이름': name, '상태': state,
+            '예상지표수': exp_n,
+            '누락(필수)': ', '.join(m_req) if m_req else '—',
+            '누락(선택)': ', '.join(m_opt) if m_opt else '—',
+            '섹터가용': sec_n if min_sec > 0 else '—',
+            '설명': desc,
+        })
+        if state == '✓': n_ok += 1; n_expected_ok += exp_n
+        elif state == '⚠': n_warn += 1; n_expected_ok += exp_n   # 부분이라도 대부분 생성
+        else: n_bad += 1
+
+    summary = {
+        'total_groups': len(groups),
+        'ready': n_ok, 'partial': n_warn, 'missing': n_bad,
+        'expected_indicators': sum(g[6] for g in groups),
+        'estimated_available': n_expected_ok,
+    }
+
+    if verbose:
+        print("\n" + "═" * 72)
+        print("  📦 지표 데이터 준비 상태 로그 (이 지표 그룹들이 계산 가능한가?)")
+        print("═" * 72)
+        for row in rows:
+            state = row['상태']
+            bullet = {'✓': '  ✓ ', '⚠': '  ⚠ ', '✗': '  ✗ '}.get(state, '  · ')
+            miss_txt = ''
+            if row['누락(필수)'] != '—':
+                miss_txt = f"  [필수 누락: {row['누락(필수)']}]"
+            elif row['누락(선택)'] != '—':
+                miss_txt = f"  [선택 누락: {row['누락(선택)']}]"
+            sec_txt = f"  (섹터 {row['섹터가용']}개)" if row['섹터가용'] != '—' else ''
+            print(f"{bullet}[{row['그룹']:6}] {row['이름']:34} "
+                  f"~{row['예상지표수']:3}개{sec_txt}{miss_txt}")
+        print("─" * 72)
+        print(f"  요약: {n_ok}그룹 준비완료 / {n_warn}그룹 부분 / {n_bad}그룹 불가 "
+              f"  ｜ 예상 지표: 약 {n_expected_ok}/{summary['expected_indicators']}개 생성")
+        if n_bad > 0:
+            print(f"  ⚠ 불가 그룹 {n_bad}개 — 해당 데이터가 다운로드되지 않아 지표 계산 스킵됨.")
+            print(f"     PEERS 목록/FRED 시리즈 목록 확인 필요")
+        print("═" * 72 + "\n")
+
+    return {'groups': rows, 'summary': summary}
+
+
+def write_indicator_availability_sheet(wb, availability_result):
+    """지표 데이터 준비 상태를 엑셀 시트에 저장 (요청 반영)."""
+    ws = wb.create_sheet('지표 데이터 가용성')
+    try:
+        ws.sheet_view.showGridLines = False
+    except Exception:
+        pass
+    HDR = PatternFill('solid', fgColor='1F3864')
+    OK  = PatternFill('solid', fgColor='C6EFCE')
+    WRN = PatternFill('solid', fgColor='FFF2CC')
+    BAD = PatternFill('solid', fgColor='FFC7CE')
+    ALT = PatternFill('solid', fgColor='F2F2F2')
+
+    summ = availability_result.get('summary', {})
+    ws.cell(1, 1).value = ('📦 지표 데이터 가용성 로그 — 각 지표 그룹의 필수/선택 데이터 존재 여부 자동 점검')
+    ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:H1')
+    ws.cell(2, 1).value = (f"총 {summ.get('total_groups', 0)}그룹 "
+                           f"| 준비완료 {summ.get('ready', 0)} "
+                           f"/ 부분 {summ.get('partial', 0)} "
+                           f"/ 불가 {summ.get('missing', 0)} "
+                           f"| 예상 지표 약 {summ.get('estimated_available', 0)}"
+                           f"/{summ.get('expected_indicators', 0)}개 생성")
+    ws.cell(2, 1).font = Font(italic=True, size=10, color='606060'); ws.merge_cells('A2:H2')
+
+    r = 4
+    heads = ['그룹', '이름', '상태', '예상지표수', '누락(필수)', '누락(선택)', '섹터가용', '설명']
+    for ci, h in enumerate(heads, 1):
+        c = ws.cell(r, ci); c.value = h
+        c.font = Font(bold=True, color='FFFFFF'); c.fill = HDR
+        c.alignment = Alignment(horizontal='center')
+    r += 1
+    for ri, row in enumerate(availability_result.get('groups', [])):
+        for ci, h in enumerate(heads, 1):
+            c = ws.cell(r + ri, ci); c.value = row[h]
+            c.alignment = Alignment(horizontal='center' if ci <= 4 or ci == 7 else 'left')
+            c.font = Font(size=10)
+            if ri % 2 == 1: c.fill = ALT
+            if h == '상태':
+                s = row[h]
+                c.fill = OK if s == '✓' else (WRN if s == '⚠' else BAD)
+                c.font = Font(bold=True, size=11,
+                               color=('006100' if s == '✓' else
+                                      ('9C6500' if s == '⚠' else '9C0006')))
+    for ci, w in enumerate([9, 34, 8, 12, 30, 30, 10, 46], 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.freeze_panes = 'A5'
+
+
+# ════════════════════════════════════════════════════════════════
 #                  지표 계산 (~450개)
 # ════════════════════════════════════════════════════════════════
-def compute_features(ohlcv, closes, fred_df=None):
+def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True):
+    # ★ 지표 데이터 준비 상태 로그 (요청 반영) — compute_features 진입 시 자동 실행.
+    #   외부에서 별도 호출도 가능. log_availability=False로 끌 수 있음.
+    if log_availability:
+        try:
+            _avail = log_indicator_data_availability(closes, ohlcv, fred_df, verbose=True)
+            # 결과를 globals에 남겨 write_indicator_availability_sheet에서 재사용 가능
+            globals()['_LAST_AVAILABILITY_RESULT'] = _avail
+        except Exception as _le:
+            print(f"  ⚠ 지표 가용성 로그 실패(무시): {_le}")
     df = ohlcv[TICKER].copy()
     cl = df['Close']; hi = df['High']; lo = df['Low']
     op = df['Open'];  vo = df['Volume']
@@ -1044,19 +1494,15 @@ def compute_features(ohlcv, closes, fred_df=None):
         hv = cl.pct_change().rolling(base).std() * np.sqrt(252)
         feat[f'hist_vol_{base}_roc_{chg}'] = (hv - hv.shift(chg)) / hv.shift(chg).replace(0, np.nan)
 
-    # NVI / PVI
-    nvi = pd.Series(1000.0, index=cl.index)
-    pvi = pd.Series(1000.0, index=cl.index)
-    for i in range(1, len(cl)):
-        r = (cl.iloc[i] - cl.iloc[i - 1]) / cl.iloc[i - 1] if cl.iloc[i - 1] != 0 else 0
-        if vo.iloc[i] < vo.iloc[i - 1]:
-            nvi.iloc[i] = nvi.iloc[i - 1] * (1 + r)
-        else:
-            nvi.iloc[i] = nvi.iloc[i - 1]
-        if vo.iloc[i] > vo.iloc[i - 1]:
-            pvi.iloc[i] = pvi.iloc[i - 1] * (1 + r)
-        else:
-            pvi.iloc[i] = pvi.iloc[i - 1]
+    # ── NVI / PVI ★ 벡터화 (수정) — 원본은 파이썬 for 루프였음 (수천 일 × 십수 티커
+    #    호출 시 눈에 띄게 느림). 곱셈 누적을 pd.cumprod로 대체.
+    ret_v   = cl.pct_change().fillna(0.0)
+    vol_dn  = (vo < vo.shift(1))   # 거래량 감소일
+    vol_up  = (vo > vo.shift(1))   # 거래량 증가일
+    nvi_mul = (1 + ret_v.where(vol_dn, 0.0))    # 감소일에만 수익률 반영
+    pvi_mul = (1 + ret_v.where(vol_up, 0.0))    # 증가일에만 수익률 반영
+    nvi = nvi_mul.cumprod() * 1000.0
+    pvi = pvi_mul.cumprod() * 1000.0
     feat['nvi_255_dist'] = nvi / nvi.rolling(255).mean() - 1
     feat['pvi_255_dist'] = pvi / pvi.rolling(255).mean() - 1
 
@@ -1921,7 +2367,8 @@ def compute_features(ohlcv, closes, fred_df=None):
     # ══════════════════════════════════════════════════════════
     if fred_df is not None and len(fred_df) > 0:
         # 공통 인덱스 맞추기
-        fred_al = fred_df.reindex(feat.index).ffill().bfill()
+        # ★ 룩어헤드 방지: bfill 제거. FRED 시리즈 발표 전 구간은 NaN 유지.
+        fred_al = fred_df.reindex(feat.index).ffill()
 
         def _fred(col):
             """fred_al에 컬럼 존재 여부 안전 조회."""
@@ -2027,28 +2474,38 @@ def compute_features(ohlcv, closes, fred_df=None):
             )
 
         # ── 13F. PMI (ISM 제조업) ──────────────────────────────
-        pmi = _fred('NAPM'); pmi_orders = _fred('NAPMNOI')
-        pmi_emp = _fred('NAPMEI'); pmi_price = _fred('NAPMPI')
+        # ★ 폐기 시리즈(NAPM/NAPMNOI/NAPMEI/NAPMPI) 대체 (수정) — daily_series 딕셔너리에서
+        #   이미 다운로드한 대체 시리즈 사용. 이전에는 폐기된 ID를 참조해 PMI 지표들이 모두 empty였음.
+        pmi = _fred('CFNAI'); pmi_orders = _fred('NEWORDER')
+        pmi_emp = _fred('MANEMP'); pmi_price = _fred('PPIACO')
         if pmi is not None:
-            feat['fred_pmi_level']         = pmi
-            feat['fred_pmi_chg3m']         = pmi.diff(63)
-            feat['fred_pmi_below_50']      = (pmi < 50).astype(float)
-            feat['fred_pmi_below_45']      = (pmi < 45).astype(float)
-            feat['fred_pmi_zscore_252']    = calc_zscore(pmi, 252)
-            feat['fred_pmi_falling_3m']    = (pmi.diff(63) < -2).astype(float)
+            # ★ CFNAI: 시카고 연준 국가활동지수 — 0 중심 (>0 = 확장, <-0.7 = 침체 신호)
+            feat['fred_cfnai_level']        = pmi
+            feat['fred_cfnai_chg3m']        = pmi.diff(63)
+            feat['fred_cfnai_below_0']      = (pmi < 0).astype(float)         # 확장 아래
+            feat['fred_cfnai_below_neg07']  = (pmi < -0.7).astype(float)      # 침체 신호
+            feat['fred_cfnai_zscore_252']   = calc_zscore(pmi, 252)
+            feat['fred_cfnai_falling_3m']   = (pmi.diff(63) < -0.3).astype(float)
         if pmi_orders is not None:
-            feat['fred_pmi_orders']        = pmi_orders
-            feat['fred_pmi_orders_below50'] = (pmi_orders < 50).astype(float)
-            feat['fred_pmi_orders_chg3m']  = pmi_orders.diff(63)
+            # ★ NEWORDER: 비국방 자본재 신규주문 ($) — YoY 성장률로 변환해 사용
+            feat['fred_neworder_yoy']       = pmi_orders.pct_change(252) * 100
+            feat['fred_neworder_falling']   = (pmi_orders.pct_change(63) < -0.02).astype(float)
+            feat['fred_neworder_chg3m']     = pmi_orders.diff(63)
+            feat['fred_neworder_zscore']    = calc_zscore(pmi_orders.pct_change(63).fillna(0), 252)
         if pmi is not None and pmi_orders is not None:
-            # 신규주문 > PMI = 모멘텀 양호; 반대 = 둔화 신호
-            feat['fred_pmi_orders_pmi_gap'] = pmi_orders - pmi
+            # 신규주문 성장 + CFNAI 조합 (경기 모멘텀 gap)
+            feat['fred_orders_activity_gap'] = pmi_orders.pct_change(63).fillna(0) - pmi.rolling(63).mean().fillna(0) * 0.01
         if pmi_emp is not None:
-            feat['fred_pmi_employment']    = pmi_emp
-            feat['fred_pmi_emp_below50']   = (pmi_emp < 50).astype(float)
+            # ★ MANEMP: 제조업 고용 (천 명) — YoY와 3개월 변화율
+            feat['fred_manemp_yoy']         = pmi_emp.pct_change(252) * 100
+            feat['fred_manemp_falling_3m']  = (pmi_emp.diff(63) < 0).astype(float)
+            feat['fred_manemp_zscore']      = calc_zscore(pmi_emp.pct_change(63).fillna(0), 252)
         if pmi_price is not None:
-            feat['fred_pmi_price_above60'] = (pmi_price > 60).astype(float)
-            feat['fred_pmi_price_zscore']  = calc_zscore(pmi_price, 252)
+            # ★ PPIACO: 생산자물가지수 — YoY로 인플레 압력 프록시
+            feat['fred_ppi_yoy']            = pmi_price.pct_change(252) * 100
+            feat['fred_ppi_above_5pct']     = (pmi_price.pct_change(252) * 100 > 5).astype(float)
+            feat['fred_ppi_zscore']         = calc_zscore(pmi_price.pct_change(252).fillna(0), 252)
+            feat['fred_ppi_accelerating']   = (pmi_price.pct_change(63) > pmi_price.pct_change(63).shift(63)).astype(float)
 
         # ── 13G. 소비자 신뢰 ───────────────────────────────────
         umcsi = _fred('UMCSENT'); umcsi_inf = _fred('MICH')
@@ -2123,7 +2580,7 @@ def compute_features(ohlcv, closes, fred_df=None):
         if hy_oas is not None:   recession_score += (hy_oas > hy_oas.rolling(252).mean() +
                                                       hy_oas.rolling(252).std()).astype(float)
         if unrate is not None:   recession_score += feat.get('fred_sahm_trigger', pd.Series(0, index=feat.index))
-        if pmi is not None:      recession_score += (pmi < 50).astype(float)
+        if pmi is not None:      recession_score += (pmi < 0).astype(float)   # ★ CFNAI 0 = 확장/수축 경계
         if umcsi is not None:    recession_score += (umcsi < umcsi.rolling(252).mean()).astype(float)
         if icsa is not None:     recession_score += feat.get('fred_icsa_spike', pd.Series(0, index=feat.index))
         feat['fred_composite_recession_score'] = recession_score
@@ -3123,6 +3580,247 @@ def compute_features(ohlcv, closes, fred_df=None):
     feat['stagflation_composite_v2'] = stag_score
 
 # ══════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
+    #  17.5. ★ 하락 방지 신규 지표 (요청 반영) ─ 기존 지표와 중복 無
+    #  ─────────────────────────────────────────────────────────────
+    #  이 블록은 PEERS에 다운로드되지만 코드에서 한 번도 사용되지 않던
+    #  ^VIX9D / ^VIX3M / ^VIX6M / ^SKEW / ^MOVE를 활용하고,
+    #  다음 하락-특화 신규 지표를 추가한다:
+    #    17.5A VIX Term Structure (기간구조) — 백워데이션 조기 감지
+    #    17.5B ^SKEW 지수 (꼬리위험 프리미엄)
+    #    17.5C ^MOVE (채권 변동성) 및 VIX-MOVE 갭
+    #    17.5D 200일선 위 거주기간 (Fatigue days)
+    #    17.5E Yield-curve twist 3D 스코어 (level/slope/curvature)
+    #    17.5F 채권-주식 상관 레짐 (양의 상관 = 균형 붕괴)
+    #    17.5G VIX 스파이크 반감기 (안정성 지표)
+    #    17.5H HYG-LQD 스프레드 확대 속도
+    #    17.5I 통화 안전자산 동시 강세
+    #    17.5J 섹터 베타 수렴 (crisis correlation)
+    # ══════════════════════════════════════════════════════════════
+
+    vix_ma = closes.get('^VIX')
+
+    # ── 17.5A. VIX Term Structure (VIX9D/VIX/VIX3M/VIX6M) ──────────
+    # 이론: 정상 시장은 콘탱고 (VIX < VIX3M < VIX6M).
+    #       백워데이션(VIX9D > VIX > VIX3M)은 임박 위기의 대표 신호.
+    vix9d  = closes.get('^VIX9D')
+    vix3m  = closes.get('^VIX3M')
+    vix6m  = closes.get('^VIX6M')
+
+    if vix_ma is not None and vix9d is not None:
+        ratio_9d = vix9d / vix_ma.replace(0, np.nan)
+        feat['vix_term_9d_over_vix']          = ratio_9d
+        feat['vix_term_9d_over_vix_zscore60'] = calc_zscore(ratio_9d, 60)
+        # 9D > VIX → 초단기 공포 편중 (뉴스 발표 대기 등 이벤트 위험)
+        feat['vix_term_9d_backwardation']     = (ratio_9d > 1.05).astype(float)
+        feat['vix_term_9d_bw_5d_sum']         = feat['vix_term_9d_backwardation'].rolling(5).sum()
+
+    if vix_ma is not None and vix3m is not None:
+        ratio_3m = vix_ma / vix3m.replace(0, np.nan)
+        # 정상 콘탱고면 <1, 백워데이션이면 >1 (VIX가 3개월 만기보다 비쌈)
+        feat['vix_term_slope_3m_ratio']       = ratio_3m
+        feat['vix_term_3m_zscore60']          = calc_zscore(ratio_3m, 60)
+        feat['vix_term_backwardation_3m']     = (ratio_3m > 1.0).astype(float)
+        feat['vix_term_bw_persistence_5d']    = feat['vix_term_backwardation_3m'].rolling(5).sum()
+        feat['vix_term_bw_persistence_10d']   = feat['vix_term_backwardation_3m'].rolling(10).sum()
+        # 백워데이션 진입 (전날 대비 새로 나타남)
+        feat['vix_term_bw_entry_flag']        = (
+            (feat['vix_term_backwardation_3m'] == 1) &
+            (feat['vix_term_backwardation_3m'].shift(1) == 0)
+        ).astype(float)
+
+    if vix_ma is not None and vix6m is not None:
+        feat['vix_term_slope_6m_ratio']       = vix_ma / vix6m.replace(0, np.nan)
+        feat['vix_term_slope_6m_diff']        = vix_ma - vix6m
+        feat['vix_term_6m_zscore60']          = calc_zscore(vix_ma / vix6m.replace(0, np.nan), 60)
+
+    if vix3m is not None and vix6m is not None:
+        # 3m/6m — 중기 곡선 (steep = 완화적, 플랫 = 긴장)
+        feat['vix_term_mid_slope']            = vix3m / vix6m.replace(0, np.nan)
+        feat['vix_term_mid_flat_flag']        = (
+            (vix3m / vix6m.replace(0, np.nan) - 1).abs() < 0.02
+        ).astype(float)
+
+    # ── 17.5B. ^SKEW 지수 (꼬리위험 프리미엄) ──────────────────────
+    # 이론: SKEW>140이면 시장이 큰 하락(black swan)에 프리미엄 지불 중.
+    #       SKEW 급등 + VIX 정상 = "조용한 헤지" (스마트머니 시그널).
+    skew_i = closes.get('^SKEW')
+    if skew_i is not None:
+        feat['skew_level']                    = skew_i
+        feat['skew_5d_chg']                   = skew_i.diff(5)
+        feat['skew_20d_chg']                  = skew_i.diff(20)
+        feat['skew_zscore_60']                = calc_zscore(skew_i, 60)
+        feat['skew_zscore_252']               = calc_zscore(skew_i, 252)
+        feat['skew_pctrank_252']              = calc_pctrank(skew_i, 252)
+        feat['skew_above_140']                = (skew_i > 140).astype(float)
+        feat['skew_above_150']                = (skew_i > 150).astype(float)
+        # SKEW 극단 + VIX 저점 = 스마트머니 조용한 헤지 (가장 강한 선행 신호)
+        if vix_ma is not None:
+            feat['skew_high_vix_low_flag']    = (
+                (skew_i > skew_i.rolling(60).quantile(0.80)) &
+                (vix_ma < vix_ma.rolling(60).quantile(0.30))
+            ).astype(float)
+            # SKEW/VIX 비율 - 프리미엄 배율
+            feat['skew_vix_ratio']            = skew_i / vix_ma.replace(0, np.nan)
+            feat['skew_vix_ratio_zscore60']   = calc_zscore(feat['skew_vix_ratio'], 60)
+        # SKEW 상승 지속 (여러 날 계속 오르면 신뢰도↑)
+        feat['skew_rising_5d']                = (skew_i.diff(5) > 5).astype(float)
+        feat['skew_persistent_high_10d']      = (skew_i > 140).astype(float).rolling(10).sum()
+
+    # ── 17.5C. ^MOVE (채권 변동성 지수) & VIX-MOVE 갭 ───────────────
+    # 이론: MOVE는 채권판 VIX. MOVE 급등이 VIX 급등에 선행하는 경우가 많음
+    #       (신용시장이 주식보다 스마트).
+    move_i = closes.get('^MOVE')
+    if move_i is not None:
+        feat['move_level']                    = move_i
+        feat['move_5d_chg']                   = move_i.pct_change(5)
+        feat['move_20d_chg']                  = move_i.pct_change(20)
+        feat['move_zscore_60']                = calc_zscore(move_i, 60)
+        feat['move_zscore_252']               = calc_zscore(move_i, 252)
+        feat['move_pctrank_252']              = calc_pctrank(move_i, 252)
+        feat['move_above_120']                = (move_i > 120).astype(float)
+        feat['move_above_150']                = (move_i > 150).astype(float)
+        # MOVE 5일 급등 (이벤트 프록시)
+        feat['move_spike_5d']                 = (move_i.pct_change(5) > 0.15).astype(float)
+        # MOVE 상승 + VIX 정체 = 채권시장이 먼저 위험 감지
+        if vix_ma is not None:
+            feat['move_leads_vix_5d']         = (
+                (move_i.pct_change(5) > 0.10) & (vix_ma.pct_change(5) < 0.05)
+            ).astype(float)
+            feat['move_vix_ratio']            = move_i / vix_ma.replace(0, np.nan)
+            feat['move_vix_ratio_zscore60']   = calc_zscore(feat['move_vix_ratio'], 60)
+            # MOVE와 VIX 둘 다 급등 = 시스템 리스크 (금융위기 유형)
+            feat['move_vix_dual_spike']       = (
+                (move_i.pct_change(5) > 0.10) & (vix_ma.pct_change(5) > 0.10)
+            ).astype(float)
+
+    # ── 17.5D. 200일선 위 거주기간 (Fatigue Days above SMA200) ──────
+    # 이론: 200일선 위 거주기간이 길수록 조정 확률 ↑ (평균회귀 압력).
+    sma200 = cl.rolling(200).mean()
+    above_sma200 = (cl > sma200).astype(float)
+    # 연속 거주일수 계산 (streak)
+    grp = (above_sma200 != above_sma200.shift()).cumsum()
+    feat['days_above_sma200_streak']     = above_sma200.groupby(grp).cumsum().where(above_sma200 == 1, 0)
+    feat['sma200_fatigue_over_200d']     = (feat['days_above_sma200_streak'] > 200).astype(float)
+    feat['sma200_fatigue_over_400d']     = (feat['days_above_sma200_streak'] > 400).astype(float)
+    # 200일선 위 거주기간 z-score (역사 대비)
+    feat['sma200_streak_zscore_500']     = calc_zscore(feat['days_above_sma200_streak'], 500)
+    # 200일선 위 + 종가가 200일선에서 20% 이상 위 = 과열 피로
+    feat['sma200_dist_excess_20pct']     = (
+        (cl / sma200 - 1 > 0.20) & (above_sma200 == 1)
+    ).astype(float)
+
+    # ── 17.5E. Yield-curve twist 3D 스코어 ─────────────────────────
+    # 이론: 커브의 level·slope·curvature 3차원 동시 변화 방향.
+    #       Bear steepener (level↑ slope↑) 또는 Bull flattener 등 특정 조합이 위험 신호.
+    tnx3d = closes.get('^TNX'); irx3d = closes.get('^IRX'); tyx3d = closes.get('^TYX')
+    if tnx3d is not None and irx3d is not None and tyx3d is not None:
+        # Level = 3개 평균 (금리 전반 위치)
+        yc_level     = (tnx3d + irx3d + tyx3d) / 3
+        # Slope = 30y - 3m (장단기 스프레드)
+        yc_slope     = tyx3d - irx3d
+        # Curvature = 2*10y - 3m - 30y (2s10s-butterfly)
+        yc_curvature = 2 * tnx3d - irx3d - tyx3d
+        feat['yc_level']                     = yc_level
+        feat['yc_slope']                     = yc_slope
+        feat['yc_curvature']                 = yc_curvature
+        feat['yc_slope_20d_chg']             = yc_slope.diff(20)
+        feat['yc_curvature_20d_chg']         = yc_curvature.diff(20)
+        # Bear steepener (level↑ + slope↑) — 인플레 우려 + 침체 우려 동시
+        feat['yc_bear_steepener_20d']        = (
+            (yc_level.diff(20) > 0.2) & (yc_slope.diff(20) > 0.1)
+        ).astype(float)
+        # Bull flattener (level↓ + slope↓) — 침체 임박 & 완화 기대
+        feat['yc_bull_flattener_20d']        = (
+            (yc_level.diff(20) < -0.2) & (yc_slope.diff(20) < -0.1)
+        ).astype(float)
+        # Curvature 극단 (커브 꺾임 심함)
+        feat['yc_curvature_zscore_252']      = calc_zscore(yc_curvature, 252)
+        feat['yc_curvature_extreme_flag']    = (feat['yc_curvature_zscore_252'].abs() > 1.5).astype(float)
+
+    # ── 17.5F. 채권-주식 상관 레짐 ─────────────────────────────────
+    # 이론: 정상 시장은 채권-주식 음의 상관 (분산). 양의 상관 (동반 하락) = 인플레 쇼크 유형.
+    if tlt is not None:
+        r_stk = cl.pct_change()
+        r_bnd = tlt.pct_change()
+        for p in [20, 60]:
+            corr_p = r_stk.rolling(p).corr(r_bnd)
+            feat[f'stock_bond_corr_{p}d']    = corr_p
+            feat[f'stock_bond_corr_pos_flag_{p}'] = (corr_p > 0).astype(float)
+            feat[f'stock_bond_corr_extreme_pos_{p}'] = (corr_p > 0.3).astype(float)
+        # 상관 regime shift (음→양 전환은 큰 위험 신호)
+        feat['stock_bond_corr_regime_flip']  = (
+            (feat['stock_bond_corr_20d'] > 0) & (feat['stock_bond_corr_20d'].shift(20) < 0)
+        ).astype(float)
+
+    # ── 17.5G. VIX 스파이크 반감기 (안정성 지표) ───────────────────
+    # 이론: VIX 급등 후 얼마나 빨리 정상으로 돌아오는가.
+    #       회복 느림 = 시장 스트레스 지속 = 하락 재개 위험.
+    if vix_ma is not None:
+        vix_max_20 = vix_ma.rolling(20).max()
+        # 20일 최고점 대비 현재 위치 (1 = 최고점, 0 = 정상)
+        feat['vix_recovery_from_20d_peak']   = vix_ma / vix_max_20.replace(0, np.nan)
+        # 최근 20일 VIX가 25 이상이었던 날 수
+        feat['vix_stress_days_20d']          = (vix_ma > 25).astype(float).rolling(20).sum()
+        feat['vix_stress_days_60d']          = (vix_ma > 25).astype(float).rolling(60).sum()
+        # VIX 20일 z-score의 평활 (안정성)
+        feat['vix_smoothed_zscore']          = calc_zscore(vix_ma, 60).rolling(5).mean()
+        # VIX 재상승 (일단 하락 후 다시 상승)
+        feat['vix_rebound_from_low']         = (
+            (vix_ma > vix_ma.rolling(10).min() * 1.15) &
+            (vix_ma.rolling(10).min() < vix_ma.rolling(60).median() * 0.8)
+        ).astype(float)
+
+    # ── 17.5H. HYG-LQD 스프레드 확대 속도 (신용 조기경보) ──────────
+    # 이론: 하이일드(HYG) 스프레드가 IG(LQD) 대비 확대 = 신용 리스크 감지.
+    #       확대 '속도'가 빠를수록 위험 임박.
+    _hyg_i = closes.get('HYG'); _lqd_i = closes.get('LQD')
+    if _hyg_i is not None and _lqd_i is not None:
+        hyg_lqd_diff = _hyg_i.pct_change(20) - _lqd_i.pct_change(20)
+        feat['hyg_lqd_diff_20d']             = hyg_lqd_diff
+        # 확대 속도 (다이버전스 5일 변화)
+        feat['hyg_lqd_widening_5d']          = hyg_lqd_diff - hyg_lqd_diff.shift(5)
+        feat['hyg_lqd_widening_zscore60']    = calc_zscore(feat['hyg_lqd_widening_5d'], 60)
+        # HYG 급락 + LQD 안정 = 정크본드만 스트레스 (전형적 조기 신호)
+        feat['hyg_lqd_credit_stress']        = (
+            (_hyg_i.pct_change(10) < -0.02) & (_lqd_i.pct_change(10) > -0.005)
+        ).astype(float)
+
+    # ── 17.5I. 통화 안전자산 동시 강세 (VIG+DXY 등) ──────────────────
+    # 이론: FXY(엔) + UUP(달러) 동시 강세 = 글로벌 위험자산 청산 유입.
+    fxy_c5 = closes.get('FXY'); uup_c5 = closes.get('UUP')
+    if fxy_c5 is not None and uup_c5 is not None:
+        feat['fxy_uup_both_up_5d']           = (
+            (fxy_c5.pct_change(5) > 0.005) & (uup_c5.pct_change(5) > 0.005)
+        ).astype(float)
+        feat['fxy_uup_both_up_10d']          = (
+            (fxy_c5.pct_change(10) > 0.01) & (uup_c5.pct_change(10) > 0.01)
+        ).astype(float)
+        # FXY-UUP 상관 급등 (동조 = 극단적 리스크 오프)
+        feat['fxy_uup_corr_20d']             = fxy_c5.pct_change().rolling(20).corr(uup_c5.pct_change())
+
+    # ── 17.5J. 섹터 베타 수렴 (Correlation Crisis) ──────────────────
+    # 이론: 위기 시 모든 섹터가 SPY와 함께 움직임 (베타 → 1로 수렴).
+    #       평상시 분산 → 위기 시 수렴 = 다변화 실패 신호.
+    if len(sec_avail) >= 5 and 'SPY' in closes.columns and TICKER != 'SPY':
+        spy_r = closes['SPY'].pct_change()
+        betas = pd.DataFrame({
+            s: closes[s].pct_change().rolling(60).cov(spy_r) /
+               spy_r.rolling(60).var().replace(0, np.nan)
+            for s in sec_avail
+        })
+        beta_spread = betas.std(axis=1)               # 섹터 간 베타 표준편차
+        feat['sector_beta_dispersion_60d']   = beta_spread
+        # 수렴 (분산 급감) → 모두 함께 움직이는 위기 국면
+        feat['sector_beta_convergence_flag'] = (
+            beta_spread < beta_spread.rolling(252).quantile(0.20)
+        ).astype(float)
+        feat['sector_beta_dispersion_zscore'] = calc_zscore(beta_spread, 252)
+        # 평균 베타 (전체 시장 민감도)
+        feat['sector_avg_beta_60d']          = betas.mean(axis=1)
+
+
+    # ══════════════════════════════════════════════════════════
     #  18. 신규 핵심 하락 선행 지표 (~200개)
     #      — 팩터 로테이션·역사적 붕괴 패턴·금융조건지수·
     #        차트패턴 계량화·수학 심화(적분/고차미분/위상공간/
@@ -4368,7 +5066,7 @@ def compute_features(ohlcv, closes, fred_df=None):
         feat[f'cape_to_mean_{_ny}y']   = cl / _mean_n.replace(0, np.nan)
         # 그 비율이 얼마나 극단적인가 (z-score, 분위수)
         feat[f'cape_to_mean_{_ny}y_zscore252'] = calc_zscore(
-            (cl / _mean_n.replace(0, np.nan)).fillna(method='ffill'), 252)
+            (cl / _mean_n.replace(0, np.nan)).ffill(), 252)
         feat[f'cape_to_mean_{_ny}y_pctrank252'] = calc_pctrank(
             (cl / _mean_n.replace(0, np.nan)).fillna(0), 252)
 
@@ -4550,7 +5248,7 @@ def compute_features(ohlcv, closes, fred_df=None):
     # 기존 shiller_cape_proxy (원본에 있음)
     if 'shiller_cape_proxy' in feat.columns:
         _sc = feat['shiller_cape_proxy']
-        _cape_composite += calc_zscore(_sc.fillna(method='ffill'), 252).fillna(0)
+        _cape_composite += calc_zscore(_sc.ffill(), 252).fillna(0)
         _cape_cnt += 1
 
     # 새로 만든 CAPE들
@@ -4558,7 +5256,7 @@ def compute_features(ohlcv, closes, fred_df=None):
                   f'cape_to_geomean_3y', f'log_trend_ratio_504d',
                   f'ann_ret_cagr_3y']:
         if _key in feat.columns:
-            _v = feat[_key].fillna(method='ffill')
+            _v = feat[_key].ffill()
             _v_z = calc_zscore(_v, 252).fillna(0)
             _cape_composite += _v_z
             _cape_cnt += 1
