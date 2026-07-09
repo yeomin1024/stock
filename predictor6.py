@@ -10561,7 +10561,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~3% (요청: 실행시간 단축)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
@@ -10590,7 +10590,7 @@ NET_MULTI_THRESHOLD_WEIGHT = True
 #   목적: 과거 적합이 아니라 '미래에도 유지되는 신호'를 우대해 매수/매도 시점 예측력↑.
 # (1) z-스코어 신호: 절대 임계 대신 롤링 z=(x-평균)/표준편차에도 임계를 걸어 신호 생성.
 #     시장 레짐이 바뀌어도 '평균 대비 몇 시그마'는 의미가 유지됨 → 미래 일반화에 강함.
-USE_ZSCORE_SIGNAL   = False   # ★ 끔(요청: 실행시간 단축) — True면 절대임계 + z스코어임계 두 방식 평가
+USE_ZSCORE_SIGNAL   = False    # True면 각 지표를 절대임계 + z스코어임계 두 방식으로 평가
 ZSCORE_WINDOW       = 60      # z스코어 롤링 창(거래일). 약 3개월.
 ZSCORE_THRESHOLDS   = [-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5]  # z 임계 후보 (요청 확장)
 # (2) OOS 안정성 가중: 지표 점수를 '전체기간 Wilson'에만 의존하지 말고,
@@ -10604,6 +10604,34 @@ OOS_STABILITY_WEIGHT = 0.3    # 안정성 가중 강도 (0=기존과 동일, 1=�
 USE_BIG_MOVE_BONUS   = True   # True면 큰움직임 적중비율을 점수에 가산
 BIG_MOVE_THRESHOLD   = 0.03   # 신호 뒤 horizon 내 유리방향 최대변동이 이 값(3%) 이상이면 '큰 움직임'
 BIG_MOVE_BONUS_WEIGHT = 0.5   # 가산 강도: score *= (1 + W * 큰움직임적중비율)
+
+# ════════════════════════════════════════════════════════════════
+# ★ 지표 선출·점수 개선 (요청) — 매매 규칙(KL 순신호)은 유지, 지표 선별만 개선.
+#   각 아이디어는 개별 flag로 켜고 끔. A/B 검증(SELECTION_AB_VERIFY)이 자동으로 켜져서
+#   각 flag의 ON/OFF 성적(수익률·MDD·보유중하락)을 엑셀 시트에 남긴다.
+# ════════════════════════════════════════════════════════════════
+# [SEL-1] 풀 정렬 기준 선택 — 현재는 raw success_rate. 대안: expected(SR×평균움직임),
+#   wilson(하한 = 표본크기 반영), skill(SR − 기저확률 = 순 알파).
+POOL_RANK_BY = 'success'        # 'success' | 'expected' | 'wilson' | 'skill'
+# [SEL-2] 신호 후 '불리방향' 감점 — 성공률은 좋아도 신호 후 큰 손실을 겪는 지표 강등.
+#   avg_adverse = 신호 후 horizon 내 평균 최악 불리방향(매수=최저하락, 매도=최고상승).
+USE_ADVERSE_PENALTY   = True
+ADVERSE_PENALTY_WEIGHT = 0.5     # score *= max(0.5, 1 − W × |avg_adverse|/limit)
+# [SEL-3] 지표당 최대 임계 개수 — 지표당 상위 K개(성공률순)만 유지 → 풀 노이즈↓, 다양성↑.
+MAX_THRESHOLDS_PER_INDICATOR = 3   # 0 = 무제한 (기존과 동일)
+# [SEL-4] 홀드아웃 감쇠 감점 — 훈련 vs 홀드아웃 스킬 감쇠가 크면 강등. enrichment의
+#   skill/skill_holdout 활용.  감쇠 = max(0, skill − skill_holdout).
+USE_HOLDOUT_DECAY_PENALTY = True
+HOLDOUT_DECAY_WEIGHT      = 1.0  # score *= max(0.5, 1 − W × 감쇠)
+# [SEL-5] 신호수 하한 적응 — 절대치 10 대신 데이터 길이의 X% 이상 요구 (더 안정된 소표본 방어).
+USE_ADAPTIVE_MIN_SIG = False
+ADAPTIVE_MIN_SIG_PCT = 0.03       # 전체 거래일의 3% 이상 (예: 500일→15개)
+
+# ★ A/B 검증 (요청) — 각 개선 아이디어의 ON/OFF 성적을 KL 백테스트로 비교해 엑셀 시트로 저장.
+#   Baseline = 모든 신규 flag OFF (원본 로직) → 각 flag 하나씩 켜서 개별 기여 측정
+#   →  전부 켠 조합(현재 defaults)까지 총 N+2회 KL 백테스트.  시간 소폭 증가.
+SELECTION_AB_VERIFY = True         # False면 A/B 검증 건너뛰고 실행 로그만 남김
+SELECTION_AB_QUICK  = False        # True면 각 flag 개별 ON만 하고 조합은 생략 (시간 절약)
 
 # ════════════════════════════════════════════════════════════════
 # ★ 미래 예측 로직 개선 (요청) — 리드타임 탐색 · 스킬 필터 · 홀드아웃 가드 · 검증 시트
@@ -10628,20 +10656,6 @@ LEAD_SHIFT_HO_TOL   = 0.02     # 지연 채택 시 홀드아웃 스킬 허용 �
 #     선출 시 지연 d(0~MAX)를 함께 탐색해 최적 d로 성공률을 계산하면 이런 선행 지표가
 #     처음부터 풀에 들어온다. (d 선택은 훈련구간 스킬 + 홀드아웃 가드 — 과최적화 방지)
 LEAD_SELECT_IN_SCORING = True
-# (2c) ★ 지연 채택 홀드아웃 증거 요건 (WDC 실데이터 점검 후 보강) — d>0 지연은 홀드아웃
-#     구간에 신호가 최소 LEAD_SHIFT_MIN_HO_SIG개 있고 그 스킬이 유지될 때만 채택.
-#     (기존엔 홀드아웃 신호가 0~2개면 가드가 조용히 통과 → 훈련구간만으로 지연이 채택되는
-#      과최적화 구멍이 있었음. 예: WDC corr_spy_60d d=3 — 홀드아웃 신호 0개로 채택됨)
-LEAD_SHIFT_REQUIRE_HO  = True
-LEAD_SHIFT_MIN_HO_SIG  = 3
-# (2d) ★ 그리드 선정 0거래 방지 (WDC 실데이터 점검 후 보강) — 최종 일별 백테스트가 0거래면
-#     밴드 내 다음 후보로 자동 교체(최대 N회). 그리드 시뮬≠최종 백테스트 괴리 안전망.
-FINAL_ZERO_TRADE_FALLBACK = True
-FINAL_ZERO_TRADE_TRIES    = 4
-# (2e) ★ KL 히스테리시스 K=L 극단 회피 (WDC 3회차 점검: KL top1이 K=-0.718/L=-0.718로 K=L,
-#     사실상 net>K로 축퇴됐고 히스테리시스 이점 무효화. 아래 옵션으로 K와 L의 최소 갭 강제).
-KL_MIN_GAP_ENABLE = True
-KL_MIN_GAP_PCT    = 0.10        # net 범위(max-min) 대비 K-L 최소 갭 비율 (10%)
 # (3) 삼중배리어 판정 (리드 탐색용) — h일 이내 '유리 한도'가 '불리 한도'보다 먼저 도달해야 성공.
 #     긴 h에서 '먼저 -3% 빠졌다가 나중에 +1% 회복'을 성공으로 세는 왜곡 제거 (실전 손절 현실 반영).
 #     ※ 체결 지평(HORIZON_DAYS=1) 성공 판정은 기존 정의 그대로 유지 — 풀 선출 기준 불변.
@@ -10856,9 +10870,9 @@ STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-�
 SKIP_GRID_VOTE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
-STAGE_WILSON_Z    = [1.95]           # ★ 축소(요청)
-STAGE_WILSON_REFINE_STEP = 0         # ★ 미세탐색 끔(요청)
-STAGE_CORR_LIMIT  = [0.2]            # ★ 축소(요청)
+STAGE_WILSON_Z    = [1.95]
+STAGE_WILSON_REFINE_STEP = 0
+STAGE_CORR_LIMIT  = [0.2]
 
 # ============================================================
 # ★ 테스트 모드 — 빠르게 동작만 확인할 때 True. (정식 분석은 False)
@@ -11240,6 +11254,40 @@ def _eval_big_move_hits(close_arr, signal_arr, horizon, big_thr, is_buy):
             ns += 1
             if mn / base_p - 1.0 <= -big_thr: hit += 1
     return ns, hit
+
+
+@njit(cache=True)
+def _eval_avg_adverse(close_arr, signal_arr, horizon, is_buy):
+    """★ [SEL-2] 신호 후 '불리방향' 평균 (지표 선출 감점용).
+       매수신호(is_buy=1): 신호일 종가 대비 horizon 내 최저 하락률의 평균 (음수, 유리하면 0).
+       매도신호(is_buy=0): 신호일 종가 대비 horizon 내 최고 상승률의 평균 (양수, 유리하면 0).
+       반환: (n_signals, avg_adverse). n_signals=0면 avg_adverse=0.
+       — 성공률만 좋아도 신호 후 큰 손실을 겪는 지표는 이 값으로 강등된다."""
+    n = close_arr.shape[0]
+    h = horizon if horizon >= 1 else 1
+    ns = 0; sum_adv = 0.0
+    for i in range(n - 1):
+        if signal_arr[i] != 1: continue
+        base_p = close_arr[i]
+        if base_p <= 0.0: continue
+        end = i + h
+        if end > n - 1: end = n - 1
+        if end <= i: continue
+        if is_buy == 1:
+            worst = 0.0                # 최저 하락 (음수 or 0)
+            for j in range(i + 1, end + 1):
+                r = close_arr[j] / base_p - 1.0
+                if r < worst: worst = r
+            sum_adv += worst
+        else:
+            worst = 0.0                # 최고 상승 (양수 or 0) - 매도인데 오르면 불리
+            for j in range(i + 1, end + 1):
+                r = close_arr[j] / base_p - 1.0
+                if r > worst: worst = r
+            sum_adv += worst
+        ns += 1
+    if ns == 0: return 0, 0.0
+    return ns, sum_adv / ns
 
 
 @njit(cache=True)
@@ -11691,9 +11739,6 @@ def _best_shift_for_side(sig_arr, hit0, ev0, *, split, min_sig, d_max, min_gain,
     n_tr0, sr_tr0, n_ho0, sr_ho0 = _stats(0)
     sk_tr0 = (sr_tr0 - b_tr) if (n_tr0 > 0 and np.isfinite(sr_tr0) and np.isfinite(b_tr)) else -1e18
     sk_ho0 = ((sr_ho0 - b_ho) if (n_ho0 >= 3 and np.isfinite(sr_ho0) and np.isfinite(b_ho)) else None)
-    req_ho = bool(globals().get('LEAD_SHIFT_REQUIRE_HO', True))
-    min_ho = int(globals().get('LEAD_SHIFT_MIN_HO_SIG', 3))
-    _st = globals().setdefault('_SHIFT_STATS', {'adopt': 0, 'reject_ho_few': 0, 'reject_ho_drop': 0})
     best_d = 0; best_sk = sk_tr0
     for d in range(1, int(d_max) + 1):
         n_tr, sr_tr, n_ho, sr_ho = _stats(d)
@@ -11702,27 +11747,11 @@ def _best_shift_for_side(sig_arr, hit0, ev0, *, split, min_sig, d_max, min_gain,
         sk_tr = sr_tr - b_tr
         if sk_tr - sk_tr0 < min_gain:
             continue
-        # ★ 홀드아웃 증거 요건 (2c) — 지연 d의 홀드아웃 신호가 min_ho개 이상 있어야 하고,
-        #   그 스킬이 기준(d=0 홀드아웃 스킬 있으면 그 값-허용폭, 없으면 0) 이상이어야 채택.
-        #   훈련구간 성적만으로 지연을 채택하는 과최적화 구멍을 막는다.
-        if req_ho:
-            if n_ho < min_ho or not (np.isfinite(sr_ho) and np.isfinite(b_ho)):
-                _st['reject_ho_few'] += 1
-                continue
-            sk_ho_d = sr_ho - b_ho
-            floor = (sk_ho0 - ho_tol) if sk_ho0 is not None else 0.0
-            if sk_ho_d < floor:
-                _st['reject_ho_drop'] += 1
-                continue
-        else:
-            if sk_ho0 is not None and n_ho >= 3 and np.isfinite(sr_ho) and np.isfinite(b_ho):
-                if (sr_ho - b_ho) < sk_ho0 - ho_tol:
-                    _st['reject_ho_drop'] += 1
-                    continue      # 홀드아웃에서 무너지는 지연은 미채택
+        if sk_ho0 is not None and n_ho >= 3 and np.isfinite(sr_ho) and np.isfinite(b_ho):
+            if (sr_ho - b_ho) < sk_ho0 - ho_tol:
+                continue      # 홀드아웃에서 무너지는 지연은 미채택
         if sk_tr > best_sk + 1e-12:
             best_sk = sk_tr; best_d = d
-    if best_d > 0:
-        _st['adopt'] += 1
     return best_d
 
 
@@ -11816,8 +11845,6 @@ def enrich_pool_with_lead_and_skill(feat, close, pool_df, is_buy, *, verbose=Tru
             d_cap = min(shift_max - d0, max(int(rd.get('best_lead', hz)) - 1 - d0, 0))
             sk_tr0 = (s0['sr_tr'] - s0['b_tr']) if np.isfinite(s0['sr_tr']) else -1e18
             sk_ho0 = (s0['sr_ho'] - s0['b_ho']) if (s0['n_ho'] >= 3 and np.isfinite(s0['sr_ho'])) else None
-            _req_ho = bool(g.get('LEAD_SHIFT_REQUIRE_HO', True))
-            _min_ho = int(g.get('LEAD_SHIFT_MIN_HO_SIG', 3))
             cur_best_tr = sk_tr0
             for d in range(1, d_cap + 1):
                 sd = _seg(_shift_signal_forward(sig, d0 + d))
@@ -11826,14 +11853,7 @@ def enrich_pool_with_lead_and_skill(feat, close, pool_df, is_buy, *, verbose=Tru
                 sk_tr_d = sd['sr_tr'] - sd['b_tr']
                 if sk_tr_d - sk_tr0 < shift_gain:
                     continue
-                if _req_ho:
-                    # ★ 홀드아웃 증거 요건 (2c) — 신호 부족/스킬 붕괴 시 미채택
-                    if sd['n_ho'] < _min_ho or not np.isfinite(sd['sr_ho']):
-                        continue
-                    _floor = (sk_ho0 - ho_tol) if sk_ho0 is not None else 0.0
-                    if (sd['sr_ho'] - sd['b_ho']) < _floor:
-                        continue
-                elif sk_ho0 is not None and sd['n_ho'] >= 3 and np.isfinite(sd['sr_ho']):
+                if sk_ho0 is not None and sd['n_ho'] >= 3 and np.isfinite(sd['sr_ho']):
                     if (sd['sr_ho'] - sd['b_ho']) < sk_ho0 - ho_tol:
                         continue            # 홀드아웃에서 무너지는 지연은 미채택
                 if sk_tr_d > cur_best_tr + 1e-12:
@@ -11972,7 +11992,6 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
         _split   = max(30, int(round(n_days * (1.0 - _ho_frac))))
         _bhit, _bev = _hit_flags_cached(close_arr, horizon, dd_limit, 1, False)
         _shit, _sev = _hit_flags_cached(close_arr, horizon, ru_limit, 0, False)
-        globals()['_SHIFT_STATS'] = {'adopt': 0, 'reject_ho_few': 0, 'reject_ho_drop': 0}
 
     buy_rows = []; sell_rows = []
     for col in indicators:
@@ -12029,13 +12048,6 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
     cols = ['indicator', 'direction', 'pct_label', 'threshold',
             'n_signals', 'n_success', 'success_rate', 'avg_extreme', 'score',
             'lead_shift']
-    if lead_sel:
-        _st = globals().get('_SHIFT_STATS', {})
-        if _st.get('adopt', 0) or _st.get('reject_ho_few', 0) or _st.get('reject_ho_drop', 0):
-            print(f"      · 지연 탐색(선출): 채택 {_st.get('adopt',0)}건 / "
-                  f"홀드아웃 신호부족 기각 {_st.get('reject_ho_few',0)}건 / "
-                  f"홀드아웃 스킬하락 기각 {_st.get('reject_ho_drop',0)}건 "
-                  f"(요건: 홀드아웃 신호≥{int(globals().get('LEAD_SHIFT_MIN_HO_SIG',3))}개 & 스킬 유지)")
     buy_df  = pd.DataFrame(buy_rows,  columns=cols)
     sell_df = pd.DataFrame(sell_rows, columns=cols)
     if globals().get('POOL_SELECT_BY_SUCCESS', False):
@@ -12275,6 +12287,100 @@ def _diversify_keep_thresholds(feat, score_df, *, top_n, corr_limit):
     return pd.DataFrame(kept)
 
 
+def _compute_avg_adverse_for_pool(feat, close, pool_df, is_buy, horizon=1):
+    """[SEL-2] 풀의 각 (지표,임계) 행에 avg_adverse 열 추가.
+       매수: 신호 후 horizon 내 최저하락률 평균 (음수), 매도: 최고상승률 평균 (양수)."""
+    if pool_df is None or len(pool_df) == 0:
+        return pool_df
+    close_arr = np.asarray(close.values, dtype=np.float64)
+    out = pool_df.copy()
+    advs = []
+    for _, row in out.iterrows():
+        try:
+            sig = _to_signal_array(feat, row).astype(np.uint8)
+            n_, adv = _eval_avg_adverse(close_arr, sig, int(horizon), 1 if is_buy else 0)
+            advs.append(float(adv) if n_ > 0 else 0.0)
+        except Exception:
+            advs.append(0.0)
+    out['avg_adverse'] = advs
+    return out
+
+
+def _rank_pool_by_selection(pool_df, is_buy, *, dd_limit=0.01, verbose=False):
+    """★ [SEL-1/2/4] 풀을 개선된 정렬 기준으로 재정렬.
+       POOL_RANK_BY: 'success' | 'expected' | 'wilson' | 'skill'
+       USE_ADVERSE_PENALTY: True면 신호 후 불리방향 크기로 감점
+       USE_HOLDOUT_DECAY_PENALTY: True면 훈련→홀드아웃 스킬 감쇠로 감점
+       원본 success_rate 컬럼은 보존, 'rank_score' 컬럼을 추가해 그 값으로 정렬.
+       enrichment가 부여한 skill/skill_holdout/base_rate/avg_adverse가 없으면 성공률로 폴백."""
+    g = globals()
+    if pool_df is None or len(pool_df) == 0:
+        return pool_df
+    df = pool_df.copy()
+    rank_by = str(g.get('POOL_RANK_BY', 'success')).lower()
+
+    # 기본 점수 계산
+    sr = df['success_rate'].astype(float)
+    n_sig = df['n_signals'].astype(float).replace(0, 1)
+    if rank_by == 'expected':
+        # 기대수익 = 성공률 × 평균 유리방향 (avg_extreme는 항상 존재)
+        base = sr * df.get('avg_extreme', sr * 0.02).astype(float).abs()
+    elif rank_by == 'wilson':
+        # Wilson 하한(z=1.96 근사) — 표본 크기 반영
+        z = 1.96
+        p = sr; n = n_sig
+        base = (p + z*z/(2*n) - z*np.sqrt((p*(1-p)+z*z/(4*n))/n)) / (1 + z*z/n)
+    elif rank_by == 'skill':
+        # 스킬 = 성공률 - 기저확률 (enrichment 있어야, 없으면 성공률로 폴백)
+        if 'base_rate' in df.columns:
+            base = sr - df['base_rate'].astype(float).fillna(0)
+        else:
+            base = sr
+    else:  # 'success'
+        base = sr
+
+    # [SEL-2] 불리방향 감점
+    if g.get('USE_ADVERSE_PENALTY', False) and 'avg_adverse' in df.columns:
+        w = float(g.get('ADVERSE_PENALTY_WEIGHT', 0.5))
+        # |avg_adverse| / dd_limit — 1.0이면 손실이 이익 목표와 같은 크기
+        adv_ratio = df['avg_adverse'].astype(float).abs() / max(float(dd_limit), 1e-6)
+        penalty = np.clip(1.0 - w * adv_ratio, 0.5, 1.0)
+        base = base * penalty
+
+    # [SEL-4] 홀드아웃 감쇠 감점
+    if g.get('USE_HOLDOUT_DECAY_PENALTY', False) and 'skill' in df.columns and 'skill_holdout' in df.columns:
+        w = float(g.get('HOLDOUT_DECAY_WEIGHT', 1.0))
+        decay = (df['skill'].astype(float).fillna(0) - df['skill_holdout'].astype(float).fillna(0)).clip(lower=0)
+        penalty = np.clip(1.0 - w * decay, 0.5, 1.0)
+        base = base * penalty
+
+    df['rank_score'] = base.astype(float)
+    df = df.sort_values(['rank_score', 'success_rate', 'n_signals'],
+                        ascending=[False, False, False]).reset_index(drop=True)
+    if verbose:
+        print(f"    · 풀 재정렬: 기준={rank_by}"
+              f"{' +불리감점' if g.get('USE_ADVERSE_PENALTY') else ''}"
+              f"{' +홀드감쇠감점' if g.get('USE_HOLDOUT_DECAY_PENALTY') else ''} "
+              f"({len(df)}행)")
+    return df
+
+
+def _limit_thresholds_per_indicator(pool_df, max_per=None, verbose=False):
+    """★ [SEL-3] 지표당 최대 임계 수 제한. 성공률 기준 상위 K개만 유지.
+       max_per=0 또는 None이면 무제한 (기존 동작)."""
+    g = globals()
+    k = int(max_per if max_per is not None else g.get('MAX_THRESHOLDS_PER_INDICATOR', 0) or 0)
+    if pool_df is None or len(pool_df) == 0 or k <= 0:
+        return pool_df
+    n_before = len(pool_df)
+    df = pool_df.sort_values('success_rate', ascending=False)
+    df = df.groupby('indicator', as_index=False, sort=False).head(k).reset_index(drop=True)
+    if verbose:
+        print(f"    · 지표당 임계 상위 {k}개 유지: {n_before}행 → {len(df)}행")
+    return df
+
+
+
 def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0, corr_limit=None):
     """★ 요청: 1~5% 각 한도로 성공풀 선출 → 하나로 합친 '다중임계' 풀.
        각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
@@ -12313,6 +12419,34 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         sell_c = enrich_pool_with_lead_and_skill(feat, close, sell_c, False)
     except Exception as _ee:
         print(f"    ⚠ 풀 예측력 보강 실패(원본 풀 유지): {_ee}")
+
+    # ★ [SEL-2] 매수/매도 avg_adverse 부여를 여기서(A/B 스냅샷 이전) 해서 baseline·모든 변형에서 재사용
+    try:
+        _hz = int(globals().get('HORIZON_DAYS', 1))
+        buy_c  = _compute_avg_adverse_for_pool(feat, close, buy_c,  True,  _hz)
+        sell_c = _compute_avg_adverse_for_pool(feat, close, sell_c, False, _hz)
+    except Exception:
+        pass
+
+    # ★ A/B 스냅샷: 재정렬/제한 前 상태 저장 (A/B 검증이 이 시점의 풀을 기준으로 각 변형을 비교)
+    try:
+        globals()['_KNET_PRERANK_POOL'] = (buy_c.copy() if buy_c is not None else None,
+                                            sell_c.copy() if sell_c is not None else None)
+    except Exception:
+        pass
+
+    # ★ 지표 선출 개선 (요청) — enrichment 뒤에 신규 정렬/필터 적용.
+    _sel_verbose = bool(globals().get('SELECTION_VERBOSE', True))
+    _limit = float((globals().get('STAGE_SUCCESS_LIMIT') or [0.01])[0])
+    try:
+        # [SEL-3] 지표당 임계 개수 제한
+        buy_c  = _limit_thresholds_per_indicator(buy_c,  verbose=_sel_verbose)
+        sell_c = _limit_thresholds_per_indicator(sell_c, verbose=_sel_verbose)
+        # [SEL-1/2/4] 최종 정렬
+        buy_c  = _rank_pool_by_selection(buy_c,  True,  dd_limit=_limit, verbose=_sel_verbose)
+        sell_c = _rank_pool_by_selection(sell_c, False, dd_limit=_limit, verbose=_sel_verbose)
+    except Exception as _rke:
+        print(f"    ⚠ 지표 선출 개선 실패(원본 풀 유지): {_rke}")
     return buy_c, sell_c
 
 
@@ -12462,8 +12596,6 @@ def _free_global_caches(*, keep_pool_map=False):
         g['_HITF_CACHE'].clear()
     if '_ENRICH_STATS' in g:
         g['_ENRICH_STATS'].clear()
-    g.pop('_GRID_FINAL_DIAG', None)
-    g.pop('_SHIFT_STATS', None)
     if '_LAST_FULL_CAND_MAP' in g:
         g['_LAST_FULL_CAND_MAP'].clear()
     if not keep_pool_map and '_LAST_POOL_MAP' in g:
@@ -12804,18 +12936,8 @@ def grid_search_ensemble(feat, close, buy_pool, sell_pool, *,
                 sell_mat_oos = np.ascontiguousarray(sell_mat_full[is_len:])
             else:
                 buy_mat = buy_mat_full; sell_mat = sell_mat_full
-            # ★ 정합 수정 (WDC 실데이터 점검) — 가중치를 '상위 K'만으로 정규화 (평균1).
-            #   기존엔 풀 전체(예: 100행)로 정규화 후 상위 K를 잘라 써서 상위 K 가중치
-            #   평균이 1을 초과 → 그리드에선 투표 임계 도달, 최종 백테스트(상위 K로 정규화)
-            #   에선 미도달하는 '그리드 11거래 vs 최종 0거래' 괴리가 발생했음.
-            if globals().get('USE_WEIGHTED_VOTE', False):
-                buy_w_k  = np.ascontiguousarray(compute_vote_weights(
-                    buy_pool['score'].values[:K_b], globals().get('WEIGHT_MAX_RATIO', 1.6)))
-                sell_w_k = np.ascontiguousarray(compute_vote_weights(
-                    sell_pool['score'].values[:K_s], globals().get('WEIGHT_MAX_RATIO', 1.6)))
-            else:
-                buy_w_k  = np.ascontiguousarray(buy_w_full[:K_b])
-                sell_w_k = np.ascontiguousarray(sell_w_full[:K_s])
+            buy_w_k  = np.ascontiguousarray(buy_w_full[:K_b])
+            sell_w_k = np.ascontiguousarray(sell_w_full[:K_s])
             v_b_set = sorted(set(max(1, int(round(K_b * r))) for r in vote_ratio_buy))
             v_s_set = sorted(set(max(1, int(round(K_s * r))) for r in vote_ratio_sell))
             for v_b in v_b_set:
@@ -14320,16 +14442,8 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             k_grid = sorted(set(np.round(np.concatenate([
                 np.linspace(lo, hi, 60), np.nanpercentile(net, np.linspace(1, 99, 40))]), 4).tolist()))
     kg = sorted(k_grid)
-    # ★ K-L 최소 갭 (요청: K=L 축퇴 회피). 옵션으로 켜고 끔.
-    _gap_min = 0.0
-    if globals().get('KL_MIN_GAP_ENABLE', True):
-        _net_range = float(np.nanmax(net) - np.nanmin(net))
-        if _net_range > 0:
-            _gap_min = _net_range * float(globals().get('KL_MIN_GAP_PCT', 0.10))
 
     best_ret = None; best_mdd = None; cnt = 0; _all = []
-    # ★ 참고용 K=L 최고행도 별도 보관 (있으면 상위 top 리스트에 항상 포함해 비교 가능)
-    _kl_eq_best = None
     for K in kg:
         for L in kg:
             if L > K:
@@ -14337,28 +14451,15 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             cnt += 1
             ret, mdd, dl, pos = _run(K, L)
             _all.append((ret, mdd, dl, K, L, pos))
-            if (K - L) < _gap_min - 1e-12:      # ★ 갭 미달은 최적 후보에서 제외
-                if abs(K - L) < 1e-9 and (_kl_eq_best is None or ret > _kl_eq_best[0]):
-                    _kl_eq_best = (ret, mdd, dl, K, L, pos)
-                continue
             if best_ret is None or ret > best_ret[2]:
                 best_ret = (K, L, ret, mdd, dl, pos)
             if mdd_limit is not None and mdd >= -abs(mdd_limit):
                 if best_mdd is None or ret > best_mdd[2]:
                     best_mdd = (K, L, ret, mdd, dl, pos)
-    # 갭 강제 후에도 best_ret이 없으면(전 조합 갭 미달) 원본 규칙으로 폴백
-    if best_ret is None and _all:
-        _all_sorted = sorted(_all, key=lambda x: x[0], reverse=True)
-        _b = _all_sorted[0]
-        best_ret = (_b[3], _b[4], _b[0], _b[1], _b[2], _b[5])
-    # 상위 (K,L) 조합 순위표 (수익 내림차순, 최대 40개) — K=L 최고행 있으면 참고로 포함
+    # 상위 (K,L) 조합 순위표 (수익 내림차순, 최대 40개)
     _all.sort(key=lambda x: x[0], reverse=True)
     top = [{'K': a[3], 'L': a[4], 'ret': a[0], 'mdd': a[1], 'dl': a[2], 'pos': a[5]} for a in _all[:40]]
-    if _kl_eq_best is not None and _gap_min > 0:
-        top.append({'K': _kl_eq_best[3], 'L': _kl_eq_best[4], 'ret': _kl_eq_best[0],
-                    'mdd': _kl_eq_best[1], 'dl': _kl_eq_best[2], 'pos': _kl_eq_best[5]})
-    return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt, 'top': top,
-            'gap_min': _gap_min}
+    return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt, 'top': top}
 
 
 def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
@@ -14576,17 +14677,14 @@ def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
 
 
 def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
-                                    horizon, dd_limit, ru_limit,
-                                    cur=None, bh_ret=None,
-                                    knet_full=None, knet_kl=None):
+                                    horizon, dd_limit, ru_limit):
     """★ '검증_예측로직' 시트 (요청) — 적용된 개선사항이 의도대로 기능하는지 실행 시점에
        독립 재계산으로 교차검증해 기록.
        ① 기능 점검: 성공률 독립 재계산 일치 / KL·net>K 수익 재계산 일치 / 지연 인과성(미래참조 無)
           / 리드탐색·스킬필터·홀드아웃가드 적용 통계
        ② 기저확률(base rate) 표: 한도×선행일별 — '성공률 착시'(h 길수록 저절로 상승) 근거 제시
-       ③ 전략 성적 비교: 그리드 앙상블 vs net>K vs KL vs B&H (같은 지표 풀, 매매 규칙만 다름)
-       ④⑤ 풀 지표별 예측력: 성공률·기저·스킬·배율·최적선행·리드프로파일·훈련/홀드아웃·순열백분위
-       ⑥ 종합 판정 + 통계적 주의(선택편향·소표본)"""
+       ③④ 풀 지표별 예측력: 성공률·기저·스킬·배율·최적선행·리드프로파일·훈련/홀드아웃·순열백분위
+       ⑤ 종합 판정 + 통계적 주의(선택편향·소표본)"""
     g = globals()
     ws = wb.create_sheet('검증_예측로직'); ws.sheet_view.showGridLines = False
     ws.cell(1, 1).value = (f'{ticker} — 예측 로직 검증 (모든 수치는 시트 생성 시점에 독립 재계산한 교차검증 값) '
@@ -14771,25 +14869,6 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
     else:
         _put_check('신호 지연 인과성', '지연 적용 행 없음 (개선폭·홀드아웃 조건 미충족)', None)
 
-    # (d2) ★ 지연 채택 홀드아웃 증거 (2c) — d>0 행은 홀드아웃 신호가 최소 기준 이상이어야 함.
-    #      (WDC 점검에서 홀드아웃 신호 0~2개로 지연이 채택되던 과최적화 구멍을 막은 규칙의 사후 검증)
-    if _shifted:
-        _min_ho = int(g.get('LEAD_SHIFT_MIN_HO_SIG', 3))
-        _req_ho = bool(g.get('LEAD_SHIFT_REQUIRE_HO', True))
-        _few = [m for m in _shifted if m['n_ho'] < _min_ho]
-        _ss = g.get('_SHIFT_STATS') or {}
-        _det = (f"지연 {len(_shifted)}행 중 홀드아웃 신호<{_min_ho}개: {len(_few)}행"
-                + (f" (예: {', '.join(m['ind'][:22] for m in _few[:3])})" if _few else '')
-                + (f" ｜ 지연 탐색 카운터(지표×임계 조합 누적): 채택 {_ss.get('adopt','—'):,} / "
-                   f"신호부족 기각 {_ss.get('reject_ho_few','—'):,} / "
-                   f"스킬하락 기각 {_ss.get('reject_ho_drop','—'):,}"
-                   if _ss else ''))
-        if _req_ho:
-            _put_check(f'지연 채택 홀드아웃 증거 (신호≥{_min_ho}개 & 스킬 유지 요건)', _det,
-                       len(_few) == 0, warn_txt='⚠ 홀드아웃 증거 부족 행 존재')
-        else:
-            _put_check('지연 채택 홀드아웃 증거 (요건 OFF)', _det, None)
-
     # (e) 선출 필터 적용 통계 (분석 실행 시 수집 — 재현 모드는 없음)
     _es = g.get('_ENRICH_STATS') or {}
     for _side, _lb in [('buy', '매수'), ('sell', '매도')]:
@@ -14804,42 +14883,12 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
         else:
             _put_check(f'{_lb} 풀 선출 필터', '통계 없음 (재현 모드 또는 필터 OFF)', None)
 
-    # (e2) ★ 그리드 선정↔최종 일별 백테스트 정합 (2d) — 같은 조합의 그리드 예측치와 실측치 비교.
-    #      (WDC 점검: 그리드 11거래/+101% 예측 vs 최종 0거래/0% — 가중치 정규화 모집단 불일치가 원인.
-    #       상위 K 기준으로 통일 후에는 두 값이 일치해야 함)
-    _gd = g.get('_GRID_FINAL_DIAG')
-    if _gd:
-        _gt_n = _gd.get('grid_trades', -1); _dt_n = _gd.get('daily_trades', -1)
-        _gr = _gd.get('grid_return', np.nan); _dr = _gd.get('daily_return', np.nan)
-        _fb = _gd.get('fallback_used', False)
-        _cmb = _gd.get('combo', ('—',)*4)
-        _txt = (f"조합 K{_cmb[0]}/v{_cmb[1]}·K{_cmb[2]}/v{_cmb[3]} — 그리드 예측 {_gt_n}회/"
-                f"{_gr*100:+.2f}% vs 최종 실측 {_dt_n}회/{_dr*100:+.2f}%"
-                + (f" ｜ 0거래 폴백 사용({_gd.get('fallback_tries',0)}회 시도)" if _fb else ''))
-        if _fb:
-            _put_check('그리드 선정↔최종 백테스트 정합', _txt, False, warn_txt='⚠ 폴백으로 조합 교체됨')
-        else:
-            _ok_n = (_gt_n == _dt_n)
-            _ok_r = (np.isfinite(_gr) and np.isfinite(_dr) and abs(_gr - _dr) < 0.005)
-            _put_check('그리드 선정↔최종 백테스트 정합 (거래수 일치 & 수익 ±0.5%p)', _txt,
-                       bool(_ok_n and _ok_r))
-        # 투표 도달 가능성 — 일별 가중 카운트가 임계에 닿는 날이 있는가
-        if 'buy_cnt_max' in _gd:
-            _bd = _gd.get('buy_days_ge_vote', 0); _sd2 = _gd.get('sell_days_ge_vote', 0)
-            _put_check('앙상블 투표 도달 가능성 (가중 카운트≥임계인 날 존재)',
-                       f"매수: 최대 {_gd['buy_cnt_max']:.2f}/임계 {_cmb[1]} 도달 {_bd}일 · "
-                       f"매도: 최대 {_gd['sell_cnt_max']:.2f}/임계 {_cmb[3]} 도달 {_sd2}일",
-                       (_bd > 0 and _sd2 > 0), warn_txt='⚠ 도달 불가 방향 존재(거래 0 원인)')
-
     # (f) 설정 스냅샷
     ws.cell(r, 1).value = '적용 설정'
     ws.cell(r, 2).value = (f"리드탐색={g.get('LEAD_TIME_SEARCH')} (h={g.get('LEAD_HORIZONS')}) · "
                            f"삼중배리어={g.get('LEAD_TRIPLE_BARRIER')} · "
                            f"지연정렬={g.get('LEAD_SHIFT_ENABLED')}(최대{g.get('LEAD_SHIFT_MAX')}일, "
-                           f"개선≥{float(g.get('LEAD_SHIFT_MIN_GAIN',0.05))*100:.0f}%p, "
-                           f"선출단계={g.get('LEAD_SELECT_IN_SCORING', True)}, "
-                           f"홀드아웃증거≥{int(g.get('LEAD_SHIFT_MIN_HO_SIG',3))}개"
-                           f"{'' if g.get('LEAD_SHIFT_REQUIRE_HO', True) else '(요건OFF)'}) · "
+                           f"개선≥{float(g.get('LEAD_SHIFT_MIN_GAIN',0.05))*100:.0f}%p) · "
                            f"스킬필터={g.get('POOL_REQUIRE_SKILL')} · "
                            f"홀드아웃={f_hold*100:.0f}% (분할 {pd.Timestamp(dates[split-1]).date() if split-1 < n else '—'} 이후)")
     r += 2
@@ -14912,101 +14961,11 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
             ws.cell(r, 1).value = f'… 외 {len(metrics)-_cap}행 (성공률 하위 생략)'; r += 1
         r += 1
 
-    # ════ ③ 전략 성적 비교 (WDC 실데이터 점검 후 신설) ════
-    # 같은 지표 풀을 세 가지 매매 규칙으로 돌린 결과를 나란히 표시.
-    # (사용자 관점: '★ 현재 포지션' 시트의 그리드 앙상블 성적이 KL·net>K보다 크게 나쁘면,
-    #  실전 매매는 이 표를 보고 판단할 것)
-    ws.cell(r, 1).value = '③ 전략 성적 비교 (같은 지표 풀, 매매 규칙만 다름)'
-    ws.cell(r, 1).font = Font(bold=True, size=12, color='1F3864'); r += 1
-    ws.cell(r, 1).value = ('※ 지연 정렬은 지표별로 다른 d를 적용해 신호 동시성을 낮춥니다. '
-                           '이 때문에 투표 기반인 그리드 앙상블(K/v)이 net>K·KL보다 뒤질 수 있습니다. '
-                           '아래 표에서 가장 좋은 전략을 실전 매매에 사용하세요.')
-    ws.cell(r, 1).font = Font(italic=True, size=10, color='808080')
-    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6); r += 1
-    _hdr(ws, r, ['전략', '누적수익%', 'B&H대비%p', '거래', '승률', '최악거래/MDD']); r += 1
+    _write_pool_table(f'③ 매수 풀 지표별 예측력 검증 (체결 지평 {hz}일 · 실거래 신호=지연 적용 기준 독립 재계산)', buy_m)
+    _write_pool_table(f'④ 매도 풀 지표별 예측력 검증 (체결 지평 {hz}일)', sell_m)
 
-    # ★ 명시적 인자(cur/bh_ret/knet_full/knet_kl) 우선, 없으면 전역 폴백. 데이터 획득 이슈로
-    #   표가 조용히 비는 버그 방지.
-    def _safe_float(x, dflt=np.nan):
-        try:
-            v = float(x)
-            return v if np.isfinite(v) else dflt
-        except Exception:
-            return dflt
-    _bh_pct  = _safe_float(bh_ret if bh_ret is not None else g.get('_LAST_BH_RET'))
-    _cur_ens = cur if isinstance(cur, dict) else (g.get('_LAST_ENSEMBLE_CUR') or {})
-    _nsd     = knet_full if knet_full is not None else g.get('_KNET_FULL')
-    _kl      = knet_kl   if knet_kl   is not None else g.get('_KNET_KL')
-
-    _rows = []
-    _sources = []      # 어느 소스에서 왔는지 진단
-    if _cur_ens:
-        _r_g = _safe_float(_cur_ens.get('cum_return_pct', 0.0)) / 100.0
-        _rows.append(('그리드 앙상블 (K/v 투표) ← ★현재 포지션 시트',
-                      _r_g, int(_cur_ens.get('n_trades', 0)),
-                      _safe_float(_cur_ens.get('win_rate', 0.0)),
-                      _safe_float(_cur_ens.get('max_drawdown', 0.0))))
-        _sources.append('grid✓')
-    else:
-        _sources.append('grid✗ (cur 없음)')
-    if _nsd is not None:
-        _rows.append((f"net>K (K={round(_nsd.get('best_k',0),3)}) ← 일별 백테스트 시트",
-                      _safe_float(_nsd.get('full_cum')), _nsd.get('n_trades'), None,
-                      _safe_float(_nsd.get('held_down_full'))))
-        _sources.append('net>K✓')
-    else:
-        _sources.append('net>K✗ (_KNET_FULL 없음)')
-    if _kl and _kl.get('best_ret'):
-        K, L, ret, mdd, ntr, wr = _kl['best_ret'][:6]
-        _rows.append((f"KL 히스테리시스 (K={round(K,3)}/L={round(L,3)}) ← KL 순신호 시트",
-                      _safe_float(ret)/100.0, int(ntr), _safe_float(wr)/100.0, _safe_float(mdd)/100.0))
-        _sources.append('KL✓')
-    else:
-        _sources.append('KL✗ (_KNET_KL 없음)')
-    if np.isfinite(_bh_pct):
-        _rows.append(('Buy & Hold', _bh_pct, None, None, None))
-        _sources.append('B&H✓')
-
-    if not _rows:
-        # 완전 실패 케이스도 시트에 그 사실을 남긴다 (조용히 비는 것보다 낫다)
-        ws.cell(r, 1).value = f'⚠ 전략 데이터 획득 실패 — 진단: {" / ".join(_sources)}'
-        ws.cell(r, 1).font = Font(italic=True, color='C00000'); r += 2
-    else:
-        for _row in _rows:
-            lb, ret, ntr, wr, mdd = _row
-            ws.cell(r, 1).value = lb
-            ws.cell(r, 2).value = (f"{ret*100:+.2f}%" if (ret is not None and np.isfinite(ret)) else '—')
-            ws.cell(r, 3).value = (f"{(ret-_bh_pct)*100:+.2f}%p"
-                                    if (ret is not None and np.isfinite(ret) and np.isfinite(_bh_pct)) else '—')
-            ws.cell(r, 4).value = f"{ntr}회" if ntr is not None else '—'
-            ws.cell(r, 5).value = f"{wr*100:.1f}%" if (wr is not None and np.isfinite(wr)) else '—'
-            ws.cell(r, 6).value = (f"{mdd*100:.2f}%" if (mdd is not None and np.isfinite(mdd)) else '—')
-            for _c in range(1, 7):
-                ws.cell(r, _c).border = _TH
-                ws.cell(r, _c).alignment = Alignment(horizontal='center' if _c > 1 else 'left')
-            r += 1
-        # 판정 로그 — 그리드가 net>K/KL보다 크게 뒤지면 경고
-        _grid = next((x for x in _rows if '그리드' in x[0]), None)
-        _knet = next((x for x in _rows if 'net>K' in x[0]), None)
-        _kl_r = next((x for x in _rows if 'KL' in x[0]), None)
-        if _grid and (_knet or _kl_r):
-            _best_alt = max([x for x in (_knet, _kl_r) if x is not None], key=lambda x: (x[1] or -9))
-            _gap = ((_best_alt[1] or 0) - (_grid[1] or 0))
-            _lbl = '그리드 앙상블 vs 최고 대안전략 격차'
-            _det = (f"최고 대안({_best_alt[0].split(' ←')[0]})이 그리드 대비 {_gap*100:+.2f}%p" +
-                    (" — 실전 매매는 대안전략 사용 권장 (★ 현재 포지션 시트는 그리드 기준이라 저평가로 보임)"
-                     if _gap > 0.20 else " — 그리드도 경쟁력 있음"))
-            _put_check(_lbl, _det, _gap <= 0.20, warn_txt='⚠ 그리드가 크게 뒤짐(대안전략 권장)')
-        # 소스 진단 로그 (엑셀 디버깅용)
-        _put_check('전략 비교 데이터 소스', ' / '.join(_sources),
-                   all('✓' in s for s in _sources), warn_txt='⚠ 일부 전략 데이터 누락')
-    r += 1
-
-    _write_pool_table(f'④ 매수 풀 지표별 예측력 검증 (체결 지평 {hz}일 · 실거래 신호=지연 적용 기준 독립 재계산)', buy_m)
-    _write_pool_table(f'⑤ 매도 풀 지표별 예측력 검증 (체결 지평 {hz}일)', sell_m)
-
-    # ════ ⑥ 종합 판정 ════
-    ws.cell(r, 1).value = '⑥ 종합 판정'
+    # ════ ⑤ 종합 판정 ════
+    ws.cell(r, 1).value = '⑤ 종합 판정'
     ws.cell(r, 1).font = Font(bold=True, size=12, color='1F3864'); r += 1
     def _med(vals):
         v = [x for x in vals if np.isfinite(x)]
@@ -15042,13 +15001,6 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
         '※ 주의 1 (선택 편향): 수천 지표×임계에서 성공률 최고를 고르면 우연히 높은 것이 섞임 — 순열백분위·홀드아웃이 낮은 행은 신뢰 금물.',
         '※ 주의 2 (소표본): 신호수·홀드아웃 신호가 적은 행의 성공률은 불안정 — 신호수 열을 함께 볼 것.',
         '※ 주의 3 (기간): 홀드아웃도 같은 데이터의 뒤쪽 일부일 뿐, 진짜 미래가 아님 — 실전은 새 데이터 재분석으로 재확인 권장.',
-        '',
-        '💡 「왜 개선할수록 그리드 앙상블 성적이 나빠 보이지?」 자주 나오는 오해:',
-        '   ① ★현재 포지션 시트는 그리드 앙상블(K/v 투표) 결과만 대표합니다. 지연 정렬을 도입한 뒤 지표별 최적 d가 달라져 신호',
-        '     동시성이 낮아지므로 투표 방식은 구조적으로 net>K·KL보다 뒤질 수 있습니다.',
-        '   ② 반면 위 ③표의 net>K·KL은 개선사항이 그대로 반영돼 여전히 좋은 성적입니다 — 실전은 이 둘 중 하나를 사용하세요.',
-        '   ③ 실행마다 하루치 데이터가 추가되면 KL top 조합의 (K,L)이 바뀌어 수익이 몇 %p 오르내리는데, 이건 정상 변동입니다.',
-        '   ④ 세 전략 모두 같은 지표 풀에서 나옵니다 — 지표 품질 자체가 나빠진 게 아니라 매매 규칙 선택 문제입니다.',
     ]:
         ws.cell(r, 1).value = note; ws.cell(r, 1).font = Font(size=9, italic=True, color='808080'); r += 1
 
@@ -15057,6 +15009,255 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
     ws.freeze_panes = 'A4'
     _nb = len(buy_m); _ns = len(sell_m)
     print(f"  ✅ '검증_예측로직' 시트 작성 — 매수 {_nb}행 / 매도 {_ns}행 재계산 검증")
+
+
+def _kl_pos_held_dd(pos, price):
+    """KL 백테스트 결과의 '보유중 최대 하락률' 계산 (진입가 대비 저점)."""
+    held_max_dd = 0.0
+    ei = None
+    n = len(pos)
+    for i in range(n):
+        if pos[i] == 1 and (i == 0 or pos[i - 1] == 0):
+            ei = i
+        if pos[i] == 0 and i > 0 and pos[i - 1] == 1 and ei is not None:
+            seg = price[ei:i + 1]
+            if len(seg) >= 2:
+                dd = float(seg.min() / seg[0] - 1.0)
+                if dd < held_max_dd:
+                    held_max_dd = dd
+            ei = None
+    if ei is not None:
+        seg = price[ei:]
+        if len(seg) >= 2:
+            dd = float(seg.min() / seg[0] - 1.0)
+            if dd < held_max_dd:
+                held_max_dd = dd
+    return held_max_dd
+
+
+def run_selection_ab_verification(feat, close_full, ticker, *, top_n=None, quick=False):
+    """★ 지표 선출 개선 A/B 검증 (요청).
+
+    각 개선 flag의 ON/OFF 성적을 KL 순신호 백테스트로 비교해 개별 기여도를 측정.
+    - Baseline: 모든 신규 flag OFF (원본 로직: raw success_rate 정렬, 감점 없음)
+    - 변형: flag 하나씩 ON (개별 marginal gain)
+    - Combined: 현재 defaults (모두 반영된 상태)
+
+    각 변형별 KL 백테스트 결과 기록: 전체수익%, MDD%, 보유중하락%, 거래횟수, 승률%.
+    반환: list[dict] — 엑셀 시트로 저장 가능.
+    """
+    g = globals()
+    src = g.get('_KNET_PRERANK_POOL')
+    if not src or not isinstance(src, tuple):
+        return None
+    buy_src, sell_src = src
+    if buy_src is None or sell_src is None or len(buy_src) == 0 or len(sell_src) == 0:
+        return None
+    top_n = int(top_n or g.get('TOP_N_POOL', g.get('MAX_POOL', 100)) or 100)
+    dd_limit = float((g.get('STAGE_SUCCESS_LIMIT') or [0.01])[0])
+    hz = int(g.get('HORIZON_DAYS', 1))
+    mdd_limit = g.get('MAX_DRAWDOWN_LIMIT_PCT')
+
+    # 원래 flag 스냅샷 (복원용)
+    _snap = {k: g.get(k) for k in ('POOL_RANK_BY', 'USE_ADVERSE_PENALTY',
+                                    'USE_HOLDOUT_DECAY_PENALTY',
+                                    'MAX_THRESHOLDS_PER_INDICATOR')}
+
+    # 검증 변형 정의: (라벨, flag 딕셔너리)
+    variants = [
+        ('Baseline (신규 flag 전부 OFF)', dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=False,
+                                             USE_HOLDOUT_DECAY_PENALTY=False,
+                                             MAX_THRESHOLDS_PER_INDICATOR=0)),
+        ('SEL-1 정렬=Expected (SR×움직임)', dict(POOL_RANK_BY='expected', USE_ADVERSE_PENALTY=False,
+                                                 USE_HOLDOUT_DECAY_PENALTY=False,
+                                                 MAX_THRESHOLDS_PER_INDICATOR=0)),
+        ('SEL-1 정렬=Wilson 하한', dict(POOL_RANK_BY='wilson', USE_ADVERSE_PENALTY=False,
+                                        USE_HOLDOUT_DECAY_PENALTY=False,
+                                        MAX_THRESHOLDS_PER_INDICATOR=0)),
+        ('SEL-1 정렬=Skill (순 알파)', dict(POOL_RANK_BY='skill', USE_ADVERSE_PENALTY=False,
+                                            USE_HOLDOUT_DECAY_PENALTY=False,
+                                            MAX_THRESHOLDS_PER_INDICATOR=0)),
+        ('SEL-2 불리방향 감점', dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=True,
+                                     USE_HOLDOUT_DECAY_PENALTY=False,
+                                     MAX_THRESHOLDS_PER_INDICATOR=0)),
+        ('SEL-3 지표당 임계 3개 제한', dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=False,
+                                            USE_HOLDOUT_DECAY_PENALTY=False,
+                                            MAX_THRESHOLDS_PER_INDICATOR=3)),
+        ('SEL-4 홀드아웃 감쇠 감점', dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=False,
+                                          USE_HOLDOUT_DECAY_PENALTY=True,
+                                          MAX_THRESHOLDS_PER_INDICATOR=0)),
+    ]
+    if not quick:
+        variants.append(('★ 전부 적용 (현재 defaults)', dict(_snap)))
+
+    results = []
+    _t0 = time.time()
+    for label, flags in variants:
+        # flag 적용
+        for k, v in flags.items():
+            g[k] = v
+        try:
+            # 풀 재구성 (스냅샷 재사용)
+            _b = _limit_thresholds_per_indicator(buy_src.copy(),  verbose=False)
+            _s = _limit_thresholds_per_indicator(sell_src.copy(), verbose=False)
+            _b = _rank_pool_by_selection(_b, True,  dd_limit=dd_limit, verbose=False)
+            _s = _rank_pool_by_selection(_s, False, dd_limit=dd_limit, verbose=False)
+            _b = _b.head(top_n).reset_index(drop=True)
+            _s = _s.head(top_n).reset_index(drop=True)
+            # 순신호(net) 계산 — SEARCH_WEIGHT_SCHEME는 baseline과 공평 비교 위해 고정 g=1.0 사용
+            _nsd = _net_signal_k_search(feat, close_full, _b, _s, ticker=ticker,
+                                         oos_start=None, n_buy=None, n_sell=None,
+                                         search_counts=True, weight_exp=1.0, select_by='full')
+            if _nsd is None or _nsd.get('daily') is None:
+                results.append(dict(variant=label, ret=None, mdd=None, held_dd=None,
+                                     n_trades=None, win_rate=None, buy_rows=len(_b),
+                                     sell_rows=len(_s), status='net 계산 실패'))
+                continue
+            _d = _nsd['daily']
+            _net = _d['net'].values.astype(float)
+            _price = _d['price'].values.astype(float)
+            _rr = np.zeros(len(_price)); _rr[1:] = _price[1:] / _price[:-1] - 1.0
+            _rr[~np.isfinite(_rr)] = 0.0
+            _kl = _net_kl_search(_net, _rr, mdd_limit=mdd_limit)
+            best = _kl.get('best_ret')
+            if best is None:
+                results.append(dict(variant=label, ret=None, mdd=None, held_dd=None,
+                                     n_trades=None, win_rate=None, buy_rows=len(_b),
+                                     sell_rows=len(_s), status='KL 결과 없음'))
+                continue
+            K, L, ret, mdd, dl, pos = best[:6]
+            # 거래 통계
+            tr = []; ei = None
+            for i in range(len(pos)):
+                if pos[i] == 1 and (i == 0 or pos[i - 1] == 0):
+                    ei = i
+                if pos[i] == 0 and i > 0 and pos[i - 1] == 1 and ei is not None:
+                    tr.append(float(np.sum(_rr[ei + 1:i + 1]))); ei = None
+            if ei is not None:
+                tr.append(float(np.sum(_rr[ei + 1:])))
+            nt = len(tr); wins = sum(1 for t in tr if t > 0)
+            wr = (wins / nt * 100) if nt else 0.0
+            held_dd = _kl_pos_held_dd(pos, _price)
+            results.append(dict(variant=label, ret=float(ret), mdd=float(mdd),
+                                 held_dd=float(held_dd), n_trades=int(nt), win_rate=float(wr),
+                                 buy_rows=len(_b), sell_rows=len(_s),
+                                 K=float(K), L=float(L), status='OK'))
+        except Exception as e:
+            results.append(dict(variant=label, ret=None, mdd=None, held_dd=None,
+                                 n_trades=None, win_rate=None, buy_rows=0, sell_rows=0,
+                                 status=f'실패: {str(e)[:60]}'))
+
+    # 원래 flag 복원
+    for k, v in _snap.items():
+        g[k] = v
+
+    _elapsed = time.time() - _t0
+    # 콘솔 요약
+    print("\n  " + "─" * 70)
+    print(f"  🧪 지표 선출 A/B 검증 결과 ({_elapsed:.1f}초)")
+    print("  " + "─" * 70)
+    _base = next((r for r in results if 'Baseline' in r['variant']), None)
+    _base_ret = _base['ret'] if _base and _base['ret'] is not None else 0.0
+    _base_dd = _base['held_dd'] if _base and _base['held_dd'] is not None else 0.0
+    for r in results:
+        if r['ret'] is None:
+            print(f"    · {r['variant']:36}  ✗ {r['status']}"); continue
+        _dret = (r['ret'] - _base_ret) * 100
+        _ddd = (r['held_dd'] - _base_dd) * 100
+        _marker = '★' if 'Baseline' not in r['variant'] and _dret > 0 and _ddd >= -0.5 else ' '
+        print(f"  {_marker} · {r['variant']:36}  수익 {r['ret']*100:+6.1f}% (Δ{_dret:+5.1f}%p)  "
+              f"보유중하락 {r['held_dd']*100:5.1f}% (Δ{_ddd:+4.1f}%p)  거래 {r['n_trades']}회")
+    print("  " + "─" * 70 + "\n")
+    return results
+
+
+def _write_selection_ab_sheet(wb, ab_results, *, mdd_limit=None):
+    """A/B 검증 결과를 엑셀 시트로 저장."""
+    if not ab_results:
+        return
+    ws = wb.create_sheet('지표선출_AB검증'); ws.sheet_view.showGridLines = False
+    ws.cell(1, 1).value = ('🧪 지표 선출·점수 개선 아이디어의 KL 백테스트 성적 비교 '
+                            '— 각 flag가 실제로 수익률·보유중하락 개선하는지 검증')
+    ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864')
+    ws.merge_cells('A1:K1')
+    ws.cell(2, 1).value = ('★ Baseline = 신규 flag 전부 OFF (원본 로직: raw success_rate 정렬). '
+                            'Δ 컬럼은 Baseline 대비 개선폭. 수익↑ & 보유중하락↑(덜 음수) 이면 개선.')
+    ws.cell(2, 1).font = Font(italic=True, size=10, color='606060')
+    ws.merge_cells('A2:K2')
+
+    HDR = PatternFill('solid', fgColor='1F3864')
+    OK = PatternFill('solid', fgColor='C6EFCE')
+    ALT = PatternFill('solid', fgColor='F2F2F2')
+
+    heads = ['변형(Variant)', '풀 매수/매도', 'K', 'L', '전체수익%',
+             'Δ수익%p', 'MDD%', '보유중하락%', 'Δ보유중하락%p', '거래', '승률%']
+    for ci, h in enumerate(heads, 1):
+        c = ws.cell(4, ci); c.value = h
+        c.font = Font(bold=True, color='FFFFFF'); c.fill = HDR
+        c.alignment = Alignment(horizontal='center')
+
+    _base = next((r for r in ab_results if 'Baseline' in r['variant']), None)
+    _bret = _base['ret'] if _base and _base['ret'] is not None else 0.0
+    _bdd = _base['held_dd'] if _base and _base['held_dd'] is not None else 0.0
+
+    for ri, r in enumerate(ab_results):
+        rr = 5 + ri
+        is_base = ('Baseline' in r['variant'])
+        vals = [r['variant']]
+        vals.append(f"{r.get('buy_rows', 0)}/{r.get('sell_rows', 0)}")
+        if r['ret'] is None:
+            vals += ['—', '—', '—', '—', '—', '—', '—', '—', '—']
+            ws.cell(rr, 1).value = f"{r['variant']}  ({r.get('status','?')})"
+            ws.cell(rr, 1).font = Font(color='C00000')
+            for ci in range(2, 12):
+                ws.cell(rr, ci).value = '—'
+            continue
+        _dret_p = ('' if is_base else f" ({(r['ret']-_bret)*100:+.2f})")
+        _ddd_p = ('' if is_base else f" ({(r['held_dd']-_bdd)*100:+.2f})")
+        vals += [
+            round(r.get('K', 0), 3), round(r.get('L', 0), 3),
+            f"{r['ret']*100:+.2f}",
+            '—' if is_base else f"{(r['ret']-_bret)*100:+.2f}",
+            f"{r['mdd']*100:.2f}",
+            f"{r['held_dd']*100:.2f}",
+            '—' if is_base else f"{(r['held_dd']-_bdd)*100:+.2f}",
+            r['n_trades'], round(r['win_rate'], 1),
+        ]
+        for ci, v in enumerate(vals, 1):
+            c = ws.cell(rr, ci); c.value = v
+            c.alignment = Alignment(horizontal='center' if ci > 1 else 'left')
+            c.font = Font(size=10, bold=is_base)
+            if ri % 2 == 1: c.fill = ALT
+        # 개선된 행 강조
+        if not is_base and r['ret'] > _bret and r['held_dd'] >= _bdd - 0.005:
+            for ci in range(1, 12): ws.cell(rr, ci).fill = OK
+
+    # 하단 판정 요약
+    _final = 5 + len(ab_results) + 1
+    ws.cell(_final, 1).value = '📋 판정 요약'
+    ws.cell(_final, 1).font = Font(bold=True, size=11, color='1F3864')
+    _final += 1
+    if _base:
+        improved = [r for r in ab_results
+                    if not ('Baseline' in r['variant']) and r['ret'] is not None
+                    and r['ret'] > _bret and r['held_dd'] >= _bdd - 0.005]
+        best_var = max([r for r in ab_results if r['ret'] is not None],
+                        key=lambda r: r['ret']) if ab_results else None
+        ws.cell(_final, 1).value = (f"개선 변형 {len(improved)}개 (Baseline 대비 수익↑ & 보유중하락 유지). "
+                                     f"최고 수익: {best_var['variant']} ({best_var['ret']*100:+.2f}%)"
+                                     if best_var else "")
+        ws.cell(_final, 1).font = Font(size=10)
+        _final += 1
+        # 개선된 flag 조합 안내
+        if improved:
+            _tips = ' · '.join([r['variant'].split('(')[0].strip() for r in improved[:3]])
+            ws.cell(_final, 1).value = f"→ 실전 활용 후보: {_tips}"
+            ws.cell(_final, 1).font = Font(size=10, color='006100')
+
+    for ci, w in enumerate([34, 12, 8, 8, 11, 11, 9, 12, 14, 8, 8], 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.freeze_panes = 'A5'
+
 
 
 def write_excel(meta_results_df, inner_all, inner_passed,
@@ -15074,12 +15275,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 oos_daily=None, oos_trades=None, oos_cur=None,
                 bh_up_ret=None, anchor_prio=None,
                 feat=None, close_full=None):
-    # ★ 전략 비교 표(현재 포지션 시트 + 검증 시트)에서 접근하도록 전역에 스냅샷
-    try:
-        globals()['_LAST_ENSEMBLE_CUR'] = dict(cur) if isinstance(cur, dict) else cur
-        globals()['_LAST_BH_RET'] = float(bh_ret) if bh_ret is not None else np.nan
-    except Exception:
-        pass
     wb = Workbook(); wb.remove(wb.active)
 
     # 1. 현재 포지션
@@ -15286,69 +15481,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.merge_cells(start_row=ar, start_column=2, end_row=ar, end_column=4)
     ws.row_dimensions[ar].height = 25
 
-    # ★ 전략 비교 표 (WDC 실데이터 점검 후 신설) — 사용자가 3개 전략 성적을 한눈에 보고
-    #   어느 걸 실제 매매에 쓸지 판단할 수 있게 함. (그리드 앙상블/net>K/K·L 병기)
-    try:
-        _nsd = globals().get('_KNET_FULL')
-        _kl  = globals().get('_KNET_KL')
-        cr = ar + 2
-        ws.cell(cr, 1).value = '📊 전략 성적 비교 (같은 데이터·같은 기간)'
-        ws.cell(cr, 1).font = Font(bold=True, size=13, color='1F3864')
-        ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=4)
-        cr += 1
-        _hdr(ws, cr, ['전략', '누적수익%', '거래', '승률/MDD', '오늘 신호'])
-        cr += 1
-        _bh_txt = f"B&H {bh_ret*100:+.2f}%"
-        # 그리드 앙상블 (현재 '★ 현재 포지션' 대표값)
-        _grid_today = ('🔴 매도' if cur.get('sell_on_now') else
-                       ('🟢 매수' if cur.get('buy_on_now') else '⚪ 유지'))
-        _put_bt = lambda r, label, ret, n, wr, mdd, sig: [
-            ws.cell(r, 1, label), ws.cell(r, 2, f"{ret*100:+.2f}%" if ret is not None else '—'),
-            ws.cell(r, 3, f"{n}회" if n is not None else '—'),
-            ws.cell(r, 4, (f"{wr*100:.1f}% / {mdd*100:.2f}%" if (wr is not None and mdd is not None) else '—')),
-            ws.cell(r, 5, sig)]
-        _put_bt(cr, '그리드 앙상블 (K/v 투표) ← 이 시트 대표값',
-                float(cur.get('cum_return_pct', 0.0)) / 100.0,
-                int(cur.get('n_trades', 0)),
-                float(cur.get('win_rate', 0.0)),
-                float(cur.get('max_drawdown', 0.0)), _grid_today)
-        cr += 1
-        # net>K (일별 백테스트 시트)
-        if _nsd is not None:
-            _knet_today = ('🟢 매수' if float(_nsd['daily'].iloc[-1]['net']) > _nsd['best_k'] else '🔴 매도')
-            _put_bt(cr, f"net>K (K={round(_nsd['best_k'],3)}) ← '일별 백테스트' 시트",
-                    _nsd.get('full_cum'), _nsd.get('n_trades'), None, None, _knet_today)
-            ws.cell(cr, 4).value = f"보유중하락 {(_nsd.get('held_down_full') or 0)*100:.2f}%"
-            cr += 1
-        # KL 히스테리시스 (KL 순신호 시트 top1)
-        if _kl and _kl.get('best_ret'):
-            K, L, ret, mdd, ntr, wr = _kl['best_ret'][:6]
-            _kl_last = _kl.get('last_net')
-            if _kl_last is not None:
-                _kl_today = ('🟢 매수' if _kl_last >= K else ('🔴 매도' if _kl_last <= L else '⚪ 유지'))
-            else:
-                _kl_today = '—'
-            _put_bt(cr, f"KL 히스테리시스 (K={round(K,3)}/L={round(L,3)}) ← 'KL 순신호' 시트",
-                    float(ret)/100.0, int(ntr), float(wr)/100.0, float(mdd)/100.0, _kl_today)
-            cr += 1
-        # 벤치마크
-        _put_bt(cr, 'Buy & Hold', bh_ret, None, None, None, '📊 벤치마크')
-        for r in range(cr - 3, cr + 1):
-            for c in range(1, 6):
-                _cell = ws.cell(r, c)
-                _cell.border = _TH; _cell.alignment = Alignment(horizontal='center')
-        # 헤더 서식
-        for c in range(1, 6):
-            ws.cell(cr - 4, c).font = Font(bold=True); ws.cell(cr - 4, c).fill = _HL
-        cr += 1
-        ws.cell(cr, 1).value = ('※ 세 전략은 같은 지표 풀에서 나오지만 매매 규칙이 달라 결과가 다릅니다. '
-                                '이 시트의 "현재 포지션·다음 액션"은 그리드 앙상블(투표) 기준입니다 — '
-                                '다른 전략을 쓰려면 위 표에서 각 시트를 확인하세요.')
-        ws.cell(cr, 1).font = Font(italic=True, size=9, color='808080')
-        ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=5)
-    except Exception as _sc:
-        pass
-
     ws.column_dimensions['A'].width = 38
     ws.column_dimensions['B'].width = 50
     ws.column_dimensions['C'].width = 26
@@ -15412,12 +15544,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                               f"{float(globals().get('POOL_HOLDOUT_MIN_SKILL',-0.1))*100:.0f}%p 미만 제외"
                               if globals().get('POOL_HOLDOUT_GUARD', False) else 'OFF')),
         ('  삼중배리어 (리드 판정)', 'ON' if globals().get('LEAD_TRIPLE_BARRIER', False) else 'OFF'),
-        ('  지연 홀드아웃 증거 요건', (f"ON — 홀드아웃 신호 ≥ {int(globals().get('LEAD_SHIFT_MIN_HO_SIG',3))}개 & 스킬 유지 시만 지연 채택"
-                                        if globals().get('LEAD_SHIFT_REQUIRE_HO', True) else 'OFF')),
-        ('  그리드 0거래 폴백', (f"ON — 최종 백테스트 0거래 시 밴드 내 다음 후보로 교체 (최대 {int(globals().get('FINAL_ZERO_TRADE_TRIES',4))}회)"
-                                  if globals().get('FINAL_ZERO_TRADE_FALLBACK', True) else 'OFF')),
-        ('  KL K=L 회피', (f"ON — K-L 최소 갭 = net 범위×{float(globals().get('KL_MIN_GAP_PCT',0.10))*100:.0f}% (히스테리시스 축퇴 방지)"
-                            if globals().get('KL_MIN_GAP_ENABLE', True) else 'OFF')),
         ('', ''),
         ('★ 자동 선정 — 메타 변수', ''),
         ('  WILSON_Z', f"{best_meta['wilson_z']}"),
@@ -16053,16 +16179,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _bk = (round(_nsd['best_k'], 3) if _wtd else _nsd['best_k'])
         _wtag = '점수가중' if _wtd else '단순개수'
         ws.cell(1, 1).value = (f'{_shname} — net({_wtag})>K({_bk})면 매수·보유, net≤K면 매도 (신호일 종가). '
-                               f'K는 전체수익 최고. 수익=상승·하락률 합산. '
-                               f'※ 매수ON/매도ON 컬럼은 net vs K 기준이며 매수/매도 카운트가 0이라도 ON될 수 있음 '
-                               f'(예: 매수카운트 0.5·매도카운트 0 → net=0.5, K보다 낮으면 매도ON)')
+                               f'K는 전체수익 최고. 수익=상승·하락률 합산.')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:P1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         ws.cell(2, 1).value = (f"★최적K={_bk} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
                                f"전체 {_p2(_nsd['full_cum'])} / OOS {_p2(_nsd.get('oos_cum'))} (B&H {_p2(_nsd['bh_full'])}) | "
                                f"거래 {_nsd['n_trades']}회 | 보유중하락 {_p2(_nsd['held_down_full'])}")
         ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:P2')
-        _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', 'net>K(매수)', '매도카운트', 'net≤K(매도)',
+        _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
                      '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간'])
         d = _nsd['daily']
@@ -16195,7 +16319,101 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _esp:
         print(f"  ⚠ 성공률 우선 선출 시트 작성 실패(무시): {_esp}")
 
-    # ─── 7c. 단일-K 순신호 시트 — KL 순신호로 대체되어 제거됨 (죽은 코드 정리) ───
+    # ─── 7c. (요청) 단일-K 순신호 K최적화 시트는 KL 순신호로 대체 → 생성 안 함 ───
+    try:
+        _sheets = []   # 비움 → 단일-K 시트 미생성 (KL 순신호로 대체)
+        def _pct(x): return (f"{x*100:+.2f}%" if x is not None else '—')
+        for _shname, _ns, _basis in _sheets:
+            if _ns is None:
+                continue
+            ws = wb.create_sheet(_shname); ws.sheet_view.showGridLines = False
+            _hoos = _ns['has_oos']
+            ws.cell(1, 1).value = (
+                f'{ticker} — 순신호 K 최적화  ｜ net=매수카운트−매도카운트, net>K면 롱·아니면 현금(신호일 종가 기준). '
+                f'K는 [{_basis} 수익] 최고로 선정 (수익=상승·하락률 합산)')
+            ws.cell(1, 1).font = Font(bold=True, size=11)
+            ws.cell(3, 1).value = f'★ 최적 K ({_basis} 수익 기준)'; ws.cell(3, 2).value = _ns['best_k']
+            ws.cell(3, 1).font = Font(bold=True); ws.cell(3, 2).font = Font(bold=True, color='C00000')
+            # 구간별 요약 (학습/OOS/전체) — OOS 복원
+            _hh = ws.cell(5, 1); _hh.value = '구간'; _hh.font = Font(bold=True)
+            for _cc, _lab in [(2, '전략수익(합산)'), (3, 'B&H'), (4, '보유중하락 누적')]:
+                ws.cell(5, _cc).value = _lab; ws.cell(5, _cc).font = Font(bold=True)
+            ws.cell(6, 1).value = '학습'
+            ws.cell(6, 2).value = _pct(_ns.get('train_cum')); ws.cell(6, 3).value = _pct(_ns.get('bh_train'))
+            ws.cell(6, 4).value = _pct(_ns.get('held_down_train'))
+            ws.cell(7, 1).value = '★ OOS'; ws.cell(7, 1).font = Font(bold=True, color='1F6F1F')
+            ws.cell(7, 2).value = _pct(_ns.get('oos_cum')); ws.cell(7, 3).value = _pct(_ns.get('bh_oos'))
+            ws.cell(7, 4).value = _pct(_ns.get('held_down_oos'))
+            for _cc in (2, 3, 4): ws.cell(7, _cc).font = Font(bold=True, color='1F6F1F')
+            ws.cell(8, 1).value = '전체'; ws.cell(8, 1).font = Font(bold=True)
+            ws.cell(8, 2).value = _pct(_ns.get('full_cum')); ws.cell(8, 3).value = _pct(_ns.get('bh_full'))
+            ws.cell(8, 4).value = _pct(_ns.get('held_down_full'))
+            ws.cell(8, 4).font = Font(bold=True, color='C00000')
+            ws.cell(9, 1).value = '거래 횟수(전체/OOS)'; ws.cell(9, 2).value = f"{_ns['n_trades']}회 / {_ns.get('n_trades_oos','—')}회"
+            ws.cell(10, 1).value = '풀 크기(매수/매도)'; ws.cell(10, 2).value = f"{_ns['buy_pool_n']} / {_ns['sell_pool_n']}"
+            ws.cell(11, 1).value = 'net 범위'; ws.cell(11, 2).value = f"{_ns['net_min']} ~ {_ns['net_max']}"
+
+            # K vs 수익 표 (왼쪽) — 학습/OOS/전체 + 비율 (OOS 컬럼 복원)
+            _hdr(ws, 13, ['K', '학습수익%', 'OOS수익%', '전체수익%', '보유중하락%(전체)',
+                          'OOS보유중하락%', '전체 수익/하락비', 'OOS 수익/하락비', '롱일수'])
+            for i, _trow in enumerate(_ns['k_table']):
+                K, tr, oo, fu, dl = _trow[0], _trow[1], _trow[2], _trow[3], _trow[4]
+                hd = _trow[5] if len(_trow) > 5 else None
+                hd_oos = _trow[6] if len(_trow) > 6 else None
+                _rt_full = (fu / abs(hd)) if (hd is not None and abs(hd) > 1e-9) else None
+                _rt_oos = (oo / abs(hd_oos)) if (oo is not None and hd_oos is not None and abs(hd_oos) > 1e-9) else None
+                rr = 14 + i
+                ws.cell(rr, 1).value = K
+                ws.cell(rr, 2).value = (round(tr * 100, 2) if tr is not None else None)
+                ws.cell(rr, 3).value = (round(oo * 100, 2) if oo is not None else None)
+                ws.cell(rr, 4).value = round(fu * 100, 2)
+                ws.cell(rr, 5).value = (round(hd * 100, 2) if hd is not None else None)
+                ws.cell(rr, 6).value = (round(hd_oos * 100, 2) if hd_oos is not None else None)
+                ws.cell(rr, 7).value = (round(_rt_full, 2) if _rt_full is not None else '—')
+                ws.cell(rr, 8).value = (round(_rt_oos, 2) if _rt_oos is not None else '—')
+                ws.cell(rr, 9).value = dl
+                if hd is not None: ws.cell(rr, 5).font = Font(color='C00000')
+                if hd_oos is not None: ws.cell(rr, 6).font = Font(color='C00000')
+                if K == _ns['best_k']:
+                    for cc in range(1, 10):
+                        ws.cell(rr, cc).fill = PatternFill('solid', fgColor='FFF2CC')
+                        ws.cell(rr, cc).font = Font(bold=True)
+
+            # 일별 백테스트 표 (오른쪽, col11~)
+            d = _ns['daily']
+            _hdr2 = ['날짜', f'{ticker}종가', '매수카운트', '매도카운트', 'net',
+                     f'포지션(net>{(round(_ns["best_k"],3) if _ns.get("weighted") else _ns["best_k"])})',
+                     '액션', '일별수익%', '누적수익%(합산)', '보유중하락%', '구간']
+            _c0 = 11
+            for ci, h in enumerate(_hdr2, start=_c0):
+                c = ws.cell(13, ci); c.value = h; c.fill = _HDR; c.font = _WB_
+            for i in range(len(d)):
+                rr = 14 + i; row = d.iloc[i]
+                ws.cell(rr, _c0).value   = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+                ws.cell(rr, _c0+1).value = (round(float(row['price']), 2) if pd.notna(row['price']) else None)
+                ws.cell(rr, _c0+2).value = int(row['buy_count'])
+                ws.cell(rr, _c0+3).value = int(row['sell_count'])
+                ws.cell(rr, _c0+4).value = (round(float(row['net']), 3) if _ns.get('weighted') else int(row['net']))
+                ws.cell(rr, _c0+5).value = int(row['position'])
+                ws.cell(rr, _c0+6).value = str(row['action'])
+                ws.cell(rr, _c0+7).value = round(float(row['day_ret']) * 100, 3)
+                ws.cell(rr, _c0+8).value = round(float(row['cum_ret']) * 100, 2)
+                ws.cell(rr, _c0+9).value = round(float(row['held_down_run']) * 100, 2)
+                ws.cell(rr, _c0+10).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
+                if int(row['position']) == 1: ws.cell(rr, _c0+5).fill = PatternFill('solid', fgColor='C6EFCE')
+                _act = str(row['action'])
+                if _act == '매수':   ws.cell(rr, _c0+6).fill = PatternFill('solid', fgColor='C6EFCE')
+                elif _act == '매도': ws.cell(rr, _c0+6).fill = PatternFill('solid', fgColor='FFC7CE')
+                if pd.notna(row['day_ret']) and float(row['day_ret']) < 0 and int(row['position']) == 1:
+                    ws.cell(rr, _c0+7).fill = PatternFill('solid', fgColor='FFC7CE')
+                if int(row['is_oos']) == 1: ws.cell(rr, _c0).fill = PatternFill('solid', fgColor='DDEBF7')
+            for ci, w in enumerate([6, 11, 11, 11, 13, 11, 13, 12, 11, 12, 13, 11, 11, 12, 13, 9], 1):
+                ws.column_dimensions[get_column_letter(ci)].width = w
+            ws.freeze_panes = 'A14'
+            print(f"  ✓ {_shname}: 최적 K={_ns['best_k']} | 전체 {_pct(_ns.get('full_cum'))} / OOS {_pct(_ns.get('oos_cum'))} "
+                  f"| 거래 {_ns['n_trades']}회")
+    except Exception as _ek:
+        import traceback; print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
 
     # ─── 7d. 순신호 K/L 2임계 최적화 (net≥K 매수 / net≤L 매도 / 사이 유지) ───
     try:
@@ -16218,10 +16436,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 print(f"  ♻ 재현: 원본 K/L(K={_klfix['kl_k']}, L={_klfix['kl_l']}) 그대로")
             else:
                 _kl = _net_kl_search(_net, _rr, mdd_limit=_mddlim)
-            try:
-                _kl['last_net'] = float(_net[-1]) if len(_net) else None
-            except Exception:
-                pass
             globals()['_KNET_KL'] = _kl
 
             # (요청) KL 순신호 시트 — (K,L) 조합별 컬럼 결과. 일별 백테스트 옆(index 1)에 배치.
@@ -16233,9 +16447,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
             def _kl_stats(pos):
                 tr = []; ei = None; last_buy = None; last_sell = None
-                # ★ 보유중하락(held_down_run): 각 롱 구간 내 진입가 대비 저점하락률.
-                #   요청 반영 — KL 시트에도 net>K 시트와 동일한 위험지표 표시.
-                held_max_dd = 0.0        # 구간 최악(가장 큰 음수)
+                # ★ 보유중 하락 (요청): 각 롱 구간 내 진입가 대비 저점 하락률 — 구간 최악값.
+                held_max_dd = 0.0
                 for i in range(len(pos)):
                     if pos[i] == 1 and (i == 0 or pos[i-1] == 0):
                         ei = i; last_buy = i
@@ -16243,7 +16456,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         last_sell = i
                         if ei is not None:
                             tr.append(float(np.sum(_rr[ei+1:i+1])))
-                            # 이 롱 구간 진입가 대비 최저점
                             _seg = _price[ei:i+1] if ei < len(_price) else _price[ei:]
                             if len(_seg) >= 2:
                                 _dd = float(_seg.min() / _seg[0] - 1.0)
@@ -16287,11 +16499,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.cell(r,2).value = round(float(t['K']),3); ws.cell(r,3).value = round(float(t['L']),3)
                 ws.cell(r,4).value = round(t['ret']*100,2); ws.cell(r,4).font = Font(bold=True, color='C00000')
                 ws.cell(r,5).value = round(t['mdd']*100,2)
-                ws.cell(r,6).value = round(held_dd*100, 2)   # ★ 보유중하락% (요청)
-                if held_dd < -0.10:
-                    ws.cell(r,6).font = Font(color='C00000')   # 10% 초과 하락 강조
+                ws.cell(r,6).value = round(held_dd*100, 2)                    # ★ 보유중하락%
+                if held_dd < -0.10: ws.cell(r,6).font = Font(color='C00000')  # 10% 초과 강조
                 ws.cell(r,7).value = nt; ws.cell(r,8).value = round(wr,1)
-                ws.cell(r,9).value = lb;  ws.cell(r,10).value = lbp
+                ws.cell(r,9).value = lb; ws.cell(r,10).value = lbp
                 ws.cell(r,11).value = ls; ws.cell(r,12).value = lsp
                 ws.cell(r,13).value = (_tag + (' K=L' if abs(t['K']-t['L'])<1e-9 else '')).strip()
                 if _tag:
@@ -16300,7 +16511,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             for ci, w in enumerate([5,12,12,11,11,12,9,8,13,10,13,10,22], 1):
                 ws.column_dimensions[get_column_letter(ci)].width = w
             ws.freeze_panes = 'A4'
-            ws.merge_cells('A1:M1')      # 컬럼 13개로 확장
+            ws.merge_cells('A1:M1')      # 13개 컬럼
 
             _bt = _kl['best_ret']; _bm = _kl['best_mdd']
             print(f"  ✓ KL 순신호: 최대수익 K={_bt[0]:.3f}/L={_bt[1]:.3f} ({_bt[2]*100:+.1f}%, MDD {_bt[3]*100:.1f}%)"
@@ -16308,6 +16519,22 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ekl:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 순신호 K/L 최적화 시트 작성 실패(무시): {_ekl}")
+
+    # ─── 7e. ★ 지표 선출 A/B 검증 (요청) ───
+    #   각 개선 flag ON/OFF의 KL 백테스트 성적(전체수익·MDD·보유중하락·거래·승률)을 비교.
+    #   SELECTION_AB_VERIFY=False면 건너뜀.
+    try:
+        if globals().get('SELECTION_AB_VERIFY', True) and feat is not None and close_full is not None:
+            _quick = bool(globals().get('SELECTION_AB_QUICK', False))
+            _ab = run_selection_ab_verification(feat, close_full, ticker,
+                                                 top_n=globals().get('TOP_N_POOL'),
+                                                 quick=_quick)
+            if _ab:
+                _write_selection_ab_sheet(wb, _ab, mdd_limit=globals().get('MAX_DRAWDOWN_LIMIT_PCT'))
+                globals()['_LAST_AB_RESULT'] = _ab
+    except Exception as _abe:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 지표 선출 A/B 검증 실패(무시): {_abe}")
 
     # ─── 8. 메타조합별 지표 풀 (그리드 번호 재현 정확도용) ───
     #   각 메타조합(wilson_z/pct/corr)이 선별한 매수·매도 지표 전체를 저장.
@@ -16422,10 +16649,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     try:
         if globals().get('VERIFY_SHEET_ENABLED', True):
             _write_logic_verification_sheet(wb, feat, close_full, ticker,
-                                            horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
-                                            cur=cur, bh_ret=bh_ret,
-                                            knet_full=globals().get('_KNET_FULL'),
-                                            knet_kl=globals().get('_KNET_KL'))
+                                            horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit)
     except Exception as _ve:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 검증_예측로직 시트 작성 실패(무시): {_ve}")
@@ -16924,7 +17148,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          auto_anchor_max_dates=AUTO_ANCHOR_MAX_DATES,
                          anchor_buy_dates=None,
                          anchor_sell_dates=None,
-                         meta_grid=None,   # ★ None이면 호출 시점의 전역 META_GRID를 읽음 (노트북에서 mod.META_GRID=... 변경 반영)
+                         meta_grid=META_GRID,
                          select_by=SELECT_BY,
                          oos_enabled=OOS_ENABLED,
                          oos_start=OOS_START,
@@ -16934,8 +17158,6 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          force_best_combo=None,
                          force_corr=None,
                          inject_pools=None):
-    if meta_grid is None:
-        meta_grid = globals().get('META_GRID')   # ★ 호출 시점 전역 반영 (def-시점 고정값 버그 방지)
     print('=' * 72)
     print('  매수/매도 앙상블 — 메타 그리드 자동 튜닝')
     print('=' * 72)
@@ -16963,15 +17185,6 @@ def run_ensemble_search(*, eval_start=EVAL_START,
               f'훈련 스킬 +{float(globals().get("LEAD_SHIFT_MIN_GAIN",0.05))*100:.0f}%p↑ & 홀드아웃 유지 시만 채택'
               + (' (★ 풀 선출 단계에서 지연 동시 탐색 — 선행 지표가 처음부터 풀에 진입)'
                  if globals().get('LEAD_SELECT_IN_SCORING', True) else ''))
-        if globals().get('LEAD_SHIFT_REQUIRE_HO', True):
-            print(f'    · 지연 홀드아웃 증거: ON — 홀드아웃 신호 ≥ {int(globals().get("LEAD_SHIFT_MIN_HO_SIG",3))}개 '
-                  f'& 스킬 유지 시만 지연 채택 (훈련구간만으로 채택되는 과최적화 차단)')
-    if globals().get('FINAL_ZERO_TRADE_FALLBACK', True):
-        print(f'    · 그리드 0거래 폴백: ON — 선정 조합 최종 백테스트가 0거래면 밴드 내 다음 후보로 교체 '
-              f'(최대 {int(globals().get("FINAL_ZERO_TRADE_TRIES",4))}회, 검증_예측로직 시트에 기록)')
-    if globals().get('KL_MIN_GAP_ENABLE', True):
-        print(f'    · KL K=L 회피: ON — K-L 최소 갭 = net 범위 × '
-              f'{float(globals().get("KL_MIN_GAP_PCT",0.10))*100:.0f}% (히스테리시스 축퇴 방지)')
     if globals().get('POOL_REQUIRE_SKILL', False):
         print(f'    · 스킬 필터: ON — 성공률이 기저확률을 {float(globals().get("POOL_MIN_SKILL",0.0))*100:.0f}%p 초과해야 풀 채택')
     if globals().get('POOL_HOLDOUT_GUARD', False):
@@ -17340,86 +17553,19 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         _bt_bw = force_corr.get('buy_w'); _bt_sw = force_corr.get('sell_w')
         print(f"  🔧 보정 적용된 풀로 백테스트 — 매수 {_bt_Kb}개(추가 {force_corr.get('n_added_buy',0)}), "
               f"매도 {_bt_Ks}개(추가 {force_corr.get('n_added_sell',0)}) + 가중치 보정")
-    def _run_final_bt(_kb, _ks, _vb, _vs, _bw, _sw):
-        return daily_ensemble_backtest(
-            feat, close, _bt_buy_pool, _bt_sell_pool,
-            K_buy=int(_kb), K_sell=int(_ks),
-            vote_buy=int(_vb), vote_sell=int(_vs),
-            horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
-            stop_loss_pct=stop_loss_pct,
-            anchor_mode=anchor_mode,
-            anchor_safe_buy=anchor_safe_buy,
-            anchor_safe_sell=anchor_safe_sell,
-            buy_w_override=_bw, sell_w_override=_sw,
-        )
-    daily, trades, cur, buy_used, sell_used = _run_final_bt(
-        _bt_Kb, _bt_Ks, int(best_inner['vote_buy']), int(best_inner['vote_sell']),
-        _bt_bw, _bt_sw)
-
-    # ★ 그리드↔최종 정합 진단 (검증_예측로직 시트용) — 그리드 예측치 vs 최종 실측치
-    _diag = {
-        'grid_return': float(best_inner.get('total_return', np.nan)) if best_inner.get('total_return') is not None else np.nan,
-        'grid_trades': int(best_inner.get('n_trades', -1)) if pd.notna(best_inner.get('n_trades', np.nan)) else -1,
-        'combo0': (int(best_inner['K_buy']), int(best_inner['vote_buy']),
-                   int(best_inner['K_sell']), int(best_inner['vote_sell'])),
-        'fallback_used': False, 'fallback_tries': 0,
-    }
-    # ★ 0거래 폴백 (2d) — 그리드는 거래를 예측했는데 최종 백테스트가 0거래면
-    #   밴드 내 다음 후보(수익순)로 자동 교체. 보정 풀 강제 주입/재현(force_best_combo) 시엔
-    #   조합이 고정이라 폴백하지 않음 (재현 정확도 보장).
-    if bool(globals().get('FINAL_ZERO_TRADE_FALLBACK', True)) \
-       and int(cur.get('n_trades', 0)) == 0 and force_corr is None \
-       and force_best_combo is None \
-       and len(inner_passed) > 0:
-        _tries = int(globals().get('FINAL_ZERO_TRADE_TRIES', 4))
-        _alts = inner_passed.sort_values('total_return', ascending=False)
-        print(f"  ⚠ 선정 조합 K{int(best_inner['K_buy'])}/v{int(best_inner['vote_buy'])}·"
-              f"K{int(best_inner['K_sell'])}/v{int(best_inner['vote_sell'])} 최종 백테스트 거래 0회 "
-              f"(그리드 예측 {_diag['grid_trades']}회) → 밴드 내 다음 후보로 폴백 시도 (최대 {_tries}회)")
-        _n_try = 0
-        for _, _alt in _alts.iterrows():
-            if _n_try >= _tries:
-                break
-            _ck = (int(_alt['K_buy']), int(_alt['vote_buy']), int(_alt['K_sell']), int(_alt['vote_sell']))
-            if _ck == _diag['combo0']:
-                continue
-            _n_try += 1
-            _d2, _t2, _c2, _bu2, _su2 = _run_final_bt(_ck[0], _ck[2], _ck[1], _ck[3], None, None)
-            print(f"    폴백 {_n_try}/{_tries}: K{_ck[0]}/v{_ck[1]}·K{_ck[2]}/v{_ck[3]} → "
-                  f"거래 {int(_c2.get('n_trades',0))}회, 수익 {_c2.get('cum_return_pct',0.0):+.2f}%")
-            if int(_c2.get('n_trades', 0)) > 0:
-                daily, trades, cur, buy_used, sell_used = _d2, _t2, _c2, _bu2, _su2
-                best_inner = _alt.to_dict()
-                _bt_Kb = _ck[0]; _bt_Ks = _ck[2]
-                _diag['fallback_used'] = True
-                print(f"    ✔ 폴백 채택 — 이후 시트(현재 포지션/거래 내역)는 이 조합 기준")
-                break
-        _diag['fallback_tries'] = _n_try
-        if not _diag['fallback_used'] and _n_try > 0:
-            print(f"    ⚠ 폴백 {_n_try}회 모두 0거래 — 원래 조합 유지 (투표 임계가 전반적으로 높음. "
-                  f"검증_예측로직 시트의 '투표 도달 가능성' 참조)")
-    _diag['daily_return'] = float(cur.get('cum_return_pct', 0.0)) / 100.0
-    _diag['daily_trades'] = int(cur.get('n_trades', 0))
-    _diag['combo'] = (int(best_inner['K_buy']), int(best_inner['vote_buy']),
-                      int(best_inner['K_sell']), int(best_inner['vote_sell']))
-    # 투표 도달 가능성 — 최종 사용 풀·가중치로 일별 가중 카운트 분포 계산
-    try:
-        _bm = np.column_stack([_to_signal_array(feat, _r) for _, _r in buy_used.iterrows()]).astype(np.float64)
-        _sm = np.column_stack([_to_signal_array(feat, _r) for _, _r in sell_used.iterrows()]).astype(np.float64)
-        _bwv = buy_used['vote_weight'].values.astype(np.float64) if 'vote_weight' in buy_used.columns else np.ones(_bm.shape[1])
-        _swv = sell_used['vote_weight'].values.astype(np.float64) if 'vote_weight' in sell_used.columns else np.ones(_sm.shape[1])
-        _bc = _bm @ _bwv; _sc = _sm @ _swv
-        _vb = float(best_inner['vote_buy']); _vs = float(best_inner['vote_sell'])
-        _diag['buy_cnt_max'] = float(_bc.max()) if len(_bc) else 0.0
-        _diag['sell_cnt_max'] = float(_sc.max()) if len(_sc) else 0.0
-        _diag['buy_days_ge_vote'] = int((_bc >= _vb - 1e-9).sum())
-        _diag['sell_days_ge_vote'] = int((_sc >= _vs - 1e-9).sum())
-        if _diag['buy_days_ge_vote'] == 0:
-            print(f"  ⚠ 매수 투표 도달일 0일 — 일별 가중 매수카운트 최대 {_diag['buy_cnt_max']:.2f} < 임계 {_vb:g} "
-                  f"(지연 정렬로 신호 동시성이 낮아졌을 수 있음)")
-    except Exception as _de:
-        print(f"  ⚠ 투표 도달 진단 실패(무시): {_de}")
-    globals()['_GRID_FINAL_DIAG'] = _diag
+    daily, trades, cur, buy_used, sell_used = daily_ensemble_backtest(
+        feat, close, _bt_buy_pool, _bt_sell_pool,
+        K_buy=_bt_Kb,
+        K_sell=_bt_Ks,
+        vote_buy=int(best_inner['vote_buy']),
+        vote_sell=int(best_inner['vote_sell']),
+        horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
+        stop_loss_pct=stop_loss_pct,
+        anchor_mode=anchor_mode,
+        anchor_safe_buy=anchor_safe_buy,
+        anchor_safe_sell=anchor_safe_sell,
+        buy_w_override=_bt_bw, sell_w_override=_bt_sw,
+    )
 
     oos_daily = oos_trades = oos_cur = None
     if oos_enabled and oos_start_idx is not None:
@@ -17565,15 +17711,13 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                     'real_anchor_return': float(cur.get('anchor_strategy_return', 0.0)),
                 }
                 for _c, _v in _fin.items():
-                    if _c not in _gt.columns:
-                        _gt[_c] = np.nan       # ★ 검증 루프 OFF(VERIFY_TOP_N=0)면 열이 없어
-                    _gt.loc[_m, _c] = _v       #   동기화가 조용히 건너뛰던 버그 수정 — 열 생성 후 기록
+                    if _c in _gt.columns:
+                        _gt.loc[_m, _c] = _v
                 for _sc, _k in [('sel_win_rate', 'real_win_rate'),
                                 ('sel_max_drawdown', 'real_max_drawdown'),
                                 ('sel_total_return', 'real_total_return')]:
-                    if _sc not in _gt.columns:
-                        _gt[_sc] = np.nan
-                    _gt.loc[_m, _sc] = _fin[_k]
+                    if _sc in _gt.columns:
+                        _gt.loc[_m, _sc] = _fin[_k]
                 _corrected = force_corr is not None and force_corr.get('buy_pool') is not None
                 if _corrected:
                     for _cc, _k in [('corr_total_return', 'real_total_return'),
@@ -17595,32 +17739,6 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                 print(f"  🔗 선정(★) 행 수치를 최종 일별 백테스트와 동기화 "
                       f"(승률 {_fin['real_win_rate']*100:.1f}%, 최대손실 {_fin['real_max_drawdown']*100:.2f}%, "
                       f"수익 {_fin['real_total_return']*100:+.2f}%)")
-            else:
-                print(f"  ⚠ 그리드 표에서 선정 조합 행을 못 찾음 — 동기화 생략 (조합: "
-                      f"K{int(best_inner['K_buy'])}/v{int(best_inner['vote_buy'])}·"
-                      f"K{int(best_inner['K_sell'])}/v{int(best_inner['vote_sell'])})")
-        # ★ '메타_그리드_결과' ★행도 최종 백테스트 수치로 동기화 (그리드 예측치와 실측치 불일치 방지)
-        try:
-            if meta_results_df is not None and len(meta_results_df) > 0 and best_meta is not None:
-                _mm = ((meta_results_df['wilson_z'] == best_meta['wilson_z']) &
-                       (meta_results_df['pct_low'] == best_meta['pct_low']) &
-                       (meta_results_df['min_signals'] == best_meta['min_signals']) &
-                       (meta_results_df['corr_limit'] == best_meta['corr_limit']))
-                if _mm.any():
-                    meta_results_df.loc[_mm, 'best_return'] = float(cur.get('cum_return_pct', 0.0)) / 100.0
-                    meta_results_df.loc[_mm, 'best_mdd'] = float(cur.get('max_drawdown', 0.0))
-                    meta_results_df.loc[_mm, 'best_n_trades'] = int(cur.get('n_trades', 0))
-                    meta_results_df.loc[_mm, 'best_win_rate'] = float(cur.get('win_rate', 0.0))
-                    for _mc, _mv in [('best_K_buy', int(best_inner['K_buy'])),
-                                     ('best_vote_buy', int(best_inner['vote_buy'])),
-                                     ('best_K_sell', int(best_inner['K_sell'])),
-                                     ('best_vote_sell', int(best_inner['vote_sell']))]:
-                        if _mc in meta_results_df.columns:
-                            meta_results_df.loc[_mm, _mc] = _mv
-                    print(f"  🔗 '메타_그리드_결과' ★행도 최종 수치로 동기화 "
-                          f"(수익 {float(cur.get('cum_return_pct',0.0)):+.2f}%, 거래 {int(cur.get('n_trades',0))}회)")
-        except Exception as _me:
-            print(f"  ⚠ 메타 결과 동기화 실패(무시): {_me}")
     except Exception as _sync_e:
         print(f"  ⚠ 선정행 최종수치 동기화 실패(무시): {_sync_e}")
     write_excel(meta_results_df, inner_all, _grid_table_for_excel,
@@ -18512,7 +18630,9 @@ def replay_grid_combo(filename, grid_number=None, *,
             return None, None
         wsp = wb[sn]
         # 블록 헤더 '★ wilson_z=... / pct=(..) / corr=..' 를 찾아 매칭
-        cur_block = None; cur_side = None
+        target_hdr = None
+        rows_by_block = {}
+        cur_block = None; cur_side = None; cols = None
         bp_rows = []; sp_rows = []
         def _close(s):
             try: return float(str(s).replace('%','').strip())
