@@ -12291,6 +12291,30 @@ EXCEL_RUN_LOG      = True
 EXCEL_RUN_LOG_MAX  = 3000          # 시트에 남길 최대 줄수 (초과 시 앞 500 + 뒤 나머지)
 
 # ════════════════════════════════════════════════════════════════
+# ★ NKL 평가점수 탐색 (요청) — 지표 개수 선정 방식 변경 (100×100 대체)
+#   ① 성공률 60%↑ 매수/매도 지표 풀 (100개 제한 해제)
+#   ② n_buy·n_sell을 최소 10개부터 1씩 증가시키며
+#   ③ 개수별로 K(0부터 증가, net≥K→매수)를 '매수 평가점수' 최대로 선정,
+#      L(0부터 감소, net≤L→매도)을 '매도 평가점수' 최대로 각각 선정
+#   ④ (K,L) 확정 후 그 지표풀로 최종 일별 백테스트 → ★최대수익/★보유중하락최적 표시
+#   평가점수: 맞으면(매수 후 다음날 상승 / 매도 후 다음날 하락) |변동폭| 만큼 가점,
+#             큰 변동(NKL_SCORE_BIG_THR↑)을 '연속'으로 맞출수록 배율 증가 (더더 큰 점수),
+#             틀리면 같은 방식으로 차감 (연속 큰 오답도 배율 증가해 더 크게 차감).
+# ════════════════════════════════════════════════════════════════
+USE_NKL_SCORE_SEARCH = True        # ★ ON: 새 방식이 KL 순신호 시트/일별 시트를 채움 (기존 K탐색 대체)
+NKL_MIN_SUCCESS      = 0.60        # 성공률 컷 (요청: 60%)
+NKL_N_MIN            = 10          # 최소 지표 개수 (요청: 10)
+NKL_N_STEP           = 1           # 개수 증가 간격 (요청: 1)
+NKL_N_MAX            = 0           # 개수 상한 (0 = 풀 전체, 100개 제한 해제)
+NKL_K_GRID_N         = 40          # K 후보 격자 수 (0 ~ net 최대)
+NKL_L_GRID_N         = 40          # L 후보 격자 수 (net 최소 ~ 0)
+NKL_SCORE_BIG_THR    = 0.01        # '큰 변동' 기준: 다음날 |변동| ≥ 1%
+NKL_SCORE_STREAK_STEP= 0.5         # 연속 큰 적중(오답) 1회당 배율 +0.5 (1→1.5→2.0…)
+NKL_SCORE_STREAK_CAP = 10          # 연속 배율 상한 (배율 최대 1+0.5×10=6)
+NKL_MAX_COMBOS       = 40000       # (n_buy,n_sell) 조합 안전 상한 — 초과 시 스텝 자동 확대
+NKL_SHEET_MAX_ROWS   = 2000        # KL 순신호 시트 조합 행 상한 (초과 시 수익순 상위만)
+
+# ════════════════════════════════════════════════════════════════
 # ★ 미래 예측 로직 개선 (요청) — 리드타임 탐색 · 스킬 필터 · 홀드아웃 가드 · 검증 시트
 #   목적: '반등/하락 며칠 전 신호가 가장 정확한지'를 지표별로 찾아 체결 시점에 정렬하고,
 #         성공 정의를 '기저확률(그냥 아무 날이나 골라도 맞는 확률)을 초과하는가'로 보강해
@@ -14162,6 +14186,14 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
         return allp
     buy_all = _comb(bparts); sell_all = _comb(sparts)
+    # ★ NKL 평가점수 탐색용 무제한 풀 저장 (요청: 100개 제한 해제) — diversify 컷 이전 전체.
+    #   (성공률·lead_shift 포함 정렬 상태 그대로. 새 탐색이 여기서 성공률 60%↑만 사용)
+    try:
+        globals()['_NKL_FULL_POOL'] = (
+            buy_all.reset_index(drop=True) if buy_all is not None else None,
+            sell_all.reset_index(drop=True) if sell_all is not None else None)
+    except Exception:
+        pass
     # ★ 상관 다변화 (수정전과 동일 기준) — 고성공 지표는 다 남기되 중복 상관만 제거
     _tn = int(globals().get('TOP_N_POOL', globals().get('MAX_POOL', 100)) or 100)
     _cl = float(corr_limit if corr_limit is not None else (globals().get('STAGE_CORR_LIMIT') or [0.2])[0])
@@ -16166,6 +16198,459 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         return None
 
 
+@njit(cache=True)
+def _nkl_eval_score(net, rr, thr, is_buy, big_thr, streak_step, streak_cap):
+    """★ NKL 평가점수 (요청) — 신호일 t(net[t] vs thr) 판정을 다음날 수익 rr[t+1]로 채점.
+       · 맞으면 |rr[t+1]| 가점, 틀리면 |rr[t+1]| 차감 (변동폭 클수록 점수 큼)
+       · '큰 변동'(|rr|>=big_thr)을 연속으로 맞출수록 배율 1+step*연속수 로 증가 (더더 큰 점수)
+       · 연속 큰 오답도 같은 방식으로 배율 증가해 더 크게 차감
+       · 작은 변동 적중/오답은 배율 1 (연속 카운터는 오답 시 리셋)
+       · rr==0 인 날은 중립 (점수 없음, 연속 유지)"""
+    score = 0.0
+    win_streak = 0
+    loss_streak = 0
+    n = net.shape[0]
+    for t in range(n - 1):
+        if is_buy == 1:
+            if net[t] < thr:
+                continue
+        else:
+            if net[t] > thr:
+                continue
+        mv = rr[t + 1]
+        if mv == 0.0:
+            continue
+        amv = mv if mv > 0 else -mv
+        big = amv >= big_thr
+        correct = (mv > 0.0) if is_buy == 1 else (mv < 0.0)
+        if correct:
+            loss_streak = 0
+            mult = 1.0 + streak_step * win_streak
+            if big:
+                win_streak = win_streak + 1
+                if win_streak > streak_cap: win_streak = streak_cap
+            else:
+                mult = 1.0
+            score += amv * mult
+        else:
+            win_streak = 0
+            mult = 1.0 + streak_step * loss_streak
+            if big:
+                loss_streak = loss_streak + 1
+                if loss_streak > streak_cap: loss_streak = streak_cap
+            else:
+                mult = 1.0
+            score -= amv * mult
+    return score
+
+
+@njit(cache=True)
+def _nkl_pick_thr(net, rr, grid, is_buy, big_thr, streak_step, streak_cap):
+    """격자에서 평가점수 최대 임계 선택. 반환 (best_thr, best_score)."""
+    best_thr = grid[0]; best_sc = -1e18
+    for gi in range(grid.shape[0]):
+        sc = _nkl_eval_score(net, rr, grid[gi], is_buy, big_thr, streak_step, streak_cap)
+        if sc > best_sc:
+            best_sc = sc; best_thr = grid[gi]
+    return best_thr, best_sc
+
+
+@njit(cache=True)
+def _nkl_backtest(net, rr, close, K, L, big_thr, streak_step, streak_cap):
+    """★ (K,L) 확정 후 최종 일별 백테스트 — 모든 시트가 이 결과 하나만 사용 (정합 보장).
+       타이밍 규약: pos[t]=당일 보유 여부, 전일 net[t-1]로 결정 (신호 다음날 반영).
+       daily[t] = pos[t]*rr[t], 총수익 = sum(daily) (합산 방식)."""
+    n = net.shape[0]
+    pos = np.zeros(n, dtype=np.int8)
+    cur = 0
+    for t in range(1, n):
+        v = net[t - 1]
+        if v >= K: cur = 1
+        elif v <= L: cur = 0
+        pos[t] = cur
+    cum = 0.0; peak = 0.0; mdd = 0.0
+    for t in range(n):
+        if pos[t] == 1:
+            cum += rr[t]
+        if cum > peak: peak = cum
+        dd = cum - peak
+        if dd < mdd: mdd = dd
+    ret = cum
+    held_dd = 0.0
+    n_closed = 0; n_win = 0
+    t = 1
+    while t < n:
+        if pos[t] == 1 and pos[t - 1] == 0:
+            a = t
+            b = a
+            while b + 1 < n and pos[b + 1] == 1:
+                b += 1
+            entry = close[a - 1] if a >= 1 else close[a]
+            if entry > 0:
+                mn = close[a]
+                tr_ret = 0.0
+                for u in range(a, b + 1):
+                    if close[u] < mn: mn = close[u]
+                    tr_ret += rr[u]
+                dd2 = mn / entry - 1.0
+                if dd2 < held_dd: held_dd = dd2
+                if b < n - 1:
+                    n_closed += 1
+                    if tr_ret > 0: n_win += 1
+            t = b + 1
+        else:
+            t += 1
+    buy_hit = 0; buy_n = 0; sell_hit = 0; sell_n = 0
+    for t in range(n - 1):
+        if net[t] >= K:
+            buy_n += 1
+            if rr[t + 1] > 0: buy_hit += 1
+        elif net[t] <= L:
+            sell_n += 1
+            if rr[t + 1] < 0: sell_hit += 1
+    sb = _nkl_eval_score(net, rr, K, 1, big_thr, streak_step, streak_cap)
+    ss = _nkl_eval_score(net, rr, L, 0, big_thr, streak_step, streak_cap)
+    return ret, mdd, held_dd, n_closed, n_win, buy_hit, buy_n, sell_hit, sell_n, sb, ss
+
+
+def _nkl_score_search(feat, close_ser, buy_pool, sell_pool, *, mdd_limit=None, verbose=True):
+    """★ NKL 평가점수 탐색 (요청) — 지표 개수(n_buy,n_sell)x(K,L) 선정 신방식.
+    1) 성공률 >= NKL_MIN_SUCCESS(60%) 필터 (부족하면 성공률 상위 NKL_N_MIN개 폴백)
+    2) n_buy, n_sell 을 NKL_N_MIN(10)부터 STEP(1)씩 풀 전체까지 (100개 제한 없음)
+    3) 개수별 net = 상위 n_buy 가중 매수신호합 - 상위 n_sell 가중 매도신호합
+       K* = argmax 매수 평가점수 (K>=0, 0부터 증가) / L* = argmax 매도 평가점수 (L<=0, 0부터 감소)
+    4) (K*,L*) 최종 일별 백테스트 -> 조합 행 기록
+    5) 최대수익 / 보유중하락최적 (+ MDD 한도 내 최고) 선정"""
+    g = globals()
+    if feat is None or close_ser is None or buy_pool is None or sell_pool is None:
+        return None
+    if len(buy_pool) == 0 or len(sell_pool) == 0:
+        return None
+    dates = list(feat.index)
+    n = len(dates)
+    close = pd.Series(close_ser).reindex(feat.index).values.astype(np.float64)
+    rr = np.zeros(n)
+    for t in range(1, n):
+        p0, p1 = close[t - 1], close[t]
+        if p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1):
+            rr[t] = p1 / p0 - 1.0
+
+    min_sr = float(g.get('NKL_MIN_SUCCESS', 0.60))
+    n_min  = int(g.get('NKL_N_MIN', 10))
+    step   = max(1, int(g.get('NKL_N_STEP', 1)))
+    n_max  = int(g.get('NKL_N_MAX', 0) or 0)
+
+    def _filter(pool, side):
+        p = pool.copy()
+        if 'success_rate' in p.columns:
+            f = p[p['success_rate'].astype(float) >= min_sr]
+            if len(f) >= n_min:
+                p = f
+            else:
+                p = p.sort_values('success_rate', ascending=False).head(max(n_min, len(f)))
+                if verbose:
+                    print(f"    ! NKL {side}: 성공률 {min_sr*100:.0f}%+ {len(f)}행 < 최소 {n_min} - "
+                          f"성공률 상위 {len(p)}행으로 폴백")
+        p = p.reset_index(drop=True)
+        if n_max > 0:
+            p = p.head(n_max)
+        return p
+
+    bp = _filter(buy_pool, '매수'); sp = _filter(sell_pool, '매도')
+    if len(bp) < 1 or len(sp) < 1:
+        return None
+
+    _wtd = bool(g.get('NET_SIGNAL_WEIGHTED', False))
+    _wcol = str(g.get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
+    _wexp = 1.0
+    try:
+        _ws = g.get('NET_WEIGHT_SCHEMES') or [1.0]
+        _wexp = float(_ws[0])
+    except Exception:
+        pass
+    def _wt(row):
+        if not _wtd: return 1.0
+        try:
+            v = float(row.get(_wcol, 1.0))
+            if not np.isfinite(v): return 1.0
+            return v ** _wexp if _wexp != 1.0 else v
+        except Exception:
+            return 1.0
+    def _sigs(pool):
+        out = []
+        for _, row in pool.iterrows():
+            try:
+                out.append(_wt(row) * np.nan_to_num(_to_signal_array(feat, row).astype(np.float64)))
+            except Exception:
+                out.append(np.zeros(n))
+        return np.array(out) if out else None
+    B = _sigs(bp); S = _sigs(sp)
+    if B is None or S is None:
+        return None
+    buy_cum = np.cumsum(B, axis=0)
+    sell_cum = np.cumsum(S, axis=0)
+    nB, nS = buy_cum.shape[0], sell_cum.shape[0]
+    n_min_eff = n_min
+    if nB < n_min or nS < n_min:
+        n_min_eff = max(1, min(n_min, nB, nS))
+        if verbose:
+            print(f"    ! NKL: 풀 크기(매수 {nB}/매도 {nS}) < 최소 {n_min} - 최소 {n_min_eff}로 조정")
+
+    nb_list = list(range(n_min_eff, nB + 1, step))
+    ns_list = list(range(n_min_eff, nS + 1, step))
+    max_combos = int(g.get('NKL_MAX_COMBOS', 40000))
+    cur_step = step
+    while len(nb_list) * len(ns_list) > max_combos:
+        cur_step += 1
+        nb_list = list(range(n_min_eff, nB + 1, cur_step))
+        ns_list = list(range(n_min_eff, nS + 1, cur_step))
+    if cur_step != step and verbose:
+        print(f"    ! NKL: 조합 {max_combos:,}개 초과 - 스텝 {step}->{cur_step} 자동 확대 "
+              f"({len(nb_list)}x{len(ns_list)}={len(nb_list)*len(ns_list):,}조합)")
+
+    kgN = int(g.get('NKL_K_GRID_N', 40)); lgN = int(g.get('NKL_L_GRID_N', 40))
+    big  = float(g.get('NKL_SCORE_BIG_THR', 0.01))
+    sstep= float(g.get('NKL_SCORE_STREAK_STEP', 0.5))
+    scap = int(g.get('NKL_SCORE_STREAK_CAP', 10))
+
+    combos = []
+    _t0 = time.time()
+    for nb in nb_list:
+        bc = buy_cum[nb - 1]
+        for ns in ns_list:
+            net = bc - sell_cum[ns - 1]
+            hi = float(np.nanmax(net)); lo = float(np.nanmin(net))
+            if hi > 0:
+                kg = np.unique(np.round(np.linspace(0.0, hi, kgN), 6))
+            else:
+                kg = np.array([0.0])
+            if lo < 0:
+                lg = np.unique(np.round(np.linspace(lo, 0.0, lgN), 6))
+            else:
+                lg = np.array([0.0])
+            K, sbK = _nkl_pick_thr(net, rr, kg.astype(np.float64), 1, big, sstep, scap)
+            L, ssL = _nkl_pick_thr(net, rr, lg.astype(np.float64), 0, big, sstep, scap)
+            if L > K:
+                L = min(0.0, K)
+            (ret, mdd, hdd, ncl, nwin, bh, bn, sh, sn,
+             sb, ss) = _nkl_backtest(net, rr, close, float(K), float(L), big, sstep, scap)
+            combos.append(dict(n_buy=int(nb), n_sell=int(ns), K=float(K), L=float(L),
+                               ret=float(ret), mdd=float(mdd), held_dd=float(hdd),
+                               n_trades=int(ncl), win_rate=(nwin / ncl * 100 if ncl else 0.0),
+                               buy_acc=(bh / bn * 100 if bn else None), buy_n=int(bn),
+                               sell_acc=(sh / sn * 100 if sn else None), sell_n=int(sn),
+                               score_buy=float(sb), score_sell=float(ss)))
+    if not combos:
+        return None
+    _el = time.time() - _t0
+
+    best_ret = max(combos, key=lambda c: c['ret'])
+    best_hdd = max(combos, key=lambda c: (round(c['held_dd'], 6), c['ret']))
+    best_mdd = None
+    if mdd_limit is not None:
+        _ok = [c for c in combos if c['mdd'] >= -abs(mdd_limit)]
+        if _ok:
+            best_mdd = max(_ok, key=lambda c: c['ret'])
+    if verbose:
+        print(f"    + NKL 평가점수 탐색: 풀 매수 {nB}/매도 {nS} (성공률 {min_sr*100:.0f}%+), "
+              f"{len(nb_list)}x{len(ns_list)}={len(combos):,}조합, {_el:.1f}초")
+        print(f"      *최대수익 n_buy={best_ret['n_buy']}/n_sell={best_ret['n_sell']} "
+              f"K={best_ret['K']:.3f}/L={best_ret['L']:.3f} -> {best_ret['ret']*100:+.1f}% "
+              f"(보유중하락 {best_ret['held_dd']*100:.1f}%)")
+        print(f"      *보유중하락최적 n_buy={best_hdd['n_buy']}/n_sell={best_hdd['n_sell']} "
+              f"K={best_hdd['K']:.3f}/L={best_hdd['L']:.3f} -> {best_hdd['ret']*100:+.1f}% "
+              f"(보유중하락 {best_hdd['held_dd']*100:.1f}%)")
+    return dict(combos=combos, best_ret=best_ret, best_hdd=best_hdd, best_mdd=best_mdd,
+                buy_cum=buy_cum, sell_cum=sell_cum, dates=dates, close=close, rr=rr,
+                n_pool_buy=nB, n_pool_sell=nS, bp=bp, sp=sp)
+
+
+def _write_nkl_sheets(wb, res, ticker):
+    """★ NKL 결과 시트 2개 작성 — 요약(KL 순신호)과 일별(KL 순신호 일별)이
+       _nkl_daily_arrays 한 곳에서 계산된 같은 배열을 사용 → 수익률 불일치 원천 차단 (요청 수정).
+       요약 행의 수익/보유중하락과 일별 시트 합계가 정의상 동일."""
+    combos = res['combos']
+    best_ret = res['best_ret']; best_hdd = res['best_hdd']; best_mdd = res.get('best_mdd')
+    dates = res['dates']; close = res['close']
+
+    def _same(a, b):
+        return (a['n_buy'] == b['n_buy'] and a['n_sell'] == b['n_sell']
+                and abs(a['K'] - b['K']) < 1e-9 and abs(a['L'] - b['L']) < 1e-9)
+
+    # ── 시트 1: KL 순신호 (조합 순위표) ──
+    ws = wb.create_sheet('KL 순신호', 1); ws.sheet_view.showGridLines = False
+    ws.cell(1, 1).value = (
+        f'{ticker} — NKL 평가점수 탐색 (신방식). 성공률 {float(globals().get("NKL_MIN_SUCCESS",0.6))*100:.0f}%↑ 풀'
+        f'(매수 {res["n_pool_buy"]}/매도 {res["n_pool_sell"]}개, 100개 제한 없음)에서 '
+        f'n_buy·n_sell을 {int(globals().get("NKL_N_MIN",10))}부터 늘리며, 개수별 K(매수 평가점수 최대)·'
+        f'L(매도 평가점수 최대)을 선정해 최종 일별 백테스트. '
+        f'평가점수: 다음날 방향 적중 시 |변동폭| 가점 (큰 변동 연속 적중 배율↑), 오답은 같은 방식 차감. '
+        f'수익=상승·하락률 합산.')
+    ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
+    ws.merge_cells('A1:R1')
+
+    heads = ['순위', 'n_buy(매수지표수)', 'n_sell(매도지표수)', 'K(매수임계)', 'L(매도임계)',
+             '전체수익%', '최대낙폭%', '보유중하락%', '거래횟수', '승률%',
+             '매수정확도%', '매수신호일수', '매도정확도%', '매도신호일수',
+             '매수평가점수', '매도평가점수', '비고']
+    _hdr(ws, 3, heads)
+
+    # 표시 행: ★행들을 맨 위에 + 수익순 상위 (상한 NKL_SHEET_MAX_ROWS)
+    _cap = int(globals().get('NKL_SHEET_MAX_ROWS', 2000))
+    ordered = sorted(combos, key=lambda c: c['ret'], reverse=True)
+    disp = []
+    for star in (best_ret, best_hdd, best_mdd):
+        if star is not None and not any(_same(star, d) for d in disp):
+            disp.append(star)
+    for c in ordered:
+        if len(disp) >= _cap:
+            break
+        if not any(_same(c, d) for d in disp):
+            disp.append(c)
+
+    for ri, c in enumerate(disp):
+        r = 4 + ri
+        _tag = []
+        if _same(c, best_ret): _tag.append('★최대수익')
+        if _same(c, best_hdd): _tag.append('★보유중하락최적')
+        if best_mdd is not None and _same(c, best_mdd): _tag.append('★MDD한도내최고')
+        ws.cell(r, 1).value = ri + 1
+        ws.cell(r, 2).value = c['n_buy']; ws.cell(r, 3).value = c['n_sell']
+        ws.cell(r, 4).value = round(c['K'], 3); ws.cell(r, 5).value = round(c['L'], 3)
+        ws.cell(r, 6).value = round(c['ret'] * 100, 2)
+        ws.cell(r, 6).font = Font(bold=True, color='C00000')
+        ws.cell(r, 7).value = round(c['mdd'] * 100, 2)
+        ws.cell(r, 8).value = round(c['held_dd'] * 100, 2)
+        if c['held_dd'] < -0.10: ws.cell(r, 8).font = Font(color='C00000')
+        ws.cell(r, 9).value = c['n_trades']; ws.cell(r, 10).value = round(c['win_rate'], 1)
+        ws.cell(r, 11).value = (round(c['buy_acc'], 1) if c['buy_acc'] is not None else '-')
+        ws.cell(r, 12).value = c['buy_n']
+        ws.cell(r, 13).value = (round(c['sell_acc'], 1) if c['sell_acc'] is not None else '-')
+        ws.cell(r, 14).value = c['sell_n']
+        if c['buy_acc'] is not None:
+            if c['buy_acc'] < 50: ws.cell(r, 11).font = Font(color='C00000', bold=True)
+            elif c['buy_acc'] > 60: ws.cell(r, 11).font = Font(color='006100', bold=True)
+        if c['sell_acc'] is not None:
+            if c['sell_acc'] < 50: ws.cell(r, 13).font = Font(color='C00000', bold=True)
+            elif c['sell_acc'] > 60: ws.cell(r, 13).font = Font(color='006100', bold=True)
+        ws.cell(r, 15).value = round(c['score_buy'], 3)
+        ws.cell(r, 16).value = round(c['score_sell'], 3)
+        ws.cell(r, 17).value = ' '.join(_tag)
+        if _tag:
+            for cc in range(1, 18):
+                ws.cell(r, cc).fill = PatternFill('solid', fgColor='FFF2CC')
+            ws.cell(r, 17).font = Font(bold=True, color='1F6F1F')
+    if len(combos) > len(disp):
+        r = 4 + len(disp)
+        ws.cell(r, 1).value = f'… 외 {len(combos) - len(disp):,}조합 (수익 하위 생략, NKL_SHEET_MAX_ROWS={_cap})'
+        ws.cell(r, 1).font = Font(italic=True, color='808080')
+    for ci, w in enumerate([6, 16, 16, 11, 11, 11, 11, 12, 9, 8, 12, 11, 12, 11, 12, 12, 26], 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.freeze_panes = 'A4'
+    print(f"  ✓ KL 순신호 (NKL 신방식): {len(combos):,}조합 중 {len(disp):,}행 표시")
+
+    # ── 시트 2: KL 순신호 일별 (★최대수익 조합) — 같은 배열 사용 ──
+    da = _nkl_daily_arrays(res, best_ret)
+    net = da['net']; pos = da['pos']; daily = da['daily']; cum = da['cum']
+    held = da['held']; trade_pl = da['trade_pl']
+    n = len(net)
+    wsd = wb.create_sheet('KL 순신호 일별', 2); wsd.sheet_view.showGridLines = False
+    wsd.cell(1, 1).value = (
+        f'{ticker} — KL 순신호 일별 백테스트 (★최대수익 n_buy={best_ret["n_buy"]}/n_sell={best_ret["n_sell"]}, '
+        f'K={best_ret["K"]:.3f}/L={best_ret["L"]:.3f}). 전일 net≥K→매수·보유, 전일 net≤L→매도·현금, 사이→유지. '
+        f'수익=상승·하락률 합산. ※ 이 시트의 누적수익 마지막 값 = KL 순신호 시트의 전체수익 (동일 계산).')
+    wsd.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
+    wsd.merge_cells('A1:J1')
+    _hdr(wsd, 3, ['날짜', '종가', '순신호 net', '포지션', '액션',
+                  '일별수익%', '누적수익%', '보유중하락%', '거래손익%', '표시'])
+    _GRN = PatternFill('solid', fgColor='C6EFCE'); _RED = PatternFill('solid', fgColor='FFC7CE')
+    _YEL = PatternFill('solid', fgColor='FFF2CC'); _BLU = PatternFill('solid', fgColor='DDEBF7')
+    for i in range(n):
+        r = 4 + i
+        if i > 0 and pos[i] == 1 and pos[i - 1] == 0: act = '매수'
+        elif i > 0 and pos[i] == 0 and pos[i - 1] == 1: act = '매도'
+        elif pos[i] == 1: act = '보유'
+        else: act = '현금'
+        wsd.cell(r, 1).value = pd.Timestamp(dates[i]).strftime('%Y-%m-%d')
+        wsd.cell(r, 2).value = round(float(close[i]), 2)
+        wsd.cell(r, 3).value = round(float(net[i]), 3)
+        wsd.cell(r, 4).value = '롱' if pos[i] == 1 else '현금'
+        wsd.cell(r, 5).value = act
+        wsd.cell(r, 6).value = round(float(daily[i]) * 100, 2)
+        wsd.cell(r, 7).value = round(float(cum[i]) * 100, 2)
+        wsd.cell(r, 8).value = (round(float(held[i]) * 100, 2) if pos[i] == 1 else '')
+        wsd.cell(r, 9).value = (round(trade_pl[i] * 100, 2) if i in trade_pl else '')
+        if act == '매수': wsd.cell(r, 5).fill = _GRN; wsd.cell(r, 5).font = Font(bold=True, color='006100')
+        elif act == '매도': wsd.cell(r, 5).fill = _RED; wsd.cell(r, 5).font = Font(bold=True, color='9C0006')
+        if i in trade_pl:
+            wsd.cell(r, 9).font = Font(bold=True, color='006100' if trade_pl[i] > 0 else '9C0006')
+        _mk = ''
+        if i == da['max_cum_i']: _mk = '🔺 최고수익'
+        if i == da['max_dd_i']: _mk = (_mk + ' 🔻 MDD').strip()
+        if i == n - 1: _mk = (_mk + ' ← 현재').strip()
+        wsd.cell(r, 10).value = _mk
+        if i == da['max_cum_i']:
+            for cc in range(1, 11): wsd.cell(r, cc).fill = _BLU
+        if i == da['max_dd_i']:
+            for cc in range(1, 11): wsd.cell(r, cc).fill = _YEL
+    for ci, w in enumerate([12, 10, 11, 8, 8, 10, 11, 12, 11, 18], 1):
+        wsd.column_dimensions[get_column_letter(ci)].width = w
+    wsd.freeze_panes = 'A4'
+    wsd.cell(2, 1).value = (
+        f"전체수익 {da['ret']*100:+.2f}% | MDD {da['mdd']*100:.2f}% "
+        f"(최고수익 {cum[da['max_cum_i']]*100:+.2f}% @ {pd.Timestamp(dates[da['max_cum_i']]).strftime('%Y-%m-%d')}) "
+        f"| 완결거래 {best_ret['n_trades']}회 | 승률 {best_ret['win_rate']:.1f}% (매수→매도 완결 기준) "
+        f"| 보유중하락 {best_ret['held_dd']*100:.2f}%")
+    wsd.cell(2, 1).font = Font(bold=True, color='C00000'); wsd.merge_cells('A2:J2')
+    # 정합 자가검증 (혹시라도 어긋나면 로그로 즉시 알림)
+    if abs(da['ret'] - best_ret['ret']) > 1e-9:
+        print(f"  ⚠ NKL 정합 오류: 요약 {best_ret['ret']*100:.2f}% vs 일별 {da['ret']*100:.2f}%")
+    else:
+        print(f"  ✓ KL 순신호 일별 (NKL): {n}일, 요약·일별 수익 일치 확인 ({da['ret']*100:+.2f}%)")
+
+
+def _nkl_net_of(res, nb, ns):
+    """탐색 결과에서 (n_buy, n_sell) 조합의 net 시계열 재구성."""
+    return res['buy_cum'][nb - 1] - res['sell_cum'][ns - 1]
+
+
+def _nkl_daily_arrays(res, combo):
+    """★ 정합 보장 핵심 (요청 수정) — 요약과 일별 시트가 '같은 배열'을 쓰도록 한 곳에서 계산."""
+    net = _nkl_net_of(res, combo['n_buy'], combo['n_sell'])
+    rr = res['rr']; close = res['close']
+    K, L = combo['K'], combo['L']
+    n = len(net)
+    pos = np.zeros(n, dtype=int); cur = 0
+    for t in range(1, n):
+        v = net[t - 1]
+        if v >= K: cur = 1
+        elif v <= L: cur = 0
+        pos[t] = cur
+    daily = pos * rr
+    cum = np.cumsum(daily)
+    peak = np.maximum.accumulate(cum)
+    dd = cum - peak
+    max_cum_i = int(np.argmax(cum)); max_dd_i = int(np.argmin(dd))
+    held = np.zeros(n)
+    trade_pl = {}
+    t = 1
+    while t < n:
+        if pos[t] == 1 and pos[t - 1] == 0:
+            a = t; b = a
+            while b + 1 < n and pos[b + 1] == 1:
+                b += 1
+            entry = close[a - 1] if a >= 1 else close[a]
+            for u in range(a, b + 1):
+                held[u] = close[u] / entry - 1.0 if entry > 0 else 0.0
+            if b < n - 1:
+                trade_pl[b + 1] = float(np.sum(daily[a:b + 1]))
+            t = b + 1
+        else:
+            t += 1
+    return dict(net=net, pos=pos, daily=daily, cum=cum, held=held, trade_pl=trade_pl,
+                ret=float(cum[-1]), mdd=float(dd.min()), max_cum_i=max_cum_i, max_dd_i=max_dd_i)
+
+
 def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_kl_mdd=None):
     """★ K/L 2임계 히스테리시스. net_prev≥K → 매수(롱), net_prev≤L → 매도(현금), 사이는 직전 포지션 유지 (K≥L).
        (K,L) 격자를 훑어 ① 전체수익 최고 ② MDD 한도 지키는 수익 최고 를 둘 다 찾는다.
@@ -17301,6 +17786,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ('총 거래일 수', f"{len(daily)}일"),
         ('거래 비용 (왕복)', f"{COST_PER_TRADE*100:.2f}%"),
         ('', ''),
+        ('★ NKL 평가점수 탐색 (신방식)', 'ON — 아래 설정' if globals().get('USE_NKL_SCORE_SEARCH') else 'OFF (기존 K/L 탐색)'),
+        ('  성공률 컷', f"{float(globals().get('NKL_MIN_SUCCESS', 0.6))*100:.0f}% 이상 (풀 개수 제한 없음)"),
+        ('  지표 개수 탐색', f"n_buy·n_sell = {int(globals().get('NKL_N_MIN', 10))}부터 "
+                            f"+{int(globals().get('NKL_N_STEP', 1))}씩 풀 전체까지"),
+        ('  K/L 선정', f"K: 0부터 증가(매수 평가점수 최대) / L: 0부터 감소(매도 평가점수 최대) — "
+                       f"격자 {int(globals().get('NKL_K_GRID_N', 40))}/{int(globals().get('NKL_L_GRID_N', 40))}점"),
+        ('  평가점수', f"적중 시 |다음날 변동| 가점, 큰 변동(≥{float(globals().get('NKL_SCORE_BIG_THR', 0.01))*100:.0f}%) "
+                       f"연속 적중 배율 +{float(globals().get('NKL_SCORE_STREAK_STEP', 0.5))}/회 "
+                       f"(상한 {int(globals().get('NKL_SCORE_STREAK_CAP', 10))}연속), 오답 동일 방식 차감"),
+        ('', ''),
         ('★ 평가 기준 (고정)', ''),
         ('  Horizon', f"{horizon}일"),
         ('  매수 손실 한도', f"-{dd_limit*100:.1f}% 회피 확률"),
@@ -18192,9 +18687,39 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ek:
         import traceback; print(f"  ⚠ 순신호 K최적화 시트 작성 실패(무시): {_ek}")
 
+    # ─── 7d-0. ★ NKL 평가점수 탐색 (요청: 지표개수 선정 방식 변경) ───
+    #   성공률 60%↑ 풀(무제한)에서 n_buy·n_sell을 10부터 1씩 늘리며, 개수별로
+    #   K(매수 평가점수 최대)·L(매도 평가점수 최대)을 각각 선정 → 최종 일별 백테스트.
+    #   성공 시 KL 순신호/일별 시트를 이 결과로 채우고 기존 K/L 탐색 시트는 건너뜀.
+    _nkl_done = False
+    try:
+        if globals().get('USE_NKL_SCORE_SEARCH', False) and feat is not None and close_full is not None:
+            _nkl_pools = globals().get('_NKL_FULL_POOL')
+            _nkl_bp = _nkl_sp = None
+            if _nkl_pools and _nkl_pools[0] is not None and _nkl_pools[1] is not None:
+                _nkl_bp, _nkl_sp = _nkl_pools
+            else:
+                _mpp = globals().get('_KNET_MULTI_POOL')
+                if _mpp and _mpp[1] is not None and _mpp[2] is not None:
+                    _nkl_bp, _nkl_sp = _mpp[1], _mpp[2]
+            if _nkl_bp is not None and _nkl_sp is not None:
+                _mddlim0 = globals().get('MAX_DRAWDOWN_LIMIT_PCT')
+                _nres = _nkl_score_search(feat, close_full, _nkl_bp, _nkl_sp,
+                                           mdd_limit=_mddlim0, verbose=True)
+                if _nres is not None:
+                    globals()['_NKL_RESULT'] = _nres
+                    _write_nkl_sheets(wb, _nres, ticker)
+                    _nkl_done = True
+    except Exception as _enk:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ NKL 평가점수 탐색 실패(기존 방식 폴백): {_enk}")
+
     # ─── 7d. 순신호 K/L 2임계 최적화 (net≥K 매수 / net≤L 매도 / 사이 유지) ───
+    #   ★ NKL 신방식이 성공했으면 이 기존 경로는 건너뜀 (USE_NKL_SCORE_SEARCH=False로 복귀 가능)
     try:
         _kln = globals().get('_KNET_FULL') or _nsd_main
+        if _nkl_done:
+            _kln = None
         if _kln is not None and _kln.get('daily') is not None:
             _d = _kln['daily']
             _net = _d['net'].values.astype(float)
