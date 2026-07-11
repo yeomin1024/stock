@@ -12092,8 +12092,56 @@ def _iv_autorun():
 """
 
 import warnings; warnings.filterwarnings('ignore')
-import os, math, time, itertools
+import os, math, time, itertools, sys as _sys_mod
 from datetime import datetime, timedelta
+
+
+class _TeeLogger:
+    """★ 실행 로그 엑셀 저장용 (요청) — stdout을 그대로 통과시키면서 버퍼에 복사.
+       run_ensemble_search 시작 시 버퍼 리셋, write_excel에서 '실행 로그' 시트로 저장."""
+    def __init__(self, orig):
+        self.orig = orig
+        self.lines = []
+        self._cur = ''
+    def write(self, s):
+        try:
+            self.orig.write(s)
+        except Exception:
+            pass
+        try:
+            self._cur += s
+            while '\n' in self._cur:
+                line, self._cur = self._cur.split('\n', 1)
+                if line.strip():
+                    self.lines.append(line)
+                _cap = int(globals().get('EXCEL_RUN_LOG_MAX', 3000))
+                if len(self.lines) > _cap * 2:
+                    self.lines = self.lines[:500] + ['... (중간 생략) ...'] + self.lines[-_cap:]
+        except Exception:
+            pass
+    def flush(self):
+        try:
+            self.orig.flush()
+        except Exception:
+            pass
+    def reset(self):
+        self.lines = []; self._cur = ''
+
+
+def _install_run_log_tee():
+    """tee 설치(이미 설치면 재사용) 후 버퍼 리셋. 실패해도 무해 (통과형이라 영구 설치 OK)."""
+    try:
+        if not globals().get('EXCEL_RUN_LOG', True):
+            return None
+        cur = _sys_mod.stdout
+        if isinstance(cur, _TeeLogger):
+            cur.reset(); return cur
+        tee = _TeeLogger(cur)
+        _sys_mod.stdout = tee
+        return tee
+    except Exception:
+        return None
+
 import numpy as np
 import pandas as pd
 from openpyxl import Workbook
@@ -12215,12 +12263,32 @@ HOLDOUT_DECAY_WEIGHT      = 1.0  # score *= max(0.5, 1 − W × 감쇠)
 # [SEL-5] 신호수 하한 적응 — 절대치 10 대신 데이터 길이의 X% 이상 요구 (더 안정된 소표본 방어).
 USE_ADAPTIVE_MIN_SIG = False
 ADAPTIVE_MIN_SIG_PCT = 0.03       # 전체 거래일의 3% 이상 (예: 500일→15개)
+# [SEL-6] ★ 죽은 지표 감점 (신규) — 마지막 신호가 오래 전인 지표는 레짐이 바뀌어
+#   더 이상 작동하지 않을 가능성. 최근성 없는 지표를 강등.
+USE_STALE_SIGNAL_PENALTY = True
+STALE_SIGNAL_DAYS        = 120     # 마지막 신호가 이 일수보다 오래됐으면
+STALE_PENALTY            = 0.7     # score ×= 0.7 (강등, 완전 배제 아님)
+# [SEL-7] ★ 신호일 중복 제거 (신규) — 두 지표가 거의 같은 날에만 발화하면(자카드≥한도)
+#   정보 중복. 상관 다변화(일별 시계열 상관)보다 '발화일 집합' 기준이 더 직접적.
+USE_SIGNAL_DEDUP     = True
+SIGNAL_DEDUP_JACCARD = 0.80        # |교집합|/|합집합| ≥ 0.80이면 하위 랭크 제거
+# [SEL-8] ★ 시간 3분할 일관성 (신규) — 전체 기간을 3등분해 각 구간 스킬(성공률-기저)을
+#   측정, 2/3 구간 이상 양(+)이어야 유지. 단일 홀드아웃보다 촘촘한 시간 안정성 검사.
+USE_TIME_CONSISTENCY      = True
+TIME_CONSISTENCY_SEGMENTS = 3
+TIME_CONSISTENCY_MIN_OK   = 2      # 3구간 중 최소 2구간에서 스킬>0
+TIME_CONSISTENCY_MIN_SIG  = 3      # 구간당 최소 신호수 (미만 구간은 판정 제외)
 
 # ★ A/B 검증 (요청) — 각 개선 아이디어의 ON/OFF 성적을 KL 백테스트로 비교해 엑셀 시트로 저장.
 #   Baseline = 모든 신규 flag OFF (원본 로직) → 각 flag 하나씩 켜서 개별 기여 측정
 #   →  전부 켠 조합(현재 defaults)까지 총 N+2회 KL 백테스트.  시간 소폭 증가.
 SELECTION_AB_VERIFY = True         # False면 A/B 검증 건너뛰고 실행 로그만 남김
 SELECTION_AB_QUICK  = False        # True면 각 flag 개별 ON만 하고 조합은 생략 (시간 절약)
+
+# ★ 실행 로그 엑셀 저장 (요청) — 실행 중 콘솔 출력을 버퍼에 복사해 '실행 로그' 시트로 저장.
+#   선출 필터 통계·지연 채택·A/B 결과 등 디버깅에 필요한 모든 로그가 엑셀 안에 남는다.
+EXCEL_RUN_LOG      = True
+EXCEL_RUN_LOG_MAX  = 3000          # 시트에 남길 최대 줄수 (초과 시 앞 500 + 뒤 나머지)
 
 # ════════════════════════════════════════════════════════════════
 # ★ 미래 예측 로직 개선 (요청) — 리드타임 탐색 · 스킬 필터 · 홀드아웃 가드 · 검증 시트
@@ -13877,22 +13945,109 @@ def _diversify_keep_thresholds(feat, score_df, *, top_n, corr_limit):
 
 
 def _compute_avg_adverse_for_pool(feat, close, pool_df, is_buy, horizon=1):
-    """[SEL-2] 풀의 각 (지표,임계) 행에 avg_adverse 열 추가.
-       매수: 신호 후 horizon 내 최저하락률 평균 (음수), 매도: 최고상승률 평균 (양수)."""
+    """[SEL-2/6/7 공용] 풀의 각 (지표,임계) 행에 신호 통계 열 추가:
+       · avg_adverse: 매수=신호 후 최저하락률 평균(음수), 매도=최고상승률 평균(양수) [SEL-2]
+       · days_since_last_signal: 마지막 신호 이후 경과 일수 [SEL-6 죽은 지표 감점]
+       · sig_days: 신호 발화일 인덱스 튜플 [SEL-7 자카드 중복 제거용]"""
     if pool_df is None or len(pool_df) == 0:
         return pool_df
     close_arr = np.asarray(close.values, dtype=np.float64)
+    n_days = len(close_arr)
     out = pool_df.copy()
-    advs = []
+    advs = []; stale = []; sdays = []
     for _, row in out.iterrows():
         try:
             sig = _to_signal_array(feat, row).astype(np.uint8)
             n_, adv = _eval_avg_adverse(close_arr, sig, int(horizon), 1 if is_buy else 0)
             advs.append(float(adv) if n_ > 0 else 0.0)
+            idx = np.flatnonzero(sig == 1)
+            sdays.append(tuple(int(x) for x in idx))
+            stale.append(int(n_days - 1 - idx[-1]) if len(idx) else n_days)
         except Exception:
-            advs.append(0.0)
+            advs.append(0.0); stale.append(n_days); sdays.append(tuple())
     out['avg_adverse'] = advs
+    out['days_since_last_signal'] = stale
+    out['sig_days'] = sdays
     return out
+
+
+def _dedup_by_signal_overlap(pool_df, *, jaccard_limit=None, verbose=False):
+    """★ [SEL-7] 신호 발화일 자카드 중복 제거 — 두 행의 발화일 집합이
+       |교집합|/|합집합| ≥ 한도면 하위 랭크 행 제거. 상관 다변화(일별 시계열 상관)와 달리
+       '실제 발화한 날'만으로 판단하므로 희소 신호에서 훨씬 직접적.
+       pool_df는 이미 랭크순 정렬되어 있다고 가정 (앞 행 = 상위)."""
+    g = globals()
+    if not g.get('USE_SIGNAL_DEDUP', False):
+        return pool_df
+    jl = float(jaccard_limit if jaccard_limit is not None else g.get('SIGNAL_DEDUP_JACCARD', 0.80))
+    if pool_df is None or len(pool_df) <= 1 or 'sig_days' not in pool_df.columns:
+        return pool_df
+    kept_sets = []; keep_mask = []
+    for _, row in pool_df.iterrows():
+        s = set(row['sig_days']) if isinstance(row['sig_days'], (tuple, list, set)) else set()
+        dup = False
+        if s:
+            for ks in kept_sets:
+                un = len(s | ks)
+                if un > 0 and len(s & ks) / un >= jl:
+                    dup = True; break
+        keep_mask.append(not dup)
+        if not dup and s:
+            kept_sets.append(s)
+    out = pool_df[pd.Series(keep_mask, index=pool_df.index)].reset_index(drop=True)
+    if verbose and len(out) < len(pool_df):
+        print(f"    · [SEL-7] 신호일 자카드≥{jl:.2f} 중복 제거: {len(pool_df)}행 → {len(out)}행")
+    return out
+
+
+def _filter_time_consistency(feat, close, pool_df, is_buy, *, verbose=False):
+    """★ [SEL-8] 시간 3분할 일관성 필터 — 전체 기간을 N등분해 구간별 스킬(성공률-기저)을
+       측정, MIN_OK개 이상 구간에서 스킬>0이어야 유지. 신호가 부족한 구간은 판정 제외
+       (판정 가능 구간이 MIN_OK 미만이면 통과 처리 = 소표본 지표를 억울하게 죽이지 않음).
+       필터로 풀이 2행 미만이 되면 해제 폴백. 'time_consistency' 열에 'ok/판정가능' 기록."""
+    g = globals()
+    if not g.get('USE_TIME_CONSISTENCY', False):
+        return pool_df
+    if pool_df is None or len(pool_df) == 0:
+        return pool_df
+    n_seg = max(2, int(g.get('TIME_CONSISTENCY_SEGMENTS', 3)))
+    min_ok = int(g.get('TIME_CONSISTENCY_MIN_OK', 2))
+    min_sig = int(g.get('TIME_CONSISTENCY_MIN_SIG', 3))
+    close_arr = np.asarray(close.values, dtype=np.float64)
+    n = len(close_arr)
+    bounds = [int(round(n * i / n_seg)) for i in range(n_seg + 1)]
+    hz = int(g.get('HORIZON_DAYS', 1))
+    keep = []; labels = []
+    for _, row in pool_df.iterrows():
+        try:
+            limit = float(row.get('sel_limit', (g.get('STAGE_SUCCESS_LIMIT') or [0.01])[0]))
+            hit0, ev0 = _hit_flags_cached(close_arr, hz, limit, 1 if is_buy else 0, 0)
+            sig = _to_signal_array(feat, row).astype(np.uint8)
+            ok_cnt = 0; judged = 0
+            for si in range(n_seg):
+                lo, hi = bounds[si], bounds[si + 1]
+                n_s, _, sr = _success_on(hit0, ev0, sig, lo, hi)
+                _, _, base = _success_on(hit0, ev0, None, lo, hi)
+                if n_s < min_sig or not (np.isfinite(sr) and np.isfinite(base)):
+                    continue          # 신호 부족 구간 = 판정 제외
+                judged += 1
+                if sr - base > 0: ok_cnt += 1
+            labels.append(f"{ok_cnt}/{judged}")
+            # 판정 가능 구간이 min_ok 미만이면 통과 (증거 부족은 무죄 추정)
+            keep.append(judged < min_ok or ok_cnt >= min_ok)
+        except Exception:
+            labels.append('—'); keep.append(True)
+    out = pool_df.copy()
+    out['time_consistency'] = labels
+    filtered = out[pd.Series(keep, index=out.index)].reset_index(drop=True)
+    if len(filtered) < 2:               # 전량 탈락 방지 폴백
+        if verbose:
+            print(f"    · [SEL-8] 시간 일관성 필터 폴백 — 잔여 {len(filtered)}행 < 2, 필터 해제")
+        return out
+    if verbose and len(filtered) < len(out):
+        print(f"    · [SEL-8] 시간 {n_seg}분할 일관성 (스킬>0 {min_ok}구간 이상): "
+              f"{len(out)}행 → {len(filtered)}행")
+    return filtered
 
 
 def _rank_pool_by_selection(pool_df, is_buy, *, dd_limit=0.01, verbose=False):
@@ -13943,13 +14098,24 @@ def _rank_pool_by_selection(pool_df, is_buy, *, dd_limit=0.01, verbose=False):
         penalty = np.clip(1.0 - w * decay, 0.5, 1.0)
         base = base * penalty
 
+    # [SEL-6] ★ 죽은 지표 감점 — 마지막 신호가 STALE_SIGNAL_DAYS보다 오래됐으면 강등
+    if g.get('USE_STALE_SIGNAL_PENALTY', False) and 'days_since_last_signal' in df.columns:
+        _stale_d = int(g.get('STALE_SIGNAL_DAYS', 120))
+        _stale_p = float(g.get('STALE_PENALTY', 0.7))
+        _is_stale = df['days_since_last_signal'].astype(float) > _stale_d
+        base = base * np.where(_is_stale, _stale_p, 1.0)
+        if verbose and int(_is_stale.sum()):
+            print(f"    · [SEL-6] 죽은 지표 감점: 마지막 신호 {_stale_d}일↑ 경과 "
+                  f"{int(_is_stale.sum())}행 × {_stale_p}")
+
     df['rank_score'] = base.astype(float)
     df = df.sort_values(['rank_score', 'success_rate', 'n_signals'],
                         ascending=[False, False, False]).reset_index(drop=True)
     if verbose:
         print(f"    · 풀 재정렬: 기준={rank_by}"
               f"{' +불리감점' if g.get('USE_ADVERSE_PENALTY') else ''}"
-              f"{' +홀드감쇠감점' if g.get('USE_HOLDOUT_DECAY_PENALTY') else ''} "
+              f"{' +홀드감쇠감점' if g.get('USE_HOLDOUT_DECAY_PENALTY') else ''}"
+              f"{' +죽은지표감점' if g.get('USE_STALE_SIGNAL_PENALTY') else ''} "
               f"({len(df)}행)")
     return df
 
@@ -14024,18 +14190,32 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
     except Exception:
         pass
 
-    # ★ 지표 선출 개선 (요청) — enrichment 뒤에 신규 정렬/필터 적용.
+    # ★ 지표 선출 개선 (요청) — enrichment 뒤에 신규 정렬/필터 적용 (공용 파이프라인).
     _sel_verbose = bool(globals().get('SELECTION_VERBOSE', True))
-    _limit = float((globals().get('STAGE_SUCCESS_LIMIT') or [0.01])[0])
     try:
-        # [SEL-3] 지표당 임계 개수 제한
-        buy_c  = _limit_thresholds_per_indicator(buy_c,  verbose=_sel_verbose)
-        sell_c = _limit_thresholds_per_indicator(sell_c, verbose=_sel_verbose)
-        # [SEL-1/2/4] 최종 정렬
-        buy_c  = _rank_pool_by_selection(buy_c,  True,  dd_limit=_limit, verbose=_sel_verbose)
-        sell_c = _rank_pool_by_selection(sell_c, False, dd_limit=_limit, verbose=_sel_verbose)
+        buy_c, sell_c = _apply_selection_pipeline(feat, close, buy_c, sell_c, verbose=_sel_verbose)
     except Exception as _rke:
         print(f"    ⚠ 지표 선출 개선 실패(원본 풀 유지): {_rke}")
+    return buy_c, sell_c
+
+
+def _apply_selection_pipeline(feat, close, buy_c, sell_c, *, verbose=False):
+    """★ 지표 선출 개선 공용 파이프라인 — 본 실행과 A/B 검증이 정확히 같은 로직을 쓰도록 공유.
+       순서: [SEL-3] 지표당 임계 제한 → [SEL-8] 시간 일관성 필터 →
+             [SEL-1/2/4/6] 재정렬(감점 포함) → [SEL-7] 신호일 자카드 중복 제거."""
+    _limit = float((globals().get('STAGE_SUCCESS_LIMIT') or [0.01])[0])
+    # [SEL-3]
+    buy_c  = _limit_thresholds_per_indicator(buy_c,  verbose=verbose)
+    sell_c = _limit_thresholds_per_indicator(sell_c, verbose=verbose)
+    # [SEL-8] 시간 3분할 일관성
+    buy_c  = _filter_time_consistency(feat, close, buy_c,  True,  verbose=verbose)
+    sell_c = _filter_time_consistency(feat, close, sell_c, False, verbose=verbose)
+    # [SEL-1/2/4/6] 재정렬 (감점 포함)
+    buy_c  = _rank_pool_by_selection(buy_c,  True,  dd_limit=_limit, verbose=verbose)
+    sell_c = _rank_pool_by_selection(sell_c, False, dd_limit=_limit, verbose=verbose)
+    # [SEL-7] 랭크순으로 신호일 중복 제거 (상위 유지)
+    buy_c  = _dedup_by_signal_overlap(buy_c,  verbose=verbose)
+    sell_c = _dedup_by_signal_overlap(sell_c, verbose=verbose)
     return buy_c, sell_c
 
 
@@ -16657,34 +16837,34 @@ def run_selection_ab_verification(feat, close_full, ticker, *, top_n=None, quick
     hz = int(g.get('HORIZON_DAYS', 1))
     mdd_limit = g.get('MAX_DRAWDOWN_LIMIT_PCT')
 
-    # 원래 flag 스냅샷 (복원용)
+    # 원래 flag 스냅샷 (복원용) — ★ 신규 flag 4개 포함
     _snap = {k: g.get(k) for k in ('POOL_RANK_BY', 'USE_ADVERSE_PENALTY',
                                     'USE_HOLDOUT_DECAY_PENALTY',
-                                    'MAX_THRESHOLDS_PER_INDICATOR')}
+                                    'MAX_THRESHOLDS_PER_INDICATOR',
+                                    'USE_STALE_SIGNAL_PENALTY',
+                                    'USE_SIGNAL_DEDUP',
+                                    'USE_TIME_CONSISTENCY')}
+
+    # 모든 신규 flag OFF 기본형 (각 변형은 이 위에 하나씩 켠다)
+    _OFF = dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=False,
+                USE_HOLDOUT_DECAY_PENALTY=False, MAX_THRESHOLDS_PER_INDICATOR=0,
+                USE_STALE_SIGNAL_PENALTY=False, USE_SIGNAL_DEDUP=False,
+                USE_TIME_CONSISTENCY=False)
+    def _on(**kw):
+        d = dict(_OFF); d.update(kw); return d
 
     # 검증 변형 정의: (라벨, flag 딕셔너리)
     variants = [
-        ('Baseline (신규 flag 전부 OFF)', dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=False,
-                                             USE_HOLDOUT_DECAY_PENALTY=False,
-                                             MAX_THRESHOLDS_PER_INDICATOR=0)),
-        ('SEL-1 정렬=Expected (SR×움직임)', dict(POOL_RANK_BY='expected', USE_ADVERSE_PENALTY=False,
-                                                 USE_HOLDOUT_DECAY_PENALTY=False,
-                                                 MAX_THRESHOLDS_PER_INDICATOR=0)),
-        ('SEL-1 정렬=Wilson 하한', dict(POOL_RANK_BY='wilson', USE_ADVERSE_PENALTY=False,
-                                        USE_HOLDOUT_DECAY_PENALTY=False,
-                                        MAX_THRESHOLDS_PER_INDICATOR=0)),
-        ('SEL-1 정렬=Skill (순 알파)', dict(POOL_RANK_BY='skill', USE_ADVERSE_PENALTY=False,
-                                            USE_HOLDOUT_DECAY_PENALTY=False,
-                                            MAX_THRESHOLDS_PER_INDICATOR=0)),
-        ('SEL-2 불리방향 감점', dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=True,
-                                     USE_HOLDOUT_DECAY_PENALTY=False,
-                                     MAX_THRESHOLDS_PER_INDICATOR=0)),
-        ('SEL-3 지표당 임계 3개 제한', dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=False,
-                                            USE_HOLDOUT_DECAY_PENALTY=False,
-                                            MAX_THRESHOLDS_PER_INDICATOR=3)),
-        ('SEL-4 홀드아웃 감쇠 감점', dict(POOL_RANK_BY='success', USE_ADVERSE_PENALTY=False,
-                                          USE_HOLDOUT_DECAY_PENALTY=True,
-                                          MAX_THRESHOLDS_PER_INDICATOR=0)),
+        ('Baseline (신규 flag 전부 OFF)', dict(_OFF)),
+        ('SEL-1 정렬=Expected (SR×움직임)', _on(POOL_RANK_BY='expected')),
+        ('SEL-1 정렬=Wilson 하한', _on(POOL_RANK_BY='wilson')),
+        ('SEL-1 정렬=Skill (순 알파)', _on(POOL_RANK_BY='skill')),
+        ('SEL-2 불리방향 감점', _on(USE_ADVERSE_PENALTY=True)),
+        ('SEL-3 지표당 임계 3개 제한', _on(MAX_THRESHOLDS_PER_INDICATOR=3)),
+        ('SEL-4 홀드아웃 감쇠 감점', _on(USE_HOLDOUT_DECAY_PENALTY=True)),
+        ('SEL-6 죽은 지표 감점', _on(USE_STALE_SIGNAL_PENALTY=True)),
+        ('SEL-7 신호일 자카드 중복 제거', _on(USE_SIGNAL_DEDUP=True)),
+        ('SEL-8 시간 3분할 일관성', _on(USE_TIME_CONSISTENCY=True)),
     ]
     if not quick:
         variants.append(('★ 전부 적용 (현재 defaults)', dict(_snap)))
@@ -16696,11 +16876,9 @@ def run_selection_ab_verification(feat, close_full, ticker, *, top_n=None, quick
         for k, v in flags.items():
             g[k] = v
         try:
-            # 풀 재구성 (스냅샷 재사용)
-            _b = _limit_thresholds_per_indicator(buy_src.copy(),  verbose=False)
-            _s = _limit_thresholds_per_indicator(sell_src.copy(), verbose=False)
-            _b = _rank_pool_by_selection(_b, True,  dd_limit=dd_limit, verbose=False)
-            _s = _rank_pool_by_selection(_s, False, dd_limit=dd_limit, verbose=False)
+            # 풀 재구성 (스냅샷 재사용) — ★ 본 실행과 동일한 공용 파이프라인 사용
+            _b, _s = _apply_selection_pipeline(feat, close_full,
+                                                buy_src.copy(), sell_src.copy(), verbose=False)
             _b = _b.head(top_n).reset_index(drop=True)
             _s = _s.head(top_n).reset_index(drop=True)
             # 순신호(net) 계산 — SEARCH_WEIGHT_SCHEME는 baseline과 공평 비교 위해 고정 g=1.0 사용
@@ -18401,6 +18579,33 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 검증_예측로직 시트 작성 실패(무시): {_ve}")
 
+    # ─── ★ 실행 로그 시트 (요청) — 콘솔 출력 전체를 엑셀에 남겨 디버깅 가능하게 ───
+    try:
+        if globals().get('EXCEL_RUN_LOG', True):
+            _tee = _sys_mod.stdout if isinstance(_sys_mod.stdout, _TeeLogger) else None
+            if _tee is not None and _tee.lines:
+                _cap = int(globals().get('EXCEL_RUN_LOG_MAX', 3000))
+                _lines = list(_tee.lines)
+                if len(_lines) > _cap:
+                    _lines = _lines[:500] + [f'... (중간 {len(_tee.lines)-_cap}줄 생략) ...'] + _lines[-(_cap-501):]
+                wsl = wb.create_sheet('실행 로그')
+                wsl.sheet_view.showGridLines = False
+                wsl.cell(1, 1).value = (f'실행 로그 — 이번 실행의 콘솔 출력 사본 ({len(_tee.lines)}줄). '
+                                        f'선출 필터 통계·지연 채택·A/B 검증 등 디버깅용.')
+                wsl.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
+                for _li, _ln in enumerate(_lines):
+                    _c = wsl.cell(3 + _li, 1); _c.value = _ln[:1000]
+                    _c.font = Font(name='Consolas', size=9)
+                    if '⚠' in _ln or '✗' in _ln or '실패' in _ln:
+                        _c.font = Font(name='Consolas', size=9, color='C00000')
+                    elif '✓' in _ln or '✅' in _ln or '★' in _ln:
+                        _c.font = Font(name='Consolas', size=9, color='006100')
+                wsl.column_dimensions['A'].width = 130
+                wsl.freeze_panes = 'A3'
+                print(f"  ✓ '실행 로그' 시트 — {len(_lines)}줄 저장")
+    except Exception as _rle:
+        print(f"  ⚠ 실행 로그 시트 작성 실패(무시): {_rle}")
+
     wb.save(output_file)
 
 
@@ -18905,6 +19110,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          force_best_combo=None,
                          force_corr=None,
                          inject_pools=None):
+    _install_run_log_tee()      # ★ 실행 로그 캡처 시작 (요청) — '실행 로그' 시트로 저장됨
     print('=' * 72)
     print('  매수/매도 앙상블 — 메타 그리드 자동 튜닝')
     print('=' * 72)
