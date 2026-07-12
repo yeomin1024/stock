@@ -12312,11 +12312,9 @@ NKL_SCORE_BIG_THR    = 0.01        # '큰 변동' 기준: 다음날 |변동| ≥
 NKL_SCORE_STREAK_STEP= 0.5         # 연속 큰 적중(오답) 1회당 배율 +0.5 (1→1.5→2.0…)
 NKL_SCORE_STREAK_CAP = 10          # 연속 배율 상한 (배율 최대 1+0.5×10=6)
 NKL_PHASE1_N_SELL    = 0           # 1단계(매수 개수 탐색) 때 고정할 매도 지표 수 (0=매도풀 전체)
-NKL_FAST_PATH        = True        # ★ ON: NKL 모드일 때 기존 그리드·wilson×corr·enrichment를
-                                   #   전부 건너뛰고 '성공률 풀 1회 선출 → NKL 순차 탐색'만 실행 (대폭 단축).
-                                   #   OFF면 기존 전체 파이프라인 뒤에 NKL이 실행됨 (느림).
-NKL_FAST_N_THRESHOLDS = 60         # ★ NKL 빠른 경로에서 지표당 임계 후보 수 (기본 N_THRESHOLDS=1000은
-                                   #   성공률 풀 선출엔 과함 — 60이면 충분히 촘촘하고 20배 빠름). 0=원본값 사용.
+NKL_FAST_PATH        = True        # ★ ON: NKL 모드일 때 K탐색·wilson×corr 순차스코어링·enrichment만
+                                   #   건너뛰고 '성공률 풀 선출 → NKL 순차 탐색'을 실행 (지표풀은 원본과 100% 동일).
+                                   #   OFF면 기존 전체 파이프라인 뒤에 NKL이 실행됨 (느림, 지표풀 동일).
 NKL_MAX_COMBOS       = 40000       # (구버전 교차곱용 안전 상한 — 순차 탐색에서는 사용 안 함)
 NKL_SHEET_MAX_ROWS   = 2000        # KL 순신호 시트 조합 행 상한 (초과 시 수익순 상위만)
 
@@ -13648,6 +13646,29 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
                               horizon, dd_limit, ru_limit,
                               min_signals, wilson_z,
                               anchor_buy_arr=None, anchor_sell_arr=None):
+    # ★ 결과 캐시 (동일 입력 재평가 방지) — 결정적 함수라 캐시해도 결과 100% 동일.
+    #   원본이 느렸던 핵심 원인은 같은 (지표·임계·한도) 평가를 여러 번 반복한 것.
+    #   앵커가 주어지면 캐시 제외(배열 비교 비용 회피).
+    _use_cache = (anchor_buy_arr is None and anchor_sell_arr is None)
+    if _use_cache:
+        try:
+            _ek = (globals().get('_pair_ticker'), int(n_thresholds),
+                   round(float(pct_low), 4), round(float(pct_high), 4),
+                   int(horizon), round(float(dd_limit), 6), round(float(ru_limit), 6),
+                   int(min_signals), round(float(wilson_z), 4),
+                   bool(globals().get('USE_ZSCORE_SIGNAL', False)),
+                   bool(globals().get('LEAD_SELECT_IN_SCORING', True))
+                   and bool(globals().get('LEAD_SHIFT_ENABLED', True)),
+                   feat.shape, len(close), float(close.iloc[-1]) if len(close) else 0.0,
+                   len(indicators))
+            _ec = globals().setdefault('_EBSS_CACHE', {})
+            if _ek in _ec:
+                _b, _s = _ec[_ek]
+                return _b.copy(), _s.copy()
+        except Exception:
+            _ek = None
+    else:
+        _ek = None
     close_arr = close.values.astype(np.float64)
     n_days    = len(close_arr)
     pcts      = np.linspace(pct_low, pct_high, n_thresholds)
@@ -13671,11 +13692,6 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
     #    _stability_adjusted_score 결과와 정확히 일치. 훈련구간 스킬 + 홀드아웃 가드.
     lead_sel = bool(globals().get('LEAD_SELECT_IN_SCORING', True)) and \
                bool(globals().get('LEAD_SHIFT_ENABLED', True))
-    # ★ NKL 빠른 경로: 선출 단계 리드 시프트 탐색 생략 (지표×임계마다 d=0..5 탐색이 최대 비용).
-    #   NKL은 성공률 기준으로만 풀을 거르므로 리드 정렬이 불필요 → 대폭 단축.
-    if (bool(globals().get('USE_NKL_SCORE_SEARCH', False))
-            and bool(globals().get('NKL_FAST_PATH', True))):
-        lead_sel = False
     if lead_sel:
         _d_max   = int(globals().get('LEAD_SHIFT_MAX', 5))
         _min_g   = float(globals().get('LEAD_SHIFT_MIN_GAIN', 0.05))
@@ -13776,6 +13792,11 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
     else:
         buy_df  = buy_df.sort_values('score', ascending=False).reset_index(drop=True)
         sell_df = sell_df.sort_values('score', ascending=False).reset_index(drop=True)
+    if _ek is not None:
+        try:
+            globals().setdefault('_EBSS_CACHE', {})[_ek] = (buy_df.copy(), sell_df.copy())
+        except Exception:
+            pass
     return buy_df, sell_df
 
 
@@ -13920,12 +13941,15 @@ def select_pool_by_success(feat, close, *, indicators, n_thresholds,
          *_dedup  : 지표당 최고성공 1행 (성공률 우선 선출 시트용)
     """
     lo, hi = POOL_SUCCESS_WIDE_PCT
-    # ★ NKL 빠른 경로: 지표당 임계 후보 수를 축소 (기본 1000 → 60). 성공률 풀 선출엔 충분.
-    if (bool(globals().get('USE_NKL_SCORE_SEARCH', False))
-            and bool(globals().get('NKL_FAST_PATH', True))):
-        _nt = int(globals().get('NKL_FAST_N_THRESHOLDS', 60) or 0)
-        if _nt > 0:
-            n_thresholds = _nt
+    # ★ 결과 캐시 (동일 입력 재평가 방지) — 지표풀은 입력이 같으면 결정적이므로
+    #   캐시해도 결과 동일. 원본이 느렸던 건 같은 평가를 여러 번 반복했기 때문.
+    _ck = (globals().get('_pair_ticker'), int(n_thresholds), round(float(dd_limit), 6),
+           round(float(ru_limit), 6), round(float(wilson_z), 4), lo, hi,
+           int(globals().get('POOL_SUCCESS_MIN_SIG', 10)),
+           feat.shape, len(close), float(close.iloc[-1]) if len(close) else 0.0)
+    _cache = globals().setdefault('_SPBS_CACHE', {})
+    if _ck in _cache:
+        return _cache[_ck]
     bdf, sdf = evaluate_buy_sell_scores(
         feat, close, indicators=indicators, n_thresholds=n_thresholds,
         pct_low=lo, pct_high=hi, horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
@@ -13949,7 +13973,12 @@ def select_pool_by_success(feat, close, *, indicators, n_thresholds,
                   if buy_full is not None and len(buy_full) else buy_full)
     sell_dedup = (sell_full.drop_duplicates('indicator', keep='first').reset_index(drop=True)
                   if sell_full is not None and len(sell_full) else sell_full)
-    return buy_full, sell_full, buy_dedup, sell_dedup
+    _out = (buy_full, sell_full, buy_dedup, sell_dedup)
+    try:
+        globals().setdefault('_SPBS_CACHE', {})[_ck] = _out
+    except Exception:
+        pass
+    return _out
 
 
 def _diversify_keep_thresholds(feat, score_df, *, top_n, corr_limit):
@@ -14183,12 +14212,6 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
        → 상관 다변화(같은 지표 여러 임계 유지, 다른 상관 지표만 제거)로 수정전처럼 정예화.
        반환 (buy_combined, sell_combined)."""
     limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
-    # ★ NKL 빠른 경로: 한도별 반복 평가(각 121초)를 1회로 축소.
-    #   NKL은 '성공률 컷' 기준으로만 풀을 거르므로 대표 한도 1개면 충분.
-    if (bool(globals().get('USE_NKL_SCORE_SEARCH', False))
-            and bool(globals().get('NKL_FAST_PATH', True)) and len(limits) > 1):
-        _reps = sorted(limits)
-        limits = [_reps[len(_reps) // 2]]      # 중앙값 한도 1개만
     bparts, sparts = [], []
     for L in limits:
         try:
@@ -19739,6 +19762,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                          force_corr=None,
                          inject_pools=None):
     _install_run_log_tee()      # ★ 실행 로그 캡처 시작 (요청) — '실행 로그' 시트로 저장됨
+    globals()['_SPBS_CACHE'] = {}   # 성공률 풀 캐시 초기화 (티커별 재평가 방지)
     print('=' * 72)
     print('  매수/매도 앙상블 — 메타 그리드 자동 튜닝')
     print('=' * 72)
@@ -19993,13 +20017,6 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         # 그리드 내부 성공평가용 대표 한도 = 리스트 중앙값 (net>K는 합친 풀 사용 → 그리드-투표 시트에만 영향)
         _reps = sorted(globals().get('STAGE_SUCCESS_LIMIT', [dd_limit]) or [dd_limit])
         dd_limit = ru_limit = _reps[len(_reps) // 2]
-        # ★ NKL 빠른 경로: meta_grid_search에 넘기는 임계 후보 수도 축소 (그리드-투표 시트는
-        #   NKL 결과와 무관하므로 정밀도 낮춰도 됨). 기본 1000 → NKL_FAST_N_THRESHOLDS.
-        if (bool(globals().get('USE_NKL_SCORE_SEARCH', False))
-                and bool(globals().get('NKL_FAST_PATH', True))):
-            _nknt = int(globals().get('NKL_FAST_N_THRESHOLDS', 60) or 0)
-            if _nknt > 0:
-                n_thresholds = _nknt
         # ★ 그리드 딱 1회 (윌슨/그리드는 여기서만) — 그리드-투표 시트용. net>K는 합친 풀 사용.
         if globals().get('SKIP_GRID_VOTE', False):
             print("  ⚡ SKIP_GRID_VOTE — 그리드-투표 K탐색 최소화(1×1). net>K는 합친 풀로 정확 계산됨.")
