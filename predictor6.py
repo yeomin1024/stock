@@ -368,9 +368,13 @@ def calc_rsi(cl, period):
     return 100 - 100 / (1 + rs)
 
 def calc_cci(hi, lo, cl, period):
-    tp = (hi + lo + cl) / 3
-    ma = tp.rolling(period).mean()
-    md = tp.rolling(period).apply(lambda x: np.mean(np.abs(x - x.mean())))
+    # ★ NaN 강건 — min_periods로 부분 윈도우 허용, 내부 결측 ffill.
+    _lim = int(globals().get('SANITIZE_FFILL_LIMIT', 5))
+    tp = ((hi + lo + cl) / 3).ffill(limit=_lim)
+    mp = max(2, int(period * 0.5))
+    ma = tp.rolling(period, min_periods=mp).mean()
+    md = tp.rolling(period, min_periods=mp).apply(
+        lambda x: np.nanmean(np.abs(x - np.nanmean(x))), raw=True)
     return (tp - ma) / (0.015 * md.replace(0, np.nan))
 
 def calc_stoch_k(hi, lo, cl, period):
@@ -402,11 +406,19 @@ def calc_pctrank(s, period):
         raw=True)
 
 def calc_linreg_slope(s, period):
-    t = np.arange(period)
+    # ★ NaN 강건 (요청: 잔존 ⚠ 개선) — 윈도우 내 결측이 있어도 유효값만으로 회귀,
+    #   min_periods로 부분 윈도우 허용, 입력 내부 결측은 ffill. 룩어헤드 없음.
+    mp = max(3, int(period * 0.5))
+    s2 = s.ffill(limit=int(globals().get('SANITIZE_FFILL_LIMIT', 5)))
     def _s(x):
-        if np.isnan(x).any(): return np.nan
-        return np.polyfit(t, x, 1)[0] / (abs(x.mean()) or 1)
-    return s.rolling(period).apply(_s, raw=True)
+        m = ~np.isnan(x)
+        k = int(m.sum())
+        if k < 3:
+            return np.nan
+        tt = np.arange(len(x))[m]
+        xx = x[m]
+        return np.polyfit(tt, xx, 1)[0] / (abs(xx.mean()) or 1)
+    return s2.rolling(period, min_periods=mp).apply(_s, raw=True)
 
 def calc_dema(s, period):
     e1 = s.ewm(span=period, adjust=False).mean()
@@ -1804,6 +1816,17 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
         except Exception as _le:
             print(f"  ⚠ 지표 가용성 로그 실패(무시): {_le}")
     df = ohlcv[TICKER].copy()
+    # ★ 입력 OHLCV 내부 결측 정제 (요청: 잔존 ⚠ 개선) — 최근 결측이 있으면 이를 입력으로 쓰는
+    #   모든 롤링 지표(bb_pct·vol_ratio·range_compression 등)의 최근 구간이 죽음.
+    #   가격/거래량의 내부 결측을 과거값으로 채워(ffill) 근본 차단. 룩어헤드 없음(과거값만).
+    #   맨 앞 워밍업 결측은 유지. 채움 한도는 SANITIZE_FFILL_LIMIT(기본 5일).
+    if bool(globals().get('SANITIZE_FEATURES', True)):
+        _lim = int(globals().get('SANITIZE_FFILL_LIMIT', 5))
+        for _c in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            if _c in df.columns:
+                _fv = df[_c].first_valid_index()
+                if _fv is not None:
+                    df.loc[_fv:, _c] = df.loc[_fv:, _c].ffill(limit=_lim)
     cl = df['Close']; hi = df['High']; lo = df['Low']
     op = df['Open'];  vo = df['Volume']
     feat = pd.DataFrame(index=df.index)
@@ -2784,9 +2807,9 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
     vol_5d  = cl.pct_change().rolling(5).std()
     vol_60d = cl.pct_change().rolling(60).std()
     feat['volatility_compression'] = (1 - vol_5d / vol_60d.replace(0, np.nan)).clip(0, 1)
-    # 30일 가격 범위 / ATR — 좁을수록 압축
-    price_range_30 = cl.rolling(30).max() - cl.rolling(30).min()
-    atr_30 = (hi - lo).rolling(30).mean()
+    # 30일 가격 범위 / ATR — 좁을수록 압축 (min_periods로 최근값 보장)
+    price_range_30 = cl.rolling(30, min_periods=15).max() - cl.rolling(30, min_periods=15).min()
+    atr_30 = (hi - lo).rolling(30, min_periods=15).mean()
     feat['range_compression_30'] = price_range_30 / (atr_30 * 30).replace(0, np.nan)
 
     # 11c. 비대칭 위험 점수 (Asymmetric Risk)
@@ -10135,16 +10158,23 @@ def sanitize_features(feat, *, min_valid=None, verbose=True):
             if int(_filled.notna().sum()) > int(_seg.notna().sum()):
                 n_ffilled += 1
             s2.loc[first_idx:] = _filled
-            # ⑦ 최근 꼬리 결측 채움 (요청: '최근20일 유효 0' 개선) — 외부 소스가 최근 끊긴 경우,
-            #    유효 데이터가 충분(min_valid_to_fill 이상)하면 마지막 유효값을 최대 recent_maxfill일까지 유지.
+            # ⑦ 최근 구간 결측 채움 (요청: '최근20일 유효 N' 잔존 개선) — 유효 데이터가 충분하면
+            #    최근 recent_maxfill일 구간의 '흩어진 결측'까지 과거값으로 메움 (limit 없이 그 구간만).
+            #    앞 워밍업/중간은 위 limit 규칙 유지 → 최근 꼬리만 촘촘히 채워 롤링 지표를 살림.
             if fill_recent and nvalid >= min_valid_to_fill:
-                last_idx = s2.last_valid_index()
-                if last_idx is not None and last_idx != s2.index[-1]:
-                    _pos = s2.index.get_loc(last_idx)
-                    _tail_gap = len(s2) - 1 - _pos
-                    if 0 < _tail_gap <= recent_maxfill:
-                        _lastval = s2.loc[last_idx]
-                        s2.iloc[_pos + 1:] = _lastval
+                _tail_n = min(recent_maxfill, len(s2))
+                if _tail_n > 0:
+                    _tail_start = s2.index[len(s2) - _tail_n]
+                    _before = int(s2.loc[_tail_start:].notna().sum())
+                    # 최근 구간 진입 시점의 마지막 유효값으로 시작해 그 구간만 무제한 ffill
+                    _seg_tail = s2.loc[:_tail_start].ffill().iloc[-1:]  # 진입 직전 유효값
+                    _prefix = _seg_tail.iloc[0] if len(_seg_tail) and pd.notna(_seg_tail.iloc[0]) else np.nan
+                    _tailser = s2.loc[_tail_start:].copy()
+                    if pd.notna(_prefix) and pd.isna(_tailser.iloc[0]):
+                        _tailser.iloc[0] = _prefix
+                    _tailser = _tailser.ffill()
+                    s2.loc[_tail_start:] = _tailser
+                    if int(s2.loc[_tail_start:].notna().sum()) > _before:
                         n_tail_filled += 1
             fill_frame[col] = s2
         else:
@@ -12305,7 +12335,7 @@ STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축�
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
-MAX_INDICATORS      = 3000
+MAX_INDICATORS      = 3500
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
