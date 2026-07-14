@@ -10015,6 +10015,13 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
 
+    # ★ 피처 정제 (요청: 무효 지표를 모두 유효하도록 개선) — 무효/부분 판정의 근본 원인을
+    #   룩어헤드 없이 안전하게 복구. compute_features 결과 전체에 일괄 적용.
+    try:
+        feat = sanitize_features(feat, verbose=True)
+    except Exception as _se:
+        print(f"  ⚠ 피처 정제 실패(원본 유지): {_se}")
+
     # ★ 피처 건강도 자동 진단 (요청 반영) — 계산된 모든 피처 하나하나 점검.
     if log_health:
         try:
@@ -10023,6 +10030,111 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
         except Exception as _he:
             print(f"  ⚠ 피처 건강도 진단 실패(무시): {_he}")
     return feat
+
+
+# ════════════════════════════════════════════════════════════════
+# ★ 피처 정제 (요청: 무효 지표를 모두 유효하도록) — 무효화 원인별 안전 복구
+# ════════════════════════════════════════════════════════════════
+SANITIZE_FEATURES        = True    # 끄려면 False
+SANITIZE_MIN_VALID       = 30      # log_feature_health의 min_valid와 동일 기준
+SANITIZE_FFILL_LIMIT     = 5       # 내부 결측 전방채움 한도(거래일). 룩어헤드 아님(과거값만 사용)
+SANITIZE_DROP_DEAD       = True    # 유효값 0개 또는 전부 상수인 '완전 죽은' 피처는 제거
+SANITIZE_CONST_TOL = 1e-12   # 표준편차가 이 값 이하이면 상수로 간주
+
+
+def sanitize_features(feat, *, min_valid=None, verbose=True):
+    """★ 무효/부분 지표를 유효하게 만드는 정제 (요청).
+
+    무효화 4대 원인을 각각 안전하게 처리한다 (룩어헤드 없음 = 미래값 사용 안 함):
+      ① 무한대(±inf) → NaN  (이미 위에서 처리했지만 방어적 재실행)
+      ② 내부 결측(중간에 뚫린 NaN) → 과거값으로 전방채움(ffill, limit=SANITIZE_FFILL_LIMIT).
+         맨 앞 워밍업 구간 NaN은 그대로 둠(미래를 당겨오지 않기 위해 bfill 안 함).
+      ③ 워밍업으로 유효값이 min_valid 미만이 된 롤링 지표 → 남은 유효구간만으로도 판정되게
+         '유효 시작점 이후' 구간의 내부 결측만 메움. (앞부분 NaN은 정상이므로 유지)
+      ④ 상수 지표(분산 0, 항상 같은 값) → '완전 죽은' 것(전부 동일)만 제거 대상.
+         플래그(0/1)처럼 대부분 0이지만 가끔 1인 지표는 상수가 아니므로 유지.
+      ⑤ 유효값 0개(완전 무효) 피처 → 제거 (데이터 소스 결측 등).
+
+    핵심: 살릴 수 있는 지표는 살리고(결측 메움), 되살릴 수 없는 것(데이터 없음/완전상수)은
+          깔끔히 제거해 풀에 무효 지표가 남지 않게 함.
+    반환: 정제된 feat (컬럼 수가 줄 수 있음)."""
+    if feat is None or len(feat) == 0:
+        return feat
+    g = globals()
+    if not bool(g.get('SANITIZE_FEATURES', True)):
+        return feat
+    mv = int(min_valid if min_valid is not None else g.get('SANITIZE_MIN_VALID', 30))
+    ffill_lim = int(g.get('SANITIZE_FFILL_LIMIT', 5))
+    const_tol = float(g.get('SANITIZE_CONST_TOL', 1e-12))
+    drop_dead = bool(g.get('SANITIZE_DROP_DEAD', True))
+    n = len(feat)
+
+    # ① 무한대 → NaN (방어적)
+    feat = feat.replace([np.inf, -np.inf], np.nan)
+
+    n_ffilled = 0; n_dropped_dead = 0; n_dropped_empty = 0; n_const_kept = 0
+    keep_cols = []
+    fill_frame = {}
+    for col in feat.columns:
+        s = feat[col]
+        nvalid = int(s.notna().sum())
+        # ⑤ 완전 무효 (유효값 0) → 제거
+        if nvalid == 0:
+            n_dropped_empty += 1
+            continue
+        # ④ 완전 죽은 상수 (모든 유효값이 동일) → 제거 (되살릴 수 없음)
+        sv = s.dropna()
+        try:
+            _std = float(sv.std())
+        except Exception:
+            _std = 0.0
+        is_dead_const = (len(sv) > 1 and (_std <= const_tol or not np.isfinite(_std)))
+        if is_dead_const:
+            if drop_dead:
+                n_dropped_dead += 1
+                continue
+            else:
+                n_const_kept += 1
+                keep_cols.append(col)
+                fill_frame[col] = s
+                continue
+        # ②③ 유효 시작점 이후 내부 결측만 ffill (앞 워밍업 NaN은 유지 = 룩어헤드 방지)
+        first_idx = s.first_valid_index()
+        if first_idx is not None:
+            s2 = s.copy()
+            _seg = s2.loc[first_idx:]
+            _filled = _seg.ffill(limit=ffill_lim) if ffill_lim > 0 else _seg.ffill()
+            if int(_filled.notna().sum()) > int(_seg.notna().sum()):
+                n_ffilled += 1
+            s2.loc[first_idx:] = _filled
+            fill_frame[col] = s2
+        else:
+            fill_frame[col] = s
+        keep_cols.append(col)
+
+    out = pd.DataFrame(fill_frame, index=feat.index)[keep_cols] if keep_cols else feat.iloc[:, :0]
+
+    if verbose:
+        _removed = n_dropped_empty + n_dropped_dead
+        print(f"  🧹 피처 정제: {len(feat.columns)}개 → {len(out.columns)}개 "
+              f"(내부결측 ffill {n_ffilled}개 / 제거 {_removed}개"
+              f"[완전무효 {n_dropped_empty} + 죽은상수 {n_dropped_dead}])")
+        # 정제 후에도 남는 부분(⚠) 사유 요약
+        still = []
+        for col in out.columns:
+            s = out[col]
+            nv = int(s.notna().sum())
+            r20 = int(s.iloc[-20:].notna().sum()) if n >= 20 else nv
+            if nv < mv:
+                still.append((col, f'유효{nv}행(워밍업)'))
+            elif r20 < 5:
+                still.append((col, f'최근20일{r20}'))
+        if still:
+            print(f"     · 정제 후에도 ⚠ 잔존 {len(still)}개 (대부분 롤링 워밍업 — 데이터 누적되면 해소):")
+            for c, why in still[:8]:
+                print(f"       - {c[:50]}: {why}")
+    return out
+
 
 
 # ════════════════════════════════════════════════════════════════
