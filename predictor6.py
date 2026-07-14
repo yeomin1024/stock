@@ -384,11 +384,22 @@ def calc_williams(hi, lo, cl, period):
     return (hh - cl) / (hh - ll).replace(0, np.nan) * -100
 
 def calc_zscore(s, period):
-    return (s - s.rolling(period).mean()) / s.rolling(period).std().replace(0, np.nan)
+    # ★ NaN 강건 (요청: 무효 지표 개선) — min_periods로 워밍업 후 값이 나오게,
+    #   입력 내부 결측은 과거값으로 채워 롤링이 최근 구간에서 죽지 않게 함 (룩어헤드 없음).
+    mp = max(2, int(period * 0.5))
+    s2 = s.ffill(limit=int(globals().get('SANITIZE_FFILL_LIMIT', 5)))
+    mean = s2.rolling(period, min_periods=mp).mean()
+    std = s2.rolling(period, min_periods=mp).std().replace(0, np.nan)
+    return (s2 - mean) / std
 
 def calc_pctrank(s, period):
-    return s.rolling(period).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1],
-                                   raw=False)
+    # ★ NaN 강건 — min_periods로 부분 윈도우에서도 순위 계산, 내부 결측은 ffill.
+    mp = max(2, int(period * 0.5))
+    s2 = s.ffill(limit=int(globals().get('SANITIZE_FFILL_LIMIT', 5)))
+    return s2.rolling(period, min_periods=mp).apply(
+        lambda x: pd.Series(x).dropna().rank(pct=True).iloc[-1]
+        if pd.notna(x[-1]) and pd.Series(x).notna().sum() >= 2 else np.nan,
+        raw=True)
 
 def calc_linreg_slope(s, period):
     t = np.arange(period)
@@ -10040,6 +10051,13 @@ SANITIZE_MIN_VALID       = 30      # log_feature_health의 min_valid와 동일 �
 SANITIZE_FFILL_LIMIT     = 5       # 내부 결측 전방채움 한도(거래일). 룩어헤드 아님(과거값만 사용)
 SANITIZE_DROP_DEAD       = True    # 유효값 0개 또는 전부 상수인 '완전 죽은' 피처는 제거
 SANITIZE_CONST_TOL = 1e-12   # 표준편차가 이 값 이하이면 상수로 간주
+# ★ 최근값 결측 처리 (요청: ⚠ '최근20일 유효 0' 개선) — 외부 소스(^MOVE, ^SKEW, Shiller 등)가
+#   최근에 안 받아지면 파생 지표의 최근 구간이 전부 NaN이 됨. 이를 살리는 옵션:
+SANITIZE_FILL_RECENT     = True    # True면 유효 데이터가 충분한 지표의 '최근 꼬리 결측'을 마지막 값으로 채움
+SANITIZE_RECENT_MAXFILL  = 60      # 최근 꼬리 결측을 최대 이 일수까지 마지막 유효값으로 채움 (그 이상이면 데이터 없음으로 판단)
+SANITIZE_MIN_VALID_TO_FILL = 60    # 이 지표를 살릴지 판단: 전체 유효값이 이 개수 이상이어야 꼬리채움 (데이터 거의 없는 건 제거)
+SANITIZE_DROP_SOURCELESS = True    # 유효값이 극소수(아래 기준 미만)인 '사실상 데이터 없는' 지표는 제거
+SANITIZE_SOURCELESS_MIN  = 30      # 전체 유효값이 이 미만이면 소스 없음으로 간주해 제거
 
 
 def sanitize_features(feat, *, min_valid=None, verbose=True):
@@ -10073,6 +10091,12 @@ def sanitize_features(feat, *, min_valid=None, verbose=True):
     feat = feat.replace([np.inf, -np.inf], np.nan)
 
     n_ffilled = 0; n_dropped_dead = 0; n_dropped_empty = 0; n_const_kept = 0
+    n_tail_filled = 0; n_dropped_sourceless = 0
+    fill_recent = bool(g.get('SANITIZE_FILL_RECENT', True))
+    recent_maxfill = int(g.get('SANITIZE_RECENT_MAXFILL', 60))
+    min_valid_to_fill = int(g.get('SANITIZE_MIN_VALID_TO_FILL', 60))
+    drop_sourceless = bool(g.get('SANITIZE_DROP_SOURCELESS', True))
+    sourceless_min = int(g.get('SANITIZE_SOURCELESS_MIN', 30))
     keep_cols = []
     fill_frame = {}
     for col in feat.columns:
@@ -10081,6 +10105,10 @@ def sanitize_features(feat, *, min_valid=None, verbose=True):
         # ⑤ 완전 무효 (유효값 0) → 제거
         if nvalid == 0:
             n_dropped_empty += 1
+            continue
+        # ⑥ 사실상 데이터 없는 지표 (유효값 극소수) → 제거 (^MOVE 8행처럼 소스 결측)
+        if drop_sourceless and nvalid < sourceless_min:
+            n_dropped_sourceless += 1
             continue
         # ④ 완전 죽은 상수 (모든 유효값이 동일) → 제거 (되살릴 수 없음)
         sv = s.dropna()
@@ -10107,6 +10135,17 @@ def sanitize_features(feat, *, min_valid=None, verbose=True):
             if int(_filled.notna().sum()) > int(_seg.notna().sum()):
                 n_ffilled += 1
             s2.loc[first_idx:] = _filled
+            # ⑦ 최근 꼬리 결측 채움 (요청: '최근20일 유효 0' 개선) — 외부 소스가 최근 끊긴 경우,
+            #    유효 데이터가 충분(min_valid_to_fill 이상)하면 마지막 유효값을 최대 recent_maxfill일까지 유지.
+            if fill_recent and nvalid >= min_valid_to_fill:
+                last_idx = s2.last_valid_index()
+                if last_idx is not None and last_idx != s2.index[-1]:
+                    _pos = s2.index.get_loc(last_idx)
+                    _tail_gap = len(s2) - 1 - _pos
+                    if 0 < _tail_gap <= recent_maxfill:
+                        _lastval = s2.loc[last_idx]
+                        s2.iloc[_pos + 1:] = _lastval
+                        n_tail_filled += 1
             fill_frame[col] = s2
         else:
             fill_frame[col] = s
@@ -10115,10 +10154,10 @@ def sanitize_features(feat, *, min_valid=None, verbose=True):
     out = pd.DataFrame(fill_frame, index=feat.index)[keep_cols] if keep_cols else feat.iloc[:, :0]
 
     if verbose:
-        _removed = n_dropped_empty + n_dropped_dead
+        _removed = n_dropped_empty + n_dropped_dead + n_dropped_sourceless
         print(f"  🧹 피처 정제: {len(feat.columns)}개 → {len(out.columns)}개 "
-              f"(내부결측 ffill {n_ffilled}개 / 제거 {_removed}개"
-              f"[완전무효 {n_dropped_empty} + 죽은상수 {n_dropped_dead}])")
+              f"(내부결측 ffill {n_ffilled} / 최근꼬리채움 {n_tail_filled} / 제거 {_removed}"
+              f"[완전무효 {n_dropped_empty} + 죽은상수 {n_dropped_dead} + 소스없음 {n_dropped_sourceless}])")
         # 정제 후에도 남는 부분(⚠) 사유 요약
         still = []
         for col in out.columns:
