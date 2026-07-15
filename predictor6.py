@@ -16019,7 +16019,6 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             nb = max(1, min(nb, nB)); ns = max(1, min(ns, nS))
             return buy_cum[nb-1] - sell_cum[ns-1], nb, ns
         def _search_kl(net):
-            net_prev = np.empty(n); net_prev[0] = net[0]; net_prev[1:] = net[:-1]
             lo = float(np.nanmin(net)); hi = float(np.nanmax(net))
             if hi <= lo: hi = lo + 1.0
             if _net_is_float:
@@ -16032,15 +16031,16 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
                     if L > K: continue
                     pos = np.zeros(n); cur = 0.0
                     for s in range(n):
-                        v = net_prev[s]
+                        v = net[s]                    # ★ 당일 net 체결 (메인풀과 동일 규약)
                         if v >= K: cur = 1.0
                         elif v <= L: cur = 0.0
                         pos[s] = cur
                     pos[0] = 0.0
-                    # 카운트 0인 날만의 수익
-                    ret = float(np.sum(pos * rr_zero))
+                    # 카운트 0인 날만의 수익 (진입 다음날 실현)
+                    _hr = np.zeros(n); _hr[1:] = pos[:-1] * rr_zero[1:]
+                    ret = float(np.sum(_hr))
                     if best is None or ret > best[2]:
-                        cum = np.cumsum(pos * rr_zero); mdd = float(np.min(cum - np.maximum.accumulate(cum)))
+                        cum = np.cumsum(_hr); mdd = float(np.min(cum - np.maximum.accumulate(cum)))
                         best = (K, L, ret, mdd, int(pos.sum()), pos.copy())
             return best
         # 개수 탐색: 좌표하강
@@ -16062,7 +16062,9 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         K, L, ret, mdd, dl, pos = bkl
 
         # 별도 풀 daily (카운트 0인 날만 매매 반영, 나머지는 현금)
-        daily_ret = np.where(zmask, pos * rr, 0.0)
+        # 당일 체결: 진입 다음날 실현 → daily[t]=pos[t-1]*rr[t], 카운트0인 날만 남김
+        _hr_z = np.zeros(n); _hr_z[1:] = pos[:-1] * rr[1:]
+        daily_ret = np.where(zmask, _hr_z, 0.0)
         action = []
         for t in range(n):
             if t == 0: action.append('—'); continue
@@ -16286,8 +16288,13 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         })
         # ★ (요청) 카운트 0인 날 별도 풀 탐색 — 매수·매도 신호 지표가 모두 0개인 날만 대상.
         try:
-            _zero_mask = (np.asarray(buy_count) == 0) & (np.asarray(sell_count) == 0)
-            if int(np.sum(_zero_mask)) >= 5:
+            # 가중 신호는 미세값이 남을 수 있어 허용오차로 0 판정 (실질 무신호일 포착)
+            _bc0 = np.abs(np.asarray(buy_count, dtype=float)) < 1e-9
+            _sc0 = np.abs(np.asarray(sell_count, dtype=float)) < 1e-9
+            _zero_mask = _bc0 & _sc0
+            _nz = int(np.sum(_zero_mask))
+            print(f"  ℹ 카운트0(매수·매도 신호지표 모두 0개)인 날: {_nz}일")
+            if _nz >= 5:
                 _zres = _search_zero_count_pool(
                     feat, close_ser, buy_pool, sell_pool,
                     n_buy_opt, n_sell_opt, _zero_mask,
@@ -16332,17 +16339,19 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
        반환: dict{best_ret:(K,L,ret,mdd,dl,daily_pos), best_mdd:(...) or None, grid_n}."""
     net = np.asarray(net, float); r = np.asarray(r, float)
     n = len(net)
-    net_prev = np.empty(n); net_prev[0] = net[0]; net_prev[1:] = net[:-1]
 
     def _run(K, L):
+        # ★ (요청) 당일 net 체결 — net[s]가 K 넘으면 그날 롱, L 밑돌면 그날 현금 (신호일=체결일).
+        #   수익은 룩어헤드 방지를 위해 진입 다음날부터: daily[s]=pos[s-1]*r[s].
         pos = np.zeros(n); cur = 0.0
         for s in range(n):
-            v = net_prev[s]
+            v = net[s]
             if v >= K: cur = 1.0
             elif v <= L: cur = 0.0
             pos[s] = cur
         pos[0] = 0.0
-        hr = pos * r
+        hr = np.zeros(n)
+        hr[1:] = pos[:-1] * r[1:]        # 전일 보유분이 당일 등락 실현
         ret = float(np.sum(hr))
         cum = np.cumsum(hr); run_max = np.maximum.accumulate(cum)
         mdd = float(np.min(cum - run_max)) if n else 0.0
@@ -18177,12 +18186,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _brk = _kl_pre['best_ret']            # (K, L, ret, mdd, dl, pos)
             _K_bt, _L_bt = float(_brk[0]), float(_brk[1])
             _pos_bt = _brk[5]
-            # KL 규약: pos는 net_prev(전일 net) 기반. best_ret의 pos가 그것. 없으면 재구성.
+            # ★ 당일 net 체결: pos는 당일 net[s] 기반 (best_ret의 pos가 그것). 없으면 재구성.
             if _pos_bt is None:
-                _net_prev = np.empty(_n_all); _net_prev[0] = _net_arr[0]; _net_prev[1:] = _net_arr[:-1]
                 _pos_bt = np.zeros(_n_all, dtype=int); _s = 0
                 for _i in range(_n_all):
-                    _v = _net_prev[_i]
+                    _v = _net_arr[_i]
                     if _v >= _K_bt: _s = 1
                     elif _v <= _L_bt: _s = 0
                     _pos_bt[_i] = _s
@@ -18190,11 +18198,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _pos_bt = np.asarray(_pos_bt, dtype=int)
             _kltag = f'K={_K_bt:.3f}/L={_L_bt:.3f}'
         else:
-            # 폴백: 기존 net>K 단일임계
+            # 폴백: net>K 단일임계 (당일 net 기반)
             _bk0 = _nsd['best_k']
             _K_bt = (round(_bk0, 3) if _wtd else _bk0); _L_bt = None
-            _net_prev = np.empty(_n_all); _net_prev[0] = _net_arr[0]; _net_prev[1:] = _net_arr[:-1]
-            _pos_bt = (_net_prev > _bk0).astype(int); _pos_bt[0] = 0
+            _pos_bt = (_net_arr >= _bk0).astype(int); _pos_bt[0] = 0
             _kltag = f'K={_K_bt} (net>K 폴백)'
 
         # ★ (요청) 하이브리드 — 카운트 0인 날은 별도풀 포지션으로 대체.
@@ -18219,7 +18226,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _pos_hybrid[_i] = _zero_pos_by_date[_dt]
             _pos_bt = _pos_hybrid
 
-        # 액션: pos 전이 기준 (KL 규약 — pos는 net_prev 기반이라 신호 다음날 체결과 동일)
+        # 액션: pos 전이 기준 (당일 net 체결 — 신호일=매수/매도일)
         _action = []
         for _i in range(_n_all):
             if _i == 0: _action.append('—'); continue
@@ -18227,8 +18234,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             elif _pos_bt[_i] == 0 and _pos_bt[_i-1] == 1: _action.append('매도')
             elif _pos_bt[_i] == 1: _action.append('보유')
             else: _action.append('현금')
-        # ★ 수익: KL과 완전 동일하게 daily_ret[i] = pos[i]*rr[i] (pos가 이미 net_prev 기반)
-        _daily_ret = _pos_bt.astype(float) * _rr_bt
+        # ★ 수익: 당일 체결 규약 — daily_ret[i] = pos[i-1]*rr[i] (진입 다음날부터 수익, _net_kl_search와 동일)
+        _daily_ret = np.zeros(_n_all)
+        _daily_ret[1:] = _pos_bt[:-1].astype(float) * _rr_bt[1:]
         _cum_arr = np.cumsum(_daily_ret)
         _held_run = np.cumsum(np.where(_daily_ret < 0, _daily_ret, 0.0))
         _full_cum = float(_cum_arr[-1]) if _n_all else 0.0
@@ -18280,9 +18288,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _held = (i - _entry_i) if (_p == 1 and _entry_i is not None) else None
             _unreal = ((prices[i] / _entry_px - 1.0) if (_p == 1 and _entry_px) else None)
             _real = None
-            if _act == '매도' and _entry_px:
-                _real = float(np.sum(rets[_entry_i:i+1])) if _entry_i is not None else None
+            if _act == '매도' and _entry_i is not None:
+                # 실현손익 = 진입 다음날~청산일 일별수익 합 (pos[i-1]*rr[i] 규약과 일치)
+                _real = float(np.sum(rets[_entry_i+1:i+1])) if (i > _entry_i) else 0.0
                 _entry_px = None; _entry_i = None
+            # ★ 매수ON/매도ON = 당일 net 기준 (pos가 당일 net 기반이라 일관)
             _isbuy = float(_net_arr[i]) >= _K_bt
             _issell = (_L_bt is not None and float(_net_arr[i]) <= _L_bt)
             ws.cell(r, 1).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
@@ -18537,11 +18547,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
             def _pos_from_kl(K, L):
                 """net 시계열과 K/L로 히스테리시스 포지션 배열 재구성 (pos 미저장 행용).
-                   ★ _net_kl_search._run과 동일하게 net_prev(전일 net) 기반 (일별백테와 일치)."""
-                _np = np.empty(len(_net)); _np[0] = _net[0]; _np[1:] = _net[:-1]
+                   ★ _net_kl_search._run과 동일하게 당일 net 기반 (신호일=체결일)."""
                 _p = np.zeros(len(_net), dtype=int); _s = 0
                 for _i in range(len(_net)):
-                    _v = _np[_i]
+                    _v = _net[_i]
                     if _v >= K: _s = 1
                     elif _v <= L: _s = 0
                     _p[_i] = _s
@@ -18705,9 +18714,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _hdr(wsd, 3, ['날짜', '종가', '순신호 net', '포지션', '액션',
                               '일별수익%', '누적수익%', '보유중하락%', '거래손익%', '표시'])
                 # 사전 계산: 누적수익, 보유중하락, 완결 거래손익
-                # ★ _net_kl_search._run과 동일: pos는 net_prev 기반, daily=pos[i]*rr[i] (일별백테·KL시트 일치)
+                # ★ 당일 net 체결 규약: pos는 당일 net 기반, daily=pos[i-1]*rr[i] (진입 다음날부터 수익)
                 _n = len(_pos)
-                _daily = _pos.astype(float) * _rr
+                _daily = np.zeros(_n)
+                _daily[1:] = _pos[:-1].astype(float) * _rr[1:]
                 _cum_arr = np.cumsum(_daily)
                 _peak = np.maximum.accumulate(_cum_arr)
                 _max_cum_i = int(np.argmax(_cum_arr))        # 최고 수익 지점
