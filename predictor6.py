@@ -16357,8 +16357,32 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             _Km, _Lm = float(fixed_kl_mdd[0]), float(fixed_kl_mdd[1])
             r2, m2, d2, p2 = _run(_Km, _Lm)
             _bm = (_Km, _Lm, r2, m2, d2, p2)
-        return {'best_ret': _br, 'best_mdd': _bm, 'grid_n': 1,
-                'top': [{'K': _br[0], 'L': _br[1], 'ret': _br[2], 'mdd': _br[3], 'dl': _br[4], 'pos': _br[5]}]}
+        # ★ (요청) 재현모드에서도 net 근접 3·4위를 위해 전체 K/L 격자 top 계산.
+        #   best_ret/best_mdd는 원본 고정값 유지, top만 격자 탐색으로 채움.
+        _top_fixed = [{'K': _br[0], 'L': _br[1], 'ret': _br[2], 'mdd': _br[3], 'dl': _br[4], 'pos': _br[5]}]
+        try:
+            lo = float(np.nanmin(net)); hi = float(np.nanmax(net))
+            if hi > lo:
+                _isint = np.allclose(net, np.round(net))
+                if _isint:
+                    _kg = list(range(int(np.floor(lo)), int(np.ceil(hi)) + 1))
+                else:
+                    _kg = sorted(set(np.round(np.concatenate([
+                        np.linspace(lo, hi, 60), np.nanpercentile(net, np.linspace(1, 99, 40))]), 4).tolist()))
+                _seen_kl = {(round(_br[0], 4), round(_br[1], 4))}
+                if _bm is not None: _seen_kl.add((round(_bm[0], 4), round(_bm[1], 4)))
+                for K in _kg:
+                    for L in _kg:
+                        if L > K: continue
+                        _key = (round(float(K), 4), round(float(L), 4))
+                        if _key in _seen_kl: continue
+                        _rr_, _md_, _dl_, _ps_ = _run(float(K), float(L))
+                        _top_fixed.append({'K': float(K), 'L': float(L), 'ret': _rr_,
+                                           'mdd': _md_, 'dl': _dl_, 'pos': _ps_})
+        except Exception:
+            pass
+        return {'best_ret': _br, 'best_mdd': _bm, 'grid_n': len(_top_fixed),
+                'top': _top_fixed}
 
     if k_grid is None:
         lo = float(np.nanmin(net)); hi = float(np.nanmax(net))
@@ -18953,6 +18977,40 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _rr += 1
             for ci, w in enumerate([6, 30, 12, 12, 14, 12, 12, 12], 1):
                 wsr.column_dimensions[get_column_letter(ci)].width = w
+            # ★ (요청) 카운트0 별도풀 재현 데이터 — K/L·개수·선정지표를 함께 저장.
+            _zp_r = globals().get('_KNET_ZERO_POOL')
+            if _zp_r is not None and _zp_r.get('daily') is not None:
+                _zr = _rr + 1
+                wsr.cell(_zr, 1).value = '═══ 카운트0 별도풀 재현 ═══'
+                wsr.cell(_zr, 1).font = Font(bold=True, color='1F3864'); _zr += 1
+                # 파라미터 행
+                for c, h in enumerate(['zero_K', 'zero_L', 'zero_nb', 'zero_ns',
+                                       'zero_days', 'excl_buy', 'excl_sell'], 1):
+                    wsr.cell(_zr, c).value = h
+                    wsr.cell(_zr, c).font = Font(bold=True, color='FFFFFF')
+                    wsr.cell(_zr, c).fill = PatternFill('solid', fgColor='C55A11')
+                _zr += 1
+                wsr.cell(_zr, 1).value = round(float(_zp_r['K']), 4)
+                wsr.cell(_zr, 2).value = round(float(_zp_r['L']), 4)
+                wsr.cell(_zr, 3).value = int(_zp_r['n_buy'])
+                wsr.cell(_zr, 4).value = int(_zp_r['n_sell'])
+                wsr.cell(_zr, 5).value = int(_zp_r['zero_days'])
+                wsr.cell(_zr, 6).value = int(_zp_r['excluded_buy'])
+                wsr.cell(_zr, 7).value = int(_zp_r['excluded_sell'])
+                _zr += 2
+                # 선정 지표 목록
+                wsr.cell(_zr, 1).value = '구분'; wsr.cell(_zr, 2).value = '지표(indicator)'
+                wsr.cell(_zr, 1).font = Font(bold=True, color='FFFFFF'); wsr.cell(_zr, 1).fill = PatternFill('solid', fgColor='C55A11')
+                wsr.cell(_zr, 2).font = Font(bold=True, color='FFFFFF'); wsr.cell(_zr, 2).fill = PatternFill('solid', fgColor='C55A11')
+                _zr += 1
+                for _side, _pool in [('카운트0매수', _zp_r.get('rem_buy')), ('카운트0매도', _zp_r.get('rem_sell'))]:
+                    if _pool is None or 'indicator' not in _pool.columns: continue
+                    for _ind in _pool['indicator']:
+                        wsr.cell(_zr, 1).value = _side
+                        wsr.cell(_zr, 2).value = str(_ind)
+                        _zr += 1
+                print(f"  💾 카운트0 별도풀 재현 데이터 저장 — K={_zp_r['K']:.3f}/L={_zp_r['L']:.3f}, "
+                      f"n_buy={_zp_r['n_buy']}/n_sell={_zp_r['n_sell']}, {_zp_r['zero_days']}일")
             print(f"  💾 'k순신호 재현풀' 시트 저장 — 엑셀만으로 재현 가능 (매수 {len(_mp[1])}행 / 매도 {len(_mp[2])}행)")
     except Exception as _pe:
         print(f"  ⚠ k순신호 재현풀 시트 저장 실패(무시): {_pe}")
