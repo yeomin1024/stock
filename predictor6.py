@@ -3372,7 +3372,7 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
             _pos.rolling(p).sum() / _neg.abs().rolling(p).sum().replace(0, np.nan)
         )
         # 최대 단일 음봉 크기
-        feat[f'max_single_loss_{p}d']       = ret_d.where(ret_d < 0).rolling(p).min()
+        feat[f'max_single_loss_{p}d']       = ret_d.where(ret_d < 0).rolling(p, min_periods=1).min()
 
     # ── 14E. Amihud 비유동성 지수 ───────────────────────────────
     dollar_vol = cl * vo
@@ -3509,7 +3509,7 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
         )
 
     # ── 14Q. 평균 음봉 크기 가속도 ─────────────────────────────
-    avg_neg_ret = ret_d.where(ret_d < 0).abs().rolling(20).mean()
+    avg_neg_ret = ret_d.where(ret_d < 0).abs().rolling(20, min_periods=1).mean()
     feat['avg_neg_ret_accel_20d']           = avg_neg_ret - avg_neg_ret.shift(10)
     feat['avg_neg_ret_zscore_60d']          = calc_zscore(avg_neg_ret, 60)
     # 음봉 중 -1% 초과 비율 (대형 음봉 빈도)
@@ -4148,8 +4148,8 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
     # Kelly = (b×p − q) / b  →  < 0 이면 베팅하지 말 것
     for kp in [20, 60]:
         win_rate_k = (ret_d > 0).rolling(kp).mean()
-        avg_win_k  = ret_d.where(ret_d > 0).rolling(kp).mean().abs()
-        avg_loss_k = ret_d.where(ret_d < 0).rolling(kp).mean().abs()
+        avg_win_k  = ret_d.where(ret_d > 0).rolling(kp, min_periods=1).mean().abs()
+        avg_loss_k = ret_d.where(ret_d < 0).rolling(kp, min_periods=1).mean().abs()
         b_k        = avg_win_k / avg_loss_k.replace(0, np.nan)
         kelly_v    = (b_k * win_rate_k - (1 - win_rate_k)) / b_k.replace(0, np.nan)
         feat[f'kelly_signal_{kp}d']        = kelly_v
@@ -9445,6 +9445,40 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
                 feat[_col] = np.nan
     except Exception as _e:
         print(f"[intraday] 결합 건너뜀: {_e}")
+
+    # ★ (요청) 일봉 근사 폴백 — 일중(5분봉) 데이터가 없는 과거 구간의 intraday 지표를
+    #   일봉 OHLC로 근사 가능한 것만 채워 '완전무효'를 없앤다. (5분봉이 있으면 그 값 우선)
+    #   일봉으로 계산 가능한 미시구조 근사: 종가위치·일중수익·방향·갭 등. 룩어헤드 없음.
+    try:
+        _rng_d = (hi - lo).replace(0, np.nan)
+        _approx = {
+            'id_close_loc':        (cl - lo) / _rng_d,                    # 종가의 당일 레인지 내 위치
+            'idx_open_loc_in_day': (op - lo) / _rng_d,                    # 시가 위치
+            'idx_intraday_return': (cl - op) / op.replace(0, np.nan),     # 시가→종가 수익
+            'id_intraday_ret' if False else 'idm_intraday_ret': (cl - op) / op.replace(0, np.nan),
+            'idx_close_above_open': (cl > op).astype(float),
+            'idx_close_at_high':   ((hi - cl) / _rng_d < 0.1).astype(float),   # 고가 근처 마감
+            'idx_close_at_low':    ((cl - lo) / _rng_d < 0.1).astype(float),   # 저가 근처 마감
+            'id_open_drive':       (op - lo) / _rng_d,                    # 시가가 저가 대비 위치(갭업 강도 근사)
+            'id_close_drive':      (cl - lo) / _rng_d,
+            'idm_overnight_ret':   op / cl.shift(1) - 1.0,                # 오버나이트 수익 (전일종가→시가)
+            'idm_intraday_ret':    (cl - op) / op.replace(0, np.nan),     # 일중 수익 (시가→종가)
+            'idm_overnight_faded': (((op / cl.shift(1) - 1.0) > 0) & (cl < op)).astype(float),  # 갭업 후 밀림
+        }
+        _n_approx = 0
+        for _col, _series in _approx.items():
+            if _col not in feat.columns:
+                feat[_col] = np.nan
+            _cur = feat[_col]
+            # 5분봉 값이 있으면 유지, NaN인 곳만 일봉 근사로 채움
+            _filled = _cur.where(_cur.notna(), _series)
+            if int(_filled.notna().sum()) > int(_cur.notna().sum()):
+                _n_approx += 1
+            feat[_col] = _filled
+        if _n_approx > 0:
+            print(f"[intraday] 일봉 근사 폴백: {_n_approx}개 지표의 과거 구간 채움")
+    except Exception as _ea:
+        print(f"[intraday] 일봉 근사 폴백 건너뜀: {_ea}")
 
 # ══════════════════════════════════════════════════════════════
     #  39. 매수/바닥 진입 + 추세 전환 타이밍 (~56개, 기존과 중복 없음)
@@ -15954,12 +15988,16 @@ def _norm_date_set(dlist):
 
 def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
                             used_n_buy, used_n_sell, zero_mask, *,
-                            ticker='', weight_exp=1.0):
-    """★ (요청) 카운트 0인 날 전용 별도 풀 탐색.
+                            ticker='', weight_exp=1.0,
+                            main_net=None, main_K=None, main_L=None):
+    """★ (요청) 카운트 0인 날 전용 별도 풀 탐색 — 하이브리드 전체수익 최대화.
        매수·매도 신호 낸 지표가 '모두 0개'인 날(zero_mask)만 대상으로,
        이미 net에 쓴 상위(used_n_buy/used_n_sell) 지표를 제외한 성공률 우선 풀에서
-       기존과 동일한 방식(n_buy/n_sell 개수 탐색 + K/L 히스테리시스)으로
-       그 날들만의 수익 최고 풀·K·L을 찾는다.
+       (m,n)=(K,L) 임계를 탐색한다.
+       ★ 수익 계산: 메인풀(KL) 포지션과 카운트0 별도풀 포지션을 합친 '하이브리드'
+          연속 포지션의 전체 기간 수익을 최대화. 즉 카운트≠0인 날은 메인풀 pos,
+          카운트0인 날은 별도풀 (m,n) pos로 이어붙여 진입~청산이 경계를 넘나들어도
+          정확히 수익 합산. (이전 매수 상태를 이어받아 카운트0 매도까지 수익 계산 등)
        반환: dict(net, K, L, ret, mdd, n_buy, n_sell, daily, zero_days, ...) 또는 None."""
     try:
         if feat is None or close_ser is None or buy_pool is None or sell_pool is None:
@@ -16014,6 +16052,21 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
 
         _net_is_float = _wtd
         n_min = max(1, int(globals().get('NKL_N_MIN', 10)))
+
+        # ★ 메인풀 KL 포지션 (카운트≠0인 날에 사용) — main_net/K/L로 히스테리시스 재구성.
+        #   당일 net 체결 규약. 메인 정보 없으면 폴백(카운트0인 날만 독립 계산).
+        _has_main = (main_net is not None and main_K is not None and main_L is not None)
+        _main_pos = None
+        if _has_main:
+            _mn = np.asarray(main_net, float)
+            _main_pos = np.zeros(n); _cur = 0.0
+            for s in range(n):
+                v = _mn[s]
+                if v >= float(main_K): _cur = 1.0
+                elif v <= float(main_L): _cur = 0.0
+                _main_pos[s] = _cur
+            _main_pos[0] = 0.0
+
         # n_buy/n_sell 개수 탐색 (좌표하강 — 기존 방식과 동일 취지)
         def _net_for(nb, ns):
             nb = max(1, min(nb, nB)); ns = max(1, min(ns, nS))
@@ -16029,22 +16082,30 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             for K in ks:
                 for L in ks:
                     if L > K: continue
-                    pos = np.zeros(n); cur = 0.0
+                    # 별도풀 (m,n)=(K,L) 히스테리시스 pos (당일 net 체결)
+                    _zpos = np.zeros(n); cur = 0.0
                     for s in range(n):
-                        v = net[s]                    # ★ 당일 net 체결 (메인풀과 동일 규약)
+                        v = net[s]
                         if v >= K: cur = 1.0
                         elif v <= L: cur = 0.0
-                        pos[s] = cur
+                        _zpos[s] = cur
+                    _zpos[0] = 0.0
+                    # ★ 하이브리드 pos: 카운트≠0인 날=메인풀 pos, 카운트0인 날=별도풀 pos.
+                    #   이어붙인 연속 포지션 → 진입~청산이 경계를 넘나들어도 전체수익 정확.
+                    if _has_main:
+                        pos = np.where(zmask, _zpos, _main_pos)
+                    else:
+                        pos = _zpos
                     pos[0] = 0.0
-                    # 카운트 0인 날만의 수익 (진입 다음날 실현)
-                    _hr = np.zeros(n); _hr[1:] = pos[:-1] * rr_zero[1:]
+                    # ★ 하이브리드 전체 기간 수익 (진입 다음날 실현) — 이게 최대가 되도록 탐색
+                    _hr = np.zeros(n); _hr[1:] = pos[:-1] * rr[1:]
                     ret = float(np.sum(_hr))
                     cum = np.cumsum(_hr); mdd = float(np.min(cum - np.maximum.accumulate(cum)))
                     if best is None or ret > best[2]:
-                        best = (K, L, ret, mdd, int(pos.sum()), pos.copy())
+                        best = (K, L, ret, mdd, int(_zpos.sum()), pos.copy())
                     if collect_top:
                         _top.append({'K': float(K), 'L': float(L), 'ret': ret,
-                                     'mdd': mdd, 'dl': int(pos.sum()), 'pos': pos.copy()})
+                                     'mdd': mdd, 'dl': int(_zpos.sum()), 'pos': pos.copy()})
             return (best, _top) if collect_top else best
         # 개수 탐색: 좌표하강
         nb_list = list(range(n_min, nB + 1)) or [nB]
@@ -16068,14 +16129,12 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             bkl = _bkl_final
         K, L, ret, mdd, dl, pos = bkl
 
-        # 별도 풀 daily (카운트 0인 날만 매매 반영, 나머지는 현금)
-        # 당일 체결: 진입 다음날 실현 → daily[t]=pos[t-1]*rr[t], 카운트0인 날만 남김
-        _hr_z = np.zeros(n); _hr_z[1:] = pos[:-1] * rr[1:]
-        daily_ret = np.where(zmask, _hr_z, 0.0)
+        # 별도 풀 daily — ★ 하이브리드 전체 포지션 (카운트0인 날=별도풀, 그 외=메인풀).
+        #   day_ret은 전체 기간 실현수익(pos[t-1]*rr[t]). 카운트0인 날은 별도풀이 정한 pos.
+        daily_ret = np.zeros(n); daily_ret[1:] = pos[:-1] * rr[1:]
         action = []
         for t in range(n):
             if t == 0: action.append('—'); continue
-            if not zmask[t]: action.append('—(카운트≠0)'); continue
             if pos[t] == 1 and pos[t-1] == 0: action.append('매수')
             elif pos[t] == 0 and pos[t-1] == 1: action.append('매도')
             elif pos[t] == 1: action.append('보유')
@@ -16310,16 +16369,28 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             _nz = int(np.sum(_zero_mask))
             if _is_full_run:
                 print(f"  ℹ 카운트0(매수·매도 신호지표 모두 0개)인 날: {_nz}일")
+                if _nz < 5:
+                    print(f"     → 카운트0인 날이 5일 미만 → '카운트0 별도풀'·'mn 순신호' 시트 생략 "
+                          f"(지표수 {n_buy_opt}/{n_sell_opt}가 많아 전부 0인 날이 드묾)")
             if _is_full_run and _nz >= 5:
+                # ★ 메인풀 KL(K/L) 계산 → 하이브리드 기준으로 전달 (카운트≠0인 날 메인 pos)
+                _main_K = _main_L = None
+                try:
+                    _mkl = _net_kl_search(net, r, mdd_limit=globals().get('MAX_DRAWDOWN_LIMIT_PCT'))
+                    if _mkl and _mkl.get('best_ret') is not None:
+                        _main_K = float(_mkl['best_ret'][0]); _main_L = float(_mkl['best_ret'][1])
+                except Exception:
+                    pass
                 _zres = _search_zero_count_pool(
                     feat, close_ser, buy_pool, sell_pool,
                     n_buy_opt, n_sell_opt, _zero_mask,
-                    ticker=ticker, weight_exp=weight_exp)
+                    ticker=ticker, weight_exp=weight_exp,
+                    main_net=net, main_K=_main_K, main_L=_main_L)
                 if _zres is not None:
                     globals()['_KNET_ZERO_POOL'] = _zres
-                    print(f"  ✓ 카운트0 별도풀: {_zres['zero_days']}일 대상, "
+                    print(f"  ✓ 카운트0 별도풀(하이브리드): {_zres['zero_days']}일 카운트0, "
                           f"n_buy={_zres['n_buy']}/n_sell={_zres['n_sell']} "
-                          f"K={_zres['K']:.3f}/L={_zres['L']:.3f} → 수익 {_zres['ret']*100:+.2f}%")
+                          f"m={_zres['K']:.3f}/n={_zres['L']:.3f} → 하이브리드 전체수익 {_zres['ret']*100:+.2f}%")
                 else:
                     globals()['_KNET_ZERO_POOL'] = None
             elif _is_full_run:
@@ -18755,14 +18826,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _zdates = list(_zp_mn['daily']['date'])
             _zmask_mn = np.asarray(_zp_mn['zero_mask'], bool)
             wsm.cell(1, 1).value = (
-                f'{ticker} — mn 순신호 (카운트0 별도풀 전용, 카운트0인 날 {_zp_mn["zero_days"]}일만 매매). '
+                f'{ticker} — mn 순신호 (카운트0 별도풀, 하이브리드). 카운트0인 날 {_zp_mn["zero_days"]}일은 '
+                f'별도풀 (m,n) 신호, 그 외 날은 메인풀 KL 신호로 이어붙인 연속 포지션. '
                 f'm=매수임계(net≥m 매수·롱) / n=매도임계(net≤n 매도·현금), m≥n. '
-                f'수익=카운트0인 날의 상승·하락률 합산. ★=최대수익 조합')
+                f'수익=하이브리드 전체 기간 진입~청산 합산(경계 넘나드는 거래 정확 반영). ★=최대수익 조합')
             wsm.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
             wsm.merge_cells('A1:P1')
 
             def _mn_stats(pos, m, nn):
-                """카운트0 별도풀의 (m,n) 조합 성과 — 카운트0인 날만 대상."""
+                """카운트0 별도풀 (m,n) 조합의 하이브리드 성과.
+                   pos = 하이브리드(카운트0인 날=별도풀, 그 외=메인풀) 연속 포지션.
+                   수익은 전체 기간 진입~청산 합산 (경계 넘나드는 거래 정확히 반영)."""
                 tr = []; ei = None; last_buy = None; last_sell = None
                 held_max_dd = 0.0; n_closed = 0; n_closed_win = 0
                 _np2 = len(pos)
@@ -18772,7 +18846,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if pos[i] == 0 and i > 0 and pos[i-1] == 1:
                         last_sell = i
                         if ei is not None:
-                            _tret = float(np.sum(np.where(_zmask_mn[ei+1:i+1], _zrr[ei+1:i+1], 0.0)))
+                            # ★ 하이브리드 전체 구간 수익 (진입 다음날~청산일, 카운트0 경계 무관)
+                            _tret = float(np.sum(_zrr[ei+1:i+1]))
                             tr.append(_tret); n_closed += 1
                             if _tret > 0: n_closed_win += 1
                             _seg = _zprice[ei:i+1]
@@ -18787,11 +18862,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         if _dd < held_max_dd: held_max_dd = _dd
                 nt = len(tr)
                 wr = (n_closed_win / n_closed * 100) if n_closed else 0.0
-                # 매수/매도 정확도 (카운트0인 날, 당일 net 체결: net[t]≥m → 다음날 수익>0)
+                # 매수/매도 정확도 (카운트0인 날의 별도풀 신호만 판정: net[t]≥m → 다음날 수익>0)
                 buy_acc = sell_acc = None; nb_s = ns_s = 0; bh = sh = 0
                 _nn = min(len(_znet), len(_zrr) - 1)
                 for t in range(_nn):
-                    if not _zmask_mn[t]: continue      # 카운트0인 날만 판정
+                    if not _zmask_mn[t]: continue      # 카운트0인 날의 별도풀 신호만 정확도 판정
                     if _znet[t] >= m:
                         nb_s += 1
                         if _zrr[t+1] > 0: bh += 1
@@ -18842,8 +18917,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             for ci, w in enumerate([5,12,12,11,11,12,9,8,12,11,12,11,13,10,13,10,12], 1):
                 wsm.column_dimensions[get_column_letter(ci)].width = w
             wsm.freeze_panes = 'A4'
-            wsm.cell(2, 1).value = (f"★최대수익 m={_zp_mn['K']:.3f}/n={_zp_mn['L']:.3f} → "
-                                    f"{_zp_mn['ret']*100:+.2f}% | 대상 {_zp_mn['zero_days']}일 | "
+            wsm.cell(2, 1).value = (f"★최대수익(하이브리드) m={_zp_mn['K']:.3f}/n={_zp_mn['L']:.3f} → "
+                                    f"전체 {_zp_mn['ret']*100:+.2f}% | 카운트0인 날 {_zp_mn['zero_days']}일 | "
                                     f"지표수 m풀={_zp_mn['n_buy']}/n풀={_zp_mn['n_sell']}")
             wsm.cell(2, 1).font = Font(bold=True, color='C00000'); wsm.merge_cells('A2:P2')
             print(f"  ✓ mn 순신호 시트 — {len(_mtop)}개 조합, ★최대수익 m={_zp_mn['K']:.3f}/n={_zp_mn['L']:.3f}")
@@ -18859,23 +18934,23 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             wsz = wb.create_sheet('카운트0 별도풀')
             wsz.sheet_view.showGridLines = False
             wsz.cell(1, 1).value = (
-                f'{ticker} — 카운트 0 별도풀 (매수·매도 신호 지표가 모두 0개인 날 전용). '
-                f'이미 쓴 지표 제외(매수 {_zp["excluded_buy"]}개/매도 {_zp["excluded_sell"]}개) 후 '
-                f'성공률 우선 풀에서 기존과 동일 방식으로 재탐색. '
-                f'대상 {_zp["zero_days"]}일 · n_buy={_zp["n_buy"]}/n_sell={_zp["n_sell"]} · '
-                f'K={_zp["K"]:.3f}/L={_zp["L"]:.3f} · 그 날들 수익 {_zp["ret"]*100:+.2f}% (MDD {_zp["mdd"]*100:.2f}%)')
+                f'{ticker} — 카운트 0 별도풀 (하이브리드). 매수·매도 신호 지표가 모두 0개인 날만 별도풀 (m,n) 신호, '
+                f'그 외 날은 메인풀 KL 신호로 이어붙인 연속 포지션. '
+                f'이미 쓴 지표 제외(매수 {_zp["excluded_buy"]}개/매도 {_zp["excluded_sell"]}개) 후 성공률 우선 풀에서 재탐색. '
+                f'카운트0인 날 {_zp["zero_days"]}일 · n_buy={_zp["n_buy"]}/n_sell={_zp["n_sell"]} · '
+                f'm={_zp["K"]:.3f}/n={_zp["L"]:.3f} · 하이브리드 전체수익 {_zp["ret"]*100:+.2f}% (MDD {_zp["mdd"]*100:.2f}%)')
             wsz.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
             wsz.merge_cells('A1:H1')
 
             # 요약 블록
             _summ = [
-                ('대상일 (카운트 0인 날)', f'{_zp["zero_days"]}일'),
+                ('카운트0인 날 (별도풀 개입일)', f'{_zp["zero_days"]}일'),
                 ('제외한 지표 수', f'매수 {_zp["excluded_buy"]}개 / 매도 {_zp["excluded_sell"]}개 (이미 net에 사용)'),
                 ('별도풀 크기', f'매수 {_zp["pool_buy_n"]}개 / 매도 {_zp["pool_sell_n"]}개 (제외 후 남은 성공률우선 풀)'),
                 ('선정 개수', f'n_buy={_zp["n_buy"]} / n_sell={_zp["n_sell"]}'),
-                ('선정 임계', f'K={_zp["K"]:.3f} (net≥K 매수) / L={_zp["L"]:.3f} (net≤L 매도)'),
-                ('그 날들 수익', f'{_zp["ret"]*100:+.2f}%'),
-                ('그 날들 MDD', f'{_zp["mdd"]*100:.2f}%'),
+                ('선정 임계 (m/n)', f'm={_zp["K"]:.3f} (net≥m 매수) / n={_zp["L"]:.3f} (net≤n 매도)'),
+                ('하이브리드 전체수익', f'{_zp["ret"]*100:+.2f}% (카운트0인 날 별도풀 + 그 외 메인풀, 경계 넘나드는 거래 반영)'),
+                ('하이브리드 MDD', f'{_zp["mdd"]*100:.2f}%'),
             ]
             for _i, (_k, _v) in enumerate(_summ):
                 wsz.cell(3 + _i, 1).value = _k; wsz.cell(3 + _i, 1).font = Font(bold=True)
