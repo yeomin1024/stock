@@ -16018,14 +16018,14 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         def _net_for(nb, ns):
             nb = max(1, min(nb, nB)); ns = max(1, min(ns, nS))
             return buy_cum[nb-1] - sell_cum[ns-1], nb, ns
-        def _search_kl(net):
+        def _search_kl(net, collect_top=False):
             lo = float(np.nanmin(net)); hi = float(np.nanmax(net))
             if hi <= lo: hi = lo + 1.0
             if _net_is_float:
                 ks = sorted(set(np.round(np.linspace(lo, hi, 40), 4).tolist()))
             else:
                 ks = list(range(int(np.floor(lo)), int(np.ceil(hi)) + 1))
-            best = None
+            best = None; _top = []
             for K in ks:
                 for L in ks:
                     if L > K: continue
@@ -16039,10 +16039,13 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
                     # 카운트 0인 날만의 수익 (진입 다음날 실현)
                     _hr = np.zeros(n); _hr[1:] = pos[:-1] * rr_zero[1:]
                     ret = float(np.sum(_hr))
+                    cum = np.cumsum(_hr); mdd = float(np.min(cum - np.maximum.accumulate(cum)))
                     if best is None or ret > best[2]:
-                        cum = np.cumsum(_hr); mdd = float(np.min(cum - np.maximum.accumulate(cum)))
                         best = (K, L, ret, mdd, int(pos.sum()), pos.copy())
-            return best
+                    if collect_top:
+                        _top.append({'K': float(K), 'L': float(L), 'ret': ret,
+                                     'mdd': mdd, 'dl': int(pos.sum()), 'pos': pos.copy()})
+            return (best, _top) if collect_top else best
         # 개수 탐색: 좌표하강
         nb_list = list(range(n_min, nB + 1)) or [nB]
         ns_list = list(range(n_min, nS + 1)) or [nS]
@@ -16059,6 +16062,10 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         if best_overall is None:
             return None
         nb_f, ns_f, bkl, net_f = best_overall
+        # 최종 조합에 대해 전체 K/L 격자 top 수집 (mn 순신호 시트용)
+        _bkl_final, _top_final = _search_kl(net_f, collect_top=True)
+        if _bkl_final is not None:
+            bkl = _bkl_final
         K, L, ret, mdd, dl, pos = bkl
 
         # 별도 풀 daily (카운트 0인 날만 매매 반영, 나머지는 현금)
@@ -16081,12 +16088,18 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             'day_ret': daily_ret, 'cum_ret': np.cumsum(daily_ret),
             'action': action,
         })
+        # 별도풀의 매수/매도 카운트 (선정된 nb_f/ns_f개 지표의 신호 합) — 일별백테 주입용
+        _zbuy_count = buy_cum[nb_f-1] if nb_f-1 < buy_cum.shape[0] else buy_cum[-1]
+        _zsell_count = sell_cum[ns_f-1] if ns_f-1 < sell_cum.shape[0] else sell_cum[-1]
         return dict(net=net_f, K=float(K), L=float(L), ret=float(ret), mdd=float(mdd),
                     n_buy=int(nb_f), n_sell=int(ns_f), daily=daily,
                     zero_days=int(np.sum(zmask)), pool_buy_n=int(nB), pool_sell_n=int(nS),
                     rem_buy=rem_buy.head(nb_f), rem_sell=rem_sell.head(ns_f),
-                    excluded_buy=len(used_buy), excluded_sell=len(used_sell))
+                    excluded_buy=len(used_buy), excluded_sell=len(used_sell),
+                    top=_top_final, buy_count=_zbuy_count, sell_count=_zsell_count,
+                    zero_mask=zmask, rr=rr, dates=dates)
     except Exception as _e:
+        import traceback; traceback.print_exc()
         print(f"  ⚠ 카운트0 별도풀 탐색 실패(무시): {_e}")
         return None
 
@@ -16287,14 +16300,17 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             'held_down_run': held_down_run, 'action': action,
         })
         # ★ (요청) 카운트 0인 날 별도 풀 탐색 — 매수·매도 신호 지표가 모두 0개인 날만 대상.
+        #   full 모드(전체 데이터)에서만 저장 — oos 모드가 덮어쓰지 않도록 (oos는 표본 적어 None 되기 쉬움).
         try:
+            _is_full_run = (select_by == 'full' or select_by is None)
             # 가중 신호는 미세값이 남을 수 있어 허용오차로 0 판정 (실질 무신호일 포착)
             _bc0 = np.abs(np.asarray(buy_count, dtype=float)) < 1e-9
             _sc0 = np.abs(np.asarray(sell_count, dtype=float)) < 1e-9
             _zero_mask = _bc0 & _sc0
             _nz = int(np.sum(_zero_mask))
-            print(f"  ℹ 카운트0(매수·매도 신호지표 모두 0개)인 날: {_nz}일")
-            if _nz >= 5:
+            if _is_full_run:
+                print(f"  ℹ 카운트0(매수·매도 신호지표 모두 0개)인 날: {_nz}일")
+            if _is_full_run and _nz >= 5:
                 _zres = _search_zero_count_pool(
                     feat, close_ser, buy_pool, sell_pool,
                     n_buy_opt, n_sell_opt, _zero_mask,
@@ -16306,11 +16322,11 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                           f"K={_zres['K']:.3f}/L={_zres['L']:.3f} → 수익 {_zres['ret']*100:+.2f}%")
                 else:
                     globals()['_KNET_ZERO_POOL'] = None
-            else:
+            elif _is_full_run:
                 globals()['_KNET_ZERO_POOL'] = None
         except Exception as _ze:
+            import traceback; traceback.print_exc()
             print(f"  ⚠ 카운트0 별도풀 처리 실패(무시): {_ze}")
-            globals()['_KNET_ZERO_POOL'] = None
 
         return {
             'best_k': best_k, 'n_buy_opt': n_buy_opt, 'n_sell_opt': n_sell_opt,
@@ -18204,19 +18220,28 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _pos_bt = (_net_arr >= _bk0).astype(int); _pos_bt[0] = 0
             _kltag = f'K={_K_bt} (net>K 폴백)'
 
-        # ★ (요청) 하이브리드 — 카운트 0인 날은 별도풀 포지션으로 대체.
+        # ★ (요청) 하이브리드 — 카운트 0인 날은 별도풀로 대체.
         #   카운트≠0인 날은 메인풀(KL 히스테리시스), 카운트0인 날은 별도풀 매매 결과.
+        #   별도풀의 카운트(m/n 지표 신호합)와 net도 그 날들에 주입, m/n 임계값 표시.
         _zp_bt = globals().get('_KNET_ZERO_POOL')
         _zero_days_set = set()
-        _zero_pos_by_date = {}     # 날짜 → 별도풀 포지션
+        _zero_pos_by_date = {}; _zero_bc_by_date = {}; _zero_sc_by_date = {}; _zero_net_by_date = {}
+        _zero_m = _zero_n = None
         if _zp_bt is not None and _zp_bt.get('daily') is not None:
             _zd = _zp_bt['daily']
+            _zbc = np.asarray(_zp_bt.get('buy_count')) if _zp_bt.get('buy_count') is not None else None
+            _zsc = np.asarray(_zp_bt.get('sell_count')) if _zp_bt.get('sell_count') is not None else None
+            _znet_arr = np.asarray(_zp_bt.get('net'))
+            _zero_m = float(_zp_bt['K']); _zero_n = float(_zp_bt['L'])
             for _i in range(len(_zd)):
                 _row_z = _zd.iloc[_i]
                 if int(_row_z['zero_count_day']) == 1:
                     _dt = pd.Timestamp(_row_z['date']).normalize()
                     _zero_days_set.add(_dt)
                     _zero_pos_by_date[_dt] = int(_row_z['position'])
+                    if _zbc is not None and _i < len(_zbc): _zero_bc_by_date[_dt] = float(_zbc[_i])
+                    if _zsc is not None and _i < len(_zsc): _zero_sc_by_date[_dt] = float(_zsc[_i])
+                    if _i < len(_znet_arr): _zero_net_by_date[_dt] = float(_znet_arr[_i])
         # 메인 pos에 카운트0 날의 별도풀 pos를 덮어씀
         if _zero_pos_by_date:
             _pos_hybrid = _pos_bt.copy()
@@ -18269,10 +18294,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                f'메인풀은 KL 순신호 ★최대수익과 동일.{_hyb_txt} 수익=상승·하락률 합산.')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:P1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
+        _mn_txt = (f" | 카운트0풀 m={_zero_m:.3f}/n={_zero_n:.3f}({len(_zero_days_set)}일)"
+                   if _zero_m is not None else '')
         ws.cell(2, 1).value = (f"★{_kltag} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
                                f"전체 {_p2(_full_cum)} (B&H {_p2(_bh_full)}) | "
                                f"거래 {_n_trades_bt}회 | 보유중하락 {_p2(_held_max_dd)} | "
-                               f"MDD {_p2(_mdd_bt)}")
+                               f"MDD {_p2(_mdd_bt)}{_mn_txt}")
         ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:P2')
         _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
@@ -18284,6 +18311,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         for i in range(len(d)):
             r = 5 + i; row = d.iloc[i]
             _p = pos[i]; _act = _action[i]
+            _dt_i = pd.Timestamp(row['date']).normalize()
+            _is_zero_day = _dt_i in _zero_days_set
             if _act == '매수': _entry_px = prices[i]; _entry_i = i
             _held = (i - _entry_i) if (_p == 1 and _entry_i is not None) else None
             _unreal = ((prices[i] / _entry_px - 1.0) if (_p == 1 and _entry_px) else None)
@@ -18292,14 +18321,23 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 # 실현손익 = 진입 다음날~청산일 일별수익 합 (pos[i-1]*rr[i] 규약과 일치)
                 _real = float(np.sum(rets[_entry_i+1:i+1])) if (i > _entry_i) else 0.0
                 _entry_px = None; _entry_i = None
-            # ★ 매수ON/매도ON = 당일 net 기준 (pos가 당일 net 기반이라 일관)
-            _isbuy = float(_net_arr[i]) >= _K_bt
-            _issell = (_L_bt is not None and float(_net_arr[i]) <= _L_bt)
+            # ★ 카운트0인 날은 별도풀의 카운트·net·m/n 기준, 그 외는 메인풀
+            if _is_zero_day:
+                _bc_disp = _zero_bc_by_date.get(_dt_i, 0.0)
+                _sc_disp = _zero_sc_by_date.get(_dt_i, 0.0)
+                _net_disp = _zero_net_by_date.get(_dt_i, 0.0)
+                _isbuy = (_zero_m is not None and _net_disp >= _zero_m)
+                _issell = (_zero_n is not None and _net_disp <= _zero_n)
+            else:
+                _bc_disp = float(row['buy_count']); _sc_disp = float(row['sell_count'])
+                _net_disp = float(_net_arr[i])
+                _isbuy = _net_disp >= _K_bt
+                _issell = (_L_bt is not None and _net_disp <= _L_bt)
             ws.cell(r, 1).value = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
             ws.cell(r, 2).value = (round(float(prices[i]), 2) if pd.notna(prices[i]) else None)
-            ws.cell(r, 3).value = (round(float(row['buy_count']), 2) if _wtd else int(row['buy_count']))
+            ws.cell(r, 3).value = (round(_bc_disp, 2) if _wtd else int(round(_bc_disp)))
             ws.cell(r, 4).value = ('✓' if _isbuy else '')
-            ws.cell(r, 5).value = (round(float(row['sell_count']), 2) if _wtd else int(row['sell_count']))
+            ws.cell(r, 5).value = (round(_sc_disp, 2) if _wtd else int(round(_sc_disp)))
             ws.cell(r, 6).value = ('✓' if _issell else '')
             ws.cell(r, 7).value = ('롱' if _p == 1 else '현금')
             ws.cell(r, 8).value = _act
@@ -18309,13 +18347,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(r, 11).value = (round(_unreal*100, 2) if _unreal is not None else '')
             ws.cell(r, 12).value = (round(_real*100, 2) if _real is not None else '')
             ws.cell(r, 13).value = round(float(_cum_arr[i]) * 100, 2)
-            ws.cell(r, 14).value = (round(float(_net_arr[i]), 3) if _wtd else int(_net_arr[i]))
+            ws.cell(r, 14).value = (round(_net_disp, 3) if _wtd else int(round(_net_disp)))
             ws.cell(r, 15).value = round(float(_held_run[i]) * 100, 2)
             ws.cell(r, 16).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
             # ★ 카운트0 별도풀 사용일 = 노란색 (요청)
-            _is_zero_day = pd.Timestamp(row['date']).normalize() in _zero_days_set
             if _is_zero_day:
                 for _c in range(1, 17): ws.cell(r, _c).fill = _YEL
+                if _act == '매수': ws.cell(r, 8).font = Font(bold=True, color='006100')
+                elif _act == '매도': ws.cell(r, 8).font = Font(bold=True, color='9C0006')
             else:
                 if _p == 1: ws.cell(r, 7).fill = PatternFill('solid', fgColor='C6EFCE')
                 if _act == '매수':   ws.cell(r, 8).fill = PatternFill('solid', fgColor='C6EFCE')
@@ -18699,99 +18738,118 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             print(f"  ✓ KL 순신호: 최대수익 K={_bt[0]:.3f}/L={_bt[1]:.3f} ({_bt[2]*100:+.1f}%, MDD {_bt[3]*100:.1f}%)"
                   + (f" | MDD한도내 K={_bm[0]:.3f}/L={_bm[1]:.3f}" if _bm else " | (MDD 폴백)"))
 
-            # ─── 7d-2. ★ KL 순신호 일별 백테스트 시트 (요청) ───
-            #   ★최대수익 조합의 일별 진행: 날짜/종가/net/포지션/액션(매수·매도·보유·현금)/
-            #   일별수익/누적수익/보유중하락. MDD·최고수익 지점에 마커 표시.
-            try:
-                _K, _L = float(_bt[0]), float(_bt[1])
-                _pos = _bt[5] if _bt[5] is not None else _pos_from_kl(_K, _L)
-                wsd = wb.create_sheet('KL 순신호 일별', 2); wsd.sheet_view.showGridLines = False
-                wsd.cell(1, 1).value = (
-                    f'{ticker} — KL 순신호 일별 백테스트 (★최대수익 K={_K:.3f}/L={_L:.3f}). '
-                    f'net≥K→매수·보유, net≤L→매도·현금, 사이→유지. 수익=상승·하락률 합산.')
-                wsd.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
-                wsd.merge_cells('A1:J1')
-                _hdr(wsd, 3, ['날짜', '종가', '순신호 net', '포지션', '액션',
-                              '일별수익%', '누적수익%', '보유중하락%', '거래손익%', '표시'])
-                # 사전 계산: 누적수익, 보유중하락, 완결 거래손익
-                # ★ 당일 net 체결 규약: pos는 당일 net 기반, daily=pos[i-1]*rr[i] (진입 다음날부터 수익)
-                _n = len(_pos)
-                _daily = np.zeros(_n)
-                _daily[1:] = _pos[:-1].astype(float) * _rr[1:]
-                _cum_arr = np.cumsum(_daily)
-                _peak = np.maximum.accumulate(_cum_arr)
-                _max_cum_i = int(np.argmax(_cum_arr))        # 최고 수익 지점
-                _dd_arr = _cum_arr - _peak
-                _max_dd_i = int(np.argmin(_dd_arr))          # MDD 지점 (전략 자산 최대낙폭)
-                # 보유중 하락 (구간별 진입가 대비)
-                _held = np.zeros(_n); _entry_p = None
-                for i in range(_n):
-                    if _pos[i] == 1 and (i == 0 or _pos[i-1] == 0):
-                        _entry_p = _price[i]
-                    if _pos[i] == 1 and _entry_p:
-                        _held[i] = _price[i] / _entry_p - 1.0
-                    if _pos[i] == 0:
-                        _entry_p = None
-                # 완결 거래손익 (매도일에 그 거래의 누적손익 기록)
-                _trade_pl = {}; _ei = None
-                for i in range(_n):
-                    if _pos[i] == 1 and (i == 0 or _pos[i-1] == 0): _ei = i
-                    if _pos[i] == 0 and i > 0 and _pos[i-1] == 1 and _ei is not None:
-                        _trade_pl[i] = float(np.sum(_rr[_ei+1:i+1])); _ei = None
-                _GRN = PatternFill('solid', fgColor='C6EFCE')
-                _RED = PatternFill('solid', fgColor='FFC7CE')
-                _YEL = PatternFill('solid', fgColor='FFF2CC')
-                _BLU = PatternFill('solid', fgColor='DDEBF7')
-                for i in range(_n):
-                    r = 4 + i
-                    # 액션 판정
-                    if i > 0 and _pos[i] == 1 and _pos[i-1] == 0: act = '매수'
-                    elif i > 0 and _pos[i] == 0 and _pos[i-1] == 1: act = '매도'
-                    elif _pos[i] == 1: act = '보유'
-                    else: act = '현금'
-                    wsd.cell(r, 1).value = pd.Timestamp(_dates[i]).strftime('%Y-%m-%d')
-                    wsd.cell(r, 2).value = round(float(_price[i]), 2)
-                    wsd.cell(r, 3).value = round(float(_net[i]), 3)
-                    wsd.cell(r, 4).value = '롱' if _pos[i] == 1 else '현금'
-                    wsd.cell(r, 5).value = act
-                    wsd.cell(r, 6).value = round(_daily[i] * 100, 2)
-                    wsd.cell(r, 7).value = round(_cum_arr[i] * 100, 2)
-                    wsd.cell(r, 8).value = round(_held[i] * 100, 2) if _pos[i] == 1 else ''
-                    wsd.cell(r, 9).value = (round(_trade_pl[i] * 100, 2) if i in _trade_pl else '')
-                    # 액션 색상
-                    if act == '매수': wsd.cell(r, 5).fill = _GRN; wsd.cell(r, 5).font = Font(bold=True, color='006100')
-                    elif act == '매도': wsd.cell(r, 5).fill = _RED; wsd.cell(r, 5).font = Font(bold=True, color='9C0006')
-                    # 완결 거래손익 색상
-                    if i in _trade_pl:
-                        wsd.cell(r, 9).font = Font(bold=True,
-                                                    color='006100' if _trade_pl[i] > 0 else '9C0006')
-                    # ★ MDD/최고수익 마커
-                    _mk = ''
-                    if i == _max_cum_i: _mk = '🔺 최고수익'
-                    if i == _max_dd_i: _mk = (_mk + ' 🔻 MDD').strip()
-                    if i == _n - 1: _mk = (_mk + ' ← 현재').strip()
-                    wsd.cell(r, 10).value = _mk
-                    if i == _max_cum_i:
-                        for c in range(1, 11): wsd.cell(r, c).fill = _BLU
-                    if i == _max_dd_i:
-                        for c in range(1, 11): wsd.cell(r, c).fill = _YEL
-                for ci, w in enumerate([12, 10, 11, 8, 8, 10, 11, 12, 11, 18], 1):
-                    wsd.column_dimensions[get_column_letter(ci)].width = w
-                wsd.freeze_panes = 'A4'
-                # 요약 행 (상단 2행)
-                _nt2, _wr2 = _kl_stats(_pos, K=_K, L=_L)[:2]
-                wsd.cell(2, 1).value = (
-                    f"전체수익 {_cum_arr[-1]*100:+.2f}% | MDD {_dd_arr[_max_dd_i]*100:.2f}% "
-                    f"(최고수익 {_cum_arr[_max_cum_i]*100:+.2f}% @ {pd.Timestamp(_dates[_max_cum_i]).strftime('%Y-%m-%d')}) "
-                    f"| 완결거래 {_nt2}회 | 승률 {_wr2:.1f}% (매수→매도 완결 기준)")
-                wsd.cell(2, 1).font = Font(bold=True, color='C00000'); wsd.merge_cells('A2:J2')
-                print(f"  ✓ KL 순신호 일별 시트 — {_n}일, 최고수익 {_cum_arr[_max_cum_i]*100:+.1f}% / MDD {_dd_arr[_max_dd_i]*100:.1f}%")
-            except Exception as _ekd:
-                import traceback; traceback.print_exc()
-                print(f"  ⚠ KL 순신호 일별 시트 작성 실패(무시): {_ekd}")
+            # (요청) KL 순신호 일별 시트는 만들지 않음 — 제거됨.
     except Exception as _ekl:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 순신호 K/L 최적화 시트 작성 실패(무시): {_ekl}")
+
+    # ─── 7d-2b. ★ mn 순신호 시트 (요청) — 카운트0 별도풀의 (m,n)=(K,L) 조합별 결과 표 ───
+    #   KL 순신호 시트와 같은 형식. m=매수임계(K역할), n=매도임계(L역할).
+    try:
+        _zp_mn = globals().get('_KNET_ZERO_POOL')
+        if _zp_mn is not None and _zp_mn.get('top'):
+            wsm = wb.create_sheet('mn 순신호', 2); wsm.sheet_view.showGridLines = False
+            _znet = np.asarray(_zp_mn['net'], float)
+            _zrr = np.asarray(_zp_mn['rr'], float)
+            _zprice = np.asarray(_zp_mn['daily']['price'].values, float)
+            _zdates = list(_zp_mn['daily']['date'])
+            _zmask_mn = np.asarray(_zp_mn['zero_mask'], bool)
+            wsm.cell(1, 1).value = (
+                f'{ticker} — mn 순신호 (카운트0 별도풀 전용, 카운트0인 날 {_zp_mn["zero_days"]}일만 매매). '
+                f'm=매수임계(net≥m 매수·롱) / n=매도임계(net≤n 매도·현금), m≥n. '
+                f'수익=카운트0인 날의 상승·하락률 합산. ★=최대수익 조합')
+            wsm.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
+            wsm.merge_cells('A1:P1')
+
+            def _mn_stats(pos, m, nn):
+                """카운트0 별도풀의 (m,n) 조합 성과 — 카운트0인 날만 대상."""
+                tr = []; ei = None; last_buy = None; last_sell = None
+                held_max_dd = 0.0; n_closed = 0; n_closed_win = 0
+                _np2 = len(pos)
+                for i in range(_np2):
+                    if pos[i] == 1 and (i == 0 or pos[i-1] == 0):
+                        ei = i; last_buy = i
+                    if pos[i] == 0 and i > 0 and pos[i-1] == 1:
+                        last_sell = i
+                        if ei is not None:
+                            _tret = float(np.sum(np.where(_zmask_mn[ei+1:i+1], _zrr[ei+1:i+1], 0.0)))
+                            tr.append(_tret); n_closed += 1
+                            if _tret > 0: n_closed_win += 1
+                            _seg = _zprice[ei:i+1]
+                            if len(_seg) >= 2:
+                                _dd = float(_seg.min() / _seg[0] - 1.0)
+                                if _dd < held_max_dd: held_max_dd = _dd
+                            ei = None
+                if ei is not None:
+                    _seg = _zprice[ei:]
+                    if len(_seg) >= 2:
+                        _dd = float(_seg.min() / _seg[0] - 1.0)
+                        if _dd < held_max_dd: held_max_dd = _dd
+                nt = len(tr)
+                wr = (n_closed_win / n_closed * 100) if n_closed else 0.0
+                # 매수/매도 정확도 (카운트0인 날, 당일 net 체결: net[t]≥m → 다음날 수익>0)
+                buy_acc = sell_acc = None; nb_s = ns_s = 0; bh = sh = 0
+                _nn = min(len(_znet), len(_zrr) - 1)
+                for t in range(_nn):
+                    if not _zmask_mn[t]: continue      # 카운트0인 날만 판정
+                    if _znet[t] >= m:
+                        nb_s += 1
+                        if _zrr[t+1] > 0: bh += 1
+                    elif _znet[t] <= nn:
+                        ns_s += 1
+                        if _zrr[t+1] < 0: sh += 1
+                if nb_s > 0: buy_acc = bh / nb_s * 100
+                if ns_s > 0: sell_acc = sh / ns_s * 100
+                lb = (pd.Timestamp(_zdates[last_buy]).strftime('%Y-%m-%d') if last_buy is not None else '-')
+                ls = (pd.Timestamp(_zdates[last_sell]).strftime('%Y-%m-%d') if last_sell is not None else '-')
+                lbp = (round(float(_zprice[last_buy]), 2) if last_buy is not None else '-')
+                lsp = (round(float(_zprice[last_sell]), 2) if last_sell is not None else '-')
+                return nt, wr, lb, lbp, ls, lsp, held_max_dd, buy_acc, sell_acc, nb_s, ns_s
+
+            _hdr(wsm, 3, ['순위', 'm(매수임계)', 'n(매도임계)', '전체수익%', '최대낙폭%', '보유중하락%',
+                          '거래횟수', '승률%', '매수정확도%', '매수신호일수', '매도정확도%', '매도신호일수',
+                          '최근매수일', '매수가', '최근매도일', '매도가', '비고'])
+            # 최대수익 조합을 맨 위 + 나머지 상위조합 (수익 내림차순)
+            _mtop = sorted(_zp_mn['top'], key=lambda x: -x['ret'])
+            _best_mn = (_zp_mn['K'], _zp_mn['L'])
+            _GOODc = PatternFill('solid', fgColor='C6EFCE')
+            _row_mn = 4; _shown = 0
+            for t in _mtop[:200]:
+                m_, n_ = float(t['K']), float(t['L'])
+                pos = t['pos']
+                nt, wr, lb, lbp, ls, lsp, hdd, bacc, sacc, nbs, nss = _mn_stats(pos, m_, n_)
+                _tag = ''
+                if abs(m_-_best_mn[0])<1e-9 and abs(n_-_best_mn[1])<1e-9: _tag = '★최대수익'
+                wsm.cell(_row_mn, 1).value = _shown + 1
+                wsm.cell(_row_mn, 2).value = round(m_, 3)
+                wsm.cell(_row_mn, 3).value = round(n_, 3)
+                wsm.cell(_row_mn, 4).value = round(t['ret']*100, 2)
+                wsm.cell(_row_mn, 5).value = round(t['mdd']*100, 2)
+                wsm.cell(_row_mn, 6).value = round(hdd*100, 2)
+                wsm.cell(_row_mn, 7).value = nt
+                wsm.cell(_row_mn, 8).value = round(wr, 1)
+                wsm.cell(_row_mn, 9).value = (round(bacc, 1) if bacc is not None else '-')
+                wsm.cell(_row_mn, 10).value = nbs
+                wsm.cell(_row_mn, 11).value = (round(sacc, 1) if sacc is not None else '-')
+                wsm.cell(_row_mn, 12).value = nss
+                wsm.cell(_row_mn, 13).value = lb; wsm.cell(_row_mn, 14).value = lbp
+                wsm.cell(_row_mn, 15).value = ls; wsm.cell(_row_mn, 16).value = lsp
+                wsm.cell(_row_mn, 17).value = _tag
+                if _tag:
+                    for c in range(1, 18): wsm.cell(_row_mn, c).fill = _GOODc
+                    wsm.cell(_row_mn, 17).font = Font(bold=True, color='1F6F1F')
+                _row_mn += 1; _shown += 1
+            for ci, w in enumerate([5,12,12,11,11,12,9,8,12,11,12,11,13,10,13,10,12], 1):
+                wsm.column_dimensions[get_column_letter(ci)].width = w
+            wsm.freeze_panes = 'A4'
+            wsm.cell(2, 1).value = (f"★최대수익 m={_zp_mn['K']:.3f}/n={_zp_mn['L']:.3f} → "
+                                    f"{_zp_mn['ret']*100:+.2f}% | 대상 {_zp_mn['zero_days']}일 | "
+                                    f"지표수 m풀={_zp_mn['n_buy']}/n풀={_zp_mn['n_sell']}")
+            wsm.cell(2, 1).font = Font(bold=True, color='C00000'); wsm.merge_cells('A2:P2')
+            print(f"  ✓ mn 순신호 시트 — {len(_mtop)}개 조합, ★최대수익 m={_zp_mn['K']:.3f}/n={_zp_mn['L']:.3f}")
+    except Exception as _emn:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ mn 순신호 시트 작성 실패(무시): {_emn}")
 
     # ─── 7d-3. ★ 카운트 0 별도풀 시트 (요청) ───
     #   매수·매도 신호 지표가 모두 0개인 날만 대상으로 찾은 별도 풀·K·L·백테스트.
