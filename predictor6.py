@@ -12897,7 +12897,7 @@ STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축�
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
-MAX_INDICATORS      = 3500
+MAX_INDICATORS      = 4500
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
