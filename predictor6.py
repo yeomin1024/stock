@@ -135,6 +135,40 @@ PEERS          = [
     'IWO',    # Russell 2000 그로스 (소형 성장 유동성 리스크)
     'IWN',    # Russell 2000 밸류 (소형 가치 경기 지표)
     'IJH',    # S&P 미드캡 400 (대·중·소 캡 dispersion)
+    # ★ 신규 (요청): 4개 섹터(금융/헬스케어/소비재재량/소비재필수) 하위산업 ETF ─ 섹터별 상승·하락 예측용
+    # ── 금융 하위산업 ──
+    'IAI',    # 미국 브로커·거래소 (증권/트레이딩 — 시장 활황 민감)
+    'KIE',    # 보험 (금리·손해율 민감, 은행과 다른 사이클)
+    'KBWB',   # 대형 은행 (KRE 지역은행 대비 대형은행 dispersion)
+    'IAK',    # 손해·생명보험 (KIE 보완)
+    # ── 헬스케어 하위산업 ──
+    'IBB',    # 대형 바이오테크 (XBI 균등가중 대비 시총가중 — 대·소 바이오 dispersion)
+    'IHF',    # 헬스케어 서비스·보험 (관리의료·병원)
+    'PPH',    # 제약 (대형 제약주 — 방어적 헬스케어)
+    'XPH',    # 제약 균등가중 (PPH 시총가중 대비)
+    # ── 소비재 재량(cyclical) 하위산업 ──
+    'ITB',    # 주택건설 (XHB 대비 순수 홈빌더 — 금리 초민감)
+    'PEJ',    # 레저·엔터 (여행·외식·호텔 — 소비 심리 극단)
+    'CARZ',   # 자동차·부품 (경기 사이클 대표)
+    'FDIS',   # 소비재 재량 전체 (XLY 보완, 균등 성향)
+    # ── 소비재 필수(defensive) 하위산업 ──
+    'FSTA',   # 소비재 필수 전체 (XLP 보완)
+    'PBJ',    # 식음료 (방어적 필수소비)
+    'KXI',    # 글로벌 필수소비재 (경기방어 로테이션)
+    # ★ 신규 (요청): 기술주(XLK) 하위산업 ETF ─ 세부 산업별 상승·하락 예측용
+    'XSW',    # 소프트웨어 (균등가중 — IGV 시총가중 대비)
+    'SKYY',   # 클라우드 컴퓨팅
+    'WCLD',   # 순수 클라우드 SaaS (고성장·고베타)
+    'CIBR',   # 사이버보안
+    'HACK',   # 사이버보안 (CIBR 보완)
+    'XSD',    # 반도체 균등가중 (SOXX/SMH 시총가중 대비)
+    'PSI',    # 반도체 (다이나믹 — 소형 반도체 편입)
+    'FINX',   # 핀테크
+    'IPAY',   # 결제·핀테크 (FINX 보완)
+    'SNSR',   # IoT·센서
+    'BOTZ',   # 로보틱스·AI
+    'ROBO',   # 로보틱스·자동화 (BOTZ 보완)
+    'SOCL',   # 소셜미디어
 ]
 
 EVAL_START     = '2022-01-01'         # 평가 시작일
@@ -10081,6 +10115,500 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
     feat['pre2_bytype_zscore_60'] = calc_zscore(_pre2, 60)
 
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # ══════════════════════════════════════════════════════════════
+    #  40. ★ (요청) 4개 섹터 상승·하락 예측 지표 대거 추가
+    #      금융(XLF)·헬스케어(XLV)·소비재재량(XLY)·소비재필수(XLP) 및 하위산업.
+    #      각 섹터 자체의 방향 예측용. 모멘텀/상대강도/브레드스/서브분산/레짐/선행신호.
+    #      op/hi/lo/cl/vo + calc_* + closes(피어) 만 사용. 룩어헤드 없음.
+    # ══════════════════════════════════════════════════════════════
+    def _sec_get(sym):
+        s = closes.get(sym)
+        if s is None or (hasattr(s, 'notna') and int(s.notna().sum()) < 60):
+            return None
+        return s
+
+    def _add_sector_block(prefix, main_sym, subs, defensive_ref='XLP', risk_ref='XLY'):
+        """한 섹터의 방향 예측 지표 세트. main=섹터ETF, subs=하위산업 ETF 리스트."""
+        _m = _sec_get(main_sym)
+        if _m is None:
+            return
+        _spy = _sec_get('SPY'); _rsp = _sec_get('RSP')
+        _mr = _m.pct_change()
+        # ── (a) 자체 모멘텀·추세 (상승/하락 방향) ──
+        for p in [5, 10, 20, 60]:
+            feat[f'{prefix}_ret_{p}d']            = _m.pct_change(p)
+            feat[f'{prefix}_mom_accel_{p}d']      = _m.pct_change(p) - _m.pct_change(p).shift(p // 2)
+        feat[f'{prefix}_rsi_14']                  = calc_rsi(_m, 14)
+        feat[f'{prefix}_rsi_zscore_60']           = calc_zscore(calc_rsi(_m, 14), 60)
+        _ma20 = _m.rolling(20, min_periods=5).mean(); _ma50 = _m.rolling(50, min_periods=10).mean()
+        _ma200 = _m.rolling(200, min_periods=40).mean()
+        feat[f'{prefix}_px_vs_ma50']              = _m / _ma50.replace(0, np.nan) - 1.0
+        feat[f'{prefix}_px_vs_ma200']             = _m / _ma200.replace(0, np.nan) - 1.0
+        feat[f'{prefix}_ma20_50_cross']           = (_ma20 > _ma50).astype(float)
+        feat[f'{prefix}_golden_cross']            = (_ma50 > _ma200).astype(float)
+        feat[f'{prefix}_above_ma200']             = (_m > _ma200).astype(float)
+        # 추세 강도 (ADX 근사: 방향성 이동)
+        feat[f'{prefix}_trend_strength_20']       = (_m - _m.shift(20)).abs() / _mr.abs().rolling(20, min_periods=5).sum().replace(0, np.nan)
+        # ── (b) 변동성·낙폭 (하락 위험) ──
+        feat[f'{prefix}_vol_20d']                 = _mr.rolling(20, min_periods=5).std()
+        feat[f'{prefix}_vol_ratio_5_20']          = _mr.rolling(5, min_periods=2).std() / _mr.rolling(20, min_periods=5).std().replace(0, np.nan)
+        _peak60 = _m.rolling(60, min_periods=10).max()
+        feat[f'{prefix}_drawdown_60d']            = _m / _peak60.replace(0, np.nan) - 1.0
+        feat[f'{prefix}_dd_deepening']            = (feat[f'{prefix}_drawdown_60d'] < feat[f'{prefix}_drawdown_60d'].shift(5)).astype(float)
+        feat[f'{prefix}_down_day_ratio_20']       = (_mr < 0).rolling(20, min_periods=5).mean()
+        feat[f'{prefix}_large_down_ratio_20']     = (_mr < -0.015).rolling(20, min_periods=5).mean()
+        # ── (c) 상대강도 (섹터 로테이션 — 시장 대비) ──
+        if _spy is not None:
+            _rel = _m / _spy
+            feat[f'{prefix}_rel_spy_ret_20']      = _m.pct_change(20) - _spy.pct_change(20)
+            feat[f'{prefix}_rel_spy_ret_60']      = _m.pct_change(60) - _spy.pct_change(60)
+            feat[f'{prefix}_rel_spy_ma_slope']    = (_rel / _rel.rolling(20, min_periods=5).mean() - 1.0)
+            feat[f'{prefix}_rel_spy_zscore_60']   = calc_zscore(_rel, 60)
+            feat[f'{prefix}_outperform_20d']      = (_m.pct_change(20) > _spy.pct_change(20)).astype(float)
+            feat[f'{prefix}_rel_new_high_20']     = (_rel >= _rel.rolling(20, min_periods=5).max() - 1e-9).astype(float)
+            feat[f'{prefix}_rel_new_low_20']      = (_rel <= _rel.rolling(20, min_periods=5).min() + 1e-9).astype(float)
+        # 브레드스 프록시: 균등가중 vs 시총가중
+        if _rsp is not None:
+            feat[f'{prefix}_vs_equalweight_20']   = _m.pct_change(20) - _rsp.pct_change(20)
+        # ── (d) 방어 vs 위험 로테이션 (필수 vs 재량) ──
+        _defref = _sec_get(defensive_ref); _riskref = _sec_get(risk_ref)
+        if _defref is not None and _riskref is not None:
+            _rot = _riskref / _defref
+            feat[f'{prefix}_risk_appetite_20']    = _rot.pct_change(20)
+            feat[f'{prefix}_risk_on_regime']      = (_rot > _rot.rolling(60, min_periods=10).mean()).astype(float)
+        # ── (e) 하위산업 분산·확산 (섹터 내부 건강도) ──
+        _sub_series = [_sec_get(s) for s in subs]
+        _sub_series = [s for s in _sub_series if s is not None]
+        if len(_sub_series) >= 2:
+            _sub_rets20 = pd.DataFrame({f's{i}': s.pct_change(20) for i, s in enumerate(_sub_series)})
+            # 하위산업 중 몇 %가 상승 중 (확산도)
+            feat[f'{prefix}_sub_breadth_20']      = (_sub_rets20 > 0).sum(axis=1) / _sub_rets20.shape[1]
+            feat[f'{prefix}_sub_breadth_falling']  = (feat[f'{prefix}_sub_breadth_20'] < feat[f'{prefix}_sub_breadth_20'].shift(5)).astype(float)
+            # 하위산업 수익 분산 (분산 크면 섹터 내 불안정)
+            feat[f'{prefix}_sub_dispersion_20']   = _sub_rets20.std(axis=1)
+            feat[f'{prefix}_sub_dispersion_zscore'] = calc_zscore(_sub_rets20.std(axis=1), 60)
+            # 최고-최저 서브 스프레드 (극단 로테이션)
+            feat[f'{prefix}_sub_spread_20']       = _sub_rets20.max(axis=1) - _sub_rets20.min(axis=1)
+            # 하위산업 평균 대비 메인 (메인이 서브 평균보다 강한가)
+            feat[f'{prefix}_vs_sub_avg_20']       = _m.pct_change(20) - _sub_rets20.mean(axis=1)
+            # 서브 전부 하락 = 섹터 광범위 약세
+            feat[f'{prefix}_sub_all_down_20']     = (_sub_rets20 < 0).all(axis=1).astype(float)
+            feat[f'{prefix}_sub_all_up_20']       = (_sub_rets20 > 0).all(axis=1).astype(float)
+        # ── (f) 거래량·자금흐름 (섹터 ETF 자체) ──
+        _mvol = None
+        try:
+            _mvol = ohlcv.get(main_sym)
+        except Exception:
+            _mvol = None
+        if _mvol is not None and 'Volume' in _mvol.columns:
+            _mv = _mvol['Volume'].reindex(_m.index)
+            _obv = (np.sign(_mr).fillna(0) * _mv).cumsum()
+            feat[f'{prefix}_obv_slope_20']        = _obv - _obv.shift(20)
+            feat[f'{prefix}_vol_surge_20']        = _mv / _mv.rolling(20, min_periods=5).mean().replace(0, np.nan)
+            # 하락일 거래량 vs 상승일 거래량 (분산/매집)
+            _dnv = (_mv * (_mr < 0)).rolling(20, min_periods=5).sum()
+            _upv = (_mv * (_mr > 0)).rolling(20, min_periods=5).sum()
+            feat[f'{prefix}_down_up_vol_ratio_20'] = _dnv / _upv.replace(0, np.nan)
+        # ── (g) 종합 방향 점수 (상승/하락 신호 합산) ──
+        _up_score = pd.Series(0.0, index=_m.index)
+        _dn_score = pd.Series(0.0, index=_m.index)
+        _up_score += (feat.get(f'{prefix}_above_ma200', 0) == 1).astype(float)
+        _up_score += (feat.get(f'{prefix}_golden_cross', 0) == 1).astype(float)
+        _up_score += (feat.get(f'{prefix}_ret_20d', pd.Series(0.0, index=_m.index)) > 0).astype(float)
+        if f'{prefix}_outperform_20d' in feat.columns:
+            _up_score += feat[f'{prefix}_outperform_20d']
+        if f'{prefix}_sub_breadth_20' in feat.columns:
+            _up_score += (feat[f'{prefix}_sub_breadth_20'] > 0.5).astype(float)
+        _dn_score += (feat.get(f'{prefix}_dd_deepening', 0) == 1).astype(float)
+        _dn_score += (feat.get(f'{prefix}_down_day_ratio_20', pd.Series(0.0, index=_m.index)) > 0.55).astype(float)
+        _dn_score += (feat.get(f'{prefix}_vol_ratio_5_20', pd.Series(0.0, index=_m.index)) > 1.3).astype(float)
+        if f'{prefix}_sub_all_down_20' in feat.columns:
+            _dn_score += feat[f'{prefix}_sub_all_down_20']
+        feat[f'{prefix}_bull_score']              = _up_score
+        feat[f'{prefix}_bear_score']              = _dn_score
+        feat[f'{prefix}_net_direction_score']     = _up_score - _dn_score
+        feat[f'{prefix}_bull_score_rising']       = (_up_score > _up_score.shift(5)).astype(float)
+        feat[f'{prefix}_bear_score_rising']       = (_dn_score > _dn_score.shift(5)).astype(float)
+
+    # ── 금융 (XLF): 은행·보험·증권 ──
+    _add_sector_block('fin', 'XLF', ['KRE', 'KBE', 'KBWB', 'IAI', 'KIE', 'IAK'],
+                      defensive_ref='XLP', risk_ref='XLY')
+    # ── 헬스케어 (XLV): 바이오·의료기기·제약·서비스 ──
+    _add_sector_block('hlth', 'XLV', ['XBI', 'IBB', 'IHI', 'IHF', 'PPH', 'XPH'],
+                      defensive_ref='XLP', risk_ref='XLY')
+    # ── 소비재 재량 (XLY, cyclical): 주택·소매·레저·자동차 ──
+    _add_sector_block('cycl', 'XLY', ['XHB', 'ITB', 'XRT', 'PEJ', 'CARZ', 'FDIS'],
+                      defensive_ref='XLP', risk_ref='XLY')
+    # ── 소비재 필수 (XLP, defensive): 식음료·필수소비 ──
+    _add_sector_block('def', 'XLP', ['PBJ', 'FSTA', 'KXI'],
+                      defensive_ref='XLP', risk_ref='XLY')
+
+    # ── 섹터 간 로테이션 (4섹터 상호 비교) ──
+    _fin = _sec_get('XLF'); _hlth = _sec_get('XLV'); _cycl = _sec_get('XLY'); _defn = _sec_get('XLP')
+    _sec4 = {'fin': _fin, 'hlth': _hlth, 'cycl': _cycl, 'def': _defn}
+    _sec4 = {k: v for k, v in _sec4.items() if v is not None}
+    if len(_sec4) >= 3:
+        _r20 = pd.DataFrame({k: v.pct_change(20) for k, v in _sec4.items()})
+        # 4섹터 중 몇 개 상승 (섹터 브레드스)
+        feat['sec4_breadth_20']                   = (_r20 > 0).sum(axis=1) / _r20.shape[1]
+        # 섹터 수익 분산 (로테이션 강도)
+        feat['sec4_dispersion_20']                = _r20.std(axis=1)
+        feat['sec4_dispersion_zscore']            = calc_zscore(_r20.std(axis=1), 60)
+        # 방어(XLP) vs 경기(XLY,XLF) 로테이션
+        if _defn is not None and _cycl is not None:
+            feat['sec4_def_vs_cycl_20']           = _defn.pct_change(20) - _cycl.pct_change(20)
+            feat['sec4_defensive_leading']        = (feat['sec4_def_vs_cycl_20'] > 0).astype(float)
+            feat['sec4_defensive_accel']          = (feat['sec4_def_vs_cycl_20'] > feat['sec4_def_vs_cycl_20'].shift(5)).astype(float)
+        # 금융 리더십 (경기 사이클 신호)
+        if _fin is not None and _hlth is not None:
+            feat['sec4_fin_vs_hlth_20']           = _fin.pct_change(20) - _hlth.pct_change(20)
+
+    # ══════════════════════════════════════════════════════════════
+    #  41. ★ (요청) 4개 섹터 상승·하락 예측 지표 2차 추가 (기존 205개와 중복 없음)
+    #      각도: (A) 거시·금리 민감도  (B) 섹터 내부 리더십·추세전환
+    #            (C) 크로스섹터 선행성  (D) 극단·꼬리위험 레짐
+    #      접두사 뒤 접미사를 기존과 완전히 다르게(sens_/lead_/x_/tail_ 등) 사용.
+    # ══════════════════════════════════════════════════════════════
+    _tnx = closes.get('^TNX'); _irx = closes.get('^IRX'); _fvx = closes.get('^FVX')
+    _hyg = closes.get('HYG'); _lqd = closes.get('LQD'); _tlt = closes.get('TLT')
+    _uup = closes.get('UUP'); _usoil = closes.get('USO'); _gld = closes.get('GLD')
+    _vixc = closes.get('^VIX'); _xlyc = closes.get('XLY'); _xlpc = closes.get('XLP')
+
+    def _add_sector_block2(prefix, main_sym, macro_kind='rate'):
+        """섹터별 2차 지표 — 거시민감도/리더십/꼬리위험. main_sym 자체 예측용."""
+        _m = _sec_get(main_sym)
+        if _m is None:
+            return
+        _mr = _m.pct_change()
+        _spy = _sec_get('SPY')
+
+        # ── (A) 거시·금리·크레딧 민감도 (섹터 고유 드라이버) ──
+        # 롤링 베타: 섹터수익 vs 금리변화 (금융=양, 방어=음 성향)
+        if _tnx is not None:
+            _dtnx = _tnx.diff()
+            _cov = (_mr.rolling(60, min_periods=20).cov(_dtnx))
+            _var = _dtnx.rolling(60, min_periods=20).var().replace(0, np.nan)
+            feat[f'{prefix}_sens_rate_beta_60'] = _cov / _var
+            feat[f'{prefix}_sens_rate_up_capture'] = (_mr.where(_dtnx > 0)).rolling(40, min_periods=8).mean()
+        if _irx is not None and _tnx is not None:
+            _slope = (_tnx - _irx)   # 장단기 스프레드 (수익률곡선)
+            feat[f'{prefix}_sens_yc_beta_40'] = _mr.rolling(40, min_periods=10).corr(_slope.diff())
+        # 크레딧 스프레드 민감도 (HYG/LQD = 위험선호)
+        if _hyg is not None and _lqd is not None:
+            _credit = (_hyg / _lqd)
+            feat[f'{prefix}_sens_credit_corr_40'] = _mr.rolling(40, min_periods=10).corr(_credit.pct_change())
+            feat[f'{prefix}_sens_credit_stress'] = ((_credit / _credit.rolling(60, min_periods=15).mean() - 1.0) < -0.02).astype(float)
+        # 달러·유가·금 민감도 (섹터별 상이)
+        if _uup is not None:
+            feat[f'{prefix}_sens_usd_corr_40'] = _mr.rolling(40, min_periods=10).corr(_uup.pct_change())
+        if _usoil is not None:
+            feat[f'{prefix}_sens_oil_corr_40'] = _mr.rolling(40, min_periods=10).corr(_usoil.pct_change())
+
+        # ── (B) 섹터 내부 리더십·추세 전환 ──
+        # 52주(252일) 고점/저점 위치
+        _hi252 = _m.rolling(252, min_periods=40).max(); _lo252 = _m.rolling(252, min_periods=40).min()
+        feat[f'{prefix}_lead_pct_of_52w_range'] = (_m - _lo252) / (_hi252 - _lo252).replace(0, np.nan)
+        feat[f'{prefix}_lead_near_52w_high'] = (_m >= _hi252 * 0.98).astype(float)
+        feat[f'{prefix}_lead_near_52w_low'] = (_m <= _lo252 * 1.02).astype(float)
+        feat[f'{prefix}_lead_days_since_high'] = (_m.expanding().apply(lambda x: len(x) - 1 - int(np.argmax(x)), raw=True)
+                                                  if len(_m) < 400 else
+                                                  _m.rolling(120, min_periods=20).apply(lambda x: len(x) - 1 - int(np.argmax(x)), raw=True))
+        # 추세 반전 (모멘텀 부호 전환)
+        _mom20 = _m.pct_change(20)
+        feat[f'{prefix}_lead_mom_flip_up'] = ((_mom20 > 0) & (_mom20.shift(3) <= 0)).astype(float)
+        feat[f'{prefix}_lead_mom_flip_down'] = ((_mom20 < 0) & (_mom20.shift(3) >= 0)).astype(float)
+        # 가속/감속 (2차 미분 성격)
+        feat[f'{prefix}_lead_accel_2nd'] = _mom20.diff(5)
+        # 연속 상승/하락일 (streak)
+        _up = (_mr > 0).astype(int)
+        _streak = _up * (_up.groupby((_up != _up.shift()).cumsum()).cumcount() + 1)
+        feat[f'{prefix}_lead_up_streak'] = _streak
+        _dn = (_mr < 0).astype(int)
+        _dstreak = _dn * (_dn.groupby((_dn != _dn.shift()).cumsum()).cumcount() + 1)
+        feat[f'{prefix}_lead_down_streak'] = _dstreak
+        # RSI 다이버전스 프록시 (가격 신고가인데 RSI는 안 오름)
+        _rsi = calc_rsi(_m, 14)
+        feat[f'{prefix}_lead_bear_divergence'] = ((_m > _m.shift(10)) & (_rsi < _rsi.shift(10)) & (_rsi > 60)).astype(float)
+        feat[f'{prefix}_lead_bull_divergence'] = ((_m < _m.shift(10)) & (_rsi > _rsi.shift(10)) & (_rsi < 40)).astype(float)
+
+        # ── (C) 크로스섹터 선행성 (섹터 vs 시장/방어 로테이션 선행) ──
+        if _spy is not None:
+            _rel = _m / _spy
+            # 상대강도 모멘텀 방향 전환 (섹터 로테이션 초입 포착)
+            _relmom = _rel.pct_change(20)
+            feat[f'{prefix}_x_rel_mom_flip_up'] = ((_relmom > 0) & (_relmom.shift(5) <= 0)).astype(float)
+            feat[f'{prefix}_x_rel_accel'] = _relmom.diff(5)
+            # 섹터가 시장 대비 신고가 만드는 중 (리더십 확립)
+            feat[f'{prefix}_x_rel_strength_rank'] = calc_pctrank(_rel, 120)
+        # 위험선호 레짐(XLY/XLP)에서 이 섹터의 상대 행동
+        if _xlyc is not None and _xlpc is not None:
+            _riskon = (_xlyc / _xlpc).pct_change(20)
+            feat[f'{prefix}_x_riskon_beta_40'] = _mr.rolling(40, min_periods=10).corr(_riskon)
+
+        # ── (D) 극단·꼬리위험 레짐 ──
+        # 변동성 레짐 전환 (저변동→고변동)
+        _vol20 = _mr.rolling(20, min_periods=5).std()
+        _vol60 = _mr.rolling(60, min_periods=15).std()
+        feat[f'{prefix}_tail_vol_regime_shift'] = (_vol20 / _vol60.replace(0, np.nan))
+        feat[f'{prefix}_tail_vol_expansion'] = (_vol20 > _vol60 * 1.5).astype(float)
+        # 하방 편향 (하락 변동성 vs 상승 변동성 = 왜도 프록시)
+        _dnvol = _mr.where(_mr < 0).rolling(40, min_periods=8).std()
+        _upvol = _mr.where(_mr > 0).rolling(40, min_periods=8).std()
+        feat[f'{prefix}_tail_downside_skew'] = _dnvol / _upvol.replace(0, np.nan)
+        # 최근 20일 최악 수익률 (꼬리 크기)
+        feat[f'{prefix}_tail_worst_ret_20'] = _mr.rolling(20, min_periods=5).min()
+        feat[f'{prefix}_tail_worst_ret_zscore'] = calc_zscore(_mr.rolling(20, min_periods=5).min(), 120)
+        # 갭 위험 (일중 레인지 대비 종가 급변)
+        _mv = None
+        try: _mv = ohlcv.get(main_sym)
+        except Exception: _mv = None
+        if _mv is not None and all(c in _mv.columns for c in ['High', 'Low', 'Close']):
+            _h = _mv['High'].reindex(_m.index); _l = _mv['Low'].reindex(_m.index); _c = _mv['Close'].reindex(_m.index)
+            _atr = (_h - _l).rolling(14, min_periods=3).mean()
+            feat[f'{prefix}_tail_range_expansion'] = (_h - _l) / _atr.replace(0, np.nan)
+            feat[f'{prefix}_tail_close_weak'] = ((_c - _l) / (_h - _l).replace(0, np.nan) < 0.25).astype(float)
+        # VIX 상승 국면에서 섹터 취약성
+        if _vixc is not None:
+            _vixup = (_vixc.pct_change(5) > 0.15)
+            feat[f'{prefix}_tail_vix_shock_ret'] = (_mr.where(_vixup)).rolling(60, min_periods=5).mean()
+        # 연속 낙폭 심화 (누적 하락 가속)
+        _dd = _m / _m.rolling(60, min_periods=15).max().replace(0, np.nan) - 1.0
+        feat[f'{prefix}_tail_dd_accel'] = _dd.diff(5)
+        feat[f'{prefix}_tail_capitulation'] = ((_dd < -0.08) & (_mr < -0.02) & (_vol20 > _vol60 * 1.3)).astype(float)
+
+    _add_sector_block2('fin', 'XLF', macro_kind='rate')
+    _add_sector_block2('hlth', 'XLV', macro_kind='defensive')
+    _add_sector_block2('cycl', 'XLY', macro_kind='consumer')
+    _add_sector_block2('def', 'XLP', macro_kind='defensive')
+
+    # ── 섹터 간 선행·동조 (4섹터 리드-래그) ──
+    if len(_sec4) >= 3:
+        # 금융이 시장을 선행하는가 (금융 20일 모멘텀이 다른 섹터 대비 선행)
+        if _fin is not None and _cycl is not None:
+            feat['sec4_fin_leads_cycl'] = (_fin.pct_change(10).shift(5) > 0).astype(float) * (_cycl.pct_change(5) > 0).astype(float)
+        # 방어 섹터로 자금 이동 가속 (리스크오프 초기 신호)
+        if _defn is not None and _fin is not None:
+            _defrot = (_defn / _fin).pct_change(10)
+            feat['sec4_defensive_rotation_accel'] = (_defrot > _defrot.rolling(20, min_periods=5).mean()).astype(float)
+        # 4섹터 동반 하락 (시장 광범위 약세)
+        _r5 = pd.DataFrame({k: v.pct_change(5) for k, v in _sec4.items()})
+        feat['sec4_all_falling_5d'] = (_r5 < 0).all(axis=1).astype(float)
+        feat['sec4_all_rising_5d'] = (_r5 > 0).all(axis=1).astype(float)
+        # 섹터 상관 붕괴 (분산장 → 위험) / 상관 급등 (동조 매도 → 위험)
+        _corr_pairs = []
+        _keys = list(_sec4.keys())
+        for _i in range(len(_keys)):
+            for _j in range(_i + 1, len(_keys)):
+                _c = _sec4[_keys[_i]].pct_change().rolling(20, min_periods=5).corr(_sec4[_keys[_j]].pct_change())
+                _corr_pairs.append(_c)
+        if _corr_pairs:
+            _avg_corr = pd.concat(_corr_pairs, axis=1).mean(axis=1)
+            feat['sec4_avg_pairwise_corr'] = _avg_corr
+            feat['sec4_corr_spike'] = (_avg_corr > 0.8).astype(float)   # 동조 매도 위험
+
+    # ══════════════════════════════════════════════════════════════
+    #  42. ★ (요청) 기술주(XLK) 하위산업 상승·하락 예측 지표 대거 추가
+    #      소프트웨어/반도체/사이버보안/클라우드/핀테크/로보틱스/인터넷/소셜/IoT.
+    #      각 하위산업 ETF 자체의 방향 예측. 기존 semi_*/tech_* 와 접두사 완전 분리.
+    #      _add_sector_block(1차: 모멘텀/변동성/상대강도/서브분산/거래량/방향점수)
+    #      + _add_sector_block2(2차: 거시민감도/리더십/크로스섹터/꼬리위험) 재사용.
+    # ══════════════════════════════════════════════════════════════
+    #  하위산업 접두사 → (대표 ETF, 관련 대형주/보조 ETF 리스트)
+    _tech_subs = [
+        ('sw',    'IGV',  ['XSW', 'WCLD', 'SKYY']),          # 소프트웨어 (+클라우드/SaaS)
+        ('semi2', 'SMH',  ['SOXX', 'XSD', 'PSI']),           # 반도체 (semi_ 기존과 구분: semi2_)
+        ('cyber', 'CIBR', ['HACK']),                         # 사이버보안
+        ('cloud', 'SKYY', ['WCLD', 'IGV']),                  # 클라우드
+        ('fintech','FINX',['IPAY']),                         # 핀테크
+        ('robo',  'BOTZ', ['ROBO', 'SNSR']),                 # 로보틱스·AI·IoT
+        ('inet',  'FDN',  ['SOCL']),                         # 인터넷·소셜
+        ('hw',    'VGT',  ['SMH', 'IGV']),                   # 기술 하드웨어·종합(VGT)
+    ]
+    _tech_built = []
+    for _pfx, _etf, _subs in _tech_subs:
+        if _sec_get(_etf) is None:
+            continue
+        _add_sector_block(_pfx, _etf, _subs, defensive_ref='XLP', risk_ref='XLY')
+        _add_sector_block2(_pfx, _etf, macro_kind='growth')
+        _tech_built.append(_pfx)
+
+    # ── 기술 하위산업 간 로테이션·선행성 (tech-internal) ──
+    _sw_e = _sec_get('IGV'); _semi_e = _sec_get('SMH'); _cyber_e = _sec_get('CIBR')
+    _cloud_e = _sec_get('SKYY'); _xlk_e = _sec_get('XLK'); _qqq_e = _sec_get('QQQ')
+    _tsub = {'sw': _sw_e, 'semi': _semi_e, 'cyber': _cyber_e, 'cloud': _cloud_e,
+             'fintech': _sec_get('FINX'), 'robo': _sec_get('BOTZ'), 'inet': _sec_get('FDN')}
+    _tsub = {k: v for k, v in _tsub.items() if v is not None}
+    if len(_tsub) >= 3:
+        _tr20 = pd.DataFrame({k: v.pct_change(20) for k, v in _tsub.items()})
+        _tr5 = pd.DataFrame({k: v.pct_change(5) for k, v in _tsub.items()})
+        # 기술 하위산업 브레드스 (몇 %가 상승 중)
+        feat['tsub_breadth_20']              = (_tr20 > 0).sum(axis=1) / _tr20.shape[1]
+        feat['tsub_breadth_5']               = (_tr5 > 0).sum(axis=1) / _tr5.shape[1]
+        feat['tsub_breadth_falling']         = (feat['tsub_breadth_20'] < feat['tsub_breadth_20'].shift(5)).astype(float)
+        # 하위산업 수익 분산 (기술 내부 로테이션 강도)
+        feat['tsub_dispersion_20']           = _tr20.std(axis=1)
+        feat['tsub_dispersion_zscore']       = calc_zscore(_tr20.std(axis=1), 60)
+        # 최고-최저 하위산업 스프레드
+        feat['tsub_spread_20']               = _tr20.max(axis=1) - _tr20.min(axis=1)
+        # 전부 하락/상승 (기술 광범위 약세/강세)
+        feat['tsub_all_down_20']             = (_tr20 < 0).all(axis=1).astype(float)
+        feat['tsub_all_up_20']               = (_tr20 > 0).all(axis=1).astype(float)
+        feat['tsub_all_down_5d']             = (_tr5 < 0).all(axis=1).astype(float)
+        # 반도체 vs 소프트웨어 로테이션 (기술 사이클 신호: 반도체 선행)
+        if _semi_e is not None and _sw_e is not None:
+            feat['tsub_semi_vs_sw_20']       = _semi_e.pct_change(20) - _sw_e.pct_change(20)
+            feat['tsub_semi_leads_sw']       = ((_semi_e.pct_change(10).shift(5) > 0) & (_sw_e.pct_change(5) > 0)).astype(float)
+            feat['tsub_semi_sw_ratio_z60']   = calc_zscore(_semi_e / _sw_e, 60)
+        # 고베타(클라우드) vs 저베타(대형SW) — 위험선호 프록시
+        if _cloud_e is not None and _sw_e is not None:
+            feat['tsub_cloud_vs_sw_20']      = _cloud_e.pct_change(20) - _sw_e.pct_change(20)
+            feat['tsub_highbeta_appetite']   = (feat['tsub_cloud_vs_sw_20'] > 0).astype(float)
+        # 하위산업 평균 대비 XLK (XLK가 하위산업 평균보다 강한가)
+        if _xlk_e is not None:
+            feat['tsub_xlk_vs_avg_20']       = _xlk_e.pct_change(20) - _tr20.mean(axis=1)
+        # 기술 하위산업 상관 급등 (동조 매도 위험)
+        _tcorr = []
+        _tk = list(_tsub.keys())
+        for _i in range(len(_tk)):
+            for _j in range(_i + 1, len(_tk)):
+                _c = _tsub[_tk[_i]].pct_change().rolling(20, min_periods=5).corr(_tsub[_tk[_j]].pct_change())
+                _tcorr.append(_c)
+        if _tcorr:
+            _tac = pd.concat(_tcorr, axis=1).mean(axis=1)
+            feat['tsub_avg_pairwise_corr']   = _tac
+            feat['tsub_corr_spike']          = (_tac > 0.85).astype(float)
+        # 반도체 리더십: SMH가 QQQ 선행 (기술 전반 방향 신호)
+        if _semi_e is not None and _qqq_e is not None:
+            feat['tsub_semi_vs_qqq_20']      = _semi_e.pct_change(20) - _qqq_e.pct_change(20)
+            feat['tsub_semi_new_high_rel']   = ((_semi_e / _qqq_e) >= (_semi_e / _qqq_e).rolling(60, min_periods=15).max() - 1e-9).astype(float)
+
+    # ══════════════════════════════════════════════════════════════
+    #  43. ★ (요청) 주식 이론 기반 예측 지표 (기존과 중복 없음)
+    #      객관적으로 계산 가능하고 룩어헤드 없는 형태로만 지표화 —
+    #      이론의 이름값이 아니라 실제 신호로서 백테스트가 유효성을 판단하게 함.
+    #      추가 이론: 이치모쿠 / 엘리엇(객관 부분) / 와이코프 / 엘더삼중창 / DeMark / 볼린저.
+    #      접두사: ich_ / ew_ / wyk_ / elder_ / td_ / bbx_  (기존과 분리)
+    # ══════════════════════════════════════════════════════════════
+    try:
+        _c = cl.astype(float); _h = hi.astype(float); _l = lo.astype(float); _v = vo.astype(float)
+        _cr = _c.pct_change()
+
+        # ── (1) 이치모쿠 일목균형표 (Ichimoku) ──
+        _conv = (_h.rolling(9, min_periods=3).max() + _l.rolling(9, min_periods=3).min()) / 2   # 전환선
+        _base = (_h.rolling(26, min_periods=6).max() + _l.rolling(26, min_periods=6).min()) / 2  # 기준선
+        _spanA = ((_conv + _base) / 2)                                                            # 선행스팬A
+        _spanB = (_h.rolling(52, min_periods=12).max() + _l.rolling(52, min_periods=12).min()) / 2 # 선행스팬B
+        feat['ich_conv_base_diff']   = (_conv - _base) / _c.replace(0, np.nan)          # 전환-기준 (양=강세)
+        feat['ich_tk_cross_up']      = ((_conv > _base) & (_conv.shift(1) <= _base.shift(1))).astype(float)  # 전환선 상향돌파
+        feat['ich_tk_cross_down']    = ((_conv < _base) & (_conv.shift(1) >= _base.shift(1))).astype(float)
+        feat['ich_price_vs_cloud']   = np.where(_c > np.maximum(_spanA, _spanB), 1.0,
+                                        np.where(_c < np.minimum(_spanA, _spanB), -1.0, 0.0))    # 구름 위/아래/안
+        feat['ich_cloud_thickness']  = (_spanA - _spanB).abs() / _c.replace(0, np.nan)          # 구름 두께 (지지/저항 강도)
+        feat['ich_above_cloud']      = (_c > np.maximum(_spanA, _spanB)).astype(float)
+        feat['ich_below_cloud']      = (_c < np.minimum(_spanA, _spanB)).astype(float)
+        feat['ich_cloud_bullish']    = (_spanA > _spanB).astype(float)                           # 양운(강세 구름)
+        feat['ich_price_vs_base']    = _c / _base.replace(0, np.nan) - 1.0
+        _lag_span = _c.shift(-26)   # 후행스팬 (미래참조 방지: 사용 안 함, 대신 현재가 vs 26일전)
+        feat['ich_chikou_vs_past']   = (_c > _c.shift(26)).astype(float)                          # 후행스팬 근사(현재 vs 26일전)
+        feat['ich_full_bullish']     = ((_c > np.maximum(_spanA, _spanB)) & (_conv > _base) & (_spanA > _spanB)).astype(float)  # 삼역호전
+
+        # ── (2) 엘리엇 파동 (객관적 부분: 지그재그 스윙 + 피보나치 확장) ──
+        # 스윙 고/저점 추출 (프랙탈: 좌우 k봉보다 높/낮은 점)
+        _k = 5
+        _swh = ((_h == _h.rolling(2*_k+1, center=True, min_periods=_k+1).max()) & (_h.notna())).astype(float)
+        _swl = ((_l == _l.rolling(2*_k+1, center=True, min_periods=_k+1).min()) & (_l.notna())).astype(float)
+        feat['ew_swing_high']        = _swh
+        feat['ew_swing_low']         = _swl
+        # 최근 스윙 고/저 값 (ffill로 마지막 스윙 유지)
+        _last_swh = _h.where(_swh > 0).ffill()
+        _last_swl = _l.where(_swl > 0).ffill()
+        feat['ew_pos_in_swing']      = ((_c - _last_swl) / (_last_swh - _last_swl).replace(0, np.nan)).clip(-1.0, 2.0)  # 스윙 내 위치
+        # 임펄스(5파) vs 조정(3파) 프록시: 최근 상승 스윙 수 vs 하락 스윙 수
+        _swh_cnt = _swh.rolling(60, min_periods=10).sum()
+        _swl_cnt = _swl.rolling(60, min_periods=10).sum()
+        feat['ew_impulse_balance']   = (_swh_cnt - _swl_cnt) / (_swh_cnt + _swl_cnt).replace(0, np.nan)
+        # 피보나치 확장 레벨 근접 (1.618 확장 = 파동 목표)
+        _swing_range = (_last_swh - _last_swl)
+        _fib_ext_1618 = _last_swl + _swing_range * 1.618
+        feat['ew_near_fib_ext_1618'] = (np.abs(_c - _fib_ext_1618) / _c.replace(0, np.nan) < 0.02).astype(float)
+        # 파동 되돌림 깊이 (0.382/0.618이면 건강한 조정)
+        _retr_depth = (_last_swh - _c) / _swing_range.replace(0, np.nan)
+        feat['ew_retrace_healthy']   = ((_retr_depth > 0.3) & (_retr_depth < 0.66)).astype(float)
+        feat['ew_retrace_deep']      = (_retr_depth > 0.786).astype(float)   # 깊은 되돌림 = 파동 실패 위험
+
+        # ── (3) 와이코프 (Wyckoff: 축적/분산, 스프링, 거래량) ──
+        # 거래량-가격 분석: 상승에 거래량 실림(매집) vs 하락에 거래량(분산)
+        _vol_ma = _v.rolling(20, min_periods=5).mean()
+        _up_vol = (_v * (_cr > 0)).rolling(20, min_periods=5).sum()
+        _dn_vol = (_v * (_cr < 0)).rolling(20, min_periods=5).sum()
+        feat['wyk_effort_result']    = _up_vol / (_up_vol + _dn_vol).replace(0, np.nan)   # >0.5 매집 우세
+        # 스프링(하단 이탈 후 회복 = 강세 반전)
+        _range_lo = _l.rolling(30, min_periods=8).min()
+        feat['wyk_spring']           = ((_l < _range_lo.shift(1)) & (_c > _range_lo.shift(1))).astype(float)  # 저점 이탈 후 회복
+        # 업스러스트(상단 돌파 후 실패 = 약세 반전)
+        _range_hi = _h.rolling(30, min_periods=8).max()
+        feat['wyk_upthrust']         = ((_h > _range_hi.shift(1)) & (_c < _range_hi.shift(1))).astype(float)
+        # 매집/분산 레인지 (좁은 횡보 + 거래량 = 축적)
+        _range_pct = (_range_hi - _range_lo) / _c.replace(0, np.nan)
+        feat['wyk_accumulation']     = ((_range_pct < _range_pct.rolling(60, min_periods=15).quantile(0.3)) & (_v > _vol_ma)).astype(float)
+        # 클라이맥스(과도한 거래량 + 큰 하락 = 셀링 클라이맥스, 바닥 신호)
+        feat['wyk_selling_climax']   = ((_v > _vol_ma * 2.5) & (_cr < -0.03)).astype(float)
+        feat['wyk_buying_climax']    = ((_v > _vol_ma * 2.5) & (_cr > 0.03)).astype(float)
+        # 거래량 감소 되돌림 (건강한 조정 = 거래량 마름)
+        feat['wyk_no_supply']        = ((_cr < 0) & (_v < _vol_ma * 0.7)).astype(float)   # 하락인데 거래량 적음(공급 없음=강세)
+        feat['wyk_no_demand']        = ((_cr > 0) & (_v < _vol_ma * 0.7)).astype(float)   # 상승인데 거래량 적음(수요 없음=약세)
+
+        # ── (4) 엘더 삼중창 (Elder Triple Screen: 추세+오실레이터) ──
+        # 화면1: 주간 추세(장기 EMA 기울기), 화면2: 일간 오실레이터(스토캐스틱)
+        _ema_long = _c.ewm(span=50, min_periods=10).mean()
+        feat['elder_screen1_trend']  = (_ema_long > _ema_long.shift(5)).astype(float)     # 장기추세 상승
+        _low_n = _l.rolling(14, min_periods=3).min(); _high_n = _h.rolling(14, min_periods=3).max()
+        _stoch = (_c - _low_n) / (_high_n - _low_n).replace(0, np.nan) * 100
+        feat['elder_stoch']          = _stoch
+        # 삼중창 매수 신호: 장기추세↑ + 단기 과매도
+        feat['elder_buy_signal']     = ((_ema_long > _ema_long.shift(5)) & (_stoch < 30)).astype(float)
+        feat['elder_sell_signal']    = ((_ema_long < _ema_long.shift(5)) & (_stoch > 70)).astype(float)
+        # 강도 지수 (Force Index: 가격변화 × 거래량)
+        _force = _cr * _v
+        feat['elder_force_index_13'] = _force.ewm(span=13, min_periods=3).mean()
+        feat['elder_force_flip']     = ((_force.ewm(span=13, min_periods=3).mean() > 0) &
+                                        (_force.ewm(span=13, min_periods=3).mean().shift(1) <= 0)).astype(float)
+
+        # ── (5) DeMark TD Sequential (9-count setup) ──
+        # TD Buy Setup: 종가가 4봉 전 종가보다 낮은 것이 연속 몇 번
+        _buy_cond = (_c < _c.shift(4)).astype(int)
+        _sell_cond = (_c > _c.shift(4)).astype(int)
+        # 연속 카운트
+        _buy_setup = _buy_cond * (_buy_cond.groupby((_buy_cond != _buy_cond.shift()).cumsum()).cumcount() + 1)
+        _sell_setup = _sell_cond * (_sell_cond.groupby((_sell_cond != _sell_cond.shift()).cumsum()).cumcount() + 1)
+        feat['td_buy_setup_count']   = _buy_setup.clip(upper=9)
+        feat['td_sell_setup_count']  = _sell_setup.clip(upper=9)
+        feat['td_buy_setup_9']       = (_buy_setup >= 9).astype(float)    # 9카운트 완성 = 반전 임박(매수)
+        feat['td_sell_setup_9']      = (_sell_setup >= 9).astype(float)   # 9카운트 완성 = 반전 임박(매도)
+        feat['td_buy_perfected']     = ((_buy_setup >= 9) & (_l < _l.shift(3))).astype(float)   # 완성형 매수 셋업
+
+        # ── (6) 볼린저 밴드 확장 (%B, 밴드워크, 스퀴즈 브레이크) ──
+        _bb_ma = _c.rolling(20, min_periods=5).mean()
+        _bb_sd = _c.rolling(20, min_periods=5).std()
+        _bb_up = _bb_ma + 2 * _bb_sd; _bb_dn = _bb_ma - 2 * _bb_sd
+        feat['bbx_pct_b']            = (_c - _bb_dn) / (_bb_up - _bb_dn).replace(0, np.nan)     # %B (0~1)
+        feat['bbx_bandwidth']        = (_bb_up - _bb_dn) / _bb_ma.replace(0, np.nan)            # 밴드폭
+        feat['bbx_squeeze']          = (feat['bbx_bandwidth'] < feat['bbx_bandwidth'].rolling(60, min_periods=15).quantile(0.15)).astype(float)  # 스퀴즈
+        feat['bbx_upper_walk']       = ((_c > _bb_up).rolling(3, min_periods=1).sum() >= 2).astype(float)   # 상단 밴드워크(강한 추세)
+        feat['bbx_lower_walk']       = ((_c < _bb_dn).rolling(3, min_periods=1).sum() >= 2).astype(float)
+        feat['bbx_squeeze_break_up'] = ((feat['bbx_bandwidth'] > feat['bbx_bandwidth'].shift(1)) &
+                                        (feat['bbx_bandwidth'].shift(1) < feat['bbx_bandwidth'].rolling(60, min_periods=15).quantile(0.15).shift(1)) &
+                                        (_c > _bb_ma)).astype(float)   # 스퀴즈 후 상방 확장
+        feat['bbx_mean_revert_up']   = ((feat['bbx_pct_b'] < 0.05) & (_cr > 0)).astype(float)  # 하단 이탈 후 반등
+        feat['bbx_mean_revert_down'] = ((feat['bbx_pct_b'] > 0.95) & (_cr < 0)).astype(float)
+
+        print(f"  ✓ 주식 이론 지표 추가: 이치모쿠·엘리엇·와이코프·엘더·DeMark·볼린저")
+    except Exception as _eth:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 주식 이론 지표 추가 실패(무시): {_eth}")
+
+    feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
 
     # ★ 피처 정제 (요청: 무효 지표를 모두 유효하도록 개선) — 무효/부분 판정의 근본 원인을
@@ -18357,13 +18885,86 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _dd = float(_seg.min() / _seg[0] - 1.0)
                 if _dd < _held_max_dd: _held_max_dd = _dd
 
+        # ── ★ (요청) 향후 어닝 날짜 조회 ──
+        _earnings_dates = set()
+        try:
+            import yfinance as _yf
+            _tk_obj = _yf.Ticker(ticker)
+            _cal = getattr(_tk_obj, 'calendar', None)
+            _ed = None
+            if isinstance(_cal, dict) and 'Earnings Date' in _cal:
+                _ed = _cal['Earnings Date']
+            elif hasattr(_cal, 'get') and _cal is not None:
+                _ed = _cal.get('Earnings Date') if hasattr(_cal, 'get') else None
+            if _ed is not None:
+                if not isinstance(_ed, (list, tuple)): _ed = [_ed]
+                for _d in _ed:
+                    try: _earnings_dates.add(pd.Timestamp(_d).normalize())
+                    except Exception: pass
+            # 추가로 earnings_dates (미래 몇 개)
+            try:
+                _edf = _tk_obj.get_earnings_dates(limit=8) if hasattr(_tk_obj, 'get_earnings_dates') else None
+                if _edf is not None and len(_edf) > 0:
+                    _today = pd.Timestamp.now().normalize()
+                    for _d in _edf.index:
+                        try:
+                            _dn = pd.Timestamp(_d).normalize()
+                            if _dn >= _today: _earnings_dates.add(_dn)
+                        except Exception: pass
+            except Exception: pass
+        except Exception as _ee:
+            print(f"  ⚠ 어닝 조회 실패(무시): {_ee}")
+
+        # ── ★ (요청) 가장 최근 매수/매도 카운트에 기여한 상위 지표 조회 ──
+        # 카운트에 실제 쓰인 풀(buy_pool/sell_pool, 성공률 내림차순 정렬)을 우선 사용.
+        _mp_bt = globals().get('_KNET_MULTI_POOL')
+        _bp_src = buy_pool if (buy_pool is not None and len(buy_pool) > 0) else (_mp_bt[1] if _mp_bt else None)
+        _sp_src = sell_pool if (sell_pool is not None and len(sell_pool) > 0) else (_mp_bt[2] if _mp_bt else None)
+        _top_buy_txt = _top_sell_txt = ''
+        try:
+            if (_bp_src is not None and _sp_src is not None
+                    and feat is not None and len(feat) > 0):
+                _bp = _bp_src.reset_index(drop=True)
+                _sp = _sp_src.reset_index(drop=True)
+                _nbo = int(_nsd['n_buy_opt']); _nso = int(_nsd['n_sell_opt'])
+                # 최근 날짜의 각 지표 신호값(0/1, 가중이면 가중치×0/1)
+                _last_ts = pd.Timestamp(dts[-1]) if len(dts) else None
+                # 상위 2개 매수·매도 지표 이름·성공률·최근값
+                _wtd_bt = bool(_nsd.get('weighted'))
+                _get_last_sig = lambda row: float(_to_signal_array(feat, row)[-1]) if len(feat) else 0.0
+                _b_top2 = _bp.head(min(2, _nbo)) if _nbo > 0 else _bp.head(2)
+                _s_top2 = _sp.head(min(2, _nso)) if _nso > 0 else _sp.head(2)
+                def _fmt_ind(row):
+                    _nm = str(row.get('indicator', ''))[:32]
+                    _sr = row.get('success_rate', None)
+                    if _sr is not None and not pd.isna(_sr):
+                        _srtxt = f"성공률 {float(_sr)*100:.1f}%"
+                    else:
+                        _ic = row.get('ic', None)
+                        _srtxt = (f"IC {float(_ic):+.3f}" if _ic is not None and not pd.isna(_ic) else '-')
+                    try: _v = _get_last_sig(row)   # 최근일 신호 발화 여부(1=발화, 0=미발화)
+                    except Exception: _v = 0.0
+                    return f"{_v:.2f}({_nm}, {_srtxt})"
+                _top_buy_txt = ' + '.join(_fmt_ind(r) for _, r in _b_top2.iterrows())
+                _top_sell_txt = ' + '.join(_fmt_ind(r) for _, r in _s_top2.iterrows())
+        except Exception as _eind:
+            print(f"  ⚠ 상위 지표 조회 실패(무시): {_eind}")
+
         _ltxt = (f'/L({_L_bt:.3f})' if _L_bt is not None else '')
         _hyb_txt = (f' 카운트0인 날({len(_zero_days_set)}일)은 별도풀로 대체(노란색).'
                     if _zero_days_set else '')
+        _next_earn = None
+        if _earnings_dates:
+            _future = sorted([d for d in _earnings_dates if d >= pd.Timestamp(dts[-1]).normalize()])
+            _next_earn = _future[0] if _future else None
+        _earn_txt = (f" | 다음어닝: {_next_earn.strftime('%Y-%m-%d')}"
+                     + (f" (D-{(_next_earn - pd.Timestamp(dts[-1]).normalize()).days})" if _next_earn else '')) \
+                    if _next_earn else ''
         ws.cell(1, 1).value = (f'{_shname} — net≥K({_K_bt if _L_bt is None else f"{_K_bt:.3f}"}){_ltxt} 히스테리시스 '
                                f'(net≥K 매수·보유 / net≤L 매도·현금 / 사이 유지). '
-                               f'메인풀은 KL 순신호 ★최대수익과 동일.{_hyb_txt} 수익=상승·하락률 합산.')
-        ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:P1')
+                               f'메인풀은 KL 순신호 ★최대수익과 동일.{_hyb_txt} 수익=상승·하락률 합산.'
+                               f'{_earn_txt}')
+        ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:Q1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         _mn_txt = (f" | 카운트0풀 m={_zero_m:.3f}/n={_zero_n:.3f}({len(_zero_days_set)}일)"
                    if _zero_m is not None else '')
@@ -18371,10 +18972,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                f"전체 {_p2(_full_cum)} (B&H {_p2(_bh_full)}) | "
                                f"거래 {_n_trades_bt}회 | 보유중하락 {_p2(_held_max_dd)} | "
                                f"MDD {_p2(_mdd_bt)}{_mn_txt}")
-        ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:P2')
+        ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:Q2')
+        # ★ (요청) 최근 매수/매도 카운트 아래 상위 지표 표시: '값(지표명, 성공률) + 값(지표명, 성공률)'
+        _last_dt_txt = pd.Timestamp(dts[-1]).strftime('%Y-%m-%d') if len(dts) else '-'
+        ws.cell(3, 1).value = (f"[최근 {_last_dt_txt}] 매수카운트 기여: {_top_buy_txt or '-'} "
+                               f"｜ 매도카운트 기여: {_top_sell_txt or '-'}")
+        ws.cell(3, 1).font = Font(bold=True, color='1F6F1F', size=10)
+        ws.merge_cells('A3:Q3')
         _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
-                     '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간'])
+                     '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간', '향후어닝'])
         pos = _pos_bt
         rets = _daily_ret
         _YEL = PatternFill('solid', fgColor='FFF2CC')
@@ -18421,9 +19028,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(r, 14).value = (round(_net_disp, 3) if _wtd else int(round(_net_disp)))
             ws.cell(r, 15).value = round(float(_held_run[i]) * 100, 2)
             ws.cell(r, 16).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
+            # ★ (요청) 향후 어닝 표시
+            _is_earn = _dt_i in _earnings_dates
+            ws.cell(r, 17).value = ('★어닝' if _is_earn else '')
             # ★ 카운트0 별도풀 사용일 = 노란색 (요청)
             if _is_zero_day:
-                for _c in range(1, 17): ws.cell(r, _c).fill = _YEL
+                for _c in range(1, 18): ws.cell(r, _c).fill = _YEL
                 if _act == '매수': ws.cell(r, 8).font = Font(bold=True, color='006100')
                 elif _act == '매도': ws.cell(r, 8).font = Font(bold=True, color='9C0006')
             else:
@@ -18432,7 +19042,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 elif _act == '매도': ws.cell(r, 8).fill = PatternFill('solid', fgColor='FFC7CE')
                 if _real is not None: ws.cell(r, 12).fill = (_GOOD if _real > 0 else _BAD)
                 if int(row['is_oos']) == 1: ws.cell(r, 1).fill = PatternFill('solid', fgColor='DDEBF7')
-        for ci, w in enumerate([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14, 11, 14, 7], 1):
+            # 어닝일 = 주황 강조 (카운트0 노란색보다 우선)
+            if _is_earn:
+                ws.cell(r, 17).fill = PatternFill('solid', fgColor='FFD966')
+                ws.cell(r, 17).font = Font(bold=True, color='7F6000')
+        for ci, w in enumerate([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14, 11, 14, 7, 10], 1):
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.freeze_panes = 'A5'
         print(f"  ✓ {_shname}: {_kltag}, 거래 {_n_trades_bt}회, 수익 {_full_cum*100:+.2f}% "
