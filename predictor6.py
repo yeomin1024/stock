@@ -12897,7 +12897,7 @@ STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축�
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
-MAX_INDICATORS      = 4500
+MAX_INDICATORS      = 3500
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
@@ -16540,12 +16540,20 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             if p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1):
                 rr[t] = p1 / p0 - 1.0
 
-        # 이미 쓴 지표 제외 (상위 used_n_buy / used_n_sell)
+        # 이미 쓴 지표 제외 (상위 used_n_buy / used_n_sell) — 단, 풀 크기로 상한.
         bp = buy_pool.reset_index(drop=True); sp = sell_pool.reset_index(drop=True)
-        used_buy = set(bp['indicator'].iloc[:int(used_n_buy)]) if 'indicator' in bp.columns else set()
-        used_sell = set(sp['indicator'].iloc[:int(used_n_sell)]) if 'indicator' in sp.columns else set()
+        _ub = min(int(used_n_buy), len(bp)); _us = min(int(used_n_sell), len(sp))
+        used_buy = set(bp['indicator'].iloc[:_ub]) if 'indicator' in bp.columns else set()
+        used_sell = set(sp['indicator'].iloc[:_us]) if 'indicator' in sp.columns else set()
         rem_buy = bp[~bp['indicator'].isin(used_buy)].reset_index(drop=True) if 'indicator' in bp.columns else bp
         rem_sell = sp[~sp['indicator'].isin(used_sell)].reset_index(drop=True) if 'indicator' in sp.columns else sp
+        # ★ 제외 후 남는 지표가 없으면 전체 풀로 폴백 (카운트0인 날은 메인 지표가 신호를 안 내므로
+        #   같은 지표라도 이 날들엔 다른 임계/조합으로 유효할 수 있음). 별도풀이 사라지지 않도록.
+        _fallback_buy = _fallback_sell = False
+        if len(rem_buy) < 1:
+            rem_buy = bp.reset_index(drop=True); _fallback_buy = True
+        if len(rem_sell) < 1:
+            rem_sell = sp.reset_index(drop=True); _fallback_sell = True
         if len(rem_buy) < 1 or len(rem_sell) < 1:
             return None
 
@@ -16682,7 +16690,9 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
                     n_buy=int(nb_f), n_sell=int(ns_f), daily=daily,
                     zero_days=int(np.sum(zmask)), pool_buy_n=int(nB), pool_sell_n=int(nS),
                     rem_buy=rem_buy.head(nb_f), rem_sell=rem_sell.head(ns_f),
-                    excluded_buy=len(used_buy), excluded_sell=len(used_sell),
+                    excluded_buy=(0 if _fallback_buy else len(used_buy)),
+                    excluded_sell=(0 if _fallback_sell else len(used_sell)),
+                    fallback_buy=_fallback_buy, fallback_sell=_fallback_sell,
                     top=_top_final, buy_count=_zbuy_count, sell_count=_zsell_count,
                     zero_mask=zmask, rr=rr, dates=dates)
     except Exception as _e:
@@ -18885,8 +18895,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _dd = float(_seg.min() / _seg[0] - 1.0)
                 if _dd < _held_max_dd: _held_max_dd = _dd
 
-        # ── ★ (요청) 향후 어닝 날짜 조회 ──
+        # ── ★ (요청) 어닝 날짜 조회 (과거+향후 모두 — 과거는 백테스트 행에 매칭, 향후는 예정 표시) ──
         _earnings_dates = set()
+        _future_earnings = []
         try:
             import yfinance as _yf
             _tk_obj = _yf.Ticker(ticker)
@@ -18901,17 +18912,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 for _d in _ed:
                     try: _earnings_dates.add(pd.Timestamp(_d).normalize())
                     except Exception: pass
-            # 추가로 earnings_dates (미래 몇 개)
+            # get_earnings_dates: 과거+미래 모두 수집 (limit 넉넉히)
             try:
-                _edf = _tk_obj.get_earnings_dates(limit=8) if hasattr(_tk_obj, 'get_earnings_dates') else None
+                _edf = _tk_obj.get_earnings_dates(limit=24) if hasattr(_tk_obj, 'get_earnings_dates') else None
                 if _edf is not None and len(_edf) > 0:
-                    _today = pd.Timestamp.now().normalize()
+                    _last_data_day = pd.Timestamp(dts[-1]).normalize() if len(dts) else pd.Timestamp.now().normalize()
                     for _d in _edf.index:
                         try:
                             _dn = pd.Timestamp(_d).normalize()
-                            if _dn >= _today: _earnings_dates.add(_dn)
+                            _earnings_dates.add(_dn)
+                            if _dn > _last_data_day:
+                                _future_earnings.append(_dn)
                         except Exception: pass
             except Exception: pass
+            _future_earnings = sorted(set(_future_earnings))
         except Exception as _ee:
             print(f"  ⚠ 어닝 조회 실패(무시): {_ee}")
 
@@ -18927,14 +18941,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _bp = _bp_src.reset_index(drop=True)
                 _sp = _sp_src.reset_index(drop=True)
                 _nbo = int(_nsd['n_buy_opt']); _nso = int(_nsd['n_sell_opt'])
-                # 최근 날짜의 각 지표 신호값(0/1, 가중이면 가중치×0/1)
-                _last_ts = pd.Timestamp(dts[-1]) if len(dts) else None
-                # 상위 2개 매수·매도 지표 이름·성공률·최근값
                 _wtd_bt = bool(_nsd.get('weighted'))
-                _get_last_sig = lambda row: float(_to_signal_array(feat, row)[-1]) if len(feat) else 0.0
-                _b_top2 = _bp.head(min(2, _nbo)) if _nbo > 0 else _bp.head(2)
-                _s_top2 = _sp.head(min(2, _nso)) if _nso > 0 else _sp.head(2)
-                def _fmt_ind(row):
+                _wcol_bt = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
+                def _last_sig(row):
+                    try: return float(_to_signal_array(feat, row)[-1])
+                    except Exception: return 0.0
+                def _wt_of(row):
+                    if not _wtd_bt: return 1.0
+                    _w = row.get(_wcol_bt, None)
+                    return float(_w) if (_w is not None and not pd.isna(_w)) else 1.0
+                def _fmt_ind(row, contrib):
                     _nm = str(row.get('indicator', ''))[:32]
                     _sr = row.get('success_rate', None)
                     if _sr is not None and not pd.isna(_sr):
@@ -18942,11 +18958,22 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     else:
                         _ic = row.get('ic', None)
                         _srtxt = (f"IC {float(_ic):+.3f}" if _ic is not None and not pd.isna(_ic) else '-')
-                    try: _v = _get_last_sig(row)   # 최근일 신호 발화 여부(1=발화, 0=미발화)
-                    except Exception: _v = 0.0
-                    return f"{_v:.2f}({_nm}, {_srtxt})"
-                _top_buy_txt = ' + '.join(_fmt_ind(r) for _, r in _b_top2.iterrows())
-                _top_sell_txt = ' + '.join(_fmt_ind(r) for _, r in _s_top2.iterrows())
+                    return f"{contrib:.2f}({_nm}, {_srtxt})"
+                # ★ 실제 카운트에 쓰인 상위 n개 지표 중, 최근일에 '발화한' 것을 기여도(가중치) 순으로.
+                #   발화한 게 없으면 상위 지표를 그대로 표시(발화값 0).
+                def _pick_top(pool, n_used):
+                    _use = pool.head(max(1, int(n_used))) if n_used > 0 else pool
+                    _fired = []
+                    _notfired = []
+                    for _, r in _use.iterrows():
+                        _s = _last_sig(r)
+                        _contrib = _s * _wt_of(r)   # 가중이면 신호×가중치, 아니면 0/1
+                        (_fired if _s > 0 else _notfired).append((r, _contrib))
+                    _fired.sort(key=lambda x: -x[1])
+                    _sel = _fired[:2] if _fired else _notfired[:2]
+                    return ' + '.join(_fmt_ind(r, c) for r, c in _sel)
+                _top_buy_txt = _pick_top(_bp, _nbo)
+                _top_sell_txt = _pick_top(_sp, _nso)
         except Exception as _eind:
             print(f"  ⚠ 상위 지표 조회 실패(무시): {_eind}")
 
@@ -18957,13 +18984,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if _earnings_dates:
             _future = sorted([d for d in _earnings_dates if d >= pd.Timestamp(dts[-1]).normalize()])
             _next_earn = _future[0] if _future else None
-        _earn_txt = (f" | 다음어닝: {_next_earn.strftime('%Y-%m-%d')}"
-                     + (f" (D-{(_next_earn - pd.Timestamp(dts[-1]).normalize()).days})" if _next_earn else '')) \
-                    if _next_earn else ''
         ws.cell(1, 1).value = (f'{_shname} — net≥K({_K_bt if _L_bt is None else f"{_K_bt:.3f}"}){_ltxt} 히스테리시스 '
                                f'(net≥K 매수·보유 / net≤L 매도·현금 / 사이 유지). '
-                               f'메인풀은 KL 순신호 ★최대수익과 동일.{_hyb_txt} 수익=상승·하락률 합산.'
-                               f'{_earn_txt}')
+                               f'메인풀은 KL 순신호 ★최대수익과 동일.{_hyb_txt} 수익=상승·하락률 합산.')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:Q1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         _mn_txt = (f" | 카운트0풀 m={_zero_m:.3f}/n={_zero_n:.3f}({len(_zero_days_set)}일)"
@@ -18979,7 +19002,21 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                f"｜ 매도카운트 기여: {_top_sell_txt or '-'}")
         ws.cell(3, 1).font = Font(bold=True, color='1F6F1F', size=10)
         ws.merge_cells('A3:Q3')
-        _hdr(ws, 4, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
+        # ★ (요청) 향후 어닝 예정일 — 위 카운트 기여 줄 바로 밑(4행)에 표시
+        if _next_earn is not None:
+            _dd_earn = (_next_earn - pd.Timestamp(dts[-1]).normalize()).days
+            _earn_more = [d for d in sorted(_earnings_dates) if d > _next_earn]
+            _earn_more_txt = ''
+            if _earn_more:
+                _earn_more_txt = ' ｜ 이후: ' + ', '.join(d.strftime('%Y-%m-%d') for d in _earn_more[:3])
+            ws.cell(4, 1).value = (f"[향후 어닝] 다음 어닝일: {_next_earn.strftime('%Y-%m-%d')} "
+                                   f"(D-{_dd_earn}){_earn_more_txt}")
+        else:
+            ws.cell(4, 1).value = "[향후 어닝] 예정일 없음 (조회 실패 또는 데이터 없음)"
+        ws.cell(4, 1).font = Font(bold=True, color='7F6000', size=10)
+        ws.cell(4, 1).fill = PatternFill('solid', fgColor='FFF2CC')
+        ws.merge_cells('A4:Q4')
+        _hdr(ws, 5, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
                      '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간', '향후어닝'])
         pos = _pos_bt
@@ -18987,7 +19024,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _YEL = PatternFill('solid', fgColor='FFF2CC')
         _entry_px = None; _entry_i = None
         for i in range(len(d)):
-            r = 5 + i; row = d.iloc[i]
+            r = 6 + i; row = d.iloc[i]
             _p = pos[i]; _act = _action[i]
             _dt_i = pd.Timestamp(row['date']).normalize()
             _is_zero_day = _dt_i in _zero_days_set
@@ -19048,7 +19085,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.cell(r, 17).font = Font(bold=True, color='7F6000')
         for ci, w in enumerate([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14, 11, 14, 7, 10], 1):
             ws.column_dimensions[get_column_letter(ci)].width = w
-        ws.freeze_panes = 'A5'
+        ws.freeze_panes = 'A6'
         print(f"  ✓ {_shname}: {_kltag}, 거래 {_n_trades_bt}회, 수익 {_full_cum*100:+.2f}% "
               f"(카운트0 별도풀일 {len(_zero_days_set)}일 노란색)")
 
