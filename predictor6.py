@@ -10382,6 +10382,118 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
     _add_sector_block2('cycl', 'XLY', macro_kind='consumer')
     _add_sector_block2('def', 'XLP', macro_kind='defensive')
 
+    # ══════════════════════════════════════════════════════════════
+    #  41b. ★ (요청) 4개 섹터 예측 지표 3차 추가 (기존 1·2차와 중복 없음)
+    #      각도: (E) 계절성·캘린더  (F) 밸류에이션·상대가치  (G) 옵션·심리 프록시
+    #            (H) 미시구조·유동성  (I) 금리/인플레 레짐 특화
+    #      접미사: seas_/val_/opt_/micro_/regime_  (기존 접미사와 완전 분리)
+    # ══════════════════════════════════════════════════════════════
+    def _add_sector_block3(prefix, main_sym):
+        _m = _sec_get(main_sym)
+        if _m is None:
+            return
+        _mr = _m.pct_change()
+        _spy = _sec_get('SPY')
+        _idx = _m.index
+
+        # ── (E) 계절성·캘린더 효과 ──
+        _dow = _idx.dayofweek     # 0=월 ... 4=금
+        _dom = _idx.day
+        _month = _idx.month
+        feat[f'{prefix}_seas_turn_of_month'] = (((_dom >= 28) | (_dom <= 3))).astype(float)   # 월말·월초(리밸런싱)
+        feat[f'{prefix}_seas_quarter_end']   = ((_month.isin([3, 6, 9, 12])) & (_dom >= 25)).astype(float)  # 분기말
+        feat[f'{prefix}_seas_monday']        = (_dow == 0).astype(float)
+        feat[f'{prefix}_seas_friday']        = (_dow == 4).astype(float)
+        feat[f'{prefix}_seas_santa_window']  = ((_month == 12) & (_dom >= 20)).astype(float)  # 산타랠리 구간
+        feat[f'{prefix}_seas_sell_in_may']   = (_month.isin([5, 6, 7, 8, 9])).astype(float)   # 여름 약세 계절
+        # 월중 누적 수익 (월초 대비 — 계절 흐름)
+        _mstart = _m.groupby([_idx.year, _idx.month]).transform('first')
+        feat[f'{prefix}_seas_mtd_return']    = _m / _mstart.replace(0, np.nan) - 1.0
+
+        # ── (F) 밸류에이션·상대가치 (가격 기반 프록시) ──
+        # 장기 평균 회귀 (200일 평균 대비 편차 = 밸류에이션 프록시)
+        _ma200 = _m.rolling(200, min_periods=40).mean()
+        feat[f'{prefix}_val_dist_from_ma200'] = _m / _ma200.replace(0, np.nan) - 1.0
+        feat[f'{prefix}_val_zscore_252']      = calc_zscore(_m, 252)      # 1년 z-score (과열/과매도)
+        feat[f'{prefix}_val_pctrank_252']     = calc_pctrank(_m, 252)     # 1년 백분위 위치
+        # 상대 밸류: 섹터/시장 비율의 장기 평균 회귀
+        if _spy is not None:
+            _rel = _m / _spy
+            feat[f'{prefix}_val_rel_zscore_252'] = calc_zscore(_rel, 252)  # 시장 대비 상대 밸류
+            feat[f'{prefix}_val_rel_mean_revert'] = -(_rel / _rel.rolling(252, min_periods=40).mean() - 1.0)  # 회귀 압력
+        # 과매수/과매도 극단 (평균회귀 트레이드 신호)
+        feat[f'{prefix}_val_overbought']      = (calc_zscore(_m, 60) > 2.0).astype(float)
+        feat[f'{prefix}_val_oversold']        = (calc_zscore(_m, 60) < -2.0).astype(float)
+
+        # ── (G) 옵션·심리 프록시 (가격/변동성 기반) ──
+        # 풋콜 프록시: 하락 변동성 / 상승 변동성 (공포 vs 탐욕)
+        _dnstd = _mr.where(_mr < 0).rolling(20, min_periods=5).std()
+        _upstd = _mr.where(_mr > 0).rolling(20, min_periods=5).std()
+        feat[f'{prefix}_opt_fear_greed']      = _dnstd / _upstd.replace(0, np.nan)   # >1 공포 우세
+        # 변동성 리스크 프리미엄 프록시 (실현변동성 급등)
+        _rv = _mr.rolling(20, min_periods=5).std() * np.sqrt(252)
+        feat[f'{prefix}_opt_realized_vol']    = _rv
+        feat[f'{prefix}_opt_vol_spike']       = (_rv > _rv.rolling(60, min_periods=15).mean() * 1.5).astype(float)
+        # 극단 낙관/비관 (연속 상승/하락 + 저변동)
+        _updays = (_mr > 0).rolling(10, min_periods=3).sum()
+        feat[f'{prefix}_opt_euphoria']        = ((_updays >= 8) & (_rv < _rv.rolling(120, min_periods=20).median())).astype(float)
+        feat[f'{prefix}_opt_capitulation']    = ((_updays <= 2) & (_rv > _rv.rolling(120, min_periods=20).median() * 1.3)).astype(float)
+        # 스큐 프록시 (수익 분포 왜도)
+        feat[f'{prefix}_opt_return_skew_60']  = _mr.rolling(60, min_periods=15).skew()
+
+        # ── (H) 미시구조·유동성 ──
+        _mv = None
+        try: _mv = ohlcv.get(main_sym)
+        except Exception: _mv = None
+        if _mv is not None and 'Volume' in _mv.columns:
+            _v = _mv['Volume'].reindex(_idx)
+            _dollar_vol = _m * _v
+            # 유동성 (달러 거래대금 추세)
+            feat[f'{prefix}_micro_dollar_vol_z']  = calc_zscore(_dollar_vol, 60)
+            feat[f'{prefix}_micro_liquidity_dry'] = (_v < _v.rolling(20, min_periods=5).mean() * 0.6).astype(float)  # 거래량 고갈
+            # Amihud 비유동성 (수익률 절대값 / 거래대금)
+            _amihud = _mr.abs() / _dollar_vol.replace(0, np.nan)
+            feat[f'{prefix}_micro_amihud_illiq']  = calc_zscore(_amihud, 60)
+            # 거래량 가격 확인 (상승에 거래량 = 건강)
+            feat[f'{prefix}_micro_vol_price_confirm'] = ((_mr > 0) & (_v > _v.rolling(20, min_periods=5).mean())).astype(float)
+        # 가격 효율성 (자기상관 = 추세/평균회귀 성향)
+        feat[f'{prefix}_micro_autocorr_20']   = _mr.rolling(60, min_periods=15).apply(
+            lambda x: pd.Series(x).autocorr(lag=1) if len(x) > 5 else np.nan, raw=False)
+        # 가격 프랙탈성 (효율성 비율: 순변화/총변화)
+        _net_change = (_m - _m.shift(20)).abs()
+        _total_change = _mr.abs().rolling(20, min_periods=5).sum()
+        feat[f'{prefix}_micro_efficiency_ratio'] = _net_change / (_total_change * _m).replace(0, np.nan)
+        # 갭 빈도 (미시구조 불안정)
+        if _mv is not None and all(c in _mv.columns for c in ['Open', 'Close']):
+            _op = _mv['Open'].reindex(_idx); _cl_p = _mv['Close'].reindex(_idx).shift(1)
+            _gap = (_op / _cl_p - 1.0).abs()
+            feat[f'{prefix}_micro_gap_freq_20']   = (_gap > 0.005).rolling(20, min_periods=5).mean()
+
+        # ── (I) 금리/인플레 레짐 특화 (섹터별 상이한 민감도) ──
+        _tnx_r = closes.get('^TNX'); _tip = closes.get('TIP'); _ief = closes.get('IEF')
+        if _tnx_r is not None:
+            # 금리 상승 레짐에서 섹터 성과
+            _rate_rising = (_tnx_r > _tnx_r.rolling(60, min_periods=15).mean())
+            feat[f'{prefix}_regime_ret_in_rate_up'] = (_mr.where(_rate_rising)).rolling(40, min_periods=8).mean()
+            feat[f'{prefix}_regime_rate_up_flag']   = _rate_rising.astype(float)
+        # 인플레 프록시 (TIP vs IEF = 기대인플레) 레짐
+        if _tip is not None and _ief is not None:
+            _bei = (_tip / _ief)   # 브레이크이븐 인플레 프록시
+            _infl_rising = (_bei > _bei.rolling(60, min_periods=15).mean())
+            feat[f'{prefix}_regime_infl_beta']      = _mr.rolling(40, min_periods=10).corr(_bei.pct_change())
+            feat[f'{prefix}_regime_ret_in_infl_up'] = (_mr.where(_infl_rising)).rolling(40, min_periods=8).mean()
+        # 변동성 레짐 (고VIX vs 저VIX 국면 성과)
+        _vix_r = closes.get('^VIX')
+        if _vix_r is not None:
+            _high_vix = (_vix_r > _vix_r.rolling(60, min_periods=15).mean())
+            feat[f'{prefix}_regime_ret_in_high_vix'] = (_mr.where(_high_vix)).rolling(40, min_periods=8).mean()
+            feat[f'{prefix}_regime_defensive_in_vix'] = ((_high_vix) & (_mr > 0)).rolling(20, min_periods=5).mean()  # 고VIX서 방어력
+
+    _add_sector_block3('fin', 'XLF')
+    _add_sector_block3('hlth', 'XLV')
+    _add_sector_block3('cycl', 'XLY')
+    _add_sector_block3('def', 'XLP')
+
     # ── 섹터 간 선행·동조 (4섹터 리드-래그) ──
     if len(_sec4) >= 3:
         # 금융이 시장을 선행하는가 (금융 20일 모멘텀이 다른 섹터 대비 선행)
