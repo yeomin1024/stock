@@ -18,6 +18,8 @@ import yfinance as yf
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from google.colab import drive
+drive.mount('/content/drive')
 
 try:
     from tqdm import tqdm
@@ -12978,6 +12980,35 @@ SCRIPT_DIR = _resolve_output_dir(OUTPUT_DIR)
 OUTPUT_DIR = SCRIPT_DIR   # ★ 이후 모든 참조(재현 모드 등)가 로컬 폴더를 가리키도록 동기화
 print(f"  📂 출력 폴더(로컬): {SCRIPT_DIR}  — 실행 종료 후 자동 다운로드됩니다")
 
+# ★ (요청) 모드1 실행 시 엑셀을 '내 드라이브 ensemble 경로'에도 복사 생성 (모드4가 이 폴더를 읽어 재현할 수 있게).
+#   None 이면 미러링 안 함. 먼저 드라이브 마운트 필요.
+ENSEMBLE_MIRROR_DIR = '/content/drive/MyDrive/ensemble_analysis'
+
+def _mirror_to_ensemble(file_paths, *, verbose=True):
+    """모드1 산출 엑셀을 ENSEMBLE_MIRROR_DIR 로도 복사 (모드4 재현용 아카이브)."""
+    import shutil
+    g = globals()
+    _mdir = g.get('ENSEMBLE_MIRROR_DIR')
+    if not _mdir:
+        return
+    try:
+        os.makedirs(_mdir, exist_ok=True)
+    except Exception as e:
+        if verbose: print(f"  ⚠ ensemble 미러 폴더 생성 실패: {e}")
+        return
+    for fp in file_paths:
+        if not (fp and os.path.exists(fp)):
+            continue
+        _dst = os.path.join(_mdir, os.path.basename(fp))
+        try:
+            if os.path.abspath(fp) == os.path.abspath(_dst):
+                continue   # 같은 폴더면 복사 불필요
+            shutil.copy2(fp, _dst)
+            if verbose: print(f"  📁 ensemble 경로에도 저장: {_dst}")
+        except Exception as e:
+            if verbose: print(f"  ⚠ ensemble 복사 실패 ({fp}): {e}")
+
+
 try:
     from numba import njit
     HAS_NUMBA = True
@@ -19008,8 +19039,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 if _dd < _held_max_dd: _held_max_dd = _dd
 
         # ── ★ (요청) 어닝 날짜 조회 (과거+향후 모두 — 과거는 백테스트 행에 매칭, 향후는 예정 표시) ──
+        # yfinance는 tz-aware(예: US/Eastern) 타임스탬프를 줄 수 있어 tz 제거로 통일 (비교 오류 방지).
+        def _tznaive(x):
+            _t = pd.Timestamp(x)
+            if _t.tzinfo is not None or getattr(_t, 'tz', None) is not None:
+                _t = _t.tz_localize(None)
+            return _t.normalize()
+        _last_data_day = _tznaive(dts[-1]) if len(dts) else pd.Timestamp.now().normalize()
         _earnings_dates = set()
         _future_earnings = []
+        _earn_fetch_ok = False   # 조회 성공 여부 (실패 vs 데이터 없음 구분용)
         try:
             import yfinance as _yf
             _tk_obj = _yf.Ticker(ticker)
@@ -19022,22 +19061,22 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if _ed is not None:
                 if not isinstance(_ed, (list, tuple)): _ed = [_ed]
                 for _d in _ed:
-                    try: _earnings_dates.add(pd.Timestamp(_d).normalize())
+                    try: _earnings_dates.add(_tznaive(_d))
                     except Exception: pass
             # get_earnings_dates: 과거+미래 모두 수집 (limit 넉넉히)
             try:
                 _edf = _tk_obj.get_earnings_dates(limit=24) if hasattr(_tk_obj, 'get_earnings_dates') else None
                 if _edf is not None and len(_edf) > 0:
-                    _last_data_day = pd.Timestamp(dts[-1]).normalize() if len(dts) else pd.Timestamp.now().normalize()
                     for _d in _edf.index:
                         try:
-                            _dn = pd.Timestamp(_d).normalize()
+                            _dn = _tznaive(_d)
                             _earnings_dates.add(_dn)
                             if _dn > _last_data_day:
                                 _future_earnings.append(_dn)
                         except Exception: pass
             except Exception: pass
             _future_earnings = sorted(set(_future_earnings))
+            _earn_fetch_ok = True   # 예외 없이 조회 절차 완료 (데이터는 없을 수 있음)
         except Exception as _ee:
             print(f"  ⚠ 어닝 조회 실패(무시): {_ee}")
 
@@ -19094,7 +19133,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if _zero_days_set else '')
         _next_earn = None
         if _earnings_dates:
-            _future = sorted([d for d in _earnings_dates if d >= pd.Timestamp(dts[-1]).normalize()])
+            _future = sorted([d for d in _earnings_dates if d >= _last_data_day])
             _next_earn = _future[0] if _future else None
         ws.cell(1, 1).value = (f'{_shname} — net≥K({_K_bt if _L_bt is None else f"{_K_bt:.3f}"}){_ltxt} 히스테리시스 '
                                f'(net≥K 매수·보유 / net≤L 매도·현금 / 사이 유지). '
@@ -19114,17 +19153,26 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                f"｜ 매도카운트 기여: {_top_sell_txt or '-'}")
         ws.cell(3, 1).font = Font(bold=True, color='1F6F1F', size=10)
         ws.merge_cells('A3:Q3')
-        # ★ (요청) 향후 어닝 예정일 — 위 카운트 기여 줄 바로 밑(4행)에 표시
+        # ★ (요청) 향후 어닝 예정일 — 위 카운트 기여 줄 바로 밑(4행)에 표시.
+        #   어닝 없으면 skip하고 '없음'으로 명시.
         if _next_earn is not None:
-            _dd_earn = (_next_earn - pd.Timestamp(dts[-1]).normalize()).days
+            _dd_earn = (_next_earn - _last_data_day).days
             _earn_more = [d for d in sorted(_earnings_dates) if d > _next_earn]
             _earn_more_txt = ''
             if _earn_more:
                 _earn_more_txt = ' ｜ 이후: ' + ', '.join(d.strftime('%Y-%m-%d') for d in _earn_more[:3])
             ws.cell(4, 1).value = (f"[향후 어닝] 다음 어닝일: {_next_earn.strftime('%Y-%m-%d')} "
                                    f"(D-{_dd_earn}){_earn_more_txt}")
+        elif _earn_fetch_ok:
+            # 조회는 됐으나 향후 어닝이 없음 (skip)
+            if _earnings_dates:
+                _past_last = max(_earnings_dates)
+                ws.cell(4, 1).value = (f"[향후 어닝] 없음 — 예정된 향후 어닝일 없음 "
+                                       f"(마지막 확인된 어닝: {_past_last.strftime('%Y-%m-%d')})")
+            else:
+                ws.cell(4, 1).value = "[향후 어닝] 없음 — 어닝 데이터 없음 (ETF·지수 등 어닝 미해당 종목)"
         else:
-            ws.cell(4, 1).value = "[향후 어닝] 예정일 없음 (조회 실패 또는 데이터 없음)"
+            ws.cell(4, 1).value = "[향후 어닝] 조회 실패 (네트워크 오류 등)"
         ws.cell(4, 1).font = Font(bold=True, color='7F6000', size=10)
         ws.cell(4, 1).fill = PatternFill('solid', fgColor='FFF2CC')
         ws.merge_cells('A4:Q4')
@@ -19138,7 +19186,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         for i in range(len(d)):
             r = 6 + i; row = d.iloc[i]
             _p = pos[i]; _act = _action[i]
-            _dt_i = pd.Timestamp(row['date']).normalize()
+            _dt_i = _tznaive(row['date'])
             _is_zero_day = _dt_i in _zero_days_set
             if _act == '매수': _entry_px = prices[i]; _entry_i = i
             _held = (i - _entry_i) if (_p == 1 and _entry_i is not None) else None
@@ -23539,6 +23587,7 @@ def run_multi_ticker_analysis(tickers=None, *,
                                  key=os.path.getmtime, reverse=True)
                 if matches:
                     files_to_download.append(matches[0])
+        _mirror_to_ensemble(files_to_download)   # ★ (요청) ensemble 경로에도 복사
         _auto_download_excels(files_to_download)
 
     return summary_records
@@ -24063,6 +24112,19 @@ def run_mode4_drive_reproduce_all(drive_dir=None, *, date_subfolder=None, **over
     if not latest:
         print(f"  ✗ {src} 에서 ensemble_search_<티커>_<날짜>.xlsx 형식 파일을 못 찾았습니다.")
         return []
+    # ★ (요청) RUN_TICKERS 가 설정되어 있으면 그 티커만 재현 (드라이브 전체가 아니라 지정 티커만)
+    _run_tk = g.get('RUN_TICKERS')
+    if _run_tk:
+        _run_set = set(_run_tk)
+        _before = len(latest)
+        latest = {tk: v for tk, v in latest.items() if tk in _run_set}
+        _missing = [tk for tk in _run_set if tk not in latest]
+        print(f"  🎯 RUN_TICKERS 지정 → {len(latest)}/{_before}개 티커만 재현: {sorted(latest.keys())}")
+        if _missing:
+            print(f"     ⚠ 드라이브 폴더에 엑셀이 없는 티커(건너뜀): {_missing}")
+        if not latest:
+            print(f"  ✗ RUN_TICKERS {sorted(_run_set)} 에 해당하는 엑셀이 드라이브 폴더에 없습니다.")
+            return []
     print(f"  📂 드라이브 폴더: {src}  — 티커 {len(latest)}개")
 
     today = datetime.now().strftime('%Y-%m-%d')
