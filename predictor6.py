@@ -1,3 +1,6 @@
+from google.colab import drive
+drive.mount('/content/drive')
+
 # @title
 """
 XLK 하락 예측 임계치 탐색기 (완전 독립 실행)
@@ -18,8 +21,6 @@ import yfinance as yf
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from google.colab import drive
-drive.mount('/content/drive')
 
 try:
     from tqdm import tqdm
@@ -14966,9 +14967,23 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
             _shown.add((round(float(_best_wz), 4), round(float(_cl), 4)))
         if _sc > _best_sc: _best_sc = _sc; _best = (_cb, _cs); _bcl = _cl
     if _best is not None:
-        globals()['_KNET_MULTI_POOL'] = (ticker, _best[0], _best[1])
+        # ★ (요청) 최종 카운트 풀에도 성공률 60% 컷 재적용 — 다중임계 병합·상관 다변화 과정에서
+        #   컷 미만 지표가 섞여 들어오는 것을 방지 (성공률 우선 풀과 기준 일치).
+        _cut = float(globals().get('POOL_SUCCESS_MIN_RATE', 0.60))
+        def _apply_success_cut(_df):
+            if _df is None or len(_df) == 0 or 'success_rate' not in _df.columns:
+                return _df
+            _f = _df[_df['success_rate'] >= _cut].reset_index(drop=True)
+            # 컷 통과가 하나도 없으면(과도 제거 방지) 원본 유지
+            return _f if len(_f) > 0 else _df
+        _bcut = _apply_success_cut(_best[0]); _scut = _apply_success_cut(_best[1])
+        _n_removed_b = (len(_best[0]) - len(_bcut)) if _best[0] is not None else 0
+        _n_removed_s = (len(_best[1]) - len(_scut)) if _best[1] is not None else 0
+        if _n_removed_b or _n_removed_s:
+            print(f"     ▷ 카운트 풀 성공률 {_cut*100:.0f}% 컷: 매수 -{_n_removed_b} / 매도 -{_n_removed_s}행 제거")
+        globals()['_KNET_MULTI_POOL'] = (ticker, _bcut, _scut)
         print(f"  ★ k순신호 최적: wilson={_best_wz}, corr={_bcl} → 전체수익 {_best_sc*100:+.2f}% "
-              f"(매수 {_best[0]['indicator'].nunique()}지표 / 매도 {_best[1]['indicator'].nunique()}지표, 다중임계)")
+              f"(매수 {_bcut['indicator'].nunique()}지표 / 매도 {_scut['indicator'].nunique()}지표, 다중임계)")
     else:
         globals()['_KNET_MULTI_POOL'] = (ticker, None, None)
         print(f"  ⚠ 합친 풀 생성 실패")
@@ -19080,8 +19095,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         except Exception as _ee:
             print(f"  ⚠ 어닝 조회 실패(무시): {_ee}")
 
-        # ── ★ (요청) 가장 최근 매수/매도 카운트에 기여한 상위 지표 조회 ──
-        # 카운트에 실제 쓰인 풀(buy_pool/sell_pool, 성공률 내림차순 정렬)을 우선 사용.
+        # ── ★ (요청) 가장 최근 매수/매도 카운트에 '기여한 모든 지표' 표시 ──
+        #   카운트 계산과 동일한 방식으로 상위 n개 지표의 최근일 기여도를 구해,
+        #   발화한(기여>0) 지표를 모두 나열. 표시값들의 합 = 실제 카운트와 일치.
         _mp_bt = globals().get('_KNET_MULTI_POOL')
         _bp_src = buy_pool if (buy_pool is not None and len(buy_pool) > 0) else (_mp_bt[1] if _mp_bt else None)
         _sp_src = sell_pool if (sell_pool is not None and len(sell_pool) > 0) else (_mp_bt[2] if _mp_bt else None)
@@ -19094,37 +19110,59 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _nbo = int(_nsd['n_buy_opt']); _nso = int(_nsd['n_sell_opt'])
                 _wtd_bt = bool(_nsd.get('weighted'))
                 _wcol_bt = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
+                _multi_bt = bool(globals().get('NET_MULTI_THRESHOLD_WEIGHT', False))
                 def _last_sig(row):
-                    try: return float(_to_signal_array(feat, row)[-1])
+                    try: return float(np.nan_to_num(_to_signal_array(feat, row).astype(float))[-1])
                     except Exception: return 0.0
                 def _wt_of(row):
                     if not _wtd_bt: return 1.0
                     _w = row.get(_wcol_bt, None)
                     return float(_w) if (_w is not None and not pd.isna(_w)) else 1.0
-                def _fmt_ind(row, contrib):
-                    _nm = str(row.get('indicator', ''))[:32]
-                    _sr = row.get('success_rate', None)
-                    if _sr is not None and not pd.isna(_sr):
-                        _srtxt = f"성공률 {float(_sr)*100:.1f}%"
+                def _fmt_ind(nm, sr, contrib, is_ic):
+                    _nm = str(nm)[:32]
+                    if sr is not None and not pd.isna(sr):
+                        if is_ic:
+                            # IC 선정 풀: success_rate 칸이 |OOS IC| 값이라 '성공률'로 표기하면 오해.
+                            _srtxt = f"|OOS IC| {float(sr):.3f}"
+                        else:
+                            _srtxt = f"성공률 {float(sr)*100:.1f}%"
                     else:
-                        _ic = row.get('ic', None)
-                        _srtxt = (f"IC {float(_ic):+.3f}" if _ic is not None and not pd.isna(_ic) else '-')
+                        _srtxt = '-'
                     return f"{contrib:.2f}({_nm}, {_srtxt})"
-                # ★ 실제 카운트에 쓰인 상위 n개 지표 중, 최근일에 '발화한' 것을 기여도(가중치) 순으로.
-                #   발화한 게 없으면 상위 지표를 그대로 표시(발화값 0).
-                def _pick_top(pool, n_used):
+                # 이 풀이 IC 기반인지(‘ic’·‘oos_ic’ 컬럼 존재) 판별 — success_rate 칸의 의미가 다름
+                _bp_is_ic = ('oos_ic' in _bp.columns) or ('ic' in _bp.columns)
+                _sp_is_ic = ('oos_ic' in _sp.columns) or ('ic' in _sp.columns)
+                # ★ 카운트 계산과 동일: 상위 n개 지표만, 중복 지표는 최고 가중(maximum) 처리.
+                def _contrib_all(pool, n_used, is_ic):
                     _use = pool.head(max(1, int(n_used))) if n_used > 0 else pool
-                    _fired = []
-                    _notfired = []
-                    for _, r in _use.iterrows():
-                        _s = _last_sig(r)
-                        _contrib = _s * _wt_of(r)   # 가중이면 신호×가중치, 아니면 0/1
-                        (_fired if _s > 0 else _notfired).append((r, _contrib))
+                    _items = {}   # indicator → (기여도, 성공률)
+                    if _multi_bt and ('indicator' in _use.columns) and _use['indicator'].duplicated().any():
+                        for _ind, grp in _use.groupby('indicator', sort=False):
+                            _best = 0.0; _sr = None
+                            for _, row in grp.iterrows():
+                                _cv = _last_sig(row) * _wt_of(row)
+                                if _cv > _best:
+                                    _best = _cv; _sr = row.get('success_rate', None)
+                            if _sr is None:
+                                _sr = grp.iloc[0].get('success_rate', None)
+                            _items[str(_ind)] = (_best, _sr)
+                    else:
+                        for _, row in _use.iterrows():
+                            _ind = str(row.get('indicator', ''))
+                            _cv = _last_sig(row) * _wt_of(row)
+                            _items[_ind] = (_cv, row.get('success_rate', None))
+                    # 발화한(기여>0) 지표만, 기여도 내림차순 — 모두 표시
+                    _fired = [(nm, c, sr) for nm, (c, sr) in _items.items() if c > 1e-9]
                     _fired.sort(key=lambda x: -x[1])
-                    _sel = _fired[:2] if _fired else _notfired[:2]
-                    return ' + '.join(_fmt_ind(r, c) for r, c in _sel)
-                _top_buy_txt = _pick_top(_bp, _nbo)
-                _top_sell_txt = _pick_top(_sp, _nso)
+                    _total = sum(c for _, c, _ in _fired)
+                    if not _fired:
+                        return '없음 (발화 지표 0개)', 0.0
+                    return ' + '.join(_fmt_ind(nm, sr, c, is_ic) for nm, c, sr in _fired), _total
+                _top_buy_txt, _buy_sum = _contrib_all(_bp, _nbo, _bp_is_ic)
+                _top_sell_txt, _sell_sum = _contrib_all(_sp, _nso, _sp_is_ic)
+                # 합계도 함께 표기 (카운트와 일치 확인용)
+                _top_buy_txt = f"[합 {_buy_sum:.2f}] " + _top_buy_txt
+                _top_sell_txt = f"[합 {_sell_sum:.2f}] " + _top_sell_txt
         except Exception as _eind:
             print(f"  ⚠ 상위 지표 조회 실패(무시): {_eind}")
 
