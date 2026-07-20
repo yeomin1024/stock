@@ -14967,20 +14967,34 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
             _shown.add((round(float(_best_wz), 4), round(float(_cl), 4)))
         if _sc > _best_sc: _best_sc = _sc; _best = (_cb, _cs); _bcl = _cl
     if _best is not None:
-        # ★ (요청) 최종 카운트 풀에도 성공률 60% 컷 재적용 — 다중임계 병합·상관 다변화 과정에서
-        #   컷 미만 지표가 섞여 들어오는 것을 방지 (성공률 우선 풀과 기준 일치).
+        # ★ (요청) 최종 카운트 풀에도 성공률 60% 컷 + 최소신호수 컷 재적용.
+        #   다중임계 병합·상관 다변화 과정에서 (a)컷 미만 성공률, (b)소표본(신호 몇 개뿐이라
+        #   성공률 숫자를 못 믿는) 지표가 섞여 들어오는 것을 방지 — 성공률 우선 풀과 기준 일치.
+        #   예: 신호 4개짜리 "66.7%"는 통계적으로 무의미하므로 min_sig 미만이면 제거.
         _cut = float(globals().get('POOL_SUCCESS_MIN_RATE', 0.60))
+        _min_sig = int(globals().get('POOL_SUCCESS_MIN_SIG', 10))
         def _apply_success_cut(_df):
             if _df is None or len(_df) == 0 or 'success_rate' not in _df.columns:
                 return _df
-            _f = _df[_df['success_rate'] >= _cut].reset_index(drop=True)
-            # 컷 통과가 하나도 없으면(과도 제거 방지) 원본 유지
+            _mask = (_df['success_rate'] >= _cut)
+            # 신호수 컬럼이 있으면 최소신호수도 함께 요구 (소표본 가짜 고성공률 제거)
+            _sigcol = None
+            for _cand in ('n_signals', 'n_sig', 'signals', 'n'):
+                if _cand in _df.columns:
+                    _sigcol = _cand; break
+            if _sigcol is not None:
+                _mask = _mask & (_df[_sigcol].fillna(0) >= _min_sig)
+            _f = _df[_mask].reset_index(drop=True)
+            # 컷 통과가 하나도 없으면(과도 제거 방지) 성공률 컷만이라도 적용
+            if len(_f) == 0:
+                _f = _df[_df['success_rate'] >= _cut].reset_index(drop=True)
             return _f if len(_f) > 0 else _df
         _bcut = _apply_success_cut(_best[0]); _scut = _apply_success_cut(_best[1])
         _n_removed_b = (len(_best[0]) - len(_bcut)) if _best[0] is not None else 0
         _n_removed_s = (len(_best[1]) - len(_scut)) if _best[1] is not None else 0
         if _n_removed_b or _n_removed_s:
-            print(f"     ▷ 카운트 풀 성공률 {_cut*100:.0f}% 컷: 매수 -{_n_removed_b} / 매도 -{_n_removed_s}행 제거")
+            print(f"     ▷ 카운트 풀 성공률{_cut*100:.0f}%·신호{_min_sig}개 컷: "
+                  f"매수 -{_n_removed_b} / 매도 -{_n_removed_s}행 제거")
         globals()['_KNET_MULTI_POOL'] = (ticker, _bcut, _scut)
         print(f"  ★ k순신호 최적: wilson={_best_wz}, corr={_bcl} → 전체수익 {_best_sc*100:+.2f}% "
               f"(매수 {_bcut['indicator'].nunique()}지표 / 매도 {_scut['indicator'].nunique()}지표, 다중임계)")
@@ -19098,9 +19112,21 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         # ── ★ (요청) 가장 최근 매수/매도 카운트에 '기여한 모든 지표' 표시 ──
         #   카운트 계산과 동일한 방식으로 상위 n개 지표의 최근일 기여도를 구해,
         #   발화한(기여>0) 지표를 모두 나열. 표시값들의 합 = 실제 카운트와 일치.
+        # ★★ 버그 수정: 실제 net 카운트 계산(위 _use_multi 분기)은 _KNET_MULTI_POOL을
+        #    '있으면 무조건 우선' 사용한다. 여기서도 반드시 같은 우선순위를 써야
+        #    다른 풀(메타-앙상블 buy_pool 파라미터 — 별개의 구버전 투표 시스템, 임계값·
+        #    성공률이 다름)의 성공률을 잘못 표시하지 않는다. (예: THC def_trend_strength_20이
+        #    K/L풀에선 66.7%인데 메타풀의 다른 임계에서는 45.5%로 나와 혼동을 유발한 사례)
         _mp_bt = globals().get('_KNET_MULTI_POOL')
-        _bp_src = buy_pool if (buy_pool is not None and len(buy_pool) > 0) else (_mp_bt[1] if _mp_bt else None)
-        _sp_src = sell_pool if (sell_pool is not None and len(sell_pool) > 0) else (_mp_bt[2] if _mp_bt else None)
+        _use_multi_disp = (_mp_bt and isinstance(_mp_bt, tuple) and len(_mp_bt) >= 3
+                           and _mp_bt[0] == ticker
+                           and _mp_bt[1] is not None and _mp_bt[2] is not None
+                           and len(_mp_bt[1]) > 0 and len(_mp_bt[2]) > 0)
+        if _use_multi_disp:
+            _bp_src, _sp_src = _mp_bt[1], _mp_bt[2]
+        else:
+            _bp_src = buy_pool if (buy_pool is not None and len(buy_pool) > 0) else None
+            _sp_src = sell_pool if (sell_pool is not None and len(sell_pool) > 0) else None
         _top_buy_txt = _top_sell_txt = ''
         try:
             if (_bp_src is not None and _sp_src is not None
@@ -21881,6 +21907,16 @@ def replay_grid_combo(filename, grid_number=None, *,
                 "  feat=, close= 로 직접 전달하거나 download_data/compute_features를 준비하세요.")
 
     base = os.path.splitext(os.path.basename(excel_path))[0]
+    # ★ (요청) 재현 결과 파일명의 날짜를 '실행한 날짜'로 변경 (원본 파일 날짜 그대로 쓰지 않음).
+    #   'ensemble_search_<티커>_<원본날짜>' 형태에서 <원본날짜>만 오늘 날짜로 교체.
+    #   패턴이 안 맞으면(파일명이 다른 형식) 원본 base 그대로 사용 + 뒤에 오늘 날짜 붙임.
+    import re as _re_dt
+    _today_str = datetime.now().strftime('%Y-%m-%d')
+    _m_dt = _re_dt.match(r'^(ensemble_search_.+)_\d{4}-\d{2}-\d{2}$', base)
+    if _m_dt:
+        base = f"{_m_dt.group(1)}_{_today_str}"
+    else:
+        base = f"{base}_{_today_str}"
     if grid_number is None:
         output_file = os.path.join(base_dir, f"{base}__replay_best.xlsx")
     else:
