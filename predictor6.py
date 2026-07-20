@@ -19137,13 +19137,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _wtd_bt = bool(_nsd.get('weighted'))
                 _wcol_bt = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
                 _multi_bt = bool(globals().get('NET_MULTI_THRESHOLD_WEIGHT', False))
+                # ★★ 버그 수정: 실제 카운트 계산은 가중치 = success_rate ** weight_exp (거듭제곱)를 쓴다
+                #   (_net_signal_k_search 내부 _wt_of와 동일해야 함). weight_exp는 그리드 탐색으로
+                #   정해진 값이 _KNET_BEST_WEXP 에 저장되어 있음 — 이걸 빼먹으면(=1.0 가정) exp≠1일 때
+                #   표시된 기여도·합계가 실제 매수/매도카운트와 어긋난다.
+                _wexp_bt = float(globals().get('_KNET_BEST_WEXP', 1.0) or 1.0)
                 def _last_sig(row):
                     try: return float(np.nan_to_num(_to_signal_array(feat, row).astype(float))[-1])
                     except Exception: return 0.0
                 def _wt_of(row):
                     if not _wtd_bt: return 1.0
                     _w = row.get(_wcol_bt, None)
-                    return float(_w) if (_w is not None and not pd.isna(_w)) else 1.0
+                    if _w is None or pd.isna(_w): return 1.0
+                    _w = float(_w)
+                    return (_w ** _wexp_bt) if _wexp_bt != 1.0 else _w
                 def _fmt_ind(nm, sr, contrib, is_ic):
                     _nm = str(nm)[:32]
                     if sr is not None and not pd.isna(sr):
