@@ -16150,9 +16150,13 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
 
     # ★ 변경2: 가중 투표 가중치 (성공률 비례). 일반투표면 전부 1.0
     if globals().get('USE_WEIGHTED_VOTE', False):
-        buy_w  = compute_vote_weights(buy_used['score'].values,
+        # ★ 안전장치: 'score'(Wilson 조정 점수) 컬럼이 없는 풀(예: 구버전 재현풀,
+        #   IC기반 선정 등)이 들어와도 KeyError로 죽지 않도록 success_rate로 대체.
+        _buy_score  = buy_used['score']  if 'score' in buy_used.columns  else buy_used['success_rate']
+        _sell_score = sell_used['score'] if 'score' in sell_used.columns else sell_used['success_rate']
+        buy_w  = compute_vote_weights(_buy_score.values,
                                       globals().get('WEIGHT_MAX_RATIO', 1.6))
-        sell_w = compute_vote_weights(sell_used['score'].values,
+        sell_w = compute_vote_weights(_sell_score.values,
                                       globals().get('WEIGHT_MAX_RATIO', 1.6))
         weighted = True
     else:
@@ -20137,7 +20141,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             # 풀 테이블 (5행 헤더~)
             hr = 5
             for c, h in enumerate(['구분', '지표(indicator)', '방향(direction)', '임계치(threshold)', '성공률(success_rate)',
-                                   '지연(lead_shift)', '선출한도(sel_limit)', '최적선행(best_lead)'], 1):
+                                   '지연(lead_shift)', '선출한도(sel_limit)', '최적선행(best_lead)', '점수(score)'], 1):
                 cell = wsr.cell(hr, c); cell.value = h
                 cell.font = Font(bold=True, color='FFFFFF'); cell.fill = PatternFill('solid', fgColor='548235')
             _rr = hr + 1
@@ -20158,8 +20162,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     wsr.cell(_rr, 6).value = _pf(prow.get('lead_shift'), int) or 0    # ★ 신호 지연 재현
                     wsr.cell(_rr, 7).value = _pf(prow.get('sel_limit'))               # ★ 선출 한도 (검증용)
                     wsr.cell(_rr, 8).value = _pf(prow.get('best_lead'), int)          # ★ 최적 선행일 (참고)
+                    # ★ 가중투표(USE_WEIGHTED_VOTE)가 쓰는 'score' — 없으면 재현 시 KeyError 방지용 success_rate로 대체 저장.
+                    _sc = prow.get('score') if ('score' in _pool.columns) else None
+                    wsr.cell(_rr, 9).value = _pf(_sc) if _pf(_sc) is not None else \
+                        (float(prow.get('success_rate')) if pd.notna(prow.get('success_rate')) else None)
                     _rr += 1
-            for ci, w in enumerate([6, 30, 12, 12, 14, 12, 12, 12], 1):
+            for ci, w in enumerate([6, 30, 12, 12, 14, 12, 12, 12, 10], 1):
                 wsr.column_dimensions[get_column_letter(ci)].width = w
             # ★ (요청) 카운트0 별도풀 재현 데이터 — K/L·개수·선정지표를 함께 저장.
             _zp_r = globals().get('_KNET_ZERO_POOL')
@@ -24554,6 +24562,10 @@ def _load_pool_into_globals(pool_xlsx_path, *, feat=None):
             except Exception: rec['sel_limit'] = None
             try: rec['best_lead'] = int(_r[7]) if (len(_r) > 7 and _r[7] is not None) else None
             except Exception: rec['best_lead'] = None
+            # ★ 'score'(Wilson 조정 점수) — 신규 포맷 시트에는 9번째 열로 저장됨.
+            #   구버전 시트(9번째 열 없음)는 None → 아래에서 success_rate로 대체.
+            try: rec['score'] = float(_r[8]) if (len(_r) > 8 and _r[8] is not None) else None
+            except Exception: rec['score'] = None
             if '매수' in side: _bb.append(rec)
             elif '매도' in side: _ss.append(rec)
     _wbk.close()
@@ -24563,6 +24575,13 @@ def _load_pool_into_globals(pool_xlsx_path, *, feat=None):
     if _rows and _rows[0] and _rows[0][0]:
         _tkr = str(_rows[0][0]).split('—')[0].strip() or None
     _bdf = pd.DataFrame(_bb); _sdf = pd.DataFrame(_ss)
+    # ★ 'score' 컬럼 보정 — 구버전 재현풀 시트는 score를 저장하지 않아 KeyError('score') 발생.
+    #   score가 없거나 비어있으면 success_rate 값으로 대체(가중투표 폴백).
+    for _df in (_bdf, _sdf):
+        if 'score' not in _df.columns:
+            _df['score'] = _df['success_rate']
+        else:
+            _df['score'] = _df['score'].where(_df['score'].notna(), _df['success_rate'])
     if feat is not None:
         _cols = set(feat.columns)
         _bdf = _bdf[_bdf['indicator'].isin(_cols)].reset_index(drop=True)
