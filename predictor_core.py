@@ -24482,9 +24482,9 @@ def build_pool_excel_for_ticker(ticker, *, out_dir=None, end_date=None,
         if _prev and g.get('_KNET_MULTI_POOL') and g['_KNET_MULTI_POOL'][0] == ticker \
                 and g['_KNET_MULTI_POOL'][1] is not None:
             _inj = (g['_KNET_MULTI_POOL'][1], g['_KNET_MULTI_POOL'][2])
-            run_ensemble_search(ticker=ticker, inject_pools=_inj, **_kwargs)
+            run_ensemble_search(inject_pools=_inj, **_kwargs)
         else:
-            run_ensemble_search(ticker=ticker, **_kwargs)
+            run_ensemble_search(**_kwargs)
     except Exception as e:
         print(f"  ✗ {ticker} 풀 선출 실행 실패: {e}")
         import traceback; traceback.print_exc()
@@ -24621,7 +24621,7 @@ def build_result_excel_from_pool(ticker, *, pool_dir=None, out_dir=None, end_dat
     _mp = g.get('_KNET_MULTI_POOL')
     _inj = (_mp[1], _mp[2]) if (_mp and _mp[1] is not None) else None
     try:
-        run_ensemble_search(ticker=ticker, inject_pools=_inj,
+        run_ensemble_search(inject_pools=_inj,
                             write_output=True, output_file=_out, **search_kwargs)
     except Exception as e:
         print(f"  ✗ 결과 생성 실패: {e}")
