@@ -13051,6 +13051,15 @@ POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 (요청: 0.60)
 POOL_SUCCESS_MIN_SIG   = 10        # ★ 최소 신호수(요청: 신호 10개 '초과') — 소표본 가짜 100% 방지
 POOL_SUCCESS_WIDE_PCT  = (0, 100)  # ★ 풀 평가용 분위 (요청: 0,100 전체 탐색)
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
+# ★★ (요청) 종합등급 기반 지표 사전선별 (A 방식) — 탐색시간 단축.
+#   풀 탐색 시작 전에 각 지표를 1회 사전평가해 ▣고정/○탐색/✗제외로 분류.
+#   · ✗제외 지표는 후보(indicators)에서 빼서 탐색공간 축소(가장 큰 시간 절약)
+#   · ▣고정 지표는 항상 풀에 포함 보장 (탐색 대상에서 빼서 조합수 감소)
+#   · ○탐색 지표만 조합을 바꿔가며 최적화
+#   종합등급 판정은 검증_예측로직 시트의 _tier_of와 동일 기준(6요소 중 5↑=고정, 2↑=탐색, 그 미만 제외).
+USE_TIER_PRESCREEN     = True      # False면 기존 방식(전체 지표 탐색)
+TIER_PRESCREEN_MIN_POOL = 40       # 후보 지표가 이보다 적으면 사전선별 건너뜀(이미 충분히 빠름)
+TIER_PRESCREEN_PERM_N   = 0        # 사전선별 순열검정 횟수(0=생략, 속도 우선). 정밀도 원하면 100 등.
 # ★ ⓑ 순신호 점수가중 (요청) — net을 '단순 개수' 대신 '지표 점수(성공률) 가중합'으로.
 NET_SIGNAL_WEIGHTED    = True
 NET_SIGNAL_WEIGHT_COL  = 'success_rate'   # 가중치로 쓸 컬럼: 'success_rate'(성공률) 또는 'score'(Wilson점수)
@@ -14135,6 +14144,87 @@ def _fwd_hit_flags(close_arr, horizon, limit, is_buy, use_barrier):
 
 _HITF_CACHE = {}
 
+@njit(cache=True)
+def _fwd_return_mags(close_arr, horizon, limit, is_buy, use_barrier):
+    """각 날 i에 대해, 그날 신호가 켜졌다고 할 때의 '실현 크기'를 미리 계산.
+       반환: (succ_mag, fail_mag, ev)  (모두 길이 n 배열)
+       - 매수: 성공(유리방향 ≥ limit 도달)이면 그 도달 시점까지의 상승률을 succ_mag[i]에,
+               실패면 horizon 내 최저 하락률(음수의 절대값)을 fail_mag[i]에.
+       - 매도: 성공(하락 ≤ -limit 회피/포착)이면 '회피/포착한 하락폭'을 succ_mag[i]에,
+               실패면 오히려 상승해버린 손실(매도 관점 불리 = 가격 상승)폭을 fail_mag[i]에.
+       use_barrier=1이면 유리 배리어가 불리보다 먼저 닿아야 성공(삼중배리어).
+       ev[i]=1은 평가가능(뒤에 볼 날 존재)."""
+    n = close_arr.shape[0]
+    succ = np.zeros(n, dtype=np.float64)
+    fail = np.zeros(n, dtype=np.float64)
+    ev = np.zeros(n, dtype=np.uint8)
+    h = horizon if horizon >= 1 else 1
+    for i in range(n - 1):
+        base = close_arr[i]
+        if base <= 0.0:
+            continue
+        end = i + h
+        if end > n - 1: end = n - 1
+        if end <= i: continue
+        ev[i] = 1
+        hit = 0
+        fav_at_hit = 0.0     # 성공 시 유리방향 크기
+        worst_adv = 0.0      # horizon 내 최대 불리 크기(성공 못했을 때 손실)
+        best_fav = 0.0       # horizon 내 최대 유리 크기
+        if use_barrier == 1:
+            for j in range(i + 1, end + 1):
+                r = close_arr[j] / base - 1.0
+                fav = r if is_buy == 1 else -r      # 유리방향(매수=상승, 매도=하락)
+                adv = -fav                           # 불리방향
+                if adv > worst_adv: worst_adv = adv
+                if fav > best_fav: best_fav = fav
+                if adv >= limit:    # 불리 배리어 먼저 → 실패 확정
+                    break
+                if fav >= limit:
+                    hit = 1; fav_at_hit = fav; break
+        else:
+            for j in range(i + 1, end + 1):
+                r = close_arr[j] / base - 1.0
+                fav = r if is_buy == 1 else -r
+                adv = -fav
+                if adv > worst_adv: worst_adv = adv
+                if fav > best_fav: best_fav = fav
+            if best_fav >= limit:
+                hit = 1; fav_at_hit = best_fav
+        if hit == 1:
+            # 성공 크기: 매수=포착한 상승률, 매도=회피/포착한 하락률(둘 다 유리방향 크기)
+            succ[i] = fav_at_hit if fav_at_hit > 0.0 else best_fav
+        else:
+            # 실패 크기: horizon 내 불리방향으로 실제 움직인 최대폭(양수)
+            fail[i] = worst_adv if worst_adv > 0.0 else 0.0
+    return succ, fail, ev
+
+
+def _reliability_of(close_arr, sig, horizon, limit, is_buy, use_barrier):
+    """지표 신뢰도 계산 (요청):
+       신호가 켜진 날들에 대해 성공 크기 합 / 실패 크기 합 / 신호수를 모아
+       종합 신뢰도 점수를 낸다.
+       - profit_factor = 성공크기합 / 실패크기합 (>1이면 이득이 손실보다 큼)
+       - avg_edge = (성공크기합 − 실패크기합) / 신호수  (신호 1회당 기대 크기)
+       - reliability = avg_edge × log(1+신호수) 로 표본 크기까지 반영(소표본 과신 방지)."""
+    n = len(close_arr)
+    succ, fail, ev = _fwd_return_mags(np.asarray(close_arr, np.float64),
+                                      int(horizon), float(limit),
+                                      1 if is_buy else 0, 1 if use_barrier else 0)
+    m = (ev.astype(bool)) & (np.asarray(sig) == 1)
+    nn = int(m.sum())
+    if nn == 0:
+        return dict(n=0, succ_sum=0.0, fail_sum=0.0, profit_factor=float('nan'),
+                    avg_edge=float('nan'), reliability=float('nan'))
+    succ_sum = float(succ[m].sum())
+    fail_sum = float(fail[m].sum())
+    pf = (succ_sum / fail_sum) if fail_sum > 1e-12 else (float('inf') if succ_sum > 0 else float('nan'))
+    avg_edge = (succ_sum - fail_sum) / nn
+    reliability = avg_edge * float(np.log1p(nn))
+    return dict(n=nn, succ_sum=succ_sum, fail_sum=fail_sum,
+                profit_factor=pf, avg_edge=avg_edge, reliability=reliability)
+
+
 def _hit_flags_cached(close_arr, horizon, limit, is_buy, use_barrier):
     """(_fwd_hit_flags 결과 캐시) — 내용 기반 키. 같은 종가·조건이면 재사용."""
     n = len(close_arr)
@@ -14926,8 +15016,145 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
     return buy_c, sell_c
 
 
+def _prescreen_indicators_by_tier(feat, close, *, indicators, horizon, is_buy_side=None):
+    """★ (요청·A방식) 지표 사전선별 — 각 지표를 대표 임계값에서 1회 평가해 종합등급 산출.
+       반환: dict(fixed=set, search=set, excluded=set, detail={ind: (tier, score, metrics)})
+       종합등급은 _tier_of와 동일한 6요소(스킬·배율·홀드아웃·순열·이득배율·신뢰도) 기준.
+       속도를 위해 지표당 '중앙값 임계 1개'만 평가(전체 임계 스캔이 아님)."""
+    g = globals()
+    n = len(close)
+    close_arr = np.asarray(close.values if hasattr(close, 'values') else close, dtype=np.float64)
+    hz = int(horizon if horizon and horizon >= 1 else int(g.get('HORIZON_DAYS', 1)))
+    use_bar = 1 if bool(g.get('USE_TRIPLE_BARRIER', False)) else 0
+    min_sig = int(g.get('POOL_SUCCESS_MIN_SIG', 10))
+    limit_buy = float(g.get('DRAWDOWN_LIMIT_BUY', 0.01))
+    limit_sell = float(g.get('RUNUP_LIMIT_SELL', 0.01))
+    split = int(n * 0.7)   # 훈련/홀드아웃 분할
+    perm_n = int(g.get('TIER_PRESCREEN_PERM_N', 0))
+    rng = np.random.default_rng(20260721)
+
+    def _tier_of_metrics(m):
+        # _write_logic_verification_sheet 내부 _tier_of와 동일 기준
+        sk = m['skill']; lf = m['lift']; skho = m['skill_ho']; pm = m['perm']
+        rel = m['reliability']; pf = m['rel_pf']; nn = m['n']; causal = m['causal_ok']
+        if (not causal) or (np.isfinite(sk) and sk <= 0) or nn < min_sig:
+            return '✗제외', 0
+        score = 0
+        if np.isfinite(sk) and sk >= 0.05: score += 1
+        if np.isfinite(lf) and lf >= 1.15: score += 1
+        if np.isfinite(skho) and skho > 0: score += 1
+        if np.isfinite(pm) and pm >= 0.90: score += 1
+        if np.isfinite(pf) and pf >= 1.5: score += 1
+        if np.isfinite(rel) and rel > 0: score += 1
+        if score >= 5: return '▣고정', score
+        if score >= 2: return '○탐색', score
+        return '✗제외', score
+
+    def _eval_one(ind, is_buy):
+        """지표 ind를 중앙값 임계·양방향 중 유리한 쪽으로 1회 평가."""
+        if ind not in feat.columns:
+            return None
+        col = feat[ind].values.astype(float)
+        finite = col[np.isfinite(col)]
+        if len(finite) < min_sig * 2:
+            return None
+        thr = float(np.nanmedian(finite))
+        limit = limit_buy if is_buy else limit_sell
+        best = None
+        for direction in ('>=', '<='):
+            row = {'indicator': ind, 'direction': direction, 'threshold': thr, 'lead_shift': 0}
+            try:
+                sig = _to_signal_array(feat, row)
+            except Exception:
+                continue
+            hit0, ev0 = _hit_flags_cached(close_arr, hz, limit, 1 if is_buy else 0, use_bar)
+            nn, ok, sr = _success_on(hit0, ev0, sig)
+            if nn < min_sig:
+                continue
+            _, _, base = _success_on(hit0, ev0, None)
+            skill = (sr - base) if (np.isfinite(sr) and np.isfinite(base)) else np.nan
+            lift = (sr / base) if (np.isfinite(sr) and base and base > 0) else np.nan
+            n_ho, _, sr_ho = _success_on(hit0, ev0, sig, split, n)
+            _, _, b_ho = _success_on(hit0, ev0, None, split, n)
+            sk_ho = (sr_ho - b_ho) if (n_ho >= 3 and np.isfinite(sr_ho) and np.isfinite(b_ho)) else np.nan
+            perm_pct = np.nan
+            if perm_n > 0 and np.isfinite(skill) and nn >= 5 and n > 40:
+                offs = rng.integers(15, n - 15, size=perm_n); worse = 0; cnt = 0
+                for off in offs:
+                    sp = np.roll(sig, int(off)); pn, _, psr = _success_on(hit0, ev0, sp)
+                    if pn >= 3 and np.isfinite(psr):
+                        cnt += 1
+                        if skill > (psr - base) + 1e-12: worse += 1
+                perm_pct = (worse / cnt) if cnt else np.nan
+            try:
+                _rel = _reliability_of(close_arr, sig, hz, limit, is_buy, use_bar)
+            except Exception:
+                _rel = dict(reliability=np.nan, rel_pf=np.nan)
+            m = dict(n=nn, skill=skill, lift=lift, skill_ho=sk_ho, perm=perm_pct,
+                     causal_ok=True, reliability=_rel.get('reliability', np.nan),
+                     rel_pf=_rel.get('profit_factor', _rel.get('rel_pf', np.nan)))
+            # 유리한 방향(스킬 큰 쪽) 선택
+            if best is None or (np.isfinite(m['skill']) and (not np.isfinite(best['skill']) or m['skill'] > best['skill'])):
+                best = m
+        return best
+
+    fixed, search, excluded = set(), set(), set()
+    detail = {}
+    sides = [True, False] if is_buy_side is None else [is_buy_side]
+    for ind in indicators:
+        best_tier = None; best_score = -1; best_m = None
+        for is_buy in sides:
+            m = _eval_one(ind, is_buy)
+            if m is None:
+                continue
+            tier, score = _tier_of_metrics(m)
+            _rank = {'▣고정': 2, '○탐색': 1, '✗제외': 0}[tier]
+            _cur_rank = {'▣고정': 2, '○탐색': 1, '✗제외': 0}.get(best_tier, -1)
+            if _rank > _cur_rank or (_rank == _cur_rank and score > best_score):
+                best_tier = tier; best_score = score; best_m = m
+        if best_tier is None:
+            excluded.add(ind); detail[ind] = ('✗제외', 0, None); continue
+        detail[ind] = (best_tier, best_score, best_m)
+        if best_tier == '▣고정': fixed.add(ind)
+        elif best_tier == '○탐색': search.add(ind)
+        else: excluded.add(ind)
+    return dict(fixed=fixed, search=search, excluded=excluded, detail=detail)
+
+
 def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ticker):
     """기존 방식: 1~5% 통합 다중임계 풀 + (wilson×corr) 순차 탐색으로 k순신호 전체수익 최고 조합 선택."""
+    _g = globals()
+    # ★★ (요청·A방식) 종합등급 사전선별 — 탐색 전에 지표를 ▣고정/○탐색/✗제외로 분류.
+    #   ✗제외는 후보에서 제거해 탐색공간을 줄이고, ▣고정은 항상 풀에 포함되도록 전역 저장.
+    _fixed_inds = set()
+    if bool(_g.get('USE_TIER_PRESCREEN', False)) and len(indicators) >= int(_g.get('TIER_PRESCREEN_MIN_POOL', 40)):
+        try:
+            _pre = _prescreen_indicators_by_tier(feat, close, indicators=list(indicators), horizon=horizon)
+            _fixed_inds = set(_pre['fixed'])
+            _search_inds = set(_pre['search'])
+            _excluded = set(_pre['excluded'])
+            # 탐색 후보 = 고정 + 탐색 (제외는 뺌). 단 과소 제거 방지: 후보가 너무 적으면 제외분 일부 복원.
+            _kept = _fixed_inds | _search_inds
+            _min_keep = max(int(_g.get('POOL_SUCCESS_MIN_SIG', 10)), 15)
+            if len(_kept) < _min_keep:
+                # 제외 중 그나마 스코어 높은 것부터 복원
+                _restorable = sorted(
+                    [(ind, _pre['detail'][ind][1]) for ind in _excluded if _pre['detail'].get(ind)],
+                    key=lambda x: -x[1])
+                for ind, _ in _restorable:
+                    _kept.add(ind); _search_inds.add(ind)
+                    if len(_kept) >= _min_keep: break
+            if _kept:
+                indicators = [i for i in indicators if i in _kept]
+            _g['_KNET_FIXED_INDS'] = _fixed_inds
+            print(f"  🎯 사전선별(종합등급): ▣고정 {len(_fixed_inds)} / ○탐색 {len(_search_inds)} / "
+                  f"✗제외 {len(_excluded)} → 탐색 후보 {len(indicators)}개"
+                  f"{' (일부 복원됨)' if len(_kept) < _min_keep else ''}")
+        except Exception as _pe:
+            print(f"  ⚠ 사전선별 실패(전체 지표로 진행): {_pe}")
+            _g['_KNET_FIXED_INDS'] = set()
+    else:
+        _g['_KNET_FIXED_INDS'] = set()
     _limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
     _wzs = list(globals().get('STAGE_WILSON_Z') or [1.95])
     _cls = list(globals().get('STAGE_CORR_LIMIT') or [0.2])
@@ -17543,12 +17770,22 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
         causal_ok = True
         if d > 0:
             causal_ok = bool(np.all(sig[:d] == 0) and np.all(sig[d:] == sig_raw[:len(sig_raw) - d]))
+        # ★ (요청) 지표 신뢰도 — 성공 시 크기합 / 실패 시 크기합 / 신호수 기반 종합 점수.
+        #   매수: 성공=상승 포착폭, 실패=하락 손실폭.  매도: 성공=하락 회피/포착폭, 실패=(상승)손실폭.
+        try:
+            _rel = _reliability_of(close_arr, sig, hz, limit, is_buy, use_bar)
+        except Exception:
+            _rel = dict(n=nn, succ_sum=np.nan, fail_sum=np.nan,
+                        profit_factor=np.nan, avg_edge=np.nan, reliability=np.nan)
         return dict(ind=str(rd.get('indicator', '')), direction=str(rd.get('direction', '')),
                     threshold=rd.get('threshold'), limit=limit, d=d,
                     n=nn, sr=sr, base=base, skill=skill, lift=lift,
                     best_lead=best_h, prof=prof_txt,
                     n_tr=n_tr, sr_tr=sr_tr, n_ho=n_ho, sr_ho=sr_ho, skill_ho=sk_ho,
                     perm=perm_pct, causal_ok=causal_ok,
+                    rel_succ=_rel['succ_sum'], rel_fail=_rel['fail_sum'],
+                    rel_pf=_rel['profit_factor'], rel_edge=_rel['avg_edge'],
+                    reliability=_rel['reliability'],
                     sr_stored=rd.get('success_rate'))
 
     buy_m = []; sell_m = []
@@ -17688,13 +17925,37 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
     r += 2
 
     # ════ ③④ 풀 지표별 예측력 ════
+    # ★ (요청) 종합 등급 판정: 여러 검증요소(스킬·배율·홀드아웃·순열·인과성·신뢰도)를 모두 반영해
+    #   ▣고정(예측력 확실) / ○탐색(애매 → 돌려가며 탐색) / ✗제외(예측력 없음)로 분류.
+    #   고정 지표는 매번 쓰고, 탐색 지표만 조합을 바꿔가며 최적화하면 탐색시간이 크게 준다.
+    def _tier_of(m):
+        sk = m.get('skill'); lf = m.get('lift'); skho = m.get('skill_ho')
+        pm = m.get('perm'); rel = m.get('reliability'); pf = m.get('rel_pf')
+        nn = m.get('n', 0) or 0
+        causal = m.get('causal_ok', True)
+        # 하드 배제: 인과성 위반, 스킬 음수, 신호 과소
+        if (not causal) or (np.isfinite(sk) and sk <= 0) or nn < int(g.get('POOL_SUCCESS_MIN_SIG', 10)):
+            return '✗제외', 0
+        # 강한 확증 신호들(각 조건 충족 시 가점)
+        score = 0
+        if np.isfinite(sk) and sk >= 0.05: score += 1              # 스킬 +5%p↑
+        if np.isfinite(lf) and lf >= 1.15: score += 1              # 배율 1.15배↑
+        if np.isfinite(skho) and skho > 0: score += 1             # 홀드아웃도 양(+)
+        if np.isfinite(pm) and pm >= 0.90: score += 1             # 순열 상위10%(우연 아님)
+        if np.isfinite(pf) and pf >= 1.5: score += 1              # 이득크기/손실크기 1.5배↑
+        if np.isfinite(rel) and rel > 0: score += 1               # 신뢰도(크기가중 엣지) 양(+)
+        if score >= 5:  return '▣고정', score      # 6개 중 5개 이상 충족 → 확실
+        if score >= 2:  return '○탐색', score      # 애매 → 탐색 대상
+        return '✗제외', score
+
     def _write_pool_table(title, metrics):
         nonlocal r
         ws.cell(r, 1).value = title
         ws.cell(r, 1).font = Font(bold=True, size=12, color='1F3864'); r += 1
         _hdr(ws, r, ['#', '지표', '방향', '임계치', '한도', '지연d', '신호수', '성공률', '기저확률',
                      '스킬(성공-기저)', '배율(성공/기저)', '최적선행일', '리드 프로파일 (h일: 성공률(스킬p))',
-                     '훈련 성공률', '홀드아웃 성공률', '홀드아웃 스킬', '순열백분위', '판정'])
+                     '훈련 성공률', '홀드아웃 성공률', '홀드아웃 스킬', '순열백분위',
+                     '성공크기합', '실패크기합', '이득배율PF', '신뢰도', '종합등급', '판정'])
         r += 1
         _cap = 80
         for i, m in enumerate(metrics[:_cap], 1):
@@ -17708,6 +17969,7 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
                     verdict = '△ 스킬 있으나 확증 약함'; fill = _MID
                 else:
                     verdict = '⚠ 기저확률 이하'; fill = _WRN
+            _tier, _tscore = _tier_of(m)
             vals = [i, m['ind'], m['direction'],
                     (round(float(m['threshold']), 6) if m['threshold'] is not None and pd.notna(m['threshold']) else '—'),
                     f"±{m['limit']*100:.0f}%", m['d'], m['n'],
@@ -17721,11 +17983,24 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
                     (f"{m['sr_ho']*100:.1f}% ({m['n_ho']})" if np.isfinite(m['sr_ho']) else f"— ({m['n_ho']})"),
                     (f"{m['skill_ho']*100:+.1f}%p" if np.isfinite(m['skill_ho']) else '— (표본<3)'),
                     (f"{m['perm']*100:.0f}%" if np.isfinite(m['perm']) else '—'),
+                    (f"{m['rel_succ']*100:+.1f}%" if np.isfinite(m.get('rel_succ', np.nan)) else '—'),
+                    (f"{m['rel_fail']*100:.1f}%" if np.isfinite(m.get('rel_fail', np.nan)) else '—'),
+                    (f"{m['rel_pf']:.2f}" if np.isfinite(m.get('rel_pf', np.nan)) else '—'),
+                    (f"{m['reliability']*100:+.2f}" if np.isfinite(m.get('reliability', np.nan)) else '—'),
+                    _tier,
                     verdict]
             for ci, v in enumerate(vals, 1):
                 c = ws.cell(r, ci); c.value = v; c.font = Font(size=9)
             if fill is not None:
-                ws.cell(r, 18).fill = fill
+                ws.cell(r, 23).fill = fill
+            # 종합등급 색: 고정=녹색 / 탐색=노랑 / 제외=빨강
+            _tcell = ws.cell(r, 22)
+            if _tier == '▣고정':
+                _tcell.fill = _OK; _tcell.font = Font(size=9, bold=True, color='006100')
+            elif _tier == '○탐색':
+                _tcell.fill = _MID; _tcell.font = Font(size=9, bold=True, color='7F6000')
+            else:
+                _tcell.fill = _WRN; _tcell.font = Font(size=9, bold=True, color='9C0006')
             if np.isfinite(m['skill']):
                 ws.cell(r, 10).font = Font(size=9, bold=True,
                                            color=('006100' if m['skill'] > 0 else '9C0006'))
@@ -18833,7 +19108,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                   anchor_prio=anchor_prio, profit_floor=_pf)
     except Exception as _de:
         diag_df = None
-    if diag_df is not None and len(diag_df) > 0:
+    if False and diag_df is not None and len(diag_df) > 0:   # ★ (요청) '🔧 거래 진단' 시트 생성 안 함
         ws = wb.create_sheet('🔧 거래 진단'); ws.sheet_view.showGridLines = False
         n_wrong = int(diag_df['보정대상'].sum())
         ws.cell(1, 1).value = (f'거래 진단 — 총 {len(diag_df)}건 중 보정 대상(손실 또는 +{_pf*100:.0f}% 이하 수익) {n_wrong}건  '
@@ -19383,18 +19658,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     + _oind_hdr)
         _write_daily_rows(ws, oos_daily, oc, mdd_limit_pct)
 
-    # ─── ★ feature2 (요청) — 매수/매도 지표 신호 매트릭스 (각각 별도 시트) ───
-    try:
-        _abset = _norm_date_set(anchor_buy_dates)
-        _asset = _norm_date_set(anchor_sell_dates)
-        ws = wb.create_sheet('매수 지표 신호'); ws.sheet_view.showGridLines = False
-        _write_indicator_matrix_sheet(ws, buy_pool, feat, close_full,
-                                      _abset, _asset, ticker, '매수')
-        ws = wb.create_sheet('매도 지표 신호'); ws.sheet_view.showGridLines = False
-        _write_indicator_matrix_sheet(ws, sell_pool, feat, close_full,
-                                      _abset, _asset, ticker, '매도')
-    except Exception as _eim:
-        print(f"  ⚠ 지표 신호 매트릭스 시트 작성 실패(무시): {_eim}")
+    # ─── ★ (요청) 매수/매도 지표 신호 매트릭스 시트 — 생성 안 함 ───
+    if False:
+        try:
+            _abset = _norm_date_set(anchor_buy_dates)
+            _asset = _norm_date_set(anchor_sell_dates)
+            ws = wb.create_sheet('매수 지표 신호'); ws.sheet_view.showGridLines = False
+            _write_indicator_matrix_sheet(ws, buy_pool, feat, close_full,
+                                          _abset, _asset, ticker, '매수')
+            ws = wb.create_sheet('매도 지표 신호'); ws.sheet_view.showGridLines = False
+            _write_indicator_matrix_sheet(ws, sell_pool, feat, close_full,
+                                          _abset, _asset, ticker, '매도')
+        except Exception as _eim:
+            print(f"  ⚠ 지표 신호 매트릭스 시트 작성 실패(무시): {_eim}")
 
     # ─── 7b. 성공률 우선 선출 시트 (요청) — 성공률로 먼저 뽑은 지표 정리 ───
     try:
