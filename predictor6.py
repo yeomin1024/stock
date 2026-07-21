@@ -17606,7 +17606,12 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
             _rr = np.zeros(len(_price)); _rr[1:] = _price[1:] / _price[:-1] - 1.0
             _rr[~np.isfinite(_rr)] = 0.0
             _pos = np.asarray(_kl['best_ret'][5], float)
-            _re = float(np.sum(_pos * _rr)); _st = float(_kl['best_ret'][2])
+            # ★★ 버그 수정: 실제 KL 수익 계산은 '전일 포지션 × 당일수익'(1일 시차, 미래참조 방지)이다
+            #   (_net_kl_search 내부 _run()의 hr[1:] = pos[:-1]*r[1:] 와 동일해야 함).
+            #   시차 없이 pos*rr로 재계산하면 신호 당일 수익까지 포함돼(=사실상 미래참조) 실제
+            #   시트 값과 어긋난다 — 이는 검증 로직 자체의 계산 오류였지, 시트 값이 틀린 게 아니다.
+            _hr_check = np.zeros(len(_pos)); _hr_check[1:] = _pos[:-1] * _rr[1:]
+            _re = float(np.sum(_hr_check)); _st = float(_kl['best_ret'][2])
             _put_check('KL 순신호 대표조합 수익 재계산 일치',
                        f'시트 {_st*100:+.4f}% vs 재계산 {_re*100:+.4f}%', abs(_re - _st) < 1e-8)
         except Exception as _e:
@@ -19109,14 +19114,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         except Exception as _ee:
             print(f"  ⚠ 어닝 조회 실패(무시): {_ee}")
 
-        # ── ★ (요청) 가장 최근 매수/매도 카운트에 '기여한 모든 지표' 표시 ──
-        #   카운트 계산과 동일한 방식으로 상위 n개 지표의 최근일 기여도를 구해,
-        #   발화한(기여>0) 지표를 모두 나열. 표시값들의 합 = 실제 카운트와 일치.
-        # ★★ 버그 수정: 실제 net 카운트 계산(위 _use_multi 분기)은 _KNET_MULTI_POOL을
-        #    '있으면 무조건 우선' 사용한다. 여기서도 반드시 같은 우선순위를 써야
-        #    다른 풀(메타-앙상블 buy_pool 파라미터 — 별개의 구버전 투표 시스템, 임계값·
-        #    성공률이 다름)의 성공률을 잘못 표시하지 않는다. (예: THC def_trend_strength_20이
-        #    K/L풀에선 66.7%인데 메타풀의 다른 임계에서는 45.5%로 나와 혼동을 유발한 사례)
+        # ── ★ (요청) 일별 매수/매도 카운트 공식을 '맨 오른쪽 컬럼'에 날짜별로 기록 ──
+        #   기존엔 제목 아래(3행)에 '마지막 날' 공식만 표기했으나, 이제 제거하고 각 행마다
+        #   그날의 발화 지표 기여를 넣는다. 실제 카운트(buy_cum[n-1])와 '완전히 동일한 방식'으로
+        #   계산해야 표시 합계 = 카운트가 보장된다:
+        #     · 전체 풀로 지표별 (가중)신호 배열을 만들고 (중복지표는 그날 켜진 것 중 최고 가중=maximum)
+        #     · 성공률 우선 순서로 상위 n_opt개까지 누적하면서, 그 안에서 그날 기여>0인 지표만 나열.
+        #   → _build_sigs와 동일 로직을 지표명까지 추적하도록 재구현.
         _mp_bt = globals().get('_KNET_MULTI_POOL')
         _use_multi_disp = (_mp_bt and isinstance(_mp_bt, tuple) and len(_mp_bt) >= 3
                            and _mp_bt[0] == ticker
@@ -19127,77 +19131,88 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         else:
             _bp_src = buy_pool if (buy_pool is not None and len(buy_pool) > 0) else None
             _sp_src = sell_pool if (sell_pool is not None and len(sell_pool) > 0) else None
-        _top_buy_txt = _top_sell_txt = ''
-        try:
-            if (_bp_src is not None and _sp_src is not None
-                    and feat is not None and len(feat) > 0):
-                _bp = _bp_src.reset_index(drop=True)
-                _sp = _sp_src.reset_index(drop=True)
-                _nbo = int(_nsd['n_buy_opt']); _nso = int(_nsd['n_sell_opt'])
-                _wtd_bt = bool(_nsd.get('weighted'))
-                _wcol_bt = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
-                _multi_bt = bool(globals().get('NET_MULTI_THRESHOLD_WEIGHT', False))
-                # ★★ 버그 수정: 실제 카운트 계산은 가중치 = success_rate ** weight_exp (거듭제곱)를 쓴다
-                #   (_net_signal_k_search 내부 _wt_of와 동일해야 함). weight_exp는 그리드 탐색으로
-                #   정해진 값이 _KNET_BEST_WEXP 에 저장되어 있음 — 이걸 빼먹으면(=1.0 가정) exp≠1일 때
-                #   표시된 기여도·합계가 실제 매수/매도카운트와 어긋난다.
-                _wexp_bt = float(globals().get('_KNET_BEST_WEXP', 1.0) or 1.0)
-                def _last_sig(row):
-                    try: return float(np.nan_to_num(_to_signal_array(feat, row).astype(float))[-1])
-                    except Exception: return 0.0
-                def _wt_of(row):
-                    if not _wtd_bt: return 1.0
-                    _w = row.get(_wcol_bt, None)
-                    if _w is None or pd.isna(_w): return 1.0
-                    _w = float(_w)
-                    return (_w ** _wexp_bt) if _wexp_bt != 1.0 else _w
-                def _fmt_ind(nm, sr, contrib, is_ic):
-                    _nm = str(nm)[:32]
-                    if sr is not None and not pd.isna(sr):
-                        if is_ic:
-                            # IC 선정 풀: success_rate 칸이 |OOS IC| 값이라 '성공률'로 표기하면 오해.
-                            _srtxt = f"|OOS IC| {float(sr):.3f}"
-                        else:
-                            _srtxt = f"성공률 {float(sr)*100:.1f}%"
-                    else:
-                        _srtxt = '-'
-                    return f"{contrib:.2f}({_nm}, {_srtxt})"
-                # 이 풀이 IC 기반인지(‘ic’·‘oos_ic’ 컬럼 존재) 판별 — success_rate 칸의 의미가 다름
-                _bp_is_ic = ('oos_ic' in _bp.columns) or ('ic' in _bp.columns)
-                _sp_is_ic = ('oos_ic' in _sp.columns) or ('ic' in _sp.columns)
-                # ★ 카운트 계산과 동일: 상위 n개 지표만, 중복 지표는 최고 가중(maximum) 처리.
-                def _contrib_all(pool, n_used, is_ic):
-                    _use = pool.head(max(1, int(n_used))) if n_used > 0 else pool
-                    _items = {}   # indicator → (기여도, 성공률)
-                    if _multi_bt and ('indicator' in _use.columns) and _use['indicator'].duplicated().any():
-                        for _ind, grp in _use.groupby('indicator', sort=False):
-                            _best = 0.0; _sr = None
-                            for _, row in grp.iterrows():
-                                _cv = _last_sig(row) * _wt_of(row)
-                                if _cv > _best:
-                                    _best = _cv; _sr = row.get('success_rate', None)
-                            if _sr is None:
-                                _sr = grp.iloc[0].get('success_rate', None)
-                            _items[str(_ind)] = (_best, _sr)
-                    else:
-                        for _, row in _use.iterrows():
-                            _ind = str(row.get('indicator', ''))
-                            _cv = _last_sig(row) * _wt_of(row)
-                            _items[_ind] = (_cv, row.get('success_rate', None))
-                    # 발화한(기여>0) 지표만, 기여도 내림차순 — 모두 표시
-                    _fired = [(nm, c, sr) for nm, (c, sr) in _items.items() if c > 1e-9]
-                    _fired.sort(key=lambda x: -x[1])
-                    _total = sum(c for _, c, _ in _fired)
-                    if not _fired:
-                        return '없음 (발화 지표 0개)', 0.0
-                    return ' + '.join(_fmt_ind(nm, sr, c, is_ic) for nm, c, sr in _fired), _total
-                _top_buy_txt, _buy_sum = _contrib_all(_bp, _nbo, _bp_is_ic)
-                _top_sell_txt, _sell_sum = _contrib_all(_sp, _nso, _sp_is_ic)
-                # 합계도 함께 표기 (카운트와 일치 확인용)
-                _top_buy_txt = f"[합 {_buy_sum:.2f}] " + _top_buy_txt
-                _top_sell_txt = f"[합 {_sell_sum:.2f}] " + _top_sell_txt
-        except Exception as _eind:
-            print(f"  ⚠ 상위 지표 조회 실패(무시): {_eind}")
+
+        # 별도풀(카운트0인 날) 공식용 풀도 준비 — 그 날들은 별도풀 지표로 계산해야 일치.
+        _zp_bt = globals().get('_KNET_ZERO_POOL')
+        _use_zero_disp = (_zp_bt and isinstance(_zp_bt, dict)
+                          and _zp_bt.get('rem_buy') is not None and _zp_bt.get('rem_sell') is not None
+                          and len(_zero_days_set) > 0)
+        _zbp_src = _zp_bt.get('rem_buy') if _use_zero_disp else None
+        _zsp_src = _zp_bt.get('rem_sell') if _use_zero_disp else None
+
+        # 공식 계산에 쓸 파라미터 (실제 카운트 계산과 동일해야 함)
+        _wtd_bt = bool(_nsd.get('weighted'))
+        _wcol_bt = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
+        _multi_bt = bool(globals().get('NET_MULTI_THRESHOLD_WEIGHT', False))
+        _wexp_bt = float(globals().get('_KNET_BEST_WEXP', 1.0) or 1.0)
+
+        def _wt_of_bt(row):
+            if not _wtd_bt: return 1.0
+            _w = row.get(_wcol_bt, None)
+            if _w is None or pd.isna(_w): return 1.0
+            _w = float(_w)
+            return (_w ** _wexp_bt) if _wexp_bt != 1.0 else _w
+
+        def _sig_arr(row):
+            try: return np.nan_to_num(_to_signal_array(feat, row).astype(float))
+            except Exception: return np.zeros(len(feat))
+
+        def _is_ic_pool(pool):
+            return bool(pool is not None and (('oos_ic' in pool.columns) or ('ic' in pool.columns)))
+
+        def _build_named_sigs(pool):
+            """_build_sigs와 동일하되 (지표명, 성공률, 가중신호배열) 리스트로 반환 —
+               상위 n개 절단·중복 maximum 처리 방식을 카운트 계산과 정확히 일치시킴."""
+            out = []  # [(indicator, success_rate, weighted_sig_array)]
+            if pool is None or len(pool) == 0:
+                return out
+            if _multi_bt and ('indicator' in pool.columns) and pool['indicator'].duplicated().any():
+                for _ind, grp in pool.groupby('indicator', sort=False):
+                    arr = np.zeros(len(feat)); _sr = grp.iloc[0].get('success_rate', None)
+                    _best_sr_at = -1.0
+                    for _, row in grp.iterrows():
+                        s = _sig_arr(row); w = _wt_of_bt(row)
+                        arr = np.maximum(arr, w * s)
+                        # 대표 성공률: 가중치 가장 큰(=성공률 가장 큰) 임계 것
+                        _sv = row.get('success_rate', None)
+                        if _sv is not None and not pd.isna(_sv) and float(_sv) > _best_sr_at:
+                            _best_sr_at = float(_sv); _sr = _sv
+                    out.append((str(_ind), _sr, arr))
+            else:
+                for _, row in pool.iterrows():
+                    out.append((str(row.get('indicator', '')), row.get('success_rate', None),
+                                _wt_of_bt(row) * _sig_arr(row)))
+            return out
+
+        # 각 풀의 명명된 신호 배열을 미리 계산 (성능: 지표당 1회)
+        _buy_named  = _build_named_sigs(_bp_src)[: (int(_nsd['n_buy_opt']) if _nsd.get('n_buy_opt') else None)]
+        _sell_named = _build_named_sigs(_sp_src)[: (int(_nsd['n_sell_opt']) if _nsd.get('n_sell_opt') else None)]
+        _zbuy_named  = _build_named_sigs(_zbp_src)[: (int(_zp_bt['n_buy']) if (_use_zero_disp and _zp_bt.get('n_buy')) else None)] if _use_zero_disp else []
+        _zsell_named = _build_named_sigs(_zsp_src)[: (int(_zp_bt['n_sell']) if (_use_zero_disp and _zp_bt.get('n_sell')) else None)] if _use_zero_disp else []
+        _buy_is_ic = _is_ic_pool(_bp_src); _sell_is_ic = _is_ic_pool(_sp_src)
+
+        def _formula_at(named_list, day_idx, is_ic):
+            """day_idx일에 기여>0인 지표를 기여도 내림차순으로 'v(지표, 성공률) + ...' 문자열로.
+               합계도 함께 반환 → 실제 카운트와 대조 가능."""
+            fired = []
+            for nm, sr, arr in named_list:
+                if day_idx < len(arr):
+                    c = float(arr[day_idx])
+                    if c > 1e-9:
+                        fired.append((nm, sr, c))
+            fired.sort(key=lambda x: -x[2])
+            total = sum(c for _, _, c in fired)
+            if not fired:
+                return total, '카운트0 (발화 지표 없음)'
+            parts = []
+            for nm, sr, c in fired:
+                if sr is not None and not pd.isna(sr):
+                    _srtxt = (f"|OOS IC| {float(sr):.3f}" if is_ic else f"성공률 {float(sr)*100:.0f}%")
+                else:
+                    _srtxt = '-'
+                parts.append(f"{c:.2f}({str(nm)[:28]}, {_srtxt})")
+            return total, ' + '.join(parts)
+
 
         _ltxt = (f'/L({_L_bt:.3f})' if _L_bt is not None else '')
         _hyb_txt = (f' 카운트0인 날({len(_zero_days_set)}일)은 별도풀로 대체(노란색).'
@@ -19209,7 +19224,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ws.cell(1, 1).value = (f'{_shname} — net≥K({_K_bt if _L_bt is None else f"{_K_bt:.3f}"}){_ltxt} 히스테리시스 '
                                f'(net≥K 매수·보유 / net≤L 매도·현금 / 사이 유지). '
                                f'메인풀은 KL 순신호 ★최대수익과 동일.{_hyb_txt} 수익=상승·하락률 합산.')
-        ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:Q1')
+        ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:S1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
         _mn_txt = (f" | 카운트0풀 m={_zero_m:.3f}/n={_zero_n:.3f}({len(_zero_days_set)}일)"
                    if _zero_m is not None else '')
@@ -19217,13 +19232,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                f"전체 {_p2(_full_cum)} (B&H {_p2(_bh_full)}) | "
                                f"거래 {_n_trades_bt}회 | 보유중하락 {_p2(_held_max_dd)} | "
                                f"MDD {_p2(_mdd_bt)}{_mn_txt}")
-        ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:Q2')
-        # ★ (요청) 최근 매수/매도 카운트 아래 상위 지표 표시: '값(지표명, 성공률) + 값(지표명, 성공률)'
+        ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:S2')
+        # ★ 3행: 카운트 공식은 이제 각 행 맨 오른쪽 두 컬럼(매수/매도카운트 공식)에 일별로 기록.
         _last_dt_txt = pd.Timestamp(dts[-1]).strftime('%Y-%m-%d') if len(dts) else '-'
-        ws.cell(3, 1).value = (f"[최근 {_last_dt_txt}] 매수카운트 기여: {_top_buy_txt or '-'} "
-                               f"｜ 매도카운트 기여: {_top_sell_txt or '-'}")
+        ws.cell(3, 1).value = ("매수/매도카운트 공식은 오른쪽 끝 두 컬럼에 날짜별로 기록됨 "
+                               "(발화 지표의 기여도 합 = 그날 카운트). 카운트0인 날은 별도풀 지표 기준.")
         ws.cell(3, 1).font = Font(bold=True, color='1F6F1F', size=10)
-        ws.merge_cells('A3:Q3')
+        ws.merge_cells('A3:S3')
         # ★ (요청) 향후 어닝 예정일 — 위 카운트 기여 줄 바로 밑(4행)에 표시.
         #   어닝 없으면 skip하고 '없음'으로 명시.
         if _next_earn is not None:
@@ -19246,10 +19261,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(4, 1).value = "[향후 어닝] 조회 실패 (네트워크 오류 등)"
         ws.cell(4, 1).font = Font(bold=True, color='7F6000', size=10)
         ws.cell(4, 1).fill = PatternFill('solid', fgColor='FFF2CC')
-        ws.merge_cells('A4:Q4')
+        ws.merge_cells('A4:S4')
         _hdr(ws, 5, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
-                     '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간', '향후어닝'])
+                     '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간', '향후어닝',
+                     '매수카운트 공식', '매도카운트 공식'])
         pos = _pos_bt
         rets = _daily_ret
         _YEL = PatternFill('solid', fgColor='FFF2CC')
@@ -19299,9 +19315,25 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             # ★ (요청) 향후 어닝 표시
             _is_earn = _dt_i in _earnings_dates
             ws.cell(r, 17).value = ('★어닝' if _is_earn else '')
+            # ★ (요청) 매수/매도카운트 공식 — 그날 발화 지표의 기여를 오른쪽 두 컬럼에 기록.
+            #   카운트0인 날은 별도풀 지표, 그 외는 메인풀 지표로 계산 (표시 카운트와 동일 기준).
+            if _is_zero_day and _use_zero_disp:
+                _fb_sum, _fb_txt = _formula_at(_zbuy_named, i, False)
+                _fs_sum, _fs_txt = _formula_at(_zsell_named, i, False)
+            else:
+                _fb_sum, _fb_txt = _formula_at(_buy_named, i, _buy_is_ic)
+                _fs_sum, _fs_txt = _formula_at(_sell_named, i, _sell_is_ic)
+            # 표시 카운트와 공식 합계가 어긋나면(부동소수 오차 넘어) 뒤에 실제카운트 병기 → 추적 용이
+            _bc_show = round(_bc_disp, 2); _sc_show = round(_sc_disp, 2)
+            _bmark = '' if abs(_fb_sum - _bc_disp) < 0.02 else f" [실제 {_bc_show}]"
+            _smark = '' if abs(_fs_sum - _sc_disp) < 0.02 else f" [실제 {_sc_show}]"
+            ws.cell(r, 18).value = f"[합 {_fb_sum:.2f}]{_bmark} = {_fb_txt}"
+            ws.cell(r, 19).value = f"[합 {_fs_sum:.2f}]{_smark} = {_fs_txt}"
+            ws.cell(r, 18).alignment = Alignment(vertical='center', wrap_text=False)
+            ws.cell(r, 19).alignment = Alignment(vertical='center', wrap_text=False)
             # ★ 카운트0 별도풀 사용일 = 노란색 (요청)
             if _is_zero_day:
-                for _c in range(1, 18): ws.cell(r, _c).fill = _YEL
+                for _c in range(1, 20): ws.cell(r, _c).fill = _YEL
                 if _act == '매수': ws.cell(r, 8).font = Font(bold=True, color='006100')
                 elif _act == '매도': ws.cell(r, 8).font = Font(bold=True, color='9C0006')
             else:
@@ -19314,7 +19346,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if _is_earn:
                 ws.cell(r, 17).fill = PatternFill('solid', fgColor='FFD966')
                 ws.cell(r, 17).font = Font(bold=True, color='7F6000')
-        for ci, w in enumerate([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14, 11, 14, 7, 10], 1):
+        for ci, w in enumerate([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14, 11, 14, 7, 10, 70, 70], 1):
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.freeze_panes = 'A6'
         print(f"  ✓ {_shname}: {_kltag}, 거래 {_n_trades_bt}회, 수익 {_full_cum*100:+.2f}% "
