@@ -20141,7 +20141,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             # 풀 테이블 (5행 헤더~)
             hr = 5
             for c, h in enumerate(['구분', '지표(indicator)', '방향(direction)', '임계치(threshold)', '성공률(success_rate)',
-                                   '지연(lead_shift)', '선출한도(sel_limit)', '최적선행(best_lead)', '점수(score)'], 1):
+                                   '지연(lead_shift)', '선출한도(sel_limit)', '최적선행(best_lead)', '점수(score)',
+                                   '분위(pct_label)', '신호수(n_signals)', '성공수(n_success)'], 1):
                 cell = wsr.cell(hr, c); cell.value = h
                 cell.font = Font(bold=True, color='FFFFFF'); cell.fill = PatternFill('solid', fgColor='548235')
             _rr = hr + 1
@@ -20166,8 +20167,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _sc = prow.get('score') if ('score' in _pool.columns) else None
                     wsr.cell(_rr, 9).value = _pf(_sc) if _pf(_sc) is not None else \
                         (float(prow.get('success_rate')) if pd.notna(prow.get('success_rate')) else None)
+                    # ★ 결과 리포트(write_excel '매수/매도_앙상블_지표' 시트)가 쓰는 표시용 컬럼 — 없으면 KeyError.
+                    wsr.cell(_rr, 10).value = _pf(prow.get('pct_label')) if ('pct_label' in _pool.columns) else None
+                    wsr.cell(_rr, 11).value = _pf(prow.get('n_signals'), int) if ('n_signals' in _pool.columns) else None
+                    wsr.cell(_rr, 12).value = _pf(prow.get('n_success'), int) if ('n_success' in _pool.columns) else None
                     _rr += 1
-            for ci, w in enumerate([6, 30, 12, 12, 14, 12, 12, 12, 10], 1):
+            for ci, w in enumerate([6, 30, 12, 12, 14, 12, 12, 12, 10, 12, 12, 12], 1):
                 wsr.column_dimensions[get_column_letter(ci)].width = w
             # ★ (요청) 카운트0 별도풀 재현 데이터 — K/L·개수·선정지표를 함께 저장.
             _zp_r = globals().get('_KNET_ZERO_POOL')
@@ -24566,6 +24571,14 @@ def _load_pool_into_globals(pool_xlsx_path, *, feat=None):
             #   구버전 시트(9번째 열 없음)는 None → 아래에서 success_rate로 대체.
             try: rec['score'] = float(_r[8]) if (len(_r) > 8 and _r[8] is not None) else None
             except Exception: rec['score'] = None
+            # ★ 표시용 컬럼(분위/신호수/성공수) — 신규 포맷 시트에는 10~12번째 열로 저장됨.
+            #   구버전 시트는 None → 아래에서 기본값(pct_label=50.0, n_signals/n_success=0)으로 대체.
+            try: rec['pct_label'] = float(_r[9]) if (len(_r) > 9 and _r[9] is not None) else None
+            except Exception: rec['pct_label'] = None
+            try: rec['n_signals'] = int(_r[10]) if (len(_r) > 10 and _r[10] is not None) else None
+            except Exception: rec['n_signals'] = None
+            try: rec['n_success'] = int(_r[11]) if (len(_r) > 11 and _r[11] is not None) else None
+            except Exception: rec['n_success'] = None
             if '매수' in side: _bb.append(rec)
             elif '매도' in side: _ss.append(rec)
     _wbk.close()
@@ -24575,13 +24588,30 @@ def _load_pool_into_globals(pool_xlsx_path, *, feat=None):
     if _rows and _rows[0] and _rows[0][0]:
         _tkr = str(_rows[0][0]).split('—')[0].strip() or None
     _bdf = pd.DataFrame(_bb); _sdf = pd.DataFrame(_ss)
-    # ★ 'score' 컬럼 보정 — 구버전 재현풀 시트는 score를 저장하지 않아 KeyError('score') 발생.
-    #   score가 없거나 비어있으면 success_rate 값으로 대체(가중투표 폴백).
+    # ★ 컬럼 보정 — 'k순신호 재현풀' 시트는 지표/방향/임계치/성공률/지연/선출한도/최적선행만 저장하고
+    #   write_excel 등 결과 리포트가 참조하는 pct_label·n_signals·n_success·avg_extreme·score는
+    #   저장하지 않는다(구버전 시트). 없으면 KeyError로 죽으므로, replay_grid_combo가 쓰는 것과
+    #   동일한 기본값으로 채워 재현모드에서도 리포트 생성이 항상 성공하도록 보정.
+    #   (신호 계산 자체는 indicator/direction/threshold/lead_shift만 쓰므로 백테스트 결과에는 영향 없음.)
     for _df in (_bdf, _sdf):
         if 'score' not in _df.columns:
             _df['score'] = _df['success_rate']
         else:
             _df['score'] = _df['score'].where(_df['score'].notna(), _df['success_rate'])
+        if 'pct_label' not in _df.columns:
+            _df['pct_label'] = 50.0
+        else:
+            _df['pct_label'] = pd.to_numeric(_df['pct_label'], errors='coerce').fillna(50.0)
+        if 'n_signals' not in _df.columns:
+            _df['n_signals'] = 0
+        else:
+            _df['n_signals'] = pd.to_numeric(_df['n_signals'], errors='coerce').fillna(0).astype(int)
+        if 'n_success' not in _df.columns:
+            _df['n_success'] = 0
+        else:
+            _df['n_success'] = pd.to_numeric(_df['n_success'], errors='coerce').fillna(0).astype(int)
+        if 'avg_extreme' not in _df.columns:
+            _df['avg_extreme'] = 0.01
     if feat is not None:
         _cols = set(feat.columns)
         _bdf = _bdf[_bdf['indicator'].isin(_cols)].reset_index(drop=True)
