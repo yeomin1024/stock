@@ -51,6 +51,10 @@ def main():
     if not tickers:
         print(f"✗ 지표풀 엑셀({POOL_PREFIX}_*.xlsx)을 {pool_dir} 에서 찾지 못했습니다. 코드1을 먼저 실행하세요.")
         return []
+    if not RUN_TICKERS:
+        print(f"  ℹ RUN_TICKERS 미지정 → {pool_dir} 안의 모든 지표풀 파일을 자동 탐색했습니다 "
+              f"(과거에 코드1로 만들어둔 티커까지 전부 포함될 수 있음). "
+              f"특정 티커만 하려면 p2.RUN_TICKERS = ['TICKER1', ...] 로 지정하세요.")
     print(f"[코드2] 결과 생성 — {len(tickers)}개 티커")
     print(f"  풀 폴더: {pool_dir}")
     print(f"  대상: {tickers}")
@@ -59,15 +63,14 @@ def main():
     for tk in tickers:
         print(f"\n{'='*60}\n[{tk}] 결과 생성\n{'='*60}")
         try:
+            # ★ (수정) 드라이브 미러링은 이제 core.build_result_excel_from_pool 내부에서
+            #   항상 수행됨 (mirror_to_ensemble=True 기본값) — 여기서 또 호출하면 같은
+            #   파일이 두 번 복사되므로 제거. MIRROR_RESULT_TO_ENSEMBLE=False로 두면 끌 수 있음.
             out = core.build_result_excel_from_pool(
-                tk, pool_dir=pool_dir, out_dir=out_dir, pool_prefix=POOL_PREFIX)
+                tk, pool_dir=pool_dir, out_dir=out_dir, pool_prefix=POOL_PREFIX,
+                mirror_to_ensemble=MIRROR_RESULT_TO_ENSEMBLE)
             if out:
                 made.append(out)
-                if MIRROR_RESULT_TO_ENSEMBLE and hasattr(core, '_mirror_to_ensemble'):
-                    try:
-                        core._mirror_to_ensemble([out])
-                    except Exception as e:
-                        print(f"  ⚠ ensemble 미러 실패(무시): {e}")
         except Exception as e:
             print(f"  ✗ {tk} 실패: {e}")
             import traceback; traceback.print_exc()
