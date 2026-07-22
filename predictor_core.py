@@ -24745,10 +24745,14 @@ def _load_pool_into_globals(pool_xlsx_path, *, feat=None, fix_thresholds=False):
 
 
 def build_result_excel_from_pool(ticker, *, pool_dir=None, out_dir=None, end_date=None,
-                                 pool_prefix='pool_ensemble', **search_kwargs):
+                                 pool_prefix='pool_ensemble', mirror_to_ensemble=True,
+                                 **search_kwargs):
     """[코드2용] 가장 최근 지표풀 엑셀을 읽어, 기존과 동일한 전체 결과 엑셀을 생성.
        내부적으로 풀을 전역에 주입한 뒤 run_ensemble_search를 재현(inject_pools) 모드로 실행.
-       반환: 생성된 결과 엑셀 경로(또는 None)."""
+       mirror_to_ensemble=True(기본): 로컬(OUTPUT_DIR)에 저장한 뒤 ENSEMBLE_MIRROR_DIR
+       (내 드라이브)에도 복사 — ★ 이 함수를 직접 호출하든 predictor2_result.py의 main()을
+       통하든 항상 드라이브에 저장되도록, 미러링을 래퍼가 아닌 여기(코어)로 옮김.
+       반환: 생성된 결과 엑셀 경로(로컬 경로 — 드라이브 사본은 같은 파일명으로 별도 존재)."""
     g = globals()
     _pdir = pool_dir or g.get('ENSEMBLE_MIRROR_DIR') or g.get('OUTPUT_DIR') or '.'
     _odir = out_dir or g.get('OUTPUT_DIR') or '.'
@@ -24794,6 +24798,11 @@ def build_result_excel_from_pool(ticker, *, pool_dir=None, out_dir=None, end_dat
         return None
     g['TICKER'] = old_ticker
     print(f"  ✅ 결과 엑셀 생성: {_out}")
+    if mirror_to_ensemble:
+        try:
+            _mirror_to_ensemble([_out])
+        except Exception as e:
+            print(f"  ⚠ ensemble(드라이브) 미러 실패(무시): {e}")
     return _out
 
 
