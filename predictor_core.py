@@ -21019,8 +21019,16 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                 'vote_sell': int(force_best_combo['vote_sell']),
             }
         else:
-            best_inner = {'K_buy': k_buy_range[0], 'vote_buy': int(k_buy_range[0]*vote_ratio_buy[0]),
-                          'K_sell': k_sell_range[0], 'vote_sell': int(k_sell_range[0]*vote_ratio_sell[0])}
+            # ★★ 버그 수정: k_buy_range[0]/k_sell_range[0](전역 기본 탐색범위 첫값)를
+            #   주입된 풀 크기와 무관하게 그대로 썼음 — 풀이 그보다 작으면(예: 재사용된
+            #   풀이 5개뿐인데 기본값이 10) daily_ensemble_backtest에서 행렬(K_sell열)과
+            #   가중치(실제 풀 크기) 크기가 안 맞아 'shapes not aligned' 오류로 죽었다.
+            #   주입 모드에선 '탐색'이 아니라 '주어진 풀 그대로 재현'이 목적이므로,
+            #   풀 크기를 넘지 않도록 클램프(min)한다.
+            _kb0 = min(int(k_buy_range[0]), len(buy_pool)) if len(buy_pool) > 0 else int(k_buy_range[0])
+            _ks0 = min(int(k_sell_range[0]), len(sell_pool)) if len(sell_pool) > 0 else int(k_sell_range[0])
+            best_inner = {'K_buy': _kb0, 'vote_buy': max(1, int(_kb0*vote_ratio_buy[0])),
+                          'K_sell': _ks0, 'vote_sell': max(1, int(_ks0*vote_ratio_sell[0]))}
         # best_meta는 주입된 메타 그리드값으로 채움(엑셀 표시용)
         _mg0 = meta_grid
         best_meta = {
