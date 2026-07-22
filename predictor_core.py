@@ -131,6 +131,9 @@ PEERS          = [
     'VNQ',    # 통합 REIT (XLRE 보완, 채권 대체 로테이션)
     'REM',    # 모기지 REIT (금리·신용 극단 민감)
     'IYR',    # 부동산 지수 (VNQ 보완)
+    'REZ',    # 주거·헬스케어 리츠 (REIT 하위산업 — 금리 민감도 상이)
+    'INDS',   # 산업용 리츠 (물류창고 — 전자상거래 수요 연동)
+    'MORT',   # 모기지 리츠 (REM 보완, 하위산업 dispersion용)
     'FDN',    # Dow Jones 인터넷 인덱스 (인터넷 성장주 극단)
     'IWO',    # Russell 2000 그로스 (소형 성장 유동성 리스크)
     'IWN',    # Russell 2000 밸류 (소형 가치 경기 지표)
@@ -312,6 +315,7 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
         'ICSA':     '주간 신규 실업수당 청구',
         'CCSA':     '계속 실업수당 청구',
         'WRMFSL':   '연준 지급준비금 잔액',
+        'MORTGAGE30US': '30년 고정 모기지 금리 (REIT·주택 핵심 변수)',
     }
     monthly_series = {
         'UNRATE':      '실업률',
@@ -10720,6 +10724,180 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
         import traceback; traceback.print_exc()
         print(f"  ⚠ 주식 이론 지표 추가 실패(무시): {_eth}")
 
+    # ══════════════════════════════════════════════════════════════
+    #  44. ★ (요청) REIT(부동산) 상승·하락 예측 지표 대거 추가
+    #      (A) 기존 1·2·3차 섹터블록(_add_sector_block/2/3)을 REIT에도 재사용
+    #          — 모멘텀/변동성/상대강도/서브분산/거래량/방향점수 +
+    #            거시금리민감도/리더십/크로스섹터/꼬리위험 +
+    #            계절성/밸류에이션/옵션심리/미시구조/레짐 (prefix='reit')
+    #      (B) REIT 고유 지표 신규 추가 — 모기지금리·캡레이트 스프레드·
+    #          채권대체(bond proxy) 행태·모기지REIT vs 지분REIT 괴리·
+    #          지역은행(CRE대출) 연동·주택시장 연동·배당/금리인하 민감도.
+    #      접두사: reit_ (섹터블록 재사용분) / reitx_ (신규 고유 지표)
+    # ══════════════════════════════════════════════════════════════
+    try:
+        # (A) 기존 섹터블록 재사용 — main=XLRE, subs=REIT 하위산업(주거/산업/모기지 등)
+        _add_sector_block('reit', 'XLRE', ['VNQ', 'IYR', 'REM', 'REZ', 'INDS', 'MORT'],
+                          defensive_ref='XLP', risk_ref='XLY')
+        _add_sector_block2('reit', 'XLRE', macro_kind='rate')
+        _add_sector_block3('reit', 'XLRE')
+        print(f"  ✓ REIT 섹터블록(1·2·3차) 추가 완료 (prefix=reit_)")
+    except Exception as _ereit0:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ REIT 섹터블록 추가 실패(무시): {_ereit0}")
+
+    try:
+        _xlre = _sec_get('XLRE'); _vnq = _sec_get('VNQ'); _iyr = _sec_get('IYR')
+        _rem = _sec_get('REM'); _rez = _sec_get('REZ'); _inds_r = _sec_get('INDS')
+        _mort_r = _sec_get('MORT')
+        _reit_main = _xlre if _xlre is not None else _vnq   # XLRE 없으면 VNQ로 폴백
+
+        if _reit_main is not None:
+            _rr = _reit_main.pct_change()
+            _tlt_r = closes.get('TLT'); _xlu_r = closes.get('XLU'); _kre_r = closes.get('KRE')
+            _tnx_reit = closes.get('^TNX'); _tip_r = closes.get('TIP'); _ief_r = closes.get('IEF')
+            _hyg_r = closes.get('HYG'); _lqd_r = closes.get('LQD')
+
+            # ── (a) 모기지 금리 — REIT·주택시장 핵심 변수 (FRED MORTGAGE30US) ──
+            if fred_df is not None and len(fred_df) > 0:
+                _fa_r = fred_df.reindex(feat.index).ffill().bfill()
+                def _fr(c):
+                    return _fa_r[c] if c in _fa_r.columns else None
+                _m30 = _fr('MORTGAGE30US')
+                if _m30 is not None:
+                    feat['reitx_mort_rate_level'] = _m30
+                    feat['reitx_mort_rate_chg_4w'] = _m30.diff(20)          # 4주 변화(주간계열 영업일 환산)
+                    feat['reitx_mort_rate_chg_12w'] = _m30.diff(60)
+                    feat['reitx_mort_rate_rising'] = (_m30.diff(20) > 0).astype(float)
+                    feat['reitx_mort_rate_zscore_252'] = calc_zscore(_m30, 252)
+                    feat['reitx_mort_rate_accel'] = _m30.diff(20) - _m30.diff(20).shift(20)  # 상승/하락 가속
+                    if _tnx_reit is not None:
+                        # 모기지-국채 스프레드 (신용/유동성 프리미엄 — 확대 시 주택금융 경색)
+                        _mort_spread = _m30 - _tnx_reit
+                        feat['reitx_mort_spread_level'] = _mort_spread
+                        feat['reitx_mort_spread_widening'] = (_mort_spread.diff(20) > 0).astype(float)
+                        feat['reitx_mort_spread_zscore_252'] = calc_zscore(_mort_spread, 252)
+                    # 모기지금리 레짐에서 REIT 성과 (하락 사이클 vs 상승 사이클)
+                    _mort_falling = (_m30.diff(20) < 0)
+                    feat['reitx_ret_in_mort_falling'] = (_rr.where(_mort_falling)).rolling(40, min_periods=8).mean()
+                    feat['reitx_ret_in_mort_rising'] = (_rr.where(~_mort_falling)).rolling(40, min_periods=8).mean()
+
+            # ── (b) 국채금리 민감도 심화 (REIT는 배당·듀레이션 자산이라 금리에 특히 민감) ──
+            if _tnx_reit is not None:
+                _dtnx_r = _tnx_reit.diff()
+                _cov_r = _rr.rolling(60, min_periods=20).cov(_dtnx_r)
+                _var_r = _dtnx_r.rolling(60, min_periods=20).var().replace(0, np.nan)
+                feat['reitx_rate_beta_60'] = _cov_r / _var_r        # 통상 음(-) — 금리↑ REIT↓
+                feat['reitx_rate_beta_120'] = (_rr.rolling(120, min_periods=30).cov(_dtnx_r) /
+                                              _dtnx_r.rolling(120, min_periods=30).var().replace(0, np.nan))
+                feat['reitx_rate_beta_deteriorating'] = (feat['reitx_rate_beta_60'] < feat['reitx_rate_beta_60'].shift(20)).astype(float)
+                # 금리 급등일(1일 급변) 당일 REIT 충격 흡수력
+                _rate_shock = (_dtnx_r.abs() > _dtnx_r.abs().rolling(60, min_periods=15).quantile(0.9))
+                feat['reitx_shock_day_ret'] = (_rr.where(_rate_shock)).rolling(40, min_periods=5).mean()
+            # 실질금리(TIP/IEF 프록시) 민감도 — REIT는 명목보다 실질금리에 더 민감하다는 통설 검증용
+            if _tip_r is not None and _ief_r is not None:
+                _real_proxy = (_tip_r / _ief_r)
+                feat['reitx_real_yield_corr_60'] = _rr.rolling(60, min_periods=15).corr(_real_proxy.pct_change())
+                feat['reitx_real_yield_regime'] = (_real_proxy > _real_proxy.rolling(60, min_periods=15).mean()).astype(float)
+
+            # ── (c) 채권대체(bond proxy) 행태 — REIT는 배당수익률 때문에 채권처럼 거래되는 경향 ──
+            if _tlt_r is not None:
+                feat['reitx_vs_tlt_ret_20'] = _reit_main.pct_change(20) - _tlt_r.pct_change(20)
+                feat['reitx_tlt_corr_60'] = _rr.rolling(60, min_periods=15).corr(_tlt_r.pct_change())
+                feat['reitx_tlt_corr_rising'] = (feat['reitx_tlt_corr_60'] > feat['reitx_tlt_corr_60'].shift(20)).astype(float)
+                feat['reitx_bond_proxy_regime'] = (feat['reitx_tlt_corr_60'] > 0.5).astype(float)  # 채권처럼 움직이는 국면
+            if _xlu_r is not None:
+                # 유틸리티도 대표적 '채권대체' 섹터 — REIT와 동조하면 순수 금리플레이 국면
+                feat['reitx_vs_util_ret_20'] = _reit_main.pct_change(20) - _xlu_r.pct_change(20)
+                feat['reitx_util_corr_60'] = _rr.rolling(60, min_periods=15).corr(_xlu_r.pct_change())
+                feat['reitx_util_reit_both_down'] = ((_rr < 0) & (_xlu_r.pct_change() < 0)).rolling(10, min_periods=3).mean()  # 순수 금리충격 신호
+
+            # ── (d) 모기지 REIT vs 지분(equity) REIT 괴리 — 신용/레버리지 스트레스 특화 신호 ──
+            if _rem is not None:
+                feat['reitx_mortgage_vs_equity_20'] = _rem.pct_change(20) - _reit_main.pct_change(20)
+                feat['reitx_mortgage_underperform'] = (feat['reitx_mortgage_vs_equity_20'] < -0.03).astype(float)  # 모기지리츠 급격 열위=신용스트레스
+                feat['reitx_mortgage_corr_60'] = _rr.rolling(60, min_periods=15).corr(_rem.pct_change())
+                feat['reitx_mortgage_corr_breakdown'] = (feat['reitx_mortgage_corr_60'] < 0.3).astype(float)  # 상관 붕괴=시장 분절/스트레스
+                # 모기지리츠 변동성 급등 (레버리지 마진콜 위험 프록시)
+                _rem_vol = _rem.pct_change().rolling(20, min_periods=5).std()
+                feat['reitx_mortgage_vol_spike'] = (_rem_vol > _rem_vol.rolling(60, min_periods=15).mean() * 1.6).astype(float)
+
+            # ── (e) 지역은행(CRE 대출) 연동 — 상업용부동산 대출 스트레스는 지역은행에 먼저 반영 ──
+            if _kre_r is not None:
+                feat['reitx_vs_kre_ret_20'] = _reit_main.pct_change(20) - _kre_r.pct_change(20)
+                feat['reitx_kre_corr_60'] = _rr.rolling(60, min_periods=15).corr(_kre_r.pct_change())
+                feat['reitx_kre_reit_both_down_20'] = ((_reit_main.pct_change(20) < -0.05) & (_kre_r.pct_change(20) < -0.05)).astype(float)  # CRE 위기 동조 신호
+                feat['reitx_kre_leads_reit'] = (_kre_r.pct_change(10).shift(5) < -0.03).astype(float)  # 은행 선행 하락 → REIT 후행 위험
+
+            # ── (f) 신용스프레드 민감도 (REIT는 레버리지 산업이라 HY/IG 스프레드에 특히 민감) ──
+            if _hyg_r is not None and _lqd_r is not None:
+                _credit_r = (_hyg_r / _lqd_r)
+                feat['reitx_credit_corr_60'] = _rr.rolling(60, min_periods=15).corr(_credit_r.pct_change())
+                feat['reitx_credit_stress_ret'] = (_rr.where(_credit_r.pct_change(20) < -0.02)).rolling(40, min_periods=5).mean()
+
+            # ── (g) 주택시장 연동 (FRED: Case-Shiller/착공/허가 — 주거·상업 REIT 공통 수요기반) ──
+            if fred_df is not None and len(fred_df) > 0:
+                _hpi = _fr('CSUSHPINSA'); _houst = _fr('HOUST'); _permit = _fr('PERMIT')
+                if _hpi is not None:
+                    feat['reitx_hpi_yoy'] = _hpi.pct_change(252)
+                    feat['reitx_hpi_accel'] = _hpi.pct_change(60) - _hpi.pct_change(60).shift(60)
+                    feat['reitx_hpi_decelerating'] = (feat['reitx_hpi_accel'] < 0).astype(float)
+                    feat['reitx_hpi_corr_120'] = _rr.rolling(120, min_periods=30).corr(_hpi.pct_change())
+                if _houst is not None:
+                    feat['reitx_housing_starts_mom'] = _houst.pct_change(20)
+                    feat['reitx_housing_starts_trend'] = (_houst > _houst.rolling(120, min_periods=30).mean()).astype(float)
+                if _permit is not None:
+                    feat['reitx_permits_mom'] = _permit.pct_change(20)
+                    feat['reitx_permits_falling'] = (_permit.pct_change(60) < 0).astype(float)  # 향후 공급 둔화 선행
+                if _houst is not None and _permit is not None:
+                    # 착공 대비 허가 비율(파이프라인 소화 속도) — 허가>착공 누적이면 향후 공급 과잉 위험
+                    feat['reitx_permit_starts_ratio'] = _permit / _houst.replace(0, np.nan)
+
+            # ── (h) 캡레이트 스프레드 프록시 (REIT 배당수익률 - 국채금리, 직접 배당데이터 없어 가격기반 근사) ──
+            # 근사 논리: REIT가 국채 대비 장기간 초과수익을 내면 '스프레드 확대(밸류 매력)'로,
+            # 초과손실을 내면 '스프레드 축소(밸류 부담)'로 해석 — 실제 배당수익률 데이터 없이도
+            # 방향성 프록시로 유효(REIT 가격은 결국 요구수익률=국채금리+스프레드의 역수에 수렴).
+            if _tnx_reit is not None:
+                _reit_excess_60 = _reit_main.pct_change(60) - (_tnx_reit.diff(60) / 100.0)  # 대략적 채권가격 변화 근사
+                feat['reitx_caprate_spread_proxy_60'] = _reit_excess_60
+                feat['reitx_caprate_spread_zscore'] = calc_zscore(_reit_excess_60, 252)
+                feat['reitx_caprate_spread_widening'] = (_reit_excess_60 > _reit_excess_60.shift(20)).astype(float)
+
+            # ── (i) Fed 정책금리 사이클 (인하 사이클=REIT 우호, 인상 사이클=REIT 역풍) ──
+            if fred_df is not None and len(fred_df) > 0:
+                _effr = _fr('EFFR')
+                if _effr is not None:
+                    feat['reitx_effr_trend_falling'] = (_effr.diff(60) < 0).astype(float)
+                    feat['reitx_ret_in_cut_cycle'] = (_rr.where(_effr.diff(60) < 0)).rolling(40, min_periods=8).mean()
+                    feat['reitx_ret_in_hike_cycle'] = (_rr.where(_effr.diff(60) > 0)).rolling(40, min_periods=8).mean()
+                    feat['reitx_effr_regime_flip'] = ((_effr.diff(60) < 0) & (_effr.diff(60).shift(20) >= 0)).astype(float)  # 인상→인하 전환점
+
+            # ── (j) REIT 특화 계절성 (배당락·세금손실매도 반등 패턴) ──
+            _idx_r = _reit_main.index
+            _month_r = _idx_r.month; _dom_r = _idx_r.day
+            feat['reitx_seas_jan_effect'] = ((_month_r == 1) & (_dom_r <= 15)).astype(float)     # 1월 효과(세금손실매도 반등)
+            feat['reitx_seas_dec_taxloss'] = ((_month_r == 12) & (_dom_r >= 15)).astype(float)    # 12월 세금손실매도 압력 구간
+            feat['reitx_seas_q4_yield_seeking'] = (_month_r.isin([10, 11, 12])).astype(float)     # 4분기 배당추구 자금유입 계절
+
+            # ── (k) 서브섹터(주거/산업/모기지) 방향 일치도 — REIT 내부 건강도 ──
+            _subs_r = {'vnq': _vnq, 'iyr': _iyr, 'rem': _rem, 'rez': _rez, 'inds': _inds_r, 'mort': _mort_r}
+            _subs_r = {k: v for k, v in _subs_r.items() if v is not None}
+            if len(_subs_r) >= 3:
+                _sub_r20 = pd.DataFrame({k: v.pct_change(20) for k, v in _subs_r.items()})
+                feat['reitx_subsector_breadth'] = (_sub_r20 > 0).sum(axis=1) / _sub_r20.shape[1]
+                feat['reitx_subsector_dispersion'] = _sub_r20.std(axis=1)
+                feat['reitx_subsector_all_down'] = (_sub_r20 < 0).all(axis=1).astype(float)
+                feat['reitx_residential_vs_industrial'] = ((_rez.pct_change(20) - _inds_r.pct_change(20))
+                                                           if (_rez is not None and _inds_r is not None) else np.nan)
+
+            print(f"  ✓ REIT 고유 지표(reitx_) 추가 완료: 모기지금리·캡레이트·채권대체·"
+                  f"모기지vs지분리츠·지역은행·신용스프레드·주택시장·Fed사이클·계절성·서브섹터")
+        else:
+            print(f"  ⚠ REIT 고유 지표 건너뜀: XLRE/VNQ 데이터 없음")
+    except Exception as _ereit1:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ REIT 고유 지표 추가 실패(무시): {_ereit1}")
+
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
 
@@ -13038,7 +13216,7 @@ STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축�
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
-MAX_INDICATORS      = 4500
+MAX_INDICATORS      = 4700
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
