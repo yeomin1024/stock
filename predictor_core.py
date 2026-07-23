@@ -13512,7 +13512,7 @@ META_GRID = {
     'pct_range':   [(0, 100)],
     'min_signals': [10],
     'corr_limit':  [0.2],
-    'top_n_pool':  [100],
+    'top_n_pool':  [500],
 }
 
 STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-투표용 → 그리드 8회 재실행 낭비. k순신호는 corr만 자체 탐색.
