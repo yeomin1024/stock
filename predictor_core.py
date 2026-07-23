@@ -13205,7 +13205,7 @@ EVAL_START          = '2025-01-01'
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
 
-HORIZON_DAYS        = 1
+HORIZON_DAYS        = 2
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -13294,7 +13294,7 @@ SELECTION_AB_QUICK  = False        # True면 각 flag 개별 ON만 하고 조합
 #     단, h가 길수록 성공률이 기계적으로 올라가므로(도달 기회↑) 반드시 기저확률을 빼서 비교:
 #     스킬(h) = 성공률(h) − 기저확률(h).  best_lead = 스킬 최대 h → '몇 일 전 신호가 가장 정확한지'.
 LEAD_TIME_SEARCH    = True
-LEAD_HORIZONS       = [1, 2, 3, 4, 5, 7, 10]   # 선행일(h) 후보 (거래일)
+LEAD_HORIZONS       = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20]   # 선행일(h) 후보 (거래일)
 # (2) 신호 지연 정렬 — best_lead가 긴 지표(예: 3일 전에 미리 켜지는 지표)는 신호를 d일 늦춰
 #     체결(다음날) 직전에 켜지도록 정렬. 훈련구간 스킬이 최소 개선폭 이상 & 홀드아웃 스킬이
 #     유지될 때만 채택(과최적화 방지). 지연은 sig[t-d]→t 이므로 미래참조 없음.
