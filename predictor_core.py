@@ -13205,7 +13205,7 @@ EVAL_START          = '2025-01-01'
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
 
-HORIZON_DAYS        = 1
+HORIZON_DAYS        = 2
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -13222,7 +13222,7 @@ MAX_INDICATORS      = 4700
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
 #         선발 기준을 점수(Wilson)→성공률 우선으로 바꿈. 가짜 100% 방지 위해 표본 가드 둠.
 POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
-POOL_SUCCESS_MIN_RATE  = 0.60      # 성공률 컷오프 (요청: 0.60)
+POOL_SUCCESS_MIN_RATE  = 0.80      # 성공률 컷오프 (요청: 0.60)
 POOL_SUCCESS_MIN_SIG   = 10        # ★ 최소 신호수(요청: 신호 10개 '초과') — 소표본 가짜 100% 방지
 POOL_SUCCESS_WIDE_PCT  = (0, 100)  # ★ 풀 평가용 분위 (요청: 0,100 전체 탐색)
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
