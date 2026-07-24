@@ -13226,6 +13226,16 @@ MAX_INDICATORS      = 4700
 POOL_SELECT_BY_SUCCESS = True      # True면 풀을 성공률 우선으로 선출(아래 기준), False면 기존 점수순.
 POOL_SUCCESS_MIN_RATE  = 0.80      # 성공률 컷오프 (요청: 0.60)
 POOL_SUCCESS_MIN_SIG   = 10        # ★ 최소 신호수(요청: 신호 10개 '초과') — 소표본 가짜 100% 방지
+# ★★ (요청) 성공률 90% 이상이면 최소 신호수 요건을 8개로 완화 — 아주 높은 성공률은
+#   표본이 살짝 적어도(8~9개) 신뢰할 만하다고 보고 구제. 90% 미만은 기존 10개 유지.
+POOL_SUCCESS_MIN_SIG_HIGH_RATE = 0.90
+POOL_SUCCESS_MIN_SIG_HIGH      = 8
+# ★★ (요청) 카운트0(매수·매도 모두 0) 대체풀 — 2단계 캐스케이드.
+#   1단계(메인풀, 노란색 아님)는 기존 POOL_SUCCESS_MIN_RATE(0.80) 이상.
+#   그래도 카운트0이면 → 2단계: 성공률 [TIER2_LO,TIER2_HI) 밴드 풀로 (m,n) 재탐색, 노란색.
+#   그래도 카운트0이면 → 3단계: 남은(1·2단계에 안 쓰인) 지표 전부로 (o,p) 재탐색, 주황색.
+POOL_TIER2_RATE_LO = 0.70
+POOL_TIER2_RATE_HI = 0.80          # 메인풀과 경계 — 이 값 미만만 2단계 대상(메인풀과 겹치지 않도록)
 POOL_SUCCESS_WIDE_PCT  = (0, 100)  # ★ 풀 평가용 분위 (요청: 0,100 전체 탐색)
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
 # ★ ⓑ 순신호 점수가중 (요청) — net을 '단순 개수' 대신 '지표 점수(성공률) 가중합'으로.
@@ -13311,7 +13321,10 @@ LEAD_SHIFT_HO_TOL   = 0.02     # 지연 채택 시 홀드아웃 스킬 허용 �
 LEAD_SELECT_IN_SCORING = True
 # (3) 삼중배리어 판정 (리드 탐색용) — h일 이내 '유리 한도'가 '불리 한도'보다 먼저 도달해야 성공.
 #     긴 h에서 '먼저 -3% 빠졌다가 나중에 +1% 회복'을 성공으로 세는 왜곡 제거 (실전 손절 현실 반영).
-#     ※ 체결 지평(HORIZON_DAYS=1) 성공 판정은 기존 정의 그대로 유지 — 풀 선출 기준 불변.
+#     ※ 체결 지평(HORIZON_DAYS, 현재 설정값을 그대로 사용) 성공 판정은 기존 정의 그대로 유지 —
+#       풀 선출 기준 불변. (LEAD_HORIZONS 탐색과는 별개 — 이건 '선행일' h만 다양하게 시도해보는
+#       것이고, 실제 성공/실패 판정 기준(HORIZON_DAYS)은 전역설정값 하나로 항상 일관되게 적용됨.
+#       HORIZON_DAYS를 바꾸면 이 판정 기준도 자동으로 같이 바뀜 — 별도 수정 불필요.)
 LEAD_TRIPLE_BARRIER = True
 # (4) 스킬 필터 — 성공률이 높아도 기저확률(시장이 원래 그만큼 오르내림)을 못 넘으면 예측력 0.
 #     체결 지평 기준 스킬 = 성공률 − 기저확률 이 하한 미만이면 풀에서 제외. (정렬은 기존대로 성공률순 유지)
@@ -15037,6 +15050,15 @@ def select_pool_by_ic(feat, close, *, indicators=None, horizon=1,
     return df.head(max_pool).reset_index(drop=True)
 
 
+def _passes_tiered_sig_gate(success_rate, n_signals):
+    """★★ (요청) 성공률 90%+ 면 최소신호수 8개로 완화, 그 미만은 기존 10개 유지.
+       success_rate/n_signals는 스칼라 또는 pandas Series 둘 다 가능(벡터화 연산)."""
+    _min_sig = float(globals().get('POOL_SUCCESS_MIN_SIG', 10))
+    _min_sig_high = float(globals().get('POOL_SUCCESS_MIN_SIG_HIGH', 8))
+    _high_rate = float(globals().get('POOL_SUCCESS_MIN_SIG_HIGH_RATE', 0.90))
+    return (n_signals >= _min_sig) | ((success_rate >= _high_rate) & (n_signals >= _min_sig_high))
+
+
 def select_pool_by_success(feat, close, *, indicators, n_thresholds,
                            horizon, dd_limit, ru_limit, wilson_z=1.0):
     """★ 성공률 우선 풀 선출 (요청).
@@ -15051,17 +15073,22 @@ def select_pool_by_success(feat, close, *, indicators, n_thresholds,
          *_dedup  : 지표당 최고성공 1행 (성공률 우선 선출 시트용)
     """
     lo, hi = POOL_SUCCESS_WIDE_PCT
+    # ★★ (요청) 하드 컷 최소신호수를 낮춰서(8) 8~9개짜리도 일단 평가엔 포함시키고,
+    #   아래 _filt에서 성공률 90%+ 인지 확인해 최종 통과 여부를 가른다.
+    #   (여기서 10으로 걸러버리면 8~9개짜리는 애초에 평가 결과에 나타나지도 않아 구제 불가)
+    _min_sig_floor = min(int(globals().get('POOL_SUCCESS_MIN_SIG', 10)),
+                        int(globals().get('POOL_SUCCESS_MIN_SIG_HIGH', 8)))
     bdf, sdf = evaluate_buy_sell_scores(
         feat, close, indicators=indicators, n_thresholds=n_thresholds,
         pct_low=lo, pct_high=hi, horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
-        min_signals=POOL_SUCCESS_MIN_SIG, wilson_z=wilson_z,
-        anchor_buy_arr=None, anchor_sell_arr=None,   # 오버라이드 제거됨 → 앵커 무관(순수 다음날 ±1%)
+        min_signals=_min_sig_floor, wilson_z=wilson_z,
+        anchor_buy_arr=None, anchor_sell_arr=None,   # 오버라이드 제거됨 → 앵커 무관(HORIZON_DAYS일 이내 ±한도)
     )
 
     def _filt(df):
         if df is None or len(df) == 0:
             return df.copy() if df is not None else df
-        d = df[(df['n_signals'] >= POOL_SUCCESS_MIN_SIG) &
+        d = df[_passes_tiered_sig_gate(df['success_rate'], df['n_signals']) &
                (df['success_rate'] >= POOL_SUCCESS_MIN_RATE)].copy()
         # 성공률 우선, 동률이면 점수(Wilson 하한)로 — 가짜 100% 강등
         d = d.sort_values(['success_rate', 'score'], ascending=[False, False]).reset_index(drop=True)
@@ -15314,7 +15341,7 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
             _shown.add((round(float(_best_wz), 4), round(float(_cl), 4)))
         if _sc > _best_sc: _best_sc = _sc; _best = (_cb, _cs); _bcl = _cl
     if _best is not None:
-        # ★ (요청) 최종 카운트 풀에도 성공률 60% 컷 + 최소신호수 컷 재적용.
+        # ★ (요청) 최종 카운트 풀에도 성공률 컷 + 최소신호수 컷(90%+면 8개로 완화) 재적용.
         #   다중임계 병합·상관 다변화 과정에서 (a)컷 미만 성공률, (b)소표본(신호 몇 개뿐이라
         #   성공률 숫자를 못 믿는) 지표가 섞여 들어오는 것을 방지 — 성공률 우선 풀과 기준 일치.
         #   예: 신호 4개짜리 "66.7%"는 통계적으로 무의미하므로 min_sig 미만이면 제거.
@@ -15324,13 +15351,13 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
             if _df is None or len(_df) == 0 or 'success_rate' not in _df.columns:
                 return _df
             _mask = (_df['success_rate'] >= _cut)
-            # 신호수 컬럼이 있으면 최소신호수도 함께 요구 (소표본 가짜 고성공률 제거)
+            # 신호수 컬럼이 있으면 최소신호수(90%+면 8개로 완화)도 함께 요구
             _sigcol = None
             for _cand in ('n_signals', 'n_sig', 'signals', 'n'):
                 if _cand in _df.columns:
                     _sigcol = _cand; break
             if _sigcol is not None:
-                _mask = _mask & (_df[_sigcol].fillna(0) >= _min_sig)
+                _mask = _mask & _passes_tiered_sig_gate(_df['success_rate'], _df[_sigcol].fillna(0))
             _f = _df[_mask].reset_index(drop=True)
             # 컷 통과가 하나도 없으면(과도 제거 방지) 성공률 컷만이라도 적용
             if len(_f) == 0:
@@ -17037,10 +17064,155 @@ def _norm_date_set(dlist):
     return s
 
 
+def _build_rate_band_pool(feat, close, *, horizon, dd_limit, ru_limit,
+                          rate_lo, rate_hi, exclude_names=None, n_thresholds=None):
+    """★★ (요청) 성공률 밴드 [rate_lo, rate_hi) 안의 지표만 골라 (buy_df, sell_df) 반환.
+       카운트0 대체풀 2·3단계용 — feat.columns 전체를 후보로 다시 평가한다.
+       exclude_names: {'buy': set(...), 'sell': set(...)} — 이미 다른 단계에서 쓴 지표명 제외.
+       rate_hi=None 이면 상한 없음(= '나머지 전부', 3단계용). 이때는 성공률 하한도 사실상
+       무의미하므로 rate_lo=0.0 으로 호출해 '평가 가능한 모든 지표'를 후보로 삼는다.
+       ★ (요청) '지표 검증 시 제외되는 건 제외하지 말고 탐색으로' — 여기서는 _tier_of류의
+       스킬/인과성 등 추가 하드컷을 적용하지 않고, 성공률·최소신호수(90%+ 완화 포함) 게이트만
+       적용해 최대한 넓게 후보에 포함시킨다."""
+    indicators = list(feat.columns)
+    lo, hi = POOL_SUCCESS_WIDE_PCT
+    _nth = int(n_thresholds) if n_thresholds else int(globals().get('N_THRESHOLDS', 100))
+    _min_sig_floor = min(int(globals().get('POOL_SUCCESS_MIN_SIG', 10)),
+                        int(globals().get('POOL_SUCCESS_MIN_SIG_HIGH', 8)))
+    bdf, sdf = evaluate_buy_sell_scores(
+        feat, close, indicators=indicators, n_thresholds=_nth,
+        pct_low=lo, pct_high=hi, horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
+        min_signals=_min_sig_floor, wilson_z=1.0,
+        anchor_buy_arr=None, anchor_sell_arr=None)
+
+    def _band(df, excl_names):
+        if df is None or len(df) == 0:
+            return df
+        m = _passes_tiered_sig_gate(df['success_rate'], df['n_signals']) & (df['success_rate'] >= rate_lo)
+        if rate_hi is not None:
+            m = m & (df['success_rate'] < rate_hi)
+        if excl_names:
+            m = m & (~df['indicator'].isin(excl_names))
+        d = df[m].sort_values(['success_rate', 'score'], ascending=[False, False]).reset_index(drop=True)
+        return d
+
+    exclude_names = exclude_names or {}
+    bband = _band(bdf, exclude_names.get('buy'))
+    sband = _band(sdf, exclude_names.get('sell'))
+    return bband, sband
+
+
+def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
+                                    used_n_buy, used_n_sell, zero_mask, *,
+                                    ticker='', weight_exp=1.0,
+                                    main_net=None, main_K=None, main_L=None,
+                                    horizon=None, dd_limit=None, ru_limit=None):
+    """★★ (요청) 카운트0(매수·매도 모두 0) 대체풀 — 3단 캐스케이드.
+       1단계: (호출자가 이미 만들어둔) 메인풀 — 여기선 다루지 않음, 그래도 카운트0인 날만 대상.
+       2단계: 성공률 [POOL_TIER2_RATE_LO, POOL_TIER2_RATE_HI) 밴드 풀로 (m,n) 탐색 → 노란색.
+       3단계: 1·2단계에서 쓴 지표를 뺀 '나머지 전부'로 (o,p) 탐색 → 주황색.
+              (2단계가 여전히 그 날 카운트0이면 3단계로 넘김)
+       반환: dict 또는 None.
+         결과 dict의 daily에는 'tier' 컬럼(0=메인/해당없음, 2=노랑, 3=주황)이 추가되어
+         엑셀 쪽에서 바로 색칠에 쓸 수 있다. K/L/n_buy/n_sell 등은 '최종 채택된 단계'
+         기준(3단계까지 갔으면 3단계 값)이고, 2단계 고유값은 tier2_* 키로 별도 보관."""
+    try:
+        if feat is None or close_ser is None or zero_mask is None:
+            return None
+        _nz = int(np.sum(np.asarray(zero_mask, bool)))
+        if _nz < 5:
+            return None
+
+        _hz = int(horizon) if horizon else int(globals().get('HORIZON_DAYS', 1))
+        _ddl = float(dd_limit) if dd_limit is not None else float(globals().get('DRAWDOWN_LIMIT_BUY', 0.01))
+        _rul = float(ru_limit) if ru_limit is not None else float(globals().get('RUNUP_LIMIT_SELL', 0.01))
+
+        # ── 1단계는 기존 로직 그대로(메인풀에서 이미 쓴 상위 N개 제외) — 폴백 기준선 ──
+        _zres1 = _search_zero_count_pool(
+            feat, close_ser, buy_pool, sell_pool, used_n_buy, used_n_sell, zero_mask,
+            ticker=ticker, weight_exp=weight_exp, main_net=main_net, main_K=main_K, main_L=main_L,
+            exclude_used=True)
+        # 1단계가 아예 안 되면(풀 부족 등) 더 진행 불가
+        if _zres1 is None:
+            return None
+        _zres1['tier'] = 2   # ★ (요청) 기존 단일 폴백은 이제 '노란색'(2단계) 자리를 대신 차지.
+        # 주의: 여기서 '1단계=메인풀 잔여지표' 결과를 그대로 노란색으로 표시하면 요청과 다르므로,
+        # 아래에서 '성공률 70~80% 밴드' 결과로 다시 덮어쓴다. 1단계 결과는 그 밴드 탐색이
+        # 실패했을 때의 안전 폴백으로만 보관한다.
+        _zres_fallback = _zres1
+
+        # ── 2단계: 성공률 70~80% 밴드 전용 풀 (노란색) ──
+        _rate_lo2 = float(globals().get('POOL_TIER2_RATE_LO', 0.70))
+        _rate_hi2 = float(globals().get('POOL_TIER2_RATE_HI', 0.80))
+        _bp2, _sp2 = _build_rate_band_pool(feat, close_ser, horizon=_hz, dd_limit=_ddl, ru_limit=_rul,
+                                          rate_lo=_rate_lo2, rate_hi=_rate_hi2)
+        _zres2 = None
+        if _bp2 is not None and _sp2 is not None and len(_bp2) > 0 and len(_sp2) > 0:
+            _zres2 = _search_zero_count_pool(
+                feat, close_ser, _bp2, _sp2, len(_bp2), len(_sp2), zero_mask,
+                ticker=ticker, weight_exp=weight_exp, main_net=main_net, main_K=main_K, main_L=main_L,
+                exclude_used=False)
+        if _zres2 is None:
+            # 70~80% 밴드가 비었거나 탐색 실패 → 기존 방식(메인풀 잔여지표) 폴백 유지, 3단계 생략.
+            _zres1['tier2_fallback_used'] = True
+            _zres1['daily']['tier'] = np.where(_zres1['daily']['zero_count_day'] == 1, 2, 0)
+            return _zres1
+        _zres2['tier'] = 2
+        _zres2['daily']['tier'] = np.where(_zres2['daily']['zero_count_day'] == 1, 2, 0)
+
+        # ── 2단계로도 여전히 카운트0인 날 파악 (그 날들만 3단계 대상) ──
+        _bc2 = np.asarray(_zres2['buy_count'], dtype=float)
+        _sc2 = np.asarray(_zres2['sell_count'], dtype=float)
+        _zmask2 = np.asarray(zero_mask, bool) & (np.abs(_bc2) < 1e-9) & (np.abs(_sc2) < 1e-9)
+        _n_still = int(np.sum(_zmask2))
+        if _n_still < 5:
+            # 3단계 갈 만큼 남은 날이 안 됨 → 2단계 결과 확정
+            return _zres2
+
+        # ── 3단계: 1·2단계에서 쓴 지표를 뺀 '나머지 전부' (주황색) ──
+        _used_names = {
+            'buy': set(_bp2['indicator']) if 'indicator' in _bp2.columns else set(),
+            'sell': set(_sp2['indicator']) if 'indicator' in _sp2.columns else set(),
+        }
+        if buy_pool is not None and 'indicator' in buy_pool.columns:
+            _used_names['buy'] |= set(buy_pool['indicator'])
+        if sell_pool is not None and 'indicator' in sell_pool.columns:
+            _used_names['sell'] |= set(sell_pool['indicator'])
+        _bp3, _sp3 = _build_rate_band_pool(feat, close_ser, horizon=_hz, dd_limit=_ddl, ru_limit=_rul,
+                                          rate_lo=0.0, rate_hi=None, exclude_names=_used_names)
+        if _bp3 is None or _sp3 is None or len(_bp3) == 0 or len(_sp3) == 0:
+            return _zres2   # 3단계 후보가 없으면 2단계로 확정
+
+        _zres3 = _search_zero_count_pool(
+            feat, close_ser, _bp3, _sp3, len(_bp3), len(_sp3), _zmask2,
+            ticker=ticker, weight_exp=weight_exp,
+            main_pos_override=_zres2['daily']['position'].values,  # ★ 2단계 하이브리드 결과 위에 이어쌓기
+            exclude_used=False)
+        if _zres3 is None:
+            return _zres2   # 3단계 탐색 실패 → 2단계로 확정
+
+        # ── 최종 조합: 3단계가 결정한 날(=_zmask2)은 tier=3(주황), 그 외 카운트0인 날은 tier=2(노랑) ──
+        _zres3['tier'] = 3
+        _zres3['daily']['tier'] = np.where(_zmask2, 3,
+                                    np.where(np.asarray(zero_mask, bool), 2, 0))
+        _zres3['tier2_result'] = {'K': _zres2['K'], 'L': _zres2['L'],
+                                  'n_buy': _zres2['n_buy'], 'n_sell': _zres2['n_sell'],
+                                  'zero_days_resolved': int(np.sum(np.asarray(zero_mask, bool) & ~_zmask2))}
+        _zres3['tier2_pool'] = {'buy': _bp2, 'sell': _sp2}
+        _zres3['tier3_pool'] = {'buy': _bp3, 'sell': _sp3}
+        _zres3['zero_days'] = int(np.sum(np.asarray(zero_mask, bool)))   # 원래 카운트0 총일수로 통일
+        return _zres3
+    except Exception as _e:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 카운트0 별도풀 캐스케이드 실패(무시): {_e}")
+        return None
+
+
 def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
                             used_n_buy, used_n_sell, zero_mask, *,
                             ticker='', weight_exp=1.0,
-                            main_net=None, main_K=None, main_L=None):
+                            main_net=None, main_K=None, main_L=None,
+                            exclude_used=True, main_pos_override=None):
     """★ (요청) 카운트 0인 날 전용 별도 풀 탐색 — 하이브리드 전체수익 최대화.
        매수·매도 신호 낸 지표가 '모두 0개'인 날(zero_mask)만 대상으로,
        이미 net에 쓴 상위(used_n_buy/used_n_sell) 지표를 제외한 성공률 우선 풀에서
@@ -17049,6 +17221,13 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
           연속 포지션의 전체 기간 수익을 최대화. 즉 카운트≠0인 날은 메인풀 pos,
           카운트0인 날은 별도풀 (m,n) pos로 이어붙여 진입~청산이 경계를 넘나들어도
           정확히 수익 합산. (이전 매수 상태를 이어받아 카운트0 매도까지 수익 계산 등)
+       ★★ (요청·캐스케이드용 신규 파라미터)
+         exclude_used=False 이면 '이미 쓴 상위 N개 제외' 로직을 건너뛰고 buy_pool/sell_pool을
+           그대로 후보로 씀 — 이미 다른 성공률 밴드로 분리해 만든 2·3단계 전용 풀을 그대로
+           쓸 때 사용(제외 로직이 이중으로 적용되지 않도록).
+         main_pos_override가 주어지면 main_net/K/L로 포지션을 재구성하지 않고 이 배열을
+           그대로 '기준 포지션'(카운트0 아닌 날 등)으로 사용 — 2단계 결과 위에 3단계를
+           이어 쌓는 캐스케이드에서, 3단계 호출의 '메인'을 '2단계 하이브리드 결과'로 넘길 때 사용.
        반환: dict(net, K, L, ret, mdd, n_buy, n_sell, daily, zero_days, ...) 또는 None."""
     try:
         if feat is None or close_ser is None or buy_pool is None or sell_pool is None:
@@ -17063,13 +17242,18 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             if p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1):
                 rr[t] = p1 / p0 - 1.0
 
-        # 이미 쓴 지표 제외 (상위 used_n_buy / used_n_sell) — 단, 풀 크기로 상한.
         bp = buy_pool.reset_index(drop=True); sp = sell_pool.reset_index(drop=True)
-        _ub = min(int(used_n_buy), len(bp)); _us = min(int(used_n_sell), len(sp))
-        used_buy = set(bp['indicator'].iloc[:_ub]) if 'indicator' in bp.columns else set()
-        used_sell = set(sp['indicator'].iloc[:_us]) if 'indicator' in sp.columns else set()
-        rem_buy = bp[~bp['indicator'].isin(used_buy)].reset_index(drop=True) if 'indicator' in bp.columns else bp
-        rem_sell = sp[~sp['indicator'].isin(used_sell)].reset_index(drop=True) if 'indicator' in sp.columns else sp
+        if exclude_used:
+            # 이미 쓴 지표 제외 (상위 used_n_buy / used_n_sell) — 단, 풀 크기로 상한.
+            _ub = min(int(used_n_buy), len(bp)); _us = min(int(used_n_sell), len(sp))
+            used_buy = set(bp['indicator'].iloc[:_ub]) if 'indicator' in bp.columns else set()
+            used_sell = set(sp['indicator'].iloc[:_us]) if 'indicator' in sp.columns else set()
+            rem_buy = bp[~bp['indicator'].isin(used_buy)].reset_index(drop=True) if 'indicator' in bp.columns else bp
+            rem_sell = sp[~sp['indicator'].isin(used_sell)].reset_index(drop=True) if 'indicator' in sp.columns else sp
+        else:
+            # ★ 캐스케이드 2·3단계용 — 이미 성공률 밴드로 분리해 만든 전용 풀이므로 그대로 사용.
+            used_buy = used_sell = set()
+            rem_buy, rem_sell = bp, sp
         # ★ 제외 후 남는 지표가 없으면 전체 풀로 폴백 (카운트0인 날은 메인 지표가 신호를 안 내므로
         #   같은 지표라도 이 날들엔 다른 임계/조합으로 유효할 수 있음). 별도풀이 사라지지 않도록.
         _fallback_buy = _fallback_sell = False
@@ -17114,17 +17298,24 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
 
         # ★ 메인풀 KL 포지션 (카운트≠0인 날에 사용) — main_net/K/L로 히스테리시스 재구성.
         #   당일 net 체결 규약. 메인 정보 없으면 폴백(카운트0인 날만 독립 계산).
-        _has_main = (main_net is not None and main_K is not None and main_L is not None)
-        _main_pos = None
-        if _has_main:
-            _mn = np.asarray(main_net, float)
-            _main_pos = np.zeros(n); _cur = 0.0
-            for s in range(n):
-                v = _mn[s]
-                if v >= float(main_K): _cur = 1.0
-                elif v <= float(main_L): _cur = 0.0
-                _main_pos[s] = _cur
-            _main_pos[0] = 0.0
+        if main_pos_override is not None:
+            # ★ 캐스케이드용 — 이미 계산된(예: 2단계 하이브리드) 포지션을 그대로 '기준'으로 사용.
+            _has_main = True
+            _main_pos = np.asarray(main_pos_override, float).copy()
+            if len(_main_pos) != n:
+                _main_pos = pd.Series(_main_pos).reindex(range(n)).ffill().fillna(0.0).values
+        else:
+            _has_main = (main_net is not None and main_K is not None and main_L is not None)
+            _main_pos = None
+            if _has_main:
+                _mn = np.asarray(main_net, float)
+                _main_pos = np.zeros(n); _cur = 0.0
+                for s in range(n):
+                    v = _mn[s]
+                    if v >= float(main_K): _cur = 1.0
+                    elif v <= float(main_L): _cur = 0.0
+                    _main_pos[s] = _cur
+                _main_pos[0] = 0.0
 
         # n_buy/n_sell 개수 탐색 (좌표하강 — 기존 방식과 동일 취지)
         def _net_for(nb, ns):
@@ -17442,15 +17633,22 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                         _main_K = float(_mkl['best_ret'][0]); _main_L = float(_mkl['best_ret'][1])
                 except Exception:
                     pass
-                _zres = _search_zero_count_pool(
+                _zres = _search_zero_count_pool_cascade(
                     feat, close_ser, buy_pool, sell_pool,
                     n_buy_opt, n_sell_opt, _zero_mask,
                     ticker=ticker, weight_exp=weight_exp,
-                    main_net=net, main_K=_main_K, main_L=_main_L)
+                    main_net=net, main_K=_main_K, main_L=_main_L,
+                    horizon=globals().get('HORIZON_DAYS'),
+                    dd_limit=globals().get('DRAWDOWN_LIMIT_BUY'),
+                    ru_limit=globals().get('RUNUP_LIMIT_SELL'))
                 if _zres is not None:
                     globals()['_KNET_ZERO_POOL'] = _zres
-                    print(f"  ✓ 카운트0 별도풀(하이브리드): {_zres['zero_days']}일 카운트0, "
-                          f"n_buy={_zres['n_buy']}/n_sell={_zres['n_sell']} "
+                    _t2n = int(np.sum(_zres['daily']['tier'].values == 2)) if 'tier' in _zres['daily'].columns else _zres['zero_days']
+                    _t3n = int(np.sum(_zres['daily']['tier'].values == 3)) if 'tier' in _zres['daily'].columns else 0
+                    print(f"  ✓ 카운트0 별도풀(캐스케이드): {_zres['zero_days']}일 카운트0 → "
+                          f"노랑(성공률{POOL_TIER2_RATE_LO*100:.0f}~{POOL_TIER2_RATE_HI*100:.0f}%) {_t2n}일"
+                          + (f" / 주황(나머지) {_t3n}일" if _t3n else "")
+                          + f", n_buy={_zres['n_buy']}/n_sell={_zres['n_sell']} "
                           f"m={_zres['K']:.3f}/n={_zres['L']:.3f} → 하이브리드 전체수익 {_zres['ret']*100:+.2f}%")
                 else:
                     globals()['_KNET_ZERO_POOL'] = None
@@ -18056,10 +18254,17 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
         sk = m.get('skill'); lf = m.get('lift'); skho = m.get('skill_ho')
         pm = m.get('perm'); rel = m.get('reliability'); pf = m.get('rel_pf')
         nn = m.get('n', 0) or 0
+        sr = m.get('sr', np.nan)
         causal = m.get('causal_ok', True)
-        # 하드 배제: 인과성 위반, 스킬 음수, 신호 과소
-        if (not causal) or (np.isfinite(sk) and sk <= 0) or nn < int(g.get('POOL_SUCCESS_MIN_SIG', 10)):
+        # ★★ (요청) '제외' 최소화 — 인과성 위반(=지연 정합성 깨짐, 데이터 결함이지 품질 판단이
+        #   아님)만 하드 배제하고, 그 외(스킬 음수·표본 부족 등)는 '제외' 대신 '탐색' 후보로 남겨
+        #   함께 탐색되게 한다("제외 상태되는 건 제외하지 말고 탐색으로" 요청 반영).
+        if not causal:
             return '✗제외', 0
+        # 표본 가드(90%+ 성공률이면 8개로 완화)도 이제 하드 '제외'가 아니라 '탐색' 강등으로.
+        _sr_ok = float(sr) if (sr is not None and np.isfinite(sr)) else 0.0
+        if not bool(_passes_tiered_sig_gate(_sr_ok, nn)):
+            return '○탐색', 0
         # 강한 확증 신호들(각 조건 충족 시 가점)
         score = 0
         if np.isfinite(sk) and sk >= 0.05: score += 1              # 스킬 +5%p↑
@@ -18069,8 +18274,8 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
         if np.isfinite(pf) and pf >= 1.5: score += 1              # 이득크기/손실크기 1.5배↑
         if np.isfinite(rel) and rel > 0: score += 1               # 신뢰도(크기가중 엣지) 양(+)
         if score >= 5:  return '▣고정', score      # 6개 중 5개 이상 충족 → 확실
-        if score >= 2:  return '○탐색', score      # 애매 → 탐색 대상
-        return '✗제외', score
+        # ★ (요청) 스킬 음수 등으로 점수가 낮아도 '제외'가 아니라 '탐색'으로 — 인과성만 하드제외
+        return '○탐색', score
 
     def _write_pool_table(title, metrics):
         nonlocal r
@@ -19411,12 +19616,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _zp_bt = globals().get('_KNET_ZERO_POOL')
         _zero_days_set = set()
         _zero_pos_by_date = {}; _zero_bc_by_date = {}; _zero_sc_by_date = {}; _zero_net_by_date = {}
+        _zero_tier_by_date = {}   # ★ (요청) 2(노랑, 성공률70-80%) / 3(주황, 나머지) 구분
         _zero_m = _zero_n = None
         if _zp_bt is not None and _zp_bt.get('daily') is not None:
             _zd = _zp_bt['daily']
             _zbc = np.asarray(_zp_bt.get('buy_count')) if _zp_bt.get('buy_count') is not None else None
             _zsc = np.asarray(_zp_bt.get('sell_count')) if _zp_bt.get('sell_count') is not None else None
             _znet_arr = np.asarray(_zp_bt.get('net'))
+            _ztier_arr = (_zd['tier'].values if 'tier' in _zd.columns else None)
             _zero_m = float(_zp_bt['K']); _zero_n = float(_zp_bt['L'])
             for _i in range(len(_zd)):
                 _row_z = _zd.iloc[_i]
@@ -19427,6 +19634,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if _zbc is not None and _i < len(_zbc): _zero_bc_by_date[_dt] = float(_zbc[_i])
                     if _zsc is not None and _i < len(_zsc): _zero_sc_by_date[_dt] = float(_zsc[_i])
                     if _i < len(_znet_arr): _zero_net_by_date[_dt] = float(_znet_arr[_i])
+                    _zero_tier_by_date[_dt] = int(_ztier_arr[_i]) if _ztier_arr is not None else 2
         # 메인 pos에 카운트0 날의 별도풀 pos를 덮어씀
         if _zero_pos_by_date:
             _pos_hybrid = _pos_bt.copy()
@@ -19532,12 +19740,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _sp_src = sell_pool if (sell_pool is not None and len(sell_pool) > 0) else None
 
         # 별도풀(카운트0인 날) 공식용 풀도 준비 — 그 날들은 별도풀 지표로 계산해야 일치.
+        # ★★ (요청) 캐스케이드 확장 — _zp_bt의 rem_buy/rem_sell은 '캐스케이드가 도달한
+        #   가장 깊은 단계'(3단계까지 갔으면 3단계=주황, 2단계에서 멈췄으면 2단계=노랑) 풀이다.
+        #   3단계까지 간 경우엔 2단계 풀이 tier2_pool 키에 별도 보관되어 있으므로 그것도 챙긴다.
         _zp_bt = globals().get('_KNET_ZERO_POOL')
         _use_zero_disp = (_zp_bt and isinstance(_zp_bt, dict)
                           and _zp_bt.get('rem_buy') is not None and _zp_bt.get('rem_sell') is not None
                           and len(_zero_days_set) > 0)
-        _zbp_src = _zp_bt.get('rem_buy') if _use_zero_disp else None
+        _zbp_src = _zp_bt.get('rem_buy') if _use_zero_disp else None      # '최종 도달 단계' 풀
         _zsp_src = _zp_bt.get('rem_sell') if _use_zero_disp else None
+        _has_tier2_separate = bool(_use_zero_disp and _zp_bt.get('tier2_pool') is not None)
+        _zbp2_src = _zp_bt['tier2_pool']['buy'] if _has_tier2_separate else None
+        _zsp2_src = _zp_bt['tier2_pool']['sell'] if _has_tier2_separate else None
 
         # 공식 계산에 쓸 파라미터 (실제 카운트 계산과 동일해야 함)
         _wtd_bt = bool(_nsd.get('weighted'))
@@ -19586,8 +19800,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         # 각 풀의 명명된 신호 배열을 미리 계산 (성능: 지표당 1회)
         _buy_named  = _build_named_sigs(_bp_src)[: (int(_nsd['n_buy_opt']) if _nsd.get('n_buy_opt') else None)]
         _sell_named = _build_named_sigs(_sp_src)[: (int(_nsd['n_sell_opt']) if _nsd.get('n_sell_opt') else None)]
+        # '최종 도달 단계'(3단계 도달 시=주황/tier3, 아니면=노랑/tier2) 풀의 명명된 신호
         _zbuy_named  = _build_named_sigs(_zbp_src)[: (int(_zp_bt['n_buy']) if (_use_zero_disp and _zp_bt.get('n_buy')) else None)] if _use_zero_disp else []
         _zsell_named = _build_named_sigs(_zsp_src)[: (int(_zp_bt['n_sell']) if (_use_zero_disp and _zp_bt.get('n_sell')) else None)] if _use_zero_disp else []
+        # ★ 3단계까지 간 경우, 노랑(tier2)일에 쓸 별도 명명 신호 (tier2_result에 n_buy/n_sell 보관됨)
+        _zbuy2_named = _zsell2_named = []
+        if _has_tier2_separate:
+            _t2r = _zp_bt.get('tier2_result') or {}
+            _zbuy2_named  = _build_named_sigs(_zbp2_src)[: (int(_t2r.get('n_buy')) if _t2r.get('n_buy') else None)]
+            _zsell2_named = _build_named_sigs(_zsp2_src)[: (int(_t2r.get('n_sell')) if _t2r.get('n_sell') else None)]
         _buy_is_ic = _is_ic_pool(_bp_src); _sell_is_ic = _is_ic_pool(_sp_src)
 
         def _formula_at(named_list, day_idx, is_ic):
@@ -19614,8 +19835,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
 
         _ltxt = (f'/L({_L_bt:.3f})' if _L_bt is not None else '')
-        _hyb_txt = (f' 카운트0인 날({len(_zero_days_set)}일)은 별도풀로 대체(노란색).'
-                    if _zero_days_set else '')
+        _n_yellow = sum(1 for _v in _zero_tier_by_date.values() if _v == 2)
+        _n_orange = sum(1 for _v in _zero_tier_by_date.values() if _v == 3)
+        _hyb_txt = ''
+        if _zero_days_set:
+            _hyb_txt = f' 카운트0인 날({len(_zero_days_set)}일)은 별도풀로 대체'
+            if _n_orange:
+                _hyb_txt += (f'(노랑=성공률{POOL_TIER2_RATE_LO*100:.0f}~{POOL_TIER2_RATE_HI*100:.0f}% {_n_yellow}일'
+                            f' / 주황=나머지 {_n_orange}일).')
+            else:
+                _hyb_txt += '(노란색).'
         _next_earn = None
         if _earnings_dates:
             _future = sorted([d for d in _earnings_dates if d >= _last_data_day])
@@ -19668,12 +19897,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         pos = _pos_bt
         rets = _daily_ret
         _YEL = PatternFill('solid', fgColor='FFF2CC')
+        _ORG = PatternFill('solid', fgColor='FFE0B2')   # ★ (요청) 3단계(나머지 전부) = 주황색
         _entry_px = None; _entry_i = None
         for i in range(len(d)):
             r = 6 + i; row = d.iloc[i]
             _p = pos[i]; _act = _action[i]
             _dt_i = _tznaive(row['date'])
             _is_zero_day = _dt_i in _zero_days_set
+            _zero_tier = _zero_tier_by_date.get(_dt_i, 2) if _is_zero_day else 0   # 2=노랑 3=주황
             if _act == '매수': _entry_px = prices[i]; _entry_i = i
             _held = (i - _entry_i) if (_p == 1 and _entry_i is not None) else None
             _unreal = ((prices[i] / _entry_px - 1.0) if (_p == 1 and _entry_px) else None)
@@ -19715,10 +19946,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _is_earn = _dt_i in _earnings_dates
             ws.cell(r, 17).value = ('★어닝' if _is_earn else '')
             # ★ (요청) 매수/매도카운트 공식 — 그날 발화 지표의 기여를 오른쪽 두 컬럼에 기록.
-            #   카운트0인 날은 별도풀 지표, 그 외는 메인풀 지표로 계산 (표시 카운트와 동일 기준).
+            #   카운트0인 날은 해당 tier(2=노랑/70-80%밴드, 3=주황=나머지) 풀 지표,
+            #   그 외는 메인풀 지표로 계산 (표시 카운트와 동일 기준).
             if _is_zero_day and _use_zero_disp:
-                _fb_sum, _fb_txt = _formula_at(_zbuy_named, i, False)
-                _fs_sum, _fs_txt = _formula_at(_zsell_named, i, False)
+                if _zero_tier == 2 and _has_tier2_separate:
+                    # 3단계까지 갔지만 이 날은 2단계(노랑)에서 해결된 날 → 별도 보관한 tier2 풀 사용
+                    _fb_sum, _fb_txt = _formula_at(_zbuy2_named, i, False)
+                    _fs_sum, _fs_txt = _formula_at(_zsell2_named, i, False)
+                else:
+                    # 캐스케이드가 '최종 도달한' 풀(2단계에서 멈췄으면 노랑, 3단계까지 갔으면 주황) 사용
+                    _fb_sum, _fb_txt = _formula_at(_zbuy_named, i, False)
+                    _fs_sum, _fs_txt = _formula_at(_zsell_named, i, False)
             else:
                 _fb_sum, _fb_txt = _formula_at(_buy_named, i, _buy_is_ic)
                 _fs_sum, _fs_txt = _formula_at(_sell_named, i, _sell_is_ic)
@@ -19730,9 +19968,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(r, 19).value = f"[합 {_fs_sum:.2f}]{_smark} = {_fs_txt}"
             ws.cell(r, 18).alignment = Alignment(vertical='center', wrap_text=False)
             ws.cell(r, 19).alignment = Alignment(vertical='center', wrap_text=False)
-            # ★ 카운트0 별도풀 사용일 = 노란색 (요청)
+            # ★ 카운트0 별도풀 사용일 = 노랑(2단계, 성공률70-80%) / 주황(3단계, 나머지) (요청)
             if _is_zero_day:
-                for _c in range(1, 20): ws.cell(r, _c).fill = _YEL
+                _fill_z = _ORG if _zero_tier == 3 else _YEL
+                for _c in range(1, 20): ws.cell(r, _c).fill = _fill_z
                 if _act == '매수': ws.cell(r, 8).font = Font(bold=True, color='006100')
                 elif _act == '매도': ws.cell(r, 8).font = Font(bold=True, color='9C0006')
             else:
@@ -20999,7 +21238,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     print('=' * 72)
     # ★ 요청: 적용된 탐색 설정 로그 (확인용)
     print('  [탐색 설정]')
-    print(f'    · 성공 판정: 신호 다음날(HORIZON={HORIZON_DAYS}일 이내) 종가 ±한도 도달')
+    print(f'    · 성공 판정: 신호 발생 후 HORIZON={HORIZON_DAYS}일 이내 종가 ±한도 도달')
     if globals().get('SEARCH_SUCCESS_LIMIT', False):
         _sl = globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY])
         print(f'    · 상승/하락률 한도 탐색: {[f"{x*100:.0f}%" for x in _sl]} (각 한도로 성공률 계산 → 최적 선정)')
