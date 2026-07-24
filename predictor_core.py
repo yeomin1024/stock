@@ -17084,7 +17084,15 @@ def _evaluate_all_indicators_raw(feat, close, *, horizon, dd_limit, ru_limit, n_
 
 def _filter_rate_band(bdf, sdf, *, rate_lo, rate_hi, exclude_names=None):
     """★★ (성능개선) _evaluate_all_indicators_raw 결과에서 성공률 밴드만 추려내는 값싼 필터
-       (정렬·불리언 마스크뿐 — 지표 재평가 없음). 같은 raw 결과를 밴드만 바꿔 여러 번 호출 가능."""
+       (정렬·불리언 마스크뿐 — 지표 재평가 없음). 같은 raw 결과를 밴드만 바꿔 여러 번 호출 가능.
+       ★★ 버그 수정: evaluate_buy_sell_scores는 지표 1개당 임계값을 최대 100개(양방향 200개)
+       까지 스윕한다 — 같은 지표의 '비슷한' 임계값 변형 수십 개가 전부 같은 성공률 밴드에
+       동시에 걸릴 수 있다. 이걸 중복제거 없이 그대로 풀에 넣으면(이전 버그) 사실상 같은
+       신호를 수십 번 겹쳐 넣는 셈이라 풀이 비정상적으로 부풀고, n_buy/n_sell 탐색이 그
+       중복들을 잔뜩 끌어모아 n_buy=145처럼 비상식적인 값을 '최적'으로 고르는 원인이 됐다
+       (탐색 폭이 커지니 느려지는 것도 덤). 메인풀은 _diversify_keep_thresholds로 이미
+       이런 중복을 정리하는데, 캐스케이드 2·3단계엔 그 단계가 빠져 있었다 — 여기서도 지표명당
+       '가장 좋은 임계값 1개'만 남기도록 중복제거를 추가한다."""
     def _band(df, excl_names):
         if df is None or len(df) == 0:
             return df
@@ -17094,6 +17102,10 @@ def _filter_rate_band(bdf, sdf, *, rate_lo, rate_hi, exclude_names=None):
         if excl_names:
             m = m & (~df['indicator'].isin(excl_names))
         d = df[m].sort_values(['success_rate', 'score'], ascending=[False, False]).reset_index(drop=True)
+        # ★★ 지표명당 최고 임계값 1개만 유지 (동일/유사 신호 중복 방지 — 메인풀의
+        #   _diversify_keep_thresholds와 같은 취지의 최소 버전)
+        if 'indicator' in d.columns and len(d) > 0:
+            d = d.drop_duplicates(subset='indicator', keep='first').reset_index(drop=True)
         return d
     exclude_names = exclude_names or {}
     return _band(bdf, exclude_names.get('buy')), _band(sdf, exclude_names.get('sell'))
