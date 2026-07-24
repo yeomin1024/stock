@@ -17191,7 +17191,12 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
             # 3단계 자체를 안 돌리므로 위에서 공유해둔 _bdf_raw/_sdf_raw도 여기서 그냥 버려짐, OK)
             return _zres2
 
-        # ── 3단계: 1·2단계에서 쓴 지표를 뺀 '나머지 전부' (주황색) — 같은 raw평가를 재사용 ──
+        # ── 3단계: 'A풀(성공률 70%+)' 안에서 1·2단계가 안 쓴 나머지 (주황색) — 같은 raw평가 재사용 ──
+        # ★★ 버그 수정: 이전엔 rate_lo=0.0(하한 없음)이라 성공률 70% 미만 지표까지 전부
+        #   후보에 들어가 수천 개 규모가 됐고, 그 결과 n_buy/n_sell 좌표하강 탐색이
+        #   n_buy=1618 같은 비상식적 값을 "최적"으로 골라버렸다(net 범위도 ±20 이상으로 붕괴).
+        #   요청대로 3단계도 반드시 'A풀'(성공률 >= POOL_TIER2_RATE_LO=0.70) 안에서만 찾는다 —
+        #   1·2단계에서 후보로조차 안 쓰인(=최종 채택 안 된) A풀 내 나머지만 대상.
         _used_names = {
             'buy': set(_bp2['indicator']) if 'indicator' in _bp2.columns else set(),
             'sell': set(_sp2['indicator']) if 'indicator' in _sp2.columns else set(),
@@ -17200,7 +17205,7 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
             _used_names['buy'] |= set(buy_pool['indicator'])
         if sell_pool is not None and 'indicator' in sell_pool.columns:
             _used_names['sell'] |= set(sell_pool['indicator'])
-        _bp3, _sp3 = _filter_rate_band(_bdf_raw, _sdf_raw, rate_lo=0.0, rate_hi=None,
+        _bp3, _sp3 = _filter_rate_band(_bdf_raw, _sdf_raw, rate_lo=_rate_lo2, rate_hi=None,
                                        exclude_names=_used_names)
         if _bp3 is None or _sp3 is None or len(_bp3) == 0 or len(_sp3) == 0:
             return _zres2   # 3단계 후보가 없으면 2단계로 확정
