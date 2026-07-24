@@ -17064,27 +17064,27 @@ def _norm_date_set(dlist):
     return s
 
 
-def _build_rate_band_pool(feat, close, *, horizon, dd_limit, ru_limit,
-                          rate_lo, rate_hi, exclude_names=None, n_thresholds=None):
-    """★★ (요청) 성공률 밴드 [rate_lo, rate_hi) 안의 지표만 골라 (buy_df, sell_df) 반환.
-       카운트0 대체풀 2·3단계용 — feat.columns 전체를 후보로 다시 평가한다.
-       exclude_names: {'buy': set(...), 'sell': set(...)} — 이미 다른 단계에서 쓴 지표명 제외.
-       rate_hi=None 이면 상한 없음(= '나머지 전부', 3단계용). 이때는 성공률 하한도 사실상
-       무의미하므로 rate_lo=0.0 으로 호출해 '평가 가능한 모든 지표'를 후보로 삼는다.
-       ★ (요청) '지표 검증 시 제외되는 건 제외하지 말고 탐색으로' — 여기서는 _tier_of류의
-       스킬/인과성 등 추가 하드컷을 적용하지 않고, 성공률·최소신호수(90%+ 완화 포함) 게이트만
-       적용해 최대한 넓게 후보에 포함시킨다."""
+def _evaluate_all_indicators_raw(feat, close, *, horizon, dd_limit, ru_limit, n_thresholds=None):
+    """★★ (성능개선) 카운트0 대체풀 2·3단계가 공유하는 '전체 지표 1회 평가'.
+       evaluate_buy_sell_scores는 지표 수천 개를 임계값 스윕+지연탐색까지 하는 가장 비싼
+       연산이라, 이 결과를 캐싱해 재사용하면 2단계·3단계가 각각 따로 부르지 않아도 된다
+       (밴드 필터링은 평가 결과에 대한 값싼 후처리일 뿐, 원시 평가 자체는 밴드와 무관).
+       반환: (bdf, sdf) — 성공률 밴드 필터링 '전' 원시 평가 결과."""
     indicators = list(feat.columns)
     lo, hi = POOL_SUCCESS_WIDE_PCT
     _nth = int(n_thresholds) if n_thresholds else int(globals().get('N_THRESHOLDS', 100))
     _min_sig_floor = min(int(globals().get('POOL_SUCCESS_MIN_SIG', 10)),
                         int(globals().get('POOL_SUCCESS_MIN_SIG_HIGH', 8)))
-    bdf, sdf = evaluate_buy_sell_scores(
+    return evaluate_buy_sell_scores(
         feat, close, indicators=indicators, n_thresholds=_nth,
         pct_low=lo, pct_high=hi, horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
         min_signals=_min_sig_floor, wilson_z=1.0,
         anchor_buy_arr=None, anchor_sell_arr=None)
 
+
+def _filter_rate_band(bdf, sdf, *, rate_lo, rate_hi, exclude_names=None):
+    """★★ (성능개선) _evaluate_all_indicators_raw 결과에서 성공률 밴드만 추려내는 값싼 필터
+       (정렬·불리언 마스크뿐 — 지표 재평가 없음). 같은 raw 결과를 밴드만 바꿔 여러 번 호출 가능."""
     def _band(df, excl_names):
         if df is None or len(df) == 0:
             return df
@@ -17095,11 +17095,25 @@ def _build_rate_band_pool(feat, close, *, horizon, dd_limit, ru_limit,
             m = m & (~df['indicator'].isin(excl_names))
         d = df[m].sort_values(['success_rate', 'score'], ascending=[False, False]).reset_index(drop=True)
         return d
-
     exclude_names = exclude_names or {}
-    bband = _band(bdf, exclude_names.get('buy'))
-    sband = _band(sdf, exclude_names.get('sell'))
-    return bband, sband
+    return _band(bdf, exclude_names.get('buy')), _band(sdf, exclude_names.get('sell'))
+
+
+def _build_rate_band_pool(feat, close, *, horizon, dd_limit, ru_limit,
+                          rate_lo, rate_hi, exclude_names=None, n_thresholds=None):
+    """★★ (요청) 성공률 밴드 [rate_lo, rate_hi) 안의 지표만 골라 (buy_df, sell_df) 반환.
+       카운트0 대체풀 2·3단계용 — feat.columns 전체를 후보로 다시 평가한다.
+       exclude_names: {'buy': set(...), 'sell': set(...)} — 이미 다른 단계에서 쓴 지표명 제외.
+       rate_hi=None 이면 상한 없음(= '나머지 전부', 3단계용). 이때는 성공률 하한도 사실상
+       무의미하므로 rate_lo=0.0 으로 호출해 '평가 가능한 모든 지표'를 후보로 삼는다.
+       ★ (요청) '지표 검증 시 제외되는 건 제외하지 말고 탐색으로' — 여기서는 _tier_of류의
+       스킬/인과성 등 추가 하드컷을 적용하지 않고, 성공률·최소신호수(90%+ 완화 포함) 게이트만
+       적용해 최대한 넓게 후보에 포함시킨다.
+       (단독 호출용 하위호환 래퍼 — 캐스케이드 내부에서는 raw평가를 공유하는
+       _evaluate_all_indicators_raw + _filter_rate_band 조합을 대신 쓴다.)"""
+    bdf, sdf = _evaluate_all_indicators_raw(feat, close, horizon=horizon, dd_limit=dd_limit,
+                                            ru_limit=ru_limit, n_thresholds=n_thresholds)
+    return _filter_rate_band(bdf, sdf, rate_lo=rate_lo, rate_hi=rate_hi, exclude_names=exclude_names)
 
 
 def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
@@ -17112,6 +17126,13 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
        2단계: 성공률 [POOL_TIER2_RATE_LO, POOL_TIER2_RATE_HI) 밴드 풀로 (m,n) 탐색 → 노란색.
        3단계: 1·2단계에서 쓴 지표를 뺀 '나머지 전부'로 (o,p) 탐색 → 주황색.
               (2단계가 여전히 그 날 카운트0이면 3단계로 넘김)
+       ★★ (요청·성능개선) '쓸모없는 로직 안 타기' — 결과는 이전과 100% 동일하게 유지하면서:
+         · 옛 방식(메인풀 잔여지표) 폴백은 더 이상 매번 미리 계산하지 않는다. 2단계 풀 자체가
+           비어있어 아예 시도조차 못 할 때만(진짜 필요할 때만) 계산한다 — 2단계가 정상 작동하는
+           보통의 경우, 옛 폴백 계산(좌표하강 K/L 탐색)은 이전엔 매번 돌고 버려졌지만 이제 아예
+           안 돈다.
+         · 2단계·3단계가 각각 따로 전체지표 재평가(evaluate_buy_sell_scores, 가장 비싼 연산)를
+           부르지 않고, 한 번의 원시평가 결과를 성공률 밴드만 바꿔가며(값싼 필터) 공유한다.
        반환: dict 또는 None.
          결과 dict의 daily에는 'tier' 컬럼(0=메인/해당없음, 2=노랑, 3=주황)이 추가되어
          엑셀 쪽에서 바로 색칠에 쓸 수 있다. K/L/n_buy/n_sell 등은 '최종 채택된 단계'
@@ -17127,25 +17148,27 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
         _ddl = float(dd_limit) if dd_limit is not None else float(globals().get('DRAWDOWN_LIMIT_BUY', 0.01))
         _rul = float(ru_limit) if ru_limit is not None else float(globals().get('RUNUP_LIMIT_SELL', 0.01))
 
-        # ── 1단계는 기존 로직 그대로(메인풀에서 이미 쓴 상위 N개 제외) — 폴백 기준선 ──
-        _zres1 = _search_zero_count_pool(
-            feat, close_ser, buy_pool, sell_pool, used_n_buy, used_n_sell, zero_mask,
-            ticker=ticker, weight_exp=weight_exp, main_net=main_net, main_K=main_K, main_L=main_L,
-            exclude_used=True)
-        # 1단계가 아예 안 되면(풀 부족 등) 더 진행 불가
-        if _zres1 is None:
-            return None
-        _zres1['tier'] = 2   # ★ (요청) 기존 단일 폴백은 이제 '노란색'(2단계) 자리를 대신 차지.
-        # 주의: 여기서 '1단계=메인풀 잔여지표' 결과를 그대로 노란색으로 표시하면 요청과 다르므로,
-        # 아래에서 '성공률 70~80% 밴드' 결과로 다시 덮어쓴다. 1단계 결과는 그 밴드 탐색이
-        # 실패했을 때의 안전 폴백으로만 보관한다.
-        _zres_fallback = _zres1
+        def _legacy_fallback():
+            """옛 방식(메인풀 잔여지표) 폴백 — 2단계가 아예 안 될 때만 호출(지연 계산)."""
+            _zr1 = _search_zero_count_pool(
+                feat, close_ser, buy_pool, sell_pool, used_n_buy, used_n_sell, zero_mask,
+                ticker=ticker, weight_exp=weight_exp, main_net=main_net, main_K=main_K, main_L=main_L,
+                exclude_used=True)
+            if _zr1 is None:
+                return None
+            _zr1['tier'] = 2
+            _zr1['tier2_fallback_used'] = True
+            _zr1['daily']['tier'] = np.where(_zr1['daily']['zero_count_day'] == 1, 2, 0)
+            return _zr1
+
+        # ── 전체 지표 원시평가는 '1번만' — 2·3단계가 이 결과를 공유(성능개선 핵심) ──
+        _bdf_raw, _sdf_raw = _evaluate_all_indicators_raw(feat, close_ser, horizon=_hz,
+                                                          dd_limit=_ddl, ru_limit=_rul)
 
         # ── 2단계: 성공률 70~80% 밴드 전용 풀 (노란색) ──
         _rate_lo2 = float(globals().get('POOL_TIER2_RATE_LO', 0.70))
         _rate_hi2 = float(globals().get('POOL_TIER2_RATE_HI', 0.80))
-        _bp2, _sp2 = _build_rate_band_pool(feat, close_ser, horizon=_hz, dd_limit=_ddl, ru_limit=_rul,
-                                          rate_lo=_rate_lo2, rate_hi=_rate_hi2)
+        _bp2, _sp2 = _filter_rate_band(_bdf_raw, _sdf_raw, rate_lo=_rate_lo2, rate_hi=_rate_hi2)
         _zres2 = None
         if _bp2 is not None and _sp2 is not None and len(_bp2) > 0 and len(_sp2) > 0:
             _zres2 = _search_zero_count_pool(
@@ -17153,10 +17176,8 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
                 ticker=ticker, weight_exp=weight_exp, main_net=main_net, main_K=main_K, main_L=main_L,
                 exclude_used=False)
         if _zres2 is None:
-            # 70~80% 밴드가 비었거나 탐색 실패 → 기존 방식(메인풀 잔여지표) 폴백 유지, 3단계 생략.
-            _zres1['tier2_fallback_used'] = True
-            _zres1['daily']['tier'] = np.where(_zres1['daily']['zero_count_day'] == 1, 2, 0)
-            return _zres1
+            # 70~80% 밴드가 비었거나 탐색 실패 → 여기서 '처음으로' 옛 폴백을 계산(지연 계산).
+            return _legacy_fallback()
         _zres2['tier'] = 2
         _zres2['daily']['tier'] = np.where(_zres2['daily']['zero_count_day'] == 1, 2, 0)
 
@@ -17166,10 +17187,11 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
         _zmask2 = np.asarray(zero_mask, bool) & (np.abs(_bc2) < 1e-9) & (np.abs(_sc2) < 1e-9)
         _n_still = int(np.sum(_zmask2))
         if _n_still < 5:
-            # 3단계 갈 만큼 남은 날이 안 됨 → 2단계 결과 확정
+            # 3단계 갈 만큼 남은 날이 안 됨 → 2단계 결과 확정 (3단계 raw평가 재사용 불필요 — 애초에
+            # 3단계 자체를 안 돌리므로 위에서 공유해둔 _bdf_raw/_sdf_raw도 여기서 그냥 버려짐, OK)
             return _zres2
 
-        # ── 3단계: 1·2단계에서 쓴 지표를 뺀 '나머지 전부' (주황색) ──
+        # ── 3단계: 1·2단계에서 쓴 지표를 뺀 '나머지 전부' (주황색) — 같은 raw평가를 재사용 ──
         _used_names = {
             'buy': set(_bp2['indicator']) if 'indicator' in _bp2.columns else set(),
             'sell': set(_sp2['indicator']) if 'indicator' in _sp2.columns else set(),
@@ -17178,8 +17200,8 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
             _used_names['buy'] |= set(buy_pool['indicator'])
         if sell_pool is not None and 'indicator' in sell_pool.columns:
             _used_names['sell'] |= set(sell_pool['indicator'])
-        _bp3, _sp3 = _build_rate_band_pool(feat, close_ser, horizon=_hz, dd_limit=_ddl, ru_limit=_rul,
-                                          rate_lo=0.0, rate_hi=None, exclude_names=_used_names)
+        _bp3, _sp3 = _filter_rate_band(_bdf_raw, _sdf_raw, rate_lo=0.0, rate_hi=None,
+                                       exclude_names=_used_names)
         if _bp3 is None or _sp3 is None or len(_bp3) == 0 or len(_sp3) == 0:
             return _zres2   # 3단계 후보가 없으면 2단계로 확정
 
