@@ -17443,23 +17443,27 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
                         pos = _zpos
                     pos[0] = 0.0
                     _hr = np.zeros(n); _hr[1:] = pos[:-1] * rr[1:]
-                    # ★★ (요청) 탐색 기준을 '하이브리드 전체기간 수익'에서 '카운트0인 날만의
-                    #   수익 합'으로 변경 — 원래는 zmask가 아닌 나머지 95%+ 기간의 등락까지
-                    #   (m,n) 선택에 영향을 줘서, 카운트0인 날과 무관한 이유로 이상한(과최적화된)
-                    #   조합이 뽑히던 문제의 근본 원인이었다. 이제 이 (m,n)이 '실제로 담당하는
-                    #   날들'에서만 얼마나 잘하는지로 순수하게 평가한다.
+                    # ★★ (요청 — 재변경) 탐색 기준을 다시 '하이브리드 전체기간 수익'으로.
+                    #   카운트0구간만으로 최적화하면 그 구간 안에서는 좋아 보여도, 실제 하이브리드
+                    #   (메인+대체풀 이어붙인) 전체 결과가 메인풀 단독(예: 401%)보다 낮아지는
+                    #   경우가 실측으로 확인됐다(경계효과 등으로 국소최적이 전역에서 해로울 수
+                    #   있음) — 그래서 원래대로 '전체 하이브리드 수익'을 최적화 기준으로 삼는다.
+                    #   카운트0구간수익은 여전히 계산·표시(정보용 zret)는 하되 선정엔 안 씀.
                     zret = float(np.sum(_hr[zmask])) if zmask is not None else float(np.sum(_hr))
-                    ret = float(np.sum(_hr))   # 하이브리드 전체기간 수익 — 참고용으로 계속 보관
+                    ret = float(np.sum(_hr))   # ★ 이제 이게 다시 선정 기준(하이브리드 전체기간)
                     cum_z = np.cumsum(np.where(zmask, _hr, 0.0))
                     mdd_z = float(np.min(cum_z - np.maximum.accumulate(cum_z))) if len(cum_z) else 0.0
-                    if best is None or zret > best[2]:
-                        best = (K, L, zret, mdd_z, int(_zpos.sum()), pos.copy(), ret)
+                    cum_h = np.cumsum(_hr)
+                    mdd_h = float(np.min(cum_h - np.maximum.accumulate(cum_h))) if len(cum_h) else 0.0
+                    if best is None or ret > best[2]:
+                        # best[2]=zret(정보용, 필드순서 유지) / _best_score_track=ret(실제 비교기준)
+                        best = (K, L, zret, mdd_h, int(_zpos.sum()), pos.copy(), ret)
                     if collect_top:
-                        _top.append({'K': float(K), 'L': float(L), 'ret': zret, 'mdd': mdd_z,
+                        _top.append({'K': float(K), 'L': float(L), 'ret': zret, 'mdd': mdd_h,
                                      'dl': int(_zpos.sum()), 'pos': pos.copy(),
                                      'hybrid_ret': ret})
             return (best, _top) if collect_top else best
-        # 개수 탐색: 좌표하강 (기준도 동일하게 '카운트0인 날만의 수익 합'으로 통일)
+        # 개수 탐색: 좌표하강 (기준도 동일하게 '하이브리드 전체기간 수익'으로 통일)
         nb_list = list(range(n_min, nB + 1)) or [nB]
         ns_list = list(range(n_min, nS + 1)) or [nS]
         best_overall = None
@@ -17467,11 +17471,12 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         _best_nb = nb_list[0]; _bsc = -1e18
         for nb in nb_list:
             net_c, _, _ = _net_for(nb, _bns); _bkl = _search_kl(net_c)
-            if _bkl and _bkl[2] > _bsc: _bsc = _bkl[2]; _best_nb = nb
+            # ★ (요청) 개수(n_buy/n_sell) 선택도 하이브리드 전체기간 수익(_bkl[6])으로 통일
+            if _bkl and _bkl[6] > _bsc: _bsc = _bkl[6]; _best_nb = nb
         _best_ns = ns_list[0]; _bsc = -1e18
         for ns in ns_list:
             net_c, _, _ = _net_for(_best_nb, ns); _bkl = _search_kl(net_c)
-            if _bkl and _bkl[2] > _bsc: _bsc = _bkl[2]; _best_ns = ns; best_overall = (_best_nb, ns, _bkl, net_c)
+            if _bkl and _bkl[6] > _bsc: _bsc = _bkl[6]; _best_ns = ns; best_overall = (_best_nb, ns, _bkl, net_c)
         if best_overall is None:
             return None
         nb_f, ns_f, bkl, net_f = best_overall
@@ -17760,7 +17765,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                           + f" | 2단계풀 매수{_t2pool_n.split('/')[0]}/매도{_t2pool_n.split('/')[1]}{_t3pool_n}"
                           + f"\n     n_buy={_zres['n_buy']}/n_sell={_zres['n_sell']} "
                           f"m={_zres['K']:.3f}/n={_zres['L']:.3f} → "
-                          f"카운트0구간수익 {_zres['ret']*100:+.2f}% (참고: 하이브리드 전체기간 {_zres['hybrid_ret']*100:+.2f}%)")
+                          f"하이브리드 전체기간수익 {_zres['hybrid_ret']*100:+.2f}% (참고: 카운트0구간만 {_zres['ret']*100:+.2f}%)")
                 else:
                     globals()['_KNET_ZERO_POOL'] = None
             elif _is_full_run:
@@ -18980,6 +18985,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     ws.column_dimensions['C'].width = 26
     ws.column_dimensions['D'].width = 18
 
+    # ★★ (요청) 레거시 앙상블(K_buy/vote_buy) '현재 포지션' 시트 — 실제 매매결정은
+    #   K/L 순신호가 하므로 더 이상 안 씀. 계산 자체는 이미 최소화돼 있고(플레이스홀더),
+    #   여기선 '만들고 나서 바로 지우기'로 최종 파일에서 확실히 제외한다.
+    if globals().get('SKIP_LEGACY_META_ENSEMBLE', False) and '★ 현재 포지션' in wb.sheetnames:
+        wb.remove(wb['★ 현재 포지션'])
+
     # 2. 사용된 설정
     ws = wb.create_sheet('사용된 설정'); ws.sheet_view.showGridLines = False
     ws.cell(1, 1).value = f'{ticker} — 메타 + 앙상블 자동 선정'
@@ -19172,6 +19183,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
+    # ★★ (요청) 레거시 메타-그리드 결과 시트 — 더 이상 안 씀. 만들고 나서 조건부 삭제.
+    if globals().get('SKIP_LEGACY_META_ENSEMBLE', False) and '메타_그리드_결과' in wb.sheetnames:
+        wb.remove(wb['메타_그리드_결과'])
+
     # 4. 매수 앙상블 지표
     ws = wb.create_sheet('매수_앙상블_지표'); ws.sheet_view.showGridLines = False
     ws.cell(1, 1).value = f'매수 앙상블 {len(buy_used)}개 지표'
@@ -19194,6 +19209,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
 
+    # ★★ (요청) 레거시 매수 앙상블 지표 시트 — 더 이상 안 씀. 만들고 나서 조건부 삭제.
+    if globals().get('SKIP_LEGACY_META_ENSEMBLE', False) and '매수_앙상블_지표' in wb.sheetnames:
+        wb.remove(wb['매수_앙상블_지표'])
+
     # 5. 매도 앙상블 지표
     ws = wb.create_sheet('매도_앙상블_지표'); ws.sheet_view.showGridLines = False
     ws.cell(1, 1).value = f'매도 앙상블 {len(sell_used)}개 지표'
@@ -19215,6 +19234,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     for ci, w in enumerate([5, 32, 8, 14, 8, 10, 10, 10, 10, 11, 9], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
+
+    # ★★ (요청) 레거시 매도 앙상블 지표 시트 — 더 이상 안 씀. 만들고 나서 조건부 삭제.
+    if globals().get('SKIP_LEGACY_META_ENSEMBLE', False) and '매도_앙상블_지표' in wb.sheetnames:
+        wb.remove(wb['매도_앙상블_지표'])
 
     # 6. 내부 그리드 통과
     ws = wb.create_sheet('내부_그리드_통과'); ws.sheet_view.showGridLines = False
@@ -19440,6 +19463,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                             10, 15, 10, 14, 14], 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = 'A4'
+
+    # ★★ (요청) 레거시 내부 그리드 통과 시트 — 더 이상 안 씀. 만들고 나서 조건부 삭제.
+    if globals().get('SKIP_LEGACY_META_ENSEMBLE', False) and '내부_그리드_통과' in wb.sheetnames:
+        wb.remove(wb['내부_그리드_통과'])
 
     # ★ 순신호 K 결과 — 전체수익 최고 K / OOS수익 최고 K 2개 계산 (풀은 공유).
     _nsd_main = None; _nsd_full = None; _nsd_oos = None
@@ -20212,6 +20239,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _write_success_sheet(ws, _spb, '매수')
         ws = wb.create_sheet('성공률 우선 매도'); ws.sheet_view.showGridLines = False
         _write_success_sheet(ws, _sps, '매도')
+        # ★★ (요청) 레거시 성공률 우선 매수/매도 시트 — 더 이상 안 씀. 조건부 삭제.
+        if globals().get('SKIP_LEGACY_META_ENSEMBLE', False):
+            for _snm in ('성공률 우선 매수', '성공률 우선 매도'):
+                if _snm in wb.sheetnames:
+                    wb.remove(wb[_snm])
     except Exception as _esp:
         print(f"  ⚠ 성공률 우선 선출 시트 작성 실패(무시): {_esp}")
 
@@ -20521,8 +20553,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             f'카운트0인 날 중 이 단계가 담당하는 {int(_zmask_mn.sum())}일은 별도풀 ({label_a},{label_b}) 신호, '
             f'그 외 날은 메인풀(또는 상위단계) 신호로 이어붙인 연속 포지션. '
             f'{label_a}=매수임계(net≥{label_a} 매수·롱) / {label_b}=매도임계(net≤{label_b} 매도·현금), {label_a}≥{label_b}. '
-            f'★=카운트0구간수익 최대 조합(탐색 기준 — 하이브리드 전체기간이 아니라 이 단계가 '
-            f'담당하는 날들만의 수익 합으로 순위를 매김).')
+            f'★=하이브리드 전체기간수익 최대 조합(탐색 기준 — 이 단계 담당일뿐 아니라 '
+            f'메인풀·다른 단계까지 이어붙인 전체 기간 수익으로 순위를 매김. 카운트0구간만의 '
+            f'수익은 참고용으로 별도 표시).')
         wsm.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
         wsm.merge_cells('A1:Q1')
 
@@ -20577,7 +20610,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                       '거래횟수', '승률%', '매수정확도%', '매수신호일수', '매도정확도%', '매도신호일수',
                       '최근매수일', '매수가', '최근매도일', '매도가', '비고'])
         # ★ 카운트0구간수익(t['ret'], 새 탐색기준) 내림차순으로 순위
-        _mtop = sorted(zdata['top'], key=lambda x: -x['ret'])
+        _mtop = sorted(zdata['top'], key=lambda x: -x.get('hybrid_ret', x['ret']))
         _best_mn = (zdata['K'], zdata['L'])
         _GOODc = PatternFill('solid', fgColor='C6EFCE')
         _row_mn = 4; _shown = 0
@@ -20586,7 +20619,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             pos = t['pos']
             nt, wr, lb, lbp, ls, lsp, hdd, bacc, sacc, nbs, nss = _mn_stats(pos, m_, n_)
             _tag = ''
-            if abs(m_-_best_mn[0])<1e-9 and abs(n_-_best_mn[1])<1e-9: _tag = '★카운트0구간수익최대'
+            if abs(m_-_best_mn[0])<1e-9 and abs(n_-_best_mn[1])<1e-9: _tag = '★하이브리드전체수익최대'
             wsm.cell(_row_mn, 1).value = _shown + 1
             wsm.cell(_row_mn, 2).value = round(m_, 3)
             wsm.cell(_row_mn, 3).value = round(n_, 3)
@@ -20611,11 +20644,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             wsm.column_dimensions[get_column_letter(ci)].width = w
         wsm.freeze_panes = 'A4'
         wsm.cell(2, 1).value = (
-            f"★카운트0구간수익 최대: {label_a}={zdata['K']:.3f}/{label_b}={zdata['L']:.3f} → "
-            f"카운트0구간 {zdata['ret']*100:+.2f}% (하이브리드 전체 {zdata.get('hybrid_ret', zdata['ret'])*100:+.2f}%) | "
+            f"★하이브리드전체수익 최대: {label_a}={zdata['K']:.3f}/{label_b}={zdata['L']:.3f} → "
+            f"하이브리드 전체 {zdata.get('hybrid_ret', zdata['ret'])*100:+.2f}% (참고: 카운트0구간만 {zdata['ret']*100:+.2f}%) | "
             f"담당일 {int(_zmask_mn.sum())}일 | 지표수 {label_a}풀={zdata['n_buy']}/{label_b}풀={zdata['n_sell']}")
         wsm.cell(2, 1).font = Font(bold=True, color='C00000'); wsm.merge_cells('A2:Q2')
-        print(f"  ✓ {sheet_name} 시트 — {len(_mtop)}개 조합, ★카운트0구간수익최대 "
+        print(f"  ✓ {sheet_name} 시트 — {len(_mtop)}개 조합, ★하이브리드전체수익최대 "
               f"{label_a}={zdata['K']:.3f}/{label_b}={zdata['L']:.3f}")
         return True
 
@@ -20658,8 +20691,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 f'그 외 날은 메인풀 KL 신호로 이어붙인 연속 포지션. '
                 f'이미 쓴 지표 제외(매수 {_zp["excluded_buy"]}개/매도 {_zp["excluded_sell"]}개) 후 성공률 우선 풀에서 재탐색. '
                 f'카운트0인 날 {_zp["zero_days"]}일 · n_buy={_zp["n_buy"]}/n_sell={_zp["n_sell"]} · '
-                f'm={_zp["K"]:.3f}/n={_zp["L"]:.3f} · 카운트0구간수익 {_zp["ret"]*100:+.2f}% '
-                f'(참고: 하이브리드 전체기간 {_zp.get("hybrid_ret", _zp["ret"])*100:+.2f}%, MDD {_zp["mdd"]*100:.2f}%)')
+                f'm={_zp["K"]:.3f}/n={_zp["L"]:.3f} · 하이브리드 전체기간수익 {_zp.get("hybrid_ret", _zp["ret"])*100:+.2f}% '
+                f'(참고: 카운트0구간만 {_zp["ret"]*100:+.2f}%, MDD {_zp["mdd"]*100:.2f}%)')
             wsz.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
             wsz.merge_cells('A1:H1')
 
@@ -20670,8 +20703,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ('별도풀 크기', f'매수 {_zp["pool_buy_n"]}개 / 매도 {_zp["pool_sell_n"]}개 (제외 후 남은 성공률우선 풀)'),
                 ('선정 개수', f'n_buy={_zp["n_buy"]} / n_sell={_zp["n_sell"]}'),
                 ('선정 임계 (m/n)', f'm={_zp["K"]:.3f} (net≥m 매수) / n={_zp["L"]:.3f} (net≤n 매도)'),
-                ('카운트0구간수익 (선정기준)', f'{_zp["ret"]*100:+.2f}% (이 단계가 담당하는 날들만의 수익 합)'),
-                ('하이브리드 전체기간수익 (참고용)', f'{_zp.get("hybrid_ret", _zp["ret"])*100:+.2f}% (카운트0인 날 별도풀 + 그 외 메인풀, 경계 넘나드는 거래 반영)'),
+                ('하이브리드 전체기간수익 (선정기준)', f'{_zp.get("hybrid_ret", _zp["ret"])*100:+.2f}% (메인풀+이 단계 이어붙인 전체 기간 수익)'),
+                ('카운트0구간수익 (참고용)', f'{_zp["ret"]*100:+.2f}% (이 단계가 담당하는 날들만의 수익 합)'),
                 ('하이브리드 MDD', f'{_zp["mdd"]*100:.2f}%'),
             ]
             for _i, (_k, _v) in enumerate(_summ):
@@ -20898,7 +20931,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 검증_예측로직 시트 작성 실패(무시): {_ve}")
 
+    # ★★ (요청) 저장 직전 실제 시트 목록 로그 — 'op 순신호' 등이 이 시점에 실제로
+    #   있는지/없는지 확정적으로 확인하기 위한 진단용. 만들었다는 로그가 찍혔는데도
+    #   최종 파일에 없다는 보고가 있어서, 저장 '직전' 스냅샷을 남겨 다음 실행에서
+    #   바로 원인을 좁힐 수 있게 한다 (write_excel 내부 문제 vs 그 이후 문제 구분).
+    print(f"  📋 저장 직전 시트 목록({len(wb.sheetnames)}개): {wb.sheetnames}")
     wb.save(output_file)
+    print(f"  📋 저장 완료 확인: {output_file}")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -25150,6 +25189,59 @@ def _extract_pool_workbook(full_xlsx_path, pool_xlsx_path):
     except Exception as e:
         print(f"  ⚠ 풀 엑셀 저장 실패: {e}")
         return False
+
+
+def build_ensemble_search_direct(ticker, *, out_dir=None, end_date=None,
+                                 mirror_to_ensemble=True, **search_kwargs):
+    """★★ (요청) predictor_core.py만 단독으로 돌릴 때 — 코드1처럼 '지표풀 엑셀'만 만들고
+       버리는 중간 단계 없이, 곧바로 최종 'ensemble_search_<티커>_<날짜>.xlsx' 결과를 만든다.
+       (코드1/코드2 두 스크립트로 나눠 쓰는 게 아니라, predictor_core.py 하나만 돌려서
+       전체 분석 결과를 바로 받고 싶을 때 사용 — __tmp_full_* 임시파일이나
+       pool_ensemble_* 풀파일을 만들지 않음.)
+       반환: 저장된 결과 엑셀 경로(또는 None)."""
+    g = globals()
+    _dir = out_dir or g.get('OUTPUT_DIR') or '.'
+    try:
+        os.makedirs(_dir, exist_ok=True)
+    except Exception:
+        pass
+    _today = datetime.now().strftime('%Y-%m-%d')
+    _out_path = os.path.join(_dir, f"ensemble_search_{ticker}_{_today}.xlsx")
+
+    feat, close = None, None
+    if '_resolve_data_for_ticker' in g and callable(g['_resolve_data_for_ticker']):
+        try:
+            feat, close = g['_resolve_data_for_ticker'](ticker, end_date=end_date)
+        except Exception as e:
+            print(f"  ⚠ 데이터 로드 실패({ticker}): {e}")
+            return None
+    if feat is None or close is None:
+        print(f"  ✗ {ticker} 데이터 없음 — 결과 생성 불가")
+        return None
+
+    old_ticker = g.get('TICKER'); g['TICKER'] = ticker
+    g['_pair_feat'] = feat; g['_pair_close'] = close; g['_pair_ticker'] = ticker
+    _kwargs = dict(search_kwargs)
+    _kwargs.update(dict(write_output=True, output_file=_out_path))
+    try:
+        run_ensemble_search(**_kwargs)
+    except Exception as e:
+        print(f"  ✗ {ticker} 결과 생성 실패: {e}")
+        import traceback; traceback.print_exc()
+        g['TICKER'] = old_ticker
+        return None
+    g['TICKER'] = old_ticker
+
+    if not os.path.exists(_out_path):
+        print(f"  ✗ {ticker} 결과 파일이 생성되지 않음: {_out_path}")
+        return None
+    print(f"  💾 결과 엑셀 저장: {_out_path}")
+    if mirror_to_ensemble:
+        try:
+            _mirror_to_ensemble([_out_path])
+        except Exception as e:
+            print(f"  ⚠ ensemble(드라이브) 미러 실패(무시): {e}")
+    return _out_path
 
 
 def build_pool_excel_for_ticker(ticker, *, out_dir=None, end_date=None,
