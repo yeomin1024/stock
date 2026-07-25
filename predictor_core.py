@@ -20150,8 +20150,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         for ci, w in enumerate([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14, 11, 14, 7, 10, 70, 70], 1):
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.freeze_panes = 'A6'
+        _n_yellow_sum = sum(1 for _v in _zero_tier_by_date.values() if _v == 2)
+        _n_orange_sum = sum(1 for _v in _zero_tier_by_date.values() if _v == 3)
+        _zero_color_txt = (f"노랑{_n_yellow_sum}일/주황{_n_orange_sum}일" if _n_orange_sum
+                           else f"{len(_zero_days_set)}일 노란색") if _zero_days_set else "0일"
         print(f"  ✓ {_shname}: {_kltag}, 거래 {_n_trades_bt}회, 수익 {_full_cum*100:+.2f}% "
-              f"(카운트0 별도풀일 {len(_zero_days_set)}일 노란색)")
+              f"(카운트0 별도풀일 {_zero_color_txt})")
 
     # 9. ★ OOS 일별 거래
     if oos_enabled and oos_daily is not None and len(oos_daily) > 0:
