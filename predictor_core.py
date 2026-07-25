@@ -17534,6 +17534,20 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             bkl = _bkl_final
         K, L, ret, mdd, dl, pos, hybrid_ret = bkl
 
+        # ★★ (요청) '메인풀 단독(대체 없음) 기준선'과 비교 — 캐스케이드가 그 기준선을 못
+        #   넘으면 실제 포지션엔 대체를 적용하지 않는다(색 표시만). 실측 확인된 문제: 캐스케이드가
+        #   찾은 최선의 (m,n)/(o,p)조차도 '아예 대체 안 하고 메인풀 포지션을 그대로 이어가는 것'
+        #   보다 하이브리드 전체수익이 낮을 수 있다 — 이 경우 대체가 오히려 손해이므로 적용 보류.
+        applied = True
+        if _has_main:
+            _hr_base = np.zeros(n); _hr_base[1:] = _main_pos[:-1] * rr[1:]
+            _baseline_ret = float(np.sum(_hr_base))
+            if hybrid_ret <= _baseline_ret:
+                applied = False
+                pos = _main_pos.copy()          # 대체 취소 — 메인풀(또는 상위단계) 포지션 유지
+                hybrid_ret = _baseline_ret       # 실제 반영되는 수익은 기준선 그대로
+                ret = _baseline_ret
+
         # 별도 풀 daily — ★ 하이브리드 전체 포지션 (카운트0인 날=별도풀, 그 외=메인풀).
         #   day_ret은 전체 기간 실현수익(pos[t-1]*rr[t]). 카운트0인 날은 별도풀이 정한 pos.
         daily_ret = np.zeros(n); daily_ret[1:] = pos[:-1] * rr[1:]
@@ -17556,6 +17570,7 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         _zbuy_count = buy_cum[nb_f-1] if nb_f-1 < buy_cum.shape[0] else buy_cum[-1]
         _zsell_count = sell_cum[ns_f-1] if ns_f-1 < sell_cum.shape[0] else sell_cum[-1]
         return dict(net=net_f, K=float(K), L=float(L), ret=float(ret), mdd=float(mdd),
+                    applied=applied,   # ★ (요청) False면 기준선(대체없음)이 더 나아서 색만 표시, 실제 포지션엔 미반영
                     hybrid_ret=float(hybrid_ret),  # ★ 참고용 — 하이브리드 전체기간 수익(선정기준 아님)
                     n_buy=int(nb_f), n_sell=int(ns_f), daily=daily,
                     zero_days=int(np.sum(zmask)), pool_buy_n=int(nB), pool_sell_n=int(nS),
@@ -17803,16 +17818,24 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                     _t3n = int(np.sum(_zres['daily']['tier'].values == 3)) if 'tier' in _zres['daily'].columns else 0
                     _t2pool_n = f"{len(_zres['tier2_pool']['buy'])}/{len(_zres['tier2_pool']['sell'])}" if _zres.get('tier2_pool') else f"{_zres['pool_buy_n']}/{_zres['pool_sell_n']}"
                     _t3pool_n = f", 3단계풀 매수{len(_zres['tier3_pool']['buy'])}/매도{len(_zres['tier3_pool']['sell'])}" if _zres.get('tier3_pool') else ""
-                    # ★★ 버그 수정: 값은 이미 '카운트0구간수익'(하이브리드 아님)으로 바뀌었는데
-                    #   로그 라벨이 예전 그대로 '하이브리드 전체수익'이라 찍혀 있었다 — 실제
-                    #   계산된 값과 이름이 안 맞는 상태였음. 라벨을 정확히 고치고, 참고용
-                    #   하이브리드 값도 괄호로 같이 보여준다. 지표풀 개수도 단계별로 표시(요청).
+                    # ★★ (요청) 3단계 도달 시 top-level K/L은 실은 o/p(3단계)이므로 라벨을 정확히
+                    #   구분해서 표시하고, 2단계 자체의 m/n도 같이 보여준다. 기준선(대체없음) 못
+                    #   넘어 실제로 적용 안 됐으면 명시(색만 표시, 포지션엔 미반영).
+                    _t2r_log = _zres.get('tier2_result')
+                    _applied_top = bool(_zres.get('applied', True))
+                    if _t2r_log:
+                        _applied_t2_log = bool(_t2r_log.get('applied', True))
+                        _label_txt = (f"2단계 m={_t2r_log['K']:.3f}/n={_t2r_log['L']:.3f}"
+                                     f"{'(미적용)' if not _applied_t2_log else ''} | "
+                                     f"3단계 o={_zres['K']:.3f}/p={_zres['L']:.3f}"
+                                     f"{'(미적용)' if not _applied_top else ''}")
+                    else:
+                        _label_txt = f"m={_zres['K']:.3f}/n={_zres['L']:.3f}{'(미적용)' if not _applied_top else ''}"
                     print(f"  ✓ 카운트0 별도풀(캐스케이드): {_zres['zero_days']}일 카운트0 → "
                           f"노랑(성공률{POOL_TIER2_RATE_LO*100:.0f}~{POOL_TIER2_RATE_HI*100:.0f}%) {_t2n}일"
                           + (f" / 주황(나머지) {_t3n}일" if _t3n else "")
                           + f" | 2단계풀 매수{_t2pool_n.split('/')[0]}/매도{_t2pool_n.split('/')[1]}{_t3pool_n}"
-                          + f"\n     n_buy={_zres['n_buy']}/n_sell={_zres['n_sell']} "
-                          f"m={_zres['K']:.3f}/n={_zres['L']:.3f} → "
+                          + f"\n     n_buy={_zres['n_buy']}/n_sell={_zres['n_sell']} {_label_txt} → "
                           f"하이브리드 전체기간수익 {_zres['hybrid_ret']*100:+.2f}% (참고: 카운트0구간만 {_zres['ret']*100:+.2f}%)")
                 else:
                     globals()['_KNET_ZERO_POOL'] = None
@@ -20064,8 +20087,24 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                f'메인풀은 KL 순신호 ★최대수익과 동일.{_hyb_txt} 수익=상승·하락률 합산.')
         ws.cell(1, 1).font = Font(bold=True, size=13, color='1F3864'); ws.merge_cells('A1:S1')
         def _p2(x): return (f"{x*100:+.2f}%" if x is not None else '—')
-        _mn_txt = (f" | 카운트0풀 m={_zero_m:.3f}/n={_zero_n:.3f}({len(_zero_days_set)}일)"
-                   if _zero_m is not None else '')
+        # ★★ (요청) '카운트0풀 m=X/n=Y'가 3단계(주황) 도달 시에도 항상 m/n으로만 표시되던 문제
+        #   수정 — 3단계까지 갔으면 tier2(m/n)와 tier3(o/p)를 각각 정확한 이름으로 같이 보여준다.
+        #   적용 여부(★★ 요청: 기준선 못 넘으면 색만 표시하고 미적용)도 같이 표시.
+        _mn_txt = ''
+        if _zero_m is not None:
+            _t2r_disp = _zp_bt.get('tier2_result') if _zp_bt else None
+            _applied_final = bool(_zp_bt.get('applied', True)) if _zp_bt else True
+            if _t2r_disp:
+                _applied_t2 = bool(_t2r_disp.get('applied', True))
+                _mn_txt = (f" | 2단계풀 m={_t2r_disp['K']:.3f}/n={_t2r_disp['L']:.3f}"
+                          f"{'' if _applied_t2 else '(기준선 미달→미적용)'}"
+                          f" | 3단계풀 o={_zero_m:.3f}/p={_zero_n:.3f}"
+                          f"{'' if _applied_final else '(기준선 미달→미적용)'}"
+                          f"({len(_zero_days_set)}일)")
+            else:
+                _mn_txt = (f" | 카운트0풀 m={_zero_m:.3f}/n={_zero_n:.3f}"
+                          f"{'' if _applied_final else '(기준선 미달→미적용)'}"
+                          f"({len(_zero_days_set)}일)")
         ws.cell(2, 1).value = (f"★{_kltag} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
                                f"전체 {_p2(_full_cum)} (B&H {_p2(_bh_full)}) | "
                                f"거래 {_n_trades_bt}회 | 보유중하락 {_p2(_held_max_dd)} | "
