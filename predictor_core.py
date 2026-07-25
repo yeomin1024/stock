@@ -13534,6 +13534,12 @@ STAGED_META_TUNE = False  # ★ 끔(요청): 단계적 튜닝은 옛 그리드-�
 # ★ 그리드-투표 K탐색 최소화 (요청) — k순신호만 사용 시 True. K_buy×K_sell 99×99(≈700초) → 1×1로 축소.
 #   그리드-투표 시트(현재 포지션 등)는 대략값이 되지만, net>K 시트는 합친 풀로 정확. 실행 대폭 단축.
 SKIP_GRID_VOTE = True
+# ★★ (요청) 레거시 메타-앙상블(투표식 K_buy/vote_buy) 시스템 전체 스킵 — k순신호(K/L) 방식만
+#   매매결정에 쓰고, 이 구시스템 결과(성공률 우선 매수/매도, 메타_그리드_결과, 매수·매도_앙상블_지표,
+#   현재 포지션 표시)는 더 이상 안 씀. True면 inject_pools 유무와 무관하게 항상 건너뛰고
+#   (기존에 inject_pools일 때만 건너뛰던 경로를 재사용), K/L 시스템의 _KNET_MULTI_POOL로
+#   대체한다 — 전체 지표(수천개) 재평가하는 evaluate_buy_sell_scores 호출이 아예 안 돎.
+SKIP_LEGACY_META_ENSEMBLE = True
                           #   단계에서 돌린 결과들을 한 엑셀에 모두 모아 최종 판단.
 STAGE_PCT_RANGE   = [(0, 100)]
 STAGE_WILSON_Z    = [1.95]
@@ -17064,22 +17070,41 @@ def _norm_date_set(dlist):
     return s
 
 
+_EVAL_ALL_RAW_CACHE = {}   # ★★ (요청) feat/close/horizon/한도가 같으면 재계산 안 하도록 캐시
+
 def _evaluate_all_indicators_raw(feat, close, *, horizon, dd_limit, ru_limit, n_thresholds=None):
     """★★ (성능개선) 카운트0 대체풀 2·3단계가 공유하는 '전체 지표 1회 평가'.
        evaluate_buy_sell_scores는 지표 수천 개를 임계값 스윕+지연탐색까지 하는 가장 비싼
        연산이라, 이 결과를 캐싱해 재사용하면 2단계·3단계가 각각 따로 부르지 않아도 된다
        (밴드 필터링은 평가 결과에 대한 값싼 후처리일 뿐, 원시 평가 자체는 밴드와 무관).
+       ★★ (요청) 모듈 레벨 캐시 추가 — 같은 feat/close/horizon/한도로 캐스케이드가 여러 번
+       (예: _build_pool_by_success의 wilson/corr 후보 평가마다) 불려도, A풀(성공률70%+)
+       자체는 '메인풀이 무엇을 뽑았는지'와 무관하게 항상 같은 결과라 매번 재계산할 이유가
+       없다. feat/close 객체 identity + shape + horizon/한도로 키를 만들어 재사용한다.
+       (다른 티커 분석으로 넘어가면 자연히 다른 feat 객체라 캐시가 안 섞임 — 안전을 위해
+       최근 3개까지만 보관해 메모리 누적도 방지.)
        반환: (bdf, sdf) — 성공률 밴드 필터링 '전' 원시 평가 결과."""
     indicators = list(feat.columns)
     lo, hi = POOL_SUCCESS_WIDE_PCT
     _nth = int(n_thresholds) if n_thresholds else int(globals().get('N_THRESHOLDS', 100))
     _min_sig_floor = min(int(globals().get('POOL_SUCCESS_MIN_SIG', 10)),
                         int(globals().get('POOL_SUCCESS_MIN_SIG_HIGH', 8)))
-    return evaluate_buy_sell_scores(
+    _key = (id(feat), id(close), feat.shape, len(close), horizon,
+            round(float(dd_limit), 6), round(float(ru_limit), 6), _nth, _min_sig_floor,
+            tuple(feat.columns))  # ★ 컬럼명까지 키에 포함 — id() 재사용 우연 충돌까지 방지
+    if _key in _EVAL_ALL_RAW_CACHE:
+        _bdf_c, _sdf_c = _EVAL_ALL_RAW_CACHE[_key]
+        print(f"     [캐스케이드] A풀 원시평가 캐시 재사용 (재계산 생략)")
+        return _bdf_c, _sdf_c
+    _bdf, _sdf = evaluate_buy_sell_scores(
         feat, close, indicators=indicators, n_thresholds=_nth,
         pct_low=lo, pct_high=hi, horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
         min_signals=_min_sig_floor, wilson_z=1.0,
         anchor_buy_arr=None, anchor_sell_arr=None)
+    if len(_EVAL_ALL_RAW_CACHE) >= 3:
+        _EVAL_ALL_RAW_CACHE.pop(next(iter(_EVAL_ALL_RAW_CACHE)))  # 가장 오래된 항목 제거
+    _EVAL_ALL_RAW_CACHE[_key] = (_bdf, _sdf)
+    return _bdf, _sdf
 
 
 def _filter_rate_band(bdf, sdf, *, rate_lo, rate_hi, exclude_names=None, max_pool=100):
@@ -17185,11 +17210,19 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
         # ── 전체 지표 원시평가는 '1번만' — 2·3단계가 이 결과를 공유(성능개선 핵심) ──
         _bdf_raw, _sdf_raw = _evaluate_all_indicators_raw(feat, close_ser, horizon=_hz,
                                                           dd_limit=_ddl, ru_limit=_rul)
-
-        # ── 2단계: 성공률 70~80% 밴드 전용 풀 (노란색) ──
+        # ★ (요청) 단계별 확인용 로그 — A풀(성공률 70%+ 전체) 크기부터 보여줌
         _rate_lo2 = float(globals().get('POOL_TIER2_RATE_LO', 0.70))
         _rate_hi2 = float(globals().get('POOL_TIER2_RATE_HI', 0.80))
+        _a_pool_b = int((_bdf_raw['success_rate'] >= _rate_lo2).sum()) if (_bdf_raw is not None and len(_bdf_raw)) else 0
+        _a_pool_s = int((_sdf_raw['success_rate'] >= _rate_lo2).sum()) if (_sdf_raw is not None and len(_sdf_raw)) else 0
+        print(f"     [캐스케이드] A풀(성공률{_rate_lo2*100:.0f}%+) 원시후보: 매수{_a_pool_b}/매도{_a_pool_s}행 "
+              f"(중복임계 포함, 지표당 1개로 정리 전)")
+
+        # ── 2단계: 성공률 70~80% 밴드 전용 풀 (노란색) ──
         _bp2, _sp2 = _filter_rate_band(_bdf_raw, _sdf_raw, rate_lo=_rate_lo2, rate_hi=_rate_hi2)
+        print(f"     [캐스케이드] 2단계(노랑, {_rate_lo2*100:.0f}~{_rate_hi2*100:.0f}%) 후보풀: "
+              f"매수{len(_bp2) if _bp2 is not None else 0}/매도{len(_sp2) if _sp2 is not None else 0}개 "
+              f"(지표당1개·최대100개 상한 적용됨)")
         _zres2 = None
         if _bp2 is not None and _sp2 is not None and len(_bp2) > 0 and len(_sp2) > 0:
             _zres2 = _search_zero_count_pool(
@@ -17228,6 +17261,9 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
             _used_names['sell'] |= set(sell_pool['indicator'])
         _bp3, _sp3 = _filter_rate_band(_bdf_raw, _sdf_raw, rate_lo=_rate_lo2, rate_hi=None,
                                        exclude_names=_used_names)
+        print(f"     [캐스케이드] 3단계(주황, A풀 나머지) 후보풀: "
+              f"매수{len(_bp3) if _bp3 is not None else 0}/매도{len(_sp3) if _sp3 is not None else 0}개 "
+              f"(1·2단계 사용분 제외, 최대100개 상한 적용됨), 대상일 {int(_n_still)}일")
         if _bp3 is None or _sp3 is None or len(_bp3) == 0 or len(_sp3) == 0:
             return _zres2   # 3단계 후보가 없으면 2단계로 확정
 
@@ -17712,11 +17748,19 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                     globals()['_KNET_ZERO_POOL'] = _zres
                     _t2n = int(np.sum(_zres['daily']['tier'].values == 2)) if 'tier' in _zres['daily'].columns else _zres['zero_days']
                     _t3n = int(np.sum(_zres['daily']['tier'].values == 3)) if 'tier' in _zres['daily'].columns else 0
+                    _t2pool_n = f"{len(_zres['tier2_pool']['buy'])}/{len(_zres['tier2_pool']['sell'])}" if _zres.get('tier2_pool') else f"{_zres['pool_buy_n']}/{_zres['pool_sell_n']}"
+                    _t3pool_n = f", 3단계풀 매수{len(_zres['tier3_pool']['buy'])}/매도{len(_zres['tier3_pool']['sell'])}" if _zres.get('tier3_pool') else ""
+                    # ★★ 버그 수정: 값은 이미 '카운트0구간수익'(하이브리드 아님)으로 바뀌었는데
+                    #   로그 라벨이 예전 그대로 '하이브리드 전체수익'이라 찍혀 있었다 — 실제
+                    #   계산된 값과 이름이 안 맞는 상태였음. 라벨을 정확히 고치고, 참고용
+                    #   하이브리드 값도 괄호로 같이 보여준다. 지표풀 개수도 단계별로 표시(요청).
                     print(f"  ✓ 카운트0 별도풀(캐스케이드): {_zres['zero_days']}일 카운트0 → "
                           f"노랑(성공률{POOL_TIER2_RATE_LO*100:.0f}~{POOL_TIER2_RATE_HI*100:.0f}%) {_t2n}일"
                           + (f" / 주황(나머지) {_t3n}일" if _t3n else "")
-                          + f", n_buy={_zres['n_buy']}/n_sell={_zres['n_sell']} "
-                          f"m={_zres['K']:.3f}/n={_zres['L']:.3f} → 하이브리드 전체수익 {_zres['ret']*100:+.2f}%")
+                          + f" | 2단계풀 매수{_t2pool_n.split('/')[0]}/매도{_t2pool_n.split('/')[1]}{_t3pool_n}"
+                          + f"\n     n_buy={_zres['n_buy']}/n_sell={_zres['n_sell']} "
+                          f"m={_zres['K']:.3f}/n={_zres['L']:.3f} → "
+                          f"카운트0구간수익 {_zres['ret']*100:+.2f}% (참고: 하이브리드 전체기간 {_zres['hybrid_ret']*100:+.2f}%)")
                 else:
                     globals()['_KNET_ZERO_POOL'] = None
             elif _is_full_run:
@@ -20614,7 +20658,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 f'그 외 날은 메인풀 KL 신호로 이어붙인 연속 포지션. '
                 f'이미 쓴 지표 제외(매수 {_zp["excluded_buy"]}개/매도 {_zp["excluded_sell"]}개) 후 성공률 우선 풀에서 재탐색. '
                 f'카운트0인 날 {_zp["zero_days"]}일 · n_buy={_zp["n_buy"]}/n_sell={_zp["n_sell"]} · '
-                f'm={_zp["K"]:.3f}/n={_zp["L"]:.3f} · 하이브리드 전체수익 {_zp["ret"]*100:+.2f}% (MDD {_zp["mdd"]*100:.2f}%)')
+                f'm={_zp["K"]:.3f}/n={_zp["L"]:.3f} · 카운트0구간수익 {_zp["ret"]*100:+.2f}% '
+                f'(참고: 하이브리드 전체기간 {_zp.get("hybrid_ret", _zp["ret"])*100:+.2f}%, MDD {_zp["mdd"]*100:.2f}%)')
             wsz.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
             wsz.merge_cells('A1:H1')
 
@@ -20625,7 +20670,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ('별도풀 크기', f'매수 {_zp["pool_buy_n"]}개 / 매도 {_zp["pool_sell_n"]}개 (제외 후 남은 성공률우선 풀)'),
                 ('선정 개수', f'n_buy={_zp["n_buy"]} / n_sell={_zp["n_sell"]}'),
                 ('선정 임계 (m/n)', f'm={_zp["K"]:.3f} (net≥m 매수) / n={_zp["L"]:.3f} (net≤n 매도)'),
-                ('하이브리드 전체수익', f'{_zp["ret"]*100:+.2f}% (카운트0인 날 별도풀 + 그 외 메인풀, 경계 넘나드는 거래 반영)'),
+                ('카운트0구간수익 (선정기준)', f'{_zp["ret"]*100:+.2f}% (이 단계가 담당하는 날들만의 수익 합)'),
+                ('하이브리드 전체기간수익 (참고용)', f'{_zp.get("hybrid_ret", _zp["ret"])*100:+.2f}% (카운트0인 날 별도풀 + 그 외 메인풀, 경계 넘나드는 거래 반영)'),
                 ('하이브리드 MDD', f'{_zp["mdd"]*100:.2f}%'),
             ]
             for _i, (_k, _v) in enumerate(_summ):
@@ -21535,14 +21581,21 @@ def run_ensemble_search(*, eval_start=EVAL_START,
         bh_ret_for_filter = _bh_sum_return(close_arr)
 
     print(f"\n[메타 그리드 탐색]   (B&H 미달 조합 제외, 기준 B&H={bh_ret_for_filter*100:+.2f}%)")
-    if inject_pools is not None:
-        # ★ 재현 모드 — 엑셀에서 읽은 지표 풀을 그대로 사용 (지표 재선별 안 함).
-        #   meta_grid_search(지표 선별·그리드 탐색) 전체를 건너뛰고, 주입된 풀 +
-        #   force_best_combo의 K/vote로 곧장 daily 백테스트 → 원본과 동일 지표·조합 재현.
-        buy_pool, sell_pool = inject_pools
-        print(f"  ♻ 재현 모드 — 엑셀의 지표 풀 그대로 사용 "
-              f"(매수 {len(buy_pool)}개 / 매도 {len(sell_pool)}개 지표, 재선별 안 함)")
-        # ★ 재현: 원본 스냅샷에 k순신호 풀이 있으면 그대로 사용(탐색 0). 없을 때만 재구성.
+    _skip_legacy_meta = (inject_pools is not None) or bool(globals().get('SKIP_LEGACY_META_ENSEMBLE', False))
+    if _skip_legacy_meta:
+        # ★ 재현 모드 또는 SKIP_LEGACY_META_ENSEMBLE — 지표 풀을 그대로 사용 (지표 재선별 안 함).
+        #   meta_grid_search(전체 지표 재평가·그리드 탐색 — 가장 비싼 레거시 연산) 전체를
+        #   건너뛰고, 주입된 풀(inject_pools) 또는 K/L 시스템의 _KNET_MULTI_POOL +
+        #   force_best_combo의 K/vote로 곧장 daily 백테스트 → 매매결정(K/L)과 무관한
+        #   레거시 앙상블 계산을 아예 하지 않는다.
+        if inject_pools is not None:
+            buy_pool, sell_pool = inject_pools
+            print(f"  ♻ 재현 모드 — 엑셀의 지표 풀 그대로 사용 "
+                  f"(매수 {len(buy_pool)}개 / 매도 {len(sell_pool)}개 지표, 재선별 안 함)")
+        else:
+            print(f"  ⏩ SKIP_LEGACY_META_ENSEMBLE — 레거시 앙상블(성공률우선/메타그리드/현재포지션) "
+                  f"생략, K/L 시스템 풀을 그대로 사용")
+        # ★ 원본 스냅샷에 k순신호 풀이 있으면 그대로 사용(탐색 0). 없을 때만 재구성.
         _mp0 = globals().get('_KNET_MULTI_POOL')
         if _mp0 and _mp0[0] == ticker and _mp0[1] is not None:
             print(f"  ♻ 재현: 원본 k순신호 풀 그대로 사용 (탐색 생략) "
@@ -21551,8 +21604,19 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             try:
                 _build_and_pick_knet_pool(feat, close, indicators=indicators,
                                           n_thresholds=n_thresholds, horizon=horizon, ticker=ticker)
+                _mp0 = globals().get('_KNET_MULTI_POOL')
             except Exception as _re:
                 print(f"  ⚠ 재현용 합친 풀 생성 실패(폴백): {_re}")
+        if inject_pools is None:
+            # ★ inject_pools가 없으면(=SKIP_LEGACY_META_ENSEMBLE만으로 이 분기에 온 경우)
+            #   K/L 시스템 풀(_KNET_MULTI_POOL)을 buy_pool/sell_pool로 대신 사용.
+            #   (buy_pool/sell_pool은 이 분기 이전엔 정의된 적 없는 지역변수라 안전하게 직접 대입)
+            if _mp0 and _mp0[1] is not None and _mp0[2] is not None:
+                buy_pool, sell_pool = _mp0[1], _mp0[2]
+            else:
+                print(f"  ⚠ K/L 풀 생성 실패 — 빈 풀로 폴백(메타 그리드 없이 진행)")
+                buy_pool = pd.DataFrame(columns=['indicator', 'direction', 'threshold', 'success_rate'])
+                sell_pool = pd.DataFrame(columns=['indicator', 'direction', 'threshold', 'success_rate'])
         if force_best_combo is not None:
             best_inner = {
                 'K_buy': int(force_best_combo['K_buy']),
@@ -21678,7 +21742,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             anchor_safe_buy=anchor_safe_buy, anchor_safe_sell=anchor_safe_sell,
             best_inner_fallback=best_inner, bh_ret=bh_ret)
 
-    if inject_pools is None:
+    if not _skip_legacy_meta:
         print(f"\n  ─ 메타 그리드 Top 10 ─")
         print(f"  {'#':>2} {'w_z':>5}  {'pct':>8}  {'min_s':>5} {'corr':>5} {'pool':>4}  "
               f"{'평균성공':>8} {'매수':>6} {'매도':>6}  {'수익%':>8}  {'MDD%':>7}  {'거래':>4}")
@@ -21802,55 +21866,59 @@ def run_ensemble_search(*, eval_start=EVAL_START,
             print(f'  ⚠ OOS 일별 백테스트 실패: {e}')
             oos_daily = oos_trades = oos_cur = None
 
-    print()
-    print('  ' + '─' * 68)
-    print(f'  📅  {ticker}  현재 포지션  ({cur["last_date"].date()})')
-    print('  ' + '─' * 68)
-    print(f'    {cur["position_emoji"]}  {cur["position"]}')
-    if '보유' in cur['position']:
-        print(f'    진입일: {cur["entry_date"].date()}   진입가: ${cur["entry_price"]:.2f}   '
-              f'현재가: ${cur["current_price"]:.2f}')
-        print(f'    보유일: {cur["days_held"]}일   미실현: {cur["unrealized_pct"]:+.2f}%')
-        if cur.get('stop_price'):
-            print(f'    ⛔ 손절가: ${cur["stop_price"]:.2f} '
-                  f'(현재가 대비 +{(cur["current_price"]/cur["stop_price"]-1)*100:.2f}% 여유)')
-    else:
-        print(f'    현재가: ${cur["current_price"]:.2f}')
-    print('  ' + '─' * 68)
-    print(f'    누적 {cur["cum_return_pct"]:+.2f}%   B&H {bh_ret*100:+.2f}%   '
-          f'MDD {cur["max_drawdown"]*100:.2f}%   거래 {cur["n_trades"]}회 (손절매 {cur["n_stop_triggered"]}회)')
-    print(f'    📈 상승일만 합산: 전략 {cur["up_cum_return_pct"]:+.2f}%   B&H {bh_up_ret*100:+.2f}%  '
-          f'(보유 중 양(+)의 일별 변동률만 합산)')
-    # ★ 성공/실패 집계 출력 (first-touch, 정답인 날만 평가)
-    print(f'    ✅ [ON만 적중률] 매수 {cur.get("n_buy_success_cnt",0)}/{cur.get("n_buy_on_total",0)} '
-          f'({cur.get("buy_signal_hit_rate",0)*100:.1f}%)   '
-          f'매도 {cur.get("n_sell_success_cnt",0)}/{cur.get("n_sell_on_total",0)} '
-          f'({cur.get("sell_signal_hit_rate",0)*100:.1f}%)')
-    print(f'    ✅ [정답일 적중률] 매수 {cur.get("buy_acc_all",0)*100:.1f}% '
-          f'({cur.get("n_buy_correct_all",0)}/{cur.get("n_buy_eval_all",0)}일)   '
-          f'매도 {cur.get("sell_acc_all",0)*100:.1f}% '
-          f'({cur.get("n_sell_correct_all",0)}/{cur.get("n_sell_eval_all",0)}일)  '
-          f'※ 올라야/내려야 했던 날만 분모, 놓침=실패 (무임승차 제외)')
-    succ_label = ' (⚓ANCHOR 보정)' if anchor_mode else ''
-    print(f'    매수신호 BalAcc{succ_label} {cur["buy_success_rate"]*100:.1f}% (plain {cur["buy_accuracy_plain"]*100:.1f}%, ON {cur["n_buy_signal_on"]})  '
-          f'매도신호 BalAcc {cur["sell_success_rate"]*100:.1f}% (plain {cur["sell_accuracy_plain"]*100:.1f}%, ON {cur["n_sell_signal_on"]})  '
-          f'평균 BalAcc {cur["avg_success_rate"]*100:.1f}%  /  충돌 {cur["n_conflicts"]}일')
-    if anchor_mode:
-        b_rate = (cur['n_anchor_buy_caught']/cur['n_anchor_buy']*100) if cur['n_anchor_buy']>0 else 0
-        s_rate = (cur['n_anchor_sell_caught']/cur['n_anchor_sell']*100) if cur['n_anchor_sell']>0 else 0
-        print(f'    ⚓ 정답일 매칭: 매수 {cur["n_anchor_buy_caught"]}/{cur["n_anchor_buy"]} ({b_rate:.1f}%)   '
-              f'매도 {cur["n_anchor_sell_caught"]}/{cur["n_anchor_sell"]} ({s_rate:.1f}%)')
-    print('  ' + '─' * 68)
-    b_str_now = cur['buy_count_now']  / cur['K_buy']  if cur['K_buy']  > 0 else 0
-    s_str_now = cur['sell_count_now'] / cur['K_sell'] if cur['K_sell'] > 0 else 0
-    print(f'    🟢 매수: {cur["buy_count_now"]:.2f}/{cur["K_buy"]} ON  (필요 {cur["vote_buy"]}, 강도 {b_str_now:.0%})  '
-          f'→ {"ON ✓" if cur["buy_on_now"] else "OFF"}')
-    print(f'    🔴 매도: {cur["sell_count_now"]:.2f}/{cur["K_sell"]} ON  (필요 {cur["vote_sell"]}, 강도 {s_str_now:.0%})  '
-          f'→ {"ON ✓" if cur["sell_on_now"] else "OFF"}')
-    if cur['buy_on_now'] and cur['sell_on_now']:
-        winner = "매수" if b_str_now >= s_str_now else "매도"
-        print(f'    ⚔ 충돌 발생 → 강도 더 큰 [{winner}] 우세')
-    print('  ' + '─' * 68)
+    # ★★ (요청) 레거시 앙상블(K_buy/vote_buy 방식) '현재 포지션' 출력 — 실제 매매결정은
+    #   K/L 순신호 시스템이 하므로 이 표시는 더 이상 안 씀. SKIP_LEGACY_META_ENSEMBLE=True면
+    #   생략(cur 딕셔너리 자체는 write_output 등 아래 로직이 계속 쓸 수 있어 계산은 유지, 출력만 생략).
+    if not globals().get('SKIP_LEGACY_META_ENSEMBLE', False):
+        print()
+        print('  ' + '─' * 68)
+        print(f'  📅  {ticker}  현재 포지션  ({cur["last_date"].date()})')
+        print('  ' + '─' * 68)
+        print(f'    {cur["position_emoji"]}  {cur["position"]}')
+        if '보유' in cur['position']:
+            print(f'    진입일: {cur["entry_date"].date()}   진입가: ${cur["entry_price"]:.2f}   '
+                  f'현재가: ${cur["current_price"]:.2f}')
+            print(f'    보유일: {cur["days_held"]}일   미실현: {cur["unrealized_pct"]:+.2f}%')
+            if cur.get('stop_price'):
+                print(f'    ⛔ 손절가: ${cur["stop_price"]:.2f} '
+                      f'(현재가 대비 +{(cur["current_price"]/cur["stop_price"]-1)*100:.2f}% 여유)')
+        else:
+            print(f'    현재가: ${cur["current_price"]:.2f}')
+        print('  ' + '─' * 68)
+        print(f'    누적 {cur["cum_return_pct"]:+.2f}%   B&H {bh_ret*100:+.2f}%   '
+              f'MDD {cur["max_drawdown"]*100:.2f}%   거래 {cur["n_trades"]}회 (손절매 {cur["n_stop_triggered"]}회)')
+        print(f'    📈 상승일만 합산: 전략 {cur["up_cum_return_pct"]:+.2f}%   B&H {bh_up_ret*100:+.2f}%  '
+              f'(보유 중 양(+)의 일별 변동률만 합산)')
+        # ★ 성공/실패 집계 출력 (first-touch, 정답인 날만 평가)
+        print(f'    ✅ [ON만 적중률] 매수 {cur.get("n_buy_success_cnt",0)}/{cur.get("n_buy_on_total",0)} '
+              f'({cur.get("buy_signal_hit_rate",0)*100:.1f}%)   '
+              f'매도 {cur.get("n_sell_success_cnt",0)}/{cur.get("n_sell_on_total",0)} '
+              f'({cur.get("sell_signal_hit_rate",0)*100:.1f}%)')
+        print(f'    ✅ [정답일 적중률] 매수 {cur.get("buy_acc_all",0)*100:.1f}% '
+              f'({cur.get("n_buy_correct_all",0)}/{cur.get("n_buy_eval_all",0)}일)   '
+              f'매도 {cur.get("sell_acc_all",0)*100:.1f}% '
+              f'({cur.get("n_sell_correct_all",0)}/{cur.get("n_sell_eval_all",0)}일)  '
+              f'※ 올라야/내려야 했던 날만 분모, 놓침=실패 (무임승차 제외)')
+        succ_label = ' (⚓ANCHOR 보정)' if anchor_mode else ''
+        print(f'    매수신호 BalAcc{succ_label} {cur["buy_success_rate"]*100:.1f}% (plain {cur["buy_accuracy_plain"]*100:.1f}%, ON {cur["n_buy_signal_on"]})  '
+              f'매도신호 BalAcc {cur["sell_success_rate"]*100:.1f}% (plain {cur["sell_accuracy_plain"]*100:.1f}%, ON {cur["n_sell_signal_on"]})  '
+              f'평균 BalAcc {cur["avg_success_rate"]*100:.1f}%  /  충돌 {cur["n_conflicts"]}일')
+        if anchor_mode:
+            b_rate = (cur['n_anchor_buy_caught']/cur['n_anchor_buy']*100) if cur['n_anchor_buy']>0 else 0
+            s_rate = (cur['n_anchor_sell_caught']/cur['n_anchor_sell']*100) if cur['n_anchor_sell']>0 else 0
+            print(f'    ⚓ 정답일 매칭: 매수 {cur["n_anchor_buy_caught"]}/{cur["n_anchor_buy"]} ({b_rate:.1f}%)   '
+                  f'매도 {cur["n_anchor_sell_caught"]}/{cur["n_anchor_sell"]} ({s_rate:.1f}%)')
+        print('  ' + '─' * 68)
+        b_str_now = cur['buy_count_now']  / cur['K_buy']  if cur['K_buy']  > 0 else 0
+        s_str_now = cur['sell_count_now'] / cur['K_sell'] if cur['K_sell'] > 0 else 0
+        print(f'    🟢 매수: {cur["buy_count_now"]:.2f}/{cur["K_buy"]} ON  (필요 {cur["vote_buy"]}, 강도 {b_str_now:.0%})  '
+              f'→ {"ON ✓" if cur["buy_on_now"] else "OFF"}')
+        print(f'    🔴 매도: {cur["sell_count_now"]:.2f}/{cur["K_sell"]} ON  (필요 {cur["vote_sell"]}, 강도 {s_str_now:.0%})  '
+              f'→ {"ON ✓" if cur["sell_on_now"] else "OFF"}')
+        if cur['buy_on_now'] and cur['sell_on_now']:
+            winner = "매수" if b_str_now >= s_str_now else "매도"
+            print(f'    ⚔ 충돌 발생 → 강도 더 큰 [{winner}] 우세')
+        print('  ' + '─' * 68)
 
     if not write_output:
         print('  ⏩ (중간 탐색 — Excel 저장 생략)\n')
