@@ -17082,7 +17082,7 @@ def _evaluate_all_indicators_raw(feat, close, *, horizon, dd_limit, ru_limit, n_
         anchor_buy_arr=None, anchor_sell_arr=None)
 
 
-def _filter_rate_band(bdf, sdf, *, rate_lo, rate_hi, exclude_names=None):
+def _filter_rate_band(bdf, sdf, *, rate_lo, rate_hi, exclude_names=None, max_pool=100):
     """★★ (성능개선) _evaluate_all_indicators_raw 결과에서 성공률 밴드만 추려내는 값싼 필터
        (정렬·불리언 마스크뿐 — 지표 재평가 없음). 같은 raw 결과를 밴드만 바꿔 여러 번 호출 가능.
        ★★ 버그 수정: evaluate_buy_sell_scores는 지표 1개당 임계값을 최대 100개(양방향 200개)
@@ -17092,7 +17092,11 @@ def _filter_rate_band(bdf, sdf, *, rate_lo, rate_hi, exclude_names=None):
        중복들을 잔뜩 끌어모아 n_buy=145처럼 비상식적인 값을 '최적'으로 고르는 원인이 됐다
        (탐색 폭이 커지니 느려지는 것도 덤). 메인풀은 _diversify_keep_thresholds로 이미
        이런 중복을 정리하는데, 캐스케이드 2·3단계엔 그 단계가 빠져 있었다 — 여기서도 지표명당
-       '가장 좋은 임계값 1개'만 남기도록 중복제거를 추가한다."""
+       '가장 좋은 임계값 1개'만 남기도록 중복제거를 추가한다.
+       ★★ (요청) '윌슨같이 기존 지표 탐색할 때처럼' — score 컬럼은 evaluate_buy_sell_scores가
+       wilson_z=1.0 기준 wilson_lower(하한신뢰구간)로 계산해둔 값이라, 메인풀(_build_pool_by_success)
+       이 지표를 줄세울 때 쓰는 것과 동일한 통계적 기준이다. 성공률 우선 정렬 뒤, 동률 구간은
+       이 윌슨 점수로 다시 정렬하고, 최종적으로 상위 max_pool(기본 100)개까지만 남긴다."""
     def _band(df, excl_names):
         if df is None or len(df) == 0:
             return df
@@ -17106,6 +17110,11 @@ def _filter_rate_band(bdf, sdf, *, rate_lo, rate_hi, exclude_names=None):
         #   _diversify_keep_thresholds와 같은 취지의 최소 버전)
         if 'indicator' in d.columns and len(d) > 0:
             d = d.drop_duplicates(subset='indicator', keep='first').reset_index(drop=True)
+        # ★★ (요청) 윌슨 점수(score) 기준 재정렬 + 최대 max_pool개로 상한
+        if len(d) > 0 and 'score' in d.columns:
+            d = d.sort_values('score', ascending=False).reset_index(drop=True)
+        if max_pool is not None and len(d) > max_pool:
+            d = d.head(max_pool).reset_index(drop=True)
         return d
     exclude_names = exclude_names or {}
     return _band(bdf, exclude_names.get('buy')), _band(sdf, exclude_names.get('sell'))
@@ -17234,8 +17243,19 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
         _zres3['tier'] = 3
         _zres3['daily']['tier'] = np.where(_zmask2, 3,
                                     np.where(np.asarray(zero_mask, bool), 2, 0))
+        # ★★ 버그 수정: 최종 반환 dict의 buy_count/sell_count는 '3단계 풀'로 전체기간을 계산한
+        #   배열이라, 노란색(2단계로 해결된) 날짜에 갖다 쓰면 그날은 3단계 풀 기준 우연히
+        #   0/0일 수 있어(3단계 풀은 애초에 그 날짜들을 목표로 최적화되지 않았음) '노란색인데
+        #   카운트0'으로 잘못 표시된다. 2단계 자체의 buy_count/sell_count/net도 별도로 보관해서,
+        #   화면표시 쪽에서 그날의 tier가 2면 이 배열을, 3이면 3단계 배열을 쓰도록 한다.
         _zres3['tier2_result'] = {'K': _zres2['K'], 'L': _zres2['L'],
                                   'n_buy': _zres2['n_buy'], 'n_sell': _zres2['n_sell'],
+                                  'buy_count': _bc2, 'sell_count': _sc2,
+                                  'net': _zres2.get('net'), 'ret': _zres2.get('ret'),
+                                  'hybrid_ret': _zres2.get('hybrid_ret'), 'mdd': _zres2.get('mdd'),
+                                  'top': _zres2.get('top'),          # ★ mn 순신호 시트가 참조할 2단계 전용 그리드
+                                  'daily': _zres2.get('daily'), 'rr': _zres2.get('rr'),
+                                  'zero_mask': _zres2.get('zero_mask'),
                                   'zero_days_resolved': int(np.sum(np.asarray(zero_mask, bool) & ~_zmask2))}
         _zres3['tier2_pool'] = {'buy': _bp2, 'sell': _sp2}
         _zres3['tier3_pool'] = {'buy': _bp3, 'sell': _sp3}
@@ -17386,17 +17406,24 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
                     else:
                         pos = _zpos
                     pos[0] = 0.0
-                    # ★ 하이브리드 전체 기간 수익 (진입 다음날 실현) — 이게 최대가 되도록 탐색
                     _hr = np.zeros(n); _hr[1:] = pos[:-1] * rr[1:]
-                    ret = float(np.sum(_hr))
-                    cum = np.cumsum(_hr); mdd = float(np.min(cum - np.maximum.accumulate(cum)))
-                    if best is None or ret > best[2]:
-                        best = (K, L, ret, mdd, int(_zpos.sum()), pos.copy())
+                    # ★★ (요청) 탐색 기준을 '하이브리드 전체기간 수익'에서 '카운트0인 날만의
+                    #   수익 합'으로 변경 — 원래는 zmask가 아닌 나머지 95%+ 기간의 등락까지
+                    #   (m,n) 선택에 영향을 줘서, 카운트0인 날과 무관한 이유로 이상한(과최적화된)
+                    #   조합이 뽑히던 문제의 근본 원인이었다. 이제 이 (m,n)이 '실제로 담당하는
+                    #   날들'에서만 얼마나 잘하는지로 순수하게 평가한다.
+                    zret = float(np.sum(_hr[zmask])) if zmask is not None else float(np.sum(_hr))
+                    ret = float(np.sum(_hr))   # 하이브리드 전체기간 수익 — 참고용으로 계속 보관
+                    cum_z = np.cumsum(np.where(zmask, _hr, 0.0))
+                    mdd_z = float(np.min(cum_z - np.maximum.accumulate(cum_z))) if len(cum_z) else 0.0
+                    if best is None or zret > best[2]:
+                        best = (K, L, zret, mdd_z, int(_zpos.sum()), pos.copy(), ret)
                     if collect_top:
-                        _top.append({'K': float(K), 'L': float(L), 'ret': ret,
-                                     'mdd': mdd, 'dl': int(_zpos.sum()), 'pos': pos.copy()})
+                        _top.append({'K': float(K), 'L': float(L), 'ret': zret, 'mdd': mdd_z,
+                                     'dl': int(_zpos.sum()), 'pos': pos.copy(),
+                                     'hybrid_ret': ret})
             return (best, _top) if collect_top else best
-        # 개수 탐색: 좌표하강
+        # 개수 탐색: 좌표하강 (기준도 동일하게 '카운트0인 날만의 수익 합'으로 통일)
         nb_list = list(range(n_min, nB + 1)) or [nB]
         ns_list = list(range(n_min, nS + 1)) or [nS]
         best_overall = None
@@ -17416,7 +17443,7 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         _bkl_final, _top_final = _search_kl(net_f, collect_top=True)
         if _bkl_final is not None:
             bkl = _bkl_final
-        K, L, ret, mdd, dl, pos = bkl
+        K, L, ret, mdd, dl, pos, hybrid_ret = bkl
 
         # 별도 풀 daily — ★ 하이브리드 전체 포지션 (카운트0인 날=별도풀, 그 외=메인풀).
         #   day_ret은 전체 기간 실현수익(pos[t-1]*rr[t]). 카운트0인 날은 별도풀이 정한 pos.
@@ -17440,6 +17467,7 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         _zbuy_count = buy_cum[nb_f-1] if nb_f-1 < buy_cum.shape[0] else buy_cum[-1]
         _zsell_count = sell_cum[ns_f-1] if ns_f-1 < sell_cum.shape[0] else sell_cum[-1]
         return dict(net=net_f, K=float(K), L=float(L), ret=float(ret), mdd=float(mdd),
+                    hybrid_ret=float(hybrid_ret),  # ★ 참고용 — 하이브리드 전체기간 수익(선정기준 아님)
                     n_buy=int(nb_f), n_sell=int(ns_f), daily=daily,
                     zero_days=int(np.sum(zmask)), pool_buy_n=int(nB), pool_sell_n=int(nS),
                     rem_buy=rem_buy.head(nb_f), rem_sell=rem_sell.head(ns_f),
@@ -18310,7 +18338,9 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
         if np.isfinite(lf) and lf >= 1.15: score += 1              # 배율 1.15배↑
         if np.isfinite(skho) and skho > 0: score += 1             # 홀드아웃도 양(+)
         if np.isfinite(pm) and pm >= 0.90: score += 1             # 순열 상위10%(우연 아님)
-        if np.isfinite(pf) and pf >= 1.5: score += 1              # 이득크기/손실크기 1.5배↑
+        # ★★ 버그 수정: PF=무한대(실패 0=최고)인 경우 np.isfinite(inf)==False라서 이 조건을
+        #   못 받았다 — inf도 명백히 1.5배 이상이므로 카운트돼야 한다(NaN만 제외).
+        if not np.isnan(pf) and pf >= 1.5: score += 1              # 이득크기/손실크기 1.5배↑ (무손실=∞ 포함)
         if np.isfinite(rel) and rel > 0: score += 1               # 신뢰도(크기가중 엣지) 양(+)
         if score >= 5:  return '▣고정', score      # 6개 중 5개 이상 충족 → 확실
         # ★ (요청) 스킬 음수 등으로 점수가 낮아도 '제외'가 아니라 '탐색'으로 — 인과성만 하드제외
@@ -18353,7 +18383,11 @@ def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
                     (f"{m['perm']*100:.0f}%" if np.isfinite(m['perm']) else '—'),
                     (f"{m['rel_succ']*100:+.1f}%" if np.isfinite(m.get('rel_succ', np.nan)) else '—'),
                     (f"{m['rel_fail']*100:.1f}%" if np.isfinite(m.get('rel_fail', np.nan)) else '—'),
-                    (f"{m['rel_pf']:.2f}" if np.isfinite(m.get('rel_pf', np.nan)) else '—'),
+                    # ★★ 버그 수정: 실패크기합=0(한 번도 안 틀림)이면 PF=무한대(inf)인데,
+                    #   np.isfinite(inf)==False라서 '정보없음'처럼 '—'로 잘못 표시되고 있었다.
+                    #   inf는 '실패 0 — 최고 등급'이라는 뜻이라 '∞'로 명확히 보여준다(NaN만 '—').
+                    ('∞(무손실)' if (m.get('rel_pf') is not None and np.isposinf(m.get('rel_pf')))
+                     else (f"{m['rel_pf']:.2f}" if np.isfinite(m.get('rel_pf', np.nan)) else '—')),
                     (f"{m['reliability']*100:+.2f}" if np.isfinite(m.get('reliability', np.nan)) else '—'),
                     _tier,
                     verdict]
@@ -19659,21 +19693,39 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _zero_m = _zero_n = None
         if _zp_bt is not None and _zp_bt.get('daily') is not None:
             _zd = _zp_bt['daily']
-            _zbc = np.asarray(_zp_bt.get('buy_count')) if _zp_bt.get('buy_count') is not None else None
-            _zsc = np.asarray(_zp_bt.get('sell_count')) if _zp_bt.get('sell_count') is not None else None
-            _znet_arr = np.asarray(_zp_bt.get('net'))
+            # ★★ 버그 수정: buy_count/sell_count/net을 무조건 '최종(3단계 도달 시 3단계)' 배열
+            #   하나로만 봤더니, 노란색(2단계)으로 해결된 날에도 3단계 풀 기준 값이 표시돼
+            #   그 날 3단계 풀이 우연히 0/0이면 '노란색인데 카운트0'으로 잘못 나왔다.
+            #   2단계 자체의 배열이 tier2_result에 있으면 그걸 우선 쓰도록 tier별로 분기한다.
+            _zbc_final = np.asarray(_zp_bt.get('buy_count')) if _zp_bt.get('buy_count') is not None else None
+            _zsc_final = np.asarray(_zp_bt.get('sell_count')) if _zp_bt.get('sell_count') is not None else None
+            _znet_final = np.asarray(_zp_bt.get('net')) if _zp_bt.get('net') is not None else None
+            _t2r = _zp_bt.get('tier2_result')
+            _zbc_t2 = np.asarray(_t2r['buy_count']) if (_t2r and _t2r.get('buy_count') is not None) else None
+            _zsc_t2 = np.asarray(_t2r['sell_count']) if (_t2r and _t2r.get('sell_count') is not None) else None
+            _znet_t2 = np.asarray(_t2r['net']) if (_t2r and _t2r.get('net') is not None) else None
+            _zm_t2 = float(_t2r['K']) if (_t2r and _t2r.get('K') is not None) else None
+            _zn_t2 = float(_t2r['L']) if (_t2r and _t2r.get('L') is not None) else None
             _ztier_arr = (_zd['tier'].values if 'tier' in _zd.columns else None)
             _zero_m = float(_zp_bt['K']); _zero_n = float(_zp_bt['L'])
+            _zero_mn_by_date = {}   # ★ tier별 실제 적용된 m/n(K/L) — 매수·매도 ON 판정용
             for _i in range(len(_zd)):
                 _row_z = _zd.iloc[_i]
                 if int(_row_z['zero_count_day']) == 1:
                     _dt = pd.Timestamp(_row_z['date']).normalize()
                     _zero_days_set.add(_dt)
                     _zero_pos_by_date[_dt] = int(_row_z['position'])
-                    if _zbc is not None and _i < len(_zbc): _zero_bc_by_date[_dt] = float(_zbc[_i])
-                    if _zsc is not None and _i < len(_zsc): _zero_sc_by_date[_dt] = float(_zsc[_i])
-                    if _i < len(_znet_arr): _zero_net_by_date[_dt] = float(_znet_arr[_i])
-                    _zero_tier_by_date[_dt] = int(_ztier_arr[_i]) if _ztier_arr is not None else 2
+                    _tier_i = int(_ztier_arr[_i]) if _ztier_arr is not None else 2
+                    # tier=2이고 2단계 고유 배열이 있으면 그걸 우선 사용, 아니면 최종(3단계) 배열
+                    _use_bc = _zbc_t2 if (_tier_i == 2 and _zbc_t2 is not None) else _zbc_final
+                    _use_sc = _zsc_t2 if (_tier_i == 2 and _zsc_t2 is not None) else _zsc_final
+                    _use_net = _znet_t2 if (_tier_i == 2 and _znet_t2 is not None) else _znet_final
+                    if _use_bc is not None and _i < len(_use_bc): _zero_bc_by_date[_dt] = float(_use_bc[_i])
+                    if _use_sc is not None and _i < len(_use_sc): _zero_sc_by_date[_dt] = float(_use_sc[_i])
+                    if _use_net is not None and _i < len(_use_net): _zero_net_by_date[_dt] = float(_use_net[_i])
+                    _zero_tier_by_date[_dt] = _tier_i
+                    _zero_mn_by_date[_dt] = ((_zm_t2, _zn_t2) if (_tier_i == 2 and _zm_t2 is not None)
+                                             else (_zero_m, _zero_n))
         # 메인 pos에 카운트0 날의 별도풀 pos를 덮어씀
         if _zero_pos_by_date:
             _pos_hybrid = _pos_bt.copy()
@@ -19952,13 +20004,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 # 실현손익 = 진입 다음날~청산일 일별수익 합 (pos[i-1]*rr[i] 규약과 일치)
                 _real = float(np.sum(rets[_entry_i+1:i+1])) if (i > _entry_i) else 0.0
                 _entry_px = None; _entry_i = None
-            # ★ 카운트0인 날은 별도풀의 카운트·net·m/n 기준, 그 외는 메인풀
+            # ★ 카운트0인 날은 별도풀의 카운트·net·m/n 기준(tier별로 정확한 배열/임계값 사용), 그 외는 메인풀
             if _is_zero_day:
                 _bc_disp = _zero_bc_by_date.get(_dt_i, 0.0)
                 _sc_disp = _zero_sc_by_date.get(_dt_i, 0.0)
                 _net_disp = _zero_net_by_date.get(_dt_i, 0.0)
-                _isbuy = (_zero_m is not None and _net_disp >= _zero_m)
-                _issell = (_zero_n is not None and _net_disp <= _zero_n)
+                _m_disp, _n_disp = _zero_mn_by_date.get(_dt_i, (_zero_m, _zero_n))
+                _isbuy = (_m_disp is not None and _net_disp >= _m_disp)
+                _issell = (_n_disp is not None and _net_disp <= _n_disp)
             else:
                 _bc_disp = float(row['buy_count']); _sc_disp = float(row['sell_count'])
                 _net_disp = float(_net_arr[i])
@@ -20406,117 +20459,148 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 순신호 K/L 최적화 시트 작성 실패(무시): {_ekl}")
 
-    # ─── 7d-2b. ★ mn 순신호 시트 (요청) — 카운트0 별도풀의 (m,n)=(K,L) 조합별 결과 표 ───
-    #   KL 순신호 시트와 같은 형식. m=매수임계(K역할), n=매도임계(L역할).
+    # ─── 7d-2b. ★ mn/op 순신호 시트 (요청) — 카운트0 별도풀의 임계 조합별 결과 표 ───
+    #   2단계(노랑)=mn 순신호, 3단계(주황)=op 순신호. 같은 형식이라 헬�100퍼 함수로 통일.
+    #   ★★ (요청) '전체수익%'은 이제 '카운트0구간수익%'(=탐색 기준, ★는 이 기준 최대)로 바뀌고,
+    #   하이브리드 전체기간 수익은 참고용 컬럼으로 별도 표시.
+    def _write_mn_style_sheet(sheet_name, sheet_pos, zdata, label_a, label_b, extra_note=''):
+        if zdata is None or not zdata.get('top'):
+            return False
+        wsm = wb.create_sheet(sheet_name, sheet_pos); wsm.sheet_view.showGridLines = False
+        _znet = np.asarray(zdata['net'], float)
+        _zrr = np.asarray(zdata['rr'], float)
+        _zprice = np.asarray(zdata['daily']['price'].values, float)
+        _zdates = list(zdata['daily']['date'])
+        _zmask_mn = np.asarray(zdata['zero_mask'], bool)
+        wsm.cell(1, 1).value = (
+            f'{ticker} — {sheet_name} (카운트0 별도풀{extra_note}, 하이브리드). '
+            f'카운트0인 날 중 이 단계가 담당하는 {int(_zmask_mn.sum())}일은 별도풀 ({label_a},{label_b}) 신호, '
+            f'그 외 날은 메인풀(또는 상위단계) 신호로 이어붙인 연속 포지션. '
+            f'{label_a}=매수임계(net≥{label_a} 매수·롱) / {label_b}=매도임계(net≤{label_b} 매도·현금), {label_a}≥{label_b}. '
+            f'★=카운트0구간수익 최대 조합(탐색 기준 — 하이브리드 전체기간이 아니라 이 단계가 '
+            f'담당하는 날들만의 수익 합으로 순위를 매김).')
+        wsm.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
+        wsm.merge_cells('A1:Q1')
+
+        def _mn_stats(pos, m, nn):
+            """카운트0 별도풀 임계 조합의 하이브리드 성과(거래내역 통계용).
+               pos = 하이브리드(이 단계 담당일=별도풀, 그 외=상위단계) 연속 포지션.
+               거래 상세(승률·낙폭 등)는 여전히 전체 구간 진입~청산 기준(경계 왜곡 방지)."""
+            tr = []; ei = None; last_buy = None; last_sell = None
+            held_max_dd = 0.0; n_closed = 0; n_closed_win = 0
+            _np2 = len(pos)
+            for i in range(_np2):
+                if pos[i] == 1 and (i == 0 or pos[i-1] == 0):
+                    ei = i; last_buy = i
+                if pos[i] == 0 and i > 0 and pos[i-1] == 1:
+                    last_sell = i
+                    if ei is not None:
+                        _tret = float(np.sum(_zrr[ei+1:i+1]))
+                        tr.append(_tret); n_closed += 1
+                        if _tret > 0: n_closed_win += 1
+                        _seg = _zprice[ei:i+1]
+                        if len(_seg) >= 2:
+                            _dd = float(_seg.min() / _seg[0] - 1.0)
+                            if _dd < held_max_dd: held_max_dd = _dd
+                        ei = None
+            if ei is not None:
+                _seg = _zprice[ei:]
+                if len(_seg) >= 2:
+                    _dd = float(_seg.min() / _seg[0] - 1.0)
+                    if _dd < held_max_dd: held_max_dd = _dd
+            nt = len(tr)
+            wr = (n_closed_win / n_closed * 100) if n_closed else 0.0
+            buy_acc = sell_acc = None; nb_s = ns_s = 0; bh = sh = 0
+            _nn = min(len(_znet), len(_zrr) - 1)
+            for t in range(_nn):
+                if not _zmask_mn[t]: continue      # 이 단계가 담당하는 날의 신호만 정확도 판정
+                if _znet[t] >= m:
+                    nb_s += 1
+                    if _zrr[t+1] > 0: bh += 1
+                elif _znet[t] <= nn:
+                    ns_s += 1
+                    if _zrr[t+1] < 0: sh += 1
+            if nb_s > 0: buy_acc = bh / nb_s * 100
+            if ns_s > 0: sell_acc = sh / ns_s * 100
+            lb = (pd.Timestamp(_zdates[last_buy]).strftime('%Y-%m-%d') if last_buy is not None else '-')
+            ls = (pd.Timestamp(_zdates[last_sell]).strftime('%Y-%m-%d') if last_sell is not None else '-')
+            lbp = (round(float(_zprice[last_buy]), 2) if last_buy is not None else '-')
+            lsp = (round(float(_zprice[last_sell]), 2) if last_sell is not None else '-')
+            return nt, wr, lb, lbp, ls, lsp, held_max_dd, buy_acc, sell_acc, nb_s, ns_s
+
+        _hdr(wsm, 3, ['순위', f'{label_a}(매수임계)', f'{label_b}(매도임계)',
+                      '카운트0구간수익%', '하이브리드전체수익%', '최대낙폭%', '보유중하락%',
+                      '거래횟수', '승률%', '매수정확도%', '매수신호일수', '매도정확도%', '매도신호일수',
+                      '최근매수일', '매수가', '최근매도일', '매도가', '비고'])
+        # ★ 카운트0구간수익(t['ret'], 새 탐색기준) 내림차순으로 순위
+        _mtop = sorted(zdata['top'], key=lambda x: -x['ret'])
+        _best_mn = (zdata['K'], zdata['L'])
+        _GOODc = PatternFill('solid', fgColor='C6EFCE')
+        _row_mn = 4; _shown = 0
+        for t in _mtop[:200]:
+            m_, n_ = float(t['K']), float(t['L'])
+            pos = t['pos']
+            nt, wr, lb, lbp, ls, lsp, hdd, bacc, sacc, nbs, nss = _mn_stats(pos, m_, n_)
+            _tag = ''
+            if abs(m_-_best_mn[0])<1e-9 and abs(n_-_best_mn[1])<1e-9: _tag = '★카운트0구간수익최대'
+            wsm.cell(_row_mn, 1).value = _shown + 1
+            wsm.cell(_row_mn, 2).value = round(m_, 3)
+            wsm.cell(_row_mn, 3).value = round(n_, 3)
+            wsm.cell(_row_mn, 4).value = round(t['ret']*100, 2)
+            wsm.cell(_row_mn, 5).value = round(t.get('hybrid_ret', t['ret'])*100, 2)
+            wsm.cell(_row_mn, 6).value = round(t['mdd']*100, 2)
+            wsm.cell(_row_mn, 7).value = round(hdd*100, 2)
+            wsm.cell(_row_mn, 8).value = nt
+            wsm.cell(_row_mn, 9).value = round(wr, 1)
+            wsm.cell(_row_mn, 10).value = (round(bacc, 1) if bacc is not None else '-')
+            wsm.cell(_row_mn, 11).value = nbs
+            wsm.cell(_row_mn, 12).value = (round(sacc, 1) if sacc is not None else '-')
+            wsm.cell(_row_mn, 13).value = nss
+            wsm.cell(_row_mn, 14).value = lb; wsm.cell(_row_mn, 15).value = lbp
+            wsm.cell(_row_mn, 16).value = ls; wsm.cell(_row_mn, 17).value = lsp
+            wsm.cell(_row_mn, 18).value = _tag
+            if _tag:
+                for c in range(1, 19): wsm.cell(_row_mn, c).fill = _GOODc
+                wsm.cell(_row_mn, 18).font = Font(bold=True, color='1F6F1F')
+            _row_mn += 1; _shown += 1
+        for ci, w in enumerate([5,13,13,14,16,11,11,9,8,12,11,12,11,13,10,13,10,16], 1):
+            wsm.column_dimensions[get_column_letter(ci)].width = w
+        wsm.freeze_panes = 'A4'
+        wsm.cell(2, 1).value = (
+            f"★카운트0구간수익 최대: {label_a}={zdata['K']:.3f}/{label_b}={zdata['L']:.3f} → "
+            f"카운트0구간 {zdata['ret']*100:+.2f}% (하이브리드 전체 {zdata.get('hybrid_ret', zdata['ret'])*100:+.2f}%) | "
+            f"담당일 {int(_zmask_mn.sum())}일 | 지표수 {label_a}풀={zdata['n_buy']}/{label_b}풀={zdata['n_sell']}")
+        wsm.cell(2, 1).font = Font(bold=True, color='C00000'); wsm.merge_cells('A2:Q2')
+        print(f"  ✓ {sheet_name} 시트 — {len(_mtop)}개 조합, ★카운트0구간수익최대 "
+              f"{label_a}={zdata['K']:.3f}/{label_b}={zdata['L']:.3f}")
+        return True
+
     try:
         _zp_mn = globals().get('_KNET_ZERO_POOL')
-        if _zp_mn is not None and _zp_mn.get('top'):
-            wsm = wb.create_sheet('mn 순신호', 2); wsm.sheet_view.showGridLines = False
-            _znet = np.asarray(_zp_mn['net'], float)
-            _zrr = np.asarray(_zp_mn['rr'], float)
-            _zprice = np.asarray(_zp_mn['daily']['price'].values, float)
-            _zdates = list(_zp_mn['daily']['date'])
-            _zmask_mn = np.asarray(_zp_mn['zero_mask'], bool)
-            wsm.cell(1, 1).value = (
-                f'{ticker} — mn 순신호 (카운트0 별도풀, 하이브리드). 카운트0인 날 {_zp_mn["zero_days"]}일은 '
-                f'별도풀 (m,n) 신호, 그 외 날은 메인풀 KL 신호로 이어붙인 연속 포지션. '
-                f'm=매수임계(net≥m 매수·롱) / n=매도임계(net≤n 매도·현금), m≥n. '
-                f'수익=하이브리드 전체 기간 진입~청산 합산(경계 넘나드는 거래 정확 반영). ★=최대수익 조합')
-            wsm.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
-            wsm.merge_cells('A1:P1')
-
-            def _mn_stats(pos, m, nn):
-                """카운트0 별도풀 (m,n) 조합의 하이브리드 성과.
-                   pos = 하이브리드(카운트0인 날=별도풀, 그 외=메인풀) 연속 포지션.
-                   수익은 전체 기간 진입~청산 합산 (경계 넘나드는 거래 정확히 반영)."""
-                tr = []; ei = None; last_buy = None; last_sell = None
-                held_max_dd = 0.0; n_closed = 0; n_closed_win = 0
-                _np2 = len(pos)
-                for i in range(_np2):
-                    if pos[i] == 1 and (i == 0 or pos[i-1] == 0):
-                        ei = i; last_buy = i
-                    if pos[i] == 0 and i > 0 and pos[i-1] == 1:
-                        last_sell = i
-                        if ei is not None:
-                            # ★ 하이브리드 전체 구간 수익 (진입 다음날~청산일, 카운트0 경계 무관)
-                            _tret = float(np.sum(_zrr[ei+1:i+1]))
-                            tr.append(_tret); n_closed += 1
-                            if _tret > 0: n_closed_win += 1
-                            _seg = _zprice[ei:i+1]
-                            if len(_seg) >= 2:
-                                _dd = float(_seg.min() / _seg[0] - 1.0)
-                                if _dd < held_max_dd: held_max_dd = _dd
-                            ei = None
-                if ei is not None:
-                    _seg = _zprice[ei:]
-                    if len(_seg) >= 2:
-                        _dd = float(_seg.min() / _seg[0] - 1.0)
-                        if _dd < held_max_dd: held_max_dd = _dd
-                nt = len(tr)
-                wr = (n_closed_win / n_closed * 100) if n_closed else 0.0
-                # 매수/매도 정확도 (카운트0인 날의 별도풀 신호만 판정: net[t]≥m → 다음날 수익>0)
-                buy_acc = sell_acc = None; nb_s = ns_s = 0; bh = sh = 0
-                _nn = min(len(_znet), len(_zrr) - 1)
-                for t in range(_nn):
-                    if not _zmask_mn[t]: continue      # 카운트0인 날의 별도풀 신호만 정확도 판정
-                    if _znet[t] >= m:
-                        nb_s += 1
-                        if _zrr[t+1] > 0: bh += 1
-                    elif _znet[t] <= nn:
-                        ns_s += 1
-                        if _zrr[t+1] < 0: sh += 1
-                if nb_s > 0: buy_acc = bh / nb_s * 100
-                if ns_s > 0: sell_acc = sh / ns_s * 100
-                lb = (pd.Timestamp(_zdates[last_buy]).strftime('%Y-%m-%d') if last_buy is not None else '-')
-                ls = (pd.Timestamp(_zdates[last_sell]).strftime('%Y-%m-%d') if last_sell is not None else '-')
-                lbp = (round(float(_zprice[last_buy]), 2) if last_buy is not None else '-')
-                lsp = (round(float(_zprice[last_sell]), 2) if last_sell is not None else '-')
-                return nt, wr, lb, lbp, ls, lsp, held_max_dd, buy_acc, sell_acc, nb_s, ns_s
-
-            _hdr(wsm, 3, ['순위', 'm(매수임계)', 'n(매도임계)', '전체수익%', '최대낙폭%', '보유중하락%',
-                          '거래횟수', '승률%', '매수정확도%', '매수신호일수', '매도정확도%', '매도신호일수',
-                          '최근매수일', '매수가', '최근매도일', '매도가', '비고'])
-            # 최대수익 조합을 맨 위 + 나머지 상위조합 (수익 내림차순)
-            _mtop = sorted(_zp_mn['top'], key=lambda x: -x['ret'])
-            _best_mn = (_zp_mn['K'], _zp_mn['L'])
-            _GOODc = PatternFill('solid', fgColor='C6EFCE')
-            _row_mn = 4; _shown = 0
-            for t in _mtop[:200]:
-                m_, n_ = float(t['K']), float(t['L'])
-                pos = t['pos']
-                nt, wr, lb, lbp, ls, lsp, hdd, bacc, sacc, nbs, nss = _mn_stats(pos, m_, n_)
-                _tag = ''
-                if abs(m_-_best_mn[0])<1e-9 and abs(n_-_best_mn[1])<1e-9: _tag = '★최대수익'
-                wsm.cell(_row_mn, 1).value = _shown + 1
-                wsm.cell(_row_mn, 2).value = round(m_, 3)
-                wsm.cell(_row_mn, 3).value = round(n_, 3)
-                wsm.cell(_row_mn, 4).value = round(t['ret']*100, 2)
-                wsm.cell(_row_mn, 5).value = round(t['mdd']*100, 2)
-                wsm.cell(_row_mn, 6).value = round(hdd*100, 2)
-                wsm.cell(_row_mn, 7).value = nt
-                wsm.cell(_row_mn, 8).value = round(wr, 1)
-                wsm.cell(_row_mn, 9).value = (round(bacc, 1) if bacc is not None else '-')
-                wsm.cell(_row_mn, 10).value = nbs
-                wsm.cell(_row_mn, 11).value = (round(sacc, 1) if sacc is not None else '-')
-                wsm.cell(_row_mn, 12).value = nss
-                wsm.cell(_row_mn, 13).value = lb; wsm.cell(_row_mn, 14).value = lbp
-                wsm.cell(_row_mn, 15).value = ls; wsm.cell(_row_mn, 16).value = lsp
-                wsm.cell(_row_mn, 17).value = _tag
-                if _tag:
-                    for c in range(1, 18): wsm.cell(_row_mn, c).fill = _GOODc
-                    wsm.cell(_row_mn, 17).font = Font(bold=True, color='1F6F1F')
-                _row_mn += 1; _shown += 1
-            for ci, w in enumerate([5,12,12,11,11,12,9,8,12,11,12,11,13,10,13,10,12], 1):
-                wsm.column_dimensions[get_column_letter(ci)].width = w
-            wsm.freeze_panes = 'A4'
-            wsm.cell(2, 1).value = (f"★최대수익(하이브리드) m={_zp_mn['K']:.3f}/n={_zp_mn['L']:.3f} → "
-                                    f"전체 {_zp_mn['ret']*100:+.2f}% | 카운트0인 날 {_zp_mn['zero_days']}일 | "
-                                    f"지표수 m풀={_zp_mn['n_buy']}/n풀={_zp_mn['n_sell']}")
-            wsm.cell(2, 1).font = Font(bold=True, color='C00000'); wsm.merge_cells('A2:P2')
-            print(f"  ✓ mn 순신호 시트 — {len(_mtop)}개 조합, ★최대수익 m={_zp_mn['K']:.3f}/n={_zp_mn['L']:.3f}")
+        _t2r_mn = _zp_mn.get('tier2_result') if _zp_mn else None
+        if _t2r_mn and _t2r_mn.get('top'):
+            # ★ 3단계(주황)까지 간 경우: 'mn 순신호'는 반드시 2단계(노랑) 자체 데이터를 써야 함
+            #   (예전엔 여기서 top-level _KNET_ZERO_POOL을 그대로 썼는데, 3단계까지 가면 그건
+            #   3단계 결과라서 'mn 순신호'에 엉뚱하게 3단계 값이 나오는 문제가 있었다.)
+            _mn_zdata = dict(_t2r_mn)  # K,L,n_buy,n_sell,net,rr,daily,zero_mask,top,ret,hybrid_ret,mdd
+        else:
+            _mn_zdata = _zp_mn
+        _write_mn_style_sheet('mn 순신호', 2, _mn_zdata, 'm', 'n')
     except Exception as _emn:
         import traceback; traceback.print_exc()
         print(f"  ⚠ mn 순신호 시트 작성 실패(무시): {_emn}")
+
+    # ─── 7d-2c. ★★ (요청) op 순신호 시트 — 3단계(주황, A풀 나머지) 전용. 2단계로도 여전히
+    #   카운트0인 날이 있어 3단계까지 간 경우에만 생성됨 (o=매수임계, p=매도임계).
+    try:
+        _zp_op = globals().get('_KNET_ZERO_POOL')
+        if _zp_op and _zp_op.get('tier2_result') and _zp_op.get('top'):
+            # 3단계까지 갔다는 신호 = tier2_result가 존재. top-level 자체가 3단계 결과다.
+            _write_mn_style_sheet('op 순신호', 3, _zp_op, 'o', 'p',
+                                  extra_note=' — 3단계, A풀(성공률70%+) 내 1·2단계 미사용 지표')
+    except Exception as _eop:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ op 순신호 시트 작성 실패(무시): {_eop}")
 
     # ─── 7d-3. ★ 카운트 0 별도풀 시트 (요청) ───
     #   매수·매도 신호 지표가 모두 0개인 날만 대상으로 찾은 별도 풀·K·L·백테스트.
