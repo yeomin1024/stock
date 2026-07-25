@@ -13208,6 +13208,12 @@ OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수
 OOS_START           = None           # OOS 미사용
 
 HORIZON_DAYS        = 2
+# ★★ (요청) 여러 호라이즌으로 각각 지표풀을 뽑은 뒤 하나로 통합(지표 중복 없이)하고 싶으면
+#   여기에 [1, 2] 처럼 리스트를 지정. None(기본)이면 기존처럼 HORIZON_DAYS 단일값만 사용.
+#   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
+#   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
+#   뿐이라) 동작 — 이미 통합된 풀을 그대로 쓴다.
+HORIZON_DAYS_LIST   = [1, 2]
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -13234,7 +13240,7 @@ POOL_SUCCESS_MIN_SIG_HIGH      = 8
 #   1단계(메인풀, 노란색 아님)는 기존 POOL_SUCCESS_MIN_RATE(0.80) 이상.
 #   그래도 카운트0이면 → 2단계: 성공률 [TIER2_LO,TIER2_HI) 밴드 풀로 (m,n) 재탐색, 노란색.
 #   그래도 카운트0이면 → 3단계: 남은(1·2단계에 안 쓰인) 지표 전부로 (o,p) 재탐색, 주황색.
-POOL_TIER2_RATE_LO = 0.70
+POOL_TIER2_RATE_LO = 0.65          # ★★ (요청) A풀·2단계 하한 70%→65%로 확장 (후보 범위 넓힘)
 POOL_TIER2_RATE_HI = 0.80          # 메인풀과 경계 — 이 값 미만만 2단계 대상(메인풀과 겹치지 않도록)
 POOL_SUCCESS_WIDE_PCT  = (0, 100)  # ★ 풀 평가용 분위 (요청: 0,100 전체 탐색)
 POOL_SUCCESS_K_FLOOR   = 2         # ★ 성공률 우선 시 K 하한 — 정예(희소) 풀은 소수 동의로도 신호나야 거래 발생.
@@ -15384,12 +15390,79 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
     return globals()['_KNET_MULTI_POOL']
 
 
+def _build_pool_multi_horizon(feat, close, *, indicators, n_thresholds, horizon_list, ticker):
+    """★★ (요청) HORIZON_DAYS_LIST=[1,2,...] 처럼 여러 호라이즌을 줘서, 호라이즌별로
+       기존 방식(wilson×corr 순차 탐색)을 '각각 그대로' 돌린 뒤 그 결과 풀들을 하나로
+       통합한다. 지표 중복은 안 됨 — 같은 지표가 여러 호라이즌에서 뽑히면 성공률이
+       가장 높은(동률이면 윌슨점수) 한 건만 남긴다.
+       ★ 핵심 근거: 신호배열 생성(_to_signal_array)은 호라이즌과 무관(지표값 vs 임계값
+       비교일 뿐)하고, 호라이즌은 오직 '이 지표+임계값이 성공적인지' 판정(풀 선정 단계)
+       에만 쓰인다. 그래서 호라이즌별로 각각 제대로 뽑은 뒤 합치기만 하면 되고, 이후
+       단계(K/L탐색·캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게 동작한다."""
+    print(f"\n  ══ 멀티호라이즌 통합 지표풀 — HORIZON_DAYS_LIST={list(horizon_list)} ══")
+    _per_h = {}   # h -> (buy_df, sell_df)
+    for _h in horizon_list:
+        print(f"\n  ── 호라이즌 {_h}일 ──")
+        _tk_h = f"{ticker}__h{_h}"   # ★ _score_cache 등 내부 캐시가 ticker로 분리되진 않지만,
+                                     #   _KNET_MULTI_POOL 캐시 히트 오판 방지용으로 표시만 다르게
+        _, _bp, _sp = _build_pool_by_success(feat, close, indicators=indicators,
+                                             n_thresholds=n_thresholds, horizon=int(_h), ticker=ticker)
+        if _bp is not None and len(_bp) > 0:
+            _bp = _bp.copy(); _bp['horizon'] = int(_h)
+        if _sp is not None and len(_sp) > 0:
+            _sp = _sp.copy(); _sp['horizon'] = int(_h)
+        _per_h[_h] = (_bp, _sp)
+
+    def _combine_dedupe(dfs):
+        _valid = [d for d in dfs if d is not None and len(d) > 0]
+        if not _valid:
+            return None
+        _all = pd.concat(_valid, ignore_index=True)
+        # ★★ (요청) 지표 중복 금지 — 같은 지표명이 여러 호라이즌에서 나오면 성공률(동률시
+        #   윌슨점수 score) 최고 1건만 유지. 어느 호라이즌 것이 남았는지 'horizon' 컬럼으로 추적 가능.
+        # ★★ 중요 수정: 이 시스템의 성공 판정은 '구간 내 어느 시점이든 터치하면 성공'
+        #   (barrier-touch) 방식이라, 호라이즌이 길수록 성공률이 수학적으로 항상 같거나
+        #   높아진다(짧은 구간의 터치는 항상 긴 구간에도 포함되므로). 그래서 'success_rate'
+        #   기준으로 중복제거하면 거의 항상 가장 긴 호라이즌만 남아 '통합'의 의미가 없어진다.
+        #   'skill'(성공률-기저확률)은 기저확률도 호라이즌에 따라 같이 오르기 때문에
+        #   훨씬 공정한 호라이즌간 비교 기준이다 — 이 지표가 '어느 호라이즌에서 상대적으로
+        #   더 두드러지는지'를 제대로 반영. skill이 없으면 success_rate로 폴백.
+        if 'skill' in _all.columns and _all['skill'].notna().any():
+            _sort_cols = ['skill'] + (['success_rate'] if 'success_rate' in _all.columns else [])
+        else:
+            _sort_cols = ['success_rate'] + (['score'] if 'score' in _all.columns else [])
+        _all = _all.sort_values(_sort_cols, ascending=False).reset_index(drop=True)
+        _all = _all.drop_duplicates(subset='indicator', keep='first').reset_index(drop=True)
+        return _all
+
+    _combined_buy = _combine_dedupe([v[0] for v in _per_h.values()])
+    _combined_sell = _combine_dedupe([v[1] for v in _per_h.values()])
+
+    if _combined_buy is not None and len(_combined_buy) > 0:
+        _hcounts_b = _combined_buy['horizon'].value_counts().sort_index().to_dict()
+        print(f"\n  ★ 매수 통합풀: {len(_combined_buy)}개 지표 (호라이즌별 채택 {_hcounts_b})")
+    if _combined_sell is not None and len(_combined_sell) > 0:
+        _hcounts_s = _combined_sell['horizon'].value_counts().sort_index().to_dict()
+        print(f"  ★ 매도 통합풀: {len(_combined_sell)}개 지표 (호라이즌별 채택 {_hcounts_s})")
+
+    globals()['_KNET_MULTI_POOL'] = (ticker, _combined_buy, _combined_sell)
+    return globals()['_KNET_MULTI_POOL']
+
+
 def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon, ticker):
     """★ 지표 풀 선정. USE_IC_SELECTION 스위치로 두 방식 분기.
        - False (기본): 기존 성공률+wilson×corr 순차 탐색 (안전, 검증됨)
-       - True  (실험): IC/OOS IC/OOS IR/FDR 기반 통계적 선정 (A+B+C)"""
+       - True  (실험): IC/OOS IC/OOS IR/FDR 기반 통계적 선정 (A+B+C)
+       ★★ (요청) HORIZON_DAYS_LIST가 설정돼 있으면([1,2] 등) 호라이즌별로 각각 뽑은 뒤
+       통합(지표 중복 없이)한 풀을 사용 — horizon 인자(단일값)는 이 경우 무시되고
+       HORIZON_DAYS_LIST가 우선한다."""
     globals().pop('_KNET_REPLAY_FIXED', None)
     globals().pop('_KNET_KL_FIXED', None)
+
+    _hz_list = globals().get('HORIZON_DAYS_LIST')
+    if _hz_list and isinstance(_hz_list, (list, tuple)) and len(_hz_list) > 1:
+        return _build_pool_multi_horizon(feat, close, indicators=indicators,
+                                         n_thresholds=n_thresholds, horizon_list=_hz_list, ticker=ticker)
 
     if not bool(globals().get('USE_IC_SELECTION', False)):
         # ── 기존 방식 (성공률 + wilson×corr 순차) ──
@@ -17337,6 +17410,8 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
                                   'buy_count': _bc2, 'sell_count': _sc2,
                                   'net': _zres2.get('net'), 'ret': _zres2.get('ret'),
                                   'hybrid_ret': _zres2.get('hybrid_ret'), 'mdd': _zres2.get('mdd'),
+                                  'applied': _zres2.get('applied', True),        # ★ 2단계 자체의 적용 여부
+                                  'baseline_ret': _zres2.get('baseline_ret'),    # ★ 2단계 기준선(현금강제) 수익
                                   'top': _zres2.get('top'),          # ★ mn 순신호 시트가 참조할 2단계 전용 그리드
                                   'daily': _zres2.get('daily'), 'rr': _zres2.get('rr'),
                                   'zero_mask': _zres2.get('zero_mask'),
@@ -17534,18 +17609,21 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             bkl = _bkl_final
         K, L, ret, mdd, dl, pos, hybrid_ret = bkl
 
-        # ★★ (요청) '메인풀 단독(대체 없음) 기준선'과 비교 — 캐스케이드가 그 기준선을 못
-        #   넘으면 실제 포지션엔 대체를 적용하지 않는다(색 표시만). 실측 확인된 문제: 캐스케이드가
-        #   찾은 최선의 (m,n)/(o,p)조차도 '아예 대체 안 하고 메인풀 포지션을 그대로 이어가는 것'
-        #   보다 하이브리드 전체수익이 낮을 수 있다 — 이 경우 대체가 오히려 손해이므로 적용 보류.
+        # ★★ (요청 — 재설계) '기준선'을 '메인풀 포지션 그대로 이어가기'가 아니라
+        #   '이 날들(zmask)은 무조건 매도·현금'으로 변경. 신호가 하나도 없는 날 굳이 이전
+        #   포지션을 관성으로 들고 가는 것보다, 근거 없으면 안전하게 현금이 기본값이 되어야
+        #   한다는 요청. 캐스케이드가 이 '현금 기준선'조차 못 넘으면 대체를 적용하지 않고
+        #   그 날들은 강제로 매도·현금 처리(색 표시는 유지).
         applied = True
+        _baseline_ret = None
         if _has_main:
-            _hr_base = np.zeros(n); _hr_base[1:] = _main_pos[:-1] * rr[1:]
+            _baseline_pos = np.where(zmask, 0.0, _main_pos)  # zmask일=현금 강제, 그 외=메인풀 그대로
+            _hr_base = np.zeros(n); _hr_base[1:] = _baseline_pos[:-1] * rr[1:]
             _baseline_ret = float(np.sum(_hr_base))
             if hybrid_ret <= _baseline_ret:
                 applied = False
-                pos = _main_pos.copy()          # 대체 취소 — 메인풀(또는 상위단계) 포지션 유지
-                hybrid_ret = _baseline_ret       # 실제 반영되는 수익은 기준선 그대로
+                pos = _baseline_pos.copy()       # 대체 취소 — 이 날들은 무조건 현금
+                hybrid_ret = _baseline_ret        # 실제 반영되는 수익은 기준선(현금) 그대로
                 ret = _baseline_ret
 
         # 별도 풀 daily — ★ 하이브리드 전체 포지션 (카운트0인 날=별도풀, 그 외=메인풀).
@@ -17571,6 +17649,7 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         _zsell_count = sell_cum[ns_f-1] if ns_f-1 < sell_cum.shape[0] else sell_cum[-1]
         return dict(net=net_f, K=float(K), L=float(L), ret=float(ret), mdd=float(mdd),
                     applied=applied,   # ★ (요청) False면 기준선(대체없음)이 더 나아서 색만 표시, 실제 포지션엔 미반영
+                    baseline_ret=_baseline_ret,   # ★ 비교 기준(현금 강제) 자체의 하이브리드 수익 — 표시용
                     hybrid_ret=float(hybrid_ret),  # ★ 참고용 — 하이브리드 전체기간 수익(선정기준 아님)
                     n_buy=int(nb_f), n_sell=int(ns_f), daily=daily,
                     zero_days=int(np.sum(zmask)), pool_buy_n=int(nB), pool_sell_n=int(nS),
@@ -19848,9 +19927,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _znet_t2 = np.asarray(_t2r['net']) if (_t2r and _t2r.get('net') is not None) else None
             _zm_t2 = float(_t2r['K']) if (_t2r and _t2r.get('K') is not None) else None
             _zn_t2 = float(_t2r['L']) if (_t2r and _t2r.get('L') is not None) else None
+            _applied_t2 = bool(_t2r.get('applied', True)) if _t2r else True
+            _applied_top = bool(_zp_bt.get('applied', True))
             _ztier_arr = (_zd['tier'].values if 'tier' in _zd.columns else None)
             _zero_m = float(_zp_bt['K']); _zero_n = float(_zp_bt['L'])
             _zero_mn_by_date = {}   # ★ tier별 실제 적용된 m/n(K/L) — 매수·매도 ON 판정용
+            _zero_applied_by_date = {}   # ★★ (요청) 이 날짜의 대체가 실제로 적용됐는지(기준선 못넘으면 False)
             for _i in range(len(_zd)):
                 _row_z = _zd.iloc[_i]
                 if int(_row_z['zero_count_day']) == 1:
@@ -19858,13 +19940,22 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _zero_days_set.add(_dt)
                     _zero_pos_by_date[_dt] = int(_row_z['position'])
                     _tier_i = int(_ztier_arr[_i]) if _ztier_arr is not None else 2
+                    _applied_i = _applied_t2 if _tier_i == 2 else _applied_top
+                    _zero_applied_by_date[_dt] = _applied_i
                     # tier=2이고 2단계 고유 배열이 있으면 그걸 우선 사용, 아니면 최종(3단계) 배열
                     _use_bc = _zbc_t2 if (_tier_i == 2 and _zbc_t2 is not None) else _zbc_final
                     _use_sc = _zsc_t2 if (_tier_i == 2 and _zsc_t2 is not None) else _zsc_final
                     _use_net = _znet_t2 if (_tier_i == 2 and _znet_t2 is not None) else _znet_final
-                    if _use_bc is not None and _i < len(_use_bc): _zero_bc_by_date[_dt] = float(_use_bc[_i])
-                    if _use_sc is not None and _i < len(_use_sc): _zero_sc_by_date[_dt] = float(_use_sc[_i])
-                    if _use_net is not None and _i < len(_use_net): _zero_net_by_date[_dt] = float(_use_net[_i])
+                    # ★★ (요청) 미적용이면 표시상으로도 매수/매도카운트 모두 0(실제 대체 안 쓴 걸
+                    #   화면에서도 명확히) — 카운트0풀 지표 값을 굳이 보여주지 않는다.
+                    if _applied_i:
+                        if _use_bc is not None and _i < len(_use_bc): _zero_bc_by_date[_dt] = float(_use_bc[_i])
+                        if _use_sc is not None and _i < len(_use_sc): _zero_sc_by_date[_dt] = float(_use_sc[_i])
+                        if _use_net is not None and _i < len(_use_net): _zero_net_by_date[_dt] = float(_use_net[_i])
+                    else:
+                        _zero_bc_by_date[_dt] = 0.0
+                        _zero_sc_by_date[_dt] = 0.0
+                        _zero_net_by_date[_dt] = 0.0
                     _zero_tier_by_date[_dt] = _tier_i
                     _zero_mn_by_date[_dt] = ((_zm_t2, _zn_t2) if (_tier_i == 2 and _zm_t2 is not None)
                                              else (_zero_m, _zero_n))
@@ -20168,8 +20259,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _sc_disp = _zero_sc_by_date.get(_dt_i, 0.0)
                 _net_disp = _zero_net_by_date.get(_dt_i, 0.0)
                 _m_disp, _n_disp = _zero_mn_by_date.get(_dt_i, (_zero_m, _zero_n))
-                _isbuy = (_m_disp is not None and _net_disp >= _m_disp)
-                _issell = (_n_disp is not None and _net_disp <= _n_disp)
+                _applied_disp = _zero_applied_by_date.get(_dt_i, True)
+                if _applied_disp:
+                    _isbuy = (_m_disp is not None and _net_disp >= _m_disp)
+                    _issell = (_n_disp is not None and _net_disp <= _n_disp)
+                else:
+                    # ★★ (요청) 미적용이면 매수·매도 ON 표시 모두 강제 OFF (카운트0/net0과
+                    #   일관되게 — 임계값과의 우연한 비교로 잘못 켜지는 것 방지)
+                    _isbuy = False
+                    _issell = False
             else:
                 _bc_disp = float(row['buy_count']); _sc_disp = float(row['sell_count'])
                 _net_disp = float(_net_arr[i])
@@ -20710,7 +20808,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             pos = t['pos']
             nt, wr, lb, lbp, ls, lsp, hdd, bacc, sacc, nbs, nss = _mn_stats(pos, m_, n_)
             _tag = ''
-            if abs(m_-_best_mn[0])<1e-9 and abs(n_-_best_mn[1])<1e-9: _tag = '★하이브리드전체수익최대'
+            if abs(m_-_best_mn[0])<1e-9 and abs(n_-_best_mn[1])<1e-9:
+                _applied_mn = bool(zdata.get('applied', True))
+                _tag = '★하이브리드전체수익최대' if _applied_mn else '★최선(기준선 미달→미적용, 참고용)'
             wsm.cell(_row_mn, 1).value = _shown + 1
             wsm.cell(_row_mn, 2).value = round(m_, 3)
             wsm.cell(_row_mn, 3).value = round(n_, 3)
@@ -20734,12 +20834,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         for ci, w in enumerate([5,13,13,14,16,11,11,9,8,12,11,12,11,13,10,13,10,16], 1):
             wsm.column_dimensions[get_column_letter(ci)].width = w
         wsm.freeze_panes = 'A4'
+        _applied_disp2 = bool(zdata.get('applied', True))
+        _base_txt = (f" | 기준선(무신호일 현금강제) {zdata['baseline_ret']*100:+.2f}%"
+                    if zdata.get('baseline_ret') is not None else '')
+        _status_txt = '적용됨' if _applied_disp2 else '★기준선 미달 → 미적용(색만 표시, 그 날들은 현금)'
         wsm.cell(2, 1).value = (
-            f"★하이브리드전체수익 최대: {label_a}={zdata['K']:.3f}/{label_b}={zdata['L']:.3f} → "
-            f"하이브리드 전체 {zdata.get('hybrid_ret', zdata['ret'])*100:+.2f}% (참고: 카운트0구간만 {zdata['ret']*100:+.2f}%) | "
+            f"{label_a}={zdata['K']:.3f}/{label_b}={zdata['L']:.3f} [{_status_txt}] → "
+            f"하이브리드 전체 {zdata.get('hybrid_ret', zdata['ret'])*100:+.2f}% "
+            f"(참고: 카운트0구간만 {zdata['ret']*100:+.2f}%){_base_txt} | "
             f"담당일 {int(_zmask_mn.sum())}일 | 지표수 {label_a}풀={zdata['n_buy']}/{label_b}풀={zdata['n_sell']}")
         wsm.cell(2, 1).font = Font(bold=True, color='C00000'); wsm.merge_cells('A2:Q2')
-        print(f"  ✓ {sheet_name} 시트 — {len(_mtop)}개 조합, ★하이브리드전체수익최대 "
+        print(f"  ✓ {sheet_name} 시트 — {len(_mtop)}개 조합, {_status_txt} "
               f"{label_a}={zdata['K']:.3f}/{label_b}={zdata['L']:.3f}")
         return True
 
