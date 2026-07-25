@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-predictor1_pool.py  — [코드1] 지표풀 선출 전용
+predictor1_pool.py  — [코드1] 결과 직접 생성 (풀 파일 안 만듦)
 ────────────────────────────────────────────────────────────────────────
-공유 코어(predictor_core.py)를 그대로 사용해, 각 티커의 '지표풀'만 선출하여
-ensemble 경로에 '지표풀 엑셀'(pool_ensemble_<티커>_<날짜>.xlsx)로 저장한다.
+★★★ (요청) 이제 지표풀 엑셀(pool_ensemble_*)을 만들지 않는다. 임시 전체파일을
+만들었다가 풀 시트만 뽑고 버리는 대신, 그 전체 결과를 곧바로 최종 결과 엑셀
+'ensemble_search_<티커>_<날짜>.xlsx'로 저장한다.
 
-· 기존 지표풀 엑셀이 있으면 → 재탐색 없이 그 풀을 그대로 쓰고 '현재까지 데이터'만 반영해 갱신.
-· 없으면 → 전체 탐색 후 풀 저장.
-· 파일명이 'ensemble_search_*'(코드2 결과물)와 구분되도록 'pool_ensemble_*' 접두사 사용.
+· 코드2(predictor2_result.py)와의 2단계 분리(풀 선출 → 결과 재현) 없이,
+  이 스크립트 하나로 티커별 전체 분석 결과가 바로 나온다.
+· 자동 다운로드 + 드라이브(ENSEMBLE_MIRROR_DIR) 미러링 모두 그대로 지원.
 
 사용법 (Colab):
     from google.colab import drive; drive.mount('/content/drive')
@@ -22,8 +23,7 @@ import predictor_core as core
 
 # ── 설정 ──
 RUN_TICKERS = None          # None이면 코어의 기본 티커 목록(core.RUN_TICKERS 또는 MULTI_TICKERS) 사용
-POOL_PREFIX = 'pool_ensemble'   # 지표풀 엑셀 접두사 (결과물과 구분)
-OUT_DIR     = None          # None이면 core.ENSEMBLE_MIRROR_DIR(내 드라이브 ensemble 경로)
+OUT_DIR     = None          # None이면 core.OUTPUT_DIR(로컬) — 드라이브 미러는 별도로 자동 수행됨
 
 
 def _resolve_tickers():
@@ -42,26 +42,28 @@ def main():
     if not tickers:
         print("✗ 대상 티커가 없습니다. p1.RUN_TICKERS = ['THC', ...] 로 지정하세요.")
         return []
-    out_dir = OUT_DIR or getattr(core, 'ENSEMBLE_MIRROR_DIR', None) or getattr(core, 'OUTPUT_DIR', '.')
-    print(f"[코드1] 지표풀 선출 — {len(tickers)}개 티커 → {out_dir}")
+    out_dir = OUT_DIR or getattr(core, 'OUTPUT_DIR', '.')
+    print(f"[코드1] 결과 직접 생성(풀 파일 없이 바로 ensemble_search) — {len(tickers)}개 티커 → {out_dir}")
     print(f"  대상: {tickers}")
     saved = []
     for tk in tickers:
-        print(f"\n{'='*60}\n[{tk}] 지표풀 선출\n{'='*60}")
+        print(f"\n{'='*60}\n[{tk}] 결과 생성\n{'='*60}")
         try:
-            p = core.build_pool_excel_for_ticker(tk, out_dir=out_dir, pool_prefix=POOL_PREFIX)
+            # ★★★ (요청) build_pool_excel_for_ticker(풀만 뽑고 버림) 대신
+            #   build_ensemble_search_direct를 써서 곧바로 최종 결과 엑셀을 만든다.
+            p = core.build_ensemble_search_direct(tk, out_dir=out_dir)
             if p:
                 saved.append(p)
         except Exception as e:
             print(f"  ✗ {tk} 실패: {e}")
             import traceback; traceback.print_exc()
-    print(f"\n✅ [코드1] 완료 — 지표풀 엑셀 {len(saved)}개 생성")
+    print(f"\n✅ [코드1] 완료 — 결과 엑셀 {len(saved)}개 생성")
     for p in saved:
         print(f"   · {p}")
-    # ★ (버그 수정) 자동 다운로드 — 이전엔 이 호출이 아예 없어서 코드1 결과가 다운로드되지
-    #   않았음. run_ensemble_search 내부 자동다운로드도 build_pool_excel_for_ticker 호출
-    #   경로에서는 꺼져있으므로(임시 전체파일을 잘못 받으려던 문제 방지), 여기서 최종
-    #   풀 엑셀만 한번에 배치로 다운로드한다 (코드2와 동일한 패턴).
+    # ★ 자동 다운로드 — build_ensemble_search_direct 내부에서 run_ensemble_search가
+    #   호출될 때 이미 자동다운로드가 걸리지만(caller_name 제외 목록에 없음), 혹시
+    #   빠뜨린 경우를 대비해 배치로 한 번 더 시도(이미 받은 파일은 브라우저가 자체적으로
+    #   무시하거나 재확인만 하므로 중복 문제 없음).
     if getattr(core, 'AUTO_DOWNLOAD_EXCEL', False) and saved and hasattr(core, '_auto_download_excels'):
         try:
             core._auto_download_excels(saved)
