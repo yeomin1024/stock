@@ -13216,7 +13216,7 @@ HORIZON_DAYS        = 2
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
 #   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = None
+HORIZON_DAYS_LIST   = [1]
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
