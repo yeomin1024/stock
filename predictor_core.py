@@ -13208,12 +13208,15 @@ OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수
 OOS_START           = None           # OOS 미사용
 
 HORIZON_DAYS        = 2
-# ★★ (요청) 여러 호라이즌으로 각각 지표풀을 뽑은 뒤 하나로 통합(지표 중복 없이)하고 싶으면
-#   여기에 [1, 2] 처럼 리스트를 지정. None(기본)이면 기존처럼 HORIZON_DAYS 단일값만 사용.
+# ★★★ (요청 — 재설계) 주 호라이즌(HORIZON_DAYS)은 완전히 그대로 유지하고, 여기 목록에
+#   적은 '추가' 호라이즌들에서 '기존 풀에 없는 새 지표'만 찾아서 덧붙이고 싶을 때 지정.
+#   예: [1] → HORIZON_DAYS(2일) 풀은 그대로 두고, 1일 기준으로 봤을 때만 좋은 걸로 나오는
+#   지표가 있으면 그것만 추가로 합침. 기존 지표를 대체/제거하지 않으므로 원래 성능이
+#   나빠질 위험이 없다(순수 추가). None(기본)이면 기존처럼 HORIZON_DAYS 단일값만 사용.
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
-#   뿐이라) 동작 — 이미 통합된 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = [1, 2]
+#   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
+HORIZON_DAYS_LIST   = None
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -15390,62 +15393,60 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
     return globals()['_KNET_MULTI_POOL']
 
 
-def _build_pool_multi_horizon(feat, close, *, indicators, n_thresholds, horizon_list, ticker):
-    """★★ (요청) HORIZON_DAYS_LIST=[1,2,...] 처럼 여러 호라이즌을 줘서, 호라이즌별로
-       기존 방식(wilson×corr 순차 탐색)을 '각각 그대로' 돌린 뒤 그 결과 풀들을 하나로
-       통합한다. 지표 중복은 안 됨 — 같은 지표가 여러 호라이즌에서 뽑히면 성공률이
-       가장 높은(동률이면 윌슨점수) 한 건만 남긴다.
-       ★ 핵심 근거: 신호배열 생성(_to_signal_array)은 호라이즌과 무관(지표값 vs 임계값
-       비교일 뿐)하고, 호라이즌은 오직 '이 지표+임계값이 성공적인지' 판정(풀 선정 단계)
-       에만 쓰인다. 그래서 호라이즌별로 각각 제대로 뽑은 뒤 합치기만 하면 되고, 이후
-       단계(K/L탐색·캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게 동작한다."""
-    print(f"\n  ══ 멀티호라이즌 통합 지표풀 — HORIZON_DAYS_LIST={list(horizon_list)} ══")
-    _per_h = {}   # h -> (buy_df, sell_df)
-    for _h in horizon_list:
-        print(f"\n  ── 호라이즌 {_h}일 ──")
-        _tk_h = f"{ticker}__h{_h}"   # ★ _score_cache 등 내부 캐시가 ticker로 분리되진 않지만,
-                                     #   _KNET_MULTI_POOL 캐시 히트 오판 방지용으로 표시만 다르게
-        _, _bp, _sp = _build_pool_by_success(feat, close, indicators=indicators,
+def _build_pool_multi_horizon(feat, close, *, indicators, n_thresholds, horizon, extra_horizons, ticker):
+    """★★★ (요청 — 재설계) 이전 버전은 호라이즌끼리 '경쟁시켜 더 나은 쪽 채택'이라 기존
+       HORIZON_DAYS(=2) 단독보다 성능이 떨어질 수 있었다(요청: "니멋대로 방식을 바꾸지마").
+       올바른 요청은: 기존(주 호라이즌, 예: 2일) 풀은 '완전히 그대로' 두고, 다른 호라이즌
+       (예: 1일)에서 '기존 풀에 없는 새 지표'만 찾아서 추가만 하는 것 — 기존 것을 대체하지
+       않으므로 원래 성능이 훼손될 위험이 없다(순수 추가라 나빠질 이유가 없고, 새 지표가
+       실제로 유용하면 net>K 풀에 더해져 개선 가능성만 있음).
+       horizon: 주 호라이즌(그대로 유지) / extra_horizons: 추가로 훑어볼 호라이즌 목록."""
+    print(f"\n  ══ 멀티호라이즌 지표풀 — 주호라이즌 {horizon}일(그대로 유지) + "
+          f"추가호라이즌 {list(extra_horizons)}일(새 지표만 추가) ══")
+    _, _base_buy, _base_sell = _build_pool_by_success(feat, close, indicators=indicators,
+                                                       n_thresholds=n_thresholds, horizon=horizon, ticker=ticker)
+    _base_buy_n = _base_buy['indicator'].nunique() if _base_buy is not None and len(_base_buy) else 0
+    _base_sell_n = _base_sell['indicator'].nunique() if _base_sell is not None and len(_base_sell) else 0
+    _known_buy = set(_base_buy['indicator']) if _base_buy is not None and len(_base_buy) else set()
+    _known_sell = set(_base_sell['indicator']) if _base_sell is not None and len(_base_sell) else set()
+
+    _add_buy_parts, _add_sell_parts = [], []
+    for _h in extra_horizons:
+        if int(_h) == int(horizon):
+            continue   # 주 호라이즌과 같으면 스킵(중복 계산 방지)
+        print(f"\n  ── 추가 호라이즌 {_h}일 (기존 풀에 없는 지표만 탐색) ──")
+        _, _hb, _hs = _build_pool_by_success(feat, close, indicators=indicators,
                                              n_thresholds=n_thresholds, horizon=int(_h), ticker=ticker)
-        if _bp is not None and len(_bp) > 0:
-            _bp = _bp.copy(); _bp['horizon'] = int(_h)
-        if _sp is not None and len(_sp) > 0:
-            _sp = _sp.copy(); _sp['horizon'] = int(_h)
-        _per_h[_h] = (_bp, _sp)
+        if _hb is not None and len(_hb) > 0:
+            _new_b = _hb[~_hb['indicator'].isin(_known_buy)].copy()
+            if len(_new_b) > 0:
+                _new_b['horizon'] = int(_h)
+                _add_buy_parts.append(_new_b)
+                _known_buy |= set(_new_b['indicator'])   # 다음 추가호라이즌과도 중복 안 되게 누적
+        if _hs is not None and len(_hs) > 0:
+            _new_s = _hs[~_hs['indicator'].isin(_known_sell)].copy()
+            if len(_new_s) > 0:
+                _new_s['horizon'] = int(_h)
+                _add_sell_parts.append(_new_s)
+                _known_sell |= set(_new_s['indicator'])
 
-    def _combine_dedupe(dfs):
-        _valid = [d for d in dfs if d is not None and len(d) > 0]
-        if not _valid:
-            return None
-        _all = pd.concat(_valid, ignore_index=True)
-        # ★★ (요청) 지표 중복 금지 — 같은 지표명이 여러 호라이즌에서 나오면 성공률(동률시
-        #   윌슨점수 score) 최고 1건만 유지. 어느 호라이즌 것이 남았는지 'horizon' 컬럼으로 추적 가능.
-        # ★★ 중요 수정: 이 시스템의 성공 판정은 '구간 내 어느 시점이든 터치하면 성공'
-        #   (barrier-touch) 방식이라, 호라이즌이 길수록 성공률이 수학적으로 항상 같거나
-        #   높아진다(짧은 구간의 터치는 항상 긴 구간에도 포함되므로). 그래서 'success_rate'
-        #   기준으로 중복제거하면 거의 항상 가장 긴 호라이즌만 남아 '통합'의 의미가 없어진다.
-        #   'skill'(성공률-기저확률)은 기저확률도 호라이즌에 따라 같이 오르기 때문에
-        #   훨씬 공정한 호라이즌간 비교 기준이다 — 이 지표가 '어느 호라이즌에서 상대적으로
-        #   더 두드러지는지'를 제대로 반영. skill이 없으면 success_rate로 폴백.
-        if 'skill' in _all.columns and _all['skill'].notna().any():
-            _sort_cols = ['skill'] + (['success_rate'] if 'success_rate' in _all.columns else [])
-        else:
-            _sort_cols = ['success_rate'] + (['score'] if 'score' in _all.columns else [])
-        _all = _all.sort_values(_sort_cols, ascending=False).reset_index(drop=True)
-        _all = _all.drop_duplicates(subset='indicator', keep='first').reset_index(drop=True)
-        return _all
+    # ★ 기존(주 호라이즌) 풀에는 'horizon' 컬럼이 원래 없었으므로 표시용으로 채워줌
+    if _base_buy is not None and len(_base_buy) > 0 and 'horizon' not in _base_buy.columns:
+        _base_buy = _base_buy.copy(); _base_buy['horizon'] = int(horizon)
+    if _base_sell is not None and len(_base_sell) > 0 and 'horizon' not in _base_sell.columns:
+        _base_sell = _base_sell.copy(); _base_sell['horizon'] = int(horizon)
 
-    _combined_buy = _combine_dedupe([v[0] for v in _per_h.values()])
-    _combined_sell = _combine_dedupe([v[1] for v in _per_h.values()])
+    _final_buy = pd.concat([_base_buy] + _add_buy_parts, ignore_index=True) if _base_buy is not None and len(_base_buy) else (pd.concat(_add_buy_parts, ignore_index=True) if _add_buy_parts else None)
+    _final_sell = pd.concat([_base_sell] + _add_sell_parts, ignore_index=True) if _base_sell is not None and len(_base_sell) else (pd.concat(_add_sell_parts, ignore_index=True) if _add_sell_parts else None)
 
-    if _combined_buy is not None and len(_combined_buy) > 0:
-        _hcounts_b = _combined_buy['horizon'].value_counts().sort_index().to_dict()
-        print(f"\n  ★ 매수 통합풀: {len(_combined_buy)}개 지표 (호라이즌별 채택 {_hcounts_b})")
-    if _combined_sell is not None and len(_combined_sell) > 0:
-        _hcounts_s = _combined_sell['horizon'].value_counts().sort_index().to_dict()
-        print(f"  ★ 매도 통합풀: {len(_combined_sell)}개 지표 (호라이즌별 채택 {_hcounts_s})")
+    _n_added_b = sum(len(p) for p in _add_buy_parts)
+    _n_added_s = sum(len(p) for p in _add_sell_parts)
+    print(f"\n  ★ 매수풀: 기존 {_base_buy_n}지표(그대로) + 신규 {_n_added_b}지표 추가 = "
+          f"{_final_buy['indicator'].nunique() if _final_buy is not None and len(_final_buy) else 0}지표")
+    print(f"  ★ 매도풀: 기존 {_base_sell_n}지표(그대로) + 신규 {_n_added_s}지표 추가 = "
+          f"{_final_sell['indicator'].nunique() if _final_sell is not None and len(_final_sell) else 0}지표")
 
-    globals()['_KNET_MULTI_POOL'] = (ticker, _combined_buy, _combined_sell)
+    globals()['_KNET_MULTI_POOL'] = (ticker, _final_buy, _final_sell)
     return globals()['_KNET_MULTI_POOL']
 
 
@@ -15453,16 +15454,16 @@ def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon,
     """★ 지표 풀 선정. USE_IC_SELECTION 스위치로 두 방식 분기.
        - False (기본): 기존 성공률+wilson×corr 순차 탐색 (안전, 검증됨)
        - True  (실험): IC/OOS IC/OOS IR/FDR 기반 통계적 선정 (A+B+C)
-       ★★ (요청) HORIZON_DAYS_LIST가 설정돼 있으면([1,2] 등) 호라이즌별로 각각 뽑은 뒤
-       통합(지표 중복 없이)한 풀을 사용 — horizon 인자(단일값)는 이 경우 무시되고
-       HORIZON_DAYS_LIST가 우선한다."""
+       ★★★ (요청) HORIZON_DAYS_LIST가 설정돼 있으면([1] 등) 주 호라이즌(horizon, 기존과
+       완전히 동일하게 그대로 유지)에 더해, 그 목록의 호라이즌들에서 '기존에 없는 새 지표만'
+       추가로 찾아 덧붙인다 — 기존 지표를 대체하지 않으므로 기존 성능이 나빠질 수 없다."""
     globals().pop('_KNET_REPLAY_FIXED', None)
     globals().pop('_KNET_KL_FIXED', None)
 
     _hz_list = globals().get('HORIZON_DAYS_LIST')
-    if _hz_list and isinstance(_hz_list, (list, tuple)) and len(_hz_list) > 1:
-        return _build_pool_multi_horizon(feat, close, indicators=indicators,
-                                         n_thresholds=n_thresholds, horizon_list=_hz_list, ticker=ticker)
+    if _hz_list and isinstance(_hz_list, (list, tuple)) and len(_hz_list) > 0:
+        return _build_pool_multi_horizon(feat, close, indicators=indicators, n_thresholds=n_thresholds,
+                                         horizon=horizon, extra_horizons=_hz_list, ticker=ticker)
 
     if not bool(globals().get('USE_IC_SELECTION', False)):
         # ── 기존 방식 (성공률 + wilson×corr 순차) ──
