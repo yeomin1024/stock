@@ -15332,7 +15332,8 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
         if _cb is None or _cs is None or len(_cb) == 0 or len(_cs) == 0:
             _score_cache[_ck] = (None, None, -1e18); return _score_cache[_ck]
         _nsd = _net_signal_k_search(feat, close, _cb, _cs, ticker=ticker,
-                                    oos_start=None, search_counts=True)
+                                    oos_start=None, search_counts=True,
+                                    compute_zero_pool=False)   # ★ 탐색 후보 비교용 — full_cum만 씀, 카운트0 무관
         _score_cache[_ck] = (_cb, _cs, (_nsd['full_cum'] if _nsd else -1e18))
         return _score_cache[_ck]
     _cl0 = _cls[0]; _best_wz = _wzs[0]; _wz_sc = -1e18
@@ -17684,7 +17685,7 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
 def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                          ticker='', max_k_candidates=600, oos_start=None,
                          n_buy=None, n_sell=None, search_counts=False, weight_exp=1.0, fixed_k=None,
-                         select_by='full'):
+                         select_by='full', compute_zero_pool=True):
     """★ 순신호 K 최적화 + OOS 검증 (요청):
        b(순신호) = (상위 n_buy 매수지표 가중합) − (상위 n_sell 매도지표 가중합).
        net > K → 롱(매수/보유), net ≤ K → 현금(매도). 신호는 다음날 반영.
@@ -17692,6 +17693,13 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
        - search_counts=True: 지표개수(n_buy,n_sell)까지 탐색 → 최적 개수 자동 선정.
        - n_buy/n_sell 지정: 그 개수로 고정(그리드 행별 K_buy/K_sell 적용용).
        (수익=상승·하락률 단순 합산, 손절 미적용)
+       ★★★ (요청 — 성능개선, 결과불변) compute_zero_pool=False면 카운트0 캐스케이드(가장
+       비싼 부분)를 건너뛴다. 이 함수의 반환값 중 'full_cum'(메인풀 자체 수익) 계산 경로는
+       전혀 건드리지 않고, 그 뒤에 이어지는 카운트0 대체 처리 블록만 스킵한다 — 즉 어떤
+       n_buy/n_sell/wilson/corr가 '선택'되는지는 이 스킵과 완전히 무관, 동일하게 유지된다.
+       호출부에서 반환값의 카운트0 관련 필드(_KNET_ZERO_POOL 등)를 쓰지 않는 '탐색 중간
+       평가'(예: wilson/corr 후보 비교, A/B 검증 각 조합) 용도일 때만 False로 준다 — 최종
+       확정된 조합에 대해서는 반드시 기본값(True)으로 한 번 더 불러 캐스케이드를 만든다.
     """
     if feat is None or close_ser is None or buy_pool is None or sell_pool is None:
         return None
@@ -17890,7 +17898,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                 if _nz < 5:
                     print(f"     → 카운트0인 날이 5일 미만 → '카운트0 별도풀'·'mn 순신호' 시트 생략 "
                           f"(지표수 {n_buy_opt}/{n_sell_opt}가 많아 전부 0인 날이 드묾)")
-            if _is_full_run and _nz >= 5:
+            if _is_full_run and _nz >= 5 and compute_zero_pool:
                 # ★ 메인풀 KL(K/L) 계산 → 하이브리드 기준으로 전달 (카운트≠0인 날 메인 pos)
                 _main_K = _main_L = None
                 try:
@@ -18772,7 +18780,8 @@ def run_selection_ab_verification(feat, close_full, ticker, *, top_n=None, quick
             # 순신호(net) 계산 — SEARCH_WEIGHT_SCHEME는 baseline과 공평 비교 위해 고정 g=1.0 사용
             _nsd = _net_signal_k_search(feat, close_full, _b, _s, ticker=ticker,
                                          oos_start=None, n_buy=None, n_sell=None,
-                                         search_counts=True, weight_exp=1.0, select_by='full')
+                                         search_counts=True, weight_exp=1.0, select_by='full',
+                                         compute_zero_pool=False)   # ★ A/B비교는 net_kl_search만 씀, 카운트0 무관
             if _nsd is None or _nsd.get('daily') is None:
                 results.append(dict(variant=label, ret=None, mdd=None, held_dd=None,
                                      n_trades=None, win_rate=None, buy_rows=len(_b),
@@ -19488,7 +19497,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 try:
                     _knet_cache[_ck] = _net_signal_k_search(
                         feat, close_full, _bp, _sp, ticker=ticker, oos_start=_oos_k,
-                        n_buy=_kb, n_sell=_ks)
+                        n_buy=_kb, n_sell=_ks, compute_zero_pool=False)   # ★ 그리드 표시·폴백용, 카운트0 무관
                 except Exception:
                     _knet_cache[_ck] = None
             _r = _knet_cache[_ck]
@@ -19653,12 +19662,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _fixed = globals().get('_KNET_REPLAY_FIXED')
 
         def _compute(sel_by, fk=None, fnb=None, fns=None, fg=None):
-            """sel_by='full'|'oos'. fk 있으면 고정(재현), 없으면 g 탐색."""
+            """sel_by='full'|'oos'. fk 있으면 고정(재현), 없으면 g 탐색.
+               ★★★ (요청 — 성능개선, 결과불변) 여기서 카운트0 캐스케이드를 전부 건너뛴다 —
+               이 함수의 선택 기준은 full_cum/oos_cum(메인풀 자체 수익)뿐이라 카운트0
+               처리와 무관하고, 아래 write_excel의 재동기화 로직이 최종 확정된 K/L·풀
+               기준으로 캐스케이드를 정확히 다시 만들어주므로 여기서 여러 번 반복 계산할
+               필요가 없다(결과 동일, 실행시간만 단축)."""
             if fk is not None:
                 c = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
                                          oos_start=globals().get('OOS_START'),
                                          n_buy=fnb, n_sell=fns, search_counts=False,
-                                         weight_exp=(fg or 1.0), fixed_k=fk, select_by=sel_by)
+                                         weight_exp=(fg or 1.0), fixed_k=fk, select_by=sel_by,
+                                         compute_zero_pool=False)
                 return c, (fg or 1.0)
             _gs = (list(globals().get('NET_WEIGHT_SCHEMES', [1.0]))
                    if (globals().get('SEARCH_WEIGHT_SCHEME', False) and globals().get('NET_SIGNAL_WEIGHTED', False))
@@ -19668,14 +19683,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 c = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
                                          oos_start=globals().get('OOS_START'),
                                          n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt,
-                                         weight_exp=_g_, select_by=sel_by)
+                                         weight_exp=_g_, select_by=sel_by,
+                                         compute_zero_pool=False)
                 _m = ((c.get('oos_cum') if sel_by == 'oos' else c.get('full_cum')) if c else None)
                 _m = -1e18 if _m is None else _m
                 if _m > _bsc: _bsc = _m; _bg = _g_; _bc = c
             if _bc is None:
                 _bc = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
                                            oos_start=globals().get('OOS_START'),
-                                           n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt, select_by=sel_by)
+                                           n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt, select_by=sel_by,
+                                           compute_zero_pool=False)
             return _bc, _bg
 
         if _fixed and isinstance(_fixed, dict) and _fixed.get('k_full') is not None:
@@ -24863,6 +24880,21 @@ def _auto_download_excels(file_paths, *, verbose=True):
             print("  ℹ AUTO_DOWNLOAD_EXCEL=False — 자동 다운로드 건너뜀")
         return
 
+    # ★★★ (요청) 같은 파일이 여러 경로(예: run_ensemble_search 내부 자동호출 + 바깥쪽
+    #   배치호출 등)로 두 번 이상 다운로드 트리거되는 문제 방지 — 절대경로 기준으로
+    #   '이 세션에서 이미 다운로드 트리거한 파일'을 기억해서, 같은 파일은 두 번째부터
+    #   조용히 건너뛴다(원인이 어디든 상관없이 확실하게 막는 방어 로직).
+    if '_DOWNLOAD_TRIGGERED' not in g:
+        g['_DOWNLOAD_TRIGGERED'] = set()
+    _abs_requested = [os.path.abspath(fp) for fp in file_paths if fp]
+    _already = [fp for fp in _abs_requested if fp in g['_DOWNLOAD_TRIGGERED']]
+    file_paths = [fp for fp in file_paths if fp and os.path.abspath(fp) not in g['_DOWNLOAD_TRIGGERED']]
+    if _already and verbose:
+        for fp in _already:
+            print(f"  ℹ 이미 다운로드 트리거됨(중복 방지, 건너뜀): {fp}")
+    if not file_paths:
+        return
+
     existing = [fp for fp in file_paths if fp and os.path.exists(fp)]
     missing  = [fp for fp in file_paths if fp and not os.path.exists(fp)]
 
@@ -24887,6 +24919,7 @@ def _auto_download_excels(file_paths, *, verbose=True):
         for fp in existing:
             try:
                 files.download(fp)
+                g['_DOWNLOAD_TRIGGERED'].add(os.path.abspath(fp))   # ★ 중복 방지용 기록
                 if verbose:
                     print(f"     📥 다운로드 시작: {fp}")
             except Exception as e:
