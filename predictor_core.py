@@ -19911,10 +19911,46 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _pos_bt = (_net_arr >= _bk0).astype(int); _pos_bt[0] = 0
             _kltag = f'K={_K_bt} (net>K 폴백)'
 
+        # ★★★ (요청) 캐스케이드 최신성 검증 — _KNET_ZERO_POOL은 탐색 과정 중 어느 한 시점의
+        #   (K,L)/풀 조합으로 만들어진 것일 수 있는데, 여기서 실제로 표시되는 K/L(_K_bt/_L_bt)은
+        #   _net_kl_search라는 완전히 별도의(캐스케이드와 무관한) 탐색 결과다. 실측으로 확인된
+        #   버그: 카운트0(매수·매도카운트 둘 다 0)인 날인데도 캐스케이드의 zero_days_set에
+        #   없어서 색칠도 안 되고 대체도 안 되는 날짜가 생김. 여기서 '지금 실제로 표시될
+        #   buy_count/sell_count' 기준으로 진짜 카운트0 날짜를 다시 계산해서, 캐스케이드가
+        #   놓친 날짜가 있으면 그 자리에서 다시 정확히 맞춰 돈다(원시평가·검증은 캐시 재사용돼
+        #   빠름 — 매수/매도카운트만 다시 계산하면 되는 수준).
+        _true_bc = np.abs(d['buy_count'].values.astype(float)) < 1e-9
+        _true_sc = np.abs(d['sell_count'].values.astype(float)) < 1e-9
+        _true_zero_mask = _true_bc & _true_sc
+        _zp_bt = globals().get('_KNET_ZERO_POOL')
+        _cached_zero_dates = set()
+        if _zp_bt is not None and _zp_bt.get('daily') is not None:
+            _zd_check = _zp_bt['daily']
+            if 'zero_count_day' in _zd_check.columns:
+                for _ci in range(len(_zd_check)):
+                    if int(_zd_check.iloc[_ci]['zero_count_day']) == 1:
+                        _cached_zero_dates.add(pd.Timestamp(_zd_check.iloc[_ci]['date']).normalize())
+        _true_zero_dates = {pd.Timestamp(dts[_i]).normalize() for _i in range(_n_all) if _true_zero_mask[_i]}
+        if _true_zero_dates != _cached_zero_dates and int(np.sum(_true_zero_mask)) >= 5:
+            print(f"  ⚠ 캐스케이드 재동기화 — 최종 K/L 기준 실제 카운트0 {len(_true_zero_dates)}일 "
+                  f"vs 캐스케이드 캐시 {len(_cached_zero_dates)}일 불일치, 다시 계산")
+            try:
+                _bp_sync = buy_pool if buy_pool is not None else globals().get('_KNET_MULTI_POOL', (None, None, None))[1]
+                _sp_sync = sell_pool if sell_pool is not None else globals().get('_KNET_MULTI_POOL', (None, None, None))[2]
+                if feat is not None and close_full is not None and _bp_sync is not None and _sp_sync is not None:
+                    _zp_bt = _search_zero_count_pool_cascade(
+                        feat, close_full, _bp_sync, _sp_sync, len(_bp_sync), len(_sp_sync),
+                        _true_zero_mask, ticker=ticker,
+                        weight_exp=float(globals().get('WEIGHT_EXP', 1.0)) if globals().get('NET_SIGNAL_WEIGHTED', True) else 1.0,
+                        main_net=_net_arr, main_K=_K_bt, main_L=(_L_bt if _L_bt is not None else _K_bt),
+                        horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit)
+                    globals()['_KNET_ZERO_POOL'] = _zp_bt
+            except Exception as _esync:
+                print(f"  ⚠ 캐스케이드 재동기화 실패(기존 캐시로 진행): {_esync}")
+
         # ★ (요청) 하이브리드 — 카운트 0인 날은 별도풀로 대체.
         #   카운트≠0인 날은 메인풀(KL 히스테리시스), 카운트0인 날은 별도풀 매매 결과.
         #   별도풀의 카운트(m/n 지표 신호합)와 net도 그 날들에 주입, m/n 임계값 표시.
-        _zp_bt = globals().get('_KNET_ZERO_POOL')
         _zero_days_set = set()
         _zero_pos_by_date = {}; _zero_bc_by_date = {}; _zero_sc_by_date = {}; _zero_net_by_date = {}
         _zero_tier_by_date = {}   # ★ (요청) 2(노랑, 성공률70-80%) / 3(주황, 나머지) 구분
