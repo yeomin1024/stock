@@ -13216,7 +13216,7 @@ HORIZON_DAYS        = 2
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
 #   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = [1]
+HORIZON_DAYS_LIST   = None
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -17579,8 +17579,12 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
                     mdd_z = float(np.min(cum_z - np.maximum.accumulate(cum_z))) if len(cum_z) else 0.0
                     cum_h = np.cumsum(_hr)
                     mdd_h = float(np.min(cum_h - np.maximum.accumulate(cum_h))) if len(cum_h) else 0.0
-                    if best is None or ret > best[2]:
-                        # best[2]=zret(정보용, 필드순서 유지) / _best_score_track=ret(실제 비교기준)
+                    if best is None or ret >= best[6]:
+                        # ★★★ (요청) 동률(정확히 같은 하이브리드 값)이 여러 개면, 그 중 순위가
+                        #   가장 낮은(그리드 시트에서 맨 마지막 순번인) 조합을 채택 — '>' 대신
+                        #   '>='를 써서 동률일 때 나중에 검색되는 조합이 최종 선택되게 한다.
+                        #   (그리드 반복순서와 시트 정렬은 안정정렬로 동일 순서를 유지하므로,
+                        #   여기서 마지막에 이기는 조합 = 시트에서 그 동률그룹의 마지막 순위)
                         best = (K, L, zret, mdd_h, int(_zpos.sum()), pos.copy(), ret)
                     if collect_top:
                         _top.append({'K': float(K), 'L': float(L), 'ret': zret, 'mdd': mdd_h,
@@ -17610,21 +17614,23 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             bkl = _bkl_final
         K, L, ret, mdd, dl, pos, hybrid_ret = bkl
 
-        # ★★ (요청 — 재설계) '기준선'을 '메인풀 포지션 그대로 이어가기'가 아니라
-        #   '이 날들(zmask)은 무조건 매도·현금'으로 변경. 신호가 하나도 없는 날 굳이 이전
-        #   포지션을 관성으로 들고 가는 것보다, 근거 없으면 안전하게 현금이 기본값이 되어야
-        #   한다는 요청. 캐스케이드가 이 '현금 기준선'조차 못 넘으면 대체를 적용하지 않고
-        #   그 날들은 강제로 매도·현금 처리(색 표시는 유지).
+        # ★★★ (요청 — 재변경) '무조건 현금 강제' 기준선을 되돌린다. 이렇게 하면 KL 순신호
+        #   시트(카운트0인 날도 그냥 net/K/L 히스테리시스 그대로 적용하는 순수 계산)와 일별
+        #   백테스트가 서로 다른 수치를 보이는 불일치가 생긴다는 게 실측으로 확인됐다
+        #   (예: KL순신호 286% vs 일별백테스트 274.56% — 같은 K/L인데도). '메인풀(또는 상위
+        #   단계) 포지션을 그대로 이어가기'가 원래 로직이고, 이게 KL 순신호의 계산 방식과도
+        #   정확히 일치한다 — 카운트0인 날(net=0)도 그냥 그 net값으로 K/L 히스테리시스를
+        #   그대로 적용(이전 상태 유지)하는 것과 동일.
         applied = True
         _baseline_ret = None
         if _has_main:
-            _baseline_pos = np.where(zmask, 0.0, _main_pos)  # zmask일=현금 강제, 그 외=메인풀 그대로
+            _baseline_pos = _main_pos.copy()   # 원래 로직: 메인풀(또는 상위단계) 포지션 그대로 이어가기
             _hr_base = np.zeros(n); _hr_base[1:] = _baseline_pos[:-1] * rr[1:]
             _baseline_ret = float(np.sum(_hr_base))
             if hybrid_ret <= _baseline_ret:
                 applied = False
-                pos = _baseline_pos.copy()       # 대체 취소 — 이 날들은 무조건 현금
-                hybrid_ret = _baseline_ret        # 실제 반영되는 수익은 기준선(현금) 그대로
+                pos = _baseline_pos.copy()       # 대체 취소 — 메인풀(또는 상위단계) 포지션 그대로
+                hybrid_ret = _baseline_ret
                 ret = _baseline_ret
 
         # 별도 풀 daily — ★ 하이브리드 전체 포지션 (카운트0인 날=별도풀, 그 외=메인풀).
@@ -19947,16 +19953,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _use_bc = _zbc_t2 if (_tier_i == 2 and _zbc_t2 is not None) else _zbc_final
                     _use_sc = _zsc_t2 if (_tier_i == 2 and _zsc_t2 is not None) else _zsc_final
                     _use_net = _znet_t2 if (_tier_i == 2 and _znet_t2 is not None) else _znet_final
-                    # ★★ (요청) 미적용이면 표시상으로도 매수/매도카운트 모두 0(실제 대체 안 쓴 걸
-                    #   화면에서도 명확히) — 카운트0풀 지표 값을 굳이 보여주지 않는다.
-                    if _applied_i:
-                        if _use_bc is not None and _i < len(_use_bc): _zero_bc_by_date[_dt] = float(_use_bc[_i])
-                        if _use_sc is not None and _i < len(_use_sc): _zero_sc_by_date[_dt] = float(_use_sc[_i])
-                        if _use_net is not None and _i < len(_use_net): _zero_net_by_date[_dt] = float(_use_net[_i])
-                    else:
-                        _zero_bc_by_date[_dt] = 0.0
-                        _zero_sc_by_date[_dt] = 0.0
-                        _zero_net_by_date[_dt] = 0.0
+                    # ★★★ (요청 — 원상복귀) 미적용이어도 표시는 캐스케이드 자체 계산값을 그대로
+                    #   보여준다(예전처럼 강제로 0/0 만들지 않음) — '원래 로직'.
+                    if _use_bc is not None and _i < len(_use_bc): _zero_bc_by_date[_dt] = float(_use_bc[_i])
+                    if _use_sc is not None and _i < len(_use_sc): _zero_sc_by_date[_dt] = float(_use_sc[_i])
+                    if _use_net is not None and _i < len(_use_net): _zero_net_by_date[_dt] = float(_use_net[_i])
                     _zero_tier_by_date[_dt] = _tier_i
                     _zero_mn_by_date[_dt] = ((_zm_t2, _zn_t2) if (_tier_i == 2 and _zm_t2 is not None)
                                              else (_zero_m, _zero_n))
@@ -20260,15 +20261,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _sc_disp = _zero_sc_by_date.get(_dt_i, 0.0)
                 _net_disp = _zero_net_by_date.get(_dt_i, 0.0)
                 _m_disp, _n_disp = _zero_mn_by_date.get(_dt_i, (_zero_m, _zero_n))
-                _applied_disp = _zero_applied_by_date.get(_dt_i, True)
-                if _applied_disp:
-                    _isbuy = (_m_disp is not None and _net_disp >= _m_disp)
-                    _issell = (_n_disp is not None and _net_disp <= _n_disp)
-                else:
-                    # ★★ (요청) 미적용이면 매수·매도 ON 표시 모두 강제 OFF (카운트0/net0과
-                    #   일관되게 — 임계값과의 우연한 비교로 잘못 켜지는 것 방지)
-                    _isbuy = False
-                    _issell = False
+                # ★★★ (요청 — 원상복귀) 미적용이어도 표시는 표준 임계값 비교 그대로 — 예전처럼
+                #   강제 OFF 처리하지 않는다('원래 로직').
+                _isbuy = (_m_disp is not None and _net_disp >= _m_disp)
+                _issell = (_n_disp is not None and _net_disp <= _n_disp)
             else:
                 _bc_disp = float(row['buy_count']); _sc_disp = float(row['sell_count'])
                 _net_disp = float(_net_arr[i])
