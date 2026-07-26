@@ -19937,15 +19937,33 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             try:
                 _bp_sync = buy_pool if buy_pool is not None else globals().get('_KNET_MULTI_POOL', (None, None, None))[1]
                 _sp_sync = sell_pool if sell_pool is not None else globals().get('_KNET_MULTI_POOL', (None, None, None))[2]
-                if feat is not None and close_full is not None and _bp_sync is not None and _sp_sync is not None:
+                # ★★★ (요청) feat/close_full이 이 표(_nsd)의 날짜범위(d['date'])와 정확히
+                #   같은 길이·순서라는 보장이 없으면, 캐스케이드가 만든 'daily'의 날짜와
+                #   이 표의 날짜가 문자열로는 매칭되더라도 인덱스가 어긋나 일부만 조용히
+                #   누락될 수 있다(실측: op는 306%인데 표는 298%로 8%p 손실) — feat/close를
+                #   이 표의 날짜(d['date'])에 정확히 맞춰 재색인해서 완전히 동일한 길이·순서로
+                #   캐스케이드를 재계산한다.
+                _d_dates = pd.to_datetime(d['date']).dt.normalize()
+                _feat_aligned = feat.reindex(_d_dates) if feat is not None else None
+                _close_aligned = close_full.reindex(_d_dates) if close_full is not None else None
+                if _feat_aligned is not None and _feat_aligned.isna().all(axis=1).any():
+                    print(f"  ⚠ 재색인 후 feat에 결측 행 있음(날짜범위 불일치) — 원본 feat로 폴백")
+                    _feat_aligned, _close_aligned = feat, close_full
+                if _feat_aligned is not None and _close_aligned is not None and _bp_sync is not None and _sp_sync is not None:
                     _zp_bt = _search_zero_count_pool_cascade(
-                        feat, close_full, _bp_sync, _sp_sync, len(_bp_sync), len(_sp_sync),
+                        _feat_aligned, _close_aligned, _bp_sync, _sp_sync, len(_bp_sync), len(_sp_sync),
                         _true_zero_mask, ticker=ticker,
                         weight_exp=float(globals().get('WEIGHT_EXP', 1.0)) if globals().get('NET_SIGNAL_WEIGHTED', True) else 1.0,
                         main_net=_net_arr, main_K=_K_bt, main_L=(_L_bt if _L_bt is not None else _K_bt),
                         horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit)
-                    globals()['_KNET_ZERO_POOL'] = _zp_bt
+                    # ★ 재계산 결과의 'daily' 길이가 d와 정확히 같은지 최종 확인(다르면 폐기)
+                    if _zp_bt is not None and _zp_bt.get('daily') is not None and len(_zp_bt['daily']) == len(d):
+                        globals()['_KNET_ZERO_POOL'] = _zp_bt
+                        print(f"  ✓ 캐스케이드 재동기화 완료 (날짜 {len(d)}개 정확히 정렬됨)")
+                    else:
+                        print(f"  ⚠ 재동기화 결과 길이 불일치({len(_zp_bt['daily']) if _zp_bt and _zp_bt.get('daily') is not None else 'None'} vs {len(d)}) — 기존 캐시 유지")
             except Exception as _esync:
+                import traceback; traceback.print_exc()
                 print(f"  ⚠ 캐스케이드 재동기화 실패(기존 캐시로 진행): {_esync}")
 
         # ★ (요청) 하이브리드 — 카운트 0인 날은 별도풀로 대체.
