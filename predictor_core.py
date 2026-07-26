@@ -17401,6 +17401,15 @@ def _search_zero_count_pool_cascade(feat, close_ser, buy_pool, sell_pool,
         _zres3['tier'] = 3
         _zres3['daily']['tier'] = np.where(_zmask2, 3,
                                     np.where(np.asarray(zero_mask, bool), 2, 0))
+        # ★★★ 버그 수정(핵심): _zres3는 3단계 자신의 zero_mask(=_zmask2, tier3 대상일만)로
+        #   내부적으로 만들어졌기 때문에, 그 안의 'zero_count_day' 컬럼은 _zmask2(예: 100일)
+        #   기준으로만 1이 찍혀 있다 — 'tier' 컬럼은 방금 위에서 tier2+tier3 합쳐서(예: 200일)
+        #   올바르게 고쳤는데 'zero_count_day'는 안 고쳐서 서로 어긋난 상태였다. write_excel의
+        #   추출 루프가 'zero_count_day==1'인 행만 순회하기 때문에, 이 불일치 때문에 tier=2
+        #   (노랑)로 정확히 표시돼야 할 날짜들이 순회 대상에서 통째로 빠져 결과적으로
+        #   "노랑0일/주황N일"처럼 노랑이 전부 사라져 보이는 버그로 이어졌다(실측 확인).
+        #   'tier'와 완전히 같은 기준(원본 전체 zero_mask)으로 다시 맞춘다.
+        _zres3['daily']['zero_count_day'] = np.where(np.asarray(zero_mask, bool), 1, 0)
         # ★★ 버그 수정: 최종 반환 dict의 buy_count/sell_count는 '3단계 풀'로 전체기간을 계산한
         #   배열이라, 노란색(2단계로 해결된) 날짜에 갖다 쓰면 그날은 3단계 풀 기준 우연히
         #   0/0일 수 있어(3단계 풀은 애초에 그 날짜들을 목표로 최적화되지 않았음) '노란색인데
