@@ -10900,6 +10900,518 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
         import traceback; traceback.print_exc()
         print(f"  ⚠ REIT 고유 지표 추가 실패(무시): {_ereit1}")
 
+    # ════════════════════════════════════════════════════════════════════
+    # ★★★ (요청) 신규 하락 예측 지표 대거 추가 — 매도 지표 부족 티커 보강용
+    #   GL/NLY/SPG/MNST/ROST/STT/TJX/GS 등 매도 지표가 2~9개뿐인 티커들을 위해,
+    #   기존 2,355개 지표와 이름·로직이 겹치지 않는 하락 예측 지표를 추가한다.
+    #   전부 해당 종목 OHLCV만으로 계산 → 모든 티커에 보편 적용. 룩어헤드 없음.
+    #   계열: ADX/DMI·Aroon·Supertrend·Chandelier·Vortex·Fisher·TRIX·UO·CMO·DPO·
+    #   StochRSI·ConnorsRSI·Choppiness·RVI·BOP·ElderRay·VPT·ChaikinVol·KST·Coppock·
+    #   CUSUM·분산비·t통계·Ulcer·손익비·CVaR·Hill꼬리·하방편차·RV기간구조·EWMA관리도·
+    #   선형회귀채널·Donchian·Keltner·3선전환·McGinley·HullMA·AnchoredVWAP·포물선정점·
+    #   RSI실패스윙·VZO·고저가거래량비·신규종합점수(dp9)
+    # ════════════════════════════════════════════════════════════════════
+    try:
+        _op9 = df['Open'].astype(float)
+        _vv9 = df['Volume'].astype(float)
+        _ret9 = cl.pct_change()
+        _n9 = len(cl)
+        _tr9 = pd.concat([(hi - lo), (hi - cl.shift(1)).abs(), (lo - cl.shift(1)).abs()], axis=1).max(axis=1)
+
+        # ── 1) ADX / DMI (14) — 하락 방향성 강도 ──
+        _up_m = hi.diff(); _dn_m = -lo.diff()
+        _pdm = pd.Series(np.where((_up_m > _dn_m) & (_up_m > 0), _up_m, 0.0), index=cl.index)
+        _ndm = pd.Series(np.where((_dn_m > _up_m) & (_dn_m > 0), _dn_m, 0.0), index=cl.index)
+        _atr_w = _tr9.ewm(alpha=1/14, min_periods=14).mean()
+        _pdi = 100 * _pdm.ewm(alpha=1/14, min_periods=14).mean() / _atr_w.replace(0, np.nan)
+        _ndi = 100 * _ndm.ewm(alpha=1/14, min_periods=14).mean() / _atr_w.replace(0, np.nan)
+        _dx = 100 * (_pdi - _ndi).abs() / (_pdi + _ndi).replace(0, np.nan)
+        _adx = _dx.ewm(alpha=1/14, min_periods=14).mean()
+        feat['dmx_di_minus_14'] = _ndi
+        feat['dmx_di_spread'] = _pdi - _ndi
+        feat['dmx_adx_14'] = _adx
+        _bear_x = (_ndi > _pdi) & (_ndi.shift(1) <= _pdi.shift(1))
+        feat['dmx_bear_cross'] = _bear_x.astype(float)
+        feat['dmx_bear_cross_10d'] = _bear_x.rolling(10, min_periods=1).sum()
+        feat['dmx_strong_downtrend'] = ((_adx > 25) & (_ndi > _pdi)).astype(float)
+
+        # ── 2) Aroon (25) — 하락 우위 국면 ──
+        _aroon_up = 100 * (25 - (25 - hi.rolling(25, min_periods=25).apply(np.argmax, raw=True) - 1)) / 25
+        _aroon_dn = 100 * (25 - (25 - lo.rolling(25, min_periods=25).apply(np.argmin, raw=True) - 1)) / 25
+        feat['aroon_dn_25'] = _aroon_dn
+        feat['aroon_osc_25'] = _aroon_up - _aroon_dn
+        _ar_x = (_aroon_dn > _aroon_up) & (_aroon_dn.shift(1) <= _aroon_up.shift(1))
+        feat['aroon_bear_cross'] = _ar_x.astype(float)
+        feat['aroon_dn_dominant'] = ((_aroon_dn > 70) & (_aroon_up < 30)).astype(float)
+
+        # ── 3) Supertrend (10, 3) — 추세 반전 하향 플립 ──
+        _atr10 = _tr9.rolling(10, min_periods=10).mean()
+        _st_mid = (hi + lo) / 2
+        _bu = (_st_mid + 3 * _atr10).values; _bl = (_st_mid - 3 * _atr10).values
+        _clv9 = cl.values
+        _st_line = np.full(_n9, np.nan); _st_dir = np.zeros(_n9)
+        _fu = np.nan; _fl = np.nan; _d = 1
+        for _i9 in range(_n9):
+            if not np.isfinite(_bu[_i9]):
+                continue
+            _fu = _bu[_i9] if (not np.isfinite(_fu)) or _bu[_i9] < _fu or _clv9[_i9-1] > _fu else _fu
+            _fl = _bl[_i9] if (not np.isfinite(_fl)) or _bl[_i9] > _fl or _clv9[_i9-1] < _fl else _fl
+            if _d == 1 and _clv9[_i9] < _fl:
+                _d = -1
+            elif _d == -1 and _clv9[_i9] > _fu:
+                _d = 1
+            _st_dir[_i9] = _d
+            _st_line[_i9] = _fl if _d == 1 else _fu
+        feat['sptr_bearish'] = (pd.Series(_st_dir, index=cl.index) == -1).astype(float)
+        _st_flip_dn = (pd.Series(_st_dir, index=cl.index) == -1) & (pd.Series(_st_dir, index=cl.index).shift(1) == 1)
+        feat['sptr_flip_dn'] = _st_flip_dn.astype(float)
+        feat['sptr_flip_dn_10d'] = _st_flip_dn.rolling(10, min_periods=1).sum()
+        feat['sptr_dist'] = (cl - pd.Series(_st_line, index=cl.index)) / cl
+
+        # ── 4) Chandelier Exit (22, 3ATR) — 트레일링 스탑 이탈 ──
+        _atr22 = _tr9.rolling(22, min_periods=22).mean()
+        _chdl_stop = hi.rolling(22, min_periods=22).max() - 3 * _atr22
+        feat['chdl_dist'] = (cl - _chdl_stop) / cl
+        _chdl_br = cl < _chdl_stop
+        feat['chdl_below_long_stop'] = _chdl_br.astype(float)
+        feat['chdl_breach_10d'] = _chdl_br.rolling(10, min_periods=1).sum()
+
+        # ── 5) Vortex (14) — 하락 소용돌이 우위 ──
+        _vmp = (hi - lo.shift(1)).abs(); _vmm = (lo - hi.shift(1)).abs()
+        _trs14 = _tr9.rolling(14, min_periods=14).sum().replace(0, np.nan)
+        _vip = _vmp.rolling(14, min_periods=14).sum() / _trs14
+        _vim = _vmm.rolling(14, min_periods=14).sum() / _trs14
+        feat['vtx_vi_minus_14'] = _vim
+        feat['vtx_spread'] = _vip - _vim
+        _vtx_x = (_vim > _vip) & (_vim.shift(1) <= _vip.shift(1))
+        feat['vtx_bear_cross'] = _vtx_x.astype(float)
+        feat['vtx_bear_dominant'] = ((_vim > 1.05) & (_vip < 0.95)).astype(float)
+
+        # ── 6) Fisher Transform (10) — 고점 반전 감지 ──
+        _min10 = lo.rolling(10, min_periods=10).min(); _max10 = hi.rolling(10, min_periods=10).max()
+        _rng10 = (_max10 - _min10).replace(0, np.nan)
+        _x_raw = (2 * ((cl - _min10) / _rng10 - 0.5)).clip(-0.999, 0.999).values
+        _fv = np.full(_n9, np.nan); _fish = np.full(_n9, np.nan)
+        _pv = 0.0; _pf = 0.0
+        for _i9 in range(_n9):
+            if not np.isfinite(_x_raw[_i9]):
+                continue
+            _pv = 0.33 * _x_raw[_i9] + 0.67 * _pv
+            _cv = min(max(_pv, -0.999), 0.999)
+            _pf = 0.5 * np.log((1 + _cv) / (1 - _cv)) + 0.5 * _pf
+            _fish[_i9] = _pf
+        _fshr = pd.Series(_fish, index=cl.index)
+        feat['fshr_10'] = _fshr
+        feat['fshr_extreme_high'] = (_fshr > 2.0).astype(float)
+        feat['fshr_turning_dn'] = ((_fshr.shift(1) > 1.5) & (_fshr < _fshr.shift(1))).astype(float)
+        feat['fshr_cross_signal_dn'] = ((_fshr < _fshr.shift(1)) & (_fshr.shift(1) >= _fshr.shift(2))).astype(float)
+
+        # ── 7) TRIX (15) — 3중 지수평활 모멘텀 하향 ──
+        _e1 = np.log(cl.replace(0, np.nan)).ewm(span=15, min_periods=15).mean()
+        _e3 = _e1.ewm(span=15, min_periods=15).mean().ewm(span=15, min_periods=15).mean()
+        _trix = _e3.diff() * 10000
+        _trix_sig = _trix.ewm(span=9, min_periods=9).mean()
+        feat['trix_15'] = _trix
+        feat['trix_negative'] = (_trix < 0).astype(float)
+        feat['trix_cross_dn'] = ((_trix < _trix_sig) & (_trix.shift(1) >= _trix_sig.shift(1))).astype(float)
+        feat['trix_turning_dn'] = ((_trix < _trix.shift(1)) & (_trix.shift(1) >= _trix.shift(2))).astype(float)
+
+        # ── 8) Ultimate Oscillator (7/14/28) — 과열 후 냉각 ──
+        _bp_uo = cl - pd.concat([lo, cl.shift(1)], axis=1).min(axis=1)
+        _tr_uo = (pd.concat([hi, cl.shift(1)], axis=1).max(axis=1)
+                  - pd.concat([lo, cl.shift(1)], axis=1).min(axis=1)).replace(0, np.nan)
+        _a7 = _bp_uo.rolling(7, min_periods=7).sum() / _tr_uo.rolling(7, min_periods=7).sum()
+        _a14 = _bp_uo.rolling(14, min_periods=14).sum() / _tr_uo.rolling(14, min_periods=14).sum()
+        _a28 = _bp_uo.rolling(28, min_periods=28).sum() / _tr_uo.rolling(28, min_periods=28).sum()
+        _uo = 100 * (4 * _a7 + 2 * _a14 + _a28) / 7
+        feat['uo_7_14_28'] = _uo
+        feat['uo_overbought_turn'] = ((_uo.shift(1) > 70) & (_uo < _uo.shift(1))).astype(float)
+        feat['uo_below_50'] = (_uo < 50).astype(float)
+
+        # ── 9) Chande Momentum Oscillator (14) ──
+        _upm = _ret9.clip(lower=0).rolling(14, min_periods=14).sum()
+        _dnm = (-_ret9.clip(upper=0)).rolling(14, min_periods=14).sum()
+        _cmo = 100 * (_upm - _dnm) / (_upm + _dnm).replace(0, np.nan)
+        feat['cmo_14'] = _cmo
+        feat['cmo_ob_turn'] = ((_cmo.shift(1) > 50) & (_cmo < _cmo.shift(1))).astype(float)
+        feat['cmo_cross_zero_dn'] = ((_cmo < 0) & (_cmo.shift(1) >= 0)).astype(float)
+
+        # ── 10) Detrended Price Oscillator (20) — 사이클 고점 ──
+        _dpo = cl.shift(11) - cl.rolling(20, min_periods=20).mean()
+        _dpo_n = _dpo / cl
+        feat['dpo_20'] = _dpo_n
+        feat['dpo_negative'] = (_dpo_n < 0).astype(float)
+        feat['dpo_turning_dn'] = ((_dpo_n < _dpo_n.shift(1)) & (_dpo_n.shift(1) >= _dpo_n.shift(2))).astype(float)
+
+        # ── 11) Stochastic RSI (14,3,3) — 과열 붕괴 ──
+        _d_up = _ret9.clip(lower=0).ewm(alpha=1/14, min_periods=14).mean()
+        _d_dn = (-_ret9.clip(upper=0)).ewm(alpha=1/14, min_periods=14).mean()
+        _rsi_l = 100 - 100 / (1 + _d_up / _d_dn.replace(0, np.nan))
+        _rmin = _rsi_l.rolling(14, min_periods=14).min(); _rmax = _rsi_l.rolling(14, min_periods=14).max()
+        _srsi_raw = (_rsi_l - _rmin) / (_rmax - _rmin).replace(0, np.nan)
+        _srsi_k = _srsi_raw.rolling(3, min_periods=3).mean()
+        _srsi_d = _srsi_k.rolling(3, min_periods=3).mean()
+        feat['srsi_k'] = _srsi_k
+        feat['srsi_d'] = _srsi_d
+        feat['srsi_cross_dn'] = ((_srsi_k < _srsi_d) & (_srsi_k.shift(1) >= _srsi_d.shift(1))).astype(float)
+        feat['srsi_ob_turn'] = ((_srsi_k.shift(1) > 0.8) & (_srsi_k < _srsi_k.shift(1))).astype(float)
+
+        # ── 12) Connors RSI — 단기 극과열 ──
+        _cd_up = _ret9.clip(lower=0).ewm(alpha=1/3, min_periods=3).mean()
+        _cd_dn = (-_ret9.clip(upper=0)).ewm(alpha=1/3, min_periods=3).mean()
+        _rsi3 = 100 - 100 / (1 + _cd_up / _cd_dn.replace(0, np.nan))
+        _sgn = np.sign(_ret9.fillna(0)).values
+        _stk = np.zeros(_n9)
+        for _i9 in range(1, _n9):
+            _stk[_i9] = (_stk[_i9-1] + _sgn[_i9]) if (_sgn[_i9] != 0 and _sgn[_i9] == np.sign(_stk[_i9-1] or _sgn[_i9])) else _sgn[_i9]
+        _stk_s = pd.Series(_stk, index=cl.index)
+        _sd = _stk_s.diff()
+        _su_up = _sd.clip(lower=0).ewm(alpha=1/2, min_periods=2).mean()
+        _su_dn = (-_sd.clip(upper=0)).ewm(alpha=1/2, min_periods=2).mean()
+        _rsi_stk = 100 - 100 / (1 + _su_up / _su_dn.replace(0, np.nan))
+        _prank = _ret9.rolling(100, min_periods=50).apply(lambda a: (a[:-1] < a[-1]).mean() * 100, raw=True)
+        _crsi = (_rsi3 + _rsi_stk + _prank) / 3
+        feat['crsi_val'] = _crsi
+        feat['crsi_extreme_high'] = (_crsi > 85).astype(float)
+        feat['crsi_high_turn'] = ((_crsi.shift(1) > 80) & (_crsi < _crsi.shift(1))).astype(float)
+
+        # ── 13) Choppiness (14) — 고점권 방향성 상실(분산 국면) ──
+        _rng14 = (hi.rolling(14, min_periods=14).max() - lo.rolling(14, min_periods=14).min()).replace(0, np.nan)
+        _chop = 100 * np.log10((_tr9.rolling(14, min_periods=14).sum() / _rng14).clip(lower=1e-10)) / np.log10(14)
+        feat['chop_14'] = _chop
+        feat['chop_low_trending'] = (_chop < 38).astype(float)
+        feat['chop_high_after_up'] = ((_chop > 60) & (cl.pct_change(20) > 0.05)).astype(float)
+
+        # ── 14) Relative Vigor Index (10) — 활력 소진 ──
+        def _swma(s):
+            return (s + 2 * s.shift(1) + 2 * s.shift(2) + s.shift(3)) / 6
+        _rvg_num = _swma(cl - _op9).rolling(10, min_periods=10).sum()
+        _rvg_den = _swma((hi - lo).replace(0, np.nan)).rolling(10, min_periods=10).sum().replace(0, np.nan)
+        _rvg = _rvg_num / _rvg_den
+        _rvg_sig = _swma(_rvg)
+        feat['rvg_10'] = _rvg
+        feat['rvg_cross_dn'] = ((_rvg < _rvg_sig) & (_rvg.shift(1) >= _rvg_sig.shift(1))).astype(float)
+        feat['rvg_negative'] = (_rvg < 0).astype(float)
+
+        # ── 15) Balance of Power — 매도 우위 지속 ──
+        _bop = (cl - _op9) / (hi - lo).replace(0, np.nan)
+        _bop_e = _bop.ewm(span=5, min_periods=5).mean()
+        feat['bop_ema5'] = _bop_e
+        feat['bop_neg_persist_10d'] = (_bop_e < 0).rolling(10, min_periods=1).sum()
+        feat['bop_falling'] = ((_bop_e < _bop_e.shift(1)) & (_bop_e.shift(1) < _bop_e.shift(2))).astype(float)
+
+        # ── 16) Elder-Ray (13) — 곰의 힘 심화 ──
+        _ema13 = cl.ewm(span=13, min_periods=13).mean()
+        _eray_bear = (lo - _ema13) / cl
+        _eray_bull = (hi - _ema13) / cl
+        feat['eray_bear_13'] = _eray_bear
+        feat['eray_bear_deepening'] = ((_eray_bear < _eray_bear.shift(1)) & (_eray_bear < 0)).rolling(5, min_periods=1).sum()
+        feat['eray_bull_fading'] = ((_eray_bull > 0) & (_eray_bull < _eray_bull.shift(1)) & (_eray_bull.shift(1) < _eray_bull.shift(2))).astype(float)
+        feat['eray_double_bear'] = ((_eray_bear < 0) & (_eray_bull < 0)).astype(float)
+
+        # ── 17) Volume Price Trend — 수급 이탈 ──
+        _vpt = (_vv9 * _ret9.fillna(0)).cumsum()
+        _vpt_sl = _vpt.diff(10) / _vv9.rolling(20, min_periods=20).mean().replace(0, np.nan)
+        feat['vpt_slope_10'] = _vpt_sl
+        feat['vpt_slope_neg'] = (_vpt_sl < 0).astype(float)
+        feat['vpt_div_20d'] = ((cl.pct_change(20) > 0) & (_vpt.diff(20) < 0)).astype(float)
+
+        # ── 18) Chaikin Volatility (10) — 급락 직전 레인지 폭발 ──
+        _hl_e = (hi - lo).ewm(span=10, min_periods=10).mean()
+        _chv = _hl_e.pct_change(10) * 100
+        feat['chv_10'] = _chv
+        _chv_mu = _chv.rolling(60, min_periods=30).mean(); _chv_sd = _chv.rolling(60, min_periods=30).std()
+        feat['chv_spike'] = ((_chv - _chv_mu) / _chv_sd.replace(0, np.nan) > 2).astype(float)
+        feat['chv_calm_at_high'] = ((_chv < _chv_mu - _chv_sd) & (cl >= cl.rolling(20, min_periods=20).max() * 0.99)).astype(float)
+
+        # ── 19) KST (Know Sure Thing) — 장기 모멘텀 하향 전환 ──
+        _kst = (cl.pct_change(10).rolling(10, min_periods=10).mean() * 1
+                + cl.pct_change(15).rolling(10, min_periods=10).mean() * 2
+                + cl.pct_change(20).rolling(10, min_periods=10).mean() * 3
+                + cl.pct_change(30).rolling(15, min_periods=15).mean() * 4) * 100
+        _kst_sig = _kst.rolling(9, min_periods=9).mean()
+        feat['kst_val'] = _kst
+        feat['kst_cross_dn'] = ((_kst < _kst_sig) & (_kst.shift(1) >= _kst_sig.shift(1))).astype(float)
+        feat['kst_negative'] = (_kst < 0).astype(float)
+        feat['kst_turning_dn'] = ((_kst < _kst.shift(1)) & (_kst.shift(1) >= _kst.shift(2))).astype(float)
+
+        # ── 20) Coppock Curve (14,11,10 WMA) — 정점 하향 전환 ──
+        _copp_raw = cl.pct_change(14) * 100 + cl.pct_change(11) * 100
+        _w10 = np.arange(1, 11, dtype=float)
+        _copp = _copp_raw.rolling(10, min_periods=10).apply(lambda a: np.dot(a, _w10) / _w10.sum(), raw=True)
+        feat['copp_val'] = _copp
+        feat['copp_turning_dn'] = ((_copp.shift(1) > 0) & (_copp < _copp.shift(1)) & (_copp.shift(1) >= _copp.shift(2))).astype(float)
+        feat['copp_negative'] = (_copp < 0).astype(float)
+
+        # ── 21) CUSUM (하방 누적합 관리도) — 구조적 하락 전환점 ──
+        _z9 = ((_ret9 - _ret9.rolling(60, min_periods=30).mean())
+               / _ret9.rolling(60, min_periods=30).std().replace(0, np.nan)).fillna(0).values
+        _cus = np.zeros(_n9)
+        for _i9 in range(1, _n9):
+            _cus[_i9] = min(0.0, _cus[_i9-1] + _z9[_i9] + 0.5)
+        _cus_s = pd.Series(_cus, index=cl.index)
+        feat['cusum_neg_stat'] = _cus_s
+        feat['cusum_breach_dn'] = (_cus_s < -4).astype(float)
+        feat['cusum_deepening'] = ((_cus_s < _cus_s.shift(1)) & (_cus_s < -2)).astype(float)
+
+        # ── 22) 분산비 (5일/1일, 60일 창) — 하락 추세 지속성 ──
+        _r5sum = _ret9.rolling(5, min_periods=5).sum()
+        _vr = (_r5sum.rolling(60, min_periods=40).var()
+               / (5 * _ret9.rolling(60, min_periods=40).var()).replace(0, np.nan))
+        feat['vratio_5_60'] = _vr
+        feat['vratio_trending'] = (_vr > 1.2).astype(float)
+        feat['vratio_high_neg_mom'] = ((_vr > 1.2) & (cl.pct_change(10) < 0)).astype(float)
+
+        # ── 23) 롤링 t-통계 — 평균수익 유의성 붕괴 ──
+        _tstat = (_ret9.rolling(20, min_periods=20).mean()
+                  / (_ret9.rolling(20, min_periods=20).std() / np.sqrt(20)).replace(0, np.nan))
+        feat['tstat_20'] = _tstat
+        feat['tstat_turning_neg'] = ((_tstat < 0) & (_tstat.shift(1) >= 0)).astype(float)
+        feat['tstat_below_neg1'] = (_tstat < -1).astype(float)
+
+        # ── 24) Ulcer Index (14) — 낙폭 고통 지수 ──
+        _rmax14 = cl.rolling(14, min_periods=14).max()
+        _dd_pct = 100 * (cl - _rmax14) / _rmax14
+        _ulcer = np.sqrt((_dd_pct ** 2).rolling(14, min_periods=14).mean())
+        feat['ulcer_14'] = _ulcer
+        feat['ulcer_rising_5d'] = (_ulcer.diff() > 0).rolling(5, min_periods=1).sum()
+        _ul_mu = _ulcer.rolling(60, min_periods=30).mean(); _ul_sd = _ulcer.rolling(60, min_periods=30).std()
+        feat['ulcer_zscore_60'] = (_ulcer - _ul_mu) / _ul_sd.replace(0, np.nan)
+        _martin = cl.pct_change(20) * 100 / _ulcer.replace(0, np.nan)
+        feat['martin_falling'] = ((_martin < _martin.shift(5)) & (_martin.shift(5) < _martin.shift(10))).astype(float)
+
+        # ── 25) 손익비 (20) — 이익/손실 균형 붕괴 ──
+        _glr = (_ret9.clip(lower=0).rolling(20, min_periods=20).sum()
+                / (-_ret9.clip(upper=0)).rolling(20, min_periods=20).sum().replace(0, np.nan))
+        feat['glr_20'] = _glr
+        feat['glr_below_1'] = (_glr < 1).astype(float)
+        feat['glr_falling_5d'] = (_glr.diff() < 0).rolling(5, min_periods=1).sum()
+
+        # ── 26) CVaR 5% (60) — 조건부 기대손실 악화 ──
+        def _cvar5(a):
+            _q = np.nanpercentile(a, 5)
+            _t = a[a <= _q]
+            return np.nanmean(_t) if len(_t) else np.nan
+        _cvar = _ret9.rolling(60, min_periods=40).apply(_cvar5, raw=True)
+        feat['cvar5_60'] = _cvar
+        _cv_mu = _cvar.rolling(60, min_periods=30).mean(); _cv_sd = _cvar.rolling(60, min_periods=30).std()
+        feat['cvar_zscore'] = (_cvar - _cv_mu) / _cv_sd.replace(0, np.nan)
+        feat['cvar_worsening'] = ((_cvar < _cv_mu - _cv_sd)).astype(float)
+
+        # ── 27) Hill 좌측 꼬리지수 (60, k=10) — 폭락 꼬리 무거워짐 ──
+        def _hill_left(a):
+            _neg = -a[a < 0]
+            if len(_neg) < 12:
+                return np.nan
+            _s = np.sort(_neg)[::-1][:10]
+            if _s[-1] <= 0:
+                return np.nan
+            return 1.0 / max(np.mean(np.log(_s[:-1] / _s[-1])), 1e-6)
+        _hill = _ret9.rolling(60, min_periods=40).apply(_hill_left, raw=True)
+        feat['hill_left_60'] = _hill
+        feat['hill_heavy_tail'] = (_hill < 2).astype(float)
+        feat['hill_worsening'] = ((_hill < _hill.shift(5)) & (_hill < 3)).astype(float)
+
+        # ── 28) 하방편차·Sortino (20) — 하방 위험 가속 ──
+        _ddev = np.sqrt((_ret9.clip(upper=0) ** 2).rolling(20, min_periods=20).mean())
+        feat['ddev_20'] = _ddev
+        _ddev10 = np.sqrt((_ret9.clip(upper=0) ** 2).rolling(10, min_periods=10).mean())
+        _ddev40 = np.sqrt((_ret9.clip(upper=0) ** 2).rolling(40, min_periods=40).mean())
+        feat['ddev_ratio_10_40'] = _ddev10 / _ddev40.replace(0, np.nan)
+        feat['ddev_accel_flag'] = (feat['ddev_ratio_10_40'] > 1.5).astype(float)
+        _sortino = _ret9.rolling(20, min_periods=20).mean() / _ddev.replace(0, np.nan)
+        feat['sortino_20'] = _sortino
+        feat['sortino_falling'] = ((_sortino < _sortino.shift(5)) & (_sortino.shift(5) < _sortino.shift(10))).astype(float)
+
+        # ── 29) 실현변동성 기간구조 — 단기vol>장기vol 역전(패닉) ──
+        _rv5 = _ret9.rolling(5, min_periods=5).std() * np.sqrt(252)
+        _rv20 = _ret9.rolling(20, min_periods=20).std() * np.sqrt(252)
+        _rv60 = _ret9.rolling(60, min_periods=60).std() * np.sqrt(252)
+        _rvterm = (_rv5 - _rv60) / _rv60.replace(0, np.nan)
+        feat['rvterm_slope'] = _rvterm
+        feat['rvterm_inverted'] = ((_rv5 > _rv20) & (_rv20 > _rv60)).astype(float)
+        _rvt_mu = _rvterm.rolling(60, min_periods=30).mean(); _rvt_sd = _rvterm.rolling(60, min_periods=30).std()
+        feat['rvterm_inversion_z60'] = (_rvterm - _rvt_mu) / _rvt_sd.replace(0, np.nan)
+
+        # ── 30) EWMA 관리도 — 하방 이탈 감지 ──
+        _ew_m = _ret9.ewm(span=10, min_periods=10).mean()
+        _ew_s = _ret9.ewm(span=10, min_periods=10).std()
+        _ewmac = _ew_m / _ew_s.replace(0, np.nan)
+        feat['ewmac_stat'] = _ewmac
+        feat['ewmac_breach_dn'] = (_ewmac < -0.5).astype(float)
+        feat['ewmac_dn_persist'] = (_ewmac < 0).rolling(10, min_periods=1).sum()
+
+        # ── 31) 선형회귀 채널 (20) — 추세 품질 붕괴·과확장 ──
+        _x20 = np.arange(20, dtype=float)
+        _x20c = _x20 - _x20.mean(); _ssx = float((_x20c ** 2).sum())
+        def _lr_slope(a):
+            return float(np.dot(_x20c, a - a.mean()) / _ssx)
+        def _lr_r2(a):
+            _sl = np.dot(_x20c, a - a.mean()) / _ssx
+            _fit = a.mean() + _sl * _x20c
+            _sse = ((a - _fit) ** 2).sum(); _sst = ((a - a.mean()) ** 2).sum()
+            return float(1 - _sse / _sst) if _sst > 0 else np.nan
+        def _lr_resid_z(a):
+            _sl = np.dot(_x20c, a - a.mean()) / _ssx
+            _fit = a.mean() + _sl * _x20c
+            _res = a - _fit; _sd = _res.std()
+            return float(_res[-1] / _sd) if _sd > 0 else np.nan
+        _lcl = np.log(cl.replace(0, np.nan))
+        _lslope = _lcl.rolling(20, min_periods=20).apply(_lr_slope, raw=True) * 252
+        _lr2 = _lcl.rolling(20, min_periods=20).apply(_lr_r2, raw=True)
+        _lresz = _lcl.rolling(20, min_periods=20).apply(_lr_resid_z, raw=True)
+        feat['lreg_slope_20'] = _lslope
+        feat['lreg_slope_turning_neg'] = ((_lslope < 0) & (_lslope.shift(1) >= 0)).astype(float)
+        feat['lreg_r2_20'] = _lr2
+        feat['lreg_r2_falling'] = ((_lr2 < _lr2.shift(5)) & (_lr2.shift(5) < _lr2.shift(10))).astype(float)
+        feat['lreg_resid_z'] = _lresz
+        feat['lreg_overext_reversal'] = ((_lresz.shift(1) > 1.5) & (_lresz < _lresz.shift(1))).astype(float)
+
+        # ── 32) Donchian (20) — 채널 하단 이탈 ──
+        _don_lo = lo.rolling(20, min_periods=20).min(); _don_hi = hi.rolling(20, min_periods=20).max()
+        _don_w = (_don_hi - _don_lo).replace(0, np.nan)
+        feat['donch_pos_20'] = (cl - _don_lo) / _don_w
+        _don_br = cl < _don_lo.shift(1)
+        feat['donch_break_dn'] = _don_br.astype(float)
+        _dw_mu = _don_w.rolling(60, min_periods=30).mean(); _dw_sd = _don_w.rolling(60, min_periods=30).std()
+        feat['donch_width_z'] = (_don_w - _dw_mu) / _dw_sd.replace(0, np.nan)
+        feat['donch_squeeze_break_dn'] = (_don_br & (feat['donch_width_z'].shift(1) < -1)).astype(float)
+
+        # ── 33) Keltner (20, 2ATR) — 상단 거부·하단 이탈 ──
+        _kelt_mid = cl.ewm(span=20, min_periods=20).mean()
+        _atr20k = _tr9.rolling(20, min_periods=20).mean().replace(0, np.nan)
+        _kelt_pos = (cl - _kelt_mid) / (2 * _atr20k)
+        feat['kelt_pos_20'] = _kelt_pos
+        feat['kelt_below_lower'] = (_kelt_pos < -1).astype(float)
+        feat['kelt_upper_reject'] = ((_kelt_pos.shift(1) > 1) & (_kelt_pos < _kelt_pos.shift(1))).astype(float)
+
+        # ── 34) 3선 전환(Three-Line Break 근사) — 상승 3선 붕괴 ──
+        _tlb_min3 = cl.rolling(3, min_periods=3).min().shift(1)
+        _was_up = cl.shift(1) > cl.rolling(10, min_periods=10).mean().shift(1)
+        _tlb_flip = (cl < _tlb_min3) & _was_up
+        feat['tlb3_flip_dn'] = _tlb_flip.astype(float)
+        feat['tlb3_flip_dn_10d'] = _tlb_flip.rolling(10, min_periods=1).sum()
+
+        # ── 35) McGinley Dynamic (14) — 적응형 추세선 이탈 ──
+        _clv2 = cl.values
+        _mcg = np.full(_n9, np.nan)
+        _m0 = np.nan
+        for _i9 in range(_n9):
+            _c = _clv2[_i9]
+            if not np.isfinite(_c):
+                continue
+            if not np.isfinite(_m0):
+                _m0 = _c
+            else:
+                _m0 = _m0 + (_c - _m0) / max(0.6 * 14 * (_c / _m0) ** 4, 1.0)
+            _mcg[_i9] = _m0
+        _mcg_s = pd.Series(_mcg, index=cl.index)
+        feat['mcg_dist_14'] = (cl - _mcg_s) / _mcg_s.replace(0, np.nan)
+        _mcg_x = (cl < _mcg_s) & (cl.shift(1) >= _mcg_s.shift(1))
+        feat['mcg_cross_dn'] = _mcg_x.astype(float)
+        feat['mcg_below_persist'] = (cl < _mcg_s).rolling(10, min_periods=1).sum()
+
+        # ── 36) Hull MA (20) — 저지연 추세 하향 전환 ──
+        def _wma_np(s, w):
+            _wt = np.arange(1, w + 1, dtype=float)
+            return s.rolling(w, min_periods=w).apply(lambda a: np.dot(a, _wt) / _wt.sum(), raw=True)
+        _hma_raw = 2 * _wma_np(cl, 10) - _wma_np(cl, 20)
+        _hma = _wma_np(_hma_raw, 4)
+        _hma_sl = _hma.diff(5) / cl
+        feat['hma_20_slope'] = _hma_sl
+        feat['hma_slope_turning_neg'] = ((_hma_sl < 0) & (_hma_sl.shift(1) >= 0)).astype(float)
+        feat['hma_cross_dn'] = ((cl < _hma) & (cl.shift(1) >= _hma.shift(1))).astype(float)
+
+        # ── 37) Anchored VWAP (60일 고점 기준) — 고점 이후 평단 이탈 ──
+        _tp = ((hi + lo + cl) / 3).values
+        _vvv = _vv9.fillna(0).values
+        _cum_tpv = np.cumsum(np.nan_to_num(_tp * _vvv))
+        _cum_v = np.cumsum(_vvv)
+        _hi_v = hi.values
+        _avwp = np.full(_n9, np.nan)
+        for _i9 in range(60, _n9):
+            _w = _hi_v[_i9-59:_i9+1]
+            if not np.isfinite(_w).any():
+                continue
+            _aidx = _i9 - 59 + int(np.nanargmax(_w))
+            _den = _cum_v[_i9] - (_cum_v[_aidx-1] if _aidx > 0 else 0.0)
+            if _den > 0:
+                _num = _cum_tpv[_i9] - (_cum_tpv[_aidx-1] if _aidx > 0 else 0.0)
+                _avwp[_i9] = _num / _den
+        _avwp_s = pd.Series(_avwp, index=cl.index)
+        feat['avwp_high_dist'] = (cl - _avwp_s) / _avwp_s.replace(0, np.nan)
+        _avwp_bel = cl < _avwp_s
+        feat['avwp_below_from_high'] = _avwp_bel.astype(float)
+        feat['avwp_below_persist_10d'] = _avwp_bel.rolling(10, min_periods=1).sum()
+
+        # ── 38) 포물선 정점(2차 적합) — 둥근 천장 감지 ──
+        _x20q = np.arange(20, dtype=float)
+        def _quad_a(a):
+            try:
+                return float(np.polyfit(_x20q, a, 2)[0])
+            except Exception:
+                return np.nan
+        _lcl_n = _lcl / _lcl.rolling(20, min_periods=20).mean().replace(0, np.nan)
+        _curv = _lcl_n.rolling(20, min_periods=20).apply(_quad_a, raw=True)
+        feat['ptop_curvature_20'] = _curv
+        _near_high = cl >= cl.rolling(20, min_periods=20).max() * 0.97
+        feat['ptop_concave_at_high'] = ((_curv < 0) & _near_high).astype(float)
+        feat['ptop_flag_10d'] = ((_curv < 0) & _near_high).rolling(10, min_periods=1).sum()
+
+        # ── 39) RSI 실패 스윙(약세) — 재돌파 실패 ──
+        _r10max = _rsi_l.rolling(10, min_periods=10).max()
+        _rsifs = ((_r10max.shift(1) > 70) & (_rsi_l < 70)
+                  & (_rsi_l.rolling(5, min_periods=5).max() < _r10max.shift(5) - 5)
+                  & (_rsi_l < _rsi_l.shift(1)))
+        feat['rsifs_bear'] = _rsifs.astype(float)
+        feat['rsifs_bear_10d'] = _rsifs.rolling(10, min_periods=1).sum()
+
+        # ── 40) Volume Zone Oscillator (14) — 거래량 구역 하향 ──
+        _sv = _vv9 * np.sign(cl.diff().fillna(0))
+        _vzo = 100 * _sv.ewm(span=14, min_periods=14).mean() / _vv9.ewm(span=14, min_periods=14).mean().replace(0, np.nan)
+        feat['vzo_14'] = _vzo
+        feat['vzo_cross_dn_40'] = ((_vzo < 40) & (_vzo.shift(1) >= 40)).astype(float)
+        feat['vzo_negative'] = (_vzo < 0).astype(float)
+
+        # ── 41) 고가권/저가권 거래량비 (20) — 분산(distribution) 감지 ──
+        _pos20 = (cl - _don_lo) / _don_w
+        _v_hi = _vv9.where(_pos20 > 0.67, 0.0).rolling(20, min_periods=20).sum()
+        _v_lo = _vv9.where(_pos20 < 0.33, 0.0).rolling(20, min_periods=20).sum()
+        _vhl = np.log((_v_hi + 1) / (_v_lo + 1))
+        feat['vhl_ratio_20'] = _vhl
+        feat['vhl_ratio_falling'] = ((_vhl < _vhl.shift(5)) & (_vhl.shift(5) < _vhl.shift(10))).astype(float)
+        feat['vhl_distribution_flag'] = (_vhl < 0).astype(float)
+
+        # ── 42) 신규 종합 하락압력 점수 (dp9) — 위 신규지표 조합 ──
+        _dp9_parts = [
+            (feat['dmx_strong_downtrend'] > 0).astype(float),
+            (feat['sptr_bearish'] > 0).astype(float),
+            (feat['chdl_below_long_stop'] > 0).astype(float),
+            (feat['donch_break_dn'].rolling(5, min_periods=1).sum() > 0).astype(float),
+            (feat['cusum_breach_dn'] > 0).astype(float),
+            (feat['ulcer_zscore_60'] > 1).astype(float),
+            (feat['kst_cross_dn'].rolling(5, min_periods=1).sum() > 0).astype(float),
+            (feat['vzo_negative'] > 0).astype(float),
+            (feat['rvterm_inverted'] > 0).astype(float),
+            (feat['eray_double_bear'] > 0).astype(float),
+        ]
+        _dp9 = sum(_dp9_parts)
+        feat['dp9_score'] = _dp9
+        feat['dp9_high'] = (_dp9 >= 5).astype(float)
+        feat['dp9_rising'] = ((_dp9 > _dp9.shift(3))).astype(float)
+        _dp9_mu = _dp9.rolling(60, min_periods=30).mean(); _dp9_sd = _dp9.rolling(60, min_periods=30).std()
+        feat['dp9_zscore60'] = (_dp9 - _dp9_mu) / _dp9_sd.replace(0, np.nan)
+
+        print(f"  ✓ 신규 하락예측 지표 42계열 추가 (ADX/DMI·Aroon·Supertrend·Chandelier·Vortex·"
+              f"Fisher·TRIX·UO·CMO·DPO·StochRSI·ConnorsRSI·Choppiness·RVI·BOP·ElderRay·VPT·"
+              f"ChaikinVol·KST·Coppock·CUSUM·분산비·t통계·Ulcer·손익비·CVaR·Hill꼬리·하방편차·"
+              f"RV기간구조·EWMA관리도·선형회귀·Donchian·Keltner·3선전환·McGinley·HullMA·"
+              f"AnchoredVWAP·포물선정점·RSI실패스윙·VZO·고저거래량비·dp9종합)")
+    except Exception as _e_newdrop:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 신규 하락예측 지표 추가 실패(무시): {_e_newdrop}")
+
+
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
     print(f"  계산된 피처 수: {len(feat.columns)}개")
 
