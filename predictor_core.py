@@ -25606,24 +25606,62 @@ def _parse_overrides_from_excel(summary_file, tickers, *, verbose=True):
 
 def _resolve_data_for_ticker(ticker, end_date=None):
     g = globals()
+
+    # ★★★ (요청 — 버그수정) 캐시 신선도 검사 — 실측: 27일에 돌린 결과가 26일 결과보다
+    #   오히려 하루 늦은 데이터(7/23까지)로 만들어짐. _pair_data_map/_multi_ticker_cache/
+    #   load_ticker_data 경로에는 신선도 검사가 전혀 없어서, 오래된 세션의 캐시가 그대로
+    #   쓰이면 조용히 옛날 데이터로 결과가 나온다. 마지막 거래일이 오늘보다 2영업일 이상
+    #   전이면 캐시를 버리고 새로 받는다. (end_date 지정된 재현모드는 의도된 과거 데이터라 검사 제외)
+    def _is_stale(close_like):
+        if end_date is not None:
+            return False, None, 0
+        try:
+            _idx = close_like.index if hasattr(close_like, 'index') else None
+            if _idx is None or len(_idx) == 0:
+                return False, None, 0
+            _last = pd.Timestamp(_idx[-1]).normalize()
+            _tdy = pd.Timestamp(datetime.now().date())
+            _bd = len(pd.bdate_range(_last, _tdy)) - 1
+            return (_bd >= 2), _last, _bd
+        except Exception:
+            return False, None, 0
+
     pdm = g.get('_pair_data_map')
     if isinstance(pdm, dict) and ticker in pdm:
         entry = pdm[ticker]
-        if isinstance(entry, tuple) and len(entry) == 2:
-            return entry[0], entry[1]
-        if isinstance(entry, dict):
-            return entry.get('feat'), entry.get('close')
+        _f0, _c0 = (entry if (isinstance(entry, tuple) and len(entry) == 2)
+                    else (entry.get('feat'), entry.get('close')) if isinstance(entry, dict) else (None, None))
+        if _c0 is not None:
+            _st, _ld, _bd = _is_stale(_c0)
+            if _st:
+                print(f"  ⚠ {ticker} _pair_data_map 캐시가 오래됨(마지막 {str(_ld)[:10]}, "
+                      f"오늘보다 {_bd}영업일 전) — 캐시 무시하고 새로 다운로드")
+            else:
+                return _f0, _c0
 
     if 'load_ticker_data' in g and callable(g['load_ticker_data']):
         try:
-            return g['load_ticker_data'](ticker)
+            _f1, _c1 = g['load_ticker_data'](ticker)
+            _st, _ld, _bd = _is_stale(_c1)
+            if _st:
+                print(f"  ⚠ {ticker} load_ticker_data 데이터가 오래됨(마지막 {str(_ld)[:10]}, "
+                      f"오늘보다 {_bd}영업일 전) — 무시하고 새로 다운로드")
+            else:
+                return _f1, _c1
         except Exception as e:
             print(f"  ⚠ load_ticker_data({ticker}) 실패: {e}")
 
     cache = g.setdefault('_multi_ticker_cache', {})
     if ticker in cache:
-        print(f"  ℹ 캐시 사용: {ticker}")
-        return cache[ticker]
+        _f2, _c2 = cache[ticker]
+        _st, _ld, _bd = _is_stale(_c2)
+        if _st:
+            print(f"  ⚠ {ticker} 세션 캐시가 오래됨(마지막 {str(_ld)[:10]}, "
+                  f"오늘보다 {_bd}영업일 전) — 캐시 삭제 후 새로 다운로드")
+            cache.pop(ticker, None)
+        else:
+            print(f"  ℹ 캐시 사용: {ticker} (마지막 거래일 {str(_ld)[:10] if _ld is not None else '?'})")
+            return _f2, _c2
 
     needed = ['download_data', 'compute_features']
     if all(n in g for n in needed):
@@ -25669,9 +25707,12 @@ def _resolve_data_for_ticker(ticker, end_date=None):
                     import yfinance as yf
                     # ★ end를 '내일'로 명시 — yfinance는 end 미지정 시 당일을 빠뜨릴 수 있음.
                     #   (특히 장 마감 전/시간대 차이로 전날까지만 받아지는 문제 완화)
+                    # ★★★ (버그수정) auto_adjust=True로 통일 — download_data는 True(수정주가)인데
+                    #   여기만 False(비수정주가)여서, 이 보충 경로를 타면 배당 반영이 달라
+                    #   같은 거래일인데도 지표값이 미묘하게 달라지는 원인이 됐다.
                     _end = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
                     df = yf.download(ticker, start=start, end=_end,
-                                     progress=False, auto_adjust=False)
+                                     progress=False, auto_adjust=True)
                     if df is None or len(df) == 0:
                         raise RuntimeError(f"yfinance에서 {ticker} 데이터 0건")
                     if isinstance(df.columns, pd.MultiIndex):
@@ -26019,6 +26060,20 @@ def build_ensemble_search_direct(ticker, *, out_dir=None, end_date=None,
     if feat is None or close is None:
         print(f"  ✗ {ticker} 데이터 없음 — 결과 생성 불가")
         return None
+
+    # ★★★ (요청) 실행 환경 즉시 확인 로그 — '구버전 파일로 실행' / '오래된 데이터로 실행'
+    #   문제를 결과 받기 전에 바로 알 수 있도록. 신규 하락예측 지표(dmx_adx_14 등)가 feat에
+    #   있으면 신규 코드, 없으면 구버전 코드가 실행된 것.
+    try:
+        _last_dt = pd.Timestamp(close.index[-1]).normalize()
+        _tdy2 = pd.Timestamp(datetime.now().date())
+        _behind = len(pd.bdate_range(_last_dt, _tdy2)) - 1
+        _has_new = ('dmx_adx_14' in feat.columns)
+        print(f"  🏷 코드버전: {'신규지표143 포함' if _has_new else '⚠⚠ 구버전(신규 하락지표 없음 — Colab에 새 predictor_core.py 업로드 필요)'} "
+              f"| 데이터 마지막 거래일: {str(_last_dt)[:10]}"
+              f"{f' (⚠ 오늘보다 {_behind}영업일 전 — 오래된 데이터!)' if _behind >= 2 else ''}")
+    except Exception:
+        pass
 
     old_ticker = g.get('TICKER'); g['TICKER'] = ticker
     g['_pair_feat'] = feat; g['_pair_close'] = close; g['_pair_ticker'] = ticker
