@@ -216,7 +216,7 @@ RISE_OFFSET_WEIGHT   = 1.0         # fallback 기본값 (스윕 실패 또는 �
 # ════════════════════════════════════════════════════════════════
 #                      데이터 다운로드
 # ════════════════════════════════════════════════════════════════
-def download_data(start='2020-01-01'):
+def download_data(start='2020-01-01', max_retries=4, retry_wait=8.0):
     # PEERS에 TICKER가 포함되어 있으면 자동 제거 (자기비교 방지)
     peers_clean = [p for p in PEERS if p != TICKER]
 
@@ -241,17 +241,70 @@ def download_data(start='2020-01-01'):
         removed = set(PEERS) - set(peers_clean) - {TICKER}
         print(f"  ℹ TICKER({TICKER})와 동의어/자기비교 자산 제거: {sorted(removed) if removed else 'TICKER만'}")
     print(f"  다운로드: {all_tickers}")
-    raw = yf.download(all_tickers, start=start, auto_adjust=True, progress=False)
-    ohlcv = {}
-    for tk in all_tickers:
-        try:
-            df = raw.xs(tk, axis=1, level=1)[['Open', 'High', 'Low', 'Close', 'Volume']]
-            if df['Close'].notna().sum() > 100:
-                ohlcv[tk] = df
-        except Exception:
-            pass
-    closes = pd.DataFrame({tk: ohlcv[tk]['Close'] for tk in ohlcv})
-    return closes, ohlcv
+
+    # ★★★ (요청) 가끔 최근 날짜가 하루 빠지거나(예: 24일까지 있어야 하는데 23일까지만)
+    #   데이터가 불완전하게 받아지는 문제 — yfinance가 야후 서버 쪽 반영 지연으로
+    #   방금 마감된 거래일 데이터를 아직 못 주는 경우가 있다. TICKER(분석 대상 종목)
+    #   기준으로 (a) 마지막 날짜가 기대치보다 너무 뒤처졌는지, (b) 마지막 행이
+    #   NaN/거래량0 등으로 불완전한지 검사해서, 문제가 있으면 몇 초 기다렸다가
+    #   다시 받는다(최대 max_retries회).
+    import time as _time_dd
+    from datetime import datetime as _dt_dd
+    _closes = None; _ohlcv = None
+    for _attempt in range(max_retries):
+        raw = yf.download(all_tickers, start=start, auto_adjust=True, progress=False)
+        ohlcv = {}
+        for tk in all_tickers:
+            try:
+                df = raw.xs(tk, axis=1, level=1)[['Open', 'High', 'Low', 'Close', 'Volume']]
+                if df['Close'].notna().sum() > 100:
+                    ohlcv[tk] = df
+            except Exception:
+                pass
+
+        _tdf = ohlcv.get(TICKER)
+        _is_fresh_ok = _tdf is not None and len(_tdf) > 0
+        _is_complete_ok = _is_fresh_ok
+        _behind_bdays = None
+        if _tdf is not None and len(_tdf) > 0:
+            try:
+                _last_dt = pd.Timestamp(_tdf.index[-1]).normalize()
+                _today_dd = pd.Timestamp(_dt_dd.now().date())
+                _behind_bdays = len(pd.bdate_range(_last_dt, _today_dd)) - 1
+                _is_fresh_ok = _behind_bdays < 2   # 1영업일(오늘 장중/직후) 정도는 정상, 2일 이상이면 재시도
+            except Exception:
+                pass
+            try:
+                _last_row = _tdf.iloc[-1][['Open', 'High', 'Low', 'Close', 'Volume']]
+                _is_complete_ok = bool(_last_row.notna().all() and _last_row['Volume'] > 0)
+            except Exception:
+                _is_complete_ok = False
+
+        if _tdf is None:
+            print(f"  ⚠ [{_attempt+1}/{max_retries}] {TICKER} 데이터를 아예 못 받음 — "
+                  f"{retry_wait:.0f}초 후 재시도")
+        elif not _is_fresh_ok:
+            print(f"  ⚠ [{_attempt+1}/{max_retries}] {TICKER} 최근 데이터 지연 감지 "
+                  f"(마지막 거래일 {str(_last_dt)[:10]}, 오늘보다 {_behind_bdays}영업일 전) — "
+                  f"{retry_wait:.0f}초 후 재시도")
+        elif not _is_complete_ok:
+            print(f"  ⚠ [{_attempt+1}/{max_retries}] {TICKER} 마지막 행이 불완전(결측/거래량0) — "
+                  f"{retry_wait:.0f}초 후 재시도")
+        else:
+            _closes = pd.DataFrame({tk: ohlcv[tk]['Close'] for tk in ohlcv})
+            _ohlcv = ohlcv
+            break
+
+        if _attempt < max_retries - 1:
+            _time_dd.sleep(retry_wait)
+        else:
+            # 마지막 시도까지도 실패 — 그래도 받은 걸로 진행(완전 실패보단 나음), 경고만 남김
+            print(f"  ⚠ {max_retries}회 재시도에도 {TICKER} 데이터 최신성/완전성 확인 실패 — "
+                  f"마지막으로 받은 데이터로 진행합니다(수동 확인 권장)")
+            _closes = pd.DataFrame({tk: ohlcv[tk]['Close'] for tk in ohlcv})
+            _ohlcv = ohlcv
+
+    return _closes, _ohlcv
 
 # ════════════════════════════════════════════════════════════════
 #            FRED 경제지표 다운로드 (신규 추가)
@@ -14183,7 +14236,7 @@ STAGE_SUCCESS_LIMIT = [0.01, 0.02]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
-MAX_INDICATORS      = 4700
+MAX_INDICATORS      = 5000
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
 #   목적: pct(분위)가 달라 따로 나오던 고성공 지표를 누락 없이 한 풀에 모으고,
