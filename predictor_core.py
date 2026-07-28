@@ -14259,6 +14259,10 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.cell.rich_text import CellRichText as _CellRichText, TextBlock as _TextBlock
+from openpyxl.cell.text import InlineFont as _InlineFont
+# ★ (요청) HORIZON_DAYS_LIST 추가지표 발화 시 지표명·net을 빨간 굵게 강조하는 데 쓰는 공용 서식
+_RED_BOLD_FONT = _InlineFont(rFont='Arial', b=True, color='FF0000')
 
 # ★★★ (요청) Colab 서버는 UTC로 동작해서, datetime.now()가 실제 한국 날짜와 다를 수 있다
 #   (UTC 자정 = 한국시간 오전 9시 — 그 전에 실행하면 결과 파일명 날짜가 하루 전 걸로 찍힘,
@@ -21323,14 +21327,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             return bool(pool is not None and (('oos_ic' in pool.columns) or ('ic' in pool.columns)))
 
         def _build_named_sigs(pool):
-            """_build_sigs와 동일하되 (지표명, 성공률, 가중신호배열) 리스트로 반환 —
-               상위 n개 절단·중복 maximum 처리 방식을 카운트 계산과 정확히 일치시킴."""
-            out = []  # [(indicator, success_rate, weighted_sig_array)]
+            """_build_sigs와 동일하되 (지표명, 성공률, 가중신호배열, horizon) 리스트로 반환 —
+               상위 n개 절단·중복 maximum 처리 방식을 카운트 계산과 정확히 일치시킴.
+               ★ (요청) horizon: HORIZON_DAYS_LIST로 추가된(주 호라이즌이 아닌) 지표면 그 값,
+               아니면 None(주 호라이즌 지표) — 공식 텍스트에서 강조 표시하는 데 사용."""
+            out = []  # [(indicator, success_rate, weighted_sig_array, horizon)]
             if pool is None or len(pool) == 0:
                 return out
+            _has_hz_col = 'horizon' in pool.columns
             if _multi_bt and ('indicator' in pool.columns) and pool['indicator'].duplicated().any():
                 for _ind, grp in pool.groupby('indicator', sort=False):
                     arr = np.zeros(len(feat)); _sr = grp.iloc[0].get('success_rate', None)
+                    _hz = grp.iloc[0].get('horizon', None) if _has_hz_col else None
                     _best_sr_at = -1.0
                     for _, row in grp.iterrows():
                         s = _sig_arr(row); w = _wt_of_bt(row)
@@ -21339,11 +21347,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         _sv = row.get('success_rate', None)
                         if _sv is not None and not pd.isna(_sv) and float(_sv) > _best_sr_at:
                             _best_sr_at = float(_sv); _sr = _sv
-                    out.append((str(_ind), _sr, arr))
+                    out.append((str(_ind), _sr, arr, _hz))
             else:
                 for _, row in pool.iterrows():
+                    _hz = row.get('horizon', None) if _has_hz_col else None
                     out.append((str(row.get('indicator', '')), row.get('success_rate', None),
-                                _wt_of_bt(row) * _sig_arr(row)))
+                                _wt_of_bt(row) * _sig_arr(row), _hz))
             return out
 
         # 각 풀의 명명된 신호 배열을 미리 계산 (성능: 지표당 1회)
@@ -21362,25 +21371,42 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
         def _formula_at(named_list, day_idx, is_ic):
             """day_idx일에 기여>0인 지표를 기여도 내림차순으로 'v(지표, 성공률) + ...' 문자열로.
-               합계도 함께 반환 → 실제 카운트와 대조 가능."""
+               합계도 함께 반환 → 실제 카운트와 대조 가능.
+               ★ (요청) HORIZON_DAYS_LIST로 추가된(주 호라이즌이 아닌) 지표가 그날 발화했으면,
+               (rich_parts, has_h1) 도 반환 — rich_parts는 [(텍스트, 강조여부), ...] 리스트로,
+               강조(True)인 조각은 지표명 부분만 표시할 때 빨간 굵게 렌더링하는 데 쓴다."""
             fired = []
-            for nm, sr, arr in named_list:
+            for entry in named_list:
+                nm, sr, arr = entry[0], entry[1], entry[2]
+                hz = entry[3] if len(entry) > 3 else None
                 if day_idx < len(arr):
                     c = float(arr[day_idx])
                     if c > 1e-9:
-                        fired.append((nm, sr, c))
+                        fired.append((nm, sr, c, hz))
             fired.sort(key=lambda x: -x[2])
-            total = sum(c for _, _, c in fired)
+            total = sum(c for _, _, c, _ in fired)
             if not fired:
-                return total, '카운트0 (발화 지표 없음)'
+                return total, '카운트0 (발화 지표 없음)', [('카운트0 (발화 지표 없음)', False)], False
             parts = []
-            for nm, sr, c in fired:
+            rich_parts = []
+            has_h1 = False
+            for idx_f, (nm, sr, c, hz) in enumerate(fired):
                 if sr is not None and not pd.isna(sr):
                     _srtxt = (f"|OOS IC| {float(sr):.3f}" if is_ic else f"성공률 {float(sr)*100:.0f}%")
                 else:
                     _srtxt = '-'
-                parts.append(f"{c:.2f}({str(nm)[:28]}, {_srtxt})")
-            return total, ' + '.join(parts)
+                _nm_disp = str(nm)[:28]
+                _is_h1 = (hz is not None and not pd.isna(hz) and int(hz) == 1)
+                if _is_h1:
+                    has_h1 = True
+                parts.append(f"{c:.2f}({_nm_disp}, {_srtxt})")
+                sep = ' + ' if idx_f > 0 else ''
+                if sep:
+                    rich_parts.append((sep, False))
+                rich_parts.append((f"{c:.2f}(", False))
+                rich_parts.append((_nm_disp, _is_h1))          # ★ 지표명만 강조 대상
+                rich_parts.append((f", {_srtxt})", False))
+            return total, ' + '.join(parts), rich_parts, has_h1
 
 
         _ltxt = (f'/L({_L_bt:.3f})' if _L_bt is not None else '')
@@ -21519,23 +21545,38 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if _is_zero_day and _use_zero_disp:
                 if _zero_tier == 2 and _has_tier2_separate:
                     # 3단계까지 갔지만 이 날은 2단계(노랑)에서 해결된 날 → 별도 보관한 tier2 풀 사용
-                    _fb_sum, _fb_txt = _formula_at(_zbuy2_named, i, False)
-                    _fs_sum, _fs_txt = _formula_at(_zsell2_named, i, False)
+                    _fb_sum, _fb_txt, _fb_rich, _fb_h1 = _formula_at(_zbuy2_named, i, False)
+                    _fs_sum, _fs_txt, _fs_rich, _fs_h1 = _formula_at(_zsell2_named, i, False)
                 else:
                     # 캐스케이드가 '최종 도달한' 풀(2단계에서 멈췄으면 노랑, 3단계까지 갔으면 주황) 사용
-                    _fb_sum, _fb_txt = _formula_at(_zbuy_named, i, False)
-                    _fs_sum, _fs_txt = _formula_at(_zsell_named, i, False)
+                    _fb_sum, _fb_txt, _fb_rich, _fb_h1 = _formula_at(_zbuy_named, i, False)
+                    _fs_sum, _fs_txt, _fs_rich, _fs_h1 = _formula_at(_zsell_named, i, False)
             else:
-                _fb_sum, _fb_txt = _formula_at(_buy_named, i, _buy_is_ic)
-                _fs_sum, _fs_txt = _formula_at(_sell_named, i, _sell_is_ic)
+                _fb_sum, _fb_txt, _fb_rich, _fb_h1 = _formula_at(_buy_named, i, _buy_is_ic)
+                _fs_sum, _fs_txt, _fs_rich, _fs_h1 = _formula_at(_sell_named, i, _sell_is_ic)
             # 표시 카운트와 공식 합계가 어긋나면(부동소수 오차 넘어) 뒤에 실제카운트 병기 → 추적 용이
             _bc_show = round(_bc_disp, 2); _sc_show = round(_sc_disp, 2)
             _bmark = '' if abs(_fb_sum - _bc_disp) < 0.02 else f" [실제 {_bc_show}]"
             _smark = '' if abs(_fs_sum - _sc_disp) < 0.02 else f" [실제 {_sc_show}]"
-            ws.cell(r, 18).value = f"[합 {_fb_sum:.2f}]{_bmark} = {_fb_txt}"
-            ws.cell(r, 19).value = f"[합 {_fs_sum:.2f}]{_smark} = {_fs_txt}"
+            _b_prefix = f"[합 {_fb_sum:.2f}]{_bmark} = "
+            _s_prefix = f"[합 {_fs_sum:.2f}]{_smark} = "
+            # ★★★ (요청) HORIZON_DAYS_LIST로 추가된 지표(주 호라이즌이 아닌 지표)가 그날 발화했으면
+            #   지표명 부분만 빨간 굵게 — CellRichText로 그 조각만 서식 적용, 없으면 기존처럼 평문.
+            if _fb_h1:
+                ws.cell(r, 18).value = _CellRichText([_b_prefix] + [
+                    (_TextBlock(_RED_BOLD_FONT, t) if hl else t) for t, hl in _fb_rich])
+            else:
+                ws.cell(r, 18).value = _b_prefix + _fb_txt
+            if _fs_h1:
+                ws.cell(r, 19).value = _CellRichText([_s_prefix] + [
+                    (_TextBlock(_RED_BOLD_FONT, t) if hl else t) for t, hl in _fs_rich])
+            else:
+                ws.cell(r, 19).value = _s_prefix + _fs_txt
             ws.cell(r, 18).alignment = Alignment(vertical='center', wrap_text=False)
             ws.cell(r, 19).alignment = Alignment(vertical='center', wrap_text=False)
+            # ★ (요청) 그날 net에 HORIZON_DAYS_LIST 추가지표가 기여했으면 net 셀도 빨간 굵게
+            if _fb_h1 or _fs_h1:
+                ws.cell(r, 14).font = Font(bold=True, color='FF0000')
             # ★ 카운트0 별도풀 사용일 = 노랑(2단계, 성공률70-80%) / 주황(3단계, 나머지) (요청)
             if _is_zero_day:
                 _fill_z = _ORG if _zero_tier == 3 else _YEL
@@ -21838,23 +21879,30 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 lbp = (round(float(_price[last_buy]), 2) if last_buy is not None else '-')
                 lsp = (round(float(_price[last_sell]), 2) if last_sell is not None else '-')
 
-                # ★ 매수·매도 정확도 (요청) — 신호일 t 판정: net[t] vs K/L → 다음날 t+1의 return.
-                #   매수 정확 = net[t]≥K일 때 r[t+1]>0 (매수했는데 다음날 상승 = 맞음)
-                #   매도 정확 = net[t]≤L일 때 r[t+1]<0 (매도했는데 다음날 하락 = 맞음)
-                #   무포지션·중립(L<net<K) 상태는 미판정 (분모 제외).
+                # ★★★ 버그 수정 (요청) — 이전엔 '신호일 t의 net vs K/L → 바로 다음날(t+1)
+                #   수익률이 양/음인지'만 봤다. 이건 HORIZON_DAYS(며칠 이내 목표% 도달)를
+                #   전혀 반영 안 하고, 방향만 맞으면(단 0.01%만 올라도) '정확'으로 쳐서 시스템
+                #   전체가 실제로 최적화하는 기준(HORIZON_DAYS일 이내 dd_limit/ru_limit% 이상
+                #   도달)과 완전히 다른, 훨씬 관대한 별개의 지표였다(실측 확인). '일별 백테스트'
+                #   요약에서 쓰는 것과 동일한 정답 기준(_compute_safe_arrays)을 그대로 재사용해
+                #   시스템 전체와 일관되게 맞춘다 — 매수정확도 = net≥K인 날 중 실제로 그
+                #   HORIZON_DAYS 이내에 +dd_limit% 이상 올랐던(=매수 정답) 비율.
                 buy_acc = sell_acc = None
                 n_buy_sig = n_sell_sig = 0
                 buy_hit = sell_hit = 0
-                if K is not None and L is not None and len(_net) >= 2 and len(_rr) >= 2:
-                    # net[t]와 r[t+1] 정렬. 마지막 net는 미래 r 없어 스킵.
-                    _n = min(len(_net), len(_rr) - 1)
+                if K is not None and L is not None and len(_net) >= 2 and len(_price) >= 2:
+                    _safe_buy_kl, _safe_sell_kl, _ev_kl = _compute_safe_arrays(
+                        _price.astype(np.float64), int(horizon), float(dd_limit), float(ru_limit))
+                    _n = min(len(_net), len(_safe_buy_kl))
                     for t in range(_n):
+                        if _ev_kl[t] == 0:
+                            continue
                         if _net[t] >= K:                              # 매수/보유 신호
                             n_buy_sig += 1
-                            if _rr[t + 1] > 0: buy_hit += 1
+                            if _safe_buy_kl[t] == 1: buy_hit += 1
                         elif _net[t] <= L:                             # 매도/현금 신호
                             n_sell_sig += 1
-                            if _rr[t + 1] < 0: sell_hit += 1
+                            if _safe_sell_kl[t] == 1: sell_hit += 1
                     if n_buy_sig  > 0: buy_acc  = buy_hit  / n_buy_sig  * 100
                     if n_sell_sig > 0: sell_acc = sell_hit / n_sell_sig * 100
                 return nt, wr, lb, lbp, ls, lsp, held_max_dd, buy_acc, sell_acc, n_buy_sig, n_sell_sig
@@ -21996,18 +22044,24 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if _dd < held_max_dd: held_max_dd = _dd
             nt = len(tr)
             wr = (n_closed_win / n_closed * 100) if n_closed else 0.0
+            # ★★★ 버그 수정 (요청) — KL 순신호 시트와 동일한 문제: 이전엔 '다음날(t+1) 단순
+            #   방향'만 봐서 HORIZON_DAYS/dd_limit·ru_limit를 전혀 반영 안 했다. 시스템 전체와
+            #   일관되게 _compute_safe_arrays(같은 정답 기준)로 통일.
             buy_acc = sell_acc = None; nb_s = ns_s = 0; bh = sh = 0
-            _nn = min(len(_znet), len(_zrr) - 1)
-            for t in range(_nn):
-                if not _zmask_mn[t]: continue      # 이 단계가 담당하는 날의 신호만 정확도 판정
-                if _znet[t] >= m:
-                    nb_s += 1
-                    if _zrr[t+1] > 0: bh += 1
-                elif _znet[t] <= nn:
-                    ns_s += 1
-                    if _zrr[t+1] < 0: sh += 1
-            if nb_s > 0: buy_acc = bh / nb_s * 100
-            if ns_s > 0: sell_acc = sh / ns_s * 100
+            if len(_znet) >= 2 and len(_zprice) >= 2:
+                _safe_buy_mn, _safe_sell_mn, _ev_mn = _compute_safe_arrays(
+                    _zprice.astype(np.float64), int(horizon), float(dd_limit), float(ru_limit))
+                _nn = min(len(_znet), len(_safe_buy_mn))
+                for t in range(_nn):
+                    if not _zmask_mn[t] or _ev_mn[t] == 0: continue   # 이 단계가 담당하는 날의 신호만 정확도 판정
+                    if _znet[t] >= m:
+                        nb_s += 1
+                        if _safe_buy_mn[t] == 1: bh += 1
+                    elif _znet[t] <= nn:
+                        ns_s += 1
+                        if _safe_sell_mn[t] == 1: sh += 1
+                if nb_s > 0: buy_acc = bh / nb_s * 100
+                if ns_s > 0: sell_acc = sh / ns_s * 100
             lb = (pd.Timestamp(_zdates[last_buy]).strftime('%Y-%m-%d') if last_buy is not None else '-')
             ls = (pd.Timestamp(_zdates[last_sell]).strftime('%Y-%m-%d') if last_sell is not None else '-')
             lbp = (round(float(_zprice[last_buy]), 2) if last_buy is not None else '-')
