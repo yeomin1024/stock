@@ -242,14 +242,16 @@ def download_data(start='2020-01-01', max_retries=4, retry_wait=8.0):
         print(f"  ℹ TICKER({TICKER})와 동의어/자기비교 자산 제거: {sorted(removed) if removed else 'TICKER만'}")
     print(f"  다운로드: {all_tickers}")
 
-    # ★★★ (요청) 가끔 최근 날짜가 하루 빠지거나(예: 24일까지 있어야 하는데 23일까지만)
-    #   데이터가 불완전하게 받아지는 문제 — yfinance가 야후 서버 쪽 반영 지연으로
-    #   방금 마감된 거래일 데이터를 아직 못 주는 경우가 있다. TICKER(분석 대상 종목)
-    #   기준으로 (a) 마지막 날짜가 기대치보다 너무 뒤처졌는지, (b) 마지막 행이
-    #   NaN/거래량0 등으로 불완전한지 검사해서, 문제가 있으면 몇 초 기다렸다가
-    #   다시 받는다(최대 max_retries회).
+    # ★★★ (요청 — 재수정 v2) 가끔 최근 날짜가 하루 빠지는(예: 실제 마감은 24일인데 23일까지만
+    #   나오는) 문제. 실측으로 확인한 핵심: yfinance로 여러 티커를 한번에 받으면 모든 티커가
+    #   '같은 날짜 인덱스'를 공유하고, TICKER 데이터가 덜 갱신된 날은 그 날짜 행이 사라지는
+    #   게 아니라 TICKER 컬럼만 NaN으로 채워진다. 그래서 '.index[-1]'을 티커끼리 비교하는
+    #   방식은 전부 동일하게 나와 절대 못 잡는다(직접 재현 테스트로 확인) — 반드시 '그 날짜에
+    #   TICKER 컬럼 값이 실제로 유효한지(NaN 아닌지)'를 봐야 한다. 그래서:
+    #   1) 같은 배치의 다른 티커들(SPY 등) 중 유효(Close notna & Volume>0)한 가장 최근 날짜를
+    #      찾고, 2) TICKER 자신의 유효한 가장 최근 날짜와 비교 — TICKER가 그보다 뒤처져 있으면
+    #      확실한 누락 증거. (비교할 다른 티커가 없으면 '오늘' 대비로 폴백.)
     import time as _time_dd
-    from datetime import datetime as _dt_dd
     _closes = None; _ohlcv = None
     for _attempt in range(max_retries):
         raw = yf.download(all_tickers, start=start, auto_adjust=True, progress=False)
@@ -265,15 +267,35 @@ def download_data(start='2020-01-01', max_retries=4, retry_wait=8.0):
         _tdf = ohlcv.get(TICKER)
         _is_fresh_ok = _tdf is not None and len(_tdf) > 0
         _is_complete_ok = _is_fresh_ok
-        _behind_bdays = None
+        _tk_valid_dt = None; _ref_dt = None; _gap_bdays = None
+
         if _tdf is not None and len(_tdf) > 0:
-            try:
-                _last_dt = pd.Timestamp(_tdf.index[-1]).normalize()
-                _today_dd = pd.Timestamp(_dt_dd.now().date())
-                _behind_bdays = len(pd.bdate_range(_last_dt, _today_dd)) - 1
-                _is_fresh_ok = _behind_bdays < 2   # 1영업일(오늘 장중/직후) 정도는 정상, 2일 이상이면 재시도
-            except Exception:
-                pass
+            # TICKER 자신의 '실제 유효한'(NaN 아닌) 마지막 날짜
+            _valid_t = _tdf['Close'].notna() & (_tdf['Volume'].fillna(0) > 0)
+            if _valid_t.any():
+                _tk_valid_dt = pd.Timestamp(_tdf.index[_valid_t][-1]).normalize()
+
+            # 같은 배치의 다른 티커들 중 '유효한' 가장 최근 날짜
+            for _tk2, _df2 in ohlcv.items():
+                if _tk2 == TICKER or len(_df2) == 0:
+                    continue
+                _valid2 = _df2['Close'].notna() & (_df2['Volume'].fillna(0) > 0)
+                if _valid2.any():
+                    _d2 = pd.Timestamp(_df2.index[_valid2][-1]).normalize()
+                    if _ref_dt is None or _d2 > _ref_dt:
+                        _ref_dt = _d2
+
+            if _tk_valid_dt is None:
+                _is_fresh_ok = False
+            elif _ref_dt is not None:
+                _gap_bdays = len(pd.bdate_range(_tk_valid_dt, _ref_dt)) - 1
+                _is_fresh_ok = _gap_bdays <= 0   # 다른 티커들의 유효 최신일보다 하루라도 뒤처지면 재시도
+            else:
+                # 비교할 다른 티커가 없으면(단독 실행 등) '오늘'(한국시간 기준) 대비로 폴백
+                _today_dd = pd.Timestamp(_kst_now().date())
+                _gap_bdays = len(pd.bdate_range(_tk_valid_dt, _today_dd)) - 1
+                _is_fresh_ok = _gap_bdays < 2   # 장중/직후 시차는 감안(오늘 대비 1영업일까지는 정상)
+
             try:
                 _last_row = _tdf.iloc[-1][['Open', 'High', 'Low', 'Close', 'Volume']]
                 _is_complete_ok = bool(_last_row.notna().all() and _last_row['Volume'] > 0)
@@ -284,8 +306,10 @@ def download_data(start='2020-01-01', max_retries=4, retry_wait=8.0):
             print(f"  ⚠ [{_attempt+1}/{max_retries}] {TICKER} 데이터를 아예 못 받음 — "
                   f"{retry_wait:.0f}초 후 재시도")
         elif not _is_fresh_ok:
-            print(f"  ⚠ [{_attempt+1}/{max_retries}] {TICKER} 최근 데이터 지연 감지 "
-                  f"(마지막 거래일 {str(_last_dt)[:10]}, 오늘보다 {_behind_bdays}영업일 전) — "
+            _ref_txt = (f"다른 티커 유효최신일 {str(_ref_dt)[:10]}" if _ref_dt is not None else "오늘")
+            _tk_txt = str(_tk_valid_dt)[:10] if _tk_valid_dt is not None else '없음'
+            print(f"  ⚠ [{_attempt+1}/{max_retries}] {TICKER} 최근 데이터 누락 감지 "
+                  f"(TICKER 유효최신일={_tk_txt}, 기준({_ref_txt})보다 {_gap_bdays}영업일 뒤처짐) — "
                   f"{retry_wait:.0f}초 후 재시도")
         elif not _is_complete_ok:
             print(f"  ⚠ [{_attempt+1}/{max_retries}] {TICKER} 마지막 행이 불완전(결측/거래량0) — "
@@ -14144,6 +14168,14 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+# ★★★ (요청) Colab 서버는 UTC로 동작해서, datetime.now()가 실제 한국 날짜와 다를 수 있다
+#   (UTC 자정 = 한국시간 오전 9시 — 그 전에 실행하면 결과 파일명 날짜가 하루 전 걸로 찍힘,
+#   '오늘 데이터 최신인지' 판단 기준도 같이 하루 밀림). 한국은 서머타임이 없어 UTC+9 고정이므로
+#   이 오프셋을 그대로 더해서 쓴다. 파일명 날짜·'오늘' 기준 판단에 쓰이는 datetime.now()를
+#   전부 이걸로 통일 — 실행 시각과 무관하게 항상 한국 달력 기준 날짜로 일관되게 찍힌다.
+def _kst_now():
+    return datetime.utcnow() + timedelta(hours=9)
+
 OUTPUT_DIR = '/content/ensemble_analysis'   # ★ 로컬(Colab 세션) 저장 — Drive 저장 안 함
 
 def _resolve_output_dir(target):
@@ -23249,7 +23281,7 @@ def run_ensemble_search(*, eval_start=EVAL_START,
                 daily, trades, cur)
 
     if output_file is None:
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        today_str = _kst_now().strftime('%Y-%m-%d')
         output_file = os.path.join(SCRIPT_DIR, f'ensemble_search_{ticker}_{today_str}.xlsx')
     print(f"\n  Excel 저장: {output_file}")
     # ★ 데이터 스냅샷 저장 (요청) — 재현 정확도용. 재현 때 이 데이터를 그대로 쓰면
@@ -24119,7 +24151,7 @@ def replay_grid_combo(filename, grid_number=None, *,
     #   'ensemble_search_<티커>_<원본날짜>' 형태에서 <원본날짜>만 오늘 날짜로 교체.
     #   패턴이 안 맞으면(파일명이 다른 형식) 원본 base 그대로 사용 + 뒤에 오늘 날짜 붙임.
     import re as _re_dt
-    _today_str = datetime.now().strftime('%Y-%m-%d')
+    _today_str = _kst_now().strftime('%Y-%m-%d')
     _m_dt = _re_dt.match(r'^(ensemble_search_.+)_\d{4}-\d{2}-\d{2}$', base)
     if _m_dt:
         base = f"{_m_dt.group(1)}_{_today_str}"
@@ -25344,7 +25376,7 @@ def _save_summary_excel(summary_records, summary_file, all_tickers, *,
 
     ws = wb.create_sheet('결과 요약', 0); ws.sheet_view.showGridLines = False
     ws.cell(1, 1).value = (f'전체 티커 분석 요약 — {len(summary_records)}/{len(all_tickers)} 완료  '
-                            f'({datetime.now().strftime("%Y-%m-%d %H:%M:%S")})')
+                            f'({_kst_now().strftime("%Y-%m-%d %H:%M:%S")})')
     ws.cell(1, 1).font = Font(bold=True, size=16, color='1F3864')
     ws.merge_cells('A1:T1')
 
@@ -25594,7 +25626,7 @@ def run_multi_ticker_analysis(tickers=None, *,
     t_total = time.time()
     n_done = sum(1 for tk in tickers if tk in existing)
     n_total = len(tickers)
-    today_str = datetime.now().strftime('%Y-%m-%d')
+    today_str = _kst_now().strftime('%Y-%m-%d')
 
     for ti, ticker in enumerate(tickers, 1):
         print(f"\n{'━' * 72}")
@@ -25687,7 +25719,7 @@ def run_multi_ticker_analysis(tickers=None, *,
                 else:
                     summary_records[ticker] = {
                         'status': '통과없음', 'signal': '— 통과조합없음', 'position': '—',
-                        'close': None, 'analyzed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'close': None, 'analyzed_at': _kst_now().strftime('%Y-%m-%d %H:%M:%S'),
                         'tuned_vars': {}, 'tuning_applied': False, 'volatility_stats': {},
                     }
                 if globals().get('WRITE_SUMMARY_FILE', False):
@@ -25767,7 +25799,7 @@ def run_multi_ticker_analysis(tickers=None, *,
                 'match_sell_pct': match_sell * 100.0 if match_sell is not None and pd.notna(match_sell) else None,
                 'K_b_v_b': f"{int(best_inner['K_buy'])}/{int(best_inner['vote_buy'])}",
                 'K_s_v_s': f"{int(best_inner['K_sell'])}/{int(best_inner['vote_sell'])}",
-                'analyzed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'analyzed_at': _kst_now().strftime('%Y-%m-%d %H:%M:%S'),
                 'tuned_vars': effective_vars,
                 'tuning_applied': tuning_applied,
                 'tuning_source': tuning_source,
@@ -25818,7 +25850,7 @@ def run_multi_ticker_analysis(tickers=None, *,
                     'signal': '— 에러',
                     'position': '—',
                     'close': None,
-                    'analyzed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'analyzed_at': _kst_now().strftime('%Y-%m-%d %H:%M:%S'),
                     'error_msg': str(e),
                     'tuned_vars': {},
                     'tuning_applied': False,
@@ -25857,7 +25889,7 @@ def run_multi_ticker_analysis(tickers=None, *,
     print('═' * 72)
 
     if AUTO_DOWNLOAD_EXCEL:
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        today_str = _kst_now().strftime('%Y-%m-%d')
         files_to_download = []   # ★ summary 파일 안 만듦 → 종목별 엑셀만
         for ticker in tickers:
             candidate = os.path.join(SCRIPT_DIR, f'ensemble_search_{ticker}_{today_str}.xlsx')
@@ -26117,7 +26149,7 @@ def _resolve_data_for_ticker(ticker, end_date=None):
             if _idx is None or len(_idx) == 0:
                 return False, None, 0
             _last = pd.Timestamp(_idx[-1]).normalize()
-            _tdy = pd.Timestamp(datetime.now().date())
+            _tdy = pd.Timestamp(_kst_now().date())
             _bd = len(pd.bdate_range(_last, _tdy)) - 1
             return (_bd >= 2), _last, _bd
         except Exception:
@@ -26190,7 +26222,7 @@ def _resolve_data_for_ticker(ticker, end_date=None):
             if not _need_yf and end_date is None:
                 try:
                     _last0 = ohlcv[ticker].index[-1]
-                    _today0 = pd.Timestamp(datetime.now().date())
+                    _today0 = pd.Timestamp(_kst_now().date())
                     if len(pd.bdate_range(_last0.normalize(), _today0)) - 1 >= 2:
                         _need_yf = True
                         print(f"  ℹ {ticker} download_data 데이터가 {str(_last0)[:10]}까지 — "
@@ -26207,7 +26239,7 @@ def _resolve_data_for_ticker(ticker, end_date=None):
                     # ★★★ (버그수정) auto_adjust=True로 통일 — download_data는 True(수정주가)인데
                     #   여기만 False(비수정주가)여서, 이 보충 경로를 타면 배당 반영이 달라
                     #   같은 거래일인데도 지표값이 미묘하게 달라지는 원인이 됐다.
-                    _end = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+                    _end = (_kst_now() + timedelta(days=1)).strftime('%Y-%m-%d')
                     df = yf.download(ticker, start=start, end=_end,
                                      progress=False, auto_adjust=True)
                     if df is None or len(df) == 0:
@@ -26218,7 +26250,7 @@ def _resolve_data_for_ticker(ticker, end_date=None):
                     closes[ticker] = df['Close'] if 'Close' in df.columns else df.iloc[:, 0]
                     _did_yf_refetch = True
                     _last = df.index[-1]
-                    _today = pd.Timestamp(datetime.now().date())
+                    _today = pd.Timestamp(_kst_now().date())
                     _bdays = len(pd.bdate_range(_last.normalize(), _today)) - 1
                     print(f"  ✓ yfinance로 {ticker} 다운로드 성공 ({len(df)}일, 마지막 {str(_last)[:10]})")
                     if _bdays >= 1:
@@ -26466,7 +26498,7 @@ def run_mode4_drive_reproduce_all(drive_dir=None, *, date_subfolder=None, **over
             return []
     print(f"  📂 드라이브 폴더: {src}  — 티커 {len(latest)}개")
 
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = _kst_now().strftime('%Y-%m-%d')
     sub = date_subfolder or today
     out_dir = os.path.join(src, sub)            # ★ 드라이브 안에 '날짜 폴더' 생성
     os.makedirs(out_dir, exist_ok=True)
@@ -26544,7 +26576,7 @@ def build_ensemble_search_direct(ticker, *, out_dir=None, end_date=None,
         os.makedirs(_dir, exist_ok=True)
     except Exception:
         pass
-    _today = datetime.now().strftime('%Y-%m-%d')
+    _today = _kst_now().strftime('%Y-%m-%d')
     _out_path = os.path.join(_dir, f"ensemble_search_{ticker}_{_today}.xlsx")
 
     feat, close = None, None
@@ -26563,7 +26595,7 @@ def build_ensemble_search_direct(ticker, *, out_dir=None, end_date=None,
     #   있으면 신규 코드, 없으면 구버전 코드가 실행된 것.
     try:
         _last_dt = pd.Timestamp(close.index[-1]).normalize()
-        _tdy2 = pd.Timestamp(datetime.now().date())
+        _tdy2 = pd.Timestamp(_kst_now().date())
         _behind = len(pd.bdate_range(_last_dt, _tdy2)) - 1
         _has_new = ('dmx_adx_14' in feat.columns)
         print(f"  🏷 코드버전: {'신규지표143 포함' if _has_new else '⚠⚠ 구버전(신규 하락지표 없음 — Colab에 새 predictor_core.py 업로드 필요)'} "
@@ -26610,7 +26642,7 @@ def build_pool_excel_for_ticker(ticker, *, out_dir=None, end_date=None,
         os.makedirs(_dir, exist_ok=True)
     except Exception:
         pass
-    _today = datetime.now().strftime('%Y-%m-%d')
+    _today = _kst_now().strftime('%Y-%m-%d')
     _pool_path = os.path.join(_dir, f"{pool_prefix}_{ticker}_{_today}.xlsx")
     _tmp_full = os.path.join(g.get('OUTPUT_DIR', '.'), f"__tmp_full_{ticker}_{_today}.xlsx")
 
@@ -26845,7 +26877,7 @@ def build_result_excel_from_pool(ticker, *, pool_dir=None, out_dir=None, end_dat
         print(f"  ✗ 풀 로드 실패: {e}")
         return None
 
-    _today = datetime.now().strftime('%Y-%m-%d')
+    _today = _kst_now().strftime('%Y-%m-%d')
     _out = os.path.join(_odir, f"ensemble_search_{ticker}_{_today}.xlsx")
     old_ticker = g.get('TICKER'); g['TICKER'] = ticker
     g['_pair_feat'] = feat; g['_pair_close'] = close; g['_pair_ticker'] = ticker
