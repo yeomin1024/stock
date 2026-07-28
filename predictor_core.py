@@ -13,6 +13,63 @@ if _IS_COLAB:
 elif _IS_KAGGLE:
     print("  ℹ Kaggle 환경 감지 — 구글드라이브 마운트 생략, 저장 경로를 /kaggle/working 으로 사용합니다")
 
+# ★★★ (요청) 인터넷 연결 여부를 미리 확인 — Kaggle은 노트북 인터넷이 기본적으로 꺼져 있어서,
+#   pip install은 물론 이 스크립트의 핵심 기능(야후파이낸스·FRED 데이터 다운로드)도 전부
+#   막힌다. 이 상태로 계속 진행하면 한참 뒤에야 알기 힘든 urllib3/DNS 에러로 나타나므로,
+#   맨 처음에 미리 검사해서 원인과 해결법을 바로 알려준다.
+def _check_internet(timeout=5):
+    import socket
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.gethostbyname('pypi.org')
+        return True
+    except Exception:
+        return False
+
+if not _check_internet():
+    print("=" * 72)
+    print("  ⚠⚠⚠ 인터넷 연결이 안 됩니다 — pip install, 야후파이낸스·FRED 데이터 다운로드가")
+    print("      전부 이 상태로는 실패합니다(예: 'Temporary failure in name resolution').")
+    if _IS_KAGGLE:
+        print("  Kaggle은 노트북 인터넷이 기본값 OFF입니다. 해결 순서:")
+        print("    1) (최초 1회) 전화번호 인증: kaggle.com/settings → Phone verification")
+        print("    2) 노트북 화면 오른쪽 패널에서 'Session options'(또는 'Notebook options')를 찾아")
+        print("       펼치고, 그 안의 'Internet' 토글을 ON으로 켜기")
+        print("       (버튼 위치가 종종 바뀌므로 안 보이면 'kaggle enable internet'으로 검색)")
+        print("    3) 토글을 켜면 커널이 재시작되니, 이 셀부터 다시 실행하세요")
+    else:
+        print("  네트워크 연결 상태를 확인해주세요(방화벽/프록시/오프라인 여부 등).")
+    print("=" * 72)
+
+# ★★★ (요청 — 결과 재현성 버그수정) 이 파일은 세션마다 계속 수정·재실행되는데, numba의
+#   @njit(cache=True)는 컴파일 결과를 소스파일 옆 __pycache__에 '함수가 파일 몇 번째 줄에
+#   있는지'까지 포함해서 .nbi/.nbc로 저장한다. 코드를 고칠 때마다 같은 함수가 다른 줄로
+#   이동하면 새 캐시가 생기지만 예전 캐시 파일은 지워지지 않고 계속 쌓인다 — 실측으로
+#   확인한 바, 이 오래된 캐시가 남아있으면 완전히 동일한 코드·데이터로 돌려도 지표풀
+#   선정 같은 계산 결과 자체가 실행마다 달라지는 문제가 생길 수 있다(속도 문제가 아니라
+#   정확성 문제). 그래서 이 스크립트를 실행할 때마다 시작 시점에 numba 캐시 파일만
+#   선택적으로 지워서, 항상 지금 이 코드로 새로 컴파일되도록 보장한다(다른 .pyc 등은
+#   안 건드림 — 재현성 확보가 약간의 초기 컴파일 시간보다 훨씬 중요).
+def _clear_stale_numba_cache():
+    import glob as _glob_boot
+    try:
+        _here = _os_boot.path.dirname(_os_boot.path.abspath(__file__))
+    except NameError:
+        _here = _os_boot.getcwd()
+    _pycache = _os_boot.path.join(_here, '__pycache__')
+    _n = 0
+    for _pat in ('*.nbi', '*.nbc'):
+        for _f in _glob_boot.glob(_os_boot.path.join(_pycache, _pat)):
+            try:
+                _os_boot.remove(_f)
+                _n += 1
+            except Exception:
+                pass
+    if _n:
+        print(f"  ℹ 이전 세션의 numba 캐시 {_n}개 정리 — 이번 실행 코드로 새로 컴파일합니다")
+
+_clear_stale_numba_cache()
+
 # @title
 """
 XLK 하락 예측 임계치 탐색기 (완전 독립 실행)
@@ -14287,7 +14344,7 @@ HORIZON_DAYS        = 2
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
 #   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = None
+HORIZON_DAYS_LIST   = [1]
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
