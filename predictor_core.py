@@ -1,5 +1,18 @@
-from google.colab import drive
-drive.mount('/content/drive')
+import os as _os_boot
+# ★★★ (요청) Kaggle에서도 그대로 실행되도록 — Colab/Kaggle 환경을 자동 감지해서 그에 맞게
+#   동작한다(구글드라이브 마운트·저장경로·다운로드 방식·FRED 키 조회를 전부 분기).
+_IS_KAGGLE = bool(_os_boot.environ.get('KAGGLE_KERNEL_RUN_TYPE')) or _os_boot.path.isdir('/kaggle/working')
+_IS_COLAB = (not _IS_KAGGLE) and _os_boot.path.isdir('/content')
+
+if _IS_COLAB:
+    try:
+        from google.colab import drive
+        drive.mount('/content/drive')
+    except Exception as _e_mount:
+        print(f"  ⚠ 구글드라이브 마운트 실패(무시하고 진행): {_e_mount}")
+elif _IS_KAGGLE:
+    print("  ℹ Kaggle 환경 감지 — 구글드라이브 마운트 생략, 저장 경로를 /kaggle/working 으로 사용합니다")
+
 # @title
 """
 XLK 하락 예측 임계치 탐색기 (완전 독립 실행)
@@ -342,10 +355,11 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
     FRED 경제지표 다운로드 (fredapi 공식 API 사용 — pandas_datareader보다 안정적·빠름).
     실패한 시리즈는 ID·설명·이유를 함께 표시하고, 일시적 실패는 재시도한다.
 
-    API 키 준비 (셋 중 하나):
+    API 키 준비 (넷 중 하나):
       1) 함수 인자:        download_fred_data(api_key='발급받은키')
       2) 환경변수:         os.environ['FRED_API_KEY'] = '발급받은키'
       3) Colab 비밀변수:   from google.colab import userdata; userdata.get('FRED_API_KEY')
+      4) Kaggle Secrets:   노트북 Add-ons → Secrets 에 FRED_API_KEY로 등록
     키 발급(무료, 즉시): https://fredaccount.stlouisfed.org/apikeys
 
     fredapi 미설치 또는 키 없으면 빈 DataFrame 반환 (지표 계산 건너뜀).
@@ -358,13 +372,19 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
         print("    (설치 후 재실행: pip install fredapi)")
         return pd.DataFrame()
 
-    # API 키 확보 — 인자 > 환경변수 > Colab userdata 순
+    # API 키 확보 — 인자 > 환경변수 > Colab userdata > Kaggle Secrets 순
     if api_key is None:
         api_key = os.environ.get('FRED_API_KEY')
     if api_key is None:
         try:
             from google.colab import userdata
             api_key = userdata.get('FRED_API_KEY')
+        except Exception:
+            pass
+    if api_key is None and _IS_KAGGLE:
+        try:
+            from kaggle_secrets import UserSecretsClient
+            api_key = UserSecretsClient().get_secret('FRED_API_KEY')
         except Exception:
             pass
     if not api_key:
@@ -14176,32 +14196,42 @@ from openpyxl.utils import get_column_letter
 def _kst_now():
     return datetime.utcnow() + timedelta(hours=9)
 
-OUTPUT_DIR = '/content/ensemble_analysis'   # ★ 로컬(Colab 세션) 저장 — Drive 저장 안 함
+# ★★★ (요청 — Kaggle 대응) 기본 저장 위치를 플랫폼별로 분기. Kaggle은 /kaggle/working 아래에
+#   저장한 파일이 세션 종료 후에도 노트북 Output 탭에 자동으로 남아 다운로드할 수 있다.
+OUTPUT_DIR = ('/kaggle/working/ensemble_analysis' if _IS_KAGGLE else '/content/ensemble_analysis')
 
 def _resolve_output_dir(target):
     """OUTPUT_DIR 해석 + 폴더 생성. (Google Drive 저장 안 함 — 로컬에만 저장 후 다운로드)"""
+    _local_default = ('/kaggle/working' if _IS_KAGGLE else
+                       ('/content' if os.path.isdir('/content') else os.getcwd()))
     if target is None:
-        return '/content' if os.path.isdir('/content') else os.getcwd()
+        return _local_default
     # ★ Drive 경로가 지정돼 있어도 Drive에 저장하지 않고 로컬로 대체
     if target.startswith('/content/drive/'):
-        local_alt = '/content/ensemble_analysis' if os.path.isdir('/content') else os.path.join(os.getcwd(), 'ensemble_analysis')
+        if _IS_KAGGLE:
+            local_alt = '/kaggle/working/ensemble_analysis'
+        else:
+            local_alt = '/content/ensemble_analysis' if os.path.isdir('/content') else os.path.join(os.getcwd(), 'ensemble_analysis')
         print(f"  ℹ Drive 저장 비활성화 — 로컬 폴더에 저장 후 다운로드: {local_alt}")
         target = local_alt
     # 폴더 없으면 생성
     try:
         os.makedirs(target, exist_ok=True)
     except Exception as e:
-        print(f"  ⚠ {target} 생성 실패: {e} → /content 로 fallback")
-        return '/content' if os.path.isdir('/content') else os.getcwd()
+        print(f"  ⚠ {target} 생성 실패: {e} → {_local_default} 로 fallback")
+        return _local_default
     return target
 
 SCRIPT_DIR = _resolve_output_dir(OUTPUT_DIR)
 OUTPUT_DIR = SCRIPT_DIR   # ★ 이후 모든 참조(재현 모드 등)가 로컬 폴더를 가리키도록 동기화
-print(f"  📂 출력 폴더(로컬): {SCRIPT_DIR}  — 실행 종료 후 자동 다운로드됩니다")
+if _IS_KAGGLE:
+    print(f"  📂 출력 폴더: {SCRIPT_DIR}  — 실행 종료 후 Kaggle 노트북 우측 'Output' 탭에서 다운로드하세요")
+else:
+    print(f"  📂 출력 폴더(로컬): {SCRIPT_DIR}  — 실행 종료 후 자동 다운로드됩니다")
 
 # ★ (요청) 모드1 실행 시 엑셀을 '내 드라이브 ensemble 경로'에도 복사 생성 (모드4가 이 폴더를 읽어 재현할 수 있게).
-#   None 이면 미러링 안 함. 먼저 드라이브 마운트 필요.
-ENSEMBLE_MIRROR_DIR = '/content/drive/MyDrive/ensemble_analysis'
+#   None 이면 미러링 안 함. 먼저 드라이브 마운트 필요. (Kaggle은 드라이브 마운트가 없으므로 비활성)
+ENSEMBLE_MIRROR_DIR = (None if _IS_KAGGLE else '/content/drive/MyDrive/ensemble_analysis')
 
 def _mirror_to_ensemble(file_paths, *, verbose=True):
     """모드1 산출 엑셀을 ENSEMBLE_MIRROR_DIR 로도 복사 (모드4 재현용 아카이브)."""
@@ -25969,7 +25999,11 @@ def _auto_download_excels(file_paths, *, verbose=True):
             print(f"  ✓ Colab 다운로드 트리거 완료\n")
     else:
         if verbose:
-            print(f"  ℹ Colab 환경 아님 — 위 경로에서 직접 가져가세요\n")
+            if _IS_KAGGLE:
+                print(f"  ℹ Kaggle 환경 — 브라우저 자동다운로드는 지원 안 함. "
+                      f"세션 종료 후 노트북 우측 'Output' 탭에서 위 파일들을 다운로드하세요\n")
+            else:
+                print(f"  ℹ Colab 환경 아님 — 위 경로에서 직접 가져가세요\n")
 
 
 def _try_float(x):
@@ -26468,7 +26502,11 @@ def run_mode4_drive_reproduce_all(drive_dir=None, *, date_subfolder=None, **over
     src = drive_dir or g.get('RUN_MODE4_DRIVE_DIR', '/content/drive/MyDrive/ensemble_analysis')
     if not os.path.isdir(src):
         print(f"  ✗ 드라이브 폴더를 찾을 수 없습니다: {src}")
-        print(f"    먼저 드라이브 마운트: from google.colab import drive; drive.mount('/content/drive')")
+        if _IS_KAGGLE:
+            print(f"    ℹ 모드4는 구글드라이브 아카이브를 읽는 기능이라 Kaggle에서는 기본 지원 안 함 "
+                  f"(별도로 구글드라이브 API 연동 필요)")
+        else:
+            print(f"    먼저 드라이브 마운트: from google.colab import drive; drive.mount('/content/drive')")
         return []
     # 티커별 가장 최근 파일 (재현본 __replay 제외)
     latest = {}
@@ -27000,6 +27038,103 @@ def main():
 def get_generated_files():
     """이번 실행에서 만든 엑셀 파일 경로 목록 (노트북 셀에서 직접 다운로드용)."""
     return list(globals().get('_GENERATED_FILES', []))
+
+
+# ════════════════════════════════════════════════════════════════
+#   ★★★ (요청) 대기모드 — 스크립트를 실행하면 y/n을 물어보고, y면 '미국 정규장
+#   마감 후 데이터가 안전하게 확보되는 시각'(한국시간)까지 자동으로 기다렸다가
+#   실행을 이어간다. 미국 서머타임(DST)을 zoneinfo로 정확히 반영 — 하드코딩된
+#   "새벽 5시"가 아니라 실제 마감 4:00pm ET를 그때그때 한국시간으로 환산한다.
+# ════════════════════════════════════════════════════════════════
+def _next_safe_kst_time(buffer_minutes=30):
+    """다음으로 돌아오는 '미국 정규장 마감(4:00pm ET) + 여유버퍼' 시각을 KST로 반환.
+       주말(마감 자체가 없는 토·일)은 건너뛰고 다음 평일로 이동한다.
+       ★ 시장 휴장일(추수감사절 등)은 반영하지 않음 — 그런 날은 마감 자체가 없어
+       계산상의 '마감 시각'이 실제로는 지나가는 형태가 되지만, 실행 시점의
+       download_data() 재시도 로직(배치 내 다른 티커와 비교)이 그 상황도 안전하게
+       처리하므로 대기 시각 자체가 틀어지진 않는다."""
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo('America/New_York')
+    KST = ZoneInfo('Asia/Seoul')
+    now_et = datetime.now(ET)
+    close_et = now_et.replace(hour=16, minute=buffer_minutes, second=0, microsecond=0)
+    if close_et <= now_et:
+        close_et = close_et + timedelta(days=1)
+    while close_et.weekday() >= 5:   # 5=토요일, 6=일요일 → 그날은 마감 없음
+        close_et += timedelta(days=1)
+    return close_et.astimezone(KST)
+
+
+def _input_with_timeout(prompt, timeout_sec=60):
+    """input()에 타임아웃을 건다. ★★★ (실측으로 확인된 문제) 일부 비대화형 환경은
+       stdin이 즉시 EOF를 주지 않고 '열려는 있지만 아무 입력도 안 오는' 상태라
+       평범한 input()이 무한정 멈춘다(try/except로 EOFError만 잡는 걸로는 방지 안 됨).
+       그래서 별도 스레드에서 input()을 돌리고, 메인 스레드는 timeout_sec만 기다렸다가
+       응답이 없으면 포기하고 넘어간다(그 스레드는 데몬이라 무해하게 백그라운드에 남는다)."""
+    import threading
+    _box = {'val': None, 'done': False}
+    def _read():
+        try:
+            _box['val'] = input(prompt)
+        except Exception:
+            pass
+        finally:
+            _box['done'] = True
+    _t = threading.Thread(target=_read, daemon=True)
+    _t.start()
+    _t.join(timeout_sec)
+    if not _box['done']:
+        print(f"\n  ℹ {timeout_sec}초 동안 입력이 없어 대기모드 없이 자동 진행합니다.")
+        return None
+    return _box['val']
+
+
+def wait_mode_prompt(check_interval_sec=300, input_timeout_sec=60):
+    """대기모드 y/n을 물어보고, y면 다음 안전 시각까지 대기한다.
+       입력을 받을 수 없거나(비대화형) 응답이 없는 환경에서는 자동으로 'n'(즉시 진행)
+       처리해 멈춰버리는 일이 없게 한다."""
+    _ans = _input_with_timeout(
+        f"\n⏳ 대기모드로 실행할까요? 미국 장마감 후 데이터가 안전하게 확보되는 시각까지 "
+        f"자동 대기합니다 ({input_timeout_sec}초 내 미응답 시 대기모드 없이 진행) [y/n]: ",
+        timeout_sec=input_timeout_sec)
+    if _ans is None:
+        return
+    _ans = _ans.strip().lower()
+
+    if _ans not in ('y', 'yes'):
+        print("  ℹ 대기모드 사용 안 함 — 바로 진행합니다.")
+        return
+
+    from zoneinfo import ZoneInfo
+    KST = ZoneInfo('Asia/Seoul')
+    _target = _next_safe_kst_time()
+    _now0 = datetime.now(KST)
+    _wait_h = (_target - _now0).total_seconds() / 3600
+
+    print(f"  ⏳ 대기모드 시작 — 목표 시각: {_target.strftime('%Y-%m-%d %H:%M:%S')} (한국시간)")
+    print(f"     예상 대기시간: 약 {_wait_h:.1f}시간")
+    if _wait_h > 11:
+        print(f"     ⚠ Colab/Kaggle 무료 세션은 보통 최대 12시간까지만 유지됩니다 — "
+              f"이 대기시간은 세션 제한에 걸릴 수 있으니, 장마감에 더 가까운 시점에 "
+              f"다시 실행하는 것을 권장합니다.")
+
+    while True:
+        _now = datetime.now(KST)
+        _remain = (_target - _now).total_seconds()
+        if _remain <= 0:
+            break
+        _this_wait = min(check_interval_sec, _remain)
+        _h = int(_remain // 3600); _m = int((_remain % 3600) // 60)
+        print(f"     ⏳ 대기 중... 남은 시간 약 {_h}시간 {_m}분")
+        time.sleep(_this_wait)
+
+    print(f"  ✅ 대기 완료 ({datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')} 한국시간) — "
+          f"지금부터 실행합니다.\n")
+
+
+# ★ 모듈이 로드되는 시점(노트북 셀 실행 포함)에 바로 물어본다 — main()이나 RUN_MODE
+#   설정과 무관하게, 이 파일이 실행되는 순간 항상 한 번 트리거된다.
+wait_mode_prompt()
 
 
 if __name__ == '__main__':
