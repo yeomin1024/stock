@@ -345,15 +345,22 @@ def download_data(start='2020-01-01', max_retries=4, retry_wait=8.0):
             if _valid_t.any():
                 _tk_valid_dt = pd.Timestamp(_tdf.index[_valid_t][-1]).normalize()
 
-            # 같은 배치의 다른 티커들 중 '유효한' 가장 최근 날짜
+            # ★★★ 버그 수정: 같은 배치의 다른 티커들 중 '유효한' 가장 최근 날짜를 기준으로 삼되,
+            #   ^VIX/^TNX/^IRX 같은 지수는 개별 종목과 업데이트 스케줄 자체가 달라 하루 정도
+            #   먼저 갱신되는 일이 흔하다 — 이런 지수를 단순 최댓값(max)으로 기준 삼으면 TICKER가
+            #   실제로는 SPY 등 '보통 자산'과 똑같이 최신인데도 지수 하나 때문에 영원히 '뒤처짐'
+            #   으로 오판되는 문제가 실측으로 확인됐다. 지수(^로 시작)는 기준 후보에서 제외하고,
+            #   남은 후보들의 중앙값을 써서 소수 이상치(피어 하나가 유독 하루 이르거나 늦은 경우)에도
+            #   안정적이게 한다.
+            _ref_candidates = []
             for _tk2, _df2 in ohlcv.items():
-                if _tk2 == TICKER or len(_df2) == 0:
+                if _tk2 == TICKER or len(_df2) == 0 or _tk2.startswith('^'):
                     continue
                 _valid2 = _df2['Close'].notna() & (_df2['Volume'].fillna(0) > 0)
                 if _valid2.any():
-                    _d2 = pd.Timestamp(_df2.index[_valid2][-1]).normalize()
-                    if _ref_dt is None or _d2 > _ref_dt:
-                        _ref_dt = _d2
+                    _ref_candidates.append(pd.Timestamp(_df2.index[_valid2][-1]).normalize())
+            if _ref_candidates:
+                _ref_dt = pd.Series(_ref_candidates).median()
 
             if _tk_valid_dt is None:
                 _is_fresh_ok = False
@@ -367,8 +374,16 @@ def download_data(start='2020-01-01', max_retries=4, retry_wait=8.0):
                 _is_fresh_ok = _gap_bdays < 2   # 장중/직후 시차는 감안(오늘 대비 1영업일까지는 정상)
 
             try:
-                _last_row = _tdf.iloc[-1][['Open', 'High', 'Low', 'Close', 'Volume']]
-                _is_complete_ok = bool(_last_row.notna().all() and _last_row['Volume'] > 0)
+                # ★★★ 버그 수정: '.iloc[-1]'(배치 전체 물리적 마지막 행)이 아니라 TICKER 자신의
+                #   '유효 최신일'(_tk_valid_dt) 시점의 행을 봐야 한다. ^VIX/^TNX/^IRX 같은 PEERS의
+                #   지수들은 개별 주식과 업데이트 스케줄이 달라서, 그 중 하나가 TICKER보다 하루
+                #   앞선 날짜까지 있으면 배치 전체의 '마지막 행'이 그 지수 기준이 되어버린다 — 이
+                #   경우 TICKER는 실제로 최신인데도 그 무관한 날짜엔 원래 데이터가 없어(정상) NaN이
+                #   찍혀서 영원히 '불완전'으로 오판, 재시도만 반복하다 끝나는 문제가 있었다(실측 확인).
+                _last_row = (_tdf.loc[_tk_valid_dt][['Open', 'High', 'Low', 'Close', 'Volume']]
+                            if _tk_valid_dt is not None else None)
+                _is_complete_ok = (_last_row is not None and
+                                   bool(_last_row.notna().all() and _last_row['Volume'] > 0))
             except Exception:
                 _is_complete_ok = False
 
