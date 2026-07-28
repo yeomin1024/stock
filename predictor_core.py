@@ -432,7 +432,7 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
     # API 키 확보 — 인자 > 환경변수 > Colab userdata > Kaggle Secrets 순
     if api_key is None:
         api_key = os.environ.get('FRED_API_KEY')
-    if api_key is None:
+    if api_key is None and globals().get('_IS_COLAB', False):
         try:
             from google.colab import userdata
             api_key = userdata.get('FRED_API_KEY')
@@ -26037,11 +26037,19 @@ def _auto_download_excels(file_paths, *, verbose=True):
             for fp in missing:
                 print(f"     ⚠ 누락: {fp}")
 
-    try:
-        from google.colab import files
-        is_colab = True
-    except ImportError:
-        is_colab = False
+    # ★★★ (버그수정) "google.colab.files를 import할 수 있는지"만으로 Colab 여부를 판단하면
+    #   안 된다 — 실측으로 확인됨: Kaggle에서도 이 import 자체는 성공해버려서(브라우저에
+    #   실제로 연결되는 JS 브릿지는 없는 채로) files.download()를 그대로 호출하다가
+    #   "Javascript Error: download is not defined"로 터졌다. 이 스크립트 맨 위에서 이미
+    #   파일시스템/환경변수 기반으로 확실하게 판별해둔 _IS_COLAB을 우선 기준으로 쓴다.
+    is_colab = False
+    files = None
+    if globals().get('_IS_COLAB', False):
+        try:
+            from google.colab import files
+            is_colab = True
+        except ImportError:
+            is_colab = False
 
     if is_colab:
         for fp in existing:
