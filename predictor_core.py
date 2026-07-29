@@ -4,14 +4,13 @@ import os as _os_boot
 _IS_KAGGLE = bool(_os_boot.environ.get('KAGGLE_KERNEL_RUN_TYPE')) or _os_boot.path.isdir('/kaggle/working')
 _IS_COLAB = (not _IS_KAGGLE) and _os_boot.path.isdir('/content')
 
-if _IS_COLAB:
-    try:
-        from google.colab import drive
-        drive.mount('/content/drive')
-    except Exception as _e_mount:
-        print(f"  ⚠ 구글드라이브 마운트 실패(무시하고 진행): {_e_mount}")
-elif _IS_KAGGLE:
-    print("  ℹ Kaggle 환경 감지 — 구글드라이브 마운트 생략, 저장 경로를 /kaggle/working 으로 사용합니다")
+# ★★★ (요청) '내 드라이브에 결과 엑셀 생성' 기능을 OFF로 — 실행할 때마다 구글드라이브 마운트
+#   승인 창이 뜨는 게 이 자동 마운트 때문이었다. 결과는 어차피 로컬 저장+자동다운로드로
+#   충분히 받아지므로, 드라이브가 실제로 필요 없는 평소 실행에서는 승인 절차 자체를
+#   건너뛴다. (모드4처럼 드라이브 자체를 읽어야 하는 기능을 쓸 때는 그 시점에 각자
+#   필요하면 알아서 마운트를 시도하도록 남겨둠 — 여기서 무조건 미리 마운트하지 않을 뿐.)
+if _IS_KAGGLE:
+    print("  ℹ Kaggle 환경 감지 — 저장 경로를 /kaggle/working 으로 사용합니다")
 
 # ★★★ (요청) 인터넷 연결 여부를 미리 확인 — Kaggle은 노트북 인터넷이 기본적으로 꺼져 있어서,
 #   pip install은 물론 이 스크립트의 핵심 기능(야후파이낸스·FRED 데이터 다운로드)도 전부
@@ -14329,9 +14328,10 @@ if _IS_KAGGLE:
 else:
     print(f"  📂 출력 폴더(로컬): {SCRIPT_DIR}  — 실행 종료 후 자동 다운로드됩니다")
 
-# ★ (요청) 모드1 실행 시 엑셀을 '내 드라이브 ensemble 경로'에도 복사 생성 (모드4가 이 폴더를 읽어 재현할 수 있게).
-#   None 이면 미러링 안 함. 먼저 드라이브 마운트 필요. (Kaggle은 드라이브 마운트가 없으므로 비활성)
-ENSEMBLE_MIRROR_DIR = (None if _IS_KAGGLE else '/content/drive/MyDrive/ensemble_analysis')
+# ★★★ (요청) '내 드라이브에 결과 엑셀 생성' 기능 OFF — 자동 드라이브 마운트 승인창이 뜨는
+#   원인이었던 이 미러링 기능을 완전히 끔. 필요해지면 나중에 직접 값을 넣어 다시 켤 수 있음
+#   (예: ENSEMBLE_MIRROR_DIR = '/content/drive/MyDrive/ensemble_analysis').
+ENSEMBLE_MIRROR_DIR = None
 
 def _mirror_to_ensemble(file_paths, *, verbose=True):
     """모드1 산출 엑셀을 ENSEMBLE_MIRROR_DIR 로도 복사 (모드4 재현용 아카이브)."""
@@ -14387,7 +14387,7 @@ HORIZON_DAYS        = 2
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
 #   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = None
+HORIZON_DAYS_LIST   = [1]
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -26145,7 +26145,11 @@ def _auto_download_excels(file_paths, *, verbose=True):
             is_colab = False
 
     if is_colab:
-        for fp in existing:
+        # ★★★ (요청) '가끔 자동다운로드가 안 되는' 문제의 유력한 원인 — 여러 파일을 연속으로
+        #   files.download() 호출하면(간격 없이) 브라우저가 다운로드 요청을 처리하는 속도를
+        #   못 따라가 일부를 조용히 놓치는 게 Colab에서 잘 알려진 현상이다. 파일이 2개 이상이면
+        #   각 다운로드 사이에 짧게 텀을 둬서 브라우저가 각각을 확실히 처리하게 한다.
+        for _i_dl, fp in enumerate(existing):
             try:
                 files.download(fp)
                 g['_DOWNLOAD_TRIGGERED'].add(os.path.abspath(fp))   # ★ 중복 방지용 기록
@@ -26153,6 +26157,8 @@ def _auto_download_excels(file_paths, *, verbose=True):
                     print(f"     📥 다운로드 시작: {fp}")
             except Exception as e:
                 print(f"     ⚠ 다운로드 실패 ({fp}): {e}")
+            if _i_dl < len(existing) - 1:
+                time.sleep(1.5)
         if verbose:
             print(f"  ✓ Colab 다운로드 트리거 완료\n")
     else:
@@ -27292,10 +27298,6 @@ def upload_to_kaggle_dataset(file_paths=None, dataset_slug=None, dataset_title=N
         shutil.rmtree(_upload_dir, ignore_errors=True)
 
 
-def get_generated_files():
-    """이번 실행에서 만든 엑셀 파일 경로 목록 (노트북 셀에서 직접 다운로드용)."""
-    return list(globals().get('_GENERATED_FILES', []))
-
 
 # ════════════════════════════════════════════════════════════════
 #   ★★★ (요청) 대기모드 — 스크립트를 실행하면 y/n을 물어보고, y면 '미국 정규장
@@ -27347,16 +27349,19 @@ def _input_with_timeout(prompt, timeout_sec=60):
 
 
 def wait_mode_prompt(check_interval_sec=300, input_timeout_sec=60):
-    """대기모드 y/n을 물어보고, y면 다음 안전 시각까지 대기한다.
-       입력을 받을 수 없거나(비대화형) 응답이 없는 환경에서는 자동으로 'n'(즉시 진행)
-       처리해 멈춰버리는 일이 없게 한다."""
+    """대기모드 y/n을 물어보고, y면(또는 응답이 없으면) 다음 안전 시각까지 대기한다.
+       ★★★ (요청) 응답이 없을 때의 기본값을 '대기 안 함'에서 '대기모드 자동 진입'으로 변경.
+       입력을 받을 수 없는(비대화형) 환경도 동일하게 대기모드로 들어간다 — 명시적으로
+       'n'을 입력했을 때만 대기 없이 바로 진행한다."""
     _ans = _input_with_timeout(
         f"\n⏳ 대기모드로 실행할까요? 미국 장마감 후 데이터가 안전하게 확보되는 시각까지 "
-        f"자동 대기합니다 ({input_timeout_sec}초 내 미응답 시 대기모드 없이 진행) [y/n]: ",
+        f"자동 대기합니다 ({input_timeout_sec}초 내 미응답 시 자동으로 대기모드 진입) [y/n]: ",
         timeout_sec=input_timeout_sec)
     if _ans is None:
-        return
-    _ans = _ans.strip().lower()
+        print("  ℹ 응답 없음 — 기본값대로 대기모드로 진입합니다. (바로 진행하려면 'n' 입력)")
+        _ans = 'y'
+    else:
+        _ans = _ans.strip().lower()
 
     if _ans not in ('y', 'yes'):
         print("  ℹ 대기모드 사용 안 함 — 바로 진행합니다.")
