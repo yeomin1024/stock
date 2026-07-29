@@ -422,10 +422,21 @@ import pandas as pd
 import time
 import os
 
-def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f5da4', max_retries=2, retry_wait=1.0):
+_FRED_CACHE = {}   # (start, api_key) -> (DataFrame, cached_at) — 세션 내 재사용, 중복 API호출 방지
+
+
+def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f5da4', max_retries=4, retry_wait=1.0,
+                       force_refresh=False):
     """
     FRED 경제지표 다운로드 (fredapi 공식 API 사용 — pandas_datareader보다 안정적·빠름).
     실패한 시리즈는 ID·설명·이유를 함께 표시하고, 일시적 실패는 재시도한다.
+
+    ★★★ (요청) 여러 티커를 한 번에(20개 이상) 돌리면 'FRED 성공 14개/실패 25개' 식으로 대량
+    실패하는 문제 — FRED 매크로데이터는 티커와 무관하게 항상 동일한데도, 티커마다 이 함수를
+    새로 호출할 때마다 39개 시리즈를 처음부터 전부 다시 받고 있었다. 20개 티커면 39×20=780번
+    같은 데이터를 중복 요청하는 셈이라 FRED API 속도제한(rate limit)에 쉽게 걸린다.
+    → 세션 내 캐싱(같은 start/api_key면 재사용)으로 중복 호출 자체를 없애고, 그래도 발생하는
+    속도제한 에러는 더 길게 대기 후 재시도한다.
 
     API 키 준비 (넷 중 하나):
       1) 함수 인자:        download_fred_data(api_key='발급받은키')
@@ -437,6 +448,13 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
     fredapi 미설치 또는 키 없으면 빈 DataFrame 반환 (지표 계산 건너뜀).
     설치: pip install fredapi
     """
+    _cache_key = (start, api_key)
+    if not force_refresh and _cache_key in _FRED_CACHE:
+        _cached_df, _cached_at = _FRED_CACHE[_cache_key]
+        print(f"  ℹ FRED 캐시 재사용 (이번 세션에서 이미 받음, {_cached_df.shape[1]}개 시리즈, "
+              f"{_cached_at.strftime('%H:%M:%S')}) — 중복 API 호출 생략")
+        return _cached_df.copy()
+
     try:
         from fredapi import Fred
     except ImportError:
@@ -534,7 +552,12 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
             except Exception as e:
                 last_err = f'{type(e).__name__}: {str(e)[:70]}'
                 if attempt < max_retries:
-                    time.sleep(retry_wait)   # 일시적 실패 재시도
+                    # ★ (요청) 속도제한(rate limit)으로 보이는 에러는 훨씬 길게 대기 후 재시도 —
+                    #   1초 정도로는 FRED의 rolling-window 제한이 안 풀려서 계속 실패만 반복됐다.
+                    _is_rate_limit = any(k in str(e).lower() for k in
+                                         ('429', 'rate limit', 'too many request', 'quota'))
+                    _wait = retry_wait * (4 ** attempt) if _is_rate_limit else retry_wait
+                    time.sleep(_wait)
                     continue
         if last_err is None:
             ok += 1
@@ -550,12 +573,13 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
     if not frames:
         return pd.DataFrame()
     raw = pd.DataFrame(frames)
-    biz_idx = pd.bdate_range(start=start, end=pd.Timestamp.today())
+    biz_idx = pd.bdate_range(start=start, end=pd.Timestamp(_kst_now().date()))
     # ★ 룩어헤드 방지 (수정): 원본은 .ffill().bfill()이라 초기 구간에서 미래 값이 과거로
     #   채워지는 look-ahead였음. ffill만 사용하여 실행 시점에 알 수 없는 값은 NaN 유지.
     #   후속 지표 계산 시 NaN이면 지표도 NaN이 되므로 안전.
     fred_df = raw.reindex(biz_idx).ffill()
     fred_df.index.name = 'Date'
+    _FRED_CACHE[_cache_key] = (fred_df.copy(), _kst_now())   # ★ 세션 캐시 저장 — 다음 티커부터는 재사용
     return fred_df
 
 # ════════════════════════════════════════════════════════════════
@@ -27167,6 +27191,105 @@ def main():
         print(f"       for f in mod.get_generated_files(): files.download(f)")
         print(f"{'═'*72}")
     return made
+
+
+def upload_to_kaggle_dataset(file_paths=None, dataset_slug=None, dataset_title=None, *, verbose=True):
+    """★★★ (요청) Kaggle은 자동 브라우저 다운로드가 안 되고, 세션이 끊기면(런타임 재시작 등)
+       /kaggle/working의 파일도 그 실행이 정식으로 안 끝났으면 Output 탭에 안 남을 수 있다.
+       그래서 결과 엑셀들을 노트북 런타임과 완전히 무관한 '내 Kaggle Dataset'에 직접 올려서
+       영구 보관한다 — 이후 언제든 kaggle.com/datasets/<내계정>/<슬러그> 에서 다운로드 가능,
+       또는 다른 Kaggle 노트북에서 입력 데이터로 바로 붙여 쓸 수도 있다.
+
+       ★ 사전 준비 (최초 1회만):
+         1) kaggle.com/settings → API 섹션 → 'Create New Token' → kaggle.json 다운로드
+            (파일 안에 {"username": "...", "key": "..."} 형태로 들어있음)
+         2) 이 노트북 우측 Add-ons → Secrets 에 두 개 등록:
+            - KAGGLE_USERNAME = kaggle.json의 username 값
+            - KAGGLE_KEY      = kaggle.json의 key 값
+
+       사용법:
+         upload_to_kaggle_dataset()                       # 이번 실행에서 생성된 파일 전부 업로드
+         upload_to_kaggle_dataset(dataset_slug='afrm-btsg-results')  # 슬러그(=URL 일부) 직접 지정
+         upload_to_kaggle_dataset(['/kaggle/working/....xlsx'])      # 파일 직접 지정
+
+       처음 호출이면 새 Dataset을 만들고, 같은 슬러그로 다시 호출하면 새 버전으로 갱신한다
+       (기존 파일은 안 지워지고 버전이 쌓임 — Kaggle Dataset 자체가 버전 관리를 지원).
+    """
+    if not _IS_KAGGLE:
+        print("  ⚠ Kaggle 환경이 아니라서 이 기능은 필요 없습니다 (Colab은 자동 다운로드가 됩니다)")
+        return False
+
+    file_paths = file_paths or list(globals().get('_GENERATED_FILES', []))
+    file_paths = [fp for fp in file_paths if fp and os.path.exists(fp)]
+    if not file_paths:
+        print("  ⚠ 업로드할 파일이 없습니다 (file_paths 직접 지정하거나, 먼저 결과를 생성하세요)")
+        return False
+
+    # ── 1) 자격증명 확보 (Kaggle Secrets → 환경변수로 주입) ──
+    try:
+        from kaggle_secrets import UserSecretsClient
+        _sec = UserSecretsClient()
+        _username = _sec.get_secret('KAGGLE_USERNAME')
+        _key = _sec.get_secret('KAGGLE_KEY')
+    except Exception as e:
+        print(f"  ✗ Kaggle Secrets에서 KAGGLE_USERNAME/KAGGLE_KEY를 읽지 못했습니다: {e}")
+        print("    설정 방법: kaggle.com/settings에서 'Create New Token'으로 kaggle.json 발급 →")
+        print("    이 노트북 우측 Add-ons → Secrets 에 KAGGLE_USERNAME / KAGGLE_KEY 로 각각 등록")
+        return False
+    if not _username or not _key:
+        print("  ✗ KAGGLE_USERNAME 또는 KAGGLE_KEY 시크릿 값이 비어있습니다")
+        return False
+    os.environ['KAGGLE_USERNAME'] = _username
+    os.environ['KAGGLE_KEY'] = _key
+
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+    except ImportError:
+        print("  ⚠ kaggle 패키지 미설치 → pip install kaggle 후 재시도하세요")
+        return False
+
+    try:
+        _api = KaggleApi()
+        _api.authenticate()
+    except SystemExit:
+        print("  ✗ Kaggle 인증 실패 — KAGGLE_USERNAME/KAGGLE_KEY 값을 다시 확인하세요")
+        return False
+    except Exception as e:
+        print(f"  ✗ Kaggle 인증 실패: {e}")
+        return False
+
+    # ── 2) 업로드용 임시 폴더에 파일 복사 + 메타데이터 작성 ──
+    import shutil, tempfile, json as _json_up
+    _upload_dir = tempfile.mkdtemp(prefix='kaggle_ds_upload_')
+    try:
+        for fp in file_paths:
+            shutil.copy2(fp, os.path.join(_upload_dir, os.path.basename(fp)))
+
+        _slug = dataset_slug or f"ensemble-results-{_kst_now().strftime('%Y%m%d')}"
+        _title = dataset_title or _slug
+        _full_ref = f"{_username}/{_slug}"
+        with open(os.path.join(_upload_dir, 'dataset-metadata.json'), 'w') as f:
+            _json_up.dump({"title": _title, "id": _full_ref, "licenses": [{"name": "CC0-1.0"}]}, f)
+
+        # ── 3) 신규 생성 시도 → 이미 있으면(재실행) 새 버전으로 업데이트 ──
+        try:
+            _api.dataset_create_new(_upload_dir, public=False, quiet=not verbose, convert_to_csv=False)
+            if verbose:
+                print(f"  ✓ 새 Kaggle Dataset 생성 완료 — https://www.kaggle.com/datasets/{_full_ref}")
+        except Exception as _e_new:
+            if 'already exists' in str(_e_new).lower() or '409' in str(_e_new):
+                _api.dataset_create_version(
+                    _upload_dir, f"업데이트 {_kst_now().strftime('%Y-%m-%d %H:%M')} KST (predictor_core)",
+                    quiet=not verbose, convert_to_csv=False)
+                if verbose:
+                    print(f"  ✓ 기존 Kaggle Dataset에 새 버전 업로드 완료 — "
+                          f"https://www.kaggle.com/datasets/{_full_ref}")
+            else:
+                print(f"  ✗ Kaggle Dataset 업로드 실패: {_e_new}")
+                return False
+        return True
+    finally:
+        shutil.rmtree(_upload_dir, ignore_errors=True)
 
 
 def get_generated_files():
