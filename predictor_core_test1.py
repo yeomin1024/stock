@@ -246,7 +246,7 @@ PEERS          = [
 ]
 
 EVAL_START     = '2022-01-01'         # 평가 시작일
-EVAL_END       = '2026-07-29'                # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지.
+EVAL_END       = None                 # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지.
                                        #   지정 시 'YYYY-MM-DD' 형식(그 날짜 포함, 이후는 잘라냄).
 DOWNLOAD_START = '2020-01-01'         # 지표 계산 히스토리 확보용
 
@@ -23031,7 +23031,7 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
 
 
 def run_ensemble_search(*, eval_start=EVAL_START,
-                         eval_end=EVAL_END,
+                         eval_end='__USE_GLOBAL__',
                          horizon=HORIZON_DAYS,
                          dd_limit=DRAWDOWN_LIMIT_BUY,
                          ru_limit=RUNUP_LIMIT_SELL,
@@ -23108,6 +23108,12 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     if max_drawdown_limit_pct == '__USE_GLOBAL__':
         max_drawdown_limit_pct = globals().get('MAX_DRAWDOWN_LIMIT_PCT', None)
 
+    # ★★★ (요청 — 버그수정) eval_end도 동일한 sentinel 방식으로 '호출 시점'의 전역 EVAL_END를
+    #   읽는다. 이전엔 기본값을 eval_end=EVAL_END로 정의했는데, 파이썬 함수 기본값은 모듈
+    #   로드 시점에 한 번만 평가되므로 로드 후 mod.EVAL_END='...'로 바꿔도 반영이 안 됐다.
+    if isinstance(eval_end, str) and eval_end == '__USE_GLOBAL__':
+        eval_end = globals().get('EVAL_END', None)
+
     if anchor_buy_dates is None:  anchor_buy_dates  = list(ANCHOR_BUY_DATES)
     if anchor_sell_dates is None: anchor_sell_dates = list(ANCHOR_SELL_DATES)
 
@@ -23118,11 +23124,15 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     #   학습/평가에 사용. download_data는 그대로 최신까지 받아오고(다른 로직 영향 없음),
     #   여기서 feat만 뒤쪽을 잘라내는 방식이라 EVAL_START와 완전히 대칭적으로 동작.
     if eval_end is not None:
+        _n_before_end = len(feat)
         _eval_end_ts = pd.Timestamp(eval_end).normalize() + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
         feat = feat.loc[feat.index <= _eval_end_ts]
         if len(feat) == 0:
             raise ValueError(f"eval_end='{eval_end}'가 eval_start='{eval_start}'보다 앞서거나, "
                              f"그 구간에 거래일 데이터가 없습니다.")
+        print(f"  ✂ EVAL_END={str(eval_end)[:10]} 적용 — 학습/평가 구간을 "
+              f"{str(feat.index[0])[:10]} ~ {str(feat.index[-1])[:10]}로 자름 "
+              f"(이후 {_n_before_end - len(feat)}일 제외)")
     close = close.reindex(feat.index)
     # ★ 거래하지 않는 날(공휴일 등 종가 NaN) 제거 — ffill로 가짜 변동 만들지 않음(요청).
     #   여기서 한 번 제거하면 anchor·grid·daily 모든 단계가 같은 길이의 거래일만 사용
@@ -23988,7 +23998,9 @@ def staged_meta_tune(*, base_meta_grid=None,
             _feat_v, _close_v, _tk_v = _resolve_data()
             _mask_v = _feat_v.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
             _feat_v = _feat_v.loc[_mask_v]
-            _eval_end_v = run_kwargs.get('eval_end', EVAL_END)   # ★ (요청) 검증 구간도 동일하게 상한 적용
+            _eval_end_v = run_kwargs.get('eval_end', '__USE_GLOBAL__')   # ★ (요청) 검증 구간도 동일하게 상한 적용
+            if isinstance(_eval_end_v, str) and _eval_end_v == '__USE_GLOBAL__':
+                _eval_end_v = globals().get('EVAL_END', None)   # 호출 시점 전역을 읽음(런타임 변경 반영)
             if _eval_end_v is not None:
                 _end_ts_v = pd.Timestamp(_eval_end_v).normalize() + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
                 _feat_v = _feat_v.loc[_feat_v.index <= _end_ts_v]
@@ -24091,7 +24103,9 @@ def staged_meta_tune(*, base_meta_grid=None,
                 _ffC, _ccC, _tkC = _resolve_data()
                 _mC = _ffC.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
                 _ffC = _ffC.loc[_mC]
-                _eval_end_C = run_kwargs.get('eval_end', EVAL_END)   # ★ (요청) 여기도 동일하게 상한 적용
+                _eval_end_C = run_kwargs.get('eval_end', '__USE_GLOBAL__')   # ★ (요청) 여기도 동일하게 상한 적용
+                if isinstance(_eval_end_C, str) and _eval_end_C == '__USE_GLOBAL__':
+                    _eval_end_C = globals().get('EVAL_END', None)   # 호출 시점 전역을 읽음(런타임 변경 반영)
                 if _eval_end_C is not None:
                     _end_ts_C = pd.Timestamp(_eval_end_C).normalize() + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
                     _ffC = _ffC.loc[_ffC.index <= _end_ts_C]
