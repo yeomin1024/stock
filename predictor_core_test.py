@@ -4,14 +4,13 @@ import os as _os_boot
 _IS_KAGGLE = bool(_os_boot.environ.get('KAGGLE_KERNEL_RUN_TYPE')) or _os_boot.path.isdir('/kaggle/working')
 _IS_COLAB = (not _IS_KAGGLE) and _os_boot.path.isdir('/content')
 
-if _IS_COLAB:
-    try:
-        from google.colab import drive
-        drive.mount('/content/drive')
-    except Exception as _e_mount:
-        print(f"  ⚠ 구글드라이브 마운트 실패(무시하고 진행): {_e_mount}")
-elif _IS_KAGGLE:
-    print("  ℹ Kaggle 환경 감지 — 구글드라이브 마운트 생략, 저장 경로를 /kaggle/working 으로 사용합니다")
+# ★★★ (요청) '내 드라이브에 결과 엑셀 생성' 기능을 OFF로 — 실행할 때마다 구글드라이브 마운트
+#   승인 창이 뜨는 게 이 자동 마운트 때문이었다. 결과는 어차피 로컬 저장+자동다운로드로
+#   충분히 받아지므로, 드라이브가 실제로 필요 없는 평소 실행에서는 승인 절차 자체를
+#   건너뛴다. (모드4처럼 드라이브 자체를 읽어야 하는 기능을 쓸 때는 그 시점에 각자
+#   필요하면 알아서 마운트를 시도하도록 남겨둠 — 여기서 무조건 미리 마운트하지 않을 뿐.)
+if _IS_KAGGLE:
+    print("  ℹ Kaggle 환경 감지 — 저장 경로를 /kaggle/working 으로 사용합니다")
 
 # ★★★ (요청) 인터넷 연결 여부를 미리 확인 — Kaggle은 노트북 인터넷이 기본적으로 꺼져 있어서,
 #   pip install은 물론 이 스크립트의 핵심 기능(야후파이낸스·FRED 데이터 다운로드)도 전부
@@ -247,6 +246,8 @@ PEERS          = [
 ]
 
 EVAL_START     = '2022-01-01'         # 평가 시작일
+EVAL_END       = None                 # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지.
+                                       #   지정 시 'YYYY-MM-DD' 형식(그 날짜 포함, 이후는 잘라냄).
 DOWNLOAD_START = '2020-01-01'         # 지표 계산 히스토리 확보용
 
 # (n, m) 그리드  ※ 단기 예측만 의미있음 → n≤5일 강제
@@ -422,10 +423,21 @@ import pandas as pd
 import time
 import os
 
-def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f5da4', max_retries=2, retry_wait=1.0):
+_FRED_CACHE = {}   # (start, api_key) -> (DataFrame, cached_at) — 세션 내 재사용, 중복 API호출 방지
+
+
+def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f5da4', max_retries=4, retry_wait=1.0,
+                       force_refresh=False):
     """
     FRED 경제지표 다운로드 (fredapi 공식 API 사용 — pandas_datareader보다 안정적·빠름).
     실패한 시리즈는 ID·설명·이유를 함께 표시하고, 일시적 실패는 재시도한다.
+
+    ★★★ (요청) 여러 티커를 한 번에(20개 이상) 돌리면 'FRED 성공 14개/실패 25개' 식으로 대량
+    실패하는 문제 — FRED 매크로데이터는 티커와 무관하게 항상 동일한데도, 티커마다 이 함수를
+    새로 호출할 때마다 39개 시리즈를 처음부터 전부 다시 받고 있었다. 20개 티커면 39×20=780번
+    같은 데이터를 중복 요청하는 셈이라 FRED API 속도제한(rate limit)에 쉽게 걸린다.
+    → 세션 내 캐싱(같은 start/api_key면 재사용)으로 중복 호출 자체를 없애고, 그래도 발생하는
+    속도제한 에러는 더 길게 대기 후 재시도한다.
 
     API 키 준비 (넷 중 하나):
       1) 함수 인자:        download_fred_data(api_key='발급받은키')
@@ -437,6 +449,13 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
     fredapi 미설치 또는 키 없으면 빈 DataFrame 반환 (지표 계산 건너뜀).
     설치: pip install fredapi
     """
+    _cache_key = (start, api_key)
+    if not force_refresh and _cache_key in _FRED_CACHE:
+        _cached_df, _cached_at = _FRED_CACHE[_cache_key]
+        print(f"  ℹ FRED 캐시 재사용 (이번 세션에서 이미 받음, {_cached_df.shape[1]}개 시리즈, "
+              f"{_cached_at.strftime('%H:%M:%S')}) — 중복 API 호출 생략")
+        return _cached_df.copy()
+
     try:
         from fredapi import Fred
     except ImportError:
@@ -534,7 +553,12 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
             except Exception as e:
                 last_err = f'{type(e).__name__}: {str(e)[:70]}'
                 if attempt < max_retries:
-                    time.sleep(retry_wait)   # 일시적 실패 재시도
+                    # ★ (요청) 속도제한(rate limit)으로 보이는 에러는 훨씬 길게 대기 후 재시도 —
+                    #   1초 정도로는 FRED의 rolling-window 제한이 안 풀려서 계속 실패만 반복됐다.
+                    _is_rate_limit = any(k in str(e).lower() for k in
+                                         ('429', 'rate limit', 'too many request', 'quota'))
+                    _wait = retry_wait * (4 ** attempt) if _is_rate_limit else retry_wait
+                    time.sleep(_wait)
                     continue
         if last_err is None:
             ok += 1
@@ -550,12 +574,13 @@ def download_fred_data(start='2020-01-01', api_key='5a586c94ed745a6193f625c0620f
     if not frames:
         return pd.DataFrame()
     raw = pd.DataFrame(frames)
-    biz_idx = pd.bdate_range(start=start, end=pd.Timestamp.today())
+    biz_idx = pd.bdate_range(start=start, end=pd.Timestamp(_kst_now().date()))
     # ★ 룩어헤드 방지 (수정): 원본은 .ffill().bfill()이라 초기 구간에서 미래 값이 과거로
     #   채워지는 look-ahead였음. ffill만 사용하여 실행 시점에 알 수 없는 값은 NaN 유지.
     #   후속 지표 계산 시 NaN이면 지표도 NaN이 되므로 안전.
     fred_df = raw.reindex(biz_idx).ffill()
     fred_df.index.name = 'Date'
+    _FRED_CACHE[_cache_key] = (fred_df.copy(), _kst_now())   # ★ 세션 캐시 저장 — 다음 티커부터는 재사용
     return fred_df
 
 # ════════════════════════════════════════════════════════════════
@@ -14259,6 +14284,10 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.cell.rich_text import CellRichText as _CellRichText, TextBlock as _TextBlock
+from openpyxl.cell.text import InlineFont as _InlineFont
+# ★ (요청) HORIZON_DAYS_LIST 추가지표 발화 시 지표명·net을 빨간 굵게 강조하는 데 쓰는 공용 서식
+_RED_BOLD_FONT = _InlineFont(rFont='Arial', b=True, color='FF0000')
 
 # ★★★ (요청) Colab 서버는 UTC로 동작해서, datetime.now()가 실제 한국 날짜와 다를 수 있다
 #   (UTC 자정 = 한국시간 오전 9시 — 그 전에 실행하면 결과 파일명 날짜가 하루 전 걸로 찍힘,
@@ -14301,9 +14330,10 @@ if _IS_KAGGLE:
 else:
     print(f"  📂 출력 폴더(로컬): {SCRIPT_DIR}  — 실행 종료 후 자동 다운로드됩니다")
 
-# ★ (요청) 모드1 실행 시 엑셀을 '내 드라이브 ensemble 경로'에도 복사 생성 (모드4가 이 폴더를 읽어 재현할 수 있게).
-#   None 이면 미러링 안 함. 먼저 드라이브 마운트 필요. (Kaggle은 드라이브 마운트가 없으므로 비활성)
-ENSEMBLE_MIRROR_DIR = (None if _IS_KAGGLE else '/content/drive/MyDrive/ensemble_analysis')
+# ★★★ (요청) '내 드라이브에 결과 엑셀 생성' 기능 OFF — 자동 드라이브 마운트 승인창이 뜨는
+#   원인이었던 이 미러링 기능을 완전히 끔. 필요해지면 나중에 직접 값을 넣어 다시 켤 수 있음
+#   (예: ENSEMBLE_MIRROR_DIR = '/content/drive/MyDrive/ensemble_analysis').
+ENSEMBLE_MIRROR_DIR = None
 
 def _mirror_to_ensemble(file_paths, *, verbose=True):
     """모드1 산출 엑셀을 ENSEMBLE_MIRROR_DIR 로도 복사 (모드4 재현용 아카이브)."""
@@ -14346,6 +14376,9 @@ except ImportError:
 #                            설정
 # ════════════════════════════════════════════════════════════════
 EVAL_START          = '2025-01-01'
+EVAL_END            = None           # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지 학습.
+                                      #   지정 시 'YYYY-MM-DD'(그 날짜 포함, 이후 데이터는 잘라냄) —
+                                      #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
 
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
@@ -16314,6 +16347,109 @@ def _compute_avg_adverse_for_pool(feat, close, pool_df, is_buy, horizon=1):
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  ★★★ (요청 — 선정 안정화) "우수한 지표는 하루 데이터가 추가돼도 얼추 같게 나와야"
+#  실측(TSLS 7/29 vs 7/30, 하루 차이): 매수풀 겹침이 합집합 대비 47%뿐인데 최종 수익은
+#  468.78% vs 471.32%로 사실상 동일 — 즉 '거의 동점인 풀'이 무수히 많고, 순수 argmax
+#  (최대수익)와 성공률 내림차순 탐욕 선정이 그 동점권에서 아무거나 집는 구조였다.
+#  원인 두 갈래와 대응:
+#   (1) 성공률 정렬 → 탐욕 다양화(상관 중복 제거)의 연쇄: 하루 데이터로 성공률이 미세하게
+#       바뀌면 경계 순위가 뒤집히고, 탐욕 다양화는 앞 순위 하나가 바뀌면 뒤가 연쇄로
+#       뒤바뀐다. → [다중 시점 합의 정렬] 전체 데이터뿐 아니라 '마지막 5일 뺀 것',
+#       '마지막 10일 뺀 것'에서도 성공률 순위를 매겨 평균 순위로 정렬. 오늘과 내일의
+#       실행은 평가 시점 대부분을 공유하므로 순위가 안정된다. 진짜 우수한 지표는 어느
+#       시점에서 봐도 상위 — 마지막 며칠 덕에 반짝 1등인 지표는 자연히 밀린다.
+#   (2) wilson/corr 조합의 순수 argmax: 수익 차이가 0.5%p 수준인 근접동률에서 하루
+#       데이터로 1등이 뒤바뀜. → [근접동률 정준 선택] 최고수익과 STABLE_NEARTIE_EPS
+#       이내인 후보들은 '사실상 동률'로 보고 그리드 앞 순서(정준 순서)를 일관 선택.
+#  두 기능 모두 아래 플래그로 끌 수 있음(끄면 기존 동작 그대로).
+# ══════════════════════════════════════════════════════════════════════
+STABLE_POOL_SELECT = True      # 다중 시점 합의 정렬 사용 여부
+STABLE_POOL_TRIMS = (5, 10)    # 추가 평가 시점: 마지막 k일 제외한 데이터 (기본 5·10일)
+STABLE_NEARTIE_EPS = 0.02      # 누적수익 이 값(=2%p) 이내면 동률로 간주, 그리드 앞순서 선택.
+                               # 0이면 기존 순수 argmax.
+
+
+def _pick_near_tie(cands, eps):
+    """cands=[(key, score), ...] (그리드/정준 순서). 최고점과 eps 이내인 첫 후보의 key 반환.
+       eps<=0이면 순수 argmax(동점 시 앞 순서). 근접동률 정준 선택의 공용 헬퍼."""
+    if not cands:
+        return None
+    best_sc = max(sc for _, sc in cands)
+    if eps is None or eps <= 0:
+        for k, sc in cands:
+            if sc >= best_sc:
+                return k
+        return cands[0][0]
+    for k, sc in cands:
+        if sc >= best_sc - eps:
+            return k
+    return cands[0][0]
+
+
+def _stable_consensus_reorder(feat, close_arr, pool_all, is_buy, horizon):
+    """★ 다중 시점 합의 정렬 — pool_all(성공률 내림차순 정렬 상태)을 '전체 / 마지막 5일 제외 /
+       마지막 10일 제외' 각 시점의 성공률 순위 평균으로 재정렬해 반환.
+       각 시점 내 동률은 기존(전체 데이터 성공률) 순서를 유지(안정 정렬)하므로,
+       기능을 켜도 '어느 시점에서 봐도 같은 순위'라면 결과가 기존과 동일하다."""
+    g = globals()
+    if not g.get('STABLE_POOL_SELECT', False):
+        return pool_all
+    if pool_all is None or len(pool_all) <= 1:
+        return pool_all
+    trims = tuple(g.get('STABLE_POOL_TRIMS', (5, 10)) or ())
+    n = len(close_arr)
+    views = [0] + [int(k) for k in trims if int(k) > 0 and (n - int(k)) >= 30]
+    if len(views) <= 1:
+        return pool_all
+    m_rows = len(pool_all)
+    # 행별 신호 배열은 한 번만 계산해 모든 시점에서 재사용
+    sig_list = []
+    for _, row in pool_all.iterrows():
+        try:
+            sig_list.append(_to_signal_array(feat, row).astype(np.uint8))
+        except Exception:
+            sig_list.append(None)
+    rank_sum = np.zeros(m_rows)
+    row_limits = []
+    for _, row in pool_all.iterrows():
+        _lv = row.get('sel_limit', None)
+        if _lv is None or (isinstance(_lv, float) and np.isnan(_lv)):
+            _lv = row.get('dd_limit', 0.01)
+        try:
+            row_limits.append(float(_lv))
+        except Exception:
+            row_limits.append(0.01)
+    for k in views:
+        m = n - k
+        succ = np.full(m_rows, -1.0)
+        for i in range(m_rows):
+            sig = sig_list[i]
+            if sig is None:
+                continue
+            hit, ev = _hit_flags_cached(close_arr[:m], int(horizon), row_limits[i],
+                                        1 if is_buy else 0, 0)
+            msk = (sig[:m] > 0) & (ev > 0)
+            cnt = int(msk.sum())
+            if cnt >= 1:
+                succ[i] = float(hit[msk].mean())
+        order = np.argsort(-succ, kind='mergesort')   # 동률은 입력(전체 성공률) 순서 유지
+        r = np.empty(m_rows)
+        r[order] = np.arange(m_rows)
+        rank_sum += r
+    pool = pool_all.copy()
+    pool['_stable_rank'] = rank_sum
+    _sort_cols = ['_stable_rank']
+    _asc = [True]
+    if 'success_rate' in pool.columns:
+        _sort_cols.append('success_rate'); _asc.append(False)
+    if 'n_signals' in pool.columns:
+        _sort_cols.append('n_signals'); _asc.append(False)
+    pool = (pool.sort_values(_sort_cols, ascending=_asc, kind='mergesort')
+                .drop(columns=['_stable_rank']).reset_index(drop=True))
+    return pool
+
+
 def _rank_pool_by_selection(pool_df, is_buy, *, dd_limit=0.01, verbose=False):
     """★ [SEL-1/2/4] 풀을 개선된 정렬 기준으로 재정렬.
        POOL_RANK_BY: 'success' | 'expected' | 'wilson' | 'skill'
@@ -16415,6 +16551,15 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         allp = allp.drop_duplicates(['indicator', 'threshold'], keep='first').reset_index(drop=True)
         return allp
     buy_all = _comb(bparts); sell_all = _comb(sparts)
+    # ★★★ (요청 — 선정 안정화) 탐욕 다양화에 들어가는 '순서' 자체를 다중 시점 합의로
+    #   안정화. 하루 데이터 추가로 경계 순위가 뒤집혀 다양화가 연쇄로 뒤바뀌는 문제 대응.
+    if globals().get('STABLE_POOL_SELECT', False):
+        try:
+            _carr = pd.Series(close).reindex(feat.index).values.astype(np.float64)
+            buy_all = _stable_consensus_reorder(feat, _carr, buy_all, True, horizon)
+            sell_all = _stable_consensus_reorder(feat, _carr, sell_all, False, horizon)
+        except Exception as _ste:
+            print(f"    ⚠ 다중시점 합의 정렬 실패(기존 성공률 정렬 유지): {_ste}")
     # ★ 상관 다변화 (수정전과 동일 기준) — 고성공 지표는 다 남기되 중복 상관만 제거
     _tn = int(globals().get('TOP_N_POOL', globals().get('MAX_POOL', 100)) or 100)
     _cl = float(corr_limit if corr_limit is not None else (globals().get('STAGE_CORR_LIMIT') or [0.2])[0])
@@ -16479,26 +16624,40 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
                                     compute_zero_pool=False)   # ★ 탐색 후보 비교용 — full_cum만 씀, 카운트0 무관
         _score_cache[_ck] = (_cb, _cs, (_nsd['full_cum'] if _nsd else -1e18))
         return _score_cache[_ck]
-    _cl0 = _cls[0]; _best_wz = _wzs[0]; _wz_sc = -1e18
+    _eps = float(globals().get('STABLE_NEARTIE_EPS', 0.0) or 0.0)
+    _cl0 = _cls[0]
+    # ── wilson 단계: 전 후보 점수 수집 → 근접동률 정준 선택 ──
+    _wz_cands = []
     for _wz in _wzs:
         _cb, _cs, _sc = _score(_wz, _cl0)
         _np = _cb['indicator'].nunique() if _cb is not None else 0
         _ns = _cs['indicator'].nunique() if _cs is not None else 0
-        print(f"    [wilson={_wz}, corr={_cl0}] 전체수익 {_sc*100:+8.2f}% | 매수{_np}/매도{_ns}"
-              f"{'  ★최고' if _sc > _wz_sc else ''}")
-        if _sc > _wz_sc: _wz_sc = _sc; _best_wz = _wz
-    print(f"    → 최고 wilson = {_best_wz} (전체수익 {_wz_sc*100:+.2f}%)")
-    _best = None; _best_sc = -1e18; _bcl = _cls[0]
+        _wz_cands.append((_wz, _sc))
+        print(f"    [wilson={_wz}, corr={_cl0}] 전체수익 {_sc*100:+8.2f}% | 매수{_np}/매도{_ns}")
+    _best_wz = _pick_near_tie(_wz_cands, _eps)
+    _wz_sc = dict(_wz_cands)[_best_wz]
+    _wz_max = max(sc for _, sc in _wz_cands)
+    _tie_note = (f" (최고 {_wz_max*100:+.2f}%와 {abs(_wz_max-_wz_sc)*100:.2f}%p 이내 동률 → 정준 선택)"
+                 if _eps > 0 and _wz_sc < _wz_max else "")
+    print(f"    → 최고 wilson = {_best_wz} (전체수익 {_wz_sc*100:+.2f}%){_tie_note}")
+    # ── corr 단계: 동일하게 근접동률 정준 선택 ──
     _shown = {(round(float(_best_wz), 4), round(float(_cl0), 4))}
+    _cl_cands = []
     for _cl in _cls:
         _cb, _cs, _sc = _score(_best_wz, _cl)
         _np = _cb['indicator'].nunique() if _cb is not None else 0
         _ns = _cs['indicator'].nunique() if _cs is not None else 0
+        _cl_cands.append((_cl, _sc))
         if (round(float(_best_wz), 4), round(float(_cl), 4)) not in _shown:
-            print(f"    [wilson={_best_wz}, corr={_cl}] 전체수익 {_sc*100:+8.2f}% | 매수{_np}/매도{_ns}"
-                  f"{'  ★최고' if _sc > _best_sc else ''}")
+            print(f"    [wilson={_best_wz}, corr={_cl}] 전체수익 {_sc*100:+8.2f}% | 매수{_np}/매도{_ns}")
             _shown.add((round(float(_best_wz), 4), round(float(_cl), 4)))
-        if _sc > _best_sc: _best_sc = _sc; _best = (_cb, _cs); _bcl = _cl
+    _bcl = _pick_near_tie(_cl_cands, _eps)
+    _cb_f, _cs_f, _best_sc = _score(_best_wz, _bcl)   # 캐시에서 즉시 반환
+    _cl_max = max(sc for _, sc in _cl_cands)
+    if _eps > 0 and _best_sc < _cl_max:
+        print(f"    → corr={_bcl} 정준 선택 (최고 {_cl_max*100:+.2f}%와 "
+              f"{abs(_cl_max-_best_sc)*100:.2f}%p 이내 동률)")
+    _best = (_cb_f, _cs_f) if (_cb_f is not None and _cs_f is not None) else None
     if _best is not None:
         # ★ (요청) 최종 카운트 풀에도 성공률 컷 + 최소신호수 컷(90%+면 8개로 완화) 재적용.
         #   다중임계 병합·상관 다변화 과정에서 (a)컷 미만 성공률, (b)소표본(신호 몇 개뿐이라
@@ -21323,14 +21482,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             return bool(pool is not None and (('oos_ic' in pool.columns) or ('ic' in pool.columns)))
 
         def _build_named_sigs(pool):
-            """_build_sigs와 동일하되 (지표명, 성공률, 가중신호배열) 리스트로 반환 —
-               상위 n개 절단·중복 maximum 처리 방식을 카운트 계산과 정확히 일치시킴."""
-            out = []  # [(indicator, success_rate, weighted_sig_array)]
+            """_build_sigs와 동일하되 (지표명, 성공률, 가중신호배열, horizon) 리스트로 반환 —
+               상위 n개 절단·중복 maximum 처리 방식을 카운트 계산과 정확히 일치시킴.
+               ★ (요청) horizon: HORIZON_DAYS_LIST로 추가된(주 호라이즌이 아닌) 지표면 그 값,
+               아니면 None(주 호라이즌 지표) — 공식 텍스트에서 강조 표시하는 데 사용."""
+            out = []  # [(indicator, success_rate, weighted_sig_array, horizon)]
             if pool is None or len(pool) == 0:
                 return out
+            _has_hz_col = 'horizon' in pool.columns
             if _multi_bt and ('indicator' in pool.columns) and pool['indicator'].duplicated().any():
                 for _ind, grp in pool.groupby('indicator', sort=False):
                     arr = np.zeros(len(feat)); _sr = grp.iloc[0].get('success_rate', None)
+                    _hz = grp.iloc[0].get('horizon', None) if _has_hz_col else None
                     _best_sr_at = -1.0
                     for _, row in grp.iterrows():
                         s = _sig_arr(row); w = _wt_of_bt(row)
@@ -21339,11 +21502,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         _sv = row.get('success_rate', None)
                         if _sv is not None and not pd.isna(_sv) and float(_sv) > _best_sr_at:
                             _best_sr_at = float(_sv); _sr = _sv
-                    out.append((str(_ind), _sr, arr))
+                    out.append((str(_ind), _sr, arr, _hz))
             else:
                 for _, row in pool.iterrows():
+                    _hz = row.get('horizon', None) if _has_hz_col else None
                     out.append((str(row.get('indicator', '')), row.get('success_rate', None),
-                                _wt_of_bt(row) * _sig_arr(row)))
+                                _wt_of_bt(row) * _sig_arr(row), _hz))
             return out
 
         # 각 풀의 명명된 신호 배열을 미리 계산 (성능: 지표당 1회)
@@ -21362,25 +21526,42 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
         def _formula_at(named_list, day_idx, is_ic):
             """day_idx일에 기여>0인 지표를 기여도 내림차순으로 'v(지표, 성공률) + ...' 문자열로.
-               합계도 함께 반환 → 실제 카운트와 대조 가능."""
+               합계도 함께 반환 → 실제 카운트와 대조 가능.
+               ★ (요청) HORIZON_DAYS_LIST로 추가된(주 호라이즌이 아닌) 지표가 그날 발화했으면,
+               (rich_parts, has_h1) 도 반환 — rich_parts는 [(텍스트, 강조여부), ...] 리스트로,
+               강조(True)인 조각은 지표명 부분만 표시할 때 빨간 굵게 렌더링하는 데 쓴다."""
             fired = []
-            for nm, sr, arr in named_list:
+            for entry in named_list:
+                nm, sr, arr = entry[0], entry[1], entry[2]
+                hz = entry[3] if len(entry) > 3 else None
                 if day_idx < len(arr):
                     c = float(arr[day_idx])
                     if c > 1e-9:
-                        fired.append((nm, sr, c))
+                        fired.append((nm, sr, c, hz))
             fired.sort(key=lambda x: -x[2])
-            total = sum(c for _, _, c in fired)
+            total = sum(c for _, _, c, _ in fired)
             if not fired:
-                return total, '카운트0 (발화 지표 없음)'
+                return total, '카운트0 (발화 지표 없음)', [('카운트0 (발화 지표 없음)', False)], False
             parts = []
-            for nm, sr, c in fired:
+            rich_parts = []
+            has_h1 = False
+            for idx_f, (nm, sr, c, hz) in enumerate(fired):
                 if sr is not None and not pd.isna(sr):
                     _srtxt = (f"|OOS IC| {float(sr):.3f}" if is_ic else f"성공률 {float(sr)*100:.0f}%")
                 else:
                     _srtxt = '-'
-                parts.append(f"{c:.2f}({str(nm)[:28]}, {_srtxt})")
-            return total, ' + '.join(parts)
+                _nm_disp = str(nm)[:28]
+                _is_h1 = (hz is not None and not pd.isna(hz) and int(hz) == 1)
+                if _is_h1:
+                    has_h1 = True
+                parts.append(f"{c:.2f}({_nm_disp}, {_srtxt})")
+                sep = ' + ' if idx_f > 0 else ''
+                if sep:
+                    rich_parts.append((sep, False))
+                rich_parts.append((f"{c:.2f}(", False))
+                rich_parts.append((_nm_disp, _is_h1))          # ★ 지표명만 강조 대상
+                rich_parts.append((f", {_srtxt})", False))
+            return total, ' + '.join(parts), rich_parts, has_h1
 
 
         _ltxt = (f'/L({_L_bt:.3f})' if _L_bt is not None else '')
@@ -21519,23 +21700,38 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if _is_zero_day and _use_zero_disp:
                 if _zero_tier == 2 and _has_tier2_separate:
                     # 3단계까지 갔지만 이 날은 2단계(노랑)에서 해결된 날 → 별도 보관한 tier2 풀 사용
-                    _fb_sum, _fb_txt = _formula_at(_zbuy2_named, i, False)
-                    _fs_sum, _fs_txt = _formula_at(_zsell2_named, i, False)
+                    _fb_sum, _fb_txt, _fb_rich, _fb_h1 = _formula_at(_zbuy2_named, i, False)
+                    _fs_sum, _fs_txt, _fs_rich, _fs_h1 = _formula_at(_zsell2_named, i, False)
                 else:
                     # 캐스케이드가 '최종 도달한' 풀(2단계에서 멈췄으면 노랑, 3단계까지 갔으면 주황) 사용
-                    _fb_sum, _fb_txt = _formula_at(_zbuy_named, i, False)
-                    _fs_sum, _fs_txt = _formula_at(_zsell_named, i, False)
+                    _fb_sum, _fb_txt, _fb_rich, _fb_h1 = _formula_at(_zbuy_named, i, False)
+                    _fs_sum, _fs_txt, _fs_rich, _fs_h1 = _formula_at(_zsell_named, i, False)
             else:
-                _fb_sum, _fb_txt = _formula_at(_buy_named, i, _buy_is_ic)
-                _fs_sum, _fs_txt = _formula_at(_sell_named, i, _sell_is_ic)
+                _fb_sum, _fb_txt, _fb_rich, _fb_h1 = _formula_at(_buy_named, i, _buy_is_ic)
+                _fs_sum, _fs_txt, _fs_rich, _fs_h1 = _formula_at(_sell_named, i, _sell_is_ic)
             # 표시 카운트와 공식 합계가 어긋나면(부동소수 오차 넘어) 뒤에 실제카운트 병기 → 추적 용이
             _bc_show = round(_bc_disp, 2); _sc_show = round(_sc_disp, 2)
             _bmark = '' if abs(_fb_sum - _bc_disp) < 0.02 else f" [실제 {_bc_show}]"
             _smark = '' if abs(_fs_sum - _sc_disp) < 0.02 else f" [실제 {_sc_show}]"
-            ws.cell(r, 18).value = f"[합 {_fb_sum:.2f}]{_bmark} = {_fb_txt}"
-            ws.cell(r, 19).value = f"[합 {_fs_sum:.2f}]{_smark} = {_fs_txt}"
+            _b_prefix = f"[합 {_fb_sum:.2f}]{_bmark} = "
+            _s_prefix = f"[합 {_fs_sum:.2f}]{_smark} = "
+            # ★★★ (요청) HORIZON_DAYS_LIST로 추가된 지표(주 호라이즌이 아닌 지표)가 그날 발화했으면
+            #   지표명 부분만 빨간 굵게 — CellRichText로 그 조각만 서식 적용, 없으면 기존처럼 평문.
+            if _fb_h1:
+                ws.cell(r, 18).value = _CellRichText([_b_prefix] + [
+                    (_TextBlock(_RED_BOLD_FONT, t) if hl else t) for t, hl in _fb_rich])
+            else:
+                ws.cell(r, 18).value = _b_prefix + _fb_txt
+            if _fs_h1:
+                ws.cell(r, 19).value = _CellRichText([_s_prefix] + [
+                    (_TextBlock(_RED_BOLD_FONT, t) if hl else t) for t, hl in _fs_rich])
+            else:
+                ws.cell(r, 19).value = _s_prefix + _fs_txt
             ws.cell(r, 18).alignment = Alignment(vertical='center', wrap_text=False)
             ws.cell(r, 19).alignment = Alignment(vertical='center', wrap_text=False)
+            # ★ (요청) 그날 net에 HORIZON_DAYS_LIST 추가지표가 기여했으면 net 셀도 빨간 굵게
+            if _fb_h1 or _fs_h1:
+                ws.cell(r, 14).font = Font(bold=True, color='FF0000')
             # ★ 카운트0 별도풀 사용일 = 노랑(2단계, 성공률70-80%) / 주황(3단계, 나머지) (요청)
             if _is_zero_day:
                 _fill_z = _ORG if _zero_tier == 3 else _YEL
@@ -21838,23 +22034,30 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 lbp = (round(float(_price[last_buy]), 2) if last_buy is not None else '-')
                 lsp = (round(float(_price[last_sell]), 2) if last_sell is not None else '-')
 
-                # ★ 매수·매도 정확도 (요청) — 신호일 t 판정: net[t] vs K/L → 다음날 t+1의 return.
-                #   매수 정확 = net[t]≥K일 때 r[t+1]>0 (매수했는데 다음날 상승 = 맞음)
-                #   매도 정확 = net[t]≤L일 때 r[t+1]<0 (매도했는데 다음날 하락 = 맞음)
-                #   무포지션·중립(L<net<K) 상태는 미판정 (분모 제외).
+                # ★★★ 버그 수정 (요청) — 이전엔 '신호일 t의 net vs K/L → 바로 다음날(t+1)
+                #   수익률이 양/음인지'만 봤다. 이건 HORIZON_DAYS(며칠 이내 목표% 도달)를
+                #   전혀 반영 안 하고, 방향만 맞으면(단 0.01%만 올라도) '정확'으로 쳐서 시스템
+                #   전체가 실제로 최적화하는 기준(HORIZON_DAYS일 이내 dd_limit/ru_limit% 이상
+                #   도달)과 완전히 다른, 훨씬 관대한 별개의 지표였다(실측 확인). '일별 백테스트'
+                #   요약에서 쓰는 것과 동일한 정답 기준(_compute_safe_arrays)을 그대로 재사용해
+                #   시스템 전체와 일관되게 맞춘다 — 매수정확도 = net≥K인 날 중 실제로 그
+                #   HORIZON_DAYS 이내에 +dd_limit% 이상 올랐던(=매수 정답) 비율.
                 buy_acc = sell_acc = None
                 n_buy_sig = n_sell_sig = 0
                 buy_hit = sell_hit = 0
-                if K is not None and L is not None and len(_net) >= 2 and len(_rr) >= 2:
-                    # net[t]와 r[t+1] 정렬. 마지막 net는 미래 r 없어 스킵.
-                    _n = min(len(_net), len(_rr) - 1)
+                if K is not None and L is not None and len(_net) >= 2 and len(_price) >= 2:
+                    _safe_buy_kl, _safe_sell_kl, _ev_kl = _compute_safe_arrays(
+                        _price.astype(np.float64), int(horizon), float(dd_limit), float(ru_limit))
+                    _n = min(len(_net), len(_safe_buy_kl))
                     for t in range(_n):
+                        if _ev_kl[t] == 0:
+                            continue
                         if _net[t] >= K:                              # 매수/보유 신호
                             n_buy_sig += 1
-                            if _rr[t + 1] > 0: buy_hit += 1
+                            if _safe_buy_kl[t] == 1: buy_hit += 1
                         elif _net[t] <= L:                             # 매도/현금 신호
                             n_sell_sig += 1
-                            if _rr[t + 1] < 0: sell_hit += 1
+                            if _safe_sell_kl[t] == 1: sell_hit += 1
                     if n_buy_sig  > 0: buy_acc  = buy_hit  / n_buy_sig  * 100
                     if n_sell_sig > 0: sell_acc = sell_hit / n_sell_sig * 100
                 return nt, wr, lb, lbp, ls, lsp, held_max_dd, buy_acc, sell_acc, n_buy_sig, n_sell_sig
@@ -21996,18 +22199,24 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if _dd < held_max_dd: held_max_dd = _dd
             nt = len(tr)
             wr = (n_closed_win / n_closed * 100) if n_closed else 0.0
+            # ★★★ 버그 수정 (요청) — KL 순신호 시트와 동일한 문제: 이전엔 '다음날(t+1) 단순
+            #   방향'만 봐서 HORIZON_DAYS/dd_limit·ru_limit를 전혀 반영 안 했다. 시스템 전체와
+            #   일관되게 _compute_safe_arrays(같은 정답 기준)로 통일.
             buy_acc = sell_acc = None; nb_s = ns_s = 0; bh = sh = 0
-            _nn = min(len(_znet), len(_zrr) - 1)
-            for t in range(_nn):
-                if not _zmask_mn[t]: continue      # 이 단계가 담당하는 날의 신호만 정확도 판정
-                if _znet[t] >= m:
-                    nb_s += 1
-                    if _zrr[t+1] > 0: bh += 1
-                elif _znet[t] <= nn:
-                    ns_s += 1
-                    if _zrr[t+1] < 0: sh += 1
-            if nb_s > 0: buy_acc = bh / nb_s * 100
-            if ns_s > 0: sell_acc = sh / ns_s * 100
+            if len(_znet) >= 2 and len(_zprice) >= 2:
+                _safe_buy_mn, _safe_sell_mn, _ev_mn = _compute_safe_arrays(
+                    _zprice.astype(np.float64), int(horizon), float(dd_limit), float(ru_limit))
+                _nn = min(len(_znet), len(_safe_buy_mn))
+                for t in range(_nn):
+                    if not _zmask_mn[t] or _ev_mn[t] == 0: continue   # 이 단계가 담당하는 날의 신호만 정확도 판정
+                    if _znet[t] >= m:
+                        nb_s += 1
+                        if _safe_buy_mn[t] == 1: bh += 1
+                    elif _znet[t] <= nn:
+                        ns_s += 1
+                        if _safe_sell_mn[t] == 1: sh += 1
+                if nb_s > 0: buy_acc = bh / nb_s * 100
+                if ns_s > 0: sell_acc = sh / ns_s * 100
             lb = (pd.Timestamp(_zdates[last_buy]).strftime('%Y-%m-%d') if last_buy is not None else '-')
             ls = (pd.Timestamp(_zdates[last_sell]).strftime('%Y-%m-%d') if last_sell is not None else '-')
             lbp = (round(float(_zprice[last_buy]), 2) if last_buy is not None else '-')
@@ -22822,6 +23031,7 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
 
 
 def run_ensemble_search(*, eval_start=EVAL_START,
+                         eval_end=EVAL_END,
                          horizon=HORIZON_DAYS,
                          dd_limit=DRAWDOWN_LIMIT_BUY,
                          ru_limit=RUNUP_LIMIT_SELL,
@@ -22904,6 +23114,15 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     feat, close, ticker = _resolve_data()
     mask = feat.index >= pd.Timestamp(eval_start)
     feat = feat.loc[mask]
+    # ★★★ (요청) EVAL_END — None이면 기존대로 최신 날짜까지, 지정하면 그 날짜(포함)까지만
+    #   학습/평가에 사용. download_data는 그대로 최신까지 받아오고(다른 로직 영향 없음),
+    #   여기서 feat만 뒤쪽을 잘라내는 방식이라 EVAL_START와 완전히 대칭적으로 동작.
+    if eval_end is not None:
+        _eval_end_ts = pd.Timestamp(eval_end).normalize() + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+        feat = feat.loc[feat.index <= _eval_end_ts]
+        if len(feat) == 0:
+            raise ValueError(f"eval_end='{eval_end}'가 eval_start='{eval_start}'보다 앞서거나, "
+                             f"그 구간에 거래일 데이터가 없습니다.")
     close = close.reindex(feat.index)
     # ★ 거래하지 않는 날(공휴일 등 종가 NaN) 제거 — ffill로 가짜 변동 만들지 않음(요청).
     #   여기서 한 번 제거하면 anchor·grid·daily 모든 단계가 같은 길이의 거래일만 사용
@@ -23768,7 +23987,12 @@ def staged_meta_tune(*, base_meta_grid=None,
         try:
             _feat_v, _close_v, _tk_v = _resolve_data()
             _mask_v = _feat_v.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
-            _feat_v = _feat_v.loc[_mask_v]; _close_v = _close_v.reindex(_feat_v.index)
+            _feat_v = _feat_v.loc[_mask_v]
+            _eval_end_v = run_kwargs.get('eval_end', EVAL_END)   # ★ (요청) 검증 구간도 동일하게 상한 적용
+            if _eval_end_v is not None:
+                _end_ts_v = pd.Timestamp(_eval_end_v).normalize() + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+                _feat_v = _feat_v.loc[_feat_v.index <= _end_ts_v]
+            _close_v = _close_v.reindex(_feat_v.index)
             _valid_v = _close_v.notna()
             _feat_v = _feat_v[_valid_v.values]; _close_v = _close_v[_valid_v.values]
             # 메타조합별 풀 맵 (wz,pct_low,pct_high,corr) → (buy_pool, sell_pool)
@@ -23866,7 +24090,12 @@ def staged_meta_tune(*, base_meta_grid=None,
                 _bpC, _spC = _poolsC
                 _ffC, _ccC, _tkC = _resolve_data()
                 _mC = _ffC.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
-                _ffC = _ffC.loc[_mC]; _ccC = _ccC.reindex(_ffC.index)
+                _ffC = _ffC.loc[_mC]
+                _eval_end_C = run_kwargs.get('eval_end', EVAL_END)   # ★ (요청) 여기도 동일하게 상한 적용
+                if _eval_end_C is not None:
+                    _end_ts_C = pd.Timestamp(_eval_end_C).normalize() + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+                    _ffC = _ffC.loc[_ffC.index <= _end_ts_C]
+                _ccC = _ccC.reindex(_ffC.index)
                 _vmC = _ccC.notna(); _ffC = _ffC[_vmC.values]; _ccC = _ccC[_vmC.values]
                 _abdC, _asdC = auto_compute_anchor_dates(
                     _ffC.index, _ccC, window=globals().get('AUTO_ANCHOR_WINDOW',1),
@@ -26067,7 +26296,11 @@ def _auto_download_excels(file_paths, *, verbose=True):
             is_colab = False
 
     if is_colab:
-        for fp in existing:
+        # ★★★ (요청) '가끔 자동다운로드가 안 되는' 문제의 유력한 원인 — 여러 파일을 연속으로
+        #   files.download() 호출하면(간격 없이) 브라우저가 다운로드 요청을 처리하는 속도를
+        #   못 따라가 일부를 조용히 놓치는 게 Colab에서 잘 알려진 현상이다. 파일이 2개 이상이면
+        #   각 다운로드 사이에 짧게 텀을 둬서 브라우저가 각각을 확실히 처리하게 한다.
+        for _i_dl, fp in enumerate(existing):
             try:
                 files.download(fp)
                 g['_DOWNLOAD_TRIGGERED'].add(os.path.abspath(fp))   # ★ 중복 방지용 기록
@@ -26075,6 +26308,8 @@ def _auto_download_excels(file_paths, *, verbose=True):
                     print(f"     📥 다운로드 시작: {fp}")
             except Exception as e:
                 print(f"     ⚠ 다운로드 실패 ({fp}): {e}")
+            if _i_dl < len(existing) - 1:
+                time.sleep(1.5)
         if verbose:
             print(f"  ✓ Colab 다운로드 트리거 완료\n")
     else:
@@ -27115,20 +27350,136 @@ def main():
     return made
 
 
-def get_generated_files():
-    """이번 실행에서 만든 엑셀 파일 경로 목록 (노트북 셀에서 직접 다운로드용)."""
-    return list(globals().get('_GENERATED_FILES', []))
+def upload_to_kaggle_dataset(file_paths=None, dataset_slug=None, dataset_title=None, *, verbose=True):
+    """★★★ (요청) Kaggle은 자동 브라우저 다운로드가 안 되고, 세션이 끊기면(런타임 재시작 등)
+       /kaggle/working의 파일도 그 실행이 정식으로 안 끝났으면 Output 탭에 안 남을 수 있다.
+       그래서 결과 엑셀들을 노트북 런타임과 완전히 무관한 '내 Kaggle Dataset'에 직접 올려서
+       영구 보관한다 — 이후 언제든 kaggle.com/datasets/<내계정>/<슬러그> 에서 다운로드 가능,
+       또는 다른 Kaggle 노트북에서 입력 데이터로 바로 붙여 쓸 수도 있다.
+
+       ★ 사전 준비 (최초 1회만):
+         1) kaggle.com/settings → API 섹션 → 'Create New Token' → kaggle.json 다운로드
+            (파일 안에 {"username": "...", "key": "..."} 형태로 들어있음)
+         2) 이 노트북 우측 Add-ons → Secrets 에 두 개 등록:
+            - KAGGLE_USERNAME = kaggle.json의 username 값
+            - KAGGLE_KEY      = kaggle.json의 key 값
+
+       사용법:
+         upload_to_kaggle_dataset()                       # 이번 실행에서 생성된 파일 전부 업로드
+         upload_to_kaggle_dataset(dataset_slug='afrm-btsg-results')  # 슬러그(=URL 일부) 직접 지정
+         upload_to_kaggle_dataset(['/kaggle/working/....xlsx'])      # 파일 직접 지정
+
+       처음 호출이면 새 Dataset을 만들고, 같은 슬러그로 다시 호출하면 새 버전으로 갱신한다
+       (기존 파일은 안 지워지고 버전이 쌓임 — Kaggle Dataset 자체가 버전 관리를 지원).
+    """
+    if not _IS_KAGGLE:
+        print("  ⚠ Kaggle 환경이 아니라서 이 기능은 필요 없습니다 (Colab은 자동 다운로드가 됩니다)")
+        return False
+
+    file_paths = file_paths or list(globals().get('_GENERATED_FILES', []))
+    file_paths = [fp for fp in file_paths if fp and os.path.exists(fp)]
+    if not file_paths:
+        print("  ⚠ 업로드할 파일이 없습니다 (file_paths 직접 지정하거나, 먼저 결과를 생성하세요)")
+        return False
+
+    # ── 1) 자격증명 확보 (Kaggle Secrets → 환경변수로 주입) ──
+    try:
+        from kaggle_secrets import UserSecretsClient
+        _sec = UserSecretsClient()
+        _username = _sec.get_secret('KAGGLE_USERNAME')
+        _key = _sec.get_secret('KAGGLE_KEY')
+    except Exception as e:
+        print(f"  ✗ Kaggle Secrets에서 KAGGLE_USERNAME/KAGGLE_KEY를 읽지 못했습니다: {e}")
+        print("    설정 방법: kaggle.com/settings에서 'Create New Token'으로 kaggle.json 발급 →")
+        print("    이 노트북 우측 Add-ons → Secrets 에 KAGGLE_USERNAME / KAGGLE_KEY 로 각각 등록")
+        return False
+    if not _username or not _key:
+        print("  ✗ KAGGLE_USERNAME 또는 KAGGLE_KEY 시크릿 값이 비어있습니다")
+        return False
+    os.environ['KAGGLE_USERNAME'] = _username
+    os.environ['KAGGLE_KEY'] = _key
+
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+    except ImportError:
+        print("  ⚠ kaggle 패키지 미설치 → pip install kaggle 후 재시도하세요")
+        return False
+
+    try:
+        _api = KaggleApi()
+        _api.authenticate()
+    except SystemExit:
+        print("  ✗ Kaggle 인증 실패 — KAGGLE_USERNAME/KAGGLE_KEY 값을 다시 확인하세요")
+        return False
+    except Exception as e:
+        print(f"  ✗ Kaggle 인증 실패: {e}")
+        return False
+
+    # ── 2) 업로드용 임시 폴더에 파일 복사 + 메타데이터 작성 ──
+    import shutil, tempfile, json as _json_up
+    _upload_dir = tempfile.mkdtemp(prefix='kaggle_ds_upload_')
+    try:
+        for fp in file_paths:
+            shutil.copy2(fp, os.path.join(_upload_dir, os.path.basename(fp)))
+
+        _slug = dataset_slug or f"ensemble-results-{_kst_now().strftime('%Y%m%d')}"
+        _title = dataset_title or _slug
+        _full_ref = f"{_username}/{_slug}"
+        with open(os.path.join(_upload_dir, 'dataset-metadata.json'), 'w') as f:
+            _json_up.dump({"title": _title, "id": _full_ref, "licenses": [{"name": "CC0-1.0"}]}, f)
+
+        # ── 3) 신규 생성 시도 → 이미 있으면(재실행) 새 버전으로 업데이트 ──
+        try:
+            _api.dataset_create_new(_upload_dir, public=False, quiet=not verbose, convert_to_csv=False)
+            if verbose:
+                print(f"  ✓ 새 Kaggle Dataset 생성 완료 — https://www.kaggle.com/datasets/{_full_ref}")
+        except Exception as _e_new:
+            if 'already exists' in str(_e_new).lower() or '409' in str(_e_new):
+                _api.dataset_create_version(
+                    _upload_dir, f"업데이트 {_kst_now().strftime('%Y-%m-%d %H:%M')} KST (predictor_core)",
+                    quiet=not verbose, convert_to_csv=False)
+                if verbose:
+                    print(f"  ✓ 기존 Kaggle Dataset에 새 버전 업로드 완료 — "
+                          f"https://www.kaggle.com/datasets/{_full_ref}")
+            else:
+                print(f"  ✗ Kaggle Dataset 업로드 실패: {_e_new}")
+                return False
+        return True
+    finally:
+        shutil.rmtree(_upload_dir, ignore_errors=True)
+
 
 
 # ════════════════════════════════════════════════════════════════
 #   ★★★ (요청) 대기모드 — 스크립트를 실행하면 y/n을 물어보고, y면 '미국 정규장
-#   마감 후 데이터가 안전하게 확보되는 시각'(한국시간)까지 자동으로 기다렸다가
-#   실행을 이어간다. 미국 서머타임(DST)을 zoneinfo로 정확히 반영 — 하드코딩된
-#   "새벽 5시"가 아니라 실제 마감 4:00pm ET를 그때그때 한국시간으로 환산한다.
+#   마감 후 데이터가 안전하게 확정되는 시각'(한국시간)까지 자동으로 기다렸다가
+#   실행을 이어간다. 미국 서머타임(DST)을 zoneinfo로 정확히 반영.
+#
+#   ★★★ (실측 후 수정) 원래 버퍼는 '마감+30분'이었는데, CRM 동일날짜 두 실행(새벽
+#   5:30 vs 밤 21:00) 비교로 공통지표 77개 중 41개의 임계치가 소수점 7자리 수준에서
+#   달라진 걸 확인 — 마감 30분 뒤 야후 데이터는 아직 잠정치(통합 거래량 미확정,
+#   가격 정정 미반영)라서 실행 시각에 따라 결과가 미세하게 달라졌다. 통합 집계·정정은
+#   애프터아워 종료(8:00pm ET)까지 대부분 마무리되므로 기본 버퍼를 4시간(마감 4pm
+#   +4h = 8pm ET, 서머타임 기준 한국 아침 9시)으로 늘렸다.
+#   · FRED의 ICE BofA 신용스프레드 3종(BAMLH0A0HYM2 등)은 해당일 값이 '다음날 미국
+#     아침'(실측: 7:29~9:29am CDT = 한국 21:30~23:30경)에야 게시되므로, 다음 개장
+#     (한국 22:30) 전에는 어느 시각에 돌려도 이 3종은 하루 지연(ffill)이 불가피하다.
+#     매일 같은 시각에 돌리면 일관되므로 재현성 문제는 없다. 그날 값까지 완전히
+#     반영된 결과가 필요하면 한국시간 밤 21:30 이후(가급적 자정 근처)에 실행할 것.
 # ════════════════════════════════════════════════════════════════
-def _next_safe_kst_time(buffer_minutes=30):
-    """다음으로 돌아오는 '미국 정규장 마감(4:00pm ET) + 여유버퍼' 시각을 KST로 반환.
+WAIT_MODE_BUFFER_MIN = 240   # 대기모드 목표 = 미국 장마감(4pm ET) + 이 분(分)만큼 뒤.
+                             # 240분(4h)=애프터아워 종료 시점, 한국 아침 9시(서머타임)/10시(겨울).
+                             # 30으로 되돌리면 예전처럼 '마감+30분'(잠정 데이터 위험) 동작.
+
+
+def _next_safe_kst_time(buffer_minutes=None):
+    """다음으로 돌아오는 '미국 정규장 마감(4:00pm ET) + 확정버퍼' 시각을 KST로 반환.
        주말(마감 자체가 없는 토·일)은 건너뛰고 다음 평일로 이동한다.
+       ★ (수정) 이전 구현은 버퍼를 minute= 필드에 그대로 넣어서 60분 이상이면
+       ValueError로 크래시했다 — timedelta 가산으로 바꿔 임의 버퍼를 지원한다.
+       주말 판정은 '마감이 속한 날'(세션일) 기준으로 하고 버퍼는 그 뒤에 더한다 —
+       버퍼가 자정을 넘겨도(예: 금요일 마감+10시간=토요일 새벽) 엉뚱하게 월요일로
+       건너뛰지 않게 하기 위함.
        ★ 시장 휴장일(추수감사절 등)은 반영하지 않음 — 그런 날은 마감 자체가 없어
        계산상의 '마감 시각'이 실제로는 지나가는 형태가 되지만, 실행 시점의
        download_data() 재시도 로직(배치 내 다른 티커와 비교)이 그 상황도 안전하게
@@ -27136,13 +27487,15 @@ def _next_safe_kst_time(buffer_minutes=30):
     from zoneinfo import ZoneInfo
     ET = ZoneInfo('America/New_York')
     KST = ZoneInfo('Asia/Seoul')
+    if buffer_minutes is None:
+        buffer_minutes = globals().get('WAIT_MODE_BUFFER_MIN', 240)
     now_et = datetime.now(ET)
-    close_et = now_et.replace(hour=16, minute=buffer_minutes, second=0, microsecond=0)
-    if close_et <= now_et:
-        close_et = close_et + timedelta(days=1)
-    while close_et.weekday() >= 5:   # 5=토요일, 6=일요일 → 그날은 마감 없음
-        close_et += timedelta(days=1)
-    return close_et.astimezone(KST)
+    close_base = now_et.replace(hour=16, minute=0, second=0, microsecond=0)   # 세션 마감 4:00pm
+    if close_base + timedelta(minutes=buffer_minutes) <= now_et:
+        close_base = close_base + timedelta(days=1)
+    while close_base.weekday() >= 5:   # 5=토요일, 6=일요일 → 그날은 마감(세션) 없음
+        close_base += timedelta(days=1)
+    return (close_base + timedelta(minutes=buffer_minutes)).astimezone(KST)
 
 
 def _input_with_timeout(prompt, timeout_sec=60):
@@ -27170,16 +27523,20 @@ def _input_with_timeout(prompt, timeout_sec=60):
 
 
 def wait_mode_prompt(check_interval_sec=300, input_timeout_sec=60):
-    """대기모드 y/n을 물어보고, y면 다음 안전 시각까지 대기한다.
-       입력을 받을 수 없거나(비대화형) 응답이 없는 환경에서는 자동으로 'n'(즉시 진행)
-       처리해 멈춰버리는 일이 없게 한다."""
+    """대기모드 y/n을 물어보고, y면(또는 응답이 없으면) 다음 안전 시각까지 대기한다.
+       ★★★ (요청) 응답이 없을 때의 기본값을 '대기 안 함'에서 '대기모드 자동 진입'으로 변경.
+       입력을 받을 수 없는(비대화형) 환경도 동일하게 대기모드로 들어간다 — 명시적으로
+       'n'을 입력했을 때만 대기 없이 바로 진행한다."""
     _ans = _input_with_timeout(
-        f"\n⏳ 대기모드로 실행할까요? 미국 장마감 후 데이터가 안전하게 확보되는 시각까지 "
-        f"자동 대기합니다 ({input_timeout_sec}초 내 미응답 시 대기모드 없이 진행) [y/n]: ",
+        f"\n⏳ 대기모드로 실행할까요? 미국 장마감 후 데이터가 '확정'되는 시각(마감"
+        f"+{globals().get('WAIT_MODE_BUFFER_MIN', 240)//60}시간 — 통합 거래량·정정 반영 완료)까지 "
+        f"자동 대기합니다 ({input_timeout_sec}초 내 미응답 시 자동으로 대기모드 진입) [y/n]: ",
         timeout_sec=input_timeout_sec)
     if _ans is None:
-        return
-    _ans = _ans.strip().lower()
+        print("  ℹ 응답 없음 — 기본값대로 대기모드로 진입합니다. (바로 진행하려면 'n' 입력)")
+        _ans = 'y'
+    else:
+        _ans = _ans.strip().lower()
 
     if _ans not in ('y', 'yes'):
         print("  ℹ 대기모드 사용 안 함 — 바로 진행합니다.")
