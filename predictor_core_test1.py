@@ -16368,21 +16368,33 @@ STABLE_POOL_SELECT = True      # 다중 시점 합의 정렬 사용 여부
 STABLE_POOL_TRIMS = (5, 10)    # 추가 평가 시점: 마지막 k일 제외한 데이터 (기본 5·10일)
 STABLE_NEARTIE_EPS = 0.02      # 누적수익 이 값(=2%p) 이내면 동률로 간주, 그리드 앞순서 선택.
                                # 0이면 기존 순수 argmax.
+STABLE_NEARTIE_REL = 0.05      # ★ 상대 동률폭 — 최고수익의 5% 이내면 동률로 간주(절대치와 max).
+                               #   TSLS처럼 누적수익 ~470%면 2%p 절대폭은 0.4% 상대라 사실상
+                               #   무력했음(실측). 상대폭이 실질적인 동률 흡수 역할을 한다.
 
 
-def _pick_near_tie(cands, eps):
-    """cands=[(key, score), ...] (그리드/정준 순서). 최고점과 eps 이내인 첫 후보의 key 반환.
-       eps<=0이면 순수 argmax(동점 시 앞 순서). 근접동률 정준 선택의 공용 헬퍼."""
+def _near_tie_eff_eps(best_score):
+    """절대(STABLE_NEARTIE_EPS)·상대(STABLE_NEARTIE_REL) 동률폭 중 큰 쪽을 유효 폭으로."""
+    _a = float(globals().get('STABLE_NEARTIE_EPS', 0.0) or 0.0)
+    _r = float(globals().get('STABLE_NEARTIE_REL', 0.0) or 0.0)
+    return max(_a, _r * abs(float(best_score)))
+
+
+def _pick_near_tie(cands, eps, rel=None):
+    """cands=[(key, score), ...] (그리드/정준 순서). 최고점과 유효폭 이내인 첫 후보의 key 반환.
+       유효폭 = max(eps, rel×|최고점|). eps·rel 모두 0이면 순수 argmax(동점 시 앞 순서)."""
     if not cands:
         return None
     best_sc = max(sc for _, sc in cands)
-    if eps is None or eps <= 0:
+    _rel = float(rel) if rel is not None else float(globals().get('STABLE_NEARTIE_REL', 0.0) or 0.0)
+    _eff = max(float(eps or 0.0), _rel * abs(best_sc))
+    if _eff <= 0:
         for k, sc in cands:
             if sc >= best_sc:
                 return k
         return cands[0][0]
     for k, sc in cands:
-        if sc >= best_sc - eps:
+        if sc >= best_sc - _eff:
             return k
     return cands[0][0]
 
@@ -16598,6 +16610,16 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         # [SEL-1/2/4] 최종 정렬
         buy_c  = _rank_pool_by_selection(buy_c,  True,  dd_limit=_limit, verbose=_sel_verbose)
         sell_c = _rank_pool_by_selection(sell_c, False, dd_limit=_limit, verbose=_sel_verbose)
+        # ★★★ (버그수정 — 안정화 무력화) 위 [SEL-1/2/4] 재정렬이 앞서 적용한 '다중시점 합의
+        #   정렬'을 매일 재계산되는 성공률 순서로 도로 덮어써서, 실데이터에서 풀 겹침이
+        #   47%→45%로 사실상 그대로였다(TSLS EVAL_END 스윕 4개 파일 실측). 합의 정렬을
+        #   '마지막' 단계로 한 번 더 적용해 최종 순서(→지표수 절단에 그대로 쓰임)가
+        #   안정되게 한다. 다중시점 순위가 동률인 행들은 안정정렬 특성상 SEL 순서를
+        #   그대로 유지하므로 SEL 선출 규칙과도 충돌하지 않는다.
+        if globals().get('STABLE_POOL_SELECT', False):
+            _carr2 = pd.Series(close).reindex(feat.index).values.astype(np.float64)
+            buy_c  = _stable_consensus_reorder(feat, _carr2, buy_c,  True, horizon)
+            sell_c = _stable_consensus_reorder(feat, _carr2, sell_c, False, horizon)
     except Exception as _rke:
         print(f"    ⚠ 지표 선출 개선 실패(원본 풀 유지): {_rke}")
     return buy_c, sell_c
@@ -16637,8 +16659,9 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
     _best_wz = _pick_near_tie(_wz_cands, _eps)
     _wz_sc = dict(_wz_cands)[_best_wz]
     _wz_max = max(sc for _, sc in _wz_cands)
+    _eps_on = (_eps > 0 or float(globals().get('STABLE_NEARTIE_REL', 0) or 0) > 0)
     _tie_note = (f" (최고 {_wz_max*100:+.2f}%와 {abs(_wz_max-_wz_sc)*100:.2f}%p 이내 동률 → 정준 선택)"
-                 if _eps > 0 and _wz_sc < _wz_max else "")
+                 if _eps_on and _wz_sc < _wz_max else "")
     print(f"    → 최고 wilson = {_best_wz} (전체수익 {_wz_sc*100:+.2f}%){_tie_note}")
     # ── corr 단계: 동일하게 근접동률 정준 선택 ──
     _shown = {(round(float(_best_wz), 4), round(float(_cl0), 4))}
@@ -16654,7 +16677,7 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
     _bcl = _pick_near_tie(_cl_cands, _eps)
     _cb_f, _cs_f, _best_sc = _score(_best_wz, _bcl)   # 캐시에서 즉시 반환
     _cl_max = max(sc for _, sc in _cl_cands)
-    if _eps > 0 and _best_sc < _cl_max:
+    if _eps_on and _best_sc < _cl_max:
         print(f"    → corr={_bcl} 정준 선택 (최고 {_cl_max*100:+.2f}%와 "
               f"{abs(_cl_max-_best_sc)*100:.2f}%p 이내 동률)")
     _best = (_cb_f, _cs_f) if (_cb_f is not None and _cs_f is not None) else None
@@ -19089,6 +19112,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                 ks = (sorted(set(np.linspace(_kl, _kh, max_k_candidates).astype(int).tolist()))
                       if (_kh - _kl) > max_k_candidates else list(range(_kl, _kh + 1)))
             best = None; best_sel = None; table = []
+            _k_cands = []   # ★ (K행, _sel) 그리드 순서 수집 — 동률 정준 선택용
             for K in ks:
                 pos = (net_prev > K).astype(float); pos[0] = 0.0
                 _hr = pos * r
@@ -19101,8 +19125,18 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                 _Kv = (round(float(K), 4) if _net_is_float else int(K))
                 table.append((_Kv, tr, oo, fu, dl, hd, hd_oos))
                 _sel = (oo if (select_by == 'oos' and has_oos and oo is not None) else fu)   # 전체 or OOS 기준
+                _k_cands.append(((_Kv, tr, oo, fu, dl), _sel))
                 if best_sel is None or _sel > best_sel:
                     best_sel = _sel; best = (_Kv, tr, oo, fu, dl)
+            # ★★★ (요청 — K 안정화) 최고점과 유효 동률폭 이내인 K들은 사실상 동률 —
+            #   그리드 앞 순서(K 오름차순 첫 번째)를 정준 선택. EPS·REL=0이면 기존 그대로.
+            if best_sel is not None and _k_cands:
+                _eff_k = _near_tie_eff_eps(best_sel)
+                if _eff_k > 0:
+                    for _row_k, _sel_k in _k_cands:
+                        if _sel_k >= best_sel - _eff_k:
+                            best = _row_k; best_sel = _sel_k
+                            break
             return best, table, (best_sel if best_sel is not None else -1e18), (kmin, kmax)
 
         # ── 지표개수(n_buy, n_sell) 후보 ──
@@ -19116,9 +19150,13 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             nb_list = [nB]; ns_list = [nS]
 
         overall = None
+        _cnt_evals = {}   # ★ (nb,ns) → 최고 sel 점수 — 동률 정준 선택용 수집
         def _eval(nb, ns, ov):
             net_c, nbu, nsu = _net_for(nb, ns)
             best_c, table_c, sel_c, krng = _search_threshold(net_c)
+            _ck = (int(nbu), int(nsu))
+            if _ck not in _cnt_evals or sel_c > _cnt_evals[_ck]:
+                _cnt_evals[_ck] = sel_c
             if ov is None or sel_c > ov['sel']:
                 ov = dict(sel=sel_c, best=best_c, table=table_c, net=net_c,
                           nb=nbu, ns=nsu, krng=krng)
@@ -19140,6 +19178,25 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             for nb in nb_list:
                 for ns in ns_list:
                     overall, _ = _eval(nb, ns, overall)
+
+        # ★★★ (요청 — 지표수 안정화) 탐색된 (n_buy,n_sell) 중 최고점과 '유효 동률폭' 이내인
+        #   후보들은 사실상 동률 — 그중 '가장 적은 개수'(nb 우선, 다음 ns)를 정준 선택한다.
+        #   하루 데이터로 지표수가 69→80→72→82처럼 널뛰던 문제(실측) 대응. 개수가 적을수록
+        #   단순·해석 용이하고, 정렬 안정화와 결합하면 날마다 같은 상위 지표가 유지된다.
+        #   STABLE_NEARTIE_EPS=0 & REL=0이면 기존 argmax 그대로.
+        if search_counts and overall is not None and _cnt_evals:
+            _mx_sel = max(_cnt_evals.values())
+            _eff_c = _near_tie_eff_eps(_mx_sel)
+            if _eff_c > 0:
+                _ties = sorted([k for k, v in _cnt_evals.items() if v >= _mx_sel - _eff_c])
+                _pick = _ties[0]
+                if _pick != (int(overall['nb']), int(overall['ns'])):
+                    _net_p, _nbu_p, _nsu_p = _net_for(_pick[0], _pick[1])
+                    _best_p, _table_p, _sel_p, _krng_p = _search_threshold(_net_p)
+                    overall = dict(sel=_sel_p, best=_best_p, table=_table_p, net=_net_p,
+                                   nb=_nbu_p, ns=_nsu_p, krng=_krng_p)
+                    print(f"    (지표수 안정화) 최고점과 동률폭 이내 {len(_ties)}개 조합 중 "
+                          f"최소 개수 {_pick[0]}/{_pick[1]} 정준 선택")
 
         net = overall['net']; best = overall['best']; table = overall['table']
         n_buy_opt = overall['nb']; n_sell_opt = overall['ns']
@@ -19355,6 +19412,26 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             if mdd_limit is not None and mdd >= -abs(mdd_limit):
                 if best_mdd is None or ret > best_mdd[2]:
                     best_mdd = (K, L, ret, mdd, dl, pos)
+    # ★★★ (요청 — KL★ 안정화) 최고수익과 '유효 동률폭'(절대·상대 중 큰 쪽) 이내인 (K,L)들은
+    #   사실상 동률로 보고 그리드 앞 순서(정준)를 일관 선택 — 하루 데이터로 0.5%p 차 1등이
+    #   뒤바뀌며 K/L이 널뛰던 문제(실측: K 0.000→0.761→0.449→0.701) 대응.
+    #   STABLE_NEARTIE_EPS=0 & STABLE_NEARTIE_REL=0 이면 기존 순수 argmax 그대로.
+    if best_ret is not None and _all:
+        _eff = _near_tie_eff_eps(best_ret[2])
+        if _eff > 0:
+            _max_r = best_ret[2]
+            for (ret, mdd, dl, K, L, pos) in _all:      # _all은 그리드(정준) 순서
+                if ret >= _max_r - _eff:
+                    best_ret = (K, L, ret, mdd, dl, pos)
+                    break
+    if best_mdd is not None and _all and mdd_limit is not None:
+        _effm = _near_tie_eff_eps(best_mdd[2])
+        if _effm > 0:
+            _max_m = best_mdd[2]
+            for (ret, mdd, dl, K, L, pos) in _all:
+                if mdd >= -abs(mdd_limit) and ret >= _max_m - _effm:
+                    best_mdd = (K, L, ret, mdd, dl, pos)
+                    break
     # 상위 (K,L) 조합 순위표 (수익 내림차순, 전부) — 요청: 40개 제한 해제.
     #   메모리 절약: 표시용 지표만 담고 pos 배열은 best_ret/best_mdd만 유지.
     _all.sort(key=lambda x: x[0], reverse=True)
