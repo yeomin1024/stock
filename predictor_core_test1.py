@@ -16534,6 +16534,10 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             return d
         buy_c = _simple_filter(_bdf, '매수')
         sell_c = _simple_filter(_sdf, '매도')
+        # ★★★ (요청) "확인해야 하니 모든 후보 지표 정보 시트로" — 필터 전 원시 평가 결과
+        #   (전체 4700여개 지표-임계 조합) 전체를 저장해뒀다가 write_excel에서 시트로 씀.
+        #   재계산 없이 여기서 이미 나온 결과를 그대로 재사용.
+        globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_bdf, _sdf)
         # avg_adverse는 정보성 컬럼(선정에는 안 씀) — 하위호환을 위해 그대로 채워둠
         try:
             _hz = int(globals().get('HORIZON_DAYS', 1))
@@ -16630,6 +16634,19 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
 
 def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ticker):
     """기존 방식: 1~5% 통합 다중임계 풀 + (wilson×corr) 순차 탐색으로 k순신호 전체수익 최고 조합 선택."""
+    # ★★★ (요청 — 단순화 모드) wilson/corr 그리드를 여러 조합 돌며 비교하는 것 자체가
+    #   "그 외 아무것도 하지 말라"에 어긋남 — select_pool_combined 한 번만 불러서(내부에서
+    #   이미 성공률 컷만 적용) 그 결과를 그대로 쓴다. 비교·재탐색·후처리 재컷 전부 생략.
+    if globals().get('SIMPLE_POOL_MODE', False):
+        _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
+                                        n_thresholds=n_thresholds, horizon=horizon)
+        globals()['_KNET_MULTI_POOL'] = (ticker, _cb, _cs)
+        if _cb is not None and _cs is not None:
+            print(f"    (단순모드) 성공률 컷만 적용된 풀을 그대로 사용 — "
+                  f"매수 {_cb['indicator'].nunique()}지표 / 매도 {_cs['indicator'].nunique()}지표 "
+                  f"(wilson/corr 재탐색·재컷 없음)")
+        return globals()['_KNET_MULTI_POOL']
+
     _limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
     _wzs = list(globals().get('STAGE_WILSON_Z') or [1.95])
     _cls = list(globals().get('STAGE_CORR_LIMIT') or [0.2])
@@ -19143,7 +19160,12 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             return best, table, (best_sel if best_sel is not None else -1e18), (kmin, kmax)
 
         # ── 지표개수(n_buy, n_sell) 후보 ──
-        if search_counts:
+        # ★★★ (요청 — 단순화 모드) 호출부가 뭘 넘기든(search_counts=True 포함) 상관없이,
+        #   여기서 최종적으로 '전체 지표 그대로'로 강제한다 — 이 함수를 어디서 어떻게
+        #   불러도 단순모드에선 개수탐색이 절대 안 켜지도록 방어적으로 막음.
+        if globals().get('SIMPLE_POOL_MODE', False):
+            nb_list = [nB]; ns_list = [nS]
+        elif search_counts:
             def _cand(mx):
                 return list(range(1, int(mx) + 1))   # 1~풀크기(최대 100) 전부 탐색
             nb_list = _cand(nB); ns_list = _cand(nS)
@@ -19256,11 +19278,13 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             _zero_mask = _bc0 & _sc0
             _nz = int(np.sum(_zero_mask))
             if _is_full_run:
-                print(f"  ℹ 카운트0(매수·매도 신호지표 모두 0개)인 날: {_nz}일")
-                if _nz < 5:
-                    print(f"     → 카운트0인 날이 5일 미만 → '카운트0 별도풀'·'mn 순신호' 시트 생략 "
-                          f"(지표수 {n_buy_opt}/{n_sell_opt}가 많아 전부 0인 날이 드묾)")
-            if _is_full_run and _nz >= 5 and compute_zero_pool:
+                if not globals().get('SIMPLE_POOL_MODE', False):
+                    print(f"  ℹ 카운트0(매수·매도 신호지표 모두 0개)인 날: {_nz}일")
+                    if _nz < 5:
+                        print(f"     → 카운트0인 날이 5일 미만 → '카운트0 별도풀'·'mn 순신호' 시트 생략 "
+                              f"(지표수 {n_buy_opt}/{n_sell_opt}가 많아 전부 0인 날이 드묾)")
+            if (_is_full_run and _nz >= 5 and compute_zero_pool
+                    and not globals().get('SIMPLE_POOL_MODE', False)):
                 # ★ 메인풀 KL(K/L) 계산 → 하이브리드 기준으로 전달 (카운트≠0인 날 메인 pos)
                 _main_K = _main_L = None
                 try:
@@ -21035,6 +21059,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                       and len(_mp[1]) > 0 and len(_mp[2]) > 0)
         if _use_multi:
             _mbp, _msp = _mp[1], _mp[2]; _nb = _ns = None; _sc_cnt = True
+            if globals().get('SIMPLE_POOL_MODE', False):
+                # ★★★ (요청 — 단순화 모드) n_buy/n_sell 탐색 자체를 하지 않고 풀 전체를 그대로 사용
+                _nb = len(_mbp); _ns = len(_msp); _sc_cnt = False
+                print(f"  (단순모드) 지표수 탐색 없이 전체 사용: 매수 {_nb} / 매도 {_ns}")
             print(f"  ★ net>K = 합친 다중임계 풀 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행)")
         else:
             _kp = globals().get('_KNET_BEST_POOL')
@@ -21339,7 +21367,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if int(_zd_check.iloc[_ci]['zero_count_day']) == 1:
                         _cached_zero_dates.add(pd.Timestamp(_zd_check.iloc[_ci]['date']).normalize())
         _true_zero_dates = {pd.Timestamp(dts[_i]).normalize() for _i in range(_n_all) if _true_zero_mask[_i]}
-        if _true_zero_dates != _cached_zero_dates and int(np.sum(_true_zero_mask)) >= 5:
+        # ★★★ (요청 — 단순화 모드) 카운트0 캐스케이드(별도풀·mn/op 시트) 전체를 끔 —
+        #   이 블록이 사실상 캐스케이드의 최초 생성 지점이었다(_KNET_ZERO_POOL이 처음엔
+        #   비어있어 항상 '불일치'로 판정돼 재계산이 걸림). 단순모드에선 아예 진입 안 함.
+        if globals().get('SIMPLE_POOL_MODE', False):
+            pass
+        elif _true_zero_dates != _cached_zero_dates and int(np.sum(_true_zero_mask)) >= 5:
             print(f"  ⚠ 캐스케이드 재동기화 — 최종 K/L 기준 실제 카운트0 {len(_true_zero_dates)}일 "
                   f"vs 캐스케이드 캐시 {len(_cached_zero_dates)}일 불일치, 다시 계산")
             try:
@@ -22459,11 +22492,60 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 카운트0 별도풀 시트 작성 실패(무시): {_eze}")
 
+    # ─── 7d-2. ★ (요청) 단순모드 — 전체 후보 지표(필터 전) 정보 시트 ───
+    #   "확인해야 하니 모든 후보 지표에 대해 신호 개수·성공률 등 정보 시트 하나로 정리,
+    #   성공률 높은 순 정렬" — SIMPLE_POOL_MODE에서 select_pool_combined가 저장해둔
+    #   필터 전 원시 평가 결과(전체 지표-임계 조합)를 그대로 시트로 씀.
+    try:
+        _allc = globals().get('_SIMPLE_MODE_ALL_CANDIDATES')
+        if _allc is not None:
+            _abdf, _asdf = _allc
+            ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
+            _min_succ_disp = float(globals().get('SIMPLE_POOL_MIN_SUCCESS', 0.90))
+            ws_all.cell(1, 1).value = (
+                f"{ticker} — 전체 후보 지표-임계 조합 (필터 전, 단순모드). "
+                f"성공률 {_min_succ_disp*100:.0f}% 이상만 실제 K/L 탐색에 사용됨(그 경계는 노랑 표시).")
+            ws_all.cell(1, 1).font = Font(bold=True, size=12)
+            _cols_all = ['방향', '지표', '신호방향', '임계값', '신호개수', '성공개수', '성공률%',
+                        '평균크기', 'wilson점수']
+            _hdr_row = 3
+            for _ci, _cn in enumerate(_cols_all, 1):
+                c = ws_all.cell(_hdr_row, _ci); c.value = _cn
+                c.font = Font(bold=True, color='FFFFFF'); c.fill = PatternFill('solid', fgColor='4472C4')
+            _r_all = _hdr_row
+            _yellow = PatternFill('solid', fgColor='FFF2CC')
+            for _label, _df in (('매수', _abdf), ('매도', _asdf)):
+                if _df is None or len(_df) == 0:
+                    continue
+                _dsort = _df.sort_values('success_rate', ascending=False).reset_index(drop=True)
+                for _i in range(len(_dsort)):
+                    _row = _dsort.iloc[_i]
+                    _r_all += 1
+                    _vals = [_label, str(_row['indicator']), str(_row['direction']),
+                             round(float(_row['threshold']), 6), int(_row['n_signals']),
+                             int(_row['n_success']), round(float(_row['success_rate']) * 100, 2),
+                             round(float(_row.get('avg_extreme', 0.0)), 4),
+                             round(float(_row.get('score', 0.0)), 4)]
+                    for _ci, _v in enumerate(_vals, 1):
+                        ws_all.cell(_r_all, _ci).value = _v
+                    if float(_row['success_rate']) >= _min_succ_disp:
+                        for _ci in range(1, len(_cols_all) + 1):
+                            ws_all.cell(_r_all, _ci).fill = _yellow
+            for _ci, _w in enumerate([6, 30, 8, 11, 9, 9, 9, 10, 10], 1):
+                ws_all.column_dimensions[get_column_letter(_ci)].width = _w
+            ws_all.freeze_panes = f'A{_hdr_row + 1}'
+            print(f"  ✓ 전체 후보 지표 시트 — 매수 {len(_abdf) if _abdf is not None else 0}개 / "
+                  f"매도 {len(_asdf) if _asdf is not None else 0}개 (성공률순 정렬)")
+    except Exception as _eallc:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 전체 후보 지표 시트 작성 실패(무시): {_eallc}")
+
     # ─── 7e. ★ 지표 선출 A/B 검증 (요청) ───
     #   각 개선 flag ON/OFF의 KL 백테스트 성적(전체수익·MDD·보유중하락·거래·승률)을 비교.
     #   SELECTION_AB_VERIFY=False면 건너뜀.
     try:
-        if globals().get('SELECTION_AB_VERIFY', True) and feat is not None and close_full is not None:
+        if (globals().get('SELECTION_AB_VERIFY', True) and feat is not None and close_full is not None
+                and not globals().get('SIMPLE_POOL_MODE', False)):
             _quick = bool(globals().get('SELECTION_AB_QUICK', False))
             _ab = run_selection_ab_verification(feat, close_full, ticker,
                                                  top_n=globals().get('TOP_N_POOL'),
@@ -23110,7 +23192,7 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
     return best_inner, inner_passed_out
 
 
-def run_ensemble_search(*, eval_start=EVAL_START,
+def run_ensemble_search(*, eval_start='__USE_GLOBAL__',
                          eval_end='__USE_GLOBAL__',
                          horizon=HORIZON_DAYS,
                          dd_limit=DRAWDOWN_LIMIT_BUY,
@@ -23191,6 +23273,12 @@ def run_ensemble_search(*, eval_start=EVAL_START,
     # ★★★ (요청 — 버그수정) eval_end도 동일한 sentinel 방식으로 '호출 시점'의 전역 EVAL_END를
     #   읽는다. 이전엔 기본값을 eval_end=EVAL_END로 정의했는데, 파이썬 함수 기본값은 모듈
     #   로드 시점에 한 번만 평가되므로 로드 후 mod.EVAL_END='...'로 바꿔도 반영이 안 됐다.
+    # ★★★ (요청 — 버그수정, EVAL_END와 동일한 문제) eval_start도 같은 sentinel 방식으로
+    #   '호출 시점'의 전역 EVAL_START를 읽는다 — 이전엔 eval_start=EVAL_START가 모듈
+    #   로드 시점에 박제돼, 로드 후 mod.EVAL_START='...'로 바꿔도 반영이 안 됐다.
+    if isinstance(eval_start, str) and eval_start == '__USE_GLOBAL__':
+        eval_start = globals().get('EVAL_START', '2022-01-01')
+
     if isinstance(eval_end, str) and eval_end == '__USE_GLOBAL__':
         eval_end = globals().get('EVAL_END', None)
 
@@ -24076,7 +24164,10 @@ def staged_meta_tune(*, base_meta_grid=None,
     if _do_verify:
         try:
             _feat_v, _close_v, _tk_v = _resolve_data()
-            _mask_v = _feat_v.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
+            _eval_start_v = run_kwargs.get('eval_start', '__USE_GLOBAL__')
+            if isinstance(_eval_start_v, str) and _eval_start_v == '__USE_GLOBAL__':
+                _eval_start_v = globals().get('EVAL_START', '2022-01-01')
+            _mask_v = _feat_v.index >= pd.Timestamp(_eval_start_v)
             _feat_v = _feat_v.loc[_mask_v]
             _eval_end_v = run_kwargs.get('eval_end', '__USE_GLOBAL__')   # ★ (요청) 검증 구간도 동일하게 상한 적용
             if isinstance(_eval_end_v, str) and _eval_end_v == '__USE_GLOBAL__':
@@ -24181,7 +24272,10 @@ def staged_meta_tune(*, base_meta_grid=None,
             if _poolsC is not None:
                 _bpC, _spC = _poolsC
                 _ffC, _ccC, _tkC = _resolve_data()
-                _mC = _ffC.index >= pd.Timestamp(run_kwargs.get('eval_start', EVAL_START))
+                _eval_start_C = run_kwargs.get('eval_start', '__USE_GLOBAL__')
+                if isinstance(_eval_start_C, str) and _eval_start_C == '__USE_GLOBAL__':
+                    _eval_start_C = globals().get('EVAL_START', '2022-01-01')
+                _mC = _ffC.index >= pd.Timestamp(_eval_start_C)
                 _ffC = _ffC.loc[_mC]
                 _eval_end_C = run_kwargs.get('eval_end', '__USE_GLOBAL__')   # ★ (요청) 여기도 동일하게 상한 적용
                 if isinstance(_eval_end_C, str) and _eval_end_C == '__USE_GLOBAL__':
