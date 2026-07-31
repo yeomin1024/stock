@@ -14380,6 +14380,12 @@ EVAL_END            = None           # ★ (요청) 평가 종료일. None이면
                                       #   지정 시 'YYYY-MM-DD'(그 날짜 포함, 이후 데이터는 잘라냄) —
                                       #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
 
+# ★★★ (요청) 단순화 모드 — 켜면 개수탐색·wilson계층·상관다변화·[SEL] 재정렬을 전부 건너뛰고
+#   '성공률 SIMPLE_POOL_MIN_SUCCESS 이상인 모든 지표-임계 조합'을 그대로 다 써서 K/L만 탐색한다.
+#   끄면(False) 기존의 복잡한 선출 파이프라인 그대로.
+SIMPLE_POOL_MODE        = False
+SIMPLE_POOL_MIN_SUCCESS = 0.90        # 이 성공률 미만은 전부 제외(개수 상한 없음 — 넘으면 다 씀)
+
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
 
@@ -15032,8 +15038,9 @@ def auto_compute_anchor_dates(dates, close, *,
 
 @njit
 def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
-    # ★ 기준(요청): 매수신호 적중 = 신호 후 'horizon일 이내'에 종가가 신호일 종가 대비
-    #   +dd_limit 이상 상승(기간 내 최고가 기준). horizon=1이면 '다음날', 5면 '5일 이내 어느 날이든 도달'.
+    # ★★★ (요청 — 버그수정) 매수신호 적중 = 신호 후 '정확히 horizon일 후(day+horizon)' 시점에
+    #   종가가 신호일 종가 대비 +dd_limit 이상 상승. horizon=1이면 '다음날', 2면 '정확히 2일 후'
+    #   (1일 후는 안 봄, 1·2일 중 아무 때나 도달해도 되는 게 아님) — _fwd_hit_flags와 동일 기준.
     #   ★ 앵커 오버라이드 없음 — 실제 도달 여부만으로 판정.
     #   anchor_buy_arr 인자는 호출 호환 위해 남겨두나 미사용.
     n = close_arr.shape[0]
@@ -15044,22 +15051,19 @@ def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
         base_p = close_arr[i]
         if base_p <= 0.0: continue
         end = i + h
-        if end > n - 1: end = n - 1
-        if end <= i: continue
-        max_ret = -1.0e18
-        for j in range(i + 1, end + 1):
-            r = close_arr[j] / base_p - 1.0
-            if r > max_ret: max_ret = r
-        ns += 1; sum_ret += max_ret
-        if max_ret >= dd_limit:
+        if end > n - 1: continue    # ★ day+h 밖이면 평가불가(clamp 안 함)
+        ret = close_arr[end] / base_p - 1.0
+        ns += 1; sum_ret += ret
+        if ret >= dd_limit:
             ok += 1
     return ns, ok, sum_ret
 
 
 @njit(cache=True)
 def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr):
-    # ★ 기준(요청): 매도신호 적중 = 신호 후 'horizon일 이내'에 종가가 신호일 종가 대비
-    #   -ru_limit 이상 하락(기간 내 최저가 기준). horizon=1이면 '다음날', 5면 '5일 이내'.
+    # ★★★ (요청 — 버그수정) 매도신호 적중 = 신호 후 '정확히 horizon일 후' 시점에 종가가
+    #   신호일 종가 대비 -ru_limit 이상 하락 — _fwd_hit_flags와 동일 기준(구간 내 아무
+    #   때나 터치가 아니라 그 시점만).
     #   anchor_sell_arr 인자는 호출 호환 위해 남겨두나 미사용.
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
@@ -15069,14 +15073,10 @@ def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr
         base_p = close_arr[i]
         if base_p <= 0.0: continue
         end = i + h
-        if end > n - 1: end = n - 1
-        if end <= i: continue
-        min_ret = 1.0e18
-        for j in range(i + 1, end + 1):
-            r = close_arr[j] / base_p - 1.0
-            if r < min_ret: min_ret = r
-        ns += 1; sum_ret += min_ret
-        if min_ret <= -ru_limit:
+        if end > n - 1: continue
+        ret = close_arr[end] / base_p - 1.0
+        ns += 1; sum_ret += ret
+        if ret <= -ru_limit:
             ok += 1
     return ns, ok, sum_ret
 
@@ -15156,6 +15156,14 @@ def _compute_safe_arrays(close_arr, horizon, dd_limit, ru_limit):
       둘 다 아니면 evaluable=0 → 성공/실패 평가에서 제외.
       (매수·매도 둘 다 가능하면 둘 다 1 — 변동성 큰 구간)
       horizon=1이면 다음날만, 5면 5일 이내.
+
+    ★★★ (요청 — 버그수정) 위 docstring의 '이내'는 실제로는 부정확했다 — 실제로는
+    '정확히 horizon일 후(day+horizon) 시점'의 등락만 본다(_fwd_hit_flags/
+    _fwd_return_mags와 동일하게 맞춤). 예: horizon=2면 '오늘 종가 대비 2일 후
+    종가가 ±limit 이상 상승/하락했는가'만 판정 — day+1은 안 보고, day+1과 day+2
+    중 아무 때나 닿아도 되는 게 아니다. HORIZON_DAYS=h가 문자 그대로 "h일 후 예측"을
+    뜻하도록 통일(이전엔 h일 이내 아무 시점이나 터치하면 성공으로 치는 배리어터치
+    방식이어서 이름과 실제 판정이 어긋났음 — 실측 확인 후 수정).
     """
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
@@ -15167,17 +15175,12 @@ def _compute_safe_arrays(close_arr, horizon, dd_limit, ru_limit):
         if base <= 0.0:
             continue
         end = i + h
-        if end > n - 1: end = n - 1
-        if end <= i: continue
-        max_ret = -1.0e18
-        min_ret = 1.0e18
-        for j in range(i + 1, end + 1):
-            r = close_arr[j] / base - 1.0
-            if r > max_ret: max_ret = r
-            if r < min_ret: min_ret = r
-        if max_ret >= dd_limit:
+        if end > n - 1:
+            continue     # ★ day+h가 데이터 범위 밖이면 평가불가 (clamp 안 함)
+        r = close_arr[end] / base - 1.0    # ★ 정확히 day+h 시점의 등락률만
+        if r >= dd_limit:
             safe_buy[i] = 1; evaluable[i] = 1
-        if min_ret <= -ru_limit:
+        if r <= -ru_limit:
             safe_sell[i] = 1; evaluable[i] = 1
         # 둘 다 미달이면 evaluable 0 (평가 제외)
     return safe_buy, safe_sell, evaluable
@@ -15474,12 +15477,14 @@ def _rolling_zscore(x, window):
 @njit(cache=True)
 def _fwd_hit_flags(close_arr, horizon, limit, is_buy, use_barrier):
     """각 날 i의 '정답 깃발' 사전계산 — hit[i]=1이면 그날 신호가 켜졌을 때 성공.
-       - use_barrier=0: 기존 정의 그대로 — horizon일 이내 유리방향 최대변동 ≥ limit.
-         (매수: 최고 종가 상승률 ≥ +limit / 매도: 최저 종가 하락률 ≤ -limit)
-       - use_barrier=1: 삼중배리어 — 유리 한도가 '불리 한도보다 먼저' 도달해야 성공.
-       ev[i]=1 은 평가가능(뒤에 볼 날이 있음). 마지막 날은 평가불가.
-       ※ use_barrier=0 이면 _eval_buy_signals/_eval_sell_signals와 판정이 정확히 일치
-         (검증 시트의 '성공률 독립 재계산' 교차검증에 사용)."""
+       ★★★ (요청 — 버그수정) HORIZON_DAYS=h는 'h일 이내 아무 때나 터치'가 아니라
+       '정확히 h일 후(day+h) 시점'의 등락만 본다 — 예: h=2면 '2일 후 종가가 ±limit
+       이상 상승/하락했는가'만 판정(day+1은 안 봄). 원래는 [i+1, i+h] 구간 전체를
+       훑어 어느 날이든 닿으면 성공으로 치는 '배리어터치' 방식이었는데, 이건
+       "N일 후 예측"이라는 이름과 실제 의미가 달랐다(실측 확인 후 사용자 요청으로 변경).
+       use_barrier 인자는 하위호환을 위해 남겨두되, 단일 시점 판정에는 '유리/불리
+       먼저 도달' 개념 자체가 없으므로 두 값 모두 동일하게 동작한다.
+       ev[i]=1 은 평가가능(day+h가 존재). 끝에서 h일 이내는 평가불가."""
     n = close_arr.shape[0]
     hit = np.zeros(n, dtype=np.uint8)
     ev  = np.zeros(n, dtype=np.uint8)
@@ -15489,28 +15494,13 @@ def _fwd_hit_flags(close_arr, horizon, limit, is_buy, use_barrier):
         if base <= 0.0:
             continue
         end = i + h
-        if end > n - 1: end = n - 1
-        if end <= i: continue
+        if end > n - 1:
+            continue          # ★ day+h가 데이터 범위 밖이면 평가불가(clamp 안 함 — 정확히 h일 후만 봄)
         ev[i] = 1
-        if use_barrier == 1:
-            for j in range(i + 1, end + 1):
-                r = close_arr[j] / base - 1.0
-                if is_buy == 1:
-                    if r <= -limit: break          # 불리 배리어 먼저 → 실패
-                    if r >= limit:
-                        hit[i] = 1; break
-                else:
-                    if r >= limit: break
-                    if r <= -limit:
-                        hit[i] = 1; break
-        else:
-            best = -1.0e18
-            for j in range(i + 1, end + 1):
-                r = close_arr[j] / base - 1.0
-                rr = r if is_buy == 1 else -r
-                if rr > best: best = rr
-            if best >= limit:
-                hit[i] = 1
+        r = close_arr[end] / base - 1.0
+        fav = r if is_buy == 1 else -r
+        if fav >= limit:
+            hit[i] = 1
     return hit, ev
 
 
@@ -15520,12 +15510,13 @@ _HITF_CACHE = {}
 def _fwd_return_mags(close_arr, horizon, limit, is_buy, use_barrier):
     """각 날 i에 대해, 그날 신호가 켜졌다고 할 때의 '실현 크기'를 미리 계산.
        반환: (succ_mag, fail_mag, ev)  (모두 길이 n 배열)
-       - 매수: 성공(유리방향 ≥ limit 도달)이면 그 도달 시점까지의 상승률을 succ_mag[i]에,
-               실패면 horizon 내 최저 하락률(음수의 절대값)을 fail_mag[i]에.
-       - 매도: 성공(하락 ≤ -limit 회피/포착)이면 '회피/포착한 하락폭'을 succ_mag[i]에,
-               실패면 오히려 상승해버린 손실(매도 관점 불리 = 가격 상승)폭을 fail_mag[i]에.
-       use_barrier=1이면 유리 배리어가 불리보다 먼저 닿아야 성공(삼중배리어).
-       ev[i]=1은 평가가능(뒤에 볼 날 존재)."""
+       ★★★ (요청 — 버그수정) _fwd_hit_flags와 동일하게 '정확히 day+horizon 시점'만
+       본다(구간 내 아무 때나 터치가 아님). 그 시점 등락이 유리방향으로 limit
+       이상이면 성공(그 크기가 succ_mag), 아니면 그 시점의 불리방향 크기가 fail_mag.
+       - 매수: day+h 시점 상승률이 succ/fail 판정 기준.
+       - 매도: day+h 시점 하락률이 succ/fail 판정 기준.
+       use_barrier는 하위호환용(단일 시점 판정엔 의미 없음, 두 값 동일 동작).
+       ev[i]=1은 평가가능(day+h가 존재)."""
     n = close_arr.shape[0]
     succ = np.zeros(n, dtype=np.float64)
     fail = np.zeros(n, dtype=np.float64)
@@ -15536,39 +15527,15 @@ def _fwd_return_mags(close_arr, horizon, limit, is_buy, use_barrier):
         if base <= 0.0:
             continue
         end = i + h
-        if end > n - 1: end = n - 1
-        if end <= i: continue
+        if end > n - 1:
+            continue
         ev[i] = 1
-        hit = 0
-        fav_at_hit = 0.0     # 성공 시 유리방향 크기
-        worst_adv = 0.0      # horizon 내 최대 불리 크기(성공 못했을 때 손실)
-        best_fav = 0.0       # horizon 내 최대 유리 크기
-        if use_barrier == 1:
-            for j in range(i + 1, end + 1):
-                r = close_arr[j] / base - 1.0
-                fav = r if is_buy == 1 else -r      # 유리방향(매수=상승, 매도=하락)
-                adv = -fav                           # 불리방향
-                if adv > worst_adv: worst_adv = adv
-                if fav > best_fav: best_fav = fav
-                if adv >= limit:    # 불리 배리어 먼저 → 실패 확정
-                    break
-                if fav >= limit:
-                    hit = 1; fav_at_hit = fav; break
+        r = close_arr[end] / base - 1.0
+        fav = r if is_buy == 1 else -r
+        if fav >= limit:
+            succ[i] = fav
         else:
-            for j in range(i + 1, end + 1):
-                r = close_arr[j] / base - 1.0
-                fav = r if is_buy == 1 else -r
-                adv = -fav
-                if adv > worst_adv: worst_adv = adv
-                if fav > best_fav: best_fav = fav
-            if best_fav >= limit:
-                hit = 1; fav_at_hit = best_fav
-        if hit == 1:
-            # 성공 크기: 매수=포착한 상승률, 매도=회피/포착한 하락률(둘 다 유리방향 크기)
-            succ[i] = fav_at_hit if fav_at_hit > 0.0 else best_fav
-        else:
-            # 실패 크기: horizon 내 불리방향으로 실제 움직인 최대폭(양수)
-            fail[i] = worst_adv if worst_adv > 0.0 else 0.0
+            fail[i] = -fav if fav < 0.0 else 0.0
     return succ, fail, ev
 
 
@@ -16542,6 +16509,42 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
        각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
        → 상관 다변화(같은 지표 여러 임계 유지, 다른 상관 지표만 제거)로 수정전처럼 정예화.
        반환 (buy_combined, sell_combined)."""
+    # ══════════════════════════════════════════════════════════════════════
+    #  ★★★ (요청 — 단순화 모드) "개수 탐색·검증·지표 중복제거 이런 거 하지 말고
+    #  성공률 90% 넘는 모든 지표를 다 써서 K/L만 탐색" — wilson_z 계층별 재탐색,
+    #  상관 기반 다양화, n_buy/n_sell 개수 좌표하강, 다중 wilson/corr 메타그리드
+    #  전부 건너뛰고, '성공률만으로 통과/탈락'하는 가장 단순한 방식으로 바로 감.
+    #  이 아래(diversify/enrich/[SEL] 재정렬)는 전혀 타지 않고 여기서 즉시 반환.
+    # ══════════════════════════════════════════════════════════════════════
+    if globals().get('SIMPLE_POOL_MODE', False):
+        _min_succ = float(globals().get('SIMPLE_POOL_MIN_SUCCESS', 0.90))
+        _limit0 = float((globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])[0])
+        _bdf, _sdf = _evaluate_all_indicators_raw(
+            feat, close, horizon=horizon, dd_limit=_limit0, ru_limit=_limit0,
+            n_thresholds=n_thresholds)
+
+        def _simple_filter(df, label):
+            if df is None or len(df) == 0:
+                return df
+            d = df[df['success_rate'] >= _min_succ].copy()
+            d = d.sort_values('success_rate', ascending=False).reset_index(drop=True)
+            d['sel_limit'] = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
+            print(f"    (단순모드) {label}: 성공률≥{_min_succ*100:.0f}% 지표-임계 조합 "
+                  f"{len(d)}개 채택 (전체 평가 {len(df)}개 중, 개수제한·다양화·상관제거 없음)")
+            return d
+        buy_c = _simple_filter(_bdf, '매수')
+        sell_c = _simple_filter(_sdf, '매도')
+        # avg_adverse는 정보성 컬럼(선정에는 안 씀) — 하위호환을 위해 그대로 채워둠
+        try:
+            _hz = int(globals().get('HORIZON_DAYS', 1))
+            if buy_c is not None and len(buy_c):
+                buy_c = _compute_avg_adverse_for_pool(feat, close, buy_c, True, _hz)
+            if sell_c is not None and len(sell_c):
+                sell_c = _compute_avg_adverse_for_pool(feat, close, sell_c, False, _hz)
+        except Exception:
+            pass
+        return buy_c, sell_c
+
     limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
     bparts, sparts = [], []
     for L in limits:
