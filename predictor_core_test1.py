@@ -14389,7 +14389,7 @@ SIMPLE_POOL_MIN_SUCCESS = 0.90        # 이 성공률 미만은 전부 제외(�
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
 
-HORIZON_DAYS        = 2
+HORIZON_DAYS        = 5
 # ★★★ (요청 — 재설계) 주 호라이즌(HORIZON_DAYS)은 완전히 그대로 유지하고, 여기 목록에
 #   적은 '추가' 호라이즌들에서 '기존 풀에 없는 새 지표'만 찾아서 덧붙이고 싶을 때 지정.
 #   예: [1] → HORIZON_DAYS(2일) 풀은 그대로 두고, 1일 기준으로 봤을 때만 좋은 걸로 나오는
@@ -14398,7 +14398,7 @@ HORIZON_DAYS        = 2
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
 #   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = [1]
+HORIZON_DAYS_LIST   = None
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -14716,7 +14716,7 @@ META_GRID = {
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
     'wilson_z':    [1.65],
     'pct_range':   [(0, 100)],
-    'min_signals': [10],
+    'min_signals': [30],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
 }
