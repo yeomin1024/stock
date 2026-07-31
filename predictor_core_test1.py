@@ -14407,7 +14407,7 @@ HORIZON_DAYS        = 2
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
 #   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = [1]
+HORIZON_DAYS_LIST   = None
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -16777,10 +16777,8 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
         _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
                                         n_thresholds=n_thresholds, horizon=horizon)
         globals()['_KNET_MULTI_POOL'] = (ticker, _cb, _cs)
-        if _cb is not None and _cs is not None:
-            print(f"    (단순모드) 성공률 컷만 적용된 풀을 그대로 사용 — "
-                  f"매수 {_cb['indicator'].nunique()}지표 / 매도 {_cs['indicator'].nunique()}지표 "
-                  f"(wilson/corr 재탐색·재컷 없음)")
+        # ★ (요청) 여기서 별도로 다시 안내 문구를 찍지 않음 — select_pool_combined가 이미
+        #   호라이즌별 세부 로그와 '최종 통합' 요약을 다 찍어서, 여기서 또 찍으면 중복이었다.
         return globals()['_KNET_MULTI_POOL']
 
     _limits = list(globals().get('STAGE_SUCCESS_LIMIT', [DRAWDOWN_LIMIT_BUY]))
@@ -16941,6 +16939,16 @@ def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon,
        추가로 찾아 덧붙인다 — 기존 지표를 대체하지 않으므로 기존 성능이 나빠질 수 없다."""
     globals().pop('_KNET_REPLAY_FIXED', None)
     globals().pop('_KNET_KL_FIXED', None)
+
+    # ★★★ (요청 — 중복실행 제거) SIMPLE_POOL_MODE에선 select_pool_combined의 단순모드
+    #   분기가 SIMPLE_POOL_HORIZON_CONFIG의 모든 horizon_day(1~5일)를 이미 자체적으로
+    #   전부 훑는다. 그런데 HORIZON_DAYS_LIST가 (이전 설정에서) 남아있으면 아래
+    #   _build_pool_multi_horizon이 '추가 호라이즌'이라며 똑같은 호라이즌을 또 한 번
+    #   중복 평가하고 있었다(실측 확인) — 단순모드에서는 이 멀티호라이즌 래퍼 자체를
+    #   건너뛰고 _build_pool_by_success를 바로 호출한다(내부에서 이미 다 처리됨).
+    if globals().get('SIMPLE_POOL_MODE', False):
+        return _build_pool_by_success(feat, close, indicators=indicators,
+                                      n_thresholds=n_thresholds, horizon=horizon, ticker=ticker)
 
     _hz_list = globals().get('HORIZON_DAYS_LIST')
     if _hz_list and isinstance(_hz_list, (list, tuple)) and len(_hz_list) > 0:
