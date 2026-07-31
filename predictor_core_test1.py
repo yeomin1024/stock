@@ -16523,6 +16523,27 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             feat, close, horizon=horizon, dd_limit=_limit0, ru_limit=_limit0,
             n_thresholds=n_thresholds)
 
+        # ★★★ (요청 — 재수정) "윌슨 값만 적용" — 전체 후보(필터 전)에 윌슨 하한 점수를 먼저
+        #   매긴다. 필터는 raw success_rate≥90%로 하되, net 순신호 가중치는 이 윌슨값을
+        #   쓴다(표본 적은 지표는 raw success_rate보다 보수적으로 깎임). corr(상관 다변화
+        #   제거)는 적용 안 함 — 성공률 필터만으로 통과/탈락.
+        _wz_simple = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
+        def _add_wilson(df):
+            if df is None or len(df) == 0:
+                return df
+            df = df.copy()
+            df['wilson_score'] = [
+                wilson_lower(int(row['n_success']), int(row['n_signals']), _wz_simple)
+                for _, row in df.iterrows()
+            ]
+            return df
+        _bdf = _add_wilson(_bdf)
+        _sdf = _add_wilson(_sdf)
+        # ★★★ (요청) "확인해야 하니 모든 후보 지표 정보 시트로" — 필터 전 원시 평가 결과
+        #   (전체 4700여개 지표-임계 조합, 윌슨점수 포함)을 저장해뒀다가 write_excel에서
+        #   시트로 씀. 재계산 없이 여기서 이미 나온 결과를 그대로 재사용.
+        globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_bdf, _sdf)
+
         def _simple_filter(df, label):
             if df is None or len(df) == 0:
                 return df
@@ -16530,14 +16551,13 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             d = d.sort_values('success_rate', ascending=False).reset_index(drop=True)
             d['sel_limit'] = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
             print(f"    (단순모드) {label}: 성공률≥{_min_succ*100:.0f}% 지표-임계 조합 "
-                  f"{len(d)}개 채택 (전체 평가 {len(df)}개 중, 개수제한·다양화·상관제거 없음)")
+                  f"{len(d)}개 채택 (전체 평가 {len(df)}개 중, 개수제한·다양화·상관제거 없음, "
+                  f"net 가중치는 윌슨(z={_wz_simple}) 하한 사용)")
             return d
         buy_c = _simple_filter(_bdf, '매수')
         sell_c = _simple_filter(_sdf, '매도')
-        # ★★★ (요청) "확인해야 하니 모든 후보 지표 정보 시트로" — 필터 전 원시 평가 결과
-        #   (전체 4700여개 지표-임계 조합) 전체를 저장해뒀다가 write_excel에서 시트로 씀.
-        #   재계산 없이 여기서 이미 나온 결과를 그대로 재사용.
-        globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_bdf, _sdf)
+        globals()['NET_SIGNAL_WEIGHT_COL'] = 'wilson_score'   # ★ net 가중치 = 윌슨값(corr 미적용)
+        globals()['NET_SIGNAL_WEIGHTED'] = True
         # avg_adverse는 정보성 컬럼(선정에는 안 씀) — 하위호환을 위해 그대로 채워둠
         try:
             _hz = int(globals().get('HORIZON_DAYS', 1))
@@ -22507,7 +22527,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 f"성공률 {_min_succ_disp*100:.0f}% 이상만 실제 K/L 탐색에 사용됨(그 경계는 노랑 표시).")
             ws_all.cell(1, 1).font = Font(bold=True, size=12)
             _cols_all = ['방향', '지표', '신호방향', '임계값', '신호개수', '성공개수', '성공률%',
-                        '평균크기', 'wilson점수']
+                        '평균크기', 'wilson점수%(net가중치)']
             _hdr_row = 3
             for _ci, _cn in enumerate(_cols_all, 1):
                 c = ws_all.cell(_hdr_row, _ci); c.value = _cn
@@ -22525,7 +22545,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                              round(float(_row['threshold']), 6), int(_row['n_signals']),
                              int(_row['n_success']), round(float(_row['success_rate']) * 100, 2),
                              round(float(_row.get('avg_extreme', 0.0)), 4),
-                             round(float(_row.get('score', 0.0)), 4)]
+                             round(float(_row.get('wilson_score', 0.0)) * 100, 2)]
                     for _ci, _v in enumerate(_vals, 1):
                         ws_all.cell(_r_all, _ci).value = _v
                     if float(_row['success_rate']) >= _min_succ_disp:
