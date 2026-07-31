@@ -14381,15 +14381,24 @@ EVAL_END            = None           # ★ (요청) 평가 종료일. None이면
                                       #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
 
 # ★★★ (요청) 단순화 모드 — 켜면 개수탐색·wilson계층·상관다변화·[SEL] 재정렬을 전부 건너뛰고
-#   '성공률 SIMPLE_POOL_MIN_SUCCESS 이상인 모든 지표-임계 조합'을 그대로 다 써서 K/L만 탐색한다.
+#   '호라이즌일별 SIMPLE_POOL_HORIZON_CONFIG 기준을 만족하는 모든 지표-임계 조합'을
+#   그대로 다 써서 K/L만 탐색한다.
 #   끄면(False) 기존의 복잡한 선출 파이프라인 그대로.
 SIMPLE_POOL_MODE        = False
-SIMPLE_POOL_MIN_SUCCESS = 0.90        # 이 성공률 미만은 전부 제외(개수 상한 없음 — 넘으면 다 씀)
+# ★★★ (요청 — 재설계) 성공률 컷을 horizon_day(1~5일)별로 독립 설정. 최소신호수 8개 완화
+#   (성공률 90%+ 예외)는 더 이상 안 씀 — 아래 표의 min_signals가 절대 기준.
+SIMPLE_POOL_HORIZON_CONFIG = [
+    {'day': 1, 'min_signals': 10, 'min_success': 0.85},
+    {'day': 2, 'min_signals': 10, 'min_success': 0.85},
+    {'day': 3, 'min_signals': 15, 'min_success': 0.85},
+    {'day': 4, 'min_signals': 15, 'min_success': 0.85},
+    {'day': 5, 'min_signals': 15, 'min_success': 0.85},
+]
 
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
 
-HORIZON_DAYS        = 5
+HORIZON_DAYS        = 2
 # ★★★ (요청 — 재설계) 주 호라이즌(HORIZON_DAYS)은 완전히 그대로 유지하고, 여기 목록에
 #   적은 '추가' 호라이즌들에서 '기존 풀에 없는 새 지표'만 찾아서 덧붙이고 싶을 때 지정.
 #   예: [1] → HORIZON_DAYS(2일) 풀은 그대로 두고, 1일 기준으로 봤을 때만 좋은 걸로 나오는
@@ -14398,7 +14407,7 @@ HORIZON_DAYS        = 5
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
 #   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = None
+HORIZON_DAYS_LIST   = [1]
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -14716,7 +14725,7 @@ META_GRID = {
     #   STAGE_CORR_LIMIT 후보들을 순서대로 돌리며 좁힌다 (모든 조합 X).
     'wilson_z':    [1.65],
     'pct_range':   [(0, 100)],
-    'min_signals': [30],
+    'min_signals': [10],
     'corr_limit':  [0.2],
     'top_n_pool':  [100],
 }
@@ -16504,6 +16513,67 @@ def _limit_thresholds_per_indicator(pool_df, max_per=None, verbose=False):
 
 
 
+def _dedup_identical_signal_dates(feat, pool):
+    """★★★ (요청) 신호수·성공률이 완전히 같은 지표들은 '신호 발화일'까지 비교해서,
+       진짜로 전부 같은 날짜에 발화하는 것들끼리는 하나만 남긴다(서로 다른 이름/수식의
+       지표가 우연히 수치만 같은 게 아니라 실질적으로 동일한 신호를 내는 경우 대비).
+       비용 절감: (n_signals, n_success) 로 먼저 묶고, 그 안에서만 실제 신호일 비교
+       (전체 쌍끼리 비교하면 느림 — 대부분은애초에 신호수·성공개수부터 달라 그룹이 갈림)."""
+    if pool is None or len(pool) == 0:
+        return pool
+    pool = pool.reset_index(drop=True)
+    if 'n_success' not in pool.columns:
+        return pool
+    groups = pool.groupby([pool['n_signals'].astype(int), pool['n_success'].astype(int)]).indices
+    drop_idx = set()
+    for _key, idxs in groups.items():
+        if len(idxs) <= 1:
+            continue
+        seen_patterns = {}
+        for i in idxs:
+            row = pool.iloc[i]
+            try:
+                sig = _to_signal_array(feat, row)
+                pat = tuple(np.nonzero(sig)[0].tolist())
+            except Exception:
+                continue
+            if pat in seen_patterns:
+                drop_idx.add(i)   # 이미 완전히 동일한 발화일 패턴을 가진 행이 있음 → 이건 중복
+            else:
+                seen_patterns[pat] = i
+    if drop_idx:
+        pool = pool.drop(index=list(drop_idx)).reset_index(drop=True)
+    return pool
+
+
+def _add_display_suffix(pool):
+    """★★★ (요청) 같은 지표명이 여러 임계값/호라이즌으로 풀에 살아남으면, 표시용 이름
+       (display_name)에 구분 접미사를 붙인다 — '지표명[N일]' 기본형, 같은 지표명+같은
+       호라이즌일에 임계값이 여럿이면 추가로 '#k' 번호를 붙임. 실제 feat 조회에 쓰이는
+       'indicator' 컬럼 자체는 절대 안 바꾼다(바꾸면 _to_signal_array가 못 찾음) —
+       display_name은 화면표시(공식 텍스트·전체후보 시트) 전용 별도 컬럼."""
+    if pool is None or len(pool) == 0:
+        return pool
+    pool = pool.copy()
+    _hz_col = pool['horizon_day'] if 'horizon_day' in pool.columns else pd.Series([None] * len(pool))
+    _grp_key = pool['indicator'].astype(str) + '||' + _hz_col.astype(str)
+    _counts = _grp_key.value_counts()
+    _seen = {}
+    disp = []
+    for i in range(len(pool)):
+        ind = str(pool.iloc[i]['indicator'])
+        hz = _hz_col.iloc[i]
+        base = f"{ind}[{int(hz)}일]" if hz is not None and not pd.isna(hz) else ind
+        key = _grp_key.iloc[i]
+        if _counts[key] > 1:
+            _seen[key] = _seen.get(key, 0) + 1
+            disp.append(f"{base}#{_seen[key]}")
+        else:
+            disp.append(base)
+    pool['display_name'] = disp
+    return pool
+
+
 def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0, corr_limit=None):
     """★ 요청: 1~5% 각 한도로 성공풀 선출 → 하나로 합친 '다중임계' 풀.
        각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
@@ -16516,18 +16586,30 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
     #  전부 건너뛰고, '성공률만으로 통과/탈락'하는 가장 단순한 방식으로 바로 감.
     #  이 아래(diversify/enrich/[SEL] 재정렬)는 전혀 타지 않고 여기서 즉시 반환.
     # ══════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════
+    #  ★★★ (요청 — 단순화 모드) "개수 탐색·검증·지표 중복제거 이런 거 하지 말고
+    #  성공률 90% 넘는 모든 지표를 다 써서 K/L만 탐색" — wilson_z 계층별 재탐색,
+    #  상관 기반 다양화, n_buy/n_sell 개수 좌표하강, 다중 wilson/corr 메타그리드
+    #  전부 건너뛰고, '성공률만으로 통과/탈락'하는 가장 단순한 방식으로 바로 감.
+    #  이 아래(diversify/enrich/[SEL] 재정렬)는 전혀 타지 않고 여기서 즉시 반환.
+    #
+    #  ★★★ (요청 — 재설계) horizon_day(1~5일)별로 최소신호수·성공률 컷을 독립적으로
+    #  설정(SIMPLE_POOL_HORIZON_CONFIG), 전부 통합. 성공률·신호수가 완전히 같은
+    #  지표는 신호 발화일까지 비교해 진짜 동일하면 하나만 남김. 같은 지표명이 여러
+    #  임계값/호라이즌으로 살아남으면 표시용 이름에 구분 접미사([N일], #k)를 붙임.
+    #  ★ (요청) 최소신호수 8개 완화(성공률90%+)는 이제 안 씀 — 호라이즌별 고정값만 사용.
+    # ══════════════════════════════════════════════════════════════════════
     if globals().get('SIMPLE_POOL_MODE', False):
-        _min_succ = float(globals().get('SIMPLE_POOL_MIN_SUCCESS', 0.90))
         _limit0 = float((globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])[0])
-        _bdf, _sdf = _evaluate_all_indicators_raw(
-            feat, close, horizon=horizon, dd_limit=_limit0, ru_limit=_limit0,
-            n_thresholds=n_thresholds)
-
-        # ★★★ (요청 — 재수정) "윌슨 값만 적용" — 전체 후보(필터 전)에 윌슨 하한 점수를 먼저
-        #   매긴다. 필터는 raw success_rate≥90%로 하되, net 순신호 가중치는 이 윌슨값을
-        #   쓴다(표본 적은 지표는 raw success_rate보다 보수적으로 깎임). corr(상관 다변화
-        #   제거)는 적용 안 함 — 성공률 필터만으로 통과/탈락.
         _wz_simple = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
+        _hz_cfgs = list(globals().get('SIMPLE_POOL_HORIZON_CONFIG') or [
+            {'day': 1, 'min_signals': 10, 'min_success': 0.85},
+            {'day': 2, 'min_signals': 10, 'min_success': 0.85},
+            {'day': 3, 'min_signals': 15, 'min_success': 0.85},
+            {'day': 4, 'min_signals': 15, 'min_success': 0.85},
+            {'day': 5, 'min_signals': 15, 'min_success': 0.85},
+        ])
+
         def _add_wilson(df):
             if df is None or len(df) == 0:
                 return df
@@ -16537,40 +16619,68 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 for _, row in df.iterrows()
             ]
             return df
-        _bdf = _add_wilson(_bdf)
-        _sdf = _add_wilson(_sdf)
-        # ★★★ (요청) "확인해야 하니 모든 후보 지표 정보 시트로" — 필터 전 원시 평가 결과
-        #   (전체 4700여개 지표-임계 조합, 윌슨점수 포함)을 저장해뒀다가 write_excel에서
-        #   시트로 씀. 재계산 없이 여기서 이미 나온 결과를 그대로 재사용.
-        globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_bdf, _sdf)
 
-        def _simple_filter(df, label):
-            if df is None or len(df) == 0:
-                return df
-            # ★★★ (요청 — 버그수정) "최소 신호개수는 그냥 냅두라"고 하셨는데 raw success_rate
-            #   컷만 걸고 신호개수 가드를 빠뜨렸었다 — 신호 몇 개 안 되는데 우연히 90%인 지표가
-            #   그대로 통과하는 문제. 기존 시스템의 계단식 최소신호수 가드
-            #   (_passes_tiered_sig_gate: 성공률 90%+면 8개, 미만이면 10개)를 그대로 재적용.
-            _min_sig_gate = _passes_tiered_sig_gate(df['success_rate'], df['n_signals'])
-            d = df[(df['success_rate'] >= _min_succ) & _min_sig_gate].copy()
-            d = d.sort_values('success_rate', ascending=False).reset_index(drop=True)
-            d['sel_limit'] = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
-            _n_low_sig = int(((df['success_rate'] >= _min_succ) & ~_min_sig_gate).sum())
-            print(f"    (단순모드) {label}: 성공률≥{_min_succ*100:.0f}% 지표-임계 조합 "
-                  f"{len(d)}개 채택 (전체 평가 {len(df)}개 중, 최소신호수 미달 {_n_low_sig}개 별도 제외, "
-                  f"개수제한·다양화·상관제거 없음, net 가중치는 윌슨(z={_wz_simple}) 하한 사용)")
-            return d
-        buy_c = _simple_filter(_bdf, '매수')
-        sell_c = _simple_filter(_sdf, '매도')
+        _all_buy_raw, _all_sell_raw = [], []      # 전체 후보(필터 전) — '전체 후보 지표' 시트용
+        _buy_parts, _sell_parts = [], []          # 각 호라이즌 필터 통과분 — 최종 풀 조합용
+        for _cfg in _hz_cfgs:
+            _day = int(_cfg['day']); _msig = int(_cfg['min_signals']); _msucc = float(_cfg['min_success'])
+            print(f"    ── horizon={_day}일 (최소신호 {_msig}개, 성공률≥{_msucc*100:.0f}%) ──")
+            _bdf_h, _sdf_h = _evaluate_all_indicators_raw(
+                feat, close, horizon=_day, dd_limit=_limit0, ru_limit=_limit0,
+                n_thresholds=n_thresholds)
+            _bdf_h = _add_wilson(_bdf_h); _sdf_h = _add_wilson(_sdf_h)
+            if _bdf_h is not None and len(_bdf_h): _bdf_h['horizon_day'] = _day
+            if _sdf_h is not None and len(_sdf_h): _sdf_h['horizon_day'] = _day
+            if _bdf_h is not None and len(_bdf_h): _all_buy_raw.append(_bdf_h)
+            if _sdf_h is not None and len(_sdf_h): _all_sell_raw.append(_sdf_h)
+
+            def _filt_day(df):
+                if df is None or len(df) == 0:
+                    return None
+                d = df[(df['success_rate'] >= _msucc) & (df['n_signals'] >= _msig)].copy()
+                return d if len(d) else None
+            _bp = _filt_day(_bdf_h); _sp = _filt_day(_sdf_h)
+            if _bp is not None: _buy_parts.append(_bp)
+            if _sp is not None: _sell_parts.append(_sp)
+            print(f"       → 매수 {len(_bp) if _bp is not None else 0}개 / "
+                  f"매도 {len(_sp) if _sp is not None else 0}개 채택")
+
+        _all_bdf = pd.concat(_all_buy_raw, ignore_index=True) if _all_buy_raw else None
+        _all_sdf = pd.concat(_all_sell_raw, ignore_index=True) if _all_sell_raw else None
+        globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_all_bdf, _all_sdf)   # ★ '전체 후보 지표' 시트용
+
+        buy_c  = pd.concat(_buy_parts,  ignore_index=True) if _buy_parts  else pd.DataFrame()
+        sell_c = pd.concat(_sell_parts, ignore_index=True) if _sell_parts else pd.DataFrame()
+
+        _n_before_b, _n_before_s = len(buy_c), len(sell_c)
+        buy_c  = _dedup_identical_signal_dates(feat, buy_c)
+        sell_c = _dedup_identical_signal_dates(feat, sell_c)
+        if _n_before_b != len(buy_c) or _n_before_s != len(sell_c):
+            print(f"    (동일신호 중복제거) 매수 {_n_before_b}→{len(buy_c)}개, "
+                  f"매도 {_n_before_s}→{len(sell_c)}개 (신호수·성공률 같고 발화일까지 완전 동일한 것만 제거)")
+
+        buy_c  = _add_display_suffix(buy_c)
+        sell_c = _add_display_suffix(sell_c)
+        buy_c['horizon'] = buy_c['horizon_day']     # ★ 기존 red-bold/공식표시 로직 재사용
+        if len(sell_c): sell_c['horizon'] = sell_c['horizon_day']
+
+        buy_c  = buy_c.sort_values('success_rate',  ascending=False).reset_index(drop=True) if len(buy_c) else buy_c
+        sell_c = sell_c.sort_values('success_rate', ascending=False).reset_index(drop=True) if len(sell_c) else sell_c
+        if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
+        if len(sell_c): sell_c['sel_limit'] = _limit0
+
         globals()['NET_SIGNAL_WEIGHT_COL'] = 'wilson_score'   # ★ net 가중치 = 윌슨값(corr 미적용)
         globals()['NET_SIGNAL_WEIGHTED'] = True
+        print(f"    (단순모드) 최종 통합: 매수 {len(buy_c)}개 / 매도 {len(sell_c)}개 "
+              f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, net 가중치는 윌슨(z={_wz_simple}) 하한)")
+
         # avg_adverse는 정보성 컬럼(선정에는 안 씀) — 하위호환을 위해 그대로 채워둠
         try:
-            _hz = int(globals().get('HORIZON_DAYS', 1))
+            _hz_main = int(globals().get('HORIZON_DAYS', 1))
             if buy_c is not None and len(buy_c):
-                buy_c = _compute_avg_adverse_for_pool(feat, close, buy_c, True, _hz)
+                buy_c = _compute_avg_adverse_for_pool(feat, close, buy_c, True, _hz_main)
             if sell_c is not None and len(sell_c):
-                sell_c = _compute_avg_adverse_for_pool(feat, close, sell_c, False, _hz)
+                sell_c = _compute_avg_adverse_for_pool(feat, close, sell_c, False, _hz_main)
         except Exception:
             pass
         return buy_c, sell_c
@@ -21621,16 +21731,23 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             return bool(pool is not None and (('oos_ic' in pool.columns) or ('ic' in pool.columns)))
 
         def _build_named_sigs(pool):
-            """_build_sigs와 동일하되 (지표명, 성공률, 가중신호배열, horizon) 리스트로 반환 —
+            """_build_sigs와 동일하되 (표시명, 성공률, 가중신호배열, horizon) 리스트로 반환 —
                상위 n개 절단·중복 maximum 처리 방식을 카운트 계산과 정확히 일치시킴.
                ★ (요청) horizon: HORIZON_DAYS_LIST로 추가된(주 호라이즌이 아닌) 지표면 그 값,
-               아니면 None(주 호라이즌 지표) — 공식 텍스트에서 강조 표시하는 데 사용."""
-            out = []  # [(indicator, success_rate, weighted_sig_array, horizon)]
+               아니면 None(주 호라이즌 지표) — 공식 텍스트에서 강조 표시하는 데 사용.
+               ★★★ (요청 — 재설계) 그룹화 키를 'indicator'가 아니라 'display_name'(있으면)으로
+               바꿈 — 단순모드에서 같은 지표명이 여러 임계값/호라이즌으로 살아남으면 이전엔
+               여기서 자동으로 합쳐져서(np.maximum) 어느 임계값이 실제로 쓰였는지 알 수 없었다.
+               display_name은 임계값·호라이즌별로 고유하므로, 이 키로 묶으면 실질적으로
+               '그룹 크기 1'이 되어 병합 없이 각 임계값이 독립된 항목으로 표시된다.
+               display_name이 없는 기존(비단순모드) 풀은 그대로 'indicator'로 묶여 기존과 동일."""
+            out = []  # [(표시명, success_rate, weighted_sig_array, horizon)]
             if pool is None or len(pool) == 0:
                 return out
             _has_hz_col = 'horizon' in pool.columns
-            if _multi_bt and ('indicator' in pool.columns) and pool['indicator'].duplicated().any():
-                for _ind, grp in pool.groupby('indicator', sort=False):
+            _grp_col = 'display_name' if 'display_name' in pool.columns else 'indicator'
+            if _multi_bt and (_grp_col in pool.columns) and pool[_grp_col].duplicated().any():
+                for _ind, grp in pool.groupby(_grp_col, sort=False):
                     arr = np.zeros(len(feat)); _sr = grp.iloc[0].get('success_rate', None)
                     _hz = grp.iloc[0].get('horizon', None) if _has_hz_col else None
                     _best_sr_at = -1.0
@@ -21645,7 +21762,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             else:
                 for _, row in pool.iterrows():
                     _hz = row.get('horizon', None) if _has_hz_col else None
-                    out.append((str(row.get('indicator', '')), row.get('success_rate', None),
+                    _disp = row.get('display_name', None)
+                    _disp = _disp if (_disp is not None and not pd.isna(_disp)) else row.get('indicator', '')
+                    out.append((str(_disp), row.get('success_rate', None),
                                 _wt_of_bt(row) * _sig_arr(row), _hz))
             return out
 
@@ -21689,7 +21808,21 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _srtxt = (f"|OOS IC| {float(sr):.3f}" if is_ic else f"성공률 {float(sr)*100:.0f}%")
                 else:
                     _srtxt = '-'
-                _nm_disp = str(nm)[:28]
+                _nm_str = str(nm)
+                if len(_nm_str) <= 28:
+                    _nm_disp = _nm_str
+                else:
+                    # ★ (요청 관련) 접미사([N일]/#k)가 잘리지 않도록 — 접미사를 뒤에서 분리해
+                    #   보존하고, 기본 지표명 부분만 줄인다.
+                    import re as _re_fmt
+                    _sfx_m = _re_fmt.search(r'(\[\d+일\](?:#\d+)?)$', _nm_str)
+                    if _sfx_m:
+                        _base_part = _nm_str[:_sfx_m.start()]
+                        _sfx_part = _sfx_m.group(1)
+                        _keep = max(28 - len(_sfx_part), 6)
+                        _nm_disp = _base_part[:_keep] + _sfx_part
+                    else:
+                        _nm_disp = _nm_str[:28]
                 _is_h1 = (hz is not None and not pd.isna(hz) and int(hz) == 1)
                 if _is_h1:
                     has_h1 = True
@@ -22521,19 +22654,25 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     # ─── 7d-2. ★ (요청) 단순모드 — 전체 후보 지표(필터 전) 정보 시트 ───
     #   "확인해야 하니 모든 후보 지표에 대해 신호 개수·성공률 등 정보 시트 하나로 정리,
     #   성공률 높은 순 정렬" — SIMPLE_POOL_MODE에서 select_pool_combined가 저장해둔
-    #   필터 전 원시 평가 결과(전체 지표-임계 조합)를 그대로 시트로 씀.
+    #   필터 전 원시 평가 결과(전체 지표-임계 조합, 호라이즌 1~5일 전부)를 그대로 시트로 씀.
+    #   ★★★ (요청 — 재설계) 호라이즌별 통과기준이 다르므로, 노랑 표시도 그 행의
+    #   horizon_day에 맞는 기준(min_signals/min_success)으로 판정. 지표명 뒤에
+    #   [N일]·#k 구분 접미사가 붙은 표시용 이름(display_name)도 별도 컬럼으로 추가.
     try:
         _allc = globals().get('_SIMPLE_MODE_ALL_CANDIDATES')
         if _allc is not None:
             _abdf, _asdf = _allc
+            _hz_cfgs_disp = list(globals().get('SIMPLE_POOL_HORIZON_CONFIG') or [])
+            _cfg_by_day = {int(c['day']): (int(c['min_signals']), float(c['min_success'])) for c in _hz_cfgs_disp}
             ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
-            _min_succ_disp = float(globals().get('SIMPLE_POOL_MIN_SUCCESS', 0.90))
+            _cfg_txt = ' / '.join(f"{d}일:신호≥{ms}·성공률≥{mp*100:.0f}%"
+                                  for d, (ms, mp) in sorted(_cfg_by_day.items()))
             ws_all.cell(1, 1).value = (
-                f"{ticker} — 전체 후보 지표-임계 조합 (필터 전, 단순모드). "
-                f"성공률 {_min_succ_disp*100:.0f}% 이상만 실제 K/L 탐색에 사용됨(그 경계는 노랑 표시).")
+                f"{ticker} — 전체 후보 지표-임계-호라이즌 조합 (필터 전, 단순모드). "
+                f"호라이즌별 통과기준: {_cfg_txt} (통과분은 노랑 표시)")
             ws_all.cell(1, 1).font = Font(bold=True, size=12)
-            _cols_all = ['방향', '지표', '신호방향', '임계값', '신호개수', '성공개수', '성공률%',
-                        '평균크기', 'wilson점수%(net가중치)']
+            _cols_all = ['방향', '표시명(호라이즌·구분)', '지표(원본)', '신호방향', '임계값', '호라이즌일',
+                        '신호개수', '성공개수', '성공률%', '평균크기', 'wilson점수%(net가중치)']
             _hdr_row = 3
             for _ci, _cn in enumerate(_cols_all, 1):
                 c = ws_all.cell(_hdr_row, _ci); c.value = _cn
@@ -22544,20 +22683,25 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 if _df is None or len(_df) == 0:
                     continue
                 _dsort = _df.sort_values('success_rate', ascending=False).reset_index(drop=True)
+                _dsort = _add_display_suffix(_dsort)   # ★ 같은 지표명 여러 임계값이면 구분 접미사
                 for _i in range(len(_dsort)):
                     _row = _dsort.iloc[_i]
                     _r_all += 1
-                    _vals = [_label, str(_row['indicator']), str(_row['direction']),
-                             round(float(_row['threshold']), 6), int(_row['n_signals']),
-                             int(_row['n_success']), round(float(_row['success_rate']) * 100, 2),
+                    _day_v = int(_row['horizon_day']) if 'horizon_day' in _dsort.columns else None
+                    _vals = [_label, str(_row.get('display_name', _row['indicator'])),
+                             str(_row['indicator']), str(_row['direction']),
+                             round(float(_row['threshold']), 6), _day_v,
+                             int(_row['n_signals']), int(_row['n_success']),
+                             round(float(_row['success_rate']) * 100, 2),
                              round(float(_row.get('avg_extreme', 0.0)), 4),
                              round(float(_row.get('wilson_score', 0.0)) * 100, 2)]
                     for _ci, _v in enumerate(_vals, 1):
                         ws_all.cell(_r_all, _ci).value = _v
-                    if float(_row['success_rate']) >= _min_succ_disp:
+                    _ms_req, _mp_req = _cfg_by_day.get(_day_v, (10, 0.85))
+                    if float(_row['success_rate']) >= _mp_req and int(_row['n_signals']) >= _ms_req:
                         for _ci in range(1, len(_cols_all) + 1):
                             ws_all.cell(_r_all, _ci).fill = _yellow
-            for _ci, _w in enumerate([6, 30, 8, 11, 9, 9, 9, 10, 10], 1):
+            for _ci, _w in enumerate([6, 26, 22, 8, 11, 8, 9, 9, 9, 10, 12], 1):
                 ws_all.column_dimensions[get_column_letter(_ci)].width = _w
             ws_all.freeze_panes = f'A{_hdr_row + 1}'
             print(f"  ✓ 전체 후보 지표 시트 — 매수 {len(_abdf) if _abdf is not None else 0}개 / "
