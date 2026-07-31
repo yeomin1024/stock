@@ -16547,12 +16547,18 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         def _simple_filter(df, label):
             if df is None or len(df) == 0:
                 return df
-            d = df[df['success_rate'] >= _min_succ].copy()
+            # ★★★ (요청 — 버그수정) "최소 신호개수는 그냥 냅두라"고 하셨는데 raw success_rate
+            #   컷만 걸고 신호개수 가드를 빠뜨렸었다 — 신호 몇 개 안 되는데 우연히 90%인 지표가
+            #   그대로 통과하는 문제. 기존 시스템의 계단식 최소신호수 가드
+            #   (_passes_tiered_sig_gate: 성공률 90%+면 8개, 미만이면 10개)를 그대로 재적용.
+            _min_sig_gate = _passes_tiered_sig_gate(df['success_rate'], df['n_signals'])
+            d = df[(df['success_rate'] >= _min_succ) & _min_sig_gate].copy()
             d = d.sort_values('success_rate', ascending=False).reset_index(drop=True)
             d['sel_limit'] = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
+            _n_low_sig = int(((df['success_rate'] >= _min_succ) & ~_min_sig_gate).sum())
             print(f"    (단순모드) {label}: 성공률≥{_min_succ*100:.0f}% 지표-임계 조합 "
-                  f"{len(d)}개 채택 (전체 평가 {len(df)}개 중, 개수제한·다양화·상관제거 없음, "
-                  f"net 가중치는 윌슨(z={_wz_simple}) 하한 사용)")
+                  f"{len(d)}개 채택 (전체 평가 {len(df)}개 중, 최소신호수 미달 {_n_low_sig}개 별도 제외, "
+                  f"개수제한·다양화·상관제거 없음, net 가중치는 윌슨(z={_wz_simple}) 하한 사용)")
             return d
         buy_c = _simple_filter(_bdf, '매수')
         sell_c = _simple_filter(_sdf, '매도')
