@@ -14404,8 +14404,8 @@ SIMPLE_POOL_MODE        = False
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
-    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
     {'day': 3, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
     {'day': 4, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
     {'day': 5, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
@@ -14420,7 +14420,7 @@ SIMPLE_POOL_HORIZON_CONFIG = [
 #      안전함) + 신호몰림(순열검정 기반 — n_signals개를 무작위로 뿌렸을 때 흔히 나오는
 #      몰림 정도보다 실제로 더 심할 때만 탈락, 신호가 적을수록 기준선이 자동으로 관대해짐).
 #   AND-3(3개 전부) 대신 MIN_PASS로 완화 가능 — 예: 2로 두면 3개 중 2개만 통과해도 채택.
-SIMPLE_POOL_VERIFY_ENABLED       = True
+SIMPLE_POOL_VERIFY_ENABLED       = False   # ★ (요청) 다시 끔 — 최소신호·성공률 필터만 쓰고 통과분은 전부 사용
 SIMPLE_POOL_VERIFY_LIFT_MARGIN   = 0.10   # 기저확률보다 절대 10%p 이상 높아야(①)
 SIMPLE_POOL_VERIFY_LIFT_RATIO    = 1.15   # 또는 기저확률의 1.15배 이상(① — margin과 OR 조건)
 SIMPLE_POOL_VERIFY_MIN_HALF_SIG  = 2      # 전/후반 각각 최소 이 개수 이상 신호 있어야 안정성 판정 가능
@@ -14437,12 +14437,14 @@ SIMPLE_POOL_VERIFY_STABILITY_TOL  = 0.03
 SIMPLE_POOL_VERIFY_CLUSTER_PCTILE = 93
 SIMPLE_POOL_VERIFY_MIN_PASS      = 3      # ①②③ 중 최소 몇 개를 통과해야 최종 채택인지(기본 3=전부)
 
-# ★★★ (요청 — 예측 유효기간 방식) h일 지표가 발화하면 t~t+h-1(실보유 t+1~t+h) 동안 net
-#   신호를 계속 켠 채로 유지 — "정확히 h일 후 오른다"는 예측이 검증되는 시점까지 그 주장을
-#   반영한다(발화 당일 하루만 반영하고 사라지면 호라이즌 정보가 사실상 버려짐). h=1 지표는
-#   원래도 하루만 유효하므로 영향 없음(회귀 없음). SIMPLE_POOL_MODE에서만 적용(horizon_day
-#   컬럼이 있는 풀에만 자연히 해당 — 기존 비단순모드 풀은 영향 없음).
-SIMPLE_POOL_HOLD_TO_HORIZON      = True
+# ★★★ (요청 — 재설계) 호라이즌별 net 정렬 방식 — h일 지표가 발화하면 그 예측은 발화일
+#   기준 h일 후를 가리키므로, "내일(오늘+1일)"을 가리키게 되는 시점은 발화일+(h-1)일이다.
+#   그 시점에 딱 하루만 반영되도록 신호를 (h-1)일 뒤로 민다 — 예: 오늘 매수/매도 결정 시
+#   1일 net은 오늘 값, 2일 net은 어제 값, 3일 net은 그저께 값, ..., 5일 net은 4일 전 값을
+#   그대로 쓰는 셈이 되어, 서로 다른 호라이즌의 예측이 전부 '내일 하나'를 향해 정렬된 채
+#   더해진다. (예전의 '발화일부터 h일간 계속 보유' 방식을 대체 — 그 방식은 같은 예측을
+#   h일 내내 반복 반영해 이 정렬 논리와는 다른 가정이었음.) h=1 지표는 이동 없음(영향 없음).
+SIMPLE_POOL_ALIGN_HORIZON_NET   = True
 
 # ★★★ (요청) KL 순신호(net≥K 매수/net≤L 매도)는 근접동률 정준화 없이 '진짜 최대 수익률'
 #   조합으로 선정 — 끄면(False) 비단순모드처럼 STABLE_NEARTIE_EPS/REL 정준화가 다시 적용됨.
@@ -19566,17 +19568,23 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         # ★ 요청 ②: 한 지표가 임계별 여러 성공률 보유 시, '그날 켜진 것 중 최고 성공률'을 그 지표 점수로.
         #   (단일임계 풀이면 지표당 1행 → 기존과 동일하게 동작. 안전)
         _multi = bool(globals().get('NET_MULTI_THRESHOLD_WEIGHT', False))
-        _hold_hz = bool(globals().get('SIMPLE_POOL_HOLD_TO_HORIZON', True))
+        _align_hz = bool(globals().get('SIMPLE_POOL_ALIGN_HORIZON_NET', True))
         def _row_sig(row):
-            """★★★ (요청 — 예측 유효기간) 원신호에 lead_shift까지 적용된 배열을 얻은 뒤,
-               horizon_day(또는 horizon)가 있으면 그 기간만큼 신호를 연장해 보유."""
+            """★★★ (요청 — 재설계) 호라이즌 정렬 방식 — "d일 net"은 d일 후 시점을 예측하므로,
+               그 예측이 '내일(d+1)'을 향하게 되는 시점은 발화일+(d-1)일이다. 즉 h일 지표가
+               날짜 s에 발화하면 s+(h-1)일에 딱 한 번 영향을 준다(그 h-1일만큼 신호를 뒤로
+               민다) — 예: 2일 지표가 어제 발화했으면 오늘(어제+1)에 반영, 3일 지표가
+               그저께 발화했으면 오늘(그저께+2)에 반영. 이렇게 하면 서로 다른 호라이즌의
+               예측이 전부 '내일 하나'를 가리키도록 정렬되어 그대로 더할 수 있다.
+               (이전의 '발화일부터 h일간 계속 보유' 방식을 대체 — 그 방식은 같은 예측을
+               h번 반복 반영하는 효과가 있어 이 정렬 논리와는 다른 가정이었음.)"""
             s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
-            if _hold_hz:
+            if _align_hz:
                 _hz = row.get('horizon_day', None)
                 if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
                     _hz = row.get('horizon', None)
                 if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) and int(_hz) > 1:
-                    s = _extend_signal_to_horizon(s, int(_hz))
+                    s = _shift_signal_forward(s, int(_hz) - 1)
             return s
         def _build_sigs(pool):
             sigs = []
@@ -19608,6 +19616,33 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         def _net_for(nb, ns):
             nb = max(1, min(int(nb), nB)); ns = max(1, min(int(ns), nS))
             return buy_cum[nb-1] - sell_cum[ns-1], nb, ns
+
+        # ★★★ (요청 — 일별 백테스트 호라이즌별 net 표시용) 매수-매도를 이미 (h-1)일 정렬한
+        #   신호로 호라이즌일별 net(=그 날의 매수합-매도합)을 따로 만들어둔다. 표시 전용
+        #   정보이며 K/L 임계 비교에는 항상 '종합'(전체 net, 위 buy_cum/sell_cum 합)이 쓰인다.
+        _net_by_horizon = {}
+        if globals().get('SIMPLE_POOL_MODE', False):
+            def _hz_of(row):
+                _h = row.get('horizon_day', None)
+                if _h is None or (isinstance(_h, float) and pd.isna(_h)):
+                    _h = row.get('horizon', 1)
+                return int(_h) if _h is not None and not (isinstance(_h, float) and pd.isna(_h)) else 1
+            _all_hz = set()
+            if buy_pool is not None and len(buy_pool): _all_hz |= {_hz_of(r) for _, r in buy_pool.iterrows()}
+            if sell_pool is not None and len(sell_pool): _all_hz |= {_hz_of(r) for _, r in sell_pool.iterrows()}
+            for _h in sorted(_all_hz):
+                _barr = np.zeros(n); _sarr = np.zeros(n)
+                if buy_pool is not None and len(buy_pool):
+                    for _, row in buy_pool.iterrows():
+                        if _hz_of(row) == _h:
+                            try: _barr += _wt_of(row) * _row_sig(row)
+                            except Exception: pass
+                if sell_pool is not None and len(sell_pool):
+                    for _, row in sell_pool.iterrows():
+                        if _hz_of(row) == _h:
+                            try: _sarr += _wt_of(row) * _row_sig(row)
+                            except Exception: pass
+                _net_by_horizon[_h] = _barr - _sarr
 
         r = np.zeros(n)
         for t in range(1, n):
@@ -19845,6 +19880,10 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             import traceback; traceback.print_exc()
             print(f"  ⚠ 카운트0 별도풀 처리 실패(무시): {_ze}")
 
+        if _net_by_horizon:
+            for _h, _arr in _net_by_horizon.items():
+                daily[f'net_h{_h}'] = _arr
+
         return {
             'best_k': best_k, 'n_buy_opt': n_buy_opt, 'n_sell_opt': n_sell_opt,
             'train_cum': best[1], 'oos_cum': best[2], 'full_cum': best[3],
@@ -19859,6 +19898,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             'net_min': (round(float(kmin),2) if _net_is_float else int(kmin)),
             'net_max': (round(float(kmax),2) if _net_is_float else int(kmax)),
             'weighted': _net_is_float, 'searched_counts': bool(search_counts),
+            'net_by_horizon_days': sorted(_net_by_horizon.keys()) if _net_by_horizon else [],
         }
     except Exception as _e:
         print(f"  ⚠ 순신호 K 최적화 실패(무시): {_e}")
@@ -22099,19 +22139,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             return (_w ** _wexp_bt) if _wexp_bt != 1.0 else _w
 
         def _sig_arr(row):
-            # ★★★ (요청 — 예측 유효기간, 일관성) _net_signal_k_search의 _row_sig와 동일한
-            #   호라이즌 연장을 적용 — 그래야 "보유 중"인 날(발화일은 아니지만 h일 유효기간
-            #   안)에도 공식 텍스트가 왜 그 지표가 기여하는지 실제 net 계산과 일치해서 보여준다.
+            # ★★★ (요청 — 재설계, 일관성) _net_signal_k_search의 _row_sig와 동일한 정렬 —
+            #   h일 지표는 발화일+(h-1)일에만 반영(모든 호라이즌이 '내일'을 가리키도록 정렬).
+            #   공식 텍스트가 실제 net 계산과 항상 일치하도록 동일 로직을 공유한다.
             try:
                 s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
             except Exception:
                 return np.zeros(len(feat))
-            if bool(globals().get('SIMPLE_POOL_HOLD_TO_HORIZON', True)):
+            if bool(globals().get('SIMPLE_POOL_ALIGN_HORIZON_NET', True)):
                 _hz = row.get('horizon_day', None)
                 if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
                     _hz = row.get('horizon', None)
                 if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) and int(_hz) > 1:
-                    s = _extend_signal_to_horizon(s, int(_hz))
+                    s = _shift_signal_forward(s, int(_hz) - 1)
             return s
 
         def _is_ic_pool(pool):
@@ -22261,17 +22301,29 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _mn_txt = (f" | 카운트0풀 m={_zero_m:.3f}/n={_zero_n:.3f}"
                           f"{'' if _applied_final else '(기준선 미달→미적용)'}"
                           f"({len(_zero_days_set)}일)")
+        # ★★★ (요청 — 호라이즌별 net 분리표시) SIMPLE_POOL_MODE + 호라이즌 breakdown 데이터가
+        #   있으면, 기존 '순신호 net' 한 칸을 '1일net~5일net'(호라이즌별) + '종합net'(K/L
+        #   비교에 실제 쓰이는 값)으로 늘려서 표시한다. 없으면(비단순모드 등) 기존 그대로
+        #   1칸 — 재현/리플레이 등 기존 파이프라인의 컬럼 위치 의존성을 깨지 않기 위함.
+        _hz_days_present = list(_nsd.get('net_by_horizon_days') or [])
+        _show_hz_net = bool(globals().get('SIMPLE_POOL_MODE', False) and _hz_days_present)
+        _hz_extra = (len(_hz_days_present) + 1 - 1) if _show_hz_net else 0   # +breakdown개+종합1 -기존net1
+        _total_cols = 19 + _hz_extra
+        _colL = get_column_letter(_total_cols)
         ws.cell(2, 1).value = (f"★{_kltag} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
                                f"전체 {_p2(_full_cum)} (B&H {_p2(_bh_full)}) | "
                                f"거래 {_n_trades_bt}회 | 보유중하락 {_p2(_held_max_dd)} | "
                                f"MDD {_p2(_mdd_bt)}{_mn_txt}")
-        ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells('A2:S2')
+        ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells(f'A2:{_colL}2')
         # ★ 3행: 카운트 공식은 이제 각 행 맨 오른쪽 두 컬럼(매수/매도카운트 공식)에 일별로 기록.
         _last_dt_txt = pd.Timestamp(dts[-1]).strftime('%Y-%m-%d') if len(dts) else '-'
         ws.cell(3, 1).value = ("매수/매도카운트 공식은 오른쪽 끝 두 컬럼에 날짜별로 기록됨 "
-                               "(발화 지표의 기여도 합 = 그날 카운트). 카운트0인 날은 별도풀 지표 기준.")
+                               "(발화 지표의 기여도 합 = 그날 카운트). 카운트0인 날은 별도풀 지표 기준."
+                               + (f" 호라이즌별 net은 '표시일+({{h}}-1)일'에 그 지표 기여가 한 번만 "
+                                  f"반영되도록 정렬됨(모든 호라이즌이 '내일'을 가리키게 함)."
+                                  if _show_hz_net else ""))
         ws.cell(3, 1).font = Font(bold=True, color='1F6F1F', size=10)
-        ws.merge_cells('A3:S3')
+        ws.merge_cells(f'A3:{_colL}3')
         # ★ (요청) 향후 어닝 예정일 — 위 카운트 기여 줄 바로 밑(4행)에 표시.
         #   어닝 없으면 skip하고 '없음'으로 명시.
         if _next_earn is not None:
@@ -22294,11 +22346,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(4, 1).value = "[향후 어닝] 조회 실패 (네트워크 오류 등)"
         ws.cell(4, 1).font = Font(bold=True, color='7F6000', size=10)
         ws.cell(4, 1).fill = PatternFill('solid', fgColor='FFF2CC')
-        ws.merge_cells('A4:S4')
+        ws.merge_cells(f'A4:{_colL}4')
+        if _show_hz_net:
+            _net_hdr_cols = [f'{_h}일net' for _h in _hz_days_present] + ['종합net']
+        else:
+            _net_hdr_cols = ['순신호 net']
         _hdr(ws, 5, ['날짜', f'{ticker}종가', '매수카운트', '매수ON', '매도카운트', '매도ON',
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
-                     '누적수익%(합산)', '순신호 net', '보유중하락 누적%', '구간', '향후어닝',
-                     '매수카운트 공식', '매도카운트 공식'])
+                     '누적수익%(합산)'] + _net_hdr_cols +
+                    ['보유중하락 누적%', '구간', '향후어닝', '매수카운트 공식', '매도카운트 공식'])
         pos = _pos_bt
         rets = _daily_ret
         _YEL = PatternFill('solid', fgColor='FFF2CC')
@@ -22347,12 +22403,21 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws.cell(r, 11).value = (round(_unreal*100, 2) if _unreal is not None else '')
             ws.cell(r, 12).value = (round(_real*100, 2) if _real is not None else '')
             ws.cell(r, 13).value = round(float(_cum_arr[i]) * 100, 2)
-            ws.cell(r, 14).value = (round(_net_disp, 3) if _wtd else int(round(_net_disp)))
-            ws.cell(r, 15).value = round(float(_held_run[i]) * 100, 2)
-            ws.cell(r, 16).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
+            _c14 = 14
+            if _show_hz_net:
+                for _hi, _h in enumerate(_hz_days_present):
+                    _hv = float(row.get(f'net_h{_h}', 0.0)) if pd.notna(row.get(f'net_h{_h}', 0.0)) else 0.0
+                    ws.cell(r, _c14 + _hi).value = round(_hv, 3)
+                ws.cell(r, _c14 + len(_hz_days_present)).value = (round(_net_disp, 3) if _wtd else int(round(_net_disp)))
+                _c_after = _c14 + len(_hz_days_present) + 1
+            else:
+                ws.cell(r, _c14).value = (round(_net_disp, 3) if _wtd else int(round(_net_disp)))
+                _c_after = _c14 + 1
+            ws.cell(r, _c_after).value = round(float(_held_run[i]) * 100, 2)
+            ws.cell(r, _c_after+1).value = ('OOS' if int(row['is_oos']) == 1 else '학습')
             # ★ (요청) 향후 어닝 표시
             _is_earn = _dt_i in _earnings_dates
-            ws.cell(r, 17).value = ('★어닝' if _is_earn else '')
+            ws.cell(r, _c_after+2).value = ('★어닝' if _is_earn else '')
             # ★ (요청) 매수/매도카운트 공식 — 그날 발화 지표의 기여를 오른쪽 두 컬럼에 기록.
             #   카운트0인 날은 해당 tier(2=노랑/70-80%밴드, 3=주황=나머지) 풀 지표,
             #   그 외는 메인풀 지표로 계산 (표시 카운트와 동일 기준).
@@ -22374,27 +22439,30 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _smark = '' if abs(_fs_sum - _sc_disp) < 0.02 else f" [실제 {_sc_show}]"
             _b_prefix = f"[합 {_fb_sum:.2f}]{_bmark} = "
             _s_prefix = f"[합 {_fs_sum:.2f}]{_smark} = "
+            _c_formula_b = _c_after + 3; _c_formula_s = _c_after + 4
             # ★★★ (요청) HORIZON_DAYS_LIST로 추가된 지표(주 호라이즌이 아닌 지표)가 그날 발화했으면
             #   지표명 부분만 빨간 굵게 — CellRichText로 그 조각만 서식 적용, 없으면 기존처럼 평문.
             if _fb_h1:
-                ws.cell(r, 18).value = _CellRichText([_b_prefix] + [
+                ws.cell(r, _c_formula_b).value = _CellRichText([_b_prefix] + [
                     (_TextBlock(_RED_BOLD_FONT, t) if hl else t) for t, hl in _fb_rich])
             else:
-                ws.cell(r, 18).value = _b_prefix + _fb_txt
+                ws.cell(r, _c_formula_b).value = _b_prefix + _fb_txt
             if _fs_h1:
-                ws.cell(r, 19).value = _CellRichText([_s_prefix] + [
+                ws.cell(r, _c_formula_s).value = _CellRichText([_s_prefix] + [
                     (_TextBlock(_RED_BOLD_FONT, t) if hl else t) for t, hl in _fs_rich])
             else:
-                ws.cell(r, 19).value = _s_prefix + _fs_txt
-            ws.cell(r, 18).alignment = Alignment(vertical='center', wrap_text=False)
-            ws.cell(r, 19).alignment = Alignment(vertical='center', wrap_text=False)
+                ws.cell(r, _c_formula_s).value = _s_prefix + _fs_txt
+            ws.cell(r, _c_formula_b).alignment = Alignment(vertical='center', wrap_text=False)
+            ws.cell(r, _c_formula_s).alignment = Alignment(vertical='center', wrap_text=False)
             # ★ (요청) 그날 net에 HORIZON_DAYS_LIST 추가지표가 기여했으면 net 셀도 빨간 굵게
+            #   (호라이즌별 표시 중이면 '종합net' 칸에 표시)
             if _fb_h1 or _fs_h1:
-                ws.cell(r, 14).font = Font(bold=True, color='FF0000')
+                _c_net_hl = (_c14 + len(_hz_days_present)) if _show_hz_net else _c14
+                ws.cell(r, _c_net_hl).font = Font(bold=True, color='FF0000')
             # ★ 카운트0 별도풀 사용일 = 노랑(2단계, 성공률70-80%) / 주황(3단계, 나머지) (요청)
             if _is_zero_day:
                 _fill_z = _ORG if _zero_tier == 3 else _YEL
-                for _c in range(1, 20): ws.cell(r, _c).fill = _fill_z
+                for _c in range(1, _total_cols + 1): ws.cell(r, _c).fill = _fill_z
                 if _act == '매수': ws.cell(r, 8).font = Font(bold=True, color='006100')
                 elif _act == '매도': ws.cell(r, 8).font = Font(bold=True, color='9C0006')
             else:
@@ -22405,9 +22473,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 if int(row['is_oos']) == 1: ws.cell(r, 1).fill = PatternFill('solid', fgColor='DDEBF7')
             # 어닝일 = 주황 강조 (카운트0 노란색보다 우선)
             if _is_earn:
-                ws.cell(r, 17).fill = PatternFill('solid', fgColor='FFD966')
-                ws.cell(r, 17).font = Font(bold=True, color='7F6000')
-        for ci, w in enumerate([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14, 11, 14, 7, 10, 70, 70], 1):
+                ws.cell(r, _c_after+2).fill = PatternFill('solid', fgColor='FFD966')
+                ws.cell(r, _c_after+2).font = Font(bold=True, color='7F6000')
+        _net_widths = ([9] * len(_hz_days_present) + [11]) if _show_hz_net else [11]
+        _widths_bt = ([12, 10, 10, 7, 10, 7, 7, 9, 10, 7, 10, 10, 14] + _net_widths +
+                     [14, 7, 10, 70, 70])
+        for ci, w in enumerate(_widths_bt, 1):
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.freeze_panes = 'A6'
         _n_yellow_sum = sum(1 for _v in _zero_tier_by_date.values() if _v == 2)
