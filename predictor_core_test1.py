@@ -14411,17 +14411,19 @@ SIMPLE_POOL_HORIZON_CONFIG = [
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
 #      최소 margin(%p) 이상 높거나 최소 ratio배 이상이어야 함(둘 중 하나만 만족해도 통과).
+#      margin/lift는 항상 '표시된 success_rate' 기준(=시트에 보이는 값과 100% 일치).
 #   ② 기대수익(크기) — 성공시 평균이익×성공률 − 실패시 평균손실×실패율 > 0 이어야 함.
-#   ③ 시간 안정성 — 평가구간 전반/후반으로 나눠 각각의 성공률이 전체 성공률보다
-#      STABILITY_GAP(%p) 넘게 낮지 않아야 함(반쪽만 신호가 CLUSTER_WINDOW일 내에 몰리면
-#      "몰림"으로 별도 탈락 — 특정 사건 하나에만 반응한 지표 배제).
+#   ③ 시간 안정성(윌슨 기반) — 전반/후반 각각의 '윌슨 하한'이 기저확률 이상이어야 함
+#      (표본이 적은 반쪽은 하한이 자동으로 더 보수적으로 깎이므로, 고정 %p 컷보다 소표본에
+#      안전함) + 신호몰림(순열검정 기반 — n_signals개를 무작위로 뿌렸을 때 흔히 나오는
+#      몰림 정도보다 실제로 더 심할 때만 탈락, 신호가 적을수록 기준선이 자동으로 관대해짐).
+#   AND-3(3개 전부) 대신 MIN_PASS로 완화 가능 — 예: 2로 두면 3개 중 2개만 통과해도 채택.
 SIMPLE_POOL_VERIFY_ENABLED       = True
 SIMPLE_POOL_VERIFY_LIFT_MARGIN   = 0.10   # 기저확률보다 절대 10%p 이상 높아야(①)
 SIMPLE_POOL_VERIFY_LIFT_RATIO    = 1.15   # 또는 기저확률의 1.15배 이상(① — margin과 OR 조건)
-SIMPLE_POOL_VERIFY_STABILITY_GAP = 0.15   # 전/후반 성공률이 전체 대비 15%p 넘게 안 떨어져야(③)
 SIMPLE_POOL_VERIFY_MIN_HALF_SIG  = 2      # 전/후반 각각 최소 이 개수 이상 신호 있어야 안정성 판정 가능
-SIMPLE_POOL_VERIFY_CLUSTER_WINDOW   = 60  # 신호 몰림 검사 창(거래일)
-SIMPLE_POOL_VERIFY_CLUSTER_MAX_FRAC = 0.5 # 신호의 이 비율 이상이 위 창 안에 몰리면 "몰림"으로 탈락
+SIMPLE_POOL_VERIFY_CLUSTER_WINDOW = 60    # 신호 몰림 검사 창(거래일) — 순열검정 기준선 계산에 사용
+SIMPLE_POOL_VERIFY_MIN_PASS      = 3      # ①②③ 중 최소 몇 개를 통과해야 최종 채택인지(기본 3=전부)
 
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
@@ -16602,6 +16604,38 @@ def _add_display_suffix(pool):
     return pool
 
 
+_CLUSTER_NULL_CACHE = {}
+
+
+def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=90):
+    """★★★ (요청 — 개선) 몰림비율 판정을 '고정 50% 컷'에서 순열검정 기반으로 교체.
+       n_signals개를 n_days일에 완전 무작위로 뿌렸을 때 window일 창 안에 가장 많이
+       몰리는 비율의 분포를 시뮬레이션하고, 그 분포의 pctile 백분위를 '이 정도는 순전히
+       우연으로도 흔히 나온다'는 기준선으로 삼는다. 신호가 적을수록(표본오차 큼) 무작위
+       배치로도 자연히 몰리기 쉬우므로, 기준선 자체가 n_signals에 맞춰 자동으로 관대해짐
+       — "신호 16개 중 8개가 한쪽 반에" 같은 상황을 획일적 컷이 아니라 '이게 우연 대비
+       정말 이례적인가'로 판정한다. (n_signals, n_days, window) 조합별로 캐시.
+       n_signals가 너무 적으면(<3) 판정 자체가 무의미하므로 항상 통과 처리."""
+    key = (int(n_signals), int(n_days), int(window))
+    if key in _CLUSTER_NULL_CACHE:
+        return _CLUSTER_NULL_CACHE[key]
+    if n_signals < 3 or n_days < window:
+        _CLUSTER_NULL_CACHE[key] = 1.0
+        return 1.0
+    rng = np.random.default_rng(12345 + key[0] * 7919 + key[1] * 104729 + key[2])
+    max_fracs = np.empty(n_sim)
+    for s in range(n_sim):
+        idx = np.sort(rng.choice(n_days, size=n_signals, replace=False))
+        mc = 0.0
+        for st in idx:
+            frac = float(((idx >= st) & (idx < st + window)).sum()) / n_signals
+            if frac > mc: mc = frac
+        max_fracs[s] = mc
+    thr = float(np.percentile(max_fracs, pctile))
+    _CLUSTER_NULL_CACHE[key] = thr
+    return thr
+
+
 def _compute_baseline_rate(close_arr, horizon, limit, is_buy):
     """★ (요청 — 2차검증①) '아무 날이나 항상 신호 켜져 있다'고 가정했을 때의 기저 성공률.
        예: 상승장에서 '아무 날이나 2일 후 +1%' 확률이 이미 78%면, 성공률 85%짜리 지표는
@@ -16611,14 +16645,23 @@ def _compute_baseline_rate(close_arr, horizon, limit, is_buy):
     return float(hit.sum()) / n_ev if n_ev > 0 else 0.0
 
 
-def _verify_indicator_row(feat, close_arr, row, limit, base_rate):
+def _verify_indicator_row(feat, close_arr, row, limit, base_rate, is_buy):
     """★★★ (요청) 지표컷(성공률+최소신호) 통과 후 2차 검증 3종을 계산해 dict로 반환.
-       ① 기저확률 대비 초과(lift/margin)  ② 기대수익(크기) 점수  ③ 시간 안정성(전/후반) + 신호몰림.
-       셋 다 통과해야 passed=True. 계산 실패 시 안전하게 통과시키지 않음(보수적)."""
+       ① 기저확률 대비 초과(lift/margin)  ② 기대수익(크기) 점수  ③ 시간 안정성(윌슨기반)+신호몰림(순열검정).
+       N개 이상 통과해야 passed=True(SIMPLE_POOL_VERIFY_MIN_PASS). 계산 실패 시 보수적으로 미통과.
+       ★★★ is_buy는 반드시 '이 행이 매수풀/매도풀 중 어디 소속인지'를 그대로 받아야 한다 —
+       row['direction']('>=' 등)은 원시 임계값 비교 방향일 뿐, evaluate_buy_sell_scores는 같은
+       '>=' 신호를 매수후보로도 매도후보로도 동시에 평가해 넣으므로 direction만으로 매수/매도를
+       되짚으면 틀린다(실측 확인 — 매도풀 행에서 성공률이 0%로 완전히 뒤집혀 나오는 버그였음)."""
     g = globals()
     try:
-        is_buy = 1 if str(row['direction']) in ('>=', 'z>=') else 0
-        sig = _to_signal_array_raw(feat, row)
+        # ★★★ (요청 — 버그수정, 심각) evaluate_buy_sell_scores는 리드타임 탐색으로 찾은
+        #   최적 lead_shift만큼 신호를 이동시킨 뒤에 success_rate를 계산한다(row['lead_shift']).
+        #   여기서 _to_signal_array_raw(이동 미적용 원본)를 쓰면, 이동이 있는 지표는 완전히
+        #   다른 날짜 집합을 보게 되어 재계산한 성공률이 표시된 성공률과 크게 어긋난다
+        #   (실측: 86% 행에서 불일치, 일부는 성공률이 0으로 나오기까지 함) — lead_shift가
+        #   적용된 _to_signal_array를 써야 표시값과 정확히 같은 신호를 재현한다.
+        sig = _to_signal_array(feat, row)
         _hz = row.get('horizon_day', None)
         horizon = int(_hz) if _hz is not None and not pd.isna(_hz) else int(row.get('horizon', 1))
         succ_mag, fail_mag, ev = _fwd_return_mags(close_arr, horizon, limit, is_buy, 0)
@@ -16628,7 +16671,16 @@ def _verify_indicator_row(feat, close_arr, row, limit, base_rate):
             return {'passed': False, 'note': '평가가능신호없음'}
         succ_flags = succ_mag[mask] > 0
         n_succ = int(succ_flags.sum())
-        sr = n_succ / n
+        sr_recomputed = n_succ / n
+        # ★★★ (요청 — 안전장치) ①기저확률 대비는 '표시된 success_rate'를 그대로 써서
+        #   margin/lift가 시트에 보이는 성공률과 항상 정확히 일치하도록 보장한다(재구성값을
+        #   쓰면 위 lead_shift 버그 같은 것이 또 있어도 표시값과 어긋날 수 있음). ②기대수익
+        #   ·③안정성은 일자별 세부 분해가 꼭 필요해 재구성 배열(sr_recomputed)을 그대로 씀.
+        sr = float(row.get('success_rate', sr_recomputed))
+        if abs(sr_recomputed - sr) > 0.03:   # 3%p 넘게 어긋나면 진단용으로 남겨둠(조용히 무시 안 함)
+            print(f"    ⚠ 검증 재계산 성공률({sr_recomputed*100:.1f}%)이 표시값({sr*100:.1f}%)과 "
+                  f"{abs(sr_recomputed-sr)*100:.1f}%p 어긋남 — {row.get('indicator','?')} "
+                  f"(임계 {row.get('threshold','?')}, {int(horizon)}일)")
 
         # ① 기저확률 대비
         margin = sr - base_rate
@@ -16637,13 +16689,18 @@ def _verify_indicator_row(feat, close_arr, row, limit, base_rate):
         _rt = float(g.get('SIMPLE_POOL_VERIFY_LIFT_RATIO', 1.15))
         pass_lift = (margin >= _mg) or (lift >= _rt)
 
-        # ② 기대수익(크기)
+        # ② 기대수익(크기) — ③ 시간안정성용 성공/실패 판정은 재구성 배열(sr_recomputed) 기준
         avg_succ = float(succ_mag[mask][succ_flags].mean()) if n_succ > 0 else 0.0
         avg_fail = float(fail_mag[mask][~succ_flags].mean()) if (n - n_succ) > 0 else 0.0
-        ev_score = sr * avg_succ - (1 - sr) * avg_fail
+        ev_score = sr_recomputed * avg_succ - (1 - sr_recomputed) * avg_fail
         pass_ev = ev_score > 0
 
-        # ③ 시간 안정성(전/후반) + 신호몰림
+        # ③ 시간 안정성(전/후반) — ★★★ (요청 — 개선) 소표본에서 너무 가혹했던 문제 대응.
+        #   기존: "전/후반 성공률이 전체 대비 gap%p 이내" — 반으로 가르면 표본이 반토막나
+        #   (중앙값 16개→반쪽 8개) 우연한 쏠림만으로도 걸림. 개선: 더 나쁜 쪽 반의 '윌슨
+        #   하한'(표본이 적을수록 자동으로 더 보수적으로 깎이는 값)이 기저확률을 여전히
+        #   넘는지로 판정 — "표본오차를 감안해도 이 반쪽에 진짜 스킬이 남아있는가"를 직접
+        #   묻는 것이라, 신호가 적어도 무작정 떨어지지 않고 실제 근거 있는 하락만 걸러낸다.
         idx_true = np.nonzero(mask)[0]
         mid = len(close_arr) // 2
         _min_half = int(g.get('SIMPLE_POOL_VERIFY_MIN_HALF_SIG', 2))
@@ -16651,26 +16708,42 @@ def _verify_indicator_row(feat, close_arr, row, limit, base_rate):
         if len(i1) < _min_half or len(i2) < _min_half:
             pass_stability = False; sr1 = sr2 = None
         else:
-            sr1 = float((succ_mag[i1] > 0).mean()); sr2 = float((succ_mag[i2] > 0).mean())
-            _gap = float(g.get('SIMPLE_POOL_VERIFY_STABILITY_GAP', 0.15))
-            pass_stability = (sr1 >= sr - _gap) and (sr2 >= sr - _gap)
+            n1 = len(i1); ok1 = int((succ_mag[i1] > 0).sum())
+            n2 = len(i2); ok2 = int((succ_mag[i2] > 0).sum())
+            sr1 = ok1 / n1; sr2 = ok2 / n2
+            _wz_stab = float((g.get('STAGE_WILSON_Z') or [1.95])[0])
+            wl1 = wilson_lower(ok1, n1, _wz_stab); wl2 = wilson_lower(ok2, n2, _wz_stab)
+            pass_stability = (wl1 >= base_rate) and (wl2 >= base_rate)
 
+        # 신호몰림 — ★★★ (요청 — 개선) 고정 50% 컷 대신 순열검정 기반 임계값.
+        #   "n_signals개를 무작위로 뿌렸어도 이 정도는 흔히 몰린다"는 기준선(_cluster_null_
+        #   threshold)보다 실제 몰림이 더 심할 때만 탈락 — 신호가 적을수록 기준선 자체가
+        #   자동으로 관대해져, 표본 크기를 무시한 획일적 컷의 문제를 해소한다.
         _cw = int(g.get('SIMPLE_POOL_VERIFY_CLUSTER_WINDOW', 60))
-        _cmax = float(g.get('SIMPLE_POOL_VERIFY_CLUSTER_MAX_FRAC', 0.5))
         max_cluster = 0.0
         if len(idx_true) >= 3:
             for s in idx_true:
                 frac = float(((idx_true >= s) & (idx_true < s + _cw)).sum()) / len(idx_true)
                 if frac > max_cluster: max_cluster = frac
-        pass_cluster = max_cluster <= _cmax
-        pass_stability = pass_stability and pass_cluster
+        _cluster_thr = _cluster_null_threshold(len(idx_true), len(close_arr), _cw)
+        pass_cluster = max_cluster <= _cluster_thr
+        pass_stability_combined = pass_stability and pass_cluster
+
+        # ★★★ (요청 — 개선) AND-3(3개 전부 통과) 대신 N-of-3 완화 게이트 지원.
+        #   SIMPLE_POOL_VERIFY_MIN_PASS=3(기본)이면 기존과 동일(전부 통과 필요),
+        #   2로 낮추면 3개 중 2개만 통과해도 최종 채택 — 유망한 후보가 체크 하나 때문에
+        #   통째로 탈락하는 것을 완화.
+        _checks = [pass_lift, pass_ev, pass_stability_combined]
+        _min_pass = int(g.get('SIMPLE_POOL_VERIFY_MIN_PASS', 3))
+        _n_pass = sum(1 for c in _checks if c)
 
         return {
-            'passed': bool(pass_lift and pass_ev and pass_stability),
+            'passed': bool(_n_pass >= _min_pass),
             'baseline_rate': base_rate, 'lift': lift, 'margin': margin,
             'expected_value': ev_score, 'sr_first_half': sr1, 'sr_second_half': sr2,
-            'cluster_max_frac': max_cluster,
-            'pass_lift': pass_lift, 'pass_ev': pass_ev, 'pass_stability': pass_stability,
+            'cluster_max_frac': max_cluster, 'cluster_threshold': _cluster_thr,
+            'pass_lift': pass_lift, 'pass_ev': pass_ev, 'pass_stability': pass_stability_combined,
+            'n_checks_passed': _n_pass,
         }
     except Exception as _ve:
         return {'passed': False, 'note': f'검증오류:{_ve}'}
@@ -16735,7 +16808,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 return df
             _horizon0 = int(df.iloc[0]['horizon_day'])
             _base = _compute_baseline_rate(_close_arr, _horizon0, _limit0, 1 if is_buy else 0)
-            _results = [_verify_indicator_row(feat, _close_arr, row, _limit0, _base)
+            _results = [_verify_indicator_row(feat, _close_arr, row, _limit0, _base, is_buy)
                        for _, row in df.iterrows()]
             df['baseline_rate']    = [r.get('baseline_rate', _base) for r in _results]
             df['lift']             = [r.get('lift', np.nan) for r in _results]
@@ -16744,9 +16817,11 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             df['sr_first_half']    = [r.get('sr_first_half', None) for r in _results]
             df['sr_second_half']   = [r.get('sr_second_half', None) for r in _results]
             df['cluster_max_frac'] = [r.get('cluster_max_frac', np.nan) for r in _results]
+            df['cluster_threshold']= [r.get('cluster_threshold', np.nan) for r in _results]
             df['pass_lift']        = [bool(r.get('pass_lift', False)) for r in _results]
             df['pass_ev']          = [bool(r.get('pass_ev', False)) for r in _results]
             df['pass_stability']   = [bool(r.get('pass_stability', False)) for r in _results]
+            df['n_checks_passed']  = [int(r.get('n_checks_passed', 0)) for r in _results]
             df['passed_verify']    = [bool(r.get('passed', False)) for r in _results]
             return df
 
@@ -22817,16 +22892,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if _allc is not None:
             _abdf, _asdf = _allc
             _verify_on_disp = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
+            _min_pass_disp = int(globals().get('SIMPLE_POOL_VERIFY_MIN_PASS', 3))
             ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
             ws_all.cell(1, 1).value = (
                 f"{ticker} — 지표컷(최소신호수·성공률) 통과 후보만 표시, 호라이즌일별 섹션·성공률순 정렬. "
-                + ("2차검증(①기저확률초과 ②기대수익 ③시간안정성) 결과도 표시 — 초록=최종 풀에 사용됨."
+                + (f"2차검증(①기저확률초과 ②기대수익 ③시간안정성[윌슨하한]+신호몰림[순열검정]) "
+                   f"— {_min_pass_disp}/3개 이상 통과해야 최종 채택(초록)."
                    if _verify_on_disp else "2차검증은 꺼져 있음(SIMPLE_POOL_VERIFY_ENABLED=False)."))
             ws_all.cell(1, 1).font = Font(bold=True, size=12)
             _cols_all = ['방향', '표시명', '지표(원본)', '신호방향', '임계값', '신호개수', '성공개수', '성공률%']
             if _verify_on_disp:
                 _cols_all += ['기저확률%', '초과폭%p', '기대수익점수', '전반성공%', '후반성공%',
-                             '몰림비율%', '①기저확률', '②기대수익', '③안정성', '최종통과']
+                             '몰림비율%', '몰림기준선%', '①기저확률', '②기대수익', '③안정성',
+                             '통과수/3', '최종통과']
             _cols_all += ['wilson점수%(net가중치)']
             _green  = PatternFill('solid', fgColor='C6E0B4')
             _grey   = PatternFill('solid', fgColor='F2F2F2')
@@ -22873,9 +22951,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                 (round(float(_sr1) * 100, 1) if _sr1 is not None and not pd.isna(_sr1) else '-'),
                                 (round(float(_sr2) * 100, 1) if _sr2 is not None and not pd.isna(_sr2) else '-'),
                                 round(float(_row.get('cluster_max_frac', 0.0)) * 100, 1),
+                                round(float(_row.get('cluster_threshold', 0.0)) * 100, 1),
                                 ('✓' if _row.get('pass_lift') else '✗'),
                                 ('✓' if _row.get('pass_ev') else '✗'),
                                 ('✓' if _row.get('pass_stability') else '✗'),
+                                f"{int(_row.get('n_checks_passed', 0))}/3",
                                 ('✓ 통과' if _row.get('passed_verify') else '✗ 탈락'),
                             ]
                         _vals += [round(float(_row.get('wilson_score', 0.0)) * 100, 2)]
@@ -22889,7 +22969,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
 
             _widths = [6, 24, 20, 8, 11, 9, 9, 9]
             if _verify_on_disp:
-                _widths += [9, 9, 10, 9, 9, 9, 8, 8, 8, 9]
+                _widths += [9, 9, 10, 9, 9, 9, 10, 8, 8, 8, 8, 9]
             _widths += [12]
             for _ci, _w in enumerate(_widths, 1):
                 ws_all.column_dimensions[get_column_letter(_ci)].width = _w
