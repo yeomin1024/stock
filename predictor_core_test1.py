@@ -14402,7 +14402,7 @@ SIMPLE_POOL_MODE        = False
 # ★★★ (요청 — 재설계) 성공률 컷을 horizon_day(1~5일)별로 독립 설정. 최소신호수 8개 완화
 #   (성공률 90%+ 예외)는 더 이상 안 씀 — 아래 표의 min_signals가 절대 기준.
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
-#   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀
+#   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
     {'day': 1, 'min_signals': 10, 'min_success_buy': 0.80, 'min_success_sell': 0.75},
     {'day': 2, 'min_signals': 10, 'min_success_buy': 0.80, 'min_success_sell': 0.75},
@@ -14450,6 +14450,12 @@ SIMPLE_POOL_ALIGN_HORIZON_NET   = True
 #   조합으로 선정 — 끄면(False) 비단순모드처럼 STABLE_NEARTIE_EPS/REL 정준화가 다시 적용됨.
 SIMPLE_POOL_KL_PURE_MAX_RETURN   = True
 
+# ★★★ (요청) 매수/매도 풀은 이미 신뢰도 내림차순으로 정렬돼 있음 — "지표를 몇 개(=신뢰도
+#   얼마 이상)까지 포함해야 수익이 최대인가"를 최대 신뢰도부터 점진적으로 낮춰가며(더 많이
+#   포함시켜가며) 탐색한다. 매수/매도 각각 독립적으로 탐색(좌표하강). 끄면(False) 풀 전체를
+#   그대로 씀(탐색 없음) — 신뢰도는 그래도 net_weight_score를 통해 가중치에는 계속 반영됨.
+SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = True
+
 # ★★★ (요청 — 재설계) 지표컷 통과분에 '신뢰도'(다음날 등락률 기반, 윌슨하한×크기가중배율)를
 #   계산하되, 더 이상 개수로 자르지 않음(상위 N개 설정 자체를 없앰) — 대신 net 가중치 자체에
 #   신뢰도가 곱으로 반영되어(NET_SIGNAL_WEIGHT_COL='net_weight_score' 참고), 신뢰도가
@@ -14486,7 +14492,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04]   # ★ 1~5% (요청: 1~10%에서 축소)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
@@ -19653,6 +19659,16 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             return None
         close = pd.Series(close_ser).reindex(dates).values.astype(float)
 
+        # ★★★ (요청 — 신뢰도 임계값 탐색) 아래 count search가 "신뢰도 k번째까지 포함"을
+        #   찾으려면 buy_pool/sell_pool이 반드시 신뢰도 내림차순이어야 한다 — 호출부가
+        #   이미 정렬해서 넘기지만, 여기서도 방어적으로 다시 정렬해 순서를 보장한다
+        #   (다른 경로로 이 함수가 불려도 항상 안전하게 동작하도록).
+        if globals().get('SIMPLE_POOL_MODE', False):
+            if 'reliability' in buy_pool.columns:
+                buy_pool = buy_pool.sort_values('reliability', ascending=False).reset_index(drop=True)
+            if 'reliability' in sell_pool.columns:
+                sell_pool = sell_pool.sort_values('reliability', ascending=False).reset_index(drop=True)
+
         _wtd = bool(globals().get('NET_SIGNAL_WEIGHTED', False))
         _wcol = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
         _net_is_float = _wtd
@@ -19823,11 +19839,18 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             return best, table, (best_sel if best_sel is not None else -1e18), (kmin, kmax)
 
         # ── 지표개수(n_buy, n_sell) 후보 ──
-        # ★★★ (요청 — 단순화 모드) 호출부가 뭘 넘기든(search_counts=True 포함) 상관없이,
-        #   여기서 최종적으로 '전체 지표 그대로'로 강제한다 — 이 함수를 어디서 어떻게
-        #   불러도 단순모드에선 개수탐색이 절대 안 켜지도록 방어적으로 막음.
+        # ★★★ (요청 — 신뢰도 임계값 탐색) 풀이 신뢰도 내림차순이므로, "개수 k"를 찾는 것이
+        #   곧 "신뢰도 임계값(=k번째 지표의 신뢰도값 이상만 사용)"을 찾는 것과 수학적으로
+        #   동일하다 — 최대 신뢰도(k=1)부터 점진적으로 낮춰가며(k를 늘려가며) 최대 수익이
+        #   나오는 지점을 찾는다. SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH=False로 끄면
+        #   기존처럼 풀 전체를 그대로 씀(탐색 없음).
         if globals().get('SIMPLE_POOL_MODE', False):
-            nb_list = [nB]; ns_list = [nS]
+            if globals().get('SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH', True):
+                def _cand(mx):
+                    return list(range(1, int(mx) + 1))
+                nb_list = _cand(nB); ns_list = _cand(nS)
+            else:
+                nb_list = [nB]; ns_list = [nS]
         elif search_counts:
             def _cand(mx):
                 return list(range(1, int(mx) + 1))   # 1~풀크기(최대 100) 전부 탐색
@@ -19849,7 +19872,12 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                 ov = dict(sel=sel_c, best=best_c, table=table_c, net=net_c,
                           nb=nbu, ns=nsu, krng=krng)
             return ov, sel_c
-        if search_counts and len(nb_list) * len(ns_list) > 400:
+        # ★★★ (요청 관련 — 버그수정) 좌표하강 여부를 'search_counts 파라미터'가 아니라
+        #   '실제 격자 크기'로 판단하도록 수정 — SIMPLE_POOL_MODE의 신뢰도 임계값 탐색은
+        #   search_counts 파라미터값과 무관하게 nb_list/ns_list가 커질 수 있는데(풀 크기만큼),
+        #   기존처럼 search_counts만 보면 큰 격자를 그대로 전수탐색해(예: 80×80=6400회)
+        #   느려진다. 격자가 크면 항상 좌표하강, 작으면 항상 전수 — 결과는 동일하고 속도만 개선.
+        if len(nb_list) * len(ns_list) > 400:
             # ★ 독립(좌표하강) 탐색 — 100×100=10000 → (100+100+100)≈300. 1~100 범위 그대로.
             _bns = ns_list[len(ns_list) // 2]        # ns 초기값(중앙)
             _best_nb = nb_list[0]; _bsc = -1e18
@@ -19872,7 +19900,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         #   하루 데이터로 지표수가 69→80→72→82처럼 널뛰던 문제(실측) 대응. 개수가 적을수록
         #   단순·해석 용이하고, 정렬 안정화와 결합하면 날마다 같은 상위 지표가 유지된다.
         #   STABLE_NEARTIE_EPS=0 & REL=0이면 기존 argmax 그대로.
-        if search_counts and overall is not None and _cnt_evals:
+        if overall is not None and len(_cnt_evals) > 1:
             _mx_sel = max(_cnt_evals.values())
             _eff_c = _near_tie_eff_eps(_mx_sel)
             if _eff_c > 0:
@@ -19888,6 +19916,17 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
 
         net = overall['net']; best = overall['best']; table = overall['table']
         n_buy_opt = overall['nb']; n_sell_opt = overall['ns']
+        # ★★★ (요청) 찾은 개수를 실제 '신뢰도 임계값'으로 환산 — 풀이 신뢰도 내림차순이므로
+        #   n_buy_opt번째(=마지막으로 포함된) 지표의 신뢰도값이 곧 "이 값 이상만 사용" 임계값.
+        _rel_threshold_buy = None; _rel_threshold_sell = None
+        if globals().get('SIMPLE_POOL_MODE', False):
+            try:
+                if 'reliability' in buy_pool.columns and n_buy_opt >= 1:
+                    _rel_threshold_buy = float(buy_pool.iloc[int(n_buy_opt) - 1]['reliability'])
+                if 'reliability' in sell_pool.columns and n_sell_opt >= 1:
+                    _rel_threshold_sell = float(sell_pool.iloc[int(n_sell_opt) - 1]['reliability'])
+            except Exception:
+                pass
         kmin, kmax = overall['krng']
         buy_count = buy_cum[n_buy_opt-1]; sell_count = sell_cum[n_sell_opt-1]
 
@@ -20017,6 +20056,8 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             'weighted': _net_is_float, 'searched_counts': bool(search_counts),
             'net_by_horizon_days': sorted(_net_by_horizon.keys()) if _net_by_horizon else [],
             'kl_by_horizon': _kl_by_horizon,
+            'reliability_threshold_buy': _rel_threshold_buy,
+            'reliability_threshold_sell': _rel_threshold_sell,
         }
     except Exception as _e:
         print(f"  ⚠ 순신호 K 최적화 실패(무시): {_e}")
@@ -22428,10 +22469,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _hz_extra = (len(_hz_days_present) + 1 - 1) if _show_hz_net else 0   # +breakdown개+종합1 -기존net1
         _total_cols = 19 + _hz_extra
         _colL = get_column_letter(_total_cols)
+        _rel_thr_txt = ""
+        if globals().get('SIMPLE_POOL_MODE', False):
+            _rtb = _nsd.get('reliability_threshold_buy'); _rts = _nsd.get('reliability_threshold_sell')
+            if _rtb is not None or _rts is not None:
+                _rel_thr_txt = (f" | 신뢰도 임계값(탐색됨) 매수≥{_rtb:.3f}" if _rtb is not None else "") + \
+                              (f" / 매도≥{_rts:.3f}" if _rts is not None else "")
         ws.cell(2, 1).value = (f"★{_kltag} | 지표수 {_nsd['n_buy_opt']}/{_nsd['n_sell_opt']} | "
                                f"전체 {_p2(_full_cum)} (B&H {_p2(_bh_full)}) | "
                                f"거래 {_n_trades_bt}회 | 보유중하락 {_p2(_held_max_dd)} | "
-                               f"MDD {_p2(_mdd_bt)}{_mn_txt}")
+                               f"MDD {_p2(_mdd_bt)}{_mn_txt}{_rel_thr_txt}")
         ws.cell(2, 1).font = Font(bold=True, color='C00000'); ws.merge_cells(f'A2:{_colL}2')
         # ★ 3행: 카운트 공식은 이제 각 행 맨 오른쪽 두 컬럼(매수/매도카운트 공식)에 일별로 기록.
         _last_dt_txt = pd.Timestamp(dts[-1]).strftime('%Y-%m-%d') if len(dts) else '-'
