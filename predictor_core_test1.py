@@ -14401,12 +14401,14 @@ EVAL_END            = None           # ★ (요청) 평가 종료일. None이면
 SIMPLE_POOL_MODE        = False
 # ★★★ (요청 — 재설계) 성공률 컷을 horizon_day(1~5일)별로 독립 설정. 최소신호수 8개 완화
 #   (성공률 90%+ 예외)는 더 이상 안 씀 — 아래 표의 min_signals가 절대 기준.
+#   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
+#   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success': 0.85},
-    {'day': 2, 'min_signals': 10, 'min_success': 0.85},
-    {'day': 3, 'min_signals': 15, 'min_success': 0.85},
-    {'day': 4, 'min_signals': 15, 'min_success': 0.85},
-    {'day': 5, 'min_signals': 15, 'min_success': 0.85},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.75},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.75},
+    {'day': 3, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 4, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 5, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
 ]
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
@@ -14423,7 +14425,24 @@ SIMPLE_POOL_VERIFY_LIFT_MARGIN   = 0.10   # 기저확률보다 절대 10%p 이�
 SIMPLE_POOL_VERIFY_LIFT_RATIO    = 1.15   # 또는 기저확률의 1.15배 이상(① — margin과 OR 조건)
 SIMPLE_POOL_VERIFY_MIN_HALF_SIG  = 2      # 전/후반 각각 최소 이 개수 이상 신호 있어야 안정성 판정 가능
 SIMPLE_POOL_VERIFY_CLUSTER_WINDOW = 60    # 신호 몰림 검사 창(거래일) — 순열검정 기준선 계산에 사용
+# ★★★ (요청) ③시간안정성을 더 관대하게 — 세 가지 손잡이로 조절 가능.
+#   STABILITY_Z: 반쪽 성공률의 윌슨 하한 계산에 쓰는 z값. STAGE_WILSON_Z(보통 1.65~1.95,
+#   전체 지표 컷용)보다 낮게(기본 1.0) 잡아 하한을 덜 보수적으로 깎음 — 표본 적은 반쪽이
+#   통과하기 쉬워짐.
+#   STABILITY_TOL: 반쪽 윌슨하한이 기저확률보다 이 값(%p)만큼 낮아도 봐줌(완충 여유).
+#   CLUSTER_PCTILE: 몰림 순열검정 기준 백분위(기존 90 → 95) — '이 정도 몰림은 무작위로도
+#   흔하다'고 인정하는 폭을 넓혀, 정말 극단적으로 몰린 경우만 걸러냄.
+SIMPLE_POOL_VERIFY_STABILITY_Z    = 1.0
+SIMPLE_POOL_VERIFY_STABILITY_TOL  = 0.05
+SIMPLE_POOL_VERIFY_CLUSTER_PCTILE = 95
 SIMPLE_POOL_VERIFY_MIN_PASS      = 3      # ①②③ 중 최소 몇 개를 통과해야 최종 채택인지(기본 3=전부)
+
+# ★★★ (요청 — 예측 유효기간 방식) h일 지표가 발화하면 t~t+h-1(실보유 t+1~t+h) 동안 net
+#   신호를 계속 켠 채로 유지 — "정확히 h일 후 오른다"는 예측이 검증되는 시점까지 그 주장을
+#   반영한다(발화 당일 하루만 반영하고 사라지면 호라이즌 정보가 사실상 버려짐). h=1 지표는
+#   원래도 하루만 유효하므로 영향 없음(회귀 없음). SIMPLE_POOL_MODE에서만 적용(horizon_day
+#   컬럼이 있는 풀에만 자연히 해당 — 기존 비단순모드 풀은 영향 없음).
+SIMPLE_POOL_HOLD_TO_HORIZON      = True
 
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
@@ -16547,14 +16566,23 @@ def _dedup_identical_signal_dates(feat, pool):
     """★★★ (요청) 신호수·성공률이 완전히 같은 지표들은 '신호 발화일'까지 비교해서,
        진짜로 전부 같은 날짜에 발화하는 것들끼리는 하나만 남긴다(서로 다른 이름/수식의
        지표가 우연히 수치만 같은 게 아니라 실질적으로 동일한 신호를 내는 경우 대비).
-       비용 절감: (n_signals, n_success) 로 먼저 묶고, 그 안에서만 실제 신호일 비교
-       (전체 쌍끼리 비교하면 느림 — 대부분은애초에 신호수·성공개수부터 달라 그룹이 갈림)."""
+       비용 절감: (horizon_day, n_signals, n_success) 로 먼저 묶고, 그 안에서만 실제
+       신호일 비교(전체 쌍끼리 비교하면 느림 — 대부분은 애초에 신호수·성공개수부터
+       달라 그룹이 갈림).
+       ★★★ (요청 관련 — 버그수정) horizon_day를 그룹 키에서 빠뜨렸었다 — 같은 지표·같은
+       임계값은 호라이즌이 달라도 '언제 발화하는지'(원신호)는 100% 동일하고 성공/실패
+       판정만 다르므로, n_signals·n_success까지 우연히 같으면(실측: 소표본에서 흔함)
+       서로 다른 호라이즌 예측(예: 1일 후 예측 vs 3일 후 예측)인데도 '중복'으로 오판해
+       하나를 지워버렸다 — 이는 완전히 다른 주장이라 지우면 안 된다."""
     if pool is None or len(pool) == 0:
         return pool
     pool = pool.reset_index(drop=True)
     if 'n_success' not in pool.columns:
         return pool
-    groups = pool.groupby([pool['n_signals'].astype(int), pool['n_success'].astype(int)]).indices
+    _hz_key = (pool['horizon_day'].astype(int) if 'horizon_day' in pool.columns
+              else pd.Series([0] * len(pool)))
+    groups = pool.groupby([_hz_key, pool['n_signals'].astype(int),
+                           pool['n_success'].astype(int)]).indices
     drop_idx = set()
     for _key, idxs in groups.items():
         if len(idxs) <= 1:
@@ -16607,7 +16635,7 @@ def _add_display_suffix(pool):
 _CLUSTER_NULL_CACHE = {}
 
 
-def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=90):
+def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=95):
     """★★★ (요청 — 개선) 몰림비율 판정을 '고정 50% 컷'에서 순열검정 기반으로 교체.
        n_signals개를 n_days일에 완전 무작위로 뿌렸을 때 window일 창 안에 가장 많이
        몰리는 비율의 분포를 시뮬레이션하고, 그 분포의 pctile 백분위를 '이 정도는 순전히
@@ -16616,7 +16644,7 @@ def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=90):
        — "신호 16개 중 8개가 한쪽 반에" 같은 상황을 획일적 컷이 아니라 '이게 우연 대비
        정말 이례적인가'로 판정한다. (n_signals, n_days, window) 조합별로 캐시.
        n_signals가 너무 적으면(<3) 판정 자체가 무의미하므로 항상 통과 처리."""
-    key = (int(n_signals), int(n_days), int(window))
+    key = (int(n_signals), int(n_days), int(window), int(round(pctile)))
     if key in _CLUSTER_NULL_CACHE:
         return _CLUSTER_NULL_CACHE[key]
     if n_signals < 3 or n_days < window:
@@ -16711,21 +16739,27 @@ def _verify_indicator_row(feat, close_arr, row, limit, base_rate, is_buy):
             n1 = len(i1); ok1 = int((succ_mag[i1] > 0).sum())
             n2 = len(i2); ok2 = int((succ_mag[i2] > 0).sum())
             sr1 = ok1 / n1; sr2 = ok2 / n2
-            _wz_stab = float((g.get('STAGE_WILSON_Z') or [1.95])[0])
+            # ★★★ (요청 — 더 관대하게) 전체 지표컷용 STAGE_WILSON_Z(1.65~1.95, 표본이 적을수록
+            #   많이 깎음) 대신, 이 체크 전용으로 더 낮은 z(기본 1.0)를 써서 반쪽 표본의 하한이
+            #   덜 보수적으로 깎이게 함 + 그래도 기저확률보다 TOL(%p)만큼 낮은 것까지는 허용.
+            _wz_stab = float(g.get('SIMPLE_POOL_VERIFY_STABILITY_Z', 1.0))
+            _tol = float(g.get('SIMPLE_POOL_VERIFY_STABILITY_TOL', 0.05))
             wl1 = wilson_lower(ok1, n1, _wz_stab); wl2 = wilson_lower(ok2, n2, _wz_stab)
-            pass_stability = (wl1 >= base_rate) and (wl2 >= base_rate)
+            pass_stability = (wl1 >= base_rate - _tol) and (wl2 >= base_rate - _tol)
 
         # 신호몰림 — ★★★ (요청 — 개선) 고정 50% 컷 대신 순열검정 기반 임계값.
         #   "n_signals개를 무작위로 뿌렸어도 이 정도는 흔히 몰린다"는 기준선(_cluster_null_
         #   threshold)보다 실제 몰림이 더 심할 때만 탈락 — 신호가 적을수록 기준선 자체가
         #   자동으로 관대해져, 표본 크기를 무시한 획일적 컷의 문제를 해소한다.
+        #   ★ (요청 — 더 관대하게) 기준 백분위를 90→95로 높여, 무작위로도 흔한 몰림 폭을 넓게 인정.
         _cw = int(g.get('SIMPLE_POOL_VERIFY_CLUSTER_WINDOW', 60))
+        _cpct = float(g.get('SIMPLE_POOL_VERIFY_CLUSTER_PCTILE', 95))
         max_cluster = 0.0
         if len(idx_true) >= 3:
             for s in idx_true:
                 frac = float(((idx_true >= s) & (idx_true < s + _cw)).sum()) / len(idx_true)
                 if frac > max_cluster: max_cluster = frac
-        _cluster_thr = _cluster_null_threshold(len(idx_true), len(close_arr), _cw)
+        _cluster_thr = _cluster_null_threshold(len(idx_true), len(close_arr), _cw, pctile=_cpct)
         pass_cluster = max_cluster <= _cluster_thr
         pass_stability_combined = pass_stability and pass_cluster
 
@@ -16778,11 +16812,11 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         _limit0 = float((globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])[0])
         _wz_simple = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
         _hz_cfgs = list(globals().get('SIMPLE_POOL_HORIZON_CONFIG') or [
-            {'day': 1, 'min_signals': 10, 'min_success': 0.85},
-            {'day': 2, 'min_signals': 10, 'min_success': 0.85},
-            {'day': 3, 'min_signals': 15, 'min_success': 0.85},
-            {'day': 4, 'min_signals': 15, 'min_success': 0.85},
-            {'day': 5, 'min_signals': 15, 'min_success': 0.85},
+            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+            {'day': 3, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+            {'day': 4, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+            {'day': 5, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
         ])
         _verify_on = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
         _close_arr = pd.Series(close).reindex(feat.index).values.astype(np.float64)
@@ -16828,8 +16862,17 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         _all_buy_raw, _all_sell_raw = [], []      # 지표컷 통과분(검증정보 포함) — '전체 후보 지표' 시트용
         _buy_parts, _sell_parts = [], []          # 지표컷+검증 둘 다 통과분 — 최종 풀 조합용
         for _cfg in _hz_cfgs:
-            _day = int(_cfg['day']); _msig = int(_cfg['min_signals']); _msucc = float(_cfg['min_success'])
-            print(f"    ── horizon={_day}일 (최소신호 {_msig}개, 성공률≥{_msucc*100:.0f}%) ──")
+            _day = int(_cfg['day']); _msig = int(_cfg['min_signals'])
+            # ★★★ (요청) 매수/매도 성공률 필터를 따로 읽음 — 'min_success_buy'/'min_success_sell'이
+            #   있으면 그걸, 없으면 하위호환으로 'min_success'(공통값)를 양쪽에 씀.
+            _msucc_shared = _cfg.get('min_success', None)
+            _msucc_b = float(_cfg.get('min_success_buy', _msucc_shared if _msucc_shared is not None else 0.85))
+            _msucc_s = float(_cfg.get('min_success_sell', _msucc_shared if _msucc_shared is not None else 0.85))
+            if abs(_msucc_b - _msucc_s) < 1e-9:
+                print(f"    ── horizon={_day}일 (최소신호 {_msig}개, 성공률≥{_msucc_b*100:.0f}%) ──")
+            else:
+                print(f"    ── horizon={_day}일 (최소신호 {_msig}개, "
+                      f"매수 성공률≥{_msucc_b*100:.0f}% / 매도 성공률≥{_msucc_s*100:.0f}%) ──")
             _bdf_h, _sdf_h = _evaluate_all_indicators_raw(
                 feat, close, horizon=_day, dd_limit=_limit0, ru_limit=_limit0,
                 n_thresholds=n_thresholds)
@@ -16837,12 +16880,12 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             if _bdf_h is not None and len(_bdf_h): _bdf_h['horizon_day'] = _day
             if _sdf_h is not None and len(_sdf_h): _sdf_h['horizon_day'] = _day
 
-            def _filt_day(df):
+            def _filt_day(df, _msucc):
                 if df is None or len(df) == 0:
                     return None
                 d = df[(df['success_rate'] >= _msucc) & (df['n_signals'] >= _msig)].copy()
                 return d if len(d) else None
-            _bp = _filt_day(_bdf_h); _sp = _filt_day(_sdf_h)
+            _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s)
             _bp = _apply_verify(_bp, True); _sp = _apply_verify(_sp, False)
             if _bp is not None and len(_bp): _all_buy_raw.append(_bp)
             if _sp is not None and len(_sp): _all_sell_raw.append(_sp)
@@ -17332,6 +17375,25 @@ def _to_signal_array(feat, row):
     if d > 0:
         sig = _shift_signal_forward(sig, d)
     return sig
+
+
+def _extend_signal_to_horizon(sig, horizon):
+    """★★★ (요청 — 예측 유효기간 방식) h일 지표는 "t일 후 t+h 시점에 오른다/내린다"는
+       예측이므로, 그 예측이 유효한 t~t+h-1 구간 내내 신호를 켠 채로 유지한다(발화 당일
+       하루만 반영하고 사라지는 게 아니라, 검증 시점까지 보유). 체결은 다음날부터이므로
+       실제 보유일은 t+1~t+h(h일간). sig는 0/1 또는 가중치가 이미 곱해진 배열 모두 지원
+       (가중치는 창 안에서 그대로 유지). horizon<=1이면 원본과 동일(회귀 없음)."""
+    h = int(horizon) if horizon else 1
+    if h <= 1:
+        return sig
+    n = len(sig)
+    ext = np.zeros(n, dtype=sig.dtype)
+    fire_days = np.nonzero(sig)[0]
+    for d in fire_days:
+        end = min(d + h, n)
+        seg = ext[d:end]
+        seg[seg < sig[d]] = sig[d]
+    return ext
 
 
 def diversify_candidates(feat, score_df, *, top_n, corr_limit):
@@ -19437,20 +19499,37 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         # ★ 요청 ②: 한 지표가 임계별 여러 성공률 보유 시, '그날 켜진 것 중 최고 성공률'을 그 지표 점수로.
         #   (단일임계 풀이면 지표당 1행 → 기존과 동일하게 동작. 안전)
         _multi = bool(globals().get('NET_MULTI_THRESHOLD_WEIGHT', False))
+        _hold_hz = bool(globals().get('SIMPLE_POOL_HOLD_TO_HORIZON', True))
+        def _row_sig(row):
+            """★★★ (요청 — 예측 유효기간) 원신호에 lead_shift까지 적용된 배열을 얻은 뒤,
+               horizon_day(또는 horizon)가 있으면 그 기간만큼 신호를 연장해 보유."""
+            s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
+            if _hold_hz:
+                _hz = row.get('horizon_day', None)
+                if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
+                    _hz = row.get('horizon', None)
+                if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) and int(_hz) > 1:
+                    s = _extend_signal_to_horizon(s, int(_hz))
+            return s
         def _build_sigs(pool):
             sigs = []
-            if _multi and ('indicator' in pool.columns) and pool['indicator'].duplicated().any():
-                for _ind, grp in pool.groupby('indicator', sort=False):
+            # ★★★ (요청 — 버그수정, 일관성) 표시명(display_name)이 있으면 그걸로 그룹화 —
+            #   _build_named_sigs(공식 텍스트용)는 이미 display_name 기준으로 바뀌어 서로
+            #   다른 임계값/호라이즌을 별개로 취급하는데, 여기(실제 net 합산)가 여전히 원본
+            #   'indicator'로 묶으면 화면에는 둘로 보이는 게 실제 net 계산에서는 max()로
+            #   하나만 반영되는 불일치가 생긴다 — 표시와 실제 계산을 반드시 맞춘다.
+            _grp_col = 'display_name' if 'display_name' in pool.columns else 'indicator'
+            if _multi and (_grp_col in pool.columns) and pool[_grp_col].duplicated().any():
+                for _key, grp in pool.groupby(_grp_col, sort=False):
                     arr = np.zeros(n)
                     for _, row in grp.iterrows():
                         try:
-                            s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
-                            arr = np.maximum(arr, _wt_of(row) * s)   # 켜진 임계 중 최고 가중
+                            arr = np.maximum(arr, _wt_of(row) * _row_sig(row))   # 켜진 임계 중 최고 가중
                         except Exception: pass
                     sigs.append(arr)
             else:
                 for _, row in pool.iterrows():
-                    try: sigs.append(_wt_of(row) * np.nan_to_num(_to_signal_array(feat, row).astype(float)))
+                    try: sigs.append(_wt_of(row) * _row_sig(row))
                     except Exception: pass
             return sigs
         buy_sigs  = _build_sigs(buy_pool)
@@ -21953,8 +22032,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             return (_w ** _wexp_bt) if _wexp_bt != 1.0 else _w
 
         def _sig_arr(row):
-            try: return np.nan_to_num(_to_signal_array(feat, row).astype(float))
-            except Exception: return np.zeros(len(feat))
+            # ★★★ (요청 — 예측 유효기간, 일관성) _net_signal_k_search의 _row_sig와 동일한
+            #   호라이즌 연장을 적용 — 그래야 "보유 중"인 날(발화일은 아니지만 h일 유효기간
+            #   안)에도 공식 텍스트가 왜 그 지표가 기여하는지 실제 net 계산과 일치해서 보여준다.
+            try:
+                s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
+            except Exception:
+                return np.zeros(len(feat))
+            if bool(globals().get('SIMPLE_POOL_HOLD_TO_HORIZON', True)):
+                _hz = row.get('horizon_day', None)
+                if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
+                    _hz = row.get('horizon', None)
+                if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) and int(_hz) > 1:
+                    s = _extend_signal_to_horizon(s, int(_hz))
+            return s
 
         def _is_ic_pool(pool):
             return bool(pool is not None and (('oos_ic' in pool.columns) or ('ic' in pool.columns)))
@@ -27566,7 +27657,11 @@ def build_ensemble_search_direct(ticker, *, out_dir=None, end_date=None,
         os.makedirs(_dir, exist_ok=True)
     except Exception:
         pass
-    _today = _kst_now().strftime('%Y-%m-%d')
+    # ★★★ (요청 — 버그수정, 놓친 지점) 이 함수는 앞서 고친 run_ensemble_search 등과 별개의
+    #   진입점이라 _output_date_str() 대신 _kst_now()를 직접 써서, EVAL_END를 지정해도
+    #   파일명은 계속 '오늘' 날짜로만 나오고 있었다 — end_date 인자가 명시되면 그 날짜를,
+    #   아니면 _output_date_str()(전역 EVAL_END 반영)을 쓴다.
+    _today = (pd.Timestamp(end_date).strftime('%Y-%m-%d') if end_date else _output_date_str())
     _out_path = os.path.join(_dir, f"ensemble_search_{ticker}_{_today}.xlsx")
 
     feat, close = None, None
@@ -27867,7 +27962,9 @@ def build_result_excel_from_pool(ticker, *, pool_dir=None, out_dir=None, end_dat
         print(f"  ✗ 풀 로드 실패: {e}")
         return None
 
-    _today = _kst_now().strftime('%Y-%m-%d')
+    # ★★★ (요청 — 버그수정, 놓친 지점) 동일 — end_date 인자가 있으면 그 날짜, 없으면
+    #   _output_date_str()(전역 EVAL_END 반영)을 파일명에 쓴다.
+    _today = (pd.Timestamp(end_date).strftime('%Y-%m-%d') if end_date else _output_date_str())
     _out = os.path.join(_odir, f"ensemble_search_{ticker}_{_today}.xlsx")
     old_ticker = g.get('TICKER'); g['TICKER'] = ticker
     g['_pair_feat'] = feat; g['_pair_close'] = close; g['_pair_ticker'] = ticker
