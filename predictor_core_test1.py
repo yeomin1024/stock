@@ -14450,6 +14450,10 @@ SIMPLE_POOL_ALIGN_HORIZON_NET   = True
 #   조합으로 선정 — 끄면(False) 비단순모드처럼 STABLE_NEARTIE_EPS/REL 정준화가 다시 적용됨.
 SIMPLE_POOL_KL_PURE_MAX_RETURN   = True
 
+# ★★★ (요청) 지표컷 통과분에 '신뢰도'(다음날 등락률 기반, 윌슨하한×크기가중배율)를 계산해
+#   신뢰도 높은 순 정렬, 매수/매도 각각 상위 이 개수만 실제 K/L 탐색·일별 백테스트에 사용.
+SIMPLE_POOL_TOP_N = 100
+
 # ★★★ (요청) "지표 통과 개수가 거의 없으면 점진적으로 널널하게" — 호라이즌별 매수/매도
 #   최종통과 개수가 이 값 미만이면 아래 단계를 순서대로 적용해 기준을 완화하며 재검증한다.
 #   목표치를 채우면 그 단계에서 멈춤. 다 적용해도 못 채우면 가장 완화된 결과 그대로 사용
@@ -16659,6 +16663,66 @@ def _add_display_suffix(pool):
 _CLUSTER_NULL_CACHE = {}
 
 
+def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, z=1.65):
+    """★★★ (요청) 지표 신뢰도 — '신호 발생 후 바로 다음날'(day+1, 지표 자신의 호라이즌과
+       무관하게 항상 다음날 하나만 봄)의 실제 등락률로 신호가 얼마나 믿을 만한지 계산.
+
+       설계(정밀한 수학공식 — 두 요소의 곱):
+       ① 윌슨 하한 적중률 p_wilson = wilson_lower(k, n, z)
+          — '다음날 등락률이 임계값(threshold) 이상 유리한 방향'이었던 비율의 통계적
+          하한. 단순 k/n(관측 적중률)이 아니라 표본이 적을수록 자동으로 더 보수적으로
+          깎이는 하한을 쓰는 이유: 신호 5개 중 4개 적중(80%)과 신호 50개 중 40개
+          적중(80%)은 같은 비율이라도 신뢰도가 달라야 하는데, 윌슨 하한이 이 표본크기
+          효과를 정확히 반영한다(신호가 적을수록 하한이 더 크게 깎임).
+       ② 크기가중 배율 mag_mult = 1 + mean( max(0, (fav_i-threshold)/threshold) | 적중일 )
+          — 적중한 날들만 놓고, 각 날의 실제 등락률이 임계값을 '몇 배' 넘겼는지의
+          초과분 평균에 1을 더함. 예: 적중일 평균이 정확히 임계값(예 1%)이면 배율=1
+          (보너스 없음), 평균이 임계값의 3배(예 3%)면 배율≈3(적중 시 큰 폭으로 맞춘
+          지표에 정확히 요청하신 가중 점수 부여).
+
+       reliability = p_wilson × mag_mult
+       → 적중률이 통계적으로 탄탄하면서(①) 적중했을 때 크게 맞추는(②) 지표일수록 높은 점수.
+       하나라도 0에 가까우면(전혀 안 맞거나, 맞춰도 항상 임계값 근처에서 겨우) 전체 점수도
+       낮아지는 곱셈 구조 — 두 조건 중 하나만 좋아서는 최고점을 받을 수 없다.
+
+       반환 dict: reliability, hit_rate(관측치), wilson_hit, avg_hit_ratio(적중일 평균이
+       임계값의 몇 배인지), mag_mult, n_evaluable."""
+    try:
+        sig = _to_signal_array(feat, row)   # lead_shift는 적용(신호의 실제 유효 시점 정렬),
+                                              # 호라이즌 정렬(align)은 미적용 — 신뢰도는 지표
+                                              # 자신의 호라이즌과 무관하게 '항상 다음날' 고정 기준
+        n_total = len(sig)
+        fire_idx = np.nonzero(np.nan_to_num(np.asarray(sig, dtype=float)))[0]
+        fire_idx = fire_idx[fire_idx < n_total - 1]   # 마지막 날 발화는 다음날이 없어 평가 불가
+        if len(fire_idx) == 0:
+            return {'reliability': 0.0, 'hit_rate': 0.0, 'wilson_hit': 0.0,
+                    'avg_hit_ratio': 0.0, 'mag_mult': 1.0, 'n_evaluable': 0}
+        base = close_arr[fire_idx]
+        nxt = close_arr[fire_idx + 1]
+        valid = (base > 0) & np.isfinite(base) & np.isfinite(nxt)
+        base = base[valid]; nxt = nxt[valid]
+        if len(base) == 0:
+            return {'reliability': 0.0, 'hit_rate': 0.0, 'wilson_hit': 0.0,
+                    'avg_hit_ratio': 0.0, 'mag_mult': 1.0, 'n_evaluable': 0}
+        raw_ret = nxt / base - 1.0
+        fav = raw_ret if is_buy else -raw_ret   # ★ 매수지표=상승이 +, 매도지표=하락이 +
+        hit = fav >= threshold
+        n = len(fav); k = int(hit.sum())
+        p_wilson = wilson_lower(k, n, z)
+        if k > 0:
+            excess_ratio = (fav[hit] - threshold) / threshold
+            avg_hit_ratio = float(np.mean(fav[hit] / threshold))
+            mag_mult = 1.0 + float(np.mean(np.maximum(0.0, excess_ratio)))
+        else:
+            avg_hit_ratio = 0.0; mag_mult = 1.0
+        reliability = p_wilson * mag_mult
+        return {'reliability': reliability, 'hit_rate': k / n, 'wilson_hit': p_wilson,
+                'avg_hit_ratio': avg_hit_ratio, 'mag_mult': mag_mult, 'n_evaluable': n}
+    except Exception:
+        return {'reliability': 0.0, 'hit_rate': 0.0, 'wilson_hit': 0.0,
+                'avg_hit_ratio': 0.0, 'mag_mult': 1.0, 'n_evaluable': 0}
+
+
 def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=95):
     """★★★ (요청 — 개선) 몰림비율 판정을 '고정 50% 컷'에서 순열검정 기반으로 교체.
        n_signals개를 n_days일에 완전 무작위로 뿌렸을 때 window일 창 안에 가장 많이
@@ -16910,6 +16974,25 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 d = df[(df['success_rate'] >= _msucc) & (df['n_signals'] >= _msig)].copy()
                 return d if len(d) else None
             _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s)
+
+            # ★★★ (요청) 지표컷 통과분에 '신뢰도' 계산 — 신호 다음날(day+1, 지표 자신의
+            #   호라이즌과 무관) 등락률로 윌슨하한×크기가중배율(자세한 설계는 함수 docstring).
+            def _add_reliability(df, is_buy):
+                if df is None or len(df) == 0:
+                    return df
+                df = df.copy()
+                _rel_z = float((globals().get('STAGE_WILSON_Z') or [1.65])[0])
+                _results = [_compute_reliability_score(feat, _close_arr, row, _limit0, is_buy, _rel_z)
+                           for _, row in df.iterrows()]
+                df['reliability']    = [r['reliability'] for r in _results]
+                df['hit_rate_next']  = [r['hit_rate'] for r in _results]
+                df['wilson_hit_next']= [r['wilson_hit'] for r in _results]
+                df['avg_hit_ratio']  = [r['avg_hit_ratio'] for r in _results]
+                df['mag_mult']       = [r['mag_mult'] for r in _results]
+                return df
+            _bp = _add_reliability(_bp, True)
+            _sp = _add_reliability(_sp, False)
+
             _bp = _apply_verify(_bp, True); _sp = _apply_verify(_sp, False)
 
             # ★★★ (요청) "지표 통과 개수가 거의 없으면 점진적으로 널널하게" — 이 호라이즌의
@@ -16974,7 +17057,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_all_bdf, _all_sdf)   # ★ '전체 후보 지표' 시트용(지표컷 통과분만)
 
         _empty_cols = ['indicator', 'direction', 'threshold', 'n_signals', 'n_success',
-                      'success_rate', 'horizon_day', 'wilson_score']
+                      'success_rate', 'horizon_day', 'wilson_score', 'reliability']
         buy_c  = (pd.concat(_buy_parts,  ignore_index=True) if _buy_parts
                  else pd.DataFrame(columns=_empty_cols))
         sell_c = (pd.concat(_sell_parts, ignore_index=True) if _sell_parts
@@ -16992,8 +17075,16 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         if len(buy_c):  buy_c['horizon']  = buy_c['horizon_day']     # ★ 기존 red-bold/공식표시 로직 재사용
         if len(sell_c): sell_c['horizon'] = sell_c['horizon_day']
 
-        buy_c  = buy_c.sort_values('success_rate',  ascending=False).reset_index(drop=True) if len(buy_c) else buy_c
-        sell_c = sell_c.sort_values('success_rate', ascending=False).reset_index(drop=True) if len(sell_c) else sell_c
+        # ★★★ (요청) 신뢰도 높은 순 정렬 + 상위 N개만 채택(호라이즌 통합 후, 매수/매도 각각)
+        _top_n = int(globals().get('SIMPLE_POOL_TOP_N', 100))
+        buy_c  = buy_c.sort_values('reliability',  ascending=False).reset_index(drop=True) if len(buy_c) else buy_c
+        sell_c = sell_c.sort_values('reliability', ascending=False).reset_index(drop=True) if len(sell_c) else sell_c
+        _n_pre_top_b, _n_pre_top_s = len(buy_c), len(sell_c)
+        if len(buy_c) > _top_n:  buy_c  = buy_c.iloc[:_top_n].reset_index(drop=True)
+        if len(sell_c) > _top_n: sell_c = sell_c.iloc[:_top_n].reset_index(drop=True)
+        if _n_pre_top_b > _top_n or _n_pre_top_s > _top_n:
+            print(f"    (신뢰도 상위 {_top_n}개 채택) 매수 {_n_pre_top_b}→{len(buy_c)}개, "
+                  f"매도 {_n_pre_top_s}→{len(sell_c)}개")
         if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
         if len(sell_c): sell_c['sel_limit'] = _limit0
 
@@ -17003,9 +17094,9 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
               f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, net 가중치는 윌슨(z={_wz_simple}) 하한)")
         if len(buy_c) == 0 and len(sell_c) == 0:
             raise ValueError(
-                "2차검증(①기저확률초과 ②기대수익 ③시간안정성)까지 통과한 지표가 매수·매도 "
-                "모두 0개입니다. SIMPLE_POOL_HORIZON_CONFIG의 min_success를 낮추거나, "
-                "SIMPLE_POOL_VERIFY_ENABLED=False로 2차검증을 끄고 다시 시도하세요.")
+                "지표컷(최소신호수·성공률)을 통과한 지표가 매수·매도 모두 0개입니다. "
+                "SIMPLE_POOL_HORIZON_CONFIG의 min_success_buy/min_success_sell을 낮추거나 "
+                "min_signals을 줄여서 다시 시도하세요.")
 
         # avg_adverse는 정보성 컬럼(선정에는 안 씀) — 하위호환을 위해 그대로 채워둠
         try:
@@ -23113,34 +23204,41 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     #   "성공률 컷 통과한 것만 표시하고 days별로 나눈 후 각각 성공률 높은 순으로 정렬" —
     #   더 이상 필터 전 전체(4700여개)를 보여주지 않고, select_pool_combined가 이미
     #   지표컷(최소신호·성공률)까지 통과시킨 후보만 받아서(_SIMPLE_MODE_ALL_CANDIDATES),
-    #   호라이즌일별로 섹션을 나누고 각 섹션 내에서 성공률 내림차순 정렬.
-    #   2차검증(①기저확률초과 ②기대수익 ③시간안정성) 결과도 컬럼으로 표시 — 최종
-    #   통과(=실제 풀에 쓰인 것)는 초록, 지표컷은 통과했지만 검증에서 탈락한 건 흰색.
+    #   호라이즌일별로 섹션을 나누고 각 섹션 내에서 '신뢰도' 내림차순 정렬.
+    #   ★★★ (요청) 신뢰도 = 다음날(day+1) 등락률 기반 윌슨하한×크기가중배율(자세한 설계는
+    #   _compute_reliability_score 함수 docstring 참고). 매수/매도 각각 신뢰도 상위
+    #   SIMPLE_POOL_TOP_N개만 실제 K/L 탐색에 쓰이므로, 그 경계를 초록으로 표시.
     try:
         _allc = globals().get('_SIMPLE_MODE_ALL_CANDIDATES')
         if _allc is not None:
             _abdf, _asdf = _allc
-            _verify_on_disp = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
+            _verify_on_disp = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', False))
             _min_pass_disp = int(globals().get('SIMPLE_POOL_VERIFY_MIN_PASS', 3))
+            _top_n_disp = int(globals().get('SIMPLE_POOL_TOP_N', 100))
+            # ★ 실제 채택된(top-N) 풀의 최소 신뢰도값 — 이 이상이면 '채택' 표시(초록)
+            _rel_cut_buy = float(buy_pool['reliability'].min()) if (buy_pool is not None and len(buy_pool) and 'reliability' in buy_pool.columns) else None
+            _rel_cut_sell = float(sell_pool['reliability'].min()) if (sell_pool is not None and len(sell_pool) and 'reliability' in sell_pool.columns) else None
             ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
             ws_all.cell(1, 1).value = (
-                f"{ticker} — 지표컷(최소신호수·성공률) 통과 후보만 표시, 호라이즌일별 섹션·성공률순 정렬. "
-                + (f"2차검증(①기저확률초과 ②기대수익 ③시간안정성[윌슨하한]+신호몰림[순열검정]) "
-                   f"— {_min_pass_disp}/3개 이상 통과해야 최종 채택(초록)."
-                   if _verify_on_disp else "2차검증은 꺼져 있음(SIMPLE_POOL_VERIFY_ENABLED=False)."))
+                f"{ticker} — 지표컷(최소신호수·성공률) 통과 후보만 표시, 호라이즌일별 섹션·신뢰도순 정렬. "
+                f"신뢰도=다음날 등락률 기반 윌슨하한×크기가중배율. 매수/매도 각각 상위 {_top_n_disp}개만 "
+                f"실제 K/L 탐색에 사용됨(초록 표시)."
+                + (f" 2차검증(①기저확률초과 ②기대수익 ③시간안정성)도 표시 — {_min_pass_disp}/3개 이상 "
+                   f"통과해야 함." if _verify_on_disp else " (2차검증은 꺼져 있음)"))
             ws_all.cell(1, 1).font = Font(bold=True, size=12)
-            _cols_all = ['방향', '표시명', '지표(원본)', '신호방향', '임계값', '신호개수', '성공개수', '성공률%']
+            _cols_all = ['방향', '표시명', '지표(원본)', '신호방향', '임계값', '신호개수', '성공개수', '성공률%',
+                        '신뢰도', '다음날적중률%', '윌슨적중률%', '적중시평균배율']
             if _verify_on_disp:
                 _cols_all += ['기저확률%', '초과폭%p', '기대수익점수', '전반성공%', '후반성공%',
                              '몰림비율%', '몰림기준선%', '①기저확률', '②기대수익', '③안정성',
-                             '통과수/3', '최종통과']
-            _cols_all += ['wilson점수%(net가중치)']
+                             '통과수/3', '2차검증통과']
+            _cols_all += ['wilson점수%(net가중치)', f'상위{_top_n_disp}채택']
             _green  = PatternFill('solid', fgColor='C6E0B4')
             _grey   = PatternFill('solid', fgColor='F2F2F2')
             _day_hdr_fill = PatternFill('solid', fgColor='2E5B8A')
 
             _r_all = 2
-            for _label, _df in (('매수', _abdf), ('매도', _asdf)):
+            for _label, _df, _rel_cut in (('매수', _abdf, _rel_cut_buy), ('매도', _asdf, _rel_cut_sell)):
                 if _df is None or len(_df) == 0:
                     continue
                 _days_present = sorted(_df['horizon_day'].dropna().unique().astype(int).tolist()) \
@@ -23151,11 +23249,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if len(_dsub) == 0:
                         continue
                     _dsub = _add_display_suffix(_dsub)   # ★ 같은 지표명 여러 임계값이면 구분 접미사
-                    _dsub = _dsub.sort_values('success_rate', ascending=False).reset_index(drop=True)
+                    _sort_col = 'reliability' if 'reliability' in _dsub.columns else 'success_rate'
+                    _dsub = _dsub.sort_values(_sort_col, ascending=False).reset_index(drop=True)
                     _r_all += 1
-                    _n_ok = int(_dsub['passed_verify'].sum()) if 'passed_verify' in _dsub.columns else len(_dsub)
+                    _n_top = (int((_dsub['reliability'] >= _rel_cut).sum())
+                             if _rel_cut is not None and 'reliability' in _dsub.columns else 0)
                     c = ws_all.cell(_r_all, 1)
-                    c.value = f"── {_label} · horizon={_day}일 (성공률순, {len(_dsub)}개 중 최종통과 {_n_ok}개) ──"
+                    c.value = f"── {_label} · horizon={_day}일 (신뢰도순, {len(_dsub)}개 중 상위채택 {_n_top}개) ──"
                     c.font = Font(bold=True, color='FFFFFF'); c.fill = _day_hdr_fill
                     ws_all.merge_cells(start_row=_r_all, start_column=1, end_row=_r_all, end_column=len(_cols_all))
                     _r_all += 1
@@ -23166,11 +23266,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     for _i in range(len(_dsub)):
                         _row = _dsub.iloc[_i]
                         _r_all += 1
+                        _is_top = (_rel_cut is not None and float(_row.get('reliability', 0.0)) >= _rel_cut)
                         _vals = [_label, str(_row.get('display_name', _row['indicator'])),
                                  str(_row['indicator']), str(_row['direction']),
                                  round(float(_row['threshold']), 6),
                                  int(_row['n_signals']), int(_row['n_success']),
-                                 round(float(_row['success_rate']) * 100, 2)]
+                                 round(float(_row['success_rate']) * 100, 2),
+                                 round(float(_row.get('reliability', 0.0)), 4),
+                                 round(float(_row.get('hit_rate_next', 0.0)) * 100, 2),
+                                 round(float(_row.get('wilson_hit_next', 0.0)) * 100, 2),
+                                 round(float(_row.get('mag_mult', 1.0)), 3)]
                         if _verify_on_disp:
                             _sr1 = _row.get('sr_first_half', None); _sr2 = _row.get('sr_second_half', None)
                             _vals += [
@@ -23187,19 +23292,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                 f"{int(_row.get('n_checks_passed', 0))}/3",
                                 ('✓ 통과' if _row.get('passed_verify') else '✗ 탈락'),
                             ]
-                        _vals += [round(float(_row.get('wilson_score', 0.0)) * 100, 2)]
+                        _vals += [round(float(_row.get('wilson_score', 0.0)) * 100, 2),
+                                 ('✓ 채택' if _is_top else '')]
                         for _ci, _v in enumerate(_vals, 1):
                             ws_all.cell(_r_all, _ci).value = _v
-                        if _verify_on_disp:
-                            _fill = _green if _row.get('passed_verify') else _grey
-                            for _ci in range(1, len(_cols_all) + 1):
-                                ws_all.cell(_r_all, _ci).fill = _fill
+                        _fill = _green if _is_top else _grey
+                        for _ci in range(1, len(_cols_all) + 1):
+                            ws_all.cell(_r_all, _ci).fill = _fill
                     _r_all += 1   # 섹션 사이 빈 줄
 
-            _widths = [6, 24, 20, 8, 11, 9, 9, 9]
+            _widths = [6, 24, 20, 8, 11, 9, 9, 9, 9, 10, 10, 10]
             if _verify_on_disp:
                 _widths += [9, 9, 10, 9, 9, 9, 10, 8, 8, 8, 8, 9]
-            _widths += [12]
+            _widths += [12, 9]
             for _ci, _w in enumerate(_widths, 1):
                 ws_all.column_dimensions[get_column_letter(_ci)].width = _w
             _n_b_tot = len(_abdf) if _abdf is not None else 0
