@@ -14404,11 +14404,11 @@ SIMPLE_POOL_MODE        = False
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
-    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
-    {'day': 3, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
-    {'day': 4, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
-    {'day': 5, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 3, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 4, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 5, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
 ]
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
@@ -14481,7 +14481,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02]   # ★ 1~5% (요청: 1~10%에서 축소)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
