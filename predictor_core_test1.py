@@ -14297,6 +14297,20 @@ _RED_BOLD_FONT = _InlineFont(rFont='Arial', b=True, color='FF0000')
 def _kst_now():
     return datetime.utcnow() + timedelta(hours=9)
 
+
+def _output_date_str():
+    """★★★ (요청) 결과 파일명에 쓸 날짜 — EVAL_END가 지정돼 있으면 '그 날짜'를,
+       None(기본)이면 기존대로 '오늘(KST) 날짜'를 반환. 과거 시점 스냅샷을 재현할 때
+       (EVAL_END로 구간을 자를 때) 파일명도 실행일이 아니라 그 기준일로 남기기 위함 —
+       예: EVAL_END='2026-07-29'로 돌리면 오늘 실행해도 파일명은 ..._2026-07-29.xlsx."""
+    _ee = globals().get('EVAL_END', None)
+    if _ee is not None and str(_ee).strip():
+        try:
+            return pd.Timestamp(_ee).strftime('%Y-%m-%d')
+        except Exception:
+            pass
+    return _kst_now().strftime('%Y-%m-%d')
+
 # ★★★ (요청 — Kaggle 대응) 기본 저장 위치를 플랫폼별로 분기. Kaggle은 /kaggle/working 아래에
 #   저장한 파일이 세션 종료 후에도 노트북 Output 탭에 자동으로 남아 다운로드할 수 있다.
 OUTPUT_DIR = ('/kaggle/working/ensemble_analysis' if _IS_KAGGLE else '/content/ensemble_analysis')
@@ -14394,6 +14408,20 @@ SIMPLE_POOL_HORIZON_CONFIG = [
     {'day': 4, 'min_signals': 15, 'min_success': 0.85},
     {'day': 5, 'min_signals': 15, 'min_success': 0.85},
 ]
+# ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
+#   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
+#      최소 margin(%p) 이상 높거나 최소 ratio배 이상이어야 함(둘 중 하나만 만족해도 통과).
+#   ② 기대수익(크기) — 성공시 평균이익×성공률 − 실패시 평균손실×실패율 > 0 이어야 함.
+#   ③ 시간 안정성 — 평가구간 전반/후반으로 나눠 각각의 성공률이 전체 성공률보다
+#      STABILITY_GAP(%p) 넘게 낮지 않아야 함(반쪽만 신호가 CLUSTER_WINDOW일 내에 몰리면
+#      "몰림"으로 별도 탈락 — 특정 사건 하나에만 반응한 지표 배제).
+SIMPLE_POOL_VERIFY_ENABLED       = True
+SIMPLE_POOL_VERIFY_LIFT_MARGIN   = 0.10   # 기저확률보다 절대 10%p 이상 높아야(①)
+SIMPLE_POOL_VERIFY_LIFT_RATIO    = 1.15   # 또는 기저확률의 1.15배 이상(① — margin과 OR 조건)
+SIMPLE_POOL_VERIFY_STABILITY_GAP = 0.15   # 전/후반 성공률이 전체 대비 15%p 넘게 안 떨어져야(③)
+SIMPLE_POOL_VERIFY_MIN_HALF_SIG  = 2      # 전/후반 각각 최소 이 개수 이상 신호 있어야 안정성 판정 가능
+SIMPLE_POOL_VERIFY_CLUSTER_WINDOW   = 60  # 신호 몰림 검사 창(거래일)
+SIMPLE_POOL_VERIFY_CLUSTER_MAX_FRAC = 0.5 # 신호의 이 비율 이상이 위 창 안에 몰리면 "몰림"으로 탈락
 
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
@@ -14407,7 +14435,7 @@ HORIZON_DAYS        = 2
 #   메인풀 선정(_build_and_pick_knet_pool) 단계에서만 쓰이고, 그 이후(K/L탐색·카운트0
 #   캐스케이드·일별백테스트)는 항상 그래왔듯 호라이즌과 무관하게(신호배열은 임계값 비교일
 #   뿐이라) 동작 — 이미 만들어진 풀을 그대로 쓴다.
-HORIZON_DAYS_LIST   = None
+HORIZON_DAYS_LIST   = [1]
 DRAWDOWN_LIMIT_BUY  = 0.02
 RUNUP_LIMIT_SELL    = 0.02
 
@@ -16574,6 +16602,80 @@ def _add_display_suffix(pool):
     return pool
 
 
+def _compute_baseline_rate(close_arr, horizon, limit, is_buy):
+    """★ (요청 — 2차검증①) '아무 날이나 항상 신호 켜져 있다'고 가정했을 때의 기저 성공률.
+       예: 상승장에서 '아무 날이나 2일 후 +1%' 확률이 이미 78%면, 성공률 85%짜리 지표는
+       스킬이 거의 없는 것 — 이 기저선 대비 초과분으로 진짜 예측력을 가늠한다."""
+    hit, ev = _fwd_hit_flags(close_arr, horizon, limit, is_buy, 0)
+    n_ev = int(ev.sum())
+    return float(hit.sum()) / n_ev if n_ev > 0 else 0.0
+
+
+def _verify_indicator_row(feat, close_arr, row, limit, base_rate):
+    """★★★ (요청) 지표컷(성공률+최소신호) 통과 후 2차 검증 3종을 계산해 dict로 반환.
+       ① 기저확률 대비 초과(lift/margin)  ② 기대수익(크기) 점수  ③ 시간 안정성(전/후반) + 신호몰림.
+       셋 다 통과해야 passed=True. 계산 실패 시 안전하게 통과시키지 않음(보수적)."""
+    g = globals()
+    try:
+        is_buy = 1 if str(row['direction']) in ('>=', 'z>=') else 0
+        sig = _to_signal_array_raw(feat, row)
+        _hz = row.get('horizon_day', None)
+        horizon = int(_hz) if _hz is not None and not pd.isna(_hz) else int(row.get('horizon', 1))
+        succ_mag, fail_mag, ev = _fwd_return_mags(close_arr, horizon, limit, is_buy, 0)
+        mask = (sig > 0) & (ev > 0)
+        n = int(mask.sum())
+        if n == 0:
+            return {'passed': False, 'note': '평가가능신호없음'}
+        succ_flags = succ_mag[mask] > 0
+        n_succ = int(succ_flags.sum())
+        sr = n_succ / n
+
+        # ① 기저확률 대비
+        margin = sr - base_rate
+        lift = (sr / base_rate) if base_rate > 1e-9 else float('inf')
+        _mg = float(g.get('SIMPLE_POOL_VERIFY_LIFT_MARGIN', 0.10))
+        _rt = float(g.get('SIMPLE_POOL_VERIFY_LIFT_RATIO', 1.15))
+        pass_lift = (margin >= _mg) or (lift >= _rt)
+
+        # ② 기대수익(크기)
+        avg_succ = float(succ_mag[mask][succ_flags].mean()) if n_succ > 0 else 0.0
+        avg_fail = float(fail_mag[mask][~succ_flags].mean()) if (n - n_succ) > 0 else 0.0
+        ev_score = sr * avg_succ - (1 - sr) * avg_fail
+        pass_ev = ev_score > 0
+
+        # ③ 시간 안정성(전/후반) + 신호몰림
+        idx_true = np.nonzero(mask)[0]
+        mid = len(close_arr) // 2
+        _min_half = int(g.get('SIMPLE_POOL_VERIFY_MIN_HALF_SIG', 2))
+        i1 = idx_true[idx_true < mid]; i2 = idx_true[idx_true >= mid]
+        if len(i1) < _min_half or len(i2) < _min_half:
+            pass_stability = False; sr1 = sr2 = None
+        else:
+            sr1 = float((succ_mag[i1] > 0).mean()); sr2 = float((succ_mag[i2] > 0).mean())
+            _gap = float(g.get('SIMPLE_POOL_VERIFY_STABILITY_GAP', 0.15))
+            pass_stability = (sr1 >= sr - _gap) and (sr2 >= sr - _gap)
+
+        _cw = int(g.get('SIMPLE_POOL_VERIFY_CLUSTER_WINDOW', 60))
+        _cmax = float(g.get('SIMPLE_POOL_VERIFY_CLUSTER_MAX_FRAC', 0.5))
+        max_cluster = 0.0
+        if len(idx_true) >= 3:
+            for s in idx_true:
+                frac = float(((idx_true >= s) & (idx_true < s + _cw)).sum()) / len(idx_true)
+                if frac > max_cluster: max_cluster = frac
+        pass_cluster = max_cluster <= _cmax
+        pass_stability = pass_stability and pass_cluster
+
+        return {
+            'passed': bool(pass_lift and pass_ev and pass_stability),
+            'baseline_rate': base_rate, 'lift': lift, 'margin': margin,
+            'expected_value': ev_score, 'sr_first_half': sr1, 'sr_second_half': sr2,
+            'cluster_max_frac': max_cluster,
+            'pass_lift': pass_lift, 'pass_ev': pass_ev, 'pass_stability': pass_stability,
+        }
+    except Exception as _ve:
+        return {'passed': False, 'note': f'검증오류:{_ve}'}
+
+
 def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0, corr_limit=None):
     """★ 요청: 1~5% 각 한도로 성공풀 선출 → 하나로 합친 '다중임계' 풀.
        각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
@@ -16609,6 +16711,8 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             {'day': 4, 'min_signals': 15, 'min_success': 0.85},
             {'day': 5, 'min_signals': 15, 'min_success': 0.85},
         ])
+        _verify_on = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
+        _close_arr = pd.Series(close).reindex(feat.index).values.astype(np.float64)
 
         def _add_wilson(df):
             if df is None or len(df) == 0:
@@ -16620,8 +16724,34 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             ]
             return df
 
-        _all_buy_raw, _all_sell_raw = [], []      # 전체 후보(필터 전) — '전체 후보 지표' 시트용
-        _buy_parts, _sell_parts = [], []          # 각 호라이즌 필터 통과분 — 최종 풀 조합용
+        def _apply_verify(df, is_buy):
+            """★★★ (요청) 지표컷 통과분에 2차 검증 3종(기저확률초과·기대수익·시간안정성)을
+               적용해 검증 컬럼을 추가. SIMPLE_POOL_VERIFY_ENABLED=False면 전부 통과 처리."""
+            if df is None or len(df) == 0:
+                return df
+            df = df.copy()
+            if not _verify_on:
+                df['passed_verify'] = True
+                return df
+            _horizon0 = int(df.iloc[0]['horizon_day'])
+            _base = _compute_baseline_rate(_close_arr, _horizon0, _limit0, 1 if is_buy else 0)
+            _results = [_verify_indicator_row(feat, _close_arr, row, _limit0, _base)
+                       for _, row in df.iterrows()]
+            df['baseline_rate']    = [r.get('baseline_rate', _base) for r in _results]
+            df['lift']             = [r.get('lift', np.nan) for r in _results]
+            df['margin']           = [r.get('margin', np.nan) for r in _results]
+            df['expected_value']   = [r.get('expected_value', np.nan) for r in _results]
+            df['sr_first_half']    = [r.get('sr_first_half', None) for r in _results]
+            df['sr_second_half']   = [r.get('sr_second_half', None) for r in _results]
+            df['cluster_max_frac'] = [r.get('cluster_max_frac', np.nan) for r in _results]
+            df['pass_lift']        = [bool(r.get('pass_lift', False)) for r in _results]
+            df['pass_ev']          = [bool(r.get('pass_ev', False)) for r in _results]
+            df['pass_stability']   = [bool(r.get('pass_stability', False)) for r in _results]
+            df['passed_verify']    = [bool(r.get('passed', False)) for r in _results]
+            return df
+
+        _all_buy_raw, _all_sell_raw = [], []      # 지표컷 통과분(검증정보 포함) — '전체 후보 지표' 시트용
+        _buy_parts, _sell_parts = [], []          # 지표컷+검증 둘 다 통과분 — 최종 풀 조합용
         for _cfg in _hz_cfgs:
             _day = int(_cfg['day']); _msig = int(_cfg['min_signals']); _msucc = float(_cfg['min_success'])
             print(f"    ── horizon={_day}일 (최소신호 {_msig}개, 성공률≥{_msucc*100:.0f}%) ──")
@@ -16631,8 +16761,6 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             _bdf_h = _add_wilson(_bdf_h); _sdf_h = _add_wilson(_sdf_h)
             if _bdf_h is not None and len(_bdf_h): _bdf_h['horizon_day'] = _day
             if _sdf_h is not None and len(_sdf_h): _sdf_h['horizon_day'] = _day
-            if _bdf_h is not None and len(_bdf_h): _all_buy_raw.append(_bdf_h)
-            if _sdf_h is not None and len(_sdf_h): _all_sell_raw.append(_sdf_h)
 
             def _filt_day(df):
                 if df is None or len(df) == 0:
@@ -16640,17 +16768,30 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 d = df[(df['success_rate'] >= _msucc) & (df['n_signals'] >= _msig)].copy()
                 return d if len(d) else None
             _bp = _filt_day(_bdf_h); _sp = _filt_day(_sdf_h)
-            if _bp is not None: _buy_parts.append(_bp)
-            if _sp is not None: _sell_parts.append(_sp)
-            print(f"       → 매수 {len(_bp) if _bp is not None else 0}개 / "
-                  f"매도 {len(_sp) if _sp is not None else 0}개 채택")
+            _bp = _apply_verify(_bp, True); _sp = _apply_verify(_sp, False)
+            if _bp is not None and len(_bp): _all_buy_raw.append(_bp)
+            if _sp is not None and len(_sp): _all_sell_raw.append(_sp)
+            _bp_ok = _bp[_bp['passed_verify']] if _bp is not None and len(_bp) else None
+            _sp_ok = _sp[_sp['passed_verify']] if _sp is not None and len(_sp) else None
+            if _bp_ok is not None and len(_bp_ok): _buy_parts.append(_bp_ok)
+            if _sp_ok is not None and len(_sp_ok): _sell_parts.append(_sp_ok)
+            _n_bp = len(_bp) if _bp is not None else 0
+            _n_sp = len(_sp) if _sp is not None else 0
+            _n_bp_ok = len(_bp_ok) if _bp_ok is not None else 0
+            _n_sp_ok = len(_sp_ok) if _sp_ok is not None else 0
+            print(f"       → 지표컷 통과: 매수 {_n_bp}개 / 매도 {_n_sp}개"
+                  + (f"  →  2차검증까지 통과: 매수 {_n_bp_ok}개 / 매도 {_n_sp_ok}개" if _verify_on else ""))
 
         _all_bdf = pd.concat(_all_buy_raw, ignore_index=True) if _all_buy_raw else None
         _all_sdf = pd.concat(_all_sell_raw, ignore_index=True) if _all_sell_raw else None
-        globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_all_bdf, _all_sdf)   # ★ '전체 후보 지표' 시트용
+        globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_all_bdf, _all_sdf)   # ★ '전체 후보 지표' 시트용(지표컷 통과분만)
 
-        buy_c  = pd.concat(_buy_parts,  ignore_index=True) if _buy_parts  else pd.DataFrame()
-        sell_c = pd.concat(_sell_parts, ignore_index=True) if _sell_parts else pd.DataFrame()
+        _empty_cols = ['indicator', 'direction', 'threshold', 'n_signals', 'n_success',
+                      'success_rate', 'horizon_day', 'wilson_score']
+        buy_c  = (pd.concat(_buy_parts,  ignore_index=True) if _buy_parts
+                 else pd.DataFrame(columns=_empty_cols))
+        sell_c = (pd.concat(_sell_parts, ignore_index=True) if _sell_parts
+                 else pd.DataFrame(columns=_empty_cols))
 
         _n_before_b, _n_before_s = len(buy_c), len(sell_c)
         buy_c  = _dedup_identical_signal_dates(feat, buy_c)
@@ -16661,7 +16802,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
 
         buy_c  = _add_display_suffix(buy_c)
         sell_c = _add_display_suffix(sell_c)
-        buy_c['horizon'] = buy_c['horizon_day']     # ★ 기존 red-bold/공식표시 로직 재사용
+        if len(buy_c):  buy_c['horizon']  = buy_c['horizon_day']     # ★ 기존 red-bold/공식표시 로직 재사용
         if len(sell_c): sell_c['horizon'] = sell_c['horizon_day']
 
         buy_c  = buy_c.sort_values('success_rate',  ascending=False).reset_index(drop=True) if len(buy_c) else buy_c
@@ -16673,6 +16814,11 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         globals()['NET_SIGNAL_WEIGHTED'] = True
         print(f"    (단순모드) 최종 통합: 매수 {len(buy_c)}개 / 매도 {len(sell_c)}개 "
               f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, net 가중치는 윌슨(z={_wz_simple}) 하한)")
+        if len(buy_c) == 0 and len(sell_c) == 0:
+            raise ValueError(
+                "2차검증(①기저확률초과 ②기대수익 ③시간안정성)까지 통과한 지표가 매수·매도 "
+                "모두 0개입니다. SIMPLE_POOL_HORIZON_CONFIG의 min_success를 낮추거나, "
+                "SIMPLE_POOL_VERIFY_ENABLED=False로 2차검증을 끄고 다시 시도하세요.")
 
         # avg_adverse는 정보성 컬럼(선정에는 안 씀) — 하위호환을 위해 그대로 채워둠
         try:
@@ -22659,61 +22805,98 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 카운트0 별도풀 시트 작성 실패(무시): {_eze}")
 
-    # ─── 7d-2. ★ (요청) 단순모드 — 전체 후보 지표(필터 전) 정보 시트 ───
-    #   "확인해야 하니 모든 후보 지표에 대해 신호 개수·성공률 등 정보 시트 하나로 정리,
-    #   성공률 높은 순 정렬" — SIMPLE_POOL_MODE에서 select_pool_combined가 저장해둔
-    #   필터 전 원시 평가 결과(전체 지표-임계 조합, 호라이즌 1~5일 전부)를 그대로 시트로 씀.
-    #   ★★★ (요청 — 재설계) 호라이즌별 통과기준이 다르므로, 노랑 표시도 그 행의
-    #   horizon_day에 맞는 기준(min_signals/min_success)으로 판정. 지표명 뒤에
-    #   [N일]·#k 구분 접미사가 붙은 표시용 이름(display_name)도 별도 컬럼으로 추가.
+    # ─── 7d-2. ★★★ (요청 — 재설계) 단순모드 — 지표컷 통과 + 2차검증 결과 시트 ───
+    #   "성공률 컷 통과한 것만 표시하고 days별로 나눈 후 각각 성공률 높은 순으로 정렬" —
+    #   더 이상 필터 전 전체(4700여개)를 보여주지 않고, select_pool_combined가 이미
+    #   지표컷(최소신호·성공률)까지 통과시킨 후보만 받아서(_SIMPLE_MODE_ALL_CANDIDATES),
+    #   호라이즌일별로 섹션을 나누고 각 섹션 내에서 성공률 내림차순 정렬.
+    #   2차검증(①기저확률초과 ②기대수익 ③시간안정성) 결과도 컬럼으로 표시 — 최종
+    #   통과(=실제 풀에 쓰인 것)는 초록, 지표컷은 통과했지만 검증에서 탈락한 건 흰색.
     try:
         _allc = globals().get('_SIMPLE_MODE_ALL_CANDIDATES')
         if _allc is not None:
             _abdf, _asdf = _allc
-            _hz_cfgs_disp = list(globals().get('SIMPLE_POOL_HORIZON_CONFIG') or [])
-            _cfg_by_day = {int(c['day']): (int(c['min_signals']), float(c['min_success'])) for c in _hz_cfgs_disp}
+            _verify_on_disp = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
             ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
-            _cfg_txt = ' / '.join(f"{d}일:신호≥{ms}·성공률≥{mp*100:.0f}%"
-                                  for d, (ms, mp) in sorted(_cfg_by_day.items()))
             ws_all.cell(1, 1).value = (
-                f"{ticker} — 전체 후보 지표-임계-호라이즌 조합 (필터 전, 단순모드). "
-                f"호라이즌별 통과기준: {_cfg_txt} (통과분은 노랑 표시)")
+                f"{ticker} — 지표컷(최소신호수·성공률) 통과 후보만 표시, 호라이즌일별 섹션·성공률순 정렬. "
+                + ("2차검증(①기저확률초과 ②기대수익 ③시간안정성) 결과도 표시 — 초록=최종 풀에 사용됨."
+                   if _verify_on_disp else "2차검증은 꺼져 있음(SIMPLE_POOL_VERIFY_ENABLED=False)."))
             ws_all.cell(1, 1).font = Font(bold=True, size=12)
-            _cols_all = ['방향', '표시명(호라이즌·구분)', '지표(원본)', '신호방향', '임계값', '호라이즌일',
-                        '신호개수', '성공개수', '성공률%', '평균크기', 'wilson점수%(net가중치)']
-            _hdr_row = 3
-            for _ci, _cn in enumerate(_cols_all, 1):
-                c = ws_all.cell(_hdr_row, _ci); c.value = _cn
-                c.font = Font(bold=True, color='FFFFFF'); c.fill = PatternFill('solid', fgColor='4472C4')
-            _r_all = _hdr_row
-            _yellow = PatternFill('solid', fgColor='FFF2CC')
+            _cols_all = ['방향', '표시명', '지표(원본)', '신호방향', '임계값', '신호개수', '성공개수', '성공률%']
+            if _verify_on_disp:
+                _cols_all += ['기저확률%', '초과폭%p', '기대수익점수', '전반성공%', '후반성공%',
+                             '몰림비율%', '①기저확률', '②기대수익', '③안정성', '최종통과']
+            _cols_all += ['wilson점수%(net가중치)']
+            _green  = PatternFill('solid', fgColor='C6E0B4')
+            _grey   = PatternFill('solid', fgColor='F2F2F2')
+            _day_hdr_fill = PatternFill('solid', fgColor='2E5B8A')
+
+            _r_all = 2
             for _label, _df in (('매수', _abdf), ('매도', _asdf)):
                 if _df is None or len(_df) == 0:
                     continue
-                _dsort = _df.sort_values('success_rate', ascending=False).reset_index(drop=True)
-                _dsort = _add_display_suffix(_dsort)   # ★ 같은 지표명 여러 임계값이면 구분 접미사
-                for _i in range(len(_dsort)):
-                    _row = _dsort.iloc[_i]
+                _days_present = sorted(_df['horizon_day'].dropna().unique().astype(int).tolist()) \
+                                if 'horizon_day' in _df.columns else [None]
+                for _day in _days_present:
+                    _dsub = (_df[_df['horizon_day'].astype(int) == _day].copy()
+                            if _day is not None else _df.copy())
+                    if len(_dsub) == 0:
+                        continue
+                    _dsub = _add_display_suffix(_dsub)   # ★ 같은 지표명 여러 임계값이면 구분 접미사
+                    _dsub = _dsub.sort_values('success_rate', ascending=False).reset_index(drop=True)
                     _r_all += 1
-                    _day_v = int(_row['horizon_day']) if 'horizon_day' in _dsort.columns else None
-                    _vals = [_label, str(_row.get('display_name', _row['indicator'])),
-                             str(_row['indicator']), str(_row['direction']),
-                             round(float(_row['threshold']), 6), _day_v,
-                             int(_row['n_signals']), int(_row['n_success']),
-                             round(float(_row['success_rate']) * 100, 2),
-                             round(float(_row.get('avg_extreme', 0.0)), 4),
-                             round(float(_row.get('wilson_score', 0.0)) * 100, 2)]
-                    for _ci, _v in enumerate(_vals, 1):
-                        ws_all.cell(_r_all, _ci).value = _v
-                    _ms_req, _mp_req = _cfg_by_day.get(_day_v, (10, 0.85))
-                    if float(_row['success_rate']) >= _mp_req and int(_row['n_signals']) >= _ms_req:
-                        for _ci in range(1, len(_cols_all) + 1):
-                            ws_all.cell(_r_all, _ci).fill = _yellow
-            for _ci, _w in enumerate([6, 26, 22, 8, 11, 8, 9, 9, 9, 10, 12], 1):
+                    _n_ok = int(_dsub['passed_verify'].sum()) if 'passed_verify' in _dsub.columns else len(_dsub)
+                    c = ws_all.cell(_r_all, 1)
+                    c.value = f"── {_label} · horizon={_day}일 (성공률순, {len(_dsub)}개 중 최종통과 {_n_ok}개) ──"
+                    c.font = Font(bold=True, color='FFFFFF'); c.fill = _day_hdr_fill
+                    ws_all.merge_cells(start_row=_r_all, start_column=1, end_row=_r_all, end_column=len(_cols_all))
+                    _r_all += 1
+                    _hdr_row_this = _r_all
+                    for _ci, _cn in enumerate(_cols_all, 1):
+                        hc = ws_all.cell(_r_all, _ci); hc.value = _cn
+                        hc.font = Font(bold=True, color='FFFFFF'); hc.fill = PatternFill('solid', fgColor='4472C4')
+                    for _i in range(len(_dsub)):
+                        _row = _dsub.iloc[_i]
+                        _r_all += 1
+                        _vals = [_label, str(_row.get('display_name', _row['indicator'])),
+                                 str(_row['indicator']), str(_row['direction']),
+                                 round(float(_row['threshold']), 6),
+                                 int(_row['n_signals']), int(_row['n_success']),
+                                 round(float(_row['success_rate']) * 100, 2)]
+                        if _verify_on_disp:
+                            _sr1 = _row.get('sr_first_half', None); _sr2 = _row.get('sr_second_half', None)
+                            _vals += [
+                                round(float(_row.get('baseline_rate', 0.0)) * 100, 2),
+                                round(float(_row.get('margin', 0.0)) * 100, 2),
+                                round(float(_row.get('expected_value', 0.0)), 5),
+                                (round(float(_sr1) * 100, 1) if _sr1 is not None and not pd.isna(_sr1) else '-'),
+                                (round(float(_sr2) * 100, 1) if _sr2 is not None and not pd.isna(_sr2) else '-'),
+                                round(float(_row.get('cluster_max_frac', 0.0)) * 100, 1),
+                                ('✓' if _row.get('pass_lift') else '✗'),
+                                ('✓' if _row.get('pass_ev') else '✗'),
+                                ('✓' if _row.get('pass_stability') else '✗'),
+                                ('✓ 통과' if _row.get('passed_verify') else '✗ 탈락'),
+                            ]
+                        _vals += [round(float(_row.get('wilson_score', 0.0)) * 100, 2)]
+                        for _ci, _v in enumerate(_vals, 1):
+                            ws_all.cell(_r_all, _ci).value = _v
+                        if _verify_on_disp:
+                            _fill = _green if _row.get('passed_verify') else _grey
+                            for _ci in range(1, len(_cols_all) + 1):
+                                ws_all.cell(_r_all, _ci).fill = _fill
+                    _r_all += 1   # 섹션 사이 빈 줄
+
+            _widths = [6, 24, 20, 8, 11, 9, 9, 9]
+            if _verify_on_disp:
+                _widths += [9, 9, 10, 9, 9, 9, 8, 8, 8, 9]
+            _widths += [12]
+            for _ci, _w in enumerate(_widths, 1):
                 ws_all.column_dimensions[get_column_letter(_ci)].width = _w
-            ws_all.freeze_panes = f'A{_hdr_row + 1}'
-            print(f"  ✓ 전체 후보 지표 시트 — 매수 {len(_abdf) if _abdf is not None else 0}개 / "
-                  f"매도 {len(_asdf) if _asdf is not None else 0}개 (성공률순 정렬)")
+            _n_b_tot = len(_abdf) if _abdf is not None else 0
+            _n_s_tot = len(_asdf) if _asdf is not None else 0
+            print(f"  ✓ 전체 후보 지표 시트 — 지표컷 통과분 매수 {_n_b_tot}개 / 매도 {_n_s_tot}개 "
+                  f"(호라이즌일별 섹션·성공률순 정렬{', 2차검증 결과 포함' if _verify_on_disp else ''})")
     except Exception as _eallc:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 전체 후보 지표 시트 작성 실패(무시): {_eallc}")
@@ -23645,8 +23828,11 @@ def run_ensemble_search(*, eval_start='__USE_GLOBAL__',
                 buy_pool, sell_pool = _mp0[1], _mp0[2]
             else:
                 print(f"  ⚠ K/L 풀 생성 실패 — 빈 풀로 폴백(메타 그리드 없이 진행)")
-                buy_pool = pd.DataFrame(columns=['indicator', 'direction', 'threshold', 'success_rate'])
-                sell_pool = pd.DataFrame(columns=['indicator', 'direction', 'threshold', 'success_rate'])
+                _empty_pool_cols = ['indicator', 'direction', 'threshold', 'success_rate',
+                                    'n_signals', 'n_success', 'horizon_day', 'horizon',
+                                    'wilson_score', 'sel_limit', 'display_name']
+                buy_pool = pd.DataFrame(columns=_empty_pool_cols)
+                sell_pool = pd.DataFrame(columns=_empty_pool_cols)
         if force_best_combo is not None:
             best_inner = {
                 'K_buy': int(force_best_combo['K_buy']),
@@ -23661,8 +23847,13 @@ def run_ensemble_search(*, eval_start='__USE_GLOBAL__',
             #   가중치(실제 풀 크기) 크기가 안 맞아 'shapes not aligned' 오류로 죽었다.
             #   주입 모드에선 '탐색'이 아니라 '주어진 풀 그대로 재현'이 목적이므로,
             #   풀 크기를 넘지 않도록 클램프(min)한다.
-            _kb0 = min(int(k_buy_range[0]), len(buy_pool)) if len(buy_pool) > 0 else int(k_buy_range[0])
-            _ks0 = min(int(k_sell_range[0]), len(sell_pool)) if len(sell_pool) > 0 else int(k_sell_range[0])
+            #   ★★★ (요청 관련 버그수정) 풀이 '완전히 비었을 때'(len==0)는 위 클램프가 여전히
+            #   전역 기본값을 그대로 써서(예: 10) 크기0 가중치와 안 맞는 동일한 크래시가
+            #   났다(SIMPLE_POOL_MODE에서 2차검증까지 전부 탈락하면 이 경로를 탐). 빈 풀이면
+            #   0으로 맞춘다 — 이러면 daily_ensemble_backtest가 '항상 매수/매도 신호 없음'으로
+            #   깨끗하게 처리되어(카운트0 전용) 크래시 대신 명확한 결과(거래 0건)로 끝난다.
+            _kb0 = min(int(k_buy_range[0]), len(buy_pool)) if len(buy_pool) > 0 else 0
+            _ks0 = min(int(k_sell_range[0]), len(sell_pool)) if len(sell_pool) > 0 else 0
             best_inner = {'K_buy': _kb0, 'vote_buy': max(1, int(_kb0*vote_ratio_buy[0])),
                           'K_sell': _ks0, 'vote_sell': max(1, int(_ks0*vote_ratio_sell[0]))}
         # best_meta는 주입된 메타 그리드값으로 채움(엑셀 표시용)
@@ -23958,7 +24149,7 @@ def run_ensemble_search(*, eval_start='__USE_GLOBAL__',
                 daily, trades, cur)
 
     if output_file is None:
-        today_str = _kst_now().strftime('%Y-%m-%d')
+        today_str = _output_date_str()   # ★ (요청) EVAL_END 지정 시 그 날짜, 아니면 오늘
         output_file = os.path.join(SCRIPT_DIR, f'ensemble_search_{ticker}_{today_str}.xlsx')
     print(f"\n  Excel 저장: {output_file}")
     # ★ 데이터 스냅샷 저장 (요청) — 재현 정확도용. 재현 때 이 데이터를 그대로 쓰면
@@ -26323,7 +26514,7 @@ def run_multi_ticker_analysis(tickers=None, *,
     t_total = time.time()
     n_done = sum(1 for tk in tickers if tk in existing)
     n_total = len(tickers)
-    today_str = _kst_now().strftime('%Y-%m-%d')
+    today_str = _output_date_str()   # ★ (요청) EVAL_END 지정 시 그 날짜, 아니면 오늘
 
     for ti, ticker in enumerate(tickers, 1):
         print(f"\n{'━' * 72}")
@@ -26586,7 +26777,7 @@ def run_multi_ticker_analysis(tickers=None, *,
     print('═' * 72)
 
     if AUTO_DOWNLOAD_EXCEL:
-        today_str = _kst_now().strftime('%Y-%m-%d')
+        today_str = _output_date_str()   # ★ (요청) 실제 저장된 파일명과 반드시 같은 날짜 기준이어야 매칭됨
         files_to_download = []   # ★ summary 파일 안 만듦 → 종목별 엑셀만
         for ticker in tickers:
             candidate = os.path.join(SCRIPT_DIR, f'ensemble_search_{ticker}_{today_str}.xlsx')
