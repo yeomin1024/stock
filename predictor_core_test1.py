@@ -14404,11 +14404,11 @@ SIMPLE_POOL_MODE        = False
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.75},
-    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.75},
-    {'day': 3, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
-    {'day': 4, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
-    {'day': 5, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.80},
+    {'day': 3, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+    {'day': 4, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+    {'day': 5, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
 ]
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
@@ -14432,9 +14432,9 @@ SIMPLE_POOL_VERIFY_CLUSTER_WINDOW = 60    # 신호 몰림 검사 창(거래일) 
 #   STABILITY_TOL: 반쪽 윌슨하한이 기저확률보다 이 값(%p)만큼 낮아도 봐줌(완충 여유).
 #   CLUSTER_PCTILE: 몰림 순열검정 기준 백분위(기존 90 → 95) — '이 정도 몰림은 무작위로도
 #   흔하다'고 인정하는 폭을 넓혀, 정말 극단적으로 몰린 경우만 걸러냄.
-SIMPLE_POOL_VERIFY_STABILITY_Z    = 1.0
-SIMPLE_POOL_VERIFY_STABILITY_TOL  = 0.05
-SIMPLE_POOL_VERIFY_CLUSTER_PCTILE = 95
+SIMPLE_POOL_VERIFY_STABILITY_Z    = 1.15
+SIMPLE_POOL_VERIFY_STABILITY_TOL  = 0.03
+SIMPLE_POOL_VERIFY_CLUSTER_PCTILE = 93
 SIMPLE_POOL_VERIFY_MIN_PASS      = 3      # ①②③ 중 최소 몇 개를 통과해야 최종 채택인지(기본 3=전부)
 
 # ★★★ (요청 — 예측 유효기간 방식) h일 지표가 발화하면 t~t+h-1(실보유 t+1~t+h) 동안 net
@@ -14443,6 +14443,22 @@ SIMPLE_POOL_VERIFY_MIN_PASS      = 3      # ①②③ 중 최소 몇 개를 통�
 #   원래도 하루만 유효하므로 영향 없음(회귀 없음). SIMPLE_POOL_MODE에서만 적용(horizon_day
 #   컬럼이 있는 풀에만 자연히 해당 — 기존 비단순모드 풀은 영향 없음).
 SIMPLE_POOL_HOLD_TO_HORIZON      = True
+
+# ★★★ (요청) KL 순신호(net≥K 매수/net≤L 매도)는 근접동률 정준화 없이 '진짜 최대 수익률'
+#   조합으로 선정 — 끄면(False) 비단순모드처럼 STABLE_NEARTIE_EPS/REL 정준화가 다시 적용됨.
+SIMPLE_POOL_KL_PURE_MAX_RETURN   = True
+
+# ★★★ (요청) "지표 통과 개수가 거의 없으면 점진적으로 널널하게" — 호라이즌별 매수/매도
+#   최종통과 개수가 이 값 미만이면 아래 단계를 순서대로 적용해 기준을 완화하며 재검증한다.
+#   목표치를 채우면 그 단계에서 멈춤. 다 적용해도 못 채우면 가장 완화된 결과 그대로 사용
+#   (탈락 처리하지 않음 — 아예 0개보다는 완화된 기준으로라도 있는 게 낫다는 전제).
+SIMPLE_POOL_MIN_TOTAL_INDICATORS = 5
+SIMPLE_POOL_RELAX_STEPS = [
+    {'min_pass': 2},                                                              # 1단계: 3개중 2개만 통과해도 채택
+    {'min_pass': 2, 'lift_margin': 0.05, 'lift_ratio': 1.08, 'stability_tol': 0.06},  # 2단계: 기준 자체도 살짝 완화
+    {'min_pass': 1, 'lift_margin': 0.03, 'lift_ratio': 1.05, 'stability_tol': 0.10,
+     'cluster_pctile': 97},                                                       # 3단계: 더 완화(①②③ 중 1개만 통과해도)
+]
 
 OOS_ENABLED         = False          # ★ 끔(요청): OOS 미사용, 전체수익 최고 K만
 OOS_START           = None           # OOS 미사용
@@ -16399,7 +16415,13 @@ STABLE_NEARTIE_REL = 0.05      # ★ 상대 동률폭 — 최고수익의 5% 이
 
 
 def _near_tie_eff_eps(best_score):
-    """절대(STABLE_NEARTIE_EPS)·상대(STABLE_NEARTIE_REL) 동률폭 중 큰 쪽을 유효 폭으로."""
+    """절대(STABLE_NEARTIE_EPS)·상대(STABLE_NEARTIE_REL) 동률폭 중 큰 쪽을 유효 폭으로.
+       ★★★ (요청 — KL 순신호는 최대 수익률로 선정) SIMPLE_POOL_MODE에서는 이 근접동률
+       정준화(원래 복잡한 파이프라인의 지표풀 자체가 매일 흔들리는 문제 대응용)를 끄고
+       순수 argmax(진짜 최대 수익률)를 쓴다 — 단순모드는 풀 구성 자체가 이미 결정적이라
+       정준화의 필요성이 낮고, 사용자 요청대로 'KL 순신호는 최대 수익률로 선정'을 보장."""
+    if globals().get('SIMPLE_POOL_MODE', False) and globals().get('SIMPLE_POOL_KL_PURE_MAX_RETURN', True):
+        return 0.0
     _a = float(globals().get('STABLE_NEARTIE_EPS', 0.0) or 0.0)
     _r = float(globals().get('STABLE_NEARTIE_REL', 0.0) or 0.0)
     return max(_a, _r * abs(float(best_score)))
@@ -16887,6 +16909,51 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 return d if len(d) else None
             _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s)
             _bp = _apply_verify(_bp, True); _sp = _apply_verify(_sp, False)
+
+            # ★★★ (요청) "지표 통과 개수가 거의 없으면 점진적으로 널널하게" — 이 호라이즌의
+            #   매수/매도 각각 최종통과 개수가 목표치(SIMPLE_POOL_MIN_TOTAL_INDICATORS) 미만이면
+            #   SIMPLE_POOL_RELAX_STEPS를 순서대로 하나씩 적용해(기준 완화) 재검증한다 —
+            #   목표치를 채우거나 단계가 바닥나면 멈춘다. 완전히 못 채워도 그 시점까지
+            #   가장 완화된 결과를 그대로 쓴다(에러 아님, 그 정도가 최선).
+            _min_target = int(globals().get('SIMPLE_POOL_MIN_TOTAL_INDICATORS', 5))
+            _relax_steps = list(globals().get('SIMPLE_POOL_RELAX_STEPS') or [])
+            def _relax_if_needed(df_primary, is_buy, label):
+                nonlocal_result = df_primary
+                _n_ok = int(nonlocal_result['passed_verify'].sum()) if nonlocal_result is not None and len(nonlocal_result) else 0
+                if _n_ok >= _min_target or df_primary is None or len(df_primary) == 0:
+                    return nonlocal_result, 0
+                _param_map = {'min_pass': 'SIMPLE_POOL_VERIFY_MIN_PASS',
+                             'lift_margin': 'SIMPLE_POOL_VERIFY_LIFT_MARGIN',
+                             'lift_ratio': 'SIMPLE_POOL_VERIFY_LIFT_RATIO',
+                             'stability_tol': 'SIMPLE_POOL_VERIFY_STABILITY_TOL',
+                             'stability_z': 'SIMPLE_POOL_VERIFY_STABILITY_Z',
+                             'cluster_pctile': 'SIMPLE_POOL_VERIFY_CLUSTER_PCTILE'}
+                for _si, _step in enumerate(_relax_steps):
+                    _snap = {}
+                    for _k, _v in _step.items():
+                        _gk = _param_map.get(_k)
+                        if _gk:
+                            _snap[_gk] = globals().get(_gk)
+                            globals()[_gk] = _v
+                    try:
+                        _re = _apply_verify(df_primary, is_buy)
+                    finally:
+                        for _gk, _v in _snap.items():
+                            globals()[_gk] = _v
+                    _n_ok2 = int(_re['passed_verify'].sum()) if _re is not None and len(_re) else 0
+                    if _n_ok2 > _n_ok:
+                        nonlocal_result = _re; _n_ok = _n_ok2
+                    if _n_ok >= _min_target:
+                        print(f"       (점진적 완화) {label} horizon={_day}일: {_si+1}단계 완화 후 "
+                              f"{_n_ok}개 통과(목표 {_min_target}개)")
+                        return nonlocal_result, _si + 1
+                if _n_ok > (int(df_primary['passed_verify'].sum()) if len(df_primary) else 0):
+                    print(f"       (점진적 완화) {label} horizon={_day}일: 전 단계 적용해도 "
+                          f"{_n_ok}개뿐(목표 {_min_target}개 미달) — 이 결과로 진행")
+                return nonlocal_result, len(_relax_steps)
+            if _relax_steps and _min_target > 0:
+                _bp, _ = _relax_if_needed(_bp, True, '매수')
+                _sp, _ = _relax_if_needed(_sp, False, '매도')
             if _bp is not None and len(_bp): _all_buy_raw.append(_bp)
             if _sp is not None and len(_sp): _all_sell_raw.append(_sp)
             _bp_ok = _bp[_bp['passed_verify']] if _bp is not None and len(_bp) else None
@@ -28303,10 +28370,44 @@ def wait_mode_prompt(check_interval_sec=300, input_timeout_sec=60):
           f"지금부터 실행합니다.\n")
 
 
-# ★ 모듈이 로드되는 시점(노트북 셀 실행 포함)에 바로 물어본다 — main()이나 RUN_MODE
-#   설정과 무관하게, 이 파일이 실행되는 순간 항상 한 번 트리거된다.
-wait_mode_prompt()
+def wait_mode_run_after(check_interval_sec=300):
+    """★★★ (요청 — 재설계) 기존엔 실행 '전'에 대기모드 여부를 y/n으로 물어보고,
+       거기서 대기가 끝나야 비로소 분석이 시작됐다 — 자동화/예약 실행 환경에서는
+       응답을 받을 수 없어 그 자체가 실행을 막는 문제가 있었다(타임아웃 후 기본값이
+       '대기'라 더더욱 그랬음). ★ 요청대로 순서를 뒤집는다: 질문 없이 분석을 즉시
+       실행하고, 분석이 전부 끝난 뒤에 '질문 없이 자동으로' 다음 안전 시각(미국
+       정규장 마감+버퍼, 통합거래량·정정 반영 완료 시점)까지 대기모드로 들어간다.
+       이미 안전 시각을 지났으면 대기 없이 바로 종료."""
+    from zoneinfo import ZoneInfo
+    KST = ZoneInfo('Asia/Seoul')
+    _target = _next_safe_kst_time()
+    _now0 = datetime.now(KST)
+    _wait_h = (_target - _now0).total_seconds() / 3600
+    if _wait_h <= 0:
+        print(f"\n  ℹ 이미 데이터 확정 시각을 지났습니다 — 대기모드 생략.")
+        return
+    print(f"\n  ⏳ 실행 완료 — 대기모드 진입(자동, 질문 없음). "
+          f"목표 시각: {_target.strftime('%Y-%m-%d %H:%M:%S')} (한국시간)")
+    print(f"     예상 대기시간: 약 {_wait_h:.1f}시간")
+    if _wait_h > 11:
+        print(f"     ⚠ Colab/Kaggle 무료 세션은 보통 최대 12시간까지만 유지됩니다 — "
+              f"이 대기시간은 세션 제한에 걸릴 수 있습니다.")
+    while True:
+        _now = datetime.now(KST)
+        _remain = (_target - _now).total_seconds()
+        if _remain <= 0:
+            break
+        _this_wait = min(check_interval_sec, _remain)
+        _h = int(_remain // 3600); _m = int((_remain % 3600) // 60)
+        print(f"     ⏳ 대기 중... 남은 시간 약 {_h}시간 {_m}분")
+        time.sleep(_this_wait)
+    print(f"  ✅ 대기 완료 ({datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')} 한국시간)")
 
 
+# ★★★ (요청 — 재설계) 모듈 로드 시점에 실행 '전' 대기모드를 물어보던 것을 제거 —
+#   이제 아무것도 묻지 않고 바로 main()을 실행한 뒤, 완료 후에만 자동으로(질문 없이)
+#   대기모드에 들어간다. (구 wait_mode_prompt()는 y/n 질문 버전 — 더 이상 자동 호출
+#   안 되지만 필요시 참고용으로 정의는 남겨둠.)
 if __name__ == '__main__':
     main()
+    wait_mode_run_after()
