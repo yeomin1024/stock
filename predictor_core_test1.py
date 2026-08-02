@@ -19649,55 +19649,47 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
 
 
 def _compute_all_horizon_nets_display(feat, close_ser, buy_pool, sell_pool):
-    """★★★ (요청 — "net값 수치는 표시는 해놓고") 각 호라이즌의 net을 '그 호라이즌의 모든
-       지표를 그대로 다 써서'(신뢰도 임계값 탐색으로 일부만 골라내지 않고) 계산 — 순수
-       표시/참고용. 종합net·K/L 결정에 실제로 쓰이는 값(신뢰도임계값 탐색+호라이즌범위
-       탐색 결과 반영)과는 별개다 — 그래서 범위탐색에서 제외된 호라이즌이라도, 또는
-       한 호라이즌 안에서 신뢰도임계값 탐색으로 일부 지표가 빠지는 경우라도, 여기서는
-       그 호라이즌의 지표를 전부 반영한 '있는 그대로의' net을 보여준다.
+    """★★★ (요청 — "net값 수치는 표시는 해놓고") 각 호라이즌의 net을 '그 호라이즌만 따로
+       떼서 독립적으로 신뢰도임계값 탐색까지 거친' 결과로 계산 — 순수 표시/참고용이지만
+       실제 매수/매도카운트(공식)에 반영되는 지표 구성과 일관되게 만든 값.
+
+       ★★★ (요청 관련 — 버그수정) 이전 버전은 '그 호라이즌의 모든 후보를 신뢰도임계값
+       탐색 없이 전부 그대로' 더했다 — 그 결과 그날 실제로는 발화 지표가 0개인
+       호라이즌인데도(매수/매도카운트 공식에 안 나타남) net_h가 큰 값으로 나오는
+       불일치가 있었다(실측 확인: 매도카운트 공식엔 3일 지표 1개(가중치 1.11)뿐인데
+       1~5일net이 전부 0이 아니고 부호도 안 맞았음) — 신뢰도임계값 탐색에서 이미
+       제외된(그 호라이즌 안에서 수익에 도움 안 되는) 후보까지 전부 합산해버린 게 원인.
+       이제 각 호라이즌을 '그 호라이즌 지표만 갖고 독립적으로 K/L까지 탐색했을 때'의
+       net을 쓴다 — 실제 매수/매도카운트 구성 원리와 동일한 필터링을 거치므로, 특정
+       호라이즌에서 그날 신호가 하나도 없으면 net_h도 정확히 0이 된다.
        반환: {horizon_day: net_array} 딕셔너리."""
     out = {}
     if buy_pool is None or sell_pool is None:
         return out
-    n = len(feat)
-    close = pd.Series(close_ser).reindex(feat.index).values.astype(float)
-    _wtd = bool(globals().get('NET_SIGNAL_WEIGHTED', False))
-    _wcol = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
-    def _wt_of(row):
-        if not _wtd: return 1.0
-        try:
-            v = row.get(_wcol)
-            if v is None or (isinstance(v, float) and np.isnan(v)): return 1.0
-            return float(v)
-        except Exception:
-            return 1.0
-    def _hz_of(row):
-        _h = row.get('horizon_day', None)
-        if _h is None or (isinstance(_h, float) and pd.isna(_h)):
-            _h = row.get('horizon', 1)
-        return int(_h) if _h is not None and not (isinstance(_h, float) and pd.isna(_h)) else 1
-    def _row_sig(row, _h):
-        try:
-            s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
-        except Exception:
-            return np.zeros(n)
-        if _h > 1:
-            s = _shift_signal_forward(s, _h - 1)
-        return s
+    _has_hz = ('horizon_day' in buy_pool.columns) or ('horizon_day' in sell_pool.columns)
+    if not _has_hz:
+        return out
     _all_hz = set()
-    if len(buy_pool): _all_hz |= {_hz_of(r) for _, r in buy_pool.iterrows()}
-    if len(sell_pool): _all_hz |= {_hz_of(r) for _, r in sell_pool.iterrows()}
+    if len(buy_pool): _all_hz |= set(buy_pool['horizon_day'].dropna().astype(int))
+    if len(sell_pool): _all_hz |= set(sell_pool['horizon_day'].dropna().astype(int))
     for _h in sorted(_all_hz):
-        _barr = np.zeros(n); _sarr = np.zeros(n)
-        for _, row in buy_pool.iterrows():
-            if _hz_of(row) == _h:
-                try: _barr += _wt_of(row) * _row_sig(row, _h)
-                except Exception: pass
-        for _, row in sell_pool.iterrows():
-            if _hz_of(row) == _h:
-                try: _sarr += _wt_of(row) * _row_sig(row, _h)
-                except Exception: pass
-        out[_h] = _barr - _sarr
+        _bp = (buy_pool[buy_pool['horizon_day'].astype(int) == _h].reset_index(drop=True)
+              if 'horizon_day' in buy_pool.columns else buy_pool.iloc[0:0])
+        _sp = (sell_pool[sell_pool['horizon_day'].astype(int) == _h].reset_index(drop=True)
+              if 'horizon_day' in sell_pool.columns else sell_pool.iloc[0:0])
+        if len(_bp) == 0 or len(_sp) == 0:
+            out[_h] = np.zeros(len(feat))
+            continue
+        try:
+            _res_h = _net_signal_k_search(feat, close_ser, _bp, _sp, ticker='',
+                                          n_buy=None, n_sell=None, search_counts=False,
+                                          select_by='full', compute_zero_pool=False)
+            if _res_h is not None and _res_h.get('daily') is not None and 'net' in _res_h['daily'].columns:
+                out[_h] = _res_h['daily']['net'].values.astype(float)
+            else:
+                out[_h] = np.zeros(len(feat))
+        except Exception:
+            out[_h] = np.zeros(len(feat))
     return out
 
 
@@ -21903,13 +21895,39 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         print(f"  ★ 채택: 호라이즌 {_hz_best_subset[0]}~{_hz_best_subset[-1]}일까지만 사용 "
                               f"(전체수익 {_hz_best_res['full_cum']*100:+.2f}%)")
                         globals()['_KNET_HORIZON_SUBSET'] = list(_hz_best_subset)
-                        # ★★★ (요청 — "net값 수치는 표시는 해놓고") 채택 안 된 호라이즌도 정보 표시는
-                        #   계속 되도록, 각 호라이즌의 '모든' 지표를 그대로 쓴(신뢰도임계값 탐색으로
-                        #   걸러지지 않은) 순수 표시용 net을 따로 계산해둔다 — _search_best_horizon_
-                        #   subset의 "전체 호라이즌 포함" 후보조차 그 안에서 신뢰도임계값 탐색이 다시
-                        #   걸려 신뢰도0인 호라이즌(예: 5일)을 스스로 배제해버리는 문제가 있었다
-                        #   (실측 확인) — 그래서 별도 함수로 필터링 없이 순수하게 계산한다.
-                        _hz_disp_all = _compute_all_horizon_nets_display(feat, close_full, _mbp0, _msp0)
+                        _hz_all = sorted(set(
+                            list(_mbp0['horizon_day'].dropna().astype(int)) +
+                            list(_msp0['horizon_day'].dropna().astype(int))))
+                        # ★★★ (요청 — "net값 수치는 표시는 해놓고", 버그수정 2차) 하이브리드 방식 —
+                        #   ① 채택된 호라이즌(= _hz_best_subset에 포함)은 실제 매수/매도카운트를
+                        #      만드는 것과 '완전히 동일한' 최종 풀(_mbp/_msp, 이미 신뢰도임계값+
+                        #      호라이즌범위 탐색 다 끝난 것)에서 그대로 뽑아 쓴다 — 그래야 그날
+                        #      매수/매도 공식에 안 보이는 지표가 net_h에 몰래 섞여 들어가는 일이
+                        #      없다(실측 확인된 버그).
+                        #   ② 채택 안 된 호라이즌(범위탐색에서 제외됨)은 애초에 최종 풀에 아예
+                        #      없으므로, 그 호라이즌만 따로 떼어 독립적으로 신뢰도임계값 탐색한
+                        #      결과를 참고용으로 보여준다(순수 정보용 — 실제 매매엔 영향 없음).
+                        _hz_disp_all = {}
+                        _excluded_hz = [h for h in _hz_all if h not in _hz_best_subset]
+                        if _excluded_hz:
+                            _bp_excl = _mbp0[_mbp0['horizon_day'].isin(_excluded_hz)].reset_index(drop=True)
+                            _sp_excl = _msp0[_msp0['horizon_day'].isin(_excluded_hz)].reset_index(drop=True)
+                            _hz_disp_all.update(_compute_all_horizon_nets_display(feat, close_full, _bp_excl, _sp_excl))
+                        for _h in _hz_best_subset:
+                            _bp_h = _mbp[_mbp['horizon_day'] == _h]
+                            _sp_h = _msp[_msp['horizon_day'] == _h]
+                            _barr = np.zeros(len(feat)); _sarr = np.zeros(len(feat))
+                            for _, row in _bp_h.iterrows():
+                                _s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
+                                if _h > 1: _s = _shift_signal_forward(_s, _h - 1)
+                                _w = float(row.get('net_weight_score', 0.0) or 0.0)
+                                _barr += _w * _s
+                            for _, row in _sp_h.iterrows():
+                                _s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
+                                if _h > 1: _s = _shift_signal_forward(_s, _h - 1)
+                                _w = float(row.get('net_weight_score', 0.0) or 0.0)
+                                _sarr += _w * _s
+                            _hz_disp_all[_h] = _barr - _sarr
                         if _hz_disp_all:
                             globals()['_KNET_HORIZON_NET_DISPLAY'] = {
                                 f'net_h{_h}': _arr for _h, _arr in _hz_disp_all.items()}
@@ -22699,6 +22717,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                      '포지션', '액션', '진입가', '보유일', '미실현%', '실현%',
                      '누적수익%(합산)'] + _net_hdr_cols +
                     ['보유중하락 누적%', '구간', '향후어닝', '매수카운트 공식', '매도카운트 공식'])
+        # ★★★ (요청) "net값을 몇일까지 사용했는지 사용한열은 노란색으로 표시" — 종합net
+        #   계산에 실제로 채택된(호라이즌 범위탐색 결과) net_h{h} 헤더만 노란색으로 표시.
+        #   범위탐색을 안 했거나 전부 채택됐으면(=제외된 게 없으면) 전부 그대로(강조 없음).
+        if _show_hz_net:
+            _adopted_hz = globals().get('_KNET_HORIZON_SUBSET')
+            if _adopted_hz and set(_adopted_hz) != set(_hz_days_present):
+                _c14 = 14
+                for _hi, _h in enumerate(_hz_days_present):
+                    if _h in _adopted_hz:
+                        hc = ws.cell(5, _c14 + _hi)
+                        hc.fill = PatternFill('solid', fgColor='FFEB3B')  # 진한 노랑 — 채택된 호라이즌
+                _c_comb = _c14 + len(_hz_days_present)
+                ws.cell(5, _c_comb).fill = PatternFill('solid', fgColor='FFEB3B')  # 종합net도 항상 채택 표시
         pos = _pos_bt
         rets = _daily_ret
         _YEL = PatternFill('solid', fgColor='FFF2CC')
@@ -28829,10 +28860,86 @@ def wait_mode_run_after(check_interval_sec=300):
     print(f"  ✅ 대기 완료 ({datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')} 한국시간)")
 
 
+class _TeeOutput:
+    """★★★ (요청) 화면에 그대로 보여주면서 동시에 버퍼에도 전부 누적 — 실행 로그 파일 기록용.
+       print()은 그대로 실시간으로 보이고, 실행이 끝나면 누적된 전체 로그를 텍스트 파일로 저장."""
+    def __init__(self, original_stream):
+        self.original = original_stream
+        self.buffer = []
+    def write(self, text):
+        self.original.write(text)
+        self.buffer.append(text)
+        return len(text)
+    def flush(self):
+        try:
+            self.original.flush()
+        except Exception:
+            pass
+    def get_log(self):
+        return ''.join(self.buffer)
+
+
+def _run_with_log_capture():
+    """★★★ (요청) "각 단계별 진행이 잘 이루어졌는지 모든 과정을 텍스트파일에 실행 로그
+       남겨놓고 실행 다되면 자동 다운로드" — main() 실행 전체(모든 print 출력)를 화면에
+       보여주는 동시에 버퍼에 누적하고, main()이 끝나면(성공이든 예외든) 그 전체 로그를
+       타임스탬프 붙은 .txt 파일로 저장한 뒤 자동 다운로드한다(엑셀 자동다운로드와 동일한
+       방식 재사용 — Colab이면 files.download, 아니면 안내만)."""
+    import sys as _sys
+    _orig_stdout = _sys.stdout
+    _tee = _TeeOutput(_orig_stdout)
+    _sys.stdout = _tee
+    _run_err = None
+    try:
+        main()
+    except Exception as _e:
+        _run_err = _e
+        import traceback
+        traceback.print_exc()
+    finally:
+        _sys.stdout = _orig_stdout
+    _log_text = _tee.get_log()
+    try:
+        _ts = _kst_now().strftime('%Y-%m-%d_%H%M%S')
+        _log_dir = globals().get('SCRIPT_DIR', '.')
+        os.makedirs(_log_dir, exist_ok=True)
+        _log_path = os.path.join(_log_dir, f'실행로그_{_ts}.txt')
+        with open(_log_path, 'w', encoding='utf-8') as _lf:
+            _lf.write(_log_text)
+        print(f"\n  📝 실행 로그 저장 완료: {_log_path} ({len(_log_text):,}자)")
+        _download_log_file(_log_path)
+    except Exception as _le:
+        print(f"\n  ⚠ 실행 로그 저장/다운로드 실패: {_le}")
+    if _run_err is not None:
+        raise _run_err
+
+
+def _download_log_file(log_path):
+    """★ 실행로그 .txt 자동 다운로드 — 엑셀 자동다운로드(_auto_download_excels)와 동일한
+       Colab 판별·다운로드 방식을 그대로 재사용."""
+    if not os.path.exists(log_path):
+        return
+    is_colab = False; files = None
+    if globals().get('_IS_COLAB', False):
+        try:
+            from google.colab import files
+            is_colab = True
+        except ImportError:
+            is_colab = False
+    if is_colab:
+        try:
+            files.download(log_path)
+            print(f"     📥 실행 로그 다운로드 시작: {log_path}")
+        except Exception as e:
+            print(f"     ⚠ 실행 로그 다운로드 실패: {e}")
+    else:
+        print(f"     ℹ (Colab 아님) 실행 로그는 다음 경로에 저장돼 있습니다: {log_path}")
+
+
 # ★★★ (요청 — 재설계) 모듈 로드 시점에 실행 '전' 대기모드를 물어보던 것을 제거 —
 #   이제 아무것도 묻지 않고 바로 main()을 실행한 뒤, 완료 후에만 자동으로(질문 없이)
 #   대기모드에 들어간다. (구 wait_mode_prompt()는 y/n 질문 버전 — 더 이상 자동 호출
 #   안 되지만 필요시 참고용으로 정의는 남겨둠.)
 if __name__ == '__main__':
-    main()
+    _run_with_log_capture()
     wait_mode_run_after()
