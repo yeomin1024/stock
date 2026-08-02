@@ -16902,25 +16902,44 @@ def _score_indicator_vs_target(feat, row, target, magnitude, is_buy, harm_mask=N
     return correct_w, wrong_w, harm_w, len(fire_idx), fire_idx
 
 
-def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=0.0):
-    """★★★ (요청) "전체 후보 지표" 시트에 표시할, 이 지표가 발화한(호라이즌 정렬된 표시일
-       기준) 날짜들과 그 각각의 다음날 실제 등락률을 계산한다 — 화면 표시용
-       "YYYY-MM-DD(+3%)" 형식과, 예측이 맞았는지(초록)/틀렸는지(빨강) 색상 판정까지 함께.
-       반환: [(date_str, ret_pct, is_correct), ...] — 표시일 오름차순, 마지막 날(다음날
-       정보 없음)은 자동 제외."""
-    sig = _aligned_signal_for_row(feat, row)
+def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=None):
+    """★★★ (요청 — 재설계) "전체 후보 지표" 시트에 표시할, 이 지표의 실제 발화일과 그
+       '성공률' 판정에 그대로 쓰인 것과 동일한 수치·기준으로 성공/실패를 계산한다.
+
+       ★★★ (요청 관련 — 버그수정, 실측 확인) 이전 버전은 호라이즌 정렬된 '표시일'
+       기준으로 '그 다음날 하루치' 등락만 봤는데, 실제 '성공률'(_eval_buy_signals/
+       _eval_sell_signals)은 전혀 다른 걸 잰다 — 원본 발화일 i(lead_shift만 적용, 호라이즌
+       정렬 전)부터 '정확히 horizon일 후'(i+horizon)까지의 누적 등락률 딱 하나
+       (close[i+horizon]/close[i]-1, 며칠간 등락 합산이 아니라 시작·끝 두 가격만 비교하는
+       것)로 판정한다. 그래서 예를 들어 5일 중 나흘은 올라 누적으론 임계값을 넘겨
+       '성공'이어도, 마지막 하루만 따로 보면 하락(음수)일 수 있다 — 성공률100%인데
+       날짜별 목록에 마이너스가 섞여 보이는 모순은 바로 이 정의 차이 때문이었다(실측
+       확인됨). 이제 발화일도(_to_signal_array — lead_shift만 적용, 호라이즌 정렬 안 함)
+       등락률도(close[i+horizon]/close[i]-1, 전체 구간 누적 하나) 성공률 계산과 완전히
+       동일한 방식으로 맞췄고, 성공 판정 기준도 0%가 아니라 실제 그 호라이즌에 쓰인
+       임계값(STAGE_SUCCESS_LIMIT[horizon-1])을 그대로 쓴다 — 이제 이 컬럼의 초록/빨강이
+       '성공개수/성공률' 숫자와 정확히 1:1로 맞아떨어진다.
+       반환: [(date_str, ret_pct, is_correct), ...] — 발화일 오름차순, horizon일 후가
+       데이터 범위를 벗어나는(평가 불가) 날은 자동 제외."""
+    sig = _to_signal_array(feat, row)   # ★ lead_shift만 적용 — 성공률 계산과 동일한 발화일 기준
     n = len(sig)
     idx = feat.index
+    _hz = row.get('horizon_day', None)
+    if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
+        _hz = row.get('horizon', None)
+    _hz = int(_hz) if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) else 1
+    if target_threshold is None:
+        _lims = list(globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])
+        target_threshold = float(_lims[_hz - 1]) if len(_lims) >= _hz else float(_lims[0])
     fire_idx = np.nonzero(sig)[0]
-    fire_idx = fire_idx[fire_idx < n - 1]   # 마지막 표시일은 다음날 정보가 없어 평가 불가
+    fire_idx = fire_idx[fire_idx <= n - 1 - _hz]   # i+horizon이 범위 안에 있어야 평가 가능
     out = []
     for d in sorted(fire_idx.tolist()):
-        p0 = close_arr[d]; p1 = close_arr[d + 1]
+        p0 = close_arr[d]; p1 = close_arr[d + _hz]
         if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
             continue
-        ret = p1 / p0 - 1.0
-        fav = ret if is_buy else -ret
-        is_correct = bool(fav > target_threshold)
+        ret = p1 / p0 - 1.0   # ★ close[i+horizon]/close[i]-1 — 성공률 계산과 완전히 동일한 식
+        is_correct = bool(ret >= target_threshold) if is_buy else bool(ret <= -target_threshold)
         try:
             date_str = pd.Timestamp(idx[d]).strftime('%Y-%m-%d')
         except Exception:
