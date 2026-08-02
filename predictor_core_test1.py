@@ -14461,6 +14461,13 @@ SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = True
 #   채택 안 된 호라이즌도 개별 net_h{h} 값은 계속 표시됨(종합net 계산에서만 빠짐).
 SIMPLE_POOL_HORIZON_SUBSET_SEARCH = True
 
+# ★★★ (요청) 호라이즌 범위 탐색 시 순수 최대수익 하나만 보지 않고, 최대수익 대비 이 비율
+#   (상대) 이내 후보들도 전부 고려 — 그 중 "매수여야 하는데 상승을 놓치거나 매도여야
+#   하는데 하락을 못 피한" 변동폭 벌점이 가장 낮은 후보를 최종 채택.
+SIMPLE_POOL_HZ_MISS_PENALTY_SELECT = True
+SIMPLE_POOL_HZ_BAND_PCT            = 0.10   # 최대수익 대비 10% 이내까지 후보로
+SIMPLE_POOL_HZ_MISS_Z               = 1.0   # 벌점 계산 시 표준오차 가중치(신뢰도 z와 같은 역할)
+
 # ★★★ (요청 — 재설계) 지표컷 통과분에 '신뢰도'(다음날 등락률 기반, 윌슨하한×크기가중배율)를
 #   계산하되, 더 이상 개수로 자르지 않음(상위 N개 설정 자체를 없앰) — 대신 net 가중치 자체에
 #   신뢰도가 곱으로 반영되어(NET_SIGNAL_WEIGHT_COL='net_weight_score' 참고), 신뢰도가
@@ -17107,11 +17114,20 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         #   윌슨값을 완전히 빼고 신뢰도(이제 t-통계량 기반) 그 자체를 가중치로 쓴다.
         #   reliability는 max(0,t)라 항상 0 이상 — 신뢰도가 낮을수록(0에 가까울수록) 자연히
         #   net 기여가 작아지고, 높을수록 그만큼 직접 커진다(중간에 다른 지표로 희석 안 됨).
+        #   ★★★ (요청 관련 — 버그수정) reliability를 '그대로' 가중치로 쓰면(바닥 없이), 채택된
+        #   지표들이 전부 reliability=0인 경우(=지표컷은 통과했지만 다음날 t-검정은 못 넘긴
+        #   경우 — 실제로 흔함) net 배열 전체가 0이 되어버려 K/L 탐색 격자가 [0,1] 두 값뿐인
+        #   퇴화 상태가 되고, 그러면 '항상 롱'(K=0,L=0)이 유일한 비자명 선택지라 그게 그대로
+        #   채택돼버린다(실측: 엑셀에 ★K=0.000/L=0.000으로 찍힘 — 지표 존재 여부와 무관하게
+        #   나오는 무의미한 결과). 최소 바닥 1.0을 더해(1+reliability) 가중치가 절대 0이
+        #   되지 않게 한다 — 신뢰도가 0인 지표도 최소 1만큼은 목소리를 내고, 신뢰도가 있는
+        #   지표는 그만큼 추가로 커지는 구조는 그대로 유지(윌슨값은 여전히 안 씀).
         def _add_net_weight(df):
             if df is None or len(df) == 0:
                 return df
             df = df.copy()
-            df['net_weight_score'] = df['reliability'].fillna(0.0) if 'reliability' in df.columns else 0.0
+            _rel = df['reliability'].fillna(0.0) if 'reliability' in df.columns else 0.0
+            df['net_weight_score'] = 1.0 + _rel
             return df
         buy_c  = _add_net_weight(buy_c)
         sell_c = _add_net_weight(sell_c)
@@ -17121,7 +17137,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
         if len(sell_c): sell_c['sel_limit'] = _limit0
 
-        globals()['NET_SIGNAL_WEIGHT_COL'] = 'net_weight_score'   # ★ net 가중치 = 윌슨값×(1+신뢰도)
+        globals()['NET_SIGNAL_WEIGHT_COL'] = 'net_weight_score'   # ★ net 가중치 = 1+신뢰도(윌슨 미사용)
         globals()['NET_SIGNAL_WEIGHTED'] = True
         print(f"    (단순모드) 최종 통합: 매수 {len(buy_c)}개 / 매도 {len(sell_c)}개 "
               f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, 개수제한 없음, "
@@ -19693,6 +19709,42 @@ def _compute_all_horizon_nets_display(feat, close_ser, buy_pool, sell_pool):
     return out
 
 
+def _compute_miss_penalty_score(daily_net, best_k, close_arr, threshold=0.01, z=1.0):
+    """★★★ (요청) 후보(호라이즌 범위 등) 선택 시 "매수 상태여야 하는데 상승을 놓치거나
+       (=현금 상태에서 다음날 크게 상승), 매도 상태여야 하는데 하락을 피하지 못한
+       (=보유 상태에서 다음날 크게 하락) 경우의 변동률"로 점수를 매긴다 — 점수가
+       낮을수록 좋은 후보(기회를 덜 놓치고, 손실을 더 잘 피함).
+
+       설계(신뢰도와 비슷한 방식 — 평균+표준오차 기반, 이진 카운트 아님):
+       각 '놓친 날'의 실제 놓친/못피한 변동폭(연속값)을 모아서
+         score = mean(놓친폭) + z × 표준오차(놓친폭)
+       — 신뢰도가 '평균 − z×SE'(하한, 낙관적 지표는 보수적으로 깎음)였다면, 이건 정반대로
+       '평균 + z×SE'(상한, 놓친 게 적어 보여도 표본이 적으면 불리하게/보수적으로 더 얹음)
+       — 같은 원리를 방향만 뒤집어 적용(적을수록 좋은 '벌점'이므로 상한을 써야 보수적).
+       표본(놓친 날)이 아예 없으면 0점(완벽 — 놓친 기회도 못피한 손실도 없음)."""
+    n = len(daily_net)
+    pos = (np.asarray(daily_net, float) >= best_k).astype(float)
+    pos[0] = 0.0
+    misses = []
+    for s in range(n - 1):
+        base = close_arr[s]; nxt = close_arr[s + 1]
+        if not (base > 0 and np.isfinite(base) and np.isfinite(nxt)):
+            continue
+        ret = nxt / base - 1.0
+        if pos[s] == 0 and ret > threshold:
+            misses.append(ret)            # 현금인데 다음날 크게 상승 = 놓친 매수기회
+        elif pos[s] == 1 and ret < -threshold:
+            misses.append(-ret)           # 보유인데 다음날 크게 하락 = 못 피한 손실(양수로 기록)
+    if not misses:
+        return 0.0
+    m = np.asarray(misses, float)
+    if len(m) < 2:
+        return float(m[0])
+    mean_miss = float(np.mean(m))
+    se = float(np.std(m, ddof=1)) / np.sqrt(len(m))
+    return mean_miss + z * se
+
+
 def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker='', oos_start=None):
     """★★★ (요청) "1일, 1~2일, 1~3일, 1~4일, 1~5일" 처럼 호라이즌을 누적으로 포함시켜가며,
        전체수익이 최대가 되는 지점(=어디까지 포함해야 하는가)을 찾는다. 무조건 다 포함하는
@@ -19714,6 +19766,7 @@ def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker=
         return None, _hz_all, []   # 호라이즌이 1개뿐이면 비교할 대상이 없음 — 탐색 불필요
     best_result = None; best_subset = None; best_ret = -1e18
     _all_results = []
+    close_arr = pd.Series(close_ser).reindex(feat.index).values.astype(float)
     for _i in range(len(_hz_all)):
         _subset = _hz_all[:_i + 1]   # 누적 포함: [1], [1,2], [1,2,3], ...
         _bp = (buy_pool[buy_pool['horizon_day'].isin(_subset)].reset_index(drop=True)
@@ -19728,7 +19781,44 @@ def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker=
         _ret = (_res.get('full_cum') if _res else None)
         _all_results.append((list(_subset), _ret, _res))
         if _res is not None and _ret is not None and _ret > best_ret:
-            best_ret = _ret; best_result = _res; best_subset = list(_subset)
+            best_ret = _ret
+
+    # ★★★ (요청) 순수 최대수익 하나만 보지 않고, 최대수익 대비 일정폭(기본 10%, 상대) 이내
+    #   후보들을 전부 '동등하게 유효한' 후보로 놓고, 그 중에서 "매수여야 하는데 상승을
+    #   놓쳤거나(현금인데 다음날 크게 오름) 매도여야 하는데 하락을 못 피한(보유인데 다음날
+    #   크게 내림)" 변동폭으로 벌점을 매겨 벌점이 가장 낮은 후보를 최종 채택한다 — 수익률만
+    #   보면 비슷비슷한 후보들 중에서, 실제로 기회를 더 잘 잡고 손실을 더 잘 피하는 쪽을
+    #   고르기 위함. 끄면(False) 기존처럼 순수 최대수익 하나만 채택.
+    if globals().get('SIMPLE_POOL_HZ_MISS_PENALTY_SELECT', True) and best_ret > -1e17:
+        _band = float(globals().get('SIMPLE_POOL_HZ_BAND_PCT', 0.10))
+        _cut = best_ret * (1.0 - _band) if best_ret > 0 else best_ret - abs(best_ret) * _band - 0.10
+        _band_cands = [(s, r, res) for (s, r, res) in _all_results
+                       if r is not None and res is not None and r >= _cut]
+        if len(_band_cands) > 1:
+            _z_miss = float(globals().get('SIMPLE_POOL_HZ_MISS_Z', 1.0))
+            _scored = []
+            for (s, r, res) in _band_cands:
+                _bk = res.get('best_k')
+                _dn = res.get('daily')
+                if _bk is None or _dn is None or 'net' not in _dn.columns:
+                    continue
+                _sc = _compute_miss_penalty_score(_dn['net'].values, float(_bk), close_arr, z=_z_miss)
+                _scored.append((s, r, res, _sc))
+            if _scored:
+                _scored.sort(key=lambda x: x[3])   # 벌점 낮은 순
+                _band_txt = ", ".join(f"{s[0]}~{s[-1]}일(수익{r*100:+.1f}%,벌점{sc:.4f})"
+                                      if len(s) > 1 else f"{s[0]}일(수익{r*100:+.1f}%,벌점{sc:.4f})"
+                                      for s, r, _, sc in _scored)
+                print(f"    (최대수익 {_band*100:.0f}% 이내 후보 벌점비교) {_band_txt}")
+                best_subset_s, best_ret_s, best_result_s, _ = _scored[0]
+                if best_result_s is not None:
+                    best_result = best_result_s; best_subset = list(best_subset_s)
+                    return best_result, (best_subset or _hz_all), _all_results
+
+    for (s, r, res) in _all_results:
+        if res is not None and r is not None and r == best_ret:
+            best_result = res; best_subset = list(s)
+            break
     return best_result, (best_subset or _hz_all), _all_results
 
 
@@ -19994,6 +20084,13 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
 
         net = overall['net']; best = overall['best']; table = overall['table']
         n_buy_opt = overall['nb']; n_sell_opt = overall['ns']
+        # ★★★ (요청 — 버그수정, net 불일치 재발 원인) '실제로 채택된' 풀 슬라이스 자체를
+        #   반환값에 노출 — 호출부가 이 슬라이스를 그대로 써야 표시용 계산이 종합net과
+        #   반드시 일치한다(호출부가 buy_pool/sell_pool 원본을 그대로 재사용하면, 그건
+        #   신뢰도임계값 탐색으로 걸러지기 '전' 전체 후보라서 다시 불일치가 생긴다 —
+        #   이번에 실측으로 재확인된 문제).
+        _buy_pool_used = buy_pool.iloc[:int(n_buy_opt)].copy()
+        _sell_pool_used = sell_pool.iloc[:int(n_sell_opt)].copy()
         # ★★★ (요청) 찾은 개수를 실제 '신뢰도 임계값'으로 환산 — 풀이 신뢰도 내림차순이므로
         #   n_buy_opt번째(=마지막으로 포함된) 지표의 신뢰도값이 곧 "이 값 이상만 사용" 임계값.
         _rel_threshold_buy = None; _rel_threshold_sell = None
@@ -20164,6 +20261,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             'kl_by_horizon': _kl_by_horizon,
             'reliability_threshold_buy': _rel_threshold_buy,
             'reliability_threshold_sell': _rel_threshold_sell,
+            'buy_pool_used': _buy_pool_used, 'sell_pool_used': _sell_pool_used,
         }
     except Exception as _e:
         print(f"  ⚠ 순신호 K 최적화 실패(무시): {_e}")
@@ -21898,12 +21996,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         _hz_all = sorted(set(
                             list(_mbp0['horizon_day'].dropna().astype(int)) +
                             list(_msp0['horizon_day'].dropna().astype(int))))
-                        # ★★★ (요청 — "net값 수치는 표시는 해놓고", 버그수정 2차) 하이브리드 방식 —
-                        #   ① 채택된 호라이즌(= _hz_best_subset에 포함)은 실제 매수/매도카운트를
-                        #      만드는 것과 '완전히 동일한' 최종 풀(_mbp/_msp, 이미 신뢰도임계값+
-                        #      호라이즌범위 탐색 다 끝난 것)에서 그대로 뽑아 쓴다 — 그래야 그날
-                        #      매수/매도 공식에 안 보이는 지표가 net_h에 몰래 섞여 들어가는 일이
-                        #      없다(실측 확인된 버그).
+                        # ★★★ (요청 — "net값 수치는 표시는 해놓고", 버그수정 3차 — 진짜 원인) 하이브리드 —
+                        #   ① 채택된 호라이즌은 _hz_best_res가 '실제로 사용한' 최종 풀
+                        #      (buy_pool_used/sell_pool_used — 신뢰도임계값 탐색까지 다 끝난 뒤
+                        #      살아남은 것만)에서 뽑는다. ★ 직전 수정에서 실수로 _mbp/_msp를
+                        #      썼는데, 그 시점의 _mbp/_msp는 아직 호라이즌범위로도 신뢰도임계값
+                        #      으로도 전혀 걸러지지 않은 '원본 전체'였다(아래에서야 비로소
+                        #      _hz_best_subset으로 걸러짐) — 그래서 여전히 그날 실제로는 발화
+                        #      안 한 지표까지 다 합산되고 있었다(실측 재확인). buy_pool_used는
+                        #      _net_signal_k_search 내부에서 신뢰도 임계값 탐색까지 마친 뒤의
+                        #      '진짜 최종' 슬라이스라서, 이걸 써야 매수/매도카운트 공식과
+                        #      100% 같은 지표 구성으로 net_h를 계산하게 된다.
                         #   ② 채택 안 된 호라이즌(범위탐색에서 제외됨)은 애초에 최종 풀에 아예
                         #      없으므로, 그 호라이즌만 따로 떼어 독립적으로 신뢰도임계값 탐색한
                         #      결과를 참고용으로 보여준다(순수 정보용 — 실제 매매엔 영향 없음).
@@ -21913,9 +22016,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                             _bp_excl = _mbp0[_mbp0['horizon_day'].isin(_excluded_hz)].reset_index(drop=True)
                             _sp_excl = _msp0[_msp0['horizon_day'].isin(_excluded_hz)].reset_index(drop=True)
                             _hz_disp_all.update(_compute_all_horizon_nets_display(feat, close_full, _bp_excl, _sp_excl))
+                        _bp_final = _hz_best_res.get('buy_pool_used')
+                        _sp_final = _hz_best_res.get('sell_pool_used')
                         for _h in _hz_best_subset:
-                            _bp_h = _mbp[_mbp['horizon_day'] == _h]
-                            _sp_h = _msp[_msp['horizon_day'] == _h]
+                            _bp_h = (_bp_final[_bp_final['horizon_day'] == _h] if _bp_final is not None
+                                     else _mbp.iloc[0:0])
+                            _sp_h = (_sp_final[_sp_final['horizon_day'] == _h] if _sp_final is not None
+                                     else _msp.iloc[0:0])
                             _barr = np.zeros(len(feat)); _sarr = np.zeros(len(feat))
                             for _, row in _bp_h.iterrows():
                                 _s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
@@ -23490,7 +23597,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     #   지표컷(최소신호·성공률)까지 통과시킨 후보만 받아서(_SIMPLE_MODE_ALL_CANDIDATES),
     #   호라이즌일별로 섹션을 나누고 각 섹션 내에서 '신뢰도' 내림차순 정렬.
     #   ★★★ (요청 — 재설계) 상위 N개로 자르는 하드컷은 완전히 없앰 — 지표컷 통과분은
-    #   전부 net 계산에 참여하고, 신뢰도는 net_weight_score(=윌슨값×(1+신뢰도))로 가중치에
+    #   전부 net 계산에 참여하고, 신뢰도는 net_weight_score(=1+신뢰도, 윌슨 미사용)로 가중치에
     #   연속적으로 반영된다. 이 컬럼을 표시해 어떤 지표가 실제로 net에 얼마나 목소리를
     #   내는지 보여준다(하드컷 표시는 더 이상 없음).
     try:
@@ -24247,7 +24354,7 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
     return best_inner, inner_passed_out
 
 
-def run_ensemble_search(*, eval_start='__USE_GLOBAL__',
+def _run_ensemble_search_impl(*, eval_start='__USE_GLOBAL__',
                          eval_end='__USE_GLOBAL__',
                          horizon=HORIZON_DAYS,
                          dd_limit=DRAWDOWN_LIMIT_BUY,
@@ -24964,6 +25071,46 @@ def run_ensemble_search(*, eval_start='__USE_GLOBAL__',
             daily, trades, cur)
 
 
+def run_ensemble_search(*args, **kwargs):
+    """★★★ (요청 — 버그수정, 재발) 실행 로그를 텍스트 파일로 저장 + 자동 다운로드.
+       ★ 이전엔 main()을 감싸는 방식(_run_with_log_capture)으로만 만들어서
+       `if __name__=='__main__':` 블록 안에서만 동작했는데, 실제 사용 패턴은 importlib로
+       모듈을 로드한 뒤 이 함수(run_ensemble_search)를 '직접' 호출하는 것이라 __main__
+       분기 자체가 전혀 실행되지 않아 로깅이 완전히 무동작이었다(실측 확인) — 이 함수
+       자체를 감싸는 걸로 바꿔서, 어떻게 호출하든(직접 호출/main() 경유 모두) 항상
+       로그가 남도록 고쳤다. 실제 로직은 그대로 _run_ensemble_search_impl에 있고,
+       이 함수는 그걸 부르면서 화면 출력을 실시간으로 보여주는 동시에 텍스트 파일로도
+       저장 + 다운로드한다."""
+    import sys as _sys
+    _orig_stdout = _sys.stdout
+    _tee = _TeeOutput(_orig_stdout)
+    _sys.stdout = _tee
+    _run_err = None; _result = None
+    try:
+        _result = _run_ensemble_search_impl(*args, **kwargs)
+    except Exception as _e:
+        _run_err = _e
+        import traceback
+        traceback.print_exc()
+    finally:
+        _sys.stdout = _orig_stdout
+    _log_text = _tee.get_log()
+    try:
+        _ts = _kst_now().strftime('%Y-%m-%d_%H%M%S')
+        _log_dir = globals().get('SCRIPT_DIR', '.')
+        os.makedirs(_log_dir, exist_ok=True)
+        _log_path = os.path.join(_log_dir, f'실행로그_{_ts}.txt')
+        with open(_log_path, 'w', encoding='utf-8') as _lf:
+            _lf.write(_log_text)
+        print(f"\n  📝 실행 로그 저장 완료: {_log_path} ({len(_log_text):,}자)")
+        _download_log_file(_log_path)
+    except Exception as _le:
+        print(f"\n  ⚠ 실행 로그 저장/다운로드 실패: {_le}")
+    if _run_err is not None:
+        raise _run_err
+    return _result
+
+
 def staged_meta_tune(*, base_meta_grid=None,
                       stage_pct_range=None,
                       stage_wilson_z=None,
@@ -25013,7 +25160,7 @@ def staged_meta_tune(*, base_meta_grid=None,
         if key in _cache:
             return _cache[key]
         try:
-            res = run_ensemble_search(
+            res = _run_ensemble_search_impl(
                 meta_grid=_mk_grid(wz, pct, corr),
                 write_output=False, output_file=None,
                 **run_kwargs)
@@ -25373,7 +25520,7 @@ def staged_meta_tune(*, base_meta_grid=None,
             print(f"  ⚠ 선정 조합 보정 재계산 실패(기존 결과로 출력): {_ce}")
 
     try:
-        final_res = run_ensemble_search(
+        final_res = _run_ensemble_search_impl(
             meta_grid=_mk_grid(fb['wz'], fb['pct'], fb['corr']),
             write_output=True, output_file=output_file,
             inject_combined_table=merged_table,
@@ -26044,7 +26191,7 @@ def replay_grid_combo(filename, grid_number=None, *,
         globals()['EXCLUDE_BELOW_BH'] = False
         if _cost_used is not None:
             globals()['COST_PER_TRADE'] = _cost_used
-        result = run_ensemble_search(**kwargs)
+        result = _run_ensemble_search_impl(**kwargs)
     finally:
         globals()['EXCLUDE_BELOW_BH'] = _exbh_saved
         if _cost_used is not None:
@@ -27290,7 +27437,7 @@ def run_multi_ticker_analysis(tickers=None, *,
                 print(f"\n  🔬 STAGED_META_TUNE ON ({ticker}) — 단계적 메타 변수 자동 튜닝 수행")
                 result = staged_meta_tune(base_meta_grid=base_mg, **kwargs)
             else:
-                result = run_ensemble_search(**kwargs)
+                result = _run_ensemble_search_impl(**kwargs)
 
             # ★ 통과 조합이 없어 staged가 None을 반환하면: 에러 없이 이 티커 스킵
             if result is None:
@@ -28217,7 +28364,7 @@ def build_ensemble_search_direct(ticker, *, out_dir=None, end_date=None,
     _kwargs = dict(search_kwargs)
     _kwargs.update(dict(write_output=True, output_file=_out_path))
     try:
-        run_ensemble_search(**_kwargs)
+        _run_ensemble_search_impl(**_kwargs)
     except Exception as e:
         print(f"  ✗ {ticker} 결과 생성 실패: {e}")
         import traceback; traceback.print_exc()
@@ -28290,9 +28437,9 @@ def build_pool_excel_for_ticker(ticker, *, out_dir=None, end_date=None,
         if _prev and g.get('_KNET_MULTI_POOL') and g['_KNET_MULTI_POOL'][0] == ticker \
                 and g['_KNET_MULTI_POOL'][1] is not None:
             _inj = (g['_KNET_MULTI_POOL'][1], g['_KNET_MULTI_POOL'][2])
-            run_ensemble_search(inject_pools=_inj, **_kwargs)
+            _run_ensemble_search_impl(inject_pools=_inj, **_kwargs)
         else:
-            run_ensemble_search(**_kwargs)
+            _run_ensemble_search_impl(**_kwargs)
     except Exception as e:
         print(f"  ✗ {ticker} 풀 선출 실행 실패: {e}")
         import traceback; traceback.print_exc()
@@ -28494,7 +28641,7 @@ def build_result_excel_from_pool(ticker, *, pool_dir=None, out_dir=None, end_dat
     _mp = g.get('_KNET_MULTI_POOL')
     _inj = (_mp[1], _mp[2]) if (_mp and _mp[1] is not None) else None
     try:
-        run_ensemble_search(inject_pools=_inj,
+        _run_ensemble_search_impl(inject_pools=_inj,
                             write_output=True, output_file=_out, **search_kwargs)
     except Exception as e:
         print(f"  ✗ 결과 생성 실패: {e}")
