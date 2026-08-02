@@ -14492,7 +14492,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03]   # ★ 1~5% (요청: 1~10%에서 축소)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
@@ -16670,30 +16670,33 @@ def _add_display_suffix(pool):
 _CLUSTER_NULL_CACHE = {}
 
 
-def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, z=1.65):
-    """★★★ (요청) 지표 신뢰도 — '신호 발생 후 바로 다음날'(day+1, 지표 자신의 호라이즌과
-       무관하게 항상 다음날 하나만 봄)의 실제 등락률로 신호가 얼마나 믿을 만한지 계산.
+def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
+    """★★★ (요청 — 재설계, 윌�한 미사용) 지표 신뢰도 — '신호 발생 후 바로 다음날'(day+1,
+       지표 자신의 호라이즌과 무관하게 항상 다음날 하나만 봄)의 실제 등락률로 신호가
+       얼마나 믿을 만한지 계산.
 
-       설계(정밀한 수학공식 — 두 요소의 곱):
-       ① 윌슨 하한 적중률 p_wilson = wilson_lower(k, n, z)
-          — '다음날 등락률이 임계값(threshold) 이상 유리한 방향'이었던 비율의 통계적
-          하한. 단순 k/n(관측 적중률)이 아니라 표본이 적을수록 자동으로 더 보수적으로
-          깎이는 하한을 쓰는 이유: 신호 5개 중 4개 적중(80%)과 신호 50개 중 40개
-          적중(80%)은 같은 비율이라도 신뢰도가 달라야 하는데, 윌슨 하한이 이 표본크기
-          효과를 정확히 반영한다(신호가 적을수록 하한이 더 크게 깎임).
-       ② 크기가중 배율 mag_mult = 1 + mean( max(0, (fav_i-threshold)/threshold) | 적중일 )
-          — 적중한 날들만 놓고, 각 날의 실제 등락률이 임계값을 '몇 배' 넘겼는지의
-          초과분 평균에 1을 더함. 예: 적중일 평균이 정확히 임계값(예 1%)이면 배율=1
-          (보너스 없음), 평균이 임계값의 3배(예 3%)면 배율≈3(적중 시 큰 폭으로 맞춘
-          지표에 정확히 요청하신 가중 점수 부여).
+       설계 — 임계값(threshold) 대비 일표본 t-통계량(연속값 기반):
+       각 신호일의 다음날 '유리방향' 등락률 fav_i(부호 있는 연속값 — 매수=상승분,
+       매도=하락분)로:
+         mean_fav = 평균(fav_i),  std_fav = 표본표준편차(fav_i, ddof=1)
+         se = std_fav / √n   (표준오차)
+         t = (mean_fav − threshold) / se
+         reliability = max(0, t)
 
-       reliability = p_wilson × mag_mult
-       → 적중률이 통계적으로 탄탄하면서(①) 적중했을 때 크게 맞추는(②) 지표일수록 높은 점수.
-       하나라도 0에 가까우면(전혀 안 맞거나, 맞춰도 항상 임계값 근처에서 겨우) 전체 점수도
-       낮아지는 곱셈 구조 — 두 조건 중 하나만 좋아서는 최고점을 받을 수 없다.
+       ★ 왜 윌슨(이진 적중/실패 비율의 신뢰구간) 대신 이 방식인가: 윌슨은 "1% 이상 넘겼는가
+       (예/아니오)"만 보고 실제 등락폭(+1.01%든 +5%든 똑같이 '적중 1건')은 버린다. 반면
+       t-통계량은 등락폭을 있는 그대로 검정에 사용하므로 정보 손실이 없다 — 통계학적으로
+       이진화(discretization)는 항상 검정력(statistical power)을 떨어뜨리므로, 같은
+       표본으로 더 정확하게 '진짜 예측력이 있는가'를 가려낼 수 있다(요청하신 "예측력을
+       더 높이는 방법"에 해당하는 표준적 통계 원리).
+       ★ 크게·일관되게 맞출수록 자동으로 커짐: 평균(mean_fav)이 클수록, 편차(std_fav)가
+       작을수록(일관될수록) t가 커진다 — 별도의 배율 항 없이 이 t 값 자체가 "크게 맞췄으면
+       가중 점수"를 자연스럽게 구현한다.
+       ★ 표본이 적을수록 표준오차(se)가 커져 t가 자동으로 보수적으로 깎인다(작은 표본의
+       우연한 결과를 과대평가하지 않음) — 윌슨 하한이 하던 '표본크기 보정' 역할을
+       t-통계량이 대신 수행.
 
-       반환 dict: reliability, hit_rate(관측치), wilson_hit, avg_hit_ratio(적중일 평균이
-       임계값의 몇 배인지), mag_mult, n_evaluable."""
+       반환 dict: reliability, mean_fav, std_fav, se, t_stat, n_evaluable."""
     try:
         sig = _to_signal_array(feat, row)   # lead_shift는 적용(신호의 실제 유효 시점 정렬),
                                               # 호라이즌 정렬(align)은 미적용 — 신뢰도는 지표
@@ -16701,33 +16704,33 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, z=1.65):
         n_total = len(sig)
         fire_idx = np.nonzero(np.nan_to_num(np.asarray(sig, dtype=float)))[0]
         fire_idx = fire_idx[fire_idx < n_total - 1]   # 마지막 날 발화는 다음날이 없어 평가 불가
-        if len(fire_idx) == 0:
-            return {'reliability': 0.0, 'hit_rate': 0.0, 'wilson_hit': 0.0,
-                    'avg_hit_ratio': 0.0, 'mag_mult': 1.0, 'n_evaluable': 0}
+        _empty = {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
+                  't_stat': 0.0, 'n_evaluable': 0}
+        if len(fire_idx) < 2:   # t-통계량은 최소 2개 표본 필요(표준편차 계산)
+            return _empty
         base = close_arr[fire_idx]
         nxt = close_arr[fire_idx + 1]
         valid = (base > 0) & np.isfinite(base) & np.isfinite(nxt)
         base = base[valid]; nxt = nxt[valid]
-        if len(base) == 0:
-            return {'reliability': 0.0, 'hit_rate': 0.0, 'wilson_hit': 0.0,
-                    'avg_hit_ratio': 0.0, 'mag_mult': 1.0, 'n_evaluable': 0}
+        if len(base) < 2:
+            return _empty
         raw_ret = nxt / base - 1.0
         fav = raw_ret if is_buy else -raw_ret   # ★ 매수지표=상승이 +, 매도지표=하락이 +
-        hit = fav >= threshold
-        n = len(fav); k = int(hit.sum())
-        p_wilson = wilson_lower(k, n, z)
-        if k > 0:
-            excess_ratio = (fav[hit] - threshold) / threshold
-            avg_hit_ratio = float(np.mean(fav[hit] / threshold))
-            mag_mult = 1.0 + float(np.mean(np.maximum(0.0, excess_ratio)))
+        n = len(fav)
+        mean_fav = float(np.mean(fav))
+        std_fav = float(np.std(fav, ddof=1))
+        se = std_fav / np.sqrt(n)
+        if se > 1e-12:
+            t_stat = (mean_fav - threshold) / se
         else:
-            avg_hit_ratio = 0.0; mag_mult = 1.0
-        reliability = p_wilson * mag_mult
-        return {'reliability': reliability, 'hit_rate': k / n, 'wilson_hit': p_wilson,
-                'avg_hit_ratio': avg_hit_ratio, 'mag_mult': mag_mult, 'n_evaluable': n}
+            # 완벽하게 일관된 경우(분산 0) — 부호에 따라 매우 크게(사실상 확실)/0으로.
+            t_stat = 50.0 if mean_fav > threshold else -50.0
+        reliability = max(0.0, t_stat)
+        return {'reliability': reliability, 'mean_fav': mean_fav, 'std_fav': std_fav,
+                'se': se, 't_stat': t_stat, 'n_evaluable': n}
     except Exception:
-        return {'reliability': 0.0, 'hit_rate': 0.0, 'wilson_hit': 0.0,
-                'avg_hit_ratio': 0.0, 'mag_mult': 1.0, 'n_evaluable': 0}
+        return {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
+                't_stat': 0.0, 'n_evaluable': 0}
 
 
 def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=95):
@@ -16988,14 +16991,12 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 if df is None or len(df) == 0:
                     return df
                 df = df.copy()
-                _rel_z = float((globals().get('STAGE_WILSON_Z') or [1.65])[0])
-                _results = [_compute_reliability_score(feat, _close_arr, row, _limit0, is_buy, _rel_z)
+                _results = [_compute_reliability_score(feat, _close_arr, row, _limit0, is_buy)
                            for _, row in df.iterrows()]
-                df['reliability']    = [r['reliability'] for r in _results]
-                df['hit_rate_next']  = [r['hit_rate'] for r in _results]
-                df['wilson_hit_next']= [r['wilson_hit'] for r in _results]
-                df['avg_hit_ratio']  = [r['avg_hit_ratio'] for r in _results]
-                df['mag_mult']       = [r['mag_mult'] for r in _results]
+                df['reliability']  = [r['reliability'] for r in _results]
+                df['mean_fav_next']= [r['mean_fav'] for r in _results]
+                df['std_fav_next'] = [r['std_fav'] for r in _results]
+                df['t_stat_next']  = [r['t_stat'] for r in _results]
                 return df
             _bp = _add_reliability(_bp, True)
             _sp = _add_reliability(_sp, False)
@@ -17082,19 +17083,16 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         if len(buy_c):  buy_c['horizon']  = buy_c['horizon_day']     # ★ 기존 red-bold/공식표시 로직 재사용
         if len(sell_c): sell_c['horizon'] = sell_c['horizon_day']
 
-        # ★★★ (요청 — 재설계) 개수로 자르는 설정(상위 N개) 완전히 없앰 — 지표컷을 통과한
-        #   지표는 전부 그대로 net 계산에 참여시키되, '신뢰도'가 net 가중치 자체에 유의미하게
-        #   반영되도록 한다: net_weight_score = wilson_score × (1 + reliability).
-        #   신뢰도가 0이어도 곱수가 최소 1이라 완전히 배제되지 않고(기존 wilson_score만큼은
-        #   유지), 신뢰도가 높을수록(예: 3이면 4배) net 기여가 커진다 — "몇 개만 쓴다"는
-        #   하드컷 대신 "얼마나 크게 목소리를 내는가"로 연속적으로 반영.
+        # ★★★ (요청 — 재설계, 윌슨 미사용) net 가중치를 신뢰도가 직접·전적으로 결정하도록
+        #   변경 — 이전엔 wilson_score × (1+reliability)로 윌슨값과 신뢰도가 섞여 있었는데,
+        #   윌슨값을 완전히 빼고 신뢰도(이제 t-통계량 기반) 그 자체를 가중치로 쓴다.
+        #   reliability는 max(0,t)라 항상 0 이상 — 신뢰도가 낮을수록(0에 가까울수록) 자연히
+        #   net 기여가 작아지고, 높을수록 그만큼 직접 커진다(중간에 다른 지표로 희석 안 됨).
         def _add_net_weight(df):
             if df is None or len(df) == 0:
                 return df
             df = df.copy()
-            _rel = df['reliability'].fillna(0.0) if 'reliability' in df.columns else 0.0
-            _ws = df['wilson_score'].fillna(0.0) if 'wilson_score' in df.columns else 0.0
-            df['net_weight_score'] = _ws * (1.0 + _rel)
+            df['net_weight_score'] = df['reliability'].fillna(0.0) if 'reliability' in df.columns else 0.0
             return df
         buy_c  = _add_net_weight(buy_c)
         sell_c = _add_net_weight(sell_c)
@@ -19735,32 +19733,9 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             nb = max(1, min(int(nb), nB)); ns = max(1, min(int(ns), nS))
             return buy_cum[nb-1] - sell_cum[ns-1], nb, ns
 
-        # ★★★ (요청 — 일별 백테스트 호라이즌별 net 표시용) 매수-매도를 이미 (h-1)일 정렬한
-        #   신호로 호라이즌일별 net(=그 날의 매수합-매도합)을 따로 만들어둔다. 표시 전용
-        #   정보이며 K/L 임계 비교에는 항상 '종합'(전체 net, 위 buy_cum/sell_cum 합)이 쓰인다.
+        # ★ (요청 — 버그수정) 호라이즌별 net 분해 계산은 n_buy_opt/n_sell_opt(신뢰도 임계값
+        #   탐색으로 최종 확정된 채택 개수)가 정해진 '뒤'로 옮김 — 아래 참조.
         _net_by_horizon = {}
-        if globals().get('SIMPLE_POOL_MODE', False):
-            def _hz_of(row):
-                _h = row.get('horizon_day', None)
-                if _h is None or (isinstance(_h, float) and pd.isna(_h)):
-                    _h = row.get('horizon', 1)
-                return int(_h) if _h is not None and not (isinstance(_h, float) and pd.isna(_h)) else 1
-            _all_hz = set()
-            if buy_pool is not None and len(buy_pool): _all_hz |= {_hz_of(r) for _, r in buy_pool.iterrows()}
-            if sell_pool is not None and len(sell_pool): _all_hz |= {_hz_of(r) for _, r in sell_pool.iterrows()}
-            for _h in sorted(_all_hz):
-                _barr = np.zeros(n); _sarr = np.zeros(n)
-                if buy_pool is not None and len(buy_pool):
-                    for _, row in buy_pool.iterrows():
-                        if _hz_of(row) == _h:
-                            try: _barr += _wt_of(row) * _row_sig(row)
-                            except Exception: pass
-                if sell_pool is not None and len(sell_pool):
-                    for _, row in sell_pool.iterrows():
-                        if _hz_of(row) == _h:
-                            try: _sarr += _wt_of(row) * _row_sig(row)
-                            except Exception: pass
-                _net_by_horizon[_h] = _barr - _sarr
 
         r = np.zeros(n)
         for t in range(1, n):
@@ -19929,6 +19904,34 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                 pass
         kmin, kmax = overall['krng']
         buy_count = buy_cum[n_buy_opt-1]; sell_count = sell_cum[n_sell_opt-1]
+
+        # ★★★ (요청 — 버그수정) 호라이즌별 net 분해 — 반드시 '종합net'(위 net = buy_cum[n_buy_opt-1]
+        #   - sell_cum[n_sell_opt-1])과 정확히 같은 부분집합(신뢰도 임계값 탐색으로 채택된 상위
+        #   n_buy_opt/n_sell_opt개)만 써야 "1일net+2일net+...+5일net = 종합net"이 실제로 성립한다.
+        #   이전엔 이 계산이 n_buy_opt 확정 '전'에, 풀 전체로 이뤄져서 종합net(필터링됨)과
+        #   1~5일net(필터링 안 됨) 합이 서로 안 맞는 불일치가 있었다(실측 확인 후 수정).
+        if globals().get('SIMPLE_POOL_MODE', False):
+            def _hz_of(row):
+                _h = row.get('horizon_day', None)
+                if _h is None or (isinstance(_h, float) and pd.isna(_h)):
+                    _h = row.get('horizon', 1)
+                return int(_h) if _h is not None and not (isinstance(_h, float) and pd.isna(_h)) else 1
+            _buy_sel = buy_pool.iloc[:int(n_buy_opt)]     # ★ 종합net과 완전히 동일한 부분집합
+            _sell_sel = sell_pool.iloc[:int(n_sell_opt)]
+            _all_hz = set()
+            if len(_buy_sel): _all_hz |= {_hz_of(r) for _, r in _buy_sel.iterrows()}
+            if len(_sell_sel): _all_hz |= {_hz_of(r) for _, r in _sell_sel.iterrows()}
+            for _h in sorted(_all_hz):
+                _barr = np.zeros(n); _sarr = np.zeros(n)
+                for _, row in _buy_sel.iterrows():
+                    if _hz_of(row) == _h:
+                        try: _barr += _wt_of(row) * _row_sig(row)
+                        except Exception: pass
+                for _, row in _sell_sel.iterrows():
+                    if _hz_of(row) == _h:
+                        try: _sarr += _wt_of(row) * _row_sig(row)
+                        except Exception: pass
+                _net_by_horizon[_h] = _barr - _sarr
 
         best_k = best[0]
         if fixed_k is not None:      # ★ 재현: 원본 K 그대로 (탐색 안 함)
@@ -23304,13 +23307,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
             ws_all.cell(1, 1).value = (
                 f"{ticker} — 지표컷(최소신호수·성공률) 통과 후보 전부 표시(개수제한 없음), "
-                f"호라이즌일별 섹션·신뢰도순 정렬. 신뢰도=다음날 등락률 기반 윌슨하한×크기가중배율. "
-                f"net가중치점수=윌슨점수×(1+신뢰도) — 이 값이 클수록 net 계산에 크게 반영됨."
+                f"호라이즌일별 섹션·신뢰도순 정렬. 신뢰도=다음날 등락률 기반 t-통계량(임계값 대비, "
+                f"윌슨 미사용) — max(0,(평균등락-임계값)/표준오차). "
+                f"net가중치점수=신뢰도 그 자체(윌슨 미사용, 신뢰도가 직접·전적으로 net 가중치를 결정)."
                 + (f" 2차검증(①기저확률초과 ②기대수익 ③시간안정성)도 표시 — {_min_pass_disp}/3개 이상 "
                    f"통과해야 함." if _verify_on_disp else " (2차검증은 꺼져 있음)"))
             ws_all.cell(1, 1).font = Font(bold=True, size=12)
             _cols_all = ['방향', '표시명', '지표(원본)', '신호방향', '임계값', '신호개수', '성공개수', '성공률%',
-                        '신뢰도', '다음날적중률%', '윌슨적중률%', '적중시평균배율']
+                        '신뢰도(t값)', '다음날평균등락%', '다음날표준편차%']
             if _verify_on_disp:
                 _cols_all += ['기저확률%', '초과폭%p', '기대수익점수', '전반성공%', '후반성공%',
                              '몰림비율%', '몰림기준선%', '①기저확률', '②기대수익', '③안정성',
@@ -23347,16 +23351,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     for _i in range(len(_dsub)):
                         _row = _dsub.iloc[_i]
                         _r_all += 1
-                        _nwscore = float(_row.get('wilson_score', 0.0)) * (1.0 + float(_row.get('reliability', 0.0)))
+                        _nwscore = float(_row.get('reliability', 0.0))   # ★ 윌슨 미사용, 신뢰도 그 자체
                         _vals = [_label, str(_row.get('display_name', _row['indicator'])),
                                  str(_row['indicator']), str(_row['direction']),
                                  round(float(_row['threshold']), 6),
                                  int(_row['n_signals']), int(_row['n_success']),
                                  round(float(_row['success_rate']) * 100, 2),
                                  round(float(_row.get('reliability', 0.0)), 4),
-                                 round(float(_row.get('hit_rate_next', 0.0)) * 100, 2),
-                                 round(float(_row.get('wilson_hit_next', 0.0)) * 100, 2),
-                                 round(float(_row.get('mag_mult', 1.0)), 3)]
+                                 round(float(_row.get('mean_fav_next', 0.0)) * 100, 3),
+                                 round(float(_row.get('std_fav_next', 0.0)) * 100, 3)]
                         if _verify_on_disp:
                             _sr1 = _row.get('sr_first_half', None); _sr2 = _row.get('sr_second_half', None)
                             _vals += [
@@ -23383,7 +23386,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                 ws_all.cell(_r_all, _ci).fill = _fill
                     _r_all += 1   # 섹션 사이 빈 줄
 
-            _widths = [6, 24, 20, 8, 11, 9, 9, 9, 9, 10, 10, 10]
+            _widths = [6, 24, 20, 8, 11, 9, 9, 9, 10, 12, 12]
             if _verify_on_disp:
                 _widths += [9, 9, 10, 9, 9, 9, 10, 8, 8, 8, 8, 9]
             _widths += [10, 12]
