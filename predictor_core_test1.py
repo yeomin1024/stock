@@ -14456,6 +14456,11 @@ SIMPLE_POOL_KL_PURE_MAX_RETURN   = True
 #   그대로 씀(탐색 없음) — 신뢰도는 그래도 net_weight_score를 통해 가중치에는 계속 반영됨.
 SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = True
 
+# ★★★ (요청) "1일, 1~2일, 1~3일, 1~4일, 1~5일"처럼 호라이즌을 누적 포함시켜가며, 종합net에
+#   포함시켰을 때 전체수익이 최대가 되는 지점을 탐색한다(다 포함하는 게 항상 최선은 아님).
+#   채택 안 된 호라이즌도 개별 net_h{h} 값은 계속 표시됨(종합net 계산에서만 빠짐).
+SIMPLE_POOL_HORIZON_SUBSET_SEARCH = True
+
 # ★★★ (요청 — 재설계) 지표컷 통과분에 '신뢰도'(다음날 등락률 기반, 윌슨하한×크기가중배율)를
 #   계산하되, 더 이상 개수로 자르지 않음(상위 N개 설정 자체를 없앰) — 대신 net 가중치 자체에
 #   신뢰도가 곱으로 반영되어(NET_SIGNAL_WEIGHT_COL='net_weight_score' 참고), 신뢰도가
@@ -16671,39 +16676,53 @@ _CLUSTER_NULL_CACHE = {}
 
 
 def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
-    """★★★ (요청 — 재설계, 윌�한 미사용) 지표 신뢰도 — '신호 발생 후 바로 다음날'(day+1,
-       지표 자신의 호라이즌과 무관하게 항상 다음날 하나만 봄)의 실제 등락률로 신호가
-       얼마나 믿을 만한지 계산.
+    """★★★ (요청 — 재설계, 윌슨 미사용) 지표 신뢰도 — '신호가 net에 반영되는 표시일'
+       바로 다음날의 실제 등락률로 신호가 얼마나 믿을 만한지 계산.
 
        설계 — 임계값(threshold) 대비 일표본 t-통계량(연속값 기반):
-       각 신호일의 다음날 '유리방향' 등락률 fav_i(부호 있는 연속값 — 매수=상승분,
+       각 표시일의 다음날 '유리방향' 등락률 fav_i(부호 있는 연속값 — 매수=상승분,
        매도=하락분)로:
          mean_fav = 평균(fav_i),  std_fav = 표본표준편차(fav_i, ddof=1)
          se = std_fav / √n   (표준오차)
          t = (mean_fav − threshold) / se
          reliability = max(0, t)
 
+       ★★★ (요청 관련 — 버그수정) '표시일'이 무엇인지가 핵심. h일 지표는 net 계산에서
+       발화일 s가 아니라 s+(h-1)일(정렬된 표시일)에 반영된다(_row_sig의 호라이즌 정렬과
+       동일 로직) — 그 표시일의 '다음날'(=s+h, 원래 h일 지표가 검증되는 바로 그 시점)이
+       진짜 "다음날 예측"이다. 예전엔 여기서 정렬을 빼먹고 원본 발화일(s) 기준 다음날
+       (s+1)을 봤는데, h=5 지표라면 s+1은 아직 예측이 전혀 검증되지 않은 시점이라 실제
+       움직임이 없는 게 당연하다(성공률은 s+5에서 판정되므로) — 실측으로 재현: 상승이
+       전부 s+4→s+5 구간에 몰린 지표를 s+1 기준으로 재면 mean_fav≈0(완전히 놓침)이지만,
+       표시일(s+4) 기준으로 재면 정확히 실제 상승분(mean_fav≈3%)이 잡힌다. 이 정렬을
+       빼먹은 게 "성공률은 높은데 4·5일 지표 수익이 낮다"는 원인이었다 — h가 클수록
+       원본발화일 기준 다음날은 예측과 무관한 날일 가능성이 커지므로, h가 클수록 신뢰도가
+       체계적으로 저평가되고 있었다.
+
        ★ 왜 윌슨(이진 적중/실패 비율의 신뢰구간) 대신 이 방식인가: 윌슨은 "1% 이상 넘겼는가
        (예/아니오)"만 보고 실제 등락폭(+1.01%든 +5%든 똑같이 '적중 1건')은 버린다. 반면
        t-통계량은 등락폭을 있는 그대로 검정에 사용하므로 정보 손실이 없다 — 통계학적으로
        이진화(discretization)는 항상 검정력(statistical power)을 떨어뜨리므로, 같은
-       표본으로 더 정확하게 '진짜 예측력이 있는가'를 가려낼 수 있다(요청하신 "예측력을
-       더 높이는 방법"에 해당하는 표준적 통계 원리).
+       표본으로 더 정확하게 '진짜 예측력이 있는가'를 가려낼 수 있다.
        ★ 크게·일관되게 맞출수록 자동으로 커짐: 평균(mean_fav)이 클수록, 편차(std_fav)가
        작을수록(일관될수록) t가 커진다 — 별도의 배율 항 없이 이 t 값 자체가 "크게 맞췄으면
        가중 점수"를 자연스럽게 구현한다.
-       ★ 표본이 적을수록 표준오차(se)가 커져 t가 자동으로 보수적으로 깎인다(작은 표본의
-       우연한 결과를 과대평가하지 않음) — 윌슨 하한이 하던 '표본크기 보정' 역할을
-       t-통계량이 대신 수행.
+       ★ 표본이 적을수록 표준오차(se)가 커져 t가 자동으로 보수적으로 깎인다.
 
        반환 dict: reliability, mean_fav, std_fav, se, t_stat, n_evaluable."""
     try:
-        sig = _to_signal_array(feat, row)   # lead_shift는 적용(신호의 실제 유효 시점 정렬),
-                                              # 호라이즌 정렬(align)은 미적용 — 신뢰도는 지표
-                                              # 자신의 호라이즌과 무관하게 '항상 다음날' 고정 기준
-        n_total = len(sig)
-        fire_idx = np.nonzero(np.nan_to_num(np.asarray(sig, dtype=float)))[0]
-        fire_idx = fire_idx[fire_idx < n_total - 1]   # 마지막 날 발화는 다음날이 없어 평가 불가
+        sig = _to_signal_array(feat, row)   # 원본 신호(lead_shift만 적용, 호라이즌 정렬 전)
+        _hz = row.get('horizon_day', None)
+        if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
+            _hz = row.get('horizon', None)
+        _hz = int(_hz) if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) else 1
+        sig_arr = np.nan_to_num(np.asarray(sig, dtype=float))
+        # ★ 표시일로 정렬 — _row_sig(net 계산)와 완전히 동일한 정렬을 적용해, "표시일 다음날"
+        #   기준으로 일관되게 평가한다(정렬 안 하면 h가 클수록 엉뚱한 날을 보게 됨).
+        aligned = _shift_signal_forward(sig_arr, _hz - 1) if _hz > 1 else sig_arr
+        n_total = len(aligned)
+        fire_idx = np.nonzero(aligned)[0]
+        fire_idx = fire_idx[fire_idx < n_total - 1]   # 마지막 표시일은 다음날이 없어 평가 불가
         _empty = {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
                   't_stat': 0.0, 'n_evaluable': 0}
         if len(fire_idx) < 2:   # t-통계량은 최소 2개 표본 필요(표준편차 계산)
@@ -19629,6 +19648,98 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
         return None
 
 
+def _compute_all_horizon_nets_display(feat, close_ser, buy_pool, sell_pool):
+    """★★★ (요청 — "net값 수치는 표시는 해놓고") 각 호라이즌의 net을 '그 호라이즌의 모든
+       지표를 그대로 다 써서'(신뢰도 임계값 탐색으로 일부만 골라내지 않고) 계산 — 순수
+       표시/참고용. 종합net·K/L 결정에 실제로 쓰이는 값(신뢰도임계값 탐색+호라이즌범위
+       탐색 결과 반영)과는 별개다 — 그래서 범위탐색에서 제외된 호라이즌이라도, 또는
+       한 호라이즌 안에서 신뢰도임계값 탐색으로 일부 지표가 빠지는 경우라도, 여기서는
+       그 호라이즌의 지표를 전부 반영한 '있는 그대로의' net을 보여준다.
+       반환: {horizon_day: net_array} 딕셔너리."""
+    out = {}
+    if buy_pool is None or sell_pool is None:
+        return out
+    n = len(feat)
+    close = pd.Series(close_ser).reindex(feat.index).values.astype(float)
+    _wtd = bool(globals().get('NET_SIGNAL_WEIGHTED', False))
+    _wcol = str(globals().get('NET_SIGNAL_WEIGHT_COL', 'success_rate'))
+    def _wt_of(row):
+        if not _wtd: return 1.0
+        try:
+            v = row.get(_wcol)
+            if v is None or (isinstance(v, float) and np.isnan(v)): return 1.0
+            return float(v)
+        except Exception:
+            return 1.0
+    def _hz_of(row):
+        _h = row.get('horizon_day', None)
+        if _h is None or (isinstance(_h, float) and pd.isna(_h)):
+            _h = row.get('horizon', 1)
+        return int(_h) if _h is not None and not (isinstance(_h, float) and pd.isna(_h)) else 1
+    def _row_sig(row, _h):
+        try:
+            s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
+        except Exception:
+            return np.zeros(n)
+        if _h > 1:
+            s = _shift_signal_forward(s, _h - 1)
+        return s
+    _all_hz = set()
+    if len(buy_pool): _all_hz |= {_hz_of(r) for _, r in buy_pool.iterrows()}
+    if len(sell_pool): _all_hz |= {_hz_of(r) for _, r in sell_pool.iterrows()}
+    for _h in sorted(_all_hz):
+        _barr = np.zeros(n); _sarr = np.zeros(n)
+        for _, row in buy_pool.iterrows():
+            if _hz_of(row) == _h:
+                try: _barr += _wt_of(row) * _row_sig(row, _h)
+                except Exception: pass
+        for _, row in sell_pool.iterrows():
+            if _hz_of(row) == _h:
+                try: _sarr += _wt_of(row) * _row_sig(row, _h)
+                except Exception: pass
+        out[_h] = _barr - _sarr
+    return out
+
+
+def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker='', oos_start=None):
+    """★★★ (요청) "1일, 1~2일, 1~3일, 1~4일, 1~5일" 처럼 호라이즌을 누적으로 포함시켜가며,
+       전체수익이 최대가 되는 지점(=어디까지 포함해야 하는가)을 찾는다. 무조건 다 포함하는
+       게 최선이 아닐 수 있음(예: 4·5일 호라이즌이 오히려 수익을 깎으면 1~3일까지만 쓰는
+       게 더 나음) — 실제로 각 누적집합으로 K/L까지 다시 탐색해 전체수익을 직접 비교한다.
+       반환: (최적 결과 dict 또는 None, 채택된 호라이즌 리스트, 후보별 결과 리스트
+       [(호라이즌집합,수익,결과dict), ...] — 마지막 원소가 항상 '전체 호라이즌 포함'
+       케이스라서, 채택되지 않은 호라이즌도 그 결과의 net_h{h} 컬럼으로 참고 표시 가능)."""
+    if buy_pool is None or sell_pool is None or len(buy_pool) == 0 or len(sell_pool) == 0:
+        return None, [], []
+    _has_hz = ('horizon_day' in buy_pool.columns) or ('horizon_day' in sell_pool.columns)
+    if not _has_hz:
+        return None, [], []
+    _hz_all = sorted(set(
+        (list(buy_pool['horizon_day'].dropna().astype(int)) if 'horizon_day' in buy_pool.columns else []) +
+        (list(sell_pool['horizon_day'].dropna().astype(int)) if 'horizon_day' in sell_pool.columns else [])
+    ))
+    if len(_hz_all) <= 1:
+        return None, _hz_all, []   # 호라이즌이 1개뿐이면 비교할 대상이 없음 — 탐색 불필요
+    best_result = None; best_subset = None; best_ret = -1e18
+    _all_results = []
+    for _i in range(len(_hz_all)):
+        _subset = _hz_all[:_i + 1]   # 누적 포함: [1], [1,2], [1,2,3], ...
+        _bp = (buy_pool[buy_pool['horizon_day'].isin(_subset)].reset_index(drop=True)
+              if 'horizon_day' in buy_pool.columns else buy_pool)
+        _sp = (sell_pool[sell_pool['horizon_day'].isin(_subset)].reset_index(drop=True)
+              if 'horizon_day' in sell_pool.columns else sell_pool)
+        if len(_bp) == 0 or len(_sp) == 0:
+            continue
+        _res = _net_signal_k_search(feat, close_ser, _bp, _sp, ticker=ticker,
+                                    oos_start=oos_start, n_buy=None, n_sell=None,
+                                    search_counts=False, select_by='full', compute_zero_pool=False)
+        _ret = (_res.get('full_cum') if _res else None)
+        _all_results.append((list(_subset), _ret, _res))
+        if _res is not None and _ret is not None and _ret > best_ret:
+            best_ret = _ret; best_result = _res; best_subset = list(_subset)
+    return best_result, (best_subset or _hz_all), _all_results
+
+
 def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                          ticker='', max_k_candidates=600, oos_start=None,
                          n_buy=None, n_sell=None, search_counts=False, weight_exp=1.0, fixed_k=None,
@@ -21776,6 +21887,35 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 # ★★★ (요청 — 단순화 모드) n_buy/n_sell 탐색 자체를 하지 않고 풀 전체를 그대로 사용
                 _nb = len(_mbp); _ns = len(_msp); _sc_cnt = False
                 print(f"  (단순모드) 지표수 탐색 없이 전체 사용: 매수 {_nb} / 매도 {_ns}")
+                # ★★★ (요청) 1일, 1~2일, ..., 1~5일처럼 호라이즌을 누적 포함시켜가며 전체수익이
+                #   최대가 되는 지점을 탐색 — 다 포함하는 게 항상 최선은 아닐 수 있어서 실제로
+                #   비교한다. 호라이즌이 1종류뿐이면(탐색할 게 없으면) 그대로 건너뜀.
+                if globals().get('SIMPLE_POOL_HORIZON_SUBSET_SEARCH', True):
+                    _mbp0, _msp0 = _mbp, _msp   # ★ 표시용 계산에 쓸 필터링 전 원본 보존
+                    _hz_best_res, _hz_best_subset, _hz_all_results = _search_best_horizon_subset(
+                        feat, close_full, _mbp, _msp, ticker=ticker,
+                        oos_start=globals().get('OOS_START'))
+                    if _hz_best_res is not None:
+                        _cmp_txt = ", ".join(
+                            (f"1~{s[-1]}일:{r*100:+.1f}%" if len(s) > 1 else f"{s[0]}일:{r*100:+.1f}%")
+                            for s, r, _ in _hz_all_results if r is not None)
+                        print(f"  (호라이즌 범위 탐색) 후보별 전체수익 — {_cmp_txt}")
+                        print(f"  ★ 채택: 호라이즌 {_hz_best_subset[0]}~{_hz_best_subset[-1]}일까지만 사용 "
+                              f"(전체수익 {_hz_best_res['full_cum']*100:+.2f}%)")
+                        globals()['_KNET_HORIZON_SUBSET'] = list(_hz_best_subset)
+                        # ★★★ (요청 — "net값 수치는 표시는 해놓고") 채택 안 된 호라이즌도 정보 표시는
+                        #   계속 되도록, 각 호라이즌의 '모든' 지표를 그대로 쓴(신뢰도임계값 탐색으로
+                        #   걸러지지 않은) 순수 표시용 net을 따로 계산해둔다 — _search_best_horizon_
+                        #   subset의 "전체 호라이즌 포함" 후보조차 그 안에서 신뢰도임계값 탐색이 다시
+                        #   걸려 신뢰도0인 호라이즌(예: 5일)을 스스로 배제해버리는 문제가 있었다
+                        #   (실측 확인) — 그래서 별도 함수로 필터링 없이 순수하게 계산한다.
+                        _hz_disp_all = _compute_all_horizon_nets_display(feat, close_full, _mbp0, _msp0)
+                        if _hz_disp_all:
+                            globals()['_KNET_HORIZON_NET_DISPLAY'] = {
+                                f'net_h{_h}': _arr for _h, _arr in _hz_disp_all.items()}
+                        _mbp = _mbp[_mbp['horizon_day'].isin(_hz_best_subset)].reset_index(drop=True)
+                        _msp = _msp[_msp['horizon_day'].isin(_hz_best_subset)].reset_index(drop=True)
+                        _nb = len(_mbp); _ns = len(_msp)
             print(f"  ★ net>K = 합친 다중임계 풀 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행)")
         else:
             _kp = globals().get('_KNET_BEST_POOL')
@@ -21838,6 +21978,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 print(f"  ★ OOS수익 최고 K = {_nsd_oos['best_k'] if _nsd_oos else '—'} "
                       f"(OOS {(_nsd_oos['oos_cum']*100 if (_nsd_oos and _nsd_oos.get('oos_cum') is not None) else 0):+.1f}%)")
         _nsd_main = _nsd_full   # 기본(하위호환)
+        # ★★★ (요청 — "net값 수치는 표시는 해놓고") 호라이즌 범위 탐색으로 일부 호라이즌이
+        #   종합net에서 빠졌어도, 화면 표시용 net_h{h} 컬럼은 전체 호라이즌 걸 그대로 채워
+        #   넣는다 — 실제 종합net·K/L은 채택된 부분집합 그대로 유지.
+        _hz_disp = globals().get('_KNET_HORIZON_NET_DISPLAY')
+        if _nsd_full is not None and _hz_disp:
+            try:
+                _d = _nsd_full['daily']
+                for _c, _vals in _hz_disp.items():
+                    if len(_vals) == len(_d):
+                        _d[_c] = _vals
+                _nsd_full['net_by_horizon_days'] = sorted(
+                    int(c[5:]) for c in _hz_disp.keys() if c.startswith('net_h'))
+            except Exception:
+                pass
         globals()['_KNET_FULL'] = _nsd_full; globals()['_KNET_OOS'] = _nsd_oos
     except Exception as _em:
         print(f"  ⚠ 순신호 K 계산 실패(무시): {_em}")
@@ -22496,11 +22650,21 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         _parts.append(f"K{_h}={_info['K']:.3f}/L{_h}={_info['L']:.3f}(수익{_info['ret']*100:+.1f}%)")
                 if _parts:
                     _klh_txt = " | [호라이즌별 독립 K/L(참고용, 실매매는 종합net 기준)] " + ", ".join(_parts)
+        _hz_subset_txt = ""
+        if _show_hz_net:
+            _adopted = globals().get('_KNET_HORIZON_SUBSET')
+            if _adopted and len(_adopted) < len(_hz_days_present):
+                _excluded = [h for h in _hz_days_present if h not in _adopted]
+                _hz_subset_txt = (f" ※ 종합net은 호라이즌 {_adopted[0]}~{_adopted[-1]}일까지만 채택됨"
+                                  f"(범위탐색 결과 {_excluded}일은 수익에 도움 안 돼 제외 — 그래도 "
+                                  f"개별 net 값은 참고용으로 계속 표시)."
+                                  f" 그래서 1~5일net을 단순히 다 더해도 종합net과 안 맞을 수 있음(의도된 것).")
         ws.cell(3, 1).value = ("매수/매도카운트 공식은 오른쪽 끝 두 컬럼에 날짜별로 기록됨 "
                                "(발화 지표의 기여도 합 = 그날 카운트). 카운트0인 날은 별도풀 지표 기준."
                                + (f" 호라이즌별 net은 '표시일+({{h}}-1)일'에 그 지표 기여가 한 번만 "
                                   f"반영되도록 정렬됨(모든 호라이즌이 '내일'을 가리키게 함)."
                                   if _show_hz_net else "")
+                               + _hz_subset_txt
                                + _klh_txt)
         ws.cell(3, 1).font = Font(bold=True, color='1F6F1F', size=10)
         ws.merge_cells(f'A3:{_colL}3')
