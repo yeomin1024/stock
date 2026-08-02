@@ -14450,11 +14450,13 @@ SIMPLE_POOL_ALIGN_HORIZON_NET   = True
 #   조합으로 선정 — 끄면(False) 비단순모드처럼 STABLE_NEARTIE_EPS/REL 정준화가 다시 적용됨.
 SIMPLE_POOL_KL_PURE_MAX_RETURN   = True
 
-# ★★★ (요청 — 신뢰도 계산 개선) "우연으로 예측한 지표는 절대 없어야" — t-통계량이 이 값을
-#   넘어야만(=이 정도 결과가 우연히 나올 확률이 매우 낮아야만) 신뢰도가 0보다 커짐.
-#   2.33=단측 99% 신뢰수준, 3.09=단측 99.9% 신뢰수준. ★ (요청) 매수는 매도보다 더 엄격하게.
-SIMPLE_POOL_RELIABILITY_TMIN_BUY  = 3.09
-SIMPLE_POOL_RELIABILITY_TMIN_SELL = 2.33
+# ★★★ (요청 — 재설계) 신뢰도 = max(0, t통계량)^POWER — 하드컷(통과/탈락) 없이, 우연에
+#   가까운 지표(t≈0)는 점수가 자연히 작고 예측력이 뚜렷한 지표(t가 클수록)는 점수가
+#   기하급수적으로 커지는 연속 스케일링. POWER가 클수록 '조금 나은 것'과 '확실히 나은
+#   것' 사이 점수 격차(분별력)가 더 크게 벌어짐. ★ (요청) 매수가 매도보다 분별력이 높도록
+#   POWER_BUY > POWER_SELL.
+SIMPLE_POOL_RELIABILITY_POWER_BUY  = 2.2
+SIMPLE_POOL_RELIABILITY_POWER_SELL = 1.5
 
 # ★★★ (요청 — 폐기, 재설계로 대체) "신뢰도로 사용지표 개수를 정하는" 방식은 더 이상 안 씀 —
 #   아래 SIMPLE_POOL_POSITION_MATCH_SELECT(정답 매수/매도 자리 기반 선정)로 완전히 대체.
@@ -14475,6 +14477,13 @@ SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = False
 SIMPLE_POOL_POSITION_MATCH_SELECT   = True
 SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT  = True    # 상승/하락폭 클수록 그 날을 맞히는 게 더 중요
 SIMPLE_POOL_MATCH_TARGET_THRESHOLD  = 0.0     # 정답 판정 임계값(다음날 수익률 > 이 값이면 '롱이 정답')
+# ★★★ (요청 관련 — 버그수정, 실측 확인: 매수1600+개일 때 매도가 232→0개로 전멸) 매수보호구역·
+#   침범허용폭 — 매수지표가 많을수록 "어느 하나라도 겹침"은 흔해지므로, 두 손잡이로 과도한
+#   배제를 막는다. HARM_MIN_FRAC: 매수보호구역으로 인정하려면 살아남은 매수지표 중 최소 이
+#   비율 이상이 그 날짜를 동시에(그리고 실제 정답으로) 지지해야 함. HARM_MARGIN: 매도지표의
+#   침범(harm)이 자기 정답기여의 이 배수를 넘어야만 제외(1.5=50% 더 커야 제외, 완전동률은 봐줌).
+SIMPLE_POOL_MATCH_HARM_MIN_FRAC     = 0.05
+SIMPLE_POOL_MATCH_HARM_MARGIN       = 1.5
 
 # ★★★ (요청) "1일, 1~2일, 1~3일, 1~4일, 1~5일"처럼 호라이즌을 누적 포함시켜가며, 종합net에
 #   포함시켰을 때 전체수익이 최대가 되는 지점을 탐색한다(다 포함하는 게 항상 최선은 아님).
@@ -16771,25 +16780,27 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         else:
             # 완벽하게 일관된 경우(분산 0) — 부호에 따라 매우 크게(사실상 확실)/0으로.
             t_stat = 50.0 if mean_fav > threshold else -50.0
-        # ★★★ (요청 — 신뢰도 계산 개선) "우연으로 상승/하락을 예측한 지표는 절대 없어야
-        #   한다" — 예전엔 t_stat이 조금이라도 0을 넘으면(아무리 미미해도) 양의 신뢰도를
-        #   줬는데, 그 정도로는 우연(랜덤)과 통계적으로 구분이 안 된다. 여기서부터는
-        #   진짜 '통계적 유의성 기준선'(t_min)을 넘어야만 신뢰도가 0보다 커지도록 한다 —
-        #   t_min=2.33은 단측검정 약 99% 신뢰수준(우연히 이 정도 평균이 나올 확률이 1%
-        #   미만이어야 함)에 해당하는 표준적인 기준값. ★ (요청) 매수 지표는 더 엄격하게 —
-        #   t_min을 3.09(단측 99.9%)로 매도(2.33, 99%)보다 훨씬 높게 잡는다. t_min을
-        #   못 넘기면 아무리 t_stat이 양수여도(=조금이라도 맞는 것처럼 보여도) 신뢰도는
-        #   정확히 0 — "그럴듯해 보이지만 우연일 수 있는" 애매한 지표를 전부 걸러낸다.
-        _t_min = float(globals().get(
-            'SIMPLE_POOL_RELIABILITY_TMIN_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_TMIN_SELL',
-            3.09 if is_buy else 2.33))
-        reliability = max(0.0, t_stat - _t_min)
+        # ★★★ (요청 — 신뢰도 계산 재설계) "엄격하게"는 통과를 막으라는 뜻이 아니라 예측력을
+        #   더 정교하게 가려내라는 뜻이었다 — 이전 버전(t_stat에서 통계적 유의성 기준선을
+        #   빼는 방식)은 기준선을 못 넘기면 무조건 신뢰도 0으로 만드는 '하드컷'이라, 실제로는
+        #   거의 다 걸러져버려 "통과가 안 된다"는 문제를 만들었다. 지금은 하드컷을 완전히
+        #   없애고, t_stat을 거듭제곱(power)으로 매끄럽게 늘려서(연속값) 우연에 가까운
+        #   지표(t≈0)는 자연히 점수가 낮게, 예측력이 뚜렷한 지표(t가 클수록)는 점수가
+        #   기하급수적으로 커지도록 한다 — "통과/탈락"이 아니라 '점수의 격차'로 우연과
+        #   진짜 예측력을 가려낸다. ★ (요청) 매수 지표는 이 격차(분별력)를 매도보다 더 크게
+        #   벌린다 — power_buy가 power_sell보다 커서, 같은 t_stat 차이라도 매수 쪽 점수
+        #   차이가 훨씬 크게 벌어진다(t=1이면 둘 다 1로 같지만, t=3이면 매수가 매도보다
+        #   훨씬 큰 점수를 받는 식 — '조금 나은 것'과 '확실히 나은 것'을 매수에서 더
+        #   뚜렷하게 구분).
+        _power = float(globals().get(
+            'SIMPLE_POOL_RELIABILITY_POWER_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_POWER_SELL',
+            2.2 if is_buy else 1.5))
+        reliability = max(0.0, t_stat) ** _power
         return {'reliability': reliability, 'mean_fav': mean_fav, 'std_fav': std_fav,
-                'se': se, 't_stat': t_stat, 'n_evaluable': n, 't_min': _t_min,
-                'passed_significance': bool(t_stat >= _t_min)}
+                'se': se, 't_stat': t_stat, 'n_evaluable': n, 'power': _power}
     except Exception:
         return {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
-                't_stat': 0.0, 'n_evaluable': 0, 't_min': 0.0, 'passed_significance': False}
+                't_stat': 0.0, 'n_evaluable': 0, 'power': 0.0}
 
 
 def _compute_target_positions(close_arr, threshold=0.0):
@@ -16860,10 +16871,19 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool):
           '틀린 것(진폭가중 오답)'이 '맞은 것(진폭가중 정답)'보다 많거나 같으면 — 즉
           우연이거나 역효과인 지표는 — 그 지표를 완전히 제외한다. 살아남은 매수지표는
           전부 사용(요청: "최대한 사용 지표들로 매수 신호를 만들고").
-       ③ 확정된 매수지표들이 실제로 발화하는 날짜 전체를 '매수커버 날짜'로 기록.
+       ③ 확정된 매수지표들이 '실제로 정답(target==1)이면서 여러 지표가 두텁게 겹쳐
+          지지하는' 날짜만 '매수보호구역'으로 기록한다.
+          ★★★ (요청 관련 — 버그수정, 실측 확인) 매수지표가 아주 많으면(실측 1600개+)
+          "어느 한 지표라도 발화"로 보호구역을 정의할 경우 사실상 전체 기간을 덮어버려서
+          매도지표가 전멸(232→0개)하는 문제가 있었다 — 매수지표 한둘이 실수로(오답으로)
+          발화한 날짜까지 '보호구역'으로 치면 안 된다. 그래서 (a) 실제로 맞는 날(target==1)
+          이면서 (b) 일정 비율 이상의 매수지표가 동시에 지지하는 날짜만 보호구역으로 좁힌다.
        ④ 매도 지표: 정답(현금) 기준으로 같은 방식의 오답≥정답 제외를 적용하고, **추가로**
-          매수커버 날짜를 침범하는 정도(harm, 진폭가중)가 자기 자신의 정답기여(correct)보다
-          크거나 같으면 제외한다 — "매수 신호를 최대한 해치지 않는 지표들을 사용" 요청.
+          매수보호구역을 침범하는 정도(harm, 진폭가중)가 자기 자신의 정답기여(correct)의
+          일정 배수를 넘으면 제외한다 — "매수 신호를 최대한 해치지 않는 지표들을 사용"
+          요청. (완전히 동률(≥)이 아니라 여유배수를 두는 이유도 위와 같은 실측 문제 방지용
+          — 매수지표가 많을수록 우연한 소량 겹침은 자연히 늘어나므로, 그 정도의 겹침까지
+          전부 배제하면 역시 매도가 전멸하기 쉽다.)
        ⑤ 신뢰도(이제 통계적 유의성 기준까지 통과해야 하는 엄격한 버전)는 살아남은 지표들
           안에서의 우선순위/가중치로만 쓴다("신호가 여러 개면 신뢰도가 높은 것부터 적용") —
           포함 여부 자체를 신뢰도로 정하지 않는다(요청: 신뢰도로 사용지표 정하는 기능 중단).
@@ -16875,32 +16895,55 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool):
     target, magnitude, _ret = _compute_target_positions(close_arr, threshold=_thr)
     n = len(target)
 
-    def _filter_side(pool, is_buy, harm_mask=None):
+    def _filter_buy(pool):
         if pool is None or len(pool) == 0:
-            return pool, np.zeros(n, dtype=bool)
-        keep_rows = []; cov = np.zeros(n, dtype=bool)
-        _cw = []; _ww = []; _hw = []
+            return pool, np.zeros(n, dtype=float)
+        keep_rows = []; strength = np.zeros(n, dtype=float)
+        _cw = []; _ww = []
         for _, row in pool.iterrows():
-            cw, ww, hw, nfire, fidx = _score_indicator_vs_target(
-                feat, row, target, magnitude, is_buy, harm_mask=harm_mask)
-            # ① 오답(우연/역효과 포함)이 정답 이상이면 무조건 제외
+            cw, ww, _hw0, nfire, fidx = _score_indicator_vs_target(
+                feat, row, target, magnitude, True)
             if nfire == 0 or ww >= cw:
                 continue
-            # ② (매도만) 매수신호 침범(harm)이 자기 정답기여보다 크거나 같으면 제외
-            if harm_mask is not None and hw >= cw:
+            keep_rows.append(row); _cw.append(cw); _ww.append(ww)
+            strength[fidx] += 1.0   # ★ 이진(발화여부)이 아니라 '몇 개가 겹쳐 발화하는지' 누적
+        if not keep_rows:
+            return pool.iloc[0:0].copy(), strength
+        out = pd.DataFrame(keep_rows).reset_index(drop=True)
+        out['score_correct'] = _cw; out['score_wrong'] = _ww; out['score_harm'] = 0.0
+        return out, strength
+
+    buy_survivors, buy_strength = _filter_buy(buy_pool)
+
+    # ★ 매수보호구역 = (a) 실제 정답(target==1)이면서 (b) 살아남은 매수지표 중 일정 비율
+    #   이상이 동시에 지지하는 날짜만. 매수지표가 1개뿐이어도 최소 1개는 지지해야 하므로
+    #   ceil(...)로 최소 1은 보장.
+    _min_frac = float(globals().get('SIMPLE_POOL_MATCH_HARM_MIN_FRAC', 0.05))
+    _min_strength = max(1, int(np.ceil(_min_frac * max(1, len(buy_survivors)))))
+    harm_mask = (buy_strength >= _min_strength) & (target == 1)
+
+    def _filter_sell(pool, harm_mask):
+        if pool is None or len(pool) == 0:
+            return pool
+        _harm_margin = float(globals().get('SIMPLE_POOL_MATCH_HARM_MARGIN', 1.5))
+        keep_rows = []; _cw = []; _ww = []; _hw = []
+        for _, row in pool.iterrows():
+            cw, ww, hw, nfire, fidx = _score_indicator_vs_target(
+                feat, row, target, magnitude, False, harm_mask=harm_mask)
+            if nfire == 0 or ww >= cw:
+                continue
+            if hw >= cw * _harm_margin:
                 continue
             keep_rows.append(row); _cw.append(cw); _ww.append(ww); _hw.append(hw)
-            cov[fidx] = True
         if not keep_rows:
-            return pool.iloc[0:0].copy(), cov
+            return pool.iloc[0:0].copy()
         out = pd.DataFrame(keep_rows).reset_index(drop=True)
         out['score_correct'] = _cw; out['score_wrong'] = _ww; out['score_harm'] = _hw
-        out = out.sort_values('reliability', ascending=False).reset_index(drop=True)
-        return out, cov
+        return out
 
-    buy_survivors, buy_cov = _filter_side(buy_pool, True, harm_mask=None)
-    # ★ 매수 확정 후에만 매도 평가 — "먼저 매수부터 정해서... 그다음 매도"
-    sell_survivors, _sell_cov = _filter_side(sell_pool, False, harm_mask=buy_cov)
+    sell_survivors = _filter_sell(sell_pool, harm_mask)
+    if len(buy_survivors):
+        buy_survivors = buy_survivors.sort_values('reliability', ascending=False).reset_index(drop=True)
     return buy_survivors, sell_survivors
 
 
