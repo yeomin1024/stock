@@ -16997,9 +16997,13 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             else:
                 print(f"    ── horizon={_day}일 (최소신호 {_msig}개, "
                       f"매수 성공률≥{_msucc_b*100:.0f}% / 매도 성공률≥{_msucc_s*100:.0f}%) ──")
+            _t_eval0 = time.time()
             _bdf_h, _sdf_h = _evaluate_all_indicators_raw(
                 feat, close, horizon=_day, dd_limit=_limit0, ru_limit=_limit0,
                 n_thresholds=n_thresholds)
+            print(f"       [진단로그] horizon={_day}일 지표평가(_evaluate_all_indicators_raw) "
+                  f"소요 {time.time()-_t_eval0:.1f}초 (매수후보 {len(_bdf_h) if _bdf_h is not None else 0}개, "
+                  f"매도후보 {len(_sdf_h) if _sdf_h is not None else 0}개)")
             _bdf_h = _add_wilson(_bdf_h); _sdf_h = _add_wilson(_sdf_h)
             if _bdf_h is not None and len(_bdf_h): _bdf_h['horizon_day'] = _day
             if _sdf_h is not None and len(_sdf_h): _sdf_h['horizon_day'] = _day
@@ -17024,8 +17028,12 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 df['std_fav_next'] = [r['std_fav'] for r in _results]
                 df['t_stat_next']  = [r['t_stat'] for r in _results]
                 return df
+            _t_rel0 = time.time()
             _bp = _add_reliability(_bp, True)
             _sp = _add_reliability(_sp, False)
+            print(f"       [진단로그] horizon={_day}일 신뢰도(t-통계량) 계산 소요 "
+                  f"{time.time()-_t_rel0:.1f}초 (매수 {len(_bp) if _bp is not None else 0}개, "
+                  f"매도 {len(_sp) if _sp is not None else 0}개 대상)")
 
             _bp = _apply_verify(_bp, True); _sp = _apply_verify(_sp, False)
 
@@ -19775,9 +19783,13 @@ def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker=
               if 'horizon_day' in sell_pool.columns else sell_pool)
         if len(_bp) == 0 or len(_sp) == 0:
             continue
+        _t_cand0 = time.time()
         _res = _net_signal_k_search(feat, close_ser, _bp, _sp, ticker=ticker,
                                     oos_start=oos_start, n_buy=None, n_sell=None,
-                                    search_counts=False, select_by='full', compute_zero_pool=False)
+                                    search_counts=False, select_by='full', compute_zero_pool=False,
+                                    compute_kl_by_horizon=False)   # ★ 버려질 후보라 무거운 계산 생략
+        print(f"    [진단로그] 호라이즌후보 {_subset} (매수{len(_bp)}/매도{len(_sp)}개) "
+              f"소요 {time.time()-_t_cand0:.1f}초")
         _ret = (_res.get('full_cum') if _res else None)
         _all_results.append((list(_subset), _ret, _res))
         if _res is not None and _ret is not None and _ret > best_ret:
@@ -19825,7 +19837,7 @@ def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker=
 def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                          ticker='', max_k_candidates=600, oos_start=None,
                          n_buy=None, n_sell=None, search_counts=False, weight_exp=1.0, fixed_k=None,
-                         select_by='full', compute_zero_pool=True):
+                         select_by='full', compute_zero_pool=True, compute_kl_by_horizon=True):
     """★ 순신호 K 최적화 + OOS 검증 (요청):
        b(순신호) = (상위 n_buy 매수지표 가중합) − (상위 n_sell 매도지표 가중합).
        net > K → 롱(매수/보유), net ≤ K → 현금(매도). 신호는 다음날 반영.
@@ -19929,27 +19941,17 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         # ★ (요청 — 버그수정) 호라이즌별 net 분해 계산은 n_buy_opt/n_sell_opt(신뢰도 임계값
         #   탐색으로 최종 확정된 채택 개수)가 정해진 '뒤'로 옮김 — 아래 참조.
         _net_by_horizon = {}
+        _kl_by_horizon = {}   # ★★★ (요청 — 버그수정) 이것도 net_by_horizon과 함께 '뒤'로 옮김 —
+        #   예전엔 여기서 바로 계산했는데, 그 시점엔 net_by_horizon이 아직 빈 채라(호라이즌별
+        #   net은 n_buy_opt/n_sell_opt 확정 '후'에야 채워짐) if _net_by_horizon: 조건이 항상
+        #   거짓이라 kl_by_horizon이 영원히 빈 채로 남아 있었다(K1~K5/L1~L5 표시가 통째로
+        #   사라진 원인). 실제 계산은 아래 net_by_horizon 채워지는 지점 바로 뒤로 옮김.
 
         r = np.zeros(n)
         for t in range(1, n):
             p0 = close[t-1]; p1 = close[t]
             if p0 and p0 > 0 and not np.isnan(p1) and not np.isnan(p0):
                 r[t] = p1 / p0 - 1.0
-
-        # ★★★ (요청) net값별(1~5일) 독립 최적 K,L 탐색 — "이 호라이즌의 net 하나만으로
-        #   트레이딩한다면 K/L을 얼마로 잡는 게 최선인가"를 각 호라이즌별로 따로 구해본다.
-        #   실제 매매에 쓰이는 메인 net(전체 합산)과는 별개의 진단/참고용 정보.
-        _kl_by_horizon = {}
-        if _net_by_horizon:
-            for _h, _harr in _net_by_horizon.items():
-                try:
-                    _klh = _net_kl_search(_harr, r, mdd_limit=None)
-                    if _klh is not None and _klh.get('best_ret') is not None:
-                        _kb, _kl_, _kret, _kmdd = _klh['best_ret'][0], _klh['best_ret'][1], \
-                                                    _klh['best_ret'][2], _klh['best_ret'][3]
-                        _kl_by_horizon[_h] = {'K': _kb, 'L': _kl_, 'ret': _kret, 'mdd': _kmdd}
-                except Exception:
-                    pass
 
         # ── OOS 분할 ──
         oos_idx = n
@@ -20132,6 +20134,27 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                         try: _sarr += _wt_of(row) * _row_sig(row)
                         except Exception: pass
                 _net_by_horizon[_h] = _barr - _sarr
+
+        # ★★★ (요청 — 버그수정, 위치 이동) net값별(1~5일) 독립 최적 K,L 탐색 — "이 호라이즌의
+        #   net 하나만으로 트레이딩한다면 K/L을 얼마로 잡는 게 최선인가"를 각 호라이즌별로
+        #   따로 구해본다. 실제 매매에 쓰이는 메인 net(전체 합산)과는 별개의 진단/참고용
+        #   정보. ★ net_by_horizon이 바로 위에서 막 채워진 '뒤'에 계산해야 한다 — 예전엔
+        #   이 계산이 net_by_horizon이 채워지기 전(함수 앞쪽)에 있어서 매번 빈 채로 끝나
+        #   K1~K5/L1~L5 표시가 아예 안 나오고 있었다(실측 확인 후 위치 이동으로 수정).
+        #   ★★★ (요청 관련 — 성능버그) compute_kl_by_horizon=False면 건너뜀 — 호라이즌범위
+        #   탐색은 이 함수를 후보 개수만큼 반복 호출하는데, 그 중 버려지는(채택 안 된)
+        #   후보들까지 매번 이 무거운 계산(호라이즌마다 K/L 그리드 탐색)을 다시 하느라
+        #   실행이 타임아웃 날 정도로 느려지고 있었다 — 최종 채택된 결과에만 계산하면 충분.
+        if compute_kl_by_horizon and _net_by_horizon:
+            for _h, _harr in _net_by_horizon.items():
+                try:
+                    _klh = _net_kl_search(_harr, r, mdd_limit=None)
+                    if _klh is not None and _klh.get('best_ret') is not None:
+                        _kb, _kl_, _kret, _kmdd = _klh['best_ret'][0], _klh['best_ret'][1], \
+                                                    _klh['best_ret'][2], _klh['best_ret'][3]
+                        _kl_by_horizon[_h] = {'K': _kb, 'L': _kl_, 'ret': _kret, 'mdd': _kmdd}
+                except Exception:
+                    pass
 
         best_k = best[0]
         if fixed_k is not None:      # ★ 재현: 원본 K 그대로 (탐색 안 함)
@@ -22055,24 +22078,47 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                이 함수의 선택 기준은 full_cum/oos_cum(메인풀 자체 수익)뿐이라 카운트0
                처리와 무관하고, 아래 write_excel의 재동기화 로직이 최종 확정된 K/L·풀
                기준으로 캐스케이드를 정확히 다시 만들어주므로 여기서 여러 번 반복 계산할
-               필요가 없다(결과 동일, 실행시간만 단축)."""
+               필요가 없다(결과 동일, 실행시간만 단축).
+               ★★★ (요청 — 성능버그 수정, 상세로그) SIMPLE_POOL_MODE에서 K1~K5/L1~L5를
+               되살리려고 kl_by_horizon 계산을 되살렸더니, 이 함수가 가중치 스킴(g) 6개를
+               순회하며 매번 _net_signal_k_search를 호출하는데, 그때마다 (1) SIMPLE_POOL_MODE의
+               신뢰도임계값 탐색(1~풀크기까지 좌표하강)과 (2) kl_by_horizon(호라이즌별 K/L
+               그리드탐색)이 '매 스킴마다' 통째로 다시 실행되는 게 겹쳐서 실행이 몇 분씩
+               걸리는 문제가 있었다(실측 확인 후 수정) — 최종 채택되는 건 스킴 1개뿐인데
+               6배 낭비였음. SIMPLE_POOL_MODE는 net_weight_score 자체가 이미 신뢰도 기반
+               정교한 가중치라 g 거듭제곱 탐색 자체가 설계 의도에 안 맞기도 해서, 이 모드는
+               스킴 탐색을 아예 건너뛰고 g=1.0 한 번만 계산한다(비단순모드는 기존 그대로)."""
+            _t_compute0 = time.time()
             if fk is not None:
                 c = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
                                          oos_start=globals().get('OOS_START'),
                                          n_buy=fnb, n_sell=fns, search_counts=False,
                                          weight_exp=(fg or 1.0), fixed_k=fk, select_by=sel_by,
                                          compute_zero_pool=False)
+                print(f"    [진단로그] _compute('{sel_by}', 고정재현) 소요 {time.time()-_t_compute0:.1f}초")
                 return c, (fg or 1.0)
-            _gs = (list(globals().get('NET_WEIGHT_SCHEMES', [1.0]))
-                   if (globals().get('SEARCH_WEIGHT_SCHEME', False) and globals().get('NET_SIGNAL_WEIGHTED', False))
-                   else [1.0])
+            _simple_mode = bool(globals().get('SIMPLE_POOL_MODE', False))
+            _gs = ([1.0] if _simple_mode else
+                   (list(globals().get('NET_WEIGHT_SCHEMES', [1.0]))
+                    if (globals().get('SEARCH_WEIGHT_SCHEME', False) and globals().get('NET_SIGNAL_WEIGHTED', False))
+                    else [1.0]))
+            if _simple_mode and len(list(globals().get('NET_WEIGHT_SCHEMES', [1.0]))) > 1:
+                print(f"    [진단로그] 단순모드 — 가중치 스킴(g) 탐색 생략(net_weight_score가 "
+                      f"이미 신뢰도 기반이라 g 거듭제곱 탐색은 설계상 불필요, g=1.0 한 번만 계산)")
             _bg = 1.0; _bsc = -1e18; _bc = None
-            for _g_ in _gs:
+            for _i_g, _g_ in enumerate(_gs):
+                _t_g0 = time.time()
+                # ★ 스킴이 2개 이상일 때만, 마지막(=최종 채택 가능성 있는) 게 아니면 kl_by_horizon
+                #   생략 — 실제로 채택되는 스킴 하나에 대해서만 아래에서 다시 계산해 채움.
                 c = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
                                          oos_start=globals().get('OOS_START'),
                                          n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt,
                                          weight_exp=_g_, select_by=sel_by,
-                                         compute_zero_pool=False)
+                                         compute_zero_pool=False,
+                                         compute_kl_by_horizon=(len(_gs) == 1))
+                if len(_gs) > 1:
+                    print(f"    [진단로그] 가중치스킴 g={_g_} ({_i_g+1}/{len(_gs)}) "
+                          f"소요 {time.time()-_t_g0:.1f}초, 수익={((c.get('full_cum') or 0)*100 if c else 0):+.1f}%")
                 _m = ((c.get('oos_cum') if sel_by == 'oos' else c.get('full_cum')) if c else None)
                 _m = -1e18 if _m is None else _m
                 if _m > _bsc: _bsc = _m; _bg = _g_; _bc = c
@@ -22081,6 +22127,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                            oos_start=globals().get('OOS_START'),
                                            n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt, select_by=sel_by,
                                            compute_zero_pool=False)
+            elif len(_gs) > 1 and not _bc.get('kl_by_horizon'):
+                # ★ 여러 스킴 중 하나가 채택됐는데 kl_by_horizon을 안 채웠으면(생략했으면),
+                #   그 채택된 스킴으로만 다시 한 번 계산해 kl_by_horizon을 채워준다(1회 추가만).
+                _t_refill0 = time.time()
+                _bc = _net_signal_k_search(feat, close_full, _mbp, _msp, ticker=ticker,
+                                           oos_start=globals().get('OOS_START'),
+                                           n_buy=_nb, n_sell=_ns, search_counts=_sc_cnt,
+                                           weight_exp=_bg, select_by=sel_by, compute_zero_pool=False,
+                                           compute_kl_by_horizon=True)
+                print(f"    [진단로그] 채택된 스킴(g={_bg}) kl_by_horizon 재계산 소요 "
+                      f"{time.time()-_t_refill0:.1f}초")
+            print(f"    [진단로그] _compute('{sel_by}') 전체 소요 {time.time()-_t_compute0:.1f}초 "
+                  f"(스킴 {len(_gs)}개 탐색)")
             return _bc, _bg
 
         if _fixed and isinstance(_fixed, dict) and _fixed.get('k_full') is not None:
@@ -22546,7 +22605,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                            and _mp_bt[0] == ticker
                            and _mp_bt[1] is not None and _mp_bt[2] is not None
                            and len(_mp_bt[1]) > 0 and len(_mp_bt[2]) > 0)
-        if _use_multi_disp:
+        # ★★★ (요청 — 버그수정, 근본 원인) _mp_bt(=_KNET_MULTI_POOL)는 호라이즌범위 탐색·
+        #   신뢰도임계값 탐색이 다 끝나기 '전'에 한 번 저장된 뒤 갱신되지 않는 전역이라,
+        #   공식 텍스트가 실제로 채택된 것보다 더 많은 지표를 나열하는 불일치가 있었다
+        #   (실측 확인: 공식엔 4개인데 실제 카운트엔 3개만 반영돼 있었음 — "[실제 X]"로
+        #   기존에도 불일치 자체는 감지하고 있었지만 원인을 안 고치고 표시만 하고 있었음).
+        #   _nsd(이 시트를 실제로 그리는 데 쓰인 그 결과)가 자기 자신의 buy_pool_used/
+        #   sell_pool_used(호라이즌범위+신뢰도임계값 둘 다 반영된 최종본)를 갖고 있으므로
+        #   이걸 최우선으로 쓴다 — 반드시 실제 카운트와 일치하게 됨.
+        _nsd_bp = _nsd.get('buy_pool_used') if isinstance(_nsd, dict) else None
+        _nsd_sp = _nsd.get('sell_pool_used') if isinstance(_nsd, dict) else None
+        if _nsd_bp is not None and len(_nsd_bp) > 0 and _nsd_sp is not None and len(_nsd_sp) > 0:
+            _bp_src, _sp_src = _nsd_bp, _nsd_sp
+        elif _use_multi_disp:
             _bp_src, _sp_src = _mp_bt[1], _mp_bt[2]
         else:
             _bp_src = buy_pool if (buy_pool is not None and len(buy_pool) > 0) else None
@@ -29062,8 +29133,13 @@ def _run_with_log_capture():
 
 
 def _download_log_file(log_path):
-    """★ 실행로그 .txt 자동 다운로드 — 엑셀 자동다운로드(_auto_download_excels)와 동일한
-       Colab 판별·다운로드 방식을 그대로 재사용."""
+    """★★★ (요청 — 버그수정, 재발) 실행로그 .txt 자동 다운로드 — 엑셀 자동다운로드
+       (_auto_download_excels)와 동일한 Colab 판별·다운로드 방식을 그대로 재사용.
+       ★ 이전엔 엑셀 다운로드 '바로 뒤'에 텀 없이 이 함수가 불려서, files.download()를
+       연속 호출하면 브라우저가 처리 속도를 못 따라가 조용히 놓치는 문제(_auto_download_
+       excels에 이미 있던 것과 동일한 원인)가 로그 파일에도 그대로 발생하고 있었다 —
+       실행 로그가 '텍스트 파일로 다운로드가 안 된다'던 게 이것. 다운로드 직전에 짧은
+       텀을 둬서 브라우저가 앞선 엑셀 다운로드를 확실히 처리한 뒤 이어받게 한다."""
     if not os.path.exists(log_path):
         return
     is_colab = False; files = None
@@ -29075,6 +29151,7 @@ def _download_log_file(log_path):
             is_colab = False
     if is_colab:
         try:
+            time.sleep(1.5)   # ★ 버그수정 — 앞선 엑셀 다운로드와의 연속 호출 텀 확보
             files.download(log_path)
             print(f"     📥 실행 로그 다운로드 시작: {log_path}")
         except Exception as e:
