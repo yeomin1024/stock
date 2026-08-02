@@ -14408,11 +14408,11 @@ SIMPLE_POOL_MODE        = False
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
-    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
-    {'day': 3, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
-    {'day': 4, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
-    {'day': 5, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+    {'day': 1, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 2, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 3, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 4, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 5, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
 ]
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
@@ -14465,6 +14465,13 @@ SIMPLE_POOL_RELIABILITY_POWER_SELL = 1.5
 #   커질 수 있어(통계적으론 맞지만) net_weight_score=1+신뢰도를 통해 한 지표가 net 전체를
 #   압도해버릴 위험이 있다 — 상대적 우선순위는 유지하되 이 값을 넘지 않도록 상한을 둔다.
 SIMPLE_POOL_RELIABILITY_CAP        = 30.0
+# ★★★ (요청 — 신규) 추세전환 적중 보너스 — 발화 직전 LOOKBACK일간 추세와 반대 방향으로
+#   성공하면(=추세전환을 맞춤) 신뢰도에 강하게(초선형) 보너스를 준다. 여러 번 맞을수록
+#   보너스가 훨씬 커짐(POWER>1) — "추세전환 여러 번 맞으면 가장 중요하니까 분별력 있게".
+SIMPLE_POOL_REVERSAL_BONUS_ENABLED = True
+SIMPLE_POOL_REVERSAL_LOOKBACK      = 10     # 추세 판정에 쓸 발화 이전 기간(거래일)
+SIMPLE_POOL_REVERSAL_BONUS_WEIGHT  = 0.35   # 보너스 배율의 크기
+SIMPLE_POOL_REVERSAL_BONUS_POWER   = 1.6    # 1보다 크면 여러 번 맞을수록 초선형으로 커짐
 
 # ★★★ (요청 — 폐기, 재설계로 대체) "신뢰도로 사용지표 개수를 정하는" 방식은 더 이상 안 씀 —
 #   아래 SIMPLE_POOL_POSITION_MATCH_SELECT(정답 매수/매도 자리 기반 선정)로 완전히 대체.
@@ -16650,31 +16657,32 @@ def _limit_thresholds_per_indicator(pool_df, max_per=None, verbose=False):
 
 
 def _dedup_identical_signal_dates(feat, pool):
-    """★★★ (요청) 신호수·성공률이 완전히 같은 지표들은 '신호 발화일'까지 비교해서,
-       진짜로 전부 같은 날짜에 발화하는 것들끼리는 하나만 남긴다(서로 다른 이름/수식의
-       지표가 우연히 수치만 같은 게 아니라 실질적으로 동일한 신호를 내는 경우 대비).
-       비용 절감: (horizon_day, n_signals, n_success) 로 먼저 묶고, 그 안에서만 실제
-       신호일 비교(전체 쌍끼리 비교하면 느림 — 대부분은 애초에 신호수·성공개수부터
-       달라 그룹이 갈림).
-       ★★★ (요청 관련 — 버그수정) horizon_day를 그룹 키에서 빠뜨렸었다 — 같은 지표·같은
-       임계값은 호라이즌이 달라도 '언제 발화하는지'(원신호)는 100% 동일하고 성공/실패
-       판정만 다르므로, n_signals·n_success까지 우연히 같으면(실측: 소표본에서 흔함)
-       서로 다른 호라이즌 예측(예: 1일 후 예측 vs 3일 후 예측)인데도 '중복'으로 오판해
-       하나를 지워버렸다 — 이는 완전히 다른 주장이라 지우면 안 된다."""
+    """★★★ (요청 — 재확인, 호라이즌 무관 재설계) "신호 날짜가 100% 일치하는 지표들이
+       여러개 있으면 그중 하나만 사용" — 신호수·성공률이 완전히 같은 지표들은 '신호
+       발화일'까지 비교해서, 진짜로 전부 같은 날짜에 발화하는 것들끼리는 하나만 남긴다.
+
+       ★★★ (요청 관련 — 재수정) 예전엔 horizon_day를 그룹 키에 넣어서 "호라이즌이 다르면
+       다른 주장이니 지우면 안 된다"고 판단했었는데, 사용자가 다시 명확히 "신호 날짜가
+       100% 일치하면 그중 하나만 써라"고 재확인했다 — 같은 원본 발화일 패턴이면 호라이즌이
+       달라도(=성공판정 임계값만 다를 뿐 '언제 목소리를 내는지'는 완전히 같은 지표라서)
+       net 계산에 같은 정보가 여러 번(호라이즌 개수만큼) 중복 반영되는 게 더 큰 문제라고
+       판단, horizon_day를 그룹 키에서 다시 뺀다. 대신 완전히 '지우기'보다, 중복 그룹
+       안에서 신뢰도가 가장 높은 것(=성공판정 임계값이 그 지표의 실제 예측력과 가장 잘
+       맞는 호라이즌일 가능성이 높음)만 남기고 나머지를 제거한다 — 정보 손실 없이 최선의
+       버전 하나로 압축.
+       비용 절감: (n_signals) 로 먼저 묶고, 그 안에서만 실제 신호일 비교(전체 쌍끼리
+       비교하면 느림 — 대부분은 애초에 신호수부터 달라 그룹이 갈림)."""
     if pool is None or len(pool) == 0:
         return pool
     pool = pool.reset_index(drop=True)
-    if 'n_success' not in pool.columns:
+    if 'n_signals' not in pool.columns:
         return pool
-    _hz_key = (pool['horizon_day'].astype(int) if 'horizon_day' in pool.columns
-              else pd.Series([0] * len(pool)))
-    groups = pool.groupby([_hz_key, pool['n_signals'].astype(int),
-                           pool['n_success'].astype(int)]).indices
+    groups = pool.groupby([pool['n_signals'].astype(int)]).indices
     drop_idx = set()
     for _key, idxs in groups.items():
         if len(idxs) <= 1:
             continue
-        seen_patterns = {}
+        seen_patterns = {}   # pat -> 현재 남겨둔 인덱스(신뢰도 최고)
         for i in idxs:
             row = pool.iloc[i]
             try:
@@ -16682,8 +16690,16 @@ def _dedup_identical_signal_dates(feat, pool):
                 pat = tuple(np.nonzero(sig)[0].tolist())
             except Exception:
                 continue
+            if not pat:
+                continue
             if pat in seen_patterns:
-                drop_idx.add(i)   # 이미 완전히 동일한 발화일 패턴을 가진 행이 있음 → 이건 중복
+                j = seen_patterns[pat]
+                _ri = float(pool.iloc[i].get('reliability', 0.0) or 0.0)
+                _rj = float(pool.iloc[j].get('reliability', 0.0) or 0.0)
+                if _ri > _rj:
+                    drop_idx.add(j); seen_patterns[pat] = i   # i가 더 신뢰도 높으면 j 대신 i를 남김
+                else:
+                    drop_idx.add(i)   # 기존(j)이 신뢰도 같거나 더 높으면 i를 제거
             else:
                 seen_patterns[pat] = i
     if drop_idx:
@@ -16723,64 +16739,56 @@ _CLUSTER_NULL_CACHE = {}
 
 
 def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
-    """★★★ (요청 — 재설계, 윌슨 미사용) 지표 신뢰도 — '신호가 net에 반영되는 표시일'
-       바로 다음날의 실제 등락률로 신호가 얼마나 믿을 만한지 계산.
+    """★★★ (요청 — 전면 재설계) 지표 신뢰도 — '실제 성공률 판정과 완전히 동일한 방식'으로
+       계산해야 한다는 지적을 반영해 다시 설계.
 
-       설계 — 임계값(threshold) 대비 일표본 t-통계량(연속값 기반):
-       각 표시일의 다음날 '유리방향' 등락률 fav_i(부호 있는 연속값 — 매수=상승분,
-       매도=하락분)로:
-         mean_fav = 평균(fav_i),  std_fav = 표본표준편차(fav_i, ddof=1)
-         se = std_fav / √n   (표준오차)
+       ★★★ (요청 관련 — 버그수정, 핵심) 이전 버전은 '호라이즌 정렬된 표시일의 바로 다음날
+       하루치' 등락만 봤는데, 실제 '성공률'(_eval_buy_signals/_eval_sell_signals)은 원본
+       발화일 i부터 '정확히 horizon일 후'(i+horizon)까지의 누적 등락률 딱 하나
+       (close[i+horizon]/close[i]-1)로 판정한다 — 하루치 등락과 h일 누적 등락은 전혀 다른
+       양이다. 이 불일치 때문에, 호라이즌이 클수록(2~5일) 판정기준(STAGE_SUCCESS_LIMIT가
+       호라이즌별로 커짐: 1%→5%)은 커지는데 비교 대상은 여전히 '하루치 등락'(보통 1~2%대)
+       이라 mean_fav가 threshold를 거의 항상 밑돌아 t값이 음수 → reliability=0으로 나오는
+       지표가 2~5일에서 압도적으로 많아지는 문제가 있었다(실측 확인) — 이제 신호일자 컬럼과
+       동일하게 close[i+horizon]/close[i]-1(원본발화일 i부터 h일 누적, "신호일자" 컬럼·
+       성공률 계산과 완전히 동일한 정의)로 고쳐서 이 불일치를 없앤다.
+
+       ★★★ (요청 — 신규) "추세전환 시 예측을 맞출수록, 특히 여러 번 맞으면 가장 중요하니까
+       분별력 있게" — 발화일 이전 LOOKBACK일간의 추세 방향과 반대로(즉 추세전환을 맞춰서)
+       성공한 경우를 별도로 세어, 그 횟수가 많을수록 신뢰도에 강하게(초선형으로) 보너스를
+       준다. 추세전환을 맞히는 건 단순 추세추종보다 훨씬 어렵고 우연으로 여러 번 맞기
+       힘들므로, 이게 실제 예측력의 가장 강력한 신호라고 보고 가장 크게 가중한다.
+
+       설계 — 임계값(threshold) 대비 일표본 t-통계량(연속값 기반, h일 누적 등락 사용):
+         fav_i = close[i+h]/close[i]-1 (매수) 또는 그 반대부호(매도) — i는 원본 발화일
+         mean_fav = 평균(fav_i), std_fav = 표본표준편차(fav_i, ddof=1), se = std_fav/√n
          t = (mean_fav − threshold) / se
-         reliability = max(0, t)
+       t를 scipy t분포(자유도 n-1)로 정확한 단측 p값 변환 → -log10(2p) 기반 연속 점수
+       (우연=0, 통계적으로 유의할수록 매끄럽게 커짐, 하드컷 없음) → 매수/매도 분별력
+       거듭제곱 → 추세전환 보너스 곱 → 상한 클램프.
 
-       ★★★ (요청 관련 — 버그수정) '표시일'이 무엇인지가 핵심. h일 지표는 net 계산에서
-       발화일 s가 아니라 s+(h-1)일(정렬된 표시일)에 반영된다(_row_sig의 호라이즌 정렬과
-       동일 로직) — 그 표시일의 '다음날'(=s+h, 원래 h일 지표가 검증되는 바로 그 시점)이
-       진짜 "다음날 예측"이다. 예전엔 여기서 정렬을 빼먹고 원본 발화일(s) 기준 다음날
-       (s+1)을 봤는데, h=5 지표라면 s+1은 아직 예측이 전혀 검증되지 않은 시점이라 실제
-       움직임이 없는 게 당연하다(성공률은 s+5에서 판정되므로) — 실측으로 재현: 상승이
-       전부 s+4→s+5 구간에 몰린 지표를 s+1 기준으로 재면 mean_fav≈0(완전히 놓침)이지만,
-       표시일(s+4) 기준으로 재면 정확히 실제 상승분(mean_fav≈3%)이 잡힌다. 이 정렬을
-       빼먹은 게 "성공률은 높은데 4·5일 지표 수익이 낮다"는 원인이었다 — h가 클수록
-       원본발화일 기준 다음날은 예측과 무관한 날일 가능성이 커지므로, h가 클수록 신뢰도가
-       체계적으로 저평가되고 있었다.
-
-       ★ 왜 윌슨(이진 적중/실패 비율의 신뢰구간) 대신 이 방식인가: 윌슨은 "1% 이상 넘겼는가
-       (예/아니오)"만 보고 실제 등락폭(+1.01%든 +5%든 똑같이 '적중 1건')은 버린다. 반면
-       t-통계량은 등락폭을 있는 그대로 검정에 사용하므로 정보 손실이 없다 — 통계학적으로
-       이진화(discretization)는 항상 검정력(statistical power)을 떨어뜨리므로, 같은
-       표본으로 더 정확하게 '진짜 예측력이 있는가'를 가려낼 수 있다.
-       ★ 크게·일관되게 맞출수록 자동으로 커짐: 평균(mean_fav)이 클수록, 편차(std_fav)가
-       작을수록(일관될수록) t가 커진다 — 별도의 배율 항 없이 이 t 값 자체가 "크게 맞췄으면
-       가중 점수"를 자연스럽게 구현한다.
-       ★ 표본이 적을수록 표준오차(se)가 커져 t가 자동으로 보수적으로 깎인다.
-
-       반환 dict: reliability, mean_fav, std_fav, se, t_stat, n_evaluable."""
+       반환 dict: reliability, mean_fav, std_fav, se, t_stat, n_evaluable, n_reversal_hits."""
     try:
-        sig = _to_signal_array(feat, row)   # 원본 신호(lead_shift만 적용, 호라이즌 정렬 전)
+        sig = _to_signal_array(feat, row)   # 원본 발화일(lead_shift만 적용) — 성공률 판정과 동일 기준
         _hz = row.get('horizon_day', None)
         if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
             _hz = row.get('horizon', None)
         _hz = int(_hz) if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) else 1
         sig_arr = np.nan_to_num(np.asarray(sig, dtype=float))
-        # ★ 표시일로 정렬 — _row_sig(net 계산)와 완전히 동일한 정렬을 적용해, "표시일 다음날"
-        #   기준으로 일관되게 평가한다(정렬 안 하면 h가 클수록 엉뚱한 날을 보게 됨).
-        aligned = _shift_signal_forward(sig_arr, _hz - 1) if _hz > 1 else sig_arr
-        n_total = len(aligned)
-        fire_idx = np.nonzero(aligned)[0]
-        fire_idx = fire_idx[fire_idx < n_total - 1]   # 마지막 표시일은 다음날이 없어 평가 불가
+        n_total = len(sig_arr)
+        fire_idx = np.nonzero(sig_arr)[0]
+        fire_idx = fire_idx[fire_idx <= n_total - 1 - _hz]   # i+horizon이 범위 안에 있어야 평가 가능
         _empty = {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
-                  't_stat': 0.0, 'n_evaluable': 0}
+                  't_stat': 0.0, 'n_evaluable': 0, 'n_reversal_hits': 0}
         if len(fire_idx) < 2:   # t-통계량은 최소 2개 표본 필요(표준편차 계산)
             return _empty
         base = close_arr[fire_idx]
-        nxt = close_arr[fire_idx + 1]
+        nxt = close_arr[fire_idx + _hz]   # ★ 핵심수정 — h일 후(성공률과 동일), 다음날(+1) 아님
         valid = (base > 0) & np.isfinite(base) & np.isfinite(nxt)
-        base = base[valid]; nxt = nxt[valid]
+        base = base[valid]; nxt = nxt[valid]; fire_valid = fire_idx[valid]
         if len(base) < 2:
             return _empty
-        raw_ret = nxt / base - 1.0
+        raw_ret = nxt / base - 1.0   # close[i+h]/close[i]-1 — 성공률 계산과 완전히 동일한 식
         fav = raw_ret if is_buy else -raw_ret   # ★ 매수지표=상승이 +, 매도지표=하락이 +
         n = len(fav)
         mean_fav = float(np.mean(fav))
@@ -16789,45 +16797,54 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         if se > 1e-12:
             t_stat = (mean_fav - threshold) / se
         else:
-            # 완벽하게 일관된 경우(분산 0) — 부호에 따라 매우 크게(사실상 확실)/0으로.
             t_stat = 50.0 if mean_fav > threshold else -50.0
-        # ★★★ (요청 — 재검토, 표본크기 미반영 문제 수정) "표본 개수가 너무 적으면 신뢰하기
-        #   어렵다"는 지적이 정확했다 — 이전 버전(t_stat을 그대로 거듭제곱)은 t-통계량
-        #   숫자만 보고, '그 t값이 표본 몇 개로 나온 것인지'(자유도)를 전혀 반영하지 않았다.
-        #   t분포는 자유도(n-1)가 작을수록 꼬리가 두꺼워서, 표본이 적으면 같은 t값이라도
-        #   우연히 나올 확률이 훨씬 높다(예: t=3이 표본3개짜리에서 나온 거면 꽤 흔하지만,
-        #   표본30개짜리에서 나온 거면 매우 드묾) — 표본이 적을수록 신뢰도를 실제로 더
-        #   깎아야 한다는 뜻. scipy의 t분포로 자유도(n-1)까지 반영한 정확한 단측 p값을
-        #   구하고, 이를 -log10(p)로 변환해 신뢰도의 기반으로 삼는다 — 표본이 적으면
-        #   같은 t값이라도 p값이 덜 작게(=덜 유의미하게) 나와 자동으로 낮은 점수를 받는다.
         try:
             from scipy import stats as _sps
             _df = max(1, n - 1)
             _p = float(_sps.t.sf(t_stat, df=_df))
         except Exception:
-            _p = 0.5 if t_stat <= 0 else max(1e-300, 1.0 / (1.0 + t_stat ** 2))   # 예외시 대략적 폴백
+            _p = 0.5 if t_stat <= 0 else max(1e-300, 1.0 / (1.0 + t_stat ** 2))
         _p = min(1.0, max(1e-300, _p))
-        # t=0(=p=0.5, "완전 우연")에서 정확히 0이 되도록 2배해서 로그 — 우연보다 못하면(p>0.5,
-        # 즉 t<0) 음수가 되므로 0으로 클램프.
         base_score = max(0.0, -np.log10(min(1.0, 2.0 * _p)))
-        # ★ (요청) 매수 지표는 이 분별력을 매도보다 더 크게 벌린다 — power_buy > power_sell.
         _power = float(globals().get(
             'SIMPLE_POOL_RELIABILITY_POWER_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_POWER_SELL',
             2.2 if is_buy else 1.5))
         reliability = base_score ** _power
-        # ★★★ (요청 — 재확인 후 보완) p값이 극단적으로 작으면(-log10(p))^power가 매우 커질 수
-        #   있다(예: 표본이 많고 아주 일관되면 수백대까지도) — 통계적으로 틀린 계산은 아니지만,
-        #   net_weight_score=1+신뢰도라서 이런 극단값 하나가 다른 지표 전부를 압도해버릴 수
-        #   있다. 상대적 우선순위(분별력)는 그대로 유지하면서도 한 지표가 net을 통째로
-        #   지배하지 않도록 합리적 상한을 둔다.
+
+        # ★★★ (요청 — 신규) 추세전환 성공 보너스 — 발화 직전 LOOKBACK일간 추세 방향과
+        #   반대로 성공한 경우를 세어, 그 횟수만큼 초선형(거듭제곱)으로 보너스를 곱한다.
+        _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
+        n_reversal_hits = 0
+        if globals().get('SIMPLE_POOL_REVERSAL_BONUS_ENABLED', True):
+            for _k, _i in enumerate(fire_valid.tolist()):
+                if _i < _lookback:
+                    continue
+                _p0 = close_arr[_i - _lookback]; _p1 = close_arr[_i]
+                if not (_p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1)):
+                    continue
+                _pre_trend = _p1 / _p0 - 1.0
+                _was_success = bool(fav[_k] >= threshold)
+                if not _was_success:
+                    continue
+                # 매수인데 직전이 하락추세였다 = 하락→상승 전환을 맞춤. 매도인데 직전이
+                # 상승추세였다 = 상승→하락 전환을 맞춤. 둘 다 "추세전환 적중".
+                if (is_buy and _pre_trend < 0) or ((not is_buy) and _pre_trend > 0):
+                    n_reversal_hits += 1
+        if n_reversal_hits > 0:
+            _rev_w = float(globals().get('SIMPLE_POOL_REVERSAL_BONUS_WEIGHT', 0.35))
+            _rev_pow = float(globals().get('SIMPLE_POOL_REVERSAL_BONUS_POWER', 1.6))
+            reversal_mult = 1.0 + _rev_w * (float(n_reversal_hits) ** _rev_pow)
+            reliability *= reversal_mult
+
         _rel_cap = float(globals().get('SIMPLE_POOL_RELIABILITY_CAP', 30.0))
         reliability = min(reliability, _rel_cap)
         return {'reliability': reliability, 'mean_fav': mean_fav, 'std_fav': std_fav,
                 'se': se, 't_stat': t_stat, 'n_evaluable': n, 'power': _power,
-                'p_value': _p, 'df': n - 1}
+                'p_value': _p, 'df': n - 1, 'n_reversal_hits': n_reversal_hits}
     except Exception:
         return {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
-                't_stat': 0.0, 'n_evaluable': 0, 'power': 0.0, 'p_value': 1.0, 'df': 0}
+                't_stat': 0.0, 'n_evaluable': 0, 'power': 0.0, 'p_value': 1.0, 'df': 0,
+                'n_reversal_hits': 0}
 
 
 def _compute_target_positions(close_arr, threshold=0.0):
