@@ -14404,11 +14404,11 @@ SIMPLE_POOL_MODE        = False
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.80, 'min_success_sell': 0.75},
-    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.80, 'min_success_sell': 0.75},
-    {'day': 3, 'min_signals': 15, 'min_success_buy': 0.80, 'min_success_sell': 0.75},
-    {'day': 4, 'min_signals': 15, 'min_success_buy': 0.80, 'min_success_sell': 0.75},
-    {'day': 5, 'min_signals': 15, 'min_success_buy': 0.80, 'min_success_sell': 0.75},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+    {'day': 3, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+    {'day': 4, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+    {'day': 5, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
 ]
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
@@ -16863,61 +16863,105 @@ def _score_indicator_vs_target(feat, row, target, magnitude, is_buy, harm_mask=N
     return correct_w, wrong_w, harm_w, len(fire_idx), fire_idx
 
 
-def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool):
-    """★★★ (요청 — 전면 재설계) 신뢰도 임계값 탐색을 완전히 대체하는 새 선정 알고리즘.
+def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, ticker=None):
+    """★★★ (요청 — 전면 재설계, 재개선) 신뢰도 임계값 탐색을 완전히 대체하는 선정 알고리즘.
 
        ① 실제 다음날 등락으로 '정답 매수/매도 자리'를 먼저 계산(_compute_target_positions).
-       ② 매수 지표부터: 각 후보가 발화하는 날들이 정답(롱)과 맞는지(진폭가중)를 채점해,
-          '틀린 것(진폭가중 오답)'이 '맞은 것(진폭가중 정답)'보다 많거나 같으면 — 즉
-          우연이거나 역효과인 지표는 — 그 지표를 완전히 제외한다. 살아남은 매수지표는
-          전부 사용(요청: "최대한 사용 지표들로 매수 신호를 만들고").
+          ★★★ (요청) 어닝일과 그다음날은 매칭에서 완전히 제외 — 실적 발표 급등락은 기술적
+          지표로 예측 가능한 성격이 아니라서, 이 날들을 정답/오답 채점과 자리매칭 양쪽
+          모두에서 빼야 어닝발 급변동이 지표 선정을 왜곡하지 않는다.
+       ② 매수 자리 매칭 — ★★★ (요청 재설계) "최대한 다 쓰기"에서 "상승폭 큰 자리부터
+          순서대로, 그 자리에 발화한 지표 중 신뢰도 최고 하나만 채택, 이미 채택된 지표가
+          그 자리에도 있으면 새로 안 늘리고 재사용" 방식의 탐욕(greedy) 선정으로 전환.
+          같은 지표가 여러 자리에 걸쳐 재사용되는 것은 문제없음(오히려 권장) — 그 결과
+          '사용 지표 개수'가 자연히 최소화된다(매수 지표가 너무 많아 점수가 부풀려지는
+          문제의 직접적 해결책). 오답(우연/역효과) 후보는 애초에 후보군에서 제외.
        ③ 확정된 매수지표들이 '실제로 정답(target==1)이면서 여러 지표가 두텁게 겹쳐
-          지지하는' 날짜만 '매수보호구역'으로 기록한다.
-          ★★★ (요청 관련 — 버그수정, 실측 확인) 매수지표가 아주 많으면(실측 1600개+)
-          "어느 한 지표라도 발화"로 보호구역을 정의할 경우 사실상 전체 기간을 덮어버려서
-          매도지표가 전멸(232→0개)하는 문제가 있었다 — 매수지표 한둘이 실수로(오답으로)
-          발화한 날짜까지 '보호구역'으로 치면 안 된다. 그래서 (a) 실제로 맞는 날(target==1)
-          이면서 (b) 일정 비율 이상의 매수지표가 동시에 지지하는 날짜만 보호구역으로 좁힌다.
-       ④ 매도 지표: 정답(현금) 기준으로 같은 방식의 오답≥정답 제외를 적용하고, **추가로**
-          매수보호구역을 침범하는 정도(harm, 진폭가중)가 자기 자신의 정답기여(correct)의
-          일정 배수를 넘으면 제외한다 — "매수 신호를 최대한 해치지 않는 지표들을 사용"
-          요청. (완전히 동률(≥)이 아니라 여유배수를 두는 이유도 위와 같은 실측 문제 방지용
-          — 매수지표가 많을수록 우연한 소량 겹침은 자연히 늘어나므로, 그 정도의 겹침까지
-          전부 배제하면 역시 매도가 전멸하기 쉽다.)
-       ⑤ 신뢰도(이제 통계적 유의성 기준까지 통과해야 하는 엄격한 버전)는 살아남은 지표들
-          안에서의 우선순위/가중치로만 쓴다("신호가 여러 개면 신뢰도가 높은 것부터 적용") —
-          포함 여부 자체를 신뢰도로 정하지 않는다(요청: 신뢰도로 사용지표 정하는 기능 중단).
+          지지하는' 날짜만 '매수보호구역'으로 기록한다(매도 평가용).
+       ④ 매도 지표: 정답(현금) 기준 오답≥정답 제외 + 매수보호구역 침범(harm)이 자기
+          정답기여의 일정 배수를 넘으면 제외 — "매수 신호를 최대한 해치지 않는 지표들을
+          사용" 요청. (매도는 이번 요청 대상이 아니라 기존 방식 그대로 유지.)
+       ⑤ 신뢰도는 포함 여부가 아니라(①②에서 이미 결정됨) 매수 쪽에서는 '어느 지표를
+          그 자리에 채택할지'의 우선순위로, 매도 쪽에서는 정렬/표시 우선순위로 쓴다.
 
        buy_pool/sell_pool은 이미 reliability 컬럼이 채워져 있어야 한다(정렬·표시용).
+       ticker가 주어지면 어닝일 제외를 적용(없으면 생략, 하위호환).
        반환: (buy_survivors, sell_survivors) — 둘 다 원본 컬럼 + score_correct/score_wrong/
        score_harm 컬럼이 추가된 DataFrame, reliability 내림차순 정렬."""
     _thr = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
     target, magnitude, _ret = _compute_target_positions(close_arr, threshold=_thr)
     n = len(target)
 
-    def _filter_buy(pool):
-        if pool is None or len(pool) == 0:
-            return pool, np.zeros(n, dtype=float)
-        keep_rows = []; strength = np.zeros(n, dtype=float)
-        _cw = []; _ww = []
-        for _, row in pool.iterrows():
-            cw, ww, _hw0, nfire, fidx = _score_indicator_vs_target(
-                feat, row, target, magnitude, True)
-            if nfire == 0 or ww >= cw:
-                continue
-            keep_rows.append(row); _cw.append(cw); _ww.append(ww)
-            strength[fidx] += 1.0   # ★ 이진(발화여부)이 아니라 '몇 개가 겹쳐 발화하는지' 누적
-        if not keep_rows:
-            return pool.iloc[0:0].copy(), strength
-        out = pd.DataFrame(keep_rows).reset_index(drop=True)
-        out['score_correct'] = _cw; out['score_wrong'] = _ww; out['score_harm'] = 0.0
-        return out, strength
+    # ★★★ (요청) 어닝일 + 그다음날 제외 — 두 날의 magnitude를 0으로 만들어 채점(correct/
+    #   wrong)과 자리매칭(magnitude 기준 정렬) 양쪽에서 자연히 빠지게 한다(target 자체는
+    #   건드리지 않음 — 0가중이라 어차피 correct_w/wrong_w에 기여가 없음).
+    _excl_mask = np.zeros(n, dtype=bool)
+    if ticker:
+        try:
+            _edates = _get_earnings_dates_cached(ticker)
+            if _edates:
+                _idx_norm = pd.DatetimeIndex(feat.index).tz_localize(None) \
+                            if getattr(feat.index, 'tz', None) is not None else pd.DatetimeIndex(feat.index)
+                _idx_norm = _idx_norm.normalize()
+                for _i, _d in enumerate(_idx_norm):
+                    if _d in _edates:
+                        _excl_mask[_i] = True
+                        if _i + 1 < n:
+                            _excl_mask[_i + 1] = True
+        except Exception:
+            pass
+    magnitude_m = magnitude.copy()
+    magnitude_m[_excl_mask] = 0.0
 
-    buy_survivors, buy_strength = _filter_buy(buy_pool)
+    def _score(row, is_buy, harm_mask=None):
+        return _score_indicator_vs_target(feat, row, target, magnitude_m, is_buy, harm_mask=harm_mask)
+
+    # ── 매수: 오답≥정답 후보만 먼저 제외(우연/역효과 배제) ──
+    _buy_cands = []
+    for _, row in (buy_pool.iterrows() if buy_pool is not None and len(buy_pool) else []):
+        cw, ww, _h0, nfire, fidx = _score(row, True)
+        if nfire == 0 or ww >= cw:
+            continue
+        _buy_cands.append((row, cw, ww, fidx))
+
+    # ── ★★★ (요청) 상승폭 큰 자리부터 순서대로, 자리마다 신뢰도 최고 지표 하나만 채택 ──
+    #   day -> 그 날 발화하는 후보 인덱스 목록(1회 스캔으로 구축, 효율성)
+    _day_to_cands = {}
+    for _ci, (row, cw, ww, fidx) in enumerate(_buy_cands):
+        for _d in fidx:
+            if _excl_mask[_d] or target[_d] != 1:
+                continue   # 어닝(가중치0으로 이미 배점서 제외됐지만 자리선정에서도 재확인) / 정답아닌 자리는 매칭대상 아님
+            _day_to_cands.setdefault(_d, []).append(_ci)
+    _target_buy_days = sorted(_day_to_cands.keys(), key=lambda d: magnitude_m[d], reverse=True)
+
+    selected_idx = set()
+    for _d in _target_buy_days:
+        _cand_list = _day_to_cands[_d]
+        # 이미 채택된 지표가 이 자리에도 있으면 재사용(새 지표 추가 안 함) — 지표 개수 최소화 핵심
+        if any(_ci in selected_idx for _ci in _cand_list):
+            continue
+        # 없으면 이 자리에서 신뢰도 최고인 후보 하나만 새로 채택
+        _best_ci = max(_cand_list, key=lambda _ci: float(_buy_cands[_ci][0].get('reliability', 0.0)))
+        selected_idx.add(_best_ci)
+
+    if selected_idx:
+        _rows = [_buy_cands[_ci][0] for _ci in selected_idx]
+        _cws = [_buy_cands[_ci][1] for _ci in selected_idx]
+        _wws = [_buy_cands[_ci][2] for _ci in selected_idx]
+        _fidxs = [_buy_cands[_ci][3] for _ci in selected_idx]
+        buy_survivors = pd.DataFrame(_rows).reset_index(drop=True)
+        buy_survivors['score_correct'] = _cws; buy_survivors['score_wrong'] = _wws
+        buy_survivors['score_harm'] = 0.0
+        buy_strength = np.zeros(n, dtype=float)
+        for _fidx in _fidxs:
+            buy_strength[_fidx] += 1.0
+    else:
+        buy_survivors = (buy_pool.iloc[0:0].copy() if buy_pool is not None else
+                         pd.DataFrame(columns=['indicator', 'reliability']))
+        buy_strength = np.zeros(n, dtype=float)
 
     # ★ 매수보호구역 = (a) 실제 정답(target==1)이면서 (b) 살아남은 매수지표 중 일정 비율
-    #   이상이 동시에 지지하는 날짜만. 매수지표가 1개뿐이어도 최소 1개는 지지해야 하므로
-    #   ceil(...)로 최소 1은 보장.
+    #   이상이 동시에 지지하는 날짜만.
     _min_frac = float(globals().get('SIMPLE_POOL_MATCH_HARM_MIN_FRAC', 0.05))
     _min_strength = max(1, int(np.ceil(_min_frac * max(1, len(buy_survivors)))))
     harm_mask = (buy_strength >= _min_strength) & (target == 1)
@@ -16928,8 +16972,7 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool):
         _harm_margin = float(globals().get('SIMPLE_POOL_MATCH_HARM_MARGIN', 1.5))
         keep_rows = []; _cw = []; _ww = []; _hw = []
         for _, row in pool.iterrows():
-            cw, ww, hw, nfire, fidx = _score_indicator_vs_target(
-                feat, row, target, magnitude, False, harm_mask=harm_mask)
+            cw, ww, hw, nfire, fidx = _score(row, False, harm_mask=harm_mask)
             if nfire == 0 or ww >= cw:
                 continue
             if hw >= cw * _harm_margin:
@@ -16945,6 +16988,51 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool):
     if len(buy_survivors):
         buy_survivors = buy_survivors.sort_values('reliability', ascending=False).reset_index(drop=True)
     return buy_survivors, sell_survivors
+
+
+_EARNINGS_DATES_CACHE = {}   # ticker -> set(정규화된 Timestamp) — 반복 조회 방지용 모듈 캐시
+
+
+def _get_earnings_dates_cached(ticker):
+    """★★★ (요청 — "어닝날하고 그다음날은 지표신호 매칭하지말고") yfinance에서 어닝일을
+       가져오되, 같은 티커를 여러 번 조회하지 않도록 캐시한다 — write_excel의 기존 어닝
+       조회 로직과 동일한 방식(calendar + get_earnings_dates)을 재사용해 일관성을 유지."""
+    if not ticker:
+        return set()
+    if ticker in _EARNINGS_DATES_CACHE:
+        return _EARNINGS_DATES_CACHE[ticker]
+    _dates = set()
+    try:
+        import yfinance as _yf
+        def _tznaive(x):
+            _t = pd.Timestamp(x)
+            if _t.tzinfo is not None or getattr(_t, 'tz', None) is not None:
+                _t = _t.tz_localize(None)
+            return _t.normalize()
+        _tk_obj = _yf.Ticker(ticker)
+        _cal = getattr(_tk_obj, 'calendar', None)
+        _ed = None
+        if isinstance(_cal, dict) and 'Earnings Date' in _cal:
+            _ed = _cal['Earnings Date']
+        elif hasattr(_cal, 'get') and _cal is not None:
+            _ed = _cal.get('Earnings Date') if hasattr(_cal, 'get') else None
+        if _ed is not None:
+            if not isinstance(_ed, (list, tuple)): _ed = [_ed]
+            for _d in _ed:
+                try: _dates.add(_tznaive(_d))
+                except Exception: pass
+        try:
+            _edf = _tk_obj.get_earnings_dates(limit=24) if hasattr(_tk_obj, 'get_earnings_dates') else None
+            if _edf is not None and len(_edf) > 0:
+                for _d in _edf.index:
+                    try: _dates.add(_tznaive(_d))
+                    except Exception: pass
+        except Exception:
+            pass
+    except Exception:
+        pass
+    _EARNINGS_DATES_CACHE[ticker] = _dates
+    return _dates
 
 
 def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=95):
@@ -17095,7 +17183,7 @@ def _verify_indicator_row(feat, close_arr, row, limit, base_rate, is_buy):
         return {'passed': False, 'note': f'검증오류:{_ve}'}
 
 
-def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0, corr_limit=None):
+def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wilson_z=1.0, corr_limit=None, ticker=None):
     """★ 요청: 1~5% 각 한도로 성공풀 선출 → 하나로 합친 '다중임계' 풀.
        각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
        → 상관 다변화(같은 지표 여러 임계 유지, 다른 상관 지표만 제거)로 수정전처럼 정예화.
@@ -17314,7 +17402,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         if globals().get('SIMPLE_POOL_POSITION_MATCH_SELECT', True):
             _n_before_match_b, _n_before_match_s = len(buy_c), len(sell_c)
             _close_arr_match = pd.Series(close).reindex(feat.index).values.astype(np.float64)
-            buy_c, sell_c = _select_indicators_by_position_match(feat, _close_arr_match, buy_c, sell_c)
+            buy_c, sell_c = _select_indicators_by_position_match(feat, _close_arr_match, buy_c, sell_c, ticker=ticker)
             print(f"    (정답자리 매칭 선정) 매수 {_n_before_match_b}→{len(buy_c)}개 "
                   f"(오답≥정답인 지표 제외, 나머지 전부 사용), "
                   f"매도 {_n_before_match_s}→{len(sell_c)}개 "
@@ -17460,7 +17548,7 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
     #   이미 성공률 컷만 적용) 그 결과를 그대로 쓴다. 비교·재탐색·후처리 재컷 전부 생략.
     if globals().get('SIMPLE_POOL_MODE', False):
         _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
-                                        n_thresholds=n_thresholds, horizon=horizon)
+                                        n_thresholds=n_thresholds, horizon=horizon, ticker=ticker)
         globals()['_KNET_MULTI_POOL'] = (ticker, _cb, _cs)
         # ★ (요청) 여기서 별도로 다시 안내 문구를 찍지 않음 — select_pool_combined가 이미
         #   호라이즌별 세부 로그와 '최종 통합' 요약을 다 찍어서, 여기서 또 찍으면 중복이었다.
@@ -17477,7 +17565,7 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
         if _ck in _score_cache: return _score_cache[_ck]
         _cb, _cs = select_pool_combined(feat, close, indicators=indicators,
                                         n_thresholds=n_thresholds, horizon=horizon,
-                                        wilson_z=_wz, corr_limit=_cl)
+                                        wilson_z=_wz, corr_limit=_cl, ticker=ticker)
         if _cb is None or _cs is None or len(_cb) == 0 or len(_cs) == 0:
             _score_cache[_ck] = (None, None, -1e18); return _score_cache[_ck]
         _nsd = _net_signal_k_search(feat, close, _cb, _cs, ticker=ticker,
@@ -17705,7 +17793,7 @@ def _build_and_pick_knet_pool(feat, close, *, indicators, n_thresholds, horizon,
         print(f"  ⚠ IC 기준 통과 지표 부족 → 성공률 기반 폴백")
         _cb2, _cs2 = select_pool_combined(feat, close, indicators=indicators,
                                           n_thresholds=n_thresholds, horizon=horizon,
-                                          wilson_z=1.95, corr_limit=0.2)
+                                          wilson_z=1.95, corr_limit=0.2, ticker=ticker)
         if _cb is None or len(_cb) == 0: _cb = _cb2
         if _cs is None or len(_cs) == 0: _cs = _cs2
 
