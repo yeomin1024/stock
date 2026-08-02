@@ -14288,6 +14288,10 @@ from openpyxl.cell.rich_text import CellRichText as _CellRichText, TextBlock as 
 from openpyxl.cell.text import InlineFont as _InlineFont
 # ★ (요청) HORIZON_DAYS_LIST 추가지표 발화 시 지표명·net을 빨간 굵게 강조하는 데 쓰는 공용 서식
 _RED_BOLD_FONT = _InlineFont(rFont='Arial', b=True, color='FF0000')
+# ★★★ (요청) "전체 후보 지표" 시트에서 신호발생일별 다음날 등락률 표시 시, 예측이 맞았으면
+#   초록, 틀렸으면 빨강 글자색으로 구분하는 데 쓰는 공용 서식.
+_GREEN_TEXT_FONT = _InlineFont(rFont='Arial', color='006100')
+_RED_TEXT_FONT   = _InlineFont(rFont='Arial', color='9C0006')
 
 # ★★★ (요청) Colab 서버는 UTC로 동작해서, datetime.now()가 실제 한국 날짜와 다를 수 있다
 #   (UTC 자정 = 한국시간 오전 9시 — 그 전에 실행하면 결과 파일명 날짜가 하루 전 걸로 찍힘,
@@ -14540,7 +14544,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ 1~5% (요청: 1~10%에서 축소)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ (요청) 호라이즌 1~5일에 각각 1~5% 대응
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
@@ -16898,6 +16902,33 @@ def _score_indicator_vs_target(feat, row, target, magnitude, is_buy, harm_mask=N
     return correct_w, wrong_w, harm_w, len(fire_idx), fire_idx
 
 
+def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=0.0):
+    """★★★ (요청) "전체 후보 지표" 시트에 표시할, 이 지표가 발화한(호라이즌 정렬된 표시일
+       기준) 날짜들과 그 각각의 다음날 실제 등락률을 계산한다 — 화면 표시용
+       "YYYY-MM-DD(+3%)" 형식과, 예측이 맞았는지(초록)/틀렸는지(빨강) 색상 판정까지 함께.
+       반환: [(date_str, ret_pct, is_correct), ...] — 표시일 오름차순, 마지막 날(다음날
+       정보 없음)은 자동 제외."""
+    sig = _aligned_signal_for_row(feat, row)
+    n = len(sig)
+    idx = feat.index
+    fire_idx = np.nonzero(sig)[0]
+    fire_idx = fire_idx[fire_idx < n - 1]   # 마지막 표시일은 다음날 정보가 없어 평가 불가
+    out = []
+    for d in sorted(fire_idx.tolist()):
+        p0 = close_arr[d]; p1 = close_arr[d + 1]
+        if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
+            continue
+        ret = p1 / p0 - 1.0
+        fav = ret if is_buy else -ret
+        is_correct = bool(fav > target_threshold)
+        try:
+            date_str = pd.Timestamp(idx[d]).strftime('%Y-%m-%d')
+        except Exception:
+            date_str = str(idx[d])
+        out.append((date_str, ret * 100.0, is_correct))
+    return out
+
+
 def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, ticker=None):
     """★★★ (요청 — 전면 재설계, 재개선) 신뢰도 임계값 탐색을 완전히 대체하는 선정 알고리즘.
 
@@ -17253,11 +17284,11 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         _limit0 = float((globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])[0])
         _wz_simple = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
         _hz_cfgs = list(globals().get('SIMPLE_POOL_HORIZON_CONFIG') or [
-            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
-            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
-            {'day': 3, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
-            {'day': 4, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
-            {'day': 5, 'min_signals': 15, 'min_success_buy': 0.85, 'min_success_sell': 0.85},
+            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+            {'day': 3, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+            {'day': 4, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+            {'day': 5, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
         ])
         _verify_on = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
         _close_arr = pd.Series(close).reindex(feat.index).values.astype(np.float64)
@@ -17272,18 +17303,21 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             ]
             return df
 
-        def _apply_verify(df, is_buy):
+        def _apply_verify(df, is_buy, _limit=None):
             """★★★ (요청) 지표컷 통과분에 2차 검증 3종(기저확률초과·기대수익·시간안정성)을
-               적용해 검증 컬럼을 추가. SIMPLE_POOL_VERIFY_ENABLED=False면 전부 통과 처리."""
+               적용해 검증 컬럼을 추가. SIMPLE_POOL_VERIFY_ENABLED=False면 전부 통과 처리.
+               ★ (요청) _limit 인자로 호라이즌별 성공기준(STAGE_SUCCESS_LIMIT[day-1])을
+               명시적으로 받는다(안 넘기면 기존처럼 _limit0)."""
             if df is None or len(df) == 0:
                 return df
             df = df.copy()
             if not _verify_on:
                 df['passed_verify'] = True
                 return df
+            _lim = _limit if _limit is not None else _limit0
             _horizon0 = int(df.iloc[0]['horizon_day'])
-            _base = _compute_baseline_rate(_close_arr, _horizon0, _limit0, 1 if is_buy else 0)
-            _results = [_verify_indicator_row(feat, _close_arr, row, _limit0, _base, is_buy)
+            _base = _compute_baseline_rate(_close_arr, _horizon0, _lim, 1 if is_buy else 0)
+            _results = [_verify_indicator_row(feat, _close_arr, row, _lim, _base, is_buy)
                        for _, row in df.iterrows()]
             df['baseline_rate']    = [r.get('baseline_rate', _base) for r in _results]
             df['lift']             = [r.get('lift', np.nan) for r in _results]
@@ -17304,19 +17338,27 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         _buy_parts, _sell_parts = [], []          # 지표컷+검증 둘 다 통과분 — 최종 풀 조합용
         for _cfg in _hz_cfgs:
             _day = int(_cfg['day']); _msig = int(_cfg['min_signals'])
+            # ★★★ (요청) STAGE_SUCCESS_LIMIT을 호라이즌일별로 따로 적용 — 리스트의
+            #   (day-1)번째 값을 그 호라이즌의 성공판정 등락폭 기준으로 쓴다(예:
+            #   [0.01,0.02,0.03,0.04,0.05]면 1일=1%, 2일=2%, ..., 5일=5%). 리스트가
+            #   그 인덱스만큼 없으면(하위호환) 기존처럼 _limit0(첫 값) 그대로 사용.
+            _limit_list = list(globals().get('STAGE_SUCCESS_LIMIT') or [_limit0])
+            _limit_day = float(_limit_list[_day - 1]) if len(_limit_list) >= _day else _limit0
             # ★★★ (요청) 매수/매도 성공률 필터를 따로 읽음 — 'min_success_buy'/'min_success_sell'이
             #   있으면 그걸, 없으면 하위호환으로 'min_success'(공통값)를 양쪽에 씀.
             _msucc_shared = _cfg.get('min_success', None)
             _msucc_b = float(_cfg.get('min_success_buy', _msucc_shared if _msucc_shared is not None else 0.85))
             _msucc_s = float(_cfg.get('min_success_sell', _msucc_shared if _msucc_shared is not None else 0.85))
             if abs(_msucc_b - _msucc_s) < 1e-9:
-                print(f"    ── horizon={_day}일 (최소신호 {_msig}개, 성공률≥{_msucc_b*100:.0f}%) ──")
+                print(f"    ── horizon={_day}일 (최소신호 {_msig}개, 성공률≥{_msucc_b*100:.0f}%, "
+                      f"성공판정폭≥{_limit_day*100:.1f}%) ──")
             else:
                 print(f"    ── horizon={_day}일 (최소신호 {_msig}개, "
-                      f"매수 성공률≥{_msucc_b*100:.0f}% / 매도 성공률≥{_msucc_s*100:.0f}%) ──")
+                      f"매수 성공률≥{_msucc_b*100:.0f}% / 매도 성공률≥{_msucc_s*100:.0f}%, "
+                      f"성공판정폭≥{_limit_day*100:.1f}%) ──")
             _t_eval0 = time.time()
             _bdf_h, _sdf_h = _evaluate_all_indicators_raw(
-                feat, close, horizon=_day, dd_limit=_limit0, ru_limit=_limit0,
+                feat, close, horizon=_day, dd_limit=_limit_day, ru_limit=_limit_day,
                 n_thresholds=n_thresholds)
             print(f"       [진단로그] horizon={_day}일 지표평가(_evaluate_all_indicators_raw) "
                   f"소요 {time.time()-_t_eval0:.1f}초 (매수후보 {len(_bdf_h) if _bdf_h is not None else 0}개, "
@@ -17338,7 +17380,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 if df is None or len(df) == 0:
                     return df
                 df = df.copy()
-                _results = [_compute_reliability_score(feat, _close_arr, row, _limit0, is_buy)
+                _results = [_compute_reliability_score(feat, _close_arr, row, _limit_day, is_buy)
                            for _, row in df.iterrows()]
                 df['reliability']  = [r['reliability'] for r in _results]
                 df['mean_fav_next']= [r['mean_fav'] for r in _results]
@@ -17352,7 +17394,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                   f"{time.time()-_t_rel0:.1f}초 (매수 {len(_bp) if _bp is not None else 0}개, "
                   f"매도 {len(_sp) if _sp is not None else 0}개 대상)")
 
-            _bp = _apply_verify(_bp, True); _sp = _apply_verify(_sp, False)
+            _bp = _apply_verify(_bp, True, _limit_day); _sp = _apply_verify(_sp, False, _limit_day)
 
             # ★★★ (요청) "지표 통과 개수가 거의 없으면 점진적으로 널널하게" — 이 호라이즌의
             #   매수/매도 각각 최종통과 개수가 목표치(SIMPLE_POOL_MIN_TOTAL_INDICATORS) 미만이면
@@ -24086,6 +24128,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                              '몰림비율%', '몰림기준선%', '①기저확률', '②기대수익', '③안정성',
                              '통과수/3', '2차검증통과']
             _cols_all += ['wilson점수%', 'net가중치점수']
+            # ★★★ (요청) 신호발생일과 다음날 실제등락률을 "YYYY-MM-DD(+3%), ..." 형식으로
+            #   나열 — 예측이 맞았으면(매수=상승/매도=하락) 초록, 틀렸으면 빨강 글자색.
+            _cols_all += ['신호일자(다음날등락%)']
+            _c_dates_all = len(_cols_all)   # ★ 이 컬럼의 위치(뒤에서 참조)
+            _close_arr_all = (pd.Series(close_full).reindex(feat.index).values.astype(np.float64)
+                              if (feat is not None and close_full is not None) else None)
             _green  = PatternFill('solid', fgColor='C6E0B4')
             _grey   = PatternFill('solid', fgColor='F2F2F2')
             _day_hdr_fill = PatternFill('solid', fgColor='2E5B8A')
@@ -24146,6 +24194,24 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                  round(_nwscore, 4)]
                         for _ci, _v in enumerate(_vals, 1):
                             ws_all.cell(_r_all, _ci).value = _v
+                        # ★★★ (요청) 신호일자(다음날등락%) — 리치텍스트로 날짜별 초록/빨강 표시.
+                        if _close_arr_all is not None:
+                            try:
+                                _sd = _signal_dates_with_outcome(
+                                    feat, _row, _close_arr_all, (_label == '매수'))
+                            except Exception:
+                                _sd = []
+                            if _sd:
+                                _rt_parts = []
+                                for _di, (_ds, _rp, _ok) in enumerate(_sd):
+                                    _seg = f"{_ds}({_rp:+.1f}%)"
+                                    if _di < len(_sd) - 1:
+                                        _seg += ", "
+                                    _rt_parts.append(_TextBlock(
+                                        _GREEN_TEXT_FONT if _ok else _RED_TEXT_FONT, _seg))
+                                ws_all.cell(_r_all, _c_dates_all).value = _CellRichText(_rt_parts)
+                            else:
+                                ws_all.cell(_r_all, _c_dates_all).value = '-'
                         if _verify_on_disp:
                             _fill = _green if _row.get('passed_verify') else _grey
                             for _ci in range(1, len(_cols_all) + 1):
@@ -24156,6 +24222,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if _verify_on_disp:
                 _widths += [9, 9, 10, 9, 9, 9, 10, 8, 8, 8, 8, 9]
             _widths += [10, 12]
+            _widths += [60]   # ★ 신호일자(다음날등락%) — 날짜가 여러 개 나열되므로 넓게
             for _ci, _w in enumerate(_widths, 1):
                 ws_all.column_dimensions[get_column_letter(_ci)].width = _w
             _n_b_tot = len(_abdf) if _abdf is not None else 0
