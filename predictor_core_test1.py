@@ -14450,11 +14450,31 @@ SIMPLE_POOL_ALIGN_HORIZON_NET   = True
 #   조합으로 선정 — 끄면(False) 비단순모드처럼 STABLE_NEARTIE_EPS/REL 정준화가 다시 적용됨.
 SIMPLE_POOL_KL_PURE_MAX_RETURN   = True
 
-# ★★★ (요청) 매수/매도 풀은 이미 신뢰도 내림차순으로 정렬돼 있음 — "지표를 몇 개(=신뢰도
-#   얼마 이상)까지 포함해야 수익이 최대인가"를 최대 신뢰도부터 점진적으로 낮춰가며(더 많이
-#   포함시켜가며) 탐색한다. 매수/매도 각각 독립적으로 탐색(좌표하강). 끄면(False) 풀 전체를
-#   그대로 씀(탐색 없음) — 신뢰도는 그래도 net_weight_score를 통해 가중치에는 계속 반영됨.
-SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = True
+# ★★★ (요청 — 신뢰도 계산 개선) "우연으로 예측한 지표는 절대 없어야" — t-통계량이 이 값을
+#   넘어야만(=이 정도 결과가 우연히 나올 확률이 매우 낮아야만) 신뢰도가 0보다 커짐.
+#   2.33=단측 99% 신뢰수준, 3.09=단측 99.9% 신뢰수준. ★ (요청) 매수는 매도보다 더 엄격하게.
+SIMPLE_POOL_RELIABILITY_TMIN_BUY  = 3.09
+SIMPLE_POOL_RELIABILITY_TMIN_SELL = 2.33
+
+# ★★★ (요청 — 폐기, 재설계로 대체) "신뢰도로 사용지표 개수를 정하는" 방식은 더 이상 안 씀 —
+#   아래 SIMPLE_POOL_POSITION_MATCH_SELECT(정답 매수/매도 자리 기반 선정)로 완전히 대체.
+#   끔(False) 상태로 유지 — 켜도 무해하지만(하위호환용 코드는 남겨둠) 기본 흐름에서는 안 씀.
+SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = False
+
+# ★★★ (요청 — 전면 재설계) 지표 선정을 "신뢰도 임계값 탐색"이 아니라 "정답 매수/매도 자리
+#   맞히기" 방식으로 완전히 바꾼다:
+#   1) 실제 다음날 등락으로 '정답'(롱이어야 하는 날/현금이어야 하는 날)을 먼저 정의 —
+#      상승/하락폭이 큰 날일수록(SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT) 맞히는 게 더 중요하게
+#      가중치를 준다.
+#   2) 각 지표가 발화하는(호라이즌 정렬된 표시일 기준) 날들이 정답과 맞는지(진폭가중 정답)
+#      틀리는지(진폭가중 오답) 채점 — 오답이 정답보다 많거나 같으면(우연/역효과) 그 지표는
+#      아예 제외.
+#   3) 매수를 먼저 확정(살아남은 매수지표는 전부 사용 — "최대한 사용 지표로 매수신호 구성").
+#   4) 매도는 그 다음 — 매도지표 중에서도, 이미 확정된 매수커버 날짜를 침범(=매수신호를
+#      해치는)하는 정도가 자기 자신의 정답기여보다 크면 제외.
+SIMPLE_POOL_POSITION_MATCH_SELECT   = True
+SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT  = True    # 상승/하락폭 클수록 그 날을 맞히는 게 더 중요
+SIMPLE_POOL_MATCH_TARGET_THRESHOLD  = 0.0     # 정답 판정 임계값(다음날 수익률 > 이 값이면 '롱이 정답')
 
 # ★★★ (요청) "1일, 1~2일, 1~3일, 1~4일, 1~5일"처럼 호라이즌을 누적 포함시켜가며, 종합net에
 #   포함시켰을 때 전체수익이 최대가 되는 지점을 탐색한다(다 포함하는 게 항상 최선은 아님).
@@ -16751,12 +16771,137 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         else:
             # 완벽하게 일관된 경우(분산 0) — 부호에 따라 매우 크게(사실상 확실)/0으로.
             t_stat = 50.0 if mean_fav > threshold else -50.0
-        reliability = max(0.0, t_stat)
+        # ★★★ (요청 — 신뢰도 계산 개선) "우연으로 상승/하락을 예측한 지표는 절대 없어야
+        #   한다" — 예전엔 t_stat이 조금이라도 0을 넘으면(아무리 미미해도) 양의 신뢰도를
+        #   줬는데, 그 정도로는 우연(랜덤)과 통계적으로 구분이 안 된다. 여기서부터는
+        #   진짜 '통계적 유의성 기준선'(t_min)을 넘어야만 신뢰도가 0보다 커지도록 한다 —
+        #   t_min=2.33은 단측검정 약 99% 신뢰수준(우연히 이 정도 평균이 나올 확률이 1%
+        #   미만이어야 함)에 해당하는 표준적인 기준값. ★ (요청) 매수 지표는 더 엄격하게 —
+        #   t_min을 3.09(단측 99.9%)로 매도(2.33, 99%)보다 훨씬 높게 잡는다. t_min을
+        #   못 넘기면 아무리 t_stat이 양수여도(=조금이라도 맞는 것처럼 보여도) 신뢰도는
+        #   정확히 0 — "그럴듯해 보이지만 우연일 수 있는" 애매한 지표를 전부 걸러낸다.
+        _t_min = float(globals().get(
+            'SIMPLE_POOL_RELIABILITY_TMIN_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_TMIN_SELL',
+            3.09 if is_buy else 2.33))
+        reliability = max(0.0, t_stat - _t_min)
         return {'reliability': reliability, 'mean_fav': mean_fav, 'std_fav': std_fav,
-                'se': se, 't_stat': t_stat, 'n_evaluable': n}
+                'se': se, 't_stat': t_stat, 'n_evaluable': n, 't_min': _t_min,
+                'passed_significance': bool(t_stat >= _t_min)}
     except Exception:
         return {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
-                't_stat': 0.0, 'n_evaluable': 0}
+                't_stat': 0.0, 'n_evaluable': 0, 't_min': 0.0, 'passed_significance': False}
+
+
+def _compute_target_positions(close_arr, threshold=0.0):
+    """★★★ (요청 — 전면 재설계) "일별 백테스트에서 올바른 매수/매도 자리들을 계산" —
+       실제(사후) 다음날 등락률로 '정답' 포지션을 정의한다: 다음날 수익률이 임계값보다
+       크면 그날은 '롱이 정답'(target=1), 아니면 '현금이 정답'(target=0).
+       magnitude(=|다음날 등락률|)도 함께 반환 — "하루 상승/하락폭이 큰 자리를 우선으로
+       맞추는" 요청을 지표 채점 시 가중치로 반영하기 위함(폭이 큰 날을 맞히면 더 큰
+       점수, 틀리면 더 큰 감점).
+       반환: target(0/1 배열), magnitude(절대등락률 배열), ret(부호있는 등락률 배열)."""
+    n = len(close_arr)
+    ret = np.zeros(n)
+    for t in range(n - 1):
+        p0 = close_arr[t]; p1 = close_arr[t + 1]
+        if p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1):
+            ret[t] = p1 / p0 - 1.0
+    target = (ret > threshold).astype(int)
+    magnitude = np.abs(ret)
+    return target, magnitude, ret
+
+
+def _aligned_signal_for_row(feat, row):
+    """행의 신호를 lead_shift + 호라이즌 정렬까지 적용한 '표시일' 기준 배열로 변환 —
+       net 계산(_row_sig)·신뢰도 계산과 완전히 동일한 정렬 로직을 재사용해, 어디서
+       계산하든 "이 지표가 실제로 언제 목소리를 내는지"가 항상 일치하게 한다."""
+    try:
+        s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
+    except Exception:
+        return np.zeros(len(feat))
+    _hz = row.get('horizon_day', None)
+    if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
+        _hz = row.get('horizon', None)
+    _hz = int(_hz) if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) else 1
+    if _hz > 1:
+        s = _shift_signal_forward(s, _hz - 1)
+    return s
+
+
+def _score_indicator_vs_target(feat, row, target, magnitude, is_buy, harm_mask=None):
+    """★★★ (요청) 지표가 발화하는(표시일 기준) 날들이 '정답'과 맞는지/틀리는지 진폭가중으로
+       채점 — 상승/하락폭이 큰 날을 맞히면 더 크게 점수를 주고(SIMPLE_POOL_MATCH_MAGNITUDE_
+       WEIGHT), 그 폭만큼 틀리면 더 크게 감점한다. harm_mask가 주어지면(매도 지표 평가 시,
+       이미 확정된 매수커버 날짜) 그 날짜에 발화한 만큼을 '해침(harm)'으로 별도 집계.
+       반환: (correct_w, wrong_w, harm_w, n_fire, fire_idx)."""
+    _use_mag = bool(globals().get('SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT', True))
+    sig = _aligned_signal_for_row(feat, row)
+    fire_idx = np.nonzero(sig)[0]
+    fire_idx = fire_idx[fire_idx < len(target)]
+    if len(fire_idx) == 0:
+        return 0.0, 0.0, 0.0, 0, fire_idx
+    want = 1 if is_buy else 0
+    is_correct = (target[fire_idx] == want)
+    w = magnitude[fire_idx] if _use_mag else np.ones(len(fire_idx))
+    correct_w = float(w[is_correct].sum())
+    wrong_w = float(w[~is_correct].sum())
+    harm_w = 0.0
+    if harm_mask is not None:
+        _harm_hit = harm_mask[fire_idx]
+        harm_w = float(w[_harm_hit].sum())
+    return correct_w, wrong_w, harm_w, len(fire_idx), fire_idx
+
+
+def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool):
+    """★★★ (요청 — 전면 재설계) 신뢰도 임계값 탐색을 완전히 대체하는 새 선정 알고리즘.
+
+       ① 실제 다음날 등락으로 '정답 매수/매도 자리'를 먼저 계산(_compute_target_positions).
+       ② 매수 지표부터: 각 후보가 발화하는 날들이 정답(롱)과 맞는지(진폭가중)를 채점해,
+          '틀린 것(진폭가중 오답)'이 '맞은 것(진폭가중 정답)'보다 많거나 같으면 — 즉
+          우연이거나 역효과인 지표는 — 그 지표를 완전히 제외한다. 살아남은 매수지표는
+          전부 사용(요청: "최대한 사용 지표들로 매수 신호를 만들고").
+       ③ 확정된 매수지표들이 실제로 발화하는 날짜 전체를 '매수커버 날짜'로 기록.
+       ④ 매도 지표: 정답(현금) 기준으로 같은 방식의 오답≥정답 제외를 적용하고, **추가로**
+          매수커버 날짜를 침범하는 정도(harm, 진폭가중)가 자기 자신의 정답기여(correct)보다
+          크거나 같으면 제외한다 — "매수 신호를 최대한 해치지 않는 지표들을 사용" 요청.
+       ⑤ 신뢰도(이제 통계적 유의성 기준까지 통과해야 하는 엄격한 버전)는 살아남은 지표들
+          안에서의 우선순위/가중치로만 쓴다("신호가 여러 개면 신뢰도가 높은 것부터 적용") —
+          포함 여부 자체를 신뢰도로 정하지 않는다(요청: 신뢰도로 사용지표 정하는 기능 중단).
+
+       buy_pool/sell_pool은 이미 reliability 컬럼이 채워져 있어야 한다(정렬·표시용).
+       반환: (buy_survivors, sell_survivors) — 둘 다 원본 컬럼 + score_correct/score_wrong/
+       score_harm 컬럼이 추가된 DataFrame, reliability 내림차순 정렬."""
+    _thr = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
+    target, magnitude, _ret = _compute_target_positions(close_arr, threshold=_thr)
+    n = len(target)
+
+    def _filter_side(pool, is_buy, harm_mask=None):
+        if pool is None or len(pool) == 0:
+            return pool, np.zeros(n, dtype=bool)
+        keep_rows = []; cov = np.zeros(n, dtype=bool)
+        _cw = []; _ww = []; _hw = []
+        for _, row in pool.iterrows():
+            cw, ww, hw, nfire, fidx = _score_indicator_vs_target(
+                feat, row, target, magnitude, is_buy, harm_mask=harm_mask)
+            # ① 오답(우연/역효과 포함)이 정답 이상이면 무조건 제외
+            if nfire == 0 or ww >= cw:
+                continue
+            # ② (매도만) 매수신호 침범(harm)이 자기 정답기여보다 크거나 같으면 제외
+            if harm_mask is not None and hw >= cw:
+                continue
+            keep_rows.append(row); _cw.append(cw); _ww.append(ww); _hw.append(hw)
+            cov[fidx] = True
+        if not keep_rows:
+            return pool.iloc[0:0].copy(), cov
+        out = pd.DataFrame(keep_rows).reset_index(drop=True)
+        out['score_correct'] = _cw; out['score_wrong'] = _ww; out['score_harm'] = _hw
+        out = out.sort_values('reliability', ascending=False).reset_index(drop=True)
+        return out, cov
+
+    buy_survivors, buy_cov = _filter_side(buy_pool, True, harm_mask=None)
+    # ★ 매수 확정 후에만 매도 평가 — "먼저 매수부터 정해서... 그다음 매도"
+    sell_survivors, _sell_cov = _filter_side(sell_pool, False, harm_mask=buy_cov)
+    return buy_survivors, sell_survivors
 
 
 def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=95):
@@ -17117,6 +17262,21 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         if len(buy_c):  buy_c['horizon']  = buy_c['horizon_day']     # ★ 기존 red-bold/공식표시 로직 재사용
         if len(sell_c): sell_c['horizon'] = sell_c['horizon_day']
 
+        # ★★★ (요청 — 전면 재설계) "신뢰도로 사용지표 정하는 기능"은 완전히 중단하고, 대신
+        #   "일별 백테스트에서 올바른 매수/매도 자리를 먼저 계산해서, 그 자리에 실제로
+        #   맞는 지표만 사용" 방식으로 바꾼다. 우연이거나 역효과인(오답이 정답 이상인)
+        #   지표는 무조건 제외되고, 매수를 먼저 확정한 뒤 매도는 매수신호를 해치는 정도로
+        #   추가 제외된다. 신뢰도는 이제 '포함 여부'가 아니라 살아남은 지표들 사이의
+        #   가중치 우선순위로만 쓰인다(net_weight_score를 통해).
+        if globals().get('SIMPLE_POOL_POSITION_MATCH_SELECT', True):
+            _n_before_match_b, _n_before_match_s = len(buy_c), len(sell_c)
+            _close_arr_match = pd.Series(close).reindex(feat.index).values.astype(np.float64)
+            buy_c, sell_c = _select_indicators_by_position_match(feat, _close_arr_match, buy_c, sell_c)
+            print(f"    (정답자리 매칭 선정) 매수 {_n_before_match_b}→{len(buy_c)}개 "
+                  f"(오답≥정답인 지표 제외, 나머지 전부 사용), "
+                  f"매도 {_n_before_match_s}→{len(sell_c)}개 "
+                  f"(오답≥정답 또는 매수신호 침범≥자기기여인 지표 제외)")
+
         # ★★★ (요청 — 재설계, 윌슨 미사용) net 가중치를 신뢰도가 직접·전적으로 결정하도록
         #   변경 — 이전엔 wilson_score × (1+reliability)로 윌슨값과 신뢰도가 섞여 있었는데,
         #   윌슨값을 완전히 빼고 신뢰도(이제 t-통계량 기반) 그 자체를 가중치로 쓴다.
@@ -17148,8 +17308,8 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         globals()['NET_SIGNAL_WEIGHT_COL'] = 'net_weight_score'   # ★ net 가중치 = 1+신뢰도(윌슨 미사용)
         globals()['NET_SIGNAL_WEIGHTED'] = True
         print(f"    (단순모드) 최종 통합: 매수 {len(buy_c)}개 / 매도 {len(sell_c)}개 "
-              f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, 개수제한 없음, "
-              f"net 가중치=윌슨하한×(1+신뢰도))")
+              f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, 정답자리 매칭 선정, "
+              f"net 가중치=1+신뢰도)")
         if len(buy_c) == 0 and len(sell_c) == 0:
             raise ValueError(
                 "지표컷(최소신호수·성공률)을 통과한 지표가 매수·매도 모두 0개입니다. "
