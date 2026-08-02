@@ -14408,11 +14408,11 @@ SIMPLE_POOL_MODE        = False
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
-    {'day': 2, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
-    {'day': 3, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
-    {'day': 4, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
-    {'day': 5, 'min_signals': 8, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
 ]
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
@@ -14461,10 +14461,15 @@ SIMPLE_POOL_KL_PURE_MAX_RETURN   = True
 #   POWER_BUY > POWER_SELL.
 SIMPLE_POOL_RELIABILITY_POWER_BUY  = 2.2
 SIMPLE_POOL_RELIABILITY_POWER_SELL = 1.5
-# ★★★ (요청 관련 — 재검토 후 보완) 표본이 많고 아주 일관된 지표는 -log10(p)^power가 매우
-#   커질 수 있어(통계적으론 맞지만) net_weight_score=1+신뢰도를 통해 한 지표가 net 전체를
-#   압도해버릴 위험이 있다 — 상대적 우선순위는 유지하되 이 값을 넘지 않도록 상한을 둔다.
-SIMPLE_POOL_RELIABILITY_CAP        = 30.0
+# ★★★ (요청 — 밸런스 조정) "최대 매수 점수가 30점인데 너무 높아, 매도 최대점수랑 비슷한
+#   정도로" — 매수는 power(분별력 지수)가 매도보다 훨씬 커서(2.2 vs 1.5), 같은 상한을
+#   공유해도 매수 쪽이 그 상한에 훨씬 쉽게(더 낮은 기본점수로도) 도달해버려 실질적으로
+#   매수 지표 다수가 상한(30) 근처에 몰리고, 매도는 상한에 거의 못 미치는 불균형이
+#   있었다. 매수/매도 상한을 분리하고 둘 다 낮춰서 같은 값으로 맞춘다 — 분별력(기울기)
+#   차이는 그대로 유지하되(중간 구간에서는 여전히 매수가 더 가파르게 벌어짐), 양쪽이
+#   도달할 수 있는 절대적 최댓값 자체는 동일하게 제한한다.
+SIMPLE_POOL_RELIABILITY_CAP_BUY    = 15.0
+SIMPLE_POOL_RELIABILITY_CAP_SELL   = 15.0
 # ★★★ (요청 — 신규) 추세전환 적중 보너스 — 발화 직전 LOOKBACK일간 추세와 반대 방향으로
 #   성공하면(=추세전환을 맞춤) 신뢰도에 강하게(초선형) 보너스를 준다. 여러 번 맞을수록
 #   보너스가 훨씬 커짐(POWER>1) — "추세전환 여러 번 맞으면 가장 중요하니까 분별력 있게".
@@ -14472,6 +14477,19 @@ SIMPLE_POOL_REVERSAL_BONUS_ENABLED = True
 SIMPLE_POOL_REVERSAL_LOOKBACK      = 10     # 추세 판정에 쓸 발화 이전 기간(거래일)
 SIMPLE_POOL_REVERSAL_BONUS_WEIGHT  = 0.35   # 보너스 배율의 크기
 SIMPLE_POOL_REVERSAL_BONUS_POWER   = 1.6    # 1보다 크면 여러 번 맞을수록 초선형으로 커짐
+# ★★★ (요청 — 신규) "1%이상 예측이 틀리면 신뢰도 감점을 좀 더 해서 안정성을 올려" — 개별
+#   신호 중 1%(BIG_MISS_THRESHOLD) 이상 반대방향으로 틀린 게 있으면, 그 정도(개수·크기)에
+#   비례해 신뢰도를 추가로 깎는다. t-통계량(평균/표준오차)도 큰 오답을 어느정도 반영하지만
+#   평균으로 뭉개지므로, 부호가 뚜렷하게 틀린 오답에는 별도 벌점을 더해 안정성 낮은
+#   지표를 더 확실히 걸러낸다.
+SIMPLE_POOL_BIG_MISS_THRESHOLD     = 0.01   # 이 이상 반대방향이면 '큰 오답'으로 셈
+SIMPLE_POOL_BIG_MISS_PENALTY_W     = 0.25   # 벌점 배율의 크기
+# ★★★ (요청 — 신규) "같은 날 여러 지표가 있는데 신호 날짜가 비슷하면 비슷할수록 점수를
+#   차감해서 합산" — 같은(매수/매도) 풀 안에서 선정된 지표들끼리 발화일이 많이 겹칠수록
+#   (자카드 유사도 기준) net 합산 시 가중치를 깎는다 — 사실상 같은 정보를 여러 지표가
+#   중복 반영해 net을 부풀리는 것을 방지.
+SIMPLE_POOL_OVERLAP_DISCOUNT_ENABLED = True
+SIMPLE_POOL_OVERLAP_DISCOUNT_WEIGHT  = 0.6  # 완전히 겹치는 지표쌍 하나당 최대 이 비율까지 깎음
 
 # ★★★ (요청 — 폐기, 재설계로 대체) "신뢰도로 사용지표 개수를 정하는" 방식은 더 이상 안 씀 —
 #   아래 SIMPLE_POOL_POSITION_MATCH_SELECT(정답 매수/매도 자리 기반 선정)로 완전히 대체.
@@ -16779,7 +16797,8 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         fire_idx = np.nonzero(sig_arr)[0]
         fire_idx = fire_idx[fire_idx <= n_total - 1 - _hz]   # i+horizon이 범위 안에 있어야 평가 가능
         _empty = {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
-                  't_stat': 0.0, 'n_evaluable': 0, 'n_reversal_hits': 0}
+                  't_stat': 0.0, 'n_evaluable': 0, 'n_reversal_hits': 0,
+                  'n_big_miss': 0, 'miss_penalty_mult': 1.0}
         if len(fire_idx) < 2:   # t-통계량은 최소 2개 표본 필요(표준편차 계산)
             return _empty
         base = close_arr[fire_idx]
@@ -16811,6 +16830,26 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
             2.2 if is_buy else 1.5))
         reliability = base_score ** _power
 
+        # ★★★ (요청 — 신규) "1%이상 예측이 틀리면 신뢰도 감점을 좀 더 해서 안정성을 올려" —
+        #   임계값(SIMPLE_POOL_BIG_MISS_THRESHOLD, 기본 1%) 이상 반대방향으로 틀린 신호를
+        #   '큰 오답'으로 세고, 그 정도(개수·크기 둘 다)에 비례해 신뢰도를 나눠서 깎는다.
+        #   t-통계량은 평균으로 뭉개지기 때문에 큰 오답 몇 개가 다른 좋은 신호들에 묻혀
+        #   덜 벌점받을 수 있는데, 이 별도 항으로 "부호가 뚜렷하게 틀린 경우"를 명시적으로
+        #   더 강하게 반영해 안정성 낮은 지표를 확실히 걸러낸다.
+        _bm_thr = float(globals().get('SIMPLE_POOL_BIG_MISS_THRESHOLD', 0.01))
+        _bm_w = float(globals().get('SIMPLE_POOL_BIG_MISS_PENALTY_W', 0.25))
+        _bm_severity_sum = 0.0
+        n_big_miss = 0
+        for _f in fav.tolist():
+            if _f <= -_bm_thr:
+                n_big_miss += 1
+                _bm_severity_sum += abs(_f) / _bm_thr   # 1%=1.0, 2%=2.0 식으로 정규화된 심각도
+        if n_big_miss > 0:
+            miss_penalty_mult = 1.0 / (1.0 + _bm_w * _bm_severity_sum)
+            reliability *= miss_penalty_mult
+        else:
+            miss_penalty_mult = 1.0
+
         # ★★★ (요청 — 신규) 추세전환 성공 보너스 — 발화 직전 LOOKBACK일간 추세 방향과
         #   반대로 성공한 경우를 세어, 그 횟수만큼 초선형(거듭제곱)으로 보너스를 곱한다.
         _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
@@ -16836,15 +16875,19 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
             reversal_mult = 1.0 + _rev_w * (float(n_reversal_hits) ** _rev_pow)
             reliability *= reversal_mult
 
-        _rel_cap = float(globals().get('SIMPLE_POOL_RELIABILITY_CAP', 30.0))
+        # ★★★ (요청 — 밸런스 조정) 매수/매도 상한을 분리 — 매수는 power가 커서 같은 상한을
+        #   공유하면 상한에 훨씬 쉽게 도달해 매도보다 부당하게 더 큰 가중치를 갖게 된다.
+        _rel_cap = float(globals().get(
+            'SIMPLE_POOL_RELIABILITY_CAP_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_CAP_SELL', 15.0))
         reliability = min(reliability, _rel_cap)
         return {'reliability': reliability, 'mean_fav': mean_fav, 'std_fav': std_fav,
                 'se': se, 't_stat': t_stat, 'n_evaluable': n, 'power': _power,
-                'p_value': _p, 'df': n - 1, 'n_reversal_hits': n_reversal_hits}
+                'p_value': _p, 'df': n - 1, 'n_reversal_hits': n_reversal_hits,
+                'n_big_miss': n_big_miss, 'miss_penalty_mult': miss_penalty_mult}
     except Exception:
         return {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
                 't_stat': 0.0, 'n_evaluable': 0, 'power': 0.0, 'p_value': 1.0, 'df': 0,
-                'n_reversal_hits': 0}
+                'n_reversal_hits': 0, 'n_big_miss': 0, 'miss_penalty_mult': 1.0}
 
 
 def _compute_target_positions(close_arr, threshold=0.0):
@@ -17095,7 +17138,53 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     sell_survivors = _filter_sell(sell_pool, harm_mask)
     if len(buy_survivors):
         buy_survivors = buy_survivors.sort_values('reliability', ascending=False).reset_index(drop=True)
+    buy_survivors = _apply_overlap_discount(feat, buy_survivors)
+    sell_survivors = _apply_overlap_discount(feat, sell_survivors)
     return buy_survivors, sell_survivors
+
+
+def _apply_overlap_discount(feat, pool):
+    """★★★ (요청 — 신규) "같은 날 여러 지표가 있는데 신호 날짜가 비슷하면 비슷할수록
+       점수를 차감해서 합산" — 최종 선정된(같은 매수 또는 매도) 풀 안에서, 지표들끼리
+       발화일(net에 실제로 반영되는 표시일 기준)이 얼마나 겹치는지 자카드 유사도
+       (교집합/합집합)로 계산해, 겹침이 심할수록 net_weight_score를 깎는다 — 사실상 같은
+       정보를 여러 지표가 중복 반영해 net을 부풀리는 것을 막는다. 각 지표는 자신과 가장
+       많이 겹치는 상대와의 유사도만큼 할인받는다(1 - WEIGHT*최대유사도, 최소 5%는 유지)."""
+    if (pool is None or len(pool) < 2
+            or not globals().get('SIMPLE_POOL_OVERLAP_DISCOUNT_ENABLED', True)
+            or 'net_weight_score' not in pool.columns):
+        return pool
+    pool = pool.copy().reset_index(drop=True)
+    n = len(pool)
+    sig_sets = []
+    for _, row in pool.iterrows():
+        try:
+            sig = _aligned_signal_for_row(feat, row)
+            sig_sets.append(set(np.nonzero(sig)[0].tolist()))
+        except Exception:
+            sig_sets.append(set())
+    _w = float(globals().get('SIMPLE_POOL_OVERLAP_DISCOUNT_WEIGHT', 0.6))
+    max_sim = [0.0] * n
+    for i in range(n):
+        si = sig_sets[i]
+        if not si:
+            continue
+        for j in range(n):
+            if i == j:
+                continue
+            sj = sig_sets[j]
+            if not sj:
+                continue
+            union = len(si | sj)
+            if union == 0:
+                continue
+            jac = len(si & sj) / union
+            if jac > max_sim[i]:
+                max_sim[i] = jac
+    for i in range(n):
+        discount = max(0.05, 1.0 - _w * max_sim[i])
+        pool.at[i, 'net_weight_score'] = float(pool.at[i, 'net_weight_score']) * discount
+    return pool
 
 
 _EARNINGS_DATES_CACHE = {}   # ticker -> set(정규화된 Timestamp) — 반복 조회 방지용 모듈 캐시
