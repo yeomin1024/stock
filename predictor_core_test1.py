@@ -14457,6 +14457,10 @@ SIMPLE_POOL_KL_PURE_MAX_RETURN   = True
 #   POWER_BUY > POWER_SELL.
 SIMPLE_POOL_RELIABILITY_POWER_BUY  = 2.2
 SIMPLE_POOL_RELIABILITY_POWER_SELL = 1.5
+# ★★★ (요청 관련 — 재검토 후 보완) 표본이 많고 아주 일관된 지표는 -log10(p)^power가 매우
+#   커질 수 있어(통계적으론 맞지만) net_weight_score=1+신뢰도를 통해 한 지표가 net 전체를
+#   압도해버릴 위험이 있다 — 상대적 우선순위는 유지하되 이 값을 넘지 않도록 상한을 둔다.
+SIMPLE_POOL_RELIABILITY_CAP        = 30.0
 
 # ★★★ (요청 — 폐기, 재설계로 대체) "신뢰도로 사용지표 개수를 정하는" 방식은 더 이상 안 씀 —
 #   아래 SIMPLE_POOL_POSITION_MATCH_SELECT(정답 매수/매도 자리 기반 선정)로 완전히 대체.
@@ -14495,6 +14499,9 @@ SIMPLE_POOL_HORIZON_SUBSET_SEARCH = True
 #   하는데 하락을 못 피한" 변동폭 벌점이 가장 낮은 후보를 최종 채택.
 SIMPLE_POOL_HZ_MISS_PENALTY_SELECT = True
 SIMPLE_POOL_HZ_BAND_PCT            = 0.10   # 최대수익 대비 10% 이내까지 후보로
+# ★★★ (요청 관련 — 개선) 벌점이 최대수익 후보 자신의 벌점보다 이 비율(상대) 이상 낮아야만
+#   대체 채택 — 그 정도가 안 되면(오차범위 수준이면) 그냥 최대수익 후보를 그대로 쓴다.
+SIMPLE_POOL_HZ_MISS_MARGIN          = 0.15
 SIMPLE_POOL_HZ_MISS_Z               = 1.0   # 벌점 계산 시 표준오차 가중치(신뢰도 z와 같은 역할)
 
 # ★★★ (요청 — 재설계) 지표컷 통과분에 '신뢰도'(다음날 등락률 기반, 윌슨하한×크기가중배율)를
@@ -14533,7 +14540,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02]   # ★ 1~5% (요청: 1~10%에서 축소)
+STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ 1~5% (요청: 1~10%에서 축소)
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
@@ -16780,27 +16787,43 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         else:
             # 완벽하게 일관된 경우(분산 0) — 부호에 따라 매우 크게(사실상 확실)/0으로.
             t_stat = 50.0 if mean_fav > threshold else -50.0
-        # ★★★ (요청 — 신뢰도 계산 재설계) "엄격하게"는 통과를 막으라는 뜻이 아니라 예측력을
-        #   더 정교하게 가려내라는 뜻이었다 — 이전 버전(t_stat에서 통계적 유의성 기준선을
-        #   빼는 방식)은 기준선을 못 넘기면 무조건 신뢰도 0으로 만드는 '하드컷'이라, 실제로는
-        #   거의 다 걸러져버려 "통과가 안 된다"는 문제를 만들었다. 지금은 하드컷을 완전히
-        #   없애고, t_stat을 거듭제곱(power)으로 매끄럽게 늘려서(연속값) 우연에 가까운
-        #   지표(t≈0)는 자연히 점수가 낮게, 예측력이 뚜렷한 지표(t가 클수록)는 점수가
-        #   기하급수적으로 커지도록 한다 — "통과/탈락"이 아니라 '점수의 격차'로 우연과
-        #   진짜 예측력을 가려낸다. ★ (요청) 매수 지표는 이 격차(분별력)를 매도보다 더 크게
-        #   벌린다 — power_buy가 power_sell보다 커서, 같은 t_stat 차이라도 매수 쪽 점수
-        #   차이가 훨씬 크게 벌어진다(t=1이면 둘 다 1로 같지만, t=3이면 매수가 매도보다
-        #   훨씬 큰 점수를 받는 식 — '조금 나은 것'과 '확실히 나은 것'을 매수에서 더
-        #   뚜렷하게 구분).
+        # ★★★ (요청 — 재검토, 표본크기 미반영 문제 수정) "표본 개수가 너무 적으면 신뢰하기
+        #   어렵다"는 지적이 정확했다 — 이전 버전(t_stat을 그대로 거듭제곱)은 t-통계량
+        #   숫자만 보고, '그 t값이 표본 몇 개로 나온 것인지'(자유도)를 전혀 반영하지 않았다.
+        #   t분포는 자유도(n-1)가 작을수록 꼬리가 두꺼워서, 표본이 적으면 같은 t값이라도
+        #   우연히 나올 확률이 훨씬 높다(예: t=3이 표본3개짜리에서 나온 거면 꽤 흔하지만,
+        #   표본30개짜리에서 나온 거면 매우 드묾) — 표본이 적을수록 신뢰도를 실제로 더
+        #   깎아야 한다는 뜻. scipy의 t분포로 자유도(n-1)까지 반영한 정확한 단측 p값을
+        #   구하고, 이를 -log10(p)로 변환해 신뢰도의 기반으로 삼는다 — 표본이 적으면
+        #   같은 t값이라도 p값이 덜 작게(=덜 유의미하게) 나와 자동으로 낮은 점수를 받는다.
+        try:
+            from scipy import stats as _sps
+            _df = max(1, n - 1)
+            _p = float(_sps.t.sf(t_stat, df=_df))
+        except Exception:
+            _p = 0.5 if t_stat <= 0 else max(1e-300, 1.0 / (1.0 + t_stat ** 2))   # 예외시 대략적 폴백
+        _p = min(1.0, max(1e-300, _p))
+        # t=0(=p=0.5, "완전 우연")에서 정확히 0이 되도록 2배해서 로그 — 우연보다 못하면(p>0.5,
+        # 즉 t<0) 음수가 되므로 0으로 클램프.
+        base_score = max(0.0, -np.log10(min(1.0, 2.0 * _p)))
+        # ★ (요청) 매수 지표는 이 분별력을 매도보다 더 크게 벌린다 — power_buy > power_sell.
         _power = float(globals().get(
             'SIMPLE_POOL_RELIABILITY_POWER_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_POWER_SELL',
             2.2 if is_buy else 1.5))
-        reliability = max(0.0, t_stat) ** _power
+        reliability = base_score ** _power
+        # ★★★ (요청 — 재확인 후 보완) p값이 극단적으로 작으면(-log10(p))^power가 매우 커질 수
+        #   있다(예: 표본이 많고 아주 일관되면 수백대까지도) — 통계적으로 틀린 계산은 아니지만,
+        #   net_weight_score=1+신뢰도라서 이런 극단값 하나가 다른 지표 전부를 압도해버릴 수
+        #   있다. 상대적 우선순위(분별력)는 그대로 유지하면서도 한 지표가 net을 통째로
+        #   지배하지 않도록 합리적 상한을 둔다.
+        _rel_cap = float(globals().get('SIMPLE_POOL_RELIABILITY_CAP', 30.0))
+        reliability = min(reliability, _rel_cap)
         return {'reliability': reliability, 'mean_fav': mean_fav, 'std_fav': std_fav,
-                'se': se, 't_stat': t_stat, 'n_evaluable': n, 'power': _power}
+                'se': se, 't_stat': t_stat, 'n_evaluable': n, 'power': _power,
+                'p_value': _p, 'df': n - 1}
     except Exception:
         return {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
-                't_stat': 0.0, 'n_evaluable': 0, 'power': 0.0}
+                't_stat': 0.0, 'n_evaluable': 0, 'power': 0.0, 'p_value': 1.0, 'df': 0}
 
 
 def _compute_target_positions(close_arr, threshold=0.0):
@@ -16810,16 +16833,28 @@ def _compute_target_positions(close_arr, threshold=0.0):
        magnitude(=|다음날 등락률|)도 함께 반환 — "하루 상승/하락폭이 큰 자리를 우선으로
        맞추는" 요청을 지표 채점 시 가중치로 반영하기 위함(폭이 큰 날을 맞히면 더 큰
        점수, 틀리면 더 큰 감점).
-       반환: target(0/1 배열), magnitude(절대등락률 배열), ret(부호있는 등락률 배열)."""
+
+       ★★★ (요청 관련 — 버그수정) "맨 마지막 날은 다음날 가격을 모르니 정답을 알 수
+       없다" — 이전엔 마지막 날의 ret가 배열 초기화값(0)에 그대로 남아 target=0(현금이
+       정답)으로 '기본값 처리'되고 있었다. 이건 진짜 판정이 아니라 우연히 그렇게 보이는
+       것뿐이라(threshold가 음수면 오히려 target=1로 잘못 나올 수도 있었음), 마지막
+       날짜(및 가격 데이터가 없어 다음날 수익률을 못 구하는 날)는 valid=False로 명시
+       표시해 채점·자리매칭 양쪽에서 완전히 제외되도록 한다.
+       반환: target(0/1 배열), magnitude(절대등락률 배열), ret(부호있는 등락률 배열),
+       valid(그 날의 정답을 실제로 알 수 있는지 — True/False 배열)."""
     n = len(close_arr)
     ret = np.zeros(n)
+    valid = np.zeros(n, dtype=bool)
     for t in range(n - 1):
         p0 = close_arr[t]; p1 = close_arr[t + 1]
         if p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1):
             ret[t] = p1 / p0 - 1.0
+            valid[t] = True
+    # 마지막 날(t=n-1)은 루프에서 아예 안 다뤄져 valid=False로 남음(의도된 것) — 다음날
+    # 가격이 없어 정답을 알 수 없으므로.
     target = (ret > threshold).astype(int)
     magnitude = np.abs(ret)
-    return target, magnitude, ret
+    return target, magnitude, ret, valid
 
 
 def _aligned_signal_for_row(feat, row):
@@ -16889,13 +16924,19 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
        반환: (buy_survivors, sell_survivors) — 둘 다 원본 컬럼 + score_correct/score_wrong/
        score_harm 컬럼이 추가된 DataFrame, reliability 내림차순 정렬."""
     _thr = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
-    target, magnitude, _ret = _compute_target_positions(close_arr, threshold=_thr)
+    target, magnitude, _ret, _valid = _compute_target_positions(close_arr, threshold=_thr)
     n = len(target)
+
+    # ★★★ (요청 — 버그수정) "맨 마지막 날은 다음날 가격을 모르니 정답을 알 수 없다" —
+    #   _compute_target_positions가 표시해준 valid=False인 날(마지막 날 등)도 어닝일과
+    #   똑같이 magnitude를 0으로 만들어 채점·자리매칭에서 완전히 제외한다. target값 자체는
+    #   건드리지 않지만(내부적으로 0/False로 남아있음), magnitude=0이라 correct_w/wrong_w에
+    #   전혀 기여하지 않고, 아래 매수 자리매칭 루프에서도 별도로 다시 확인해 제외한다.
+    _excl_mask = ~_valid
 
     # ★★★ (요청) 어닝일 + 그다음날 제외 — 두 날의 magnitude를 0으로 만들어 채점(correct/
     #   wrong)과 자리매칭(magnitude 기준 정렬) 양쪽에서 자연히 빠지게 한다(target 자체는
     #   건드리지 않음 — 0가중이라 어차피 correct_w/wrong_w에 기여가 없음).
-    _excl_mask = np.zeros(n, dtype=bool)
     if ticker:
         try:
             _edates = _get_earnings_dates_cached(ticker)
@@ -20092,6 +20133,12 @@ def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker=
     #   크게 내림)" 변동폭으로 벌점을 매겨 벌점이 가장 낮은 후보를 최종 채택한다 — 수익률만
     #   보면 비슷비슷한 후보들 중에서, 실제로 기회를 더 잘 잡고 손실을 더 잘 피하는 쪽을
     #   고르기 위함. 끄면(False) 기존처럼 순수 최대수익 하나만 채택.
+    #   ★★★ (요청 관련 — 개선) 실측 확인: 벌점 차이가 겨우 3%인데 수익은 1.6% 포기하는
+    #   경우가 있었다(예: 벌점 낮은 후보가 최대수익 후보보다 벌점만 3.1% 낮고 수익은
+    #   1.56% 낮음) — 이 정도는 벌점이 '확실히' 낮다고 보기 어려운 오차범위 수준이라,
+    #   그 근소한 차이로 더 높은 수익을 포기하는 건 과하다. 그래서 벌점이 최대수익
+    #   후보 자신의 벌점보다 '의미 있는 폭'(기본 15% 이상) 낮을 때만 대체하고, 그 정도가
+    #   안 되면 그냥 최대수익 후보를 그대로 채택한다.
     if globals().get('SIMPLE_POOL_HZ_MISS_PENALTY_SELECT', True) and best_ret > -1e17:
         _band = float(globals().get('SIMPLE_POOL_HZ_BAND_PCT', 0.10))
         _cut = best_ret * (1.0 - _band) if best_ret > 0 else best_ret - abs(best_ret) * _band - 0.10
@@ -20113,10 +20160,22 @@ def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker=
                                       if len(s) > 1 else f"{s[0]}일(수익{r*100:+.1f}%,벌점{sc:.4f})"
                                       for s, r, _, sc in _scored)
                 print(f"    (최대수익 {_band*100:.0f}% 이내 후보 벌점비교) {_band_txt}")
-                best_subset_s, best_ret_s, best_result_s, _ = _scored[0]
-                if best_result_s is not None:
-                    best_result = best_result_s; best_subset = list(best_subset_s)
+                # ★ 최대수익 후보 자신의 벌점을 기준선으로 — 그보다 '의미 있게' 낮은 벌점의
+                #   후보가 있을 때만 대체, 아니면 최대수익 후보 그대로 채택.
+                _margin = float(globals().get('SIMPLE_POOL_HZ_MISS_MARGIN', 0.15))
+                _ret_own_penalty = next((sc for s, r, res, sc in _scored if r == best_ret), None)
+                if _ret_own_penalty is None:
+                    _ret_own_penalty = max(sc for _, _, _, sc in _scored)
+                _cut_penalty = _ret_own_penalty * (1.0 - _margin)
+                _winner = min(_scored, key=lambda x: x[3])
+                if _winner[3] < _cut_penalty:
+                    print(f"       → 벌점이 최대수익 후보 대비 {_margin*100:.0f}% 이상 낮은 대체 후보 있음 "
+                          f"({_winner[3]:.4f} < {_cut_penalty:.4f}) — 대체 채택")
+                    best_result = _winner[2]; best_subset = list(_winner[0])
                     return best_result, (best_subset or _hz_all), _all_results
+                else:
+                    print(f"       → 벌점 차이가 {_margin*100:.0f}% 미만(오차범위 수준)이라 "
+                          f"최대수익 후보 그대로 채택")
 
     for (s, r, res) in _all_results:
         if res is not None and r is not None and r == best_ret:
@@ -22326,10 +22385,37 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         #      결과를 참고용으로 보여준다(순수 정보용 — 실제 매매엔 영향 없음).
                         _hz_disp_all = {}
                         _excluded_hz = [h for h in _hz_all if h not in _hz_best_subset]
+                        _kl_extra = {}   # ★ (요청) 채택 안 된 호라이즌도 보너스로 독립 K/L 계산
                         if _excluded_hz:
                             _bp_excl = _mbp0[_mbp0['horizon_day'].isin(_excluded_hz)].reset_index(drop=True)
                             _sp_excl = _msp0[_msp0['horizon_day'].isin(_excluded_hz)].reset_index(drop=True)
                             _hz_disp_all.update(_compute_all_horizon_nets_display(feat, close_full, _bp_excl, _sp_excl))
+                            # ★★★ (요청) "채택이 다 끝나면 보너스로 채택 안 된 것도 최적 K,L
+                            #   표시" — 배제된 호라이즌은 _net_by_horizon(메인 계산 내부)에
+                            #   아예 없어서 K3~K5/L3~L5가 통째로 안 나오는 문제가 있었다.
+                            #   여기서 이미 구한 배제 호라이즌들의 독립 net(_hz_disp_all)으로
+                            #   그 호라이즌 각각의 K/L도 똑같이 마저 구해서 채워 넣는다
+                            #   (참고용 — 실매매엔 영향 없음, 표시만 보완).
+                            _r_excl = np.zeros(len(feat))
+                            _close_excl_arr = pd.Series(close_full).reindex(feat.index).values.astype(np.float64)
+                            for _t in range(1, len(feat)):
+                                _p0 = _close_excl_arr[_t-1]; _p1 = _close_excl_arr[_t]
+                                if _p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1):
+                                    _r_excl[_t] = _p1 / _p0 - 1.0
+                            for _h in _excluded_hz:
+                                _harr = _hz_disp_all.get(_h)
+                                if _harr is None:
+                                    continue
+                                try:
+                                    _klh_e = _net_kl_search(_harr, _r_excl, mdd_limit=None)
+                                    if _klh_e is not None and _klh_e.get('best_ret') is not None:
+                                        _kb_e, _kl_e, _kret_e, _kmdd_e = (_klh_e['best_ret'][0], _klh_e['best_ret'][1],
+                                                                          _klh_e['best_ret'][2], _klh_e['best_ret'][3])
+                                        _kl_extra[_h] = {'K': _kb_e, 'L': _kl_e, 'ret': _kret_e, 'mdd': _kmdd_e}
+                                except Exception:
+                                    pass
+                            if _kl_extra:
+                                globals()['_KNET_KL_BY_HORIZON_EXTRA'] = _kl_extra
                         _bp_final = _hz_best_res.get('buy_pool_used')
                         _sp_final = _hz_best_res.get('sell_pool_used')
                         for _h in _hz_best_subset:
@@ -22465,6 +22551,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         _d[_c] = _vals
                 _nsd_full['net_by_horizon_days'] = sorted(
                     int(c[5:]) for c in _hz_disp.keys() if c.startswith('net_h'))
+            except Exception:
+                pass
+        # ★★★ (요청) "채택이 다 끝나면 보너스로 채택 안 된 호라이즌도 최적 K,L 표시" —
+        #   호라이즌범위 탐색에서 배제된 호라이즌들의 독립 K/L(_KNET_KL_BY_HORIZON_EXTRA)을
+        #   채택된 호라이즌들의 K/L(kl_by_horizon)에 합쳐서, K1~K5/L1~L5가 채택 여부와
+        #   무관하게 전부 표시되도록 한다(배제분은 참고용 — 실매매엔 영향 없음).
+        _kl_extra_g = globals().get('_KNET_KL_BY_HORIZON_EXTRA')
+        if _nsd_full is not None and _kl_extra_g:
+            try:
+                _klh_merged = dict(_nsd_full.get('kl_by_horizon') or {})
+                _klh_merged.update(_kl_extra_g)
+                _nsd_full['kl_by_horizon'] = _klh_merged
             except Exception:
                 pass
         globals()['_KNET_FULL'] = _nsd_full; globals()['_KNET_OOS'] = _nsd_oos
@@ -23130,13 +23228,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if _show_hz_net:
             _klh = _nsd.get('kl_by_horizon') or {}
             if _klh:
+                _adopted_set = set(globals().get('_KNET_HORIZON_SUBSET') or [])
                 _parts = []
                 for _h in _hz_days_present:
                     _info = _klh.get(_h)
                     if _info:
-                        _parts.append(f"K{_h}={_info['K']:.3f}/L{_h}={_info['L']:.3f}(수익{_info['ret']*100:+.1f}%)")
+                        _tag = "" if (not _adopted_set or _h in _adopted_set) else "(보너스,미채택)"
+                        _parts.append(f"K{_h}={_info['K']:.3f}/L{_h}={_info['L']:.3f}"
+                                     f"(수익{_info['ret']*100:+.1f}%){_tag}")
                 if _parts:
-                    _klh_txt = " | [호라이즌별 독립 K/L(참고용, 실매매는 종합net 기준)] " + ", ".join(_parts)
+                    _klh_txt = (" | [호라이즌별 독립 K/L(참고용, 실매매는 종합net 기준) — "
+                               "채택 안 된 호라이즌도 보너스로 함께 표시] ") + ", ".join(_parts)
         _hz_subset_txt = ""
         if _show_hz_net:
             _adopted = globals().get('_KNET_HORIZON_SUBSET')
