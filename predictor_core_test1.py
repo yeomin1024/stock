@@ -17118,11 +17118,22 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 continue
             _sell_day_to_cands.setdefault(_d, []).append(_ci)
 
+    # ★★★ (요청 — 재설계, 대칭적 상호회피) 매수 추세전환과 매도 추세전환은 "둘 다 무조건
+    #   맞춰야 하는" 최우선 자리이고, 서로 침범하면 안 된다 — 이전 버전은 "매수→매도 침범
+    #   회피"만 있고 "매도→매수 침범 회피"가 없어서(2단계는 제약 없이 자유 선정), 매도
+    #   추세전환 자리에 매수 지표가 섞여 들어가는 문제가 있었다(실측 확인). 이제 양방향
+    #   모두 같은 원칙 적용: "깨끗한(반대쪽 추세전환을 안 건드리는) 후보만 우선 채택 —
+    #   대안이 없을 때만 부득이 가장 덜 침범하는 것 '하나만' 채택"(대안 없을 때 전부
+    #   채택하면 오히려 침범이 늘어나므로, 이 경우엔 "최대한 많이"가 아니라 "최소 침범
+    #   하나"로 타협).
     _sell_reversal_day_set = set(d for d in _sell_day_to_cands if reversal_mask[d])
+    _buy_reversal_day_set = set(d for d in _buy_day_to_cands if reversal_mask[d])
 
-    def _buy_harms_sell_reversal(_ci):
-        """이 매수 후보가 매도 추세전환 자리 중 하나에라도 발화하는지."""
-        return any((_d in _sell_reversal_day_set) for _d in _buy_cands[_ci][3])
+    def _buy_conflict_days(_ci):
+        return [_d for _d in _buy_cands[_ci][3] if _d in _sell_reversal_day_set]
+
+    def _sell_conflict_days(_ci):
+        return [_d for _d in _sell_cands[_ci][3] if _d in _buy_reversal_day_set]
 
     _buy_reversal_days = sorted([d for d in _buy_day_to_cands if reversal_mask[d]],
                                 key=lambda d: magnitude_m[d], reverse=True)
@@ -17142,7 +17153,7 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
             return None   # 이미 채택된 지표로 커버됨 — 재사용, 신규 없음
         _pool_use = _cand_list
         if avoid_sell_reversal:
-            _safe = [_ci for _ci in _cand_list if not _buy_harms_sell_reversal(_ci)]
+            _safe = [_ci for _ci in _cand_list if not _buy_conflict_days(_ci)]
             if _safe:
                 _pool_use = _safe   # ★ 매도추세전환을 안 건드리는 후보가 있으면 그것만 고려
             # 없으면(대안 없음) 부득이 전체 후보군에서 고른다(_cand_list 그대로)
@@ -17158,29 +17169,40 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
         sell_selected.add(_best)
         return _best
 
-    # ★★★ (요청 — 신규) "추세전환 자리에 잘 매칭되는 지표들은 최대한 많이 채용" — 1·2단계
-    #   (추세전환 자리)는 자리당 하나만 뽑는 게 아니라, 그 자리에 발화하는(=잘 매칭되는)
-    #   후보를 전부 채택한다. 추세전환은 가장 중요하고 예측이 어려운 자리라, 여러 지표가
-    #   동시에 확인해주는 게 신호를 더 견고하게 만든다고 판단(3·4단계 일반 자리는 기존처럼
-    #   "자리당 하나, 재사용으로 지표수 최소화" 원칙 그대로 유지 — 이번 요청은 추세전환에만
-    #   해당). 겹치는 지표끼리의 과도한 가중치 중복은 기존 overlap_discount가 그대로 처리.
+    # ★★★ (요청) "추세전환 자리에 잘 매칭되는 지표들은 최대한 많이 채용" — 단, 대안 없이
+    #   반대쪽 추세전환을 침범하는 경우는 "최대한 많이"가 아니라 "최소 침범 하나만"으로
+    #   예외 처리(전부 채택하면 침범만 늘어나므로).
     def _adopt_all_buy(_d):
         _cand_list = _buy_day_to_cands[_d]
-        _safe = [_ci for _ci in _cand_list if not _buy_harms_sell_reversal(_ci)]
-        _pool_use = _safe if _safe else _cand_list   # 매도추세전환 안 해치는 후보만, 없으면 전체
-        for _ci in _pool_use:
-            buy_selected.add(_ci)
-            buy_reversal_used.add(_ci)
+        _clean = [_ci for _ci in _cand_list if not _buy_conflict_days(_ci)]
+        if _clean:
+            for _ci in _clean:
+                buy_selected.add(_ci); buy_reversal_used.add(_ci)
+        else:
+            # 대안 없음 — 매도추세전환을 가장 적게 건드리는(침범일수 최소, 그 다음 신뢰도
+            # 최고) 딱 하나만 부득이 채택. 전부 채택하면 침범만 커짐.
+            _best = min(_cand_list, key=lambda _ci: (
+                len(_buy_conflict_days(_ci)), -float(_buy_cands[_ci][0].get('reliability', 0.0))))
+            buy_selected.add(_best); buy_reversal_used.add(_best)
 
     def _adopt_all_sell(_d):
-        for _ci in _sell_day_to_cands[_d]:
-            sell_selected.add(_ci)
-            sell_reversal_used.add(_ci)
+        _cand_list = _sell_day_to_cands[_d]
+        _clean = [_ci for _ci in _cand_list if not _sell_conflict_days(_ci)]
+        if _clean:
+            for _ci in _clean:
+                sell_selected.add(_ci); sell_reversal_used.add(_ci)
+        else:
+            _best = min(_cand_list, key=lambda _ci: (
+                len(_sell_conflict_days(_ci)), -float(_sell_cands[_ci][0].get('reliability', 0.0))))
+            sell_selected.add(_best); sell_reversal_used.add(_best)
 
-    # ★★★ 1단계: 매수 추세전환 자리 — 매도추세전환을 해치지 않는 후보 전부 채택
+    # ★★★ 1단계: 매수 추세전환 자리 — 매도추세전환을 해치지 않는 후보 우선 채택
     for _d in _buy_reversal_days:
         _adopt_all_buy(_d)
-    # ★★★ 2단계: 매도 추세전환 자리 — 1단계가 이미 피해줬으므로 제약 없이 전부 채택
+    # ★★★ 2단계: 매도 추세전환 자리 — ★ 이제 매수추세전환을 해치지 않는 후보 우선 채택
+    #   (예전엔 "1단계가 이미 피해줬으니 제약 없음"이었는데, 그 가정이 틀렸다 — 대안이
+    #   없어 1단계가 부득이 침범한 경우가 있을 수 있고, 무엇보다 2단계 자체의 후보들이
+    #   독립적으로 매수추세전환을 침범할 수 있으므로 별도로 반드시 확인해야 한다.)
     for _d in _sell_reversal_days:
         _adopt_all_sell(_d)
     # ★★★ 3단계: 나머지 매수 자리 — 여기는 기존 원칙(자리당 하나, 지표수 최소화) 유지
