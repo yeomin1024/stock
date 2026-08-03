@@ -17588,52 +17588,6 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
        각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
        → 상관 다변화(같은 지표 여러 임계 유지, 다른 상관 지표만 제거)로 수정전처럼 정예화.
        반환 (buy_combined, sell_combined)."""
-    # ★★★ (요청 — 신규) "추세전환 만점 임계값(MSC)을 3부터 10까지 돌아가면서 해보고
-    #   가장 수익률 괜찮은 걸로 결정" — 최상위 호출(재귀 아님)에서 켜져 있으면, MSC 후보
-    #   3~10 각각으로 이 함수 전체(지표평가·신뢰도·정답자리매칭까지)를 다시 실행하고,
-    #   간단한 K/L 탐색으로 실제 수익을 비교해 가장 좋은 MSC의 결과를 채택한다. 매수/매도
-    #   둘 다 같은 MSC로 탐색(비율은 매수가 항상 1 크게 유지해 기존 엄격도 차이 보존).
-    if (globals().get('SIMPLE_POOL_MODE', False)
-            and globals().get('SIMPLE_POOL_REVERSAL_MSC_SEARCH_ENABLED', True)
-            and globals().get('_SIMPLE_POOL_REVERSAL_MSC_ACTIVE') is None):
-        _msc_candidates = list(globals().get('SIMPLE_POOL_REVERSAL_MSC_RANGE', range(3, 11)))
-        _best_msc = None; _best_ret = -1e18; _best_pair = (None, None)
-        _msc_log = []
-        for _msc_try in _msc_candidates:
-            globals()['_SIMPLE_POOL_REVERSAL_MSC_ACTIVE'] = _msc_try
-            try:
-                _bc, _sc = select_pool_combined(feat, close, indicators=indicators,
-                                                n_thresholds=n_thresholds, horizon=horizon,
-                                                wilson_z=wilson_z, corr_limit=corr_limit, ticker=ticker)
-            finally:
-                globals()['_SIMPLE_POOL_REVERSAL_MSC_ACTIVE'] = None
-            if _bc is None or _sc is None or len(_bc) == 0 or len(_sc) == 0:
-                _msc_log.append((_msc_try, None))
-                continue
-            _bc2 = _bc.copy(); _sc2 = _sc.copy()
-            if 'net_weight_score' not in _bc2.columns:
-                _bc2['net_weight_score'] = 1.0 + _bc2.get('reliability', 0.0).fillna(0.0)
-            if 'net_weight_score' not in _sc2.columns:
-                _sc2['net_weight_score'] = 1.0 + _sc2.get('reliability', 0.0).fillna(0.0)
-            try:
-                _res_try = _net_signal_k_search(feat, close, _bc2, _sc2, ticker=ticker,
-                                                n_buy=None, n_sell=None, search_counts=False,
-                                                select_by='full', compute_zero_pool=False,
-                                                compute_kl_by_horizon=False)
-                _ret_try = _res_try.get('full_cum') if _res_try else None
-            except Exception:
-                _ret_try = None
-            _msc_log.append((_msc_try, _ret_try))
-            if _ret_try is not None and _ret_try > _best_ret:
-                _best_ret = _ret_try; _best_msc = _msc_try; _best_pair = (_bc, _sc)
-        _log_txt = ", ".join(f"MSC={m}:{(r*100):+.1f}%" if r is not None else f"MSC={m}:실패"
-                             for m, r in _msc_log)
-        print(f"    (추세전환 만점임계값 탐색) {_log_txt}")
-        if _best_msc is not None:
-            print(f"    ★ 채택: MSC={_best_msc} (수익 {_best_ret*100:+.2f}%)")
-            return _best_pair
-        # 전부 실패하면 기본값(탐색 없이 1회) 폴백
-        globals()['_SIMPLE_POOL_REVERSAL_MSC_ACTIVE'] = None
     # ══════════════════════════════════════════════════════════════════════
     #  ★★★ (요청 — 단순화 모드) "개수 탐색·검증·지표 중복제거 이런 거 하지 말고
     #  성공률 90% 넘는 모든 지표를 다 써서 K/L만 탐색" — wilson_z 계층별 재탐색,
@@ -17710,199 +17664,280 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
 
         _all_buy_raw, _all_sell_raw = [], []      # 지표컷 통과분(검증정보 포함) — '전체 후보 지표' 시트용
         _buy_parts, _sell_parts = [], []          # 지표컷+검증 둘 다 통과분 — 최종 풀 조합용
-        for _cfg in _hz_cfgs:
-            _day = int(_cfg['day']); _msig = int(_cfg['min_signals'])
-            # ★★★ (요청) STAGE_SUCCESS_LIMIT을 호라이즌일별로 따로 적용 — 리스트의
-            #   (day-1)번째 값을 그 호라이즌의 성공판정 등락폭 기준으로 쓴다(예:
-            #   [0.01,0.02,0.03,0.04,0.05]면 1일=1%, 2일=2%, ..., 5일=5%). 리스트가
-            #   그 인덱스만큼 없으면(하위호환) 기존처럼 _limit0(첫 값) 그대로 사용.
-            _limit_list = list(globals().get('STAGE_SUCCESS_LIMIT') or [_limit0])
-            _limit_day = float(_limit_list[_day - 1]) if len(_limit_list) >= _day else _limit0
-            # ★★★ (요청) 매수/매도 성공률 필터를 따로 읽음 — 'min_success_buy'/'min_success_sell'이
-            #   있으면 그걸, 없으면 하위호환으로 'min_success'(공통값)를 양쪽에 씀.
-            _msucc_shared = _cfg.get('min_success', None)
-            _msucc_b = float(_cfg.get('min_success_buy', _msucc_shared if _msucc_shared is not None else 0.85))
-            _msucc_s = float(_cfg.get('min_success_sell', _msucc_shared if _msucc_shared is not None else 0.85))
-            if abs(_msucc_b - _msucc_s) < 1e-9:
-                print(f"    ── horizon={_day}일 (최소신호 {_msig}개, 성공률≥{_msucc_b*100:.0f}%, "
-                      f"성공판정폭≥{_limit_day*100:.1f}%) ──")
-            else:
-                print(f"    ── horizon={_day}일 (최소신호 {_msig}개, "
-                      f"매수 성공률≥{_msucc_b*100:.0f}% / 매도 성공률≥{_msucc_s*100:.0f}%, "
-                      f"성공판정폭≥{_limit_day*100:.1f}%) ──")
-            _t_eval0 = time.time()
-            _bdf_h, _sdf_h = _evaluate_all_indicators_raw(
-                feat, close, horizon=_day, dd_limit=_limit_day, ru_limit=_limit_day,
-                n_thresholds=n_thresholds)
-            print(f"       [진단로그] horizon={_day}일 지표평가(_evaluate_all_indicators_raw) "
-                  f"소요 {time.time()-_t_eval0:.1f}초 (매수후보 {len(_bdf_h) if _bdf_h is not None else 0}개, "
-                  f"매도후보 {len(_sdf_h) if _sdf_h is not None else 0}개)")
-            _bdf_h = _add_wilson(_bdf_h); _sdf_h = _add_wilson(_sdf_h)
-            if _bdf_h is not None and len(_bdf_h): _bdf_h['horizon_day'] = _day
-            if _sdf_h is not None and len(_sdf_h): _sdf_h['horizon_day'] = _day
+        # ★★★ (요청 — 재수정, 근본원인) "MSC 탐색 재시도 때 horizon 루프 헤더조차 다시
+        #   뜨면 안 된다 — 신뢰도 점수만 다시 매기고 지표 탐색(평가+2차검증까지)은 진짜
+        #   딱 한 번만" — 이전 수정(내부 캐시 용량 확대)은 '실제 계산'은 건너뛰었지만
+        #   호라이즌 루프 자체(헤더 출력 등)는 여전히 MSC 후보 수만큼 반복 실행되고
+        #   있었다(실측 확인) — 이번엔 호라이즌 루프 전체(평가·2차검증·완화단계까지, 신뢰도
+        #   계산 '직전'까지)를 모듈 레벨 캐시로 감싸서, 캐시 적중이면 이 루프 코드 자체를
+        #   전혀 실행하지 않는다(print 포함 — 화면에 아예 안 뜸). '신뢰도 재계산'만 뒤에서
+        #   MSC별로 반복된다 — _apply_verify(2차검증)는 reliability와 무관하므로 이 캐시에
+        #   포함시켜도 안전(검증됨: reliability 컬럼을 쓰지 않음).
+        _hz_cache_key = (id(feat), id(close), feat.shape, len(close),
+                         tuple((c.get('day'), c.get('min_signals'), c.get('min_success_buy'),
+                               c.get('min_success_sell'), c.get('min_success')) for c in _hz_cfgs),
+                         round(_limit0, 6), tuple(globals().get('STAGE_SUCCESS_LIMIT') or []),
+                         n_thresholds, _verify_on)
+        if _hz_cache_key in _SIMPLE_POOL_HZ_LOOP_CACHE:
+            _all_buy_raw, _all_sell_raw, _buy_parts, _sell_parts = [
+                [d.copy() for d in lst] for lst in _SIMPLE_POOL_HZ_LOOP_CACHE[_hz_cache_key]]
+        else:
+            for _cfg in _hz_cfgs:
+                _day = int(_cfg['day']); _msig = int(_cfg['min_signals'])
+                # ★★★ (요청) STAGE_SUCCESS_LIMIT을 호라이즌일별로 따로 적용 — 리스트의
+                #   (day-1)번째 값을 그 호라이즌의 성공판정 등락폭 기준으로 쓴다(예:
+                #   [0.01,0.02,0.03,0.04,0.05]면 1일=1%, 2일=2%, ..., 5일=5%). 리스트가
+                #   그 인덱스만큼 없으면(하위호환) 기존처럼 _limit0(첫 값) 그대로 사용.
+                _limit_list = list(globals().get('STAGE_SUCCESS_LIMIT') or [_limit0])
+                _limit_day = float(_limit_list[_day - 1]) if len(_limit_list) >= _day else _limit0
+                # ★★★ (요청) 매수/매도 성공률 필터를 따로 읽음 — 'min_success_buy'/'min_success_sell'이
+                #   있으면 그걸, 없으면 하위호환으로 'min_success'(공통값)를 양쪽에 씀.
+                _msucc_shared = _cfg.get('min_success', None)
+                _msucc_b = float(_cfg.get('min_success_buy', _msucc_shared if _msucc_shared is not None else 0.85))
+                _msucc_s = float(_cfg.get('min_success_sell', _msucc_shared if _msucc_shared is not None else 0.85))
+                if abs(_msucc_b - _msucc_s) < 1e-9:
+                    print(f"    ── horizon={_day}일 (최소신호 {_msig}개, 성공률≥{_msucc_b*100:.0f}%, "
+                          f"성공판정폭≥{_limit_day*100:.1f}%) ──")
+                else:
+                    print(f"    ── horizon={_day}일 (최소신호 {_msig}개, "
+                          f"매수 성공률≥{_msucc_b*100:.0f}% / 매도 성공률≥{_msucc_s*100:.0f}%, "
+                          f"성공판정폭≥{_limit_day*100:.1f}%) ──")
+                _t_eval0 = time.time()
+                _bdf_h, _sdf_h = _evaluate_all_indicators_raw(
+                    feat, close, horizon=_day, dd_limit=_limit_day, ru_limit=_limit_day,
+                    n_thresholds=n_thresholds)
+                print(f"       [진단로그] horizon={_day}일 지표평가(_evaluate_all_indicators_raw) "
+                      f"소요 {time.time()-_t_eval0:.1f}초 (매수후보 {len(_bdf_h) if _bdf_h is not None else 0}개, "
+                      f"매도후보 {len(_sdf_h) if _sdf_h is not None else 0}개)")
+                _bdf_h = _add_wilson(_bdf_h); _sdf_h = _add_wilson(_sdf_h)
+                if _bdf_h is not None and len(_bdf_h): _bdf_h['horizon_day'] = _day
+                if _sdf_h is not None and len(_sdf_h): _sdf_h['horizon_day'] = _day
 
-            def _filt_day(df, _msucc):
-                if df is None or len(df) == 0:
-                    return None
-                d = df[(df['success_rate'] >= _msucc) & (df['n_signals'] >= _msig)].copy()
-                return d if len(d) else None
-            _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s)
+                def _filt_day(df, _msucc):
+                    if df is None or len(df) == 0:
+                        return None
+                    d = df[(df['success_rate'] >= _msucc) & (df['n_signals'] >= _msig)].copy()
+                    return d if len(d) else None
+                _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s)
 
-            # ★★★ (요청) 지표컷 통과분에 '신뢰도' 계산 — 신호 다음날(day+1, 지표 자신의
-            #   호라이즌과 무관) 등락률로 윌슨하한×크기가중배율(자세한 설계는 함수 docstring).
-            def _add_reliability(df, is_buy):
-                if df is None or len(df) == 0:
-                    return df
-                df = df.copy()
-                _results = [_compute_reliability_score(feat, _close_arr, row, _limit_day, is_buy)
-                           for _, row in df.iterrows()]
-                df['reliability']  = [r['reliability'] for r in _results]
-                df['mean_fav_next']= [r['mean_fav'] for r in _results]
-                df['std_fav_next'] = [r['std_fav'] for r in _results]
-                df['t_stat_next']  = [r['t_stat'] for r in _results]
-                return df
-            _t_rel0 = time.time()
-            _bp = _add_reliability(_bp, True)
-            _sp = _add_reliability(_sp, False)
-            print(f"       [진단로그] horizon={_day}일 신뢰도(t-통계량) 계산 소요 "
-                  f"{time.time()-_t_rel0:.1f}초 (매수 {len(_bp) if _bp is not None else 0}개, "
-                  f"매도 {len(_sp) if _sp is not None else 0}개 대상)")
+                # ★★★ (요청 관련 — 재배치) 신뢰도 계산은 MSC별로 반복돼야 하므로 이 루프
+                #   (지표평가+2차검증, 딱 한 번만) 밖으로 옮겼다 — 아래 _finalize_with_msc()
+                #   에서 이 루프의 결과(_bp/_sp, 아직 reliability 없음)를 받아 MSC별로 매긴다.
+                _bp = _apply_verify(_bp, True, _limit_day); _sp = _apply_verify(_sp, False, _limit_day)
 
-            _bp = _apply_verify(_bp, True, _limit_day); _sp = _apply_verify(_sp, False, _limit_day)
+                # ★★★ (요청) "지표 통과 개수가 거의 없으면 점진적으로 널널하게" — 이 호라이즌의
+                #   매수/매도 각각 최종통과 개수가 목표치(SIMPLE_POOL_MIN_TOTAL_INDICATORS) 미만이면
+                #   SIMPLE_POOL_RELAX_STEPS를 순서대로 하나씩 적용해(기준 완화) 재검증한다 —
+                #   목표치를 채우거나 단계가 바닥나면 멈춘다. 완전히 못 채워도 그 시점까지
+                #   가장 완화된 결과를 그대로 쓴다(에러 아님, 그 정도가 최선).
+                _min_target = int(globals().get('SIMPLE_POOL_MIN_TOTAL_INDICATORS', 5))
+                _relax_steps = list(globals().get('SIMPLE_POOL_RELAX_STEPS') or [])
+                def _relax_if_needed(df_primary, is_buy, label):
+                    nonlocal_result = df_primary
+                    _n_ok = int(nonlocal_result['passed_verify'].sum()) if nonlocal_result is not None and len(nonlocal_result) else 0
+                    if _n_ok >= _min_target or df_primary is None or len(df_primary) == 0:
+                        return nonlocal_result, 0
+                    _param_map = {'min_pass': 'SIMPLE_POOL_VERIFY_MIN_PASS',
+                                 'lift_margin': 'SIMPLE_POOL_VERIFY_LIFT_MARGIN',
+                                 'lift_ratio': 'SIMPLE_POOL_VERIFY_LIFT_RATIO',
+                                 'stability_tol': 'SIMPLE_POOL_VERIFY_STABILITY_TOL',
+                                 'stability_z': 'SIMPLE_POOL_VERIFY_STABILITY_Z',
+                                 'cluster_pctile': 'SIMPLE_POOL_VERIFY_CLUSTER_PCTILE'}
+                    for _si, _step in enumerate(_relax_steps):
+                        _snap = {}
+                        for _k, _v in _step.items():
+                            _gk = _param_map.get(_k)
+                            if _gk:
+                                _snap[_gk] = globals().get(_gk)
+                                globals()[_gk] = _v
+                        try:
+                            _re = _apply_verify(df_primary, is_buy)
+                        finally:
+                            for _gk, _v in _snap.items():
+                                globals()[_gk] = _v
+                        _n_ok2 = int(_re['passed_verify'].sum()) if _re is not None and len(_re) else 0
+                        if _n_ok2 > _n_ok:
+                            nonlocal_result = _re; _n_ok = _n_ok2
+                        if _n_ok >= _min_target:
+                            print(f"       (점진적 완화) {label} horizon={_day}일: {_si+1}단계 완화 후 "
+                                  f"{_n_ok}개 통과(목표 {_min_target}개)")
+                            return nonlocal_result, _si + 1
+                    if _n_ok > (int(df_primary['passed_verify'].sum()) if len(df_primary) else 0):
+                        print(f"       (점진적 완화) {label} horizon={_day}일: 전 단계 적용해도 "
+                              f"{_n_ok}개뿐(목표 {_min_target}개 미달) — 이 결과로 진행")
+                    return nonlocal_result, len(_relax_steps)
+                if _relax_steps and _min_target > 0:
+                    _bp, _ = _relax_if_needed(_bp, True, '매수')
+                    _sp, _ = _relax_if_needed(_sp, False, '매도')
+                if _bp is not None and len(_bp): _all_buy_raw.append(_bp)
+                if _sp is not None and len(_sp): _all_sell_raw.append(_sp)
+                _bp_ok = _bp[_bp['passed_verify']] if _bp is not None and len(_bp) else None
+                _sp_ok = _sp[_sp['passed_verify']] if _sp is not None and len(_sp) else None
+                if _bp_ok is not None and len(_bp_ok): _buy_parts.append(_bp_ok)
+                if _sp_ok is not None and len(_sp_ok): _sell_parts.append(_sp_ok)
+                _n_bp = len(_bp) if _bp is not None else 0
+                _n_sp = len(_sp) if _sp is not None else 0
+                _n_bp_ok = len(_bp_ok) if _bp_ok is not None else 0
+                _n_sp_ok = len(_sp_ok) if _sp_ok is not None else 0
+                print(f"       → 지표컷 통과: 매수 {_n_bp}개 / 매도 {_n_sp}개"
+                      + (f"  →  2차검증까지 통과: 매수 {_n_bp_ok}개 / 매도 {_n_sp_ok}개" if _verify_on else ""))
+            # ★ 다음 MSC 후보(또는 다른 곳)에서 재사용할 수 있도록 저장(reliability 계산 전
+            #   상태 — 아직 MSC와 무관하므로 그대로 캐시해도 안전).
+            if len(_SIMPLE_POOL_HZ_LOOP_CACHE) >= 8:
+                _SIMPLE_POOL_HZ_LOOP_CACHE.pop(next(iter(_SIMPLE_POOL_HZ_LOOP_CACHE)))
+            _SIMPLE_POOL_HZ_LOOP_CACHE[_hz_cache_key] = (
+                [d.copy() for d in _all_buy_raw], [d.copy() for d in _all_sell_raw],
+                [d.copy() for d in _buy_parts], [d.copy() for d in _sell_parts])
 
-            # ★★★ (요청) "지표 통과 개수가 거의 없으면 점진적으로 널널하게" — 이 호라이즌의
-            #   매수/매도 각각 최종통과 개수가 목표치(SIMPLE_POOL_MIN_TOTAL_INDICATORS) 미만이면
-            #   SIMPLE_POOL_RELAX_STEPS를 순서대로 하나씩 적용해(기준 완화) 재검증한다 —
-            #   목표치를 채우거나 단계가 바닥나면 멈춘다. 완전히 못 채워도 그 시점까지
-            #   가장 완화된 결과를 그대로 쓴다(에러 아님, 그 정도가 최선).
-            _min_target = int(globals().get('SIMPLE_POOL_MIN_TOTAL_INDICATORS', 5))
-            _relax_steps = list(globals().get('SIMPLE_POOL_RELAX_STEPS') or [])
-            def _relax_if_needed(df_primary, is_buy, label):
-                nonlocal_result = df_primary
-                _n_ok = int(nonlocal_result['passed_verify'].sum()) if nonlocal_result is not None and len(nonlocal_result) else 0
-                if _n_ok >= _min_target or df_primary is None or len(df_primary) == 0:
-                    return nonlocal_result, 0
-                _param_map = {'min_pass': 'SIMPLE_POOL_VERIFY_MIN_PASS',
-                             'lift_margin': 'SIMPLE_POOL_VERIFY_LIFT_MARGIN',
-                             'lift_ratio': 'SIMPLE_POOL_VERIFY_LIFT_RATIO',
-                             'stability_tol': 'SIMPLE_POOL_VERIFY_STABILITY_TOL',
-                             'stability_z': 'SIMPLE_POOL_VERIFY_STABILITY_Z',
-                             'cluster_pctile': 'SIMPLE_POOL_VERIFY_CLUSTER_PCTILE'}
-                for _si, _step in enumerate(_relax_steps):
-                    _snap = {}
-                    for _k, _v in _step.items():
-                        _gk = _param_map.get(_k)
-                        if _gk:
-                            _snap[_gk] = globals().get(_gk)
-                            globals()[_gk] = _v
-                    try:
-                        _re = _apply_verify(df_primary, is_buy)
-                    finally:
-                        for _gk, _v in _snap.items():
-                            globals()[_gk] = _v
-                    _n_ok2 = int(_re['passed_verify'].sum()) if _re is not None and len(_re) else 0
-                    if _n_ok2 > _n_ok:
-                        nonlocal_result = _re; _n_ok = _n_ok2
-                    if _n_ok >= _min_target:
-                        print(f"       (점진적 완화) {label} horizon={_day}일: {_si+1}단계 완화 후 "
-                              f"{_n_ok}개 통과(목표 {_min_target}개)")
-                        return nonlocal_result, _si + 1
-                if _n_ok > (int(df_primary['passed_verify'].sum()) if len(df_primary) else 0):
-                    print(f"       (점진적 완화) {label} horizon={_day}일: 전 단계 적용해도 "
-                          f"{_n_ok}개뿐(목표 {_min_target}개 미달) — 이 결과로 진행")
-                return nonlocal_result, len(_relax_steps)
-            if _relax_steps and _min_target > 0:
-                _bp, _ = _relax_if_needed(_bp, True, '매수')
-                _sp, _ = _relax_if_needed(_sp, False, '매도')
-            if _bp is not None and len(_bp): _all_buy_raw.append(_bp)
-            if _sp is not None and len(_sp): _all_sell_raw.append(_sp)
-            _bp_ok = _bp[_bp['passed_verify']] if _bp is not None and len(_bp) else None
-            _sp_ok = _sp[_sp['passed_verify']] if _sp is not None and len(_sp) else None
-            if _bp_ok is not None and len(_bp_ok): _buy_parts.append(_bp_ok)
-            if _sp_ok is not None and len(_sp_ok): _sell_parts.append(_sp_ok)
-            _n_bp = len(_bp) if _bp is not None else 0
-            _n_sp = len(_sp) if _sp is not None else 0
-            _n_bp_ok = len(_bp_ok) if _bp_ok is not None else 0
-            _n_sp_ok = len(_sp_ok) if _sp_ok is not None else 0
-            print(f"       → 지표컷 통과: 매수 {_n_bp}개 / 매도 {_n_sp}개"
-                  + (f"  →  2차검증까지 통과: 매수 {_n_bp_ok}개 / 매도 {_n_sp_ok}개" if _verify_on else ""))
-
-        _all_bdf = pd.concat(_all_buy_raw, ignore_index=True) if _all_buy_raw else None
-        _all_sdf = pd.concat(_all_sell_raw, ignore_index=True) if _all_sell_raw else None
-        globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_all_bdf, _all_sdf)   # ★ '전체 후보 지표' 시트용(지표컷 통과분만)
-
-        _empty_cols = ['indicator', 'direction', 'threshold', 'n_signals', 'n_success',
-                      'success_rate', 'horizon_day', 'wilson_score', 'reliability', 'net_weight_score']
-        buy_c  = (pd.concat(_buy_parts,  ignore_index=True) if _buy_parts
-                 else pd.DataFrame(columns=_empty_cols))
-        sell_c = (pd.concat(_sell_parts, ignore_index=True) if _sell_parts
-                 else pd.DataFrame(columns=_empty_cols))
-
-        _n_before_b, _n_before_s = len(buy_c), len(sell_c)
-        buy_c  = _dedup_identical_signal_dates(feat, buy_c)
-        sell_c = _dedup_identical_signal_dates(feat, sell_c)
-        if _n_before_b != len(buy_c) or _n_before_s != len(sell_c):
-            print(f"    (동일신호 중복제거) 매수 {_n_before_b}→{len(buy_c)}개, "
-                  f"매도 {_n_before_s}→{len(sell_c)}개 (신호수·성공률 같고 발화일까지 완전 동일한 것만 제거)")
-
-        # ★★★ (요청 — 신규) "동일한 이름의 지표지만 horizon 일수만 다른 지표가 있으면
-        #   일수 가장 적은 지표만 사용" — 같은 원본 지표명이 여러 호라이즌으로 풀에 남아
-        #   있으면, 그 중 호라이즌이 가장 작은 것만 남긴다(같은 원천 정보를 여러 호라이즌
-        #   버전으로 중복 반영하는 것을 방지, 가장 빠르게(적은 일수로) 반응하는 버전 우선).
-        _n_before_b2, _n_before_s2 = len(buy_c), len(sell_c)
-        buy_c  = _dedup_same_indicator_smallest_horizon(buy_c)
-        sell_c = _dedup_same_indicator_smallest_horizon(sell_c)
-        if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
-            print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
-                  f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 최소 호라이즌만 유지)")
-
-        buy_c  = _add_display_suffix(buy_c)
-        sell_c = _add_display_suffix(sell_c)
-        if len(buy_c):  buy_c['horizon']  = buy_c['horizon_day']     # ★ 기존 red-bold/공식표시 로직 재사용
-        if len(sell_c): sell_c['horizon'] = sell_c['horizon_day']
-
-        # ★★★ (요청 — 전면 재설계) "신뢰도로 사용지표 정하는 기능"은 완전히 중단하고, 대신
-        #   "일별 백테스트에서 올바른 매수/매도 자리를 먼저 계산해서, 그 자리에 실제로
-        #   맞는 지표만 사용" 방식으로 바꾼다. 우연이거나 역효과인(오답이 정답 이상인)
-        #   지표는 무조건 제외되고, 매수를 먼저 확정한 뒤 매도는 매수신호를 해치는 정도로
-        #   추가 제외된다. 신뢰도는 이제 '포함 여부'가 아니라 살아남은 지표들 사이의
-        #   가중치 우선순위로만 쓰인다(net_weight_score를 통해).
-        if globals().get('SIMPLE_POOL_POSITION_MATCH_SELECT', True):
-            _n_before_match_b, _n_before_match_s = len(buy_c), len(sell_c)
-            _close_arr_match = pd.Series(close).reindex(feat.index).values.astype(np.float64)
-            buy_c, sell_c = _select_indicators_by_position_match(feat, _close_arr_match, buy_c, sell_c, ticker=ticker)
-            print(f"    (정답자리 매칭 선정) 매수 {_n_before_match_b}→{len(buy_c)}개 "
-                  f"(오답≥정답인 지표 제외, 나머지 전부 사용), "
-                  f"매도 {_n_before_match_s}→{len(sell_c)}개 "
-                  f"(오답≥정답 또는 매수신호 침범≥자기기여인 지표 제외)")
-
-        # ★★★ (요청 — 재설계, 윌슨 미사용) net 가중치를 신뢰도가 직접·전적으로 결정하도록
-        #   변경 — 이전엔 wilson_score × (1+reliability)로 윌슨값과 신뢰도가 섞여 있었는데,
-        #   윌슨값을 완전히 빼고 신뢰도(이제 t-통계량 기반) 그 자체를 가중치로 쓴다.
-        #   reliability는 max(0,t)라 항상 0 이상 — 신뢰도가 낮을수록(0에 가까울수록) 자연히
-        #   net 기여가 작아지고, 높을수록 그만큼 직접 커진다(중간에 다른 지표로 희석 안 됨).
-        #   ★★★ (요청 관련 — 버그수정) reliability를 '그대로' 가중치로 쓰면(바닥 없이), 채택된
-        #   지표들이 전부 reliability=0인 경우(=지표컷은 통과했지만 다음날 t-검정은 못 넘긴
-        #   경우 — 실제로 흔함) net 배열 전체가 0이 되어버려 K/L 탐색 격자가 [0,1] 두 값뿐인
-        #   퇴화 상태가 되고, 그러면 '항상 롱'(K=0,L=0)이 유일한 비자명 선택지라 그게 그대로
-        #   채택돼버린다(실측: 엑셀에 ★K=0.000/L=0.000으로 찍힘 — 지표 존재 여부와 무관하게
-        #   나오는 무의미한 결과). 최소 바닥 1.0을 더해(1+reliability) 가중치가 절대 0이
-        #   되지 않게 한다 — 신뢰도가 0인 지표도 최소 1만큼은 목소리를 내고, 신뢰도가 있는
-        #   지표는 그만큼 추가로 커지는 구조는 그대로 유지(윌슨값은 여전히 안 씀).
-        def _add_net_weight(df):
+        # ★★★ (요청 관련 — 재배치) 신뢰도 계산 — 위 루프(캐시됨)와 분리해서 여기 정의.
+        #   호라이즌별로 다른 _limit_day가 필요한데, 이제 루프 밖이므로 row 자신의
+        #   horizon_day 컬럼에서 되짚어 계산한다(_hz_cache의 각 파트가 이미 이 컬럼을
+        #   갖고 있음).
+        _limit_list_g = list(globals().get('STAGE_SUCCESS_LIMIT') or [_limit0])
+        def _add_reliability(df, is_buy):
             if df is None or len(df) == 0:
                 return df
             df = df.copy()
-            _rel = df['reliability'].fillna(0.0) if 'reliability' in df.columns else 0.0
-            df['net_weight_score'] = 1.0 + _rel
+            _results = []
+            for _, row in df.iterrows():
+                _hd = int(row.get('horizon_day', 1) or 1)
+                _lim_row = float(_limit_list_g[_hd - 1]) if len(_limit_list_g) >= _hd else _limit0
+                _results.append(_compute_reliability_score(feat, _close_arr, row, _lim_row, is_buy))
+            df['reliability']  = [r['reliability'] for r in _results]
+            df['mean_fav_next']= [r['mean_fav'] for r in _results]
+            df['std_fav_next'] = [r['std_fav'] for r in _results]
+            df['t_stat_next']  = [r['t_stat'] for r in _results]
             return df
-        buy_c  = _add_net_weight(buy_c)
-        sell_c = _add_net_weight(sell_c)
 
-        buy_c  = buy_c.sort_values('reliability',  ascending=False).reset_index(drop=True) if len(buy_c) else buy_c
-        sell_c = sell_c.sort_values('reliability', ascending=False).reset_index(drop=True) if len(sell_c) else sell_c
-        if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
-        if len(sell_c): sell_c['sel_limit'] = _limit0
+        # ★★★ (요청 — 재설계) "MSC(추세전환 만점임계값)만 다시 매기면 되는데 지표 탐색
+        #   자체가 반복됐다" — 위 루프(_evaluate_all_indicators_raw+2차검증, MSC와 완전
+        #   무관)는 캐시로 이미 딱 한 번만 실행되도록 고쳤다. 이제 신뢰도 계산부터 끝까지
+        #   (concat·dedup·정답자리매칭·net가중치)를 함수로 감싸서, MSC 탐색은 이 함수만
+        #   반복 호출한다 — 호라이즌 루프의 헤더·평가·검증 코드 자체를 다시 타지 않는다.
+        def _finalize_pool(_msc_value):
+            globals()['_SIMPLE_POOL_REVERSAL_MSC_ACTIVE'] = _msc_value
+            try:
+                _all_buy_raw2 = [_add_reliability(d, True) for d in _all_buy_raw]
+                _all_sell_raw2 = [_add_reliability(d, False) for d in _all_sell_raw]
+                _buy_parts2 = [_add_reliability(d, True) for d in _buy_parts]
+                _sell_parts2 = [_add_reliability(d, False) for d in _sell_parts]
+            finally:
+                globals()['_SIMPLE_POOL_REVERSAL_MSC_ACTIVE'] = None
+
+            _all_bdf = pd.concat(_all_buy_raw2, ignore_index=True) if _all_buy_raw2 else None
+            _all_sdf = pd.concat(_all_sell_raw2, ignore_index=True) if _all_sell_raw2 else None
+            globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_all_bdf, _all_sdf)   # ★ '전체 후보 지표' 시트용(지표컷 통과분만)
+
+            _empty_cols = ['indicator', 'direction', 'threshold', 'n_signals', 'n_success',
+                          'success_rate', 'horizon_day', 'wilson_score', 'reliability', 'net_weight_score']
+            buy_c  = (pd.concat(_buy_parts2,  ignore_index=True) if _buy_parts2
+                     else pd.DataFrame(columns=_empty_cols))
+            sell_c = (pd.concat(_sell_parts2, ignore_index=True) if _sell_parts2
+                     else pd.DataFrame(columns=_empty_cols))
+
+            _n_before_b, _n_before_s = len(buy_c), len(sell_c)
+            buy_c  = _dedup_identical_signal_dates(feat, buy_c)
+            sell_c = _dedup_identical_signal_dates(feat, sell_c)
+            if _n_before_b != len(buy_c) or _n_before_s != len(sell_c):
+                print(f"    (동일신호 중복제거) 매수 {_n_before_b}→{len(buy_c)}개, "
+                      f"매도 {_n_before_s}→{len(sell_c)}개 (신호수·성공률 같고 발화일까지 완전 동일한 것만 제거)")
+
+            # ★★★ (요청 — 신규) "동일한 이름의 지표지만 horizon 일수만 다른 지표가 있으면
+            #   일수 가장 적은 지표만 사용" — 같은 원본 지표명이 여러 호라이즌으로 풀에 남아
+            #   있으면, 그 중 호라이즌이 가장 작은 것만 남긴다(같은 원천 정보를 여러 호라이즌
+            #   버전으로 중복 반영하는 것을 방지, 가장 빠르게(적은 일수로) 반응하는 버전 우선).
+            _n_before_b2, _n_before_s2 = len(buy_c), len(sell_c)
+            buy_c  = _dedup_same_indicator_smallest_horizon(buy_c)
+            sell_c = _dedup_same_indicator_smallest_horizon(sell_c)
+            if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
+                print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
+                      f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 최소 호라이즌만 유지)")
+
+            buy_c  = _add_display_suffix(buy_c)
+            sell_c = _add_display_suffix(sell_c)
+            if len(buy_c):  buy_c['horizon']  = buy_c['horizon_day']     # ★ 기존 red-bold/공식표시 로직 재사용
+            if len(sell_c): sell_c['horizon'] = sell_c['horizon_day']
+
+            # ★★★ (요청 — 전면 재설계) "신뢰도로 사용지표 정하는 기능"은 완전히 중단하고, 대신
+            #   "일별 백테스트에서 올바른 매수/매도 자리를 먼저 계산해서, 그 자리에 실제로
+            #   맞는 지표만 사용" 방식으로 바꾼다. 우연이거나 역효과인(오답이 정답 이상인)
+            #   지표는 무조건 제외되고, 매수를 먼저 확정한 뒤 매도는 매수신호를 해치는 정도로
+            #   추가 제외된다. 신뢰도는 이제 '포함 여부'가 아니라 살아남은 지표들 사이의
+            #   가중치 우선순위로만 쓰인다(net_weight_score를 통해).
+            if globals().get('SIMPLE_POOL_POSITION_MATCH_SELECT', True):
+                _n_before_match_b, _n_before_match_s = len(buy_c), len(sell_c)
+                _close_arr_match = pd.Series(close).reindex(feat.index).values.astype(np.float64)
+                buy_c, sell_c = _select_indicators_by_position_match(feat, _close_arr_match, buy_c, sell_c, ticker=ticker)
+                print(f"    (정답자리 매칭 선정) 매수 {_n_before_match_b}→{len(buy_c)}개 "
+                      f"(오답≥정답인 지표 제외, 나머지 전부 사용), "
+                      f"매도 {_n_before_match_s}→{len(sell_c)}개 "
+                      f"(오답≥정답 또는 매수신호 침범≥자기기여인 지표 제외)")
+
+            # ★★★ (요청 — 재설계, 윌슨 미사용) net 가중치를 신뢰도가 직접·전적으로 결정하도록
+            #   변경 — 이전엔 wilson_score × (1+reliability)로 윌슨값과 신뢰도가 섞여 있었는데,
+            #   윌슨값을 완전히 빼고 신뢰도(이제 t-통계량 기반) 그 자체를 가중치로 쓴다.
+            #   reliability는 max(0,t)라 항상 0 이상 — 신뢰도가 낮을수록(0에 가까울수록) 자연히
+            #   net 기여가 작아지고, 높을수록 그만큼 직접 커진다(중간에 다른 지표로 희석 안 됨).
+            #   ★★★ (요청 관련 — 버그수정) reliability를 '그대로' 가중치로 쓰면(바닥 없이), 채택된
+            #   지표들이 전부 reliability=0인 경우(=지표컷은 통과했지만 다음날 t-검정은 못 넘긴
+            #   경우 — 실제로 흔함) net 배열 전체가 0이 되어버려 K/L 탐색 격자가 [0,1] 두 값뿐인
+            #   퇴화 상태가 되고, 그러면 '항상 롱'(K=0,L=0)이 유일한 비자명 선택지라 그게 그대로
+            #   채택돼버린다(실측: 엑셀에 ★K=0.000/L=0.000으로 찍힘 — 지표 존재 여부와 무관하게
+            #   나오는 무의미한 결과). 최소 바닥 1.0을 더해(1+reliability) 가중치가 절대 0이
+            #   되지 않게 한다 — 신뢰도가 0인 지표도 최소 1만큼은 목소리를 내고, 신뢰도가 있는
+            #   지표는 그만큼 추가로 커지는 구조는 그대로 유지(윌슨값은 여전히 안 씀).
+            def _add_net_weight(df):
+                if df is None or len(df) == 0:
+                    return df
+                df = df.copy()
+                _rel = df['reliability'].fillna(0.0) if 'reliability' in df.columns else 0.0
+                df['net_weight_score'] = 1.0 + _rel
+                return df
+            buy_c  = _add_net_weight(buy_c)
+            sell_c = _add_net_weight(sell_c)
+
+            buy_c  = buy_c.sort_values('reliability',  ascending=False).reset_index(drop=True) if len(buy_c) else buy_c
+            sell_c = sell_c.sort_values('reliability', ascending=False).reset_index(drop=True) if len(sell_c) else sell_c
+            if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
+            if len(sell_c): sell_c['sel_limit'] = _limit0
+            return buy_c, sell_c
+
+        # ★★★ (요청) "추세전환 만점 임계값(MSC)을 3부터 10까지 돌아가면서 해보고 가장
+        #   수익률 괜찮은 걸로 결정" — 위에서 이미 비싼 부분(지표평가·2차검증)은 캐시로
+        #   딱 한 번만 실행됐으므로, 이제부터는 _finalize_pool()(신뢰도 계산 이후만) 호출로
+        #   가벼운 반복만 한다 — 호라이즌 루프의 헤더·평가·검증 print/계산이 다시 실행되지
+        #   않는다(위 캐시 분기 자체를 안 타므로).
+        if (globals().get('SIMPLE_POOL_REVERSAL_MSC_SEARCH_ENABLED', True)
+                and (len(_buy_parts) > 0 or len(_sell_parts) > 0)):
+            _msc_candidates = list(globals().get('SIMPLE_POOL_REVERSAL_MSC_RANGE', range(3, 11)))
+            _best_msc = None; _best_ret = -1e18; _best_pair = None
+            _msc_log = []
+            for _msc_try in _msc_candidates:
+                _bc, _sc = _finalize_pool(_msc_try)
+                if _bc is None or _sc is None or len(_bc) == 0 or len(_sc) == 0:
+                    _msc_log.append((_msc_try, None))
+                    continue
+                try:
+                    _res_try = _net_signal_k_search(feat, close, _bc, _sc, ticker=ticker,
+                                                    n_buy=None, n_sell=None, search_counts=False,
+                                                    select_by='full', compute_zero_pool=False,
+                                                    compute_kl_by_horizon=False)
+                    _ret_try = _res_try.get('full_cum') if _res_try else None
+                except Exception:
+                    _ret_try = None
+                _msc_log.append((_msc_try, _ret_try))
+                if _ret_try is not None and _ret_try > _best_ret:
+                    _best_ret = _ret_try; _best_msc = _msc_try; _best_pair = (_bc, _sc)
+            _log_txt = ", ".join(f"MSC={mv}:{(rv*100):+.1f}%" if rv is not None else f"MSC={mv}:실패"
+                                 for mv, rv in _msc_log)
+            print(f"    (추세전환 만점임계값 탐색) {_log_txt}")
+            if _best_pair is not None:
+                print(f"    ★ 채택: MSC={_best_msc} (수익 {_best_ret*100:+.2f}%)")
+                buy_c, sell_c = _best_pair
+            else:
+                buy_c, sell_c = _finalize_pool(int(globals().get('SIMPLE_POOL_REVERSAL_MIN_COUNT_BUY', 3)))
+        else:
+            buy_c, sell_c = _finalize_pool(int(globals().get('SIMPLE_POOL_REVERSAL_MIN_COUNT_BUY', 3)))
 
         globals()['NET_SIGNAL_WEIGHT_COL'] = 'net_weight_score'   # ★ net 가중치 = 1+신뢰도(윌슨 미사용)
         globals()['NET_SIGNAL_WEIGHTED'] = True
@@ -19895,6 +19930,10 @@ def _norm_date_set(dlist):
 
 
 _EVAL_ALL_RAW_CACHE = {}   # ★★ (요청) feat/close/horizon/한도가 같으면 재계산 안 하도록 캐시
+# ★★★ (요청 — 신규) "MSC 탐색 재시도 때 horizon 루프 헤더조차 다시 뜨면 안 된다" — 호라이즌
+#   루프 전체(평가+2차검증까지, 신뢰도 계산 전)의 결과를 캐시 — select_pool_combined 안에서
+#   사용(자세한 설명은 그 함수 본문 참고).
+_SIMPLE_POOL_HZ_LOOP_CACHE = {}
 _ENRICH_CACHE = {}         # ★★ (요청) 캐스케이드 검증(지연·스킬·홀드아웃)도 동일 풀이면 재사용
 
 
@@ -19955,7 +19994,12 @@ def _evaluate_all_indicators_raw(feat, close, *, horizon, dd_limit, ru_limit, n_
         pct_low=lo, pct_high=hi, horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
         min_signals=_min_sig_floor, wilson_z=1.0,
         anchor_buy_arr=None, anchor_sell_arr=None)
-    if len(_EVAL_ALL_RAW_CACHE) >= 3:
+    # ★★★ (요청 관련 — 버그수정, 근본원인) 용량이 3개뿐이면 호라이즌 1~5일(=서로 다른
+    #   캐시 키 5개)을 순회하는 도중 앞쪽이 밀려나 버려서, "신뢰도만 다시 매기면 되는"
+    #   MSC(추세전환 만점임계값) 재탐색 때마다 이 가장 비싼 단계(호라이즌당 최대 수백초)가
+    #   매번 통째로 재실행되는 문제가 있었다(실측: 600초짜리 평가가 MSC 후보 8개만큼
+    #   반복됨) — 호라이즌 5개 + 여유를 담을 수 있도록 넉넉히 키운다.
+    if len(_EVAL_ALL_RAW_CACHE) >= 12:
         _EVAL_ALL_RAW_CACHE.pop(next(iter(_EVAL_ALL_RAW_CACHE)))  # 가장 오래된 항목 제거
     _EVAL_ALL_RAW_CACHE[_key] = (_bdf, _sdf)
     return _bdf, _sdf
