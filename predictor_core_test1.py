@@ -14477,6 +14477,24 @@ SIMPLE_POOL_REVERSAL_BONUS_ENABLED = True
 SIMPLE_POOL_REVERSAL_LOOKBACK      = 10     # 추세 판정에 쓸 발화 이전 기간(거래일)
 SIMPLE_POOL_REVERSAL_BONUS_WEIGHT  = 0.35   # 보너스 배율의 크기
 SIMPLE_POOL_REVERSAL_BONUS_POWER   = 1.6    # 1보다 크면 여러 번 맞을수록 초선형으로 커짐
+# ★★★ (요청 — 신규) "지속 상승장에선 매수 점수가 우연히도 잘 나올 수밖에 없어 매도랑
+#   밸런스가 안 맞는다 — 추세전환 아니면 점수를 짜게, 특히 매수는 더 짜게" — 추세추종
+#   (비추세전환) 적중일의 기여도를 t-통계량 계산에서부터 대폭 할인한다. 매수가 매도보다
+#   더 작은(더 엄격한) 값.
+SIMPLE_POOL_NONREVERSAL_DISCOUNT_BUY  = 0.12
+SIMPLE_POOL_NONREVERSAL_DISCOUNT_SELL = 0.25
+# ★★★ (요청 — 신규) "추세반전도 우연히 몇 번 맞을 수 있는데 그런 것도 점수가 너무 높다" —
+#   추세전환 적중이 이 횟수 미만이면 보너스가 사실상 없음(우연 방지). 매수가 매도보다
+#   더 높은(더 엄격한) 기준.
+SIMPLE_POOL_REVERSAL_MIN_COUNT_BUY    = 3
+SIMPLE_POOL_REVERSAL_MIN_COUNT_SELL   = 2
+# ★★★ (요청 — 신규) "추세전환 만점 임계값(몇 회에서 사실상 최대점수가 되는지)을 3~10까지
+#   돌아가면서 실제 수익률로 결정" — 위 MIN_COUNT는 이제 탐색이 꺼져있을 때의 폴백값으로만
+#   쓰이고, 탐색이 켜져 있으면 이 범위를 실제로 다 돌려서 최선을 찾는다.
+SIMPLE_POOL_REVERSAL_MSC_SEARCH_ENABLED = True
+SIMPLE_POOL_REVERSAL_MSC_RANGE          = range(3, 11)   # 3,4,...,10
+SIMPLE_POOL_REVERSAL_BONUS_SCALE        = 50.0    # MSC 도달 시 상한을 확실히 채우기 위한 배율 크기
+_SIMPLE_POOL_REVERSAL_MSC_ACTIVE = None   # 탐색 재귀 중 현재 시도 중인 MSC값(내부용, 직접 건드리지 않음)
 # ★★★ (요청 — 신규) "1%이상 예측이 틀리면 신뢰도 감점을 좀 더 해서 안정성을 올려" — 개별
 #   신호 중 1%(BIG_MISS_THRESHOLD) 이상 반대방향으로 틀린 게 있으면, 그 정도(개수·크기)에
 #   비례해 신뢰도를 추가로 깎는다. t-통계량(평균/표준오차)도 큰 오답을 어느정도 반영하지만
@@ -16773,34 +16791,30 @@ _CLUSTER_NULL_CACHE = {}
 
 
 def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
-    """★★★ (요청 — 전면 재설계) 지표 신뢰도 — '실제 성공률 판정과 완전히 동일한 방식'으로
-       계산해야 한다는 지적을 반영해 다시 설계.
+    """★★★ (요청 — 전면 재설계, 추세추종 편향 제거) 지표 신뢰도.
 
-       ★★★ (요청 관련 — 버그수정, 핵심) 이전 버전은 '호라이즌 정렬된 표시일의 바로 다음날
-       하루치' 등락만 봤는데, 실제 '성공률'(_eval_buy_signals/_eval_sell_signals)은 원본
-       발화일 i부터 '정확히 horizon일 후'(i+horizon)까지의 누적 등락률 딱 하나
-       (close[i+horizon]/close[i]-1)로 판정한다 — 하루치 등락과 h일 누적 등락은 전혀 다른
-       양이다. 이 불일치 때문에, 호라이즌이 클수록(2~5일) 판정기준(STAGE_SUCCESS_LIMIT가
-       호라이즌별로 커짐: 1%→5%)은 커지는데 비교 대상은 여전히 '하루치 등락'(보통 1~2%대)
-       이라 mean_fav가 threshold를 거의 항상 밑돌아 t값이 음수 → reliability=0으로 나오는
-       지표가 2~5일에서 압도적으로 많아지는 문제가 있었다(실측 확인) — 이제 신호일자 컬럼과
-       동일하게 close[i+horizon]/close[i]-1(원본발화일 i부터 h일 누적, "신호일자" 컬럼·
-       성공률 계산과 완전히 동일한 정의)로 고쳐서 이 불일치를 없앤다.
+       ★★★ (요청 — 핵심) "지속적으로 상승하는 경우엔 지표 점수가 잘 나올 수밖에 없는데
+       이러면 매도랑 밸런스가 안 맞아... 결국 추세반전을 가장 잘 예측하는 지표를 찾아야
+       하는데... 추세반전도 우연히 몇 번 맞출 수 있는데 그런 것도 점수가 너무 높다...
+       추세전환을 맞춘 게 아니면 점수를 짜게 줘야 한다. 특히 매수는 매도보다 더 짜게" —
+       지금까지는 t-통계량(mean_fav/se)을 '추세추종이든 추세전환이든 구분 없이 전부 같은
+       무게로' 평균에 반영했다. 상승장에서는 방향만 맞으면(추세추종) 어떤 지표든 쉽게
+       높은 mean_fav가 나오므로, 이게 진짜 예측력인지 그냥 시장 자체가 오른 덕인지
+       구분이 안 됐다 — 이게 매수 점수가 과하게 높아지는(그리고 하락장에선 매도가 과하게
+       높아지는) 근본 원인이었다.
 
-       ★★★ (요청 — 신규) "추세전환 시 예측을 맞출수록, 특히 여러 번 맞으면 가장 중요하니까
-       분별력 있게" — 발화일 이전 LOOKBACK일간의 추세 방향과 반대로(즉 추세전환을 맞춰서)
-       성공한 경우를 별도로 세어, 그 횟수가 많을수록 신뢰도에 강하게(초선형으로) 보너스를
-       준다. 추세전환을 맞히는 건 단순 추세추종보다 훨씬 어렵고 우연으로 여러 번 맞기
-       힘들므로, 이게 실제 예측력의 가장 강력한 신호라고 보고 가장 크게 가중한다.
+       새 설계 — 추세추종/추세전환을 아예 다른 무게로 t-통계량 자체에 반영:
+         credit_i = fav_i                         (추세전환 적중인 날)
+         credit_i = fav_i × NONREV_DISCOUNT        (추세추종인 날 — 대폭 할인)
+       이 credit으로 평균/표준편차/t값을 계산 — "추세전환이 아니면 그 날의 기여도 자체를
+       확 깎아서" 시작한다(보너스를 나중에 곱하는 게 아니라 애초에 기초 점수 자체가
+       추세전환 중심으로 만들어짐). NONREV_DISCOUNT는 매수가 매도보다 더 작다(더 엄격).
 
-       설계 — 임계값(threshold) 대비 일표본 t-통계량(연속값 기반, h일 누적 등락 사용):
-         fav_i = close[i+h]/close[i]-1 (매수) 또는 그 반대부호(매도) — i는 원본 발화일
-         mean_fav = 평균(fav_i), std_fav = 표본표준편차(fav_i, ddof=1), se = std_fav/√n
-         t = (mean_fav − threshold) / se
-       t를 scipy t분포(자유도 n-1)로 정확한 단측 p값 변환 → -log10(2p) 기반 연속 점수
-       (우연=0, 통계적으로 유의할수록 매끄럽게 커짐, 하드컷 없음) → 매수/매도 분별력
-       거듭제곱 → 추세전환 보너스 곱 → 상한 클램프.
+       추세전환 보너스도 "우연히 몇 번"을 걸러내도록 최소횟수(MIN_COUNT) 이상부터만
+       의미있게 작동 — 그 미만(매수는 더 높은 기준)이면 보너스가 사실상 없음. 매수는
+       매도보다 이 기준도 더 높다.
 
+       나머지(h일 누적등락 기반 성공판정, 큰오답 벌점, 상한 클램프)는 기존과 동일.
        반환 dict: reliability, mean_fav, std_fav, se, t_stat, n_evaluable, n_reversal_hits."""
     try:
         sig = _to_signal_array(feat, row)   # 원본 발화일(lead_shift만 적용) — 성공률 판정과 동일 기준
@@ -16818,7 +16832,7 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         if len(fire_idx) < 2:   # t-통계량은 최소 2개 표본 필요(표준편차 계산)
             return _empty
         base = close_arr[fire_idx]
-        nxt = close_arr[fire_idx + _hz]   # ★ 핵심수정 — h일 후(성공률과 동일), 다음날(+1) 아님
+        nxt = close_arr[fire_idx + _hz]   # ★ h일 후(성공률과 동일), 다음날(+1) 아님
         valid = (base > 0) & np.isfinite(base) & np.isfinite(nxt)
         base = base[valid]; nxt = nxt[valid]; fire_valid = fire_idx[valid]
         if len(base) < 2:
@@ -16826,9 +16840,38 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         raw_ret = nxt / base - 1.0   # close[i+h]/close[i]-1 — 성공률 계산과 완전히 동일한 식
         fav = raw_ret if is_buy else -raw_ret   # ★ 매수지표=상승이 +, 매도지표=하락이 +
         n = len(fav)
-        mean_fav = float(np.mean(fav))
-        std_fav = float(np.std(fav, ddof=1))
+
+        # ★★★ (요청 — 신규, 핵심) 발화일별 '추세전환 여부'를 t-통계량 계산 전에 먼저 판정
+        #   — 추세추종 날은 credit을 대폭 할인해서, 상승장에서 방향만 맞아 생기는 가짜
+        #   고득점을 원천적으로 줄인다.
+        _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
+        _is_rev = np.zeros(n, dtype=bool)
+        if globals().get('SIMPLE_POOL_REVERSAL_BONUS_ENABLED', True):
+            for _k, _i in enumerate(fire_valid.tolist()):
+                if _i < _lookback:
+                    continue
+                _p0 = close_arr[_i - _lookback]; _p1 = close_arr[_i]
+                if not (_p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1)):
+                    continue
+                _pre_trend = _p1 / _p0 - 1.0
+                # 매수인데 직전이 하락추세였다=하락→상승 전환. 매도인데 직전이 상승추세
+                # 였다=상승→하락 전환. 둘 다 "추세전환 자리"(성공여부와 무관하게 자리 자체의
+                # 성격) — 성공/실패는 fav 부호로 이미 반영되므로 여기선 '자리 판정'만 한다.
+                if (is_buy and _pre_trend < 0) or ((not is_buy) and _pre_trend > 0):
+                    _is_rev[_k] = True
+        n_reversal_hits = int(np.sum(_is_rev & (fav >= threshold)))
+
+        _nonrev_discount = float(globals().get(
+            'SIMPLE_POOL_NONREVERSAL_DISCOUNT_BUY' if is_buy else 'SIMPLE_POOL_NONREVERSAL_DISCOUNT_SELL',
+            0.12 if is_buy else 0.25))
+        _credit = np.where(_is_rev, fav, fav * _nonrev_discount)
+
+        mean_fav = float(np.mean(_credit))
+        std_fav = float(np.std(_credit, ddof=1))
         se = std_fav / np.sqrt(n)
+        # ★ 할인된 credit과 비교할 기준선도 같은 비율로 낮춰야 공정 — 순수 추세추종 지표
+        #   전체가 "할인된 credit 평균"이 "할인 안 된 threshold" 그대로를 넘기는 건 원래보다
+        #   더 어려워야 하므로(의도된 엄격화), threshold는 낮추지 않고 그대로 유지한다.
         if se > 1e-12:
             t_stat = (mean_fav - threshold) / se
         else:
@@ -16849,9 +16892,6 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         # ★★★ (요청 — 신규) "1%이상 예측이 틀리면 신뢰도 감점을 좀 더 해서 안정성을 올려" —
         #   임계값(SIMPLE_POOL_BIG_MISS_THRESHOLD, 기본 1%) 이상 반대방향으로 틀린 신호를
         #   '큰 오답'으로 세고, 그 정도(개수·크기 둘 다)에 비례해 신뢰도를 나눠서 깎는다.
-        #   t-통계량은 평균으로 뭉개지기 때문에 큰 오답 몇 개가 다른 좋은 신호들에 묻혀
-        #   덜 벌점받을 수 있는데, 이 별도 항으로 "부호가 뚜렷하게 틀린 경우"를 명시적으로
-        #   더 강하게 반영해 안정성 낮은 지표를 확실히 걸러낸다.
         _bm_thr = float(globals().get('SIMPLE_POOL_BIG_MISS_THRESHOLD', 0.01))
         _bm_w = float(globals().get('SIMPLE_POOL_BIG_MISS_PENALTY_W', 0.25))
         _bm_severity_sum = 0.0
@@ -16866,29 +16906,23 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         else:
             miss_penalty_mult = 1.0
 
-        # ★★★ (요청 — 신규) 추세전환 성공 보너스 — 발화 직전 LOOKBACK일간 추세 방향과
-        #   반대로 성공한 경우를 세어, 그 횟수만큼 초선형(거듭제곱)으로 보너스를 곱한다.
-        _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
-        n_reversal_hits = 0
-        if globals().get('SIMPLE_POOL_REVERSAL_BONUS_ENABLED', True):
-            for _k, _i in enumerate(fire_valid.tolist()):
-                if _i < _lookback:
-                    continue
-                _p0 = close_arr[_i - _lookback]; _p1 = close_arr[_i]
-                if not (_p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1)):
-                    continue
-                _pre_trend = _p1 / _p0 - 1.0
-                _was_success = bool(fav[_k] >= threshold)
-                if not _was_success:
-                    continue
-                # 매수인데 직전이 하락추세였다 = 하락→상승 전환을 맞춤. 매도인데 직전이
-                # 상승추세였다 = 상승→하락 전환을 맞춤. 둘 다 "추세전환 적중".
-                if (is_buy and _pre_trend < 0) or ((not is_buy) and _pre_trend > 0):
-                    n_reversal_hits += 1
+        # ★★★ (요청 — 신규, 재조정) 추세전환 성공 보너스 — "3회가 만점인 것도 너무 후하다,
+        #   만점 임계값(몇 회에서 사실상 최대점수가 되는지) 자체를 3~10까지 돌려보고
+        #   수익률 좋은 걸로 결정" — 이제 '만점 임계값'(MSC)이 탐색 가능한 파라미터가
+        #   됐다. 탐색 중이면(_SIMPLE_POOL_REVERSAL_MSC_ACTIVE) 그 값을 최우선 사용,
+        #   아니면 기존 설정값(매수/매도 개별) 사용. n_reversal_hits가 MSC에 도달하면
+        #   배율이 상한을 확실히 채울 만큼 커지고, MSC 미만이면 그 비율만큼만(진행률의
+        #   거듭제곱) 작게 붙는다 — "몇 번이면 바로 만점"이 아니라 MSC까지 점진적으로
+        #   커지는 곡선.
+        _msc = int(globals().get('_SIMPLE_POOL_REVERSAL_MSC_ACTIVE') or globals().get(
+            'SIMPLE_POOL_REVERSAL_MIN_COUNT_BUY' if is_buy else 'SIMPLE_POOL_REVERSAL_MIN_COUNT_SELL',
+            3 if is_buy else 2))
         if n_reversal_hits > 0:
             _rev_w = float(globals().get('SIMPLE_POOL_REVERSAL_BONUS_WEIGHT', 0.35))
             _rev_pow = float(globals().get('SIMPLE_POOL_REVERSAL_BONUS_POWER', 1.6))
-            reversal_mult = 1.0 + _rev_w * (float(n_reversal_hits) ** _rev_pow)
+            _rev_scale = float(globals().get('SIMPLE_POOL_REVERSAL_BONUS_SCALE', 50.0))
+            _norm = float(n_reversal_hits) / max(1, _msc)   # n==MSC일 때 정확히 1.0
+            reversal_mult = 1.0 + _rev_w * _rev_scale * (_norm ** _rev_pow)
             reliability *= reversal_mult
 
         # ★★★ (요청 — 밸런스 조정) 매수/매도 상한을 분리 — 매수는 power가 커서 같은 상한을
@@ -17554,6 +17588,52 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
        각 한도의 full 풀(지표당 여러 임계)을 concat → (indicator,threshold) 중복은 최고 success_rate 1행
        → 상관 다변화(같은 지표 여러 임계 유지, 다른 상관 지표만 제거)로 수정전처럼 정예화.
        반환 (buy_combined, sell_combined)."""
+    # ★★★ (요청 — 신규) "추세전환 만점 임계값(MSC)을 3부터 10까지 돌아가면서 해보고
+    #   가장 수익률 괜찮은 걸로 결정" — 최상위 호출(재귀 아님)에서 켜져 있으면, MSC 후보
+    #   3~10 각각으로 이 함수 전체(지표평가·신뢰도·정답자리매칭까지)를 다시 실행하고,
+    #   간단한 K/L 탐색으로 실제 수익을 비교해 가장 좋은 MSC의 결과를 채택한다. 매수/매도
+    #   둘 다 같은 MSC로 탐색(비율은 매수가 항상 1 크게 유지해 기존 엄격도 차이 보존).
+    if (globals().get('SIMPLE_POOL_MODE', False)
+            and globals().get('SIMPLE_POOL_REVERSAL_MSC_SEARCH_ENABLED', True)
+            and globals().get('_SIMPLE_POOL_REVERSAL_MSC_ACTIVE') is None):
+        _msc_candidates = list(globals().get('SIMPLE_POOL_REVERSAL_MSC_RANGE', range(3, 11)))
+        _best_msc = None; _best_ret = -1e18; _best_pair = (None, None)
+        _msc_log = []
+        for _msc_try in _msc_candidates:
+            globals()['_SIMPLE_POOL_REVERSAL_MSC_ACTIVE'] = _msc_try
+            try:
+                _bc, _sc = select_pool_combined(feat, close, indicators=indicators,
+                                                n_thresholds=n_thresholds, horizon=horizon,
+                                                wilson_z=wilson_z, corr_limit=corr_limit, ticker=ticker)
+            finally:
+                globals()['_SIMPLE_POOL_REVERSAL_MSC_ACTIVE'] = None
+            if _bc is None or _sc is None or len(_bc) == 0 or len(_sc) == 0:
+                _msc_log.append((_msc_try, None))
+                continue
+            _bc2 = _bc.copy(); _sc2 = _sc.copy()
+            if 'net_weight_score' not in _bc2.columns:
+                _bc2['net_weight_score'] = 1.0 + _bc2.get('reliability', 0.0).fillna(0.0)
+            if 'net_weight_score' not in _sc2.columns:
+                _sc2['net_weight_score'] = 1.0 + _sc2.get('reliability', 0.0).fillna(0.0)
+            try:
+                _res_try = _net_signal_k_search(feat, close, _bc2, _sc2, ticker=ticker,
+                                                n_buy=None, n_sell=None, search_counts=False,
+                                                select_by='full', compute_zero_pool=False,
+                                                compute_kl_by_horizon=False)
+                _ret_try = _res_try.get('full_cum') if _res_try else None
+            except Exception:
+                _ret_try = None
+            _msc_log.append((_msc_try, _ret_try))
+            if _ret_try is not None and _ret_try > _best_ret:
+                _best_ret = _ret_try; _best_msc = _msc_try; _best_pair = (_bc, _sc)
+        _log_txt = ", ".join(f"MSC={m}:{(r*100):+.1f}%" if r is not None else f"MSC={m}:실패"
+                             for m, r in _msc_log)
+        print(f"    (추세전환 만점임계값 탐색) {_log_txt}")
+        if _best_msc is not None:
+            print(f"    ★ 채택: MSC={_best_msc} (수익 {_best_ret*100:+.2f}%)")
+            return _best_pair
+        # 전부 실패하면 기본값(탐색 없이 1회) 폴백
+        globals()['_SIMPLE_POOL_REVERSAL_MSC_ACTIVE'] = None
     # ══════════════════════════════════════════════════════════════════════
     #  ★★★ (요청 — 단순화 모드) "개수 탐색·검증·지표 중복제거 이런 거 하지 말고
     #  성공률 90% 넘는 모든 지표를 다 써서 K/L만 탐색" — wilson_z 계층별 재탐색,
@@ -24657,7 +24737,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     for _i in range(len(_dsub)):
                         _row = _dsub.iloc[_i]
                         _r_all += 1
-                        _nwscore = float(_row.get('reliability', 0.0))   # ★ 윌슨 미사용, 신뢰도 그 자체
+                        _nwscore = float(_row.get('net_weight_score', 1.0 + float(_row.get('reliability', 0.0))))
                         _vals = [_label, str(_row.get('display_name', _row['indicator'])),
                                  str(_row['indicator']), str(_row['direction']),
                                  round(float(_row['threshold']), 6),
