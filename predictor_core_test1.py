@@ -17578,11 +17578,11 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         _limit0 = float((globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])[0])
         _wz_simple = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
         _hz_cfgs = list(globals().get('SIMPLE_POOL_HORIZON_CONFIG') or [
-            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
-            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
-            {'day': 3, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
-            {'day': 4, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
-            {'day': 5, 'min_signals': 15, 'min_success_buy': 0.75, 'min_success_sell': 0.70},
+            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
         ])
         _verify_on = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
         _close_arr = pd.Series(close).reindex(feat.index).values.astype(np.float64)
@@ -20432,6 +20432,111 @@ def _compute_miss_penalty_score(daily_net, best_k, close_arr, threshold=0.01, z=
     return mean_miss + z * se
 
 
+def _search_best_horizon_combo(feat, close_ser, buy_pool, sell_pool, *, ticker='', oos_start=None):
+    """★★★ (요청 — 재설계) "매수 4,5일 포함되면 계속 방해되는데, 매수 1일,1~2일,...,1~5일
+       이고 매도도 1일,1~2일,...,1~5일 경우의 수 조합을 다 해서 예전처럼 최대 수익률에서
+       10%이내 후보에서 벌점 계산해서 선정" — 매수/매도 누적 호라이즌범위(각 최대 5가지)의
+       모든 조합(최대 5×5=25가지)에 대해 실제 K/L 탐색까지 거친 전체수익을 계산하고,
+       최대수익 대비 10%(기본) 이내 후보들 중 벌점(놓친기회/못피한손실, 진폭가중)이
+       최대수익 후보 자신보다 의미있게(기본 15%) 낮은 대체가 있으면 그걸, 없으면 최대수익
+       후보를 그대로 채택한다(요청했던 기존 밴드+벌점 로직을 매수/매도 조합 탐색에 재적용).
+
+       각 조합마다 정답자리매칭(_select_indicators_by_position_match — 침범최소화·매도
+       보강·추세전환우선 등 전부 포함)을 먼저 거친 뒤 그 최종 풀로 K/L을 탐색한다.
+
+       반환: (최적 결과 dict 또는 None, 채택된 매수 호라이즌 리스트, 채택된 매도 호라이즌
+       리스트, 후보별 결과 리스트 [(매수집합,매도집합,수익,결과dict), ...])."""
+    if buy_pool is None or sell_pool is None or len(buy_pool) == 0 or len(sell_pool) == 0:
+        return None, [], [], []
+    _buy_hz_all = (sorted(set(buy_pool['horizon_day'].dropna().astype(int)))
+                  if 'horizon_day' in buy_pool.columns else [])
+    _sell_hz_all = (sorted(set(sell_pool['horizon_day'].dropna().astype(int)))
+                   if 'horizon_day' in sell_pool.columns else [])
+    if not _buy_hz_all or not _sell_hz_all:
+        return None, _buy_hz_all, _sell_hz_all, []
+    _buy_subsets = [_buy_hz_all[:i + 1] for i in range(len(_buy_hz_all))]
+    _sell_subsets = [_sell_hz_all[:i + 1] for i in range(len(_sell_hz_all))]
+    close_arr = pd.Series(close_ser).reindex(feat.index).values.astype(np.float64)
+
+    best_ret = -1e18
+    _all_results = []
+    for _bsub in _buy_subsets:
+        _bp = buy_pool[buy_pool['horizon_day'].isin(_bsub)].reset_index(drop=True)
+        if len(_bp) == 0:
+            continue
+        for _ssub in _sell_subsets:
+            _sp = sell_pool[sell_pool['horizon_day'].isin(_ssub)].reset_index(drop=True)
+            if len(_sp) == 0:
+                continue
+            _t0 = time.time()
+            _bp_final, _sp_final = _select_indicators_by_position_match(
+                feat, close_arr, _bp, _sp, ticker=ticker)
+            if _bp_final is None or len(_bp_final) == 0 or _sp_final is None or len(_sp_final) == 0:
+                print(f"    [진단로그] 조합 매수{_bsub}/매도{_ssub} — 선정 후 한쪽이 0개라 건너뜀")
+                continue
+            _bp_final = _bp_final.copy(); _sp_final = _sp_final.copy()
+            if 'net_weight_score' not in _bp_final.columns:
+                _bp_final['net_weight_score'] = 1.0 + _bp_final.get('reliability', 0.0).fillna(0.0)
+            if 'net_weight_score' not in _sp_final.columns:
+                _sp_final['net_weight_score'] = 1.0 + _sp_final.get('reliability', 0.0).fillna(0.0)
+            _res = _net_signal_k_search(feat, close_ser, _bp_final, _sp_final, ticker=ticker,
+                                        oos_start=oos_start, n_buy=None, n_sell=None,
+                                        search_counts=False, select_by='full', compute_zero_pool=False,
+                                        compute_kl_by_horizon=False)   # ★ 버려질 후보라 무거운 계산 생략
+            print(f"    [진단로그] 조합 매수{_bsub}/매도{_ssub} (매수{len(_bp_final)}/매도{len(_sp_final)}개) "
+                  f"소요 {time.time()-_t0:.1f}초")
+            _ret = (_res.get('full_cum') if _res else None)
+            _all_results.append((list(_bsub), list(_ssub), _ret, _res))
+            if _res is not None and _ret is not None and _ret > best_ret:
+                best_ret = _ret
+
+    if not _all_results:
+        return None, _buy_hz_all, _sell_hz_all, []
+
+    # ★★★ 최대수익 대비 밴드 + 벌점(놓친기회/못피한손실) 선택 — 이전 세션의 검증된 로직을
+    #   매수/매도 조합 버전으로 그대로 재적용(밴드폭·마진 등 설정도 동일하게 재사용).
+    if globals().get('SIMPLE_POOL_HZ_MISS_PENALTY_SELECT', True) and best_ret > -1e17:
+        _band = float(globals().get('SIMPLE_POOL_HZ_BAND_PCT', 0.10))
+        _cut = best_ret * (1.0 - _band) if best_ret > 0 else best_ret - abs(best_ret) * _band - 0.10
+        _band_cands = [(b, s, r, res) for (b, s, r, res) in _all_results
+                       if r is not None and res is not None and r >= _cut]
+        if len(_band_cands) > 1:
+            _z_miss = float(globals().get('SIMPLE_POOL_HZ_MISS_Z', 1.0))
+            _scored = []
+            for (b, s, r, res) in _band_cands:
+                _bk = res.get('best_k')
+                _dn = res.get('daily')
+                if _bk is None or _dn is None or 'net' not in _dn.columns:
+                    continue
+                _sc = _compute_miss_penalty_score(_dn['net'].values, float(_bk), close_arr, z=_z_miss)
+                _scored.append((b, s, r, res, _sc))
+            if _scored:
+                _scored.sort(key=lambda x: x[4])
+                _band_txt = ", ".join(
+                    (f"매수1~{b[-1]}/매도1~{s[-1]}" if (len(b) > 1 or len(s) > 1)
+                     else f"매수{b[0]}/매도{s[0]}") + f"(수익{r*100:+.1f}%,벌점{sc:.4f})"
+                    for b, s, r, _, sc in _scored)
+                print(f"    (최대수익 {_band*100:.0f}% 이내 조합 벌점비교) {_band_txt}")
+                _margin = float(globals().get('SIMPLE_POOL_HZ_MISS_MARGIN', 0.15))
+                _ret_own_penalty = next((sc for b, s, r, res, sc in _scored if r == best_ret), None)
+                if _ret_own_penalty is None:
+                    _ret_own_penalty = max(sc for _, _, _, _, sc in _scored)
+                _cut_penalty = _ret_own_penalty * (1.0 - _margin)
+                _winner = min(_scored, key=lambda x: x[4])
+                if _winner[4] < _cut_penalty:
+                    print(f"       → 벌점이 최대수익 조합 대비 {_margin*100:.0f}% 이상 낮은 대체 조합 있음 "
+                          f"({_winner[4]:.4f} < {_cut_penalty:.4f}) — 대체 채택")
+                    return _winner[3], list(_winner[0]), list(_winner[1]), _all_results
+                else:
+                    print(f"       → 벌점 차이가 {_margin*100:.0f}% 미만(오차범위 수준)이라 "
+                          f"최대수익 조합 그대로 채택")
+
+    for (b, s, r, res) in _all_results:
+        if res is not None and r is not None and r == best_ret:
+            return res, list(b), list(s), _all_results
+    return None, _buy_hz_all, _sell_hz_all, _all_results
+
+
 def _search_best_horizon_subset_per_side(feat, close_arr, pool, is_buy, ticker=None,
                                          adopt_all_normal=False):
     """★★★ (요청 — 신규) "1~5일 사용 지표를 매수, 매도 분리해서 각각 최적으로 찾아 —
@@ -22761,77 +22866,29 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 #   비교한다. 호라이즌이 1종류뿐이면(탐색할 게 없으면) 그대로 건너뜀.
                 if globals().get('SIMPLE_POOL_HORIZON_SUBSET_SEARCH', True):
                     _mbp0, _msp0 = _mbp, _msp   # ★ 표시용 계산에 쓸 필터링 전 원본 보존
-                    # ★★★ (버그수정 — 근본원인) close_full은 날짜 인덱스가 붙은 Series라서,
-                    #   함수 내부에서 close_arr[t](정수위치 인덱싱)를 하면 '레이블 0을 찾는다'로
-                    #   해석돼 KeyError(0)이 난다(실측 확인) — 반드시 .values로 순수 numpy
-                    #   배열로 바꾼 뒤 넘겨야 정수위치 인덱싱이 의도대로 동작한다.
-                    _close_arr_hz = pd.Series(close_full).reindex(feat.index).values.astype(np.float64)
-                    # ★★★ (요청 — 전면 재설계) "1~5일 사용 지표를 매수, 매도 분리해서 각각
-                    #   최적으로 찾아" — 기존엔 매수/매도를 함께 필터링해 공통 호라이즌범위
-                    #   하나를 찾았는데, 이제 매수는 매수대로(매도자리 침범=0 필터가 이미
-                    #   적용된 상태로) 매도는 매도대로 독립적으로 "1~2일까지가 최선"/
-                    #   "1~5일까지가 최선"처럼 서로 다른 범위를 각자 찾는다.
-                    _buy_surv_opt, _buy_best_subset, _buy_hz_results = _search_best_horizon_subset_per_side(
-                        feat, _close_arr_hz, _mbp0, True, ticker=ticker)
-                    _sell_surv_opt, _sell_best_subset, _sell_hz_results = _search_best_horizon_subset_per_side(
-                        feat, _close_arr_hz, _msp0, False, ticker=ticker)
-                    if _buy_hz_results:
-                        _cmp_b = ", ".join((f"1~{s[-1]}일:{sc:.3f}" if len(s) > 1 else f"{s[0]}일:{sc:.3f}")
-                                           for s, sc in _buy_hz_results)
-                        print(f"  (매수 독립 호라이즌 탐색 — 정답기여 진폭가중 합) {_cmp_b}")
+                    # ★★★ (요청 — 재설계) "매수 4,5일 포함되니까 계속 방해되는데, 매수
+                    #   1일,1~2일,...,1~5일이고 매도도 1일,1~2일,...,1~5일 경우의 수 조합을
+                    #   다 해서 예전처럼 최대 수익률에서 10%이내 후보에서 벌점 계산해서
+                    #   선정" — 커버리지 기반 독립탐색(전 버전)을 버리고, 매수/매도 누적
+                    #   호라이즌범위의 모든 조합(최대 5×5=25가지)에 대해 실제 K/L탐색까지
+                    #   거친 전체수익을 비교 → 최대수익 10%이내 후보 중 벌점(놓친기회/못피한
+                    #   손실) 최소인 조합을 채택(이전 세션에서 검증된 밴드+벌점+마진 로직을
+                    #   그대로 재사용).
+                    _hz_best_res, _buy_best_subset, _sell_best_subset, _hz_all_results = (
+                        _search_best_horizon_combo(feat, close_full, _mbp0, _msp0, ticker=ticker,
+                                                   oos_start=globals().get('OOS_START')))
                     print(f"  ★ 매수 채택: 호라이즌 {_buy_best_subset[0]}~{_buy_best_subset[-1]}일까지만 사용"
                           if _buy_best_subset else "  ★ 매수 채택: (없음)")
-                    if _sell_hz_results:
-                        _cmp_s = ", ".join((f"1~{s[-1]}일:{sc:.3f}" if len(s) > 1 else f"{s[0]}일:{sc:.3f}")
-                                           for s, sc in _sell_hz_results)
-                        print(f"  (매도 독립 호라이즌 탐색 — 정답기여 진폭가중 합) {_cmp_s}")
                     print(f"  ★ 매도 채택: 호라이즌 {_sell_best_subset[0]}~{_sell_best_subset[-1]}일까지만 사용"
                           if _sell_best_subset else "  ★ 매도 채택: (없음)")
-                    # ★★★ (요청 — 신규) "매수, 매도간 신뢰도 점수차이가 많이 나면 점수가
-                    #   낮은 쪽에서는 지표 최대한 많이 사용" — 평균 신뢰도를 비교해 격차가
-                    #   크면(기본 2배 이상) 약한 쪽만 재선정(일반 자리도 자리당 하나가
-                    #   아니라 매칭되는 후보 전부 채택)해서 보강한다.
-                    _avg_rel_buy = (float(_buy_surv_opt['reliability'].mean())
-                                   if (_buy_surv_opt is not None and len(_buy_surv_opt)
-                                       and 'reliability' in _buy_surv_opt.columns) else 0.0)
-                    _avg_rel_sell = (float(_sell_surv_opt['reliability'].mean())
-                                     if (_sell_surv_opt is not None and len(_sell_surv_opt)
-                                         and 'reliability' in _sell_surv_opt.columns) else 0.0)
-                    _gap_ratio = float(globals().get('SIMPLE_POOL_WEAK_SIDE_GAP_RATIO', 2.0))
-                    if _avg_rel_buy > 1e-9 and _avg_rel_sell > 1e-9:
-                        if _avg_rel_buy >= _avg_rel_sell * _gap_ratio:
-                            print(f"  (신뢰도 격차 보강) 매수({_avg_rel_buy:.2f}) ≥ 매도({_avg_rel_sell:.2f})×{_gap_ratio:.1f} "
-                                  f"— 매도쪽 지표를 최대한 많이 사용하도록 재선정")
-                            _sell_surv_opt, _sell_best_subset, _sell_hz_results = _search_best_horizon_subset_per_side(
-                                feat, _close_arr_hz, _msp0, False, ticker=ticker, adopt_all_normal=True)
-                        elif _avg_rel_sell >= _avg_rel_buy * _gap_ratio:
-                            print(f"  (신뢰도 격차 보강) 매도({_avg_rel_sell:.2f}) ≥ 매수({_avg_rel_buy:.2f})×{_gap_ratio:.1f} "
-                                  f"— 매수쪽 지표를 최대한 많이 사용하도록 재선정")
-                            _buy_surv_opt, _buy_best_subset, _buy_hz_results = _search_best_horizon_subset_per_side(
-                                feat, _close_arr_hz, _mbp0, True, ticker=ticker, adopt_all_normal=True)
                     globals()['_KNET_HORIZON_SUBSET_BUY'] = list(_buy_best_subset)
                     globals()['_KNET_HORIZON_SUBSET_SELL'] = list(_sell_best_subset)
                     _hz_best_subset = sorted(set(_buy_best_subset) | set(_sell_best_subset))  # 표시용(합집합)
                     globals()['_KNET_HORIZON_SUBSET'] = list(_hz_best_subset)
-                    # ★ 각 SIDE 최적범위로 필터링된 풀에서 정답자리매칭까지 이미 끝난 결과
-                    #   (_buy_surv_opt/_sell_surv_opt)를 최종 채택 풀로 그대로 사용.
-                    _mbp_final = (_buy_surv_opt if _buy_surv_opt is not None
-                                 else _mbp0.iloc[0:0]).reset_index(drop=True)
-                    _msp_final = (_sell_surv_opt if _sell_surv_opt is not None
-                                 else _msp0.iloc[0:0]).reset_index(drop=True)
-                    if 'net_weight_score' not in _mbp_final.columns and len(_mbp_final):
-                        _mbp_final['net_weight_score'] = 1.0 + _mbp_final.get('reliability', 0.0).fillna(0.0)
-                    if 'net_weight_score' not in _msp_final.columns and len(_msp_final):
-                        _msp_final['net_weight_score'] = 1.0 + _msp_final.get('reliability', 0.0).fillna(0.0)
                     globals()['NET_SIGNAL_WEIGHT_COL'] = 'net_weight_score'
                     globals()['NET_SIGNAL_WEIGHTED'] = True
-                    _hz_best_res = _net_signal_k_search(
-                        feat, close_full, _mbp_final, _msp_final, ticker=ticker,
-                        oos_start=globals().get('OOS_START'), n_buy=None, n_sell=None,
-                        search_counts=False, select_by='full', compute_zero_pool=False)
-                    _hz_all_results = []   # ★ 하위호환용(더 이상 단일 비교 리스트는 없음)
                     if _hz_best_res is not None:
-                        print(f"  ★ 최종(매수·매도 독립범위 반영) 전체수익 "
+                        print(f"  ★ 최종(매수·매도 조합탐색 반영) 전체수익 "
                               f"{(_hz_best_res.get('full_cum') or 0)*100:+.2f}%")
                         _hz_all = sorted(set(
                             list(_mbp0['horizon_day'].dropna().astype(int)) +
@@ -22905,12 +22962,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         if _hz_disp_all:
                             globals()['_KNET_HORIZON_NET_DISPLAY'] = {
                                 f'net_h{_h}': _arr for _h, _arr in _hz_disp_all.items()}
-                        # ★ 이제 _mbp/_msp를 '각 SIDE 최적범위+정답자리매칭까지 끝난' 최종
-                        #   풀로 확정 — 기존처럼 단순 호라이즌 필터링이 아니라, 이미 완성된
-                        #   _mbp_final/_msp_final을 그대로 사용(매수/매도가 서로 다른
-                        #   범위를 가질 수 있으므로 공통 필터로는 표현 불가능해짐).
-                        _mbp = _mbp_final
-                        _msp = _msp_final
+                        # ★ 이제 _mbp/_msp를 '매수·매도 조합탐색으로 채택된' 최종 풀로
+                        #   확정 — _hz_best_res가 실제로 사용한 buy_pool_used/sell_pool_used
+                        #   (_bp_final/_sp_final, 위에서 이미 구함)를 그대로 사용.
+                        _mbp = _bp_final if _bp_final is not None else _mbp0.iloc[0:0]
+                        _msp = _sp_final if _sp_final is not None else _msp0.iloc[0:0]
                         _nb = len(_mbp); _ns = len(_msp)
             print(f"  ★ net>K = 합친 다중임계 풀 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행)")
         else:
