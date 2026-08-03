@@ -16674,6 +16674,19 @@ def _limit_thresholds_per_indicator(pool_df, max_per=None, verbose=False):
 
 
 
+def _dedup_same_indicator_smallest_horizon(pool):
+    """★★★ (요청 — 신규) "동일한 이름의 지표지만 horizon 일수만 다른 지표가 있으면 일수
+       가장 적은 지표만 사용" — 같은 원본 지표명(indicator 컬럼)이 여러 호라이즌으로
+       풀에 동시에 남아 있으면, 그 중 horizon_day가 가장 작은 것만 남기고 나머지는
+       제거한다. 같은 원천 데이터를 여러 호라이즌 버전으로 중복 반영하는 것을 막고,
+       가장 빠르게 반응하는(적은 일수) 버전을 우선한다."""
+    if pool is None or len(pool) == 0 or 'indicator' not in pool.columns or 'horizon_day' not in pool.columns:
+        return pool
+    pool = pool.reset_index(drop=True)
+    keep_idx = pool.groupby('indicator')['horizon_day'].idxmin()
+    return pool.loc[keep_idx].reset_index(drop=True)
+
+
 def _dedup_identical_signal_dates(feat, pool):
     """★★★ (요청 — 재확인, 호라이즌 무관 재설계) "신호 날짜가 100% 일치하는 지표들이
        여러개 있으면 그중 하나만 사용" — 신호수·성공률이 완전히 같은 지표들은 '신호
@@ -17009,44 +17022,39 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
 
 
 def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, ticker=None):
-    """★★★ (요청 — 전면 재설계, 재개선) 신뢰도 임계값 탐색을 완전히 대체하는 선정 알고리즘.
+    """★★★ (요청 — 전면 재설계, 추세전환 우선순위) 신뢰도 임계값 탐색을 완전히 대체하는
+       선정 알고리즘 — 이번 요청으로 선정 '순서'가 4단계로 재설계됨.
 
        ① 실제 다음날 등락으로 '정답 매수/매도 자리'를 먼저 계산(_compute_target_positions).
-          ★★★ (요청) 어닝일과 그다음날은 매칭에서 완전히 제외 — 실적 발표 급등락은 기술적
-          지표로 예측 가능한 성격이 아니라서, 이 날들을 정답/오답 채점과 자리매칭 양쪽
-          모두에서 빼야 어닝발 급변동이 지표 선정을 왜곡하지 않는다.
-       ② 매수 자리 매칭 — ★★★ (요청 재설계) "최대한 다 쓰기"에서 "상승폭 큰 자리부터
-          순서대로, 그 자리에 발화한 지표 중 신뢰도 최고 하나만 채택, 이미 채택된 지표가
-          그 자리에도 있으면 새로 안 늘리고 재사용" 방식의 탐욕(greedy) 선정으로 전환.
-          같은 지표가 여러 자리에 걸쳐 재사용되는 것은 문제없음(오히려 권장) — 그 결과
-          '사용 지표 개수'가 자연히 최소화된다(매수 지표가 너무 많아 점수가 부풀려지는
-          문제의 직접적 해결책). 오답(우연/역효과) 후보는 애초에 후보군에서 제외.
-       ③ 확정된 매수지표들이 '실제로 정답(target==1)이면서 여러 지표가 두텁게 겹쳐
-          지지하는' 날짜만 '매수보호구역'으로 기록한다(매도 평가용).
-       ④ 매도 지표: 정답(현금) 기준 오답≥정답 제외 + 매수보호구역 침범(harm)이 자기
-          정답기여의 일정 배수를 넘으면 제외 — "매수 신호를 최대한 해치지 않는 지표들을
-          사용" 요청. (매도는 이번 요청 대상이 아니라 기존 방식 그대로 유지.)
-       ⑤ 신뢰도는 포함 여부가 아니라(①②에서 이미 결정됨) 매수 쪽에서는 '어느 지표를
-          그 자리에 채택할지'의 우선순위로, 매도 쪽에서는 정렬/표시 우선순위로 쓴다.
+          어닝일과 그다음날은 매칭에서 완전히 제외.
+       ② ★★★ (요청) 각 정답 자리가 '추세전환'인지 판정 — 발화 직전 LOOKBACK일간 추세와
+          반대 방향으로 정답이면(하락 중 상승전환=매수추세전환, 상승 중 하락전환=매도
+          추세전환) 그 자리를 '추세전환 자리'로 표시.
+       ③ ★★★ (요청) 선정을 4단계 순서로 진행:
+          1단계: 매수 추세전환 자리 — 상승폭 큰 순서로, 자리마다 신뢰도 최고 지표 하나만
+                 채택(이미 채택된 지표 있으면 재사용). 이때 매도의 추세전환 자리를
+                 침범(=그 지표가 그 자리에도 발화)하는 후보는 가능하면 피한다(대안이
+                 없을 때만 부득이 채택).
+          2단계: 매도 추세전환 자리 — 같은 방식(1단계에서 이미 매수가 피해줬으므로
+                 별도 제약 없이 자유롭게 선정).
+          3단계: 나머지 매수 자리(추세전환 아닌 것) — 1단계와 같은 "매도추세전환 회피"
+                 원칙을 계속 적용.
+          4단계: 나머지 매도 자리(추세전환 아닌 것) — 기존 방식대로, 이미 확정된 매수
+                 전체(1+3단계)가 두텁게 지지하는 자리를 침범하면 제외.
+          ★ "동일 포지션은 가능" — 매수가 다른 매수 자리와 겹치는 것, 매도가 다른 매도
+          자리와 겹치는 것은 전혀 문제 삼지 않는다(오히려 재사용을 통한 지표수 최소화의
+          핵심 메커니즘). 문제 삼는 건 오직 '매수가 매도의 추세전환 자리를 해치는 것'.
+       ④ 추세전환 자리에 채택된 지표는 별도 표시(used_for_reversal=True) — 공식 텍스트에서
+          빨간 글씨로 강조하는 데 사용(요청: 기존 '1일 지표' 강조 대신 이걸로 교체).
+       ⑤ 신뢰도는 포함 여부가 아니라 '어느 지표를 그 자리에 채택할지'의 우선순위로만 쓴다.
 
-       buy_pool/sell_pool은 이미 reliability 컬럼이 채워져 있어야 한다(정렬·표시용).
-       ticker가 주어지면 어닝일 제외를 적용(없으면 생략, 하위호환).
-       반환: (buy_survivors, sell_survivors) — 둘 다 원본 컬럼 + score_correct/score_wrong/
-       score_harm 컬럼이 추가된 DataFrame, reliability 내림차순 정렬."""
+       반환: (buy_survivors, sell_survivors) — 원본 컬럼 + score_correct/score_wrong/
+       score_harm/used_for_reversal 컬럼이 추가된 DataFrame, reliability 내림차순 정렬."""
     _thr = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
     target, magnitude, _ret, _valid = _compute_target_positions(close_arr, threshold=_thr)
     n = len(target)
-
-    # ★★★ (요청 — 버그수정) "맨 마지막 날은 다음날 가격을 모르니 정답을 알 수 없다" —
-    #   _compute_target_positions가 표시해준 valid=False인 날(마지막 날 등)도 어닝일과
-    #   똑같이 magnitude를 0으로 만들어 채점·자리매칭에서 완전히 제외한다. target값 자체는
-    #   건드리지 않지만(내부적으로 0/False로 남아있음), magnitude=0이라 correct_w/wrong_w에
-    #   전혀 기여하지 않고, 아래 매수 자리매칭 루프에서도 별도로 다시 확인해 제외한다.
     _excl_mask = ~_valid
 
-    # ★★★ (요청) 어닝일 + 그다음날 제외 — 두 날의 magnitude를 0으로 만들어 채점(correct/
-    #   wrong)과 자리매칭(magnitude 기준 정렬) 양쪽에서 자연히 빠지게 한다(target 자체는
-    #   건드리지 않음 — 0가중이라 어차피 correct_w/wrong_w에 기여가 없음).
     if ticker:
         try:
             _edates = _get_earnings_dates_cached(ticker)
@@ -17064,80 +17072,177 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     magnitude_m = magnitude.copy()
     magnitude_m[_excl_mask] = 0.0
 
+    # ★★★ (요청) 추세전환 자리 판정 — 발화 직전 LOOKBACK일 추세와 반대방향인 정답 자리.
+    _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
+    reversal_mask = np.zeros(n, dtype=bool)
+    for _t in range(_lookback, n):
+        if _excl_mask[_t]:
+            continue
+        _p0 = close_arr[_t - _lookback]; _p1 = close_arr[_t]
+        if not (_p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1)):
+            continue
+        _pre_trend = _p1 / _p0 - 1.0
+        if target[_t] == 1 and _pre_trend < 0:
+            reversal_mask[_t] = True     # 하락→상승 전환 = 매수 추세전환 자리
+        elif target[_t] == 0 and _pre_trend > 0:
+            reversal_mask[_t] = True     # 상승→하락 전환 = 매도 추세전환 자리
+
     def _score(row, is_buy, harm_mask=None):
         return _score_indicator_vs_target(feat, row, target, magnitude_m, is_buy, harm_mask=harm_mask)
 
-    # ── 매수: 오답≥정답 후보만 먼저 제외(우연/역효과 배제) ──
+    # ── 후보 채점(오답≥정답 제외) — 매수/매도 각각 ──
     _buy_cands = []
     for _, row in (buy_pool.iterrows() if buy_pool is not None and len(buy_pool) else []):
         cw, ww, _h0, nfire, fidx = _score(row, True)
         if nfire == 0 or ww >= cw:
             continue
         _buy_cands.append((row, cw, ww, fidx))
+    _sell_cands = []
+    for _, row in (sell_pool.iterrows() if sell_pool is not None and len(sell_pool) else []):
+        cw, ww, _h0, nfire, fidx = _score(row, False)
+        if nfire == 0 or ww >= cw:
+            continue
+        _sell_cands.append((row, cw, ww, fidx))
 
-    # ── ★★★ (요청) 상승폭 큰 자리부터 순서대로, 자리마다 신뢰도 최고 지표 하나만 채택 ──
-    #   day -> 그 날 발화하는 후보 인덱스 목록(1회 스캔으로 구축, 효율성)
-    _day_to_cands = {}
+    # day -> 후보 인덱스 목록 (매수/매도 각각, 정답 자리 기준으로만)
+    _buy_day_to_cands = {}
     for _ci, (row, cw, ww, fidx) in enumerate(_buy_cands):
         for _d in fidx:
             if _excl_mask[_d] or target[_d] != 1:
-                continue   # 어닝(가중치0으로 이미 배점서 제외됐지만 자리선정에서도 재확인) / 정답아닌 자리는 매칭대상 아님
-            _day_to_cands.setdefault(_d, []).append(_ci)
-    _target_buy_days = sorted(_day_to_cands.keys(), key=lambda d: magnitude_m[d], reverse=True)
+                continue
+            _buy_day_to_cands.setdefault(_d, []).append(_ci)
+    _sell_day_to_cands = {}
+    for _ci, (row, cw, ww, fidx) in enumerate(_sell_cands):
+        for _d in fidx:
+            if _excl_mask[_d] or target[_d] != 0:
+                continue
+            _sell_day_to_cands.setdefault(_d, []).append(_ci)
 
-    selected_idx = set()
-    for _d in _target_buy_days:
-        _cand_list = _day_to_cands[_d]
-        # 이미 채택된 지표가 이 자리에도 있으면 재사용(새 지표 추가 안 함) — 지표 개수 최소화 핵심
-        if any(_ci in selected_idx for _ci in _cand_list):
-            continue
-        # 없으면 이 자리에서 신뢰도 최고인 후보 하나만 새로 채택
-        _best_ci = max(_cand_list, key=lambda _ci: float(_buy_cands[_ci][0].get('reliability', 0.0)))
-        selected_idx.add(_best_ci)
+    _sell_reversal_day_set = set(d for d in _sell_day_to_cands if reversal_mask[d])
 
-    if selected_idx:
-        _rows = [_buy_cands[_ci][0] for _ci in selected_idx]
-        _cws = [_buy_cands[_ci][1] for _ci in selected_idx]
-        _wws = [_buy_cands[_ci][2] for _ci in selected_idx]
-        _fidxs = [_buy_cands[_ci][3] for _ci in selected_idx]
-        buy_survivors = pd.DataFrame(_rows).reset_index(drop=True)
-        buy_survivors['score_correct'] = _cws; buy_survivors['score_wrong'] = _wws
-        buy_survivors['score_harm'] = 0.0
-        buy_strength = np.zeros(n, dtype=float)
+    def _buy_harms_sell_reversal(_ci):
+        """이 매수 후보가 매도 추세전환 자리 중 하나에라도 발화하는지."""
+        return any((_d in _sell_reversal_day_set) for _d in _buy_cands[_ci][3])
+
+    _buy_reversal_days = sorted([d for d in _buy_day_to_cands if reversal_mask[d]],
+                                key=lambda d: magnitude_m[d], reverse=True)
+    _buy_normal_days = sorted([d for d in _buy_day_to_cands if not reversal_mask[d]],
+                              key=lambda d: magnitude_m[d], reverse=True)
+    _sell_reversal_days = sorted([d for d in _sell_day_to_cands if reversal_mask[d]],
+                                 key=lambda d: magnitude_m[d], reverse=True)
+    _sell_normal_days = sorted([d for d in _sell_day_to_cands if not reversal_mask[d]],
+                               key=lambda d: magnitude_m[d], reverse=True)
+
+    buy_selected = set(); sell_selected = set()
+    buy_reversal_used = set(); sell_reversal_used = set()
+
+    def _pick_buy(_d, avoid_sell_reversal=True):
+        _cand_list = _buy_day_to_cands[_d]
+        if any(_ci in buy_selected for _ci in _cand_list):
+            return None   # 이미 채택된 지표로 커버됨 — 재사용, 신규 없음
+        _pool_use = _cand_list
+        if avoid_sell_reversal:
+            _safe = [_ci for _ci in _cand_list if not _buy_harms_sell_reversal(_ci)]
+            if _safe:
+                _pool_use = _safe   # ★ 매도추세전환을 안 건드리는 후보가 있으면 그것만 고려
+            # 없으면(대안 없음) 부득이 전체 후보군에서 고른다(_cand_list 그대로)
+        _best = max(_pool_use, key=lambda _ci: float(_buy_cands[_ci][0].get('reliability', 0.0)))
+        buy_selected.add(_best)
+        return _best
+
+    def _pick_sell(_d):
+        _cand_list = _sell_day_to_cands[_d]
+        if any(_ci in sell_selected for _ci in _cand_list):
+            return None
+        _best = max(_cand_list, key=lambda _ci: float(_sell_cands[_ci][0].get('reliability', 0.0)))
+        sell_selected.add(_best)
+        return _best
+
+    # ★★★ (요청 — 신규) "추세전환 자리에 잘 매칭되는 지표들은 최대한 많이 채용" — 1·2단계
+    #   (추세전환 자리)는 자리당 하나만 뽑는 게 아니라, 그 자리에 발화하는(=잘 매칭되는)
+    #   후보를 전부 채택한다. 추세전환은 가장 중요하고 예측이 어려운 자리라, 여러 지표가
+    #   동시에 확인해주는 게 신호를 더 견고하게 만든다고 판단(3·4단계 일반 자리는 기존처럼
+    #   "자리당 하나, 재사용으로 지표수 최소화" 원칙 그대로 유지 — 이번 요청은 추세전환에만
+    #   해당). 겹치는 지표끼리의 과도한 가중치 중복은 기존 overlap_discount가 그대로 처리.
+    def _adopt_all_buy(_d):
+        _cand_list = _buy_day_to_cands[_d]
+        _safe = [_ci for _ci in _cand_list if not _buy_harms_sell_reversal(_ci)]
+        _pool_use = _safe if _safe else _cand_list   # 매도추세전환 안 해치는 후보만, 없으면 전체
+        for _ci in _pool_use:
+            buy_selected.add(_ci)
+            buy_reversal_used.add(_ci)
+
+    def _adopt_all_sell(_d):
+        for _ci in _sell_day_to_cands[_d]:
+            sell_selected.add(_ci)
+            sell_reversal_used.add(_ci)
+
+    # ★★★ 1단계: 매수 추세전환 자리 — 매도추세전환을 해치지 않는 후보 전부 채택
+    for _d in _buy_reversal_days:
+        _adopt_all_buy(_d)
+    # ★★★ 2단계: 매도 추세전환 자리 — 1단계가 이미 피해줬으므로 제약 없이 전부 채택
+    for _d in _sell_reversal_days:
+        _adopt_all_sell(_d)
+    # ★★★ 3단계: 나머지 매수 자리 — 여기는 기존 원칙(자리당 하나, 지표수 최소화) 유지
+    for _d in _buy_normal_days:
+        _pick_buy(_d, avoid_sell_reversal=True)
+
+    def _build_pool(cands, selected_idx, reversal_used):
+        if not selected_idx:
+            return None, np.zeros(n, dtype=float)
+        _rows = [cands[_ci][0] for _ci in selected_idx]
+        _cws = [cands[_ci][1] for _ci in selected_idx]
+        _wws = [cands[_ci][2] for _ci in selected_idx]
+        _fidxs = [cands[_ci][3] for _ci in selected_idx]
+        _used_rev = [(_ci in reversal_used) for _ci in selected_idx]
+        out = pd.DataFrame(_rows).reset_index(drop=True)
+        out['score_correct'] = _cws; out['score_wrong'] = _wws; out['score_harm'] = 0.0
+        out['used_for_reversal'] = _used_rev
+        strength = np.zeros(n, dtype=float)
         for _fidx in _fidxs:
-            buy_strength[_fidx] += 1.0
-    else:
+            strength[_fidx] += 1.0
+        return out, strength
+
+    buy_survivors, buy_strength = _build_pool(_buy_cands, buy_selected, buy_reversal_used)
+    if buy_survivors is None:
         buy_survivors = (buy_pool.iloc[0:0].copy() if buy_pool is not None else
                          pd.DataFrame(columns=['indicator', 'reliability']))
-        buy_strength = np.zeros(n, dtype=float)
+        if 'used_for_reversal' not in buy_survivors.columns:
+            buy_survivors['used_for_reversal'] = pd.Series(dtype=bool)
 
-    # ★ 매수보호구역 = (a) 실제 정답(target==1)이면서 (b) 살아남은 매수지표 중 일정 비율
-    #   이상이 동시에 지지하는 날짜만.
+    # ★ 매수보호구역(4단계 매도 나머지 자리 선정에 사용) — 실제 정답(target==1)이면서
+    #   충분히 두텁게 지지되는 자리만(기존 방식 그대로, 1+3단계 결과 전체 기준).
     _min_frac = float(globals().get('SIMPLE_POOL_MATCH_HARM_MIN_FRAC', 0.05))
     _min_strength = max(1, int(np.ceil(_min_frac * max(1, len(buy_survivors)))))
     harm_mask = (buy_strength >= _min_strength) & (target == 1)
+    _harm_margin = float(globals().get('SIMPLE_POOL_MATCH_HARM_MARGIN', 1.5))
 
-    def _filter_sell(pool, harm_mask):
-        if pool is None or len(pool) == 0:
-            return pool
-        _harm_margin = float(globals().get('SIMPLE_POOL_MATCH_HARM_MARGIN', 1.5))
-        keep_rows = []; _cw = []; _ww = []; _hw = []
-        for _, row in pool.iterrows():
-            cw, ww, hw, nfire, fidx = _score(row, False, harm_mask=harm_mask)
-            if nfire == 0 or ww >= cw:
-                continue
-            if hw >= cw * _harm_margin:
-                continue
-            keep_rows.append(row); _cw.append(cw); _ww.append(ww); _hw.append(hw)
-        if not keep_rows:
-            return pool.iloc[0:0].copy()
-        out = pd.DataFrame(keep_rows).reset_index(drop=True)
-        out['score_correct'] = _cw; out['score_wrong'] = _ww; out['score_harm'] = _hw
-        return out
+    # ★★★ 4단계: 나머지 매도 자리 — 매수 전체 보호구역을 침범하는 후보는 회피
+    for _d in _sell_normal_days:
+        _cand_list = _sell_day_to_cands[_d]
+        if any(_ci in sell_selected for _ci in _cand_list):
+            continue
+        _safe = []
+        for _ci in _cand_list:
+            _row, _cw, _ww, _fidx = _sell_cands[_ci]
+            _hw = float(np.sum(magnitude_m[_fidx][harm_mask[_fidx]])) if len(_fidx) else 0.0
+            if _hw < _cw * _harm_margin:
+                _safe.append(_ci)
+        _pool_use = _safe if _safe else _cand_list
+        _best = max(_pool_use, key=lambda _ci: float(_sell_cands[_ci][0].get('reliability', 0.0)))
+        sell_selected.add(_best)
 
-    sell_survivors = _filter_sell(sell_pool, harm_mask)
+    sell_survivors, _sell_strength = _build_pool(_sell_cands, sell_selected, sell_reversal_used)
+    if sell_survivors is None:
+        sell_survivors = (sell_pool.iloc[0:0].copy() if sell_pool is not None else
+                          pd.DataFrame(columns=['indicator', 'reliability']))
+        if 'used_for_reversal' not in sell_survivors.columns:
+            sell_survivors['used_for_reversal'] = pd.Series(dtype=bool)
+
     if len(buy_survivors):
         buy_survivors = buy_survivors.sort_values('reliability', ascending=False).reset_index(drop=True)
+    if len(sell_survivors):
+        sell_survivors = sell_survivors.sort_values('reliability', ascending=False).reset_index(drop=True)
     buy_survivors = _apply_overlap_discount(feat, buy_survivors)
     sell_survivors = _apply_overlap_discount(feat, sell_survivors)
     return buy_survivors, sell_survivors
@@ -17595,6 +17700,17 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         if _n_before_b != len(buy_c) or _n_before_s != len(sell_c):
             print(f"    (동일신호 중복제거) 매수 {_n_before_b}→{len(buy_c)}개, "
                   f"매도 {_n_before_s}→{len(sell_c)}개 (신호수·성공률 같고 발화일까지 완전 동일한 것만 제거)")
+
+        # ★★★ (요청 — 신규) "동일한 이름의 지표지만 horizon 일수만 다른 지표가 있으면
+        #   일수 가장 적은 지표만 사용" — 같은 원본 지표명이 여러 호라이즌으로 풀에 남아
+        #   있으면, 그 중 호라이즌이 가장 작은 것만 남긴다(같은 원천 정보를 여러 호라이즌
+        #   버전으로 중복 반영하는 것을 방지, 가장 빠르게(적은 일수로) 반응하는 버전 우선).
+        _n_before_b2, _n_before_s2 = len(buy_c), len(sell_c)
+        buy_c  = _dedup_same_indicator_smallest_horizon(buy_c)
+        sell_c = _dedup_same_indicator_smallest_horizon(sell_c)
+        if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
+            print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
+                  f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 최소 호라이즌만 유지)")
 
         buy_c  = _add_display_suffix(buy_c)
         sell_c = _add_display_suffix(sell_c)
@@ -23226,25 +23342,27 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             return bool(pool is not None and (('oos_ic' in pool.columns) or ('ic' in pool.columns)))
 
         def _build_named_sigs(pool):
-            """_build_sigs와 동일하되 (표시명, 성공률, 가중신호배열, horizon) 리스트로 반환 —
-               상위 n개 절단·중복 maximum 처리 방식을 카운트 계산과 정확히 일치시킴.
-               ★ (요청) horizon: HORIZON_DAYS_LIST로 추가된(주 호라이즌이 아닌) 지표면 그 값,
-               아니면 None(주 호라이즌 지표) — 공식 텍스트에서 강조 표시하는 데 사용.
+            """_build_sigs와 동일하되 (표시명, 성공률, 가중신호배열, used_for_reversal) 리스트로
+               반환 — 상위 n개 절단·중복 maximum 처리 방식을 카운트 계산과 정확히 일치시킴.
+               ★★★ (요청 — 재설계) 예전엔 4번째 값이 'horizon'(HORIZON_DAYS_LIST 추가지표
+               여부)이었는데, 이제 '추세전환 자리에 사용된 지표인지'(used_for_reversal)로
+               바꿨다 — 공식 텍스트 강조 기준이 "1일 지표"가 아니라 "추세전환 자리를
+               맞춘 지표"가 되도록.
                ★★★ (요청 — 재설계) 그룹화 키를 'indicator'가 아니라 'display_name'(있으면)으로
                바꿈 — 단순모드에서 같은 지표명이 여러 임계값/호라이즌으로 살아남으면 이전엔
                여기서 자동으로 합쳐져서(np.maximum) 어느 임계값이 실제로 쓰였는지 알 수 없었다.
                display_name은 임계값·호라이즌별로 고유하므로, 이 키로 묶으면 실질적으로
                '그룹 크기 1'이 되어 병합 없이 각 임계값이 독립된 항목으로 표시된다.
                display_name이 없는 기존(비단순모드) 풀은 그대로 'indicator'로 묶여 기존과 동일."""
-            out = []  # [(표시명, success_rate, weighted_sig_array, horizon)]
+            out = []  # [(표시명, success_rate, weighted_sig_array, used_for_reversal)]
             if pool is None or len(pool) == 0:
                 return out
-            _has_hz_col = 'horizon' in pool.columns
+            _has_rev_col = 'used_for_reversal' in pool.columns
             _grp_col = 'display_name' if 'display_name' in pool.columns else 'indicator'
             if _multi_bt and (_grp_col in pool.columns) and pool[_grp_col].duplicated().any():
                 for _ind, grp in pool.groupby(_grp_col, sort=False):
                     arr = np.zeros(len(feat)); _sr = grp.iloc[0].get('success_rate', None)
-                    _hz = grp.iloc[0].get('horizon', None) if _has_hz_col else None
+                    _rev = bool(grp.iloc[0].get('used_for_reversal', False)) if _has_rev_col else False
                     _best_sr_at = -1.0
                     for _, row in grp.iterrows():
                         s = _sig_arr(row); w = _wt_of_bt(row)
@@ -23253,14 +23371,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         _sv = row.get('success_rate', None)
                         if _sv is not None and not pd.isna(_sv) and float(_sv) > _best_sr_at:
                             _best_sr_at = float(_sv); _sr = _sv
-                    out.append((str(_ind), _sr, arr, _hz))
+                        if _has_rev_col and bool(row.get('used_for_reversal', False)):
+                            _rev = True   # 그룹 내 하나라도 추세전환 사용이면 강조
+                    out.append((str(_ind), _sr, arr, _rev))
             else:
                 for _, row in pool.iterrows():
-                    _hz = row.get('horizon', None) if _has_hz_col else None
+                    _rev = bool(row.get('used_for_reversal', False)) if _has_rev_col else False
                     _disp = row.get('display_name', None)
                     _disp = _disp if (_disp is not None and not pd.isna(_disp)) else row.get('indicator', '')
                     out.append((str(_disp), row.get('success_rate', None),
-                                _wt_of_bt(row) * _sig_arr(row), _hz))
+                                _wt_of_bt(row) * _sig_arr(row), _rev))
             return out
 
         # 각 풀의 명명된 신호 배열을 미리 계산 (성능: 지표당 1회)
@@ -23280,25 +23400,27 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         def _formula_at(named_list, day_idx, is_ic):
             """day_idx일에 기여>0인 지표를 기여도 내림차순으로 'v(지표, 성공률) + ...' 문자열로.
                합계도 함께 반환 → 실제 카운트와 대조 가능.
-               ★ (요청) HORIZON_DAYS_LIST로 추가된(주 호라이즌이 아닌) 지표가 그날 발화했으면,
-               (rich_parts, has_h1) 도 반환 — rich_parts는 [(텍스트, 강조여부), ...] 리스트로,
-               강조(True)인 조각은 지표명 부분만 표시할 때 빨간 굵게 렌더링하는 데 쓴다."""
+               ★★★ (요청 — 재설계) "추세전환 자리에 사용된 지표를 빨간색으로" — 예전엔
+               HORIZON_DAYS_LIST 추가지표(horizon==1)를 강조했는데, 이제 '이 지표가 추세전환
+               자리를 커버하기 위해 채택됐는지'(used_for_reversal)를 강조 기준으로 쓴다.
+               (rich_parts, has_reversal) 반환 — rich_parts는 [(텍스트, 강조여부), ...]
+               리스트로, 강조(True)인 조각은 지표명 부분만 표시할 때 빨간 굵게 렌더링."""
             fired = []
             for entry in named_list:
                 nm, sr, arr = entry[0], entry[1], entry[2]
-                hz = entry[3] if len(entry) > 3 else None
+                is_rev = bool(entry[3]) if len(entry) > 3 else False
                 if day_idx < len(arr):
                     c = float(arr[day_idx])
                     if c > 1e-9:
-                        fired.append((nm, sr, c, hz))
+                        fired.append((nm, sr, c, is_rev))
             fired.sort(key=lambda x: -x[2])
             total = sum(c for _, _, c, _ in fired)
             if not fired:
                 return total, '카운트0 (발화 지표 없음)', [('카운트0 (발화 지표 없음)', False)], False
             parts = []
             rich_parts = []
-            has_h1 = False
-            for idx_f, (nm, sr, c, hz) in enumerate(fired):
+            has_reversal = False
+            for idx_f, (nm, sr, c, is_rev) in enumerate(fired):
                 if sr is not None and not pd.isna(sr):
                     _srtxt = (f"|OOS IC| {float(sr):.3f}" if is_ic else f"성공률 {float(sr)*100:.0f}%")
                 else:
@@ -23318,17 +23440,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         _nm_disp = _base_part[:_keep] + _sfx_part
                     else:
                         _nm_disp = _nm_str[:28]
-                _is_h1 = (hz is not None and not pd.isna(hz) and int(hz) == 1)
-                if _is_h1:
-                    has_h1 = True
+                if is_rev:
+                    has_reversal = True
                 parts.append(f"{c:.2f}({_nm_disp}, {_srtxt})")
                 sep = ' + ' if idx_f > 0 else ''
                 if sep:
                     rich_parts.append((sep, False))
                 rich_parts.append((f"{c:.2f}(", False))
-                rich_parts.append((_nm_disp, _is_h1))          # ★ 지표명만 강조 대상
+                rich_parts.append((_nm_disp, is_rev))          # ★ 지표명만 강조 대상
                 rich_parts.append((f", {_srtxt})", False))
-            return total, ' + '.join(parts), rich_parts, has_h1
+            return total, ' + '.join(parts), rich_parts, has_reversal
 
 
         _ltxt = (f'/L({_L_bt:.3f})' if _L_bt is not None else '')
@@ -23553,8 +23674,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _b_prefix = f"[합 {_fb_sum:.2f}]{_bmark} = "
             _s_prefix = f"[합 {_fs_sum:.2f}]{_smark} = "
             _c_formula_b = _c_after + 3; _c_formula_s = _c_after + 4
-            # ★★★ (요청) HORIZON_DAYS_LIST로 추가된 지표(주 호라이즌이 아닌 지표)가 그날 발화했으면
-            #   지표명 부분만 빨간 굵게 — CellRichText로 그 조각만 서식 적용, 없으면 기존처럼 평문.
+            # ★★★ (요청 — 재설계) "추세전환 자리에 사용된 지표를 빨간색으로" — 예전엔
+            #   HORIZON_DAYS_LIST 추가지표(1일 아닌 것)를 강조했는데, 이제 그 지표가 이
+            #   날 추세전환 자리를 커버하려고 채택됐는지(used_for_reversal)로 기준이
+            #   바뀌었다 — 지표명 부분만 빨간 굵게, CellRichText로 그 조각만 서식 적용.
             if _fb_h1:
                 ws.cell(r, _c_formula_b).value = _CellRichText([_b_prefix] + [
                     (_TextBlock(_RED_BOLD_FONT, t) if hl else t) for t, hl in _fb_rich])
@@ -23567,7 +23690,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.cell(r, _c_formula_s).value = _s_prefix + _fs_txt
             ws.cell(r, _c_formula_b).alignment = Alignment(vertical='center', wrap_text=False)
             ws.cell(r, _c_formula_s).alignment = Alignment(vertical='center', wrap_text=False)
-            # ★ (요청) 그날 net에 HORIZON_DAYS_LIST 추가지표가 기여했으면 net 셀도 빨간 굵게
+            # ★ (요청) 그날 net에 추세전환 자리용 지표가 기여했으면 net 셀도 빨간 굵게
             #   (호라이즌별 표시 중이면 '종합net' 칸에 표시)
             if _fb_h1 or _fs_h1:
                 _c_net_hl = (_c14 + len(_hz_days_present)) if _show_hz_net else _c14
