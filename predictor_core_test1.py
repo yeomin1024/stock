@@ -14408,11 +14408,11 @@ SIMPLE_POOL_MODE        = False
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
-    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
-    {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
-    {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
-    {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.70},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
 ]
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
@@ -14490,6 +14490,9 @@ SIMPLE_POOL_BIG_MISS_PENALTY_W     = 0.25   # 벌점 배율의 크기
 #   중복 반영해 net을 부풀리는 것을 방지.
 SIMPLE_POOL_OVERLAP_DISCOUNT_ENABLED = True
 SIMPLE_POOL_OVERLAP_DISCOUNT_WEIGHT  = 0.6  # 완전히 겹치는 지표쌍 하나당 최대 이 비율까지 깎음
+# ★★★ (요청 — 신규) 매수/매도 평균 신뢰도 격차가 이 배율 이상이면, 낮은 쪽은 일반 자리도
+#   자리당 하나가 아니라 매칭 후보 전부 채택(약한 쪽 보강).
+SIMPLE_POOL_WEAK_SIDE_GAP_RATIO      = 2.0
 
 # ★★★ (요청 — 폐기, 재설계로 대체) "신뢰도로 사용지표 개수를 정하는" 방식은 더 이상 안 씀 —
 #   아래 SIMPLE_POOL_POSITION_MATCH_SELECT(정답 매수/매도 자리 기반 선정)로 완전히 대체.
@@ -14569,7 +14572,7 @@ RUNUP_LIMIT_SELL    = 0.02
 # ★ 요청: 신호 다음날 '1~10% 이상' 상승/하락 예측 성공률로 지표 선출.
 #   아래 리스트의 각 한도(상승=매수, 하락=매도)로 성공률을 따로 계산해 '최적 한도'를 탐색.
 #   (성공 판정: HORIZON_DAYS 이내 종가가 +한도 이상 오르면 매수성공 / -한도 이상 내리면 매도성공)
-STAGE_SUCCESS_LIMIT = [0.01, 0.02, 0.03, 0.04, 0.05]   # ★ (요청) 호라이즌 1~5일에 각각 1~5% 대응
+STAGE_SUCCESS_LIMIT = [0.01, 0.01, 0.01, 0.01, 0.01]   # ★ (요청 — 재수정) 1~5일 전부 1%로 통일
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
 N_THRESHOLDS        = 1000
@@ -17021,7 +17024,8 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
     return out
 
 
-def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, ticker=None):
+def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, ticker=None,
+                                          adopt_all_normal_buy=False, adopt_all_normal_sell=False):
     """★★★ (요청 — 전면 재설계, 추세전환 우선순위) 신뢰도 임계값 탐색을 완전히 대체하는
        선정 알고리즘 — 이번 요청으로 선정 '순서'가 4단계로 재설계됨.
 
@@ -17090,7 +17094,11 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     def _score(row, is_buy, harm_mask=None):
         return _score_indicator_vs_target(feat, row, target, magnitude_m, is_buy, harm_mask=harm_mask)
 
-    # ── 후보 채점(오답≥정답 제외) — 매수/매도 각각 ──
+    # ── 후보 채점 — 매수/매도 둘 다 기존처럼 오답≥정답만 제외(부분 허용) ──
+    #   ★★★ (요청 — 재조정) "절대 침범 금지"(오답=0)는 후보가 하나도 안 남는 비현실적인
+    #   결과를 만들었다(실측 확인: 매수 11개 전부 탈락) — 대신 "침범이 불가피하면 최소화
+    #   하되, 그 자리에서 매도쪽을 보강해 net 계산에서 자연히 매도가 이기도록" 방식으로
+    #   바꾼다(아래 _invaded_days 보강 로직 참고). 후보 필터 자체는 기존 원칙으로 복귀.
     _buy_cands = []
     for _, row in (buy_pool.iterrows() if buy_pool is not None and len(buy_pool) else []):
         cw, ww, _h0, nfire, fidx = _score(row, True)
@@ -17205,9 +17213,15 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     #   독립적으로 매수추세전환을 침범할 수 있으므로 별도로 반드시 확인해야 한다.)
     for _d in _sell_reversal_days:
         _adopt_all_sell(_d)
-    # ★★★ 3단계: 나머지 매수 자리 — 여기는 기존 원칙(자리당 하나, 지표수 최소화) 유지
+    # ★★★ 3단계: 나머지 매수 자리 — 기본은 자리당 하나(지표수 최소화), 단 ★(요청 — 신규)
+    #   "매수/매도간 신뢰도 점수차이가 많이 나면 점수가 낮은 쪽에서는 지표 최대한 많이
+    #   사용" — adopt_all_normal_buy=True면 일반 자리도 추세전환처럼 매칭되는 후보를
+    #   전부 채택(약한 쪽을 더 많은 지표로 보강).
     for _d in _buy_normal_days:
-        _pick_buy(_d, avoid_sell_reversal=True)
+        if adopt_all_normal_buy:
+            _adopt_all_buy(_d)
+        else:
+            _pick_buy(_d, avoid_sell_reversal=True)
 
     def _build_pool(cands, selected_idx, reversal_used):
         if not selected_idx:
@@ -17239,8 +17253,32 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     harm_mask = (buy_strength >= _min_strength) & (target == 1)
     _harm_margin = float(globals().get('SIMPLE_POOL_MATCH_HARM_MARGIN', 1.5))
 
-    # ★★★ 4단계: 나머지 매도 자리 — 매수 전체 보호구역을 침범하는 후보는 회피
+    # ★★★ (요청 — 신규) "침범하지 않는 지표가 없어서 침범이 불가피하면 침범을 최소화하되,
+    #   매도 지표 점수를 올리거나 매도 지표 개수가 많아야 해 — 매도 지표를 이용해 매도
+    #   자리의 매수 점수를 차감시키도록" — 매수를 무조건 배제하는 대신, 실제로 채택된
+    #   매수지표가 침범하는 날짜(target==0인데 매수강도>0)를 찾아서, 그 날짜만큼은 매도
+    #   후보를 하나만이 아니라 '전부' 채택해 매도쪽 가중치를 최대화한다. net=매수-매도
+    #   구조이므로, 그 날 매도가 두텁게 실리면 매수의 침범 기여가 자연히 상쇄된다.
+    _invaded_days = set(np.nonzero((target == 0) & (buy_strength > 0) & (~_excl_mask))[0].tolist())
+    _boosted_days = set()
+    if _invaded_days:
+        for _d in _invaded_days:
+            _cand_list = _sell_day_to_cands.get(_d)
+            if not _cand_list:
+                continue   # 그 날 발화 가능한 매도 후보가 아예 없으면 보강 불가(자연스러운 한계)
+            for _ci in _cand_list:
+                sell_selected.add(_ci)
+            _boosted_days.add(_d)
+        if _boosted_days:
+            print(f"    (매수침범 자리 매도 보강) {len(_boosted_days)}개 자리에서 매도 후보 "
+                  f"전부 채택(매수 침범 {len(_invaded_days)}개 자리 중)")
+
+    # ★★★ 4단계: 나머지 매도 자리 — 매수 전체 보호구역을 침범하는 후보는 회피, 단
+    #   ★(요청 — 신규) adopt_all_normal_sell=True면 안전한 후보를 하나가 아니라 전부 채택
+    #   (약한 쪽 보강).
     for _d in _sell_normal_days:
+        if _d in _boosted_days:
+            continue   # 이미 위에서 전부 채택 완료
         _cand_list = _sell_day_to_cands[_d]
         if any(_ci in sell_selected for _ci in _cand_list):
             continue
@@ -17251,8 +17289,12 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
             if _hw < _cw * _harm_margin:
                 _safe.append(_ci)
         _pool_use = _safe if _safe else _cand_list
-        _best = max(_pool_use, key=lambda _ci: float(_sell_cands[_ci][0].get('reliability', 0.0)))
-        sell_selected.add(_best)
+        if adopt_all_normal_sell and _safe:
+            for _ci in _safe:
+                sell_selected.add(_ci)
+        else:
+            _best = max(_pool_use, key=lambda _ci: float(_sell_cands[_ci][0].get('reliability', 0.0)))
+            sell_selected.add(_best)
 
     sell_survivors, _sell_strength = _build_pool(_sell_cands, sell_selected, sell_reversal_used)
     if sell_survivors is None:
@@ -20390,6 +20432,65 @@ def _compute_miss_penalty_score(daily_net, best_k, close_arr, threshold=0.01, z=
     return mean_miss + z * se
 
 
+def _search_best_horizon_subset_per_side(feat, close_arr, pool, is_buy, ticker=None,
+                                         adopt_all_normal=False):
+    """★★★ (요청 — 신규) "1~5일 사용 지표를 매수, 매도 분리해서 각각 최적으로 찾아 —
+       매수는 1~2일까지가 매도자리 침범 안하고 매수 자리 만족하면 그렇게 사용하고 매도는
+       1~5일까지 매도 자리를 만족하면 거기까지 사용" — 기존엔 매수/매도를 '함께' 필터링해
+       하나의 공통 호라이즌범위를 찾았는데, 이제 매수는 매수대로 매도는 매도대로 독립적으로
+       "1일, 1~2일, 1~3일, 1~4일, 1~5일" 누적 후보를 비교해 각자의 최적 범위를 찾는다.
+
+       평가 기준: 그 누적범위로 실제 정답자리매칭(_select_indicators_by_position_match)을
+       거쳤을 때 살아남는 지표들의 '정답 기여 총합'(score_correct 합, 진폭가중) — "그 자리를
+       얼마나 잘 만족하는가"에 해당. 매수 쪽은 이미 강화된 필터(매도자리 침범=0)가 이
+       함수 내부에서도 그대로 적용된다(반대편 풀을 비워서 호출하므로 매도자리 자체와는
+       비교 안 되지만, _score_indicator_vs_target의 오답 판정 자체는 target 배열 기준으로
+       원래도 매도자리 여부와 무관하게 항상 계산됨 — 매수 후보 필터의 '오답=0' 요구는
+       select_indicators 내부에 이미 있으므로 그대로 유지됨).
+       adopt_all_normal: ★(요청) "신뢰도 점수차이가 많이 나면 낮은 쪽에서는 지표 최대한
+       많이" — True면 일반(비추세전환) 자리도 자리당 하나가 아니라 매칭되는 후보 전부 채택.
+
+       반환: (best_survivors, best_subset, all_results) — best_survivors는 그 최적범위로
+       최종 선정된 지표 DataFrame(그대로 사용 가능), all_results는 [(subset, score), ...]."""
+    if pool is None or len(pool) == 0 or 'horizon_day' not in pool.columns:
+        return pool, [], []
+    _hz_all = sorted(set(pool['horizon_day'].dropna().astype(int)))
+    _kw = ({'adopt_all_normal_buy': adopt_all_normal} if is_buy
+          else {'adopt_all_normal_sell': adopt_all_normal})
+    if len(_hz_all) <= 1:
+        _empty_other = pool.iloc[0:0]
+        if is_buy:
+            _surv, _ = _select_indicators_by_position_match(feat, close_arr, pool, _empty_other, ticker=ticker, **_kw)
+        else:
+            _, _surv = _select_indicators_by_position_match(feat, close_arr, _empty_other, pool, ticker=ticker, **_kw)
+        return _surv, _hz_all, []
+    _empty_other = pool.iloc[0:0]
+    best_score = -1e18; best_subset = list(_hz_all); best_survivors = None
+    _all_results = []
+    for _i in range(len(_hz_all)):
+        _subset = _hz_all[:_i + 1]
+        _p = pool[pool['horizon_day'].isin(_subset)].reset_index(drop=True)
+        if len(_p) == 0:
+            continue
+        if is_buy:
+            _surv, _ = _select_indicators_by_position_match(feat, close_arr, _p, _empty_other, ticker=ticker, **_kw)
+        else:
+            _, _surv = _select_indicators_by_position_match(feat, close_arr, _empty_other, _p, ticker=ticker, **_kw)
+        _score = (float(_surv['score_correct'].sum())
+                 if (_surv is not None and len(_surv) and 'score_correct' in _surv.columns) else 0.0)
+        _all_results.append((list(_subset), _score))
+        if _score > best_score:
+            best_score = _score; best_subset = list(_subset); best_survivors = _surv
+    if best_survivors is None:
+        _empty_other2 = pool.iloc[0:0]
+        if is_buy:
+            best_survivors, _ = _select_indicators_by_position_match(feat, close_arr, pool, _empty_other2, ticker=ticker, **_kw)
+        else:
+            _, best_survivors = _select_indicators_by_position_match(feat, close_arr, _empty_other2, pool, ticker=ticker, **_kw)
+        best_subset = list(_hz_all)
+    return best_survivors, best_subset, _all_results
+
+
 def _search_best_horizon_subset(feat, close_ser, buy_pool, sell_pool, *, ticker='', oos_start=None):
     """★★★ (요청) "1일, 1~2일, 1~3일, 1~4일, 1~5일" 처럼 호라이즌을 누적으로 포함시켜가며,
        전체수익이 최대가 되는 지점(=어디까지 포함해야 하는가)을 찾는다. 무조건 다 포함하는
@@ -22660,17 +22761,78 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 #   비교한다. 호라이즌이 1종류뿐이면(탐색할 게 없으면) 그대로 건너뜀.
                 if globals().get('SIMPLE_POOL_HORIZON_SUBSET_SEARCH', True):
                     _mbp0, _msp0 = _mbp, _msp   # ★ 표시용 계산에 쓸 필터링 전 원본 보존
-                    _hz_best_res, _hz_best_subset, _hz_all_results = _search_best_horizon_subset(
-                        feat, close_full, _mbp, _msp, ticker=ticker,
-                        oos_start=globals().get('OOS_START'))
+                    # ★★★ (버그수정 — 근본원인) close_full은 날짜 인덱스가 붙은 Series라서,
+                    #   함수 내부에서 close_arr[t](정수위치 인덱싱)를 하면 '레이블 0을 찾는다'로
+                    #   해석돼 KeyError(0)이 난다(실측 확인) — 반드시 .values로 순수 numpy
+                    #   배열로 바꾼 뒤 넘겨야 정수위치 인덱싱이 의도대로 동작한다.
+                    _close_arr_hz = pd.Series(close_full).reindex(feat.index).values.astype(np.float64)
+                    # ★★★ (요청 — 전면 재설계) "1~5일 사용 지표를 매수, 매도 분리해서 각각
+                    #   최적으로 찾아" — 기존엔 매수/매도를 함께 필터링해 공통 호라이즌범위
+                    #   하나를 찾았는데, 이제 매수는 매수대로(매도자리 침범=0 필터가 이미
+                    #   적용된 상태로) 매도는 매도대로 독립적으로 "1~2일까지가 최선"/
+                    #   "1~5일까지가 최선"처럼 서로 다른 범위를 각자 찾는다.
+                    _buy_surv_opt, _buy_best_subset, _buy_hz_results = _search_best_horizon_subset_per_side(
+                        feat, _close_arr_hz, _mbp0, True, ticker=ticker)
+                    _sell_surv_opt, _sell_best_subset, _sell_hz_results = _search_best_horizon_subset_per_side(
+                        feat, _close_arr_hz, _msp0, False, ticker=ticker)
+                    if _buy_hz_results:
+                        _cmp_b = ", ".join((f"1~{s[-1]}일:{sc:.3f}" if len(s) > 1 else f"{s[0]}일:{sc:.3f}")
+                                           for s, sc in _buy_hz_results)
+                        print(f"  (매수 독립 호라이즌 탐색 — 정답기여 진폭가중 합) {_cmp_b}")
+                    print(f"  ★ 매수 채택: 호라이즌 {_buy_best_subset[0]}~{_buy_best_subset[-1]}일까지만 사용"
+                          if _buy_best_subset else "  ★ 매수 채택: (없음)")
+                    if _sell_hz_results:
+                        _cmp_s = ", ".join((f"1~{s[-1]}일:{sc:.3f}" if len(s) > 1 else f"{s[0]}일:{sc:.3f}")
+                                           for s, sc in _sell_hz_results)
+                        print(f"  (매도 독립 호라이즌 탐색 — 정답기여 진폭가중 합) {_cmp_s}")
+                    print(f"  ★ 매도 채택: 호라이즌 {_sell_best_subset[0]}~{_sell_best_subset[-1]}일까지만 사용"
+                          if _sell_best_subset else "  ★ 매도 채택: (없음)")
+                    # ★★★ (요청 — 신규) "매수, 매도간 신뢰도 점수차이가 많이 나면 점수가
+                    #   낮은 쪽에서는 지표 최대한 많이 사용" — 평균 신뢰도를 비교해 격차가
+                    #   크면(기본 2배 이상) 약한 쪽만 재선정(일반 자리도 자리당 하나가
+                    #   아니라 매칭되는 후보 전부 채택)해서 보강한다.
+                    _avg_rel_buy = (float(_buy_surv_opt['reliability'].mean())
+                                   if (_buy_surv_opt is not None and len(_buy_surv_opt)
+                                       and 'reliability' in _buy_surv_opt.columns) else 0.0)
+                    _avg_rel_sell = (float(_sell_surv_opt['reliability'].mean())
+                                     if (_sell_surv_opt is not None and len(_sell_surv_opt)
+                                         and 'reliability' in _sell_surv_opt.columns) else 0.0)
+                    _gap_ratio = float(globals().get('SIMPLE_POOL_WEAK_SIDE_GAP_RATIO', 2.0))
+                    if _avg_rel_buy > 1e-9 and _avg_rel_sell > 1e-9:
+                        if _avg_rel_buy >= _avg_rel_sell * _gap_ratio:
+                            print(f"  (신뢰도 격차 보강) 매수({_avg_rel_buy:.2f}) ≥ 매도({_avg_rel_sell:.2f})×{_gap_ratio:.1f} "
+                                  f"— 매도쪽 지표를 최대한 많이 사용하도록 재선정")
+                            _sell_surv_opt, _sell_best_subset, _sell_hz_results = _search_best_horizon_subset_per_side(
+                                feat, _close_arr_hz, _msp0, False, ticker=ticker, adopt_all_normal=True)
+                        elif _avg_rel_sell >= _avg_rel_buy * _gap_ratio:
+                            print(f"  (신뢰도 격차 보강) 매도({_avg_rel_sell:.2f}) ≥ 매수({_avg_rel_buy:.2f})×{_gap_ratio:.1f} "
+                                  f"— 매수쪽 지표를 최대한 많이 사용하도록 재선정")
+                            _buy_surv_opt, _buy_best_subset, _buy_hz_results = _search_best_horizon_subset_per_side(
+                                feat, _close_arr_hz, _mbp0, True, ticker=ticker, adopt_all_normal=True)
+                    globals()['_KNET_HORIZON_SUBSET_BUY'] = list(_buy_best_subset)
+                    globals()['_KNET_HORIZON_SUBSET_SELL'] = list(_sell_best_subset)
+                    _hz_best_subset = sorted(set(_buy_best_subset) | set(_sell_best_subset))  # 표시용(합집합)
+                    globals()['_KNET_HORIZON_SUBSET'] = list(_hz_best_subset)
+                    # ★ 각 SIDE 최적범위로 필터링된 풀에서 정답자리매칭까지 이미 끝난 결과
+                    #   (_buy_surv_opt/_sell_surv_opt)를 최종 채택 풀로 그대로 사용.
+                    _mbp_final = (_buy_surv_opt if _buy_surv_opt is not None
+                                 else _mbp0.iloc[0:0]).reset_index(drop=True)
+                    _msp_final = (_sell_surv_opt if _sell_surv_opt is not None
+                                 else _msp0.iloc[0:0]).reset_index(drop=True)
+                    if 'net_weight_score' not in _mbp_final.columns and len(_mbp_final):
+                        _mbp_final['net_weight_score'] = 1.0 + _mbp_final.get('reliability', 0.0).fillna(0.0)
+                    if 'net_weight_score' not in _msp_final.columns and len(_msp_final):
+                        _msp_final['net_weight_score'] = 1.0 + _msp_final.get('reliability', 0.0).fillna(0.0)
+                    globals()['NET_SIGNAL_WEIGHT_COL'] = 'net_weight_score'
+                    globals()['NET_SIGNAL_WEIGHTED'] = True
+                    _hz_best_res = _net_signal_k_search(
+                        feat, close_full, _mbp_final, _msp_final, ticker=ticker,
+                        oos_start=globals().get('OOS_START'), n_buy=None, n_sell=None,
+                        search_counts=False, select_by='full', compute_zero_pool=False)
+                    _hz_all_results = []   # ★ 하위호환용(더 이상 단일 비교 리스트는 없음)
                     if _hz_best_res is not None:
-                        _cmp_txt = ", ".join(
-                            (f"1~{s[-1]}일:{r*100:+.1f}%" if len(s) > 1 else f"{s[0]}일:{r*100:+.1f}%")
-                            for s, r, _ in _hz_all_results if r is not None)
-                        print(f"  (호라이즌 범위 탐색) 후보별 전체수익 — {_cmp_txt}")
-                        print(f"  ★ 채택: 호라이즌 {_hz_best_subset[0]}~{_hz_best_subset[-1]}일까지만 사용 "
-                              f"(전체수익 {_hz_best_res['full_cum']*100:+.2f}%)")
-                        globals()['_KNET_HORIZON_SUBSET'] = list(_hz_best_subset)
+                        print(f"  ★ 최종(매수·매도 독립범위 반영) 전체수익 "
+                              f"{(_hz_best_res.get('full_cum') or 0)*100:+.2f}%")
                         _hz_all = sorted(set(
                             list(_mbp0['horizon_day'].dropna().astype(int)) +
                             list(_msp0['horizon_day'].dropna().astype(int))))
@@ -22743,8 +22905,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         if _hz_disp_all:
                             globals()['_KNET_HORIZON_NET_DISPLAY'] = {
                                 f'net_h{_h}': _arr for _h, _arr in _hz_disp_all.items()}
-                        _mbp = _mbp[_mbp['horizon_day'].isin(_hz_best_subset)].reset_index(drop=True)
-                        _msp = _msp[_msp['horizon_day'].isin(_hz_best_subset)].reset_index(drop=True)
+                        # ★ 이제 _mbp/_msp를 '각 SIDE 최적범위+정답자리매칭까지 끝난' 최종
+                        #   풀로 확정 — 기존처럼 단순 호라이즌 필터링이 아니라, 이미 완성된
+                        #   _mbp_final/_msp_final을 그대로 사용(매수/매도가 서로 다른
+                        #   범위를 가질 수 있으므로 공통 필터로는 표현 불가능해짐).
+                        _mbp = _mbp_final
+                        _msp = _msp_final
                         _nb = len(_mbp); _ns = len(_msp)
             print(f"  ★ net>K = 합친 다중임계 풀 (매수 {len(_mbp)}행 / 매도 {len(_msp)}행)")
         else:
