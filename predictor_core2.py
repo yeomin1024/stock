@@ -14402,7 +14402,7 @@ EVAL_END            = None           # ★ (요청) 평가 종료일. None이면
 #   '호라이즌일별 SIMPLE_POOL_HORIZON_CONFIG 기준을 만족하는 모든 지표-임계 조합'을
 #   그대로 다 써서 K/L만 탐색한다.
 #   끄면(False) 기존의 복잡한 선출 파이프라인 그대로.
-SIMPLE_POOL_MODE        = False
+SIMPLE_POOL_MODE        = True
 # ★★★ (요청 — 재설계) 성공률 컷을 horizon_day(1~5일)별로 독립 설정. 최소신호수 8개 완화
 #   (성공률 90%+ 예외)는 더 이상 안 씀 — 아래 표의 min_signals가 절대 기준.
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
