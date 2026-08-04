@@ -14402,7 +14402,7 @@ EVAL_END            = None           # ★ (요청) 평가 종료일. None이면
 #   '호라이즌일별 SIMPLE_POOL_HORIZON_CONFIG 기준을 만족하는 모든 지표-임계 조합'을
 #   그대로 다 써서 K/L만 탐색한다.
 #   끄면(False) 기존의 복잡한 선출 파이프라인 그대로.
-SIMPLE_POOL_MODE        = True
+SIMPLE_POOL_MODE        = False
 # ★★★ (요청 — 재설계) 성공률 컷을 horizon_day(1~5일)별로 독립 설정. 최소신호수 8개 완화
 #   (성공률 90%+ 예외)는 더 이상 안 씀 — 아래 표의 min_signals가 절대 기준.
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
@@ -14470,6 +14470,14 @@ SIMPLE_POOL_RELIABILITY_POWER_SELL = 1.5
 #   도달할 수 있는 절대적 최댓값 자체는 동일하게 제한한다.
 SIMPLE_POOL_RELIABILITY_CAP_BUY    = 15.0
 SIMPLE_POOL_RELIABILITY_CAP_SELL   = 15.0
+# ★★★ (요청 — 신규 5원칙) 신뢰도 채점 세부 규칙
+SIMPLE_POOL_AMBIGUOUS_THRESHOLD    = 0.01   # (3번) h일 누적등락이 이 안쪽이면 다음날 등락으로 재판단
+SIMPLE_POOL_CONSECUTIVE_WEIGHT     = 0.15   # (4번) 연속 발화일의 가중치(첫날=1.0 대비)
+SIMPLE_POOL_HIT_COUNT_BONUS_ENABLED = True  # (1번) 일반 히트 카운트 보너스 on/off
+SIMPLE_POOL_HIT_COUNT_BONUS_WEIGHT  = 0.20
+SIMPLE_POOL_HIT_COUNT_BONUS_POWER   = 1.3
+SIMPLE_POOL_HIT_COUNT_BONUS_SCALE   = 8.0   # ★ 추세전환 보너스(SCALE=50)보다 훨씬 작게 — 2번 원칙 보장
+SIMPLE_POOL_HIT_COUNT_BONUS_MSC     = 6.0
 # ★★★ (요청 — 신규) 추세전환 적중 보너스 — 발화 직전 LOOKBACK일간 추세와 반대 방향으로
 #   성공하면(=추세전환을 맞춤) 신뢰도에 강하게(초선형) 보너스를 준다. 여러 번 맞을수록
 #   보너스가 훨씬 커짐(POWER>1) — "추세전환 여러 번 맞으면 가장 중요하니까 분별력 있게".
@@ -16790,121 +16798,192 @@ def _add_display_suffix(pool):
 _CLUSTER_NULL_CACHE = {}
 
 
-def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
-    """★★★ (요청 — 전면 재설계, 추세추종 편향 제거) 지표 신뢰도.
+def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=None):
+    """★★★ (요청 — 전면 재설계, 추세추종 편향 제거 + 신규 5원칙) 지표 신뢰도.
 
        ★★★ (요청 — 핵심) "지속적으로 상승하는 경우엔 지표 점수가 잘 나올 수밖에 없는데
        이러면 매도랑 밸런스가 안 맞아... 결국 추세반전을 가장 잘 예측하는 지표를 찾아야
        하는데... 추세반전도 우연히 몇 번 맞출 수 있는데 그런 것도 점수가 너무 높다...
        추세전환을 맞춘 게 아니면 점수를 짜게 줘야 한다. 특히 매수는 매도보다 더 짜게" —
-       지금까지는 t-통계량(mean_fav/se)을 '추세추종이든 추세전환이든 구분 없이 전부 같은
-       무게로' 평균에 반영했다. 상승장에서는 방향만 맞으면(추세추종) 어떤 지표든 쉽게
-       높은 mean_fav가 나오므로, 이게 진짜 예측력인지 그냥 시장 자체가 오른 덕인지
-       구분이 안 됐다 — 이게 매수 점수가 과하게 높아지는(그리고 하락장에선 매도가 과하게
-       높아지는) 근본 원인이었다.
+       추세추종/추세전환을 아예 다른 무게로 t-통계량 자체에 반영(credit 할인)하는 기존
+       설계는 그대로 유지.
 
-       새 설계 — 추세추종/추세전환을 아예 다른 무게로 t-통계량 자체에 반영:
-         credit_i = fav_i                         (추세전환 적중인 날)
-         credit_i = fav_i × NONREV_DISCOUNT        (추세추종인 날 — 대폭 할인)
-       이 credit으로 평균/표준편차/t값을 계산 — "추세전환이 아니면 그 날의 기여도 자체를
-       확 깎아서" 시작한다(보너스를 나중에 곱하는 게 아니라 애초에 기초 점수 자체가
-       추세전환 중심으로 만들어짐). NONREV_DISCOUNT는 매수가 매도보다 더 작다(더 엄격).
+       ★★★ (요청 — 신규 5원칙, 이번 요청)
+       1) "한번 큰걸 맞춘것보다 여러번 맞춘걸 더 쳐줘야" — 별도의 '일반 히트 카운트
+          보너스'를 신설(추세전환 보너스와 같은 구조지만 훨씬 약하게 — 추세전환이 가장
+          중요하다는 2번 원칙을 지키기 위해 추세전환 보너스보다 배율을 낮게 잡음).
+       2) "추세전환을 여러 번 잘 맞추는 게 가장 중요" — 기존 추세전환 보너스(MSC 탐색)
+          그대로 유지, 여전히 가장 강한 보너스로 남김.
+       3) "변동률이 1% 내로는 다음날 결과로 판단" — h일 누적등락(fav)의 절대값이 1%
+          미만이면(=사실상 무의미한 보합) 그 표본만 h일 누적 대신 발화일 바로 다음날
+          하루치 등락으로 다시 판단.
+       4) "처음 맞추고 연속된 날 계속 맞춘 건 한 번으로 치고, 연속분은 조금만" — 발화일
+          인덱스가 연속(i, i+1, i+2, ...)이면 같은 '군집'으로 묶어 첫날만 온전한 가중치
+          (1.0), 그 뒤 연속일은 작은 가중치(SIMPLE_POOL_CONSECUTIVE_WEIGHT)만 준다.
+          히트 카운트(1·2번 보너스 둘 다)와 t-통계량에 쓰는 credit 양쪽에 동일하게 적용
+          — 연속 발화로 표본을 부풀려 우연히 점수를 뻥튀기하는 걸 원천 차단.
+       5) "어닝 전날은 평가에서 빼자(어닝 당일은 포함)" — 발화일 바로 다음 거래일이
+          어닝일이면(=오늘이 '어닝 전날') 그 표본 자체를 평가 대상에서 제외. 어닝 당일
+          발화는 그대로 포함.
 
-       추세전환 보너스도 "우연히 몇 번"을 걸러내도록 최소횟수(MIN_COUNT) 이상부터만
-       의미있게 작동 — 그 미만(매수는 더 높은 기준)이면 보너스가 사실상 없음. 매수는
-       매도보다 이 기준도 더 높다.
-
-       나머지(h일 누적등락 기반 성공판정, 큰오답 벌점, 상한 클램프)는 기존과 동일.
-       반환 dict: reliability, mean_fav, std_fav, se, t_stat, n_evaluable, n_reversal_hits."""
+       반환 dict: reliability, mean_fav, std_fav, se, t_stat, n_evaluable, n_reversal_hits,
+       n_hit_clusters, n_big_miss, miss_penalty_mult."""
     try:
-        sig = _to_signal_array(feat, row)   # 원본 발화일(lead_shift만 적용) — 성공률 판정과 동일 기준
-        _hz = row.get('horizon_day', None)
-        if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
-            _hz = row.get('horizon', None)
-        _hz = int(_hz) if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) else 1
-        sig_arr = np.nan_to_num(np.asarray(sig, dtype=float))
-        n_total = len(sig_arr)
-        fire_idx = np.nonzero(sig_arr)[0]
-        fire_idx = fire_idx[fire_idx <= n_total - 1 - _hz]   # i+horizon이 범위 안에 있어야 평가 가능
-        _empty = {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
-                  't_stat': 0.0, 'n_evaluable': 0, 'n_reversal_hits': 0,
-                  'n_big_miss': 0, 'miss_penalty_mult': 1.0}
-        if len(fire_idx) < 2:   # t-통계량은 최소 2개 표본 필요(표준편차 계산)
-            return _empty
-        base = close_arr[fire_idx]
-        nxt = close_arr[fire_idx + _hz]   # ★ h일 후(성공률과 동일), 다음날(+1) 아님
-        valid = (base > 0) & np.isfinite(base) & np.isfinite(nxt)
-        base = base[valid]; nxt = nxt[valid]; fire_valid = fire_idx[valid]
-        if len(base) < 2:
-            return _empty
-        raw_ret = nxt / base - 1.0   # close[i+h]/close[i]-1 — 성공률 계산과 완전히 동일한 식
-        fav = raw_ret if is_buy else -raw_ret   # ★ 매수지표=상승이 +, 매도지표=하락이 +
-        n = len(fav)
-
-        # ★★★ (요청 — 신규, 핵심) 발화일별 '추세전환 여부'를 t-통계량 계산 전에 먼저 판정
-        #   — 추세추종 날은 credit을 대폭 할인해서, 상승장에서 방향만 맞아 생기는 가짜
-        #   고득점을 원천적으로 줄인다.
-        _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
-        _is_rev = np.zeros(n, dtype=bool)
-        if globals().get('SIMPLE_POOL_REVERSAL_BONUS_ENABLED', True):
-            for _k, _i in enumerate(fire_valid.tolist()):
-                if _i < _lookback:
-                    continue
-                _p0 = close_arr[_i - _lookback]; _p1 = close_arr[_i]
-                if not (_p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1)):
-                    continue
-                _pre_trend = _p1 / _p0 - 1.0
-                # 매수인데 직전이 하락추세였다=하락→상승 전환. 매도인데 직전이 상승추세
-                # 였다=상승→하락 전환. 둘 다 "추세전환 자리"(성공여부와 무관하게 자리 자체의
-                # 성격) — 성공/실패는 fav 부호로 이미 반영되므로 여기선 '자리 판정'만 한다.
-                if (is_buy and _pre_trend < 0) or ((not is_buy) and _pre_trend > 0):
-                    _is_rev[_k] = True
-        n_reversal_hits = int(np.sum(_is_rev & (fav >= threshold)))
-
-        _nonrev_discount = float(globals().get(
-            'SIMPLE_POOL_NONREVERSAL_DISCOUNT_BUY' if is_buy else 'SIMPLE_POOL_NONREVERSAL_DISCOUNT_SELL',
-            0.12 if is_buy else 0.25))
-        _credit = np.where(_is_rev, fav, fav * _nonrev_discount)
-
-        mean_fav = float(np.mean(_credit))
-        std_fav = float(np.std(_credit, ddof=1))
-        se = std_fav / np.sqrt(n)
-        # ★ 할인된 credit과 비교할 기준선도 같은 비율로 낮춰야 공정 — 순수 추세추종 지표
-        #   전체가 "할인된 credit 평균"이 "할인 안 된 threshold" 그대로를 넘기는 건 원래보다
-        #   더 어려워야 하므로(의도된 엄격화), threshold는 낮추지 않고 그대로 유지한다.
-        if se > 1e-12:
-            t_stat = (mean_fav - threshold) / se
+        _row_key = (row.get('indicator'), row.get('threshold'), row.get('direction'),
+                   row.get('lead_shift', 0), row.get('horizon_day', row.get('horizon', 1)))
+        _base_cache_key = (id(feat), id(close_arr), _row_key, threshold, is_buy, ticker)
+        _cached = _RELIABILITY_BASE_CACHE.get(_base_cache_key)
+        if _cached is not None:
+            (reliability_base, mean_fav, std_fav, se, t_stat, n, _p,
+             n_reversal_hits, n_hit_clusters, n_big_miss, miss_penalty_mult) = _cached
         else:
-            t_stat = 50.0 if mean_fav > threshold else -50.0
-        try:
-            from scipy import stats as _sps
-            _df = max(1, n - 1)
-            _p = float(_sps.t.sf(t_stat, df=_df))
-        except Exception:
-            _p = 0.5 if t_stat <= 0 else max(1e-300, 1.0 / (1.0 + t_stat ** 2))
-        _p = min(1.0, max(1e-300, _p))
-        base_score = max(0.0, -np.log10(min(1.0, 2.0 * _p)))
-        _power = float(globals().get(
-            'SIMPLE_POOL_RELIABILITY_POWER_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_POWER_SELL',
-            2.2 if is_buy else 1.5))
-        reliability = base_score ** _power
+            sig = _to_signal_array(feat, row)   # 원본 발화일(lead_shift만 적용) — 성공률 판정과 동일 기준
+            _hz = row.get('horizon_day', None)
+            if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
+                _hz = row.get('horizon', None)
+            _hz = int(_hz) if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) else 1
+            sig_arr = np.nan_to_num(np.asarray(sig, dtype=float))
+            n_total = len(sig_arr)
+            fire_idx = np.nonzero(sig_arr)[0]
+            fire_idx = fire_idx[fire_idx <= n_total - 1 - _hz]   # i+horizon이 범위 안에 있어야 평가 가능
 
-        # ★★★ (요청 — 신규) "1%이상 예측이 틀리면 신뢰도 감점을 좀 더 해서 안정성을 올려" —
-        #   임계값(SIMPLE_POOL_BIG_MISS_THRESHOLD, 기본 1%) 이상 반대방향으로 틀린 신호를
-        #   '큰 오답'으로 세고, 그 정도(개수·크기 둘 다)에 비례해 신뢰도를 나눠서 깎는다.
-        _bm_thr = float(globals().get('SIMPLE_POOL_BIG_MISS_THRESHOLD', 0.01))
-        _bm_w = float(globals().get('SIMPLE_POOL_BIG_MISS_PENALTY_W', 0.25))
-        _bm_severity_sum = 0.0
-        n_big_miss = 0
-        for _f in fav.tolist():
-            if _f <= -_bm_thr:
-                n_big_miss += 1
-                _bm_severity_sum += abs(_f) / _bm_thr   # 1%=1.0, 2%=2.0 식으로 정규화된 심각도
-        if n_big_miss > 0:
-            miss_penalty_mult = 1.0 / (1.0 + _bm_w * _bm_severity_sum)
-            reliability *= miss_penalty_mult
-        else:
-            miss_penalty_mult = 1.0
+            # ★★★ (요청 — 신규 5번) "어닝 전날은 평가에서 빼자(어닝 당일은 포함)" — 발화일
+            #   바로 다음 거래일이 어닝일이면 그 발화(=어닝 전날 발화)는 표본에서 제외.
+            if ticker and len(fire_idx):
+                try:
+                    _edates = _get_earnings_dates_cached(ticker)
+                    if _edates:
+                        _idx_norm = pd.DatetimeIndex(feat.index).tz_localize(None) \
+                                    if getattr(feat.index, 'tz', None) is not None else pd.DatetimeIndex(feat.index)
+                        _idx_norm = _idx_norm.normalize()
+                        _is_day_before_earn = np.zeros(n_total, dtype=bool)
+                        for _ii in range(n_total - 1):
+                            if _idx_norm[_ii + 1] in _edates:
+                                _is_day_before_earn[_ii] = True
+                        fire_idx = fire_idx[~_is_day_before_earn[fire_idx]]
+                except Exception:
+                    pass
+
+            _empty = {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
+                      't_stat': 0.0, 'n_evaluable': 0, 'n_reversal_hits': 0,
+                      'n_hit_clusters': 0, 'n_big_miss': 0, 'miss_penalty_mult': 1.0}
+            if len(fire_idx) < 2:   # t-통계량은 최소 2개 표본 필요(표준편차 계산)
+                return _empty
+            base = close_arr[fire_idx]
+            nxt = close_arr[fire_idx + _hz]   # ★ h일 후(성공률과 동일), 다음날(+1) 아님
+            valid = (base > 0) & np.isfinite(base) & np.isfinite(nxt)
+            base = base[valid]; nxt = nxt[valid]; fire_valid = fire_idx[valid]
+            if len(base) < 2:
+                return _empty
+            raw_ret = nxt / base - 1.0   # close[i+h]/close[i]-1 — 성공률 계산과 완전히 동일한 식
+            fav = raw_ret if is_buy else -raw_ret   # ★ 매수지표=상승이 +, 매도지표=하락이 +
+            n = len(fav)
+
+            # ★★★ (요청 — 신규 3번) "변동률이 1% 내로는 다음날 결과로 판단" — h일 누적등락이
+            #   ±1% 안쪽(사실상 보합)이면 그 표본만 발화일 바로 다음 거래일 하루치 등락으로
+            #   대체해서 판단한다 — h일 전체가 애매하면 더 가까운 정보로 방향을 다시 잰다.
+            _ambig_thr = float(globals().get('SIMPLE_POOL_AMBIGUOUS_THRESHOLD', 0.01))
+            for _k in range(n):
+                if abs(fav[_k]) < _ambig_thr:
+                    _fi = int(fire_valid[_k])
+                    if _fi + 1 < len(close_arr):
+                        _p0n = close_arr[_fi]; _p1n = close_arr[_fi + 1]
+                        if _p0n and _p0n > 0 and np.isfinite(_p0n) and np.isfinite(_p1n):
+                            _raw1 = _p1n / _p0n - 1.0
+                            fav[_k] = _raw1 if is_buy else -_raw1
+
+            # ★★★ (요청 — 신규 4번) "처음 맞추고 연속된 날 계속 맞춘 건 한 번, 연속분은
+            #   조금만" — 발화일(fire_valid, 오름차순)이 연속된 거래일 인덱스로 이어지면
+            #   같은 군집으로 묶는다. 군집의 첫 표본은 가중치 1.0, 그 뒤 연속표본은
+            #   SIMPLE_POOL_CONSECUTIVE_WEIGHT(작은 값)만 받는다 — credit(t-통계량용)과
+            #   히트 카운트(보너스용) 양쪽에 동일하게 적용.
+            _consec_w = float(globals().get('SIMPLE_POOL_CONSECUTIVE_WEIGHT', 0.15))
+            _cluster_weight = np.ones(n, dtype=float)
+            _cluster_first = np.ones(n, dtype=bool)   # 이 표본이 자기 군집의 '첫 표본'인지
+            for _k in range(1, n):
+                if int(fire_valid[_k]) == int(fire_valid[_k - 1]) + 1:
+                    _cluster_weight[_k] = _consec_w
+                    _cluster_first[_k] = False
+
+            # ★★★ (요청 — 신규 1·4번 결합) 발화일별 '추세전환 여부' 판정 — 군집 가중치 계산
+            #   이후에 판정해도 '자리 성격' 자체는 가중치와 무관하게 그대로 판단.
+            _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
+            _is_rev = np.zeros(n, dtype=bool)
+            if globals().get('SIMPLE_POOL_REVERSAL_BONUS_ENABLED', True):
+                for _k, _i in enumerate(fire_valid.tolist()):
+                    if _i < _lookback:
+                        continue
+                    _p0 = close_arr[_i - _lookback]; _p1 = close_arr[_i]
+                    if not (_p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1)):
+                        continue
+                    _pre_trend = _p1 / _p0 - 1.0
+                    # 매수인데 직전이 하락추세였다=하락→상승 전환. 매도인데 직전이 상승추세
+                    # 였다=상승→하락 전환. 둘 다 "추세전환 자리"(성공여부와 무관하게 자리 자체의
+                    # 성격) — 성공/실패는 fav 부호로 이미 반영되므로 여기선 '자리 판정'만 한다.
+                    if (is_buy and _pre_trend < 0) or ((not is_buy) and _pre_trend > 0):
+                        _is_rev[_k] = True
+
+            _is_hit = fav >= threshold
+            # ★ (요청 4번) 히트 카운트는 '군집 단위'로 — 군집의 첫 표본이 히트일 때만 그
+            #   군집을 1건으로 센다(연속 성공을 여러 건으로 중복 카운트하지 않음).
+            n_reversal_hits = int(np.sum(_is_hit & _is_rev & _cluster_first))
+            n_hit_clusters = int(np.sum(_is_hit & _cluster_first))   # 추세전환 포함 전체 히트 군집 수
+
+            _nonrev_discount = float(globals().get(
+                'SIMPLE_POOL_NONREVERSAL_DISCOUNT_BUY' if is_buy else 'SIMPLE_POOL_NONREVERSAL_DISCOUNT_SELL',
+                0.12 if is_buy else 0.25))
+            # ★ (요청 1·4번) credit에도 군집 가중치를 곱해 — 연속 발화로 t-통계량(평균/표준
+            #   오차)이 부풀려지는 것도 함께 억제한다.
+            _credit = np.where(_is_rev, fav, fav * _nonrev_discount) * _cluster_weight
+
+            mean_fav = float(np.mean(_credit))
+            std_fav = float(np.std(_credit, ddof=1))
+            se = std_fav / np.sqrt(n)
+            # ★ 할인된 credit과 비교할 기준선도 같은 비율로 낮춰야 공정 — 순수 추세추종 지표
+            #   전체가 "할인된 credit 평균"이 "할인 안 된 threshold" 그대로를 넘기는 건 원래보다
+            #   더 어려워야 하므로(의도된 엄격화), threshold는 낮추지 않고 그대로 유지한다.
+            if se > 1e-12:
+                t_stat = (mean_fav - threshold) / se
+            else:
+                t_stat = 50.0 if mean_fav > threshold else -50.0
+            try:
+                from scipy import stats as _sps
+                _df = max(1, n - 1)
+                _p = float(_sps.t.sf(t_stat, df=_df))
+            except Exception:
+                _p = 0.5 if t_stat <= 0 else max(1e-300, 1.0 / (1.0 + t_stat ** 2))
+            _p = min(1.0, max(1e-300, _p))
+            base_score = max(0.0, -np.log10(min(1.0, 2.0 * _p)))
+            _power = float(globals().get(
+                'SIMPLE_POOL_RELIABILITY_POWER_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_POWER_SELL',
+                2.2 if is_buy else 1.5))
+            reliability_base = base_score ** _power
+
+            # ★★★ (요청 — 신규) "1%이상 예측이 틀리면 신뢰도 감점을 좀 더 해서 안정성을 올려" —
+            #   임계값(SIMPLE_POOL_BIG_MISS_THRESHOLD, 기본 1%) 이상 반대방향으로 틀린 신호를
+            #   '큰 오답'으로 세고, 그 정도(개수·크기 둘 다)에 비례해 신뢰도를 나눠서 깎는다.
+            _bm_thr = float(globals().get('SIMPLE_POOL_BIG_MISS_THRESHOLD', 0.01))
+            _bm_w = float(globals().get('SIMPLE_POOL_BIG_MISS_PENALTY_W', 0.25))
+            _bm_severity_sum = 0.0
+            n_big_miss = 0
+            for _f in fav.tolist():
+                if _f <= -_bm_thr:
+                    n_big_miss += 1
+                    _bm_severity_sum += abs(_f) / _bm_thr   # 1%=1.0, 2%=2.0 식으로 정규화된 심각도
+            if n_big_miss > 0:
+                miss_penalty_mult = 1.0 / (1.0 + _bm_w * _bm_severity_sum)
+                reliability_base *= miss_penalty_mult
+            else:
+                miss_penalty_mult = 1.0
+
+            if len(_RELIABILITY_BASE_CACHE) >= 20000:
+                _RELIABILITY_BASE_CACHE.pop(next(iter(_RELIABILITY_BASE_CACHE)))
+            _RELIABILITY_BASE_CACHE[_base_cache_key] = (
+                reliability_base, mean_fav, std_fav, se, t_stat, n, _p,
+                n_reversal_hits, n_hit_clusters, n_big_miss, miss_penalty_mult)
+
+        # ── 여기서부터는 MSC(추세전환 만점임계값)에 의존 — 캐시 여부와 무관하게 매번 재계산 ──
+        reliability = reliability_base
 
         # ★★★ (요청 — 신규, 재조정) 추세전환 성공 보너스 — "3회가 만점인 것도 너무 후하다,
         #   만점 임계값(몇 회에서 사실상 최대점수가 되는지) 자체를 3~10까지 돌려보고
@@ -16913,7 +16992,9 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
         #   아니면 기존 설정값(매수/매도 개별) 사용. n_reversal_hits가 MSC에 도달하면
         #   배율이 상한을 확실히 채울 만큼 커지고, MSC 미만이면 그 비율만큼만(진행률의
         #   거듭제곱) 작게 붙는다 — "몇 번이면 바로 만점"이 아니라 MSC까지 점진적으로
-        #   커지는 곡선.
+        #   커지는 곡선. ★ (요청 2번) 이 보너스가 아래 일반 히트 보너스보다 항상 훨씬
+        #   커서(SCALE=50 vs 아래 SCALE=8) "추세전환을 여러 번 맞추는 게 가장 중요"를
+        #   수치로도 보장한다.
         _msc = int(globals().get('_SIMPLE_POOL_REVERSAL_MSC_ACTIVE') or globals().get(
             'SIMPLE_POOL_REVERSAL_MIN_COUNT_BUY' if is_buy else 'SIMPLE_POOL_REVERSAL_MIN_COUNT_SELL',
             3 if is_buy else 2))
@@ -16925,19 +17006,37 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy):
             reversal_mult = 1.0 + _rev_w * _rev_scale * (_norm ** _rev_pow)
             reliability *= reversal_mult
 
+        # ★★★ (요청 — 신규 1번) "한번 큰걸 맞춘것보다 여러번 맞춘걸 더 쳐줘야, 여러번
+        #   맞출수록 점수를 더 줘야" — 추세전환 여부와 무관하게, 히트(군집 단위, 4번 원칙
+        #   반영) 개수 자체에 대한 별도 보너스. 2번 원칙("추세전환이 가장 중요")을 지키기
+        #   위해 위 추세전환 보너스보다 훨씬 약하게(SCALE 8 vs 50, WEIGHT/POWER도 낮음)
+        #   잡는다 — 그래도 "표본 1개짜리 큰 수익"보다 "표본 여러 개짜리 꾸준한 적중"이
+        #   항상 더 높은 점수를 받도록 만드는 것이 목적.
+        if n_hit_clusters > 0:
+            _hit_w = float(globals().get('SIMPLE_POOL_HIT_COUNT_BONUS_WEIGHT', 0.20))
+            _hit_pow = float(globals().get('SIMPLE_POOL_HIT_COUNT_BONUS_POWER', 1.3))
+            _hit_scale = float(globals().get('SIMPLE_POOL_HIT_COUNT_BONUS_SCALE', 8.0))
+            _hit_msc = float(globals().get('SIMPLE_POOL_HIT_COUNT_BONUS_MSC', 6.0))
+            _hit_norm = float(n_hit_clusters) / max(1, _hit_msc)
+            hit_mult = 1.0 + _hit_w * _hit_scale * (_hit_norm ** _hit_pow)
+            reliability *= hit_mult
+
         # ★★★ (요청 — 밸런스 조정) 매수/매도 상한을 분리 — 매수는 power가 커서 같은 상한을
         #   공유하면 상한에 훨씬 쉽게 도달해 매도보다 부당하게 더 큰 가중치를 갖게 된다.
         _rel_cap = float(globals().get(
             'SIMPLE_POOL_RELIABILITY_CAP_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_CAP_SELL', 15.0))
         reliability = min(reliability, _rel_cap)
         return {'reliability': reliability, 'mean_fav': mean_fav, 'std_fav': std_fav,
-                'se': se, 't_stat': t_stat, 'n_evaluable': n, 'power': _power,
+                'se': se, 't_stat': t_stat, 'n_evaluable': n, 'power': globals().get(
+                    'SIMPLE_POOL_RELIABILITY_POWER_BUY' if is_buy else 'SIMPLE_POOL_RELIABILITY_POWER_SELL',
+                    2.2 if is_buy else 1.5),
                 'p_value': _p, 'df': n - 1, 'n_reversal_hits': n_reversal_hits,
+                'n_hit_clusters': n_hit_clusters,
                 'n_big_miss': n_big_miss, 'miss_penalty_mult': miss_penalty_mult}
     except Exception:
         return {'reliability': 0.0, 'mean_fav': 0.0, 'std_fav': 0.0, 'se': 0.0,
                 't_stat': 0.0, 'n_evaluable': 0, 'power': 0.0, 'p_value': 1.0, 'df': 0,
-                'n_reversal_hits': 0, 'n_big_miss': 0, 'miss_penalty_mult': 1.0}
+                'n_reversal_hits': 0, 'n_hit_clusters': 0, 'n_big_miss': 0, 'miss_penalty_mult': 1.0}
 
 
 def _compute_target_positions(close_arr, threshold=0.0):
@@ -17088,42 +17187,57 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
 
        반환: (buy_survivors, sell_survivors) — 원본 컬럼 + score_correct/score_wrong/
        score_harm/used_for_reversal 컬럼이 추가된 DataFrame, reliability 내림차순 정렬."""
+    # ★★★ (요청 — 실행시간 최적화) 아래 블록(정답자리/진폭/추세전환자리 판정)은 close_arr·
+    #   ticker·설정값에만 의존하고 buy_pool/sell_pool(어떤 지표들이 후보인지)과는 완전히
+    #   무관하다 — 그런데 이 함수는 MSC 탐색(8회)·호라이즌조합 탐색(최대 25회)에서 반복
+    #   호출되고, 그때마다 같은 close_arr에 대해 이 블록(특히 추세전환 판정 for문, O(n))을
+    #   매번 처음부터 다시 계산하고 있었다. close_arr 객체가 안정적으로 재사용되는 한(위
+    #   _finalize_pool 수정으로 이제 그렇게 됨) 결과는 항상 100% 동일하므로, 캐싱해도
+    #   출력에 어떤 영향도 없다 — 순수하게 중복 계산만 제거.
     _thr = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
-    target, magnitude, _ret, _valid = _compute_target_positions(close_arr, threshold=_thr)
-    n = len(target)
-    _excl_mask = ~_valid
-
-    if ticker:
-        try:
-            _edates = _get_earnings_dates_cached(ticker)
-            if _edates:
-                _idx_norm = pd.DatetimeIndex(feat.index).tz_localize(None) \
-                            if getattr(feat.index, 'tz', None) is not None else pd.DatetimeIndex(feat.index)
-                _idx_norm = _idx_norm.normalize()
-                for _i, _d in enumerate(_idx_norm):
-                    if _d in _edates:
-                        _excl_mask[_i] = True
-                        if _i + 1 < n:
-                            _excl_mask[_i + 1] = True
-        except Exception:
-            pass
-    magnitude_m = magnitude.copy()
-    magnitude_m[_excl_mask] = 0.0
-
-    # ★★★ (요청) 추세전환 자리 판정 — 발화 직전 LOOKBACK일 추세와 반대방향인 정답 자리.
     _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
-    reversal_mask = np.zeros(n, dtype=bool)
-    for _t in range(_lookback, n):
-        if _excl_mask[_t]:
-            continue
-        _p0 = close_arr[_t - _lookback]; _p1 = close_arr[_t]
-        if not (_p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1)):
-            continue
-        _pre_trend = _p1 / _p0 - 1.0
-        if target[_t] == 1 and _pre_trend < 0:
-            reversal_mask[_t] = True     # 하락→상승 전환 = 매수 추세전환 자리
-        elif target[_t] == 0 and _pre_trend > 0:
-            reversal_mask[_t] = True     # 상승→하락 전환 = 매도 추세전환 자리
+    _pm_cache_key = (id(close_arr), len(close_arr), _thr, ticker, _lookback,
+                     globals().get('SIMPLE_POOL_REVERSAL_BONUS_ENABLED', True))
+    if _pm_cache_key in _POSITION_MATCH_TARGET_CACHE:
+        target, magnitude_m, reversal_mask, n, _excl_mask = _POSITION_MATCH_TARGET_CACHE[_pm_cache_key]
+    else:
+        target, magnitude, _ret, _valid = _compute_target_positions(close_arr, threshold=_thr)
+        n = len(target)
+        _excl_mask = ~_valid
+
+        if ticker:
+            try:
+                _edates = _get_earnings_dates_cached(ticker)
+                if _edates:
+                    _idx_norm = pd.DatetimeIndex(feat.index).tz_localize(None) \
+                                if getattr(feat.index, 'tz', None) is not None else pd.DatetimeIndex(feat.index)
+                    _idx_norm = _idx_norm.normalize()
+                    for _i, _d in enumerate(_idx_norm):
+                        if _d in _edates:
+                            _excl_mask[_i] = True
+                            if _i + 1 < n:
+                                _excl_mask[_i + 1] = True
+            except Exception:
+                pass
+        magnitude_m = magnitude.copy()
+        magnitude_m[_excl_mask] = 0.0
+
+        # ★★★ (요청) 추세전환 자리 판정 — 발화 직전 LOOKBACK일 추세와 반대방향인 정답 자리.
+        reversal_mask = np.zeros(n, dtype=bool)
+        for _t in range(_lookback, n):
+            if _excl_mask[_t]:
+                continue
+            _p0 = close_arr[_t - _lookback]; _p1 = close_arr[_t]
+            if not (_p0 and _p0 > 0 and np.isfinite(_p0) and np.isfinite(_p1)):
+                continue
+            _pre_trend = _p1 / _p0 - 1.0
+            if target[_t] == 1 and _pre_trend < 0:
+                reversal_mask[_t] = True     # 하락→상승 전환 = 매수 추세전환 자리
+            elif target[_t] == 0 and _pre_trend > 0:
+                reversal_mask[_t] = True     # 상승→하락 전환 = 매도 추세전환 자리
+        if len(_POSITION_MATCH_TARGET_CACHE) >= 8:
+            _POSITION_MATCH_TARGET_CACHE.pop(next(iter(_POSITION_MATCH_TARGET_CACHE)))
+        _POSITION_MATCH_TARGET_CACHE[_pm_cache_key] = (target, magnitude_m, reversal_mask, n, _excl_mask)
 
     def _score(row, is_buy, harm_mask=None):
         return _score_indicator_vs_target(feat, row, target, magnitude_m, is_buy, harm_mask=harm_mask)
@@ -17802,7 +17916,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             for _, row in df.iterrows():
                 _hd = int(row.get('horizon_day', 1) or 1)
                 _lim_row = float(_limit_list_g[_hd - 1]) if len(_limit_list_g) >= _hd else _limit0
-                _results.append(_compute_reliability_score(feat, _close_arr, row, _lim_row, is_buy))
+                _results.append(_compute_reliability_score(feat, _close_arr, row, _lim_row, is_buy, ticker=ticker))
             df['reliability']  = [r['reliability'] for r in _results]
             df['mean_fav_next']= [r['mean_fav'] for r in _results]
             df['std_fav_next'] = [r['std_fav'] for r in _results]
@@ -17866,7 +17980,10 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             #   가중치 우선순위로만 쓰인다(net_weight_score를 통해).
             if globals().get('SIMPLE_POOL_POSITION_MATCH_SELECT', True):
                 _n_before_match_b, _n_before_match_s = len(buy_c), len(sell_c)
-                _close_arr_match = pd.Series(close).reindex(feat.index).values.astype(np.float64)
+                # ★★★ (요청 — 실행시간 최적화) 이 값은 _close_arr(위에서 이미 계산됨)와
+                #   완전히 동일한데, MSC 후보마다(8회) 매번 새로 재구성하고 있었다 — 재사용.
+                #   (결과에 영향 없음: 같은 close/feat.index로 만든 동일한 배열)
+                _close_arr_match = _close_arr
                 buy_c, sell_c = _select_indicators_by_position_match(feat, _close_arr_match, buy_c, sell_c, ticker=ticker)
                 print(f"    (정답자리 매칭 선정) 매수 {_n_before_match_b}→{len(buy_c)}개 "
                       f"(오답≥정답인 지표 제외, 나머지 전부 사용), "
@@ -19934,6 +20051,12 @@ _EVAL_ALL_RAW_CACHE = {}   # ★★ (요청) feat/close/horizon/한도가 같으
 #   루프 전체(평가+2차검증까지, 신뢰도 계산 전)의 결과를 캐시 — select_pool_combined 안에서
 #   사용(자세한 설명은 그 함수 본문 참고).
 _SIMPLE_POOL_HZ_LOOP_CACHE = {}
+# ★★★ (요청 — 실행시간 최적화) _compute_reliability_score의 MSC 무관 기초계산(발화일 추출·
+#   h일후 등락·추세전환판정·t검정·큰오답벌점) 캐시 — 자세한 설명은 그 함수 본문.
+_RELIABILITY_BASE_CACHE = {}
+# ★★★ (요청 — 실행시간 최적화) _select_indicators_by_position_match 내부의 정답자리/
+#   추세전환자리 판정(POOL과 무관, close_arr에만 의존)을 캐싱 — 자세한 설명은 그 함수 본문.
+_POSITION_MATCH_TARGET_CACHE = {}
 _ENRICH_CACHE = {}         # ★★ (요청) 캐스케이드 검증(지연·스킬·홀드아웃)도 동일 풀이면 재사용
 
 
@@ -24848,6 +24971,155 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _eallc:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 전체 후보 지표 시트 작성 실패(무시): {_eallc}")
+
+    # ─── 7d-2. ★★★ (요청 — 신규, 재수정) "가장 최근날짜는 시트를 만들어서 그날 발생한
+    #   모든 지표들을 표시하고 각 일별 백테스트 사용여부를 표시해" — feat의 마지막
+    #   날짜에 실제로 발화한 지표를 전부(호라이즌·매수매도 구분 없이) 찾아서, 그중 어떤
+    #   것이 실제 최종 채택 풀(=일별 백테스트 net 계산에 쓰이는 것)에 포함됐는지 표시한다.
+    #   ★★★ (요청 — 재수정) "전체 후보 시트처럼 정보 나와?" — 예전 버전은 방향·표시명·
+    #   호라이즌·신뢰도·net가중치점수·사용여부만 있어서 "전체 후보 지표"보다 정보가
+    #   훨씬 부실했다 — 이제 "전체 후보 지표"와 완전히 같은 컬럼 세트(신호방향·임계값·
+    #   신호개수·성공개수·성공률%·다음날평균등락%·다음날표준편차%·(2차검증)·wilson점수%·
+    #   net가중치점수·신호일자(다음날등락%) 색상표시까지)를 그대로 갖추고, 거기에 이
+    #   시트만의 '일별백테스트 사용여부' 컬럼을 맨 끝에 추가하는 형태로 재구성했다. ───
+    try:
+        _latest_idx = len(feat.index) - 1
+        _latest_date_str = pd.Timestamp(feat.index[_latest_idx]).strftime('%Y-%m-%d')
+        _nsd_latest = globals().get('_KNET_FULL') or {}
+        _bp_used_latest = _nsd_latest.get('buy_pool_used')
+        _sp_used_latest = _nsd_latest.get('sell_pool_used')
+        _used_names_buy = set(_bp_used_latest['display_name'].astype(str)) \
+            if (_bp_used_latest is not None and len(_bp_used_latest) and 'display_name' in _bp_used_latest.columns) else set()
+        _used_names_sell = set(_sp_used_latest['display_name'].astype(str)) \
+            if (_sp_used_latest is not None and len(_sp_used_latest) and 'display_name' in _sp_used_latest.columns) else set()
+
+        # ★ _abdf/_asdf는 "전체 후보 지표" 시트 작성용 원본이라 아직 _add_display_suffix
+        #   적용 전(=[N일] 접미사 없음) 상태다 — buy_pool_used 등의 display_name(접미사
+        #   붙음)과 이름을 맞추려면 여기서도 동일하게 접미사를 붙여야 한다.
+        _abdf_disp = _add_display_suffix(_abdf) if _abdf is not None and len(_abdf) else _abdf
+        _asdf_disp = _add_display_suffix(_asdf) if _asdf is not None and len(_asdf) else _asdf
+
+        # 발화 행만 추림(방향 라벨 붙여서)
+        _latest_fire_rows = []   # [(방향라벨, row, used_bool), ...]
+        for _pool_df, _dir_label, _used_set in (
+                (_abdf_disp, '매수', _used_names_buy), (_asdf_disp, '매도', _used_names_sell)):
+            if _pool_df is None or len(_pool_df) == 0:
+                continue
+            for _, _r in _pool_df.iterrows():
+                try:
+                    _sig_latest = _to_signal_array(feat, _r)
+                    if not (len(_sig_latest) and bool(_sig_latest[_latest_idx])):
+                        continue
+                except Exception:
+                    continue
+                _dname = str(_r.get('display_name', _r.get('indicator', '')))
+                _latest_fire_rows.append((_dir_label, _r, _dname in _used_set))
+
+        if _latest_fire_rows:
+            # net가중치점수 내림차순(매수 먼저) 정렬
+            _latest_fire_rows.sort(key=lambda t: (t[0] != '매수', -float(
+                t[1].get('net_weight_score', 1.0 + float(t[1].get('reliability', 0.0) or 0.0)))))
+
+            ws_latest = wb.create_sheet('최근일자 발화지표'); ws_latest.sheet_view.showGridLines = False
+            ws_latest.cell(1, 1).value = (
+                f"{_latest_date_str} 기준 — 실제로 발화한 전체 후보 지표(★'전체 후보 지표' "
+                f"시트와 동일한 컬럼 구성). 맨 끝 '일별백테스트 사용여부'만 이 시트 전용 —"
+                f"'미사용(후보만)'은 지표컷은 통과했지만 정답자리 매칭에서 최종 선정되지 "
+                f"않아 net 계산에는 반영되지 않는 지표입니다.")
+            ws_latest.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+
+            _cols_latest = ['방향', '표시명', '지표(원본)', '신호방향', '임계값', '신호개수', '성공개수', '성공률%',
+                            '신뢰도(t값)', '다음날평균등락%', '다음날표준편차%']
+            if _verify_on_disp:
+                _cols_latest += ['기저확률%', '초과폭%p', '기대수익점수', '전반성공%', '후반성공%',
+                                 '몰림비율%', '몰림기준선%', '①기저확률', '②기대수익', '③안정성',
+                                 '통과수/3', '2차검증통과']
+            _cols_latest += ['wilson점수%', 'net가중치점수']
+            _cols_latest += ['신호일자(다음날등락%)']
+            _c_dates_latest = len(_cols_latest)
+            _cols_latest += ['일별백테스트 사용여부']   # ★ 이 시트만의 추가 컬럼(맨 끝)
+            _c_used_latest = len(_cols_latest)
+
+            for _ci, _cname in enumerate(_cols_latest, 1):
+                _hc = ws_latest.cell(3, _ci); _hc.value = _cname
+                _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='4472C4')
+
+            for _ri_off, (_dir_label, _row, _is_used) in enumerate(_latest_fire_rows):
+                _r_latest = _ri_off + 4
+                _nwscore = float(_row.get('net_weight_score', 1.0 + float(_row.get('reliability', 0.0) or 0.0)))
+                _vals_latest = [_dir_label, str(_row.get('display_name', _row['indicator'])),
+                               str(_row['indicator']), str(_row['direction']),
+                               round(float(_row['threshold']), 6),
+                               int(_row['n_signals']), int(_row['n_success']),
+                               round(float(_row['success_rate']) * 100, 2),
+                               round(float(_row.get('reliability', 0.0) or 0.0), 4),
+                               round(float(_row.get('mean_fav_next', 0.0) or 0.0) * 100, 3),
+                               round(float(_row.get('std_fav_next', 0.0) or 0.0) * 100, 3)]
+                if _verify_on_disp:
+                    _sr1 = _row.get('sr_first_half', None); _sr2 = _row.get('sr_second_half', None)
+                    _vals_latest += [
+                        round(float(_row.get('baseline_rate', 0.0) or 0.0) * 100, 2),
+                        round(float(_row.get('margin', 0.0) or 0.0) * 100, 2),
+                        round(float(_row.get('expected_value', 0.0) or 0.0), 5),
+                        (round(float(_sr1) * 100, 1) if _sr1 is not None and not pd.isna(_sr1) else '-'),
+                        (round(float(_sr2) * 100, 1) if _sr2 is not None and not pd.isna(_sr2) else '-'),
+                        round(float(_row.get('cluster_max_frac', 0.0) or 0.0) * 100, 1),
+                        round(float(_row.get('cluster_threshold', 0.0) or 0.0) * 100, 1),
+                        ('✓' if _row.get('pass_lift') else '✗'),
+                        ('✓' if _row.get('pass_ev') else '✗'),
+                        ('✓' if _row.get('pass_stability') else '✗'),
+                        f"{int(_row.get('n_checks_passed', 0) or 0)}/3",
+                        ('✓ 통과' if _row.get('passed_verify') else '✗ 탈락'),
+                    ]
+                _vals_latest += [round(float(_row.get('wilson_score', 0.0) or 0.0) * 100, 2),
+                                 round(_nwscore, 4)]
+                for _ci, _v in enumerate(_vals_latest, 1):
+                    ws_latest.cell(_r_latest, _ci).value = _v
+
+                # ★ 신호일자(다음날등락%) — "전체 후보 지표"와 동일하게 리치텍스트 색상표시
+                if _close_arr_all is not None:
+                    try:
+                        _sd_latest = _signal_dates_with_outcome(
+                            feat, _row, _close_arr_all, (_dir_label == '매수'))
+                    except Exception:
+                        _sd_latest = []
+                    if _sd_latest:
+                        _rt_parts_latest = []
+                        for _di, (_ds, _rp, _ok) in enumerate(_sd_latest):
+                            _seg = f"{_ds}({_rp:+.1f}%)"
+                            if _di < len(_sd_latest) - 1:
+                                _seg += ", "
+                            _rt_parts_latest.append(_TextBlock(
+                                _GREEN_TEXT_FONT if _ok else _RED_TEXT_FONT, _seg))
+                        ws_latest.cell(_r_latest, _c_dates_latest).value = _CellRichText(_rt_parts_latest)
+                    else:
+                        ws_latest.cell(_r_latest, _c_dates_latest).value = '-'
+
+                # ★ 이 시트만의 추가 컬럼 — 일별백테스트 사용여부
+                _use_cell = ws_latest.cell(_r_latest, _c_used_latest)
+                _use_cell.value = '사용' if _is_used else '미사용(후보만)'
+                _use_cell.font = (Font(color='006100', bold=True) if _is_used else Font(color='808080'))
+                if _verify_on_disp:
+                    _fill_latest = _green if _row.get('passed_verify') else _grey
+                    for _ci in range(1, len(_cols_latest) + 1):
+                        ws_latest.cell(_r_latest, _ci).fill = _fill_latest
+
+            _w_latest = [6, 24, 20, 8, 11, 9, 9, 9, 10, 12, 12]
+            if _verify_on_disp:
+                _w_latest += [9, 9, 10, 9, 9, 9, 10, 8, 8, 8, 8, 9]
+            _w_latest += [10, 12, 60, 18]
+            for _ci, _w in enumerate(_w_latest, 1):
+                ws_latest.column_dimensions[get_column_letter(_ci)].width = _w
+            ws_latest.freeze_panes = 'A4'
+
+            _n_used_total = sum(1 for _, _, _u in _latest_fire_rows if _u)
+            print(f"  ✓ 최근일자 발화지표 시트 — {_latest_date_str} 발화 {len(_latest_fire_rows)}개 "
+                  f"(그중 실사용 {_n_used_total}개, '전체 후보 지표'와 동일 컬럼 구성)")
+        else:
+            print(f"  ℹ 최근일자({_latest_date_str}) 발화지표 시트 — 그날 발화한 후보 지표가 없어 생략")
+    except Exception as _elatest:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 최근일자 발화지표 시트 작성 실패(무시): {_elatest}")
 
     # ─── 7e. ★ 지표 선출 A/B 검증 (요청) ───
     #   각 개선 flag ON/OFF의 KL 백테스트 성적(전체수익·MDD·보유중하락·거래·승률)을 비교.
