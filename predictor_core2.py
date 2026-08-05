@@ -14541,7 +14541,11 @@ SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT  = True    # 상승/하락폭 클수록 그 �
 SIMPLE_POOL_MATCH_TARGET_THRESHOLD  = 0.0     # 정답 판정 임계값(다음날 수익률 > 이 값이면 '롱이 정답')
 # ★★★ (요청 — 신규) 정답자리 관대화 — 추세 중간 소폭이탈/추세전환 직전 소폭 날은
 #   반대(또는 새) 추세 방향도 정답으로 함께 인정(_compute_target_positions 참고).
-SIMPLE_POOL_TREND_MID_TOLERANCE  = 0.02   # 추세 중간 하루짜리 반대방향 소폭이탈 허용폭
+SIMPLE_POOL_TREND_MID_TOLERANCE  = 0.02   # 추세 중간 하루짜리 반대방향 소폭이탈 허용폭 (= 2%이상 절대거부 기준선)
+# ★★★ (요청 — 신규) "만약 아무것도 없으면 기준을 0.5%씩 올려서 다시 진행" — 위 절대거부
+#   기준(2%)으로 매수/매도 어느 한쪽이라도 후보 0개면, 그 쪽만 이 폭만큼씩 완화해서 재시도.
+SIMPLE_POOL_BIG_MISS_RELAX_STEP  = 0.005
+SIMPLE_POOL_BIG_MISS_RELAX_CAP   = 0.15   # 안전판 — 15%까지 완화해도 없으면 포기
 SIMPLE_POOL_TREND_EDGE_TOLERANCE = 0.01   # 추세전환 직전 소폭 허용폭
 # ★★★ (요청 — 신규) 신호공백(갭) 보강 — 아무 채택 지표도 발화 안 하는 정답일 중, 변동폭이
 #   이 이상이고, 탈락지표를 다시 썼을 때 그 지표가 다른 곳에서 이 개수 이하로만 틀리면 채택.
@@ -17139,9 +17143,15 @@ def _compute_target_positions(close_arr, threshold=0.0):
         # 규칙2) 블록의 마지막 날 — 다음 블록이 반대 방향이고 그 마지막 날의 등락폭이
         #   1% 이내면, 그 날의 정답을 다음(전환될) 추세 방향으로 완전히 교체(REPLACE).
         #   (규칙1과 동일하게 정확히 하루만 — 마지막 하루만 대상, 그 전날들은 대상 아님)
+        #   ★★★ (요청 관련 — 버그수정, 견고성) "다음 블록"이 단 하루짜리 노이즈면(진짜
+        #   추세가 아니라 우연한 등락일 수 있음) 그 방향으로 재배정하면 오히려 명확한
+        #   신호(예: 진짜 발화로 인한 뚜렷한 등락)를 무의미한 하루짜리 잡음에 잘못
+        #   흡수시키는 부작용이 있었다(실측 확인). 다음 블록이 최소 2일 이상 이어질
+        #   때만 "진짜 추세 전환"으로 인정해 재배정한다.
         if _bi < len(blocks) - 1:
-            _next_val2 = blocks[_bi + 1][2]
-            if _next_val2 != _val and magnitude[_e] <= _edge_tol:
+            _next_s2, _next_e2, _next_val2 = blocks[_bi + 1]
+            _next_len = _next_e2 - _next_s2 + 1
+            if _next_val2 != _val and magnitude[_e] <= _edge_tol and _next_len >= 2:
                 new_target[_e] = _next_val2
 
     target = new_target
@@ -17345,26 +17355,67 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     def _score(row, is_buy):
         return _score_indicator_vs_target(feat, row, (buy_ok if is_buy else sell_ok), magnitude_m, is_buy)
 
-    # ★★★ (요청 — 핵심) 자리 경쟁 없이, 각 후보를 독립적으로 채점해서 "맞춘 게 틀린 것보다
-    #   많으면"(score_wrong < score_correct) 다른 후보와 무관하게 그대로 채택한다.
-    _buy_cands = []; _buy_rejected = []
-    for _, row in (buy_pool.iterrows() if buy_pool is not None and len(buy_pool) else []):
-        cw, ww, _h0, nfire, fidx = _score(row, True)
-        if nfire == 0:
-            continue
-        if ww >= cw:
-            _buy_rejected.append((row, cw, ww, fidx))
-            continue
-        _buy_cands.append((row, cw, ww, fidx))
-    _sell_cands = []; _sell_rejected = []
-    for _, row in (sell_pool.iterrows() if sell_pool is not None and len(sell_pool) else []):
-        cw, ww, _h0, nfire, fidx = _score(row, False)
-        if nfire == 0:
-            continue
-        if ww >= cw:
-            _sell_rejected.append((row, cw, ww, fidx))
-            continue
-        _sell_cands.append((row, cw, ww, fidx))
+    # ★★★ (요청 — 핵심, 신규) "2%이상은 무조건 안맞는 지표는 제외" — 지금까지는 지표
+    #   전체의 맞은 정도(correct_w)와 틀린 정도(wrong_w)를 '합산'해서 비교했는데, 이러면
+    #   변동폭 2% 이상인 날을 딱 한 번 틀려도(그 자체로 이미 명백한 오답인데) 다른
+    #   날들에서 충분히 많이 맞히면 합산으로 상쇄돼 통과해버리는 문제가 있었다(실측 —
+    #   4~5일씩 롱을 계속 들고 큰 손실을 내는 결과로 나타남). 이제는 이게 '합산으로
+    #   상쇄 가능한 감점'이 아니라 '절대 거부'다 — 변동폭 SIMPLE_POOL_TREND_MID_TOLERANCE
+    #   (기본 2%) 이상인 날을 단 한 번이라도 틀리면, 다른 날들 성적과 무관하게 그
+    #   지표는 즉시 탈락(신호공백 보강 대상도 아님 — 이런 지표는 애초에 큰 폭 오답이
+    #   있다는 것 자체가 신뢰할 수 없다는 뜻이라 구제 대상에서도 제외).
+    #
+    #   ★★★ (요청 — 신규) "만약 아무것도 없으면 기준을 0.5%씩 올려서 다시 진행" — 이
+    #   절대거부 기준이 너무 엄격해서 후보가 한쪽(매수 또는 매도)이라도 0개가 되면,
+    #   그 쪽만 기준을 0.5%p씩(2.5%, 3.0%, ...) 완화해서 후보가 하나라도 나올 때까지
+    #   다시 걸러본다(매수/매도 각각 독립적으로 완화 — 한쪽만 비었으면 그쪽만 완화).
+    _big_miss_thr_base = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.02))
+    _relax_step = float(globals().get('SIMPLE_POOL_BIG_MISS_RELAX_STEP', 0.005))
+    _relax_cap = float(globals().get('SIMPLE_POOL_BIG_MISS_RELAX_CAP', 0.15))   # 안전판(15%까지만)
+
+    def _has_big_miss(fidx, ok_mask, thr):
+        if len(fidx) == 0:
+            return False
+        _wrong = ~ok_mask[fidx]
+        if not _wrong.any():
+            return False
+        return bool((magnitude_m[fidx][_wrong] >= thr).any())
+
+    def _build_cands(pool, ok_mask, is_buy, thr):
+        _cands = []; _rej = []
+        for _, row in (pool.iterrows() if pool is not None and len(pool) else []):
+            cw, ww, _h0, nfire, fidx = _score(row, is_buy)
+            if nfire == 0:
+                continue
+            if _has_big_miss(fidx, ok_mask, thr):
+                _rej.append((row, cw, ww, fidx))   # 절대거부 — 집계와 무관하게 탈락
+                continue
+            if ww >= cw:
+                _rej.append((row, cw, ww, fidx))
+                continue
+            _cands.append((row, cw, ww, fidx))
+        return _cands, _rej
+
+    _buy_thr_used = _big_miss_thr_base
+    _buy_cands, _buy_rejected = _build_cands(buy_pool, buy_ok, True, _buy_thr_used)
+    while not _buy_cands and _buy_thr_used < _relax_cap:
+        _buy_thr_used = round(_buy_thr_used + _relax_step, 6)
+        _buy_cands, _buy_rejected = _build_cands(buy_pool, buy_ok, True, _buy_thr_used)
+    if _buy_cands and _buy_thr_used > _big_miss_thr_base:
+        print(f"    (절대거부 기준 완화) 매수: {_big_miss_thr_base*100:.1f}%에서는 통과 지표가 "
+              f"0개라 {_buy_thr_used*100:.1f}%까지 완화해서 {len(_buy_cands)}개 확보")
+
+    _sell_thr_used = _big_miss_thr_base
+    _sell_cands, _sell_rejected = _build_cands(sell_pool, sell_ok, False, _sell_thr_used)
+    while not _sell_cands and _sell_thr_used < _relax_cap:
+        _sell_thr_used = round(_sell_thr_used + _relax_step, 6)
+        _sell_cands, _sell_rejected = _build_cands(sell_pool, sell_ok, False, _sell_thr_used)
+    if _sell_cands and _sell_thr_used > _big_miss_thr_base:
+        print(f"    (절대거부 기준 완화) 매도: {_big_miss_thr_base*100:.1f}%에서는 통과 지표가 "
+              f"0개라 {_sell_thr_used*100:.1f}%까지 완화해서 {len(_sell_cands)}개 확보")
+
+    # ★ 갭 채우기(신호공백 보강)에서도 동일하게 완화된 기준을 써야 일관됨.
+    _big_miss_thr = max(_buy_thr_used, _sell_thr_used)
 
     def _to_df(cands, pool_for_empty):
         if not cands:
@@ -17411,7 +17462,12 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 _fset = set(_fidx.tolist())
                 if _d not in _fset:
                     continue
-                _n_other_wrong = sum(1 for _x in _fset if _x != _d and not buy_ok[_x])
+                _other_wrong_days = [_x for _x in _fset if _x != _d and not buy_ok[_x]]
+                # ★★★ (요청 — 연동) 다른 곳에 2% 이상 큰 오답이 하나라도 있으면 이 지표는
+                #   갭 구제 대상에서도 완전히 제외(절대거부와 동일한 기준 — 개수 상관없이).
+                if any(magnitude_m[_x] >= _big_miss_thr for _x in _other_wrong_days):
+                    continue
+                _n_other_wrong = len(_other_wrong_days)
                 if _n_other_wrong > _max_other_wrongs:
                     continue
                 _sc = float(_row.get('reliability', 0.0)) - _n_other_wrong * 1000.0
@@ -17422,7 +17478,10 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 _fset = set(_fidx.tolist())
                 if _d not in _fset:
                     continue
-                _n_other_wrong = sum(1 for _x in _fset if _x != _d and not sell_ok[_x])
+                _other_wrong_days = [_x for _x in _fset if _x != _d and not sell_ok[_x]]
+                if any(magnitude_m[_x] >= _big_miss_thr for _x in _other_wrong_days):
+                    continue
+                _n_other_wrong = len(_other_wrong_days)
                 if _n_other_wrong > _max_other_wrongs:
                     continue
                 _sc = float(_row.get('reliability', 0.0)) - _n_other_wrong * 1000.0
