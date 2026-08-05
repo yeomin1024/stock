@@ -14539,6 +14539,14 @@ SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = False
 SIMPLE_POOL_POSITION_MATCH_SELECT   = True
 SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT  = True    # 상승/하락폭 클수록 그 날을 맞히는 게 더 중요
 SIMPLE_POOL_MATCH_TARGET_THRESHOLD  = 0.0     # 정답 판정 임계값(다음날 수익률 > 이 값이면 '롱이 정답')
+# ★★★ (요청 — 신규) 정답자리 관대화 — 추세 중간 소폭이탈/추세전환 직전 소폭 날은
+#   반대(또는 새) 추세 방향도 정답으로 함께 인정(_compute_target_positions 참고).
+SIMPLE_POOL_TREND_MID_TOLERANCE  = 0.02   # 추세 중간 하루짜리 반대방향 소폭이탈 허용폭
+SIMPLE_POOL_TREND_EDGE_TOLERANCE = 0.01   # 추세전환 직전 소폭 허용폭
+# ★★★ (요청 — 신규) 신호공백(갭) 보강 — 아무 채택 지표도 발화 안 하는 정답일 중, 변동폭이
+#   이 이상이고, 탈락지표를 다시 썼을 때 그 지표가 다른 곳에서 이 개수 이하로만 틀리면 채택.
+SIMPLE_POOL_GAP_FILL_MIN_MAGNITUDE      = 0.02
+SIMPLE_POOL_GAP_FILL_MAX_OTHER_WRONGS   = 1
 # ★★★ (요청 관련 — 버그수정, 실측 확인: 매수1600+개일 때 매도가 232→0개로 전멸) 매수보호구역·
 #   침범허용폭 — 매수지표가 많을수록 "어느 하나라도 겹침"은 흔해지므로, 두 손잡이로 과도한
 #   배제를 막는다. HARM_MIN_FRAC: 매수보호구역으로 인정하려면 살아남은 매수지표 중 최소 이
@@ -16703,16 +16711,19 @@ def _limit_thresholds_per_indicator(pool_df, max_per=None, verbose=False):
 
 
 
-def _dedup_same_indicator_smallest_horizon(pool):
-    """★★★ (요청 — 신규) "동일한 이름의 지표지만 horizon 일수만 다른 지표가 있으면 일수
-       가장 적은 지표만 사용" — 같은 원본 지표명(indicator 컬럼)이 여러 호라이즌으로
-       풀에 동시에 남아 있으면, 그 중 horizon_day가 가장 작은 것만 남기고 나머지는
-       제거한다. 같은 원천 데이터를 여러 호라이즌 버전으로 중복 반영하는 것을 막고,
-       가장 빠르게 반응하는(적은 일수) 버전을 우선한다."""
-    if pool is None or len(pool) == 0 or 'indicator' not in pool.columns or 'horizon_day' not in pool.columns:
+def _dedup_same_indicator_best_reliability(pool):
+    """★★★ (요청 — 재설계) "같은 지표명이면 그중 신뢰도 가장 높은 하나만 사용" — 같은
+       원본 지표명(indicator 컬럼)이 여러 호라이즌으로 풀에 동시에 남아 있으면, 그 중
+       신뢰도(reliability)가 가장 높은 것만 남기고 나머지는 제거한다.
+       ★★★ (요청 관련 — 재수정) 이전엔 '호라이즌이 가장 작은 것'을 유지했는데, 이제
+       '어느 호라이즌이든 신뢰도가 가장 높은 버전'을 유지하도록 기준을 바꿨다 — 호라이즌
+       자체보다 실제 예측력(신뢰도)이 그 지표의 최선 버전을 고르는 데 더 직접적인 기준."""
+    if pool is None or len(pool) == 0 or 'indicator' not in pool.columns:
         return pool
     pool = pool.reset_index(drop=True)
-    keep_idx = pool.groupby('indicator')['horizon_day'].idxmin()
+    if 'reliability' not in pool.columns:
+        return pool
+    keep_idx = pool.groupby('indicator')['reliability'].idxmax()
     return pool.loc[keep_idx].reset_index(drop=True)
 
 
@@ -17053,8 +17064,26 @@ def _compute_target_positions(close_arr, threshold=0.0):
        것뿐이라(threshold가 음수면 오히려 target=1로 잘못 나올 수도 있었음), 마지막
        날짜(및 가격 데이터가 없어 다음날 수익률을 못 구하는 날)는 valid=False로 명시
        표시해 채점·자리매칭 양쪽에서 완전히 제외되도록 한다.
-       반환: target(0/1 배열), magnitude(절대등락률 배열), ret(부호있는 등락률 배열),
-       valid(그 날의 정답을 실제로 알 수 있는지 — True/False 배열)."""
+
+       ★★★ (요청 — 신규) 정답 자리를 "완전한 이진값"에서 "허용 방향 집합"으로 확장 —
+       1) "지속적인 매수/매도 추세 중간에 2% 내외로 그 추세랑 안 맞는 지점은, 그냥 그
+          추세를 따라가는 지표가 있어도 상관없다" — 같은 방향이 연속되는 '추세 블록'
+          사이에 딱 하루만 반대로 끼어 있고 그 등락폭이 SIMPLE_POOL_TREND_MID_TOLERANCE
+          (기본 2%) 이하면, 그 하루는 "엄격한 정답(반대방향)"과 별개로 "주변 추세
+          방향도 정답으로 인정"한다.
+       2) "추세 전환 직전 변동률 1% 내외인 날은 그 추세전환 포지션을 따라가는 지표로도
+          사용" — 한 추세 블록이 끝나고 다음 블록(반대 방향)이 시작되기 직전의 마지막
+          날의 등락폭이 SIMPLE_POOL_TREND_EDGE_TOLERANCE(기본 1%) 이하면, 그 날은
+          "엄격한 정답(원래 추세 방향)"과 별개로 "다음(전환될) 추세 방향도 정답으로
+          인정"한다.
+       이 두 규칙 다 '엄격한 정답을 지우는' 게 아니라 '추가로 허용'하는 것 — 원래
+       방향으로 맞춰도 여전히 정답이고, 관대화된 반대 방향으로 맞춰도 이제 정답이 된다
+       (둘 다 정답이 되는 날이 생김. 오답은 그 둘 다 아닌 경우만).
+
+       반환: target(엄격한 0/1 배열, 추세전환 판정 등 기존 용도에 그대로 사용),
+       magnitude(절대등락률), ret(부호있는 등락률), valid(정답을 알 수 있는지),
+       buy_ok(그 날 매수로 판정해도 정답으로 인정하는지 — 관대화 반영),
+       sell_ok(그 날 매도로 판정해도 정답으로 인정하는지 — 관대화 반영)."""
     n = len(close_arr)
     ret = np.zeros(n)
     valid = np.zeros(n, dtype=bool)
@@ -17067,7 +17096,47 @@ def _compute_target_positions(close_arr, threshold=0.0):
     # 가격이 없어 정답을 알 수 없으므로.
     target = (ret > threshold).astype(int)
     magnitude = np.abs(ret)
-    return target, magnitude, ret, valid
+
+    buy_ok = (target == 1) & valid
+    sell_ok = (target == 0) & valid
+
+    _mid_tol = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.02))
+    _edge_tol = float(globals().get('SIMPLE_POOL_TREND_EDGE_TOLERANCE', 0.01))
+
+    # ★ 유효한(valid) 구간에서 target이 연속으로 같은 값을 유지하는 '추세 블록' 찾기.
+    blocks = []   # [(start_idx, end_idx, value), ...] — end_idx 포함, valid 구간만
+    _t = 0
+    while _t < n:
+        if not valid[_t]:
+            _t += 1
+            continue
+        _s = _t
+        while _t + 1 < n and valid[_t + 1] and target[_t + 1] == target[_t]:
+            _t += 1
+        blocks.append((_s, _t, int(target[_s])))
+        _t += 1
+
+    for _bi, (_s, _e, _val) in enumerate(blocks):
+        # 규칙1) 길이 1짜리 블록(하루만 낀 반대방향)이고, 앞뒤 블록이 서로 같은 방향이며
+        #   등락폭이 2% 이내면 — 그 하루도 주변 추세 방향을 정답으로 추가 인정.
+        if _s == _e and 0 < _bi < len(blocks) - 1:
+            _prev_val = blocks[_bi - 1][2]; _next_val = blocks[_bi + 1][2]
+            if _prev_val == _next_val and _prev_val != _val and magnitude[_s] <= _mid_tol:
+                if _prev_val == 1:
+                    buy_ok[_s] = True
+                else:
+                    sell_ok[_s] = True
+        # 규칙2) 블록의 마지막 날 — 다음 블록이 반대 방향이고 그 마지막 날의 등락폭이
+        #   1% 이내면, 그 날은 다음(전환될) 추세 방향도 정답으로 추가 인정.
+        if _bi < len(blocks) - 1:
+            _next_val2 = blocks[_bi + 1][2]
+            if _next_val2 != _val and magnitude[_e] <= _edge_tol:
+                if _next_val2 == 1:
+                    buy_ok[_e] = True
+                else:
+                    sell_ok[_e] = True
+
+    return target, magnitude, ret, valid, buy_ok, sell_ok
 
 
 def _aligned_signal_for_row(feat, row):
@@ -17087,20 +17156,24 @@ def _aligned_signal_for_row(feat, row):
     return s
 
 
-def _score_indicator_vs_target(feat, row, target, magnitude, is_buy, harm_mask=None):
+def _score_indicator_vs_target(feat, row, ok_mask, magnitude, is_buy, harm_mask=None):
     """★★★ (요청) 지표가 발화하는(표시일 기준) 날들이 '정답'과 맞는지/틀리는지 진폭가중으로
        채점 — 상승/하락폭이 큰 날을 맞히면 더 크게 점수를 주고(SIMPLE_POOL_MATCH_MAGNITUDE_
        WEIGHT), 그 폭만큼 틀리면 더 크게 감점한다. harm_mask가 주어지면(매도 지표 평가 시,
        이미 확정된 매수커버 날짜) 그 날짜에 발화한 만큼을 '해침(harm)'으로 별도 집계.
+       ★★★ (요청 — 재설계) ok_mask는 호출자가 is_buy에 맞게 미리 골라 넘기는 확장된
+       정답 마스크(buy_ok 또는 sell_ok, _compute_target_positions 참고) — 추세 중간
+       소폭이탈·추세전환 직전 소폭 관대화가 이미 반영된 상태라, 여기서는 '그 날이 이
+       방향으로 인정되는지'만 그대로 읽으면 된다(예전처럼 target==1/0을 직접 비교하지
+       않음).
        반환: (correct_w, wrong_w, harm_w, n_fire, fire_idx)."""
     _use_mag = bool(globals().get('SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT', True))
     sig = _aligned_signal_for_row(feat, row)
     fire_idx = np.nonzero(sig)[0]
-    fire_idx = fire_idx[fire_idx < len(target)]
+    fire_idx = fire_idx[fire_idx < len(ok_mask)]
     if len(fire_idx) == 0:
         return 0.0, 0.0, 0.0, 0, fire_idx
-    want = 1 if is_buy else 0
-    is_correct = (target[fire_idx] == want)
+    is_correct = ok_mask[fire_idx]
     w = magnitude[fire_idx] if _use_mag else np.ones(len(fire_idx))
     correct_w = float(w[is_correct].sum())
     wrong_w = float(w[~is_correct].sum())
@@ -17217,11 +17290,13 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     _thr = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
     _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
     _pm_cache_key = (id(close_arr), len(close_arr), _thr, ticker, _lookback,
-                     globals().get('SIMPLE_POOL_REVERSAL_BONUS_ENABLED', True))
+                     globals().get('SIMPLE_POOL_REVERSAL_BONUS_ENABLED', True),
+                     round(float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.02)), 6),
+                     round(float(globals().get('SIMPLE_POOL_TREND_EDGE_TOLERANCE', 0.01)), 6))
     if _pm_cache_key in _POSITION_MATCH_TARGET_CACHE:
-        target, magnitude_m, reversal_mask, n, _excl_mask = _POSITION_MATCH_TARGET_CACHE[_pm_cache_key]
+        target, magnitude_m, reversal_mask, n, _excl_mask, buy_ok, sell_ok = _POSITION_MATCH_TARGET_CACHE[_pm_cache_key]
     else:
-        target, magnitude, _ret, _valid = _compute_target_positions(close_arr, threshold=_thr)
+        target, magnitude, _ret, _valid, buy_ok, sell_ok = _compute_target_positions(close_arr, threshold=_thr)
         n = len(target)
         _excl_mask = ~_valid
 
@@ -17241,6 +17316,8 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 pass
         magnitude_m = magnitude.copy()
         magnitude_m[_excl_mask] = 0.0
+        buy_ok = buy_ok & ~_excl_mask
+        sell_ok = sell_ok & ~_excl_mask
 
         # ★★★ (요청) 추세전환 자리 판정 — 발화 직전 LOOKBACK일 추세와 반대방향인 정답 자리.
         reversal_mask = np.zeros(n, dtype=bool)
@@ -17257,40 +17334,48 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 reversal_mask[_t] = True     # 상승→하락 전환 = 매도 추세전환 자리
         if len(_POSITION_MATCH_TARGET_CACHE) >= 8:
             _POSITION_MATCH_TARGET_CACHE.pop(next(iter(_POSITION_MATCH_TARGET_CACHE)))
-        _POSITION_MATCH_TARGET_CACHE[_pm_cache_key] = (target, magnitude_m, reversal_mask, n, _excl_mask)
+        _POSITION_MATCH_TARGET_CACHE[_pm_cache_key] = (target, magnitude_m, reversal_mask, n, _excl_mask, buy_ok, sell_ok)
 
     def _score(row, is_buy, harm_mask=None):
-        return _score_indicator_vs_target(feat, row, target, magnitude_m, is_buy, harm_mask=harm_mask)
+        return _score_indicator_vs_target(feat, row, (buy_ok if is_buy else sell_ok), magnitude_m, is_buy, harm_mask=harm_mask)
 
     # ── 후보 채점 — 매수/매도 둘 다 기존처럼 오답≥정답만 제외(부분 허용) ──
     #   ★★★ (요청 — 재조정) "절대 침범 금지"(오답=0)는 후보가 하나도 안 남는 비현실적인
     #   결과를 만들었다(실측 확인: 매수 11개 전부 탈락) — 대신 "침범이 불가피하면 최소화
     #   하되, 그 자리에서 매도쪽을 보강해 net 계산에서 자연히 매도가 이기도록" 방식으로
     #   바꾼다(아래 _invaded_days 보강 로직 참고). 후보 필터 자체는 기존 원칙으로 복귀.
-    _buy_cands = []
+    #   ★★★ (요청 — 신규) 오답≥정답이라 여기서 탈락한 지표도 _rejected로 별도 보관 —
+    #   아래 '신호공백 보강' 단계에서 "탈락한 지표들 중" 재검토 대상이 이것.
+    _buy_cands = []; _buy_rejected = []
     for _, row in (buy_pool.iterrows() if buy_pool is not None and len(buy_pool) else []):
         cw, ww, _h0, nfire, fidx = _score(row, True)
-        if nfire == 0 or ww >= cw:
+        if nfire == 0:
+            continue
+        if ww >= cw:
+            _buy_rejected.append((row, cw, ww, fidx))
             continue
         _buy_cands.append((row, cw, ww, fidx))
-    _sell_cands = []
+    _sell_cands = []; _sell_rejected = []
     for _, row in (sell_pool.iterrows() if sell_pool is not None and len(sell_pool) else []):
         cw, ww, _h0, nfire, fidx = _score(row, False)
-        if nfire == 0 or ww >= cw:
+        if nfire == 0:
+            continue
+        if ww >= cw:
+            _sell_rejected.append((row, cw, ww, fidx))
             continue
         _sell_cands.append((row, cw, ww, fidx))
 
-    # day -> 후보 인덱스 목록 (매수/매도 각각, 정답 자리 기준으로만)
+    # day -> 후보 인덱스 목록 (매수/매도 각각, 정답 자리 기준으로만 — 관대화 반영된 buy_ok/sell_ok 사용)
     _buy_day_to_cands = {}
     for _ci, (row, cw, ww, fidx) in enumerate(_buy_cands):
         for _d in fidx:
-            if _excl_mask[_d] or target[_d] != 1:
+            if _excl_mask[_d] or not buy_ok[_d]:
                 continue
             _buy_day_to_cands.setdefault(_d, []).append(_ci)
     _sell_day_to_cands = {}
     for _ci, (row, cw, ww, fidx) in enumerate(_sell_cands):
         for _d in fidx:
-            if _excl_mask[_d] or target[_d] != 0:
+            if _excl_mask[_d] or not sell_ok[_d]:
                 continue
             _sell_day_to_cands.setdefault(_d, []).append(_ci)
 
@@ -17414,11 +17499,11 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
         if 'used_for_reversal' not in buy_survivors.columns:
             buy_survivors['used_for_reversal'] = pd.Series(dtype=bool)
 
-    # ★ 매수보호구역(4단계 매도 나머지 자리 선정에 사용) — 실제 정답(target==1)이면서
+    # ★ 매수보호구역(4단계 매도 나머지 자리 선정에 사용) — 실제 정답(관대화 반영 buy_ok)이면서
     #   충분히 두텁게 지지되는 자리만(기존 방식 그대로, 1+3단계 결과 전체 기준).
     _min_frac = float(globals().get('SIMPLE_POOL_MATCH_HARM_MIN_FRAC', 0.05))
     _min_strength = max(1, int(np.ceil(_min_frac * max(1, len(buy_survivors)))))
-    harm_mask = (buy_strength >= _min_strength) & (target == 1)
+    harm_mask = (buy_strength >= _min_strength) & buy_ok
     _harm_margin = float(globals().get('SIMPLE_POOL_MATCH_HARM_MARGIN', 1.5))
 
     # ★★★ (요청 — 신규) "침범하지 않는 지표가 없어서 침범이 불가피하면 침범을 최소화하되,
@@ -17427,7 +17512,7 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     #   매수지표가 침범하는 날짜(target==0인데 매수강도>0)를 찾아서, 그 날짜만큼은 매도
     #   후보를 하나만이 아니라 '전부' 채택해 매도쪽 가중치를 최대화한다. net=매수-매도
     #   구조이므로, 그 날 매도가 두텁게 실리면 매수의 침범 기여가 자연히 상쇄된다.
-    _invaded_days = set(np.nonzero((target == 0) & (buy_strength > 0) & (~_excl_mask))[0].tolist())
+    _invaded_days = set(np.nonzero(sell_ok & (buy_strength > 0) & (~_excl_mask))[0].tolist())
     _boosted_days = set()
     if _invaded_days:
         for _d in _invaded_days:
@@ -17464,7 +17549,98 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
             _best = max(_pool_use, key=lambda _ci: float(_sell_cands[_ci][0].get('reliability', 0.0)))
             sell_selected.add(_best)
 
+    # ★★★ (요청 — 신규) "이렇게 하면 신호가 아예 없는 날도 있을 텐데... 사용 안 하기로
+    #   한 지표들 중 다시 사용시 다른 여러 군데 맞지 않는게 생기면 사용하지 말고, 그렇지
+    #   않고 해당날이 변동폭이 커서 맞추는게 이득이면 사용" — 1~4단계가 다 끝난 뒤에도
+    #   매수·매도 어느 쪽도 그 자리를 커버 못 한 '갭 날'(정답이 있는 날인데 아무 채택된
+    #   지표도 발화 안 함)이 남을 수 있다. "사용 안 하기로 한 지표"는 애초에 오답≥정답
+    #   이라 후보에도 못 든 지표들(_buy_rejected/_sell_rejected)을 가리킨다 — 이런
+    #   지표를 그 갭 하나 때문에 다시 쓰면 "다른 여러 군데"(그 지표의 나머지 오답들,
+    #   ww-cw로 측정되는 순손해)가 생기므로, 그 갭날의 변동폭(이득)이 그 순손해보다
+    #   커야만("맞추는 게 이득"이어야만) 채택한다 — 그렇지 않으면 그대로 미사용.
+    _gap_min_mag = float(globals().get('SIMPLE_POOL_GAP_FILL_MIN_MAGNITUDE', 0.02))
+    _covered_days = set()
+    for _ci in buy_selected:
+        _covered_days.update(_buy_cands[_ci][3].tolist())
+    for _ci in sell_selected:
+        _covered_days.update(_sell_cands[_ci][3].tolist())
+    _gap_days = [d for d in range(n) if not _excl_mask[d] and (buy_ok[d] or sell_ok[d])
+                and d not in _covered_days and magnitude_m[d] >= _gap_min_mag]
+    # ★★★ (요청 — 신규, 재설계) "이렇게 하면 신호가 아예 없는 날도 있을 텐데... 사용 안
+    #   하기로 한 지표들 중 다시 사용시 다른 여러 군데 맞지 않는게 생기면 사용하지 말고,
+    #   그렇지 않고 해당날이 변동폭이 커서 맞추는게 이득이면 사용" — "손해"를 magnitude
+    #   합(wrong_w)으로 재보면 수학적 모순이 생긴다: rejected 조건 자체가 correct_w≤
+    #   wrong_w인데, 이 갭날은 그 correct_w의 일부이므로 항상 magnitude[갭날]≤correct_w
+    #   ≤wrong_w — 즉 "이 갭날 하나의 이득이 전체 오답합보다 크다"는 조건은 절대 성립할
+    #   수 없다(자기모순). "다른 여러 군데"는 magnitude 합이 아니라 '오답이 나는 날의
+    #   개수'로 봐야 이 모순이 사라지고 요청 취지("여러 군데"=복수 개수)에도 더 맞는다
+    #   — 그 지표가 (이 갭날 제외) 다른 발화일에서 오답을 내는 횟수가 적으면("여러 군데"
+    #   아니면) 채택, 그 갭날 자체는 이미 위에서 변동폭 기준(SIMPLE_POOL_GAP_FILL_MIN_
+    #   MAGNITUDE)을 통과했으므로 "맞추는 게 이득"은 그것으로 충족.
+    _max_other_wrongs = int(globals().get('SIMPLE_POOL_GAP_FILL_MAX_OTHER_WRONGS', 1))
+    _n_gap_filled = 0
+    _buy_rescued = []; _sell_rescued = []
+    for _d in _gap_days:
+        _best_row = None; _best_score = -1e18; _best_is_buy = None; _best_fidx = None
+        if buy_ok[_d]:
+            for (_row, _cw, _ww, _fidx) in _buy_rejected:
+                _fset = set(_fidx.tolist())
+                if _d not in _fset:
+                    continue
+                _n_other_wrong = sum(1 for _x in _fset if _x != _d and not buy_ok[_x])
+                if _n_other_wrong > _max_other_wrongs:
+                    continue   # 다른 여러 군데서 틀림 — 사용 안 함
+                _score = float(_row.get('reliability', 0.0)) - _n_other_wrong * 1000.0
+                if _score > _best_score:
+                    _best_score = _score; _best_row = _row; _best_is_buy = True; _best_fidx = _fidx
+        if sell_ok[_d]:
+            for (_row, _cw, _ww, _fidx) in _sell_rejected:
+                _fset = set(_fidx.tolist())
+                if _d not in _fset:
+                    continue
+                _n_other_wrong = sum(1 for _x in _fset if _x != _d and not sell_ok[_x])
+                if _n_other_wrong > _max_other_wrongs:
+                    continue
+                _score = float(_row.get('reliability', 0.0)) - _n_other_wrong * 1000.0
+                if _score > _best_score:
+                    _best_score = _score; _best_row = _row; _best_is_buy = False; _best_fidx = _fidx
+        if _best_row is not None:
+            if _best_is_buy:
+                _buy_rescued.append(_best_row)
+                _covered_days.update(_best_fidx.tolist())
+            else:
+                _sell_rescued.append(_best_row)
+                _covered_days.update(_best_fidx.tolist())
+            _n_gap_filled += 1
+    if _n_gap_filled:
+        print(f"    (신호공백 보강) 변동폭 {_gap_min_mag*100:.1f}%↑인 무발화일 {len(_gap_days)}개 중 "
+              f"{_n_gap_filled}개를 탈락지표 재검토로 채움(매수{len(_buy_rescued)}/매도{len(_sell_rescued)}, "
+              f"다른 곳 오답 {_max_other_wrongs}개 이하인 것만)")
+
+    # ★ 갭 채우기로 buy_selected가 바뀌었을 수 있으므로 buy_survivors를 최신 상태로 재빌드.
+    buy_survivors, buy_strength = _build_pool(_buy_cands, buy_selected, buy_reversal_used)
+    if buy_survivors is None:
+        buy_survivors = (buy_pool.iloc[0:0].copy() if buy_pool is not None else
+                         pd.DataFrame(columns=['indicator', 'reliability']))
+        if 'used_for_reversal' not in buy_survivors.columns:
+            buy_survivors['used_for_reversal'] = pd.Series(dtype=bool)
+    if _buy_rescued:
+        _resc_df = pd.DataFrame(_buy_rescued).reset_index(drop=True)
+        _resc_df['score_correct'] = 0.0; _resc_df['score_wrong'] = 0.0; _resc_df['score_harm'] = 0.0
+        _resc_df['used_for_reversal'] = False
+        buy_survivors = pd.concat([buy_survivors, _resc_df], ignore_index=True) if len(buy_survivors) else _resc_df
+
     sell_survivors, _sell_strength = _build_pool(_sell_cands, sell_selected, sell_reversal_used)
+    if sell_survivors is None:
+        sell_survivors = (sell_pool.iloc[0:0].copy() if sell_pool is not None else
+                          pd.DataFrame(columns=['indicator', 'reliability']))
+        if 'used_for_reversal' not in sell_survivors.columns:
+            sell_survivors['used_for_reversal'] = pd.Series(dtype=bool)
+    if _sell_rescued:
+        _resc_sdf = pd.DataFrame(_sell_rescued).reset_index(drop=True)
+        _resc_sdf['score_correct'] = 0.0; _resc_sdf['score_wrong'] = 0.0; _resc_sdf['score_harm'] = 0.0
+        _resc_sdf['used_for_reversal'] = False
+        sell_survivors = pd.concat([sell_survivors, _resc_sdf], ignore_index=True) if len(sell_survivors) else _resc_sdf
     if sell_survivors is None:
         sell_survivors = (sell_pool.iloc[0:0].copy() if sell_pool is not None else
                           pd.DataFrame(columns=['indicator', 'reliability']))
@@ -17981,8 +18157,8 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             #   있으면, 그 중 호라이즌이 가장 작은 것만 남긴다(같은 원천 정보를 여러 호라이즌
             #   버전으로 중복 반영하는 것을 방지, 가장 빠르게(적은 일수로) 반응하는 버전 우선).
             _n_before_b2, _n_before_s2 = len(buy_c), len(sell_c)
-            buy_c  = _dedup_same_indicator_smallest_horizon(buy_c)
-            sell_c = _dedup_same_indicator_smallest_horizon(sell_c)
+            buy_c  = _dedup_same_indicator_best_reliability(buy_c)
+            sell_c = _dedup_same_indicator_best_reliability(sell_c)
             if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
                 print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
                       f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 최소 호라이즌만 유지)")
@@ -24871,12 +25047,36 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _abdf, _asdf = _allc
             _verify_on_disp = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', False))
             _min_pass_disp = int(globals().get('SIMPLE_POOL_VERIFY_MIN_PASS', 3))
+            # ★★★ (요청 — 버그수정) "지표별 발화날짜 정보랑 최근 날짜 발화지표가 안 맞는
+            #   것 같다" — 원인: 이 섹션은 호라이즌 day별로 쪼갠 서브셋마다 각각
+            #   _add_display_suffix를 다시 호출했는데, "최근일자 발화지표" 섹션은 전체
+            #   _abdf/_asdf에 한 번만 적용했다. 그룹키(indicator||horizon_day) 자체는
+            #   이론상 같은 결과를 내야 하지만, 두 섹션이 완전히 독립적으로 각자 접미사를
+            #   계산하는 구조 자체가 앞으로 로직이 바뀔 때마다 다시 어긋날 수 있는 위험을
+            #   안고 있었다 — 이제 여기서 딱 한 번만 접미사를 붙이고, 아래 day별 루프와
+            #   "최근일자 발화지표" 섹션 둘 다 이 결과를 그대로 재사용해 원천적으로
+            #   같은 표시명을 쓰도록 통일한다.
+            _abdf = _add_display_suffix(_abdf) if _abdf is not None and len(_abdf) else _abdf
+            _asdf = _add_display_suffix(_asdf) if _asdf is not None and len(_asdf) else _asdf
+            globals()['_SIMPLE_MODE_ALL_CANDIDATES_DISP'] = (_abdf, _asdf)   # ★ 최근일자 섹션이 재사용
+
+            # ★★★ (요청 — 신규) "전체 후보시트에 사용여부 표시" — 최종 채택 풀(buy_pool_used/
+            #   sell_pool_used, 실제 net 계산에 쓰이는 것)에 표시명이 포함되는지로 판정.
+            _nsd_all = globals().get('_KNET_FULL') or {}
+            _bp_used_all = _nsd_all.get('buy_pool_used')
+            _sp_used_all = _nsd_all.get('sell_pool_used')
+            _used_names_buy_all = set(_bp_used_all['display_name'].astype(str)) \
+                if (_bp_used_all is not None and len(_bp_used_all) and 'display_name' in _bp_used_all.columns) else set()
+            _used_names_sell_all = set(_sp_used_all['display_name'].astype(str)) \
+                if (_sp_used_all is not None and len(_sp_used_all) and 'display_name' in _sp_used_all.columns) else set()
+
             ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
             ws_all.cell(1, 1).value = (
                 f"{ticker} — 지표컷(최소신호수·성공률) 통과 후보 전부 표시(개수제한 없음), "
                 f"호라이즌일별 섹션·신뢰도순 정렬. 신뢰도=다음날 등락률 기반 t-통계량(임계값 대비, "
                 f"윌슨 미사용) — max(0,(평균등락-임계값)/표준오차). "
-                f"net가중치점수=신뢰도 그 자체(윌슨 미사용, 신뢰도가 직접·전적으로 net 가중치를 결정)."
+                f"net가중치점수=신뢰도 그 자체(윌슨 미사용, 신뢰도가 직접·전적으로 net 가중치를 결정). "
+                f"사용여부=중복제거·정답자리매칭까지 거쳐 실제 일별 백테스트 net 계산에 쓰이는지."
                 + (f" 2차검증(①기저확률초과 ②기대수익 ③시간안정성)도 표시 — {_min_pass_disp}/3개 이상 "
                    f"통과해야 함." if _verify_on_disp else " (2차검증은 꺼져 있음)"))
             ws_all.cell(1, 1).font = Font(bold=True, size=12)
@@ -24891,6 +25091,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             #   나열 — 예측이 맞았으면(매수=상승/매도=하락) 초록, 틀렸으면 빨강 글자색.
             _cols_all += ['신호일자(다음날등락%)']
             _c_dates_all = len(_cols_all)   # ★ 이 컬럼의 위치(뒤에서 참조)
+            _cols_all += ['사용여부']   # ★ (요청) 최종 채택 풀 포함 여부
+            _c_used_all = len(_cols_all)
             _close_arr_all = (pd.Series(close_full).reindex(feat.index).values.astype(np.float64)
                               if (feat is not None and close_full is not None) else None)
             _green  = PatternFill('solid', fgColor='C6E0B4')
@@ -24908,7 +25110,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                             if _day is not None else _df.copy())
                     if len(_dsub) == 0:
                         continue
-                    _dsub = _add_display_suffix(_dsub)   # ★ 같은 지표명 여러 임계값이면 구분 접미사
                     _sort_col = 'reliability' if 'reliability' in _dsub.columns else 'success_rate'
                     _dsub = _dsub.sort_values(_sort_col, ascending=False).reset_index(drop=True)
                     _r_all += 1
@@ -24971,6 +25172,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                 ws_all.cell(_r_all, _c_dates_all).value = _CellRichText(_rt_parts)
                             else:
                                 ws_all.cell(_r_all, _c_dates_all).value = '-'
+                        # ★★★ (요청) 사용여부 — 이 표시명이 실제 최종 채택 풀(net 계산에
+                        #   쓰이는 buy_pool_used/sell_pool_used)에 있는지.
+                        _dname_check = str(_row.get('display_name', _row['indicator']))
+                        _is_used_all = (_dname_check in _used_names_buy_all) if _label == '매수' \
+                                       else (_dname_check in _used_names_sell_all)
+                        _use_cell_all = ws_all.cell(_r_all, _c_used_all)
+                        _use_cell_all.value = '사용' if _is_used_all else '미사용'
+                        _use_cell_all.font = (Font(color='006100', bold=True) if _is_used_all
+                                              else Font(color='808080'))
                         if _verify_on_disp:
                             _fill = _green if _row.get('passed_verify') else _grey
                             for _ci in range(1, len(_cols_all) + 1):
@@ -24982,11 +25192,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _widths += [9, 9, 10, 9, 9, 9, 10, 8, 8, 8, 8, 9]
             _widths += [10, 12]
             _widths += [60]   # ★ 신호일자(다음날등락%) — 날짜가 여러 개 나열되므로 넓게
+            _widths += [10]   # ★ 사용여부
             for _ci, _w in enumerate(_widths, 1):
                 ws_all.column_dimensions[get_column_letter(_ci)].width = _w
             _n_b_tot = len(_abdf) if _abdf is not None else 0
             _n_s_tot = len(_asdf) if _asdf is not None else 0
-            print(f"  ✓ 전체 후보 지표 시트 — 지표컷 통과분 매수 {_n_b_tot}개 / 매도 {_n_s_tot}개 "
+            _n_b_used = sum(1 for _n in (_abdf['display_name'] if _abdf is not None and len(_abdf) and 'display_name' in _abdf.columns else []) if str(_n) in _used_names_buy_all)
+            _n_s_used = sum(1 for _n in (_asdf['display_name'] if _asdf is not None and len(_asdf) and 'display_name' in _asdf.columns else []) if str(_n) in _used_names_sell_all)
+            print(f"  ✓ 전체 후보 지표 시트 — 지표컷 통과분 매수 {_n_b_tot}개(실사용 {_n_b_used}개) / "
+                  f"매도 {_n_s_tot}개(실사용 {_n_s_used}개) "
                   f"(호라이즌일별 섹션·신뢰도순 정렬, 개수제한 없이 전부 net에 참여{', 2차검증 결과 포함' if _verify_on_disp else ''})")
     except Exception as _eallc:
         import traceback; traceback.print_exc()
@@ -25018,11 +25232,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _used_names_sell = set(_sp_used_latest['display_name'].astype(str)) \
             if (_sp_used_latest is not None and len(_sp_used_latest) and 'display_name' in _sp_used_latest.columns) else set()
 
-        # ★ _abdf/_asdf는 "전체 후보 지표" 시트 작성용 원본이라 아직 _add_display_suffix
-        #   적용 전(=[N일] 접미사 없음) 상태다 — buy_pool_used 등의 display_name(접미사
-        #   붙음)과 이름을 맞추려면 여기서도 동일하게 접미사를 붙여야 한다.
-        _abdf_disp = _add_display_suffix(_abdf) if _abdf is not None and len(_abdf) else _abdf
-        _asdf_disp = _add_display_suffix(_asdf) if _asdf is not None and len(_asdf) else _asdf
+        # ★★★ (요청 관련 — 버그수정) "전체 후보 지표" 섹션에서 이미 접미사를 붙이고
+        #   globals()['_SIMPLE_MODE_ALL_CANDIDATES_DISP']로 저장해둔 것을 그대로 재사용
+        #   — 두 섹션이 독립적으로 각자 접미사를 계산하던 예전 구조가 불일치의 근본
+        #   원인이었다(실측 확인). 혹시 그 섹션이 예외로 건너뛰어져 저장이 안 됐으면
+        #   폴백으로 여기서 직접 계산.
+        _disp_pair = globals().get('_SIMPLE_MODE_ALL_CANDIDATES_DISP')
+        if _disp_pair is not None:
+            _abdf_disp, _asdf_disp = _disp_pair
+        else:
+            _abdf_disp = _add_display_suffix(_abdf) if _abdf is not None and len(_abdf) else _abdf
+            _asdf_disp = _add_display_suffix(_asdf) if _asdf is not None and len(_asdf) else _asdf
 
         # 발화 행만 추림(방향 라벨 붙여서) + 신호일자/정답판정(근소오답 구제 포함)을
         # 이 단계에서 미리 계산해둬서, 필터링(2·3번)과 표시(신호일자 컬럼) 양쪽에 재사용.
