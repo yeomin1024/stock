@@ -15246,11 +15246,14 @@ def auto_compute_anchor_dates(dates, close, *,
 
 @njit
 def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
-    # ★★★ (요청 — 버그수정) 매수신호 적중 = 신호 후 '정확히 horizon일 후(day+horizon)' 시점에
-    #   종가가 신호일 종가 대비 +dd_limit 이상 상승. horizon=1이면 '다음날', 2면 '정확히 2일 후'
-    #   (1일 후는 안 봄, 1·2일 중 아무 때나 도달해도 되는 게 아님) — _fwd_hit_flags와 동일 기준.
-    #   ★ 앵커 오버라이드 없음 — 실제 도달 여부만으로 판정.
-    #   anchor_buy_arr 인자는 호출 호환 위해 남겨두나 미사용.
+    # ★★★ (요청 — 재수정, 핵심) "1~horizon일 전부 +dd_limit 이상이어야 성공" — 이전엔
+    #   '정확히 horizon일째 시점'의 누적 등락 하나만 봤는데(중간 날짜는 전혀 확인 안 함),
+    #   이러면 "초반에 크게 올랐다가 h일째 되기 직전에 크게 조정 와서 h일째는 여전히
+    #   +1%는 넘는" 경우도 무조건 성공으로 잡혔다. 이제는 1일째부터 h일째까지 '매일'의
+    #   누적 등락이 전부 +dd_limit 이상 유지돼야 성공으로 인정한다 — 중간에 단 하루라도
+    #   dd_limit 밑으로 떨어지면(설사 h일째엔 다시 회복해도) 실패로 친다. 표시용 등락률
+    #   (sum_ret에 누적되는 값)은 그대로 'h일째 시점'의 최종 누적을 사용(성공/실패 판정
+    #   기준만 엄격해진 것 — 표시되는 수치 자체의 정의는 바뀌지 않음).
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
     ns = 0; ok = 0; sum_ret = 0.0
@@ -15260,19 +15263,24 @@ def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
         if base_p <= 0.0: continue
         end = i + h
         if end > n - 1: continue    # ★ day+h 밖이면 평가불가(clamp 안 함)
+        all_ok = True
+        for k in range(1, h + 1):
+            step_ret = close_arr[i + k] / base_p - 1.0
+            if step_ret < dd_limit:
+                all_ok = False
+                break
         ret = close_arr[end] / base_p - 1.0
         ns += 1; sum_ret += ret
-        if ret >= dd_limit:
+        if all_ok:
             ok += 1
     return ns, ok, sum_ret
 
 
 @njit(cache=True)
 def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr):
-    # ★★★ (요청 — 버그수정) 매도신호 적중 = 신호 후 '정확히 horizon일 후' 시점에 종가가
-    #   신호일 종가 대비 -ru_limit 이상 하락 — _fwd_hit_flags와 동일 기준(구간 내 아무
-    #   때나 터치가 아니라 그 시점만).
-    #   anchor_sell_arr 인자는 호출 호환 위해 남겨두나 미사용.
+    # ★★★ (요청 — 재수정, 핵심) "1~horizon일 전부 -ru_limit 이하여야(그만큼 하락) 성공" —
+    #   매수와 대칭으로, 1일째부터 h일째까지 매일의 누적 등락이 전부 -ru_limit 이하로
+    #   유지돼야 성공. 중간에 하루라도 그 정도로 안 떨어지면 실패.
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
     ns = 0; ok = 0; sum_ret = 0.0
@@ -15282,9 +15290,15 @@ def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr
         if base_p <= 0.0: continue
         end = i + h
         if end > n - 1: continue
+        all_ok = True
+        for k in range(1, h + 1):
+            step_ret = close_arr[i + k] / base_p - 1.0
+            if step_ret > -ru_limit:
+                all_ok = False
+                break
         ret = close_arr[end] / base_p - 1.0
         ns += 1; sum_ret += ret
-        if ret <= -ru_limit:
+        if all_ok:
             ok += 1
     return ns, ok, sum_ret
 
@@ -17252,8 +17266,20 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
         p0 = close_arr[d]; p1 = close_arr[d + _hz]
         if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
             continue
-        ret = p1 / p0 - 1.0   # ★ close[i+horizon]/close[i]-1 — 성공률 계산과 완전히 동일한 식
-        is_correct = bool(ret >= target_threshold) if is_buy else bool(ret <= -target_threshold)
+        ret = p1 / p0 - 1.0   # ★ close[i+horizon]/close[i]-1 — 표시용 등락률(최종 h일째 값)
+        # ★★★ (요청 — 재수정) "1~horizon일 전부 임계값 이상이어야 성공" — _eval_buy_signals/
+        #   _eval_sell_signals와 동일하게, h일째 누적 하나가 아니라 1일째부터 h일째까지
+        #   매일의 누적이 전부 기준을 넘는지로 판정(중간에 하루라도 못 미치면 오답).
+        _all_ok = True
+        for _k in range(1, _hz + 1):
+            _pk = close_arr[d + _k]
+            if not (np.isfinite(_pk)):
+                _all_ok = False; break
+            _step_ret = _pk / p0 - 1.0
+            _step_ok = (_step_ret >= target_threshold) if is_buy else (_step_ret <= -target_threshold)
+            if not _step_ok:
+                _all_ok = False; break
+        is_correct = _all_ok
         # ★★★ (요청 — 신규) 근소한 오답(변동률 1%이하) 구제 — 하루 더 연장해서 재확인
         if allow_next_day_rescue and not is_correct and abs(ret) <= _ambig_thr and d + _hz + 1 < n:
             p2 = close_arr[d + _hz + 1]
@@ -17416,6 +17442,48 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
 
     # ★ 갭 채우기(신호공백 보강)에서도 동일하게 완화된 기준을 써야 일관됨.
     _big_miss_thr = max(_buy_thr_used, _sell_thr_used)
+
+    # ★★★ (요청 — 신규) "매수,매도 지표 개수 차이가 많이 나면 개수 없는쪽 미사용된
+    #   지표에서 성공률,신뢰도가 가장 높은 것부터 사용으로 적용해봐. 그런데 기존 올바른
+    #   매수나 매도점수를 차감해서 결과가 뒤바뀌면 절대로 안됨" — 한쪽이 다른 쪽보다
+    #   SIMPLE_POOL_WEAK_SIDE_IMBALANCE_RATIO(기본 3)배 이상 적으면, 그 약한 쪽의
+    #   미사용(2%이상 절대거부는 아니지만 오답≥정답이라 탈락한) 후보들을 성공률 높은
+    #   순서로 하나씩 검토해서 추가한다. "결과가 뒤바뀌면 안 됨"을 보장하기 위해, 그
+    #   약한 쪽 전체 풀의 누적 correct_w가 누적 wrong_w보다 큰 상태를 절대 깨지 않는
+    #   경우에만(추가해도 여전히, 또는 더, 정답우세가 유지되는 경우에만) 추가한다 —
+    #   이러면 새로 들어온 지표가 기존에 이미 확보된 '정답 우세'를 깎아서 약한 쪽 net이
+    #   반대로 뒤집히는 일이 구조적으로 불가능하다(2%이상 큰 오답이 있는 것들은 애초에
+    #   _rejected에 안 담기므로 절대거부 원칙도 그대로 유지됨).
+    _imbalance_ratio = float(globals().get('SIMPLE_POOL_WEAK_SIDE_IMBALANCE_RATIO', 3.0))
+    _n_buy_c = len(_buy_cands); _n_sell_c = len(_sell_cands)
+
+    def _reinforce_weak_side(cands, rejected, label):
+        if not rejected:
+            return 0
+        _sorted_rej = sorted(
+            rejected,
+            key=lambda t: (-float(t[0].get('success_rate', 0.0) or 0.0),
+                           -float(t[0].get('reliability', 0.0) or 0.0)))
+        _cum_c = sum(c[1] for c in cands)
+        _cum_w = sum(c[2] for c in cands)
+        _added = 0
+        for (_row, _cw, _ww, _fidx) in _sorted_rej:
+            _new_c = _cum_c + _cw; _new_w = _cum_w + _ww
+            if _new_c > _new_w:   # ★ 추가해도 약한 쪽 누적 정답우세가 유지되는 경우만
+                cands.append((_row, _cw, _ww, _fidx))
+                _cum_c = _new_c; _cum_w = _new_w
+                _added += 1
+        if _added:
+            print(f"    (약한쪽 보강) {label}: 미사용 {len(rejected)}개 중 {_added}개를 "
+                  f"성공률·신뢰도 높은 순으로 추가(누적 정답우세 유지 확인하며 — 결과가 "
+                  f"뒤바뀌는 추가는 하지 않음)")
+        return _added
+
+    if _n_buy_c > 0 and _n_sell_c > 0:
+        if _n_buy_c >= _n_sell_c * _imbalance_ratio:
+            _reinforce_weak_side(_sell_cands, _sell_rejected, '매도')
+        elif _n_sell_c >= _n_buy_c * _imbalance_ratio:
+            _reinforce_weak_side(_buy_cands, _buy_rejected, '매수')
 
     def _to_df(cands, pool_for_empty):
         if not cands:
