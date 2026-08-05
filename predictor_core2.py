@@ -14558,7 +14558,10 @@ SIMPLE_POOL_MATCH_HARM_MARGIN       = 1.5
 # ★★★ (요청) "1일, 1~2일, 1~3일, 1~4일, 1~5일"처럼 호라이즌을 누적 포함시켜가며, 종합net에
 #   포함시켰을 때 전체수익이 최대가 되는 지점을 탐색한다(다 포함하는 게 항상 최선은 아님).
 #   채택 안 된 호라이즌도 개별 net_h{h} 값은 계속 표시됨(종합net 계산에서만 빠짐).
-SIMPLE_POOL_HORIZON_SUBSET_SEARCH = True
+SIMPLE_POOL_HORIZON_SUBSET_SEARCH = False   # ★★★ (요청) "매수,매도 horizon day 돌려가면서
+#   최적 수익률 선정하는거 하지마" — 25가지 조합을 실제 수익률로 비교해 채택하는 이 탐색을
+#   끄면(기본값 False로 변경), 처음부터 계산돼 있던 전체 호라이즌 풀을 그대로 사용한다
+#   (건드리지 않고 남겨둔 이유: 필요하면 다시 True로 켤 수 있게).
 
 # ★★★ (요청) 호라이즌 범위 탐색 시 순수 최대수익 하나만 보지 않고, 최대수익 대비 이 비율
 #   (상대) 이내 후보들도 전부 고려 — 그 중 "매수여야 하는데 상승을 놓치거나 매도여야
@@ -17252,41 +17255,35 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
 
 def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, ticker=None,
                                           adopt_all_normal_buy=False, adopt_all_normal_sell=False):
-    """★★★ (요청 — 전면 재설계, 추세전환 우선순위) 신뢰도 임계값 탐색을 완전히 대체하는
-       선정 알고리즘 — 이번 요청으로 선정 '순서'가 4단계로 재설계됨.
+    """★★★ (요청 — 전면 재설계, 단순화) "중복 제거한 후보 지표 모두 적용한 다음, 최적
+       매수/매도날에 맞지 않는 지표들만 사용 지표에서 제거해" —
 
-       ① 실제 다음날 등락으로 '정답 매수/매도 자리'를 먼저 계산(_compute_target_positions).
-          어닝일과 그다음날은 매칭에서 완전히 제외.
-       ② ★★★ (요청) 각 정답 자리가 '추세전환'인지 판정 — 발화 직전 LOOKBACK일간 추세와
-          반대 방향으로 정답이면(하락 중 상승전환=매수추세전환, 상승 중 하락전환=매도
-          추세전환) 그 자리를 '추세전환 자리'로 표시.
-       ③ ★★★ (요청) 선정을 4단계 순서로 진행:
-          1단계: 매수 추세전환 자리 — 상승폭 큰 순서로, 자리마다 신뢰도 최고 지표 하나만
-                 채택(이미 채택된 지표 있으면 재사용). 이때 매도의 추세전환 자리를
-                 침범(=그 지표가 그 자리에도 발화)하는 후보는 가능하면 피한다(대안이
-                 없을 때만 부득이 채택).
-          2단계: 매도 추세전환 자리 — 같은 방식(1단계에서 이미 매수가 피해줬으므로
-                 별도 제약 없이 자유롭게 선정).
-          3단계: 나머지 매수 자리(추세전환 아닌 것) — 1단계와 같은 "매도추세전환 회피"
-                 원칙을 계속 적용.
-          4단계: 나머지 매도 자리(추세전환 아닌 것) — 기존 방식대로, 이미 확정된 매수
-                 전체(1+3단계)가 두텁게 지지하는 자리를 침범하면 제외.
-          ★ "동일 포지션은 가능" — 매수가 다른 매수 자리와 겹치는 것, 매도가 다른 매도
-          자리와 겹치는 것은 전혀 문제 삼지 않는다(오히려 재사용을 통한 지표수 최소화의
-          핵심 메커니즘). 문제 삼는 건 오직 '매수가 매도의 추세전환 자리를 해치는 것'.
-       ④ 추세전환 자리에 채택된 지표는 별도 표시(used_for_reversal=True) — 공식 텍스트에서
-          빨간 글씨로 강조하는 데 사용(요청: 기존 '1일 지표' 강조 대신 이걸로 교체).
-       ⑤ 신뢰도는 포함 여부가 아니라 '어느 지표를 그 자리에 채택할지'의 우선순위로만 쓴다.
+       ★★★ (요청 — 핵심, 버그수정) 이전 버전은 '자리(날짜) 하나에 지표 하나만 승자로
+       채택'하는 경쟁 방식이었다 — 그래서 신호 20개가 전부 정답(성공률100%, 신뢰도
+       상한15)인 지표조차, 같은 날짜를 다른(더 먼저 처리된) 지표가 이미 차지하고
+       있으면 '미사용'으로 완전히 빠지는 문제가 있었다(실측 확인: beta_smh_60d[5일],
+       매도 20/20 전부 정답인데 미사용). 이건 "맞는 지표는 남기고 틀린 지표만
+       뺀다"는 요청과 정면으로 어긋난다.
+
+       새 설계 — 자리 경쟁을 완전히 없앤다: 중복제거(호출 전에 이미 완료)된 각 후보를
+       독립적으로 채점해서, "맞춘 게 틀린 것보다 많은"(score_correct > score_wrong)
+       지표는 다른 지표가 같은 날짜를 쓰든 말든 상관없이 전부 그대로 채택한다.
+       매수와 매도가 같은 날 서로 다른 판단을 내리는 경우(둘 다 정확도 기준을
+       통과했더라도)는 여기서 강제로 어느 한쪽을 배제하지 않는다 — net 가중치
+       합산(net = 매수가중합 - 매도가중합) 단계에서 자연스럽게 상쇄·조정되도록
+       맡긴다(둘 다 남겨도 이상하지 않다: 예를 들어 그 날 매수 쪽 지표들이 신뢰도
+       합계로 매도보다 훨씬 강하면 net은 여전히 매수 우위로 정상 계산된다).
+
+       추세전환 자리에서 발화하는 지표는 여전히 used_for_reversal=True로 표시(공식
+       텍스트 강조용) — 우선순위 개념이 아니라 순수 표시 목적으로만 남긴다.
+
+       "탈락(오답≥정답)한 지표들 중, 아무 채택 지표도 없는 큰 변동폭 날 하나만 놓고
+       보면 구제할 가치가 있는" 경우의 보강(신호공백 보강)은 그대로 유지 — 이건 애초에
+       "맞춘 게 틀린 것보다 많은" 지표 목록에는 못 들었지만, 특정 자리 하나의 가치가
+       충분히 커서 예외적으로 봐주는 별개의 보강 로직이라 이번 단순화와 상충하지 않는다.
 
        반환: (buy_survivors, sell_survivors) — 원본 컬럼 + score_correct/score_wrong/
        score_harm/used_for_reversal 컬럼이 추가된 DataFrame, reliability 내림차순 정렬."""
-    # ★★★ (요청 — 실행시간 최적화) 아래 블록(정답자리/진폭/추세전환자리 판정)은 close_arr·
-    #   ticker·설정값에만 의존하고 buy_pool/sell_pool(어떤 지표들이 후보인지)과는 완전히
-    #   무관하다 — 그런데 이 함수는 MSC 탐색(8회)·호라이즌조합 탐색(최대 25회)에서 반복
-    #   호출되고, 그때마다 같은 close_arr에 대해 이 블록(특히 추세전환 판정 for문, O(n))을
-    #   매번 처음부터 다시 계산하고 있었다. close_arr 객체가 안정적으로 재사용되는 한(위
-    #   _finalize_pool 수정으로 이제 그렇게 됨) 결과는 항상 100% 동일하므로, 캐싱해도
-    #   출력에 어떤 영향도 없다 — 순수하게 중복 계산만 제거.
     _thr = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
     _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
     _pm_cache_key = (id(close_arr), len(close_arr), _thr, ticker, _lookback,
@@ -17320,6 +17317,7 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
         sell_ok = sell_ok & ~_excl_mask
 
         # ★★★ (요청) 추세전환 자리 판정 — 발화 직전 LOOKBACK일 추세와 반대방향인 정답 자리.
+        #   (이제 선정 우선순위가 아니라 used_for_reversal 표시 목적으로만 쓰임)
         reversal_mask = np.zeros(n, dtype=bool)
         for _t in range(_lookback, n):
             if _excl_mask[_t]:
@@ -17336,16 +17334,11 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
             _POSITION_MATCH_TARGET_CACHE.pop(next(iter(_POSITION_MATCH_TARGET_CACHE)))
         _POSITION_MATCH_TARGET_CACHE[_pm_cache_key] = (target, magnitude_m, reversal_mask, n, _excl_mask, buy_ok, sell_ok)
 
-    def _score(row, is_buy, harm_mask=None):
-        return _score_indicator_vs_target(feat, row, (buy_ok if is_buy else sell_ok), magnitude_m, is_buy, harm_mask=harm_mask)
+    def _score(row, is_buy):
+        return _score_indicator_vs_target(feat, row, (buy_ok if is_buy else sell_ok), magnitude_m, is_buy)
 
-    # ── 후보 채점 — 매수/매도 둘 다 기존처럼 오답≥정답만 제외(부분 허용) ──
-    #   ★★★ (요청 — 재조정) "절대 침범 금지"(오답=0)는 후보가 하나도 안 남는 비현실적인
-    #   결과를 만들었다(실측 확인: 매수 11개 전부 탈락) — 대신 "침범이 불가피하면 최소화
-    #   하되, 그 자리에서 매도쪽을 보강해 net 계산에서 자연히 매도가 이기도록" 방식으로
-    #   바꾼다(아래 _invaded_days 보강 로직 참고). 후보 필터 자체는 기존 원칙으로 복귀.
-    #   ★★★ (요청 — 신규) 오답≥정답이라 여기서 탈락한 지표도 _rejected로 별도 보관 —
-    #   아래 '신호공백 보강' 단계에서 "탈락한 지표들 중" 재검토 대상이 이것.
+    # ★★★ (요청 — 핵심) 자리 경쟁 없이, 각 후보를 독립적으로 채점해서 "맞춘 게 틀린 것보다
+    #   많으면"(score_wrong < score_correct) 다른 후보와 무관하게 그대로 채택한다.
     _buy_cands = []; _buy_rejected = []
     for _, row in (buy_pool.iterrows() if buy_pool is not None and len(buy_pool) else []):
         cw, ww, _h0, nfire, fidx = _score(row, True)
@@ -17365,220 +17358,43 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
             continue
         _sell_cands.append((row, cw, ww, fidx))
 
-    # day -> 후보 인덱스 목록 (매수/매도 각각, 정답 자리 기준으로만 — 관대화 반영된 buy_ok/sell_ok 사용)
-    _buy_day_to_cands = {}
-    for _ci, (row, cw, ww, fidx) in enumerate(_buy_cands):
-        for _d in fidx:
-            if _excl_mask[_d] or not buy_ok[_d]:
-                continue
-            _buy_day_to_cands.setdefault(_d, []).append(_ci)
-    _sell_day_to_cands = {}
-    for _ci, (row, cw, ww, fidx) in enumerate(_sell_cands):
-        for _d in fidx:
-            if _excl_mask[_d] or not sell_ok[_d]:
-                continue
-            _sell_day_to_cands.setdefault(_d, []).append(_ci)
+    def _to_df(cands, pool_for_empty):
+        if not cands:
+            _empty = (pool_for_empty.iloc[0:0].copy() if pool_for_empty is not None else
+                      pd.DataFrame(columns=['indicator', 'reliability']))
+            if 'used_for_reversal' not in _empty.columns:
+                _empty['used_for_reversal'] = pd.Series(dtype=bool)
+            if 'score_correct' not in _empty.columns:
+                _empty['score_correct'] = pd.Series(dtype=float)
+            if 'score_wrong' not in _empty.columns:
+                _empty['score_wrong'] = pd.Series(dtype=float)
+            if 'score_harm' not in _empty.columns:
+                _empty['score_harm'] = pd.Series(dtype=float)
+            return _empty
+        _out = pd.DataFrame([c[0] for c in cands]).reset_index(drop=True)
+        _out['score_correct'] = [c[1] for c in cands]
+        _out['score_wrong'] = [c[2] for c in cands]
+        _out['score_harm'] = 0.0
+        # 이 지표가 발화하는 날 중 하나라도 추세전환 자리와 겹치면 강조 표시.
+        _out['used_for_reversal'] = [bool(reversal_mask[c[3]].any()) if len(c[3]) else False for c in cands]
+        return _out
 
-    # ★★★ (요청 — 재설계, 대칭적 상호회피) 매수 추세전환과 매도 추세전환은 "둘 다 무조건
-    #   맞춰야 하는" 최우선 자리이고, 서로 침범하면 안 된다 — 이전 버전은 "매수→매도 침범
-    #   회피"만 있고 "매도→매수 침범 회피"가 없어서(2단계는 제약 없이 자유 선정), 매도
-    #   추세전환 자리에 매수 지표가 섞여 들어가는 문제가 있었다(실측 확인). 이제 양방향
-    #   모두 같은 원칙 적용: "깨끗한(반대쪽 추세전환을 안 건드리는) 후보만 우선 채택 —
-    #   대안이 없을 때만 부득이 가장 덜 침범하는 것 '하나만' 채택"(대안 없을 때 전부
-    #   채택하면 오히려 침범이 늘어나므로, 이 경우엔 "최대한 많이"가 아니라 "최소 침범
-    #   하나"로 타협).
-    _sell_reversal_day_set = set(d for d in _sell_day_to_cands if reversal_mask[d])
-    _buy_reversal_day_set = set(d for d in _buy_day_to_cands if reversal_mask[d])
+    buy_survivors = _to_df(_buy_cands, buy_pool)
+    sell_survivors = _to_df(_sell_cands, sell_pool)
 
-    def _buy_conflict_days(_ci):
-        return [_d for _d in _buy_cands[_ci][3] if _d in _sell_reversal_day_set]
-
-    def _sell_conflict_days(_ci):
-        return [_d for _d in _sell_cands[_ci][3] if _d in _buy_reversal_day_set]
-
-    _buy_reversal_days = sorted([d for d in _buy_day_to_cands if reversal_mask[d]],
-                                key=lambda d: magnitude_m[d], reverse=True)
-    _buy_normal_days = sorted([d for d in _buy_day_to_cands if not reversal_mask[d]],
-                              key=lambda d: magnitude_m[d], reverse=True)
-    _sell_reversal_days = sorted([d for d in _sell_day_to_cands if reversal_mask[d]],
-                                 key=lambda d: magnitude_m[d], reverse=True)
-    _sell_normal_days = sorted([d for d in _sell_day_to_cands if not reversal_mask[d]],
-                               key=lambda d: magnitude_m[d], reverse=True)
-
-    buy_selected = set(); sell_selected = set()
-    buy_reversal_used = set(); sell_reversal_used = set()
-
-    def _pick_buy(_d, avoid_sell_reversal=True):
-        _cand_list = _buy_day_to_cands[_d]
-        if any(_ci in buy_selected for _ci in _cand_list):
-            return None   # 이미 채택된 지표로 커버됨 — 재사용, 신규 없음
-        _pool_use = _cand_list
-        if avoid_sell_reversal:
-            _safe = [_ci for _ci in _cand_list if not _buy_conflict_days(_ci)]
-            if _safe:
-                _pool_use = _safe   # ★ 매도추세전환을 안 건드리는 후보가 있으면 그것만 고려
-            # 없으면(대안 없음) 부득이 전체 후보군에서 고른다(_cand_list 그대로)
-        _best = max(_pool_use, key=lambda _ci: float(_buy_cands[_ci][0].get('reliability', 0.0)))
-        buy_selected.add(_best)
-        return _best
-
-    def _pick_sell(_d):
-        _cand_list = _sell_day_to_cands[_d]
-        if any(_ci in sell_selected for _ci in _cand_list):
-            return None
-        _best = max(_cand_list, key=lambda _ci: float(_sell_cands[_ci][0].get('reliability', 0.0)))
-        sell_selected.add(_best)
-        return _best
-
-    # ★★★ (요청) "추세전환 자리에 잘 매칭되는 지표들은 최대한 많이 채용" — 단, 대안 없이
-    #   반대쪽 추세전환을 침범하는 경우는 "최대한 많이"가 아니라 "최소 침범 하나만"으로
-    #   예외 처리(전부 채택하면 침범만 늘어나므로).
-    def _adopt_all_buy(_d):
-        _cand_list = _buy_day_to_cands[_d]
-        _clean = [_ci for _ci in _cand_list if not _buy_conflict_days(_ci)]
-        if _clean:
-            for _ci in _clean:
-                buy_selected.add(_ci); buy_reversal_used.add(_ci)
-        else:
-            # 대안 없음 — 매도추세전환을 가장 적게 건드리는(침범일수 최소, 그 다음 신뢰도
-            # 최고) 딱 하나만 부득이 채택. 전부 채택하면 침범만 커짐.
-            _best = min(_cand_list, key=lambda _ci: (
-                len(_buy_conflict_days(_ci)), -float(_buy_cands[_ci][0].get('reliability', 0.0))))
-            buy_selected.add(_best); buy_reversal_used.add(_best)
-
-    def _adopt_all_sell(_d):
-        _cand_list = _sell_day_to_cands[_d]
-        _clean = [_ci for _ci in _cand_list if not _sell_conflict_days(_ci)]
-        if _clean:
-            for _ci in _clean:
-                sell_selected.add(_ci); sell_reversal_used.add(_ci)
-        else:
-            _best = min(_cand_list, key=lambda _ci: (
-                len(_sell_conflict_days(_ci)), -float(_sell_cands[_ci][0].get('reliability', 0.0))))
-            sell_selected.add(_best); sell_reversal_used.add(_best)
-
-    # ★★★ 1단계: 매수 추세전환 자리 — 매도추세전환을 해치지 않는 후보 우선 채택
-    for _d in _buy_reversal_days:
-        _adopt_all_buy(_d)
-    # ★★★ 2단계: 매도 추세전환 자리 — ★ 이제 매수추세전환을 해치지 않는 후보 우선 채택
-    #   (예전엔 "1단계가 이미 피해줬으니 제약 없음"이었는데, 그 가정이 틀렸다 — 대안이
-    #   없어 1단계가 부득이 침범한 경우가 있을 수 있고, 무엇보다 2단계 자체의 후보들이
-    #   독립적으로 매수추세전환을 침범할 수 있으므로 별도로 반드시 확인해야 한다.)
-    for _d in _sell_reversal_days:
-        _adopt_all_sell(_d)
-    # ★★★ 3단계: 나머지 매수 자리 — 기본은 자리당 하나(지표수 최소화), 단 ★(요청 — 신규)
-    #   "매수/매도간 신뢰도 점수차이가 많이 나면 점수가 낮은 쪽에서는 지표 최대한 많이
-    #   사용" — adopt_all_normal_buy=True면 일반 자리도 추세전환처럼 매칭되는 후보를
-    #   전부 채택(약한 쪽을 더 많은 지표로 보강).
-    for _d in _buy_normal_days:
-        if adopt_all_normal_buy:
-            _adopt_all_buy(_d)
-        else:
-            _pick_buy(_d, avoid_sell_reversal=True)
-
-    def _build_pool(cands, selected_idx, reversal_used):
-        if not selected_idx:
-            return None, np.zeros(n, dtype=float)
-        _rows = [cands[_ci][0] for _ci in selected_idx]
-        _cws = [cands[_ci][1] for _ci in selected_idx]
-        _wws = [cands[_ci][2] for _ci in selected_idx]
-        _fidxs = [cands[_ci][3] for _ci in selected_idx]
-        _used_rev = [(_ci in reversal_used) for _ci in selected_idx]
-        out = pd.DataFrame(_rows).reset_index(drop=True)
-        out['score_correct'] = _cws; out['score_wrong'] = _wws; out['score_harm'] = 0.0
-        out['used_for_reversal'] = _used_rev
-        strength = np.zeros(n, dtype=float)
-        for _fidx in _fidxs:
-            strength[_fidx] += 1.0
-        return out, strength
-
-    buy_survivors, buy_strength = _build_pool(_buy_cands, buy_selected, buy_reversal_used)
-    if buy_survivors is None:
-        buy_survivors = (buy_pool.iloc[0:0].copy() if buy_pool is not None else
-                         pd.DataFrame(columns=['indicator', 'reliability']))
-        if 'used_for_reversal' not in buy_survivors.columns:
-            buy_survivors['used_for_reversal'] = pd.Series(dtype=bool)
-
-    # ★ 매수보호구역(4단계 매도 나머지 자리 선정에 사용) — 실제 정답(관대화 반영 buy_ok)이면서
-    #   충분히 두텁게 지지되는 자리만(기존 방식 그대로, 1+3단계 결과 전체 기준).
-    _min_frac = float(globals().get('SIMPLE_POOL_MATCH_HARM_MIN_FRAC', 0.05))
-    _min_strength = max(1, int(np.ceil(_min_frac * max(1, len(buy_survivors)))))
-    harm_mask = (buy_strength >= _min_strength) & buy_ok
-    _harm_margin = float(globals().get('SIMPLE_POOL_MATCH_HARM_MARGIN', 1.5))
-
-    # ★★★ (요청 — 신규) "침범하지 않는 지표가 없어서 침범이 불가피하면 침범을 최소화하되,
-    #   매도 지표 점수를 올리거나 매도 지표 개수가 많아야 해 — 매도 지표를 이용해 매도
-    #   자리의 매수 점수를 차감시키도록" — 매수를 무조건 배제하는 대신, 실제로 채택된
-    #   매수지표가 침범하는 날짜(target==0인데 매수강도>0)를 찾아서, 그 날짜만큼은 매도
-    #   후보를 하나만이 아니라 '전부' 채택해 매도쪽 가중치를 최대화한다. net=매수-매도
-    #   구조이므로, 그 날 매도가 두텁게 실리면 매수의 침범 기여가 자연히 상쇄된다.
-    _invaded_days = set(np.nonzero(sell_ok & (buy_strength > 0) & (~_excl_mask))[0].tolist())
-    _boosted_days = set()
-    if _invaded_days:
-        for _d in _invaded_days:
-            _cand_list = _sell_day_to_cands.get(_d)
-            if not _cand_list:
-                continue   # 그 날 발화 가능한 매도 후보가 아예 없으면 보강 불가(자연스러운 한계)
-            for _ci in _cand_list:
-                sell_selected.add(_ci)
-            _boosted_days.add(_d)
-        if _boosted_days:
-            print(f"    (매수침범 자리 매도 보강) {len(_boosted_days)}개 자리에서 매도 후보 "
-                  f"전부 채택(매수 침범 {len(_invaded_days)}개 자리 중)")
-
-    # ★★★ 4단계: 나머지 매도 자리 — 매수 전체 보호구역을 침범하는 후보는 회피, 단
-    #   ★(요청 — 신규) adopt_all_normal_sell=True면 안전한 후보를 하나가 아니라 전부 채택
-    #   (약한 쪽 보강).
-    for _d in _sell_normal_days:
-        if _d in _boosted_days:
-            continue   # 이미 위에서 전부 채택 완료
-        _cand_list = _sell_day_to_cands[_d]
-        if any(_ci in sell_selected for _ci in _cand_list):
-            continue
-        _safe = []
-        for _ci in _cand_list:
-            _row, _cw, _ww, _fidx = _sell_cands[_ci]
-            _hw = float(np.sum(magnitude_m[_fidx][harm_mask[_fidx]])) if len(_fidx) else 0.0
-            if _hw < _cw * _harm_margin:
-                _safe.append(_ci)
-        _pool_use = _safe if _safe else _cand_list
-        if adopt_all_normal_sell and _safe:
-            for _ci in _safe:
-                sell_selected.add(_ci)
-        else:
-            _best = max(_pool_use, key=lambda _ci: float(_sell_cands[_ci][0].get('reliability', 0.0)))
-            sell_selected.add(_best)
-
-    # ★★★ (요청 — 신규) "이렇게 하면 신호가 아예 없는 날도 있을 텐데... 사용 안 하기로
-    #   한 지표들 중 다시 사용시 다른 여러 군데 맞지 않는게 생기면 사용하지 말고, 그렇지
-    #   않고 해당날이 변동폭이 커서 맞추는게 이득이면 사용" — 1~4단계가 다 끝난 뒤에도
-    #   매수·매도 어느 쪽도 그 자리를 커버 못 한 '갭 날'(정답이 있는 날인데 아무 채택된
-    #   지표도 발화 안 함)이 남을 수 있다. "사용 안 하기로 한 지표"는 애초에 오답≥정답
-    #   이라 후보에도 못 든 지표들(_buy_rejected/_sell_rejected)을 가리킨다 — 이런
-    #   지표를 그 갭 하나 때문에 다시 쓰면 "다른 여러 군데"(그 지표의 나머지 오답들,
-    #   ww-cw로 측정되는 순손해)가 생기므로, 그 갭날의 변동폭(이득)이 그 순손해보다
-    #   커야만("맞추는 게 이득"이어야만) 채택한다 — 그렇지 않으면 그대로 미사용.
+    # ★★★ (요청 — 신규, 유지) "신호가 아예 없는 날" 보강 — 위 필터에서 탈락(오답≥정답)한
+    #   지표라도, 아무도 커버 못 하는 큰 변동폭 날 하나만 놓고 보면(그 날 제외 다른 곳
+    #   오답이 적으면) 그 자리를 위해 예외적으로 채택한다. "정확도 기준으로 유지하되,
+    #   특별한 경우엔 봐준다"는 원칙이라 위 단순화와 상충하지 않는다.
     _gap_min_mag = float(globals().get('SIMPLE_POOL_GAP_FILL_MIN_MAGNITUDE', 0.02))
+    _max_other_wrongs = int(globals().get('SIMPLE_POOL_GAP_FILL_MAX_OTHER_WRONGS', 1))
     _covered_days = set()
-    for _ci in buy_selected:
-        _covered_days.update(_buy_cands[_ci][3].tolist())
-    for _ci in sell_selected:
-        _covered_days.update(_sell_cands[_ci][3].tolist())
+    for _c in _buy_cands:
+        _covered_days.update(_c[3].tolist())
+    for _c in _sell_cands:
+        _covered_days.update(_c[3].tolist())
     _gap_days = [d for d in range(n) if not _excl_mask[d] and (buy_ok[d] or sell_ok[d])
                 and d not in _covered_days and magnitude_m[d] >= _gap_min_mag]
-    # ★★★ (요청 — 신규, 재설계) "이렇게 하면 신호가 아예 없는 날도 있을 텐데... 사용 안
-    #   하기로 한 지표들 중 다시 사용시 다른 여러 군데 맞지 않는게 생기면 사용하지 말고,
-    #   그렇지 않고 해당날이 변동폭이 커서 맞추는게 이득이면 사용" — "손해"를 magnitude
-    #   합(wrong_w)으로 재보면 수학적 모순이 생긴다: rejected 조건 자체가 correct_w≤
-    #   wrong_w인데, 이 갭날은 그 correct_w의 일부이므로 항상 magnitude[갭날]≤correct_w
-    #   ≤wrong_w — 즉 "이 갭날 하나의 이득이 전체 오답합보다 크다"는 조건은 절대 성립할
-    #   수 없다(자기모순). "다른 여러 군데"는 magnitude 합이 아니라 '오답이 나는 날의
-    #   개수'로 봐야 이 모순이 사라지고 요청 취지("여러 군데"=복수 개수)에도 더 맞는다
-    #   — 그 지표가 (이 갭날 제외) 다른 발화일에서 오답을 내는 횟수가 적으면("여러 군데"
-    #   아니면) 채택, 그 갭날 자체는 이미 위에서 변동폭 기준(SIMPLE_POOL_GAP_FILL_MIN_
-    #   MAGNITUDE)을 통과했으므로 "맞추는 게 이득"은 그것으로 충족.
-    _max_other_wrongs = int(globals().get('SIMPLE_POOL_GAP_FILL_MAX_OTHER_WRONGS', 1))
-    _n_gap_filled = 0
     _buy_rescued = []; _sell_rescued = []
     for _d in _gap_days:
         _best_row = None; _best_score = -1e18; _best_is_buy = None; _best_fidx = None
@@ -17589,10 +17405,10 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                     continue
                 _n_other_wrong = sum(1 for _x in _fset if _x != _d and not buy_ok[_x])
                 if _n_other_wrong > _max_other_wrongs:
-                    continue   # 다른 여러 군데서 틀림 — 사용 안 함
-                _score = float(_row.get('reliability', 0.0)) - _n_other_wrong * 1000.0
-                if _score > _best_score:
-                    _best_score = _score; _best_row = _row; _best_is_buy = True; _best_fidx = _fidx
+                    continue
+                _sc = float(_row.get('reliability', 0.0)) - _n_other_wrong * 1000.0
+                if _sc > _best_score:
+                    _best_score = _sc; _best_row = _row; _best_is_buy = True; _best_fidx = _fidx
         if sell_ok[_d]:
             for (_row, _cw, _ww, _fidx) in _sell_rejected:
                 _fset = set(_fidx.tolist())
@@ -17601,51 +17417,28 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 _n_other_wrong = sum(1 for _x in _fset if _x != _d and not sell_ok[_x])
                 if _n_other_wrong > _max_other_wrongs:
                     continue
-                _score = float(_row.get('reliability', 0.0)) - _n_other_wrong * 1000.0
-                if _score > _best_score:
-                    _best_score = _score; _best_row = _row; _best_is_buy = False; _best_fidx = _fidx
+                _sc = float(_row.get('reliability', 0.0)) - _n_other_wrong * 1000.0
+                if _sc > _best_score:
+                    _best_score = _sc; _best_row = _row; _best_is_buy = False; _best_fidx = _fidx
         if _best_row is not None:
             if _best_is_buy:
-                _buy_rescued.append(_best_row)
-                _covered_days.update(_best_fidx.tolist())
+                _buy_rescued.append(_best_row); _covered_days.update(_best_fidx.tolist())
             else:
-                _sell_rescued.append(_best_row)
-                _covered_days.update(_best_fidx.tolist())
-            _n_gap_filled += 1
-    if _n_gap_filled:
+                _sell_rescued.append(_best_row); _covered_days.update(_best_fidx.tolist())
+    if _buy_rescued or _sell_rescued:
         print(f"    (신호공백 보강) 변동폭 {_gap_min_mag*100:.1f}%↑인 무발화일 {len(_gap_days)}개 중 "
-              f"{_n_gap_filled}개를 탈락지표 재검토로 채움(매수{len(_buy_rescued)}/매도{len(_sell_rescued)}, "
-              f"다른 곳 오답 {_max_other_wrongs}개 이하인 것만)")
-
-    # ★ 갭 채우기로 buy_selected가 바뀌었을 수 있으므로 buy_survivors를 최신 상태로 재빌드.
-    buy_survivors, buy_strength = _build_pool(_buy_cands, buy_selected, buy_reversal_used)
-    if buy_survivors is None:
-        buy_survivors = (buy_pool.iloc[0:0].copy() if buy_pool is not None else
-                         pd.DataFrame(columns=['indicator', 'reliability']))
-        if 'used_for_reversal' not in buy_survivors.columns:
-            buy_survivors['used_for_reversal'] = pd.Series(dtype=bool)
+              f"{len(_buy_rescued)+len(_sell_rescued)}개를 탈락지표 재검토로 채움"
+              f"(매수{len(_buy_rescued)}/매도{len(_sell_rescued)}, 다른 곳 오답 {_max_other_wrongs}개 이하인 것만)")
     if _buy_rescued:
         _resc_df = pd.DataFrame(_buy_rescued).reset_index(drop=True)
         _resc_df['score_correct'] = 0.0; _resc_df['score_wrong'] = 0.0; _resc_df['score_harm'] = 0.0
         _resc_df['used_for_reversal'] = False
         buy_survivors = pd.concat([buy_survivors, _resc_df], ignore_index=True) if len(buy_survivors) else _resc_df
-
-    sell_survivors, _sell_strength = _build_pool(_sell_cands, sell_selected, sell_reversal_used)
-    if sell_survivors is None:
-        sell_survivors = (sell_pool.iloc[0:0].copy() if sell_pool is not None else
-                          pd.DataFrame(columns=['indicator', 'reliability']))
-        if 'used_for_reversal' not in sell_survivors.columns:
-            sell_survivors['used_for_reversal'] = pd.Series(dtype=bool)
     if _sell_rescued:
         _resc_sdf = pd.DataFrame(_sell_rescued).reset_index(drop=True)
         _resc_sdf['score_correct'] = 0.0; _resc_sdf['score_wrong'] = 0.0; _resc_sdf['score_harm'] = 0.0
         _resc_sdf['used_for_reversal'] = False
         sell_survivors = pd.concat([sell_survivors, _resc_sdf], ignore_index=True) if len(sell_survivors) else _resc_sdf
-    if sell_survivors is None:
-        sell_survivors = (sell_pool.iloc[0:0].copy() if sell_pool is not None else
-                          pd.DataFrame(columns=['indicator', 'reliability']))
-        if 'used_for_reversal' not in sell_survivors.columns:
-            sell_survivors['used_for_reversal'] = pd.Series(dtype=bool)
 
     if len(buy_survivors):
         buy_survivors = buy_survivors.sort_values('reliability', ascending=False).reset_index(drop=True)
@@ -17654,6 +17447,7 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     buy_survivors = _apply_overlap_discount(feat, buy_survivors)
     sell_survivors = _apply_overlap_discount(feat, sell_survivors)
     return buy_survivors, sell_survivors
+
 
 
 def _apply_overlap_discount(feat, pool):
@@ -18182,9 +17976,9 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 _close_arr_match = _close_arr
                 buy_c, sell_c = _select_indicators_by_position_match(feat, _close_arr_match, buy_c, sell_c, ticker=ticker)
                 print(f"    (정답자리 매칭 선정) 매수 {_n_before_match_b}→{len(buy_c)}개 "
-                      f"(오답≥정답인 지표 제외, 나머지 전부 사용), "
+                      f"(오답≥정답인 지표만 제외, 나머지 전부 자리경쟁 없이 사용), "
                       f"매도 {_n_before_match_s}→{len(sell_c)}개 "
-                      f"(오답≥정답 또는 매수신호 침범≥자기기여인 지표 제외)")
+                      f"(오답≥정답인 지표만 제외, 나머지 전부 자리경쟁 없이 사용)")
 
             # ★★★ (요청 — 재설계, 윌슨 미사용) net 가중치를 신뢰도가 직접·전적으로 결정하도록
             #   변경 — 이전엔 wilson_score × (1+reliability)로 윌슨값과 신뢰도가 섞여 있었는데,
