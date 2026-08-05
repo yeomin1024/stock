@@ -17111,7 +17111,8 @@ def _score_indicator_vs_target(feat, row, target, magnitude, is_buy, harm_mask=N
     return correct_w, wrong_w, harm_w, len(fire_idx), fire_idx
 
 
-def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=None):
+def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=None,
+                               allow_next_day_rescue=False):
     """★★★ (요청 — 재설계) "전체 후보 지표" 시트에 표시할, 이 지표의 실제 발화일과 그
        '성공률' 판정에 그대로 쓰인 것과 동일한 수치·기준으로 성공/실패를 계산한다.
 
@@ -17128,6 +17129,15 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
        동일한 방식으로 맞췄고, 성공 판정 기준도 0%가 아니라 실제 그 호라이즌에 쓰인
        임계값(STAGE_SUCCESS_LIMIT[horizon-1])을 그대로 쓴다 — 이제 이 컬럼의 초록/빨강이
        '성공개수/성공률' 숫자와 정확히 1:1로 맞아떨어진다.
+
+       ★★★ (요청 — 신규) allow_next_day_rescue=True면 "변동률 1%이하로 신호 틀린거는
+       그 다음날 결과가 결국 맞으면 맞는 걸로 취급" — h일 누적등락(ret)이 오답이면서
+       그 절대값이 1%(SIMPLE_POOL_AMBIGUOUS_THRESHOLD) 이하인 '근소한 오답'인 경우에만,
+       하루 더 연장한 등락률(close[i+horizon+1]/close[i]-1)을 추가로 확인해 그게 기준을
+       넘기면 그 신호를 정답으로 재판정한다. 큰 폭으로 틀린 경우(1% 초과)는 그대로 오답
+       유지 — "거의 맞았는데 하루 늦게 맞은 것"만 구제하는 취지. 기본값(False)에서는
+       기존 동작 그대로라 "전체 후보 지표" 시트 등 다른 용도에는 영향 없음.
+
        반환: [(date_str, ret_pct, is_correct), ...] — 발화일 오름차순, horizon일 후가
        데이터 범위를 벗어나는(평가 불가) 날은 자동 제외."""
     sig = _to_signal_array(feat, row)   # ★ lead_shift만 적용 — 성공률 계산과 동일한 발화일 기준
@@ -17140,6 +17150,7 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
     if target_threshold is None:
         _lims = list(globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])
         target_threshold = float(_lims[_hz - 1]) if len(_lims) >= _hz else float(_lims[0])
+    _ambig_thr = float(globals().get('SIMPLE_POOL_AMBIGUOUS_THRESHOLD', 0.01))
     fire_idx = np.nonzero(sig)[0]
     fire_idx = fire_idx[fire_idx <= n - 1 - _hz]   # i+horizon이 범위 안에 있어야 평가 가능
     out = []
@@ -17149,6 +17160,15 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
             continue
         ret = p1 / p0 - 1.0   # ★ close[i+horizon]/close[i]-1 — 성공률 계산과 완전히 동일한 식
         is_correct = bool(ret >= target_threshold) if is_buy else bool(ret <= -target_threshold)
+        # ★★★ (요청 — 신규) 근소한 오답(변동률 1%이하) 구제 — 하루 더 연장해서 재확인
+        if allow_next_day_rescue and not is_correct and abs(ret) <= _ambig_thr and d + _hz + 1 < n:
+            p2 = close_arr[d + _hz + 1]
+            if p2 and np.isfinite(p2):
+                ret_ext = p2 / p0 - 1.0
+                is_correct_ext = bool(ret_ext >= target_threshold) if is_buy else bool(ret_ext <= -target_threshold)
+                if is_correct_ext:
+                    is_correct = True
+                    ret = ret_ext   # 표시용 등락률도 재판정에 쓰인 연장값으로 갱신
         try:
             date_str = pd.Timestamp(idx[d]).strftime('%Y-%m-%d')
         except Exception:
@@ -24976,12 +24996,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     #   모든 지표들을 표시하고 각 일별 백테스트 사용여부를 표시해" — feat의 마지막
     #   날짜에 실제로 발화한 지표를 전부(호라이즌·매수매도 구분 없이) 찾아서, 그중 어떤
     #   것이 실제 최종 채택 풀(=일별 백테스트 net 계산에 쓰이는 것)에 포함됐는지 표시한다.
-    #   ★★★ (요청 — 재수정) "전체 후보 시트처럼 정보 나와?" — 예전 버전은 방향·표시명·
-    #   호라이즌·신뢰도·net가중치점수·사용여부만 있어서 "전체 후보 지표"보다 정보가
-    #   훨씬 부실했다 — 이제 "전체 후보 지표"와 완전히 같은 컬럼 세트(신호방향·임계값·
-    #   신호개수·성공개수·성공률%·다음날평균등락%·다음날표준편차%·(2차검증)·wilson점수%·
-    #   net가중치점수·신호일자(다음날등락%) 색상표시까지)를 그대로 갖추고, 거기에 이
-    #   시트만의 '일별백테스트 사용여부' 컬럼을 맨 끝에 추가하는 형태로 재구성했다. ───
+    #   ★★★ (요청 — 재수정) "전체 후보 시트처럼 정보 나와?" — "전체 후보 지표"와 완전히
+    #   같은 컬럼 세트를 그대로 갖추고, 이 시트만의 '일별백테스트 사용여부' 컬럼을 맨
+    #   끝에 추가.
+    #   ★★★ (요청 — 신규, 이번 요청) 아래 4가지 필터·중복제거 + 합산 점수를 추가:
+    #   1) 같은 원본 지표명이 호라이즌만 다르게 여러 개 있으면 신뢰도 최고 하나만.
+    #   2) 신호가 하나라도 틀린 지표는 표시 안 함(단, 변동률 1%이하 근소 오답은 다음날
+    #      결과가 결국 맞으면 정답으로 구제 — _signal_dates_with_outcome의
+    #      allow_next_day_rescue 반영).
+    #   3) 신뢰도 0인 지표도 표시 안 함.
+    #   4) 신호 발화일 집합이 완전히 동일한 지표들도 신뢰도 최고 하나만.
+    #   5) 남은 지표들의 net가중치점수를 매수합 - 매도합으로 집계해 시트 상단에 표시. ───
     try:
         _latest_idx = len(feat.index) - 1
         _latest_date_str = pd.Timestamp(feat.index[_latest_idx]).strftime('%Y-%m-%d')
@@ -24999,34 +25024,82 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _abdf_disp = _add_display_suffix(_abdf) if _abdf is not None and len(_abdf) else _abdf
         _asdf_disp = _add_display_suffix(_asdf) if _asdf is not None and len(_asdf) else _asdf
 
-        # 발화 행만 추림(방향 라벨 붙여서)
-        _latest_fire_rows = []   # [(방향라벨, row, used_bool), ...]
+        # 발화 행만 추림(방향 라벨 붙여서) + 신호일자/정답판정(근소오답 구제 포함)을
+        # 이 단계에서 미리 계산해둬서, 필터링(2·3번)과 표시(신호일자 컬럼) 양쪽에 재사용.
+        _latest_fire_rows = []   # [(방향라벨, row, used_bool, sig_dates_outcome, fire_idx_set), ...]
         for _pool_df, _dir_label, _used_set in (
                 (_abdf_disp, '매수', _used_names_buy), (_asdf_disp, '매도', _used_names_sell)):
             if _pool_df is None or len(_pool_df) == 0:
                 continue
             for _, _r in _pool_df.iterrows():
                 try:
-                    _sig_latest = _to_signal_array(feat, _r)
-                    if not (len(_sig_latest) and bool(_sig_latest[_latest_idx])):
+                    _sig_full = _to_signal_array(feat, _r)
+                    if not (len(_sig_full) and bool(_sig_full[_latest_idx])):
                         continue
                 except Exception:
                     continue
+                # ★ (요청 3번) 신뢰도 0인 지표는 아예 제외
+                _rel_val = float(_r.get('reliability', 0.0) or 0.0)
+                if _rel_val <= 0.0:
+                    continue
+                # ★ (요청 2번, 근소오답 구제 포함) 신호일자별 정답여부를 계산해, 하나라도
+                #   틀리면 이 지표 전체를 제외.
+                try:
+                    _sd = _signal_dates_with_outcome(
+                        feat, _r, _close_arr_all, (_dir_label == '매수'), allow_next_day_rescue=True)
+                except Exception:
+                    _sd = []
+                if not _sd or any(not _ok for (_ds, _rp, _ok) in _sd):
+                    continue
                 _dname = str(_r.get('display_name', _r.get('indicator', '')))
-                _latest_fire_rows.append((_dir_label, _r, _dname in _used_set))
+                _fire_idx_set = frozenset(np.nonzero(_sig_full)[0].tolist())
+                _latest_fire_rows.append(
+                    (_dir_label, _r, _dname in _used_set, _sd, _fire_idx_set))
+
+        # ★ (요청 1번) 같은 원본 지표명이 호라이즌만 다르게 여럿이면 신뢰도 최고만.
+        _by_indicator_name = {}
+        for _entry in _latest_fire_rows:
+            _key = (_entry[0], str(_entry[1].get('indicator', '')))   # (방향, 원본지표명)
+            _rel = float(_entry[1].get('reliability', 0.0) or 0.0)
+            if _key not in _by_indicator_name or _rel > float(_by_indicator_name[_key][1].get('reliability', 0.0) or 0.0):
+                _by_indicator_name[_key] = _entry
+        _latest_fire_rows = list(_by_indicator_name.values())
+
+        # ★ (요청 4번) 신호 발화일 집합이 완전히 동일한 지표들도 신뢰도 최고만.
+        _by_fire_set = {}
+        for _entry in _latest_fire_rows:
+            _key2 = (_entry[0], _entry[4])   # (방향, 발화일 집합)
+            _rel2 = float(_entry[1].get('reliability', 0.0) or 0.0)
+            if _key2 not in _by_fire_set or _rel2 > float(_by_fire_set[_key2][1].get('reliability', 0.0) or 0.0):
+                _by_fire_set[_key2] = _entry
+        _latest_fire_rows = list(_by_fire_set.values())
 
         if _latest_fire_rows:
             # net가중치점수 내림차순(매수 먼저) 정렬
             _latest_fire_rows.sort(key=lambda t: (t[0] != '매수', -float(
                 t[1].get('net_weight_score', 1.0 + float(t[1].get('reliability', 0.0) or 0.0)))))
 
+            # ★ (요청 5번) 남은 지표들의 net가중치점수 — 매수합 - 매도합
+            _buy_score_sum = sum(float(_e[1].get('net_weight_score',
+                                 1.0 + float(_e[1].get('reliability', 0.0) or 0.0)))
+                                 for _e in _latest_fire_rows if _e[0] == '매수')
+            _sell_score_sum = sum(float(_e[1].get('net_weight_score',
+                                  1.0 + float(_e[1].get('reliability', 0.0) or 0.0)))
+                                  for _e in _latest_fire_rows if _e[0] == '매도')
+            _net_score_latest = _buy_score_sum - _sell_score_sum
+
             ws_latest = wb.create_sheet('최근일자 발화지표'); ws_latest.sheet_view.showGridLines = False
             ws_latest.cell(1, 1).value = (
-                f"{_latest_date_str} 기준 — 실제로 발화한 전체 후보 지표(★'전체 후보 지표' "
-                f"시트와 동일한 컬럼 구성). 맨 끝 '일별백테스트 사용여부'만 이 시트 전용 —"
-                f"'미사용(후보만)'은 지표컷은 통과했지만 정답자리 매칭에서 최종 선정되지 "
-                f"않아 net 계산에는 반영되지 않는 지표입니다.")
+                f"{_latest_date_str} 기준 — 신뢰도>0이고 신호가 전부(근소오답 구제 포함) "
+                f"정답인 지표만, 동일 원본지표(호라이즌만 다른 것)·동일 발화일 집합은 "
+                f"신뢰도 최고 하나로 압축해서 표시. '전체 후보 지표'와 같은 컬럼 구성 + "
+                f"맨 끝 '일별백테스트 사용여부' 전용 컬럼.")
             ws_latest.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+            ws_latest.cell(2, 1).value = (
+                f"★ 매수점수합 {_buy_score_sum:.2f} − 매도점수합 {_sell_score_sum:.2f} "
+                f"= 순net {_net_score_latest:+.2f}")
+            ws_latest.cell(2, 1).font = Font(bold=True, size=11,
+                                             color='1F6F3F' if _net_score_latest >= 0 else 'A6293D')
 
             _cols_latest = ['방향', '표시명', '지표(원본)', '신호방향', '임계값', '신호개수', '성공개수', '성공률%',
                             '신뢰도(t값)', '다음날평균등락%', '다음날표준편차%']
@@ -25041,11 +25114,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _c_used_latest = len(_cols_latest)
 
             for _ci, _cname in enumerate(_cols_latest, 1):
-                _hc = ws_latest.cell(3, _ci); _hc.value = _cname
+                _hc = ws_latest.cell(4, _ci); _hc.value = _cname
                 _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='4472C4')
 
-            for _ri_off, (_dir_label, _row, _is_used) in enumerate(_latest_fire_rows):
-                _r_latest = _ri_off + 4
+            for _ri_off, (_dir_label, _row, _is_used, _sd_cached, _fset) in enumerate(_latest_fire_rows):
+                _r_latest = _ri_off + 5
                 _nwscore = float(_row.get('net_weight_score', 1.0 + float(_row.get('reliability', 0.0) or 0.0)))
                 _vals_latest = [_dir_label, str(_row.get('display_name', _row['indicator'])),
                                str(_row['indicator']), str(_row['direction']),
@@ -25076,24 +25149,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 for _ci, _v in enumerate(_vals_latest, 1):
                     ws_latest.cell(_r_latest, _ci).value = _v
 
-                # ★ 신호일자(다음날등락%) — "전체 후보 지표"와 동일하게 리치텍스트 색상표시
-                if _close_arr_all is not None:
-                    try:
-                        _sd_latest = _signal_dates_with_outcome(
-                            feat, _row, _close_arr_all, (_dir_label == '매수'))
-                    except Exception:
-                        _sd_latest = []
-                    if _sd_latest:
-                        _rt_parts_latest = []
-                        for _di, (_ds, _rp, _ok) in enumerate(_sd_latest):
-                            _seg = f"{_ds}({_rp:+.1f}%)"
-                            if _di < len(_sd_latest) - 1:
-                                _seg += ", "
-                            _rt_parts_latest.append(_TextBlock(
-                                _GREEN_TEXT_FONT if _ok else _RED_TEXT_FONT, _seg))
-                        ws_latest.cell(_r_latest, _c_dates_latest).value = _CellRichText(_rt_parts_latest)
-                    else:
-                        ws_latest.cell(_r_latest, _c_dates_latest).value = '-'
+                # ★ 신호일자(다음날등락%) — 위에서 이미 계산해둔(근소오답 구제 반영) 결과 재사용
+                if _sd_cached:
+                    _rt_parts_latest = []
+                    for _di, (_ds, _rp, _ok) in enumerate(_sd_cached):
+                        _seg = f"{_ds}({_rp:+.1f}%)"
+                        if _di < len(_sd_cached) - 1:
+                            _seg += ", "
+                        _rt_parts_latest.append(_TextBlock(
+                            _GREEN_TEXT_FONT if _ok else _RED_TEXT_FONT, _seg))
+                    ws_latest.cell(_r_latest, _c_dates_latest).value = _CellRichText(_rt_parts_latest)
+                else:
+                    ws_latest.cell(_r_latest, _c_dates_latest).value = '-'
 
                 # ★ 이 시트만의 추가 컬럼 — 일별백테스트 사용여부
                 _use_cell = ws_latest.cell(_r_latest, _c_used_latest)
@@ -25110,13 +25177,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _w_latest += [10, 12, 60, 18]
             for _ci, _w in enumerate(_w_latest, 1):
                 ws_latest.column_dimensions[get_column_letter(_ci)].width = _w
-            ws_latest.freeze_panes = 'A4'
+            ws_latest.freeze_panes = 'A5'
 
-            _n_used_total = sum(1 for _, _, _u in _latest_fire_rows if _u)
-            print(f"  ✓ 최근일자 발화지표 시트 — {_latest_date_str} 발화 {len(_latest_fire_rows)}개 "
-                  f"(그중 실사용 {_n_used_total}개, '전체 후보 지표'와 동일 컬럼 구성)")
+            _n_used_total = sum(1 for _, _, _u, _, _ in _latest_fire_rows if _u)
+            print(f"  ✓ 최근일자 발화지표 시트 — {_latest_date_str} 발화(필터·중복제거 후) "
+                  f"{len(_latest_fire_rows)}개 (그중 실사용 {_n_used_total}개) "
+                  f"| 매수{_buy_score_sum:.2f}−매도{_sell_score_sum:.2f}=순net{_net_score_latest:+.2f}")
         else:
-            print(f"  ℹ 최근일자({_latest_date_str}) 발화지표 시트 — 그날 발화한 후보 지표가 없어 생략")
+            print(f"  ℹ 최근일자({_latest_date_str}) 발화지표 시트 — 조건(신뢰도>0·전부정답) "
+                  f"통과하는 지표가 없어 생략")
     except Exception as _elatest:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 최근일자 발화지표 시트 작성 실패(무시): {_elatest}")
