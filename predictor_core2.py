@@ -17062,31 +17062,35 @@ def _compute_target_positions(close_arr, threshold=0.0):
        점수, 틀리면 더 큰 감점).
 
        ★★★ (요청 관련 — 버그수정) "맨 마지막 날은 다음날 가격을 모르니 정답을 알 수
-       없다" — 이전엔 마지막 날의 ret가 배열 초기화값(0)에 그대로 남아 target=0(현금이
-       정답)으로 '기본값 처리'되고 있었다. 이건 진짜 판정이 아니라 우연히 그렇게 보이는
-       것뿐이라(threshold가 음수면 오히려 target=1로 잘못 나올 수도 있었음), 마지막
-       날짜(및 가격 데이터가 없어 다음날 수익률을 못 구하는 날)는 valid=False로 명시
-       표시해 채점·자리매칭 양쪽에서 완전히 제외되도록 한다.
+       없다" — 마지막 날짜(및 가격 데이터가 없어 다음날 수익률을 못 구하는 날)는
+       valid=False로 명시 표시해 채점·자리매칭 양쪽에서 완전히 제외되도록 한다.
 
-       ★★★ (요청 — 신규) 정답 자리를 "완전한 이진값"에서 "허용 방향 집합"으로 확장 —
-       1) "지속적인 매수/매도 추세 중간에 2% 내외로 그 추세랑 안 맞는 지점은, 그냥 그
-          추세를 따라가는 지표가 있어도 상관없다" — 같은 방향이 연속되는 '추세 블록'
-          사이에 딱 하루만 반대로 끼어 있고 그 등락폭이 SIMPLE_POOL_TREND_MID_TOLERANCE
-          (기본 2%) 이하면, 그 하루는 "엄격한 정답(반대방향)"과 별개로 "주변 추세
-          방향도 정답으로 인정"한다.
-       2) "추세 전환 직전 변동률 1% 내외인 날은 그 추세전환 포지션을 따라가는 지표로도
-          사용" — 한 추세 블록이 끝나고 다음 블록(반대 방향)이 시작되기 직전의 마지막
-          날의 등락폭이 SIMPLE_POOL_TREND_EDGE_TOLERANCE(기본 1%) 이하면, 그 날은
-          "엄격한 정답(원래 추세 방향)"과 별개로 "다음(전환될) 추세 방향도 정답으로
-          인정"한다.
-       이 두 규칙 다 '엄격한 정답을 지우는' 게 아니라 '추가로 허용'하는 것 — 원래
-       방향으로 맞춰도 여전히 정답이고, 관대화된 반대 방향으로 맞춰도 이제 정답이 된다
-       (둘 다 정답이 되는 날이 생김. 오답은 그 둘 다 아닌 경우만).
+       ★★★ (요청 — 재설계, 핵심 버그수정) "추세전환되는 부분은 무조건 맞춰야하는데
+       틀린게 많다" — 이전 버전은 애매한(변동폭 작은) 날을 "엄격한 방향도 여전히
+       정답, 관대화된 방향도 추가로 정답"(OR)으로 만들었는데, 이러면 추세전환 직전에
+       옛 추세(진짜로는 이제 끝난) 방향을 그대로 따라간 지표까지 '정답'으로 잘못
+       인정돼버려서 진짜 추세전환을 못 잡는 지표가 걸러지지 않는 허점이 있었다(실측
+       확인 — 방향이 두 개나 허용되니 어느 쪽으로 판단해도 '맞다'고 쳐줌).
 
-       반환: target(엄격한 0/1 배열, 추세전환 판정 등 기존 용도에 그대로 사용),
-       magnitude(절대등락률), ret(부호있는 등락률), valid(정답을 알 수 있는지),
-       buy_ok(그 날 매수로 판정해도 정답으로 인정하는지 — 관대화 반영),
-       sell_ok(그 날 매도로 판정해도 정답으로 인정하는지 — 관대화 반영)."""
+       이제는 애매한 날의 정답을 "추가 허용"이 아니라 "완전히 교체"한다 — 그 날의
+       진짜 정답은 오직 하나(REPLACE)뿐이다:
+       1) "지속적인 매수/매도 추세 중간에 2% 내외로 그 추세랑 안 맞는 지점" — 같은
+          방향이 연속되는 '추세 블록' 사이에 딱 하루만 반대로 끼어 있고 그 등락폭이
+          SIMPLE_POOL_TREND_MID_TOLERANCE(기본 2%) 이하면, 그 하루의 정답을 (원래의
+          반대방향이 아니라) 주변 추세 방향으로 완전히 바꾼다.
+       2) "추세 전환 직전 변동률 1% 내외인 날은 그 후에 있는 추세에 맞춰야 함" — 한
+          추세 블록이 끝나고 다음 블록(반대 방향)이 시작되기 직전 마지막 날의 등락폭이
+          SIMPLE_POOL_TREND_EDGE_TOLERANCE(기본 1%) 이하면, 그 날의 정답을 (원래
+          추세 방향이 아니라) 다음에 오는(전환될) 추세 방향으로 완전히 바꾼다.
+       ★ 두 규칙 다 이제 정답이 정확히 하나로 확정된다(원래 방향은 더 이상 정답이
+       아니게 됨) — "추세전환은 무조건 맞춰야"를 지표 채점에 실제로 반영하려면, 애매한
+       날의 유일한 정답이 그 후 추세 방향이어야 하고, 옛 방향을 따라간 지표는 이제
+       정확히 '오답'으로 채점된다.
+
+       반환: target(위 재배정까지 전부 반영된 최종 0/1 배열 — 추세전환 판정에도 이걸
+       그대로 사용), magnitude, ret(원본 부호있는 등락률), valid,
+       buy_ok(target==1과 정확히 같음, 함수 인터페이스 하위호환용),
+       sell_ok(target==0과 정확히 같음, 함수 인터페이스 하위호환용)."""
     n = len(close_arr)
     ret = np.zeros(n)
     valid = np.zeros(n, dtype=bool)
@@ -17100,13 +17104,11 @@ def _compute_target_positions(close_arr, threshold=0.0):
     target = (ret > threshold).astype(int)
     magnitude = np.abs(ret)
 
-    buy_ok = (target == 1) & valid
-    sell_ok = (target == 0) & valid
-
     _mid_tol = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.02))
     _edge_tol = float(globals().get('SIMPLE_POOL_TREND_EDGE_TOLERANCE', 0.01))
 
-    # ★ 유효한(valid) 구간에서 target이 연속으로 같은 값을 유지하는 '추세 블록' 찾기.
+    # ★ 유효한(valid) 구간에서 target이 연속으로 같은 값을 유지하는 '추세 블록' 찾기
+    #   (재배정 전, 원본 방향 기준).
     blocks = []   # [(start_idx, end_idx, value), ...] — end_idx 포함, valid 구간만
     _t = 0
     while _t < n:
@@ -17121,24 +17123,20 @@ def _compute_target_positions(close_arr, threshold=0.0):
 
     for _bi, (_s, _e, _val) in enumerate(blocks):
         # 규칙1) 길이 1짜리 블록(하루만 낀 반대방향)이고, 앞뒤 블록이 서로 같은 방향이며
-        #   등락폭이 2% 이내면 — 그 하루도 주변 추세 방향을 정답으로 추가 인정.
+        #   등락폭이 2% 이내면 — 그 하루의 정답을 주변 추세 방향으로 완전히 교체(REPLACE).
         if _s == _e and 0 < _bi < len(blocks) - 1:
             _prev_val = blocks[_bi - 1][2]; _next_val = blocks[_bi + 1][2]
             if _prev_val == _next_val and _prev_val != _val and magnitude[_s] <= _mid_tol:
-                if _prev_val == 1:
-                    buy_ok[_s] = True
-                else:
-                    sell_ok[_s] = True
+                target[_s] = _prev_val
         # 규칙2) 블록의 마지막 날 — 다음 블록이 반대 방향이고 그 마지막 날의 등락폭이
-        #   1% 이내면, 그 날은 다음(전환될) 추세 방향도 정답으로 추가 인정.
+        #   1% 이내면, 그 날의 정답을 다음(전환될) 추세 방향으로 완전히 교체(REPLACE).
         if _bi < len(blocks) - 1:
             _next_val2 = blocks[_bi + 1][2]
             if _next_val2 != _val and magnitude[_e] <= _edge_tol:
-                if _next_val2 == 1:
-                    buy_ok[_e] = True
-                else:
-                    sell_ok[_e] = True
+                target[_e] = _next_val2
 
+    buy_ok = (target == 1) & valid
+    sell_ok = (target == 0) & valid
     return target, magnitude, ret, valid, buy_ok, sell_ok
 
 
@@ -25000,21 +24998,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 전체 후보 지표 시트 작성 실패(무시): {_eallc}")
 
-    # ─── 7d-2. ★★★ (요청 — 신규, 재수정) "가장 최근날짜는 시트를 만들어서 그날 발생한
-    #   모든 지표들을 표시하고 각 일별 백테스트 사용여부를 표시해" — feat의 마지막
-    #   날짜에 실제로 발화한 지표를 전부(호라이즌·매수매도 구분 없이) 찾아서, 그중 어떤
-    #   것이 실제 최종 채택 풀(=일별 백테스트 net 계산에 쓰이는 것)에 포함됐는지 표시한다.
-    #   ★★★ (요청 — 재수정) "전체 후보 시트처럼 정보 나와?" — "전체 후보 지표"와 완전히
-    #   같은 컬럼 세트를 그대로 갖추고, 이 시트만의 '일별백테스트 사용여부' 컬럼을 맨
-    #   끝에 추가.
-    #   ★★★ (요청 — 신규, 이번 요청) 아래 4가지 필터·중복제거 + 합산 점수를 추가:
-    #   1) 같은 원본 지표명이 호라이즌만 다르게 여러 개 있으면 신뢰도 최고 하나만.
-    #   2) 신호가 하나라도 틀린 지표는 표시 안 함(단, 변동률 1%이하 근소 오답은 다음날
-    #      결과가 결국 맞으면 정답으로 구제 — _signal_dates_with_outcome의
-    #      allow_next_day_rescue 반영).
-    #   3) 신뢰도 0인 지표도 표시 안 함.
-    #   4) 신호 발화일 집합이 완전히 동일한 지표들도 신뢰도 최고 하나만.
-    #   5) 남은 지표들의 net가중치점수를 매수합 - 매도합으로 집계해 시트 상단에 표시. ───
+    # ─── 7d-2. ★★★ (요청 — 전면 재설계, 핵심 버그수정) "최근일자 발화지표 시트에 있는
+    #   지표들이 가장 최근 일별 백테스트의 매수/매도 공식에 있는 거랑 다르잖아" —
+    #   원인: 이 시트가 "신뢰도>0 & 신호 전부 정답"이라는 자체 필터를 추가로 걸고
+    #   있었는데, 실제 매수/매도 공식(buy_pool_used/sell_pool_used, net 계산에 진짜
+    #   쓰이는 것)의 채택 기준은 그것과 다르다(오답<정답이면 충분, 100%도 신뢰도>0도
+    #   요구 안 함) — 그래서 실제로 공식에 쓰이는 지표인데도 이 시트에서는 "신뢰도가
+    #   낮다"거나 "신호가 하나라도 틀렸다"는 이유로 빠지는 불일치가 있었다.
+    #
+    #   새 설계: "사용"으로 표시되는 지표는 예외 없이 buy_pool_used/sell_pool_used에서
+    #   직접 가져온다(추가 필터 전혀 없음) — 이러면 이 시트의 '사용' 목록이 그날의
+    #   매수/매도 공식과 항상 정확히 일치한다(같은 소스, 같은 원본이므로 구조적으로
+    #   어긋날 수가 없음). 그 아래에 참고용으로 "미사용(후보만)" 지표도 보여주되(신뢰도
+    #   >0인 것만, 필터는 최소화), 이건 사용여부 판정에 전혀 영향 없는 순수 참고정보다.
     try:
         _latest_idx = len(feat.index) - 1
         _latest_date_str = pd.Timestamp(feat.index[_latest_idx]).strftime('%Y-%m-%d')
@@ -25026,11 +25022,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _used_names_sell = set(_sp_used_latest['display_name'].astype(str)) \
             if (_sp_used_latest is not None and len(_sp_used_latest) and 'display_name' in _sp_used_latest.columns) else set()
 
-        # ★★★ (요청 관련 — 버그수정) "전체 후보 지표" 섹션에서 이미 접미사를 붙이고
-        #   globals()['_SIMPLE_MODE_ALL_CANDIDATES_DISP']로 저장해둔 것을 그대로 재사용
-        #   — 두 섹션이 독립적으로 각자 접미사를 계산하던 예전 구조가 불일치의 근본
-        #   원인이었다(실측 확인). 혹시 그 섹션이 예외로 건너뛰어져 저장이 안 됐으면
-        #   폴백으로 여기서 직접 계산.
         _disp_pair = globals().get('_SIMPLE_MODE_ALL_CANDIDATES_DISP')
         if _disp_pair is not None:
             _abdf_disp, _asdf_disp = _disp_pair
@@ -25038,79 +25029,95 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _abdf_disp = _add_display_suffix(_abdf) if _abdf is not None and len(_abdf) else _abdf
             _asdf_disp = _add_display_suffix(_asdf) if _asdf is not None and len(_asdf) else _asdf
 
-        # 발화 행만 추림(방향 라벨 붙여서) + 신호일자/정답판정(근소오답 구제 포함)을
-        # 이 단계에서 미리 계산해둬서, 필터링(2·3번)과 표시(신호일자 컬럼) 양쪽에 재사용.
-        _latest_fire_rows = []   # [(방향라벨, row, used_bool, sig_dates_outcome, fire_idx_set), ...]
-        for _pool_df, _dir_label, _used_set in (
-                (_abdf_disp, '매수', _used_names_buy), (_asdf_disp, '매도', _used_names_sell)):
-            if _pool_df is None or len(_pool_df) == 0:
+        # ★★★ (요청 — 핵심) "사용" 목록 — buy_pool_used/sell_pool_used에서 직접, 추가
+        #   필터 전혀 없이 마지막날 발화하는 것만 추림. 이게 곧 그날의 매수/매도 공식.
+        _latest_fire_rows = []   # [(방향, row, is_used, sig_dates, fire_idx_set), ...]
+        for _pool_used, _dir_label in ((_bp_used_latest, '매수'), (_sp_used_latest, '매도')):
+            if _pool_used is None or len(_pool_used) == 0:
                 continue
-            for _, _r in _pool_df.iterrows():
+            for _, _r in _pool_used.iterrows():
                 try:
                     _sig_full = _to_signal_array(feat, _r)
                     if not (len(_sig_full) and bool(_sig_full[_latest_idx])):
                         continue
                 except Exception:
                     continue
-                # ★ (요청 3번) 신뢰도 0인 지표는 아예 제외
-                _rel_val = float(_r.get('reliability', 0.0) or 0.0)
-                if _rel_val <= 0.0:
-                    continue
-                # ★ (요청 2번, 근소오답 구제 포함) 신호일자별 정답여부를 계산해, 하나라도
-                #   틀리면 이 지표 전체를 제외.
                 try:
                     _sd = _signal_dates_with_outcome(
                         feat, _r, _close_arr_all, (_dir_label == '매수'), allow_next_day_rescue=True)
                 except Exception:
                     _sd = []
-                if not _sd or any(not _ok for (_ds, _rp, _ok) in _sd):
-                    continue
-                _dname = str(_r.get('display_name', _r.get('indicator', '')))
                 _fire_idx_set = frozenset(np.nonzero(_sig_full)[0].tolist())
-                _latest_fire_rows.append(
-                    (_dir_label, _r, _dname in _used_set, _sd, _fire_idx_set))
+                _latest_fire_rows.append((_dir_label, _r, True, _sd, _fire_idx_set))
 
-        # ★ (요청 1번) 같은 원본 지표명이 호라이즌만 다르게 여럿이면 신뢰도 최고만.
-        _by_indicator_name = {}
-        for _entry in _latest_fire_rows:
-            _key = (_entry[0], str(_entry[1].get('indicator', '')))   # (방향, 원본지표명)
+        # ★ 참고용 "미사용" 목록 — 위 사용 목록에 없는 지표 중 마지막날 발화하는 것.
+        #   최소한의 정리 필터(신�로도>0)만 유지 — 사용여부 판정과는 무관한 순수 참고정보.
+        _unused_rows = []
+        for _pool_df, _dir_label, _used_set in (
+                (_abdf_disp, '매수', _used_names_buy), (_asdf_disp, '매도', _used_names_sell)):
+            if _pool_df is None or len(_pool_df) == 0:
+                continue
+            for _, _r in _pool_df.iterrows():
+                _dname = str(_r.get('display_name', _r.get('indicator', '')))
+                if _dname in _used_set:
+                    continue   # 이미 위에서 "사용"으로 표시됨
+                try:
+                    _sig_full = _r2sig = _to_signal_array(feat, _r)
+                    if not (len(_sig_full) and bool(_sig_full[_latest_idx])):
+                        continue
+                except Exception:
+                    continue
+                _rel_val = float(_r.get('reliability', 0.0) or 0.0)
+                if _rel_val <= 0.0:
+                    continue
+                try:
+                    _sd = _signal_dates_with_outcome(
+                        feat, _r, _close_arr_all, (_dir_label == '매수'), allow_next_day_rescue=True)
+                except Exception:
+                    _sd = []
+                _fire_idx_set = frozenset(np.nonzero(_sig_full)[0].tolist())
+                _unused_rows.append((_dir_label, _r, False, _sd, _fire_idx_set))
+
+        # 미사용 참고목록만 중복정리(같은 원본지표명·같은 발화일집합은 신뢰도 최고 하나) —
+        # "사용" 목록은 이미 select_pool_combined 안에서 정리된 최종 채택분이라 손대지 않는다
+        # (여기서 또 지우면 실제 매수/매도 공식과 다시 어긋나게 됨).
+        _by_name_u = {}
+        for _entry in _unused_rows:
+            _key = (_entry[0], str(_entry[1].get('indicator', '')))
             _rel = float(_entry[1].get('reliability', 0.0) or 0.0)
-            if _key not in _by_indicator_name or _rel > float(_by_indicator_name[_key][1].get('reliability', 0.0) or 0.0):
-                _by_indicator_name[_key] = _entry
-        _latest_fire_rows = list(_by_indicator_name.values())
-
-        # ★ (요청 4번) 신호 발화일 집합이 완전히 동일한 지표들도 신뢰도 최고만.
-        _by_fire_set = {}
-        for _entry in _latest_fire_rows:
-            _key2 = (_entry[0], _entry[4])   # (방향, 발화일 집합)
+            if _key not in _by_name_u or _rel > float(_by_name_u[_key][1].get('reliability', 0.0) or 0.0):
+                _by_name_u[_key] = _entry
+        _unused_rows = list(_by_name_u.values())
+        _by_fset_u = {}
+        for _entry in _unused_rows:
+            _key2 = (_entry[0], _entry[4])
             _rel2 = float(_entry[1].get('reliability', 0.0) or 0.0)
-            if _key2 not in _by_fire_set or _rel2 > float(_by_fire_set[_key2][1].get('reliability', 0.0) or 0.0):
-                _by_fire_set[_key2] = _entry
-        _latest_fire_rows = list(_by_fire_set.values())
+            if _key2 not in _by_fset_u or _rel2 > float(_by_fset_u[_key2][1].get('reliability', 0.0) or 0.0):
+                _by_fset_u[_key2] = _entry
+        _unused_rows = list(_by_fset_u.values())
+
+        _latest_fire_rows += _unused_rows
 
         if _latest_fire_rows:
-            # net가중치점수 내림차순(매수 먼저) 정렬
-            _latest_fire_rows.sort(key=lambda t: (t[0] != '매수', -float(
+            _latest_fire_rows.sort(key=lambda t: (t[0] != '매수', not t[2], -float(
                 t[1].get('net_weight_score', 1.0 + float(t[1].get('reliability', 0.0) or 0.0)))))
 
-            # ★ (요청 5번) 남은 지표들의 net가중치점수 — 매수합 - 매도합
             _buy_score_sum = sum(float(_e[1].get('net_weight_score',
                                  1.0 + float(_e[1].get('reliability', 0.0) or 0.0)))
-                                 for _e in _latest_fire_rows if _e[0] == '매수')
+                                 for _e in _latest_fire_rows if _e[0] == '매수' and _e[2])
             _sell_score_sum = sum(float(_e[1].get('net_weight_score',
                                   1.0 + float(_e[1].get('reliability', 0.0) or 0.0)))
-                                  for _e in _latest_fire_rows if _e[0] == '매도')
+                                  for _e in _latest_fire_rows if _e[0] == '매도' and _e[2])
             _net_score_latest = _buy_score_sum - _sell_score_sum
 
             ws_latest = wb.create_sheet('최근일자 발화지표'); ws_latest.sheet_view.showGridLines = False
             ws_latest.cell(1, 1).value = (
-                f"{_latest_date_str} 기준 — 신뢰도>0이고 신호가 전부(근소오답 구제 포함) "
-                f"정답인 지표만, 동일 원본지표(호라이즌만 다른 것)·동일 발화일 집합은 "
-                f"신뢰도 최고 하나로 압축해서 표시. '전체 후보 지표'와 같은 컬럼 구성 + "
-                f"맨 끝 '일별백테스트 사용여부' 전용 컬럼.")
+                f"{_latest_date_str} 기준 — '사용' 지표는 그날의 매수/매도 공식(buy_pool_used/"
+                f"sell_pool_used)과 완전히 동일한 소스라 항상 일치합니다(추가 필터 없음). "
+                f"'미사용(참고)'은 발화는 했지만 최종 채택 안 된 지표(신뢰도>0인 것만, 참고용).")
             ws_latest.cell(1, 1).font = Font(italic=True, size=9, color='808080')
             ws_latest.cell(2, 1).value = (
-                f"★ 매수점수합 {_buy_score_sum:.2f} − 매도점수합 {_sell_score_sum:.2f} "
+                f"★ 매수점수합(사용만) {_buy_score_sum:.2f} − 매도점수합(사용만) {_sell_score_sum:.2f} "
                 f"= 순net {_net_score_latest:+.2f}")
             ws_latest.cell(2, 1).font = Font(bold=True, size=11,
                                              color='1F6F3F' if _net_score_latest >= 0 else 'A6293D')
@@ -25124,7 +25131,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _cols_latest += ['wilson점수%', 'net가중치점수']
             _cols_latest += ['신호일자(다음날등락%)']
             _c_dates_latest = len(_cols_latest)
-            _cols_latest += ['일별백테스트 사용여부']   # ★ 이 시트만의 추가 컬럼(맨 끝)
+            _cols_latest += ['일별백테스트 사용여부']
             _c_used_latest = len(_cols_latest)
 
             for _ci, _cname in enumerate(_cols_latest, 1):
@@ -25163,7 +25170,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 for _ci, _v in enumerate(_vals_latest, 1):
                     ws_latest.cell(_r_latest, _ci).value = _v
 
-                # ★ 신호일자(다음날등락%) — 위에서 이미 계산해둔(근소오답 구제 반영) 결과 재사용
                 if _sd_cached:
                     _rt_parts_latest = []
                     for _di, (_ds, _rp, _ok) in enumerate(_sd_cached):
@@ -25176,9 +25182,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 else:
                     ws_latest.cell(_r_latest, _c_dates_latest).value = '-'
 
-                # ★ 이 시트만의 추가 컬럼 — 일별백테스트 사용여부
                 _use_cell = ws_latest.cell(_r_latest, _c_used_latest)
-                _use_cell.value = '사용' if _is_used else '미사용(후보만)'
+                _use_cell.value = '사용' if _is_used else '미사용(참고)'
                 _use_cell.font = (Font(color='006100', bold=True) if _is_used else Font(color='808080'))
                 if _verify_on_disp:
                     _fill_latest = _green if _row.get('passed_verify') else _grey
@@ -25194,15 +25199,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_latest.freeze_panes = 'A5'
 
             _n_used_total = sum(1 for _, _, _u, _, _ in _latest_fire_rows if _u)
-            print(f"  ✓ 최근일자 발화지표 시트 — {_latest_date_str} 발화(필터·중복제거 후) "
-                  f"{len(_latest_fire_rows)}개 (그중 실사용 {_n_used_total}개) "
+            print(f"  ✓ 최근일자 발화지표 시트 — {_latest_date_str} 사용 {_n_used_total}개"
+                  f"(매수/매도 공식과 동일 소스) + 미사용참고 {len(_latest_fire_rows)-_n_used_total}개 "
                   f"| 매수{_buy_score_sum:.2f}−매도{_sell_score_sum:.2f}=순net{_net_score_latest:+.2f}")
         else:
-            print(f"  ℹ 최근일자({_latest_date_str}) 발화지표 시트 — 조건(신뢰도>0·전부정답) "
-                  f"통과하는 지표가 없어 생략")
+            print(f"  ℹ 최근일자({_latest_date_str}) 발화지표 시트 — 발화한 지표가 없어 생략")
     except Exception as _elatest:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 최근일자 발화지표 시트 작성 실패(무시): {_elatest}")
+
 
     # ─── 7e. ★ 지표 선출 A/B 검증 (요청) ───
     #   각 개선 flag ON/OFF의 KL 백테스트 성적(전체수익·MDD·보유중하락·거래·승률)을 비교.
