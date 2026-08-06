@@ -14487,6 +14487,12 @@ SIMPLE_POOL_NEUTRAL_DAY_WINDOW = 3      # "±2~3일 이내" — 기준일과의 
 SIMPLE_POOL_NEUTRAL_PRICE_TOL  = 0.01   # "가격 ±1% 이내"
 # ★★★ (요청 — 신규) 중립자리 기반 약한쪽 보강 상한 — "과하지 않게"
 SIMPLE_POOL_WEAK_SIDE_MAX_ADD  = 3
+# ★★★ (요청 — 신규) 최적 K/L 확정 후 2단계 지표 정제(_kl_refine_after_search 참고).
+SIMPLE_POOL_KL_REFINE_ENABLED     = True
+SIMPLE_POOL_KL_REFINE_MAX_STAGE1  = 12     # 1단계(틀린날 주도 제거) 최대 제거 개수
+SIMPLE_POOL_KL_REFINE_MAX_STAGE2  = 8      # 2단계(K/L→0 제거) 최대 제거 개수
+SIMPLE_POOL_KL_ZERO_TOL           = 0.05   # |K|,|L|이 이 이하면 '충분히 0에 가까움'으로 종료
+SIMPLE_POOL_KL_REFINE_RET_TOL     = 0.02   # 2단계에서 허용하는 총수익 하락폭(2%p)
 SIMPLE_POOL_CONSECUTIVE_WEIGHT     = 0.15   # (4번) 연속 발화일의 가중치(첫날=1.0 대비)
 SIMPLE_POOL_HIT_COUNT_BONUS_ENABLED = True  # (1번) 일반 히트 카운트 보너스 on/off
 SIMPLE_POOL_HIT_COUNT_BONUS_WEIGHT  = 0.20
@@ -21339,7 +21345,7 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                     s = _shift_signal_forward(s, int(_hz) - 1)
             return s
         def _build_sigs(pool):
-            sigs = []
+            sigs = []; keys = []
             # ★★★ (요청 — 버그수정, 일관성) 표시명(display_name)이 있으면 그걸로 그룹화 —
             #   _build_named_sigs(공식 텍스트용)는 이미 display_name 기준으로 바뀌어 서로
             #   다른 임계값/호라이즌을 별개로 취급하는데, 여기(실제 net 합산)가 여전히 원본
@@ -21353,14 +21359,16 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                         try:
                             arr = np.maximum(arr, _wt_of(row) * _row_sig(row))   # 켜진 임계 중 최고 가중
                         except Exception: pass
-                    sigs.append(arr)
+                    sigs.append(arr); keys.append(str(_key))
             else:
                 for _, row in pool.iterrows():
-                    try: sigs.append(_wt_of(row) * _row_sig(row))
+                    try:
+                        sigs.append(_wt_of(row) * _row_sig(row))
+                        keys.append(str(row.get('display_name', row.get('indicator', ''))))
                     except Exception: pass
-            return sigs
-        buy_sigs  = _build_sigs(buy_pool)
-        sell_sigs = _build_sigs(sell_pool)
+            return sigs, keys
+        buy_sigs, _buy_sig_keys  = _build_sigs(buy_pool)
+        sell_sigs, _sell_sig_keys = _build_sigs(sell_pool)
         nB = len(buy_sigs); nS = len(sell_sigs)
         if nB == 0 or nS == 0: return None
         buy_cum  = np.cumsum(np.array(buy_sigs),  axis=0)   # buy_cum[k-1] = 상위 k개 합
@@ -21716,6 +21724,10 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
             'reliability_threshold_buy': _rel_threshold_buy,
             'reliability_threshold_sell': _rel_threshold_sell,
             'buy_pool_used': _buy_pool_used, 'sell_pool_used': _sell_pool_used,
+            # ★★★ (요청 — KL정제용) 지표별 가중신호 배열·키 — 사후 정제(지표 제거 시 net에서
+            #   정확히 그 지표 기여분만 빼기)에 사용. display_name 기준 키.
+            'buy_sig_ws': buy_sigs, 'sell_sig_ws': sell_sigs,
+            'buy_sig_keys': _buy_sig_keys, 'sell_sig_keys': _sell_sig_keys,
         }
     except Exception as _e:
         print(f"  ⚠ 순신호 K 최적화 실패(무시): {_e}")
@@ -21841,6 +21853,205 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
         top.append({'K': a[3], 'L': a[4], 'ret': a[0], 'mdd': a[1], 'dl': a[2],
                     'pos': (a[5] if _keep_pos else None)})
     return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt, 'top': top}
+
+
+def _kl_refine_after_search(nsd, mdd_limit=None):
+    """★★★ (요청 — 신규) 최적 K/L 확정 후 2단계 지표 정제.
+       [1단계] 최적자리와 백테스트 결과(K/L 포지션)가 '틀린 날'들에서, 그날 이긴(점수가
+         높아 포지션을 결정한) 쪽 지표들을 후보로 — 신뢰도 낮은 순 + 기존 맞는 날 발화가
+         적은 순으로 하나씩 빼보며, (같은 K/L 그대로 재실행했을 때) 틀린날이 줄어드는
+         경우에만 제거 채택 → 끝나면 K/L 재탐색.
+       [2단계] K/L이 최대한 0에 가까워지도록 — 사용지표 총점수(net_weight_score 합)가 큰
+         쪽에서 신뢰도 최저 지표부터 하나씩 빼고 K/L을 재탐색, |K|+|L|이 줄고 틀린날이
+         늘지 않고 수익이 SIMPLE_POOL_KL_REFINE_RET_TOL 이상 나빠지지 않는 경우에만 채택.
+       [보고] K/L·총수익률·최적자리 대비 틀린날 개수의 변화를 출력.
+       제거 확정 시 nsd(=_KNET_FULL)를 제자리에서 갱신 — daily의 net/buy_count/sell_count/
+       net_h*, buy_pool_used/sell_pool_used까지 전부 축소 풀 기준으로 다시 계산해 이후
+       write_excel의 모든 시트(공식·카운트·K/L 재탐색)가 자동으로 정제 결과와 일치한다."""
+    if not globals().get('SIMPLE_POOL_KL_REFINE_ENABLED', True):
+        return None
+    try:
+        d = nsd.get('daily')
+        bp = nsd.get('buy_pool_used'); sp = nsd.get('sell_pool_used')
+        keysB = nsd.get('buy_sig_keys'); arrsB = nsd.get('buy_sig_ws')
+        keysS = nsd.get('sell_sig_keys'); arrsS = nsd.get('sell_sig_ws')
+        if d is None or bp is None or sp is None or not keysB or not keysS:
+            return None
+        mapB = dict(zip(keysB, arrsB)); mapS = dict(zip(keysS, arrsS))
+        price = d['price'].values.astype(float)
+        n = len(price)
+        rr = np.zeros(n); rr[1:] = price[1:] / price[:-1] - 1.0
+        rr[~np.isfinite(rr)] = 0.0
+
+        def _rk(row):
+            return str(row.get('display_name', row.get('indicator', '')))
+        rowsB = [( _rk(r), float(r.get('reliability', 0.0) or 0.0),
+                   float(r.get('net_weight_score', 1.0 + float(r.get('reliability', 0.0) or 0.0))))
+                 for _, r in bp.iterrows() if _rk(r) in mapB]
+        rowsS = [( _rk(r), float(r.get('reliability', 0.0) or 0.0),
+                   float(r.get('net_weight_score', 1.0 + float(r.get('reliability', 0.0) or 0.0))))
+                 for _, r in sp.iterrows() if _rk(r) in mapS]
+        if not rowsB or not rowsS:
+            return None
+
+        _ctp = _ctp_cached(price)
+        target = _ctp[0]; valid = _ctp[3]; neutral = _ctp[6]
+        judge = valid & (~neutral)
+        tgt1 = (np.asarray(target) == 1)
+
+        def _wrongs(pos):
+            p = np.asarray(pos)[:n] > 0.5
+            return int(np.sum(judge & (p != tgt1)))
+
+        def _run_kl(net_a, K, L):
+            # _net_kl_search의 _run과 동일한 당일 체결 히스테리시스 — 고정 K/L 빠른 재실행용
+            pos = np.zeros(n); cur = 0.0
+            for s in range(n):
+                v = net_a[s]
+                if v >= K: cur = 1.0
+                elif v <= L: cur = 0.0
+                pos[s] = cur
+            pos[0] = 0.0
+            hr = np.zeros(n); hr[1:] = pos[:-1] * rr[1:]
+            return float(np.sum(hr)), pos
+
+        net0 = (sum(mapB[k] for k, _r, _w in rowsB)
+                - sum(mapS[k] for k, _r, _w in rowsS))
+        kl0 = _net_kl_search(net0, rr, mdd_limit=mdd_limit)
+        b0 = kl0.get('best_ret')
+        if b0 is None:
+            return None
+        K0, L0, ret0 = float(b0[0]), float(b0[1]), float(b0[2])
+        pos0 = b0[5]; w0 = _wrongs(pos0)
+
+        removedB = set(); removedS = set(); rm1 = []; rm2 = []
+        cur_net = np.asarray(net0, float).copy()
+        cur_w = w0
+
+        # ── 1단계: 틀린날 주도 지표 제거(같은 K/L 고정 재실행으로 검증) ──
+        posA = np.asarray(pos0) > 0.5
+        wrong_long = judge & posA & (~tgt1)     # 잘못 롱(정답은 매도) → 매수쪽이 이긴 날
+        wrong_cash = judge & (~posA) & tgt1     # 잘못 현금(정답은 매수) → 매도쪽이 이긴 날
+        correct_days = judge & ~(wrong_long | wrong_cash)
+        cand1 = []
+        for side, rows, mp, wl in (('buy', rowsB, mapB, wrong_long),
+                                   ('sell', rowsS, mapS, wrong_cash)):
+            for k, rel, _w in rows:
+                a = mp[k]; f = a > 1e-12
+                nw = int(np.sum(f & wl))
+                if nw == 0:
+                    continue
+                nc = int(np.sum(f & correct_days))
+                cand1.append((rel, nc, -nw, side, k))
+        cand1.sort()
+        cap1 = int(globals().get('SIMPLE_POOL_KL_REFINE_MAX_STAGE1', 12))
+        for rel, nc, nnw, side, k in cand1:
+            if len(rm1) >= cap1:
+                break
+            if (side == 'buy' and k in removedB) or (side == 'sell' and k in removedS):
+                continue
+            a = (mapB if side == 'buy' else mapS)[k]
+            t_net = cur_net - a if side == 'buy' else cur_net + a
+            _tret, _tpos = _run_kl(t_net, K0, L0)
+            tw = _wrongs(_tpos)
+            if tw < cur_w:
+                cur_net = t_net; cur_w = tw
+                (removedB if side == 'buy' else removedS).add(k)
+                rm1.append((side, k))
+
+        # ── 1단계 후 K/L 재탐색 ──
+        kl1 = _net_kl_search(cur_net, rr, mdd_limit=mdd_limit)
+        b1 = kl1.get('best_ret') or b0
+        curK, curL, cur_ret = float(b1[0]), float(b1[1]), float(b1[2])
+        cur_w = _wrongs(b1[5])
+
+        # ── 2단계: K/L을 0에 가깝게 — 총점수 큰 쪽에서 신뢰도 최저부터 ──
+        zero_tol = float(globals().get('SIMPLE_POOL_KL_ZERO_TOL', 0.05))
+        ret_tol = float(globals().get('SIMPLE_POOL_KL_REFINE_RET_TOL', 0.02))
+        cap2 = int(globals().get('SIMPLE_POOL_KL_REFINE_MAX_STAGE2', 8))
+        while len(rm2) < cap2 and (abs(curK) > zero_tol or abs(curL) > zero_tol):
+            remB = [(rel, k) for k, rel, _w in rowsB if k not in removedB]
+            remS = [(rel, k) for k, rel, _w in rowsS if k not in removedS]
+            if not remB and not remS:
+                break
+            sumB = sum(w for k, _r, w in rowsB if k not in removedB)
+            sumS = sum(w for k, _r, w in rowsS if k not in removedS)
+            side = 'buy' if sumB >= sumS else 'sell'
+            cands2 = sorted(remB if side == 'buy' else remS)
+            if len(cands2) <= 1:      # 한쪽이 1개뿐이면 그쪽은 더 못 뺌 → 반대쪽 시도
+                side = 'sell' if side == 'buy' else 'buy'
+                cands2 = sorted(remS if side == 'sell' else remB)
+                if len(cands2) <= 1:
+                    break
+            accepted = False
+            for rel, k in cands2[:6]:
+                a = (mapB if side == 'buy' else mapS)[k]
+                t_net = cur_net - a if side == 'buy' else cur_net + a
+                tkl = _net_kl_search(t_net, rr, mdd_limit=mdd_limit)
+                tb = tkl.get('best_ret')
+                if tb is None:
+                    continue
+                tK, tL, tret = float(tb[0]), float(tb[1]), float(tb[2])
+                tw = _wrongs(tb[5])
+                if (abs(tK) + abs(tL) < abs(curK) + abs(curL) - 1e-9) \
+                        and tw <= cur_w and tret >= cur_ret - ret_tol:
+                    cur_net = t_net; curK, curL, cur_ret, cur_w = tK, tL, tret, tw
+                    (removedB if side == 'buy' else removedS).add(k)
+                    rm2.append((side, k)); accepted = True
+                    break
+            if not accepted:
+                break
+
+        if not removedB and not removedS:
+            print(f"  ℹ (KL정제) 제거해서 개선되는 지표 없음 — 원본 유지 "
+                  f"(K={K0:.3f}/L={L0:.3f}, 수익 {ret0*100:+.2f}%, 최적자리 틀린날 {w0}일)")
+            return None
+
+        # ── nsd 제자리 갱신 — 축소 풀 기준으로 daily 전부 재계산 ──
+        keepB_mask = bp.apply(lambda r: _rk(r) not in removedB, axis=1)
+        keepS_mask = sp.apply(lambda r: _rk(r) not in removedS, axis=1)
+        keepB = bp[keepB_mask].reset_index(drop=True)
+        keepS = sp[keepS_mask].reset_index(drop=True)
+        b_arr = np.zeros(n); s_arr = np.zeros(n)
+        for _, r in keepB.iterrows():
+            b_arr = b_arr + mapB[_rk(r)]
+        for _, r in keepS.iterrows():
+            s_arr = s_arr + mapS[_rk(r)]
+        _wtd = bool(nsd.get('weighted', True))
+        d['buy_count'] = (np.round(b_arr, 3) if _wtd else b_arr.astype(int))
+        d['sell_count'] = (np.round(s_arr, 3) if _wtd else s_arr.astype(int))
+        d['net'] = (np.round(b_arr - s_arr, 4) if _wtd else (b_arr - s_arr).astype(int))
+        for _c in list(d.columns):
+            if _c.startswith('net_h'):
+                try:
+                    _h = int(_c[5:])
+                    _bh = np.zeros(n); _sh = np.zeros(n)
+                    for _, r in keepB.iterrows():
+                        if int(r.get('horizon_day', r.get('horizon', 1)) or 1) == _h:
+                            _bh = _bh + mapB[_rk(r)]
+                    for _, r in keepS.iterrows():
+                        if int(r.get('horizon_day', r.get('horizon', 1)) or 1) == _h:
+                            _sh = _sh + mapS[_rk(r)]
+                    d[_c] = np.round(_bh - _sh, 4)
+                except Exception:
+                    pass
+        nsd['buy_pool_used'] = keepB; nsd['sell_pool_used'] = keepS
+        nsd['n_buy_opt'] = len(keepB); nsd['n_sell_opt'] = len(keepS)
+
+        _rmB_txt = ', '.join(sorted(removedB)) or '없음'
+        _rmS_txt = ', '.join(sorted(removedS)) or '없음'
+        print(f"  ✓ (KL정제) K {K0:.3f}→{curK:.3f} / L {L0:.3f}→{curL:.3f} | "
+              f"수익 {ret0*100:+.2f}%→{cur_ret*100:+.2f}% | "
+              f"최적자리 틀린날 {w0}→{cur_w}일 | "
+              f"제거 매수 {len(removedB)}개[{_rmB_txt}] / 매도 {len(removedS)}개[{_rmS_txt}] "
+              f"(1단계 {len(rm1)}, 2단계 {len(rm2)})")
+        return dict(K0=K0, L0=L0, K1=curK, L1=curL, ret0=ret0, ret1=cur_ret,
+                    wrong0=w0, wrong1=cur_w,
+                    removed_buy=sorted(removedB), removed_sell=sorted(removedS))
+    except Exception as _e:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ KL정제 실패(무시, 원본 유지): {_e}")
+        return None
 
 
 def _write_indicator_matrix_sheet(ws, pool, feat, close_ser,
@@ -23663,6 +23874,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             except Exception:
                 pass
         globals()['_KNET_FULL'] = _nsd_full; globals()['_KNET_OOS'] = _nsd_oos
+        # ★★★ (요청 — 신규) 최적 K/L 확정 후 2단계 지표 정제(틀린날 주도 제거 → K/L 재탐색
+        #   → K/L을 0에 가깝게 총점수 우세쪽 저신뢰도 제거 → 재탐색) — _nsd_full을 제자리
+        #   갱신하므로 이후 write_excel의 K/L 재탐색·공식·카운트가 자동으로 정제 결과 기준.
+        try:
+            if _nsd_full is not None:
+                _kl_refine_after_search(_nsd_full,
+                                        mdd_limit=globals().get('MAX_DRAWDOWN_LIMIT_PCT'))
+        except Exception as _ekr:
+            print(f"  ⚠ KL정제 훅 실패(무시): {_ekr}")
     except Exception as _em:
         print(f"  ⚠ 순신호 K 계산 실패(무시): {_em}")
 
