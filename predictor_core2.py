@@ -14539,9 +14539,18 @@ SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = False
 SIMPLE_POOL_POSITION_MATCH_SELECT   = True
 SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT  = True    # 상승/하락폭 클수록 그 날을 맞히는 게 더 중요
 SIMPLE_POOL_MATCH_TARGET_THRESHOLD  = 0.0     # 정답 판정 임계값(다음날 수익률 > 이 값이면 '롱이 정답')
-# ★★★ (요청 — 신규) 정답자리 관대화 — 추세 중간 소폭이탈/추세전환 직전 소폭 날은
+# ★★★ (요청 — 재수정, 2단계) 정답자리 관대화 — 추세 중간 소폭이탈/추세전환 직전 소폭 날은
 #   반대(또는 새) 추세 방향도 정답으로 함께 인정(_compute_target_positions 참고).
-SIMPLE_POOL_TREND_MID_TOLERANCE  = 0.02   # 추세 중간 하루짜리 반대방향 소폭이탈 허용폭 (= 2%이상 절대거부 기준선)
+#   "그 임계값을 1%로 변경하고, 1(초과)~2%까지는 향후 상승 추세가 2배이상이어야 추세를
+#   따라가도록" — 1% 이내는 무조건 재배정, 1~2%는 다음날 등락폭이 이 이탈의 2배 이상일
+#   때만 재배정(그 미만이면 원래 엄격한 방향이 그대로 정답).
+SIMPLE_POOL_TREND_MID_TOLERANCE     = 0.01   # 무조건 재배정되는 하루짜리 소폭이탈 상한
+SIMPLE_POOL_TREND_MID_TOLERANCE_EXT = 0.02   # 조건부(향후추세 2배) 재배정 상한
+SIMPLE_POOL_TREND_MID_FUTURE_MULT   = 2.0    # 조건부 구간에서 요구하는 '향후 추세 ≥ 이탈×배수'
+# ★★★ (요청 관련) 절대거부(2%이상 오답이면 무조건 제외) 기준선 — 위 재배정 임계값이 1%로
+#   바뀌어도 이 하드거부 기준은 별도로 2%를 그대로 유지(재배정 임계값과 하드거부 기준은
+#   서로 다른 목적이라 값을 공유하지 않도록 완전히 분리).
+SIMPLE_POOL_BIG_MISS_THRESHOLD      = 0.02
 # ★★★ (요청 — 신규) "만약 아무것도 없으면 기준을 0.5%씩 올려서 다시 진행" — 위 절대거부
 #   기준(2%)으로 매수/매도 어느 한쪽이라도 후보 0개면, 그 쪽만 이 폭만큼씩 완화해서 재시도.
 SIMPLE_POOL_BIG_MISS_RELAX_STEP  = 0.005
@@ -15246,11 +15255,14 @@ def auto_compute_anchor_dates(dates, close, *,
 
 @njit
 def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
-    # ★★★ (요청 — 버그수정) 매수신호 적중 = 신호 후 '정확히 horizon일 후(day+horizon)' 시점에
-    #   종가가 신호일 종가 대비 +dd_limit 이상 상승. horizon=1이면 '다음날', 2면 '정확히 2일 후'
-    #   (1일 후는 안 봄, 1·2일 중 아무 때나 도달해도 되는 게 아님) — _fwd_hit_flags와 동일 기준.
-    #   ★ 앵커 오버라이드 없음 — 실제 도달 여부만으로 판정.
-    #   anchor_buy_arr 인자는 호출 호환 위해 남겨두나 미사용.
+    # ★★★ (요청 — 재수정, 핵심) "1~horizon일 전부 +dd_limit 이상이어야 성공" — 이전엔
+    #   '정확히 horizon일째 시점'의 누적 등락 하나만 봤는데(중간 날짜는 전혀 확인 안 함),
+    #   이러면 "초반에 크게 올랐다가 h일째 되기 직전에 크게 조정 와서 h일째는 여전히
+    #   +1%는 넘는" 경우도 무조건 성공으로 잡혔다. 이제는 1일째부터 h일째까지 '매일'의
+    #   누적 등락이 전부 +dd_limit 이상 유지돼야 성공으로 인정한다 — 중간에 단 하루라도
+    #   dd_limit 밑으로 떨어지면(설사 h일째엔 다시 회복해도) 실패로 친다. 표시용 등락률
+    #   (sum_ret에 누적되는 값)은 그대로 'h일째 시점'의 최종 누적을 사용(성공/실패 판정
+    #   기준만 엄격해진 것 — 표시되는 수치 자체의 정의는 바뀌지 않음).
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
     ns = 0; ok = 0; sum_ret = 0.0
@@ -15260,19 +15272,24 @@ def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
         if base_p <= 0.0: continue
         end = i + h
         if end > n - 1: continue    # ★ day+h 밖이면 평가불가(clamp 안 함)
+        all_ok = True
+        for k in range(1, h + 1):
+            step_ret = close_arr[i + k] / base_p - 1.0
+            if step_ret < dd_limit:
+                all_ok = False
+                break
         ret = close_arr[end] / base_p - 1.0
         ns += 1; sum_ret += ret
-        if ret >= dd_limit:
+        if all_ok:
             ok += 1
     return ns, ok, sum_ret
 
 
 @njit(cache=True)
 def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr):
-    # ★★★ (요청 — 버그수정) 매도신호 적중 = 신호 후 '정확히 horizon일 후' 시점에 종가가
-    #   신호일 종가 대비 -ru_limit 이상 하락 — _fwd_hit_flags와 동일 기준(구간 내 아무
-    #   때나 터치가 아니라 그 시점만).
-    #   anchor_sell_arr 인자는 호출 호환 위해 남겨두나 미사용.
+    # ★★★ (요청 — 재수정, 핵심) "1~horizon일 전부 -ru_limit 이하여야(그만큼 하락) 성공" —
+    #   매수와 대칭으로, 1일째부터 h일째까지 매일의 누적 등락이 전부 -ru_limit 이하로
+    #   유지돼야 성공. 중간에 하루라도 그 정도로 안 떨어지면 실패.
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
     ns = 0; ok = 0; sum_ret = 0.0
@@ -15282,9 +15299,15 @@ def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr
         if base_p <= 0.0: continue
         end = i + h
         if end > n - 1: continue
+        all_ok = True
+        for k in range(1, h + 1):
+            step_ret = close_arr[i + k] / base_p - 1.0
+            if step_ret > -ru_limit:
+                all_ok = False
+                break
         ret = close_arr[end] / base_p - 1.0
         ns += 1; sum_ret += ret
-        if ret <= -ru_limit:
+        if all_ok:
             ok += 1
     return ns, ok, sum_ret
 
@@ -17110,7 +17133,9 @@ def _compute_target_positions(close_arr, threshold=0.0):
     target = (ret > threshold).astype(int)
     magnitude = np.abs(ret)
 
-    _mid_tol = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.02))
+    _mid_tol_strict = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.01))
+    _mid_tol_ext = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE_EXT', 0.02))
+    _mid_future_mult = float(globals().get('SIMPLE_POOL_TREND_MID_FUTURE_MULT', 2.0))
     _edge_tol = float(globals().get('SIMPLE_POOL_TREND_EDGE_TOLERANCE', 0.01))
 
     # ★ 유효한(valid) 구간에서 target이 연속으로 같은 값을 유지하는 '추세 블록' 찾기
@@ -17130,16 +17155,26 @@ def _compute_target_positions(close_arr, threshold=0.0):
 
     new_target = target.copy()
     for _bi, (_s, _e, _val) in enumerate(blocks):
-        # ★★★ (요청 — 재수정, 단순화) "2%이상은 무조건 안맞는 지표는 제외하고, 2%
-        #   내외로 하루만 추세랑 다른 날은 추세를 따라가는 지표를 사용" — 정확히 하루만
-        #   낀 반대방향 블록에만 적용(여러 날 연속이면 대상 아님), 그 하루의 등락폭이
-        #   2% 이내이고 앞뒤 블록이 서로 같은 방향이면, 그 하루의 정답을 주변 추세
-        #   방향으로 완전히 교체(REPLACE) — 2% 이상이면(또는 이틀 이상 이어지면) 그
-        #   블록은 그대로 원래(엄격한) 방향이 정답이라 관대화 대상이 아니다.
+        # ★★★ (요청 — 재수정, 2단계 임계값) "그 임계값을 1%로 변경하고, 1(초과)~2%까지는
+        #   향후 상승 추세가 2배이상이어야 추세를 따라가도록" — 정확히 하루만 낀
+        #   반대방향 블록에 한해:
+        #   · 등락폭 1% 이내 → 무조건 주변 추세 방향으로 재배정(REPLACE).
+        #   · 등락폭 1% 초과 ~2% 이내 → 그 다음날(다음 블록 첫날)의 등락폭이 이 이탈
+        #     크기의 2배 이상일 때만 재배정 — 진짜로 강하게 추세가 재개되는 경우만
+        #     "일시적 조정"으로 봐주고, 그 정도로 강하게 재개되지 않으면 원래(엄격한)
+        #     방향을 그대로 정답으로 유지한다.
+        #   · 2% 초과 → 여전히 재배정 대상 아님(그대로 원래 방향이 정답).
         if _s == _e and 0 < _bi < len(blocks) - 1:
             _prev_val = blocks[_bi - 1][2]; _next_val = blocks[_bi + 1][2]
-            if _prev_val == _next_val and _prev_val != _val and magnitude[_s] <= _mid_tol:
-                new_target[_s] = _prev_val
+            if _prev_val == _next_val and _prev_val != _val:
+                _dev_mag = magnitude[_s]
+                if _dev_mag <= _mid_tol_strict:
+                    new_target[_s] = _prev_val
+                elif _dev_mag <= _mid_tol_ext:
+                    _future_day = _e + 1
+                    if _future_day < n and valid[_future_day] and \
+                       magnitude[_future_day] >= _mid_future_mult * _dev_mag:
+                        new_target[_s] = _prev_val
         # 규칙2) 블록의 마지막 날 — 다음 블록이 반대 방향이고 그 마지막 날의 등락폭이
         #   1% 이내면, 그 날의 정답을 다음(전환될) 추세 방향으로 완전히 교체(REPLACE).
         #   (규칙1과 동일하게 정확히 하루만 — 마지막 하루만 대상, 그 전날들은 대상 아님)
@@ -17252,8 +17287,20 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
         p0 = close_arr[d]; p1 = close_arr[d + _hz]
         if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
             continue
-        ret = p1 / p0 - 1.0   # ★ close[i+horizon]/close[i]-1 — 성공률 계산과 완전히 동일한 식
-        is_correct = bool(ret >= target_threshold) if is_buy else bool(ret <= -target_threshold)
+        ret = p1 / p0 - 1.0   # ★ close[i+horizon]/close[i]-1 — 표시용 등락률(최종 h일째 값)
+        # ★★★ (요청 — 재수정) "1~horizon일 전부 임계값 이상이어야 성공" — _eval_buy_signals/
+        #   _eval_sell_signals와 동일하게, h일째 누적 하나가 아니라 1일째부터 h일째까지
+        #   매일의 누적이 전부 기준을 넘는지로 판정(중간에 하루라도 못 미치면 오답).
+        _all_ok = True
+        for _k in range(1, _hz + 1):
+            _pk = close_arr[d + _k]
+            if not (np.isfinite(_pk)):
+                _all_ok = False; break
+            _step_ret = _pk / p0 - 1.0
+            _step_ok = (_step_ret >= target_threshold) if is_buy else (_step_ret <= -target_threshold)
+            if not _step_ok:
+                _all_ok = False; break
+        is_correct = _all_ok
         # ★★★ (요청 — 신규) 근소한 오답(변동률 1%이하) 구제 — 하루 더 연장해서 재확인
         if allow_next_day_rescue and not is_correct and abs(ret) <= _ambig_thr and d + _hz + 1 < n:
             p2 = close_arr[d + _hz + 1]
@@ -17369,7 +17416,7 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     #   절대거부 기준이 너무 엄격해서 후보가 한쪽(매수 또는 매도)이라도 0개가 되면,
     #   그 쪽만 기준을 0.5%p씩(2.5%, 3.0%, ...) 완화해서 후보가 하나라도 나올 때까지
     #   다시 걸러본다(매수/매도 각각 독립적으로 완화 — 한쪽만 비었으면 그쪽만 완화).
-    _big_miss_thr_base = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.02))
+    _big_miss_thr_base = float(globals().get('SIMPLE_POOL_BIG_MISS_THRESHOLD', 0.02))
     _relax_step = float(globals().get('SIMPLE_POOL_BIG_MISS_RELAX_STEP', 0.005))
     _relax_cap = float(globals().get('SIMPLE_POOL_BIG_MISS_RELAX_CAP', 0.15))   # 안전판(15%까지만)
 
@@ -17382,40 +17429,89 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
         return bool((magnitude_m[fidx][_wrong] >= thr).any())
 
     def _build_cands(pool, ok_mask, is_buy, thr):
-        _cands = []; _rej = []
+        # ★★★ (요청 관련 — 핵심 버그수정, 실측 확인) "2025-03-07은 무조건 매도, 해당날의
+        #   매수지표 제거 필요" — 절대거부(2%이상 큰 오답)로 걸러진 지표가, 이후 '신호공백
+        #   보강'이나 '약한쪽 보강' 단계에서 rejected 리스트를 다시 훑다가 성공률·신뢰도가
+        #   높다는 이유로 재부활하는 구멍이 있었다(실측: 큰 폭 오답이 있는 지표가 보유
+        #   지속 신호에 계속 기여). 이제 '절대거부(빅미스)'와 '일반 오답(ww≥cw)'을 아예
+        #   별도 리스트로 완전히 분리 — 빅미스로 걸린 지표는 이 함수를 벗어난 어떤 구제
+        #   경로(신호공백 보강·약한쪽 보강)에서도 원천적으로 접근할 수 없다.
+        _cands = []; _rej_normal = []; _rej_bigmiss = []
         for _, row in (pool.iterrows() if pool is not None and len(pool) else []):
             cw, ww, _h0, nfire, fidx = _score(row, is_buy)
             if nfire == 0:
                 continue
             if _has_big_miss(fidx, ok_mask, thr):
-                _rej.append((row, cw, ww, fidx))   # 절대거부 — 집계와 무관하게 탈락
+                _rej_bigmiss.append((row, cw, ww, fidx))   # ★ 절대거부 — 어떤 구제경로에도 노출 안 됨
                 continue
             if ww >= cw:
-                _rej.append((row, cw, ww, fidx))
+                _rej_normal.append((row, cw, ww, fidx))
                 continue
             _cands.append((row, cw, ww, fidx))
-        return _cands, _rej
+        return _cands, _rej_normal, _rej_bigmiss
 
     _buy_thr_used = _big_miss_thr_base
-    _buy_cands, _buy_rejected = _build_cands(buy_pool, buy_ok, True, _buy_thr_used)
+    _buy_cands, _buy_rejected, _buy_rejected_bigmiss = _build_cands(buy_pool, buy_ok, True, _buy_thr_used)
     while not _buy_cands and _buy_thr_used < _relax_cap:
         _buy_thr_used = round(_buy_thr_used + _relax_step, 6)
-        _buy_cands, _buy_rejected = _build_cands(buy_pool, buy_ok, True, _buy_thr_used)
+        _buy_cands, _buy_rejected, _buy_rejected_bigmiss = _build_cands(buy_pool, buy_ok, True, _buy_thr_used)
     if _buy_cands and _buy_thr_used > _big_miss_thr_base:
         print(f"    (절대거부 기준 완화) 매수: {_big_miss_thr_base*100:.1f}%에서는 통과 지표가 "
               f"0개라 {_buy_thr_used*100:.1f}%까지 완화해서 {len(_buy_cands)}개 확보")
 
     _sell_thr_used = _big_miss_thr_base
-    _sell_cands, _sell_rejected = _build_cands(sell_pool, sell_ok, False, _sell_thr_used)
+    _sell_cands, _sell_rejected, _sell_rejected_bigmiss = _build_cands(sell_pool, sell_ok, False, _sell_thr_used)
     while not _sell_cands and _sell_thr_used < _relax_cap:
         _sell_thr_used = round(_sell_thr_used + _relax_step, 6)
-        _sell_cands, _sell_rejected = _build_cands(sell_pool, sell_ok, False, _sell_thr_used)
+        _sell_cands, _sell_rejected, _sell_rejected_bigmiss = _build_cands(sell_pool, sell_ok, False, _sell_thr_used)
     if _sell_cands and _sell_thr_used > _big_miss_thr_base:
         print(f"    (절대거부 기준 완화) 매도: {_big_miss_thr_base*100:.1f}%에서는 통과 지표가 "
               f"0개라 {_sell_thr_used*100:.1f}%까지 완화해서 {len(_sell_cands)}개 확보")
 
     # ★ 갭 채우기(신호공백 보강)에서도 동일하게 완화된 기준을 써야 일관됨.
     _big_miss_thr = max(_buy_thr_used, _sell_thr_used)
+
+    # ★★★ (요청 — 신규) "매수,매도 지표 개수 차이가 많이 나면 개수 없는쪽 미사용된
+    #   지표에서 성공률,신뢰도가 가장 높은 것부터 사용으로 적용해봐. 그런데 기존 올바른
+    #   매수나 매도점수를 차감해서 결과가 뒤바뀌면 절대로 안됨" — 한쪽이 다른 쪽보다
+    #   SIMPLE_POOL_WEAK_SIDE_IMBALANCE_RATIO(기본 3)배 이상 적으면, 그 약한 쪽의
+    #   미사용(2%이상 절대거부는 아니지만 오답≥정답이라 탈락한) 후보들을 성공률 높은
+    #   순서로 하나씩 검토해서 추가한다. "결과가 뒤바뀌면 안 됨"을 보장하기 위해, 그
+    #   약한 쪽 전체 풀의 누적 correct_w가 누적 wrong_w보다 큰 상태를 절대 깨지 않는
+    #   경우에만(추가해도 여전히, 또는 더, 정답우세가 유지되는 경우에만) 추가한다 —
+    #   이러면 새로 들어온 지표가 기존에 이미 확보된 '정답 우세'를 깎아서 약한 쪽 net이
+    #   반대로 뒤집히는 일이 구조적으로 불가능하다(2%이상 큰 오답이 있는 것들은 애초에
+    #   _rejected에 안 담기므로 절대거부 원칙도 그대로 유지됨).
+    _imbalance_ratio = float(globals().get('SIMPLE_POOL_WEAK_SIDE_IMBALANCE_RATIO', 3.0))
+    _n_buy_c = len(_buy_cands); _n_sell_c = len(_sell_cands)
+
+    def _reinforce_weak_side(cands, rejected, label):
+        if not rejected:
+            return 0
+        _sorted_rej = sorted(
+            rejected,
+            key=lambda t: (-float(t[0].get('success_rate', 0.0) or 0.0),
+                           -float(t[0].get('reliability', 0.0) or 0.0)))
+        _cum_c = sum(c[1] for c in cands)
+        _cum_w = sum(c[2] for c in cands)
+        _added = 0
+        for (_row, _cw, _ww, _fidx) in _sorted_rej:
+            _new_c = _cum_c + _cw; _new_w = _cum_w + _ww
+            if _new_c > _new_w:   # ★ 추가해도 약한 쪽 누적 정답우세가 유지되는 경우만
+                cands.append((_row, _cw, _ww, _fidx))
+                _cum_c = _new_c; _cum_w = _new_w
+                _added += 1
+        if _added:
+            print(f"    (약한쪽 보강) {label}: 미사용 {len(rejected)}개 중 {_added}개를 "
+                  f"성공률·신뢰도 높은 순으로 추가(누적 정답우세 유지 확인하며 — 결과가 "
+                  f"뒤바뀌는 추가는 하지 않음)")
+        return _added
+
+    if _n_buy_c > 0 and _n_sell_c > 0:
+        if _n_buy_c >= _n_sell_c * _imbalance_ratio:
+            _reinforce_weak_side(_sell_cands, _sell_rejected, '매도')
+        elif _n_sell_c >= _n_buy_c * _imbalance_ratio:
+            _reinforce_weak_side(_buy_cands, _buy_rejected, '매수')
 
     def _to_df(cands, pool_for_empty):
         if not cands:
