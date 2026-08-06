@@ -14481,6 +14481,12 @@ SIMPLE_POOL_TREND_HIT_W        = 0.02   # 추세성공/실패 1회당 약한 가
 SIMPLE_POOL_REV_MAJORITY_FRAC  = 0.5    # 전환성공(또는 실패)이 전체 이벤트의 이 비율 이상이면
 SIMPLE_POOL_REV_MAJORITY_MULT  = 2.0    #   해당 가중을 이 배수로 강화
 SIMPLE_POOL_STABILITY_COEF     = 0.5    # 안정계수 = 1/(1+계수×이벤트등락 표준편차%)
+# ★★★ (요청 — 신규) 중립 자리 — 매수 전환일과 매도추세 종료일 '양쪽 모두'에 시간·가격이
+#   동시에 가까운 날은 중립(매수/매도 어느 판정이든 성공 인정).
+SIMPLE_POOL_NEUTRAL_DAY_WINDOW = 3      # "±2~3일 이내" — 기준일과의 최대 거리(일)
+SIMPLE_POOL_NEUTRAL_PRICE_TOL  = 0.01   # "가격 ±1% 이내"
+# ★★★ (요청 — 신규) 중립자리 기반 약한쪽 보강 상한 — "과하지 않게"
+SIMPLE_POOL_WEAK_SIDE_MAX_ADD  = 3
 SIMPLE_POOL_CONSECUTIVE_WEIGHT     = 0.15   # (4번) 연속 발화일의 가중치(첫날=1.0 대비)
 SIMPLE_POOL_HIT_COUNT_BONUS_ENABLED = True  # (1번) 일반 히트 카운트 보너스 on/off
 SIMPLE_POOL_HIT_COUNT_BONUS_WEIGHT  = 0.20
@@ -14548,7 +14554,7 @@ SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = False
 SIMPLE_POOL_POSITION_MATCH_SELECT   = True
 # ★★★ (요청 — 신규) "일별 백테스트에 지표 적용하는 건 가장 최근 날짜 발화지표만" — 정답자리
 #   매칭 통과 후, 마지막 날짜에 발화(표시일 기준)하는 지표만 net 계산에 사용.
-SIMPLE_POOL_LATEST_FIRE_ONLY        = True
+SIMPLE_POOL_LATEST_FIRE_ONLY        = False   # ★ (요청 — 원복) 다시 모든 지표를 일별 백테스트에 적용
 SIMPLE_POOL_MATCH_MAGNITUDE_WEIGHT  = True    # 상승/하락폭 클수록 그 날을 맞히는 게 더 중요
 SIMPLE_POOL_MATCH_TARGET_THRESHOLD  = 0.0     # 정답 판정 임계값(다음날 수익률 > 이 값이면 '롱이 정답')
 # ★★★ (요청 — 재수정, 2단계) 정답자리 관대화 — 추세 중간 소폭이탈/추세전환 직전 소폭 날은
@@ -15267,6 +15273,34 @@ def auto_compute_anchor_dates(dates, close, *,
 
 @njit
 def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
+    # ★★★ (요청 — 재설계) "지표 탐색 시 성공 판단 기준을 최적자리에 맞는 신호가 발생했는지로,
+    #   등락률은 신호대로 매수 시 다음날 하루 변동률로만" — anchor_buy_arr에 최적자리
+    #   ok마스크(매수정답|중립, uint8)를 받아, 표시일(fire+h-1)의 최적자리가 매수(또는
+    #   중립)면 성공. 등락률은 표시일→다음날 하루치. 마스크 길이가 안 맞으면(비단순모드
+    #   등 하위호환) 예전처럼 다음날 등락 ≥ dd_limit로 폴백.
+    n = close_arr.shape[0]
+    h = horizon if horizon >= 1 else 1
+    use_ok = anchor_buy_arr.shape[0] == n
+    ns = 0; ok = 0; sum_ret = 0.0
+    for i in range(n - 1):
+        if signal_arr[i] != 1: continue
+        disp = i + h - 1
+        if disp + 1 > n - 1: continue
+        p0 = close_arr[disp]
+        if p0 <= 0.0: continue
+        ret = close_arr[disp + 1] / p0 - 1.0
+        ns += 1; sum_ret += ret
+        if use_ok:
+            if anchor_buy_arr[disp] == 1:
+                ok += 1
+        else:
+            if ret >= dd_limit:
+                ok += 1
+    return ns, ok, sum_ret
+
+
+@njit
+def _OLD_eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
     # ★★★ (요청 — 재수정, 핵심) "1~horizon일 전부 +dd_limit 이상이어야 성공" — 이전엔
     #   '정확히 horizon일째 시점'의 누적 등락 하나만 봤는데(중간 날짜는 전혀 확인 안 함),
     #   이러면 "초반에 크게 올랐다가 h일째 되기 직전에 크게 조정 와서 h일째는 여전히
@@ -15297,8 +15331,33 @@ def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
     return ns, ok, sum_ret
 
 
-@njit(cache=True)
+@njit
 def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr):
+    # ★★★ (요청 — 재설계) 매도 대칭 — 표시일의 최적자리가 매도(또는 중립)면 성공,
+    #   등락률은 표시일→다음날 하루치(원부호 그대로 합산 — 표시용).
+    n = close_arr.shape[0]
+    h = horizon if horizon >= 1 else 1
+    use_ok = anchor_sell_arr.shape[0] == n
+    ns = 0; ok = 0; sum_ret = 0.0
+    for i in range(n - 1):
+        if signal_arr[i] != 1: continue
+        disp = i + h - 1
+        if disp + 1 > n - 1: continue
+        p0 = close_arr[disp]
+        if p0 <= 0.0: continue
+        ret = close_arr[disp + 1] / p0 - 1.0
+        ns += 1; sum_ret += ret
+        if use_ok:
+            if anchor_sell_arr[disp] == 1:
+                ok += 1
+        else:
+            if ret <= -ru_limit:
+                ok += 1
+    return ns, ok, sum_ret
+
+
+@njit(cache=True)
+def _OLD_eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr):
     # ★★★ (요청 — 재수정, 핵심) "1~horizon일 전부 -ru_limit 이하여야(그만큼 하락) 성공" —
     #   매수와 대칭으로, 1일째부터 h일째까지 매일의 누적 등락이 전부 -ru_limit 이하로
     #   유지돼야 성공. 중간에 하루라도 그 정도로 안 떨어지면 실패.
@@ -15817,7 +15876,23 @@ def _hit_flags_cached(close_arr, horizon, limit, is_buy, use_barrier):
     c = _HITF_CACHE.get(key)
     if c is not None:
         return c
-    hit, ev = _fwd_hit_flags(close_arr, int(horizon), float(limit), int(is_buy), int(use_barrier))
+    # ★★★ (요청 — 재설계) 리드(선행일) 탐색의 적중 판정도 성공률과 동일 기준으로 통일 —
+    #   발화일 i의 적중 = 표시일(i+h-1)의 최적자리가 해당 방향(또는 중립)인지.
+    try:
+        _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
+        _mask = _ctp[7] if int(is_buy) == 1 else _ctp[8]
+        n_ = len(close_arr); h_ = max(1, int(horizon))
+        hit = np.zeros(n_, dtype=np.uint8)
+        ev = np.zeros(n_, dtype=np.uint8)
+        for _i in range(n_ - 1):
+            _disp = _i + h_ - 1
+            if _disp + 1 > n_ - 1:
+                continue
+            ev[_i] = 1
+            if _mask[_disp] == 1:
+                hit[_i] = 1
+    except Exception:
+        hit, ev = _fwd_hit_flags(close_arr, int(horizon), float(limit), int(is_buy), int(use_barrier))
     if len(_HITF_CACHE) > 600:
         _HITF_CACHE.clear()
     _HITF_CACHE[key] = (hit, ev)
@@ -16200,10 +16275,20 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
     z_window  = int(globals().get('ZSCORE_WINDOW', 60))
     z_thrs    = globals().get('ZSCORE_THRESHOLDS', [-2.0, 2.0])
 
-    if anchor_buy_arr is None:
-        anchor_buy_arr = np.zeros(0, dtype=np.uint8)
-    if anchor_sell_arr is None:
-        anchor_sell_arr = np.zeros(0, dtype=np.uint8)
+    # ★★★ (요청 — 재설계) 성공판정용 최적자리 마스크 준비 — anchor 파라미터를 재활용해
+    #   njit 평가함수에 (매수정답|중립)/(매도정답|중립) 마스크를 전달한다.
+    if anchor_buy_arr is None or anchor_sell_arr is None:
+        try:
+            _ctp = _ctp_cached(close_arr)
+            if anchor_buy_arr is None:
+                anchor_buy_arr = _ctp[7]
+            if anchor_sell_arr is None:
+                anchor_sell_arr = _ctp[8]
+        except Exception:
+            if anchor_buy_arr is None:
+                anchor_buy_arr = np.zeros(0, dtype=np.uint8)
+            if anchor_sell_arr is None:
+                anchor_sell_arr = np.zeros(0, dtype=np.uint8)
 
     if HAS_NUMBA:
         zero_sig = np.zeros(n_days, dtype=np.uint8)
@@ -16907,8 +16992,11 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
         fire_idx = np.nonzero(sig_arr)[0]
         fire_idx = fire_idx[fire_idx <= n_total - 1 - _hz]   # i+horizon이 범위 안에 있어야 평가 가능
 
-        # ★ (기존 유지) "어닝 전날은 평가에서 빼자(어닝 당일은 포함)"
-        if ticker and len(fire_idx):
+        # ★★★ (요청 — 재설계) 등락률 = "신호대로 매수/매도 시 다음날 하루 변동률" —
+        #   표시일(발화일+h-1) 기준으로 그 다음날 하루치만 본다. 어닝 제외도 '행동하는
+        #   날(표시일)의 다음 거래일이 어닝'인 표본을 제외하는 것으로 표시일 기준 통일.
+        disp_idx = fire_idx + (_hz - 1)
+        if ticker and len(disp_idx):
             try:
                 _edates = _get_earnings_dates_cached(ticker)
                 if _edates:
@@ -16919,34 +17007,23 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
                     for _ii in range(n_total - 1):
                         if _idx_norm[_ii + 1] in _edates:
                             _is_day_before_earn[_ii] = True
-                    fire_idx = fire_idx[~_is_day_before_earn[fire_idx]]
+                    disp_idx = disp_idx[~_is_day_before_earn[disp_idx]]
             except Exception:
                 pass
 
-        if len(fire_idx) < 2:   # 최소 표본 2개(기존 유지)
+        if len(disp_idx) < 2:   # 최소 표본 2개(기존 유지)
             _RELIABILITY_BASE_CACHE[_base_cache_key] = dict(_empty)
             return dict(_empty)
-        base = close_arr[fire_idx]
-        nxt = close_arr[fire_idx + _hz]   # h일 후(성공률과 동일)
+        base = close_arr[disp_idx]
+        nxt = close_arr[disp_idx + 1]   # ★ 표시일 다음날 하루치
         valid = (base > 0) & np.isfinite(base) & np.isfinite(nxt)
-        base = base[valid]; nxt = nxt[valid]; fire_valid = fire_idx[valid]
+        base = base[valid]; nxt = nxt[valid]; fire_valid = disp_idx[valid]
         if len(base) < 2:
             _RELIABILITY_BASE_CACHE[_base_cache_key] = dict(_empty)
             return dict(_empty)
         raw_ret = nxt / base - 1.0
         fav = raw_ret if is_buy else -raw_ret   # 매수=상승이 +, 매도=하락이 +
         n = len(fav)
-
-        # ★ (기존 유지) h일 누적이 ±1% 안쪽(애매)이면 그 표본만 다음날 하루치로 재판정
-        _ambig_thr = float(globals().get('SIMPLE_POOL_AMBIGUOUS_THRESHOLD', 0.01))
-        for _k in range(n):
-            if abs(fav[_k]) < _ambig_thr:
-                _fi = int(fire_valid[_k])
-                if _fi + 1 < len(close_arr):
-                    _p0n = close_arr[_fi]; _p1n = close_arr[_fi + 1]
-                    if _p0n and _p0n > 0 and np.isfinite(_p0n) and np.isfinite(_p1n):
-                        _raw1 = _p1n / _p0n - 1.0
-                        fav[_k] = _raw1 if is_buy else -_raw1
 
         # ★★★ (원칙 6) 연속한 날짜 같은 포지션 신호 = 이벤트 1건 — 연속 run의 첫날만 남김
         _ev_mask = np.ones(n, dtype=bool)
@@ -16960,8 +17037,9 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
             _RELIABILITY_BASE_CACHE[_base_cache_key] = dict(_empty)
             return dict(_empty)
 
-        # ★★★ (원칙 1) 기본점수 = 수익·손실 합산(소수 등락률 합 = %합÷100)
-        base_sum = float(np.sum(ev_fav))
+        # ★★★ (원칙 1, 요청 — 스케일 변경) 기본점수 = 수익·손실 %합 ÷ 10 — 이전의 ÷100
+        #   (=소수합)에서 스케일을 10배 올림. 소수 등락률 합 × 10과 동일.
+        base_sum = float(np.sum(ev_fav)) * 10.0
 
         # ★★★ (원칙 2) "1%이상 변동률 추세전환 자리" 사전 계산(close_arr당 1회, 캐시)
         _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
@@ -17006,7 +17084,13 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
                     return True
             return False
 
-        # ★★★ (원칙 2·4·5) 이벤트 분류 — rs(전환성공)/rf(전환실패)/ts(추세성공)/tf(추세실패)
+        # ★★★ (원칙 2·4·5, 요청 — 재설계) 이벤트 분류 — 전환 매칭은 그대로, 추세성공/실패는
+        #   등락 부호가 아니라 '최적자리(정답|중립) 매칭'으로 판정(성공률 기준과 완전 동일).
+        try:
+            _ctp_r = _ctp_cached(close_arr)
+            _ok_mask_r = _ctp_r[7] if is_buy else _ctp_r[8]
+        except Exception:
+            _ok_mask_r = None
         rs = ts = rf = tf = 0
         for _k in range(n_events):
             _f = int(ev_days[_k])
@@ -17014,10 +17098,12 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
                 rs += 1                      # 전환자리에서 전환포지션과 맞는 신호 = 전환성공
             elif _match_spot(_f, _opp_dir_spots):
                 rf += 1                      # 전환자리에서 반대 포지션 신호 = 전환실패
-            elif ev_fav[_k] > 0:
-                ts += 1                      # 전환 아닌 자리에서 맞음 = 추세성공(약)
             else:
-                tf += 1                      # 전환 아닌 자리에서 틀림 = 추세실패(약)
+                _hit = bool(_ok_mask_r[_f]) if _ok_mask_r is not None else (ev_fav[_k] > 0)
+                if _hit:
+                    ts += 1                  # 전환 아닌 자리에서 최적자리와 일치 = 추세성공(약)
+                else:
+                    tf += 1                  # 전환 아닌 자리에서 불일치 = 추세실패(약)
 
         # ★★★ (원칙 3·5) UP/DOWN 가중 — 성공·실패 대칭 구조
         _rev_w = float(globals().get('SIMPLE_POOL_REV_HIT_W', 0.10))
@@ -17175,7 +17261,83 @@ def _compute_target_positions(close_arr, threshold=0.0):
     target = new_target
     buy_ok = (target == 1) & valid
     sell_ok = (target == 0) & valid
-    return target, magnitude, ret, valid, buy_ok, sell_ok
+    # ★★★ (요청 — 신규) 중립 자리 — "매수 전환일 ±2~3일 이내 AND 가격 ±1% 이내이고,
+    #   매도 추세가 끝나는 날 주가와도 ±2~3일 이내 AND 가격 ±1% 이내면 중립" —
+    #   바닥 전환 구간(매도추세가 끝나고 매수 전환이 일어나는 그 언저리)에서, 두 기준일
+    #   모두에 시간·가격이 동시에 가까운 날들은 매수/매도 어느 쪽으로 판단해도 정답으로
+    #   인정하는 '중립' 지대다(지표 탐색 성공판정에서 양쪽 다 성공 처리).
+    #   · 매수 전환일 = 다음날 등락 ≥ +SIMPLE_POOL_REV_MIN_MAGNITUDE(1%)이고 직전
+    #     SIMPLE_POOL_REVERSAL_LOOKBACK일 추세가 하락인 날(신뢰도 공식의 전환자리와 동일 정의)
+    #   · 매도 추세가 끝나는 날 = target==0 블록의 마지막 날(다음 블록이 target==1)
+    neutral = np.zeros(n, dtype=bool)
+    _n_day_win = int(globals().get('SIMPLE_POOL_NEUTRAL_DAY_WINDOW', 3))
+    _n_price_tol = float(globals().get('SIMPLE_POOL_NEUTRAL_PRICE_TOL', 0.01))
+    _n_rev_mag = float(globals().get('SIMPLE_POOL_REV_MIN_MAGNITUDE', 0.01))
+    _n_lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
+    _buy_turn_days = []
+    for _t in range(_n_lookback, n - 1):
+        if not valid[_t]:
+            continue
+        _p0 = close_arr[_t]; _pb = close_arr[_t - _n_lookback]
+        if not (_p0 and _p0 > 0 and np.isfinite(_p0) and _pb and _pb > 0 and np.isfinite(_pb)):
+            continue
+        if ret[_t] >= _n_rev_mag and (_p0 / _pb - 1.0) < 0:
+            _buy_turn_days.append(_t)
+    _sell_end_days = []
+    # target 재배정 이후 블록 기준 — 재배정 반영된 최종 target으로 다시 블록을 스캔
+    _t2 = 0
+    while _t2 < n:
+        if not valid[_t2]:
+            _t2 += 1; continue
+        _s2 = _t2
+        while _t2 + 1 < n and valid[_t2 + 1] and target[_t2 + 1] == target[_t2]:
+            _t2 += 1
+        if int(target[_s2]) == 0 and _t2 + 1 < n and valid[_t2 + 1] and int(target[_t2 + 1]) == 1:
+            _sell_end_days.append(_t2)   # 매도(현금) 블록의 마지막 날, 다음이 매수 블록
+        _t2 += 1
+    if _buy_turn_days and _sell_end_days:
+        _bt_arr = np.asarray(_buy_turn_days, dtype=int)
+        _se_arr = np.asarray(_sell_end_days, dtype=int)
+        for _d in range(n):
+            if not valid[_d]:
+                continue
+            _pd_ = close_arr[_d]
+            if not (_pd_ and _pd_ > 0 and np.isfinite(_pd_)):
+                continue
+            _near_bt = _bt_arr[np.abs(_bt_arr - _d) <= _n_day_win]
+            _ok_bt = any(abs(_pd_ / close_arr[_t] - 1.0) <= _n_price_tol for _t in _near_bt.tolist()
+                         if close_arr[_t] and close_arr[_t] > 0)
+            if not _ok_bt:
+                continue
+            _near_se = _se_arr[np.abs(_se_arr - _d) <= _n_day_win]
+            _ok_se = any(abs(_pd_ / close_arr[_t] - 1.0) <= _n_price_tol for _t in _near_se.tolist()
+                         if close_arr[_t] and close_arr[_t] > 0)
+            if _ok_se:
+                neutral[_d] = True
+
+    return target, magnitude, ret, valid, buy_ok, sell_ok, neutral
+
+
+def _ctp_cached(close_arr, threshold=None):
+    """★ _compute_target_positions 결과 메모 래퍼 — 성공판정·신뢰도·시트가 같은 배열을
+       반복 계산하지 않도록. (buy_ok|중립), (sell_ok|중립) 결합 마스크도 함께 반환."""
+    if threshold is None:
+        threshold = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
+    _k = (id(close_arr), len(close_arr), round(float(threshold), 8),
+          round(float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.01)), 6),
+          round(float(globals().get('SIMPLE_POOL_TREND_EDGE_TOLERANCE', 0.01)), 6),
+          int(globals().get('SIMPLE_POOL_NEUTRAL_DAY_WINDOW', 3)))
+    _c = _CTP_MEMO.get(_k)
+    if _c is None:
+        target, magnitude, ret, valid, buy_ok, sell_ok, neutral = _compute_target_positions(
+            close_arr, threshold=threshold)
+        buy_ok_n = ((buy_ok | neutral) & valid).astype(np.uint8)
+        sell_ok_n = ((sell_ok | neutral) & valid).astype(np.uint8)
+        _c = (target, magnitude, ret, valid, buy_ok, sell_ok, neutral, buy_ok_n, sell_ok_n)
+        if len(_CTP_MEMO) >= 16:
+            _CTP_MEMO.pop(next(iter(_CTP_MEMO)))
+        _CTP_MEMO[_k] = _c
+    return _c
 
 
 def _aligned_signal_for_row(feat, row):
@@ -17225,74 +17387,36 @@ def _score_indicator_vs_target(feat, row, ok_mask, magnitude, is_buy, harm_mask=
 
 def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=None,
                                allow_next_day_rescue=False):
-    """★★★ (요청 — 재설계) "전체 후보 지표" 시트에 표시할, 이 지표의 실제 발화일과 그
-       '성공률' 판정에 그대로 쓰인 것과 동일한 수치·기준으로 성공/실패를 계산한다.
-
-       ★★★ (요청 관련 — 버그수정, 실측 확인) 이전 버전은 호라이즌 정렬된 '표시일'
-       기준으로 '그 다음날 하루치' 등락만 봤는데, 실제 '성공률'(_eval_buy_signals/
-       _eval_sell_signals)은 전혀 다른 걸 잰다 — 원본 발화일 i(lead_shift만 적용, 호라이즌
-       정렬 전)부터 '정확히 horizon일 후'(i+horizon)까지의 누적 등락률 딱 하나
-       (close[i+horizon]/close[i]-1, 며칠간 등락 합산이 아니라 시작·끝 두 가격만 비교하는
-       것)로 판정한다. 그래서 예를 들어 5일 중 나흘은 올라 누적으론 임계값을 넘겨
-       '성공'이어도, 마지막 하루만 따로 보면 하락(음수)일 수 있다 — 성공률100%인데
-       날짜별 목록에 마이너스가 섞여 보이는 모순은 바로 이 정의 차이 때문이었다(실측
-       확인됨). 이제 발화일도(_to_signal_array — lead_shift만 적용, 호라이즌 정렬 안 함)
-       등락률도(close[i+horizon]/close[i]-1, 전체 구간 누적 하나) 성공률 계산과 완전히
-       동일한 방식으로 맞췄고, 성공 판정 기준도 0%가 아니라 실제 그 호라이즌에 쓰인
-       임계값(STAGE_SUCCESS_LIMIT[horizon-1])을 그대로 쓴다 — 이제 이 컬럼의 초록/빨강이
-       '성공개수/성공률' 숫자와 정확히 1:1로 맞아떨어진다.
-
-       ★★★ (요청 — 신규) allow_next_day_rescue=True면 "변동률 1%이하로 신호 틀린거는
-       그 다음날 결과가 결국 맞으면 맞는 걸로 취급" — h일 누적등락(ret)이 오답이면서
-       그 절대값이 1%(SIMPLE_POOL_AMBIGUOUS_THRESHOLD) 이하인 '근소한 오답'인 경우에만,
-       하루 더 연장한 등락률(close[i+horizon+1]/close[i]-1)을 추가로 확인해 그게 기준을
-       넘기면 그 신호를 정답으로 재판정한다. 큰 폭으로 틀린 경우(1% 초과)는 그대로 오답
-       유지 — "거의 맞았는데 하루 늦게 맞은 것"만 구제하는 취지. 기본값(False)에서는
-       기존 동작 그대로라 "전체 후보 지표" 시트 등 다른 용도에는 영향 없음.
-
-       반환: [(date_str, ret_pct, is_correct), ...] — 발화일 오름차순, horizon일 후가
-       데이터 범위를 벗어나는(평가 불가) 날은 자동 제외."""
-    sig = _to_signal_array(feat, row)   # ★ lead_shift만 적용 — 성공률 계산과 동일한 발화일 기준
+    """★★★ (요청 — 재설계) "전체 후보 지표" 시트에 표시할 발화일·등락률·성공판정 —
+       성공률 계산(_eval_buy_signals/_eval_sell_signals)과 완전히 동일한 기준:
+       · 성공 = 표시일(발화일+h-1)의 '최적자리'(재배정 반영)가 이 지표 방향(또는 중립)
+       · 등락률 = 표시일 → 그 다음날 하루치(close[disp+1]/close[disp]-1)
+       allow_next_day_rescue 파라미터는 시그니처 호환용으로 유지하되 무시(최적자리
+       기준에서는 애매함이 재배정·중립으로 이미 처리됨).
+       반환: [(date_str, ret_pct, is_correct), ...] — 발화일(원본) 오름차순."""
+    sig = _to_signal_array(feat, row)   # lead_shift만 적용된 원본 발화일
     n = len(sig)
     idx = feat.index
     _hz = row.get('horizon_day', None)
     if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
         _hz = row.get('horizon', None)
     _hz = int(_hz) if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) else 1
-    if target_threshold is None:
-        _lims = list(globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])
-        target_threshold = float(_lims[_hz - 1]) if len(_lims) >= _hz else float(_lims[0])
-    _ambig_thr = float(globals().get('SIMPLE_POOL_AMBIGUOUS_THRESHOLD', 0.01))
+    try:
+        _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
+        _mask = _ctp[7] if is_buy else _ctp[8]   # (정답|중립)&valid, uint8
+    except Exception:
+        _mask = None
     fire_idx = np.nonzero(sig)[0]
-    fire_idx = fire_idx[fire_idx <= n - 1 - _hz]   # i+horizon이 범위 안에 있어야 평가 가능
+    fire_idx = fire_idx[fire_idx <= n - 1 - _hz]   # disp+1 = i+h 가 범위 안이어야
     out = []
     for d in sorted(fire_idx.tolist()):
-        p0 = close_arr[d]; p1 = close_arr[d + _hz]
+        _disp = d + _hz - 1
+        p0 = close_arr[_disp]; p1 = close_arr[_disp + 1]
         if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
             continue
-        ret = p1 / p0 - 1.0   # ★ close[i+horizon]/close[i]-1 — 표시용 등락률(최종 h일째 값)
-        # ★★★ (요청 — 재수정) "1~horizon일 전부 임계값 이상이어야 성공" — _eval_buy_signals/
-        #   _eval_sell_signals와 동일하게, h일째 누적 하나가 아니라 1일째부터 h일째까지
-        #   매일의 누적이 전부 기준을 넘는지로 판정(중간에 하루라도 못 미치면 오답).
-        _all_ok = True
-        for _k in range(1, _hz + 1):
-            _pk = close_arr[d + _k]
-            if not (np.isfinite(_pk)):
-                _all_ok = False; break
-            _step_ret = _pk / p0 - 1.0
-            _step_ok = (_step_ret >= target_threshold) if is_buy else (_step_ret <= -target_threshold)
-            if not _step_ok:
-                _all_ok = False; break
-        is_correct = _all_ok
-        # ★★★ (요청 — 신규) 근소한 오답(변동률 1%이하) 구제 — 하루 더 연장해서 재확인
-        if allow_next_day_rescue and not is_correct and abs(ret) <= _ambig_thr and d + _hz + 1 < n:
-            p2 = close_arr[d + _hz + 1]
-            if p2 and np.isfinite(p2):
-                ret_ext = p2 / p0 - 1.0
-                is_correct_ext = bool(ret_ext >= target_threshold) if is_buy else bool(ret_ext <= -target_threshold)
-                if is_correct_ext:
-                    is_correct = True
-                    ret = ret_ext   # 표시용 등락률도 재판정에 쓰인 연장값으로 갱신
+        ret = p1 / p0 - 1.0   # ★ 표시일 다음날 하루치 — 성공률 표시 등락과 동일
+        is_correct = bool(_mask[_disp]) if _mask is not None else \
+                     (ret > 0 if is_buy else ret < 0)
         try:
             date_str = pd.Timestamp(idx[d]).strftime('%Y-%m-%d')
         except Exception:
@@ -17339,9 +17463,9 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                      round(float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.02)), 6),
                      round(float(globals().get('SIMPLE_POOL_TREND_EDGE_TOLERANCE', 0.01)), 6))
     if _pm_cache_key in _POSITION_MATCH_TARGET_CACHE:
-        target, magnitude_m, reversal_mask, n, _excl_mask, buy_ok, sell_ok = _POSITION_MATCH_TARGET_CACHE[_pm_cache_key]
+        target, magnitude_m, reversal_mask, n, _excl_mask, buy_ok, sell_ok, neutral_mask = _POSITION_MATCH_TARGET_CACHE[_pm_cache_key]
     else:
-        target, magnitude, _ret, _valid, buy_ok, sell_ok = _compute_target_positions(close_arr, threshold=_thr)
+        target, magnitude, _ret, _valid, buy_ok, sell_ok, neutral_mask = _compute_target_positions(close_arr, threshold=_thr)
         n = len(target)
         _excl_mask = ~_valid
 
@@ -17361,8 +17485,11 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 pass
         magnitude_m = magnitude.copy()
         magnitude_m[_excl_mask] = 0.0
-        buy_ok = buy_ok & ~_excl_mask
-        sell_ok = sell_ok & ~_excl_mask
+        # ★★★ (요청 — 신규) "지표 탐색 시 중립은 그냥 매수든 매도든 성공으로" — 중립 자리는
+        #   매수/매도 어느 판정이든 정답으로 인정(양쪽 ok 마스크에 OR).
+        neutral_mask = neutral_mask & ~_excl_mask
+        buy_ok = (buy_ok | neutral_mask) & ~_excl_mask
+        sell_ok = (sell_ok | neutral_mask) & ~_excl_mask
 
         # ★★★ (요청) 추세전환 자리 판정 — 발화 직전 LOOKBACK일 추세와 반대방향인 정답 자리.
         #   (이제 선정 우선순위가 아니라 used_for_reversal 표시 목적으로만 쓰임)
@@ -17380,7 +17507,7 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 reversal_mask[_t] = True     # 상승→하락 전환 = 매도 추세전환 자리
         if len(_POSITION_MATCH_TARGET_CACHE) >= 8:
             _POSITION_MATCH_TARGET_CACHE.pop(next(iter(_POSITION_MATCH_TARGET_CACHE)))
-        _POSITION_MATCH_TARGET_CACHE[_pm_cache_key] = (target, magnitude_m, reversal_mask, n, _excl_mask, buy_ok, sell_ok)
+        _POSITION_MATCH_TARGET_CACHE[_pm_cache_key] = (target, magnitude_m, reversal_mask, n, _excl_mask, buy_ok, sell_ok, neutral_mask)
 
     def _score(row, is_buy):
         return _score_indicator_vs_target(feat, row, (buy_ok if is_buy else sell_ok), magnitude_m, is_buy)
@@ -17469,25 +17596,36 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
     _n_buy_c = len(_buy_cands); _n_sell_c = len(_sell_cands)
 
     def _reinforce_weak_side(cands, rejected, label):
+        # ★★★ (요청 — 재설계) "중립자리는 나중에 매수/매도 개수 차이가 많이 나면, 개수가
+        #   적은 쪽 포지션의 사용하지 않은 지표 중 신뢰도가 높은 지표를 '과하지 않게'
+        #   사용" — 미사용(일반 탈락, 빅미스 제외) 후보 중 ①중립 자리에 실제 발화하는
+        #   것만 ②신뢰도 높은 순으로 ③최대 SIMPLE_POOL_WEAK_SIDE_MAX_ADD개까지만 추가,
+        #   ④추가해도 약한 쪽 누적 정답우세(correct>wrong)가 유지되는 경우만(결과 역전
+        #   방지 — 기존 안전장치 그대로).
         if not rejected:
             return 0
+        _max_add = int(globals().get('SIMPLE_POOL_WEAK_SIDE_MAX_ADD', 3))
         _sorted_rej = sorted(
             rejected,
-            key=lambda t: (-float(t[0].get('success_rate', 0.0) or 0.0),
-                           -float(t[0].get('reliability', 0.0) or 0.0)))
+            key=lambda t: (-float(t[0].get('reliability', 0.0) or 0.0),
+                           -float(t[0].get('success_rate', 0.0) or 0.0)))
         _cum_c = sum(c[1] for c in cands)
         _cum_w = sum(c[2] for c in cands)
         _added = 0
         for (_row, _cw, _ww, _fidx) in _sorted_rej:
+            if _added >= _max_add:
+                break
+            if not any(bool(neutral_mask[_f]) for _f in _fidx.tolist()):
+                continue   # 중립 자리에 발화하지 않는 지표는 이 보강 대상 아님
             _new_c = _cum_c + _cw; _new_w = _cum_w + _ww
-            if _new_c > _new_w:   # ★ 추가해도 약한 쪽 누적 정답우세가 유지되는 경우만
+            if _new_c > _new_w:
                 cands.append((_row, _cw, _ww, _fidx))
                 _cum_c = _new_c; _cum_w = _new_w
                 _added += 1
         if _added:
-            print(f"    (약한쪽 보강) {label}: 미사용 {len(rejected)}개 중 {_added}개를 "
-                  f"성공률·신뢰도 높은 순으로 추가(누적 정답우세 유지 확인하며 — 결과가 "
-                  f"뒤바뀌는 추가는 하지 않음)")
+            print(f"    (약한쪽 보강·중립자리) {label}: 미사용 {len(rejected)}개 중 "
+                  f"중립자리 발화 지표 {_added}개를 신뢰도 높은 순으로 추가"
+                  f"(상한 {_max_add}개, 누적 정답우세 유지 — 결과 역전 없음)")
         return _added
 
     if _n_buy_c > 0 and _n_sell_c > 0:
@@ -18082,6 +18220,16 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
 
             _all_bdf = pd.concat(_all_buy_raw2, ignore_index=True) if _all_buy_raw2 else None
             _all_sdf = pd.concat(_all_sell_raw2, ignore_index=True) if _all_sell_raw2 else None
+            # ★★★ (요청 — 신규) "horizon day만 다르고 같은 지표명은 신뢰도가 가장 높은 것
+            #   하나만 사용하고 시트에 표시" — 풀뿐 아니라 '전체 후보 지표' 시트 원본에도
+            #   같은 dedup을 적용해, 시트에 지표명당 최고 신뢰도 한 행만 보이게 한다.
+            _nab, _nas = (len(_all_bdf) if _all_bdf is not None else 0), (len(_all_sdf) if _all_sdf is not None else 0)
+            _all_bdf = _dedup_same_indicator_best_reliability(_all_bdf)
+            _all_sdf = _dedup_same_indicator_best_reliability(_all_sdf)
+            if _nab != (len(_all_bdf) if _all_bdf is not None else 0) or \
+               _nas != (len(_all_sdf) if _all_sdf is not None else 0):
+                print(f"    (시트 동일지표 정리) 전체후보 매수 {_nab}→{len(_all_bdf) if _all_bdf is not None else 0}, "
+                      f"매도 {_nas}→{len(_all_sdf) if _all_sdf is not None else 0} — 같은 지표명은 신뢰도 최고 호라이즌만 표시")
             globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_all_bdf, _all_sdf)   # ★ '전체 후보 지표' 시트용(지표컷 통과분만)
 
             _empty_cols = ['indicator', 'direction', 'threshold', 'n_signals', 'n_success',
@@ -20227,6 +20375,7 @@ _SIMPLE_POOL_HZ_LOOP_CACHE = {}
 # ★★★ (요청 — 실행시간 최적화) _compute_reliability_score의 MSC 무관 기초계산(발화일 추출·
 #   h일후 등락·추세전환판정·t검정·큰오답벌점) 캐시 — 자세한 설명은 그 함수 본문.
 _RELIABILITY_BASE_CACHE = {}
+_CTP_MEMO = {}   # ★ _compute_target_positions 결과 메모(같은 close_arr·임계값이면 재사용)
 _REV_SPOT_CACHE = {}   # ★ (새 신뢰도 공식) close_arr별 "1%이상 변동 추세전환 자리" 목록 캐시
 # ★★★ (요청 — 실행시간 최적화) _select_indicators_by_position_match 내부의 정답자리/
 #   추세전환자리 판정(POOL과 무관, close_arr에만 의존)을 캐싱 — 자세한 설명은 그 함수 본문.
@@ -24261,12 +24410,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if feat is not None and close_full is not None:
                 _ca_opt = pd.Series(close_full).reindex(feat.index).values.astype(np.float64)
                 _thr_opt = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
-                _tg_o, _mg_o, _rt_o, _vd_o, _bo_o, _so_o = _compute_target_positions(_ca_opt, threshold=_thr_opt)
+                _tg_o, _mg_o, _rt_o, _vd_o, _bo_o, _so_o, _nu_o = _compute_target_positions(_ca_opt, threshold=_thr_opt)
                 _idxn_o = pd.DatetimeIndex(feat.index).tz_localize(None)                           if getattr(feat.index, 'tz', None) is not None else pd.DatetimeIndex(feat.index)
                 _idxn_o = _idxn_o.normalize()
                 for _oi in range(len(_idxn_o)):
                     if _vd_o[_oi]:
-                        _opt_pos_by_date[_idxn_o[_oi]] = int(_tg_o[_oi])
+                        _opt_pos_by_date[_idxn_o[_oi]] = 2 if _nu_o[_oi] else int(_tg_o[_oi])
         except Exception:
             _opt_pos_by_date = {}
         pos = _pos_bt
@@ -24317,6 +24466,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _oc.value = '매수'; _oc.font = Font(bold=True, color='006100')
             elif _opt == 0:
                 _oc.value = '매도'; _oc.font = Font(bold=True, color='9C0006')
+            elif _opt == 2:
+                _oc.value = '중립'; _oc.font = Font(bold=True, color='808080')
             else:
                 _oc.value = '-'
             ws.cell(r, 8).value = ('롱' if _p == 1 else '현금')
@@ -25076,8 +25227,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
             ws_all.cell(1, 1).value = (
                 f"{ticker} — 지표컷(최소신호수·성공률) 통과 후보 전부 표시(개수제한 없음), "
-                f"호라이즌일별 섹션·신뢰도순 정렬. 신뢰도(새 공식)=max(0,수익합산)×UP÷DOWN×안정계수 — "
-                f"기본점수는 이벤트별 등락 합(연속발화는 1건), UP=1+0.10×전환성공+0.02×추세성공(과반이면 ×2), "
+                f"호라이즌일별 섹션·신뢰도순 정렬(같은 지표명은 신뢰도 최고 호라이즌만 표시). "
+                f"성공판정=표시일의 최적자리(중립 포함) 매칭, 등락률=표시일 다음날 하루치. "
+                f"신뢰도=max(0,기본점수)×UP÷DOWN×안정계수 — 기본점수=이벤트별 등락%합÷10(연속발화 1건), "
+                f"UP=1+0.10×전환성공+0.02×추세성공(과반이면 ×2), "
                 f"DOWN은 실패로 대칭 계산, 안정계수=1/(1+0.5×표준편차%). 구성요소를 열로 표시해 검산 가능. "
                 f"net가중치점수=1+신뢰도. "
                 f"사용여부=중복제거·정답자리매칭까지 거쳐 실제 일별 백테스트 net 계산에 쓰이는지."
