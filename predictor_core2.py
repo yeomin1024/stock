@@ -14563,6 +14563,19 @@ SIMPLE_POOL_WEAK_SIDE_GAP_RATIO      = 2.0
 #   지표의 신뢰도 이상만 사용)"을 찾는 것과 동일 — 1(최고신뢰도 1개)부터 전체까지 늘려가며
 #   실제 누적수익(_search_threshold의 fu/oo)이 최대가 되는 k를 탐색해 그 지점을 채택한다.
 SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = True
+# ★★★ (요청 — 버그수정, 실측: K=2919.997/지표수 2917) 정답자리 매칭을 끄면서 풀을 줄여주던
+#   단계가 사라져, 지표컷만 통과한 수천 개 후보가 통째로 임계값 탐색에 들어가는 문제 —
+#   예전(클래식) 방식의 TOP_N_POOL=100 상한과 동일하게, 단순모드에서도 신뢰도 상위 이
+#   개수까지만 탐색 대상으로 유지한다(임계값 탐색은 이 안에서 수익 최적 개수를 고른다).
+# ★★★ (요청 — 재수정) 풀 상한을 "개수"가 아니라 "신뢰도 값"으로 — 매수는 신뢰도 4 이상,
+#   매도는 신뢰도 2 이상만 임계값 탐색 대상으로 남긴다(매도 기준이 더 낮은 이유: 이 시스템의
+#   신뢰도 분포상 매도쪽이 대체로 더 낮게 나오는 경향 — 실측 로그에서도 매도 임계값이
+#   매수보다 낮게 잡히는 경우가 많았음). 이 값 미만은 임계값 탐색에 들어가기도 전에 제외.
+SIMPLE_POOL_MIN_RELIABILITY_BUY          = 4.0
+SIMPLE_POOL_MIN_RELIABILITY_SELL         = 2.0
+# ★★★ (요청 관련 — 신규) 위 고정 임계값을 아무도 못 넘어 그 쪽이 0개가 되면, 결과가 아예
+#   안 나오게 두지 않고 이 폭만큼씩(0까지) 완화해서 재시도 — "2%이상 절대거부" 완화와 동일.
+SIMPLE_POOL_MIN_RELIABILITY_RELAX_STEP   = 0.5
 
 # ★★★ (요청 — 전면 재설계) 지표 선정을 "신뢰도 임계값 탐색"이 아니라 "정답 매수/매도 자리
 #   맞히기" 방식으로 완전히 바꾼다:
@@ -18390,6 +18403,51 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
 
             buy_c  = buy_c.sort_values('reliability',  ascending=False).reset_index(drop=True) if len(buy_c) else buy_c
             sell_c = sell_c.sort_values('reliability', ascending=False).reset_index(drop=True) if len(sell_c) else sell_c
+            # ★★★ (요청 — 재수정, 실측 K=2919.997/지표수 2917 대응) 풀 상한을 "개수"가 아니라
+            #   "신뢰도 값"으로 — 매수는 신뢰도 4 이상, 매도는 2 이상만 임계값 탐색 대상으로
+            #   유지. 정답자리 매칭이 꺼진 상태에서 지표컷만 통과한 낮은신뢰도 후보 수천 개가
+            #   통째로 net에 합산돼 K/L·지표수가 폭주하던 문제를 값 기준으로 원천 차단한다.
+            _min_rel_b = float(globals().get('SIMPLE_POOL_MIN_RELIABILITY_BUY', 4.0))
+            _min_rel_s = float(globals().get('SIMPLE_POOL_MIN_RELIABILITY_SELL', 2.0))
+            _nb_cap0, _ns_cap0 = len(buy_c), len(sell_c)
+            # ★★★ (요청 관련 — 신규, 실측: 매수 신뢰도≥4를 아무도 못 넘어 매수 34→0개→
+            #   K계산 실패) 고정 임계값이 한쪽을 전멸시키면 그쪽만 0.5씩 낮춰가며(0까지)
+            #   재시도 — "2%이상 절대거부" 완화와 동일한 원칙(기준을 못 넘는 게 있으면
+            #   결과가 아예 안 나오게 두지 말고, 그 쪽만 단계적으로 완화).
+            _relax_step_r = float(globals().get('SIMPLE_POOL_MIN_RELIABILITY_RELAX_STEP', 0.5))
+
+            def _apply_rel_cut(df, thr):
+                if len(df) == 0 or 'reliability' not in df.columns:
+                    return df
+                return df[df['reliability'].fillna(0.0) >= thr].reset_index(drop=True)
+
+            _cur_b = _min_rel_b
+            _buy_cut = _apply_rel_cut(buy_c, _cur_b)
+            while len(_buy_cut) == 0 and _cur_b > 0 and len(buy_c) > 0:
+                _cur_b = round(max(0.0, _cur_b - _relax_step_r), 4)
+                _buy_cut = _apply_rel_cut(buy_c, _cur_b)
+            if len(buy_c) > 0 and len(_buy_cut) == 0:
+                _buy_cut = buy_c   # 0까지 낮춰도 없으면(전부 음수 등) 원본 유지 — 결과 공백 방지
+            if _cur_b != _min_rel_b and len(_buy_cut):
+                print(f"    (신뢰도 상한 완화) 매수: {_min_rel_b}로는 통과 지표가 0개라 "
+                      f"{_cur_b}까지 완화해서 {len(_buy_cut)}개 확보")
+            buy_c = _buy_cut
+
+            _cur_s = _min_rel_s
+            _sell_cut = _apply_rel_cut(sell_c, _cur_s)
+            while len(_sell_cut) == 0 and _cur_s > 0 and len(sell_c) > 0:
+                _cur_s = round(max(0.0, _cur_s - _relax_step_r), 4)
+                _sell_cut = _apply_rel_cut(sell_c, _cur_s)
+            if len(sell_c) > 0 and len(_sell_cut) == 0:
+                _sell_cut = sell_c
+            if _cur_s != _min_rel_s and len(_sell_cut):
+                print(f"    (신뢰도 상한 완화) 매도: {_min_rel_s}로는 통과 지표가 0개라 "
+                      f"{_cur_s}까지 완화해서 {len(_sell_cut)}개 확보")
+            sell_c = _sell_cut
+            if len(buy_c) != _nb_cap0 or len(sell_c) != _ns_cap0:
+                print(f"    (풀 상한·신뢰도값 기준) 매수 신뢰도≥{_min_rel_b} / 매도 신뢰도≥{_min_rel_s}만 유지 — "
+                      f"매수 {_nb_cap0}→{len(buy_c)}개, 매도 {_ns_cap0}→{len(sell_c)}개 "
+                      f"(임계값 탐색은 이 안에서 수익 최적 개수를 고름)")
             if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
             if len(sell_c): sell_c['sel_limit'] = _limit0
             return buy_c, sell_c
