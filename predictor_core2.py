@@ -14578,6 +14578,9 @@ SIMPLE_POOL_MIN_WRONG_SELECT             = True
 # ★★★ (요청 관련 — 성능버그 대응, 실측: 후보 10587개에서 극도로 지연) 위 선정에서 탐색할
 #   (성공률100% 제외) 후보 상한 — 성공률·신뢰도 상위 이 개수까지만 늘려가며 탐색한다.
 SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES     = 300
+# ★★★ (요청 관련 — 핵심 정확도버그 대응) 몇 단계(k)마다 실제 K/L 그리드 탐색을 다시 해서
+#   임계값을 그 시점 net 스케일에 맞게 갱신할지 — 작을수록 정확하지만 느려짐.
+SIMPLE_POOL_MIN_WRONG_REFRESH_INTERVAL   = 20
 
 # ★★★ (요청 — 전면 재설계) 지표 선정을 "신뢰도 임계값 탐색"이 아니라 "정답 매수/매도 자리
 #   맞히기" 방식으로 완전히 바꾼다:
@@ -17502,28 +17505,27 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
     """★★★ (요청 — 전면 재설계, 핵심 버그수정) "성공률 100%는 무조건 사용, 그 이외는
        성공률·신뢰도 높은 순으로 늘려가면서 매수/매도 틀린 자리가 가장 적은 지표 개수로
        정해라 — 근데 전체 후보의 성공날 정보랑 일별 백테스트가 안 맞는다, 성공률이 아니라
-       최적자리로 판단한 거 아니냐" — 실측 확인 결과 정확한 지적이었다: "지표가 발화하는
-       날들의 합집합"이 아니라, 일별 백테스트가 실제로 보여주는 '틀린 자리'(노란색 표시)와
-       똑같이 "K/L을 적용해 매일 실제로 롱/현금 상태가 결정된 뒤, 그 매일의 실제 포지션이
-       최적자리와 다른 날"을 세도록 통일했다.
-       ★★★ (요청 — 재수정, 핵심) "성공률 100% 지표만 썼는데 틀린자리가 100개 넘는다,
-       진짜 0개인지 확인해봐라, 100%지표도 몇개 안 쓰인 게 있다" — 직접 재현 확인 결과:
-       ① 성공률100%(always) 지표는 예외없이 전부 채택되고 있었다(코드상 항상 무조건
-       포함, 버그 아님). ② 틀린자리가 100개 넘게 나오는 건 지표가 '틀린 신호'를 낸 게
-       아니라, 그 지표들이 발화하는 빈도가 낮아서(뜨문뜨문) 한 번 발화하고 다음 발화까지
-       사이 기간에 최적자리(target)가 여러 번 바뀌는데 포지션은 계속 이전 상태로 '홀드'만
-       되고 있어서 생기는 것이었다(직접 재현: 틀린 105일 전부 '그날 발화 없음' — 신호가
-       틀린 게 아니라 커버리지가 부족한 것). 이걸 "남은자리"(발화 없이 홀드로만 틀린
-       날 — 지표를 더 추가하면 줄일 수 있는 부분)와, 신호가 있었는데도 틀린 날(지표
-       추가로는 못 줄이는, 그 신호 자체의 한계로 인한 부분)로 나눠서 별도로 센다.
-       "추가 지표는 남은자리를 최대한 없애면서 틀린 자리는 최소가 되도록" — 이제 k를
-       늘려갈 때 1차 기준은 틀린자리 최소화, 동률이면 남은자리가 더 적은 쪽, 그래도
-       동률이면 수익이 더 높은 쪽을 채택한다.
+       최적자리로 판단한 거 아니냐" 이후, 매 단계 K/L 탐색·재사용·비율스케일링을 전부
+       시도했지만(느리거나, 부정확하거나) 계속 문제가 있었다.
+       ★★★ (요청 — 최종 해법) "성공률 100%만 적용했을 때는 +점수는 매수자리, -는 매도
+       자리로 판단하고, 나중에 합칠 때만 최적 K,L로 판단하면 되잖아" — 정확한 지적으로
+       완전히 재설계했다. 이 선정 단계에서는 K/L(히스테리시스, 포지션 홀드)을 아예 쓰지
+       않는다 — 매수는 "그 시점 지표 세트가 그 날 발화하면 매수자리(무기억, 즉시반응)",
+       매도는 "발화하면 매도자리(=현금), 발화 안 하면(매도 의견 없음) 기본값 매수자리"로
+       매일을 즉시·독립 판정한다. 이러면:
+       · 스케일 문제가 원천적으로 없다 — "발화했는가"는 세트 크기(1개든 1000개든)와
+         무관한 이분법이라 K/L처럼 net 규모에 좌우되는 임계값이 아예 필요 없다.
+       · 매우 빠르다 — 벡터화 연산만으로 계산되고 K/L 그리드탐색·순차루프가 전혀 없다.
+       · "나중에 합칠 때만 최적 K,L로 판단" — 실제 daily net(buy_c-sell_c 조합)에 대한
+         진짜 최적 K/L 탐색은 이 함수 밖(_net_signal_k_search→_net_kl_search)에서 이미
+         그대로 수행되므로, 이 원칙이 시스템 전체에 자연스럽게 구현된다(이 함수에서
+         K/L을 흉내내려던 시도 자체가 애초에 불필요했다).
        매수/매도 각각 독립적으로: 성공률100%는 무조건 포함(always), 나머지는 (성공률,
-       신뢰도) 내림차순으로 하나씩 늘려가며 위 기준으로 최적 k를 채택. always가 없으면
-       k=0(포지션 항상 0)은 후보에서 제외(전부 안 쓰는 게 항상 이겨버리는 퇴화 방지).
-       ★ (요청 — 신규) 검증용 — k별 (사용지표수, 틀린자리, 남은자리, 수익) 추이를
-       trace로 남겨 반환(엑셀 검증 시트용).
+       신뢰도) 내림차순으로 하나씩 늘려가며, 틀린자리 최소(동률이면 남은자리 최소,
+       그래도 동률이면 즉시반응 기준 수익 최고)인 k를 채택. '틀린자리'=이 즉시반응
+       포지션이 최적자리(target, 중립 제외)와 다른 날. '남은자리'=그중 그날 이 세트에서
+       어떤 지표도 발화하지 않아(무기억 기본값만으로) 틀린 날(지표 추가로 줄일 수 있음).
+       always가 없으면 k=0(전부 기본값)은 후보에서 제외(퇴화 방지).
        반환: (buy_final, sell_final, report) — report에 buy_trace/sell_trace 포함."""
     _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
     target = np.asarray(_ctp[0]); valid = np.asarray(_ctp[3]); neutral = np.asarray(_ctp[6])
@@ -17559,57 +17561,42 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
             w = 1.0 + float(row.get('reliability', 0.0) or 0.0)
             return w * sig
 
-        def _to_net(sig_sum):
-            return sig_sum if is_buy else -sig_sum
+        # ★★★ (요청 — 최종 해법) K/L 없이, 즉시·무기억 판정만 — 매수: 발화하면 그 날은
+        #   매수자리(1). 매도: 발화하면 그 날은 매도자리(=현금,0), 발화 안 하면 매도
+        #   관점에서 의견 없음이므로 기본값(1, 매수자리) — 세트 크기와 무관하게 항상
+        #   동일한 규칙이라 스케일 문제가 없다.
+        def _score_direct(sig_sum):
+            fired = sig_sum > 1e-12
+            pos_bool = fired if is_buy else (~fired)
+            wrong_mask = judge & (pos_bool != tgt1)
+            # '남은자리' = 틀린 날 중, 그날 이 세트에서 어떤 지표도 발화 안 해서(기본값만
+            # 적용돼) 틀린 것 — 지표를 더 추가하면 줄일 수 있는 부분.
+            remaining = int(np.sum(wrong_mask & (~fired)))
+            wrong = int(np.sum(wrong_mask))
+            pos_arr = pos_bool.astype(np.float64)
+            hr = np.zeros(n); hr[1:] = pos_arr[:-1] * rr[1:]
+            ret = float(np.sum(hr))
+            return wrong, remaining, ret
 
-        # ① 기준 K/L — always+rest(탐색대상) 전체로 그리드 탐색 '딱 한 번'
         cur_sum = np.zeros(n)
         for _, row in always.iterrows():
             cur_sum = cur_sum + _sig_w(row)
-        full_sum = cur_sum.copy()
-        for _, row in rest.iterrows():
-            full_sum = full_sum + _sig_w(row)
-        try:
-            _kl_ref = _net_kl_search(_to_net(full_sum), rr, mdd_limit=None)
-            _refb = _kl_ref.get('best_ret')
-            K_ref, L_ref = (float(_refb[0]), float(_refb[1])) if _refb is not None else (0.0, 0.0)
-        except Exception:
-            K_ref, L_ref = 0.0, 0.0
-
-        def _score_fixed(sig_sum):
-            # ② 매 단계는 그리드 탐색·top순위 계산 없이 _kl_run_single로 '단일 평가'만
-            #   (numba 컴파일, 순수 파이썬 루프보다 훨씬 빠름).
-            net_side = _to_net(sig_sum)
-            try:
-                ret, pos = _kl_run_single(net_side.astype(np.float64), rr.astype(np.float64),
-                                          K_ref, L_ref)
-            except Exception:
-                return n, n, -1e18
-            pos_bool = np.asarray(pos)[:n] > 0.5
-            wrong_mask = judge & (pos_bool != tgt1)
-            # ★★★ (요청 — 신규) '남은자리' = 틀린 날 중, 그날 이 세트에서 어떤 지표도 발화
-            #   안 해서(신호 없이 이전 포지션이 그냥 유지됨) 틀린 것만 — 지표를 더 추가하면
-            #   줄일 수 있는 부분. (fired = sig_sum>0, 가중치가 전부 양수라 안전)
-            fired = sig_sum > 1e-12
-            remaining = int(np.sum(wrong_mask & (~fired)))
-            wrong = int(np.sum(wrong_mask))
-            return wrong, remaining, float(ret)
 
         trace = []   # [(k, n_used, wrong, remaining, ret), ...] — 검증 시트용
-        # ★★★ (요청 관련 — 버그수정, 실측: 매수 0개로 K계산 실패) '아무 지표도 안 씀'(포지션
-        #   항상 0)이 틀린자리를 인위적으로 적게 만들어 항상 이겨버리는 퇴화 방지 —
-        #   always가 없으면 k=0을 후보에서 제외.
+        # ★★★ (요청 관련 — 버그수정, 실측: 매수 0개로 K계산 실패) '아무 지표도 안 씀'이
+        #   틀린자리를 인위적으로 적게 만들어 항상 이겨버리는 퇴화 방지 — always가 없으면
+        #   k=0을 후보에서 제외.
         if len(always) > 0:
-            best_wrong, best_remain, best_ret = _score_fixed(cur_sum)
+            best_wrong, best_remain, best_ret = _score_direct(cur_sum)
             best_k = 0
             trace.append((0, len(always), best_wrong, best_remain, best_ret))
         else:
             best_wrong, best_remain, best_ret, best_k = None, None, None, None
         for k in range(len(rest)):
             cur_sum = cur_sum + _sig_w(rest.iloc[k])
-            w, rem, r = _score_fixed(cur_sum)
+            w, rem, r = _score_direct(cur_sum)
             trace.append((k + 1, len(always) + k + 1, w, rem, r))
-            # ★★★ (요청 — 재수정) tie-break: 1차 틀린자리 최소, 2차 남은자리 최소, 3차 수익최고
+            # tie-break: 1차 틀린자리 최소, 2차 남은자리 최소, 3차 수익최고
             if best_wrong is None or w < best_wrong or \
                (w == best_wrong and (rem < best_remain or (rem == best_remain and r > best_ret))):
                 best_wrong, best_remain, best_ret, best_k = w, rem, r, k + 1
@@ -17618,24 +17605,6 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
 
         final = pd.concat([always, rest.iloc[:best_k]], ignore_index=True) if best_k > 0 \
                 else always.reset_index(drop=True)
-
-        # ④ 최종 세트로 '진짜' 최적 K/L 재탐색 — report의 수익을 정확한 값으로.
-        if len(final) > 0:
-            final_sum = np.zeros(n)
-            for _, row in final.iterrows():
-                final_sum = final_sum + _sig_w(row)
-            try:
-                _kl_fin = _net_kl_search(_to_net(final_sum), rr, mdd_limit=None)
-                _finb = _kl_fin.get('best_ret')
-                if _finb is not None:
-                    _pos_fin = np.asarray(_finb[5])[:n] > 0.5
-                    _wrong_mask_fin = judge & (_pos_fin != tgt1)
-                    best_wrong = int(np.sum(_wrong_mask_fin))
-                    best_remain = int(np.sum(_wrong_mask_fin & ~(final_sum > 1e-12)))
-                    best_ret = float(_finb[2])
-            except Exception:
-                pass
-
         return final, best_wrong, best_remain, best_ret, len(final), trace
 
     buy_final, bw, brem, br, bn, btrace = _select_side(buy_pool, True, '매수')
