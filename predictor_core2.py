@@ -14487,6 +14487,16 @@ SIMPLE_POOL_NEUTRAL_DAY_WINDOW = 3      # "±2~3일 이내" — 기준일과의 
 SIMPLE_POOL_NEUTRAL_PRICE_TOL  = 0.01   # "가격 ±1% 이내"
 # ★★★ (요청 — 신규) 중립자리 기반 약한쪽 보강 상한 — "과하지 않게"
 SIMPLE_POOL_WEAK_SIDE_MAX_ADD  = 3
+# ★★★ (요청 — 신규) 연속 신호 = 1건(이벤트) 취급 — 지표 탐색(최소신호수 컷·성공률)과
+#   신뢰도 공식 양쪽에 동일 적용. "몇일 텀까지 연속으로 볼지": 발화(표시)일 사이 간격이
+#   이 값 이하면 같은 신호 묶음으로 연결(체인). 1=엄밀히 연속(하루 간격)만,
+#   2(기본)=하루 건너뛰어도 같은 묶음 — 실전에서 신호가 하루 쉬었다 다시 켜지는 건
+#   같은 국면이 이어지는 것이라 별개 신호로 세지 않는 게 과대집계를 막는다.
+SIMPLE_POOL_EVENT_GAP_DAYS     = 2
+# ★★★ (요청 — 신규) 일별 백테스트 구성 전 포지션 점수 균형 — 사용 지표 신뢰도 총합이 더
+#   높은 쪽에서 신뢰도 최저 지표부터 제외해, 양쪽 총합이 최대한 같아지도록 조정.
+SIMPLE_POOL_SCORE_BALANCE_ENABLED    = True
+SIMPLE_POOL_SCORE_BALANCE_MAX_REMOVE = 20   # 안전 상한
 # ★★★ (요청 — 신규) 최적 K/L 확정 후 2단계 지표 정제(_kl_refine_after_search 참고).
 SIMPLE_POOL_KL_REFINE_ENABLED     = True
 SIMPLE_POOL_KL_REFINE_MAX_STAGE1  = 12     # 1단계(틀린날 주도 제거) 최대 제거 개수
@@ -15278,18 +15288,26 @@ def auto_compute_anchor_dates(dates, close, *,
 
 
 @njit
-def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr):
-    # ★★★ (요청 — 재설계) "지표 탐색 시 성공 판단 기준을 최적자리에 맞는 신호가 발생했는지로,
-    #   등락률은 신호대로 매수 시 다음날 하루 변동률로만" — anchor_buy_arr에 최적자리
-    #   ok마스크(매수정답|중립, uint8)를 받아, 표시일(fire+h-1)의 최적자리가 매수(또는
-    #   중립)면 성공. 등락률은 표시일→다음날 하루치. 마스크 길이가 안 맞으면(비단순모드
-    #   등 하위호환) 예전처럼 다음날 등락 ≥ dd_limit로 폴백.
+def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr, event_gap):
+    # ★★★ (요청 — 재설계) 성공 = 표시일(fire+h-1)의 최적자리가 매수(또는 중립),
+    #   등락률 = 표시일→다음날 하루치. 마스크 없으면(비단순모드) 다음날 등락 기준 폴백.
+    # ★★★ (요청 — 신규) "연속된 신호는 한 번으로 취급해서 최소신호수 컷을 비교" —
+    #   신뢰도 공식과 동일하게, 발화일 간격이 event_gap 이하로 이어지는 묶음(체인)은
+    #   이벤트 1건으로 세고, 그 묶음의 '첫 발화일' 기준으로만 성공·등락률을 판정한다.
+    #   ns/ok/sum_ret 전부 이벤트 기준 — 최소신호수 컷·성공률·평균등락이 신뢰도의
+    #   이벤트 정의와 완전히 일치하게 된다.
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
+    g = event_gap if event_gap >= 1 else 1
     use_ok = anchor_buy_arr.shape[0] == n
     ns = 0; ok = 0; sum_ret = 0.0
+    prev_fire = -10**9
     for i in range(n - 1):
         if signal_arr[i] != 1: continue
+        is_new_event = (i - prev_fire) > g
+        prev_fire = i
+        if not is_new_event:
+            continue                      # 같은 묶음(체인) — 이미 센 이벤트
         disp = i + h - 1
         if disp + 1 > n - 1: continue
         p0 = close_arr[disp]
@@ -15338,15 +15356,20 @@ def _OLD_eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_a
 
 
 @njit
-def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr):
-    # ★★★ (요청 — 재설계) 매도 대칭 — 표시일의 최적자리가 매도(또는 중립)면 성공,
-    #   등락률은 표시일→다음날 하루치(원부호 그대로 합산 — 표시용).
+def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr, event_gap):
+    # ★★★ (요청 — 재설계) 매도 대칭 — 이벤트(연속=1건, 간격 event_gap 체인) 기준.
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
+    g = event_gap if event_gap >= 1 else 1
     use_ok = anchor_sell_arr.shape[0] == n
     ns = 0; ok = 0; sum_ret = 0.0
+    prev_fire = -10**9
     for i in range(n - 1):
         if signal_arr[i] != 1: continue
+        is_new_event = (i - prev_fire) > g
+        prev_fire = i
+        if not is_new_event:
+            continue
         disp = i + h - 1
         if disp + 1 > n - 1: continue
         p0 = close_arr[disp]
@@ -16233,7 +16256,8 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
        반환: (n, ok, sum, score). 신호 부족 시 score=음수로 사실상 제외.
     """
     evalf = _eval_buy_signals if is_buy else _eval_sell_signals
-    n_all, ok_all, sum_all = evalf(close_arr, sig_arr, horizon, limit, anchor_arr)
+    _egap = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
+    n_all, ok_all, sum_all = evalf(close_arr, sig_arr, horizon, limit, anchor_arr, _egap)
     if n_all < min_signals:
         return n_all, ok_all, sum_all, -1.0
     base = wilson_lower(ok_all, n_all, wilson_z)
@@ -16298,8 +16322,10 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
 
     if HAS_NUMBA:
         zero_sig = np.zeros(n_days, dtype=np.uint8)
-        _eval_buy_signals(close_arr, zero_sig, horizon, dd_limit, anchor_buy_arr)
-        _eval_sell_signals(close_arr, zero_sig, horizon, ru_limit, anchor_sell_arr)
+        _eval_buy_signals(close_arr, zero_sig, horizon, dd_limit, anchor_buy_arr,
+                          int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2)))
+        _eval_sell_signals(close_arr, zero_sig, horizon, ru_limit, anchor_sell_arr,
+                           int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2)))
 
     # ★ (2b) 선출 단계 리드 탐색 준비 — '며칠 전 신호'가 정확한 지표는 다음날 성공률이
     #    낮아 기존 선출에서 탈락하므로, 선출 시 지연 d(0~MAX)를 함께 탐색한다.
@@ -17031,10 +17057,12 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
         fav = raw_ret if is_buy else -raw_ret   # 매수=상승이 +, 매도=하락이 +
         n = len(fav)
 
-        # ★★★ (원칙 6) 연속한 날짜 같은 포지션 신호 = 이벤트 1건 — 연속 run의 첫날만 남김
+        # ★★★ (원칙 6, 요청 — 간격 일반화) 연속(간격 ≤ SIMPLE_POOL_EVENT_GAP_DAYS 체인)
+        #   신호 = 이벤트 1건 — 묶음의 첫날만 남김. 지표 탐색의 이벤트 정의와 완전 동일.
+        _egap_r = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
         _ev_mask = np.ones(n, dtype=bool)
         for _k in range(1, n):
-            if int(fire_valid[_k]) == int(fire_valid[_k - 1]) + 1:
+            if int(fire_valid[_k]) - int(fire_valid[_k - 1]) <= _egap_r:
                 _ev_mask[_k] = False
         ev_days = fire_valid[_ev_mask].astype(int)
         ev_fav = fav[_ev_mask]
@@ -17414,8 +17442,17 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
         _mask = None
     fire_idx = np.nonzero(sig)[0]
     fire_idx = fire_idx[fire_idx <= n - 1 - _hz]   # disp+1 = i+h 가 범위 안이어야
+    # ★★★ (요청 — 신규) 이벤트(연속=1건, 간격 체인) 단위로 축약 — 성공률의 이벤트 정의와
+    #   동일하게 묶음의 첫 발화일만 표시(신호개수·성공개수와 날짜 목록이 1:1로 일치).
+    _egap_s = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
+    _ev_first = []
+    _prev_f = None
+    for _d in sorted(fire_idx.tolist()):
+        if _prev_f is None or (_d - _prev_f) > _egap_s:
+            _ev_first.append(_d)
+        _prev_f = _d
     out = []
-    for d in sorted(fire_idx.tolist()):
+    for d in _ev_first:
         _disp = d + _hz - 1
         p0 = close_arr[_disp]; p1 = close_arr[_disp + 1]
         if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
@@ -21855,6 +21892,103 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt, 'top': top}
 
 
+def _balance_pool_scores(nsd):
+    """★★★ (요청 — 신규) "일별 백테스트 구성하기 전에, 사용 지표 신뢰도 점수 총합이 더
+       높은 포지션에서 신뢰도가 가장 낮은 것부터 제외해서 낮은 쪽이랑 점수 총합이
+       같도록 조정" — 매수/매도 사용 풀의 신뢰도 합을 비교해, 높은 쪽에서 신뢰도 최저
+       지표부터 하나씩 제외한다. 제외가 두 총합의 격차를 실제로 '더 줄이는' 동안만
+       계속(격차보다 큰 폭으로 넘어가 반대로 벌어지게 되면 그 직전에 멈춤 — 최대한
+       같아지는 지점). 한쪽이 1개만 남으면 그쪽은 더 못 뺀다.
+       제외 확정 시 nsd(=_KNET_FULL)를 제자리 갱신 — daily의 net/buy_count/sell_count/
+       net_h*, buy_pool_used/sell_pool_used까지 축소 풀 기준으로 재계산해, 이후의
+       KL정제·write_excel(일별 백테스트)이 자동으로 균형 조정 결과를 그대로 쓴다."""
+    if not globals().get('SIMPLE_POOL_SCORE_BALANCE_ENABLED', True):
+        return None
+    try:
+        d = nsd.get('daily')
+        bp = nsd.get('buy_pool_used'); sp = nsd.get('sell_pool_used')
+        keysB = nsd.get('buy_sig_keys'); arrsB = nsd.get('buy_sig_ws')
+        keysS = nsd.get('sell_sig_keys'); arrsS = nsd.get('sell_sig_ws')
+        if d is None or bp is None or sp is None or not keysB or not keysS:
+            return None
+        mapB = dict(zip(keysB, arrsB)); mapS = dict(zip(keysS, arrsS))
+
+        def _rk(row):
+            return str(row.get('display_name', row.get('indicator', '')))
+        rowsB = [(_rk(r), float(r.get('reliability', 0.0) or 0.0))
+                 for _, r in bp.iterrows() if _rk(r) in mapB]
+        rowsS = [(_rk(r), float(r.get('reliability', 0.0) or 0.0))
+                 for _, r in sp.iterrows() if _rk(r) in mapS]
+        if not rowsB or not rowsS:
+            return None
+        sumB0 = sum(rel for _k, rel in rowsB); sumS0 = sum(rel for _k, rel in rowsS)
+        removedB = set(); removedS = set()
+        _cap = int(globals().get('SIMPLE_POOL_SCORE_BALANCE_MAX_REMOVE', 20))
+        while len(removedB) + len(removedS) < _cap:
+            sumB = sum(rel for k, rel in rowsB if k not in removedB)
+            sumS = sum(rel for k, rel in rowsS if k not in removedS)
+            diff = sumB - sumS
+            if abs(diff) <= 1e-9:
+                break
+            if diff > 0:
+                cands = sorted(((rel, k) for k, rel in rowsB if k not in removedB))
+                rmset = removedB
+            else:
+                cands = sorted(((rel, k) for k, rel in rowsS if k not in removedS))
+                rmset = removedS
+            if len(cands) <= 1:
+                break                       # 한쪽 1개 남으면 더 못 뺌
+            rel0, k0 = cands[0]
+            # 제거 후 격차 |diff|-rel0(부호 넘어가면 rel0-|diff|) — 격차가 실제로 줄어드는
+            # 경우(rel0 < 2|diff|)에만 제거. 아니면 지금이 '최대한 같은' 지점이므로 종료.
+            if rel0 >= 2.0 * abs(diff) - 1e-12:
+                break
+            rmset.add(k0)
+        if not removedB and not removedS:
+            return None
+
+        keepB = bp[bp.apply(lambda r: _rk(r) not in removedB, axis=1)].reset_index(drop=True)
+        keepS = sp[sp.apply(lambda r: _rk(r) not in removedS, axis=1)].reset_index(drop=True)
+        n = len(d)
+        b_arr = np.zeros(n); s_arr = np.zeros(n)
+        for _, r in keepB.iterrows():
+            b_arr = b_arr + mapB[_rk(r)]
+        for _, r in keepS.iterrows():
+            s_arr = s_arr + mapS[_rk(r)]
+        _wtd = bool(nsd.get('weighted', True))
+        d['buy_count'] = (np.round(b_arr, 3) if _wtd else b_arr.astype(int))
+        d['sell_count'] = (np.round(s_arr, 3) if _wtd else s_arr.astype(int))
+        d['net'] = (np.round(b_arr - s_arr, 4) if _wtd else (b_arr - s_arr).astype(int))
+        for _c in list(d.columns):
+            if _c.startswith('net_h'):
+                try:
+                    _h = int(_c[5:])
+                    _bh = np.zeros(n); _sh = np.zeros(n)
+                    for _, r in keepB.iterrows():
+                        if int(r.get('horizon_day', r.get('horizon', 1)) or 1) == _h:
+                            _bh = _bh + mapB[_rk(r)]
+                    for _, r in keepS.iterrows():
+                        if int(r.get('horizon_day', r.get('horizon', 1)) or 1) == _h:
+                            _sh = _sh + mapS[_rk(r)]
+                    d[_c] = np.round(_bh - _sh, 4)
+                except Exception:
+                    pass
+        nsd['buy_pool_used'] = keepB; nsd['sell_pool_used'] = keepS
+        nsd['n_buy_opt'] = len(keepB); nsd['n_sell_opt'] = len(keepS)
+        sumB1 = sum(float(r.get('reliability', 0.0) or 0.0) for _, r in keepB.iterrows())
+        sumS1 = sum(float(r.get('reliability', 0.0) or 0.0) for _, r in keepS.iterrows())
+        _rm_txt = ', '.join(sorted(removedB | removedS))
+        print(f"  ✓ (점수균형) 신뢰도합 매수 {sumB0:.2f}→{sumB1:.2f} / 매도 {sumS0:.2f}→{sumS1:.2f} "
+              f"(격차 {abs(sumB0-sumS0):.2f}→{abs(sumB1-sumS1):.2f}) | "
+              f"제거 {len(removedB)+len(removedS)}개[{_rm_txt}]")
+        return dict(removed_buy=sorted(removedB), removed_sell=sorted(removedS),
+                    sumB0=sumB0, sumS0=sumS0, sumB1=sumB1, sumS1=sumS1)
+    except Exception as _e:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 점수균형 실패(무시, 원본 유지): {_e}")
+        return None
+
+
 def _kl_refine_after_search(nsd, mdd_limit=None):
     """★★★ (요청 — 신규) 최적 K/L 확정 후 2단계 지표 정제.
        [1단계] 최적자리와 백테스트 결과(K/L 포지션)가 '틀린 날'들에서, 그날 이긴(점수가
@@ -23879,6 +24013,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         #   갱신하므로 이후 write_excel의 K/L 재탐색·공식·카운트가 자동으로 정제 결과 기준.
         try:
             if _nsd_full is not None:
+                # ★ (요청 — 신규) 일별 백테스트 구성 전: ①양쪽 신뢰도 총합 균형 → ②KL정제
+                _balance_pool_scores(_nsd_full)
                 _kl_refine_after_search(_nsd_full,
                                         mdd_limit=globals().get('MAX_DRAWDOWN_LIMIT_PCT'))
         except Exception as _ekr:
