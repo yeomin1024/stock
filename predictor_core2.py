@@ -14557,25 +14557,24 @@ SIMPLE_POOL_OVERLAP_DISCOUNT_WEIGHT  = 0.6  # 완전히 겹치는 지표쌍 하�
 #   자리당 하나가 아니라 매칭 후보 전부 채택(약한 쪽 보강).
 SIMPLE_POOL_WEAK_SIDE_GAP_RATIO      = 2.0
 
-# ★★★ (요청 — 원복 확정) "정답 매수/매도 자리 맞히기로 지표를 정하는 것, K,L 조정, 매수
-#   자리 조정 전부 하지 말고, 수익이 최적이 되는 매수/매도 신뢰도 임계값을 찾아 그 이상만
-#   쓰던 예전 방식으로" — 신뢰도 내림차순 풀에서 "개수 k"를 찾는 게 "신뢰도 임계값(=k번째
-#   지표의 신뢰도 이상만 사용)"을 찾는 것과 동일 — 1(최고신뢰도 1개)부터 전체까지 늘려가며
-#   실제 누적수익(_search_threshold의 fu/oo)이 최대가 되는 k를 탐색해 그 지점을 채택한다.
-SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = True
-# ★★★ (요청 — 버그수정, 실측: K=2919.997/지표수 2917) 정답자리 매칭을 끄면서 풀을 줄여주던
-#   단계가 사라져, 지표컷만 통과한 수천 개 후보가 통째로 임계값 탐색에 들어가는 문제 —
-#   예전(클래식) 방식의 TOP_N_POOL=100 상한과 동일하게, 단순모드에서도 신뢰도 상위 이
-#   개수까지만 탐색 대상으로 유지한다(임계값 탐색은 이 안에서 수익 최적 개수를 고른다).
-# ★★★ (요청 — 재수정) 풀 상한을 "개수"가 아니라 "신뢰도 값"으로 — 매수는 신뢰도 4 이상,
-#   매도는 신뢰도 2 이상만 임계값 탐색 대상으로 남긴다(매도 기준이 더 낮은 이유: 이 시스템의
-#   신뢰도 분포상 매도쪽이 대체로 더 낮게 나오는 경향 — 실측 로그에서도 매도 임계값이
-#   매수보다 낮게 잡히는 경우가 많았음). 이 값 미만은 임계값 탐색에 들어가기도 전에 제외.
+# ★★★ (요청 — 재원복) "신뢰도로 사용지표 결정하는 거 다시 off" — 아래 새 방식
+#   (SIMPLE_POOL_MIN_WRONG_SELECT: 성공률100%는 무조건 사용 + 틀린자리 최소화 개수탐색)로
+#   대체됐으므로 다시 끔. 코드는 하위호환용으로 남겨둠.
+SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = False
+# ★★★ (요청 — 재원복) 위와 같은 이유로 신뢰도값 기준 풀 상한도 끔(새 방식이 자체적으로
+#   개수를 정하므로 이 사전 컷은 불필요 — 성공률100%가 신뢰도컷에 걸려 빠지면 안 되니까도).
 SIMPLE_POOL_MIN_RELIABILITY_BUY          = 4.0
 SIMPLE_POOL_MIN_RELIABILITY_SELL         = 2.0
 # ★★★ (요청 관련 — 신규) 위 고정 임계값을 아무도 못 넘어 그 쪽이 0개가 되면, 결과가 아예
 #   안 나오게 두지 않고 이 폭만큼씩(0까지) 완화해서 재시도 — "2%이상 절대거부" 완화와 동일.
 SIMPLE_POOL_MIN_RELIABILITY_RELAX_STEP   = 0.5
+
+# ★★★ (요청 — 전면 재설계, 신규 기본 선정방식) "성공률 100%는 무조건 사용, 그 이외는
+#   성공률·신뢰도 높은 순으로 사용지표 늘려가면서 매수/매도 틀린 자리가 가장 적은 지표
+#   개수로 정하고(동률이면 수익률 높은 쪽), 매수/매도 각각 독립 결정 후 합쳐서 K,L 탐색" —
+#   _select_pool_min_wrong_positions 참고. 위 두 옛 방식(신뢰도 임계값 탐색·정답자리
+#   매칭)을 모두 대체하는 현재 기본 선정 로직.
+SIMPLE_POOL_MIN_WRONG_SELECT             = True
 
 # ★★★ (요청 — 전면 재설계) 지표 선정을 "신뢰도 임계값 탐색"이 아니라 "정답 매수/매도 자리
 #   맞히기" 방식으로 완전히 바꾼다:
@@ -17492,6 +17491,92 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
     return out
 
 
+def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticker=None):
+    """★★★ (요청 — 전면 재설계) "신뢰도로 사용지표 결정하는 거 다시 off, 성공률 100%는
+       무조건 사용, 그 이외는 성공률·신뢰도 높은 순으로 늘려가면서 매수/매도 틀린 자리가
+       가장 적은 개수로 정하고, 틀리면 수익률 높은 걸로" — 매수/매도 각각 독립적으로:
+       1) 성공률 100%인 지표는 무조건 포함(항상 채택 — "always" 집합).
+       2) 나머지는 (성공률, 신뢰도) 내림차순 정렬.
+       3) k=0(추가 없음)부터 전체까지 하나씩 늘려가며, 그 시점까지의 지표 집합이
+          "표시일 기준 발화하는 날들의 합집합"에서 최적자리(target, 중립 제외)와 어긋나는
+          날(=틀린 자리) 개수를 센다.
+       4) 틀린 자리가 가장 적은 k를 채택 — 동률이면 그 구간의 수익률(발화일들의 방향성
+          등락 합)이 가장 높은 k를 채택.
+       반환: (buy_final, sell_final, report) — report에 매수/매도 각각의
+       (채택개수, 틀린자리수, 수익률) 기록(엑셀 요약·검증용)."""
+    _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
+    target = np.asarray(_ctp[0]); valid = np.asarray(_ctp[3]); neutral = np.asarray(_ctp[6])
+    n = len(target)
+    tgt1 = target == 1
+    judge = valid & (~neutral)   # 중립은 어느 쪽이든 정답 취급이라 '틀린 자리' 판정에서 제외
+
+    def _select_side(pool, is_buy):
+        if pool is None or len(pool) == 0:
+            return (pool.iloc[0:0].copy() if pool is not None else pool), 0, 0.0, 0
+        pool = pool.copy()
+        if 'success_rate' not in pool.columns:
+            pool['success_rate'] = 0.0
+        if 'reliability' not in pool.columns:
+            pool['reliability'] = 0.0
+        pool = pool.sort_values(['success_rate', 'reliability'], ascending=[False, False]).reset_index(drop=True)
+        always = pool[pool['success_rate'] >= 0.999].reset_index(drop=True)
+        rest = pool[pool['success_rate'] < 0.999].reset_index(drop=True)
+        want = tgt1 if is_buy else (~tgt1)
+
+        def _score(fired_mask):
+            wrong = int(np.sum(fired_mask & judge & (~want)))
+            idxs = np.nonzero(fired_mask)[0]
+            idxs = idxs[idxs < n - 1]
+            if len(idxs) == 0:
+                return wrong, 0.0
+            rr = close_arr[idxs + 1] / close_arr[idxs] - 1.0
+            ret = float(np.sum(rr if is_buy else -rr))
+            return wrong, ret
+
+        cur_fired = np.zeros(n, dtype=bool)
+        for _, row in always.iterrows():
+            try:
+                sig = np.asarray(_aligned_signal_for_row(feat, row), dtype=bool)[:n]
+                cur_fired |= sig
+            except Exception:
+                pass
+        # ★★★ (요청 관련 — 버그수정, 실측: 매수 0개로 K계산 실패) "틀린 자리 최소화"만
+        #   그대로 두면 '아무 지표도 안 씀'(발화 자체가 없음)이 틀린자리 0으로 항상 이겨서
+        #   전부 제외되는 퇴화해가 있었다 — 성공률100%(always) 지표가 하나도 없으면, k=0
+        #   (발화 없음)은 아예 후보에서 빼고 rest에서 최소 1개는 반드시 넣은 상태부터
+        #   비교를 시작한다(always가 있으면 그 자체가 이미 유효한 후보이므로 그대로 둠).
+        if len(always) > 0:
+            best_wrong, best_ret = _score(cur_fired)
+            best_k = 0
+        else:
+            best_wrong, best_ret, best_k = None, None, None
+        for k in range(len(rest)):
+            try:
+                sig = np.asarray(_aligned_signal_for_row(feat, rest.iloc[k]), dtype=bool)[:n]
+            except Exception:
+                continue
+            cur_fired = cur_fired | sig
+            w, r = _score(cur_fired)
+            if best_wrong is None or w < best_wrong or (w == best_wrong and r > best_ret):
+                best_wrong, best_ret, best_k = w, r, k + 1
+        if best_k is None:
+            best_wrong, best_ret, best_k = 0, 0.0, 0   # always도 rest도 없음(진짜 후보 자체가 없음)
+
+        final = pd.concat([always, rest.iloc[:best_k]], ignore_index=True) if best_k > 0 \
+                else always.reset_index(drop=True)
+        return final, best_wrong, best_ret, len(final)
+
+    buy_final, bw, br, bn = _select_side(buy_pool, True)
+    sell_final, sw, sr, sn = _select_side(sell_pool, False)
+    report = dict(n_buy_always=int((buy_pool['success_rate'] >= 0.999).sum())
+                  if buy_pool is not None and len(buy_pool) and 'success_rate' in buy_pool.columns else 0,
+                  n_sell_always=int((sell_pool['success_rate'] >= 0.999).sum())
+                  if sell_pool is not None and len(sell_pool) and 'success_rate' in sell_pool.columns else 0,
+                  buy_n=bn, buy_wrong=bw, buy_ret=br,
+                  sell_n=sn, sell_wrong=sw, sell_ret=sr)
+    return buy_final, sell_final, report
+
+
 def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, ticker=None,
                                           adopt_all_normal_buy=False, adopt_all_normal_sell=False):
     """★★★ (요청 — 전면 재설계, 단순화) "중복 제거한 후보 지표 모두 적용한 다음, 최적
@@ -18401,53 +18486,23 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             buy_c  = _add_net_weight(buy_c)
             sell_c = _add_net_weight(sell_c)
 
-            buy_c  = buy_c.sort_values('reliability',  ascending=False).reset_index(drop=True) if len(buy_c) else buy_c
-            sell_c = sell_c.sort_values('reliability', ascending=False).reset_index(drop=True) if len(sell_c) else sell_c
-            # ★★★ (요청 — 재수정, 실측 K=2919.997/지표수 2917 대응) 풀 상한을 "개수"가 아니라
-            #   "신뢰도 값"으로 — 매수는 신뢰도 4 이상, 매도는 2 이상만 임계값 탐색 대상으로
-            #   유지. 정답자리 매칭이 꺼진 상태에서 지표컷만 통과한 낮은신뢰도 후보 수천 개가
-            #   통째로 net에 합산돼 K/L·지표수가 폭주하던 문제를 값 기준으로 원천 차단한다.
-            _min_rel_b = float(globals().get('SIMPLE_POOL_MIN_RELIABILITY_BUY', 4.0))
-            _min_rel_s = float(globals().get('SIMPLE_POOL_MIN_RELIABILITY_SELL', 2.0))
-            _nb_cap0, _ns_cap0 = len(buy_c), len(sell_c)
-            # ★★★ (요청 관련 — 신규, 실측: 매수 신뢰도≥4를 아무도 못 넘어 매수 34→0개→
-            #   K계산 실패) 고정 임계값이 한쪽을 전멸시키면 그쪽만 0.5씩 낮춰가며(0까지)
-            #   재시도 — "2%이상 절대거부" 완화와 동일한 원칙(기준을 못 넘는 게 있으면
-            #   결과가 아예 안 나오게 두지 말고, 그 쪽만 단계적으로 완화).
-            _relax_step_r = float(globals().get('SIMPLE_POOL_MIN_RELIABILITY_RELAX_STEP', 0.5))
-
-            def _apply_rel_cut(df, thr):
-                if len(df) == 0 or 'reliability' not in df.columns:
-                    return df
-                return df[df['reliability'].fillna(0.0) >= thr].reset_index(drop=True)
-
-            _cur_b = _min_rel_b
-            _buy_cut = _apply_rel_cut(buy_c, _cur_b)
-            while len(_buy_cut) == 0 and _cur_b > 0 and len(buy_c) > 0:
-                _cur_b = round(max(0.0, _cur_b - _relax_step_r), 4)
-                _buy_cut = _apply_rel_cut(buy_c, _cur_b)
-            if len(buy_c) > 0 and len(_buy_cut) == 0:
-                _buy_cut = buy_c   # 0까지 낮춰도 없으면(전부 음수 등) 원본 유지 — 결과 공백 방지
-            if _cur_b != _min_rel_b and len(_buy_cut):
-                print(f"    (신뢰도 상한 완화) 매수: {_min_rel_b}로는 통과 지표가 0개라 "
-                      f"{_cur_b}까지 완화해서 {len(_buy_cut)}개 확보")
-            buy_c = _buy_cut
-
-            _cur_s = _min_rel_s
-            _sell_cut = _apply_rel_cut(sell_c, _cur_s)
-            while len(_sell_cut) == 0 and _cur_s > 0 and len(sell_c) > 0:
-                _cur_s = round(max(0.0, _cur_s - _relax_step_r), 4)
-                _sell_cut = _apply_rel_cut(sell_c, _cur_s)
-            if len(sell_c) > 0 and len(_sell_cut) == 0:
-                _sell_cut = sell_c
-            if _cur_s != _min_rel_s and len(_sell_cut):
-                print(f"    (신뢰도 상한 완화) 매도: {_min_rel_s}로는 통과 지표가 0개라 "
-                      f"{_cur_s}까지 완화해서 {len(_sell_cut)}개 확보")
-            sell_c = _sell_cut
-            if len(buy_c) != _nb_cap0 or len(sell_c) != _ns_cap0:
-                print(f"    (풀 상한·신뢰도값 기준) 매수 신뢰도≥{_min_rel_b} / 매도 신뢰도≥{_min_rel_s}만 유지 — "
-                      f"매수 {_nb_cap0}→{len(buy_c)}개, 매도 {_ns_cap0}→{len(sell_c)}개 "
-                      f"(임계값 탐색은 이 안에서 수익 최적 개수를 고름)")
+            # ★★★ (요청 — 전면 재설계) "신뢰도로 사용지표 결정하는 거 다시 off, 성공률
+            #   100%는 무조건 사용, 그 이외는 성공률·신뢰도 높은 순으로 늘려가며 틀린
+            #   자리가 가장 적은 지표 개수로(동률이면 수익률 높은 쪽으로) 결정" —
+            #   _select_pool_min_wrong_positions로 완전히 대체. 신뢰도는 이제도 net
+            #   가중치(net_weight_score) 용도로만 쓰이고, '포함 여부' 결정에는 안 쓰인다.
+            if globals().get('SIMPLE_POOL_MIN_WRONG_SELECT', True):
+                _nb_mw0, _ns_mw0 = len(buy_c), len(sell_c)
+                buy_c, sell_c, _mw_report = _select_pool_min_wrong_positions(
+                    feat, _close_arr, buy_c, sell_c, ticker=ticker)
+                globals()['_KNET_MIN_WRONG_REPORT'] = _mw_report
+                print(f"    (틀린자리 최소화 선정) 매수: 100%확정 {_mw_report['n_buy_always']}개 + "
+                      f"추가 {_mw_report['buy_n']-_mw_report['n_buy_always']}개 = {_mw_report['buy_n']}개 "
+                      f"(틀린자리 {_mw_report['buy_wrong']}일, 방향수익합 {_mw_report['buy_ret']*100:+.2f}%) | "
+                      f"매도: 100%확정 {_mw_report['n_sell_always']}개 + "
+                      f"추가 {_mw_report['sell_n']-_mw_report['n_sell_always']}개 = {_mw_report['sell_n']}개 "
+                      f"(틀린자리 {_mw_report['sell_wrong']}일, 방향수익합 {_mw_report['sell_ret']*100:+.2f}%) | "
+                      f"{_nb_mw0}→{len(buy_c)} / {_ns_mw0}→{len(sell_c)}")
             if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
             if len(sell_c): sell_c['sel_limit'] = _limit0
             return buy_c, sell_c
@@ -18492,7 +18547,8 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         globals()['NET_SIGNAL_WEIGHT_COL'] = 'net_weight_score'   # ★ net 가중치 = 1+신뢰도(윌슨 미사용)
         globals()['NET_SIGNAL_WEIGHTED'] = True
         _sel_desc = ('정답자리 매칭 선정' if globals().get('SIMPLE_POOL_POSITION_MATCH_SELECT', False)
-                    else '신뢰도 임계값 탐색(수익최적)')
+                    else ('틀린자리 최소화 선정' if globals().get('SIMPLE_POOL_MIN_WRONG_SELECT', False)
+                          else '신뢰도 임계값 탐색(수익최적)'))
         print(f"    (단순모드) 최종 통합: 매수 {len(buy_c)}개 / 매도 {len(sell_c)}개 "
               f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, {_sel_desc}, "
               f"net 가중치=1+신뢰도)")
@@ -24897,7 +24953,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _oc.value = '중립'; _oc.font = Font(bold=True, color='808080')
             else:
                 _oc.value = '-'
-            ws.cell(r, 8).value = ('롱' if _p == 1 else '현금')
+            _pc8 = ws.cell(r, 8)
+            _pc8.value = ('롱' if _p == 1 else '현금')
+            # ★★★ (요청 — 신규) "새롭게 생긴 최적자리와 틀린 자리는 노란색으로 표시" — 실제
+            #   포지션(_p)이 최적자리(_opt)와 어긋나는 날(중립·판정불가 제외)을 최적자리·
+            #   포지션 두 셀 다 노란색 배경으로 표시해 한눈에 틀린 날을 확인할 수 있게 한다.
+            if _opt in (0, 1) and int(_p) != int(_opt):
+                _oc.fill = _SIGY; _pc8.fill = _SIGY
             ws.cell(r, 9).value = _act
             ws.cell(r, 10).value = (f"${_entry_px:.2f}" if (_p == 1 and _entry_px) else
                                    (f"${prices[i]:.2f}" if _act == '매수' else ''))
