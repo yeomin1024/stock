@@ -15320,35 +15320,49 @@ def auto_compute_anchor_dates(dates, close, *,
 def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr, event_gap):
     # ★★★ (요청 — 재설계) 성공 = 표시일(fire+h-1)의 최적자리가 매수(또는 중립),
     #   등락률 = 표시일→다음날 하루치. 마스크 없으면(비단순모드) 다음날 등락 기준 폴백.
-    # ★★★ (요청 — 신규) "연속된 신호는 한 번으로 취급해서 최소신호수 컷을 비교" —
-    #   신뢰도 공식과 동일하게, 발화일 간격이 event_gap 이하로 이어지는 묶음(체인)은
-    #   이벤트 1건으로 세고, 그 묶음의 '첫 발화일' 기준으로만 성공·등락률을 판정한다.
-    #   ns/ok/sum_ret 전부 이벤트 기준 — 최소신호수 컷·성공률·평균등락이 신뢰도의
-    #   이벤트 정의와 완전히 일치하게 된다.
+    # ★★★ (요청 — 재설계, 핵심) "연속으로 나오는 부분을 한 번으로 취급할 거면, 연속구간
+    #   중 하나라도 틀리면 실패, 전부 맞아야 성공. 등락률은 연속날들의 평균으로" — 이전엔
+    #   이벤트(연속묶음)의 '첫 발화일'만 보고 성공/실패·등락률을 정했는데, 그러면 첫날만
+    #   우연히 맞으면 그 뒤로 며칠이고 계속 틀려도 전부 '성공 1건'으로 잡혀서, 넓게 계속
+    #   발화하는 지표가 부당하게 '성공률 100%'로 나오는 문제가 있었다(실측 지적). 이제는
+    #   묶음에 속한 '모든' 발화일 각각을 판정해서, 하나라도 틀리면 그 이벤트 전체가
+    #   실패, 전부 맞아야 성공 — 등락률(sum_ret에 누적되는 값)도 묶음 내 유효 발화일들의
+    #   평균으로 바꿨다.
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
     g = event_gap if event_gap >= 1 else 1
     use_ok = anchor_buy_arr.shape[0] == n
     ns = 0; ok = 0; sum_ret = 0.0
     prev_fire = -10**9
+    ev_all_ok = True; ev_ret_sum = 0.0; ev_n_valid = 0; ev_active = False
     for i in range(n - 1):
         if signal_arr[i] != 1: continue
         is_new_event = (i - prev_fire) > g
+        if is_new_event:
+            if ev_active and ev_n_valid > 0:      # 이전 이벤트 마감(전부 판정된 뒤 집계)
+                ns += 1
+                sum_ret += ev_ret_sum / ev_n_valid
+                if ev_all_ok:
+                    ok += 1
+            ev_all_ok = True; ev_ret_sum = 0.0; ev_n_valid = 0; ev_active = True
         prev_fire = i
-        if not is_new_event:
-            continue                      # 같은 묶음(체인) — 이미 센 이벤트
         disp = i + h - 1
         if disp + 1 > n - 1: continue
         p0 = close_arr[disp]
         if p0 <= 0.0: continue
         ret = close_arr[disp + 1] / p0 - 1.0
-        ns += 1; sum_ret += ret
+        ev_ret_sum += ret; ev_n_valid += 1
         if use_ok:
-            if anchor_buy_arr[disp] == 1:
-                ok += 1
+            if anchor_buy_arr[disp] != 1:
+                ev_all_ok = False
         else:
-            if ret >= dd_limit:
-                ok += 1
+            if ret < dd_limit:
+                ev_all_ok = False
+    if ev_active and ev_n_valid > 0:              # 마지막 이벤트 마감
+        ns += 1
+        sum_ret += ev_ret_sum / ev_n_valid
+        if ev_all_ok:
+            ok += 1
     return ns, ok, sum_ret
 
 
@@ -15386,31 +15400,43 @@ def _OLD_eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_a
 
 @njit
 def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr, event_gap):
-    # ★★★ (요청 — 재설계) 매도 대칭 — 이벤트(연속=1건, 간격 event_gap 체인) 기준.
+    # ★★★ (요청 — 재설계, 핵심) 매도 대칭 — 이벤트 내 '모든' 발화일이 다 맞아야 성공,
+    #   하나라도 틀리면 실패. 등락률은 묶음 내 유효 발화일들의 평균.
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
     g = event_gap if event_gap >= 1 else 1
     use_ok = anchor_sell_arr.shape[0] == n
     ns = 0; ok = 0; sum_ret = 0.0
     prev_fire = -10**9
+    ev_all_ok = True; ev_ret_sum = 0.0; ev_n_valid = 0; ev_active = False
     for i in range(n - 1):
         if signal_arr[i] != 1: continue
         is_new_event = (i - prev_fire) > g
+        if is_new_event:
+            if ev_active and ev_n_valid > 0:
+                ns += 1
+                sum_ret += ev_ret_sum / ev_n_valid
+                if ev_all_ok:
+                    ok += 1
+            ev_all_ok = True; ev_ret_sum = 0.0; ev_n_valid = 0; ev_active = True
         prev_fire = i
-        if not is_new_event:
-            continue
         disp = i + h - 1
         if disp + 1 > n - 1: continue
         p0 = close_arr[disp]
         if p0 <= 0.0: continue
         ret = close_arr[disp + 1] / p0 - 1.0
-        ns += 1; sum_ret += ret
+        ev_ret_sum += ret; ev_n_valid += 1
         if use_ok:
-            if anchor_sell_arr[disp] == 1:
-                ok += 1
+            if anchor_sell_arr[disp] != 1:
+                ev_all_ok = False
         else:
-            if ret <= -ru_limit:
-                ok += 1
+            if ret > -ru_limit:
+                ev_all_ok = False
+    if ev_active and ev_n_valid > 0:
+        ns += 1
+        sum_ret += ev_ret_sum / ev_n_valid
+        if ev_all_ok:
+            ok += 1
     return ns, ok, sum_ret
 
 
@@ -15955,6 +15981,30 @@ def _hit_flags_cached(close_arr, horizon, limit, is_buy, use_barrier):
         _HITF_CACHE.clear()
     _HITF_CACHE[key] = (hit, ev)
     return hit, ev
+
+
+def _event_first_only(sig_arr, gap):
+    """★★★ (요청 관련 — 핵심 버그수정, 실측: 신호개수 10개인데 공식엔 235번 등장)
+       "연속된 신호는 한 번으로 취급"이 성공률·최소신호수컷(_eval_buy_signals 등)에는
+       적용됐지만, 실제 net·매수/매도카운트 공식에 쓰이는 원본 신호배열(_to_signal_array
+       그대로)에는 전혀 적용되지 않고 있었다 — 그래서 "몇 달간 계속 켜져 있는" 지표는
+       이벤트로는 소수(예: 6건)로 집계되는데, 실제 net에는 그 몇 달 내내(예: 138일)
+       매일 반영되는 불일치가 있었다(실측 확인: 6건 vs 138일, 23배 차이). 간격
+       ≤gap이면 같은 이벤트로 묶어 그 묶음의 '첫날'만 남기고 나머지는 0으로 만든다 —
+       이러면 실제 net·공식에 반영되는 발화일수가 '신호개수'(이벤트수)와 정확히
+       일치하고, 긴 연속 국면 동안 매일 카운트가 겹겹이 쌓이는 부자연스러움도 사라진다."""
+    sig_arr = np.asarray(sig_arr)
+    out = np.zeros_like(sig_arr)
+    idxs = np.nonzero(sig_arr)[0]
+    if len(idxs) == 0:
+        return out
+    prev_fire = -10**9
+    g = gap if gap >= 1 else 1
+    for i in idxs.tolist():
+        if (i - prev_fire) > g:
+            out[i] = sig_arr[i]
+        prev_fire = i
+    return out
 
 
 def _shift_signal_forward(sig, d):
@@ -17090,25 +17140,53 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
         fav = raw_ret if is_buy else -raw_ret   # 매수=상승이 +, 매도=하락이 +
         n = len(fav)
 
-        # ★★★ (원칙 6, 요청 — 간격 일반화) 연속(간격 ≤ SIMPLE_POOL_EVENT_GAP_DAYS 체인)
-        #   신호 = 이벤트 1건 — 묶음의 첫날만 남김. 지표 탐색의 이벤트 정의와 완전 동일.
+        # ★★★ (원칙 2) "1%이상 변동률 추세전환 자리" 사전 계산(close_arr당 1회, 캐시) —
+        #   이벤트별 '전체 성공 여부' 판정에 필요한 최적자리 마스크도 이 시점에 미리 준비.
+        try:
+            _ctp_r = _ctp_cached(close_arr)
+            _ok_mask_r = _ctp_r[7] if is_buy else _ctp_r[8]
+        except Exception:
+            _ok_mask_r = None
+
+        # ★★★ (원칙 6, 요청 — 전면 재설계) "연속구간 중 하나라도 틀리면 실패, 전부 맞아야
+        #   성공. 등락률은 연속날들의 평균으로" — 이전엔 이벤트(연속묶음)의 '첫 발화일'만
+        #   보고 성공/실패·등락률을 정했는데(뒤쪽 날짜가 계속 틀려도 무시됨), 이제는
+        #   묶음에 속한 '모든' 발화일을 판정해서 하나라도 최적자리와 안 맞으면(또는 fav
+        #   부호가 반대면) 그 이벤트 전체를 실패로, 등락률(ev_fav)은 묶음 내 평균으로 바꿨다.
         _egap_r = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
-        _ev_mask = np.ones(n, dtype=bool)
-        for _k in range(1, n):
-            if int(fire_valid[_k]) - int(fire_valid[_k - 1]) <= _egap_r:
-                _ev_mask[_k] = False
-        ev_days = fire_valid[_ev_mask].astype(int)
-        ev_fav = fav[_ev_mask]
+        ev_days_l = []; ev_fav_l = []; ev_all_ok_l = []
+        _i = 0
+        while _i < n:
+            _j = _i
+            while _j + 1 < n and (int(fire_valid[_j + 1]) - int(fire_valid[_j])) <= _egap_r:
+                _j += 1
+            _seg_fav = fav[_i:_j + 1]
+            _seg_days = fire_valid[_i:_j + 1]
+            _all_ok_seg = True
+            for _off, _dd in enumerate(_seg_days.tolist()):
+                _ok_dd = bool(_ok_mask_r[_dd]) if _ok_mask_r is not None else bool(_seg_fav[_off] > 0)
+                if not _ok_dd:
+                    _all_ok_seg = False
+                    break
+            ev_days_l.append(int(fire_valid[_i]))
+            ev_fav_l.append(float(np.mean(_seg_fav)))
+            ev_all_ok_l.append(_all_ok_seg)
+            _i = _j + 1
+        ev_days = np.asarray(ev_days_l, dtype=int)
+        ev_fav = np.asarray(ev_fav_l, dtype=float)
+        ev_all_ok = np.asarray(ev_all_ok_l, dtype=bool)
         n_events = len(ev_days)
         if n_events == 0:
             _RELIABILITY_BASE_CACHE[_base_cache_key] = dict(_empty)
             return dict(_empty)
 
         # ★★★ (원칙 1, 요청 — 스케일 변경) 기본점수 = 수익·손실 %합 ÷ 10 — 이전의 ÷100
-        #   (=소수합)에서 스케일을 10배 올림. 소수 등락률 합 × 10과 동일.
+        #   (=소수합)에서 스케일을 10배 올림. 소수 등락률 합 × 10과 동일. 이벤트별 값이
+        #   이제 '평균 등락'이므로, 합산도 그 평균들의 합(=이벤트당 기여 그대로 유지).
         base_sum = float(np.sum(ev_fav)) * 10.0
 
-        # ★★★ (원칙 2) "1%이상 변동률 추세전환 자리" 사전 계산(close_arr당 1회, 캐시)
+        # ★★★ (원칙 2) "1%이상 변동률 추세전환 자리" — 위에서 이미 계산됨(_up_arr/_down_arr
+        #   준비는 아래에서 그대로 진행).
         _lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
         _rev_min_mag = float(globals().get('SIMPLE_POOL_REV_MIN_MAGNITUDE', 0.01))
         _rev_key = (id(close_arr), len(close_arr), _lookback, round(_rev_min_mag, 6))
@@ -17151,26 +17229,26 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
                     return True
             return False
 
-        # ★★★ (원칙 2·4·5, 요청 — 재설계) 이벤트 분류 — 전환 매칭은 그대로, 추세성공/실패는
-        #   등락 부호가 아니라 '최적자리(정답|중립) 매칭'으로 판정(성공률 기준과 완전 동일).
-        try:
-            _ctp_r = _ctp_cached(close_arr)
-            _ok_mask_r = _ctp_r[7] if is_buy else _ctp_r[8]
-        except Exception:
-            _ok_mask_r = None
+        # ★★★ (원칙 2·4·5, 요청 — 재설계) 이벤트 분류 — 전환자리 매칭 자체는 이벤트의
+        #   첫날 위치로 판단(그 이벤트가 '언제' 시작됐는지가 위치의 의미), 성공/실패는
+        #   이벤트 전체가 다 맞았는지(ev_all_ok)로 판단(★ 요청 반영 — 하나라도 틀리면 실패).
         rs = ts = rf = tf = 0
         for _k in range(n_events):
             _f = int(ev_days[_k])
-            if _match_spot(_f, _same_dir_spots):
-                rs += 1                      # 전환자리에서 전환포지션과 맞는 신호 = 전환성공
-            elif _match_spot(_f, _opp_dir_spots):
-                rf += 1                      # 전환자리에서 반대 포지션 신호 = 전환실패
-            else:
-                _hit = bool(_ok_mask_r[_f]) if _ok_mask_r is not None else (ev_fav[_k] > 0)
-                if _hit:
-                    ts += 1                  # 전환 아닌 자리에서 최적자리와 일치 = 추세성공(약)
+            _near_same = _match_spot(_f, _same_dir_spots)
+            _near_opp = _match_spot(_f, _opp_dir_spots)
+            if _near_same:
+                if ev_all_ok[_k]:
+                    rs += 1                  # 전환자리에서 전환포지션과 맞고, 이벤트 전체 성공
                 else:
-                    tf += 1                  # 전환 아닌 자리에서 불일치 = 추세실패(약)
+                    rf += 1                  # 전환자리 시작이었지만 이벤트 중 하나라도 틀림
+            elif _near_opp:
+                rf += 1                      # 전환자리에서 애초에 반대 포지션 = 전환실패
+            else:
+                if ev_all_ok[_k]:
+                    ts += 1                  # 전환 아닌 자리, 이벤트 전체 최적자리와 일치 = 추세성공(약)
+                else:
+                    tf += 1                  # 전환 아닌 자리, 이벤트 중 하나라도 불일치 = 추세실패(약)
 
         # ★★★ (원칙 3·5) UP/DOWN 가중 — 성공·실패 대칭 구조
         _rev_w = float(globals().get('SIMPLE_POOL_REV_HIT_W', 0.10))
@@ -17458,9 +17536,14 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
        성공률 계산(_eval_buy_signals/_eval_sell_signals)과 완전히 동일한 기준:
        · 성공 = 표시일(발화일+h-1)의 '최적자리'(재배정 반영)가 이 지표 방향(또는 중립)
        · 등락률 = 표시일 → 그 다음날 하루치(close[disp+1]/close[disp]-1)
+       ★★★ (요청 — 재설계, 핵심) "연속구간 중 하나라도 틀리면 실패, 전부 맞아야 성공,
+       등락률은 연속날들의 평균" — 이벤트(연속=1건, 간격 체인) 안의 '모든' 발화일을
+       판정해서 하나라도 최적자리와 안 맞으면 그 이벤트 전체를 실패로 표시하고, 등락률은
+       이벤트 내 유효 발화일들의 평균으로 표시한다(_eval_buy_signals/_compute_reliability_
+       score와 완전히 동일한 이벤트 정의·판정 기준).
        allow_next_day_rescue 파라미터는 시그니처 호환용으로 유지하되 무시(최적자리
        기준에서는 애매함이 재배정·중립으로 이미 처리됨).
-       반환: [(date_str, ret_pct, is_correct), ...] — 발화일(원본) 오름차순."""
+       반환: [(date_str, avg_ret_pct, all_correct), ...] — 이벤트 첫 발화일 오름차순."""
     sig = _to_signal_array(feat, row)   # lead_shift만 적용된 원본 발화일
     n = len(sig)
     idx = feat.index
@@ -17475,29 +17558,49 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
         _mask = None
     fire_idx = np.nonzero(sig)[0]
     fire_idx = fire_idx[fire_idx <= n - 1 - _hz]   # disp+1 = i+h 가 범위 안이어야
-    # ★★★ (요청 — 신규) 이벤트(연속=1건, 간격 체인) 단위로 축약 — 성공률의 이벤트 정의와
-    #   동일하게 묶음의 첫 발화일만 표시(신호개수·성공개수와 날짜 목록이 1:1로 일치).
+
+    # ★ 이벤트(연속=1건, 간격 체인) 그룹화 — 신뢰도·성공률과 동일 정의.
     _egap_s = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
-    _ev_first = []
-    _prev_f = None
-    for _d in sorted(fire_idx.tolist()):
-        if _prev_f is None or (_d - _prev_f) > _egap_s:
-            _ev_first.append(_d)
-        _prev_f = _d
+    _sorted_fire = sorted(fire_idx.tolist())
+    _events = []
+    _cur = []
+    _prev = None
+    for _d in _sorted_fire:
+        if _prev is None or (_d - _prev) <= _egap_s:
+            _cur.append(_d)
+        else:
+            _events.append(_cur)
+            _cur = [_d]
+        _prev = _d
+    if _cur:
+        _events.append(_cur)
+
     out = []
-    for d in _ev_first:
-        _disp = d + _hz - 1
-        p0 = close_arr[_disp]; p1 = close_arr[_disp + 1]
-        if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
+    for _event in _events:
+        _rets = []; _all_ok = True; _any_valid = False
+        for _d in _event:
+            _disp = _d + _hz - 1
+            if _disp + 1 >= len(close_arr):
+                continue
+            p0 = close_arr[_disp]; p1 = close_arr[_disp + 1]
+            if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
+                continue
+            _ret_d = p1 / p0 - 1.0
+            _rets.append(_ret_d)
+            _any_valid = True
+            _is_ok_d = bool(_mask[_disp]) if _mask is not None else \
+                       (_ret_d > 0 if is_buy else _ret_d < 0)
+            if not _is_ok_d:
+                _all_ok = False
+        if not _any_valid:
             continue
-        ret = p1 / p0 - 1.0   # ★ 표시일 다음날 하루치 — 성공률 표시 등락과 동일
-        is_correct = bool(_mask[_disp]) if _mask is not None else \
-                     (ret > 0 if is_buy else ret < 0)
+        avg_ret = sum(_rets) / len(_rets)
+        _first_d = _event[0]
         try:
-            date_str = pd.Timestamp(idx[d]).strftime('%Y-%m-%d')
+            date_str = pd.Timestamp(idx[_first_d]).strftime('%Y-%m-%d')
         except Exception:
-            date_str = str(idx[d])
-        out.append((date_str, ret * 100.0, is_correct))
+            date_str = str(idx[_first_d])
+        out.append((date_str, avg_ret * 100.0, _all_ok))
     return out
 
 
@@ -17582,20 +17685,30 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
         for _, row in always.iterrows():
             cur_sum = cur_sum + _sig_w(row)
 
-        trace = []   # [(k, n_used, wrong, remaining, ret), ...] — 검증 시트용
+        trace = []   # [(k, n_used, wrong, remaining, ret, new_fire_days, added_name), ...] — 검증 시트용
         # ★★★ (요청 관련 — 버그수정, 실측: 매수 0개로 K계산 실패) '아무 지표도 안 씀'이
         #   틀린자리를 인위적으로 적게 만들어 항상 이겨버리는 퇴화 방지 — always가 없으면
         #   k=0을 후보에서 제외.
+        _prev_fired = cur_sum > 1e-12
         if len(always) > 0:
             best_wrong, best_remain, best_ret = _score_direct(cur_sum)
             best_k = 0
-            trace.append((0, len(always), best_wrong, best_remain, best_ret))
+            trace.append((0, len(always), best_wrong, best_remain, best_ret,
+                          int(np.sum(_prev_fired)), '(성공률100% 전체)'))
         else:
             best_wrong, best_remain, best_ret, best_k = None, None, None, None
         for k in range(len(rest)):
-            cur_sum = cur_sum + _sig_w(rest.iloc[k])
+            _row_k = rest.iloc[k]
+            cur_sum = cur_sum + _sig_w(_row_k)
             w, rem, r = _score_direct(cur_sum)
-            trace.append((k + 1, len(always) + k + 1, w, rem, r))
+            # ★★★ (요청 — 신규, 진단용) 이번 지표가 '새로 커버한 날짜 수' — 0이면 이
+            #   지표가 기존 세트와 발화일이 완전히 겹쳐서(또는 애초에 발화가 없어서)
+            #   실질적으로 아무 영향이 없었다는 뜻 — "왜 안 줄어드는지" 바로 확인 가능.
+            _new_fired = cur_sum > 1e-12
+            _n_newly_covered = int(np.sum(_new_fired & ~_prev_fired))
+            _prev_fired = _new_fired
+            trace.append((k + 1, len(always) + k + 1, w, rem, r, _n_newly_covered,
+                          str(_row_k.get('indicator', ''))))
             # tie-break: 1차 틀린자리 최소, 2차 남은자리 최소, 3차 수익최고
             if best_wrong is None or w < best_wrong or \
                (w == best_wrong and (rem < best_remain or (rem == best_remain and r > best_ret))):
@@ -21546,8 +21659,15 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                그저께 발화했으면 오늘(그저께+2)에 반영. 이렇게 하면 서로 다른 호라이즌의
                예측이 전부 '내일 하나'를 가리키도록 정렬되어 그대로 더할 수 있다.
                (이전의 '발화일부터 h일간 계속 보유' 방식을 대체 — 그 방식은 같은 예측을
-               h번 반복 반영하는 효과가 있어 이 정렬 논리와는 다른 가정이었음.)"""
+               h번 반복 반영하는 효과가 있어 이 정렬 논리와는 다른 가정이었음.)
+               ★★★ (요청 관련 — 핵심 버그수정, 실측: 신호개수 10개인데 공식엔 235번)
+               "연속된 신호는 한 번으로 취급"을 여기(실제 net 계산)에도 동일 적용 —
+               _event_first_only로 원본 발화를 이벤트(첫날)만 남기고 축약한 뒤 정렬한다.
+               이러면 '신호개수'(_eval_buy_signals, 이벤트 기준)와 실제 net·매수/매도카운트
+               공식에 반영되는 발화일수가 항상 정확히 일치한다."""
+            _egap_ns = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
             s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
+            s = _event_first_only(s, _egap_ns)
             if _align_hz:
                 _hz = row.get('horizon_day', None)
                 if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
@@ -24696,8 +24816,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             # ★★★ (요청 — 재설계, 일관성) _net_signal_k_search의 _row_sig와 동일한 정렬 —
             #   h일 지표는 발화일+(h-1)일에만 반영(모든 호라이즌이 '내일'을 가리키도록 정렬).
             #   공식 텍스트가 실제 net 계산과 항상 일치하도록 동일 로직을 공유한다.
+            #   ★★★ (요청 관련 — 핵심 버그수정, 실측: 신호개수 10개인데 공식엔 235번)
+            #   여기도 _row_sig와 동일하게 _event_first_only로 연속발화를 이벤트(첫날)만
+            #   남기고 축약 — 공식 텍스트에 지표가 등장하는 횟수가 '신호개수'와 일치하게.
             try:
                 s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
+                s = _event_first_only(s, int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2)))
             except Exception:
                 return np.zeros(len(feat))
             if bool(globals().get('SIMPLE_POOL_ALIGN_HORIZON_NET', True)):
@@ -26152,6 +26276,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     #   틀린자리=전체 어긋난 날, 남은자리=그중 그날 어떤 지표도 발화 안 해서(홀드유지로만)
     #   어긋난 날(지표 추가로 줄일 수 있는 부분), 신호오판=틀린자리-남은자리(발화가
     #   있었는데도 어긋난 날 — 지표 추가로는 못 줄이는 부분). 채택된 지점은 굵게+배경색.
+    #   ★★★ (요청 관련 — 신규, 진단용) "추가지표 없는데 신호오판 154, 지표 계속 추가해도
+    #   154로 그대로" 문의 대응 — 이번 단계에서 실제로 새로 커버된 날짜 수·추가된 지표명을
+    #   같이 표시해, "그 지표가 왜 영향이 없었는지"(이미 겹치는 날에만 발화했는지 등)를
+    #   시트에서 바로 확인할 수 있게 했다.
     try:
         _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
         if _mwr and (_mwr.get('buy_trace') or _mwr.get('sell_trace')):
@@ -26161,13 +26289,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "높은 순으로 지표를 하나씩 추가하며 각 시점의 (틀린자리/남은자리/수익)을 기록. "
                 "틀린자리=최적자리와 실제 포지션이 다른 날 전체 / 남은자리=그중 그날 발화한 "
                 "지표가 하나도 없어서(홀드만 유지돼) 틀린 날(지표를 더 넣으면 줄 수 있음) / "
-                "신호오판=틀린자리-남은자리(발화가 있었는데도 틀린 날, 지표 추가로는 안 줄어듦). "
-                "채택된 지점(★)은 굵게 표시.")
+                "신호오판=틀린자리-남은자리(발화가 있었는데도 틀린 날, 지표 추가로는 안 줄어듦) / "
+                "신규커버일수=이번에 추가된 지표가 그전까지 아무도 발화 안 하던 날에 새로 "
+                "발화한 날짜 수(0이면 이 지표가 실질적으로 이미 겹치는 날에만 발화해 영향이 "
+                "없었다는 뜻). 채택된 지점(★)은 굵게 표시.")
             ws_v.cell(1, 1).font = Font(italic=True, size=9, color='808080')
-            ws_v.merge_cells('A1:H1')
+            ws_v.merge_cells('A1:J1')
 
             _cols_v = ['추가지표수(k)', '누적사용지표수', '틀린자리', '남은자리(발화없음)',
-                      '신호오판(발화있어도틀림)', '방향수익합%', '틀린자리 변화', '채택여부']
+                      '신호오판(발화있어도틀림)', '방향수익합%', '틀린자리 변화',
+                      '신규커버일수', '이번추가지표', '채택여부']
             _r0 = 3
             for _side_label, _trace, _best_n in (
                     ('매수', _mwr.get('buy_trace') or [], _mwr.get('buy_n', 0)),
@@ -26179,22 +26310,28 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _hc = ws_v.cell(_hr, _ci); _hc.value = _cname
                     _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='4472C4')
                 _prev_wrong = None
-                for _ri, (_k, _nused, _w, _rem, _ret) in enumerate(_trace):
+                for _ri, _trow in enumerate(_trace):
+                    _k, _nused, _w, _rem, _ret = _trow[0], _trow[1], _trow[2], _trow[3], _trow[4]
+                    _newcov = _trow[5] if len(_trow) > 5 else ''
+                    _addname = _trow[6] if len(_trow) > 6 else ''
                     _rr_ = _hr + 1 + _ri
                     _is_best = (_nused == _best_n)
                     _delta = '' if _prev_wrong is None else (_w - _prev_wrong)
                     _prev_wrong = _w
                     _vals_v = [_k, _nused, _w, _rem, _w - _rem, round(_ret * 100, 3),
                               (f"{_delta:+d}" if isinstance(_delta, int) else ''),
+                              _newcov, _addname,
                               ('★채택' if _is_best else '')]
                     for _ci, _v in enumerate(_vals_v, 1):
                         _cc = ws_v.cell(_rr_, _ci); _cc.value = _v
                         if _is_best:
                             _cc.font = Font(bold=True)
                             _cc.fill = PatternFill('solid', fgColor='C6EFCE')
+                        elif _ci == 8 and isinstance(_newcov, int) and _newcov == 0:
+                            _cc.font = Font(color='9C0006')   # 신규커버 0일 = 영향없음, 빨간글씨로 눈에 띄게
                 _r0 = _hr + len(_trace) + 3   # 다음 섹션(매도) 시작 행 — 빈 줄 두 개 띄움
 
-            for _ci, _w in enumerate([14, 14, 10, 16, 16, 12, 12, 10], 1):
+            for _ci, _w in enumerate([14, 14, 10, 16, 16, 12, 12, 10, 22, 10], 1):
                 ws_v.column_dimensions[get_column_letter(_ci)].width = _w
             ws_v.freeze_panes = 'A4'
             print(f"  ✓ 지표선정 검증 시트 — 매수 {len(_mwr.get('buy_trace') or [])}단계, "
