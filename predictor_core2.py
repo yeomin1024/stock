@@ -14495,10 +14495,16 @@ SIMPLE_POOL_WEAK_SIDE_MAX_ADD  = 3
 SIMPLE_POOL_EVENT_GAP_DAYS     = 2
 # ★★★ (요청 — 신규) 일별 백테스트 구성 전 포지션 점수 균형 — 사용 지표 신뢰도 총합이 더
 #   높은 쪽에서 신뢰도 최저 지표부터 제외해, 양쪽 총합이 최대한 같아지도록 조정.
-SIMPLE_POOL_SCORE_BALANCE_ENABLED    = True
+# ★★★ (요청 — 원복 확정) "매수 자리 조정하는 것도 하지 말고" — 신뢰도 총합 기준 강제
+#   균형조정도 폐기(끔). 수익 최적 임계값 탐색이 매수/매도 개수를 이미 독립적으로
+#   최적화하므로 별도 균형 조정이 불필요.
+SIMPLE_POOL_SCORE_BALANCE_ENABLED    = False
 SIMPLE_POOL_SCORE_BALANCE_MAX_REMOVE = 20   # 안전 상한
 # ★★★ (요청 — 신규) 최적 K/L 확정 후 2단계 지표 정제(_kl_refine_after_search 참고).
-SIMPLE_POOL_KL_REFINE_ENABLED     = True
+# ★★★ (요청 — 원복 확정) "K,L 조정하는 것도 하지 말고" — 정답자리 매칭 폐기와 함께
+#   같이 꺼짐(정답자리 자체가 이제 백테스트 채택 기준이 아니므로 '틀린날' 개념도 이
+#   흐름에서는 안 씀). 코드는 남겨둠.
+SIMPLE_POOL_KL_REFINE_ENABLED     = False
 SIMPLE_POOL_KL_REFINE_MAX_STAGE1  = 12     # 1단계(틀린날 주도 제거) 최대 제거 개수
 SIMPLE_POOL_KL_REFINE_MAX_STAGE2  = 8      # 2단계(K/L→0 제거) 최대 제거 개수
 SIMPLE_POOL_KL_ZERO_TOL           = 0.05   # |K|,|L|이 이 이하면 '충분히 0에 가까움'으로 종료
@@ -14551,10 +14557,12 @@ SIMPLE_POOL_OVERLAP_DISCOUNT_WEIGHT  = 0.6  # 완전히 겹치는 지표쌍 하�
 #   자리당 하나가 아니라 매칭 후보 전부 채택(약한 쪽 보강).
 SIMPLE_POOL_WEAK_SIDE_GAP_RATIO      = 2.0
 
-# ★★★ (요청 — 폐기, 재설계로 대체) "신뢰도로 사용지표 개수를 정하는" 방식은 더 이상 안 씀 —
-#   아래 SIMPLE_POOL_POSITION_MATCH_SELECT(정답 매수/매도 자리 기반 선정)로 완전히 대체.
-#   끔(False) 상태로 유지 — 켜도 무해하지만(하위호환용 코드는 남겨둠) 기본 흐름에서는 안 씀.
-SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = False
+# ★★★ (요청 — 원복 확정) "정답 매수/매도 자리 맞히기로 지표를 정하는 것, K,L 조정, 매수
+#   자리 조정 전부 하지 말고, 수익이 최적이 되는 매수/매도 신뢰도 임계값을 찾아 그 이상만
+#   쓰던 예전 방식으로" — 신뢰도 내림차순 풀에서 "개수 k"를 찾는 게 "신뢰도 임계값(=k번째
+#   지표의 신뢰도 이상만 사용)"을 찾는 것과 동일 — 1(최고신뢰도 1개)부터 전체까지 늘려가며
+#   실제 누적수익(_search_threshold의 fu/oo)이 최대가 되는 k를 탐색해 그 지점을 채택한다.
+SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = True
 
 # ★★★ (요청 — 전면 재설계) 지표 선정을 "신뢰도 임계값 탐색"이 아니라 "정답 매수/매도 자리
 #   맞히기" 방식으로 완전히 바꾼다:
@@ -14567,7 +14575,10 @@ SIMPLE_POOL_RELIABILITY_THRESHOLD_SEARCH = False
 #   3) 매수를 먼저 확정(살아남은 매수지표는 전부 사용 — "최대한 사용 지표로 매수신호 구성").
 #   4) 매도는 그 다음 — 매도지표 중에서도, 이미 확정된 매수커버 날짜를 침범(=매수신호를
 #      해치는)하는 정도가 자기 자신의 정답기여보다 크면 제외.
-SIMPLE_POOL_POSITION_MATCH_SELECT   = True
+# ★★★ (요청 — 원복 확정) "정답 매수/매도 자리 맞춰서 사용 지표 정하는 거 하지 말고" —
+#   위 신뢰도 임계값 탐색으로 완전히 대체(끔). 코드는 하위호환용으로 남겨둠(켜면 여전히
+#   동작하지만 기본 흐름에서는 안 씀).
+SIMPLE_POOL_POSITION_MATCH_SELECT   = False
 # ★★★ (요청 — 신규) "일별 백테스트에 지표 적용하는 건 가장 최근 날짜 발화지표만" — 정답자리
 #   매칭 통과 후, 마지막 날짜에 발화(표시일 기준)하는 지표만 net 계산에 사용.
 SIMPLE_POOL_LATEST_FIRE_ONLY        = False   # ★ (요청 — 원복) 다시 모든 지표를 일별 백테스트에 적용
@@ -18422,8 +18433,10 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
 
         globals()['NET_SIGNAL_WEIGHT_COL'] = 'net_weight_score'   # ★ net 가중치 = 1+신뢰도(윌슨 미사용)
         globals()['NET_SIGNAL_WEIGHTED'] = True
+        _sel_desc = ('정답자리 매칭 선정' if globals().get('SIMPLE_POOL_POSITION_MATCH_SELECT', False)
+                    else '신뢰도 임계값 탐색(수익최적)')
         print(f"    (단순모드) 최종 통합: 매수 {len(buy_c)}개 / 매도 {len(sell_c)}개 "
-              f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, 정답자리 매칭 선정, "
+              f"(호라이즌 {[c['day'] for c in _hz_cfgs]}일 통합, {_sel_desc}, "
               f"net 가중치=1+신뢰도)")
         if len(buy_c) == 0 and len(sell_c) == 0:
             raise ValueError(
