@@ -14575,6 +14575,9 @@ SIMPLE_POOL_MIN_RELIABILITY_RELAX_STEP   = 0.5
 #   _select_pool_min_wrong_positions 참고. 위 두 옛 방식(신뢰도 임계값 탐색·정답자리
 #   매칭)을 모두 대체하는 현재 기본 선정 로직.
 SIMPLE_POOL_MIN_WRONG_SELECT             = True
+# ★★★ (요청 관련 — 성능버그 대응, 실측: 후보 10587개에서 극도로 지연) 위 선정에서 탐색할
+#   (성공률100% 제외) 후보 상한 — 성공률·신뢰도 상위 이 개수까지만 늘려가며 탐색한다.
+SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES     = 300
 
 # ★★★ (요청 — 전면 재설계) 지표 선정을 "신뢰도 임계값 탐색"이 아니라 "정답 매수/매도 자리
 #   맞히기" 방식으로 완전히 바꾼다:
@@ -17499,25 +17502,26 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
     """★★★ (요청 — 전면 재설계, 핵심 버그수정) "성공률 100%는 무조건 사용, 그 이외는
        성공률·신뢰도 높은 순으로 늘려가면서 매수/매도 틀린 자리가 가장 적은 지표 개수로
        정해라 — 근데 전체 후보의 성공날 정보랑 일별 백테스트가 안 맞는다, 성공률이 아니라
-       최적자리로 판단한 거 아니냐" — 실측 확인 결과 정확한 지적이었다: 이전 버전은
-       "지표가 발화하는 날들의 합집합"에서만 틀린 자리를 셌는데(=지표 자신의 성공률과
-       거의 같은 개념), 일별 백테스트가 실제로 보여주는 '틀린 자리'(노란색 표시)는
-       "K/L을 적용해 매일 실제로 롱/현금 상태가 결정된 뒤, 그 매일의 실제 포지션이
-       최적자리와 다른 날"이다 — 이 둘은 완전히 다른 것을 센다(홀드 기간 동안은 그날
-       발화가 없어도 포지션이 계속 유지되므로, '발화일만' 보는 것과 '매일의 실제 포지션'을
-       보는 것은 셈이 전혀 다를 수 있다). 이제는 매 단계(k)마다 해당 지표 집합 하나만으로
-       (그 사이드만 사용한) K/L을 실제로 탐색해 매일의 포지션을 얻고, 그 포지션이 최적자리
-       (target)와 어긋나는 날을 세도록 통일했다 — 이러면 여기서 계산하는 '틀린 자리'가
-       일별 백테스트 노란색 표시와 정의상 완전히 같아진다.
-       매수/매도 각각 독립적으로:
-       1) 성공률 100%인 지표는 무조건 포함(항상 채택 — "always" 집합).
-       2) 나머지는 (성공률, 신뢰도) 내림차순 정렬.
-       3) k=0(추가 없음)부터 전체까지 하나씩 늘려가며, 그 시점까지의 지표 집합만으로
-          net을 구성해 K/L 탐색 → 실제 매일 포지션을 얻어, 최적자리(target, 중립 제외)와
-          어긋나는 날(=틀린 자리) 개수를 센다.
-       4) 틀린 자리가 가장 적은 k를 채택 — 동률이면 그 K/L의 누적수익이 가장 높은 k를 채택.
-       always가 하나도 없으면 k=0(발화 없음=포지션 항상 0)은 후보에서 제외하고 최소 1개는
-       포함한 상태부터 비교(전부 안 쓰는 게 항상 이겨버리는 퇴화 방지).
+       최적자리로 판단한 거 아니냐" — 실측 확인 결과 정확한 지적이었다: "지표가 발화하는
+       날들의 합집합"이 아니라, 일별 백테스트가 실제로 보여주는 '틀린 자리'(노란색 표시)와
+       똑같이 "K/L을 적용해 매일 실제로 롱/현금 상태가 결정된 뒤, 그 매일의 실제 포지션이
+       최적자리와 다른 날"을 세도록 통일했다.
+       ★★★ (요청 관련 — 성능 버그수정, 실측: 후보 10587개에서 극도로 느려짐) 위 수정
+       직후, 매 단계(k)마다 "전체 K/L 그리드 탐색"을 새로 돌리고 있었다 — 후보가 수천 개면
+       그리드 탐색을 수천 번 반복하게 돼 사실상 멈춘 것처럼 느려졌다(실측: 매수만 10587개,
+       dedup 후에도 3032개). 이제는:
+       ① 먼저 후보 전체(always+rest)로 그리드 탐색을 '딱 한 번'만 돌려 기준 K/L을 구하고,
+       ② k를 늘려가는 매 단계에서는 이 고정된 K/L로 '단일 평가'(그리드 없음, _run 1회)만
+          하여 그 net에서의 포지션·틀린자리를 구한다 — 그리드 탐색 1회 + 단순평가 k회로,
+          그리드 탐색을 k번 반복하는 것보다 수백 배 빠르다.
+       ③ 안전장치로 후보가 SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES개를 넘으면 (성공률,신뢰도)
+          상위 그 개수까지만 탐색 대상으로 줄인다(그 아래는 애초에 채택 가능성이 낮음).
+       ④ 최종 k가 정해지면, 그 최종 지표 집합에 대해서만 '진짜' 최적 K/L을 한 번 더
+          탐색해 report의 수익(ret)을 정확한 값으로 갱신한다(그리드 탐색 1회 추가, 미미함).
+       매수/매도 각각 독립적으로: 성공률100%는 무조건 포함(always), 나머지는 (성공률,
+       신뢰도) 내림차순으로 하나씩 늘려가며 틀린자리가 가장 적은 지점(동률이면 수익최고)을
+       채택. always가 없으면 k=0(포지션 항상 0)은 후보에서 제외(전부 안 쓰는 게 항상
+       이겨버리는 퇴화 방지).
        반환: (buy_final, sell_final, report)."""
     _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
     target = np.asarray(_ctp[0]); valid = np.asarray(_ctp[3]); neutral = np.asarray(_ctp[6])
@@ -17526,8 +17530,9 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
     judge = valid & (~neutral)   # 중립은 어느 쪽이든 정답 취급이라 '틀린 자리' 판정에서 제외
     rr = np.zeros(n); rr[1:] = close_arr[1:] / close_arr[:-1] - 1.0
     rr[~np.isfinite(rr)] = 0.0
+    _max_cand = int(globals().get('SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES', 300))
 
-    def _select_side(pool, is_buy):
+    def _select_side(pool, is_buy, label):
         if pool is None or len(pool) == 0:
             return (pool.iloc[0:0].copy() if pool is not None else pool), 0, 0.0, 0
         pool = pool.copy()
@@ -17537,7 +17542,12 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
             pool['reliability'] = 0.0
         pool = pool.sort_values(['success_rate', 'reliability'], ascending=[False, False]).reset_index(drop=True)
         always = pool[pool['success_rate'] >= 0.999].reset_index(drop=True)
-        rest = pool[pool['success_rate'] < 0.999].reset_index(drop=True)
+        rest_full = pool[pool['success_rate'] < 0.999].reset_index(drop=True)
+        rest = rest_full
+        if len(rest_full) > _max_cand:
+            rest = rest_full.iloc[:_max_cand].reset_index(drop=True)
+            print(f"    (틀린자리 탐색 후보 제한) {label}: 성공률100% 외 {len(rest_full)}개 중 "
+                  f"성공률·신뢰도 상위 {_max_cand}개만 탐색(그 아래는 채택 가능성이 낮아 생략)")
 
         def _sig_w(row):
             try:
@@ -17547,36 +17557,48 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
             w = 1.0 + float(row.get('reliability', 0.0) or 0.0)
             return w * sig
 
-        def _score(sig_sum):
-            # ★ 이 사이드 신호합만으로 K/L 탐색 — 매수는 그대로(크면 롱), 매도는 부호
-            #   반전(매도신호 강할수록 값이 작아져 L 밑돌아 현금이 되도록).
-            net_side = sig_sum if is_buy else -sig_sum
-            try:
-                kl = _net_kl_search(net_side, rr, mdd_limit=None)
-                best = kl.get('best_ret')
-            except Exception:
-                best = None
-            if best is None:
-                return n, -1e18
-            pos_bool = np.asarray(best[5])[:n] > 0.5
-            wrong = int(np.sum(judge & (pos_bool != tgt1)))
-            ret = float(best[2])
-            return wrong, ret
+        def _to_net(sig_sum):
+            return sig_sum if is_buy else -sig_sum
 
+        # ① 기준 K/L — always+rest(탐색대상) 전체로 그리드 탐색 '딱 한 번'
         cur_sum = np.zeros(n)
         for _, row in always.iterrows():
             cur_sum = cur_sum + _sig_w(row)
-        # ★★★ (요청 관련 — 버그수정, 실측: 매수 0개로 K계산 실패) "틀린 자리 최소화"만
-        #   그대로 두면 '아무 지표도 안 씀'(포지션 항상 0)이 틀린자리를 인위적으로 적게
-        #   만들어 항상 이겨버리는 퇴화가 있었다 — always가 없으면 k=0을 후보에서 제외.
+        full_sum = cur_sum.copy()
+        for _, row in rest.iterrows():
+            full_sum = full_sum + _sig_w(row)
+        try:
+            _kl_ref = _net_kl_search(_to_net(full_sum), rr, mdd_limit=None)
+            _refb = _kl_ref.get('best_ret')
+            K_ref, L_ref = (float(_refb[0]), float(_refb[1])) if _refb is not None else (0.0, 0.0)
+        except Exception:
+            K_ref, L_ref = 0.0, 0.0
+
+        def _score_fixed(sig_sum):
+            # ② 매 단계는 그리드 탐색·top순위 계산 없이 _kl_run_single로 '단일 평가'만
+            #   (numba 컴파일, 순수 파이썬 루프보다 훨씬 빠름). fixed_kl= 방식은 재현모드
+            #   에서도 top-4 계산을 위해 여전히 전체 격자를 훑어서 여기엔 부적합했다.
+            net_side = _to_net(sig_sum)
+            try:
+                ret, pos = _kl_run_single(net_side.astype(np.float64), rr.astype(np.float64),
+                                          K_ref, L_ref)
+            except Exception:
+                return n, -1e18
+            pos_bool = np.asarray(pos)[:n] > 0.5
+            wrong = int(np.sum(judge & (pos_bool != tgt1)))
+            return wrong, float(ret)
+
+        # ★★★ (요청 관련 — 버그수정, 실측: 매수 0개로 K계산 실패) '아무 지표도 안 씀'(포지션
+        #   항상 0)이 틀린자리를 인위적으로 적게 만들어 항상 이겨버리는 퇴화 방지 —
+        #   always가 없으면 k=0을 후보에서 제외.
         if len(always) > 0:
-            best_wrong, best_ret = _score(cur_sum)
+            best_wrong, best_ret = _score_fixed(cur_sum)
             best_k = 0
         else:
             best_wrong, best_ret, best_k = None, None, None
         for k in range(len(rest)):
             cur_sum = cur_sum + _sig_w(rest.iloc[k])
-            w, r = _score(cur_sum)
+            w, r = _score_fixed(cur_sum)
             if best_wrong is None or w < best_wrong or (w == best_wrong and r > best_ret):
                 best_wrong, best_ret, best_k = w, r, k + 1
         if best_k is None:
@@ -17584,10 +17606,26 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
 
         final = pd.concat([always, rest.iloc[:best_k]], ignore_index=True) if best_k > 0 \
                 else always.reset_index(drop=True)
+
+        # ④ 최종 세트로 '진짜' 최적 K/L 재탐색 — report의 수익을 정확한 값으로.
+        if len(final) > 0:
+            final_sum = np.zeros(n)
+            for _, row in final.iterrows():
+                final_sum = final_sum + _sig_w(row)
+            try:
+                _kl_fin = _net_kl_search(_to_net(final_sum), rr, mdd_limit=None)
+                _finb = _kl_fin.get('best_ret')
+                if _finb is not None:
+                    _pos_fin = np.asarray(_finb[5])[:n] > 0.5
+                    best_wrong = int(np.sum(judge & (_pos_fin != tgt1)))
+                    best_ret = float(_finb[2])
+            except Exception:
+                pass
+
         return final, best_wrong, best_ret, len(final)
 
-    buy_final, bw, br, bn = _select_side(buy_pool, True)
-    sell_final, sw, sr, sn = _select_side(sell_pool, False)
+    buy_final, bw, br, bn = _select_side(buy_pool, True, '매수')
+    sell_final, sw, sr, sn = _select_side(sell_pool, False, '매도')
     report = dict(n_buy_always=int((buy_pool['success_rate'] >= 0.999).sum())
                   if buy_pool is not None and len(buy_pool) and 'success_rate' in buy_pool.columns else 0,
                   n_sell_always=int((sell_pool['success_rate'] >= 0.999).sum())
@@ -21918,6 +21956,32 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
     except Exception as _e:
         print(f"  ⚠ 순신호 K 최적화 실패(무시): {_e}")
         return None
+
+
+@njit(cache=True)
+def _kl_run_single(net, r, K, L):
+    """★★★ (요청 관련 — 성능버그 근본수정) _net_kl_search 내부 _run(K,L)과 완전히 동일한
+       단일 평가 로직(그리드 탐색·top순위 계산 등 부가작업 전혀 없음, numba로 컴파일돼
+       파이썬 루프보다 훨씬 빠름) — _select_pool_min_wrong_positions처럼 '이미 정해진
+       K/L 하나로 포지션·수익만 빠르게 여러 번 평가'해야 할 때 전용으로 쓴다.
+       (fixed_kl=... 로 _net_kl_search를 쓰면 재현모드에서도 top-4 계산을 위해 여전히
+       전체 K/L 격자를 훑어서 느리다 — 이 함수는 그 부가계산이 아예 없다.)
+       반환: (ret, pos) — ret은 누적수익 합, pos는 매일의 롱(1)/현금(0) 배열."""
+    n = len(net)
+    pos = np.zeros(n)
+    cur = 0.0
+    for s in range(n):
+        v = net[s]
+        if v >= K:
+            cur = 1.0
+        elif v <= L:
+            cur = 0.0
+        pos[s] = cur
+    pos[0] = 0.0
+    ret = 0.0
+    for s in range(1, n):
+        ret += pos[s - 1] * r[s]
+    return ret, pos
 
 
 def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_kl_mdd=None):
