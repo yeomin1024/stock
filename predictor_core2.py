@@ -17506,23 +17506,25 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
        날들의 합집합"이 아니라, 일별 백테스트가 실제로 보여주는 '틀린 자리'(노란색 표시)와
        똑같이 "K/L을 적용해 매일 실제로 롱/현금 상태가 결정된 뒤, 그 매일의 실제 포지션이
        최적자리와 다른 날"을 세도록 통일했다.
-       ★★★ (요청 관련 — 성능 버그수정, 실측: 후보 10587개에서 극도로 느려짐) 위 수정
-       직후, 매 단계(k)마다 "전체 K/L 그리드 탐색"을 새로 돌리고 있었다 — 후보가 수천 개면
-       그리드 탐색을 수천 번 반복하게 돼 사실상 멈춘 것처럼 느려졌다(실측: 매수만 10587개,
-       dedup 후에도 3032개). 이제는:
-       ① 먼저 후보 전체(always+rest)로 그리드 탐색을 '딱 한 번'만 돌려 기준 K/L을 구하고,
-       ② k를 늘려가는 매 단계에서는 이 고정된 K/L로 '단일 평가'(그리드 없음, _run 1회)만
-          하여 그 net에서의 포지션·틀린자리를 구한다 — 그리드 탐색 1회 + 단순평가 k회로,
-          그리드 탐색을 k번 반복하는 것보다 수백 배 빠르다.
-       ③ 안전장치로 후보가 SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES개를 넘으면 (성공률,신뢰도)
-          상위 그 개수까지만 탐색 대상으로 줄인다(그 아래는 애초에 채택 가능성이 낮음).
-       ④ 최종 k가 정해지면, 그 최종 지표 집합에 대해서만 '진짜' 최적 K/L을 한 번 더
-          탐색해 report의 수익(ret)을 정확한 값으로 갱신한다(그리드 탐색 1회 추가, 미미함).
+       ★★★ (요청 — 재수정, 핵심) "성공률 100% 지표만 썼는데 틀린자리가 100개 넘는다,
+       진짜 0개인지 확인해봐라, 100%지표도 몇개 안 쓰인 게 있다" — 직접 재현 확인 결과:
+       ① 성공률100%(always) 지표는 예외없이 전부 채택되고 있었다(코드상 항상 무조건
+       포함, 버그 아님). ② 틀린자리가 100개 넘게 나오는 건 지표가 '틀린 신호'를 낸 게
+       아니라, 그 지표들이 발화하는 빈도가 낮아서(뜨문뜨문) 한 번 발화하고 다음 발화까지
+       사이 기간에 최적자리(target)가 여러 번 바뀌는데 포지션은 계속 이전 상태로 '홀드'만
+       되고 있어서 생기는 것이었다(직접 재현: 틀린 105일 전부 '그날 발화 없음' — 신호가
+       틀린 게 아니라 커버리지가 부족한 것). 이걸 "남은자리"(발화 없이 홀드로만 틀린
+       날 — 지표를 더 추가하면 줄일 수 있는 부분)와, 신호가 있었는데도 틀린 날(지표
+       추가로는 못 줄이는, 그 신호 자체의 한계로 인한 부분)로 나눠서 별도로 센다.
+       "추가 지표는 남은자리를 최대한 없애면서 틀린 자리는 최소가 되도록" — 이제 k를
+       늘려갈 때 1차 기준은 틀린자리 최소화, 동률이면 남은자리가 더 적은 쪽, 그래도
+       동률이면 수익이 더 높은 쪽을 채택한다.
        매수/매도 각각 독립적으로: 성공률100%는 무조건 포함(always), 나머지는 (성공률,
-       신뢰도) 내림차순으로 하나씩 늘려가며 틀린자리가 가장 적은 지점(동률이면 수익최고)을
-       채택. always가 없으면 k=0(포지션 항상 0)은 후보에서 제외(전부 안 쓰는 게 항상
-       이겨버리는 퇴화 방지).
-       반환: (buy_final, sell_final, report)."""
+       신뢰도) 내림차순으로 하나씩 늘려가며 위 기준으로 최적 k를 채택. always가 없으면
+       k=0(포지션 항상 0)은 후보에서 제외(전부 안 쓰는 게 항상 이겨버리는 퇴화 방지).
+       ★ (요청 — 신규) 검증용 — k별 (사용지표수, 틀린자리, 남은자리, 수익) 추이를
+       trace로 남겨 반환(엑셀 검증 시트용).
+       반환: (buy_final, sell_final, report) — report에 buy_trace/sell_trace 포함."""
     _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
     target = np.asarray(_ctp[0]); valid = np.asarray(_ctp[3]); neutral = np.asarray(_ctp[6])
     n = len(target)
@@ -17534,7 +17536,7 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
 
     def _select_side(pool, is_buy, label):
         if pool is None or len(pool) == 0:
-            return (pool.iloc[0:0].copy() if pool is not None else pool), 0, 0.0, 0
+            return (pool.iloc[0:0].copy() if pool is not None else pool), 0, 0, 0.0, 0, []
         pool = pool.copy()
         if 'success_rate' not in pool.columns:
             pool['success_rate'] = 0.0
@@ -17576,33 +17578,43 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
 
         def _score_fixed(sig_sum):
             # ② 매 단계는 그리드 탐색·top순위 계산 없이 _kl_run_single로 '단일 평가'만
-            #   (numba 컴파일, 순수 파이썬 루프보다 훨씬 빠름). fixed_kl= 방식은 재현모드
-            #   에서도 top-4 계산을 위해 여전히 전체 격자를 훑어서 여기엔 부적합했다.
+            #   (numba 컴파일, 순수 파이썬 루프보다 훨씬 빠름).
             net_side = _to_net(sig_sum)
             try:
                 ret, pos = _kl_run_single(net_side.astype(np.float64), rr.astype(np.float64),
                                           K_ref, L_ref)
             except Exception:
-                return n, -1e18
+                return n, n, -1e18
             pos_bool = np.asarray(pos)[:n] > 0.5
-            wrong = int(np.sum(judge & (pos_bool != tgt1)))
-            return wrong, float(ret)
+            wrong_mask = judge & (pos_bool != tgt1)
+            # ★★★ (요청 — 신규) '남은자리' = 틀린 날 중, 그날 이 세트에서 어떤 지표도 발화
+            #   안 해서(신호 없이 이전 포지션이 그냥 유지됨) 틀린 것만 — 지표를 더 추가하면
+            #   줄일 수 있는 부분. (fired = sig_sum>0, 가중치가 전부 양수라 안전)
+            fired = sig_sum > 1e-12
+            remaining = int(np.sum(wrong_mask & (~fired)))
+            wrong = int(np.sum(wrong_mask))
+            return wrong, remaining, float(ret)
 
+        trace = []   # [(k, n_used, wrong, remaining, ret), ...] — 검증 시트용
         # ★★★ (요청 관련 — 버그수정, 실측: 매수 0개로 K계산 실패) '아무 지표도 안 씀'(포지션
         #   항상 0)이 틀린자리를 인위적으로 적게 만들어 항상 이겨버리는 퇴화 방지 —
         #   always가 없으면 k=0을 후보에서 제외.
         if len(always) > 0:
-            best_wrong, best_ret = _score_fixed(cur_sum)
+            best_wrong, best_remain, best_ret = _score_fixed(cur_sum)
             best_k = 0
+            trace.append((0, len(always), best_wrong, best_remain, best_ret))
         else:
-            best_wrong, best_ret, best_k = None, None, None
+            best_wrong, best_remain, best_ret, best_k = None, None, None, None
         for k in range(len(rest)):
             cur_sum = cur_sum + _sig_w(rest.iloc[k])
-            w, r = _score_fixed(cur_sum)
-            if best_wrong is None or w < best_wrong or (w == best_wrong and r > best_ret):
-                best_wrong, best_ret, best_k = w, r, k + 1
+            w, rem, r = _score_fixed(cur_sum)
+            trace.append((k + 1, len(always) + k + 1, w, rem, r))
+            # ★★★ (요청 — 재수정) tie-break: 1차 틀린자리 최소, 2차 남은자리 최소, 3차 수익최고
+            if best_wrong is None or w < best_wrong or \
+               (w == best_wrong and (rem < best_remain or (rem == best_remain and r > best_ret))):
+                best_wrong, best_remain, best_ret, best_k = w, rem, r, k + 1
         if best_k is None:
-            best_wrong, best_ret, best_k = 0, 0.0, 0   # always도 rest도 없음(진짜 후보 자체가 없음)
+            best_wrong, best_remain, best_ret, best_k = 0, 0, 0.0, 0   # 진짜 후보 자체가 없음
 
         final = pd.concat([always, rest.iloc[:best_k]], ignore_index=True) if best_k > 0 \
                 else always.reset_index(drop=True)
@@ -17617,21 +17629,23 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
                 _finb = _kl_fin.get('best_ret')
                 if _finb is not None:
                     _pos_fin = np.asarray(_finb[5])[:n] > 0.5
-                    best_wrong = int(np.sum(judge & (_pos_fin != tgt1)))
+                    _wrong_mask_fin = judge & (_pos_fin != tgt1)
+                    best_wrong = int(np.sum(_wrong_mask_fin))
+                    best_remain = int(np.sum(_wrong_mask_fin & ~(final_sum > 1e-12)))
                     best_ret = float(_finb[2])
             except Exception:
                 pass
 
-        return final, best_wrong, best_ret, len(final)
+        return final, best_wrong, best_remain, best_ret, len(final), trace
 
-    buy_final, bw, br, bn = _select_side(buy_pool, True, '매수')
-    sell_final, sw, sr, sn = _select_side(sell_pool, False, '매도')
+    buy_final, bw, brem, br, bn, btrace = _select_side(buy_pool, True, '매수')
+    sell_final, sw, srem, sr, sn, strace = _select_side(sell_pool, False, '매도')
     report = dict(n_buy_always=int((buy_pool['success_rate'] >= 0.999).sum())
                   if buy_pool is not None and len(buy_pool) and 'success_rate' in buy_pool.columns else 0,
                   n_sell_always=int((sell_pool['success_rate'] >= 0.999).sum())
                   if sell_pool is not None and len(sell_pool) and 'success_rate' in sell_pool.columns else 0,
-                  buy_n=bn, buy_wrong=bw, buy_ret=br,
-                  sell_n=sn, sell_wrong=sw, sell_ret=sr)
+                  buy_n=bn, buy_wrong=bw, buy_remaining=brem, buy_ret=br, buy_trace=btrace,
+                  sell_n=sn, sell_wrong=sw, sell_remaining=srem, sell_ret=sr, sell_trace=strace)
     return buy_final, sell_final, report
 
 
@@ -18558,10 +18572,14 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 globals()['_KNET_MIN_WRONG_REPORT'] = _mw_report
                 print(f"    (틀린자리 최소화 선정) 매수: 100%확정 {_mw_report['n_buy_always']}개 + "
                       f"추가 {_mw_report['buy_n']-_mw_report['n_buy_always']}개 = {_mw_report['buy_n']}개 "
-                      f"(틀린자리 {_mw_report['buy_wrong']}일, 방향수익합 {_mw_report['buy_ret']*100:+.2f}%) | "
+                      f"(틀린자리 {_mw_report['buy_wrong']}일=발화없는홀드 {_mw_report['buy_remaining']}일+"
+                      f"신호오판 {_mw_report['buy_wrong']-_mw_report['buy_remaining']}일, "
+                      f"방향수익합 {_mw_report['buy_ret']*100:+.2f}%) | "
                       f"매도: 100%확정 {_mw_report['n_sell_always']}개 + "
                       f"추가 {_mw_report['sell_n']-_mw_report['n_sell_always']}개 = {_mw_report['sell_n']}개 "
-                      f"(틀린자리 {_mw_report['sell_wrong']}일, 방향수익합 {_mw_report['sell_ret']*100:+.2f}%) | "
+                      f"(틀린자리 {_mw_report['sell_wrong']}일=발화없는홀드 {_mw_report['sell_remaining']}일+"
+                      f"신호오판 {_mw_report['sell_wrong']-_mw_report['sell_remaining']}일, "
+                      f"방향수익합 {_mw_report['sell_ret']*100:+.2f}%) | "
                       f"{_nb_mw0}→{len(buy_c)} / {_ns_mw0}→{len(sell_c)}")
             if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
             if len(sell_c): sell_c['sel_limit'] = _limit0
@@ -26158,6 +26176,63 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _elatest:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 최근일자 발화지표 시트 작성 실패(무시): {_elatest}")
+
+    # ─── 7d-3. ★★★ (요청 — 신규) "내가 검증하게 시트 하나 만들어서 매수,매도 각각
+    #   추가 사용지표 개수 당 남은자리, 틀린자리 개수를 표시" — 지표선정
+    #   (_select_pool_min_wrong_positions)이 남긴 k별 추이(trace)를 그대로 시트로.
+    #   틀린자리=전체 어긋난 날, 남은자리=그중 그날 어떤 지표도 발화 안 해서(홀드유지로만)
+    #   어긋난 날(지표 추가로 줄일 수 있는 부분), 신호오판=틀린자리-남은자리(발화가
+    #   있었는데도 어긋난 날 — 지표 추가로는 못 줄이는 부분). 채택된 지점은 굵게+배경색.
+    try:
+        _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
+        if _mwr and (_mwr.get('buy_trace') or _mwr.get('sell_trace')):
+            ws_v = wb.create_sheet('지표선정 검증'); ws_v.sheet_view.showGridLines = False
+            ws_v.cell(1, 1).value = (
+                "틀린자리 최소화 선정 과정 — 성공률100% 지표(항상 포함) 이후, 성공률·신뢰도 "
+                "높은 순으로 지표를 하나씩 추가하며 각 시점의 (틀린자리/남은자리/수익)을 기록. "
+                "틀린자리=최적자리와 실제 포지션이 다른 날 전체 / 남은자리=그중 그날 발화한 "
+                "지표가 하나도 없어서(홀드만 유지돼) 틀린 날(지표를 더 넣으면 줄 수 있음) / "
+                "신호오판=틀린자리-남은자리(발화가 있었는데도 틀린 날, 지표 추가로는 안 줄어듦). "
+                "채택된 지점(★)은 굵게 표시.")
+            ws_v.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+            ws_v.merge_cells('A1:H1')
+
+            _cols_v = ['추가지표수(k)', '누적사용지표수', '틀린자리', '남은자리(발화없음)',
+                      '신호오판(발화있어도틀림)', '방향수익합%', '틀린자리 변화', '채택여부']
+            _r0 = 3
+            for _side_label, _trace, _best_n in (
+                    ('매수', _mwr.get('buy_trace') or [], _mwr.get('buy_n', 0)),
+                    ('매도', _mwr.get('sell_trace') or [], _mwr.get('sell_n', 0))):
+                _hc0 = ws_v.cell(_r0, 1); _hc0.value = f"[{_side_label}]"
+                _hc0.font = Font(bold=True, size=12, color='1F3864')
+                _hr = _r0 + 1
+                for _ci, _cname in enumerate(_cols_v, 1):
+                    _hc = ws_v.cell(_hr, _ci); _hc.value = _cname
+                    _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='4472C4')
+                _prev_wrong = None
+                for _ri, (_k, _nused, _w, _rem, _ret) in enumerate(_trace):
+                    _rr_ = _hr + 1 + _ri
+                    _is_best = (_nused == _best_n)
+                    _delta = '' if _prev_wrong is None else (_w - _prev_wrong)
+                    _prev_wrong = _w
+                    _vals_v = [_k, _nused, _w, _rem, _w - _rem, round(_ret * 100, 3),
+                              (f"{_delta:+d}" if isinstance(_delta, int) else ''),
+                              ('★채택' if _is_best else '')]
+                    for _ci, _v in enumerate(_vals_v, 1):
+                        _cc = ws_v.cell(_rr_, _ci); _cc.value = _v
+                        if _is_best:
+                            _cc.font = Font(bold=True)
+                            _cc.fill = PatternFill('solid', fgColor='C6EFCE')
+                _r0 = _hr + len(_trace) + 3   # 다음 섹션(매도) 시작 행 — 빈 줄 두 개 띄움
+
+            for _ci, _w in enumerate([14, 14, 10, 16, 16, 12, 12, 10], 1):
+                ws_v.column_dimensions[get_column_letter(_ci)].width = _w
+            ws_v.freeze_panes = 'A4'
+            print(f"  ✓ 지표선정 검증 시트 — 매수 {len(_mwr.get('buy_trace') or [])}단계, "
+                  f"매도 {len(_mwr.get('sell_trace') or [])}단계 추이 기록")
+    except Exception as _ev:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 지표선정 검증 시트 작성 실패(무시): {_ev}")
 
 
     # ─── 7e. ★ 지표 선출 A/B 검증 (요청) ───
