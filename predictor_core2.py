@@ -16894,18 +16894,22 @@ def _limit_thresholds_per_indicator(pool_df, max_per=None, verbose=False):
 
 
 def _dedup_same_indicator_best_reliability(pool):
-    """★★★ (요청 — 재설계) "같은 지표명이면 그중 신뢰도 가장 높은 하나만 사용" — 같은
+    """★★★ (요청 — 재설계) "같은 이름 지표는 성공률·신뢰도가 가장 높은걸로 유지" — 같은
        원본 지표명(indicator 컬럼)이 여러 호라이즌으로 풀에 동시에 남아 있으면, 그 중
-       신뢰도(reliability)가 가장 높은 것만 남기고 나머지는 제거한다.
-       ★★★ (요청 관련 — 재수정) 이전엔 '호라이즌이 가장 작은 것'을 유지했는데, 이제
-       '어느 호라이즌이든 신뢰도가 가장 높은 버전'을 유지하도록 기준을 바꿨다 — 호라이즌
-       자체보다 실제 예측력(신뢰도)이 그 지표의 최선 버전을 고르는 데 더 직접적인 기준."""
+       (성공률, 신뢰도) 내림차순으로 가장 앞서는 것만 남기고 나머지는 제거한다.
+       ★★★ (요청 관련 — 재수정) 이전엔 '호라이즌이 가장 작은 것'을 유지했다가, 그 다음엔
+       신뢰도만 봤는데, 이제는 성공률을 1차 기준으로(같은 지표명이면 결국 실제로 얼마나
+       잘 맞았는지가 우선), 신뢰도를 2차(성공률 동률일 때만) 기준으로 삼는다."""
     if pool is None or len(pool) == 0 or 'indicator' not in pool.columns:
         return pool
     pool = pool.reset_index(drop=True)
     if 'reliability' not in pool.columns:
         return pool
-    keep_idx = pool.groupby('indicator')['reliability'].idxmax()
+    _sr = pool['success_rate'] if 'success_rate' in pool.columns else 0.0
+    _rel = pool['reliability']
+    _rank = pool.assign(_sr=_sr, _rel=_rel).sort_values(
+        ['_sr', '_rel'], ascending=[False, False])
+    keep_idx = _rank.groupby('indicator', sort=False).head(1).index
     return pool.loc[keep_idx].reset_index(drop=True)
 
 
@@ -17492,23 +17496,36 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
 
 
 def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticker=None):
-    """★★★ (요청 — 전면 재설계) "신뢰도로 사용지표 결정하는 거 다시 off, 성공률 100%는
-       무조건 사용, 그 이외는 성공률·신뢰도 높은 순으로 늘려가면서 매수/매도 틀린 자리가
-       가장 적은 개수로 정하고, 틀리면 수익률 높은 걸로" — 매수/매도 각각 독립적으로:
+    """★★★ (요청 — 전면 재설계, 핵심 버그수정) "성공률 100%는 무조건 사용, 그 이외는
+       성공률·신뢰도 높은 순으로 늘려가면서 매수/매도 틀린 자리가 가장 적은 지표 개수로
+       정해라 — 근데 전체 후보의 성공날 정보랑 일별 백테스트가 안 맞는다, 성공률이 아니라
+       최적자리로 판단한 거 아니냐" — 실측 확인 결과 정확한 지적이었다: 이전 버전은
+       "지표가 발화하는 날들의 합집합"에서만 틀린 자리를 셌는데(=지표 자신의 성공률과
+       거의 같은 개념), 일별 백테스트가 실제로 보여주는 '틀린 자리'(노란색 표시)는
+       "K/L을 적용해 매일 실제로 롱/현금 상태가 결정된 뒤, 그 매일의 실제 포지션이
+       최적자리와 다른 날"이다 — 이 둘은 완전히 다른 것을 센다(홀드 기간 동안은 그날
+       발화가 없어도 포지션이 계속 유지되므로, '발화일만' 보는 것과 '매일의 실제 포지션'을
+       보는 것은 셈이 전혀 다를 수 있다). 이제는 매 단계(k)마다 해당 지표 집합 하나만으로
+       (그 사이드만 사용한) K/L을 실제로 탐색해 매일의 포지션을 얻고, 그 포지션이 최적자리
+       (target)와 어긋나는 날을 세도록 통일했다 — 이러면 여기서 계산하는 '틀린 자리'가
+       일별 백테스트 노란색 표시와 정의상 완전히 같아진다.
+       매수/매도 각각 독립적으로:
        1) 성공률 100%인 지표는 무조건 포함(항상 채택 — "always" 집합).
        2) 나머지는 (성공률, 신뢰도) 내림차순 정렬.
-       3) k=0(추가 없음)부터 전체까지 하나씩 늘려가며, 그 시점까지의 지표 집합이
-          "표시일 기준 발화하는 날들의 합집합"에서 최적자리(target, 중립 제외)와 어긋나는
-          날(=틀린 자리) 개수를 센다.
-       4) 틀린 자리가 가장 적은 k를 채택 — 동률이면 그 구간의 수익률(발화일들의 방향성
-          등락 합)이 가장 높은 k를 채택.
-       반환: (buy_final, sell_final, report) — report에 매수/매도 각각의
-       (채택개수, 틀린자리수, 수익률) 기록(엑셀 요약·검증용)."""
+       3) k=0(추가 없음)부터 전체까지 하나씩 늘려가며, 그 시점까지의 지표 집합만으로
+          net을 구성해 K/L 탐색 → 실제 매일 포지션을 얻어, 최적자리(target, 중립 제외)와
+          어긋나는 날(=틀린 자리) 개수를 센다.
+       4) 틀린 자리가 가장 적은 k를 채택 — 동률이면 그 K/L의 누적수익이 가장 높은 k를 채택.
+       always가 하나도 없으면 k=0(발화 없음=포지션 항상 0)은 후보에서 제외하고 최소 1개는
+       포함한 상태부터 비교(전부 안 쓰는 게 항상 이겨버리는 퇴화 방지).
+       반환: (buy_final, sell_final, report)."""
     _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
     target = np.asarray(_ctp[0]); valid = np.asarray(_ctp[3]); neutral = np.asarray(_ctp[6])
     n = len(target)
     tgt1 = target == 1
     judge = valid & (~neutral)   # 중립은 어느 쪽이든 정답 취급이라 '틀린 자리' 판정에서 제외
+    rr = np.zeros(n); rr[1:] = close_arr[1:] / close_arr[:-1] - 1.0
+    rr[~np.isfinite(rr)] = 0.0
 
     def _select_side(pool, is_buy):
         if pool is None or len(pool) == 0:
@@ -17521,42 +17538,45 @@ def _select_pool_min_wrong_positions(feat, close_arr, buy_pool, sell_pool, ticke
         pool = pool.sort_values(['success_rate', 'reliability'], ascending=[False, False]).reset_index(drop=True)
         always = pool[pool['success_rate'] >= 0.999].reset_index(drop=True)
         rest = pool[pool['success_rate'] < 0.999].reset_index(drop=True)
-        want = tgt1 if is_buy else (~tgt1)
 
-        def _score(fired_mask):
-            wrong = int(np.sum(fired_mask & judge & (~want)))
-            idxs = np.nonzero(fired_mask)[0]
-            idxs = idxs[idxs < n - 1]
-            if len(idxs) == 0:
-                return wrong, 0.0
-            rr = close_arr[idxs + 1] / close_arr[idxs] - 1.0
-            ret = float(np.sum(rr if is_buy else -rr))
+        def _sig_w(row):
+            try:
+                sig = np.asarray(_aligned_signal_for_row(feat, row), dtype=float)[:n]
+            except Exception:
+                return np.zeros(n)
+            w = 1.0 + float(row.get('reliability', 0.0) or 0.0)
+            return w * sig
+
+        def _score(sig_sum):
+            # ★ 이 사이드 신호합만으로 K/L 탐색 — 매수는 그대로(크면 롱), 매도는 부호
+            #   반전(매도신호 강할수록 값이 작아져 L 밑돌아 현금이 되도록).
+            net_side = sig_sum if is_buy else -sig_sum
+            try:
+                kl = _net_kl_search(net_side, rr, mdd_limit=None)
+                best = kl.get('best_ret')
+            except Exception:
+                best = None
+            if best is None:
+                return n, -1e18
+            pos_bool = np.asarray(best[5])[:n] > 0.5
+            wrong = int(np.sum(judge & (pos_bool != tgt1)))
+            ret = float(best[2])
             return wrong, ret
 
-        cur_fired = np.zeros(n, dtype=bool)
+        cur_sum = np.zeros(n)
         for _, row in always.iterrows():
-            try:
-                sig = np.asarray(_aligned_signal_for_row(feat, row), dtype=bool)[:n]
-                cur_fired |= sig
-            except Exception:
-                pass
+            cur_sum = cur_sum + _sig_w(row)
         # ★★★ (요청 관련 — 버그수정, 실측: 매수 0개로 K계산 실패) "틀린 자리 최소화"만
-        #   그대로 두면 '아무 지표도 안 씀'(발화 자체가 없음)이 틀린자리 0으로 항상 이겨서
-        #   전부 제외되는 퇴화해가 있었다 — 성공률100%(always) 지표가 하나도 없으면, k=0
-        #   (발화 없음)은 아예 후보에서 빼고 rest에서 최소 1개는 반드시 넣은 상태부터
-        #   비교를 시작한다(always가 있으면 그 자체가 이미 유효한 후보이므로 그대로 둠).
+        #   그대로 두면 '아무 지표도 안 씀'(포지션 항상 0)이 틀린자리를 인위적으로 적게
+        #   만들어 항상 이겨버리는 퇴화가 있었다 — always가 없으면 k=0을 후보에서 제외.
         if len(always) > 0:
-            best_wrong, best_ret = _score(cur_fired)
+            best_wrong, best_ret = _score(cur_sum)
             best_k = 0
         else:
             best_wrong, best_ret, best_k = None, None, None
         for k in range(len(rest)):
-            try:
-                sig = np.asarray(_aligned_signal_for_row(feat, rest.iloc[k]), dtype=bool)[:n]
-            except Exception:
-                continue
-            cur_fired = cur_fired | sig
-            w, r = _score(cur_fired)
+            cur_sum = cur_sum + _sig_w(rest.iloc[k])
+            w, r = _score(cur_sum)
             if best_wrong is None or w < best_wrong or (w == best_wrong and r > best_ret):
                 best_wrong, best_ret, best_k = w, r, k + 1
         if best_k is None:
@@ -18398,16 +18418,18 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 print(f"    (동일신호 중복제거) 매수 {_n_before_b}→{len(buy_c)}개, "
                       f"매도 {_n_before_s}→{len(sell_c)}개 (신호수·성공률 같고 발화일까지 완전 동일한 것만 제거)")
 
-            # ★★★ (요청 — 신규) "동일한 이름의 지표지만 horizon 일수만 다른 지표가 있으면
-            #   일수 가장 적은 지표만 사용" — 같은 원본 지표명이 여러 호라이즌으로 풀에 남아
-            #   있으면, 그 중 호라이즌이 가장 작은 것만 남긴다(같은 원천 정보를 여러 호라이즌
-            #   버전으로 중복 반영하는 것을 방지, 가장 빠르게(적은 일수로) 반응하는 버전 우선).
+            # ★★★ (요청 — 재확인, 로그 문구 버그수정) "같은 이름 지표는 최소 호라이즌만
+            #   유지"라고 로그에 나왔지만, 실제 함수(_dedup_same_indicator_best_reliability)는
+            #   이미 오래전에 "신뢰도 최고 유지" 기준으로 재설계돼 있었다 — 로직은 정확한데
+            #   설명 문구만 옛 버전 그대로 남아있어 혼란을 줬다(실제 동작은 항상 신뢰도
+            #   기준이었음). 문구만 실제 동작에 맞게 수정.
             _n_before_b2, _n_before_s2 = len(buy_c), len(sell_c)
             buy_c  = _dedup_same_indicator_best_reliability(buy_c)
             sell_c = _dedup_same_indicator_best_reliability(sell_c)
             if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
                 print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
-                      f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 최소 호라이즌만 유지)")
+                      f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 성공률·신뢰도 "
+                      f"가장 높은 호라이즌만 유지)")
 
             buy_c  = _add_display_suffix(buy_c)
             sell_c = _add_display_suffix(sell_c)
