@@ -22212,6 +22212,163 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt, 'top': top}
 
 
+def _compute_state_transition_analysis(feat, close_arr, named_all, pos_arr):
+    """★★★ (요청 — 신규) "가장 최근일자 상태가 추세전환(롱→숏, 숏→롱), 추세지속(롱지속,
+       숏지속) 4가지 중 해당될 수 있는 상태들을 판단" —
+
+       [상태 정의] 어떤 날 t의 상태는 '그 전날까지 들고 있던 포지션'(pos[t-1])과 '그 날의
+       최적자리'(target[t])의 조합으로 결정된다:
+         · pos[t-1]=롱, target[t]=매수 → 롱지속      · pos[t-1]=롱, target[t]=매도 → 롱→숏
+         · pos[t-1]=현금, target[t]=매도 → 숏지속    · pos[t-1]=현금, target[t]=매수 → 숏→롱
+       즉 "지금 롱이면 다음 상태는 롱지속/롱→숏 둘 중 하나, 현금이면 숏지속/숏→롱 둘 중
+       하나"로, 매 시점 후보는 항상 2가지다(요청의 "해당될 수 있는 상태들").
+       ★ pos[t-1]은 t일 시작 전에 이미 확정된 값이라 미래참조가 없다.
+
+       [지표별 확률] "일별 백테스트에서 모든 날들의 각각 발생한 지표들의 평균 롱지속,
+       롱에서 숏 확률들을 구하고" — 각 지표마다, 그 지표가 발화한 날들 중
+         · 직전이 롱이던 날들에서 실제로 롱지속이었던 비율 = P(롱지속 | 이 지표 발화)
+         · 직전이 현금이던 날들에서 실제로 숏지속이었던 비율 = P(숏지속 | 이 지표 발화)
+       을 구한다(표본이 적을 때 0/1로 튀지 않도록 라플라스 보정 (x+1)/(n+2), 표본 0이면 0.5).
+       그리고 각 날짜마다 '그 날 발화한 지표들'의 이 확률을 평균낸 값을 그 날의 점수로 쓴다.
+
+       [임계값] "가장 판단 성공 비율이 높은 확률 임계값을 구해서" — 롱 상태(롱지속 vs
+       롱→숏)와 현금 상태(숏지속 vs 숏→롱) 각각에 대해, '평균확률 ≥ 임계값이면 지속,
+       아니면 전환'으로 판정했을 때 실제 상태와 맞은 비율(정확도)이 최대가 되는 임계값을
+       0~1 격자에서 찾는다.
+
+       [최근일자] 마지막 날짜에 대해 같은 방식으로 평균확률을 구하고, 위에서 찾은 임계값과
+       비교해 4가지 중 하나로 판단한다.
+
+       ★ 중립(neutral) 자리는 매수/매도 어느 쪽도 정답이라 상태 판정이 모호하므로 정확도
+       계산·임계값 탐색에서 제외한다(시트에는 '중립'으로 표시).
+       ★ 임계값은 전체 구간으로 적합(in-sample)한 값이라 과최적화 여지가 있다 — 시트의
+       정확도는 '그 임계값이 과거를 얼마나 잘 설명하는지'로 읽어야 한다.
+
+       반환 dict: rows(날짜별 상세), thr_long/acc_long/n_long, thr_short/acc_short/n_short,
+       latest(최근일자 판단)."""
+    try:
+        n = len(feat.index)
+        if n < 3 or pos_arr is None or len(pos_arr) < n:
+            return None
+        _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
+        target = np.asarray(_ctp[0]); valid = np.asarray(_ctp[3]); neutral = np.asarray(_ctp[6])
+        pos = (np.asarray(pos_arr)[:n] > 0.5)      # True=롱, False=현금
+        tgt_long = (target == 1)
+        judge = valid & (~neutral)                  # 상태 판정이 뚜렷한 날만 정확도에 사용
+
+        # ── 지표별 조건부 확률(라플라스 보정) ──
+        _probs = []   # [(name, arr_bool, p_cont_long, p_cont_short, n_l, n_s), ...]
+        for _entry in (named_all or []):
+            _nm = _entry[0]; _arr = np.asarray(_entry[2], dtype=float)
+            if len(_arr) < n:
+                _arr = np.concatenate([_arr, np.zeros(n - len(_arr))])
+            _fire = _arr[:n] > 1e-9
+            # t일 판정에는 pos[t-1]이 필요하므로 t>=1만
+            _m_long = np.zeros(n, dtype=bool); _m_short = np.zeros(n, dtype=bool)
+            _m_long[1:] = _fire[1:] & judge[1:] & pos[:-1]
+            _m_short[1:] = _fire[1:] & judge[1:] & (~pos[:-1])
+            _nl = int(_m_long.sum()); _ns_ = int(_m_short.sum())
+            _cl = int((_m_long & tgt_long).sum())          # 롱지속(다음도 매수가 정답)
+            _cs = int((_m_short & (~tgt_long)).sum())      # 숏지속(계속 매도가 정답)
+            _p_l = ((_cl + 1.0) / (_nl + 2.0)) if _nl > 0 else 0.5
+            _p_s = ((_cs + 1.0) / (_ns_ + 2.0)) if _ns_ > 0 else 0.5
+            _probs.append((str(_nm), _fire, _p_l, _p_s, _nl, _ns_))
+        if not _probs:
+            return None
+
+        # ── 날짜별 평균확률 ──
+        avg_p = np.full(n, np.nan)
+        n_fired = np.zeros(n, dtype=int)
+        for t in range(1, n):
+            _prev_long = bool(pos[t - 1])
+            _vals = [(_p_l if _prev_long else _p_s)
+                     for (_nm, _fire, _p_l, _p_s, _nl, _ns_) in _probs if _fire[t]]
+            n_fired[t] = len(_vals)
+            if _vals:
+                avg_p[t] = float(np.mean(_vals))
+
+        # ── 임계값 탐색(정확도 최대) ──
+        def _search_thr(prev_long_side):
+            _mask = np.zeros(n, dtype=bool)
+            _mask[1:] = judge[1:] & (pos[:-1] if prev_long_side else ~pos[:-1])
+            _mask &= np.isfinite(avg_p)
+            _idxs = np.nonzero(_mask)[0]
+            if len(_idxs) == 0:
+                return 0.5, 0.0, 0
+            # 실제 '지속' 여부: 롱 상태면 target==1이 지속, 현금 상태면 target==0이 지속
+            _actual_cont = tgt_long[_idxs] if prev_long_side else (~tgt_long[_idxs])
+            _p = avg_p[_idxs]
+            _best_thr, _best_acc = 0.5, -1.0
+            for _thr in np.arange(0.0, 1.0001, 0.01):
+                _pred_cont = _p >= _thr
+                _acc = float(np.mean(_pred_cont == _actual_cont))
+                if _acc > _best_acc:
+                    _best_acc, _best_thr = _acc, float(_thr)
+            return _best_thr, _best_acc, int(len(_idxs))
+
+        thr_long, acc_long, n_long = _search_thr(True)
+        thr_short, acc_short, n_short = _search_thr(False)
+
+        # ── 날짜별 상세 행 ──
+        _idxn = pd.DatetimeIndex(feat.index)
+        rows = []
+        for t in range(1, n):
+            _prev_long = bool(pos[t - 1])
+            _prev_lbl = '롱' if _prev_long else '현금'
+            _cands = '롱지속 / 롱→숏' if _prev_long else '숏지속 / 숏→롱'
+            _thr_t = thr_long if _prev_long else thr_short
+            _p_t = avg_p[t]
+            if not np.isfinite(_p_t):
+                _judged = '(발화없음)'
+            else:
+                _cont = bool(_p_t >= _thr_t)
+                _judged = ('롱지속' if _cont else '롱→숏') if _prev_long else \
+                          ('숏지속' if _cont else '숏→롱')
+            if not valid[t]:
+                _actual = '(평가불가)'
+            elif neutral[t]:
+                _actual = '중립'
+            else:
+                _actual = ('롱지속' if tgt_long[t] else '롱→숏') if _prev_long else \
+                          ('숏지속' if not tgt_long[t] else '숏→롱')
+            _ok = ('' if (_actual in ('중립', '(평가불가)') or _judged == '(발화없음)')
+                   else ('O' if _judged == _actual else 'X'))
+            try:
+                _ds = pd.Timestamp(_idxn[t]).strftime('%Y-%m-%d')
+            except Exception:
+                _ds = str(_idxn[t])
+            rows.append((_ds, _prev_lbl, _cands, int(n_fired[t]),
+                         (round(float(_p_t), 4) if np.isfinite(_p_t) else ''),
+                         round(float(_thr_t), 3), _judged, _actual, _ok))
+
+        # ── 최근일자 판단 ──
+        _tl = n - 1
+        _prev_long_l = bool(pos[_tl - 1])
+        _thr_l = thr_long if _prev_long_l else thr_short
+        _p_l_val = avg_p[_tl]
+        if np.isfinite(_p_l_val):
+            _cont_l = bool(_p_l_val >= _thr_l)
+            _judged_l = ('롱지속' if _cont_l else '롱→숏') if _prev_long_l else \
+                        ('숏지속' if _cont_l else '숏→롱')
+        else:
+            _judged_l = ('롱지속' if _prev_long_l else '숏지속')   # 발화 없음 → 현 상태 유지
+        try:
+            _ds_l = pd.Timestamp(_idxn[_tl]).strftime('%Y-%m-%d')
+        except Exception:
+            _ds_l = str(_idxn[_tl])
+        latest = dict(date=_ds_l, prev=('롱' if _prev_long_l else '현금'),
+                      candidates=('롱지속 / 롱→숏' if _prev_long_l else '숏지속 / 숏→롱'),
+                      avg_p=(float(_p_l_val) if np.isfinite(_p_l_val) else None),
+                      thr=float(_thr_l), n_fired=int(n_fired[_tl]), judged=_judged_l,
+                      acc=(acc_long if _prev_long_l else acc_short))
+        return dict(rows=rows, thr_long=thr_long, acc_long=acc_long, n_long=n_long,
+                    thr_short=thr_short, acc_short=acc_short, n_short=n_short,
+                    latest=latest)
+    except Exception:
+        import traceback; traceback.print_exc()
+        return None
+
+
 def _balance_pool_scores(nsd):
     """★★★ (요청 — 신규) "일별 백테스트 구성하기 전에, 사용 지표 신뢰도 점수 총합이 더
        높은 포지션에서 신뢰도가 가장 낮은 것부터 제외해서 낮은 쪽이랑 점수 총합이
@@ -25099,6 +25256,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         except Exception:
             _opt_pos_by_date = {}
         pos = _pos_bt
+        # ★★★ (요청 — 신규) 최근일자 상태(롱지속/롱→숏/숏지속/숏→롱) 판단 — 날짜별 평균
+        #   확률·최적 임계값을 함께 계산해 별도 시트('추세전환 판단')로 검증 가능하게 한다.
+        try:
+            _ca_st = pd.Series(close_full).reindex(feat.index).values.astype(np.float64)
+            globals()['_STATE_TRANS_ANALYSIS'] = _compute_state_transition_analysis(
+                feat, _ca_st, list(_buy_named) + list(_sell_named), pos)
+        except Exception as _est:
+            globals()['_STATE_TRANS_ANALYSIS'] = None
+            print(f"  ⚠ 추세전환 판단 계산 실패(무시): {_est}")
         rets = _daily_ret
         _YEL = PatternFill('solid', fgColor='FFF2CC')
         _ORG = PatternFill('solid', fgColor='FFE0B2')   # ★ (요청) 3단계(나머지 전부) = 주황색
@@ -26339,6 +26505,71 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ev:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 지표선정 검증 시트 작성 실패(무시): {_ev}")
+
+    # ─── 7d-4. ★★★ (요청 — 신규) 추세전환 판단 시트 ───
+    #   "롱지속/롱→숏/숏지속/숏→롱 4가지 중 해당될 수 있는 상태를 판단하고, 날짜별 평균
+    #   확률과 가장 성공비율 높은 임계값을 시트로 정리, 그 임계값으로 최근일자도 판단."
+    try:
+        _sta = globals().get('_STATE_TRANS_ANALYSIS')
+        if _sta and _sta.get('rows'):
+            ws_s = wb.create_sheet('추세전환 판단'); ws_s.sheet_view.showGridLines = False
+            _lt = _sta['latest']
+            ws_s.cell(1, 1).value = (
+                "매일의 상태는 '직전 포지션'과 '그 날의 최적자리'로 결정된다 — 직전이 롱이면 "
+                "후보는 (롱지속/롱→숏), 현금이면 (숏지속/숏→롱) 둘 중 하나. 각 지표마다 '그 지표가 "
+                "발화했을 때 실제로 지속이었던 비율'을 구하고(라플라스 보정), 그 날 발화한 지표들의 "
+                "평균을 그 날의 확률로 쓴다. 평균확률 ≥ 임계값이면 '지속', 아니면 '전환'으로 판정하며, "
+                "임계값은 실제 상태와 맞은 비율(정확도)이 최대가 되는 값을 0~1 격자에서 찾은 것이다. "
+                "※ 임계값은 전체 구간으로 적합한 값(in-sample)이라 과최적화 여지가 있으니, 정확도는 "
+                "'과거를 얼마나 잘 설명하는지'로 읽어야 한다. 중립일은 매수/매도 모두 정답이라 제외.")
+            ws_s.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+            ws_s.merge_cells('A1:I1')
+
+            ws_s.cell(2, 1).value = (
+                f"★ 최근일자({_lt['date']}) 판단: 직전 {_lt['prev']} → 후보 [{_lt['candidates']}] → "
+                f"판정 [{_lt['judged']}]  "
+                f"(그 날 발화 {_lt['n_fired']}개, 평균확률 "
+                f"{('%.4f' % _lt['avg_p']) if _lt['avg_p'] is not None else '없음'}, "
+                f"임계값 {_lt['thr']:.3f}, 이 임계값의 과거 정확도 {_lt['acc']*100:.1f}%)")
+            ws_s.cell(2, 1).font = Font(bold=True, size=11, color='1F6F1F')
+            ws_s.merge_cells('A2:I2')
+
+            ws_s.cell(3, 1).value = (
+                f"임계값(탐색결과) — 롱 상태: {_sta['thr_long']:.3f} "
+                f"(정확도 {_sta['acc_long']*100:.1f}%, 표본 {_sta['n_long']}일) | "
+                f"현금 상태: {_sta['thr_short']:.3f} "
+                f"(정확도 {_sta['acc_short']*100:.1f}%, 표본 {_sta['n_short']}일)")
+            ws_s.cell(3, 1).font = Font(bold=True, size=10, color='1F3864')
+            ws_s.merge_cells('A3:I3')
+
+            _cols_s = ['날짜', '직전포지션', '가능상태', '발화지표수', '평균확률',
+                      '임계값', '판정', '실제상태', '적중']
+            for _ci, _cn in enumerate(_cols_s, 1):
+                _hc = ws_s.cell(5, _ci); _hc.value = _cn
+                _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='4472C4')
+            for _ri, _row_s in enumerate(_sta['rows']):
+                _rr = 6 + _ri
+                for _ci, _v in enumerate(_row_s, 1):
+                    _cc = ws_s.cell(_rr, _ci); _cc.value = _v
+                _okv = _row_s[8]
+                if _okv == 'O':
+                    ws_s.cell(_rr, 9).fill = _GOOD
+                elif _okv == 'X':
+                    ws_s.cell(_rr, 9).fill = _BAD
+                _jd = _row_s[6]
+                if _jd in ('롱→숏', '숏→롱'):
+                    ws_s.cell(_rr, 7).font = Font(bold=True, color='9C0006')   # 전환은 눈에 띄게
+            # 마지막 행(최근일자)은 실제상태가 없으므로 강조
+            ws_s.cell(5 + len(_sta['rows']), 1).fill = PatternFill('solid', fgColor='FFF2CC')
+            for _ci, _w in enumerate([12, 11, 16, 11, 10, 9, 10, 12, 7], 1):
+                ws_s.column_dimensions[get_column_letter(_ci)].width = _w
+            ws_s.freeze_panes = 'A6'
+            print(f"  ✓ 추세전환 판단 시트 — 최근일자({_lt['date']}) 판정 [{_lt['judged']}], "
+                  f"임계값 롱 {_sta['thr_long']:.3f}(정확도 {_sta['acc_long']*100:.1f}%) / "
+                  f"현금 {_sta['thr_short']:.3f}(정확도 {_sta['acc_short']*100:.1f}%)")
+    except Exception as _es:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 추세전환 판단 시트 작성 실패(무시): {_es}")
 
 
     # ─── 7e. ★ 지표 선출 A/B 검증 (요청) ───
