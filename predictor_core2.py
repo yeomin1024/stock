@@ -17608,181 +17608,170 @@ _STATE_THR_GRID = np.arange(0.0, 1.0001, 0.01)
 
 
 def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticker=None):
-    """★★★ (요청 — 전면 재설계) "지표 선정 검증 시트는 추가 지표 개수에 따른 정보를 일별
-       백테스트가 아닌 추세전환 판단 기준으로. 매수 지표 쪽은 롱지속과 숏→롱, 매도 지표
-       쪽은 숏지속과 롱→숏. 각 지표 개수에 따라 평균 임계값을 계산하여 4가지 상태 모두
-       틀린 자리가 최소가 되는 지표 개수를 찾고, 그 사용 지표로 최근 날짜에서 발화한
-       지표들을 보고 될 수 있는 2가지 상태의 임계값으로 판단. 일별 백테스트로 사용지표
-       정하는 거 아니야 이제" —
+    """★★★ (요청 — 재설계) "4가지 상태 다 사용 지표 개수 다 따로 구해야지. 시트를 하나
+       만들어서 4가지 상태별로 맞출 확률이 높은 순으로 각각 특화지표를 정리하고, 지표선정
+       검증 시트에 4가지 상태별로 각 상태에 맞는 특화지표 개수를 늘리면서 각각 틀린자리가
+       최소화되는 임계값을 구해 추세전환 판단 시트에 적용" —
 
-       [상태 정의 — 백테스트 비의존] 이전엔 '직전 포지션'을 K/L 일별 백테스트 결과에서
-       가져왔는데, 이제 선정 자체가 백테스트를 쓰지 않으므로 '직전 최적자리'(target[t-1])로
-       상태를 정의한다(가격만으로 결정되는 값이라 백테스트와 무관하고 순환참조도 없다):
-         · target[t-1]=매수, target[t]=매수 → 롱지속     · 매수→매도 → 롱→숏
-         · target[t-1]=매도, target[t]=매도 → 숏지속     · 매도→매수 → 숏→롱
+       [상태 정의 — 백테스트 비의존] '직전 최적자리'(target[t-1])와 '그 날 최적자리'(target[t]):
+         · 매수→매수 = 롱지속   · 매수→매도 = 롱→숏   · 매도→매도 = 숏지속   · 매도→매수 = 숏→롱
+       (가격만으로 결정되므로 K/L 일별 백테스트에 전혀 의존하지 않는다.)
 
-       [담당 분리] 매수 지표는 '그 날의 최적자리가 매수'인 두 상태(롱지속·숏→롱)를,
-       매도 지표는 '최적자리가 매도'인 두 상태(숏지속·롱→숏)를 담당한다.
+       [상태별 후보 풀] 매수 지표는 '그 날 최적자리가 매수'인 두 상태(롱지속·숏→롱)의,
+       매도 지표는 '매도'인 두 상태(숏지속·롱→숏)의 후보가 된다.
 
-       [지표별 확률] 각 지표가 발화한 (판정가능) 날들이 4가지 상태 각각이었던 비율을
-       라플라스 보정 (x+1)/(n+4)로 구한다 — 4개 합이 1이라 한 쌍(예: 롱지속·롱→숏)의 합은
-       1보다 작아, 두 상태가 동시에 임계값을 넘거나 동시에 못 넘는 경우가 실제로 생긴다.
+       [특화지표 랭킹] 지표마다 P(상태|이 지표 발화) = 발화일 중 그 상태였던 비율을
+       라플라스 보정 (x+1)/(n+4)로 구하고, '그 상태를 맞출 확률이 높은 순'으로 정렬한다 —
+       이게 그 상태의 특화지표 순위다(4개 상태 각각 별도 순위).
 
-       [개수 탐색] 성공률100%는 무조건 포함하고, 나머지를 (성공률,신뢰도) 순으로 하나씩
-       늘려가며 매 단계에서 그 세트의 '날짜별 평균확률'과 '담당 2개 상태의 최적 임계값'을
-       다시 구하고, 그 임계값으로 판정했을 때 틀린 날 수를 센다 — 틀린 자리가 최소가 되는
-       개수를 채택(동률이면 남은자리 최소 → 그래도 동률이면 적중률 높은 쪽).
-       ★ 매수/매도 각각 담당 2개 상태를 최소화하므로, 둘을 합치면 4가지 상태 전부가 최소화된다.
+       [상태별 독립 개수·임계값] 4가지 상태 '각각' 자기 특화지표를 1개부터 하나씩 늘려가며,
+       매 단계에서 그 세트의 날짜별 평균확률로 최적 임계값(그 상태 판정의 틀린자리가 최소가
+       되는 값)을 다시 찾고, 틀린자리가 최소가 되는 개수를 채택한다 — 네 상태의 사용 개수와
+       임계값이 서로 완전히 독립이다(동률이면 남은자리 최소 → 그래도 동률이면 적중률 높은 쪽).
 
-       [최근 날짜 판단] 채택된 지표들 중 최근 날짜에 발화한 것들로 두 후보 상태의 평균
-       확률을 구하고, 각자의 임계값과 비교해 판정한다(한쪽만 초과 → 그 상태 / 둘 다 초과 →
-       임계값 대비 확률이 높은 쪽 / 둘 다 미달 → 같은 기준, '둘다미달' 표시).
+       [최근 날짜 판단] 그 날 가능한 2가지 상태 각각에 대해, '그 상태 전용 특화지표 세트'
+       중 발화한 것들의 평균확률을 구해 '그 상태 전용 임계값'과 비교한다(한쪽만 초과 →
+       그 상태 / 둘 다 초과 → 임계값 대비 확률이 높은 쪽 / 둘 다 미달 → 같은 기준, 표시).
 
-       반환: (buy_final, sell_final, report) — report에 지표선정 검증용 trace와
-       추세전환 판단 시트용 rows·latest·임계값이 모두 들어있다."""
+       반환: (buy_final, sell_final, report) — buy_final은 (롱지속∪숏→롱) 채택 지표,
+       sell_final은 (숏지속∪롱→숏) 채택 지표(일별 백테스트 net 계산용). report에는 상태별
+       trace·특화지표 랭킹·임계값과 추세전환 판단용 rows·latest가 모두 들어있다."""
     try:
         n = len(feat.index)
         _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
         target = np.asarray(_ctp[0]); valid = np.asarray(_ctp[3]); neutral = np.asarray(_ctp[6])
         tgt_long = (target == 1)
         judge = valid & (~neutral)
-        # ★ 직전 상태도 판정가능해야 상태쌍이 성립 — 백테스트 포지션이 아니라 '직전 최적자리'
         prev_long = np.zeros(n, dtype=bool); prev_long[1:] = tgt_long[:-1]
         day_ok = np.zeros(n, dtype=bool); day_ok[1:] = judge[1:] & judge[:-1]
-        st_lc = day_ok & prev_long & tgt_long        # 롱지속   (매수지표 담당)
-        st_lr = day_ok & prev_long & (~tgt_long)     # 롱→숏    (매도지표 담당)
-        st_sc = day_ok & (~prev_long) & (~tgt_long)  # 숏지속   (매도지표 담당)
-        st_sr = day_ok & (~prev_long) & tgt_long     # 숏→롱    (매수지표 담당)
-        dom_long = day_ok & prev_long                # 직전 롱인 날(롱지속 vs 롱→숏)
-        dom_short = day_ok & (~prev_long)            # 직전 숏인 날(숏지속 vs 숏→롱)
+        st = {
+            'lc': day_ok & prev_long & tgt_long,          # 롱지속
+            'lr': day_ok & prev_long & (~tgt_long),       # 롱→숏
+            'sc': day_ok & (~prev_long) & (~tgt_long),    # 숏지속
+            'sr': day_ok & (~prev_long) & tgt_long,       # 숏→롱
+        }
+        dom = {'lc': day_ok & prev_long, 'lr': day_ok & prev_long,
+               'sc': day_ok & (~prev_long), 'sr': day_ok & (~prev_long)}
+        _NAME = {'lc': '롱지속', 'lr': '롱→숏', 'sc': '숏지속', 'sr': '숏→롱'}
+        _SIDE = {'lc': '매수', 'sr': '매수', 'sc': '매도', 'lr': '매도'}
+
+        _pcache = {}
 
         def _probs_of(row):
-            """지표 하나의 4상태 확률 + 발화마스크."""
+            """지표 하나의 (발화마스크, 4상태 확률dict, 상태별 적중일수dict, 판정가능 발화일수)."""
+            _key = (str(row.get('indicator', '')), str(row.get('direction', '')),
+                    row.get('threshold', None), int(row.get('lead_shift', 0) or 0),
+                    int(row.get('horizon_day', row.get('horizon', 1)) or 1))
+            _c = _pcache.get(_key)
+            if _c is not None:
+                return _c
             try:
                 _s = np.asarray(_aligned_signal_for_row(feat, row), dtype=float)[:n]
             except Exception:
                 return None
             _f = _s > 1e-12
-            _c_lc = int((_f & st_lc).sum()); _c_lr = int((_f & st_lr).sum())
-            _c_sc = int((_f & st_sc).sum()); _c_sr = int((_f & st_sr).sum())
-            _tot = _c_lc + _c_lr + _c_sc + _c_sr
+            _cnts = {k: int((_f & st[k]).sum()) for k in st}
+            _tot = sum(_cnts.values())
             if _tot > 0:
                 _d = float(_tot + 4.0)
-                return (_f, (_c_lc + 1.0) / _d, (_c_lr + 1.0) / _d,
-                        (_c_sc + 1.0) / _d, (_c_sr + 1.0) / _d)
-            return (_f, 0.25, 0.25, 0.25, 0.25)
+                _p = {k: (_cnts[k] + 1.0) / _d for k in st}
+            else:
+                _p = {k: 0.25 for k in st}
+            _c = (_f, _p, _cnts, _tot)
+            _pcache[_key] = _c
+            return _c
 
         def _best_thr(p, actual):
-            """'p ≥ 임계값이면 이 상태'로 봤을 때 적중률이 최대가 되는 임계값."""
+            """'p ≥ 임계값이면 이 상태'로 봤을 때 틀린 날이 최소가 되는 임계값."""
             if len(p) == 0:
                 return 0.5, 0.0, 0
-            _preds = p[None, :] >= _STATE_THR_GRID[:, None]
-            _acc = (_preds == actual[None, :]).mean(axis=1)
-            _i = int(np.argmax(_acc))
-            _a = float(_acc[_i])
+            _acc = (((p[None, :] >= _STATE_THR_GRID[:, None]) == actual[None, :])).mean(axis=1)
+            _i = int(np.argmax(_acc)); _a = float(_acc[_i])
             return float(_STATE_THR_GRID[_i]), _a, int(round((1.0 - _a) * len(p)))
 
         _max_cand = int(globals().get('SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES', 300))
 
-        def _select_side(pool, is_buy, label):
-            """매수면 (롱지속, 숏→롱), 매도면 (숏지속, 롱→숏) 두 상태를 담당."""
-            _empty = (pool.iloc[0:0].copy() if pool is not None else None)
+        def _select_state(skey, pool):
+            """한 상태에 대해: 특화지표 랭킹 → 개수 늘려가며 임계값·틀린자리 최소화."""
+            _blank = dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=0, wrong=0,
+                          remaining=0, acc=0.0, thr=0.5, trace=[], ranked=[],
+                          rows_idx=None, sel=(pool.iloc[0:0].copy() if pool is not None else None))
             if pool is None or len(pool) == 0:
-                return _empty, dict(n=0, wrong=0, remaining=0, acc=0.0, thr_a=0.5, thr_b=0.5,
-                                    trace=[], n_always=0)
-            pool = pool.copy()
-            if 'success_rate' not in pool.columns: pool['success_rate'] = 0.0
-            if 'reliability' not in pool.columns: pool['reliability'] = 0.0
-            pool = pool.sort_values(['success_rate', 'reliability'],
-                                    ascending=[False, False]).reset_index(drop=True)
-            always = pool[pool['success_rate'] >= 0.999].reset_index(drop=True)
-            rest_full = pool[pool['success_rate'] < 0.999].reset_index(drop=True)
-            rest = rest_full
-            if len(rest_full) > _max_cand:
-                rest = rest_full.iloc[:_max_cand].reset_index(drop=True)
-                print(f"    (상태기반 선정 후보 제한) {label}: 성공률100% 외 {len(rest_full)}개 중 "
-                      f"상위 {_max_cand}개만 탐색")
-            # 담당 상태 A(지속형)·B(전환형)와 그 판정 도메인
-            if is_buy:
-                _dom_a, _act_a, _pi_a = dom_long, st_lc, 1     # 롱지속 (p_lc)
-                _dom_b, _act_b, _pi_b = dom_short, st_sr, 4    # 숏→롱 (p_sr)
-            else:
-                _dom_a, _act_a, _pi_a = dom_short, st_sc, 3    # 숏지속 (p_sc)
-                _dom_b, _act_b, _pi_b = dom_long, st_lr, 2     # 롱→숏 (p_lr)
-            _ia = np.nonzero(_dom_a)[0]; _ib = np.nonzero(_dom_b)[0]
-            _aa = _act_a[_ia]; _ab = _act_b[_ib]
-
-            _sum_a = np.zeros(n); _sum_b = np.zeros(n); _cnt = np.zeros(n)
-
-            def _add(row):
-                _pr = _probs_of(row)
+                return _blank
+            _act = st[skey]; _dm = dom[skey]
+            _idxs = np.nonzero(_dm)[0]
+            _actual = _act[_idxs]
+            # ── 특화지표 랭킹: P(상태) 내림차순(동률이면 성공률·신뢰도) ──
+            _cands = []
+            for _, _r in pool.iterrows():
+                _pr = _probs_of(_r)
                 if _pr is None:
-                    return 0
+                    continue
+                _cands.append((float(_pr[1][skey]), float(_r.get('success_rate', 0.0) or 0.0),
+                               float(_r.get('reliability', 0.0) or 0.0), _r, _pr))
+            if not _cands:
+                return _blank
+            _cands.sort(key=lambda x: (-x[0], -x[1], -x[2]))
+            if len(_cands) > _max_cand:
+                _cands = _cands[:_max_cand]
+            ranked = [(i + 1, str(_c[3].get('indicator', '')), round(_c[0], 4),
+                       int(_c[4][3]), int(_c[4][2][skey]))
+                      for i, _c in enumerate(_cands)]
+            # ── 개수 늘려가며 임계값·틀린자리 최소 탐색 ──
+            _sum = np.zeros(n); _cnt = np.zeros(n)
+            trace = []; best = None
+            for k, (_p_s, _sr_, _rel_, _row, _pr) in enumerate(_cands):
                 _f = _pr[0]
-                _new = int((_f & (_cnt < 0.5)).sum())
-                _sum_a[_f] += _pr[_pi_a]; _sum_b[_f] += _pr[_pi_b]; _cnt[_f] += 1.0
-                return _new
-
-            def _score():
-                _avg_a = np.where(_cnt > 0, _sum_a / np.maximum(_cnt, 1e-12), 0.0)
-                _avg_b = np.where(_cnt > 0, _sum_b / np.maximum(_cnt, 1e-12), 0.0)
-                _thr_a, _acc_a, _w_a = _best_thr(_avg_a[_ia], _aa)
-                _thr_b, _acc_b, _w_b = _best_thr(_avg_b[_ib], _ab)
-                _nn = len(_ia) + len(_ib)
-                _acc = ((_acc_a * len(_ia) + _acc_b * len(_ib)) / _nn) if _nn else 0.0
-                # 남은자리 = 그 상태가 실제로 일어났는데 아무 지표도 발화 안 한 날
-                _rem = int(((_act_a & (_cnt < 0.5)).sum()) + ((_act_b & (_cnt < 0.5)).sum()))
-                return _w_a + _w_b, _rem, _acc, _thr_a, _thr_b
-
-            for _, _r in always.iterrows():
-                _add(_r)
-            trace = []
-            if len(always) > 0:
-                _w, _rem, _acc, _ta, _tb = _score()
-                best = dict(k=0, n=len(always), wrong=_w, rem=_rem, acc=_acc, thr_a=_ta, thr_b=_tb)
-                trace.append((0, len(always), _w, _rem, _acc, _ta, _tb,
-                              int((_cnt > 0.5).sum()), '(성공률100% 전체)'))
-            else:
-                best = None
-            for k in range(len(rest)):
-                _row_k = rest.iloc[k]
-                _newcov = _add(_row_k)
-                _w, _rem, _acc, _ta, _tb = _score()
-                trace.append((k + 1, len(always) + k + 1, _w, _rem, _acc, _ta, _tb,
-                              _newcov, str(_row_k.get('indicator', ''))))
+                _newcov = int((_f & (_cnt < 0.5)).sum())
+                _sum[_f] += _p_s; _cnt[_f] += 1.0
+                _avg = np.where(_cnt > 0, _sum / np.maximum(_cnt, 1e-12), 0.0)
+                _thr, _acc, _w = _best_thr(_avg[_idxs], _actual)
+                _rem = int((_act & (_cnt < 0.5)).sum())
+                trace.append((k + 1, _w, _rem, _acc, _thr, _newcov,
+                              str(_row.get('indicator', ''))))
                 if best is None or _w < best['wrong'] or \
                    (_w == best['wrong'] and (_rem < best['rem'] or
                     (_rem == best['rem'] and _acc > best['acc']))):
-                    best = dict(k=k + 1, n=len(always) + k + 1, wrong=_w, rem=_rem,
-                                acc=_acc, thr_a=_ta, thr_b=_tb)
+                    best = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr)
             if best is None:
-                best = dict(k=0, n=0, wrong=0, rem=0, acc=0.0, thr_a=0.5, thr_b=0.5)
-            final = pd.concat([always, rest.iloc[:best['k']]], ignore_index=True) \
-                    if best['k'] > 0 else always.reset_index(drop=True)
-            return final, dict(n=len(final), wrong=best['wrong'], remaining=best['rem'],
-                               acc=best['acc'], thr_a=best['thr_a'], thr_b=best['thr_b'],
-                               trace=trace, n_always=len(always))
+                return _blank
+            _sel_rows = [_c[3] for _c in _cands[:best['k']]]
+            _sel = pd.DataFrame(_sel_rows).reset_index(drop=True) if _sel_rows else pool.iloc[0:0].copy()
+            _sel_names = set(str(_r.get('indicator', '')) for _r in _sel_rows)
+            ranked = [(_rk, _nm, _pv, _nf, _nh, ('사용' if _nm in _sel_names else ''))
+                      for (_rk, _nm, _pv, _nf, _nh) in ranked]
+            return dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=best['k'],
+                        wrong=best['wrong'], remaining=best['rem'], acc=best['acc'],
+                        thr=best['thr'], trace=trace, ranked=ranked, sel=_sel)
 
-        buy_final, brep = _select_side(buy_pool, True, '매수')
-        sell_final, srep = _select_side(sell_pool, False, '매도')
-        thr_lc, thr_sr = brep['thr_a'], brep['thr_b']
-        thr_sc, thr_lr = srep['thr_a'], srep['thr_b']
+        _st_res = {
+            'lc': _select_state('lc', buy_pool), 'sr': _select_state('sr', buy_pool),
+            'sc': _select_state('sc', sell_pool), 'lr': _select_state('lr', sell_pool),
+        }
 
-        # ── 채택된 지표들로 날짜별 4상태 평균확률 재계산(시트·최근일자 판단용) ──
-        _s_lc = np.zeros(n); _s_sr = np.zeros(n); _c_b = np.zeros(n)
-        for _, _r in (buy_final.iterrows() if buy_final is not None and len(buy_final) else []):
-            _pr = _probs_of(_r)
-            if _pr is None: continue
-            _f = _pr[0]; _s_lc[_f] += _pr[1]; _s_sr[_f] += _pr[4]; _c_b[_f] += 1.0
-        _s_sc = np.zeros(n); _s_lr = np.zeros(n); _c_s = np.zeros(n)
-        for _, _r in (sell_final.iterrows() if sell_final is not None and len(sell_final) else []):
-            _pr = _probs_of(_r)
-            if _pr is None: continue
-            _f = _pr[0]; _s_sc[_f] += _pr[3]; _s_lr[_f] += _pr[2]; _c_s[_f] += 1.0
-        _avg_lc = np.where(_c_b > 0, _s_lc / np.maximum(_c_b, 1e-12), np.nan)
-        _avg_sr = np.where(_c_b > 0, _s_sr / np.maximum(_c_b, 1e-12), np.nan)
-        _avg_sc = np.where(_c_s > 0, _s_sc / np.maximum(_c_s, 1e-12), np.nan)
-        _avg_lr = np.where(_c_s > 0, _s_lr / np.maximum(_c_s, 1e-12), np.nan)
+        def _union(a, b):
+            _parts = [x for x in (a, b) if x is not None and len(x) > 0]
+            if not _parts:
+                return (buy_pool.iloc[0:0].copy() if buy_pool is not None else None)
+            _u = pd.concat(_parts, ignore_index=True)
+            if 'indicator' in _u.columns:
+                _u = _u.drop_duplicates(subset=['indicator'], keep='first').reset_index(drop=True)
+            return _u
+
+        buy_final = _union(_st_res['lc']['sel'], _st_res['sr']['sel'])
+        sell_final = _union(_st_res['sc']['sel'], _st_res['lr']['sel'])
+
+        # ── 상태별 '자기 세트'로 날짜별 평균확률(시트·최근일자 판단용) ──
+        _avg = {}
+        for _k, _r in _st_res.items():
+            _s_ = np.zeros(n); _c_ = np.zeros(n)
+            _sel = _r.get('sel')
+            for _, _row in (_sel.iterrows() if _sel is not None and len(_sel) else []):
+                _pr = _probs_of(_row)
+                if _pr is None:
+                    continue
+                _f = _pr[0]; _s_[_f] += _pr[1][_k]; _c_[_f] += 1.0
+            _avg[_k] = (np.where(_c_ > 0, _s_ / np.maximum(_c_, 1e-12), np.nan), _c_)
 
         _EPS = 1e-9
 
@@ -17802,19 +17791,16 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         rows = []
         for t in range(1, n):
             _pl = bool(prev_long[t])
-            _nm_c = '롱지속' if _pl else '숏지속'
-            _nm_r = '롱→숏' if _pl else '숏→롱'
-            _thr_c = thr_lc if _pl else thr_sc
-            _thr_r = thr_lr if _pl else thr_sr
-            _pc = _avg_lc[t] if _pl else _avg_sc[t]
-            _pr_ = _avg_lr[t] if _pl else _avg_sr[t]
-            _nf = int((_c_b[t] if _pl else _c_b[t]) + _c_s[t]) if True else 0
-            _nf = int(_c_b[t] + _c_s[t])
+            _kc, _kr = ('lc', 'lr') if _pl else ('sc', 'sr')
+            _nm_c, _nm_r = _NAME[_kc], _NAME[_kr]
+            _thr_c, _thr_r = _st_res[_kc]['thr'], _st_res[_kr]['thr']
+            _pc = _avg[_kc][0][t]; _pr_ = _avg[_kr][0][t]
+            _nf = int(_avg[_kc][1][t] + _avg[_kr][1][t])
             _judged, _basis = _decide(_pc, _pr_, _thr_c, _thr_r, _nm_c, _nm_r)
             if not day_ok[t]:
                 _actual = '중립' if (valid[t] and neutral[t]) else '(평가불가)'
             else:
-                _actual = (_nm_c if (tgt_long[t] == _pl) else _nm_r)
+                _actual = _nm_c if (tgt_long[t] == _pl) else _nm_r
             _ok = '' if _actual in ('중립', '(평가불가)') else ('O' if _judged == _actual else 'X')
             try: _ds = pd.Timestamp(_idxn[t]).strftime('%Y-%m-%d')
             except Exception: _ds = str(_idxn[t])
@@ -17827,34 +17813,34 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
 
         _tl = n - 1
         _pl_l = bool(prev_long[_tl])
-        _nm_c_l = '롱지속' if _pl_l else '숏지속'
-        _nm_r_l = '롱→숏' if _pl_l else '숏→롱'
-        _thr_c_l = thr_lc if _pl_l else thr_sc
-        _thr_r_l = thr_lr if _pl_l else thr_sr
-        _pc_l = _avg_lc[_tl] if _pl_l else _avg_sc[_tl]
-        _pr_l = _avg_lr[_tl] if _pl_l else _avg_sr[_tl]
-        _judged_l, _basis_l = _decide(_pc_l, _pr_l, _thr_c_l, _thr_r_l, _nm_c_l, _nm_r_l)
+        _kc_l, _kr_l = ('lc', 'lr') if _pl_l else ('sc', 'sr')
+        _pc_l = _avg[_kc_l][0][_tl]; _pr_l = _avg[_kr_l][0][_tl]
+        _thr_c_l, _thr_r_l = _st_res[_kc_l]['thr'], _st_res[_kr_l]['thr']
+        _judged_l, _basis_l = _decide(_pc_l, _pr_l, _thr_c_l, _thr_r_l,
+                                      _NAME[_kc_l], _NAME[_kr_l])
         try: _ds_l = pd.Timestamp(_idxn[_tl]).strftime('%Y-%m-%d')
         except Exception: _ds_l = str(_idxn[_tl])
         latest = dict(date=_ds_l, prev=('롱' if _pl_l else '현금'),
-                      name_cont=_nm_c_l, name_rev=_nm_r_l,
+                      name_cont=_NAME[_kc_l], name_rev=_NAME[_kr_l],
                       p_cont=(float(_pc_l) if np.isfinite(_pc_l) else None),
                       p_rev=(float(_pr_l) if np.isfinite(_pr_l) else None),
                       thr_cont=float(_thr_c_l), thr_rev=float(_thr_r_l),
-                      n_fired=int(_c_b[_tl] + _c_s[_tl]), judged=_judged_l, basis=_basis_l,
-                      acc_cont=(brep['acc'] if _pl_l else srep['acc']),
-                      acc_rev=(srep['acc'] if _pl_l else brep['acc']))
+                      n_fired=int(_avg[_kc_l][1][_tl] + _avg[_kr_l][1][_tl]),
+                      judged=_judged_l, basis=_basis_l,
+                      acc_cont=_st_res[_kc_l]['acc'], acc_rev=_st_res[_kr_l]['acc'],
+                      n_cont=_st_res[_kc_l]['n'], n_rev=_st_res[_kr_l]['n'])
 
-        _n_lc = int(dom_long.sum()); _n_sr = int(dom_short.sum())
         report = dict(
-            n_buy_always=brep['n_always'], n_sell_always=srep['n_always'],
-            buy_n=brep['n'], buy_wrong=brep['wrong'], buy_remaining=brep['remaining'],
-            buy_acc=brep['acc'], buy_trace=brep['trace'],
-            sell_n=srep['n'], sell_wrong=srep['wrong'], sell_remaining=srep['remaining'],
-            sell_acc=srep['acc'], sell_trace=srep['trace'],
-            thr_lc=thr_lc, thr_lr=thr_lr, thr_sc=thr_sc, thr_sr=thr_sr,
-            acc_lc=brep['acc'], acc_lr=srep['acc'], acc_sc=srep['acc'], acc_sr=brep['acc'],
-            n_lc=_n_lc, n_lr=_n_lc, n_sc=_n_sr, n_sr=_n_sr,
+            states=[_st_res[k] for k in ('lc', 'lr', 'sc', 'sr')],
+            state_map={k: _st_res[k] for k in _st_res},
+            buy_n=(len(buy_final) if buy_final is not None else 0),
+            sell_n=(len(sell_final) if sell_final is not None else 0),
+            thr_lc=_st_res['lc']['thr'], thr_lr=_st_res['lr']['thr'],
+            thr_sc=_st_res['sc']['thr'], thr_sr=_st_res['sr']['thr'],
+            acc_lc=_st_res['lc']['acc'], acc_lr=_st_res['lr']['acc'],
+            acc_sc=_st_res['sc']['acc'], acc_sr=_st_res['sr']['acc'],
+            n_lc=_st_res['lc']['n'], n_lr=_st_res['lr']['n'],
+            n_sc=_st_res['sc']['n'], n_sr=_st_res['sr']['n'],
             rows=rows, latest=latest)
         return buy_final, sell_final, report
     except Exception:
@@ -18912,16 +18898,13 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 if _mw_report is not None:
                     globals()['_KNET_MIN_WRONG_REPORT'] = _mw_report
                     globals()['_STATE_TRANS_ANALYSIS'] = _mw_report
-                    print(f"    (상태기반 선정) 매수[롱지속·숏→롱]: 100%확정 "
-                          f"{_mw_report['n_buy_always']}개 + 추가 "
-                          f"{_mw_report['buy_n']-_mw_report['n_buy_always']}개 = {_mw_report['buy_n']}개 "
-                          f"(틀린자리 {_mw_report['buy_wrong']}일, 그중 발화없음 "
-                          f"{_mw_report['buy_remaining']}일, 적중 {_mw_report['buy_acc']*100:.1f}%) | "
-                          f"매도[숏지속·롱→숏]: 100%확정 {_mw_report['n_sell_always']}개 + 추가 "
-                          f"{_mw_report['sell_n']-_mw_report['n_sell_always']}개 = {_mw_report['sell_n']}개 "
-                          f"(틀린자리 {_mw_report['sell_wrong']}일, 그중 발화없음 "
-                          f"{_mw_report['sell_remaining']}일, 적중 {_mw_report['sell_acc']*100:.1f}%) | "
-                          f"{_nb_mw0}→{len(buy_c)} / {_ns_mw0}→{len(sell_c)}")
+                    _st_txt = " | ".join(
+                        f"{_s['name']}({_s['side']}) {_s['n']}개·틀린{_s['wrong']}"
+                        f"·적중{_s['acc']*100:.0f}%·임계{_s['thr']:.2f}"
+                        for _s in _mw_report['states'])
+                    print(f"    (상태별 독립 선정) {_st_txt}")
+                    print(f"      → 백테스트용 통합: 매수(롱지속∪숏→롱) {_nb_mw0}→{len(buy_c)}개, "
+                          f"매도(숏지속∪롱→숏) {_ns_mw0}→{len(sell_c)}개")
             if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
             if len(sell_c): sell_c['sel_limit'] = _limit0
             return buy_c, sell_c
@@ -26740,60 +26723,48 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 최근일자 발화지표 시트 작성 실패(무시): {_elatest}")
 
-    # ─── 7d-3. ★★★ (요청 — 재설계) 지표선정 검증 시트 ───
-    #   "추가 지표 개수에 따른 정보를 일별 백테스트가 아닌 추세전환 판단 기준으로" —
-    #   매수 지표는 (롱지속·숏→롱), 매도 지표는 (숏지속·롱→숏) 두 상태를 담당하며, 지표를
-    #   하나씩 늘려갈 때마다 그 세트의 상태별 최적 임계값을 다시 구해서 틀린 자리·적중률이
-    #   어떻게 변하는지 기록한다. 채택 지점(★)은 틀린 자리가 최소가 되는 개수.
+    # ─── 7d-3. ★★★ (요청 — 재설계) 지표선정 검증 시트(4가지 상태 각각) ───
+    #   "4가지 상태별로 각 상태에 맞는 특화지표 개수를 늘리면서 각각 틀린자리가 최소화되는
+    #   임계값을 구해" — 상태마다 독립 섹션으로, 특화지표를 1개씩 늘릴 때의 틀린자리·
+    #   남은자리·적중률·그 시점 최적 임계값을 기록하고 채택 지점(★)을 표시한다.
     try:
         _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
-        if _mwr and (_mwr.get('buy_trace') or _mwr.get('sell_trace')):
+        if _mwr and _mwr.get('states'):
             ws_v = wb.create_sheet('지표선정 검증'); ws_v.sheet_view.showGridLines = False
             ws_v.cell(1, 1).value = (
-                "지표 선정 과정 — 성공률100% 지표(항상 포함) 이후, 성공률·신뢰도 높은 순으로 하나씩 "
-                "추가하며 각 시점의 상태 판정 성적을 기록. 매수 지표는 [롱지속·숏→롱], 매도 지표는 "
-                "[숏지속·롱→숏]을 담당하고, 매 단계마다 그 세트로 각 상태의 최적 임계값을 다시 찾는다. "
-                "틀린자리=두 담당 상태의 판정이 실제와 어긋난 날 수 합 / 남은자리=그 상태가 실제로 "
-                "일어났는데 그 날 아무 지표도 발화 안 한 날(지표를 더 넣으면 줄 수 있음) / "
-                "신규커버일수=이번 지표가 그전까지 아무도 발화 안 하던 날에 새로 발화한 날짜 수"
-                "(0이면 이미 겹치는 날에만 발화해 영향이 없었다는 뜻). ★ 이 선정은 K/L 일별 "
-                "백테스트 결과를 전혀 쓰지 않는다(직전 최적자리만으로 상태를 정의).")
+                "상태별 지표 선정 과정 — 4가지 상태(롱지속·롱→숏·숏지속·숏→롱) 각각, 그 상태를 맞출 "
+                "확률이 높은 순(=특화지표 순)으로 지표를 하나씩 늘려가며 매 단계의 성적을 기록. "
+                "매 단계마다 그 세트의 날짜별 평균확률로 최적 임계값을 다시 찾는다. "
+                "틀린자리=그 상태 판정이 실제와 어긋난 날 수 / 남은자리=그 상태가 실제로 일어났는데 "
+                "그 날 아무 특화지표도 발화 안 한 날 / 신규커버일수=이번 지표가 그전까지 아무도 발화 "
+                "안 하던 날에 새로 발화한 날짜 수(0이면 이미 겹치는 날에만 발화해 영향 없음). "
+                "★ 네 상태의 사용 개수와 임계값은 서로 완전히 독립이며, K/L 일별 백테스트를 전혀 쓰지 않는다.")
             ws_v.cell(1, 1).font = Font(italic=True, size=9, color='808080')
-            ws_v.merge_cells('A1:K1')
+            ws_v.merge_cells('A1:H1')
 
-            _cols_v = ['추가지표수(k)', '누적사용지표수', '틀린자리', '남은자리(발화없음)',
-                      '적중률%', '지속상태 임계값', '전환상태 임계값', '틀린자리 변화',
-                      '신규커버일수', '이번추가지표', '채택여부']
+            _cols_v = ['특화지표수(k)', '틀린자리', '남은자리(발화없음)', '적중률%',
+                      '최적임계값', '틀린자리 변화', '신규커버일수', '이번추가지표', '채택여부']
             _r0 = 3
-            for _side_label, _states, _trace, _best_n in (
-                    ('매수 [롱지속 · 숏→롱]', ('롱지속', '숏→롱'),
-                     _mwr.get('buy_trace') or [], _mwr.get('buy_n', 0)),
-                    ('매도 [숏지속 · 롱→숏]', ('숏지속', '롱→숏'),
-                     _mwr.get('sell_trace') or [], _mwr.get('sell_n', 0))):
+            for _s in _mwr['states']:
                 _hc0 = ws_v.cell(_r0, 1)
-                _hc0.value = f"[{_side_label}]"
+                _hc0.value = (f"[{_s['name']}] ({_s['side']} 지표 후보) — 채택 {_s['n']}개, "
+                              f"틀린자리 {_s['wrong']}일(발화없음 {_s['remaining']}일), "
+                              f"적중 {_s['acc']*100:.1f}%, 임계값 {_s['thr']:.3f}")
                 _hc0.font = Font(bold=True, size=12, color='1F3864')
                 _hr = _r0 + 1
-                for _ci, _cname in enumerate(_cols_v, 1):
-                    _cn2 = (_cname.replace('지속상태', _states[0]).replace('전환상태', _states[1]))
-                    _hc = ws_v.cell(_hr, _ci); _hc.value = _cn2
+                for _ci, _cname in enumerate(_cols_v + ['채택여부'][:0], 1):
+                    _hc = ws_v.cell(_hr, _ci); _hc.value = _cname
                     _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='4472C4')
                 _prev_wrong = None
-                for _ri, _trow in enumerate(_trace):
-                    # (k, n_used, wrong, remaining, acc, thr_a, thr_b, newcov, name)
-                    _k, _nused, _w, _rem = _trow[0], _trow[1], _trow[2], _trow[3]
-                    _acc = _trow[4] if len(_trow) > 4 else 0.0
-                    _ta = _trow[5] if len(_trow) > 5 else ''
-                    _tb = _trow[6] if len(_trow) > 6 else ''
-                    _newcov = _trow[7] if len(_trow) > 7 else ''
-                    _addname = _trow[8] if len(_trow) > 8 else ''
+                _tr = _s.get('trace') or []
+                for _ri, _trow in enumerate(_tr):
+                    # (k, wrong, remaining, acc, thr, newcov, name)
+                    _k, _w, _rem, _acc, _thr, _newcov, _addname = _trow
                     _rr_ = _hr + 1 + _ri
-                    _is_best = (_nused == _best_n)
+                    _is_best = (_k == _s['n'])
                     _delta = '' if _prev_wrong is None else (_w - _prev_wrong)
                     _prev_wrong = _w
-                    _vals_v = [_k, _nused, _w, _rem, round(float(_acc) * 100, 2),
-                              (round(float(_ta), 3) if _ta != '' else ''),
-                              (round(float(_tb), 3) if _tb != '' else ''),
+                    _vals_v = [_k, _w, _rem, round(float(_acc) * 100, 2), round(float(_thr), 3),
                               (f"{_delta:+d}" if isinstance(_delta, int) else ''),
                               _newcov, _addname, ('★채택' if _is_best else '')]
                     for _ci, _v in enumerate(_vals_v, 1):
@@ -26801,18 +26772,72 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         if _is_best:
                             _cc.font = Font(bold=True)
                             _cc.fill = PatternFill('solid', fgColor='C6EFCE')
-                        elif _ci == 9 and isinstance(_newcov, int) and _newcov == 0:
-                            _cc.font = Font(color='9C0006')   # 신규커버 0일 = 영향없음
-                _r0 = _hr + len(_trace) + 3
+                        elif _ci == 7 and isinstance(_newcov, int) and _newcov == 0:
+                            _cc.font = Font(color='9C0006')
+                _r0 = _hr + len(_tr) + 3
 
-            for _ci, _w in enumerate([14, 14, 10, 16, 10, 15, 15, 12, 12, 22, 10], 1):
+            for _ci, _w in enumerate([14, 10, 16, 10, 12, 12, 12, 24, 10], 1):
                 ws_v.column_dimensions[get_column_letter(_ci)].width = _w
             ws_v.freeze_panes = 'A4'
-            print(f"  ✓ 지표선정 검증 시트 — 매수 {len(_mwr.get('buy_trace') or [])}단계, "
-                  f"매도 {len(_mwr.get('sell_trace') or [])}단계 추이 기록(상태 판정 기준)")
+            _sum_txt = ', '.join('%s %d단계' % (_s['name'], len(_s.get('trace') or []))
+                                 for _s in _mwr['states'])
+            print("  ✓ 지표선정 검증 시트 — 4개 상태별 추이 기록(%s)" % _sum_txt)
     except Exception as _ev:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 지표선정 검증 시트 작성 실패(무시): {_ev}")
+
+    # ─── 7d-3b. ★★★ (요청 — 신규) 상태별 특화지표 시트 ───
+    #   "시트를 하나 만들어서 4가지 상태별로 맞출 확률이 높은 순으로 각각 특화지표를 정리"
+    try:
+        _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
+        if _mwr and _mwr.get('states'):
+            ws_p = wb.create_sheet('상태별 특화지표'); ws_p.sheet_view.showGridLines = False
+            ws_p.cell(1, 1).value = (
+                "4가지 상태별 특화지표 순위 — 각 지표가 발화한 날들 중 그 상태였던 비율"
+                "(P(상태|발화), 라플라스 보정)이 높은 순. 이 순서대로 지표를 하나씩 늘려가며 "
+                "틀린자리가 최소가 되는 개수를 채택하고(→ '지표선정 검증' 시트), 채택된 지표에 "
+                "'사용' 표시가 붙는다. 매수 지표는 (롱지속·숏→롱), 매도 지표는 (숏지속·롱→숏)의 "
+                "후보가 된다 — 같은 지표가 두 상태에서 서로 다른 순위를 가질 수 있다.")
+            ws_p.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+            ws_p.merge_cells('A1:F1')
+
+            _cols_p = ['순위', '지표', 'P(상태|발화)', '판정가능 발화일수', '그중 이 상태', '채택']
+            _r0 = 3
+            _cap = int(globals().get('STATE_SPECIALIST_SHEET_TOP_N', 60))
+            for _s in _mwr['states']:
+                _rk = _s.get('ranked') or []
+                _hc0 = ws_p.cell(_r0, 1)
+                _hc0.value = (f"[{_s['name']}] ({_s['side']} 지표) — 후보 {len(_rk)}개 중 "
+                              f"상위 {_s['n']}개 채택, 임계값 {_s['thr']:.3f}, 적중 {_s['acc']*100:.1f}%")
+                _hc0.font = Font(bold=True, size=12, color='1F3864')
+                _hr = _r0 + 1
+                for _ci, _cname in enumerate(_cols_p, 1):
+                    _hc = ws_p.cell(_hr, _ci); _hc.value = _cname
+                    _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='548235')
+                _shown = _rk[:_cap]
+                for _ri, (_rank, _nm, _pv, _nf, _nh, _use) in enumerate(_shown):
+                    _rr_ = _hr + 1 + _ri
+                    for _ci, _v in enumerate([_rank, _nm, _pv, _nf, _nh, _use], 1):
+                        _cc = ws_p.cell(_rr_, _ci); _cc.value = _v
+                        if _use == '사용':
+                            _cc.font = Font(bold=True)
+                            _cc.fill = PatternFill('solid', fgColor='C6EFCE')
+                if len(_rk) > len(_shown):
+                    ws_p.cell(_hr + 1 + len(_shown), 1).value = f"… 이하 {len(_rk)-len(_shown)}개 생략"
+                    ws_p.cell(_hr + 1 + len(_shown), 1).font = Font(italic=True, size=9, color='808080')
+                    _r0 = _hr + len(_shown) + 4
+                else:
+                    _r0 = _hr + len(_shown) + 3
+
+            for _ci, _w in enumerate([7, 30, 14, 18, 14, 8], 1):
+                ws_p.column_dimensions[get_column_letter(_ci)].width = _w
+            ws_p.freeze_panes = 'A4'
+            _sum_txt2 = ', '.join('%s %d개' % (_s['name'], len(_s.get('ranked') or []))
+                                  for _s in _mwr['states'])
+            print("  ✓ 상태별 특화지표 시트 — %s" % _sum_txt2)
+    except Exception as _ep:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 상태별 특화지표 시트 작성 실패(무시): {_ep}")
 
     # ─── 7d-4. ★★★ (요청 — 재설계) 추세전환 판단 시트 ───
     #   "날짜마다 2가지 가능 상태의 평균 확률과 임계값을 각각 구하고, 최근 날짜도 각각
