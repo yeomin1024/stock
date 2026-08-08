@@ -14580,7 +14580,7 @@ SIMPLE_POOL_MIN_WRONG_SELECT             = True
 SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES     = 300
 # ★★★ (요청 — 신규) 전환확률(=적중수 ÷ 총 이벤트수)이 이 값 미만인 지표는 전환 판정
 #   사용지표에서 무조건 제외. "전환확률 50% 이상이 아니면 무조건 제외" 요청 반영.
-SIMPLE_POOL_REVERSAL_MIN_PROB            = 0.5
+SIMPLE_POOL_REVERSAL_MIN_PROB            = 0.1
 # ★★★ (요청 관련 — 핵심 정확도버그 대응) 몇 단계(k)마다 실제 K/L 그리드 탐색을 다시 해서
 #   임계값을 그 시점 net 스케일에 맞게 갱신할지 — 작을수록 정확하지만 느려짐.
 SIMPLE_POOL_MIN_WRONG_REFRESH_INTERVAL   = 20
