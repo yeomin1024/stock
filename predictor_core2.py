@@ -14578,6 +14578,9 @@ SIMPLE_POOL_MIN_WRONG_SELECT             = True
 # ★★★ (요청 관련 — 성능버그 대응, 실측: 후보 10587개에서 극도로 지연) 위 선정에서 탐색할
 #   (성공률100% 제외) 후보 상한 — 성공률·신뢰도 상위 이 개수까지만 늘려가며 탐색한다.
 SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES     = 300
+# ★★★ (요청 — 신규) 전환확률(=적중수 ÷ 총 이벤트수)이 이 값 미만인 지표는 전환 판정
+#   사용지표에서 무조건 제외. "전환확률 50% 이상이 아니면 무조건 제외" 요청 반영.
+SIMPLE_POOL_REVERSAL_MIN_PROB            = 0.5
 # ★★★ (요청 관련 — 핵심 정확도버그 대응) 몇 단계(k)마다 실제 K/L 그리드 탐색을 다시 해서
 #   임계값을 그 시점 net 스케일에 맞게 갱신할지 — 작을수록 정확하지만 느려짐.
 SIMPLE_POOL_MIN_WRONG_REFRESH_INTERVAL   = 20
@@ -17608,37 +17611,41 @@ _STATE_THR_GRID = np.arange(0.0, 1.0001, 0.01)
 
 
 def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticker=None):
-    """★★★ (요청 — 재설계) "롱지속·숏지속은 확률 계산 대상에서 제외하고 추세전환만 대상으로.
-       전환 임계값을 못 넘으면 롱지속/숏지속으로. 지표별 추세전환만의 신뢰도 점수를 새로
-       고안해 기존 확률평균 방식과 비교해 틀린자리가 적은 방식으로 적용" —
+    """★★★ (요청 — 재설계) "롱지속·숏지속은 확률 계산 대상에서 제외하고 추세전환만 대상.
+       전환 임계값을 못 넘으면 롱지속/숏지속으로. 지표별 추세전환 신뢰도 점수를 새로 고안해
+       기존 확률평균과 비교해 틀린자리가 적은 방식으로 적용" +
+       ★★★ (요청 — 재수정) "판정가능 이벤트수를 왜 쓰냐, 전환확률은 총 이벤트수 중 적중수로
+       백분율을 내야지 — 그래서 숏→롱 전환확률이 다 1로 나오잖아. 전환확률 50% 미만은
+       사용지표에서 무조건 제외. 지표 추가 시 틀린 자리에 발화됐는지도 컬럼으로" —
 
-       [대상 축소] 판정 대상은 전환 2가지뿐이다. 직전이 롱이면 '롱→숏'만, 현금이면 '숏→롱'만
-       확률/점수를 계산해 임계값과 비교하고, 못 넘으면 자동으로 롱지속/숏지속이 된다.
-       (지속 상태는 별도 지표·임계값이 필요 없다 — 전환의 여집합으로 정의된다.)
-         · 롱→숏 후보 = 매도 지표, 판정 도메인 = 직전이 롱인 날
-         · 숏→롱 후보 = 매수 지표, 판정 도메인 = 직전이 현금인 날
+       [전환확률 분모 수정 — 핵심 버그] 이전엔 분모를 '판정 도메인 안의 발화수'로 썼는데,
+       그러면 성공률이 높은 지표일수록 구조적으로 1이 나온다: 예컨대 매수 지표는 정의상
+       '최적자리가 매수'인 날에만 발화하므로, 직전이 현금인 날(숏→롱 도메인)로 한정하면
+       그 발화는 전부 숏→롱이 되어 확률이 항상 1이었다(지적하신 그대로). 이제 분모를
+       '그 지표의 총 이벤트수'로 바꿨다 — "이 지표가 켜졌을 때 그게 이 전환일 확률"이라는
+       원래 의미가 되고, 도메인 밖(직전이 반대였던 날)의 발화가 전부 페널티로 반영된다.
 
-       [두 가지 집계 방식을 실제로 겨뤄서 선택]
-       ① 확률평균(기존): 그 날 발화한 특화지표들의 P(전환|발화) 평균. 발화 없으면 0.
-       ② 전환점수 LLR(신규 고안): 나이브베이즈 로그우도비 누적 —
-            LLR_i = ln[ P(발화_i | 전환) / P(발화_i | 비전환) ]   (0.5 보정)
-            그 날 점수 = ln(기저오즈) + Σ_{그날 발화한 i} LLR_i
-          · LLR_i는 그 자체로 "이 지표가 켜졌다는 사실이 전환 쪽으로 얼마나 증거를 더하는가"라
-            부호와 크기가 곧바로 해석되는 지표별 점수다(양수=전환 증거, 음수=지속 증거).
-          · 확률평균과 달리 '여러 지표가 동시에 확인해 주면 증거가 누적'되고, 어떤 지표가
-            비전환일에 더 자주 켜지면 음수로 깎여 자동 페널티가 된다.
-          · 발화가 하나도 없는 날은 기저오즈 그대로 → '전환 근거 없음'이 자연스럽게 표현된다.
-       두 방식 각각 자기 랭킹으로 지표를 1개씩 늘려가며 매 단계 최적 임계값을 다시 찾고,
-       틀린자리가 최소가 되는 (개수, 임계값)을 구한 뒤 → '틀린자리가 더 적은 방식'을 채택한다
-       (동률이면 적중률 높은 쪽 → 그래도 동률이면 지표 수가 적은 쪽).
+       [50% 하한] 전환확률(=적중수 ÷ 총 이벤트수)이 SIMPLE_POOL_REVERSAL_MIN_PROB(기본 0.5)
+       미만인 지표는 랭킹·선정에서 무조건 제외한다(시트에는 '제외'로 남겨 확인 가능).
 
-       [지표별 통계 일치] 요청("지표선정 검증 시트랑 전체 지표의 추세전환 횟수·총이벤트 횟수가
-       안 맞는 것 같다")에 따라, 발화일을 '전체 후보 지표' 시트의 신호개수와 동일한 정의
-       (연속발화는 이벤트 1건으로 축약, _event_first_only)로 통일했다. 시트에는 '총 이벤트수'
-       (신호개수와 동일 기준)와 '판정가능 이벤트수'(직전·당일 모두 판정가능한 날로 제한)를
-       나란히 실어 어디서 숫자가 줄어드는지 바로 대조할 수 있게 했다.
+       [판정 대상] 전환 2가지뿐 — 직전이 롱이면 롱→숏만, 현금이면 숏→롱만 점수를 계산해
+       임계값과 비교하고, 못 넘으면 자동으로 롱지속/숏지속이 된다(지속은 전환의 여집합).
+         · 롱→숏 후보 = 매도 지표 / 숏→롱 후보 = 매수 지표
 
-       반환: (buy_final, sell_final, report)."""
+       [두 집계 방식을 실제로 겨뤄 선택]
+       ① 확률평균: 그 날 발화한 특화지표들의 전환확률 평균(발화 없으면 0).
+       ② 전환점수 LLR: LLR_i = ln[P(발화_i|전환)/P(발화_i|비전환)] (0.5 보정, 판정가능
+          전체 구간 기준). 그 날 점수 = ln(기저오즈) + Σ 발화지표 LLR — 여러 지표가 동시에
+          확인하면 증거가 누적되고, 비전환일에 더 자주 켜지는 지표는 음수로 자동 페널티.
+       각 방식이 자기 랭킹으로 지표를 1개씩 늘려가며 매 단계 최적 임계값을 다시 찾고,
+       틀린자리 최소가 되는 (개수, 임계값)을 구한 뒤 틀린자리가 더 적은 방식을 채택한다.
+
+       [진단 컬럼] 요청대로 각 단계에 '이번 지표의 비전환일 발화수(오발화)'와 '이번 지표가
+       그 시점 틀린자리에 발화한 수'를 함께 기록해, 추가한 지표가 실제로 틀린 자리에서
+       켜지고 있는지 바로 확인할 수 있게 했다.
+
+       [이벤트 정의 통일] 발화일은 '전체 후보 지표' 시트의 신호개수와 같은 기준
+       (연속발화=이벤트 1건, _event_first_only)."""
     try:
         n = len(feat.index)
         _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
@@ -17647,21 +17654,20 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         judge = valid & (~neutral)
         prev_long = np.zeros(n, dtype=bool); prev_long[1:] = tgt_long[:-1]
         day_ok = np.zeros(n, dtype=bool); day_ok[1:] = judge[1:] & judge[:-1]
-        # 전환 상태만 대상
         st_lr = day_ok & prev_long & (~tgt_long)      # 롱→숏
         st_sr = day_ok & (~prev_long) & tgt_long      # 숏→롱
-        dom_lr = day_ok & prev_long                   # 직전 롱인 날(롱→숏 판정 도메인)
-        dom_sr = day_ok & (~prev_long)                # 직전 현금인 날(숏→롱 판정 도메인)
+        dom_lr = day_ok & prev_long                   # 롱→숏 판정 도메인
+        dom_sr = day_ok & (~prev_long)                # 숏→롱 판정 도메인
+        _n_ok = int(day_ok.sum())
         _NAME = {'lr': '롱→숏', 'sr': '숏→롱'}
         _CONT = {'lr': '롱지속', 'sr': '숏지속'}
         _SIDE = {'lr': '매도', 'sr': '매수'}
         _egap = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
+        _min_prob = float(globals().get('SIMPLE_POOL_REVERSAL_MIN_PROB', 0.5))
 
         _pcache = {}
 
         def _fire_of(row):
-            """★ 전체 후보 지표 시트의 '신호개수'와 동일 기준(연속발화=이벤트 1건)으로 축약한
-               발화 마스크 + 총 이벤트수."""
             _key = (str(row.get('indicator', '')), str(row.get('direction', '')),
                     row.get('threshold', None), int(row.get('lead_shift', 0) or 0),
                     int(row.get('horizon_day', row.get('horizon', 1)) or 1))
@@ -17688,7 +17694,6 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             return max(0.0, (c - mrg) / d)
 
         def _best_thr_vals(vals, actual):
-            """임의 스케일 점수용 임계값 탐색 — '값 ≥ 임계값이면 전환'의 틀린 날이 최소인 값."""
             if len(vals) == 0:
                 return 0.0, 0.0, 0
             _uv = np.unique(vals)
@@ -17705,46 +17710,59 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _dm = dom_lr if skey == 'lr' else dom_sr
             _idxs = np.nonzero(_dm)[0]
             _actual = _act[_idxs]
-            _A = int(_act.sum())                      # 도메인 내 전환일 수
-            _B = int(_dm.sum()) - _A                  # 도메인 내 비전환(지속)일 수
-            _p0 = (_A / float(_A + _B)) if (_A + _B) > 0 else 0.0
+            _A = int(_act.sum())              # 이 전환이 실제로 일어난 날(전체 판정가능 구간)
+            _B = _n_ok - _A                   # 나머지 판정가능일
+            # ★ 기저 전환율 — 분모를 '총 이벤트'로 바꿨으므로 기저도 전체 판정가능일 기준
+            _p0 = (_A / float(_n_ok)) if _n_ok > 0 else 0.0
             _blank = dict(key=skey, name=_NAME[skey], cont=_CONT[skey], side=_SIDE[skey],
                           n=0, wrong=0, remaining=0, acc=0.0, thr=0.0, method='확률평균',
                           trace=[], stats=[], sel=(pool.iloc[0:0].copy() if pool is not None else None),
-                          p0=_p0, n_rev=_A, n_dom=int(_dm.sum()),
-                          cmp=dict(avg=None, llr=None))
-            if pool is None or len(pool) == 0 or (_A + _B) == 0:
+                          p0=_p0, n_rev=_A, n_dom=int(_dm.sum()), n_excluded=0,
+                          logit0=0.0, use_llr=False, cmp=dict(avg=None, llr=None))
+            if pool is None or len(pool) == 0 or _n_ok == 0:
                 return _blank
             _logit0 = float(np.log(max(_p0, 1e-9) / max(1.0 - _p0, 1e-9)))
 
-            # ── 지표별 통계 ──
-            _stats = []
+            _stats = []; _excluded = []
             for _, _r in pool.iterrows():
                 _fr = _fire_of(_r)
                 if _fr is None:
                     continue
                 _f, _tot_ev = _fr
-                _a = int((_f & _act).sum())                  # 전환 적중
-                _nn = int((_f & _dm).sum())                  # 판정가능 이벤트수
-                _b = _nn - _a
-                _phat = (_a / float(_nn)) if _nn > 0 else 0.0
-                _lb = _wilson_lb(_a, _nn)
+                _a = int((_f & _act).sum())                 # 이 전환일에 발화한 수(적중)
+                _nn_dom = int((_f & _dm).sum())             # 도메인 내 발화(참고용)
+                _fp = _nn_dom - _a                          # 도메인 내 비전환일 발화(오발화)
+                _b = int((_f & day_ok).sum()) - _a          # 판정가능일 중 비전환일 발화
+                # ★★★ (요청 — 핵심수정) 전환확률 = 적중수 ÷ '총 이벤트수'
+                _phat = (_a / float(_tot_ev)) if _tot_ev > 0 else 0.0
+                _lb = _wilson_lb(_a, _tot_ev)
                 _lift = (_lb / _p0) if _p0 > 1e-12 else 0.0
                 _pf_r = (_a + 0.5) / (_A + 1.0)
                 _pf_nr = (_b + 0.5) / (_B + 1.0)
                 _llr = float(np.log(max(_pf_r, 1e-12) / max(_pf_nr, 1e-12)))
-                _stats.append(dict(row=_r, name=str(_r.get('indicator', '')), fire=_f,
-                                   tot_ev=_tot_ev, n=_nn, hit=_a, phat=_phat, lb=_lb,
-                                   lift=_lift, llr=_llr))
+                _rec = dict(row=_r, name=str(_r.get('indicator', '')), fire=_f,
+                            tot_ev=_tot_ev, n=_nn_dom, hit=_a, fp=_fp, phat=_phat,
+                            lb=_lb, lift=_lift, llr=_llr)
+                # ★★★ (요청) 전환확률 50% 미만은 무조건 제외
+                if _phat >= _min_prob:
+                    _stats.append(_rec)
+                else:
+                    _excluded.append(_rec)
             if not _stats:
+                _blank['n_excluded'] = len(_excluded)
+                _blank['stats'] = [dict(rank=i + 1, name=s['name'], tot_ev=s['tot_ev'], n=s['n'],
+                                        hit=s['hit'], fp=s['fp'], phat=s['phat'], lb=s['lb'],
+                                        lift=s['lift'], llr=s['llr'], used='제외(<%.0f%%)' % (_min_prob * 100))
+                                   for i, s in enumerate(sorted(_excluded, key=lambda x: -x['phat']))]
+                print(f"    ⚠ ({_NAME[skey]}) 전환확률 {_min_prob*100:.0f}% 이상인 지표가 하나도 없어 "
+                      f"이 전환은 판정하지 않음(항상 {_CONT[skey]}) — 후보 {len(_excluded)}개 전부 제외")
                 return _blank
 
             def _run(method):
-                """method='avg'(확률평균) 또는 'llr'(전환점수 누적)."""
                 if method == 'avg':
-                    _ord = sorted(_stats, key=lambda s: (-s['phat'], -s['lb'], -s['n']))
+                    _ord = sorted(_stats, key=lambda s: (-s['phat'], -s['lb'], -s['tot_ev']))
                 else:
-                    _ord = sorted(_stats, key=lambda s: (-s['llr'], -s['n']))
+                    _ord = sorted(_stats, key=lambda s: (-s['llr'], -s['tot_ev']))
                 _ord = _ord[:_max_cand]
                 _sum = np.zeros(n); _cnt = np.zeros(n)
                 trace = []; best = None
@@ -17759,15 +17777,18 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                         _vals = _logit0 + _sum
                     _thr, _acc, _w = _best_thr_vals(_vals[_idxs], _actual)
                     _rem = int((_act & (_cnt < 0.5)).sum())
-                    trace.append((k + 1, _w, _rem, _acc, _thr, _newcov, _s['name']))
+                    # ★★★ (요청 — 신규 진단) 이 시점의 '틀린 자리'에 이번 지표가 발화했는지
+                    _pred = _vals[_idxs] >= _thr
+                    _wrong_days = _idxs[_pred != _actual]
+                    _wf = int(_f[_wrong_days].sum()) if len(_wrong_days) else 0
+                    trace.append((k + 1, _w, _rem, _acc, _thr, _newcov, _s['fp'], _wf, _s['name']))
                     if best is None or _w < best['wrong'] or \
                        (_w == best['wrong'] and (_rem < best['rem'] or
                         (_rem == best['rem'] and _acc > best['acc']))):
                         best = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr)
                 return dict(order=_ord, trace=trace, best=best)
 
-            _res_avg = _run('avg')
-            _res_llr = _run('llr')
+            _res_avg = _run('avg'); _res_llr = _run('llr')
             _ba, _bl = _res_avg['best'], _res_llr['best']
 
             def _key_of(b):
@@ -17781,20 +17802,27 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _sel = pd.DataFrame(_sel_rows).reset_index(drop=True) if _sel_rows else pool.iloc[0:0].copy()
             _sel_names = set(s['name'] for s in _sel_stats)
             _stats_out = [dict(rank=i + 1, name=s['name'], tot_ev=s['tot_ev'], n=s['n'],
-                               hit=s['hit'], phat=s['phat'], lb=s['lb'], lift=s['lift'],
-                               llr=s['llr'], used=('사용' if s['name'] in _sel_names else ''))
+                               hit=s['hit'], fp=s['fp'], phat=s['phat'], lb=s['lb'],
+                               lift=s['lift'], llr=s['llr'],
+                               used=('사용' if s['name'] in _sel_names else ''))
                           for i, s in enumerate(_chosen['order'])]
+            _base = len(_stats_out)
+            _stats_out += [dict(rank=_base + i + 1, name=s['name'], tot_ev=s['tot_ev'], n=s['n'],
+                                hit=s['hit'], fp=s['fp'], phat=s['phat'], lb=s['lb'],
+                                lift=s['lift'], llr=s['llr'],
+                                used='제외(<%.0f%%)' % (_min_prob * 100))
+                           for i, s in enumerate(sorted(_excluded, key=lambda x: -x['phat']))]
             return dict(key=skey, name=_NAME[skey], cont=_CONT[skey], side=_SIDE[skey],
                         n=_best['k'], wrong=_best['wrong'], remaining=_best['rem'],
                         acc=_best['acc'], thr=_best['thr'], method=_method,
                         trace=_chosen['trace'], stats=_stats_out, sel=_sel,
                         p0=_p0, logit0=_logit0, n_rev=_A, n_dom=int(_dm.sum()),
+                        n_excluded=len(_excluded),
                         trace_avg=_res_avg['trace'], trace_llr=_res_llr['trace'],
                         cmp=dict(avg=_ba, llr=_bl), use_llr=_use_llr)
 
         _R = {'lr': _select_state('lr', sell_pool), 'sr': _select_state('sr', buy_pool)}
 
-        # 백테스트 net용 풀 — 전환 지표만 사용(지속은 히스테리시스가 알아서 유지)
         buy_final = _R['sr'].get('sel')
         sell_final = _R['lr'].get('sel')
         if buy_final is None: buy_final = (buy_pool.iloc[0:0].copy() if buy_pool is not None else None)
@@ -17805,24 +17833,14 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         for _k, _r in _R.items():
             _sum = np.zeros(n); _cnt = np.zeros(n)
             _use_llr = bool(_r.get('use_llr'))
-            _sel_names = set()
             _sel = _r.get('sel')
-            if _sel is not None and len(_sel):
-                _sel_names = set(str(x) for x in _sel['indicator'].tolist())
-            for _s in (_r.get('stats') or []):
-                if _s['used'] != '사용':
-                    continue
-                # stats에는 fire가 없으므로 이름으로 다시 계산
-                pass
-            # 세트 지표들의 발화·점수 재적용
-            _pool_ref = sell_pool if _k == 'lr' else buy_pool
+            _by_name = {s['name']: s for s in (_r.get('stats') or [])}
             if _sel is not None and len(_sel):
                 for _, _row in _sel.iterrows():
                     _fr = _fire_of(_row)
                     if _fr is None: continue
                     _f = _fr[0]
-                    _nm = str(_row.get('indicator', ''))
-                    _stat = next((s for s in (_r.get('stats') or []) if s['name'] == _nm), None)
+                    _stat = _by_name.get(str(_row.get('indicator', '')))
                     if _stat is None: continue
                     _sum[_f] += (_stat['llr'] if _use_llr else _stat['phat'])
                     _cnt[_f] += 1.0
@@ -17830,6 +17848,8 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 _vals = _r.get('logit0', 0.0) + _sum
             else:
                 _vals = np.where(_cnt > 0, _sum / np.maximum(_cnt, 1e-12), np.nan)
+            if _r.get('n', 0) == 0:
+                _vals = np.full(n, np.nan)     # 사용 지표가 없으면 전환 판정 자체를 안 함
             _dayval[_k] = (_vals, _cnt)
 
         _idxn = pd.DatetimeIndex(feat.index)
@@ -17840,10 +17860,11 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _r = _R[_k]
             _v = _dayval[_k][0][t]; _c = _dayval[_k][1][t]
             _thr = _r['thr']
-            _rev_ok = bool(np.isfinite(_v) and _v >= _thr)
+            _rev_ok = bool(np.isfinite(_v) and _r.get('n', 0) > 0 and _v >= _thr)
             _judged = _r['name'] if _rev_ok else _r['cont']
             _basis = ('전환 임계값 초과' if _rev_ok else
-                      ('전환 근거 없음(발화 0) → 지속' if _c < 0.5 else '전환 임계값 미달 → 지속'))
+                      ('사용 전환지표 없음 → 지속' if _r.get('n', 0) == 0 else
+                       ('전환 근거 없음(발화 0) → 지속' if _c < 0.5 else '전환 임계값 미달 → 지속')))
             if not day_ok[t]:
                 _actual = '중립' if (valid[t] and neutral[t]) else '(평가불가)'
             else:
@@ -17861,10 +17882,11 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         _k_l = 'lr' if _pl_l else 'sr'
         _r_l = _R[_k_l]
         _v_l = _dayval[_k_l][0][_tl]; _c_l = _dayval[_k_l][1][_tl]
-        _rev_ok_l = bool(np.isfinite(_v_l) and _v_l >= _r_l['thr'])
+        _rev_ok_l = bool(np.isfinite(_v_l) and _r_l.get('n', 0) > 0 and _v_l >= _r_l['thr'])
         _judged_l = _r_l['name'] if _rev_ok_l else _r_l['cont']
         _basis_l = ('전환 임계값 초과' if _rev_ok_l else
-                    ('전환 근거 없음(발화 0) → 지속' if _c_l < 0.5 else '전환 임계값 미달 → 지속'))
+                    ('사용 전환지표 없음 → 지속' if _r_l.get('n', 0) == 0 else
+                     ('전환 근거 없음(발화 0) → 지속' if _c_l < 0.5 else '전환 임계값 미달 → 지속')))
         try: _ds_l = pd.Timestamp(_idxn[_tl]).strftime('%Y-%m-%d')
         except Exception: _ds_l = str(_idxn[_tl])
         latest = dict(date=_ds_l, prev=('롱' if _pl_l else '현금'),
@@ -17877,7 +17899,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         report = dict(states=[_R['lr'], _R['sr']], state_map=_R,
                       buy_n=(len(buy_final) if buy_final is not None else 0),
                       sell_n=(len(sell_final) if sell_final is not None else 0),
-                      rows=rows, latest=latest, reversal_only=True)
+                      min_prob=_min_prob, rows=rows, latest=latest, reversal_only=True)
         return buy_final, sell_final, report
     except Exception:
         import traceback; traceback.print_exc()
@@ -19251,6 +19273,13 @@ def _build_pool_multi_horizon(feat, close, *, indicators, n_thresholds, horizon,
 
     _n_added_b = sum(len(p) for p in _add_buy_parts)
     _n_added_s = sum(len(p) for p in _add_sell_parts)
+    # ★★★ (요청 관련 — 버그수정) 전환확률 50% 하한으로 한쪽이 0개가 되면 여기서 None이 되고,
+    #   이후 _use_multi 조건(둘 다 not None)에서 탈락해 일별 백테스트가 "순신호 K 계산 실패"로
+    #   죽었다. 한쪽이라도 살아 있으면 반대쪽은 '빈 DataFrame'으로 유지해 정상 진행시킨다.
+    if _final_buy is None and _final_sell is not None:
+        _final_buy = _final_sell.iloc[0:0].copy()
+    if _final_sell is None and _final_buy is not None:
+        _final_sell = _final_buy.iloc[0:0].copy()
     print(f"\n  ★ 매수풀: 기존 {_base_buy_n}지표(그대로) + 신규 {_n_added_b}지표 추가 = "
           f"{_final_buy['indicator'].nunique() if _final_buy is not None and len(_final_buy) else 0}지표")
     print(f"  ★ 매도풀: 기존 {_base_sell_n}지표(그대로) + 신규 {_n_added_s}지표 추가 = "
@@ -21905,8 +21934,18 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
     try:
         dates = list(feat.index)
         n = len(dates)
-        if n < 10 or len(buy_pool) == 0 or len(sell_pool) == 0:
+        # ★★★ (요청 관련 — 버그수정) 전환확률 50% 하한을 적용하면서 한쪽(예: 숏→롱)이 0개가
+        #   되는 경우가 생기는데, 예전엔 어느 한쪽이라도 비면 무조건 None을 반환해 일별
+        #   백테스트가 통째로 "순신호 K 계산 실패"로 죽었다. 이제 '양쪽 다' 비었을 때만
+        #   포기하고, 한쪽만 있으면 그 쪽 신호만으로 net을 구성해 정상 진행한다
+        #   (매수만 있으면 net=매수, 매도만 있으면 net=-매도 — 히스테리시스는 그대로 동작).
+        _nb0 = 0 if buy_pool is None else len(buy_pool)
+        _ns0 = 0 if sell_pool is None else len(sell_pool)
+        if n < 10 or (_nb0 == 0 and _ns0 == 0):
             return None
+        if _nb0 == 0 or _ns0 == 0:
+            print(f"    (한쪽 전환지표 없음) 매수 {_nb0}개 / 매도 {_ns0}개 — "
+                  f"있는 쪽 신호만으로 net을 구성해 진행")
         close = pd.Series(close_ser).reindex(dates).values.astype(float)
 
         # ★★★ (요청 — 신뢰도 임계값 탐색) 아래 count search가 "신뢰도 k번째까지 포함"을
@@ -21987,7 +22026,14 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         buy_sigs, _buy_sig_keys  = _build_sigs(buy_pool)
         sell_sigs, _sell_sig_keys = _build_sigs(sell_pool)
         nB = len(buy_sigs); nS = len(sell_sigs)
-        if nB == 0 or nS == 0: return None
+        # ★★★ (요청 관련 — 버그수정) 한쪽이 0개여도 진행 — 빈 쪽은 '0 신호' 한 줄을 넣어
+        #   누적합(cumsum) 형태만 맞춰 준다(그 쪽 기여는 항상 0). 둘 다 0일 때만 포기.
+        if nB == 0 and nS == 0:
+            return None
+        if nB == 0:
+            buy_sigs = [np.zeros(n)]; _buy_sig_keys = ['(매수 전환지표 없음)']; nB = 1
+        if nS == 0:
+            sell_sigs = [np.zeros(n)]; _sell_sig_keys = ['(매도 전환지표 없음)']; nS = 1
         buy_cum  = np.cumsum(np.array(buy_sigs),  axis=0)   # buy_cum[k-1] = 상위 k개 합
         sell_cum = np.cumsum(np.array(sell_sigs), axis=0)
         def _net_for(nb, ns):
@@ -24581,9 +24627,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     try:
         _replay_fixed_done = False
         _mp = globals().get('_KNET_MULTI_POOL')
+        # ★★★ (요청 관련 — 버그수정) 전환확률 50% 하한으로 한쪽(예: 숏→롱=매수)이 0개가 되면
+        #   예전엔 이 조건(양쪽 다 len>0)에서 걸려 멀티풀 경로를 못 타고 결국 일별 백테스트가
+        #   "순신호 K 계산 실패"로 죽었다. 이제 '양쪽 다 비어 있을 때'만 제외한다.
         _use_multi = (_mp and isinstance(_mp, tuple) and _mp[0] == ticker
                       and _mp[1] is not None and _mp[2] is not None
-                      and len(_mp[1]) > 0 and len(_mp[2]) > 0)
+                      and (len(_mp[1]) > 0 or len(_mp[2]) > 0))
         if _use_multi:
             _mbp, _msp = _mp[1], _mp[2]; _nb = _ns = None; _sc_cnt = True
             if globals().get('SIMPLE_POOL_MODE', False):
@@ -26782,13 +26831,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "(ln(기저오즈) + Σ 발화지표의 로그우도비)을 각각 자기 랭킹대로 1개씩 늘려가며 매 단계 "
                 "최적 임계값을 다시 찾고, 틀린자리가 더 적은 방식을 채택한다. 틀린자리=그 상태 판정이 "
                 "실제와 어긋난 날 / 남은자리=전환이 실제로 일어났는데 그 날 아무 지표도 발화 안 한 날 / "
-                "신규커버일수=이번 지표가 그전까지 아무도 발화 안 하던 날에 새로 발화한 날짜 수. "
-                "★ 발화일은 '전체 후보 지표' 시트의 신호개수와 같은 기준(연속발화=이벤트 1건)으로 통일했다.")
+                "신규커버일수=이번 지표가 그전까지 아무도 발화 안 하던 날에 새로 발화한 날짜 수 / "
+                "이번지표 오발화=그 지표가 판정 도메인 안에서 '전환이 아닌 날'에 켜진 수 / "
+                "이번지표 틀린자리 발화=그 시점에 판정이 틀린 날들 중 이 지표가 켜져 있던 수"
+                "(0이 아니면 이 지표가 오판에 직접 기여했다는 뜻). "
+                "★ 전환확률(=적중수÷총 이벤트수)이 %.0f%% 미만인 지표는 애초에 후보에서 제외된다. "
+                "★ 발화일은 '전체 후보 지표' 시트의 신호개수와 같은 기준(연속발화=이벤트 1건)으로 통일했다."
+                % (float(globals().get('SIMPLE_POOL_REVERSAL_MIN_PROB', 0.5)) * 100))
             ws_v.cell(1, 1).font = Font(italic=True, size=9, color='808080')
-            ws_v.merge_cells('A1:I1')
+            ws_v.merge_cells('A1:K1')
 
             _cols_v = ['특화지표수(k)', '틀린자리', '남은자리(발화없음)', '적중률%',
-                      '최적임계값', '틀린자리 변화', '신규커버일수', '이번추가지표', '채택여부']
+                      '최적임계값', '틀린자리 변화', '신규커버일수',
+                      '이번지표 오발화(비전환일)', '이번지표 틀린자리 발화',
+                      '이번추가지표', '채택여부']
             _r0 = 3
             for _s in _mwr['states']:
                 _ca = (_s.get('cmp') or {}).get('avg'); _cl = (_s.get('cmp') or {}).get('llr')
@@ -26815,23 +26871,25 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _prev_wrong = None
                 _tr = _s.get('trace') or []
                 for _ri, _trow in enumerate(_tr):
-                    _k, _w, _rem, _acc, _thr, _newcov, _addname = _trow
+                    _k, _w, _rem, _acc, _thr, _newcov, _fp, _wf, _addname = _trow
                     _rr_ = _hr + 1 + _ri
                     _is_best = (_k == _s['n'])
                     _delta = '' if _prev_wrong is None else (_w - _prev_wrong)
                     _prev_wrong = _w
                     _vals_v = [_k, _w, _rem, round(float(_acc) * 100, 2), round(float(_thr), 4),
                               (f"{_delta:+d}" if isinstance(_delta, int) else ''),
-                              _newcov, _addname, ('★채택' if _is_best else '')]
+                              _newcov, _fp, _wf, _addname, ('★채택' if _is_best else '')]
                     for _ci, _v in enumerate(_vals_v, 1):
                         _cc = ws_v.cell(_rr_, _ci); _cc.value = _v
                         if _is_best:
                             _cc.font = Font(bold=True); _cc.fill = PatternFill('solid', fgColor='C6EFCE')
                         elif _ci == 7 and isinstance(_newcov, int) and _newcov == 0:
                             _cc.font = Font(color='9C0006')
+                        elif _ci == 9 and isinstance(_wf, int) and _wf > 0:
+                            _cc.font = Font(color='9C0006')   # 틀린자리에서 켜진 지표 = 눈에 띄게
                 _r0 = _hr + len(_tr) + 3
 
-            for _ci, _w in enumerate([14, 10, 16, 10, 13, 12, 12, 24, 10], 1):
+            for _ci, _w in enumerate([14, 10, 16, 10, 13, 12, 12, 20, 20, 24, 10], 1):
                 ws_v.column_dimensions[get_column_letter(_ci)].width = _w
             ws_v.freeze_panes = 'A4'
             _sum_txt = ', '.join('%s %d단계' % (_s['name'], len(_s.get('trace') or []))
@@ -26851,18 +26909,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_p = wb.create_sheet('전환점수·임계값'); ws_p.sheet_view.showGridLines = False
             ws_p.cell(1, 1).value = (
                 "지표별 추세전환 점수 — 총 이벤트수는 '전체 후보 지표' 시트의 신호개수와 동일 기준"
-                "(연속발화=이벤트 1건)이고, 판정가능 이벤트수는 그중 직전·당일이 모두 판정가능한 날로 "
-                "제한한 수다(중립·평가불가일이 빠지므로 총 이벤트수보다 작거나 같다). "
-                "전환확률=판정가능 이벤트 중 실제 전환이었던 비율, Wilson하한=표본이 적으면 자동으로 "
-                "깎이는 보수적 하한, Lift=Wilson하한÷기저전환율(1보다 크면 기저보다 전환을 잘 맞힌다는 뜻), "
+                "(연속발화=이벤트 1건)이다. ★ 전환확률 = 전환 적중수 ÷ 총 이벤트수 — 도메인 안의 발화만 "
+                "분모로 쓰면 성공률 높은 지표가 구조적으로 항상 1이 되어버려(예: 매수 지표는 정의상 "
+                "'최적자리 매수'일에만 켜지므로 숏→롱 도메인에선 발화가 전부 숏→롱이 됨) 총 이벤트수를 "
+                "분모로 삼는다. 도메인내 발화·오발화(비전환일)는 참고용 내역이다. "
+                "Wilson하한=표본이 적으면 자동으로 깎이는 보수적 하한, "
+                "Lift=Wilson하한÷기저전환율(1보다 크면 기저보다 전환을 잘 맞힌다는 뜻), "
                 "LLR점수=ln[P(발화|전환)/P(발화|비전환)] — 양수면 전환 증거, 음수면 지속 증거이며 "
                 "여러 지표가 동시에 켜지면 이 점수가 합산되어 증거가 누적된다. 정렬은 채택된 방식의 "
                 "랭킹 기준이고, 실제 채택된 지표에 '사용' 표시가 붙는다.")
             ws_p.cell(1, 1).font = Font(italic=True, size=9, color='808080')
-            ws_p.merge_cells('A1:J1')
+            ws_p.merge_cells('A1:K1')
 
-            _cols_p = ['순위', '지표', '총 이벤트수', '판정가능 이벤트수', '전환 적중수',
-                      '전환확률', 'Wilson하한', 'Lift', 'LLR점수', '채택']
+            _cols_p = ['순위', '지표', '총 이벤트수', '전환 적중수', '전환확률(적중÷총이벤트)',
+                      '도메인내 발화', '오발화(비전환일)', 'Wilson하한', 'Lift', 'LLR점수', '채택']
             _r0 = 3
             _cap = int(globals().get('STATE_SPECIALIST_SHEET_TOP_N', 80))
             for _s in _mwr['states']:
@@ -26882,15 +26942,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _shown = _stt[:_cap]
                 for _ri, _st in enumerate(_shown):
                     _rr_ = _hr + 1 + _ri
-                    _vals_p = [_st['rank'], _st['name'], _st['tot_ev'], _st['n'], _st['hit'],
-                              round(float(_st['phat']), 4), round(float(_st['lb']), 4),
-                              round(float(_st['lift']), 3), round(float(_st['llr']), 4), _st['used']]
+                    _vals_p = [_st['rank'], _st['name'], _st['tot_ev'], _st['hit'],
+                              round(float(_st['phat']), 4), _st['n'], _st.get('fp', 0),
+                              round(float(_st['lb']), 4), round(float(_st['lift']), 3),
+                              round(float(_st['llr']), 4), _st['used']]
                     for _ci, _v in enumerate(_vals_p, 1):
                         _cc = ws_p.cell(_rr_, _ci); _cc.value = _v
                         if _st['used'] == '사용':
                             _cc.font = Font(bold=True); _cc.fill = PatternFill('solid', fgColor='C6EFCE')
                     if _st['llr'] < 0:
-                        ws_p.cell(_rr_, 9).font = Font(bold=(_st['used'] == '사용'), color='9C0006')
+                        ws_p.cell(_rr_, 10).font = Font(bold=(_st['used'] == '사용'), color='9C0006')
+                    if str(_st['used']).startswith('제외'):
+                        ws_p.cell(_rr_, 11).font = Font(color='808080', italic=True)
                 if len(_stt) > len(_shown):
                     ws_p.cell(_hr + 1 + len(_shown), 1).value = f"… 이하 {len(_stt)-len(_shown)}개 생략"
                     ws_p.cell(_hr + 1 + len(_shown), 1).font = Font(italic=True, size=9, color='808080')
@@ -26898,7 +26961,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 else:
                     _r0 = _hr + len(_shown) + 3
 
-            for _ci, _w in enumerate([6, 28, 12, 16, 11, 10, 11, 8, 10, 8], 1):
+            for _ci, _w in enumerate([6, 28, 12, 11, 20, 13, 16, 11, 8, 10, 14], 1):
                 ws_p.column_dimensions[get_column_letter(_ci)].width = _w
             ws_p.freeze_panes = 'A4'
             _sum_txt2 = ', '.join('%s %d개' % (_s['name'], len(_s.get('stats') or []))
