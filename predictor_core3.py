@@ -14588,11 +14588,28 @@ SIMPLE_POOL_MIN_WRONG_REFRESH_INTERVAL   = 20
 #   · 전환확률 ≥ 이 값  → 1순위 그룹, 전환확률 내림차순
 #   · 전환확률 < 이 값  → 2순위 그룹, '방향 적중확률' 내림차순
 #     (롱→숏이면 P(숏|발화)=P(숏지속)+P(롱→숏), 숏→롱이면 P(롱|발화)=P(롱지속)+P(숏→롱).
-#      라플라스 보정된 4상태 확률의 합이 1이라 두 방향 확률의 합도 정확히 1이 된다.)
+#      4상태 확률의 합이 1이라 두 방향 확률의 합도 정확히 1이 된다.)
 #   전환확률이 절반도 안 되면 그 지표를 '전환 예보'로 믿을 근거가 사실상 없으므로, 그
 #   아래부터는 최소한 방향(매수/매도)이라도 맞히는 지표를 먼저 쓰게 하는 것.
 #   ★ 롱지속·숏지속(전환이 아닌 지속 상태)은 이 규칙과 무관 — 기존대로 P(상태|발화) 순.
 STATE_REV_RANK_PROB_FLOOR                = 0.5
+# ★★★ (요청 — 계산식 수정) "전환확률 = 전환 적중수 ÷ 총 이벤트수"
+#     예) 총 10건 중 6건 적중 → 0.6  /  15건 중 8건 → 0.5333
+#   예전에는 라플라스 보정 (x+1)/(n+4)를 썼는데, 그러면 6/10이 0.6이 아니라 7/14=0.5로
+#   나와서 시트에 표시되는 '총 이벤트수·적중수'와 '확률'이 서로 안 맞았다. 이제 보정 없이
+#   있는 그대로 나눈다(4상태 확률의 합은 여전히 정확히 1).
+# ★ 분모 '총 이벤트수' — 연속 발화는 1건으로 묶어서 센다(SIMPLE_POOL_EVENT_GAP_DAYS —
+#   성공률·최소신호수컷·신뢰도가 이미 쓰는 것과 같은 규칙). 몇 달 내내 켜져 있는 지표가
+#   그 기간 일수만큼 분모를 부풀리는 걸 막는다. False로 두면 예전처럼 발화일 단위로 센다.
+STATE_PROB_EVENT_BASED                   = True
+# ★ 날짜별 평균확률에 참여하는 '발화일'까지 이벤트 첫날만으로 볼지 — True로 켜면 긴 연속
+#   국면에서 그 지표가 첫날에만 목소리를 낸다(확률 계산과 완전히 같은 기준). 기본은 False
+#   (분모만 이벤트 기준으로 바꾸고, 어느 날 발화 중인지는 종전대로 유지 — 판정 로직 불변).
+STATE_FIRE_EVENT_FIRST                   = False
+# ★ 보정을 뺐으므로 "1건 중 1건 적중 = 100%"인 표본부족 지표가 1등이 될 수 있다. 총
+#   이벤트수가 이 값 미만인 지표는 순위 맨 뒤로 보낸다(기본 1 = 이벤트 0건만 뒤로 감).
+#   표본부족 1등이 거슬리면 3~5 정도로 올리면 된다.
+STATE_PROB_MIN_EVENTS                    = 1
 # ★★★ (요청 — 신규) '지표선정 검증' 시트의 "새로 맞게 된 자리 / 새로 틀리게 된 자리" 열에
 #   한 셀당 최대 몇 개 날짜까지 적을지 — 넘으면 "… 외 N일"로 줄인다(셀이 지나치게
 #   길어져 가독성이 떨어지는 것 방지, 엑셀 셀 길이 한계 대비 안전장치도 겸함).
@@ -17636,8 +17653,9 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
        [상태별 후보 풀] 매수 지표는 '그 날 최적자리가 매수'인 두 상태(롱지속·숏→롱)의,
        매도 지표는 '매도'인 두 상태(숏지속·롱→숏)의 후보가 된다.
 
-       [특화지표 랭킹] 지표마다 P(상태|이 지표 발화) = 발화일 중 그 상태였던 비율을
-       라플라스 보정 (x+1)/(n+4)로 구하고, '그 상태를 맞출 확률이 높은 순'으로 정렬한다 —
+       [특화지표 랭킹] 지표마다 P(상태|발화) = 그 상태 적중수 ÷ 총 이벤트수(연속 발화는
+       1건으로 묶음, 보정 없음 — 6/10=0.6, 8/15=0.5333처럼 있는 그대로)를 구하고,
+       '그 상태를 맞출 확률이 높은 순'으로 정렬한다 —
        이게 그 상태의 특화지표 순위다(4개 상태 각각 별도 순위).
 
        [상태별 독립 개수·임계값] 4가지 상태 '각각' 자기 특화지표를 1개부터 하나씩 늘려가며,
@@ -17674,12 +17692,17 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         #   부터는 롱→숏 지표에서는 숏을 맞춘 확률, 숏→롱에서는 롱을 맞춘 확률이 높은순으로
         #   정렬" — 그 날의 '최적자리'가 매수(롱)인 상태는 (롱지속·숏→롱), 매도(숏)인 상태는
         #   (숏지속·롱→숏)이므로, 한 지표의 P(숏|발화)=P(숏지속)+P(롱→숏),
-        #   P(롱|발화)=P(롱지속)+P(숏→롱)로 계산된다(라플라스 보정 4상태 확률의 합이 1이라
-        #   두 방향 확률의 합도 정확히 1이 된다).
+        #   P(롱|발화)=P(롱지속)+P(숏→롱)로 계산된다(4상태 확률의 합이 1이라 두 방향
+        #   확률의 합도 정확히 1이 된다).
         _SIDE_STATES = {'매수': ('lc', 'sr'), '매도': ('sc', 'lr')}
         _REV_KEYS = ('lr', 'sr')          # 전환(추세반전) 상태 — 2단 정렬 적용 대상
         _REV_FLOOR = float(globals().get('STATE_REV_RANK_PROB_FLOOR', 0.5))
         _TRACE_DATE_CAP = int(globals().get('STATE_TRACE_DATE_CAP', 40))
+        # ★★★ (요청 — 계산식 수정) 전환확률 = 적중수 ÷ 총 이벤트수(보정 없음).
+        _EVENT_BASED = bool(globals().get('STATE_PROB_EVENT_BASED', True))
+        _FIRE_EVENT_FIRST = bool(globals().get('STATE_FIRE_EVENT_FIRST', False))
+        _EGAP = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
+        _MIN_EV = int(globals().get('STATE_PROB_MIN_EVENTS', 1))
 
         # ★ 검증 시트용 — 각 날짜의 문자열과 그 '자리'의 변동률(=다음날 등락률, 정답자리를
         #   정의할 때 쓰는 바로 그 수익률)을 미리 준비.
@@ -17693,7 +17716,22 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         _pcache = {}
 
         def _probs_of(row):
-            """지표 하나의 (발화마스크, 4상태 확률dict, 상태별 적중일수dict, 판정가능 발화일수)."""
+            """지표 하나의 (발화마스크, 4상태 확률dict, 상태별 적중수dict, 총 이벤트수).
+
+               ★★★ (요청 — 계산식 수정) "전환확률 = 전환 적중수 ÷ 총 이벤트수" —
+               예: 총 10건 중 6건 적중 → 0.6 / 15건 중 8건 → 0.5333.
+               예전에는 라플라스 보정 (x+1)/(n+4)를 썼는데, 그러면 6/10이 0.6이 아니라
+               7/14=0.5로 나와서 시트에 보이는 '총 이벤트수·적중수'와 '확률'이 서로 안
+               맞았다. 이제는 보정 없이 있는 그대로 나눈다.
+
+               ★ '총 이벤트수' — 연속 발화는 1건으로 묶는다(SIMPLE_POOL_EVENT_GAP_DAYS,
+               이 코드베이스가 성공률·최소신호수컷·신뢰도에서 이미 쓰는 것과 같은 규칙).
+               몇 달 내내 켜져 있는 지표가 그 기간 일수만큼 분모를 부풀리지 않게 하기 위함.
+               STATE_PROB_EVENT_BASED=False로 두면 예전처럼 발화일 단위로 센다.
+
+               ★ 보정을 뺐으므로 이벤트가 1~2건뿐인 지표가 100%로 1등이 될 수 있다 —
+               STATE_PROB_MIN_EVENTS(기본 1)를 올리면 그 미만인 지표는 순위 맨 뒤로 밀린다.
+            """
             _key = (str(row.get('indicator', '')), str(row.get('direction', '')),
                     row.get('threshold', None), int(row.get('lead_shift', 0) or 0),
                     int(row.get('horizon_day', row.get('horizon', 1)) or 1))
@@ -17705,13 +17743,21 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             except Exception:
                 return None
             _f = _s > 1e-12
-            _cnts = {k: int((_f & st[k]).sum()) for k in st}
-            _tot = sum(_cnts.values())
-            if _tot > 0:
-                _d = float(_tot + 4.0)
-                _p = {k: (_cnts[k] + 1.0) / _d for k in st}
+            if _EVENT_BASED:
+                try:
+                    _fe = np.asarray(_event_first_only(_s, _EGAP), dtype=float) > 1e-12
+                except Exception:
+                    _fe = _f
             else:
-                _p = {k: 0.25 for k in st}
+                _fe = _f
+            if _FIRE_EVENT_FIRST:
+                _f = _fe          # 날짜별 평균확률에 참여하는 '발화일'도 이벤트 첫날만
+            _cnts = {k: int((_fe & st[k]).sum()) for k in st}
+            _tot = sum(_cnts.values())          # 총 이벤트수(4상태 중 하나로 판정 가능한 것만)
+            if _tot > 0:
+                _p = {k: _cnts[k] / float(_tot) for k in st}     # ★ 적중수 ÷ 총 이벤트수
+            else:
+                _p = {k: 0.0 for k in st}       # 근거 자체가 없음 → 어떤 상태도 주장 못 함
             _c = (_f, _p, _cnts, _tot)
             _pcache[_key] = _c
             return _c
@@ -17750,6 +17796,9 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             #                                   숏→롱이면 P(롱|발화)) 높은 순
             #   전환확률이 50% 미만이면 그 지표를 '전환 예보'로 믿을 근거가 사실상 없으므로,
             #   그 아래부터는 최소한 방향(매수/매도)이라도 맞히는 지표를 먼저 쓰게 한다.
+            #   ★ 확률에 보정을 안 쓰므로(적중÷총이벤트 그대로), 이벤트가 STATE_PROB_MIN_EVENTS
+            #     미만인 지표는 "1건 중 1건 적중 = 100%" 같은 표본부족 1등을 막기 위해 어떤
+            #     그룹보다도 뒤로 보낸다(기본 1 = 사실상 이벤트 0건만 뒤로 감).
             _cands = []
             for _, _r in pool.iterrows():
                 _pr = _probs_of(_r)
@@ -17761,11 +17810,13 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             if not _cands:
                 return _blank
             if _is_rev:
-                _cands.sort(key=lambda x: ((0 if x[0] >= _REV_FLOOR else 1),
+                _cands.sort(key=lambda x: ((0 if int(x[4][3]) >= _MIN_EV else 1),
+                                           (0 if x[0] >= _REV_FLOOR else 1),
                                            -(x[0] if x[0] >= _REV_FLOOR else x[5]),
                                            -x[0], -x[1], -x[2]))
             else:
-                _cands.sort(key=lambda x: (-x[0], -x[1], -x[2]))
+                _cands.sort(key=lambda x: ((0 if int(x[4][3]) >= _MIN_EV else 1),
+                                           -x[0], -x[1], -x[2]))
             if len(_cands) > _max_cand:
                 _cands = _cands[:_max_cand]
             _side_lbl = ('숏을 맞춘 확률' if _side == '매도' else '롱을 맞춘 확률')
@@ -26923,8 +26974,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         if _mwr and _mwr.get('states'):
             ws_p = wb.create_sheet('상태별 특화지표'); ws_p.sheet_view.showGridLines = False
             ws_p.cell(1, 1).value = (
-                "4가지 상태별 특화지표 순위 — 각 지표가 발화한 날들 중 그 상태였던 비율"
-                "(P(상태|발화), 라플라스 보정)이 높은 순. 이 순서대로 지표를 하나씩 늘려가며 "
+                "4가지 상태별 특화지표 순위 — 각 지표의 P(상태|발화) = 그 상태 적중수 ÷ 총 이벤트수"
+                "(연속 발화는 1건으로 묶음, 보정 없이 있는 그대로 나눈 값 — 10건 중 6건이면 0.6, "
+                "15건 중 8건이면 0.5333)가 높은 순. 이 순서대로 지표를 하나씩 늘려가며 "
                 "틀린자리가 최소가 되는 개수를 채택하고(→ '지표선정 검증' 시트), 채택된 지표에 "
                 "'사용' 표시가 붙는다. 매수 지표는 (롱지속·숏→롱), 매도 지표는 (숏지속·롱→숏)의 "
                 "후보가 된다 — 같은 지표가 두 상태에서 서로 다른 순위를 가질 수 있다. "
@@ -26936,7 +26988,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_p.merge_cells('A1:H1')
 
             _cols_p = ['순위', '지표', 'P(상태|발화)', '방향적중확률', '정렬기준',
-                       '판정가능 발화일수', '그중 이 상태', '채택']
+                       '총 이벤트수', '이 상태 적중수', '채택']
             _r0 = 3
             _cap = int(globals().get('STATE_SPECIALIST_SHEET_TOP_N', 60))
             for _s in _mwr['states']:
@@ -26953,8 +27005,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _hr = _r0 + 1
                 _cols_p_s = list(_cols_p)
                 if _is_rev_s:
-                    _cols_p_s[2] = 'P(상태|발화)=전환확률'
+                    _cols_p_s[2] = '전환확률(적중÷총이벤트)'
                     _cols_p_s[3] = _s.get('side_label', '방향적중확률')
+                    _cols_p_s[6] = '전환 적중수'
                 for _ci, _cname in enumerate(_cols_p_s, 1):
                     _hc = ws_p.cell(_hr, _ci); _hc.value = _cname
                     _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='548235')
@@ -27003,7 +27056,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_s.cell(1, 1).value = (
                 "매일의 상태는 '직전 포지션'과 '그 날의 최적자리'로 결정된다 — 직전이 롱이면 후보는 "
                 "(롱지속/롱→숏), 현금이면 (숏지속/숏→롱). 각 지표마다 '그 지표가 발화했을 때 각 상태였던 "
-                "비율'을 상태별로 구하고(라플라스 보정), 그 날 발화한 지표들의 평균을 두 상태 각각의 "
+                "비율'을 상태별로 구하고(적중수÷총 이벤트수, 연속 발화는 1건), 그 날 발화한 지표들의 평균을 두 상태 각각의 "
                 "확률로 쓴다. 임계값도 상태마다 따로, 그 상태 단독 판정의 적중률이 최대가 되는 값을 "
                 "0~1 격자에서 찾는다. 판정: 한쪽만 임계값 초과 → 그 상태 / 둘 다 초과 → 임계값 대비 "
                 "확률(확률÷임계값)이 높은 쪽 / 둘 다 미달 → 같은 기준으로 고르되 '둘다미달(참고)' 표시. "
