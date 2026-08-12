@@ -17803,13 +17803,22 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             except Exception:
                 return 1.0
 
-        def _ret_of_net(net_arr, is_buy_side):
-            """0 기준 포지션의 총수익률 — 완전 벡터화."""
-            if is_buy_side:
-                _pos = (net_arr > 0.0)
-            else:
-                _pos = ~(net_arr < 0.0)
-            return float(np.sum(_pos[:-1] * _rr_kl[1:]))
+        # ★ 상태 짝 — 같은 '판정대상 날짜(dom)'를 놓고 서로 반대를 주장하는 상대 상태.
+        #   롱지속(매수) ↔ 롱→숏(매도)  : 직전이 롱이던 날의 결정
+        #   숏지속(매도) ↔ 숏→롱(매수)  : 직전이 현금이던 날의 결정
+        _OPP = {'lc': 'lr', 'lr': 'lc', 'sc': 'sr', 'sr': 'sc'}
+
+        def _ret_of_net(net_arr, idxs):
+            """0 기준 포지션의 수익률 — 그 상태가 실제로 판정을 내리는 날(dom)에서만 집계.
+
+               ★★★ (실측 버그수정) 처음엔 net을 한쪽 방향으로만 쌓고 전 구간에서 집계했는데,
+               그러면 매수 상태는 지표를 넣을수록 롱 노출만 늘어 수익률이 단조 증가하고
+               (GOOG 결과: 5%→400%까지 계속 상승) 결국 '후보 전부 채택'이 최적이 돼 버렸다.
+               ① net에 상대 상태(반대 방향)를 함께 넣어 0을 사이에 두고 겨루게 하고,
+               ② 틀린자리를 세던 그 날짜(_idxs)에서만 집계해 '그 자리들에서 실제로 번 돈'을
+               재도록 바꾼다 — 틀린자리와 완전히 같은 표본이라 두 지표가 직접 비교된다."""
+            _pos = (net_arr[idxs] > 0.0)
+            return float(np.sum(_pos * _ret_arr[idxs]))
 
         def _fire_of(row):
             """지표 하나의 발화마스크(신호 기준 캐시) — 확률과 별개로 '어느 날 목소리를
@@ -17869,17 +17878,27 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _cnts = {'lr': _rs, 'sr': _rs, 'lc': _ts, 'sc': _ts}
             return (_f, _p, _cnts, _ne, _p_all)
 
-        def _best_thr(p, actual):
-            """'p ≥ 임계값이면 이 상태'로 봤을 때 틀린 날이 최소가 되는 임계값."""
+        def _best_thr(p, actual, fired=None):
+            """'p ≥ 임계값이면 이 상태'로 봤을 때 틀린 날이 최소가 되는 임계값.
+
+               ★★★ (실측 버그수정) 예전엔 아무 지표도 발화하지 않은 날의 평균확률이 0으로
+               채워져 있었는데, 임계값 0이 선택되면 0 ≥ 0 이 참이라 '발화가 전혀 없는 날'까지
+               전부 이 상태로 판정돼 버렸다. 그 결과 어떤 지표를 몇 개 넣든 판정이 '항상 YES'로
+               고정돼 맞는자리·틀린자리·적중률·임계값이 k와 무관하게 완전히 똑같은 값으로
+               찍혔다(GOOG 결과: 357/133/72.86%/임계값 0 이 75단계 내내 그대로, '자리 변화'도
+               전부 +0). 발화가 없으면 그 상태를 주장할 근거 자체가 없으므로 무조건 NO로 본다."""
             if len(p) == 0:
                 return 0.5, 0.0, 0
-            _acc = (((p[None, :] >= _STATE_THR_GRID[:, None]) == actual[None, :])).mean(axis=1)
+            _pred = (p[None, :] >= _STATE_THR_GRID[:, None])
+            if fired is not None:
+                _pred = _pred & fired[None, :]
+            _acc = (_pred == actual[None, :]).mean(axis=1)
             _i = int(np.argmax(_acc)); _a = float(_acc[_i])
             return float(_STATE_THR_GRID[_i]), _a, int(round((1.0 - _a) * len(p)))
 
         _max_cand = int(globals().get('SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES', 300))
 
-        def _select_state(skey, pool, order='prob'):
+        def _select_state(skey, pool, order='prob', opp_net=None):
             """한 상태에 대해: 특화지표 랭킹 → 개수 늘려가며 임계값·틀린자리 최소화.
                order='prob' → 기존(전환/추세 성공확률 순), order='rel' → ★(요청 7번) 신뢰도 순."""
             _blank = dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=0, wrong=0,
@@ -17888,7 +17907,9 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                           is_rev=(skey in _REV_KEYS),
                           side_label='(전환성공+추세성공)÷총이벤트',
                           rev_floor=_REV_FLOOR, n_rev_tier=None, judge_days=0,
-                          order=order, ret_kl0=0.0, n_by_wrong=0, picked_by='')
+                          order=order, ret_kl0=0.0, n_by_wrong=0, picked_by='',
+                          net_sel=np.zeros(n), opp_net=np.zeros(n),
+                          dom_idx=np.zeros(0, dtype=int))
             if pool is None or len(pool) == 0:
                 return _blank
             _act = st[skey]; _dm = dom[skey]
@@ -17940,6 +17961,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _sum = np.zeros(n); _cnt = np.zeros(n)
             _netw = np.zeros(n)                  # ★ (요청 6번) 0기준 포지션용 누적 net
             _is_buy_side = (_side == '매수')
+            _opp_net = (opp_net if opp_net is not None else np.zeros(n))
             trace = []; best = None; best_ret = None
             _prev_corr = None
             for k, (_p_s, _sr_, _rel_, _row, _pr, _p_sd) in enumerate(_cands):
@@ -17947,7 +17969,8 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 _newcov = int((_f & (_cnt < 0.5)).sum())
                 _sum[_f] += _p_s; _cnt[_f] += 1.0
                 _avg = np.where(_cnt > 0, _sum / np.maximum(_cnt, 1e-12), 0.0)
-                _thr, _acc, _w = _best_thr(_avg[_idxs], _actual)
+                _fired_j = (_cnt[_idxs] > 0.5)
+                _thr, _acc, _w = _best_thr(_avg[_idxs], _actual, _fired_j)
                 _rem = int((_act & (_cnt < 0.5)).sum())
                 # ★★★ (요청 — 신규) "지표 추가시 맞는 자리, 틀린자리 변화 및 각각 날짜와
                 #   변동률 정보" — 이번 단계의 임계값으로 판정했을 때 맞은 날/틀린 날을
@@ -17955,7 +17978,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 #   날짜·변동률(그 자리의 다음날 등락률)과 함께 기록한다. 임계값도 매
                 #   단계 다시 탐색되므로, 이 변화에는 '지표 추가'와 '임계값 이동' 효과가
                 #   함께 반영된다(실제로 그 단계에서 성적이 어떻게 달라졌는지 그대로).
-                _corr = (_avg[_idxs] >= _thr) == _actual
+                _corr = ((_avg[_idxs] >= _thr) & _fired_j) == _actual
                 _ncorr = int(_corr.sum())
                 if _prev_corr is None:
                     _gain_i = np.zeros(0, dtype=int); _lost_i = np.zeros(0, dtype=int)
@@ -17978,9 +18001,9 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                     return _out
 
                 # ★★★ (요청 6번) 틀린자리와 똑같은 자리에서 수익률만 추가 계산 —
-                #   이번 지표의 가중치를 net에 누적(O(n))하고 0 기준 포지션으로 총수익률.
+                #   이번 지표의 가중치를 net에 누적(O(n))하고 0 기준 포지션으로 수익률.
                 _netw[_f] += (_wt_of(_row) if _is_buy_side else -_wt_of(_row))
-                _ret_kl0 = _ret_of_net(_netw, _is_buy_side)
+                _ret_kl0 = _ret_of_net(_netw + _opp_net, _idxs)
                 trace.append((k + 1, _w, _rem, _acc, _thr, _newcov,
                               str(_row.get('indicator', '')),
                               _ncorr, _d_corr, _d_wrong,
@@ -18002,6 +18025,10 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             if _pick_ret and best_ret is not None:
                 best = dict(best_ret)
             _sel_rows = [_c[3] for _c in _cands[:best['k']]]
+            # ★ 채택된 개수까지의 net(자기 몫) — 2패스와 일별백테스트 시트에서 재사용
+            _net_sel = np.zeros(n)
+            for _c2 in _cands[:best['k']]:
+                _net_sel[_c2[4][0]] += (_wt_of(_c2[3]) if _is_buy_side else -_wt_of(_c2[3]))
             _sel = pd.DataFrame(_sel_rows).reset_index(drop=True) if _sel_rows else pool.iloc[0:0].copy()
             _sel_names = set(str(_r.get('indicator', '')) for _r in _sel_rows)
             ranked = [(_rk, _nm, _pv, _nf, _nh, _ps, _bs, _relv,
@@ -18013,6 +18040,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                         is_rev=_is_rev, side_label=_side_lbl, rev_floor=_REV_FLOOR,
                         n_rev_tier=int(sum(1 for _c in _cands if _c[0] >= _REV_FLOOR)) if _is_rev else None,
                         judge_days=int(len(_idxs)), order=order,
+                        net_sel=_net_sel, opp_net=_opp_net, dom_idx=_idxs,
                         ret_kl0=float(best.get('ret', 0.0) or 0.0),
                         n_by_wrong=_best_wrong_k, picked_by=('수익률' if _pick_ret else '틀린자리'))
 
@@ -18029,17 +18057,23 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             return _u
 
         _try_rel = bool(globals().get('SIMPLE_POOL_STATE_TRY_RELIABILITY_ORDER', True))
-        _res_prob = {'lc': _select_state('lc', buy_pool, 'prob'),
-                     'sr': _select_state('sr', buy_pool, 'prob'),
-                     'sc': _select_state('sc', sell_pool, 'prob'),
-                     'lr': _select_state('lr', sell_pool, 'prob')}
-        if _try_rel:
-            _res_rel = {'lc': _select_state('lc', buy_pool, 'rel'),
-                        'sr': _select_state('sr', buy_pool, 'rel'),
-                        'sc': _select_state('sc', sell_pool, 'rel'),
-                        'lr': _select_state('lr', sell_pool, 'rel')}
-        else:
-            _res_rel = None
+        _POOL_OF = {'lc': buy_pool, 'sr': buy_pool, 'sc': sell_pool, 'lr': sell_pool}
+
+        def _run_pass(order, opp_nets):
+            return {_k2: _select_state(_k2, _POOL_OF[_k2], order, opp_nets.get(_k2))
+                    for _k2 in ('lc', 'sr', 'sc', 'lr')}
+
+        def _select_two_pass(order):
+            """★ 2패스 — 1패스는 상대 상태 없이(자기 주장만) 뽑고, 2패스는 1패스에서 뽑힌
+               상대 상태의 net을 깔아둔 상태에서 다시 뽑는다. 이래야 0을 사이에 두고 두
+               상태가 실제로 겨루게 되고, 수익률이 단조 증가하는 퇴화가 사라진다."""
+            _a = _run_pass(order, {})
+            _opp = {_k2: _a[_OPP[_k2]]['net_sel'] for _k2 in ('lc', 'sr', 'sc', 'lr')}
+            _b = _run_pass(order, _opp)
+            return _b
+
+        _res_prob = _select_two_pass('prob')
+        _res_rel = _select_two_pass('rel') if _try_rel else None
 
         _st_res = {}
         _pick_log = []
@@ -18060,6 +18094,55 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 _a['name'], _win_k, _wr * 100.0,
                 ('%.2f%%' % (_rb * 100.0)) if _b is not None else '—'))
         print("    (상태별 지표선정 — K=L=0 수익률 비교) " + ', '.join(_pick_log))
+
+        # ★★★ (요청) "4가지 상태 수익률 최적으로 된거 일별백테스트로 각각 시트 만들도록" —
+        #   각 상태의 채택 세트로 0기준 포지션을 매일 재현한 표를 만들어 리포트에 싣는다.
+        #   그 상태가 판정을 내리는 날(dom)만 실제 포지션을 잡고, 그 외의 날은 '판정없음'
+        #   으로 두어 수익 집계에서 빠진다 — 선정에 쓴 수익률과 정확히 같은 정의.
+        _sw_arr = np.asarray(_ctp[6], dtype=bool)
+        for _k2, _r2 in _st_res.items():
+            _net_tot = np.asarray(_r2.get('net_sel')) + np.asarray(_r2.get('opp_net'))
+            _dom_i = np.asarray(_r2.get('dom_idx'), dtype=int)
+            _dom_m = np.zeros(n, dtype=bool)
+            if len(_dom_i):
+                _dom_m[_dom_i] = True
+            _pos_a = (_net_tot > 0.0)
+            _rows_bt = []
+            _cum = 0.0
+            _nw = _nl = 0
+            for _t in range(n):
+                _dm_ = bool(_dom_m[_t])
+                _pos_ = bool(_pos_a[_t]) if _dm_ else None
+                _rt = float(_ret_arr[_t])
+                _day = (_rt if (_dm_ and _pos_) else 0.0)
+                if _dm_:
+                    _cum += _day
+                    if _pos_ and _rt > 0: _nw += 1
+                    elif _pos_ and _rt < 0: _nl += 1
+                if _sw_arr[_t]:
+                    _opt = '횡보'
+                elif not bool(_ctp[3][_t]):
+                    _opt = '(평가불가)'
+                else:
+                    _opt = '매수' if int(_ctp[0][_t]) == 1 else '매도'
+                _act = ('매수' if _pos_ else '현금') if _dm_ else '-'
+                if _dm_ and _opt in ('매수', '매도'):
+                    _ok = 'O' if ((_opt == '매수') == bool(_pos_)) else 'X'
+                elif _dm_ and _opt == '횡보':
+                    _ok = 'X'          # 횡보자리는 어느 쪽도 정답 아님(요청 2번)
+                else:
+                    _ok = ''
+                _rows_bt.append((_dstr_all[_t] if _t < len(_dstr_all) else str(_t),
+                                 float(close_arr[_t]) if _t < len(close_arr) else None,
+                                 round(_rt * 100.0, 3),
+                                 round(float(_net_tot[_t]), 4),
+                                 round(float(_r2.get('net_sel')[_t]), 4),
+                                 round(float(_r2.get('opp_net')[_t]), 4),
+                                 _act, _opt, _ok,
+                                 round(_day * 100.0, 3), round(_cum * 100.0, 3)))
+            _r2['daily_bt'] = _rows_bt
+            _r2['bt_win'] = _nw
+            _r2['bt_loss'] = _nl
 
         buy_final = _union(_st_res['lc']['sel'], _st_res['sr']['sel'])
         sell_final = _union(_st_res['sc']['sel'], _st_res['lr']['sel'])
@@ -27263,6 +27346,59 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ep:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 상태별 특화지표 시트 작성 실패(무시): {_ep}")
+
+    # ─── 7d-3b. ★★★ (요청 — 신규) 4가지 상태별 일별 백테스트 시트 ───
+    try:
+        _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
+        if _mwr and _mwr.get('states'):
+            for _s in _mwr['states']:
+                _bt = _s.get('daily_bt') or []
+                if not _bt:
+                    continue
+                _nm_sheet = ('일별백테스트_%s' % _s['name'])[:31]
+                ws_b = wb.create_sheet(_nm_sheet); ws_b.sheet_view.showGridLines = False
+                _tot = float(_s.get('ret_kl0', 0.0) or 0.0) * 100.0
+                _nwin = int(_s.get('bt_win', 0) or 0); _nloss = int(_s.get('bt_loss', 0) or 0)
+                ws_b.cell(1, 1).value = (
+                    f"[{_s['name']}] ({_s['side']} 지표 {_s['n']}개 채택) 일별 백테스트 — "
+                    f"총수익 {_tot:+.2f}%, 판정일 {len(np.asarray(_s.get('dom_idx')))}일, "
+                    f"보유수익일 {_nwin}일 / 보유손실일 {_nloss}일, "
+                    f"정렬 {'신뢰도순' if _s.get('win_order') == 'rel' else '확률순'}. "
+                    "★ 포지션은 K와 L을 둘 다 0으로 놓고(net>0이면 매수, 아니면 현금) 정한 것으로, "
+                    "지표 개수를 고를 때 쓴 수익률과 정의가 완전히 같다. "
+                    "net = 이 상태 지표 합 + 상대 상태 지표 합(반대부호) — 두 상태가 0을 사이에 두고 겨룬다. "
+                    "이 상태가 판정을 내리는 날(직전 포지션이 맞는 날)만 포지션을 잡고 나머지는 '-'로 두며, "
+                    "그런 날은 수익 집계에서 빠진다. 최적자리가 '횡보'인 날은 어느 쪽도 정답이 아니라 X로 표시된다.")
+                ws_b.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+                ws_b.merge_cells('A1:K1')
+                _cols_b = ['날짜', '종가', '다음날등락%', 'net(합계)', 'net(이 상태)', 'net(상대 상태)',
+                           '포지션', '최적자리', '정오', '일수익%', '누적수익%']
+                for _ci, _cn in enumerate(_cols_b, 1):
+                    _hc = ws_b.cell(3, _ci); _hc.value = _cn
+                    _hc.font = Font(bold=True, color='FFFFFF')
+                    _hc.fill = PatternFill('solid', fgColor='2F5597')
+                for _ri, _row_b in enumerate(_bt):
+                    _rr_ = 4 + _ri
+                    for _ci, _v in enumerate(_row_b, 1):
+                        _cc = ws_b.cell(_rr_, _ci); _cc.value = _v
+                    _okv = _row_b[8]
+                    if _okv == 'O':
+                        ws_b.cell(_rr_, 9).fill = PatternFill('solid', fgColor='C6EFCE')
+                    elif _okv == 'X':
+                        ws_b.cell(_rr_, 9).fill = PatternFill('solid', fgColor='FFC7CE')
+                    if _row_b[7] == '횡보':
+                        ws_b.cell(_rr_, 8).font = Font(color='808080', italic=True)
+                    if _row_b[6] == '매수':
+                        ws_b.cell(_rr_, 7).font = Font(bold=True, color='1F6F3D')
+                for _ci, _w in enumerate([12, 10, 12, 12, 13, 14, 9, 10, 7, 10, 12], 1):
+                    ws_b.column_dimensions[get_column_letter(_ci)].width = _w
+                ws_b.freeze_panes = 'B4'
+            print("  ✓ 상태별 일별백테스트 시트 4종 — " + ', '.join(
+                '%s %+.2f%%' % (_s['name'], float(_s.get('ret_kl0', 0.0) or 0.0) * 100.0)
+                for _s in _mwr['states']))
+    except Exception as _ebt:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 상태별 일별백테스트 시트 작성 실패(무시): {_ebt}")
 
     # ─── 7d-4. ★★★ (요청 — 재설계) 추세전환 판단 시트 ───
     #   "날짜마다 2가지 가능 상태의 평균 확률과 임계값을 각각 구하고, 최근 날짜도 각각
