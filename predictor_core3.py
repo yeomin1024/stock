@@ -14394,7 +14394,7 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 #                            설정
 # ════════════════════════════════════════════════════════════════
-EVAL_START          = '2022-01-01'
+EVAL_START          = '2025-01-01'
 EVAL_END            = None           # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지 학습.
                                       #   지정 시 'YYYY-MM-DD'(그 날짜 포함, 이후 데이터는 잘라냄) —
                                       #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
@@ -14628,6 +14628,12 @@ SIMPLE_POOL_REL_SHRINK_BASE              = True
 #   잰다. 본 선정 결과는 바뀌지 않으며 '선정 홀드아웃 검증' 시트로만 보고된다.
 #   0 또는 1 이상이면 검증을 건너뛴다.
 STATE_HOLDOUT_TRAIN_FRAC                 = 0.7
+# ★★★ (실측 버그수정) 발화 정렬에도 연속발화 축약을 적용 — 최근일자 시트와 실제 net의
+#   발화 판정이 어긋나던 문제(매도 3개 발화인데 net 카운트 0) 해결. False면 예전 동작.
+SIMPLE_POOL_ALIGN_EVENT_FIRST_ONLY       = True
+# ★★★ (실측 개선) 상태별 지표 개수 채택 기준 — 'avoid'(기본) / 'return' / 'wrong'.
+#   실측 근거는 '선정 홀드아웃 검증' 시트의 세 기준 비교표를 참고.
+SIMPLE_POOL_STATE_PICK_CRITERION         = 'avoid'
 # ★★★ (실측 개선) 시간 일관성 감점 강도(0~1). 이벤트를 시간순 전·후반으로 갈라 한쪽에서만
 #   벌었으면 점수를 이 비율만큼 깎는다. 0이면 보정 없음, 1이면 최대 감점.
 #   실측: 전반 성적 → 후반 성적 상관이 r=-0.10에 불과해, 전 구간 일괄 채점은 과적합이 크다.
@@ -17655,6 +17661,19 @@ def _aligned_signal_for_row(feat, row):
         s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
     except Exception:
         return np.zeros(len(feat))
+    # ★★★ (실측 버그수정) "최근일자 발화지표에 매도 3개가 떴는데 일별 백테스트에는 매도
+    #   카운트가 0" — 원인은 여기서 연속발화 축약(_event_first_only)이 빠져 있었던 것.
+    #   실제 net을 만드는 _row_sig/_sig_arr는 연속발화를 이벤트 첫날만 남기고 축약하는데,
+    #   이 함수는 원본 발화를 그대로 써서 "며칠째 계속 켜져 있는 지표"가 마지막 날에도
+    #   발화 중인 것으로 잡혔다. 그래서 최근일자 시트에는 매도점수합 5.53으로 뜨지만
+    #   net에는 0으로 들어가 두 시트가 어긋났다. 축약을 여기에도 동일 적용해 정렬을 맞춘다.
+    #   ★ 이 함수는 최근일자 시트뿐 아니라 상태별 지표선정·신뢰도 채점에도 쓰이므로,
+    #     수정 효과가 '어디서 계산하든 같은 날 목소리를 낸다'로 전 경로에 일관되게 퍼진다.
+    if bool(globals().get('SIMPLE_POOL_ALIGN_EVENT_FIRST_ONLY', True)):
+        try:
+            s = _event_first_only(s, int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2)))
+        except Exception:
+            pass
     _hz = row.get('horizon_day', None)
     if _hz is None or (isinstance(_hz, float) and pd.isna(_hz)):
         _hz = row.get('horizon', None)
@@ -17903,7 +17922,17 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 _pos = (net_arr[idxs] > 0.0)
             else:
                 _pos = ~(net_arr[idxs] < 0.0)
-            return float(np.sum(_pos * _ret_arr[idxs]))
+            _long_only = float(np.sum(_pos * _ret_arr[idxs]))
+            # ★★★ (실측 개선) 위 '롱온리 수익'만 최대화하면 노출을 늘리는 쪽으로 퇴화한다.
+            #   GOOG 실측: 롱지속 74개·숏지속 66개가 채택돼 사실상 '항상 롱'·'항상 현금'이
+            #   됐고(숏지속 검증수익 정확히 0.00%), 홀드아웃 초과수익이 +0.2%p / -57.5%p로
+            #   무너졌다. 현금으로 피한 하락(=회피이익)을 같이 세면 이 퇴화가 사라진다:
+            #     점수 = Σ (보유했으면 +등락, 피했으면 -등락) = Σ (2·pos - 1) · 등락
+            #   맞힌 날은 폭만큼 가산, 틀린 날은 폭만큼 감산 — '진폭가중 정확도'와 같다.
+            #   그래서 '항상 롱'도 '항상 현금'도 좋은 점수를 못 받고, 큰 움직임을 제대로
+            #   가려내야만 점수가 오른다.
+            _avoid = float(np.sum((2.0 * _pos - 1.0) * _ret_arr[idxs]))
+            return _long_only, _avoid
 
         def _fire_of(row):
             """지표 하나의 발화마스크(신호 기준 캐시) — 확률과 별개로 '어느 날 목소리를
@@ -17992,7 +18021,8 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                           is_rev=(skey in _REV_KEYS),
                           side_label='(전환성공+추세성공)÷총이벤트',
                           rev_floor=_REV_FLOOR, n_rev_tier=None, judge_days=0,
-                          order=order, ret_kl0=0.0, n_by_wrong=0, picked_by='',
+                          order=order, ret_kl0=0.0, ret_avoid=0.0, n_by_wrong=0,
+                          n_by_ret=0, n_by_avoid=0, picked_by='',
                           net_sel=np.zeros(n), opp_net=np.zeros(n),
                           dom_idx=np.zeros(0, dtype=int))
             if pool is None or len(pool) == 0:
@@ -18048,7 +18078,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _netw = np.zeros(n)                  # ★ (요청 6번) 0기준 포지션용 누적 net
             _is_buy_side = (_side == '매수')
             _opp_net = (opp_net if opp_net is not None else np.zeros(n))
-            trace = []; best = None; best_ret = None
+            trace = []; best = None; best_ret = None; best_avd = None
             _prev_corr = None
             for k, (_p_s, _sr_, _rel_, _row, _pr, _p_sd) in enumerate(_cands):
                 _f = _pr[0]
@@ -18089,12 +18119,12 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 # ★★★ (요청 6번) 틀린자리와 똑같은 자리에서 수익률만 추가 계산 —
                 #   이번 지표의 가중치를 net에 누적(O(n))하고 0 기준 포지션으로 수익률.
                 _netw[_f] += (_wt_of(_row) if _is_buy_side else -_wt_of(_row))
-                _ret_kl0 = _ret_of_net(_netw, _idxs, _is_buy_side)
+                _ret_kl0, _ret_avoid = _ret_of_net(_netw, _idxs, _is_buy_side)
                 trace.append((k + 1, _w, _rem, _acc, _thr, _newcov,
                               str(_row.get('indicator', '')),
                               _ncorr, _d_corr, _d_wrong,
                               _fmt_days(_gain_i), _fmt_days(_lost_i),
-                              float(_ret_kl0)))
+                              float(_ret_kl0), float(_ret_avoid)))
                 if best is None or _w < best['wrong'] or \
                    (_w == best['wrong'] and (_rem < best['rem'] or
                     (_rem == best['rem'] and _acc > best['acc']))):
@@ -18102,16 +18132,30 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 if best_ret is None or _ret_kl0 > best_ret['ret'] + 1e-12:
                     best_ret = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr,
                                     ret=float(_ret_kl0))
+                if best_avd is None or _ret_avoid > best_avd['avd'] + 1e-12:
+                    best_avd = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr,
+                                    ret=float(_ret_kl0), avd=float(_ret_avoid))
             if best is None:
                 return _blank
             # ★★★ (요청 6번) 채택 기준 = K=L=0 수익률 최고 개수(SIMPLE_POOL_STATE_PICK_BY_RETURN).
             #   False로 두면 예전처럼 '틀린자리 최소' 개수를 쓴다.
-            _pick_ret = bool(globals().get('SIMPLE_POOL_STATE_PICK_BY_RETURN', True))
+            #   ★★★ (실측 개선) 채택 기준 3종 — 기본값은 'avoid'(진폭가중 정확도).
+            #     'wrong'  : 틀린자리 최소 (분류 정확도, 등락폭 무시)
+            #     'return' : 롱온리 수익 최대 (노출 증가로 퇴화 — GOOG 실측에서 무너짐)
+            #     'avoid'  : 회피이익 포함 수익 최대 (폭이 큰 날을 가려낼수록 점수↑)
+            _crit = str(globals().get('SIMPLE_POOL_STATE_PICK_CRITERION', 'avoid')).lower()
+            if not bool(globals().get('SIMPLE_POOL_STATE_PICK_BY_RETURN', True)):
+                _crit = 'wrong'
             _best_wrong_k = int(best['k'])
-            if _pick_ret and best_ret is not None:
+            _best_ret_k = int(best_ret['k']) if best_ret else _best_wrong_k
+            _best_avd_k = int(best_avd['k']) if best_avd else _best_wrong_k
+            if _crit == 'return' and best_ret is not None:
                 best = dict(best_ret)
+            elif _crit == 'avoid' and best_avd is not None:
+                best = dict(best_avd)
+            _cand_rows_meta = [(_c2[4][0], _wt_of(_c2[3])) for _c2 in _cands]
             _sel_rows = [_c[3] for _c in _cands[:best['k']]]
-            # ★ 채택된 개수까지의 net(자기 몫) — 2패스와 일별백테스트 시트에서 재사용
+            # ★ 채택된 개수까지의 net(자기 몫) — 일별백테스트 시트에서 재사용
             _net_sel = np.zeros(n)
             for _c2 in _cands[:best['k']]:
                 _net_sel[_c2[4][0]] += (_wt_of(_c2[3]) if _is_buy_side else -_wt_of(_c2[3]))
@@ -18127,8 +18171,12 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                         n_rev_tier=int(sum(1 for _c in _cands if _c[0] >= _REV_FLOOR)) if _is_rev else None,
                         judge_days=int(len(_idxs)), order=order,
                         net_sel=_net_sel, opp_net=_opp_net, dom_idx=_idxs,
+                        cand_rows=_cand_rows_meta,
                         ret_kl0=float(best.get('ret', 0.0) or 0.0),
-                        n_by_wrong=_best_wrong_k, picked_by=('수익률' if _pick_ret else '틀린자리'))
+                        ret_avoid=float(best.get('avd', 0.0) or 0.0),
+                        n_by_wrong=_best_wrong_k, n_by_ret=_best_ret_k, n_by_avoid=_best_avd_k,
+                        picked_by={'wrong': '틀린자리최소', 'return': '롱온리수익',
+                                   'avoid': '회피포함수익'}.get(_crit, _crit))
 
         # ★★★ (요청 7번) 상태마다 ①확률순 ②신뢰도순 두 가지로 각각 선정해보고,
         #   그 상태의 K=L=0 수익률이 더 높은 쪽을 채택한다(상태별 독립 — 선정 자체가
@@ -18310,30 +18358,55 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 _cut = int(n * _hf)
                 _tr = np.zeros(n, dtype=bool); _tr[:_cut] = True
                 _te = ~_tr
+                # ★★★ (실측 — 요청) "최대 수익률이 왜 틀린자리 최소가 아닌지, 어느 게 맞는지"
+                #   → 의견이 아니라 데이터로 답한다. 세 기준(틀린자리최소 / 롱온리수익최대 /
+                #   회피포함수익최대)으로 각각 학습구간에서만 지표를 뽑고, 손대지 않은 검증
+                #   구간에서 '그냥 계속 보유' 대비 초과수익을 비교한다.
+                _CRITS = (('wrong', '틀린자리최소', 'n_by_wrong'),
+                          ('return', '롱온리수익', 'n_by_ret'),
+                          ('avoid', '회피포함수익', 'n_by_avoid'))
                 _res_tr = {_k2: _select_state_tr(_k2, _POOL_OF[_k2], 'prob', _tr)
                            for _k2 in ('lc', 'sr', 'sc', 'lr')}
-                _hrows = []
+                _hrows = []; _crit_tot = {_c: [0.0, 0.0] for _c, _, _ in _CRITS}
                 for _k2 in ('lc', 'lr', 'sc', 'sr'):
                     _rt = _res_tr[_k2]
                     _isb = (_rt['side'] == '매수')
-                    _net = np.asarray(_rt['net_sel'])
-                    _pos = (_net > 0.0) if _isb else ~(_net < 0.0)
                     _dm_all = dom_full[_k2]
                     _d_tr = np.nonzero(_dm_all & _tr)[0]
                     _d_te = np.nonzero(_dm_all & _te)[0]
-                    _r_tr = float(np.sum(_pos[_d_tr] * _ret_arr[_d_tr])) if len(_d_tr) else 0.0
-                    _r_te = float(np.sum(_pos[_d_te] * _ret_arr[_d_te])) if len(_d_te) else 0.0
-                    # 같은 날짜에 '항상 보유'했을 때(=벤치마크)와 비교해야 의미가 있다
                     _b_tr = float(np.sum(_ret_arr[_d_tr])) if len(_d_tr) else 0.0
                     _b_te = float(np.sum(_ret_arr[_d_te])) if len(_d_te) else 0.0
+                    _cand_rows = _rt.get('cand_rows') or []
+                    _per = {}
+                    for _cid, _clabel, _nkey in _CRITS:
+                        _kk = int(_rt.get(_nkey, 0) or 0)
+                        _net = np.zeros(n)
+                        for _cr in _cand_rows[:_kk]:
+                            _net[_cr[0]] += (_cr[1] if _isb else -_cr[1])
+                        _pos = (_net > 0.0) if _isb else ~(_net < 0.0)
+                        _rtr = float(np.sum(_pos[_d_tr] * _ret_arr[_d_tr])) if len(_d_tr) else 0.0
+                        _rte = float(np.sum(_pos[_d_te] * _ret_arr[_d_te])) if len(_d_te) else 0.0
+                        _per[_cid] = dict(label=_clabel, k=_kk, ret_tr=_rtr, ret_te=_rte,
+                                          edge_tr=_rtr - _b_tr, edge_te=_rte - _b_te)
+                        _crit_tot[_cid][0] += _rtr - _b_tr
+                        _crit_tot[_cid][1] += _rte - _b_te
+                    _cur = _per.get(str(globals().get('SIMPLE_POOL_STATE_PICK_CRITERION',
+                                                      'avoid')).lower(), _per['avoid'])
                     _hrows.append(dict(key=_k2, name=_rt['name'], side=_rt['side'],
-                                       n=_rt['n'], n_days_tr=len(_d_tr), n_days_te=len(_d_te),
-                                       ret_tr=_r_tr, ret_te=_r_te,
+                                       n=_cur['k'], n_days_tr=len(_d_tr), n_days_te=len(_d_te),
+                                       ret_tr=_cur['ret_tr'], ret_te=_cur['ret_te'],
                                        bh_tr=_b_tr, bh_te=_b_te,
-                                       edge_tr=_r_tr - _b_tr, edge_te=_r_te - _b_te))
+                                       edge_tr=_cur['edge_tr'], edge_te=_cur['edge_te'],
+                                       per_crit=_per))
+                _best_crit = max(_crit_tot.items(), key=lambda kv: kv[1][1])[0]
                 _hold = dict(train_frac=_hf, cut=_cut,
                              cut_date=(_dstr_all[_cut] if _cut < len(_dstr_all) else ''),
-                             rows=_hrows)
+                             rows=_hrows, crit_totals=_crit_tot,
+                             crit_labels={_c: _l for _c, _l, _ in _CRITS},
+                             best_crit=_best_crit)
+                print("    (기준 비교 — 검증구간 초과수익 합계) " + ', '.join(
+                    "%s %+.1f%%p" % (_l, _crit_tot[_c][1] * 100) for _c, _l, _ in _CRITS)
+                    + " → 최선: %s" % {_c: _l for _c, _l, _ in _CRITS}[_best_crit])
                 print("    (홀드아웃 검증) 학습 %d일 / 검증 %d일 — " % (_cut, n - _cut) +
                       ', '.join("%s 학습%+.1f%%→검증%+.1f%%(보유대비 %+.1f%%p)"
                                 % (_h['name'], _h['ret_tr'] * 100, _h['ret_te'] * 100,
@@ -27523,6 +27596,45 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                    if _avg_tr > _avg_te else ""))
             ws_h.cell(_nrow, 1).font = Font(bold=True, size=11,
                                             color=('1F6F3D' if _avg_te > 0 else '9C0006'))
+            # ★★★ (요청) "최대 수익률이 왜 틀린자리 최소가 아닌지, 어느 게 맞는지" — 실측 비교표
+            _ct = _hd.get('crit_totals') or {}
+            _cl = _hd.get('crit_labels') or {}
+            if _ct:
+                _cr0 = _nrow + 2
+                ws_h.cell(_cr0, 1).value = (
+                    "▼ 지표 개수 채택 기준 3종 비교 — 학습구간에서만 뽑고 검증구간에서 잰 "
+                    "'보유 대비 초과수익' 합계. 이 표의 검증 열이 가장 큰 기준이 실제로 가장 나은 기준이다.")
+                ws_h.cell(_cr0, 1).font = Font(bold=True, size=10, color='1F3864')
+                ws_h.merge_cells(start_row=_cr0, start_column=1, end_row=_cr0, end_column=10)
+                for _ci, _cn in enumerate(['채택 기준', '설명', '학습 초과합%p', '검증 초과합%p(★)',
+                                           '현재 적용'], 1):
+                    _hc = ws_h.cell(_cr0 + 1, _ci); _hc.value = _cn
+                    _hc.font = Font(bold=True, color='FFFFFF')
+                    _hc.fill = PatternFill('solid', fgColor='7030A0')
+                _desc = {'wrong': '분류 정확도만 — 등락폭을 무시(1% 날과 5% 날이 동급)',
+                         'return': '보유수익만 — 노출을 늘리는 쪽으로 퇴화하기 쉬움',
+                         'avoid': '보유수익 + 현금으로 피한 하락 — 폭 큰 날을 가려낼수록 점수↑'}
+                _cur_crit = str(globals().get('SIMPLE_POOL_STATE_PICK_CRITERION', 'avoid')).lower()
+                for _ri2, _cid in enumerate(('wrong', 'return', 'avoid')):
+                    if _cid not in _ct:
+                        continue
+                    _rr2 = _cr0 + 2 + _ri2
+                    _is_best2 = (_cid == _hd.get('best_crit'))
+                    for _ci, _v in enumerate([_cl.get(_cid, _cid), _desc.get(_cid, ''),
+                                              round(_ct[_cid][0] * 100, 2),
+                                              round(_ct[_cid][1] * 100, 2),
+                                              ('◀ 적용중' if _cid == _cur_crit else '')], 1):
+                        _cc = ws_h.cell(_rr2, _ci); _cc.value = _v
+                        if _is_best2:
+                            _cc.font = Font(bold=True)
+                            _cc.fill = PatternFill('solid', fgColor='C6EFCE')
+                ws_h.cell(_cr0 + 5, 1).value = (
+                    "→ 검증 기준 최선: %s. 현재 적용: %s. 다르면 "
+                    "SIMPLE_POOL_STATE_PICK_CRITERION 을 바꾸면 된다('wrong'/'return'/'avoid')."
+                    % (_cl.get(_hd.get('best_crit'), '?'), _cl.get(_cur_crit, _cur_crit)))
+                ws_h.cell(_cr0 + 5, 1).font = Font(bold=True, size=10, color='1F6F3D')
+                _nrow = _cr0 + 6
+
             ws_h.cell(_nrow + 2, 1).value = (
                 "※ 참고 — 개별 지표 단위로도 검증해 보면(신호를 시간순 전·후반으로 분할) "
                 "전반 성적과 후반 성적의 상관은 GOOG 기준 r=-0.10, 승률은 r=-0.14였다. "
