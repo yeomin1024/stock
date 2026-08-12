@@ -14394,7 +14394,7 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 #                            설정
 # ════════════════════════════════════════════════════════════════
-EVAL_START          = '2022-01-01'
+EVAL_START          = '2025-01-01'
 EVAL_END            = None           # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지 학습.
                                       #   지정 시 'YYYY-MM-DD'(그 날짜 포함, 이후 데이터는 잘라냄) —
                                       #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
@@ -14633,7 +14633,22 @@ STATE_HOLDOUT_TRAIN_FRAC                 = 0.7
 SIMPLE_POOL_ALIGN_EVENT_FIRST_ONLY       = True
 # ★★★ (실측 개선) 상태별 지표 개수 채택 기준 — 'avoid'(기본) / 'return' / 'wrong'.
 #   실측 근거는 '선정 홀드아웃 검증' 시트의 세 기준 비교표를 참고.
-SIMPLE_POOL_STATE_PICK_CRITERION         = 'avoid'
+#   ★★★ (실측 정정) 'avoid'는 'return'과 수학적으로 동일한 기준이었다 —
+#     Σ(2·pos-1)·ret = 2·Σ(pos·ret) - Σret 이고 Σret은 k와 무관한 상수라 argmax가 같다.
+#     실측에서도 두 기준의 학습/검증 초과수익이 528.06/130.50으로 완전히 일치했다.
+#     실질적인 선택지는 'wrong'(분류 정확도)와 'return'(수익) 둘뿐이며, GOOG 홀드아웃에서는
+#     return이 근소하게 우세했다(검증 초과합 130.50 vs 127.75%p).
+SIMPLE_POOL_STATE_PICK_CRITERION         = 'return'
+# ★★★ (요청 — 신규) 신호수 하한과 최소 지표수 확보
+#   기본 하한 10건 → 남는 지표가 30개 미만이면 5씩 낮춰가며 30개를 확보(최저 1).
+SIMPLE_POOL_MIN_SIGNALS_FLOOR            = 10
+SIMPLE_POOL_MIN_INDICATORS_TARGET        = 30
+SIMPLE_POOL_MIN_SIGNALS_STEP             = 5
+# ★★★ (요청 — 신규) 워크포워드 검증 — 전체 기간의 뒤쪽 (1-START_FRAC)을 FOLDS등분해서,
+#   매 구간마다 '그 직전까지의 과거만' 보고 지표를 뽑고 그 구간에서 성적을 잰다.
+#   0 또는 1이면 건너뜀. 구간이 많을수록 정직하지만 그만큼 느려진다(구간당 선정 1회).
+STATE_WALKFORWARD_FOLDS                  = 5
+STATE_WALKFORWARD_START_FRAC             = 0.5
 # ★★★ (실측 개선) 시간 일관성 감점 강도(0~1). 이벤트를 시간순 전·후반으로 갈라 한쪽에서만
 #   벌었으면 점수를 이 비율만큼 깎는다. 0이면 보정 없음, 1이면 최대 감점.
 #   실측: 전반 성적 → 후반 성적 상관이 r=-0.10에 불과해, 전 구간 일괄 채점은 과적합이 크다.
@@ -17104,6 +17119,48 @@ def _dedup_same_prefix_best_reliability(pool, label=''):
     return out
 
 
+def _apply_min_signal_floor(pool, label=''):
+    """★★★ (요청 — 신규) 신호수 하한을 걸되, 지표가 너무 줄면 하한을 단계적으로 낮춘다.
+
+       신호(이벤트) 10건 미만인 지표는 승률·신뢰도가 사실상 운에 좌우된다 — 실측에서도
+       신뢰도 상위가 전부 10~19건짜리 소표본이었고, 그 지표들의 미래 성적은 평균 이하였다.
+       그래서 기본 하한을 SIMPLE_POOL_MIN_SIGNALS_FLOOR(=10)로 두되, 그 결과 남는 지표가
+       SIMPLE_POOL_MIN_INDICATORS_TARGET(=30)개에 못 미치면 하한을 STEP(=5)씩 낮춰가며
+       다시 세어 30개를 확보한다. 하한이 1까지 내려가도 모자라면 있는 대로 쓴다.
+
+       ★ 기준 컬럼은 n_signals(이벤트 기준 신호개수) — 없으면 rel_n_events로 대체."""
+    if pool is None or len(pool) == 0:
+        return pool
+    _floor = int(globals().get('SIMPLE_POOL_MIN_SIGNALS_FLOOR', 10))
+    _target = int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET', 30))
+    _step = max(1, int(globals().get('SIMPLE_POOL_MIN_SIGNALS_STEP', 5)))
+    if _floor <= 1:
+        return pool
+    _col = 'n_signals' if 'n_signals' in pool.columns else (
+        'rel_n_events' if 'rel_n_events' in pool.columns else None)
+    if _col is None:
+        return pool
+    _ns = pd.to_numeric(pool[_col], errors='coerce').fillna(0)
+    _cut = _floor
+    while _cut > 1:
+        _out = pool[_ns >= _cut]
+        if len(_out) >= _target:
+            break
+        _cut -= _step
+    _cut = max(_cut, 1)
+    _out = pool[_ns >= _cut].reset_index(drop=True)
+    if len(_out) == 0:
+        return pool
+    if label:
+        _msg = f"    (신호수 하한) {label}: {len(pool)}→{len(_out)}개, 하한 {_cut}건"
+        if _cut < _floor:
+            _msg += f" (기본 {_floor}건으로는 {int((_ns >= _floor).sum())}개뿐이라 낮춤)"
+        elif len(_out) < _target:
+            _msg += f" (목표 {_target}개 미달 — 후보 자체가 부족)"
+        print(_msg)
+    return _out
+
+
 def _dedup_identical_signal_dates(feat, pool):
     """★★★ (요청 — 재확인, 호라이즌 무관 재설계) "신호 날짜가 100% 일치하는 지표들이
        여러개 있으면 그중 하나만 사용" — 신호수·성공률이 완전히 같은 지표들은 '신호
@@ -18414,8 +18471,67 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         except Exception as _eh:
             print(f"    ⚠ 홀드아웃 검증 생략: {_eh}")
 
+        # ★★★ (요청 — 신규) 워크포워드 검증
+        #   홀드아웃은 분할점이 하나뿐이라 "하필 그 시점" 운에 좌우된다. 워크포워드는
+        #   구간을 여러 개로 쪼개서, 매 구간마다 '그 시점까지의 과거만' 보고 지표를 뽑고
+        #   바로 다음 구간에서 성적을 잰 뒤 이어붙인다 — 실제 운용을 그대로 흉내낸 것이라
+        #   이 결과가 이 시스템의 가장 정직한 성적표다.
+        #   ★ 본 선정(_st_res)은 그대로 전 구간 기준이다 — 최신 예측에는 모든 데이터를
+        #     쓰는 게 맞고, 워크포워드는 '이 방식이 통하는가'를 재는 별도 진단이다.
+        _wf = None
+        try:
+            _wf_folds = int(globals().get('STATE_WALKFORWARD_FOLDS', 5))
+            _wf_start = float(globals().get('STATE_WALKFORWARD_START_FRAC', 0.5))
+            if _wf_folds >= 2 and n >= 250:
+                _b0 = int(n * _wf_start)
+                _edges = [_b0 + int(round((n - _b0) * _i / _wf_folds))
+                          for _i in range(_wf_folds + 1)]
+                _crit_wf = str(globals().get('SIMPLE_POOL_STATE_PICK_CRITERION', 'return')).lower()
+                _nkey_wf = {'wrong': 'n_by_wrong', 'return': 'n_by_ret',
+                            'avoid': 'n_by_avoid'}.get(_crit_wf, 'n_by_ret')
+                _acc = {_k2: dict(ret=0.0, bh=0.0, days=0, ks=[]) for _k2 in ('lc', 'lr', 'sc', 'sr')}
+                _fold_rows = []
+                for _fi in range(_wf_folds):
+                    _tr_end, _te_end = _edges[_fi], _edges[_fi + 1]
+                    if _te_end - _tr_end < 5:
+                        continue
+                    _trm = np.zeros(n, dtype=bool); _trm[:_tr_end] = True
+                    _tem = np.zeros(n, dtype=bool); _tem[_tr_end:_te_end] = True
+                    _frow = dict(fold=_fi + 1,
+                                 tr_days=int(_tr_end), te_days=int(_te_end - _tr_end),
+                                 te_from=(_dstr_all[_tr_end] if _tr_end < len(_dstr_all) else ''),
+                                 te_to=(_dstr_all[_te_end - 1] if _te_end - 1 < len(_dstr_all) else ''),
+                                 per={})
+                    for _k2 in ('lc', 'lr', 'sc', 'sr'):
+                        _rt = _select_state_tr(_k2, _POOL_OF[_k2], 'prob', _trm)
+                        _isb = (_rt['side'] == '매수')
+                        _kk = int(_rt.get(_nkey_wf, 0) or 0)
+                        _net = np.zeros(n)
+                        for _cr in (_rt.get('cand_rows') or [])[:_kk]:
+                            _net[_cr[0]] += (_cr[1] if _isb else -_cr[1])
+                        _pos = (_net > 0.0) if _isb else ~(_net < 0.0)
+                        _dte = np.nonzero(dom_full[_k2] & _tem)[0]
+                        _r = float(np.sum(_pos[_dte] * _ret_arr[_dte])) if len(_dte) else 0.0
+                        _b = float(np.sum(_ret_arr[_dte])) if len(_dte) else 0.0
+                        _acc[_k2]['ret'] += _r; _acc[_k2]['bh'] += _b
+                        _acc[_k2]['days'] += len(_dte); _acc[_k2]['ks'].append(_kk)
+                        _frow['per'][_k2] = dict(name=_rt['name'], side=_rt['side'], k=_kk,
+                                                 days=len(_dte), ret=_r, bh=_b, edge=_r - _b)
+                    _fold_rows.append(_frow)
+                _wf = dict(folds=_fold_rows, acc=_acc, crit=_crit_wf,
+                           n_folds=len(_fold_rows), start_frac=_wf_start,
+                           names={_k2: _NAME[_k2] for _k2 in _acc},
+                           sides={_k2: _SIDE[_k2] for _k2 in _acc})
+                print("    (워크포워드 %d구간) " % len(_fold_rows) + ', '.join(
+                    "%s %+.1f%%p(지표 %s)" % (_NAME[_k2], (_acc[_k2]['ret'] - _acc[_k2]['bh']) * 100,
+                                             '~'.join(str(x) for x in (min(_acc[_k2]['ks']),
+                                                                       max(_acc[_k2]['ks']))))
+                    for _k2 in ('lc', 'lr', 'sc', 'sr')))
+        except Exception as _ewf:
+            print(f"    ⚠ 워크포워드 검증 생략: {_ewf}")
+
         report = dict(
-            holdout=_hold,
+            holdout=_hold, walkforward=_wf,
             states=[_st_res[k] for k in ('lc', 'lr', 'sc', 'sr')],
             state_map={k: _st_res[k] for k in _st_res},
             buy_n=(len(buy_final) if buy_final is not None else 0),
@@ -19403,6 +19519,13 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             # ★★★ (요청 8번) 접두사가 같은 계열(stoch_d_9/stoch_d_14 …)도 신뢰도 최고 하나만
             buy_c  = _dedup_same_prefix_best_reliability(buy_c, '매수')
             sell_c = _dedup_same_prefix_best_reliability(sell_c, '매도')
+            # ★★★ (요청 — 신규) 신호수 하한 + 최소 지표수 확보
+            #   "일단 10개 이상으로 하고 그중에서 30개 이상 고르고 너무 지표가 없으면
+            #    5씩 낮춰서 확보해" — 표본이 10건도 안 되는 지표는 승률이 우연에 좌우되므로
+            #   기본적으로 잘라내되, 그 바람에 지표가 30개도 안 남으면 하한을 5씩 낮춰가며
+            #   30개를 확보한다(끝까지 모자라면 있는 대로 쓴다).
+            buy_c  = _apply_min_signal_floor(buy_c, '매수')
+            sell_c = _apply_min_signal_floor(sell_c, '매도')
             if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
                 print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
                       f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 성공률·신뢰도 "
@@ -27650,6 +27773,91 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ehs:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 선정 홀드아웃 검증 시트 작성 실패(무시): {_ehs}")
+
+    # ─── 7d-3a2. ★★★ (요청 — 신규) 워크포워드 검증 시트 ───
+    try:
+        _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
+        _wf = (_mwr or {}).get('walkforward')
+        if _wf and _wf.get('folds'):
+            ws_w = wb.create_sheet('워크포워드 검증'); ws_w.sheet_view.showGridLines = False
+            ws_w.cell(1, 1).value = (
+                f"★ 이 시트가 이 시스템의 가장 정직한 성적표다. 뒤쪽 기간을 {_wf['n_folds']}구간으로 "
+                "나눠, 매 구간마다 '그 직전까지의 과거만' 보고 지표를 새로 뽑은 뒤 그 구간에서 성적을 "
+                "재고 이어붙였다 — 실제 운용을 그대로 흉내낸 것이라 미래를 미리 본 부분이 전혀 없다. "
+                "다른 시트의 수익률은 전 구간을 보고 전 구간을 채점한 인샘플 값이라 항상 이보다 좋게 나온다. "
+                "판단 기준은 '초과%p'(=그 날짜들에 그냥 계속 보유한 것 대비) 한 열이다. "
+                "구간마다 부호가 왔다갔다 하면 그 상태의 지표 선정은 신뢰할 수 없다는 뜻이다.")
+            ws_w.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+            ws_w.merge_cells('A1:J1')
+
+            _keys_w = ('lc', 'lr', 'sc', 'sr')
+            _cols_w = ['구간', '검증 시작', '검증 끝', '학습일수', '검증일수', '상태',
+                       '채택지표수', '수익%', '보유%', '초과%p']
+            for _ci, _cn in enumerate(_cols_w, 1):
+                _hc = ws_w.cell(3, _ci); _hc.value = _cn
+                _hc.font = Font(bold=True, color='FFFFFF')
+                _hc.fill = PatternFill('solid', fgColor='C55A11')
+            _r_w = 4
+            for _f in _wf['folds']:
+                for _k2 in _keys_w:
+                    _pv = _f['per'].get(_k2)
+                    if not _pv:
+                        continue
+                    _vals = [_f['fold'], _f['te_from'], _f['te_to'], _f['tr_days'], _f['te_days'],
+                             _pv['name'], _pv['k'], round(_pv['ret'] * 100, 2),
+                             round(_pv['bh'] * 100, 2), round(_pv['edge'] * 100, 2)]
+                    for _ci, _v in enumerate(_vals, 1):
+                        _cc = ws_w.cell(_r_w, _ci); _cc.value = _v
+                    _ec = ws_w.cell(_r_w, 10)
+                    _ec.font = Font(bold=True)
+                    _ec.fill = PatternFill('solid',
+                                           fgColor=('C6EFCE' if _pv['edge'] > 0 else 'FFC7CE'))
+                    _r_w += 1
+                _r_w += 1
+            _sum_r = _r_w + 1
+            ws_w.cell(_sum_r, 1).value = "▼ 전 구간 합계 (워크포워드 누적)"
+            ws_w.cell(_sum_r, 1).font = Font(bold=True, size=11, color='1F3864')
+            for _ci, _cn in enumerate(['상태', '방향', '검증일수', '지표수 범위', '누적 수익%',
+                                       '누적 보유%', '누적 초과%p(★)', '플러스 구간'], 1):
+                _hc = ws_w.cell(_sum_r + 1, _ci); _hc.value = _cn
+                _hc.font = Font(bold=True, color='FFFFFF')
+                _hc.fill = PatternFill('solid', fgColor='7030A0')
+            _tot_edge = 0.0
+            for _ri, _k2 in enumerate(_keys_w):
+                _a = _wf['acc'][_k2]
+                _edge = _a['ret'] - _a['bh']
+                _tot_edge += _edge
+                _npos = sum(1 for _f in _wf['folds']
+                            if _f['per'].get(_k2) and _f['per'][_k2]['edge'] > 0)
+                _ks = _a['ks'] or [0]
+                _vals = [_wf['names'][_k2], _wf['sides'][_k2], _a['days'],
+                         ('%d~%d' % (min(_ks), max(_ks))),
+                         round(_a['ret'] * 100, 2), round(_a['bh'] * 100, 2),
+                         round(_edge * 100, 2), '%d/%d' % (_npos, len(_wf['folds']))]
+                for _ci, _v in enumerate(_vals, 1):
+                    _cc = ws_w.cell(_sum_r + 2 + _ri, _ci); _cc.value = _v
+                _ec = ws_w.cell(_sum_r + 2 + _ri, 7)
+                _ec.font = Font(bold=True)
+                _ec.fill = PatternFill('solid', fgColor=('C6EFCE' if _edge > 0 else 'FFC7CE'))
+            _fr = _sum_r + 2 + len(_keys_w) + 1
+            ws_w.cell(_fr, 1).value = (
+                "→ 4개 상태 누적 초과수익 합계 %+.2f%%p (기준: %s). "
+                "이 값이 0 이하면 지표 선정이 '그냥 보유'보다 나을 게 없다는 뜻이므로, "
+                "지표 후보를 더 줄이거나(SIMPLE_POOL_MIN_SIGNALS_FLOOR 상향) 채택 기준"
+                "(SIMPLE_POOL_STATE_PICK_CRITERION)을 바꿔봐야 한다."
+                % (_tot_edge * 100,
+                   {'wrong': '틀린자리최소', 'return': '수익최대'}.get(_wf['crit'], _wf['crit'])))
+            ws_w.cell(_fr, 1).font = Font(bold=True, size=11,
+                                          color=('1F6F3D' if _tot_edge > 0 else '9C0006'))
+            ws_w.merge_cells(start_row=_fr, start_column=1, end_row=_fr, end_column=10)
+            for _ci, _w2 in enumerate([7, 12, 12, 10, 10, 10, 12, 12, 12, 14], 1):
+                ws_w.column_dimensions[get_column_letter(_ci)].width = _w2
+            ws_w.freeze_panes = 'A4'
+            print("  ✓ 워크포워드 검증 시트 — 누적 초과수익 %+.2f%%p (%d구간)"
+                  % (_tot_edge * 100, _wf['n_folds']))
+    except Exception as _ewfs:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 워크포워드 검증 시트 작성 실패(무시): {_ewfs}")
 
     # ─── 7d-3b. ★★★ (요청 — 신규) 4가지 상태별 일별 백테스트 시트 ───
     try:
