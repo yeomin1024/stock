@@ -83,6 +83,7 @@ XLK 하락 예측 임계치 탐색기 (완전 독립 실행)
 출력:    xlk_drop_predictor_result.xlsx
 """
 import warnings; warnings.filterwarnings('ignore')
+import re          # ★ (요청 8번) 지표명 접두사 추출용
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -14393,7 +14394,7 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 #                            설정
 # ════════════════════════════════════════════════════════════════
-EVAL_START          = '2022-01-01'
+EVAL_START          = '2025-01-01'
 EVAL_END            = None           # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지 학습.
                                       #   지정 시 'YYYY-MM-DD'(그 날짜 포함, 이후 데이터는 잘라냄) —
                                       #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
@@ -14592,6 +14593,34 @@ SIMPLE_POOL_MIN_WRONG_REFRESH_INTERVAL   = 20
 #   전환확률이 절반도 안 되면 그 지표를 '전환 예보'로 믿을 근거가 사실상 없으므로, 그
 #   아래부터는 최소한 방향(매수/매도)이라도 맞히는 지표를 먼저 쓰게 하는 것.
 #   ★ 롱지속·숏지속(전환이 아닌 지속 상태)은 이 규칙과 무관 — 기존대로 P(상태|발화) 순.
+# ★★★ (요청 1번 — 신규) 날짜별 '최적 자리' 판정 임계값. 다음날 등락률이 이 값 이상이면
+#   매수, -이 값 이하면 매도. 그 사이(애매한 날)는 ①전날과 변동방향이 같으면 전날 포지션
+#   ②다르면 다음날이 ±임계값 이상일 때 그 방향 ③다음날도 미달이면 '횡보'.
+#   ★ 횡보는 매수/매도 어느 쪽도 정답이 아니다 — 그 자리 발화는 전부 실패(요청 2번).
+#   ★ 기존 '중립(neutral, 양쪽 다 정답)' 개념은 완전히 삭제됐다.
+# ★★★ (요청 8번) stoch_d_9 / stoch_d_14 처럼 접두사(파라미터만 다른 계열)가 같은 지표는
+#   신뢰도가 가장 높은 하나만 사용. False로 두면 예전처럼 전부 사용.
+SIMPLE_POOL_DEDUP_SAME_PREFIX            = True
+# ★★★ (요청 6번) 상태별 지표 개수를 'K=L=0 백테스트 수익률이 가장 높은 개수'로 채택.
+#   False면 예전처럼 '틀린자리 최소' 개수. (검증 시트에는 두 값이 모두 표시된다)
+SIMPLE_POOL_STATE_PICK_BY_RETURN         = True
+# ★★★ (요청 7번) 상태별 특화지표를 '신뢰도 높은 순'으로도 한 번 더 선정해서, K=L=0
+#   수익률이 더 높은 쪽을 최종 채택할지. False면 확률순만 사용(비교 시트도 안 그림).
+SIMPLE_POOL_STATE_TRY_RELIABILITY_ORDER  = True
+SIMPLE_POOL_TARGET_MOVE_THRESHOLD        = 0.01
+# ★★★ (요청 3번) 신뢰도의 이벤트별 등락률을 '표시일 다음날 하루치'가 아니라 "성공이면
+#   성공날부터 성공추세가 끝날 때까지, 실패면 실패날부터 실패포지션 추세가 끝날 때까지"의
+#   변동률 합산으로 계산. False면 예전 하루치 방식.
+SIMPLE_POOL_REL_TREND_RUN_RETURN         = True
+# ★★★ (요청 4번) 신뢰도 UP 가중은 성공확률(rs/총이벤트, ts/총이벤트)이 이 문턱 이상일
+#   때만 부여한다(미만이면 가산 0). 실패(DOWN)는 문턱 없이 횟수 비례로 계속 차감.
+SIMPLE_POOL_REL_PROB_GATE                = 0.5
+# ★ 같은 확률이라도 총이벤트수가 많을수록 신뢰가 커지도록: conf = n/(n+N0).
+#   N0가 작을수록 적은 표본에서도 빨리 만점 가중에 가까워진다.
+SIMPLE_POOL_REL_EVENT_CONF_N             = 10.0
+# ★ 문턱을 얼마나 넘었는지(확률 초과분)에 비례해 가중을 더 키우는 배율 —
+#   확률=문턱이면 1배, 확률=100%면 (1+이 값)배.
+SIMPLE_POOL_REL_EXCESS_MULT              = 2.0
 STATE_REV_RANK_PROB_FLOOR                = 0.5
 # ★★★ (요청 — 계산식 확정) 상태확률은 '전체 후보 지표' 시트의 신뢰도 구성요소를 그대로 쓴다
 #   (새로 세지 않는다 — 두 시트 숫자가 어긋나던 원인이 바로 별도 재계산이었다):
@@ -17000,6 +17029,47 @@ def _dedup_same_indicator_best_reliability(pool):
     return pool.loc[keep_idx].reset_index(drop=True)
 
 
+def _indicator_prefix_key(name):
+    """★★★ (요청 8번 — 신규) "stoch_d_9, stoch_d_14 같이 접두사가 똑같은 것도 중복 제거" —
+       지표명 끝의 숫자 파라미터(기간 등)를 벗겨낸 '계열 이름'을 만든다.
+         stoch_d_9 / stoch_d_14      → stoch_d
+         rsi_14 / rsi_21             → rsi
+         ma_dev_20_2.0               → ma_dev
+         bb_upper_20_2 / bb_upper_20 → bb_upper
+       ★ 숫자를 전부 벗겨서 빈 문자열이 되면(예: '14') 원래 이름을 그대로 쓴다."""
+    _s = str(name).strip()
+    _prev = None
+    while _prev != _s:
+        _prev = _s
+        _s = re.sub(r'[_\-]\d+(?:\.\d+)?$', '', _s)
+    _s = re.sub(r'\d+(?:\.\d+)?$', '', _s).rstrip('_-')
+    return _s if _s else str(name).strip()
+
+
+def _dedup_same_prefix_best_reliability(pool, label=''):
+    """★★★ (요청 8번) 접두사가 같은 지표 계열(stoch_d_9 / stoch_d_14 …)은 신뢰도가 가장
+       높은 것 하나만 남긴다 — 같은 지표의 파라미터만 바꾼 변형들이 net에 여러 번 중복
+       반영되면서 사실상 한 지표에 여러 표를 주는 문제를 막는다.
+       ★ 기준은 신뢰도 최우선(요청 문구 그대로), 동률이면 성공률 → 신호수 순."""
+    if pool is None or len(pool) == 0 or 'indicator' not in pool.columns:
+        return pool
+    if not bool(globals().get('SIMPLE_POOL_DEDUP_SAME_PREFIX', True)):
+        return pool
+    pool = pool.reset_index(drop=True)
+    _rel = pool['reliability'] if 'reliability' in pool.columns else 0.0
+    _sr = pool['success_rate'] if 'success_rate' in pool.columns else 0.0
+    _ns = pool['n_signals'] if 'n_signals' in pool.columns else 0
+    _pref = pool['indicator'].astype(str).map(_indicator_prefix_key)
+    _rank = pool.assign(_pref=_pref, _rel=_rel, _sr=_sr, _ns=_ns).sort_values(
+        ['_rel', '_sr', '_ns'], ascending=[False, False, False])
+    keep_idx = _rank.groupby('_pref', sort=False).head(1).index
+    out = pool.loc[sorted(keep_idx)].reset_index(drop=True)
+    if label and len(out) != len(pool):
+        print(f"    (동일접두사 중복제거) {label}: {len(pool)}→{len(out)}개 "
+              f"— stoch_d_9/stoch_d_14처럼 파라미터만 다른 계열은 신뢰도 최고 하나만 사용")
+    return out
+
+
 def _dedup_identical_signal_dates(feat, pool):
     """★★★ (요청 — 재확인, 호라이즌 무관 재설계) "신호 날짜가 100% 일치하는 지표들이
        여러개 있으면 그중 하나만 사용" — 신호수·성공률이 완전히 같은 지표들은 '신호
@@ -17119,7 +17189,8 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
               'n_hit_clusters': 0, 'n_big_miss': 0, 'miss_penalty_mult': 1.0,
               'power': 0.0, 'p_value': 1.0, 'df': 0,
               'rel_base': 0.0, 'rel_n_events': 0, 'rel_rs': 0, 'rel_ts': 0,
-              'rel_rf': 0, 'rel_tf': 0, 'rel_up': 1.0, 'rel_down': 1.0, 'rel_stab': 1.0}
+              'rel_rf': 0, 'rel_tf': 0, 'rel_up': 1.0, 'rel_down': 1.0, 'rel_stab': 1.0,
+              'rel_p_rs': 0.0, 'rel_p_ts': 0.0, 'rel_conf': 0.0}
     try:
         _row_key = (row.get('indicator'), row.get('threshold'), row.get('direction'),
                    row.get('lead_shift', 0), row.get('horizon_day', row.get('horizon', 1)))
@@ -17161,23 +17232,37 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
             _RELIABILITY_BASE_CACHE[_base_cache_key] = dict(_empty)
             return dict(_empty)
         base = close_arr[disp_idx]
-        nxt = close_arr[disp_idx + 1]   # ★ 표시일 다음날 하루치
+        nxt = close_arr[disp_idx + 1]   # ★ 표시일 다음날 하루치(하위호환 판정용)
         valid = (base > 0) & np.isfinite(base) & np.isfinite(nxt)
         base = base[valid]; nxt = nxt[valid]; fire_valid = disp_idx[valid]
         if len(base) < 2:
             _RELIABILITY_BASE_CACHE[_base_cache_key] = dict(_empty)
             return dict(_empty)
         raw_ret = nxt / base - 1.0
-        fav = raw_ret if is_buy else -raw_ret   # 매수=상승이 +, 매도=하락이 +
-        n = len(fav)
 
-        # ★★★ (원칙 2) "1%이상 변동률 추세전환 자리" 사전 계산(close_arr당 1회, 캐시) —
+        # ★★★ (요청 2) "1%이상 변동률 추세전환 자리" 사전 계산(close_arr당 1회, 캐시) —
         #   이벤트별 '전체 성공 여부' 판정에 필요한 최적자리 마스크도 이 시점에 미리 준비.
         try:
             _ctp_r = _ctp_cached(close_arr)
             _ok_mask_r = _ctp_r[7] if is_buy else _ctp_r[8]
         except Exception:
+            _ctp_r = None
             _ok_mask_r = None
+
+        # ★★★ (요청 3번 — 신규) 등락률을 '표시일 다음날 하루치'가 아니라 "성공이면 성공날
+        #   부터 성공추세가 끝날 때까지, 실패면 실패날부터 실패포지션 추세가 끝날 때까지의
+        #   변동률 합산"으로 바꾼다. 그 날이 속한 추세 블록의 끝까지 누적한 값(trend_sum)을
+        #   쓰면 두 경우가 한 식으로 처리된다 — 정답 자리에 올라탔으면 그 추세 전체 폭만큼
+        #   가산되고, 반대 포지션 추세에 올라탔으면 그 추세 전체 폭만큼 감산된다.
+        #   ★ 기존 하루치 방식으로 되돌리려면 SIMPLE_POOL_REL_TREND_RUN_RETURN=False.
+        _use_trend_run = bool(globals().get('SIMPLE_POOL_REL_TREND_RUN_RETURN', True))
+        if _use_trend_run and _ctp_r is not None and len(_ctp_r) > 9:
+            _tsum = np.asarray(_ctp_r[9], dtype=float)
+            _base_ret = _tsum[fire_valid]
+        else:
+            _base_ret = raw_ret
+        fav = _base_ret if is_buy else -_base_ret   # 매수=상승이 +, 매도=하락이 +
+        n = len(fav)
 
         # ★★★ (원칙 6, 요청 — 전면 재설계) "연속구간 중 하나라도 틀리면 실패, 전부 맞아야
         #   성공. 등락률은 연속날들의 평균으로" — 이전엔 이벤트(연속묶음)의 '첫 발화일'만
@@ -17281,17 +17366,36 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
                 else:
                     tf += 1                  # 전환 아닌 자리, 이벤트 중 하나라도 불일치 = 추세실패(약)
 
-        # ★★★ (원칙 3·5) UP/DOWN 가중 — 성공·실패 대칭 구조
+        # ★★★ (요청 4번 — 재설계) UP/DOWN 가중
+        #   [성공] "추세전환성공·추세성공 확률(총이벤트수 중)이 50% 이상부터 가중치를 부여"
+        #     → p_rs = rs/총이벤트, p_ts = ts/총이벤트 가 각각 50% 미만이면 가산 0.
+        #       50% 이상이면 (확률 - 50%)에 비례해 커지도록 해서, 겨우 50%를 넘긴 지표와
+        #       압도적인 지표가 구분되게 한다.
+        #   [실패] "실패 시에는 그냥 여러번 틀릴수록 점수 차감" → 문턱 없이 횟수에 비례
+        #       (예전의 '과반이면 ×2' 같은 계단식 배수는 제거 — 요청대로 단순 비례).
+        #   [표본] "확률이 같아도 총이벤트수 차이에 따라 다르니까 이것도 반영" →
+        #       conf = n_events / (n_events + N0). 같은 60%라도 이벤트 3건보다 30건이
+        #       훨씬 강한 가중을 받는다(N0=SIMPLE_POOL_REL_EVENT_CONF_N, 기본 10).
+        #   ★ 최종 형태(신뢰도 = max(0,기본점수) × UP ÷ DOWN × 안정계수)와 상한·캡은
+        #     기존 그대로 유지한다(요청 5번 — 개선 부분만 적용).
         _rev_w = float(globals().get('SIMPLE_POOL_REV_HIT_W', 0.10))
         _trend_w = float(globals().get('SIMPLE_POOL_TREND_HIT_W', 0.02))
-        _maj_frac = float(globals().get('SIMPLE_POOL_REV_MAJORITY_FRAC', 0.5))
-        _maj_mult = float(globals().get('SIMPLE_POOL_REV_MAJORITY_MULT', 2.0))
-        up_w = 1.0 + _rev_w * rs + _trend_w * ts
-        if n_events > 0 and rs >= _maj_frac * n_events:
-            up_w *= _maj_mult
+        _gate = float(globals().get('SIMPLE_POOL_REL_PROB_GATE', 0.5))
+        _conf_n0 = float(globals().get('SIMPLE_POOL_REL_EVENT_CONF_N', 10.0))
+        _exc_mult = float(globals().get('SIMPLE_POOL_REL_EXCESS_MULT', 2.0))
+
+        p_rs = rs / float(n_events) if n_events > 0 else 0.0
+        p_ts = ts / float(n_events) if n_events > 0 else 0.0
+        conf = n_events / (n_events + _conf_n0) if n_events > 0 else 0.0
+
+        up_w = 1.0
+        if p_rs >= _gate:
+            # (확률 - 문턱)에 비례한 배율 — 50%면 1배, 100%면 (1+_exc_mult)배
+            up_w += _rev_w * rs * conf * (1.0 + _exc_mult * (p_rs - _gate) / max(1.0 - _gate, 1e-9))
+        if p_ts >= _gate:
+            up_w += _trend_w * ts * conf * (1.0 + _exc_mult * (p_ts - _gate) / max(1.0 - _gate, 1e-9))
+        # 실패 — 문턱 없이 횟수 비례로 계속 깎임
         down_w = 1.0 + _rev_w * rf + _trend_w * tf
-        if n_events > 0 and rf >= _maj_frac * n_events:
-            down_w *= _maj_mult
 
         # ★★★ (보완) 안정계수 — 이벤트 등락률의 표준편차(%)가 클수록 깎는다
         _stab_coef = float(globals().get('SIMPLE_POOL_STABILITY_COEF', 0.5))
@@ -17315,7 +17419,9 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
                   'n_big_miss': rf, 'miss_penalty_mult': 1.0 / max(down_w, 1e-12),
                   'rel_base': base_sum, 'rel_n_events': n_events,
                   'rel_rs': rs, 'rel_ts': ts, 'rel_rf': rf, 'rel_tf': tf,
-                  'rel_up': up_w, 'rel_down': down_w, 'rel_stab': stab}
+                  'rel_up': up_w, 'rel_down': down_w, 'rel_stab': stab,
+                  # ★★★ (요청 4번 — 신규) 시트 검산용 구성요소
+                  'rel_p_rs': p_rs, 'rel_p_ts': p_ts, 'rel_conf': conf}
         if len(_RELIABILITY_BASE_CACHE) >= 20000:
             _RELIABILITY_BASE_CACHE.pop(next(iter(_RELIABILITY_BASE_CACHE)))
         _RELIABILITY_BASE_CACHE[_base_cache_key] = dict(result)
@@ -17326,45 +17432,31 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
 
 
 def _compute_target_positions(close_arr, threshold=0.0):
-    """★★★ (요청 — 전면 재설계) "일별 백테스트에서 올바른 매수/매도 자리들을 계산" —
-       실제(사후) 다음날 등락률로 '정답' 포지션을 정의한다: 다음날 수익률이 임계값보다
-       크면 그날은 '롱이 정답'(target=1), 아니면 '현금이 정답'(target=0).
-       magnitude(=|다음날 등락률|)도 함께 반환 — "하루 상승/하락폭이 큰 자리를 우선으로
-       맞추는" 요청을 지표 채점 시 가중치로 반영하기 위함(폭이 큰 날을 맞히면 더 큰
-       점수, 틀리면 더 큰 감점).
+    """★★★ (요청 — 전면 재설계, 확정 규칙) 날짜별 '최적 자리'(매수/매도/횡보) 판정.
 
-       ★★★ (요청 관련 — 버그수정) "맨 마지막 날은 다음날 가격을 모르니 정답을 알 수
-       없다" — 마지막 날짜(및 가격 데이터가 없어 다음날 수익률을 못 구하는 날)는
-       valid=False로 명시 표시해 채점·자리매칭 양쪽에서 완전히 제외되도록 한다.
+       [사용자 규칙 — 그대로 구현]
+       타겟 날 t의 다음날 등락률 ret[t] = close[t+1]/close[t] - 1 을 기준으로:
+         1) ret[t] ≥ +1%  → 매수(target=1)
+            ret[t] ≤ -1%  → 매도(target=0)
+         2) |ret[t]| < 1% (애매한 날):
+            · 하루 전(ret[t-1])과 '변동 방향'이 같으면 → 전날과 같은 포지션
+            · 방향이 다르면 → 다음날(t+1)이 ±1% 이상이면 그 다음날의 포지션 방향을 따라감
+            · 그 다음날(t+1)도 |ret[t+1]| < 1%이면 → 횡보(sideways)
+       ★ 기존 '중립(neutral)' 개념은 완전히 삭제 — 중립은 매수/매도 어느 쪽도 정답으로
+         인정해주는 관대한 자리였지만, 횡보는 정반대로 '어느 쪽도 정답이 아닌' 자리다
+         (요청 2번: 지표 탐색 시 횡보자리 발화는 모두 실패 처리 — buy_ok/sell_ok 양쪽에서
+         모두 빠지므로 성공률·신뢰도·정답자리매칭 전 경로에서 자동으로 실패가 된다).
 
-       ★★★ (요청 — 재설계, 3차 수정, 단순화 확정) "2%이상은 무조건 안맞는 지표는
-       제외하고, 2% 내외로 하루만 추세랑 다른 날은 추세를 따라가는 지표를 사용하라" —
-       "따라가는 지표를 사용"은 "그 날의 정답이 추세 방향"이라는 뜻이므로 정답 자체를
-       추세 방향으로 바꾼다(REPLACE). 범위는 정확히 '하루'만 — 반대방향이 이틀 이상
-       이어지거나 등락폭이 2%(또는 1%)를 넘으면 관대화 대상이 아니고 원래(엄격한)
-       방향이 그대로 정답이다(중간에 한 번 여러 날짜로 넓혀봤다가 "하루만"이라는
-       명확한 지시로 다시 좁혔다).
+       ★ 임계값 1%는 SIMPLE_POOL_TARGET_MOVE_THRESHOLD로 조정 가능.
+       ★ threshold 인자는 하위호환용으로 남겨두되(호출부 다수), 위 규칙에서는 방향 판정에
+         쓰지 않는다 — 1%/횡보 규칙이 이를 대체한다.
 
-       이제는 애매한 날의 정답을 "추가 허용"이 아니라 "완전히 교체"한다 — 그 날의
-       진짜 정답은 오직 하나(REPLACE)뿐이다:
-       1) "지속적인 매수/매도 추세 중간에 2% 내외로 그 추세랑 안 맞는 지점" — 같은
-          방향이 연속되는 '추세 블록' 사이에 정확히 하루만 반대로 끼어 있고(이틀 이상
-          이어지면 대상 아님) 그 등락폭이 SIMPLE_POOL_TREND_MID_TOLERANCE(기본 2%)
-          이하이며, 앞뒤 블록이 서로 같은 방향이면, 그 하루의 정답을 (원래의
-          반대방향이 아니라) 주변 추세 방향으로 완전히 바꾼다.
-       2) "추세 전환 직전 변동률 1% 내외인 날은 그 후에 있는 추세에 맞춰야 함" — 한
-          추세 블록의 마지막 하루의 등락폭이 SIMPLE_POOL_TREND_EDGE_TOLERANCE(기본
-          1%) 이하이고 다음 블록이 반대 방향이면, 그 하루의 정답을 다음에 오는
-          (전환될) 추세 방향으로 완전히 바꾼다(이것도 정확히 마지막 하루만).
-       ★ 두 규칙 다 이제 정답이 정확히 하나로 확정된다(원래 방향은 더 이상 정답이
-       아니게 됨) — "추세전환은 무조건 맞춰야"를 지표 채점에 실제로 반영하려면, 애매한
-       날의 유일한 정답이 그 후 추세 방향이어야 하고, 옛 방향을 따라간 지표는 이제
-       정확히 '오답'으로 채점되어, 정답자리 매칭에서 자동으로 제외된다.
+       ★★★ (기존 유지) 마지막 날(및 다음날 가격이 없는 날)은 valid=False — 정답을 알 수
+       없으므로 채점·자리매칭 양쪽에서 완전히 제외.
 
-       반환: target(위 재배정까지 전부 반영된 최종 0/1 배열 — 추세전환 판정에도 이걸
-       그대로 사용), magnitude, ret(원본 부호있는 등락률), valid,
-       buy_ok(target==1과 정확히 같음, 함수 인터페이스 하위호환용),
-       sell_ok(target==0과 정확히 같음, 함수 인터페이스 하위호환용)."""
+       반환: target(0/1, 횡보일은 직전 포지션을 이어받아 채워두되 sideways=True로 별도
+       표시), magnitude(|ret|), ret, valid, buy_ok, sell_ok, sideways
+       ★ 반환 위치 6번은 예전 neutral 자리 그대로지만 의미가 정반대(양쪽 정답 → 양쪽 오답)."""
     n = len(close_arr)
     ret = np.zeros(n)
     valid = np.zeros(n, dtype=bool)
@@ -17373,147 +17465,123 @@ def _compute_target_positions(close_arr, threshold=0.0):
         if p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1):
             ret[t] = p1 / p0 - 1.0
             valid[t] = True
-    # 마지막 날(t=n-1)은 루프에서 아예 안 다뤄져 valid=False로 남음(의도된 것) — 다음날
-    # 가격이 없어 정답을 알 수 없으므로.
-    target = (ret > threshold).astype(int)
+    # 마지막 날(t=n-1)은 루프에서 제외 → valid=False(의도된 것).
     magnitude = np.abs(ret)
 
-    _mid_tol_strict = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.01))
-    _mid_tol_ext = float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE_EXT', 0.02))
-    _mid_future_mult = float(globals().get('SIMPLE_POOL_TREND_MID_FUTURE_MULT', 2.0))
-    _edge_tol = float(globals().get('SIMPLE_POOL_TREND_EDGE_TOLERANCE', 0.01))
+    _mv = float(globals().get('SIMPLE_POOL_TARGET_MOVE_THRESHOLD', 0.01))
 
-    # ★ 유효한(valid) 구간에서 target이 연속으로 같은 값을 유지하는 '추세 블록' 찾기
-    #   (재배정 전, 원본 방향 기준 — 모든 재배정 결정은 이 원본 블록 구조로만 판단하고,
-    #   실제 값 변경은 new_target에만 반영해 결정 과정이 서로 꼬이지 않게 한다).
-    blocks = []   # [(start_idx, end_idx, value), ...] — end_idx 포함, valid 구간만
-    _t = 0
-    while _t < n:
-        if not valid[_t]:
-            _t += 1
+    target = np.zeros(n, dtype=int)
+    sideways = np.zeros(n, dtype=bool)
+
+    # ── 1단계: ±1% 이상인 날은 그 방향으로 확정 ──
+    _decided = np.zeros(n, dtype=bool)
+    for t in range(n):
+        if not valid[t]:
             continue
-        _s = _t
-        while _t + 1 < n and valid[_t + 1] and target[_t + 1] == target[_t]:
-            _t += 1
-        blocks.append((_s, _t, int(target[_s])))
-        _t += 1
+        if ret[t] >= _mv:
+            target[t] = 1; _decided[t] = True
+        elif ret[t] <= -_mv:
+            target[t] = 0; _decided[t] = True
 
-    new_target = target.copy()
-    for _bi, (_s, _e, _val) in enumerate(blocks):
-        # ★★★ (요청 — 재수정, 2단계 임계값) "그 임계값을 1%로 변경하고, 1(초과)~2%까지는
-        #   향후 상승 추세가 2배이상이어야 추세를 따라가도록" — 정확히 하루만 낀
-        #   반대방향 블록에 한해:
-        #   · 등락폭 1% 이내 → 무조건 주변 추세 방향으로 재배정(REPLACE).
-        #   · 등락폭 1% 초과 ~2% 이내 → 그 다음날(다음 블록 첫날)의 등락폭이 이 이탈
-        #     크기의 2배 이상일 때만 재배정 — 진짜로 강하게 추세가 재개되는 경우만
-        #     "일시적 조정"으로 봐주고, 그 정도로 강하게 재개되지 않으면 원래(엄격한)
-        #     방향을 그대로 정답으로 유지한다.
-        #   · 2% 초과 → 여전히 재배정 대상 아님(그대로 원래 방향이 정답).
-        if _s == _e and 0 < _bi < len(blocks) - 1:
-            _prev_val = blocks[_bi - 1][2]; _next_val = blocks[_bi + 1][2]
-            if _prev_val == _next_val and _prev_val != _val:
-                _dev_mag = magnitude[_s]
-                if _dev_mag <= _mid_tol_strict:
-                    new_target[_s] = _prev_val
-                elif _dev_mag <= _mid_tol_ext:
-                    _future_day = _e + 1
-                    if _future_day < n and valid[_future_day] and \
-                       magnitude[_future_day] >= _mid_future_mult * _dev_mag:
-                        new_target[_s] = _prev_val
-        # 규칙2) 블록의 마지막 날 — 다음 블록이 반대 방향이고 그 마지막 날의 등락폭이
-        #   1% 이내면, 그 날의 정답을 다음(전환될) 추세 방향으로 완전히 교체(REPLACE).
-        #   (규칙1과 동일하게 정확히 하루만 — 마지막 하루만 대상, 그 전날들은 대상 아님)
-        #   ★★★ (요청 관련 — 버그수정, 견고성) "다음 블록"이 단 하루짜리 노이즈면(진짜
-        #   추세가 아니라 우연한 등락일 수 있음) 그 방향으로 재배정하면 오히려 명확한
-        #   신호(예: 진짜 발화로 인한 뚜렷한 등락)를 무의미한 하루짜리 잡음에 잘못
-        #   흡수시키는 부작용이 있었다(실측 확인). 다음 블록이 최소 2일 이상 이어질
-        #   때만 "진짜 추세 전환"으로 인정해 재배정한다.
-        if _bi < len(blocks) - 1:
-            _next_s2, _next_e2, _next_val2 = blocks[_bi + 1]
-            _next_len = _next_e2 - _next_s2 + 1
-            if _next_val2 != _val and magnitude[_e] <= _edge_tol and _next_len >= 2:
-                new_target[_e] = _next_val2
-
-    target = new_target
-    buy_ok = (target == 1) & valid
-    sell_ok = (target == 0) & valid
-    # ★★★ (요청 — 신규) 중립 자리 — "매수 전환일 ±2~3일 이내 AND 가격 ±1% 이내이고,
-    #   매도 추세가 끝나는 날 주가와도 ±2~3일 이내 AND 가격 ±1% 이내면 중립" —
-    #   바닥 전환 구간(매도추세가 끝나고 매수 전환이 일어나는 그 언저리)에서, 두 기준일
-    #   모두에 시간·가격이 동시에 가까운 날들은 매수/매도 어느 쪽으로 판단해도 정답으로
-    #   인정하는 '중립' 지대다(지표 탐색 성공판정에서 양쪽 다 성공 처리).
-    #   · 매수 전환일 = 다음날 등락 ≥ +SIMPLE_POOL_REV_MIN_MAGNITUDE(1%)이고 직전
-    #     SIMPLE_POOL_REVERSAL_LOOKBACK일 추세가 하락인 날(신뢰도 공식의 전환자리와 동일 정의)
-    #   · 매도 추세가 끝나는 날 = target==0 블록의 마지막 날(다음 블록이 target==1)
-    neutral = np.zeros(n, dtype=bool)
-    _n_day_win = int(globals().get('SIMPLE_POOL_NEUTRAL_DAY_WINDOW', 3))
-    _n_price_tol = float(globals().get('SIMPLE_POOL_NEUTRAL_PRICE_TOL', 0.01))
-    _n_rev_mag = float(globals().get('SIMPLE_POOL_REV_MIN_MAGNITUDE', 0.01))
-    _n_lookback = int(globals().get('SIMPLE_POOL_REVERSAL_LOOKBACK', 10))
-    _buy_turn_days = []
-    for _t in range(_n_lookback, n - 1):
-        if not valid[_t]:
+    # ── 2단계: 애매한 날(|ret| < 1%) 처리 ──
+    #   앞에서부터 순서대로 — '전날과 같은 방향이면 전날 포지션'을 판정하려면 전날
+    #   포지션이 이미 확정돼 있어야 하므로 t 오름차순으로 진행한다.
+    for t in range(n):
+        if not valid[t] or _decided[t]:
             continue
-        _p0 = close_arr[_t]; _pb = close_arr[_t - _n_lookback]
-        if not (_p0 and _p0 > 0 and np.isfinite(_p0) and _pb and _pb > 0 and np.isfinite(_pb)):
+        _prev_dir = None
+        if t - 1 >= 0 and valid[t - 1]:
+            _prev_dir = (1 if ret[t - 1] > 0 else (-1 if ret[t - 1] < 0 else 0))
+        _cur_dir = (1 if ret[t] > 0 else (-1 if ret[t] < 0 else 0))
+        if _prev_dir is not None and _cur_dir != 0 and _cur_dir == _prev_dir:
+            # ① 하루 전과 변동 방향이 같음 → 전날과 같은 포지션
+            target[t] = int(target[t - 1])
+            sideways[t] = bool(sideways[t - 1])   # 전날이 횡보면 이어서 횡보
+            _decided[t] = True
             continue
-        if ret[_t] >= _n_rev_mag and (_p0 / _pb - 1.0) < 0:
-            _buy_turn_days.append(_t)
-    _sell_end_days = []
-    # target 재배정 이후 블록 기준 — 재배정 반영된 최종 target으로 다시 블록을 스캔
-    _t2 = 0
-    while _t2 < n:
-        if not valid[_t2]:
-            _t2 += 1; continue
-        _s2 = _t2
-        while _t2 + 1 < n and valid[_t2 + 1] and target[_t2 + 1] == target[_t2]:
-            _t2 += 1
-        if int(target[_s2]) == 0 and _t2 + 1 < n and valid[_t2 + 1] and int(target[_t2 + 1]) == 1:
-            _sell_end_days.append(_t2)   # 매도(현금) 블록의 마지막 날, 다음이 매수 블록
-        _t2 += 1
-    if _buy_turn_days and _sell_end_days:
-        _bt_arr = np.asarray(_buy_turn_days, dtype=int)
-        _se_arr = np.asarray(_sell_end_days, dtype=int)
-        for _d in range(n):
-            if not valid[_d]:
-                continue
-            _pd_ = close_arr[_d]
-            if not (_pd_ and _pd_ > 0 and np.isfinite(_pd_)):
-                continue
-            _near_bt = _bt_arr[np.abs(_bt_arr - _d) <= _n_day_win]
-            _ok_bt = any(abs(_pd_ / close_arr[_t] - 1.0) <= _n_price_tol for _t in _near_bt.tolist()
-                         if close_arr[_t] and close_arr[_t] > 0)
-            if not _ok_bt:
-                continue
-            _near_se = _se_arr[np.abs(_se_arr - _d) <= _n_day_win]
-            _ok_se = any(abs(_pd_ / close_arr[_t] - 1.0) <= _n_price_tol for _t in _near_se.tolist()
-                         if close_arr[_t] and close_arr[_t] > 0)
-            if _ok_se:
-                neutral[_d] = True
+        # ② 방향이 다름 → 다음날이 ±1% 이상이면 그 방향을 따라감
+        if t + 1 < n and valid[t + 1] and abs(ret[t + 1]) >= _mv:
+            target[t] = 1 if ret[t + 1] > 0 else 0
+            _decided[t] = True
+            continue
+        # ③ 다음날도 ±1% 미만 → 횡보
+        sideways[t] = True
+        target[t] = int(target[t - 1]) if (t - 1 >= 0 and valid[t - 1]) else 0
+        _decided[t] = True
 
-    return target, magnitude, ret, valid, buy_ok, sell_ok, neutral
+    # ★ 횡보일은 매수/매도 어느 쪽도 정답이 아니다(요청 2번) — 양쪽 ok 마스크에서 제외.
+    buy_ok = (target == 1) & valid & (~sideways)
+    sell_ok = (target == 0) & valid & (~sideways)
+
+    return target, magnitude, ret, valid, buy_ok, sell_ok, sideways
 
 
 def _ctp_cached(close_arr, threshold=None):
     """★ _compute_target_positions 결과 메모 래퍼 — 성공판정·신뢰도·시트가 같은 배열을
-       반복 계산하지 않도록. (buy_ok|중립), (sell_ok|중립) 결합 마스크도 함께 반환."""
+       반복 계산하지 않도록.
+       ★★★ (요청 — 규칙 변경) 위치 6은 이제 '중립'이 아니라 '횡보(sideways)'다. 예전
+       중립은 매수/매도 양쪽 다 정답으로 인정했지만, 횡보는 양쪽 다 오답이다(요청 2번:
+       횡보자리 발화는 모두 실패). 따라서 결합 마스크(7·8번)도 OR가 아니라 그대로
+       buy_ok/sell_ok — 이미 sideways가 제외돼 있어, 이 마스크를 쓰는 모든 성공판정
+       경로(성공률·리드탐색·신뢰도·전체후보시트)에서 횡보 발화가 자동으로 실패가 된다.
+       ★ 위치 9는 신규 — 각 날짜에서 '그 날이 속한 추세가 끝날 때까지'의 등락률 누적합
+       (요청 3번, 신뢰도 계산용). trend_sum[t] = ret[t] + ret[t+1] + ... (같은 방향
+       추세 블록의 마지막 날까지)."""
     if threshold is None:
         threshold = float(globals().get('SIMPLE_POOL_MATCH_TARGET_THRESHOLD', 0.0))
     _k = (id(close_arr), len(close_arr), round(float(threshold), 8),
-          round(float(globals().get('SIMPLE_POOL_TREND_MID_TOLERANCE', 0.01)), 6),
-          round(float(globals().get('SIMPLE_POOL_TREND_EDGE_TOLERANCE', 0.01)), 6),
-          int(globals().get('SIMPLE_POOL_NEUTRAL_DAY_WINDOW', 3)))
+          round(float(globals().get('SIMPLE_POOL_TARGET_MOVE_THRESHOLD', 0.01)), 6))
     _c = _CTP_MEMO.get(_k)
     if _c is None:
-        target, magnitude, ret, valid, buy_ok, sell_ok, neutral = _compute_target_positions(
+        target, magnitude, ret, valid, buy_ok, sell_ok, sideways = _compute_target_positions(
             close_arr, threshold=threshold)
-        buy_ok_n = ((buy_ok | neutral) & valid).astype(np.uint8)
-        sell_ok_n = ((sell_ok | neutral) & valid).astype(np.uint8)
-        _c = (target, magnitude, ret, valid, buy_ok, sell_ok, neutral, buy_ok_n, sell_ok_n)
+        buy_ok_n = (buy_ok & valid).astype(np.uint8)
+        sell_ok_n = (sell_ok & valid).astype(np.uint8)
+        trend_sum = _trend_run_cum_return(target, ret, valid, sideways)
+        _c = (target, magnitude, ret, valid, buy_ok, sell_ok, sideways,
+              buy_ok_n, sell_ok_n, trend_sum)
         if len(_CTP_MEMO) >= 16:
             _CTP_MEMO.pop(next(iter(_CTP_MEMO)))
         _CTP_MEMO[_k] = _c
     return _c
+
+
+def _trend_run_cum_return(target, ret, valid, sideways):
+    """★★★ (요청 3번 — 신규) "신호일자의 등락은 해당 지표 발화 후 성공이면 성공날부터
+       성공추세가 끝날 때까지, 실패면 실패날부터 실패포지션 추세가 끝날 때까지 변동률
+       합산을 신뢰도 계산에 사용해"
+
+       각 날짜 t에 대해, t가 속한 '추세 블록'(target 값이 같은 연속 구간)의 마지막 날까지
+       ret을 모두 더한 값을 돌려준다 — 즉 "이 자리에 올라타서 그 추세가 끝날 때까지 들고
+       갔을 때의 총 변동률".
+         · 그 날 정답이 매수(target=1)면 trend_sum > 0 방향으로 쌓이고,
+           매도(target=0)면 하락이 이어지므로 trend_sum < 0 방향으로 쌓인다.
+         · 신뢰도에서 매수지표는 fav=+trend_sum, 매도지표는 fav=-trend_sum을 쓰므로
+           성공한 자리에 발화하면 '성공 추세 전체 폭'만큼 가산되고, 실패한 자리(반대
+           포지션 추세)에 발화하면 그 추세 전체 폭만큼 감산된다 — 요청 문구 그대로.
+       ★ 횡보(sideways)일은 추세 블록 경계로 취급하고 자기 자신 하루치만 담는다(어느
+         추세에도 속하지 않으므로 '추세 끝까지'를 정의할 수 없음).
+       ★ valid=False인 날은 0."""
+    n = len(target)
+    out = np.zeros(n, dtype=float)
+    t = n - 1
+    while t >= 0:
+        if not valid[t]:
+            out[t] = 0.0
+            t -= 1
+            continue
+        if sideways[t]:
+            out[t] = float(ret[t])
+            t -= 1
+            continue
+        # 같은 방향 추세 블록의 끝(뒤쪽)에서부터 앞으로 누적
+        _v = int(target[t])
+        _acc = 0.0
+        while t >= 0 and valid[t] and (not sideways[t]) and int(target[t]) == _v:
+            _acc += float(ret[t])
+            out[t] = _acc
+            t -= 1
+    return out
 
 
 def _aligned_signal_for_row(feat, row):
@@ -17709,6 +17777,40 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
 
         _pcache = {}
 
+        # ★★★ (요청 6번) "틀린자리를 수익률로 바꾸기만 하면 된다 — 0기준으로 매수/매도"
+        #   틀린자리 계산과 똑같이 O(n) 증분·벡터화로 처리한다(별도 기준세트·K/L 그리드
+        #   탐색 없음 — 그래서 예전 틀린자리 탐색만큼 빠르다):
+        #     · 상태의 net를 하나씩 누적(매수 상태는 +가중치, 매도 상태는 -가중치)
+        #     · 0 기준 포지션 — 매수 상태: net>0이면 매수, 아니면 매도(현금)
+        #                       매도 상태: net<0이면 매도(현금), 아니면 매수
+        #       (K=L=0이라 히스테리시스가 없어 날짜별로 독립 결정 → 순차 루프 불필요)
+        #     · 수익률 = Σ pos[t-1] × r[t]  (전일 보유분이 당일 등락 실현 — 룩어헤드 없음)
+        _px_kl = np.asarray(close_arr, dtype=np.float64)[:n]
+        _rr_kl = np.zeros(n)
+        if n > 1:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                _rr_kl[1:] = _px_kl[1:] / _px_kl[:-1] - 1.0
+        _rr_kl[~np.isfinite(_rr_kl)] = 0.0
+
+        def _wt_of(row):
+            """net 가중치 — 본 파이프라인과 동일하게 net_weight_score(=1+신뢰도)."""
+            try:
+                _w = row.get('net_weight_score', None)
+                if _w is None or (isinstance(_w, float) and pd.isna(_w)):
+                    _w = 1.0 + float(row.get('reliability', 0.0) or 0.0)
+                _w = float(_w)
+                return _w if np.isfinite(_w) and _w > 0 else 1.0
+            except Exception:
+                return 1.0
+
+        def _ret_of_net(net_arr, is_buy_side):
+            """0 기준 포지션의 총수익률 — 완전 벡터화."""
+            if is_buy_side:
+                _pos = (net_arr > 0.0)
+            else:
+                _pos = ~(net_arr < 0.0)
+            return float(np.sum(_pos[:-1] * _rr_kl[1:]))
+
         def _fire_of(row):
             """지표 하나의 발화마스크(신호 기준 캐시) — 확률과 별개로 '어느 날 목소리를
                내는지'만 담당."""
@@ -17777,14 +17879,16 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
 
         _max_cand = int(globals().get('SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES', 300))
 
-        def _select_state(skey, pool):
-            """한 상태에 대해: 특화지표 랭킹 → 개수 늘려가며 임계값·틀린자리 최소화."""
+        def _select_state(skey, pool, order='prob'):
+            """한 상태에 대해: 특화지표 랭킹 → 개수 늘려가며 임계값·틀린자리 최소화.
+               order='prob' → 기존(전환/추세 성공확률 순), order='rel' → ★(요청 7번) 신뢰도 순."""
             _blank = dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=0, wrong=0,
                           remaining=0, acc=0.0, thr=0.5, trace=[], ranked=[],
                           rows_idx=None, sel=(pool.iloc[0:0].copy() if pool is not None else None),
                           is_rev=(skey in _REV_KEYS),
                           side_label='(전환성공+추세성공)÷총이벤트',
-                          rev_floor=_REV_FLOOR, n_rev_tier=None, judge_days=0)
+                          rev_floor=_REV_FLOOR, n_rev_tier=None, judge_days=0,
+                          order=order, ret_kl0=0.0, n_by_wrong=0, picked_by='')
             if pool is None or len(pool) == 0:
                 return _blank
             _act = st[skey]; _dm = dom[skey]
@@ -17809,7 +17913,12 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                                float(_r.get('reliability', 0.0) or 0.0), _r, _pr, float(_pr[4])))
             if not _cands:
                 return _blank
-            if _is_rev:
+            if order == 'rel':
+                # ★★★ (요청 7번) 신뢰도가 높은 순 — 확률 정렬과 완전히 별개의 후보 순서를
+                #   만들어 두 방식의 최종 수익률을 나중에 맞붙인다(동률이면 확률·성공률).
+                _cands.sort(key=lambda x: ((0 if int(x[4][3]) >= _MIN_EV else 1),
+                                           -x[2], -x[0], -x[1]))
+            elif _is_rev:
                 _cands.sort(key=lambda x: ((0 if int(x[4][3]) >= _MIN_EV else 1),
                                            (0 if x[0] >= _REV_FLOOR else 1),
                                            -(x[0] if x[0] >= _REV_FLOOR else x[5]),
@@ -17822,12 +17931,16 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _side_lbl = '(전환성공+추세성공)÷총이벤트'
             ranked = [(i + 1, str(_c[3].get('indicator', '')), round(_c[0], 4),
                        int(_c[4][3]), int(_c[4][2][skey]), round(float(_c[5]), 4),
-                       (('전환성공÷총이벤트' if _c[0] >= _REV_FLOOR else _side_lbl) if _is_rev
-                        else '추세성공÷총이벤트'))
+                       ('신뢰도' if order == 'rel' else
+                        (('전환성공÷총이벤트' if _c[0] >= _REV_FLOOR else _side_lbl) if _is_rev
+                         else '추세성공÷총이벤트')),
+                       round(float(_c[2]), 4))
                       for i, _c in enumerate(_cands)]
             # ── 개수 늘려가며 임계값·틀린자리 최소 탐색 ──
             _sum = np.zeros(n); _cnt = np.zeros(n)
-            trace = []; best = None
+            _netw = np.zeros(n)                  # ★ (요청 6번) 0기준 포지션용 누적 net
+            _is_buy_side = (_side == '매수')
+            trace = []; best = None; best_ret = None
             _prev_corr = None
             for k, (_p_s, _sr_, _rel_, _row, _pr, _p_sd) in enumerate(_cands):
                 _f = _pr[0]
@@ -17864,33 +17977,48 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                         _out.append(('… 외 %d일' % (len(_rel_idx) - _TRACE_DATE_CAP), None))
                     return _out
 
+                # ★★★ (요청 6번) 틀린자리와 똑같은 자리에서 수익률만 추가 계산 —
+                #   이번 지표의 가중치를 net에 누적(O(n))하고 0 기준 포지션으로 총수익률.
+                _netw[_f] += (_wt_of(_row) if _is_buy_side else -_wt_of(_row))
+                _ret_kl0 = _ret_of_net(_netw, _is_buy_side)
                 trace.append((k + 1, _w, _rem, _acc, _thr, _newcov,
                               str(_row.get('indicator', '')),
                               _ncorr, _d_corr, _d_wrong,
-                              _fmt_days(_gain_i), _fmt_days(_lost_i)))
+                              _fmt_days(_gain_i), _fmt_days(_lost_i),
+                              float(_ret_kl0)))
                 if best is None or _w < best['wrong'] or \
                    (_w == best['wrong'] and (_rem < best['rem'] or
                     (_rem == best['rem'] and _acc > best['acc']))):
                     best = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr)
+                if best_ret is None or _ret_kl0 > best_ret['ret'] + 1e-12:
+                    best_ret = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr,
+                                    ret=float(_ret_kl0))
             if best is None:
                 return _blank
+            # ★★★ (요청 6번) 채택 기준 = K=L=0 수익률 최고 개수(SIMPLE_POOL_STATE_PICK_BY_RETURN).
+            #   False로 두면 예전처럼 '틀린자리 최소' 개수를 쓴다.
+            _pick_ret = bool(globals().get('SIMPLE_POOL_STATE_PICK_BY_RETURN', True))
+            _best_wrong_k = int(best['k'])
+            if _pick_ret and best_ret is not None:
+                best = dict(best_ret)
             _sel_rows = [_c[3] for _c in _cands[:best['k']]]
             _sel = pd.DataFrame(_sel_rows).reset_index(drop=True) if _sel_rows else pool.iloc[0:0].copy()
             _sel_names = set(str(_r.get('indicator', '')) for _r in _sel_rows)
-            ranked = [(_rk, _nm, _pv, _nf, _nh, _ps, _bs, ('사용' if _nm in _sel_names else ''))
-                      for (_rk, _nm, _pv, _nf, _nh, _ps, _bs) in ranked]
+            ranked = [(_rk, _nm, _pv, _nf, _nh, _ps, _bs, _relv,
+                       ('사용' if _nm in _sel_names else ''))
+                      for (_rk, _nm, _pv, _nf, _nh, _ps, _bs, _relv) in ranked]
             return dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=best['k'],
                         wrong=best['wrong'], remaining=best['rem'], acc=best['acc'],
                         thr=best['thr'], trace=trace, ranked=ranked, sel=_sel,
                         is_rev=_is_rev, side_label=_side_lbl, rev_floor=_REV_FLOOR,
                         n_rev_tier=int(sum(1 for _c in _cands if _c[0] >= _REV_FLOOR)) if _is_rev else None,
-                        judge_days=int(len(_idxs)))
+                        judge_days=int(len(_idxs)), order=order,
+                        ret_kl0=float(best.get('ret', 0.0) or 0.0),
+                        n_by_wrong=_best_wrong_k, picked_by=('수익률' if _pick_ret else '틀린자리'))
 
-        _st_res = {
-            'lc': _select_state('lc', buy_pool), 'sr': _select_state('sr', buy_pool),
-            'sc': _select_state('sc', sell_pool), 'lr': _select_state('lr', sell_pool),
-        }
-
+        # ★★★ (요청 7번) 상태마다 ①확률순 ②신뢰도순 두 가지로 각각 선정해보고,
+        #   그 상태의 K=L=0 수익률이 더 높은 쪽을 채택한다(상태별 독립 — 선정 자체가
+        #   상태별 독립이므로 비교도 같은 단위로 한다).
         def _union(a, b):
             _parts = [x for x in (a, b) if x is not None and len(x) > 0]
             if not _parts:
@@ -17899,6 +18027,39 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             if 'indicator' in _u.columns:
                 _u = _u.drop_duplicates(subset=['indicator'], keep='first').reset_index(drop=True)
             return _u
+
+        _try_rel = bool(globals().get('SIMPLE_POOL_STATE_TRY_RELIABILITY_ORDER', True))
+        _res_prob = {'lc': _select_state('lc', buy_pool, 'prob'),
+                     'sr': _select_state('sr', buy_pool, 'prob'),
+                     'sc': _select_state('sc', sell_pool, 'prob'),
+                     'lr': _select_state('lr', sell_pool, 'prob')}
+        if _try_rel:
+            _res_rel = {'lc': _select_state('lc', buy_pool, 'rel'),
+                        'sr': _select_state('sr', buy_pool, 'rel'),
+                        'sc': _select_state('sc', sell_pool, 'rel'),
+                        'lr': _select_state('lr', sell_pool, 'rel')}
+        else:
+            _res_rel = None
+
+        _st_res = {}
+        _pick_log = []
+        for _k_ in ('lc', 'lr', 'sc', 'sr'):
+            _a = _res_prob[_k_]
+            _b = _res_rel[_k_] if _res_rel is not None else None
+            _ra = float(_a.get('ret_kl0', 0.0) or 0.0)
+            _rb = float(_b.get('ret_kl0', 0.0) or 0.0) if _b is not None else float('-inf')
+            if _b is not None and _rb > _ra + 1e-12:
+                _st_res[_k_] = _b; _win_k = '신뢰도순'; _wr = _rb
+            else:
+                _st_res[_k_] = _a; _win_k = '확률순'; _wr = _ra
+            _st_res[_k_] = dict(_st_res[_k_])
+            _st_res[_k_]['win_order'] = ('rel' if _win_k == '신뢰도순' else 'prob')
+            _st_res[_k_]['ret_prob'] = _ra
+            _st_res[_k_]['ret_rel'] = (_rb if _b is not None else None)
+            _pick_log.append("%s %s(%.2f%% vs %s)" % (
+                _a['name'], _win_k, _wr * 100.0,
+                ('%.2f%%' % (_rb * 100.0)) if _b is not None else '—'))
+        print("    (상태별 지표선정 — K=L=0 수익률 비교) " + ', '.join(_pick_log))
 
         buy_final = _union(_st_res['lc']['sel'], _st_res['sr']['sel'])
         sell_final = _union(_st_res['sc']['sel'], _st_res['lr']['sel'])
@@ -17983,7 +18144,11 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             acc_sc=_st_res['sc']['acc'], acc_sr=_st_res['sr']['acc'],
             n_lc=_st_res['lc']['n'], n_lr=_st_res['lr']['n'],
             n_sc=_st_res['sc']['n'], n_sr=_st_res['sr']['n'],
-            rows=rows, latest=latest)
+            rows=rows, latest=latest,
+            # ★★★ (요청 7번) 확률순/신뢰도순 두 방식의 결과를 둘 다 싣는다 —
+            #   '상태별 특화지표(신뢰도순)' 시트를 따로 그리고, 어느 쪽이 채택됐는지 표시.
+            states_prob=[_res_prob[k] for k in ('lc', 'lr', 'sc', 'sr')],
+            states_rel=([_res_rel[k] for k in ('lc', 'lr', 'sc', 'sr')] if _res_rel is not None else None))
         return buy_final, sell_final, report
     except Exception:
         import traceback; traceback.print_exc()
@@ -18158,6 +18323,7 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
         target, magnitude_m, reversal_mask, n, _excl_mask, buy_ok, sell_ok, neutral_mask = _POSITION_MATCH_TARGET_CACHE[_pm_cache_key]
     else:
         target, magnitude, _ret, _valid, buy_ok, sell_ok, neutral_mask = _compute_target_positions(close_arr, threshold=_thr)
+        # ★ neutral_mask 변수명은 유지하되 내용은 '횡보'다(요청 1번 — 중립 삭제).
         n = len(target)
         _excl_mask = ~_valid
 
@@ -18177,11 +18343,12 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
                 pass
         magnitude_m = magnitude.copy()
         magnitude_m[_excl_mask] = 0.0
-        # ★★★ (요청 — 신규) "지표 탐색 시 중립은 그냥 매수든 매도든 성공으로" — 중립 자리는
-        #   매수/매도 어느 판정이든 정답으로 인정(양쪽 ok 마스크에 OR).
-        neutral_mask = neutral_mask & ~_excl_mask
-        buy_ok = (buy_ok | neutral_mask) & ~_excl_mask
-        sell_ok = (sell_ok | neutral_mask) & ~_excl_mask
+        # ★★★ (요청 2번 — 규칙 반전) "지표 탐색 시 횡보자리에서 발생한거는 모두 실패로
+        #   취급해" — 예전 '중립'은 양쪽 다 성공으로 쳐줬지만(OR), 이제 횡보는 양쪽 다
+        #   실패다. buy_ok/sell_ok에서 횡보일을 명시적으로 뺀다(AND NOT).
+        neutral_mask = neutral_mask & ~_excl_mask          # 내용은 '횡보' 마스크
+        buy_ok = buy_ok & ~neutral_mask & ~_excl_mask
+        sell_ok = sell_ok & ~neutral_mask & ~_excl_mask
 
         # ★★★ (요청) 추세전환 자리 판정 — 발화 직전 LOOKBACK일 추세와 반대방향인 정답 자리.
         #   (이제 선정 우선순위가 아니라 used_for_reversal 표시 목적으로만 쓰임)
@@ -18307,8 +18474,12 @@ def _select_indicators_by_position_match(feat, close_arr, buy_pool, sell_pool, t
         for (_row, _cw, _ww, _fidx) in _sorted_rej:
             if _added >= _max_add:
                 break
-            if not any(bool(neutral_mask[_f]) for _f in _fidx.tolist()):
-                continue   # 중립 자리에 발화하지 않는 지표는 이 보강 대상 아님
+            # ★★★ (요청 2번 — 규칙 반전으로 무효화) 예전엔 '중립 자리(양쪽 정답)에
+            #   발화하는 지표'를 보강 후보로 삼았지만, 이제 그 자리는 횡보(양쪽 오답)라
+            #   보강 근거가 정반대가 됐다 — 횡보에 발화하는 지표는 오히려 실패 지표이므로
+            #   이 보강에서 제외한다.
+            if any(bool(neutral_mask[_f]) for _f in _fidx.tolist()):
+                continue
             _new_c = _cum_c + _cw; _new_w = _cum_w + _ww
             if _new_c > _new_w:
                 cands.append((_row, _cw, _ww, _fidx))
@@ -18891,7 +19062,8 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             #   계산에 필요한 정보들을 지표별로 표시해서 공식 적용이 제대로 된 건지 확인
             #   가능하도록" — 각 지표 행에 그대로 저장해 시트에서 열로 노출한다.
             for _cname in ('rel_base', 'rel_n_events', 'rel_rs', 'rel_ts',
-                           'rel_rf', 'rel_tf', 'rel_up', 'rel_down', 'rel_stab'):
+                           'rel_rf', 'rel_tf', 'rel_up', 'rel_down', 'rel_stab',
+                           'rel_p_rs', 'rel_p_ts', 'rel_conf'):
                 df[_cname] = [r.get(_cname, 0) for r in _results]
             return df
 
@@ -18946,6 +19118,9 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             _n_before_b2, _n_before_s2 = len(buy_c), len(sell_c)
             buy_c  = _dedup_same_indicator_best_reliability(buy_c)
             sell_c = _dedup_same_indicator_best_reliability(sell_c)
+            # ★★★ (요청 8번) 접두사가 같은 계열(stoch_d_9/stoch_d_14 …)도 신뢰도 최고 하나만
+            buy_c  = _dedup_same_prefix_best_reliability(buy_c, '매수')
+            sell_c = _dedup_same_prefix_best_reliability(sell_c, '매도')
             if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
                 print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
                       f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 성공률·신뢰도 "
@@ -26506,6 +26681,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 if (_sp_used_all is not None and len(_sp_used_all) and 'display_name' in _sp_used_all.columns) else set()
 
             ws_all = wb.create_sheet('전체 후보 지표'); ws_all.sheet_view.showGridLines = False
+            _first_hdr_row_all = None   # ★ (요청 3번) 틀 고정에 쓸 첫 헤더행
             ws_all.cell(1, 1).value = (
                 f"{ticker} — 지표컷(최소신호수·성공률) 통과 후보 전부 표시(개수제한 없음), "
                 f"호라이즌일별 섹션·신뢰도순 정렬(같은 지표명은 신뢰도 최고 호라이즌만 표시). "
@@ -26559,6 +26735,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     ws_all.merge_cells(start_row=_r_all, start_column=1, end_row=_r_all, end_column=len(_cols_all))
                     _r_all += 1
                     _hdr_row_this = _r_all
+                    if _first_hdr_row_all is None:
+                        _first_hdr_row_all = _r_all
                     for _ci, _cn in enumerate(_cols_all, 1):
                         hc = ws_all.cell(_r_all, _ci); hc.value = _cn
                         hc.font = Font(bold=True, color='FFFFFF'); hc.fill = PatternFill('solid', fgColor='4472C4')
@@ -26644,6 +26822,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _widths += [10]   # ★ 사용여부
             for _ci, _w in enumerate(_widths, 1):
                 ws_all.column_dimensions[get_column_letter(_ci)].width = _w
+            # ★★★ (요청 3번) "전체 지표 시트에 컬럼 부분을 고정" — 첫 섹션의 헤더행까지
+            #   위쪽을 얼고, 왼쪽 표시명(B열)까지 함께 얼려서 오른쪽으로 스크롤해도 어떤
+            #   지표의 행인지 항상 보이게 한다.
+            try:
+                if _first_hdr_row_all:
+                    ws_all.freeze_panes = ws_all.cell(_first_hdr_row_all + 1, 3)
+                else:
+                    ws_all.freeze_panes = 'C3'
+            except Exception:
+                ws_all.freeze_panes = 'C3'
             _n_b_tot = len(_abdf) if _abdf is not None else 0
             _n_s_tot = len(_asdf) if _asdf is not None else 0
             _n_b_used = sum(1 for _n in (_abdf['display_name'] if _abdf is not None and len(_abdf) and 'display_name' in _abdf.columns else []) if str(_n) in _used_names_buy_all)
@@ -26885,14 +27073,17 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "판정이 뒤집힌 날짜와 그 자리의 변동률(=다음날 등락률, 정답자리를 정하는 그 수익률)을 "
                 "그대로 적는다 — 초록=새로 맞게 됨, 빨강=새로 틀리게 됨. 매 단계 임계값도 다시 "
                 "탐색되므로 이 변화에는 '지표 추가'와 '임계값 이동' 효과가 함께 담긴다. "
-                "★ 네 상태의 사용 개수와 임계값은 서로 완전히 독립이며, K/L 일별 백테스트를 전혀 쓰지 않는다.")
+                "★ (요청) 'K=L=0 수익률%' — 그 개수까지 썼을 때 K와 L을 둘 다 0으로 놓고"
+                "(net≥0이면 롱, net<0이면 현금) 돌린 총수익률. 이 값이 가장 높은 개수를 채택하고"
+                "(초록 ★), 예전 기준인 '틀린자리 최소' 개수는 노란색으로 함께 표시한다.")
             ws_v.cell(1, 1).font = Font(italic=True, size=9, color='808080')
             ws_v.merge_cells('A1:M1')
 
-            _cols_v = ['특화지표수(k)', '맞는자리', '틀린자리', '맞는자리 변화', '틀린자리 변화',
-                       '남은자리(발화없음)', '적중률%', '최적임계값', '신규커버일수', '이번추가지표',
-                       '새로 맞게 된 자리(날짜·변동률%)', '새로 틀리게 된 자리(날짜·변동률%)', '채택여부']
-            _C_GAIN_V, _C_LOSS_V, _C_ADOPT_V = 11, 12, 13
+            _cols_v = ['특화지표수(k)', 'K=L=0 수익률%', '맞는자리', '틀린자리', '맞는자리 변화',
+                       '틀린자리 변화', '남은자리(발화없음)', '적중률%', '최적임계값', '신규커버일수',
+                       '이번추가지표', '새로 맞게 된 자리(날짜·변동률%)',
+                       '새로 틀리게 된 자리(날짜·변동률%)', '채택여부']
+            _C_GAIN_V, _C_LOSS_V, _C_ADOPT_V = 12, 13, 14
             _r0 = 3
 
             def _rich_days(_pairs, _is_gain):
@@ -26915,7 +27106,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             for _s in _mwr['states']:
                 _hc0 = ws_v.cell(_r0, 1)
                 _jd = int(_s.get('judge_days', 0) or 0)
-                _hc0.value = (f"[{_s['name']}] ({_s['side']} 지표 후보) — 채택 {_s['n']}개, "
+                _hc0.value = (f"[{_s['name']}] ({_s['side']} 지표 후보) — 채택 {_s['n']}개"
+                              f"(기준 {_s.get('picked_by', '수익률')}, K=L=0 수익률 "
+                              f"{float(_s.get('ret_kl0', 0.0) or 0.0)*100:+.2f}%, "
+                              f"틀린자리최소 개수는 {_s.get('n_by_wrong', 0)}개), "
                               f"맞는자리 {max(_jd - int(_s['wrong']), 0)}일 / 틀린자리 {_s['wrong']}일"
                               f"(판정대상 {_jd}일, 발화없음 {_s['remaining']}일), "
                               f"적중 {_s['acc']*100:.1f}%, 임계값 {_s['thr']:.3f}")
@@ -26928,38 +27122,47 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 for _ri, _trow in enumerate(_tr):
                     # (k, wrong, remaining, acc, thr, newcov, name, ncorrect, dcorrect, dwrong,
                     #  newly_correct_days, newly_wrong_days)
+                    _ret_kl0 = None
                     if len(_trow) >= 12:
                         (_k, _w, _rem, _acc, _thr, _newcov, _addname,
                          _ncorr, _dcorr, _dwrong, _gain_days, _loss_days) = _trow[:12]
+                        if len(_trow) >= 13:      # ★ (요청 6번) K=L=0 수익률
+                            _ret_kl0 = float(_trow[12])
                     else:   # 하위호환 — 옛 형식(7개) trace도 그대로 읽힘
                         _k, _w, _rem, _acc, _thr, _newcov, _addname = _trow[:7]
                         _ncorr = ''; _dcorr = ''; _dwrong = ''; _gain_days = []; _loss_days = []
                     _rr_ = _hr + 1 + _ri
                     _is_best = (_k == _s['n'])
-                    _vals_v = [_k, _ncorr, _w,
+                    _is_wrong_best = ((not _is_best) and _k == int(_s.get('n_by_wrong', 0) or 0))
+                    _vals_v = [_k,
+                               (round(_ret_kl0 * 100, 2) if _ret_kl0 is not None else ''),
+                               _ncorr, _w,
                                (f"{_dcorr:+d}" if isinstance(_dcorr, int) else ''),
                                (f"{_dwrong:+d}" if isinstance(_dwrong, int) else ''),
                                _rem, round(float(_acc) * 100, 2), round(float(_thr), 3),
                                _newcov, _addname,
                                _rich_days(_gain_days, True), _rich_days(_loss_days, False),
-                               ('★채택' if _is_best else '')]
+                               ('★채택(수익률최고)' if _is_best else
+                                ('틀린자리최소' if _is_wrong_best else ''))]
                     for _ci, _v in enumerate(_vals_v, 1):
                         _cc = ws_v.cell(_rr_, _ci); _cc.value = _v
                         if _is_best:
                             if _ci not in (_C_GAIN_V, _C_LOSS_V):
                                 _cc.font = Font(bold=True)
                             _cc.fill = PatternFill('solid', fgColor='C6EFCE')
-                        elif _ci == 9 and isinstance(_newcov, int) and _newcov == 0:
+                        elif _is_wrong_best:
+                            _cc.fill = PatternFill('solid', fgColor='FFF2CC')
+                        elif _ci == 10 and isinstance(_newcov, int) and _newcov == 0:
                             _cc.font = Font(color='9C0006')
-                        elif _ci == 4 and isinstance(_dcorr, int) and _dcorr > 0:
+                        elif _ci == 5 and isinstance(_dcorr, int) and _dcorr > 0:
                             _cc.font = Font(bold=True, color='006100')
-                        elif _ci == 5 and isinstance(_dwrong, int) and _dwrong > 0:
+                        elif _ci == 6 and isinstance(_dwrong, int) and _dwrong > 0:
                             _cc.font = Font(bold=True, color='9C0006')
                 _r0 = _hr + len(_tr) + 3
 
-            for _ci, _w in enumerate([14, 10, 10, 13, 13, 16, 10, 12, 12, 24, 52, 52, 10], 1):
+            for _ci, _w in enumerate([14, 14, 10, 10, 13, 13, 16, 10, 12, 12, 24, 52, 52, 16], 1):
                 ws_v.column_dimensions[get_column_letter(_ci)].width = _w
-            ws_v.freeze_panes = 'A4'
+            ws_v.freeze_panes = 'B4'
             _sum_txt = ', '.join('%s %d단계' % (_s['name'], len(_s.get('trace') or []))
                                  for _s in _mwr['states'])
             print("  ✓ 지표선정 검증 시트 — 4개 상태별 추이 기록(%s)" % _sum_txt)
@@ -26972,73 +27175,91 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     try:
         _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
         if _mwr and _mwr.get('states'):
-            ws_p = wb.create_sheet('상태별 특화지표'); ws_p.sheet_view.showGridLines = False
-            ws_p.cell(1, 1).value = (
-                "4가지 상태별 특화지표 순위 — 확률은 '전체 후보 지표' 시트의 전환성공rs·추세성공ts·"
-                "이벤트수를 그대로 나눈 값이라 두 시트 숫자가 항상 정확히 일치한다. "
-                "전환 상태(롱→숏·숏→롱)는 전환확률 = 전환성공 ÷ 총 이벤트수, "
-                "지속 상태(롱지속·숏지속)는 추세성공 ÷ 총 이벤트수 기준. "
-                "이 순서대로 지표를 하나씩 늘려가며 틀린자리가 최소가 되는 개수를 채택하고"
-                "(→ '지표선정 검증' 시트), 채택된 지표에 '사용' 표시가 붙는다. "
-                "매수 지표는 (롱지속·숏→롱), 매도 지표는 (숏지속·롱→숏)의 후보가 된다. "
-                "★ (요청) 전환 상태는 2단 정렬 — 전환확률 50% 이상은 전환확률 높은 순으로 먼저 놓고, "
-                "50% 미만부터는 (전환성공 + 추세성공) ÷ 총 이벤트수가 높은 순으로 정렬한다. "
-                "'정렬기준' 열에서 그 행이 어느 기준으로 놓였는지 확인 가능.")
-            ws_p.cell(1, 1).font = Font(italic=True, size=9, color='808080')
-            ws_p.merge_cells('A1:H1')
+            # ★★★ (요청 7번) 확률순 / 신뢰도순 두 벌을 각각 시트로 그린다.
+            _variants = [('상태별 특화지표', _mwr.get('states_prob') or _mwr['states'], '확률순', 'prob')]
+            if _mwr.get('states_rel'):
+                _variants.append(('상태별 특화지표(신뢰도순)', _mwr['states_rel'], '신뢰도순', 'rel'))
+            _win_map = {_s['key']: _s.get('win_order', 'prob') for _s in _mwr['states']}
 
-            _cols_p = ['순위', '지표', '추세성공÷총이벤트', '(전환성공+추세성공)÷총이벤트', '정렬기준',
-                       '총 이벤트수', '추세성공ts', '채택']
-            _r0 = 3
-            _cap = int(globals().get('STATE_SPECIALIST_SHEET_TOP_N', 60))
-            for _s in _mwr['states']:
-                _rk = _s.get('ranked') or []
-                _hc0 = ws_p.cell(_r0, 1)
-                _is_rev_s = bool(_s.get('is_rev'))
-                _floor_s = float(_s.get('rev_floor', 0.5))
-                _hc0.value = (f"[{_s['name']}] ({_s['side']} 지표) — 후보 {len(_rk)}개 중 "
-                              f"상위 {_s['n']}개 채택, 임계값 {_s['thr']:.3f}, 적중 {_s['acc']*100:.1f}%"
-                              + ((f"  |  ★2단 정렬: 전환확률 ≥{_floor_s:.0%} {_s.get('n_rev_tier') or 0}개 "
-                                  f"→ 그 아래는 '(전환성공+추세성공)÷총이벤트' 높은 순")
-                                 if _is_rev_s else ''))
-                _hc0.font = Font(bold=True, size=12, color='1F3864')
-                _hr = _r0 + 1
-                _cols_p_s = list(_cols_p)
-                if _is_rev_s:
-                    _cols_p_s[2] = '전환확률(전환성공÷총이벤트)'
-                    _cols_p_s[6] = '전환성공rs'
-                for _ci, _cname in enumerate(_cols_p_s, 1):
-                    _hc = ws_p.cell(_hr, _ci); _hc.value = _cname
-                    _hc.font = Font(bold=True, color='FFFFFF'); _hc.fill = PatternFill('solid', fgColor='548235')
-                _shown = _rk[:_cap]
-                _tier_drawn = False
-                for _ri, (_rank, _nm, _pv, _nf, _nh, _ps, _bs, _use) in enumerate(_shown):
-                    _rr_ = _hr + 1 + _ri
-                    for _ci, _v in enumerate([_rank, _nm, _pv, _ps, _bs, _nf, _nh, _use], 1):
-                        _cc = ws_p.cell(_rr_, _ci); _cc.value = _v
-                        if _use == '사용':
-                            _cc.font = Font(bold=True)
-                            _cc.fill = PatternFill('solid', fgColor='C6EFCE')
-                        elif _is_rev_s and float(_pv) < _floor_s:
-                            _cc.fill = PatternFill('solid', fgColor='FFF2CC')   # 2순위 그룹 표시
-                    # ★ 50% 경계선 — 여기서부터 '방향 적중확률' 기준 정렬임을 눈으로 구분
-                    if _is_rev_s and (not _tier_drawn) and float(_pv) < _floor_s:
-                        _tier_drawn = True
-                        _bc = ws_p.cell(_rr_, 5)
-                        _bc.font = Font(bold=True, color='9C0006')
-                if len(_rk) > len(_shown):
-                    ws_p.cell(_hr + 1 + len(_shown), 1).value = f"… 이하 {len(_rk)-len(_shown)}개 생략"
-                    ws_p.cell(_hr + 1 + len(_shown), 1).font = Font(italic=True, size=9, color='808080')
-                    _r0 = _hr + len(_shown) + 4
-                else:
+            for _sheet_name, _states_v, _ord_lbl, _ord_key in _variants:
+                _n_win = sum(1 for _s in _states_v if _win_map.get(_s['key']) == _ord_key)
+                _ord_ret = sum(float(_s.get('ret_kl0', 0.0) or 0.0) for _s in _states_v) / max(len(_states_v), 1)
+                _is_win = (_n_win > 0)
+                ws_p = wb.create_sheet(_sheet_name); ws_p.sheet_view.showGridLines = False
+                ws_p.cell(1, 1).value = (
+                    f"[{_ord_lbl}] 4가지 상태별 특화지표 순위 — 4개 상태 중 {_n_win}개가 이 정렬로 채택됨"
+                    + ("" if _is_win else "  (비교용 — 이 정렬로 채택된 상태 없음)")
+                    + ". 확률은 '전체 후보 지표' 시트의 전환성공rs·추세성공ts·이벤트수를 그대로 나눈 값이라 "
+                    "두 시트 숫자가 항상 일치한다. 전환 상태(롱→숏·숏→롱)는 전환확률 = 전환성공 ÷ 총 이벤트수, "
+                    "지속 상태(롱지속·숏지속)는 추세성공 ÷ 총 이벤트수. "
+                    "★ (요청) 전환 상태는 2단 정렬 — 전환확률 50% 이상은 전환확률 높은 순, "
+                    "50% 미만부터는 (전환성공 + 추세성공) ÷ 총 이벤트수 높은 순. "
+                    "★ (요청) '신뢰도순' 시트는 같은 후보를 신뢰도 내림차순으로만 세운 뒤 같은 절차를 밟은 것으로, "
+                    "두 방식 중 K=L=0 수익률이 높은 쪽이 실제 net 계산에 쓰인다. "
+                    "지표를 하나씩 늘려가며 수익률이 가장 높은 개수를 채택하고(→ '지표선정 검증' 시트) "
+                    "채택된 지표에 '사용' 표시가 붙는다.")
+                ws_p.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+                ws_p.merge_cells('A1:I1')
+
+                _cols_p = ['순위', '지표', '추세성공÷총이벤트', '(전환성공+추세성공)÷총이벤트',
+                           '신뢰도', '정렬기준', '총 이벤트수', '추세성공ts', '채택']
+                _r0 = 3
+                _cap = int(globals().get('STATE_SPECIALIST_SHEET_TOP_N', 60))
+                for _s in _states_v:
+                    _rk = _s.get('ranked') or []
+                    _hc0 = ws_p.cell(_r0, 1)
+                    _is_rev_s = bool(_s.get('is_rev'))
+                    _floor_s = float(_s.get('rev_floor', 0.5))
+                    _this_win = (_win_map.get(_s['key'], 'prob') == _ord_key)
+                    _hc0.value = (f"[{_s['name']}] ({_s['side']} 지표) — 후보 {len(_rk)}개 중 "
+                                  f"상위 {_s['n']}개, K=L=0 수익률 "
+                                  f"{float(_s.get('ret_kl0', 0.0) or 0.0)*100:+.2f}%"
+                                  + ("  ★이 상태는 이 정렬이 채택됨" if _this_win else "  (미채택)")
+                                  + f", 임계값 {_s['thr']:.3f}, 적중 {_s['acc']*100:.1f}%"
+                                  + ((f"  |  ★2단 정렬: 전환확률 ≥{_floor_s:.0%} "
+                                      f"{_s.get('n_rev_tier') or 0}개 → 그 아래는 "
+                                      f"'(전환성공+추세성공)÷총이벤트' 높은 순")
+                                     if (_is_rev_s and _s.get('order') != 'rel') else ''))
+                    _hc0.font = Font(bold=True, size=12,
+                                     color=('1F3864' if _this_win else '808080'))
+                    _hr = _r0 + 1
+                    _cols_p_s = list(_cols_p)
+                    if _is_rev_s:
+                        _cols_p_s[2] = '전환확률(전환성공÷총이벤트)'
+                        _cols_p_s[7] = '전환성공rs'
+                    for _ci, _cname in enumerate(_cols_p_s, 1):
+                        _hc = ws_p.cell(_hr, _ci); _hc.value = _cname
+                        _hc.font = Font(bold=True, color='FFFFFF')
+                        _hc.fill = PatternFill('solid', fgColor='548235')
+                    _shown = _rk[:_cap]
+                    _tier_drawn = False
+                    for _ri, _rrow in enumerate(_shown):
+                        (_rank, _nm, _pv, _nf, _nh, _ps, _bs, _relv, _use) = (
+                            _rrow if len(_rrow) >= 9 else
+                            (_rrow[0], _rrow[1], _rrow[2], _rrow[3], _rrow[4], _rrow[5],
+                             _rrow[6], 0.0, _rrow[-1]))
+                        _rr_ = _hr + 1 + _ri
+                        for _ci, _v in enumerate([_rank, _nm, _pv, _ps, _relv, _bs,
+                                                  _nf, _nh, _use], 1):
+                            _cc = ws_p.cell(_rr_, _ci); _cc.value = _v
+                            if _use == '사용':
+                                _cc.font = Font(bold=True)
+                                _cc.fill = PatternFill('solid', fgColor='C6EFCE')
+                            elif _is_rev_s and _s.get('order') != 'rel' and float(_pv) < _floor_s:
+                                _cc.fill = PatternFill('solid', fgColor='FFF2CC')
+                        if _is_rev_s and _s.get('order') != 'rel' and (not _tier_drawn) \
+                           and float(_pv) < _floor_s:
+                            _tier_drawn = True
+                            ws_p.cell(_rr_, 6).font = Font(bold=True, color='9C0006')
                     _r0 = _hr + len(_shown) + 3
 
-            for _ci, _w in enumerate([7, 30, 20, 16, 16, 18, 14, 8], 1):
-                ws_p.column_dimensions[get_column_letter(_ci)].width = _w
-            ws_p.freeze_panes = 'A4'
-            _sum_txt2 = ', '.join('%s %d개' % (_s['name'], len(_s.get('ranked') or []))
-                                  for _s in _mwr['states'])
-            print("  ✓ 상태별 특화지표 시트 — %s" % _sum_txt2)
+                for _ci, _w in enumerate([7, 30, 22, 26, 10, 26, 13, 13, 8], 1):
+                    ws_p.column_dimensions[get_column_letter(_ci)].width = _w
+                ws_p.freeze_panes = 'C4'
+                _sum_txt2 = ', '.join('%s %d개' % (_s['name'], len(_s.get('ranked') or []))
+                                      for _s in _states_v)
+                print("  ✓ %s 시트 — %s%s" % (_sheet_name, _sum_txt2,
+                                              ' ★채택' if _is_win else ''))
     except Exception as _ep:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 상태별 특화지표 시트 작성 실패(무시): {_ep}")
