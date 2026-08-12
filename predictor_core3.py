@@ -14621,6 +14621,34 @@ SIMPLE_POOL_REL_EVENT_CONF_N             = 10.0
 # ★ 문턱을 얼마나 넘었는지(확률 초과분)에 비례해 가중을 더 키우는 배율 —
 #   확률=문턱이면 1배, 확률=100%면 (1+이 값)배.
 SIMPLE_POOL_REL_EXCESS_MULT              = 2.0
+# ★★★ (실측 개선) 기본점수(수익합)에도 표본수 축소 n/(n+N0)를 적용 — 이벤트 12~19건짜리
+#   소표본이 신뢰도 상위를 독식하던 문제 대응. False면 예전처럼 축소 없음.
+SIMPLE_POOL_REL_SHRINK_BASE              = True
+# ★★★ (신규) 홀드아웃 검증 — 앞 이 비율만큼만 보고 지표를 뽑은 뒤, 나머지 구간에서 성적을
+#   잰다. 본 선정 결과는 바뀌지 않으며 '선정 홀드아웃 검증' 시트로만 보고된다.
+#   0 또는 1 이상이면 검증을 건너뛴다.
+STATE_HOLDOUT_TRAIN_FRAC                 = 0.7
+# ★★★ (실측 개선) 시간 일관성 감점 강도(0~1). 이벤트를 시간순 전·후반으로 갈라 한쪽에서만
+#   벌었으면 점수를 이 비율만큼 깎는다. 0이면 보정 없음, 1이면 최대 감점.
+#   실측: 전반 성적 → 후반 성적 상관이 r=-0.10에 불과해, 전 구간 일괄 채점은 과적합이 크다.
+#   ★ 실측 결과 이 보정은 아웃오브샘플 성적을 개선하지 못했다(아래 주석 참조) — 기본 0으로
+#     꺼 두고, 필요하면 켜서 쓴다.
+SIMPLE_POOL_REL_TIME_CONSIST_W           = 0.0
+# ─────────────────────────────────────────────────────────────────────────────
+# ★★★ [중요 · 실측 검증 기록] 신뢰도의 실제 예측력 (GOOG 2022~2026, 후보 837개)
+#   지표별 신호를 시간순으로 나눠 "앞 2/3로 점수를 매기고 뒤 1/3 성적을 맞히는지" 검증:
+#       변형              점수→미래등락 r   상위10% 미래등락   하위10% 미래등락
+#       현재 공식              -0.095          +0.833%          +1.143%
+#       기본점수 축소          -0.091          +0.927%          +1.134%
+#       시간일관성 감점        -0.098          +0.817%          +1.171%
+#       둘 다 적용            -0.093          +0.785%          +1.134%
+#       (전체 평균 미래등락 +0.985%)
+#   → 어떤 변형도 미래 성적을 예측하지 못했고, 점수가 높은 지표가 오히려 미래에는 평균보다
+#     못했다. 전반 성적 → 후반 성적 상관 자체가 r=-0.10(승률 -0.14)이라, 개별 지표의 과거
+#     성적은 미래로 이어지지 않는다. 신뢰도는 '과거 구간 요약'으로만 읽어야 하며, 이 값이
+#     높다고 앞으로 잘 맞는다는 뜻이 아니다. 표본수 축소만 상위10% 미래등락을 소폭
+#     끌어올려(+0.833→+0.927%) 기본값으로 켜 둔다.
+# ─────────────────────────────────────────────────────────────────────────────
 STATE_REV_RANK_PROB_FLOOR                = 0.5
 # ★★★ (요청 — 계산식 확정) 상태확률은 '전체 후보 지표' 시트의 신뢰도 구성요소를 그대로 쓴다
 #   (새로 세지 않는다 — 두 시트 숫자가 어긋나던 원인이 바로 별도 재계산이었다):
@@ -17190,7 +17218,7 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
               'power': 0.0, 'p_value': 1.0, 'df': 0,
               'rel_base': 0.0, 'rel_n_events': 0, 'rel_rs': 0, 'rel_ts': 0,
               'rel_rf': 0, 'rel_tf': 0, 'rel_up': 1.0, 'rel_down': 1.0, 'rel_stab': 1.0,
-              'rel_p_rs': 0.0, 'rel_p_ts': 0.0, 'rel_conf': 0.0}
+              'rel_p_rs': 0.0, 'rel_p_ts': 0.0, 'rel_conf': 0.0, 'rel_time_consist': 1.0}
     try:
         _row_key = (row.get('indicator'), row.get('threshold'), row.get('direction'),
                    row.get('lead_shift', 0), row.get('horizon_day', row.get('horizon', 1)))
@@ -17388,6 +17416,40 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
         p_ts = ts / float(n_events) if n_events > 0 else 0.0
         conf = n_events / (n_events + _conf_n0) if n_events > 0 else 0.0
 
+        # ★★★ (실측 개선) GOOG 결과에서 신뢰도 상위 12개가 전부 이벤트 12~19건짜리
+        #   소표본이었다(전체 1155일 중). conf가 up_w 안에만 있어서 12건(conf 0.55)과
+        #   75건(conf 0.88)의 차이가 1.6배에 그쳤고, 기본점수(수익합)에는 축소가 전혀
+        #   걸리지 않아 "몇 번 크게 맞은 지표"가 그대로 1등이 됐다.
+        #   → 기본점수에도 같은 축소를 곱해, 표본이 적으면 점수가 실제로 깎이게 한다.
+        #   (SIMPLE_POOL_REL_SHRINK_BASE=False로 두면 예전 동작)
+        if bool(globals().get('SIMPLE_POOL_REL_SHRINK_BASE', True)) and n_events > 0:
+            base_sum = base_sum * (n_events / (n_events + _conf_n0))
+
+        # ★★★ (실측 개선 — 시간 일관성) GOOG 실데이터로 지표들의 신호를 전·후반으로 갈라
+        #   검증해 보니, 전반 성적과 후반 성적의 상관이 r=-0.10(승률은 -0.14)로 사실상
+        #   무관하거나 오히려 반대였다. 즉 "과거에 잘 맞은 지표가 앞으로도 잘 맞는다"는
+        #   보장이 전혀 없고, 전 구간을 한 덩어리로 채점하면 한 시기에 몰아서 크게 맞은
+        #   지표가 그대로 1등이 된다(인샘플 과적합).
+        #   → 이벤트를 시간순 전·후반으로 갈라 양쪽 다 플러스인 지표만 온전한 점수를 주고,
+        #     한쪽에서만 벌었으면 점수를 깎는다. 예측력을 없던 데서 만들어낼 수는 없지만,
+        #     '한 번의 운'으로 상위에 오르는 것은 확실히 막는다.
+        #   (SIMPLE_POOL_REL_TIME_CONSIST_W=0.0으로 두면 이 보정 없음)
+        _tc_w = float(globals().get('SIMPLE_POOL_REL_TIME_CONSIST_W', 0.6))
+        time_consist = 1.0
+        if _tc_w > 0.0 and len(ev_fav) >= 4:
+            _h = len(ev_fav) // 2
+            _f1 = float(np.mean(ev_fav[:_h])); _f2 = float(np.mean(ev_fav[_h:]))
+            if _f1 > 0 and _f2 > 0:
+                # 양쪽 다 플러스 — 약한 쪽/강한 쪽 비율만큼만 인정(둘이 비슷할수록 1에 가까움)
+                _ratio = min(_f1, _f2) / max(_f1, _f2)
+                time_consist = 1.0 - _tc_w * (1.0 - _ratio)
+            elif _f1 > 0 or _f2 > 0:
+                time_consist = 1.0 - _tc_w        # 한쪽에서만 벎 — 크게 감점
+            else:
+                time_consist = 1.0 - _tc_w        # 양쪽 다 마이너스(base<=0으로 걸러질 것)
+            time_consist = max(time_consist, 1e-6)
+        base_sum = base_sum * time_consist
+
         up_w = 1.0
         if p_rs >= _gate:
             # (확률 - 문턱)에 비례한 배율 — 50%면 1배, 100%면 (1+_exc_mult)배
@@ -17421,7 +17483,8 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
                   'rel_rs': rs, 'rel_ts': ts, 'rel_rf': rf, 'rel_tf': tf,
                   'rel_up': up_w, 'rel_down': down_w, 'rel_stab': stab,
                   # ★★★ (요청 4번 — 신규) 시트 검산용 구성요소
-                  'rel_p_rs': p_rs, 'rel_p_ts': p_ts, 'rel_conf': conf}
+                  'rel_p_rs': p_rs, 'rel_p_ts': p_ts, 'rel_conf': conf,
+                  'rel_time_consist': time_consist}
         if len(_RELIABILITY_BASE_CACHE) >= 20000:
             _RELIABILITY_BASE_CACHE.pop(next(iter(_RELIABILITY_BASE_CACHE)))
         _RELIABILITY_BASE_CACHE[_base_cache_key] = dict(result)
@@ -17706,7 +17769,7 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
 _STATE_THR_GRID = np.arange(0.0, 1.0001, 0.01)
 
 
-def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticker=None):
+def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticker=None, train_mask=None):
     """★★★ (요청 — 재설계) "4가지 상태 다 사용 지표 개수 다 따로 구해야지. 시트를 하나
        만들어서 4가지 상태별로 맞출 확률이 높은 순으로 각각 특화지표를 정리하고, 지표선정
        검증 시트에 4가지 상태별로 각 상태에 맞는 특화지표 개수를 늘리면서 각각 틀린자리가
@@ -17752,6 +17815,15 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         }
         dom = {'lc': day_ok & prev_long, 'lr': day_ok & prev_long,
                'sc': day_ok & (~prev_long), 'sr': day_ok & (~prev_long)}
+        dom_full = dict(dom)      # ★ 홀드아웃 검증용 — 제한 전 원본 보존
+        # ★★★ (신규 — 홀드아웃 검증) 선정에 쓸 날짜를 제한하는 마스크. 기본은 전 구간
+        #   (=기존 동작 그대로). 앞 구간만 True로 주면 '학습구간에서만 지표를 뽑는' 것이
+        #   되어, 나머지 구간에서 진짜 아웃오브샘플 성적을 잴 수 있다.
+        if train_mask is not None:
+            _tm = np.asarray(train_mask, dtype=bool)[:n]
+            if len(_tm) < n:
+                _tm = np.concatenate([_tm, np.zeros(n - len(_tm), dtype=bool)])
+            dom = {_k3: (_v3 & _tm) for _k3, _v3 in dom.items()}
         _NAME = {'lc': '롱지속', 'lr': '롱→숏', 'sc': '숏지속', 'sr': '숏→롱'}
         _SIDE = {'lc': '매수', 'sr': '매수', 'sc': '매도', 'lr': '매도'}
         # ★★★ (요청 — 확정) 상태확률은 '전체 후보 지표' 시트의 신뢰도 구성요소를 그대로 쓴다:
@@ -17808,7 +17880,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         #   숏지속(매도) ↔ 숏→롱(매수)  : 직전이 현금이던 날의 결정
         _OPP = {'lc': 'lr', 'lr': 'lc', 'sc': 'sr', 'sr': 'sc'}
 
-        def _ret_of_net(net_arr, idxs):
+        def _ret_of_net(net_arr, idxs, is_buy_side):
             """0 기준 포지션의 수익률 — 그 상태가 실제로 판정을 내리는 날(dom)에서만 집계.
 
                ★★★ (실측 버그수정) 처음엔 net을 한쪽 방향으로만 쌓고 전 구간에서 집계했는데,
@@ -17817,7 +17889,20 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                ① net에 상대 상태(반대 방향)를 함께 넣어 0을 사이에 두고 겨루게 하고,
                ② 틀린자리를 세던 그 날짜(_idxs)에서만 집계해 '그 자리들에서 실제로 번 돈'을
                재도록 바꾼다 — 틀린자리와 완전히 같은 표본이라 두 지표가 직접 비교된다."""
-            _pos = (net_arr[idxs] > 0.0)
+            #   ★★★ (요청 — 재수정) "4가지 상태별 일별 백테스트는 각각 1가지 상태 지표만
+            #   사용했을 때 최대 수익률로 해야 하는데 왜 다른 게 들어갔지" — 맞다. 상대 상태
+            #   net을 섞으면 그 상태 지표만의 성적이 아니게 된다. 상대 net은 완전히 빼고
+            #   자기 상태 지표만으로 0기준 포지션을 잡는다.
+            #   ★ 그래도 단조증가 퇴화가 없는 이유: 집계를 '그 상태가 판정을 내리는 날
+            #     (dom)'로 한정했기 때문. 예컨대 롱지속의 dom(직전이 롱인 날)에는 실제로
+            #     롱지속인 날과 롱→숏인 날이 섞여 있어서, 롱→숏 날에 발화하는 지표를
+            #     추가하면 그 날 롱을 잡아 손실이 나므로 수익률이 오히려 떨어진다.
+            #   · 매수 상태: 발화해서 net>0이면 매수, 아니면 현금
+            #   · 매도 상태: 발화해서 net<0이면 현금, 아니면 매수(기본 보유)
+            if is_buy_side:
+                _pos = (net_arr[idxs] > 0.0)
+            else:
+                _pos = ~(net_arr[idxs] < 0.0)
             return float(np.sum(_pos * _ret_arr[idxs]))
 
         def _fire_of(row):
@@ -17898,7 +17983,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
 
         _max_cand = int(globals().get('SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES', 300))
 
-        def _select_state(skey, pool, order='prob', opp_net=None):
+        def _select_state(skey, pool, order='prob', opp_net=None, dom_override=None):
             """한 상태에 대해: 특화지표 랭킹 → 개수 늘려가며 임계값·틀린자리 최소화.
                order='prob' → 기존(전환/추세 성공확률 순), order='rel' → ★(요청 7번) 신뢰도 순."""
             _blank = dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=0, wrong=0,
@@ -17912,7 +17997,8 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                           dom_idx=np.zeros(0, dtype=int))
             if pool is None or len(pool) == 0:
                 return _blank
-            _act = st[skey]; _dm = dom[skey]
+            _act = st[skey]
+            _dm = dom[skey] if dom_override is None else dom_override
             _idxs = np.nonzero(_dm)[0]
             _actual = _act[_idxs]
             _side = _SIDE[skey]
@@ -18003,7 +18089,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 # ★★★ (요청 6번) 틀린자리와 똑같은 자리에서 수익률만 추가 계산 —
                 #   이번 지표의 가중치를 net에 누적(O(n))하고 0 기준 포지션으로 수익률.
                 _netw[_f] += (_wt_of(_row) if _is_buy_side else -_wt_of(_row))
-                _ret_kl0 = _ret_of_net(_netw + _opp_net, _idxs)
+                _ret_kl0 = _ret_of_net(_netw, _idxs, _is_buy_side)
                 trace.append((k + 1, _w, _rem, _acc, _thr, _newcov,
                               str(_row.get('indicator', '')),
                               _ncorr, _d_corr, _d_wrong,
@@ -18063,17 +18149,14 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             return {_k2: _select_state(_k2, _POOL_OF[_k2], order, opp_nets.get(_k2))
                     for _k2 in ('lc', 'sr', 'sc', 'lr')}
 
-        def _select_two_pass(order):
-            """★ 2패스 — 1패스는 상대 상태 없이(자기 주장만) 뽑고, 2패스는 1패스에서 뽑힌
-               상대 상태의 net을 깔아둔 상태에서 다시 뽑는다. 이래야 0을 사이에 두고 두
-               상태가 실제로 겨루게 되고, 수익률이 단조 증가하는 퇴화가 사라진다."""
-            _a = _run_pass(order, {})
-            _opp = {_k2: _a[_OPP[_k2]]['net_sel'] for _k2 in ('lc', 'sr', 'sc', 'lr')}
-            _b = _run_pass(order, _opp)
-            return _b
+        # ★ 각 상태는 '자기 상태 지표만'으로 독립 선정한다(요청) — 상대 상태 net을 섞던
+        #   2패스는 폐기. 상태 간 결합은 이후 net/KL 단계에서 이뤄진다.
+        def _select_state_tr(skey, pool, order, tr_mask):
+            """★ 홀드아웃용 — 학습구간 날짜만 보고 그 상태를 선정한다."""
+            return _select_state(skey, pool, order, None, dom_full[skey] & tr_mask)
 
-        _res_prob = _select_two_pass('prob')
-        _res_rel = _select_two_pass('rel') if _try_rel else None
+        _res_prob = _run_pass('prob', {})
+        _res_rel = _run_pass('rel', {}) if _try_rel else None
 
         _st_res = {}
         _pick_log = []
@@ -18101,12 +18184,13 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         #   으로 두어 수익 집계에서 빠진다 — 선정에 쓴 수익률과 정확히 같은 정의.
         _sw_arr = np.asarray(_ctp[6], dtype=bool)
         for _k2, _r2 in _st_res.items():
-            _net_tot = np.asarray(_r2.get('net_sel')) + np.asarray(_r2.get('opp_net'))
+            _net_tot = np.asarray(_r2.get('net_sel'))      # ★ 자기 상태 지표만
             _dom_i = np.asarray(_r2.get('dom_idx'), dtype=int)
             _dom_m = np.zeros(n, dtype=bool)
             if len(_dom_i):
                 _dom_m[_dom_i] = True
-            _pos_a = (_net_tot > 0.0)
+            _is_buy_2 = (_r2.get('side') == '매수')
+            _pos_a = (_net_tot > 0.0) if _is_buy_2 else ~(_net_tot < 0.0)
             _rows_bt = []
             _cum = 0.0
             _nw = _nl = 0
@@ -18136,8 +18220,6 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                                  float(close_arr[_t]) if _t < len(close_arr) else None,
                                  round(_rt * 100.0, 3),
                                  round(float(_net_tot[_t]), 4),
-                                 round(float(_r2.get('net_sel')[_t]), 4),
-                                 round(float(_r2.get('opp_net')[_t]), 4),
                                  _act, _opt, _ok,
                                  round(_day * 100.0, 3), round(_cum * 100.0, 3)))
             _r2['daily_bt'] = _rows_bt
@@ -18216,7 +18298,51 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                       acc_cont=_st_res[_kc_l]['acc'], acc_rev=_st_res[_kr_l]['acc'],
                       n_cont=_st_res[_kc_l]['n'], n_rev=_st_res[_kr_l]['n'])
 
+        # ★★★ (신규 — 홀드아웃 검증) 지금까지의 선정은 전 구간을 보고 전 구간을 채점한
+        #   인샘플이다. GOOG 실측에서 지표의 전반 성적 → 후반 성적 상관이 r=-0.10에
+        #   불과했으므로, 이 수치를 그대로 믿으면 안 된다. 그래서 같은 절차를 '앞 구간만
+        #   보고' 한 번 더 돌린 뒤, 손대지 않은 뒤 구간에서 성적을 재서 함께 보고한다.
+        #   ★ 본 선정 결과(_st_res)는 건드리지 않는다 — 검증은 별도 진단일 뿐.
+        _hold = None
+        try:
+            _hf = float(globals().get('STATE_HOLDOUT_TRAIN_FRAC', 0.7))
+            if 0.3 <= _hf < 1.0 and n >= 120:
+                _cut = int(n * _hf)
+                _tr = np.zeros(n, dtype=bool); _tr[:_cut] = True
+                _te = ~_tr
+                _res_tr = {_k2: _select_state_tr(_k2, _POOL_OF[_k2], 'prob', _tr)
+                           for _k2 in ('lc', 'sr', 'sc', 'lr')}
+                _hrows = []
+                for _k2 in ('lc', 'lr', 'sc', 'sr'):
+                    _rt = _res_tr[_k2]
+                    _isb = (_rt['side'] == '매수')
+                    _net = np.asarray(_rt['net_sel'])
+                    _pos = (_net > 0.0) if _isb else ~(_net < 0.0)
+                    _dm_all = dom_full[_k2]
+                    _d_tr = np.nonzero(_dm_all & _tr)[0]
+                    _d_te = np.nonzero(_dm_all & _te)[0]
+                    _r_tr = float(np.sum(_pos[_d_tr] * _ret_arr[_d_tr])) if len(_d_tr) else 0.0
+                    _r_te = float(np.sum(_pos[_d_te] * _ret_arr[_d_te])) if len(_d_te) else 0.0
+                    # 같은 날짜에 '항상 보유'했을 때(=벤치마크)와 비교해야 의미가 있다
+                    _b_tr = float(np.sum(_ret_arr[_d_tr])) if len(_d_tr) else 0.0
+                    _b_te = float(np.sum(_ret_arr[_d_te])) if len(_d_te) else 0.0
+                    _hrows.append(dict(key=_k2, name=_rt['name'], side=_rt['side'],
+                                       n=_rt['n'], n_days_tr=len(_d_tr), n_days_te=len(_d_te),
+                                       ret_tr=_r_tr, ret_te=_r_te,
+                                       bh_tr=_b_tr, bh_te=_b_te,
+                                       edge_tr=_r_tr - _b_tr, edge_te=_r_te - _b_te))
+                _hold = dict(train_frac=_hf, cut=_cut,
+                             cut_date=(_dstr_all[_cut] if _cut < len(_dstr_all) else ''),
+                             rows=_hrows)
+                print("    (홀드아웃 검증) 학습 %d일 / 검증 %d일 — " % (_cut, n - _cut) +
+                      ', '.join("%s 학습%+.1f%%→검증%+.1f%%(보유대비 %+.1f%%p)"
+                                % (_h['name'], _h['ret_tr'] * 100, _h['ret_te'] * 100,
+                                   _h['edge_te'] * 100) for _h in _hrows))
+        except Exception as _eh:
+            print(f"    ⚠ 홀드아웃 검증 생략: {_eh}")
+
         report = dict(
+            holdout=_hold,
             states=[_st_res[k] for k in ('lc', 'lr', 'sc', 'sr')],
             state_map={k: _st_res[k] for k in _st_res},
             buy_n=(len(buy_final) if buy_final is not None else 0),
@@ -19146,7 +19272,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             #   가능하도록" — 각 지표 행에 그대로 저장해 시트에서 열로 노출한다.
             for _cname in ('rel_base', 'rel_n_events', 'rel_rs', 'rel_ts',
                            'rel_rf', 'rel_tf', 'rel_up', 'rel_down', 'rel_stab',
-                           'rel_p_rs', 'rel_p_ts', 'rel_conf'):
+                           'rel_p_rs', 'rel_p_ts', 'rel_conf', 'rel_time_consist'):
                 df[_cname] = [r.get(_cname, 0) for r in _results]
             return df
 
@@ -27347,6 +27473,72 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 상태별 특화지표 시트 작성 실패(무시): {_ep}")
 
+    # ─── 7d-3a. ★★★ (신규) 선정 홀드아웃 검증 시트 ───
+    #   이 리포트의 다른 수익률은 전부 '전 구간을 보고 전 구간을 채점한' 인샘플 값이다.
+    #   여기서는 앞 구간만 보고 지표를 뽑은 뒤 손대지 않은 뒤 구간에서 성적을 재서,
+    #   선정 절차가 정말 쓸모가 있는지(=그냥 계속 보유한 것보다 나은지) 보여준다.
+    try:
+        _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
+        _hd = (_mwr or {}).get('holdout')
+        if _hd and _hd.get('rows'):
+            ws_h = wb.create_sheet('선정 홀드아웃 검증'); ws_h.sheet_view.showGridLines = False
+            ws_h.cell(1, 1).value = (
+                "★ 이 리포트의 나머지 수익률은 모두 인샘플(전 구간을 보고 전 구간을 채점)이라 "
+                "실제로 앞으로 그만큼 번다는 뜻이 아니다. 여기서는 앞 "
+                f"{_hd['train_frac']*100:.0f}%({_hd.get('cut_date','')} 이전)만 보고 지표를 뽑은 뒤, "
+                "학습에 전혀 쓰지 않은 나머지 구간에서 같은 지표 세트의 성적을 잰다. "
+                "판단 기준은 '검증구간 초과수익(보유대비)' 열 하나다 — 이 값이 0보다 크면 그 상태의 "
+                "지표 선정이 '그 날짜들에 그냥 계속 보유한 것'보다 나았다는 뜻이고, "
+                "0 이하면 선정이 아무 값어치가 없었다는 뜻이다. "
+                "학습구간 초과수익은 크고 검증구간은 0 근처거나 마이너스라면 전형적인 과적합이다.")
+            ws_h.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+            ws_h.merge_cells('A1:J1')
+            _cols_h = ['상태', '방향', '채택지표수', '학습 판정일', '검증 판정일',
+                       '학습 수익%', '학습 보유%', '학습 초과%p',
+                       '검증 수익%', '검증 초과%p(★)']
+            for _ci, _cn in enumerate(_cols_h, 1):
+                _hc = ws_h.cell(3, _ci); _hc.value = _cn
+                _hc.font = Font(bold=True, color='FFFFFF')
+                _hc.fill = PatternFill('solid', fgColor='7030A0')
+            for _ri, _h in enumerate(_hd['rows']):
+                _rr_ = 4 + _ri
+                _vals = [_h['name'], _h['side'], _h['n'], _h['n_days_tr'], _h['n_days_te'],
+                         round(_h['ret_tr'] * 100, 2), round(_h['bh_tr'] * 100, 2),
+                         round(_h['edge_tr'] * 100, 2),
+                         round(_h['ret_te'] * 100, 2), round(_h['edge_te'] * 100, 2)]
+                for _ci, _v in enumerate(_vals, 1):
+                    _cc = ws_h.cell(_rr_, _ci); _cc.value = _v
+                _ec = ws_h.cell(_rr_, 10)
+                _ec.font = Font(bold=True)
+                _ec.fill = PatternFill('solid',
+                                       fgColor=('C6EFCE' if _h['edge_te'] > 0 else 'FFC7CE'))
+            _nrow = 4 + len(_hd['rows']) + 1
+            _good = sum(1 for _h in _hd['rows'] if _h['edge_te'] > 0)
+            _avg_te = sum(_h['edge_te'] for _h in _hd['rows']) / max(len(_hd['rows']), 1)
+            _avg_tr = sum(_h['edge_tr'] for _h in _hd['rows']) / max(len(_hd['rows']), 1)
+            ws_h.cell(_nrow, 1).value = (
+                f"요약 — 4개 상태 중 {_good}개가 검증구간에서 보유 대비 플러스. "
+                f"평균 초과수익: 학습 {_avg_tr*100:+.2f}%p → 검증 {_avg_te*100:+.2f}%p"
+                + ("  (학습 대비 크게 줄었다면 그만큼이 과적합분이다)"
+                   if _avg_tr > _avg_te else ""))
+            ws_h.cell(_nrow, 1).font = Font(bold=True, size=11,
+                                            color=('1F6F3D' if _avg_te > 0 else '9C0006'))
+            ws_h.cell(_nrow + 2, 1).value = (
+                "※ 참고 — 개별 지표 단위로도 검증해 보면(신호를 시간순 전·후반으로 분할) "
+                "전반 성적과 후반 성적의 상관은 GOOG 기준 r=-0.10, 승률은 r=-0.14였다. "
+                "즉 '과거에 잘 맞은 지표가 앞으로도 잘 맞는다'는 근거가 없으므로, "
+                "'전체 후보 지표' 시트의 신뢰도·성공률은 과거 구간 요약으로만 읽어야 한다.")
+            ws_h.cell(_nrow + 2, 1).font = Font(italic=True, size=9, color='808080')
+            ws_h.merge_cells(start_row=_nrow + 2, start_column=1, end_row=_nrow + 2, end_column=10)
+            for _ci, _w in enumerate([12, 8, 12, 12, 12, 12, 12, 12, 13, 16], 1):
+                ws_h.column_dimensions[get_column_letter(_ci)].width = _w
+            ws_h.freeze_panes = 'A4'
+            print("  ✓ 선정 홀드아웃 검증 시트 — 검증구간 보유대비 평균 %+.2f%%p (%d/4 플러스)"
+                  % (_avg_te * 100, _good))
+    except Exception as _ehs:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 선정 홀드아웃 검증 시트 작성 실패(무시): {_ehs}")
+
     # ─── 7d-3b. ★★★ (요청 — 신규) 4가지 상태별 일별 백테스트 시트 ───
     try:
         _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
@@ -27364,14 +27556,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     f"총수익 {_tot:+.2f}%, 판정일 {len(np.asarray(_s.get('dom_idx')))}일, "
                     f"보유수익일 {_nwin}일 / 보유손실일 {_nloss}일, "
                     f"정렬 {'신뢰도순' if _s.get('win_order') == 'rel' else '확률순'}. "
-                    "★ 포지션은 K와 L을 둘 다 0으로 놓고(net>0이면 매수, 아니면 현금) 정한 것으로, "
-                    "지표 개수를 고를 때 쓴 수익률과 정의가 완전히 같다. "
-                    "net = 이 상태 지표 합 + 상대 상태 지표 합(반대부호) — 두 상태가 0을 사이에 두고 겨룬다. "
+                    "★ (요청) 오직 이 상태의 채택 지표만으로 계산한 것이다 — 다른 상태 지표는 전혀 섞지 않는다. "
+                    "K와 L을 둘 다 0으로 놓고, 매수 상태는 net>0이면 매수·아니면 현금, "
+                    "매도 상태는 net<0이면 현금·아니면 매수로 잡으며, 지표 개수를 고를 때 쓴 수익률과 정의가 완전히 같다. "
                     "이 상태가 판정을 내리는 날(직전 포지션이 맞는 날)만 포지션을 잡고 나머지는 '-'로 두며, "
                     "그런 날은 수익 집계에서 빠진다. 최적자리가 '횡보'인 날은 어느 쪽도 정답이 아니라 X로 표시된다.")
                 ws_b.cell(1, 1).font = Font(italic=True, size=9, color='808080')
-                ws_b.merge_cells('A1:K1')
-                _cols_b = ['날짜', '종가', '다음날등락%', 'net(합계)', 'net(이 상태)', 'net(상대 상태)',
+                ws_b.merge_cells('A1:I1')
+                _cols_b = ['날짜', '종가', '다음날등락%', 'net(이 상태 지표만)',
                            '포지션', '최적자리', '정오', '일수익%', '누적수익%']
                 for _ci, _cn in enumerate(_cols_b, 1):
                     _hc = ws_b.cell(3, _ci); _hc.value = _cn
@@ -27381,16 +27573,16 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _rr_ = 4 + _ri
                     for _ci, _v in enumerate(_row_b, 1):
                         _cc = ws_b.cell(_rr_, _ci); _cc.value = _v
-                    _okv = _row_b[8]
+                    _okv = _row_b[6]
                     if _okv == 'O':
-                        ws_b.cell(_rr_, 9).fill = PatternFill('solid', fgColor='C6EFCE')
+                        ws_b.cell(_rr_, 7).fill = PatternFill('solid', fgColor='C6EFCE')
                     elif _okv == 'X':
-                        ws_b.cell(_rr_, 9).fill = PatternFill('solid', fgColor='FFC7CE')
-                    if _row_b[7] == '횡보':
-                        ws_b.cell(_rr_, 8).font = Font(color='808080', italic=True)
-                    if _row_b[6] == '매수':
-                        ws_b.cell(_rr_, 7).font = Font(bold=True, color='1F6F3D')
-                for _ci, _w in enumerate([12, 10, 12, 12, 13, 14, 9, 10, 7, 10, 12], 1):
+                        ws_b.cell(_rr_, 7).fill = PatternFill('solid', fgColor='FFC7CE')
+                    if _row_b[5] == '횡보':
+                        ws_b.cell(_rr_, 6).font = Font(color='808080', italic=True)
+                    if _row_b[4] == '매수':
+                        ws_b.cell(_rr_, 5).font = Font(bold=True, color='1F6F3D')
+                for _ci, _w in enumerate([12, 10, 12, 18, 9, 10, 7, 10, 12], 1):
                     ws_b.column_dimensions[get_column_letter(_ci)].width = _w
                 ws_b.freeze_panes = 'B4'
             print("  ✓ 상태별 일별백테스트 시트 4종 — " + ', '.join(
