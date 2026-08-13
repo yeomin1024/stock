@@ -14644,7 +14644,13 @@ SIMPLE_POOL_STATE_PICK_CRITERION         = 'return'
 #   선호 하한 30건에서 시작 → 지표가 30개 미만이면 5씩 낮춤 → 최저 10건에서 정지.
 SIMPLE_POOL_MIN_SIGNALS_PREFERRED        = 30
 SIMPLE_POOL_MIN_SIGNALS_FLOOR            = 10
-SIMPLE_POOL_MIN_INDICATORS_TARGET        = 30
+#   ★ 목표 지표수 — 이 개수를 확보할 때까지 하한을 낮춘다. 크게 잡으면 하한이 더 내려가
+#     지표가 많아지고, 작게 잡으면 신호가 풍부한 지표만 남는다(방향별로 따로 적용).
+#     실측(GOOG 1156일): 매수는 30건↑ 6개뿐이라 15건까지 내려가 98개, 매도는 20건에서 34개.
+SIMPLE_POOL_MIN_INDICATORS_TARGET        = 60
+# ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
+#   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
+SIMPLE_POOL_DROP_USELESS_CONT_STATE      = True
 SIMPLE_POOL_MIN_SIGNALS_STEP             = 5
 # ★★★ (요청 — 신규) 워크포워드 검증 — 전체 기간의 뒤쪽 (1-START_FRAC)을 FOLDS등분해서,
 #   매 구간마다 '그 직전까지의 과거만' 보고 지표를 뽑고 그 구간에서 성적을 잰다.
@@ -17155,6 +17161,12 @@ def _apply_min_signal_floor(pool, label=''):
             break
         _cut -= _step
     _cut = max(_cut, _floor)
+    # ★ 어느 단계에서 몇 개가 살아남는지 항상 보여준다 — "지표수가 너무 적은 거 아니냐"를
+    #   눈으로 확인하고 SIMPLE_POOL_MIN_INDICATORS_TARGET을 조정할 수 있도록.
+    if label:
+        _tbl = ', '.join('%d건↑ %d개' % (_c, int((_ns >= _c).sum()))
+                         for _c in range(_pref, _floor - 1, -_step))
+        print(f"    (신호수 분포) {label}: {_tbl}")
     _out = pool[_ns >= _cut].reset_index(drop=True)
     if len(_out) == 0:
         return pool
@@ -18232,8 +18244,20 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             #   ★★★ (실측 정정) 지속 상태는 짝의 net을 못 뒤집으면 한계기여가 전 구간 0이
             #   된다(=그 지표들이 결정에 아무 영향을 못 줌). 그때 수익 기준으로 뽑으면
             #   k=1이 그냥 선택돼 의미가 없으므로, 분류 정확도(틀린자리 최소)로 되돌린다.
-            _flat = (best_ret is None) or (float(best_ret.get('ret', 0.0)) <= 1e-12)
+            #   ★★★ (실측) 지속 상태는 짝의 판정을 못 뒤집으면 한계기여가 전 구간 0이다.
+            #   그때 수익 기준으로 뽑으면 k=1이 그냥 선택돼 의미가 없다.
+            #     · 한계기여가 어느 개수에서도 '0보다 크지 않으면' → 그 상태는 결정에
+            #       도움이 안 되므로 아예 쓰지 않는다(0개 채택). 실측에서 숏지속이
+            #       워크포워드 -7.06%p(플러스 1/5구간)로 오히려 해로웠다.
+            #     · 정확히 0(=판정을 한 번도 못 뒤집음)뿐이면 분류 정확도로 폴백한다.
+            _mret = float(best_ret.get('ret', 0.0)) if best_ret is not None else 0.0
+            _flat = (best_ret is None) or (_mret <= 1e-12)
             if _flat and pair_net is not None:
+                if _mret < -1e-12 and bool(globals().get(
+                        'SIMPLE_POOL_DROP_USELESS_CONT_STATE', True)):
+                    print(f"    (지속상태 제외) {_NAME[skey]}: 한계기여 최대 {_mret*100:+.2f}% "
+                          f"— 짝 상태의 판정을 개선하지 못해 0개 채택")
+                    return _blank
                 _crit = 'wrong'
             if _crit == 'return' and best_ret is not None:
                 best = dict(best_ret)
