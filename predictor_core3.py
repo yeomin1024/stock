@@ -14641,6 +14641,8 @@ SIMPLE_POOL_ALIGN_EVENT_FIRST_ONLY       = True
 SIMPLE_POOL_STATE_PICK_CRITERION         = 'return'
 # ★★★ (요청 — 신규) 신호수 하한과 최소 지표수 확보
 #   기본 하한 10건 → 남는 지표가 30개 미만이면 5씩 낮춰가며 30개를 확보(최저 1).
+#   선호 하한 30건에서 시작 → 지표가 30개 미만이면 5씩 낮춤 → 최저 10건에서 정지.
+SIMPLE_POOL_MIN_SIGNALS_PREFERRED        = 30
 SIMPLE_POOL_MIN_SIGNALS_FLOOR            = 10
 SIMPLE_POOL_MIN_INDICATORS_TARGET        = 30
 SIMPLE_POOL_MIN_SIGNALS_STEP             = 5
@@ -17131,32 +17133,38 @@ def _apply_min_signal_floor(pool, label=''):
        ★ 기준 컬럼은 n_signals(이벤트 기준 신호개수) — 없으면 rel_n_events로 대체."""
     if pool is None or len(pool) == 0:
         return pool
+    _pref = int(globals().get('SIMPLE_POOL_MIN_SIGNALS_PREFERRED', 30))
     _floor = int(globals().get('SIMPLE_POOL_MIN_SIGNALS_FLOOR', 10))
     _target = int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET', 30))
     _step = max(1, int(globals().get('SIMPLE_POOL_MIN_SIGNALS_STEP', 5)))
-    if _floor <= 1:
+    if _pref <= _floor:
         return pool
     _col = 'n_signals' if 'n_signals' in pool.columns else (
         'rel_n_events' if 'rel_n_events' in pool.columns else None)
     if _col is None:
         return pool
     _ns = pd.to_numeric(pool[_col], errors='coerce').fillna(0)
-    _cut = _floor
-    while _cut > 1:
-        _out = pool[_ns >= _cut]
-        if len(_out) >= _target:
+    # ★★★ (실측 정정) 처음엔 하한 10에서 시작해 '모자라면 낮추는' 방향으로 짰는데,
+    #   지표컷이 이미 min_signals=10이라 838개 후보가 전부 통과해 아무 효과가 없었다
+    #   (신호개수 중앙값 11, 10건 미만 0개). 요청 취지는 "원래 30건 이상을 원하지만
+    #   그러면 지표가 너무 없을 수 있으니 5씩 낮춰서 30개는 확보하라"였으므로,
+    #   선호 하한 30에서 시작해 지표수가 목표에 닿을 때까지 5씩 낮추고 10에서 멈춘다.
+    _cut = _pref
+    while _cut > _floor:
+        if int((_ns >= _cut).sum()) >= _target:
             break
         _cut -= _step
-    _cut = max(_cut, 1)
+    _cut = max(_cut, _floor)
     _out = pool[_ns >= _cut].reset_index(drop=True)
     if len(_out) == 0:
         return pool
     if label:
         _msg = f"    (신호수 하한) {label}: {len(pool)}→{len(_out)}개, 하한 {_cut}건"
-        if _cut < _floor:
-            _msg += f" (기본 {_floor}건으로는 {int((_ns >= _floor).sum())}개뿐이라 낮춤)"
-        elif len(_out) < _target:
-            _msg += f" (목표 {_target}개 미달 — 후보 자체가 부족)"
+        if _cut < _pref:
+            _msg += (f" (선호 {_pref}건으로는 {int((_ns >= _pref).sum())}개뿐이라 "
+                     f"{_step}씩 낮춤, 최저 {_floor}건)")
+        if len(_out) < _target:
+            _msg += f" ★목표 {_target}개 미달 — 후보 자체가 부족"
         print(_msg)
     return _out
 
@@ -17955,6 +17963,10 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         #   롱지속(매수) ↔ 롱→숏(매도)  : 직전이 롱이던 날의 결정
         #   숏지속(매도) ↔ 숏→롱(매수)  : 직전이 현금이던 날의 결정
         _OPP = {'lc': 'lr', 'lr': 'lc', 'sc': 'sr', 'sr': 'sc'}
+        # ★ 그 상태의 판정대상 날짜에서 '아무것도 안 했을 때'의 기본 포지션 —
+        #   직전이 롱인 날(lc·lr)은 계속 보유, 직전이 현금인 날(sc·sr)은 계속 현금.
+        #   초과수익(edge)을 잴 때의 올바른 벤치마크다.
+        _BASE_IS_LONG = {'lc': True, 'lr': True, 'sc': False, 'sr': False}
 
         def _ret_of_net(net_arr, idxs, is_buy_side):
             """0 기준 포지션의 수익률 — 그 상태가 실제로 판정을 내리는 날(dom)에서만 집계.
@@ -18431,8 +18443,17 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                     _dm_all = dom_full[_k2]
                     _d_tr = np.nonzero(_dm_all & _tr)[0]
                     _d_te = np.nonzero(_dm_all & _te)[0]
-                    _b_tr = float(np.sum(_ret_arr[_d_tr])) if len(_d_tr) else 0.0
-                    _b_te = float(np.sum(_ret_arr[_d_te])) if len(_d_te) else 0.0
+                    # ★★★ (실측 정정 — 중대) 벤치마크는 '그 날 아무것도 안 했을 때'여야 한다.
+                    #   dom이 '직전 롱'인 상태(롱지속·롱→숏)는 가만히 두면 계속 보유이므로
+                    #   벤치마크가 Σ등락이 맞다. 그런데 dom이 '직전 현금'인 상태(숏지속·숏→롱)는
+                    #   가만히 두면 계속 현금이라 벤치마크가 0이어야 하는데, 여기에도 Σ등락을
+                    #   써서 하락장에서 '아무것도 안 사기만 해도' 엄청난 초과수익이 찍혔다.
+                    #   실측: 숏지속 누적수익 -1.70%(사실상 항상 현금)인데 보유 -66.11%와
+                    #   비교돼 +64.41%p로 표시됨 — 실력이 아니라 벤치마크 오류였다.
+                    #   올바르게 고치면 -1.70%p(마이너스)가 된다.
+                    _base_long = _BASE_IS_LONG[_k2]
+                    _b_tr = (float(np.sum(_ret_arr[_d_tr])) if (_base_long and len(_d_tr)) else 0.0)
+                    _b_te = (float(np.sum(_ret_arr[_d_te])) if (_base_long and len(_d_te)) else 0.0)
                     _cand_rows = _rt.get('cand_rows') or []
                     _per = {}
                     for _cid, _clabel, _nkey in _CRITS:
@@ -18512,16 +18533,20 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                         _pos = (_net > 0.0) if _isb else ~(_net < 0.0)
                         _dte = np.nonzero(dom_full[_k2] & _tem)[0]
                         _r = float(np.sum(_pos[_dte] * _ret_arr[_dte])) if len(_dte) else 0.0
-                        _b = float(np.sum(_ret_arr[_dte])) if len(_dte) else 0.0
+                        # ★ 벤치마크 = 그 상태에서 '아무것도 안 했을 때'(위 홀드아웃 주석 참조)
+                        _b = (float(np.sum(_ret_arr[_dte]))
+                              if (_BASE_IS_LONG[_k2] and len(_dte)) else 0.0)
                         _acc[_k2]['ret'] += _r; _acc[_k2]['bh'] += _b
                         _acc[_k2]['days'] += len(_dte); _acc[_k2]['ks'].append(_kk)
                         _frow['per'][_k2] = dict(name=_rt['name'], side=_rt['side'], k=_kk,
-                                                 days=len(_dte), ret=_r, bh=_b, edge=_r - _b)
+                                                 days=len(_dte), ret=_r, bh=_b, edge=_r - _b,
+                                                 base_long=bool(_BASE_IS_LONG[_k2]))
                     _fold_rows.append(_frow)
                 _wf = dict(folds=_fold_rows, acc=_acc, crit=_crit_wf,
                            n_folds=len(_fold_rows), start_frac=_wf_start,
                            names={_k2: _NAME[_k2] for _k2 in _acc},
-                           sides={_k2: _SIDE[_k2] for _k2 in _acc})
+                           sides={_k2: _SIDE[_k2] for _k2 in _acc},
+                           base_long={_k2: bool(_BASE_IS_LONG[_k2]) for _k2 in _acc})
                 print("    (워크포워드 %d구간) " % len(_fold_rows) + ', '.join(
                     "%s %+.1f%%p(지표 %s)" % (_NAME[_k2], (_acc[_k2]['ret'] - _acc[_k2]['bh']) * 100,
                                              '~'.join(str(x) for x in (min(_acc[_k2]['ks']),
@@ -27683,7 +27708,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "실제로 앞으로 그만큼 번다는 뜻이 아니다. 여기서는 앞 "
                 f"{_hd['train_frac']*100:.0f}%({_hd.get('cut_date','')} 이전)만 보고 지표를 뽑은 뒤, "
                 "학습에 전혀 쓰지 않은 나머지 구간에서 같은 지표 세트의 성적을 잰다. "
-                "판단 기준은 '검증구간 초과수익(보유대비)' 열 하나다 — 이 값이 0보다 크면 그 상태의 "
+                "판단 기준은 '검증구간 초과수익' 열 하나다 — 비교 대상은 '아무것도 안 했을 때'로, "
+                "롱지속·롱→숏은 '계속 보유', 숏지속·숏→롱은 '계속 현금(0%)'이다 — 이 값이 0보다 크면 그 상태의 "
                 "지표 선정이 '그 날짜들에 그냥 계속 보유한 것'보다 나았다는 뜻이고, "
                 "0 이하면 선정이 아무 값어치가 없었다는 뜻이다. "
                 "학습구간 초과수익은 크고 검증구간은 0 근처거나 마이너스라면 전형적인 과적합이다.")
@@ -27785,14 +27811,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "나눠, 매 구간마다 '그 직전까지의 과거만' 보고 지표를 새로 뽑은 뒤 그 구간에서 성적을 "
                 "재고 이어붙였다 — 실제 운용을 그대로 흉내낸 것이라 미래를 미리 본 부분이 전혀 없다. "
                 "다른 시트의 수익률은 전 구간을 보고 전 구간을 채점한 인샘플 값이라 항상 이보다 좋게 나온다. "
-                "판단 기준은 '초과%p'(=그 날짜들에 그냥 계속 보유한 것 대비) 한 열이다. "
+                "판단 기준은 '초과%p' 한 열이다 — 비교 대상은 그 상태에서 '아무것도 안 했을 때'로, "
+                "직전이 롱인 날을 다루는 롱지속·롱→숏은 '계속 보유', 직전이 현금인 날을 다루는 "
+                "숏지속·숏→롱은 '계속 현금'(=0%)이 기준이다('기준행동' 열 참조). "
+                "숏 계열까지 '계속 보유'와 비교하면 하락장에서 아무것도 안 사기만 해도 초과수익이 "
+                "부풀려지므로 그렇게 재지 않는다. "
                 "구간마다 부호가 왔다갔다 하면 그 상태의 지표 선정은 신뢰할 수 없다는 뜻이다.")
             ws_w.cell(1, 1).font = Font(italic=True, size=9, color='808080')
             ws_w.merge_cells('A1:J1')
 
             _keys_w = ('lc', 'lr', 'sc', 'sr')
             _cols_w = ['구간', '검증 시작', '검증 끝', '학습일수', '검증일수', '상태',
-                       '채택지표수', '수익%', '보유%', '초과%p']
+                       '채택지표수', '수익%', '기준행동', '기준수익%', '초과%p']
             for _ci, _cn in enumerate(_cols_w, 1):
                 _hc = ws_w.cell(3, _ci); _hc.value = _cn
                 _hc.font = Font(bold=True, color='FFFFFF')
@@ -27803,12 +27833,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _pv = _f['per'].get(_k2)
                     if not _pv:
                         continue
+                    _bl = ('계속 보유' if _pv.get('base_long') else '계속 현금')
                     _vals = [_f['fold'], _f['te_from'], _f['te_to'], _f['tr_days'], _f['te_days'],
-                             _pv['name'], _pv['k'], round(_pv['ret'] * 100, 2),
+                             _pv['name'], _pv['k'], round(_pv['ret'] * 100, 2), _bl,
                              round(_pv['bh'] * 100, 2), round(_pv['edge'] * 100, 2)]
                     for _ci, _v in enumerate(_vals, 1):
                         _cc = ws_w.cell(_r_w, _ci); _cc.value = _v
-                    _ec = ws_w.cell(_r_w, 10)
+                    _ec = ws_w.cell(_r_w, 11)
                     _ec.font = Font(bold=True)
                     _ec.fill = PatternFill('solid',
                                            fgColor=('C6EFCE' if _pv['edge'] > 0 else 'FFC7CE'))
@@ -27818,7 +27849,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_w.cell(_sum_r, 1).value = "▼ 전 구간 합계 (워크포워드 누적)"
             ws_w.cell(_sum_r, 1).font = Font(bold=True, size=11, color='1F3864')
             for _ci, _cn in enumerate(['상태', '방향', '검증일수', '지표수 범위', '누적 수익%',
-                                       '누적 보유%', '누적 초과%p(★)', '플러스 구간'], 1):
+                                       '기준행동', '누적 기준수익%', '누적 초과%p(★)',
+                                       '플러스 구간'], 1):
                 _hc = ws_w.cell(_sum_r + 1, _ci); _hc.value = _cn
                 _hc.font = Font(bold=True, color='FFFFFF')
                 _hc.fill = PatternFill('solid', fgColor='7030A0')
@@ -27830,13 +27862,14 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _npos = sum(1 for _f in _wf['folds']
                             if _f['per'].get(_k2) and _f['per'][_k2]['edge'] > 0)
                 _ks = _a['ks'] or [0]
+                _bl2 = ('계속 보유' if _wf.get('base_long', {}).get(_k2) else '계속 현금')
                 _vals = [_wf['names'][_k2], _wf['sides'][_k2], _a['days'],
                          ('%d~%d' % (min(_ks), max(_ks))),
-                         round(_a['ret'] * 100, 2), round(_a['bh'] * 100, 2),
+                         round(_a['ret'] * 100, 2), _bl2, round(_a['bh'] * 100, 2),
                          round(_edge * 100, 2), '%d/%d' % (_npos, len(_wf['folds']))]
                 for _ci, _v in enumerate(_vals, 1):
                     _cc = ws_w.cell(_sum_r + 2 + _ri, _ci); _cc.value = _v
-                _ec = ws_w.cell(_sum_r + 2 + _ri, 7)
+                _ec = ws_w.cell(_sum_r + 2 + _ri, 8)
                 _ec.font = Font(bold=True)
                 _ec.fill = PatternFill('solid', fgColor=('C6EFCE' if _edge > 0 else 'FFC7CE'))
             _fr = _sum_r + 2 + len(_keys_w) + 1
@@ -27850,7 +27883,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_w.cell(_fr, 1).font = Font(bold=True, size=11,
                                           color=('1F6F3D' if _tot_edge > 0 else '9C0006'))
             ws_w.merge_cells(start_row=_fr, start_column=1, end_row=_fr, end_column=10)
-            for _ci, _w2 in enumerate([7, 12, 12, 10, 10, 10, 12, 12, 12, 14], 1):
+            for _ci, _w2 in enumerate([7, 12, 12, 10, 10, 10, 12, 12, 11, 14, 13], 1):
                 ws_w.column_dimensions[get_column_letter(_ci)].width = _w2
             ws_w.freeze_panes = 'A4'
             print("  ✓ 워크포워드 검증 시트 — 누적 초과수익 %+.2f%%p (%d구간)"
