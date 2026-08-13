@@ -14651,6 +14651,13 @@ SIMPLE_POOL_MIN_INDICATORS_TARGET        = 60
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
 #   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
 SIMPLE_POOL_DROP_USELESS_CONT_STATE      = True
+# ★★★ (실측 개선) 채택 개수 안정화 — 최고 성적의 (1-이 값)배 이상을 처음 달성하는 가장
+#   적은 개수를 쓴다. 0이면 예전처럼 최고점 그대로(폴드마다 개수가 크게 요동).
+SIMPLE_POOL_STATE_K_TOLERANCE            = 0.05
+# ★★★ (실측 개선) 워크포워드에서 한계기여가 마이너스로 확인된 지속 상태를 최종 선정에서
+#   자동으로 뺀다. 인샘플 한계기여만 보면 숏지속이 +15.33%로 플러스라 안 걸리지만,
+#   워크포워드로는 -6.16%p(플러스 2/5구간)로 순손해였다 — 판단은 워크포워드가 맞다.
+SIMPLE_POOL_DROP_CONT_STATE_BY_WF        = True
 SIMPLE_POOL_MIN_SIGNALS_STEP             = 5
 # ★★★ (요청 — 신규) 워크포워드 검증 — 전체 기간의 뒤쪽 (1-START_FRAC)을 FOLDS등분해서,
 #   매 구간마다 '그 직전까지의 과거만' 보고 지표를 뽑고 그 구간에서 성적을 잰다.
@@ -18170,6 +18177,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _is_buy_side = (_side == '매수')
             _opp_net = (opp_net if opp_net is not None else np.zeros(n))
             trace = []; best = None; best_ret = None; best_avd = None
+            _ret_hist = []; _wrong_hist = []
             _prev_corr = None
             for k, (_p_s, _sr_, _rel_, _row, _pr, _p_sd) in enumerate(_cands):
                 _f = _pr[0]
@@ -18178,6 +18186,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 _avg = np.where(_cnt > 0, _sum / np.maximum(_cnt, 1e-12), 0.0)
                 _fired_j = (_cnt[_idxs] > 0.5)
                 _thr, _acc, _w = _best_thr(_avg[_idxs], _actual, _fired_j)
+                _wrong_hist.append(int(_w))
                 _rem = int((_act & (_cnt < 0.5)).sum())
                 # ★★★ (요청 — 신규) "지표 추가시 맞는 자리, 틀린자리 변화 및 각각 날짜와
                 #   변동률 정보" — 이번 단계의 임계값으로 판정했을 때 맞은 날/틀린 날을
@@ -18221,6 +18230,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                    (_w == best['wrong'] and (_rem < best['rem'] or
                     (_rem == best['rem'] and _acc > best['acc']))):
                     best = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr)
+                _ret_hist.append(float(_ret_kl0))
                 if best_ret is None or _ret_kl0 > best_ret['ret'] + 1e-12:
                     best_ret = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr,
                                     ret=float(_ret_kl0))
@@ -18259,10 +18269,44 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                           f"— 짝 상태의 판정을 개선하지 못해 0개 채택")
                     return _blank
                 _crit = 'wrong'
+            # ★★★ (실측 개선 — 안정화) 최고점을 그대로 쓰면 폴드마다 채택 개수가 3~4배씩
+            #   요동한다(실측: 롱→숏 58~106개, 숏지속 77~204개). 수익률 곡선은 꼭대기 부근이
+            #   거의 평평한데 잡음으로 정점 위치만 흔들리기 때문이다.
+            #   → '최고점의 (1-TOL)배 이상을 처음 달성하는 가장 적은 개수'를 채택한다.
+            #     성적을 거의 잃지 않으면서 지표 수가 줄고 폴드 간 안정성이 올라간다.
+            _tol = float(globals().get('SIMPLE_POOL_STATE_K_TOLERANCE', 0.05))
+
+            def _parsimonious(_hist, _bestv, _maximize=True):
+                if not _hist or _tol <= 0:
+                    return None
+                if _maximize:
+                    if _bestv <= 0:
+                        return None
+                    _need = _bestv * (1.0 - _tol)
+                    for _i, _v in enumerate(_hist):
+                        if _v >= _need:
+                            return _i + 1
+                else:
+                    _need = _bestv + abs(_bestv) * _tol + _tol
+                    for _i, _v in enumerate(_hist):
+                        if _v <= _need:
+                            return _i + 1
+                return None
+
+            if _crit == 'avoid':
+                _crit = 'return'      # ★ 두 기준은 수학적으로 동일 — 하나로 합침
             if _crit == 'return' and best_ret is not None:
                 best = dict(best_ret)
-            elif _crit == 'avoid' and best_avd is not None:
-                best = dict(best_avd)
+                _kp = _parsimonious(_ret_hist, float(best_ret['ret']), True)
+                if _kp is not None and _kp < best['k']:
+                    _t = trace[_kp - 1]
+                    best = dict(k=_kp, wrong=_t[1], rem=_t[2], acc=_t[3], thr=_t[4],
+                                ret=float(_t[12]))
+            elif _crit == 'wrong' and _wrong_hist:
+                _kp = _parsimonious(_wrong_hist, float(best['wrong']), False)
+                if _kp is not None and _kp < best['k']:
+                    _t = trace[_kp - 1]
+                    best = dict(k=_kp, wrong=_t[1], rem=_t[2], acc=_t[3], thr=_t[4])
             _cand_rows_meta = [(_c2[4][0], _wt_of(_c2[3])) for _c2 in _cands]
             _sel_rows = [_c[3] for _c in _cands[:best['k']]]
             # ★ 채택된 개수까지의 net(자기 몫) — 일별백테스트 시트에서 재사용
@@ -18647,8 +18691,41 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         except Exception as _ewf:
             print(f"    ⚠ 워크포워드 검증 생략: {_ewf}")
 
+        # ★★★ (실측 개선) 워크포워드에서 한계기여가 마이너스로 확인된 지속 상태를 최종
+        #   선정에서 뺀다. 인샘플만 보면 숏지속이 +15.33%로 플러스라 안 걸리지만,
+        #   워크포워드로는 -6.16%p(플러스 2/5구간)로 순손해였다 — 어느 쪽을 믿어야 하는지는
+        #   분명하다. 미래를 미리 보지 않은 워크포워드가 판단 근거다.
+        _wf_dropped = []
+        try:
+            if (_wf and _wf.get('acc')
+                    and bool(globals().get('SIMPLE_POOL_DROP_CONT_STATE_BY_WF', True))):
+                for _k2 in ('lc', 'sc'):
+                    _a2 = _wf['acc'].get(_k2)
+                    if not _a2:
+                        continue
+                    _edge2 = float(_a2['ret'] - _a2['bh'])
+                    _npos2 = sum(1 for _f2 in _wf['folds']
+                                 if _f2['per'].get(_k2) and _f2['per'][_k2]['edge'] > 0)
+                    if _edge2 < 0 and int(_st_res[_k2].get('n', 0) or 0) > 0:
+                        _wf_dropped.append((_NAME[_k2], _edge2, _npos2, len(_wf['folds']),
+                                            int(_st_res[_k2]['n'])))
+                        _st_res[_k2] = dict(_st_res[_k2])
+                        _st_res[_k2]['n'] = 0
+                        _st_res[_k2]['sel'] = (_POOL_OF[_k2].iloc[0:0].copy()
+                                               if _POOL_OF[_k2] is not None else None)
+                        _st_res[_k2]['net_sel'] = np.zeros(n)
+                        _st_res[_k2]['dropped_by_wf'] = True
+                if _wf_dropped:
+                    buy_final = _union(_st_res['lc']['sel'], _st_res['sr']['sel'])
+                    sell_final = _union(_st_res['sc']['sel'], _st_res['lr']['sel'])
+                    for _nm2, _e2, _np2, _nf2, _n2 in _wf_dropped:
+                        print(f"    (워크포워드 근거 제외) {_nm2}: 한계기여 {_e2*100:+.2f}%p, "
+                              f"플러스 {_np2}/{_nf2}구간 — 채택 {_n2}개를 0개로 되돌림")
+        except Exception as _edr:
+            print(f"    ⚠ 워크포워드 기반 상태 제외 생략: {_edr}")
+
         report = dict(
-            holdout=_hold, walkforward=_wf,
+            holdout=_hold, walkforward=_wf, wf_dropped=_wf_dropped,
             states=[_st_res[k] for k in ('lc', 'lr', 'sc', 'sr')],
             state_map={k: _st_res[k] for k in _st_res},
             buy_n=(len(buy_final) if buy_final is not None else 0),
