@@ -14394,7 +14394,7 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 #                            설정
 # ════════════════════════════════════════════════════════════════
-EVAL_START          = '2025-01-01'
+EVAL_START          = '2022-01-01'
 EVAL_END            = None           # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지 학습.
                                       #   지정 시 'YYYY-MM-DD'(그 날짜 포함, 이후 데이터는 잘라냄) —
                                       #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
@@ -17968,53 +17968,49 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         #   초과수익(edge)을 잴 때의 올바른 벤치마크다.
         _BASE_IS_LONG = {'lc': True, 'lr': True, 'sc': False, 'sr': False}
 
-        def _ret_of_net(net_arr, idxs, is_buy_side):
-            """0 기준 포지션의 수익률 — 그 상태가 실제로 판정을 내리는 날(dom)에서만 집계.
+        # ★ 판정대상 날짜에서 '아무것도 안 했을 때'의 기본 포지션
+        #   직전이 롱인 날(lc·lr) → 계속 보유 / 직전이 현금인 날(sc·sr) → 계속 현금
+        _BASE_IS_LONG = {'lc': True, 'lr': True, 'sc': False, 'sr': False}
 
-               ★★★ (실측 버그수정) 처음엔 net을 한쪽 방향으로만 쌓고 전 구간에서 집계했는데,
-               그러면 매수 상태는 지표를 넣을수록 롱 노출만 늘어 수익률이 단조 증가하고
-               (GOOG 결과: 5%→400%까지 계속 상승) 결국 '후보 전부 채택'이 최적이 돼 버렸다.
-               ① net에 상대 상태(반대 방향)를 함께 넣어 0을 사이에 두고 겨루게 하고,
-               ② 틀린자리를 세던 그 날짜(_idxs)에서만 집계해 '그 자리들에서 실제로 번 돈'을
-               재도록 바꾼다 — 틀린자리와 완전히 같은 표본이라 두 지표가 직접 비교된다."""
-            #   ★★★ (요청 — 재수정) "4가지 상태별 일별 백테스트는 각각 1가지 상태 지표만
-            #   사용했을 때 최대 수익률로 해야 하는데 왜 다른 게 들어갔지" — 맞다. 상대 상태
-            #   net을 섞으면 그 상태 지표만의 성적이 아니게 된다. 상대 net은 완전히 빼고
-            #   자기 상태 지표만으로 0기준 포지션을 잡는다.
-            #   ★ 그래도 단조증가 퇴화가 없는 이유: 집계를 '그 상태가 판정을 내리는 날
-            #     (dom)'로 한정했기 때문. 예컨대 롱지속의 dom(직전이 롱인 날)에는 실제로
-            #     롱지속인 날과 롱→숏인 날이 섞여 있어서, 롱→숏 날에 발화하는 지표를
-            #     추가하면 그 날 롱을 잡아 손실이 나므로 수익률이 오히려 떨어진다.
-            #   · 매수 상태: 발화해서 net>0이면 매수, 아니면 현금
-            #   · 매도 상태: 발화해서 net<0이면 현금, 아니면 매수(기본 보유)
-            #   ★★★ (실측 정정 — 구조적 결함) 매도 상태의 포지션을 "발화하면 현금, 발화
-            #   안 하면 매수"로 뒀던 게 문제였다. 롱→숏(직전이 롱인 날)은 기본이 보유라
-            #   '미발화=보유'가 맞지만, 숏지속(직전이 현금인 날)은 기본이 현금이라
-            #   '미발화=매수'가 아무 근거 없는 진입이 된다. 실측: 숏지속이 판정일 411일 중
-            #   221일이나 매수로 들어가 워크포워드 누적 -33.27%p(5구간 중 4구간 마이너스).
-            #   → 매도 상태는 '발화한 날 막아서 피한 손실'로 채점한다. 발화 안 한 날은
-            #     아무 주장도 안 한 것이므로 성적에 넣지 않는다(기여 0).
-            #     · 롱→숏: 이 정의가 예전 '초과수익'과 정확히 같은 값이다(검증됨) — 즉
-            #       실제로 의미 있었던 상태의 수치는 그대로 유지되고, 엉터리였던 숏지속만
-            #       바로잡힌다.
-            #   매수 상태는 종전대로 '발화한 날 보유해서 번 돈'.
-            if is_buy_side:
-                _pos = (net_arr[idxs] > 0.0)
-                _long_only = float(np.sum(_pos * _ret_arr[idxs]))
+        def _group_edge(net_arr, idxs, base_long):
+            """★★★ (실측 정정 — 구조적) 그 날짜들에서 'net 부호대로 행동했을 때' 기본행동
+               대비 얼마나 더 벌었는지. K=L=0이라 히스테리시스가 없어 날짜별 독립 결정이다.
+                 · 기본이 보유(직전 롱): net<0이면 청산 → 초과 = 청산한 날 피한 손실
+                 · 기본이 현금(직전 현금): net>0이면 진입 → 초과 = 진입한 날 번 돈
+               ★ net은 그 그룹에 속한 두 상태를 합친 값(매수 상태 +, 매도 상태 −)이다.
+                 실제 시스템의 net 계산과 동일한 구조라, 여기서 잰 값이 곧 그 지표들이
+                 시스템에 보태는 몫이다."""
+            if len(idxs) == 0:
+                return 0.0
+            _r = _ret_arr[idxs]; _nt = net_arr[idxs]
+            if base_long:
+                return float(-np.sum((_nt < 0.0) * _r))     # 청산해서 피한 손실
+            return float(np.sum((_nt > 0.0) * _r))          # 진입해서 번 돈
+
+        def _ret_of_net(net_arr, idxs, is_buy_side, base_long=None, pair_net=None):
+            """상태 하나를 지표 k개까지 넣었을 때의 '기여'.
+
+               ★★★ (실측 정정 — 중대) 지속 상태(롱지속·숏지속)는 기본행동과 똑같은 주장을
+               하는 상태라 단독 기여가 원리적으로 0이다:
+                 · 롱지속: 직전이 롱인 날에 "보유해라" → 가만히 둬도 보유 → 마진 0
+                 · 숏지속: 직전이 현금인 날에 "현금 유지" → 가만히 둬도 현금 → 마진 0
+               그런데 예전 구현은 지속 상태에 인위적으로 반대 기본값을 붙여(롱지속은 미발화=현금,
+               숏지속은 발화=차단) 없는 점수를 만들어냈다. 실측에서 숏지속이 규칙을 바꿀 때마다
+               -33%p ↔ +52%p로 널뛴 게 그 증거다(둘 다 실력이 아니라 측정 착시).
+               → 지속 상태는 짝 상태(전환 상태)의 net을 깔아둔 뒤 '그걸 얼마나 개선하는가'
+                 (한계 기여)로 잰다. 이게 실제 net에서 그 지표들이 하는 일과 정확히 같다.
+                 · 롱지속 = 롱→숏의 청산 신호를 걸러내 불필요한 청산을 막는 몫
+                 · 숏지속 = 숏→롱의 진입 신호를 걸러내 나쁜 진입을 막는 몫
+               전환 상태(롱→숏·숏→롱)는 pair_net이 0이라 예전 값이 그대로 유지된다(검증됨)."""
+            if base_long is None:
+                base_long = bool(is_buy_side)
+            _pn = pair_net if pair_net is not None else None
+            if _pn is None:
+                _sc = _group_edge(net_arr, idxs, base_long)
             else:
-                _fired = (net_arr[idxs] < 0.0)
-                _pos = ~_fired
-                _long_only = float(-np.sum(_fired * _ret_arr[idxs]))   # 피한 손실
-            # ★★★ (실측 개선) 위 '롱온리 수익'만 최대화하면 노출을 늘리는 쪽으로 퇴화한다.
-            #   GOOG 실측: 롱지속 74개·숏지속 66개가 채택돼 사실상 '항상 롱'·'항상 현금'이
-            #   됐고(숏지속 검증수익 정확히 0.00%), 홀드아웃 초과수익이 +0.2%p / -57.5%p로
-            #   무너졌다. 현금으로 피한 하락(=회피이익)을 같이 세면 이 퇴화가 사라진다:
-            #     점수 = Σ (보유했으면 +등락, 피했으면 -등락) = Σ (2·pos - 1) · 등락
-            #   맞힌 날은 폭만큼 가산, 틀린 날은 폭만큼 감산 — '진폭가중 정확도'와 같다.
-            #   그래서 '항상 롱'도 '항상 현금'도 좋은 점수를 못 받고, 큰 움직임을 제대로
-            #   가려내야만 점수가 오른다.
-            _avoid = _long_only    # ★ 두 기준은 수학적으로 동일(설정 주석 참조) — 호환용
-            return _long_only, _avoid
+                _sc = (_group_edge(_pn + net_arr, idxs, base_long)
+                       - _group_edge(_pn, idxs, base_long))
+            return _sc, _sc
 
         def _fire_of(row):
             """지표 하나의 발화마스크(신호 기준 캐시) — 확률과 별개로 '어느 날 목소리를
@@ -18094,7 +18090,8 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
 
         _max_cand = int(globals().get('SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES', 300))
 
-        def _select_state(skey, pool, order='prob', opp_net=None, dom_override=None):
+        def _select_state(skey, pool, order='prob', opp_net=None, dom_override=None,
+                          pair_net=None):
             """한 상태에 대해: 특화지표 랭킹 → 개수 늘려가며 임계값·틀린자리 최소화.
                order='prob' → 기존(전환/추세 성공확률 순), order='rel' → ★(요청 7번) 신뢰도 순."""
             _blank = dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=0, wrong=0,
@@ -18201,7 +18198,8 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 # ★★★ (요청 6번) 틀린자리와 똑같은 자리에서 수익률만 추가 계산 —
                 #   이번 지표의 가중치를 net에 누적(O(n))하고 0 기준 포지션으로 수익률.
                 _netw[_f] += (_wt_of(_row) if _is_buy_side else -_wt_of(_row))
-                _ret_kl0, _ret_avoid = _ret_of_net(_netw, _idxs, _is_buy_side)
+                _ret_kl0, _ret_avoid = _ret_of_net(_netw, _idxs, _is_buy_side,
+                                                   _BASE_IS_LONG[skey], pair_net)
                 trace.append((k + 1, _w, _rem, _acc, _thr, _newcov,
                               str(_row.get('indicator', '')),
                               _ncorr, _d_corr, _d_wrong,
@@ -18231,6 +18229,12 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _best_wrong_k = int(best['k'])
             _best_ret_k = int(best_ret['k']) if best_ret else _best_wrong_k
             _best_avd_k = int(best_avd['k']) if best_avd else _best_wrong_k
+            #   ★★★ (실측 정정) 지속 상태는 짝의 net을 못 뒤집으면 한계기여가 전 구간 0이
+            #   된다(=그 지표들이 결정에 아무 영향을 못 줌). 그때 수익 기준으로 뽑으면
+            #   k=1이 그냥 선택돼 의미가 없으므로, 분류 정확도(틀린자리 최소)로 되돌린다.
+            _flat = (best_ret is None) or (float(best_ret.get('ret', 0.0)) <= 1e-12)
+            if _flat and pair_net is not None:
+                _crit = 'wrong'
             if _crit == 'return' and best_ret is not None:
                 best = dict(best_ret)
             elif _crit == 'avoid' and best_avd is not None:
@@ -18279,14 +18283,29 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             return {_k2: _select_state(_k2, _POOL_OF[_k2], order, opp_nets.get(_k2))
                     for _k2 in ('lc', 'sr', 'sc', 'lr')}
 
-        # ★ 각 상태는 '자기 상태 지표만'으로 독립 선정한다(요청) — 상대 상태 net을 섞던
-        #   2패스는 폐기. 상태 간 결합은 이후 net/KL 단계에서 이뤄진다.
-        def _select_state_tr(skey, pool, order, tr_mask):
-            """★ 홀드아웃용 — 학습구간 날짜만 보고 그 상태를 선정한다."""
-            return _select_state(skey, pool, order, None, dom_full[skey] & tr_mask)
+        # ★★★ (실측 정정) 2단계 선정 —
+        #   1) 전환 상태(롱→숏·숏→롱)를 먼저 뽑는다. 기본행동을 실제로 바꾸므로 단독으로
+        #      기여를 잴 수 있다.
+        #   2) 지속 상태(롱지속·숏지속)는 1)에서 뽑힌 짝의 net을 깔아둔 뒤 그걸 얼마나
+        #      개선하는지(한계 기여)로 뽑는다 — 기본행동과 같은 주장이라 단독 평가가
+        #      원리적으로 불가능하기 때문.
+        _PAIR = {'lc': 'lr', 'lr': 'lc', 'sc': 'sr', 'sr': 'sc'}
 
-        _res_prob = _run_pass('prob', {})
-        _res_rel = _run_pass('rel', {}) if _try_rel else None
+        def _select_state_tr(skey, pool, order, tr_mask, pair_net=None):
+            """★ 홀드아웃/워크포워드용 — 학습구간 날짜만 보고 그 상태를 선정한다."""
+            return _select_state(skey, pool, order, None, dom_full[skey] & tr_mask, pair_net)
+
+        def _run_two_stage(order):
+            _r = {}
+            for _k2 in ('lr', 'sr'):
+                _r[_k2] = _select_state(_k2, _POOL_OF[_k2], order)
+            for _k2 in ('lc', 'sc'):
+                _r[_k2] = _select_state(_k2, _POOL_OF[_k2], order,
+                                        pair_net=np.asarray(_r[_PAIR[_k2]]['net_sel']))
+            return _r
+
+        _res_prob = _run_two_stage('prob')
+        _res_rel = _run_two_stage('rel') if _try_rel else None
 
         _st_res = {}
         _pick_log = []
@@ -18320,10 +18339,24 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             if len(_dom_i):
                 _dom_m[_dom_i] = True
             _is_buy_2 = (_r2.get('side') == '매수')
-            # ★ 매도 상태는 '발화한 날 현금으로 막는다'만 주장한다 — 발화 안 한 날은
-            #   아무 주장도 안 한 것이므로 포지션을 잡지 않는다(성적에서 제외).
-            _fire_a = (_net_tot > 0.0) if _is_buy_2 else (_net_tot < 0.0)
-            _pos_a = _fire_a if _is_buy_2 else np.zeros(n, dtype=bool)
+            _base_l2 = bool({'lc': True, 'lr': True, 'sc': False, 'sr': False}[_k2])
+            _is_cont = _k2 in ('lc', 'sc')
+            # ★★★ (실측 정정) 지속 상태(롱지속·숏지속)는 기본행동과 같은 주장이라 단독
+            #   기여가 0이다. 그래서 짝 상태(전환 상태)의 net을 깔아둔 뒤 '이 상태가 그
+            #   판정을 뒤집은 날'만 성적에 넣는다 — 선정에 쓴 한계기여와 정의가 같다.
+            _pn_bt = (np.asarray(_st_res[{'lc': 'lr', 'sc': 'sr'}[_k2]].get('net_sel'))
+                      if _is_cont else np.zeros(n))
+
+            def _act_of(_nt):
+                return (_nt >= 0.0) if _base_l2 else (_nt > 0.0)   # True=보유/진입
+
+            _with = _act_of(_pn_bt + _net_tot)
+            _without = _act_of(_pn_bt)
+            if _is_cont:
+                _fire_a = (_with != _without)      # 판정을 뒤집은 날만
+            else:
+                _fire_a = ((_net_tot > 0.0) if _is_buy_2 else (_net_tot < 0.0))
+            _pos_a = _with
             _rows_bt = []
             _cum = 0.0
             _nw = _nl = 0
@@ -18333,6 +18366,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 _pos_ = bool(_pos_a[_t]) if _dm_ else None
                 _rt = float(_ret_arr[_t])
                 # 매수 상태: 보유해서 번 돈 / 매도 상태: 막아서 피한 손실(-등락)
+                # 보유/진입한 날은 +등락, 청산/차단한 날은 -등락(피한 손실)
                 _day = ((_rt if _pos_ else -_rt) if _dm_ else 0.0)
                 if _dm_:
                     _cum += _day
@@ -18344,7 +18378,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                     _opt = '(평가불가)'
                 else:
                     _opt = '매수' if int(_ctp[0][_t]) == 1 else '매도'
-                _act = ('매수' if _pos_ else '현금(차단)') if _dm_ else '-'
+                _act = (('매수' if _pos_ else '현금(차단)') if _dm_ else '-')
                 if _dm_ and _opt in ('매수', '매도'):
                     _ok = 'O' if ((_opt == '매수') == bool(_pos_)) else 'X'
                 elif _dm_ and _opt == '횡보':
@@ -18452,8 +18486,12 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 _CRITS = (('wrong', '틀린자리최소', 'n_by_wrong'),
                           ('return', '롱온리수익', 'n_by_ret'),
                           ('avoid', '회피포함수익', 'n_by_avoid'))
-                _res_tr = {_k2: _select_state_tr(_k2, _POOL_OF[_k2], 'prob', _tr)
-                           for _k2 in ('lc', 'sr', 'sc', 'lr')}
+                _res_tr = {}
+                for _k2 in ('lr', 'sr'):
+                    _res_tr[_k2] = _select_state_tr(_k2, _POOL_OF[_k2], 'prob', _tr)
+                for _k2 in ('lc', 'sc'):
+                    _res_tr[_k2] = _select_state_tr(_k2, _POOL_OF[_k2], 'prob', _tr,
+                                                    np.asarray(_res_tr[_PAIR[_k2]]['net_sel']))
                 _hrows = []; _crit_tot = {_c: [0.0, 0.0] for _c, _, _ in _CRITS}
                 for _k2 in ('lc', 'lr', 'sc', 'sr'):
                     _rt = _res_tr[_k2]
@@ -18471,26 +18509,19 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                     #   올바르게 고치면 -1.70%p(마이너스)가 된다.
                     #   ★ 매도 상태는 '발화한 날 피한 손실'만 세므로 비교 기준이 0(=아무
                     #     주장도 안 함)이다. 매수 상태는 그 날의 기본행동과 비교한다.
-                    _base_long = _BASE_IS_LONG[_k2] and (_rt['side'] == '매수')
-                    _b_tr = (float(np.sum(_ret_arr[_d_tr])) if (_base_long and len(_d_tr)) else 0.0)
-                    _b_te = (float(np.sum(_ret_arr[_d_te])) if (_base_long and len(_d_te)) else 0.0)
+                    # ★ 모든 상태가 '기본행동 대비 초과'로 통일됐으므로 기준은 0이다.
+                    _b_tr = 0.0; _b_te = 0.0
                     _cand_rows = _rt.get('cand_rows') or []
                     _per = {}
                     for _cid, _clabel, _nkey in _CRITS:
-                        _kk = int(_rt.get(_nkey, 0) or 0)
+                        _kk = int(_rt.get(_nkey, 0) or 0)   # 기준 비교표는 기준별 개수 그대로
                         _net = np.zeros(n)
                         for _cr in _cand_rows[:_kk]:
                             _net[_cr[0]] += (_cr[1] if _isb else -_cr[1])
-                        if _isb:
-                            _rtr = (float(np.sum((_net[_d_tr] > 0.0) * _ret_arr[_d_tr]))
-                                    if len(_d_tr) else 0.0)
-                            _rte = (float(np.sum((_net[_d_te] > 0.0) * _ret_arr[_d_te]))
-                                    if len(_d_te) else 0.0)
-                        else:
-                            _rtr = (float(-np.sum((_net[_d_tr] < 0.0) * _ret_arr[_d_tr]))
-                                    if len(_d_tr) else 0.0)
-                            _rte = (float(-np.sum((_net[_d_te] < 0.0) * _ret_arr[_d_te]))
-                                    if len(_d_te) else 0.0)
+                        _pn3 = (np.asarray(_res_tr[_PAIR[_k2]]['net_sel'])
+                                if _k2 in ('lc', 'sc') else None)
+                        _rtr = _ret_of_net(_net, _d_tr, _isb, _BASE_IS_LONG[_k2], _pn3)[0]
+                        _rte = _ret_of_net(_net, _d_te, _isb, _BASE_IS_LONG[_k2], _pn3)[0]
                         _per[_cid] = dict(label=_clabel, k=_kk, ret_tr=_rtr, ret_te=_rte,
                                           edge_tr=_rtr - _b_tr, edge_te=_rte - _b_te)
                         _crit_tot[_cid][0] += _rtr - _b_tr
@@ -18550,35 +18581,40 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                                  te_from=(_dstr_all[_tr_end] if _tr_end < len(_dstr_all) else ''),
                                  te_to=(_dstr_all[_te_end - 1] if _te_end - 1 < len(_dstr_all) else ''),
                                  per={})
+                    _rt_map = {}
+                    for _k2 in ('lr', 'sr'):
+                        _rt_map[_k2] = _select_state_tr(_k2, _POOL_OF[_k2], 'prob', _trm)
+                    for _k2 in ('lc', 'sc'):
+                        _rt_map[_k2] = _select_state_tr(
+                            _k2, _POOL_OF[_k2], 'prob', _trm,
+                            np.asarray(_rt_map[_PAIR[_k2]]['net_sel']))
                     for _k2 in ('lc', 'lr', 'sc', 'sr'):
-                        _rt = _select_state_tr(_k2, _POOL_OF[_k2], 'prob', _trm)
+                        _rt = _rt_map[_k2]
                         _isb = (_rt['side'] == '매수')
-                        _kk = int(_rt.get(_nkey_wf, 0) or 0)
+                        # ★ 그 상태가 실제로 채택한 개수(지속 상태는 한계기여가 0이면
+                        #   틀린자리 최소로 폴백된 값)를 그대로 쓴다.
+                        _kk = int(_rt.get('n', 0) or _rt.get(_nkey_wf, 0) or 0)
                         _net = np.zeros(n)
                         for _cr in (_rt.get('cand_rows') or [])[:_kk]:
                             _net[_cr[0]] += (_cr[1] if _isb else -_cr[1])
                         _dte = np.nonzero(dom_full[_k2] & _tem)[0]
-                        if _isb:
-                            _r = (float(np.sum((_net[_dte] > 0.0) * _ret_arr[_dte]))
-                                  if len(_dte) else 0.0)
-                        else:   # ★ 매도 상태 = 발화한 날 피한 손실
-                            _r = (float(-np.sum((_net[_dte] < 0.0) * _ret_arr[_dte]))
-                                  if len(_dte) else 0.0)
-                        # ★ 벤치마크 = 그 상태에서 '아무것도 안 했을 때'(위 홀드아웃 주석 참조)
-                        _b = (float(np.sum(_ret_arr[_dte]))
-                              if (_BASE_IS_LONG[_k2] and _isb and len(_dte)) else 0.0)
+                        # ★ 전환 상태는 단독 기여, 지속 상태는 짝 위에서의 한계 기여.
+                        #   모두 '기본행동 대비 초과'라 벤치마크는 0으로 통일된다.
+                        _pn2 = (np.asarray(_rt_map[_PAIR[_k2]]['net_sel'])
+                                if _k2 in ('lc', 'sc') else None)
+                        _r = _ret_of_net(_net, _dte, _isb, _BASE_IS_LONG[_k2], _pn2)[0]
+                        _b = 0.0
                         _acc[_k2]['ret'] += _r; _acc[_k2]['bh'] += _b
                         _acc[_k2]['days'] += len(_dte); _acc[_k2]['ks'].append(_kk)
                         _frow['per'][_k2] = dict(name=_rt['name'], side=_rt['side'], k=_kk,
                                                  days=len(_dte), ret=_r, bh=_b, edge=_r - _b,
-                                                 base_long=bool(_BASE_IS_LONG[_k2] and _isb))
+                                                 marginal=bool(_k2 in ('lc', 'sc')))
                     _fold_rows.append(_frow)
                 _wf = dict(folds=_fold_rows, acc=_acc, crit=_crit_wf,
                            n_folds=len(_fold_rows), start_frac=_wf_start,
                            names={_k2: _NAME[_k2] for _k2 in _acc},
                            sides={_k2: _SIDE[_k2] for _k2 in _acc},
-                           base_long={_k2: bool(_BASE_IS_LONG[_k2] and _SIDE[_k2] == '매수')
-                                      for _k2 in _acc})
+                           base_long={_k2: bool(_k2 in ('lc', 'sc')) for _k2 in _acc})
                 print("    (워크포워드 %d구간) " % len(_fold_rows) + ', '.join(
                     "%s %+.1f%%p(지표 %s)" % (_NAME[_k2], (_acc[_k2]['ret'] - _acc[_k2]['bh']) * 100,
                                              '~'.join(str(x) for x in (min(_acc[_k2]['ks']),
@@ -27844,18 +27880,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "재고 이어붙였다 — 실제 운용을 그대로 흉내낸 것이라 미래를 미리 본 부분이 전혀 없다. "
                 "다른 시트의 수익률은 전 구간을 보고 전 구간을 채점한 인샘플 값이라 항상 이보다 좋게 나온다. "
                 "판단 기준은 '초과%p' 한 열이다 — 비교 대상은 그 상태에서 '아무것도 안 했을 때'로, "
-                "롱지속(매수 주장, 직전이 롱)은 '계속 보유'가 기준이고, 숏→롱(매수 주장, 직전이 현금)은 "
-                "'계속 현금'(0%)이 기준이다. 매도 상태(롱→숏·숏지속)는 발화한 날 막아서 피한 손실만 "
-                "세므로 기준이 0이다('기준행동' 열 참조). "
-                "★ 예전에는 매도 상태를 '발화 안 하면 매수'로 해석해 근거 없이 진입시켰고, 숏 계열까지 "
-                "'계속 보유'와 비교해 하락장에서 아무것도 안 사기만 해도 초과수익이 부풀려졌다 — 둘 다 수정됨. "
+                "모든 상태가 '가만히 뒀을 때 대비 얼마나 더 벌었나'로 통일돼 기준수익은 0이다. "
+                "전환 상태(롱→숏·숏→롱)는 기본행동을 실제로 바꾸므로 단독기여를 재고, "
+                "지속 상태(롱지속·숏지속)는 기본행동과 똑같은 주장이라 단독 기여가 원리적으로 0이어서 "
+                "짝 상태의 net을 깔아둔 뒤 그걸 얼마나 개선하는지(한계기여)로 잰다 — "
+                "롱지속은 롱→숏의 불필요한 청산을 막는 몫, 숏지속은 숏→롱의 나쁜 진입을 막는 몫이다. "
+                "★ 예전에는 지속 상태에 인위적 기본값을 붙여 없는 점수를 만들었고, 그 탓에 숏지속이 "
+                "규칙을 바꿀 때마다 -33%p ↔ +52%p로 널뛰었다(둘 다 실력이 아니라 측정 착시 — 수정됨). "
                 "구간마다 부호가 왔다갔다 하면 그 상태의 지표 선정은 신뢰할 수 없다는 뜻이다.")
             ws_w.cell(1, 1).font = Font(italic=True, size=9, color='808080')
             ws_w.merge_cells('A1:J1')
 
             _keys_w = ('lc', 'lr', 'sc', 'sr')
             _cols_w = ['구간', '검증 시작', '검증 끝', '학습일수', '검증일수', '상태',
-                       '채택지표수', '수익%', '기준행동', '기준수익%', '초과%p']
+                       '채택지표수', '수익%', '측정방식', '기준수익%', '초과%p']
             for _ci, _cn in enumerate(_cols_w, 1):
                 _hc = ws_w.cell(3, _ci); _hc.value = _cn
                 _hc.font = Font(bold=True, color='FFFFFF')
@@ -27866,8 +27904,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _pv = _f['per'].get(_k2)
                     if not _pv:
                         continue
-                    _bl = ('계속 보유' if _pv.get('base_long')
-                           else ('주장없음(0)' if _pv.get('side') == '매도' else '계속 현금'))
+                    _bl = ('한계기여(짝 위)' if _pv.get('marginal') else '단독기여')
                     _vals = [_f['fold'], _f['te_from'], _f['te_to'], _f['tr_days'], _f['te_days'],
                              _pv['name'], _pv['k'], round(_pv['ret'] * 100, 2), _bl,
                              round(_pv['bh'] * 100, 2), round(_pv['edge'] * 100, 2)]
@@ -27883,7 +27920,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             ws_w.cell(_sum_r, 1).value = "▼ 전 구간 합계 (워크포워드 누적)"
             ws_w.cell(_sum_r, 1).font = Font(bold=True, size=11, color='1F3864')
             for _ci, _cn in enumerate(['상태', '방향', '검증일수', '지표수 범위', '누적 수익%',
-                                       '기준행동', '누적 기준수익%', '누적 초과%p(★)',
+                                       '측정방식', '누적 기준수익%', '누적 초과%p(★)',
                                        '플러스 구간'], 1):
                 _hc = ws_w.cell(_sum_r + 1, _ci); _hc.value = _cn
                 _hc.font = Font(bold=True, color='FFFFFF')
@@ -27896,8 +27933,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _npos = sum(1 for _f in _wf['folds']
                             if _f['per'].get(_k2) and _f['per'][_k2]['edge'] > 0)
                 _ks = _a['ks'] or [0]
-                _bl2 = ('계속 보유' if _wf.get('base_long', {}).get(_k2)
-                        else ('주장없음(0)' if _wf['sides'][_k2] == '매도' else '계속 현금'))
+                _bl2 = ('한계기여(짝 위)' if _k2 in ('lc', 'sc') else '단독기여')
                 _vals = [_wf['names'][_k2], _wf['sides'][_k2], _a['days'],
                          ('%d~%d' % (min(_ks), max(_ks))),
                          round(_a['ret'] * 100, 2), _bl2, round(_a['bh'] * 100, 2),
@@ -27941,7 +27977,10 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _nwin = int(_s.get('bt_win', 0) or 0); _nloss = int(_s.get('bt_loss', 0) or 0)
                 ws_b.cell(1, 1).value = (
                     f"[{_s['name']}] ({_s['side']} 지표 {_s['n']}개 채택) 일별 백테스트 — "
-                    f"기여 {_tot:+.2f}%, 판정대상 {len(np.asarray(_s.get('dom_idx')))}일 중 "
+                    f"기여 {_tot:+.2f}%"
+                    + ("(한계기여 — 짝 상태의 판정을 뒤집은 날만)"
+                       if _s['key'] in ('lc', 'sc') else "(단독기여)")
+                    + f", 판정대상 {len(np.asarray(_s.get('dom_idx')))}일 중 "
                     f"실제 발화 {_nwin + _nloss}일(맞음 {_nwin}일 / 틀림 {_nloss}일), "
                     f"정렬 {'신뢰도순' if _s.get('win_order') == 'rel' else '확률순'}. "
                     "★ 오직 이 상태의 채택 지표만으로 계산한다 — 다른 상태 지표는 전혀 섞지 않는다. "
