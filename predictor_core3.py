@@ -14693,6 +14693,9 @@ SCORE_BIG_FAIL_PENALTY                   = 0.25   # 진짜 실패 벌점(무겁�
 # ★ 매수 실패는 즉시 손실, 매도 실패는 기회비용뿐 → 벌점 배수를 비대칭으로.
 SCORE_BUY_FAIL_MULT                      = 1.6
 SCORE_SELL_FAIL_MULT                     = 0.7
+
+# ★ 실행 중인 파일이 최신인지 확인하는 표식 — 수정할 때마다 올린다.
+CORE_VERSION = '2026-08-15.a  (추세기반점수+실패성격구분+매수비대칭벌점, 그룹분류12종+상한150)'
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
 #   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
 SIMPLE_POOL_DROP_USELESS_CONT_STATE      = True
@@ -29529,6 +29532,11 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
     indicators = _select_indicators(feat, max_indicators)
     print(f"\n  후보 지표: {len(indicators)}개")
     # ★★★ (요청) 적용된 수정사항이 실제로 켜져 있는지 매 실행마다 확인 출력
+    #   ★ 구버전 파일로 실행하면 아래 줄들이 안 찍히거나 버전이 다르게 나온다 —
+    #     실측: 점수개선을 넣었는데 로그에 [점수체계]가 없고 지표평가 시간도 그대로여서
+    #     구버전이 돌고 있음을 확인했다. 그래서 버전 표식을 맨 앞에 박아 둔다.
+    print(f"\n  ■ CORE_VERSION = {globals().get('CORE_VERSION', '?')}  "
+          f"(이 값이 최신이 아니면 예전 파일이 실행되고 있는 것)")
     _g = globals(); _g0 = _g
     print("  [점수체계] "
           f"추세기반={_g0.get('SCORE_USE_TREND_OUTCOME')}"
@@ -34204,6 +34212,13 @@ def _log_indicator_search_diagnostics(feat, close, indicators, max_list=25):
     nv = feat[cols].notna().sum() if len(cols) else None
 
     def _grp(name):
+        # ★ (실측 개선) 예전엔 여기에 별도의 성긴 분류 규칙이 있어서, 진단 로그의 그룹과
+        #   그룹 합성지표의 그룹이 서로 달랐다(진단은 '가격/기술 4,053개', 합성은 '기타 3,171개').
+        #   같은 함수를 쓰도록 통일해 두 곳의 숫자가 항상 맞아떨어지게 한다.
+        try:
+            return _indicator_group_of(name)
+        except Exception:
+            pass
         n = str(name).lower()
         if any(n.startswith(p) or p in n for p in ('fred_', 'macro_', 'yc_', 'cpi', 'infl', 'ppi')):
             return '매크로/경제'
