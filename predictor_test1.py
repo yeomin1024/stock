@@ -14654,6 +14654,9 @@ SIMPLE_POOL_DROP_USELESS_CONT_STATE      = True
 # ★★★ (실측 개선) 채택 개수 안정화 — 최고 성적의 (1-이 값)배 이상을 처음 달성하는 가장
 #   적은 개수를 쓴다. 0이면 예전처럼 최고점 그대로(폴드마다 개수가 크게 요동).
 SIMPLE_POOL_STATE_K_TOLERANCE            = 0.05
+# ★★★ (실측 개선) MSC 탐색에서 지표 세트가 연속 N번 동일하면 조기 종료.
+#   실측: MSC=3~10 이 전부 같은 결과(+198.6%)라 상태별 선정·워크포워드가 8번 중복 실행됐다.
+SIMPLE_POOL_MSC_EARLY_STOP               = 2
 # ★★★ (실측 개선) 워크포워드에서 한계기여가 마이너스로 확인된 지속 상태를 최종 선정에서
 #   자동으로 뺀다. 인샘플 한계기여만 보면 숏지속이 +15.33%로 플러스라 안 걸리지만,
 #   워크포워드로는 -6.16%p(플러스 2/5구간)로 순손해였다 — 판단은 워크포워드가 맞다.
@@ -19844,11 +19847,39 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             _msc_candidates = list(globals().get('SIMPLE_POOL_REVERSAL_MSC_RANGE', range(3, 11)))
             _best_msc = None; _best_ret = -1e18; _best_pair = None
             _msc_log = []
+            # ★★★ (실측 개선) MSC 값을 바꿔도 결과가 전혀 안 달라지는 경우가 있다.
+            #   실측 로그: MSC=3~10 여덟 값이 전부 +198.6% 로 완전히 동일했고, 그 8번 동안
+            #   상태별 지표선정·홀드아웃·워크포워드가 통째로 8번 반복 실행됐다(로그도 8번 중복).
+            #   → 앞선 후보와 '선정된 지표 세트'가 같으면 백테스트를 건너뛰고 결과를 재사용하고,
+            #     연속으로 동일한 세트가 반복되면 더 볼 게 없으므로 탐색을 조기 종료한다.
+            _seen_sig = {}
+            _same_run = 0
             for _msc_try in _msc_candidates:
                 _bc, _sc = _finalize_pool(_msc_try)
                 if _bc is None or _sc is None or len(_bc) == 0 or len(_sc) == 0:
                     _msc_log.append((_msc_try, None))
                     continue
+                # 선정 결과의 지문(지표명+임계값 집합) — 같으면 백테스트 결과도 반드시 같다
+                try:
+                    _sig_key = (
+                        tuple(sorted(zip(_bc['indicator'].astype(str),
+                                         _bc.get('threshold', pd.Series([0]*len(_bc))).round(8)))),
+                        tuple(sorted(zip(_sc['indicator'].astype(str),
+                                         _sc.get('threshold', pd.Series([0]*len(_sc))).round(8)))))
+                except Exception:
+                    _sig_key = None
+                if _sig_key is not None and _sig_key in _seen_sig:
+                    _ret_prev = _seen_sig[_sig_key]
+                    _msc_log.append((_msc_try, _ret_prev))
+                    _same_run += 1
+                    if _same_run >= int(globals().get('SIMPLE_POOL_MSC_EARLY_STOP', 2)):
+                        _msc_log.extend((m, _ret_prev) for m in _msc_candidates
+                                        if m > _msc_try)
+                        print(f"    (MSC 탐색 조기종료) MSC={_msc_try}까지 지표 세트가 계속 동일 "
+                              f"— 남은 후보는 결과가 같으므로 생략(중복 실행 제거)")
+                        break
+                    continue
+                _same_run = 0
                 try:
                     _res_try = _net_signal_k_search(feat, close, _bc, _sc, ticker=ticker,
                                                     n_buy=None, n_sell=None, search_counts=False,
@@ -19858,6 +19889,8 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 except Exception:
                     _ret_try = None
                 _msc_log.append((_msc_try, _ret_try))
+                if _sig_key is not None:
+                    _seen_sig[_sig_key] = _ret_try
                 if _ret_try is not None and _ret_try > _best_ret:
                     _best_ret = _ret_try; _best_msc = _msc_try; _best_pair = (_bc, _sc)
             _log_txt = ", ".join(f"MSC={mv}:{(rv*100):+.1f}%" if rv is not None else f"MSC={mv}:실패"
@@ -28860,7 +28893,7 @@ def _verify_candidates_by_daily(inner_passed, feat, close, buy_pool, sell_pool, 
     return best_inner, inner_passed_out
 
 
-def _run_ensemble_search_impl(*, eval_start='__USE_GLOBAL__',
+def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
                          eval_end='__USE_GLOBAL__',
                          horizon=HORIZON_DAYS,
                          dd_limit=DRAWDOWN_LIMIT_BUY,
@@ -29577,44 +29610,87 @@ def _run_ensemble_search_impl(*, eval_start='__USE_GLOBAL__',
             daily, trades, cur)
 
 
-def run_ensemble_search(*args, **kwargs):
-    """★★★ (요청 — 버그수정, 재발) 실행 로그를 텍스트 파일로 저장 + 자동 다운로드.
-       ★ 이전엔 main()을 감싸는 방식(_run_with_log_capture)으로만 만들어서
-       `if __name__=='__main__':` 블록 안에서만 동작했는데, 실제 사용 패턴은 importlib로
-       모듈을 로드한 뒤 이 함수(run_ensemble_search)를 '직접' 호출하는 것이라 __main__
-       분기 자체가 전혀 실행되지 않아 로깅이 완전히 무동작이었다(실측 확인) — 이 함수
-       자체를 감싸는 걸로 바꿔서, 어떻게 호출하든(직접 호출/main() 경유 모두) 항상
-       로그가 남도록 고쳤다. 실제 로직은 그대로 _run_ensemble_search_impl에 있고,
-       이 함수는 그걸 부르면서 화면 출력을 실시간으로 보여주는 동시에 텍스트 파일로도
-       저장 + 다운로드한다."""
+# ★★★ (요청 — 버그수정) 실행 로그 텍스트 파일이 안 만들어지던 문제.
+#   예전엔 run_ensemble_search()만 로그를 감쌌는데, 실제 호출 경로는
+#   _run_ensemble_search_impl() 을 '직접' 부르는 곳이 8군데나 있었다
+#   (run_multi_ticker_analysis / staged_meta_tune / build_* / 재현 모드 …).
+#   그 경로로 돌리면 래퍼를 통과하지 않아 로그 파일이 아예 안 남았다(실측 확인).
+#   → 가장 안쪽 진입점 이름을 그대로 유지한 채 여기서 감싸, 어떤 경로로 들어와도
+#     항상 로그가 남고 코랩이면 자동 다운로드된다. 중첩 호출 시에는 가장 바깥 것만 저장.
+_LOG_CAPTURE_DEPTH = 0
+
+
+def _run_ensemble_search_impl(*args, **kwargs):
+    """실행 로그를 텍스트 파일로 남기는 래퍼 (실제 로직은 _run_ensemble_search_core).
+
+       ★★★ (요청) INDICATOR_SCAN_ONLY=True 면 여기서 지표 탐색 진단만 하고 끝낸다.
+       예전엔 main() 안에만 가드를 뒀는데, 실제 호출은 이 함수를 직접 부르는 경로가
+       대부분이라 가드가 전혀 동작하지 않았다(실측: 전체 파이프라인이 끝까지 실행됨)."""
+    if bool(globals().get('INDICATOR_SCAN_ONLY', False)):
+        print("\n  [지표 탐색 전용 모드] 풀 선정·백테스트·엑셀 생성은 실행하지 않습니다.")
+        print("  (전체 실행하려면 INDICATOR_SCAN_ONLY = False 로 바꾸세요)\n")
+        return run_indicator_scan()
     import sys as _sys
-    _orig_stdout = _sys.stdout
-    _tee = _TeeOutput(_orig_stdout)
-    _sys.stdout = _tee
-    _run_err = None; _result = None
+    global _LOG_CAPTURE_DEPTH
+    _outer = (_LOG_CAPTURE_DEPTH == 0)
+    _LOG_CAPTURE_DEPTH += 1
+    _orig = _sys.stdout
+    _tee = None
+    if _outer:
+        try:
+            _tee = _TeeOutput(_orig)
+            _sys.stdout = _tee
+        except Exception:
+            _tee = None
+    _err = None; _res = None
     try:
-        _result = _run_ensemble_search_impl(*args, **kwargs)
+        _res = _run_ensemble_search_core(*args, **kwargs)
     except Exception as _e:
-        _run_err = _e
-        import traceback
-        traceback.print_exc()
+        _err = _e
+        import traceback; traceback.print_exc()
     finally:
-        _sys.stdout = _orig_stdout
-    _log_text = _tee.get_log()
+        _LOG_CAPTURE_DEPTH -= 1
+        if _tee is not None:
+            _sys.stdout = _orig
+    if _tee is not None:
+        _save_feedback_log(_tee.get_log())
+    if _err is not None:
+        raise _err
+    return _res
+
+
+def _save_feedback_log(text, tag=None):
+    """로그 텍스트를 파일로 저장하고 코랩이면 다운로드. 실패해도 본 실행은 계속."""
     try:
         _ts = _kst_now().strftime('%Y-%m-%d_%H%M%S')
-        _log_dir = globals().get('SCRIPT_DIR', '.')
-        os.makedirs(_log_dir, exist_ok=True)
-        _log_path = os.path.join(_log_dir, f'실행로그_{_ts}.txt')
-        with open(_log_path, 'w', encoding='utf-8') as _lf:
-            _lf.write(_log_text)
-        print(f"\n  📝 실행 로그 저장 완료: {_log_path} ({len(_log_text):,}자)")
-        _download_log_file(_log_path)
+        _tk = str(globals().get('TICKER', '') or '').strip()
+        _name = f"실행로그_{_tk + '_' if _tk else ''}{tag + '_' if tag else ''}{_ts}.txt"
+        _dir = globals().get('SCRIPT_DIR', '.') or '.'
+        try:
+            os.makedirs(_dir, exist_ok=True)
+        except Exception:
+            _dir = '.'
+        _path = os.path.join(_dir, _name)
+        with open(_path, 'w', encoding='utf-8') as _f:
+            _f.write(text)
+        print(f"\n  📝 실행 로그 저장: {_path} ({len(text):,}자)")
+        try:
+            _download_log_file(_path)
+        except Exception:
+            try:
+                from google.colab import files as _cf   # type: ignore
+                _cf.download(_path)
+            except Exception:
+                pass
+        return _path
     except Exception as _le:
-        print(f"\n  ⚠ 실행 로그 저장/다운로드 실패: {_le}")
-    if _run_err is not None:
-        raise _run_err
-    return _result
+        print(f"\n  ⚠ 실행 로그 저장 실패(무시): {_le}")
+        return None
+
+
+def run_ensemble_search(*args, **kwargs):
+    """공개 진입점 — 로그 저장은 안쪽 _run_ensemble_search_impl 래퍼가 담당한다."""
+    return _run_ensemble_search_impl(*args, **kwargs)
 
 
 def staged_meta_tune(*, base_meta_grid=None,
@@ -33166,7 +33242,9 @@ def build_result_excel_from_pool(ticker, *, pool_dir=None, out_dir=None, end_dat
 
 # ★★★ (요청) 지표 탐색만 실행하고 그 뒤 단계(풀 선정·백테스트·엑셀)는 진행하지 않는 스위치.
 #   True 로 두면 main() 이 run_indicator_scan() 만 돌리고 즉시 끝난다.
-INDICATOR_SCAN_ONLY = True
+#   False = 평소대로 전체 실행(엑셀까지) — 이때도 실행로그 txt 는 항상 저장·다운로드됨.
+#   True  = 지표 탐색 진단만 하고 즉시 종료(indicator_scan_*.txt 생성).
+INDICATOR_SCAN_ONLY = False
 
 
 def main():
@@ -33850,14 +33928,24 @@ def run_indicator_scan(ticker=None, start=None, horizon=None, report_path=None):
     W('  ※ 이 리포트는 지표 탐색까지만 수행한 것이며, 풀 선정·백테스트·엑셀 생성은 실행하지 않았습니다.')
 
     # ── 5. 저장 + 코랩 자동 다운로드 ─────────────────────────────────────────
-    path = report_path or SCAN_REPORT_PATH or \
+    name = report_path or SCAN_REPORT_PATH or \
         f'indicator_scan_{ticker}_{datetime.datetime.now():%Y%m%d_%H%M}.txt'
-    with open(path, 'w', encoding='utf-8') as f:
+    if not os.path.isabs(name):
+        _dir = g.get('SCRIPT_DIR', '.') or '.'
+        try:
+            os.makedirs(_dir, exist_ok=True)
+            name = os.path.join(_dir, name)
+        except Exception:
+            pass
+    with open(name, 'w', encoding='utf-8') as f:
         f.write(R.getvalue())
-    print(f'\n  ✓ 리포트 저장: {path}')
+    print(f'\n  ✓ 리포트 저장: {name}')
     try:
-        from google.colab import files as _cf   # type: ignore
-        _cf.download(path)
+        _download_log_file(name)
     except Exception:
-        pass
-    return path
+        try:
+            from google.colab import files as _cf   # type: ignore
+            _cf.download(name)
+        except Exception:
+            pass
+    return name
