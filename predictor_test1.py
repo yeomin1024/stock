@@ -14657,6 +14657,18 @@ SIMPLE_POOL_MIN_SIGNALS_FLOOR            = 10
 #     지표가 많아지고, 작게 잡으면 신호가 풍부한 지표만 남는다(방향별로 따로 적용).
 #     실측(GOOG 1156일): 매수는 30건↑ 6개뿐이라 15건까지 내려가 98개, 매도는 20건에서 34개.
 SIMPLE_POOL_MIN_INDICATORS_TARGET        = 60
+# ★★★ (요청 — 의도적 비대칭) 매수는 엄격하게 적게, 매도는 느슨하게 많이 뽑는다.
+#   매도가 틀리면 기회비용뿐이지만 매수가 틀리면 즉시 손실이기 때문.
+#   목표 지표수가 작을수록 신호수 하한이 높게 유지돼 '표본 충분한 소수'만 남는다.
+#   실측 분포(GOOG 1409일) 기준: 매수 목표60 → 하한15건·80개 / 매도 목표150 → 하한10건·171개
+SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY    = 60
+SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL   = 150
+# ★★★ (요청 — 신규) 개별 컷에서 탈락한 지표들을 성격별 그룹으로 묶어 합성지표를 만든다.
+#   개별로 약한 신호도 여러 개를 방향 정렬해 평균하면 잡음이 상쇄돼 쓸 만해진다.
+#   생성된 합성지표는 일반 지표와 똑같은 컷을 거치므로 쓸모없으면 자연히 탈락한다.
+SIMPLE_POOL_GROUP_COMPOSITE              = True
+SIMPLE_POOL_COMPOSITE_Z_WINDOW           = 60   # 롤링 z-점수 창(일)
+SIMPLE_POOL_COMPOSITE_MIN_MEMBERS        = 8    # 그룹당 최소 멤버 수
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
 #   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
 SIMPLE_POOL_DROP_USELESS_CONT_STATE      = True
@@ -16814,6 +16826,8 @@ def _passes_tiered_sig_gate(success_rate, n_signals, indicator=None):
     _min_sig_high = float(globals().get('POOL_SUCCESS_MIN_SIG_HIGH', 8))
     _high_rate = float(globals().get('POOL_SUCCESS_MIN_SIG_HIGH_RATE', 0.90))
     base = (n_signals >= _min_sig) | ((success_rate >= _high_rate) & (n_signals >= _min_sig_high))
+    # ★ 매크로 완화도 매수/매도 비대칭을 따른다 — 매수는 틀리면 즉시 손실이므로
+    #   완화 폭을 줄이고(기본 8건), 매도는 하락을 놓치지 않는 게 우선이라 더 느슨(5건).
     _macro_min = float(globals().get('SIMPLE_POOL_MACRO_MIN_SIG', 5))
     if _macro_min > 0 and indicator is not None:
         try:
@@ -17186,7 +17200,160 @@ def _dedup_same_prefix_best_reliability(pool, label=''):
     return out
 
 
-def _apply_min_signal_floor(pool, label=''):
+def _indicator_group_of(name):
+    """지표를 성격별 그룹으로 분류 — 그룹 합성지표를 만들 때 쓴다."""
+    n = str(name).lower()
+    if any(k in n for k in ('fred_', 'macro_', 'yc_', 'cpi', 'infl', 'ppi', 'pce',
+                            'unrate', 'bei', 'recession', 'yield')):
+        return '매크로'
+    if any(k in n for k in ('vix', 'vvix', 'skew', 'move', 'term_struct')):
+        return '변동성'
+    if any(k in n for k in ('vol', 'obv', 'mfi', 'adl', 'vwap', 'vwma', 'turnover')):
+        return '거래량'
+    if any(n.startswith(p + '_') for p in ('spy', 'qqq', 'iwm', 'dia', 'aapl', 'msft',
+                                           'nvda', 'amzn', 'meta', 'tlt', 'gld', 'uup',
+                                           'hyg', 'lqd', 'xlk', 'xlf', 'xle', 'smh')):
+        return '피어/ETF'
+    if any(k in n for k in ('rsi', 'stoch', 'cci', 'willr', 'mfi', 'roc', 'mom')):
+        return '모멘텀'
+    if any(k in n for k in ('ma_', 'ema', 'sma', 'macd', 'adx', 'psar', 'ichimoku', 'trend')):
+        return '추세'
+    if any(k in n for k in ('bb_', 'atr', 'kc_', 'dc_', 'std', 'range', 'gap')):
+        return '변동폭'
+    return '기타'
+
+
+def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
+                                     train_frac=0.7):
+    """★★★ (요청 — 신규 아이디어) 개별로는 탈락한 지표들을 그룹 합성지표로 되살린다.
+
+    문제의식: 지금은 지표 하나하나가 '신호수·성공률·상관' 컷을 통과해야만 쓰인다.
+      실측 로그 기준 4,665개 중 최종 풀에 남는 건 수십 개뿐이고, 나머지 수천 개는
+      통째로 버려진다. 그런데 개별로 약한 신호도 여러 개를 같은 방향으로 모으면
+      잡음이 상쇄되면서 쓸 만한 신호가 된다(팩터 투자의 기본 원리). 특히 경제지표처럼
+      발화가 드물어 이벤트수 컷에 걸리는 부류는 개별 평가로는 절대 살아남지 못한다.
+
+    방법 (그룹당 지표 2종):
+      1) 탈락 지표를 성격별 그룹(매크로/변동성/거래량/피어·ETF/모멘텀/추세/변동폭)으로 나눈다.
+      2) 각 지표를 롤링 z-점수로 표준화한다 — 단위가 제각각이라 그대로 더할 수 없다.
+      3) ★방향 정렬: 학습구간(앞 70%)에서 '다음날 수익률과의 상관' 부호로 뒤집는다.
+         상관이 음수인 지표는 -1을 곱해 모두 '높을수록 상승' 방향으로 맞춘다.
+         ★ 부호를 학습구간에서만 정하므로 뒤 구간에는 미래 정보가 새지 않는다.
+      4) `<그룹>_composite_z`   : 정렬된 z-점수의 평균 (그룹의 종합 강도)
+         `<그룹>_composite_breadth` : 그룹 중 z>0인 지표의 비율 (폭 — 몇 %가 같은 편인가)
+      합성지표는 일반 지표와 똑같이 임계값 스윕·성공률 평가를 거치므로, 쓸모없으면
+      기존 컷에서 자연히 탈락한다. 즉 '무조건 넣는' 게 아니라 '기회를 준다'.
+    """
+    if not bool(globals().get('SIMPLE_POOL_GROUP_COMPOSITE', True)):
+        return None
+    try:
+        n = len(feat)
+        used = set(str(x) for x in (used_names or []))
+        num = feat.select_dtypes(include=[np.number])
+        # used_names=None 이면 '아직 선정 전'이므로 전체 지표를 그룹 합성 대상으로 삼는다.
+        rejects = [c for c in num.columns
+                   if str(c) not in used and num[c].notna().sum() >= 200
+                   and not str(c).endswith(('_composite_z', '_composite_breadth'))]
+        if len(rejects) < 20:
+            print('    (그룹 합성지표) 탈락 지표가 적어 생략')
+            return None
+
+        px = np.asarray(close_arr, dtype=float)[:n]
+        fwd = np.full(n, np.nan)
+        h = max(1, int(horizon))
+        fwd[:-h] = px[h:] / np.where(px[:-h] == 0, np.nan, px[:-h]) - 1.0
+        cut = int(n * train_frac)                       # ★ 부호 결정은 학습구간만
+        win = int(globals().get('SIMPLE_POOL_COMPOSITE_Z_WINDOW', 60))
+        min_members = int(globals().get('SIMPLE_POOL_COMPOSITE_MIN_MEMBERS', 8))
+
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for c in rejects:
+            groups[_indicator_group_of(c)].append(c)
+
+        out = {}
+        rep = []
+        for gname, members in groups.items():
+            if len(members) < min_members:
+                rep.append((gname, len(members), 0, '멤버부족'))
+                continue
+            zs = []
+            n_flip = 0
+            for c in members:
+                v = num[c].astype(float)
+                mu = v.rolling(win, min_periods=max(10, win // 3)).mean()
+                sd = v.rolling(win, min_periods=max(10, win // 3)).std()
+                z = ((v - mu) / sd.replace(0, np.nan)).clip(-5, 5)
+                zt = z.to_numpy(dtype=float)[:cut]
+                ft = fwd[:cut]
+                m = np.isfinite(zt) & np.isfinite(ft)
+                if m.sum() < 60:
+                    continue
+                r = float(np.corrcoef(zt[m], ft[m])[0, 1]) if m.sum() > 3 else 0.0
+                if not np.isfinite(r):
+                    r = 0.0
+                if r < 0:
+                    z = -z; n_flip += 1
+                zs.append(z)
+            if len(zs) < min_members:
+                rep.append((gname, len(members), len(zs), '유효멤버부족'))
+                continue
+            Z = pd.concat(zs, axis=1)
+            out[f'{gname}_composite_z'] = Z.mean(axis=1)
+            out[f'{gname}_composite_breadth'] = (Z > 0).sum(axis=1) / float(Z.shape[1])
+            rep.append((gname, len(members), len(zs), f'생성(부호반전 {n_flip}개)'))
+
+        print(f'    (그룹 합성지표) 탈락 {len(rejects):,}개를 그룹별로 묶어 합성 —')
+        for gname, nm, nz, st in sorted(rep, key=lambda x: -x[1]):
+            print(f'      · {gname:<8} 멤버 {nm:>5,}개 → 사용 {nz:>4,}개  {st}')
+        if not out:
+            print('      → 생성된 합성지표 없음')
+            return None
+        df = pd.DataFrame(out, index=feat.index)
+        print(f'      → 합성지표 {len(df.columns)}개 생성 '
+              f'(그룹당 종합강도 z + 폭breadth 2종). 일반 지표와 동일한 컷을 거칩니다.')
+        return df
+    except Exception as e:
+        print(f'    ⚠ 그룹 합성지표 생성 실패(무시): {e}')
+        return None
+
+
+def _apply_min_signal_floor_pair(buy_pool, sell_pool):
+    """★★★ (요청 — 재수정) 매수는 엄격하게 적게, 매도는 느슨하게 많이.
+
+    [왜 비대칭이 맞는가 — 사용자 지적]
+      · 매도(=현금) 신호가 틀리면 손해는 '못 번 것'(기회비용)에 그친다.
+      · 매수 신호가 틀리면 즉시 실현 손실이 난다.
+      → 따라서 매수 지표는 표본이 충분하고 확실한 것만 뽑아야 하고(개수가 적어도 됨),
+        매도 지표는 넓게 잡아 놓치는 하락이 없게 하는 편이 낫다.
+      ※ 직전 버전에서 내가 이 비대칭을 '버그'로 보고 양방향 공통 하한으로 통일했는데,
+        그건 잘못된 판단이었다 — 원래대로 방향별 독립 하한으로 되돌리되, 이번에는
+        '우연히 갈리는' 게 아니라 목표치를 방향별로 다르게 줘서 의도적으로 갈리게 한다.
+
+    [작동] 신호수 하한을 선호값(30)에서 시작해 5씩 낮추며, 그 방향의 목표 지표수를
+      만족하는 순간 멈춘다. 목표가 작을수록 하한이 높게 유지되어 '엄격·소수'가 되고,
+      목표가 클수록 하한이 내려가 '느슨·다수'가 된다.
+        매수 목표 SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY  (작게 → 엄격)
+        매도 목표 SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL (크게 → 느슨)
+    """
+    b2 = _apply_min_signal_floor(
+        buy_pool, '매수',
+        target=int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY', 60)),
+        note='엄격 — 틀리면 즉시 손실이라 표본 충분한 것만')
+    s2 = _apply_min_signal_floor(
+        sell_pool, '매도',
+        target=int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL', 150)),
+        note='느슨 — 틀려도 기회비용뿐, 하락을 놓치지 않는 게 우선')
+    try:
+        print(f"    (매수/매도 비대칭 확인) 매수 {len(b2)}개 / 매도 {len(s2)}개"
+              f" — 매도가 더 많아야 정상"
+              + ("  ★매도가 매수보다 적음 — 매도 후보 부족" if len(s2) < len(b2) else ""))
+    except Exception:
+        pass
+    return b2, s2
+
+
+def _apply_min_signal_floor(pool, label='', target=None, note=''):
     """★★★ (요청 — 신규) 신호수 하한을 걸되, 지표가 너무 줄면 하한을 단계적으로 낮춘다.
 
        신호(이벤트) 10건 미만인 지표는 승률·신뢰도가 사실상 운에 좌우된다 — 실측에서도
@@ -17200,7 +17367,8 @@ def _apply_min_signal_floor(pool, label=''):
         return pool
     _pref = int(globals().get('SIMPLE_POOL_MIN_SIGNALS_PREFERRED', 30))
     _floor = int(globals().get('SIMPLE_POOL_MIN_SIGNALS_FLOOR', 10))
-    _target = int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET', 30))
+    _target = int(target if target is not None
+                  else globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET', 30))
     _step = max(1, int(globals().get('SIMPLE_POOL_MIN_SIGNALS_STEP', 5)))
     if _pref <= _floor:
         return pool
@@ -17230,7 +17398,8 @@ def _apply_min_signal_floor(pool, label=''):
     if len(_out) == 0:
         return pool
     if label:
-        _msg = f"    (신호수 하한) {label}: {len(pool)}→{len(_out)}개, 하한 {_cut}건"
+        _msg = (f"    (신호수 하한) {label}: {len(pool)}→{len(_out)}개, 하한 {_cut}건"
+                f"[목표 {_target}개{', ' + note if note else ''}]")
         if _cut < _pref:
             _msg += (f" (선호 {_pref}건으로는 {int((_ns >= _pref).sum())}개뿐이라 "
                      f"{_step}씩 낮춤, 최저 {_floor}건)")
@@ -19770,8 +19939,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             #    5씩 낮춰서 확보해" — 표본이 10건도 안 되는 지표는 승률이 우연에 좌우되므로
             #   기본적으로 잘라내되, 그 바람에 지표가 30개도 안 남으면 하한을 5씩 낮춰가며
             #   30개를 확보한다(끝까지 모자라면 있는 대로 쓴다).
-            buy_c  = _apply_min_signal_floor(buy_c, '매수')
-            sell_c = _apply_min_signal_floor(sell_c, '매도')
+            buy_c, sell_c = _apply_min_signal_floor_pair(buy_c, sell_c)
             if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
                 print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
                       f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 성공률·신뢰도 "
@@ -29153,6 +29321,17 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
 
     indicators = _select_indicators(feat, max_indicators)
     print(f"\n  후보 지표: {len(indicators)}개")
+    # ★★★ (요청) 적용된 수정사항이 실제로 켜져 있는지 매 실행마다 확인 출력
+    _g = globals()
+    print("  [적용 확인] "
+          f"평가기간 {_g.get('EVAL_START')}~ / "
+          f"신호하한 목표(매수 {_g.get('SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY')}"
+          f"/매도 {_g.get('SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL')}, 매도가 많은 게 정상) / "
+          f"매크로완화={_g.get('SIMPLE_POOL_MACRO_MIN_SIG')}건 / "
+          f"그룹합성={_g.get('SIMPLE_POOL_GROUP_COMPOSITE')} / "
+          f"MSC조기종료={_g.get('SIMPLE_POOL_MSC_EARLY_STOP')} / "
+          f"개수절약={_g.get('SIMPLE_POOL_STATE_K_TOLERANCE')} / "
+          f"지속상태WF제외={_g.get('SIMPLE_POOL_DROP_CONT_STATE_BY_WF')}")
 
     # ★★★ (요청) 지표 탐색 진단을 '일반 실행 로그'에도 항상 남긴다.
     #   예전엔 INDICATOR_SCAN_ONLY 모드에서만 진단이 나와서, 평소 실행 로그에는 지표 탐색에
@@ -29161,6 +29340,24 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
         _log_indicator_search_diagnostics(feat, close, indicators)
     except Exception as _e_diag:
         print(f"    ⚠ 지표 탐색 진단 생략(무시): {_e_diag}")
+
+    # ★★★ (요청 — 신규) 그룹 합성지표를 후보에 추가한다.
+    #   개별 컷을 통과 못 할 약한 지표들도 그룹으로 묶으면 신호가 될 수 있다.
+    #   여기서는 아직 '누가 탈락할지'를 모르므로, 전체 지표를 그룹으로 묶어 합성한다.
+    #   (합성지표 자체도 일반 지표와 똑같이 임계값 스윕·성공률 컷을 거친다)
+    try:
+        if bool(globals().get('SIMPLE_POOL_GROUP_COMPOSITE', True)):
+            _comp = _build_group_composite_features(
+                feat[indicators], np.asarray(close, dtype=float), used_names=None,
+                horizon=int(globals().get('HORIZON_DAYS', 1)))
+            if _comp is not None and len(_comp.columns):
+                for _cc in _comp.columns:
+                    feat[_cc] = _comp[_cc]
+                indicators = list(indicators) + list(_comp.columns)
+                print(f"    (그룹 합성지표) 후보에 {len(_comp.columns)}개 추가 "
+                      f"→ 총 {len(indicators):,}개")
+    except Exception as _e_comp:
+        print(f"    ⚠ 그룹 합성지표 추가 생략(무시): {_e_comp}")
 
     anchor_safe_buy = anchor_safe_sell = None
     if anchor_mode:
