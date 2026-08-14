@@ -84,6 +84,31 @@ XLK 하락 예측 임계치 탐색기 (완전 독립 실행)
 """
 import warnings; warnings.filterwarnings('ignore')
 import re          # ★ (요청 8번) 지표명 접두사 추출용
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★★ 버전 표식 — 임포트하는 순간 출력된다.
+#  왜 여기(모듈 최상단)인가: 버전 출력을 함수 안에 뒀더니 두 번 연속으로 '예전 파일이
+#  돌고 있는데도 모르고' 결과를 분석하게 됐다. 임포트 즉시, 그리고 '실제로 로드된 파일
+#  경로'까지 함께 찍어야 어느 사본이 실행 중인지 바로 알 수 있다.
+#  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
+#    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
+# ══════════════════════════════════════════════════════════════════════════════
+CORE_VERSION = '2026-08-15.b'
+CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일')
+try:
+    import os as _os_v
+    _vpath = _os_v.path.abspath(__file__)
+except Exception:
+    _vpath = '(경로 확인 불가)'
+print('=' * 78)
+print(f'  ■ predictor_core  CORE_VERSION = {CORE_VERSION}')
+print(f'    {CORE_VERSION_NOTE}')
+print(f'    로드된 파일: {_vpath}')
+print('    ※ 이 버전이 최신이 아니면 예전 사본이 실행 중입니다 —')
+print('       코랩: 런타임 재시작  또는  importlib.reload(predictor_core)')
+print('=' * 78)
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -14693,9 +14718,11 @@ SCORE_BIG_FAIL_PENALTY                   = 0.25   # 진짜 실패 벌점(무겁�
 # ★ 매수 실패는 즉시 손실, 매도 실패는 기회비용뿐 → 벌점 배수를 비대칭으로.
 SCORE_BUY_FAIL_MULT                      = 1.6
 SCORE_SELL_FAIL_MULT                     = 0.7
+# ★★★ (실측 개선) 상태별 채택 개수의 하한 — 워크포워드에서 롱지속이 0~43개로 요동해
+#   폴드마다 net 구성이 딴판이 됐다. '기여 없음'으로 명시 제외된 경우가 아니면
+#   최소 이 개수는 채택해 폴드 간 일관성을 지킨다.
+SIMPLE_POOL_STATE_MIN_K                  = 3
 
-# ★ 실행 중인 파일이 최신인지 확인하는 표식 — 수정할 때마다 올린다.
-CORE_VERSION = '2026-08-15.a  (추세기반점수+실패성격구분+매수비대칭벌점, 그룹분류12종+상한150)'
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
 #   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
 SIMPLE_POOL_DROP_USELESS_CONT_STATE      = True
@@ -18692,10 +18719,16 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             #       워크포워드 -7.06%p(플러스 1/5구간)로 오히려 해로웠다.
             #     · 정확히 0(=판정을 한 번도 못 뒤집음)뿐이면 분류 정확도로 폴백한다.
             _mret = float(best_ret.get('ret', 0.0)) if best_ret is not None else 0.0
+            # ★★★ (실측) 워크포워드에서 롱지속 채택 개수가 0~43개로 요동했다(한 구간 0개).
+            #   지속 상태는 한계기여가 0이면 폴백하는데, 폴백 대상도 구간마다 흔들리면
+            #   net 구성이 폴드마다 딴판이 된다. → 0개는 '기여 없음'이 확인된 경우로만
+            #   한정하고, 그 외에는 최소 개수를 보장해 일관성을 지킨다.
+            _dropped_zero = False
             _flat = (best_ret is None) or (_mret <= 1e-12)
             if _flat and pair_net is not None:
                 if _mret < -1e-12 and bool(globals().get(
                         'SIMPLE_POOL_DROP_USELESS_CONT_STATE', True)):
+                    _dropped_zero = True
                     print(f"    (지속상태 제외) {_NAME[skey]}: 한계기여 최대 {_mret*100:+.2f}% "
                           f"— 짝 상태의 판정을 개선하지 못해 0개 채택")
                     return _blank
@@ -18739,6 +18772,12 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                     _t = trace[_kp - 1]
                     best = dict(k=_kp, wrong=_t[1], rem=_t[2], acc=_t[3], thr=_t[4])
             _cand_rows_meta = [(_c2[4][0], _wt_of(_c2[3])) for _c2 in _cands]
+            # ★ 폴드 간 일관성 — 채택 개수가 0~1로 떨어지면 net이 폴드마다 딴판이 된다.
+            _min_k = int(globals().get('SIMPLE_POOL_STATE_MIN_K', 3))
+            if (not _dropped_zero) and best['k'] < _min_k and len(_cands) >= _min_k:
+                _t2 = trace[_min_k - 1]
+                best = dict(k=_min_k, wrong=_t2[1], rem=_t2[2], acc=_t2[3], thr=_t2[4],
+                            ret=float(_t2[12]))
             _sel_rows = [_c[3] for _c in _cands[:best['k']]]
             # ★ 채택된 개수까지의 net(자기 몫) — 일별백테스트 시트에서 재사용
             _net_sel = np.zeros(n)
