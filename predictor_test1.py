@@ -268,7 +268,7 @@ TOP_K_FOR_SCORE = 20                  # (n, m) 점수 = 상위 K개 F1 평균
 TRAIN_RATIO     = 0.70                # 시간순 분할 비율
 
 # 일별 예측 설정
-DAILY_START          = '2022-01-01'   # 일별 예측 출력 시작일
+DAILY_START          = '2021-01-01'   # 일별 예측 출력 시작일 (EVAL_START와 맞춤)
 ENSEMBLE_TOP_K       = 10             # (기본값; 실행 시 K 스윕으로 자동 최적화)
 ENSEMBLE_VOTE_THRESH = 0.5            # 다수결 임계치 (유효지표 중 50% 이상)
 K_RANGE = [i for i in range(1,51)]
@@ -14394,7 +14394,16 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 #                            설정
 # ════════════════════════════════════════════════════════════════
-EVAL_START          = '2025-01-01'
+# ★★★ (실측 기반 재설정) 평가 기간 —
+#   실측 로그: 피처는 1664일치가 만들어졌는데 EVAL_START='2025-01-01' 탓에 평가는 404일만
+#   썼다. 그 결과 ①신호 30건 이상인 지표가 0개(최대 25~29건) ②워크포워드 구간이 각 24일
+#   ③홀드아웃 검증 122일 — 통계적으로 아무것도 확정할 수 없는 크기였다.
+#   지표 하나가 이벤트 30건을 모으려면(성공률을 ±10%p 오차로 재려면 최소 30~50건 필요)
+#   대략 4~6년치가 필요하다. DOWNLOAD_START(2020-01-01)로 확보되는 히스토리를 다 쓰도록
+#   맞춘다. 앞 1년은 롱윈도우 지표(200일 이동평균 등) 워밍업으로 소모되므로,
+#   다운로드 시작 + 1년을 평가 시작으로 잡는 게 안전하다.
+#   ★ 더 길게 보려면 DOWNLOAD_START 를 앞당기고 EVAL_START 도 함께 당기면 된다.
+EVAL_START          = '2021-01-01'   # (이전 '2025-01-01' → 404일밖에 안 됐음)
 EVAL_END            = None           # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지 학습.
                                       #   지정 시 'YYYY-MM-DD'(그 날짜 포함, 이후 데이터는 잘라냄) —
                                       #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
@@ -14657,6 +14666,11 @@ SIMPLE_POOL_STATE_K_TOLERANCE            = 0.05
 # ★★★ (실측 개선) MSC 탐색에서 지표 세트가 연속 N번 동일하면 조기 종료.
 #   실측: MSC=3~10 이 전부 같은 결과(+198.6%)라 상태별 선정·워크포워드가 8번 중복 실행됐다.
 SIMPLE_POOL_MSC_EARLY_STOP               = 2
+# ★★★ (요청 — 경제지표 누락 대응) 국면형 경제지표(인플레·금리·수익률곡선 등)의 최소 이벤트수.
+#   이들은 몇 달씩 같은 상태가 이어져 연속 발화가 이벤트 1건으로 축약되므로, 일반 지표와
+#   같은 문턱(10)을 적용하면 구조적으로 전멸한다(실측: 경제지표 40개 중 통과 0개).
+#   0 으로 두면 완화를 끄고 예전 동작으로 되돌린다.
+SIMPLE_POOL_MACRO_MIN_SIG                = 5
 # ★★★ (실측 개선) 워크포워드에서 한계기여가 마이너스로 확인된 지속 상태를 최종 선정에서
 #   자동으로 뺀다. 인샘플 한계기여만 보면 숏지속이 +15.33%로 플러스라 안 걸리지만,
 #   워크포워드로는 -6.16%p(플러스 2/5구간)로 순손해였다 — 판단은 워크포워드가 맞다.
@@ -16783,13 +16797,39 @@ def select_pool_by_ic(feat, close, *, indicators=None, horizon=1,
     return df.head(max_pool).reset_index(drop=True)
 
 
-def _passes_tiered_sig_gate(success_rate, n_signals):
+def _passes_tiered_sig_gate(success_rate, n_signals, indicator=None):
     """★★ (요청) 성공률 90%+ 면 최소신호수 8개로 완화, 그 미만은 기존 10개 유지.
-       success_rate/n_signals는 스칼라 또는 pandas Series 둘 다 가능(벡터화 연산)."""
+       success_rate/n_signals는 스칼라 또는 pandas Series 둘 다 가능(벡터화 연산).
+
+       ★★★ (요청 — 실측 대응) "인플레이션 같은 경제지표는 분명 참고가 될 텐데 실제로는
+       컷당하고 있는지" — 진단해 보니 경제지표 40개 중 최종 통과 0개였고, 그중 23개가
+       '이벤트수 부족'에서 탈락했다. 원인은 지표 자체가 나빠서가 아니라 구조적이다:
+       인플레이션·금리·수익률곡선처럼 몇 달씩 같은 상태가 이어지는 국면 지표는 연속 발화가
+       이벤트 1건으로 축약돼(SIMPLE_POOL_EVENT_GAP_DAYS) 이벤트수가 한 자릿수로 떨어진다.
+       예) yc_10y_3m_inv_flag 는 성공률 42.9%인데 이벤트 7건이라 8건 문턱에서 탈락.
+       → 국면형 지표(indicator 이름이 매크로 계열)에는 별도의 낮은 문턱을 적용한다.
+         대신 표본이 적은 만큼 성공률 요구는 그대로 두어 무분별한 통과는 막는다.
+       (SIMPLE_POOL_MACRO_MIN_SIG=0 으로 두면 이 완화를 끄고 예전 동작으로 돌아간다.)"""
     _min_sig = float(globals().get('POOL_SUCCESS_MIN_SIG', 10))
     _min_sig_high = float(globals().get('POOL_SUCCESS_MIN_SIG_HIGH', 8))
     _high_rate = float(globals().get('POOL_SUCCESS_MIN_SIG_HIGH_RATE', 0.90))
-    return (n_signals >= _min_sig) | ((success_rate >= _high_rate) & (n_signals >= _min_sig_high))
+    base = (n_signals >= _min_sig) | ((success_rate >= _high_rate) & (n_signals >= _min_sig_high))
+    _macro_min = float(globals().get('SIMPLE_POOL_MACRO_MIN_SIG', 5))
+    if _macro_min > 0 and indicator is not None:
+        try:
+            is_mac = (indicator.map(_is_macro_indicator) if hasattr(indicator, 'map')
+                      else _is_macro_indicator(indicator))
+            base = base | (is_mac & (n_signals >= _macro_min))
+        except Exception:
+            pass
+    return base
+
+
+def _is_macro_indicator(name):
+    """경제·거시 계열 지표인지 — 이름 기준. 국면형 완화 게이트에 쓰인다."""
+    n = str(name).lower()
+    return any(k in n for k in ('fred_', 'macro_', 'yc_', 'cpi', 'infl', 'ppi',
+                                'pce', 'unrate', 'bei', 'recession', 'yield'))
 
 
 def select_pool_by_success(feat, close, *, indicators, n_thresholds,
@@ -16821,7 +16861,7 @@ def select_pool_by_success(feat, close, *, indicators, n_thresholds,
     def _filt(df):
         if df is None or len(df) == 0:
             return df.copy() if df is not None else df
-        d = df[_passes_tiered_sig_gate(df['success_rate'], df['n_signals']) &
+        d = df[_passes_tiered_sig_gate(df['success_rate'], df['n_signals'], df['indicator']) &
                (df['success_rate'] >= POOL_SUCCESS_MIN_RATE)].copy()
         # 성공률 우선, 동률이면 점수(Wilson 하한)로 — 가짜 100% 강등
         d = d.sort_values(['success_rate', 'score'], ascending=[False, False]).reset_index(drop=True)
@@ -20096,7 +20136,8 @@ def _build_pool_by_success(feat, close, *, indicators, n_thresholds, horizon, ti
                 if _cand in _df.columns:
                     _sigcol = _cand; break
             if _sigcol is not None:
-                _mask = _mask & _passes_tiered_sig_gate(_df['success_rate'], _df[_sigcol].fillna(0))
+                _mask = _mask & _passes_tiered_sig_gate(_df['success_rate'], _df[_sigcol].fillna(0),
+                                                        _df.get('indicator'))
             _f = _df[_mask].reset_index(drop=True)
             # 컷 통과가 하나도 없으면(과도 제거 방지) 성공률 컷만이라도 적용
             if len(_f) == 0:
@@ -21995,7 +22036,7 @@ def _filter_rate_band(feat, bdf, sdf, *, rate_lo, rate_hi, exclude_names=None, m
     def _band(df, excl_names):
         if df is None or len(df) == 0:
             return df
-        m = _passes_tiered_sig_gate(df['success_rate'], df['n_signals']) & (df['success_rate'] >= rate_lo)
+        m = _passes_tiered_sig_gate(df['success_rate'], df['n_signals'], df['indicator']) & (df['success_rate'] >= rate_lo)
         if rate_hi is not None:
             m = m & (df['success_rate'] < rate_hi)
         if excl_names:
@@ -29113,6 +29154,14 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
     indicators = _select_indicators(feat, max_indicators)
     print(f"\n  후보 지표: {len(indicators)}개")
 
+    # ★★★ (요청) 지표 탐색 진단을 '일반 실행 로그'에도 항상 남긴다.
+    #   예전엔 INDICATOR_SCAN_ONLY 모드에서만 진단이 나와서, 평소 실행 로그에는 지표 탐색에
+    #   대한 정보가 한 줄도 없었다(실측 확인) — 어떤 지표가 왜 빠졌는지 볼 수가 없었다.
+    try:
+        _log_indicator_search_diagnostics(feat, close, indicators)
+    except Exception as _e_diag:
+        print(f"    ⚠ 지표 탐색 진단 생략(무시): {_e_diag}")
+
     anchor_safe_buy = anchor_safe_sell = None
     if anchor_mode:
         anchor_safe_buy, anchor_safe_sell = _compute_anchor_arrays(
@@ -33729,6 +33778,80 @@ def _scan_fmt_list(names, limit=None, indent='      '):
     return out
 
 
+def _log_indicator_search_diagnostics(feat, close, indicators, max_list=25):
+    """★★★ (요청) 일반 실행에서도 '지표 탐색이 어떻게 걸러지는지'를 로그에 남긴다.
+
+    비용을 줄이려고 값싼 통계만 쓴다(전체 재평가 없음):
+      · 지표 구성(가격/거래량/매크로/피어 등)과 유효일수 분포
+      · 각 컷 기준값과, 그 기준에 걸릴 지표가 대략 몇 개인지
+      · 경제지표(FRED/매크로)가 살아있는지 — 사용자가 지목한 핵심 점검 항목
+    무거운 퍼널(단계별 정확한 통과 수)은 INDICATOR_SCAN_ONLY=True 로 따로 돌린다.
+    """
+    g = globals()
+    n_days = len(close)
+    cols = list(indicators)
+    nv = feat[cols].notna().sum() if len(cols) else None
+
+    def _grp(name):
+        n = str(name).lower()
+        if any(n.startswith(p) or p in n for p in ('fred_', 'macro_', 'yc_', 'cpi', 'infl', 'ppi')):
+            return '매크로/경제'
+        if n.startswith(('vix', 'vvix', 'skew', 'move')) or 'vix' in n:
+            return '변동성'
+        if any(k in n for k in ('vol', 'obv', 'mfi', 'adl', 'vwap', 'vwma')):
+            return '거래량'
+        if any(n.startswith(p + '_') for p in ('spy', 'qqq', 'aapl', 'msft', 'tlt', 'gld', 'xlk')):
+            return '피어/ETF'
+        return '가격/기술'
+
+    from collections import Counter
+    gc = Counter(_grp(c) for c in cols)
+
+    print('  ┌─ 지표 탐색 진단 ' + '─' * 52)
+    print(f'  │ 평가 대상 : {len(cols):,}개 지표 × {n_days:,}일')
+    print('  │ 구성      : ' + ', '.join(f'{k} {v:,}개' for k, v in gc.most_common()))
+    if nv is not None and len(nv):
+        _lt = int((nv < int(g.get('EVAL_MIN_VALID_DAYS', 100))).sum())
+        print(f'  │ 유효일수  : 중앙값 {int(nv.median()):,}일 / 최소 {int(nv.min()):,}일 '
+              f'— 100일 미만 {_lt:,}개는 평가 자체가 안 됨')
+        if _lt:
+            _names = sorted(nv[nv < 100].index.tolist())
+            _mac = [x for x in _names if _grp(x) == '매크로/경제']
+            print(f'  │   └ 그중 매크로/경제 {len(_mac)}개' +
+                  (': ' + ', '.join(_mac[:8]) + (' …' if len(_mac) > 8 else '') if _mac else ''))
+    # 컷 기준값
+    print(f"  │ 컷 기준   : 최소신호수 {g.get('POOL_SUCCESS_MIN_SIG', 10)}"
+          f"(성공률{g.get('POOL_SUCCESS_MIN_SIG_HIGH_RATE', 0.9):.0%}+면 {g.get('POOL_SUCCESS_MIN_SIG_HIGH', 8)})"
+          f" / 성공률 {float(g.get('POOL_SUCCESS_MIN_RATE', 0.8)):.0%}"
+          f" / 상관 {g.get('POOL_TIER_CORR_LIMIT', 0.2)}"
+          f" / 임계분위 {g.get('POOL_SUCCESS_WIDE_PCT', (0, 100))} {g.get('N_THRESHOLDS', 1000)}등분")
+    # 매크로 생존 여부 — 사용자가 지목한 핵심
+    _mac_all = [c for c in cols if _grp(c) == '매크로/경제']
+    if _mac_all:
+        _dead = [c for c in _mac_all if nv is not None and int(nv.get(c, 0)) < 100]
+        print(f'  │ 매크로 점검: 전체 {len(_mac_all)}개 중 평가가능 {len(_mac_all)-len(_dead)}개')
+        # 장기국면형(값이 오래 유지되는) 지표는 이벤트 축약으로 컷되기 쉽다 — 미리 경고
+        try:
+            _slow = []
+            for c in _mac_all[:400]:
+                v = feat[c].dropna()
+                if len(v) < 100:
+                    continue
+                _chg = float((v.diff() != 0).mean())
+                if _chg < 0.05:      # 값이 바뀌는 날이 5% 미만 = 사실상 국면 지표
+                    _slow.append(c)
+            if _slow:
+                print(f'  │   └ ★장기국면형 {len(_slow)}개(값 변동일 5% 미만) — 연속 발화가 이벤트 1건으로')
+                print(f'  │      묶여 최소신호수 컷에 걸리기 쉬움: '
+                      + ', '.join(_slow[:6]) + (' …' if len(_slow) > 6 else ''))
+        except Exception:
+            pass
+    else:
+        print('  │ 매크로 점검: ★매크로/경제 지표가 0개 — FRED 다운로드 실패 가능성')
+    print('  │ ※ 단계별 정확한 통과/탈락 수는 INDICATOR_SCAN_ONLY=True 로 따로 확인')
+    print('  └' + '─' * 68)
+
+
 def run_indicator_scan(ticker=None, start=None, horizon=None, report_path=None):
     """지표 탐색만 수행하고 단계별 통과/탈락을 텍스트 리포트로 남긴다.
 
@@ -33851,7 +33974,7 @@ def run_indicator_scan(ticker=None, start=None, horizon=None, report_path=None):
           f'   (탈락 지표 {u0 - d1["indicator"].nunique():,}개)')
         d2 = d1[d1['score'] >= 0]
         W(f'    ③ 안정성점수 >= 0         : {len(d2):,}행 / 지표 {d2["indicator"].nunique():,}개')
-        d3 = d2[_passes_tiered_sig_gate(d2['success_rate'], d2['n_signals'])]
+        d3 = d2[_passes_tiered_sig_gate(d2['success_rate'], d2['n_signals'], d2['indicator'])]
         W(f'    ④ 계층 신호수 게이트      : {len(d3):,}행 / 지표 {d3["indicator"].nunique():,}개')
         d4 = d3[d3['success_rate'] >= min_rate]
         W(f'    ⑤ 성공률 >= {min_rate:.0%}          : {len(d4):,}행 / 지표 {d4["indicator"].nunique():,}개')
