@@ -84,6 +84,31 @@ XLK 하락 예측 임계치 탐색기 (완전 독립 실행)
 """
 import warnings; warnings.filterwarnings('ignore')
 import re          # ★ (요청 8번) 지표명 접두사 추출용
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★★ 버전 표식 — 임포트하는 순간 출력된다.
+#  왜 여기(모듈 최상단)인가: 버전 출력을 함수 안에 뒀더니 두 번 연속으로 '예전 파일이
+#  돌고 있는데도 모르고' 결과를 분석하게 됐다. 임포트 즉시, 그리고 '실제로 로드된 파일
+#  경로'까지 함께 찍어야 어느 사본이 실행 중인지 바로 알 수 있다.
+#  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
+#    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
+# ══════════════════════════════════════════════════════════════════════════════
+CORE_VERSION = '2026-08-15.c'
+CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록')
+try:
+    import os as _os_v
+    _vpath = _os_v.path.abspath(__file__)
+except Exception:
+    _vpath = '(경로 확인 불가)'
+print('=' * 78)
+print(f'  ■ predictor_core  CORE_VERSION = {CORE_VERSION}')
+print(f'    {CORE_VERSION_NOTE}')
+print(f'    로드된 파일: {_vpath}')
+print('    ※ 이 버전이 최신이 아니면 예전 사본이 실행 중입니다 —')
+print('       코랩: 런타임 재시작  또는  importlib.reload(predictor_core)')
+print('=' * 78)
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -14669,6 +14694,35 @@ SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL   = 150
 SIMPLE_POOL_GROUP_COMPOSITE              = True
 SIMPLE_POOL_COMPOSITE_Z_WINDOW           = 60   # 롤링 z-점수 창(일)
 SIMPLE_POOL_COMPOSITE_MIN_MEMBERS        = 8    # 그룹당 최소 멤버 수
+# ★ 그룹당 최대 멤버 수 — 수천 개를 한 덩어리로 평균하면 신호가 서로 상쇄돼 사라진다.
+#   상한을 넘으면 학습구간 |상관| 상위 N개만 써서 희석을 막는다.
+SIMPLE_POOL_COMPOSITE_MAX_MEMBERS        = 150
+
+# ════════════════════════════════════════════════════════════════
+#  ★★★ (요청) 지표 점수 — 추세 기반 + 실패 성격 구분 + 매수/매도 비대칭
+# ════════════════════════════════════════════════════════════════
+# 점수를 '다음날 하루 등락'이 아니라 '발화 후 추세 전체'로 매긴다.
+#   기존: 표시일 다음날 하루치만 봄 → 다음날 잠깐 반대로 갔다가 크게 오르는 지표가 탈락,
+#         다음날만 살짝 오르고 무너지는 지표가 통과. 실제 수익과 어긋난다.
+SCORE_USE_TREND_OUTCOME                  = True
+SCORE_TREND_WEIGHT                       = 0.6    # 추세 이익 보너스 강도
+SCORE_TREND_NORM                         = 0.03   # 추세 3%를 기준(1.0)으로 정규화
+# ★ 추세 누적 상한 — 장기 추세는 누적이 수십%까지 커져 한두 이벤트가 점수를 지배한다.
+#   ±15%로 잘라 극단값의 영향을 제한한다(방향은 그대로 반영).
+SCORE_TREND_CAP                          = 0.15
+# 실패를 폭으로 나눠 성격을 구분한다 — "우연히 스친 실패"와 "반대 추세를 정면으로 맞은 실패"
+SCORE_SMALL_FAIL_MAG                     = 0.01   # 이 미만이면 우연에 가까운 실패
+SCORE_BIG_FAIL_MAG                       = 0.02   # 이 이상이면 진짜 오신호
+SCORE_SMALL_FAIL_PENALTY                 = 0.05   # 우연 실패 벌점(가볍게)
+SCORE_BIG_FAIL_PENALTY                   = 0.25   # 진짜 실패 벌점(무겁게)
+# ★ 매수 실패는 즉시 손실, 매도 실패는 기회비용뿐 → 벌점 배수를 비대칭으로.
+SCORE_BUY_FAIL_MULT                      = 1.6
+SCORE_SELL_FAIL_MULT                     = 0.7
+# ★★★ (실측 개선) 상태별 채택 개수의 하한 — 워크포워드에서 롱지속이 0~43개로 요동해
+#   폴드마다 net 구성이 딴판이 됐다. '기여 없음'으로 명시 제외된 경우가 아니면
+#   최소 이 개수는 채택해 폴드 간 일관성을 지킨다.
+SIMPLE_POOL_STATE_MIN_K                  = 3
+
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
 #   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
 SIMPLE_POOL_DROP_USELESS_CONT_STATE      = True
@@ -16480,6 +16534,93 @@ def enrich_pool_with_lead_and_skill(feat, close, pool_df, is_buy, *, verbose=Tru
     return out
 
 
+def _trend_outcome_stats(close_arr, sig_arr, horizon, event_gap, is_buy,
+                         anchor_arr=None):
+    """★★★ (요청) 지표 발화 뒤 '다음날 하루'가 아니라 '향후 추세'로 성과를 잰다.
+
+    [왜 바꾸는가 — 사용자 지적]
+      "지표 발생 후 그다음날 등락률이 아닌 향후 추세를 보는 게 중요하다"
+      기존 점수는 표시일 다음날 하루치 등락만 봤다. 그러면 신호 다음날 잠깐 반대로
+      갔다가 그 뒤로 크게 오르는 지표가 '실패'로 찍히고, 다음날만 살짝 오르고 곧바로
+      무너지는 지표가 '성공'으로 찍힌다. 실제 수익은 추세를 얼마나 오래 타느냐에서
+      나오므로, 발화 시점부터 '그 자리가 속한 추세가 끝날 때까지'의 누적 변동률로 잰다.
+      (신뢰도 계산에는 이미 이 방식을 넣었는데 점수에는 빠져 있었다 — 여기서 통일한다.)
+
+    [실패의 성격 구분 — 사용자 지적]
+      "실패가 우연인지, 반대 포지션 지표가 더 세서인지 밸런스 잡기 힘들다"
+      실패를 폭으로 나눈다:
+        · 작은 실패(|추세폭| < SMALL): 방향이 애매한 구간에서 스친 것 — 우연에 가깝다
+        · 큰 실패(|추세폭| >= BIG)  : 반대 추세를 정면으로 맞은 것 — 진짜 오신호
+      큰 실패에만 무겁게 벌점을 준다. 우연한 스침으로 좋은 지표가 탈락하는 것을 막고,
+      정말 반대로 가는 지표는 확실히 걸러낸다.
+
+    반환: dict(fav_mean, fav_sum, n_ev, n_small_fail, n_big_fail, big_fail_mag)
+          fav_* 는 방향 정렬된 값(매수는 상승이 +, 매도는 하락이 +).
+    """
+    n = close_arr.shape[0]
+    h = horizon if horizon >= 1 else 1
+    g = event_gap if event_gap >= 1 else 1
+    try:
+        _ctp = _ctp_cached(close_arr)
+        tsum = np.asarray(_ctp[9], dtype=float)      # 추세 끝까지 누적 변동률
+        okm = np.asarray(_ctp[7] if is_buy else _ctp[8], dtype=bool)
+    except Exception:
+        return None
+    sgn = 1.0 if is_buy else -1.0
+    small = float(globals().get('SCORE_SMALL_FAIL_MAG', 0.01))
+    big = float(globals().get('SCORE_BIG_FAIL_MAG', 0.02))
+
+    n_ev = 0; fav_sum = 0.0
+    n_small = 0; n_big = 0; big_mag = 0.0
+    prev = -10**9
+    ev_fav = 0.0; ev_cnt = 0; ev_bad = 0.0; ev_ok = True; active = False
+
+    def _close_ev():
+        nonlocal n_ev, fav_sum, n_small, n_big, big_mag
+        if ev_cnt <= 0:
+            return
+        n_ev += 1
+        _f = ev_fav / ev_cnt
+        fav_sum += _f
+        if not ev_ok:                       # 실패 이벤트 — 폭으로 성격 구분
+            _m = abs(ev_bad / ev_cnt)
+            if _m >= big:
+                n_big += 1; big_mag += _m
+            elif _m >= small:
+                n_small += 1
+            else:
+                n_small += 1                # 아주 작은 건 우연 취급
+
+    for i in range(n - 1):
+        if sig_arr[i] != 1:
+            continue
+        if (i - prev) > g:
+            if active:
+                _close_ev()
+            ev_fav = 0.0; ev_cnt = 0; ev_bad = 0.0; ev_ok = True; active = True
+        prev = i
+        disp = i + h - 1
+        if disp >= n:
+            continue
+        # 방향 정렬된 추세 누적. ★ 장기 추세는 누적이 수십~수백%까지 커져서 그대로 쓰면
+        #   한두 이벤트가 점수를 지배한다 → 상한을 둬 극단값의 영향을 제한한다.
+        _cap_t = float(globals().get('SCORE_TREND_CAP', 0.15))
+        _t = float(np.clip(sgn * float(tsum[disp]), -_cap_t, _cap_t))
+        if not np.isfinite(_t):
+            continue
+        ev_fav += _t; ev_cnt += 1
+        if not bool(okm[disp]):             # 그 자리가 이 방향의 정답이 아니면 실패
+            ev_ok = False
+            ev_bad += _t                    # 음수 방향으로 쌓임
+    if active:
+        _close_ev()
+    if n_ev == 0:
+        return None
+    return dict(fav_mean=fav_sum / n_ev, fav_sum=fav_sum, n_ev=n_ev,
+                n_small_fail=n_small, n_big_fail=n_big,
+                big_fail_mag=(big_mag / max(n_big, 1)))
+
+
 def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
                               wilson_z, is_buy, min_signals):
     """지표 신호의 점수 = Wilson 하한 × (1 + w·시간안정성).
@@ -16504,6 +16645,30 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
         if bn > 0:
             big_ratio = bhit / bn          # 0~1
             base = base * (1.0 + bw * big_ratio)
+
+    # ★★★ (요청) 추세 기반 보정 + 실패 성격 구분 + 매수/매도 비대칭 벌점
+    if bool(globals().get('SCORE_USE_TREND_OUTCOME', True)):
+        _st = _trend_outcome_stats(close_arr, sig_arr, horizon, _egap, is_buy, anchor_arr)
+        if _st is not None and _st['n_ev'] > 0:
+            # ① 추세 이익 보너스 — 발화 후 추세를 얼마나 크게 탔는가(하루치가 아니라 추세 전체)
+            _tw = float(globals().get('SCORE_TREND_WEIGHT', 0.6))
+            _norm = float(globals().get('SCORE_TREND_NORM', 0.03))   # 3% 추세를 1.0으로
+            _fav = float(_st['fav_mean']) / max(_norm, 1e-9)
+            base = base * (1.0 + _tw * float(np.clip(_fav, -1.0, 2.0)))
+
+            # ② 실패 성격별 벌점 — 큰 실패(반대 추세 정면)만 무겁게, 작은 실패(우연)는 가볍게
+            #    ★ 매수는 틀리면 즉시 손실이므로 벌점 배수를 매도보다 크게 준다(요청).
+            _pen_big = float(globals().get('SCORE_BIG_FAIL_PENALTY', 0.25))
+            _pen_small = float(globals().get('SCORE_SMALL_FAIL_PENALTY', 0.05))
+            _side_mult = float(globals().get(
+                'SCORE_BUY_FAIL_MULT' if is_buy else 'SCORE_SELL_FAIL_MULT',
+                1.6 if is_buy else 0.7))
+            _fb = _st['n_big_fail'] / float(_st['n_ev'])
+            _fs = _st['n_small_fail'] / float(_st['n_ev'])
+            _penalty = _side_mult * (_pen_big * _fb + _pen_small * _fs)
+            base = base / (1.0 + max(_penalty, 0.0))
+
+            base = max(base, 0.0)
 
     if not globals().get('USE_OOS_STABILITY', False):
         return n_all, ok_all, sum_all, base
@@ -17201,26 +17366,67 @@ def _dedup_same_prefix_best_reliability(pool, label=''):
 
 
 def _indicator_group_of(name):
-    """지표를 성격별 그룹으로 분류 — 그룹 합성지표를 만들 때 쓴다."""
+    """지표를 성격별 그룹으로 분류 — 그룹 합성지표를 만들 때 쓴다.
+
+    ★★★ (실측 개선) 첫 버전은 규칙이 성겨서 4,652개 중 3,166개(68%)가 '기타'로 몰렸다.
+      3,150개를 한 덩어리로 평균하면 서로 다른 성격의 신호가 상쇄돼 정보가 사라진다
+      (실제로 기타_composite_z 하나만 겨우 통과했고 나머지는 묻혔다).
+      → 분류를 훨씬 촘촘하게 하고, 그래도 남는 '기타'는 접두사(첫 토큰)로 자동 세분한다.
+    """
     n = str(name).lower()
-    if any(k in n for k in ('fred_', 'macro_', 'yc_', 'cpi', 'infl', 'ppi', 'pce',
-                            'unrate', 'bei', 'recession', 'yield')):
+    def has(*ks):
+        return any(k in n for k in ks)
+
+    # ── 거시·경제 ──
+    if has('fred_', 'macro_', 'yc_', 'cpi', 'infl', 'ppi', 'pce', 'unrate',
+           'bei', 'recession', 'yield', 'nfp', 'ism', 'claims', 'sentiment_umich'):
         return '매크로'
-    if any(k in n for k in ('vix', 'vvix', 'skew', 'move', 'term_struct')):
+    # ── 금리·크레딧 ──
+    if has('t10y', 't2y', 'dgs', 'oas', 'credit', 'spread', 'curve', 'term_'):
+        return '금리/크레딧'
+    # ── 변동성 ──
+    if has('vix', 'vvix', 'skew', 'move_', 'garch', 'realized_vol', 'ivol', 'term_struct'):
         return '변동성'
-    if any(k in n for k in ('vol', 'obv', 'mfi', 'adl', 'vwap', 'vwma', 'turnover')):
-        return '거래량'
-    if any(n.startswith(p + '_') for p in ('spy', 'qqq', 'iwm', 'dia', 'aapl', 'msft',
-                                           'nvda', 'amzn', 'meta', 'tlt', 'gld', 'uup',
-                                           'hyg', 'lqd', 'xlk', 'xlf', 'xle', 'smh')):
+    # ── 거래량·자금흐름 ──
+    if has('volume', 'obv', 'mfi', 'adl', 'vwap', 'vwma', 'turnover', 'dollar_vol',
+           'accum', 'distrib', 'flow', 'cmf', 'eom', 'force_index'):
+        return '거래량/자금'
+    # ── 피어·ETF·상대강도 ──
+    if has('_rs_', 'relative', 'beta_', 'corr_') or any(
+            n.startswith(p + '_') for p in
+            ('spy', 'qqq', 'iwm', 'dia', 'vtv', 'vug', 'aapl', 'msft', 'nvda', 'amzn',
+             'meta', 'goog', 'tsla', 'tlt', 'ief', 'shy', 'gld', 'slv', 'uup', 'dxy',
+             'hyg', 'lqd', 'xlk', 'xlf', 'xle', 'xlv', 'xly', 'xlp', 'xli', 'xlu',
+             'smh', 'soxx', 'kre', 'eem', 'efa', 'vnq', 'uso', 'ung')):
         return '피어/ETF'
-    if any(k in n for k in ('rsi', 'stoch', 'cci', 'willr', 'mfi', 'roc', 'mom')):
+    # ── 모멘텀(오실레이터) ──
+    if has('rsi', 'stoch', 'cci', 'willr', 'roc_', 'momentum', 'mom_', 'tsi',
+           'ultimate', 'awesome', 'ppo', 'kst', 'trix'):
         return '모멘텀'
-    if any(k in n for k in ('ma_', 'ema', 'sma', 'macd', 'adx', 'psar', 'ichimoku', 'trend')):
+    # ── 추세 ──
+    if has('macd', 'adx', 'aroon', 'psar', 'ichimoku', 'supertrend', 'dmi', 'di_',
+           'vortex', 'trend', 'slope', 'linreg') or has('ma_', 'ema', 'sma', 'wma', 'dema',
+                                                        'tema', 'hma', 'kama'):
         return '추세'
-    if any(k in n for k in ('bb_', 'atr', 'kc_', 'dc_', 'std', 'range', 'gap')):
+    # ── 변동폭·밴드 ──
+    if has('bb_', 'bband', 'atr', 'kc_', 'keltner', 'donchian', 'dc_', 'std_', 'stdev',
+           'range', 'gap', 'truerange', 'chop'):
         return '변동폭'
-    return '기타'
+    # ── 캔들·패턴 ──
+    if has('cdl_', 'candle', 'doji', 'hammer', 'engulf', 'pattern', 'pivot',
+           'fractal', 'swing'):
+        return '패턴'
+    # ── 수익률·통계 ──
+    if has('ret_', 'return', 'zscore', 'percentile', 'rank_', 'drawdown', 'sharpe',
+           'skew_', 'kurt', 'autocorr', 'hurst', 'entropy'):
+        return '수익률/통계'
+    # ── 계절·달력 ──
+    if has('dow_', 'month', 'quarter', 'season', 'turn_of', 'holiday', 'opex'):
+        return '계절성'
+    # ── 그래도 남으면 접두사(첫 토큰)로 자동 세분 ──
+    _tok = n.split('_')[0]
+    _tok = ''.join(ch for ch in _tok if not ch.isdigit())
+    return f'기타:{_tok}' if len(_tok) >= 2 else '기타'
 
 
 def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
@@ -17271,6 +17477,24 @@ def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
         for c in rejects:
             groups[_indicator_group_of(c)].append(c)
 
+        # ★★★ (실측 개선) 접두사 자동 세분('기타:xxx')은 그룹이 120개까지 파편화돼
+        #   대부분 멤버 부족으로 버려진다. 멤버가 모자란 '기타:' 그룹들은 하나로 합쳐
+        #   최소한 하나의 합성지표라도 만들어지게 한다.
+        _small = [k for k in list(groups)
+                  if k.startswith('기타') and len(groups[k]) < min_members]
+        if _small:
+            _merged = []
+            for k in _small:
+                _merged.extend(groups.pop(k))
+            if len(_merged) >= min_members:
+                groups['기타(소그룹통합)'] = _merged
+            print(f'      · 멤버 부족한 기타 하위그룹 {len(_small)}개({len(_merged)}지표)를 통합')
+
+        # ★ 한 그룹이 지나치게 크면(수백~수천 개) 평균이 서로 상쇄돼 신호가 사라진다.
+        #   실측: 첫 버전에서 '기타' 3,166개를 한 덩어리로 평균해 정보가 묻혔다.
+        #   상한을 넘는 그룹은 |학습구간 상관| 상위 N개만 써서 희석을 막는다.
+        _cap = int(globals().get('SIMPLE_POOL_COMPOSITE_MAX_MEMBERS', 150))
+
         out = {}
         rep = []
         for gname, members in groups.items():
@@ -17279,6 +17503,19 @@ def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
                 continue
             zs = []
             n_flip = 0
+            if len(members) > _cap:
+                _sc = []
+                for c in members:
+                    v = num[c].to_numpy(dtype=float)[:cut]
+                    m = np.isfinite(v) & np.isfinite(fwd[:cut])
+                    if m.sum() < 60:
+                        continue
+                    r0 = np.corrcoef(v[m], fwd[:cut][m])[0, 1]
+                    _sc.append((abs(r0) if np.isfinite(r0) else 0.0, c))
+                _sc.sort(reverse=True)
+                members = [c for _, c in _sc[:_cap]]
+                rep.append((gname + '(상한적용)', len(_sc), len(members),
+                            f'|상관| 상위 {_cap}개만 사용'))
             for c in members:
                 v = num[c].astype(float)
                 mu = v.rolling(win, min_periods=max(10, win // 3)).mean()
@@ -18340,6 +18577,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                           is_rev=(skey in _REV_KEYS),
                           side_label='(전환성공+추세성공)÷총이벤트',
                           rev_floor=_REV_FLOOR, n_rev_tier=None, judge_days=0,
+                          base_rate=0.0, base_acc=0.0, lift=0.0,
                           order=order, ret_kl0=0.0, ret_avoid=0.0, n_by_wrong=0,
                           n_by_ret=0, n_by_avoid=0, picked_by='',
                           net_sel=np.zeros(n), opp_net=np.zeros(n),
@@ -18348,6 +18586,11 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 return _blank
             _act = st[skey]
             _dm = dom[skey] if dom_override is None else dom_override
+            # ★★★ (실측 문제) 임계값 0.00 + 적중률 59%가 계속 반복됐다. 지표가 34개면
+            #   거의 매일 하나는 발화하므로 '항상 이 상태'라고 찍는 것과 다름없고,
+            #   그때 적중률은 그냥 그 상태의 기저 발생률(base rate)이 된다.
+            #   → 기저율 대비 얼마나 나은지(정보이득)를 함께 재서 로그에 남긴다.
+            #     정보이득이 0 근처면 그 상태의 판정은 아무 정보도 주지 않는 것이다.
             _idxs = np.nonzero(_dm)[0]
             _actual = _act[_idxs]
             _side = _SIDE[skey]
@@ -18482,10 +18725,16 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             #       워크포워드 -7.06%p(플러스 1/5구간)로 오히려 해로웠다.
             #     · 정확히 0(=판정을 한 번도 못 뒤집음)뿐이면 분류 정확도로 폴백한다.
             _mret = float(best_ret.get('ret', 0.0)) if best_ret is not None else 0.0
+            # ★★★ (실측) 워크포워드에서 롱지속 채택 개수가 0~43개로 요동했다(한 구간 0개).
+            #   지속 상태는 한계기여가 0이면 폴백하는데, 폴백 대상도 구간마다 흔들리면
+            #   net 구성이 폴드마다 딴판이 된다. → 0개는 '기여 없음'이 확인된 경우로만
+            #   한정하고, 그 외에는 최소 개수를 보장해 일관성을 지킨다.
+            _dropped_zero = False
             _flat = (best_ret is None) or (_mret <= 1e-12)
             if _flat and pair_net is not None:
                 if _mret < -1e-12 and bool(globals().get(
                         'SIMPLE_POOL_DROP_USELESS_CONT_STATE', True)):
+                    _dropped_zero = True
                     print(f"    (지속상태 제외) {_NAME[skey]}: 한계기여 최대 {_mret*100:+.2f}% "
                           f"— 짝 상태의 판정을 개선하지 못해 0개 채택")
                     return _blank
@@ -18529,6 +18778,12 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                     _t = trace[_kp - 1]
                     best = dict(k=_kp, wrong=_t[1], rem=_t[2], acc=_t[3], thr=_t[4])
             _cand_rows_meta = [(_c2[4][0], _wt_of(_c2[3])) for _c2 in _cands]
+            # ★ 폴드 간 일관성 — 채택 개수가 0~1로 떨어지면 net이 폴드마다 딴판이 된다.
+            _min_k = int(globals().get('SIMPLE_POOL_STATE_MIN_K', 3))
+            if (not _dropped_zero) and best['k'] < _min_k and len(_cands) >= _min_k:
+                _t2 = trace[_min_k - 1]
+                best = dict(k=_min_k, wrong=_t2[1], rem=_t2[2], acc=_t2[3], thr=_t2[4],
+                            ret=float(_t2[12]))
             _sel_rows = [_c[3] for _c in _cands[:best['k']]]
             # ★ 채택된 개수까지의 net(자기 몫) — 일별백테스트 시트에서 재사용
             _net_sel = np.zeros(n)
@@ -18539,7 +18794,11 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             ranked = [(_rk, _nm, _pv, _nf, _nh, _ps, _bs, _relv,
                        ('사용' if _nm in _sel_names else ''))
                       for (_rk, _nm, _pv, _nf, _nh, _ps, _bs, _relv) in ranked]
+            _p_base = float(_actual.mean()) if len(_actual) else 0.0
+            _base_acc = max(_p_base, 1.0 - _p_base)      # 항상 다수를 찍었을 때의 적중률
             return dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=best['k'],
+                        base_rate=_p_base, base_acc=_base_acc,
+                        lift=float(best['acc']) - _base_acc,
                         wrong=best['wrong'], remaining=best['rem'], acc=best['acc'],
                         thr=best['thr'], trace=trace, ranked=ranked, sel=_sel,
                         is_rev=_is_rev, side_label=_side_lbl, rev_floor=_REV_FLOOR,
@@ -20036,9 +20295,21 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                     globals()['_STATE_TRANS_ANALYSIS'] = _mw_report
                     _st_txt = " | ".join(
                         f"{_s['name']}({_s['side']}) {_s['n']}개·틀린{_s['wrong']}"
-                        f"·적중{_s['acc']*100:.0f}%·임계{_s['thr']:.2f}"
+                        f"·적중{_s['acc']*100:.0f}%(기저{_s.get('base_acc', 0)*100:.0f}%"
+                        f"→이득{_s.get('lift', 0)*100:+.1f}%p"
+                        + ("★무의미" if abs(_s.get('lift', 0)) < 0.02 else "") + ")"
+                        f"·임계{_s['thr']:.2f}"
                         for _s in _mw_report['states'])
                     print(f"    (상태별 독립 선정) {_st_txt}")
+                    # ★★★ (실측) 정보이득이 0 근처면 그 상태 판정은 '항상 다수를 찍는 것'과
+                    #   다를 바 없다 — 지표를 아무리 넣어도 기저 발생률만 재현하고 있다는 뜻.
+                    _dead = [_s['name'] for _s in _mw_report['states']
+                             if abs(_s.get('lift', 0)) < 0.02]
+                    if _dead:
+                        print(f"      ★경고: {', '.join(_dead)} — 기저율 대비 정보이득이 "
+                              f"2%p 미만입니다. 임계값이 0에 붙어 '거의 항상 그 상태'로 "
+                              f"판정하고 있을 가능성이 큽니다(지표 수를 줄이거나 임계 하한을 "
+                              f"올려야 함).")
                     print(f"      → 백테스트용 통합: 매수(롱지속∪숏→롱) {_nb_mw0}→{len(buy_c)}개, "
                           f"매도(숏지속∪롱→숏) {_ns_mw0}→{len(sell_c)}개")
             if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
@@ -29322,7 +29593,19 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
     indicators = _select_indicators(feat, max_indicators)
     print(f"\n  후보 지표: {len(indicators)}개")
     # ★★★ (요청) 적용된 수정사항이 실제로 켜져 있는지 매 실행마다 확인 출력
-    _g = globals()
+    #   ★ 구버전 파일로 실행하면 아래 줄들이 안 찍히거나 버전이 다르게 나온다 —
+    #     실측: 점수개선을 넣었는데 로그에 [점수체계]가 없고 지표평가 시간도 그대로여서
+    #     구버전이 돌고 있음을 확인했다. 그래서 버전 표식을 맨 앞에 박아 둔다.
+    print(f"\n  ■ CORE_VERSION = {globals().get('CORE_VERSION', '?')}  "
+          f"(이 값이 최신이 아니면 예전 파일이 실행되고 있는 것)")
+    _g = globals(); _g0 = _g
+    print("  [점수체계] "
+          f"추세기반={_g0.get('SCORE_USE_TREND_OUTCOME')}"
+          f"(가중 {_g0.get('SCORE_TREND_WEIGHT')}, 상한 ±{_g0.get('SCORE_TREND_CAP'):.0%}) / "
+          f"실패벌점 큰{_g0.get('SCORE_BIG_FAIL_PENALTY')}·작은{_g0.get('SCORE_SMALL_FAIL_PENALTY')} "
+          f"(큰실패 기준 {_g0.get('SCORE_BIG_FAIL_MAG'):.0%}↑) / "
+          f"실패배수 매수{_g0.get('SCORE_BUY_FAIL_MULT')}·매도{_g0.get('SCORE_SELL_FAIL_MULT')} "
+          f"→ 매수가 {_g0.get('SCORE_BUY_FAIL_MULT')/max(_g0.get('SCORE_SELL_FAIL_MULT'),1e-9):.1f}배 엄격")
     print("  [적용 확인] "
           f"평가기간 {_g.get('EVAL_START')}~ / "
           f"신호하한 목표(매수 {_g.get('SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY')}"
@@ -29888,6 +30171,20 @@ def _run_ensemble_search_impl(*args, **kwargs):
             _sys.stdout = _tee
         except Exception:
             _tee = None
+    # ★★★ (실측 개선) 버전 표식을 '로그 파일 안'에도 반드시 남긴다.
+    #   임포트 시점 출력은 콘솔에만 찍히고 로그 캡처 전이라 파일에 안 들어갔다 —
+    #   그 탓에 세 번 연속으로 '예전 파일이 도는 줄 모르고' 결과를 분석했다.
+    if _tee is not None:
+        try:
+            import os as _os_x
+            print('=' * 78)
+            print(f"  ■ CORE_VERSION = {globals().get('CORE_VERSION', '?')}   "
+                  f"{globals().get('CORE_VERSION_NOTE', '')}")
+            print(f"  ■ 로드된 파일  = {_os_x.path.abspath(__file__)}")
+            print(f"  ■ 실행 시각    = {_kst_now():%Y-%m-%d %H:%M:%S} (KST)")
+            print('=' * 78)
+        except Exception:
+            pass
     _err = None; _res = None
     try:
         _res = _run_ensemble_search_core(*args, **kwargs)
@@ -33990,6 +34287,13 @@ def _log_indicator_search_diagnostics(feat, close, indicators, max_list=25):
     nv = feat[cols].notna().sum() if len(cols) else None
 
     def _grp(name):
+        # ★ (실측 개선) 예전엔 여기에 별도의 성긴 분류 규칙이 있어서, 진단 로그의 그룹과
+        #   그룹 합성지표의 그룹이 서로 달랐다(진단은 '가격/기술 4,053개', 합성은 '기타 3,171개').
+        #   같은 함수를 쓰도록 통일해 두 곳의 숫자가 항상 맞아떨어지게 한다.
+        try:
+            return _indicator_group_of(name)
+        except Exception:
+            pass
         n = str(name).lower()
         if any(n.startswith(p) or p in n for p in ('fred_', 'macro_', 'yc_', 'cpi', 'infl', 'ppi')):
             return '매크로/경제'
