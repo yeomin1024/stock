@@ -93,9 +93,9 @@ import re          # ★ (요청 8번) 지표명 접두사 추출용
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-15.d'
+CORE_VERSION = '2026-08-15.e'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 속도개선(벡터화·합성그룹상한)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14697,6 +14697,9 @@ SIMPLE_POOL_COMPOSITE_MIN_MEMBERS        = 8    # 그룹당 최소 멤버 수
 # ★ 그룹당 최대 멤버 수 — 수천 개를 한 덩어리로 평균하면 신호가 서로 상쇄돼 사라진다.
 #   상한을 넘으면 학습구간 |상관| 상위 N개만 써서 희석을 막는다.
 SIMPLE_POOL_COMPOSITE_MAX_MEMBERS        = 150
+# ★ 합성지표를 만들 그룹 수 상한 — 합성지표 1개마다 임계 스윕이 한 번 더 돌아
+#   평가 시간에 직접 얹힌다(실측: 144개 생성 → 실행이 4시간 초과).
+SIMPLE_POOL_COMPOSITE_MAX_GROUPS         = 12
 
 # ════════════════════════════════════════════════════════════════
 #  ★★★ (요청) 지표 점수 — 추세 기반 + 실패 성격 구분 + 매수/매도 비대칭
@@ -16543,87 +16546,61 @@ def _trend_outcome_stats(close_arr, sig_arr, horizon, event_gap, is_buy,
                          anchor_arr=None):
     """★★★ (요청) 지표 발화 뒤 '다음날 하루'가 아니라 '향후 추세'로 성과를 잰다.
 
-    [왜 바꾸는가 — 사용자 지적]
-      "지표 발생 후 그다음날 등락률이 아닌 향후 추세를 보는 게 중요하다"
-      기존 점수는 표시일 다음날 하루치 등락만 봤다. 그러면 신호 다음날 잠깐 반대로
-      갔다가 그 뒤로 크게 오르는 지표가 '실패'로 찍히고, 다음날만 살짝 오르고 곧바로
-      무너지는 지표가 '성공'으로 찍힌다. 실제 수익은 추세를 얼마나 오래 타느냐에서
-      나오므로, 발화 시점부터 '그 자리가 속한 추세가 끝날 때까지'의 누적 변동률로 잰다.
-      (신뢰도 계산에는 이미 이 방식을 넣었는데 점수에는 빠져 있었다 — 여기서 통일한다.)
-
-    [실패의 성격 구분 — 사용자 지적]
-      "실패가 우연인지, 반대 포지션 지표가 더 세서인지 밸런스 잡기 힘들다"
-      실패를 폭으로 나눈다:
-        · 작은 실패(|추세폭| < SMALL): 방향이 애매한 구간에서 스친 것 — 우연에 가깝다
-        · 큰 실패(|추세폭| >= BIG)  : 반대 추세를 정면으로 맞은 것 — 진짜 오신호
-      큰 실패에만 무겁게 벌점을 준다. 우연한 스침으로 좋은 지표가 탈락하는 것을 막고,
-      정말 반대로 가는 지표는 확실히 걸러낸다.
-
+    발화 시점부터 '그 자리가 속한 추세가 끝날 때까지'의 누적 변동률로 잰다.
+    실패는 폭으로 나눠 성격을 구분한다:
+      · 작은 실패(|추세폭| < SMALL): 애매한 구간에서 스친 것 — 우연에 가깝다
+      · 큰 실패(|추세폭| >= BIG)  : 반대 추세를 정면으로 맞은 것 — 진짜 오신호
     반환: dict(fav_mean, fav_sum, n_ev, n_small_fail, n_big_fail, big_fail_mag)
-          fav_* 는 방향 정렬된 값(매수는 상승이 +, 매도는 하락이 +).
     """
+    # ★★★ (성능 긴급수정) 첫 구현은 파이썬 for 루프였다. 이 함수는 '임계 후보마다'
+    #   호출되는데(지표 4,800개 × 임계 1,000개 × 방향 2 ≈ 900만 회), 회당 O(n) 파이썬
+    #   루프를 돌면서 실행이 4시간을 넘겼다. 전부 numpy 벡터화로 바꿔 루프를 없앤다.
     n = close_arr.shape[0]
     h = horizon if horizon >= 1 else 1
     g = event_gap if event_gap >= 1 else 1
+    idx = np.flatnonzero(sig_arr[:n - 1] == 1)
+    if idx.size == 0:
+        return None
+    disp = idx + h - 1
+    keep = disp < n
+    idx = idx[keep]; disp = disp[keep]
+    if idx.size == 0:
+        return None
     try:
         _ctp = _ctp_cached(close_arr)
-        tsum = np.asarray(_ctp[9], dtype=float)      # 추세 끝까지 누적 변동률
+        tsum = np.asarray(_ctp[9], dtype=float)
         okm = np.asarray(_ctp[7] if is_buy else _ctp[8], dtype=bool)
     except Exception:
         return None
+
     sgn = 1.0 if is_buy else -1.0
+    _cap_t = float(globals().get('SCORE_TREND_CAP', 0.15))
+    t = np.clip(sgn * tsum[disp], -_cap_t, _cap_t)
+    ok = okm[disp]
+    fin = np.isfinite(t)
+    if not fin.any():
+        return None
+    t = np.where(fin, t, 0.0)
+
+    # 이벤트 경계 — 발화 간격이 g를 넘으면 새 이벤트
+    starts = np.r_[0, np.flatnonzero(np.diff(idx) > g) + 1]
+    cnt = np.diff(np.r_[starts, idx.size]).astype(float)
+    ev_fav = np.add.reduceat(t * fin, starts) / np.maximum(
+        np.add.reduceat(fin.astype(float), starts), 1e-12)
+    ev_bad_sum = np.add.reduceat(np.where(~ok, t, 0.0) * fin, starts)
+    ev_allok = np.add.reduceat((~ok).astype(np.int64), starts) == 0
+
     small = float(globals().get('SCORE_SMALL_FAIL_MAG', 0.01))
     big = float(globals().get('SCORE_BIG_FAIL_MAG', 0.02))
-
-    n_ev = 0; fav_sum = 0.0
-    n_small = 0; n_big = 0; big_mag = 0.0
-    prev = -10**9
-    ev_fav = 0.0; ev_cnt = 0; ev_bad = 0.0; ev_ok = True; active = False
-
-    def _close_ev():
-        nonlocal n_ev, fav_sum, n_small, n_big, big_mag
-        if ev_cnt <= 0:
-            return
-        n_ev += 1
-        _f = ev_fav / ev_cnt
-        fav_sum += _f
-        if not ev_ok:                       # 실패 이벤트 — 폭으로 성격 구분
-            _m = abs(ev_bad / ev_cnt)
-            if _m >= big:
-                n_big += 1; big_mag += _m
-            elif _m >= small:
-                n_small += 1
-            else:
-                n_small += 1                # 아주 작은 건 우연 취급
-
-    for i in range(n - 1):
-        if sig_arr[i] != 1:
-            continue
-        if (i - prev) > g:
-            if active:
-                _close_ev()
-            ev_fav = 0.0; ev_cnt = 0; ev_bad = 0.0; ev_ok = True; active = True
-        prev = i
-        disp = i + h - 1
-        if disp >= n:
-            continue
-        # 방향 정렬된 추세 누적. ★ 장기 추세는 누적이 수십~수백%까지 커져서 그대로 쓰면
-        #   한두 이벤트가 점수를 지배한다 → 상한을 둬 극단값의 영향을 제한한다.
-        _cap_t = float(globals().get('SCORE_TREND_CAP', 0.15))
-        _t = float(np.clip(sgn * float(tsum[disp]), -_cap_t, _cap_t))
-        if not np.isfinite(_t):
-            continue
-        ev_fav += _t; ev_cnt += 1
-        if not bool(okm[disp]):             # 그 자리가 이 방향의 정답이 아니면 실패
-            ev_ok = False
-            ev_bad += _t                    # 음수 방향으로 쌓임
-    if active:
-        _close_ev()
-    if n_ev == 0:
-        return None
-    return dict(fav_mean=fav_sum / n_ev, fav_sum=fav_sum, n_ev=n_ev,
-                n_small_fail=n_small, n_big_fail=n_big,
-                big_fail_mag=(big_mag / max(n_big, 1)))
+    mag = np.abs(ev_bad_sum / np.maximum(cnt, 1.0))
+    failed = ~ev_allok
+    is_big = failed & (mag >= big)
+    n_big = int(is_big.sum())
+    n_small = int((failed & ~is_big).sum())
+    n_ev = int(cnt.size)
+    return dict(fav_mean=float(np.nanmean(ev_fav)), fav_sum=float(np.nansum(ev_fav)),
+                n_ev=n_ev, n_small_fail=n_small, n_big_fail=n_big,
+                big_fail_mag=float(mag[is_big].mean()) if n_big else 0.0)
 
 
 def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
@@ -16652,7 +16629,9 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
             base = base * (1.0 + bw * big_ratio)
 
     # ★★★ (요청) 추세 기반 보정 + 실패 성격 구분 + 매수/매도 비대칭 벌점
-    if bool(globals().get('SCORE_USE_TREND_OUTCOME', True)):
+    # ★ 어차피 컷에 걸릴 후보에는 계산하지 않는다 — 호출 횟수를 크게 줄이는 조기 탈출.
+    if (bool(globals().get('SCORE_USE_TREND_OUTCOME', True))
+            and n_all >= min_signals and base > 0.0):
         _st = _trend_outcome_stats(close_arr, sig_arr, horizon, _egap, is_buy, anchor_arr)
         if _st is not None and _st['n_ev'] > 0:
             # ① 추세 이익 보너스 — 발화 후 추세를 얼마나 크게 탔는가(하루치가 아니라 추세 전체)
@@ -17500,6 +17479,16 @@ def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
         #   상한을 넘는 그룹은 |학습구간 상관| 상위 N개만 써서 희석을 막는다.
         _cap = int(globals().get('SIMPLE_POOL_COMPOSITE_MAX_MEMBERS', 150))
 
+        # ★★★ (성능) 접두사 자동 세분으로 그룹이 70여 개까지 늘어 합성지표가 144개나
+        #   만들어졌다. 합성지표 1개당 임계 스윕이 통째로 한 번 더 도는 셈이라 평가
+        #   시간에 그대로 얹힌다 → 멤버가 많은 상위 그룹만 남긴다.
+        _max_g = int(globals().get('SIMPLE_POOL_COMPOSITE_MAX_GROUPS', 12))
+        if len(groups) > _max_g:
+            _keep = sorted(groups.items(), key=lambda kv: -len(kv[1]))[:_max_g]
+            _drop = len(groups) - _max_g
+            groups = dict(_keep)
+            print(f'      · 그룹이 많아 상위 {_max_g}개만 사용(작은 그룹 {_drop}개 생략) '
+                  f'— 합성지표 하나마다 임계 스윕이 한 번씩 더 돌기 때문')
         out = {}
         rep = []
         for gname, members in groups.items():
