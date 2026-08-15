@@ -93,9 +93,9 @@ import re          # ★ (요청 8번) 지표명 접두사 추출용
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-15.c'
+CORE_VERSION = '2026-08-15.d'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14722,6 +14722,11 @@ SCORE_SELL_FAIL_MULT                     = 0.7
 #   폴드마다 net 구성이 딴판이 됐다. '기여 없음'으로 명시 제외된 경우가 아니면
 #   최소 이 개수는 채택해 폴드 간 일관성을 지킨다.
 SIMPLE_POOL_STATE_MIN_K                  = 3
+# ★★★ (실측 근본수정) 상태 임계값을 '단순 적중률'이 아니라 '균형정확도'로 고른다.
+#   단순 적중률은 다수 클래스를 항상 찍는 게 최적해라, 임계값이 0에 붙고 적중률이
+#   기저 발생률과 같아지는 퇴화가 반복됐다(롱지속 적중 59%·임계 0.00이 4회 연속).
+#   균형정확도는 '항상 YES'가 0.5를 못 넘으므로 그 퇴화가 원천 차단된다.
+STATE_THR_BALANCED                       = True
 
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
 #   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
@@ -18561,7 +18566,28 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _pred = (p[None, :] >= _STATE_THR_GRID[:, None])
             if fired is not None:
                 _pred = _pred & fired[None, :]
-            _acc = (_pred == actual[None, :]).mean(axis=1)
+            _hit = (_pred == actual[None, :])
+            _acc = _hit.mean(axis=1)
+
+            # ★★★ (실측 문제 — 근본 수정) 임계값이 0.00으로 붙고 적중률이 기저 발생률과
+            #   같아지는 현상이 네 번 연속 반복됐다(롱지속 적중 59%, 임계 0.00).
+            #   원인: '단순 적중률'을 최대화하면 다수 클래스를 항상 찍는 게 최적해가 된다.
+            #   지표가 34개면 거의 매일 하나는 발화하므로 임계 0 = '항상 이 상태' → 그
+            #   적중률은 그냥 기저율이고 정보가 0이다.
+            #   → 균형정확도(=민감도와 특이도의 평균)로 임계값을 고른다.
+            #     항상 YES는 민감도1·특이도0 → 균형정확도 0.5로 절대 이기지 못하므로,
+            #     '맞은 것'과 '틀린 것'을 함께 가려내는 임계값만 선택된다.
+            #   ★ 보고용 적중률·틀린자리 수는 종전대로 '단순' 기준으로 돌려준다(비교 가능하게).
+            if bool(globals().get('STATE_THR_BALANCED', True)) and len(actual) > 0:
+                _pos = actual.astype(bool)
+                _npos = int(_pos.sum()); _nneg = int(len(actual) - _npos)
+                if _npos > 0 and _nneg > 0:
+                    _tpr = (_pred & _pos[None, :]).sum(axis=1) / _npos
+                    _tnr = ((~_pred) & (~_pos)[None, :]).sum(axis=1) / _nneg
+                    _bal = 0.5 * (_tpr + _tnr)
+                    _i = int(np.argmax(_bal))
+                    _a = float(_acc[_i])
+                    return float(_STATE_THR_GRID[_i]), _a, int(round((1.0 - _a) * len(p)))
             _i = int(np.argmax(_acc)); _a = float(_acc[_i])
             return float(_STATE_THR_GRID[_i]), _a, int(round((1.0 - _a) * len(p)))
 
