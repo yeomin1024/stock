@@ -93,9 +93,9 @@ import re          # ★ (요청 8번) 지표명 접두사 추출용
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-15.b'
+CORE_VERSION = '2026-08-15.c'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -18577,6 +18577,7 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                           is_rev=(skey in _REV_KEYS),
                           side_label='(전환성공+추세성공)÷총이벤트',
                           rev_floor=_REV_FLOOR, n_rev_tier=None, judge_days=0,
+                          base_rate=0.0, base_acc=0.0, lift=0.0,
                           order=order, ret_kl0=0.0, ret_avoid=0.0, n_by_wrong=0,
                           n_by_ret=0, n_by_avoid=0, picked_by='',
                           net_sel=np.zeros(n), opp_net=np.zeros(n),
@@ -18585,6 +18586,11 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 return _blank
             _act = st[skey]
             _dm = dom[skey] if dom_override is None else dom_override
+            # ★★★ (실측 문제) 임계값 0.00 + 적중률 59%가 계속 반복됐다. 지표가 34개면
+            #   거의 매일 하나는 발화하므로 '항상 이 상태'라고 찍는 것과 다름없고,
+            #   그때 적중률은 그냥 그 상태의 기저 발생률(base rate)이 된다.
+            #   → 기저율 대비 얼마나 나은지(정보이득)를 함께 재서 로그에 남긴다.
+            #     정보이득이 0 근처면 그 상태의 판정은 아무 정보도 주지 않는 것이다.
             _idxs = np.nonzero(_dm)[0]
             _actual = _act[_idxs]
             _side = _SIDE[skey]
@@ -18788,7 +18794,11 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             ranked = [(_rk, _nm, _pv, _nf, _nh, _ps, _bs, _relv,
                        ('사용' if _nm in _sel_names else ''))
                       for (_rk, _nm, _pv, _nf, _nh, _ps, _bs, _relv) in ranked]
+            _p_base = float(_actual.mean()) if len(_actual) else 0.0
+            _base_acc = max(_p_base, 1.0 - _p_base)      # 항상 다수를 찍었을 때의 적중률
             return dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=best['k'],
+                        base_rate=_p_base, base_acc=_base_acc,
+                        lift=float(best['acc']) - _base_acc,
                         wrong=best['wrong'], remaining=best['rem'], acc=best['acc'],
                         thr=best['thr'], trace=trace, ranked=ranked, sel=_sel,
                         is_rev=_is_rev, side_label=_side_lbl, rev_floor=_REV_FLOOR,
@@ -20285,9 +20295,21 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                     globals()['_STATE_TRANS_ANALYSIS'] = _mw_report
                     _st_txt = " | ".join(
                         f"{_s['name']}({_s['side']}) {_s['n']}개·틀린{_s['wrong']}"
-                        f"·적중{_s['acc']*100:.0f}%·임계{_s['thr']:.2f}"
+                        f"·적중{_s['acc']*100:.0f}%(기저{_s.get('base_acc', 0)*100:.0f}%"
+                        f"→이득{_s.get('lift', 0)*100:+.1f}%p"
+                        + ("★무의미" if abs(_s.get('lift', 0)) < 0.02 else "") + ")"
+                        f"·임계{_s['thr']:.2f}"
                         for _s in _mw_report['states'])
                     print(f"    (상태별 독립 선정) {_st_txt}")
+                    # ★★★ (실측) 정보이득이 0 근처면 그 상태 판정은 '항상 다수를 찍는 것'과
+                    #   다를 바 없다 — 지표를 아무리 넣어도 기저 발생률만 재현하고 있다는 뜻.
+                    _dead = [_s['name'] for _s in _mw_report['states']
+                             if abs(_s.get('lift', 0)) < 0.02]
+                    if _dead:
+                        print(f"      ★경고: {', '.join(_dead)} — 기저율 대비 정보이득이 "
+                              f"2%p 미만입니다. 임계값이 0에 붙어 '거의 항상 그 상태'로 "
+                              f"판정하고 있을 가능성이 큽니다(지표 수를 줄이거나 임계 하한을 "
+                              f"올려야 함).")
                     print(f"      → 백테스트용 통합: 매수(롱지속∪숏→롱) {_nb_mw0}→{len(buy_c)}개, "
                           f"매도(숏지속∪롱→숏) {_ns_mw0}→{len(sell_c)}개")
             if len(buy_c):  buy_c['sel_limit']  = _limit0   # ★ 하위호환 — _kl_stats 등이 row.get('sel_limit')로 읽음
@@ -30149,6 +30171,20 @@ def _run_ensemble_search_impl(*args, **kwargs):
             _sys.stdout = _tee
         except Exception:
             _tee = None
+    # ★★★ (실측 개선) 버전 표식을 '로그 파일 안'에도 반드시 남긴다.
+    #   임포트 시점 출력은 콘솔에만 찍히고 로그 캡처 전이라 파일에 안 들어갔다 —
+    #   그 탓에 세 번 연속으로 '예전 파일이 도는 줄 모르고' 결과를 분석했다.
+    if _tee is not None:
+        try:
+            import os as _os_x
+            print('=' * 78)
+            print(f"  ■ CORE_VERSION = {globals().get('CORE_VERSION', '?')}   "
+                  f"{globals().get('CORE_VERSION_NOTE', '')}")
+            print(f"  ■ 로드된 파일  = {_os_x.path.abspath(__file__)}")
+            print(f"  ■ 실행 시각    = {_kst_now():%Y-%m-%d %H:%M:%S} (KST)")
+            print('=' * 78)
+        except Exception:
+            pass
     _err = None; _res = None
     try:
         _res = _run_ensemble_search_core(*args, **kwargs)
