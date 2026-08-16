@@ -93,9 +93,9 @@ import re          # ★ (요청 8번) 지표명 접두사 추출용
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-15.e'
+CORE_VERSION = '2026-08-16.a'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 속도개선(벡터화·합성그룹상한)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14442,6 +14442,10 @@ SIMPLE_POOL_MODE        = True
 #   (성공률 90%+ 예외)는 더 이상 안 씀 — 아래 표의 min_signals가 절대 기준.
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
+# ★★★ (실측 속도) 이 표의 항목 수 = 지표 전체 평가를 몇 번 반복하는지다.
+#   실측: 항목 5개 × 약 5,000초 = 7시간. 항목을 줄이면 그만큼 정직하게 줄어든다.
+#   급하면 아래 SIMPLE_POOL_HORIZON_FAST 를 True 로 두면 1·3일 두 개만 쓴다(2.5배 단축).
+SIMPLE_POOL_HORIZON_FAST = False
 SIMPLE_POOL_HORIZON_CONFIG = [
     {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
     {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
@@ -14449,6 +14453,13 @@ SIMPLE_POOL_HORIZON_CONFIG = [
     {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
     {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
 ]
+
+# ★ 빠른 모드 — 호라이즌을 1·3일만 남긴다(평가 반복 5회 → 2회).
+if SIMPLE_POOL_HORIZON_FAST:
+    SIMPLE_POOL_HORIZON_CONFIG = [c for c in SIMPLE_POOL_HORIZON_CONFIG
+                                  if int(c.get('day', 0)) in (1, 3)]
+    print(f"  ⚡ SIMPLE_POOL_HORIZON_FAST — 호라이즌 "
+          f"{[c['day'] for c in SIMPLE_POOL_HORIZON_CONFIG]}일만 평가(약 2.5배 단축)")
 # ★★★ (요청) 지표컷(성공률+최소신호) 통과 후 '정말 예측력 있는지' 2차 검증 3종.
 #   ① 기저확률 대비 초과 — 아무 날이나 signal이라 가정했을 때의 '기저 성공률' 대비,
 #      최소 margin(%p) 이상 높거나 최소 ratio배 이상이어야 함(둘 중 하나만 만족해도 통과).
@@ -14707,7 +14718,12 @@ SIMPLE_POOL_COMPOSITE_MAX_GROUPS         = 12
 # 점수를 '다음날 하루 등락'이 아니라 '발화 후 추세 전체'로 매긴다.
 #   기존: 표시일 다음날 하루치만 봄 → 다음날 잠깐 반대로 갔다가 크게 오르는 지표가 탈락,
 #         다음날만 살짝 오르고 무너지는 지표가 통과. 실제 수익과 어긋난다.
-SCORE_USE_TREND_OUTCOME                  = True
+# ★★★ (실측 결론 — 기본 OFF) 비용 대비 효과가 없다.
+#   측정: 지표평가 990초 → 5,000초/호라이즌 (5배, 5개 호라이즌이면 1.4시간 → 7시간)
+#         워크포워드 초과수익 합계 +103.3%p → +104.6%p (겨우 +1.3%p, 1.3% 개선)
+#         상태별로는 롱지속 +2.2 / 롱→숏 +0.5 / 숏지속 -1.0 / 숏→롱 -0.4 로 뒤섞임
+#   → 5배의 시간을 쓸 근거가 없다. 필요하면 True 로 켜되, 호라이즌을 1~2개로 줄일 것.
+SCORE_USE_TREND_OUTCOME                  = False
 SCORE_TREND_WEIGHT                       = 0.6    # 추세 이익 보너스 강도
 SCORE_TREND_NORM                         = 0.03   # 추세 3%를 기준(1.0)으로 정규화
 # ★ 추세 누적 상한 — 장기 추세는 누적이 수십%까지 커져 한두 이벤트가 점수를 지배한다.
@@ -14730,6 +14746,10 @@ SIMPLE_POOL_STATE_MIN_K                  = 3
 #   기저 발생률과 같아지는 퇴화가 반복됐다(롱지속 적중 59%·임계 0.00이 4회 연속).
 #   균형정확도는 '항상 YES'가 0.5를 못 넘으므로 그 퇴화가 원천 차단된다.
 STATE_THR_BALANCED                       = True
+# ★★★ (실측) 정보이득(적중률 - 기저율)이 음수인 상태는 net에서 뺀다.
+#   실측: 롱지속 적중 62% / 기저 74% → 이득 -12.3%p. '항상 그 상태'라고 찍는 것보다 못하다.
+STATE_DROP_ON_NEGATIVE_LIFT              = True
+STATE_MIN_LIFT_TO_KEEP                   = 0.0
 
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
 #   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
@@ -14903,7 +14923,11 @@ RUNUP_LIMIT_SELL    = 0.02
 STAGE_SUCCESS_LIMIT = [0.01, 0.01, 0.01, 0.01, 0.01]   # ★ (요청 — 재수정) 1~5일 전부 1%로 통일
 SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최적 한도 선정
 
-N_THRESHOLDS        = 1000
+# ★★★ (실측 속도) 임계 후보 수는 평가 시간에 정비례한다(지표 4,800개 × 이 값 × 방향2).
+#   1000 → 250 이면 평가가 4배 빨라지고, 임계 해상도는 0.1%→0.4% 분위로만 떨어져
+#   실용상 차이가 거의 없다(성공률·수익률 곡선이 그만큼 촘촘하지 않음).
+#   더 정밀하게 보고 싶으면 올리되, 호라이즌 수(HORIZON_LIST)를 함께 줄일 것.
+N_THRESHOLDS        = 250
 MAX_INDICATORS      = 5000
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
@@ -20318,6 +20342,20 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                     print(f"    (상태별 독립 선정) {_st_txt}")
                     # ★★★ (실측) 정보이득이 0 근처면 그 상태 판정은 '항상 다수를 찍는 것'과
                     #   다를 바 없다 — 지표를 아무리 넣어도 기저 발생률만 재현하고 있다는 뜻.
+                    # ★★★ (실측 결정적) 롱지속: 적중 62%인데 기저 74% → 이득 -12.3%p.
+                    #   '항상 롱지속'이라고 찍는 것보다도 못하다는 뜻이다. 이런 상태는
+                    #   net에 넣으면 오히려 방해가 되므로 지표를 0개로 되돌린다.
+                    _neg = [_s for _s in _mw_report['states']
+                            if _s.get('lift', 0) < -float(globals().get(
+                                'STATE_MIN_LIFT_TO_KEEP', 0.0)) and int(_s.get('n', 0)) > 0]
+                    if _neg and bool(globals().get('STATE_DROP_ON_NEGATIVE_LIFT', True)):
+                        for _s in _neg:
+                            print(f"      ★제외: {_s['name']} — 정보이득 {_s['lift']*100:+.1f}%p "
+                                  f"(적중 {_s['acc']*100:.0f}% < 기저 {_s['base_acc']*100:.0f}%). "
+                                  f"'항상 그 상태'라고 찍는 것보다 못해 채택 {_s['n']}개→0개")
+                            _s['n'] = 0
+                            _s['sel'] = _s['sel'].iloc[0:0] if _s.get('sel') is not None else None
+                            _s['dropped_by_lift'] = True
                     _dead = [_s['name'] for _s in _mw_report['states']
                              if abs(_s.get('lift', 0)) < 0.02]
                     if _dead:
