@@ -93,9 +93,9 @@ import re          # ★ (요청 8번) 지표명 접두사 추출용
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.a'
+CORE_VERSION = '2026-08-16.b'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -20356,6 +20356,29 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                             _s['n'] = 0
                             _s['sel'] = _s['sel'].iloc[0:0] if _s.get('sel') is not None else None
                             _s['dropped_by_lift'] = True
+                        # ★★★ (실측 버그수정) 리포트만 0개로 바꾸면 소용없다 —
+                        #   buy_c/sell_c 는 이 시점에 '이미' 만들어져 있어서 제외가 실제
+                        #   풀에 반영되지 않았다(실측: 롱지속 56개→0개라고 찍혔는데 매수 풀은
+                        #   62→61개로 1개만 줄었다). 제외 후 상태별 sel 을 다시 합쳐
+                        #   진짜로 빼야 한다.
+                        try:
+                            _sm = _mw_report.get('state_map') or {}
+                            def _u2(a, b):
+                                _ps = [x for x in (a, b) if x is not None and len(x) > 0]
+                                if not _ps:
+                                    return buy_c.iloc[0:0].copy()
+                                _u = pd.concat(_ps, ignore_index=True)
+                                if 'indicator' in _u.columns:
+                                    _u = _u.drop_duplicates(subset=['indicator'],
+                                                            keep='first').reset_index(drop=True)
+                                return _u
+                            _nb_before, _ns_before = len(buy_c), len(sell_c)
+                            buy_c = _u2(_sm.get('lc', {}).get('sel'), _sm.get('sr', {}).get('sel'))
+                            sell_c = _u2(_sm.get('sc', {}).get('sel'), _sm.get('lr', {}).get('sel'))
+                            print(f"      → 제외 반영: 매수 {_nb_before}→{len(buy_c)}개, "
+                                  f"매도 {_ns_before}→{len(sell_c)}개")
+                        except Exception as _e_drop:
+                            print(f"      ⚠ 제외 반영 실패(무시): {_e_drop}")
                     _dead = [_s['name'] for _s in _mw_report['states']
                              if abs(_s.get('lift', 0)) < 0.02]
                     if _dead:
