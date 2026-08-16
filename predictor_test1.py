@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.r'
+CORE_VERSION = '2026-08-17.b'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15074,6 +15074,9 @@ USE_EARNINGS_FEATURES                    = True
 #   (새 지표를 추가했는데 예전 캐시가 쓰여 반영이 안 되는 사고 방지)
 FEATURE_CACHE_REQUIRED_COLS              = ['earn_momentum_score']
 EARN_DRIFT_DAYS                          = 60     # 어닝 드리프트 유효 기간(일)
+# ★ 어닝 지표는 첫 발표 전이 NaN이고 분기마다만 값이 바뀌어, 일반 지표 컷(유효 100일)에
+#   걸려 후보에서 통째로 빠졌다(실측). 별도의 완화된 기준으로 되살린다.
+EARN_MIN_VALID_DAYS                      = 60
 KL_GATE_AB_TEST                          = True
 GROUP_ROLE_SHORT_HORIZON                 = 5      # 섹터강약·시장폭 판단 단기 일수
 SIMPLE_POOL_MT_Z_CAP                     = 4.0
@@ -30757,37 +30760,64 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
     except Exception as _e_diag:
         print(f"    ⚠ 지표 탐색 진단 생략(무시): {_e_diag}")
 
-    # ★★★ (실측 버그수정) 어닝 지표가 끝내 안 만들어진 이유 —
-    #   feat은 compute_features 안에서만 만들어지는 게 아니라, 노트북에서 미리 만들어
-    #   전역으로 넘겨주는 경로(_resolve_data)가 실제 사용 경로다. 그 경우
-    #   compute_features가 아예 호출되지 않아 어닝 지표를 붙일 기회가 없었다.
-    #   → 지표 평가 직전, 여기서 없으면 직접 붙인다(이미 있으면 건너뜀).
+    # ══════════════════════════════════════════════════════════════════
+    # ★★★ 어닝 지표 — 생성·복원·진단을 한 곳에서 처리하고 '무조건' 로그를 남긴다.
+    #
+    #   [왜 한 곳으로 모았나] 지금까지 어닝 지표가 세 번 연속 사라졌는데, 매번 원인이
+    #   달랐고 그때마다 로그가 침묵해서 추측으로 찾아야 했다:
+    #     1차: compute_features 가 실제 경로에서 호출되지 않음
+    #     2차: TICKER 전역이 None 이라 조용히 건너뜀
+    #     3차: feat 에는 있는데 'earn_momentum_score in feat.columns' 조건 때문에
+    #          블록 전체가 로그 한 줄 없이 스킵 → _select_indicators 컷에 걸려 후보 0개
+    #   → 이제는 어떤 경로로 들어와도 상태를 반드시 출력한다. 침묵하지 않는다.
+    # ══════════════════════════════════════════════════════════════════
     try:
-        if bool(globals().get('USE_EARNINGS_FEATURES', True)) and \
-                'earn_momentum_score' not in feat.columns:
-            # ★★★ (실측) 앞선 실행에서 이 블록이 조용히 건너뛰어졌다. 원인은 전역
-            #   TICKER 가 비어 있는 경우(실행 경로에 따라 ticker 인자로만 넘어옴).
-            #   → 함수 인자 ticker 를 우선 쓰고, 왜 건너뛰는지 반드시 로그로 남긴다.
-            _tk_e = str(ticker or globals().get('TICKER', '') or '').upper().strip()
-            if not _tk_e:
-                print("  ⚠ 어닝 지표 생략 — 티커를 알 수 없습니다"
-                      "(TICKER 전역도 ticker 인자도 비어 있음)")
-            if _tk_e:
-                _ed = download_earnings_data(_tk_e, start=globals().get('DOWNLOAD_START'))
-                _na = add_earnings_features(feat, close, _ed)
-                if _na:
-                    indicators = list(indicators) + [c for c in feat.columns
-                                                     if c.startswith('earn_')
-                                                     and c not in indicators]
-                    print(f"  ✓ 어닝 지표 {_na}개 추가 (발표 {len(_ed)}회분 — "
-                          f"서프라이즈·모멘텀·드리프트 수명) → 후보 {len(indicators):,}개")
+        if not bool(globals().get('USE_EARNINGS_FEATURES', True)):
+            print("  ℹ 어닝 지표 사용 안 함 (USE_EARNINGS_FEATURES=False)")
+        else:
+            _earn_cols = [c for c in feat.columns if str(c).startswith('earn_')]
+            # ── 1) feat 에 없으면 만들어 붙인다 ──
+            if not _earn_cols:
+                _tk_e = str(ticker or globals().get('TICKER', '') or '').upper().strip()
+                if not _tk_e:
+                    print("  ⚠ 어닝 지표 생략 — 티커를 알 수 없음"
+                          "(ticker 인자·TICKER 전역 모두 비어 있음)")
                 else:
-                    print(f"  ℹ [{_tk_e}] 어닝 데이터를 받지 못해 어닝 지표를 건너뜁니다 "
-                          f"(yfinance가 이 티커의 실적을 제공하지 않거나 "
-                          f"earnings_dates API가 막혔을 수 있음)")
+                    _ed = download_earnings_data(_tk_e, start=globals().get('DOWNLOAD_START'))
+                    if _ed is None or len(_ed) < 2:
+                        print(f"  ℹ [{_tk_e}] 어닝 데이터 없음 — yfinance가 실적을 "
+                              f"제공하지 않거나 API가 막혔을 수 있음 (어닝 지표 생략)")
+                    else:
+                        _na = add_earnings_features(feat, close, _ed)
+                        _earn_cols = [c for c in feat.columns if str(c).startswith('earn_')]
+                        print(f"  ✓ 어닝 지표 {_na}개 생성 (발표 {len(_ed)}회분 — "
+                              f"서프라이즈·모멘텀·드리프트 수명)")
+            # ── 2) 후보 목록에 넣는다 (일반 컷에 걸려 빠졌으면 되살린다) ──
+            if _earn_cols:
+                _in = [c for c in _earn_cols if c in indicators]
+                _out = [c for c in _earn_cols if c not in indicators]
+                _restored, _dropped = [], []
+                _minv = int(globals().get('EARN_MIN_VALID_DAYS', 60))
+                for c in _out:
+                    _v = feat[c].to_numpy(dtype=float)
+                    _m = ~np.isnan(_v)
+                    if _m.sum() >= _minv and float(np.std(_v[_m])) > 1e-12:
+                        _restored.append(c)
+                    else:
+                        _dropped.append((c, int(_m.sum()),
+                                         float(np.std(_v[_m])) if _m.any() else 0.0))
+                if _restored:
+                    indicators = list(indicators) + _restored
+                print(f"  ▸ 어닝 지표 현황: feat {len(_earn_cols)}개 / "
+                      f"이미 후보 {len(_in)}개 / 복원 {len(_restored)}개 / "
+                      f"제외 {len(_dropped)}개 → 후보 총 {len(indicators):,}개")
+                if _dropped:
+                    print("     제외 사유(유효일수·표준편차): " + ', '.join(
+                        f"{c}({v}일,sd{sd:.2g})" for c, v, sd in _dropped[:5])
+                        + (' …' if len(_dropped) > 5 else ''))
     except Exception as _e_earn:
         import traceback as _tbe
-        print(f"  ⚠ 어닝 지표 추가 실패: {_e_earn}")
+        print(f"  ⚠ 어닝 지표 처리 실패: {_e_earn}")
         _tbe.print_exc()
 
     # ★★★ (요청) 그룹별 용도 분화 — 방향성이 약한 그룹은 국면/위험 게이트로 돌린다.
