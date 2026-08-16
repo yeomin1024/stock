@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.p'
+CORE_VERSION = '2026-08-16.q'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 캐시 무효화')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15038,23 +15038,33 @@ GROUP_ROLE_MIN_DIRECTION_GROUPS          = 3      # 방향성 그룹 최소 개�
 #     최선이었지만(+12.25 → +15.12%), 실제 데이터에서는 문턱을 너무 크게 흔들어
 #     진입이 잦아지고 성적이 나빠졌다. 실제 결과를 따라 폭을 절반으로 줄인다.
 #     ★ 0으로 두면 게이트 없이 예전 동작. 늘리려면 실제 워크포워드로 확인하고 올릴 것.
-KL_REGIME_WEIGHT                         = 0.25   # 국면이 문턱을 움직이는 폭
-KL_RISK_WEIGHT                           = 0.25   # 위험이 문턱을 움직이는 폭
-KL_MEANREV_WEIGHT                        = 0.15   # 과매도면 매수 문턱↓ (되돌림 진입)
-KL_TRENDSTR_WEIGHT                       = 0.15   # 추세 강하면 청산 문턱↓ (덜 팔게)
+#   ★★★ (실측 결론 — 기본 OFF) A/B 자동측정 6회 결과:
+#         켬 합계 300.9% vs 끔 312.8%  →  평균 -1.98%p (손해 4회 / 도움 2회)
+#     가중치를 절반(0.5→0.25)으로 줄인 뒤에도 여전히 손해다. 문턱을 흔드는 방식 자체가
+#     이 데이터에서는 도움이 안 된다 — 매수/매도 결정을 net이 이미 충분히 하고 있는데,
+#     문턱을 움직이면 그 판단을 흐리기만 한다.
+#     ★ 지표를 '버리지 않고 활용'한다는 취지는 좋았지만 실측이 아니라고 하니 끈다.
+#       그룹 용도 분석·시트는 그대로 남으므로 어느 그룹이 무슨 능력을 갖는지는 계속 보인다.
+#     ★ 켜보려면 0.1~0.25로 조금씩 올리고 반드시 (게이트 A/B) 로그를 확인할 것.
+KL_REGIME_WEIGHT                         = 0.0
+KL_RISK_WEIGHT                           = 0.0
+KL_MEANREV_WEIGHT                        = 0.0
+KL_TRENDSTR_WEIGHT                       = 0.0
 KL_CONVICTION_WEIGHT                     = 0.0    # net 증폭(기본 OFF — 효과 확인 후 사용)
 KL_CRASH_THRESHOLD                       = 0.8    # 꼬리위험 게이트가 이 값 넘으면 강제 청산
-KL_ROTATION_WEIGHT                       = 0.2    # 섹터 상대강세면 매수문턱↓
-KL_BREADTH_WEIGHT                        = 0.15   # 시장폭 넓으면 매수문턱↓
-KL_LIQUIDITY_WEIGHT                      = 0.15   # 유동성 우호적이면 매수문턱↓
+KL_ROTATION_WEIGHT                       = 0.0
+KL_BREADTH_WEIGHT                        = 0.0
+KL_LIQUIDITY_WEIGHT                      = 0.0
 # ★ 매 실행마다 '게이트 켬 vs 끔'을 같은 OOS 기준으로 비교해 로그에 남긴다.
 #   게이트가 손해면 경고가 뜨므로 가중치를 줄일지 끌지 숫자로 판단할 수 있다.
-KL_TIMING_WEIGHT                         = 0.15   # 선행성 있으면 매수문턱↓
-KL_EXHAUST_WEIGHT                        = 0.15   # 추세 끝물이면 청산문턱↑(빨리 팔게)
-KL_CALENDAR_WEIGHT                       = 0.10   # 시기적으로 유리하면 매수문턱↓
+KL_TIMING_WEIGHT                         = 0.0
+KL_EXHAUST_WEIGHT                        = 0.0
+KL_CALENDAR_WEIGHT                       = 0.0
 # ★★★ (요청) 어닝 — 실적 개선이면 진입을 쉽게, 실적 효과가 소진되면 청산을 앞당긴다.
-KL_EARNMOM_WEIGHT                        = 0.25
-KL_EARNFADE_WEIGHT                       = 0.20
+#   ★ 어닝만은 아직 실측 못 했다(어닝 지표가 캐시 문제로 생성되지 않았음).
+#     지표가 실제로 만들어진 뒤 A/B로 확인하고 켜야 한다. 지금은 0.
+KL_EARNMOM_WEIGHT                        = 0.0
+KL_EARNFADE_WEIGHT                       = 0.0
 # ★ 실제 어닝 데이터(yfinance) 사용 여부. False면 어닝 지표 없이 진행.
 USE_EARNINGS_FEATURES                    = True
 # ★ 캐시된 feat에 이 컬럼들이 없으면 캐시를 버리고 다시 계산한다.
@@ -30737,6 +30747,30 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
         _log_indicator_search_diagnostics(feat, close, indicators)
     except Exception as _e_diag:
         print(f"    ⚠ 지표 탐색 진단 생략(무시): {_e_diag}")
+
+    # ★★★ (실측 버그수정) 어닝 지표가 끝내 안 만들어진 이유 —
+    #   feat은 compute_features 안에서만 만들어지는 게 아니라, 노트북에서 미리 만들어
+    #   전역으로 넘겨주는 경로(_resolve_data)가 실제 사용 경로다. 그 경우
+    #   compute_features가 아예 호출되지 않아 어닝 지표를 붙일 기회가 없었다.
+    #   → 지표 평가 직전, 여기서 없으면 직접 붙인다(이미 있으면 건너뜀).
+    try:
+        if bool(globals().get('USE_EARNINGS_FEATURES', True)) and \
+                'earn_momentum_score' not in feat.columns:
+            _tk_e = str(globals().get('TICKER', '') or '').upper()
+            if _tk_e:
+                _ed = download_earnings_data(_tk_e, start=globals().get('DOWNLOAD_START'))
+                _na = add_earnings_features(feat, close, _ed)
+                if _na:
+                    indicators = list(indicators) + [c for c in feat.columns
+                                                     if c.startswith('earn_')
+                                                     and c not in indicators]
+                    print(f"  ✓ 어닝 지표 {_na}개 추가 (발표 {len(_ed)}회분 — "
+                          f"서프라이즈·모멘텀·드리프트 수명) → 후보 {len(indicators):,}개")
+                else:
+                    print("  ℹ 어닝 데이터를 받지 못해 어닝 지표를 건너뜁니다 "
+                          "(yfinance가 이 티커의 실적을 제공하지 않을 수 있음)")
+    except Exception as _e_earn:
+        print(f"  ⚠ 어닝 지표 추가 생략(무시): {_e_earn}")
 
     # ★★★ (요청) 그룹별 용도 분화 — 방향성이 약한 그룹은 국면/위험 게이트로 돌린다.
     try:
