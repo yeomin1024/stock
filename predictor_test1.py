@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.l'
+CORE_VERSION = '2026-08-16.o'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정(투표 0개 방지)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개(서프라이즈·모멘텀·드리프트수명)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -2066,6 +2066,184 @@ def write_feature_health_sheet(wb, health_result):
 # ════════════════════════════════════════════════════════════════
 #                  지표 계산 (~450개)
 # ════════════════════════════════════════════════════════════════
+_EARNINGS_CACHE = {}
+
+
+def download_earnings_data(ticker, start=None):
+    """★★★ (요청) 실제 어닝(실적) 데이터를 받아온다.
+
+    지금까지는 어닝을 '1·4·7·10월'이라는 달력 추측(earnings_season_vol_spike)으로만
+    다뤘다. 실제 발표일도, 서프라이즈 크기도 모르는 채였다. yfinance에서 분기 실적을
+    받아 발표일·EPS 실적치·예상치·서프라이즈를 확보한다.
+
+    반환: DataFrame(index=발표일) with columns
+          [eps_actual, eps_estimate, surprise_pct]  — 없으면 None
+    ★ 실패해도 파이프라인은 계속 진행된다(어닝 지표만 비게 됨).
+    """
+    _k = (str(ticker).upper(), str(start))
+    if _k in _EARNINGS_CACHE:
+        return _EARNINGS_CACHE[_k]
+    df = None
+    try:
+        _t = yf.Ticker(str(ticker).upper())
+        # yfinance 버전에 따라 제공 속성이 달라 순서대로 시도한다
+        for _attr in ('earnings_dates', 'get_earnings_dates'):
+            try:
+                _o = getattr(_t, _attr, None)
+                _d = _o(limit=60) if callable(_o) else _o
+                if _d is not None and len(_d) > 0:
+                    df = _d.copy()
+                    break
+            except Exception:
+                continue
+        if df is not None:
+            df = df.rename(columns={
+                'Reported EPS': 'eps_actual', 'EPS Estimate': 'eps_estimate',
+                'Surprise(%)': 'surprise_pct', 'Surprise (%)': 'surprise_pct'})
+            keep = [c for c in ('eps_actual', 'eps_estimate', 'surprise_pct')
+                    if c in df.columns]
+            if not keep:
+                df = None
+            else:
+                df = df[keep].copy()
+                try:
+                    df.index = pd.to_datetime(df.index).tz_localize(None)
+                except Exception:
+                    df.index = pd.to_datetime(df.index)
+                df = df.sort_index()
+                if start is not None:
+                    df = df[df.index >= pd.Timestamp(start)]
+                # 서프라이즈가 없으면 실적/예상으로 직접 계산
+                if 'surprise_pct' not in df.columns and \
+                        {'eps_actual', 'eps_estimate'} <= set(df.columns):
+                    _e = df['eps_estimate'].replace(0, np.nan)
+                    df['surprise_pct'] = (df['eps_actual'] - _e) / _e.abs() * 100.0
+    except Exception as e:
+        print(f"  ⚠ 어닝 데이터 수신 실패(무시): {e}")
+        df = None
+    if df is not None and len(df) == 0:
+        df = None
+    _EARNINGS_CACHE[_k] = df
+    return df
+
+
+def add_earnings_features(feat, cl, earn_df):
+    """★★★ (요청) 어닝 관련 지표를 만든다 — "어닝이 잘 나오면 상승 추세, 반대면 하락.
+    어닝 모멘텀과 그게 언제 끝나는지".
+
+    [만드는 지표]
+      · 서프라이즈 자체와 그 모멘텀
+          earn_surprise_last      직전 발표의 서프라이즈%
+          earn_surprise_ma4       최근 4개 분기 평균 (어닝 모멘텀의 수준)
+          earn_surprise_trend     최근 2개 - 그 이전 2개 (모멘텀이 커지나 꺾이나)
+          earn_beat_streak        연속 상회 횟수 (+) / 연속 하회 (-)
+          earn_accel              직전 서프라이즈 - 4분기 평균 (가속/감속)
+      · 발표 전후 위치 — '언제 끝나는지'의 핵심
+          earn_days_since         발표 후 경과일
+          earn_days_until         다음 발표까지 남은 일수(직전 간격으로 추정)
+          earn_drift_window       발표 후 1~60일 구간 여부(PEAD 구간)
+          earn_pre_window         발표 5일 전 구간 여부
+          earn_cycle_pos          분기 사이클 내 위치 0~1
+      · 발표 반응과 그 소진
+          earn_reaction           발표 당일·다음날 등락률
+          earn_drift_cum          발표 이후 누적 등락 (드리프트가 얼마나 진행됐나)
+          earn_drift_decay        경과일 기반 감쇠 가중 (드리프트가 끝나가는 정도)
+          earn_momentum_score     서프라이즈 × 남은 드리프트 = 지금 얼마나 유효한가
+
+    ★ 왜 '언제 끝나는지'가 중요한가: 어닝 서프라이즈 효과(PEAD)는 발표 후 수십 일에 걸쳐
+      서서히 반영되고 사라진다. 서프라이즈가 좋아도 이미 60일이 지났으면 더 볼 게 없다.
+      그래서 크기(모멘텀)와 잔여 수명(감쇠)을 곱한 earn_momentum_score를 핵심 지표로 둔다.
+    ★ 모든 지표는 '발표일 이후'에만 값이 채워진다 — 미래 정보 차단.
+    """
+    if earn_df is None or len(earn_df) == 0:
+        return 0
+    try:
+        idx = cl.index
+        n = len(idx)
+        _dates = [d for d in earn_df.index if d <= idx[-1]]
+        if len(_dates) < 2:
+            return 0
+        _drift = int(globals().get('EARN_DRIFT_DAYS', 60))
+
+        sup = earn_df.get('surprise_pct')
+        if sup is None:
+            return 0
+        sup = pd.to_numeric(sup, errors='coerce')
+
+        # 발표일을 거래일 인덱스에 매핑(그 날 이후 첫 거래일)
+        pos = []
+        for d in _dates:
+            _p = idx.searchsorted(pd.Timestamp(d))
+            pos.append(int(min(_p, n - 1)))
+
+        last_sup = np.full(n, np.nan); ma4 = np.full(n, np.nan)
+        trend = np.full(n, np.nan); streak = np.full(n, np.nan)
+        accel = np.full(n, np.nan); since = np.full(n, np.nan)
+        cyc = np.full(n, np.nan); reaction = np.full(n, np.nan)
+        drift_cum = np.full(n, np.nan)
+
+        _svals = [float(sup.get(d, np.nan)) for d in _dates]
+        _px = cl.to_numpy(dtype=float)
+        for i, p in enumerate(pos):
+            _hist = [v for v in _svals[:i + 1] if np.isfinite(v)]
+            if not _hist:
+                continue
+            _nxt = pos[i + 1] if i + 1 < len(pos) else n
+            _seg = slice(p, _nxt)
+            last_sup[_seg] = _hist[-1]
+            ma4[_seg] = float(np.mean(_hist[-4:]))
+            if len(_hist) >= 4:
+                trend[_seg] = float(np.mean(_hist[-2:]) - np.mean(_hist[-4:-2]))
+            accel[_seg] = _hist[-1] - float(np.mean(_hist[-4:]))
+            _st = 0
+            for v in reversed(_hist):
+                if v > 0 and _st >= 0: _st += 1
+                elif v < 0 and _st <= 0: _st -= 1
+                else: break
+            streak[_seg] = _st
+            _len = max(_nxt - p, 1)
+            since[p:_nxt] = np.arange(_len)
+            cyc[p:_nxt] = np.arange(_len) / float(_len)
+            if p + 1 < n and _px[p] > 0:
+                reaction[_seg] = float(_px[min(p + 1, n - 1)] / _px[p] - 1.0)
+            _base = _px[p] if _px[p] > 0 else np.nan
+            if np.isfinite(_base):
+                drift_cum[p:_nxt] = _px[p:_nxt] / _base - 1.0
+
+        # 다음 발표까지 남은 일수 — 직전 간격의 중앙값으로 추정
+        _gaps = np.diff(pos)
+        _med = float(np.median(_gaps)) if len(_gaps) else 63.0
+        until = np.clip(_med - since, 0, None)
+
+        _decay = np.clip(1.0 - since / max(_drift, 1), 0.0, 1.0)   # 드리프트 잔여 수명
+        out = {
+            'earn_surprise_last': last_sup,
+            'earn_surprise_ma4': ma4,
+            'earn_surprise_trend': trend,
+            'earn_beat_streak': streak,
+            'earn_accel': accel,
+            'earn_days_since': since,
+            'earn_days_until': until,
+            'earn_drift_window': ((since >= 1) & (since <= _drift)).astype(float),
+            'earn_pre_window': (until <= 5).astype(float),
+            'earn_cycle_pos': cyc,
+            'earn_reaction': reaction,
+            'earn_drift_cum': drift_cum,
+            'earn_drift_decay': _decay,
+            # ★ 핵심 — 서프라이즈 크기 × 남은 드리프트 수명
+            'earn_momentum_score': np.nan_to_num(ma4) * _decay,
+            'earn_momentum_fading': np.nan_to_num(ma4) * (1.0 - _decay),
+        }
+        _n_add = 0
+        for k, v in out.items():
+            feat[k] = pd.Series(v, index=idx)
+            _n_add += 1
+        return _n_add
+    except Exception as e:
+        print(f"  ⚠ 어닝 지표 생성 실패(무시): {e}")
+        return 0
+
+
 def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_health=True):
     # ★ 지표 데이터 준비 상태 로그 (요청 반영) — compute_features 진입 시 자동 실행.
     #   외부에서 별도 호출도 가능. log_availability=False로 끌 수 있음.
@@ -12081,6 +12259,24 @@ def compute_features(ohlcv, closes, fred_df=None, *, log_availability=True, log_
     print(f"  계산된 피처 수: {len(feat.columns)}개")
 
     # ★ 피처 정제 (요청: 무효 지표를 모두 유효하도록 개선) — 무효/부분 판정의 근본 원인을
+    # ★★★ (요청) 어닝 지표 추가 — 정제 직전에 붙인다.
+    #   기존에는 '1·4·7·10월'이라는 달력 추측(earnings_season_vol_spike)만 있었고
+    #   실제 발표일·서프라이즈는 쓰지 않았다. 실적 데이터를 받아 어닝 모멘텀과
+    #   '그 효과가 언제 끝나는지'(드리프트 잔여 수명)를 지표로 만든다.
+    try:
+        if bool(globals().get('USE_EARNINGS_FEATURES', True)):
+            _tk = str(globals().get('TICKER', '') or '').upper()
+            if _tk:
+                _ed = download_earnings_data(_tk, start=globals().get('DOWNLOAD_START'))
+                _na = add_earnings_features(feat, cl, _ed)
+                if _na:
+                    print(f"  ✓ 어닝 지표 {_na}개 추가 "
+                          f"(발표 {len(_ed)}회분 — 서프라이즈·모멘텀·드리프트 수명)")
+                else:
+                    print("  ℹ 어닝 데이터 없음 — 어닝 지표 생략")
+    except Exception as _ee:
+        print(f"  ⚠ 어닝 지표 추가 생략(무시): {_ee}")
+
     #   룩어헤드 없이 안전하게 복구. compute_features 결과 전체에 일괄 적용.
     try:
         feat = sanitize_features(feat, verbose=True)
@@ -14837,15 +15033,32 @@ GROUP_ROLE_DIR_MIN                       = 0.03   # 방향성으로 인정할 �
 GROUP_ROLE_DIR_RANK_MIN                  = 0.6    # 방향성 상대순위 상위 40%면 우선 배정
 GROUP_ROLE_DIR_BONUS                     = 0.15   # 동점 경합 시 방향성 가산
 GROUP_ROLE_MIN_DIRECTION_GROUPS          = 3      # 방향성 그룹 최소 개수(안전장치)
-KL_REGIME_WEIGHT                         = 0.5    # 국면이 문턱을 움직이는 폭
-KL_RISK_WEIGHT                           = 0.5    # 위험이 문턱을 움직이는 폭
-KL_MEANREV_WEIGHT                        = 0.3    # 과매도면 매수 문턱↓ (되돌림 진입)
-KL_TRENDSTR_WEIGHT                       = 0.3    # 추세 강하면 청산 문턱↓ (덜 팔게)
+#   ★★★ (실측 조정) 게이트를 켠 뒤 실제 GOOG 워크포워드가 +109.75 → +103.41%p 로
+#     6.34%p 떨어졌다(거래는 265→469회로 77% 증가). 합성 데이터에서는 게이트 전부가
+#     최선이었지만(+12.25 → +15.12%), 실제 데이터에서는 문턱을 너무 크게 흔들어
+#     진입이 잦아지고 성적이 나빠졌다. 실제 결과를 따라 폭을 절반으로 줄인다.
+#     ★ 0으로 두면 게이트 없이 예전 동작. 늘리려면 실제 워크포워드로 확인하고 올릴 것.
+KL_REGIME_WEIGHT                         = 0.25   # 국면이 문턱을 움직이는 폭
+KL_RISK_WEIGHT                           = 0.25   # 위험이 문턱을 움직이는 폭
+KL_MEANREV_WEIGHT                        = 0.15   # 과매도면 매수 문턱↓ (되돌림 진입)
+KL_TRENDSTR_WEIGHT                       = 0.15   # 추세 강하면 청산 문턱↓ (덜 팔게)
 KL_CONVICTION_WEIGHT                     = 0.0    # net 증폭(기본 OFF — 효과 확인 후 사용)
 KL_CRASH_THRESHOLD                       = 0.8    # 꼬리위험 게이트가 이 값 넘으면 강제 청산
-KL_ROTATION_WEIGHT                       = 0.4    # 섹터 상대강세면 매수문턱↓
-KL_BREADTH_WEIGHT                        = 0.3    # 시장폭 넓으면 매수문턱↓
-KL_LIQUIDITY_WEIGHT                      = 0.3    # 유동성 우호적이면 매수문턱↓
+KL_ROTATION_WEIGHT                       = 0.2    # 섹터 상대강세면 매수문턱↓
+KL_BREADTH_WEIGHT                        = 0.15   # 시장폭 넓으면 매수문턱↓
+KL_LIQUIDITY_WEIGHT                      = 0.15   # 유동성 우호적이면 매수문턱↓
+# ★ 매 실행마다 '게이트 켬 vs 끔'을 같은 OOS 기준으로 비교해 로그에 남긴다.
+#   게이트가 손해면 경고가 뜨므로 가중치를 줄일지 끌지 숫자로 판단할 수 있다.
+KL_TIMING_WEIGHT                         = 0.15   # 선행성 있으면 매수문턱↓
+KL_EXHAUST_WEIGHT                        = 0.15   # 추세 끝물이면 청산문턱↑(빨리 팔게)
+KL_CALENDAR_WEIGHT                       = 0.10   # 시기적으로 유리하면 매수문턱↓
+# ★★★ (요청) 어닝 — 실적 개선이면 진입을 쉽게, 실적 효과가 소진되면 청산을 앞당긴다.
+KL_EARNMOM_WEIGHT                        = 0.25
+KL_EARNFADE_WEIGHT                       = 0.20
+# ★ 실제 어닝 데이터(yfinance) 사용 여부. False면 어닝 지표 없이 진행.
+USE_EARNINGS_FEATURES                    = True
+EARN_DRIFT_DAYS                          = 60     # 어닝 드리프트 유효 기간(일)
+KL_GATE_AB_TEST                          = True
 GROUP_ROLE_SHORT_HORIZON                 = 5      # 섹터강약·시장폭 판단 단기 일수
 SIMPLE_POOL_MT_Z_CAP                     = 4.0
 
@@ -17497,6 +17710,11 @@ def _indicator_group_of(name):
     if has('volume', 'obv', 'mfi', 'adl', 'vwap', 'vwma', 'turnover', 'dollar_vol',
            'accum', 'distrib', 'flow', 'cmf', 'eom', 'force_index'):
         return '거래량/자금'
+    # ── 어닝(실적) ──
+    #   ★★★ (요청) 실적은 성격이 완전히 달라 별도 그룹으로 둔다. 서프라이즈 크기와
+    #   그 효과의 잔여 수명(드리프트)이 핵심이라 기술적 지표와 섞으면 안 된다.
+    if n.startswith('earn_') or any(k in n for k in ('earnings', 'eps_', 'surprise')):
+        return '어닝'
     # ── 섹터 (업종별 강세/약세 — 섹터 로테이션 판단용) ──
     #   ★★★ (요청) "섹터별 강세/약세 흐름 같은 건 왜 없나" — 실제로 섹터 지표가
     #   500개 넘게 있는데 접두사가 제각각이라 '기타:reit', '기타:semi'처럼 흩어져
@@ -17590,7 +17808,9 @@ def _build_regime_risk_gates(feat, close_arr, roles, train_frac=0.7):
             fwd_s[t] = np.nansum(_sg); up_r[t] = float(np.nanmean(_sg > 0))
         TARGETS = {'regime': fwd_n, 'risk': vol_n, 'crash': -dd_n,
                    'trendstr': fwd_n, 'meanrev': -fwd_n, 'conviction': np.abs(r1),
-                   'rotation': fwd_s, 'breadth': up_r, 'liquidity': -dd_n}
+                   'rotation': fwd_s, 'breadth': up_r, 'liquidity': -dd_n,
+                   'timing': fwd_s, 'exhaust': -fwd_n, 'calendar': fwd_s,
+                   'earnmom': fwd_n, 'earnfade': -fwd_n}
 
         def _stack(role_name):
             tgt = TARGETS.get(role_name)
@@ -17627,7 +17847,8 @@ def _build_regime_risk_gates(feat, close_arr, roles, train_frac=0.7):
         gates = {}
         _msg = []
         for rname in ('regime', 'risk', 'crash', 'trendstr', 'meanrev', 'conviction',
-                      'rotation', 'breadth', 'liquidity'):
+                      'rotation', 'breadth', 'liquidity', 'timing', 'exhaust',
+                      'calendar', 'earnmom', 'earnfade'):
             arr, cnt = _stack(rname)
             gates[rname] = arr
             if arr is not None:
@@ -17656,6 +17877,14 @@ ROLE_SPECS = {
     'rotation'   : ('섹터강약 — 업종 자금이 어디로',      '상대강세면 매수문턱↓'),
     'breadth'    : ('시장폭 — 오르는 종목이 넓은가',      '폭 좁으면 매수문턱↑'),
     'liquidity'  : ('유동성 — 자금 환경이 우호적인가',    '경색이면 매수문턱↑'),
+    # ★★★ (요청 — 2차 확인) 실제 지표 구성을 다시 훑어 누락된 용도를 더 채움
+    'timing'     : ('타이밍 — 며칠 뒤에 오는가(리드)',    '신호를 며칠 당겨/늦춰 반영'),
+    'exhaust'    : ('소진 — 추세가 끝물인가',            '과열이면 청산문턱L↑(빨리 팔게)'),
+    'calendar'   : ('달력 — 요일·월말 등 시기 편향',      '불리한 시기면 매수문턱↑'),
+    # ★★★ (요청) 어닝 — 실적이 좋으면 상승 추세, 나쁘면 하락 추세.
+    #   단순히 '좋다/나쁘다'가 아니라 그 효과가 아직 유효한지(드리프트 잔여)가 핵심이다.
+    'earnmom'    : ('어닝모멘텀 — 실적이 좋아지는가',      '개선이면 매수문턱↓'),
+    'earnfade'   : ('어닝소진 — 실적 효과가 끝나가는가',    '소진되면 청산문턱↑'),
 }
 
 
@@ -17774,6 +18003,34 @@ def _analyze_group_roles(feat, close_arr, groups_map=None, train_frac=0.7,
                 # ⑩ 유동성 — 지표가 낮을 때(경색) 향후 낙폭이 커지는가
                 _c5 = _corr(raw, -dd_n[:cut])
                 if np.isfinite(_c5): acc['liquidity'].append(abs(_c5))
+                # ⑪ 타이밍 — 지표를 며칠 당겼을 때 상관이 더 커지는가(선행성)
+                #    당장은 안 맞지만 며칠 뒤 맞는 지표는 '리드'를 줘야 쓸 수 있다.
+                _best_lead = 0.0
+                for _ld in (2, 3, 5):
+                    if _ld < cut:
+                        _c6 = _corr(raw[:-_ld], r1[:cut][_ld:])
+                        if np.isfinite(_c6):
+                            _best_lead = max(_best_lead, abs(_c6))
+                _now = abs(_corr(raw, r1[:cut])) if np.isfinite(_corr(raw, r1[:cut])) else 0.0
+                acc['timing'].append(max(_best_lead - _now, 0.0))
+                # ⑫ 소진 — 지표가 극단(상위 10%)일 때 향후 수익이 오히려 나쁜가(끝물)
+                if len(fz) > 100:
+                    _ex = np.nanpercentile(fz, 90)
+                    _sg2 = fwd_n[:cut][z >= _ex]
+                    _sg2 = _sg2[np.isfinite(_sg2)]
+                    if len(_sg2) > 20:
+                        acc['exhaust'].append(max(-float(np.mean(_sg2)), 0.0))
+                # ⑬ 달력 — 지표가 요일·월중 위치와 강하게 묶여 있는가
+                _dow = np.arange(cut) % 5
+                _c7 = _corr(raw, _dow.astype(float))
+                if np.isfinite(_c7): acc['calendar'].append(abs(_c7))
+                # ⑭ 어닝모멘텀 — 지표가 높을 때 '향후 수 주' 수익이 좋은가.
+                #    실적 개선이 추세로 이어지는지를 본다(regime과 달리 부호를 지킨다:
+                #    좋을수록 오르는 관계여야 매수 근거가 된다).
+                _c8 = _corr(raw, fwd_n[:cut])
+                if np.isfinite(_c8): acc['earnmom'].append(max(_c8, 0.0))
+                # ⑮ 어닝소진 — 지표가 높을 때 향후 수익이 오히려 나쁜가(효과가 끝남)
+                if np.isfinite(_c8): acc['earnfade'].append(max(-_c8, 0.0))
 
             sc = {k: (float(np.mean(v)) if v else 0.0) for k, v in acc.items()}
             if not any(sc.values()):
@@ -24350,6 +24607,18 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     if _ro is not None and _w_ro > 0: _adjK -= _w_ro * _ro          # 섹터 강세 → 낮춤
     if _br is not None and _w_br > 0: _adjK -= _w_br * _br          # 시장폭 넓음 → 낮춤
     if _lq is not None and _w_lq > 0: _adjK -= _w_lq * _lq          # 유동성 우호 → 낮춤
+    _ti, _ex, _cal = _ga('timing'), _ga('exhaust'), _ga('calendar')
+    _w_ti = float(globals().get('KL_TIMING_WEIGHT', 0.15))
+    _w_ex = float(globals().get('KL_EXHAUST_WEIGHT', 0.15))
+    _w_cal = float(globals().get('KL_CALENDAR_WEIGHT', 0.1))
+    if _ti is not None and _w_ti > 0: _adjK -= _w_ti * _ti          # 선행신호 우호 → 낮춤
+    if _cal is not None and _w_cal > 0: _adjK -= _w_cal * _cal      # 유리한 시기 → 낮춤
+    if _ex is not None and _w_ex > 0: _adjL += _w_ex * _ex          # 끝물 → 청산문턱↑(빨리 팔게)
+    _em, _ef = _ga('earnmom'), _ga('earnfade')
+    _w_em = float(globals().get('KL_EARNMOM_WEIGHT', 0.25))
+    _w_ef = float(globals().get('KL_EARNFADE_WEIGHT', 0.20))
+    if _em is not None and _w_em > 0: _adjK -= _w_em * _em          # 실적 개선 → 매수문턱↓
+    if _ef is not None and _w_ef > 0: _adjL += _w_ef * _ef          # 실적효과 소진 → 빨리 청산
     # 청산 문턱 L 이동분 (음수 = 덜 팔게 = 추세를 더 오래 탐)
     _adjL = np.zeros(n)
     if _ts is not None and _w_ts > 0: _adjL -= _w_ts * _ts
@@ -24536,6 +24805,35 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
                             _acc.append(_v2)
             _sm[(K, L)] = sum(_acc) / len(_acc) if _acc else v
         _bk = max(_sm, key=lambda kk: (_sm[kk], -abs(kk[0]), -abs(kk[1])))
+
+        # ★★★ (실측 필요) 게이트가 정말 도움이 되는지 매 실행마다 스스로 확인한다.
+        #   게이트를 끈 상태로 같은 OOS 기준을 다시 계산해 비교한다. 실측에서 게이트를
+        #   켠 뒤 워크포워드가 109.75 → 103.41%p로 6.34%p 떨어진 적이 있어, 추측하지
+        #   말고 숫자로 판단할 수 있게 남긴다.
+        if _use_gate and bool(globals().get('KL_GATE_AB_TEST', True)):
+            try:
+                _off = {}
+                for K2 in kg:
+                    for L2 in _kg_L:
+                        if L2 > K2:
+                            continue
+                        _p2 = np.zeros(n); _c2 = 0.0
+                        for _t2 in range(n):
+                            _v2 = net[_t2]
+                            if _v2 >= K2: _c2 = 1.0
+                            elif _v2 <= L2: _c2 = 0.0
+                            _p2[_t2] = _c2
+                        _h2 = np.zeros(n); _h2[1:] = _p2[:-1] * r[1:]
+                        _off[(K2, L2)] = float(np.mean([_h2[a:b].sum() for a, b in _segs]))
+                if _off:
+                    _bo = max(_off.values()); _bg = _sm[_bk]
+                    _verdict = ('게이트가 도움' if _bg > _bo else
+                                '★게이트가 오히려 손해 — KL_*_WEIGHT를 줄이거나 0으로 두세요')
+                    print(f"    (게이트 A/B) 켬 OOS {_bg*100:+.1f}% vs 끔 {_bo*100:+.1f}%"
+                          f" → {_verdict}")
+            except Exception:
+                pass
+
         for (ret, mdd, dl, K, L, pos) in _all:
             if (K, L) == _bk:
                 _in_ret = best_ret[2] if best_ret else 0.0
@@ -29198,7 +29496,6 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "★ '매수 유리/매도 유리'는 그 용도가 어느 쪽 결정을 돕는지를 뜻한다 — "
                 "매수 문턱을 낮추는 용도는 매수에, 진입을 억제하거나 청산을 돕는 용도는 매도에 유리하다.")
             ws_r.cell(1, 1).font = Font(italic=True, size=9, color='808080')
-            ws_r.merge_cells('A1:N1')
 
             _ROLE_SIDE = {
                 'direction' : ('양쪽',   '매수·매도 투표에 직접 참여'),
@@ -29211,16 +29508,23 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 'rotation'  : ('매수 유리', '섹터 자금이 몰리면 진입 문턱을 낮춤'),
                 'breadth'   : ('양쪽',   '폭 넓으면 매수 촉진 / 좁으면 억제'),
                 'liquidity' : ('매도 유리', '자금 경색이면 진입 억제'),
+                'timing'    : ('매수 유리', '며칠 뒤 오는 신호를 미리 당겨 진입 기회 확보'),
+                'exhaust'   : ('매도 유리', '추세 끝물이면 청산을 앞당김'),
+                'calendar'  : ('양쪽',   '유리한 시기 매수 촉진 / 불리한 시기 억제'),
+                'earnmom'   : ('매수 유리', '실적이 좋아지면 진입 문턱을 낮춤'),
+                'earnfade'  : ('매도 유리', '실적 효과가 끝나가면 청산을 앞당김'),
             }
             _cols_r = ['그룹', '지표수', '채택 용도', '하는 일', '매수/매도',
                        '방향성', '평균회귀', '추세강도', '국면', '위험',
-                       '꼬리위험', '확신도', '섹터강약', '시장폭']
+                       '꼬리위험', '확신도', '섹터강약', '시장폭', '유동성',
+                       '타이밍', '소진', '달력', '어닝모멘텀', '어닝소진']
             for _ci, _cn in enumerate(_cols_r, 1):
                 _hc = ws_r.cell(3, _ci); _hc.value = _cn
                 _hc.font = Font(bold=True, color='FFFFFF')
                 _hc.fill = PatternFill('solid', fgColor='305496')
             _keys = ['direction', 'meanrev', 'trendstr', 'regime', 'risk',
-                     'crash', 'conviction', 'rotation', 'breadth']
+                     'crash', 'conviction', 'rotation', 'breadth', 'liquidity',
+                     'timing', 'exhaust', 'calendar', 'earnmom', 'earnfade']
             _rr = 4
             for _g, _v in sorted(_roles_r.items(), key=lambda kv: -kv[1]['n']):
                 _role = _v.get('role', '')
@@ -29262,7 +29566,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                         _cc.fill = PatternFill('solid', fgColor=(
                             'C6EFCE' if '매수' in _side else
                             ('FFC7CE' if '매도' in _side else 'FFF2CC')))
-            for _ci, _w in enumerate([14, 8, 12, 24, 10] + [9] * 9, 1):
+            ws_r.merge_cells('A1:T1')
+            for _ci, _w in enumerate([14, 8, 12, 24, 10] + [9] * 15, 1):
                 ws_r.column_dimensions[get_column_letter(_ci)].width = _w
             ws_r.freeze_panes = 'A4'
             print("  ✓ 그룹별 용도 시트 — %d개 그룹 배치" % len(_roles_r))
@@ -30417,9 +30722,7 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
                     _desc = ROLE_SPECS.get(_v['role'], ('', ''))
                     print(f"      · {_g:<12} {_v['n']:>4}개 → {_v['role']:<10} "
                           f"{_desc[1]:<20} "
-                          + ' '.join(f"{k[:4]}{_sc.get(k, 0):.3f}" for k in
-                                     ('direction', 'meanrev', 'trendstr', 'regime',
-                                      'risk', 'crash', 'conviction')))
+                          + ' '.join(f"{k[:4]}{_sc.get(k, 0):.3f}" for k in ROLE_SPECS))
                 _gates = _build_regime_risk_gates(
                     feat[indicators], np.asarray(close, dtype=float), _roles)
                 globals()['_KL_GATES'] = _gates
