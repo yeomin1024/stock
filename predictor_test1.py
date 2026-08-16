@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.c'
+CORE_VERSION = '2026-08-16.e'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14771,7 +14771,35 @@ STATE_MIN_LIFT_TO_KEEP                   = 0.0
 #   7천만 조합이면 약 414만 개가 '성공률 70% 이상'으로 통과한다.
 #   → Wilson z를 조합 수에 맞춰 완만히 올려(로그 비례) 우연 통과를 걸러낸다.
 #     0이면 보정 없음(예전 동작). 0.35면 조합 15,000개에서 z가 1.95 → 3.6 수준.
-SIMPLE_POOL_MT_STRENGTH                  = 0.35
+#   ★★★ (실측 결론 — 기본 OFF) 이론은 맞지만 실제로는 선별력이 개선되지 않았다.
+#     검증: 잡음 지표 80개 + 진짜 신호 지표 15개를 섞고 상위 20개를 뽑았을 때
+#           보정 없음 [12, 11, 9] → 평균 10.7개 / 보정 0.35 [12, 10, 9] → 평균 10.3개
+#           3개 시드 전부 같거나 오히려 나빴다.
+#     이유: Wilson 하한은 표본수에 반응하지 실제 예측력에 반응하지 않는다. z를 올리면
+#           잡음과 진짜 신호가 '함께' 깎여 순위가 거의 그대로다. 다중검정 문제 자체는
+#           실재하지만 z 상향으로는 풀리지 않는다 — 근본 해법은 워크포워드로 검증하는 것
+#           (이미 적용돼 있음)과 탐색 공간 자체를 줄이는 것(호라이즌 수 축소)이다.
+#     필요하면 0.2~0.35로 켜서 비교해 보되, 기본값은 끈다.
+SIMPLE_POOL_MT_STRENGTH                  = 0.0
+
+# ════════════════════════════════════════════════════════════════
+# ★★★ (요청) 매수/매도 결정 — K/L 임계값을 '미래 예측' 기준으로 고른다
+# ════════════════════════════════════════════════════════════════
+# 문제: 지금까지는 (K,L) 격자 수천 개 중 '전 구간 수익 최대'를 골랐다. 그 구간은 전부
+#   인샘플이라, 과거에 가장 잘 맞은 값일 뿐 미래 최적이라는 근거가 없다.
+#   실측: 인샘플 +662.8% vs 워크포워드 +110%p — 6배 차이.
+# 해법: 뒤쪽 기간을 여러 폴드로 나눠 '검증구간에서만' 실현된 수익의 합이 최대인 K/L을 쓴다.
+#   = "과거에 이 값을 골랐다면 그 다음 구간에서 어땠나"를 직접 재는 것.
+KL_SELECT_BY_OOS                         = True
+KL_OOS_FOLDS                             = 4      # 검증 폴드 수
+KL_OOS_START_FRAC                        = 0.5    # 뒤쪽 50%를 검증에 사용
+# ★ 이웃 (K,L)들의 평균으로 평활 — 뾰족한 정점(조금만 달라져도 급락)이 아니라
+#   '평평하고 넓은 고원'의 중심을 고른다. 미래에 조건이 조금 달라져도 성적이 유지된다.
+KL_OOS_SMOOTH                            = 1
+# ★ 매수 문턱 하한 — 매수·매도가 동시에 발화해 애매할 때 현금을 택하게 한다.
+#   매수 실패는 즉시 손실, 매도 실패는 기회비용뿐이므로 매수에만 더 높은 문턱을 요구.
+#   None이면 제한 없음(예전 동작). 0.0이면 'net이 양수일 때만 매수'.
+KL_MIN_BUY_THRESHOLD                     = 0.0
 SIMPLE_POOL_MT_Z_CAP                     = 4.0
 
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
@@ -22585,14 +22613,27 @@ def _evaluate_all_indicators_raw(feat, close, *, horizon, dd_limit, ru_limit, n_
     _key = (id(feat), id(close), feat.shape, len(close), horizon,
             round(float(dd_limit), 6), round(float(ru_limit), 6), _nth, _min_sig_floor,
             tuple(feat.columns))  # ★ 컬럼명까지 키에 포함 — id() 재사용 우연 충돌까지 방지
+    _key = (_key, round(float(globals().get('SIMPLE_POOL_MT_STRENGTH', 0.35)), 3))
     if _key in _EVAL_ALL_RAW_CACHE:
         _bdf_c, _sdf_c = _EVAL_ALL_RAW_CACHE[_key]
         print(f"     [캐스케이드] A풀 원시평가 캐시 재사용 (재계산 생략)")
         return _bdf_c, _sdf_c
+    # ★★★ (실측 버그수정) 다중검정 보정을 meta_grid_search 쪽에 넣었는데, 실제 실행
+    #   경로는 SKIP_LEGACY_META_ENSEMBLE 로 그쪽을 건너뛰고 여기(_evaluate_all_indicators_raw)
+    #   를 쓴다. 그래서 보정이 전혀 걸리지 않았다(로그에 '(다중검정 보정)' 줄이 없었고
+    #   결과도 사실상 동일). 실제 경로인 여기에 적용한다.
+    _wz_raw = _multiple_testing_z(n_thresholds=_nth, base_z=1.0)
+    if not globals().get('_MT_LOGGED_RAW', False):
+        _nh_ = len(globals().get('SIMPLE_POOL_HORIZON_CONFIG', [1]))
+        _nl_ = int(globals().get('LEAD_MAX_SHIFT', 5)) + 1
+        print(f"    (다중검정 보정) Wilson z 1.00 → {_wz_raw:.2f} — 지표당 조합 "
+              f"임계{_nth}×방향2×호라이즌{_nh_}×리드{_nl_} = {_nth*2*_nh_*_nl_:,}개에서 "
+              f"최고를 고르기 때문 (끄려면 SIMPLE_POOL_MT_STRENGTH=0)")
+        globals()['_MT_LOGGED_RAW'] = True
     _bdf, _sdf = evaluate_buy_sell_scores(
         feat, close, indicators=indicators, n_thresholds=_nth,
         pct_low=lo, pct_high=hi, horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
-        min_signals=_min_sig_floor, wilson_z=1.0,
+        min_signals=_min_sig_floor, wilson_z=_wz_raw,
         anchor_buy_arr=None, anchor_sell_arr=None)
     # ★★★ (요청 관련 — 버그수정, 근본원인) 용량이 3개뿐이면 호라이즌 1~5일(=서로 다른
     #   캐시 키 5개)을 순회하는 도중 앞쪽이 밀려나 버려서, "신뢰도만 다시 매기면 되는"
@@ -23986,15 +24027,66 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             k_grid = sorted(set(np.round(np.concatenate([
                 np.linspace(lo, hi, 60), np.nanpercentile(net, np.linspace(1, 99, 40))]), 4).tolist()))
     kg = sorted(k_grid)
+    # ★★★ (요청) "매수·매도 둘 다 발화하면 어느 쪽을 골라야 하나 — 기준이 애매하다"
+    #   지금 규칙은 net = Σ매수가중 − Σ매도가중 한 줄이고, K/L이 둘 다 0이면 net>0이기만
+    #   하면 매수다. 매수 실패는 즉시 손실, 매도 실패는 기회비용뿐인데 문턱이 대칭이다.
+    #   → 매수 문턱 K의 하한을 둬서, 매수는 '확실히 우세할 때만' 잡도록 한다.
+    #     (K는 진입 문턱, L은 청산 문턱. K를 올리면 애매한 국면에서 현금을 택한다.)
+    _kmin = globals().get('KL_MIN_BUY_THRESHOLD', None)
+    if _kmin is not None:
+        try:
+            _kmin = float(_kmin)
+            _n_before = len(kg)
+            kg_buy = [k for k in kg if k >= _kmin]
+            if kg_buy:
+                _kg_all = kg
+                kg = kg_buy
+                if not globals().get('_KL_KMIN_LOGGED', False):
+                    print(f"    (매수 문턱 하한) K ≥ {_kmin} 로 제한 — 매수·매도가 동시에 "
+                          f"발화해 애매할 때는 현금을 택한다(매수 실패=즉시 손실, "
+                          f"매도 실패=기회비용). 격자 {_n_before}→{len(kg)}개")
+                    globals()['_KL_KMIN_LOGGED'] = True
+        except Exception:
+            pass
+
+    # ★★★ (요청 — 핵심) "최적 수익률로 임계값을 정하는 게 정말 미래에도 맞는가?"
+    #   맞지 않다. 지금은 (K,L) 격자 수천 개 중 '전 구간 수익 최대'를 고르는데, 그 구간은
+    #   전부 인샘플이다. 실측에서도 인샘플 +662.8% vs 워크포워드 +110%p로 6배 차이가 났다.
+    #   격자에서 최고를 고르는 순간 그 값은 과거에 가장 잘 맞은 값일 뿐, 미래 최적이라는
+    #   근거가 전혀 없다.
+    #
+    #   [미래를 가장 잘 예측하는 방법] "과거에 이 K/L을 골랐다면 그 다음 구간에서 어땠나"를
+    #   직접 재서 고른다. 뒤쪽 기간을 여러 폴드로 나눠, 각 (K,L)을 '검증구간에서만' 돌린
+    #   수익의 합이 최대인 값을 채택한다. 인샘플 최대가 아니라 아웃오브샘플 최대다.
+    #   추가로, 수익 곡선이 뾰족한 지점(조금만 달라져도 급락)은 위험하므로 이웃 (K,L)들의
+    #   평균 수익으로 평활해서 '평평하고 넓은 고원'의 중심을 고른다 — 이래야 미래에
+    #   조건이 조금 달라져도 성적이 유지된다.
+    _oos_sel = bool(globals().get('KL_SELECT_BY_OOS', True)) and fixed_kl is None
+    _oos_scores = {}
+    if _oos_sel and n >= 200:
+        _nf = int(globals().get('KL_OOS_FOLDS', 4))
+        _sf = float(globals().get('KL_OOS_START_FRAC', 0.5))
+        _b0 = int(n * _sf)
+        _edges = [_b0 + int(round((n - _b0) * i / _nf)) for i in range(_nf + 1)]
+        _segs = [(_edges[i], _edges[i + 1]) for i in range(_nf)
+                 if _edges[i + 1] - _edges[i] >= 5]
+        if not _segs:
+            _oos_sel = False
 
     best_ret = None; best_mdd = None; cnt = 0; _all = []
+    _kg_L = globals().get('_KL_LGRID_OVERRIDE') or (locals().get('_kg_all') or kg)
     for K in kg:
-        for L in kg:
+        for L in _kg_L:
             if L > K:
                 continue
             cnt += 1
             ret, mdd, dl, pos = _run(K, L)
             _all.append((ret, mdd, dl, K, L, pos))
+            if _oos_sel:
+                # 검증구간에서만 실현된 수익의 합 — 앞 구간은 '그 K/L을 알아내는 데'
+                # 썼다고 보고 성적에서 제외한다.
+                _hr = np.zeros(n); _hr[1:] = pos[:-1] * r[1:]
+                _oos_scores[(K, L)] = float(sum(_hr[a:b].sum() for a, b in _segs))
             if best_ret is None or ret > best_ret[2]:
                 best_ret = (K, L, ret, mdd, dl, pos)
             if mdd_limit is not None and mdd >= -abs(mdd_limit):
@@ -24004,7 +24096,37 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     #   사실상 동률로 보고 그리드 앞 순서(정준)를 일관 선택 — 하루 데이터로 0.5%p 차 1등이
     #   뒤바뀌며 K/L이 널뛰던 문제(실측: K 0.000→0.761→0.449→0.701) 대응.
     #   STABLE_NEARTIE_EPS=0 & STABLE_NEARTIE_REL=0 이면 기존 순수 argmax 그대로.
-    if best_ret is not None and _all:
+    # ★ OOS 점수로 최종 (K,L) 재선택 — 이웃 평활 후 최대
+    if _oos_sel and _oos_scores and _all:
+        _ks = sorted(set(k for k, _ in _oos_scores))
+        _ls = sorted(set(l for _, l in _oos_scores))
+        _ki = {k: i for i, k in enumerate(_ks)}
+        _li = {l: i for i, l in enumerate(_ls)}
+        _w = int(globals().get('KL_OOS_SMOOTH', 1))
+        _sm = {}
+        for (K, L), v in _oos_scores.items():
+            _acc = []
+            for dk in range(-_w, _w + 1):
+                for dl2 in range(-_w, _w + 1):
+                    _i, _j = _ki[K] + dk, _li[L] + dl2
+                    if 0 <= _i < len(_ks) and 0 <= _j < len(_ls):
+                        _v2 = _oos_scores.get((_ks[_i], _ls[_j]))
+                        if _v2 is not None:
+                            _acc.append(_v2)
+            _sm[(K, L)] = sum(_acc) / len(_acc) if _acc else v
+        _bk = max(_sm, key=lambda kk: (_sm[kk], -abs(kk[0]), -abs(kk[1])))
+        for (ret, mdd, dl, K, L, pos) in _all:
+            if (K, L) == _bk:
+                _in_ret = best_ret[2] if best_ret else 0.0
+                print(f"    (K/L 선택 — 미래예측 기준) OOS {len(_segs)}구간 검증수익 최대 "
+                      f"K={K:.3f}/L={L:.3f} (OOS {_sm[_bk]*100:+.1f}%, 전구간 {ret*100:+.1f}%)"
+                      f"  ※ 인샘플 최대는 K={best_ret[0]:.3f}/L={best_ret[1]:.3f}"
+                      f"({_in_ret*100:+.1f}%) — 그건 과거에만 맞는 값이라 쓰지 않음")
+                best_ret = (K, L, ret, mdd, dl, pos)
+                break
+        globals()['_KL_OOS_PICKED'] = True
+
+    if best_ret is not None and _all and not globals().get('_KL_OOS_PICKED', False):
         _eff = _near_tie_eff_eps(best_ret[2])
         if _eff > 0:
             _max_r = best_ret[2]
