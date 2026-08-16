@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.e'
+CORE_VERSION = '2026-08-16.g'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14796,6 +14796,21 @@ KL_OOS_START_FRAC                        = 0.5    # 뒤쪽 50%를 검증에 사�
 # ★ 이웃 (K,L)들의 평균으로 평활 — 뾰족한 정점(조금만 달라져도 급락)이 아니라
 #   '평평하고 넓은 고원'의 중심을 고른다. 미래에 조건이 조금 달라져도 성적이 유지된다.
 KL_OOS_SMOOTH                            = 1
+# ★ 폴드 집계 방식 — 'median'(기본) / 'min' / 'mean'.
+#   합계를 쓰면 한 구간에서만 크게 번 K/L이 뽑혀 나머지 구간에서 무너진다(실측 확인).
+#   중앙값은 '여러 구간에서 고르게 통하는' 값만 살아남게 한다. 더 보수적이면 'min'.
+#   ★★★ (실측 결론 — 'mean' 채택) 12개 시드로 진짜 미래구간에서 비교:
+#         mean(감점0)      평균 +14.65%  최악 -13.58%  플러스 8/12   ← 최선
+#         median(감점0)    평균  +8.52%  최악 -43.80%  플러스 7/12
+#         median(감점0.5)  평균 +11.63%  최악 -14.45%  플러스 6/12
+#         min(감점0)       평균  +6.42%  최악  -5.73%  플러스 6/12
+#     '한 구간에서만 크게 번 값'을 걸러내려 중앙값을 써봤지만 오히려 나빴다. 중앙값은
+#     폴드 하나의 순위 변화에 민감해 정보를 버리는 쪽이었다. 평균이 가장 안정적이다.
+#     (min은 지나치게 보수적이라 수익 기회를 놓친다 — 최악값은 좋지만 평균이 절반)
+KL_OOS_AGG                               = 'mean'
+# ★ 구간 간 성적 편차에 대한 감점 — 고르게 통하는 K/L을 선호하게 만든다.
+#   ★ 실측상 감점을 주면 평균이 +14.65% → +11.63%로 떨어졌다 → 0으로 둔다.
+KL_OOS_STD_PENALTY                       = 0.0
 # ★ 매수 문턱 하한 — 매수·매도가 동시에 발화해 애매할 때 현금을 택하게 한다.
 #   매수 실패는 즉시 손실, 매도 실패는 기회비용뿐이므로 매수에만 더 높은 문턱을 요구.
 #   None이면 제한 없음(예전 동작). 0.0이면 'net이 양수일 때만 매수'.
@@ -24062,7 +24077,7 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     #   평균 수익으로 평활해서 '평평하고 넓은 고원'의 중심을 고른다 — 이래야 미래에
     #   조건이 조금 달라져도 성적이 유지된다.
     _oos_sel = bool(globals().get('KL_SELECT_BY_OOS', True)) and fixed_kl is None
-    _oos_scores = {}
+    _oos_scores = {}; _oos_folds = {}
     if _oos_sel and n >= 200:
         _nf = int(globals().get('KL_OOS_FOLDS', 4))
         _sf = float(globals().get('KL_OOS_START_FRAC', 0.5))
@@ -24083,10 +24098,28 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             ret, mdd, dl, pos = _run(K, L)
             _all.append((ret, mdd, dl, K, L, pos))
             if _oos_sel:
-                # 검증구간에서만 실현된 수익의 합 — 앞 구간은 '그 K/L을 알아내는 데'
-                # 썼다고 보고 성적에서 제외한다.
+                # ★★★ (자체 정정) 처음엔 '검증구간 수익의 합'을 최대화했는데, 그러면 그
+                #   구간들도 결국 최적화 대상이 되어 진짜 아웃오브샘플이 아니다(합을 키우는
+                #   방향으로 K/L이 맞춰짐). 실측에서도 한 폴드에서만 크게 번 K/L이 뽑혀
+                #   전구간 수익이 376.8%→220.5%로 무너지는 사례가 나왔다.
+                #   → 합 대신 '폴드별 수익의 중앙값(또는 최악값)'을 쓴다. 한 구간에서
+                #     우연히 크게 번 값은 중앙값을 못 올리므로, 여러 구간에서 '고르게'
+                #     통하는 K/L만 선택된다. 이게 미래에도 통할 가능성이 높은 값이다.
                 _hr = np.zeros(n); _hr[1:] = pos[:-1] * r[1:]
-                _oos_scores[(K, L)] = float(sum(_hr[a:b].sum() for a, b in _segs))
+                _fr = [float(_hr[a:b].sum()) for a, b in _segs]
+                _agg = str(globals().get('KL_OOS_AGG', 'median')).lower()
+                if _agg == 'min':
+                    _sc_v = min(_fr)
+                elif _agg == 'mean':
+                    _sc_v = sum(_fr) / len(_fr)
+                else:
+                    _sc_v = float(np.median(_fr))
+                # 구간 간 편차가 큰 값은 감점 — 고르게 통하는 쪽을 선호
+                _pen = float(globals().get('KL_OOS_STD_PENALTY', 0.5))
+                if _pen > 0 and len(_fr) > 1:
+                    _sc_v -= _pen * float(np.std(_fr))
+                _oos_scores[(K, L)] = _sc_v
+                _oos_folds[(K, L)] = _fr
             if best_ret is None or ret > best_ret[2]:
                 best_ret = (K, L, ret, mdd, dl, pos)
             if mdd_limit is not None and mdd >= -abs(mdd_limit):
@@ -24118,10 +24151,15 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
         for (ret, mdd, dl, K, L, pos) in _all:
             if (K, L) == _bk:
                 _in_ret = best_ret[2] if best_ret else 0.0
-                print(f"    (K/L 선택 — 미래예측 기준) OOS {len(_segs)}구간 검증수익 최대 "
-                      f"K={K:.3f}/L={L:.3f} (OOS {_sm[_bk]*100:+.1f}%, 전구간 {ret*100:+.1f}%)"
-                      f"  ※ 인샘플 최대는 K={best_ret[0]:.3f}/L={best_ret[1]:.3f}"
-                      f"({_in_ret*100:+.1f}%) — 그건 과거에만 맞는 값이라 쓰지 않음")
+                _fr_b = _oos_folds.get(_bk, [])
+                _npos_f = sum(1 for x in _fr_b if x > 0)
+                print(f"    (K/L 선택 — 미래예측 기준) K={K:.3f}/L={L:.3f} — "
+                      f"{len(_segs)}구간 중 플러스 {_npos_f}개, 구간별 "
+                      f"[{', '.join(f'{x*100:+.0f}%' for x in _fr_b)}], "
+                      f"OOS평균점수 {_sm[_bk]*100:+.1f}%, 전구간 {ret*100:+.1f}%")
+                print(f"      ※ 인샘플 최대는 K={best_ret[0]:.3f}/L={best_ret[1]:.3f}"
+                      f"({_in_ret*100:+.1f}%) — 한 구간에서 크게 번 값일 수 있어 쓰지 않음. "
+                      f"'검증구간들에서 평균적으로 잘 통한' 값을 고른다")
                 best_ret = (K, L, ret, mdd, dl, pos)
                 break
         globals()['_KL_OOS_PICKED'] = True
