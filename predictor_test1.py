@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.o'
+CORE_VERSION = '2026-08-16.p'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개(서프라이즈·모멘텀·드리프트수명)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 캐시 무효화')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15057,6 +15057,9 @@ KL_EARNMOM_WEIGHT                        = 0.25
 KL_EARNFADE_WEIGHT                       = 0.20
 # ★ 실제 어닝 데이터(yfinance) 사용 여부. False면 어닝 지표 없이 진행.
 USE_EARNINGS_FEATURES                    = True
+# ★ 캐시된 feat에 이 컬럼들이 없으면 캐시를 버리고 다시 계산한다.
+#   (새 지표를 추가했는데 예전 캐시가 쓰여 반영이 안 되는 사고 방지)
+FEATURE_CACHE_REQUIRED_COLS              = ['earn_momentum_score']
 EARN_DRIFT_DAYS                          = 60     # 어닝 드리프트 유효 기간(일)
 KL_GATE_AB_TEST                          = True
 GROUP_ROLE_SHORT_HORIZON                 = 5      # 섹터강약·시장폭 판단 단기 일수
@@ -24595,8 +24598,14 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     _mr, _ts = _ga('meanrev'), _ga('trendstr')
     _cr, _cv = _ga('crash'), _ga('conviction')
 
-    # 매수 문턱 K 이동분 (양수 = 진입 어렵게)
+    # ★★★ (실측 치명 버그수정) _adjL 초기화가 사용 지점보다 아래에 있어
+    #   UnboundLocalError로 _net_kl_search 전체가 죽었다. 그 예외가 상위에서
+    #   조용히 삼켜져 'net>K 폴백'으로 넘어갔고, OOS 기반 K/L 선택·게이트·A/B가
+    #   전부 무시된 채 K=-1.152 하나로 백테스트가 돌았다(로그에 K/L 선택·게이트 A/B
+    #   줄이 아예 없었던 이유). 두 배열을 사용 전에 함께 초기화한다.
+    # 매수 문턱 K 이동분 (양수 = 진입 어렵게) / 청산 문턱 L 이동분 (음수 = 덜 팔게)
     _adjK = np.zeros(n)
+    _adjL = np.zeros(n)
     if _rg is not None and _w_rg > 0: _adjK -= _w_rg * _rg          # 상승국면 → 낮춤
     if _rk is not None and _w_rk > 0: _adjK += _w_rk * _rk          # 위험↑ → 올림
     if _mr is not None and _w_mr > 0: _adjK -= _w_mr * _mr          # 과매도 → 낮춤
@@ -24619,9 +24628,7 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     _w_ef = float(globals().get('KL_EARNFADE_WEIGHT', 0.20))
     if _em is not None and _w_em > 0: _adjK -= _w_em * _em          # 실적 개선 → 매수문턱↓
     if _ef is not None and _w_ef > 0: _adjL += _w_ef * _ef          # 실적효과 소진 → 빨리 청산
-    # 청산 문턱 L 이동분 (음수 = 덜 팔게 = 추세를 더 오래 탐)
-    _adjL = np.zeros(n)
-    if _ts is not None and _w_ts > 0: _adjL -= _w_ts * _ts
+    if _ts is not None and _w_ts > 0: _adjL -= _w_ts * _ts   # 추세 강하면 덜 팔게
     # 강제 청산 마스크
     _force_cash = (_cr >= _crash_th) if (_cr is not None and _crash_th <= 1.0) else None
     # net 증폭 (확신도)
@@ -27397,7 +27404,12 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _kl_pre = _net_kl_search(_net0, _rr0, mdd_limit=_mddlim0)
             globals()['_KNET_KL'] = _kl_pre     # 아래 KL 시트도 이 결과 재사용 (중복 계산·불일치 방지)
     except Exception as _eklpre:
-        print(f"  ⚠ KL 사전계산 실패(일별백테는 net>K 폴백): {_eklpre}")
+        # ★★★ (실측) 이 예외가 조용히 넘어가면서 K/L 탐색·게이트·A/B가 통째로
+        #   무시됐는데 로그만 봐서는 알 수 없었다. 원인을 반드시 남긴다.
+        import traceback as _tb
+        print(f"  ★KL 사전계산 실패 — 일별백테가 'net>K 폴백'으로 돕니다: {_eklpre}")
+        print("     (이 경우 OOS 기반 K/L 선택·용도별 게이트가 전부 적용되지 않습니다)")
+        _tb.print_exc()
         _kl_pre = None
 
     for _si, (_shname, _nsd) in enumerate([('일별 백테스트', globals().get('_KNET_FULL') or _nsd_main)]):
@@ -30000,6 +30012,24 @@ def _resolve_data():
     feat   = g.get('_pair_feat',  g.get('feat'))
     close  = g.get('_pair_close', g.get('close'))
     ticker = g.get('_pair_ticker', g.get('TICKER'))
+    if feat is not None and close is not None and ticker is not None:
+        # ★★★ (실측 버그) 이전 실행의 feat이 전역에 남아 재사용되면서, 새로 추가한
+        #   지표(어닝 등)가 있는데도 compute_features가 아예 실행되지 않았다.
+        #   실측: 어닝 지표 15개를 넣었는데 로그에 '어닝 지표 추가'가 한 줄도 없고
+        #   feat=(1664, 4899)로 예전 캐시 그대로였다.
+        #   → 필수 지표가 빠져 있으면 캐시를 버리고 다시 계산한다.
+        try:
+            _need = list(globals().get('FEATURE_CACHE_REQUIRED_COLS',
+                                       ['earn_momentum_score']))
+            _miss = [c for c in _need if c not in feat.columns]
+            if _miss and bool(globals().get('USE_EARNINGS_FEATURES', True)):
+                print(f"  ⚠ 캐시된 feat에 새 지표가 없습니다({', '.join(_miss[:3])}) "
+                      f"→ 캐시를 버리고 다시 계산합니다")
+                for _k in ('_pair_feat', 'feat', '_pair_close', 'close'):
+                    globals().pop(_k, None)
+                feat = None
+        except Exception:
+            pass
     if feat is not None and close is not None and ticker is not None:
         print(f"  ✓ 메모리 로드: feat={feat.shape}, close={len(close)}일, ticker={ticker}")
         return feat, close, ticker
