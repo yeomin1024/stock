@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.k'
+CORE_VERSION = '2026-08-16.l'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정(투표 0개 방지)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14830,7 +14830,13 @@ KL_MIN_BUY_THRESHOLD                     = 0.0
 #     문턱을 움직이면 '지금이 살 만한 국면인가'라는 다른 질문에 답하게 된다.
 GROUP_ROLE_ENABLED                       = True
 GROUP_ROLE_HORIZON                       = 20     # 국면·위험 판단에 쓰는 향후 일수
-GROUP_ROLE_DIR_MIN                       = 0.03   # 방향성으로 인정할 최소 |상관|
+GROUP_ROLE_DIR_MIN                       = 0.03   # 방향성으로 인정할 최소 |상관|(절대값)
+# ★★★ (실측 치명 버그 대응) 능력마다 점수 척도가 달라(방향성 0.02~0.04 vs 추세강도
+#   0.15~0.27) 방향성이 늘 져서 '방향성 투표에 0개'가 됐다. 상대순위로 비교하되,
+#   방향성은 net을 만드는 핵심이라 우대·최소보장을 둔다.
+GROUP_ROLE_DIR_RANK_MIN                  = 0.6    # 방향성 상대순위 상위 40%면 우선 배정
+GROUP_ROLE_DIR_BONUS                     = 0.15   # 동점 경합 시 방향성 가산
+GROUP_ROLE_MIN_DIRECTION_GROUPS          = 3      # 방향성 그룹 최소 개수(안전장치)
 KL_REGIME_WEIGHT                         = 0.5    # 국면이 문턱을 움직이는 폭
 KL_RISK_WEIGHT                           = 0.5    # 위험이 문턱을 움직이는 폭
 KL_MEANREV_WEIGHT                        = 0.3    # 과매도면 매수 문턱↓ (되돌림 진입)
@@ -17772,7 +17778,13 @@ def _analyze_group_roles(feat, close_arr, groups_map=None, train_frac=0.7,
             sc = {k: (float(np.mean(v)) if v else 0.0) for k, v in acc.items()}
             if not any(sc.values()):
                 continue
-            # 방향성은 문턱을 넘으면 우선(가장 직접적인 능력)
+            # ★★★ (실측 치명적 버그) 방향성 점수만 유독 작아 항상 진다.
+            #   실측: dire 0.023~0.036 vs tren 0.15~0.27 — 척도가 달라 비교 자체가 불공정.
+            #   결과: '방향성 투표에 0개'가 되어 net을 만들 지표가 하나도 안 남았다.
+            #   원인: direction은 '하루 등락'과의 상관(원래 매우 작음)이고, trendstr은
+            #        '부호 일관성 비율'(0~1)이라 절대값 비교가 성립하지 않는다.
+            #   → 방향성도 다른 능력과 똑같이 '그룹 간 상대순위'로 비교한다(아래 정규화).
+            #     문턱은 절대값이 아니라 '상위 몇 %인가'로 바꾼다.
             _dir_min = float(globals().get('GROUP_ROLE_DIR_MIN', 0.03))
             if sc['direction'] >= _dir_min and sc['direction'] >= max(sc.values()) * 0.9:
                 role = 'direction'
@@ -17785,16 +17797,41 @@ def _analyze_group_roles(feat, close_arr, groups_map=None, train_frac=0.7,
         # ★ 능력별 점수 스케일이 제각각(상관 vs 비율 vs 수익차)이라 그대로 비교하면
         #   한 능력이 늘 이긴다 → 그룹 간 순위(백분위)로 바꿔 공정하게 비교한다.
         if out:
-            keys = [k for k in ROLE_SPECS if k != 'direction']
+            # ★ direction 도 정규화 대상에 포함 — 척도 차이로 늘 지던 문제 해결
+            keys = list(ROLE_SPECS)
             for k in keys:
                 vals = np.array([o['scores'][k] for o in out.values()], dtype=float)
                 rk = (vals.argsort().argsort() / max(len(vals) - 1, 1)) if len(vals) > 1 \
                     else np.zeros(len(vals))
                 for o, rv in zip(out.values(), rk):
                     o.setdefault('rank', {})[k] = float(rv)
+            # ★ 방향성 우대 — 가장 직접적인 능력이라 상대순위가 상위권이면 우선 배정한다.
+            #   (net에 투표할 지표가 최소한은 있어야 시스템이 돌아간다)
+            _dir_q = float(globals().get('GROUP_ROLE_DIR_RANK_MIN', 0.6))
+            _dir_bonus = float(globals().get('GROUP_ROLE_DIR_BONUS', 0.15))
             for g, o in out.items():
                 if o['role'] is None:
-                    o['role'] = max(o['rank'], key=lambda k: o['rank'][k])
+                    _rk2 = dict(o['rank'])
+                    _rk2['direction'] = _rk2.get('direction', 0.0) + _dir_bonus
+                    o['role'] = ('direction' if o['rank'].get('direction', 0) >= _dir_q
+                                 else max(_rk2, key=lambda k: _rk2[k]))
+            # ★ 안전장치 — 방향성 그룹이 하나도 없으면 net을 만들 수 없다.
+            #   방향성 상대순위 상위 그룹을 강제로 direction 으로 돌린다.
+            _n_dir = sum(1 for o in out.values() if o['role'] == 'direction')
+            _min_dir = int(globals().get('GROUP_ROLE_MIN_DIRECTION_GROUPS', 3))
+            if _n_dir < _min_dir:
+                _cand = sorted(out.items(),
+                               key=lambda kv: -kv[1]['rank'].get('direction', 0.0))
+                _added = 0
+                for _g2, _o2 in _cand:
+                    if _o2['role'] == 'direction':
+                        continue
+                    _o2['role'] = 'direction'
+                    _added += 1
+                    if _n_dir + _added >= _min_dir:
+                        break
+                print(f"    ★안전장치: 방향성 그룹이 {_n_dir}개뿐이라 상위 {_added}개를 "
+                      f"방향성으로 배정 — net 투표에 쓸 지표가 없으면 시스템이 동작하지 않음")
         return out
     except Exception as e:
         print(f'    ⚠ 그룹 용도 분석 실패(무시): {e}')
