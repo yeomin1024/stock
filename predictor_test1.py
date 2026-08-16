@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.g'
+CORE_VERSION = '2026-08-16.k'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14815,6 +14815,32 @@ KL_OOS_STD_PENALTY                       = 0.0
 #   매수 실패는 즉시 손실, 매도 실패는 기회비용뿐이므로 매수에만 더 높은 문턱을 요구.
 #   None이면 제한 없음(예전 동작). 0.0이면 'net이 양수일 때만 매수'.
 KL_MIN_BUY_THRESHOLD                     = 0.0
+
+# ════════════════════════════════════════════════════════════════
+# ★★★ (요청) 그룹별 용도 분화 — 버려지던 96% 지표를 살리는 방법
+# ════════════════════════════════════════════════════════════════
+# 문제: 4,832개 지표를 전부 같은 방식(임계 넘으면 매수/매도표)으로 쓴다. 그래서
+#   '내일 오를까'를 맞히는 지표만 살아남고 최종 사용은 185개(3.8%)뿐이다.
+#   성격이 다른 지표(국면·거시·변동성)는 그 시험에 안 맞아 통째로 탈락한다.
+# 해법: 그룹마다 세 능력을 실측해 가장 잘하는 쪽으로 쓴다.
+#   ① 방향성 → 기존대로 매수/매도 투표자
+#   ② 국면   → 매수 문턱 K를 국면에 따라 이동(상승국면 ↓, 하락국면 ↑)
+#   ③ 위험   → 변동성 확대 신호면 매수 문턱 ↑ (진입 억제)
+#   ★ net(투표)에 더하지 않는다 — 성격이 다른 신호를 같은 저울에 올리면 상쇄되지만,
+#     문턱을 움직이면 '지금이 살 만한 국면인가'라는 다른 질문에 답하게 된다.
+GROUP_ROLE_ENABLED                       = True
+GROUP_ROLE_HORIZON                       = 20     # 국면·위험 판단에 쓰는 향후 일수
+GROUP_ROLE_DIR_MIN                       = 0.03   # 방향성으로 인정할 최소 |상관|
+KL_REGIME_WEIGHT                         = 0.5    # 국면이 문턱을 움직이는 폭
+KL_RISK_WEIGHT                           = 0.5    # 위험이 문턱을 움직이는 폭
+KL_MEANREV_WEIGHT                        = 0.3    # 과매도면 매수 문턱↓ (되돌림 진입)
+KL_TRENDSTR_WEIGHT                       = 0.3    # 추세 강하면 청산 문턱↓ (덜 팔게)
+KL_CONVICTION_WEIGHT                     = 0.0    # net 증폭(기본 OFF — 효과 확인 후 사용)
+KL_CRASH_THRESHOLD                       = 0.8    # 꼬리위험 게이트가 이 값 넘으면 강제 청산
+KL_ROTATION_WEIGHT                       = 0.4    # 섹터 상대강세면 매수문턱↓
+KL_BREADTH_WEIGHT                        = 0.3    # 시장폭 넓으면 매수문턱↓
+KL_LIQUIDITY_WEIGHT                      = 0.3    # 유동성 우호적이면 매수문턱↓
+GROUP_ROLE_SHORT_HORIZON                 = 5      # 섹터강약·시장폭 판단 단기 일수
 SIMPLE_POOL_MT_Z_CAP                     = 4.0
 
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
@@ -17465,6 +17491,16 @@ def _indicator_group_of(name):
     if has('volume', 'obv', 'mfi', 'adl', 'vwap', 'vwma', 'turnover', 'dollar_vol',
            'accum', 'distrib', 'flow', 'cmf', 'eom', 'force_index'):
         return '거래량/자금'
+    # ── 섹터 (업종별 강세/약세 — 섹터 로테이션 판단용) ──
+    #   ★★★ (요청) "섹터별 강세/약세 흐름 같은 건 왜 없나" — 실제로 섹터 지표가
+    #   500개 넘게 있는데 접두사가 제각각이라 '기타:reit', '기타:semi'처럼 흩어져
+    #   대부분 멤버부족으로 버려지고 있었다. 하나의 섹터 그룹으로 모은다.
+    if any(k in n for k in (
+            'reit', 'semi', 'cloud', 'cyber', 'fintech', 'robo', 'inet', 'sw_', 'hw_',
+            'defensive', 'cyclical', 'hlth', 'health', 'finl', 'energy', 'util',
+            'staples', 'discret', 'indus', 'materi', 'telecom', 'sector', 'sectors',
+            'sec_', 'industry', 'rotation', 'breadth')):
+        return '섹터'
     # ── 피어·ETF·상대강도 ──
     if has('_rs_', 'relative', 'beta_', 'corr_') or any(
             n.startswith(p + '_') for p in
@@ -17501,6 +17537,272 @@ def _indicator_group_of(name):
     _tok = n.split('_')[0]
     _tok = ''.join(ch for ch in _tok if not ch.isdigit())
     return f'기타:{_tok}' if len(_tok) >= 2 else '기타'
+
+
+def _build_regime_risk_gates(feat, close_arr, roles, train_frac=0.7):
+    """★★★ (요청) 그룹 용도별 게이트 — 버려지던 지표들을 각자 다른 자리에 배치한다.
+
+    용도마다 매수/매도 로직에서 하는 일이 다르다:
+      · regime     상승국면이면 매수 문턱 K↓, 하락국면이면 K↑
+      · risk       변동성 확대 신호면 K↑ (진입 억제)
+      · crash      큰 낙폭 임박 신호면 강제 청산(즉시 현금)
+      · trendstr   추세가 강하면 청산 문턱 L↓ (덜 팔게 — 추세를 더 오래 탄다)
+      · meanrev    과매도면 K↓ (되돌림 진입 허용)
+      · conviction 신호가 강한 날 net 자체를 증폭 (약한 날은 축소)
+    ★ 전부 net 투표에 더하지 않는다 — 성격이 다른 신호를 같은 저울에 올리면 상쇄되지만,
+      문턱·가중치를 움직이면 각자 다른 질문에 답하게 되어 정보가 살아난다.
+    ★ 방향 정렬·정규화 통계는 학습구간에서만 — 미래정보 차단.
+
+    반환: dict(regime, risk, crash, trendstr, meanrev, conviction) — 각 길이 n 배열 또는 None
+    """
+    try:
+        n = len(feat)
+        num = feat.select_dtypes(include=[np.number])
+        px = np.asarray(close_arr, dtype=float)[:n]
+        cut = int(n * train_frac)
+        _w = int(globals().get('GROUP_ROLE_HORIZON', 20))
+        r1 = np.zeros(n); r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
+        fwd_n = np.full(n, np.nan); vol_n = np.full(n, np.nan); dd_n = np.full(n, np.nan)
+        for t in range(n - _w):
+            seg = r1[t:t + _w]
+            fwd_n[t] = np.nansum(seg); vol_n[t] = np.nanstd(seg)
+            _c = np.nancumsum(seg)
+            dd_n[t] = float(np.nanmin(_c - np.maximum.accumulate(_c)))
+
+        from collections import defaultdict
+        gm = defaultdict(list)
+        for c in num.columns:
+            gm[_indicator_group_of(c)].append(c)
+        zwin = int(globals().get('SIMPLE_POOL_COMPOSITE_Z_WINDOW', 60))
+        cap = int(globals().get('SIMPLE_POOL_COMPOSITE_MAX_MEMBERS', 150))
+
+        # 용도별 정렬 기준 — 그 용도가 '커야 좋은' 방향으로 부호를 맞춘다
+        _ws = int(globals().get('GROUP_ROLE_SHORT_HORIZON', 5))
+        fwd_s = np.full(n, np.nan); up_r = np.full(n, np.nan)
+        for t in range(n - _ws):
+            _sg = r1[t:t + _ws]
+            fwd_s[t] = np.nansum(_sg); up_r[t] = float(np.nanmean(_sg > 0))
+        TARGETS = {'regime': fwd_n, 'risk': vol_n, 'crash': -dd_n,
+                   'trendstr': fwd_n, 'meanrev': -fwd_n, 'conviction': np.abs(r1),
+                   'rotation': fwd_s, 'breadth': up_r, 'liquidity': -dd_n}
+
+        def _stack(role_name):
+            tgt = TARGETS.get(role_name)
+            if tgt is None:
+                return None, 0
+            zs = []
+            for g, info in roles.items():
+                if info.get('role') != role_name:
+                    continue
+                for c in gm.get(g, [])[:cap]:
+                    v = num[c].astype(float)
+                    mu = v.rolling(zwin, min_periods=max(10, zwin // 3)).mean()
+                    sd = v.rolling(zwin, min_periods=max(10, zwin // 3)).std()
+                    z = ((v - mu) / sd.replace(0, np.nan)).clip(-4, 4)
+                    zt = z.to_numpy(dtype=float)[:cut]; tt = np.asarray(tgt)[:cut]
+                    m = np.isfinite(zt) & np.isfinite(tt)
+                    if m.sum() < 80:
+                        continue
+                    with np.errstate(invalid='ignore'):
+                        cc = np.corrcoef(zt[m], tt[m])[0, 1]
+                    if not np.isfinite(cc) or abs(cc) < 0.02:
+                        continue
+                    zs.append(-z if cc < 0 else z)
+                    
+            if not zs:
+                return None, 0
+            Z = pd.concat(zs, axis=1).mean(axis=1).to_numpy(dtype=float)
+            zt = Z[:cut][np.isfinite(Z[:cut])]
+            if len(zt) < 50:
+                return None, 0
+            sd = float(np.std(zt)) or 1.0
+            return np.clip(Z / (2.0 * sd), -1.0, 1.0), len(zs)
+
+        gates = {}
+        _msg = []
+        for rname in ('regime', 'risk', 'crash', 'trendstr', 'meanrev', 'conviction',
+                      'rotation', 'breadth', 'liquidity'):
+            arr, cnt = _stack(rname)
+            gates[rname] = arr
+            if arr is not None:
+                _msg.append(f"{rname} {cnt}개")
+        if _msg:
+            print("    (용도별 게이트 구성) " + ', '.join(_msg))
+            print("      · regime→매수문턱K 이동  · risk/crash→진입억제·강제청산  "
+                  "· trendstr→청산문턱L 이동  · meanrev→과매도 진입허용  "
+                  "· conviction→net 증폭")
+        return gates
+    except Exception as e:
+        print(f'    ⚠ 용도별 게이트 생성 실패(무시): {e}')
+        return {}
+
+
+ROLE_SPECS = {
+    # 용도명      : (설명, 매수/매도 로직에서 하는 일)
+    'direction'  : ('방향성 — 다음날 등락 부호',        '매수/매도 투표'),
+    'meanrev'    : ('평균회귀 — 극단에서 되돌림',        '과매도면 매수문턱↓'),
+    'trendstr'   : ('추세강도 — 추세가 살아있나',        '청산문턱L↓(덜 팔게)'),
+    'regime'     : ('국면 — 향후 수 주 방향',           '매수문턱K 이동'),
+    'risk'       : ('위험 — 향후 변동성 확대',          '매수문턱K↑(진입억제)'),
+    'crash'      : ('꼬리위험 — 큰 낙폭 임박',          '강제 청산'),
+    'conviction' : ('확신도 — 신호에 힘이 실렸나',       'net 증폭'),
+    # ★★★ (요청) 누락돼 있던 용도들 — 실제 지표 구성을 보고 추가
+    'rotation'   : ('섹터강약 — 업종 자금이 어디로',      '상대강세면 매수문턱↓'),
+    'breadth'    : ('시장폭 — 오르는 종목이 넓은가',      '폭 좁으면 매수문턱↑'),
+    'liquidity'  : ('유동성 — 자금 환경이 우호적인가',    '경색이면 매수문턱↑'),
+}
+
+
+def _analyze_group_roles(feat, close_arr, groups_map=None, train_frac=0.7,
+                         min_members=8):
+    """★★★ (요청) "세 가지 능력만 보지 말고 지표에 따라 더 의미있는 용도를 늘려라"
+
+    그룹마다 잘하는 게 다르다. 7가지 능력을 각각 재서 가장 잘하는 쪽으로 쓴다.
+    측정 대상(전부 학습구간에서만, 미래정보 차단):
+
+      ① direction  다음날 등락의 부호       → 매수/매도 투표 (기존)
+      ② meanrev    지표가 극단일 때 되돌림   → 역방향 투표. 과매도면 매수.
+                   (지표 z가 낮은 날의 향후 수익 - 높은 날의 향후 수익)
+      ③ trendstr   추세 지속 여부           → 청산 문턱 L 이동. 추세 강하면 덜 팔게.
+                   (지표가 높을 때 향후 수익의 '부호 일관성')
+      ④ regime     향후 수 주 방향          → 매수 문턱 K 이동
+      ⑤ risk       향후 변동성              → 매수 문턱 K 상향
+      ⑥ crash      향후 최대낙폭            → 강제 청산 게이트
+      ⑦ conviction 신호 강도와 수익의 연동   → net 가중치 증폭
+                   (지표 |z|가 클수록 그날 수익 절대값도 큰가)
+
+    ★ 왜 용도를 나누나: 전부 같은 시험(내일 오를까)으로 걸러서 4,832개 중 185개(3.8%)만
+      쓰이고 있었다. 능력이 다른 지표를 다른 자리에 배치하면 버려지던 지표가 살아난다.
+    반환: {그룹명: dict(role, n, scores={능력:점수})}
+    """
+    try:
+        n = len(feat)
+        num = feat.select_dtypes(include=[np.number])
+        px = np.asarray(close_arr, dtype=float)[:n]
+        cut = int(n * train_frac)
+        if cut < 150:
+            return {}
+        _w = int(globals().get('GROUP_ROLE_HORIZON', 20))
+        r1 = np.zeros(n); r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
+        fwd_n = np.full(n, np.nan); vol_n = np.full(n, np.nan); dd_n = np.full(n, np.nan)
+        for t in range(n - _w):
+            seg = r1[t:t + _w]
+            fwd_n[t] = np.nansum(seg)
+            vol_n[t] = np.nanstd(seg)
+            _c = np.nancumsum(seg)
+            dd_n[t] = float(np.nanmin(_c - np.maximum.accumulate(_c)))   # 향후 최대낙폭(음수)
+        # ★ 섹터강약용 단기(5일) 향후수익 / 시장폭용 상승일 비율
+        _ws = int(globals().get('GROUP_ROLE_SHORT_HORIZON', 5))
+        fwd_s = np.full(n, np.nan); up_r = np.full(n, np.nan)
+        for t in range(n - _ws):
+            _sg = r1[t:t + _ws]
+            fwd_s[t] = np.nansum(_sg)
+            up_r[t] = float(np.nanmean(_sg > 0))
+
+        from collections import defaultdict
+        gm = groups_map or defaultdict(list)
+        if not groups_map:
+            for c in num.columns:
+                gm[_indicator_group_of(c)].append(c)
+
+        zwin = int(globals().get('SIMPLE_POOL_COMPOSITE_Z_WINDOW', 60))
+
+        def _corr(a, b):
+            m = np.isfinite(a) & np.isfinite(b)
+            if m.sum() < 80:
+                return np.nan
+            with np.errstate(invalid='ignore'):
+                c = np.corrcoef(a[m], b[m])[0, 1]
+            return c if np.isfinite(c) else np.nan
+
+        out = {}
+        for g, members in gm.items():
+            if len(members) < min_members:
+                continue
+            acc = {k: [] for k in ROLE_SPECS}
+            for c in members[:200]:
+                v = num[c].astype(float)
+                mu = v.rolling(zwin, min_periods=max(10, zwin // 3)).mean()
+                sd = v.rolling(zwin, min_periods=max(10, zwin // 3)).std()
+                z = ((v - mu) / sd.replace(0, np.nan)).clip(-4, 4).to_numpy(dtype=float)[:cut]
+                raw = v.to_numpy(dtype=float)[:cut]
+                if np.isfinite(raw).sum() < 100:
+                    continue
+                # ① 방향성
+                _c = _corr(raw, r1[:cut])
+                if np.isfinite(_c): acc['direction'].append(abs(_c))
+                # ② 평균회귀 — z 하위 20% 날의 향후수익 vs 상위 20%
+                fz = z[np.isfinite(z)]
+                if len(fz) > 100:
+                    lo_t, hi_t = np.nanpercentile(fz, 20), np.nanpercentile(fz, 80)
+                    _lo = np.nanmean(fwd_n[:cut][z <= lo_t])
+                    _hi = np.nanmean(fwd_n[:cut][z >= hi_t])
+                    if np.isfinite(_lo) and np.isfinite(_hi):
+                        acc['meanrev'].append(max(_lo - _hi, 0.0))
+                # ③ 추세강도 — 지표가 높을 때 향후 수익 부호가 일관되는가
+                if len(fz) > 100:
+                    hi_t = np.nanpercentile(fz, 70)
+                    _seg = fwd_n[:cut][z >= hi_t]
+                    _seg = _seg[np.isfinite(_seg)]
+                    if len(_seg) > 30:
+                        acc['trendstr'].append(abs(float(np.mean(_seg > 0) - 0.5)) * 2)
+                # ④⑤⑥ 국면·위험·꼬리위험
+                for k, tgt in (('regime', fwd_n[:cut]), ('risk', vol_n[:cut]),
+                               ('crash', dd_n[:cut])):
+                    _c2 = _corr(raw, tgt)
+                    if np.isfinite(_c2): acc[k].append(abs(_c2))
+                # ⑦ 확신도 — |z|가 클수록 그날 수익 절대값도 큰가
+                _c3 = _corr(np.abs(z), np.abs(r1[:cut]))
+                if np.isfinite(_c3): acc['conviction'].append(abs(_c3))
+                # ⑧ 섹터강약 — 이 지표가 강할 때 '향후 수익'이 좋은가(상대강세 지속성).
+                #   regime과 달리 짧은 구간(5일)으로 재서 '로테이션'의 빠른 전환을 잡는다.
+                _c4 = _corr(raw, fwd_s[:cut])
+                if np.isfinite(_c4): acc['rotation'].append(abs(_c4))
+                # ⑨ 시장폭 — 지표가 높을 때 '상승일 비율'이 높은가(폭이 넓은가)
+                if len(fz) > 100:
+                    _hi = np.nanpercentile(fz, 70)
+                    _sg = up_r[:cut][z >= _hi]
+                    _sg = _sg[np.isfinite(_sg)]
+                    if len(_sg) > 30:
+                        acc['breadth'].append(abs(float(np.mean(_sg) - 0.5)) * 2)
+                # ⑩ 유동성 — 지표가 낮을 때(경색) 향후 낙폭이 커지는가
+                _c5 = _corr(raw, -dd_n[:cut])
+                if np.isfinite(_c5): acc['liquidity'].append(abs(_c5))
+
+            sc = {k: (float(np.mean(v)) if v else 0.0) for k, v in acc.items()}
+            if not any(sc.values()):
+                continue
+            # 방향성은 문턱을 넘으면 우선(가장 직접적인 능력)
+            _dir_min = float(globals().get('GROUP_ROLE_DIR_MIN', 0.03))
+            if sc['direction'] >= _dir_min and sc['direction'] >= max(sc.values()) * 0.9:
+                role = 'direction'
+            else:
+                # 나머지는 점수 스케일이 달라 각 능력의 그룹 간 상대순위로 비교해야
+                # 공정하다 → 아래에서 정규화 후 재판정
+                role = None
+            out[g] = dict(role=role, n=len(members), scores=sc)
+
+        # ★ 능력별 점수 스케일이 제각각(상관 vs 비율 vs 수익차)이라 그대로 비교하면
+        #   한 능력이 늘 이긴다 → 그룹 간 순위(백분위)로 바꿔 공정하게 비교한다.
+        if out:
+            keys = [k for k in ROLE_SPECS if k != 'direction']
+            for k in keys:
+                vals = np.array([o['scores'][k] for o in out.values()], dtype=float)
+                rk = (vals.argsort().argsort() / max(len(vals) - 1, 1)) if len(vals) > 1 \
+                    else np.zeros(len(vals))
+                for o, rv in zip(out.values(), rk):
+                    o.setdefault('rank', {})[k] = float(rv)
+            for g, o in out.items():
+                if o['role'] is None:
+                    o['role'] = max(o['rank'], key=lambda k: o['rank'][k])
+        return out
+    except Exception as e:
+        print(f'    ⚠ 그룹 용도 분석 실패(무시): {e}')
+        return {}
+
+
+
+
 
 
 def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
@@ -23979,14 +24281,63 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     net = np.asarray(net, float); r = np.asarray(r, float)
     n = len(net)
 
+    # ★★★ (요청) 용도별 게이트를 각각 다른 자리에 반영한다.
+    #   같은 저울(net)에 다 올리면 성격이 다른 신호가 상쇄된다 → 하는 일을 나눈다.
+    _G = globals().get('_KL_GATES') or {}
+    def _ga(k):
+        v = _G.get(k)
+        if v is None:
+            return None
+        v = np.asarray(v, dtype=float)
+        return np.nan_to_num(v[:n]) if len(v) >= n else None
+    _w_rg = float(globals().get('KL_REGIME_WEIGHT', 0.5))
+    _w_rk = float(globals().get('KL_RISK_WEIGHT', 0.5))
+    _w_mr = float(globals().get('KL_MEANREV_WEIGHT', 0.3))
+    _w_ts = float(globals().get('KL_TRENDSTR_WEIGHT', 0.3))
+    _w_cv = float(globals().get('KL_CONVICTION_WEIGHT', 0.0))
+    _crash_th = float(globals().get('KL_CRASH_THRESHOLD', 0.8))
+
+    _rg, _rk = _ga('regime'), _ga('risk')
+    _mr, _ts = _ga('meanrev'), _ga('trendstr')
+    _cr, _cv = _ga('crash'), _ga('conviction')
+
+    # 매수 문턱 K 이동분 (양수 = 진입 어렵게)
+    _adjK = np.zeros(n)
+    if _rg is not None and _w_rg > 0: _adjK -= _w_rg * _rg          # 상승국면 → 낮춤
+    if _rk is not None and _w_rk > 0: _adjK += _w_rk * _rk          # 위험↑ → 올림
+    if _mr is not None and _w_mr > 0: _adjK -= _w_mr * _mr          # 과매도 → 낮춤
+    _ro, _br, _lq = _ga('rotation'), _ga('breadth'), _ga('liquidity')
+    _w_ro = float(globals().get('KL_ROTATION_WEIGHT', 0.4))
+    _w_br = float(globals().get('KL_BREADTH_WEIGHT', 0.3))
+    _w_lq = float(globals().get('KL_LIQUIDITY_WEIGHT', 0.3))
+    if _ro is not None and _w_ro > 0: _adjK -= _w_ro * _ro          # 섹터 강세 → 낮춤
+    if _br is not None and _w_br > 0: _adjK -= _w_br * _br          # 시장폭 넓음 → 낮춤
+    if _lq is not None and _w_lq > 0: _adjK -= _w_lq * _lq          # 유동성 우호 → 낮춤
+    # 청산 문턱 L 이동분 (음수 = 덜 팔게 = 추세를 더 오래 탐)
+    _adjL = np.zeros(n)
+    if _ts is not None and _w_ts > 0: _adjL -= _w_ts * _ts
+    # 강제 청산 마스크
+    _force_cash = (_cr >= _crash_th) if (_cr is not None and _crash_th <= 1.0) else None
+    # net 증폭 (확신도)
+    _netx = net
+    if _cv is not None and _w_cv > 0:
+        _netx = net * (1.0 + _w_cv * _cv)
+    _use_gate = bool(np.any(_adjK) or np.any(_adjL) or _force_cash is not None
+                     or _cv is not None and _w_cv > 0)
+
     def _run(K, L):
         # ★ (요청) 당일 net 체결 — net[s]가 K 넘으면 그날 롱, L 밑돌면 그날 현금 (신호일=체결일).
         #   수익은 룩어헤드 방지를 위해 진입 다음날부터: daily[s]=pos[s-1]*r[s].
         pos = np.zeros(n); cur = 0.0
         for s in range(n):
-            v = net[s]
-            if v >= K: cur = 1.0
-            elif v <= L: cur = 0.0
+            v = _netx[s]
+            _K = K + _adjK[s]      # 국면·위험·평균회귀가 매수 문턱을 움직임
+            _L = L + _adjL[s]      # 추세강도가 청산 문턱을 움직임(추세 강하면 덜 팔게)
+            if _L > _K: _L = _K
+            if _force_cash is not None and _force_cash[s]:
+                cur = 0.0          # ★ 꼬리위험 신호 — 강제 청산
+            elif v >= _K: cur = 1.0
+            elif v <= _L: cur = 0.0
             pos[s] = cur
         pos[0] = 0.0
         hr = np.zeros(n)
@@ -28795,6 +29146,93 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         import traceback; traceback.print_exc()
         print(f"  ⚠ 선정 홀드아웃 검증 시트 작성 실패(무시): {_ehs}")
 
+    # ─── 7d-2b. ★★★ (요청) 그룹별 용도 시트 ───
+    try:
+        _roles_r = globals().get('_GROUP_ROLE_REPORT') or {}
+        if _roles_r:
+            ws_r = wb.create_sheet('그룹별 용도'); ws_r.sheet_view.showGridLines = False
+            ws_r.cell(1, 1).value = (
+                "지표 그룹마다 잘하는 일이 다르다. 10가지 능력을 학습구간에서 각각 재고, "
+                "가장 잘하는 자리에 배치한다 — 예전에는 전부 '내일 오를까' 하나로만 걸러서 "
+                "4,832개 중 185개(3.8%)만 쓰이고 나머지가 버려졌다. "
+                "★ 점수는 능력마다 단위가 달라(상관·비율·수익차) 그대로 비교하면 안 되므로, "
+                "'그룹 간 상대순위(0~1)'로 환산해 판정한다. 방향성만 예외로, 문턱(0.03)을 넘으면 "
+                "가장 직접적인 능력이라 우선 배정한다. "
+                "★ '매수 유리/매도 유리'는 그 용도가 어느 쪽 결정을 돕는지를 뜻한다 — "
+                "매수 문턱을 낮추는 용도는 매수에, 진입을 억제하거나 청산을 돕는 용도는 매도에 유리하다.")
+            ws_r.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+            ws_r.merge_cells('A1:N1')
+
+            _ROLE_SIDE = {
+                'direction' : ('양쪽',   '매수·매도 투표에 직접 참여'),
+                'meanrev'   : ('매수 유리', '과매도에서 진입 기회를 열어줌'),
+                'trendstr'  : ('매수 유리', '추세가 살아있으면 청산을 늦춰 수익을 더 탐'),
+                'regime'    : ('양쪽',   '상승국면 매수 촉진 / 하락국면 매수 억제'),
+                'risk'      : ('매도 유리', '변동성 확대 시 진입 억제'),
+                'crash'     : ('매도 유리', '큰 낙폭 임박 시 강제 청산'),
+                'conviction': ('양쪽',   'net 자체를 증폭 — 방향은 net이 정함'),
+                'rotation'  : ('매수 유리', '섹터 자금이 몰리면 진입 문턱을 낮춤'),
+                'breadth'   : ('양쪽',   '폭 넓으면 매수 촉진 / 좁으면 억제'),
+                'liquidity' : ('매도 유리', '자금 경색이면 진입 억제'),
+            }
+            _cols_r = ['그룹', '지표수', '채택 용도', '하는 일', '매수/매도',
+                       '방향성', '평균회귀', '추세강도', '국면', '위험',
+                       '꼬리위험', '확신도', '섹터강약', '시장폭']
+            for _ci, _cn in enumerate(_cols_r, 1):
+                _hc = ws_r.cell(3, _ci); _hc.value = _cn
+                _hc.font = Font(bold=True, color='FFFFFF')
+                _hc.fill = PatternFill('solid', fgColor='305496')
+            _keys = ['direction', 'meanrev', 'trendstr', 'regime', 'risk',
+                     'crash', 'conviction', 'rotation', 'breadth']
+            _rr = 4
+            for _g, _v in sorted(_roles_r.items(), key=lambda kv: -kv[1]['n']):
+                _role = _v.get('role', '')
+                _sc = _v.get('scores', {})
+                _side, _why = _ROLE_SIDE.get(_role, ('—', ''))
+                _vals = [_g, _v['n'], _role,
+                         ROLE_SPECS.get(_role, ('', ''))[1], _side, _why][:5]
+                _vals[3] = ROLE_SPECS.get(_role, ('', ''))[1]
+                _vals = [_g, _v['n'], _role, ROLE_SPECS.get(_role, ('', ''))[1], _side]
+                _vals += [round(float(_sc.get(k, 0.0)), 4) for k in _keys]
+                for _ci, _val in enumerate(_vals, 1):
+                    _cc = ws_r.cell(_rr, _ci); _cc.value = _val
+                    if _ci == 5:
+                        _cc.font = Font(bold=True)
+                        _cc.fill = PatternFill('solid', fgColor=(
+                            'C6EFCE' if '매수' in str(_val) else
+                            ('FFC7CE' if '매도' in str(_val) else 'FFF2CC')))
+                # 채택된 능력 칸 강조
+                if _role in _keys:
+                    _cc2 = ws_r.cell(_rr, 6 + _keys.index(_role))
+                    _cc2.font = Font(bold=True, color='1F6F3D')
+                    _cc2.fill = PatternFill('solid', fgColor='E2EFDA')
+                _rr += 1
+
+            _nr = _rr + 1
+            ws_r.cell(_nr, 1).value = "▼ 용도별 설명 — 매수/매도 결정에서 하는 일"
+            ws_r.cell(_nr, 1).font = Font(bold=True, size=11, color='1F3864')
+            for _ci, _cn in enumerate(['용도', '무엇을 재는가', '매수/매도 로직에서 하는 일',
+                                       '매수/매도 유불리', '이유'], 1):
+                _hc = ws_r.cell(_nr + 1, _ci); _hc.value = _cn
+                _hc.font = Font(bold=True, color='FFFFFF')
+                _hc.fill = PatternFill('solid', fgColor='7030A0')
+            for _i, (_k, (_d, _a)) in enumerate(ROLE_SPECS.items()):
+                _side, _why = _ROLE_SIDE.get(_k, ('—', ''))
+                for _ci, _val in enumerate([_k, _d, _a, _side, _why], 1):
+                    _cc = ws_r.cell(_nr + 2 + _i, _ci); _cc.value = _val
+                    if _ci == 4:
+                        _cc.font = Font(bold=True)
+                        _cc.fill = PatternFill('solid', fgColor=(
+                            'C6EFCE' if '매수' in _side else
+                            ('FFC7CE' if '매도' in _side else 'FFF2CC')))
+            for _ci, _w in enumerate([14, 8, 12, 24, 10] + [9] * 9, 1):
+                ws_r.column_dimensions[get_column_letter(_ci)].width = _w
+            ws_r.freeze_panes = 'A4'
+            print("  ✓ 그룹별 용도 시트 — %d개 그룹 배치" % len(_roles_r))
+    except Exception as _e_rs:
+        import traceback; traceback.print_exc()
+        print(f"  ⚠ 그룹별 용도 시트 작성 실패(무시): {_e_rs}")
+
     # ─── 7d-3a2. ★★★ (요청 — 신규) 워크포워드 검증 시트 ───
     try:
         _mwr = globals().get('_KNET_MIN_WRONG_REPORT')
@@ -29927,6 +30365,34 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
         _log_indicator_search_diagnostics(feat, close, indicators)
     except Exception as _e_diag:
         print(f"    ⚠ 지표 탐색 진단 생략(무시): {_e_diag}")
+
+    # ★★★ (요청) 그룹별 용도 분화 — 방향성이 약한 그룹은 국면/위험 게이트로 돌린다.
+    try:
+        if bool(globals().get('GROUP_ROLE_ENABLED', True)):
+            _roles = _analyze_group_roles(feat[indicators], np.asarray(close, dtype=float))
+            if _roles:
+                from collections import Counter as _Ct
+                _rc = _Ct(v['role'] for v in _roles.values())
+                print("    (그룹 용도 분석) " + ', '.join(
+                    f"{k} {v}개그룹" for k, v in _rc.most_common()))
+                for _g, _v in sorted(_roles.items(), key=lambda kv: -kv[1]['n'])[:12]:
+                    _sc = _v.get('scores', {})
+                    _desc = ROLE_SPECS.get(_v['role'], ('', ''))
+                    print(f"      · {_g:<12} {_v['n']:>4}개 → {_v['role']:<10} "
+                          f"{_desc[1]:<20} "
+                          + ' '.join(f"{k[:4]}{_sc.get(k, 0):.3f}" for k in
+                                     ('direction', 'meanrev', 'trendstr', 'regime',
+                                      'risk', 'crash', 'conviction')))
+                _gates = _build_regime_risk_gates(
+                    feat[indicators], np.asarray(close, dtype=float), _roles)
+                globals()['_KL_GATES'] = _gates
+                globals()['_GROUP_ROLE_REPORT'] = _roles
+                _n_dir = sum(_v['n'] for _v in _roles.values() if _v['role'] == 'direction')
+                _n_oth = sum(_v['n'] for _v in _roles.values() if _v['role'] != 'direction')
+                print(f"      → 방향성 투표에 {_n_dir:,}개, 용도별 게이트에 {_n_oth:,}개 "
+                      f"활용(예전에는 게이트 쪽 {_n_oth:,}개가 통째로 버려졌음)")
+    except Exception as _e_role:
+        print(f"    ⚠ 그룹 용도 분석 생략(무시): {_e_role}")
 
     # ★★★ (요청 — 신규) 그룹 합성지표를 후보에 추가한다.
     #   개별 컷을 통과 못 할 약한 지표들도 그룹으로 묶으면 신호가 될 수 있다.
@@ -34576,6 +35042,9 @@ def _scan_fmt_list(names, limit=None, indent='      '):
     return out
 
 
+_MACRO_GROUPS = ('매크로', '금리/크레딧', '매크로/경제')
+
+
 def _log_indicator_search_diagnostics(feat, close, indicators, max_list=25):
     """★★★ (요청) 일반 실행에서도 '지표 탐색이 어떻게 걸러지는지'를 로그에 남긴다.
 
@@ -34621,7 +35090,7 @@ def _log_indicator_search_diagnostics(feat, close, indicators, max_list=25):
               f'— 100일 미만 {_lt:,}개는 평가 자체가 안 됨')
         if _lt:
             _names = sorted(nv[nv < 100].index.tolist())
-            _mac = [x for x in _names if _grp(x) == '매크로/경제']
+            _mac = [x for x in _names if _grp(x) in _MACRO_GROUPS]
             print(f'  │   └ 그중 매크로/경제 {len(_mac)}개' +
                   (': ' + ', '.join(_mac[:8]) + (' …' if len(_mac) > 8 else '') if _mac else ''))
     # 컷 기준값
@@ -34631,7 +35100,11 @@ def _log_indicator_search_diagnostics(feat, close, indicators, max_list=25):
           f" / 상관 {g.get('POOL_TIER_CORR_LIMIT', 0.2)}"
           f" / 임계분위 {g.get('POOL_SUCCESS_WIDE_PCT', (0, 100))} {g.get('N_THRESHOLDS', 1000)}등분")
     # 매크로 생존 여부 — 사용자가 지목한 핵심
-    _mac_all = [c for c in cols if _grp(c) == '매크로/경제']
+    # ★★★ (실측 오탐 수정) 진단과 합성의 그룹 분류를 통일하면서 그룹명이 '매크로/경제'
+    #   → '매크로'·'금리/크레딧'으로 바뀌었는데, 이 점검만 옛 이름을 그대로 비교하고 있어
+    #   구성에는 매크로 184개가 있는데도 "★매크로/경제 지표가 0개 — FRED 실패 가능성"
+    #   이라는 잘못된 경고가 떴다. 새 그룹명 집합으로 비교한다.
+    _mac_all = [c for c in cols if _grp(c) in _MACRO_GROUPS]
     if _mac_all:
         _dead = [c for c in _mac_all if nv is not None and int(nv.get(c, 0)) < 100]
         print(f'  │ 매크로 점검: 전체 {len(_mac_all)}개 중 평가가능 {len(_mac_all)-len(_dead)}개')
