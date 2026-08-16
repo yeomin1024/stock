@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.q'
+CORE_VERSION = '2026-08-16.r'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15052,6 +15052,9 @@ KL_MEANREV_WEIGHT                        = 0.0
 KL_TRENDSTR_WEIGHT                       = 0.0
 KL_CONVICTION_WEIGHT                     = 0.0    # net 증폭(기본 OFF — 효과 확인 후 사용)
 KL_CRASH_THRESHOLD                       = 0.8    # 꼬리위험 게이트가 이 값 넘으면 강제 청산
+# ★ 강제청산은 가중치가 아니라 on/off라 다른 게이트를 꺼도 계속 작동했다(실측 버그).
+#   전용 스위치로 분리 — A/B에서 게이트가 손해로 확인돼 기본 OFF.
+KL_CRASH_ENABLED                         = False
 KL_ROTATION_WEIGHT                       = 0.0
 KL_BREADTH_WEIGHT                        = 0.0
 KL_LIQUIDITY_WEIGHT                      = 0.0
@@ -24640,7 +24643,13 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     if _ef is not None and _w_ef > 0: _adjL += _w_ef * _ef          # 실적효과 소진 → 빨리 청산
     if _ts is not None and _w_ts > 0: _adjL -= _w_ts * _ts   # 추세 강하면 덜 팔게
     # 강제 청산 마스크
-    _force_cash = (_cr >= _crash_th) if (_cr is not None and _crash_th <= 1.0) else None
+    # ★★★ (실측 버그) 게이트 가중치를 전부 0으로 껐는데도 A/B가 '게이트 손해'로 계속
+    #   나왔다. 원인은 꼬리위험 강제청산(_force_cash)이 가중치와 무관하게 항상 켜져
+    #   있었던 것 — 다른 게이트를 다 꺼도 이것만은 계속 포지션을 청산하고 있었다.
+    #   → 전용 스위치(KL_CRASH_ENABLED)로 분리하고, 게이트를 끄면 함께 꺼지게 한다.
+    _crash_on = bool(globals().get('KL_CRASH_ENABLED', False))
+    _force_cash = ((_cr >= _crash_th)
+                   if (_crash_on and _cr is not None and _crash_th <= 1.0) else None)
     # net 증폭 (확신도)
     _netx = net
     if _cv is not None and _w_cv > 0:
@@ -30756,7 +30765,13 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
     try:
         if bool(globals().get('USE_EARNINGS_FEATURES', True)) and \
                 'earn_momentum_score' not in feat.columns:
-            _tk_e = str(globals().get('TICKER', '') or '').upper()
+            # ★★★ (실측) 앞선 실행에서 이 블록이 조용히 건너뛰어졌다. 원인은 전역
+            #   TICKER 가 비어 있는 경우(실행 경로에 따라 ticker 인자로만 넘어옴).
+            #   → 함수 인자 ticker 를 우선 쓰고, 왜 건너뛰는지 반드시 로그로 남긴다.
+            _tk_e = str(ticker or globals().get('TICKER', '') or '').upper().strip()
+            if not _tk_e:
+                print("  ⚠ 어닝 지표 생략 — 티커를 알 수 없습니다"
+                      "(TICKER 전역도 ticker 인자도 비어 있음)")
             if _tk_e:
                 _ed = download_earnings_data(_tk_e, start=globals().get('DOWNLOAD_START'))
                 _na = add_earnings_features(feat, close, _ed)
@@ -30767,10 +30782,13 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
                     print(f"  ✓ 어닝 지표 {_na}개 추가 (발표 {len(_ed)}회분 — "
                           f"서프라이즈·모멘텀·드리프트 수명) → 후보 {len(indicators):,}개")
                 else:
-                    print("  ℹ 어닝 데이터를 받지 못해 어닝 지표를 건너뜁니다 "
-                          "(yfinance가 이 티커의 실적을 제공하지 않을 수 있음)")
+                    print(f"  ℹ [{_tk_e}] 어닝 데이터를 받지 못해 어닝 지표를 건너뜁니다 "
+                          f"(yfinance가 이 티커의 실적을 제공하지 않거나 "
+                          f"earnings_dates API가 막혔을 수 있음)")
     except Exception as _e_earn:
-        print(f"  ⚠ 어닝 지표 추가 생략(무시): {_e_earn}")
+        import traceback as _tbe
+        print(f"  ⚠ 어닝 지표 추가 실패: {_e_earn}")
+        _tbe.print_exc()
 
     # ★★★ (요청) 그룹별 용도 분화 — 방향성이 약한 그룹은 국면/위험 게이트로 돌린다.
     try:
