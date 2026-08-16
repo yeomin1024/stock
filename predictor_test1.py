@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.b'
+CORE_VERSION = '2026-08-17.c'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15077,6 +15077,9 @@ EARN_DRIFT_DAYS                          = 60     # 어닝 드리프트 유효 �
 # ★ 어닝 지표는 첫 발표 전이 NaN이고 분기마다만 값이 바뀌어, 일반 지표 컷(유효 100일)에
 #   걸려 후보에서 통째로 빠졌다(실측). 별도의 완화된 기준으로 되살린다.
 EARN_MIN_VALID_DAYS                      = 60
+# ★★★ (실측) 어닝 지표의 최소 이벤트수 — 분기 발표라 5년치라도 이벤트가 1~5건뿐이다.
+#   일반 문턱(10건)을 쓰면 구조적으로 전부 탈락한다(실측 확인). 성공률 요구는 그대로.
+SIMPLE_POOL_EARN_MIN_SIG                 = 3
 KL_GATE_AB_TEST                          = True
 GROUP_ROLE_SHORT_HORIZON                 = 5      # 섹터강약·시장폭 판단 단기 일수
 SIMPLE_POOL_MT_Z_CAP                     = 4.0
@@ -17331,6 +17334,22 @@ def _passes_tiered_sig_gate(success_rate, n_signals, indicator=None):
     base = (n_signals >= _min_sig) | ((success_rate >= _high_rate) & (n_signals >= _min_sig_high))
     # ★ 매크로 완화도 매수/매도 비대칭을 따른다 — 매수는 틀리면 즉시 손실이므로
     #   완화 폭을 줄이고(기본 8건), 매도는 하락을 놓치지 않는 게 우선이라 더 느슨(5건).
+    # ★★★ (실측) 어닝 지표는 분기마다 한 번씩만 값이 바뀌어, 연속 발화가 이벤트 1건으로
+    #   축약되면 이벤트가 1~5건에 그친다(실측: surprise_ma4 2건, beat_streak 1건).
+    #   최소신호수 10건 문턱을 구조적으로 넘을 수 없어 15개 전부 탈락했다.
+    #   5년치 데이터라도 분기 발표는 20회뿐이라 표본을 늘릴 방법도 없다.
+    #   → 국면형 매크로와 같은 이유로, 어닝 지표에도 별도의 낮은 문턱을 적용한다.
+    #     대신 성공률 요구는 그대로 둬서 아무거나 통과하지 못하게 한다.
+    _earn_min = float(globals().get('SIMPLE_POOL_EARN_MIN_SIG', 3))
+    if _earn_min > 0 and indicator is not None:
+        try:
+            _is_e = (indicator.astype(str).str.startswith('earn_')
+                     if hasattr(indicator, 'astype')
+                     else str(indicator).startswith('earn_'))
+            base = base | (_is_e & (n_signals >= _earn_min))
+        except Exception:
+            pass
+
     _macro_min = float(globals().get('SIMPLE_POOL_MACRO_MIN_SIG', 5))
     if _macro_min > 0 and indicator is not None:
         try:
