@@ -84,6 +84,7 @@ XLK 하락 예측 임계치 탐색기 (완전 독립 실행)
 """
 import warnings; warnings.filterwarnings('ignore')
 import re          # ★ (요청 8번) 지표명 접두사 추출용
+import math
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★★ 버전 표식 — 임포트하는 순간 출력된다.
@@ -93,9 +94,9 @@ import re          # ★ (요청 8번) 지표명 접두사 추출용
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-16.b'
+CORE_VERSION = '2026-08-16.c'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14442,6 +14443,18 @@ SIMPLE_POOL_MODE        = True
 #   (성공률 90%+ 예외)는 더 이상 안 씀 — 아래 표의 min_signals가 절대 기준.
 #   ★★★ (요청) 매수/매도 성공률 필터를 따로 설정 가능 — min_success_buy/min_success_sell.
 #   (하위호환: 'min_success' 하나만 있으면 매수·매도 둘 다에 그 값을 씀)
+# ★★★ (실측 검토 — 호라이즌 범위가 맞는가?)
+#   실측 분포(GOOG): 최종 사용 지표의 호라이즌은 1일 98개(55%), 2일 28, 3일 11, 4일 16, 5일 27.
+#   매수만 보면 1일 27개인데 2~5일은 각 2~3개뿐이다 — 사실상 1일이 지배한다.
+#   [문제] 호라이즌을 5개 두면 지표당 조합 수가 5배가 되고(임계250×방향2×리드6×호라이즌5
+#     = 15,000), 그 중 '가장 좋은 것'을 고르므로 우연히 좋아 보이는 조합이 대량 생긴다.
+#     실제로 같은 지표의 5개 호라이즌 중 최고만 남기는 중복제거가 들어 있어, 구조적으로
+#     '베스트 오브 5' 체리피킹이 된다.
+#   [현재 대응] ①다중검정 보정(SIMPLE_POOL_MT_STRENGTH)으로 z를 올려 우연 통과를 억제,
+#              ②아래 FAST 스위치로 호라이즌을 1·3일만 쓸 수 있게 함.
+#   [권장] 1~5일 전부보다 [1, 3] 또는 [1, 2, 3] 이 실용적이다 — 2~5일 기여가 작고
+#         조합 수만 늘린다. 결과를 비교해 보고 정하시길.
+#
 # ★★★ (실측 속도) 이 표의 항목 수 = 지표 전체 평가를 몇 번 반복하는지다.
 #   실측: 항목 5개 × 약 5,000초 = 7시간. 항목을 줄이면 그만큼 정직하게 줄어든다.
 #   급하면 아래 SIMPLE_POOL_HORIZON_FAST 를 True 로 두면 1·3일 두 개만 쓴다(2.5배 단축).
@@ -14750,6 +14763,16 @@ STATE_THR_BALANCED                       = True
 #   실측: 롱지속 적중 62% / 기저 74% → 이득 -12.3%p. '항상 그 상태'라고 찍는 것보다 못하다.
 STATE_DROP_ON_NEGATIVE_LIFT              = True
 STATE_MIN_LIFT_TO_KEEP                   = 0.0
+# ════════════════════════════════════════════════════════════════
+# ★★★ (실측 문제) 다중검정 보정
+#   지표당 임계 250 × 방향 2 × 호라이즌 5 × 리드 6 = 15,000개 조합,
+#   전체 4,664개 지표면 약 7,000만 개 조합에서 '가장 좋은 것'을 고르고 있다.
+#   무작위 신호라도 이벤트 15건 중 11건(73%)을 우연히 맞힐 확률이 5.9%이므로,
+#   7천만 조합이면 약 414만 개가 '성공률 70% 이상'으로 통과한다.
+#   → Wilson z를 조합 수에 맞춰 완만히 올려(로그 비례) 우연 통과를 걸러낸다.
+#     0이면 보정 없음(예전 동작). 0.35면 조합 15,000개에서 z가 1.95 → 3.6 수준.
+SIMPLE_POOL_MT_STRENGTH                  = 0.35
+SIMPLE_POOL_MT_Z_CAP                     = 4.0
 
 # ★ 지속 상태(롱지속·숏지속)의 한계기여가 마이너스면 그 상태를 아예 쓰지 않는다.
 #   실측에서 숏지속이 워크포워드 -7.06%p(플러스 1/5)로 순손해였다.
@@ -17571,6 +17594,40 @@ def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
     except Exception as e:
         print(f'    ⚠ 그룹 합성지표 생성 실패(무시): {e}')
         return None
+
+
+def _multiple_testing_z(n_thresholds=None, n_horizons=None, n_leads=None,
+                        n_dirs=2, base_z=None):
+    """★★★ (실측 문제 — 다중검정) 지표 하나에 대해 임계값·방향·호라이즌·리드를 전부
+    조합해 '가장 좋은 것'을 고르고 있다. 그 조합 수가 지표당 1만5천 개, 전체로는
+    7천만 개다. 이 정도 규모에서는 **완전히 무작위인 신호도** 상당수가 높은 성공률을
+    우연히 달성한다.
+
+      계산: 진짜 성공확률이 50%인 신호가 이벤트 15건 중 11건(73%)을 맞힐 확률은 5.9%.
+            7천만 조합 × 5.9% ≈ 414만 개가 '성공률 70% 이상'으로 통과한다.
+      즉 지금 컷을 통과한 지표 중 상당수는 실력이 아니라 탐색 규모의 산물일 수 있다.
+      (앞서 워크포워드에서 개별 지표의 전반→후반 성적 상관이 r=-0.10으로 나온 것도
+       같은 원인으로 설명된다.)
+
+    대응: Wilson 하한을 구할 때 쓰는 z를 '탐색한 조합 수'에 맞춰 키운다.
+      완전한 Bonferroni(z≈5.5)를 적용하면 아무것도 안 남으므로, 조합 수의 로그에
+      비례해 완만하게 올린다(SIMPLE_POOL_MT_STRENGTH로 강도 조절, 0이면 보정 없음).
+      z가 커질수록 표본이 적은 후보의 점수가 더 강하게 깎여, 우연히 좋아 보이는
+      조합이 걸러진다.
+    """
+    g = globals()
+    base_z = float(base_z if base_z is not None else g.get('WILSON_Z', 1.95))
+    strength = float(g.get('SIMPLE_POOL_MT_STRENGTH', 0.35))
+    if strength <= 0:
+        return base_z
+    nt = int(n_thresholds if n_thresholds is not None else g.get('N_THRESHOLDS', 250))
+    nh = int(n_horizons if n_horizons is not None
+             else len(g.get('SIMPLE_POOL_HORIZON_CONFIG', [1])))
+    nl = int(n_leads if n_leads is not None else (int(g.get('LEAD_MAX_SHIFT', 5)) + 1))
+    n_cfg = max(int(nt) * max(nh, 1) * max(nl, 1) * max(int(n_dirs), 1), 1)
+    # 조합 수의 로그에 비례해 z 상향 (조합 1개면 그대로, 1만5천개면 약 +1.4z)
+    z = base_z + strength * math.log(n_cfg) / 2.0
+    return float(min(z, float(g.get('SIMPLE_POOL_MT_Z_CAP', 4.0))))
 
 
 def _apply_min_signal_floor_pair(buy_pool, sell_pool):
@@ -21355,12 +21412,23 @@ def meta_grid_search(feat, close, *,
         if key in score_cache:
             return score_cache[key]
         pct_low, pct_high = pct_range
+        # ★★★ (실측 문제 — 다중검정 보정) 지표당 임계·방향·호라이즌·리드 조합이
+        #   1만5천 개라, 무작위 신호도 상당수가 우연히 높은 성공률을 낸다.
+        #   조합 수에 맞춰 Wilson z를 올려 우연 통과를 걸러낸다.
+        _wz_eff = _multiple_testing_z(n_thresholds=n_thresholds, base_z=wilson_z)
+        if not globals().get('_MT_LOGGED', False):
+            print(f"    (다중검정 보정) 조합 수에 맞춰 Wilson z {wilson_z:.2f} → "
+                  f"{_wz_eff:.2f} — 지표당 임계 {n_thresholds}×방향2×"
+                  f"호라이즌{len(globals().get('SIMPLE_POOL_HORIZON_CONFIG', [1]))}×리드"
+                  f"{int(globals().get('LEAD_MAX_SHIFT', 5))+1} 조합에서 최고를 고르기 때문"
+                  f" (끄려면 SIMPLE_POOL_MT_STRENGTH=0)")
+            globals()['_MT_LOGGED'] = True
         buy_df, sell_df = evaluate_buy_sell_scores(
             feat_score, close_score, indicators=indicators,
             n_thresholds=n_thresholds,
             pct_low=pct_low, pct_high=pct_high,
             horizon=horizon, dd_limit=dd_limit, ru_limit=ru_limit,
-            min_signals=min_signals, wilson_z=wilson_z,
+            min_signals=min_signals, wilson_z=_wz_eff,
             anchor_buy_arr=ab, anchor_sell_arr=asu,
         )
         score_cache[key] = (buy_df, sell_df)
