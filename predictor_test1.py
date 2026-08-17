@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.f'
+CORE_VERSION = '2026-08-17.g'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -17346,9 +17346,13 @@ def _passes_tiered_sig_gate(success_rate, n_signals, indicator=None):
     _earn_min = float(globals().get('SIMPLE_POOL_EARN_MIN_SIG', 3))
     if _earn_min > 0 and indicator is not None:
         try:
-            _is_e = (indicator.astype(str).str.startswith('earn_')
-                     if hasattr(indicator, 'astype')
-                     else str(indicator).startswith('earn_'))
+            # ★ 어닝 개별 지표(earn_*)와 어닝 합성지표(어닝_composite_*) 둘 다 대상
+            _s_ind = (indicator.astype(str) if hasattr(indicator, 'astype')
+                      else pd.Series([str(indicator)]))
+            _is_e = (_s_ind.str.startswith('earn_')
+                     | _s_ind.str.startswith('어닝_composite'))
+            if not hasattr(indicator, 'astype'):
+                _is_e = bool(_is_e.iloc[0])
             base = base | (_is_e & (n_signals >= _earn_min))
         except Exception:
             pass
@@ -18171,7 +18175,12 @@ def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
         rejects = [c for c in num.columns
                    if str(c) not in used and num[c].notna().sum() >= 200
                    and not str(c).endswith(('_composite_z', '_composite_breadth'))]
-        if len(rejects) < 20:
+        # ★★★ (실측) rejects<20 이면 통째로 생략했는데, 어닝처럼 지표 수가 적은 부류만
+        #   남은 경우에도 생략돼 합성 기회를 잃었다. '항상 포함' 그룹이 있으면 진행한다.
+        _always0 = tuple(globals().get('SIMPLE_POOL_COMPOSITE_ALWAYS_GROUPS',
+                                       ('어닝', '매크로', '금리/크레딧')))
+        _has_always = any(_indicator_group_of(c) in _always0 for c in rejects)
+        if len(rejects) < 20 and not _has_always:
             print('    (그룹 합성지표) 탈락 지표가 적어 생략')
             return None
 
@@ -18400,7 +18409,9 @@ def _apply_min_signal_floor(pool, label='', target=None, note=''):
         _e_min = float(globals().get('SIMPLE_POOL_EARN_MIN_SIG', 3))
         _m_min = float(globals().get('SIMPLE_POOL_MACRO_MIN_SIG', 5))
         if _e_min > 0:
-            _exempt |= _nm.str.startswith('earn_') & (_ns >= _e_min)
+            # ★ 어닝 개별 지표 + 어닝 합성지표('어닝_composite_*') 둘 다 예외 대상
+            _exempt |= (_nm.str.startswith('earn_')
+                        | _nm.str.startswith('어닝_composite')) & (_ns >= _e_min)
         if _m_min > 0:
             _exempt |= _nm.map(_is_macro_indicator).astype(bool) & (_ns >= _m_min)
     except Exception:
