@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.d'
+CORE_VERSION = '2026-08-17.f'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14920,6 +14920,9 @@ SIMPLE_POOL_COMPOSITE_MAX_MEMBERS        = 150
 # ★ 합성지표를 만들 그룹 수 상한 — 합성지표 1개마다 임계 스윕이 한 번 더 돌아
 #   평가 시간에 직접 얹힌다(실측: 144개 생성 → 실행이 4시간 초과).
 SIMPLE_POOL_COMPOSITE_MAX_GROUPS         = 12
+# ★ 멤버수가 적어도 반드시 합성지표를 만들 그룹 — 성격이 달라 다른 그룹이 대체 못 한다.
+#   실측: 어닝(15개)이 상한에 밀려 합성이 안 만들어져 정보가 통째로 버려졌다.
+SIMPLE_POOL_COMPOSITE_ALWAYS_GROUPS      = ('어닝', '매크로', '금리/크레딧')
 
 # ════════════════════════════════════════════════════════════════
 #  ★★★ (요청) 지표 점수 — 추세 기반 + 실패 성격 구분 + 매수/매도 비대칭
@@ -18207,9 +18210,19 @@ def _build_group_composite_features(feat, close_arr, used_names, horizon=1,
         #   만들어졌다. 합성지표 1개당 임계 스윕이 통째로 한 번 더 도는 셈이라 평가
         #   시간에 그대로 얹힌다 → 멤버가 많은 상위 그룹만 남긴다.
         _max_g = int(globals().get('SIMPLE_POOL_COMPOSITE_MAX_GROUPS', 12))
+        # ★★★ (실측) 그룹 상한을 멤버수 순으로만 자르면 '어닝'(15개)처럼 작지만 성격이
+        #   전혀 다른 그룹이 밀려난다. 실제로 어닝은 개별 지표가 성공률 컷을 못 넘어
+        #   최종 0개였는데, 합성지표조차 안 만들어져 정보가 통째로 버려졌다.
+        #   (합성하면 개별 대비 |상관| 2.7배 — 어닝처럼 표본이 적은 부류일수록 효과가 크다)
+        #   → 지정한 그룹은 멤버수와 무관하게 항상 포함한다.
+        _always = tuple(globals().get('SIMPLE_POOL_COMPOSITE_ALWAYS_GROUPS',
+                                      ('어닝', '매크로', '금리/크레딧')))
         if len(groups) > _max_g:
-            _keep = sorted(groups.items(), key=lambda kv: -len(kv[1]))[:_max_g]
-            _drop = len(groups) - _max_g
+            _must = {k: v for k, v in groups.items() if k in _always}
+            _rest = sorted(((k, v) for k, v in groups.items() if k not in _must),
+                           key=lambda kv: -len(kv[1]))[:max(_max_g - len(_must), 0)]
+            _keep = list(_must.items()) + _rest
+            _drop = len(groups) - len(_keep)
             groups = dict(_keep)
             print(f'      · 그룹이 많아 상위 {_max_g}개만 사용(작은 그룹 {_drop}개 생략) '
                   f'— 합성지표 하나마다 임계 스윕이 한 번씩 더 돌기 때문')
@@ -20959,6 +20972,25 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 print(f"    (시트 동일지표 정리) 전체후보 매수 {_nab}→{len(_all_bdf) if _all_bdf is not None else 0}, "
                       f"매도 {_nas}→{len(_all_sdf) if _all_sdf is not None else 0} — 같은 지표명은 신뢰도 최고 호라이즌만 표시")
             globals()['_SIMPLE_MODE_ALL_CANDIDATES'] = (_all_bdf, _all_sdf)   # ★ '전체 후보 지표' 시트용(지표컷 통과분만)
+            # ★★★ (실측 진단) 어닝 지표가 최종 풀까지 왔는지, 못 왔다면 성공률이 얼마나
+            #   모자랐는지 한 줄로 남긴다. 네 번 연속 '후보엔 있는데 최종 0개'였고 매번
+            #   원인이 달라 추적이 어려웠다.
+            try:
+                _ecols = set(globals().get('_EARN_COLS_FOR_REPORT') or [])
+                if _ecols:
+                    for _lbl, _df in (('매수', _all_bdf), ('매도', _all_sdf)):
+                        if _df is None or len(_df) == 0:
+                            continue
+                        _em = _df[_df['indicator'].astype(str).isin(_ecols)]
+                        if len(_em):
+                            print(f"    (어닝 최종) {_lbl} 통과 {_em['indicator'].nunique()}개 "
+                                  f"— 최고 성공률 {_em['success_rate'].max()*100:.1f}%")
+                        else:
+                            print(f"    (어닝 최종) {_lbl} 통과 0개 — 성공률 컷을 못 넘었습니다"
+                                  f"(어닝은 분기 이벤트라 표본이 20건 내외로 작아 "
+                                  f"성공률이 컷에 닿기 어렵습니다)")
+            except Exception:
+                pass
 
             _empty_cols = ['indicator', 'direction', 'threshold', 'n_signals', 'n_success',
                           'success_rate', 'horizon_day', 'wilson_score', 'reliability', 'net_weight_score']
@@ -30853,6 +30885,11 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
                     print("     제외 사유(유효일수·표준편차): " + ', '.join(
                         f"{c}({v}일,sd{sd:.2g})" for c, v, sd in _dropped[:5])
                         + (' …' if len(_dropped) > 5 else ''))
+                # ★★★ (실측) 후보까지는 들어가는데 최종 풀에 0개인 상태가 네 번 반복됐다.
+                #   매번 다른 컷이 원인이었고 로그만으로는 알 수 없었다. 평가가 끝난 뒤
+                #   어닝 지표의 '최고 성공률'을 찍어, 컷에 못 미치는 건지 다른 문제인지
+                #   한 줄로 구분되게 한다.
+                globals()['_EARN_COLS_FOR_REPORT'] = list(_earn_cols)
     except Exception as _e_earn:
         import traceback as _tbe
         print(f"  ⚠ 어닝 지표 처리 실패: {_e_earn}")
