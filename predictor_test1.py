@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.c'
+CORE_VERSION = '2026-08-17.d'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -18377,13 +18377,30 @@ def _apply_min_signal_floor(pool, label='', target=None, note=''):
             break
         _cut -= _step
     _cut = max(_cut, _floor)
+    # ★★★ (실측) 어닝·매크로처럼 발화 빈도가 구조적으로 낮은 지표는 이 하한(15/10건)에
+    #   또 걸린다. 계층 게이트에서 문턱을 낮춰줘도 여기서 다시 잘려 최종 0개가 됐다
+    #   (실측: 어닝 15개가 후보까지 들어왔는데 전체후보 시트에는 0개).
+    #   → 이 지표들은 별도의 낮은 하한을 적용해 예외로 통과시킨다.
+    _exempt = pd.Series(False, index=pool.index)
+    try:
+        _nm = pool['indicator'].astype(str)
+        _e_min = float(globals().get('SIMPLE_POOL_EARN_MIN_SIG', 3))
+        _m_min = float(globals().get('SIMPLE_POOL_MACRO_MIN_SIG', 5))
+        if _e_min > 0:
+            _exempt |= _nm.str.startswith('earn_') & (_ns >= _e_min)
+        if _m_min > 0:
+            _exempt |= _nm.map(_is_macro_indicator).astype(bool) & (_ns >= _m_min)
+    except Exception:
+        pass
     # ★ 어느 단계에서 몇 개가 살아남는지 항상 보여준다 — "지표수가 너무 적은 거 아니냐"를
     #   눈으로 확인하고 SIMPLE_POOL_MIN_INDICATORS_TARGET을 조정할 수 있도록.
     if label:
         _tbl = ', '.join('%d건↑ %d개' % (_c, int((_ns >= _c).sum()))
                          for _c in range(_pref, _floor - 1, -_step))
         print(f"    (신호수 분포) {label}: {_tbl}")
-    _out = pool[_ns >= _cut].reset_index(drop=True)
+    _keep_mask = (_ns >= _cut) | _exempt
+    _n_ex = int((_exempt & (_ns < _cut)).sum())
+    _out = pool[_keep_mask].reset_index(drop=True)
     if len(_out) == 0:
         return pool
     if label:
@@ -18392,6 +18409,8 @@ def _apply_min_signal_floor(pool, label='', target=None, note=''):
         if _cut < _pref:
             _msg += (f" (선호 {_pref}건으로는 {int((_ns >= _pref).sum())}개뿐이라 "
                      f"{_step}씩 낮춤, 최저 {_floor}건)")
+        if _n_ex:
+            _msg += f" +어닝·매크로 예외 {_n_ex}개(발화 빈도가 구조적으로 낮아 별도 하한)"
         if len(_out) < _target:
             _msg += f" ★목표 {_target}개 미달 — 후보 자체가 부족"
         print(_msg)
