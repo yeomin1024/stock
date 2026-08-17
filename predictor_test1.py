@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.g'
+CORE_VERSION = '2026-08-17.i'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 자동폴백')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15073,6 +15073,11 @@ KL_EARNMOM_WEIGHT                        = 0.0
 KL_EARNFADE_WEIGHT                       = 0.0
 # ★ 실제 어닝 데이터(yfinance) 사용 여부. False면 어닝 지표 없이 진행.
 USE_EARNINGS_FEATURES                    = True
+# ★★★ (요청) 어닝이 성공률 컷을 못 넘으면 게이트(문턱 조절)로라도 쓴다.
+#   투표에는 못 들어가도 '실적이 좋아지는 국면인가'라는 보조 정보는 남기는 게 낫다.
+#   자동으로 켜지므로 (게이트 A/B) 로그에서 도움 여부가 바로 확인된다.
+EARN_GATE_FALLBACK                       = True
+EARN_GATE_FALLBACK_WEIGHT                = 0.15
 # ★ 캐시된 feat에 이 컬럼들이 없으면 캐시를 버리고 다시 계산한다.
 #   (새 지표를 추가했는데 예전 캐시가 쓰여 반영이 안 되는 사고 방지)
 FEATURE_CACHE_REQUIRED_COLS              = ['earn_momentum_score']
@@ -20855,7 +20860,22 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 def _filt_day(df, _msucc):
                     if df is None or len(df) == 0:
                         return None
-                    d = df[(df['success_rate'] >= _msucc) & (df['n_signals'] >= _msig)].copy()
+                    # ★★★ (실측) 어닝 지표를 통과시키려 앞선 컷들(계층게이트·신호수하한)에
+                    #   예외를 넣었는데도 최종 0개였다. 원인은 여기 — 호라이즌별 필터가
+                    #   n_signals >= 10 을 예외 없이 적용하는 마지막 관문이었다.
+                    #   어닝은 분기 이벤트라 합성해도 4~5건이라 구조적으로 통과 불가.
+                    #   → 어닝 계열만 별도 최소 이벤트수를 적용한다(성공률 컷은 그대로).
+                    _msig_ok = (df['n_signals'] >= _msig)
+                    try:
+                        _e_min2 = float(globals().get('SIMPLE_POOL_EARN_MIN_SIG', 3))
+                        if _e_min2 > 0:
+                            _nm2 = df['indicator'].astype(str)
+                            _is_e2 = (_nm2.str.startswith('earn_')
+                                      | _nm2.str.startswith('어닝_composite'))
+                            _msig_ok = _msig_ok | (_is_e2 & (df['n_signals'] >= _e_min2))
+                    except Exception:
+                        pass
+                    d = df[(df['success_rate'] >= _msucc) & _msig_ok].copy()
                     return d if len(d) else None
                 _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s)
 
@@ -20987,6 +21007,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             #   모자랐는지 한 줄로 남긴다. 네 번 연속 '후보엔 있는데 최종 0개'였고 매번
             #   원인이 달라 추적이 어려웠다.
             try:
+                _earn_failed = False
                 _ecols = set(globals().get('_EARN_COLS_FOR_REPORT') or [])
                 if _ecols:
                     for _lbl, _df in (('매수', _all_bdf), ('매도', _all_sdf)):
@@ -21000,6 +21021,22 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                             print(f"    (어닝 최종) {_lbl} 통과 0개 — 성공률 컷을 못 넘었습니다"
                                   f"(어닝은 분기 이벤트라 표본이 20건 내외로 작아 "
                                   f"성공률이 컷에 닿기 어렵습니다)")
+                            _earn_failed = True
+                # ★★★ (요청) "어닝이 통과 안 되면 용도(게이트)로 보조지표처럼 쓰면 된다"
+                #   지금은 게이트 가중치를 전부 0으로 꺼둔 상태라, 컷을 못 넘으면 어닝
+                #   정보가 통째로 사라진다. 컷 탈락이 확인되면 어닝 게이트만 자동으로
+                #   켜서 보조 역할이라도 하게 한다(다른 게이트는 손해로 확인돼 계속 OFF).
+                #   ★ 켜진 뒤에는 (게이트 A/B) 로그가 나오므로 도움이 되는지 바로 보인다.
+                if _earn_failed and bool(globals().get('EARN_GATE_FALLBACK', True)):
+                    _w_em0 = float(globals().get('KL_EARNMOM_WEIGHT', 0.0))
+                    _w_ef0 = float(globals().get('KL_EARNFADE_WEIGHT', 0.0))
+                    if _w_em0 <= 0 and _w_ef0 <= 0:
+                        _fb = float(globals().get('EARN_GATE_FALLBACK_WEIGHT', 0.15))
+                        globals()['KL_EARNMOM_WEIGHT'] = _fb
+                        globals()['KL_EARNFADE_WEIGHT'] = _fb
+                        print(f"    ↪ 어닝 게이트 자동 활성화 (가중치 {_fb}) — 투표로는 못 쓰지만"
+                              f" 문턱 조절(매수↓/청산↑)에 보조로 활용합니다."
+                              f" 효과는 아래 (게이트 A/B) 로그로 확인하세요.")
             except Exception:
                 pass
 
