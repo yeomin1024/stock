@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.i'
+CORE_VERSION = '2026-08-17.k'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 자동폴백')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15076,7 +15076,15 @@ USE_EARNINGS_FEATURES                    = True
 # ★★★ (요청) 어닝이 성공률 컷을 못 넘으면 게이트(문턱 조절)로라도 쓴다.
 #   투표에는 못 들어가도 '실적이 좋아지는 국면인가'라는 보조 정보는 남기는 게 낫다.
 #   자동으로 켜지므로 (게이트 A/B) 로그에서 도움 여부가 바로 확인된다.
-EARN_GATE_FALLBACK                       = True
+#   ★★★ (실측 결론 — 기본 OFF) 폴백을 켜고 측정한 A/B 6회 결과:
+#         켬 합계 299.1% vs 끔 313.0%  →  평균 -2.32%p (손해 5회 / 도움 1회)
+#     어닝을 게이트로 돌려도 도움이 되지 않았다. 앞서 국면·위험 게이트가 -1.98%p로
+#     손해였던 것과 같은 결론 — 이 데이터에서는 '문턱을 흔드는 방식' 자체가 안 통한다.
+#     net이 이미 판단을 잘 하고 있는데 문턱을 움직이면 흐리기만 한다.
+#   ★ 어닝 지표·합성지표는 계속 생성되고 후보에도 들어간다(성공률 컷을 넘으면 투표에 참여).
+#     다른 종목·기간에서는 통과할 수 있으므로 지표 자체를 없애지는 않는다.
+#   ★ 켜보려면 True + 가중치 0.1 정도로 두고 반드시 (게이트 A/B) 로그를 확인할 것.
+EARN_GATE_FALLBACK                       = False
 EARN_GATE_FALLBACK_WEIGHT                = 0.15
 # ★ 캐시된 feat에 이 컬럼들이 없으면 캐시를 버리고 다시 계산한다.
 #   (새 지표를 추가했는데 예전 캐시가 쓰여 반영이 안 되는 사고 방지)
@@ -15268,6 +15276,13 @@ SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최�
 #   1000 → 250 이면 평가가 4배 빨라지고, 임계 해상도는 0.1%→0.4% 분위로만 떨어져
 #   실용상 차이가 거의 없다(성공률·수익률 곡선이 그만큼 촘촘하지 않음).
 #   더 정밀하게 보고 싶으면 올리되, 호라이즌 수(HORIZON_LIST)를 함께 줄일 것.
+# ★★★ (요청) 임계값 이산화 — '의미 있는 분위'만 후보로 쓴다.
+#   기존: 0~100을 N_THRESHOLDS개로 균등 분할 → 지표당 후보 수백~수천 개 → 다중검정 폭발.
+#   변경: 아래 15개 분위만 사용 → 조합이 수십 분의 1. 우연 통과가 급감하고 속도도 빨라진다.
+#   ★ 사람이 실제로 쓰는 지점들이다: 극단(1·5·10 / 90·95·99), 사분위(25·75),
+#     중앙(50), 그 사이 보조선(20·30·40·60·70·80).
+THRESHOLD_DISCRETE                       = True
+THRESHOLD_DISCRETE_PCTS                  = [1, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 99]
 N_THRESHOLDS        = 250
 MAX_INDICATORS      = 5000
 
@@ -17046,7 +17061,23 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
                               anchor_buy_arr=None, anchor_sell_arr=None):
     close_arr = close.values.astype(np.float64)
     n_days    = len(close_arr)
-    pcts      = np.linspace(pct_low, pct_high, n_thresholds)
+    # ★★★ (요청 — 임계값 이산화) 지금까지는 분위 0~100을 n_thresholds개로 잘게 쪼개
+    #   지표당 임계 후보를 수백~수천 개 만들고 그 중 '가장 좋은 것'을 골랐다.
+    #   전체 조합이 수천만 개라, 진짜 확률 50%인 무작위 신호도 15건 중 11건을 우연히
+    #   맞힐 확률이 5.9%인 규모에서 상당수가 운으로 통과한다(다중검정).
+    #   사후 보정(Wilson z 상향)은 실측상 효과가 없었다 — 잡음과 진짜 신호가 함께 깎임.
+    #   → 애초에 탐색 공간을 줄인다. '의미 있는 분위'만 후보로 쓴다.
+    #     과매도/과매수 극단, 사분위, 중앙값 등 사람이 실제로 쓰는 지점들이다.
+    #     조합이 수십 분의 1로 줄어 우연 통과가 급감하고 속도도 그만큼 빨라진다.
+    #   ★ THRESHOLD_DISCRETE=False 면 예전처럼 촘촘히 훑는다(비교용).
+    if bool(globals().get('THRESHOLD_DISCRETE', True)):
+        _grid = list(globals().get('THRESHOLD_DISCRETE_PCTS',
+                                   [1, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 99]))
+        pcts = np.array([p for p in _grid if pct_low <= p <= pct_high], dtype=float)
+        if len(pcts) == 0:
+            pcts = np.linspace(pct_low, pct_high, min(n_thresholds, 15))
+    else:
+        pcts = np.linspace(pct_low, pct_high, n_thresholds)
     use_z     = globals().get('USE_ZSCORE_SIGNAL', False)
     z_window  = int(globals().get('ZSCORE_WINDOW', 60))
     z_thrs    = globals().get('ZSCORE_THRESHOLDS', [-2.0, 2.0])
@@ -25747,6 +25778,130 @@ def _write_daily_rows(ws, daily, cur, mdd_limit_pct):
     ws.freeze_panes = 'B5'
 
 
+def _write_pipeline_summary_sheet(wb):
+    """★★★ (요청) 전 단계가 제대로 이뤄졌는지 한 장으로 확인하는 시트.
+
+    각 단계마다 '무엇을 하는가 / 실제 수치 / 판정 / 봐야 할 시트'를 적는다.
+    숫자가 이상하면 판정 칸이 빨갛게 뜨므로, 로그를 훑지 않아도 어느 단계가
+    문제인지 바로 보인다.
+    """
+    g = globals()
+    ws = wb.create_sheet('0. 파이프라인 요약')
+    ws.sheet_view.showGridLines = False
+    ws.cell(1, 1).value = (
+        "지표 탐색부터 매수/매도 결정까지 전 단계 요약. '판정'이 ★경고면 그 단계에 문제가 "
+        "있다는 뜻이고, '확인 시트'에 적힌 시트를 열어 자세히 보면 된다. "
+        "★ 맨 아래 '신뢰도 주의' 항목을 반드시 읽어주세요 — 인샘플 수익률은 실제 기대치가 아닙니다.")
+    ws.cell(1, 1).font = Font(italic=True, size=9, color='808080')
+    ws.merge_cells('A1:F1')
+
+    for _ci, _cn in enumerate(['단계', '무엇을 하는가', '실제 수치', '판정', '확인 시트'], 1):
+        _hc = ws.cell(3, _ci); _hc.value = _cn
+        _hc.font = Font(bold=True, color='FFFFFF')
+        _hc.fill = PatternFill('solid', fgColor='1F3864')
+
+    _mw = g.get('_KNET_MIN_WRONG_REPORT') or {}
+    _st = {x['key']: x for x in (_mw.get('states') or [])}
+    _wf = _mw.get('walkforward') or {}
+    _hd = _mw.get('holdout') or {}
+    _cand = g.get('_SIMPLE_MODE_ALL_CANDIDATES') or (None, None)
+    _nb = _cand[0]['indicator'].nunique() if _cand[0] is not None and len(_cand[0]) else 0
+    _ns_ = _cand[1]['indicator'].nunique() if _cand[1] is not None and len(_cand[1]) else 0
+    _roles = g.get('_GROUP_ROLE_REPORT') or {}
+    _npct = len(g.get('THRESHOLD_DISCRETE_PCTS', [])) if g.get('THRESHOLD_DISCRETE', True) \
+        else int(g.get('N_THRESHOLDS', 250))
+
+    def _lift(k):
+        v = _st.get(k, {})
+        return float(v.get('lift', 0.0)) * 100.0
+
+    def _wf_edge(k):
+        a = (_wf.get('acc') or {}).get(k)
+        return (a['ret'] - a['bh']) * 100.0 if a else None
+
+    _wf_tot = sum(v for v in (_wf_edge(k) for k in ('lc', 'lr', 'sc', 'sr')) if v is not None)
+    _hd_avg = (sum(r['edge_te'] for r in _hd.get('rows', [])) /
+               max(len(_hd.get('rows', [])), 1) * 100.0) if _hd.get('rows') else None
+
+    rows = [
+        ('1. 지표 생성',
+         f"주가·피어·매크로·어닝으로 지표를 만든다",
+         f"약 {g.get('_LAST_FEAT_NCOL', 4900):,}개 생성",
+         'ok', '1. 지표탐색 결과'),
+        ('2. 임계값 탐색',
+         f"지표마다 '의미 있는 분위'만 후보로 삼는다(이산화)",
+         f"분위 {_npct}개 × 방향 2 (기존 250분할 대비 {250 // max(_npct, 1)}배 축소)",
+         'ok' if g.get('THRESHOLD_DISCRETE', True) else 'warn',
+         '1. 지표탐색 결과'),
+        ('3. 성공률·신호수 컷',
+         "성공률·이벤트수 기준으로 쓸 만한 지표만 남긴다",
+         f"매수 {_nb}개 / 매도 {_ns_}개 (매도가 많아야 정상)",
+         'ok' if (_nb > 0 and _ns_ >= _nb) else 'warn',
+         '1. 지표탐색 결과'),
+        ('4. 그룹 용도 배정',
+         "그룹마다 잘하는 능력을 재서 역할을 준다",
+         f"{len(_roles)}개 그룹 배정" if _roles else '배정 없음',
+         'ok' if _roles else 'warn', '2. 그룹별 용도'),
+        ('5. 상태별 지표선정',
+         "직전 포지션별 4상태 각각에 특화 지표를 뽑는다",
+         ' / '.join(f"{_st[k]['name']} {_st[k]['n']}개"
+                    for k in ('lc', 'lr', 'sc', 'sr') if k in _st) or '—',
+         'ok' if _st else 'warn', '3. 상태별 지표선정'),
+        ('6. 상태 정보이득',
+         "각 상태가 '항상 그 상태'라고 찍는 것보다 나은가",
+         ' / '.join(f"{_st[k]['name']} {_lift(k):+.1f}%p"
+                    for k in ('lc', 'lr', 'sc', 'sr') if k in _st) or '—',
+         'warn' if any(_lift(k) < 0 for k in _st) else 'ok',
+         '3. 상태별 지표선정'),
+        ('7. K/L 결정',
+         "미래예측 기준(검증구간 수익)으로 매수·청산 문턱을 정한다",
+         f"OOS {g.get('KL_OOS_FOLDS', 4)}구간 평균 기준"
+         + (" · 게이트 OFF" if float(g.get('KL_REGIME_WEIGHT', 0)) == 0 else " · 게이트 ON"),
+         'ok' if g.get('KL_SELECT_BY_OOS', True) else 'warn', '7. KL 결정'),
+        ('8. 홀드아웃 검증',
+         "앞 70%로 뽑고 나머지 30%에서 성적을 잰다",
+         f"보유대비 평균 {_hd_avg:+.2f}%p" if _hd_avg is not None else '—',
+         'ok' if (_hd_avg or 0) > 0 else 'warn', '11. 홀드아웃 검증'),
+        ('9. 워크포워드 검증',
+         "구간마다 과거만 보고 뽑아 다음 구간에서 잰다 (가장 정직한 성적)",
+         f"누적 초과수익 {_wf_tot:+.2f}%p" if _wf else '—',
+         'ok' if _wf_tot > 0 else 'warn', '12. 워크포워드 검증'),
+    ]
+    _r = 4
+    for _s1, _s2, _s3, _flag, _sheet in rows:
+        for _ci, _v in enumerate([_s1, _s2, _s3,
+                                  ('정상' if _flag == 'ok' else '★확인 필요'), _sheet], 1):
+            _c = ws.cell(_r, _ci); _c.value = _v
+            if _ci == 4:
+                _c.font = Font(bold=True)
+                _c.fill = PatternFill('solid',
+                                      fgColor=('C6EFCE' if _flag == 'ok' else 'FFC7CE'))
+        _r += 1
+
+    _r += 1
+    ws.cell(_r, 1).value = "▼ 신뢰도 주의 — 반드시 읽어주세요"
+    ws.cell(_r, 1).font = Font(bold=True, size=12, color='9C0006')
+    _notes = [
+        "· '일별 백테스트'의 수익률은 전 구간을 보고 전 구간을 채점한 인샘플 값입니다. "
+        "실제로 그만큼 번다는 뜻이 아닙니다.",
+        "· 실제 기대치는 '12. 워크포워드 검증'의 누적 초과수익을 보세요. 두 값의 차이가 과적합의 크기입니다.",
+        "· '1. 지표탐색 결과'의 신뢰도·성공률은 과거 구간 요약입니다. 개별 지표의 전반→후반 성적 "
+        "상관이 r=-0.10으로 측정돼, 높다고 앞으로 잘 맞는다는 뜻이 아닙니다.",
+        "· 후보 지표 자체가 전 구간 데이터로 만들어졌으므로 워크포워드에도 잔여 편향이 남습니다. "
+        "실제 기대치는 그보다 낮게 잡으세요.",
+    ]
+    for _i, _n in enumerate(_notes):
+        ws.cell(_r + 1 + _i, 1).value = _n
+        ws.cell(_r + 1 + _i, 1).font = Font(size=9, color='606060')
+        ws.merge_cells(start_row=_r + 1 + _i, start_column=1,
+                       end_row=_r + 1 + _i, end_column=5)
+
+    for _ci, _w in enumerate([20, 42, 46, 13, 24], 1):
+        ws.column_dimensions[get_column_letter(_ci)].width = _w
+    ws.freeze_panes = 'A4'
+    print("  ✓ 0. 파이프라인 요약 시트 — 단계별 수치·판정 기록")
+
+
 def _write_logic_verification_sheet(wb, feat, close_ser, ticker, *,
                                     horizon, dd_limit, ru_limit):
     """★ '검증_예측로직' 시트 (요청) — 적용된 개선사항이 의도대로 기능하는지 실행 시점에
@@ -30134,6 +30289,52 @@ def write_excel(meta_results_df, inner_all, inner_passed,
     except Exception as _ve:
         import traceback; traceback.print_exc()
         print(f"  ⚠ 검증_예측로직 시트 작성 실패(무시): {_ve}")
+
+    # ══════════════════════════════════════════════════════════════════
+    # ★★★ (요청) 단계별 검증 시트 정리 —
+    #   ① 파이프라인 전 단계를 요약한 '0. 파이프라인 요약' 시트를 새로 만들고
+    #   ② 기존 시트에 단계 번호를 붙여(1. 2. 3. …) 실행 순서대로 재배열한다.
+    #   ③ 일별 백테스트를 맨 앞에 두어 결과부터 보이게 한다.
+    # ══════════════════════════════════════════════════════════════════
+    try:
+        _stage_map = [
+            ('전체 후보 지표',            '1. 지표탐색 결과'),
+            ('그룹별 용도',              '2. 그룹별 용도'),
+            ('지표선정 검증',            '3. 상태별 지표선정'),
+            ('상태별 특화지표',           '4. 상태별 특화(확률순)'),
+            ('상태별 특화지표(신뢰도순)',   '5. 상태별 특화(신뢰도순)'),
+            ('일별백테스트_롱지속',        '6a. 상태검증_롱지속'),
+            ('일별백테스트_롱→숏',        '6b. 상태검증_롱→숏'),
+            ('일별백테스트_숏지속',        '6c. 상태검증_숏지속'),
+            ('일별백테스트_숏→롱',        '6d. 상태검증_숏→롱'),
+            ('KL 순신호',               '7. KL 결정'),
+            ('추세전환 판단',            '8. 최근 상태판단'),
+            ('최근일자 발화지표',         '9. 최근일자 발화'),
+            ('거래 내역',               '10. 거래 내역'),
+            ('선정 홀드아웃 검증',        '11. 홀드아웃 검증'),
+            ('워크포워드 검증',          '12. 워크포워드 검증'),
+            ('검증_예측로직',            '13. 로직 재현검증'),
+            ('k순신호 재현풀',           '14. 재현용 지표풀'),
+            ('사용된 설정',             '15. 사용된 설정'),
+        ]
+        _write_pipeline_summary_sheet(wb)
+        def _safe_title(t):
+            # 엑셀 시트명 금지문자 제거(/ \ ? * [ ] :) + 31자 제한
+            for _ch in '/\\?*[]:':
+                t = t.replace(_ch, '-')
+            return t[:31]
+        for _old, _new in _stage_map:
+            _new = _safe_title(_new)
+            if _old in wb.sheetnames and _new not in wb.sheetnames:
+                wb[_old].title = _new
+        # 순서: 일별 백테스트 → 0. 요약 → 1~15
+        _order = ['일별 백테스트', '0. 파이프라인 요약'] + [_safe_title(n) for _, n in _stage_map]
+        _final = [n for n in _order if n in wb.sheetnames]
+        _final += [n for n in wb.sheetnames if n not in _final]
+        wb._sheets = [wb[n] for n in _final]
+        print(f"  ✓ 시트 단계별 정리 — 일별 백테스트 옆에 0~15단계 순서로 배치")
+    except Exception as _eo:
+        print(f"  ⚠ 시트 정리 생략(무시): {_eo}")
 
     # ★★ (요청) 저장 직전 실제 시트 목록 로그 — 'op 순신호' 등이 이 시점에 실제로
     #   있는지/없는지 확정적으로 확인하기 위한 진단용. 만들었다는 로그가 찍혔는데도
