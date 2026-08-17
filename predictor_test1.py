@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.n'
+CORE_VERSION = '2026-08-17.o'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(워크포워드 검증)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(미평가 감쇠 버그수정·커버리지 가드)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14922,6 +14922,9 @@ USE_STABILITY_WEIGHT                     = True
 STABILITY_FOLDS                          = 4
 STABILITY_START_FRAC                     = 0.5
 STABILITY_WEIGHT_STRENGTH                = 0.5    # 0이면 끔, 1이면 안정성만으로 결정
+# ★ 평가 가능한 지표 비율이 이 값 미만이면 가중을 건너뛴다.
+#   실측: 35%만 평가돼 나머지가 근거 없이 깎이면서 롱지속이 -23.0%p로 무너졌다.
+STABILITY_MIN_COVERAGE                   = 0.5
 SIMPLE_POOL_TARGET_USE_FRAC              = False  # ★ 실측상 고정 목표가 우수 → 기본 OFF
 SIMPLE_POOL_TARGET_FRAC_BUY              = 0.15   # 매수: 후보의 상위 15%만 (엄격)
 SIMPLE_POOL_TARGET_FRAC_SELL             = 0.70   # 매도: 후보의 70%까지 (느슨)
@@ -18450,7 +18453,11 @@ def _walkforward_indicator_stability(feat, close, pool, is_buy, folds=4,
                 sig = sig & np.isfinite(_v)
             except Exception:
                 continue
-            if sig.sum() < len(segs):
+            # ★★★ (실측) 발화가 적은 지표는 폴드별로 나누면 표본이 더 부족해 평가가 안 된다.
+            #   실측: 182개 중 64개(35%)만 평가됐고, 나머지는 기본값 0.5를 받아
+            #   부당하게 절반 가까이 깎였다(롱지속 정보이득 -6.1 → -23.0%p 악화).
+            #   → 평가 불가한 지표는 '중립'이 아니라 '가중치 손대지 않음'으로 처리한다.
+            if sig.sum() < max(len(segs), 2):
                 continue
             pos_folds = 0; used = 0
             for a, b in segs:
@@ -18494,7 +18501,16 @@ def _apply_stability_weight(pool, stab_map, label=''):
             pool.get('reliability', 0.0), errors='coerce').fillna(0.0)
     _st = pool['indicator'].astype(str).map(stab_map)
     _cov = float(_st.notna().mean())
-    _f = (1.0 - W) + W * _st.fillna(0.5)
+    # ★★★ (실측 버그수정) 평가되지 않은 지표에 0.5를 넣으면 가중치가 25% 깎인다.
+    #   전체의 65%가 미평가라 대부분이 근거 없이 감쇠됐다 → 미평가는 1.0(변화 없음)로 둔다.
+    #   ★ 커버리지가 너무 낮으면(기본 50% 미만) 가중 자체를 건너뛴다 — 일부만 깎으면
+    #     평가된 지표가 오히려 불리해져 net 균형이 깨진다.
+    _min_cov = float(globals().get('STABILITY_MIN_COVERAGE', 0.5))
+    if _cov < _min_cov:
+        print(f"    (지표 안정성 가중) {label}: 평가 가능 {_cov:.0%}(<{_min_cov:.0%}) — "
+              f"일부만 깎으면 균형이 깨지므로 이번엔 가중을 건너뜁니다")
+        return pool
+    _f = (1.0 - W) + W * _st.fillna(1.0)
     pool['stability'] = _st
     pool['net_weight_score'] = pool['net_weight_score'] * _f
     try:
