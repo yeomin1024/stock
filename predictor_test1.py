@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.k'
+CORE_VERSION = '2026-08-17.l'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화(비대칭 복원)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14906,7 +14906,15 @@ SIMPLE_POOL_MIN_INDICATORS_TARGET        = 60
 #   매도가 틀리면 기회비용뿐이지만 매수가 틀리면 즉시 손실이기 때문.
 #   목표 지표수가 작을수록 신호수 하한이 높게 유지돼 '표본 충분한 소수'만 남는다.
 #   실측 분포(GOOG 1409일) 기준: 매수 목표60 → 하한15건·80개 / 매도 목표150 → 하한10건·171개
-SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY    = 60
+#   ★★★ (실측 개선) 고정 개수 → '후보 규모 대비 비율'로 변경.
+#     이산화로 후보가 줄자 고정 목표(매수60·매도150)가 뜻대로 작동하지 않았다
+#     (매도 후보가 278개뿐인데 150개를 요구 → 하한이 최저까지 내려가 87개, 비대칭 역전).
+#     비율로 두면 후보가 늘든 줄든 '매수는 엄선, 매도는 넓게'가 항상 유지된다.
+SIMPLE_POOL_TARGET_FRAC_BUY              = 0.15   # 매수: 후보의 상위 15%만 (엄격)
+SIMPLE_POOL_TARGET_FRAC_SELL             = 0.70   # 매도: 후보의 70%까지 (느슨)
+SIMPLE_POOL_TARGET_MIN_BUY               = 30     # 그래도 이 개수는 확보
+SIMPLE_POOL_TARGET_MIN_SELL              = 60
+SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY    = 60     # (하위호환 — 지금은 위 비율이 우선)
 SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL   = 150
 # ★★★ (요청 — 신규) 개별 컷에서 탈락한 지표들을 성격별 그룹으로 묶어 합성지표를 만든다.
 #   개별로 약한 신호도 여러 개를 방향 정렬해 평균하면 잡음이 상쇄돼 쓸 만해진다.
@@ -18383,13 +18391,26 @@ def _apply_min_signal_floor_pair(buy_pool, sell_pool):
         매수 목표 SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY  (작게 → 엄격)
         매도 목표 SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL (크게 → 느슨)
     """
+    # ★★★ (실측 개선) 목표치를 고정값으로 두면 후보 규모가 달라졌을 때 뜻대로 안 된다.
+    #   임계값 이산화 후 후보가 매수 586 / 매도 278로 줄었는데, 목표가 매수60·매도150으로
+    #   고정돼 있어 매도만 '★목표 미달' 경고가 뜨고 비대칭이 뒤집혔다(매수181 / 매도87).
+    #   원인은 매도 후보가 애초에 매수의 절반이라는 것 — 하한을 아무리 낮춰도 150개를
+    #   만들 수 없다. 고정 목표로는 해결이 안 된다.
+    #   → 목표를 '후보 규모에 대한 비율'로 바꾼다. 매수는 상위 일부만(엄격),
+    #     매도는 대부분을(느슨) 남기는 원래 의도가 후보 수와 무관하게 지켜진다.
+    _nb0 = len(buy_pool) if buy_pool is not None else 0
+    _ns0 = len(sell_pool) if sell_pool is not None else 0
+    _fr_b = float(globals().get('SIMPLE_POOL_TARGET_FRAC_BUY', 0.15))
+    _fr_s = float(globals().get('SIMPLE_POOL_TARGET_FRAC_SELL', 0.70))
+    _tb = max(int(globals().get('SIMPLE_POOL_TARGET_MIN_BUY', 30)), int(_nb0 * _fr_b))
+    _ts = max(int(globals().get('SIMPLE_POOL_TARGET_MIN_SELL', 60)), int(_ns0 * _fr_s))
+    print(f"    (목표 지표수 — 후보 규모 비례) 매수 {_tb}개(후보 {_nb0}의 {_fr_b:.0%}) / "
+          f"매도 {_ts}개(후보 {_ns0}의 {_fr_s:.0%}) — 매도를 더 넓게 남긴다")
     b2 = _apply_min_signal_floor(
-        buy_pool, '매수',
-        target=int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY', 60)),
+        buy_pool, '매수', target=_tb,
         note='엄격 — 틀리면 즉시 손실이라 표본 충분한 것만')
     s2 = _apply_min_signal_floor(
-        sell_pool, '매도',
-        target=int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL', 150)),
+        sell_pool, '매도', target=_ts,
         note='느슨 — 틀려도 기회비용뿐, 하락을 놓치지 않는 게 우선')
     try:
         print(f"    (매수/매도 비대칭 확인) 매수 {len(b2)}개 / 매도 {len(s2)}개"
