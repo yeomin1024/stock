@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.o'
+CORE_VERSION = '2026-08-17.p'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(미평가 감쇠 버그수정·커버리지 가드)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(컬럼명 충돌 수정·net가중치 비침습)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -18496,9 +18496,6 @@ def _apply_stability_weight(pool, stab_map, label=''):
     if W <= 0:
         return pool
     pool = pool.copy()
-    if 'net_weight_score' not in pool.columns:
-        pool['net_weight_score'] = 1.0 + pd.to_numeric(
-            pool.get('reliability', 0.0), errors='coerce').fillna(0.0)
     _st = pool['indicator'].astype(str).map(stab_map)
     _cov = float(_st.notna().mean())
     # ★★★ (실측 버그수정) 평가되지 않은 지표에 0.5를 넣으면 가중치가 25% 깎인다.
@@ -18510,9 +18507,17 @@ def _apply_stability_weight(pool, stab_map, label=''):
         print(f"    (지표 안정성 가중) {label}: 평가 가능 {_cov:.0%}(<{_min_cov:.0%}) — "
               f"일부만 깎으면 균형이 깨지므로 이번엔 가중을 건너뜁니다")
         return pool
+    # ★★★ (실측 충돌) 'stability'는 SELECTION_PRIORITY 모드명으로 이미 쓰이는 예약어다.
+    #   같은 이름의 컬럼을 만들자 뒤쪽 선정 로직이 이를 오해했고, 롱지속 채택이
+    #   83→38개로 줄며 적중률이 68%→52%로 무너졌다(정보이득 -6.1 → -22.0%p).
+    #   → 충돌하지 않는 이름(wf_stability)으로 바꾸고, net_weight_score도 여기서
+    #     처음 만들지 않는다(없으면 뒤 단계가 신뢰도로 계산하도록 그대로 둔다).
+    _base_w = (pool['net_weight_score'] if 'net_weight_score' in pool.columns
+               else 1.0 + pd.to_numeric(pool.get('reliability', 0.0),
+                                        errors='coerce').fillna(0.0))
     _f = (1.0 - W) + W * _st.fillna(1.0)
-    pool['stability'] = _st
-    pool['net_weight_score'] = pool['net_weight_score'] * _f
+    pool['wf_stability'] = _st
+    pool['net_weight_score'] = _base_w * _f
     try:
         _mean_st = float(_st.dropna().mean()) if _st.notna().any() else float('nan')
         print(f"    (지표 안정성 가중) {label}: {len(pool)}개 중 {int(_st.notna().sum())}개 평가 "
