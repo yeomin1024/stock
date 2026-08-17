@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.m'
+CORE_VERSION = '2026-08-17.n'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + 하한탐색 최소확보(지표부족 해소)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(워크포워드 검증)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14910,16 +14910,35 @@ SIMPLE_POOL_MIN_INDICATORS_TARGET        = 60
 #     이산화로 후보가 줄자 고정 목표(매수60·매도150)가 뜻대로 작동하지 않았다
 #     (매도 후보가 278개뿐인데 150개를 요구 → 하한이 최저까지 내려가 87개, 비대칭 역전).
 #     비율로 두면 후보가 늘든 줄든 '매수는 엄선, 매도는 넓게'가 항상 유지된다.
+# ════════════════════════════════════════════════════════════════
+# ★★★ (요청 — 둘째 아이디어) 지표 선정의 워크포워드 검증
+# ════════════════════════════════════════════════════════════════
+# 문제: 신뢰도(과거 성적)로 net 가중치를 주는데, 개별 지표의 전반→후반 성적 상관이
+#   r=-0.10 으로 측정됐다 — 과거에 잘 맞은 지표가 앞으로도 잘 맞는다는 근거가 없다.
+# 해법: 뒤쪽 구간을 여러 폴드로 나눠 '폴드마다 꾸준히 맞는지'를 재고, 그 일관성을
+#   가중치에 곱한다. 한 시기에 몰아서 맞은 지표는 자연히 밀려난다.
+#   net_weight_score = (1 + 신뢰도) × [(1-W) + W × 플러스폴드비율]
+USE_STABILITY_WEIGHT                     = True
+STABILITY_FOLDS                          = 4
+STABILITY_START_FRAC                     = 0.5
+STABILITY_WEIGHT_STRENGTH                = 0.5    # 0이면 끔, 1이면 안정성만으로 결정
+SIMPLE_POOL_TARGET_USE_FRAC              = False  # ★ 실측상 고정 목표가 우수 → 기본 OFF
 SIMPLE_POOL_TARGET_FRAC_BUY              = 0.15   # 매수: 후보의 상위 15%만 (엄격)
 SIMPLE_POOL_TARGET_FRAC_SELL             = 0.70   # 매도: 후보의 70%까지 (느슨)
 SIMPLE_POOL_TARGET_MIN_BUY               = 30     # 그래도 이 개수는 확보
 SIMPLE_POOL_TARGET_MIN_SELL              = 60
 # ★★★ (실측) 하한 탐색이 중간(15건)에서 멈춰 10건짜리 지표가 통째로 잘렸다.
 #   목표를 만족해도 이 개수에 미달하면 하한을 계속 낮춘다 — 지표 부족 방지.
-SIMPLE_POOL_HARD_MIN_INDICATORS          = 60
+#   ★ B버전(워크포워드 +117.10%p) 재현을 위해 0으로 둔다. 값을 주면 하한이 최저까지
+#     내려가 후보를 거의 다 통과시켜 버려, 목표 기반 탐색이 무력화된다.
+#     지표가 심하게 부족할 때(매수 20개 미만)만 30~60으로 올려 쓰는 안전장치.
+SIMPLE_POOL_HARD_MIN_INDICATORS          = 0
 # ★★★ (실측) 후보 단계에서 이미 매수가 매도의 2배라 하한 조정만으로는 비대칭을 못 지킨다.
 #   매수가 매도보다 많으면 매수를 매도의 이 비율까지 잘라 강제로 되돌린다.
-SIMPLE_POOL_FORCE_ASYMMETRY              = True
+#   ★★★ (실측 결론 — OFF) 매수를 매도보다 적게 강제했더니 롱지속에 쓸 지표가 남지 않아
+#     상태 판정이 붕괴했다(적중 43%, 기저 74% → 이득 -31.1%p, 홀드아웃 플러스 4/4→3/4).
+#     매수/매도 개수 역전 자체는 문제가 아니었다 — 원칙에 집착해 고치려다 더 나빠졌다.
+SIMPLE_POOL_FORCE_ASYMMETRY              = False
 SIMPLE_POOL_BUY_MAX_RATIO                = 0.7    # 매수 ≤ 매도 × 0.7
 SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY    = 60     # (하위호환 — 지금은 위 비율이 우선)
 SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL   = 150
@@ -18380,6 +18399,114 @@ def _multiple_testing_z(n_thresholds=None, n_horizons=None, n_leads=None,
     return float(min(z, float(g.get('SIMPLE_POOL_MT_Z_CAP', 4.0))))
 
 
+def _walkforward_indicator_stability(feat, close, pool, is_buy, folds=4,
+                                     start_frac=0.5, horizon=1):
+    """★★★ (요청 — 둘째 아이디어) 지표 선정 자체를 워크포워드로 검증한다.
+
+    [문제] 지금은 전 구간 성적으로 지표를 뽑고 신뢰도를 매긴다. 그런데 실측에서
+      개별 지표의 전반→후반 성적 상관이 r=-0.10 이었다 — 과거에 잘 맞은 지표가
+      앞으로도 잘 맞는다는 근거가 없다. 즉 신뢰도 가중치는 사실상 무작위에 가깝다.
+
+    [해법] 뒤쪽 구간을 여러 폴드로 나눠, 각 지표가 '폴드마다' 얼마나 꾸준히 맞는지 잰다.
+      · 한 구간에서만 크게 맞은 지표 → 불안정 → 가중치 낮춤
+      · 여러 구간에서 고르게 맞은 지표 → 안정 → 가중치 높임
+      과거 성적의 크기가 아니라 '성적의 일관성'에 투표권을 준다.
+
+    반환: {지표명: 안정성 점수 0~1}  (플러스 폴드 비율 × 방향 일치도)
+    ★ 폴드는 전부 과거 데이터지만, '여러 시기에서 반복 확인'이라는 점에서
+      단일 구간 성적보다 미래로 이어질 가능성이 높다.
+    """
+    try:
+        if pool is None or len(pool) == 0:
+            return {}
+        n = len(close)
+        px = np.asarray(close, dtype=float)[:n]
+        r1 = np.zeros(n)
+        r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
+        b0 = int(n * start_frac)
+        edges = [b0 + int(round((n - b0) * i / folds)) for i in range(folds + 1)]
+        segs = [(edges[i], edges[i + 1]) for i in range(folds)
+                if edges[i + 1] - edges[i] >= 20]
+        if len(segs) < 2:
+            return {}
+        sgn = 1.0 if is_buy else -1.0
+        out = {}
+        for _, row in pool.iterrows():
+            nm = str(row.get('indicator', ''))
+            if not nm or nm in out:
+                continue
+            try:
+                # ★ 풀에 기록된 임계값·방향을 그대로 재현해야 실제 발화와 일치한다.
+                #   (_aligned_signal_for_row 는 원본 지표값을 돌려주므로 임계 비교가 필요)
+                _v = np.asarray(_aligned_signal_for_row(feat, row), dtype=float)[:n]
+                _thr = row.get('threshold', None)
+                _dirv = str(row.get('direction', '>=') or '>=')
+                if _thr is None or (isinstance(_thr, float) and pd.isna(_thr)):
+                    sig = _v > 1e-12
+                elif _dirv in ('<=', 'down', 'below'):
+                    sig = _v <= float(_thr)
+                else:
+                    sig = _v >= float(_thr)
+                sig = sig & np.isfinite(_v)
+            except Exception:
+                continue
+            if sig.sum() < len(segs):
+                continue
+            pos_folds = 0; used = 0
+            for a, b in segs:
+                m = np.zeros(n, dtype=bool); m[a:b] = True
+                f = sig & m
+                if f.sum() < 2:
+                    continue
+                used += 1
+                # 그 폴드에서 발화일 다음날 수익(방향 정렬)의 평균
+                idx = np.flatnonzero(f)
+                idx = idx[idx < n - 1]
+                if len(idx) == 0:
+                    continue
+                if float(np.nanmean(sgn * r1[idx])) > 0:
+                    pos_folds += 1
+            if used >= 2:
+                out[nm] = pos_folds / float(used)
+        return out
+    except Exception as e:
+        print(f'    ⚠ 지표 안정성 검증 생략(무시): {e}')
+        return {}
+
+
+def _apply_stability_weight(pool, stab_map, label=''):
+    """안정성 점수를 net 가중치에 반영한다.
+
+    net_weight_score = (1 + 신뢰도) × 안정성계수
+      안정성계수 = 1 - W + W × (플러스 폴드 비율)
+      W=0.5 이면, 전 폴드 플러스는 그대로 / 전 폴드 마이너스는 절반으로 깎인다.
+    ★ 신뢰도(과거 성적 크기)와 안정성(여러 시기 반복성)을 곱해서 쓰는 것 —
+      크기만 크고 한 시기에 몰린 지표는 자연히 밀려난다.
+    """
+    if pool is None or len(pool) == 0 or not stab_map:
+        return pool
+    W = float(globals().get('STABILITY_WEIGHT_STRENGTH', 0.5))
+    if W <= 0:
+        return pool
+    pool = pool.copy()
+    if 'net_weight_score' not in pool.columns:
+        pool['net_weight_score'] = 1.0 + pd.to_numeric(
+            pool.get('reliability', 0.0), errors='coerce').fillna(0.0)
+    _st = pool['indicator'].astype(str).map(stab_map)
+    _cov = float(_st.notna().mean())
+    _f = (1.0 - W) + W * _st.fillna(0.5)
+    pool['stability'] = _st
+    pool['net_weight_score'] = pool['net_weight_score'] * _f
+    try:
+        _mean_st = float(_st.dropna().mean()) if _st.notna().any() else float('nan')
+        print(f"    (지표 안정성 가중) {label}: {len(pool)}개 중 {int(_st.notna().sum())}개 평가 "
+              f"— 평균 플러스폴드비율 {_mean_st:.2f}, 가중치 배율 {_f.min():.2f}~{_f.max():.2f} "
+              f"(전 폴드 플러스는 유지, 전 폴드 마이너스는 {1-W:.0%}로 감쇠)")
+    except Exception:
+        pass
+    return pool
+
+
 def _apply_min_signal_floor_pair(buy_pool, sell_pool):
     """★★★ (요청 — 재수정) 매수는 엄격하게 적게, 매도는 느슨하게 많이.
 
@@ -18407,12 +18534,20 @@ def _apply_min_signal_floor_pair(buy_pool, sell_pool):
     #     매도는 대부분을(느슨) 남기는 원래 의도가 후보 수와 무관하게 지켜진다.
     _nb0 = len(buy_pool) if buy_pool is not None else 0
     _ns0 = len(sell_pool) if sell_pool is not None else 0
-    _fr_b = float(globals().get('SIMPLE_POOL_TARGET_FRAC_BUY', 0.15))
-    _fr_s = float(globals().get('SIMPLE_POOL_TARGET_FRAC_SELL', 0.70))
-    _tb = max(int(globals().get('SIMPLE_POOL_TARGET_MIN_BUY', 30)), int(_nb0 * _fr_b))
-    _ts = max(int(globals().get('SIMPLE_POOL_TARGET_MIN_SELL', 60)), int(_ns0 * _fr_s))
-    print(f"    (목표 지표수 — 후보 규모 비례) 매수 {_tb}개(후보 {_nb0}의 {_fr_b:.0%}) / "
-          f"매도 {_ts}개(후보 {_ns0}의 {_fr_s:.0%}) — 매도를 더 넓게 남긴다")
+    # ★★★ (실측 결론) 비율 목표는 후보가 줄었을 때 오히려 지표 부족을 심화시켰다
+    #   (매수 최종 16개, 롱지속 -24.7%p). 고정 목표가 실측상 가장 좋았다(워크포워드
+    #   +117.10%p, 홀드아웃 4/4). SIMPLE_POOL_TARGET_USE_FRAC=True 로 켜면 비율 방식.
+    if bool(globals().get('SIMPLE_POOL_TARGET_USE_FRAC', False)):
+        _fr_b = float(globals().get('SIMPLE_POOL_TARGET_FRAC_BUY', 0.15))
+        _fr_s = float(globals().get('SIMPLE_POOL_TARGET_FRAC_SELL', 0.70))
+        _tb = max(int(globals().get('SIMPLE_POOL_TARGET_MIN_BUY', 30)), int(_nb0 * _fr_b))
+        _ts = max(int(globals().get('SIMPLE_POOL_TARGET_MIN_SELL', 60)), int(_ns0 * _fr_s))
+        print(f"    (목표 지표수 — 후보 비례) 매수 {_tb}개 / 매도 {_ts}개")
+    else:
+        _tb = int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY', 60))
+        _ts = int(globals().get('SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL', 150))
+        print(f"    (목표 지표수 — 고정) 매수 {_tb}개 / 매도 {_ts}개 "
+              f"(후보 {_nb0}/{_ns0}) — 매도를 더 넓게 남긴다")
     # ★★★ (실측) 후보 단계에서 이미 매수가 매도의 2배(179 vs 86)라, 하한을 아무리
     #   조정해도 '매도가 더 많다'는 원칙을 지킬 수 없다. 매수 성공률 컷이 70%로 높아
     #   통과가 적어야 정상인데 실제로는 반대다 — 매수 지표가 구조적으로 더 많이 만들어진다.
@@ -21156,6 +21291,21 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             #   기본적으로 잘라내되, 그 바람에 지표가 30개도 안 남으면 하한을 5씩 낮춰가며
             #   30개를 확보한다(끝까지 모자라면 있는 대로 쓴다).
             buy_c, sell_c = _apply_min_signal_floor_pair(buy_c, sell_c)
+            # ★★★ (요청 — 둘째) 지표 선정을 워크포워드로 검증해 '여러 시기에서 고르게
+            #   맞는' 지표에 더 큰 투표권을 준다. 신뢰도(과거 성적 크기)만으로는 미래를
+            #   예측 못 한다는 게 실측으로 확인됐다(전반→후반 상관 r=-0.10).
+            try:
+                if bool(globals().get('USE_STABILITY_WEIGHT', True)):
+                    _fd = int(globals().get('STABILITY_FOLDS', 4))
+                    _sf = float(globals().get('STABILITY_START_FRAC', 0.5))
+                    _stb = _walkforward_indicator_stability(
+                        feat, close, buy_c, True, folds=_fd, start_frac=_sf)
+                    _sts = _walkforward_indicator_stability(
+                        feat, close, sell_c, False, folds=_fd, start_frac=_sf)
+                    buy_c = _apply_stability_weight(buy_c, _stb, '매수')
+                    sell_c = _apply_stability_weight(sell_c, _sts, '매도')
+            except Exception as _e_stb:
+                print(f"    ⚠ 지표 안정성 가중 생략(무시): {_e_stb}")
             if _n_before_b2 != len(buy_c) or _n_before_s2 != len(sell_c):
                 print(f"    (동일지표 호라이즌 중복제거) 매수 {_n_before_b2}→{len(buy_c)}개, "
                       f"매도 {_n_before_s2}→{len(sell_c)}개 (같은 이름 지표는 성공률·신뢰도 "
