@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.l'
+CORE_VERSION = '2026-08-17.m'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화(비대칭 복원)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + 하한탐색 최소확보(지표부족 해소)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14914,6 +14914,13 @@ SIMPLE_POOL_TARGET_FRAC_BUY              = 0.15   # 매수: 후보의 상위 15%
 SIMPLE_POOL_TARGET_FRAC_SELL             = 0.70   # 매도: 후보의 70%까지 (느슨)
 SIMPLE_POOL_TARGET_MIN_BUY               = 30     # 그래도 이 개수는 확보
 SIMPLE_POOL_TARGET_MIN_SELL              = 60
+# ★★★ (실측) 하한 탐색이 중간(15건)에서 멈춰 10건짜리 지표가 통째로 잘렸다.
+#   목표를 만족해도 이 개수에 미달하면 하한을 계속 낮춘다 — 지표 부족 방지.
+SIMPLE_POOL_HARD_MIN_INDICATORS          = 60
+# ★★★ (실측) 후보 단계에서 이미 매수가 매도의 2배라 하한 조정만으로는 비대칭을 못 지킨다.
+#   매수가 매도보다 많으면 매수를 매도의 이 비율까지 잘라 강제로 되돌린다.
+SIMPLE_POOL_FORCE_ASYMMETRY              = True
+SIMPLE_POOL_BUY_MAX_RATIO                = 0.7    # 매수 ≤ 매도 × 0.7
 SIMPLE_POOL_MIN_INDICATORS_TARGET_BUY    = 60     # (하위호환 — 지금은 위 비율이 우선)
 SIMPLE_POOL_MIN_INDICATORS_TARGET_SELL   = 150
 # ★★★ (요청 — 신규) 개별 컷에서 탈락한 지표들을 성격별 그룹으로 묶어 합성지표를 만든다.
@@ -18406,12 +18413,30 @@ def _apply_min_signal_floor_pair(buy_pool, sell_pool):
     _ts = max(int(globals().get('SIMPLE_POOL_TARGET_MIN_SELL', 60)), int(_ns0 * _fr_s))
     print(f"    (목표 지표수 — 후보 규모 비례) 매수 {_tb}개(후보 {_nb0}의 {_fr_b:.0%}) / "
           f"매도 {_ts}개(후보 {_ns0}의 {_fr_s:.0%}) — 매도를 더 넓게 남긴다")
+    # ★★★ (실측) 후보 단계에서 이미 매수가 매도의 2배(179 vs 86)라, 하한을 아무리
+    #   조정해도 '매도가 더 많다'는 원칙을 지킬 수 없다. 매수 성공률 컷이 70%로 높아
+    #   통과가 적어야 정상인데 실제로는 반대다 — 매수 지표가 구조적으로 더 많이 만들어진다.
+    #   → 매도가 매수보다 적으면, 매수 쪽만 상위 몇 개로 잘라 비대칭을 강제 회복한다.
+    #     (매수를 줄이는 방향이라 '매수는 엄선' 원칙에도 부합한다)
+    _force = bool(globals().get('SIMPLE_POOL_FORCE_ASYMMETRY', True))
     b2 = _apply_min_signal_floor(
         buy_pool, '매수', target=_tb,
         note='엄격 — 틀리면 즉시 손실이라 표본 충분한 것만')
     s2 = _apply_min_signal_floor(
         sell_pool, '매도', target=_ts,
         note='느슨 — 틀려도 기회비용뿐, 하락을 놓치지 않는 게 우선')
+    if _force and len(s2) > 0 and len(b2) > len(s2):
+        _ratio = float(globals().get('SIMPLE_POOL_BUY_MAX_RATIO', 0.7))
+        _keep_n = max(int(len(s2) * _ratio),
+                      int(globals().get('SIMPLE_POOL_TARGET_MIN_BUY', 30)))
+        if _keep_n < len(b2):
+            _col = ('reliability' if 'reliability' in b2.columns else
+                    ('success_rate' if 'success_rate' in b2.columns else None))
+            _b3 = (b2.sort_values(_col, ascending=False).head(_keep_n).reset_index(drop=True)
+                   if _col else b2.head(_keep_n).reset_index(drop=True))
+            print(f"    (비대칭 강제) 매수 {len(b2)}→{len(_b3)}개 — 매도({len(s2)}개)보다 "
+                  f"많아 상위 신뢰도만 남김. 매수 실패는 즉시 손실이라 엄선이 맞다")
+            b2 = _b3
     try:
         print(f"    (매수/매도 비대칭 확인) 매수 {len(b2)}개 / 매도 {len(s2)}개"
               f" — 매도가 더 많아야 정상"
@@ -18433,6 +18458,11 @@ def _apply_min_signal_floor(pool, label='', target=None, note=''):
        ★ 기준 컬럼은 n_signals(이벤트 기준 신호개수) — 없으면 rel_n_events로 대체."""
     if pool is None or len(pool) == 0:
         return pool
+    # ★★★ (실측 개선) 하한을 '선호 30건'에서 시작해 5씩 낮추는데, 이산화 이후 30건짜리
+    #   지표가 2~3개뿐이라 사실상 매번 최저까지 내려간다. 그런데 중간 단계(15건)에서
+    #   목표를 만족해 버리면 거기서 멈춰, 10건짜리 좋은 지표들이 통째로 잘린다
+    #   (실측: 매수 179→43개, 최종 16개까지 감소 / 롱지속 정보이득 -24.7%p).
+    #   → 목표를 만족해도 '최소 확보 개수'에 미달하면 계속 낮춘다.
     _pref = int(globals().get('SIMPLE_POOL_MIN_SIGNALS_PREFERRED', 30))
     _floor = int(globals().get('SIMPLE_POOL_MIN_SIGNALS_FLOOR', 10))
     _target = int(target if target is not None
@@ -18450,9 +18480,12 @@ def _apply_min_signal_floor(pool, label='', target=None, note=''):
     #   (신호개수 중앙값 11, 10건 미만 0개). 요청 취지는 "원래 30건 이상을 원하지만
     #   그러면 지표가 너무 없을 수 있으니 5씩 낮춰서 30개는 확보하라"였으므로,
     #   선호 하한 30에서 시작해 지표수가 목표에 닿을 때까지 5씩 낮추고 10에서 멈춘다.
+    _hard_min = int(globals().get('SIMPLE_POOL_HARD_MIN_INDICATORS', 60))
     _cut = _pref
     while _cut > _floor:
-        if int((_ns >= _cut).sum()) >= _target:
+        _n_at = int((_ns >= _cut).sum())
+        # 목표를 만족하고, 동시에 절대 최소 개수도 넘겨야 멈춘다
+        if _n_at >= _target and _n_at >= _hard_min:
             break
         _cut -= _step
     _cut = max(_cut, _floor)
