@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-18.g'
+CORE_VERSION = '2026-08-18.i'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화 + EVAL_START 중복제거 + 워크포워드 검증모드')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화 + EVAL_START 중복제거 + 검증모드 net품질진단 + 매수 하방가드')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15005,6 +15005,18 @@ STATE_MIN_LIFT_TO_KEEP                   = 0.0
 #   'lc'=롱지속, 'lr'=롱→숏, 'sc'=숏지속, 'sr'=숏→롱
 #   롱지속은 10회 연속 정보이득 마이너스(-3.9 ~ -22.5%p)라 ('lc',) 를 검토할 만하다.
 SIMPLE_POOL_DISABLE_STATES               = ()
+
+# ════════════════════════════════════════════════════════════════
+# ★★★ (요청) 매수 하방 가드 — "매수는 틀리면 절대 안 된다"
+# ════════════════════════════════════════════════════════════════
+# 실측: 매수 18회 중 손실 10회(56%), 그중 -2% 이상 대형손실 3회(-4.43/-4.05/-3.61%).
+#   성공률만 보면 통과하는 지표가 틀릴 때 크게 잃는 구조였다.
+#   → 매수 지표에만 '발화 후 낙폭'을 별도로 검사해 위험한 지표를 뺀다.
+#     매도에는 적용하지 않는다(틀려도 기회비용뿐이고 풀이 얇아지면 손해가 더 큼).
+USE_BUY_DOWNSIDE_GUARD                   = True
+BUY_MAX_LOSS                             = 0.02   # 이 이상 떨어지면 '대형손실'
+BUY_MAX_BIG_LOSS_RATE                    = 0.15   # 대형손실 비율이 이걸 넘으면 제외
+BUY_MIN_PROFIT_FACTOR                    = 1.0    # 손익비 1 미만이면 제외
 # ★ 지속 상태의 정보이득이 이 값 미만이면 '자동 비활성 판정' 안내를 로그에 남긴다.
 #   (실제로 끄지는 않는다 — 위 SIMPLE_POOL_DISABLE_STATES 에 직접 넣어야 적용)
 STATE_AUTO_DISABLE_LIFT                  = -0.05
@@ -17403,6 +17415,86 @@ def select_pool_by_ic(feat, close, *, indicators=None, horizon=1,
     else:
         df = df.reindex(df['oos_ic'].abs().sort_values(ascending=False).index)
     return df.head(max_pool).reset_index(drop=True)
+
+
+def _buy_downside_guard(feat, close, pool, max_loss=None, min_events=5):
+    """★★★ (요청 — "매수는 틀리면 절대 안 된다") 매수 지표에 하방 안전장치를 건다.
+
+    [문제] 지금 매수 지표는 '다음날 올랐나'만 본다. 그래서 10번 중 6번 맞히지만
+      틀릴 때 -4%를 맞는 지표도 통과한다. 실측: 매수 18회 중 손실 10회, 그중
+      -2% 이상 대형손실이 3회(-4.43%, -4.05%, -3.61%)였다.
+      매수 실패는 즉시 손실이므로 이런 지표는 아무리 성공률이 높아도 쓰면 안 된다.
+
+    [해법] 각 매수 지표의 '발화일 다음날 최악 손실'과 '대형손실 빈도'를 재서,
+      기준을 넘는 지표를 풀에서 뺀다. 성공률과 별개의 관문이다.
+        · 발화일 중 -max_loss 이하로 떨어진 비율이 BUY_MAX_BIG_LOSS_RATE 초과 → 제외
+        · 평균 손실이 평균 이익보다 큰 지표(손익비 1 미만) → 제외
+    ★ 매도 지표에는 적용하지 않는다 — 매도는 틀려도 기회비용뿐이다.
+    """
+    if pool is None or len(pool) == 0:
+        return pool, {}
+    if not bool(globals().get('USE_BUY_DOWNSIDE_GUARD', True)):
+        return pool, {}
+    try:
+        n = len(close)
+        px = np.asarray(close, dtype=float)[:n]
+        r1 = np.zeros(n)
+        r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
+        _ml = float(max_loss if max_loss is not None
+                    else globals().get('BUY_MAX_LOSS', 0.02))
+        _rate = float(globals().get('BUY_MAX_BIG_LOSS_RATE', 0.15))
+        _minpf = float(globals().get('BUY_MIN_PROFIT_FACTOR', 1.0))
+        keep, drop, info = [], [], {}
+        for _i, row in pool.iterrows():
+            nm = str(row.get('indicator', ''))
+            try:
+                _v = np.asarray(_aligned_signal_for_row(feat, row), dtype=float)[:n]
+                _thr = row.get('threshold', None)
+                _dirv = str(row.get('direction', '>=') or '>=')
+                if _thr is None or (isinstance(_thr, float) and pd.isna(_thr)):
+                    sig = _v > 1e-12
+                elif _dirv in ('<=', 'down', 'below'):
+                    sig = _v <= float(_thr)
+                else:
+                    sig = _v >= float(_thr)
+                sig = sig & np.isfinite(_v)
+            except Exception:
+                keep.append(_i); continue
+            idx = np.flatnonzero(sig)
+            idx = idx[idx < n - 1]
+            if len(idx) < min_events:
+                keep.append(_i); continue
+            _rr = r1[idx]
+            _rr = _rr[np.isfinite(_rr)]
+            if len(_rr) < min_events:
+                keep.append(_i); continue
+            _bigrate = float(np.mean(_rr <= -_ml))
+            _win = _rr[_rr > 0]; _los = _rr[_rr < 0]
+            _pf = (float(_win.sum() / abs(_los.sum()))
+                   if len(_los) and _los.sum() != 0 else float('inf'))
+            if _bigrate > _rate or _pf < _minpf:
+                drop.append(_i)
+                info[nm] = (_bigrate, _pf, float(_rr.min()))
+            else:
+                keep.append(_i)
+        if not keep:
+            print(f"    (매수 하방 가드) 전부 탈락해 적용하지 않습니다 "
+                  f"— 기준이 너무 엄격합니다(BUY_MAX_BIG_LOSS_RATE={_rate})")
+            return pool, {}
+        _out = pool.loc[keep].reset_index(drop=True)
+        if drop:
+            _worst = sorted(info.items(), key=lambda kv: kv[1][2])[:3]
+            print(f"    (매수 하방 가드) {len(pool)}→{len(_out)}개 "
+                  f"— 발화 후 -{_ml:.0%} 이하 낙폭이 {_rate:.0%} 넘거나 손익비 "
+                  f"{_minpf} 미만인 {len(drop)}개 제외. 매수 실패는 즉시 손실이라 "
+                  f"성공률과 별개로 걸러야 합니다")
+            for _nm, (_br, _pf2, _mn) in _worst:
+                print(f"       · {_nm[:38]:<38} 대형손실 {_br:.0%} / 손익비 "
+                      f"{_pf2:.2f} / 최악 {_mn*100:+.1f}%")
+        return _out, info
+    except Exception as e:
+        print(f"    ⚠ 매수 하방 가드 생략(무시): {e}")
+        return pool, {}
 
 
 def _passes_tiered_sig_gate(success_rate, n_signals, indicator=None):
@@ -21428,6 +21520,13 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
             #    5씩 낮춰서 확보해" — 표본이 10건도 안 되는 지표는 승률이 우연에 좌우되므로
             #   기본적으로 잘라내되, 그 바람에 지표가 30개도 안 남으면 하한을 5씩 낮춰가며
             #   30개를 확보한다(끝까지 모자라면 있는 대로 쓴다).
+            # ★★★ (요청 — "매수는 틀리면 절대 안 됨") 매수 지표에만 하방 가드를 건다.
+            #   성공률이 높아도 틀릴 때 -4%를 맞는 지표는 쓰면 안 된다(실측: 매수 18회 중
+            #   대형손실 3회 -4.43/-4.05/-3.61%). 매도에는 적용하지 않는다 — 기회비용뿐.
+            try:
+                buy_c, _ = _buy_downside_guard(feat, close, buy_c)
+            except Exception as _e_bg:
+                print(f"    ⚠ 매수 하방 가드 생략(무시): {_e_bg}")
             buy_c, sell_c = _apply_min_signal_floor_pair(buy_c, sell_c)
             # ★★★ (요청 — 둘째) 지표 선정을 워크포워드로 검증해 '여러 시기에서 고르게
             #   맞는' 지표에 더 큰 투표권을 준다. 신뢰도(과거 성적 크기)만으로는 미래를
@@ -35830,6 +35929,14 @@ def run_validation_mode(ticker=None):
         if _call is None:
             continue
         _r = float(_px.loc[_nxt] / _px.loc[_d] - 1.0)
+        # ★★★ (실측 버그수정) 다음날 종가가 아직 없으면(nan) 채점할 수 없다.
+        #   그런데 예전엔 nan 을 그냥 '오답'으로 세어 정확도가 부당하게 낮아졌고
+        #   (16/33=48.5% → 실제는 16/31=51.6%), 누적수익도 nan 으로 오염됐다.
+        #   → 채점 불가한 날은 집계에서 제외하고 그 사실을 표시한다.
+        if not np.isfinite(_r):
+            print(f"  [{_i+1:>3}/{len(_days)}] {_d.date()} 판정 "
+                  f"{_call['action']} → {_nxt.date()} 실제값 없음(미확정) — 집계 제외")
+            continue
         _buy = ('매수' in _call['action'])
         # 매수인데 오르면 정답, 현금인데 내리면 정답
         _ok = (_r > 0) if _buy else (_r <= 0)
@@ -35845,11 +35952,14 @@ def run_validation_mode(ticker=None):
         return None
 
     _n = len(rows); _nok = sum(1 for x in rows if x['ok'])
+    _zero = [x for x in rows if abs(x['net']) < 1e-9]
     _buys = [x for x in rows if x['action'] == '매수']
     _cash = [x for x in rows if x['action'] == '현금']
     _bok = sum(1 for x in _buys if x['ok']); _cok = sum(1 for x in _cash if x['ok'])
-    _sys = sum(x['ret'] for x in _buys)          # 시스템대로 했을 때 누적
-    _hold = sum(x['ret'] for x in rows)          # 계속 보유했을 때
+    _sys = float(np.nansum([x['ret'] for x in _buys]))   # 시스템대로 했을 때 누적
+    _hold = float(np.nansum([x['ret'] for x in rows]))   # 계속 보유했을 때
+    _avg_b = (float(np.nanmean([x['ret'] for x in _buys])) if _buys else 0.0)
+    _avg_c = (float(np.nanmean([x['ret'] for x in _cash])) if _cash else 0.0)
 
     W('')
     W('=' * 92)
@@ -35858,9 +35968,72 @@ def run_validation_mode(ticker=None):
       + (f" ({_bok/len(_buys)*100:.1f}%)" if _buys else ""))
     W(f"    · 현금 판정 {len(_cash)}회 중 적중 {_cok}회"
       + (f" ({_cok/len(_cash)*100:.1f}%)" if _cash else ""))
-    W(f"  누적 수익 — 시스템 {_sys*100:+.2f}% vs 계속보유 {_hold*100:+.2f}%"
-      f"  → 초과 {(_sys-_hold)*100:+.2f}%p")
     W('')
+    W(f"  ★ 누적 수익 — 시스템 {_sys*100:+.2f}% vs 계속보유 {_hold*100:+.2f}%"
+      f"  → 초과 {(_sys-_hold)*100:+.2f}%p")
+    W(f"    · 매수한 날 평균 {_avg_b*100:+.2f}% ({len(_buys)}일)")
+    W(f"    · 현금인 날 평균 {_avg_c*100:+.2f}% ({len(_cash)}일)  ← 피한 등락")
+    W('')
+    W("  ※ 정확도보다 '초과수익'을 보세요. 이 시스템은 매일 맞히는 게 목표가 아니라")
+    W("    큰 하락을 피하고 큰 상승에 올라타는 게 목표입니다. 정확도가 50% 근처여도")
+    W("    현금인 날 평균이 매수한 날 평균보다 낮으면 제 역할을 하고 있는 것입니다.")
+    W('')
+    if _zero:
+        _zok = sum(1 for x in _zero if x['ok'])
+        W(f"  ⚠ net=0.000 인 날 {len(_zero)}/{_n}일 ({len(_zero)/_n*100:.0f}%) — "
+          f"발화한 지표가 하나도 없어 직전 포지션을 그대로 유지한 날입니다"
+          f"(적중 {_zok}/{len(_zero)}). 이 비율이 높으면 지표 수가 부족하거나 "
+          f"임계값이 너무 엄격한 것입니다.")
+        W('')
+    # ★★★ (요청 — 매수 실패는 절대 안 됨) net 이 다음날 방향과 관계가 있는지 직접 잰다.
+    #   실측 진단: net과 다음날 등락의 상관 +0.11, 부호 일치율 35%(동전 던지기보다 낮음).
+    #   net 상위 33% 구간조차 상승비율 36%로, 강한 매수 신호일수록 오히려 덜 올랐다.
+    #   → 문턱(K)을 올려도 해결되지 않는다. net 자체가 다음날 방향 정보를 갖고 있지 않다.
+    #   이 진단을 매번 찍어, 종목·기간을 바꿔가며 net이 유효한지 확인할 수 있게 한다.
+    try:
+        _nets = np.array([x['net'] for x in rows], dtype=float)
+        _rets = np.array([x['ret'] for x in rows], dtype=float)
+        _m = np.isfinite(_nets) & np.isfinite(_rets)
+        if _m.sum() > 5:
+            _cc = float(np.corrcoef(_nets[_m], _rets[_m])[0, 1])
+            _sgn = float(np.mean(np.sign(_nets[_m]) == np.sign(_rets[_m])))
+            W('')
+            W(f"  ▣ net 신호 품질 — 다음날 등락과의 상관 {_cc:+.3f} / "
+              f"부호 일치율 {_sgn*100:.0f}%")
+            _q = np.percentile(_nets[_m], [33, 66])
+            for _lo, _hi, _lb in ((-1e18, _q[0], '하위33%'), (_q[0], _q[1], '중간'),
+                                  (_q[1], 1e18, '상위33%')):
+                _sel = _m & (_nets > _lo) & (_nets <= _hi)
+                if _sel.sum():
+                    W(f"     net {_lb:<8} (n={int(_sel.sum()):>2}) 다음날 평균 "
+                      f"{_rets[_sel].mean()*100:+.2f}%  상승비율 "
+                      f"{np.mean(_rets[_sel] > 0)*100:.0f}%")
+            if _sgn < 0.5 or _cc < 0.05:
+                W("     ★net이 다음날 방향을 예측하지 못합니다. 상위 구간이 하위 구간보다")
+                W("       높지 않다면 매수 문턱(K)을 올려도 해결되지 않습니다 —")
+                W("       지표 풀이나 점수 체계를 손봐야 합니다.")
+    except Exception:
+        pass
+
+    # ★ 매수 실패는 즉시 손실 — 손실 크기를 따로 집계한다(요청)
+    try:
+        _bl = [x['ret'] for x in _buys if x['ret'] < 0]
+        _bw = [x['ret'] for x in _buys if x['ret'] > 0]
+        _big_loss = [x for x in _buys if x['ret'] < -0.02]
+        if _buys:
+            W('')
+            W(f"  ▣ 매수 손익 구조 — 벌 때 평균 {np.mean(_bw)*100:+.2f}% ({len(_bw)}회) / "
+              f"잃을 때 평균 {np.mean(_bl)*100:+.2f}% ({len(_bl)}회)"
+              if _bw and _bl else "  ▣ 매수 손익 구조 — 표본 부족")
+            if _bw and _bl:
+                _pf = (sum(_bw) / abs(sum(_bl))) if sum(_bl) else float('inf')
+                W(f"     손익비 {_pf:.2f} (1.0 미만이면 이기고도 지는 구조)")
+            W(f"     ★2% 이상 잃은 매수 {len(_big_loss)}회"
+              + (": " + ', '.join(f"{x['date']}({x['ret']*100:.1f}%,net{x['net']:+.2f})"
+                                  for x in _big_loss[:5]) if _big_loss else ""))
+    except Exception:
+        pass
+
     _miss = [x for x in rows if not x['ok']]
     _big = sorted(_miss, key=lambda x: -abs(x['ret']))[:10]
     if _big:
