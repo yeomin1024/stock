@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-18.d'
+CORE_VERSION = '2026-08-18.e'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 매도지속 제외대신 유지(한계기여·워크포워드 두 경로 모두)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화(3경로 통합·전수테스트)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -18540,6 +18540,56 @@ def _apply_stability_weight(pool, stab_map, label=''):
     return pool
 
 
+def _should_drop_state(skey, edge, context=''):
+    """★★★ (구조 정리) '이 상태를 제외할지'를 결정하는 **단 하나의** 함수.
+
+    [왜 만들었나] 같은 판정을 하는 코드가 세 군데 흩어져 있었다:
+      ① 한계기여 제외(_select_state 내부)
+      ② 워크포워드 근거 제외(_st_res 갱신)
+      ③ 정보이득 음수 제외(리포트 단계)
+    하나를 고치면 다음 것에 걸려, 숏지속이 매번 다른 경로로 0개가 됐고 그때마다
+    매도 풀이 86→32개로 무너져 워크포워드가 -5.35%p 떨어졌다.
+    → 판정을 여기로 모으고 세 곳이 전부 이 함수를 참조하게 한다. 규칙이 바뀌면
+      여기만 고치면 되고, 새 경로가 생겨도 같은 규칙을 따르게 된다.
+
+    [규칙]
+      · 매수 지속 상태(롱지속) : 기여가 음수면 제외. 매수 실패는 즉시 손실이라 엄격.
+      · 매도 지속 상태(숏지속) : 제외하지 않고 가중치만 낮춤. 매도는 틀려도 기회비용뿐이고,
+                                풀이 얇아지면 하락을 놓쳐 손해가 더 크다(실측 -5.35%p).
+      · 전환 상태(롱→숏·숏→롱) : 제외하지 않음. net의 91%를 만드는 핵심이다.
+    반환: ('drop' | 'weight_down' | 'keep', 사유 문자열)
+    """
+    if skey not in ('lc', 'sc'):
+        return 'keep', ''
+    if edge is None or edge >= 0:
+        return 'keep', ''
+    if skey == 'sc' and bool(globals().get('KEEP_SELL_CONT_STATE', True)):
+        _wd = float(globals().get('SELL_CONT_WEIGHT_DOWN', 0.5))
+        return 'weight_down', (
+            f"기여 {edge*100:+.2f}%p 이지만 제외하지 않고 가중치를 {_wd:.0%}로 낮춥니다 "
+            f"— 매도 풀이 얇아지면 하락을 놓쳐 손해가 더 큽니다(실측 -5.35%p)"
+            + (f" [{context}]" if context else ""))
+    if not bool(globals().get('SIMPLE_POOL_DROP_USELESS_CONT_STATE', True)):
+        return 'keep', ''
+    return 'drop', (f"기여 {edge*100:+.2f}%p — 짝 상태의 판정을 개선하지 못해 0개 채택"
+                    + (f" [{context}]" if context else ""))
+
+
+def _weight_down_sel(sel, factor=None):
+    """상태의 선정 결과에 가중치 배율을 적용한다(제외 대신 쓰는 완화 조치)."""
+    if sel is None or len(sel) == 0:
+        return sel
+    _wd = float(factor if factor is not None
+                else globals().get('SELL_CONT_WEIGHT_DOWN', 0.5))
+    sel = sel.copy()
+    if 'net_weight_score' in sel.columns:
+        sel['net_weight_score'] = sel['net_weight_score'] * _wd
+    else:
+        sel['net_weight_score'] = (1.0 + pd.to_numeric(
+            sel.get('reliability', 0.0), errors='coerce').fillna(0.0)) * _wd
+    return sel
+
+
 def _apply_min_signal_floor_pair(buy_pool, sell_pool):
     """★★★ (요청 — 재수정) 매수는 엄격하게 적게, 매도는 느슨하게 많이.
 
@@ -19806,22 +19856,13 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _dropped_zero = False
             _flat = (best_ret is None) or (_mret <= 1e-12)
             if _flat and pair_net is not None:
-                # ★★★ (실측) 숏지속을 0개로 빼자 매도 풀이 86→32개로 급감하고 워크포워드가
-                #   -5.35%p 떨어졌다. 숏지속 자체 기여는 -0.1%p로 미미했지만, 그 지표들이
-                #   빠지면서 매도 다양성이 무너진 게 더 컸다.
-                #   ★ 매도는 틀려도 기회비용뿐이라 넓게 두는 게 설계 원칙 →
-                #     매도 쪽 지속 상태(숏지속)는 제외하지 않고 그대로 둔다.
-                #     (가중치 하향은 상위 리포트 단계에서 처리)
-                if (skey == 'sc') and bool(globals().get('KEEP_SELL_CONT_STATE', True)):
-                    print(f"    (숏지속 유지) 한계기여 {_mret*100:+.2f}% 이지만 매도 풀 "
-                          f"다양성을 지키려 제외하지 않습니다 — 매도는 틀려도 기회비용뿐이라 "
-                          f"넓게 두는 게 낫습니다(끄려면 KEEP_SELL_CONT_STATE=False)")
-                elif _mret < -1e-12 and bool(globals().get(
-                        'SIMPLE_POOL_DROP_USELESS_CONT_STATE', True)):
+                # ★ 판정은 _should_drop_state 한 곳에서만 한다(경로①: 한계기여)
+                _act1, _why1 = _should_drop_state(skey, _mret, '한계기여')
+                if _act1 == 'drop':
                     _dropped_zero = True
-                    print(f"    (지속상태 제외) {_NAME[skey]}: 한계기여 최대 {_mret*100:+.2f}% "
-                          f"— 짝 상태의 판정을 개선하지 못해 0개 채택")
-                    return _blank
+                    print(f"    (지속상태 제외) {_NAME[skey]}: {_why1}")
+                elif _act1 == 'weight_down':
+                    print(f"    ({_NAME[skey]} 유지) {_why1}")
                 _crit = 'wrong'
             # ★★★ (실측 개선 — 안정화) 최고점을 그대로 쓰면 폴드마다 채택 개수가 3~4배씩
             #   요동한다(실측: 롱→숏 58~106개, 숏지속 77~204개). 수익률 곡선은 꼭대기 부근이
@@ -20316,34 +20357,13 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                     _edge2 = float(_a2['ret'] - _a2['bh'])
                     _npos2 = sum(1 for _f2 in _wf['folds']
                                  if _f2['per'].get(_k2) and _f2['per'][_k2]['edge'] > 0)
-                    # ★★★ (실측) 워크포워드 근거 제외도 숏지속을 0개로 만들어 매도 풀이
-                    #   86→32개로 급감했다(워크포워드 -5.35%p). 앞서 고친 '한계기여 제외'와
-                    #   별개의 경로였다. 매도는 틀려도 기회비용뿐이라 넓게 두는 게 원칙 →
-                    #   매도 지속 상태는 여기서도 제외 대신 가중치만 낮춰 남긴다.
-                    if (_k2 == 'sc' and _edge2 < 0
-                            and bool(globals().get('KEEP_SELL_CONT_STATE', True))
-                            and int(_st_res[_k2].get('n', 0) or 0) > 0):
-                        _wd2 = float(globals().get('SELL_CONT_WEIGHT_DOWN', 0.5))
-                        try:
-                            _sel3 = _st_res[_k2]['sel']
-                            if _sel3 is not None and len(_sel3):
-                                _sel3 = _sel3.copy()
-                                if 'net_weight_score' in _sel3.columns:
-                                    _sel3['net_weight_score'] = \
-                                        _sel3['net_weight_score'] * _wd2
-                                else:
-                                    _sel3['net_weight_score'] = (
-                                        1.0 + pd.to_numeric(_sel3.get('reliability', 0.0),
-                                                            errors='coerce').fillna(0.0)) * _wd2
-                                _st_res[_k2] = dict(_st_res[_k2])
-                                _st_res[_k2]['sel'] = _sel3
-                                print(f"    (숏지속 유지) 워크포워드 한계기여 "
-                                      f"{_edge2*100:+.2f}%p 이지만 제외하지 않고 가중치를 "
-                                      f"{_wd2:.0%}로 낮춥니다 — 매도 풀이 얇아지면 하락을 "
-                                      f"놓쳐 손해가 더 큽니다(실측 -5.35%p)")
-                        except Exception:
-                            pass
-                    elif _edge2 < 0 and int(_st_res[_k2].get('n', 0) or 0) > 0:
+                    # ★ 판정은 _should_drop_state 한 곳에서만 한다(경로②: 워크포워드)
+                    _act2, _why2 = _should_drop_state(_k2, _edge2, '워크포워드')
+                    if _act2 == 'weight_down' and int(_st_res[_k2].get('n', 0) or 0) > 0:
+                        _st_res[_k2] = dict(_st_res[_k2])
+                        _st_res[_k2]['sel'] = _weight_down_sel(_st_res[_k2].get('sel'))
+                        print(f"    ({_NAME[_k2]} 유지) {_why2}")
+                    elif _act2 == 'drop' and int(_st_res[_k2].get('n', 0) or 0) > 0:
                         _wf_dropped.append((_NAME[_k2], _edge2, _npos2, len(_wf['folds']),
                                             int(_st_res[_k2]['n'])))
                         _st_res[_k2] = dict(_st_res[_k2])
@@ -21542,56 +21562,42 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                                   f"적중 {_s.get('acc', 0)*100:.0f}%. 이 상태는 선정이 "
                                   f"불안정하니 net에서 빼는 것을 검토하세요"
                                   f"(SIMPLE_POOL_DISABLE_STATES 에 추가).")
-                    _neg = [_s for _s in _mw_report['states']
-                            if _s.get('lift', 0) < -float(globals().get(
-                                'STATE_MIN_LIFT_TO_KEEP', 0.0)) and int(_s.get('n', 0)) > 0]
-                    if _neg and bool(globals().get('STATE_DROP_ON_NEGATIVE_LIFT', True)):
-                        for _s in _neg:
-                            print(f"      ★제외: {_s['name']} — 정보이득 {_s['lift']*100:+.1f}%p "
-                                  f"(적중 {_s['acc']*100:.0f}% < 기저 {_s['base_acc']*100:.0f}%). "
-                                  f"'항상 그 상태'라고 찍는 것보다 못해 채택 {_s['n']}개→0개")
-                            if _s['key'] == 'sc' and bool(globals().get(
-                                    'KEEP_SELL_CONT_STATE', True)):
-                                # ★ 매도 지속 상태는 제외 대신 가중치만 낮춘다(위 주석 참조)
-                                _wd = float(globals().get('SELL_CONT_WEIGHT_DOWN', 0.5))
-                                try:
-                                    if _s.get('sel') is not None and len(_s['sel']):
-                                        _sel2 = _s['sel'].copy()
-                                        if 'net_weight_score' in _sel2.columns:
-                                            _sel2['net_weight_score'] = \
-                                                _sel2['net_weight_score'] * _wd
-                                        _s['sel'] = _sel2
-                                        print(f"      ↪ {_s['name']}: 제외 대신 가중치 "
-                                              f"{_wd:.0%}로 낮춤({len(_sel2)}개 유지)")
-                                except Exception:
-                                    pass
-                                continue
+                    # ★ 판정은 _should_drop_state 한 곳에서만 한다(경로③: 정보이득)
+                    for _s in _mw_report['states']:
+                        if int(_s.get('n', 0) or 0) <= 0:
+                            continue
+                        _act3, _why3 = _should_drop_state(
+                            _s['key'], float(_s.get('lift', 0.0)), '정보이득')
+                        if _act3 == 'drop':
+                            print(f"      ★제외: {_s['name']} — {_why3} "
+                                  f"(적중 {_s.get('acc', 0)*100:.0f}% < "
+                                  f"기저 {_s.get('base_acc', 0)*100:.0f}%)")
                             _s['n'] = 0
-                            _s['sel'] = _s['sel'].iloc[0:0] if _s.get('sel') is not None else None
+                            _s['sel'] = (_s['sel'].iloc[0:0]
+                                         if _s.get('sel') is not None else None)
                             _s['dropped_by_lift'] = True
-                        # ★★★ (실측 버그수정) 리포트만 0개로 바꾸면 소용없다 —
-                        #   buy_c/sell_c 는 이 시점에 '이미' 만들어져 있어서 제외가 실제
-                        #   풀에 반영되지 않았다(실측: 롱지속 56개→0개라고 찍혔는데 매수 풀은
-                        #   62→61개로 1개만 줄었다). 제외 후 상태별 sel 을 다시 합쳐
-                        #   진짜로 빼야 한다.
-                        try:
-                            _sm = _mw_report.get('state_map') or {}
-                            def _u2(a, b):
-                                _ps = [x for x in (a, b) if x is not None and len(x) > 0]
-                                if not _ps:
-                                    return buy_c.iloc[0:0].copy()
-                                _u = pd.concat(_ps, ignore_index=True)
-                                if 'indicator' in _u.columns:
-                                    _u = _u.drop_duplicates(subset=['indicator'],
-                                                            keep='first').reset_index(drop=True)
-                                return _u
-                            _nb_before, _ns_before = len(buy_c), len(sell_c)
-                            buy_c = _u2(_sm.get('lc', {}).get('sel'), _sm.get('sr', {}).get('sel'))
-                            sell_c = _u2(_sm.get('sc', {}).get('sel'), _sm.get('lr', {}).get('sel'))
-                            print(f"      → 제외 반영: 매수 {_nb_before}→{len(buy_c)}개, "
-                                  f"매도 {_ns_before}→{len(sell_c)}개")
-                        except Exception as _e_drop:
-                            print(f"      ⚠ 제외 반영 실패(무시): {_e_drop}")
+                        elif _act3 == 'weight_down':
+                            _s['sel'] = _weight_down_sel(_s.get('sel'))
+                            print(f"      ↪ {_s['name']} 유지 — {_why3}")
+                    try:
+                        _sm = _mw_report.get('state_map') or {}
+                        def _u2(a_, b_):
+                            _ps = [x for x in (a_, b_) if x is not None and len(x) > 0]
+                            if not _ps:
+                                return buy_c.iloc[0:0].copy()
+                            _u = pd.concat(_ps, ignore_index=True)
+                            if 'indicator' in _u.columns:
+                                _u = _u.drop_duplicates(subset=['indicator'],
+                                                        keep='first').reset_index(drop=True)
+                            return _u
+                        _nb_b, _ns_b = len(buy_c), len(sell_c)
+                        buy_c = _u2(_sm.get('lc', {}).get('sel'), _sm.get('sr', {}).get('sel'))
+                        sell_c = _u2(_sm.get('sc', {}).get('sel'), _sm.get('lr', {}).get('sel'))
+                        if (_nb_b, _ns_b) != (len(buy_c), len(sell_c)):
+                            print(f"      → 반영: 매수 {_nb_b}→{len(buy_c)}개, "
+                                  f"매도 {_ns_b}→{len(sell_c)}개")
+                    except Exception as _e_drop:
+                        print(f"      ⚠ 반영 실패(무시): {_e_drop}")
                     _dead = [_s['name'] for _s in _mw_report['states']
                              if abs(_s.get('lift', 0)) < 0.02]
                     if _dead:
