@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-18.c'
+CORE_VERSION = '2026-08-18.d'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 매도지속 제외대신 유지·가중하향')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 매도지속 제외대신 유지(한계기여·워크포워드 두 경로 모두)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -20316,7 +20316,34 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                     _edge2 = float(_a2['ret'] - _a2['bh'])
                     _npos2 = sum(1 for _f2 in _wf['folds']
                                  if _f2['per'].get(_k2) and _f2['per'][_k2]['edge'] > 0)
-                    if _edge2 < 0 and int(_st_res[_k2].get('n', 0) or 0) > 0:
+                    # ★★★ (실측) 워크포워드 근거 제외도 숏지속을 0개로 만들어 매도 풀이
+                    #   86→32개로 급감했다(워크포워드 -5.35%p). 앞서 고친 '한계기여 제외'와
+                    #   별개의 경로였다. 매도는 틀려도 기회비용뿐이라 넓게 두는 게 원칙 →
+                    #   매도 지속 상태는 여기서도 제외 대신 가중치만 낮춰 남긴다.
+                    if (_k2 == 'sc' and _edge2 < 0
+                            and bool(globals().get('KEEP_SELL_CONT_STATE', True))
+                            and int(_st_res[_k2].get('n', 0) or 0) > 0):
+                        _wd2 = float(globals().get('SELL_CONT_WEIGHT_DOWN', 0.5))
+                        try:
+                            _sel3 = _st_res[_k2]['sel']
+                            if _sel3 is not None and len(_sel3):
+                                _sel3 = _sel3.copy()
+                                if 'net_weight_score' in _sel3.columns:
+                                    _sel3['net_weight_score'] = \
+                                        _sel3['net_weight_score'] * _wd2
+                                else:
+                                    _sel3['net_weight_score'] = (
+                                        1.0 + pd.to_numeric(_sel3.get('reliability', 0.0),
+                                                            errors='coerce').fillna(0.0)) * _wd2
+                                _st_res[_k2] = dict(_st_res[_k2])
+                                _st_res[_k2]['sel'] = _sel3
+                                print(f"    (숏지속 유지) 워크포워드 한계기여 "
+                                      f"{_edge2*100:+.2f}%p 이지만 제외하지 않고 가중치를 "
+                                      f"{_wd2:.0%}로 낮춥니다 — 매도 풀이 얇아지면 하락을 "
+                                      f"놓쳐 손해가 더 큽니다(실측 -5.35%p)")
+                        except Exception:
+                            pass
+                    elif _edge2 < 0 and int(_st_res[_k2].get('n', 0) or 0) > 0:
                         _wf_dropped.append((_NAME[_k2], _edge2, _npos2, len(_wf['folds']),
                                             int(_st_res[_k2]['n'])))
                         _st_res[_k2] = dict(_st_res[_k2])
