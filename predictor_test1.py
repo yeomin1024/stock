@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-18.b'
+CORE_VERSION = '2026-08-18.c'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 매도지속 제외대신 유지·가중하향')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15006,6 +15006,11 @@ SIMPLE_POOL_DISABLE_STATES               = ()
 # ★ 지속 상태의 정보이득이 이 값 미만이면 '자동 비활성 판정' 안내를 로그에 남긴다.
 #   (실제로 끄지는 않는다 — 위 SIMPLE_POOL_DISABLE_STATES 에 직접 넣어야 적용)
 STATE_AUTO_DISABLE_LIFT                  = -0.05
+# ★★★ (실측) 숏지속을 0개로 빼자 매도 풀이 86→32개가 되고 워크포워드가 -5.35%p 떨어졌다.
+#   숏지속 자체 기여는 미미했지만 매도 다양성 손실이 더 컸다. 매도는 틀려도 기회비용뿐이라
+#   넓게 두는 게 원칙 → 제외 대신 유지하고, 정보이득이 음수면 가중치만 낮춘다.
+KEEP_SELL_CONT_STATE                     = True
+SELL_CONT_WEIGHT_DOWN                    = 0.5
 # ════════════════════════════════════════════════════════════════
 # ★★★ (실측 문제) 다중검정 보정
 #   지표당 임계 250 × 방향 2 × 호라이즌 5 × 리드 6 = 15,000개 조합,
@@ -19801,7 +19806,17 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _dropped_zero = False
             _flat = (best_ret is None) or (_mret <= 1e-12)
             if _flat and pair_net is not None:
-                if _mret < -1e-12 and bool(globals().get(
+                # ★★★ (실측) 숏지속을 0개로 빼자 매도 풀이 86→32개로 급감하고 워크포워드가
+                #   -5.35%p 떨어졌다. 숏지속 자체 기여는 -0.1%p로 미미했지만, 그 지표들이
+                #   빠지면서 매도 다양성이 무너진 게 더 컸다.
+                #   ★ 매도는 틀려도 기회비용뿐이라 넓게 두는 게 설계 원칙 →
+                #     매도 쪽 지속 상태(숏지속)는 제외하지 않고 그대로 둔다.
+                #     (가중치 하향은 상위 리포트 단계에서 처리)
+                if (skey == 'sc') and bool(globals().get('KEEP_SELL_CONT_STATE', True)):
+                    print(f"    (숏지속 유지) 한계기여 {_mret*100:+.2f}% 이지만 매도 풀 "
+                          f"다양성을 지키려 제외하지 않습니다 — 매도는 틀려도 기회비용뿐이라 "
+                          f"넓게 두는 게 낫습니다(끄려면 KEEP_SELL_CONT_STATE=False)")
+                elif _mret < -1e-12 and bool(globals().get(
                         'SIMPLE_POOL_DROP_USELESS_CONT_STATE', True)):
                     _dropped_zero = True
                     print(f"    (지속상태 제외) {_NAME[skey]}: 한계기여 최대 {_mret*100:+.2f}% "
@@ -21508,6 +21523,22 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                             print(f"      ★제외: {_s['name']} — 정보이득 {_s['lift']*100:+.1f}%p "
                                   f"(적중 {_s['acc']*100:.0f}% < 기저 {_s['base_acc']*100:.0f}%). "
                                   f"'항상 그 상태'라고 찍는 것보다 못해 채택 {_s['n']}개→0개")
+                            if _s['key'] == 'sc' and bool(globals().get(
+                                    'KEEP_SELL_CONT_STATE', True)):
+                                # ★ 매도 지속 상태는 제외 대신 가중치만 낮춘다(위 주석 참조)
+                                _wd = float(globals().get('SELL_CONT_WEIGHT_DOWN', 0.5))
+                                try:
+                                    if _s.get('sel') is not None and len(_s['sel']):
+                                        _sel2 = _s['sel'].copy()
+                                        if 'net_weight_score' in _sel2.columns:
+                                            _sel2['net_weight_score'] = \
+                                                _sel2['net_weight_score'] * _wd
+                                        _s['sel'] = _sel2
+                                        print(f"      ↪ {_s['name']}: 제외 대신 가중치 "
+                                              f"{_wd:.0%}로 낮춤({len(_sel2)}개 유지)")
+                                except Exception:
+                                    pass
+                                continue
                             _s['n'] = 0
                             _s['sel'] = _s['sel'].iloc[0:0] if _s.get('sel') is not None else None
                             _s['dropped_by_lift'] = True
