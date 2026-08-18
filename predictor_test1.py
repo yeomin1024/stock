@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-17.p'
+CORE_VERSION = '2026-08-18.a'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(컬럼명 충돌 수정·net가중치 비침습)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14999,6 +14999,10 @@ STATE_THR_BALANCED                       = True
 #   실측: 롱지속 적중 62% / 기저 74% → 이득 -12.3%p. '항상 그 상태'라고 찍는 것보다 못하다.
 STATE_DROP_ON_NEGATIVE_LIFT              = True
 STATE_MIN_LIFT_TO_KEEP                   = 0.0
+# ★★★ (실측) 특정 상태를 아예 쓰지 않으려면 여기에 키를 넣는다.
+#   'lc'=롱지속, 'lr'=롱→숏, 'sc'=숏지속, 'sr'=숏→롱
+#   롱지속은 10회 연속 정보이득 마이너스(-3.9 ~ -22.5%p)라 ('lc',) 를 검토할 만하다.
+SIMPLE_POOL_DISABLE_STATES               = ()
 # ════════════════════════════════════════════════════════════════
 # ★★★ (실측 문제) 다중검정 보정
 #   지표당 임계 250 × 방향 2 × 호라이즌 5 × 리드 6 = 15,000개 조합,
@@ -19900,18 +19904,44 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
         #      개선하는지(한계 기여)로 뽑는다 — 기본행동과 같은 주장이라 단독 평가가
         #      원리적으로 불가능하기 때문.
         _PAIR = {'lc': 'lr', 'lr': 'lc', 'sc': 'sr', 'sr': 'sc'}
+        # ★★★ (요청 대응) 특정 상태를 아예 쓰지 않도록 끄는 스위치.
+        #   롱지속은 '보유해라'라는 기본행동과 같은 주장이라 원리적으로 기여가 어렵고,
+        #   실측에서도 10회 연속 정보이득 마이너스(-3.9 ~ -22.5%p)였다.
+        #   ['lc'] 로 두면 롱지속을 빼고 3상태로 돌린다.
+        _DISABLED = set(globals().get('SIMPLE_POOL_DISABLE_STATES', ()) or ())
+        if _DISABLED:
+            print(f"    (상태 비활성) {', '.join(_NAME.get(k, k) for k in _DISABLED)} "
+                  f"— 설정으로 제외됨(SIMPLE_POOL_DISABLE_STATES)")
 
         def _select_state_tr(skey, pool, order, tr_mask, pair_net=None):
             """★ 홀드아웃/워크포워드용 — 학습구간 날짜만 보고 그 상태를 선정한다."""
             return _select_state(skey, pool, order, None, dom_full[skey] & tr_mask, pair_net)
 
+        def _blank_state(skey):
+            """★ 비활성 상태용 빈 결과 — 지표 0개, net 기여 0."""
+            _p = _POOL_OF.get(skey)
+            return dict(key=skey, name=_NAME[skey], side=_SIDE[skey], n=0, wrong=0,
+                        remaining=0, acc=0.0, thr=0.5, trace=[], ranked=[],
+                        rows_idx=None,
+                        sel=(_p.iloc[0:0].copy() if _p is not None else None),
+                        is_rev=(skey in _REV_KEYS),
+                        side_label='(전환성공+추세성공)÷총이벤트',
+                        rev_floor=_REV_FLOOR, n_rev_tier=None, judge_days=0,
+                        base_rate=0.0, base_acc=0.0, lift=0.0,
+                        order='disabled', ret_kl0=0.0, ret_avoid=0.0, n_by_wrong=0,
+                        n_by_ret=0, n_by_avoid=0, picked_by='비활성',
+                        net_sel=np.zeros(n), opp_net=np.zeros(n),
+                        dom_idx=np.zeros(0, dtype=int), disabled=True)
+
         def _run_two_stage(order):
             _r = {}
             for _k2 in ('lr', 'sr'):
-                _r[_k2] = _select_state(_k2, _POOL_OF[_k2], order)
+                _r[_k2] = (_blank_state(_k2) if _k2 in _DISABLED
+                           else _select_state(_k2, _POOL_OF[_k2], order))
             for _k2 in ('lc', 'sc'):
-                _r[_k2] = _select_state(_k2, _POOL_OF[_k2], order,
-                                        pair_net=np.asarray(_r[_PAIR[_k2]]['net_sel']))
+                _r[_k2] = (_blank_state(_k2) if _k2 in _DISABLED
+                           else _select_state(_k2, _POOL_OF[_k2], order,
+                                              pair_net=np.asarray(_r[_PAIR[_k2]]['net_sel'])))
             return _r
 
         _res_prob = _run_two_stage('prob')
@@ -21434,6 +21464,19 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                     # ★★★ (실측 결정적) 롱지속: 적중 62%인데 기저 74% → 이득 -12.3%p.
                     #   '항상 롱지속'이라고 찍는 것보다도 못하다는 뜻이다. 이런 상태는
                     #   net에 넣으면 오히려 방해가 되므로 지표를 0개로 되돌린다.
+                    # ★★★ (실측) 롱지속이 데이터 하루 차이로 채택 83→37개, 적중 68%→51%,
+                    #   정보이득 -6.1→-22.5%p 로 요동쳤다. 후보·풀·설정이 전부 동일한데도
+                    #   이 정도 변동이 난다는 건 그 상태의 선정 자체가 불안정하다는 뜻이다.
+                    #   → 정보이득이 크게 마이너스면 '제외'로 끝내지 말고, 왜 그런지
+                    #     한 줄로 남겨 다음 실행과 비교할 수 있게 한다.
+                    for _s in _mw_report['states']:
+                        _lf = float(_s.get('lift', 0.0))
+                        if _lf < -0.15 and int(_s.get('n', 0)) > 0:
+                            print(f"      ★불안정 경고: {_s['name']} 정보이득 {_lf*100:+.1f}%p "
+                                  f"— 기저율보다 15%p 이상 낮습니다. 채택 {_s['n']}개, "
+                                  f"적중 {_s.get('acc', 0)*100:.0f}%. 이 상태는 선정이 "
+                                  f"불안정하니 net에서 빼는 것을 검토하세요"
+                                  f"(SIMPLE_POOL_DISABLE_STATES 에 추가).")
                     _neg = [_s for _s in _mw_report['states']
                             if _s.get('lift', 0) < -float(globals().get(
                                 'STATE_MIN_LIFT_TO_KEEP', 0.0)) and int(_s.get('n', 0)) > 0]
