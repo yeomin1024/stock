@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-18.e'
+CORE_VERSION = '2026-08-18.g'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화(3경로 통합·전수테스트)')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화 + EVAL_START 중복제거 + 워크포워드 검증모드')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -272,7 +272,12 @@ PEERS          = [
     'SOCL',   # 소셜미디어
 ]
 
-EVAL_START     = '2022-01-01'         # 평가 시작일
+# ★★★ 평가 기간 — 이 파일에서 EVAL_START/EVAL_END 를 정의하는 유일한 곳이다.
+#   외부(노트북)에서 mod.EVAL_START = '2022-08-10' 처럼 덮어쓰면 그대로 적용된다.
+#   실측 근거: 평가 기간이 404일이면 신호 30건 이상 지표가 0개가 되고 워크포워드 구간이
+#   각 24일에 그쳐 통계적으로 아무것도 확정할 수 없었다. 지표 하나가 이벤트 30건을
+#   모으려면 4~6년치가 필요하므로, DOWNLOAD_START + 1년(워밍업) 이후를 권장한다.
+EVAL_START     = '2021-01-01'         # 평가 시작일
 EVAL_END       = None                 # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지.
                                        #   지정 시 'YYYY-MM-DD' 형식(그 날짜 포함, 이후는 잘라냄).
 DOWNLOAD_START = '2020-01-01'         # 지표 계산 히스토리 확보용
@@ -282,7 +287,9 @@ N_RANGE = [1, 2, 3, 4, 5]                                  # 미래 일수 (최�
 M_RANGE = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]              # 누적 하락률 % (1~5%만, 7%+는 단기엔 비현실적)
 
 # 임계치 스윕
-N_THRESHOLDS   = 100
+# ★★★ 주의 — 아래 설정 블록에서 다시 정의됩니다(실제 적용값 250).
+#   다만 THRESHOLD_DISCRETE=True 이면 이 값과 무관하게 지정된 15개 분위만 씁니다.
+N_THRESHOLDS   = 100                  # (미사용 — 아래 정의가 우선)
 PCTL_LO, PCTL_HI = 1, 99              # 이상치 배제 분위
 
 # 예측 유효성 제약
@@ -14616,17 +14623,12 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════
 #                            설정
 # ════════════════════════════════════════════════════════════════
-# ★★★ (실측 기반 재설정) 평가 기간 —
-#   실측 로그: 피처는 1664일치가 만들어졌는데 EVAL_START='2025-01-01' 탓에 평가는 404일만
-#   썼다. 그 결과 ①신호 30건 이상인 지표가 0개(최대 25~29건) ②워크포워드 구간이 각 24일
-#   ③홀드아웃 검증 122일 — 통계적으로 아무것도 확정할 수 없는 크기였다.
-#   지표 하나가 이벤트 30건을 모으려면(성공률을 ±10%p 오차로 재려면 최소 30~50건 필요)
-#   대략 4~6년치가 필요하다. DOWNLOAD_START(2020-01-01)로 확보되는 히스토리를 다 쓰도록
-#   맞춘다. 앞 1년은 롱윈도우 지표(200일 이동평균 등) 워밍업으로 소모되므로,
-#   다운로드 시작 + 1년을 평가 시작으로 잡는 게 안전하다.
-#   ★ 더 길게 보려면 DOWNLOAD_START 를 앞당기고 EVAL_START 도 함께 당기면 된다.
-EVAL_START          = '2021-01-01'   # (이전 '2025-01-01' → 404일밖에 안 됐음)
-EVAL_END            = None           # ★ (요청) 평가 종료일. None이면 기존대로 최신 날짜까지 학습.
+# ★★★ (요청) EVAL_START / EVAL_END 중복 정의 제거 —
+#   예전에는 이 자리에도 EVAL_START 가 있어서 위쪽(275줄) 정의를 덮어썼다. 그래서
+#   외부에서 mod.EVAL_START 를 바꿔도 어느 쪽이 적용되는지 헷갈렸다.
+#   이제 정의는 파일 상단 한 곳뿐이며, 외부에서 아래처럼 바꾸면 그대로 반영된다:
+#       mod1.EVAL_START = '2022-08-10'
+#       mod1.EVAL_END   = '2026-08-10'   # None 이면 최신까지
                                       #   지정 시 'YYYY-MM-DD'(그 날짜 포함, 이후 데이터는 잘라냄) —
                                       #   과거 특정 시점 기준으로 결과를 재현하거나 워크포워드 검증할 때 사용.
 
@@ -28234,6 +28236,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
         _full_cum = float(_cum_arr[-1]) if _n_all else 0.0
         _mdd_bt = float(np.min(_cum_arr - np.maximum.accumulate(_cum_arr))) if _n_all else 0.0
         _n_trades_bt = int(np.sum(np.abs(np.diff(_pos_bt)) > 0)) if _n_all > 1 else 0
+        # ★★★ (요청) 검증 모드가 '마지막 날의 판정'을 읽을 수 있도록 노출한다.
+        #   run_validation_mode 가 EVAL_END 를 하루씩 밀며 이 값을 수집해
+        #   그 다음날 실제 등락과 대조한다.
+        try:
+            if _n_all:
+                globals()['_LAST_DAILY_BACKTEST'] = [dict(
+                    date=str(pd.Timestamp(dts[-1]).date()),
+                    position=('매수' if _pos_bt[-1] == 1 else '현금'),
+                    action=str(_action[-1]) if _action else '',
+                    net=(float(_net_arr[-1]) if (_net_arr is not None
+                                                 and len(_net_arr)) else 0.0))]
+        except Exception:
+            pass
         _bh_full = float(np.sum(_rr_bt))
         # ★ 보유중하락 = KL 순신호 시트와 동일 정의 (각 롱 구간 진입가 대비 저점 하락률의 최악값)
         _held_max_dd = 0.0
@@ -32056,6 +32071,12 @@ def _run_ensemble_search_impl(*args, **kwargs):
        ★★★ (요청) INDICATOR_SCAN_ONLY=True 면 여기서 지표 탐색 진단만 하고 끝낸다.
        예전엔 main() 안에만 가드를 뒀는데, 실제 호출은 이 함수를 직접 부르는 경로가
        대부분이라 가드가 전혀 동작하지 않았다(실측: 전체 파이프라인이 끝까지 실행됨)."""
+    # ★★★ (요청) 검증 모드 — EVAL_END 를 하루씩 늘려가며 실제 결과와 대조한다.
+    if bool(globals().get('VALIDATION_MODE', False)):
+        print("\n  [워크포워드 검증 모드] EVAL_END 를 하루씩 늘리며 실제 결과와 대조합니다.")
+        print("  (끄려면 VALIDATION_MODE = False)\n")
+        return run_validation_mode()
+
     if bool(globals().get('INDICATOR_SCAN_ONLY', False)):
         print("\n  [지표 탐색 전용 모드] 풀 선정·백테스트·엑셀 생성은 실행하지 않습니다.")
         print("  (전체 실행하려면 INDICATOR_SCAN_ONLY = False 로 바꾸세요)\n")
@@ -35689,6 +35710,191 @@ def build_result_excel_from_pool(ticker, *, pool_dir=None, out_dir=None, end_dat
 #   False = 평소대로 전체 실행(엑셀까지) — 이때도 실행로그 txt 는 항상 저장·다운로드됨.
 #   True  = 지표 탐색 진단만 하고 즉시 종료(indicator_scan_*.txt 생성).
 INDICATOR_SCAN_ONLY = False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★★ (요청) 워크포워드 검증 모드 — 하루씩 늘려가며 실제 결과와 대조
+#
+#  [무엇을 하나] EVAL_END 를 하루씩 뒤로 밀면서 파이프라인을 반복 실행하고,
+#    각 시점에서 시스템이 낸 '다음날 판정'을 그 다음날 실제 등락과 대조한다.
+#    = "그날그날 이 시스템을 실제로 썼다면 얼마나 맞혔을까"를 직접 재는 것.
+#
+#  [왜 필요한가] 워크포워드 검증 시트는 '구간별 수익'을 보여주지만, 하루 단위로
+#    무엇을 맞히고 무엇을 틀렸는지는 알 수 없었다. 실측에서 같은 코드가 데이터
+#    하루 차이로 워크포워드 +116.89 → +113.55%p 로 흔들린 적도 있어, 일자별
+#    적중을 직접 봐야 시스템을 신뢰할 수 있다.
+#
+#  [사용법 — 노트북에서]
+#      import importlib.util, sys
+#      spec1 = importlib.util.spec_from_file_location("predictor_core", "predictor_core.py")
+#      mod1  = importlib.util.module_from_spec(spec1)
+#      sys.modules["predictor_core"] = mod1
+#      spec1.loader.exec_module(mod1)
+#
+#      mod1.EVAL_START      = '2022-08-10'
+#      mod1.VALIDATION_MODE = True          # ★ 검증 모드 켜기
+#      mod1.VALID_END_FROM  = '2026-06-01'  # 이 날부터
+#      mod1.VALID_END_TO    = '2026-08-10'  # 이 날까지 하루씩
+#      mod1.main()
+# ══════════════════════════════════════════════════════════════════════════════
+
+VALIDATION_MODE      = False      # True 면 아래 구간을 하루씩 늘려가며 검증
+VALID_END_FROM       = None       # 검증 시작일 'YYYY-MM-DD' (None이면 EVAL_END-60일)
+VALID_END_TO         = None       # 검증 종료일   (None이면 최신)
+VALID_STEP_DAYS      = 1          # 며칠씩 늘릴지 (1 = 하루씩)
+VALID_MAX_STEPS      = 60         # 안전장치 — 최대 반복 횟수
+VALID_LOG_PATH       = None       # None이면 검증결과_<티커>_<시각>.txt
+
+
+def _validation_next_day_call(ticker, eval_end):
+    """EVAL_END 를 고정한 채 파이프라인을 1회 돌리고, '마지막 날의 판정'을 뽑는다.
+
+    반환: dict(date=판정 기준일, action='매수'|'현금', net=순신호) 또는 None
+    """
+    g = globals()
+    _sv = (g.get('EVAL_END'), g.get('VALIDATION_MODE'))
+    try:
+        g['EVAL_END'] = eval_end
+        g['VALIDATION_MODE'] = False          # 재귀 방지
+        g.pop('_KNET_MIN_WRONG_REPORT', None)
+        for _k in ('feat', 'close', '_pair_feat', '_pair_close'):
+            g.pop(_k, None)                   # 캐시 무효화 — 구간이 바뀌었으므로
+        _run_ensemble_search_core(ticker=ticker) if False else None
+        _res = _run_ensemble_search_impl()
+        _bt = g.get('_LAST_DAILY_BACKTEST')
+        if not _bt:
+            return None
+        _last = _bt[-1]
+        return dict(date=str(_last.get('date')), action=str(_last.get('position', '')),
+                    net=float(_last.get('net', 0.0)))
+    except Exception as e:
+        print(f"    ⚠ [{eval_end}] 실행 실패: {e}")
+        return None
+    finally:
+        g['EVAL_END'], g['VALIDATION_MODE'] = _sv
+
+
+def run_validation_mode(ticker=None):
+    """★★★ (요청) EVAL_END 를 하루씩 늘려가며 돌리고 실제 결과와 대조한다.
+
+    각 시점에서:
+      1) 그 날까지의 데이터만으로 파이프라인을 돌린다 (미래 정보 차단)
+      2) 마지막 날의 판정(매수/현금)을 기록한다
+      3) 그 다음 거래일의 실제 등락과 대조해 정오를 판정한다
+    결과를 화면과 텍스트 파일에 남기고, 코랩이면 자동 다운로드한다.
+    """
+    import datetime
+    g = globals()
+    ticker = str(ticker or g.get('TICKER', '') or '').upper().strip()
+    if not ticker:
+        print("  ★검증 모드: 티커를 알 수 없습니다 (mod.TICKER 를 설정하세요)")
+        return None
+
+    # 실제 등락을 알기 위해 전체 가격을 먼저 확보
+    try:
+        _old_end = g.get('EVAL_END'); g['EVAL_END'] = None
+        _closes, _ohlcv = download_data(start=g.get('DOWNLOAD_START'))
+        g['EVAL_END'] = _old_end
+        _px = _ohlcv[ticker]['Close']
+    except Exception as e:
+        print(f"  ★검증 모드: 가격 데이터를 받지 못했습니다 — {e}")
+        return None
+
+    _idx = _px.index
+    _to = pd.Timestamp(g.get('VALID_END_TO') or _idx[-1])
+    _from = pd.Timestamp(g.get('VALID_END_FROM') or (_to - pd.Timedelta(days=60)))
+    _step = max(1, int(g.get('VALID_STEP_DAYS', 1)))
+    _days = [d for d in _idx if _from <= d <= _to][::_step]
+    _days = _days[:int(g.get('VALID_MAX_STEPS', 60))]
+    if len(_days) < 2:
+        print(f"  ★검증 모드: 검증할 날짜가 부족합니다 ({len(_days)}일)")
+        return None
+
+    _buf = []
+    def W(s=''):
+        print(s); _buf.append(s)
+
+    W('=' * 92)
+    W(f"  워크포워드 검증 모드 — {ticker}")
+    W(f"  EVAL_START={g.get('EVAL_START')} / 검증 구간 {_days[0].date()} ~ {_days[-1].date()}"
+      f" ({len(_days)}회, {_step}일 간격)")
+    W("  각 시점까지의 데이터만으로 판정하고, 그 다음 거래일 실제 등락과 대조합니다.")
+    W('=' * 92)
+
+    rows = []
+    for _i, _d in enumerate(_days):
+        _nxt = _idx[_idx.get_loc(_d) + 1] if _idx.get_loc(_d) + 1 < len(_idx) else None
+        if _nxt is None:
+            break
+        _call = _validation_next_day_call(ticker, str(_d.date()))
+        if _call is None:
+            continue
+        _r = float(_px.loc[_nxt] / _px.loc[_d] - 1.0)
+        _buy = ('매수' in _call['action'])
+        # 매수인데 오르면 정답, 현금인데 내리면 정답
+        _ok = (_r > 0) if _buy else (_r <= 0)
+        rows.append(dict(date=str(_d.date()), nxt=str(_nxt.date()),
+                         action=('매수' if _buy else '현금'), net=_call['net'],
+                         ret=_r, ok=_ok))
+        W(f"  [{_i+1:>3}/{len(_days)}] {_d.date()} 판정 {'매수' if _buy else '현금'}"
+          f" (net {_call['net']:+.3f}) → {_nxt.date()} 실제 {_r*100:+.2f}%"
+          f"  {'○ 적중' if _ok else '✗ 오답'}")
+
+    if not rows:
+        W("  ★검증 결과 없음")
+        return None
+
+    _n = len(rows); _nok = sum(1 for x in rows if x['ok'])
+    _buys = [x for x in rows if x['action'] == '매수']
+    _cash = [x for x in rows if x['action'] == '현금']
+    _bok = sum(1 for x in _buys if x['ok']); _cok = sum(1 for x in _cash if x['ok'])
+    _sys = sum(x['ret'] for x in _buys)          # 시스템대로 했을 때 누적
+    _hold = sum(x['ret'] for x in rows)          # 계속 보유했을 때
+
+    W('')
+    W('=' * 92)
+    W(f"  정확도 {_nok}/{_n} = {_nok/_n*100:.1f}%")
+    W(f"    · 매수 판정 {len(_buys)}회 중 적중 {_bok}회"
+      + (f" ({_bok/len(_buys)*100:.1f}%)" if _buys else ""))
+    W(f"    · 현금 판정 {len(_cash)}회 중 적중 {_cok}회"
+      + (f" ({_cok/len(_cash)*100:.1f}%)" if _cash else ""))
+    W(f"  누적 수익 — 시스템 {_sys*100:+.2f}% vs 계속보유 {_hold*100:+.2f}%"
+      f"  → 초과 {(_sys-_hold)*100:+.2f}%p")
+    W('')
+    _miss = [x for x in rows if not x['ok']]
+    _big = sorted(_miss, key=lambda x: -abs(x['ret']))[:10]
+    if _big:
+        W("  ▼ 크게 틀린 날 (손실·기회비용이 큰 순)")
+        for x in _big:
+            W(f"     {x['date']} 판정 {x['action']} → 다음날 {x['ret']*100:+.2f}%"
+              f" (net {x['net']:+.3f})")
+    _hit = sorted([x for x in rows if x['ok']], key=lambda x: -abs(x['ret']))[:5]
+    if _hit:
+        W("  ▲ 크게 맞힌 날")
+        for x in _hit:
+            W(f"     {x['date']} 판정 {x['action']} → 다음날 {x['ret']*100:+.2f}%"
+              f" (net {x['net']:+.3f})")
+    W('')
+    W("  ※ 이 정확도는 '매수/현금 방향'만 본 것입니다. 매수 적중률이 50%를 넘어도")
+    W("    맞힐 때 작게 벌고 틀릴 때 크게 잃으면 손해이므로, 누적 수익을 함께 보세요.")
+    W('=' * 92)
+
+    _path = g.get('VALID_LOG_PATH') or \
+        f"검증결과_{ticker}_{_kst_now():%Y%m%d_%H%M}.txt"
+    try:
+        _dir = g.get('SCRIPT_DIR', '.') or '.'
+        os.makedirs(_dir, exist_ok=True)
+        _path = os.path.join(_dir, _path) if not os.path.isabs(_path) else _path
+        with open(_path, 'w', encoding='utf-8') as _f:
+            _f.write('\n'.join(_buf))
+        print(f"\n  📝 검증 결과 저장: {_path}")
+        try:
+            _download_log_file(_path)
+        except Exception:
+            pass
+    except Exception as _e:
+        print(f"  ⚠ 검증 결과 저장 실패(무시): {_e}")
+    return dict(rows=rows, acc=_nok / _n, sys_ret=_sys, hold_ret=_hold, path=_path)
 
 
 def main():
