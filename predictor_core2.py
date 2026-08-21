@@ -94,9 +94,8 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-19.a'
-CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화 + EVAL_START 중복제거 + 검증모드 net품질진단 + 매수 하방가드 + 큰움직임 정렬(롱엄격·숏널널)')
+CORE_VERSION = '2026-08-21.b'
+CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + K/L 최대수익 + 틀린자리최소 선정')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14894,7 +14893,16 @@ SIMPLE_POOL_ALIGN_EVENT_FIRST_ONLY       = True
 #     실측에서도 두 기준의 학습/검증 초과수익이 528.06/130.50으로 완전히 일치했다.
 #     실질적인 선택지는 'wrong'(분류 정확도)와 'return'(수익) 둘뿐이며, GOOG 홀드아웃에서는
 #     return이 근소하게 우세했다(검증 초과합 130.50 vs 127.75%p).
-SIMPLE_POOL_STATE_PICK_CRITERION         = 'return'
+# ★★★ (요청) 틀린자리를 최대한 없애도록 '틀린자리 최소' 기준으로 선정한다.
+#   실제 엑셀(ensemble_search_GOOG_2026-08-21) 단계별 데이터로 두 기준을 비교한 결과:
+#       롱지속  틀린자리 139 → 134  (적중 76.3% → 77.1%)
+#       롱→숏   틀린자리 131 → 114  (적중 77.7% → 80.5%)
+#       숏지속  틀린자리 122 → 111  (적중 73.8% → 76.1%)
+#       숏→롱   틀린자리 103 → 103  (동일)
+#       합계    495 → 462 (-33, 6.7% 감소) / 적중률은 전 상태에서 상승
+#   수익은 롱→숏에서 -12.53%p 줄지만, 그건 소수 이벤트에서 크게 번 값이라
+#   재현성이 낮다. 틀린자리를 줄이는 쪽이 요청 취지에 맞다.
+SIMPLE_POOL_STATE_PICK_CRITERION         = 'wrong'
 # ★★★ (요청 — 신규) 신호수 하한과 최소 지표수 확보
 #   기본 하한 10건 → 남는 지표가 30개 미만이면 5씩 낮춰가며 30개를 확보(최저 1).
 #   선호 하한 30건에서 시작 → 지표가 30개 미만이면 5씩 낮춤 → 최저 10건에서 정지.
@@ -15029,6 +15037,19 @@ MAG_WEIGHT_SELL                          = 0.3    # 매도: 완만하게
 MAG_MIN_SCORE_BUY                        = 0.05   # 매수 전용 컷(0이면 끔)
 MAG_MIN_KEEP_BUY                         = 20     # 컷 후 최소 보유 개수(미달이면 컷 미적용)
 
+# ★★★ (요청) 용도 거부권 — 그룹 용도를 net에 섞지 않고 '매수 금지일' 판단에만 쓴다.
+#   실측: 용도 판정을 받은 지표 1,196개가 게이트 OFF 이후 통째로 버려지고 있었다.
+#   문턱을 흔드는 방식은 손해였지만(-1.98%p, -2.32%p), 거부권은 방향 판단을 건드리지
+#   않고 위험한 날의 매수만 막으므로 틀린자리(매수 오답)를 직접 줄인다.
+#   ★ 효과가 없으면 자동으로 꺼진다(ROLE_VETO_AUTO_OFF).
+USE_ROLE_VETO                            = True
+ROLE_VETO_QUANTILE                       = 0.85   # 상·하위 15%를 위험일로 본다
+ROLE_VETO_MAX_RATIO                      = 0.20   # 거부일 상한 — 넘으면 경고 많은 날만
+# ★ 판정 기준 — 거부한 날의 '큰 하락 포함률'이 나머지보다 이만큼 높아야 유효로 본다.
+#   평균 등락으로 판정하면 작은 등락에 희석돼 유효한 거부권도 손해로 나온다(실측).
+ROLE_VETO_MIN_DN_GAIN                    = 0.03
+ROLE_VETO_AUTO_OFF                       = True   # 실측상 손해면 그 실행에서 자동 해제
+
 USE_BUY_DOWNSIDE_GUARD                   = True
 BUY_MAX_LOSS                             = 0.02   # 이 이상 떨어지면 '대형손실'
 BUY_MAX_BIG_LOSS_RATE                    = 0.15   # 대형손실 비율이 이걸 넘으면 제외
@@ -15068,7 +15089,10 @@ SIMPLE_POOL_MT_STRENGTH                  = 0.0
 #   실측: 인샘플 +662.8% vs 워크포워드 +110%p — 6배 차이.
 # 해법: 뒤쪽 기간을 여러 폴드로 나눠 '검증구간에서만' 실현된 수익의 합이 최대인 K/L을 쓴다.
 #   = "과거에 이 값을 골랐다면 그 다음 구간에서 어땠나"를 직접 재는 것.
-KL_SELECT_BY_OOS                         = True
+# ★★★ (요청) K/L 은 '최대 수익률'로 선정한다.
+#   앞서 OOS(검증구간 평균) 기준으로 바꿨었는데, 요청에 따라 전 구간 수익 최대로 되돌린다.
+#   ※ 주의 — 전 구간은 인샘플이라 낙관 편향이 있다. 실제 기대치는 워크포워드 시트를 볼 것.
+KL_SELECT_BY_OOS                         = False
 KL_OOS_FOLDS                             = 4      # 검증 폴드 수
 KL_OOS_START_FRAC                        = 0.5    # 뒤쪽 50%를 검증에 사용
 # ★ 이웃 (K,L)들의 평균으로 평활 — 뾰족한 정점(조금만 달라져도 급락)이 아니라
@@ -15360,7 +15384,9 @@ SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최�
 #   변경: 아래 15개 분위만 사용 → 조합이 수십 분의 1. 우연 통과가 급감하고 속도도 빨라진다.
 #   ★ 사람이 실제로 쓰는 지점들이다: 극단(1·5·10 / 90·95·99), 사분위(25·75),
 #     중앙(50), 그 사이 보조선(20·30·40·60·70·80).
-THRESHOLD_DISCRETE                       = True
+#   ★ (요청) 이산화를 끄고 N_THRESHOLDS(1000) 로 촘촘히 훑는다.
+#     켜면 아래 15개 분위만 사용(속도 14배·잡음 통과 감소), 끄면 1000분할 전수 탐색.
+THRESHOLD_DISCRETE                       = False
 THRESHOLD_DISCRETE_PCTS                  = [1, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 99]
 N_THRESHOLDS        = 1000
 MAX_INDICATORS      = 5000
@@ -15991,7 +16017,7 @@ def auto_compute_anchor_dates(dates, close, *,
 
 
 @njit
-def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr, event_gap):
+def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr, event_gap, trend_sum_arr=None, use_trend=False):
     # ★★★ (요청 — 재설계) 성공 = 표시일(fire+h-1)의 최적자리가 매수(또는 중립),
     #   등락률 = 표시일→다음날 하루치. 마스크 없으면(비단순모드) 다음날 등락 기준 폴백.
     # ★★★ (요청 — 재설계, 핵심) "연속으로 나오는 부분을 한 번으로 취급할 거면, 연속구간
@@ -16024,8 +16050,17 @@ def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr, 
         if disp + 1 > n - 1: continue
         p0 = close_arr[disp]
         if p0 <= 0.0: continue
-        ret = close_arr[disp + 1] / p0 - 1.0
+        # ★★★ (요청 — 정정) 등락률은 '다음날 하루'가 아니라
+        #   '최적자리 추세 시작~끝' 누적으로 잰다. 신뢰도 계산엔 이미 추세
+        #   누적을 쓰는데 여기만 하루치라 기준이 어긋나 있었다.
+        if use_trend and trend_sum_arr is not None and trend_sum_arr.shape[0] == n:
+            ret = trend_sum_arr[disp]
+        else:
+            ret = close_arr[disp + 1] / p0 - 1.0
         ev_ret_sum += ret; ev_n_valid += 1
+        # ★★★ (요청 — 정정) 성공/실패는 '최적자리와 일치하는가' 하나로만 본다.
+        #   예전엔 최적자리가 없을 때 등락률 문턱(ret < dd_limit)으로 대체 판정해서,
+        #   '다음날 얼마나 움직였나'가 성공 기준처럼 작동했다.
         if use_ok:
             if anchor_buy_arr[disp] != 1:
                 ev_all_ok = False
@@ -16073,7 +16108,7 @@ def _OLD_eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_a
 
 
 @njit
-def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr, event_gap):
+def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr, event_gap, trend_sum_arr=None, use_trend=False):
     # ★★★ (요청 — 재설계, 핵심) 매도 대칭 — 이벤트 내 '모든' 발화일이 다 맞아야 성공,
     #   하나라도 틀리면 실패. 등락률은 묶음 내 유효 발화일들의 평균.
     n = close_arr.shape[0]
@@ -16098,8 +16133,17 @@ def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr
         if disp + 1 > n - 1: continue
         p0 = close_arr[disp]
         if p0 <= 0.0: continue
-        ret = close_arr[disp + 1] / p0 - 1.0
+        # ★★★ (요청 — 정정) 등락률은 '다음날 하루'가 아니라
+        #   '최적자리 추세 시작~끝' 누적으로 잰다. 신뢰도 계산엔 이미 추세
+        #   누적을 쓰는데 여기만 하루치라 기준이 어긋나 있었다.
+        if use_trend and trend_sum_arr is not None and trend_sum_arr.shape[0] == n:
+            ret = trend_sum_arr[disp]
+        else:
+            ret = close_arr[disp + 1] / p0 - 1.0
         ev_ret_sum += ret; ev_n_valid += 1
+        # ★★★ (요청 — 정정) 성공/실패는 '최적자리와 일치하는가' 하나로만 본다.
+        #   예전엔 최적자리가 없을 때 등락률 문턱(ret > -ru_limit)으로 대체 판정해서,
+        #   '다음날 얼마나 움직였나'가 성공 기준처럼 작동했다.
         if use_ok:
             if anchor_sell_arr[disp] != 1:
                 ev_all_ok = False
@@ -17071,7 +17115,21 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
     """
     evalf = _eval_buy_signals if is_buy else _eval_sell_signals
     _egap = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
-    n_all, ok_all, sum_all = evalf(close_arr, sig_arr, horizon, limit, anchor_arr, _egap)
+    # ★★★ (요청) 등락률을 '최적자리 추세 시작~끝' 누적으로 잰다.
+    #   신뢰도 계산에는 이미 _ctp_cached[9](추세 누적)를 쓰는데, 성공률·기본점수를
+    #   내는 이 경로만 '다음날 하루'였다. 같은 배열을 넘겨 기준을 통일한다.
+    _tsum = None
+    _use_tr = bool(globals().get('SIMPLE_POOL_REL_TREND_RUN_RETURN', True))
+    if _use_tr:
+        try:
+            _ctp9 = _ctp_cached(close_arr)
+            _tsum = np.asarray(_ctp9[9], dtype=np.float64)
+            if not is_buy:
+                _tsum = -_tsum          # 매도는 하락이 이익
+        except Exception:
+            _tsum = None; _use_tr = False
+    n_all, ok_all, sum_all = evalf(close_arr, sig_arr, horizon, limit, anchor_arr, _egap,
+                                   _tsum, bool(_use_tr and _tsum is not None))
     if n_all < min_signals:
         return n_all, ok_all, sum_all, -1.0
     base = wilson_lower(ok_all, n_all, wilson_z)
@@ -17431,6 +17489,101 @@ def select_pool_by_ic(feat, close, *, indicators=None, horizon=1,
     else:
         df = df.reindex(df['oos_ic'].abs().sort_values(ascending=False).index)
     return df.head(max_pool).reset_index(drop=True)
+
+
+def _apply_role_veto(feat, close, buy_pool, sell_pool):
+    """★★★ (요청) 그룹 용도를 '틀린자리 줄이기'에 직접 쓴다.
+
+    [지금까지의 실수] 용도(regime·risk·crash 등)를 계산해 놓고도 K/L 문턱을 흔드는
+      데만 썼다. 문턱 조절은 A/B 실측에서 -1.98%p, -2.32%p 로 손해였고, 그래서 전부
+      끄면서 용도 판정 자체가 무용지물이 됐다 — 실측: 1,196개 지표가 판정만 받고 버려짐.
+      문턱을 흔든 게 잘못이지 용도가 잘못된 게 아니었다.
+
+    [새 방식 — 거부권(veto)] 용도 지표를 net 투표에 섞지도, 문턱을 흔들지도 않는다.
+      대신 '이 날은 매수하면 안 된다'는 거부권만 준다. 방향은 net이 정하고,
+      용도는 위험한 날의 매수만 막는다. 틀린자리(특히 매수 오답)를 직접 줄이는 방식이다.
+
+        crash 게이트 상위 X% → 그날 매수 금지 (큰 낙폭 임박)
+        risk  게이트 상위 X% → 그날 매수 금지 (변동성 확대)
+        regime 하위 X%       → 그날 매수 금지 (하락 국면)
+
+      ★ 매도(현금)는 절대 막지 않는다 — 현금은 틀려도 기회비용뿐이다(요청).
+      ★ 거부권이 실제로 틀린자리를 줄였는지 즉시 측정해 로그에 남긴다.
+    반환: (veto_mask, 요약dict)  veto_mask[t]=True 면 그날 매수 금지
+    """
+    if not bool(globals().get('USE_ROLE_VETO', True)):
+        return None, {}
+    try:
+        _G = globals().get('_KL_GATES') or {}
+        if not _G:
+            return None, {}
+        n = len(close)
+        px = np.asarray(close, dtype=float)[:n]
+        r1 = np.zeros(n)
+        r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
+        _q = float(globals().get('ROLE_VETO_QUANTILE', 0.85))
+        _maxr = float(globals().get('ROLE_VETO_MAX_RATIO', 0.20))
+        veto = np.zeros(n, dtype=bool)
+        _score = np.zeros(n)          # ★ 몇 개 게이트가 동시에 경고했는가
+        used = []
+        for _k, _hi in (('crash', True), ('risk', True), ('regime', False)):
+            _a = _G.get(_k)
+            if _a is None:
+                continue
+            _v = np.asarray(_a, dtype=float)[:n]
+            _f = np.isfinite(_v)
+            if _f.sum() < 100:
+                continue
+            _thr = np.quantile(_v[_f], _q if _hi else (1.0 - _q))
+            _m = (_v >= _thr) if _hi else (_v <= _thr)
+            veto |= (_m & _f)
+            _score += (_m & _f).astype(float)
+            used.append(_k)
+        if not used or veto.sum() == 0:
+            return None, {}
+        # ★★★ (실측) OR 로 합치면 거부일이 43%까지 늘어 정상적인 매수 기회까지 막는다.
+        #   → 여러 게이트가 '동시에' 경고한 날만 거부한다. 상한(기본 20%)을 넘으면
+        #     경고 개수가 많은 날부터 잘라 상한에 맞춘다.
+        if veto.mean() > _maxr:
+            _need = int(n * _maxr)
+            _ord = np.lexsort((-np.arange(n), -_score))   # 경고 많은 순
+            _sel = _ord[:_need]
+            _v2 = np.zeros(n, dtype=bool); _v2[_sel] = True
+            veto = _v2 & (_score > 0)
+            print(f"    (용도 거부권) 거부일이 많아 상한 {_maxr:.0%}로 축소 "
+                  f"— 여러 용도가 동시에 경고한 날만 남깁니다")
+        # ★ 실제로 틀린자리를 줄이는지 측정 — 거부한 날의 다음날 등락
+        _vr = r1[veto]
+        _vr = _vr[np.isfinite(_vr)]
+        _nr = r1[~veto]
+        _nr = _nr[np.isfinite(_nr)]
+        _info = dict(n_veto=int(veto.sum()), ratio=float(veto.mean()),
+                     veto_mean=float(_vr.mean()) if len(_vr) else 0.0,
+                     rest_mean=float(_nr.mean()) if len(_nr) else 0.0,
+                     used=used,
+                     big_dn_in_veto=(float(np.mean(_vr <= -0.02)) if len(_vr) else 0.0),
+                     big_dn_in_rest=(float(np.mean(_nr <= -0.02)) if len(_nr) else 0.0))
+        # ★★★ (실측 판정기준 수정) 평균만 보면 안 된다. 거부권의 목적은 '큰 손실 회피'인데
+        #   평균은 작은 등락에 희석된다. 실측에서 큰하락 포함률이 19% vs 4%로 명확히
+        #   유효한데도 평균이 +0.10 vs +0.08 이라는 이유로 '손해'로 판정됐다.
+        #   → 큰 하락을 얼마나 걸러내는지(주 목적)를 우선 보고, 평균은 보조로 본다.
+        _dn_gain = _info['big_dn_in_veto'] - _info['big_dn_in_rest']
+        _ok = (_dn_gain >= float(globals().get('ROLE_VETO_MIN_DN_GAIN', 0.03)))
+        print(f"    (용도 거부권) {', '.join(used)} 상·하위 {(1-_q)*100:.0f}% → "
+              f"{_info['n_veto']}일({_info['ratio']*100:.0f}%) 매수 금지")
+        print(f"       거부한 날 다음날 평균 {_info['veto_mean']*100:+.2f}% vs "
+              f"나머지 {_info['rest_mean']*100:+.2f}%  "
+              f"(참고 — 판정은 아래 큰하락 회피율로 합니다)")
+        print(f"       ★큰하락(-2%↓) 비율: 거부한 날 {_info['big_dn_in_veto']*100:.0f}% vs "
+              f"나머지 {_info['big_dn_in_rest']*100:.0f}% → 차이 {_dn_gain*100:+.0f}%p "
+              f"{'— 거부가 유효합니다(큰 손실을 걸러냄)' if _ok else '— ★효과 미달'}")
+        if not _ok and bool(globals().get('ROLE_VETO_AUTO_OFF', True)):
+            print("       ↪ 손해로 측정돼 이번 실행에서는 거부권을 적용하지 않습니다")
+            return None, _info
+        return veto, _info
+    except Exception as e:
+        print(f'    ⚠ 용도 거부권 생략(무시): {e}')
+        return None, {}
 
 
 def _magnitude_alignment(feat, close, pool, is_buy, min_events=5):
@@ -25422,8 +25575,18 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     _netx = net
     if _cv is not None and _w_cv > 0:
         _netx = net * (1.0 + _w_cv * _cv)
+    # ★★★ (요청) 용도 거부권 — 위험한 날의 '매수'만 막는다. 문턱을 흔들지 않으므로
+    #   앞서 손해로 확인된 게이트 방식과 다르다. 방향은 net이 정하고 용도는 거부만 한다.
+    _veto = globals().get('_KL_ROLE_VETO')
+    if _veto is not None:
+        try:
+            _veto = np.asarray(_veto, dtype=bool)[:n]
+            if len(_veto) != n:
+                _veto = None
+        except Exception:
+            _veto = None
     _use_gate = bool(np.any(_adjK) or np.any(_adjL) or _force_cash is not None
-                     or _cv is not None and _w_cv > 0)
+                     or (_cv is not None and _w_cv > 0) or _veto is not None)
 
     def _run(K, L):
         # ★ (요청) 당일 net 체결 — net[s]가 K 넘으면 그날 롱, L 밑돌면 그날 현금 (신호일=체결일).
@@ -25436,6 +25599,8 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             if _L > _K: _L = _K
             if _force_cash is not None and _force_cash[s]:
                 cur = 0.0          # ★ 꼬리위험 신호 — 강제 청산
+            elif _veto is not None and _veto[s]:
+                cur = 0.0          # ★ 용도 거부권 — 위험한 날은 매수 금지(현금)
             elif v >= _K: cur = 1.0
             elif v <= _L: cur = 0.0
             pos[s] = cur
@@ -31792,6 +31957,13 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
                     feat[indicators], np.asarray(close, dtype=float), _roles)
                 globals()['_KL_GATES'] = _gates
                 globals()['_GROUP_ROLE_REPORT'] = _roles
+                # ★★★ (요청) 용도를 '틀린자리 줄이기'에 직접 쓴다 — 위험한 날 매수 금지.
+                try:
+                    _vt, _vinfo = _apply_role_veto(feat, close, None, None)
+                    globals()['_KL_ROLE_VETO'] = _vt
+                    globals()['_ROLE_VETO_INFO'] = _vinfo
+                except Exception as _e_vt:
+                    print(f"    ⚠ 용도 거부권 생략(무시): {_e_vt}")
                 _n_dir = sum(_v['n'] for _v in _roles.values() if _v['role'] == 'direction')
                 _n_oth = sum(_v['n'] for _v in _roles.values() if _v['role'] != 'direction')
                 print(f"      → 방향성 투표에 {_n_dir:,}개, 용도별 게이트에 {_n_oth:,}개 "
