@@ -94,9 +94,9 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-18.i'
+CORE_VERSION = '2026-08-19.b'
 CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화 + EVAL_START 중복제거 + 검증모드 net품질진단 + 매수 하방가드')
+                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화 + EVAL_START 중복제거 + 검증모드 net품질진단 + 매수 하방가드 + 큰움직임 정렬(롱엄격·숏널널) + 용도 거부권(매수금지일)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -15013,6 +15013,35 @@ SIMPLE_POOL_DISABLE_STATES               = ()
 #   성공률만 보면 통과하는 지표가 틀릴 때 크게 잃는 구조였다.
 #   → 매수 지표에만 '발화 후 낙폭'을 별도로 검사해 위험한 지표를 뺀다.
 #     매도에는 적용하지 않는다(틀려도 기회비용뿐이고 풀이 얇아지면 손해가 더 큼).
+# ════════════════════════════════════════════════════════════════
+# ★★★ (요청) 큰 움직임 정렬 — "강한 상승·하락일수록 net 절댓값이 커야 한다"
+# ════════════════════════════════════════════════════════════════
+# 실측 문제: |net| vs |등락| 상관 -0.267. 큰 등락일 평균 |net| 1.05 vs 작은 날 2.19 로
+#   정반대였다. 그래서 net +2.123 인 날 -4.43%, net +0.113 인 날 -4.05% 를 맞았다.
+# 해법: 지표마다 '자기 방향 큰 움직임을 잡는 비율 - 벌점×반대방향 큰 움직임 발화 비율'
+#   을 재서, 점수가 높은 지표에 가중치를 몰아준다 → 큰 날일수록 net 절댓값이 커진다.
+# ★ 롱은 엄격 / 숏은 널널 (요청) — 매수 실패는 즉시 손실, 매도 실패는 기회비용뿐.
+MAG_BIG_MOVE                             = 0.02   # 이 이상이면 '큰 움직임'
+MAG_WRONG_PENALTY_BUY                    = 2.0    # 매수: 반대 방향 발화에 큰 벌점
+MAG_WRONG_PENALTY_SELL                   = 0.5    # 매도: 널널하게
+MAG_WEIGHT_BUY                           = 0.7    # 매수: 가중치를 크게 몰아줌
+MAG_WEIGHT_SELL                          = 0.3    # 매도: 완만하게
+MAG_MIN_SCORE_BUY                        = 0.05   # 매수 전용 컷(0이면 끔)
+MAG_MIN_KEEP_BUY                         = 20     # 컷 후 최소 보유 개수(미달이면 컷 미적용)
+
+# ★★★ (요청) 용도 거부권 — 그룹 용도를 net에 섞지 않고 '매수 금지일' 판단에만 쓴다.
+#   실측: 용도 판정을 받은 지표 1,196개가 게이트 OFF 이후 통째로 버려지고 있었다.
+#   문턱을 흔드는 방식은 손해였지만(-1.98%p, -2.32%p), 거부권은 방향 판단을 건드리지
+#   않고 위험한 날의 매수만 막으므로 틀린자리(매수 오답)를 직접 줄인다.
+#   ★ 효과가 없으면 자동으로 꺼진다(ROLE_VETO_AUTO_OFF).
+USE_ROLE_VETO                            = True
+ROLE_VETO_QUANTILE                       = 0.85   # 상·하위 15%를 위험일로 본다
+ROLE_VETO_MAX_RATIO                      = 0.20   # 거부일 상한 — 넘으면 경고 많은 날만
+# ★ 판정 기준 — 거부한 날의 '큰 하락 포함률'이 나머지보다 이만큼 높아야 유효로 본다.
+#   평균 등락으로 판정하면 작은 등락에 희석돼 유효한 거부권도 손해로 나온다(실측).
+ROLE_VETO_MIN_DN_GAIN                    = 0.03
+ROLE_VETO_AUTO_OFF                       = True   # 실측상 손해면 그 실행에서 자동 해제
+
 USE_BUY_DOWNSIDE_GUARD                   = True
 BUY_MAX_LOSS                             = 0.02   # 이 이상 떨어지면 '대형손실'
 BUY_MAX_BIG_LOSS_RATE                    = 0.15   # 대형손실 비율이 이걸 넘으면 제외
@@ -15344,9 +15373,11 @@ SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최�
 #   변경: 아래 15개 분위만 사용 → 조합이 수십 분의 1. 우연 통과가 급감하고 속도도 빨라진다.
 #   ★ 사람이 실제로 쓰는 지점들이다: 극단(1·5·10 / 90·95·99), 사분위(25·75),
 #     중앙(50), 그 사이 보조선(20·30·40·60·70·80).
-THRESHOLD_DISCRETE                       = True
+#   ★ (요청) 이산화를 끄고 N_THRESHOLDS(1000) 로 촘촘히 훑는다.
+#     켜면 아래 15개 분위만 사용(속도 14배·잡음 통과 감소), 끄면 1000분할 전수 탐색.
+THRESHOLD_DISCRETE                       = False
 THRESHOLD_DISCRETE_PCTS                  = [1, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 99]
-N_THRESHOLDS        = 250
+N_THRESHOLDS        = 1000
 MAX_INDICATORS      = 5000
 
 # ★ 성공률 우선 풀 선출 (요청) — 점수가 아니라 '성공률'로 먼저 지표를 선발한 뒤 그리드.
@@ -17415,6 +17446,229 @@ def select_pool_by_ic(feat, close, *, indicators=None, horizon=1,
     else:
         df = df.reindex(df['oos_ic'].abs().sort_values(ascending=False).index)
     return df.head(max_pool).reset_index(drop=True)
+
+
+def _apply_role_veto(feat, close, buy_pool, sell_pool):
+    """★★★ (요청) 그룹 용도를 '틀린자리 줄이기'에 직접 쓴다.
+
+    [지금까지의 실수] 용도(regime·risk·crash 등)를 계산해 놓고도 K/L 문턱을 흔드는
+      데만 썼다. 문턱 조절은 A/B 실측에서 -1.98%p, -2.32%p 로 손해였고, 그래서 전부
+      끄면서 용도 판정 자체가 무용지물이 됐다 — 실측: 1,196개 지표가 판정만 받고 버려짐.
+      문턱을 흔든 게 잘못이지 용도가 잘못된 게 아니었다.
+
+    [새 방식 — 거부권(veto)] 용도 지표를 net 투표에 섞지도, 문턱을 흔들지도 않는다.
+      대신 '이 날은 매수하면 안 된다'는 거부권만 준다. 방향은 net이 정하고,
+      용도는 위험한 날의 매수만 막는다. 틀린자리(특히 매수 오답)를 직접 줄이는 방식이다.
+
+        crash 게이트 상위 X% → 그날 매수 금지 (큰 낙폭 임박)
+        risk  게이트 상위 X% → 그날 매수 금지 (변동성 확대)
+        regime 하위 X%       → 그날 매수 금지 (하락 국면)
+
+      ★ 매도(현금)는 절대 막지 않는다 — 현금은 틀려도 기회비용뿐이다(요청).
+      ★ 거부권이 실제로 틀린자리를 줄였는지 즉시 측정해 로그에 남긴다.
+    반환: (veto_mask, 요약dict)  veto_mask[t]=True 면 그날 매수 금지
+    """
+    if not bool(globals().get('USE_ROLE_VETO', True)):
+        return None, {}
+    try:
+        _G = globals().get('_KL_GATES') or {}
+        if not _G:
+            return None, {}
+        n = len(close)
+        px = np.asarray(close, dtype=float)[:n]
+        r1 = np.zeros(n)
+        r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
+        _q = float(globals().get('ROLE_VETO_QUANTILE', 0.85))
+        _maxr = float(globals().get('ROLE_VETO_MAX_RATIO', 0.20))
+        veto = np.zeros(n, dtype=bool)
+        _score = np.zeros(n)          # ★ 몇 개 게이트가 동시에 경고했는가
+        used = []
+        for _k, _hi in (('crash', True), ('risk', True), ('regime', False)):
+            _a = _G.get(_k)
+            if _a is None:
+                continue
+            _v = np.asarray(_a, dtype=float)[:n]
+            _f = np.isfinite(_v)
+            if _f.sum() < 100:
+                continue
+            _thr = np.quantile(_v[_f], _q if _hi else (1.0 - _q))
+            _m = (_v >= _thr) if _hi else (_v <= _thr)
+            veto |= (_m & _f)
+            _score += (_m & _f).astype(float)
+            used.append(_k)
+        if not used or veto.sum() == 0:
+            return None, {}
+        # ★★★ (실측) OR 로 합치면 거부일이 43%까지 늘어 정상적인 매수 기회까지 막는다.
+        #   → 여러 게이트가 '동시에' 경고한 날만 거부한다. 상한(기본 20%)을 넘으면
+        #     경고 개수가 많은 날부터 잘라 상한에 맞춘다.
+        if veto.mean() > _maxr:
+            _need = int(n * _maxr)
+            _ord = np.lexsort((-np.arange(n), -_score))   # 경고 많은 순
+            _sel = _ord[:_need]
+            _v2 = np.zeros(n, dtype=bool); _v2[_sel] = True
+            veto = _v2 & (_score > 0)
+            print(f"    (용도 거부권) 거부일이 많아 상한 {_maxr:.0%}로 축소 "
+                  f"— 여러 용도가 동시에 경고한 날만 남깁니다")
+        # ★ 실제로 틀린자리를 줄이는지 측정 — 거부한 날의 다음날 등락
+        _vr = r1[veto]
+        _vr = _vr[np.isfinite(_vr)]
+        _nr = r1[~veto]
+        _nr = _nr[np.isfinite(_nr)]
+        _info = dict(n_veto=int(veto.sum()), ratio=float(veto.mean()),
+                     veto_mean=float(_vr.mean()) if len(_vr) else 0.0,
+                     rest_mean=float(_nr.mean()) if len(_nr) else 0.0,
+                     used=used,
+                     big_dn_in_veto=(float(np.mean(_vr <= -0.02)) if len(_vr) else 0.0),
+                     big_dn_in_rest=(float(np.mean(_nr <= -0.02)) if len(_nr) else 0.0))
+        # ★★★ (실측 판정기준 수정) 평균만 보면 안 된다. 거부권의 목적은 '큰 손실 회피'인데
+        #   평균은 작은 등락에 희석된다. 실측에서 큰하락 포함률이 19% vs 4%로 명확히
+        #   유효한데도 평균이 +0.10 vs +0.08 이라는 이유로 '손해'로 판정됐다.
+        #   → 큰 하락을 얼마나 걸러내는지(주 목적)를 우선 보고, 평균은 보조로 본다.
+        _dn_gain = _info['big_dn_in_veto'] - _info['big_dn_in_rest']
+        _ok = (_dn_gain >= float(globals().get('ROLE_VETO_MIN_DN_GAIN', 0.03)))
+        print(f"    (용도 거부권) {', '.join(used)} 상·하위 {(1-_q)*100:.0f}% → "
+              f"{_info['n_veto']}일({_info['ratio']*100:.0f}%) 매수 금지")
+        print(f"       거부한 날 다음날 평균 {_info['veto_mean']*100:+.2f}% vs "
+              f"나머지 {_info['rest_mean']*100:+.2f}%  "
+              f"(참고 — 판정은 아래 큰하락 회피율로 합니다)")
+        print(f"       ★큰하락(-2%↓) 비율: 거부한 날 {_info['big_dn_in_veto']*100:.0f}% vs "
+              f"나머지 {_info['big_dn_in_rest']*100:.0f}% → 차이 {_dn_gain*100:+.0f}%p "
+              f"{'— 거부가 유효합니다(큰 손실을 걸러냄)' if _ok else '— ★효과 미달'}")
+        if not _ok and bool(globals().get('ROLE_VETO_AUTO_OFF', True)):
+            print("       ↪ 손해로 측정돼 이번 실행에서는 거부권을 적용하지 않습니다")
+            return None, _info
+        return veto, _info
+    except Exception as e:
+        print(f'    ⚠ 용도 거부권 생략(무시): {e}')
+        return None, {}
+
+
+def _magnitude_alignment(feat, close, pool, is_buy, min_events=5):
+    """★★★ (요청) "강한 상승·하락일수록 net 절댓값이 커야 한다"
+
+    [문제] 실측에서 정반대였다:
+        |net| vs |등락| 상관 -0.267
+        큰 등락일(|r|>=2%) 평균 |net| 1.05  vs  작은 날 2.19   ← 큰 날에 오히려 작다
+        큰 등락일 부호 일치 40%
+      그래서 net +2.123 인 날 -4.43%, net +0.113 인 날 -4.05% 를 맞았다.
+      지금 지표 선정은 '다음날 방향'만 보고 '얼마나 크게 움직이는가'를 전혀 안 본다.
+
+    [해법] 지표마다 '큰 움직임을 잡는 능력'을 따로 재서, 큰 날에 제대로 발화하는
+      지표에 가중치를 몰아준다. 그러면 큰 날일수록 net 절댓값이 커진다.
+        big_catch  : 자기 방향의 큰 움직임(매수=큰상승 / 매도=큰하락) 중 발화한 비율
+        big_wrong  : 반대 방향 큰 움직임에 잘못 발화한 비율  ← 매수에 치명적
+        score      = big_catch - PENALTY × big_wrong        (0~1로 정규화)
+
+    ★ 매수는 엄격, 매도는 널널하게(요청). 매수 실패는 즉시 손실이고 매도 실패는
+      기회비용뿐이라, 매수에만 big_wrong 벌점을 크게 준다.
+    반환: ({지표명: 점수}, 요약dict)
+    """
+    if pool is None or len(pool) == 0:
+        return {}, {}
+    try:
+        n = len(close)
+        px = np.asarray(close, dtype=float)[:n]
+        r1 = np.zeros(n)
+        r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
+        _big = float(globals().get('MAG_BIG_MOVE', 0.02))
+        _pen = float(globals().get('MAG_WRONG_PENALTY_BUY' if is_buy
+                                   else 'MAG_WRONG_PENALTY_SELL', 2.0 if is_buy else 0.5))
+        # 자기 방향의 큰 움직임 / 반대 방향의 큰 움직임
+        _fav = (r1 >= _big) if is_buy else (r1 <= -_big)
+        _adv = (r1 <= -_big) if is_buy else (r1 >= _big)
+        _nf, _na = int(_fav.sum()), int(_adv.sum())
+        if _nf < min_events:
+            return {}, {}
+        out = {}
+        for _, row in pool.iterrows():
+            nm = str(row.get('indicator', ''))
+            if not nm or nm in out:
+                continue
+            try:
+                _v = np.asarray(_aligned_signal_for_row(feat, row), dtype=float)[:n]
+                _thr = row.get('threshold', None)
+                _dirv = str(row.get('direction', '>=') or '>=')
+                if _thr is None or (isinstance(_thr, float) and pd.isna(_thr)):
+                    sig = _v > 1e-12
+                elif _dirv in ('<=', 'down', 'below'):
+                    sig = _v <= float(_thr)
+                else:
+                    sig = _v >= float(_thr)
+                sig = sig & np.isfinite(_v)
+            except Exception:
+                continue
+            if int(sig.sum()) < min_events:
+                continue
+            _catch = float(np.mean(sig[_fav])) if _nf else 0.0
+            _wrong = float(np.mean(sig[_adv])) if _na else 0.0
+            out[nm] = float(np.clip(_catch - _pen * _wrong, 0.0, 1.0))
+        if not out:
+            return {}, {}
+        _vals = np.array(list(out.values()))
+        return out, dict(n=len(out), mean=float(_vals.mean()), max=float(_vals.max()),
+                         n_fav=_nf, n_adv=_na, big=_big, pen=_pen)
+    except Exception as e:
+        print(f'    ⚠ 큰움직임 정렬 계산 생략(무시): {e}')
+        return {}, {}
+
+
+def _apply_magnitude_weight(pool, mag_map, label='', is_buy=True):
+    """큰 움직임을 잡는 지표에 가중치를 몰아준다 → 큰 날일수록 |net| 이 커진다.
+
+    net_weight_score ×= (1 - W) + W × (정규화 점수 / 평균)
+    ★ 매수는 W를 크게(엄격), 매도는 작게(널널) 잡는다(요청).
+    """
+    if pool is None or len(pool) == 0 or not mag_map:
+        return pool
+    W = float(globals().get('MAG_WEIGHT_BUY' if is_buy else 'MAG_WEIGHT_SELL',
+                            0.7 if is_buy else 0.3))
+    if W <= 0:
+        return pool
+    pool = pool.copy()
+    _m = pool['indicator'].astype(str).map(mag_map)
+    _cov = float(_m.notna().mean())
+    _mean = float(_m.dropna().mean()) if _m.notna().any() else 0.0
+    if _cov < 0.3 or _mean <= 1e-9:
+        print(f"    (큰움직임 가중) {label}: 평가 {_cov:.0%} / 평균 {_mean:.3f} — 건너뜁니다")
+        return pool
+    _base = (pool['net_weight_score'] if 'net_weight_score' in pool.columns
+             else 1.0 + pd.to_numeric(pool.get('reliability', 0.0),
+                                      errors='coerce').fillna(0.0))
+    _f = (1.0 - W) + W * (_m.fillna(_mean) / _mean)
+    pool['mag_score'] = _m
+    pool['net_weight_score'] = _base * _f
+    print(f"    (큰움직임 가중) {label}: {int(_m.notna().sum())}/{len(pool)}개 평가, "
+          f"평균 점수 {_mean:.3f}, 가중치 배율 {_f.min():.2f}~{_f.max():.2f} "
+          f"(W={W}) — 큰 등락을 잡는 지표에 몰아줍니다")
+    return pool
+
+
+def _drop_low_magnitude(pool, mag_map, label='', is_buy=True):
+    """★ 매수 전용 — 큰 움직임 정렬 점수가 바닥인 지표를 아예 뺀다(요청: 롱은 엄격).
+
+    반대 방향 큰 움직임에 자주 발화하는 지표는 '강한 매수 신호일 때 폭락'의 원인이다.
+    매도에는 적용하지 않는다(널널하게).
+    """
+    if pool is None or len(pool) == 0 or not mag_map or not is_buy:
+        return pool
+    _min = float(globals().get('MAG_MIN_SCORE_BUY', 0.0))
+    if _min <= 0:
+        return pool
+    _m = pool['indicator'].astype(str).map(mag_map)
+    _keep = (_m.isna()) | (_m >= _min)
+    _out = pool[_keep].reset_index(drop=True)
+    # ★ 안전장치 — 너무 많이 잘리면 적용하지 않는다. 다만 '절대 개수'만 보면
+    #   지표가 많을 때 컷이 무력화되므로, 최소 보유 개수로만 판단한다.
+    _minkeep = int(globals().get('MAG_MIN_KEEP_BUY', 20))
+    if len(_out) < _minkeep:
+        print(f"    (큰움직임 컷) {label}: 통과 {len(_out)}개 < 최소 {_minkeep}개 — "
+              f"적용하지 않습니다(기준 MAG_MIN_SCORE_BUY={_min} 을 낮춰보세요)")
+        return pool
+    if len(_out) < len(pool):
+        print(f"    (큰움직임 컷) {label}: {len(pool)}→{len(_out)}개 — 큰 하락에 잘못 "
+              f"발화하는 지표 {len(pool)-len(_out)}개 제외(점수 {_min} 미만). "
+              f"매수는 틀리면 즉시 손실이라 엄격하게 겁니다")
+    return _out
 
 
 def _buy_downside_guard(feat, close, pool, max_loss=None, min_events=5):
@@ -21527,6 +21781,22 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 buy_c, _ = _buy_downside_guard(feat, close, buy_c)
             except Exception as _e_bg:
                 print(f"    ⚠ 매수 하방 가드 생략(무시): {_e_bg}")
+            # ★★★ (요청) "강한 상승·하락일수록 net 절댓값이 커야 한다"
+            #   실측: |net| vs |등락| 상관 -0.267 (큰 날에 오히려 net이 작았다).
+            #   큰 움직임을 잡는 지표에 가중치를 몰아주고, 매수는 반대 방향 큰 움직임에
+            #   잘못 발화하는 지표를 아예 뺀다(롱은 엄격 / 숏은 널널 — 요청).
+            try:
+                _mb, _ib = _magnitude_alignment(feat, close, buy_c, True)
+                _ms, _is_ = _magnitude_alignment(feat, close, sell_c, False)
+                if _ib:
+                    print(f"    (큰움직임 정렬) 기준 ±{_ib['big']:.0%} — "
+                          f"매수: 큰상승 {_ib['n_fav']}일 / 큰하락 {_ib['n_adv']}일, "
+                          f"반대발화 벌점 ×{_ib['pen']}")
+                buy_c = _drop_low_magnitude(buy_c, _mb, '매수', True)
+                buy_c = _apply_magnitude_weight(buy_c, _mb, '매수', True)
+                sell_c = _apply_magnitude_weight(sell_c, _ms, '매도', False)
+            except Exception as _e_mg:
+                print(f"    ⚠ 큰움직임 정렬 생략(무시): {_e_mg}")
             buy_c, sell_c = _apply_min_signal_floor_pair(buy_c, sell_c)
             # ★★★ (요청 — 둘째) 지표 선정을 워크포워드로 검증해 '여러 시기에서 고르게
             #   맞는' 지표에 더 큰 투표권을 준다. 신뢰도(과거 성적 크기)만으로는 미래를
@@ -25262,8 +25532,18 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     _netx = net
     if _cv is not None and _w_cv > 0:
         _netx = net * (1.0 + _w_cv * _cv)
+    # ★★★ (요청) 용도 거부권 — 위험한 날의 '매수'만 막는다. 문턱을 흔들지 않으므로
+    #   앞서 손해로 확인된 게이트 방식과 다르다. 방향은 net이 정하고 용도는 거부만 한다.
+    _veto = globals().get('_KL_ROLE_VETO')
+    if _veto is not None:
+        try:
+            _veto = np.asarray(_veto, dtype=bool)[:n]
+            if len(_veto) != n:
+                _veto = None
+        except Exception:
+            _veto = None
     _use_gate = bool(np.any(_adjK) or np.any(_adjL) or _force_cash is not None
-                     or _cv is not None and _w_cv > 0)
+                     or (_cv is not None and _w_cv > 0) or _veto is not None)
 
     def _run(K, L):
         # ★ (요청) 당일 net 체결 — net[s]가 K 넘으면 그날 롱, L 밑돌면 그날 현금 (신호일=체결일).
@@ -25276,6 +25556,8 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             if _L > _K: _L = _K
             if _force_cash is not None and _force_cash[s]:
                 cur = 0.0          # ★ 꼬리위험 신호 — 강제 청산
+            elif _veto is not None and _veto[s]:
+                cur = 0.0          # ★ 용도 거부권 — 위험한 날은 매수 금지(현금)
             elif v >= _K: cur = 1.0
             elif v <= _L: cur = 0.0
             pos[s] = cur
@@ -31632,6 +31914,13 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
                     feat[indicators], np.asarray(close, dtype=float), _roles)
                 globals()['_KL_GATES'] = _gates
                 globals()['_GROUP_ROLE_REPORT'] = _roles
+                # ★★★ (요청) 용도를 '틀린자리 줄이기'에 직접 쓴다 — 위험한 날 매수 금지.
+                try:
+                    _vt, _vinfo = _apply_role_veto(feat, close, None, None)
+                    globals()['_KL_ROLE_VETO'] = _vt
+                    globals()['_ROLE_VETO_INFO'] = _vinfo
+                except Exception as _e_vt:
+                    print(f"    ⚠ 용도 거부권 생략(무시): {_e_vt}")
                 _n_dir = sum(_v['n'] for _v in _roles.values() if _v['role'] == 'direction')
                 _n_oth = sum(_v['n'] for _v in _roles.values() if _v['role'] != 'direction')
                 print(f"      → 방향성 투표에 {_n_dir:,}개, 용도별 게이트에 {_n_oth:,}개 "
