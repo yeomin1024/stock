@@ -94,9 +94,8 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-19.e'
-CORE_VERSION_NOTE = ('추세기반점수 + 실패성격구분 + 매수비대칭벌점 '
-                     '+ 그룹분류12종/상한150 + 진단·합성 분류통일 + 상태최소채택3 + 로그내 버전기록 + 임계값 균형정확도 + 추세점수 기본OFF(비용대비효과 없음) + 음의정보이득 상태 제외(풀 반영 버그수정) + 다중검정 보정(실측 무효 → 기본OFF) + K/L 미래예측기준 선택(OOS평균) + 매크로점검 오탐수정 + 그룹용도분화 10종(섹터강약·시장폭·유동성 추가) + 섹터그룹 신설 + 방향성 척도버그 수정 + 게이트 가중치 하향 + 게이트 A/B 자동측정 + 용도 15종 + 실제 어닝지표 15개 + K/L 폴백 치명버그 수정 + 어닝지표 실경로 주입 + 게이트 실측기반 OFF + 강제청산 분리 + 어닝 티커 폴백 + 어닝 경로 통합·무조건 로그 + 어닝 이벤트수 문턱 완화 + 신호수하한 예외 + 어닝 최종결과 진단 + 어닝 합성지표 보장 + 합성지표 컷 예외 + 호라이즌필터 어닝예외 + 어닝 게이트 폴백 OFF + 임계값 이산화 + 단계별 시트 정리 + 목표지표수 비율화 + B버전 복귀(비율목표·비대칭강제 OFF) + 지표 안정성 가중(충돌수정) + 상태 불안정 경고·비활성 스위치 + 지속상태 자동판정 + 상태제외 판정 단일화 + EVAL_START 중복제거 + 검증모드 net품질진단 + 매수 하방가드 + 큰움직임 정렬(롱엄격·숏널널) + 용도 거부권 + 펀더멘탈지표 + 관계형지표(상호작용·선행·희석) + 전수분석모드 + 지식기반 모델(의미로 판단·참고용 기본OFF)')
+CORE_VERSION = '2026-08-21.b'
+CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + K/L 최대수익 + 틀린자리최소 선정')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -2132,147 +2131,6 @@ def download_earnings_data(ticker, start=None):
         df = None
     _EARNINGS_CACHE[_k] = df
     return df
-
-
-_FUNDA_CACHE = {}
-
-
-def download_fundamentals(ticker):
-    """★★★ (요청) 펀더멘탈 — 시가총액·PER·부채비율 등을 받아온다.
-
-    yfinance 의 info / quarterly_balance_sheet / quarterly_financials 를 조합한다.
-    ★ 실패해도 파이프라인은 계속 진행된다(펀더멘탈 지표만 비게 됨).
-    반환: dict(스칼라 지표들) 또는 None
-    """
-    _k = str(ticker).upper()
-    if _k in _FUNDA_CACHE:
-        return _FUNDA_CACHE[_k]
-    out = None
-    try:
-        _t = yf.Ticker(_k)
-        _info = {}
-        for _attr in ('info', 'get_info'):
-            try:
-                _o = getattr(_t, _attr, None)
-                _d = _o() if callable(_o) else _o
-                if isinstance(_d, dict) and _d:
-                    _info = _d; break
-            except Exception:
-                continue
-        if _info:
-            def _g(*keys):
-                for k in keys:
-                    v = _info.get(k)
-                    if v is not None and isinstance(v, (int, float)) and np.isfinite(v):
-                        return float(v)
-                return np.nan
-            out = dict(
-                market_cap=_g('marketCap'),
-                per=_g('trailingPE', 'forwardPE'),
-                forward_per=_g('forwardPE'),
-                pbr=_g('priceToBook'),
-                psr=_g('priceToSalesTrailing12Months'),
-                peg=_g('pegRatio', 'trailingPegRatio'),
-                debt_to_equity=_g('debtToEquity'),
-                current_ratio=_g('currentRatio'),
-                quick_ratio=_g('quickRatio'),
-                roe=_g('returnOnEquity'),
-                roa=_g('returnOnAssets'),
-                profit_margin=_g('profitMargins'),
-                operating_margin=_g('operatingMargins'),
-                revenue_growth=_g('revenueGrowth'),
-                earnings_growth=_g('earningsGrowth', 'earningsQuarterlyGrowth'),
-                free_cashflow=_g('freeCashflow'),
-                total_debt=_g('totalDebt'),
-                total_cash=_g('totalCash'),
-                beta=_g('beta'),
-                dividend_yield=_g('dividendYield'),
-                shares_out=_g('sharesOutstanding'),
-            )
-            out = {k: v for k, v in out.items() if np.isfinite(v)}
-            if not out:
-                out = None
-    except Exception as e:
-        print(f"  ⚠ 펀더멘탈 수신 실패(무시): {e}")
-        out = None
-    _FUNDA_CACHE[_k] = out
-    return out
-
-
-def add_fundamental_features(feat, cl, funda, ticker=''):
-    """★★★ (요청) 펀더멘탈 지표를 시계열로 만든다.
-
-    [설계 의도] 시가총액·PER 같은 값은 '하루하루 바뀌는 신호'가 아니라 '수준'이다.
-      그대로 넣으면 상수에 가까워 임계값 스윕이 무의미해진다. 그래서 두 갈래로 만든다:
-        ① 가격과 연동해 매일 변하는 값 — PER·PBR·시총은 주가에 비례하므로
-           현재가/기준가로 스케일해 '지금 밸류에이션이 어디쯤인가'를 매일 계산한다.
-        ② 그 값의 롤링 z-점수·백분위 — '역사적으로 비싼가/싼가'를 신호로 만든다.
-      부채비율·유동비율처럼 주가와 무관한 값은 상수로 두되, 다른 지표와의 상호작용
-      (예: 고부채 × 금리상승)에 쓰이도록 남긴다.
-    """
-    if not funda:
-        return 0
-    try:
-        idx = cl.index
-        px = cl.astype(float)
-        _base = float(px.iloc[-1]) if len(px) else np.nan
-        if not np.isfinite(_base) or _base <= 0:
-            return 0
-        _ratio = px / _base            # 오늘 대비 그날의 가격 배율
-        _n_add = 0
-
-        def _put(name, series):
-            nonlocal _n_add
-            feat[f'funda_{name}'] = series
-            _n_add += 1
-
-        # ── ① 가격 연동 밸류에이션 (매일 변함) ──
-        for _k, _nm in (('per', 'per'), ('forward_per', 'fwd_per'),
-                        ('pbr', 'pbr'), ('psr', 'psr')):
-            _v = funda.get(_k)
-            if _v is None or not np.isfinite(_v) or _v <= 0:
-                continue
-            _ts = _ratio * float(_v)          # 그날 주가 기준 밸류에이션
-            _put(_nm, _ts)
-            # 역사적으로 비싼가/싼가 — 롤링 백분위
-            _put(f'{_nm}_pct252', _ts.rolling(252, min_periods=60).rank(pct=True))
-            _put(f'{_nm}_z252', (_ts - _ts.rolling(252, min_periods=60).mean())
-                 / _ts.rolling(252, min_periods=60).std().replace(0, np.nan))
-        _mc = funda.get('market_cap')
-        if _mc and np.isfinite(_mc) and _mc > 0:
-            _ts = _ratio * float(_mc)
-            _put('mktcap_log', np.log(_ts))
-            _put('mktcap_z252', (_ts - _ts.rolling(252, min_periods=60).mean())
-                 / _ts.rolling(252, min_periods=60).std().replace(0, np.nan))
-
-        # ── ② 재무 건전성 (수준값 — 상호작용용) ──
-        for _k, _nm in (('debt_to_equity', 'debt_equity'), ('current_ratio', 'current_ratio'),
-                        ('quick_ratio', 'quick_ratio'), ('roe', 'roe'), ('roa', 'roa'),
-                        ('profit_margin', 'profit_margin'),
-                        ('operating_margin', 'op_margin'),
-                        ('revenue_growth', 'rev_growth'),
-                        ('earnings_growth', 'eps_growth'),
-                        ('beta', 'beta'), ('peg', 'peg'),
-                        ('dividend_yield', 'div_yield')):
-            _v = funda.get(_k)
-            if _v is None or not np.isfinite(_v):
-                continue
-            _put(_nm, pd.Series(float(_v), index=idx))
-
-        # ── ③ 파생 — 부채 대비 현금, 밸류 대비 성장 ──
-        _td, _tc = funda.get('total_debt'), funda.get('total_cash')
-        if _td and _tc and np.isfinite(_td) and np.isfinite(_tc) and _td > 0:
-            _put('cash_to_debt', pd.Series(float(_tc / _td), index=idx))
-        _fcf = funda.get('free_cashflow')
-        if _fcf and _mc and np.isfinite(_fcf) and np.isfinite(_mc) and _mc > 0:
-            _put('fcf_yield', (float(_fcf) / (_ratio * float(_mc))))
-        _per, _eg = funda.get('per'), funda.get('earnings_growth')
-        if _per and _eg and np.isfinite(_per) and np.isfinite(_eg) and _eg != 0:
-            _put('peg_calc', (_ratio * float(_per)) / (float(_eg) * 100.0))
-        return _n_add
-    except Exception as e:
-        print(f"  ⚠ 펀더멘탈 지표 생성 실패(무시): {e}")
-        return 0
 
 
 def add_earnings_features(feat, cl, earn_df):
@@ -15035,7 +14893,16 @@ SIMPLE_POOL_ALIGN_EVENT_FIRST_ONLY       = True
 #     실측에서도 두 기준의 학습/검증 초과수익이 528.06/130.50으로 완전히 일치했다.
 #     실질적인 선택지는 'wrong'(분류 정확도)와 'return'(수익) 둘뿐이며, GOOG 홀드아웃에서는
 #     return이 근소하게 우세했다(검증 초과합 130.50 vs 127.75%p).
-SIMPLE_POOL_STATE_PICK_CRITERION         = 'return'
+# ★★★ (요청) 틀린자리를 최대한 없애도록 '틀린자리 최소' 기준으로 선정한다.
+#   실제 엑셀(ensemble_search_GOOG_2026-08-21) 단계별 데이터로 두 기준을 비교한 결과:
+#       롱지속  틀린자리 139 → 134  (적중 76.3% → 77.1%)
+#       롱→숏   틀린자리 131 → 114  (적중 77.7% → 80.5%)
+#       숏지속  틀린자리 122 → 111  (적중 73.8% → 76.1%)
+#       숏→롱   틀린자리 103 → 103  (동일)
+#       합계    495 → 462 (-33, 6.7% 감소) / 적중률은 전 상태에서 상승
+#   수익은 롱→숏에서 -12.53%p 줄지만, 그건 소수 이벤트에서 크게 번 값이라
+#   재현성이 낮다. 틀린자리를 줄이는 쪽이 요청 취지에 맞다.
+SIMPLE_POOL_STATE_PICK_CRITERION         = 'wrong'
 # ★★★ (요청 — 신규) 신호수 하한과 최소 지표수 확보
 #   기본 하한 10건 → 남는 지표가 30개 미만이면 5씩 낮춰가며 30개를 확보(최저 1).
 #   선호 하한 30건에서 시작 → 지표가 30개 미만이면 5씩 낮춤 → 최저 10건에서 정지.
@@ -15175,47 +15042,6 @@ MAG_MIN_KEEP_BUY                         = 20     # 컷 후 최소 보유 개수
 #   문턱을 흔드는 방식은 손해였지만(-1.98%p, -2.32%p), 거부권은 방향 판단을 건드리지
 #   않고 위험한 날의 매수만 막으므로 틀린자리(매수 오답)를 직접 줄인다.
 #   ★ 효과가 없으면 자동으로 꺼진다(ROLE_VETO_AUTO_OFF).
-# ════════════════════════════════════════════════════════════════
-# ★★★ (요청) 펀더멘탈 · 관계형 지표 · 컷 없는 전수 분석
-# ════════════════════════════════════════════════════════════════
-# 펀더멘탈: 시가총액·PER·PBR·부채비율·ROE 등. 주가에 비례하는 값은 매일 재계산해
-#   '지금 밸류에이션이 역사적으로 어디쯤인가'를 신호로 만든다.
-# ════════════════════════════════════════════════════════════════
-# ★★★ (요청) 지식 기반 모델 — 지표의 의미로 판단
-# ════════════════════════════════════════════════════════════════
-# 통계 모델(net/KL)은 4,900개 지표 × 수천 임계값에서 성공률 높은 걸 고르는
-#   데이터마이닝이라 과적합이 났다(net 부호 일치율 35%).
-# 지식 모델은 교과서 임계값만 쓴다: RSI 30/70, Stoch 20/80, ADX 25, %B 0.05/0.95.
-#   역할별로 읽는 법이 다르다 — 추세는 방향, 모멘텀은 극단에서 역방향,
-#   변동성은 진입 억제, 자금은 확신도, 밸류·거시는 국면.
-# 결정 규칙은 비대칭이다 — 매수는 4조건 AND, 청산은 3조건 중 하나만 OR.
-USE_KNOWLEDGE_MODEL                      = True
-KM_Z_WINDOW                              = 60
-KM_TREND_MIN                             = 0.0    # 추세 점수 이 이상이어야 매수
-#   ★ 실측: -0.8 이면 청산일이 52%까지 늘어 상승장을 통째로 놓쳤다(초과 -35%p).
-#     -1.2 로 좁혀 '진짜 위험한 날'만 청산한다.
-KM_RISK_MAX                              = -1.2   # 위험 점수(반전값) 이하면 청산
-KM_MOMO_MAX                              = 0.8    # 과열 상한 — 넘으면 매수 안 함
-KM_MACRO_MIN                             = -1.0   # 거시가 이보다 나쁘면 매수 안 함
-#   ★★★ (실측 주의) 합성 데이터 3개 시드 검증 결과 초과수익이 -57.75 / -8.52 / +17.03%p 로
-#     크게 흔들렸다. 교과서 임계값은 종목·기간을 안 가리지만, 그렇다고 항상 통하는 것도
-#     아니다. → 지식 모델은 '참고 지표'로 먼저 보고, 실제 반영은 실측 후 켤 것.
-#     KM_USE_AS_VETO=True 면 지식 모델 청산신호가 매수 금지에 반영된다(기본 OFF).
-KM_USE_AS_VETO                           = False  # 지식 모델 청산신호를 매수금지에 반영
-
-USE_FUNDAMENTAL_FEATURES                 = True
-# 관계형: ①상호작용(RSI 과매도 × 국면) ②선행지표(주가와 연동 큰 지표를 먼저 예측)
-#   ③희석(극단 상태가 오래 가면 효과가 약해짐 — 반감기)
-USE_RELATIONAL_FEATURES                  = True
-REL_DECAY_HALFLIFE                       = 10.0   # 희석 반감기(일)
-REL_LEAD_DAYS                            = 3      # 선행지표가 몇 일 앞서는지
-REL_MAX_PAIRS                            = 40     # 상호작용 쌍 상한(조합 폭발 방지)
-REL_GROUP_TOPK                           = 30     # 그룹 대표 z 계산에 쓸 멤버 수
-# ★★★ (요청) 컷 없이 전 지표 분석 — 최소신호수·성공률 컷을 모두 끄고 전부 평가한다.
-#   무엇이 살아남는지가 아니라 '전 지표가 각각 어떤 성격인지'를 보려는 목적.
-#   ★ 켜면 풀이 매우 커져 느려지고 과적합 위험도 커진다. 분석용으로만 쓸 것.
-ANALYZE_ALL_NO_CUT                       = False
-
 USE_ROLE_VETO                            = True
 ROLE_VETO_QUANTILE                       = 0.85   # 상·하위 15%를 위험일로 본다
 ROLE_VETO_MAX_RATIO                      = 0.20   # 거부일 상한 — 넘으면 경고 많은 날만
@@ -15263,7 +15089,10 @@ SIMPLE_POOL_MT_STRENGTH                  = 0.0
 #   실측: 인샘플 +662.8% vs 워크포워드 +110%p — 6배 차이.
 # 해법: 뒤쪽 기간을 여러 폴드로 나눠 '검증구간에서만' 실현된 수익의 합이 최대인 K/L을 쓴다.
 #   = "과거에 이 값을 골랐다면 그 다음 구간에서 어땠나"를 직접 재는 것.
-KL_SELECT_BY_OOS                         = True
+# ★★★ (요청) K/L 은 '최대 수익률'로 선정한다.
+#   앞서 OOS(검증구간 평균) 기준으로 바꿨었는데, 요청에 따라 전 구간 수익 최대로 되돌린다.
+#   ※ 주의 — 전 구간은 인샘플이라 낙관 편향이 있다. 실제 기대치는 워크포워드 시트를 볼 것.
+KL_SELECT_BY_OOS                         = False
 KL_OOS_FOLDS                             = 4      # 검증 폴드 수
 KL_OOS_START_FRAC                        = 0.5    # 뒤쪽 50%를 검증에 사용
 # ★ 이웃 (K,L)들의 평균으로 평활 — 뾰족한 정점(조금만 달라져도 급락)이 아니라
@@ -16188,7 +16017,7 @@ def auto_compute_anchor_dates(dates, close, *,
 
 
 @njit
-def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr, event_gap):
+def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr, event_gap, trend_sum_arr=None, use_trend=False):
     # ★★★ (요청 — 재설계) 성공 = 표시일(fire+h-1)의 최적자리가 매수(또는 중립),
     #   등락률 = 표시일→다음날 하루치. 마스크 없으면(비단순모드) 다음날 등락 기준 폴백.
     # ★★★ (요청 — 재설계, 핵심) "연속으로 나오는 부분을 한 번으로 취급할 거면, 연속구간
@@ -16221,8 +16050,17 @@ def _eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_arr, 
         if disp + 1 > n - 1: continue
         p0 = close_arr[disp]
         if p0 <= 0.0: continue
-        ret = close_arr[disp + 1] / p0 - 1.0
+        # ★★★ (요청 — 정정) 등락률은 '다음날 하루'가 아니라
+        #   '최적자리 추세 시작~끝' 누적으로 잰다. 신뢰도 계산엔 이미 추세
+        #   누적을 쓰는데 여기만 하루치라 기준이 어긋나 있었다.
+        if use_trend and trend_sum_arr is not None and trend_sum_arr.shape[0] == n:
+            ret = trend_sum_arr[disp]
+        else:
+            ret = close_arr[disp + 1] / p0 - 1.0
         ev_ret_sum += ret; ev_n_valid += 1
+        # ★★★ (요청 — 정정) 성공/실패는 '최적자리와 일치하는가' 하나로만 본다.
+        #   예전엔 최적자리가 없을 때 등락률 문턱(ret < dd_limit)으로 대체 판정해서,
+        #   '다음날 얼마나 움직였나'가 성공 기준처럼 작동했다.
         if use_ok:
             if anchor_buy_arr[disp] != 1:
                 ev_all_ok = False
@@ -16270,7 +16108,7 @@ def _OLD_eval_buy_signals(close_arr, signal_arr, horizon, dd_limit, anchor_buy_a
 
 
 @njit
-def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr, event_gap):
+def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr, event_gap, trend_sum_arr=None, use_trend=False):
     # ★★★ (요청 — 재설계, 핵심) 매도 대칭 — 이벤트 내 '모든' 발화일이 다 맞아야 성공,
     #   하나라도 틀리면 실패. 등락률은 묶음 내 유효 발화일들의 평균.
     n = close_arr.shape[0]
@@ -16295,8 +16133,17 @@ def _eval_sell_signals(close_arr, signal_arr, horizon, ru_limit, anchor_sell_arr
         if disp + 1 > n - 1: continue
         p0 = close_arr[disp]
         if p0 <= 0.0: continue
-        ret = close_arr[disp + 1] / p0 - 1.0
+        # ★★★ (요청 — 정정) 등락률은 '다음날 하루'가 아니라
+        #   '최적자리 추세 시작~끝' 누적으로 잰다. 신뢰도 계산엔 이미 추세
+        #   누적을 쓰는데 여기만 하루치라 기준이 어긋나 있었다.
+        if use_trend and trend_sum_arr is not None and trend_sum_arr.shape[0] == n:
+            ret = trend_sum_arr[disp]
+        else:
+            ret = close_arr[disp + 1] / p0 - 1.0
         ev_ret_sum += ret; ev_n_valid += 1
+        # ★★★ (요청 — 정정) 성공/실패는 '최적자리와 일치하는가' 하나로만 본다.
+        #   예전엔 최적자리가 없을 때 등락률 문턱(ret > -ru_limit)으로 대체 판정해서,
+        #   '다음날 얼마나 움직였나'가 성공 기준처럼 작동했다.
         if use_ok:
             if anchor_sell_arr[disp] != 1:
                 ev_all_ok = False
@@ -17268,7 +17115,21 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
     """
     evalf = _eval_buy_signals if is_buy else _eval_sell_signals
     _egap = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
-    n_all, ok_all, sum_all = evalf(close_arr, sig_arr, horizon, limit, anchor_arr, _egap)
+    # ★★★ (요청) 등락률을 '최적자리 추세 시작~끝' 누적으로 잰다.
+    #   신뢰도 계산에는 이미 _ctp_cached[9](추세 누적)를 쓰는데, 성공률·기본점수를
+    #   내는 이 경로만 '다음날 하루'였다. 같은 배열을 넘겨 기준을 통일한다.
+    _tsum = None
+    _use_tr = bool(globals().get('SIMPLE_POOL_REL_TREND_RUN_RETURN', True))
+    if _use_tr:
+        try:
+            _ctp9 = _ctp_cached(close_arr)
+            _tsum = np.asarray(_ctp9[9], dtype=np.float64)
+            if not is_buy:
+                _tsum = -_tsum          # 매도는 하락이 이익
+        except Exception:
+            _tsum = None; _use_tr = False
+    n_all, ok_all, sum_all = evalf(close_arr, sig_arr, horizon, limit, anchor_arr, _egap,
+                                   _tsum, bool(_use_tr and _tsum is not None))
     if n_all < min_signals:
         return n_all, ok_all, sum_all, -1.0
     base = wilson_lower(ok_all, n_all, wilson_z)
@@ -17630,401 +17491,6 @@ def select_pool_by_ic(feat, close, *, indicators=None, horizon=1,
     return df.head(max_pool).reset_index(drop=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  ★★★ (요청) 지식 기반 모델 — 지표의 '의미'로 예측한다
-#
-#  [왜 만드나] 지금까지는 지표 4,900개를 익명의 숫자로 보고 "성공률이 높은 임계값"을
-#    통계로 찾았다. 그래서 수천만 조합에서 우연히 잘 맞는 걸 골라내는 데이터마이닝이
-#    됐고, 워크포워드 편차가 ±5%p, net 부호 일치율이 35%까지 떨어졌다.
-#    지표는 원래 뜻이 있다. RSI 30은 과매도, ADX 25↑는 추세 존재, VIX 급등은 공포다.
-#    그 뜻대로 조합하면 데이터마이닝 없이도 판단할 수 있고, 왜 그렇게 판단했는지
-#    설명할 수 있다.
-#
-#  [설계 원칙]
-#    ① 임계값을 데이터에서 찾지 않는다 — 교과서 값(RSI 30/70, ADX 25 등)을 쓴다.
-#    ② 지표를 역할별로 묶고, 역할마다 다른 방식으로 읽는다.
-#       추세는 방향, 모멘텀은 극단에서 역방향, 위험은 진입 억제, 자금은 확신도.
-#    ③ 매수는 여러 조건이 '동시에' 맞아야 하고(AND), 매도는 하나만 걸려도 나간다(OR).
-#       매수 실패는 즉시 손실, 매도 실패는 기회비용뿐이라는 비대칭을 규칙에 박는다.
-#    ④ 판단 근거를 매일 기록한다 — 왜 샀는지 설명할 수 없으면 신뢰할 수 없다.
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _indicator_semantics(name):
-    """지표 이름에서 '무슨 뜻인지'를 읽어낸다.
-
-    반환: (역할, 방향, 정규화기준)
-      역할  : trend/momentum/volatility/flow/value/macro/breadth/none
-      방향  : +1 = 값이 크면 강세, -1 = 값이 크면 약세, 0 = 극단이 의미(양방향)
-      기준  : (하단, 상단) — 교과서 임계값. None이면 z-점수로 판단.
-    """
-    n = str(name).lower()
-
-    def has(*ks):
-        return any(k in n for k in ks)
-
-    # ── 모멘텀 오실레이터 — 극단이 의미(과매수/과매도) ──
-    if 'rsi' in n and not has('_z', 'zscore'):
-        return 'momentum', 0, (30.0, 70.0)
-    if has('stoch', 'willr', 'cci'):
-        return 'momentum', 0, ((20.0, 80.0) if 'stoch' in n else
-                               ((-80.0, -20.0) if 'willr' in n else (-100.0, 100.0)))
-    if has('mfi'):
-        return 'flow', 0, (20.0, 80.0)
-    # ── 추세 — 방향 그대로 ──
-    if has('adx'):
-        return 'trend', +1, (20.0, 25.0)     # 25 이상이면 추세가 살아있음
-    if has('macd'):
-        return 'trend', +1, None
-    if has('ma_dev', 'ema_dev', 'sma_dev', 'price_vs_ma', 'above_ma'):
-        return 'trend', +1, None
-    if has('supertrend', 'psar', 'aroon', 'vortex', 'ichimoku', 'dmi', 'di_'):
-        return 'trend', +1, None
-    if has('slope', 'linreg', 'trend'):
-        return 'trend', +1, None
-    # ── 변동성/위험 — 크면 위험 ──
-    if has('atr', 'stdev', 'std_', 'realized_vol', 'garch', 'bb_width', 'bbw',
-           'keltner_width', 'chop'):
-        return 'volatility', -1, None
-    if has('vix', 'vvix', 'skew', 'move_'):
-        return 'volatility', -1, None
-    if has('drawdown', 'maxdd'):
-        return 'volatility', -1, None
-    # ── 밴드 위치 — 극단이 의미 ──
-    if has('bb_pct', 'bb_position', 'percent_b', 'donchian_pos', 'channel_pos'):
-        return 'momentum', 0, (0.05, 0.95)
-    # ── 자금 흐름 ──
-    if has('obv', 'adl', 'cmf', 'force_index', 'eom', 'accum', 'vwap', 'vwma',
-           'volume', 'turnover', 'dollar_vol'):
-        return 'flow', +1, None
-    # ── 밸류에이션 ──
-    if has('funda_per', 'funda_pbr', 'funda_psr', 'funda_peg', 'cape'):
-        return 'value', -1, None             # 비쌀수록 약세
-    if has('fcf_yield', 'div_yield', 'earnings_yield'):
-        return 'value', +1, None
-    # ── 거시 ──
-    if has('yc_', 'yield_curve', 'inver', 't10y', 't2y', 'oas', 'credit', 'spread'):
-        return 'macro', -1, None             # 역전·스프레드 확대는 약세
-    if has('fred_', 'macro_', 'cpi', 'infl', 'unrate', 'recession'):
-        return 'macro', -1, None
-    # ── 시장 폭 ──
-    if has('breadth', 'advance_decline', 'new_high', 'pct_above'):
-        return 'breadth', +1, None
-    return 'none', 0, None
-
-
-def build_knowledge_model(feat, close, train_frac=0.7):
-    """★★★ (요청) 지표의 의미대로 읽어 매수/매도를 판단한다.
-
-    [역할별 읽는 법 — 도메인 지식]
-      추세(trend)      : 값이 양수면 상승 추세. ADX는 25 이상일 때만 추세로 인정한다.
-                         추세가 없으면(ADX<20) 추세 지표를 신뢰하지 않는다.
-      모멘텀(momentum) : 극단이 의미다. RSI 30 이하는 과매도(반등 기대),
-                         70 이상은 과매수(조정 위험). 단, 강한 추세에서는
-                         과매수가 오래 지속되므로 추세와 함께 읽는다.
-      변동성(volatility): 크면 위험. 진입을 막는 용도로만 쓴다(방향 판단에 안 씀).
-      자금(flow)       : 가격 상승에 거래가 실렸는지. 확신도 보정에 쓴다.
-      밸류(value)      : 역사적으로 비싼가. 장기 신호라 문턱 조절에만 쓴다.
-      거시(macro)      : 국면 판단. 하락 국면이면 매수를 억제한다.
-      폭(breadth)      : 상승이 넓은가. 좁으면 취약하다.
-
-    [결정 규칙 — 매수는 AND, 매도는 OR (비대칭)]
-      매수 = 추세 우호 AND 위험 낮음 AND 거시 비적대 AND (모멘텀 과열 아님)
-      매도 = 위험 급등 OR 추세 붕괴 OR 모멘텀 과열 정점
-      ★ 매수는 조건이 모두 맞아야 하고, 매도는 하나만 걸려도 나간다.
-        매수 실패는 즉시 손실이고 매도 실패는 기회비용뿐이기 때문이다.
-
-    반환: DataFrame(index=날짜) with [trend, momo, risk, flow, macro, buy_ok, sell_hit, reason]
-    """
-    if not bool(globals().get('USE_KNOWLEDGE_MODEL', True)):
-        return None
-    try:
-        n = len(feat)
-        num = feat.select_dtypes(include=[np.number])
-        idx = feat.index
-        zwin = int(globals().get('KM_Z_WINDOW', 60))
-
-        from collections import defaultdict
-        buckets = defaultdict(list)
-        for c in num.columns:
-            role, sign, band = _indicator_semantics(c)
-            if role == 'none':
-                continue
-            v = num[c].astype(float)
-            if v.notna().sum() < 100:
-                continue
-            if band is not None and role in ('momentum', 'flow'):
-                # 교과서 임계값 — 데이터에서 찾지 않는다
-                lo, hi = band
-                # -1(과매도) ~ +1(과매수) 로 정규화
-                _sig = np.where(v <= lo, -1.0, np.where(v >= hi, 1.0, 0.0))
-                buckets[role].append(pd.Series(_sig, index=idx))
-            elif band is not None and role == 'trend':
-                lo, hi = band                        # ADX: 20/25
-                buckets['trend_strength'].append((v >= hi).astype(float))
-            else:
-                mu = v.rolling(zwin, min_periods=max(10, zwin // 3)).mean()
-                sd = v.rolling(zwin, min_periods=max(10, zwin // 3)).std()
-                z = ((v - mu) / sd.replace(0, np.nan)).clip(-3, 3)
-                buckets[role].append(z * (1.0 if sign >= 0 else -1.0))
-
-        def _agg(k):
-            xs = buckets.get(k) or []
-            if not xs:
-                return pd.Series(0.0, index=idx)
-            return pd.concat(xs, axis=1).mean(axis=1).fillna(0.0)
-
-        trend = _agg('trend')
-        tstr = _agg('trend_strength')          # 추세가 존재하는가(ADX)
-        momo = _agg('momentum')                # -1 과매도 ~ +1 과매수
-        risk = _agg('volatility')              # 음수일수록 위험(방향 반전돼 있음)
-        flow = _agg('flow')
-        value = _agg('value')
-        macro = _agg('macro')
-        breadth = _agg('breadth')
-
-        # ── 결정 규칙 (교과서 논리) ──
-        _rt = float(globals().get('KM_TREND_MIN', 0.0))
-        _rr = float(globals().get('KM_RISK_MAX', -1.2))     # risk는 반전값이라 음수가 위험
-        _rm = float(globals().get('KM_MOMO_MAX', 0.8))      # 과열 상한
-        _rg = float(globals().get('KM_MACRO_MIN', -1.0))
-
-        c_trend = (trend > _rt)
-        c_risk = (risk > _rr)
-        c_macro = (macro > _rg)
-        c_momo = (momo < _rm)
-        buy_ok = c_trend & c_risk & c_macro & c_momo          # AND — 전부 맞아야 매수
-
-        # ★★★ (실측 보정) 처음엔 청산 조건을 OR로만 걸었더니 52%가 청산일이 돼
-        #   상승장까지 통째로 놓쳤다(초과 -35%p). 매도가 널널한 건 맞지만 '항상 현금'은
-        #   전략이 아니다. → 청산은 '위험이 실제로 큰 경우'로 좁히고, 추세 붕괴는
-        #   추세가 존재할 때(ADX)만 인정한다. 과열은 추세가 없을 때만 청산 사유로 본다.
-        s_risk = (risk <= _rr)                                  # 변동성 급등
-        s_trend = (trend <= -abs(_rt) - 0.5) & (tstr > 0.3)     # 추세가 있는데 꺾임
-        s_momo = (momo >= 0.9) & (tstr <= 0.3)                  # 추세 없이 과열 = 조정 위험
-        sell_hit = s_risk | s_trend | s_momo                    # OR — 하나만 걸려도 청산
-
-        _rows = []
-        for t in range(n):
-            if sell_hit.iloc[t]:
-                _r = []
-                if s_risk.iloc[t]: _r.append('위험급등')
-                if s_trend.iloc[t]: _r.append('추세붕괴')
-                if s_momo.iloc[t]: _r.append('과열정점')
-                _rows.append('청산: ' + '·'.join(_r))
-            elif buy_ok.iloc[t]:
-                _rows.append('매수: 추세+ 위험낮음 거시양호 과열아님')
-            else:
-                _r = []
-                if not c_trend.iloc[t]: _r.append('추세약함')
-                if not c_risk.iloc[t]: _r.append('위험높음')
-                if not c_macro.iloc[t]: _r.append('거시부정')
-                if not c_momo.iloc[t]: _r.append('과열')
-                _rows.append('보류: ' + ('·'.join(_r) if _r else '조건미달'))
-
-        out = pd.DataFrame(dict(trend=trend, trend_str=tstr, momo=momo, risk=risk,
-                                flow=flow, value=value, macro=macro, breadth=breadth,
-                                buy_ok=buy_ok.astype(int),
-                                sell_hit=sell_hit.astype(int)), index=idx)
-        out['reason'] = _rows
-
-        _nb = int(buy_ok.sum()); _ns = int(sell_hit.sum())
-        print(f"    (지식 모델) 역할별 지표 — " + ', '.join(
-            f"{k} {len(v)}개" for k, v in sorted(buckets.items(), key=lambda kv: -len(kv[1]))))
-        print(f"       매수 가능일 {_nb}일({_nb/n*100:.0f}%) / 청산 신호일 {_ns}일({_ns/n*100:.0f}%)")
-        print(f"       규칙 — 매수는 추세·위험·거시·과열 4조건 AND, 청산은 3조건 중 하나만 OR")
-        print(f"       (매수 실패는 즉시 손실, 매도 실패는 기회비용뿐이라는 비대칭을 규칙에 반영)")
-        return out
-    except Exception as e:
-        print(f'    ⚠ 지식 모델 생성 실패(무시): {e}')
-        return None
-
-
-def evaluate_knowledge_model(km, close, label='지식 모델'):
-    """지식 모델이 실제로 맞는지 잰다 — 통계 모델과 같은 잣대로 비교한다."""
-    try:
-        n = len(km)
-        px = np.asarray(close, dtype=float)[:n]
-        r1 = np.zeros(n)
-        r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
-        pos = np.zeros(n); cur = 0.0
-        for t in range(n):
-            if km['sell_hit'].iloc[t]:
-                cur = 0.0
-            elif km['buy_ok'].iloc[t]:
-                cur = 1.0
-            pos[t] = cur
-        _sys = float(np.nansum(pos[:-1] * r1[1:]))
-        _hold = float(np.nansum(r1[np.isfinite(r1)]))
-        _bd = pos[:-1] > 0
-        _wr = float(np.mean(r1[1:][_bd] > 0)) if _bd.sum() else 0.0
-        _big_loss = int(np.sum(r1[1:][_bd] <= -0.02)) if _bd.sum() else 0
-        print(f"    ({label} 성적) 보유 {int(_bd.sum())}일 / 매수일 승률 {_wr*100:.0f}% / "
-              f"큰손실(-2%↓) {_big_loss}회")
-        print(f"       누적 {_sys*100:+.2f}% vs 계속보유 {_hold*100:+.2f}% "
-              f"→ 초과 {(_sys-_hold)*100:+.2f}%p")
-        return dict(sys=_sys, hold=_hold, win=_wr, big_loss=_big_loss,
-                    days=int(_bd.sum()))
-    except Exception as e:
-        print(f'    ⚠ {label} 평가 실패(무시): {e}')
-        return None
-
-
-def build_relational_features(feat, close, groups_map=None, train_frac=0.7):
-    """★★★ (요청) 지표를 '단독 예측자'가 아니라 '관계'로 다룬다.
-
-    [문제의식 — 요청 그대로]
-      "rsi 30이면 과매도라는 의미는 있지만 이거 하나로 상승·하락을 정확히 예측하는 건
-       아니다. 다른 지표들의 영향이 있을 거고, 주가 자체가 아니라 주가와 상관성이 큰
-       지표의 흐름을 예측하는 것도 방법이고, 안 좋은 상태도 시간이 지나면 희석된다."
-
-    [세 가지 관계를 지표로 만든다]
-
-      ① 상호작용(interaction) — "과매도 × 국면"
-         RSI 30은 상승장에서는 매수 기회지만 하락장에서는 더 떨어질 신호다.
-         조건부로 의미가 갈리는 것을 곱셈으로 표현한다:
-             rsi_low × regime_up  → 상승장 과매도(진짜 기회)
-             rsi_low × regime_dn  → 하락장 과매도(함정)
-         그룹 대표 z-점수끼리 곱해 조합 수를 억제한다(전수 조합은 폭발).
-
-      ② 선행지표(leading) — "주가 자체가 아니라 주가와 상관 큰 지표의 흐름을 예측"
-         주가와 상관이 높은 지표(예: 섹터 상대강도)를 찾고, 그 지표를 '먼저 움직이는'
-         다른 지표를 붙인다. 주가를 직접 맞히는 것보다 중간 다리를 거치는 쪽이
-         신호가 선명할 수 있다:
-             lead_<대표지표>  =  그 지표의 변화를 며칠 앞서 설명하는 조합
-         구현은 '대표지표의 미래 변화'와 상관이 높은 지표들의 정렬 평균이다.
-
-      ③ 희석(decay) — "안 좋은 상태도 시간이 지나면 받아들여진다"
-         극단값이 처음 나왔을 때와 한 달째 지속될 때의 의미가 다르다.
-         극단 진입 후 경과일에 따라 감쇠시킨 값을 따로 만든다:
-             <지표>_fresh  =  극단값 × exp(-경과일/반감기)
-         새로 발생한 극단만 강하게 반영되고, 오래된 것은 자연히 약해진다.
-
-    ★ 방향 정렬·상관 계산은 학습구간(앞 70%)에서만 — 미래 정보 차단.
-    """
-    if not bool(globals().get('USE_RELATIONAL_FEATURES', True)):
-        return None
-    try:
-        n = len(feat)
-        num = feat.select_dtypes(include=[np.number])
-        px = np.asarray(close, dtype=float)[:n]
-        cut = int(n * train_frac)
-        if cut < 150:
-            return None
-        r1 = np.zeros(n)
-        r1[:-1] = px[1:] / np.where(px[:-1] == 0, np.nan, px[:-1]) - 1.0
-        zwin = int(globals().get('SIMPLE_POOL_COMPOSITE_Z_WINDOW', 60))
-        _hl = float(globals().get('REL_DECAY_HALFLIFE', 10.0))
-        _topk = int(globals().get('REL_GROUP_TOPK', 30))
-
-        from collections import defaultdict
-        gm = groups_map or defaultdict(list)
-        if not groups_map:
-            for c in num.columns:
-                gm[_indicator_group_of(c)].append(c)
-
-        def _z(col):
-            v = num[col].astype(float)
-            mu = v.rolling(zwin, min_periods=max(10, zwin // 3)).mean()
-            sd = v.rolling(zwin, min_periods=max(10, zwin // 3)).std()
-            return ((v - mu) / sd.replace(0, np.nan)).clip(-4, 4)
-
-        # ── 그룹 대표 z (방향 정렬 후 평균) ──
-        reps = {}
-        for g, members in gm.items():
-            if len(members) < 8:
-                continue
-            zs = []
-            for c in members[:_topk]:
-                try:
-                    z = _z(c)
-                except Exception:
-                    continue
-                zt = z.to_numpy(dtype=float)[:cut]
-                m = np.isfinite(zt) & np.isfinite(r1[:cut])
-                if m.sum() < 80:
-                    continue
-                with np.errstate(invalid='ignore'):
-                    cc = np.corrcoef(zt[m], r1[:cut][m])[0, 1]
-                if not np.isfinite(cc) or abs(cc) < 0.01:
-                    continue
-                zs.append(-z if cc < 0 else z)
-            if len(zs) >= 5:
-                reps[g] = pd.concat(zs, axis=1).mean(axis=1)
-        if len(reps) < 2:
-            return None
-
-        out = {}
-        _names = list(reps)
-
-        # ① 상호작용 — 대표 z 끼리 곱
-        _pairs = 0
-        _maxp = int(globals().get('REL_MAX_PAIRS', 40))
-        for _i in range(len(_names)):
-            for _j in range(_i + 1, len(_names)):
-                if _pairs >= _maxp:
-                    break
-                a, b = _names[_i], _names[_j]
-                out[f'rel_x_{a}__{b}'] = (reps[a] * reps[b]).clip(-16, 16)
-                _pairs += 1
-
-        # ② 선행지표 — 주가와 상관 큰 대표를 '중간 목표'로 삼고, 그걸 앞서 움직이는 조합
-        _lead_days = int(globals().get('REL_LEAD_DAYS', 3))
-        _corr_rep = {}
-        for g, z in reps.items():
-            zt = z.to_numpy(dtype=float)[:cut]
-            m = np.isfinite(zt) & np.isfinite(r1[:cut])
-            if m.sum() < 80:
-                continue
-            with np.errstate(invalid='ignore'):
-                _corr_rep[g] = abs(np.corrcoef(zt[m], r1[:cut][m])[0, 1])
-        if _corr_rep:
-            _tgt = max(_corr_rep, key=lambda k: _corr_rep[k])   # 주가와 가장 연동된 그룹
-            _tz = reps[_tgt]
-            _fwd_t = _tz.shift(-_lead_days) - _tz               # 그 지표의 향후 변화
-            _lead = []
-            for g, z in reps.items():
-                if g == _tgt:
-                    continue
-                zt = z.to_numpy(dtype=float)[:cut]
-                ft = _fwd_t.to_numpy(dtype=float)[:cut]
-                m = np.isfinite(zt) & np.isfinite(ft)
-                if m.sum() < 80:
-                    continue
-                with np.errstate(invalid='ignore'):
-                    cc = np.corrcoef(zt[m], ft[m])[0, 1]
-                if np.isfinite(cc) and abs(cc) >= 0.03:
-                    _lead.append(-z if cc < 0 else z)
-            if _lead:
-                out[f'rel_lead_{_tgt}'] = pd.concat(_lead, axis=1).mean(axis=1)
-                out[f'rel_lead_{_tgt}_n'] = pd.Series(float(len(_lead)), index=feat.index)
-
-        # ③ 희석 — 극단 진입 후 경과일로 감쇠
-        for g, z in reps.items():
-            v = z.to_numpy(dtype=float)
-            ext = np.abs(v) >= 1.5                      # 극단 상태
-            age = np.zeros(n)
-            _a = 0
-            for t in range(n):
-                _a = 0 if (t == 0 or not ext[t] or not ext[t - 1]) else _a + 1
-                age[t] = _a
-            _decay = np.exp(-age / max(_hl, 1e-9))
-            out[f'rel_fresh_{g}'] = pd.Series(np.nan_to_num(v) * _decay, index=feat.index)
-
-        if not out:
-            return None
-        df = pd.DataFrame(out, index=feat.index)
-        print(f"    (관계형 지표) {len(df.columns)}개 생성 — "
-              f"상호작용 {_pairs}쌍 / 선행지표 {'있음' if any('rel_lead' in c for c in df.columns) else '없음'} / "
-              f"희석 {sum(1 for c in df.columns if c.startswith('rel_fresh'))}개")
-        print(f"       · 상호작용: 'RSI 과매도'가 상승장이냐 하락장이냐에 따라 뜻이 갈리는 것을 곱으로 표현")
-        print(f"       · 선행지표: 주가와 가장 연동된 그룹을 중간 목표로 삼고 그걸 앞서 움직이는 조합")
-        print(f"       · 희석: 극단 상태가 오래 지속되면 시장이 받아들여 효과가 약해지는 것을 반감기 {_hl:.0f}일로 반영")
-        return df
-    except Exception as e:
-        print(f'    ⚠ 관계형 지표 생성 실패(무시): {e}')
-        return None
-
-
 def _apply_role_veto(feat, close, buy_pool, sell_pool):
     """★★★ (요청) 그룹 용도를 '틀린자리 줄이기'에 직접 쓴다.
 
@@ -18344,12 +17810,6 @@ def _passes_tiered_sig_gate(success_rate, n_signals, indicator=None):
     _min_sig = float(globals().get('POOL_SUCCESS_MIN_SIG', 10))
     _min_sig_high = float(globals().get('POOL_SUCCESS_MIN_SIG_HIGH', 8))
     _high_rate = float(globals().get('POOL_SUCCESS_MIN_SIG_HIGH_RATE', 0.90))
-    if bool(globals().get('ANALYZE_ALL_NO_CUT', False)):
-        # ★ 컷 없이 전수 분석 모드 — 모든 후보를 통과시킨다
-        try:
-            return (n_signals >= 0)
-        except Exception:
-            return True
     base = (n_signals >= _min_sig) | ((success_rate >= _high_rate) & (n_signals >= _min_sig_high))
     # ★ 매크로 완화도 매수/매도 비대칭을 따른다 — 매수는 틀리면 즉시 손실이므로
     #   완화 폭을 줄이고(기본 8건), 매도는 하락을 놓치지 않는 게 우선이라 더 느슨(5건).
@@ -22152,9 +21612,6 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                     #   n_signals >= 10 을 예외 없이 적용하는 마지막 관문이었다.
                     #   어닝은 분기 이벤트라 합성해도 4~5건이라 구조적으로 통과 불가.
                     #   → 어닝 계열만 별도 최소 이벤트수를 적용한다(성공률 컷은 그대로).
-                    # ★★★ (요청) ANALYZE_ALL_NO_CUT — 컷 없이 전 지표를 본다
-                    if bool(globals().get('ANALYZE_ALL_NO_CUT', False)):
-                        return df.copy()
                     _msig_ok = (df['n_signals'] >= _msig)
                     try:
                         _e_min2 = float(globals().get('SIMPLE_POOL_EARN_MIN_SIG', 3))
@@ -32480,60 +31937,6 @@ def _run_ensemble_search_core(*, eval_start='__USE_GLOBAL__',
         import traceback as _tbe
         print(f"  ⚠ 어닝 지표 처리 실패: {_e_earn}")
         _tbe.print_exc()
-
-    # ★★★ (요청) 펀더멘탈 지표 — 시가총액·PER·부채비율 등
-    try:
-        if bool(globals().get('USE_FUNDAMENTAL_FEATURES', True)) and \
-                not any(str(c).startswith('funda_') for c in feat.columns):
-            _tk_f = str(ticker or globals().get('TICKER', '') or '').upper().strip()
-            if _tk_f:
-                _fd = download_fundamentals(_tk_f)
-                if _fd:
-                    _nf = add_fundamental_features(feat, close, _fd, _tk_f)
-                    _new = [c for c in feat.columns
-                            if str(c).startswith('funda_') and c not in indicators]
-                    indicators = list(indicators) + _new
-                    print(f"  ✓ 펀더멘탈 지표 {_nf}개 추가 "
-                          f"(시총·PER·PBR·부채비율·ROE 등 {len(_fd)}개 항목) "
-                          f"→ 후보 {len(indicators):,}개")
-                else:
-                    print(f"  ℹ [{_tk_f}] 펀더멘탈 데이터 없음 — 생략")
-    except Exception as _e_fd:
-        print(f"  ⚠ 펀더멘탈 지표 생략(무시): {_e_fd}")
-
-    # ★★★ (요청) 지식 기반 모델 — 지표의 '의미'로 판단하고, 통계 모델과 나란히 비교한다.
-    #   통계 모델(net/KL)은 성공률로 임계값을 찾는 데이터마이닝이라 과적합이 났다.
-    #   지식 모델은 교과서 임계값(RSI 30/70, ADX 25 등)만 쓰고 데이터에서 찾지 않는다.
-    try:
-        if bool(globals().get('USE_KNOWLEDGE_MODEL', True)):
-            _km = build_knowledge_model(feat[indicators], close)
-            if _km is not None:
-                globals()['_KNOWLEDGE_MODEL'] = _km
-                evaluate_knowledge_model(_km, np.asarray(close, dtype=float))
-                # ★ 지식 모델의 '청산 신호'를 용도 거부권과 합쳐 매수 금지일에 반영
-                if bool(globals().get('KM_USE_AS_VETO', True)):
-                    _kv = (_km['sell_hit'].to_numpy() > 0)
-                    _old = globals().get('_KL_ROLE_VETO')
-                    globals()['_KL_ROLE_VETO'] = (_kv if _old is None
-                                                  else (np.asarray(_old, bool) | _kv))
-                    print(f"       ↪ 지식 모델 청산신호 {int(_kv.sum())}일을 매수 금지에 반영"
-                          f"(KM_USE_AS_VETO=False 로 끌 수 있음)")
-    except Exception as _e_km:
-        print(f"    ⚠ 지식 모델 생략(무시): {_e_km}")
-
-    # ★★★ (요청) 관계형 지표 — 상호작용·선행지표·희석
-    try:
-        if bool(globals().get('USE_RELATIONAL_FEATURES', True)):
-            _rel = build_relational_features(feat[indicators], np.asarray(close, dtype=float))
-            if _rel is not None and len(_rel.columns):
-                for _rc in _rel.columns:
-                    feat[_rc] = _rel[_rc]
-                indicators = list(indicators) + [c for c in _rel.columns
-                                                 if c not in indicators]
-                print(f"    (관계형 지표) 후보에 {len(_rel.columns)}개 추가 "
-                      f"→ 총 {len(indicators):,}개")
-    except Exception as _e_rel:
-        print(f"    ⚠ 관계형 지표 생략(무시): {_e_rel}")
 
     # ★★★ (요청) 그룹별 용도 분화 — 방향성이 약한 그룹은 국면/위험 게이트로 돌린다.
     try:
