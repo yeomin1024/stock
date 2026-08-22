@@ -94,8 +94,8 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-22.g'
-CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + 틀린자리최소 선정 + 매도컷 0.58/7건 + K/L=매수틀린자리최소 + KL시트 틀린자리컬럼 (매수컷·속도최적화 되돌림)')
+CORE_VERSION = '2026-08-22.h'
+CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + 틀린자리최소 선정 + 매도컷 0.58/7건 + K/L=매수틀린자리최소 + KL시트 틀린자리컬럼 + 후보급감 자동경고')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14932,6 +14932,8 @@ SIMPLE_POOL_MIN_SIGNALS_PREFERRED        = 30
 #     이중으로 깎였다. 원인이 분리될 때까지 0.70 으로 되돌린다.
 #     ★ 매수를 더 엄격히 하려면 컷 대신 '큰움직임 정렬'·'하방 가드'를 쓰는 게 안전하다.
 SIMPLE_POOL_BUY_SUCCESS_CUT              = 0.70
+# ★ 컷 통과 지표가 이 수보다 적으면 경고 — 설정 실수로 후보가 붕괴하는 것을 조기 발견.
+EVAL_MIN_EXPECTED_ROWS                   = 50
 SIMPLE_POOL_SELL_SUCCESS_CUT             = 0.58
 # ★ 매도 이벤트 하한도 완화 — 매수 10건 대비 7건. 표본이 조금 적어도 넓게 담는다.
 SIMPLE_POOL_SELL_MIN_SIGNALS             = 7
@@ -17189,6 +17191,12 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
     #   base 가 0 이하인 후보가 보너스로 살아나는 경로가 실제로 있었다.
     #   즉 '탈락할 후보에는 무의미하다'는 내 가정이 틀렸다 → 원래대로 항상 계산한다.
     if globals().get('USE_BIG_MOVE_BONUS', False):
+        # ★★★ (실측 되돌림 — 절대 조건을 붙이지 말 것)
+        #   속도를 위해 `and n_all >= min_signals and base > 0.0` 를 붙였다가
+        #   매수 후보가 497 → 4개로 붕괴했다(워크포워드 +100 → +16.49%p).
+        #   보너스는 base 를 '키우는' 방향이라, 컷 직전의 낮은 base 후보가
+        #   보너스로 살아나는 경로가 실재한다(검증: 성공률 55% 미만인데 통과한 행 6개).
+        #   → 이 블록은 조건 없이 항상 실행되어야 한다.
         big_thr = float(globals().get('BIG_MOVE_THRESHOLD', 0.03))
         bw      = float(globals().get('BIG_MOVE_BONUS_WEIGHT', 0.5))
         bn, bhit = _eval_big_move_hits(close_arr, sig_arr, horizon, big_thr,
@@ -24281,6 +24289,20 @@ def _evaluate_all_indicators_raw(feat, close, *, horizon, dd_limit, ru_limit, n_
     #   반복됨) — 호라이즌 5개 + 여유를 담을 수 있도록 넉넉히 키운다.
     if len(_EVAL_ALL_RAW_CACHE) >= 12:
         _EVAL_ALL_RAW_CACHE.pop(next(iter(_EVAL_ALL_RAW_CACHE)))  # 가장 오래된 항목 제거
+    # ★★★ (재발 방지) 통과 지표가 갑자기 급감하면 즉시 경고한다.
+    #   실측: 컷 상향과 속도 최적화가 겹쳐 매수 497→4개가 됐는데 로그만으로는
+    #   한참 뒤 상태별 선정 단계에서야 이상을 알 수 있었다.
+    try:
+        _nb0 = len(_bdf) if _bdf is not None else 0
+        _ns0 = len(_sdf) if _sdf is not None else 0
+        _minexp = int(globals().get('EVAL_MIN_EXPECTED_ROWS', 50))
+        if _nb0 < _minexp or _ns0 < _minexp:
+            print(f"    ★경고: 컷 통과 지표가 비정상적으로 적습니다 "
+                  f"(매수 {_nb0}행 / 매도 {_ns0}행, 기대 {_minexp}행 이상). "
+                  f"성공률 컷(min_success_buy/sell)이나 점수 계산 변경을 확인하세요 "
+                  f"— 이 상태로 진행하면 워크포워드가 무너집니다.")
+    except Exception:
+        pass
     _EVAL_ALL_RAW_CACHE[_key] = (_bdf, _sdf)
     return _bdf, _sdf
 
