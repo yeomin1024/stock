@@ -94,8 +94,8 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-21.b'
-CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + K/L 최대수익 + 틀린자리최소 선정')
+CORE_VERSION = '2026-08-22.c'
+CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + K/L 최대수익 + 틀린자리최소 선정 + K=L=0수익 표시버그수정 + 채택라벨 정정 + 절약규칙 0.02')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14894,7 +14894,15 @@ SIMPLE_POOL_ALIGN_EVENT_FIRST_ONLY       = True
 #     실질적인 선택지는 'wrong'(분류 정확도)와 'return'(수익) 둘뿐이며, GOOG 홀드아웃에서는
 #     return이 근소하게 우세했다(검증 초과합 130.50 vs 127.75%p).
 # ★★★ (요청) 틀린자리를 최대한 없애도록 '틀린자리 최소' 기준으로 선정한다.
-#   실제 엑셀(ensemble_search_GOOG_2026-08-21) 단계별 데이터로 두 기준을 비교한 결과:
+#   ★★★ 2026-08-22 엑셀 실측 재확인 — 'wrong' 으로 바꿨을 때 예상 효과:
+#       롱지속  k=71→279  틀린 258→126  적중 56.0%→78.5%   ← 절반으로 감소
+#       롱→숏   k=73→64   틀린 114→111  적중 80.5%→81.1%
+#       숏지속  k=178→193 틀린 123→112  적중 73.6%→76.0%
+#       숏→롱   k=114     틀린 103      동일
+#       합계    598 → 452 (-146, 24.4% 감소)
+#   특히 롱지속은 수익최대 기준으로 뽑으면 적중 56%(기저 74%보다 낮음)까지 무너진다.
+#
+#   (참고) 2026-08-21 엑셀 데이터로 비교한 결과:
 #       롱지속  틀린자리 139 → 134  (적중 76.3% → 77.1%)
 #       롱→숏   틀린자리 131 → 114  (적중 77.7% → 80.5%)
 #       숏지속  틀린자리 122 → 111  (적중 73.8% → 76.1%)
@@ -15208,7 +15216,14 @@ SIMPLE_POOL_MT_Z_CAP                     = 4.0
 SIMPLE_POOL_DROP_USELESS_CONT_STATE      = True
 # ★★★ (실측 개선) 채택 개수 안정화 — 최고 성적의 (1-이 값)배 이상을 처음 달성하는 가장
 #   적은 개수를 쓴다. 0이면 예전처럼 최고점 그대로(폴드마다 개수가 크게 요동).
-SIMPLE_POOL_STATE_K_TOLERANCE            = 0.05
+# ★★★ (요청 — 틀린자리 최소화) 절약규칙 허용폭을 0.05 → 0.02 로 좁힌다.
+#   실측(2026-08-22 엑셀 단계별 데이터)으로 허용폭별 결과를 비교:
+#       tol=0.05  롱지속 k=146 틀린140 / 롱→숏 k=24 틀린125 / 숏지속 k=173 틀린115 / 숏→롱 k=116 틀린117  합계 497
+#       tol=0.02  롱지속 k=153 틀린136 / 롱→숏 k=41 틀린123 / 숏지속 k=173 틀린115 / 숏→롱 k=119 틀린114  합계 488
+#       tol=0.00  롱지속 k=163 틀린134 / 롱→숏 k=46 틀린121 / 숏지속 k=175 틀린113 / 숏→롱 k=123 틀린112  합계 480
+#   0.00 이 가장 적지만 지표 수가 크게 늘어 과적합 위험이 커진다. 0.02 가 균형점 —
+#   지표는 조금만 늘고 틀린자리는 9개 줄며 적중률도 전 상태에서 오른다.
+SIMPLE_POOL_STATE_K_TOLERANCE            = 0.02
 # ★★★ (실측 개선) MSC 탐색에서 지표 세트가 연속 N번 동일하면 조기 종료.
 #   실측: MSC=3~10 이 전부 같은 결과(+198.6%)라 상태별 선정·워크포워드가 8번 중복 실행됐다.
 SIMPLE_POOL_MSC_EARLY_STOP               = 2
@@ -20208,7 +20223,11 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                 if best is None or _w < best['wrong'] or \
                    (_w == best['wrong'] and (_rem < best['rem'] or
                     (_rem == best['rem'] and _acc > best['acc']))):
-                    best = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr)
+                    # ★★★ (실측 버그수정) best(틀린자리 최소)에만 ret 키가 없어서,
+                    #   'wrong' 기준으로 채택했을 때 시트의 'K=L=0 수익률'이 항상
+                    #   +0.00% 로 찍혔다(실측 확인). 다른 두 후보와 동일하게 담는다.
+                    best = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr,
+                                ret=float(_ret_kl0), avd=float(_ret_avoid))
                 _ret_hist.append(float(_ret_kl0))
                 if best_ret is None or _ret_kl0 > best_ret['ret'] + 1e-12:
                     best_ret = dict(k=k + 1, wrong=_w, rem=_rem, acc=_acc, thr=_thr,
@@ -20227,6 +20246,17 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             _crit = str(globals().get('SIMPLE_POOL_STATE_PICK_CRITERION', 'avoid')).lower()
             if not bool(globals().get('SIMPLE_POOL_STATE_PICK_BY_RETURN', True)):
                 _crit = 'wrong'
+            # ★★★ (요청 — 진단) 어떤 기준으로 뽑았는지 매 실행 첫 상태에서 한 번 찍는다.
+            #   실측: 설정은 'wrong'인데 결과 시트에는 '기준 롱온리수익'이 찍혀,
+            #   설정이 반영됐는지 로그만으로 알 수 없었다(구버전 실행 여부도 구분 불가).
+            if not globals().get('_CRIT_LOGGED', False):
+                print(f"    (상태 선정 기준) SIMPLE_POOL_STATE_PICK_CRITERION="
+                      f"'{globals().get('SIMPLE_POOL_STATE_PICK_CRITERION', 'avoid')}' "
+                      f"→ 실제 적용 '{_crit}'"
+                      + ("  ★설정과 다름 — SIMPLE_POOL_STATE_PICK_BY_RETURN 확인"
+                         if _crit != str(globals().get('SIMPLE_POOL_STATE_PICK_CRITERION',
+                                                       'avoid')).lower() else ""))
+                globals()['_CRIT_LOGGED'] = True
             _best_wrong_k = int(best['k'])
             _best_ret_k = int(best_ret['k']) if best_ret else _best_wrong_k
             _best_avd_k = int(best_avd['k']) if best_avd else _best_wrong_k
@@ -20325,6 +20355,8 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                         ret_kl0=float(best.get('ret', 0.0) or 0.0),
                         ret_avoid=float(best.get('avd', 0.0) or 0.0),
                         n_by_wrong=_best_wrong_k, n_by_ret=_best_ret_k, n_by_avoid=_best_avd_k,
+                        # ★ 라벨은 실제 적용된 기준을 그대로 쓴다(시트에 '수익률최고'로
+                        #   찍혀 혼동을 줬다 — 실측: 기준은 틀린자리최소인데 라벨은 수익률최고)
                         picked_by={'wrong': '틀린자리최소', 'return': '롱온리수익',
                                    'avoid': '회피포함수익'}.get(_crit, _crit))
 
@@ -30354,7 +30386,15 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                _rem, round(float(_acc) * 100, 2), round(float(_thr), 3),
                                _newcov, _addname,
                                _rich_days(_gain_days, True), _rich_days(_loss_days, False),
-                               ('★채택(수익률최고)' if _is_best else
+                               # ★★★ (실측 혼동 수정) 라벨이 기준과 무관하게 '수익률최고'로
+                               #   고정돼 있어, 틀린자리최소로 뽑았는데도 시트에는
+                               #   '★채택(수익률최고)'로 찍혔다. 실제 기준을 표시한다.
+                               ('★채택(%s)' % {'wrong': '틀린자리최소',
+                                              'return': '롱온리수익최대',
+                                              'avoid': '회피이익포함'}.get(
+                                   str(globals().get('SIMPLE_POOL_STATE_PICK_CRITERION',
+                                                     'avoid')).lower(), '기준')
+                                if _is_best else
                                 ('틀린자리최소' if _is_wrong_best else ''))]
                     for _ci, _v in enumerate(_vals_v, 1):
                         _cc = ws_v.cell(_rr_, _ci); _cc.value = _v
