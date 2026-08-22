@@ -94,8 +94,8 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-22.c'
-CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + K/L 최대수익 + 틀린자리최소 선정 + K=L=0수익 표시버그수정 + 채택라벨 정정 + 절약규칙 0.02')
+CORE_VERSION = '2026-08-22.d'
+CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + K/L 최대수익 + 틀린자리최소 선정 + 절약규칙 0.02 + 매도컷 완화(0.58/7건)')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14657,11 +14657,11 @@ SIMPLE_POOL_MODE        = True
 #   급하면 아래 SIMPLE_POOL_HORIZON_FAST 를 True 로 두면 1·3일 두 개만 쓴다(2.5배 단축).
 SIMPLE_POOL_HORIZON_FAST = False
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
-    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
-    {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
-    {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
-    {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+    {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+    {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+    {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
 ]
 
 # ★ 빠른 모드 — 호라이즌을 1·3일만 남긴다(평가 반복 5회 → 2회).
@@ -14915,6 +14915,17 @@ SIMPLE_POOL_STATE_PICK_CRITERION         = 'wrong'
 #   기본 하한 10건 → 남는 지표가 30개 미만이면 5씩 낮춰가며 30개를 확보(최저 1).
 #   선호 하한 30건에서 시작 → 지표가 30개 미만이면 5씩 낮춤 → 최저 10건에서 정지.
 SIMPLE_POOL_MIN_SIGNALS_PREFERRED        = 30
+# ★★★ (요청) "매도는 좀 널널하게" — 매도 성공률 컷을 0.65 → 0.58 로 낮춘다.
+#   실측 근거(2026-08-22 엑셀): 통과 지표의 성공률 분포가
+#       매수 496개 중앙 73.7% (컷 70%)
+#       매도 231개 중앙 70.0% (컷 65%)
+#   매도 분포 자체가 낮은데 컷 차이가 5%p 뿐이라 '널널하게'가 사실상 적용되지 않았다.
+#   그 결과 평가 단계부터 매도가 매수의 40%(552 vs 1355)로 시작해, 이후 어떤 하한을
+#   조정해도 '매도가 더 많아야 정상' 을 만족시킬 수 없었다.
+#   → 매도 실패는 기회비용뿐이므로 컷을 낮춰 후보를 늘린다. 매수 컷(70%)은 그대로.
+SIMPLE_POOL_SELL_SUCCESS_CUT             = 0.58
+# ★ 매도 이벤트 하한도 완화 — 매수 10건 대비 7건. 표본이 조금 적어도 넓게 담는다.
+SIMPLE_POOL_SELL_MIN_SIGNALS             = 7
 SIMPLE_POOL_MIN_SIGNALS_FLOOR            = 10
 #   ★ 목표 지표수 — 이 개수를 확보할 때까지 하한을 낮춘다. 크게 잡으면 하한이 더 내려가
 #     지표가 많아지고, 작게 잡으면 신호가 풍부한 지표만 남는다(방향별로 따로 적용).
@@ -21535,11 +21546,11 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         _limit0 = float((globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])[0])
         _wz_simple = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
         _hz_cfgs = list(globals().get('SIMPLE_POOL_HORIZON_CONFIG') or [
-            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
-            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
-            {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
-            {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
-            {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+            {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+            {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+            {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
         ])
         _verify_on = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
         _close_arr = pd.Series(close).reindex(feat.index).values.astype(np.float64)
@@ -21636,7 +21647,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 if _bdf_h is not None and len(_bdf_h): _bdf_h['horizon_day'] = _day
                 if _sdf_h is not None and len(_sdf_h): _sdf_h['horizon_day'] = _day
 
-                def _filt_day(df, _msucc):
+                def _filt_day(df, _msucc, _is_sell=False):
                     if df is None or len(df) == 0:
                         return None
                     # ★★★ (실측) 어닝 지표를 통과시키려 앞선 컷들(계층게이트·신호수하한)에
@@ -21644,7 +21655,14 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                     #   n_signals >= 10 을 예외 없이 적용하는 마지막 관문이었다.
                     #   어닝은 분기 이벤트라 합성해도 4~5건이라 구조적으로 통과 불가.
                     #   → 어닝 계열만 별도 최소 이벤트수를 적용한다(성공률 컷은 그대로).
-                    _msig_ok = (df['n_signals'] >= _msig)
+                    # ★★★ (요청) 매도는 이벤트 하한도 널널하게 — 틀려도 기회비용뿐이라
+                    #   표본이 조금 적어도 넓게 담는 게 낫다(하락을 놓치는 손해가 더 큼).
+                    #   매수는 그대로 엄격하게 유지한다.
+                    _msig_use = _msig
+                    if _is_sell:
+                        _msig_use = int(globals().get('SIMPLE_POOL_SELL_MIN_SIGNALS',
+                                                      max(int(_msig * 0.7), 6)))
+                    _msig_ok = (df['n_signals'] >= _msig_use)
                     try:
                         _e_min2 = float(globals().get('SIMPLE_POOL_EARN_MIN_SIG', 3))
                         if _e_min2 > 0:
@@ -21656,7 +21674,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                         pass
                     d = df[(df['success_rate'] >= _msucc) & _msig_ok].copy()
                     return d if len(d) else None
-                _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s)
+                _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s, True)
 
                 # ★★★ (요청 관련 — 재배치) 신뢰도 계산은 MSC별로 반복돼야 하므로 이 루프
                 #   (지표평가+2차검증, 딱 한 번만) 밖으로 옮겼다 — 아래 _finalize_with_msc()
