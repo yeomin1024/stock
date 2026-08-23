@@ -94,8 +94,8 @@ import math
 #  ※ 코랩에서 파일을 새로 올려도 이미 import된 모듈은 갱신되지 않는다 →
 #    런타임 재시작하거나  import importlib; importlib.reload(predictor_core)  필요.
 # ══════════════════════════════════════════════════════════════════════════════
-CORE_VERSION = '2026-08-22.h'
-CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + 틀린자리최소 선정 + 매도컷 0.58/7건 + K/L=매수틀린자리최소 + KL시트 틀린자리컬럼 + 후보급감 자동경고')
+CORE_VERSION = '2026-08-22.c'
+CORE_VERSION_NOTE = ('성공판정=최적자리일치만 + 등락률=추세누적 + K/L 최대수익 + 틀린자리최소 선정 + K=L=0수익 표시버그수정 + 채택라벨 정정 + 절약규칙 0.02')
 try:
     import os as _os_v
     _vpath = _os_v.path.abspath(__file__)
@@ -14616,8 +14616,7 @@ except ImportError:
     def njit(*args, **kw):
         if args and callable(args[0]): return args[0]
         return lambda f: f
-    print("  ★numba 미설치 — 지표평가가 수십 배 느려집니다(2시간+). "
-          "반드시 설치하세요: pip install numba")
+    print("  ⚠ numba 미설치.  pip install numba 권장")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -14658,11 +14657,11 @@ SIMPLE_POOL_MODE        = True
 #   급하면 아래 SIMPLE_POOL_HORIZON_FAST 를 True 로 두면 1·3일 두 개만 쓴다(2.5배 단축).
 SIMPLE_POOL_HORIZON_FAST = False
 SIMPLE_POOL_HORIZON_CONFIG = [
-    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
-    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
-    {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
-    {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
-    {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+    {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+    {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
 ]
 
 # ★ 빠른 모드 — 호라이즌을 1·3일만 남긴다(평가 반복 5회 → 2회).
@@ -14916,27 +14915,6 @@ SIMPLE_POOL_STATE_PICK_CRITERION         = 'wrong'
 #   기본 하한 10건 → 남는 지표가 30개 미만이면 5씩 낮춰가며 30개를 확보(최저 1).
 #   선호 하한 30건에서 시작 → 지표가 30개 미만이면 5씩 낮춤 → 최저 10건에서 정지.
 SIMPLE_POOL_MIN_SIGNALS_PREFERRED        = 30
-# ★★★ (요청) "매도는 좀 널널하게" — 매도 성공률 컷을 0.65 → 0.58 로 낮춘다.
-#   실측 근거(2026-08-22 엑셀): 통과 지표의 성공률 분포가
-#       매수 496개 중앙 73.7% (컷 70%)
-#       매도 231개 중앙 70.0% (컷 65%)
-#   매도 분포 자체가 낮은데 컷 차이가 5%p 뿐이라 '널널하게'가 사실상 적용되지 않았다.
-#   그 결과 평가 단계부터 매도가 매수의 40%(552 vs 1355)로 시작해, 이후 어떤 하한을
-#   조정해도 '매도가 더 많아야 정상' 을 만족시킬 수 없었다.
-#   → 매도 실패는 기회비용뿐이므로 컷을 낮춰 후보를 늘린다. 매수 컷(70%)은 그대로.
-# ★★★ (요청) "매수 지표는 더 정확한 것들만" — 매수 성공률 컷 0.70 → 0.76.
-#   실측(2026-08-22): 통과 매수 496개 중앙 73.7%. 컷을 76%로 올리면 중앙값 위쪽만 남아
-#   '틀리면 안 되는' 매수 원칙에 맞다. 매도는 반대로 계속 완화한다(0.58).
-#   ★★★ (실측 되돌림) 0.76 으로 올렸더니 매수 후보가 497 → 4개로 붕괴했다.
-#     분포상 194개가 남아야 하는데 실제는 4개 — 컷 상향과 속도 최적화가 겹쳐
-#     이중으로 깎였다. 원인이 분리될 때까지 0.70 으로 되돌린다.
-#     ★ 매수를 더 엄격히 하려면 컷 대신 '큰움직임 정렬'·'하방 가드'를 쓰는 게 안전하다.
-SIMPLE_POOL_BUY_SUCCESS_CUT              = 0.70
-# ★ 컷 통과 지표가 이 수보다 적으면 경고 — 설정 실수로 후보가 붕괴하는 것을 조기 발견.
-EVAL_MIN_EXPECTED_ROWS                   = 50
-SIMPLE_POOL_SELL_SUCCESS_CUT             = 0.58
-# ★ 매도 이벤트 하한도 완화 — 매수 10건 대비 7건. 표본이 조금 적어도 넓게 담는다.
-SIMPLE_POOL_SELL_MIN_SIGNALS             = 7
 SIMPLE_POOL_MIN_SIGNALS_FLOOR            = 10
 #   ★ 목표 지표수 — 이 개수를 확보할 때까지 하한을 낮춘다. 크게 잡으면 하한이 더 내려가
 #     지표가 많아지고, 작게 잡으면 신호가 풍부한 지표만 남는다(방향별로 따로 적용).
@@ -15122,12 +15100,6 @@ SIMPLE_POOL_MT_STRENGTH                  = 0.0
 # ★★★ (요청) K/L 은 '최대 수익률'로 선정한다.
 #   앞서 OOS(검증구간 평균) 기준으로 바꿨었는데, 요청에 따라 전 구간 수익 최대로 되돌린다.
 #   ※ 주의 — 전 구간은 인샘플이라 낙관 편향이 있다. 실제 기대치는 워크포워드 시트를 볼 것.
-# ★★★ (요청) K/L 선정 — '최대 수익률'이 아니라 '최대 수익의 X% 내외 중 매수 틀린자리 최소'.
-#   수익만 보면 크게 버는 소수 구간에 끌려가 매수 오답이 늘어난다. 매수 실패는 즉시
-#   손실이므로 수익을 조금 양보하고 틀린자리를 줄인다. 1.00 이면 최대수익 100% 내외
-#   (사실상 동률만), 0.95 면 최대수익의 95% 이상 구간에서 고른다.
-KL_PICK_BY_BUY_WRONG                     = True
-KL_RET_TOLERANCE                         = 1.00
 KL_SELECT_BY_OOS                         = False
 KL_OOS_FOLDS                             = 4      # 검증 폴드 수
 KL_OOS_START_FRAC                        = 0.5    # 뒤쪽 50%를 검증에 사용
@@ -15429,8 +15401,6 @@ SEARCH_SUCCESS_LIMIT = True        # True면 위 리스트 전부 탐색해 최�
 #     중앙(50), 그 사이 보조선(20·30·40·60·70·80).
 #   ★ (요청) 이산화를 끄고 N_THRESHOLDS(1000) 로 촘촘히 훑는다.
 #     켜면 아래 15개 분위만 사용(속도 14배·잡음 통과 감소), 끄면 1000분할 전수 탐색.
-# ★★★ (요청 — 속도) 발화 집합이 같은 임계값은 하나만 평가한다(결과 동일, 계산만 감소).
-THRESHOLD_DEDUP                          = True
 THRESHOLD_DISCRETE                       = False
 THRESHOLD_DISCRETE_PCTS                  = [1, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 99]
 N_THRESHOLDS        = 1000
@@ -17181,22 +17151,7 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
 
     # ★ 큰 움직임 적중 가산 (요청) — 신호 중 '큰 상승/하락'을 맞춘 비율이 높을수록 점수↑.
     #   자잘한 적중만 많은 지표보다 굵직한 변동을 잡는 지표를 우대 → 실전 수익 직결.
-    # ★★★ (요청 — 속도) 프로파일링 결과 이 함수가 전체 시간의 41%(14.1초/34.5초)를
-    #   차지했다. numba 미설치 환경에서 순수 파이썬 이중 루프로 돌기 때문이다.
-    #   그런데 어차피 컷(min_signals·base>0)에 걸릴 후보에는 보너스가 무의미하다.
-    #   → 추세 보정과 동일하게 '컷을 통과할 후보'에만 계산한다. 결과는 바뀌지 않고
-    #     호출 횟수만 크게 준다(탈락 후보는 base 가 그대로 0 이하라 순위 불변).
-    # ★★★ (실측 되돌림) 이 조건(n_all>=min_signals and base>0)을 붙였더니 매수 후보가
-    #   497 → 4개로 붕괴했다. 보너스는 base 를 '키우는' 방향이라, 컷 직전에서
-    #   base 가 0 이하인 후보가 보너스로 살아나는 경로가 실제로 있었다.
-    #   즉 '탈락할 후보에는 무의미하다'는 내 가정이 틀렸다 → 원래대로 항상 계산한다.
     if globals().get('USE_BIG_MOVE_BONUS', False):
-        # ★★★ (실측 되돌림 — 절대 조건을 붙이지 말 것)
-        #   속도를 위해 `and n_all >= min_signals and base > 0.0` 를 붙였다가
-        #   매수 후보가 497 → 4개로 붕괴했다(워크포워드 +100 → +16.49%p).
-        #   보너스는 base 를 '키우는' 방향이라, 컷 직전의 낮은 base 후보가
-        #   보너스로 살아나는 경로가 실재한다(검증: 성공률 55% 미만인데 통과한 행 6개).
-        #   → 이 블록은 조건 없이 항상 실행되어야 한다.
         big_thr = float(globals().get('BIG_MOVE_THRESHOLD', 0.03))
         bw      = float(globals().get('BIG_MOVE_BONUS_WEIGHT', 0.5))
         bn, bhit = _eval_big_move_hits(close_arr, sig_arr, horizon, big_thr,
@@ -17334,21 +17289,6 @@ def evaluate_buy_sell_scores(feat, close, *, indicators,
         #   배열을 처음부터 다시 정렬해 극도로 느림. 배열 정렬을 1회만 하는 벡터화 호출로
         #   교체 — numpy가 반환하는 값은 개별 호출과 수학적으로 완전히 동일(같은 보간식).
         thrs = np.nanpercentile(x, pcts)
-        # ★★★ (요청 — 속도) 임계값이 서로 달라도 '발화 집합'이 같으면 평가 결과가
-        #   완전히 같다. 실측: 1,415일 데이터에 임계 1,000개를 쓰면 인접 임계 다수가
-        #   같은 날들을 발화시켜 동일 계산을 반복한다. 발화 개수가 같아지는 임계는
-        #   하나만 남긴다 — 결과는 비트 단위로 동일하고 계산만 줄어든다.
-        #   (끄려면 THRESHOLD_DEDUP=False)
-        if bool(globals().get('THRESHOLD_DEDUP', True)) and len(thrs) > 32:
-            _xv = x[np.isfinite(x)]
-            if _xv.size:
-                _srt = np.sort(_xv)
-                # 각 임계에서 '이하'로 잡히는 개수 — 같으면 발화 집합이 동일
-                _cnt = np.searchsorted(_srt, thrs, side='right')
-                _keep = np.ones(len(thrs), dtype=bool)
-                _keep[1:] = _cnt[1:] != _cnt[:-1]
-                if _keep.sum() >= 8:
-                    pcts = pcts[_keep]; thrs = thrs[_keep]
         for p, thr in zip(pcts, thrs):
             thr = float(thr)
             sig_specs.append(('>=', float(p), thr, ((x >= thr) & valid).astype(np.uint8)))
@@ -21595,11 +21535,11 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
         _limit0 = float((globals().get('STAGE_SUCCESS_LIMIT') or [DRAWDOWN_LIMIT_BUY])[0])
         _wz_simple = float((globals().get('STAGE_WILSON_Z') or [1.95])[0])
         _hz_cfgs = list(globals().get('SIMPLE_POOL_HORIZON_CONFIG') or [
-            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
-            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
-            {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
-            {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
-            {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.58},
+            {'day': 1, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 2, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 3, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 4, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
+            {'day': 5, 'min_signals': 10, 'min_success_buy': 0.70, 'min_success_sell': 0.65},
         ])
         _verify_on = bool(globals().get('SIMPLE_POOL_VERIFY_ENABLED', True))
         _close_arr = pd.Series(close).reindex(feat.index).values.astype(np.float64)
@@ -21696,7 +21636,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                 if _bdf_h is not None and len(_bdf_h): _bdf_h['horizon_day'] = _day
                 if _sdf_h is not None and len(_sdf_h): _sdf_h['horizon_day'] = _day
 
-                def _filt_day(df, _msucc, _is_sell=False):
+                def _filt_day(df, _msucc):
                     if df is None or len(df) == 0:
                         return None
                     # ★★★ (실측) 어닝 지표를 통과시키려 앞선 컷들(계층게이트·신호수하한)에
@@ -21704,14 +21644,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                     #   n_signals >= 10 을 예외 없이 적용하는 마지막 관문이었다.
                     #   어닝은 분기 이벤트라 합성해도 4~5건이라 구조적으로 통과 불가.
                     #   → 어닝 계열만 별도 최소 이벤트수를 적용한다(성공률 컷은 그대로).
-                    # ★★★ (요청) 매도는 이벤트 하한도 널널하게 — 틀려도 기회비용뿐이라
-                    #   표본이 조금 적어도 넓게 담는 게 낫다(하락을 놓치는 손해가 더 큼).
-                    #   매수는 그대로 엄격하게 유지한다.
-                    _msig_use = _msig
-                    if _is_sell:
-                        _msig_use = int(globals().get('SIMPLE_POOL_SELL_MIN_SIGNALS',
-                                                      max(int(_msig * 0.7), 6)))
-                    _msig_ok = (df['n_signals'] >= _msig_use)
+                    _msig_ok = (df['n_signals'] >= _msig)
                     try:
                         _e_min2 = float(globals().get('SIMPLE_POOL_EARN_MIN_SIG', 3))
                         if _e_min2 > 0:
@@ -21723,7 +21656,7 @@ def select_pool_combined(feat, close, *, indicators, n_thresholds, horizon, wils
                         pass
                     d = df[(df['success_rate'] >= _msucc) & _msig_ok].copy()
                     return d if len(d) else None
-                _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s, True)
+                _bp = _filt_day(_bdf_h, _msucc_b); _sp = _filt_day(_sdf_h, _msucc_s)
 
                 # ★★★ (요청 관련 — 재배치) 신뢰도 계산은 MSC별로 반복돼야 하므로 이 루프
                 #   (지표평가+2차검증, 딱 한 번만) 밖으로 옮겼다 — 아래 _finalize_with_msc()
@@ -24289,20 +24222,6 @@ def _evaluate_all_indicators_raw(feat, close, *, horizon, dd_limit, ru_limit, n_
     #   반복됨) — 호라이즌 5개 + 여유를 담을 수 있도록 넉넉히 키운다.
     if len(_EVAL_ALL_RAW_CACHE) >= 12:
         _EVAL_ALL_RAW_CACHE.pop(next(iter(_EVAL_ALL_RAW_CACHE)))  # 가장 오래된 항목 제거
-    # ★★★ (재발 방지) 통과 지표가 갑자기 급감하면 즉시 경고한다.
-    #   실측: 컷 상향과 속도 최적화가 겹쳐 매수 497→4개가 됐는데 로그만으로는
-    #   한참 뒤 상태별 선정 단계에서야 이상을 알 수 있었다.
-    try:
-        _nb0 = len(_bdf) if _bdf is not None else 0
-        _ns0 = len(_sdf) if _sdf is not None else 0
-        _minexp = int(globals().get('EVAL_MIN_EXPECTED_ROWS', 50))
-        if _nb0 < _minexp or _ns0 < _minexp:
-            print(f"    ★경고: 컷 통과 지표가 비정상적으로 적습니다 "
-                  f"(매수 {_nb0}행 / 매도 {_ns0}행, 기대 {_minexp}행 이상). "
-                  f"성공률 컷(min_success_buy/sell)이나 점수 계산 변경을 확인하세요 "
-                  f"— 이 상태로 진행하면 워크포워드가 무너집니다.")
-    except Exception:
-        pass
     _EVAL_ALL_RAW_CACHE[_key] = (_bdf, _sdf)
     return _bdf, _sdf
 
@@ -25617,8 +25536,7 @@ def _kl_run_single(net, r, K, L):
     return ret, pos
 
 
-def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_kl_mdd=None,
-                   anchor_buy=None):
+def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_kl_mdd=None):
     """★ K/L 2임계 히스테리시스. net_prev≥K → 매수(롱), net_prev≤L → 매도(현금), 사이는 직전 포지션 유지 (K≥L).
        (K,L) 격자를 훑어 ① 전체수익 최고 ② MDD 한도 지키는 수익 최고 를 둘 다 찾는다.
        fixed_kl=(K,L) 주면 탐색 없이 그 값 그대로(재현). fixed_kl_mdd=(K,L)은 ②행 재현용.
@@ -25806,24 +25724,6 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     #   추가로, 수익 곡선이 뾰족한 지점(조금만 달라져도 급락)은 위험하므로 이웃 (K,L)들의
     #   평균 수익으로 평활해서 '평평하고 넓은 고원'의 중심을 고른다 — 이래야 미래에
     #   조건이 조금 달라져도 성적이 유지된다.
-    # ★ 최적자리 배열 — K/L 별 틀린자리 집계에 쓴다(요청).
-    #   호출부가 close 를 안 넘겨도, 수익률 r 로 가격을 복원해 최적자리를 계산한다.
-    if anchor_buy is None and '_KL_ANCHOR_BUY' not in globals():
-        try:
-            _rr = np.asarray(r, dtype=float)
-            _px = np.cumprod(1.0 + np.nan_to_num(_rr)) * 100.0
-            globals()['_KL_ANCHOR_BUY'] = np.asarray(_ctp_cached(_px)[7])
-        except Exception:
-            pass
-    if anchor_buy is not None:
-        globals()['_KL_ANCHOR_BUY'] = np.asarray(anchor_buy)
-    elif '_KL_ANCHOR_BUY' not in globals():
-        try:
-            _px_kl = globals().get('_KL_CLOSE_ARR')
-            if _px_kl is not None:
-                globals()['_KL_ANCHOR_BUY'] = np.asarray(_ctp_cached(_px_kl)[7])
-        except Exception:
-            pass
     _oos_sel = bool(globals().get('KL_SELECT_BY_OOS', True)) and fixed_kl is None
     _oos_scores = {}; _oos_folds = {}
     if _oos_sel and n >= 200:
@@ -25844,24 +25744,7 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
                 continue
             cnt += 1
             ret, mdd, dl, pos = _run(K, L)
-            # ★★★ (요청) K/L 별 매수/매도 틀린자리·남은자리를 함께 집계한다.
-            #   최적자리(_anchor_buy)와 대조해:
-            #     매수 틀린자리 = 보유했는데 최적은 현금이었던 날
-            #     매도 틀린자리 = 현금인데 최적은 보유였던 날
-            #     남은자리     = 최적자리인데 판정이 안 잡힌 날(기회 놓침)
-            _wb = _ws = _rb = _rs = 0
-            try:
-                _ab = globals().get('_KL_ANCHOR_BUY')
-                if _ab is not None and len(_ab) == n:
-                    _ab = np.asarray(_ab)
-                    _long = pos > 0.5
-                    _wb = int(np.sum(_long & (_ab == 0)))      # 샀는데 틀림
-                    _ws = int(np.sum((~_long) & (_ab == 1)))   # 안 샀는데 올랐음
-                    _rb = int(np.sum((_ab == 1) & (~_long)))   # 매수 기회 놓침
-                    _rs = int(np.sum((_ab == 0) & _long))      # 청산 기회 놓침
-            except Exception:
-                pass
-            _all.append((ret, mdd, dl, K, L, pos, _wb, _ws, _rb, _rs))
+            _all.append((ret, mdd, dl, K, L, pos))
             if _oos_sel:
                 # ★★★ (자체 정정) 처음엔 '검증구간 수익의 합'을 최대화했는데, 그러면 그
                 #   구간들도 결국 최적화 대상이 되어 진짜 아웃오브샘플이 아니다(합을 키우는
@@ -25942,7 +25825,7 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             except Exception:
                 pass
 
-        for (ret, mdd, dl, K, L, pos, _wb, _ws, _rb, _rs) in _all:
+        for (ret, mdd, dl, K, L, pos) in _all:
             if (K, L) == _bk:
                 _in_ret = best_ret[2] if best_ret else 0.0
                 _fr_b = _oos_folds.get(_bk, [])
@@ -25958,41 +25841,11 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
                 break
         globals()['_KL_OOS_PICKED'] = True
 
-    # ★★★ (요청) K/L 을 '최대 수익률'이 아니라 '최대 수익의 X% 내외 중 매수 틀린자리
-    #   최소'로 고른다. 수익만 보면 크게 버는 소수 구간에 끌려가 매수 오답이 늘어난다.
-    #   매수 실패는 즉시 손실이므로, 수익을 조금 양보하고 틀린자리를 줄이는 쪽이 맞다.
-    if (best_ret is not None and _all
-            and bool(globals().get('KL_PICK_BY_BUY_WRONG', True))
-            and not globals().get('_KL_OOS_PICKED', False)):
-        try:
-            _tol = float(globals().get('KL_RET_TOLERANCE', 1.00))   # 1.00 = 최대수익 100% 내외
-            _rmax = max(x[0] for x in _all)
-            _floor = _rmax * _tol if _rmax >= 0 else _rmax / max(_tol, 1e-9)
-            _cand = [x for x in _all if x[0] >= _floor - 1e-12]
-            if not _cand:
-                _cand = _all
-            # 매수 틀린자리 최소 → 동률이면 수익 최대
-            _pick = min(_cand, key=lambda x: (x[6], -x[0]))
-            if _pick[3] != best_ret[0] or _pick[4] != best_ret[1]:
-                print(f"    (K/L 선택 — 매수 틀린자리 최소) 수익 상위 {_tol:.0%} 이내 "
-                      f"{len(_cand)}개 중 매수 오답이 가장 적은 조합 채택: "
-                      f"K={_pick[3]:.3f}/L={_pick[4]:.3f} "
-                      f"(수익 {_pick[0]*100:+.1f}%, 매수틀림 {_pick[6]}, 매도틀림 {_pick[7]})")
-                print(f"       ※ 수익 최대는 K={best_ret[0]:.3f}/L={best_ret[1]:.3f}"
-                      f"({best_ret[2]*100:+.1f}%, 매수틀림 "
-                      f"{[x for x in _all if x[3]==best_ret[0] and x[4]==best_ret[1]][0][6]}) "
-                      f"— 매수 실패는 즉시 손실이라 틀린자리를 우선합니다")
-            best_ret = (_pick[3], _pick[4], _pick[0], _pick[1], _pick[2], _pick[5])
-            globals()['_KL_PICKED_BY_WRONG'] = True
-        except Exception as _e_kp:
-            print(f"    ⚠ K/L 틀린자리 기준 선택 생략(무시): {_e_kp}")
-
-    if best_ret is not None and _all and not globals().get('_KL_OOS_PICKED', False) \
-            and not globals().get('_KL_PICKED_BY_WRONG', False):
+    if best_ret is not None and _all and not globals().get('_KL_OOS_PICKED', False):
         _eff = _near_tie_eff_eps(best_ret[2])
         if _eff > 0:
             _max_r = best_ret[2]
-            for (ret, mdd, dl, K, L, pos, _wb, _ws, _rb, _rs) in _all:      # _all은 그리드(정준) 순서
+            for (ret, mdd, dl, K, L, pos) in _all:      # _all은 그리드(정준) 순서
                 if ret >= _max_r - _eff:
                     best_ret = (K, L, ret, mdd, dl, pos)
                     break
@@ -26000,7 +25853,7 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
         _effm = _near_tie_eff_eps(best_mdd[2])
         if _effm > 0:
             _max_m = best_mdd[2]
-            for (ret, mdd, dl, K, L, pos, _wb, _ws, _rb, _rs) in _all:
+            for (ret, mdd, dl, K, L, pos) in _all:
                 if mdd >= -abs(mdd_limit) and ret >= _max_m - _effm:
                     best_mdd = (K, L, ret, mdd, dl, pos)
                     break
@@ -29716,13 +29569,8 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if n_sell_sig > 0: sell_acc = sell_hit / n_sell_sig * 100
                 return nt, wr, lb, lbp, ls, lsp, held_max_dd, buy_acc, sell_acc, n_buy_sig, n_sell_sig
 
-            # ★★★ (요청) K/L 별 매수·매도 틀린자리와 남은자리를 컬럼으로 추가한다.
-            #   매수틀림 = 보유했는데 최적자리는 현금이었던 날 (즉시 손실)
-            #   매도틀림 = 현금인데 최적자리는 보유였던 날 (기회비용)
-            #   매수남은 = 최적 매수자리인데 못 잡은 날 / 매도남은 = 최적 청산자리인데 못 나온 날
             _hdr(ws, 3, ['순위', 'K(매수임계)', 'L(매도임계)', '전체수익%', '최대낙폭%', '보유중하락%',
                          '거래횟수', '승률%',
-                         '매수틀림', '매도틀림', '매수남은', '매도남은',
                          '매수정확도%', '매수신호일수', '매도정확도%', '매도신호일수',
                          '최근매수일', '매수가', '최근매도일', '매도가', '비고'])
             _br = _kl.get('best_ret'); _bm = _kl.get('best_mdd')
@@ -29772,41 +29620,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.cell(r,6).value = round(held_dd*100, 2)                    # ★ 보유중하락%
                 if held_dd < -0.10: ws.cell(r,6).font = Font(color='C00000')  # 10% 초과 강조
                 ws.cell(r,7).value = nt; ws.cell(r,8).value = round(wr,1)
-                # ★★★ (요청) K/L 별 매수·매도 틀린자리 / 남은자리
-                _wb_ = _ws_ = _rb_ = _rs_ = '-'
-                try:
-                    _abv = globals().get('_KL_ANCHOR_BUY')
-                    _pp = t.get('pos')
-                    if _pp is None:
-                        _pp = _pos_from_kl(float(t['K']), float(t['L']))
-                    if _abv is not None and len(_abv) == len(_pp):
-                        _abv = np.asarray(_abv); _lg = np.asarray(_pp) > 0.5
-                        _wb_ = int(np.sum(_lg & (_abv == 0)))     # 샀는데 최적은 현금
-                        _ws_ = int(np.sum((~_lg) & (_abv == 1)))  # 안 샀는데 최적은 보유
-                        _rb_ = int(np.sum((_abv == 1) & (~_lg)))  # 매수 기회 놓침
-                        _rs_ = int(np.sum((_abv == 0) & _lg))     # 청산 기회 놓침
-                except Exception:
-                    pass
-                ws.cell(r,9).value  = _wb_
-                ws.cell(r,10).value = _ws_
-                ws.cell(r,11).value = _rb_
-                ws.cell(r,12).value = _rs_
-                if isinstance(_wb_, int) and _wb_ > 0:
-                    ws.cell(r,9).font = Font(color='C00000', bold=True)   # 매수 오답은 강조
                 # ★ 매수/매도 정확도 (요청) — net vs K/L 판정 다음날 방향 일치 비율
-                ws.cell(r,13).value  = (round(buy_acc, 1)  if buy_acc  is not None else '-')
-                ws.cell(r,14).value = n_bs
-                ws.cell(r,15).value = (round(sell_acc, 1) if sell_acc is not None else '-')
-                ws.cell(r,16).value = n_ss
+                ws.cell(r,9).value  = (round(buy_acc, 1)  if buy_acc  is not None else '-')
+                ws.cell(r,10).value = n_bs
+                ws.cell(r,11).value = (round(sell_acc, 1) if sell_acc is not None else '-')
+                ws.cell(r,12).value = n_ss
                 # 정확도가 50% 미만이면 빨간색 (동전 던지기보다 못함)
-                if buy_acc  is not None and buy_acc  < 50: ws.cell(r,13).font  = Font(color='C00000', bold=True)
-                if sell_acc is not None and sell_acc < 50: ws.cell(r,15).font = Font(color='C00000', bold=True)
-                if buy_acc  is not None and buy_acc  > 60: ws.cell(r,13).font  = Font(color='006100', bold=True)
-                if sell_acc is not None and sell_acc > 60: ws.cell(r,15).font = Font(color='006100', bold=True)
+                if buy_acc  is not None and buy_acc  < 50: ws.cell(r,9).font  = Font(color='C00000', bold=True)
+                if sell_acc is not None and sell_acc < 50: ws.cell(r,11).font = Font(color='C00000', bold=True)
+                if buy_acc  is not None and buy_acc  > 60: ws.cell(r,9).font  = Font(color='006100', bold=True)
+                if sell_acc is not None and sell_acc > 60: ws.cell(r,11).font = Font(color='006100', bold=True)
                 # 최근 매매 정보
-                ws.cell(r,17).value = lb; ws.cell(r,18).value = lbp
-                ws.cell(r,19).value = ls; ws.cell(r,20).value = lsp
-                ws.cell(r,21).value = (_tag + (' K=L' if abs(t['K']-t['L'])<1e-9 else '')).strip()
+                ws.cell(r,13).value = lb; ws.cell(r,14).value = lbp
+                ws.cell(r,15).value = ls; ws.cell(r,16).value = lsp
+                ws.cell(r,17).value = (_tag + (' K=L' if abs(t['K']-t['L'])<1e-9 else '')).strip()
                 if id(t) in _rank34_tags:      # 3·4위 = 최근net 근접 (파란색 강조)
                     for c in range(1,18): ws.cell(r,c).fill = PatternFill('solid', fgColor='DDEBF7')
                     ws.cell(r,17).font = Font(bold=True, color='1F4E79')
