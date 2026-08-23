@@ -15127,7 +15127,10 @@ SIMPLE_POOL_MT_STRENGTH                  = 0.0
 #   손실이므로 수익을 조금 양보하고 틀린자리를 줄인다. 1.00 이면 최대수익 100% 내외
 #   (사실상 동률만), 0.95 면 최대수익의 95% 이상 구간에서 고른다.
 KL_PICK_BY_BUY_WRONG                     = True
-KL_RET_TOLERANCE                         = 1.00
+# ★★★ (요청) 0.50 = '최대 수익률의 50% 이상' 구간을 후보로 두고, 그 안에서 매수 틀린자리가
+#   가장 적은 (K,L)을 채택한다. 1.00이면 사실상 최대수익 동률만 후보(예전 동작).
+#   낮출수록 수익을 더 양보하고 매수 오답을 더 줄인다.
+KL_RET_TOLERANCE                         = 0.50
 KL_SELECT_BY_OOS                         = False
 KL_OOS_FOLDS                             = 4      # 검증 폴드 수
 KL_OOS_START_FRAC                        = 0.5    # 뒤쪽 50%를 검증에 사용
@@ -16922,12 +16925,33 @@ def _best_shift_for_side_jit(sig_arr, hit0, ev0, split, min_sig, d_max, min_gain
     return best_d
 
 
+_SHIFT_ARG_CACHE = {}
+
+
+def _shift_args_cached(hit0, ev0):
+    """★★★ (성능개선 — 결과불변) 리드탐색 JIT 호출에 넘길 hit/ev 배열의 dtype 변환 결과를
+       캐시한다. hit0/ev0는 evaluate_buy_sell_scores 한 번 도는 동안 '내내 같은 배열'인데,
+       예전엔 지표×임계 후보마다(수만~수백만 회) 매번 ascontiguousarray+astype으로 n일짜리
+       배열을 새로 만들어 버리고 있었다. JIT 함수는 두 배열을 읽기만 하므로 재사용해도
+       값·결과가 완전히 동일하다. (원본 배열을 캐시에 함께 담아 id 재사용을 막는다.)"""
+    _k = (id(hit0), id(ev0))
+    _c = _SHIFT_ARG_CACHE.get(_k)
+    if _c is not None and _c[0] is hit0 and _c[1] is ev0:
+        return _c[2], _c[3]
+    _h = np.ascontiguousarray(hit0).astype(np.float64)
+    _e = np.ascontiguousarray(ev0).astype(np.uint8)
+    if len(_SHIFT_ARG_CACHE) > 32:
+        _SHIFT_ARG_CACHE.clear()
+    _SHIFT_ARG_CACHE[_k] = (hit0, ev0, _h, _e)
+    return _h, _e
+
+
 def _best_shift_for_side_dispatch(sig_arr, hit0, ev0, *, split, min_sig, d_max, min_gain, ho_tol):
     """numba 있으면 JIT판, 없으면 원본(순수 numpy)판으로 자동 분기 — 결과는 항상 동일."""
     if HAS_NUMBA:
+        _h, _e = _shift_args_cached(hit0, ev0)
         return int(_best_shift_for_side_jit(
-            np.ascontiguousarray(sig_arr), np.ascontiguousarray(hit0).astype(np.float64),
-            np.ascontiguousarray(ev0).astype(np.uint8),
+            np.ascontiguousarray(sig_arr), _h, _e,
             int(split), int(min_sig), int(d_max), float(min_gain), float(ho_tol)))
     return _best_shift_for_side(sig_arr, hit0, ev0, split=split, min_sig=min_sig,
                                 d_max=d_max, min_gain=min_gain, ho_tol=ho_tol)
@@ -17115,9 +17139,9 @@ def _trend_outcome_stats(close_arr, sig_arr, horizon, event_gap, is_buy,
     if idx.size == 0:
         return None
     try:
-        _ctp = _ctp_cached(close_arr)
-        tsum = np.asarray(_ctp[9], dtype=float)
-        okm = np.asarray(_ctp[7] if is_buy else _ctp[8], dtype=bool)
+        _dv = _ctp_derived(close_arr)      # ★ (성능개선) 파생배열 재할당 제거 — 값 동일
+        tsum = _dv[1]
+        okm = _dv[3] if is_buy else _dv[4]
     except Exception:
         return None
 
@@ -17167,10 +17191,9 @@ def _stability_adjusted_score(close_arr, sig_arr, horizon, limit, anchor_arr,
     _use_tr = bool(globals().get('SIMPLE_POOL_REL_TREND_RUN_RETURN', True))
     if _use_tr:
         try:
-            _ctp9 = _ctp_cached(close_arr)
-            _tsum = np.asarray(_ctp9[9], dtype=np.float64)
-            if not is_buy:
-                _tsum = -_tsum          # 매도는 하락이 이익
+            # ★ (성능개선 — 결과불변) 매도쪽 -추세누적 배열을 호출마다 새로 만들던 것을 캐시.
+            _dv = _ctp_derived(close_arr)
+            _tsum = _dv[1] if is_buy else _dv[2]
         except Exception:
             _tsum = None; _use_tr = False
     n_all, ok_all, sum_all = evalf(close_arr, sig_arr, horizon, limit, anchor_arr, _egap,
@@ -19365,10 +19388,23 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
                     _idx_norm = pd.DatetimeIndex(feat.index).tz_localize(None) \
                                 if getattr(feat.index, 'tz', None) is not None else pd.DatetimeIndex(feat.index)
                     _idx_norm = _idx_norm.normalize()
-                    _is_day_before_earn = np.zeros(n_total, dtype=bool)
-                    for _ii in range(n_total - 1):
-                        if _idx_norm[_ii + 1] in _edates:
-                            _is_day_before_earn[_ii] = True
+                    # ★★★ (성능개선 — 결과불변) '다음 거래일이 어닝인 날' 마스크는 지표
+                    #   행과 무관하게 (날짜인덱스, 티커)에만 의존하는데, 예전엔 후보 행마다
+                    #   매번 n일짜리 파이썬 루프로 다시 만들었다(지표 수천 개 × 수천 일 =
+                    #   pandas 스칼라 접근 수백만~수천만 회). 판정식은 그대로 두고 결과만
+                    #   캐시해 최초 1회만 계산한다 — 값은 완전히 동일.
+                    _dbe_key = (str(ticker), int(n_total),
+                                (_idx_norm[0] if n_total else None),
+                                (_idx_norm[-1] if n_total else None))
+                    _is_day_before_earn = _DAY_BEFORE_EARN_CACHE.get(_dbe_key)
+                    if _is_day_before_earn is None:
+                        _is_day_before_earn = np.zeros(n_total, dtype=bool)
+                        for _ii in range(n_total - 1):
+                            if _idx_norm[_ii + 1] in _edates:
+                                _is_day_before_earn[_ii] = True
+                        if len(_DAY_BEFORE_EARN_CACHE) >= 32:
+                            _DAY_BEFORE_EARN_CACHE.pop(next(iter(_DAY_BEFORE_EARN_CACHE)))
+                        _DAY_BEFORE_EARN_CACHE[_dbe_key] = _is_day_before_earn
                     disp_idx = disp_idx[~_is_day_before_earn[disp_idx]]
             except Exception:
                 pass
@@ -19480,13 +19516,20 @@ def _compute_reliability_score(feat, close_arr, row, threshold, is_buy, ticker=N
         _day_win = int(globals().get('SIMPLE_POOL_REV_DAY_WINDOW', 2))
 
         def _match_spot(_f, _spot_arr):
+            # ★★★ (성능개선 — 결과불변) _spot_arr는 오름차순이므로 |spot-_f|<=_day_win 인
+            #   구간을 searchsorted로 바로 잘라낸다(전체 스캔 → 이분탐색). 잘라낸 원소·순서가
+            #   원본 마스크 결과와 완전히 같아 판정도 동일하다.
             if len(_spot_arr) == 0:
                 return False
-            _near = _spot_arr[np.abs(_spot_arr - _f) <= _day_win]
-            for _t in _near.tolist():
+            _lo = np.searchsorted(_spot_arr, _f - _day_win, side='left')
+            _hi = np.searchsorted(_spot_arr, _f + _day_win, side='right')
+            if _hi <= _lo:
+                return False
+            _cf = close_arr[_f]
+            for _t in _spot_arr[_lo:_hi].tolist():
                 _pt = close_arr[_t]
                 if _pt and _pt > 0 and np.isfinite(_pt) and \
-                   abs(close_arr[_f] / _pt - 1.0) <= _price_tol:
+                   abs(_cf / _pt - 1.0) <= _price_tol:
                     return True
             return False
 
@@ -19724,6 +19767,30 @@ def _ctp_cached(close_arr, threshold=None):
             _CTP_MEMO.pop(next(iter(_CTP_MEMO)))
         _CTP_MEMO[_k] = _c
     return _c
+
+
+_CTP_DERIV_MEMO = {}
+
+
+def _ctp_derived(close_arr):
+    """★★★ (성능개선 — 결과불변) _ctp_cached 결과에서 매번 새로 만들어 쓰던 파생배열을
+       함께 캐시한다 — (추세누적, 그 부호반전, 매수정답 bool, 매도정답 bool).
+       예전엔 지표 후보 하나를 채점할 때마다 `-trend_sum`과 `astype(bool)`로 n일짜리
+       배열을 새로 할당했는데, 후보가 수십만 개라 할당만으로 시간이 크게 샜다.
+       모두 읽기 전용으로만 쓰이므로 값·의미는 종전과 완전히 동일하다.
+       (캐시에 원본 튜플 자체를 함께 담아 id 재사용 문제를 막는다.)"""
+    _c = _ctp_cached(close_arr)
+    _k = id(_c)
+    _d = _CTP_DERIV_MEMO.get(_k)
+    if _d is not None and _d[0] is _c:
+        return _d
+    _ts = np.asarray(_c[9], dtype=np.float64)
+    _d = (_c, _ts, -_ts,
+          np.asarray(_c[7], dtype=bool), np.asarray(_c[8], dtype=bool))
+    if len(_CTP_DERIV_MEMO) >= 16:
+        _CTP_DERIV_MEMO.pop(next(iter(_CTP_DERIV_MEMO)))
+    _CTP_DERIV_MEMO[_k] = _d
+    return _d
 
 
 def _trend_run_cum_return(target, ret, valid, sideways):
@@ -20127,11 +20194,25 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
                전부 +0). 발화가 없으면 그 상태를 주장할 근거 자체가 없으므로 무조건 NO로 본다."""
             if len(p) == 0:
                 return 0.5, 0.0, 0
-            _pred = (p[None, :] >= _STATE_THR_GRID[:, None])
-            if fired is not None:
-                _pred = _pred & fired[None, :]
-            _hit = (_pred == actual[None, :])
-            _acc = _hit.mean(axis=1)
+            # ★★★ (성능개선 — 결과불변) 예전엔 (임계 101개 × 날짜 m) 불리언 행렬을 매 호출
+            #   5개씩 만들어 전수 집계했다. 이 함수는 '지표 k개까지'를 1개씩 늘려가며
+            #   상태·정렬마다 수천 번 불리므로 실측상 상태선정 시간의 28%를 차지했다.
+            #   임계값 격자가 오름차순이라, 값들을 한 번 정렬해두면 각 임계에서
+            #   'p ≥ 임계'인 개수를 searchsorted로 바로 셀 수 있다 — 원본 행렬 집계와
+            #   '정수 개수'가 완전히 동일해서 TPR/TNR·적중률·argmax·반환값이 비트 단위로
+            #   같고, 계산량만 O(101×m) → O(m log m + 101)로 준다.
+            #   (NaN은 어떤 임계와 비교해도 False였으므로, 개수에서 그대로 제외한다.)
+            _pos = np.asarray(actual).astype(bool)
+            _m = len(_pos)
+            _npos = int(_pos.sum()); _nneg = int(_m - _npos)
+            _pv = np.asarray(p, dtype=float)
+            _fmask = (np.asarray(fired).astype(bool) if fired is not None
+                      else np.ones(_m, dtype=bool))
+            _vp = _pv[_pos & _fmask]; _vn = _pv[(~_pos) & _fmask]
+            _vp = np.sort(_vp[~np.isnan(_vp)]); _vn = np.sort(_vn[~np.isnan(_vn)])
+            _tp = _vp.size - np.searchsorted(_vp, _STATE_THR_GRID, side='left')  # pred & 정답
+            _fp = _vn.size - np.searchsorted(_vn, _STATE_THR_GRID, side='left')  # pred & 오답
+            _acc = (_tp + (_nneg - _fp)) / float(_m)
 
             # ★★★ (실측 문제 — 근본 수정) 임계값이 0.00으로 붙고 적중률이 기저 발생률과
             #   같아지는 현상이 네 번 연속 반복됐다(롱지속 적중 59%, 임계 0.00).
@@ -20143,17 +20224,39 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             #     '맞은 것'과 '틀린 것'을 함께 가려내는 임계값만 선택된다.
             #   ★ 보고용 적중률·틀린자리 수는 종전대로 '단순' 기준으로 돌려준다(비교 가능하게).
             if bool(globals().get('STATE_THR_BALANCED', True)) and len(actual) > 0:
-                _pos = actual.astype(bool)
-                _npos = int(_pos.sum()); _nneg = int(len(actual) - _npos)
                 if _npos > 0 and _nneg > 0:
-                    _tpr = (_pred & _pos[None, :]).sum(axis=1) / _npos
-                    _tnr = ((~_pred) & (~_pos)[None, :]).sum(axis=1) / _nneg
+                    _tpr = _tp / _npos
+                    _tnr = (_nneg - _fp) / _nneg
                     _bal = 0.5 * (_tpr + _tnr)
                     _i = int(np.argmax(_bal))
                     _a = float(_acc[_i])
                     return float(_STATE_THR_GRID[_i]), _a, int(round((1.0 - _a) * len(p)))
             _i = int(np.argmax(_acc)); _a = float(_acc[_i])
             return float(_STATE_THR_GRID[_i]), _a, int(round((1.0 - _a) * len(p)))
+
+        # ★★★ (성능개선 — 결과불변) _select_state는 (4상태 × 확률순/신뢰도순 × 홀드아웃·
+        #   워크포워드 폴드)만큼 반복 호출되는데, 매번 같은 pool을 iterrows()로 다시 훑고
+        #   행마다 pandas 스칼라 접근(row.get)을 10여 번씩 했다(실측: 13만 회, 이 함수
+        #   시간의 23%). _probs_of의 결과는 상태(skey)와 무관하므로 pool 객체당 한 번만
+        #   만들어 재사용한다 — 만들어지는 리스트의 내용·순서는 종전과 완전히 동일하다.
+        #   (캐시에 pool 자체를 함께 담아 두므로 id 재사용 문제도 생기지 않는다.)
+        _cand_base_cache = {}
+
+        def _cand_base(pool):
+            _ck = id(pool)
+            _hit = _cand_base_cache.get(_ck)
+            if _hit is not None and _hit[0] is pool:
+                return _hit[1]
+            _lst = []
+            for _, _r in pool.iterrows():
+                _pr = _probs_of(_r)
+                if _pr is None:
+                    continue
+                _lst.append((_r, _pr,
+                             float(_r.get('success_rate', 0.0) or 0.0),
+                             float(_r.get('reliability', 0.0) or 0.0)))
+            _cand_base_cache[_ck] = (pool, _lst)
+            return _lst
 
         _max_cand = int(globals().get('SIMPLE_POOL_MIN_WRONG_MAX_CANDIDATES', 300))
 
@@ -20193,13 +20296,8 @@ def _select_pool_by_state_transition(feat, close_arr, buy_pool, sell_pool, ticke
             #   동률이면 성공률·신뢰도 순.
             #   ★ 이벤트수가 STATE_PROB_MIN_EVENTS 미만인 지표는 "1건 중 1건 = 100%" 같은
             #     표본부족 1등을 막기 위해 어떤 그룹보다도 뒤로 보낸다(기본 1).
-            _cands = []
-            for _, _r in pool.iterrows():
-                _pr = _probs_of(_r)
-                if _pr is None:
-                    continue
-                _cands.append((float(_pr[1][skey]), float(_r.get('success_rate', 0.0) or 0.0),
-                               float(_r.get('reliability', 0.0) or 0.0), _r, _pr, float(_pr[4])))
+            _cands = [(float(_pr[1][skey]), _sr0, _rel0, _r, _pr, float(_pr[4]))
+                      for (_r, _pr, _sr0, _rel0) in _cand_base(pool)]
             if not _cands:
                 return _blank
             if order == 'rel':
@@ -21342,31 +21440,28 @@ def _apply_overlap_discount(feat, pool):
         return pool
     pool = pool.copy().reset_index(drop=True)
     n = len(pool)
-    sig_sets = []
-    for _, row in pool.iterrows():
+    # ★★★ (성능개선 — 결과불변) 예전엔 파이썬 set으로 n×n 쌍마다 교집합·합집합을 새로
+    #   만들었다(풀 300개면 9만 쌍 × set 연산). 발화일을 0/1 행렬로 바꾸면 교집합 개수는
+    #   행렬곱 한 번으로 전부 나온다 — 0/1 곱의 합이라 정수값이 정확히 보존되고,
+    #   자카드(교집합/합집합)도 같은 정수 나눗셈이라 결과가 비트 단위로 동일하다.
+    _nd = len(feat.index)
+    _mat = np.zeros((n, _nd), dtype=np.float64)
+    for _i2, (_, row) in enumerate(pool.iterrows()):
         try:
             sig = _aligned_signal_for_row(feat, row)
-            sig_sets.append(set(np.nonzero(sig)[0].tolist()))
+            _fi = np.nonzero(sig)[0]
+            _mat[_i2, _fi[_fi < _nd]] = 1.0
         except Exception:
-            sig_sets.append(set())
+            pass
     _w = float(globals().get('SIMPLE_POOL_OVERLAP_DISCOUNT_WEIGHT', 0.6))
-    max_sim = [0.0] * n
-    for i in range(n):
-        si = sig_sets[i]
-        if not si:
-            continue
-        for j in range(n):
-            if i == j:
-                continue
-            sj = sig_sets[j]
-            if not sj:
-                continue
-            union = len(si | sj)
-            if union == 0:
-                continue
-            jac = len(si & sj) / union
-            if jac > max_sim[i]:
-                max_sim[i] = jac
+    _sizes = _mat.sum(axis=1)
+    _inter = (_mat @ _mat.T)                       # 0/1 곱의 합 = 교집합 개수(정확)
+    _union = _sizes[:, None] + _sizes[None, :] - _inter
+    with np.errstate(divide='ignore', invalid='ignore'):
+        _jac = np.where(_union > 0, _inter / np.where(_union > 0, _union, 1.0), 0.0)
+    np.fill_diagonal(_jac, 0.0)                    # i==j 는 원본에서도 제외
+    _jac[_sizes <= 0, :] = 0.0                     # si가 비면 원본은 0.0 유지
+    max_sim = np.maximum(_jac.max(axis=1), 0.0).tolist() if n else []
     for i in range(n):
         discount = max(0.05, 1.0 - _w * max_sim[i])
         pool.at[i, 'net_weight_score'] = float(pool.at[i, 'net_weight_score']) * discount
@@ -21374,6 +21469,7 @@ def _apply_overlap_discount(feat, pool):
 
 
 _EARNINGS_DATES_CACHE = {}   # ticker -> set(정규화된 Timestamp) — 반복 조회 방지용 모듈 캐시
+_DAY_BEFORE_EARN_CACHE = {}  # (티커, 길이, 시작일, 종료일) -> '다음날이 어닝'인 날 마스크(재계산 방지)
 
 
 def _get_earnings_dates_cached(ticker):
@@ -21437,11 +21533,12 @@ def _cluster_null_threshold(n_signals, n_days, window, n_sim=200, pctile=95):
     max_fracs = np.empty(n_sim)
     for s in range(n_sim):
         idx = np.sort(rng.choice(n_days, size=n_signals, replace=False))
-        mc = 0.0
-        for st in idx:
-            frac = float(((idx >= st) & (idx < st + window)).sum()) / n_signals
-            if frac > mc: mc = frac
-        max_fracs[s] = mc
+        # ★★★ (성능개선 — 결과불변) idx가 오름차순이므로 '각 시작점에서 window 안에 든
+        #   개수'는 searchsorted로 한 번에 구할 수 있다(원본 이중루프와 정수 개수가 동일).
+        #   최대비율 = 최대개수/n_signals 이므로 최종값도 완전히 같다. O(k²) → O(k log k).
+        _c_in = (np.searchsorted(idx, idx + window, side='left')
+                 - np.searchsorted(idx, idx, side='left'))
+        max_fracs[s] = float(_c_in.max()) / n_signals
     thr = float(np.percentile(max_fracs, pctile))
     _CLUSTER_NULL_CACHE[key] = thr
     return thr
@@ -21539,9 +21636,11 @@ def _verify_indicator_row(feat, close_arr, row, limit, base_rate, is_buy):
         _cpct = float(g.get('SIMPLE_POOL_VERIFY_CLUSTER_PCTILE', 95))
         max_cluster = 0.0
         if len(idx_true) >= 3:
-            for s in idx_true:
-                frac = float(((idx_true >= s) & (idx_true < s + _cw)).sum()) / len(idx_true)
-                if frac > max_cluster: max_cluster = frac
+            # ★★★ (성능개선 — 결과불변) idx_true는 오름차순이라 searchsorted로 동일한
+            #   '창 안 개수'를 한 번에 구한다(원본 이중루프와 정수 개수가 같아 값 동일).
+            _c_in = (np.searchsorted(idx_true, idx_true + _cw, side='left')
+                     - np.searchsorted(idx_true, idx_true, side='left'))
+            max_cluster = float(_c_in.max()) / len(idx_true)
         _cluster_thr = _cluster_null_threshold(len(idx_true), len(close_arr), _cw, pctile=_cpct)
         pass_cluster = max_cluster <= _cluster_thr
         pass_stability_combined = pass_stability and pass_cluster
@@ -22574,6 +22673,12 @@ def _free_global_caches(*, keep_pool_map=False):
         g['_ZCACHE'].clear()
     if '_HITF_CACHE' in g:
         g['_HITF_CACHE'].clear()
+    if '_CTP_DERIV_MEMO' in g:
+        g['_CTP_DERIV_MEMO'].clear()
+    if '_SHIFT_ARG_CACHE' in g:
+        g['_SHIFT_ARG_CACHE'].clear()
+    if '_DAY_BEFORE_EARN_CACHE' in g:
+        g['_DAY_BEFORE_EARN_CACHE'].clear()
     if '_ENRICH_STATS' in g:
         g['_ENRICH_STATS'].clear()
     if '_LAST_FULL_CAND_MAP' in g:
@@ -23566,6 +23671,9 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
         if anchor_safe_sell is not None and len(anchor_safe_sell) == len(valid_mask):
             anchor_safe_sell = np.asarray(anchor_safe_sell)[valid_mask]
     cl = close
+    # ★★★ (성능개선 — 결과불변) 아래 일별 루프에서 cl.iloc[i]로 pandas 스칼라 접근을
+    #   하루마다 반복했다. 같은 값의 numpy 배열을 미리 뽑아 쓴다(값 동일, 조회만 빠름).
+    _cl_vals = np.asarray(cl.values if hasattr(cl, 'values') else cl)
     n  = len(feat); dates = feat.index
     buy_used  = buy_pool.iloc[:K_buy].reset_index(drop=True)
     sell_used = sell_pool.iloc[:K_sell].reset_index(drop=True)
@@ -23643,7 +23751,7 @@ def daily_ensemble_backtest(feat, close, buy_pool, sell_pool,
     n_sell_eval_all = 0; n_sell_correct_all = 0
 
     for i in range(n):
-        d = dates[i]; price = float(cl.iloc[i])
+        d = dates[i]; price = float(_cl_vals[i])
         if pos == 1 and entry_idx >= 0 and i > entry_idx and pd.notna(prev_close) and prev_close > 0:
             _dret = price / prev_close - 1.0
             sum_daily += _dret
@@ -24632,13 +24740,9 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             _has_main = (main_net is not None and main_K is not None and main_L is not None)
             _main_pos = None
             if _has_main:
-                _mn = np.asarray(main_net, float)
-                _main_pos = np.zeros(n); _cur = 0.0
-                for s in range(n):
-                    v = _mn[s]
-                    if v >= float(main_K): _cur = 1.0
-                    elif v <= float(main_L): _cur = 0.0
-                    _main_pos[s] = _cur
+                _mn = np.ascontiguousarray(np.asarray(main_net, float))
+                # ★★★ (성능개선 — 결과불변) 비교·대입만 하는 순차 루프를 JIT판으로 교체.
+                _main_pos = _kl_pos_loop_plain_jit(_mn, float(main_K), float(main_L))
                 _main_pos[0] = 0.0
 
         # n_buy/n_sell 개수 탐색 (좌표하강 — 기존 방식과 동일 취지)
@@ -24653,16 +24757,15 @@ def _search_zero_count_pool(feat, close_ser, buy_pool, sell_pool,
             else:
                 ks = list(range(int(np.floor(lo)), int(np.ceil(hi)) + 1))
             best = None; _top = []
+            # ★★★ (성능개선 — 결과불변) 격자 × n일 파이썬 이중루프를 JIT판으로 교체 —
+            #   비교·대입만 하므로 포지션 배열이 비트 단위로 동일하고, 아래 수익·MDD
+            #   계산(부동소수 합산)은 종전 numpy 코드 그대로 둔다.
+            _net_c = np.ascontiguousarray(np.asarray(net, dtype=np.float64))
             for K in ks:
                 for L in ks:
                     if L > K: continue
                     # 별도풀 (m,n)=(K,L) 히스테리시스 pos (당일 net 체결)
-                    _zpos = np.zeros(n); cur = 0.0
-                    for s in range(n):
-                        v = net[s]
-                        if v >= K: cur = 1.0
-                        elif v <= L: cur = 0.0
-                        _zpos[s] = cur
+                    _zpos = _kl_pos_loop_plain_jit(_net_c, float(K), float(L))
                     _zpos[0] = 0.0
                     # ★ 하이브리드 pos: 카운트≠0인 날=메인풀 pos, 카운트0인 날=별도풀 pos.
                     #   이어붙인 연속 포지션 → 진입~청산이 경계를 넘나들어도 전체수익 정확.
@@ -25177,6 +25280,8 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
         #   (단일임계 풀이면 지표당 1행 → 기존과 동일하게 동작. 안전)
         _multi = bool(globals().get('NET_MULTI_THRESHOLD_WEIGHT', False))
         _align_hz = bool(globals().get('SIMPLE_POOL_ALIGN_HORIZON_NET', True))
+        _rowsig_memo = {}   # ★ (성능개선 — 결과불변) 같은 행의 정렬신호 재계산 방지
+
         def _row_sig(row):
             """★★★ (요청 — 재설계) 호라이즌 정렬 방식 — "d일 net"은 d일 후 시점을 예측하므로,
                그 예측이 '내일(d+1)'을 향하게 되는 시점은 발화일+(d-1)일이다. 즉 h일 지표가
@@ -25191,6 +25296,20 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                _event_first_only로 원본 발화를 이벤트(첫날)만 남기고 축약한 뒤 정렬한다.
                이러면 '신호개수'(_eval_buy_signals, 이벤트 기준)와 실제 net·매수/매도카운트
                공식에 반영되는 발화일수가 항상 정확히 일치한다."""
+            # ★★★ (성능개선 — 결과불변) 이 배열은 (지표·방향·임계·lead_shift·호라이즌)만으로
+            #   완전히 결정된다. 그런데 아래 호라이즌별 net 분해 블록이 같은 행들의 신호를
+            #   처음부터 다시 계산하고 있어서, 풀 크기만큼 중복 계산이 일어났다.
+            #   키가 입력 전체를 담고 있으므로 잘못된 재사용이 생길 수 없고(키가 다르면 항상
+            #   새로 계산), 결과 배열은 곱셈·덧셈으로만 쓰여 원본이 변경되지 않는다.
+            _mk = (row.get('indicator', None), row.get('direction', None),
+                   row.get('threshold', None), row.get('lead_shift', None),
+                   row.get('horizon_day', None), row.get('horizon', None))
+            try:
+                _hitm = _rowsig_memo.get(_mk)
+            except TypeError:
+                _hitm = None; _mk = None
+            if _hitm is not None:
+                return _hitm
             _egap_ns = int(globals().get('SIMPLE_POOL_EVENT_GAP_DAYS', 2))
             s = np.nan_to_num(_to_signal_array(feat, row).astype(float))
             s = _event_first_only(s, _egap_ns)
@@ -25200,6 +25319,11 @@ def _net_signal_k_search(feat, close_ser, buy_pool, sell_pool, *,
                     _hz = row.get('horizon', None)
                 if _hz is not None and not (isinstance(_hz, float) and pd.isna(_hz)) and int(_hz) > 1:
                     s = _shift_signal_forward(s, int(_hz) - 1)
+            if _mk is not None:
+                try:
+                    _rowsig_memo[_mk] = s
+                except TypeError:
+                    pass
             return s
         def _build_sigs(pool):
             sigs = []; keys = []
@@ -25617,6 +25741,51 @@ def _kl_run_single(net, r, K, L):
     return ret, pos
 
 
+@njit(cache=True)
+def _kl_pos_loop_plain_jit(netx, K, L):
+    """★★★ (성능개선 — 결과불변) K/L 히스테리시스 '포지션 배열'만 만드는 순차 루프.
+       게이트(_adjK/_adjL/강제청산/거부권)가 전부 꺼져 있을 때 쓰는 경량판 —
+       원본 파이썬 루프와 연산 순서·비교식이 완전히 동일해 결과가 비트 단위로 같다.
+       (수익·MDD 등 부동소수 합산은 이 함수 밖에서 기존과 똑같이 numpy로 계산한다 —
+        합산 순서가 바뀌면 미세한 차이로 동률 판정이 달라질 수 있어 일부러 건드리지 않음.)"""
+    n = netx.shape[0]
+    pos = np.zeros(n)
+    cur = 0.0
+    for s in range(n):
+        v = netx[s]
+        if v >= K:
+            cur = 1.0
+        elif v <= L:
+            cur = 0.0
+        pos[s] = cur
+    return pos
+
+
+@njit(cache=True)
+def _kl_pos_loop_gated_jit(netx, adjK, adjL, force_cash, veto, K, L, has_fc, has_veto):
+    """★★★ (성능개선 — 결과불변) 위 함수의 게이트 적용판. 원본 _run 루프의 분기 순서를
+       그대로 옮긴 것이라 결과가 비트 단위로 동일하다."""
+    n = netx.shape[0]
+    pos = np.zeros(n)
+    cur = 0.0
+    for s in range(n):
+        v = netx[s]
+        _K = K + adjK[s]
+        _L = L + adjL[s]
+        if _L > _K:
+            _L = _K
+        if has_fc and force_cash[s]:
+            cur = 0.0
+        elif has_veto and veto[s]:
+            cur = 0.0
+        elif v >= _K:
+            cur = 1.0
+        elif v <= _L:
+            cur = 0.0
+        pos[s] = cur
+    return pos
+
+
 def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_kl_mdd=None,
                    anchor_buy=None):
     """★ K/L 2임계 히스테리시스. net_prev≥K → 매수(롱), net_prev≤L → 매도(현금), 사이는 직전 포지션 유지 (K≥L).
@@ -25702,22 +25871,31 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
     _use_gate = bool(np.any(_adjK) or np.any(_adjL) or _force_cash is not None
                      or (_cv is not None and _w_cv > 0) or _veto is not None)
 
+    # ★★★ (성능개선 — 결과불변) _run의 순차 루프를 numba 함수로 뺀다. 이 루프는 (K,L)
+    #   격자 수천 개마다 n일 전체를 파이썬으로 도는 자리라 실측상 이 함수 시간의 87%를
+    #   차지했다. 비교·대입만 하는 루프라 JIT판과 결과가 비트 단위로 동일하고, 수익/MDD
+    #   같은 부동소수 합산은 종전 그대로 numpy로 계산해 합산 순서까지 유지한다.
+    _netx_c = np.ascontiguousarray(_netx, dtype=np.float64)
+    _adjK_c = np.ascontiguousarray(_adjK, dtype=np.float64)
+    _adjL_c = np.ascontiguousarray(_adjL, dtype=np.float64)
+    _fc_c = (np.ascontiguousarray(_force_cash, dtype=np.bool_)
+             if _force_cash is not None else np.zeros(1, dtype=np.bool_))
+    _vt_c = (np.ascontiguousarray(_veto, dtype=np.bool_)
+             if _veto is not None else np.zeros(1, dtype=np.bool_))
+    _gate_loop = bool(np.any(_adjK) or np.any(_adjL)
+                      or _force_cash is not None or _veto is not None)
+
     def _run(K, L):
         # ★ (요청) 당일 net 체결 — net[s]가 K 넘으면 그날 롱, L 밑돌면 그날 현금 (신호일=체결일).
         #   수익은 룩어헤드 방지를 위해 진입 다음날부터: daily[s]=pos[s-1]*r[s].
-        pos = np.zeros(n); cur = 0.0
-        for s in range(n):
-            v = _netx[s]
-            _K = K + _adjK[s]      # 국면·위험·평균회귀가 매수 문턱을 움직임
-            _L = L + _adjL[s]      # 추세강도가 청산 문턱을 움직임(추세 강하면 덜 팔게)
-            if _L > _K: _L = _K
-            if _force_cash is not None and _force_cash[s]:
-                cur = 0.0          # ★ 꼬리위험 신호 — 강제 청산
-            elif _veto is not None and _veto[s]:
-                cur = 0.0          # ★ 용도 거부권 — 위험한 날은 매수 금지(현금)
-            elif v >= _K: cur = 1.0
-            elif v <= _L: cur = 0.0
-            pos[s] = cur
+        if _gate_loop:
+            pos = _kl_pos_loop_gated_jit(_netx_c, _adjK_c, _adjL_c, _fc_c, _vt_c,
+                                         float(K), float(L),
+                                         _force_cash is not None, _veto is not None)
+        else:
+            # 게이트가 없으면 _K=K, _L=L 그대로 — 원본의 "if _L > _K: _L = _K" 만 미리 반영
+            _Lp = float(K) if (L > K) else float(L)
+            pos = _kl_pos_loop_plain_jit(_netx_c, float(K), _Lp)
         pos[0] = 0.0
         hr = np.zeros(n)
         hr[1:] = pos[:-1] * r[1:]        # 전일 보유분이 당일 등락 실현
@@ -25737,7 +25915,37 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             _bm = (_Km, _Lm, r2, m2, d2, p2)
         # ★ (요청) 재현모드에서도 net 근접 3·4위를 위해 전체 K/L 격자 top 계산.
         #   best_ret/best_mdd는 원본 고정값 유지, top만 격자 탐색으로 채움.
-        _top_fixed = [{'K': _br[0], 'L': _br[1], 'ret': _br[2], 'mdd': _br[3], 'dl': _br[4], 'pos': _br[5]}]
+        def _wr_fix(pos, K, L):
+            try:
+                if _gate_loop:
+                    _Ka = float(K) + _adjK_c
+                    _La = float(L) + _adjL_c
+                    _La = np.where(_La > _Ka, _Ka, _La)
+                    _un = ~((_netx_c >= _Ka) | (_netx_c <= _La))
+                    if _force_cash is not None:
+                        _un = _un & (~np.asarray(_force_cash, dtype=bool))
+                    if _veto is not None:
+                        _un = _un & (~np.asarray(_veto, dtype=bool))
+                else:
+                    _Lp3 = float(K) if (L > K) else float(L)
+                    _un = ~((_netx_c >= float(K)) | (_netx_c <= _Lp3))
+                _abf = globals().get('_KL_ANCHOR_BUY')
+                _asf = globals().get('_KL_ANCHOR_SELL')
+                if _abf is None or len(np.asarray(_abf)) != n:
+                    return 0, 0, 0, 0
+                _abf = np.asarray(_abf)
+                _asf = (np.asarray(_asf) if (_asf is not None and len(np.asarray(_asf)) == n)
+                        else None)
+                _lg = np.asarray(pos) > 0.5
+                _s1 = (_asf == 1) if _asf is not None else (_abf == 0)
+                return (int(np.sum(_lg & (_abf == 0))), int(np.sum((~_lg) & (_abf == 1))),
+                        int(np.sum((_abf == 1) & (~_lg) & _un)), int(np.sum(_s1 & _lg & _un)))
+            except Exception:
+                return 0, 0, 0, 0
+        _wf = _wr_fix(_br[5], _br[0], _br[1])
+        _top_fixed = [{'K': _br[0], 'L': _br[1], 'ret': _br[2], 'mdd': _br[3], 'dl': _br[4],
+                       'pos': _br[5], 'buy_wrong': _wf[0], 'sell_wrong': _wf[1],
+                       'buy_remain': _wf[2], 'sell_remain': _wf[3]}]
         try:
             lo = float(np.nanmin(net)); hi = float(np.nanmax(net))
             if hi > lo:
@@ -25755,8 +25963,11 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
                         _key = (round(float(K), 4), round(float(L), 4))
                         if _key in _seen_kl: continue
                         _rr_, _md_, _dl_, _ps_ = _run(float(K), float(L))
+                        _wf2 = _wr_fix(_ps_, float(K), float(L))
                         _top_fixed.append({'K': float(K), 'L': float(L), 'ret': _rr_,
-                                           'mdd': _md_, 'dl': _dl_, 'pos': _ps_})
+                                           'mdd': _md_, 'dl': _dl_, 'pos': _ps_,
+                                           'buy_wrong': _wf2[0], 'sell_wrong': _wf2[1],
+                                           'buy_remain': _wf2[2], 'sell_remain': _wf2[3]})
         except Exception:
             pass
         return {'best_ret': _br, 'best_mdd': _bm, 'grid_n': len(_top_fixed),
@@ -25812,7 +26023,9 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
         try:
             _rr = np.asarray(r, dtype=float)
             _px = np.cumprod(1.0 + np.nan_to_num(_rr)) * 100.0
-            globals()['_KL_ANCHOR_BUY'] = np.asarray(_ctp_cached(_px)[7])
+            _ctp_a0 = _ctp_cached(_px)
+            globals()['_KL_ANCHOR_BUY'] = np.asarray(_ctp_a0[7])
+            globals()['_KL_ANCHOR_SELL'] = np.asarray(_ctp_a0[8])
         except Exception:
             pass
     if anchor_buy is not None:
@@ -25821,9 +26034,23 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
         try:
             _px_kl = globals().get('_KL_CLOSE_ARR')
             if _px_kl is not None:
-                globals()['_KL_ANCHOR_BUY'] = np.asarray(_ctp_cached(_px_kl)[7])
+                _ctp_a1 = _ctp_cached(_px_kl)
+                globals()['_KL_ANCHOR_BUY'] = np.asarray(_ctp_a1[7])
+                globals()['_KL_ANCHOR_SELL'] = np.asarray(_ctp_a1[8])
         except Exception:
             pass
+    # ★★★ (요청) '매도 최적자리'(sell_ok) 앵커 — 매도 틀린자리/남은자리를 매수와 대칭으로
+    #   집계하려면 필요하다. 매수 앵커만 있고 매도 앵커가 없거나 길이가 안 맞으면 종가로 보완.
+    try:
+        _as_chk = globals().get('_KL_ANCHOR_SELL')
+        if _as_chk is None or len(np.asarray(_as_chk)) != n:
+            _px_s = globals().get('_KL_CLOSE_ARR')
+            if _px_s is None or len(np.asarray(_px_s)) != n:
+                _px_s = np.cumprod(1.0 + np.nan_to_num(np.asarray(r, dtype=float))) * 100.0
+            globals()['_KL_ANCHOR_SELL'] = np.asarray(
+                _ctp_cached(np.asarray(_px_s, dtype=np.float64))[8])
+    except Exception:
+        globals()['_KL_ANCHOR_SELL'] = None
     _oos_sel = bool(globals().get('KL_SELECT_BY_OOS', True)) and fixed_kl is None
     _oos_scores = {}; _oos_folds = {}
     if _oos_sel and n >= 200:
@@ -25838,6 +26065,59 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
 
     best_ret = None; best_mdd = None; cnt = 0; _all = []
     _kg_L = globals().get('_KL_LGRID_OVERRIDE') or (locals().get('_kg_all') or kg)
+    # ★★★ (성능개선 — 결과불변) 최적자리 배열 조회·형변환을 격자 루프 밖으로 뺀다
+    #   (루프 안에서 수천 번 반복하던 globals 조회·np.asarray가 사라질 뿐, 값은 동일).
+    _ab_loop = globals().get('_KL_ANCHOR_BUY')
+    try:
+        _ab_loop = np.asarray(_ab_loop) if (_ab_loop is not None and len(_ab_loop) == n) else None
+    except Exception:
+        _ab_loop = None
+    _ab_is0 = (_ab_loop == 0) if _ab_loop is not None else None
+    _ab_is1 = (_ab_loop == 1) if _ab_loop is not None else None
+    # ★★★ (요청) 매도 최적자리 — 있으면 sell_ok를, 없으면 '매수정답이 아닌 날'로 폴백.
+    _as_loop = globals().get('_KL_ANCHOR_SELL')
+    try:
+        _as_loop = np.asarray(_as_loop) if (_as_loop is not None and len(_as_loop) == n) else None
+    except Exception:
+        _as_loop = None
+    _as_is1 = (_as_loop == 1) if _as_loop is not None else _ab_is0
+
+    def _wrong_remain(pos, K, L):
+        """★★★ (요청) (K,L) 하나에 대한 매수/매도 틀린자리와 남은자리.
+
+           · 매수 틀린자리 = 보유 중인데 그 날 최적자리가 '매수'가 아니었던 날
+                             (매도자리·횡보자리 — 샀다가 바로 손실나는 자리)
+           · 매도 틀린자리 = 현금인데 그 날 최적자리가 '매수'였던 날 (놓친 상승 = 기회비용)
+           · 남은자리 = '그 방향 최적자리인데 못 잡았고, 게다가 그 날 net이 K와 L 사이
+                        (중립구간)라 아무 판단도 못 하고 직전 포지션을 그대로 이어간' 날.
+                        신호 자체가 없어서 놓친 몫이라, 지표를 더 넣거나 K/L을 좁히면
+                        줄일 수 있다. (상태별 선정 시트의 '남은자리' — 그 자리인데 아무
+                        지표도 발화하지 않은 날 — 과 같은 개념을 K/L 판정에 적용한 것)
+             · 매수 남은자리 = 최적은 매수인데 현금이고, 그 날 진입 판단 자체가 없던 날
+             · 매도 남은자리 = 최적은 매도인데 보유 중이고, 그 날 청산 판단이 없던 날
+        """
+        if _ab_loop is None:
+            return 0, 0, 0, 0
+        _long = pos > 0.5
+        _wb_ = int(np.sum(_long & _ab_is0))       # 샀는데 최적은 매수가 아니었음
+        _ws_ = int(np.sum((~_long) & _ab_is1))    # 안 샀는데 최적은 매수였음
+        # 그 날 '결정'이 있었는지 — net이 K 이상이면 매수결정, L 이하면 청산결정, 사이면 무결정
+        if _gate_loop:
+            _Ka = float(K) + _adjK_c
+            _La = float(L) + _adjL_c
+            _La = np.where(_La > _Ka, _Ka, _La)
+            _undec = ~((_netx_c >= _Ka) | (_netx_c <= _La))
+            if _force_cash is not None:
+                _undec = _undec & (~np.asarray(_force_cash, dtype=bool))
+            if _veto is not None:
+                _undec = _undec & (~np.asarray(_veto, dtype=bool))
+        else:
+            _Lp2 = float(K) if (L > K) else float(L)
+            _undec = ~((_netx_c >= float(K)) | (_netx_c <= _Lp2))
+        _rb_ = int(np.sum(_ab_is1 & (~_long) & _undec))   # 못 잡은 매수자리(신호 없음)
+        _rs_ = int(np.sum(_as_is1 & _long & _undec))      # 못 나온 매도자리(신호 없음)
+        return _wb_, _ws_, _rb_, _rs_
+
     for K in kg:
         for L in _kg_L:
             if L > K:
@@ -25851,14 +26131,7 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             #     남은자리     = 최적자리인데 판정이 안 잡힌 날(기회 놓침)
             _wb = _ws = _rb = _rs = 0
             try:
-                _ab = globals().get('_KL_ANCHOR_BUY')
-                if _ab is not None and len(_ab) == n:
-                    _ab = np.asarray(_ab)
-                    _long = pos > 0.5
-                    _wb = int(np.sum(_long & (_ab == 0)))      # 샀는데 틀림
-                    _ws = int(np.sum((~_long) & (_ab == 1)))   # 안 샀는데 올랐음
-                    _rb = int(np.sum((_ab == 1) & (~_long)))   # 매수 기회 놓침
-                    _rs = int(np.sum((_ab == 0) & _long))      # 청산 기회 놓침
+                _wb, _ws, _rb, _rs = _wrong_remain(pos, K, L)
             except Exception:
                 pass
             _all.append((ret, mdd, dl, K, L, pos, _wb, _ws, _rb, _rs))
@@ -25925,12 +26198,10 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
                     for L2 in _kg_L:
                         if L2 > K2:
                             continue
-                        _p2 = np.zeros(n); _c2 = 0.0
-                        for _t2 in range(n):
-                            _v2 = net[_t2]
-                            if _v2 >= K2: _c2 = 1.0
-                            elif _v2 <= L2: _c2 = 0.0
-                            _p2[_t2] = _c2
+                        # ★★★ (성능개선 — 결과불변) 순차 루프만 JIT판으로 교체.
+                        _p2 = _kl_pos_loop_plain_jit(
+                            np.ascontiguousarray(np.asarray(net, dtype=np.float64)),
+                            float(K2), float(L2))
                         _h2 = np.zeros(n); _h2[1:] = _p2[:-1] * r[1:]
                         _off[(K2, L2)] = float(np.mean([_h2[a:b].sum() for a, b in _segs]))
                 if _off:
@@ -25965,7 +26236,7 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             and bool(globals().get('KL_PICK_BY_BUY_WRONG', True))
             and not globals().get('_KL_OOS_PICKED', False)):
         try:
-            _tol = float(globals().get('KL_RET_TOLERANCE', 1.00))   # 1.00 = 최대수익 100% 내외
+            _tol = float(globals().get('KL_RET_TOLERANCE', 0.50))   # 0.50 = 최대수익의 50% 이상
             _rmax = max(x[0] for x in _all)
             _floor = _rmax * _tol if _rmax >= 0 else _rmax / max(_tol, 1e-9)
             _cand = [x for x in _all if x[0] >= _floor - 1e-12]
@@ -25974,10 +26245,11 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
             # 매수 틀린자리 최소 → 동률이면 수익 최대
             _pick = min(_cand, key=lambda x: (x[6], -x[0]))
             if _pick[3] != best_ret[0] or _pick[4] != best_ret[1]:
-                print(f"    (K/L 선택 — 매수 틀린자리 최소) 수익 상위 {_tol:.0%} 이내 "
-                      f"{len(_cand)}개 중 매수 오답이 가장 적은 조합 채택: "
+                print(f"    (K/L 선택 — 매수 틀린자리 최소) 최대수익의 {_tol:.0%} 이상인 "
+                      f"{len(_cand)}개 조합 중 매수 오답이 가장 적은 것 채택: "
                       f"K={_pick[3]:.3f}/L={_pick[4]:.3f} "
-                      f"(수익 {_pick[0]*100:+.1f}%, 매수틀림 {_pick[6]}, 매도틀림 {_pick[7]})")
+                      f"(수익 {_pick[0]*100:+.1f}%, 매수틀림 {_pick[6]}, 매도틀림 {_pick[7]}, "
+                      f"매수남은 {_pick[8]}, 매도남은 {_pick[9]})")
                 print(f"       ※ 수익 최대는 K={best_ret[0]:.3f}/L={best_ret[1]:.3f}"
                       f"({best_ret[2]*100:+.1f}%, 매수틀림 "
                       f"{[x for x in _all if x[3]==best_ret[0] and x[4]==best_ret[1]][0][6]}) "
@@ -26016,7 +26288,10 @@ def _net_kl_search(net, r, *, mdd_limit=None, k_grid=None, fixed_kl=None, fixed_
                     ((abs(a[3] - _bm_kl[0]) < 1e-9 and abs(a[4] - _bm_kl[1]) < 1e-9)
                      if _bm_kl[0] is not None else False)
         top.append({'K': a[3], 'L': a[4], 'ret': a[0], 'mdd': a[1], 'dl': a[2],
-                    'pos': (a[5] if _keep_pos else None)})
+                    'pos': (a[5] if _keep_pos else None),
+                    # ★★★ (요청) K/L 별 매수·매도 틀린자리와 남은자리 — 시트 컬럼용
+                    'buy_wrong': a[6], 'sell_wrong': a[7],
+                    'buy_remain': a[8], 'sell_remain': a[9]})
     return {'best_ret': best_ret, 'best_mdd': best_mdd, 'grid_n': cnt, 'top': top}
 
 
@@ -26375,12 +26650,9 @@ def _kl_refine_after_search(nsd, mdd_limit=None):
 
         def _run_kl(net_a, K, L):
             # _net_kl_search의 _run과 동일한 당일 체결 히스테리시스 — 고정 K/L 빠른 재실행용
-            pos = np.zeros(n); cur = 0.0
-            for s in range(n):
-                v = net_a[s]
-                if v >= K: cur = 1.0
-                elif v <= L: cur = 0.0
-                pos[s] = cur
+            # ★★★ (성능개선 — 결과불변) 순차 루프만 JIT판으로 교체(비교·대입뿐이라 동일).
+            pos = _kl_pos_loop_plain_jit(
+                np.ascontiguousarray(np.asarray(net_a, dtype=np.float64)), float(K), float(L))
             pos[0] = 0.0
             hr = np.zeros(n); hr[1:] = pos[:-1] * rr[1:]
             return float(np.sum(hr)), pos
@@ -29631,8 +29903,18 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             # (요청) KL 순신호 시트 — (K,L) 조합별 컬럼 결과. 일별 백테스트 옆(index 1)에 배치.
             ws = wb.create_sheet('KL 순신호', 1); ws.sheet_view.showGridLines = False
             _mtxt = (f'MDD 한도 {_mddlim*100:.0f}% 이내' if _mddlim is not None else 'MDD 한도 없음')
-            ws.cell(1, 1).value = (f'{ticker} — KL 순신호 (net≥K 매수·롱 / net≤L 매도·현금 / 사이 유지, K≥L). '
-                                   f'수익=상승·하락률 합산. {_mtxt}. ★=대표조합')
+            _tol_kl = float(globals().get('KL_RET_TOLERANCE', 0.50))
+            ws.cell(1, 1).value = (
+                f'{ticker} — KL 순신호 (net≥K 매수·롱 / net≤L 매도·현금 / 사이 유지, K≥L). '
+                f'수익=상승·하락률 합산. {_mtxt}. ★=대표조합. '
+                f'※ 채택 기준 — 최대수익의 {_tol_kl:.0%} 이상인 조합 중 \'매수 틀린자리\'가 가장 적은 것. '
+                f'매수틀림=보유했는데 최적자리가 매수가 아니었던 날(매도·횡보자리) / '
+                f'매도틀림=현금인데 최적자리는 매수였던 날 / '
+                f'매수남은=최적자리가 매수인데 현금이었고 그 날 net이 K~L 사이(중립)라 진입 판단조차 '
+                f'없었던 날(신호가 없어 놓친 상승자리) / '
+                f'매도남은=최적자리가 매도인데 보유 중이었고 net이 중립이라 청산 판단이 없었던 '
+                f'날(신호가 없어 못 피한 하락자리). 남은자리는 지표를 더 넣거나 K/L을 좁히면 '
+                f'줄일 수 있는 몫이다.')
             ws.cell(1, 1).font = Font(bold=True, size=12, color='1F3864')
 
             def _pos_from_kl(K, L):
@@ -29722,14 +30004,27 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             #   매수남은 = 최적 매수자리인데 못 잡은 날 / 매도남은 = 최적 청산자리인데 못 나온 날
             _hdr(ws, 3, ['순위', 'K(매수임계)', 'L(매도임계)', '전체수익%', '최대낙폭%', '보유중하락%',
                          '거래횟수', '승률%',
-                         '매수틀림', '매도틀림', '매수남은', '매도남은',
+                         '매수틀림', '매도틀림', '매수남은(무판단)', '매도남은(무판단)',
                          '매수정확도%', '매수신호일수', '매도정확도%', '매도신호일수',
                          '최근매수일', '매수가', '최근매도일', '매도가', '비고'])
             _br = _kl.get('best_ret'); _bm = _kl.get('best_mdd')
             # 대표조합(최대수익·MDD내최고)을 항상 맨 위에 + 나머지 상위조합 (중복 제거)
             _disp = []
+            # ★ top에서 같은 (K,L) 행을 찾아 틀린자리·남은자리 카운트를 함께 붙인다
+            #   (대표조합 행에도 동일한 컬럼이 채워지도록).
+            _cnt_by_kl = {}
+            for _tt in _kl.get('top', []):
+                _cnt_by_kl[(round(float(_tt['K']), 4), round(float(_tt['L']), 4))] = (
+                    _tt.get('buy_wrong'), _tt.get('sell_wrong'),
+                    _tt.get('buy_remain'), _tt.get('sell_remain'))
+
             def _as_t(tup):
-                return {'K':tup[0],'L':tup[1],'ret':tup[2],'mdd':tup[3],'dl':tup[4],'pos':tup[5]}
+                _d = {'K':tup[0],'L':tup[1],'ret':tup[2],'mdd':tup[3],'dl':tup[4],'pos':tup[5]}
+                _c = _cnt_by_kl.get((round(float(tup[0]), 4), round(float(tup[1]), 4)))
+                if _c is not None and _c[0] is not None:
+                    _d['buy_wrong'], _d['sell_wrong'] = _c[0], _c[1]
+                    _d['buy_remain'], _d['sell_remain'] = _c[2], _c[3]
+                return _d
             if _br is not None: _disp.append(_as_t(_br))
             if _bm is not None and (_br is None or abs(_bm[0]-_br[0])>1e-9 or abs(_bm[1]-_br[1])>1e-9):
                 _disp.append(_as_t(_bm))
@@ -29750,6 +30045,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     if _row is not None:
                         _t = _as_t((_row['K'], _row['L'], _row['ret'], _row['mdd'],
                                     _row['dl'], _row.get('pos')))
+                        for _kk in ('buy_wrong', 'sell_wrong', 'buy_remain', 'sell_remain'):
+                            if _row.get(_kk) is not None:
+                                _t[_kk] = _row.get(_kk)
                         _disp.append(_t)
                         _rank34_tags[id(_t)] = _lbl
 
@@ -29772,27 +30070,41 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 ws.cell(r,6).value = round(held_dd*100, 2)                    # ★ 보유중하락%
                 if held_dd < -0.10: ws.cell(r,6).font = Font(color='C00000')  # 10% 초과 강조
                 ws.cell(r,7).value = nt; ws.cell(r,8).value = round(wr,1)
-                # ★★★ (요청) K/L 별 매수·매도 틀린자리 / 남은자리
-                _wb_ = _ws_ = _rb_ = _rs_ = '-'
-                try:
-                    _abv = globals().get('_KL_ANCHOR_BUY')
-                    _pp = t.get('pos')
-                    if _pp is None:
-                        _pp = _pos_from_kl(float(t['K']), float(t['L']))
-                    if _abv is not None and len(_abv) == len(_pp):
-                        _abv = np.asarray(_abv); _lg = np.asarray(_pp) > 0.5
-                        _wb_ = int(np.sum(_lg & (_abv == 0)))     # 샀는데 최적은 현금
-                        _ws_ = int(np.sum((~_lg) & (_abv == 1)))  # 안 샀는데 최적은 보유
-                        _rb_ = int(np.sum((_abv == 1) & (~_lg)))  # 매수 기회 놓침
-                        _rs_ = int(np.sum((_abv == 0) & _lg))     # 청산 기회 놓침
-                except Exception:
-                    pass
+                # ★★★ (요청) K/L 별 매수·매도 틀린자리 / 남은자리 —
+                #   _net_kl_search가 격자 탐색 때 이미 계산해 top에 실어 보내므로 그대로 쓴다
+                #   (선정에 쓰인 값과 시트 표시값이 반드시 일치). 없을 때만 여기서 재계산.
+                _wb_ = t.get('buy_wrong'); _ws_ = t.get('sell_wrong')
+                _rb_ = t.get('buy_remain'); _rs_ = t.get('sell_remain')
+                if _wb_ is None:
+                    _wb_ = _ws_ = _rb_ = _rs_ = '-'
+                    try:
+                        _abv = globals().get('_KL_ANCHOR_BUY')
+                        _asv = globals().get('_KL_ANCHOR_SELL')
+                        _pp = t.get('pos')
+                        if _pp is None:
+                            _pp = _pos_from_kl(float(t['K']), float(t['L']))
+                        if _abv is not None and len(_abv) == len(_pp):
+                            _abv = np.asarray(_abv); _lg = np.asarray(_pp) > 0.5
+                            _Kt = float(t['K']); _Lt = float(t['L'])
+                            if _Lt > _Kt: _Lt = _Kt
+                            _un = ~((_net >= _Kt) | (_net <= _Lt))   # 중립구간 = 무판단
+                            _s1 = (np.asarray(_asv) == 1) if (
+                                _asv is not None and len(np.asarray(_asv)) == len(_pp)) else (_abv == 0)
+                            _wb_ = int(np.sum(_lg & (_abv == 0)))
+                            _ws_ = int(np.sum((~_lg) & (_abv == 1)))
+                            _rb_ = int(np.sum((_abv == 1) & (~_lg) & _un))
+                            _rs_ = int(np.sum(_s1 & _lg & _un))
+                    except Exception:
+                        pass
                 ws.cell(r,9).value  = _wb_
                 ws.cell(r,10).value = _ws_
                 ws.cell(r,11).value = _rb_
                 ws.cell(r,12).value = _rs_
                 if isinstance(_wb_, int) and _wb_ > 0:
                     ws.cell(r,9).font = Font(color='C00000', bold=True)   # 매수 오답은 강조
+                for _cc, _vv in ((11, _rb_), (12, _rs_)):                 # 남은자리는 회색 계열
+                    if isinstance(_vv, int) and _vv > 0:
+                        ws.cell(r,_cc).font = Font(color='808080')
                 # ★ 매수/매도 정확도 (요청) — net vs K/L 판정 다음날 방향 일치 비율
                 ws.cell(r,13).value  = (round(buy_acc, 1)  if buy_acc  is not None else '-')
                 ws.cell(r,14).value = n_bs
