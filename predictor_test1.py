@@ -14863,6 +14863,17 @@ SIMPLE_POOL_STATE_PICK_BY_RETURN         = True
 #   수익률이 더 높은 쪽을 최종 채택할지. False면 확률순만 사용(비교 시트도 안 그림).
 SIMPLE_POOL_STATE_TRY_RELIABILITY_ORDER  = True
 SIMPLE_POOL_TARGET_MOVE_THRESHOLD        = 0.01
+
+# ★★★ (요청) 최적자리에서 '중립(횡보)'을 없앤다.
+#   중립인 날은 중립이 아닌 날이 나올 때까지 계속 다음날을 보고, 매수/매도가 나오면
+#   그 방향을 그대로 따라간다 → 모든 유효일이 매수 아니면 매도 자리가 된다.
+#   False로 두면 예전처럼 애매한 날을 횡보로 남긴다(양쪽 다 오답 처리).
+TARGET_NO_NEUTRAL                        = True
+# ★★★ (요청) '전체 후보 지표' 시트의 신호일자 옆 등락률을 어떻게 표시할지.
+#   'trend_end'(기본·요청) = 발화 표시일 종가 → 그 최적자리 구간 마지막 날 종가
+#   'trend_sum'            = 구간 마지막 날의 다음날까지(신뢰도 계산의 추세누적과 같은 기준)
+#   'next_day'             = 예전 방식(발화 다음날 하루치)
+SIGNAL_DATE_RET_MODE                     = 'trend_end'
 # ★★★ (요청 3번) 신뢰도의 이벤트별 등락률을 '표시일 다음날 하루치'가 아니라 "성공이면
 #   성공날부터 성공추세가 끝날 때까지, 실패면 실패날부터 실패포지션 추세가 끝날 때까지"의
 #   변동률 합산으로 계산. False면 예전 하루치 방식.
@@ -19561,7 +19572,9 @@ def _compute_target_positions(close_arr, threshold=0.0):
          2) |ret[t]| < 1% (애매한 날):
             · 하루 전(ret[t-1])과 '변동 방향'이 같으면 → 전날과 같은 포지션
             · 방향이 다르면 → 다음날(t+1)이 ±1% 이상이면 그 다음날의 포지션 방향을 따라감
-            · 그 다음날(t+1)도 |ret[t+1]| < 1%이면 → 횡보(sideways)
+            · 그 다음날(t+1)도 |ret[t+1]| < 1%이면 → ★★★ (요청) 중립으로 남기지 않고,
+              '중립이 아닌 날'이 나올 때까지 계속 다음날을 보고 그 방향을 따라간다.
+              (TARGET_NO_NEUTRAL=True — 기본. False면 예전처럼 횡보로 남긴다)
        ★ 기존 '중립(neutral)' 개념은 완전히 삭제 — 중립은 매수/매도 어느 쪽도 정답으로
          인정해주는 관대한 자리였지만, 횡보는 정반대로 '어느 쪽도 정답이 아닌' 자리다
          (요청 2번: 지표 탐색 시 횡보자리 발화는 모두 실패 처리 — buy_ok/sell_ok 양쪽에서
@@ -19629,7 +19642,35 @@ def _compute_target_positions(close_arr, threshold=0.0):
         target[t] = int(target[t - 1]) if (t - 1 >= 0 and valid[t - 1]) else 0
         _decided[t] = True
 
+    # ── 3단계 ★★★ (요청) 중립(횡보) 완전 제거 ──────────────────────────────────
+    #   "모든 중립은 중립이 안 나올 때까지 계속 다음날을 보다가 매수/매도가 나오면
+    #    그걸 따라가는 걸로 해서 중립 없게 해"
+    #   2단계 ②는 '바로 다음날' 하루만 봤기 때문에, 애매한 날이 여러 날 이어지면
+    #   중간이 전부 횡보로 남았다(실측 GOOG 1,415일 중 265일). 그 며칠 뒤에 매수
+    #   추세가 확정되는데도 그 사이 발화한 지표는 전부 오답 처리돼 억울하게 깎였다.
+    #   예) 2024-01-31~02-07이 횡보로 남고 02-08에야 매수 확정 → 그 사이 발화가 전부 실패.
+    #   → 앞을 '나올 때까지' 계속 보고 그 방향을 그대로 이어받는다. 뒤에서부터 한 번
+    #     훑으면 되므로 O(n)이고, 결과적으로 횡보자리가 하나도 남지 않는다.
+    if bool(globals().get('TARGET_NO_NEUTRAL', True)):
+        _next_dir = -1
+        for t in range(n - 1, -1, -1):
+            if valid[t] and not sideways[t]:
+                _next_dir = int(target[t])          # 가장 가까운 '미래의 확정된 자리'
+            elif valid[t] and sideways[t] and _next_dir >= 0:
+                target[t] = _next_dir               # 그 방향을 그대로 따라간다
+                sideways[t] = False
+        # 뒤쪽에 확정된 날이 하나도 없는 꼬리 구간은 직전 방향을 이어받는다.
+        _prev_dir = -1
+        for t in range(n):
+            if valid[t] and not sideways[t]:
+                _prev_dir = int(target[t])
+            elif valid[t] and sideways[t] and _prev_dir >= 0:
+                target[t] = _prev_dir
+                sideways[t] = False
+
     # ★ 횡보일은 매수/매도 어느 쪽도 정답이 아니다(요청 2번) — 양쪽 ok 마스크에서 제외.
+    #   ★★★ (요청) 위 3단계로 횡보가 사라지므로, 실제로는 모든 유효일이 매수 아니면
+    #      매도 자리가 된다(중립 없음). TARGET_NO_NEUTRAL=False로 끄면 예전 동작.
     buy_ok = (target == 1) & valid & (~sideways)
     sell_ok = (target == 0) & valid & (~sideways)
 
@@ -19664,6 +19705,36 @@ def _ctp_cached(close_arr, threshold=None):
             _CTP_MEMO.pop(next(iter(_CTP_MEMO)))
         _CTP_MEMO[_k] = _c
     return _c
+
+
+_TREND_BLOCK_END_MEMO = {}
+
+
+def _trend_block_end_cached(close_arr):
+    """★★★ (요청) 각 날짜가 속한 '최적자리 구간'(같은 자리가 이어지는 연속 구간)의
+       마지막 날 인덱스를 돌려준다.
+
+       요청: "등락률도 매수 구간 끝나기까지" — 지표가 발화한 날 하루치 등락(다음날 등락)만
+       보면, 그 자리에서 시작된 추세가 며칠 더 이어져도 첫날의 미미한 움직임(예 +0.3%)만
+       찍혀 '맞았는데 별 볼 일 없어 보이는' 표가 된다. 그 자리에 올라타 구간이 끝날 때까지
+       들고 갔을 때의 등락을 보여주려면 구간의 끝을 알아야 하므로 여기서 한 번만 구해둔다.
+       매도도 동일하게 적용된다(매도 구간이 끝날 때까지의 하락률 → 음수로 표시)."""
+    _ctp = _ctp_cached(np.asarray(close_arr, dtype=np.float64))
+    _hit = _TREND_BLOCK_END_MEMO.get(id(_ctp))
+    if _hit is not None and _hit[0] is _ctp:
+        return _hit[1]
+    _tg = np.asarray(_ctp[0]); _vl = np.asarray(_ctp[3])
+    _sw = np.asarray(_ctp[6], dtype=bool)
+    _n = len(_tg)
+    _end = np.arange(_n)
+    for _t in range(_n - 2, -1, -1):
+        if (_vl[_t] and _vl[_t + 1] and (not _sw[_t]) and (not _sw[_t + 1])
+                and int(_tg[_t]) == int(_tg[_t + 1])):
+            _end[_t] = _end[_t + 1]
+    if len(_TREND_BLOCK_END_MEMO) >= 16:
+        _TREND_BLOCK_END_MEMO.pop(next(iter(_TREND_BLOCK_END_MEMO)))
+    _TREND_BLOCK_END_MEMO[id(_ctp)] = (_ctp, _end)
+    return _end
 
 
 def _trend_run_cum_return(target, ret, valid, sideways):
@@ -19788,6 +19859,12 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
         _mask = _ctp[7] if is_buy else _ctp[8]   # (정답|중립)&valid, uint8
     except Exception:
         _mask = None
+    # ★★★ (요청) 등락률을 '그 최적자리 구간이 끝날 때까지'로 표시하기 위한 구간 끝 인덱스.
+    try:
+        _bend = _trend_block_end_cached(close_arr)
+    except Exception:
+        _bend = None
+    _ret_mode = str(globals().get('SIGNAL_DATE_RET_MODE', 'trend_end')).lower()
     fire_idx = np.nonzero(sig)[0]
     fire_idx = fire_idx[fire_idx <= n - 1 - _hz]   # disp+1 = i+h 가 범위 안이어야
 
@@ -19817,8 +19894,22 @@ def _signal_dates_with_outcome(feat, row, close_arr, is_buy, target_threshold=No
             p0 = close_arr[_disp]; p1 = close_arr[_disp + 1]
             if not (p0 and p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
                 continue
-            _ret_d = p1 / p0 - 1.0
-            _rets.append(_ret_d)
+            _ret_d = p1 / p0 - 1.0        # 하루치(다음날 등락) — 판정 폴백용
+            # ★★★ (요청) 표시 등락률 = 표시일 종가 → 그 최적자리 구간 '마지막 날' 종가.
+            #   예) 2024-02-05 매수자리, 매수 구간이 2024-02-08까지 이어짐
+            #       → 143.66 → 145.93 = +1.6% (예전엔 다음날 하루치 +0.3%만 찍혔다)
+            #   매도도 같은 식이라 매도 구간이 끝날 때까지의 하락률이 음수로 표시된다.
+            #   구간 마지막 날 자신은 더 들고 갈 날이 없으므로 하루치를 그대로 쓴다.
+            _ret_show = _ret_d
+            if _ret_mode != 'next_day' and _bend is not None and _disp < len(_bend):
+                _e = int(_bend[_disp])
+                if _ret_mode == 'trend_sum':
+                    _e = min(_e + 1, len(close_arr) - 1)   # 구간 다음날까지(=신뢰도 추세누적 기준)
+                if _e > _disp:
+                    _pe = close_arr[_e]
+                    if _pe and _pe > 0 and np.isfinite(_pe):
+                        _ret_show = _pe / p0 - 1.0
+            _rets.append(_ret_show)
             _any_valid = True
             _is_ok_d = bool(_mask[_disp]) if _mask is not None else \
                        (_ret_d > 0 if is_buy else _ret_d < 0)
@@ -30004,7 +30095,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             _cols_all += ['wilson점수%', 'net가중치점수']
             # ★★★ (요청) 신호발생일과 다음날 실제등락률을 "YYYY-MM-DD(+3%), ..." 형식으로
             #   나열 — 예측이 맞았으면(매수=상승/매도=하락) 초록, 틀렸으면 빨강 글자색.
-            _cols_all += ['신호일자(다음날등락%)']
+            _cols_all += ['신호일자(구간끝까지등락%)']
             _c_dates_all = len(_cols_all)   # ★ 이 컬럼의 위치(뒤에서 참조)
             _cols_all += ['사용여부']   # ★ (요청) 최종 채택 풀 포함 여부
             _c_used_all = len(_cols_all)
@@ -30117,7 +30208,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
             if _verify_on_disp:
                 _widths += [9, 9, 10, 9, 9, 9, 10, 8, 8, 8, 8, 9]
             _widths += [10, 12]
-            _widths += [60]   # ★ 신호일자(다음날등락%) — 날짜가 여러 개 나열되므로 넓게
+            _widths += [60]   # ★ 신호일자(구간끝까지등락%) — 날짜가 여러 개 나열되므로 넓게
             _widths += [10]   # ★ 사용여부
             for _ci, _w in enumerate(_widths, 1):
                 ws_all.column_dimensions[get_column_letter(_ci)].width = _w
@@ -30273,7 +30364,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                                  '몰림비율%', '몰림기준선%', '①기저확률', '②기대수익', '③안정성',
                                  '통과수/3', '2차검증통과']
             _cols_latest += ['wilson점수%', 'net가중치점수']
-            _cols_latest += ['신호일자(다음날등락%)']
+            _cols_latest += ['신호일자(구간끝까지등락%)']
             _c_dates_latest = len(_cols_latest)
             _cols_latest += ['일별백테스트 사용여부']
             _c_used_latest = len(_cols_latest)
