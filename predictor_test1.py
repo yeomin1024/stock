@@ -14750,7 +14750,10 @@ SIMPLE_POOL_REL_SOFT_CAP       = True
 # ★★★ (요청) '매수/매도 지표선정' 시트에서 개수를 늘려가며 탐색할 최대 지표 수
 #   ★ (실측 후 상향) 60이면 BTSG에서 매수·매도 양쪽 모두 정확히 상한에 붙어버려
 #     '진짜 최적'인지 '탐색이 잘린 것'인지 구분이 안 됐다. 곡선이 꺾이는 지점이 보이도록 늘림.
-SIDE_POOL_MAX_CANDIDATES       = 150
+SIDE_POOL_MAX_CANDIDATES       = 300
+# ★★★ (요청 — 실측 3차) 균형정확도 최고점 대비 이 폭(%p) 안에 드는 '가장 작은 지표 수'를
+#   채택한다. 0으로 두면 최고점 그대로(예전 동작). 크게 잡을수록 더 적은 지표만 쓴다.
+SIDE_POOL_BAL_TOLERANCE        = 1.0
 # ★★★ (요청 — 신규) 중립 자리 — 매수 전환일과 매도추세 종료일 '양쪽 모두'에 시간·가격이
 #   동시에 가까운 날은 중립(매수/매도 어느 판정이든 성공 인정).
 SIMPLE_POOL_NEUTRAL_DAY_WINDOW = 3      # "±2~3일 이내" — 기준일과의 최대 거리(일)
@@ -20031,7 +20034,7 @@ def _select_pool_by_side(feat, close_arr, buy_pool, sell_pool):
     _valid = np.asarray(_ctp[3], dtype=bool)
     _ok = {'매수': np.asarray(_ctp[7], dtype=bool), '매도': np.asarray(_ctp[8], dtype=bool)}
     n = len(feat.index)
-    _max_k = int(globals().get('SIDE_POOL_MAX_CANDIDATES', 150))
+    _max_k = int(globals().get('SIDE_POOL_MAX_CANDIDATES', 300))
     out = {}
 
     for _side, _pool in (('매수', buy_pool), ('매도', sell_pool)):
@@ -20130,14 +20133,27 @@ def _select_pool_by_side(feat, close_arr, buy_pool, sell_pool):
             res['trace'].append(_rec)
             _prev_wrong = _wrong
             if _best is None or _rec['bal'] > _best['bal']:
-                _best = _rec                       # ★ 채택 = 균형정확도 최대
+                _best = _rec                       # 균형정확도 최고점
             if _best_wrong is None or _wrong < _best_wrong['wrong']:
                 _best_wrong = _rec                 # (참고) 틀린자리 최소 지점
         res['alt_k'] = int(_best_wrong['k']) if _best_wrong else 0
+        # ★★★ (요청 — 실측 3차) 균형정확도는 지표를 넣을수록 거의 단조로 올라간다(in-sample
+        #   적합). 실측 BTSG 매수 측면은 상한 150 중 149에서 최고가 나왔고 마지막 10단계에서도
+        #   +0.79%p씩 오르는 중이었다 — 최고점만 보면 항상 '가능한 한 많이'가 되어 과적합이고,
+        #   미미한 개선을 위해 지표 150개를 쓰는 것도 실용적이지 않다.
+        #   → 최고점 대비 허용폭(기본 1.0%p) 안에 들어오는 '가장 작은 k'를 채택한다(오컴).
+        #     최고점 자체는 시트에 파란색으로 함께 표시해 얼마나 양보했는지 보이게 한다.
+        res['peak_k'] = int(_best['k']) if _best is not None else 0
         if _best is not None:
-            res['best_k'] = int(_best['k']); res['threshold'] = float(_best['thr'])
-            res['rows'] = _df.head(_best['k']).reset_index(drop=True)
-            res['best'] = _best
+            _tol_bal = float(globals().get('SIDE_POOL_BAL_TOLERANCE', 1.0))
+            _pick = _best
+            for _rc in res['trace']:
+                if _rc['bal'] >= _best['bal'] - _tol_bal:
+                    _pick = _rc
+                    break
+            res['best_k'] = int(_pick['k']); res['threshold'] = float(_pick['thr'])
+            res['rows'] = _df.head(_pick['k']).reset_index(drop=True)
+            res['best'] = _pick; res['peak'] = _best
         out[_side] = res
     return out
 
@@ -30674,7 +30690,11 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "'매수자리를 맞히는가 / 매도자리를 맞히는가' 두 갈래로만 나눠서, 각 측면의 지표를 "
                 "성공률 높은 순으로 1개씩 늘려가며 매 단계 성적을 기록한다. 단계마다 그 세트의 "
                 "날짜별 발화비율 분위수로 임계값 격자를 다시 훑어, 균형정확도가 가장 높아지는 "
-                "(임계값·개수)를 채택한다(★ 초록). 균형정확도=0.5×(정답자리를 잡은 비율 + "
+                "(임계값·개수)를 찾은 뒤, 그 최고점 대비 허용폭(SIDE_POOL_BAL_TOLERANCE, 기본 "
+                "1.0%p) 안에 드는 '가장 작은 지표 수'를 채택한다(★ 초록). 균형정확도는 지표를 "
+                "넣을수록 거의 단조로 올라가서(in-sample 적합) 최고점만 보면 항상 '가능한 한 많이'가 "
+                "되기 때문이다. 최고점 자체는 파란색으로 함께 표시한다. "
+                "균형정확도=0.5×(정답자리를 잡은 비율 + "
                 "오답자리를 거른 비율) — '전부 매수 판정'도 '아무것도 판정 안 함'도 50%로 눌러서, "
                 "실제로 잘 맞히는 지점에서만 올라간다. 수익률%=매수 측면은 '판정=매수인 날 롱, "
                 "아니면 현금', 매도 측면은 '판정=매도인 날 현금, 아니면 롱'으로 돌린 총수익률이고 "
@@ -30700,8 +30720,9 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _r_sd += 1
                 c = ws_sd.cell(_r_sd, 1)
                 c.value = (f"── {_side} 측면 — 성공률 내림차순, 총 {len(_tr)}단계 탐색 "
-                           f"｜ ★채택 k={_rr.get('best_k', 0)}개(균형정확도 최대), 임계값 "
-                           f"{_rr.get('threshold', 0):.2f} ｜ 참고: 틀린자리 최소는 "
+                           f"｜ ★채택 k={_rr.get('best_k', 0)}개, 임계값 "
+                           f"{_rr.get('threshold', 0):.4f} ｜ 균형정확도 최고점은 "
+                           f"k={_rr.get('peak_k', 0)}개 ｜ 틀린자리 최소는 "
                            f"k={_rr.get('alt_k', 0)}개 ──")
                 c.font = Font(bold=True, color='FFFFFF')
                 c.fill = PatternFill('solid', fgColor='2E5B8A' if _side == '매수' else '8A2E2E')
@@ -30713,6 +30734,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     hc.fill = PatternFill('solid', fgColor='4472C4')
                 _r_sd += 1
                 _bk = int(_rr.get('best_k', 0)); _ak = int(_rr.get('alt_k', 0))
+                _pk = int(_rr.get('peak_k', 0))
                 for _rec in _tr:
                     _vals = [_rec['k'], _rec['name'], round(_rec['success_rate'] * 100, 2)
                              if _rec['success_rate'] <= 1.0 else round(_rec['success_rate'], 2),
@@ -30723,14 +30745,19 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                              (f"{_rec['delta']:+d}" if _rec['k'] > 1 else '—'),
                              _rec['remain'], round(_rec['acc'], 2), round(_rec['thr'], 2),
                              _rec['new_cover'],
-                             ('★ 채택(균형정확도최대)' if _rec['k'] == _bk
-                              else ('틀린자리최소' if _rec['k'] == _ak else ''))]
+                             ('★ 채택' if _rec['k'] == _bk
+                              else ('균형정확도 최고점' if _rec['k'] == _pk
+                                    else ('틀린자리최소' if _rec['k'] == _ak else '')))]
                     for _ci, _v in enumerate(_vals, 1):
                         ws_sd.cell(_r_sd, _ci).value = _v
                     if _rec['k'] == _bk:
                         for _ci in range(1, len(_cols_sd) + 1):
                             ws_sd.cell(_r_sd, _ci).fill = PatternFill('solid', fgColor='C6E0B4')
                         ws_sd.cell(_r_sd, len(_cols_sd)).font = Font(bold=True, color='1F6F1F')
+                    elif _rec['k'] == _pk:
+                        for _ci in range(1, len(_cols_sd) + 1):
+                            ws_sd.cell(_r_sd, _ci).fill = PatternFill('solid', fgColor='DDEBF7')
+                        ws_sd.cell(_r_sd, len(_cols_sd)).font = Font(bold=True, color='1F4E79')
                     elif _rec['k'] == _ak:
                         for _ci in range(1, len(_cols_sd) + 1):
                             ws_sd.cell(_r_sd, _ci).fill = PatternFill('solid', fgColor='FFF2CC')
