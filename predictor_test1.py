@@ -14748,7 +14748,9 @@ SIMPLE_POOL_REL_FAIL_RATIO_W   = 1.0
 #   상한에 점근만 하므로 '만점'이 없어지고 상한 근처 지표들의 서열이 보존된다.
 SIMPLE_POOL_REL_SOFT_CAP       = True
 # ★★★ (요청) '매수/매도 지표선정' 시트에서 개수를 늘려가며 탐색할 최대 지표 수
-SIDE_POOL_MAX_CANDIDATES       = 60
+#   ★ (실측 후 상향) 60이면 BTSG에서 매수·매도 양쪽 모두 정확히 상한에 붙어버려
+#     '진짜 최적'인지 '탐색이 잘린 것'인지 구분이 안 됐다. 곡선이 꺾이는 지점이 보이도록 늘림.
+SIDE_POOL_MAX_CANDIDATES       = 150
 # ★★★ (요청 — 신규) 중립 자리 — 매수 전환일과 매도추세 종료일 '양쪽 모두'에 시간·가격이
 #   동시에 가까운 날은 중립(매수/매도 어느 판정이든 성공 인정).
 SIMPLE_POOL_NEUTRAL_DAY_WINDOW = 3      # "±2~3일 이내" — 기준일과의 최대 거리(일)
@@ -20029,7 +20031,7 @@ def _select_pool_by_side(feat, close_arr, buy_pool, sell_pool):
     _valid = np.asarray(_ctp[3], dtype=bool)
     _ok = {'매수': np.asarray(_ctp[7], dtype=bool), '매도': np.asarray(_ctp[8], dtype=bool)}
     n = len(feat.index)
-    _max_k = int(globals().get('SIDE_POOL_MAX_CANDIDATES', 60))
+    _max_k = int(globals().get('SIDE_POOL_MAX_CANDIDATES', 150))
     out = {}
 
     for _side, _pool in (('매수', buy_pool), ('매도', sell_pool)):
@@ -20055,6 +20057,7 @@ def _select_pool_by_side(feat, close_arr, buy_pool, sell_pool):
         _cl = np.asarray(close_arr, dtype=float)
         _r_day[1:] = np.where(_cl[:-1] > 0, _cl[1:] / np.maximum(_cl[:-1], 1e-12) - 1.0, 0.0)
         _r_day[~np.isfinite(_r_day)] = 0.0
+        _bh_ret = float(np.sum(_r_day[1:]))        # 단순보유(항상 롱) 수익률 — 초과수익 기준선
         _wsum = np.zeros(n); _csum = np.zeros(n)   # 가중 발화합 / 가중치합
         _prev_wrong = None; _best = None; _best_wrong = None
         for _k, (_, _row) in enumerate(_df.iterrows(), 1):
@@ -20100,10 +20103,21 @@ def _select_pool_by_side(feat, close_arr, buy_pool, sell_pool):
             if _side == '매도':
                 _posm = 1.0 - _posm
             _ret_g = _posm[:, :-1] @ _r_day[1:]                         # 임계별 총수익률
-            _order = np.lexsort((_wrong_g, -_ret_g))                    # 수익률↑ → 틀린자리↓
+            # ★★★ (요청 — 실측 2차 수정) 채택기준을 '균형정확도'로 바꾼다.
+            #   · '틀린자리 최소'는 커버리지가 낮을 때 놓친 정답자리가 오답을 압도해 붕괴.
+            #   · '수익률 최대'도 상승 종목에서는 "거의 항상 롱"(=단순보유)이 최고가 되어
+            #     붕괴한다 — 실측 BTSG에서 매수·매도 양쪽 모두 470%대로 수렴해 버렸다.
+            #   · 균형정확도 0.5×(TPR+TNR)는 '전부 매수 판정'(TNR→0)과 '아무것도 판정 안 함'
+            #     (TPR→0)을 둘 다 0.5로 눌러서, 실제로 잘 맞히는 지점에서만 올라간다.
+            #     상태별 지표선정이 쓰는 STATE_THR_BALANCED와 같은 사상이다.
+            #   수익률·초과수익은 판단 근거로 함께 보여주되 채택기준으로는 쓰지 않는다.
+            _tpr_g = _tp / float(max(_npos, 1))
+            _tnr_g = (_nneg - _fp) / float(max(_nneg, 1))
+            _bal_g = 0.5 * (_tpr_g + _tnr_g)
+            _order = np.lexsort((_wrong_g, -_bal_g))                    # 균형정확도↑ → 틀린자리↓
             _i = int(_order[0])
             _wrong = int(_wrong_g[_i]); _thr = float(_grid[_i])
-            _ret_k = float(_ret_g[_i])
+            _ret_k = float(_ret_g[_i]); _bal_k = float(_bal_g[_i])
             _rec = {'k': _k, 'name': str(_row.get('display_name', _row.get('indicator', ''))),
                     'success_rate': float(_row.get('success_rate', 0.0) or 0.0),
                     'reliability': float(_row.get('reliability', 0.0) or 0.0),
@@ -20111,11 +20125,12 @@ def _select_pool_by_side(feat, close_arr, buy_pool, sell_pool):
                     'right': int(_npos + _nneg - _wrong), 'wrong': _wrong,
                     'remain': int(_rem_g[_i]), 'acc': float(_acc_g[_i]) * 100.0,
                     'thr': _thr, 'new_cover': _new_cover, 'ret': _ret_k * 100.0,
+                    'bal': _bal_k * 100.0, 'excess': (_ret_k - _bh_ret) * 100.0,
                     'delta': (0 if _prev_wrong is None else _wrong - _prev_wrong)}
             res['trace'].append(_rec)
             _prev_wrong = _wrong
-            if _best is None or _rec['ret'] > _best['ret']:
-                _best = _rec                       # ★ 채택 = 수익률 최대
+            if _best is None or _rec['bal'] > _best['bal']:
+                _best = _rec                       # ★ 채택 = 균형정확도 최대
             if _best_wrong is None or _wrong < _best_wrong['wrong']:
                 _best_wrong = _rec                 # (참고) 틀린자리 최소 지점
         res['alt_k'] = int(_best_wrong['k']) if _best_wrong else 0
@@ -30658,20 +30673,24 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 "매수/매도 2측면 지표선정 — 상태(롱지속·롱→숏·숏지속·숏→롱) 구분 없이 "
                 "'매수자리를 맞히는가 / 매도자리를 맞히는가' 두 갈래로만 나눠서, 각 측면의 지표를 "
                 "성공률 높은 순으로 1개씩 늘려가며 매 단계 성적을 기록한다. 단계마다 그 세트의 "
-                "날짜별 발화비율로 임계값 격자를 다시 훑어, 그 세트로 돌렸을 때 총수익률이 가장 "
-                "높아지는 (임계값·개수)를 채택한다(★ 초록). 수익률%=매수 측면은 '판정=매수인 날 롱, "
-                "아니면 현금', 매도 측면은 '판정=매도인 날 현금, 아니면 롱'으로 돌린 총수익률. "
-                "※ '틀린자리 최소'를 기준으로 삼으면 커버리지가 낮을 때 '발화하면 무조건 판정'"
-                "(임계 0)+'지표 전부 사용'으로 붕괴하므로, 상태별 지표선정 시트와 같은 수익 기준을 "
-                "쓴다. 틀린자리 최소 지점은 노란색으로 함께 표시한다. "
+                "날짜별 발화비율 분위수로 임계값 격자를 다시 훑어, 균형정확도가 가장 높아지는 "
+                "(임계값·개수)를 채택한다(★ 초록). 균형정확도=0.5×(정답자리를 잡은 비율 + "
+                "오답자리를 거른 비율) — '전부 매수 판정'도 '아무것도 판정 안 함'도 50%로 눌러서, "
+                "실제로 잘 맞히는 지점에서만 올라간다. 수익률%=매수 측면은 '판정=매수인 날 롱, "
+                "아니면 현금', 매도 측면은 '판정=매도인 날 현금, 아니면 롱'으로 돌린 총수익률이고 "
+                "초과수익%p는 거기서 단순보유 수익률을 뺀 값(양수여야 지표가 실제로 도움이 된 것). "
+                "※ '틀린자리 최소'나 '수익률 최대'를 기준으로 쓰면 각각 '임계 0+전부 사용', "
+                "'거의 항상 롱(=단순보유)'으로 붕괴해서 균형정확도를 쓴다. "
+                "틀린자리 최소 지점은 노란색으로 함께 표시한다. "
                 "맞는자리=판정이 실제 최적자리와 일치한 날 / 틀린자리=어긋난 날 / "
                 "남은자리=그 측면의 정답자리인데 아무 지표도 발화 안 한 날 / "
                 "신규커버=그전까지 아무도 발화 안 하던 날에 이 지표가 새로 발화한 날 수. "
                 "※ 상태별 특화 시트와 같은 방식·같은 정답자리 기준이라 두 접근을 직접 비교할 수 있다.")
             ws_sd.cell(1, 1).font = Font(italic=True, size=9, color='808080')
-            ws_sd.merge_cells('A1:N1')
+            ws_sd.merge_cells('A1:P1')
             _cols_sd = ['지표수(k)', '이번추가지표', '성공률%', '신뢰도', '신호개수',
-                        '수익률%', '맞는자리', '틀린자리', '틀린자리 변화', '남은자리(발화없음)',
+                        '균형정확도%', '수익률%', '초과수익%p', '맞는자리', '틀린자리',
+                        '틀린자리 변화', '남은자리(발화없음)',
                         '적중률%', '최적임계값', '신규커버일수', '채택여부']
             _r_sd = 2
             _sd_sum = []
@@ -30681,7 +30700,7 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                 _r_sd += 1
                 c = ws_sd.cell(_r_sd, 1)
                 c.value = (f"── {_side} 측면 — 성공률 내림차순, 총 {len(_tr)}단계 탐색 "
-                           f"｜ ★채택 k={_rr.get('best_k', 0)}개(수익 최대), 임계값 "
+                           f"｜ ★채택 k={_rr.get('best_k', 0)}개(균형정확도 최대), 임계값 "
                            f"{_rr.get('threshold', 0):.2f} ｜ 참고: 틀린자리 최소는 "
                            f"k={_rr.get('alt_k', 0)}개 ──")
                 c.font = Font(bold=True, color='FFFFFF')
@@ -30698,12 +30717,13 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     _vals = [_rec['k'], _rec['name'], round(_rec['success_rate'] * 100, 2)
                              if _rec['success_rate'] <= 1.0 else round(_rec['success_rate'], 2),
                              round(_rec['reliability'], 4), _rec['n_signals'],
-                             round(_rec.get('ret', 0.0), 2),
+                             round(_rec.get('bal', 0.0), 2), round(_rec.get('ret', 0.0), 2),
+                             round(_rec.get('excess', 0.0), 2),
                              _rec['right'], _rec['wrong'],
                              (f"{_rec['delta']:+d}" if _rec['k'] > 1 else '—'),
                              _rec['remain'], round(_rec['acc'], 2), round(_rec['thr'], 2),
                              _rec['new_cover'],
-                             ('★ 채택(수익최대)' if _rec['k'] == _bk
+                             ('★ 채택(균형정확도최대)' if _rec['k'] == _bk
                               else ('틀린자리최소' if _rec['k'] == _ak else ''))]
                     for _ci, _v in enumerate(_vals, 1):
                         ws_sd.cell(_r_sd, _ci).value = _v
@@ -30714,20 +30734,20 @@ def write_excel(meta_results_df, inner_all, inner_passed,
                     elif _rec['k'] == _ak:
                         for _ci in range(1, len(_cols_sd) + 1):
                             ws_sd.cell(_r_sd, _ci).fill = PatternFill('solid', fgColor='FFF2CC')
-                    if _rec.get('ret', 0.0) > 0:
-                        ws_sd.cell(_r_sd, 6).font = Font(color='006100')
-                    elif _rec.get('ret', 0.0) < 0:
-                        ws_sd.cell(_r_sd, 6).font = Font(color='C00000')
+                    if _rec.get('excess', 0.0) > 0:
+                        ws_sd.cell(_r_sd, 8).font = Font(color='006100')
+                    elif _rec.get('excess', 0.0) < 0:
+                        ws_sd.cell(_r_sd, 8).font = Font(color='C00000')
                     if _rec['k'] > 1 and _rec['delta'] > 0:
-                        ws_sd.cell(_r_sd, 9).font = Font(color='C00000', bold=True)
+                        ws_sd.cell(_r_sd, 11).font = Font(color='C00000', bold=True)
                     elif _rec['k'] > 1 and _rec['delta'] < 0:
-                        ws_sd.cell(_r_sd, 9).font = Font(color='006100', bold=True)
+                        ws_sd.cell(_r_sd, 11).font = Font(color='006100', bold=True)
                     if _rec['new_cover'] == 0:
-                        ws_sd.cell(_r_sd, 13).font = Font(color='808080')
+                        ws_sd.cell(_r_sd, 15).font = Font(color='808080')
                     _r_sd += 1
                 _r_sd += 1
                 _sd_sum.append(f"{_side} k={_bk}")
-            for _ci, _w in enumerate([9, 26, 9, 9, 9, 10, 10, 10, 12, 16, 9, 11, 12, 16], 1):
+            for _ci, _w in enumerate([9, 26, 9, 9, 9, 12, 10, 11, 10, 10, 12, 16, 9, 11, 12, 20], 1):
                 ws_sd.column_dimensions[get_column_letter(_ci)].width = _w
             ws_sd.freeze_panes = 'A4'
             globals()['_SIDE_SELECT_REPORT'] = _sres
