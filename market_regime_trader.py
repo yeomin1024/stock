@@ -1,6 +1,6 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.17.0 - 2026-09-03 - 규칙 ⑦ 경계 -20%→-15%(종가 기준 여유폭, 3중 실증) + 중간 하락 브레이크 4계열 전수 기각(소프트 트리거 캡만 보류 격자)
+#  VERSION: v1.18.0 - 2026-09-03 - 유효 저점 판별(규칙 ⑧) 설계·전수 실증(보류) + MDD 최소화 레버 프론티어 실측 — 라이브 신호 불변
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -12,6 +12,52 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.18.0 | 2026-09-03 | 사용자가 v1.17.0 실행 결과(market_regime_report_1.xlsx, 19번째)를 제출하며
+#                        "핵심 지시: 낙폭 최소화를 최우선(작은 수익은 포기 가능). 급락 뒤 유효 저점을
+#                        판별해 비중을 최대화하되 데드캣 바운스는 피할 것. 필요하면 기술적 지표 추가.
+#                        현재보다 총수익이 높아야 함"을 요청.
+#
+#                        [report19 판독 — v1.17.0 예측대로] FRED 54/54, CAGR 16.19→16.96%(예측 ≈17.1),
+#                        샤프 1.504→1.540, MDD -8.65% 동일, 2025 +20.9→+27.2%(예측 ≈27), 2022 동일.
+#                        06c 보류 격자 "소프트 트리거 캡" 16.80%/손실일 동일 → 기각 실데이터 확정.
+#
+#                        [§A 유효 저점 vs 데드캣 — 전수 라벨링, 결론: 확인 시점엔 구별 불가]
+#                        종가 8% 지그재그로 2018~2026 ≥8% 하락 뒤 반등 21건(저점 +5% 확인일 기준,
+#                        이후 60일 신저점이면 데드캣): 유효 9·데드캣 12. 확인 시점 지표 중앙값(유효/
+#                        데드캣): RSI@저점 29.6/29.0, RSI@확인 53/50, 가격/MA50 -2.1/-2.6%, MA50 기울기
+#                        -2.8/-1.6%, 트리거백분위 0.69/0.76, H 0.80/0.76, 점수 0.31/0.28, RSP/SPY
+#                        0.00/-0.01, 실현변동성 0.29/0.28, 되돌림 45/34% — **전 지표 동일**. 갈리는 것은
+#                        사후 60일 수익(+11.1% vs -0.2%)뿐. 즉 반등 초입에서 유효 저점을 판별하는
+#                        인과 신호는 이 지표군에 없다(기술적 지표를 더 넣어도 같은 결론 — 신규 지표
+#                        추가 금지 원칙과 별개로, 확인 시점 분포가 겹친다는 것이 데이터의 답).
+#
+#                        [§A-2 규칙 ⑧ 구조적 저점 확인 승격 — 설계·구현·실증 후 보류] 판별이 불가하면
+#                        남는 것은 '구조 확인'(200일선 되찾기+H 진정)으로 단계 진입하는 것. 규칙 ⑧:
+#                        ≥8% 조정 후 +5% 회복 & 가격>200MA & H<0.70 & 트리거/ΔH 침묵 → 점수 하한 없이
+#                        1.0(2026-04 +20% 반등을 0.5로 통과한 사례의 해법). 두 데이터셋 2018+ 리플레이
+#                        (충실도 99.95%): CAGR +0.8pp, 17구간 10승 7패, **MDD -8.98→-11.08%**(2018-03
+#                        재하락 풀포지션), 샤프 -0.03, 손실일 +21 → 'MDD 최우선' 지시와 충돌, 비활성
+#                        (USE_STRUCT_BOTTOM_PROMOTION=False). 06c 보류 격자 행에서 매 실행 실측.
+#                        코드: generate_signals(struct_dd=) 규칙 ⑧, run() struct_dd 산출(격자용),
+#                        출력 컬럼 struct_bottom, 게이트 제외(sb_vals), Config 3필드.
+#
+#                        [§B MDD 최소화 레버 — 전수 실측, 결론: 구조적 바닥 ≈ -8.6%] 전략 낙폭 상위
+#                        에피소드 2018-02(-8.65) / 2024-08(-8.38) / 2020-02(-7.87) / 2020-09(-7.68) /
+#                        2020-06-11(-7.07) / 2022(-6.69)가 비슷한 깊이로 독립 발생 — 하나를 깎으면 다음이
+#                        MDD가 된다. 실측(2018+ 리플레이): 즉시 하드컷(규칙 ⓪ 무히스테리시스) MDD
+#                        -8.98→**-11.93%**(바닥 매도 후 반등 놓침); 즉시 소프트캡 FT>0.90 MDD -8.64%
+#                        (-0.3pp)에 CAGR -0.7pp; FT>0.85 MDD -9.29%(악화); 최대비중 0.9/0.8/0.7 → MDD
+#                        전부 -8.6%(2022-12 에피소드가 새 MDD)에 CAGR -1.4/-2.7/-4.1pp; A-3 비대칭
+#                        MDD -9.84%(악화). 현 구조에서 MDD를 유의미하게 낮추는 유일한 길은 전 비중
+#                        일괄 축소(×0.75 → MDD ≈ -6.5%, CAGR ≈ -3.5pp)뿐 — 06c 보류 격자에 "전 비중
+#                        ×0.75(MDD 우선 참고)" 행을 두어 매 실행 실측(사용자가 그 비용을 명시적으로
+#                        선택할 때 POS_RISK_ON/POS_NEUTRAL 로 적용).
+#
+#                        [라이브 신호] v1.17.0과 비트 동일(활성 변경 없음). 06c 보류 격자 7행.
+#
+#                        [검증] 신규 test_v118_struct_bottom.py(기본값·규칙 ⑧ 역학/차단조건/게이트
+#                        제외/하위호환·06c 7행), 기존 회귀 재실행, e2e 배선.
+#
 #  v1.17.0 | 2026-09-03 | 사용자가 v1.16.0 실행 결과(market_regime_report.xlsx, 18번째)를 제출하며
 #                        "하락을 더 완전히 회피하거나 비중을 크게 줄여 손실을 막고, 저점 매수 시
 #                        비중을 많이 넣도록. 중간 크기 하락 미회피가 보인다. 단 여기서 더 나빠지면
@@ -1687,6 +1733,21 @@ class Config:
     # 남겨 06c에서 매 실행 실측한다.
     USE_SOFT_TRIGGER_CAP: bool = False
     SOFT_TRIGGER_PCT: float = 0.93
+    # [v1.18.0 §A ⚠ 신호(위험) 파라미터 — 기본 비활성(보류)] 규칙 ⑧ 구조적 저점 확인 승격. 사용자
+    # 요청 "큰 하락 뒤 유효 저점을 판별해 비중 최대화, 데드캣 회피, MDD 최소화 우선"의 후보.
+    # 설계: ≥8% 조정(고점→저점) 후 +5% 회복 확인 & 200일선 되찾기 & H<0.70 & 트리거/ΔH 침묵이면
+    # 점수 하한(규칙 ⑥의 0.30) 없이 1.0. 실증(report19·report15 2018+ 리플레이, 충실도 99.95%):
+    # CAGR 14.70→15.50%(+0.8pp), 발동 17구간 중 10승 7패(증분 손익 합 +5.5%), **MDD -8.98→-11.08%**
+    # (2018-02-27~03-21: 2월 저점 +5% 회복·200MA 회복 직후 3월 재하락 -7.5%를 풀포지션으로 통과),
+    # 샤프 1.351→1.322, -1% 손실일 100→121. -10% 변형은 CAGR +0.1pp에 MDD 동일 훼손, H<0.85 변형은
+    # CAGR +1.4pp지만 MDD·손실일 더 훼손. MDD 최소화 우선 지시와 정면 충돌 → 비활성. 근본 원인:
+    # ≥8% 하락 뒤 반등 21건(유효 9·데드캣 12) 전수에서 확인 시점(+5%)의 RSI·MA 위치·50MA 기울기·
+    # 트리거·H·점수·RSP/SPY·실현변동성·되돌림 비율 중앙값이 두 집단에서 사실상 동일 — 유효 저점과
+    # 데드캣은 확인 시점에는 구별되지 않고 사후(신저점 여부)에만 드러난다(IMPROVEMENT_PLAN_v1.18.md
+    # §B 표). 06c 보류 격자에 행을 두어 매 실행 실측한다.
+    USE_STRUCT_BOTTOM_PROMOTION: bool = False
+    STRUCT_BOTTOM_DD: float = -0.08      # '조정' 하한(고점→저점 순서 보장, RECOVERY_LOW_WINDOW 창)
+    STRUCT_BOTTOM_MAX_H: float = 0.70    # =HAZARD_BLOCK. 승격 시 H 상한(게이트 임계와 동일 → 게이트 무충돌)
     MIN_HAZARD_INDICATORS: int = 1     # 00_실행요약 "위험트랙 채택 지표수" 라인의 참고용 최소기준(정보성, 신호를 막지 않음)
     # [v1.4.0 §3(a) ⚠ 신호(위험) 파라미터] 실사용 결과(market_regime_report_3.xlsx) 진단에서
     # 해저드 트랙이 사실상 무력화된 것을 확인했다(IMPROVEMENT_PLAN_v1.4.md §3) — 기간당
@@ -4517,7 +4578,8 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      haz_pct: Optional[pd.Series] = None,
                      fast_pct: Optional[pd.Series] = None,
                      recov_conf: Optional[pd.Series] = None,
-                     deep_recov: Optional[pd.Series] = None) -> pd.DataFrame:
+                     deep_recov: Optional[pd.Series] = None,
+                     struct_dd: Optional[pd.Series] = None) -> pd.DataFrame:
     """
     t일 종가 기준으로 목표비중을 확정한다(t일 정보만 사용).
     실제 체결은 [7]에서 t+1일 시가로 이뤄진다.
@@ -4680,6 +4742,25 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
             deep_boost = deep_boost & (score_pct >= cfg.PCT_RISK_OFF)
         raw_state[deep_boost] = "RISK_ON"
 
+    # [v1.18.0 §A] 규칙 ⑧ 구조적 저점 확인 승격 — 최근 RECOVERY_LOW_WINDOW 안에 STRUCT_BOTTOM_DD
+    # (-8%, 고점→저점 순서 보장) 이상의 조정이 있었고(struct_dd), 종가가 저점 대비 회복 확인
+    # (recov_conf, +5%)됐으며, **가격이 200일선을 되찾았고**(trend200>0 — 베어마켓 랠리가 고전적으로
+    # 실패하는 선), H가 STRUCT_BOTTOM_MAX_H(0.70=BLOCK, 능동 위험 아님) 미만이고, 트리거·H급등·ΔH·
+    # 소프트캡이 침묵하면 중립을 위험선호(1.0)로 승격한다. 규칙 ⑥과 달리 복합점수 하한(0.30)을
+    # 요구하지 않는다 — 조정 뒤 회복장에서 매크로 점수가 하위 20%대에 머물러 규칙 ⑥이 침묵한
+    # 2026-04(+20% 반등을 0.5로 통과) 사례의 해법. 규칙 ⑦(-15%)과의 관계: ⑦은 200MA 아래 V반등
+    # (2020-04·2025-04)을, ⑧은 200MA 위로 복귀한 조정 회복을 맡는다. 데드캣 방어: 21개 반등
+    # 이벤트 전수에서 200MA 되찾기+H<0.70 조건을 통과한 데드캣은 2022-02-02 하나뿐(IMPROVEMENT_
+    # PLAN_v1.18.md §B). 게이트 적용 제외(sb_vals — ⑤·⑥·⑦과 동일 근거).
+    struct_boost = pd.Series(False, index=score_pct.index)
+    if (cfg.USE_STRUCT_BOTTOM_PROMOTION and cfg.USE_HAZARD_TRACK and haz_pct is not None
+            and recov_conf is not None and struct_dd is not None):
+        struct_boost = (score_pct.notna() & recov_conf.fillna(False).astype(bool)
+                        & struct_dd.fillna(False).astype(bool) & (trend200 > 0)
+                        & haz_pct.notna() & (haz_pct < cfg.STRUCT_BOTTOM_MAX_H)
+                        & ~fast_fire & ~haz_enter & ~haz_vel & ~soft_fire & raw_state.eq("NEUTRAL"))
+        raw_state[struct_boost] = "RISK_ON"
+
     # [v1.0.3] 채택지표가 부족해 복합점수가 없는 구간은 '현금'이 아니라
     # 가장 단순하고 오래 검증된 200일선 추세필터로 폴백한다.
     # (지표 부족은 '하락 신호'가 아니므로 무조건 현금화하면 장기 상승분을 통째로 놓친다)
@@ -4704,6 +4785,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
     rec_vals = recovery_floor.values   # [v1.11.0 §A] 규칙 ⑤ 발동일(게이트 제외 판정용)
     tp_vals = trend_promo.values       # [v1.13.0 §B] 규칙 ⑥ 발동일(게이트 제외 판정용)
     dr_vals = deep_boost.values        # [v1.15.0 §A] 규칙 ⑦ 발동일(게이트 제외 판정용)
+    sb_vals = struct_boost.values      # [v1.18.0 §A] 규칙 ⑧ 발동일(게이트 제외 판정용)
     conf_state, conf_pos = [], []
     buy_hold_gate = []   # [v1.8.0 §B] 이 날 비중증가 전환이 게이트에 의해 보류됐는지(감사/추적성)
     cur = "NO_SIGNAL"
@@ -4739,7 +4821,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
             # [v1.13.0 §B] 규칙 ⑥(추세 승격) 상향도 동일하게 제외(tp_vals[i]) — H 상한이
             # ENTER(0.85)로 완화되면서 0.70~0.85 구간 승격이 게이트와 충돌하게 된 것의 정리.
             if can_switch and not fallback and haz_vals is not None \
-                    and not rec_vals[i] and not tp_vals[i] and not dr_vals[i]:
+                    and not rec_vals[i] and not tp_vals[i] and not dr_vals[i] and not sb_vals[i]:
                 is_buy = pos_map.get(s, 0.0) > pos_map.get(cur, 0.0)
                 if is_buy:
                     h = haz_vals[i]
@@ -4769,6 +4851,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         "hazard_velocity": haz_vel,        # [v1.13.0 §C] ΔH 속도 경보 발동일(v1.14.0부터 활성)
         "deep_recovery": deep_boost,       # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 발동일
         "soft_trigger": soft_fire,         # [v1.17.0 §B] 소프트 트리거 캡 발동일(기본 비활성 — 보류)
+        "struct_bottom": struct_boost,     # [v1.18.0 §A] 구조적 저점 확인 승격(규칙 ⑧) 발동일
     })
     out["target_pos"] = out["target_pos"].fillna(0.0)
 
@@ -4823,6 +4906,11 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      deep_recovery_dd_mode=cfg.DEEP_RECOVERY_DD_MODE,        # [v1.16.0 §A]
                      deep_recovery_score_guard=cfg.DEEP_RECOVERY_SCORE_GUARD,  # [v1.16.0 §B]
                      deep_recoveries=int(deep_boost.sum()),
+                     # [v1.18.0 §A ⚠ 신호(위험) 파라미터] 규칙 ⑧ 적용 여부·파라미터·발동일수.
+                     use_struct_bottom_promotion=cfg.USE_STRUCT_BOTTOM_PROMOTION,
+                     struct_bottom_dd=cfg.STRUCT_BOTTOM_DD,
+                     struct_bottom_max_h=cfg.STRUCT_BOTTOM_MAX_H,
+                     struct_bottoms=int(struct_boost.sum()),
                      elapsed_s=round(time.time() - t0, 3)))
     return out
 
@@ -4923,7 +5011,8 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                           haz_pct: Optional[pd.Series] = None,
                           fast_pct: Optional[pd.Series] = None,
                           recov_conf: Optional[pd.Series] = None,
-                          deep_recov: Optional[pd.Series] = None) -> pd.DataFrame:
+                          deep_recov: Optional[pd.Series] = None,
+                          struct_dd: Optional[pd.Series] = None) -> pd.DataFrame:
     """
     국면 임계값(백분위)을 격자로 바꿔가며 성과를 측정한다.
     특정 임계값에서만 좋은 결과가 나온다면 그것은 곡선맞춤(curve fitting)이다.
@@ -4948,7 +5037,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             if on <= off:
                 continue
             c = Config(**{**cfg.__dict__, "PCT_RISK_OFF": off, "PCT_RISK_ON": on})
-            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -4977,7 +5066,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         # 격자만 보고 바로 알 수 있게 해서, "성과지표는 그대로인데 사실 규칙이 한 번도 발동하지
         # 않았다"는 식의 죽은 규칙을 조용히 넘기지 않게 한다(§0/§3 진단: HAZARD_ENTER가
         # 0.85~0.95 전 구간에서 MDD가 전혀 바뀌지 않았던 사례가 실제로 있었음).
-        sg_base = generate_signals(score_pct, trend200, cfg, haz_pct=None, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+        sg_base = generate_signals(score_pct, trend200, cfg, haz_pct=None, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
         base_state = sg_base["state"]
         base_state = base_state.loc[base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
 
@@ -4987,7 +5076,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                 if block >= enter:
                     continue
                 c = Config(**{**cfg.__dict__, "HAZARD_ENTER": enter, "HAZARD_BLOCK": block})
-                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
                 b = run_backtest(price, sg["target_pos"], c, rf_daily)
                 b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
                 m = perf_metrics(b["strategy_ret"])
@@ -5025,7 +5114,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         floor_rows = []
         for floor in [0.50, 0.60, 0.70, 0.80]:
             c = Config(**{**cfg.__dict__, "HAZARD_NEUTRAL_FLOOR": floor})
-            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -5060,14 +5149,14 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         # HAZARD_BLOCK과의 의미론 통일이 근거).
         if cfg.USE_BUY_HOLD_GATE:
             cfg_gate_off = Config(**{**cfg.__dict__, "USE_BUY_HOLD_GATE": False})
-            sg_gate_base = generate_signals(score_pct, trend200, cfg_gate_off, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+            sg_gate_base = generate_signals(score_pct, trend200, cfg_gate_off, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
             gate_base_state = sg_gate_base["state"]
             gate_base_state = gate_base_state.loc[gate_base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
 
             gate_rows = []
             for gth in [0.70, 0.75, 0.80, 0.85]:
                 c = Config(**{**cfg.__dict__, "BUY_HOLD_GATE_THRESHOLD": gth})
-                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
                 b = run_backtest(price, sg["target_pos"], c, rf_daily)
                 b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
                 m = perf_metrics(b["strategy_ret"])
@@ -5101,7 +5190,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
     if cfg.USE_FAST_TRIGGER and fast_pct is not None:
         cfg_ft_off = Config(**{**cfg.__dict__, "USE_FAST_TRIGGER": False})
         sg_ft_base = generate_signals(score_pct, trend200, cfg_ft_off, haz_pct=haz_pct,
-                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
         ft_base_state = sg_ft_base["state"]
         ft_base_state = ft_base_state.loc[ft_base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
         adj_col = "Adj Close" if "Adj Close" in price.columns else "Close"
@@ -5110,7 +5199,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         ft_rows = []
         for fpct in [0.90, 0.95, 0.97, 0.99]:
             c = Config(**{**cfg.__dict__, "FAST_TRIGGER_PCT": fpct})
-            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -5147,7 +5236,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
     if cfg.USE_RECOVERY_FLOOR:
         cfg_rf_off = Config(**{**cfg.__dict__, "USE_RECOVERY_FLOOR": False})
         sg_rf_base = generate_signals(score_pct, trend200, cfg_rf_off, haz_pct=haz_pct,
-                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
         rf_base_state = sg_rf_base["state"]
         rf_base_state = rf_base_state.loc[rf_base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
         _close = price["Close"].astype(float)
@@ -5158,7 +5247,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             rc = (_close >= _roll_low * (1.0 + cpct))
             c = Config(**{**cfg.__dict__, "RECOVERY_CONFIRM_PCT": cpct})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct,
-                                  fast_pct=fast_pct, recov_conf=rc, deep_recov=deep_recov)
+                                  fast_pct=fast_pct, recov_conf=rc, deep_recov=deep_recov, struct_dd=struct_dd)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -5190,7 +5279,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
     if cfg.USE_TREND_PROMOTION and cfg.USE_HAZARD_TRACK and haz_pct is not None:
         cfg_tp_off = Config(**{**cfg.__dict__, "USE_TREND_PROMOTION": False})
         sg_tp_base = generate_signals(score_pct, trend200, cfg_tp_off, haz_pct=haz_pct,
-                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
         tp_base_state = sg_tp_base["state"]
         tp_base_state = tp_base_state.loc[tp_base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
 
@@ -5198,7 +5287,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         for msp in [0.25, 0.30, 0.35, 0.40]:
             c = Config(**{**cfg.__dict__, "TREND_PROMOTION_MIN_SCORE_PCT": msp})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct,
-                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -5237,11 +5326,16 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             ("승격 H상한 0.85", {"TREND_PROMOTION_MAX_H": 0.85}),
             ("A-2 ΔH경보(15d,0.40)", {"USE_HAZARD_VELOCITY": True}),
             (f"소프트 트리거 캡(FT>{cfg.SOFT_TRIGGER_PCT:.2f}→0.5)", {"USE_SOFT_TRIGGER_CAP": True}),
+            # [v1.18.0 §A] 규칙 ⑧ 구조적 저점 확인 승격 + MDD 우선 참고(전 비중 ×0.75)
+            (f"⑧ 구조적 저점 확인({cfg.STRUCT_BOTTOM_DD:.0%}, H<{cfg.STRUCT_BOTTOM_MAX_H:.2f})",
+             {"USE_STRUCT_BOTTOM_PROMOTION": True}),
+            ("전 비중 ×0.75 (MDD 우선 참고)", {"POS_RISK_ON": cfg.POS_RISK_ON * 0.75,
+                                            "POS_NEUTRAL": cfg.POS_NEUTRAL * 0.75}),
         ]
         for lab, over in held_cases:
             c = Config(**{**cfg.__dict__, **over})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct,
-                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -5323,6 +5417,7 @@ def hazard_cap_sensitivity(vt_periods: List[dict], ind: pd.DataFrame,
                            fast_pct: Optional[pd.Series] = None,
                            recov_conf: Optional[pd.Series] = None,
                            deep_recov: Optional[pd.Series] = None,
+                           struct_dd: Optional[pd.Series] = None,
                            sig_mask: Optional[pd.Series] = None,
                            W_haz_live: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
@@ -5375,7 +5470,7 @@ def hazard_cap_sensitivity(vt_periods: List[dict], ind: pd.DataFrame,
         haz_score_c, _, _ = composite_score(ind, W_haz_case, c)
         haz_pct_c = score_percentile(haz_score_c).where(sig_mask_s)
         sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct_c,
-                              fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                              fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
         b = run_backtest(price, sg["target_pos"], c, rf_daily)
         b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
         m = perf_metrics(b["strategy_ret"])
@@ -6095,7 +6190,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
 # =============================================================================
 def run(cfg: Config = CFG) -> dict:
     np.random.seed(cfg.RANDOM_SEED)
-    log("START", kv(version="v1.17.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
+    log("START", kv(version="v1.18.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
@@ -6319,6 +6414,7 @@ def run(cfg: Config = CFG) -> dict:
     # 창만 사용(인과, 룩어헤드 없음). 05b/01시트와 동일하게 원시 종가 기준.
     recov_conf = None
     deep_recov = None
+    struct_dd = None   # [v1.18.0 §A] 규칙 ⑧용 '최근 창 안에 STRUCT_BOTTOM_DD 이상 조정' 플래그(기본 비활성이어도 06c 격자용으로 산출)
     if cfg.USE_RECOVERY_FLOOR:
         _close_cal = price["Close"].astype(float)
         _roll_low = _close_cal.rolling(cfg.RECOVERY_LOW_WINDOW, min_periods=20).min()
@@ -6329,6 +6425,12 @@ def run(cfg: Config = CFG) -> dict:
                                           [pd.Series(sig_mask, index=cal)].sum())))
         # [v1.15.0 §A] 규칙 ⑦용: 최근 120거래일 저점이 같은 창 고점 대비 DEEP_RECOVERY_DD
         # (-20%, 베어마켓 경계) 이상 깊었던 '깊은 낙폭 이력' AND 회복 확인 — 인과(rolling 과거창).
+        struct_dd = deep_drawdown_flag(_close_cal, cfg.STRUCT_BOTTOM_DD, cfg.RECOVERY_LOW_WINDOW,
+                                       mode="peak_to_trough")
+        log("SIGNAL", kv(event="struct_bottom_ready", use=cfg.USE_STRUCT_BOTTOM_PROMOTION,
+                         dd_threshold=cfg.STRUCT_BOTTOM_DD, max_h=cfg.STRUCT_BOTTOM_MAX_H,
+                         correction_days=int(struct_dd.reindex(cal).fillna(False)
+                                             [pd.Series(sig_mask, index=cal)].sum())))
         # [v1.16.0 §A] 낙폭 정의를 deep_drawdown_flag(고점→저점 순서 보장)로 교체 — 06c 격자와 공유.
         if cfg.USE_DEEP_RECOVERY_BOOST:
             _deep = deep_drawdown_flag(_close_cal, cfg.DEEP_RECOVERY_DD, cfg.RECOVERY_LOW_WINDOW,
@@ -6343,7 +6445,7 @@ def run(cfg: Config = CFG) -> dict:
     # ---------- 5) 신호 ----------
     trend200 = ind["TREND_200"]
     sig = generate_signals(score_pct, trend200, cfg, score=score, haz_pct=haz_pct,
-                           fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                           fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
     reason = build_reason_text(contrib, sig["state"], score)
     t_sig_done = time.time()
     stage_timing["07_신호생성(H점수+국면신호)"] = round(t_sig_done - t_wf_done, 2)
@@ -6356,12 +6458,12 @@ def run(cfg: Config = CFG) -> dict:
 
     # 임계값 민감도 (곡선맞춤 여부 점검) — [v1.3.0 §4(C)] HAZARD_ENTER×HAZARD_BLOCK 격자 포함
     sens = threshold_sensitivity(score_pct, trend200, price, cfg, rf_daily, haz_pct=haz_pct,
-                                 fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov)
+                                 fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
     # [v1.14.0 §B] 위험트랙 카테고리 상한 민감도(무제한/0.50/0.40/0.30) — 캐시 기반 저비용
     # 재시뮬레이션, 06c 시트에 이어붙임. 무제한 케이스는 라이브 W_haz와의 일치를 자기검증.
     cap_sens = hazard_cap_sensitivity(haz_vt_periods, ind, score_pct, trend200, price, cfg,
                                       rf_daily, fast_pct=fast_pct, recov_conf=recov_conf,
-                                      deep_recov=deep_recov,
+                                      deep_recov=deep_recov, struct_dd=struct_dd,
                                       sig_mask=pd.Series(sig_mask, index=cal), W_haz_live=W_haz)
     if len(cap_sens):
         sens = pd.concat([sens, cap_sens], ignore_index=True, sort=False)
@@ -6744,7 +6846,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             "info" if (fred_collect_pass and not res.get("fred_degraded")) else "warning")
 
     meta = [
-        ("버전", "v1.17.0 (2026-09-03)"),
+        ("버전", "v1.18.0 (2026-09-03)"),
         ("매매 대상", f"{cfg.TRADE_TICKER} (미국 시장 대표 ETF)"),
         ("신호/백테스트 기간", f"{idx[0].date()} ~ {idx[-1].date()} ({len(idx):,} 거래일)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단)"),
@@ -6859,6 +6961,15 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             f"⚠ 신호(위험) 파라미터 — CHANGELOG v1.16.0(활성·정의수정), v1.15.0(신설) 명시 플래그"
             + ("" if cfg.USE_DEEP_RECOVERY_BOOST else
                "  [비활성] 06c off 행이 현재 라이브 신호와 동일"))),
+        # [v1.18.0 §A] 규칙 ⑧ (기본 비활성 — 06c 보류 격자에서 실측).
+        ("구조적 저점 확인 승격(규칙 ⑧)", (
+            f"USE_STRUCT_BOTTOM_PROMOTION={cfg.USE_STRUCT_BOTTOM_PROMOTION}. True일 때: 최근 "
+            f"{cfg.RECOVERY_LOW_WINDOW}거래일 안에 {cfg.STRUCT_BOTTOM_DD:.0%} 이상 조정(고점→저점) 후 저점 대비 "
+            f"+{cfg.RECOVERY_CONFIRM_PCT:.0%} 회복 확인 & 가격>200일선 & H<{cfg.STRUCT_BOTTOM_MAX_H:.2f} & "
+            f"트리거/ΔH 침묵이면 복합점수 하한 없이 위험선호(1.0) 승격. "
+            + ("활성." if cfg.USE_STRUCT_BOTTOM_PROMOTION else
+               "기본 비활성: 리플레이에서 CAGR +0.8pp이지만 MDD -8.98→-11.08%(2018-03 재하락)로 'MDD 최소화 우선' "
+               "지시와 충돌 — 06c 보류메커니즘 격자 참조(CHANGELOG v1.18.0)."))),
         ("채택된 지표", ", ".join(name_map.get(k, k) for k in adopted) if adopted else "없음"),
         ("가중치 산정", f"SIGNAL_START 이전 워밍업은 연 1회({cfg.WARMUP_REWEIGHT_FREQ}), 이후 본구간은 "
                         f"{ {'D':'매일','W':'매주','M':'매월'}.get(cfg.REWEIGHT_FREQ, cfg.REWEIGHT_FREQ) } "
