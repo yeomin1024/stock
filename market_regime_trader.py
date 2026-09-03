@@ -1,6 +1,6 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.16.0 - 2026-09-03 - 규칙 ⑦ 2차 실증 통과·활성(고점→저점 낙폭 정의 수정 + 점수 가드)
+#  VERSION: v1.17.0 - 2026-09-03 - 규칙 ⑦ 경계 -20%→-15%(종가 기준 여유폭, 3중 실증) + 중간 하락 브레이크 4계열 전수 기각(소프트 트리거 캡만 보류 격자)
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -12,6 +12,48 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.17.0 | 2026-09-03 | 사용자가 v1.16.0 실행 결과(market_regime_report.xlsx, 18번째)를 제출하며
+#                        "하락을 더 완전히 회피하거나 비중을 크게 줄여 손실을 막고, 저점 매수 시
+#                        비중을 많이 넣도록. 중간 크기 하락 미회피가 보인다. 단 여기서 더 나빠지면
+#                        안 된다"고 요청.
+#
+#                        [report18 판독 — v1.16.0 예측대로 실현] FRED 54/54, CAGR 14.66→16.19%
+#                        (+1.53pp, 예측 16.3~16.5), 샤프 1.430→1.504, MDD -8.65% 동일, 2019 +27.6%,
+#                        2020 +31.1%, 2022 -5.42%(동일), B&H 14.67% 대비 +1.52pp. 06c 격자에서
+#                        참고행 "v1.15 정의+가드없음" 16.34%/MDD 동일, "고점→저점+가드없음"
+#                        15.65%/MDD -10.4% — 점수 가드가 MDD를 지켰음이 실데이터로 확인.
+#
+#                        [§A ⚠ 신호(위험) 파라미터 — 유일한 활성 변경(§9)] DEEP_RECOVERY_DD -0.20 →
+#                        -0.15. 05b에서 ≥5% 상승 57구간 중 저점 미참여 최대 격차가 2025-04 -19%
+#                        급락 뒤 +15.8% 반등(평균비중 0.52) — 종가 기준 최대 낙폭 -19.0%라 -20%
+#                        경계 미달. '베어마켓 -20%'는 장중 기준 관행이고 우리 낙폭은 종가 기준
+#                        (2018-12도 -20.2%로 간신히)이므로 종가 기준 여유폭이 사전 근거. v1.15의
+#                        -15% 기각 사유(MDD -12.9%·2022 -11%)는 v1.16 정의 수정+점수 가드로 소멸.
+#                        실증 3건 일치: report18 06c 실데이터 -15% 17.14%/1.549/MDD 동일/칼마 1.982
+#                        (-20%: 16.19/1.504/1.872); report18 리플레이 15.28→16.39%(+1.11pp)/샤프
+#                        +0.057/MDD·2022 동일/2025 +18.7→+25.1%; report15 리플레이 15.33→16.20%
+#                        (+0.87pp)/샤프 +0.039/MDD·2022 동일. 추가 발동: 2020-09~10(13일), 2023-02
+#                        (5일, 유일 손실 -4%), 2023-03(11일), 2025-04-14~05-09(14일 — 평균비중
+#                        0.52→0.77, 구간수익 +5.8→+11.5%). 2022 무발동 유지. 비용: -1% 손실일
+#                        87→91(+4). 06c 격자 ★가 -15%로 이동, 참고행 2개도 -15% 기준으로 산출.
+#
+#                        [§B 중간 규모 하락 회피 — 전수 실증 후 기각(정직한 결론)] 05b -4% 이상
+#                        하락 52구간 중 미회피(평균비중≥0.5) 27구간(누적 -163%): 고점 시점 H 중앙값
+#                        0.29·트리거 백분위 0.25·점수 0.42 — 어떤 인과 신호도 침묵. 첫 -2% 쇼크일
+#                        이후 남는 하락은 누적 -34%(21%)뿐, 20일 고점 -3% 도달 후 남는 하락 -71%
+#                        (44%). 후보 4계열 9변형을 두 데이터셋에 리플레이(표는 IMPROVEMENT_PLAN_
+#                        v1.17.md §B): 쇼크 브레이크 -1.6~-2.2pp, 20일 고점 낙폭 캡 -2.4~-3.8pp,
+#                        변동성 급등 캡 -0.4pp, 소프트 트리거 캡 -0.2~-1.0pp — 전부 CAGR·샤프
+#                        손실, MDD 개선 0(MDD는 2018-02·2024-08 단일 쇼크로 결정). "더 나빠지면
+#                        안 됨"을 우선해 어느 것도 활성화하지 않음. 비용 최소인 소프트 트리거 캡
+#                        (USE_SOFT_TRIGGER_CAP=False, SOFT_TRIGGER_PCT=0.93, 규칙 ⑥만 차단·⑦ 비차단)
+#                        을 보류 메커니즘으로 구현해 06c 보류 격자 행(+ -1%손실일수 열 신설)에서
+#                        매 실행 실측 — 라이브 신호 불변. 출력 컬럼 soft_trigger 추가.
+#
+#                        [검증] 신규 test_v117_soft_cap_dd15.py(기본값·소프트캡 캡/차단/비차단·
+#                        하위호환·06c 행), test_deep_recovery_v116 TEST1 기본값 갱신, 기존 회귀
+#                        재실행, e2e 06c 보류 5행·DEEP_RECOVERY_DD ★ 위치 확인.
+#
 #  v1.16.0 | 2026-09-03 | 사용자가 v1.15.1 실행 결과(market_regime_report_17.xlsx)를 제출하며
 #                        "전보다 수익률도 성능도 더 나빠졌다 — 원인 파악하고 다시 개선하라"고 요청.
 #
@@ -1615,10 +1657,36 @@ class Config:
     # 2020-09 — 진짜 베어마켓 회복만). 가드 없는 원정의(V0)는 CAGR이 +0.2pp 더 높지만 2022·MDD를
     # 훼손해 채택하지 않음(§E 격자 최고점 채택 금지·2022 방어 훼손 금지의 실적용 — 검토한 5개
     # 구조 변형의 전체 표는 IMPROVEMENT_PLAN_v1.16.md §B). 비용: -1% 손실일 +5일(82→87).
+    # [v1.17.0 §A ⚠ 신호(위험) 파라미터 — 이번 라운드 유일한 활성 변경(§9)] DEEP_RECOVERY_DD
+    # -0.20 → -0.15. 사용자 요청 "저점 매수 시 비중 많이"의 잔여 격차: report18(v1.16.0 정상
+    # 실행)에서 2025-04 -19% 급락 뒤 +15.8% 반등을 평균비중 0.52로만 탔다 — 종가 기준 최대 낙폭이
+    # -19.0%라 -20% 경계에 걸리지 않았기 때문. '베어마켓 -20%'는 관행상 장중 저가 기준이며 우리
+    # 낙폭은 종가 기준이라(2025-04 장중 -21% vs 종가 -19.0%, 2018-12 -20.2%로 간신히) 종가 기준
+    # 여유폭이 필요하다는 것이 사전 근거. v1.15에서 -15%를 기각한 이유(MDD -12.9%·2022 -11%)는
+    # v1.16의 정의 수정(고점→저점)+점수 가드로 소멸했음이 확인됨 — 실증 3건: (i) report18 06c
+    # 실데이터 격자 -15% CAGR 16.19→17.14%/샤프 1.504→1.549/**MDD -8.65% 동일**/칼마 1.872→
+    # 1.982, (ii) report18 리플레이(2019+) 15.28→16.39%(+1.11pp)/샤프 +0.057/MDD 동일/2022 동일/
+    # 2025 +18.7→+25.1%, (iii) report15 리플레이 15.33→16.20%(+0.87pp)/샤프 +0.039/MDD 동일/
+    # 2022 동일. 추가 발동 3구간(2020-10, 2023-02(유일 손실, -4%), 2023-03, 2025-04) — 2022에는
+    # 여전히 무발동(점수 가드). 비용: -1% 손실일 87→91(+4). -12%는 두 데이터셋 모두 -15%보다
+    # 열위(격자 최고점이 -15%이지만 위 종가-기준 여유폭 근거가 먼저 있었고 세 실증이 일치함).
     USE_DEEP_RECOVERY_BOOST: bool = True
-    DEEP_RECOVERY_DD: float = -0.20
+    DEEP_RECOVERY_DD: float = -0.15
     DEEP_RECOVERY_DD_MODE: str = "peak_to_trough"   # "peak_to_trough"(고점→저점 순서 보장) | "range"(v1.15 정의, 참고행 전용)
     DEEP_RECOVERY_SCORE_GUARD: bool = True          # 점수백분위 < PCT_RISK_OFF(위험회피 밴드)면 승격 금지
+    # [v1.17.0 §B 보류 메커니즘 — 기본 비활성] 소프트 트리거 캡. 사용자 요청 "중간 규모 하락 완전
+    # 회피/비중 대폭 축소"에 대한 전수 실증 결론: report18 05b의 -4% 이상 하락 52구간 중 미회피
+    # 27구간(누적 -163%)은 고점 시점 H 중앙값 0.29·트리거 백분위 0.25·점수 0.42로 어떤 인과 신호도
+    # 침묵했고, 첫 -2% 쇼크일 이후 남는 하락은 누적 -34%(21%)뿐 — 손실의 대부분이 첫 쇼크일에
+    # 발생해 사후 브레이크가 잡을 여지가 작다. 후보 4계열 × 9변형을 두 데이터셋에 리플레이:
+    # (-15% 기준, 2019+) 쇼크 브레이크(-2%/-2.5%, 5일 캡) CAGR -1.6~-2.2pp, 20일 고점 -3%/-5% 캡
+    # -2.4~-3.8pp, 변동성 급등 캡 -0.4pp, 소프트 트리거 캡(0.90) -1.0pp / (0.93, 사후 캡) -0.2pp
+    # / (0.93, 엔진 내 캡) -0.2pp·손실일 감소 0 — 전부 CAGR 손실, MDD는 어느 것도 개선 못 함
+    # (MDD가 2018·2024의 단일 쇼크로 결정됨). "더 나빠지면 안 됨"을 우선해 어떤 브레이크도
+    # 활성화하지 않고, 비용이 가장 작은 소프트 트리거 캡(0.93)만 기각 확인용 보류 메커니즘으로
+    # 남겨 06c에서 매 실행 실측한다.
+    USE_SOFT_TRIGGER_CAP: bool = False
+    SOFT_TRIGGER_PCT: float = 0.93
     MIN_HAZARD_INDICATORS: int = 1     # 00_실행요약 "위험트랙 채택 지표수" 라인의 참고용 최소기준(정보성, 신호를 막지 않음)
     # [v1.4.0 §3(a) ⚠ 신호(위험) 파라미터] 실사용 결과(market_regime_report_3.xlsx) 진단에서
     # 해저드 트랙이 사실상 무력화된 것을 확인했다(IMPROVEMENT_PLAN_v1.4.md §3) — 기간당
@@ -4521,6 +4589,20 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      & (fast_pct > cfg.FAST_TRIGGER_PCT))
         raw_state[fast_fire] = "RISK_OFF"
 
+    # [v1.17.0 §B 보류 메커니즘 — 기본 비활성] 소프트 트리거 캡: 급락트리거 지표의 백분위가
+    # SOFT_TRIGGER_PCT(0.93) 초과이지만 규칙 ⓪ 임계(0.97) 미만인 '경계' 구간이면 위험선호를
+    # 중립 상한(0.5)으로 강등하고 규칙 ⑥ 승격을 차단한다(ΔH 경보와 같은 '캡' 방식). 규칙 ⑦은
+    # 차단하지 않는다 — 차단 변형은 2020-04/05 회복(VIX 기간구조 백분위가 위기 후 한동안 0.93
+    # 초과)을 막아 2020년 -4.9pp로 훨씬 나빴다(엔진 내 리플레이). 사용자 요청 "중간 규모 하락
+    # 회피"의 후보 4계열(쇼크 브레이크/20일 고점 낙폭 캡/소프트 트리거/변동성 급등) 중 비용이
+    # 가장 작은 것이지만 그래도 CAGR -0.2pp·손실일 감소 0 — 기각. 실데이터 확인용으로 06c
+    # 보류메커니즘 격자에서만 매 실행 실측한다(두 데이터셋 리플레이 결과는 Config 주석 참조).
+    soft_fire = pd.Series(False, index=score_pct.index)
+    if cfg.USE_SOFT_TRIGGER_CAP and cfg.USE_FAST_TRIGGER and fast_pct is not None:
+        soft_fire = (score_pct.notna() & fast_pct.notna()
+                     & (fast_pct > cfg.SOFT_TRIGGER_PCT) & ~fast_fire)
+        raw_state[soft_fire & raw_state.eq("RISK_ON")] = "NEUTRAL"
+
     # [v1.13.0 §C] H 속도(ΔH) 조기경보(A-2) — 과거 H만 사용(shift, 인과). 발동 시 위험선호를
     # 중립 상한으로 강등(레벨 무관)하고 아래 규칙 ⑥ 승격도 차단한다. 기본 비활성.
     haz_vel = pd.Series(False, index=score_pct.index)
@@ -4577,7 +4659,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         trend_promo = (score_pct.notna() & (trend200 > 0)
                        & (score_pct >= cfg.TREND_PROMOTION_MIN_SCORE_PCT)
                        & haz_pct.notna() & (haz_pct < cfg.TREND_PROMOTION_MAX_H)
-                       & ~fast_fire & ~haz_vel & raw_state.eq("NEUTRAL"))
+                       & ~fast_fire & ~haz_vel & ~soft_fire & raw_state.eq("NEUTRAL"))
         raw_state[trend_promo] = "RISK_ON"
 
     # [v1.15.0 §A] 규칙 ⑦ 깊은 낙폭 회복 풀매수 — 회복 확인(deep_recov: 회복확인 AND 최근
@@ -4686,6 +4768,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         "trend_promotion": trend_promo,    # [v1.12.0 §A] 추세 승격(규칙 ⑥) 발동일
         "hazard_velocity": haz_vel,        # [v1.13.0 §C] ΔH 속도 경보 발동일(v1.14.0부터 활성)
         "deep_recovery": deep_boost,       # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 발동일
+        "soft_trigger": soft_fire,         # [v1.17.0 §B] 소프트 트리거 캡 발동일(기본 비활성 — 보류)
     })
     out["target_pos"] = out["target_pos"].fillna(0.0)
 
@@ -4715,6 +4798,10 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      fast_trigger_indicator=cfg.FAST_TRIGGER_INDICATOR,
                      fast_trigger_pct=cfg.FAST_TRIGGER_PCT,
                      fast_triggers=int(fast_fire.sum()),
+                     # [v1.17.0 §B 보류] 소프트 트리거 캡 적용 여부·임계·발동일수.
+                     use_soft_trigger_cap=cfg.USE_SOFT_TRIGGER_CAP,
+                     soft_trigger_pct=cfg.SOFT_TRIGGER_PCT,
+                     soft_triggers=int(soft_fire.sum()),
                      # [v1.11.0 §A ⚠ 신호(위험) 파라미터] 회복 승격 규칙 적용 여부·파라미터·
                      # 발동일수(추적성 원칙).
                      use_recovery_floor=cfg.USE_RECOVERY_FLOOR,
@@ -5142,11 +5229,14 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         # 전체 파이프라인에서도 같은 결론이 나오는지 사후 확인한다. 전부 기본 비활성이므로
         # 이 격자는 순수 진단이며 라이브 신호에 영향 없음.
         held_rows = []
+        # [v1.17.0 §B] 소프트 트리거 캡(FT>0.93 → 중립 상한) 행 추가 — "중간 규모 하락 회피"
+        # 요청의 후보 중 유일하게 비용이 ~0인 것을 매 실행 실측(-1% 손실일 수도 함께 기록).
         held_cases = [
             ("기준(전부 기본값)", {}),
             ("A-3 비대칭(1일+면제)", {"USE_ASYM_HYSTERESIS": True}),
             ("승격 H상한 0.85", {"TREND_PROMOTION_MAX_H": 0.85}),
             ("A-2 ΔH경보(15d,0.40)", {"USE_HAZARD_VELOCITY": True}),
+            (f"소프트 트리거 캡(FT>{cfg.SOFT_TRIGGER_PCT:.2f}→0.5)", {"USE_SOFT_TRIGGER_CAP": True}),
         ]
         for lab, over in held_cases:
             c = Config(**{**cfg.__dict__, **over})
@@ -5155,13 +5245,15 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
+            is_live = all(getattr(cfg, k) == v for k, v in over.items())
             held_rows.append({
                 "보류메커니즘 확인": lab,
                 "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
-                "기본설정": "★" if not over else "",
+                "-1%손실일수": int((b["strategy_ret"] < -0.01).sum()),   # [v1.17.0 §B]
+                "기본설정": "★" if not over else ("(=라이브)" if is_live else ""),
             })
         if held_rows:
             df_hd = pd.DataFrame(held_rows)
@@ -6003,7 +6095,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
 # =============================================================================
 def run(cfg: Config = CFG) -> dict:
     np.random.seed(cfg.RANDOM_SEED)
-    log("START", kv(version="v1.16.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
+    log("START", kv(version="v1.17.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
@@ -6652,7 +6744,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             "info" if (fred_collect_pass and not res.get("fred_degraded")) else "warning")
 
     meta = [
-        ("버전", "v1.16.0 (2026-09-03)"),
+        ("버전", "v1.17.0 (2026-09-03)"),
         ("매매 대상", f"{cfg.TRADE_TICKER} (미국 시장 대표 ETF)"),
         ("신호/백테스트 기간", f"{idx[0].date()} ~ {idx[-1].date()} ({len(idx):,} 거래일)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단)"),
