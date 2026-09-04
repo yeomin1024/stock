@@ -1,6 +1,6 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.20.0 - 2026-09-04 - 규칙 ⑩ 과열 헤어컷(200일선 이격도 → 0.1 단위 비중 상한) 활성 + 05b 판정 라벨 수정 + 피드백 가설 실증
+#  VERSION: v1.21.0 - 2026-09-04 - report22 사고(^VIX3M 1행 수집 → 급락트리거 전 구간 결측) 재발 방지 게이트 + 뉴스 기반 인과 검토 + 'B&H 2배' 상한 분석·레버리지 옵션(기본 비활성)
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -12,6 +12,56 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.21.0 | 2026-09-04 | 사용자가 v1.20.0 실행 결과(market_regime_report_4.xlsx, 22번째)를 제출: "곡선이 수정 전과
+#                        똑같아 보인다 — 지표와 주가에 인과관계가 없는 것 아닌가. 뉴스를 찾아 하락 미회피·상승 미탑승의
+#                        원인을 밝히고 국면 설계를 개선하라. 수익은 B&H의 2배 이상이어야 한다."
+#
+#                        [§A 사고 — report22는 성능저하 실행이었다] 10시트: ^VIX3M·^VIX9D가 **1행(2026-09-03)만 수집**
+#                        (report21은 5,033행) → 무결성 검사 제외 → VIX_TERM 전 구간 NaN → 급락트리거(규칙 ⓪) 백분위가
+#                        2,180일 전부 결측 → 2020-02/03 급락을 0.5로 통과(2020 +27.6→+15.8%), MDD -8.4→**-14.6%**, CAGR
+#                        17.61→17.34%. 반사실 리플레이(report21의 트리거를 대입): CAGR 16.05%/MDD -8.03%/2020 +30.4% —
+#                        v1.20.0 예측치와 일치(규칙 ⑩ 자체는 정상: 과열헤어컷 412일 vs 예측 415). 원인은 Yahoo 배치가
+#                        일부 심볼을 당일 1행만 돌려준 간헐 장애이고, 그 1행이 정상 캐시를 덮어쓴 뒤 리포트 상단은 "FRED
+#                        54/54 PASS"만 보여 줬다(FRED report16 사고와 같은 종류). 재발 방지(DataLayer):
+#                        (1) _yahoo_degenerate(): 행수<YAHOO_MIN_ROWS(250) 또는 시작일이 예상보다 PRICE_START_TOLERANCE_
+#                            DAYS 이상 늦으면 '퇴화' — 캐시에 쓰지 않고(정상 캐시 보존), 12시간 이내 캐시라도 퇴화면 무시.
+#                        (2) 퇴화 티커는 YAHOO_CRITICAL_RETRY_WAIT_S 대기 후 단일 티커 재수집 → 그래도 퇴화면
+#                            YAHOO_STALE_CACHE_MAX_DAYS(30) 이내 정상 캐시로 대체(10시트 [지연캐시]/[재수집]/[Yahoo제외]).
+#                        (3) _yahoo_critical_gate(): SIGNAL_CRITICAL_TICKERS(SPY·^VIX·^VIX3M) 중 하나라도 없으면 즉시 중단
+#                            (ALLOW_DEGRADED_RUN=True면 '성능저하 실행' 표기). (4) _fast_trigger_coverage_gate(): 신호구간
+#                            트리거 백분위 커버리지 < FAST_TRIGGER_MIN_COVERAGE(0.90) 면 같은 게이트. 00시트에 "급락트리거
+#                            데이터 커버리지(수용기준)" 라인 신설(PASS/FAIL, 신호핵심 티커 상태). 신호 로직 변경 없음.
+#
+#                        [§B 뉴스 기반 인과 검토 — 2018~2026 ≥5% 하락 35건·≥8% 상승 27건 전수] 고점(및 직전 10일)에
+#                        세 가지 선행 신호(이격도≥10% / 트리거≥0.9 / H≥0.7) 중 하나라도 있었는가로 나누면: **28/35건(80%)에
+#                        선행 신호 존재**, 평균비중 0.29·전략 -1.8%(회피율 75%); ≥8% 하락 16건 중 14건 선행 신호, 평균비중
+#                        0.17. 선행 신호가 없던 7건(평균비중 0.63·전략 -4.1%)은 전부 예고 없는 외생 뉴스였다: 2018-10
+#                        파월 "중립금리 멀었다"+금리 급등, 2019-08 관세 트윗, 2020-06-11 연준 비관 전망+2차 유행, 2022-01
+#                        매파 의사록(H 백분위 0.00 — 위험트랙 학습창에 금리 위험이 없던 시기), 2022-02 우크라이나 침공,
+#                        2023-02 뜨거운 CPI/고용, 2026-02 워시 연준의장 지명(1/30)+AI 설비투자/소프트웨어 급락(2/3~5)+
+#                        미·이스라엘 이란 공습(2/28, 유가 +66%). 즉 "지표에 인과성이 없다"가 아니라 **축적형 위험(과열·
+#                        VIX 기간구조·해저드)은 잡히고 이벤트형 쇼크는 정의상 선행 지표가 없다**. 상승 미탑승은 2022
+#                        베어마켓 랠리 3건(회피가 옳았음), 2020-03-13/23·2025-04-09 단일일 갭(선점 불가), 2026-03-30~06-02
+#                        +20%(이란 휴전 4/7·실적 12% 성장; 복합점수 0.15~0.21 위험회피 밴드 → 0.5 유지)로 나뉜다.
+#                        금융환경 확인부 규칙 ① 완화(H>0.85 & 가격>200MA & ANFCI 60일 변화≤0 → H 상한 0.70) 리플레이:
+#                        CAGR 15.98→16.07%/샤프 1.603→1.586/2023 13.5→11.6%(중립) → 기각.
+#
+#                        [§C 'B&H 2배' 상한 분석 + 규칙 ⑪ 레버리지 사다리(기본 비활성, ⚠ 위험 파라미터)] 2018+ B&H 가격
+#                        배수 2.85x → 2배 5.7x(CAGR ≈22%). 완전예측 상한(고점·저점 정확, 비용 0): ≥10% 하락 전부 회피
+#                        4.89x, ≥8% 6.84x, ≥5% 15.2x; 현 지표군이 선행 신호를 낸 28건만 완전 회피 10.4x; 현 전략(정상
+#                        데이터) ≈ 4.4x. 즉 노출 ≤1.0 롱온리로 2배는 ≥8% 하락 전부를 정확히 맞춰야 닿는다. 노출 >1.0
+#                        (조달비용 연 5% 가정) 리플레이: 저위험(이격≤7%·H≤0.5) 1.3 + 급락 후 회복 진입 1.5 → CAGR
+#                        15.98→20.06%/샤프 1.674/MDD -7.49→**-9.35%**/3.61→4.86x; 전 비중 ×1.5 → 23.4%/1.540/**-11.1%**/
+#                        6.15x(2배 도달); ×2.0 → 30.7%/-14.6%. 목표는 레버리지로만 도달 가능하고 대가는 MDD — "낙폭 최소화
+#                        최우선" 지시와 충돌하므로 USE_LEVERAGE=False로 코드만 준비: generate_signals 규칙 ⑪ 오버레이
+#                        (출력 컬럼 leverage), run_backtest 초과노출 조달비용(rf + LEVERAGE_SPREAD_BPS), 06c LEVERAGE
+#                        격자 4행(off★/저위험 1.3/+회복 1.5/×1.5, 총수익배수·최대비중 열), 01시트 레버리지(L), 00시트 라인.
+#                        기본값(비활성)에서 신호·성과는 v1.20.0과 비트 동일.
+#
+#                        [검증] 신규 test_v121_yahoo_gate.py 6종(퇴화 판정·배치 퇴화→재수집·지연캐시 대체·핵심 게이트·
+#                        커버리지 게이트·기본값), test_v121_leverage.py 4종(기본 비활성·역학·조달비용·06c 격자), 기존 회귀,
+#                        e2e 배선(00 커버리지 라인·10시트 진단행·06c LEVERAGE·01 레버리지(L)), 전체 기본값 자기시험.
+#
 #  v1.20.0 | 2026-09-04 | 사용자가 v1.19.0 실행 결과(market_regime_report_3.xlsx, 21번째)와 피드백.txt를
 #                        제출: "하락상승구간별 피드백을 무조건 지키는 방향으로 국면 판단 설계 — 지표가 정말
 #                        위험한 수치가 아니면 큰 변동 후에는 회귀하는 특성이 있는지 확인해서 적용, 상승 추세는
@@ -1537,6 +1587,28 @@ class Config:
     FRED_MIN_COLLECT_RATIO: float = 0.80      # 실데이터 실행의 FRED 수집률 하한(배치 재시도 트리거 겸 중단 게이트)
     FRED_BATCH_RETRY_WAIT_S: float = 15.0     # 배치 재시도 전 대기(초). 음수면 배치 재시도 비활성
     ALLOW_DEGRADED_RUN: bool = False          # True면 수집률 미달이어도 경고+"성능저하 실행" 표기로 진행(기본 중단)
+    # [v1.21.0 §A 견고성] report22(v1.20.0 실행) 사고의 재발 방지 — Yahoo 배치 다운로드가 ^VIX3M·^VIX9D를
+    # **1행(당일)만** 반환했고(10시트: "실제시작 2026-09-03 vs 예상 2008-01-01"), 그 1행짜리 프레임이 정상
+    # 캐시를 덮어쓴 뒤 무결성 검사에서 제외되면서 VIX_TERM이 전 구간 NaN → 급락트리거(규칙 ⓪) 백분위가
+    # 2,180일 전부 결측 → 2020-02/03 급락을 0.5로 통과(2020 +27.6→+15.8%), MDD -8.4→-14.6%. 리포트 상단은
+    # "FRED 54/54 PASS"였고 트리거 결측은 01시트 빈 열로만 드러났다(FRED report16 사고와 같은 종류).
+    #  (1) 퇴화 수집 판정: 행수 < YAHOO_MIN_ROWS 이거나 실제 시작일이 YAHOO_EXPECTED_START(DATA_START로
+    #      클램프)보다 PRICE_START_TOLERANCE_DAYS 이상 늦으면 '퇴화'로 보고 **캐시에 쓰지 않는다**(정상
+    #      캐시 덮어쓰기 금지). 12시간 이내 캐시라도 퇴화면 무시하고 재수집한다.
+    #  (2) 개별 재시도 → 지연캐시 대체: 퇴화면 YAHOO_CRITICAL_RETRY_WAIT_S 대기 후 단일 티커로 1회 재수집,
+    #      그래도 퇴화면 YAHOO_STALE_CACHE_MAX_DAYS 이내의 만료 캐시(정상 이력)를 경고와 함께 대신 쓴다
+    #      (10시트 [지연캐시] 표기).
+    #  (3) 신호핵심 게이트: 그래도 SIGNAL_CRITICAL_TICKERS(매매대상 + 급락트리거 입력 ^VIX·^VIX3M) 중 하나라도
+    #      없으면 리포트를 만들지 않고 즉시 중단한다(RuntimeError, 조치 안내). ALLOW_DEGRADED_RUN=True일 때만
+    #      경고 + 00시트 "성능저하 실행" 표기로 진행.
+    #  (4) 커버리지 투명화: 급락트리거 백분위의 신호구간 커버리지를 로그·00시트에 명시하고, 커버리지가
+    #      FAST_TRIGGER_MIN_COVERAGE 미만이면 (3)과 같은 게이트를 적용한다(원인이 무엇이든 규칙 ⓪이 죽은
+    #      리포트는 정상 실행과 비교할 수 없다).
+    SIGNAL_CRITICAL_TICKERS: Tuple[str, ...] = ("SPY", "^VIX", "^VIX3M")
+    YAHOO_MIN_ROWS: int = 250                  # 이보다 짧은 일별 프레임은 퇴화 수집으로 간주(1년 미만)
+    YAHOO_STALE_CACHE_MAX_DAYS: float = 30.0   # 퇴화/실패 시 이 일수 이내의 만료 캐시를 지연캐시로 대체(0이면 비활성)
+    YAHOO_CRITICAL_RETRY_WAIT_S: float = 10.0  # 퇴화 수집 개별 재시도 전 대기(초). 음수면 재시도 비활성
+    FAST_TRIGGER_MIN_COVERAGE: float = 0.90    # 신호구간 급락트리거 백분위 커버리지 하한(미만이면 중단 게이트)
     # [v1.4.0 §2] FRED가 구조적으로 짧은 이력만 반환하는 것으로 확인된 시리즈(BAML 신용
     # 스프레드 9종, log3.txt에서 JSON 양쪽 변형 모두 "실제시작 2023-09-01"로 일관되게 확인
     # — CSV는 이 환경에서 전부 ConnectionError라 대안이 되지 못함). 이 목록의 시리즈는
@@ -1909,6 +1981,24 @@ class Config:
     USE_EXTENSION_HAIRCUT: bool = True
     EXTENSION_HAIRCUT_STEPS: Tuple[Tuple[float, float], ...] = ((0.10, 0.8), (0.12, 0.6))   # (이격도 임계, 목표비중 상한)
     EXTENSION_HAIRCUT_SMOOTH: int = 5       # 이격도 이동평균 창(거래일). 1이면 당일값
+    # [v1.21.0 §C] 레버리지 사다리(규칙 ⑪) — **기본 비활성(⚠ 위험 파라미터, 사용자 명시 승인 후에만 켤 것)**.
+    # 사용자 목표 "B&H 총수익의 2배 이상"의 달성 가능성 분석(IMPROVEMENT_PLAN_v1.21.md §C): 비중 상한 1.0의 롱온리
+    # 국면전략은 2018~2026 ≥8% 하락 전부를 고점·저점 정확히 맞춰 완전 회피해도 6.84x(B&H 가격배수 2.85x의 2.4배)가
+    # 상한이고, 현 전략(정상 데이터 v1.20 ≈ 4.4x)은 그 65% 수준이다. 2배(≈5.7x)는 완전 예측에 가깝거나 노출 >1.0
+    # 없이는 닿지 않는다. 노출 >1.0 을 허용하면(리플레이, 초과노출 조달비용 연 5% 가정): 위험선호 & 이격도(5일)
+    # ≤ LEVERAGE_LOW_RISK_EXT & H ≤ LEVERAGE_LOW_RISK_H 인 날 LEVERAGE_LOW_RISK_POS(1.3), 급락 후 회복 진입(RISK_ON
+    # 이면서 가격<200MA = 규칙 ⑦ 경로)에 LEVERAGE_RECOVERY_POS(1.5) → report21 CAGR 15.98→20.06%/샤프 1.603→1.674/
+    # MDD -7.49→**-9.35%**/총배수 3.61→4.86x; 전 비중 ×1.5 일괄이면 23.4%/1.540/**-11.1%**/6.15x(2배 도달), ×2.0은
+    # 30.7%/-14.6%. 즉 목표는 레버리지로만 도달 가능하며 그 대가는 MDD 확대다 — "낙폭 최소화 최우선" 지시와 정면
+    # 충돌하므로 코드는 준비만 하고 켜지 않는다. 06c LEVERAGE 격자에서 매 실행 실측(off★/M1.3/M1.3+회복1.5/×1.5).
+    # 조달비용: run_backtest가 초과노출(pos>1)에 단기금리(rf) + LEVERAGE_SPREAD_BPS 를 부과한다(rf 부재 시 스프레드만).
+    USE_LEVERAGE: bool = False
+    LEVERAGE_MAX: float = 1.5               # 목표비중 절대 상한(레버리지 켰을 때)
+    LEVERAGE_LOW_RISK_EXT: float = 0.07     # 저위험 판정: 이격도(EXTENSION_HAIRCUT_SMOOTH일 평균) 상한
+    LEVERAGE_LOW_RISK_H: float = 0.50       # 저위험 판정: H 백분위 상한
+    LEVERAGE_LOW_RISK_POS: float = 1.3      # 저위험 위험선호일 목표비중
+    LEVERAGE_RECOVERY_POS: float = 1.5      # 급락 후 회복 진입(RISK_ON & 가격<200MA)일 목표비중
+    LEVERAGE_SPREAD_BPS: float = 100.0      # 초과노출 조달 스프레드(연, bp; 단기금리 위)
     MIN_HAZARD_INDICATORS: int = 1     # 00_실행요약 "위험트랙 채택 지표수" 라인의 참고용 최소기준(정보성, 신호를 막지 않음)
     # [v1.4.0 §3(a) ⚠ 신호(위험) 파라미터] 실사용 결과(market_regime_report_3.xlsx) 진단에서
     # 해저드 트랙이 사실상 무력화된 것을 확인했다(IMPROVEMENT_PLAN_v1.4.md §3) — 기간당
@@ -2377,12 +2467,13 @@ def _cache_path(name: str, cfg: Config = CFG) -> str:
     return os.path.join(cfg.CACHE_DIR, f"v{cfg.CACHE_SCHEMA_VERSION}_{safe}.csv")
 
 def _read_cache(name: str, max_age_hours: float = 12.0, cfg: Config = CFG) -> Optional[pd.DataFrame]:
-    """불필요한 재다운로드 방지 (성능 요구사항: 변경 없는 데이터 재수신 금지)."""
+    """불필요한 재다운로드 방지 (성능 요구사항: 변경 없는 데이터 재수신 금지).
+    [v1.21.0 §A] max_age_hours=None 이면 나이를 무시하고 읽는다(지연캐시 대체용)."""
     p = _cache_path(name, cfg)
     if not os.path.exists(p):
         return None
     age_h = (time.time() - os.path.getmtime(p)) / 3600.0
-    if age_h > max_age_hours:
+    if max_age_hours is not None and age_h > max_age_hours:
         return None
     try:
         df = pd.read_csv(p, index_col=0, parse_dates=True)
@@ -2443,12 +2534,58 @@ def _http_session(cfg: Config = CFG) -> "requests.Session":
     return sess
 
 
-def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None) -> Optional[pd.DataFrame]:
+def _yahoo_degenerate(ticker: str, df: Optional[pd.DataFrame], cfg: Config = CFG) -> Tuple[bool, str]:
+    """[v1.21.0 §A] Yahoo 프레임이 '퇴화 수집'(report22: ^VIX3M 1행)인지 판정. (퇴화여부, 사유).
+    행수 < YAHOO_MIN_ROWS 이거나, 실제 시작일이 max(YAHOO_EXPECTED_START, DATA_START)보다
+    PRICE_START_TOLERANCE_DAYS 이상 늦으면 퇴화. 예상시작이 없는 티커는 행수만 본다."""
+    if df is None or len(df) == 0:
+        return True, "빈 프레임"
+    n = int(len(df))
+    if n < cfg.YAHOO_MIN_ROWS:
+        return True, f"행수 {n} < {cfg.YAHOO_MIN_ROWS}"
+    exp = YAHOO_EXPECTED_START.get(ticker)
+    if exp:
+        expected_start = max(pd.Timestamp(exp), pd.Timestamp(cfg.DATA_START))
+        actual_start = pd.Timestamp(df.index.min())
+        late_by = (actual_start - expected_start).days
+        if late_by > cfg.PRICE_START_TOLERANCE_DAYS:
+            return True, f"실제시작 {actual_start.date()} vs 예상 {expected_start.date()} ({late_by}일 늦음)"
+    return False, ""
+
+
+def _yahoo_stale_fallback(ticker: str, cfg: Config = CFG,
+                          diag: Optional[List[dict]] = None, reason: str = "") -> Optional[pd.DataFrame]:
+    """[v1.21.0 §A(2)] 만료됐지만 정상 이력인 캐시를 지연캐시로 대체. 없거나 퇴화면 None."""
+    if cfg.YAHOO_STALE_CACHE_MAX_DAYS <= 0:
+        return None
+    stale = _read_cache(f"YH_{ticker}", max_age_hours=cfg.YAHOO_STALE_CACHE_MAX_DAYS * 24.0, cfg=cfg)
+    bad, why = _yahoo_degenerate(ticker, stale, cfg)
+    if stale is None or bad:
+        return None
+    age_h = _cache_age_hours(f"YH_{ticker}", cfg) or 0.0
+    log("DATA", kv(event="yahoo_stale_cache_used", series=ticker, rows=len(stale),
+                   start=str(stale.index.min().date()), end=str(stale.index.max().date()),
+                   cache_age_h=round(age_h, 1), reason=reason[:80]), "warning")
+    if diag is not None:
+        diag.append({"시리즈": ticker, "종류": "지연캐시", "사유": f"{reason} → 캐시 {age_h/24:.1f}일 전 이력으로 대체",
+                     "행수": int(len(stale)), "시작": str(stale.index.min().date()), "종료": str(stale.index.max().date())})
+    return stale
+
+
+def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None,
+                use_cache: bool = True, diag: Optional[List[dict]] = None) -> Optional[pd.DataFrame]:
     """단일 Yahoo 티커 다운로드(순차, 스레드 미사용). 배치 다운로드에서 빠진 티커의 개별
-    재시도 용도로 쓰인다. 실패 시 None (조용히 실패하지 않고 로그 남김)."""
-    cached = _read_cache(f"YH_{ticker}", cfg=cfg)
-    if cached is not None and len(cached) > 0:
-        return cached
+    재시도 용도로 쓰인다. 실패 시 None (조용히 실패하지 않고 로그 남김).
+    [v1.21.0 §A] 퇴화 수집(_yahoo_degenerate)은 성공으로 치지 않고 캐시에도 쓰지 않는다 —
+    재시도 후에도 퇴화면 지연캐시 대체를 시도하고, 그것도 없으면 None."""
+    if use_cache:
+        cached = _read_cache(f"YH_{ticker}", cfg=cfg)
+        if cached is not None and len(cached) > 0:
+            bad, why = _yahoo_degenerate(ticker, cached, cfg)
+            if not bad:
+                return cached
+            log("DATA", kv(event="yahoo_cache_degenerate_ignored", series=ticker, rows=len(cached),
+                           reason=why), "warning")
     try:
         import yfinance as yf
     except ImportError:
@@ -2472,6 +2609,9 @@ def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None) -
             df = df.dropna(how="all")
             if len(df) == 0:
                 raise ValueError("empty frame after dropna")
+            bad, why = _yahoo_degenerate(ticker, df, cfg)
+            if bad:   # [v1.21.0 §A(1)] 퇴화 수집은 성공이 아니다 — 캐시에 쓰지 않고 재시도
+                raise ValueError(f"degenerate: {why}")
             _write_cache(f"YH_{ticker}", df, cfg)
             log("DATA", kv(event="yahoo_ok", series=ticker, rows=len(df),
                            start=str(df.index[0].date()), end=str(df.index[-1].date()),
@@ -2482,8 +2622,15 @@ def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None) -
                            err=type(e).__name__, msg=str(e)[:80]), "warning")
             if attempt < n_try:
                 time.sleep(min(1.2 * attempt, 5.0))
+    stale = _yahoo_stale_fallback(ticker, cfg, diag, reason="개별 재시도 전부 실패/퇴화")
+    if stale is not None:
+        return stale
     log("DATA", kv(event="yahoo_fail", series=ticker, elapsed_s=round(time.time() - t0, 1),
-                   next_step="해당 지표는 자동 제외되고 나머지 지표로 진행됩니다"), "error")
+                   next_step="해당 지표는 자동 제외되고 나머지 지표로 진행됩니다"
+                             "(신호핵심 티커면 run()의 게이트가 중단)"), "error")
+    if diag is not None:
+        diag.append({"시리즈": ticker, "종류": "제외", "사유": "다운로드 실패/퇴화(지연캐시 없음)",
+                     "행수": 0, "시작": "-", "종료": "-"})
     return None
 
 
@@ -2847,7 +2994,8 @@ def fetch_fred(series_id: str, cfg: Config = CFG, retries: Optional[int] = None,
     return s
 
 
-def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG) -> Dict[str, Optional[pd.DataFrame]]:
+def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG,
+                    diag: Optional[List[dict]] = None) -> Dict[str, Optional[pd.DataFrame]]:
     """
     [v1.2.0 버그수정] v1.1.0의 ThreadPoolExecutor 기반 병렬 다운로드가 yfinance의 스레드 안전성
     부족과 맞물려 티커 간 가격 데이터가 서로 뒤섞이는 교차오염을 일으켰다(실사용 리포트에서
@@ -2860,10 +3008,16 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG) -> Dict[str, Optional
     t0 = time.time()
     out: Dict[str, Optional[pd.DataFrame]] = {}
     to_fetch: List[str] = []
+    degenerate: Dict[str, str] = {}   # [v1.21.0 §A] 배치에서 퇴화로 판정된 티커 → 사유
     for t in tickers:
         cached = _read_cache(f"YH_{t}", cfg=cfg)
         if cached is not None and len(cached) > 0:
-            out[t] = cached
+            bad, why = _yahoo_degenerate(t, cached, cfg)
+            if bad:   # [v1.21.0 §A(1)] 12시간 이내 캐시라도 퇴화면(report22의 1행 캐시) 무시하고 재수집
+                log("DATA", kv(event="yahoo_cache_degenerate_ignored", series=t, rows=len(cached), reason=why), "warning")
+                to_fetch.append(t)
+            else:
+                out[t] = cached
         else:
             to_fetch.append(t)
 
@@ -2887,6 +3041,13 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG) -> Dict[str, Optional
                         continue
                     sub = sub.loc[~sub.index.duplicated(keep="last")].sort_index()
                     sub.index = pd.to_datetime(sub.index).tz_localize(None)
+                    bad, why = _yahoo_degenerate(t, sub, cfg)
+                    if bad:   # [v1.21.0 §A(1)] 퇴화 수집 — 캐시에 쓰지 않고 개별 재시도 대상으로
+                        degenerate[t] = why
+                        log("DATA", kv(event="yahoo_batch_degenerate", series=t, rows=len(sub),
+                                       start=str(sub.index[0].date()), reason=why,
+                                       action="캐시 미기록 → 개별 재시도 → 지연캐시 대체"), "warning")
+                        continue
                     _write_cache(f"YH_{t}", sub, cfg)
                     out[t] = sub
                     log("DATA", kv(event="yahoo_ok", series=t, rows=len(sub),
@@ -2900,13 +3061,24 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG) -> Dict[str, Optional
                            err=type(e).__name__, msg=str(e)[:120]), "warning")
 
     # 배치에서 못 받은 티커만 순차 개별 재시도 (스레드 미사용 — 교차오염 원천 차단)
+    # [v1.21.0 §A(2)] 퇴화 수집 티커도 여기서 단일 티커 재수집(배치 API가 일부 심볼을 당일 1행만
+    # 돌려주는 Yahoo 측 간헐 장애는 단일 호출에서 정상인 경우가 많다) → 그래도 퇴화면 지연캐시.
     still_missing = [t for t in to_fetch if out.get(t) is None]
+    if degenerate and cfg.YAHOO_CRITICAL_RETRY_WAIT_S >= 0:
+        time.sleep(cfg.YAHOO_CRITICAL_RETRY_WAIT_S)
     for t in still_missing:
-        out[t] = fetch_yahoo(t, cfg)
+        out[t] = fetch_yahoo(t, cfg, use_cache=False, diag=diag)
+        if out[t] is not None and t in degenerate and diag is not None:
+            kind = "지연캐시" if any(d.get("시리즈") == t and d.get("종류") == "지연캐시" for d in diag) else "재수집"
+            if kind == "재수집":
+                diag.append({"시리즈": t, "종류": "재수집", "사유": f"배치 퇴화({degenerate[t]}) → 개별 재수집 정상",
+                             "행수": int(len(out[t])), "시작": str(out[t].index.min().date()),
+                             "종료": str(out[t].index.max().date())})
 
     n_ok = sum(1 for v in out.values() if v is not None)
     log("DATA", kv(event="yahoo_batch_done", requested=len(tickers), ok=n_ok,
-                   failed=len(tickers) - n_ok, elapsed_s=round(time.time() - t0, 1)))
+                   failed=len(tickers) - n_ok, degenerate=len(degenerate),
+                   elapsed_s=round(time.time() - t0, 1)))
     return out
 
 
@@ -3032,6 +3204,36 @@ def validate_series(name: str, s: pd.Series, quality_rows: List[dict]) -> pd.Ser
     if gap_max > 20:
         log("DATA", kv(event="anomaly_long_gap", series=name, gap_days=gap_max), "warning")
     return s
+
+
+def _yahoo_critical_gate(px_dict: Dict[str, Optional[pd.DataFrame]], cfg: Config,
+                         yahoo_diag: List[dict], quality: List[dict]) -> bool:
+    """[v1.21.0 §A(3)] 신호핵심 Yahoo 티커(매매대상 + 급락트리거 입력) 게이트. 하나라도 없으면
+    RuntimeError(ALLOW_DEGRADED_RUN=True면 True 반환 = 성능저하 실행). SELF_TEST는 대상 아님."""
+    yahoo_degraded = False
+    if not cfg.SELF_TEST:
+        _missing = [t for t in cfg.SIGNAL_CRITICAL_TICKERS if px_dict.get(t) is None]
+        if _missing:
+            _why = "; ".join(f"{d['시리즈']}: {d['사유']}" for d in yahoo_diag if d.get("시리즈") in _missing) or \
+                   "; ".join(str(q.get("무결성판정")) for q in quality
+                             if any(str(q.get("시리즈", "")).endswith(f" {t}") for t in _missing) and "제외" in str(q.get("무결성판정")))
+            _msg = (f"[중단/데이터수집] 신호핵심 Yahoo 티커 {', '.join(_missing)} 를 정상 이력으로 확보하지 못했습니다"
+                    f"({_why or '사유 미상'}). ^VIX3M 없이는 급락트리거(규칙 ⓪)의 VIX 기간구조가 전 구간 결측이 되어 "
+                    f"급락 방어가 통째로 빠진 리포트가 나옵니다(report22 사례: 2020 +27.6→+15.8%, MDD -8.4→-14.6%). "
+                    f"다음 단계: (1) 몇 분 뒤 재실행(Yahoo 배치가 일부 심볼을 당일 1행만 주는 간헐 장애 — 단일 재수집·"
+                    f"지연캐시까지 실패한 상태) (2) Colab이면 런타임 재시작 후 재실행 (3) 정말 저하 상태로도 실행해야 하면 "
+                    f"Config.ALLOW_DEGRADED_RUN=True로 명시(00시트에 '성능저하 실행' 표기).")
+            if not cfg.ALLOW_DEGRADED_RUN:
+                log("DATA", kv(event="yahoo_critical_abort", missing=",".join(_missing)), "error")
+                raise RuntimeError(_msg)
+            yahoo_degraded = True
+            log("DATA", kv(event="yahoo_critical_degraded", missing=",".join(_missing),
+                           note="ALLOW_DEGRADED_RUN=True — 경고 후 진행(00시트 성능저하 표기)"), "warning")
+        else:
+            log("DATA", kv(event="yahoo_critical_ok", tickers=",".join(cfg.SIGNAL_CRITICAL_TICKERS),
+                           stale_used=sum(1 for d in yahoo_diag if d.get("종류") == "지연캐시"),
+                           refetched=sum(1 for d in yahoo_diag if d.get("종류") == "재수집")))
+    return yahoo_degraded
 
 
 def validate_price_data(px_dict: Dict[str, Optional[pd.DataFrame]], cfg: Config,
@@ -4734,6 +4936,33 @@ def deep_drawdown_flag(close: pd.Series, dd_threshold: float, window: int,
     return dd.rolling(window, min_periods=20).min() <= dd_threshold
 
 
+def _fast_trigger_coverage_gate(fast_pct: Optional[pd.Series], sig_mask_s: pd.Series,
+                                cfg: Config) -> Tuple[float, bool, int]:
+    """[v1.21.0 §A(4)] 급락트리거 백분위의 신호구간 커버리지 게이트. (커버리지, 성능저하여부, 신호일수).
+    커버리지 < FAST_TRIGGER_MIN_COVERAGE 이면 RuntimeError(ALLOW_DEGRADED_RUN=True면 경고 후 True)."""
+    _n_sig = int(sig_mask_s.sum())
+    ft_coverage = (float(fast_pct.notna().sum()) / _n_sig) if (fast_pct is not None and _n_sig) else 0.0
+    ft_degraded = False
+    if cfg.USE_FAST_TRIGGER and _n_sig:
+        if ft_coverage < cfg.FAST_TRIGGER_MIN_COVERAGE:
+            _msg = (f"[중단/데이터수집] 급락트리거({cfg.FAST_TRIGGER_INDICATOR}) 백분위 커버리지 "
+                    f"{ft_coverage:.0%}(신호구간 {_n_sig}일 중 {int(fast_pct.notna().sum()) if fast_pct is not None else 0}일)가 "
+                    f"하한 {cfg.FAST_TRIGGER_MIN_COVERAGE:.0%} 미만입니다 — 규칙 ⓪이 사실상 비활성인 리포트는 정상 실행과 "
+                    f"비교할 수 없습니다(report22 사례). 다음 단계: 10_데이터품질의 ^VIX/^VIX3M 행 확인 후 재실행, "
+                    f"또는 Config.ALLOW_DEGRADED_RUN=True로 명시.")
+            if not cfg.ALLOW_DEGRADED_RUN:
+                log("SIGNAL", kv(event="fast_trigger_coverage_abort", coverage=round(ft_coverage, 3),
+                                 floor=cfg.FAST_TRIGGER_MIN_COVERAGE, signal_days=_n_sig), "error")
+                raise RuntimeError(_msg)
+            ft_degraded = True
+            log("SIGNAL", kv(event="fast_trigger_coverage_degraded", coverage=round(ft_coverage, 3),
+                             floor=cfg.FAST_TRIGGER_MIN_COVERAGE, signal_days=_n_sig), "warning")
+        else:
+            log("SIGNAL", kv(event="fast_trigger_coverage_ok", coverage=round(ft_coverage, 3),
+                             floor=cfg.FAST_TRIGGER_MIN_COVERAGE, signal_days=_n_sig))
+    return ft_coverage, ft_degraded, _n_sig
+
+
 def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CFG,
                      score: Optional[pd.Series] = None,
                      haz_pct: Optional[pd.Series] = None,
@@ -5064,6 +5293,25 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
     out["extension_haircut"] = ext_hit
     out["ext_cap"] = ext_cap
 
+    # [v1.21.0 §C] 규칙 ⑪ 레버리지 사다리 — 기본 비활성(⚠ 위험 파라미터). 켜면 확정 RISK_ON & 목표 1.0(헤어컷
+    # 미적용)인 날에 한해 (a) 급락 후 회복 진입(가격<200MA, 규칙 ⑦ 경로) → LEVERAGE_RECOVERY_POS,
+    # (b) 저위험(이격도 평균 ≤ LOW_RISK_EXT & H ≤ LOW_RISK_H) → LEVERAGE_LOW_RISK_POS. LEVERAGE_MAX로 절대 상한.
+    # 인과: 그날 종가 이격도·H. 근거·비용은 Config 주석/CHANGELOG v1.21.0 §C.
+    lev_hit = pd.Series(False, index=score_pct.index)
+    if cfg.USE_LEVERAGE:
+        w = int(max(1, cfg.EXTENSION_HAIRCUT_SMOOTH))
+        ext_s2 = trend200.rolling(w, min_periods=w).mean() if w > 1 else trend200
+        full_on = out["state"].eq("RISK_ON") & (out["target_pos"] >= cfg.POS_RISK_ON - 1e-12)
+        recov_entry = full_on & (trend200 < 0)
+        low_risk = (full_on & ext_s2.notna() & (ext_s2 <= cfg.LEVERAGE_LOW_RISK_EXT)
+                    & (haz_pct.notna() & (haz_pct <= cfg.LEVERAGE_LOW_RISK_H) if haz_pct is not None else False))
+        lev_pos = pd.Series(np.nan, index=score_pct.index)
+        lev_pos[low_risk] = min(cfg.LEVERAGE_LOW_RISK_POS, cfg.LEVERAGE_MAX)
+        lev_pos[recov_entry] = min(cfg.LEVERAGE_RECOVERY_POS, cfg.LEVERAGE_MAX)
+        lev_hit = lev_pos.notna() & (lev_pos > out["target_pos"] + 1e-12)
+        out.loc[lev_hit, "target_pos"] = lev_pos[lev_hit]
+    out["leverage"] = lev_hit
+
     n_sw = int((out["state"] != out["state"].shift()).sum())
     dist = out["state"].value_counts().to_dict()
     log("SIGNAL", kv(event="generated", switches=n_sw,
@@ -5133,6 +5381,9 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      extension_haircuts=int(ext_hit.sum()),
                      ext_cap_dist=str({float(k): int(v) for k, v in
                                        ext_cap[ext_hit].value_counts().sort_index().items()}).replace(" ", ""),
+                     # [v1.21.0 §C ⚠ 위험 파라미터] 규칙 ⑪ 레버리지 적용 여부·발동일수·최대 목표비중.
+                     use_leverage=cfg.USE_LEVERAGE, leverage_days=int(lev_hit.sum()),
+                     max_target_pos=float(out["target_pos"].max()),
                      elapsed_s=round(time.time() - t0, 3)))
     return out
 
@@ -5181,8 +5432,10 @@ def run_backtest(price: pd.DataFrame, target_pos: pd.Series, cfg: Config = CFG,
     rf = rf_daily.reindex(df.index).fillna(0.0) if rf_daily is not None else 0.0
 
     gross = df["pos_prev"] * df["ret_co"] + df["pos_exec"] * df["ret_oc"]
-    cash_leg = (1.0 - df["pos_exec"]) * rf                            # 미투자분 단기금리 수취
-    df["strategy_ret"] = (gross + cash_leg - cost).fillna(0.0)
+    cash_leg = (1.0 - df["pos_exec"]) * rf                            # 미투자분 단기금리 수취(pos>1 이면 단기금리 차입)
+    # [v1.21.0 §C] 초과노출(pos>1)에는 단기금리 위에 LEVERAGE_SPREAD_BPS 스프레드를 추가로 부과(레버리지 ETF/마진 비용 근사).
+    lev_cost = np.maximum(df["pos_exec"] - 1.0, 0.0) * (cfg.LEVERAGE_SPREAD_BPS / 1e4 / 252.0)
+    df["strategy_ret"] = (gross + cash_leg - cost - lev_cost).fillna(0.0)
     df["cost"] = cost
     df["turnover"] = turn
     df["bh_ret"] = df["ret_cc"].fillna(0.0)
@@ -5655,6 +5908,40 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             log("VALIDATE", kv(event="extension_haircut_sensitivity", combos=len(df_eh),
                                elapsed_s=round(time.time() - t0, 2)))
             df = pd.concat([df, df_eh], ignore_index=True, sort=False)
+
+        # [v1.21.0 §C] 레버리지 사다리(규칙 ⑪) 격자 — 기본 비활성이므로 순수 정보(사용자 목표 "B&H 2배"의 대가를
+        # 매 실행 실측). off★ / M1.3 / M1.3+회복 1.5 / 전 비중 ×1.5. 조달비용은 run_backtest가 rf+스프레드로 부과.
+        lv_rows = []
+        lv_cases = [("off(상한 1.0)★" if not cfg.USE_LEVERAGE else "off(상한 1.0)", {"USE_LEVERAGE": False}),
+                    ("저위험 1.3 (이격≤7%·H≤0.5)", {"USE_LEVERAGE": True, "LEVERAGE_RECOVERY_POS": 1.3, "LEVERAGE_LOW_RISK_POS": 1.3}),
+                    ("저위험 1.3 + 급락 후 회복진입 1.5", {"USE_LEVERAGE": True, "LEVERAGE_LOW_RISK_POS": 1.3, "LEVERAGE_RECOVERY_POS": 1.5}),
+                    ("전 비중 ×1.5 (일괄)", {"USE_LEVERAGE": False, "POS_RISK_ON": cfg.POS_RISK_ON * 1.5, "POS_NEUTRAL": cfg.POS_NEUTRAL * 1.5,
+                                         "EXTENSION_HAIRCUT_STEPS": tuple((t, round(c * 1.5, 2)) for t, c in cfg.EXTENSION_HAIRCUT_STEPS)})]
+        for label, over in lv_cases:
+            c = Config(**{**cfg.__dict__, **over})
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
+                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+            b = run_backtest(price, sg["target_pos"], c, rf_daily)
+            b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
+            m = perf_metrics(b["strategy_ret"])
+            is_live = all(getattr(cfg, k) == v for k, v in over.items())
+            lv_rows.append({
+                "LEVERAGE": label.replace("★", ""),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
+                "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
+                "평균비중": round(float(b["pos_exec"].mean()), 3),
+                "최대비중": round(float(b["pos_exec"].max()), 2),
+                "거래횟수": int((b["turnover"] > 1e-9).sum()),
+                "-1%손실일수": int((b["strategy_ret"] < -0.01).sum()),
+                "총수익배수": round(float(b["equity"].iloc[-1] / b["equity"].iloc[0]), 3),
+                "기본설정": "★" if is_live else "",
+            })
+        if lv_rows:
+            df_lv = pd.DataFrame(lv_rows)
+            log("VALIDATE", kv(event="leverage_sensitivity", combos=len(df_lv),
+                               elapsed_s=round(time.time() - t0, 2)))
+            df = pd.concat([df, df_lv], ignore_index=True, sort=False)
 
         # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 단독 민감도 — off/-0.12/-0.15/-0.20.
         # 리플레이에서 -12/-15%는 2022 방어를 훼손해 기각됐음을 실데이터에서도 재확인하는 용도.
@@ -6524,13 +6811,14 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
 # =============================================================================
 def run(cfg: Config = CFG) -> dict:
     np.random.seed(cfg.RANDOM_SEED)
-    log("START", kv(version="v1.20.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
+    log("START", kv(version="v1.21.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
     _ensure_cache_dir(cfg)
     quality: List[dict] = []
     fred_diag: List[dict] = []   # [v1.3.0 §2] 제외된 FRED 시리즈의 사유/시도경로 (10_데이터품질에 노출)
+    yahoo_diag: List[dict] = []  # [v1.21.0 §A] 퇴화/재수집/지연캐시/제외된 Yahoo 티커 (10_데이터품질에 노출)
     t_all = time.time()
     # [v1.4.0 §6-4] 단계별 소요시간 측정 — 실행요약(00시트)에 표로 노출해 성능 회귀를 리포트
     # 만으로 바로 확인할 수 있게 한다(IMPROVEMENT_PLAN_v1.4.md §1 진단표와 동일한 단계 구분을
@@ -6545,7 +6833,7 @@ def run(cfg: Config = CFG) -> dict:
     else:
         # [v1.1.0] 병렬 다운로드. 지표 유니버스가 커진 만큼(Yahoo/FRED 합산 20여->80여개)
         # 순차 다운로드는 네트워크 지연이 그대로 누적된다.
-        px_dict = fetch_all_yahoo(list(YAHOO_SERIES.keys()), cfg)
+        px_dict = fetch_all_yahoo(list(YAHOO_SERIES.keys()), cfg, diag=yahoo_diag)
         t_yahoo_done = time.time()
         fred_raw = fetch_all_fred(list(FRED_SERIES.keys()), cfg, diag=fred_diag)
         t_fred_done = time.time()
@@ -6637,6 +6925,15 @@ def run(cfg: Config = CFG) -> dict:
     # [v1.2.0] 가격 데이터 무결성 게이트 — 티커 간 교차오염/절단 여부를 확인하고
     # SPY(매매대상)가 명백히 틀린 경우 즉시 중단한다 (자세한 사유는 함수 docstring 참조).
     px_dict = validate_price_data(px_dict, cfg, quality)
+
+    # [v1.21.0 §A] Yahoo 진단 행을 10_데이터품질에 노출 + 신호핵심 티커 게이트(report22 사고 재발 방지).
+    for d in yahoo_diag:
+        kind = d.get("종류")
+        label = {"지연캐시": "[지연캐시]", "재수집": "[재수집]", "제외": "[Yahoo제외]"}.get(kind, "[Yahoo]")
+        quality.append({"시리즈": f"{label} {d['시리즈']}", "행수": d.get("행수", 0), "결측": 0, "결측비율(%)": np.nan,
+                        "중복인덱스": 0, "무한값": 0, "최대공백(일)": 0, "시작": d.get("시작", "-"),
+                        "종료": d.get("종료", "-"), "무결성판정": f"{'수용' if kind != '제외' else '제외'}({kind}): {d['사유']}"})
+    yahoo_degraded = _yahoo_critical_gate(px_dict, cfg, yahoo_diag, quality)
 
     price = px_dict[cfg.TRADE_TICKER].copy()
     price = price[~price.index.duplicated(keep="last")].sort_index()
@@ -6742,6 +7039,10 @@ def run(cfg: Config = CFG) -> dict:
                              prior_sign=_ft_spec.prior_sign,
                              threshold=cfg.FAST_TRIGGER_PCT,
                              rows=int(fast_pct.notna().sum())))
+    # [v1.21.0 §A(4)] 급락트리거 커버리지 — 신호구간에서 백분위가 있는 날의 비율. report22는 0/2,180이었지만
+    # 리포트 어디에도 "규칙 ⓪이 죽었다"는 문장이 없었다. 커버리지 미달이면 FRED/Yahoo 게이트와 같은 원칙으로
+    # 중단(ALLOW_DEGRADED_RUN=True면 표기 후 진행). 트리거를 의도적으로 끈 경우(USE_FAST_TRIGGER=False)는 대상 아님.
+    ft_coverage, ft_degraded, _n_sig = _fast_trigger_coverage_gate(fast_pct, pd.Series(sig_mask, index=cal), cfg)
 
     # [v1.11.0 §A] 회복 승격(규칙 ⑤)용 회복 확인 불리언 — 종가가 최근 RECOVERY_LOW_WINDOW
     # 거래일 저점 대비 RECOVERY_CONFIRM_PCT 이상 회복했는가. rolling min은 그 날까지의 과거
@@ -6856,6 +7157,9 @@ def run(cfg: Config = CFG) -> dict:
             "quality": pd.DataFrame(quality), "cal": cal, "fred": fred, "px_dict": px_dict,
             "fred_requested": fred_requested, "fred_ok": fred_ok, "fred_diag": fred_diag,
             "fred_degraded": fred_degraded,   # [v1.15.1 §A(3)] 수집률 미달 상태로 강행한 실행인지
+            # [v1.21.0 §A] Yahoo 신호핵심 게이트/트리거 커버리지 — 00시트 표기용
+            "yahoo_degraded": yahoo_degraded, "yahoo_diag": yahoo_diag,
+            "ft_coverage": ft_coverage, "ft_degraded": ft_degraded, "signal_days": _n_sig,
             "stage_timing": stage_timing}
 
 
@@ -6951,6 +7255,9 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         daily["과열헤어컷(E)"] = np.where(_eh, "상한 " + _ec.round(1).astype(str), "")
     else:
         daily["과열헤어컷(E)"] = ""
+    # [v1.21.0 §C] 규칙 ⑪ 레버리지 발동일(기본 비활성이면 전부 공란).
+    daily["레버리지(L)"] = sig["leverage"].reindex(idx).map({True: "발동", False: ""}) \
+        if "leverage" in sig.columns else ""
     # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 발동일.
     daily["깊은낙폭회복(D)"] = sig["deep_recovery"].reindex(idx).map({True: "발동", False: ""}) \
         if "deep_recovery" in sig.columns else ""
@@ -7189,12 +7496,33 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                            degraded=bool(res.get("fred_degraded"))),
             "info" if (fred_collect_pass and not res.get("fred_degraded")) else "warning")
 
+    # [v1.21.0 §A(4)] 급락트리거 데이터 커버리지 라인 — report22처럼 규칙 ⓪이 데이터 부재로 죽은 실행을
+    # 00시트 상단에서 바로 알 수 있게 한다(FRED 수집률 라인과 대칭).
+    _ftc = res.get("ft_coverage")
+    _nsig = res.get("signal_days") or 0
+    _yd = [d for d in res.get("yahoo_diag", []) if d.get("종류") in ("지연캐시", "재수집", "제외")]
+    _yd_note = ("; ".join(f"{d['시리즈']} {d['종류']}" for d in _yd) if _yd else "정상")
+    if cfg.SELF_TEST:
+        ft_cov_line = "N/A(합성데이터)"
+    elif not cfg.USE_FAST_TRIGGER:
+        ft_cov_line = "해당 없음(USE_FAST_TRIGGER=False)"
+    elif _ftc is None:
+        ft_cov_line = "미산출"
+    else:
+        _ok = _ftc >= cfg.FAST_TRIGGER_MIN_COVERAGE
+        ft_cov_line = (f"{'PASS' if _ok else 'FAIL'} — 신호구간 {_nsig:,}일 중 {int(round(_ftc * _nsig)):,}일 ({_ftc:.0%}) "
+                       f"| 신호핵심 티커({', '.join(cfg.SIGNAL_CRITICAL_TICKERS)}): {_yd_note}"
+                       + ("" if _ok else " — 규칙 ⓪ 급락트리거가 사실상 비활성(10_데이터품질 ^VIX/^VIX3M 행 참조)")
+                       + ("  ⚠ 성능저하 실행 — ALLOW_DEGRADED_RUN=True로 강행됨. 이 리포트의 성과는 정상 실행과 비교할 수 없음"
+                          if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
+
     meta = [
-        ("버전", "v1.20.0 (2026-09-04)"),
+        ("버전", "v1.21.0 (2026-09-04)"),
         ("매매 대상", f"{cfg.TRADE_TICKER} (미국 시장 대표 ETF)"),
         ("신호/백테스트 기간", f"{idx[0].date()} ~ {idx[-1].date()} ({len(idx):,} 거래일)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단)"),
         ("거래비용", f"편도 {cfg.COST_BPS:.0f}bp (수수료+슬리피지)"),
+        ("급락트리거 데이터 커버리지(수용기준)", ft_cov_line),   # [v1.21.0 §A(4)]
         ("포지션", f"위험선호 {cfg.POS_RISK_ON:.0%} / 중립 {cfg.POS_NEUTRAL:.0%} / "
                    f"위험회피 {cfg.POS_RISK_OFF:.0%}, 이력현상 {cfg.HYSTERESIS_DAYS}일, "
                    f"최소보유 {cfg.MIN_HOLD_DAYS}일"),
@@ -7331,6 +7659,15 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             f"이격도 상위 20%(≥+12%)의 이후 10일 수익 -0.7%·20일 내 최대낙폭 -3.6% vs 하위 20% +2.3%/-0.9%. "
             f"민감도(off/E1/E3/E5/사다리/평활없음)는 06c EXTENSION_HAIRCUT 격자 참조. ⚠ 신호(사이징) 파라미터 — CHANGELOG v1.20.0 명시 플래그"
             + ("" if cfg.USE_EXTENSION_HAIRCUT else "  [비활성] 06c off 행이 현재 라이브 신호와 동일"))),
+        # [v1.21.0 §C] 규칙 ⑪ 레버리지 사다리(기본 비활성 — 06c LEVERAGE 격자에서 실측).
+        ("레버리지 사다리(규칙 ⑪)", (
+            f"USE_LEVERAGE={cfg.USE_LEVERAGE}. True일 때: 확정 위험선호 & 목표 1.0인 날 (a) 급락 후 회복 진입(가격<200일선) → "
+            f"{cfg.LEVERAGE_RECOVERY_POS:.1f}, (b) 저위험(이격도 ≤{cfg.LEVERAGE_LOW_RISK_EXT:.0%} & H ≤{cfg.LEVERAGE_LOW_RISK_H:.2f}) → "
+            f"{cfg.LEVERAGE_LOW_RISK_POS:.1f}, 절대 상한 {cfg.LEVERAGE_MAX:.1f}; 초과노출에 단기금리+{cfg.LEVERAGE_SPREAD_BPS:.0f}bp 조달비용. "
+            + ("활성 — ⚠ 위험 파라미터가 켜진 실행." if cfg.USE_LEVERAGE else
+               "기본 비활성: 'B&H 총수익 2배' 목표는 노출 1.0 이하의 롱온리로는 완전예측 상한(≥8% 하락 전부 회피 6.8x)에 "
+               "근접해야 닿고, 레버리지는 MDD를 -7.5→-9.4%(선별 1.3/1.5)~-11%(일괄 ×1.5)로 키운다 — '낙폭 최소화 최우선' 지시와 "
+               "충돌하므로 사용자 승인 전 미적용. 대가는 06c LEVERAGE 격자에서 매 실행 실측(CHANGELOG v1.21.0 §C)."))),
         ("채택된 지표", ", ".join(name_map.get(k, k) for k in adopted) if adopted else "없음"),
         ("가중치 산정", f"SIGNAL_START 이전 워밍업은 연 1회({cfg.WARMUP_REWEIGHT_FREQ}), 이후 본구간은 "
                         f"{ {'D':'매일','W':'매주','M':'매월'}.get(cfg.REWEIGHT_FREQ, cfg.REWEIGHT_FREQ) } "
