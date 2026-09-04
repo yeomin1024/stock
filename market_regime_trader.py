@@ -1,6 +1,6 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.18.0 - 2026-09-03 - 유효 저점 판별(규칙 ⑧) 설계·전수 실증(보류) + MDD 최소화 레버 프론티어 실측 — 라이브 신호 불변
+#  VERSION: v1.19.0 - 2026-09-03 - 규칙 ⑨ 중립 위험감축(H>0.70 → 현금) 활성 + 지적 날짜별 원인 실측 + 교대-잠금 수정(보류)
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -12,6 +12,51 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.19.0 | 2026-09-03 | 사용자가 v1.18.0 실행 결과(market_regime_report_2.xlsx, 20번째)의 05b 행을
+#                        지목하며 "강한 상승에 매수 0은 용납 불가 — 높은 비중으로 진입할 것. 하락기엔
+#                        현금 또는 0.5 미만, 위험이 높을수록 비중은 작게. 해당 날짜에서 왜 조정하지
+#                        못했는지 원인을 규명하고 로직을 다듬을 것"을 요청.
+#
+#                        [report20 판독] v1.18.0(라이브 신호 v1.17과 동일): CAGR 17.14%/샤프 1.549/MDD
+#                        -8.65%. 06c 보류 격자 실데이터: ⑧ 구조적 저점 17.57%지만 MDD -10.89%·손실일
+#                        122(기각 확정), 전 비중 ×0.75 → 13.51%/MDD -6.46%/샤프 1.637(프론티어 확인).
+#
+#                        [지적 날짜별 원인 — 엔진 재현(충실도 99.95%)으로 규칙 단위 추적]
+#                        (1) 2025-03-13~25 +4.4% 미참여: 3/10 가격<200MA로 추세오버라이드 → 3/12 0
+#                            (저점 3/13 이틀 전). 반등 +4.4%는 회복확인 +5%에 0.6pp 미달 → 유지. 그
+#                            상태로 4/3~8 -12.7% 급락을 무포지션 통과 — 사후적으로 옳은 판단.
+#                        (2) 2025-04-08~09 +10.5%: 관세 유예 단일일 갭. 전일 트리거 1.00·H 0.65·가격
+#                            -13% 아래 200MA — 인과적으로 선점 불가. 4/16 규칙 ⑦로 1.0 재진입, 이후
+#                            +15% 포착(2025년 +27.2%).
+#                        (3) 2026-07-29~08-13 +6.6% 미참여: 7/15~8/3 H 0.86~0.89(규칙 ① 강제 회피,
+#                            트리거 0.0~0.2 침묵) → 8/5~12 매수보류게이트(H 0.72~0.81) → 8/13~24
+#                            raw RISK_ON/NEUTRAL 하루씩 교대로 이력현상 잠금 → 8/26 1.0. 통계 검증:
+#                            H>0.85 & 트리거<0.3인 날(n=20)의 21일 후 평균 -4.9%·양수 35%(전체 기준
+#                            +1.1%/68%), 그중 36/46일이 2022 베어마켓 — "H 높고 VIX 조용"은 오경보가
+#                            아니라 역사적으로 가장 위험한 조합. 2026-07은 예외이며 규칙 ①은 유지.
+#                            교대-잠금은 기계적 결함으로 수정안을 구현했으나 성과 근거 없음(§B).
+#                        (4) 풀포지션 하락 11건(2024-07~2026-02): 고점 시점 H 0.09~0.29·트리거
+#                            0.09~0.42 — 평온장 단일 쇼크(v1.17 §B 전수 결론 재확인, 브레이크 4계열
+#                            전부 기각). (5) 0.5 하락 4건(2023-02·07·09, 2026-06): H 0.56~0.84 —
+#                            **규칙 ⑨의 대상**. 2025-02/03(H 0.59~0.70)은 임계 미만으로 미해당.
+#
+#                        [§A ⚠ 신호(위험) 파라미터 — 유일한 활성 변경(§9)] 규칙 ⑨ 중립 위험감축:
+#                        확정 중립 & H>NEUTRAL_RISK_CUT_H(0.70=HAZARD_BLOCK 재사용) → 목표비중
+#                        POS_NEUTRAL_HIGH_H(0.0). 상태기계·이력현상 불변의 사이징 오버레이. 두
+#                        데이터셋 2018+ 엔진 리플레이: report20 CAGR 14.88→15.20%/샤프 1.361→1.414/
+#                        MDD -8.98→-8.64%/손실일 100→96/2022 -7.4→-3.6%/2024 +1.9pp/2026 +1.5pp;
+#                        report15 CAGR 동일(+0.01)/샤프 +0.025/MDD 동일 개선/2022 -6.7→-3.6%. 비용:
+#                        2020 -4.5pp(규칙 ⑤ 중립기 H>0.70), 2023 -1.5~-2.0pp. 검토 변형: 0.25 수준·
+#                        0.75/0.80 임계·⑤일 제외·FT 조건·연속 H스케일 — 전부 0.0@0.70 대비 열위
+#                        (IMPROVEMENT_PLAN_v1.19.md §C 표). 06c NEUTRAL_RISK_CUT 격자(5행) 신설,
+#                        01시트 중립감축(H) 컬럼, 출력 컬럼 neutral_risk_cut.
+#
+#                        [§B 보류] USE_ALTERNATION_FIX(교대-잠금 수정): 상태 변경 12일, CAGR 동일,
+#                        2019 +1.2pp·2026 -0.9pp, MDD -0.05pp → 기본 비활성, 06c 보류 격자 행.
+#
+#                        [검증] 신규 test_v119_neutral_cut.py(기본값·⑨ 역학/인과/오버레이 불변·교대
+#                        수정 역학·06c 격자), 기존 회귀 재실행, e2e 배선.
+#
 #  v1.18.0 | 2026-09-03 | 사용자가 v1.17.0 실행 결과(market_regime_report_1.xlsx, 19번째)를 제출하며
 #                        "핵심 지시: 낙폭 최소화를 최우선(작은 수익은 포기 가능). 급락 뒤 유효 저점을
 #                        판별해 비중을 최대화하되 데드캣 바운스는 피할 것. 필요하면 기술적 지표 추가.
@@ -1748,6 +1793,30 @@ class Config:
     USE_STRUCT_BOTTOM_PROMOTION: bool = False
     STRUCT_BOTTOM_DD: float = -0.08      # '조정' 하한(고점→저점 순서 보장, RECOVERY_LOW_WINDOW 창)
     STRUCT_BOTTOM_MAX_H: float = 0.70    # =HAZARD_BLOCK. 승격 시 H 상한(게이트 임계와 동일 → 게이트 무충돌)
+    # [v1.19.0 §A] 중립 위험감축(규칙 ⑨) — 확정 상태가 중립(0.5)인 날 H 백분위가 NEUTRAL_RISK_CUT_H
+    # (=HAZARD_BLOCK 0.70, '능동 위험' 경계 재사용) 초과이면 그날 목표비중을 POS_NEUTRAL_HIGH_H로
+    # 낮춘다(상태기계는 그대로, 확정 후 사이징 오버레이 — 이력현상·최소보유 무관, 인과: 그날 H).
+    # [⚠ 신호(위험) 파라미터 — 이번 라운드 유일한 활성 변경(§9)] 사용자 지시 "하락기엔 현금 또는 0.5
+    # 미만, 위험이 높을수록 비중은 작게"의 구현. 임계 0.70은 기존 HAZARD_BLOCK(위험선호 진입 차단·
+    # 게이트 임계)을 재사용(신규 수치 없음), 수준 0.0은 지시("현금")대로. 실증(두 데이터셋 2018+
+    # 엔진 내 리플레이, 충실도 99.95%): report20 CAGR 14.88→15.20%(+0.32pp)/샤프 1.361→1.414/MDD
+    # -8.98→-8.64%/-1% 손실일 100→96/**2022 -7.4→-3.6%**; report15 CAGR 14.73→14.74%(동일)/샤프
+    # 1.352→1.377/MDD -8.98→-8.64%/손실일 -4/2022 -6.7→-3.6%. 비용(명시): 2020 +30.9→+26.4%
+    # (규칙 ⑤ 중립 구간의 H>0.70 일수를 0으로), 2023 +15.1→+13.6% / +13.3→+11.3%(금리편중 H).
+    # 0.25 수준은 두 데이터셋 모두 0.0보다 열위(샤프·MDD·2022), 임계 0.75는 효과 절반 — 06c
+    # NEUTRAL_RISK_CUT 격자에 off/0.25@0.70/0.0@0.70★/0.0@0.75/0.0@0.80 으로 매 실행 실측.
+    USE_NEUTRAL_RISK_CUT: bool = True
+    NEUTRAL_RISK_CUT_H: float = 0.70
+    POS_NEUTRAL_HIGH_H: float = 0.0
+    # [v1.19.0 §B] 이력현상 교대-잠금 수정 — 원시상태가 현재 확정상태보다 '같은 방향'의 서로 다른
+    # 두 상태를 하루씩 번갈아 낼 때(예: RISK_OFF 확정 중 raw가 RISK_ON/NEUTRAL 교대) 종전 로직은
+    # "동일 raw 연속일수"만 세어 어느 쪽으로도 전환하지 못했다(2026-08-13~18 실측: 가격>200MA·
+    # 트리거 0.00·점수 상승 중 8일간 0 유지). True면 같은 방향 연속일수로 세고 그중 보수적인
+    # 한 단계(상향이면 낮은 쪽, 하향이면 높은 쪽)로 전환한다. 교대가 없는 날은 비트 동일.
+    # 실증(두 데이터셋 2018+): 상태가 달라지는 날 12일(2018-02-15, 2019-01-04~08, 2026-08-13~24),
+    # CAGR 동일(14.88→14.88 / 14.73→14.73), 2019 +1.2pp·2026 -0.9pp, MDD -8.98→-9.03%(-0.05pp).
+    # 성과 근거가 없고 MDD 최우선 지시에 미세 역행 → 기본 비활성(보류). 06c 보류 격자에서 실측.
+    USE_ALTERNATION_FIX: bool = False
     MIN_HAZARD_INDICATORS: int = 1     # 00_실행요약 "위험트랙 채택 지표수" 라인의 참고용 최소기준(정보성, 신호를 막지 않음)
     # [v1.4.0 §3(a) ⚠ 신호(위험) 파라미터] 실사용 결과(market_regime_report_3.xlsx) 진단에서
     # 해저드 트랙이 사실상 무력화된 것을 확인했다(IMPROVEMENT_PLAN_v1.4.md §3) — 기간당
@@ -4791,11 +4860,22 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
     cur = "NO_SIGNAL"
     prev_raw = None
     streak, held = 0, 0
+    dir_streak, dir_sign, dir_states = 0, 0, []   # [v1.19.0 §B] 같은 방향 연속일수·방향·본 상태들
     for i, s in enumerate(states):
         streak = streak + 1 if s == prev_raw else 1
         prev_raw = s
         held += 1
         gated = False
+        # [v1.19.0 §B] 교대-잠금 수정: cur 대비 같은 방향(위/아래)의 raw 가 연속되면 상태가 달라도
+        # 방향 연속일수를 누적한다. TREND_ONLY/NO_SIGNAL(폴백 경로)은 종전 로직 그대로.
+        if cfg.USE_ALTERNATION_FIX and s in pos_map and cur in pos_map:
+            sgn = int(np.sign(pos_map[s] - pos_map[cur]))
+            if sgn != 0 and sgn == dir_sign:
+                dir_streak += 1; dir_states.append(s)
+            elif sgn != 0:
+                dir_streak, dir_sign, dir_states = 1, sgn, [s]
+            else:
+                dir_streak, dir_sign, dir_states = 0, 0, []
         if s != cur:
             fallback = ("TREND_ONLY" in str(cur)) or ("TREND_ONLY" in str(s)) \
                        or cur == "NO_SIGNAL" or s == "NO_SIGNAL"
@@ -4811,6 +4891,13 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
             else:
                 req_streak, req_hold = cfg.HYSTERESIS_DAYS, cfg.MIN_HOLD_DAYS
             can_switch = (streak >= req_streak and held >= req_hold) or fallback
+            # [v1.19.0 §B] 교대 상황(동일 raw 연속은 부족하지만 같은 방향 연속은 충분)이면 보수적인
+            # 한 단계로 전환 대상을 바꾼다: 상향은 본 상태들 중 비중이 낮은 쪽, 하향은 높은 쪽.
+            if (cfg.USE_ALTERNATION_FIX and not can_switch and not fallback and dir_sign != 0
+                    and dir_streak >= req_streak and held >= req_hold and len(set(dir_states)) > 1):
+                s = (min(dir_states, key=lambda x: pos_map[x]) if dir_sign > 0
+                     else max(dir_states, key=lambda x: pos_map[x]))
+                can_switch = True
             # [v1.8.0 §B] 정상 확정 경로(fallback 아님)에서 비중을 늘리는 전환만 재확인한다.
             # 비중을 줄이는 전환(REDUCE/SELL)은 절대 보류하지 않는다(안전 비대칭). fallback
             # (TREND_ONLY/NO_SIGNAL 강제전환)은 이미 이력현상 자체를 면제하는 별도 경로라
@@ -4831,6 +4918,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
             if can_switch:
                 cur = s
                 held = 0
+                dir_streak, dir_sign, dir_states = 0, 0, []   # [v1.19.0 §B] 전환 후 방향 누적 리셋
         conf_state.append(cur)
         conf_pos.append(pos_map[cur])
         buy_hold_gate.append(gated)
@@ -4854,6 +4942,19 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         "struct_bottom": struct_boost,     # [v1.18.0 §A] 구조적 저점 확인 승격(규칙 ⑧) 발동일
     })
     out["target_pos"] = out["target_pos"].fillna(0.0)
+
+    # [v1.19.0 §A] 규칙 ⑨ 중립 위험감축 — 확정 상태 중립(0.5) & 그날 H > NEUTRAL_RISK_CUT_H 이면
+    # 목표비중을 POS_NEUTRAL_HIGH_H(기본 0.0)로. 상태기계·이력현상은 건드리지 않는 사이징
+    # 오버레이(사용자 지시 "위험이 높을수록 비중은 작게 — 하락기엔 현금 또는 0.5 미만"). 근거는
+    # Config/CHANGELOG v1.19.0(두 데이터셋 2018+ 리플레이: CAGR 무손상, 샤프↑, MDD↓, 2022 -7.4→
+    # -3.6%, 손실일 -4; 비용 2020 -4.5pp·2023 -1.5~2pp).
+    neutral_cut = pd.Series(False, index=score_pct.index)
+    if cfg.USE_NEUTRAL_RISK_CUT and cfg.USE_HAZARD_TRACK and haz_pct is not None:
+        neutral_cut = (out["state"].eq("NEUTRAL") & haz_pct.notna()
+                       & (haz_pct > cfg.NEUTRAL_RISK_CUT_H))
+        out.loc[neutral_cut, "target_pos"] = np.minimum(out.loc[neutral_cut, "target_pos"],
+                                                          cfg.POS_NEUTRAL_HIGH_H)
+    out["neutral_risk_cut"] = neutral_cut
 
     n_sw = int((out["state"] != out["state"].shift()).sum())
     dist = out["state"].value_counts().to_dict()
@@ -4911,6 +5012,12 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      struct_bottom_dd=cfg.STRUCT_BOTTOM_DD,
                      struct_bottom_max_h=cfg.STRUCT_BOTTOM_MAX_H,
                      struct_bottoms=int(struct_boost.sum()),
+                     # [v1.19.0 §A/§B ⚠ 신호(위험) 파라미터] 규칙 ⑨·교대 수정 적용 여부·발동일수.
+                     use_neutral_risk_cut=cfg.USE_NEUTRAL_RISK_CUT,
+                     neutral_risk_cut_h=cfg.NEUTRAL_RISK_CUT_H,
+                     pos_neutral_high_h=cfg.POS_NEUTRAL_HIGH_H,
+                     neutral_risk_cuts=int(neutral_cut.sum()),
+                     use_alternation_fix=cfg.USE_ALTERNATION_FIX,
                      elapsed_s=round(time.time() - t0, 3)))
     return out
 
@@ -5331,6 +5438,8 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
              {"USE_STRUCT_BOTTOM_PROMOTION": True}),
             ("전 비중 ×0.75 (MDD 우선 참고)", {"POS_RISK_ON": cfg.POS_RISK_ON * 0.75,
                                             "POS_NEUTRAL": cfg.POS_NEUTRAL * 0.75}),
+            # [v1.19.0 §B] 이력현상 교대-잠금 수정(기본 비활성)
+            ("이력현상 교대-잠금 수정", {"USE_ALTERNATION_FIX": True}),
         ]
         for lab, over in held_cases:
             c = Config(**{**cfg.__dict__, **over})
@@ -5354,6 +5463,40 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             log("VALIDATE", kv(event="held_mechanisms_check", combos=len(df_hd),
                                elapsed_s=round(time.time() - t0, 2)))
             df = pd.concat([df, df_hd], ignore_index=True, sort=False)
+
+        # [v1.19.0 §A] 규칙 ⑨ 중립 위험감축 단독 민감도 — off / 0.25@0.70 / 0.0@0.70 / 0.0@0.75 / 0.0@0.80.
+        # 라이브와 같은 케이스에 ★. 어떤 행도 라이브 신호에 영향을 주지 않는다(재시뮬레이션 전용).
+        if haz_pct is not None:
+            nc_rows = []
+            nc_cases = [(False, cfg.NEUTRAL_RISK_CUT_H, cfg.POS_NEUTRAL_HIGH_H, "off(중립 0.5 유지)"),
+                        (True, 0.70, 0.25, "0.25 @ H>0.70"), (True, 0.70, 0.0, "0.0 @ H>0.70"),
+                        (True, 0.75, 0.0, "0.0 @ H>0.75"), (True, 0.80, 0.0, "0.0 @ H>0.80")]
+            for use, th, lvl, label in nc_cases:
+                c = Config(**{**cfg.__dict__, "USE_NEUTRAL_RISK_CUT": use,
+                              "NEUTRAL_RISK_CUT_H": th, "POS_NEUTRAL_HIGH_H": lvl})
+                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
+                                      recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+                b = run_backtest(price, sg["target_pos"], c, rf_daily)
+                b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
+                m = perf_metrics(b["strategy_ret"])
+                is_live = (use == cfg.USE_NEUTRAL_RISK_CUT and
+                           (not use or (abs(th - cfg.NEUTRAL_RISK_CUT_H) < 1e-9 and
+                                        abs(lvl - cfg.POS_NEUTRAL_HIGH_H) < 1e-9)))
+                nc_rows.append({
+                    "NEUTRAL_RISK_CUT": label,
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                    "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
+                    "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
+                    "거래횟수": int((b["turnover"] > 1e-9).sum()),
+                    "-1%손실일수": int((b["strategy_ret"] < -0.01).sum()),
+                    "감축발동일수": int(sg["neutral_risk_cut"].loc[sg.index >= pd.Timestamp(cfg.SIGNAL_START)].sum()),
+                    "기본설정": "★" if is_live else "",
+                })
+            if nc_rows:
+                df_nc = pd.DataFrame(nc_rows)
+                log("VALIDATE", kv(event="neutral_risk_cut_sensitivity", combos=len(df_nc),
+                                   elapsed_s=round(time.time() - t0, 2)))
+                df = pd.concat([df, df_nc], ignore_index=True, sort=False)
 
         # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 단독 민감도 — off/-0.12/-0.15/-0.20.
         # 리플레이에서 -12/-15%는 2022 방어를 훼손해 기각됐음을 실데이터에서도 재확인하는 용도.
@@ -6190,7 +6333,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
 # =============================================================================
 def run(cfg: Config = CFG) -> dict:
     np.random.seed(cfg.RANDOM_SEED)
-    log("START", kv(version="v1.18.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
+    log("START", kv(version="v1.19.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
@@ -6607,6 +6750,9 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.13.0 §C] ΔH 속도 경보 발동일(v1.14.0부터 활성).
     daily["속도경보(ΔH)"] = sig["hazard_velocity"].reindex(idx).map({True: "발동", False: ""}) \
         if "hazard_velocity" in sig.columns else ""
+    # [v1.19.0 §A] 규칙 ⑨ 중립 위험감축 발동일(확정 중립 & H>임계 → 목표비중 POS_NEUTRAL_HIGH_H).
+    daily["중립감축(H)"] = sig["neutral_risk_cut"].reindex(idx).map({True: "발동", False: ""}) \
+        if "neutral_risk_cut" in sig.columns else ""
     # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 발동일.
     daily["깊은낙폭회복(D)"] = sig["deep_recovery"].reindex(idx).map({True: "발동", False: ""}) \
         if "deep_recovery" in sig.columns else ""
@@ -6846,7 +6992,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             "info" if (fred_collect_pass and not res.get("fred_degraded")) else "warning")
 
     meta = [
-        ("버전", "v1.18.0 (2026-09-03)"),
+        ("버전", "v1.19.0 (2026-09-03)"),
         ("매매 대상", f"{cfg.TRADE_TICKER} (미국 시장 대표 ETF)"),
         ("신호/백테스트 기간", f"{idx[0].date()} ~ {idx[-1].date()} ({len(idx):,} 거래일)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단)"),
@@ -6970,6 +7116,13 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             + ("활성." if cfg.USE_STRUCT_BOTTOM_PROMOTION else
                "기본 비활성: 리플레이에서 CAGR +0.8pp이지만 MDD -8.98→-11.08%(2018-03 재하락)로 'MDD 최소화 우선' "
                "지시와 충돌 — 06c 보류메커니즘 격자 참조(CHANGELOG v1.18.0)."))),
+        # [v1.19.0 §A] 규칙 ⑨ 중립 위험감축.
+        ("중립 위험감축(규칙 ⑨)", (
+            f"USE_NEUTRAL_RISK_CUT={cfg.USE_NEUTRAL_RISK_CUT}. True일 때: 확정 상태가 중립(0.5)인 날 위험점수 "
+            f"백분위 H > {cfg.NEUTRAL_RISK_CUT_H:.2f}(=위험선호 차단 임계)이면 그날 목표비중을 "
+            f"{cfg.POS_NEUTRAL_HIGH_H:.2f}로 낮춤(상태기계·이력현상은 불변, 확정 후 사이징 오버레이, 인과: 그날 H). "
+            f"'위험이 높을수록 비중은 작게 — 하락기엔 현금 또는 0.5 미만' 지시의 구현. 민감도(off/0.25/0.0 × "
+            f"0.70/0.75/0.80)는 06c NEUTRAL_RISK_CUT 격자 참조. ⚠ 신호(위험) 파라미터 — CHANGELOG v1.19.0 명시 플래그")),
         ("채택된 지표", ", ".join(name_map.get(k, k) for k in adopted) if adopted else "없음"),
         ("가중치 산정", f"SIGNAL_START 이전 워밍업은 연 1회({cfg.WARMUP_REWEIGHT_FREQ}), 이후 본구간은 "
                         f"{ {'D':'매일','W':'매주','M':'매월'}.get(cfg.REWEIGHT_FREQ, cfg.REWEIGHT_FREQ) } "
