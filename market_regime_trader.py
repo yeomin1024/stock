@@ -1,6 +1,6 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.19.0 - 2026-09-03 - 규칙 ⑨ 중립 위험감축(H>0.70 → 현금) 활성 + 지적 날짜별 원인 실측 + 교대-잠금 수정(보류)
+#  VERSION: v1.20.0 - 2026-09-04 - 규칙 ⑩ 과열 헤어컷(200일선 이격도 → 0.1 단위 비중 상한) 활성 + 05b 판정 라벨 수정 + 피드백 가설 실증
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -12,6 +12,79 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.20.0 | 2026-09-04 | 사용자가 v1.19.0 실행 결과(market_regime_report_3.xlsx, 21번째)와 피드백.txt를
+#                        제출: "하락상승구간별 피드백을 무조건 지키는 방향으로 국면 판단 설계 — 지표가 정말
+#                        위험한 수치가 아니면 큰 변동 후에는 회귀하는 특성이 있는지 확인해서 적용, 상승 추세는
+#                        타되 하락 낌새를 빨리 찾을 기술적/예측 지표 보강, 비중 조절을 위험도에 따라 0.1
+#                        단위로 세분화" + 05b 세 행("저점 풀보유인데 왜 4.71%?", "고점 전 매도인데 왜 손실?",
+#                        "무포지션인데 왜 손실?") 확인 요청.
+#
+#                        [report21 판독 — v1.19.0 예측대로] FRED 54/54, CAGR 17.14→17.61%(예측 17.4~17.6),
+#                        샤프 1.549→1.618, MDD -8.65→-8.38%(예측 ≈-8.3), 2022 -1.6%, 2023 +18.6%, 중립감축
+#                        191일. 06c: NEUTRAL_RISK_CUT ★=0.0@0.70 최선 재현, 보류 ⑧ 18.08%/MDD -10.89%(기각
+#                        재확인), ×0.75 13.85%/MDD -6.26%.
+#
+#                        [§A 05b 판정 라벨 수정 — 세 질문의 답] 판정이 '구간 시작일 비중'만 보고 있었다.
+#                        (1) 2020-04-01~14 "저점 풀보유" +4.71%: 4/1~4/3 사흘만 1.0. 4/1 복합점수백분위
+#                        0.90→0.28 급락 + 가격 200MA -17% → 추세오버라이드 → 4/6 0. 이어 4/6~15 H 0.88~0.91
+#                        (규칙 ①)로 재진입 봉쇄 → +15.3% 중 4.7%만 취득. (2) 2020-09-15~23 "선행 감축"
+#                        -2.39%: 9/8 1.0→0.5로 줄였을 뿐 0.5를 끝까지 보유(H 0.52~0.69·점수 0.24~0.34 —
+#                        어느 규칙도 0 조건 미달). (3) 2025-04-14~21 "무포지션 통과" -3.39%: 고점일 비중
+#                        0이었으나 4/14~15 규칙 ⑦ 발동 → 4/16 1.0으로 **하락 중 진입**(V반등 재시험)
+#                        → 이후 +15% 포착. drawdown_episodes(): 하락구간에 '구간내 매수' 판정 신설, 선행
+#                        감축을 전량/부분(잔여 비중 명시)으로 분리, 상승구간 '저점 풀보유 후 구간내 감축
+#                        (N일째, 최소 x)' 판정 신설, '종료시 비중' 컬럼 추가. 진단표만 변경(신호 무관).
+#
+#                        [§B 피드백 가설 실증 — 2018+ 선행수익률 조건부 분포(중복표본, 에피소드 수 병기)]
+#                        (a) '큰 변동 후 회귀': 10일 -5% 이하 하락 뒤 20일 수익 — H<0.5 +2.6%, H 0.5~0.7
+#                            **-3.1%(양수 48%)**, H>0.85 +2.8%; 트리거>0.9(항복) +2.6%/70%, 트리거 0.5~0.9
+#                            -0.5%/45%. 즉 하락 뒤 회귀는 'VIX 항복(FT>0.9)'일 때만 성립하고 H 중간대는
+#                            오히려 추가 하락 — 무조건 회귀 가정은 기각, 기존 ⑤/⑦(+5% 확인) 유지.
+#                            10일 +5% 이상 상승 뒤: H<0.5 +2.3%/**양수 83%**(추세 지속), H>0.85 -0.8~-2.0%
+#                            /34~50%. 큰 상승 뒤 '회귀'는 H가 높을 때만 — 규칙 ①이 이미 담당.
+#                        (b) '하락 낌새' 조기 탐지(풀포지션 1,111일, 5분위): 200일선 이격도 상위 20%
+#                            (≥+11.8%) → 10일 수익 -0.70%·손실(<-3%) 확률 15.8%·20일 내 최대낙폭 -3.55%
+#                            vs 하위 20% +2.33%/2.2%/-0.86% — 단조·독립 에피소드 27~28개. 변동성조정
+#                            3개월 모멘텀(상위 -3.41%)·RSI14(≥68 -2.46%)·52주고점 근접(-2.66%)·실현
+#                            변동성 하위 20%("평온장" 손실확률 15.1%) 도 같은 방향. H·트리거는 풀포지션
+#                            내부에선 무예측(H 상위 +0.95%). 지적된 고점의 이격도: 2018-01 +14.7%,
+#                            2020-01/02 +11.9/12.3%, 2020-09 +16.7%, 2021-09 +12.4%, 2024-03/07 +14.3/
+#                            15.5%(전부 상위 10~20%); 2018-09·2019-05·2020-06·2022-01·2025-02·2026-01은
+#                            +7~10%(중간 — 평온장 쇼크, v1.17 §B 결론 그대로 어떤 후보도 무예측).
+#
+#                        [§C ⚠ 신호(사이징) 파라미터 — 유일한 활성 변경(§9)] 규칙 ⑩ 과열 헤어컷:
+#                        확정 RISK_ON인 날 200일선 이격도(TREND_200, 기존 신호 입력 — 신규 지표 없음)의
+#                        EXTENSION_HAIRCUT_SMOOTH(5)일 평균이 EXTENSION_HAIRCUT_STEPS 임계 이상이면 목표
+#                        비중 상한을 0.1 단위로 낮춘다: ≥+10% → 0.8, ≥+12% → 0.6(기본). 상태기계·이력현상
+#                        불변의 확정 후 사이징 오버레이(규칙 ⑨와 같은 층, 인과: 그날 종가 이격도).
+#                        실증(두 데이터셋 2018+ 엔진 리플레이, 충실도 99.95%): report21 CAGR 15.20→15.98%
+#                        (+0.78pp)/샤프 1.414→1.603/MDD -8.64→**-7.49%**/칼마 1.76→2.13/-1% 손실일 96→78/
+#                        거래 109→164/평균비중 0.62→0.57; report15 14.74→15.53%/1.377→1.563/MDD 동일
+#                        개선/손실일 -18. 연도: 2018 +3.5→+5.5, 2020 +26.4→+30.2, 2024 +21.2→+22.9,
+#                        2025 +23.5→+25.4, 비용 2021 +19.2→+16.6, 2019/2022/2023 불변. 하위기간 분할
+#                        (2018~21 / 2022~26) 모두 CAGR·샤프·MDD·손실일 개선. 임계 근방(0.09/0.11,
+#                        0.11/0.13)·캡 근방(0.9/0.7, 0.7/0.5, 0.8/0.5, 3단)·0.1 사다리(0.08~0.10 시작,
+#                        바닥 0.4~0.6) 전 변형이 기준 대비 CAGR·샤프·MDD·손실일 동시 개선(플래토 —
+#                        IMPROVEMENT_PLAN_v1.20.md §C 표). 평활창 {1,3,5,7,10}은 거래수 축소 목적(229→
+#                        164)이며 3~10 전부 개선(5·7 최선). 캡 적용일(425일) 다음날 시장수익 평균
+#                        -0.003%(전체 RISK_ON일 +0.099%) — 헤어컷의 기대비용 ≈ 0. 에피소드: 2018-01
+#                        평균비중 0.80→0.56(손실 -6.3→-4.6%), 2020-09-02 0.88→0.57(-6.4→-4.1%),
+#                        2024-07 1.0→0.79(-8.4→-6.3%), 2024-03 0.91→0.64. MDD 정의 구간이 2018-04-02
+#                        → 2025-04-21(V반등 재시험)로 이동. 06c EXTENSION_HAIRCUT 격자(6행) 신설,
+#                        01시트 과열헤어컷(E) 컬럼(적용 상한 표시), 출력 컬럼 extension_haircut/ext_cap.
+#
+#                        [§D 보류(1차 실증)] 규칙 ⑩ 위에 얹은 후보: ⑧ 구조적 저점(H<0.50) CAGR +0.3pp·
+#                        칼마↑·MDD 동일이나 샤프 -0.01·손실일 +8·2022 -3.6→-4.5% → 06c 보류 격자 행
+#                        추가(2차 실증 후 판단). 회복확인 3%: CAGR 동일·2022 -0.7pp·2026 +0.8pp(중립).
+#                        추세승격 점수하한 0.20: MDD -10.1%(기각). '큰 하락 뒤 더 빠른 진입'은 2018-12·
+#                        2020-03·2025-04 모두 규칙 ⓪(FT>0.97)·①(H>0.85)이 막은 것이며, 그 조합은
+#                        v1.19 §A(3) 통계상 가장 위험한 구간 — 완화하지 않음. 2026-04는 복합점수가
+#                        0.15~0.21(위험회피 밴드)로 떨어진 채 H≈0·가격>200MA인 이례적 조합(⑤ 0.5 유지).
+#
+#                        [검증] 신규 test_v120_ext_haircut.py(기본값·⑩ 역학/상태범위/인과·평활·06c 격자·
+#                        05b 라벨 3사례 재현), 기존 회귀(보류 격자 8→9행 반영), e2e 배선, 전체 기본값
+#                        자기시험.
+#
 #  v1.19.0 | 2026-09-03 | 사용자가 v1.18.0 실행 결과(market_regime_report_2.xlsx, 20번째)의 05b 행을
 #                        지목하며 "강한 상승에 매수 0은 용납 불가 — 높은 비중으로 진입할 것. 하락기엔
 #                        현금 또는 0.5 미만, 위험이 높을수록 비중은 작게. 해당 날짜에서 왜 조정하지
@@ -1817,6 +1890,25 @@ class Config:
     # CAGR 동일(14.88→14.88 / 14.73→14.73), 2019 +1.2pp·2026 -0.9pp, MDD -8.98→-9.03%(-0.05pp).
     # 성과 근거가 없고 MDD 최우선 지시에 미세 역행 → 기본 비활성(보류). 06c 보류 격자에서 실측.
     USE_ALTERNATION_FIX: bool = False
+    # [v1.20.0 §C] 과열 헤어컷(규칙 ⑩) — 확정 상태가 위험선호(1.0)인 날, 200일선 이격도(TREND_200 =
+    # 가격/200일선-1, 이미 추세오버라이드·승격 규칙의 입력 — 신규 지표 없음)의 EXTENSION_HAIRCUT_SMOOTH
+    # 일 이동평균이 EXTENSION_HAIRCUT_STEPS의 (임계, 상한) 중 임계 이상이면 그날 목표비중을 그 상한으로
+    # 낮춘다(여러 단 충족 시 가장 높은 임계의 상한). 상태기계·이력현상은 그대로인 확정 후 사이징
+    # 오버레이(규칙 ⑨와 같은 층). 인과: 그날 종가까지의 이격도만 사용(다음날 시가 체결).
+    # [⚠ 신호(사이징) 파라미터 — 이번 라운드 유일한 활성 변경(§9)] 사용자 지시 "상승 추세는 타되 하락
+    # 낌새를 빨리 찾을 것, 큰 상승 뒤에는 위험 회피, 비중을 위험도에 따라 0.1 단위로 세분화"의 구현.
+    # 근거(report21 2018+, 풀포지션 1,111일 5분위): 이격도 상위 20%(≥+11.8%)에서 이후 10일 수익
+    # -0.70%·손실(<-3%) 확률 15.8%·20일 내 최대낙폭 -3.55% vs 하위 20% +2.33%/2.2%/-0.86%(단조, 독립
+    # 에피소드 27~28개). 임계 0.10/0.12는 그 분위 경계(0.098/0.118) 근방의 라운드값이며 근방(0.09/0.11,
+    # 0.11/0.13)·캡 근방·0.1 사다리 전 변형이 기준 대비 CAGR·샤프·MDD·손실일 동시 개선(플래토).
+    # 실증(두 데이터셋 2018+ 엔진 리플레이): report21 CAGR 15.20→15.98%/샤프 1.414→1.603/MDD -8.64→
+    # -7.49%/-1% 손실일 96→78/거래 109→164; report15 14.74→15.53%/1.377→1.563/MDD 동일 개선. 하위기간
+    # (2018~21, 2022~26) 모두 개선. 비용: 2021 +19.2→+16.6%(이격도 +10~12% 장기 체류), 평균비중 0.62→
+    # 0.57. 평활 5일은 임계 근방 깜빡임 거래 축소용(229→164회; 3~10일 전부 개선). 06c EXTENSION_HAIRCUT
+    # 격자(off/E1/E3★/E5/사다리/평활1)로 매 실행 실측.
+    USE_EXTENSION_HAIRCUT: bool = True
+    EXTENSION_HAIRCUT_STEPS: Tuple[Tuple[float, float], ...] = ((0.10, 0.8), (0.12, 0.6))   # (이격도 임계, 목표비중 상한)
+    EXTENSION_HAIRCUT_SMOOTH: int = 5       # 이격도 이동평균 창(거래일). 1이면 당일값
     MIN_HAZARD_INDICATORS: int = 1     # 00_실행요약 "위험트랙 채택 지표수" 라인의 참고용 최소기준(정보성, 신호를 막지 않음)
     # [v1.4.0 §3(a) ⚠ 신호(위험) 파라미터] 실사용 결과(market_regime_report_3.xlsx) 진단에서
     # 해저드 트랙이 사실상 무력화된 것을 확인했다(IMPROVEMENT_PLAN_v1.4.md §3) — 기간당
@@ -4956,6 +5048,22 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                                                           cfg.POS_NEUTRAL_HIGH_H)
     out["neutral_risk_cut"] = neutral_cut
 
+    # [v1.20.0 §C] 규칙 ⑩ 과열 헤어컷 — 확정 RISK_ON & 200일선 이격도(EXTENSION_HAIRCUT_SMOOTH일 평균)가
+    # EXTENSION_HAIRCUT_STEPS 임계 이상이면 목표비중 상한을 0.1 단위로 낮춘다(≥+10% → 0.8, ≥+12% → 0.6).
+    # 규칙 ⑨와 같은 '확정 후 사이징 오버레이' 층: 상태기계·이력현상·게이트는 건드리지 않는다. 인과:
+    # trend200은 t일 종가/200일선(t)이며 이동평균도 t까지의 창(min_periods=창 → 워밍업 구간은 상한 없음).
+    # 근거·실증 수치는 Config/CHANGELOG v1.20.0 참조. ext_cap 은 감사용(1.0 = 미적용).
+    ext_cap = pd.Series(1.0, index=score_pct.index)
+    if cfg.USE_EXTENSION_HAIRCUT and cfg.EXTENSION_HAIRCUT_STEPS:
+        w = int(max(1, cfg.EXTENSION_HAIRCUT_SMOOTH))
+        ext_s = trend200.rolling(w, min_periods=w).mean() if w > 1 else trend200
+        for thr, cap in sorted(cfg.EXTENSION_HAIRCUT_STEPS, key=lambda x: x[0]):
+            ext_cap[ext_s.notna() & (ext_s >= thr)] = float(cap)
+    ext_hit = out["state"].eq("RISK_ON") & (ext_cap < out["target_pos"] - 1e-12)
+    out.loc[ext_hit, "target_pos"] = ext_cap[ext_hit]
+    out["extension_haircut"] = ext_hit
+    out["ext_cap"] = ext_cap
+
     n_sw = int((out["state"] != out["state"].shift()).sum())
     dist = out["state"].value_counts().to_dict()
     log("SIGNAL", kv(event="generated", switches=n_sw,
@@ -5018,6 +5126,13 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      pos_neutral_high_h=cfg.POS_NEUTRAL_HIGH_H,
                      neutral_risk_cuts=int(neutral_cut.sum()),
                      use_alternation_fix=cfg.USE_ALTERNATION_FIX,
+                     # [v1.20.0 §C ⚠ 신호(사이징) 파라미터] 규칙 ⑩ 적용 여부·단계·평활·발동일수·상한 분포.
+                     use_extension_haircut=cfg.USE_EXTENSION_HAIRCUT,
+                     extension_haircut_steps=str(cfg.EXTENSION_HAIRCUT_STEPS).replace(" ", ""),
+                     extension_haircut_smooth=cfg.EXTENSION_HAIRCUT_SMOOTH,
+                     extension_haircuts=int(ext_hit.sum()),
+                     ext_cap_dist=str({float(k): int(v) for k, v in
+                                       ext_cap[ext_hit].value_counts().sort_index().items()}).replace(" ", ""),
                      elapsed_s=round(time.time() - t0, 3)))
     return out
 
@@ -5440,6 +5555,10 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                                             "POS_NEUTRAL": cfg.POS_NEUTRAL * 0.75}),
             # [v1.19.0 §B] 이력현상 교대-잠금 수정(기본 비활성)
             ("이력현상 교대-잠금 수정", {"USE_ALTERNATION_FIX": True}),
+            # [v1.20.0 §D] 규칙 ⑩ 위에 얹은 1차 실증 후보: ⑧ 구조적 저점 확인의 H 상한을 0.50으로 조인 변형
+            # (report21/15 리플레이: CAGR +0.3pp·칼마↑·MDD 동일, 샤프 -0.01·손실일 +8·2022 -0.9pp — 2차 실증 대기).
+            (f"⑧ 구조적 저점 확인({cfg.STRUCT_BOTTOM_DD:.0%}, H<0.50) [1차 실증]",
+             {"USE_STRUCT_BOTTOM_PROMOTION": True, "STRUCT_BOTTOM_MAX_H": 0.50}),
         ]
         for lab, over in held_cases:
             c = Config(**{**cfg.__dict__, **over})
@@ -5497,6 +5616,45 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                 log("VALIDATE", kv(event="neutral_risk_cut_sensitivity", combos=len(df_nc),
                                    elapsed_s=round(time.time() - t0, 2)))
                 df = pd.concat([df, df_nc], ignore_index=True, sort=False)
+
+        # [v1.20.0 §C] 규칙 ⑩ 과열 헤어컷 단독 민감도 — off / E1(0.9/0.8) / E3(0.8/0.6, 라이브) / E5(0.7/0.5) /
+        # 0.1 사다리(+10.5%부터 0.5%p당 -0.1, 바닥 0.4) / E3 평활 없음. 라이브와 같은 케이스에 ★.
+        # 어떤 행도 라이브 신호에 영향을 주지 않는다(재시뮬레이션 전용). trend200만 쓰므로 위험트랙 유무와 무관.
+        eh_rows = []
+        ladder = tuple((round(0.105 + 0.005 * i, 3), round(0.9 - 0.1 * i, 1)) for i in range(6))  # 0.9…0.4
+        eh_cases = [(False, cfg.EXTENSION_HAIRCUT_STEPS, cfg.EXTENSION_HAIRCUT_SMOOTH, "off(상한 없음)"),
+                    (True, ((0.10, 0.9), (0.12, 0.8)), cfg.EXTENSION_HAIRCUT_SMOOTH, "E1: ≥10%→0.9, ≥12%→0.8"),
+                    (True, ((0.10, 0.8), (0.12, 0.6)), cfg.EXTENSION_HAIRCUT_SMOOTH, "E3: ≥10%→0.8, ≥12%→0.6"),
+                    (True, ((0.10, 0.7), (0.12, 0.5)), cfg.EXTENSION_HAIRCUT_SMOOTH, "E5: ≥10%→0.7, ≥12%→0.5"),
+                    (True, ladder, cfg.EXTENSION_HAIRCUT_SMOOTH, "사다리: ≥10.5%부터 0.5%p당 -0.1(바닥 0.4)"),
+                    (True, ((0.10, 0.8), (0.12, 0.6)), 1, "E3 평활 없음(당일값)")]
+        for use, steps, sm, label in eh_cases:
+            c = Config(**{**cfg.__dict__, "USE_EXTENSION_HAIRCUT": use,
+                          "EXTENSION_HAIRCUT_STEPS": tuple(steps), "EXTENSION_HAIRCUT_SMOOTH": sm})
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
+                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+            b = run_backtest(price, sg["target_pos"], c, rf_daily)
+            b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
+            m = perf_metrics(b["strategy_ret"])
+            is_live = (use == cfg.USE_EXTENSION_HAIRCUT and
+                       (not use or (tuple(steps) == tuple(cfg.EXTENSION_HAIRCUT_STEPS)
+                                    and sm == cfg.EXTENSION_HAIRCUT_SMOOTH)))
+            eh_rows.append({
+                "EXTENSION_HAIRCUT": label,
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
+                "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
+                "평균비중": round(float(b["pos_exec"].mean()), 3),
+                "거래횟수": int((b["turnover"] > 1e-9).sum()),
+                "-1%손실일수": int((b["strategy_ret"] < -0.01).sum()),
+                "헤어컷발동일수": int(sg["extension_haircut"].loc[sg.index >= pd.Timestamp(cfg.SIGNAL_START)].sum()),
+                "기본설정": "★" if is_live else "",
+            })
+        if eh_rows:
+            df_eh = pd.DataFrame(eh_rows)
+            log("VALIDATE", kv(event="extension_haircut_sensitivity", combos=len(df_eh),
+                               elapsed_s=round(time.time() - t0, 2)))
+            df = pd.concat([df, df_eh], ignore_index=True, sort=False)
 
         # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 단독 민감도 — off/-0.12/-0.15/-0.20.
         # 리플레이에서 -12/-15%는 2022 방어를 훼손해 기각됐음을 실데이터에서도 재확인하는 용도.
@@ -5987,13 +6145,22 @@ def drawdown_episodes(bt: pd.DataFrame, cfg: Config = CFG) -> pd.DataFrame:
     빈틈없이 분할하고, 각 구간에서 전략이 하락 전에 팔았는지 / 저점 부근에서 샀는지를 판정한다.
 
     판정 규칙(체결비중 pos_exec 기준):
-      하락 구간 — "선행 감축": 고점 시점 비중이 10거래일 전보다 낮음(고점 전에 이미 매도).
-                 "기간내 감축(지연 N일)": 고점 이후 N거래일째 첫 감축.
-                 "무포지션 통과": 고점 시점 비중 0(이미 전량 회피 상태 — 방어 성공의 연장).
+      하락 구간 — "선행 감축(전량 회피)": 고점 시점 비중이 10거래일 전보다 낮고 0(고점 전에 전량 매도).
+                 "선행 감축(부분: a→b, 잔여 b 보유)": 고점 전에 줄였지만 b>0을 구간 내내 보유
+                   → 구간전략수익률은 b×시장수익률 — [v1.20.0 §A] 종전 "선행 감축"만으로는 잔여 비중
+                   의 손실이 보이지 않았음(2020-09-15~23: 0.5 보유로 -2.4%).
+                 "기간내 감축(지연 N일, a→b)": 고점 이후 N거래일째 첫 감축(최소 비중 b 명시).
+                 "무포지션 통과(전 구간 0)": 구간 내내 비중 0(이미 전량 회피 — 방어 성공의 연장).
+                 "구간내 매수(고점 후 N일, 0→x)": 고점일 비중 0이었으나 하락 도중 진입 — [v1.20.0 §A]
+                   종전엔 "무포지션 통과"로 표기돼 손실 원인이 가려졌음(2025-04-14~21: 4/16 규칙 ⑦로
+                   1.0 진입 → -3.4%).
                  "감축 없음(보유 통과)": 비중>0인데 저점까지 한 번도 줄이지 않음(예측 실패).
-      상승 구간 — "저점 풀보유": 저점 시점 이미 비중 1.0.
-                 "매수(저점 후 N일, 상승분 x% 지점)": 첫 증액 시점과 그때까지 진행된 상승 비율.
-                 "증액 없음(비중 유지)": 반포지션 등으로 참여했으나 키우지 않음.
+      상승 구간 — "저점 풀보유(구간 내내 유지)": 저점 시점 1.0이고 끝까지 유지.
+                 "저점 풀보유 후 구간내 감축(저점 후 N일, 최소 x)": 저점에 1.0이었으나 상승 도중 줄임
+                   — [v1.20.0 §A] 종전 "저점 풀보유(매수 불필요)"가 감축을 숨겼음(2020-04-01~14: 4/6 0으로
+                   → +15.3% 중 +4.7%만 취득).
+                 "매수(저점 후 N일, 상승분 x% 지점, a→b)": 첫 증액 시점·그때까지의 상승 비율·비중 변화.
+                 "증액 없음(비중 유지)": 반포지션 등으로 참여했으나 키우지 않음(구간내 감축 시 명시).
                  "매수 없음(미참여)": 구간 내내 비중 0(상승 예측 실패 — 단, 베어마켓 랠리
                  회피는 사후적으로만 구분 가능하므로 구간시장수익률과 함께 읽을 것).
 
@@ -6045,31 +6212,52 @@ def drawdown_episodes(bt: pd.DataFrame, cfg: Config = CFG) -> pd.DataFrame:
         mkt_ret = float((1 + seg_bt["bh_ret"].iloc[1:]).prod() - 1) if len(seg_bt) > 1 else 0.0
 
         first_act, lag, verdict = None, None, ""
+        p_min = float(seg_pos.min()); p_max = float(seg_pos.max()); p_end = float(seg_pos.iloc[-1])
+        # [v1.20.0 §A] 판정은 '구간 시작일 비중'만이 아니라 구간 내 증감·최소/최종 비중을 함께 본다.
+        # 종전 라벨(저점 풀보유 / 선행 감축 / 무포지션 통과)이 구간 도중의 감축·잔여 보유·진입을 숨겨
+        # 사용자가 "왜 손실/저수익인가"를 표에서 읽을 수 없었다(사례는 docstring 참조).
+        red = seg_pos[seg_pos.diff() < 0]
+        add = seg_pos[seg_pos.diff() > 0]
         if kind == "하락":
-            red = seg_pos[seg_pos.diff() < 0]
             if len(red):
                 first_act = red.index[0]
                 lag = px.index.get_loc(first_act) - i1
-            if p0 < p_pre10 - 1e-9:
-                verdict = "선행 감축(고점 전 매도)"
+            if p0 <= 1e-9 and len(add):
+                a_dt = add.index[0]; a_lag = px.index.get_loc(a_dt) - i1
+                first_act, lag = a_dt, a_lag
+                verdict = f"구간내 매수(고점 후 {a_lag}거래일, 0→{p_max:g} — 하락 중 진입)"
+            elif p0 < p_pre10 - 1e-9:
+                if p0 <= 1e-9:
+                    verdict = f"선행 감축(고점 전 전량 회피 {p_pre10:g}→0)"
+                elif first_act is not None:
+                    verdict = f"선행 감축(부분 {p_pre10:g}→{p0:g}, 기간내 추가 감축 지연 {lag}거래일, 최소 {p_min:g})"
+                else:
+                    verdict = f"선행 감축(부분 {p_pre10:g}→{p0:g}, 잔여 {p0:g} 보유 통과)"
             elif first_act is not None:
-                verdict = f"기간내 감축(지연 {lag}거래일)"
+                verdict = f"기간내 감축(지연 {lag}거래일, {p0:g}→{p_min:g})"
             elif p0 <= 1e-9:
-                verdict = "무포지션 통과(이미 전량 회피)"
+                verdict = "무포지션 통과(전 구간 0)"
             else:
                 verdict = f"감축 없음(비중 {p0:g} 보유 통과)"
         else:
-            add = seg_pos[seg_pos.diff() > 0]
             if len(add):
                 first_act = add.index[0]
                 lag = px.index.get_loc(first_act) - i1
             if p0 >= 0.99:
-                verdict = "저점 풀보유(매수 불필요)"
+                if len(red):
+                    r_dt = red.index[0]; r_lag = px.index.get_loc(r_dt) - i1
+                    first_act, lag = r_dt, r_lag
+                    verdict = f"저점 풀보유 후 구간내 감축(저점 후 {r_lag}거래일, 최소 {p_min:g}, 종료 {p_end:g})"
+                else:
+                    verdict = "저점 풀보유(구간 내내 유지)"
             elif first_act is not None:
                 frac = (float(px.loc[first_act]) / v1 - 1.0) / max(chg, 1e-9)
-                verdict = f"매수(저점 후 {lag}거래일, 상승분 {frac*100:.0f}% 지점)"
+                verdict = f"매수(저점 후 {lag}거래일, 상승분 {frac*100:.0f}% 지점, {p0:g}→{p_max:g})"
+                if len(red) and red.index[0] > first_act:
+                    verdict += f" 후 재감축(최소 {p_min:g})"
             elif p0 > 0:
-                verdict = f"증액 없음(비중 {p0:g} 유지)"
+                verdict = (f"증액 없음(비중 {p0:g} 유지)" if not len(red)
+                           else f"증액 없음, 구간내 감축({p0:g}→{p_min:g})")
             else:
                 verdict = "매수 없음(미참여)"
 
@@ -6078,7 +6266,8 @@ def drawdown_episodes(bt: pd.DataFrame, cfg: Config = CFG) -> pd.DataFrame:
             "시작일(고점/저점)": d1.date(), "종료일": d2.date(),
             "등락률(%)": round(chg * 100, 2), "거래일수": max(len(seg_pos) - 1, 0),
             "시작시 비중": p0, "10거래일 전 비중": p_pre10,
-            "구간최소비중": float(seg_pos.min()), "구간평균비중": round(float(seg_pos.mean()), 2),
+            "구간최소비중": p_min, "구간평균비중": round(float(seg_pos.mean()), 2),
+            "종료시 비중": p_end,   # [v1.20.0 §A]
             "첫 대응일": first_act.date() if first_act is not None else "-",
             "대응 지연(거래일)": lag if lag is not None else "-",
             "구간전략수익률(%)": round(strat_ret * 100, 2),
@@ -6103,6 +6292,8 @@ def drawdown_episodes(bt: pd.DataFrame, cfg: Config = CFG) -> pd.DataFrame:
                      dn_late=int(dn["판정"].str.startswith("기간내").sum()),
                      dn_flat=int(dn["판정"].str.startswith("무포지션").sum()),
                      dn_rode=int(dn["판정"].str.startswith("감축 없음").sum()),
+                     dn_bought_in=int(dn["판정"].str.startswith("구간내 매수").sum()),   # [v1.20.0 §A]
+                     dn_partial_pre=int(dn["판정"].str.startswith("선행 감축(부분").sum()),
                      elapsed_s=round(time.time() - t0, 3)))
     return df
 
@@ -6333,7 +6524,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
 # =============================================================================
 def run(cfg: Config = CFG) -> dict:
     np.random.seed(cfg.RANDOM_SEED)
-    log("START", kv(version="v1.19.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
+    log("START", kv(version="v1.20.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
@@ -6753,6 +6944,13 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.19.0 §A] 규칙 ⑨ 중립 위험감축 발동일(확정 중립 & H>임계 → 목표비중 POS_NEUTRAL_HIGH_H).
     daily["중립감축(H)"] = sig["neutral_risk_cut"].reindex(idx).map({True: "발동", False: ""}) \
         if "neutral_risk_cut" in sig.columns else ""
+    # [v1.20.0 §C] 규칙 ⑩ 과열 헤어컷 — 발동일에 적용된 목표비중 상한(0.8/0.6 …)을 표시(미발동은 공란).
+    if "extension_haircut" in sig.columns:
+        _eh = sig["extension_haircut"].reindex(idx).fillna(False).astype(bool)
+        _ec = sig["ext_cap"].reindex(idx)
+        daily["과열헤어컷(E)"] = np.where(_eh, "상한 " + _ec.round(1).astype(str), "")
+    else:
+        daily["과열헤어컷(E)"] = ""
     # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 발동일.
     daily["깊은낙폭회복(D)"] = sig["deep_recovery"].reindex(idx).map({True: "발동", False: ""}) \
         if "deep_recovery" in sig.columns else ""
@@ -6992,7 +7190,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             "info" if (fred_collect_pass and not res.get("fred_degraded")) else "warning")
 
     meta = [
-        ("버전", "v1.19.0 (2026-09-03)"),
+        ("버전", "v1.20.0 (2026-09-04)"),
         ("매매 대상", f"{cfg.TRADE_TICKER} (미국 시장 대표 ETF)"),
         ("신호/백테스트 기간", f"{idx[0].date()} ~ {idx[-1].date()} ({len(idx):,} 거래일)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단)"),
@@ -7123,6 +7321,16 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             f"{cfg.POS_NEUTRAL_HIGH_H:.2f}로 낮춤(상태기계·이력현상은 불변, 확정 후 사이징 오버레이, 인과: 그날 H). "
             f"'위험이 높을수록 비중은 작게 — 하락기엔 현금 또는 0.5 미만' 지시의 구현. 민감도(off/0.25/0.0 × "
             f"0.70/0.75/0.80)는 06c NEUTRAL_RISK_CUT 격자 참조. ⚠ 신호(위험) 파라미터 — CHANGELOG v1.19.0 명시 플래그")),
+        # [v1.20.0 §C] 규칙 ⑩ 과열 헤어컷.
+        ("과열 헤어컷(규칙 ⑩)", (
+            f"USE_EXTENSION_HAIRCUT={cfg.USE_EXTENSION_HAIRCUT}. True일 때: 확정 상태가 위험선호(1.0)인 날 "
+            f"200일선 이격도의 {cfg.EXTENSION_HAIRCUT_SMOOTH}일 평균이 "
+            + ", ".join(f"{t:+.0%} 이상이면 상한 {c:.1f}" for t, c in sorted(cfg.EXTENSION_HAIRCUT_STEPS))
+            + " (0.1 단위 위험도 사이징; 상태기계·이력현상은 불변, 확정 후 사이징 오버레이, 인과: 그날 종가 이격도). "
+            f"'상승 추세는 타되 큰 상승 뒤에는 위험 회피, 비중을 위험도에 따라 0.1 단위로' 지시의 구현 — 근거: 풀포지션 상태에서 "
+            f"이격도 상위 20%(≥+12%)의 이후 10일 수익 -0.7%·20일 내 최대낙폭 -3.6% vs 하위 20% +2.3%/-0.9%. "
+            f"민감도(off/E1/E3/E5/사다리/평활없음)는 06c EXTENSION_HAIRCUT 격자 참조. ⚠ 신호(사이징) 파라미터 — CHANGELOG v1.20.0 명시 플래그"
+            + ("" if cfg.USE_EXTENSION_HAIRCUT else "  [비활성] 06c off 행이 현재 라이브 신호와 동일"))),
         ("채택된 지표", ", ".join(name_map.get(k, k) for k in adopted) if adopted else "없음"),
         ("가중치 산정", f"SIGNAL_START 이전 워밍업은 연 1회({cfg.WARMUP_REWEIGHT_FREQ}), 이후 본구간은 "
                         f"{ {'D':'매일','W':'매주','M':'매월'}.get(cfg.REWEIGHT_FREQ, cfg.REWEIGHT_FREQ) } "
