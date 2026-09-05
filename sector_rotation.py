@@ -1,85 +1,86 @@
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.1.0 - 2026-09-04 - 11개 SPDR 섹터 ETF 로테이션 최초 구현
+#  VERSION: v0.2.0 - 2026-09-05 - 11개 섹터 각각의 '절대' 상승/하락 일별 예측 — SPY 파이프라인(M) 전체를 섹터별로 재적용
 #
 #  목적:
-#    market_regime_trader.py(이하 M)가 만든 SPY 국면(목표비중 E_t)을 그대로 두고, 그 노출을
-#    11개 섹터(XLK/XLV/XLY/XLP/XLF/XLE/XLI/XLB/XLU/XLC/XLRE) 중 어디에 둘지만 결정한다.
-#    각 섹터는 SPY와 같은 파이프라인(후보지표 -> 6기준 검증 -> 워크포워드 가중 -> 복합점수
-#    -> 이력현상 상태기계 -> 매수/중립/매도)을 거치되, 예측 대상이 "섹터 절대수익"이 아니라
-#    "SPY 대비 상대수익"이라는 점만 다르다. 시장 방향은 이미 M이 담당하므로 여기서는 방향을
-#    다시 예측하지 않고 "어느 섹터가 시장을 이기고 질지"만 예측한다.
+#    market_regime_trader.py(이하 M)가 SPY에 대해 하는 일을 11개 SPDR 섹터 ETF(XLK/XLV/XLY/
+#    XLP/XLF/XLE/XLI/XLB/XLU/XLC/XLRE) 각각에 그대로 반복한다 — 2018년부터 매 거래일, 섹터별로
+#    "상승(위험선호)/중립/하락(위험회피)" 국면과 목표비중을 산출하고, M과 같은 구성의 시트로
+#    기록한다. 예측 대상은 v0.1의 "SPY 대비 상대수익"이 아니라 **각 섹터의 절대 수익/낙폭**이다.
 #
-#  설계 문서: claude/SECTOR_ROTATION_SPEC_v0.1.md (프로젝트 "미국 주식 매수, 매도 프로그램
-#    만들기2"). 본 파일은 그 문서의 §1~§9를 그대로 구현한다.
+#  섹터 하나의 파이프라인(전부 M의 함수를 무수정 재사용):
+#    후보지표 = M의 후보지표 전부(A.변동성/B.신용/C.매크로/D.크로스에셋/E.추세/F·G 자동생성 매크로·
+#              크로스에셋, 실데이터 287개 — 그 섹터의 미래수익에 대해 다시 검증됨)
+#            + 섹터 자체 기술지표 8종(200일선 이격도·12-1모멘텀·52주낙폭·변동성조정모멘텀·RSI·
+#              MACD·50/200이격·실현변동성비 — M의 E.추세 블록과 동일 산식을 섹터 가격에 적용)
+#            + SPY대비 상대강도 9종(v0.1 가족A) + 섹터별 매크로(v0.1 가족B 표)
+#            + SPY 계층 결과(M 번들에서 로드: 복합점수·위험점수의 '마스킹 전' 백분위, 베타 상호작용)
+#    → M.validate_indicators(6기준: IC/NW-t/5분위/하락AUC/4구간 부호안정성/커버리지, 시간감쇠 가중)
+#    → M.build_walkforward_weights(월 재추정, 보조채택, 추세트랙캡, 기저시리즈캡, 위험(H)트랙)
+#    → M.composite_score / score_percentile (수익점수·위험점수 백분위)
+#    → M.generate_signals(규칙 ⓪ 급락트리거 ~ ⑩ 과열헤어컷까지 M의 국면 규칙 전부, 이력현상)
+#    → M.run_backtest(t일 종가 신호 → t+1일 시가 체결, 비용, 현금레그) + 200일선 벤치마크
+#    → M.event_study / drawdown_episodes / extract_trades / threshold_sensitivity / 룩어헤드 감사
 #
-#  market_regime_trader.py는 이 파일에서 **한 줄도 수정하지 않는다** (§9.1 "가능하면 무수정").
-#  구현 중 발견한 단순화: 스펙 초안(§4.1)은 validate_indicators/build_walkforward_weights에
-#  dd_label_override/fwd_override 훅을 추가하는 안이었으나, 실제로는 "섹터가격/SPY가격" 비율
-#  시계열(rel = P_i/SPY) 자체를 그 두 함수의 px_adj 인자로 그대로 넘기면(그 함수들은 px_adj를
-#  '가격'으로만 다루고 절대/상대를 구분하지 않는다) forward_return(rel,h)이 곧 상대수익이 되고
-#  forward_maxdd(rel,h)가 곧 상대낙폭이 되어, 코드 수정이 전혀 필요 없다(DD_LABEL_THRESHOLD만
-#  cfg에서 -3%로 낮춰 쓴다 — 이미 존재하는 파라미터). 유일한 런타임 의존은 (1) M.YAHOO_
-#  EXPECTED_START 딕셔너리에 섹터 티커를 런타임에 update()하는 것(fetch_all_yahoo가 그 값을
-#  .get()으로만 읽으므로 다른 티커에 영향 없음), (2) M.INDICATOR_SPECS/M.SPEC_BY_KEY를 섹터별
-#  후보지표 목록으로 일시 교체하는 것 — 두 함수 모두 이 두 전역을 직접 참조하는 설계라서
-#  피할 수 없고, self_test()가 위험트랙 픽스처 검증에 쓰는 것과 완전히 같은(=이미 프로덕션에서
-#  검증된) 패턴이다(_indicator_spec_override() 참조). 둘 다 try/finally로 항상 원복한다.
+#  M의 실행 결과는 M v1.22.0이 저장하는 결과 번들(market_regime_result.pkl.gz)에서 읽는다 —
+#  M을 다시 돌리지 않는다. run(res_or_path, M): res dict(M.run 반환값) 또는 번들 경로.
 #
-#  기본값: USE_SECTOR_ROTATION=False. §8 수용기준(두 번의 실측)을 통과하기 전까지는 리포트가
-#  진단 목적으로만 쓰인다 — 실제 목표비중 산출 경로에는 아직 연결하지 않는다(연결 지점은
-#  build_sector_targets()의 반환값을 사용자가 원할 때 M 실행 스크립트에서 target_i로 쓰는 것).
+#  market_regime_trader.py는 이 파일에서 **한 줄도 수정하지 않는다**. 유일한 런타임 의존은
+#  (1) M.YAHOO_EXPECTED_START에 섹터 티커를 update()하는 것, (2) M.INDICATOR_SPECS/SPEC_BY_KEY를
+#  "M의 스펙 + 섹터 스펙"으로 일시 교체하는 것(_indicator_spec_override, self_test()와 같은 패턴,
+#  try/finally 원복)이다.
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
-#  v0.1.0 | 2026-09-04 | 최초 구현. SECTOR_ROTATION_SPEC_v0.1.md §1~§9 구현:
-#    §1 유니버스(11 SPDR 섹터), 진입일 규칙(실제이력+3년), Adj Close 지연 감지.
-#    §2 타깃 = P_i/SPY 비율 시계열(그 자체를 px_adj로 재사용).
-#    §3 지표 가족 A(횡단면·기술, 공통 9종)/B(섹터별 매크로, 표 기반 3~4종)/C(국면 상호작용,
-#       공통 5종) — 전부 사전방향 명시.
-#    §4 검증: 섹터별 IC/NW-t/AUC 게이트(M.validate_indicators 재사용, dd_label만 상대낙폭
-#       -3% 기준) + 횡단면 rank IC 게이트 + 판별력 자기검사(합성데이터).
-#    §5 워크포워드 가중(섹터별 M.build_walkforward_weights 재사용 — 패널 결합 추정은 v0.2로
-#       보류, 아래 "v0.1 범위 축소" 참조), 복합점수(M.composite_score), 횡단면 순위, 이력현상
-#       상태기계(신규 구현), tilt 포트폴리오 구성(Σ target_i = E_t 불변식).
-#    §6 다자산 백테스트(신규 구현, 현금 레그를 한 번만 계산 — run_backtest 반복 호출 금지),
-#       벤치마크 B0~B3.
-#    §7 룩어헤드 감사(절단재계산), 유니버스 편입 인과성 감사.
-#    §8 수용기준 자동 판정(PASS/FAIL 표).
-#    §9 리포트(별도 파일, 12~19번대 시트), 단위테스트.
-#
-#    [단위테스트에서 발견·수정 — 최초 배포 전] build_portfolio() 상한(SECTOR_MAX_WEIGHT) 적용
-#    로직: 원래 "clip 후 전체를 동일 배율로 재정규화"를 2회 반복하는 방식이었는데, 이 방식은
-#    상한을 정확히 만족시킬 수 없는 구조적 결함이 있었다(재정규화 배율이 1보다 크면 이미
-#    상한에 걸린 항목까지 같은 배율로 다시 커져서 재차 상한을 초과 — 기하급수적으로 상한에
-#    접근할 뿐 도달하지 못함). test_sector_portfolio.py가 실제로 상한을 ~1%p 초과하는 사례를
-#    잡아냈다. 상한에 걸린 항목을 그 값에 고정하고 남은 예산만 미고정 항목에 재분배하는
-#    워터필링(waterfilling) 방식으로 교체해 정확히 수렴하도록 수정했다(build_portfolio 참조).
-#
-#    [v0.1 범위 축소 — 문서에 명시] 스펙 §5.1(b)의 "가족 A/C 패널 결합 추정"은 이번 버전에서
-#    보류하고 섹터별 독립 추정만 구현했다(각 섹터가 자기 자신의 워크포워드 가중치를 갖는다).
-#    이유: 패널 추정은 build_walkforward_weights를 복사-수정해야 하는데, 그 함수는 검증된
-#    프로덕션 코드이고 이미 크고 복잡하다 — 이번 라운드에 반쯤 검증된 패널 버전을 새로 만드는
-#    것보다, 섹터별 독립 추정(이미 100% 검증된 함수를 그대로 재사용)으로 먼저 실측하고, 결과가
-#    지표 부족(가족 A/C 특유의 "패널이라야 통계량이 안정된다")으로 나오면 v0.2에서 패널 버전을
-#    별도로 만들어 비교하는 것이 안전하다(사용자 우선순위 (1)정확성 > (3)성능, 그리고 검증되지
-#    않은 대형 신규 코드보다 검증된 코드의 반복 재사용이 §6 정확성/투명성 원칙에 더 부합).
+#  v0.2.0 | 2026-09-05 | 사용자 요청 "market_regime_trader.py처럼 2018년부터 일별로 11개 섹터 상승·하락 예측,
+#    그 코드에서 예측에 쓰이는 모든 기술을 똑같이 사용, 시트도 똑같이, M 결과 파일을 섹터 예측에 참고".
+#    [재설계] 예측 대상을 상대수익(P_i/SPY)에서 섹터 절대수익으로 변경. v0.1의 횡단면 순위·tilt 배분·
+#      Σtarget=E_t 포트폴리오·수용기준 ①~⑤는 이 방향과 맞지 않아 제거(v0.1.0 파일은 프로젝트에 보관).
+#    [v0.1 실측 리포트(2026-09-04)에서 발견한 결함 — 전부 이번 재설계에서 해소]
+#      (a) 섹터 계층이 M의 전체 달력(1993~)에서 돌아 1993~2001년(섹터 편입 전)에 E_t>0인데 배분 대상이
+#          없어 불변식 Σtarget=E_t 위반(최대오차 1.0) — v0.2는 평가창을 M과 동일한 SIGNAL_START(2018-01-02)
+#          이후로 통일하고, 섹터별 신호는 그 섹터의 실제 이력에서만 산출.
+#      (b) 17_섹터성과: 전략/B2/B3(1993~, 33.6년)와 B0/B1(2018~, 8.7년)의 기간이 달라 비교 무효 — v0.2의
+#          모든 성과 비교는 같은 창(SIGNAL_START~).
+#      (c) 가족 C(국면상호작용)가 "가중 커버리지 31%"로 전멸 — M의 score_pct/haz_pct는 SIGNAL_START 이후만
+#          값이 있는 '마스킹된' 시리즈였다. v0.2는 마스킹 전 res["score"]/res["haz_score"]에
+#          M.score_percentile을 다시 적용한 전체이력 백분위(인과: expanding rank)를 쓴다.
+#      (d) 시대별 스프레드 시대1 NaN 등 상대수익 전용 진단은 제거.
+#    [구성] 섹터별 후보 = M 후보 전부(+섹터 지표 20여 종). 검증·가중·점수·신호·백테스트·이벤트·구간·
+#      민감도·감사 전부 M 함수 재사용. 시트: 00 실행요약 / 01 섹터별 일별기록(11시트, M 01과 동일 컬럼) /
+#      01Z 섹터일별예측 매트릭스(날짜×11섹터 상승·중립·하락) / 02~11 M과 동일 시트에 '티커' 열 /
+#      12 섹터요약(섹터별 1행) / 13 섹터분산전략(11섹터 균등분산 vs 균등 B&H vs SPY 전략 — 참고용).
+#    [성능] 섹터 1개 = M 워크포워드 1회(실데이터 약 15분) → 11개 순차 2.5시간 이상. (1) 섹터별 중간결과
+#      디스크 캐시(CACHE_DIR, 입력 해시 키 — 같은 데이터로 재실행 시 즉시), (2) fork 기반 프로세스 병렬
+#      (MAX_WORKERS=0 → min(CPU, 4); Colab 2 vCPU 기준 약 2배), (3) SECTOR_REWEIGHT_FREQ="A"(연 재추정)
+#      옵션 — 기본은 None(M과 같은 월 재추정). M의 _reestimation_boundaries는 D/W/M/A만 지원.
+#    [파라미터 — 명시] SECTOR_TRAIN_MIN_YEARS=3(M은 5): XLRE(2015-10 상장)·XLC(2018-06 상장)의 신호 시작을
+#      각각 2018-10·2021-07로 당기기 위함(5년이면 2020-11·2023-07). v0.1 스펙 §1.3의 편입 규칙(실제이력+3년)과
+#      동일값. 나머지 9개 섹터(1998-12 상장)는 어느 값이든 2018 이전에 워밍업이 끝나 영향 없음. 3년 학습창의
+#      N_eff(반감기 913일 기준 약 715) > N_EFF_MIN(500)이라 M의 유효표본 안전장치와 충돌하지 않음.
+#  v0.1.0 | 2026-09-04 | 최초 구현(상대수익 로테이션). 상세는 CHANGELOG_SECTOR.md v0.1.0 항목.
 #
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 from __future__ import annotations
 
+import os
+import sys
 import time
 import math
+import hashlib
+import traceback
 import dataclasses
 import contextlib
-from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple, Any
+import multiprocessing as mp
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.1.0"
+VERSION = "v0.2.0"
+VERSION_DATE = "2026-09-05"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -94,7 +95,7 @@ SECTOR_NAME_KR: Dict[str, str] = {
     "XLC": "커뮤니케이션", "XLRE": "부동산",
 }
 
-# [§1.1] Yahoo YAHOO_EXPECTED_START 형식과 동일하게 "상장 다음 달 1일" 단위로 표기.
+# Yahoo YAHOO_EXPECTED_START 형식과 동일하게 "상장 다음 달 1일" 단위로 표기.
 SECTOR_EXPECTED_START: Dict[str, str] = {
     "XLK": "1999-01-01", "XLV": "1999-01-01", "XLY": "1999-01-01", "XLP": "1999-01-01",
     "XLF": "1999-01-01", "XLE": "1999-01-01", "XLI": "1999-01-01", "XLB": "1999-01-01",
@@ -103,12 +104,16 @@ SECTOR_EXPECTED_START: Dict[str, str] = {
     "XLC": "2018-07-01",    # 2018-06-18 상장
 }
 
+STATE_KR = {"RISK_ON": "상승(위험선호)", "NEUTRAL": "중립", "RISK_OFF": "하락(위험회피)",
+            "TREND_ONLY_IN": "추세필터-보유(지표부족)", "TREND_ONLY_OUT": "추세필터-현금(지표부족)",
+            "NO_SIGNAL": "신호없음"}
+STATE_SHORT = {"RISK_ON": "상승", "NEUTRAL": "중립", "RISK_OFF": "하락",
+               "TREND_ONLY_IN": "추세보유", "TREND_ONLY_OUT": "추세현금", "NO_SIGNAL": "신호없음"}
+
 
 def _ensure_yahoo_expected_start(M) -> None:
-    """[§1.1] M.YAHOO_EXPECTED_START(모듈 전역 dict)에 섹터 티커를 런타임에 추가한다.
-    .get(ticker) 조회만 쓰는 기존 코드 경로(_yahoo_degenerate/validate_price_data)는 새
-    키가 추가되어도 다른 티커의 동작에 전혀 영향받지 않는다 — market_regime_trader.py
-    소스는 한 글자도 바뀌지 않는다. 멱등(이미 있으면 덮어쓰기만, 값 동일)."""
+    """M.YAHOO_EXPECTED_START(모듈 전역 dict)에 섹터 티커를 런타임에 추가한다. .get(ticker)
+    조회만 쓰는 기존 코드 경로는 새 키가 추가되어도 다른 티커에 영향받지 않는다. 멱등."""
     M.YAHOO_EXPECTED_START.update(SECTOR_EXPECTED_START)
 
 
@@ -118,40 +123,32 @@ def _ensure_yahoo_expected_start(M) -> None:
 @dataclass
 class SectorConfig:
     SECTORS: Tuple[str, ...] = SECTORS
-    SECTOR_MIN_HISTORY_YEARS: int = 3          # [§1.3] 유니버스 편입에 필요한 최소 이력
-    SECTOR_REL_DD_THRESHOLD: float = -0.03     # [§2.3] 상대낙폭 라벨 임계값(21일 -3%)
-    ADJ_CLOSE_STALE_DAYS: int = 5              # [§1.2] Adj Close가 Close보다 이만큼 이상
-                                                # 늦게 끊기면 "Adj Close 지연"으로 표기·보정
-
-    # ---- 상태기계 (⚠ 신호/사이징 파라미터, 격자 민감도만 보고 최적셀 채택 금지) ----
-    SECTOR_TOP_K: int = 3
-    SECTOR_STATE_HI: float = 0.60
-    SECTOR_STATE_LO: float = 0.40
-    SECTOR_HYSTERESIS_DAYS: int = 2
-    SECTOR_MIN_HOLD_DAYS: int = 5
-    SECTOR_TILT_OVER: float = 1.5
-    SECTOR_TILT_UNDER: float = 0.0
-    SECTOR_MAX_WEIGHT: float = 0.25
-
-    # ---- 가중치 상한 (기존 SERIES_WEIGHT_CAP=0.20과 별개 상한, §5.1) ----
-    SECTOR_REGIME_FAMILY_CAP: float = 0.40     # 가족 C(국면상호작용) 합산 가중치 상한
-    SECTOR_COMMON_FAMILY_CAP: float = 0.60     # 가족 A(횡단면·기술) 합산 가중치 상한
-
-    # ---- 활성화 스위치 (§8 "무실증 활성화 금지") ----
-    USE_SECTOR_ROTATION: bool = False          # True가 되어도 이 파일은 target_i를 계산해
-                                                # 반환할 뿐, M의 실제 매매신호에 자동 연결되지
-                                                # 않는다 — 연결은 사용자가 명시적으로 한다.
-    USE_DISPERSION_GATE: bool = False          # [§5.4] 기본 비활성
-
-    # ---- 판별력 자기검사(§4.3) 수용기준 ----
-    SELFTEST_MIN_TRUE_ADOPTED: int = 2         # 심은 3개 중 최소 채택 수
-    SELFTEST_MAX_NOISE_ADOPTED: int = 1        # 잡음 5개 중 최대 채택 허용 수
-
-    # ---- 횡단면 게이트(§4.2) ----
-    CS_MIN_RANK_IC: float = 0.02
-    CS_MIN_NW_T: float = 2.0
-
-    RANDOM_SEED: int = 20260904
+    ADJ_CLOSE_STALE_DAYS: int = 5              # Adj Close가 Close보다 이만큼 이상 늦게 끊기면 지연 판정·Close 수익률로 이어붙임
+    # ---- 후보지표 구성 -------------------------------------------------------
+    USE_MARKET_CANDIDATES: bool = True         # M의 후보지표 전부를 섹터 후보에 포함(그 섹터 수익에 대해 재검증)
+    USE_SECTOR_TECHNICAL: bool = True          # 섹터 자체 기술지표 8종(M E.추세 블록과 동일 산식)
+    USE_RELATIVE_STRENGTH: bool = True         # SPY대비 상대강도 9종(v0.1 가족A)
+    USE_SECTOR_MACRO: bool = True              # 섹터별 매크로 표(v0.1 가족B)
+    USE_SPY_LAYER_FEATURES: bool = True        # SPY 계층 결과(마스킹 전 점수/위험 백분위·베타 상호작용)
+    # ---- 학습/재추정 ----------------------------------------------------------
+    SECTOR_TRAIN_MIN_YEARS: int = 3            # 헤더 CHANGELOG [파라미터] 참조(M은 5)
+    SECTOR_REWEIGHT_FREQ: Optional[str] = None # None=M과 동일(REWEIGHT_FREQ, 기본 "M"). "A"=연 1회(⚠ 약 5배 빠름, 신호 달라짐)
+    # ---- 진단 단계 -------------------------------------------------------------
+    RUN_SELFTEST: bool = True                  # 실데이터 전에 합성데이터 판별력 자기검사(FAIL이면 중단)
+    SELFTEST_MIN_TRUE_ADOPTED: int = 2
+    SELFTEST_MAX_NOISE_ADOPTED: int = 1
+    RUN_THRESHOLD_SENSITIVITY: bool = True     # 06c(섹터별 약 10초)
+    RUN_LOOKAHEAD_AUDIT: bool = True           # 11 룩어헤드감사(절단재계산)
+    AUDIT_SAMPLE: int = 6                      # 섹터별 감사 표본 날짜 수
+    # ---- 성능 -----------------------------------------------------------------
+    MAX_WORKERS: int = 0                       # 0=자동(min(CPU수,4)), 1=순차. fork 불가 환경은 자동 순차
+    USE_CACHE: bool = True                     # 섹터별 검증/워크포워드 결과 디스크 캐시
+    CACHE_DIR: str = "./cache_sector"
+    # ---- 출력 -----------------------------------------------------------------
+    OUT_XLSX: str = "sector_regime_report.xlsx"
+    EXPORT_DAILY_CSV: bool = True              # 01Z 매트릭스를 CSV로도 저장
+    DAILY_CSV_PATH: str = "sector_regime_daily.csv"
+    RANDOM_SEED: int = 20260905
 
 
 CFG = SectorConfig()
@@ -179,11 +176,9 @@ def kv(**kwargs) -> str:
 # =============================================================================
 @contextlib.contextmanager
 def _indicator_spec_override(M, specs: List[Any]):
-    """[헤더 주석 참조] M.validate_indicators/M.build_walkforward_weights/M.build_reason_text는
-    모두 지표 목록을 인자로 받지 않고 모듈 전역 M.INDICATOR_SPECS(및 M.SPEC_BY_KEY)를 직접
-    참조한다 — 이는 market_regime_trader.py의 self_test()가 위험트랙 픽스처를 검증할 때 쓰는
-    것과 완전히 같은 패턴(orig=INDICATOR_SPECS[:]; INDICATOR_SPECS=[...]; try/finally 원복)을
-    모듈 밖에서 그대로 재현한다. 예외가 나도 반드시 원복된다."""
+    """M.validate_indicators/M.build_walkforward_weights/M.build_reason_text는 지표 목록을
+    인자로 받지 않고 모듈 전역 M.INDICATOR_SPECS(및 M.SPEC_BY_KEY)를 직접 참조한다 — M의
+    self_test()가 쓰는 것과 같은 패턴(교체 후 try/finally 원복)을 모듈 밖에서 재현한다."""
     orig_specs = M.INDICATOR_SPECS
     orig_by_key = M.SPEC_BY_KEY
     M.INDICATOR_SPECS = list(specs)
@@ -198,36 +193,42 @@ def _indicator_spec_override(M, specs: List[Any]):
 # =============================================================================
 # [3] 데이터 — 섹터 ETF 수집·무결성·Adj Close 지연 감지
 # =============================================================================
-def fetch_sector_prices(res: dict, M, quality_rows: List[dict]
+def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
+                        sector_px_override: Optional[Dict[str, pd.DataFrame]] = None
                         ) -> Tuple[Dict[str, Optional[pd.DataFrame]], List[dict]]:
-    """[§1.2] 11개 섹터 ETF를 M.fetch_all_yahoo로 수집(퇴화수집 게이트·지연캐시 포함,
-    market_regime_trader.py 무수정 재사용)하고, SPY까지 포함해 M.validate_price_data로
-    무결성(시작일·교차오염) 검사한다. SPY는 res["px_dict"]["SPY"](이미 검증된 프레임)를
-    그대로 재사용하므로 M.validate_price_data의 SPY 하드요건이 항상 자연히 통과한다.
-    반환: (티커->프레임 dict, yahoo_diag 리스트)."""
+    """11개 섹터 ETF를 M.fetch_all_yahoo로 수집(퇴화수집 게이트·지연캐시 포함)하고, SPY까지
+    포함해 M.validate_price_data로 무결성(시작일·교차오염) 검사한다. SPY는 res["px_dict"]["SPY"]
+    (이미 검증된 프레임)를 재사용하므로 SPY 하드요건은 자연히 통과한다.
+    sector_px_override: 티커→OHLC 프레임을 직접 주면 수집을 건너뛴다(합성데이터 테스트·오프라인용).
+    이 경우에도 무결성 검사는 동일하게 거친다."""
     _ensure_yahoo_expected_start(M)
     cfg = res["cfg"]
     yahoo_diag: List[dict] = []
-    px = M.fetch_all_yahoo(list(SECTORS), cfg, diag=yahoo_diag)
+    if sector_px_override is not None:
+        px = {t: sector_px_override.get(t) for t in SECTORS}
+        log("DATA", kv(event="sector_px_override", tickers=sum(1 for v in px.values() if v is not None),
+                       note="수집 생략 — 직접 주입된 프레임 사용(합성/오프라인)"), M=M, level="warning")
+    else:
+        px = M.fetch_all_yahoo(list(SECTORS), cfg, diag=yahoo_diag)
     for row in yahoo_diag:
-        quality_rows.append(row)
-
+        quality_rows.append({"시리즈": f"[Yahoo:{row.get('종류', '?')}] {row.get('시리즈', '?')}",
+                             "행수": row.get("행수", 0), "시작": row.get("시작", "-"), "종료": row.get("종료", "-"),
+                             "무결성판정": row.get("사유", "-")})
     combined = dict(px)
     combined["SPY"] = res["px_dict"]["SPY"]
     validated = M.validate_price_data(combined, cfg, quality_rows)
     sector_px = {t: validated.get(t) for t in SECTORS}
-
     n_ok = sum(1 for v in sector_px.values() if v is not None and len(v) > 0)
-    log("DATA", kv(event="sector_fetch_done", tickers=len(SECTORS), ok=n_ok), M=M)
+    log("DATA", kv(event="sector_fetch_done", tickers=len(SECTORS), ok=n_ok,
+                   missing=",".join(t for t in SECTORS if sector_px.get(t) is None) or "-"), M=M)
     return sector_px, yahoo_diag
 
 
 def adj_close_lag_check(df: Optional[pd.DataFrame], ticker: str, cfg_min_stale_days: int
                         ) -> Tuple[bool, int, Optional[pd.Timestamp], Optional[pd.Timestamp]]:
-    """[§1.2] Adj Close 최종 유효일이 Close 최종 유효일보다 cfg_min_stale_days거래일 이상
-    앞서면 '지연'으로 판정한다(report23의 ^VIX3M Adj Close 사례와 같은 종류 — 배당 있는
-    섹터 ETF는 Adj Close가 필수라 이 검사가 더 중요하다). 반환: (지연여부, 지연일수,
-    Adj Close 마지막일, Close 마지막일)."""
+    """Adj Close 최종 유효일이 Close 최종 유효일보다 cfg_min_stale_days거래일 이상 앞서면
+    '지연'으로 판정한다(report23의 ^VIX3M Adj Close 사례와 같은 종류 — 배당 있는 섹터 ETF는
+    Adj Close가 필수라 이 검사가 더 중요하다). 반환: (지연여부, 지연일수, Adj 마지막일, Close 마지막일)."""
     if df is None or len(df) == 0 or "Close" not in df.columns:
         return False, 0, None, None
     close_last = df["Close"].dropna().index.max() if df["Close"].notna().any() else None
@@ -237,95 +238,67 @@ def adj_close_lag_check(df: Optional[pd.DataFrame], ticker: str, cfg_min_stale_d
     adj_last = adj_s.index.max() if len(adj_s) else None
     if adj_last is None or close_last is None:
         return False, 0, adj_last, close_last
-    gap_days = int((df.index >= adj_last) .sum() - 1) if adj_last <= close_last else 0
-    # 거래일 기준 지연폭: adj_last 이후 ~ close_last 까지 인덱스상의 거래일 수
     gap_trading_days = int(((df.index > adj_last) & (df.index <= close_last)).sum())
-    stale = gap_trading_days >= cfg_min_stale_days
-    return stale, gap_trading_days, adj_last, close_last
+    return gap_trading_days >= cfg_min_stale_days, gap_trading_days, adj_last, close_last
 
 
 def build_total_return_close(df: pd.DataFrame, cal: pd.DatetimeIndex,
                              stale_days_threshold: int) -> Tuple[pd.Series, bool]:
-    """[§1.2] Adj Close(배당 포함 총수익) 시계열을 cal에 정렬해 반환한다. Adj Close가
-    stale_days_threshold거래일 이상 지연돼 있으면(§ adj_close_lag_check), 지연 구간만
-    Close의 일간수익률(배당 미포함 근사)을 마지막 정상 Adj Close 위에 이어붙여 총수익
-    시계열이 최근 구간에서 갑자기 끊기지 않게 한다. 반환: (시계열, 대체적용여부)."""
-    close = df["Close"].reindex(cal).ffill() if "Close" in df.columns else None
-    if "Adj Close" not in df.columns or close is None:
+    """Adj Close(배당 포함 총수익) 시계열을 cal에 정렬해 반환한다. Adj Close가 지연돼 있으면
+    지연 구간만 Close의 일간수익률(배당 미포함 근사)을 마지막 정상 Adj Close 위에 이어붙인다.
+    반환: (시계열, 대체적용여부). 상장 전 구간은 NaN으로 남긴다(ffill로 채우지 않음)."""
+    close = df["Close"].reindex(cal) if "Close" in df.columns else None
+    if close is None:
+        return None, False
+    first = df.index.min()
+    close = close.where(cal >= first).ffill()
+    if "Adj Close" not in df.columns:
         return close, False
     adj = df["Adj Close"].reindex(cal)
     stale, gap, adj_last, close_last = adj_close_lag_check(df, "", stale_days_threshold)
     if not stale or adj_last is None:
-        return adj.ffill(), False
-    # adj_last까지는 원래 Adj Close를 쓰고, 그 이후는 Close의 일간수익률을 곱해 이어붙인다.
-    adj_head = adj.loc[:adj_last].ffill()
+        return adj.where(cal >= first).ffill(), False
+    adj_head = adj.loc[:adj_last].where(cal[cal <= adj_last] >= first).ffill()
     base = float(adj_head.iloc[-1])
     close_tail_ret = close.loc[adj_last:].pct_change().fillna(0.0)
-    tail_factor = (1.0 + close_tail_ret).cumprod()
-    tail = base * tail_factor
-    out = pd.concat([adj_head.iloc[:-1], tail])
-    out = out.reindex(cal).ffill()
-    return out, True
+    tail = base * (1.0 + close_tail_ret).cumprod()
+    out = pd.concat([adj_head.iloc[:-1], tail]).reindex(cal)
+    return out.where(cal >= first).ffill(), True
 
 
-def sector_entry_dates(sector_px: Dict[str, Optional[pd.DataFrame]], scfg: SectorConfig
-                       ) -> Dict[str, pd.Timestamp]:
-    """[§1.3] 섹터별 '실제 데이터 시작 + SECTOR_MIN_HISTORY_YEARS'를 유니버스 편입일로
-    계산한다. 실제 상장일(과거)만 쓰므로 룩어헤드가 아니다 — 편입일 자체가 미래 정보를
-    포함하지 않는, 그 시점에 이미 관측 가능한 이력 길이 규칙이다."""
-    out: Dict[str, pd.Timestamp] = {}
-    for t in scfg.SECTORS:
-        df = sector_px.get(t)
-        if df is None or len(df) == 0:
-            out[t] = pd.Timestamp.max
-            continue
-        start = df.index.min()
-        out[t] = start + pd.DateOffset(years=scfg.SECTOR_MIN_HISTORY_YEARS)
-    return out
-
-
-def sector_active_mask(entry_dates: Dict[str, pd.Timestamp], cal: pd.DatetimeIndex,
-                       scfg: SectorConfig) -> pd.DataFrame:
-    """[§1.3] date x sector 불리언 — 그날 유니버스에 편입돼 있는지."""
-    out = pd.DataFrame(False, index=cal, columns=list(scfg.SECTORS))
-    for t in scfg.SECTORS:
-        out.loc[cal >= entry_dates[t], t] = True
-    return out
-
-
-# =============================================================================
-# [4] 예측 대상(타깃) — SPY 대비 상대가격 비율 시계열
-# =============================================================================
-def relative_price_series(sector_tr_close: pd.Series, spy_adj: pd.Series) -> pd.Series:
-    """[§2.1] rel_i,t = P_i,t / SPY_t (둘 다 총수익 조정 종가). 이 시계열을 그대로
-    M.validate_indicators/M.build_walkforward_weights의 px_adj 인자로 넘기면:
-      forward_return(rel, h) = rel[t+h]/rel[t] - 1
-                              = (P_i,t+h/SPY_t+h) / (P_i,t/SPY_t) - 1
-                              = ln 상대수익의 1차 근사(단순수익 버전, 기존 관례와 통일)
-      forward_maxdd(rel, h)  = rel의 향후 h일 최대낙폭 = '상대낙폭'
-    이 되어 상대수익/상대낙폭을 위한 어떤 코드 수정도 필요 없다."""
-    return (sector_tr_close / spy_adj.replace(0, np.nan)).astype(float)
-
-
-def rolling_beta(sector_ret: pd.Series, spy_ret: pd.Series, window: int = 252,
-                 lag: int = 1) -> pd.Series:
-    """[§3.1 BETA_252] t행의 값이 t-lag일까지의 정보만 쓰도록 shift(lag)로 인과성을
-    보장한다(과거 window일 롤링 공분산/분산 → 그 자체가 이미 인과적이고, 추가로 lag일
-    지연시켜 '오늘 베타'가 아니라 '어제까지 확정된 베타'를 쓴다)."""
-    cov = sector_ret.rolling(window, min_periods=window // 2).cov(spy_ret)
-    var = spy_ret.rolling(window, min_periods=window // 2).var()
-    beta = (cov / var.replace(0, np.nan))
-    return beta.shift(lag)
+def sector_price_frame(df: pd.DataFrame, cal: pd.DatetimeIndex, scfg: SectorConfig
+                       ) -> Tuple[pd.DataFrame, pd.DatetimeIndex, dict]:
+    """섹터 OHLC 프레임을 M의 달력(cal)에 정렬하고 상장일 이후 구간(idx_i)만 잘라 반환한다.
+    'Adj Close' 컬럼은 build_total_return_close()의 총수익 종가로 교체(지연 시 이어붙임).
+    M.run_backtest는 Open/Close/Adj Close를, 지표는 Adj Close(총수익)와 Close(원시)를 쓴다."""
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    first = df.index.min()
+    idx_i = cal[cal >= first]
+    price = df.reindex(idx_i)
+    n_gap = int(price["Close"].isna().sum())
+    for c in ("Open", "High", "Low", "Close"):
+        if c in price.columns:
+            price[c] = price[c].astype(float).ffill()
+    tr, spliced = build_total_return_close(df, cal, scfg.ADJ_CLOSE_STALE_DAYS)
+    price["Adj Close"] = tr.reindex(idx_i).astype(float)
+    if "Open" not in price.columns:
+        price["Open"] = price["Close"]
+    stale, gap, adj_last, close_last = adj_close_lag_check(df, "", scfg.ADJ_CLOSE_STALE_DAYS)
+    info = {"실제데이터시작": str(first.date()), "행수": int(len(df)), "달력정렬결측(ffill)": n_gap,
+            "AdjClose지연": bool(stale), "지연거래일수": int(gap),
+            "AdjClose마지막일": str(adj_last.date()) if adj_last is not None else "-",
+            "Close마지막일": str(close_last.date()) if close_last is not None else "-",
+            "Close수익률대체적용": bool(spliced)}
+    return price, idx_i, info
 
 
 # =============================================================================
-# [5] 후보 지표 — 가족 A(횡단면·기술) / B(섹터별 매크로) / C(국면 상호작용)
+# [4] 섹터 후보지표 — 섹터 기술지표 / SPY대비 상대강도 / 섹터별 매크로 / SPY 계층 결과
+#     key는 "{티커}__{접미사}"로 M의 키와 절대 충돌하지 않게 한다(M에 DXY_MOM 등이 이미 있음).
 # =============================================================================
 @dataclass
 class _RawSpec:
-    """섹터 지표 하나를 만들기 위한 최소 정보. build_sector_indicators()가 이걸로
-    실제 값(pd.Series)과 M.IndicatorSpec을 함께 만든다."""
-    suffix: str            # 접미사(섹터티커와 합쳐 key가 됨) 예: "REL_MOM_21"
+    suffix: str
     name_kr: str
     category: str
     prior_sign: int
@@ -338,57 +311,107 @@ class _RawSpec:
 
 
 def _eval_h(window: int) -> Optional[int]:
-    """[기존 _generate_universe_indicators()의 _eval_h와 동일 규칙] 60일 이상 관측창의
-    변화/모멘텀 지표는 21일 평가지평에서 단기 평균회귀로 부호가 뒤집히기 쉬우므로 63일을
-    쓴다. None이면 호출부(validate_indicators)가 cfg.VAL_PRIMARY_H(21일)를 그대로 쓴다."""
+    """M._generate_universe_indicators()의 _eval_h와 동일 규칙: 60일 이상 관측창은 63일 평가지평."""
     return 63 if window >= 60 else None
 
 
-# ---- 가족 A: 횡단면·기술 지표(모든 섹터에 동일 정의) ----------------------------
-def family_a_specs() -> List[_RawSpec]:
+def rolling_beta(sector_ret: pd.Series, spy_ret: pd.Series, window: int = 252, lag: int = 1) -> pd.Series:
+    """과거 window일 롤링 베타를 lag일 지연시켜 '어제까지 확정된 베타'를 쓴다(인과)."""
+    cov = sector_ret.rolling(window, min_periods=window // 2).cov(spy_ret)
+    var = spy_ret.rolling(window, min_periods=window // 2).var()
+    return (cov / var.replace(0, np.nan)).shift(lag)
+
+
+# ---- (a) 섹터 자체 기술지표 — M.build_indicators()의 E.추세 블록·RVOL_RATIO와 동일 산식 ----------
+def sector_technical_specs() -> List[_RawSpec]:
     return [
-        _RawSpec("REL_MOM_21", "SPY대비 21일 상대모멘텀", "A.횡단면상대", -1,
-                 "1개월 내 상대강도는 단기 과매수/과매도로 역전되는 경향(섹터 반전 효과)",
-                 "최근 1개월 급등한 섹터는 단기 차익실현으로 상대 반락", "P_i/SPY 비율"),
-        _RawSpec("REL_MOM_63", "SPY대비 63일 상대모멘텀", "A.횡단면상대", +1,
-                 "3개월 상대모멘텀은 지속되는 경향(섹터 모멘텀 효과)",
-                 "자금 흐름의 관성 — 최근 아웃퍼폼 섹터로 자금이 계속 유입",
-                 "P_i/SPY 비율", trend_track=True, eval_horizon=_eval_h(63)),
-        _RawSpec("REL_MOM_126", "SPY대비 126일 상대모멘텀", "A.횡단면상대", +1,
-                 "6개월 상대모멘텀 지속(모멘텀 효과의 표준 관측창)",
-                 "중기 자금흐름 관성", "P_i/SPY 비율", trend_track=True, eval_horizon=_eval_h(126)),
-        _RawSpec("REL_MOM_12_1", "SPY대비 12-1개월 상대모멘텀", "A.횡단면상대", +1,
-                 "최근 1개월을 제외한 12개월 상대모멘텀(전통적 모멘텀 팩터 정의)",
-                 "최근월 반전 효과를 걸러낸 순수 모멘텀", "P_i/SPY 비율",
-                 trend_track=True, eval_horizon=_eval_h(252)),
-        _RawSpec("REL_MA_50_200", "상대가격 50/200일선 이격", "A.횡단면상대", +1,
-                 "상대가격(P_i/SPY)의 골든/데드크로스는 상대추세 전환의 연속형 지표",
-                 "이동평균 교차는 추세추종 자금의 진입/이탈 신호", "P_i/SPY 비율",
-                 trend_track=True, eval_horizon=_eval_h(60)),
-        _RawSpec("REL_DD_252H", "상대가격 52주 고점대비 낙폭", "A.횡단면상대", +1,
-                 "상대 신고가 근접(낙폭 작음)은 상대강세 지속과 연관",
-                 "상대 신고가 경신 섹터는 계속 주도주 지위를 유지하는 경향", "P_i/SPY 비율",
-                 trend_track=True, eval_horizon=_eval_h(60)),
-        _RawSpec("REL_RSI_14", "상대가격 RSI(14)", "A.횡단면상대", -1,
-                 "상대가격의 단기 과매수(RSI 높음)는 역전되는 경향",
-                 "기술적 과열은 단기 상대조정을 부른다", "P_i/SPY 비율"),
-        _RawSpec("REL_VOL_RATIO", "섹터/SPY 실현변동성 비율(z)", "A.횡단면상대", -1,
-                 "섹터 변동성이 SPY 대비 급등하면 이후 상대 열위(저변동성 효과의 상대판)",
-                 "변동성 급등 = 불확실성/패닉 매도 국면, 이후 회복이 느림", "섹터·SPY 종가"),
-        _RawSpec("REL_EXT_200", "섹터-SPY 200일선 이격도 차", "A.횡단면상대", -1,
-                 "섹터 자체 200일선 이격도가 SPY보다 훨씬 높으면(과열) 이후 상대 열위",
-                 "market_regime_trader.py 규칙 ⑩의 근거(200일선 이격도가 report21/23에서 "
-                 "가장 강한 조기경보)를 섹터 상대판으로 재사용", "섹터·SPY 종가"),
+        _RawSpec("TREND_200", "섹터 200일선 대비 이격도", "E2.섹터추세", +1,
+                 "대형 하락장의 대부분은 200일선 하회 구간에서 발생 — 섹터에도 같은 국면 필터",
+                 "장기 추세 이탈 = 하락장 대부분 구간", "섹터 총수익종가", trend_track=True, eval_horizon=63),
+        _RawSpec("MOM_12_1", "섹터 12-1개월 모멘텀", "E2.섹터추세", +1,
+                 "시계열 모멘텀 프리미엄(최근 1개월 제외로 단기 반전 제거)", "시계열 모멘텀 프리미엄",
+                 "섹터 총수익종가", trend_track=True, eval_horizon=63),
+        _RawSpec("DD_FROM_252H", "섹터 52주 고점 대비 낙폭", "E2.섹터추세", +1,
+                 "고점 대비 낙폭이 커질수록 추세 훼손", "추세 훼손 정도", "섹터 총수익종가",
+                 trend_track=True, eval_horizon=63),
+        _RawSpec("VOL_ADJ_MOM", "섹터 변동성조정 3개월 모멘텀", "E2.섹터추세", +1,
+                 "같은 상승률이라도 변동성이 낮을 때 추세의 질이 높다", "추세의 질(risk-adjusted)",
+                 "섹터 총수익종가", trend_track=True, eval_horizon=63),
+        _RawSpec("RSI_14", "섹터 RSI(14)", "E2.섹터추세", +1,
+                 "RSI가 50 위에 머무는 구간은 상승 지속, 40 아래 반복 이탈은 추세 훼손", "모멘텀 지속성(RSI 레짐)",
+                 "섹터 총수익종가", trend_track=True, eval_horizon=63),
+        _RawSpec("MACD_HIST", "섹터 MACD 히스토그램(12-26-9, 가격정규화)", "E2.섹터추세", +1,
+                 "히스토그램 양수 확대=상승 가속, 음수 확대=하락 가속", "중기 추세 가속/감속",
+                 "섹터 총수익종가", trend_track=True, eval_horizon=63),
+        _RawSpec("MA_50_200_SPREAD", "섹터 50-200일선 이격 스프레드", "E2.섹터추세", +1,
+                 "골든/데드크로스의 연속형 버전", "중장기 추세선 구조", "섹터 총수익종가",
+                 trend_track=True, eval_horizon=63),
+        _RawSpec("RVOL_RATIO", "섹터 실현변동성 확장비(20일/100일)", "A2.섹터변동성", -1,
+                 "단기 실현변동성이 장기 대비 확장되면 변동성 군집 시작 — 하락과 동반·지속",
+                 "변동성 군집 = 하락 지속 구간 진입", "섹터 총수익종가"),
     ]
 
 
-def family_a_values(sector_close_tr: pd.Series, spy_close_tr: pd.Series,
-                    sector_close_raw: pd.Series, spy_close_raw: pd.Series,
-                    M) -> pd.DataFrame:
-    """[§3.1] 가족 A 실제 값. 총수익(배당포함, _tr) 시계열로 모멘텀류를, 원시(배당제외
-    가능성 있는 raw) 종가로 200일선 이격도류를 계산해 기존 SPY 지표(TREND_200 등이
-    spy_a=Adj Close 기준인 것)와 정의를 통일한다 — 실무상 raw는 close 컬럼을 그대로 쓴다."""
-    rel = (sector_close_tr / spy_close_tr.replace(0, np.nan)).astype(float)
+def sector_technical_values(adj: pd.Series) -> pd.DataFrame:
+    """M.build_indicators()의 SPY(spy_a=Adj Close) 산식을 섹터 총수익종가에 그대로 적용."""
+    out = pd.DataFrame(index=adj.index)
+    ma200 = adj.rolling(200, min_periods=150).mean()
+    out["TREND_200"] = adj / ma200.replace(0, np.nan) - 1.0
+    out["MOM_12_1"] = adj.shift(21) / adj.shift(252) - 1.0
+    out["DD_FROM_252H"] = adj / adj.rolling(252, min_periods=120).max() - 1.0
+    r63 = adj / adj.shift(63) - 1.0
+    logr = np.log(adj.replace(0, np.nan)).diff()
+    vol63 = logr.rolling(63).std() * np.sqrt(252)
+    out["VOL_ADJ_MOM"] = r63 / vol63.replace(0, np.nan)
+    _delta = adj.diff()
+    _gain = _delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    _loss = (-_delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    out["RSI_14"] = 100.0 - 100.0 / (1.0 + _gain / _loss.replace(0, np.nan))
+    _ema12 = adj.ewm(span=12, adjust=False).mean()
+    _ema26 = adj.ewm(span=26, adjust=False).mean()
+    _macd = _ema12 - _ema26
+    _sig9 = _macd.ewm(span=9, adjust=False).mean()
+    out["MACD_HIST"] = (_macd - _sig9) / adj.replace(0, np.nan)
+    _ma50 = adj.rolling(50, min_periods=40).mean()
+    out["MA_50_200_SPREAD"] = _ma50 / ma200.replace(0, np.nan) - 1.0
+    out["RVOL_RATIO"] = logr.rolling(20).std() / logr.rolling(100).std().replace(0, np.nan)
+    return out.replace([np.inf, -np.inf], np.nan)
+
+
+# ---- (b) SPY대비 상대강도(v0.1 가족 A) ------------------------------------------------------------
+def relative_strength_specs() -> List[_RawSpec]:
+    return [
+        _RawSpec("REL_MOM_21", "SPY대비 21일 상대모멘텀", "H.SPY대비상대", -1,
+                 "1개월 내 상대강도는 단기 과매수/과매도로 역전되는 경향(섹터 반전 효과)",
+                 "최근 1개월 급등한 섹터는 단기 차익실현으로 반락", "P_i/SPY 비율"),
+        _RawSpec("REL_MOM_63", "SPY대비 63일 상대모멘텀", "H.SPY대비상대", +1,
+                 "3개월 상대모멘텀은 지속되는 경향(섹터 모멘텀 효과)", "자금 흐름의 관성",
+                 "P_i/SPY 비율", trend_track=True, eval_horizon=63),
+        _RawSpec("REL_MOM_126", "SPY대비 126일 상대모멘텀", "H.SPY대비상대", +1,
+                 "6개월 상대모멘텀 지속(모멘텀 효과의 표준 관측창)", "중기 자금흐름 관성",
+                 "P_i/SPY 비율", trend_track=True, eval_horizon=63),
+        _RawSpec("REL_MOM_12_1", "SPY대비 12-1개월 상대모멘텀", "H.SPY대비상대", +1,
+                 "최근 1개월을 제외한 12개월 상대모멘텀(전통적 모멘텀 팩터 정의)",
+                 "최근월 반전 효과를 걸러낸 순수 모멘텀", "P_i/SPY 비율", trend_track=True, eval_horizon=63),
+        _RawSpec("REL_MA_50_200", "상대가격 50/200일선 이격", "H.SPY대비상대", +1,
+                 "상대가격(P_i/SPY)의 골든/데드크로스는 상대추세 전환의 연속형 지표",
+                 "이동평균 교차는 추세추종 자금의 진입/이탈 신호", "P_i/SPY 비율", trend_track=True, eval_horizon=63),
+        _RawSpec("REL_DD_252H", "상대가격 52주 고점대비 낙폭", "H.SPY대비상대", +1,
+                 "상대 신고가 근접(낙폭 작음)은 상대강세 지속과 연관", "주도주 지위 유지 경향",
+                 "P_i/SPY 비율", trend_track=True, eval_horizon=63),
+        _RawSpec("REL_RSI_14", "상대가격 RSI(14)", "H.SPY대비상대", -1,
+                 "상대가격의 단기 과매수(RSI 높음)는 역전되는 경향", "기술적 과열은 단기 조정을 부른다", "P_i/SPY 비율"),
+        _RawSpec("REL_VOL_RATIO", "섹터/SPY 실현변동성 비율(z)", "H.SPY대비상대", -1,
+                 "섹터 변동성이 SPY 대비 급등하면 이후 열위(저변동성 효과)", "패닉 매도 국면, 회복이 느림", "섹터·SPY 종가"),
+        _RawSpec("REL_EXT_200", "섹터-SPY 200일선 이격도 차", "H.SPY대비상대", -1,
+                 "섹터 자체 200일선 이격도가 SPY보다 훨씬 높으면(과열) 이후 열위",
+                 "M 규칙 ⑩의 근거(이격도가 가장 강한 조기경보)를 섹터 상대판으로 재사용", "섹터·SPY 종가"),
+    ]
+
+
+def relative_strength_values(sector_tr: pd.Series, spy_tr: pd.Series,
+                             sector_raw: pd.Series, spy_raw: pd.Series, M) -> pd.DataFrame:
+    rel = (sector_tr / spy_tr.replace(0, np.nan)).astype(float)
     out = pd.DataFrame(index=rel.index)
     out["REL_MOM_21"] = M._mom(rel, 21)
     out["REL_MOM_63"] = M._mom(rel, 63)
@@ -401,82 +424,83 @@ def family_a_values(sector_close_tr: pd.Series, spy_close_tr: pd.Series,
     _delta = rel.diff()
     _gain = _delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
     _loss = (-_delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    _rs = _gain / _loss.replace(0, np.nan)
-    out["REL_RSI_14"] = 100.0 - 100.0 / (1.0 + _rs)
-
-    r_i = np.log(sector_close_tr.replace(0, np.nan)).diff()
-    r_spy = np.log(spy_close_tr.replace(0, np.nan)).diff()
-    vol_i = r_i.rolling(20).std()
-    vol_spy = r_spy.rolling(20).std()
-    vol_ratio = vol_i / vol_spy.replace(0, np.nan)
+    out["REL_RSI_14"] = 100.0 - 100.0 / (1.0 + _gain / _loss.replace(0, np.nan))
+    r_i = np.log(sector_tr.replace(0, np.nan)).diff()
+    r_spy = np.log(spy_tr.replace(0, np.nan)).diff()
+    vol_ratio = r_i.rolling(20).std() / r_spy.rolling(20).std().replace(0, np.nan)
     out["REL_VOL_RATIO"] = M._z(vol_ratio, 100)
-
-    ma200_i = sector_close_raw.rolling(200, min_periods=150).mean()
-    ma200_spy = spy_close_raw.rolling(200, min_periods=150).mean()
-    ext_i = sector_close_raw / ma200_i.replace(0, np.nan) - 1.0
-    ext_spy = spy_close_raw / ma200_spy.replace(0, np.nan) - 1.0
+    ext_i = sector_raw / sector_raw.rolling(200, min_periods=150).mean().replace(0, np.nan) - 1.0
+    ext_spy = spy_raw / spy_raw.rolling(200, min_periods=150).mean().replace(0, np.nan) - 1.0
     out["REL_EXT_200"] = ext_i - ext_spy
     return out.replace([np.inf, -np.inf], np.nan)
 
 
-# ---- 가족 C: 국면 상호작용 지표(SPY 계층 출력 재사용, 모든 섹터 공통) -------------
-def family_c_specs() -> List[_RawSpec]:
+# ---- (c) SPY 계층 결과 + 베타 상호작용(v0.1 가족 C, 마스킹 전 백분위로 교체) ----------------------
+def spy_layer_series(res: dict, M) -> Dict[str, pd.Series]:
+    """M 결과 번들에서 '마스킹 전' 전체이력 백분위를 만든다. res["score_pct"]/["haz_pct"]는
+    SIGNAL_START 이후만 값이 있는 리포트용 마스킹 시리즈라(v0.1 결함 (c)) 그대로 쓰면 커버리지
+    게이트에서 전멸한다. res["score"]/["haz_score"]는 워크포워드 가중치가 생긴 시점부터 값이 있고
+    M.score_percentile은 expanding rank(인과)이므로, 그날까지의 정보만으로 만든 백분위가 된다.
+    급락트리거 백분위도 M.run()과 같은 산식(원시값×(-사전방향)의 expanding 백분위)으로 마스킹 없이 재계산."""
+    out: Dict[str, pd.Series] = {}
+    out["SCORE_PCT"] = M.score_percentile(res["score"])
+    out["HAZ_PCT"] = M.score_percentile(res["haz_score"])
+    cfg = res["cfg"]
+    ft_key = getattr(cfg, "FAST_TRIGGER_INDICATOR", "VIX_TERM")
+    ft_spec = next((s for s in M.INDICATOR_SPECS if s.key == ft_key), None)
+    ind = res["ind"]
+    if ft_spec is not None and ft_key in ind.columns and ind[ft_key].notna().any():
+        out["FAST_PCT"] = M.score_percentile(ind[ft_key] * (-ft_spec.prior_sign))
+    else:
+        out["FAST_PCT"] = pd.Series(np.nan, index=ind.index)
+    return out
+
+
+def spy_layer_specs() -> List[_RawSpec]:
     return [
-        _RawSpec("BETA_X_H", "(베타-1)×위험점수백분위(H)", "C.국면상호작용", -1,
-                 "위험(H)이 높을수록 고베타 섹터가 저베타보다 상대 열위",
-                 "시장 전체 위험 프리미엄 확대 국면에서 고베타 자산이 더 많이 할인된다",
-                 "M.res[haz_pct] × 롤링베타"),
-        _RawSpec("BETA_X_SCORE", "(베타-1)×복합점수백분위", "C.국면상호작용", +1,
-                 "시장 강세 확신(복합점수)이 높을수록 고베타 섹터가 우위",
-                 "강세장 확신 국면에서는 고베타가 저베타를 아웃퍼폼", "M.res[score_pct] × 롤링베타"),
+        _RawSpec("SPY_SCORE_PCT", "SPY 복합점수 백분위(M 계층, 마스킹 전)", "I.SPY계층", +1,
+                 "시장 전체 강세 확신이 높을수록 섹터도 상승 확률이 높다(섹터는 시장 베타를 공유)",
+                 "SPY 계층 확정 출력의 재사용", "M.res[score] → score_percentile"),
+        _RawSpec("SPY_HAZ_PCT", "SPY 위험점수(H) 백분위(M 계층, 마스킹 전)", "I.SPY계층", -1,
+                 "시장 위험(해저드)이 높을수록 섹터 하락 확률이 높다", "SPY 계층 확정 출력의 재사용",
+                 "M.res[haz_score] → score_percentile"),
+        _RawSpec("BETA_X_SCORE", "(베타-1)×SPY복합점수백분위", "C.국면상호작용", +1,
+                 "강세 확신이 높을수록 고베타 섹터가 더 크게 상승", "강세장에서 고베타 우위",
+                 "SPY_SCORE_PCT × 롤링베타"),
+        _RawSpec("BETA_X_H", "(베타-1)×SPY위험점수백분위", "C.국면상호작용", -1,
+                 "시장 위험이 높을수록 고베타 섹터가 더 크게 하락", "위험 프리미엄 확대 시 고베타 할인",
+                 "SPY_HAZ_PCT × 롤링베타"),
+        _RawSpec("BETA_X_DH", "(베타-1)×SPY위험점수 15일변화", "C.국면상호작용", -1,
+                 "위험이 가속(ΔH 급등)하는 국면에서 고베타가 더 취약", "위험 '가속도'에 대한 고베타 민감도",
+                 "SPY_HAZ_PCT.diff(15) × 롤링베타"),
         _RawSpec("BETA_X_FT", "(베타-1)×급락트리거백분위", "C.국면상호작용", -1,
-                 "급성 변동성 급등(급락트리거) 국면에서 고베타가 즉각 상대 열위",
-                 "옵션시장 헤지수요 급증은 고베타 자산부터 매도", "M.res[fast_pct] × 롤링베타"),
-        _RawSpec("BETA_X_DH", "(베타-1)×위험점수15일변화", "C.국면상호작용", -1,
-                 "위험이 가속(ΔH 급등)하는 국면에서 고베타가 상대 열위",
-                 "위험 '수준'이 아니라 '가속도'에도 고베타가 더 민감하게 반응",
-                 "M.res[haz_pct].diff(15) × 롤링베타"),
-        _RawSpec("REGIME_STATE_BETA", "확정국면×(베타-1)", "C.국면상호작용", +1,
-                 "확정 위험선호 국면에서 고베타 우위, 확정 위험회피 국면에서 저베타 우위",
-                 "SPY 계층 상태기계의 확정 출력을 섹터 상대수익 지표로 재사용",
-                 "M.res[sig][state] × 롤링베타"),
+                 "급성 변동성 급등 국면에서 고베타가 즉각 열위", "옵션 헤지수요 급증은 고베타 자산부터 매도",
+                 "FAST_PCT × 롤링베타"),
     ]
 
 
-def family_c_values(res: dict, beta: pd.Series) -> pd.DataFrame:
-    """[§3.3] SPY 계층의 확정 출력(haz_pct/score_pct/fast_pct/state)을 그대로 재사용한다
-    — 전부 그날 종가까지의 정보로 확정된 값이라 인과성이 자동 보장된다."""
+def spy_layer_values(spy_series: Dict[str, pd.Series], beta: pd.Series) -> pd.DataFrame:
     idx = beta.index
     out = pd.DataFrame(index=idx)
-    beta_x = (beta - 1.0)
-    haz_pct = res.get("haz_pct")
-    score_pct = res.get("score_pct")
-    fast_pct = res.get("fast_pct")
-    state = res.get("sig", pd.DataFrame()).get("state") if res.get("sig") is not None else None
-
-    out["BETA_X_H"] = beta_x * haz_pct.reindex(idx) if haz_pct is not None else np.nan
-    out["BETA_X_SCORE"] = beta_x * score_pct.reindex(idx) if score_pct is not None else np.nan
-    out["BETA_X_FT"] = beta_x * fast_pct.reindex(idx) if fast_pct is not None else np.nan
-    if haz_pct is not None:
-        dh15 = haz_pct.reindex(idx).diff(15)
-        out["BETA_X_DH"] = beta_x * dh15
-    else:
-        out["BETA_X_DH"] = np.nan
-    if state is not None:
-        state_num = state.reindex(idx).map({"RISK_ON": 1.0, "NEUTRAL": 0.0, "RISK_OFF": -1.0}).astype(float)
-        out["REGIME_STATE_BETA"] = beta_x * state_num
-    else:
-        out["REGIME_STATE_BETA"] = np.nan
+    sp = spy_series["SCORE_PCT"].reindex(idx)
+    hp = spy_series["HAZ_PCT"].reindex(idx)
+    fp = spy_series["FAST_PCT"].reindex(idx)
+    bx = beta - 1.0
+    out["SPY_SCORE_PCT"] = sp
+    out["SPY_HAZ_PCT"] = hp
+    out["BETA_X_SCORE"] = bx * sp
+    out["BETA_X_H"] = bx * hp
+    out["BETA_X_DH"] = bx * hp.diff(15)
+    out["BETA_X_FT"] = bx * fp
     return out.replace([np.inf, -np.inf], np.nan)
 
 
-# ---- 가족 B: 섹터별 매크로·크로스에셋 지표(표 기반, §3.2) -------------------------
-# 각 항목: (suffix, name_kr, kind, source_id, transform, window, prior_sign, rationale, mechanism)
-#   kind: "fred_rate"(레벨 변화=diff) | "fred_index"(변화율=pct) | "fred_level"(수준 z)
-#         | "yahoo_mom"(모멘텀) | "ind_direct"(res["ind"]의 기존 컬럼을 그대로 재사용)
+# ---- (d) 섹터별 매크로·크로스에셋(v0.1 가족 B 표) ---------------------------------------------------
+# (suffix, name_kr, kind, source_id, transform, window, prior_sign, rationale, mechanism)
+#   kind: fred_rate(레벨 변화=diff) | fred_index(변화율) | fred_level(수준 z) | yahoo_mom | ind_direct
 _FamilyBRow = Tuple[str, str, str, str, str, int, int, str, str]
 
-SECTOR_FAMILY_B_TABLE: Dict[str, List[_FamilyBRow]] = {
+SECTOR_MACRO_TABLE: Dict[str, List[_FamilyBRow]] = {
     "XLK": [
         ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
          "장기 듀레이션 성장주는 실질금리 상승에 밸류에이션이 눌린다", "할인율 채널"),
@@ -484,8 +508,6 @@ SECTOR_FAMILY_B_TABLE: Dict[str, List[_FamilyBRow]] = {
          "명목금리 상승도 동일한 밸류에이션 압박", "할인율 채널"),
         ("RSP_MOM", "동일가중/시총가중 60일 상대강도", "ind_direct", "RSP_SPY_MOM", "", 60, -1,
          "동일가중 우위는 대형 기술주(시총상위) 열위를 시사", "지수 구성 효과"),
-        ("H_PCT", "위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, -1,
-         "고베타 성장주는 시장 위험 상승기에 더 크게 할인", "베타 채널(가족C와 상호보완)"),
     ],
     "XLC": [
         ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
@@ -506,7 +528,7 @@ SECTOR_FAMILY_B_TABLE: Dict[str, List[_FamilyBRow]] = {
          "모기지금리 상승은 주택·내구재 관련 소비수요를 위축", "금리-내구재 채널"),
     ],
     "XLP": [
-        ("H_PCT", "위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
+        ("H_PCT", "SPY 위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
          "필수소비재는 방어 로테이션의 전형적 수혜 섹터", "방어 로테이션"),
         ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
          "채권 대용 성격(안정배당)이라 금리 상승에 상대적으로 불리", "채권대용 채널"),
@@ -514,7 +536,7 @@ SECTOR_FAMILY_B_TABLE: Dict[str, List[_FamilyBRow]] = {
          "다국적 매출 비중이 높아 달러 강세가 환산이익을 깎는다", "환율 채널"),
     ],
     "XLV": [
-        ("H_PCT", "위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
+        ("H_PCT", "SPY 위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
          "헬스케어는 경기방어적 수요(질병·처방)로 방어 로테이션 수혜", "방어 로테이션"),
         ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
          "배당·성장이 혼재해 금리 상승에 약하게 불리", "할인율 채널(약함)"),
@@ -564,7 +586,7 @@ SECTOR_FAMILY_B_TABLE: Dict[str, List[_FamilyBRow]] = {
          "채권 대용 자산(고배당)이라 금리 상승에 가장 직접적으로 불리", "채권대용 채널"),
         ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
          "동일 논리의 실질금리판", "채권대용 채널"),
-        ("H_PCT", "위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
+        ("H_PCT", "SPY 위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
          "유틸리티는 대표적 방어 섹터", "방어 로테이션"),
     ],
     "XLRE": [
@@ -580,275 +602,120 @@ SECTOR_FAMILY_B_TABLE: Dict[str, List[_FamilyBRow]] = {
 }
 
 
-def family_b_values(ticker: str, res: dict, M, cal: pd.DatetimeIndex) -> pd.DataFrame:
-    """[§3.2] source series는 전부 res["fred"](발표지연 적용 완료)/res["px_dict"](이미
-    수집된 크로스에셋)/res["ind"](이미 계산된 SPY 지표 컬럼)/res["haz_pct"]에서 가져온다
-    — 이번 호출을 위해 새로 수집하는 원천 데이터는 없다(11개 섹터 ETF 가격 제외)."""
-    rows = SECTOR_FAMILY_B_TABLE.get(ticker, [])
-    out = pd.DataFrame(index=cal)
-    for suffix, name_kr, kind, sid, transform, window, prior_sign, rationale, mech in rows:
+def sector_macro_values(ticker: str, res: dict, M, idx: pd.DatetimeIndex,
+                        spy_series: Dict[str, pd.Series]) -> pd.DataFrame:
+    """source series는 전부 res["fred"](발표지연 적용 완료)/res["px_dict"]/res["ind"]/
+    spy_series(마스킹 전 H 백분위)에서 가져온다 — 새로 수집하는 원천 데이터는 없다."""
+    out = pd.DataFrame(index=idx)
+    for suffix, name_kr, kind, sid, transform, window, prior_sign, rationale, mech in \
+            SECTOR_MACRO_TABLE.get(ticker, []):
         col = None
-        if kind == "fred_rate":
+        if kind in ("fred_rate", "fred_index", "fred_level"):
             src = res["fred"].get(sid)
             if src is not None:
-                s = src.reindex(cal).ffill()
-                col = s - s.shift(window)
-        elif kind == "fred_index":
-            src = res["fred"].get(sid)
-            if src is not None:
-                s = src.reindex(cal).ffill()
-                col = s / s.shift(window) - 1.0
-        elif kind == "fred_level":
-            src = res["fred"].get(sid)
-            if src is not None:
-                s = src.reindex(cal).ffill()
-                col = M._z(s, window or 252)
+                s = src.reindex(idx).ffill()
+                if kind == "fred_rate":
+                    col = s - s.shift(window)
+                elif kind == "fred_index":
+                    col = s / s.shift(window) - 1.0
+                else:
+                    col = M._z(s, window or 252)
         elif kind == "yahoo_mom":
             d = res["px_dict"].get(sid)
             if d is not None:
                 price_col = "Adj Close" if "Adj Close" in d.columns else "Close"
-                s = d[price_col].reindex(cal).ffill()
-                col = M._mom(s, window)
+                col = M._mom(d[price_col].reindex(idx).ffill(), window)
         elif kind == "ind_direct":
             if sid == "__HAZ_PCT__":
-                col = res.get("haz_pct")
-                col = col.reindex(cal) if col is not None else None
+                col = spy_series["HAZ_PCT"].reindex(idx)
             else:
                 ind = res.get("ind")
-                col = ind[sid].reindex(cal) if (ind is not None and sid in ind.columns) else None
+                col = ind[sid].reindex(idx) if (ind is not None and sid in ind.columns) else None
         out[suffix] = col if col is not None else np.nan
     return out.replace([np.inf, -np.inf], np.nan)
 
 
-def build_sector_indicators(ticker: str, res: dict, M,
-                            sector_close_tr: pd.Series, sector_close_raw: pd.Series,
-                            spy_close_tr: pd.Series, spy_close_raw: pd.Series,
-                            cal: pd.DatetimeIndex) -> Tuple[pd.DataFrame, List[Any]]:
-    """[§3] 한 섹터의 가족 A+B+C 지표값(ind)과 그에 대응하는 M.IndicatorSpec 목록을 만든다.
-    spec.key는 "{티커}__{suffix}" 형식으로 전 섹터에 걸쳐 고유하다(스왑 컨텍스트가 섹터별로
-    한 번에 하나씩 열리므로 실제로는 매번 그 섹터의 지표만 보이지만, 로그·시트 추적성을
-    위해 접두어를 남긴다)."""
-    r_i = np.log(sector_close_tr.replace(0, np.nan)).diff()
-    r_spy = np.log(spy_close_tr.replace(0, np.nan)).diff()
-    beta = rolling_beta(r_i, r_spy, window=252, lag=1)
+def _mk_spec(M, ticker: str, raw: _RawSpec):
+    return M.IndicatorSpec(
+        key=f"{ticker}__{raw.suffix}", name_kr=f"[{ticker}] {raw.name_kr}", category=raw.category,
+        prior_sign=raw.prior_sign, rationale=raw.rationale, source=raw.source,
+        lead_mechanism=raw.lead_mechanism, trend_track=raw.trend_track,
+        eval_horizon=raw.eval_horizon, base_series=raw.base_series)
 
-    a_vals = family_a_values(sector_close_tr, spy_close_tr, sector_close_raw, spy_close_raw, M)
-    c_vals = family_c_values(res, beta.reindex(cal))
-    b_vals = family_b_values(ticker, res, M, cal)
 
+def build_sector_candidates(ticker: str, res: dict, M, scfg: SectorConfig,
+                            adj_tr: pd.Series, close_raw: pd.Series,
+                            spy_tr: pd.Series, spy_raw: pd.Series,
+                            spy_series: Dict[str, pd.Series], idx: pd.DatetimeIndex
+                            ) -> Tuple[pd.DataFrame, List[Any]]:
+    """한 섹터의 후보지표 전체(값 DataFrame, M.IndicatorSpec 목록)를 만든다.
+    = [M 후보 전부(res["ind"] 재사용, 재계산 없음)] + [섹터 기술 8] + [상대강도 9] + [섹터 매크로]
+      + [SPY 계층 6]. 모든 입력은 idx(섹터 상장일 이후 달력)로 정렬된다."""
+    frames: List[pd.DataFrame] = []
     specs: List[Any] = []
-    ind = pd.DataFrame(index=cal)
-    for raw in family_a_specs():
-        key = f"{ticker}__{raw.suffix}"
-        ind[key] = a_vals[raw.suffix].reindex(cal)
-        specs.append(M.IndicatorSpec(
-            key=key, name_kr=f"[{ticker}] {raw.name_kr}", category=raw.category,
-            prior_sign=raw.prior_sign, rationale=raw.rationale, source=raw.source,
-            lead_mechanism=raw.lead_mechanism, trend_track=raw.trend_track,
-            eval_horizon=raw.eval_horizon, base_series=""))
-            # [단위테스트에서 발견·수정 - 최초 배포 전] base_series를 f"REL_{raw.suffix}"처럼
-            # 지표마다 다른 문자열로 주면 M.build_walkforward_weights의 기저시리즈 그룹캡
-            # (SERIES_WEIGHT_CAP=20%, group_key=base_series)이 "지표 하나짜리 그룹"을 만들어
-            # 의도치 않게 그 지표 하나에만 개별 20% 상한을 몰래 씌운다(스펙에 없는 동작).
-            # family A 9종은 서로 다른 통계적 변환(모멘텀/이평교차/낙폭/RSI 등)이라 기존
-            # SPY 계층의 수기지표들처럼 서로 그룹화하지 않는 것이 맞다(base_series=""는
-            # "이 20%-그룹캡의 대상이 아님"을 뜻함 - market_regime_trader.py 4483행 부근
-            # 주석 "원천이 불분명한 수기 지표(base_series='')는 캡 대상에서 제외" 참조).
-            # family A/C의 "합산 60%/40%" 상한(§5.1)은 이 20%-그룹캡과는 별개 메커니즘이며
-            # apply_family_weight_cap()이 M.build_walkforward_weights 반환 후 명시적으로 적용한다.
-    for raw in family_c_specs():
-        key = f"{ticker}__{raw.suffix}"
-        ind[key] = c_vals[raw.suffix].reindex(cal)
-        specs.append(M.IndicatorSpec(
-            key=key, name_kr=f"[{ticker}] {raw.name_kr}", category=raw.category,
-            prior_sign=raw.prior_sign, rationale=raw.rationale, source=raw.source,
-            lead_mechanism="", trend_track=False, eval_horizon=None,
-            base_series=""))  # 위와 동일한 이유(family C 합산 40% 상한은 apply_family_weight_cap이 별도 적용)
-    for suffix, name_kr, kind, sid, transform, window, prior_sign, rationale, mech in \
-            SECTOR_FAMILY_B_TABLE.get(ticker, []):
-        key = f"{ticker}__{suffix}"
-        ind[key] = b_vals[suffix].reindex(cal) if suffix in b_vals.columns else np.nan
-        specs.append(M.IndicatorSpec(
-            key=key, name_kr=f"[{ticker}] {name_kr}", category="B.섹터매크로",
-            prior_sign=prior_sign, rationale=rationale, source=f"{kind}:{sid}",
-            lead_mechanism=mech, trend_track=False, eval_horizon=_eval_h(window),
-            base_series=sid))
-    ind = ind.replace([np.inf, -np.inf], np.nan)
+    if scfg.USE_MARKET_CANDIDATES:
+        m_ind = res["ind"].reindex(idx)
+        frames.append(m_ind)
+        specs.extend(list(M.INDICATOR_SPECS))
+    sec = pd.DataFrame(index=idx)
+    if scfg.USE_SECTOR_TECHNICAL:
+        vals = sector_technical_values(adj_tr.reindex(idx))
+        for raw in sector_technical_specs():
+            sec[f"{ticker}__{raw.suffix}"] = vals[raw.suffix]
+            specs.append(_mk_spec(M, ticker, raw))
+    if scfg.USE_RELATIVE_STRENGTH:
+        vals = relative_strength_values(adj_tr.reindex(idx), spy_tr.reindex(idx),
+                                        close_raw.reindex(idx), spy_raw.reindex(idx), M)
+        for raw in relative_strength_specs():
+            sec[f"{ticker}__{raw.suffix}"] = vals[raw.suffix]
+            specs.append(_mk_spec(M, ticker, raw))
+    if scfg.USE_SECTOR_MACRO:
+        vals = sector_macro_values(ticker, res, M, idx, spy_series)
+        for suffix, name_kr, kind, sid, transform, window, prior_sign, rationale, mech in \
+                SECTOR_MACRO_TABLE.get(ticker, []):
+            sec[f"{ticker}__{suffix}"] = vals[suffix] if suffix in vals.columns else np.nan
+            specs.append(M.IndicatorSpec(
+                key=f"{ticker}__{suffix}", name_kr=f"[{ticker}] {name_kr}", category="B2.섹터매크로",
+                prior_sign=prior_sign, rationale=rationale, source=f"{kind}:{sid}",
+                lead_mechanism=mech, trend_track=False, eval_horizon=_eval_h(window),
+                base_series=(sid if kind != "ind_direct" else "")))
+    if scfg.USE_SPY_LAYER_FEATURES:
+        r_i = np.log(adj_tr.reindex(idx).replace(0, np.nan)).diff()
+        r_spy = np.log(spy_tr.reindex(idx).replace(0, np.nan)).diff()
+        beta = rolling_beta(r_i, r_spy, window=252, lag=1)
+        vals = spy_layer_values(spy_series, beta)
+        for raw in spy_layer_specs():
+            sec[f"{ticker}__{raw.suffix}"] = vals[raw.suffix]
+            specs.append(_mk_spec(M, ticker, raw))
+    frames.append(sec)
+    ind = pd.concat(frames, axis=1).replace([np.inf, -np.inf], np.nan)
+    keys = [s.key for s in specs]
+    assert len(keys) == len(set(keys)), "후보지표 key 중복"
+    ind = ind[keys]
     return ind, specs
 
 
 # =============================================================================
-# [6] 검증 — 섹터별 시계열 게이트 + 횡단면 rank IC 게이트
-# =============================================================================
-def sector_cfg_for(res: dict, scfg: SectorConfig, actual_start: pd.Timestamp,
-                   entry_date: pd.Timestamp):
-    """[§4.1] SPY cfg를 베이스로 상대낙폭 라벨(-3%)과 위험트랙 비활성만 덮어쓴 사본을
-    만든다. DATA_START/SIGNAL_START/TRAIN_MIN_YEARS는 섹터별 실제 이력에 맞춘다(§1.3)."""
-    M_cfg = res["cfg"]
-    base_sig_start = pd.Timestamp(M_cfg.SIGNAL_START)
-    sig_start = max(base_sig_start, entry_date)
-    return dataclasses.replace(
-        M_cfg,
-        DD_LABEL_THRESHOLD=scfg.SECTOR_REL_DD_THRESHOLD,
-        USE_HAZARD_TRACK=False,
-        TRAIN_MIN_YEARS=scfg.SECTOR_MIN_HISTORY_YEARS,
-        DATA_START=str(actual_start.date()),
-        SIGNAL_START=str(sig_start.date()),
-        MIN_INDICATORS=3,
-    )
-
-
-def apply_family_weight_cap(W: pd.DataFrame, specs: List[Any], category_prefix: str,
-                            cap: float) -> pd.DataFrame:
-    """[§5.1 "가족 A 합계 ≤ 60%(SECTOR_COMMON_FAMILY_CAP)/가족 C 합계 ≤ 40%
-    (SECTOR_REGIME_FAMILY_CAP)"] category가 category_prefix로 시작하는 지표들의 그날
-    |가중치| 합이 cap을 넘으면, M.build_walkforward_weights 내부의 기저시리즈캡/추세트랙캡과
-    완전히 같은 패턴(그룹을 cap까지 축소 -> 풀려난 몫을 그룹 밖 지표들에 기존 비중 비례로
-    재분배)을 모든 날짜에 벡터화 적용한다. market_regime_trader.py를 수정하지 않고 그 함수가
-    반환한 W를 후처리하는 방식 — 이 캡은 (기존 재사용 중인) SERIES_WEIGHT_CAP=20% 기저시리즈
-    캡과는 별개의, 더 넓은 상한이다(같은 "가족"이라도 서로 다른 통계적 변환이라 기저시리즈로
-    보지 않으므로 base_series는 비워둔다 - build_sector_indicators의 코멘트 참조)."""
-    codes = list(W.columns)
-    cat_by_code = {s.key: getattr(s, "category", "") for s in specs}
-    fam_mask = np.array([cat_by_code.get(c, "").startswith(category_prefix) for c in codes])
-    if not fam_mask.any():
-        return W
-    W = W.copy()
-    fam_abs_sum = W.loc[:, fam_mask].abs().sum(axis=1)
-    over = fam_abs_sum > cap
-    if not over.any():
-        return W
-    freed = (fam_abs_sum - cap).clip(lower=0.0)
-    scale = pd.Series(1.0, index=W.index)
-    scale.loc[over] = cap / fam_abs_sum.loc[over]
-    W.loc[:, fam_mask] = W.loc[:, fam_mask].mul(scale, axis=0)
-    other_abs_sum = W.loc[:, ~fam_mask].abs().sum(axis=1).replace(0, np.nan)
-    redis_scale = (1.0 + freed / other_abs_sum).fillna(1.0)
-    W.loc[:, ~fam_mask] = W.loc[:, ~fam_mask].mul(redis_scale, axis=0)
-    return W
-
-
-def _sector_score_pipeline(ind_t: pd.DataFrame, rel_t: pd.Series, cfg_sector, specs: List[Any],
-                           scfg: "SectorConfig", M, verbose_log: bool = False,
-                           compute_quintiles: bool = True, full_report: bool = True
-                           ) -> Tuple[pd.DataFrame, List[dict], pd.Series, pd.DataFrame, pd.Series, pd.DataFrame]:
-    """검증(§4.1)+워크포워드 가중(§5.1)+가족캡(§5.1)+복합점수(§5.2)를 한 파이프라인으로
-    묶는다. validate_and_weight_sector(전체계산)와 lookahead_audit_sector(절단재계산) 양쪽이
-    이 함수를 그대로 재사용해야 두 계산이 항상 같은 처리를 거친다 — 한쪽만 가족캡을 적용하면
-    룩어헤드 감사의 "전체계산==절단재계산" 비교 자체가 무의미해진다."""
-    with _indicator_spec_override(M, specs):
-        vt = M.validate_indicators(ind_t, rel_t, cfg_sector, verbose=verbose_log,
-                                   compute_quintiles=compute_quintiles, full_report=full_report)
-        W, wlog, _W_haz = M.build_walkforward_weights(ind_t, rel_t, cfg_sector)
-        W = apply_family_weight_cap(W, specs, "A.", scfg.SECTOR_COMMON_FAMILY_CAP)
-        W = apply_family_weight_cap(W, specs, "C.", scfg.SECTOR_REGIME_FAMILY_CAP)
-        score, contrib, n_used = M.composite_score(ind_t, W, cfg_sector)
-    return vt, wlog, W, score, contrib, n_used
-
-
-def validate_and_weight_sector(ticker: str, ind: pd.DataFrame, specs: List[Any],
-                               rel: pd.Series, cfg_sector, M, scfg: "SectorConfig" = None,
-                               verbose_log: bool = False) -> Dict[str, Any]:
-    """[§4.1+§5.1] 한 섹터에 대해 시계열 게이트(M.validate_indicators, 전체표본) +
-    워크포워드 가중(M.build_walkforward_weights) + 가족비중상한(§5.1) + 복합점수
-    (M.composite_score)까지 한 번에 수행한다. INDICATOR_SPECS/SPEC_BY_KEY 스왑은 이 함수
-    호출 동안만 유지된다. 반환 dict: vt(전체표본 검증표), W(가중치행렬, 가족캡 적용 후),
-    wlog, score, contrib, n_used, score_pct."""
-    scfg = scfg or CFG
-    actual_start = pd.Timestamp(cfg_sector.DATA_START)
-    idx = ind.index[ind.index >= actual_start]
-    ind_t = ind.reindex(idx)
-    rel_t = rel.reindex(idx)
-
-    vt, wlog, W, score, contrib, n_used = _sector_score_pipeline(
-        ind_t, rel_t, cfg_sector, specs, scfg, M, verbose_log=verbose_log,
-        compute_quintiles=True, full_report=True)
-    score_pct = M.score_percentile(score)
-
-    log("VALIDATE", kv(ticker=ticker, candidates=len(specs),
-                       passed=int((vt["판정"] == "PASS").sum()),
-                       periods=len(wlog)), M=M)
-    return {"vt": vt, "W": W, "wlog": wlog, "score": score, "contrib": contrib,
-            "n_used": n_used, "score_pct": score_pct, "idx": idx}
-
-
-def cross_sectional_rank_ic(fwd_rel_by_sector: Dict[str, pd.Series],
-                            indicator_values_by_sector: Dict[str, pd.Series],
-                            horizon: int) -> Dict[str, float]:
-    """[§4.2] 매일 N개 섹터를 가로질러 (그날의 지표값, 그날 기준 향후 horizon일 상대수익)의
-    순위상관(스피어만)을 구하고, 그 일별 rank IC 시계열의 평균이 0과 다른지를 뉴이-웨스트
-    HAC 표준오차(겹치는 지평 보정, lag=horizon)로 검정한다.
-    fwd_rel_by_sector[t] = M.forward_return(rel_t_series, horizon) — 호출부가 이미 h일
-    앞의 상대수익으로 만들어 넘긴다(이 함수는 그 값을 그대로 그날 행에 쓴다 — t행의 값은
-    t+h의 실현치이므로 상관계산 자체는 '그날 기준'이라는 시점 정렬만 지킨다. 통계용으로만
-    쓰고, 지표 채택 로직에는 이 결과가 직접 게이트로 들어가지 않으며 §4.2 수용기준 판정에만
-    쓰인다 — 참고 진단이지 채택 여부를 좌우하는 것이 아니라는 뜻은 아니고, §8 활성화 판정의
-    한 조건이다)."""
-    tickers = [t for t in fwd_rel_by_sector if t in indicator_values_by_sector]
-    if len(tickers) < 3:
-        return {"mean_rank_ic": np.nan, "nw_t": np.nan, "n_days": 0}
-    idx = fwd_rel_by_sector[tickers[0]].index
-    fwd_mat = pd.DataFrame({t: fwd_rel_by_sector[t] for t in tickers}, index=idx)
-    x_mat = pd.DataFrame({t: indicator_values_by_sector[t].reindex(idx) for t in tickers}, index=idx)
-    daily_ic = pd.Series(np.nan, index=idx)
-    for dt in idx:
-        y = fwd_mat.loc[dt]
-        x = x_mat.loc[dt]
-        both = pd.concat([x, y], axis=1).dropna()
-        if len(both) < 5:
-            continue
-        daily_ic.loc[dt] = both.iloc[:, 0].corr(both.iloc[:, 1], method="spearman")
-    daily_ic = daily_ic.dropna()
-    if len(daily_ic) < 30:
-        return {"mean_rank_ic": np.nan, "nw_t": np.nan, "n_days": len(daily_ic)}
-    # 표준적인 HAC(뉴이-웨스트) 평균-t: daily_ic 자체를 "관측치"로 보고 그 평균이 0과
-    # 다른지 검정한다(회귀가 아니라 평균 검정이므로 M.newey_west_tstat(x~y 회귀용)을
-    # 그대로 쓸 수 없어 동일한 HAC 공식을 직접 적용).
-    m = float(daily_ic.mean())
-    n = len(daily_ic)
-    resid = daily_ic - m
-    gamma0 = float((resid ** 2).mean())
-    lag_max = min(horizon, n - 1)
-    var = gamma0
-    for L in range(1, lag_max + 1):
-        w = 1.0 - L / (lag_max + 1)
-        cov = float((resid.iloc[L:].values * resid.iloc[:-L].values).mean())
-        var += 2 * w * cov
-    se = math.sqrt(max(var, 1e-12) / n)
-    t_stat = m / se if se > 0 else np.nan
-    return {"mean_rank_ic": m, "nw_t": t_stat, "n_days": n}
-
-
-# =============================================================================
-# [7] 판별력 자기검사 (§4.3) — 실데이터 해석 전에 반드시 먼저 통과해야 함
+# [5] 판별력 자기검사 — 실데이터 해석 전에 반드시 먼저 통과해야 함
+#     합성 '섹터 가격'에 선행신호를 심은 지표 3개 + 순수 잡음 5개를 M.validate_indicators에
+#     넣어 전자만 PASS하는지 확인한다(검증 레이어가 고장 나면 어떤 결과도 신뢰할 수 없으므로).
 # =============================================================================
 def build_selftest_case(M, scfg: SectorConfig, n: int = 1500
                         ) -> Tuple[pd.Series, pd.DataFrame, List[Any]]:
-    """[§4.3] 합성 rel(=P_i/SPY 대용) 시계열을 만든다. _build_hazard_selftest_case()(기존
-    프로덕션 self_test 픽스처)와 같은 설계 원칙 — 대부분의 날은 순수 잡음이고, 간격을 둔
-    소수의 '사건' 구간에서만 지표가 사건 직전에 스파이크하고 rel이 그 방향으로 크게
-    움직인다 — 를 그대로 따른다. 매일 IC를 억지로 만드는 대신(그러면 노이즈 지표와
-    구분이 안 된다) 사건 기반 희소 신호로 만들어야 진짜 판별력 검사가 된다.
-    3개 지표에는 이 사건들을 선행하는 신호를 심고, 5개는 순수 잡음(사건과 무관)으로 둔다.
-    수용: 심은 3개 전부 채택, 잡음 5개 중 채택 ≤ SELFTEST_MAX_NOISE_ADOPTED.
-    반환: (rel 시계열, ind DataFrame, IndicatorSpec 목록[진짜 3 + 잡음 5])."""
+    """M._build_hazard_selftest_case()와 같은 설계 원칙 — 대부분의 날은 순수 잡음이고, 간격을 둔
+    소수의 '사건' 구간에서만 지표가 사건 직전에 스파이크하고 가격이 그 방향으로 크게 움직인다."""
     rng = np.random.default_rng(scfg.RANDOM_SEED)
     idx = pd.bdate_range("2010-01-04", periods=n)
-
     true_meta = [("TRUE_A", +1), ("TRUE_B", -1), ("TRUE_C", +1)]
     noise_keys = ["NOISE_A", "NOISE_B", "NOISE_C", "NOISE_D", "NOISE_E"]
-
-    ret = rng.normal(0.0002, 0.006, n)     # 일간 로그수익 기저잡음
+    ret = rng.normal(0.0002, 0.006, n)
     ind_data: Dict[str, np.ndarray] = {k: rng.normal(0.0, 1.0, n) for k, _ in true_meta}
     for k in noise_keys:
         ind_data[k] = rng.normal(0.0, 1.0, n)
-
-    move_days = 5
-    spacing = 45
-    episodes = list(range(spacing, n - spacing - 10, spacing))
-    for p in episodes:
+    move_days, spacing = 5, 45
+    for p in range(spacing, n - spacing - 10, spacing):
         direction = 1 if rng.uniform() < 0.5 else -1
-        magnitude = direction * rng.uniform(0.04, 0.08)          # ±4~8% 총 상대이동
+        magnitude = direction * rng.uniform(0.04, 0.08)
         per_day = math.log(1.0 + magnitude) / move_days
         for j in range(move_days):
             ret[p + j] += per_day
@@ -857,390 +724,882 @@ def build_selftest_case(M, scfg: SectorConfig, n: int = 1500
                 t = p + off
                 if 0 <= t < n:
                     ind_data[key][t] += sign * direction * 5.0 * (1.0 - abs(off) / 4.0)
-
-    rel = pd.Series(100.0 * np.exp(np.cumsum(ret)), index=idx)
+    px = pd.Series(100.0 * np.exp(np.cumsum(ret)), index=idx)
     ind = pd.DataFrame({k: pd.Series(v, index=idx) for k, v in ind_data.items()})
-
     specs: List[Any] = []
     for key, sign in true_meta:
-        specs.append(M.IndicatorSpec(
-            key=key, name_kr=f"[자체테스트] {key}", category="TEST", prior_sign=sign,
-            rationale="자기검사 전용 합성 신호", source="합성데이터", lead_mechanism="주입된 선행신호"))
+        specs.append(M.IndicatorSpec(key=key, name_kr=f"[자체테스트] {key}", category="TEST", prior_sign=sign,
+                                     rationale="자기검사 전용 합성 신호", source="합성데이터", lead_mechanism="주입된 선행신호"))
     for key in noise_keys:
-        specs.append(M.IndicatorSpec(
-            key=key, name_kr=f"[자체테스트] {key}", category="TEST", prior_sign=1,
-            rationale="자기검사 전용 순수 잡음", source="합성데이터", lead_mechanism="없음(잡음)"))
-    return rel, ind, specs
+        specs.append(M.IndicatorSpec(key=key, name_kr=f"[자체테스트] {key}", category="TEST", prior_sign=1,
+                                     rationale="자기검사 전용 순수 잡음", source="합성데이터", lead_mechanism="없음(잡음)"))
+    return px, ind, specs
 
 
 def run_selftest(M, scfg: SectorConfig = CFG) -> Dict[str, Any]:
-    """[§4.3] 판별력 자기검사 실행. 실데이터 검증 결과를 신뢰하기 전에 이 함수가 PASS해야
-    한다(run_all()이 자동으로 먼저 호출하고, FAIL이면 실행을 중단한다)."""
-    rel, ind, specs = build_selftest_case(M, scfg)
-    cfg_t = dataclasses.replace(M.CFG, DD_LABEL_THRESHOLD=scfg.SECTOR_REL_DD_THRESHOLD,
-                                USE_HAZARD_TRACK=False, DATA_START=str(rel.index[0].date()),
-                                SIGNAL_START=str(rel.index[0].date()), TRAIN_MIN_YEARS=3,
-                                MIN_INDICATORS=3, REWEIGHT_FREQ="M")
+    """판별력 자기검사. run()이 실데이터 전에 자동 호출하고 FAIL이면 중단한다. 합성 사건의 크기
+    (±4~8%/5일)에 맞춰 낙폭 라벨 -3%를 쓴다(픽스처 파라미터 — 실데이터 검증은 M과 같은 -5%)."""
+    px, ind, specs = build_selftest_case(M, scfg)
+    cfg_t = dataclasses.replace(M.CFG, DD_LABEL_THRESHOLD=-0.03, USE_HAZARD_TRACK=False,
+                                DATA_START=str(px.index[0].date()), SIGNAL_START=str(px.index[0].date()),
+                                TRAIN_MIN_YEARS=3, MIN_INDICATORS=3, REWEIGHT_FREQ="M")
     with _indicator_spec_override(M, specs):
-        vt = M.validate_indicators(ind, rel, cfg_t, verbose=False, compute_quintiles=False)
+        vt = M.validate_indicators(ind, px, cfg_t, verbose=False, compute_quintiles=False)
     v = vt.set_index("지표코드")
     true_keys = ["TRUE_A", "TRUE_B", "TRUE_C"]
     noise_keys = ["NOISE_A", "NOISE_B", "NOISE_C", "NOISE_D", "NOISE_E"]
-    n_true_pass = int((v.loc[true_keys, "판정"] == "PASS").sum())
-    n_noise_pass = int((v.loc[noise_keys, "판정"] == "PASS").sum())
-    passed = (n_true_pass >= scfg.SELFTEST_MIN_TRUE_ADOPTED
-              and n_noise_pass <= scfg.SELFTEST_MAX_NOISE_ADOPTED)
-    log("SELFTEST", kv(true_pass=f"{n_true_pass}/3", noise_pass=f"{n_noise_pass}/5",
-                       verdict="PASS" if passed else "FAIL"), M=M,
-        level="info" if passed else "error")
-    return {"passed": passed, "n_true_pass": n_true_pass, "n_noise_pass": n_noise_pass, "vt": vt}
+    n_true = int((v.loc[true_keys, "판정"] == "PASS").sum())
+    n_noise = int((v.loc[noise_keys, "판정"] == "PASS").sum())
+    passed = n_true >= scfg.SELFTEST_MIN_TRUE_ADOPTED and n_noise <= scfg.SELFTEST_MAX_NOISE_ADOPTED
+    log("SELFTEST", kv(true_pass=f"{n_true}/3", noise_pass=f"{n_noise}/5", verdict="PASS" if passed else "FAIL"),
+        M=M, level="info" if passed else "error")
+    return {"passed": passed, "n_true_pass": n_true, "n_noise_pass": n_noise, "vt": vt}
 
 
 # =============================================================================
-# [8] 복합점수 → 횡단면 순위 → 이력현상 상태기계 (§5.2~§5.3)
+# [6] 섹터 1개 파이프라인 = M.run()의 3)전체표본검증 ~ 7)감사 단계를 섹터 가격에 적용
 # =============================================================================
-def cross_sectional_rank(score_by_sector: pd.DataFrame, active_mask: pd.DataFrame
-                         ) -> pd.DataFrame:
-    """[§5.2] 그날 유니버스에 편입된(active) 섹터들만 대상으로 1(최고)~N(최저) 순위를
-    매긴다. 편입 전 섹터는 NaN(순위 없음)."""
-    masked = score_by_sector.where(active_mask)
-    return masked.rank(axis=1, ascending=False, method="average")
+def sector_cfg_for(M_cfg, scfg: SectorConfig, ticker: str, idx_i: pd.DatetimeIndex):
+    """M cfg를 베이스로 섹터별 사본. 신호·검증 파라미터(임계값·지평·게이트·규칙 스위치)는 전부
+    M 값을 그대로 두고, 티커/이력 시작/학습최소연수/재추정주기/감사표본/시드/출력만 바꾼다."""
+    fields = {f.name for f in dataclasses.fields(M_cfg)}
+    upd = dict(TRADE_TICKER=ticker, DATA_START=str(idx_i[0].date()),
+               TRAIN_MIN_YEARS=scfg.SECTOR_TRAIN_MIN_YEARS,
+               REWEIGHT_FREQ=scfg.SECTOR_REWEIGHT_FREQ or M_cfg.REWEIGHT_FREQ,
+               RUN_LOOKAHEAD_AUDIT=scfg.RUN_LOOKAHEAD_AUDIT, AUDIT_SAMPLE=scfg.AUDIT_SAMPLE,
+               RANDOM_SEED=scfg.RANDOM_SEED, OUT_XLSX=f"sector_{ticker}.xlsx",
+               EXPORT_RESULT_BUNDLE=False, EXPORT_DAILY_CSV=False)
+    return dataclasses.replace(M_cfg, **{k: v for k, v in upd.items() if k in fields})
 
 
-def sector_raw_state(rank: pd.Series, spct: pd.Series, n_active: pd.Series,
-                     scfg: SectorConfig) -> pd.Series:
-    """[§5.3] 원시 상태(이력현상 적용 전). n_active는 그날 유니버스 크기(그 날짜 행의
-    active 섹터 수) — 매일 달라질 수 있다(§1.3 유니버스 확장)."""
-    raw = pd.Series("NEUTRAL", index=rank.index, dtype=object)
-    out_mask = (rank <= scfg.SECTOR_TOP_K) & (spct >= scfg.SECTOR_STATE_HI)
-    under_mask = (rank >= (n_active - scfg.SECTOR_TOP_K + 1)) & (spct <= scfg.SECTOR_STATE_LO)
-    raw[out_mask.fillna(False)] = "OUTPERFORM"
-    raw[under_mask.fillna(False) & ~out_mask.fillna(False)] = "UNDERPERFORM"
-    raw[rank.isna()] = "INACTIVE"
-    return raw
+# 검증/워크포워드 결과에 영향을 주지 않는 것이 확인된(M 소스 정적 검사: validate_indicators/build_walkforward_weights/
+# _select_and_weight_*가 참조하는 cfg 필드 목록에 없음) 리포트·I/O·감사·수집 전용 필드만 캐시 키에서 제외한다.
+# 나머지 필드는 전부 키에 포함(보수적 — 불필요한 재계산은 있어도 오래된 캐시로 인한 오답은 없다).
+_CACHE_KEY_IGNORE_FIELDS = frozenset({
+    "AUDIT_SAMPLE", "RUN_LOOKAHEAD_AUDIT", "RUN_HALF_LIFE_SENSITIVITY", "HL_SENS_REWEIGHT_FREQ", "ENSEMBLE_HALF_LIVES",
+    "OUT_XLSX", "LOG_LEVEL", "EXPORT_RESULT_BUNDLE", "RESULT_BUNDLE_PATH", "EXPORT_DAILY_CSV", "DAILY_CSV_PATH",
+    "RANDOM_SEED", "CACHE_DIR", "FRED_API_KEY", "FETCH_TIMEOUT_CONNECT", "FETCH_TIMEOUT_READ", "FETCH_RETRIES",
+    "FETCH_MAX_WORKERS", "DRAWDOWN_EPISODE_THRESHOLD",
+})
 
 
-def apply_sector_hysteresis(raw_state: pd.Series, scfg: SectorConfig) -> pd.Series:
-    """[§5.3] 독자 구현(SPY 계층 generate_signals()의 복잡한 규칙 ⓪~⑪ 상태기계와는 별개
-    — 여기서는 단순 k연속일 확인 + 최소보유일만 쓴다): raw_state가 SECTOR_HYSTERESIS_DAYS
-    연속으로 새 상태를 가리켜야 전환하고, 전환 후 SECTOR_MIN_HOLD_DAYS는 고정 유지한다.
-    INACTIVE(유니버스 편입 전)는 즉시 반영(확인 불필요 — 편입 전 섹터는 애초에 tilt가
-    없어야 하므로 지연시킬 이유가 없다)."""
-    idx = raw_state.index
-    confirmed = pd.Series("NEUTRAL", index=idx, dtype=object)
-    current = "INACTIVE"
-    hold_left = 0
-    streak_state, streak_len = None, 0
-    for i in range(len(idx)):
-        r = raw_state.iloc[i]
-        if r == "INACTIVE":
-            current = "INACTIVE"
-            hold_left = 0
-            streak_state, streak_len = None, 0
-            confirmed.iloc[i] = current
-            continue
-        if current == "INACTIVE":
-            current = "NEUTRAL"   # 편입 첫날은 중립에서 시작(과거 확정이력 없음)
-        if r == streak_state:
-            streak_len += 1
-        else:
-            streak_state, streak_len = r, 1
-        if hold_left > 0:
-            hold_left -= 1
-        elif r != current and streak_len >= scfg.SECTOR_HYSTERESIS_DAYS:
-            current = r
-            hold_left = scfg.SECTOR_MIN_HOLD_DAYS - 1
-        confirmed.iloc[i] = current
-    return confirmed
+def _cache_key(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M) -> str:
+    """검증/워크포워드 캐시 키 — 코드 버전·M 버전·섹터 cfg(리포트/I/O 전용 필드 제외)·지표 열 목록·인덱스 범위·
+    값 체크섬. 이 중 하나라도 다르면 다른 키(재계산). 값 체크섬은 nan을 제외한 합/제곱합/결측수."""
+    import json
+    h = hashlib.sha1()
+    h.update(f"{VERSION}|{getattr(M, 'BUNDLE_VERSION', '?')}|{ticker}".encode())
+    cfg_d = {k: v for k, v in dataclasses.asdict(cfg_i).items() if k not in _CACHE_KEY_IGNORE_FIELDS}
+    h.update(json.dumps(cfg_d, sort_keys=True, default=str).encode())
+    h.update("|".join(map(str, ind.columns)).encode())
+    h.update(f"{ind.index[0]}|{ind.index[-1]}|{len(ind)}".encode())
+    arr = ind.to_numpy(dtype=float)
+    h.update(np.array([np.nansum(arr), np.nansum(arr * arr), float(np.isnan(arr).sum())]).tobytes())
+    pa = px_adj.to_numpy(dtype=float)
+    h.update(np.array([np.nansum(pa), np.nansum(pa * pa), float(np.isnan(pa).sum())]).tobytes())
+    return h.hexdigest()
 
 
-# =============================================================================
-# [9] 포트폴리오 구성 — 시장 계층(E_t) × 섹터 계층(tilt) (§5.4)
-# =============================================================================
-def build_portfolio(confirmed_state: pd.DataFrame, active_mask: pd.DataFrame,
-                    E_t: pd.Series, scfg: SectorConfig) -> pd.DataFrame:
-    """[§5.4] target_i,t = E_t × tilt_i,t × b_i,t / Σ_j tilt_j,t × b_j,t, 상한 적용 후
-    재정규화(2회 반복), 그 결과 Σ target_i,t = E_t가 항상 성립한다(단위테스트로 강제).
-    b_i,t = 1/N_t(그날 active 섹터 동일가중). 전 섹터 UNDER인 퇴화 케이스는 tilt를 전부
-    1.0으로 되돌린다."""
-    idx = confirmed_state.index
-    cols = list(scfg.SECTORS)
-    tilt = pd.DataFrame(1.0, index=idx, columns=cols)
-    tilt = tilt.mask(confirmed_state == "OUTPERFORM", scfg.SECTOR_TILT_OVER)
-    tilt = tilt.mask(confirmed_state == "UNDERPERFORM", scfg.SECTOR_TILT_UNDER)
-    tilt = tilt.mask(confirmed_state == "INACTIVE", 0.0)
-    tilt = tilt.mask(~active_mask.reindex(columns=cols, fill_value=False), 0.0)
-
-    n_active = active_mask.reindex(columns=cols, fill_value=False).sum(axis=1).replace(0, np.nan)
-    b = active_mask.reindex(columns=cols, fill_value=False).astype(float).div(n_active, axis=0)
-
-    tilt_sum = (tilt * (active_mask.reindex(columns=cols, fill_value=False))).sum(axis=1)
-    degenerate = (tilt_sum <= 1e-12) & (n_active.fillna(0) > 0)
-    if degenerate.any():
-        tilt.loc[degenerate, :] = active_mask.reindex(columns=cols, fill_value=False).loc[degenerate].astype(float)
-        log("PORTFOLIO", kv(event="degenerate_all_under_fallback_equal_weight",
-                            days=int(degenerate.sum())), M=None, level="warning")
-
-    raw_w = tilt * b
-
-    # 상한 적용 — 워터필링(waterfilling) 방식으로 정확히 수렴시킨다(§5.4).
-    # [단위테스트에서 발견·수정한 버그] 이전 구현은 "clip 후 전체를 동일 배율로 재정규화"를
-    # 고정 2회 반복했는데, 이 방식은 근본적으로 상한을 정확히 만족시킬 수 없다: sum(clip(w))
-    # < 1이면 재정규화 배율이 1보다 커서 "이미 상한에 걸린 항목까지" 같은 배율로 다시
-    # 키우기 때문에 재정규화 직후 다시 상한을 넘는다(기하급수적으로 상한에 접근할 뿐 도달
-    # 못함 — 2회만 반복하면 오차가 ~1%p 수준으로 남는다). 올바른 해법은 상한에 걸린 항목을
-    # 그 값에 "고정"하고, 남은 예산을 아직 고정 안 된 항목에만 재분배하는 것이며, 이는
-    # 반복마다 최소 1개 항목이 새로 고정되므로 최대 len(cols)회 안에 정확히 수렴한다.
-    cap = scfg.SECTOR_MAX_WEIGHT
-    fixed = pd.DataFrame(False, index=idx, columns=cols)   # 상한에 고정된 항목
-    w = pd.DataFrame(0.0, index=idx, columns=cols)
-    budget_left = pd.Series(1.0, index=idx)                # 미고정 항목에 남은 정규화 예산(합계 1 기준)
-    proportional = pd.DataFrame(0.0, index=idx, columns=cols)
-    for _ in range(len(cols) + 1):
-        active = ~fixed
-        denom_i = raw_w.where(active, 0.0).sum(axis=1).replace(0, np.nan)
-        proportional = (raw_w.where(active, 0.0).div(denom_i, axis=0)
-                        .mul(budget_left, axis=0).fillna(0.0))
-        over = active & (proportional > cap + 1e-12)
-        if not over.values.any():
-            break
-        w = w.mask(over, cap)
-        fixed = fixed | over
-        budget_left = (1.0 - w.where(fixed, 0.0).sum(axis=1)).clip(lower=0.0)
-    w = w.where(fixed, proportional)
-
-    # 구조적 예외: active 섹터 수가 너무 적어 N×SECTOR_MAX_WEIGHT < 1이면(예: 4개 미만) 상한을
-    # 지키면서는 예산을 전부 배분할 수 없다. 이때는 불변식①(Σtarget=E_t — "노출은 재배분만
-    # 하고 절대 줄이지 않는다")을 다양화 상한보다 우선해, 남는 예산을 이미 상한에 도달한
-    # 항목들에 원래 비중 비율대로 추가 배분한다(상한 소폭 초과, 반드시 로그 경고).
-    shortfall = (1.0 - w.sum(axis=1)).clip(lower=0.0)
-    need_fix = shortfall > 1e-9
-    if need_fix.any():
-        fixed_raw_sum = raw_w.where(fixed, 0.0).sum(axis=1).replace(0, np.nan)
-        add = (raw_w.where(fixed, 0.0).div(fixed_raw_sum, axis=0)
-              .mul(shortfall, axis=0).fillna(0.0))
-        w = w.add(add, fill_value=0.0)
-        log("PORTFOLIO", kv(event="cap_infeasible_exceeded_to_preserve_exposure_invariant",
-                            days=int(need_fix.sum())), M=None, level="warning")
-
-    target = w.mul(E_t.reindex(idx), axis=0)
-    return target
-
-
-def portfolio_invariant_check(target: pd.DataFrame, E_t: pd.Series, scfg: SectorConfig,
-                              atol: float = 1e-9) -> Dict[str, Any]:
-    """[§5.4 불변식 검증] ① Σ target_i = E_t ② 0 ≤ target_i ≤ E_t*SECTOR_MAX_WEIGHT(+atol)."""
-    row_sum = target.sum(axis=1)
-    e = E_t.reindex(target.index)
-    sum_ok = bool(((row_sum - e).abs() <= 1e-6).all())
-    max_allowed = e * scfg.SECTOR_MAX_WEIGHT + atol
-    bounds_ok = bool((target.ge(-atol).all().all())
-                     and (target.le(max_allowed, axis=0).all().all()))
-    return {"sum_equals_E_t": sum_ok, "bounds_ok": bounds_ok,
-            "max_abs_sum_diff": float((row_sum - e).abs().max())}
-
-
-# =============================================================================
-# [10] 다자산 백테스트 (§6.1) — 현금 레그는 포트폴리오 전체에서 한 번만 계산한다
-#      (run_backtest를 섹터별로 반복 호출해 합산하면 현금이 N배로 과대계상되므로 금지 —
-#      §6.1 설계노트. 대신 run_backtest와 동일한 손익 분해식을 다자산으로 직접 재현한다.)
-# =============================================================================
-def run_sector_backtest(price_by_sector: Dict[str, pd.DataFrame], target: pd.DataFrame,
-                        cfg, rf_daily: Optional[pd.Series] = None) -> pd.DataFrame:
-    """[§6.1] M.run_backtest()의 단일자산 손익분해(ret_co/ret_oc, T일 신호→T+1일 시가체결,
-    편도비용)를 섹터마다 독립적으로 만든 뒤, gross만 합산하고 현금레그·비용은 전체
-    포트폴리오 기준으로 한 번만 계산한다 — N=1(섹터 하나)일 때 M.run_backtest()와 완전히
-    같은 값이 나오는 것으로 단위테스트에서 확인한다(단, 아래 '첫날 예외' 제외).
-
-    [단위테스트에서 발견한 첫날(day 1) 경계 차이 — market_regime_trader.py 무수정 원칙상
-    수정하지 않고 여기 기록만 함] M.run_backtest()는 데이터 첫날에 pos_prev*ret_co +
-    pos_exec*ret_oc 계산에서 ret_co/ret_oc가 아직 정의되지 않아(전일 종가가 없음) NaN이
-    나오고, 0(포지션 없음)×NaN=NaN이 되어 그날의 gross가 NaN이 된다. 이후 strategy_ret 전체를
-    한 번에 .fillna(0.0)하기 때문에, 그날 실제로는 유효했던 현금레그(무포지션 상태의 단기금리
-    수취분)까지 통째로 0으로 지워진다(첫날에만 발생하는 미세한 기존 동작). 이 함수는 gross를
-    섹터별로 먼저 개별 fillna(0.0)한 뒤 합산하므로 그런 문제가 없어 첫날의 현금레그를 정확히
-    반영한다(오히려 이쪽이 더 정확함). 실전 영향은 0에 가깝다(전체 실행기간 중 정확히 1일,
-    금액도 무포지션 상태의 하루치 단기금리뿐) — 단위테스트(test_sector_backtest.py)는 이 첫날
-    차이를 알고 그 크기(=그날의 rf)까지 명시적으로 검증하고 둘째날부터는 완전 일치를 확인한다."""
-    idx = target.index
-    tickers = list(target.columns)
-    gross = pd.Series(0.0, index=idx)
-    cost = pd.Series(0.0, index=idx)
-    pos_exec_sum = pd.Series(0.0, index=idx)
-    per_sector_frames: Dict[str, pd.DataFrame] = {}
-
-    for t in tickers:
-        price = price_by_sector.get(t)
-        pos_target = target[t].reindex(idx)
-        if price is None:
-            per_sector_frames[t] = pd.DataFrame(index=idx)
-            continue
-        df = pd.DataFrame(index=idx)
-        df["Open"] = price["Open"].reindex(idx)
-        df["Close"] = price["Close"].reindex(idx)
-        adj_col = "Adj Close" if "Adj Close" in price.columns else "Close"
-        df["AdjClose"] = price[adj_col].reindex(idx)
-        df["ret_cc"] = df["AdjClose"].pct_change()
-        df["ret_co"] = (df["Open"] / df["Close"].shift(1) - 1.0)
-        df["ret_oc"] = (1.0 + df["ret_cc"]) / (1.0 + df["ret_co"]) - 1.0
-
-        df["pos_target"] = pos_target
-        df["pos_exec"] = df["pos_target"].shift(1)
-        df["pos_prev"] = df["pos_exec"].shift(1).fillna(0.0)
-        df["pos_exec"] = df["pos_exec"].fillna(0.0)
-        turn = (df["pos_exec"] - df["pos_prev"]).abs()
-        df["cost"] = turn * (cfg.COST_BPS / 1e4)
-        df["gross"] = df["pos_prev"] * df["ret_co"] + df["pos_exec"] * df["ret_oc"]
-
-        gross = gross.add(df["gross"].fillna(0.0), fill_value=0.0)
-        cost = cost.add(df["cost"].fillna(0.0), fill_value=0.0)
-        pos_exec_sum = pos_exec_sum.add(df["pos_exec"].fillna(0.0), fill_value=0.0)
-        per_sector_frames[t] = df
-
-    rf = rf_daily.reindex(idx).fillna(0.0) if rf_daily is not None else pd.Series(0.0, index=idx)
-    cash_leg = (1.0 - pos_exec_sum) * rf   # 전체 포트폴리오 노출 합(=E_t)만 빼고 현금은 1회만
-    out = pd.DataFrame(index=idx)
-    out["gross"] = gross
-    out["cash_leg"] = cash_leg
-    out["cost"] = cost
-    out["pos_exec_sum"] = pos_exec_sum
-    out["strategy_ret"] = (gross + cash_leg - cost).fillna(0.0)
-    out["equity"] = (1.0 + out["strategy_ret"]).cumprod()
-    out["dd"] = out["equity"] / out["equity"].cummax() - 1.0
-    out.attrs["per_sector"] = per_sector_frames
+def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Series, cfg_i,
+                               specs: List[Any], M, scfg: SectorConfig) -> Dict[str, Any]:
+    """[M.run() 3)+4)] 전체표본 검증표(03시트용, asof=마지막일 감쇠가중) + 워크포워드 가중치
+    (수익 W·위험 W_haz·재추정 로그). 비용 지배 단계 — 입력 해시 키로 디스크 캐시한다."""
+    t0 = time.time()
+    key = _cache_key(ticker, cfg_i, ind_i, adj_i, M)
+    path = os.path.join(scfg.CACHE_DIR, f"{ticker}_{key[:16]}.pkl.gz")
+    if scfg.USE_CACHE and os.path.exists(path):
+        try:
+            cached = pd.read_pickle(path, compression="gzip")
+            if cached.get("key") == key and all(k in cached for k in ("val_full", "W", "wlog", "W_haz")):
+                log("CACHE", kv(ticker=ticker, event="cache_hit", file=os.path.basename(path),
+                                periods=len(cached["wlog"]), elapsed_s=round(time.time() - t0, 2)), M=M)
+                cached["cache_hit"] = True
+                return cached
+        except Exception as e:
+            log("CACHE", kv(ticker=ticker, event="cache_read_failed", err=type(e).__name__), M=M, level="warning")
+    idx = ind_i.index
+    with _indicator_spec_override(M, specs):
+        w_report = M.decay_weights(idx, asof=idx[-1], half_life_days=cfg_i.HALF_LIFE_DAYS)
+        t1 = time.time()
+        val_full = M.validate_indicators(ind_i, adj_i, cfg_i, weights=w_report, verbose=False)
+        t2 = time.time()
+        W, wlog, W_haz = M.build_walkforward_weights(ind_i, adj_i, cfg_i)
+        t3 = time.time()
+    out = {"key": key, "val_full": val_full, "W": W, "wlog": wlog, "W_haz": W_haz, "cache_hit": False,
+           "t_validate": round(t2 - t1, 2), "t_walkforward": round(t3 - t2, 2)}
+    log("VALIDATE", kv(ticker=ticker, candidates=len(specs), strict_pass=int((val_full["판정"] == "PASS").sum()),
+                       reestimations=len(wlog), t_validate_s=out["t_validate"], t_walkforward_s=out["t_walkforward"]), M=M)
+    if scfg.USE_CACHE:
+        try:
+            os.makedirs(scfg.CACHE_DIR, exist_ok=True)
+            tmp = f"{path}.tmp{os.getpid()}"
+            pd.to_pickle(out, tmp, compression="gzip", protocol=4)
+            os.replace(tmp, path)     # 원자적 교체 — 중단된 실행이 잘린 캐시 파일을 남기지 않게
+            log("CACHE", kv(ticker=ticker, event="cache_saved", file=os.path.basename(path),
+                            size_mb=round(os.path.getsize(path) / 1e6, 1)), M=M)
+        except Exception as e:
+            log("CACHE", kv(ticker=ticker, event="cache_write_failed", err=type(e).__name__), M=M, level="warning")
     return out
 
 
-def benchmark_equalweight(price_by_sector: Dict[str, pd.DataFrame], active_mask: pd.DataFrame,
-                          E_t: pd.Series, cfg, rf_daily: Optional[pd.Series] = None
-                          ) -> pd.DataFrame:
-    """[§6.2 B2] E_t × 동일가중(N_t) — 로테이션 알파를 격리하기 위한 벤치마크(같은 E_t,
-    같은 유니버스, tilt만 1.0으로 고정)."""
-    cols = list(active_mask.columns)
-    n_active = active_mask.sum(axis=1).replace(0, np.nan)
-    b = active_mask.astype(float).div(n_active, axis=0).fillna(0.0)
-    target_ew = b.mul(E_t.reindex(active_mask.index), axis=0)
-    return run_sector_backtest(price_by_sector, target_ew, cfg, rf_daily)
+def _score_with_weights(Z_row: pd.Series, w_row: pd.Series) -> float:
+    """M.lookahead_audit()과 동일한 한 날짜 점수 재계산식."""
+    avail = Z_row.notna() & (w_row != 0)
+    den = float((w_row.abs() * avail).sum())
+    return float((Z_row * w_row).where(avail).sum() / den) if den > 0 else np.nan
 
 
-def benchmark_ew_buyhold(price_by_sector: Dict[str, pd.DataFrame], active_mask: pd.DataFrame,
-                         cfg, rf_daily: Optional[pd.Series] = None) -> pd.DataFrame:
-    """[§6.2 B3] 동일가중 11섹터 단순보유(E_t=1 고정)."""
-    e_one = pd.Series(1.0, index=active_mask.index)
-    return benchmark_equalweight(price_by_sector, active_mask, e_one, cfg, rf_daily)
-
-
-# =============================================================================
-# [11] 룩어헤드 감사 (§7) — 절단재계산
-# =============================================================================
-def lookahead_audit_sector(ticker: str, ind: pd.DataFrame, specs: List[Any], rel: pd.Series,
-                           cfg_sector, M, full_score: pd.Series, scfg: "SectorConfig" = None,
-                           n_dates: int = 3, seed: int = 20260904) -> pd.DataFrame:
-    """[§7] M.lookahead_audit()과 같은 발상: 무작위 날짜 d를 골라 그 날짜까지만으로 다시
-    전체 파이프라인(validate_indicators+build_walkforward_weights+가족캡+composite_score,
-    _sector_score_pipeline()로 validate_and_weight_sector와 완전히 동일하게 재사용)을 돌리고,
-    d일의 복합점수가 전체계산 결과와 같은지 비교한다(1e-9 이내면 OK). 다르면 그 시점 이후
-    정보가 d일의 점수 계산에 새어들었다는 뜻(버그) — 워크포워드 루프 자체가 이미 재추정
-    시점마다 eval_end로 절단하므로 통과가 정상이며, 이 감사는 그 설계가 실제 구현에서도
-    지켜지는지 확인하는 안전망이다. [주의] full_score는 반드시 이 함수와 같은 가족캡이
-    적용된 값(validate_and_weight_sector의 반환값)이어야 비교가 성립한다 — 그렇지 않으면
-    가족캡 적용 여부 차이가 룩어헤드 버그로 오인될 수 있다."""
-    scfg = scfg or CFG
-    rng = np.random.default_rng(seed)
-    valid_idx = full_score.dropna().index
-    if len(valid_idx) < 300:
-        return pd.DataFrame(columns=["티커", "검사일", "전체계산점수", "절단재계산점수", "차이", "일치"])
-    picks = rng.choice(valid_idx[252:], size=min(n_dates, len(valid_idx) - 252), replace=False)
-    rows = []
-    for d in sorted(pd.Timestamp(p) for p in picks):
-        sub_idx = ind.index[ind.index <= d]
-        _sub_vt, _sub_wlog, _sub_W, sub_score, _c, _n = _sector_score_pipeline(
-            ind.reindex(sub_idx), rel.reindex(sub_idx), cfg_sector, specs, scfg, M,
-            verbose_log=False, compute_quintiles=False, full_report=False)
-        full_v = float(full_score.loc[d]) if d in full_score.index else np.nan
-        cut_v = float(sub_score.iloc[-1]) if len(sub_score) else np.nan
-        diff = abs(full_v - cut_v) if pd.notna(full_v) and pd.notna(cut_v) else np.nan
-        rows.append({"티커": ticker, "검사일": str(d.date()), "전체계산점수": full_v,
-                    "절단재계산점수": cut_v, "차이": diff,
-                    "일치": "OK" if (pd.notna(diff) and diff < 1e-6) else "확인필요"})
+def sector_lookahead_audit(ticker: str, res: dict, M, scfg: SectorConfig, cfg_i,
+                           raw_df: pd.DataFrame, spy_raw_df: pd.DataFrame,
+                           W: pd.DataFrame, W_haz: pd.DataFrame,
+                           score_full: pd.Series, haz_full: pd.Series, n_dates: int) -> pd.DataFrame:
+    """[M.lookahead_audit과 같은 방법] 무작위 검사일 d마다 '섹터·SPY 원시가격, M 지표값, M 점수'를
+    d까지로 잘라 섹터 후보지표를 처음부터 다시 만들고(z-score 포함) 그날 가중치(W.loc[d])로 점수를
+    재계산해 전체계산 점수와 비교한다. 섹터 지표 구성(롤링·ewm·베타 지연·상대가격·발표지연 시리즈)
+    어디에도 d 이후 정보가 섞이지 않았음을 확인하는 감사. M 지표 자체의 인과성은 M의 11시트가 담당."""
+    rng = np.random.default_rng(cfg_i.RANDOM_SEED)
+    cal = res["cal"]
+    valid = score_full.dropna().index
+    valid = valid[(valid >= pd.Timestamp(cfg_i.SIGNAL_START))]
+    if len(valid) > 15:
+        valid = valid[:-15]     # 마지막 15거래일은 Adj Close 지연 이어붙임 구간과 겹칠 수 있어 제외
+    if len(valid) < 30:
+        return pd.DataFrame([{"티커": ticker, "결과": "감사 생략(표본 부족)"}])
+    picks = sorted(rng.choice(valid, size=min(n_dates, len(valid)), replace=False))
+    rows: List[dict] = []
+    for d in picks:
+        d = pd.Timestamp(d)
+        cal_t = cal[cal <= d]
+        sec_t = raw_df.loc[raw_df.index <= d]
+        spy_t = spy_raw_df.loc[spy_raw_df.index <= d]
+        price_t, idx_t, _ = sector_price_frame(sec_t, cal_t, scfg)
+        spy_tr_t, _ = build_total_return_close(spy_t, cal_t, scfg.ADJ_CLOSE_STALE_DAYS)
+        spy_raw_t = spy_t["Close"].reindex(cal_t).ffill()
+        res_t = {"ind": res["ind"].loc[res["ind"].index <= d],
+                 "fred": {k: (v.loc[v.index <= d] if v is not None else None) for k, v in res["fred"].items()},
+                 "px_dict": {k: (v.loc[v.index <= d] if v is not None else None) for k, v in res["px_dict"].items()},
+                 "score": res["score"].loc[res["score"].index <= d],
+                 "haz_score": res["haz_score"].loc[res["haz_score"].index <= d],
+                 "cfg": res["cfg"]}
+        spy_series_t = spy_layer_series(res_t, M)
+        ind_t, _ = build_sector_candidates(ticker, res_t, M, scfg, price_t["Adj Close"], price_t["Close"],
+                                           spy_tr_t, spy_raw_t, spy_series_t, idx_t)
+        Z_t = pd.DataFrame({k: M.expanding_zscore(ind_t[k]) for k in ind_t.columns}, index=ind_t.index)
+        z_row = Z_t.loc[d]
+        for kind, Wm, full in (("복합점수", W, score_full), ("위험점수(H)", W_haz, haz_full)):
+            w_row = Wm.loc[d].reindex(z_row.index).fillna(0.0)
+            s_t = _score_with_weights(z_row, w_row)
+            s_full = float(full.loc[d]) if d in full.index else np.nan
+            if kind == "위험점수(H)" and pd.isna(s_t) and pd.isna(s_full):
+                rows.append({"티커": ticker, "검사일": str(d.date()), "전체계산 점수": np.nan, "절단재계산 점수": np.nan,
+                             "차이": np.nan, "일치": "N/A(위험지표 미채택)", "감사종류": kind})
+                continue
+            diff = abs(s_t - s_full) if pd.notna(s_t) and pd.notna(s_full) else np.nan
+            ok = bool(pd.notna(diff) and diff < 1e-8)
+            rows.append({"티커": ticker, "검사일": str(d.date()), "전체계산 점수": round(s_full, 8) if pd.notna(s_full) else np.nan,
+                         "절단재계산 점수": round(s_t, 8) if pd.notna(s_t) else np.nan,
+                         "차이": diff, "일치": "OK" if ok else "불일치", "감사종류": kind})
+            log("AUDIT", kv(ticker=ticker, kind=kind, date=str(d.date()), full=s_full if pd.notna(s_full) else -99,
+                            truncated=s_t if pd.notna(s_t) else -99, result="OK" if ok else "MISMATCH"), M=M,
+                level="info" if ok else "error")
     return pd.DataFrame(rows)
 
 
-def universe_entry_causality_audit(entry_dates: Dict[str, pd.Timestamp],
-                                   sector_px: Dict[str, Optional[pd.DataFrame]]) -> pd.DataFrame:
-    """[§7] 유니버스 편입일이 '그 시점에 이미 관측 가능한' 실제 데이터 시작일 + 최소이력
-    으로만 계산됐는지(=상장 정보를 미래에서 끌어오지 않았는지) 확인한다."""
-    rows = []
-    for t, entry in entry_dates.items():
-        df = sector_px.get(t)
-        actual_start = df.index.min() if (df is not None and len(df)) else None
-        ok = (actual_start is not None) and (entry > actual_start) and (entry != pd.Timestamp.max)
-        rows.append({"티커": t, "실제데이터시작": str(actual_start.date()) if actual_start is not None else "N/A",
-                    "유니버스편입일": str(entry.date()) if entry != pd.Timestamp.max else "N/A(데이터없음)",
-                    "인과성": "OK" if ok else "확인필요"})
-    return pd.DataFrame(rows)
+def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """섹터 1개 전체 파이프라인. 반환 dict는 pandas/기본형만 담는다(프로세스 경계 통과 —
+    Config/IndicatorSpec 인스턴스 없음). 시트 조각(01~11)도 여기서 만들어 부모는 조립만 한다."""
+    M, res, scfg = ctx["M"], ctx["res"], ctx["scfg"]
+    M_cfg = res["cfg"]
+    price_i, idx_i, info = ctx["frames"][ticker]
+    raw_df = ctx["raw"][ticker]
+    spy_tr, spy_raw, spy_series, rf = ctx["spy_tr"], ctx["spy_raw"], ctx["spy_series"], ctx["rf_daily"]
+    cfg_i = sector_cfg_for(M_cfg, scfg, ticker, idx_i)
+    np.random.seed(cfg_i.RANDOM_SEED)
+    t_all = time.time()
+    timing: Dict[str, float] = {}
+    log("START", kv(ticker=ticker, name=SECTOR_NAME_KR.get(ticker, ""), data_start=str(idx_i[0].date()),
+                    data_end=str(idx_i[-1].date()), rows=len(idx_i), signal_start=cfg_i.SIGNAL_START,
+                    reweight_freq=cfg_i.REWEIGHT_FREQ, train_min_years=cfg_i.TRAIN_MIN_YEARS), M=M)
 
+    adj_i = price_i["Adj Close"].astype(float)
+    close_i = price_i["Close"].astype(float)
+    sig_mask = pd.Series(idx_i >= pd.Timestamp(cfg_i.SIGNAL_START), index=idx_i)
 
-# =============================================================================
-# [12] 수용기준 판정 (§8)
-# =============================================================================
-def evaluate_acceptance(cs_stats: Dict[str, float], spread_by_era_positive_count: int,
-                        strategy_metrics: Dict[str, float], b1_metrics: Dict[str, float],
-                        alpha_ir: float, cost_over_alpha: float,
-                        year2022_return: float, scfg: SectorConfig) -> pd.DataFrame:
-    """[§8] 6개 조건의 PASS/FAIL 표. 하나라도 FAIL이면 활성화하지 않는다(USE_SECTOR_ROTATION
-    은 사용자가 이 표를 보고 명시적으로 켠다 — 이 함수는 자동으로 스위치를 켜지 않는다)."""
-    def _r(cond, label, detail):
-        return {"조건": label, "판정": "PASS" if cond else "FAIL", "상세": detail}
-
-    rows = [
-        _r(pd.notna(cs_stats.get("mean_rank_ic")) and cs_stats["mean_rank_ic"] >= scfg.CS_MIN_RANK_IC
-           and pd.notna(cs_stats.get("nw_t")) and cs_stats["nw_t"] >= scfg.CS_MIN_NW_T,
-           "① 횡단면 rank IC",
-           f"mean={cs_stats.get('mean_rank_ic')}, NW-t={cs_stats.get('nw_t')} "
-           f"(기준 ≥{scfg.CS_MIN_RANK_IC}, t≥{scfg.CS_MIN_NW_T})"),
-        _r(spread_by_era_positive_count >= 3, "② 상위3-하위3 스프레드 시대별 부호",
-           f"{spread_by_era_positive_count}/4 시대에서 양(+) (기준 ≥3/4)"),
-        _r(pd.notna(strategy_metrics.get("샤프")) and pd.notna(b1_metrics.get("샤프"))
-           and strategy_metrics["샤프"] >= b1_metrics["샤프"]
-           and strategy_metrics.get("최대낙폭(MDD)", -1) >= b1_metrics.get("최대낙폭(MDD)", -1) - 0.005,
-           "③ 샤프≥B1 & MDD 훼손<0.5%p",
-           f"전략 샤프={strategy_metrics.get('샤프')} vs B1={b1_metrics.get('샤프')}, "
-           f"전략 MDD={strategy_metrics.get('최대낙폭(MDD)')} vs B1={b1_metrics.get('최대낙폭(MDD)')}"),
-        _r(pd.notna(alpha_ir) and alpha_ir >= 0.5 and pd.notna(cost_over_alpha) and cost_over_alpha < (1 / 3),
-           "④ 로테이션알파 IR≥0.5 & 비용<알파의1/3",
-           f"IR={alpha_ir}, 비용/알파={cost_over_alpha}"),
-        _r(pd.notna(year2022_return) and year2022_return >= -0.016,
-           "⑤ 2022 방어 훼손 없음",
-           f"2022 수익률={year2022_return} (기준: -1.6%보다 나빠지면 FAIL — SPY 계층 단독 "
-           f"기준치 report23 -1.6%를 섹터 계층이 재배분만 하므로 이론상 거의 동일해야 정상)"),
-    ]
-    df = pd.DataFrame(rows)
-    df.loc[len(df)] = {"조건": "종합판정",
-                       "판정": "PASS(활성 후보)" if (df["판정"] == "PASS").all() else "FAIL(OFF 유지)",
-                       "상세": f"{(df['판정']=='PASS').sum()}/{len(rows)}개 조건 통과"}
-    return df
-
-
-# =============================================================================
-# [13] 리포트 (§9) — 별도 파일. write_excel()을 재사용하지 않는다(그 함수는 00시트
-#      제목·구조가 SPY 리포트에 고정돼 있다) — 가벼운 전용 라이터를 새로 둔다.
-# =============================================================================
-def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]]) -> None:
+    # ---- 지표 ----
     t0 = time.time()
-    with pd.ExcelWriter(path, engine="xlsxwriter",
-                        datetime_format="yyyy-mm-dd", date_format="yyyy-mm-dd") as xl:
+    ind_i, specs = build_sector_candidates(ticker, res, M, scfg, adj_i, close_i, spy_tr, spy_raw, spy_series, idx_i)
+    trend200 = sector_technical_values(adj_i)["TREND_200"]
+    timing["04_지표생성"] = round(time.time() - t0, 2)
+    log("INDICATOR", kv(ticker=ticker, candidates=len(specs),
+                        market=sum(1 for s in specs if not s.key.startswith(f"{ticker}__")),
+                        sector=sum(1 for s in specs if s.key.startswith(f"{ticker}__")),
+                        with_data=int((ind_i.notna().sum() > 0).sum())), M=M)
+
+    # ---- 검증 + 워크포워드 (캐시) ----
+    t0 = time.time()
+    hv = validate_and_weight_sector(ticker, ind_i, adj_i, cfg_i, specs, M, scfg)
+    val_full, W, wlog, W_haz = hv["val_full"], hv["W"], hv["wlog"], hv["W_haz"]
+    timing["05_06_검증+워크포워드"] = round(time.time() - t0, 2)
+
+    # ---- 복합점수 / 위험점수 ----
+    t0 = time.time()
+    with _indicator_spec_override(M, specs):
+        score, contrib, n_used = M.composite_score(ind_i, W, cfg_i)
+        haz_score, haz_contrib, _ = M.composite_score(ind_i, W_haz, cfg_i)
+    score_pct = M.score_percentile(score).where(sig_mask)
+    haz_pct = M.score_percentile(haz_score).where(sig_mask)
+    fast_pct = None
+    if cfg_i.USE_FAST_TRIGGER and res.get("fast_pct") is not None:
+        fast_pct = res["fast_pct"].reindex(idx_i)      # M과 동일 지표(VIX_TERM) — 시장 급락트리거를 그대로 공유
+    recov_conf = deep_recov = struct_dd = None
+    if cfg_i.USE_RECOVERY_FLOOR:
+        roll_low = close_i.rolling(cfg_i.RECOVERY_LOW_WINDOW, min_periods=20).min()
+        recov_conf = close_i >= roll_low * (1.0 + cfg_i.RECOVERY_CONFIRM_PCT)
+        struct_dd = M.deep_drawdown_flag(close_i, cfg_i.STRUCT_BOTTOM_DD, cfg_i.RECOVERY_LOW_WINDOW, mode="peak_to_trough")
+        if cfg_i.USE_DEEP_RECOVERY_BOOST:
+            deep = M.deep_drawdown_flag(close_i, cfg_i.DEEP_RECOVERY_DD, cfg_i.RECOVERY_LOW_WINDOW, mode=cfg_i.DEEP_RECOVERY_DD_MODE)
+            deep_recov = recov_conf & deep
+
+    # ---- 신호 / 백테스트 ----
+    sig = M.generate_signals(score_pct, trend200, cfg_i, score=score, haz_pct=haz_pct, fast_pct=fast_pct,
+                             recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+    with _indicator_spec_override(M, specs):
+        reason = M.build_reason_text(contrib, sig["state"], score)
+    bt = M.run_backtest(price_i, sig["target_pos"], cfg_i, rf)
+    bt = bt.loc[bt.index >= pd.Timestamp(cfg_i.SIGNAL_START)]
+    ma_pos = (trend200 > 0).astype(float).where(sig_mask, 0.0)
+    bt_ma = M.run_backtest(price_i, ma_pos, cfg_i, rf)
+    bt_ma = bt_ma.loc[bt_ma.index >= pd.Timestamp(cfg_i.SIGNAL_START)]
+    timing["07_08_신호+백테스트"] = round(time.time() - t0, 2)
+
+    # ---- 민감도 / 감사 / 이벤트 / 거래 / 구간 ----
+    t0 = time.time()
+    sens = pd.DataFrame()
+    if scfg.RUN_THRESHOLD_SENSITIVITY:
+        sens = M.threshold_sensitivity(score_pct, trend200, price_i, cfg_i, rf, haz_pct=haz_pct, fast_pct=fast_pct,
+                                       recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+    timing["09_임계값민감도"] = round(time.time() - t0, 2)
+    t0 = time.time()
+    audit = pd.DataFrame()
+    if scfg.RUN_LOOKAHEAD_AUDIT:
+        audit = sector_lookahead_audit(ticker, res, M, scfg, cfg_i, raw_df, ctx["spy_raw_df"], W, W_haz,
+                                       score, haz_score, scfg.AUDIT_SAMPLE)
+    adopted = sorted({k for k in W.columns if (W[k] != 0).any()})
+    events = M.event_study(ind_i, adj_i, bt, adopted, cfg_i, haz_pct=haz_pct)
+    trades = M.extract_trades(bt, reason, sig["state"])
+    episodes = M.drawdown_episodes(bt, cfg_i)
+    timing["11_감사+이벤트+구간"] = round(time.time() - t0, 2)
+
+    # ---- 시트 조각 ----
+    sheets = build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score, score_pct, n_used,
+                                 haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
+                                 wlog, val_full, adopted, trades, episodes, events, sens, audit)
+    timing["12_run_sector()합계"] = round(time.time() - t_all, 2)
+    first_signal = score_pct.dropna().index[0] if score_pct.notna().any() else None
+    log("DONE", kv(ticker=ticker, adopted_ever=len(adopted), strict_pass=int((val_full["판정"] == "PASS").sum()),
+                   first_signal=str(first_signal.date()) if first_signal is not None else "-",
+                   cache_hit=hv.get("cache_hit", False), elapsed_s=timing["12_run_sector()합계"]), M=M)
+    return {"ticker": ticker, "info": info, "cfg_dict": dataclasses.asdict(cfg_i), "timing": timing,
+            "cache_hit": bool(hv.get("cache_hit", False)), "n_candidates": len(specs),
+            "first_signal": (str(first_signal.date()) if first_signal is not None else None),
+            "adopted": adopted, "sheets": sheets,
+            # 통합 시트용 소형 시리즈
+            "state": sig["state"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
+            "target_pos": sig["target_pos"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
+            "score_pct": score_pct.loc[sig_mask], "haz_pct": haz_pct.loc[sig_mask],
+            "strategy_ret": bt["strategy_ret"], "bh_ret": bt["bh_ret"], "pos_exec": bt["pos_exec"],
+            "ma_ret": bt_ma["strategy_ret"]}
+
+
+# =============================================================================
+# [7] 섹터별 시트 조각 — M.build_report()의 01~11 시트 생성 로직을 섹터에 그대로 적용(+'티커' 열)
+# =============================================================================
+def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score, score_pct, n_used,
+                        haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
+                        wlog, val_full, adopted, trades, episodes, events, sens, audit) -> Dict[str, pd.DataFrame]:
+    idx = bt.index
+    name_map = {s.key: s.name_kr for s in specs}
+    _flag = lambda col: (sig[col].reindex(idx).map({True: "발동", False: ""}) if col in sig.columns else "")
+
+    # ---- 01 일별기록 (M 01과 동일 컬럼) ----
+    daily = pd.DataFrame(index=idx)
+    daily["날짜"] = [d.date() for d in idx]
+    daily["시가"] = bt["Open"].round(2)
+    daily["고가"] = price_i["High"].reindex(idx).round(2) if "High" in price_i.columns else np.nan
+    daily["저가"] = price_i["Low"].reindex(idx).round(2) if "Low" in price_i.columns else np.nan
+    daily["종가"] = bt["Close"].round(2)
+    daily["일간등락률"] = (bt["ret_cc"] * 100).round(3)
+    daily["섹터상황"] = sig["state"].reindex(idx).map(STATE_KR).fillna("-")
+    daily["예측"] = sig["state"].reindex(idx).map(STATE_SHORT).fillna("-")
+    daily["복합점수"] = score.reindex(idx).round(4)
+    daily["복합점수백분위"] = score_pct.reindex(idx).round(4)
+    daily["사용지표수"] = n_used.reindex(idx)
+    daily["목표비중"] = sig["target_pos"].reindex(idx).round(2)
+    daily["체결비중"] = bt["pos_exec"].round(2)
+    daily["매매행동"] = M.action_labels(bt["pos_exec"])
+    daily["추세오버라이드"] = sig["trend_override"].reindex(idx).map({True: "발동", False: ""})
+    daily["위험점수(H)"] = haz_score.reindex(idx).round(4)
+    daily["위험점수백분위(H)"] = haz_pct.reindex(idx).round(4)
+    daily["위험회피진입(H)"] = _flag("hazard_entry")
+    daily["위험선호차단(H)"] = _flag("hazard_block")
+    daily["위험회피해제안전판(H)"] = _flag("hazard_floor")
+    daily["매수보류게이트(H)"] = _flag("buy_hold_gate")
+    daily["급락트리거백분위"] = fast_pct.reindex(idx).round(4) if fast_pct is not None else np.nan
+    daily["급락트리거(FT)"] = _flag("fast_trigger")
+    daily["회복확인(저점대비)"] = (recov_conf.reindex(idx).map({True: "확인", False: ""}) if recov_conf is not None else "")
+    daily["회복승격(R)"] = _flag("recovery_floor")
+    daily["추세승격(T)"] = _flag("trend_promotion")
+    daily["속도경보(ΔH)"] = _flag("hazard_velocity")
+    daily["중립감축(H)"] = _flag("neutral_risk_cut")
+    if "extension_haircut" in sig.columns:
+        _eh = sig["extension_haircut"].reindex(idx).fillna(False).astype(bool)
+        _ec = sig["ext_cap"].reindex(idx)
+        daily["과열헤어컷(E)"] = np.where(_eh, "상한 " + _ec.round(1).astype(str), "")
+    else:
+        daily["과열헤어컷(E)"] = ""
+    daily["레버리지(L)"] = _flag("leverage")
+    daily["깊은낙폭회복(D)"] = _flag("deep_recovery")
+    daily["전략일간수익"] = (bt["strategy_ret"] * 100).round(3)
+    daily["전략자산곡선"] = (bt["equity"] / bt["equity"].iloc[0]).round(4)
+    daily["섹터자산곡선"] = (bt["bh_equity"] / bt["bh_equity"].iloc[0]).round(4)
+    daily["전략낙폭"] = (bt["equity"] / bt["equity"].cummax() - 1).round(4)
+    daily["섹터낙폭"] = (bt["bh_equity"] / bt["bh_equity"].cummax() - 1).round(4)
+    daily["근거요약"] = reason.reindex(idx)
+    for k in adopted:
+        daily[f"[값]{name_map.get(k, k)}"] = ind_i[k].reindex(idx).round(4)
+        daily[f"[기여]{name_map.get(k, k)}"] = contrib[k].reindex(idx).round(4)
+    daily = daily.reset_index(drop=True)
+
+    # ---- 03 지표검증 / 04 채택근거상세 ----
+    val_cols = ["지표코드", "지표명", "카테고리", "검증트랙", "평가지평", "판정", "판정사유",
+                "위험트랙판정", "위험트랙AUC엣지", "위험트랙AUC방향안정성", "위험트랙판정사유",
+                "사용데이터", "커버리지", "커버리지(가중)", "표본수", "N_eff", "사전방향", "실증방향",
+                "사전방향일치", "IC_평가지평", "IC_5d", "IC_21d", "IC_63d", "NW_t", "NW_p",
+                "Q1수익률", "Q2수익률", "Q3수익률", "Q4수익률", "Q5수익률", "Q5-Q1", "단조성",
+                "하락AUC", "AUC엣지", "부호일치구간수",
+                "짧은이력완화적용", "유효최소커버리지", "유효최소구간일치수", "위험트랙유효최소구간일치수",
+                "구간1IC", "구간2IC", "구간3IC", "구간4IC", "선행메커니즘"]
+    val_sheet = val_full[[c for c in val_cols if c in val_full.columns]].copy()
+    val_sheet["채택이력(워크포워드)"] = val_sheet["지표코드"].map(lambda k: "채택된 적 있음" if k in adopted else "")
+    val_sheet = val_sheet.sort_values(["판정", "AUC엣지"], ascending=[True, False])
+    detail_rows = []
+    for _, r in val_full.iterrows():
+        is_trend = bool(r.get("추세트랙", False))
+        detail_rows.append({
+            "지표코드": r["지표코드"], "지표명": r["지표명"], "카테고리": r["카테고리"], "검증트랙": r.get("검증트랙", "-"),
+            "판정": r["판정"], "왜 이 지표를 후보로 넣었나(경제적 근거)": r["경제적근거"], "선행 메커니즘": r["선행메커니즘"],
+            "사용 데이터": r["사용데이터"],
+            "검증 결과 요약": (("[추세트랙 - IC/NW-t 게이트 면제] " if is_trend else "[표준트랙] ")
+                          + f"평가지평={r.get('평가지평', cfg_i.VAL_PRIMARY_H)}일, 지평별 IC={r.get('IC_평가지평')}, "
+                          + ("" if is_trend else f"Newey-West t={r.get('NW_t')} (p={r.get('NW_p')}), ")
+                          + f"5분위 스프레드={r.get('Q5-Q1')}, 단조성={r.get('단조성')}, 하락판별 AUC={r.get('하락AUC')}, "
+                          f"시대별 부호일치={r.get('부호일치구간수')}, 커버리지={r.get('커버리지')}"),
+            "최종 판정 사유": r["판정사유"]})
+    detail = pd.DataFrame(detail_rows).sort_values(["판정", "카테고리"])
+
+    # ---- 06 성과 / 06b 운용통계 / 07 연도별 ----
+    perf = pd.DataFrame([M.perf_metrics(bt["strategy_ret"], f"{ticker} 복합지표 전략"),
+                         M.perf_metrics(bt["bh_ret"], f"{ticker} 단순보유(Buy&Hold)"),
+                         M.perf_metrics(bt_ma["strategy_ret"], f"{ticker} 200일선 단독(벤치마크)")])
+    extra = pd.DataFrame([
+        {"항목": "총 거래(포지션 변경) 횟수", "값": int((bt["turnover"] > 1e-9).sum())},
+        {"항목": "연평균 회전율(편도)", "값": round(float(bt["turnover"].sum() / (len(bt) / 252)), 2)},
+        {"항목": "누적 거래비용(수익률 차감분)", "값": round(float(bt["cost"].sum()), 4)},
+        {"항목": "시장 투자 시간 비율", "값": round(float((bt["pos_exec"] > 0).mean()), 4)},
+        {"항목": "평균 비중", "값": round(float(bt["pos_exec"].mean()), 4)},
+        {"항목": "채택 지표 수(기간 중 1회 이상)", "값": len(adopted)},
+        {"항목": "채택 지표", "값": ", ".join(name_map.get(k, k) for k in adopted)},
+    ])
+    yr = pd.DataFrame({"연도": [d.year for d in idx], "s": bt["strategy_ret"].values, "b": bt["bh_ret"].values,
+                       "pos": bt["pos_exec"].values, "turn": bt["turnover"].values})
+    ann = yr.groupby("연도").agg(
+        전략수익률=("s", lambda x: round(float((1 + x).prod() - 1), 4)),
+        섹터수익률=("b", lambda x: round(float((1 + x).prod() - 1), 4)),
+        평균비중=("pos", lambda x: round(float(x.mean()), 3)),
+        거래횟수=("turn", lambda x: int((x > 1e-9).sum()))).reset_index()
+    ann["초과수익"] = (ann["전략수익률"] - ann["섹터수익률"]).round(4)
+    dd_y = bt.groupby(bt.index.year).apply(
+        lambda g: round(float(((1 + g["strategy_ret"]).cumprod() / (1 + g["strategy_ret"]).cumprod().cummax() - 1).min()), 4))
+    ann["전략연중최대낙폭"] = ann["연도"].map(dd_y)
+
+    # ---- 08 워크포워드 가중치 ----
+    wf = pd.DataFrame(wlog)
+    if len(wf):
+        rename_map = {}
+        for c in wf.columns:
+            if c.startswith("[해저드]") and c[5:] in name_map:
+                rename_map[c] = f"[해저드]{name_map[c[5:]]}"
+            elif c in name_map:
+                rename_map[c] = name_map[c]
+        wf = wf.rename(columns=rename_map)
+
+    # ---- 09 국면통계 ----
+    st = sig["state"].reindex(idx)
+    nxt = bt["bh_ret"].shift(-1)
+    reg = pd.DataFrame({"국면": st, "익일섹터수익": nxt}).dropna()
+    regime_stats = reg.groupby("국면")["익일섹터수익"].agg(
+        일수="count", 평균익일수익률="mean", 익일상승확률=lambda x: (x > 0).mean(), 변동성="std").reset_index()
+    regime_stats["평균익일수익률"] = (regime_stats["평균익일수익률"] * 100).round(4)
+    regime_stats["익일상승확률"] = regime_stats["익일상승확률"].round(4)
+    regime_stats["변동성"] = (regime_stats["변동성"] * 100).round(4)
+    regime_stats["연율화수익률"] = (regime_stats["평균익일수익률"] / 100 * 252).round(4)
+    regime_stats["국면"] = regime_stats["국면"].map(STATE_KR).fillna(regime_stats["국면"])
+    regime_validity: Optional[bool] = None
+    try:
+        r_on = float(regime_stats.loc[regime_stats["국면"] == STATE_KR["RISK_ON"], "평균익일수익률"].iloc[0])
+        r_off = float(regime_stats.loc[regime_stats["국면"] == STATE_KR["RISK_OFF"], "평균익일수익률"].iloc[0])
+        regime_validity = bool(r_on > r_off)
+        verdict = (f"국면 정의 유효 (상승국면 익일평균 {r_on:.4f}% > 하락국면 {r_off:.4f}%)" if regime_validity
+                   else f"주의: 하락국면의 익일수익률이 더 높음 ({r_off:.4f}% >= {r_on:.4f}%)")
+    except Exception:
+        verdict = "판정 불가(상승 또는 하락 국면 표본 없음)"
+    regime_stats["국면정의 검증"] = verdict
+
+    for df in (val_sheet, detail, perf, extra, ann, wf, regime_stats, trades, episodes, events, sens, audit):
+        if isinstance(df, pd.DataFrame) and len(df) and "티커" not in df.columns:
+            df.insert(0, "티커", ticker)
+    return {"daily": daily, "trades": trades, "val_sheet": val_sheet, "detail": detail, "events": events,
+            "episodes": episodes, "perf": perf, "extra": extra, "sens": sens, "annual": ann, "wf": wf,
+            "regime_stats": regime_stats, "audit": audit, "regime_validity": regime_validity,
+            "regime_verdict": verdict, "n_strict_pass": int((val_full["판정"] == "PASS").sum()),
+            "latest_adopted": (int(pd.to_numeric(pd.DataFrame(wlog)["채택지표수"], errors="coerce").dropna().iloc[-1])
+                               if len(wlog) else 0)}
+
+
+# =============================================================================
+# [8] 병렬 실행 — fork 기반. 자식은 부모 메모리(res·프레임)를 복사-쓰기로 공유하고 결과만
+#     큐로 돌려준다(함수 피클 없음 → 모듈이 sys.modules에 등록돼 있지 않아도 동작).
+# =============================================================================
+_CTX: Dict[str, Any] = {}
+
+
+def _child_entry(ticker: str, q) -> None:
+    try:
+        out = run_sector(ticker, _CTX)
+        q.put((ticker, "ok", out))
+    except Exception as e:  # noqa
+        q.put((ticker, "err", f"{type(e).__name__}: {e}\n{traceback.format_exc()[-3000:]}"))
+
+
+def _resolve_workers(scfg: SectorConfig, n_tasks: int) -> int:
+    if scfg.MAX_WORKERS and scfg.MAX_WORKERS > 0:
+        n = scfg.MAX_WORKERS
+    else:
+        n = min(os.cpu_count() or 1, 4)
+    return max(1, min(n, n_tasks))
+
+
+def run_sectors(tickers: List[str], ctx: Dict[str, Any], scfg: SectorConfig, M
+                ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+    """섹터들을 순차 또는 fork 병렬로 실행. 반환: (성공 결과 dict, 실패 티커→에러 문자열)."""
+    global _CTX
+    results: Dict[str, Dict[str, Any]] = {}
+    failed: Dict[str, str] = {}
+    n_workers = _resolve_workers(scfg, len(tickers))
+    can_fork = n_workers > 1 and sys.platform.startswith("linux")
+    mpctx = None
+    if can_fork:
+        try:
+            mpctx = mp.get_context("fork")
+        except ValueError:
+            can_fork = False
+    if not can_fork:
+        log("RUN", kv(event="sequential", n_sectors=len(tickers),
+                      reason=("MAX_WORKERS=1" if n_workers == 1 else "fork 불가")), M=M)
+        for t in tickers:
+            try:
+                results[t] = run_sector(t, ctx)
+            except Exception as e:  # noqa
+                failed[t] = f"{type(e).__name__}: {e}\n{traceback.format_exc()[-3000:]}"
+                log("RUN", kv(ticker=t, event="sector_failed", err=type(e).__name__, msg=str(e)[:200]), M=M, level="error")
+        return results, failed
+
+    _CTX = ctx
+    log("RUN", kv(event="parallel_fork", n_sectors=len(tickers), workers=n_workers), M=M)
+    q = mpctx.Queue()
+    pending = list(tickers)
+    running: Dict[str, Any] = {}
+    t_start: Dict[str, float] = {}
+    while pending or running:
+        while pending and len(running) < n_workers:
+            t = pending.pop(0)
+            p = mpctx.Process(target=_child_entry, args=(t, q), name=f"sector-{t}")
+            p.start()
+            running[t] = p
+            t_start[t] = time.time()
+        try:
+            t, status, out = q.get(timeout=60)
+        except Exception:
+            # 60초 동안 결과가 없으면 큐에 아무것도 넣지 못하고 죽은 자식(OOM 등)이 있는지 확인
+            for t_dead in [t for t, p in list(running.items()) if not p.is_alive() and p.exitcode not in (None, 0)]:
+                p = running.pop(t_dead)
+                failed[t_dead] = f"child exited with code {p.exitcode} (메모리 부족 가능 — MAX_WORKERS=1로 재시도)"
+                log("RUN", kv(ticker=t_dead, event="child_died", exitcode=p.exitcode), M=M, level="error")
+            continue
+        p = running.pop(t)
+        p.join(timeout=30)
+        if status == "ok":
+            results[t] = out
+            log("RUN", kv(ticker=t, event="sector_done", elapsed_s=round(time.time() - t_start[t], 1),
+                          remaining=len(pending) + len(running)), M=M)
+        else:
+            failed[t] = out
+            log("RUN", kv(ticker=t, event="sector_failed", msg=str(out).splitlines()[0][:200]), M=M, level="error")
+    _CTX = {}
+    return results, failed
+
+
+# =============================================================================
+# [9] 최상위 실행 — run(res_or_path, M) → sres ; build_sector_report(sres) → xlsx
+# =============================================================================
+def _resolve_res(res_or_path, M) -> dict:
+    if isinstance(res_or_path, str):
+        if not hasattr(M, "load_result_bundle"):
+            raise RuntimeError("market_regime_trader.py v1.22.0 이상이 필요합니다(load_result_bundle 없음) — "
+                               "GitHub의 market_regime_trader.py를 최신으로 올린 뒤 다시 받으세요.")
+        return M.load_result_bundle(res_or_path)
+    res = res_or_path
+    missing = [k for k in ("cfg", "ind", "score", "haz_score", "sig", "bt", "cal", "px_dict", "fred") if k not in res]
+    if missing:
+        raise KeyError(f"res에 필수 키가 없습니다: {missing} — M.run()의 반환값 또는 M.load_result_bundle() 결과를 넘기세요")
+    return res
+
+
+def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
+        sector_px_override: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
+    """섹터 11개 전체 실행. res_or_path: M.run() 반환 dict 또는 결과 번들 경로(market_regime_result.pkl.gz).
+    sector_px_override: 합성/오프라인 테스트용 가격 주입(fetch_sector_prices 참조)."""
+    scfg = scfg or CFG
+    t_all = time.time()
+    res = _resolve_res(res_or_path, M)
+    M_cfg = res["cfg"]
+    cal = res["cal"]
+    log("START", kv(version=VERSION, m_bundle=getattr(M, "BUNDLE_VERSION", "?"), sectors=len(scfg.SECTORS),
+                    signal_start=M_cfg.SIGNAL_START, cal=f"{cal[0].date()}~{cal[-1].date()}",
+                    reweight_freq=scfg.SECTOR_REWEIGHT_FREQ or M_cfg.REWEIGHT_FREQ,
+                    train_min_years=scfg.SECTOR_TRAIN_MIN_YEARS, workers=_resolve_workers(scfg, len(scfg.SECTORS)),
+                    use_cache=scfg.USE_CACHE, seed=scfg.RANDOM_SEED), M=M)
+    stage_timing: Dict[str, float] = {}
+
+    # ---- 0) 자기검사 ----
+    t0 = time.time()
+    st: Dict[str, Any] = {"passed": None, "n_true_pass": None, "n_noise_pass": None}
+    if scfg.RUN_SELFTEST:
+        st = run_selftest(M, scfg)
+        if not st["passed"]:
+            log("RUN", kv(event="abort_selftest_failed", true_pass=st["n_true_pass"], noise_pass=st["n_noise_pass"]),
+                M=M, level="error")
+            return {"selftest": st, "aborted": True, "sectors": {}, "failed": {}, "scfg": scfg}
+    stage_timing["00_자기검사"] = round(time.time() - t0, 2)
+
+    # ---- 1) 데이터 ----
+    t0 = time.time()
+    quality: List[dict] = []
+    sector_px, yahoo_diag = fetch_sector_prices(res, M, quality, sector_px_override=sector_px_override)
+    spy_df = res["px_dict"]["SPY"]
+    spy_df = spy_df[~spy_df.index.duplicated(keep="last")].sort_index()
+    spy_tr, _ = build_total_return_close(spy_df, cal, scfg.ADJ_CLOSE_STALE_DAYS)
+    spy_raw = spy_df["Close"].reindex(cal).ffill()
+    spy_series = spy_layer_series(res, M)
+    rf_daily = None
+    dgs = res["fred"].get("DGS3MO")
+    if dgs is not None and dgs.notna().sum() > 100:
+        rf_daily = (dgs / 100.0 / 252.0).reindex(cal).ffill().fillna(0.0)
+    frames: Dict[str, Tuple[pd.DataFrame, pd.DatetimeIndex, dict]] = {}
+    raw: Dict[str, pd.DataFrame] = {}
+    universe_rows: List[dict] = []
+    for t in scfg.SECTORS:
+        df = sector_px.get(t)
+        if df is None or len(df) == 0:
+            universe_rows.append({"티커": t, "섹터명": SECTOR_NAME_KR.get(t, ""), "상태": "수집 실패(제외)"})
+            continue
+        price_i, idx_i, info = sector_price_frame(df, cal, scfg)
+        if len(idx_i) < 252:
+            universe_rows.append({"티커": t, "섹터명": SECTOR_NAME_KR.get(t, ""), "상태": f"이력 부족({len(idx_i)}일, 제외)", **info})
+            continue
+        frames[t] = (price_i, idx_i, info)
+        raw[t] = df
+        universe_rows.append({"티커": t, "섹터명": SECTOR_NAME_KR.get(t, ""), "상태": "정상", **info})
+        if info["AdjClose지연"]:
+            log("DATA", kv(ticker=t, event="adj_close_stale", gap_days=info["지연거래일수"],
+                           adj_last=info["AdjClose마지막일"], close_last=info["Close마지막일"],
+                           action="지연 구간은 Close 수익률로 이어붙임(배당 미포함 근사)"), M=M, level="warning")
+    universe = pd.DataFrame(universe_rows)
+    stage_timing["01_섹터데이터"] = round(time.time() - t0, 2)
+    log("DATA", kv(event="universe_ready", ok=len(frames), excluded=len(scfg.SECTORS) - len(frames),
+                   spy_score_pct_first=(str(spy_series["SCORE_PCT"].dropna().index[0].date())
+                                        if spy_series["SCORE_PCT"].notna().any() else "-"),
+                   rf=rf_daily is not None), M=M)
+
+    # ---- 2) 섹터별 파이프라인 ----
+    t0 = time.time()
+    ctx = {"M": M, "res": res, "scfg": scfg, "frames": frames, "raw": raw, "spy_tr": spy_tr, "spy_raw": spy_raw,
+           "spy_raw_df": spy_df, "spy_series": spy_series, "rf_daily": rf_daily}
+    results, failed = run_sectors(list(frames.keys()), ctx, scfg, M)
+    stage_timing["02_섹터파이프라인"] = round(time.time() - t0, 2)
+
+    # ---- 3) 통합 ----
+    t0 = time.time()
+    sig_start = pd.Timestamp(M_cfg.SIGNAL_START)
+    eval_idx = cal[cal >= sig_start]
+    matrix = build_prediction_matrix(results, res, eval_idx, scfg)
+    portfolio_perf, portfolio_curve = build_portfolio_reference(results, res, eval_idx, M)
+    summary = build_sector_summary(results, failed, universe)
+    stage_timing["03_통합시트"] = round(time.time() - t0, 2)
+    stage_timing["04_run()합계"] = round(time.time() - t_all, 2)
+    log("DONE", kv(event="sector_pipeline_complete", ok=len(results), failed=len(failed),
+                   elapsed_s=stage_timing["04_run()합계"]), M=M)
+    return {"sectors": results, "failed": failed, "selftest": st, "universe": universe, "quality": pd.DataFrame(quality),
+            "matrix": matrix, "portfolio_perf": portfolio_perf, "portfolio_curve": portfolio_curve,
+            "summary": summary, "stage_timing": stage_timing, "scfg": scfg, "M_cfg": M_cfg,
+            "signal_start": str(sig_start.date()), "cal_end": str(cal[-1].date()), "aborted": False,
+            "m_bundle_meta": res.get("bundle_meta", {})}
+
+
+# =============================================================================
+# [10] 통합 시트 — 01Z 섹터일별예측 매트릭스 / 12 섹터요약 / 13 섹터분산전략(참고)
+# =============================================================================
+def build_prediction_matrix(results: Dict[str, Dict[str, Any]], res: dict, eval_idx: pd.DatetimeIndex,
+                            scfg: SectorConfig) -> pd.DataFrame:
+    """날짜 × 11섹터: 예측(상승/중립/하락/추세보유/추세현금/신호없음)·목표비중, SPY 시장상황, 상승·하락 섹터 수.
+    섹터 상장 전 날짜는 공란. 매 행이 그날 종가 기준 확정(다음날 시가 체결)이라는 M의 규칙 그대로."""
+    out = pd.DataFrame(index=eval_idx)
+    out["날짜"] = [d.date() for d in eval_idx]
+    spy_state = res["sig"]["state"].reindex(eval_idx)
+    out["SPY 시장상황"] = spy_state.map(STATE_SHORT).fillna("-")
+    out["SPY 목표비중"] = res["sig"]["target_pos"].reindex(eval_idx).round(2)
+    up = pd.Series(0, index=eval_idx)
+    down = pd.Series(0, index=eval_idx)
+    for t in scfg.SECTORS:
+        sr = results.get(t)
+        if sr is None:
+            out[f"{t} 예측"] = "실패/제외"
+            out[f"{t} 목표비중"] = np.nan
+            continue
+        st = sr["state"].reindex(eval_idx)
+        out[f"{t} 예측"] = st.map(STATE_SHORT).fillna("")
+        out[f"{t} 목표비중"] = sr["target_pos"].reindex(eval_idx).round(2)
+        up = up + (st == "RISK_ON").astype(int)
+        down = down + (st == "RISK_OFF").astype(int)
+    out.insert(3, "상승예측 섹터수", up.values)
+    out.insert(4, "하락예측 섹터수", down.values)
+    return out.reset_index(drop=True)
+
+
+def build_portfolio_reference(results: Dict[str, Dict[str, Any]], res: dict, eval_idx: pd.DatetimeIndex, M
+                              ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """[참고용 — 매매 권고 아님] 같은 평가창(SIGNAL_START~)에서
+    (a) 11섹터 균등분산 전략(각 섹터 자기 신호, 그날 백테스트가 있는 섹터끼리 균등)  (b) 11섹터 균등 B&H
+    (c) SPY 국면전략(M)  (d) SPY B&H — 성과표와 자산곡선. v0.1 결함 (b)의 교정: 네 곡선 모두 같은 날짜 범위."""
+    if not results:
+        return pd.DataFrame(), pd.DataFrame()
+    strat = pd.DataFrame({t: sr["strategy_ret"] for t, sr in results.items()}).reindex(eval_idx)
+    bh = pd.DataFrame({t: sr["bh_ret"] for t, sr in results.items()}).reindex(eval_idx)
+    ew_strat = strat.mean(axis=1, skipna=True).fillna(0.0)
+    ew_bh = bh.mean(axis=1, skipna=True).fillna(0.0)
+    spy_bt = res["bt"].reindex(eval_idx)
+    spy_strat = spy_bt["strategy_ret"].fillna(0.0)
+    spy_bh = spy_bt["bh_ret"].fillna(0.0)
+    perf = pd.DataFrame([M.perf_metrics(ew_strat, "11섹터 균등분산 전략(참고)"),
+                         M.perf_metrics(ew_bh, "11섹터 균등 단순보유(참고)"),
+                         M.perf_metrics(spy_strat, "SPY 국면전략(M)"),
+                         M.perf_metrics(spy_bh, "SPY 단순보유")])
+    perf.insert(1, "평가창", f"{eval_idx[0].date()}~{eval_idx[-1].date()}")
+    curve = pd.DataFrame(index=eval_idx)
+    curve["날짜"] = [d.date() for d in eval_idx]
+    curve["11섹터균등분산전략"] = (1 + ew_strat).cumprod().round(4)
+    curve["11섹터균등B&H"] = (1 + ew_bh).cumprod().round(4)
+    curve["SPY국면전략"] = (1 + spy_strat).cumprod().round(4)
+    curve["SPY B&H"] = (1 + spy_bh).cumprod().round(4)
+    curve["신호있는섹터수"] = strat.notna().sum(axis=1).values
+    return perf, curve.reset_index(drop=True)
+
+
+def build_sector_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, str], universe: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for t in SECTORS:
+        base = {"티커": t, "섹터명": SECTOR_NAME_KR.get(t, "")}
+        if t in failed:
+            rows.append({**base, "상태": "실패", "비고": str(failed[t]).splitlines()[0][:160]})
+            continue
+        sr = results.get(t)
+        if sr is None:
+            urow = universe.loc[universe["티커"] == t] if len(universe) else pd.DataFrame()
+            rows.append({**base, "상태": (urow["상태"].iloc[0] if len(urow) else "제외")})
+            continue
+        sh = sr["sheets"]
+        perf = sh["perf"].set_index("전략") if len(sh["perf"]) else pd.DataFrame()
+        p_s = perf.iloc[0] if len(perf) > 0 else {}
+        p_b = perf.iloc[1] if len(perf) > 1 else {}
+        p_m = perf.iloc[2] if len(perf) > 2 else {}
+        dist = sr["state"].value_counts().to_dict()
+        aud = sh["audit"]
+        if len(aud) and "일치" in aud.columns:
+            chk = aud[~aud["일치"].astype(str).str.startswith("N/A")]
+            audit_ok = "전체 통과" if (len(chk) == 0 or chk["일치"].astype(str).str.startswith("OK").all()) else "불일치 발생"
+        else:
+            audit_ok = "미실행"
+        rows.append({**base, "상태": "정상", "실제데이터시작": sr["info"]["실제데이터시작"],
+                     "신호시작일(복합점수)": sr["first_signal"] or "-",
+                     "후보지표수": sr["n_candidates"], "엄격채택(전체표본)": sh["n_strict_pass"],
+                     "최신재추정 채택수": sh["latest_adopted"], "기간중 채택된 지표수": len(sr["adopted"]),
+                     "상승일수": dist.get("RISK_ON", 0), "중립일수": dist.get("NEUTRAL", 0), "하락일수": dist.get("RISK_OFF", 0),
+                     "추세필터일수": dist.get("TREND_ONLY_IN", 0) + dist.get("TREND_ONLY_OUT", 0),
+                     "신호없음일수": dist.get("NO_SIGNAL", 0),
+                     "전략CAGR": p_s.get("CAGR"), "전략샤프": p_s.get("샤프"), "전략MDD": p_s.get("최대낙폭(MDD)"),
+                     "B&H CAGR": p_b.get("CAGR"), "B&H샤프": p_b.get("샤프"), "B&H MDD": p_b.get("최대낙폭(MDD)"),
+                     "200일선벤치CAGR": p_m.get("CAGR"),
+                     "국면정의검증": ("PASS" if sh["regime_validity"] else ("FAIL" if sh["regime_validity"] is False else "판정불가")),
+                     "룩어헤드감사": audit_ok, "캐시사용": sr["cache_hit"],
+                     "실행시간(초)": sr["timing"].get("12_run_sector()합계"),
+                     "AdjClose지연": sr["info"]["AdjClose지연"]})
+    return pd.DataFrame(rows)
+
+
+# =============================================================================
+# [11] 리포트 — M.write_excel과 같은 서식(제목만 섹터용). 시트 구성은 M과 동일 + 통합 시트.
+# =============================================================================
+def _concat(results: Dict[str, Dict[str, Any]], key: str) -> pd.DataFrame:
+    parts = [sr["sheets"][key] for t, sr in results.items()
+             if isinstance(sr["sheets"].get(key), pd.DataFrame) and len(sr["sheets"][key])]
+    return pd.concat(parts, ignore_index=True, sort=False) if parts else pd.DataFrame()
+
+
+def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None) -> str:
+    t0 = time.time()
+    scfg: SectorConfig = sres.get("scfg", CFG)
+    path = path or scfg.OUT_XLSX
+    if sres.get("aborted"):
+        st = sres.get("selftest", {})
+        meta = [("버전", f"{VERSION} ({VERSION_DATE})"),
+                ("판별력 자기검사", f"FAIL (참신호 {st.get('n_true_pass')}/3, 잡음오채택 {st.get('n_noise_pass')}/5) — 실데이터 실행 중단"),
+                ("면책", "본 산출물은 연구·교육 목적의 백테스트 결과이며 투자 자문이 아닙니다.")]
+        write_sector_excel(path, {}, meta, M=M)
+        return path
+    results = sres["sectors"]
+    M_cfg = sres["M_cfg"]
+    st = sres["selftest"]
+    summary = sres["summary"]
+    ok_t = [t for t in scfg.SECTORS if t in results]
+
+    sheets: Dict[str, pd.DataFrame] = {}
+    sheets["01Z_섹터일별예측"] = sres["matrix"]
+    sheets["12_섹터요약"] = summary
+    sheets["13_섹터분산전략(참고)"] = sres["portfolio_perf"]
+    sheets["13b_분산전략자산곡선"] = sres["portfolio_curve"]
+    for t in ok_t:
+        sheets[f"01_일별_{t}"] = results[t]["sheets"]["daily"]
+    sheets["02_거래내역"] = _concat(results, "trades")
+    sheets["03_지표검증"] = _concat(results, "val_sheet")
+    sheets["04_채택근거상세"] = _concat(results, "detail")
+    sheets["05_이벤트스터디"] = _concat(results, "events")
+    sheets["05b_하락상승구간"] = _concat(results, "episodes")
+    sheets["06_성과요약"] = _concat(results, "perf")
+    sheets["06b_운용통계"] = _concat(results, "extra")
+    sheets["06c_임계값민감도"] = _concat(results, "sens")
+    sheets["07_연도별성과"] = _concat(results, "annual")
+    sheets["08_워크포워드가중치"] = _concat(results, "wf")
+    sheets["09_국면통계"] = _concat(results, "regime_stats")
+    q = sres.get("quality", pd.DataFrame())
+    u = sres.get("universe", pd.DataFrame())
+    sheets["10_데이터품질"] = pd.concat([u, q], ignore_index=True, sort=False) if len(q) else u
+    sheets["11_룩어헤드감사"] = _concat(results, "audit")
+
+    # ---- 00 실행요약 ----
+    n_ok = len(ok_t)
+    audit_all = sheets["11_룩어헤드감사"]
+    if len(audit_all) and "일치" in audit_all.columns:
+        chk = audit_all[~audit_all["일치"].astype(str).str.startswith("N/A")]
+        audit_line = ("전체 통과" if (len(chk) == 0 or chk["일치"].astype(str).str.startswith("OK").all())
+                      else "불일치 발생 - 확인 필요") + f" ({len(chk)}건 검사)"
+    else:
+        audit_line = "미실행"
+    regime_pass = int(sum(1 for t in ok_t if results[t]["sheets"]["regime_validity"]))
+    up_line = ""
+    if len(sres["matrix"]):
+        last = sres["matrix"].iloc[-1]
+        preds = [f"{t}:{last.get(f'{t} 예측', '')}" for t in scfg.SECTORS]
+        up_line = f"{last['날짜']} 기준 — SPY:{last.get('SPY 시장상황', '')} | " + ", ".join(preds)
+    pp = sres["portfolio_perf"].set_index("전략") if len(sres["portfolio_perf"]) else pd.DataFrame()
+
+    def _pf(name: str) -> str:
+        if name in pp.index:
+            r = pp.loc[name]
+            return f"CAGR {r.get('CAGR')} / 샤프 {r.get('샤프')} / MDD {r.get('최대낙폭(MDD)')}"
+        return "-"
+
+    n_cand = results[ok_t[0]]["n_candidates"] if ok_t else "-"
+    meta = [
+        ("버전", f"sector_rotation.py {VERSION} ({VERSION_DATE}) — market_regime_trader.py 번들 "
+                f"{sres.get('m_bundle_meta', {}).get('bundle_version', '직접 res')}"),
+        ("예측 대상", "11개 SPDR 섹터 ETF 각각의 절대 상승/하락 국면(SPY와 동일 파이프라인을 섹터 가격에 적용)"),
+        ("신호/백테스트 기간", f"{sres['signal_start']} ~ {sres['cal_end']} (M의 SIGNAL_START와 동일 — 모든 성과 비교는 같은 창)"),
+        ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단, M과 동일)"),
+        ("거래비용", f"편도 {M_cfg.COST_BPS:.0f}bp (M과 동일)"),
+        ("판별력 자기검사", (f"PASS (참신호 {st['n_true_pass']}/3, 잡음오채택 {st['n_noise_pass']}/5)" if st.get("passed")
+                        else "미실행(RUN_SELFTEST=False)")),
+        ("섹터 실행 결과", f"{n_ok}/{len(scfg.SECTORS)} 정상" + (f", 실패: {', '.join(sres['failed'].keys())}" if sres["failed"] else "")),
+        ("최근 예측", up_line),
+        ("후보지표", f"섹터당 {n_cand}개 = M 후보 전부(변동성/신용/매크로/크로스에셋/추세/자동생성) "
+                    f"+ 섹터 기술 8 + SPY대비 상대강도 9 + 섹터 매크로 2~4 + SPY 계층 6(마스킹 전 점수·위험 백분위, 베타 상호작용)"),
+        ("검증·가중·신호 규칙", "M과 동일: 6기준 검증(IC/NW-t/5분위/하락AUC/4구간 부호안정성/커버리지, 시간감쇠), 워크포워드 "
+                           f"재추정({scfg.SECTOR_REWEIGHT_FREQ or M_cfg.REWEIGHT_FREQ}), 보조채택, 추세트랙캡 {M_cfg.TREND_TRACK_WEIGHT_CAP:.0%}, "
+                           f"기저시리즈캡 {M_cfg.SERIES_WEIGHT_CAP:.0%}, 위험(H)트랙, 규칙 ⓪ 급락트리거(M의 VIX_TERM 공유) ~ ⑩ 과열헤어컷, "
+                           f"이력현상 {M_cfg.HYSTERESIS_DAYS}일/최소보유 {M_cfg.MIN_HOLD_DAYS}일, 국면 임계 {M_cfg.PCT_RISK_OFF:.0%}/{M_cfg.PCT_RISK_ON:.0%}"),
+        ("섹터 학습 최소연수", f"{scfg.SECTOR_TRAIN_MIN_YEARS}년 (M은 {M_cfg.TRAIN_MIN_YEARS}년 — XLRE/XLC의 신호 시작을 당기기 위한 "
+                          f"명시적 파라미터, 12_섹터요약 '신호시작일' 참조)"),
+        ("국면정의 검증(수용기준)", f"{regime_pass}/{n_ok} 섹터 PASS (상승국면 익일평균수익 > 하락국면) — 09_국면통계"),
+        ("룩어헤드 감사", f"섹터별 무작위 {scfg.AUDIT_SAMPLE}개 날짜 절단 재계산: {audit_line} — 11_룩어헤드감사"),
+        ("11섹터 균등분산 전략(참고)", _pf("11섹터 균등분산 전략(참고)")),
+        ("11섹터 균등 단순보유(참고)", _pf("11섹터 균등 단순보유(참고)")),
+        ("SPY 국면전략(M)", _pf("SPY 국면전략(M)")),
+        ("SPY 단순보유", _pf("SPY 단순보유")),
+        ("난수 시드", str(scfg.RANDOM_SEED)),
+        ("시트 안내", "01Z 섹터일별예측(날짜×11섹터 상승/중립/하락·목표비중, SPY 시장상황 병기) / 12 섹터요약(섹터별 1행) / "
+                   "13 섹터분산전략(참고 성과)·13b 자산곡선 / 01_일별_티커(섹터별 M 01시트와 동일 컬럼: 주가·국면·점수·위험(H)·규칙 발동·근거·채택지표 값/기여) / "
+                   "02 거래내역 / 03 지표검증 / 04 채택근거상세 / 05 이벤트스터디 / 05b 하락상승구간 / 06 성과·06b 운용통계·06c 임계값민감도 / "
+                   "07 연도별 / 08 워크포워드가중치 / 09 국면통계 / 10 데이터품질(섹터 유니버스·Adj Close 지연) / 11 룩어헤드감사 — 전부 '티커' 열로 구분"),
+        ("면책", "본 산출물은 연구·교육 목적의 백테스트 결과이며 투자 자문이 아닙니다. 과거 성과는 미래 수익을 보장하지 않습니다."),
+    ]
+    for k, v in sorted(sres.get("stage_timing", {}).items()):
+        meta.append((f"실행시간 - {k}", f"{v:.1f}초"))
+    for t in ok_t:
+        tm = results[t]["timing"]
+        meta.append((f"실행시간 - 섹터 {t}", f"{tm.get('12_run_sector()합계', 0):.1f}초 (검증+워크포워드 "
+                     f"{tm.get('05_06_검증+워크포워드', 0):.1f}초{', 캐시' if results[t]['cache_hit'] else ''})"))
+
+    write_sector_excel(path, sheets, meta, M=M)
+    if scfg.EXPORT_DAILY_CSV:
+        try:
+            sres["matrix"].to_csv(scfg.DAILY_CSV_PATH, index=False, encoding="utf-8-sig")
+            log("REPORT", kv(event="daily_csv_saved", file=scfg.DAILY_CSV_PATH, rows=len(sres["matrix"])), M=M)
+        except Exception as e:
+            log("REPORT", kv(event="daily_csv_failed", err=type(e).__name__), M=M, level="warning")
+    log("REPORT", kv(event="report_ready", file=path, sheets=len(sheets) + 2, sectors=n_ok,
+                     elapsed_s=round(time.time() - t0, 2)), M=M)
+    return path
+
+
+def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]], M=None) -> None:
+    """M.write_excel과 같은 서식·조건부서식·자산곡선 차트(13b 시트 기준). 00시트 제목만 섹터용."""
+    t0 = time.time()
+    with pd.ExcelWriter(path, engine="xlsxwriter", datetime_format="yyyy-mm-dd", date_format="yyyy-mm-dd") as xl:
         wb = xl.book
         f_title = wb.add_format({"bold": True, "font_size": 14, "font_color": "#1F3864"})
-        f_head = wb.add_format({"bold": True, "bg_color": "#1F3864", "font_color": "white",
-                                "border": 1, "align": "center", "valign": "vcenter", "text_wrap": True})
+        f_head = wb.add_format({"bold": True, "bg_color": "#1F3864", "font_color": "white", "border": 1,
+                                "align": "center", "valign": "vcenter", "text_wrap": True})
+        f_wrap = wb.add_format({"text_wrap": True, "valign": "top", "border": 1})
         f_key = wb.add_format({"bold": True, "bg_color": "#D9E1F2", "border": 1})
         f_val = wb.add_format({"border": 1, "text_wrap": True})
+        f_pass = wb.add_format({"bg_color": "#C6EFCE", "font_color": "#006100", "bold": True})
+        f_fail = wb.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006"})
+        f_up = wb.add_format({"bg_color": "#C6EFCE"})
+        f_down = wb.add_format({"bg_color": "#FFC7CE"})
 
-        ws = wb.add_worksheet("12_섹터개요")
-        xl.sheets["12_섹터개요"] = ws
-        ws.set_column(0, 0, 30); ws.set_column(1, 1, 100)
-        ws.write(0, 0, "11개 섹터 로테이션 확장 (SPY 국면 계층 위, 상대수익 예측)", f_title)
+        ws = wb.add_worksheet("00_실행요약")
+        xl.sheets["00_실행요약"] = ws
+        ws.set_column(0, 0, 30); ws.set_column(1, 1, 110)
+        ws.write(0, 0, "미국 11개 섹터 국면(상승/하락) 예측 & 섹터별 매매 시스템 — SPY 파이프라인 재적용", f_title)
         r = 2
         for k, v in meta:
             ws.write(r, 0, str(k), f_key); ws.write(r, 1, str(v), f_val); r += 1
@@ -1251,278 +1610,97 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
             df.to_excel(xl, sheet_name=name, index=False)
             w = xl.sheets[name]
             w.freeze_panes(1, 1)
-            for j, col in enumerate(df.columns):
+            cols = list(df.columns)
+            for j, col in enumerate(cols):
                 w.write(0, j, str(col), f_head)
-                try:
-                    maxlen = int(df[col].map(str).str.len().max())
-                except Exception:
-                    maxlen = 12
-                w.set_column(j, j, min(max(maxlen + 2, 10), 60))
-    log("REPORT", kv(event="written", path=path, sheets=len(sheets),
-                     elapsed_s=round(time.time() - t0, 2)))
+                sample = df[col].map(str).head(300)
+                width = min(max(12, int(sample.str.len().max() if len(sample) else 12) + 2), 60)
+                if col in ("경제적근거", "판정사유", "근거요약", "원인", "진입 근거", "청산 근거", "선행메커니즘",
+                           "왜 이 지표를 후보로 넣었나(경제적 근거)", "검증 결과 요약", "최종 판정 사유"):
+                    w.set_column(j, j, 60, f_wrap)
+                else:
+                    w.set_column(j, j, width)
+            w.autofilter(0, 0, len(df), len(cols) - 1)
+            if "판정" in cols:
+                cj = cols.index("판정")
+                w.conditional_format(1, cj, len(df), cj, {"type": "cell", "criteria": "==", "value": '"PASS"', "format": f_pass})
+                w.conditional_format(1, cj, len(df), cj, {"type": "cell", "criteria": "==", "value": '"FAIL"', "format": f_fail})
+            if "복합점수" in cols:
+                cj = cols.index("복합점수")
+                w.conditional_format(1, cj, len(df), cj, {"type": "3_color_scale", "min_color": "#F8696B",
+                                                          "mid_color": "#FFEB84", "max_color": "#63BE7B"})
+            if "목표비중" in cols:
+                cj = cols.index("목표비중")
+                w.conditional_format(1, cj, len(df), cj, {"type": "data_bar", "bar_color": "#638EC6"})
+            if name.startswith("01Z") or name.startswith("01_일별_"):
+                for j, col in enumerate(cols):
+                    if col.endswith(" 예측") or col in ("SPY 시장상황", "예측"):
+                        w.conditional_format(1, j, len(df), j, {"type": "cell", "criteria": "==", "value": '"상승"', "format": f_up})
+                        w.conditional_format(1, j, len(df), j, {"type": "cell", "criteria": "==", "value": '"하락"', "format": f_down})
+
+        if "13b_분산전략자산곡선" in sheets and len(sheets["13b_분산전략자산곡선"]) > 0:
+            d = sheets["13b_분산전략자산곡선"]
+            cols = list(d.columns)
+            ch = wb.add_chart({"type": "line"})
+            n = len(d)
+            for cname, color in [("11섹터균등분산전략", "#1F3864"), ("11섹터균등B&H", "#7F7F7F"),
+                                 ("SPY국면전략", "#2E75B6"), ("SPY B&H", "#C00000")]:
+                if cname in cols:
+                    ci = cols.index(cname)
+                    ch.add_series({"name": cname, "categories": ["13b_분산전략자산곡선", 1, 0, n, 0],
+                                   "values": ["13b_분산전략자산곡선", 1, ci, n, ci], "line": {"color": color, "width": 1.25}})
+            ch.set_title({"name": "11섹터 균등분산 전략 vs 균등 B&H vs SPY (누적 1.0 기준, 같은 평가창)"})
+            ch.set_y_axis({"log_base": 10, "name": "누적수익(로그)"})
+            ch.set_size({"width": 1100, "height": 460})
+            cw = wb.add_worksheet("99_자산곡선")
+            cw.insert_chart("B2", ch)
+    log("REPORT", kv(event="excel_written", path=path, sheets=len(sheets) + 2, elapsed_s=round(time.time() - t0, 2)), M=M)
 
 
-# =============================================================================
-# [14] 최상위 진입점
-# =============================================================================
-def run(res: dict, M, scfg: Optional[SectorConfig] = None) -> Dict[str, Any]:
-    """[§9.4 실행순서] 1) 유니버스·수집·무결성 2) 타깃·후보지표·검증(+자기검사) 3) 가중·
-    점수·상태기계·포트폴리오·백테스트·감사 를 한 번에 수행한다. 반환 dict의 "sheets"를
-    build_sector_report()에 넘기면 엑셀이 만들어진다.
-    res: M.run(M.CFG)의 반환값. scfg: 없으면 모듈 기본 CFG."""
-    t0 = time.time()
+def main(res_or_path, M, scfg: Optional[SectorConfig] = None,
+         sector_px_override: Optional[Dict[str, pd.DataFrame]] = None) -> str:
+    """M.main()과 같은 역할: run → build_sector_report → Colab이면 자동 다운로드."""
     scfg = scfg or CFG
-    cal = res["cal"]
-    spy_close_raw = res["price"]["Close"].reindex(cal)
-    spy_adj = res["px_adj"].reindex(cal)
-
-    # ---- [4.3] 판별력 자기검사 — 먼저 통과해야 실데이터 해석을 신뢰할 수 있다 ----
-    st = run_selftest(M, scfg)
-    if not st["passed"]:
-        log("RUN", kv(event="selftest_failed_abort"), M=M, level="error")
-        return {"selftest": st, "aborted": True}
-
-    # ---- [1] 유니버스·수집·무결성 ----
-    quality_rows: List[dict] = []
-    sector_px, yahoo_diag = fetch_sector_prices(res, M, quality_rows)
-    entry_dates = sector_entry_dates(sector_px, scfg)
-    active_mask = sector_active_mask(entry_dates, cal, scfg)
-    universe_audit = universe_entry_causality_audit(entry_dates, sector_px)
-
-    adj_lag_rows = []
-    tr_close: Dict[str, pd.Series] = {}
-    raw_close: Dict[str, pd.Series] = {}
-    for t in scfg.SECTORS:
-        df = sector_px.get(t)
-        if df is None or len(df) == 0:
-            tr_close[t] = pd.Series(np.nan, index=cal)
-            raw_close[t] = pd.Series(np.nan, index=cal)
-            continue
-        s_tr, spliced = build_total_return_close(df, cal, scfg.ADJ_CLOSE_STALE_DAYS)
-        tr_close[t] = s_tr
-        raw_close[t] = df["Close"].reindex(cal).ffill()
-        stale, gap, adj_last, close_last = adj_close_lag_check(df, t, scfg.ADJ_CLOSE_STALE_DAYS)
-        adj_lag_rows.append({"티커": t, "AdjClose지연": stale, "지연거래일수": gap,
-                            "AdjClose마지막일": str(adj_last.date()) if adj_last is not None else "N/A",
-                            "Close마지막일": str(close_last.date()) if close_last is not None else "N/A",
-                            "Close수익률대체적용": spliced})
-
-    E_t = res["sig"]["target_pos"].reindex(cal)
-
-    # ---- [2]~[4] 섹터별 타깃·지표·검증·가중치 ----
-    per_sector: Dict[str, Dict[str, Any]] = {}
-    vt_rows_all = []
-    score_pct_by_sector = pd.DataFrame(index=cal, columns=list(scfg.SECTORS), dtype=float)
-    score_by_sector = pd.DataFrame(index=cal, columns=list(scfg.SECTORS), dtype=float)
-    fwd21_rel_by_sector: Dict[str, pd.Series] = {}
-    audit_rows_all = []
-    wlog_rows_all = []
-
-    for t in scfg.SECTORS:
-        df = sector_px.get(t)
-        if df is None or len(df) == 0:
-            continue
-        rel = relative_price_series(tr_close[t], spy_adj)
-        ind, specs = build_sector_indicators(t, res, M, tr_close[t], raw_close[t],
-                                             spy_adj, spy_close_raw, cal)
-        actual_start = df.index.min()
-        entry = entry_dates[t]
-        cfg_t = sector_cfg_for(res, scfg, actual_start, entry)
-        result = validate_and_weight_sector(t, ind, specs, rel, cfg_t, M, scfg=scfg)
-        per_sector[t] = {"ind": ind, "specs": specs, "rel": rel, "cfg": cfg_t, **result}
-
-        vt = result["vt"].copy(); vt.insert(0, "티커", t)
-        vt_rows_all.append(vt)
-        for e in result["wlog"]:
-            e2 = dict(e); e2["티커"] = t; wlog_rows_all.append(e2)
-
-        sp = result["score_pct"].reindex(cal)
-        sc = result["score"].reindex(cal)
-        score_pct_by_sector[t] = sp
-        score_by_sector[t] = sc
-        fwd21_rel_by_sector[t] = M.forward_return(rel, 21).reindex(cal)
-
-        audit_rows_all.append(lookahead_audit_sector(t, ind.reindex(result["idx"]), specs,
-                                                      rel.reindex(result["idx"]), cfg_t, M,
-                                                      sc.reindex(result["idx"]), scfg=scfg))
-        log("RUN", kv(event="sector_done", ticker=t,
-                      passed=int((result['vt']['판정'] == 'PASS').sum())), M=M)
-
-    vt_all = pd.concat(vt_rows_all, ignore_index=True) if vt_rows_all else pd.DataFrame()
-    wlog_all = pd.DataFrame(wlog_rows_all) if wlog_rows_all else pd.DataFrame()
-    audit_all = pd.concat(audit_rows_all, ignore_index=True) if audit_rows_all else pd.DataFrame()
-
-    # ---- [4.2] 횡단면 rank IC (복합점수 vs 21일 상대수익, §8 조건①의 근거) ----
-    cs_stats = cross_sectional_rank_ic(fwd21_rel_by_sector,
-                                       {t: score_by_sector[t] for t in scfg.SECTORS}, 21)
-
-    # ---- [5] 순위·상태기계·포트폴리오 ----
-    rank = cross_sectional_rank(score_pct_by_sector, active_mask)
-    n_active = active_mask.sum(axis=1)
-    raw_states = pd.DataFrame(index=cal, columns=list(scfg.SECTORS), dtype=object)
-    confirmed_states = pd.DataFrame(index=cal, columns=list(scfg.SECTORS), dtype=object)
-    for t in scfg.SECTORS:
-        raw = sector_raw_state(rank[t], score_pct_by_sector[t], n_active, scfg)
-        raw_states[t] = raw
-        confirmed_states[t] = apply_sector_hysteresis(raw, scfg)
-
-    target = build_portfolio(confirmed_states, active_mask, E_t, scfg)
-    invariant = portfolio_invariant_check(target, E_t, scfg)
-
-    # ---- [6] 백테스트 ----
-    rf = None
-    fred = res.get("fred", {})
-    if "DGS3MO" in fred and fred["DGS3MO"] is not None:
-        rf = (fred["DGS3MO"] / 100.0 / 252.0).reindex(cal).ffill().fillna(0.0)
-    price_by_sector = {t: sector_px[t] for t in scfg.SECTORS if sector_px.get(t) is not None}
-    strat_bt = run_sector_backtest(price_by_sector, target, res["cfg"], rf)
-    b2_bt = benchmark_equalweight(price_by_sector, active_mask, E_t, res["cfg"], rf)
-    b3_bt = benchmark_ew_buyhold(price_by_sector, active_mask, res["cfg"], rf)
-    b0_bh = res["bt"][["bh_ret"]].rename(columns={"bh_ret": "strategy_ret"}).copy()
-    b0_bh["equity"] = (1 + b0_bh["strategy_ret"]).cumprod()
-    b1_bt = res["bt"][["strategy_ret", "equity"]].copy()
-
-    strat_metrics = M.perf_metrics(strat_bt["strategy_ret"], "섹터로테이션 전략")
-    b0_metrics = M.perf_metrics(b0_bh["strategy_ret"], "B0 SPY 단순보유")
-    b1_metrics = M.perf_metrics(b1_bt["strategy_ret"], "B1 현행 SPY 국면전략")
-    b2_metrics = M.perf_metrics(b2_bt["strategy_ret"], "B2 국면×동일가중11섹터")
-    b3_metrics = M.perf_metrics(b3_bt["strategy_ret"], "B3 동일가중11섹터 단순보유")
-
-    alpha_ret = (strat_bt["strategy_ret"] - b2_bt["strategy_ret"]).dropna()
-    alpha_mean = float(alpha_ret.mean() * 252) if len(alpha_ret) else np.nan
-    alpha_std = float(alpha_ret.std() * math.sqrt(252)) if len(alpha_ret) else np.nan
-    alpha_ir = alpha_mean / alpha_std if alpha_std else np.nan
-    total_alpha = float((strat_bt["equity"].iloc[-1] - b2_bt["equity"].iloc[-1])) if len(strat_bt) else np.nan
-    total_cost = float(strat_bt["cost"].sum())
-    cost_over_alpha = (total_cost / abs(total_alpha)) if total_alpha not in (0, np.nan) and pd.notna(total_alpha) else np.nan
-
-    # 4-시대 상위3-하위3 스프레드 부호
-    blocks = np.array_split(np.arange(len(cal)), 4)
-    spread_pos = 0
-    era_rows = []
-    for bi, b in enumerate(blocks):
-        sub_idx = cal[b]
-        sub_rank = rank.reindex(sub_idx)
-        sub_fwd = pd.DataFrame({t: fwd21_rel_by_sector[t].reindex(sub_idx) for t in scfg.SECTORS})
-        top_mask = sub_rank <= scfg.SECTOR_TOP_K
-        bot_n = n_active.reindex(sub_idx)
-        bot_mask = sub_rank.ge(bot_n - scfg.SECTOR_TOP_K + 1, axis=0)
-        top_ret = sub_fwd.where(top_mask).stack().mean()
-        bot_ret = sub_fwd.where(bot_mask).stack().mean()
-        spread = (top_ret - bot_ret) if pd.notna(top_ret) and pd.notna(bot_ret) else np.nan
-        if pd.notna(spread) and spread > 0:
-            spread_pos += 1
-        era_rows.append({"시대": bi + 1, "시작": str(sub_idx.min().date()) if len(sub_idx) else "",
-                        "종료": str(sub_idx.max().date()) if len(sub_idx) else "",
-                        "상위3평균21일상대수익": top_ret, "하위3평균21일상대수익": bot_ret,
-                        "스프레드": spread})
-
-    year2022 = strat_bt["strategy_ret"].loc["2022-01-01":"2022-12-31"]
-    year2022_ret = float((1 + year2022).prod() - 1) if len(year2022) else np.nan
-
-    acceptance = evaluate_acceptance(cs_stats, spread_pos, strat_metrics, b1_metrics,
-                                     alpha_ir, cost_over_alpha, year2022_ret, scfg)
-
-    log("RUN", kv(event="all_done", elapsed_s=round(time.time() - t0, 2),
-                  acceptance=acceptance.iloc[-1]["판정"]), M=M)
-
-    return {
-        "scfg": scfg, "selftest": st, "sector_px": sector_px, "entry_dates": entry_dates,
-        "active_mask": active_mask, "universe_audit": universe_audit,
-        "adj_lag": pd.DataFrame(adj_lag_rows), "per_sector": per_sector,
-        "vt_all": vt_all, "wlog_all": wlog_all, "audit_all": audit_all,
-        "cs_stats": cs_stats, "rank": rank, "raw_states": raw_states,
-        "confirmed_states": confirmed_states, "target": target, "invariant": invariant,
-        "strat_bt": strat_bt, "b0_bt": b0_bh, "b1_bt": b1_bt, "b2_bt": b2_bt, "b3_bt": b3_bt,
-        "strat_metrics": strat_metrics, "b0_metrics": b0_metrics, "b1_metrics": b1_metrics,
-        "b2_metrics": b2_metrics, "b3_metrics": b3_metrics,
-        "alpha_ir": alpha_ir, "cost_over_alpha": cost_over_alpha, "total_alpha": total_alpha,
-        "era_spread": pd.DataFrame(era_rows), "year2022_return": year2022_ret,
-        "acceptance": acceptance, "quality_rows": quality_rows, "yahoo_diag": yahoo_diag,
-    }
+    sres = run(res_or_path, M, scfg, sector_px_override=sector_px_override)
+    out = build_sector_report(sres, M=M)
+    if hasattr(M, "maybe_colab_download"):
+        M.maybe_colab_download(out)
+        if scfg.EXPORT_DAILY_CSV and os.path.exists(scfg.DAILY_CSV_PATH) and not sres.get("aborted"):
+            M.maybe_colab_download(scfg.DAILY_CSV_PATH)
+    return out
 
 
 # =============================================================================
-# [15] 리포트 조립 (§9.1, §11)
+# [12] 합성 섹터가격(오프라인 배관 검사용) + 모듈 단독 실행
 # =============================================================================
-def build_sector_report(sres: Dict[str, Any], path: str = "sector_rotation_report.xlsx") -> str:
-    """run()의 반환값을 12~19번대 시트로 엮어 별도 엑셀 파일로 저장한다."""
-    scfg: SectorConfig = sres["scfg"]
-
-    universe_rows = []
-    for t in scfg.SECTORS:
-        entry = sres["entry_dates"].get(t)
-        df = sres["sector_px"].get(t)
-        universe_rows.append({
-            "티커": t, "섹터명": SECTOR_NAME_KR.get(t, t),
-            "실제데이터시작": str(df.index.min().date()) if (df is not None and len(df)) else "N/A",
-            "유니버스편입일": str(entry.date()) if entry is not None and entry != pd.Timestamp.max else "N/A",
-        })
-    universe_df = pd.DataFrame(universe_rows).merge(sres["adj_lag"], on="티커", how="left") \
-        if len(sres["adj_lag"]) else pd.DataFrame(universe_rows)
-    universe_df = universe_df.merge(sres["universe_audit"].rename(
-        columns={"실제데이터시작": "_dup1", "유니버스편입일": "_dup2"}), on="티커", how="left",
-        suffixes=("", "_감사"))
-    universe_df = universe_df.drop(columns=[c for c in universe_df.columns if c.startswith("_dup")],
-                                   errors="ignore")
-
-    # ---- 15 신호(01시트 스타일) ----
-    signal_rows = []
-    cal = sres["confirmed_states"].index
-    for t in scfg.SECTORS:
-        cs = sres["confirmed_states"][t]
-        rk = sres["rank"][t]
-        sp = None
-        if t in sres["per_sector"]:
-            sp = sres["per_sector"][t]["score_pct"].reindex(cal)
-        tg = sres["target"][t] if t in sres["target"].columns else pd.Series(np.nan, index=cal)
-        for dt in cal:
-            signal_rows.append({"티커": t, "날짜": dt, "확정상태": cs.loc[dt],
-                               "횡단면순위": rk.loc[dt] if pd.notna(rk.loc[dt]) else np.nan,
-                               "복합점수백분위": float(sp.loc[dt]) if (sp is not None and pd.notna(sp.loc[dt])) else np.nan,
-                               "목표비중": float(tg.loc[dt]) if pd.notna(tg.loc[dt]) else np.nan})
-    signal_df = pd.DataFrame(signal_rows)
-
-    # ---- 17 성과 ----
-    perf_df = pd.DataFrame([sres["strat_metrics"], sres["b0_metrics"], sres["b1_metrics"],
-                           sres["b2_metrics"], sres["b3_metrics"]])
-    perf_df["로테이션알파IR"] = [round(sres["alpha_ir"], 3) if pd.notna(sres["alpha_ir"]) else np.nan] + [np.nan] * 4
-    perf_df["비용/알파"] = [round(sres["cost_over_alpha"], 3) if pd.notna(sres["cost_over_alpha"]) else np.nan] + [np.nan] * 4
-
-    meta = [
-        ("버전", f"{VERSION} ({pd.Timestamp.today().date()})"),
-        ("USE_SECTOR_ROTATION(기본)", str(scfg.USE_SECTOR_ROTATION)),
-        ("판별력 자기검사", f"{'PASS' if sres['selftest']['passed'] else 'FAIL'} "
-         f"(참신호 {sres['selftest']['n_true_pass']}/3, 잡음오채택 {sres['selftest']['n_noise_pass']}/5)"),
-        ("횡단면 rank IC", f"mean={sres['cs_stats'].get('mean_rank_ic')}, "
-         f"NW-t={sres['cs_stats'].get('nw_t')}, n_days={sres['cs_stats'].get('n_days')}"),
-        ("포트폴리오 불변식", f"Σtarget=E_t: {sres['invariant']['sum_equals_E_t']}, "
-         f"상한준수: {sres['invariant']['bounds_ok']}, 최대오차: {sres['invariant']['max_abs_sum_diff']:.2e}"),
-        ("2022 방어(전략)", f"{sres['year2022_return']:.4f}" if pd.notna(sres["year2022_return"]) else "N/A"),
-        ("§8 종합판정", sres["acceptance"].iloc[-1]["판정"]),
-        ("면책", "본 산출물은 연구·교육 목적의 백테스트 결과이며 투자 자문이 아닙니다."),
-    ]
-
-    sheets = {
-        "13_섹터유니버스": universe_df,
-        "14_섹터지표검증": sres["vt_all"],
-        "15_섹터가중치로그": sres["wlog_all"],
-        "16_섹터신호": signal_df,
-        "17_섹터성과": perf_df,
-        "18_섹터시대별스프레드": sres["era_spread"],
-        "19_섹터룩어헤드감사": sres["audit_all"],
-        "20_섹터수용기준": sres["acceptance"],
-    }
-    write_sector_excel(path, sheets, meta)
-    return path
+def make_synthetic_sector_prices(res: dict, seed: int = 20260905) -> Dict[str, pd.DataFrame]:
+    """M.make_synthetic_data()의 SPY 위에 섹터별 고유 잡음을 얹은 합성 OHLC. 상장일은 실제와 같게
+    (1998-12-22 / XLRE 2015-10-08 / XLC 2018-06-19) 두어 편입·워밍업·신호시작 규칙이 실데이터와 같은
+    경로를 타게 한다. 검증 레이어의 결과 해석 목적이 아니라 배관(파이프라인·리포트) 검사 전용."""
+    rng = np.random.default_rng(seed)
+    spy = res["px_dict"]["SPY"]
+    spy = spy[~spy.index.duplicated(keep="last")].sort_index()
+    spy_ret = np.log(spy["Close"].astype(float)).diff().fillna(0.0)
+    starts = {t: "1998-12-22" for t in SECTORS}
+    starts.update({"XLRE": "2015-10-08", "XLC": "2018-06-19"})
+    out: Dict[str, pd.DataFrame] = {}
+    for t in SECTORS:
+        idx = spy.index[spy.index >= pd.Timestamp(starts[t])]
+        beta = rng.uniform(0.7, 1.3)
+        idio = rng.normal(0.0, 0.006, len(idx))
+        r = beta * spy_ret.reindex(idx).values + idio
+        close = 50.0 * np.exp(np.cumsum(r))
+        open_ = close * (1.0 + rng.normal(0.0, 0.002, len(idx)))
+        high = np.maximum(open_, close) * (1.0 + np.abs(rng.normal(0.0, 0.003, len(idx))))
+        low = np.minimum(open_, close) * (1.0 - np.abs(rng.normal(0.0, 0.003, len(idx))))
+        div_factor = np.exp(np.cumsum(np.full(len(idx), 0.00005)))    # 배당 재투자 근사(Adj > Close)
+        out[t] = pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close,
+                               "Adj Close": close * div_factor / div_factor[-1], "Volume": 1_000_000.0}, index=idx)
+    return out
 
 
-# =============================================================================
-# [16] 자체 실행(모듈 단독 스모크테스트 — 합성데이터, 실데이터 없이 배관만 확인)
-# =============================================================================
 if __name__ == "__main__":
-    import sys
     sys.path.insert(0, ".")
-    import market_regime_trader as M  # type: ignore
-    print("sector_rotation.py self-check: import 확인만 수행(실 데이터는 단위테스트 참조)")
-    print(f"VERSION={VERSION}, SECTORS={SECTORS}")
+    import market_regime_trader as _M  # type: ignore
+    print(f"sector_rotation.py {VERSION}: import 확인(M {getattr(_M, 'BUNDLE_VERSION', '?')}). "
+          f"실행은 sector_rotation.main('market_regime_result.pkl.gz', M) 또는 main(res, M). SECTORS={SECTORS}")
