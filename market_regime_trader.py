@@ -1,6 +1,6 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.22.0 - 2026-09-05 - 결과 데이터 번들(market_regime_result.pkl.gz)+일별 CSV 자동 저장·Colab 다운로드 — 섹터 계층(sector_rotation.py v0.2)의 입력. 신호 로직 무변경(I/O 전용)
+#  VERSION: v1.23.0 - 2026-09-05 - validate_indicators() 고속화(pandas 정렬 오버헤드 제거, 결과 비트 동일 — 워크포워드 약 6배) + v1.22.0 결과 번들 저장
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -12,6 +12,28 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.23.0 | 2026-09-05 | 사용자 요청: "섹터별로 워크포워드 다 돌리느라 3시간 — 30분 정도로 줄일 방법 중 4번(검증 함수
+#                        벡터화)으로 고쳐봐". ⚠ 성능 전용 변경 — 신호·검증·가중치 결과는 v1.22.0과 **비트 단위로 동일**
+#                        (test_validate_vectorized_equiv.py: v1.22.0 모듈을 나란히 로드해 검증표 전 컬럼 exact, 실제 지표 313개
+#                        ×(가중/비가중) 원시 IC·NW-t·AUC exact, build_walkforward_weights의 W/W_haz/wlog exact 비교).
+#                        [진단] 워크포워드 재추정 1회(313 후보)의 시간 대부분이 통계 계산이 아니라 지표별 루프 안의 pandas
+#                          정렬·결측제거(concat/dropna/reindex/iloc — DatetimeIndex 정렬)였다(프로파일: auc_downside 55%,
+#                          spearman_ic 24%, newey_west 11% — 그 안에서 인덱싱/concat이 대부분).
+#                        [변경] validate_indicators(): 호출 초기에 지표 행렬(k×n numpy)·결측 마스크·fwd/dd_label 배열·가중치
+#                          배열을 한 번 만들고, 지표별로는 numpy 마스크 압축만 해서 수치 코어에 넘긴다. 통계 함수 3종을
+#                          래퍼(pandas 입력) + 코어(numpy 입력)로 분리 — spearman_ic→_spearman_core, newey_west_tstat→
+#                          _nw_core, auc_downside→_auc_core. 코어는 v1.22.0 본문의 연산·순서를 그대로(pandas rank와 값이
+#                          같은 _rank_avg, np.cov(aweights), WLS-HAC, 그룹합) 유지. 같은 결측 패턴을 공유하는 지표들은 fwd
+#                          순위를 캐시 재사용. _nw_core는 lag별 원소곱을 1회만 계산(U=Xw*resid) — 단, lag 0 항은 U.T @ U.copy()
+#                          로 서로 다른 버퍼를 곱한다(numpy가 같은 버퍼의 A.T@A를 BLAS syrk로 처리해 마지막 비트가 달라지는
+#                          것을 단위테스트가 잡아냄 → 복사본으로 gemm 경로 유지). _auc_core는 동순위 없는 x에서 groupby를
+#                          생략(단일원소 그룹합=값 자체 — 동일), 동순위가 있으면 v1.22.0과 같은 pandas Kahan 그룹합.
+#                        [실측(이 샌드박스, 313후보·9,565행)] 워크포워드형 validate 1회 13.8s→2.0s(6.9배), 전체표본형
+#                          20.0s→5.1s, build_walkforward_weights(32회 재추정) 416s→110s(3.8배 — 나머지는 재추정별 선택·
+#                          가중치 기록 등 다른 단계). Colab 실측은 다음 실행 00시트 '06_워크포워드재추정' 행으로 확인.
+#                        [범위 밖·무변경] _select_and_weight_period/hazard, composite_score, generate_signals, run_backtest,
+#                          build_report — 모두 그대로. hazard_cap_sensitivity/half_life_sensitivity/lookahead_audit는 같은
+#                          함수를 쓰므로 자동으로 빨라진다.
 #  v1.22.0 | 2026-09-05 | 사용자 요청: "market_regime_trader.py 한번 돌리면 결과 데이터 파일도 같이 다운받아져서 섹터
 #                        예측에 그 결과도 참고가 되도록" — 섹터 계층(sector_rotation.py v0.2.0)이 M의 실행 결과(후보지표
 #                        값 전체·워크포워드 가중치·복합점수/위험점수·확정 국면·급락트리거 백분위·수집 원본·FRED 발표지연
@@ -3818,6 +3840,40 @@ def effective_n(weights: Optional[pd.Series]) -> float:
     return float((sw ** 2) / sw2)
 
 
+def _rank_avg(a: np.ndarray) -> np.ndarray:
+    """[v1.23.0] pd.Series(a).rank().to_numpy()(method='average')와 값이 동일한 평균순위 — 결측 없는
+    1차원 float 배열 전용. 동순위 그룹의 평균순위 = 첫순위 + (개수-1)/2 는 반정수라 float64로 정확히
+    표현되고, pandas의 (순위합/개수)도 같은 정확한 값을 내므로 두 구현의 결과가 비트 단위로 같다
+    (단위테스트 test_validate_vectorized_equiv.py에서 동순위 포함 무작위 배열로 확인). Series 생성과
+    cython rank 호출을 argsort 1회+벡터 연산으로 대체해 지표별 루프의 고정비용을 줄인다."""
+    a = np.asarray(a, dtype=float)
+    n = len(a)
+    if n == 0:
+        return np.empty(0, dtype=float)
+    order = np.argsort(a, kind="stable")
+    sa = a[order]
+    new_grp = np.empty(n, dtype=bool)
+    new_grp[0] = True
+    np.not_equal(sa[1:], sa[:-1], out=new_grp[1:])
+    starts = np.flatnonzero(new_grp)
+    counts = np.diff(np.append(starts, n))
+    avg = starts + (counts - 1) / 2.0 + 1.0          # 1-based 평균순위
+    grp = np.cumsum(new_grp) - 1
+    out = np.empty(n, dtype=float)
+    out[order] = avg[grp]
+    return out
+
+
+def _effn_arr(w: np.ndarray) -> float:
+    """[v1.23.0] effective_n()의 배열 버전 — weights.dropna().values 이후의 연산을 그대로."""
+    w = w[~np.isnan(w)].astype(float)
+    sw = w.sum()
+    sw2 = (w ** 2).sum()
+    if sw2 <= 0:
+        return 0.0
+    return float((sw ** 2) / sw2)
+
+
 def spearman_ic(x: pd.Series, y: pd.Series,
                 weights: Optional[pd.Series] = None) -> Tuple[float, int]:
     """
@@ -3828,23 +3884,40 @@ def spearman_ic(x: pd.Series, y: pd.Series,
     df = pd.concat([x, y], axis=1).dropna()
     if len(df) < 100:
         return np.nan, len(df)
-    rx = df.iloc[:, 0].rank()
-    ry = df.iloc[:, 1].rank()
-    if weights is None:
+    # [v1.23.0] 수치 연산은 _spearman_core()로 — validate_indicators()의 고속 경로와 같은 함수를
+    # 쓰므로 두 경로의 결과가 구조적으로 동일하다(rank/np.cov/합산 순서 전부 그대로).
+    wv = weights.reindex(df.index).astype(float).fillna(0.0).values if weights is not None else None
+    return _spearman_core(df.iloc[:, 0].values, df.iloc[:, 1].values, wv)
+
+
+def _spearman_core(xv: np.ndarray, yv: np.ndarray, wv: Optional[np.ndarray] = None,
+                   ry: Optional[np.ndarray] = None) -> Tuple[float, int]:
+    """[v1.23.0] spearman_ic()의 결측 제거 이후 수치부(입력은 결측 없는 공통표본 배열).
+    ry가 주어지면 yv의 순위 재계산을 생략한다(같은 결측 패턴을 공유하는 지표들 간 캐시용 —
+    값은 pd.Series(yv).rank()와 동일). 연산 순서·함수(pandas rank, np.cov(aweights))는 v1.22.0
+    spearman_ic()와 완전히 같다."""
+    n = len(xv)
+    if n < 100:
+        return np.nan, n
+    rx_a = _rank_avg(xv)
+    ry_a = _rank_avg(yv) if ry is None else ry
+    if wv is None:
+        # 비가중 경로(HALF_LIFE_DAYS=None일 때만) — v1.22.0의 pandas Series 연산을 그대로 유지
+        rx = pd.Series(rx_a)
+        ry_s = pd.Series(ry_a)
         rx = rx - rx.mean()
-        ry = ry - ry.mean()
-        denom = np.sqrt((rx ** 2).sum() * (ry ** 2).sum())
+        ry_s = ry_s - ry_s.mean()
+        denom = np.sqrt((rx ** 2).sum() * (ry_s ** 2).sum())
         if denom == 0:
-            return np.nan, len(df)
-        return float((rx * ry).sum() / denom), len(df)
-    w = weights.reindex(df.index).astype(float).fillna(0.0).values
-    if w.sum() <= 0:
-        return np.nan, len(df)
-    cov = np.cov(np.vstack([rx.values, ry.values]), aweights=w)
+            return np.nan, n
+        return float((rx * ry_s).sum() / denom), n
+    if wv.sum() <= 0:
+        return np.nan, n
+    cov = np.cov(np.vstack([rx_a, ry_a]), aweights=wv)
     denom = math.sqrt(cov[0, 0] * cov[1, 1])
     if denom == 0 or not np.isfinite(denom):
-        return np.nan, len(df)
-    return float(cov[0, 1] / denom), len(df)
+        return np.nan, n
+    return float(cov[0, 1] / denom), n
 
 
 def newey_west_tstat(x: pd.Series, y: pd.Series, lags: int,
@@ -3863,15 +3936,21 @@ def newey_west_tstat(x: pd.Series, y: pd.Series, lags: int,
     df = pd.concat([x, y], axis=1).dropna()
     if len(df) < 100:
         return np.nan, np.nan
-    xv = df.iloc[:, 0].values.astype(float)
-    yv = df.iloc[:, 1].values.astype(float)
+    # [v1.23.0] 수치 연산은 _nw_core()로(validate_indicators() 고속 경로와 공유 — 결과 동일).
+    wv = weights.reindex(df.index).fillna(0.0).values.astype(float) if weights is not None else None
+    return _nw_core(df.iloc[:, 0].values.astype(float), df.iloc[:, 1].values.astype(float), wv, lags)
+
+
+def _nw_core(xv: np.ndarray, yv: np.ndarray, wv: Optional[np.ndarray], lags: int) -> Tuple[float, float]:
+    """[v1.23.0] newey_west_tstat()의 결측 제거 이후 수치부 — v1.22.0 본문을 그대로 옮김."""
+    if len(xv) < 100:
+        return np.nan, np.nan
     xv = (xv - xv.mean()) / (xv.std() + 1e-12)      # 스케일 표준화(수치 안정)
     n = len(xv)
     X = np.column_stack([np.ones(n), xv])
 
-    if weights is not None:
-        w = weights.reindex(df.index).fillna(0.0).values.astype(float)
-        w = np.clip(w, 0.0, None)
+    if wv is not None:
+        w = np.clip(wv, 0.0, None)
         if w.sum() <= 0:
             return np.nan, np.nan
         sw = np.sqrt(w)
@@ -3885,12 +3964,14 @@ def newey_west_tstat(x: pd.Series, y: pd.Series, lags: int,
     beta = XtX_inv @ (Xw.T @ yw)
     resid = yw - Xw @ beta
     # HAC (Bartlett kernel) — 가중변환된 X/resid에 그대로 적용(시간순서는 유지됨)
-    S = (Xw * resid[:, None]).T @ (Xw * resid[:, None])
+    U = Xw * resid[:, None]              # [v1.23.0] lag별 원소곱(Xw[l:]*resid[l:]) = U[l:] — 같은 값, 1회만 계산
+    # lag 0 항은 반드시 '서로 다른 버퍼'끼리 곱한다: numpy는 A.T @ A(같은 버퍼)를 BLAS syrk로 처리해
+    # 합산 순서가 달라지고 마지막 비트가 v1.22.0((Xw*resid).T @ (Xw*resid) — 별도 배열 2개, gemm)과
+    # 어긋난다. 복사본을 쓰면 gemm 경로로 v1.22.0과 비트 동일(단위테스트로 확인).
+    S = U.T @ U.copy()
     for l in range(1, int(lags) + 1):
         wl = 1.0 - l / (lags + 1.0)
-        u_t = (Xw[l:] * resid[l:, None])
-        u_tl = (Xw[:-l] * resid[:-l, None])
-        G = u_t.T @ u_tl
+        G = U[l:].T @ U[:-l]
         S += wl * (G + G.T)
     cov = XtX_inv @ S @ XtX_inv
     se = math.sqrt(max(cov[1, 1], 1e-24))
@@ -3938,33 +4019,45 @@ def auc_downside(x: pd.Series, label: pd.Series,
     """
     df = pd.concat([x, label], axis=1).dropna()
     df.columns = ["x", "y"]
-    if weights is None:
-        n1 = int((df["y"] == 1).sum())
-        n0 = int((df["y"] == 0).sum())
-        if n1 < 30 or n0 < 30:
-            return np.nan
-        r = df["x"].rank()
-        return float((r[df["y"] == 1].sum() - n1 * (n1 + 1) / 2.0) / (n1 * n0))
+    # [v1.23.0] 수치 연산은 _auc_core()로(validate_indicators() 고속 경로와 공유 — 결과 동일).
+    wv = weights.reindex(df.index).fillna(0.0).astype(float).values if weights is not None else None
+    return _auc_core(df["x"].values, df["y"].values, wv)
 
-    n1 = int((df["y"] == 1).sum())
-    n0 = int((df["y"] == 0).sum())
+
+def _auc_core(xv: np.ndarray, yv: np.ndarray, wv: Optional[np.ndarray] = None) -> float:
+    """[v1.23.0] auc_downside()의 결측 제거 이후 수치부. 그룹 합산(pandas groupby — Kahan 보정
+    합)·정렬·누적합·searchsorted 등 v1.22.0과 같은 함수·같은 순서를 유지한다."""
+    pos = yv == 1
+    negm = yv == 0
+    n1 = int(pos.sum())
+    n0 = int(negm.sum())
     if n1 < 30 or n0 < 30:
         return np.nan
-    w = weights.reindex(df.index).fillna(0.0).astype(float)
-    df = df.assign(w=w)
-    w1_total = float(df.loc[df["y"] == 1, "w"].sum())
-    w0_total = float(df.loc[df["y"] == 0, "w"].sum())
+    if wv is None:
+        r = pd.Series(_rank_avg(xv))
+        return float((r[pos].sum() - n1 * (n1 + 1) / 2.0) / (n1 * n0))
+
+    w1_total = float(wv[pos].sum())
+    w0_total = float(wv[negm].sum())
     if w1_total <= 0 or w0_total <= 0:
         return np.nan
 
-    neg = df[df["y"] == 0]
-    neg_by_x = neg.groupby("x")["w"].sum().sort_index()
-    xs = neg_by_x.index.values
-    neg_w = neg_by_x.values
+    neg_x = xv[negm]
+    neg_wv = wv[negm]
+    order = np.argsort(neg_x, kind="stable")
+    xs_sorted = neg_x[order]
+    if len(xs_sorted) > 1 and not np.any(xs_sorted[1:] == xs_sorted[:-1]):
+        # 동순위 없음: 그룹이 전부 단일 원소라 groupby 합 = 가중치 값 자체(Kahan 보정 무관, 동일)
+        xs = xs_sorted
+        neg_w = neg_wv[order]
+    else:
+        neg_by_x = pd.Series(neg_wv).groupby(neg_x).sum().sort_index()   # v1.22.0과 같은 pandas Kahan 그룹합
+        xs = neg_by_x.index.values
+        neg_w = neg_by_x.values
     cum_upto = neg_w.cumsum()          # x<=xs[k]인 음성표본 누적가중치
 
-    pos_x = df.loc[df["y"] == 1, "x"].values
-    pos_w = df.loc[df["y"] == 1, "w"].values
+    pos_x = xv[pos]
+    pos_w = wv[pos]
 
     n_neg_levels = len(xs)
     idx_left = np.searchsorted(xs, pos_x, side="left")   # 첫 xs[k] >= v 인 위치
@@ -4164,9 +4257,55 @@ def validate_indicators(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
     blocks = np.array_split(np.arange(len(idx)), 4)
     rows: List[dict] = []
 
-    for spec in INDICATOR_SPECS:
-        x = ind[spec.key]
-        cov = float(x.notna().mean()) if len(x) else 0.0
+    # [v1.23.0 성능] 지표별 루프 안의 pandas 정렬·결측제거(concat/dropna/reindex/iloc — DatetimeIndex
+    # 정렬 비용)를 전부 없애고, 한 번 만든 numpy 배열과 결측 마스크로 같은 수치 연산을 수행한다.
+    # 통계량 자체(pandas rank, np.cov(aweights), WLS-HAC, groupby Kahan 합 등)는 _spearman_core/
+    # _nw_core/_auc_core가 v1.22.0 본문을 그대로 물려받아 결과가 비트 단위로 같다(단위테스트
+    # test_validate_vectorized_equiv.py: v1.22.0 모듈과 검증표·워크포워드 가중치 전체 exact 비교).
+    # 같은 결측 패턴을 공유하는 지표들(같은 원천 시리즈의 파생지표 등)은 fwd 순위를 캐시로 재사용.
+    n_rows = len(idx)
+    _keys = [sp.key for sp in INDICATOR_SPECS]
+    XT = np.ascontiguousarray(ind[_keys].to_numpy(dtype=float).T)           # k×n (지표별 행이 연속 메모리)
+    mask_x = ~np.isnan(XT)
+    w_arr = w_all.to_numpy(dtype=float) if w_all is not None else None
+    w_arr0 = np.nan_to_num(w_arr, nan=0.0) if w_arr is not None else None  # = w_all.fillna(0)
+    wsum_total_all = float(w_arr0.sum()) if w_arr0 is not None else 0.0     # = float(w_all.fillna(0).sum())
+    fwd_arr = {h: fwd[h].to_numpy(dtype=float) for h in cfg.VAL_HORIZONS}
+    fwd_ok = {h: ~np.isnan(fwd_arr[h]) for h in cfg.VAL_HORIZONS}
+    dd_arr = {h: dd_label[h].to_numpy(dtype=float) for h in cfg.VAL_HORIZONS}
+    dd_ok = {h: ~np.isnan(dd_arr[h]) for h in cfg.VAL_HORIZONS}
+    block_slices = [(b[0], b[-1] + 1) for b in blocks if len(b) >= 150]     # 원본 `if len(b) < 150: continue`
+    rank_cache: Dict[Tuple[int, int, bytes], np.ndarray] = {}
+
+    def _w_sel(m: np.ndarray, lo: int = 0, hi: Optional[int] = None) -> Optional[np.ndarray]:
+        # = weights.reindex(df.index).fillna(0.0).values (공통표본 행의 가중치, 결측→0)
+        if w_arr is None:
+            return None
+        return w_arr0[lo:hi][m]
+
+    def _ic_at(j: int, h: int, lo: int = 0, hi: Optional[int] = None, blk: int = -1) -> Tuple[float, int]:
+        # = spearman_ic(x.iloc[lo:hi], fwd[h].iloc[lo:hi], weights=w_all.iloc[lo:hi])
+        m = mask_x[j, lo:hi] & fwd_ok[h][lo:hi]
+        n_ok = int(m.sum())
+        if n_ok < 100:
+            return np.nan, n_ok
+        yv = fwd_arr[h][lo:hi][m]
+        ck = (h, blk, m.tobytes())
+        ry = rank_cache.get(ck)
+        if ry is None:
+            ry = _rank_avg(yv)
+            rank_cache[ck] = ry
+        return _spearman_core(XT[j, lo:hi][m], yv, _w_sel(m, lo, hi), ry=ry)
+
+    def _auc_at(j: int, h: int, lo: int = 0, hi: Optional[int] = None) -> float:
+        # = auc_downside(x.iloc[lo:hi], dd_label[h].iloc[lo:hi], weights=w_all.iloc[lo:hi])
+        m = mask_x[j, lo:hi] & dd_ok[h][lo:hi]
+        return _auc_core(XT[j, lo:hi][m], dd_arr[h][lo:hi][m], _w_sel(m, lo, hi))
+
+    for j, spec in enumerate(INDICATOR_SPECS):
+        xj = XT[j]
+        mj = mask_x[j]
+        cov = float(mj.mean()) if n_rows else 0.0
         # [v1.3.0 §3 버그수정] 커버리지가 "1990년부터의 전체 달력" 대비 비가중으로 계산되어,
         # 2000년대 이후 상장된 시리즈(VIX3M 2006년 등 기반 지표)는 최근 구간을 100% 커버해도
         # 구조적으로 불리했다(VIX_TERM 0.599 vs 기준 0.60처럼 0.1%p 차로 탈락 — 실사용 리포트
@@ -4175,9 +4314,10 @@ def validate_indicators(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
         # 방법론적으로 불일치했다. -> 판정에는 감쇠가중 커버리지(그 시점 가중치 총합 대비
         # 결측이 아닌 날의 가중치 비중)를 쓴다. weights=None이면 cov_w == cov로 완전히 동일
         # (하위호환 — 이 계산도 기존 평균과 수학적으로 같은 값이 된다).
-        if w_all is not None:
-            wsum_total = float(w_all.fillna(0).sum())
-            cov_w = float(w_all.where(x.notna(), 0.0).fillna(0).sum() / wsum_total) if wsum_total > 0 else cov
+        if w_arr is not None:
+            wsum_total = wsum_total_all
+            # = w_all.where(x.notna(), 0.0).fillna(0).sum() — n행 그대로 합산(합산 순서 동일)
+            cov_w = float(np.where(mj, w_arr0, 0.0).sum() / wsum_total) if wsum_total > 0 else cov
         else:
             cov_w = cov
         # [v1.2.0] 지표별 평가지평(eval_horizon): 추세/저빈도 지표는 짧은 지평(기본 21일)에서
@@ -4187,7 +4327,8 @@ def validate_indicators(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
         h_eval = spec.eval_horizon if spec.eval_horizon in cfg.VAL_HORIZONS else cfg.VAL_PRIMARY_H
         # [v1.2.0] 지표별 유효표본수: 이 지표가 실제 값을 가진 날짜만 골라 그 날짜들의
         # 감쇠가중치로 N_eff=(Σw)^2/Σw^2를 계산한다(투명성/추적성 — 03시트에 노출).
-        n_eff_ind = effective_n(w_all.reindex(x.dropna().index)) if w_all is not None else np.nan
+        # = effective_n(w_all.reindex(x.dropna().index)) — 지표가 값을 가진 행의 가중치만(결측 가중치 제외)
+        n_eff_ind = _effn_arr(w_arr[mj]) if w_arr is not None else np.nan
         # [v1.5.0 §A] 짧은이력(FRED_ALLOW_SHORT_HISTORY) 소속 지표는 커버리지/부호일치구간수
         # 게이트를 완화된 값으로 적용한다(근거: Config.MIN_COVERAGE_SHORT_HISTORY/
         # MIN_SUBPERIOD_AGREE_SHORT_HISTORY 정의부의 감쇠수학·4구간분할 증명 주석 참조).
@@ -4224,7 +4365,7 @@ def validate_indicators(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
         # IC_5d/21d/63d·표본수는 03시트 참고용 필드일 뿐이다(위 docstring 근거).
         horizons_to_compute = cfg.VAL_HORIZONS if full_report else (h_eval,)
         for h in horizons_to_compute:
-            ic, nobs = spearman_ic(x, fwd[h], weights=w_all)
+            ic, nobs = _ic_at(j, h)
             if full_report:
                 rec[f"IC_{h}d"] = round(ic, 4) if pd.notna(ic) else np.nan
                 if h == cfg.VAL_PRIMARY_H:
@@ -4235,12 +4376,13 @@ def validate_indicators(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
 
         h = h_eval
         ic_main = rec.get("IC_평가지평", np.nan)
-        t_nw, p_nw = newey_west_tstat(x, fwd[h], lags=h, weights=w_all)
+        _m_nw = mj & fwd_ok[h]
+        t_nw, p_nw = _nw_core(xj[_m_nw].astype(float), fwd_arr[h][_m_nw].astype(float), _w_sel(_m_nw), h)
         rec["NW_t"] = round(t_nw, 3) if pd.notna(t_nw) else np.nan
         rec["NW_p"] = round(p_nw, 4) if pd.notna(p_nw) else np.nan
 
         if compute_quintiles:
-            qm, qspread, mono = quintile_profile(x, fwd[h])
+            qm, qspread, mono = quintile_profile(pd.Series(xj), pd.Series(fwd_arr[h]))
         else:
             qm, qspread, mono = [np.nan] * 5, np.nan, np.nan
         for i, v in enumerate(qm, start=1):
@@ -4248,7 +4390,7 @@ def validate_indicators(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
         rec["Q5-Q1"] = round(qspread, 4) if pd.notna(qspread) else np.nan
         rec["단조성"] = round(mono, 3) if pd.notna(mono) else np.nan
 
-        auc = auc_downside(x, dd_label[h], weights=w_all)
+        auc = _auc_at(j, h)
         rec["하락AUC"] = round(auc, 4) if pd.notna(auc) else np.nan
         rec["AUC엣지"] = round(abs(auc - 0.5), 4) if pd.notna(auc) else np.nan
 
@@ -4256,15 +4398,12 @@ def validate_indicators(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
         # [v1.3.0 §4] 표준트랙(IC 부호 안정성)과 별개로, 위험트랙 판정에 쓸 "구간별 AUC"도
         # 같은 루프에서 함께 구한다(빈 슬라이스를 두 번 계산하지 않기 위함).
         signs, block_ics, block_aucs = [], [], []
-        for b in blocks:
-            if len(b) < 150:
-                continue
-            w_b = w_all.iloc[b] if w_all is not None else None
-            sub_ic, _ = spearman_ic(x.iloc[b], fwd[h].iloc[b], weights=w_b)
+        for bi, (lo, hi) in enumerate(block_slices):
+            sub_ic, _ = _ic_at(j, h, lo, hi, blk=bi)
             block_ics.append(round(sub_ic, 4) if pd.notna(sub_ic) else np.nan)
             if pd.notna(sub_ic):
                 signs.append(np.sign(sub_ic))
-            sub_auc = auc_downside(x.iloc[b], dd_label[h].iloc[b], weights=w_b)
+            sub_auc = _auc_at(j, h, lo, hi)
             block_aucs.append(sub_auc)
         for i, v in enumerate(block_ics, start=1):
             rec[f"구간{i}IC"] = v
@@ -6839,7 +6978,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
 # =============================================================================
 def run(cfg: Config = CFG) -> dict:
     np.random.seed(cfg.RANDOM_SEED)
-    log("START", kv(version="v1.22.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
+    log("START", kv(version="v1.23.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
@@ -7545,7 +7684,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.22.0 (2026-09-05)"),
+        ("버전", "v1.23.0 (2026-09-05)"),
         ("매매 대상", f"{cfg.TRADE_TICKER} (미국 시장 대표 ETF)"),
         ("신호/백테스트 기간", f"{idx[0].date()} ~ {idx[-1].date()} ({len(idx):,} 거래일)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단)"),
@@ -7772,7 +7911,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.22.0"
+BUNDLE_VERSION = "v1.23.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
