@@ -1,6 +1,6 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.21.0 - 2026-09-04 - report22 사고(^VIX3M 1행 수집 → 급락트리거 전 구간 결측) 재발 방지 게이트 + 뉴스 기반 인과 검토 + 'B&H 2배' 상한 분석·레버리지 옵션(기본 비활성)
+#  VERSION: v1.22.0 - 2026-09-05 - 결과 데이터 번들(market_regime_result.pkl.gz)+일별 CSV 자동 저장·Colab 다운로드 — 섹터 계층(sector_rotation.py v0.2)의 입력. 신호 로직 무변경(I/O 전용)
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -12,6 +12,25 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.22.0 | 2026-09-05 | 사용자 요청: "market_regime_trader.py 한번 돌리면 결과 데이터 파일도 같이 다운받아져서 섹터
+#                        예측에 그 결과도 참고가 되도록" — 섹터 계층(sector_rotation.py v0.2.0)이 M의 실행 결과(후보지표
+#                        값 전체·워크포워드 가중치·복합점수/위험점수·확정 국면·급락트리거 백분위·수집 원본·FRED 발표지연
+#                        반영 시리즈)를 M을 다시 돌리지 않고 그대로 입력으로 쓰기 위한 I/O 계층. **신호·검증·백테스트
+#                        로직은 한 줄도 바뀌지 않음** — 기본값에서 01~11시트·성과는 v1.21.0과 비트 동일(회귀 스위트 재실행).
+#                        (1) export_result_bundle(res, cfg): run() 반환 dict 전체를 gzip 피클(RESULT_BUNDLE_PATH, 기본
+#                            market_regime_result.pkl.gz)로 저장. cfg는 dataclass 인스턴스 대신 dict(cfg_dict)로 저장해
+#                            모듈 로드 이름(importlib 경로)에 무관하게 다른 프로세스/노트북에서도 안전하게 복원되게 함.
+#                            번들 메타(bundle_version/exported_at/pandas 버전)를 함께 기록해 호환성 검사에 쓴다.
+#                        (2) 일별 요약 CSV(DAILY_CSV_PATH, 기본 market_regime_daily.csv, utf-8-sig): 날짜·종가·시장상황·
+#                            복합점수/백분위·위험점수백분위·급락트리거백분위·목표/체결비중·전략/시장 일간수익 — 엑셀 없이
+#                            결과만 빠르게 볼 때, 그리고 섹터 리포트와 나란히 놓고 볼 때 쓰는 사람용 파일.
+#                        (3) load_result_bundle(path): (1)의 역함수 — cfg_dict를 현재 Config의 필드만 골라 재구성(버전 간
+#                            필드 추가/삭제에 관대), 필수 키(ind/score/sig/bt/cal/px_dict/fred) 존재를 검사하고 로그.
+#                        (4) main(): build_report 뒤에 (1)(2)를 실행하고 maybe_colab_download()로 엑셀과 함께 자동 다운로드.
+#                            Config.EXPORT_RESULT_BUNDLE/EXPORT_DAILY_CSV(기본 True)로 끌 수 있다. 저장 실패는 경고만 남기고
+#                            파이프라인 성공을 뒤집지 않는다(§5 견고성 — 엑셀은 이미 저장된 뒤이므로).
+#                        번들 크기: 실데이터 기준 ind(약 9,200행×287열)+W/W_haz/contrib 등 float 프레임 → gzip 후 수십 MB
+#                            (0이 대부분인 가중치 행렬은 압축률이 높음). 저장 시 파일 크기·소요시간을 REPORT 로그에 남긴다.
 #  v1.21.0 | 2026-09-04 | 사용자가 v1.20.0 실행 결과(market_regime_report_4.xlsx, 22번째)를 제출: "곡선이 수정 전과
 #                        똑같아 보인다 — 지표와 주가에 인과관계가 없는 것 아닌가. 뉴스를 찾아 하락 미회피·상승 미탑승의
 #                        원인을 밝히고 국면 설계를 개선하라. 수익은 B&H의 2배 이상이어야 한다."
@@ -1446,6 +1465,7 @@ import logging
 import warnings
 import threading
 import datetime as dt
+import dataclasses                     # [v1.22.0] 결과 번들의 cfg 직렬화(asdict/fields)
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -2092,6 +2112,14 @@ class Config:
     # 이 옵션을 켜도 실거래 신호 생성 로직(run() 본경로)에는 전혀 영향을 주지 않는다
     # (06d 시트 전용, RUN_HALF_LIFE_SENSITIVITY가 True일 때만 계산됨).
     ENSEMBLE_HALF_LIVES: Optional[List[int]] = None   # 예: [548, 913, 1461]
+    # ---- [v1.22.0] 결과 데이터 번들 저장 (I/O 전용 — 신호 로직 무관) ------------------
+    # main()이 build_report() 뒤에 run() 반환 dict 전체를 gzip 피클로 저장하고(Colab이면 엑셀과
+    # 함께 자동 다운로드), sector_rotation.py v0.2가 이 파일을 입력으로 받아 M을 다시 돌리지
+    # 않고 섹터 예측을 수행한다. 일별 요약 CSV는 사람이 결과만 빠르게 볼 때 쓰는 파일.
+    EXPORT_RESULT_BUNDLE: bool = True
+    RESULT_BUNDLE_PATH: str = "market_regime_result.pkl.gz"
+    EXPORT_DAILY_CSV: bool = True
+    DAILY_CSV_PATH: str = "market_regime_daily.csv"
 
 CFG = Config()
 
@@ -6811,7 +6839,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
 # =============================================================================
 def run(cfg: Config = CFG) -> dict:
     np.random.seed(cfg.RANDOM_SEED)
-    log("START", kv(version="v1.21.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
+    log("START", kv(version="v1.22.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
@@ -7517,7 +7545,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.21.0 (2026-09-04)"),
+        ("버전", "v1.22.0 (2026-09-05)"),
         ("매매 대상", f"{cfg.TRADE_TICKER} (미국 시장 대표 ETF)"),
         ("신호/백테스트 기간", f"{idx[0].date()} ~ {idx[-1].date()} ({len(idx):,} 거래일)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단)"),
@@ -7741,6 +7769,121 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 
 
 # =============================================================================
+# [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
+#       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
+# =============================================================================
+BUNDLE_VERSION = "v1.22.0"
+BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
+                        "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
+
+
+def build_daily_summary(res: dict) -> pd.DataFrame:
+    """[v1.22.0] 일별 요약(사람용 CSV·섹터 리포트 병기용). 01_일별기록의 핵심 컬럼만 —
+    build_report()와 같은 res 키를 같은 방식으로 읽는다(값 재계산 없음)."""
+    bt, sig = res["bt"], res["sig"]
+    idx = bt.index
+    state_kr = {"RISK_ON": "상승(위험선호)", "NEUTRAL": "중립", "RISK_OFF": "하락(위험회피)",
+                "TREND_ONLY_IN": "추세필터-보유(지표부족)", "TREND_ONLY_OUT": "추세필터-현금(지표부족)",
+                "NO_SIGNAL": "신호없음"}
+    out = pd.DataFrame(index=idx)
+    out["날짜"] = [d.date() for d in idx]
+    out["종가"] = bt["Close"].round(2)
+    out["시장상황"] = sig["state"].reindex(idx).map(state_kr).fillna("-")
+    out["복합점수"] = res["score"].reindex(idx).round(4)
+    out["복합점수백분위"] = res["score_pct"].reindex(idx).round(4)
+    out["위험점수백분위(H)"] = res["haz_pct"].reindex(idx).round(4)
+    _fp = res.get("fast_pct")
+    out["급락트리거백분위"] = _fp.reindex(idx).round(4) if _fp is not None else np.nan
+    out["목표비중"] = sig["target_pos"].reindex(idx).round(2)
+    out["체결비중"] = bt["pos_exec"].round(2)
+    out["전략일간수익(%)"] = (bt["strategy_ret"] * 100).round(3)
+    out["시장일간수익(%)"] = (bt["bh_ret"] * 100).round(3)
+    return out.reset_index(drop=True)
+
+
+def export_result_bundle(res: dict, cfg: Config = CFG) -> List[str]:
+    """[v1.22.0] run() 반환 dict 전체를 gzip 피클(cfg.RESULT_BUNDLE_PATH)로, 일별 요약을
+    CSV(cfg.DAILY_CSV_PATH)로 저장한다. 반환: 실제로 저장된 파일 경로 목록(실패한 것은 제외).
+
+    cfg(dataclass 인스턴스)는 피클에 넣지 않고 dataclasses.asdict()로 만든 dict(cfg_dict)를
+    넣는다 — 피클은 클래스를 '모듈이름.Config'로 참조하므로, Colab에서 importlib로 다른
+    이름으로 로드했거나 sys.modules에 등록하지 않은 환경에서는 복원이 실패할 수 있다.
+    dict는 그 문제가 없고 load_result_bundle()이 현재 Config 필드만 골라 재구성한다.
+    어떤 예외도 파이프라인 성공(엑셀은 이미 저장됨)을 뒤집지 않는다(§5 견고성) — 실패는
+    warning 로그로 남기고 빈 목록/부분 목록을 반환한다."""
+    saved: List[str] = []
+    if cfg.EXPORT_RESULT_BUNDLE:
+        t0 = time.time()
+        try:
+            payload = dict(res)
+            payload["cfg"] = None
+            payload["cfg_dict"] = dataclasses.asdict(res["cfg"]) if res.get("cfg") is not None \
+                else dataclasses.asdict(cfg)
+            payload["bundle_meta"] = {
+                "bundle_version": BUNDLE_VERSION,
+                "exported_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "pandas": pd.__version__, "numpy": np.__version__,
+                "trade_ticker": cfg.TRADE_TICKER,
+                "cal_start": str(res["cal"][0].date()), "cal_end": str(res["cal"][-1].date()),
+                "signal_start": cfg.SIGNAL_START, "n_indicators": int(res["ind"].shape[1]),
+            }
+            pd.to_pickle(payload, cfg.RESULT_BUNDLE_PATH, compression="gzip", protocol=4)
+            size_mb = os.path.getsize(cfg.RESULT_BUNDLE_PATH) / 1e6
+            log("REPORT", kv(event="result_bundle_saved", file=cfg.RESULT_BUNDLE_PATH,
+                             size_mb=round(size_mb, 1), keys=len(payload),
+                             ind_shape=str(res["ind"].shape).replace(" ", ""),
+                             cal=f"{payload['bundle_meta']['cal_start']}~{payload['bundle_meta']['cal_end']}",
+                             elapsed_s=round(time.time() - t0, 2)))
+            saved.append(cfg.RESULT_BUNDLE_PATH)
+        except Exception as e:
+            log("REPORT", kv(event="result_bundle_failed", err=type(e).__name__, msg=str(e)[:160],
+                             next_step="엑셀은 이미 저장됨 — 디스크 용량/권한 확인 후 export_result_bundle(res, cfg) 재호출"),
+                "warning")
+    if cfg.EXPORT_DAILY_CSV:
+        try:
+            daily = build_daily_summary(res)
+            daily.to_csv(cfg.DAILY_CSV_PATH, index=False, encoding="utf-8-sig")
+            log("REPORT", kv(event="daily_csv_saved", file=cfg.DAILY_CSV_PATH, rows=len(daily),
+                             first=str(daily["날짜"].iloc[0]) if len(daily) else "-",
+                             last=str(daily["날짜"].iloc[-1]) if len(daily) else "-"))
+            saved.append(cfg.DAILY_CSV_PATH)
+        except Exception as e:
+            log("REPORT", kv(event="daily_csv_failed", err=type(e).__name__, msg=str(e)[:160]), "warning")
+    return saved
+
+
+def load_result_bundle(path: str) -> dict:
+    """[v1.22.0] export_result_bundle()의 역함수. 반환 dict는 run()의 반환과 같은 키를 가지며
+    res["cfg"]는 현재 Config 클래스로 재구성된다(번들의 cfg_dict 중 현재 Config에 없는
+    필드는 버리고, 없는 필드는 기본값 — 버전 간 필드 변화에 관대). 필수 키가 빠져 있으면
+    명확한 메시지로 즉시 실패한다(조용한 부분 로드 금지)."""
+    t0 = time.time()
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"[결과번들] 파일이 없습니다: {path} — market_regime_trader.main()을 먼저 "
+                                f"실행해 {CFG.RESULT_BUNDLE_PATH}를 만들거나 경로를 확인하세요.")
+    res = pd.read_pickle(path, compression="gzip")
+    if not isinstance(res, dict):
+        raise ValueError(f"[결과번들] 피클 내용이 dict가 아닙니다: {type(res).__name__}")
+    cfg_dict = res.get("cfg_dict") or {}
+    valid = {f.name for f in dataclasses.fields(Config)}
+    dropped = sorted(set(cfg_dict) - valid)
+    res["cfg"] = Config(**{k: v for k, v in cfg_dict.items() if k in valid})
+    missing = [k for k in BUNDLE_REQUIRED_KEYS if k not in res or res[k] is None]
+    if missing:
+        raise KeyError(f"[결과번들] 필수 키 누락: {missing} — 다른 버전/불완전한 번들입니다. "
+                       f"market_regime_trader.main()으로 번들을 다시 만드세요.")
+    meta = res.get("bundle_meta", {})
+    log("DATA", kv(event="result_bundle_loaded", file=path,
+                   bundle_version=meta.get("bundle_version", "?"), exported_at=meta.get("exported_at", "?"),
+                   cal=f"{meta.get('cal_start', '?')}~{meta.get('cal_end', '?')}",
+                   ind_shape=str(res["ind"].shape).replace(" ", ""),
+                   cfg_fields_dropped=len(dropped), elapsed_s=round(time.time() - t0, 2)))
+    if dropped:
+        log("DATA", kv(event="result_bundle_cfg_fields_dropped", fields=",".join(dropped[:10])), "warning")
+    return res
+
+
+# =============================================================================
 # [14] SELF_TEST : 합성데이터로 파이프라인 자체검증
 #      '진짜 선행성이 있는 지표'와 '순수 노이즈 지표'를 인위적으로 섞어 넣고,
 #      검증 레이어가 전자를 PASS / 후자를 FAIL 시키는지 확인한다.
@@ -7951,6 +8094,10 @@ def main(cfg: Config = CFG) -> str:
     res = run(cfg)
     out = build_report(res, cfg)
     maybe_colab_download(out)   # [v1.13.0 §E] Colab이면 엑셀 자동 다운로드
+    # [v1.22.0] 결과 데이터 번들(pkl.gz)+일별 CSV 저장 → 섹터 계층(sector_rotation.py)의 입력.
+    # 엑셀 저장·다운로드가 끝난 뒤에 실행하므로 여기서 실패해도 리포트는 이미 확보돼 있다.
+    for p in export_result_bundle(res, cfg):
+        maybe_colab_download(p)
     return out
 
 
