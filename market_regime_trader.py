@@ -1,6 +1,7 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.23.0 - 2026-09-05 - validate_indicators() 고속화(pandas 정렬 오버헤드 제거, 결과 비트 동일 — 워크포워드 약 6배) + v1.22.0 결과 번들 저장
+#  VERSION: v1.24.0 - 2026-09-05 - [표시 전용] 00시트 맨 앞 + 01시트 마지막 행에 "다음 거래일 예측" 블록 추가(계산·신호·
+#                       백테스트 완전 불변 — IMPROVEMENT_PLAN_SECTOR_v0.3.md §1.A)
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -12,6 +13,21 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.24.0 | 2026-09-05 | 사용자 요청: "국면이든 섹터든 가장 최근 날 다음날 예측이 없는데 그것도 예측하도록" —
+#                        IMPROVEMENT_PLAN_SECTOR_v0.3.md §0.7/§1.A. 실제로는 01시트 마지막 행(t일)의 목표비중이 이미
+#                        "t+1일 시가 체결" 값이라 계산은 처음부터 다음 거래일 예측이었다 — 사용자가 그렇게 읽지 못하는
+#                        **표시 문제**였다(§0.7). 신호·검증·백테스트 로직은 한 글자도 바꾸지 않음(⚠ 아님 — 표시 전용).
+#                        [변경] 신규 함수 next_trading_day()/build_next_day_prediction()(build_report() 앞): 마지막 확정일
+#                          t의 sig/bt에서 다음 영업일 날짜·확정국면·다음거래일 목표비중·현재체결비중·예상행동(action_labels
+#                          규칙 재사용: 목표>체결→신규매수/추가매수, 목표<체결→전량매도/부분매도, 동일→보유/관망)·복합점수·
+#                          백분위·H백분위·그날 발동 규칙 목록·근거요약을 "새로 계산하지 않고" 재구성만 한다.
+#                        build_report(): meta 맨 앞(버전 다음)에 "다음 거래일 예측 - *" 11줄 추가. 01_일별기록 sheets 조립
+#                          직전에 daily에 예측 1행을 pd.concat으로 추가(날짜=다음영업일, 시가/고가/저가/종가/등락률/체결비중=
+#                          공란, 시장상황/목표비중/매매행동/위험점수백분위(H)/근거요약만 채움) — **bt 자체·02~11 시트는 전부
+#                          bt/sig에서 직접 계산되므로 daily에 붙인 행과 무관, 완전 불변**(단위테스트: bt 길이·06/07 수치 불변,
+#                          daily 마지막 행이 정확히 다음 영업일 1개).
+#                        build_daily_summary()(CSV): 같은 예측 1행 추가. BUNDLE_VERSION "v1.24.0"로 갱신(번들 내용·필수키는
+#                          무변경). 00시트 "버전" 줄 v1.24.0.
 #  v1.23.0 | 2026-09-05 | 사용자 요청: "섹터별로 워크포워드 다 돌리느라 3시간 — 30분 정도로 줄일 방법 중 4번(검증 함수
 #                        벡터화)으로 고쳐봐". ⚠ 성능 전용 변경 — 신호·검증·가중치 결과는 v1.22.0과 **비트 단위로 동일**
 #                        (test_validate_vectorized_equiv.py: v1.22.0 모듈을 나란히 로드해 검증표 전 컬럼 exact, 실제 지표 313개
@@ -6978,7 +6994,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
 # =============================================================================
 def run(cfg: Config = CFG) -> dict:
     np.random.seed(cfg.RANDOM_SEED)
-    log("START", kv(version="v1.23.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
+    log("START", kv(version="v1.24.0", ticker=cfg.TRADE_TICKER, data_start=cfg.DATA_START,
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
@@ -7333,6 +7349,114 @@ def run(cfg: Config = CFG) -> dict:
 # =============================================================================
 # [13] 리포트 조립
 # =============================================================================
+# =============================================================================
+# [12b] [v1.24.0 §1.A] "다음 거래일 예측" — 새 계산 없음, t일 확정 신호의 표시 전용 재구성.
+#       bt["pos_exec"]는 이미 shift(1)로 t+1 시가 체결값이므로 sig["target_pos"].iloc[-1]가
+#       "다음 거래일" 목표비중 그 자체다(§0.7 진단). 이 블록은 그 사실을 사람이 읽을 수 있게
+#       표시만 바꾼다 — bt/sig/score 등 어떤 배열도 수정하지 않는다(호출부에서 읽기만 함).
+# =============================================================================
+_NEXT_DAY_FIRED_COLS_KR = [
+    ("fast_trigger", "급락트리거⓪"), ("hazard_entry", "위험회피진입①"),
+    ("hazard_block", "위험선호차단②"), ("hazard_floor", "위험회피해제안전판③"),
+    ("buy_hold_gate", "매수보류게이트④"), ("recovery_floor", "회복승격⑤"),
+    ("trend_promotion", "추세승격⑥"), ("deep_recovery", "깊은낙폭회복⑦"),
+    ("struct_bottom", "구조적저점승격⑧"), ("neutral_risk_cut", "중립감축⑨"),
+    ("extension_haircut", "과열헤어컷⑩"), ("leverage", "레버리지⑪"),
+    ("hazard_velocity", "속도경보(ΔH)"), ("trend_override", "추세오버라이드"),
+]
+_NEXT_DAY_STATE_KR = {"RISK_ON": "상승(위험선호)", "NEUTRAL": "중립", "RISK_OFF": "하락(위험회피)",
+                      "TREND_ONLY_IN": "추세필터-보유(지표부족)",
+                      "TREND_ONLY_OUT": "추세필터-현금(지표부족)", "NO_SIGNAL": "신호없음"}
+
+
+def next_trading_day(last_date) -> pd.Timestamp:
+    """[v1.24.0] 마지막 거래일의 다음 '영업일'(월~금). 미국 공휴일 캘린더는 별도 조회가
+    필요해 여기서는 반영하지 않는다 — 호출부가 "다음 영업일 기준, 실제 휴장이면 그 다음
+    개장일" 문구를 항상 병기해 과신을 방지한다."""
+    return pd.Timestamp(last_date) + pd.offsets.BDay(1)
+
+
+def _next_day_action(target: float, exec_now: float, lang: str = "kr") -> str:
+    """[v1.24.0] action_labels()와 동일한 판정 규칙(d=target-exec_now의 부호, 시작/종료가
+    0 이하인지)을 '현재 체결비중 -> 다음 거래일 목표비중' 전환 1건에 재적용한다."""
+    eps = 1e-9
+    if target > exec_now + eps:
+        return ("신규매수" if exec_now <= eps else "추가매수") if lang == "kr" else \
+               ("BUY" if exec_now <= eps else "ADD")
+    if target < exec_now - eps:
+        return ("전량매도" if target <= eps else "부분매도") if lang == "kr" else \
+               ("SELL" if target <= eps else "REDUCE")
+    return "보유/관망" if lang == "kr" else "HOLD"
+
+
+def build_next_day_prediction(res: dict, cfg: Config = CFG) -> dict:
+    """[v1.24.0 §1.A] 마지막 확정일(t)의 sig/bt에서 "다음 거래일(t+1) 예측" 요약을 재구성한다
+    (신규 계산 없음 — res의 기존 값만 읽음). 반환 dict는 build_report()의 00/01시트와
+    build_daily_summary()의 CSV 예측행이 공유한다(단일 소스, 표시 불일치 방지)."""
+    bt, sig = res["bt"], res["sig"]
+    idx = bt.index
+    last = idx[-1]
+    nxt = next_trading_day(last)
+    state_raw = sig["state"].iloc[-1]
+    state_txt = _NEXT_DAY_STATE_KR.get(state_raw, str(state_raw))
+    target = float(sig["target_pos"].iloc[-1])
+    exec_now = float(bt["pos_exec"].iloc[-1])
+    score_pct = res.get("score_pct")
+    haz_pct = res.get("haz_pct")
+    score_pct_v = float(score_pct.iloc[-1]) if score_pct is not None and len(score_pct) else np.nan
+    haz_pct_v = float(haz_pct.iloc[-1]) if haz_pct is not None and len(haz_pct) else np.nan
+    fired = [kr for col, kr in _NEXT_DAY_FIRED_COLS_KR
+             if col in sig.columns and bool(sig[col].iloc[-1])]
+    reason = res["reason"].iloc[-1] if "reason" in res and len(res["reason"]) else ""
+    stale_note = ""
+    try:
+        today = pd.Timestamp.now().normalize()
+        gap_days = (today - pd.Timestamp(last).normalize()).days
+        if gap_days >= 3:
+            stale_note = f" [주의: 기준일 데이터가 오늘({today.date()})보다 {gap_days}일 오래됨 — 주말/휴장/미실행 구간 확인]"
+    except Exception:
+        pass
+    return {
+        "기준일": last, "기준일_경과주의": stale_note, "다음거래일": nxt,
+        "확정국면": state_txt, "확정국면_원시": state_raw,
+        "목표비중": round(target, 2), "체결비중": round(exec_now, 2),
+        "예상행동_kr": _next_day_action(target, exec_now, "kr"),
+        "예상행동_en": _next_day_action(target, exec_now, "en"),
+        "복합점수": float(res["score"].iloc[-1]) if len(res.get("score", [])) else np.nan,
+        "복합점수백분위": round(score_pct_v, 4) if pd.notna(score_pct_v) else np.nan,
+        "위험점수백분위(H)": round(haz_pct_v, 4) if pd.notna(haz_pct_v) else np.nan,
+        "발동규칙": ", ".join(fired) if fired else "없음",
+        "근거요약": str(reason) if reason is not None else "",
+    }
+
+
+def _append_next_day_row(daily: pd.DataFrame, nd: dict) -> pd.DataFrame:
+    """[v1.24.0 §1.A] daily(01_일별기록/CSV 조립용)에 예측 1행을 붙인다 — bt는 손대지 않으므로
+    06/07 등 다른 시트(bt/sig에서 직접 계산)는 이 함수 호출과 무관하게 완전히 그대로다."""
+    row = {c: ("" if daily[c].dtype == object else np.nan) for c in daily.columns}
+    if "날짜" in row:
+        row["날짜"] = nd["다음거래일"].date()
+    if "시장상황" in row:
+        row["시장상황"] = nd["확정국면"]
+    if "복합점수" in row:
+        row["복합점수"] = nd["복합점수"]
+    if "복합점수백분위" in row:
+        row["복합점수백분위"] = nd["복합점수백분위"]
+    if "목표비중" in row:
+        row["목표비중"] = nd["목표비중"]
+    if "체결비중" in row:
+        row["체결비중"] = np.nan
+    if "매매행동" in row:
+        row["매매행동"] = nd["예상행동_en"]
+    if "위험점수백분위(H)" in row:
+        row["위험점수백분위(H)"] = nd["위험점수백분위(H)"]
+    if "근거요약" in row:
+        row["근거요약"] = (f"다음 거래일 예측(전일 종가 신호). 발동 규칙: {nd['발동규칙']}. "
+                          f"{nd['근거요약']}{nd['기준일_경과주의']}")
+    row_df = pd.DataFrame([row])[list(daily.columns)]
+    return pd.concat([daily, row_df], ignore_index=True)
+
+
 def build_report(res: dict, cfg: Config = CFG) -> str:
     t0 = time.time()
     bt, sig, score, reason_txt = res["bt"], res["sig"], res["score"], res["reason"]
@@ -7438,6 +7562,10 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         daily[f"[값]{name_map.get(k,k)}"] = ind[k].reindex(idx).round(4)
         daily[f"[기여]{name_map.get(k,k)}"] = contrib_df[k].reindex(idx).round(4)
     daily = daily.reset_index(drop=True)
+    # [v1.24.0 §1.A] 다음 거래일 예측 1행 추가 — bt는 그대로이므로 02~11 시트(전부 bt/sig에서
+    # 직접 계산)는 이 호출과 무관하게 완전히 불변이다. nd는 아래 meta 블록과 공유(단일 소스).
+    nd = build_next_day_prediction(res, cfg)
+    daily = _append_next_day_row(daily, nd)
 
     # ---------- 02 거래내역 ----------
     trades = extract_trades(bt, reason_txt, sig["state"])
@@ -7684,7 +7812,23 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.23.0 (2026-09-05)"),
+        ("버전", "v1.24.0 (2026-09-05)"),
+        # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
+        # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
+        ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
+        ("다음 거래일 예측 - 대상일", f"{nd['다음거래일'].date()} (다음 영업일 기준 — 미국 공휴일 미반영, "
+                                     f"실제 휴장이면 그 다음 개장일에 체결)"),
+        ("다음 거래일 예측 - 확정 국면(t일 종가 기준)", nd["확정국면"]),
+        ("다음 거래일 예측 - 목표비중", f"{nd['목표비중']:.2f}"),
+        ("다음 거래일 예측 - 현재 체결비중(t일)", f"{nd['체결비중']:.2f}"),
+        ("다음 거래일 예측 - 예상 행동", nd["예상행동_kr"]),
+        ("다음 거래일 예측 - 복합점수 / 백분위", f"{nd['복합점수']:.4f} / {nd['복합점수백분위']}"),
+        ("다음 거래일 예측 - 위험점수백분위(H)", f"{nd['위험점수백분위(H)']}"),
+        ("다음 거래일 예측 - 발동 규칙(t일)", nd["발동규칙"]),
+        ("다음 거래일 예측 - 근거요약", nd["근거요약"] or "-"),
+        ("다음 거래일 예측 - 안내", "t일 종가로 확정된 target_pos를 t+1일 시가에 체결하는 기존 규칙(§6 체결 규칙)을 "
+                                    "표시만 재구성한 것 — 새 계산이 아니며 06/07 등 백테스트 성과 시트에는 영향 없음. "
+                                    "01_일별기록 마지막 행(날짜=대상일)에도 같은 값이 있음"),
         ("매매 대상", f"{cfg.TRADE_TICKER} (미국 시장 대표 ETF)"),
         ("신호/백테스트 기간", f"{idx[0].date()} ~ {idx[-1].date()} ({len(idx):,} 거래일)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단)"),
@@ -7911,7 +8055,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.23.0"
+BUNDLE_VERSION = "v1.24.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
@@ -7937,7 +8081,11 @@ def build_daily_summary(res: dict) -> pd.DataFrame:
     out["체결비중"] = bt["pos_exec"].round(2)
     out["전략일간수익(%)"] = (bt["strategy_ret"] * 100).round(3)
     out["시장일간수익(%)"] = (bt["bh_ret"] * 100).round(3)
-    return out.reset_index(drop=True)
+    out = out.reset_index(drop=True)
+    # [v1.24.0 §1.A] build_report()의 01_일별기록과 같은 예측 1행(단일 소스: build_next_day_prediction).
+    nd = build_next_day_prediction(res)
+    out = _append_next_day_row(out, nd)
+    return out
 
 
 def export_result_bundle(res: dict, cfg: Config = CFG) -> List[str]:
