@@ -1,6 +1,7 @@
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.2.0 - 2026-09-05 - 11개 섹터 각각의 '절대' 상승/하락 일별 예측 — SPY 파이프라인(M) 전체를 섹터별로 재적용
+#  VERSION: v0.3.0 - 2026-09-05 - IMPROVEMENT_PLAN_SECTOR_v0.3.md §1.A~§1.E,§1.G 반영(⚠ §1.B/§1.C는
+#    신호/사이징 파라미터 변경 — 아래 CHANGELOG 참조). §1.F(순환매 계층)는 조건부/생략(미구현).
 #
 #  목적:
 #    market_regime_trader.py(이하 M)가 SPY에 대해 하는 일을 11개 SPDR 섹터 ETF(XLK/XLV/XLY/
@@ -13,8 +14,9 @@
 #              크로스에셋, 실데이터 287개 — 그 섹터의 미래수익에 대해 다시 검증됨)
 #            + 섹터 자체 기술지표 8종(200일선 이격도·12-1모멘텀·52주낙폭·변동성조정모멘텀·RSI·
 #              MACD·50/200이격·실현변동성비 — M의 E.추세 블록과 동일 산식을 섹터 가격에 적용)
-#            + SPY대비 상대강도 9종(v0.1 가족A) + 섹터별 매크로(v0.1 가족B 표)
+#            + SPY대비 상대강도 10종(v0.1 가족A + v0.3 REL_MA200_SLOPE) + 섹터별 매크로 8종(v0.3 §1.D 확장)
 #            + SPY 계층 결과(M 번들에서 로드: 복합점수·위험점수의 '마스킹 전' 백분위, 베타 상호작용)
+#            + [v0.3 §1.E] 잔차모멘텀(베타중립 RESID_MOM_12_1) + 섹터폭(SECTOR_BREADTH_200, 11섹터 공통 1회 계산)
 #    → M.validate_indicators(6기준: IC/NW-t/5분위/하락AUC/4구간 부호안정성/커버리지, 시간감쇠 가중)
 #    → M.build_walkforward_weights(월 재추정, 보조채택, 추세트랙캡, 기저시리즈캡, 위험(H)트랙)
 #    → M.composite_score / score_percentile (수익점수·위험점수 백분위)
@@ -32,6 +34,48 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.3.0 | 2026-09-05 | IMPROVEMENT_PLAN_SECTOR_v0.3.md 이행(사용자 요청 "알려준 개선사항대로 수정해서
+#    코드 알려줘"). 작업순서 A→B→G→C→D→E(§4 권장, F는 순환매 계층으로 조건부/생략 — 미구현).
+#    [§1.A 다음 거래일 예측 — 표시 전용, 재계산 없음] M v1.24.0 build_next_day_prediction()을 그대로
+#      재사용(신규 함수 없음). 영향: run_sector()→build_sector_sheets()가 각 섹터 01_일별_티커 마지막에
+#      예측 1행 추가(_append_sector_next_day_row, bt/성과 시트는 무관·불변). run()이 SPY 자체 예측
+#      nd_spy를 계산해 build_prediction_matrix()에 전달 → 01Z_섹터일별예측에 '구분'(실적/예측) 열이
+#      생기고 맨 끝에 예측 1행 추가. build_sector_report()의 '최근 예측'(up_line)은 구분=="실적"만
+#      사용하도록 수정(예측 행이 섞여 미확정 값이 나오는 결함 방지) + '다음 거래일 예측 - *' meta 13줄
+#      (SPY 1 + 섹터 11 + 안내 1) 신설, 버전 다음에 삽입.
+#    [§1.B ⚠ HAZARD_SOURCE — 신호 파라미터 변경, 기본값이 v0.2.0에서 바뀜] SectorConfig.HAZARD_SOURCE:
+#      "spy"(신규 기본값)/"sector"(v0.2.0 현행 — 이 값이어야 v0.2.0과 비트 동일)/"max". v0.2.0은 섹터
+#      자체 haz_score의 백분위를 그대로 신호에 썼다("sector"에 해당) — v0.3.0은 기본값을 "spy"로
+#      바꿔 M이 SPY에서 이미 검증·교정한 H를 재사용한다(근거: §0.3, 섹터 자체 H는 표본이 짧고 SPY의
+#      크레딧/변동성 기반 H가 조기경보로 이미 검증됨). run_sector()에서 haz_pct_sector(섹터 자체 H)는
+#      HAZARD_SOURCE 값과 무관하게 항상 계산해 01시트에 '위험점수백분위(H,섹터자체)'로 진단 표시.
+#    [§1.C ⚠ 사이징 오버레이 변동성 정규화 — 사이징 파라미터 변경] SectorConfig.VOL_SCALE_OVERLAYS=True.
+#      _sector_vol_scale(): 섹터 최초 ~252거래일 실현변동성/SPY 동기간 실현변동성 비율을 [0.7, 2.0]로
+#      클립한 고정 스칼라(격자 최적화 아님, 섹터당 1회, run() 시점에 결정). _vol_scaled_cfg():
+#      dataclasses.replace로 EXTENSION_HAIRCUT_STEPS 임계값(캡은 불변)·RECOVERY_CONFIRM_PCT·
+#      DEEP_RECOVERY_DD·STRUCT_BOTTOM_DD에만 곱해 적용 — 매수/매도 게이트(과열 캡, 신호 임계 자체)는
+#      불변. validate_and_weight_sector()의 캐시키는 조정 전 cfg_i로 계산(사이징 임계값은 검증에
+#      관여하지 않으므로 캐시 재사용에 영향 없음). SIZING 로그로 vol_scale·조정된 임계값 확인 가능.
+#    [§1.D 섹터별 매크로 사전방향 표 확장] SECTOR_MACRO_TABLE 11개 섹터 전부 2~4행 → 8행(공통 축: 금리
+#      NOM2Y/NOM10Y, 실질금리, 기대인플레이션(BEI5Y), 달러, 유가, 구리, 신용스프레드, 커브, 클레임,
+#      센티먼트 중 섹터군에 맞는 8개), 섹터군별 사전부호(XLK/XLC/XLY 금리−; XLP/XLV 금리−·H+; XLF
+#      커브+·금리+; XLE 금리+·BEI+·달러−·WTI+; XLI/XLB 구리+·달러−; XLU/XLRE 금리−·H+). 신규 소스:
+#      DGS2(2년물), T5YIE(5년 BEI, 이제 더 넓게 사용), DTWEXBGS(광의 달러지수, XLK), BAMLC0A0CM
+#      (IG OAS). 검증 대상 후보군만 넓어짐 — 채택 여부는 워크포워드가 매월 판단(신호 로직 불변).
+#    [§1.E 신규 후보지표 3종] residual_momentum_values()(베타 중립 잔차 모멘텀, RESID_MOM_12_1 —
+#      rolling_beta(lag=1)로 인과적 베타 추정 후 잔차누적 21일~252일 구간), sector_breadth_200
+#      (SECTOR_BREADTH_200, 11섹터 200일선 상회 비율 — run()에서 1회만 계산해 ctx로 전달, 섹터별
+#      재계산 없음), REL_MA200_SLOPE(SPY대비 상대MA200의 20일 변화율). build_sector_candidates()
+#      시그니처에 breadth 인자 추가, sector_lookahead_audit()도 breadth 절단·재계산 커버.
+#    [§1.G 진단 시트] build_rule_contribution(): 규칙(위험회피진입/급락트리거/중립감축/과열헤어컷/
+#      추세승격/회복승격)별 발동일수·발동일 익일 B&H평균수익 + [전체] 비중=0인 날의 상승일 미탑승/
+#      하락일 회피 B&H수익 합(%p) — 09b_규칙별기여 신설 시트(build_sector_report), 12_섹터요약에 동일
+#      값을 인용한 3열(H진입일 익일평균수익(%)/상승 미탑승(%p)/하락 회피(%p), _rule_contrib_value()로
+#      단일 소스 인용·재계산 없음) 추가. 07_연도별성과에 SPY평균비중(같은 해 M의 평균 목표비중) 병기 —
+#      §0.2의 "강세장 과소투자" 진단표를 매 실행 자동 재현.
+#    [영향받지 않음] validate_indicators/build_walkforward_weights/composite_score/generate_signals
+#      (§1.B 기본값 "spy" 경로)/run_backtest 자체 로직은 무수정 — M도 한 줄도 수정하지 않음(기존 원칙
+#      유지). 격자탐색/최적화 없음(§1.C는 1회 고정 스칼라, 그리드서치 아님).
 #  v0.2.0 | 2026-09-05 | 사용자 요청 "market_regime_trader.py처럼 2018년부터 일별로 11개 섹터 상승·하락 예측,
 #    그 코드에서 예측에 쓰이는 모든 기술을 똑같이 사용, 시트도 똑같이, M 결과 파일을 섹터 예측에 참고".
 #    [재설계] 예측 대상을 상대수익(P_i/SPY)에서 섹터 절대수익으로 변경. v0.1의 횡단면 순위·tilt 배분·
@@ -79,7 +123,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.2.0"
+VERSION = "v0.3.0"
 VERSION_DATE = "2026-09-05"
 
 # =============================================================================
@@ -127,12 +171,31 @@ class SectorConfig:
     # ---- 후보지표 구성 -------------------------------------------------------
     USE_MARKET_CANDIDATES: bool = True         # M의 후보지표 전부를 섹터 후보에 포함(그 섹터 수익에 대해 재검증)
     USE_SECTOR_TECHNICAL: bool = True          # 섹터 자체 기술지표 8종(M E.추세 블록과 동일 산식)
-    USE_RELATIVE_STRENGTH: bool = True         # SPY대비 상대강도 9종(v0.1 가족A)
-    USE_SECTOR_MACRO: bool = True              # 섹터별 매크로 표(v0.1 가족B)
+    USE_RELATIVE_STRENGTH: bool = True         # SPY대비 상대강도 9종(v0.1 가족A) + REL_MA200_SLOPE(v0.3.0 §1.E-3)
+    USE_SECTOR_MACRO: bool = True              # 섹터별 매크로 표(v0.3.0 §1.D — 섹터당 8~10개로 확장)
     USE_SPY_LAYER_FEATURES: bool = True        # SPY 계층 결과(마스킹 전 점수/위험 백분위·베타 상호작용)
+    # [v0.3.0 §1.E] 신규 후보 3종(저비용) — 전부 기존 6기준 게이트를 그대로 통과해야 채택(조용한 채택 없음).
+    USE_RESID_MOMENTUM: bool = True            # §1.E-1: 잔차모멘텀(베타중립 12-1개월) — Blitz·Huij·Martens 2011
+    RESID_MOM_WINDOW: int = 756                # 잔차 추정 롤링 회귀창(거래일, 약 36개월) — t-1까지의 데이터만 사용(인과)
+    USE_SECTOR_BREADTH: bool = True            # §1.E-2: 섹터 폭(11섹터 중 자기 200일선 상회 비율) — 시장 내부 지표, 전 섹터 공통
     # ---- 학습/재추정 ----------------------------------------------------------
     SECTOR_TRAIN_MIN_YEARS: int = 3            # 헤더 CHANGELOG [파라미터] 참조(M은 5)
     SECTOR_REWEIGHT_FREQ: Optional[str] = None # None=M과 동일(REWEIGHT_FREQ, 기본 "M"). "A"=연 1회(⚠ 약 5배 빠름, 신호 달라짐)
+    # ---- 위험(H)트랙 소스 [v0.3.0 §1.B ⚠ 위험 파라미터] ------------------------
+    # 근거(IMPROVEMENT_PLAN_SECTOR_v0.3.md §0.3): 섹터 자체 H(현행 "sector")는 SPY와 같은 매크로 지표를
+    # '섹터 낙폭 라벨'로 재검증한 결과라 레벨 효과에 지배되고, 실측 리포트에서 9/11 섹터가 H발동일 익일
+    # 평균수익이 오히려 양(+)이었다(예측력 없음 — '위험 예측'이 아니라 '고금리·강달러 레벨 감지기'가 됨).
+    # M이 SPY에서 이미 검증·교정(규칙 ①~⑨)한 H를 그대로 쓰는 "spy"를 기본값으로 한다.
+    HAZARD_SOURCE: str = "spy"                 # "spy"(기본, M 번들의 마스킹 전 haz_pct 재사용) | "sector"(v0.2.0 현행) | "max"(둘 중 큰 값)
+    # ---- 사이징 오버레이 변동성 정규화 [v0.3.0 §1.C ⚠ 사이징 파라미터] -----------
+    # 근거(§0.5): 과열헤어컷·회복확인폭·깊은낙폭 임계값이 SPY(연변동성 ~18%) 기준 절대값이라 고변동
+    # 섹터(XLK·XLE 25~30%)에서 훨씬 자주/일찍 걸린다. 섹터 자기 변동성/SPY 변동성 배율(훈련구간 초기
+    # 252일, 인과적으로 고정)을 곱해 임계값을 섹터 변동성 스케일에 맞춘다. 신호 임계값 자체(게이트
+    # 통과기준)는 변경하지 않는다 — 사이징 오버레이 임계값에만 적용.
+    VOL_SCALE_OVERLAYS: bool = True
+    VOL_SCALE_MIN: float = 0.7
+    VOL_SCALE_MAX: float = 2.0
+    VOL_SCALE_WINDOW: int = 252                # 배율 산정에 쓰는 창(훈련구간 첫 N거래일, 인과적으로 고정 — 격자 최적화 아님)
     # ---- 진단 단계 -------------------------------------------------------------
     RUN_SELFTEST: bool = True                  # 실데이터 전에 합성데이터 판별력 자기검사(FAIL이면 중단)
     SELFTEST_MIN_TRUE_ADOPTED: int = 2
@@ -406,6 +469,11 @@ def relative_strength_specs() -> List[_RawSpec]:
         _RawSpec("REL_EXT_200", "섹터-SPY 200일선 이격도 차", "H.SPY대비상대", -1,
                  "섹터 자체 200일선 이격도가 SPY보다 훨씬 높으면(과열) 이후 열위",
                  "M 규칙 ⑩의 근거(이격도가 가장 강한 조기경보)를 섹터 상대판으로 재사용", "섹터·SPY 종가"),
+        # [v0.3.0 §1.E-3] REL_MA_50_200(상대가격 이동평균의 '수준')과 달리 상대가격 200일선 자체의
+        # '기울기'(추세 가속/감속) 정보 — REL_MOM류(가격 모멘텀)와도 다른 축.
+        _RawSpec("REL_MA200_SLOPE", "상대가격(P_i/SPY) 200일선의 20일 기울기", "H.SPY대비상대", +1,
+                 "상대가격 200일 이동평균 자체가 우상향으로 가속되는 것은 상대추세 전환이 구조적으로 굳어지는 신호",
+                 "장기 상대추세의 방향 전환(가속도)", "P_i/SPY 비율의 200일 이동평균", trend_track=True, eval_horizon=63),
     ]
 
 
@@ -432,6 +500,8 @@ def relative_strength_values(sector_tr: pd.Series, spy_tr: pd.Series,
     ext_i = sector_raw / sector_raw.rolling(200, min_periods=150).mean().replace(0, np.nan) - 1.0
     ext_spy = spy_raw / spy_raw.rolling(200, min_periods=150).mean().replace(0, np.nan) - 1.0
     out["REL_EXT_200"] = ext_i - ext_spy
+    # [v0.3.0 §1.E-3] 상대가격 200일선'기울기' — REL_MA_50_200(수준)과 다른 정보.
+    out["REL_MA200_SLOPE"] = ma200 / ma200.shift(20) - 1.0
     return out.replace([np.inf, -np.inf], np.nan)
 
 
@@ -500,57 +570,127 @@ def spy_layer_values(spy_series: Dict[str, pd.Series], beta: pd.Series) -> pd.Da
 #   kind: fred_rate(레벨 변화=diff) | fred_index(변화율) | fred_level(수준 z) | yahoo_mom | ind_direct
 _FamilyBRow = Tuple[str, str, str, str, str, int, int, str, str]
 
+# [v0.3.0 §1.D] IMPROVEMENT_PLAN_SECTOR_v0.3.md §0.4/§1.D: M 후보의 사전방향은 '시장(SPY) 기준'이라
+# 에너지·금융·유틸리티처럼 매크로 반응이 시장 평균과 반대인 섹터에서는 방향 불일치로 대부분 FAIL한다
+# (XLE 국면검증 FAIL·엄격 PASS 13개, XLK 점수가 사실상 금리·달러 '단일 팩터'). 게이트를 낮추는 대신
+# 공통 축(10Y/2Y 금리·실질금리·BEI·달러·유가·구리·신용스프레드·커브·실업청구·소비심리)을 섹터별
+# 경제적 사전방향으로 8~10개씩 명시 확장한다 — 데이터에서 부호를 학습(첫 훈련창 IC로 결정)하지 않는다.
 SECTOR_MACRO_TABLE: Dict[str, List[_FamilyBRow]] = {
+    # 그룹: 금리-·실질금리-·달러- (장기 듀레이션 성장주 밸류에이션 채널)
     "XLK": [
         ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
          "장기 듀레이션 성장주는 실질금리 상승에 밸류에이션이 눌린다", "할인율 채널"),
         ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
          "명목금리 상승도 동일한 밸류에이션 압박", "할인율 채널"),
+        ("NOM2Y_CHG", "2년 국채금리 60일 변화", "fred_rate", "DGS2", "chg", 60, -1,
+         "단기금리 상승은 성장주 할인율 상승과 긴축 기대를 동시에 반영", "할인율/긴축기대 채널"),
+        ("BEI5Y_CHG", "5년 기대인플레이션 60일 변화", "fred_rate", "T5YIE", "chg", 60, -1,
+         "기대인플레 상승은 명목금리 상승 압력을 더해 장기 듀레이션 자산에 불리", "할인율 채널"),
+        ("DXY_MOM", "달러인덱스 60일 모멘텀", "yahoo_mom", "DX-Y.NYB", "mom", 60, -1,
+         "해외매출 비중이 높아 달러 강세가 환산이익을 깎는다", "환율 채널"),
+        ("BROADUSD_CHG", "무역가중 달러지수(광의) 60일 변화율", "fred_index", "DTWEXBGS", "chg", 60, -1,
+         "DXY_MOM과 다른 바스켓(광의) — 같은 환율 채널의 교차확인", "환율 채널"),
+        ("IG_OAS_CHG", "투자등급 스프레드 20일 변화", "fred_rate", "BAMLC0A0CM", "chg", 20, -1,
+         "성장주는 신주·전환사채 등 외부자금조달 의존도가 높아 신용스프레드 확대에 불리", "자금조달비용 채널"),
         ("RSP_MOM", "동일가중/시총가중 60일 상대강도", "ind_direct", "RSP_SPY_MOM", "", 60, -1,
          "동일가중 우위는 대형 기술주(시총상위) 열위를 시사", "지수 구성 효과"),
     ],
+    # 그룹: 금리-·실질금리-·달러- (광고·구독 플랫폼도 성장주 논리 공유)
     "XLC": [
         ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
          "광고·구독 플랫폼도 성장주 밸류에이션 논리를 공유", "할인율 채널"),
+        ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
+         "명목금리 상승도 동일한 밸류에이션 압박", "할인율 채널"),
+        ("NOM2Y_CHG", "2년 국채금리 60일 변화", "fred_rate", "DGS2", "chg", 60, -1,
+         "단기금리 상승은 성장주 할인율 상승·긴축기대를 반영", "할인율/긴축기대 채널"),
+        ("BEI5Y_CHG", "5년 기대인플레이션 60일 변화", "fred_rate", "T5YIE", "chg", 60, -1,
+         "기대인플레 상승은 장기 듀레이션 자산에 불리", "할인율 채널"),
+        ("DXY_MOM", "달러인덱스 60일 모멘텀", "yahoo_mom", "DX-Y.NYB", "mom", 60, -1,
+         "해외 광고·구독 매출 비중이 높아 달러 강세에 환산손실", "환율 채널"),
+        ("IG_OAS_CHG", "투자등급 스프레드 20일 변화", "fred_rate", "BAMLC0A0CM", "chg", 20, -1,
+         "성장주 자금조달비용 채널(XLK와 동일 논리)", "자금조달비용 채널"),
         ("UMCSENT_Z", "미시간대 소비자심리지수(z)", "fred_level", "UMCSENT", "", 252, +1,
          "소비심리 개선은 광고 지출·구독 수요 확대로 연결", "광고 수요 채널"),
         ("RSP_MOM", "동일가중/시총가중 60일 상대강도", "ind_direct", "RSP_SPY_MOM", "", 60, -1,
          "메가캡 비중이 큰 섹터 특성상 XLK와 동일 논리", "지수 구성 효과"),
     ],
+    # 그룹: 금리-·실질금리-·달러- (재량소비 — 소비여력·신용 채널이 추가로 강하게 작동)
     "XLY": [
+        ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
+         "내구재·주택 관련 소비는 실질금리(할부·모기지 실질부담) 상승에 민감", "할인율/신용비용 채널"),
+        ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
+         "장기금리 상승은 내구재 할부·모기지 금리에 전가", "신용비용 채널"),
+        ("DXY_MOM", "달러인덱스 60일 모멘텀", "yahoo_mom", "DX-Y.NYB", "mom", 60, -1,
+         "달러 강세는 수입 소비재 원가·해외매출 환산이익에 역풍", "환율 채널"),
         ("UMCSENT_CHG", "미시간대 소비자심리 60일 변화", "fred_rate", "UMCSENT", "chg", 60, +1,
          "소비심리 개선은 재량소비 지출 확대로 이어진다", "소비여력 채널"),
         ("ICSA_CHG", "신규 실업수당청구 60일 변화율", "fred_index", "ICSA", "chg", 60, -1,
          "고용 악화는 재량소비부터 위축시킨다", "고용-소비 채널"),
+        ("HY_OAS_CHG", "하이일드 스프레드 20일 변화", "fred_rate", "BAMLH0A0HYM2", "chg", 20, -1,
+         "신용스프레드 확대는 소비자·기업 신용여건 악화를 시사, 재량소비 위축", "소비자신용 채널"),
         ("OIL_MOM", "WTI 원유 60일 모멘텀", "yahoo_mom", "CL=F", "mom", 60, -1,
          "유가 상승은 가처분소득을 압박해 재량소비에 불리", "유가-소비 채널"),
         ("MORT30_CHG", "30년 모기지금리 60일 변화", "fred_rate", "MORTGAGE30US", "chg", 60, -1,
          "모기지금리 상승은 주택·내구재 관련 소비수요를 위축", "금리-내구재 채널"),
     ],
+    # 그룹: 금리-·실질금리-·H+ (방어 로테이션 수혜)
     "XLP": [
         ("H_PCT", "SPY 위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
          "필수소비재는 방어 로테이션의 전형적 수혜 섹터", "방어 로테이션"),
         ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
          "채권 대용 성격(안정배당)이라 금리 상승에 상대적으로 불리", "채권대용 채널"),
+        ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
+         "채권대용 채널의 실질금리판 — 배당수익률 매력도가 실질금리에 더 민감", "채권대용 채널"),
+        ("NOM2Y_CHG", "2년 국채금리 60일 변화", "fred_rate", "DGS2", "chg", 60, -1,
+         "단기금리 상승은 배당주 대비 단기채의 상대매력을 높인다", "채권대용 채널"),
+        ("BEI5Y_CHG", "5년 기대인플레이션 60일 변화", "fred_rate", "T5YIE", "chg", 60, -1,
+         "고정배당의 실질가치를 인플레가 잠식", "채권대용 채널"),
         ("DXY_MOM", "달러인덱스 60일 모멘텀", "yahoo_mom", "DX-Y.NYB", "mom", 60, -1,
          "다국적 매출 비중이 높아 달러 강세가 환산이익을 깎는다", "환율 채널"),
+        ("CURVE", "수익률곡선 10년-2년 60일 변화", "fred_rate", "T10Y2Y", "chg", 60, -1,
+         "커브 가팔라짐(경기낙관)은 위험선호를 자극해 방어주 상대열위", "위험선호-방어주 채널"),
+        ("HY_OAS_CHG", "하이일드 스프레드 20일 변화", "fred_rate", "BAMLH0A0HYM2", "chg", 20, +1,
+         "신용스프레드 확대(위험회피)는 방어 섹터로의 자금 이동과 동반", "방어 로테이션"),
     ],
+    # XLV: 방어적 성격 + 성장(바이오텍) 성격 혼재 — 방어 로테이션과 할인율 채널 동시 적용
     "XLV": [
         ("H_PCT", "SPY 위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
          "헬스케어는 경기방어적 수요(질병·처방)로 방어 로테이션 수혜", "방어 로테이션"),
         ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
          "배당·성장이 혼재해 금리 상승에 약하게 불리", "할인율 채널(약함)"),
+        ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
+         "바이오텍 등 장기 듀레이션 성장 하위섹터의 밸류에이션 압박", "할인율 채널"),
+        ("NOM2Y_CHG", "2년 국채금리 60일 변화", "fred_rate", "DGS2", "chg", 60, -1,
+         "단기금리 상승은 성장형 바이오텍 자금조달 여건을 악화", "할인율 채널(약함)"),
+        ("BEI5Y_CHG", "5년 기대인플레이션 60일 변화", "fred_rate", "T5YIE", "chg", 60, -1,
+         "장기 듀레이션 성장주 밸류에이션 압박(약함)", "할인율 채널(약함)"),
+        ("DXY_MOM", "달러인덱스 60일 모멘텀", "yahoo_mom", "DX-Y.NYB", "mom", 60, -1,
+         "대형 제약사 해외매출 비중이 높아 달러 강세가 환산이익을 깎는다", "환율 채널"),
+        ("IG_OAS_CHG", "투자등급 스프레드 20일 변화", "fred_rate", "BAMLC0A0CM", "chg", 20, -1,
+         "임상단계 바이오텍은 외부자금조달 의존도가 높아 신용스프레드 확대에 불리", "자금조달비용 채널"),
+        ("ICSA_CHG", "신규 실업수당청구 60일 변화율", "fred_index", "ICSA", "chg", 60, +1,
+         "고용 악화기에는 방어적 수요(처방·진료 유지)로 상대적 자금 유입", "방어 로테이션"),
     ],
+    # 그룹: 커브+·금리+·HY스프레드- (순이자마진·대손비용 채널)
     "XLF": [
         ("CURVE", "수익률곡선 10년-2년 60일 변화", "fred_rate", "T10Y2Y", "chg", 60, +1,
          "커브가 가팔라지면 예대마진(순이자마진) 개선 기대", "순이자마진 채널"),
         ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, +1,
          "금리 상승 국면에서 은행 이자수익 개선 기대", "순이자마진 채널"),
+        ("NOM2Y_CHG", "2년 국채금리 60일 변화", "fred_rate", "DGS2", "chg", 60, +1,
+         "단기금리 상승은 예대마진에 직접 반영되는 조달금리 채널", "순이자마진 채널"),
         ("HY_OAS_CHG", "하이일드 스프레드 20일 변화", "fred_rate", "BAMLH0A0HYM2", "chg", 20, -1,
          "신용스프레드 확대는 대손비용 증가·자금조달비용 상승을 시사", "신용비용 채널"),
+        ("IG_OAS_CHG", "투자등급 스프레드 20일 변화", "fred_rate", "BAMLC0A0CM", "chg", 20, -1,
+         "투자등급 스프레드 확대는 은행 자체 자금조달비용 상승", "신용비용 채널"),
         ("HOUST_CHG", "주택착공건수 120일 변화율", "fred_index", "HOUST", "chg", 120, +1,
          "주택시장 활황은 모기지·소비자대출 수요 확대", "대출수요 채널"),
+        ("ICSA_CHG", "신규 실업수당청구 60일 변화율", "fred_index", "ICSA", "chg", 60, -1,
+         "고용 악화는 대출 연체·손실충당 우려로 은행주에 불리", "대손비용 채널"),
+        ("UMCSENT_CHG", "미시간대 소비자심리 60일 변화", "fred_rate", "UMCSENT", "chg", 60, +1,
+         "소비자 신뢰 개선은 소비자대출 수요·상환여력 개선과 연결", "대출수요 채널"),
     ],
+    # 그룹: 금리+·BEI+·달러-·WTI+ (원자재 직접수익·인플레헤지 채널)
     "XLE": [
         ("OIL_MOM20", "WTI 원유 20일 모멘텀", "yahoo_mom", "CL=F", "mom", 20, +1,
          "유가는 에너지 섹터 이익의 직접적 동인", "직접 수익 채널"),
@@ -560,7 +700,17 @@ SECTOR_MACRO_TABLE: Dict[str, List[_FamilyBRow]] = {
          "기대인플레 상승기에 원자재·에너지가 인플레 헤지 수요를 흡수", "인플레 헤지 채널"),
         ("DXY_MOM", "달러인덱스 60일 모멘텀", "yahoo_mom", "DX-Y.NYB", "mom", 60, -1,
          "달러 강세는 달러표시 원자재 가격에 역풍", "환율-원자재 채널"),
+        ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, +1,
+         "금리 상승은 흔히 강한 성장·리플레이션 국면과 동반돼 에너지 수요 기대를 반영(시장 평균과 반대 방향)",
+         "리플레이션 채널"),
+        ("NOM2Y_CHG", "2년 국채금리 60일 변화", "fred_rate", "DGS2", "chg", 60, +1,
+         "단기금리 상승도 동일한 리플레이션/긴축 사이클 신호", "리플레이션 채널"),
+        ("COPPER_MOM", "구리 60일 모멘텀", "yahoo_mom", "HG=F", "mom", 60, +1,
+         "원자재 복합체 동조 — 구리 강세는 글로벌 에너지 수요 확대와 동반", "원자재 복합체 채널"),
+        ("HY_OAS_CHG", "하이일드 스프레드 20일 변화", "fred_rate", "BAMLH0A0HYM2", "chg", 20, -1,
+         "신용스프레드 확대(경기둔화 우려)는 글로벌 원유수요 둔화 우려와 동반", "수요둔화 채널"),
     ],
+    # 그룹: 구리+·달러-·산업생산+
     "XLI": [
         ("INDPRO_CHG", "산업생산지수 60일 변화율", "fred_index", "INDPRO", "chg", 60, +1,
          "산업생산 확대는 산업재 수요와 직결", "산업수요 채널"),
@@ -570,7 +720,16 @@ SECTOR_MACRO_TABLE: Dict[str, List[_FamilyBRow]] = {
          "구리는 전통적인 글로벌 경기 바로미터", "경기 바로미터 채널"),
         ("EFA_MOM", "선진국(미국제외) 주식 60일 모멘텀", "yahoo_mom", "EFA", "mom", 60, +1,
          "글로벌 산업 사이클과 동조", "글로벌 사이클 채널"),
+        ("DXY_MOM", "달러인덱스 60일 모멘텀", "yahoo_mom", "DX-Y.NYB", "mom", 60, -1,
+         "달러 강세는 미국 제조·수출 경쟁력과 해외매출 환산이익에 역풍", "환율-수출 채널"),
+        ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
+         "실질금리 상승은 설비투자(capex)의 자본비용을 높인다", "자본비용 채널"),
+        ("ICSA_CHG", "신규 실업수당청구 60일 변화율", "fred_index", "ICSA", "chg", 60, -1,
+         "고용 악화는 산업재 최종수요 위축의 선행 신호", "산업수요 채널"),
+        ("EEM_MOM", "신흥국 주식 60일 모멘텀", "yahoo_mom", "EEM", "mom", 60, +1,
+         "신흥국(중국 등) 인프라·제조 수요가 글로벌 산업 사이클의 핵심 동인", "글로벌 사이클 채널"),
     ],
+    # 그룹: 구리+·달러-·산업생산+ (원자재 성격이 XLI보다 강함)
     "XLB": [
         ("COPPER_MOM", "구리 60일 모멘텀", "yahoo_mom", "HG=F", "mom", 60, +1,
          "구리는 소재 섹터 수요의 직접 프록시", "직접 수요 채널"),
@@ -580,7 +739,16 @@ SECTOR_MACRO_TABLE: Dict[str, List[_FamilyBRow]] = {
          "신흥국(중국 등) 수요가 소재 섹터의 핵심 동인", "신흥국 수요 채널"),
         ("BEI5Y_CHG", "5년 기대인플레이션 60일 변화", "fred_rate", "T5YIE", "chg", 60, +1,
          "인플레 기대 상승기 원자재 관련주 상대 강세", "인플레 헤지 채널"),
+        ("INDPRO_CHG", "산업생산지수 60일 변화율", "fred_index", "INDPRO", "chg", 60, +1,
+         "산업생산 확대는 원자재 투입수요와 직결", "산업수요 채널"),
+        ("OIL_MOM60", "WTI 원유 60일 모멘텀", "yahoo_mom", "CL=F", "mom", 60, +1,
+         "에너지·화학 하위섹터 비중이 있어 원자재 복합체와 동조", "원자재 복합체 채널"),
+        ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
+         "실질금리 상승은 채광·화학 설비투자의 자본비용을 높인다", "자본비용 채널"),
+        ("EFA_MOM", "선진국(미국제외) 주식 60일 모멘텀", "yahoo_mom", "EFA", "mom", 60, +1,
+         "글로벌 산업 사이클과 동조", "글로벌 사이클 채널"),
     ],
+    # 그룹: 금리-·실질금리-·H+ (채권대용·방어 로테이션)
     "XLU": [
         ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
          "채권 대용 자산(고배당)이라 금리 상승에 가장 직접적으로 불리", "채권대용 채널"),
@@ -588,16 +756,35 @@ SECTOR_MACRO_TABLE: Dict[str, List[_FamilyBRow]] = {
          "동일 논리의 실질금리판", "채권대용 채널"),
         ("H_PCT", "SPY 위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
          "유틸리티는 대표적 방어 섹터", "방어 로테이션"),
+        ("NOM2Y_CHG", "2년 국채금리 60일 변화", "fred_rate", "DGS2", "chg", 60, -1,
+         "단기채 대비 배당수익률 상대매력이 단기금리 상승에 약화", "채권대용 채널"),
+        ("BEI5Y_CHG", "5년 기대인플레이션 60일 변화", "fred_rate", "T5YIE", "chg", 60, -1,
+         "고정배당의 실질가치를 인플레가 잠식", "채권대용 채널"),
+        ("CURVE", "수익률곡선 10년-2년 60일 변화", "fred_rate", "T10Y2Y", "chg", 60, -1,
+         "커브 가팔라짐(위험선호)은 저베타 방어주 상대열위와 동반", "위험선호-방어주 채널"),
+        ("IG_OAS_CHG", "투자등급 스프레드 20일 변화", "fred_rate", "BAMLC0A0CM", "chg", 20, -1,
+         "유틸리티는 부채비율이 높아 신용스프레드 확대(자금조달비용 상승)에 취약", "신용비용 채널"),
+        ("HY_OAS_CHG", "하이일드 스프레드 20일 변화", "fred_rate", "BAMLH0A0HYM2", "chg", 20, +1,
+         "신용스프레드 확대(위험회피)는 방어 섹터로의 자금 이동과 동반", "방어 로테이션"),
     ],
+    # 그룹: 금리-·실질금리-·H+ (채권대용·자금조달 채널)
     "XLRE": [
         ("NOM10Y", "10년 국채금리 60일 변화", "fred_rate", "DGS10", "chg", 60, -1,
          "리츠는 배당 자산으로 금리 상승에 밸류에이션이 눌린다", "할인율 채널"),
+        ("REALRATE10", "10년 실질금리 60일 변화", "fred_rate", "DFII10", "chg", 60, -1,
+         "동일 논리의 실질금리판 — 배당수익률(cap rate) 매력도 채널", "할인율 채널"),
         ("MORT30_CHG", "30년 모기지금리 60일 변화", "fred_rate", "MORTGAGE30US", "chg", 60, -1,
          "모기지금리 상승은 부동산 거래·자금조달 비용에 직접 불리", "자금조달 채널"),
         ("HY_OAS_CHG", "하이일드 스프레드 20일 변화", "fred_rate", "BAMLH0A0HYM2", "chg", 20, -1,
          "리츠는 부채비율이 높아 신용스프레드 확대(자금조달비용 상승)에 취약", "신용비용 채널"),
+        ("IG_OAS_CHG", "투자등급 스프레드 20일 변화", "fred_rate", "BAMLC0A0CM", "chg", 20, -1,
+         "투자등급 회사채 조달 비중이 높은 대형 리츠에 직접 영향", "신용비용 채널"),
         ("HPI_CHG", "케이스실러 주택가격지수 120일 변화율", "fred_index", "CSUSHPISA", "chg", 120, +1,
          "기초자산 가치 상승은 리츠 순자산가치(NAV)에 긍정적", "자산가치 채널"),
+        ("H_PCT", "SPY 위험점수백분위(H)", "ind_direct", "__HAZ_PCT__", "", 0, +1,
+         "채권대용 고배당 자산 성격상 방어 로테이션에서도 일부 수혜", "방어 로테이션"),
+        ("NOM2Y_CHG", "2년 국채금리 60일 변화", "fred_rate", "DGS2", "chg", 60, -1,
+         "단기금리 상승은 리츠의 단기 차환(리파이낸싱) 비용을 직접 높인다", "자금조달 채널"),
     ],
 }
 
@@ -635,6 +822,42 @@ def sector_macro_values(ticker: str, res: dict, M, idx: pd.DatetimeIndex,
     return out.replace([np.inf, -np.inf], np.nan)
 
 
+# ---- (e) [v0.3.0 §1.E-1] 잔차 모멘텀(residual momentum, 베타중립) --------------------------------
+def residual_momentum_values(adj_tr: pd.Series, spy_tr: pd.Series, window: int = 756) -> pd.Series:
+    """섹터 일간(로그)수익을 SPY에 window일(기본 756≈36개월) 롤링 회귀한 잔차의 12-1개월 누적.
+    베타는 rolling_beta()로 t-1까지의 데이터만으로 추정해 lag=1 적용(인과) — 그 날의 잔차 계산에
+    당일 확정 베타가 아니라 '어제까지 확정된' 베타를 쓴다. 잔차 누적합(로그가산)의 21일 전 값 -
+    252일 전 값 = 최근 1개월을 제외한 11개월 구간의 순수(베타중립) 초과수익.
+    시장 베타 성분을 제거한 순수 섹터 모멘텀(Blitz·Huij·Martens 2011) — 상대모멘텀(REL_MOM_12_1,
+    시장 대비 '가격비율'의 모멘텀이라 베타가 섞여 있음)보다 베타 노출에 강건하다는 문헌 근거."""
+    r_i = np.log(adj_tr.replace(0, np.nan)).diff()
+    r_spy = np.log(spy_tr.replace(0, np.nan)).diff()
+    beta = rolling_beta(r_i, r_spy, window=window, lag=1)
+    resid = r_i - beta * r_spy
+    resid_cum = resid.cumsum()
+    return (resid_cum.shift(21) - resid_cum.shift(252)).replace([np.inf, -np.inf], np.nan)
+
+
+def resid_momentum_specs() -> List[_RawSpec]:
+    return [
+        _RawSpec("RESID_MOM_12_1", "잔차모멘텀(베타중립) 12-1개월", "E2.섹터추세", +1,
+                 "시장 베타 성분을 제거한 순수 섹터 모멘텀 — 상대모멘텀보다 베타 노출에 강건하다는 문헌 근거"
+                 "(Blitz·Huij·Martens 2011)", "베타중립 모멘텀 프리미엄",
+                 "섹터·SPY 총수익종가 36개월 롤링회귀 잔차(베타 t-1 lag)", trend_track=True, eval_horizon=63),
+    ]
+
+
+# ---- (f) [v0.3.0 §1.E-2] 섹터 폭(breadth) — 11개 섹터 공통 시장 내부 지표 ------------------------
+def sector_breadth_specs() -> List[_RawSpec]:
+    return [
+        _RawSpec("SECTOR_BREADTH_200", "섹터 폭(자기 200일선 상회 섹터 비율)", "J.시장폭", +1,
+                 "200일선 위에 있는 섹터가 많을수록 상승이 소수 주도주에 국한되지 않고 시장 내부로 넓게 "
+                 "확산돼 있다는 신호(breadth) — 전 섹터 공통(그날 상장돼 있는 섹터만으로 계산)",
+                 "시장 내부 참여도(breadth) 확산", "11개 섹터 각자의 자기 200일선 상회 여부(res['run']에서 1회 계산)",
+                 trend_track=True, eval_horizon=63),
+    ]
+
+
 def _mk_spec(M, ticker: str, raw: _RawSpec):
     return M.IndicatorSpec(
         key=f"{ticker}__{raw.suffix}", name_kr=f"[{ticker}] {raw.name_kr}", category=raw.category,
@@ -646,11 +869,15 @@ def _mk_spec(M, ticker: str, raw: _RawSpec):
 def build_sector_candidates(ticker: str, res: dict, M, scfg: SectorConfig,
                             adj_tr: pd.Series, close_raw: pd.Series,
                             spy_tr: pd.Series, spy_raw: pd.Series,
-                            spy_series: Dict[str, pd.Series], idx: pd.DatetimeIndex
+                            spy_series: Dict[str, pd.Series], idx: pd.DatetimeIndex,
+                            breadth: Optional[pd.Series] = None,
                             ) -> Tuple[pd.DataFrame, List[Any]]:
     """한 섹터의 후보지표 전체(값 DataFrame, M.IndicatorSpec 목록)를 만든다.
-    = [M 후보 전부(res["ind"] 재사용, 재계산 없음)] + [섹터 기술 8] + [상대강도 9] + [섹터 매크로]
-      + [SPY 계층 6]. 모든 입력은 idx(섹터 상장일 이후 달력)로 정렬된다."""
+    = [M 후보 전부(res["ind"] 재사용, 재계산 없음)] + [섹터 기술 8] + [상대강도 10(v0.3.0: REL_MA200_SLOPE 추가)]
+      + [섹터 매크로 8~10(v0.3.0 §1.D 확장)] + [SPY 계층 6] + [v0.3.0 §1.E 신규 2~3: 잔차모멘텀·섹터폭].
+    모든 입력은 idx(섹터 상장일 이후 달력)로 정렬된다.
+    breadth: [v0.3.0 §1.E-2] run()에서 11섹터 전체로 1회 계산한 SECTOR_BREADTH_200(공통 시장 내부 지표) —
+    None이면(단일 섹터 테스트 등) 해당 후보를 건너뛴다."""
     frames: List[pd.DataFrame] = []
     specs: List[Any] = []
     if scfg.USE_MARKET_CANDIDATES:
@@ -686,6 +913,19 @@ def build_sector_candidates(ticker: str, res: dict, M, scfg: SectorConfig,
         vals = spy_layer_values(spy_series, beta)
         for raw in spy_layer_specs():
             sec[f"{ticker}__{raw.suffix}"] = vals[raw.suffix]
+            specs.append(_mk_spec(M, ticker, raw))
+    # [v0.3.0 §1.E-1] 잔차모멘텀(베타중립) — 기존 6기준 게이트를 그대로 통과해야 채택.
+    if getattr(scfg, "USE_RESID_MOMENTUM", True):
+        rv = residual_momentum_values(adj_tr.reindex(idx), spy_tr.reindex(idx),
+                                      window=getattr(scfg, "RESID_MOM_WINDOW", 756))
+        for raw in resid_momentum_specs():
+            sec[f"{ticker}__{raw.suffix}"] = rv
+            specs.append(_mk_spec(M, ticker, raw))
+    # [v0.3.0 §1.E-2] 섹터 폭 — run()에서 11섹터 공통으로 1회 계산된 값을 그대로 재사용(재계산 없음).
+    if getattr(scfg, "USE_SECTOR_BREADTH", True) and breadth is not None:
+        bv = breadth.reindex(idx)
+        for raw in sector_breadth_specs():
+            sec[f"{ticker}__{raw.suffix}"] = bv
             specs.append(_mk_spec(M, ticker, raw))
     frames.append(sec)
     ind = pd.concat(frames, axis=1).replace([np.inf, -np.inf], np.nan)
@@ -772,6 +1012,43 @@ def sector_cfg_for(M_cfg, scfg: SectorConfig, ticker: str, idx_i: pd.DatetimeInd
     return dataclasses.replace(M_cfg, **{k: v for k, v in upd.items() if k in fields})
 
 
+def _sector_vol_scale(adj_tr: pd.Series, spy_tr: pd.Series, scfg: SectorConfig) -> float:
+    """[v0.3.0 §1.C ⚠] 섹터 자기 변동성 / SPY 변동성 배율 k — 그 섹터 이력의 '첫' VOL_SCALE_WINDOW
+    거래일(기본 252일)만으로 1회 고정 계산한다. 어떤 신호 계산 시점 t와도 무관한 구조적 상수라
+    격자탐색이 아니며(§3 프로토콜의 '격자 금지' 원칙), 이후 어떤 날짜에도 미래 구간의 변동성 정보가
+    섞여 들어가지 않는다(강한 의미의 인과성 — t-1이 아니라 애초에 t에 의존하지 않음).
+    표본이 부족하거나(신규상장 등) 계산 불가하면 안전하게 1.0(배율 없음)을 반환한다."""
+    w = scfg.VOL_SCALE_WINDOW
+    r_i = np.log(adj_tr.replace(0, np.nan)).diff().dropna()
+    if len(r_i) == 0:
+        return 1.0
+    r_i = r_i.iloc[:w]
+    r_spy_full = np.log(spy_tr.replace(0, np.nan)).diff()
+    r_spy = r_spy_full.reindex(r_i.index)
+    min_n = max(20, w // 2)
+    if len(r_i) < min_n or int(r_spy.notna().sum()) < min_n:
+        return 1.0
+    sigma_i = float(r_i.std())
+    sigma_spy = float(r_spy.std())
+    if not np.isfinite(sigma_i) or not np.isfinite(sigma_spy) or sigma_spy <= 0:
+        return 1.0
+    return float(np.clip(sigma_i / sigma_spy, scfg.VOL_SCALE_MIN, scfg.VOL_SCALE_MAX))
+
+
+def _vol_scaled_cfg(cfg_i, vol_scale: float):
+    """[v0.3.0 §1.C] cfg_i 사본 — EXTENSION_HAIRCUT_STEPS(임계값만, 상한은 불변)·RECOVERY_CONFIRM_PCT·
+    DEEP_RECOVERY_DD·STRUCT_BOTTOM_DD에 vol_scale을 곱한다. 다른 필드는 전부 그대로(신호·검증
+    게이트 자체는 변경하지 않음 — 사이징 오버레이 임계값에만 적용)."""
+    if vol_scale == 1.0:
+        return cfg_i
+    steps = tuple((round(thr * vol_scale, 4), cap) for thr, cap in cfg_i.EXTENSION_HAIRCUT_STEPS)
+    return dataclasses.replace(
+        cfg_i, EXTENSION_HAIRCUT_STEPS=steps,
+        RECOVERY_CONFIRM_PCT=round(cfg_i.RECOVERY_CONFIRM_PCT * vol_scale, 4),
+        DEEP_RECOVERY_DD=round(cfg_i.DEEP_RECOVERY_DD * vol_scale, 4),
+        STRUCT_BOTTOM_DD=round(cfg_i.STRUCT_BOTTOM_DD * vol_scale, 4))
+
+
 # 검증/워크포워드 결과에 영향을 주지 않는 것이 확인된(M 소스 정적 검사: validate_indicators/build_walkforward_weights/
 # _select_and_weight_*가 참조하는 cfg 필드 목록에 없음) 리포트·I/O·감사·수집 전용 필드만 캐시 키에서 제외한다.
 # 나머지 필드는 전부 키에 포함(보수적 — 불필요한 재계산은 있어도 오래된 캐시로 인한 오답은 없다).
@@ -852,7 +1129,8 @@ def _score_with_weights(Z_row: pd.Series, w_row: pd.Series) -> float:
 def sector_lookahead_audit(ticker: str, res: dict, M, scfg: SectorConfig, cfg_i,
                            raw_df: pd.DataFrame, spy_raw_df: pd.DataFrame,
                            W: pd.DataFrame, W_haz: pd.DataFrame,
-                           score_full: pd.Series, haz_full: pd.Series, n_dates: int) -> pd.DataFrame:
+                           score_full: pd.Series, haz_full: pd.Series, n_dates: int,
+                           breadth: Optional[pd.Series] = None) -> pd.DataFrame:
     """[M.lookahead_audit과 같은 방법] 무작위 검사일 d마다 '섹터·SPY 원시가격, M 지표값, M 점수'를
     d까지로 잘라 섹터 후보지표를 처음부터 다시 만들고(z-score 포함) 그날 가중치(W.loc[d])로 점수를
     재계산해 전체계산 점수와 비교한다. 섹터 지표 구성(롤링·ewm·베타 지연·상대가격·발표지연 시리즈)
@@ -882,8 +1160,11 @@ def sector_lookahead_audit(ticker: str, res: dict, M, scfg: SectorConfig, cfg_i,
                  "haz_score": res["haz_score"].loc[res["haz_score"].index <= d],
                  "cfg": res["cfg"]}
         spy_series_t = spy_layer_series(res_t, M)
+        # [v0.3.0 §1.E-2] 섹터 폭도 d까지로 절단해 재계산 감사에 포함 — d 이후 다른 섹터의 정보가
+        # 섞여 있지 않은지 확인(다른 섹터 지표와 동일한 인과성 기준 적용).
+        breadth_t = breadth.loc[breadth.index <= d] if breadth is not None else None
         ind_t, _ = build_sector_candidates(ticker, res_t, M, scfg, price_t["Adj Close"], price_t["Close"],
-                                           spy_tr_t, spy_raw_t, spy_series_t, idx_t)
+                                           spy_tr_t, spy_raw_t, spy_series_t, idx_t, breadth=breadth_t)
         Z_t = pd.DataFrame({k: M.expanding_zscore(ind_t[k]) for k in ind_t.columns}, index=ind_t.index)
         z_row = Z_t.loc[d]
         for kind, Wm, full in (("복합점수", W, score_full), ("위험점수(H)", W_haz, haz_full)):
@@ -925,9 +1206,11 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     close_i = price_i["Close"].astype(float)
     sig_mask = pd.Series(idx_i >= pd.Timestamp(cfg_i.SIGNAL_START), index=idx_i)
 
-    # ---- 지표 ----
+    # ---- 지표 ---- [v0.3.0 §1.E-2] breadth: run()에서 11섹터 공통으로 1회 계산된 값(재계산 없음).
     t0 = time.time()
-    ind_i, specs = build_sector_candidates(ticker, res, M, scfg, adj_i, close_i, spy_tr, spy_raw, spy_series, idx_i)
+    breadth = ctx.get("sector_breadth_200")
+    ind_i, specs = build_sector_candidates(ticker, res, M, scfg, adj_i, close_i, spy_tr, spy_raw, spy_series, idx_i,
+                                           breadth=breadth)
     trend200 = sector_technical_values(adj_i)["TREND_200"]
     timing["04_지표생성"] = round(time.time() - t0, 2)
     log("INDICATOR", kv(ticker=ticker, candidates=len(specs),
@@ -935,19 +1218,38 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                         sector=sum(1 for s in specs if s.key.startswith(f"{ticker}__")),
                         with_data=int((ind_i.notna().sum() > 0).sum())), M=M)
 
-    # ---- 검증 + 워크포워드 (캐시) ----
+    # ---- 검증 + 워크포워드 (캐시) ---- cfg_i(미조정, §1.C 배율 적용 전) 기준 — 캐시키는 아래 §1.C
+    # 사이징 오버레이 임계값 변경과 무관해야 한다(그 필드들은 검증/워크포워드에 관여하지 않음).
     t0 = time.time()
     hv = validate_and_weight_sector(ticker, ind_i, adj_i, cfg_i, specs, M, scfg)
     val_full, W, wlog, W_haz = hv["val_full"], hv["W"], hv["wlog"], hv["W_haz"]
     timing["05_06_검증+워크포워드"] = round(time.time() - t0, 2)
 
-    # ---- 복합점수 / 위험점수 ----
+    # ---- [v0.3.0 §1.C ⚠] 사이징 오버레이 변동성 정규화 — 이 지점부터 cfg_i는 '실제 적용된' cfg를
+    # 가리킨다(신호·검증 게이트는 불변, 과열헤어컷/회복확인폭/깊은낙폭 임계값만 섹터 변동성에 맞춰 조정).
+    vol_scale = _sector_vol_scale(adj_i, spy_tr, scfg) if scfg.VOL_SCALE_OVERLAYS else 1.0
+    cfg_i = _vol_scaled_cfg(cfg_i, vol_scale)
+    log("SIZING", kv(ticker=ticker, vol_scale=round(vol_scale, 3),
+                     haircut_steps=str(cfg_i.EXTENSION_HAIRCUT_STEPS),
+                     recovery_confirm_pct=cfg_i.RECOVERY_CONFIRM_PCT, deep_recovery_dd=cfg_i.DEEP_RECOVERY_DD,
+                     struct_bottom_dd=cfg_i.STRUCT_BOTTOM_DD, hazard_source=scfg.HAZARD_SOURCE), M=M)
+
+    # ---- 복합점수 / 위험점수 ---- [v0.3.0 §1.B ⚠] HAZARD_SOURCE에 따라 신호에 쓰이는 haz_pct의
+    # 소스를 전환한다(§0.3 근거). 섹터 자체 haz_score/haz_pct_sector는 그대로 계산해 01시트에
+    # 진단용으로 나란히 남긴다 — '신호에 쓰이는지'만 바뀐다.
     t0 = time.time()
     with _indicator_spec_override(M, specs):
         score, contrib, n_used = M.composite_score(ind_i, W, cfg_i)
         haz_score, haz_contrib, _ = M.composite_score(ind_i, W_haz, cfg_i)
     score_pct = M.score_percentile(score).where(sig_mask)
-    haz_pct = M.score_percentile(haz_score).where(sig_mask)
+    haz_pct_sector = M.score_percentile(haz_score).where(sig_mask)
+    haz_pct_spy = res["haz_pct"].reindex(idx_i).where(sig_mask)
+    if scfg.HAZARD_SOURCE == "sector":
+        haz_pct = haz_pct_sector
+    elif scfg.HAZARD_SOURCE == "max":
+        haz_pct = pd.concat([haz_pct_sector, haz_pct_spy], axis=1).max(axis=1, skipna=True).where(sig_mask)
+    else:  # "spy"(기본) — M이 SPY에서 이미 검증·교정한 H를 그대로 재사용(재계산 없음)
+        haz_pct = haz_pct_spy
     fast_pct = None
     if cfg_i.USE_FAST_TRIGGER and res.get("fast_pct") is not None:
         fast_pct = res["fast_pct"].reindex(idx_i)      # M과 동일 지표(VIX_TERM) — 시장 급락트리거를 그대로 공유
@@ -983,30 +1285,37 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     audit = pd.DataFrame()
     if scfg.RUN_LOOKAHEAD_AUDIT:
         audit = sector_lookahead_audit(ticker, res, M, scfg, cfg_i, raw_df, ctx["spy_raw_df"], W, W_haz,
-                                       score, haz_score, scfg.AUDIT_SAMPLE)
+                                       score, haz_score, scfg.AUDIT_SAMPLE, breadth=breadth)
     adopted = sorted({k for k in W.columns if (W[k] != 0).any()})
     events = M.event_study(ind_i, adj_i, bt, adopted, cfg_i, haz_pct=haz_pct)
     trades = M.extract_trades(bt, reason, sig["state"])
     episodes = M.drawdown_episodes(bt, cfg_i)
     timing["11_감사+이벤트+구간"] = round(time.time() - t0, 2)
 
+    # [v0.3.0 §1.G-2] SPY(M) 같은 해 평균 목표비중 — 07_연도별성과에 병기(§0.2 표 자동 재현).
+    spy_yearly_pos = res["bt"]["pos_exec"].groupby(res["bt"].index.year).mean()
+
     # ---- 시트 조각 ----
     sheets = build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score, score_pct, n_used,
                                  haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
-                                 wlog, val_full, adopted, trades, episodes, events, sens, audit)
+                                 wlog, val_full, adopted, trades, episodes, events, sens, audit,
+                                 haz_pct_sector=haz_pct_sector, spy_yearly_pos=spy_yearly_pos)
     timing["12_run_sector()합계"] = round(time.time() - t_all, 2)
     first_signal = score_pct.dropna().index[0] if score_pct.notna().any() else None
     log("DONE", kv(ticker=ticker, adopted_ever=len(adopted), strict_pass=int((val_full["판정"] == "PASS").sum()),
                    first_signal=str(first_signal.date()) if first_signal is not None else "-",
+                   hazard_source=scfg.HAZARD_SOURCE, vol_scale=round(vol_scale, 3),
                    cache_hit=hv.get("cache_hit", False), elapsed_s=timing["12_run_sector()합계"]), M=M)
     return {"ticker": ticker, "info": info, "cfg_dict": dataclasses.asdict(cfg_i), "timing": timing,
             "cache_hit": bool(hv.get("cache_hit", False)), "n_candidates": len(specs),
             "first_signal": (str(first_signal.date()) if first_signal is not None else None),
             "adopted": adopted, "sheets": sheets,
+            "hazard_source": scfg.HAZARD_SOURCE, "vol_scale": vol_scale,   # [v0.3.0 §1.B/§1.C]
             # 통합 시트용 소형 시리즈
             "state": sig["state"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
             "target_pos": sig["target_pos"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
             "score_pct": score_pct.loc[sig_mask], "haz_pct": haz_pct.loc[sig_mask],
+            "haz_pct_sector": haz_pct_sector.loc[sig_mask],   # [v0.3.0 §1.B] 진단용(신호 미관여)
             "strategy_ret": bt["strategy_ret"], "bh_ret": bt["bh_ret"], "pos_exec": bt["pos_exec"],
             "ma_ret": bt_ma["strategy_ret"]}
 
@@ -1014,9 +1323,80 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
 # =============================================================================
 # [7] 섹터별 시트 조각 — M.build_report()의 01~11 시트 생성 로직을 섹터에 그대로 적용(+'티커' 열)
 # =============================================================================
+# [v0.3.0 §1.G-1] 09b_규칙별기여 — 원인 진단을 시트에서 바로 확인(§0.2/§0.3 표를 매 실행 자동 산출).
+_CONTRIB_RULES: List[Tuple[str, str]] = [
+    ("hazard_entry", "위험회피진입①(H)"), ("fast_trigger", "급락트리거⓪(FT)"),
+    ("neutral_risk_cut", "중립감축⑨"), ("extension_haircut", "과열헤어컷⑩"),
+    ("trend_promotion", "추세승격⑥"), ("recovery_floor", "회복승격⑤"),
+]
+
+
+def build_rule_contribution(ticker: str, sig: pd.DataFrame, bt: pd.DataFrame) -> pd.DataFrame:
+    """[v0.3.0 §1.G-1] 규칙별 발동일수·발동일의 '익일' B&H수익 평균(그 규칙이 비중을 줄이거나
+    늘린 날 다음날 실제로 시장이 어느 방향으로 움직였는지 — §0.3 H진입일 검증과 같은 방법),
+    비중=0(현금)인 날의 B&H 수익 합(=그 구간 동안 놓친/피한 수익, §0.2)을 상승일/하락일로
+    나누어 자동 산출한다. 12_섹터요약의 신규 3열이 이 표에서 값을 가져다 쓴다(단일 소스)."""
+    idx = bt.index
+    nxt = bt["bh_ret"].shift(-1)
+    rows: List[dict] = []
+    for col, label in _CONTRIB_RULES:
+        if col not in sig.columns:
+            continue
+        fired = sig[col].reindex(idx).fillna(False).astype(bool)
+        n = int(fired.sum())
+        avg_next = float(nxt.where(fired).mean()) if n > 0 else np.nan
+        rows.append({"티커": ticker, "규칙": label, "발동일수": n,
+                     "발동일 익일B&H평균수익(%)": round(avg_next * 100, 4) if pd.notna(avg_next) else np.nan,
+                     "비중=0인 날 B&H수익 합(%p)": np.nan})
+    zero_mask = bt["pos_exec"] <= 1e-9
+    up_mask = zero_mask & (bt["bh_ret"] > 0)
+    dn_mask = zero_mask & (bt["bh_ret"] < 0)
+    rows.append({"티커": ticker, "규칙": "[전체] 비중=0(현금)인 날", "발동일수": int(zero_mask.sum()),
+                 "발동일 익일B&H평균수익(%)": np.nan,
+                 "비중=0인 날 B&H수익 합(%p)": round(float(bt["bh_ret"].where(zero_mask).sum()) * 100, 4)})
+    rows.append({"티커": ticker, "규칙": "[전체] 상승일 미탑승(비중=0 & B&H>0, %p)", "발동일수": int(up_mask.sum()),
+                 "발동일 익일B&H평균수익(%)": np.nan,
+                 "비중=0인 날 B&H수익 합(%p)": round(float(bt["bh_ret"].where(up_mask).sum()) * 100, 4)})
+    rows.append({"티커": ticker, "규칙": "[전체] 하락일 회피(비중=0 & B&H<0, %p — 음수=회피한 손실)", "발동일수": int(dn_mask.sum()),
+                 "발동일 익일B&H평균수익(%)": np.nan,
+                 "비중=0인 날 B&H수익 합(%p)": round(float(bt["bh_ret"].where(dn_mask).sum()) * 100, 4)})
+    return pd.DataFrame(rows)
+
+
+def _append_sector_next_day_row(daily: pd.DataFrame, nd: dict) -> pd.DataFrame:
+    """[v0.3.0 §1.A] M._append_next_day_row()와 같은 패턴 — S의 01_일별_{티커} 컬럼명(섹터상황/예측,
+    M은 시장상황 하나뿐)에 맞춘 버전. 새 계산 없음: M.build_next_day_prediction()이 만든 nd를 표시만."""
+    row = {c: ("" if daily[c].dtype == object else np.nan) for c in daily.columns}
+    if "날짜" in row:
+        row["날짜"] = nd["다음거래일"].date()
+    if "섹터상황" in row:
+        row["섹터상황"] = nd["확정국면"]
+    if "예측" in row:
+        row["예측"] = STATE_SHORT.get(nd["확정국면_원시"], nd["확정국면_원시"])
+    if "복합점수" in row:
+        row["복합점수"] = nd["복합점수"]
+    if "복합점수백분위" in row:
+        row["복합점수백분위"] = nd["복합점수백분위"]
+    if "목표비중" in row:
+        row["목표비중"] = nd["목표비중"]
+    if "체결비중" in row:
+        row["체결비중"] = np.nan
+    if "매매행동" in row:
+        row["매매행동"] = nd["예상행동_en"]
+    if "위험점수백분위(H)" in row:
+        row["위험점수백분위(H)"] = nd["위험점수백분위(H)"]
+    if "근거요약" in row:
+        row["근거요약"] = (f"다음 거래일 예측(전일 종가 신호). 발동 규칙: {nd['발동규칙']}. "
+                          f"{nd['근거요약']}{nd['기준일_경과주의']}")
+    row_df = pd.DataFrame([row])[list(daily.columns)]
+    return pd.concat([daily, row_df], ignore_index=True)
+
+
 def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score, score_pct, n_used,
                         haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
-                        wlog, val_full, adopted, trades, episodes, events, sens, audit) -> Dict[str, pd.DataFrame]:
+                        wlog, val_full, adopted, trades, episodes, events, sens, audit,
+                        haz_pct_sector: Optional[pd.Series] = None,
+                        spy_yearly_pos: Optional[pd.Series] = None) -> Dict[str, pd.DataFrame]:
     idx = bt.index
     name_map = {s.key: s.name_kr for s in specs}
     _flag = lambda col: (sig[col].reindex(idx).map({True: "발동", False: ""}) if col in sig.columns else "")
@@ -1040,6 +1420,10 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
     daily["추세오버라이드"] = sig["trend_override"].reindex(idx).map({True: "발동", False: ""})
     daily["위험점수(H)"] = haz_score.reindex(idx).round(4)
     daily["위험점수백분위(H)"] = haz_pct.reindex(idx).round(4)
+    # [v0.3.0 §1.B] 신호에 실제로 쓰인 H(HAZARD_SOURCE에 따라 spy/sector/max)와 별개로, 섹터 자체
+    # H는 진단 목적으로 표시만 나란히 남긴다(§1.B.2 — 신호에는 관여하지 않음).
+    if haz_pct_sector is not None:
+        daily["위험점수백분위(H,섹터자체)"] = haz_pct_sector.reindex(idx).round(4)
     daily["위험회피진입(H)"] = _flag("hazard_entry")
     daily["위험선호차단(H)"] = _flag("hazard_block")
     daily["위험회피해제안전판(H)"] = _flag("hazard_floor")
@@ -1069,6 +1453,22 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
         daily[f"[값]{name_map.get(k, k)}"] = ind_i[k].reindex(idx).round(4)
         daily[f"[기여]{name_map.get(k, k)}"] = contrib[k].reindex(idx).round(4)
     daily = daily.reset_index(drop=True)
+
+    # [v0.3.0 §1.A] 다음 거래일 예측 1행 — M.build_next_day_prediction()을 그대로 재사용(재계산 없음,
+    # 새 계산이 아니라 sig/bt의 마지막 값을 표시만 재구성). bt/성과 시트는 무관 — 이 변수는 daily에만 반영.
+    next_day = None
+    try:
+        if hasattr(M, "build_next_day_prediction"):
+            next_day = M.build_next_day_prediction(
+                {"bt": bt, "sig": sig, "score": score, "score_pct": score_pct, "haz_pct": haz_pct, "reason": reason},
+                cfg_i)
+            daily = _append_sector_next_day_row(daily, next_day)
+    except Exception as e:
+        log("REPORT", kv(ticker=ticker, event="next_day_row_failed", err=type(e).__name__, msg=str(e)[:160]),
+            M=M, level="warning")
+
+    # [v0.3.0 §1.G-1] 09b_규칙별기여 — bt(SIGNAL_START 이후)와 실제 신호에 쓰인 sig 기준(§1.B 반영).
+    rule_contrib = build_rule_contribution(ticker, sig, bt)
 
     # ---- 03 지표검증 / 04 채택근거상세 ----
     val_cols = ["지표코드", "지표명", "카테고리", "검증트랙", "평가지평", "판정", "판정사유",
@@ -1121,6 +1521,9 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
     dd_y = bt.groupby(bt.index.year).apply(
         lambda g: round(float(((1 + g["strategy_ret"]).cumprod() / (1 + g["strategy_ret"]).cumprod().cummax() - 1).min()), 4))
     ann["전략연중최대낙폭"] = ann["연도"].map(dd_y)
+    # [v0.3.0 §1.G-2] SPY(M) 같은 해 평균 목표비중 병기 — §0.2 표를 매 실행 자동 재현(강세장 과소투자 진단).
+    if spy_yearly_pos is not None:
+        ann["SPY평균비중"] = ann["연도"].map(spy_yearly_pos).round(3)
 
     # ---- 08 워크포워드 가중치 ----
     wf = pd.DataFrame(wlog)
@@ -1155,7 +1558,8 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
         verdict = "판정 불가(상승 또는 하락 국면 표본 없음)"
     regime_stats["국면정의 검증"] = verdict
 
-    for df in (val_sheet, detail, perf, extra, ann, wf, regime_stats, trades, episodes, events, sens, audit):
+    for df in (val_sheet, detail, perf, extra, ann, wf, regime_stats, trades, episodes, events, sens, audit,
+              rule_contrib):
         if isinstance(df, pd.DataFrame) and len(df) and "티커" not in df.columns:
             df.insert(0, "티커", ticker)
     return {"daily": daily, "trades": trades, "val_sheet": val_sheet, "detail": detail, "events": events,
@@ -1163,7 +1567,9 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
             "regime_stats": regime_stats, "audit": audit, "regime_validity": regime_validity,
             "regime_verdict": verdict, "n_strict_pass": int((val_full["판정"] == "PASS").sum()),
             "latest_adopted": (int(pd.to_numeric(pd.DataFrame(wlog)["채택지표수"], errors="coerce").dropna().iloc[-1])
-                               if len(wlog) else 0)}
+                               if len(wlog) else 0),
+            # [v0.3.0 §1.A/§1.G-1]
+            "rule_contrib": rule_contrib, "next_day": next_day}
 
 
 # =============================================================================
@@ -1331,10 +1737,24 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
                                         if spy_series["SCORE_PCT"].notna().any() else "-"),
                    rf=rf_daily is not None), M=M)
 
+    # [v0.3.0 §1.E-2] 섹터 폭(SECTOR_BREADTH_200) — 11섹터 공통 후보라 여기서 1회만 계산해 ctx로
+    # 전달한다(섹터별로 재계산하지 않음). 각 섹터의 TREND_200(그날 자기 200일선 이격도, 인과)이
+    # >0인지만 보므로 다른 섹터의 미래 정보가 섞일 여지가 없다.
+    sector_breadth_200 = None
+    if scfg.USE_SECTOR_BREADTH and frames:
+        trend200_by_t = {t: sector_technical_values(frames[t][0]["Adj Close"].astype(float))["TREND_200"]
+                         for t in frames}
+        breadth_df = pd.DataFrame({t: (v > 0) for t, v in trend200_by_t.items()}).reindex(cal)
+        sector_breadth_200 = breadth_df.mean(axis=1, skipna=True)
+        log("DATA", kv(event="sector_breadth_built", sectors=len(trend200_by_t),
+                       last=round(float(sector_breadth_200.dropna().iloc[-1]), 3)
+                       if sector_breadth_200.notna().any() else None), M=M)
+
     # ---- 2) 섹터별 파이프라인 ----
     t0 = time.time()
     ctx = {"M": M, "res": res, "scfg": scfg, "frames": frames, "raw": raw, "spy_tr": spy_tr, "spy_raw": spy_raw,
-           "spy_raw_df": spy_df, "spy_series": spy_series, "rf_daily": rf_daily}
+           "spy_raw_df": spy_df, "spy_series": spy_series, "rf_daily": rf_daily,
+           "sector_breadth_200": sector_breadth_200}
     results, failed = run_sectors(list(frames.keys()), ctx, scfg, M)
     stage_timing["02_섹터파이프라인"] = round(time.time() - t0, 2)
 
@@ -1342,7 +1762,15 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
     t0 = time.time()
     sig_start = pd.Timestamp(M_cfg.SIGNAL_START)
     eval_idx = cal[cal >= sig_start]
-    matrix = build_prediction_matrix(results, res, eval_idx, scfg)
+    # [v0.3.0 §1.A] SPY의 다음 거래일 예측 — M.build_next_day_prediction()을 그대로 재사용(재계산 없음).
+    # 구버전 M(v1.24.0 미만) 번들에도 안전하게 동작하도록 가드.
+    nd_spy = None
+    try:
+        if hasattr(M, "build_next_day_prediction"):
+            nd_spy = M.build_next_day_prediction(res, M_cfg)
+    except Exception as e:
+        log("RUN", kv(event="next_day_spy_failed", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+    matrix = build_prediction_matrix(results, res, eval_idx, scfg, nd_spy=nd_spy)
     portfolio_perf, portfolio_curve = build_portfolio_reference(results, res, eval_idx, M)
     summary = build_sector_summary(results, failed, universe)
     stage_timing["03_통합시트"] = round(time.time() - t0, 2)
@@ -1353,16 +1781,19 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             "matrix": matrix, "portfolio_perf": portfolio_perf, "portfolio_curve": portfolio_curve,
             "summary": summary, "stage_timing": stage_timing, "scfg": scfg, "M_cfg": M_cfg,
             "signal_start": str(sig_start.date()), "cal_end": str(cal[-1].date()), "aborted": False,
-            "m_bundle_meta": res.get("bundle_meta", {})}
+            "m_bundle_meta": res.get("bundle_meta", {}), "nd_spy": nd_spy}
 
 
 # =============================================================================
 # [10] 통합 시트 — 01Z 섹터일별예측 매트릭스 / 12 섹터요약 / 13 섹터분산전략(참고)
 # =============================================================================
 def build_prediction_matrix(results: Dict[str, Dict[str, Any]], res: dict, eval_idx: pd.DatetimeIndex,
-                            scfg: SectorConfig) -> pd.DataFrame:
+                            scfg: SectorConfig, nd_spy: Optional[dict] = None) -> pd.DataFrame:
     """날짜 × 11섹터: 예측(상승/중립/하락/추세보유/추세현금/신호없음)·목표비중, SPY 시장상황, 상승·하락 섹터 수.
-    섹터 상장 전 날짜는 공란. 매 행이 그날 종가 기준 확정(다음날 시가 체결)이라는 M의 규칙 그대로."""
+    섹터 상장 전 날짜는 공란. 매 행이 그날 종가 기준 확정(다음날 시가 체결)이라는 M의 규칙 그대로.
+    [v0.3.0 §1.A] nd_spy가 주어지면(run()에서 M.build_next_day_prediction()으로 재계산 없이 만든 SPY 다음날
+    예측) 맨 끝에 '예측' 행 1개를 추가한다 — '구분' 열로 실적/예측을 구분(불변식·성과 계산은 '실적'만 사용,
+    이 매트릭스는 참고용 시트라 별도 재계산 로직이 없어 여기서만 구분하면 됨)."""
     out = pd.DataFrame(index=eval_idx)
     out["날짜"] = [d.date() for d in eval_idx]
     spy_state = res["sig"]["state"].reindex(eval_idx)
@@ -1381,9 +1812,35 @@ def build_prediction_matrix(results: Dict[str, Dict[str, Any]], res: dict, eval_
         out[f"{t} 목표비중"] = sr["target_pos"].reindex(eval_idx).round(2)
         up = up + (st == "RISK_ON").astype(int)
         down = down + (st == "RISK_OFF").astype(int)
-    out.insert(3, "상승예측 섹터수", up.values)
-    out.insert(4, "하락예측 섹터수", down.values)
-    return out.reset_index(drop=True)
+    out.insert(1, "구분", "실적")
+    out.insert(4, "상승예측 섹터수", up.values)
+    out.insert(5, "하락예측 섹터수", down.values)
+    out = out.reset_index(drop=True)
+
+    if nd_spy is not None:
+        row = {c: ("" if out[c].dtype == object else np.nan) for c in out.columns}
+        row["날짜"] = nd_spy["다음거래일"].date()
+        row["구분"] = "예측"
+        row["SPY 시장상황"] = STATE_SHORT.get(nd_spy["확정국면_원시"], nd_spy["확정국면_원시"])
+        row["SPY 목표비중"] = nd_spy["목표비중"]
+        n_up = n_down = 0
+        for t in scfg.SECTORS:
+            sr = results.get(t)
+            nd_t = sr["sheets"].get("next_day") if sr is not None else None
+            if nd_t is None:
+                row[f"{t} 예측"] = "실패/제외" if sr is None else ""
+                row[f"{t} 목표비중"] = np.nan
+                continue
+            st_raw = nd_t["확정국면_원시"]
+            row[f"{t} 예측"] = STATE_SHORT.get(st_raw, st_raw)
+            row[f"{t} 목표비중"] = nd_t["목표비중"]
+            n_up += int(st_raw == "RISK_ON")
+            n_down += int(st_raw == "RISK_OFF")
+        row["상승예측 섹터수"] = n_up
+        row["하락예측 섹터수"] = n_down
+        row_df = pd.DataFrame([row])[list(out.columns)]
+        out = pd.concat([out, row_df], ignore_index=True)
+    return out
 
 
 def build_portfolio_reference(results: Dict[str, Dict[str, Any]], res: dict, eval_idx: pd.DatetimeIndex, M
@@ -1415,6 +1872,15 @@ def build_portfolio_reference(results: Dict[str, Dict[str, Any]], res: dict, eva
     return perf, curve.reset_index(drop=True)
 
 
+def _rule_contrib_value(rule_contrib: pd.DataFrame, label: str, col: str) -> Any:
+    """[v0.3.0 §1.G-1] 09b_규칙별기여 표에서 (규칙 라벨, 열) 하나를 뽑는다 — 12_섹터요약 신규 3열이
+    이 표를 유일한 소스로 삼도록(값 재계산 없이 그대로 인용)."""
+    if rule_contrib is None or not len(rule_contrib) or "규칙" not in rule_contrib.columns:
+        return np.nan
+    hit = rule_contrib.loc[rule_contrib["규칙"] == label, col]
+    return hit.iloc[0] if len(hit) else np.nan
+
+
 def build_sector_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, str], universe: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for t in SECTORS:
@@ -1439,6 +1905,7 @@ def build_sector_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, s
             audit_ok = "전체 통과" if (len(chk) == 0 or chk["일치"].astype(str).str.startswith("OK").all()) else "불일치 발생"
         else:
             audit_ok = "미실행"
+        rc = sh.get("rule_contrib")
         rows.append({**base, "상태": "정상", "실제데이터시작": sr["info"]["실제데이터시작"],
                      "신호시작일(복합점수)": sr["first_signal"] or "-",
                      "후보지표수": sr["n_candidates"], "엄격채택(전체표본)": sh["n_strict_pass"],
@@ -1452,7 +1919,13 @@ def build_sector_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, s
                      "국면정의검증": ("PASS" if sh["regime_validity"] else ("FAIL" if sh["regime_validity"] is False else "판정불가")),
                      "룩어헤드감사": audit_ok, "캐시사용": sr["cache_hit"],
                      "실행시간(초)": sr["timing"].get("12_run_sector()합계"),
-                     "AdjClose지연": sr["info"]["AdjClose지연"]})
+                     "AdjClose지연": sr["info"]["AdjClose지연"],
+                     # [v0.3.0 §1.G-1] 09b_규칙별기여에서 그대로 인용(단일 소스, 재계산 없음).
+                     "H진입일 익일평균수익(%)": _rule_contrib_value(rc, "위험회피진입①(H)", "발동일 익일B&H평균수익(%)"),
+                     "상승 미탑승(%p)": _rule_contrib_value(
+                         rc, "[전체] 상승일 미탑승(비중=0 & B&H>0, %p)", "비중=0인 날 B&H수익 합(%p)"),
+                     "하락 회피(%p)": _rule_contrib_value(
+                         rc, "[전체] 하락일 회피(비중=0 & B&H<0, %p — 음수=회피한 손실)", "비중=0인 날 B&H수익 합(%p)")})
     return pd.DataFrame(rows)
 
 
@@ -1500,6 +1973,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     sheets["07_연도별성과"] = _concat(results, "annual")
     sheets["08_워크포워드가중치"] = _concat(results, "wf")
     sheets["09_국면통계"] = _concat(results, "regime_stats")
+    sheets["09b_규칙별기여"] = _concat(results, "rule_contrib")  # [v0.3.0 §1.G-1]
     q = sres.get("quality", pd.DataFrame())
     u = sres.get("universe", pd.DataFrame())
     sheets["10_데이터품질"] = pd.concat([u, q], ignore_index=True, sort=False) if len(q) else u
@@ -1515,9 +1989,13 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     else:
         audit_line = "미실행"
     regime_pass = int(sum(1 for t in ok_t if results[t]["sheets"]["regime_validity"]))
+    # [v0.3.0 §1.A] '구분'==실적만 사용 — build_prediction_matrix()가 맨 끝에 붙이는 '예측' 행이
+    # 여기 섞이면 "최근 예측"이 확정되지 않은 다음 거래일 값으로 잘못 표시된다.
+    mtx = sres["matrix"]
+    mtx_actual = mtx[mtx["구분"] == "실적"] if "구분" in mtx.columns else mtx
     up_line = ""
-    if len(sres["matrix"]):
-        last = sres["matrix"].iloc[-1]
+    if len(mtx_actual):
+        last = mtx_actual.iloc[-1]
         preds = [f"{t}:{last.get(f'{t} 예측', '')}" for t in scfg.SECTORS]
         up_line = f"{last['날짜']} 기준 — SPY:{last.get('SPY 시장상황', '')} | " + ", ".join(preds)
     pp = sres["portfolio_perf"].set_index("전략") if len(sres["portfolio_perf"]) else pd.DataFrame()
@@ -1529,6 +2007,31 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         return "-"
 
     n_cand = results[ok_t[0]]["n_candidates"] if ok_t else "-"
+
+    # [v0.3.0 §1.A] '다음 거래일 예측' meta 블록 — M의 build_report() 패턴 그대로(새 계산 없음, t일
+    # 종가로 이미 확정된 target_pos를 표시만 재구성). SPY 1줄 + 섹터 11줄 + 안내 1줄.
+    nd_spy = sres.get("nd_spy")
+    nd_rows: List[Tuple[str, str]] = []
+    if nd_spy is not None:
+        nd_rows.append(("다음 거래일 예측 - 기준일(데이터)", f"{nd_spy['기준일'].date()}{nd_spy['기준일_경과주의']}"))
+        nd_rows.append(("다음 거래일 예측 - 대상일", f"{nd_spy['다음거래일'].date()} (다음 영업일 기준 — 미국 공휴일 "
+                                                 "미반영, 실제 휴장이면 그 다음 개장일에 체결)"))
+        nd_rows.append(("다음 거래일 예측 - SPY", f"{nd_spy['확정국면']} / 목표비중 {nd_spy['목표비중']:.2f} / "
+                                               f"{nd_spy['예상행동_kr']}"))
+        for t in scfg.SECTORS:
+            nd_t = results.get(t, {}).get("sheets", {}).get("next_day") if t in results else None
+            if nd_t is None:
+                nd_rows.append((f"다음 거래일 예측 - {t}", "실패/제외" if t not in results else "판정불가(재구성 실패)"))
+                continue
+            nd_rows.append((f"다음 거래일 예측 - {t}", f"{nd_t['확정국면']} / 목표비중 {nd_t['목표비중']:.2f} / "
+                                                     f"{nd_t['예상행동_kr']}"))
+        nd_rows.append(("다음 거래일 예측 - 안내", "t일 종가로 확정된 target_pos를 t+1일 시가에 체결하는 기존 체결 "
+                                               "규칙을 표시만 재구성한 것 — 새 계산이 아니며 06/07 등 백테스트 성과 "
+                                               "시트에는 영향 없음. 01Z_섹터일별예측 마지막 행(구분=예측)·01_일별_티커 "
+                                               "마지막 행에도 같은 값이 있음"))
+    else:
+        nd_rows.append(("다음 거래일 예측", "미제공(M 번들이 v1.24.0 미만이거나 계산 실패 — '최근 예측'/09b_규칙별기여 참고)"))
+
     meta = [
         ("버전", f"sector_rotation.py {VERSION} ({VERSION_DATE}) — market_regime_trader.py 번들 "
                 f"{sres.get('m_bundle_meta', {}).get('bundle_version', '직접 res')}"),
@@ -1541,7 +2044,8 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         ("섹터 실행 결과", f"{n_ok}/{len(scfg.SECTORS)} 정상" + (f", 실패: {', '.join(sres['failed'].keys())}" if sres["failed"] else "")),
         ("최근 예측", up_line),
         ("후보지표", f"섹터당 {n_cand}개 = M 후보 전부(변동성/신용/매크로/크로스에셋/추세/자동생성) "
-                    f"+ 섹터 기술 8 + SPY대비 상대강도 9 + 섹터 매크로 2~4 + SPY 계층 6(마스킹 전 점수·위험 백분위, 베타 상호작용)"),
+                    f"+ 섹터 기술 8 + SPY대비 상대강도 10(§1.E REL_MA200_SLOPE 포함) + 섹터 매크로 8(§1.D 확장) "
+                    f"+ SPY 계층 6(마스킹 전 점수·위험 백분위, 베타 상호작용) + 잔차모멘텀 1 + 섹터폭 1(§1.E)"),
         ("검증·가중·신호 규칙", "M과 동일: 6기준 검증(IC/NW-t/5분위/하락AUC/4구간 부호안정성/커버리지, 시간감쇠), 워크포워드 "
                            f"재추정({scfg.SECTOR_REWEIGHT_FREQ or M_cfg.REWEIGHT_FREQ}), 보조채택, 추세트랙캡 {M_cfg.TREND_TRACK_WEIGHT_CAP:.0%}, "
                            f"기저시리즈캡 {M_cfg.SERIES_WEIGHT_CAP:.0%}, 위험(H)트랙, 규칙 ⓪ 급락트리거(M의 VIX_TERM 공유) ~ ⑩ 과열헤어컷, "
@@ -1555,12 +2059,16 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         ("SPY 국면전략(M)", _pf("SPY 국면전략(M)")),
         ("SPY 단순보유", _pf("SPY 단순보유")),
         ("난수 시드", str(scfg.RANDOM_SEED)),
-        ("시트 안내", "01Z 섹터일별예측(날짜×11섹터 상승/중립/하락·목표비중, SPY 시장상황 병기) / 12 섹터요약(섹터별 1행) / "
-                   "13 섹터분산전략(참고 성과)·13b 자산곡선 / 01_일별_티커(섹터별 M 01시트와 동일 컬럼: 주가·국면·점수·위험(H)·규칙 발동·근거·채택지표 값/기여) / "
+        ("시트 안내", "01Z 섹터일별예측(날짜×11섹터 상승/중립/하락·목표비중, SPY 시장상황 병기, '구분' 열=실적/예측 — 맨 끝 1행이 "
+                   "다음 거래일 예측) / 12 섹터요약(섹터별 1행, H진입일 익일평균수익·상승 미탑승·하락 회피 포함) / "
+                   "13 섹터분산전략(참고 성과)·13b 자산곡선 / 01_일별_티커(섹터별 M 01시트와 동일 컬럼 + 위험점수백분위(H,섹터자체) 진단열, "
+                   "마지막 행이 다음 거래일 예측) / "
                    "02 거래내역 / 03 지표검증 / 04 채택근거상세 / 05 이벤트스터디 / 05b 하락상승구간 / 06 성과·06b 운용통계·06c 임계값민감도 / "
-                   "07 연도별 / 08 워크포워드가중치 / 09 국면통계 / 10 데이터품질(섹터 유니버스·Adj Close 지연) / 11 룩어헤드감사 — 전부 '티커' 열로 구분"),
+                   "07 연도별(SPY평균비중 병기) / 08 워크포워드가중치 / 09 국면통계 / 09b 규칙별기여(규칙 발동일수·익일평균수익, 상승 미탑승/하락 "
+                   "회피) / 10 데이터품질(섹터 유니버스·Adj Close 지연) / 11 룩어헤드감사 — 02~11(09b 포함)은 전부 '티커' 열로 구분"),
         ("면책", "본 산출물은 연구·교육 목적의 백테스트 결과이며 투자 자문이 아닙니다. 과거 성과는 미래 수익을 보장하지 않습니다."),
     ]
+    meta = [meta[0]] + nd_rows + meta[1:]  # [v0.3.0 §1.A] 버전 다음에 '다음 거래일 예측' 블록 삽입(M과 동일 패턴)
     for k, v in sorted(sres.get("stage_timing", {}).items()):
         meta.append((f"실행시간 - {k}", f"{v:.1f}초"))
     for t in ok_t:
