@@ -1,8 +1,8 @@
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.6.0 - 2026-09-05 - [순환매 판단을 항상 내리도록 ⚠] 채택 모드 best_available(엄격 통과 없으면 방향 일치·t≥1.0
-#    상위 2개 강제 채택, 13g에 근거 등급 기록) + 외부 검증(Ken French 49업종, 외부 t≥2 & 로컬 t≥1 → 채택) + 매크로 베타 예측
-#    후보(롤링 회귀 민감도 × 최근 매크로 변화). 3단계 배분 규칙·섹터 국면 신호·M 무변경.
+#  VERSION: v0.7.0 - 2026-09-06 - [검증 잣대를 전략에 맞춤 ⚠] 신호 채택 통계를 '상위1 스프레드'(평활 순위 1위 섹터의 향후 21일
+#    수익 − 상장 평균, NW-t)로 변경(ROTATION_SELECT_STAT="top1"; "ic"=종전) + 수용기준 ⑤ '목표: CAGR ≥ SPY 국면전략(M)' + 비교 변형
+#    '리더 자체 목표비중' + MACRO_BETA_FCST 팩터 커버리지 결함 수정 + REL_EXT_200 사전방향 −1→+1(외부 FF49 근거). 3단계 규칙·E_t·M 무변경.
 #
 #  목적:
 #    market_regime_trader.py(이하 M)가 SPY에 대해 하는 일을 11개 SPDR 섹터 ETF(XLK/XLV/XLY/
@@ -39,6 +39,39 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.7.0 | 2026-09-06 | 사용자 요청(v0.6.0 실데이터 리포트 확인 후): "왜 국면 판단 비중대로 안 따라가? 국면 비중대로 따라가고 그중 상승
+#    확률이 가장 높은 섹터를 사야 하는 것 아닌가. 섹터 예측을 잘한다면 SPY 국면전략보다 수익률이 높아야 한다 — 그걸 목표로 개선, 다른
+#    문제도 전체 점검".
+#    [진단 — 실측 v0.6.0] (1) 비중은 E_t를 정확히 따르고 있었다(13c 섹터+SPY 합계 == E_t, 전 거래일 차이 0). 문제는 '어느 섹터'였다.
+#      (2) 채택 신호 RESID_MOM_12_1(외부검증 지원)은 rank IC는 있으나 1위가 저베타 방어섹터(XLP·XLU·XLV)에 몰려 상승장에서 SPY보다
+#      뒤졌다(리더 CAGR 16.56%/MDD −9.3% vs SPY M 18.65%/−7.1%). (3) 근본 원인 = 검증 잣대: 평균 rank IC는 '11개 전체 순서'의
+#      정확도인데 전략은 '1위 하나'만 산다. 시스템의 상승 확률 SCORE_PCT는 rank IC t≈0.5로 탈락했지만, 같은 리포트 데이터로 잰
+#      '상위1 스프레드'(21일 평활 순위 1위의 향후 21일 수익 − 적격 평균)는 +1.25%/21일·NW-t 3.2(무작위 0.4~1.9)였고, SCORE_PCT 1위
+#      ×E_t 근사 백테스트(표본내·비용 제외)는 CAGR ≈19.8% vs SPY×E_t 15.5%, 9년 중 8년 우위, 보유/평활 창 변경에도 18.6~21.4%.
+#      (4) 전체 점검 결함: MACRO_BETA_FCST 학습 관측일이 36일(팩터 하나의 이력이 짧아 '모든 열 유효' 조건이 그 이후로만 성립),
+#      REL_EXT_200 사전방향(−, 평균회귀)이 외부 FF49 전 학습창에서 t≈−8.2로 정반대(= 지속 +8.2).
+#    [⚠ 선택 통계 ROTATION_SELECT_STAT="top1"(기본)] rotation_walkforward_select()/_top1_spread_series(): 후보별 0~1 순위(사전방향
+#      적용)를 배분과 같은 21일 평활 후 그날 1위 섹터의 향후 h일 수익 − 상장 섹터 평균 → 일별 시계열의 NW-HAC t(lag=h)를 채택 판정에
+#      사용. 임계값(엄격 2.0 / 최소 1.0 / 외부 2.0)·모드·최소 관측일·학습창 마감(연초−35일)은 그대로. rank IC t도 계속 계산해 13g에
+#      'NW-HAC t(IC)'·'NW-HAC t(상위1)'·'선택 통계' 열로 병기('NW-HAC t' 열 = 채택에 쓴 통계). 외부검증(FF49)도 같은 통계로 계산
+#      (13h에 두 t 병기). "ic"로 두면 v0.6 방식. 잡음 신호의 상위1 t는 여전히 ≈N(0,1)이라 오채택 크기는 IC 때와 같다(단위테스트).
+#    [수용기준] ③ = 배분에 쓰는 평활 복합순위의 상위1 스프레드 NW-t ≥ 2.0(top1일 때; 참고로 rank IC t 병기). ⑤ 신설 '목표: CAGR ≥
+#      SPY 국면전략(M)'(ROTATION_ACCEPT_VS_SPY_M=0 여유) — ①②④가 '균등 대조군 대비 정보 유무', ③이 '1위 판별력', ⑤가 '이 계층을
+#      둘 이유'(M만 쓰는 것보다 나은가). 13d에 후보별 상위1 스프레드·t 열, 00시트 '목표 대비(⑤)' 줄 신설. 전 기간 폴백이면 ⑤는 자동
+#      PASS(주 전략 = SPY M)이며 ③④는 N/A.
+#    [비교 변형] '집중배분(리더 자체 목표비중) [비교]': 리더 보유일 노출을 E_t 대신 그 섹터의 M식 target_pos로(E_t=0인 날은 현금 유지).
+#      13 시트 비교용 — 실행 비중(target_w)은 사용자 요청대로 E_t를 따른다. ROTATION_ALT_LEADER_OWN_POS로 끔.
+#    [결함 수정] build_rotation_raw_signals(): 팩터 채택을 '관측 500일 초과'에서 '섹터 이력 대비 커버리지 ≥ MACRO_BETA_MIN_COVERAGE
+#      (0.8)'로 — 이력 짧은 팩터가 회귀 표본을 잠식하던 문제 해소, 사용/제외 팩터를 로그(macro_beta_factors). 단위테스트: 짧은 팩터 포함
+#      시 유효일 198일 → 제외 시 6691일.
+#    [⚠ 사전방향] REL_EXT_200 −1 → +1: 근거는 11섹터 표본이 아니라 외부 표본(FF49 1926~, 전 학습창 t≈+8)과 업종 모멘텀 문헌 —
+#      사후 데이터 맞춤과 구별해 ROTATION_SIGNAL_SPECS 주석에 명시. 채택 여부는 여전히 워크포워드가 결정.
+#    [검증] test_sector_rotation_v070.py 6항목 PASS(손계산·지속형 심은 신호 전 연도 채택/잡음 미채택·인과성·커버리지·비교 변형/⑤·
+#      외부 top1). 기존 스위트(v040/v050/v060 — 픽스처가 IC 통계로 보정된 v050/v060은 ROTATION_SELECT_STAT="ic" 명시)·후보·매트릭스·
+#      자기검사·v0.3 검증·E2E(13 성과표 10행, 수용기준 6행) PASS.
+#    [기대치 — 정직하게] 실데이터에서 SCORE_PCT의 1999~2017 학습창 상위1 t가 2.0(또는 최선 가용 1.0)을 넘는지는 Colab 실행 후 13g로
+#      확정된다. 넘으면 리더가 SCORE_PCT 1위(고베타·추세 섹터)로 바뀌어 ⑤ 달성 가능성이 있지만 MDD는 SPY M보다 깊어질 수 있다
+#      (집중의 대가). 넘지 못하면 v0.6과 같은 신호가 남거나 폴백(=SPY M)이 된다 — 그 경우 ⑤는 '동률'로 PASS지만 순환매 예측은 못 한 것.
 #  v0.6.0 | 2026-09-05 | 사용자 지적(v0.5.1 후): "SPY가 오르면 모든 섹터가 오르나? 아니잖아. 순환매를 판단하도록 해야지 — 왜 더
 #    못 하나". 맞는 지적 — 연도별 최고·최저 섹터 수익 차이는 2022년 102%p(XLE +64/XLC −38), 2020년 76%p, 2023년 63%p로 거대하다.
 #    v0.5의 문제는 '분산이 없다'가 아니라 검정 문턱이었다: 11개 섹터의 일별 순위상관은 표준편차 ≈0.32로 매우 시끄러워 t≥2.0은
@@ -231,8 +264,8 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.6.0"
-VERSION_DATE = "2026-09-05"
+VERSION = "v0.7.0"
+VERSION_DATE = "2026-09-06"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -321,9 +354,17 @@ class SectorConfig:
                                          "MOM_COMPOSITE", "ALL_COMPOSITE")   # [v0.5.1] 사전 고정 복합 후보 2종
     MACRO_BETA_FACTORS: Tuple[str, ...] = ("DGS10", "DX-Y.NYB", "CL=F", "BAMLH0A0HYM2", "HG=F")   # 금리·달러·유가·신용·구리
     MACRO_BETA_WINDOW: int = 756               # 민감도 추정 롤링 창(거래일, 약 3년)
-    ROTATION_SELECT_T: float = 2.0             # '엄격' 채택 기준: 학습창 rank IC의 NW-HAC t ≥ 2.0 & 부호 = 사전방향
-    ROTATION_SELECT_MIN_DAYS: int = 1000       # 학습창 최소 IC 관측일(약 4년 — 그 미만이면 그 신호는 아직 판정 불가=미채택)
+    MACRO_BETA_MIN_COVERAGE: float = 0.8       # [v0.7.0] 팩터 채택 최소 커버리지(섹터 이력 대비 관측 비율) — v0.6 실측 '학습 36일' 결함 수정
+    ROTATION_SELECT_T: float = 2.0             # '엄격' 채택 기준: 학습창 선택통계(아래 STAT)의 NW-HAC t ≥ 2.0 & 부호 = 사전방향
+    ROTATION_SELECT_MIN_DAYS: int = 1000       # 학습창 최소 관측일(약 4년 — 그 미만이면 그 신호는 아직 판정 불가=미채택)
     ROTATION_SELECT_HORIZON: int = 21          # 검증 지평(거래일) — 월 리밸런스 관행과 동일
+    # [v0.7.0 ⚠ 선택 통계] 사용자 목표("국면 비중을 따르며 그중 상승 확률이 가장 높은 섹터 하나를 사서 SPY 국면전략보다 높은 수익").
+    #   v0.6 실측 진단: 평균 rank IC는 '11개 전체 순서'를 재는 잣대여서 '1위 하나를 고르는' 전략과 맞지 않았다 — 시스템의 상승 확률
+    #   SCORE_PCT는 rank IC t≈0.5로 탈락했지만 그 1위 섹터의 21일 초과수익(상위1 스프레드)은 +1.25%/21일·NW-t 3.2였고, 채택된
+    #   잔차모멘텀은 IC는 있어도 1위가 저베타 방어섹터로 몰려 SPY보다 뒤졌다(리더 16.6% < SPY M 18.7%).
+    #   "top1": 선택통계 = 상위1 스프레드(그날 평활 순위 1위 섹터의 향후 h일 수익 − 상장 섹터 평균)의 NW-HAC t — 전략이 실제로 얻는
+    #   것을 직접 검증. "ic": v0.5~0.6 방식(평균 rank IC의 t). 두 통계 모두 13g에 기록되며 임계값(t≥2.0/1.0)은 그대로.
+    ROTATION_SELECT_STAT: str = "top1"         # "top1"(기본) | "ic"
     # [v0.6.0 ⚠] 채택 모드 — 사용자 요청("SPY가 오른다고 모든 섹터가 오르는 게 아니다 — 순환매 판단을 하도록 하라").
     #   v0.5 실측: 후보 전부 t 1.3~1.7로 '엄격' 문턱(2.0)에 걸려 0/9 연도 채택 → 전 기간 폴백(SPY). 11개 섹터의 일별 순위상관은
     #   표준편차 ≈0.32로 매우 시끄러워 t≥2.0은 IC≥0.036을 요구하는데, 문헌상 섹터 순환매 신호의 힘은 IC 0.02~0.03 수준이다.
@@ -362,8 +403,12 @@ class SectorConfig:
     # 수용기준(§1.F.3, 사전 고정) — 대조군 "M노출×균등11" 대비
     ROTATION_ACCEPT_CAGR_GAIN: float = 0.015   # CAGR +1.5%p 이상
     ROTATION_ACCEPT_MDD_WORSE: float = 0.01    # MDD 악화 1%p 이하
-    ROTATION_ACCEPT_IC_T: float = 2.0          # 복합 순위 rank IC의 NW-HAC t ≥ 2.0
+    ROTATION_ACCEPT_IC_T: float = 2.0          # ③ 복합순위의 검정 t ≥ 2.0 — [v0.7.0] ROTATION_SELECT_STAT="top1"이면 상위1 스프레드 t, "ic"면 rank IC t
     ROTATION_ACCEPT_SPREAD_PERIODS: int = 2    # 상위3−하위3 스프레드가 3구간(18-20/21-23/24-26) 중 양수인 구간 수 ≥ 2
+    # [v0.7.0] ⑤ 목표 기준 — 사용자 목표 그대로: 주 전략 CAGR ≥ SPY 국면전략(M) CAGR + 아래 여유(0 = 같기만 해도 PASS).
+    #   ①~④가 '대조군A(균등 11) 대비 정보 유무'라면 ⑤는 '이 계층을 둘 이유가 있는가'(M만 쓰는 것보다 나은가)다.
+    ROTATION_ACCEPT_VS_SPY_M: float = 0.0
+    ROTATION_ALT_LEADER_OWN_POS: bool = True   # [v0.7.0] 비교 변형 '리더 자체 목표비중'(리더 섹터의 M식 target_pos를 노출로 사용)을 13시트에 산출
     # ---- 진단 단계 -------------------------------------------------------------
     RUN_SELFTEST: bool = True                  # 실데이터 전에 합성데이터 판별력 자기검사(FAIL이면 중단)
     SELFTEST_MIN_TRUE_ADOPTED: int = 2
@@ -1234,7 +1279,12 @@ ROTATION_SIGNAL_SPECS: Dict[str, Tuple[int, str, str]] = {
     "REL_MOM_126": (+1, "SPY대비 6개월 상대모멘텀", "중기 상대강도 지속(섹터 모멘텀)"),
     "REL_MOM_12_1": (+1, "SPY대비 12-1개월 상대모멘텀", "전통적 모멘텀 팩터 정의(최근 1개월 제외)"),
     "REL_MOM_21": (+1, "SPY대비 1개월 상대모멘텀", "Moskowitz·Grinblatt 1999 — 업종 모멘텀은 1개월 지평에서 가장 강함(개별주와 달리 단기 반전 없음)"),
-    "REL_EXT_200": (-1, "섹터−SPY 200일선 이격도 차(과열)", "상대 과열은 평균회귀 — 다른 섹터보다 뒤진다"),
+    # [v0.7.0 ⚠ 사전방향 변경 −1 → +1] v0.5의 '상대 과열 평균회귀' 가설은 근거가 약한 자체 가설이었고, 외부 데이터(Ken French 49업종
+    #   1926~, 13h)에서 같은 정의의 신호가 전 학습창에서 강한 양(+)의 지속(t≈+8)을 보였다 — 200일선 대비 상대 이격은 사실상 '상대강도'
+    #   이며 업종 수준에서는 지속(Moskowitz·Grinblatt 1999)이 문헌의 기본 결과다. 11섹터 표본이 아닌 외부 표본·문헌에 근거한 변경
+    #   (사후 데이터 맞춤과 구별). 채택 여부는 여전히 워크포워드가 결정.
+    "REL_EXT_200": (+1, "섹터−SPY 200일선 이격도 차(상대 추세 강도)",
+                    "업종 수준 상대강도는 지속 — 외부(FF49) 검증에서 양(+) 지속 확인, 평균회귀 가설(v0.5)은 기각"),
     # [v0.6.0] 학습된 매크로 민감도 × 최근 변화 — 사전부호 고정(MACRO_TAILWIND)보다 정밀. 민감도는 t-21까지의 완결 창으로만 추정(인과).
     "MACRO_BETA_FCST": (+1, "매크로 베타 예측: Σ_f β̂_{i,f}(3년 롤링) × 최근 21일 팩터 변화(금리·달러·유가·신용·구리)",
                         "섹터별 매크로 민감도가 다르므로 같은 매크로 변화가 섹터마다 다른 상대수익을 만든다 — 2021 리오프닝(유가·금리↑→에너지·"
@@ -1331,10 +1381,22 @@ def build_rotation_raw_signals(ticker: str, ind_i: pd.DataFrame, score: pd.Serie
     out["MACRO_BETA_FCST"] = np.nan
     if res is not None and scfg is not None and getattr(scfg, "MACRO_BETA_FACTORS", None):
         X = _macro_factor_changes(res, idx_i, tuple(scfg.MACRO_BETA_FACTORS), h=21)
-        X = X[[c for c in X.columns if X[c].notna().sum() > 500]]
+        # [v0.7.0 결함 수정] v0.6 실측에서 학습 관측일이 36일뿐이었다(→ '표본부족'): 팩터를 '관측 500일 초과'로만 걸러 이력이 짧은
+        #   팩터(예: 늦게 시작하는 시리즈)가 들어오면 rolling OLS의 '모든 열 유효' 조건이 그 팩터의 시작 이후로만 성립하기 때문.
+        #   → 섹터 이력(idx_i) 대비 커버리지 ≥ MACRO_BETA_MIN_COVERAGE인 팩터만 쓰고, 사용/제외 팩터를 로그에 남긴다.
+        min_cov = float(getattr(scfg, "MACRO_BETA_MIN_COVERAGE", 0.8))
+        cov = X.notna().mean(axis=0) if X.shape[1] else pd.Series(dtype=float)
+        keep = [c for c in X.columns if cov[c] >= min_cov]
+        drop = {c: round(float(cov[c]), 3) for c in X.columns if c not in keep}
+        X = X[keep]
         if X.shape[1] >= 2:
             y_rel = (r_i - r_spy).rolling(21).sum()          # 21일 상대 로그수익(창 [t-20, t], t까지 확정)
             out["MACRO_BETA_FCST"] = rolling_ols_forecast(y_rel, X, window=int(scfg.MACRO_BETA_WINDOW), min_obs=504)
+            log("ROTATION", kv(event="macro_beta_factors", ticker=ticker, used=",".join(keep), dropped_low_coverage=drop or "-",
+                               valid_days=int(out["MACRO_BETA_FCST"].notna().sum())), M=M)
+        else:
+            log("ROTATION", kv(event="macro_beta_skipped", ticker=ticker, reason=f"커버리지≥{min_cov:.0%} 팩터 {len(keep)}개(<2)",
+                               coverage={c: round(float(v), 3) for c, v in cov.items()}), M=M, level="warning")
     return out.replace([np.inf, -np.inf], np.nan)
 
 
@@ -2264,14 +2326,25 @@ def _cap_waterfill(raw: pd.DataFrame, cap: float, strict: bool) -> Tuple[pd.Data
 
 
 def portfolio_backtest(target_w: pd.DataFrame, ret_co: pd.DataFrame, ret_oc: pd.DataFrame,
-                       rf_daily: Optional[pd.Series], cost_bps: float) -> pd.DataFrame:
+                       rf_daily: Optional[pd.Series], cost_bps: float,
+                       init_exec: Optional[pd.Series] = None, init_prev: Optional[pd.Series] = None,
+                       lev_spread_bps: float = 0.0) -> pd.DataFrame:
     """다자산 T+1 시가 체결 백테스트 — M.run_backtest()의 단일자산 산식을 섹터별로 그대로 확장:
     exec_w(t) = target_w(t-1), prev_w(t) = exec_w(t-1);
     gross = Σ_i prev_w·ret_co + Σ_i exec_w·ret_oc ; 현금레그 = (1-Σ exec_w)·rf ; 비용 = Σ_i |exec_w-prev_w|·bps.
-    단일 섹터·target_w=E_t인 퇴화 케이스에서 M.run_backtest(price, E_t)의 strategy_ret과 비트 동일(단위테스트)."""
+    단일 섹터·target_w=E_t인 퇴화 케이스에서 M.run_backtest(price, E_t)의 strategy_ret과 비트 동일(단위테스트).
+    [v0.7.0] init_exec/init_prev: 평가창 첫날의 체결 비중(= 전날 목표)·전전날 체결 비중 — M은 SIGNAL_START 이전부터 이어진 포지션을
+    들고 평가창에 들어오므로, 이를 주면 첫 2일도 M과 동일(전 기간 폴백 SPY = SPY M 비트 동일). None이면 첫날 현금(종전).
+    lev_spread_bps: M v1.21 §C와 같은 초과노출(Σexec_w>1) 레버리지 스프레드(연 bp) — E_t>1인 날의 비용 정합."""
     idx, cols = target_w.index, list(target_w.columns)
-    exec_w = target_w.shift(1).fillna(0.0)
-    prev_w = exec_w.shift(1).fillna(0.0)
+    exec_w = target_w.shift(1)
+    if init_exec is not None:
+        exec_w.iloc[0] = init_exec.reindex(cols).fillna(0.0).values
+    exec_w = exec_w.fillna(0.0)
+    prev_w = exec_w.shift(1)
+    if init_prev is not None:
+        prev_w.iloc[0] = init_prev.reindex(cols).fillna(0.0).values
+    prev_w = prev_w.fillna(0.0)
     co = ret_co.reindex(index=idx, columns=cols).fillna(0.0)
     oc = ret_oc.reindex(index=idx, columns=cols).fillna(0.0)
     gross = (prev_w * co).sum(axis=1) + (exec_w * oc).sum(axis=1)
@@ -2280,8 +2353,9 @@ def portfolio_backtest(target_w: pd.DataFrame, ret_co: pd.DataFrame, ret_oc: pd.
     cash_leg = (1.0 - expo) * rf
     turn = (exec_w - prev_w).abs().sum(axis=1)
     cost = turn * (cost_bps / 1e4)
+    lev_cost = np.maximum(expo - 1.0, 0.0) * (float(lev_spread_bps) / 1e4 / 252.0)
     out = pd.DataFrame(index=idx)
-    out["strategy_ret"] = (gross + cash_leg - cost).fillna(0.0)
+    out["strategy_ret"] = (gross + cash_leg - cost - lev_cost).fillna(0.0)
     out["exposure"] = expo
     out["turnover"] = turn
     out["cost"] = cost
@@ -2298,11 +2372,19 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
     t ≥ ROTATION_SELECT_T(+부호)이고 관측일 ≥ ROTATION_SELECT_MIN_DAYS인 신호만 그 해에 채택한다.
     채택된 신호들의 그날 횡단면 0~1 순위 평균 = 그 해의 복합순위(채택 0개면 NaN → 배분 규칙은 폴백).
     미래수익은 IC 산출에만 쓰이고, 학습창 마감(연초 − 35일 → 지평 21일의 실현 수익이 연초 전에 전부 확정)으로
-    선택 자체도 인과적이다. 반환: composite_all(eval_idx×섹터), selection_log(DataFrame), selected_by_year, ic_full."""
+    선택 자체도 인과적이다. 반환: composite_all(eval_idx×섹터), selection_log(DataFrame), selected_by_year, ic_full.
+    [v0.7.0] 선택 통계 ROTATION_SELECT_STAT: "top1" = 상위1 스프레드(_top1_spread_series — 평활 순위 1위 섹터의 향후 h일 수익 −
+    상장 평균)의 NW-HAC t, "ic" = 종전 rank IC의 t. 두 통계를 모두 계산해 13g에 기록하고 채택 판정에는 선택된 하나만 쓴다."""
     h = int(scfg.ROTATION_SELECT_HORIZON)
+    stat = str(getattr(scfg, "ROTATION_SELECT_STAT", "top1")).lower()
+    if stat not in ("top1", "ic"):
+        log("ROTATION", kv(event="unknown_select_stat", value=stat, action="top1로 대체"), M=M, level="warning")
+        stat = "top1"
+    smooth = int(getattr(scfg, "ROTATION_SMOOTH_DAYS", 21) or 1)
     logr = np.log1p(ret_cc_full.fillna(0.0)).where(ret_cc_full.notna())
     fwd = (np.exp(logr.rolling(h).sum().shift(-h)) - 1.0).where(ret_cc_full.notna())
     ic_full: Dict[str, pd.Series] = {}
+    top1_full: Dict[str, pd.Series] = {}
     rank_full: Dict[str, pd.DataFrame] = {}
     for name, mat in sig_full.items():
         if name in ROTATION_COMPOSITE_MEMBERS:
@@ -2311,6 +2393,7 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
         x = (mat * sign).where(listed_full)
         ic_full[name] = _cs_rank_ic(x, fwd)
         rank_full[name] = _cs_rank01(x)
+        top1_full[name] = _top1_spread_series(rank_full[name], listed_full, fwd, smooth=smooth)
     # [v0.5.1] 사전 고정 복합 후보 — 구성원(사전방향 적용 0~1 순위)의 동일가중 평균. 구성원이 2개 미만이면 만들지 않는다.
     cols_all = list(listed_full.columns)
     for cname, members in ROTATION_COMPOSITE_MEMBERS.items():
@@ -2323,6 +2406,7 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
         comp_m = _nanmean_frames([rank_full[m] for m in avail], listed_full.index, cols_all).where(listed_full)
         rank_full[cname] = _cs_rank01(comp_m)           # 복합값을 다시 그날 순위(0~1)로 — 다른 후보와 같은 척도
         ic_full[cname] = _cs_rank_ic(comp_m, fwd)
+        top1_full[cname] = _top1_spread_series(rank_full[cname], listed_full, fwd, smooth=smooth)
         log("ROTATION", kv(event="composite_candidate_built", signal=cname, members=",".join(avail)), M=M)
     years = sorted(set(eval_idx.year))
     rows: List[dict] = []
@@ -2333,12 +2417,16 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
     best_n = int(getattr(scfg, "ROTATION_BEST_N", 2))
     ext_t_thr = float(getattr(scfg, "EXTERNAL_T", 2.0))
     external = external or {}
+    stat_kr = "상위1 스프레드" if stat == "top1" else "rank IC"
     for y in years:
         cutoff = pd.Timestamp(year=y, month=1, day=1) - pd.Timedelta(days=35)
-        stats: Dict[str, Tuple[float, float, int]] = {}
+        stats_ic: Dict[str, Tuple[float, float, int]] = {}
+        stats_top: Dict[str, Tuple[float, float, int]] = {}
         for name, ic in ic_full.items():
-            train = ic.loc[ic.index < cutoff]
-            stats[name] = _nw_mean_tstat(train, lag=h)
+            stats_ic[name] = _nw_mean_tstat(ic.loc[ic.index < cutoff], lag=h)
+            sp = top1_full[name]
+            stats_top[name] = _nw_mean_tstat(sp.loc[sp.index < cutoff], lag=h)
+        stats = stats_top if stat == "top1" else stats_ic     # [v0.7.0] 채택 판정에 쓰는 통계
         ext_y = external.get(y, {}) if isinstance(external, dict) else {}
         # ① 엄격: t ≥ ROTATION_SELECT_T
         strict = [n for n, (m, t, nn) in stats.items()
@@ -2358,17 +2446,24 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
             basis.update({n: f"최선 가용(t≥{t_min:.1f}, 상위{best_n})" for n in sel})
         for name, (m, t, nn) in stats.items():
             ext_val = ext_y.get(name, np.nan)
+            m_ic, t_ic, n_ic = stats_ic[name]
+            m_tp, t_tp, n_tp = stats_top[name]
+            # 'NW-HAC t' 열 = 채택 판정에 쓴 통계의 t(선택 통계 열 참조). IC·상위1 두 통계의 t는 각각의 열에 항상 함께 기록.
             rows.append({"적용연도": y, "학습창 마감": cutoff.date(), "신호": name,
-                         "사전방향": ROTATION_SIGNAL_SPECS.get(name, (+1, "", ""))[0],
-                         "학습 관측일": nn, "학습 평균 rank IC(사전방향 적용)": round(m, 4) if pd.notna(m) else np.nan,
+                         "사전방향": ROTATION_SIGNAL_SPECS.get(name, (+1, "", ""))[0], "선택 통계": stat_kr,
+                         "학습 관측일": nn, "학습 평균 rank IC(사전방향 적용)": round(m_ic, 4) if pd.notna(m_ic) else np.nan,
+                         "NW-HAC t(IC)": round(t_ic, 2) if pd.notna(t_ic) else np.nan,
+                         f"학습 상위1 스프레드(%/{h}일)": round(m_tp * 100, 3) if pd.notna(m_tp) else np.nan,
+                         "NW-HAC t(상위1)": round(t_tp, 2) if pd.notna(t_tp) else np.nan,
                          "NW-HAC t": round(t, 2) if pd.notna(t) else np.nan,
                          "외부 t(FF49)": round(float(ext_val), 2) if pd.notna(ext_val) else np.nan,
                          "채택": "채택" if name in sel else ("표본부족" if nn < scfg.ROTATION_SELECT_MIN_DAYS else "미채택"),
                          "채택 근거": basis.get(name, "")})
         selected_by_year[y] = sel
         basis_by_year[y] = basis
-        log("ROTATION", kv(event="walkforward_select", year=y, train_end=str(cutoff.date()), mode=mode,
-                           n_selected=len(sel), selected=",".join(f"{n}[{basis[n].split('(')[0]}]" for n in sel) if sel else "-"), M=M)
+        log("ROTATION", kv(event="walkforward_select", year=y, train_end=str(cutoff.date()), mode=mode, stat=stat,
+                           n_selected=len(sel), selected=",".join(f"{n}[{basis[n].split('(')[0]}]" for n in sel) if sel else "-",
+                           top_t=";".join(f"{n}={stats[n][1]:.2f}" for n in sorted(stats, key=lambda k: -(stats[k][1] if pd.notna(stats[k][1]) else -99))[:3])), M=M)
     # 연도별 복합순위(채택 신호의 0~1 순위 평균) — eval_idx 범위
     comp = pd.DataFrame(np.nan, index=eval_idx, columns=list(listed_full.columns))
     for y in years:
@@ -2379,8 +2474,8 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
         comp.loc[rows_y] = _nanmean_frames([rank_full[s] for s in sel], rows_y, list(listed_full.columns)).values
     sel_log = pd.DataFrame(rows)
     return {"composite_all": comp, "selection_log": sel_log, "selected_by_year": selected_by_year,
-            "basis_by_year": basis_by_year, "ic_full": ic_full, "rank_full": rank_full, "horizon": h,
-            "external": external, "mode": mode}
+            "basis_by_year": basis_by_year, "ic_full": ic_full, "top1_full": top1_full, "rank_full": rank_full,
+            "horizon": h, "external": external, "mode": mode, "stat": stat, "smooth": smooth}
 
 
 # ---- [v0.6.0] 외부 검증: Kenneth French 49업종 일별 포트폴리오 --------------------------------------------
@@ -2494,7 +2589,9 @@ def ff49_signal_matrices(ff: pd.DataFrame, spy_series: Optional[Dict[str, pd.Ser
 def external_validation_ff49(scfg: SectorConfig, M, years: List[int], spy_series: Optional[Dict[str, pd.Series]] = None
                              ) -> Tuple[Dict[int, Dict[str, float]], pd.DataFrame]:
     """[v0.6.0] 연도별(적용연도 Y, 학습창 마감 = Y-01-01 − 35일 이전) 49업종 횡단면 rank IC(지평 ROTATION_SELECT_HORIZON)의
-    NW-HAC t. 반환: ({Y: {신호: t}}, 로그 DataFrame). 실패/미사용이면 ({}, 빈 DF)."""
+    NW-HAC t. 반환: ({Y: {신호: t}}, 로그 DataFrame). 실패/미사용이면 ({}, 빈 DF).
+    [v0.7.0] 로컬과 같은 선택 통계(ROTATION_SELECT_STAT)를 외부에도 적용: "top1"이면 49업종 중 평활 순위 1위 업종의 향후 h일 수익 −
+    49업종 평균(상위1 스프레드)의 t를 반환값으로, "ic"면 rank IC의 t. 두 통계 모두 로그(13h)에 기록."""
     if not getattr(scfg, "USE_EXTERNAL_VALIDATION", False):
         return {}, pd.DataFrame()
     ff = fetch_ff49_daily(scfg, M)
@@ -2502,25 +2599,38 @@ def external_validation_ff49(scfg: SectorConfig, M, years: List[int], spy_series
         return {}, pd.DataFrame()
     t0 = time.time()
     h = int(scfg.ROTATION_SELECT_HORIZON)
+    stat = str(getattr(scfg, "ROTATION_SELECT_STAT", "top1")).lower()
+    smooth = int(getattr(scfg, "ROTATION_SMOOTH_DAYS", 21) or 1)
     sigs = ff49_signal_matrices(ff, spy_series)
     logr = np.log1p(ff)
     fwd = (np.exp(logr.rolling(h).sum().shift(-h)) - 1.0).where(ff.notna())
     ext: Dict[int, Dict[str, float]] = {}
     rows: List[dict] = []
-    ics = {}
+    ics: Dict[str, pd.Series] = {}
+    tops: Dict[str, pd.Series] = {}
+    avail = ff.notna()
     for name, mat in sigs.items():
         sign = ROTATION_SIGNAL_SPECS.get(name, (+1, "", ""))[0]
-        ics[name] = _cs_rank_ic((mat * sign).where(ff.notna()), fwd, min_n=20)
+        x = (mat * sign).where(avail)
+        ics[name] = _cs_rank_ic(x, fwd, min_n=20)
+        tops[name] = _top1_spread_series(_cs_rank01(x), avail, fwd, smooth=smooth, min_n=20)
     for y in years:
         cutoff = pd.Timestamp(year=y, month=1, day=1) - pd.Timedelta(days=35)
         ext[y] = {}
-        for name, ic in ics.items():
-            m, t, n = _nw_mean_tstat(ic.loc[ic.index < cutoff], lag=h)
-            ext[y][name] = float(t) if pd.notna(t) else np.nan
-            rows.append({"적용연도": y, "학습창 마감": cutoff.date(), "신호": name, "외부 관측일": n,
-                         "외부 평균 rank IC": round(m, 4) if pd.notna(m) else np.nan, "외부 NW-HAC t": round(t, 2) if pd.notna(t) else np.nan,
-                         "외부 유의(t≥기준)": "Y" if (pd.notna(t) and t >= float(scfg.EXTERNAL_T)) else "N"})
-    log("EXTERNAL", kv(event="ff49_validation_done", industries=ff.shape[1], signals=len(sigs), years=len(years),
+        for name in sigs:
+            ic, sp = ics[name], tops[name]
+            m_ic, t_ic, n_ic = _nw_mean_tstat(ic.loc[ic.index < cutoff], lag=h)
+            m_tp, t_tp, n_tp = _nw_mean_tstat(sp.loc[sp.index < cutoff], lag=h)
+            t_use = t_tp if stat == "top1" else t_ic
+            ext[y][name] = float(t_use) if pd.notna(t_use) else np.nan
+            rows.append({"적용연도": y, "학습창 마감": cutoff.date(), "신호": name, "선택 통계": ("상위1 스프레드" if stat == "top1" else "rank IC"),
+                         "외부 관측일": n_ic, "외부 평균 rank IC": round(m_ic, 4) if pd.notna(m_ic) else np.nan,
+                         "외부 NW-HAC t(IC)": round(t_ic, 2) if pd.notna(t_ic) else np.nan,
+                         f"외부 상위1 스프레드(%/{h}일)": round(m_tp * 100, 3) if pd.notna(m_tp) else np.nan,
+                         "외부 NW-HAC t(상위1)": round(t_tp, 2) if pd.notna(t_tp) else np.nan,
+                         "외부 NW-HAC t": round(t_use, 2) if pd.notna(t_use) else np.nan,
+                         "외부 유의(t≥기준)": "Y" if (pd.notna(t_use) and t_use >= float(scfg.EXTERNAL_T)) else "N"})
+    log("EXTERNAL", kv(event="ff49_validation_done", industries=ff.shape[1], signals=len(sigs), years=len(years), stat=stat,
                        span=f"{ff.index[0].date()}~{ff.index[-1].date()}", elapsed_s=round(time.time() - t0, 1)), M=M)
     return ext, pd.DataFrame(rows)
 
@@ -2743,6 +2853,17 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     variants[ROT_LABEL_CTRL_B] = frac_ctrl_b
 
     cost_bps = float(res["cfg"].COST_BPS)
+    lev_bps = float(getattr(res["cfg"], "LEVERAGE_SPREAD_BPS", 0.0) or 0.0)   # [v0.7.0] M v1.21 §C 초과노출 스프레드 정합
+    # [v0.7.0] 평가창 진입 시 초기 포지션 = SPY M이 그 전날·전전날 들고 있던 SPY 비중(M은 SIGNAL_START 이전부터 포지션을 이어 온다).
+    #   모든 변형에 같은 초기값 → 전 기간 폴백(SPY)이면 SPY M과 첫날부터 비트 동일, 대조군도 첫 2일만 M 포지션에서 출발.
+    E_full = res["sig"]["target_pos"].reindex(full_idx).fillna(0.0).astype(float)
+    i0 = int(full_idx.get_indexer([eval_idx[0]])[0]) if len(eval_idx) else -1
+    init_exec = pd.Series(0.0, index=all_cols); init_prev = pd.Series(0.0, index=all_cols)
+    if i0 >= 1:
+        init_exec["SPY"] = float(E_full.iloc[i0 - 1])
+    if i0 >= 2:
+        init_prev["SPY"] = float(E_full.iloc[i0 - 2])
+    bt_kw = dict(rf_daily=rf_daily, cost_bps=cost_bps, init_exec=init_exec, init_prev=init_prev, lev_spread_bps=lev_bps)
     listed_all = listed.copy()
     listed_all["SPY"] = True
     listed_all = listed_all.reindex(columns=all_cols)
@@ -2756,16 +2877,37 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 M=M, level="warning")
             tw = tw.where(~bad, 0.0)
         target_ws[label] = tw
-        bts[label] = portfolio_backtest(tw, ret_co, ret_oc, rf_daily, cost_bps)
+        bts[label] = portfolio_backtest(tw, ret_co, ret_oc, **bt_kw)
+    # [v0.7.0] 비교 변형 '리더 자체 목표비중': 리더 보유일에는 E_t 대신 그 섹터의 M식 target_pos(섹터 자체 국면 판단 크기)를
+    #   노출로 쓴다(E_t=0인 날은 주 전략과 같이 현금 — M의 위험회피 게이트는 유지). 회피·폴백일은 주 전략과 동일. 13시트 비교용이며
+    #   기본 실행 비중(target_w)은 여전히 E_t를 따른다(사용자 요청: 국면 판단 비중대로).
+    label_own = f"집중배분(리더 자체 목표비중·꼴찌회피·폴백{fallback_txt}) [비교]"
+    if getattr(scfg, "ROTATION_ALT_LEADER_OWN_POS", True):
+        own_pos = pd.DataFrame({t: results[t]["target_pos"].reindex(eval_idx) for t in cols}).fillna(0.0).astype(float)
+        tw_own = target_ws[label_leader].copy()
+        is_leader_day = (tier == "리더").values
+        for i in np.flatnonzero(is_leader_day):
+            c = leader_s.iloc[i]
+            if c in cols:
+                tw_own.iat[i, all_cols.index(c)] = float(own_pos.iat[i, cols.index(c)]) * lw
+        target_ws[label_own] = tw_own
+        bts[label_own] = portfolio_backtest(tw_own, ret_co, ret_oc, **bt_kw)
+        variants[label_own] = tw_own   # 성과표 순서용(비중 자체는 위에서 계산 완료)
+    # [v0.7.0] 참조: SPY 국면전략(M) 성과(같은 평가창, M의 bt 그대로) — 수용기준 ⑤(목표: CAGR ≥ SPY M)에 사용
+    spy_m_ret = res["bt"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
+    spy_m_pm = M.perf_metrics(spy_m_ret, "SPY 국면전략(M)")
+    spy_m = {"CAGR": float(spy_m_pm["CAGR"]), "MDD": float(spy_m_pm["최대낙폭(MDD)"]), "샤프": spy_m_pm["샤프"]}
 
-    perf = pd.DataFrame([M.perf_metrics(bts[l]["strategy_ret"], l) for l in variants])
+    # 13 성과표 순서: 주 전략 → 대안·비교 변형 → 대조군 A/B
+    order = [l for l in variants if l not in (ROT_LABEL_CTRL_A, ROT_LABEL_CTRL_B)] + [ROT_LABEL_CTRL_A, ROT_LABEL_CTRL_B]
+    perf = pd.DataFrame([M.perf_metrics(bts[l]["strategy_ret"], l) for l in order])
     perf.insert(1, "평가창", f"{eval_idx[0].date()}~{eval_idx[-1].date()}")
-    perf["평균노출"] = [round(float(bts[l]["exposure"].mean()), 4) for l in variants]
-    perf["연평균회전율(편도)"] = [round(float(bts[l]["turnover"].sum() / (len(eval_idx) / 252)), 2) for l in variants]
-    perf["누적비용"] = [round(float(bts[l]["cost"].sum()), 4) for l in variants]
+    perf["평균노출"] = [round(float(bts[l]["exposure"].mean()), 4) for l in order]
+    perf["연평균회전율(편도)"] = [round(float(bts[l]["turnover"].sum() / (len(eval_idx) / 252)), 2) for l in order]
+    perf["누적비용"] = [round(float(bts[l]["cost"].sum()), 4) for l in order]
     curve = pd.DataFrame(index=eval_idx)
     curve["날짜"] = [d.date() for d in eval_idx]
-    for l in variants:
+    for l in order:
         curve[l] = bts[l]["equity"].round(4)
     curve["E_t(SPY목표비중)"] = E.round(2)
     curve["적격섹터수"] = n_elig.astype(int).values
@@ -2775,6 +2917,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     diag = {
         "label_primary": label_primary, "label_leader": label_leader, "label_topk": label_topk, "label_linear": label_lin,
         "label_alt": (label_topk if mode == "leader3" else label_leader),
+        "label_own": (label_own if label_own in bts else None), "spy_m": spy_m,          # [v0.7.0]
+        "select_stat": wf.get("stat", "top1"),
         "tilt": mode, "cap": cap, "cap_strict": bool(scfg.ROTATION_CAP_STRICT),
         "signals": list(raw_full.keys()), "smooth_days": smooth, "min_hold_days": min_hold, "leader_weight": lw,
         "fallback": fallback_txt, "select_t": float(scfg.ROTATION_SELECT_T), "select_horizon": wf["horizon"],
@@ -2789,7 +2933,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         "leader_freq": {t: round(float((leader_s == t).mean()), 4) for t in cols},
     }
     log("ROTATION", kv(event="allocation_built",
-                       **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year")},
+                       **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year", "spy_m")},
+                       spy_m_cagr=spy_m["CAGR"], spy_m_mdd=spy_m["MDD"],
                        elapsed_s=round(time.time() - t0, 2)), M=M)
     for l in variants:
         pr = perf.set_index("전략").loc[l]
@@ -2837,6 +2982,28 @@ def _cs_rank_ic(x_mat: pd.DataFrame, fwd_mat: pd.DataFrame, min_n: int = 5) -> p
     return ic
 
 
+def _top1_spread_series(rank_mat: pd.DataFrame, avail: pd.DataFrame, fwd_mat: pd.DataFrame,
+                        smooth: int = 1, min_n: int = 5) -> pd.Series:
+    """[v0.7.0] '상위1 스프레드' 일별 시계열 = (그날 평활 순위가 가장 높은 1개 자산의 향후 h일 수익) − (그날 순위·수익이 모두
+    있는 자산 전체의 평균 향후 h일 수익). '1위 하나에 집중'하는 전략이 실제로 얻는 초과수익의 직접 추정치(비용 제외)로, 평균
+    rank IC('전체 순서'의 정확도)와 달리 1위 판별력만 잰다. rank_mat: 0~1 횡단면 순위(사전방향 적용), avail: 순위 대상 마스크
+    (상장), fwd_mat: t 기준 향후 h일 수익(통계 산출에만 쓰이며 배분에는 되돌아가지 않음). 평활은 배분에 쓰는 것과 같은
+    후행 이동평균(인과). 동률이면 첫 열. 자산 수 < min_n인 날은 NaN."""
+    cols = list(rank_mat.columns)
+    r = rank_mat.where(avail.reindex(index=rank_mat.index, columns=cols).fillna(False))
+    rs = r.rolling(smooth, min_periods=1).mean().where(r.notna()) if smooth > 1 else r
+    fwd = fwd_mat.reindex(index=rank_mat.index, columns=cols)
+    both = rs.notna() & fwd.notna()
+    n = both.sum(axis=1)
+    has = both.any(axis=1).values
+    pos = rs.where(both).fillna(-np.inf).values.argmax(axis=1)
+    fv = fwd.values
+    r_top = np.where(has, fv[np.arange(len(fv)), pos], np.nan)
+    bench = fwd.where(both).mean(axis=1)
+    spread = pd.Series(r_top, index=rank_mat.index) - bench
+    return spread.where(n >= min_n)
+
+
 def rotation_validation(alloc: Dict[str, Any], scfg: SectorConfig, M,
                         perf_ctrl_label: str = ROT_LABEL_CTRL_A) -> Dict[str, Any]:
     """[v0.4.0 §1.F.1/§1.F.3] 횡단면 rank IC(신호별·복합, 지평 5/21/63) + 상위3−하위3 일별 스프레드(3구간) +
@@ -2867,22 +3034,40 @@ def rotation_validation(alloc: Dict[str, Any], scfg: SectorConfig, M,
     sig_mats[KEY_RAW] = alloc["composite_all"]
     sig_mats[KEY_USED] = alloc.get("composite_all_smooth", alloc["composite_all"])
     sig_mats[KEY_ELIG] = alloc["composite"]
-    composite_t = np.nan
+    # [v0.7.0] 선택 통계에 맞춘 ③: "top1"이면 배분에 쓰는 평활 복합순위의 '상위1 스프레드' t, "ic"면 종전 rank IC t.
+    #   13d에는 두 통계를 후보별·지평별로 모두 기록(상위1 스프레드는 원시 후보에도 같은 21일 평활을 적용해 배분 조건과 맞춤).
+    stat = str((alloc.get("wf") or {}).get("stat", getattr(scfg, "ROTATION_SELECT_STAT", "top1"))).lower()
+    listed = alloc["listed"]
+    composite_t = np.nan          # ③에 쓰는 t(선택 통계 기준)
+    composite_ic_t = np.nan
+    composite_top1_t = np.nan
+    composite_top1_mean = np.nan
     for name, xm in sig_mats.items():
         spec = ROTATION_SIGNAL_SPECS.get(name)
+        is_raw = spec is not None
         for h in horizons:
-            ic = _cs_rank_ic(xm, _fwd(h))
+            fwd_h = _fwd(h)
+            ic = _cs_rank_ic(xm, fwd_h)
             m, tstat, n = _nw_mean_tstat(ic, lag=h)
+            # 상위1 스프레드: 원시 후보는 0~1 순위 후 평활(배분과 동일 조건), 복합순위 3종은 이미 순위·평활 상태라 그대로
+            rk = _cs_rank01(xm.where(listed)) if is_raw else xm
+            sp = _top1_spread_series(rk, listed, fwd_h, smooth=(smooth_days if is_raw else 1))
+            m_tp, t_tp, n_tp = _nw_mean_tstat(sp, lag=h)
+            t_sel = t_tp if stat == "top1" else tstat
             ic_rows.append({"신호": name, "종류": ("후보(원시, 사전방향 적용)" if spec else "복합순위"),
                             "사전방향": (spec[0] if spec else "+1"), "지평(일)": h,
                             "평균 rank IC": round(m, 4) if pd.notna(m) else np.nan,
                             "NW-HAC t": round(tstat, 2) if pd.notna(tstat) else np.nan, "검사일수": n,
                             "IC>0 비율": round(float((ic.dropna() > 0).mean()), 4) if n else np.nan,
-                            "판정": ("유의(+)" if (pd.notna(tstat) and tstat >= scfg.ROTATION_ACCEPT_IC_T)
-                                   else ("유의(−)" if (pd.notna(tstat) and tstat <= -scfg.ROTATION_ACCEPT_IC_T) else "비유의")),
+                            "상위1 스프레드(%/지평)": round(m_tp * 100, 3) if pd.notna(m_tp) else np.nan,
+                            "NW-HAC t(상위1)": round(t_tp, 2) if pd.notna(t_tp) else np.nan,
+                            "판정": ("유의(+)" if (pd.notna(t_sel) and t_sel >= scfg.ROTATION_ACCEPT_IC_T)
+                                   else ("유의(−)" if (pd.notna(t_sel) and t_sel <= -scfg.ROTATION_ACCEPT_IC_T) else "비유의")),
+                            "판정 통계": ("상위1 스프레드" if stat == "top1" else "rank IC"),
                             "설명": (spec[1] if spec else ""), "경제적 근거": (spec[2] if spec else "")})
             if name == KEY_USED and h == h_main:
-                composite_t = tstat
+                composite_ic_t, composite_top1_t, composite_top1_mean = tstat, t_tp, m_tp
+                composite_t = t_sel
     ic_table = pd.DataFrame(ic_rows)
 
     # ---- 상위3−하위3 일별 스프레드(배분에 쓰는 평활 복합순위, 상장 전체; 익일 종가수익, 비용 없음 — 진단) ----
@@ -2917,6 +3102,18 @@ def rotation_validation(alloc: Dict[str, Any], scfg: SectorConfig, M,
     p_pri, p_ctl = perf.loc[lp], perf.loc[perf_ctrl_label]
     cagr_gain = float(p_pri["CAGR"] - p_ctl["CAGR"])
     mdd_worse = float(p_ctl["최대낙폭(MDD)"] - p_pri["최대낙폭(MDD)"])   # 양수 = 주 전략의 MDD가 더 깊음
+    if stat == "top1":
+        crit3_name = f"③ 복합순위 상위1 스프레드 NW-t ≥ {scfg.ROTATION_ACCEPT_IC_T:.1f} (지평 {h_main}일, 평활 순위 1위 − 상장 평균)"
+        crit3_val = (f"t = {composite_t:.2f} (평균 {composite_top1_mean * 100:+.3f}%/{h_main}일; 참고 rank IC t = {composite_ic_t:.2f})"
+                     if pd.notna(composite_t) else "계산불가")
+    else:
+        crit3_name = f"③ 복합순위 rank IC NW-t ≥ {scfg.ROTATION_ACCEPT_IC_T:.1f} (지평 {h_main}일)"
+        crit3_val = (f"t = {composite_t:.2f} (참고 상위1 스프레드 t = {composite_top1_t:.2f})" if pd.notna(composite_t) else "계산불가")
+    # [v0.7.0] ⑤ 목표: 주 전략 CAGR ≥ SPY 국면전략(M) CAGR + 여유 — 이 계층이 M만 쓰는 것보다 나은가(사용자 목표 그대로)
+    spy_m = alloc.get("diag", {}).get("spy_m", {})
+    spy_m_cagr = spy_m.get("CAGR", np.nan)
+    vs_spy = float(p_pri["CAGR"] - spy_m_cagr) if pd.notna(spy_m_cagr) else np.nan
+    margin5 = float(getattr(scfg, "ROTATION_ACCEPT_VS_SPY_M", 0.0))
     crit = [
         {"기준": f"① CAGR ≥ 대조군A + {scfg.ROTATION_ACCEPT_CAGR_GAIN:.1%}p",
          "측정값": f"{cagr_gain:+.2%}p (주 {p_pri['CAGR']:.2%} vs 대조군A {p_ctl['CAGR']:.2%})",
@@ -2924,12 +3121,16 @@ def rotation_validation(alloc: Dict[str, Any], scfg: SectorConfig, M,
         {"기준": f"② MDD 악화 ≤ {scfg.ROTATION_ACCEPT_MDD_WORSE:.0%}p",
          "측정값": f"{mdd_worse:+.2%}p (주 {p_pri['최대낙폭(MDD)']:.2%} vs 대조군A {p_ctl['최대낙폭(MDD)']:.2%})",
          "판정": "PASS" if mdd_worse <= scfg.ROTATION_ACCEPT_MDD_WORSE else "FAIL"},
-        {"기준": f"③ 복합순위 rank IC NW-t ≥ {scfg.ROTATION_ACCEPT_IC_T:.1f} (지평 {h_main}일)",
-         "측정값": f"t = {composite_t:.2f}" if pd.notna(composite_t) else "계산불가",
+        {"기준": crit3_name, "측정값": crit3_val,
          "판정": "PASS" if (pd.notna(composite_t) and composite_t >= scfg.ROTATION_ACCEPT_IC_T) else "FAIL"},
         {"기준": f"④ 상위3−하위3 스프레드 양수 구간 ≥ {scfg.ROTATION_ACCEPT_SPREAD_PERIODS}/3",
          "측정값": f"{n_pos}/3 구간 양수",
          "판정": "PASS" if n_pos >= scfg.ROTATION_ACCEPT_SPREAD_PERIODS else "FAIL"},
+        {"기준": f"⑤ 목표: CAGR ≥ SPY 국면전략(M)" + (f" + {margin5:.1%}p" if margin5 > 0 else ""),
+         "측정값": (f"{vs_spy:+.2%}p (주 {p_pri['CAGR']:.2%} vs SPY M {spy_m_cagr:.2%}; MDD 주 {p_pri['최대낙폭(MDD)']:.2%} vs "
+                  f"SPY M {spy_m.get('MDD', np.nan):.2%}, 샤프 주 {p_pri['샤프']} vs SPY M {spy_m.get('샤프', np.nan)})"
+                  if pd.notna(vs_spy) else "계산불가(SPY M 성과 없음)"),
+         "판정": "PASS" if (pd.notna(vs_spy) and vs_spy >= margin5) else "FAIL"},
     ]
     # [v0.5.0] 워크포워드 채택 현황 — 채택 신호가 한 해도 없으면 배분은 전 기간 폴백(=사실상 M 전략)이었다는 뜻
     sel_by_year = alloc.get("diag", {}).get("selected_by_year", {})
@@ -2941,19 +3142,23 @@ def rotation_validation(alloc: Dict[str, Any], scfg: SectorConfig, M,
     #   이때 ①②는 '폴백(SPY) vs 대조군A(균등 11)'의 비교일 뿐 순위 신호와 무관함을 명시.
     no_signal_all = len(sel_by_year) > 0 and not years_with
     if no_signal_all:
-        for c in crit[2:]:
+        for c in crit[2:4]:
             c["판정"] = "N/A"
             c["측정값"] = "해당 없음 — 채택 신호가 없어 순위·복합순위 자체가 만들어지지 않음"
         for c in crit[:2]:
             c["측정값"] += " [폴백 SPY vs 균등 11 비교 — 순위 신호 무관]"
+        crit[4]["측정값"] += " [전 기간 폴백 = SPY M 자체 — 차이는 첫 행 처리·반올림뿐]"
     passed = all(c["판정"] == "PASS" for c in crit)
+    goal_txt = (f"목표(⑤ CAGR ≥ SPY M) {'달성' if crit[4]['판정'] == 'PASS' else '미달'}: {vs_spy:+.2%}p"
+                if pd.notna(vs_spy) else "목표(⑤) 계산불가")
     if no_signal_all:
         verdict = ("판정 불가(N/A) — 순환매 신호 없음: 후보 전부 워크포워드 기준 미달 → 배분은 전 기간 폴백(SPY에 E_t = M 전략). "
                    "이 상태에서는 '섹터를 고르지 않는 것'이 시스템의 판단이며, ①②는 폴백이 균등 바스켓보다 나았다는 뜻일 뿐이다. " + sel_txt)
     else:
-        verdict = (("PASS — 순위 신호에 정보가 있음(사전 고정 4기준 전부 충족). " if passed else
-                    "FAIL — 순위 신호의 정보가 확인되지 않음: " + ", ".join(c["기준"].split(" ")[0] for c in crit if c["판정"] != "PASS")
-                    + " 미달. 집중배분(3단계 규칙)은 사용자 요청으로 유지되나, 대조군A(M노출×균등11) 대비 우위가 통계적으로 입증되지 않았음을 참고. ")
+        verdict = (("PASS — 순위 신호에 정보가 있고 목표를 달성(사전 고정 5기준 전부 충족). " if passed else
+                    "FAIL — " + ", ".join(c["기준"].split(" ")[0] for c in crit if c["판정"] != "PASS")
+                    + " 미달. " + goal_txt + ". 집중배분(3단계 규칙)은 사용자 요청으로 유지되나, 미달 기준이 뜻하는 바(①②④ 균등 대조군 대비 "
+                    "정보 유무 / ③ 1위 판별력 / ⑤ M만 쓰는 것보다 나은가)를 13시트에서 확인할 것. ")
                    + sel_txt)
     overall = "N/A" if no_signal_all else ("PASS" if passed else "FAIL")
     crit_table = pd.concat([pd.DataFrame(crit),
@@ -2966,7 +3171,7 @@ def rotation_validation(alloc: Dict[str, Any], scfg: SectorConfig, M,
         agg = wf_log.groupby("신호")["NW-HAC t"].agg(["max", "min", "mean"]).sort_values("max", ascending=False)
         top3 = agg.head(3)
         best_txt = "; ".join(f"{n}: 학습 t 최대 {r['max']:.2f}(최소 {r['min']:.2f}, 평균 {r['mean']:.2f})" for n, r in top3.iterrows())
-    mode_txt = f"채택 모드={str(getattr(scfg, 'ROTATION_SELECT_MODE', 'strict'))}"
+    mode_txt = f"채택 모드={str(getattr(scfg, 'ROTATION_SELECT_MODE', 'strict'))}, 선택 통계={'상위1 스프레드' if stat == 'top1' else 'rank IC'}"
     basis_cnt = {}
     if isinstance(wf_log, pd.DataFrame) and "채택 근거" in wf_log.columns:
         for b in wf_log.loc[wf_log["채택"] == "채택", "채택 근거"]:
@@ -2978,19 +3183,23 @@ def rotation_validation(alloc: Dict[str, Any], scfg: SectorConfig, M,
                         f"best_available이면 t≥{getattr(scfg, 'ROTATION_SELECT_T_MIN', 1.0):.1f}도 없음) → 섹터를 고르지 않고 M 전략(SPY)을 유지. "
                         f"상위 후보: {best_txt}")
     elif passed:
-        pred_verdict = f"예측함(수용기준 PASS) — {sel_txt}. 채택 근거 등급(연도×신호): {basis_txt}. {mode_txt}. 상위 후보: {best_txt}"
+        pred_verdict = f"예측함(수용기준 PASS, {goal_txt}) — {sel_txt}. 채택 근거 등급(연도×신호): {basis_txt}. {mode_txt}. 상위 후보: {best_txt}"
     else:
         pred_verdict = (f"판단은 내리지만 근거는 약함 — 신호가 채택됐으나 수용기준 미달("
-                        f"{', '.join(c['기준'].split(' ')[0] for c in crit if c['판정'] not in ('PASS', 'N/A'))}). "
+                        f"{', '.join(c['기준'].split(' ')[0] for c in crit if c['판정'] not in ('PASS', 'N/A'))}); {goal_txt}. "
                         f"채택 근거 등급(연도×신호): {basis_txt}. {mode_txt}. {sel_txt}. 상위 후보: {best_txt}")
-    log("ROTATION", kv(event="validation_done", cagr_gain_pp=round(cagr_gain * 100, 2), mdd_worse_pp=round(mdd_worse * 100, 2),
-                       composite_ic_t=round(composite_t, 2) if pd.notna(composite_t) else None, spread_pos_periods=n_pos,
+    log("ROTATION", kv(event="validation_done", stat=stat, cagr_gain_pp=round(cagr_gain * 100, 2), mdd_worse_pp=round(mdd_worse * 100, 2),
+                       composite_t=round(composite_t, 2) if pd.notna(composite_t) else None,
+                       composite_ic_t=round(composite_ic_t, 2) if pd.notna(composite_ic_t) else None,
+                       composite_top1_t=round(composite_top1_t, 2) if pd.notna(composite_top1_t) else None, spread_pos_periods=n_pos,
+                       vs_spy_m_pp=round(vs_spy * 100, 2) if pd.notna(vs_spy) else None,
                        years_with_signal=len(years_with), verdict="PASS" if passed else "FAIL",
                        elapsed_s=round(time.time() - t0, 2)),
         M=M, level="info" if passed else "warning")
     wf = alloc.get("wf") or {}
     return {"ic_table": ic_table, "spread_table": spread_table, "criteria": crit_table, "passed": passed,
-            "verdict": verdict, "composite_ic_t": composite_t, "cagr_gain": cagr_gain, "mdd_worse": mdd_worse,
+            "verdict": verdict, "composite_ic_t": composite_ic_t, "composite_top1_t": composite_top1_t, "composite_t": composite_t,
+            "select_stat": stat, "cagr_gain": cagr_gain, "mdd_worse": mdd_worse, "vs_spy_m": vs_spy, "goal_txt": goal_txt,
             "spread_pos_periods": n_pos, "selection_log": wf.get("selection_log", pd.DataFrame()),
             "external_log": wf.get("external_log", pd.DataFrame()), "select_mode": wf.get("mode", "strict"),
             "selected_by_year": sel_by_year, "no_signal_all": no_signal_all, "prediction_verdict": pred_verdict}
@@ -3241,7 +3450,8 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         sel_last = dg.get("selected_by_year", {}).get(yr_last, [])
         basis_last = (alloc.get("wf") or {}).get("basis_by_year", {}).get(yr_last, {})
         sel_last_txt = "+".join(f"{n}[{basis_last.get(n, '').split('(')[0]}]" for n in sel_last) if sel_last else "없음(→ 폴백)"
-        nd_rows.append(("다음 거래일 배분 - 방식", f"{dg['label_primary']} — 매년 횡단면 워크포워드 검증(엄격 t ≥ {dg.get('select_t', 2.0):.1f} / "
+        stat_txt = "상위1 스프레드(1위 섹터 향후 21일 수익 − 상장 평균)" if str(dg.get("select_stat", "top1")) == "top1" else "rank IC"
+        nd_rows.append(("다음 거래일 배분 - 방식", f"{dg['label_primary']} — 매년 횡단면 워크포워드 검증(선택 통계 {stat_txt}; 엄격 t ≥ {dg.get('select_t', 2.0):.1f} / "
                                              f"외부검증(FF49) 지원 / 최선 가용 t ≥ {getattr(scfg, 'ROTATION_SELECT_T_MIN', 1.0):.1f}; 모드 "
                                              f"{getattr(scfg, 'ROTATION_SELECT_MODE', 'strict')}, 지평 {dg.get('select_horizon', 21)}일, 사전방향 일치) → "
                                              f"{yr_last}년 채택: {sel_last_txt}. 규칙: ① 채택 신호 과반이 같은 섹터를 1위로 지목 → "
@@ -3291,10 +3501,19 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             def _pf2(name: str) -> str:
                 if name in pf.index:
                     r = pf.loc[name]
-                    return f"CAGR {r.get('CAGR'):.2%} / 샤프 {r.get('샤프')} / MDD {r.get('최대낙폭(MDD)'):.2%} / 평균노출 {r.get('평균노출')}"
+                    ex = r.get("평균노출")
+                    return (f"CAGR {r.get('CAGR'):.2%} / 샤프 {r.get('샤프')} / MDD {r.get('최대낙폭(MDD)'):.2%}"
+                            + (f" / 평균노출 {ex}" if pd.notna(ex) else ""))
                 return "-"
-            alts = [l for l in (dg.get("label_leader"), dg.get("label_topk"), dg.get("label_linear"))
+            alts = [l for l in (dg.get("label_leader"), dg.get("label_topk"), dg.get("label_linear"), dg.get("label_own"))
                     if l and l != dg["label_primary"]]
+            # [v0.7.0] 목표 대비 — 사용자 목표(국면 비중을 따르며 상승 확률 1위 섹터 매수 → SPY 국면전략보다 높은 수익) 달성 여부를 한 줄로
+            vs = rot_val.get("vs_spy_m", np.nan)
+            own_txt = f" | [비교] 리더 자체 목표비중: {_pf2(dg['label_own'])}" if dg.get("label_own") else ""
+            nd_rows.append(("목표 대비(⑤ CAGR ≥ SPY 국면전략 M)",
+                            (f"{'달성' if (pd.notna(vs) and vs >= float(getattr(scfg, 'ROTATION_ACCEPT_VS_SPY_M', 0.0))) else '미달'} — "
+                             f"주 전략 {_pf2(dg['label_primary'])} vs SPY M {_pf2('SPY 국면전략(M)')} (CAGR 차 {vs:+.2%}p)" if pd.notna(vs)
+                             else "계산불가") + own_txt + " — 13f ⑤"))
             nd_rows.append(("집중배분 vs 대조군", f"[주] {dg['label_primary']}: {_pf2(dg['label_primary'])} | "
                                               + " | ".join(f"[대안] {l}: {_pf2(l)}" for l in alts) + " | "
                                               f"[대조군A] {_pf2(ROT_LABEL_CTRL_A)} | [대조군B] {_pf2(ROT_LABEL_CTRL_B)} | "
@@ -3334,7 +3553,8 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                    "배분 평균비중·1위 빈도 포함) / "
                    "13 섹터배분전략(집중배분 주·대안 + 대조군A·B + 기존 참고 4개, 같은 평가창)·13b 자산곡선·13c 일별배분비중(판단·1위·"
                    "회피 섹터·SPY/섹터별 목표비중·순위, 맨 끝 예측 행)·13d 횡단면 rank IC(후보 사전방향·근거 포함)·13e 상위3−하위3 "
-                   "스프레드·13f 수용기준 판정·13g 순환매 신호 워크포워드 연도별 채택 로그 / "
+                   "스프레드·13f 수용기준 판정(①~④ 대조군A 대비, ⑤ 목표 CAGR ≥ SPY M)·13g 순환매 신호 워크포워드 연도별 채택 로그"
+                   "(rank IC t·상위1 스프레드 t 병기)·13h Ken French 49업종 외부검증 / "
                    "01_일별_티커(섹터별 M 01시트와 동일 컬럼 + 위험점수백분위(H,섹터자체) 진단열, 마지막 행이 다음 거래일 예측) / "
                    "02 거래내역 / 03 지표검증 / 04 채택근거상세 / 05 이벤트스터디 / 05b 하락상승구간 / 06 성과·06b 운용통계·06c 임계값민감도 / "
                    "07 연도별(SPY평균비중 병기) / 08 워크포워드가중치 / 09 국면통계 / 09b 규칙별기여(규칙 발동일수·익일평균수익, 상승 미탑승/하락 "
