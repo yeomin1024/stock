@@ -1,5 +1,8 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.9.1 - 2026-09-06 - [파일 용량] 01_일별_{티커}의 채택 지표별 [값]/[기여] 진단열을 기본 제외
+#    (DAILY_INDICATOR_DETAIL=False, 실측 리포트8 xlsx 압축 크기의 약 88%). 신호·백테스트·사이징 값은 완전히 동일 —
+#    리포트 열 구성만 변경(⚠ 아님).
 #  VERSION: v0.9.0 - 2026-09-06 - [실제 거래 로그 + ⚠ 규칙 2건] 13j_배분거래내역(한 계좌의 실제 포트폴리오 거래 — 종전 02는 섹터별
 #    단독 진단이라 날짜가 겹쳤음, '02_섹터별단독거래(진단)'으로 개명) + ⚠ 교차확인을 증거 등급으로(엄격 통과 신호는 단독 판단, 약한 등급만
 #    ≥2 일치) + ⚠ 회피 규칙 대칭 검증(하위1 스프레드 t≤−2.0 통과 신호만 꼴찌 투표). 신호·E_t 추종·수용기준·M 무변경.
@@ -39,6 +42,27 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.9.1 | 2026-09-06 | 사용자 보고: "엑셀 파일 크기가 커서 못 올리는데 필요없는 시트 좀 없애도록 수정해봐".
+#    [진단] 리포트8(v0.8.1 실측, 11섹터) xlsx를 직접 분해(zip 내부 시트별 xml 크기)해 확인: 전체 압축 31.4MB 중
+#    01_일별_XLK~XLRE 11개 시트가 uncompressed 197MB/222MB(88%) — 나머지 27개 시트를 합쳐도 17MB. 시트 하나(01_일별_XLK)를
+#    열어보니 356열 중 318열(89%)이 그날 채택된 지표마다 [값]{지표명}/[기여]{지표명} 2열씩 붙인 것(섹터당 채택 지표 최대
+#    150개 이상 × 2 × 약 2200행) — 신호가 그 지표를 왜 썼는지는 이미 같은 행의 '근거요약' 텍스트(M.build_reason_text)와
+#    03_지표검증/04_채택근거상세/08_워크포워드가중치가 지표 단위로 보여주므로, 이 원자료 열은 "필요 없는 시트"라기보다
+#    "가장 큰 시트 안의 대부분 불필요한 열"이었다(사용자 요청이 시트 단위였지만 실제 절감 지점은 열 단위임을 확인 후 반영).
+#    [조치 — build_sector_sheets() 01 조립부] SectorConfig.DAILY_INDICATOR_DETAIL(신규, 기본 False)로 게이팅:
+#    False(기본)면 [값]/[기여] 열을 아예 만들지 않음(01_일별_XLK 356→38열), True면 종전(v0.9.0 이하) 그대로 전부 생성.
+#    신호 생성·백테스트·사이징·수용기준 등 계산 경로는 전혀 건드리지 않음 — 리포트 조립(build_sector_sheets 마지막
+#    for 루프)만 조건부라 ⚠ 아님(값 자체가 아니라 내보내는 열 구성만 바뀜). run_sector()가 이 값을 scfg에서 읽어
+#    build_sector_sheets(daily_indicator_detail=...)로 명시 전달한다(cfg_i는 sector_cfg_for()가 M.Config 필드만
+#    복제한 사본이라 SectorConfig 전용 필드를 담지 못함 — cfg_i에 얹지 않고 별도 인자로 넘김). validate_and_weight_sector의
+#    캐시 키는 cfg_i에서만 계산되므로(_cache_key) 이 필드는 애초에 그 딕셔너리에 없어 _CACHE_KEY_IGNORE_FIELDS를 손댈 필요가 없음(확인).
+#    00시트 '시트 안내'의 01_일별_티커 설명에 현재 켜짐/꺼짐 상태와 복구 방법(DAILY_INDICATOR_DETAIL=True)을 동적으로 표시.
+#    [효과 — 리포트8과 같은 합성 11섹터 재현] 01_일별_* 11개 시트 uncompressed 총합 197MB → 약 20MB대(열 수 89% 감소에 비례),
+#    xlsx 전체 압축 크기 31.4MB → 수 MB대로 추정(다른 시트는 무변경). 업로드 제한에 걸리던 근본 원인 해소.
+#    [검증] test_sector_rotation_v091.py 신규: (1) 기본값에서 01_일별_* 시트에 [값]/[기여] 열이 하나도 없고 다른 열은
+#    v0.9.0과 동일 집합·동일 값(반올림까지) — 순수 열 삭제이지 재계산 아님을 증명, (2) DAILY_INDICATOR_DETAIL=True에서
+#    v0.9.0과 완전히 같은 열·값(회귀 없음), (3) 두 설정에서 12~13j 등 다른 모든 시트가 바이트 단위로 동일(신호/배분/거래
+#    로그 무변화 확인). 기존 v050~v090/E2E 스위트는 기본값(False)에서 그대로 PASS(전부 다른 열만 비교하던 어서션이라 영향 없음).
 #  v0.9.0 | 2026-09-06 | 사용자 요청(v0.8.1 실데이터 리포트 8 확인 후): "거래 내역이 이상하다 — 왜 모든 섹터가 겹치는 날짜에 매수·보유하나?
 #    한정된 자산에서 거래가 이루어지게 해야지. 섹터 로테이션을 잘 예측하는지 확인하고 문제 있으면 개선".
 #    [진단 1 — 거래내역] 02_거래내역은 실제 포트폴리오가 아니라 '각 섹터를 그 섹터 하나만 100% 운용'했을 때의 M식 거래(11벌의 독립 백테스트,
@@ -356,7 +380,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.9.0"
+VERSION = "v0.9.1"
 VERSION_DATE = "2026-09-06"
 
 # =============================================================================
@@ -541,6 +565,12 @@ class SectorConfig:
     EXPORT_DAILY_CSV: bool = True              # 01Z 매트릭스를 CSV로도 저장
     DAILY_CSV_PATH: str = "sector_regime_daily.csv"
     ALLOC_CSV_PATH: str = "sector_allocation_daily.csv"   # [v0.4.0] 13c 일별 배분비중 CSV(EXPORT_DAILY_CSV와 함께 저장)
+    # [v0.9.1] False(기본)면 01_일별_{티커}에서 채택 지표별 [값]/[기여] 열(섹터당 최대 수백 열 × ~2200일)을
+    # 뺀다 — 신호·백테스트·리포트의 다른 시트는 전혀 바뀌지 않고, 그 지표가 그날 결정에 얼마나 기여했는지는
+    # 이미 각 행의 '근거요약' 텍스트(M.build_reason_text 그대로)와 03_지표검증/04_채택근거상세/08_워크포워드가중치가
+    # 보여준다. 11섹터 실측(리포트8) 기준 이 열들이 xlsx 전체 압축 크기의 약 88%를 차지해(01_일별_XLK 356열 중
+    # 318열) 업로드 불가 수준으로 커지므로 기본값을 끔. 지표별 원자료가 필요하면 True로 켠다(파일 용량 급증).
+    DAILY_INDICATOR_DETAIL: bool = False
     RANDOM_SEED: int = 20260905
 
 
@@ -1780,7 +1810,8 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     sheets = build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score, score_pct, n_used,
                                  haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
                                  wlog, val_full, adopted, trades, episodes, events, sens, audit,
-                                 haz_pct_sector=haz_pct_sector, spy_yearly_pos=spy_yearly_pos)
+                                 haz_pct_sector=haz_pct_sector, spy_yearly_pos=spy_yearly_pos,
+                                 daily_indicator_detail=scfg.DAILY_INDICATOR_DETAIL)
     # [v0.5.0] 순환매 후보 순위신호 — '전체 이력'(SIGNAL_START 마스킹 없음: 횡단면 워크포워드 검증이 2018 이전 이력으로
     # 학습해야 하므로). 전부 그 섹터 후보지표 프레임/점수에서 그대로 꺼내거나 인과적으로 계산(재계산·미래 정보 없음).
     rot_raw = build_rotation_raw_signals(ticker, ind_i, score, adj_i, spy_tr, idx_i, M, res=res, scfg=scfg)
@@ -1886,7 +1917,10 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
                         haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
                         wlog, val_full, adopted, trades, episodes, events, sens, audit,
                         haz_pct_sector: Optional[pd.Series] = None,
-                        spy_yearly_pos: Optional[pd.Series] = None) -> Dict[str, pd.DataFrame]:
+                        spy_yearly_pos: Optional[pd.Series] = None,
+                        daily_indicator_detail: bool = False) -> Dict[str, pd.DataFrame]:
+    # daily_indicator_detail: [v0.9.1] SectorConfig.DAILY_INDICATOR_DETAIL을 그대로 전달받는다(cfg_i는
+    # M.Config 사본이라 이 필드가 없음 — sector_cfg_for()가 M_cfg 필드만 복제하므로 여기서 직접 인자로 받는다).
     idx = bt.index
     name_map = {s.key: s.name_kr for s in specs}
     _flag = lambda col: (sig[col].reindex(idx).map({True: "발동", False: ""}) if col in sig.columns else "")
@@ -1939,9 +1973,12 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
     daily["전략낙폭"] = (bt["equity"] / bt["equity"].cummax() - 1).round(4)
     daily["섹터낙폭"] = (bt["bh_equity"] / bt["bh_equity"].cummax() - 1).round(4)
     daily["근거요약"] = reason.reindex(idx)
-    for k in adopted:
-        daily[f"[값]{name_map.get(k, k)}"] = ind_i[k].reindex(idx).round(4)
-        daily[f"[기여]{name_map.get(k, k)}"] = contrib[k].reindex(idx).round(4)
+    # [v0.9.1] 기본은 이 열들을 뺀다(⚠ 아님 — 신호·백테스트 값 자체는 불변, 리포트 열 구성만 변경).
+    # 근거는 위 '근거요약' 텍스트에 이미 있고, 지표별 원자료가 필요하면 SectorConfig.DAILY_INDICATOR_DETAIL=True.
+    if daily_indicator_detail:
+        for k in adopted:
+            daily[f"[값]{name_map.get(k, k)}"] = ind_i[k].reindex(idx).round(4)
+            daily[f"[기여]{name_map.get(k, k)}"] = contrib[k].reindex(idx).round(4)
     daily = daily.reset_index(drop=True)
 
     # [v0.3.0 §1.A] 다음 거래일 예측 1행 — M.build_next_day_prediction()을 그대로 재사용(재계산 없음,
@@ -4218,7 +4255,11 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                    "(rank IC t·상위1 스프레드 t·하위1 스프레드 t·리더 판단 사용·회피 자격 병기)·13h Ken French 49업종 외부검증(전체 이력·동일시대 t 병기)·"
                    "13i SPY 대비 격차 분해(연도×판단×리더 섹터·리더 구간)·13j 배분거래내역(**실제 포트폴리오 거래** — 한 계좌, 자산별 포지션 구간, "
                    "시가 체결가·평균비중·구간수익·같은 구간 SPY/SPY M·진입 판단·청산 사유) / "
-                   "01_일별_티커(섹터별 M 01시트와 동일 컬럼 + 위험점수백분위(H,섹터자체) 진단열, 마지막 행이 다음 거래일 예측) / "
+                   "01_일별_티커(섹터별 M 01시트와 동일 컬럼 + 위험점수백분위(H,섹터자체) 진단열, 마지막 행이 다음 거래일 예측"
+                   + (" — 채택 지표별 [값]/[기여] 열 포함, DAILY_INDICATOR_DETAIL=True) / "
+                      if scfg.DAILY_INDICATOR_DETAIL else
+                      " — 채택 지표별 [값]/[기여] 원자료 열은 파일 용량 때문에 기본 제외, 근거는 '근거요약' 텍스트와 "
+                      "03/04/08 참고. 필요하면 DAILY_INDICATOR_DETAIL=True) / ") +
                    "02 섹터별단독거래(진단: 각 섹터를 '그 섹터 하나만 100% 운용'했을 때의 M식 거래 — 11벌의 독립 백테스트라 날짜가 겹침, 실제 거래는 13j) / "
                    "03 지표검증 / 04 채택근거상세 / 05 이벤트스터디 / 05b 하락상승구간 / 06 성과·06b 운용통계·06c 임계값민감도 / "
                    "07 연도별(SPY평균비중 병기) / 08 워크포워드가중치 / 09 국면통계 / 09b 규칙별기여(규칙 발동일수·익일평균수익, 상승 미탑승/하락 "
