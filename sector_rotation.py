@@ -1,5 +1,8 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.9.2 - 2026-09-06 - [Colab 다운로드] S.main()의 엑셀+CSV 다운로드를 M.maybe_colab_download_many()로
+#    zip 1개·1회 호출로 교체(M v1.25.0과 짝) — 브라우저가 연속 자동 다운로드 중 두 번째부터 조용히 차단하는 문제 회피.
+#    신호·배분·거래로그 완전히 동일 — 다운로드 방식만 변경(⚠ 아님).
 #  VERSION: v0.9.1 - 2026-09-06 - [파일 용량] 01_일별_{티커}의 채택 지표별 [값]/[기여] 진단열을 기본 제외
 #    (DAILY_INDICATOR_DETAIL=False, 실측 리포트8 xlsx 압축 크기의 약 88%). 신호·백테스트·사이징 값은 완전히 동일 —
 #    리포트 열 구성만 변경(⚠ 아님).
@@ -42,6 +45,15 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.9.2 | 2026-09-06 | 사용자 보고(로그): market_regime_report.xlsx·sector_regime_report.xlsx 둘 다
+#    event=colab_download_started + True(정상 리턴)인데 섹터 엑셀이 실제로는 다운로드 안 됨 — "왜 여기서 끝나는거야
+#    sector rotation 엑셀 파일이 다운 안되잖아". 원인·조치는 M v1.25.0(market_regime_trader.py CHANGELOG) 참조 — 요약:
+#    files.download()는 브라우저에 다운로드를 '요청'만 하고 성공 여부를 확인하지 않는데, M.main() 자체가 이미 최대 3번
+#    (엑셀+결과번들+CSV), 거기에 S.main()의 엑셀+CSV(최대 3번)까지 이어지면 한 세션에 최대 6번 — Chrome 등이 같은 탭의
+#    연속 자동 다운로드 중 첫 번째 이후를 조용히 차단하는 것과 증상이 일치(이 샌드박스엔 브라우저가 없어 100% 재현
+#    확인은 못 함 — 정직하게 밝힘). S.main(): 엑셀+일별CSV+배분CSV를 M.maybe_colab_download_many()(신규, zip 1개로
+#    묶어 다운로드 1회만 호출)로 교체, M이 구버전(v1.25.0 미만)이라 그 함수가 없으면 종전처럼 파일별 개별 다운로드로
+#    자동 폴백. run()/build_sector_report()/신호·배분·거래로그 무변화 — 다운로드 방식만 변경(⚠ 아님).
 #  v0.9.1 | 2026-09-06 | 사용자 보고: "엑셀 파일 크기가 커서 못 올리는데 필요없는 시트 좀 없애도록 수정해봐".
 #    [진단] 리포트8(v0.8.1 실측, 11섹터) xlsx를 직접 분해(zip 내부 시트별 xml 크기)해 확인: 전체 압축 31.4MB 중
 #    01_일별_XLK~XLRE 11개 시트가 uncompressed 197MB/222MB(88%) — 나머지 27개 시트를 합쳐도 17MB. 시트 하나(01_일별_XLK)를
@@ -380,7 +392,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.9.1"
+VERSION = "v0.9.2"
 VERSION_DATE = "2026-09-06"
 
 # =============================================================================
@@ -4386,16 +4398,23 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
 
 def main(res_or_path, M, scfg: Optional[SectorConfig] = None,
          sector_px_override: Optional[Dict[str, pd.DataFrame]] = None) -> str:
-    """M.main()과 같은 역할: run → build_sector_report → Colab이면 자동 다운로드."""
+    """M.main()과 같은 역할: run → build_sector_report → Colab이면 자동 다운로드.
+    [v0.9.2] 엑셀+CSV 2개를 files.download() 3번이 아니라 1번(zip)으로 묶는다 — M.maybe_colab_download_many()
+    참조(브라우저가 같은 세션에서 자동 다운로드가 여러 번 이어지면 첫 번째 이후를 조용히 차단하는 문제 회피).
+    M이 v1.25.0 미만이라 그 함수가 없으면(구버전 M과 조합 사용 시) 종전처럼 파일별로 개별 다운로드한다."""
     scfg = scfg or CFG
     sres = run(res_or_path, M, scfg, sector_px_override=sector_px_override)
     out = build_sector_report(sres, M=M)
-    if hasattr(M, "maybe_colab_download"):
-        M.maybe_colab_download(out)
-        if scfg.EXPORT_DAILY_CSV and os.path.exists(scfg.DAILY_CSV_PATH) and not sres.get("aborted"):
-            M.maybe_colab_download(scfg.DAILY_CSV_PATH)
-        if scfg.EXPORT_DAILY_CSV and os.path.exists(scfg.ALLOC_CSV_PATH) and not sres.get("aborted") and sres.get("alloc"):
-            M.maybe_colab_download(scfg.ALLOC_CSV_PATH)   # [v0.4.0] 13c 일별 배분비중
+    dl_paths = [out]
+    if scfg.EXPORT_DAILY_CSV and os.path.exists(scfg.DAILY_CSV_PATH) and not sres.get("aborted"):
+        dl_paths.append(scfg.DAILY_CSV_PATH)
+    if scfg.EXPORT_DAILY_CSV and os.path.exists(scfg.ALLOC_CSV_PATH) and not sres.get("aborted") and sres.get("alloc"):
+        dl_paths.append(scfg.ALLOC_CSV_PATH)   # [v0.4.0] 13c 일별 배분비중
+    if hasattr(M, "maybe_colab_download_many"):
+        M.maybe_colab_download_many(dl_paths, zip_name=os.path.splitext(scfg.OUT_XLSX)[0] + "_bundle.zip")
+    elif hasattr(M, "maybe_colab_download"):
+        for p in dl_paths:
+            M.maybe_colab_download(p)
     return out
 
 
