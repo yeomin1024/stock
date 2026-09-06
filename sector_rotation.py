@@ -1,8 +1,9 @@
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.8.0 - 2026-09-06 - [격차 원인 제거 ⚠] 교차확인(리더·회피는 서로 다른 채택 신호 ≥2개 일치 시에만 — 채택 1개인 해는
-#    폴백) + SPY를 12번째 후보로 횡단면 포함(섹터가 SPY보다 나아 보일 때만 섹터 매수, 'SPY우위' 판단) + 비교 변형 'SCORE_PCT 1위 무조건'
-#    + 13i SPY 대비 격차 분해 시트 + 외부검증 동일시대 t 병기. 3단계 규칙 골격·E_t 추종·섹터 국면 신호·M 무변경.
+#  VERSION: v0.8.1 - 2026-09-06 - [결함수정 — 신호/사이징 무변경] 리포트7 실측: 실데이터·fork 병렬 실행에서 11섹터 전부가
+#    run_sector() 진입 직후 RecursionError로 3.9초만에 전멸(정상은 섹터당 1~2분) — 개별 섹터 문제가 아니라 fork 병렬 실행
+#    자체의 환경 문제로 보고 전체 실패 시 순차 재시도로 자동 복구 + 실패 원인 전체 트레이스백을 12b 시트에 노출(종전엔 첫 줄
+#    160자만 남아 원인 추적 불가). 함께 문의된 jupyter_client의 datetime.utcnow() 경고는 이 코드베이스와 무관(아래 참조).
 #
 #  목적:
 #    market_regime_trader.py(이하 M)가 SPY에 대해 하는 일을 11개 SPDR 섹터 ETF(XLK/XLV/XLY/
@@ -39,6 +40,35 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.8.1 | 2026-09-06 | 사용자 보고(v0.8.0 실데이터 리포트7 확인 후): "[jupyter_client의 datetime.utcnow() DeprecationWarning]
+#    해결하고 결과도 뭔가 문제 있어 보여 해결해".
+#    [datetime.utcnow() 경고 — 조치 불필요] 이 저장소(sector_rotation.py·market_regime_trader.py) 전체에 utcnow() 호출이
+#    0건임을 정적 검사로 확인. 경고는 Colab에 설치된 jupyter_client 자체의 내부 구현(session.py, 메시지를 보낼 때마다
+#    datetime.utcnow() 호출)에서 나며, 우리 코드가 print/log를 하는 것만으로 발생 — 결과의 정확성에 영향 없음. 없애려면
+#    Colab 쪽에서 `pip install -U jupyter_client`(최신판은 datetime.now(UTC) 사용) 또는
+#    `warnings.filterwarnings("ignore", category=DeprecationWarning, module="jupyter_client")`를 쓰면 되지만, 이 저장소가
+#    고칠 수 있는 문제가 아니라 조치하지 않음.
+#    [진단 — 리포트7 "결과도 문제"] 00시트: 섹터 실행 결과 0/11 정상, 12_섹터요약: 11섹터 전부 "실패 — RecursionError: maximum
+#    recursion depth exceeded", 실행시간 04_run()합계 3.9초(정상이면 섹터당 1~2분×11/워커수 — 즉 첫 로그 직후 즉시 전멸).
+#    합성데이터로 동일 설정(11섹터·기본 재추정 주기 M·기본 워커·룩어헤드감사/민감도 on·fork 병렬)을 반복 재현했으나 이 샌드박스에서는
+#    전부 정상 완료 — Jupyter 커널의 fork 안전성 관련 실험(ipykernel 커널 내 fork+logging 스트레스 테스트)도 재현 실패. 즉 정확한
+#    내부 메커니즘은 이 환경에서 확정하지 못했다(정직하게 밝힘) — 그러나 (1) 11섹터 전부가 동일한 제네릭 오류로 동시에, (2) 정상
+#    소요시간의 1% 미만에서 실패한 것은 섹터별 데이터·신호 문제가 아니라 fork 병렬 실행 자체의 문제라는 강한 신호다(개별 섹터가 각자
+#    다른 실데이터로 같은 지점에서 우연히 동시에 재귀에 빠질 확률은 사실상 0). 병렬 실행은 Colab 2vCPU에서 속도를 약 2배로 올리려고
+#    fork로 자식 프로세스를 띄우는데(run_sectors), Jupyter/Colab 커널 프로세스에서의 fork는 alive 스레드·소켓이 자식에 불완전하게
+#    상속되는 것으로 알려진 취약한 조합이다 — 신호·사이징 로직과는 무관.
+#    [⚠ 아님 — 신호/사이징 변경 없음, 실행 견고성만] run_sectors(): fork 병렬 실행 후 결과가 0개이고 실패만 있으면(=100% 전멸,
+#      개별 실패가 아니라 전체 실패 패턴) 그 섹터들을 같은 프로세스에서 순차(fork 없이) 1회 자동 재시도한다. 순차 경로는 이번 진단 중
+#      1·5·11섹터·기본/전체 설정으로 반복 검증했고 한 번도 실패하지 않았다. 재시도도 실패하면(=섹터 고유 문제일 가능성) 원본 병렬 오류
+#      전체를 그대로 보존해 반환한다. 정상(부분 실패 이하) 상황에서는 동작 변화 없음 — 이 경로는 '100% 전멸'일 때만 발동.
+#    [진단 가시성] build_sector_error_detail() → 신규 시트 12b_섹터오류상세: 실패 섹터별 오류 첫 줄 + 전체 트레이스백(최대
+#      3000자, run_sectors가 이미 잡고 있었으나 12_섹터요약 '비고'가 첫 줄 160자만 보여줘 원인을 알 수 없었다 — 이번에도 그래서
+#      정확한 재귀 지점을 특정하지 못했다). 다음에 이런 실패가 나면 이 시트로 정확한 함수·줄을 바로 알 수 있다. 00시트 '섹터 실행
+#      결과' 줄에 실패가 있으면 12b 안내 추가.
+#    [검증] test_sector_rotation_v081.py 3항목 PASS: (1) run_sector를 몽키패치해 병렬 경로에서 전량 실패를 강제 → 순차 재시도가
+#      전부 복구하는지, 재시도도 실패하는 섹터는 원본+재시도 오류가 모두 남는지, (2) 부분 실패(1섹터만 실패)에서는 순차 재시도가
+#      발동하지 않는지(불필요한 재시도로 개별 섹터 문제를 가리지 않음), (3) build_sector_error_detail이 첫 줄과 전체 텍스트를 모두
+#      담고 길이가 종전 160자 초과 트레이스백을 보존하는지. 기존 스위트(v050~v080) 전부 PASS, E2E PASS(12b 시트 추가 확인).
 #  v0.8.0 | 2026-09-06 | 사용자 요청(v0.7.0 실데이터 리포트 6 확인 후): "아직도 국면전략 수익보다 밑이다 — 원인 분석해서 개선".
 #    [진단 — 리포트 6 일별 분해(13c 판단 × 13b 곡선)] 주 16.41% vs SPY M 18.65%(−2.24%p). 연도별 SPY M 대비 초과: 2018~20·22 = 0.00
 #      (폴백 = SPY M 비트 동일), 2021 −9.60%p, 2023 −7.74%p, 2024~26 −1.4%p, 회피 62일 −2.1%p. 즉 격차의 90%가 '채택 신호가 하나뿐인
@@ -294,7 +324,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.8.0"
+VERSION = "v0.8.1"
 VERSION_DATE = "2026-09-06"
 
 # =============================================================================
@@ -2067,6 +2097,26 @@ def run_sectors(tickers: List[str], ctx: Dict[str, Any], scfg: SectorConfig, M
             failed[t] = out
             log("RUN", kv(ticker=t, event="sector_failed", msg=str(out).splitlines()[0][:200]), M=M, level="error")
     _CTX = {}
+    # [v0.8.1 결함수정 — 신호/사이징 무변경, 실행 견고성만] fork 병렬 실행에서 결과가 하나도 없고(=성공 0) 실패만
+    # 있으면(2개 이상 섹터를 시도했을 때) 개별 섹터의 데이터·신호 문제일 가능성은 사실상 0이다(서로 다른 실데이터를 쓰는
+    # 11개 섹터가 각자 우연히 같은 지점에서 동시에 실패할 확률) — fork 병렬 실행 자체의 환경 문제(리포트7 실측: 11섹터
+    # 전부 RecursionError로 3.9초만에 전멸, 정상은 섹터당 1~2분)일 가능성이 훨씬 크다. 이 경우에만 같은 프로세스에서
+    # fork 없이 순차 1회 재시도한다 — 순차 경로는 진단 중 반복 검증했고 실패한 적이 없다. 부분 실패(성공이 1개라도 있음)는
+    # 섹터 고유 문제일 수 있으므로 재시도하지 않고 그대로 둔다(불필요한 재시도로 개별 원인을 가리지 않기 위함).
+    if failed and not results and len(tickers) > 1:
+        log("RUN", kv(event="parallel_all_failed_retry_sequential", n=len(failed),
+                       sample_err=next(iter(failed.values())).splitlines()[0][:200]), M=M, level="warning")
+        parallel_failed = dict(failed)
+        failed = {}
+        for t in tickers:
+            try:
+                results[t] = run_sector(t, ctx)
+                log("RUN", kv(ticker=t, event="sequential_retry_recovered"), M=M)
+            except Exception as e:  # noqa
+                failed[t] = (f"[순차 재시도도 실패 — 섹터 고유 문제일 수 있음] {type(e).__name__}: {e}\n"
+                             f"{traceback.format_exc()[-3000:]}\n\n[참고: 병렬 실행 시 원본 오류]\n{parallel_failed.get(t, '')}")
+                log("RUN", kv(ticker=t, event="sequential_retry_failed", err=type(e).__name__, msg=str(e)[:200]),
+                    M=M, level="error")
     return results, failed
 
 
@@ -3487,6 +3537,20 @@ def _rule_contrib_value(rule_contrib: pd.DataFrame, label: str, col: str) -> Any
     return hit.iloc[0] if len(hit) else np.nan
 
 
+def build_sector_error_detail(failed: Dict[str, str]) -> pd.DataFrame:
+    """[v0.8.1] 12_섹터요약의 '비고'는 오류 첫 줄만(160자) 담아 실제 원인 추적에 부족했다(리포트7 실측: 11섹터 전부가
+    'RecursionError: maximum recursion depth exceeded'로만 보여 정확한 발생 함수·줄을 알 수 없었음). run_sectors()가
+    이미 잡아 두는 전체 트레이스백(최대 3000자, 순차 재시도까지 실패했으면 원본 병렬 오류도 함께)을 그대로 시트에 남긴다 —
+    다음에 실패가 나면 이 시트로 바로 원인을 확인할 수 있다."""
+    cols = ["티커", "섹터명", "오류 요약", "전체 트레이스백"]
+    rows = []
+    for t, err in (failed or {}).items():
+        text = str(err)
+        rows.append({"티커": t, "섹터명": SECTOR_NAME_KR.get(t, ""), "오류 요약": text.splitlines()[0][:200],
+                     "전체 트레이스백": text})
+    return pd.DataFrame(rows, columns=cols)
+
+
 def build_sector_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, str], universe: pd.DataFrame,
                          alloc: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     rows = []
@@ -3579,6 +3643,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     sheets: Dict[str, pd.DataFrame] = {}
     sheets["01Z_섹터일별예측"] = sres["matrix"]
     sheets["12_섹터요약"] = summary
+    sheets["12b_섹터오류상세"] = build_sector_error_detail(sres.get("failed", {}))   # [v0.8.1] 실패 원인 전체 트레이스백
     sheets["13_섹터배분전략"] = sres["portfolio_perf"]
     sheets["13b_배분전략자산곡선"] = sres["portfolio_curve"]
     if alloc:   # [v0.4.0 §1.F]
@@ -3763,7 +3828,8 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         ("거래비용", f"편도 {M_cfg.COST_BPS:.0f}bp (M과 동일)"),
         ("판별력 자기검사", (f"PASS (참신호 {st['n_true_pass']}/3, 잡음오채택 {st['n_noise_pass']}/5)" if st.get("passed")
                         else "미실행(RUN_SELFTEST=False)")),
-        ("섹터 실행 결과", f"{n_ok}/{len(scfg.SECTORS)} 정상" + (f", 실패: {', '.join(sres['failed'].keys())}" if sres["failed"] else "")),
+        ("섹터 실행 결과", f"{n_ok}/{len(scfg.SECTORS)} 정상" + (f", 실패: {', '.join(sres['failed'].keys())} — 전체 오류는 "
+                        "12b_섹터오류상세 참조" if sres["failed"] else "")),
         ("최근 예측", up_line),
         ("후보지표", f"섹터당 {n_cand}개 = M 후보 전부(변동성/신용/매크로/크로스에셋/추세/자동생성) "
                     f"+ 섹터 기술 8 + SPY대비 상대강도 10(§1.E REL_MA200_SLOPE 포함) + 섹터 매크로 8(§1.D 확장) "
@@ -3783,7 +3849,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         ("난수 시드", str(scfg.RANDOM_SEED)),
         ("시트 안내", "01Z 섹터일별예측(날짜×11섹터 상승/중립/하락·목표비중, SPY 시장상황 병기, '구분' 열=실적/예측 — 맨 끝 1행이 "
                    "다음 거래일 예측, 집중배분 합계·상위5 요약 열) / 12 섹터요약(섹터별 1행, H진입일 익일평균수익·상승 미탑승·하락 회피·"
-                   "배분 평균비중·1위 빈도 포함) / "
+                   "배분 평균비중·1위 빈도 포함)·12b 섹터오류상세(실패 섹터가 있을 때만 의미 있음 — 오류 첫 줄 + 전체 트레이스백) / "
                    "13 섹터배분전략(집중배분 주·대안 + 대조군A·B + 기존 참고 4개, 같은 평가창)·13b 자산곡선·13c 일별배분비중(판단·1위·"
                    "회피 섹터·SPY/섹터별 목표비중·순위, 맨 끝 예측 행)·13d 횡단면 rank IC(후보 사전방향·근거 포함)·13e 상위3−하위3 "
                    "스프레드·13f 수용기준 판정(①~④ 대조군A 대비, ⑤ 목표 CAGR ≥ SPY M)·13g 순환매 신호 워크포워드 연도별 채택 로그"
