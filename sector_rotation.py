@@ -1,5 +1,12 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.12.0 - 2026-09-07 - [신규 진단 13k_국면섹터구조 — 배분 규칙 무변경] 사용자 질문(리포트13): "SPY 국면이
+#    오르면 보통 XLK가 오르고 방어 섹터(XLP·XLV)는 반대 아니냐, 그 상관관계를 더 철저히 분석해서 국면 정보를 더
+#    참고하라". 실측으로 확인한 결과 **관계는 실재하지만 이 아키텍처로는 쓸 수 없다**: 상승국면의 (경기민감−방어)
+#    스프레드는 1일 t 1.97 / 3일 2.04 / 5일 2.07로 유의한데 10일 1.49 → 21일 0.84로 사라진다. 배분 계층은 h=21일·
+#    최소보유 21일로 돌아서 구조가 살아있는 지평을 지나친다. 그래서 규칙을 바꾸는 대신 매 실행이 이 사실을 스스로
+#    보여주도록 13k 시트(국면×섹터 초과수익 / 지평 프로파일 / 1위가 방어냐 아니냐)를 상설 추가했다. 검증하고 기각한
+#    구조 대안 6종은 아래 CHANGELOG v0.12.0에 수치와 함께 남긴다. 상세는 아래 CHANGELOG 참조.
 #  VERSION: v0.11.0 - 2026-09-07 - [⚠ 복합 후보 중복 계산 제거 + 교차확인 불가 연도 명시] 사용자 실측 리포트12(v0.10.1,
 #    2018-01-02~2026-09-04) 진단: 배분에 쓰는 복합순위의 상위1 스프레드 NW-t가 1.38(③ FAIL)인데 그 최강 구성원 SCORE_PCT
 #    단독은 t=4.00 — 같은 날짜 표본으로 재측정하면 복합 1.12 vs SCORE_PCT 2.73이고, 1위가 달라지는 날이 2021~23년에
@@ -69,6 +76,49 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.12.0 | 2026-09-07 | 사용자 질문("섹터 순환매를 아직 완전히 파악 못 하는 느낌 / 섹터별 일별 예측이 맞는 게 별로
+#    없다 / SPY 국면이 오르면 XLK가 오르고 방어 섹터는 반대인 상관관계를 더 철저히 분석해 국면 정보를 더 참고하라")에
+#    대한 진단 + 신규 진단 시트. **배분 규칙·신호·청산·게이트는 한 줄도 바꾸지 않았다(⚠ 아님).**
+#
+#    [확인 1 — 일별 예측이 약하다는 지적은 맞다] 리포트13 01Z 실측, 섹터별 (상승예측일 익일평균 − 하락예측일 익일평균):
+#    XLK +11.8bp / XLY +16.9 / XLRE +11.2 / XLF +9.2 vs XLP +2.8 / XLE +1.9 / XLU +1.8 / **XLV −5.2(역전)**.
+#    전 섹터 평균 익일수익이 +4.4bp인 것과 비교하면 방어 섹터(XLP·XLU·XLV)에서는 사실상 정보가 없다. 09_국면통계도
+#    XLV 한 종목만 "주의: 하락국면의 익일수익률이 더 높음"으로 이미 표시하고 있었다 — 시장 전체 성격의 피처로 '그
+#    자산의 상승'을 맞히는 파이프라인이, 시장이 빠질 때 오르는 자산에서는 방향이 뒤집히는 구조적 한계다.
+#
+#    [확인 2 — 국면↔섹터 상관관계도 실재한다] SPY 시장상황별 섹터 익일 초과수익(동일가중 대비, bp/일):
+#    상승국면 XLK +4.67 / XLY +2.73 / XLI +2.57 vs XLU −3.88 / XLRE −3.68 / XLP −2.76 / XLV −2.30,
+#    하락국면 XLV +8.22 / XLU +4.75 / XLP +1.69 vs XLE −6.33 / XLC −5.10 / XLY −3.31. 사용자가 말한 그대로다.
+#
+#    [핵심 — 그런데 왜 못 쓰는가] (경기민감 바스켓 − 방어 바스켓)을 지평별로 보면 상승국면에서
+#    1일 +0.048%(t 1.97) / 3일 +0.130%(t 2.04) / 5일 +0.204%(t 2.07) / 10일 +0.278%(t 1.49) /
+#    **21일 +0.321%(t 0.84)** / 63일 +0.528%(t 0.54) — 구조가 1~5일에만 살아있고 21일에서 사라진다.
+#    배분 계층은 ROTATION_HORIZON=21일 검증 · ROTATION_SMOOTH_DAYS=21 평활 · ROTATION_MIN_HOLD_DAYS=21로 돌기
+#    때문에 구조가 있는 지평을 통째로 지나친다. 즉 '신호가 없어서'가 아니라 '지평이 안 맞아서'다.
+#
+#    [검증하고 기각한 구조 대안 6종 — 전부 현행보다 나쁘거나 무의미] 상위1 스프레드 NW-t(향후 21일) 기준:
+#      · 국면 민감도 회귀 예측(3년 롤링, 인과) 신호: t 0.93 (1위가 XLE에 쏠림)
+#      · 사전 고정 방어/경기민감 그룹 틸트 × 국면: 단독 t 1.59, SCORE_PCT와 순위평균 결합 시 t 0.56(현행 3.81 대비 악화)
+#      · 국면별 바스켓 전환(상승→경기민감/하락→방어, E_t 동일·편도 5bp): CAGR 13.55% — '항상 경기민감' 13.66%보다도
+#        못하다. 즉 이득은 경기민감 틸트 자체에서 나오고 '국면에 따른 전환'은 값을 더하지 않는다(둘 다 주 전략 19.92%보다 낮음).
+#      · 최소보유 단축(구조가 사는 지평으로): 리포트13 자체 데이터로 상태기계를 재현해 min_hold만 바꾸면
+#        1일 14.63% / 5일 14.66% / 10일 15.54% / **21일 15.69%(현행)** / 42일 15.34% / 63일 14.44% — 21일이 최선이다.
+#        "월 리밸런스 관행"이라는 관례로 정해졌던 값이지만 결과적으로 이 표본에서 최적점 근처였다.
+#      · 섹터 국면모델 유효성 워크포워드 게이트(학습창에서 상승국면 익일평균 ≤ 하락국면이면 리더 자격 박탈):
+#        t 3.81 → 2.95로 **악화**(1위가 바뀐 날 25.6%).
+#      · 방어 섹터 리더 차단: 실제 리더 보유일 516일 중 방어 섹터는 **21일(전부 XLU)**뿐 — 교차확인 투표와 확신
+#        게이트가 이미 걸러내고 있어 규칙을 더 얹을 실익이 없다.
+#
+#    [조치] 규칙을 바꾸는 대신 **신규 시트 13k_국면섹터구조**(build_regime_sector_structure(), 신규)를 상설 추가해
+#    매 실행이 위 분석을 스스로 보여주게 했다: A. 국면×섹터 초과수익(지평 1/5/21/63), B. 경기민감−방어 지평
+#    프로파일(국면별 NW-HAC t와 "유의/비유의 — 이 지평엔 구조 있음/없음" 해석 열), C. 그날 1위가 방어냐 아니냐에
+#    따른 상위1 스프레드. 방어/경기민감 분류는 신규 ROTATION_DEFENSIVE_SECTORS=("XLP","XLU","XLV") — GICS 관례를
+#    그대로 옮긴 사전 고정값이며 **진단 표시 전용이라 배분 규칙에는 쓰지 않는다**. 수익 계산은 파이프라인 원본
+#    ret_cc_full을 쓰므로 리포트 조립 옵션(DAILY_INDICATOR_DETAIL 등)과 무관하다.
+#
+#    회귀: test_sector_rotation_v0120.py 신규(13k 3블록 구조·지평 프로파일 정합·방어 분류 사전고정·배분 불변 확인)
+#    + 기존 18개 전부 재실행 그린. 배분·신호·청산·게이트·워크포워드 채택 전부 무변경(13k는 순수 관측 시트).
+#
 #  v0.11.0 | 2026-09-07 | 사용자 지시("섹터 로테이션을 잘 예측하고 있는지 확인하고 아니라면 문제 원인 찾아서 개선해") —
 #    리포트12(v0.10.1 실측, 2018-01-02~2026-09-04) 진단 후 원인 1건 수정 + 투명성 1건.
 #
@@ -573,7 +623,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.11.0"
+VERSION = "v0.12.0"
 VERSION_DATE = "2026-09-07"
 
 # =============================================================================
@@ -3928,6 +3978,119 @@ def _quartile_labels(x: pd.Series, q: int = 4) -> pd.Series:
     return lab.astype(object).reindex(x.index)
 
 
+# [v0.12.0] 사전 고정 방어/경기민감 분류 — GICS 관례(방어=필수소비·유틸리티·헬스케어). 데이터로 고른 값이 아니며
+#   13k 진단 표시 전용(배분 규칙에는 쓰지 않는다).
+ROTATION_DEFENSIVE_SECTORS: Tuple[str, ...] = ("XLP", "XLU", "XLV")
+
+
+def build_regime_sector_structure(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
+                                  horizons: Tuple[int, ...] = (1, 5, 21, 63)) -> pd.DataFrame:
+    """[v0.12.0] 13k_국면섹터구조 — 사용자 질문("SPY 국면이 오르면 XLK가 오르고, 방어 섹터는 반대 아니냐,
+    그 상관관계를 더 철저히 분석해서 국면 정보를 더 참고하라")에 매 실행이 스스로 답하도록 만든 진단 시트.
+    배분 규칙은 전혀 건드리지 않는다(순수 관측).
+
+    3개 블록:
+      A. 국면×섹터 : SPY 시장상황(상승/중립/하락)별로 각 섹터의 향후 h일 '초과수익'(상장 섹터 평균 대비).
+         사용자 가설이 맞다면 상승에서 XLK·XLY가, 하락에서 XLV·XLP·XLU가 양수로 나온다.
+      B. 지평 프로파일 : (경기민감 바스켓 − 방어 바스켓)을 국면별·지평별로 NW-HAC t와 함께. **이 표가 핵심이다** —
+         구조가 어느 지평에 사는지 보여준다. 배분 계층은 h=ROTATION_HORIZON(기본 21일)·최소보유 21일로 도는데,
+         구조가 1~5일에만 있고 21일에서 사라진다면 그 구조는 이 아키텍처로는 못 잡는다는 뜻이다.
+      C. 리더 성격 : 그날 복합순위 1위가 방어 섹터일 때와 아닐 때의 상위1 스프레드 — 방어 섹터 1위가 실제로
+         약한지, 교차확인·확신 게이트가 이미 그것을 걸러내고 있는지 확인.
+    """
+    if not alloc or "composite" not in alloc:
+        return pd.DataFrame()
+    cols = list(alloc.get("cols", []))
+    if not cols:
+        return pd.DataFrame()
+    idx = alloc["composite"].index
+    rets = {}
+    for t in cols:
+        r = results.get(t, {}).get("ret_cc_full")        # 섹터 일간 종가수익(파이프라인 원본 — 리포트 조립과 무관)
+        if r is None:
+            continue
+        r = pd.Series(r).reindex(idx)
+        if r.notna().sum() >= 252:
+            rets[t] = r
+    if len(rets) < 4:
+        return pd.DataFrame()
+    RET = pd.DataFrame(rets)
+    listed = RET.notna()
+    lr = np.log1p(RET.where(listed))
+    state = alloc.get("spy_state_short")
+    state = (state.reindex(idx).astype(str) if state is not None else pd.Series("", index=idx))
+    dfn = [t for t in RET.columns if t in ROTATION_DEFENSIVE_SECTORS]
+    cyc = [t for t in RET.columns if t not in ROTATION_DEFENSIVE_SECTORS]
+    rows: List[Dict[str, Any]] = []
+
+    def _fwd(h):
+        return (np.exp(lr.rolling(h).sum().shift(-h)) - 1.0).where(listed)
+
+    # --- A. 국면 × 섹터 초과수익 ---
+    for h in horizons:
+        f = _fwd(h)
+        xsr = f.sub(f.where(listed).mean(axis=1), axis=0)
+        for st in ("상승", "중립", "하락"):
+            m = (state == st).values
+            if int(m.sum()) < 30:
+                continue
+            for t in RET.columns:
+                v = xsr.loc[m, t].dropna()
+                if len(v) < 30:
+                    continue
+                rows.append({"구분": "A. 국면×섹터 초과수익", "지평(일)": h, "국면": st, "항목": t,
+                             "일수": int(len(v)), "평균(%/지평)": round(float(v.mean()) * 100, 3),
+                             "NW-HAC t": np.nan})
+    # --- B. 지평 프로파일: 경기민감 − 방어 ---
+    for h in horizons:
+        f = _fwd(h)
+        g = f[cyc].mean(axis=1) - f[dfn].mean(axis=1) if dfn and cyc else pd.Series(np.nan, index=idx)
+        for lab, m in (("전체", np.ones(len(idx), dtype=bool)),
+                       ("상승", (state == "상승").values), ("중립", (state == "중립").values),
+                       ("하락", (state == "하락").values)):
+            v = g[m].dropna()
+            if len(v) < 30:
+                continue
+            mu, tt, nn = _nw_mean_tstat(v, lag=max(h, 1))
+            rows.append({"구분": "B. 경기민감−방어(지평 프로파일)", "지평(일)": h, "국면": lab,
+                         "항목": f"{'·'.join(cyc[:3])}… − {'·'.join(dfn)}", "일수": int(nn),
+                         "평균(%/지평)": round(float(mu) * 100, 3) if pd.notna(mu) else np.nan,
+                         "NW-HAC t": round(float(tt), 2) if pd.notna(tt) else np.nan})
+    # --- C. 1위가 방어냐 아니냐 ---
+    comp = alloc.get("composite_all_smooth", alloc["composite"])
+    comp = comp.reindex(index=idx, columns=RET.columns)
+    has = comp.notna().any(axis=1)
+    top = pd.Series(index=idx, dtype=object)
+    if bool(has.any()):
+        vals = comp.to_numpy(float)
+        arr = np.where(np.isnan(vals), -np.inf, vals)
+        pos = np.argmax(arr, axis=1)
+        top = pd.Series([RET.columns[p] if ok else None for p, ok in zip(pos, has.values)], index=idx)
+    for h in horizons:
+        f = _fwd(h)
+        xsr = f.sub(f.where(listed).mean(axis=1), axis=0)
+        sp = pd.Series(np.nan, index=idx)
+        for t in RET.columns:
+            m = (top == t).values
+            if m.any():
+                sp[m] = xsr.loc[m, t].values
+        for lab, m in (("1위=방어", top.isin(dfn).values), ("1위=비방어", (top.notna() & ~top.isin(dfn)).values)):
+            v = sp[m].dropna()
+            if len(v) < 30:
+                continue
+            mu, tt, nn = _nw_mean_tstat(v, lag=max(h, 1))
+            rows.append({"구분": "C. 1위 성격별 상위1 스프레드", "지평(일)": h, "국면": "전체", "항목": lab,
+                         "일수": int(nn), "평균(%/지평)": round(float(mu) * 100, 3) if pd.notna(mu) else np.nan,
+                         "NW-HAC t": round(float(tt), 2) if pd.notna(tt) else np.nan})
+    out = pd.DataFrame(rows)
+    if len(out):
+        out["해석"] = ""
+        b = out["구분"].str.startswith("B.")
+        out.loc[b & (out["NW-HAC t"].abs() >= 2.0), "해석"] = "유의(|t|≥2) — 이 지평엔 구조가 있음"
+        out.loc[b & (out["NW-HAC t"].abs() < 2.0), "해석"] = "비유의 — 이 지평엔 구조 없음"
+    return out
+
+
 def build_gap_attribution(alloc: Dict[str, Any]) -> pd.DataFrame:
     """[v0.8.0] 13i_SPY대비격차분해: 주 전략 − SPY 국면전략(M)의 일별 초과수익(단순 합, %p)을 연도 × 판단(체결 지연 1일 반영) ×
     리더 섹터로 분해. 리포트 6 판독에서 손으로 하던 분해를 자동화 — '격차가 어느 해·어느 판단·어느 섹터에서 났는가'를 바로 본다.
@@ -4680,6 +4843,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         sheets["13h_외부검증FF49"] = rot_val.get("external_log", pd.DataFrame())     # [v0.6.0] Ken French 49업종 외부 검증
         sheets["13i_SPY대비격차분해"] = rot_val.get("gap_table", pd.DataFrame())     # [v0.8.0] 연도×판단×리더 섹터 분해
         sheets["13j_배분거래내역"] = sres.get("alloc_trades", pd.DataFrame())        # [v0.9.0] 실제 포트폴리오 거래 로그(한 계좌)
+        # [v0.12.0] 사용자 질문("SPY 국면↔섹터 상관관계를 더 철저히 분석해서 국면 정보를 더 참고하라")에 매 실행이
+        #   스스로 답하는 진단 시트. 배분 규칙은 무변경 — 순수 관측.
+        sheets["13k_국면섹터구조"] = build_regime_sector_structure(alloc, results)
     for t in ok_t:
         sheets[f"01_일별_{t}"] = results[t]["sheets"]["daily"]
     # [v0.9.0] 종전 '02_거래내역' — 각 섹터를 '그 섹터 하나만 100% 운용'했을 때의 M식 거래(11벌의 독립 백테스트)라 날짜가 겹친다.
