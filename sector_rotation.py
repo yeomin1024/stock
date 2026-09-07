@@ -1,5 +1,13 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.11.0 - 2026-09-07 - [⚠ 복합 후보 중복 계산 제거 + 교차확인 불가 연도 명시] 사용자 실측 리포트12(v0.10.1,
+#    2018-01-02~2026-09-04) 진단: 배분에 쓰는 복합순위의 상위1 스프레드 NW-t가 1.38(③ FAIL)인데 그 최강 구성원 SCORE_PCT
+#    단독은 t=4.00 — 같은 날짜 표본으로 재측정하면 복합 1.12 vs SCORE_PCT 2.73이고, 1위가 달라지는 날이 2021~23년에
+#    51~59%다. 원인은 복합 후보(MOM_COMPOSITE = 모멘텀 3종의 순위 평균)가 자기 구성원과 함께 채택돼 같은 가족이 두 번
+#    세어진 것 — 2021년 실효 가중 SCORE_PCT 25% vs 모멘텀 75%, 2022년 33% vs 67%. 조치: 복합 후보와 구성원이 같이
+#    채택되면 가족을 한 번만 센다(ROTATION_DEDUP_COMPOSITE, 기본 켜짐). 재구성 엔진 실측 상위1 스프레드 t 1.43→1.62
+#    (2022년 2.15→2.93). 함께: 채택은 됐지만 교차확인 요구 수를 못 채워 리더가 구조적으로 0일인 해(2019·2020)를 13g·로그에
+#    명시(동작 무변경). 상세는 아래 CHANGELOG v0.11.0 항목 참조.
 #  VERSION: v0.10.1 - 2026-09-07 - [⚠ 주 전략 청산 규칙 버그수정] 사용자 실측 리포트11(v0.10.0, 2018-01-02~2026-09-04) 13j:
 #    주 전략 16건 중 8건이 "여유 상실(확신 게이트 미달)→폴백 SPY"로 청산됐고 청산 후 관찰창(≤63일)에서 그 섹터가 SPY를
 #    평균 +8.9%p 앞섬 — v0.10.0이 주석으로는 "게이트=진입 전용"이라 선언해 놓고 실제 청산 분기는 게이트까지 청산조건에
@@ -61,6 +69,48 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.11.0 | 2026-09-07 | 사용자 지시("섹터 로테이션을 잘 예측하고 있는지 확인하고 아니라면 문제 원인 찾아서 개선해") —
+#    리포트12(v0.10.1 실측, 2018-01-02~2026-09-04) 진단 후 원인 1건 수정 + 투명성 1건.
+#
+#    [진단 — 예측하고 있는가] ⑤ 목표(CAGR ≥ SPY M)는 v0.10.1로 +1.45%p 달성(리포트11 +0.83%p). 그러나 ③(복합순위 상위1
+#    스프레드 NW-t ≥ 2.0)은 t=1.38로 여전히 FAIL — "1위를 통계적으로 유의하게 골라낸다"고는 말할 수 없다. 실제로 리더가
+#    발동한 날은 8.7년 중 526일뿐이고 그중 469일(89%)이 2024~26년이다(2018~23년은 사실상 휴면). SPY M 대비 초과
+#    +10.91%p는 전부 리더일에서 나온다(리더 +11.30%p / 폴백 +0.97 / 폴백(여유부족) -0.46 / SPY우위 -0.13 / 현금 -0.77).
+#
+#    [원인 A — 복합 후보 중복 계산 ⚠ 수정함] 13d 실측: 배분에 쓰는 복합순위(21일 평활)의 상위1 스프레드 t=1.38인데 그
+#    구성원 SCORE_PCT 단독은 t=4.00. 리포트의 01_일별 복합점수백분위·13c 순위로 같은 날짜 표본을 만들어 재측정하면
+#    복합 +0.393%/21일(t 1.12) vs SCORE_PCT +1.186%(t 2.73)이고, 1위가 갈리는 날이 2021년 59%·2022년 56%·2023년 51%
+#    (2024~26년은 0~2% — 그 해엔 SCORE_PCT 단독 채택이라 복합=SCORE_PCT). 원인은 복합 후보 MOM_COMPOSITE가 정의상
+#    'RESID_MOM_12_1·REL_MOM_126·REL_MOM_12_1 순위의 평균'인데 그 구성원과 함께 채택돼, 복합순위 평균에 같은 숫자가
+#    두 번 들어간 것 — 2021년 실효 가중은 SCORE_PCT 25% vs 모멘텀 75%, 2022년 33% vs 67%. 부작용이 두 가지 더 있다:
+#    (1) 채택 수 K가 부풀어 과반 문턱(v_lead*2 > K)이 높아진다(2021년 4개 중 3개 일치 요구 → 리더 21일), (2) v0.8.0이
+#    의도한 '서로 다른 근거의 교차확인'이 같은 가족 변종끼리의 자기확인이 된다(모멘텀 3표만으로 과반 성립 가능).
+#    조치: dedup_composite_signals() 신규 — 복합 후보와 그 구성원이 같이 sel_eff에 있으면 가족을 한 번만 센다.
+#    단일 가족 복합(MOM_COMPOSITE)은 복합을 남기고 구성원을 빼고, 다중 가족 복합(ALL_COMPOSITE)은 복합을 빼고 구성원을
+#    남긴다(가족 분류는 신규 ROTATION_SIGNAL_FAMILY — ROTATION_SIGNAL_SPECS의 경제적 근거를 그대로 옮긴 것이며 데이터로
+#    고른 값이 아니다). 방향 선택 근거: 구성원을 남기면 가족 가중이 '그 해 몇 개 변종이 통과했는가'에 계속 좌우된다
+#    (불변성이 깨짐). 재구성 엔진 실측도 같은 방향 — 복합 유지 t 1.62 > 현행 1.43 > 구성원 유지 1.15.
+#    이 표본에서 실제로 달라지는 해는 2021·2022뿐(2019·20·23~26년은 복합 후보 미채택이라 완전히 동일).
+#
+#    [원인 B — 커버리지, 투명성만] 2019·2020년은 '최선 가용(t≥1.0)' 등급으로 SCORE_PCT 1개만 채택됐는데 약한 등급은
+#    교차확인 ≥ROTATION_MIN_AGREE(2)를 요구하므로 v_lead가 2에 닿을 수 없어 리더가 구조적으로 0일이었다 — 리포트에는
+#    '채택'으로 보이지만 실제로는 미채택과 같다. 약한 단독 신호로 100% 집중하지 않는 것 자체는 v0.9.0 증거 등급의
+#    의도이므로 동작은 바꾸지 않고(⚠ 아님), 13g '리더 판단 사용'에 "미사용(교차확인 불가 — 사용 신호 n개 < 필요 일치
+#    m개, 리더 0일)"로 명시하고 walkforward_select 로그에 usable=yes/no를 추가했다.
+#
+#    [채택하지 않은 대안 — 측정해보고 기각] 같은 재구성 엔진으로 함께 시험했고 전부 현행보다 낫지 않았다:
+#    학습 t 가중(t 1.38 — 2021년 네 신호의 학습 t가 2.10~2.41로 거의 같아 동일가중과 차이 없음), 가족 동일가중(t 1.04,
+#    현행보다 나쁨). SCORE_PCT 단독은 t 2.75로 가장 좋지만 채택하지 않았다 — 그 해 학습창 t는 오히려 SCORE_PCT가
+#    가장 낮았고(2021: SCORE_PCT 2.10 < MOM_COMPOSITE 2.41), '표본 전체를 보고 이긴 신호를 고르는' 사후 선택이라
+#    워크포워드 규율과 REPORT11_READOUT_SECTOR_v0.10.md §4-⑤("최고 변형 사후 선택 금지")에 어긋난다.
+#
+#    ⚠ 신호 집합 변경(복합순위·교차확인 투표에 들어가는 신호가 2021·2022년에 달라짐 → 리더 선택·매매가 바뀔 수 있음).
+#    ROTATION_DEDUP_COMPOSITE=False면 v0.10.1과 완전히 동일. 재구성 엔진(1위 일치율 92.7%, 종가·비용 미반영)의 방향
+#    지시는 개선이지만 절대 수치는 실제 파이프라인과 다르므로, 실제 효과는 사용자의 다음 실행(13d ③·13g·13i)으로 확인 요망.
+#
+#    회귀: test_sector_rotation_v0110.py 신규(dedup 진리표 7종·불변성·off면 v0.10.1 동일·usable 표기·실데이터풍 픽스처)
+#    + 기존 16개 전부 재실행 그린. 청산·진입 규칙(v0.10.1), 확신 게이트, 감쇠 가중, M은 전부 무변경. 격자 탐색 없음.
+#
 #  v0.10.1 | 2026-09-07 | 사용자 지시("너가 알려준 개선사항대로 수정") 이행 — REPORT11_READOUT_SECTOR_v0.10.md §4-①
 #    (최우선 권고, 실증 근거 §1) 구현: 주 전략의 청산 규칙을 확신 게이트에서 분리.
 #
@@ -523,7 +573,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.10.1"
+VERSION = "v0.11.0"
 VERSION_DATE = "2026-09-07"
 
 # =============================================================================
@@ -682,6 +732,14 @@ class SectorConfig:
     #   과반) — v0.5~0.7 방식; 엄격 신호가 없는 해(외부검증 지원·최선 가용만)는 v0.8 교차확인(서로 다른 신호 ≥ ROTATION_MIN_AGREE 일치) 유지.
     #   False면 v0.8 방식(전 등급 동일 취급).
     ROTATION_EVIDENCE_TIER: bool = True
+    # [v0.11.0 ⚠ 복합 후보 중복 계산 제거] 리포트12(v0.10.1 실측) 진단: 복합 후보(ROTATION_COMPOSITE_MEMBERS)는 '자기 구성원의
+    #   순위 평균'인데, 구성원과 함께 채택되면 복합순위 평균에 같은 값이 두 번 들어가 그 가족이 과대 가중된다 — 2021년 실효 가중은
+    #   SCORE_PCT 25% vs 모멘텀 75%(채택 4개 중 3개가 모멘텀 계열 + 그 평균인 MOM_COMPOSITE), 2022년 33% vs 67%. 동시에 채택 수 K가
+    #   부풀어 과반 문턱(v_lead*2 > K)이 높아지고, '교차확인'이 같은 가족의 변종끼리 서로를 확인하는 형태가 된다(v0.8.0이 의도한
+    #   '서로 다른 근거의 교차확인'과 어긋남). True: 복합 후보와 그 구성원이 동시에 sel_eff에 있으면 가족을 한 번만 센다 —
+    #   단일 가족 복합(MOM_COMPOSITE)은 복합을 남기고 구성원을 빼고(가족 가중이 '몇 개가 통과했는가'에 좌우되지 않음),
+    #   다중 가족 복합(ALL_COMPOSITE)은 복합을 빼고 구성원을 남긴다(구성원이 이미 각 가족을 따로 대표). False면 v0.10.1과 동일.
+    ROTATION_DEDUP_COMPOSITE: bool = True
     # [v0.9.0 ⚠ 회피 규칙 대칭 검증] 규칙 ②(꼴찌 회피)는 한 번도 따로 검증된 적이 없었다 — 실측 두 번 모두 손실(리포트 6 −2.1%p/62일, 리포트 8
     #   −2.85%p/56일), 13e 상위3−하위3 스프레드는 전 구간 음수(꼴찌 판별력 없음). True: '하위1 스프레드'(평활 순위 꼴찌 섹터의 향후 h일 수익 −
     #   평균)의 학습창 NW-t ≤ −ROTATION_SELECT_T(상위1과 같은 임계값·같은 통계, 부호만 반대)를 통과한 신호만 꼴찌 투표 자격을 갖는다.
@@ -1610,6 +1668,54 @@ ROTATION_COMPOSITE_MEMBERS: Dict[str, Tuple[str, ...]] = {
     "ALL_COMPOSITE": ("SCORE_PCT", "BETA_X_MSCORE", "BETA_X_MHAZ", "MACRO_TAILWIND", "RESID_MOM_12_1",
                       "REL_MOM_126", "REL_MOM_12_1", "REL_MOM_21", "REL_EXT_200", "MACRO_BETA_FCST"),
 }
+# [v0.11.0] 후보의 '경제적 가족' — 위 ROTATION_SIGNAL_SPECS의 경제적 근거를 그대로 분류한 것이며 데이터로 고른 값이 아니다
+#   (새 파라미터가 아니라 이미 있는 분류의 명시화). ROTATION_DEDUP_COMPOSITE가 '단일 가족 복합 vs 다중 가족 복합'을 구분하는 데만 쓴다.
+ROTATION_SIGNAL_FAMILY: Dict[str, str] = {
+    "SCORE_PCT": "시스템국면",
+    "BETA_X_MSCORE": "국면×베타", "BETA_X_MHAZ": "국면×베타",
+    "MACRO_TAILWIND": "매크로", "MACRO_BETA_FCST": "매크로",
+    "RESID_MOM_12_1": "모멘텀", "REL_MOM_126": "모멘텀", "REL_MOM_12_1": "모멘텀",
+    "REL_MOM_21": "모멘텀", "REL_EXT_200": "모멘텀", "MOM_COMPOSITE": "모멘텀",
+    "ALL_COMPOSITE": "전체복합",
+}
+
+
+def _composite_families(cname: str) -> set:
+    """복합 후보 cname이 덮는 경제적 가족 집합(구성원 기준). 단일 가족이면 원소 1개."""
+    return {ROTATION_SIGNAL_FAMILY.get(m, m) for m in ROTATION_COMPOSITE_MEMBERS.get(cname, ())}
+
+
+def dedup_composite_signals(sel_eff: List[str]) -> Tuple[List[str], Dict[str, str]]:
+    """[v0.11.0 ⚠] 복합 후보와 그 구성원이 함께 채택됐을 때 같은 가족을 두 번 세지 않도록 하나만 남긴다.
+    복합 후보는 정의상 '구성원 순위의 평균'이므로(ROTATION_COMPOSITE_MEMBERS) 둘을 함께 복합순위 평균에 넣으면
+    같은 숫자를 다시 평균하는 것 — 서로 다른 근거의 결합이 아니다. 또 채택 수 K가 부풀어 과반 문턱을 높이고,
+    '교차확인'이 같은 가족 변종끼리의 자기확인이 된다.
+      · 단일 가족 복합(예: MOM_COMPOSITE = 모멘텀 3종의 평균) → 복합을 남기고 구성원을 뺀다.
+        (가족 가중이 '그 해 몇 개 변종이 통과했는가'에 좌우되지 않게 하는 유일한 방향 — 구성원을 남기면
+         2021년처럼 3개가 통과한 해에 그 가족이 계속 과대 가중된다.)
+      · 다중 가족 복합(예: ALL_COMPOSITE = 10종 전체 평균) → 복합을 빼고 구성원을 남긴다.
+        (구성원들이 이미 각 가족을 따로 대표하므로, 복합을 남기면 오히려 가족 구분이 사라지고 희석된다.)
+    반환: (정리된 sel_eff, {제외된 신호: 사유 텍스트}). 결과가 비면 원본을 그대로 돌려준다(안전 가드).
+    """
+    reasons: Dict[str, str] = {}
+    if len(sel_eff) < 2:
+        return list(sel_eff), reasons
+    keep = list(sel_eff)
+    for cname in [n for n in sel_eff if n in ROTATION_COMPOSITE_MEMBERS]:
+        members_in = [m for m in ROTATION_COMPOSITE_MEMBERS[cname] if m in keep]
+        if not members_in:
+            continue
+        if len(_composite_families(cname)) <= 1:          # 단일 가족 복합 → 구성원 제외
+            for m in members_in:
+                keep.remove(m)
+                reasons[m] = f"미사용(복합 후보 {cname}에 이미 포함 — 중복 계산 제거)"
+        else:                                             # 다중 가족 복합 → 복합 자신을 제외
+            if cname in keep:
+                keep.remove(cname)
+                reasons[cname] = "미사용(구성원이 이미 채택돼 중복 — 중복 계산 제거)"
+    if not keep:
+        return list(sel_eff), {}
+    return keep, reasons
 
 
 def spy_equivalent_signal(name: str, idx: pd.DatetimeIndex, spy_series: Optional[Dict[str, pd.Series]]) -> pd.Series:
@@ -2875,6 +2981,15 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
             sel_eff, tier_y = list(sel), ("등급 미적용" if sel else "없음")     # v0.8 방식(전 등급 동일 취급)
         else:
             sel_eff, tier_y = list(sel), ("약함" if sel else "없음")
+        # [v0.11.0 ⚠] 복합 후보 중복 계산 제거 — 같은 가족을 두 번 세지 않게 sel_eff를 정리(사유는 13g '리더 판단 사용'에 표기).
+        dedup_reasons: Dict[str, str] = {}
+        if bool(getattr(scfg, "ROTATION_DEDUP_COMPOSITE", True)):
+            sel_eff, dedup_reasons = dedup_composite_signals(sel_eff)
+        # [v0.11.0] 이 해에 '채택은 됐지만 교차확인 요구 수를 구조적으로 만족할 수 없는가' — len(sel_eff) < need면 리더가 절대
+        #   나올 수 없다(과반 규칙 v_lead*2>K와 별개로 v_lead >= need가 불가능). 2019·2020이 그 경우로, 리포트에는 '채택'으로
+        #   보이지만 실제 리더일은 0일이었다(리포트11·12 실측). 동작은 바꾸지 않고 그 사실만 드러낸다(⚠ 아님).
+        need_eff = 1 if tier_y == "엄격" else need
+        usable_y = bool(sel_eff) and len(sel_eff) >= need_eff
         # [v0.9.0] 회피 자격: 하위1 스프레드 NW-t ≤ −ROTATION_SELECT_T(상위1과 같은 임계값, 부호 반대) & 관측일 충족 — sel_eff 안에서만
         if avoid_validate:
             avoid_ok = [n for n in sel_eff if stats_bot[n][2] >= scfg.ROTATION_SELECT_MIN_DAYS and pd.notna(stats_bot[n][1])
@@ -2893,6 +3008,10 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
             neff_map[name] = n_eff_used
             if name in sel_eff:
                 use_txt = "사용(엄격 단독)" if (tier_y == "엄격" and len(sel_eff) == 1) else ("사용(엄격 과반)" if tier_y == "엄격" else "사용(교차확인)")
+                if not usable_y:      # [v0.11.0] 채택은 됐지만 교차확인 요구 수를 못 채워 리더가 구조적으로 나올 수 없는 해
+                    use_txt = f"미사용(교차확인 불가 — 사용 신호 {len(sel_eff)}개 < 필요 일치 {need_eff}개, 리더 0일)"
+            elif name in dedup_reasons:                                  # [v0.11.0] 복합 후보 중복 제거로 빠진 신호
+                use_txt = dedup_reasons[name]
             elif name in sel:
                 use_txt = "미사용(엄격 신호 우선)"
             else:
@@ -2934,6 +3053,9 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
         log("ROTATION", kv(event="walkforward_select", year=y, train_end=str(cutoff.date()), mode=mode, stat=stat,
                            n_selected=len(sel), selected=",".join(f"{n}[{basis[n].split('(')[0]}]" for n in sel) if sel else "-",
                            tier=tier_y, used=",".join(sel_eff) if sel_eff else "-", avoid_ok=",".join(avoid_ok) if avoid_ok else "-",
+                           # [v0.11.0] dedup=중복 제거로 뺀 신호(없으면 -), usable=이 해에 리더가 구조적으로 가능한가(교차확인 요구 수 충족)
+                           dedup=",".join(sorted(dedup_reasons)) if dedup_reasons else "-",
+                           usable=("yes" if usable_y else f"no(sel_eff={len(sel_eff)}<need={need_eff})"),
                            top_t=";".join(f"{n}={stats[n][1]:.2f}" for n in sorted(stats, key=lambda k: -(stats[k][1] if pd.notna(stats[k][1]) else -99))[:3]),
                            bottom_t=";".join(f"{n}={stats_bot[n][1]:.2f}" for n in sel_eff if pd.notna(stats_bot[n][1])) or "-",
                            decay=("on" if decay_on else "off"), half_life=(int(half_life_days) if decay_on else "-"),
