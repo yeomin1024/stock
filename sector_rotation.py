@@ -1,5 +1,22 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.14.0 - 2026-09-07 - [신규 진단 13l_예측정확도 — 배분 규칙 무변경] 사용자 판단기준(리포트16):
+#                       "국면·섹터별 상승/하락을 제대로 예측해서 수익을 얻고 하락을 제대로 회피하는거야 …
+#                       정확도가 중요해". 그리고 반복된 지적: "섹터별 일별 예측을 보면 맞는게 별로 없는거 같아".
+#                       [실측] 그 지적은 맞다 — 리포트16에서 그날 지정된 1위 섹터가 **다음날** SPY를 이긴 비율은
+#                       49.4%로 동전던지기다. 그런데 같은 선택이 **21일** 지평에서는 58.7%로, 무작위 섹터 선택
+#                       (43.8%)을 +14.9%p 앞선다. 즉 이 계층의 예측은 '내일 오를 섹터'가 아니라 '앞으로 몇 주
+#                       앞설 섹터'이고(배분도 h=21·최소보유 21일로 돈다), 리포트를 일별로 읽으면 맞는 게 없어
+#                       보이는 것이 구조상 정상이다. 확신 게이트도 제 일을 하고 있었다 — 통과일의 21일
+#                       1위>SPY 비율 57.0% vs 미달·폴백일 44.6%(무작위 43.8%와 사실상 같음)로, 커버리지를
+#                       넓히면 희석된다(게이트 완화는 개선이 아니다). 다만 리더 지정일은 전체의 28.7%뿐이고
+#                       2018~2020년은 0일이다(2018은 워크포워드가 어떤 순환매 신호도 채택하지 못함).
+#                       [조치] 규칙을 바꾸는 대신 신규 시트 **13l_예측정확도**(build_prediction_accuracy(), 신규)를
+#                       상설 추가해 매 실행이 스스로 채점하게 한다 — A 지평별 리더 적중률(무작위 섹터 기준선 동반),
+#                       B 확신 게이트 통과/미달/폴백 비교, C 상·하위 5% SPY일의 총노출 배율(포착·회피),
+#                       D 연도별 리더 커버리지. 배분·신호·게이트는 한 줄도 바뀌지 않는다(순수 관측).
+#                       [검증] 신규 test_sector_accuracy_v0140.py 5개 체크포인트 — 리포트16 실데이터로
+#                       h=1 0.4936 / h=21 0.5866을 재현하고, 함수가 alloc을 변형하지 않음을 7개 키로 확인.
 #  VERSION: v0.13.0 - 2026-09-07 - [⚠ SPY 계층 사전방향의 베타 조건화] 사용자 지적(리포트14): "섹터별 일별 예측
 #    성과가 buy and hold보다 2배 이상 나와야". 진단: 11개 섹터 전략/B&H CAGR 배율 중앙값이 1.01배이고 저베타
 #    섹터만 1 미만이다(XLE 0.42 · XLV 0.62 · XLP 0.88 · XLU 0.89). 원인을 추적하니 SPY 계층 후보 두 개
@@ -676,7 +693,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.13.0"
+VERSION = "v0.14.0"
 VERSION_DATE = "2026-09-07"
 
 # =============================================================================
@@ -4070,6 +4087,138 @@ def _quartile_labels(x: pd.Series, q: int = 4) -> pd.Series:
 ROTATION_DEFENSIVE_SECTORS: Tuple[str, ...] = ("XLP", "XLU", "XLV")
 
 
+def build_prediction_accuracy(alloc: Dict[str, Any],
+                              horizons: Tuple[int, ...] = (1, 5, 21, 63)) -> pd.DataFrame:
+    """[v0.14.0] 13l_예측정확도 — 사용자 판단기준("국면·섹터별 상승/하락을 제대로 예측해서 수익을 얻고
+    하락을 제대로 회피하는거야 … 정확도가 중요해")을 매 실행이 스스로 채점하는 진단 시트.
+    배분 규칙은 전혀 건드리지 않는다(순수 관측·사후 측정).
+
+    사용자가 리포트를 보고 반복해서 지적한 것은 "섹터별 일별 예측을 보면 맞는게 별로 없는거 같아"였다.
+    리포트16 실측으로 그 지적은 **맞고**, 동시에 이 시스템이 원래 노리는 지평이 하루가 아니라는 것도
+    같이 드러났다 — 그래서 두 사실을 한 표에 나란히 놓는다.
+
+      A. 지평별 리더 적중률 : 그날 지정된 1위 섹터가 이후 h일 동안 SPY를 이겼는가.
+         비교 기준선은 '섹터를 무작위로 고른 것'(=상장 섹터 동일가중)이다. 이게 없으면 50%가
+         좋은 건지 나쁜 건지 알 수 없다.
+      B. 확신 게이트의 효과 : 게이트 통과일 / 미달일 / 해당없음(폴백)일로 나눈 같은 지표.
+         게이트가 실제로 좋은 날만 통과시키고 있는지 — 커버리지를 넓혀도 되는지의 근거.
+      C. 큰 움직임 포착·회피 : 상위/하위 5% SPY 일에 포트폴리오 총노출이 평소 대비 얼마였나.
+         1.0이면 무차별, 상승에서 높고 하락에서 낮아야 '정확한' 배분이다.
+      D. 연도별 커버리지 : 리더 지정일수와 그해 초과수익. 어느 해에 이 계층이 일을 안 했는지.
+    """
+    if not alloc:
+        return pd.DataFrame()
+    lead = alloc.get("leader")
+    ret  = alloc.get("ret_cc")
+    spy  = alloc.get("spy_ret")
+    if lead is None or ret is None or spy is None or len(ret) == 0:
+        return pd.DataFrame()
+    idx  = ret.index
+    lead = pd.Series(lead).reindex(idx)
+    spy  = pd.Series(spy).reindex(idx).astype(float)
+    cols = [c for c in alloc.get("cols", []) if c in ret.columns]
+    if len(cols) < 4:
+        return pd.DataFrame()
+    R = ret[cols].astype(float)
+    logs = np.log1p(R.where(R.notna()))
+    lspy = np.log1p(spy)
+    isL  = lead.isin(cols)
+    gate = pd.Series(alloc.get("gate")).reindex(idx).astype(str) if alloc.get("gate") is not None \
+        else pd.Series("", index=idx)
+
+    rows: List[dict] = []
+    def _fwd(x: pd.Series, h: int) -> pd.Series:
+        return x.rolling(h).sum().shift(-h)          # t+1..t+h 로그수익 합(사후 측정 전용)
+
+    # ---------- A. 지평별 리더 적중률 ----------
+    rows.append({"블록": "A. 지평별 리더 적중률", "구분": "── 리더가 SPY를 이긴 비율 ──"})
+    for h in horizons:
+        fS = _fwd(lspy, h)
+        fR = pd.DataFrame({c: _fwd(logs[c], h) for c in cols})
+        m  = isL & fS.notna()
+        if int(m.sum()) < 30:
+            continue
+        lr = pd.Series([fR.loc[i, lead.loc[i]] for i in idx[m]], index=idx[m])
+        sp = fS[m]
+        eq = fR.loc[m, cols].mean(axis=1)            # 무작위 섹터 선택의 기대치
+        ok = lr.notna() & sp.notna()
+        rows.append({"블록": "A. 지평별 리더 적중률", "구분": f"h={h}일",
+                     "표본일수": int(ok.sum()),
+                     "리더>SPY 비율": round(float((lr[ok] > sp[ok]).mean()), 4),
+                     "무작위섹터>SPY 비율": round(float((eq[ok] > sp[ok]).mean()), 4),
+                     "리더 평균초과(%/지평)": round(float(np.expm1(lr[ok] - sp[ok]).mean()) * 100, 4),
+                     "무작위 평균초과(%/지평)": round(float(np.expm1(eq[ok] - sp[ok]).mean()) * 100, 4),
+                     "리더 상승확률": round(float((lr[ok] > 0).mean()), 4),
+                     "SPY 상승확률": round(float((sp[ok] > 0).mean()), 4)})
+    rows.append({"블록": "A. 지평별 리더 적중률", "구분": "해석",
+                 "설명": "일별(h=1)은 동전던지기에 가깝고 h가 길수록 벌어진다면, 이 계층의 예측은 "
+                         "'내일 오를 섹터'가 아니라 '앞으로 몇 주 앞설 섹터'다. 리포트를 일별로 읽으면 "
+                         "맞는 게 없어 보이는 것이 정상이다."})
+
+    # ---------- B. 확신 게이트의 효과 ----------
+    hB = horizons[-2] if len(horizons) >= 2 else horizons[-1]
+    fS = _fwd(lspy, hB)
+    fR = pd.DataFrame({c: _fwd(logs[c], hB) for c in cols})
+    rank = alloc.get("composite_all_smooth", alloc.get("composite"))
+    cand = None
+    if rank is not None:
+        rk = pd.DataFrame(rank).reindex(index=idx)
+        rk = rk[[c for c in cols if c in rk.columns]]
+        if rk.shape[1] >= 4:
+            has = rk.notna().any(axis=1)
+            cand = pd.Series(index=idx, dtype=object)
+            cand.loc[has] = rk.loc[has].idxmax(axis=1)
+    rows.append({"블록": f"B. 확신 게이트 효과 (h={hB}일)", "구분": "── 게이트가 좋은 날만 통과시키나 ──"})
+    for nm, m in (("게이트 통과 = 실제 리더일", isL & fS.notna()),
+                  ("게이트 미달 = 폴백", (~isL) & gate.eq("미달") & fS.notna()),
+                  ("게이트 해당없음 = 폴백", (~isL) & (~gate.eq("미달")) & fS.notna())):
+        pick = lead if "통과" in nm else cand
+        if pick is None or int(m.sum()) < 30:
+            continue
+        mm = m & pick.notna() & pick.isin(cols)
+        if int(mm.sum()) < 30:
+            continue
+        lr = pd.Series([fR.loc[i, pick.loc[i]] for i in idx[mm]], index=idx[mm])
+        sp = fS[mm]; ok = lr.notna() & sp.notna()
+        rows.append({"블록": f"B. 확신 게이트 효과 (h={hB}일)", "구분": nm,
+                     "표본일수": int(ok.sum()),
+                     "1위>SPY 비율": round(float((lr[ok] > sp[ok]).mean()), 4),
+                     "1위 평균초과(%/지평)": round(float(np.expm1(lr[ok] - sp[ok]).mean()) * 100, 4)})
+    rows.append({"블록": f"B. 확신 게이트 효과 (h={hB}일)", "구분": "해석",
+                 "설명": "통과일의 '1위>SPY 비율'이 미달·해당없음일보다 뚜렷이 높다면 게이트는 제 일을 하고 "
+                         "있고 커버리지를 넓히면 오히려 희석된다. 반대라면 게이트가 좋은 신호를 버리고 있다."})
+
+    # ---------- C. 큰 움직임 포착·회피 ----------
+    W = alloc.get("target_w")
+    if W is not None and len(W):
+        gross = pd.DataFrame(W).reindex(idx).sum(axis=1).shift(1)   # 그날 실제 보유(다음날 체결 정렬)
+        ok = gross.notna() & spy.notna()
+        g, sp2 = gross[ok], spy[ok]
+        base = float(g.mean())
+        rows.append({"블록": "C. 큰 움직임 포착·회피", "구분": "── 총노출 배율(1.0=무차별) ──",
+                     "설명": f"전체 평균 총노출 {base:.4f}"})
+        if base > 1e-9:
+            for q, lab, cmp_ in ((0.95, "상위 5% 상승일", "높을수록 좋음"), (0.90, "상위10% 상승일", "높을수록 좋음"),
+                                 (0.10, "하위10% 하락일", "낮을수록 좋음"), (0.05, "하위 5% 하락일", "낮을수록 좋음")):
+                sel = (sp2 >= sp2.quantile(q)) if q >= 0.5 else (sp2 <= sp2.quantile(q))
+                rows.append({"블록": "C. 큰 움직임 포착·회피", "구분": lab,
+                             "표본일수": int(sel.sum()),
+                             "평균 총노출": round(float(g[sel].mean()), 4),
+                             "평균 대비 배율": round(float(g[sel].mean() / base), 3),
+                             "설명": cmp_})
+
+    # ---------- D. 연도별 커버리지 ----------
+    rows.append({"블록": "D. 연도별 커버리지", "구분": "── 이 계층이 실제로 일한 해 ──"})
+    yr = pd.Series(idx.year, index=idx)
+    for y in sorted(set(yr)):
+        m = yr.eq(y)
+        rows.append({"블록": "D. 연도별 커버리지", "구분": str(y),
+                     "표본일수": int(m.sum()),
+                     "리더 지정일": int((isL & m).sum()),
+                     "리더 비율": round(float((isL & m).mean() if m.sum() else np.nan), 4)})
+    return pd.DataFrame(rows)
+
+
 def build_regime_sector_structure(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
                                   horizons: Tuple[int, ...] = (1, 5, 21, 63)) -> pd.DataFrame:
     """[v0.12.0] 13k_국면섹터구조 — 사용자 질문("SPY 국면이 오르면 XLK가 오르고, 방어 섹터는 반대 아니냐,
@@ -4933,6 +5082,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         # [v0.12.0] 사용자 질문("SPY 국면↔섹터 상관관계를 더 철저히 분석해서 국면 정보를 더 참고하라")에 매 실행이
         #   스스로 답하는 진단 시트. 배분 규칙은 무변경 — 순수 관측.
         sheets["13k_국면섹터구조"] = build_regime_sector_structure(alloc, results)
+        # [v0.14.0] 사용자 판단기준("정확도가 중요해", "섹터별 일별 예측을 보면 맞는게 별로 없는거 같아")을
+        #   매 실행이 스스로 채점하는 시트. 배분 규칙 무변경 — 순수 관측.
+        sheets["13l_예측정확도"] = build_prediction_accuracy(alloc)
     for t in ok_t:
         sheets[f"01_일별_{t}"] = results[t]["sheets"]["daily"]
     # [v0.9.0] 종전 '02_거래내역' — 각 섹터를 '그 섹터 하나만 100% 운용'했을 때의 M식 거래(11벌의 독립 백테스트)라 날짜가 겹친다.
