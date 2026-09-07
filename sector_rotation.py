@@ -1,5 +1,11 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.10.1 - 2026-09-07 - [⚠ 주 전략 청산 규칙 버그수정] 사용자 실측 리포트11(v0.10.0, 2018-01-02~2026-09-04) 13j:
+#    주 전략 16건 중 8건이 "여유 상실(확신 게이트 미달)→폴백 SPY"로 청산됐고 청산 후 관찰창(≤63일)에서 그 섹터가 SPY를
+#    평균 +8.9%p 앞섬 — v0.10.0이 주석으로는 "게이트=진입 전용"이라 선언해 놓고 실제 청산 분기는 게이트까지 청산조건에
+#    섞어 쓰던 구현 부작용(주석·코드 불일치). _run_leader3()에 leader_lost(게이트 제외, 순위·투표 기준 1위 상실) 신설,
+#    청산 분기를 `not clear_leader` → `leader_lost`로 교체(그 한 줄만 변경). 진입 조건·적격상실/국면이탈 즉시청산은
+#    무변경. 상세는 아래 CHANGELOG v0.10.1 항목 참조.
 #  VERSION: v0.10.0 - 2026-09-06 - [순환매 배분 정합성/확신 게이트 + 진단 강화 + ⚠ 규칙 2건] IMPROVEMENT_PLAN_SECTOR_v0.10.md
 #    전체(§1.A~§1.E) 구현. ⚠ §1.A 시간감쇠 가중: rotation_walkforward_select() 학습창 통계에 M과 같은 반감기(HALF_LIFE_DAYS=913)
 #    표본가중 적용(ROTATION_DECAY_WEIGHTED=True 기본, _nw_mean_tstat_w 신설) — 1999~2017 균등가중 희석으로 채택이 2024년까지
@@ -55,6 +61,53 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.10.1 | 2026-09-07 | 사용자 지시("너가 알려준 개선사항대로 수정") 이행 — REPORT11_READOUT_SECTOR_v0.10.md §4-①
+#    (최우선 권고, 실증 근거 §1) 구현: 주 전략의 청산 규칙을 확신 게이트에서 분리.
+#
+#    [문제] v0.10.0의 최소보유 상태기계 주석은 "확신 게이트는 진입 조건에만 관여... 보유 중에는 여유가 줄어도
+#    min_hold 전엔 청산하지 않는다 — v0.9.2와 같은 청산 규칙"이라고 명시했지만, 실제 청산 분기(옛 조건: 게이트 포함
+#    clear_leader의 부정)는 clear_leader(=투표·순위 AND 게이트(gate_ok) AND 국면(regime_ok))를 그대로 재사용해,
+#    게이트 미달 하나만으로도(순위·투표는 여전히 1위인데) min_hold 이후 즉시 청산되는 부작용이 있었다 — 주석이
+#    선언한 의도와 실제 코드가 어긋난 구현 버그(설계 판단의 여지가 아니라 명백한 버그).
+#
+#    [실증] 리포트11(사용자 실측 v0.10.0, 2018-01-02~2026-09-04, market_regime_trader.py 번들 res 직접 전달 방식) 13j
+#    배분거래내역: 주 전략 실제 거래 16건 중 8건의 청산 사유가 "여유 상실(확신 게이트 미달) → 폴백 SPY". 이 8건 각각의
+#    청산 후 관찰창(다음 진입 전까지, 최대 63일)에서 청산됐던 섹터의 누적수익 − SPY 누적수익을 계산하면 평균 +8.9%p
+#    (진입비중 가중 평균 +9.9%p) — 예: XLC 2024-01-08 청산 후 27일간 XLC가 SPY를 +3.9%p 앞섰고(그 27일 내내 XLC가
+#    원시 1위 유지), XLC 2024-10-11 청산 후 29일간 +5.9%p. 즉 게이트 트리거 청산은 평균적으로 추세가 끝나기 전에
+#    너무 이르게 나온 것 — REPORT11 §2에서 확인한 "무조건(검증 없음) 변형이 특히 잘하는 유일한 실체적 강점(추세
+#    끝까지 보유)"을 주 전략이 이 버그 때문에 스스로 포기하고 있었다는 근거.
+#
+#    [조치] build_sector_allocation() 내부 _run_leader3(leader_regimes)에 leader_lost 신설(gate_ok는 의도적으로 제외):
+#      leader_lost = not (lead_ok_votes and leader == cur_leader)
+#    청산 분기를 `elif not clear_leader and ...` → `elif leader_lost and ...`로 교체(그 한 줄만 변경). 진입 조건
+#    (`if clear_leader and leader != cur_leader:` — 투표·게이트·국면 4개 전부 요구)은 완전히 무변경 — 게이트는 "이제
+#    새로 들어갈 때"만 걸리고 "이미 보유 중인데 여유가 줄었을 때"는 걸리지 않는다, v0.10.0 주석이 원래 선언했던
+#    그대로. 적격 상실(ok[] 실효 이탈)과 §1.D 국면 이탈(옵션, 기본 OFF) 즉시청산 두 분기는 이 변경과 무관 — 그대로
+#    unconditional 즉시청산 유지. _run_leader3()는 주 전략(leader_regimes=None)과 13시트 [비교] "집중배분(중립
+#    국면만 리더) [비교]"(leader_regimes=("중립",)) 양쪽에 공용이므로 이 수정은 두 변형 모두에 동일 적용됨(§1.D
+#    설계 그대로: 국면 제약 한 가지만 다르고 나머지 로직은 완전히 같은 코드 경로).
+#
+#    [논리적 영향 범위 — 정확히 특정] if/elif 상태기계 전체를 모델링해 16개 조합(투표OK·게이트OK·현재리더와동일
+#    티커·min_hold경과, 국면OK는 항상 True로 고정 가능 — regime_ok=False는 leader_regimes=None 기본에선 아예
+#    발생 불가하고, §1.D를 켠 경우에도 if/elif 전에 실행되는 별도 즉시청산 체크가 먼저 cur_leader를 None으로
+#    만들어버려 이 if/elif 안에서는 도달 불가능한 상태)을 전수 비교하면, 행동이 달라지는 조합은 정확히 1개
+#    (투표OK·게이트미달·현재리더와동일 티커·min_hold경과: old=EXIT → new=HOLD)뿐이고 나머지 15개는 완전히 동일함을
+#    test_sector_rotation_v0101.py [1/3]에서 증명(⚠ 주의: elif의 '식'만 따로 떼어 비교하면 4개가 달라 보이지만,
+#    그중 3개는 if 분기(진입/교체)가 먼저 걸려 elif 자체가 실행되지 않는 상태라 실제 행동 차이가 아니다 — 개발 중
+#    겪은 계산 실수라 여기 남긴다).
+#
+#    ⚠ 청산 규칙 변경(주 전략의 매매 타이밍이 바뀜 — 게이트 미달만으로는 더 이상 청산되지 않고, 순위·투표 기준
+#    1위를 잃어야 청산). 포지션 보유일수가 늘고(min_hold 이후 게이트만으로 인한 조기청산이 사라지므로) 거래
+#    회전율은 줄어들 것으로 예상 — 정확한 방향·폭은 사용자의 다음 실행 결과(13c/13i/13j)로 확인 요망.
+#
+#    회귀: test_sector_rotation_v0101.py 신규(3개 체크포인트 — [1/3] 위 논리 증명, [2/3] 실데이터풍 픽스처
+#    (v080 재사용, margin_steps=1.0·min_hold=21 기본값 그대로)에서 streak≥23인데 그날 게이트 미달인 실측 사례
+#    144건이 전부 청산 안 됨을 확인(예: XLV 2018-08-13, 보유 104일째), [3/3] 청산 메커니즘 생존 확인(min_hold
+#    이후 청산 32건 존재, 그중 26건은 게이트와 무관한 순수 투표상실)) + 기존 15개 전부 재실행 그린, 총 16개 전부
+#    그린. 신호(lead_ok_votes/gate_ok/clear_leader/진입 조건) 무변경, 워크포워드 채택 기준 무변경, M 무변경. 격자
+#    탐색 없음(임계값을 새로 고른 게 아니라 기존 두 변수의 조합만 바꿈).
+#
 #  v0.10.0 | 2026-09-06 | IMPROVEMENT_PLAN_SECTOR_v0.10.md(사용자 실측 리포트 10 진단, 2018-01-02~2026-09-04) 전체 구현 — §1.A~§1.E.
 #    사용자 질문 "섹터 순환매를 잘 예측하고 있는가"(13f ⑤ FAIL, −0.77%p) 진단: 원인A(§0.3) 학습창이 1999년부터 균등가중이라
 #    2020년 이후 강해진 신호(2022 +4.18%/21일)가 20년치 잡음(1999~2017 평균 −0.11)에 희석돼 엄격 채택이 2024년에야 됨.
@@ -470,8 +523,8 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.10.0"
-VERSION_DATE = "2026-09-06"
+VERSION = "v0.10.1"
+VERSION_DATE = "2026-09-07"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -3335,6 +3388,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             clear_leader = lead_ok_votes and gate_ok and regime_ok
             gate_blocked = lead_ok_votes and not gate_ok
             gate_.iloc[i] = "통과" if clear_leader else ("미달" if gate_blocked else "해당없음")
+            # [v0.10.1 §1.B 청산 규칙 분리] 청산 판정에 쓸 '1위 상실' — 게이트(gate_ok)는 제외하고 순위·투표만 본다.
+            #   아래 최소보유 상태기계 블록에서 사용(그 블록의 주석에 배경 상세).
+            leader_lost = not (lead_ok_votes and leader == cur_leader)
             clear_laggard = laggard is not None and laggard != "SPY" and v_lag * 2 > K and v_lag >= need
             # [v0.8.0] SPY 후보 포함 시 '회피' 바스켓(꼴찌 뺀 적격 균등)도 SPY보다 나아 보여야 한다 — 바스켓 평균 복합순위 > SPY 복합순위.
             #   (균등 바스켓은 이 기간 SPY보다 구조적으로 뒤졌으므로, 신호가 '바스켓 > SPY'를 말하지 않으면 SPY를 든다)
@@ -3343,11 +3399,17 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 if not basket_vals or float(np.mean(basket_vals)) <= float(row[cand.index("SPY")]):
                     clear_laggard = False
             votes_leader_.iloc[i], votes_laggard_.iloc[i] = v_lead, v_lag
-            # 최소보유 상태기계 — [v0.10.0 §1.B] 확신 게이트는 진입 조건에만 관여(clear_leader에 이미 반영); 보유 중에는 여유가
-            #   줄어도(gate_ok가 False가 돼도) min_hold 전엔 청산하지 않는다 — v0.9.2와 같은 청산 규칙.
+            # 최소보유 상태기계 — [v0.10.0 §1.B] 확신 게이트는 진입 조건에만 관여(clear_leader에 이미 반영).
+            #   [v0.10.1 §1.B 청산 규칙 분리 — 버그수정] v0.10.0은 위 의도(게이트=진입 전용)를 주석으로는 선언해 놓고,
+            #   실제 청산 분기는 clear_leader(=투표·순위·게이트·국면 4개를 전부 AND)를 그대로 재사용해 게이트 미달만으로도
+            #   보유 중 리더가 청산되는 구현 부작용이 있었다. 리포트11 13j(실데이터, market_regime_trader.py 번들 res 직접
+            #   전달 방식)로 확인: 주 전략 16건 중 8건이 "여유 상실(확신 게이트 미달) → 폴백 SPY" 사유로 청산됐고, 청산 후
+            #   관찰창(다음 진입 전, ≤63일)에서 그 섹터가 SPY를 누적 +8.9%p(진입비중 가중 +9.9%p) 앞섬 — 게이트 트리거 청산이
+            #   평균적으로 너무 이르다는 실증. leader_lost(위에서 계산, gate_ok 제외한 '순위·투표만의 1위 상실')로 교체:
+            #   보유 중에는 여유(gate_ok)가 줄어도 min_hold 전엔 청산하지 않고, 순위·투표 기준 1위를 잃어야만 청산한다.
             #   [v0.10.0 §1.D] 국면 제약(regime_ok)은 반대로 '적격 상실'과 같은 즉시청산 취급 — §1.D의 목적이 위험 축소(MDD)이므로
             #   보유 중 국면이 허용 밖으로 바뀌면 min_hold를 기다리지 않고 그날로 폴백(§0.5의 큰 MDD 개선폭은 이 즉시청산 전제).
-            #   leader_regimes=None(기본)이면 이 조건은 항상 False라 v0.9.2·§1.B와 완전히 동일(추가 청산 없음).
+            #   leader_regimes=None(기본)이면 이 조건은 항상 False라 이 변경과 무관(추가 청산 없음).
             if cur_leader is not None and not (ok[cand.index(cur_leader)] if cur_leader in cand else False):
                 cur_leader = None
             if cur_leader is not None and leader_regimes is not None and spy_regime_arr[i] not in leader_regimes:
@@ -3357,7 +3419,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     cur_leader = leader
                     held = 0
                     switches_ += 1
-            elif not clear_leader and cur_leader is not None and held >= min_hold:
+            elif leader_lost and cur_leader is not None and held >= min_hold:
                 cur_leader = None
             if cur_leader is not None:
                 frac.iat[i, all_cols.index(cur_leader)] = lw
