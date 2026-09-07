@@ -1,7 +1,17 @@
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.24.0 - 2026-09-05 - [표시 전용] 00시트 맨 앞 + 01시트 마지막 행에 "다음 거래일 예측" 블록 추가(계산·신호·
-#                       백테스트 완전 불변 — IMPROVEMENT_PLAN_SECTOR_v0.3.md §1.A)
+#  VERSION: v1.26.0 - 2026-09-07 - [⚠ 규칙 ⑫ 급락 사전경보 감축] 사용자 지시(리포트34): "하락 조짐 보일 때 감축을
+#                       더 많이 해서 손실 -1% 이상 나지 않도록". 진단: -1% 초과 손실 76일 중 사전 경고가 있던 날은
+#                       22일(29%)뿐이고 경고일 다음날 -1% 확률(2.4%)이 무경고일(4.3%)보다 오히려 낮다 — H는 국면
+#                       위험 지표라 하루 충격을 예고하지 못한다. -1%를 '보장'하려면 노출을 상시 0.17 이하로 묶어야
+#                       하고 CAGR가 18.65%→약 2.6%로 무너진다(실측). 다만 급락트리거(FT, 규칙 ⓪의 VIX 기간구조
+#                       백분위)만은 큰 손실일 직전에 실제로 높았다(중앙값 0.590 vs 전체 0.434) → 규칙 ⓪ 발동
+#                       (0.97) 전 단계인 FT>0.90 구간에서 목표비중을 절반으로 미리 줄인다(USE_CRASH_PRETRIGGER_CUT,
+#                       기본 켜짐). 실측 리플레이: CAGR 15.57→15.45%(-0.12pp), MDD -10.07→-7.39%(-2.68pp),
+#                       -1% 손실일 78→75. ⚠ -1%를 없애지는 못한다 — 최악일(2020-06-11 -5.8%)은 그날 H 0.224로
+#                       경고가 전혀 없던 단일 충격이라 인과 규칙으로 막을 수 없다.
+#  VERSION: v1.25.0 - 2026-09-06 - [Colab 다운로드] 엑셀+결과번들+CSV를 files.download() 여러 번이 아니라 zip 1개로
+#                       묶어 1번만 다운로드(브라우저의 다중 자동다운로드 차단 회피). 계산·신호·백테스트 완전 불변.
 #
 #  목적:
 #    미국 주식시장 전체의 상승/하락 국면을 "선행"하여 판단할 수 있는 지표 후보군을
@@ -13,6 +23,28 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v1.25.0 | 2026-09-06 | 사용자 보고: 실행 로그에 market_regime_report.xlsx·sector_regime_report.xlsx 둘 다
+#                        event=colab_download_started와 True(정상 리턴)가 찍혔는데도 섹터 엑셀 파일이 실제로는
+#                        다운로드되지 않았다("왜 여기서 끝나는거야 sector rotation 엑셀 파일이 다운 안되잖아").
+#                        [진단 — 정직하게 밝힘: 이 샌드박스엔 브라우저가 없어 100% 재현 확인은 못 함] files.download()는
+#                        브라우저에 JS로 다운로드를 '요청'만 하고 실제로 파일이 저장됐는지는 확인하지 않는다 — 그래서
+#                        파이썬 쪽 로그·리턴값은 차단 여부와 무관하게 항상 정상으로 보인다. Chrome 등 주요 브라우저는
+#                        같은 탭에서 사용자 클릭 없이 자동 다운로드가 여러 번 연달아 발생하면 이를 스팸으로 보고 **첫
+#                        번째 이후를 조용히 차단**한다(주소창에 작은 아이콘만 뜨고 예외는 없음) — 그런데 v1.22.0부터
+#                        main() 한 번이 이미 엑셀+결과번들(pkl.gz)+일별CSV로 최대 3번 files.download()를 호출하고,
+#                        여기에 사용자가 이어서 돌리는 S.main()의 엑셀+CSV 2개(최대 3번)까지 더하면 한 실행에 최대 6번 —
+#                        "로그·리턴값은 정상인데 두 번째부터 실제로는 안 옴"이라는 증상과 정확히 일치한다.
+#                        [조치] 신규 maybe_colab_download_many(paths): 존재하는 파일들을 zip 하나로 묶어 다운로드를
+#                        **항상 1회만** 호출 — 브라우저가 막을 '두 번째 다운로드' 자체를 만들지 않는다(zip 생성 실패
+#                        시에만 파일별 순차+지연으로 폴백, 그래도 남으면 로그에 브라우저 허용 안내). main()이 xlsx+
+#                        번들+CSV를 이걸로 1번에 내려받도록 교체. sector_rotation.py의 S.main()도 같은 함수를 쓰도록
+#                        v0.9.2로 동시 수정(엑셀+CSV 2개를 1개 zip으로). 같은 프로세스에서 두 번째 다운로드 묶음
+#                        (M.main() 다음 S.main())은 방어적으로 2초 쉬었다 요청 — 완전한 해결 보장은 아니지만(브라우저
+#                        정책은 코드가 통제 불가) 다운로드 요청 횟수 자체를 줄여 차단 확률을 크게 낮춘다.
+#                        [범위 밖·무변경] run()/build_report()/export_result_bundle()/신호·백테스트 — 전부 그대로,
+#                        저장 파일 자체(엑셀·pkl.gz·CSV)의 내용·경로도 무변경, 다운로드 '방식'만 바뀜(⚠ 아님).
+#                        BUNDLE_VERSION "v1.25.0"로 갱신(번들 내용·필수키는 무변경 — load_result_bundle은 버전
+#                        불일치를 거부하지 않고 로그만 남기므로 구버전 번들 로드에도 영향 없음).
 #  v1.24.0 | 2026-09-05 | 사용자 요청: "국면이든 섹터든 가장 최근 날 다음날 예측이 없는데 그것도 예측하도록" —
 #                        IMPROVEMENT_PLAN_SECTOR_v0.3.md §0.7/§1.A. 실제로는 01시트 마지막 행(t일)의 목표비중이 이미
 #                        "t+1일 시가 체결" 값이라 계산은 처음부터 다음 거래일 예측이었다 — 사용자가 그렇게 읽지 못하는
@@ -1502,6 +1534,7 @@ import math
 import logging
 import warnings
 import threading
+import zipfile                          # [v1.25.0] Colab 자동 다운로드를 여러 파일 1회 zip으로 묶는 데 사용
 import datetime as dt
 import dataclasses                     # [v1.22.0] 결과 번들의 cfg 직렬화(asdict/fields)
 from dataclasses import dataclass, field
@@ -2011,6 +2044,25 @@ class Config:
     USE_NEUTRAL_RISK_CUT: bool = True
     NEUTRAL_RISK_CUT_H: float = 0.70
     POS_NEUTRAL_HIGH_H: float = 0.0
+    # [v1.26.0 §A ⚠ 규칙 ⑫ 급락 사전경보 감축] 사용자 지시(리포트34): "하락 조짐 보일 때 감축을 더 많이 해서
+    #   손실이 -1% 이상 나지 않도록". 리포트34 실측 진단부터: 일간 -1% 초과 손실 76일 중 사전 경고
+    #   (H>0.6 또는 급락트리거백분위>0.8 또는 ΔH/FT 발동)가 있던 날은 22일(29%)뿐이고, 경고일의 다음날
+    #   -1% 초과 확률은 오히려 2.4%로 무경고일 4.3%보다 낮았다 — H는 '국면 위험'을 재는 지표라 하루짜리
+    #   충격을 예고하지 못한다. 즉 -1%를 규칙으로 '보장'하는 길은 없다(보장하려면 노출을 상시 0.17 이하로
+    #   묶어야 하고 그러면 CAGR가 18.65%→약 2.6%로 무너진다 — 실측). 다만 하나, **급락트리거 지표(FT,
+    #   규칙 ⓪이 쓰는 VIX 기간구조 백분위)만은 큰 손실일 직전에 실제로 높았다**(-1%일 직전 중앙값 0.590
+    #   vs 전체 0.434). 그래서 규칙 ⓪이 '발동'(FT>FAST_TRIGGER_PCT=0.97)하기 전 단계인 **상위 10%
+    #   구간에서 미리 절반으로 줄인다**. 임계 0.90과 계수 0.5는 새로 탐색한 값이 아니라 ⓪의 백분위 척도와
+    #   M의 기존 3단계 사이징(0 / 0.5 / 1.0)에서 그대로 가져온 것이다.
+    #   실측(리포트34 일별기록 리플레이, t-1 정보만 사용): CAGR 15.57→15.45%(-0.12pp), **MDD -10.07→
+    #   -7.39%(-2.68pp)**, -1% 손실일 78→75일, 해당 148일의 그날 평균수익이 +1.8bp(사실상 0)라 비중을
+    #   줄여도 잃는 수익이 거의 없다. 비교(같은 리플레이): FT>0.80×0.5는 CAGR 13.75%로 비용 과다,
+    #   FT>0.90×0.0은 MDD -8.77%로 오히려 열위, '상승국면 & H>0.70×0.5'는 MDD -8.94%.
+    #   ⚠ 한계: -1% 손실일을 없애지는 못한다(78→75). 최악일(-5.8%, 2020-06-11)은 그날 H가 0.224로
+    #   위험신호가 전혀 없었던 단일 충격이라 어떤 인과 규칙으로도 막을 수 없다.
+    USE_CRASH_PRETRIGGER_CUT: bool = True
+    CRASH_PRETRIGGER_PCT: float = 0.90     # 이 백분위 초과면 사전경보(규칙 ⓪ 발동 임계 0.97보다 앞단)
+    CRASH_PRETRIGGER_POS_MULT: float = 0.5  # 그날 목표비중에 곱하는 계수(M 기존 3단계 사이징의 가운데 값)
     # [v1.19.0 §B] 이력현상 교대-잠금 수정 — 원시상태가 현재 확정상태보다 '같은 방향'의 서로 다른
     # 두 상태를 하루씩 번갈아 낼 때(예: RISK_OFF 확정 중 raw가 RISK_ON/NEUTRAL 교대) 종전 로직은
     # "동일 raw 연속일수"만 세어 어느 쪽으로도 전환하지 못했다(2026-08-13~18 실측: 가격>200MA·
@@ -5460,6 +5512,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                                                           cfg.POS_NEUTRAL_HIGH_H)
     out["neutral_risk_cut"] = neutral_cut
 
+
     # [v1.20.0 §C] 규칙 ⑩ 과열 헤어컷 — 확정 RISK_ON & 200일선 이격도(EXTENSION_HAIRCUT_SMOOTH일 평균)가
     # EXTENSION_HAIRCUT_STEPS 임계 이상이면 목표비중 상한을 0.1 단위로 낮춘다(≥+10% → 0.8, ≥+12% → 0.6).
     # 규칙 ⑨와 같은 '확정 후 사이징 오버레이' 층: 상태기계·이력현상·게이트는 건드리지 않는다. 인과:
@@ -5494,6 +5547,24 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         lev_hit = lev_pos.notna() & (lev_pos > out["target_pos"] + 1e-12)
         out.loc[lev_hit, "target_pos"] = lev_pos[lev_hit]
     out["leverage"] = lev_hit
+
+    # [v1.26.0 §A ⚠] 규칙 ⑫ 급락 사전경보 감축 — 규칙 ⓪(급락 트리거)이 '발동'하기 전 단계인 fast_pct 상위
+    # 구간(> CRASH_PRETRIGGER_PCT)에서 목표비중을 CRASH_PRETRIGGER_POS_MULT배로 미리 줄인다. 규칙 ⑨·⑩과
+    # 같은 '확정 후 사이징 오버레이' 층 — 상태기계·이력현상·게이트는 건드리지 않는다. 인과: 그날 fast_pct
+    # (run()이 expanding 백분위로 계산, 룩어헤드 없음)만 사용. 근거·실측은 Config 주석 참조.
+    # 적용 순서: 다른 모든 사이징 오버레이(⑨ 중립감축·⑩ 과열헤어컷·⑪ 레버리지) **뒤**에 마지막으로 적용한다 —
+# (1) '무엇으로 정해졌든 그 절반으로 줄인다'가 사용자 지시('감축을 더 많이')에 맞는 보수적 해석이고,
+# (2) 앞 규칙들의 발동 플래그(extension_haircut 등)가 이 규칙 때문에 바뀌지 않아 v1.25.0과 그대로 비교된다
+#     (개발 중 이 순서를 반대로 뒀다가 ⑩의 발동 플래그가 달라지는 것을 전용 테스트가 잡아냈다).
+    pre_cut = pd.Series(False, index=score_pct.index)
+    if cfg.USE_CRASH_PRETRIGGER_CUT and cfg.USE_FAST_TRIGGER and fast_pct is not None:
+        fp = fast_pct.reindex(score_pct.index)
+        pre_cut = fp.notna() & (fp > float(cfg.CRASH_PRETRIGGER_PCT))
+        if pre_cut.any():
+            out.loc[pre_cut, "target_pos"] = np.minimum(
+                out.loc[pre_cut, "target_pos"],
+                out.loc[pre_cut, "target_pos"] * float(cfg.CRASH_PRETRIGGER_POS_MULT))
+    out["crash_pretrigger_cut"] = pre_cut
 
     n_sw = int((out["state"] != out["state"].shift()).sum())
     dist = out["state"].value_counts().to_dict()
@@ -7362,6 +7433,7 @@ _NEXT_DAY_FIRED_COLS_KR = [
     ("trend_promotion", "추세승격⑥"), ("deep_recovery", "깊은낙폭회복⑦"),
     ("struct_bottom", "구조적저점승격⑧"), ("neutral_risk_cut", "중립감축⑨"),
     ("extension_haircut", "과열헤어컷⑩"), ("leverage", "레버리지⑪"),
+    ("crash_pretrigger_cut", "급락사전경보감축⑫"),   # [v1.26.0 §A]
     ("hazard_velocity", "속도경보(ΔH)"), ("trend_override", "추세오버라이드"),
 ]
 _NEXT_DAY_STATE_KR = {"RISK_ON": "상승(위험선호)", "NEUTRAL": "중립", "RISK_OFF": "하락(위험회피)",
@@ -7539,6 +7611,9 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.19.0 §A] 규칙 ⑨ 중립 위험감축 발동일(확정 중립 & H>임계 → 목표비중 POS_NEUTRAL_HIGH_H).
     daily["중립감축(H)"] = sig["neutral_risk_cut"].reindex(idx).map({True: "발동", False: ""}) \
         if "neutral_risk_cut" in sig.columns else ""
+    # [v1.26.0 §A] 규칙 ⑫ 급락 사전경보 감축 발동일 — 01시트만으로 감사 가능하게(다른 규칙 컬럼과 대칭).
+    daily["급락사전경보감축(P)"] = (sig["crash_pretrigger_cut"].reindex(idx).map({True: "발동", False: ""})
+                                 if "crash_pretrigger_cut" in sig else "")
     # [v1.20.0 §C] 규칙 ⑩ 과열 헤어컷 — 발동일에 적용된 목표비중 상한(0.8/0.6 …)을 표시(미발동은 공란).
     if "extension_haircut" in sig.columns:
         _eh = sig["extension_haircut"].reindex(idx).fillna(False).astype(bool)
@@ -7812,7 +7887,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.24.0 (2026-09-05)"),
+        ("버전", "v1.26.0 (2026-09-07)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -8055,7 +8130,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.24.0"
+BUNDLE_VERSION = "v1.26.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
@@ -8358,7 +8433,9 @@ def self_test(cfg: Config = CFG) -> bool:
 def maybe_colab_download(path: str) -> bool:
     """[v1.13.0 §E] Colab 환경이면 산출 엑셀을 실행 종료 직후 브라우저 다운로드로 밀어준다
     (사용자 요청 "실행 끝나면 엑셀 파일 자동 다운로드"). Colab이 아니면(로컬/서버) 조용히
-    건너뛴다. 부가 기능이므로 어떤 예외도 파이프라인 성공을 뒤집지 않는다(§5 견고성)."""
+    건너뛴다. 부가 기능이므로 어떤 예외도 파이프라인 성공을 뒤집지 않는다(§5 견고성).
+    [v1.25.0] 파일 1개만 내려받을 때 쓰는 저수준 함수 — 여러 개를 내려받을 땐
+    maybe_colab_download_many()를 쓴다(아래 참조, 브라우저의 다중 다운로드 차단 회피)."""
     try:
         from google.colab import files  # type: ignore
     except ImportError:
@@ -8370,8 +8447,81 @@ def maybe_colab_download(path: str) -> bool:
         log("REPORT", kv(event="colab_download_started", file=path))
         return True
     except Exception as e:
-        log("REPORT", kv(event="colab_download_failed", err=type(e).__name__), "warning")
+        log("REPORT", kv(event="colab_download_failed", file=path, err=type(e).__name__), "warning")
         return False
+
+
+_COLAB_DOWNLOADS_THIS_SESSION = 0   # [v1.25.0] 아래 참조 — 프로세스 안에서 지금까지 성공한 콜랩 다운로드 묶음 수
+
+
+def maybe_colab_download_many(paths: List[str], zip_name: Optional[str] = None) -> bool:
+    """[v1.25.0] 사용자 보고: "market_regime_report.xlsx·sector_regime_report.xlsx 둘 다
+    event=colab_download_started 로그가 찍히고 True도 반환했는데(파이썬 쪽은 정상 종료) 섹터
+    엑셀 파일이 실제로는 다운로드되지 않았다."
+
+    [원인] files.download()는 브라우저에 JS로 다운로드를 '요청'만 하고 그 요청이 실제로 파일로
+    저장됐는지는 확인하지 않는다 — 그래서 파이썬 쪽 로그·리턴값은 항상 정상으로 보인다. 그런데
+    Chrome 등 주요 브라우저는 같은 탭에서 사용자 클릭 없이 자동으로 여러 파일을 연달아 내려받으려
+    하면(정확히 이 함수가 하던 일 — M.main()만으로도 엑셀+결과번들+일별CSV 최대 3개, 거기에
+    S.main()의 엑셀+CSV 2개까지 이어지면 한 실행에 최대 6개) 이를 다운로드 스팸으로 보고 **첫
+    번째 이후는 조용히 차단**한다(주소창에 작은 '차단됨' 아이콘만 뜨고 예외는 나지 않음). 이
+    샌드박스에는 브라우저가 없어 100% 재현 확인은 못 했지만, "로그·리턴값 정상인데 두 번째부터
+    안 옴"이라는 증상은 이 알려진 Chrome 동작과 정확히 일치한다(정직하게 밝힘 — v0.8.1의
+    RecursionError 진단과 같은 종류의 불확실성).
+
+    [조치] 파일마다 files.download()를 반복하는 대신, 존재하는 파일들을 zip 하나로 묶어 **다운로드를
+    always 1회만** 호출한다 — 애초에 브라우저가 차단할 '두 번째 다운로드'를 만들지 않는다. zip 생성이
+    실패하면(디스크 공간 등) 파일별 순차 다운로드로 폴백하되 호출 사이에 지연을 두어 차단 확률을
+    낮추고, 여러 파일이 남아 있으면 로그에 브라우저 허용 방법을 안내한다. 같은 프로세스에서 이미
+    한 번 다운로드를 내려받은 뒤(M.main() 다음 S.main() 같은 경우) 곧바로 또 요청하면 막 첫 다운로드를
+    처리한 브라우저가 두 번째를 더 의심하므로 짧게 쉬었다 시도한다."""
+    global _COLAB_DOWNLOADS_THIS_SESSION
+    paths = [p for p in paths if p and os.path.exists(p)]
+    if not paths:
+        log("REPORT", kv(event="colab_download_many_skipped", reason="다운로드할 파일 없음(전부 미존재)"),
+            "debug")
+        return False
+    try:
+        from google.colab import files  # type: ignore
+    except ImportError:
+        log("REPORT", kv(event="colab_download_skipped", reason="google.colab 미존재(로컬 실행)", n_files=len(paths)),
+            "debug")
+        return False
+
+    if _COLAB_DOWNLOADS_THIS_SESSION > 0:
+        time.sleep(2.0)   # 직전 다운로드 직후 곧바로 또 요청하면 차단 확률이 높다는 관찰(§원인) 기반 방어적 지연
+
+    if len(paths) == 1:
+        ok = maybe_colab_download(paths[0])
+        _COLAB_DOWNLOADS_THIS_SESSION += int(ok)
+        return ok
+
+    zpath = zip_name or (os.path.splitext(paths[0])[0] + "_bundle.zip")
+    try:
+        t0 = time.time()
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in paths:
+                zf.write(p, arcname=os.path.basename(p))
+        log("REPORT", kv(event="colab_download_zip_built", n_files=len(paths),
+                         names=",".join(os.path.basename(p) for p in paths), zip=zpath,
+                         size_mb=round(os.path.getsize(zpath) / 1e6, 3), elapsed_s=round(time.time() - t0, 2)))
+    except Exception as e:
+        log("REPORT", kv(event="colab_download_zip_failed", err=type(e).__name__, msg=str(e)[:200],
+                         action="파일별 순차 다운로드로 폴백(차단 위험 있음)"), "warning")
+        ok_any = False
+        for i, p in enumerate(paths):
+            if i > 0:
+                time.sleep(1.5)
+            ok_any = maybe_colab_download(p) or ok_any
+        _COLAB_DOWNLOADS_THIS_SESSION += int(ok_any)
+        log("REPORT", kv(event="colab_download_multi_warning", n_files=len(paths),
+                         note="파일이 일부만 보이면 브라우저 주소창의 '다운로드 차단됨' 아이콘에서 이 사이트의 "
+                              "자동 다운로드를 허용한 뒤 다시 실행하세요"), "warning")
+        return ok_any
+
+    ok = maybe_colab_download(zpath)
+    _COLAB_DOWNLOADS_THIS_SESSION += int(ok)
+    return ok
 
 
 def main(cfg: Config = CFG) -> str:
@@ -8380,11 +8530,13 @@ def main(cfg: Config = CFG) -> str:
         return "selftest_report.xlsx"
     res = run(cfg)
     out = build_report(res, cfg)
-    maybe_colab_download(out)   # [v1.13.0 §E] Colab이면 엑셀 자동 다운로드
     # [v1.22.0] 결과 데이터 번들(pkl.gz)+일별 CSV 저장 → 섹터 계층(sector_rotation.py)의 입력.
-    # 엑셀 저장·다운로드가 끝난 뒤에 실행하므로 여기서 실패해도 리포트는 이미 확보돼 있다.
-    for p in export_result_bundle(res, cfg):
-        maybe_colab_download(p)
+    # [v1.25.0] 엑셀+번들+CSV를 files.download() 3번이 아니라 zip 1개로 묶어 1번만 내려받는다 —
+    # 브라우저의 '자동 다운로드 여러 개 차단'을 피하기 위함(§원인은 maybe_colab_download_many 참조).
+    # 저장 자체는 그대로 개별 파일로 하므로(리포트/번들/CSV 파일은 평소처럼 디스크에 남음) 다운로드
+    # 방식만 바뀐다 — 계산·리포트 내용은 무변경.
+    bundle_paths = export_result_bundle(res, cfg)
+    maybe_colab_download_many([out] + list(bundle_paths))
     return out
 
 
