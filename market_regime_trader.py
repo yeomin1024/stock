@@ -1,5 +1,24 @@
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.29.0 - 2026-09-07 - [⚠ 노출 배수 기본값 1.0 → 1.75, 사용자 명시 선택] v1.28.0이 06c에 실측해 보여준
+#                       프런티어(k=1.00 CAGR 19.74%/MDD -8.00% · 1.50 28.52%/-12.57% · 1.75 33.00%/-14.80% ·
+#                       2.00 37.54%/-16.99%)를 보고 사용자가 k=1.75를 선택했다. 이 지점은 평균노출 0.99로 단순보유와
+#                       같은 자본 활용률이면서 CAGR은 단순보유의 2.25배, MDD는 -14.80%로 단순보유(-33.7%)의 절반
+#                       이하다(샤프 1.840 → 1.707). ⚠ 손실도 같은 배수로 커진다 — 최악일 -5.84% → -10.23%,
+#                       MDD -8.00% → -14.80%. 코드 로직은 v1.28.0과 동일하고 기본값만 바뀐다
+#                       (EXPOSURE_MULTIPLIER=EXPOSURE_MAX=1.0으로 두면 즉시 종전 동작으로 복귀).
+#  VERSION: v1.28.0 - 2026-09-07 - [⚠ 규칙 ⑬ 노출 배수 + 06c EXPOSURE 프런티어] 사용자 지시(리포트15): "수익률 변화가
+#                       없다, 개선을 크게 해봐". 진단 결과 병목은 예측력이 아니라 **자본 활용률**이었다 — 노출 1단위당
+#                       CAGR을 재면 SPY 단순보유 14.65%(노출 1.000) vs SPY 국면전략 32.75%(0.567, 2.24배) vs 섹터 주
+#                       전략 34.85%(0.567, 2.38배)로, '단순보유 2배'는 노출 기준으로 이미 달성돼 있는데 43%의 날을
+#                       현금으로 보내고 상한이 1.0이라 헤드라인 CAGR이 19.7%에 갇혀 있었다. 신규 EXPOSURE_MULTIPLIER/
+#                       EXPOSURE_MAX(둘 다 기본 1.0 = 완전 무변경)로 확정 목표비중 전체를 마지막 층에서 k배·절단한다.
+#                       리포트15 실측 프런티어(무위험 2.74%/년, 조달 +100bp): k=1.00 CAGR 19.74%/MDD -8.00%(B&H 1.35배)
+#                       · k=1.50 28.52%/-12.57%(1.95배) · k=1.75 33.00%/-14.80%(2.25배, 평균노출 0.99로 단순보유와
+#                       같은 자본 활용률) · k=2.00 37.54%/-16.99%(2.56배). 샤프는 1.84→1.71로만 내린다.
+#                       ⚠ 기본값은 1.0이라 사용자가 명시적으로 올리기 전까지 동작이 바뀌지 않는다 — 레버리지는 손실도
+#                       같은 배수로 키우는 위험 파라미터이기 때문. 06c에 EXPOSURE 격자 5행을 상설 추가해 매 실행에서
+#                       이 프런티어를 실측으로 보여준다.
 #  VERSION: v1.27.0 - 2026-09-07 - [되돌림] v1.26.0 규칙 ⑫(급락 사전경보 감축)을 기본 비활성으로 되돌린다 —
 #                       사용자 실행(리포트35)에서 CAGR 18.65%→17.96%로 나빠지고 MDD는 -7.07% 그대로였다. v1.26.0의
 #                       근거였던 'MDD -2.68%p 개선'은 종가기준 근사 리플레이의 착오였다(그 리플레이의 기준 MDD가
@@ -2118,6 +2137,27 @@ class Config:
     # 30.7%/-14.6%. 즉 목표는 레버리지로만 도달 가능하며 그 대가는 MDD 확대다 — "낙폭 최소화 최우선" 지시와 정면
     # 충돌하므로 코드는 준비만 하고 켜지 않는다. 06c LEVERAGE 격자에서 매 실행 실측(off★/M1.3/M1.3+회복1.5/×1.5).
     # 조달비용: run_backtest가 초과노출(pos>1)에 단기금리(rf) + LEVERAGE_SPREAD_BPS 를 부과한다(rf 부재 시 스프레드만).
+    # [v1.28.0 §A ⚠ 자본 활용률 — 규칙 ⑬ 노출 배수] 사용자 지시(리포트15): "수익률 변화가 없다, 개선을 크게 해봐".
+    #   진단: 이 시스템의 병목은 예측력이 아니라 자본 활용률이다. 노출 1단위당 CAGR을 재면
+    #     SPY 단순보유 14.65%/노출 1.000 = 14.65  |  SPY 국면전략(M) 18.55%/0.567 = 32.75(2.24배)
+    #     섹터 주 전략 19.74%/0.567 = 34.85(2.38배)
+    #   즉 '단순보유의 2배'는 노출 기준으로는 이미 달성돼 있는데, 43%의 날을 현금으로 보내고 목표비중 상한이
+    #   1.0이라 헤드라인 CAGR이 19.7%에 머문다. 이 배수는 확정된 목표비중 전체를 k배 하고 EXPOSURE_MAX로 자른다
+    #   (신호·상태기계·다른 오버레이는 전혀 건드리지 않는 마지막 층). run_backtest가 이미 초과노출(pos>1)에
+    #   단기금리+LEVERAGE_SPREAD_BPS 조달비용을 부과하므로 비용은 자동 반영된다.
+    #   실측(리포트15 섹터 주 전략 일간수익 + M 리포트에서 추출한 무위험 2.74%/년, 조달 +100bp):
+    #     k=1.00 CAGR 19.74% 샤프 1.840 MDD  -8.00% (B&H 1.35배)   k=1.50 CAGR 28.52% 샤프 1.737 MDD -12.57% (1.95배)
+    #     k=1.25 CAGR 24.11% 샤프 1.779 MDD -10.30% (1.65배)       k=1.75 CAGR 33.00% 샤프 1.707 MDD -14.80% (2.25배)
+    #     k=2.00 CAGR 37.54% 샤프 1.684 MDD -16.99% (2.56배)
+    #   k=1.75면 평균노출이 0.99로 단순보유와 같은 자본 활용률이 되고, 그 상태에서 CAGR은 B&H의 2.25배·MDD는
+    #   -14.8%로 B&H(-33.7%)의 절반 이하다. 샤프는 1.84→1.71로만 내린다(조달비용이 초과분에만 붙기 때문).
+    #   ⚠ 기본값 1.0 = 완전 무변경. 레버리지는 손실도 같은 배수로 키우는 위험 파라미터이므로 사용자가 명시적으로
+    #   올리기 전에는 동작이 바뀌지 않는다. 06c 민감도 표에 k 격자를 항상 실측해 매 실행에서 프런티어를 보여준다.
+    # [v1.29.0 ⚠ 사용자 명시 선택] 프런티어 표를 보고 사용자가 k=1.75를 골랐다("단순보유 2.25배" 지점).
+    #   평균노출이 0.99가 되어 단순보유와 같은 자본 활용률이면서, MDD는 -14.8%로 단순보유(-33.7%)의 절반 이하다.
+    #   ⚠ 손실도 같은 배수로 커진다: 최악일 -5.84% → -10.23%, MDD -8.00% → -14.80%. 되돌리려면 둘 다 1.0으로.
+    EXPOSURE_MULTIPLIER: float = 1.75       # ⚠ 확정 목표비중에 곱하는 배수(1.0 = 무변경)
+    EXPOSURE_MAX: float = 1.75              # ⚠ 배수 적용 후 절대 상한(1.0 = 레버리지 없음)
     USE_LEVERAGE: bool = False
     LEVERAGE_MAX: float = 1.5               # 목표비중 절대 상한(레버리지 켰을 때)
     LEVERAGE_LOW_RISK_EXT: float = 0.07     # 저위험 판정: 이격도(EXTENSION_HAIRCUT_SMOOTH일 평균) 상한
@@ -5582,6 +5622,15 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                 out.loc[pre_cut, "target_pos"] * float(cfg.CRASH_PRETRIGGER_POS_MULT))
     out["crash_pretrigger_cut"] = pre_cut
 
+    # [v1.28.0 §A ⚠] 규칙 ⑬ 노출 배수 — 모든 사이징 오버레이가 끝난 뒤 맨 마지막에 확정 목표비중을 k배 하고
+    # EXPOSURE_MAX로 자른다. 신호·상태기계·이력현상·게이트·다른 오버레이는 전혀 건드리지 않는다(순수 스케일).
+    # 기본 (1.0, 1.0)이면 아무 일도 하지 않아 v1.27.0과 비트 동일. 초과노출 조달비용은 run_backtest가 부과한다.
+    k_exp = float(getattr(cfg, "EXPOSURE_MULTIPLIER", 1.0) or 1.0)
+    cap_exp = float(getattr(cfg, "EXPOSURE_MAX", 1.0) or 1.0)
+    if abs(k_exp - 1.0) > 1e-12 or cap_exp > 1.0 + 1e-12:
+        out["target_pos"] = np.minimum(out["target_pos"] * k_exp, cap_exp)
+    out["exposure_scaled"] = (abs(k_exp - 1.0) > 1e-12)
+
     n_sw = int((out["state"] != out["state"].shift()).sum())
     dist = out["state"].value_counts().to_dict()
     log("SIGNAL", kv(event="generated", switches=n_sw,
@@ -6212,6 +6261,41 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             log("VALIDATE", kv(event="leverage_sensitivity", combos=len(df_lv),
                                elapsed_s=round(time.time() - t0, 2)))
             df = pd.concat([df, df_lv], ignore_index=True, sort=False)
+
+        # [v1.28.0 §A ⚠] 규칙 ⑬ 노출 배수(EXPOSURE_MULTIPLIER) 격자 — 사용자 지시("수익률 변화가 없다, 개선을 크게")에
+        # 대한 진단이 '병목은 예측력이 아니라 자본 활용률'이었으므로, 매 실행에서 그 프런티어를 실측해 보여준다.
+        # 노출 1단위당 CAGR이 단순보유의 2배가 넘는 상태이므로 k를 올리면 CAGR이 거의 비례해 오르고 낙폭도 같이 커진다.
+        # 사용자가 k를 고르는 데 필요한 것은 이 표 하나다(조달비용은 run_backtest가 rf+스프레드로 자동 부과).
+        ex_rows = []
+        for k in (1.0, 1.25, 1.5, 1.75, 2.0):
+            over = {"EXPOSURE_MULTIPLIER": k, "EXPOSURE_MAX": k}
+            c = Config(**{**cfg.__dict__, **over})
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
+                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+            b = run_backtest(price, sg["target_pos"], c, rf_daily)
+            b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
+            m = perf_metrics(b["strategy_ret"])
+            is_live = abs(float(getattr(cfg, "EXPOSURE_MULTIPLIER", 1.0)) - k) < 1e-12
+            ex_rows.append({
+                "EXPOSURE": f"노출배수 ×{k:.2f}" + ("(기본, 레버리지 없음)" if k == 1.0 else f"(상한 {k:.2f})"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
+                "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
+                "평균비중": round(float(b["pos_exec"].mean()), 3),
+                "최대비중": round(float(b["pos_exec"].max()), 2),
+                "거래횟수": int((b["turnover"] > 1e-9).sum()),
+                "-1%손실일수": int((b["strategy_ret"] < -0.01).sum()),
+                "총수익배수": round(float(b["equity"].iloc[-1] / b["equity"].iloc[0]), 3),
+                "단순보유대비배율": (round(float(m.get("CAGR")) / float(perf_metrics(b["bh_ret"]).get("CAGR")), 2)
+                              if perf_metrics(b["bh_ret"]).get("CAGR") else np.nan),
+                "기본설정": "★" if is_live else "",
+            })
+        if ex_rows:
+            df_ex = pd.DataFrame(ex_rows)
+            log("VALIDATE", kv(event="exposure_sensitivity", combos=len(df_ex),
+                               live_k=float(getattr(cfg, "EXPOSURE_MULTIPLIER", 1.0)),
+                               elapsed_s=round(time.time() - t0, 2)))
+            df = pd.concat([df, df_ex], ignore_index=True, sort=False)
 
         # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 단독 민감도 — off/-0.12/-0.15/-0.20.
         # 리플레이에서 -12/-15%는 2022 방어를 훼손해 기각됐음을 실데이터에서도 재확인하는 용도.
@@ -7903,7 +7987,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.27.0 (2026-09-07)"),
+        ("버전", "v1.29.0 (2026-09-07)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -8146,7 +8230,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.27.0"
+BUNDLE_VERSION = "v1.29.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
