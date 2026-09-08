@@ -1,5 +1,30 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.16.0 - 2026-09-08 - [⚠ 배분 구조 전환 — 주력섹터(XLK) 중심 · SPY 배분 제외 · 신규 시트
+#                       01Y_섹터예측정확도] 사용자 지시(리포트18): "SPY는 참고용일뿐이라고 섹터 예측에서는
+#                       빼야지 / 섹터는 일단 XLK가 가장 중요해서 제대로 예측해야돼 나머지는 XLK 하락 시
+#                       대피할 섹터라고 / 섹터별로 실제랑 예측 틀린게 많은데 정확도 시트좀 따로 만들고".
+#                       [진단 — 지적이 정확했다] 2026-03-30~06-30 XLK 실제 +49.43%(11섹터 1위)인데 그 64거래일의
+#                       XLK 국면 예측은 중립 57일·하락 7일로 '상승'이 단 하루도 없었다(평균 목표비중 0.406).
+#                       같은 구간 XLC는 실제 -0.77%인데 '상승' 예측이 14일. 종전 구조는 매일 횡단면 1위를 새로
+#                       뽑고 확신이 없으면 SPY로 폴백해(폴백 = 표본의 42%) 주력 섹터를 계속 들고 가는 경로가
+#                       아예 없었다.
+#                       [변경 1 — 주력섹터 모드] ROTATION_PRIMARY_MODE/SECTOR/CAP/EXIT_STATES 신설(전부 ⚠).
+#                       XLK가 자기 국면 RISK_OFF가 아니면 CAP(기본 0.8)만큼 보유하고 나머지는 대피처로,
+#                       RISK_OFF면 전량 대피처로. 대피처 = 기존 순환매 복합순위 1위(주력 제외·그 섹터도
+#                       RISK_OFF 아님) → 신규 신호 없음. SPY는 배분에서 완전히 빠진다.
+#                       실측(리포트18 충실 리플레이 기준선 대비): 상한 0.8에서 CAGR +3.83pp(20.88→24.71%),
+#                       샤프 -0.003(1.822→1.819), MDD -1.59pp(-8.95→-10.54%). 상한 프런티어가 평탄하다 —
+#                       1.0 +5.58pp/MDD -3.39pp · 0.9 +4.64/-2.49 · 0.7 +2.70/-1.00 · 0.5 +0.71/-0.71.
+#                       기각: '중립도 대피'(RISK_ON만 보유) CAGR +0.69pp에 샤프 -0.346 · '총비중=자체 목표비중'
+#                       CAGR -0.09pp에 MDD -8.72pp · 'SPY 폴백만 순위1위로 대체'(구조 유지) -2.44pp/MDD -3.55pp.
+#                       [변경 2 — 신규 시트 01Y_섹터예측정확도] 섹터별 자기 국면 예측을 실제로 채점한다.
+#                       각 줄에 그 섹터의 기저 상승 비율을 나란히 둬 '기저보다 나은가'를 바로 보이게 했다.
+#                       리포트18 실측: 상승예측의 기저 대비 우위는 XLK +3.03%p · XLC +2.26 · XLF +2.38 …
+#                       XLE -0.77 · XLU -0.73(정보 없음). XLK의 '크게 틀린 구간' 1·2위가 2026-04(+20.02%)와
+#                       2026-05(+19.76%) — 사용자가 지적한 바로 그 두 달이 자동으로 잡힌다.
+#                       ※ M v1.32.0의 규칙 ⑧ 활성이 sector_cfg_for()를 통해 11섹터에 함께 적용된다
+#                       (XLK 2026-03-30~06-30 RISK_ON 4일→47일).
 #  VERSION: v0.15.0 - 2026-09-08 - [⚠ 배분(위험) 규칙 신설 — 하락국면 리더] 사용자 지시(리포트17): "무조건 SPY 전략
 #                       국면이 하락 예측 시에도 상승할 수 있는 섹터가 있으면 그걸로 거래하도록 해".
 #                       [진단] 종전에는 E_t=0(M 위험회피)이면 섹터 판단과 무관하게 전량 현금이었다 — 571일, 표본의 26%.
@@ -720,8 +745,8 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.15.0"
-VERSION_DATE = "2026-09-07"
+VERSION = "v0.16.0"
+VERSION_DATE = "2026-09-08"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -935,6 +960,36 @@ class SectorConfig:
     #   ※ 개발 중 '순위 최소값'으로 재고 '상태기계 leader'로 구현하는 불일치가 있었다(32일 중 1일이 다름,
     #   +1.57pp vs +1.41pp). 전용 테스트 [5/6]이 실데이터로 잡았고, 위 수치는 전부 실제 구현 기준이다. 끄려면
     #   ROTATION_DOWN_REGIME_LEADER=False 하나로 v0.14.0과 비트 동일로 복귀한다.
+    # [v0.16.0 §A ⚠ 배분(위험) 구조 — 주력 섹터 중심] 사용자 지시(리포트18): "SPY는 참고용일뿐이라고 섹터
+    #   예측에서는 빼야지 / 섹터는 일단 XLK가 가장 중요해서 제대로 예측해야돼 나머지는 XLK 하락 시 대피할 섹터라고".
+    #   [진단 — 사용자 지적이 정확했다] 2026-03-30 저점 이후 6/30까지 XLK는 **+49.43%**로 11섹터 중 압도적
+    #   1위였는데, 그 64거래일 동안 XLK의 국면 예측은 **중립 57일 / 하락 7일 — '상승'이 단 하루도 없었다**
+    #   (평균 목표비중 0.406). 반면 XLC는 -0.77%인데 '상승' 예측이 14일이었다. 종전 구조는 매일 횡단면
+    #   1위를 새로 뽑고 확신이 없으면 SPY로 폴백했기 때문에(폴백 = 표본의 42%) 주력 섹터를 계속 들고 가는
+    #   경로가 아예 없었다.
+    #   [구조] ROTATION_PRIMARY_SECTOR(기본 "XLK")를 기본 보유로 두고, 그 섹터가 **자기 국면 RISK_OFF**일
+    #   때만 대피한다. 대피처는 기존 순환매 복합순위의 1위(주력 제외, 그 섹터도 RISK_OFF가 아닐 것) —
+    #   신규 신호를 만들지 않고 이미 검증된 순위를 재사용한다. SPY는 배분에서 완전히 빠진다(참고용).
+    #   총비중은 종전과 같이 E_t(M의 시장 노출)를 그대로 쓴다.
+    #   [실측 — 리포트18 원본을 재현하는 충실 리플레이(T+1 시가·현금레그·비용) 기준선 대비]
+    #     XLK 상한 1.0  CAGR +5.58pp(20.88→26.46%) 샤프 -0.069  MDD -3.39pp(-8.95→-12.34%)
+    #     XLK 상한 0.9  CAGR +4.64pp               샤프 -0.035  MDD -2.49pp
+    #     **XLK 상한 0.8  CAGR +3.83pp(20.88→24.71%) 샤프 -0.003  MDD -1.59pp(-8.95→-10.54%)**  ← 채택
+    #     XLK 상한 0.7  CAGR +2.70pp               샤프 -0.005  MDD -1.00pp
+    #     XLK 상한 0.6  CAGR +1.71pp               샤프 -0.018  MDD -0.86pp
+    #     XLK 상한 0.5  CAGR +0.71pp               샤프 -0.056  MDD -0.71pp
+    #   상한을 두는 이유: 100% 몰면 2022년이 -20pp가 된다(XLK가 그 해 크게 빠졌다). 0.7~0.8 구간은
+    #   샤프가 사실상 그대로면서(-0.005~-0.012) CAGR만 오르는 평탄한 프런티어다 — 뾰족한 최적점이 아니다.
+    #   나머지 (1-상한)은 같은 대피처로 간다(주력이 보유 가능한 날에도 분산 유지).
+    #   [기각한 대안] '중립도 대피'(XLK가 RISK_ON일 때만 보유): CAGR +0.69pp에 샤프 -0.346 — 중립 구간이
+    #     상승의 대부분이라 놓친다. '총비중=그 섹터 자체 목표비중': CAGR -0.09pp에 MDD -8.72pp.
+    #     'SPY분만 순위1위로 대체'(구조는 그대로): CAGR -2.44pp·MDD -3.55pp — SPY 폴백을 단순히 빼는 것만으로는
+    #     나빠진다. 주력 섹터 경로를 함께 넣어야 이득이 난다.
+    #   ⚠ ROTATION_PRIMARY_MODE=False면 v0.15.0과 비트 동일로 복귀한다.
+    ROTATION_PRIMARY_MODE: bool = True          # ⚠ 주력 섹터 중심 배분(끄면 v0.15.0 동일)
+    ROTATION_PRIMARY_SECTOR: str = "XLK"        # ⚠ 주력 섹터 — 이것이 기본 보유 대상
+    ROTATION_PRIMARY_CAP: float = 0.8           # ⚠ 주력 섹터 최대 비중(나머지는 대피처로 분산)
+    ROTATION_PRIMARY_EXIT_STATES: Tuple[str, ...] = ("RISK_OFF",)   # ⚠ 주력에서 대피하는 자기 국면
     ROTATION_DOWN_REGIME_LEADER: bool = True    # ⚠ E_t=0(하락국면)에도 명확 1위가 있으면 그 섹터로 거래
     ROTATION_DOWN_REGIME_POS: float = 1.0       # ⚠ 그때의 총비중(E_t를 무시하고 이 값을 쓴다)
     ROTATION_DOWN_REGIME_REQUIRE_GATE: bool = True   # ⚠ 확신 게이트 '통과'일로 한정(안전장치 — 끄면 MDD -5.34pp)
@@ -3825,6 +3880,51 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     frac_regime = None
     if getattr(scfg, "ROTATION_ALT_LEADER_REGIME_NEUTRAL", True):
         frac_regime = _run_leader3(("중립",))["frac_leader"]
+    # [v0.16.0 §A ⚠] 주력 섹터 중심 배분 — 근거·실측은 SectorConfig 주석 참조.
+    #   주력(기본 XLK)이 자기 국면 RISK_OFF가 아니면 ROTATION_PRIMARY_CAP만큼 보유하고 나머지는 대피처로,
+    #   RISK_OFF면 전량 대피처로 보낸다. 대피처 = 순환매 복합순위 1위(주력 제외 · 그 섹터도 RISK_OFF 아님),
+    #   그마저 없으면 RISK_OFF가 아닌 섹터 균등. SPY는 쓰지 않는다(사용자 지시: 참고용).
+    #   신규 신호 없음 — results[t]["state"](각 섹터 자기 국면)와 기존 복합순위만 재사용한다.
+    frac_primary_sector = None
+    label_psec = None
+    _pri = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "")
+    if getattr(scfg, "ROTATION_PRIMARY_MODE", False) and _pri in cols:
+        _cap = float(getattr(scfg, "ROTATION_PRIMARY_CAP", 0.8) or 0.0)
+        _exit = tuple(getattr(scfg, "ROTATION_PRIMARY_EXIT_STATES", ("RISK_OFF",)))
+        _st = pd.DataFrame({t: pd.Series(results[t].get("state")).reindex(eval_idx).astype(object)
+                            for t in cols if results.get(t) is not None and results[t].get("state") is not None})
+        _hold = ~_st.isin(_exit) & _st.notna()          # 그 섹터를 보유해도 되는 날
+        _alt_rank = rank_pos.reindex(columns=[c for c in cols if c != _pri and c in rank_pos.columns])
+        _alt = pd.Series(index=eval_idx, dtype=object)
+        _has = _alt_rank.notna().any(axis=1) if len(_alt_rank.columns) else pd.Series(False, index=eval_idx)
+        if bool(_has.any()):
+            _alt.loc[_has] = _alt_rank.loc[_has].idxmin(axis=1)   # ⚠ rank_pos는 1이 최상위 → idxmin
+        fps = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
+        _n_pri = _n_alt = _n_eq = 0
+        for _d in eval_idx:
+            _pri_ok = bool(_hold.loc[_d, _pri]) if _pri in _hold.columns else False
+            _a = _alt.get(_d)
+            _a_ok = (isinstance(_a, str) and _a in _hold.columns and bool(_hold.loc[_d, _a])
+                     and bool(eligible.loc[_d, _a]) if _a in eligible.columns else False)
+            _share = _cap if _pri_ok else 0.0
+            if _pri_ok:
+                fps.loc[_d, _pri] = _share; _n_pri += 1
+            _rest = 1.0 - _share
+            if _rest > 1e-12:
+                if _a_ok:
+                    fps.loc[_d, _a] += _rest; _n_alt += 1
+                else:
+                    _ok = [c for c in cols if c != _pri and c in _hold.columns and bool(_hold.loc[_d, c])
+                           and bool(eligible.loc[_d, c])]
+                    if _ok:
+                        for c in _ok:
+                            fps.loc[_d, c] += _rest / len(_ok)
+                        _n_eq += 1
+        frac_primary_sector = fps
+        label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
+        log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
+                           days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
+
     label_topk = ROT_LABEL_TOPK.format(k=scfg.ROTATION_TOP_K, cap=cap)
     label_lin = ROT_LABEL_PRIMARY.format(cap=cap).replace(" ★", "")
     mode = str(scfg.ROTATION_TILT).lower()
@@ -3836,6 +3936,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         label_leader = label_leader.replace(" ★", "")
     else:
         label_primary, frac_primary = label_leader, frac_leader
+    # [v0.16.0 §A] 주력 섹터 모드가 켜져 있으면 그것이 주 전략(★)이 된다. 종전 집중배분은 비교 변형으로 남는다.
+    if frac_primary_sector is not None:
+        label_leader = label_leader.replace(" ★", "")
+        label_primary, frac_primary = label_psec + " ★", frac_primary_sector
     variants = {label_primary: frac_primary}
     for lab, fr in ((label_leader, frac_leader), (label_topk, frac_topk), (label_lin, frac_lin)):
         if lab != label_primary:
@@ -3871,7 +3975,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #   '명확한 1위'(확신 게이트 통과)가 있으면 그 섹터 하나로 거래한다. 근거·실측은 SectorConfig 주석 참조.
         #   ★ 주 전략(label_leader)에만 적용한다 — 비교 변형까지 바꾸면 13시트 대조군이 오염된다.
         #   신규 신호는 만들지 않는다(leader_s·gate_s는 이미 t일 정보로 계산된 값). 체결은 t+1 시가로 동일.
-        if (label == label_leader and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
+        # [v0.16.0] 하락국면 리더(v0.15.0)는 '집중배분' 계열의 규칙이다. 주력섹터 모드가 주 전략일 때도
+        #   같은 근거(E_t=0이어도 명확1위가 게이트를 통과하면 거래)가 성립하므로 주 전략에 적용한다.
+        if (label in (label_leader, label_primary) and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
             dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
             dl_m = tier.eq("현금") & leader_s.notna() & leader_s.isin(cols)
             if getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True):
@@ -4166,6 +4272,113 @@ def _quartile_labels(x: pd.Series, q: int = 4) -> pd.Series:
 # [v0.12.0] 사전 고정 방어/경기민감 분류 — GICS 관례(방어=필수소비·유틸리티·헬스케어). 데이터로 고른 값이 아니며
 #   13k 진단 표시 전용(배분 규칙에는 쓰지 않는다).
 ROTATION_DEFENSIVE_SECTORS: Tuple[str, ...] = ("XLP", "XLU", "XLV")
+
+
+def build_sector_prediction_accuracy(results: Dict[str, Dict[str, Any]],
+                                     alloc: Optional[Dict[str, Any]] = None,
+                                     horizons: Tuple[int, ...] = (1, 5, 21, 63)) -> pd.DataFrame:
+    """[v0.16.0] 01Y_섹터예측정확도 — 사용자 지시("섹터별로 실제랑 예측 틀린게 많은데 너가 인식을 제대로
+    못하는 것 같애 정확도 시트좀 따로 만들고")에 대한 상설 채점표. 신호·배분은 전혀 건드리지 않는다.
+
+    섹터마다 그 섹터의 **자기 국면 예측**(상승/중립/하락)을 실제 결과로 채점한다. 핵심은 두 열이다:
+      · '상승예측 적중' — 상승이라고 한 날 실제로 올랐는가
+      · '하락예측 적중' — 하락이라고 한 날 실제로 내렸는가
+    각 줄에 그 섹터의 '기저 상승 비율'을 나란히 둔다. **기저보다 높지 않으면 그 예측에는 정보가 없다.**
+    (리포트18 실측 사례: XLK는 2026-03-30~06-30에 +49.4%였는데 그 구간 '상승' 예측이 0일이었다 —
+     이런 것을 사용자가 리포트에서 직접 세어 볼 수 있게 하는 것이 이 시트의 목적이다.)
+
+    블록 A: 지평 1일 요약(섹터 × 예측상태)   B: 지평별(섹터 × h)   C: 섹터별 크게 틀린 구간   D: 연도별
+    """
+    if not results:
+        return pd.DataFrame()
+    rows: List[dict] = []
+    tks = [t for t in results if isinstance(results.get(t), dict)
+           and results[t].get("state") is not None and results[t].get("ret_cc_full") is not None]
+    if not tks:
+        return pd.DataFrame()
+    UP, NU, DN = "RISK_ON", "NEUTRAL", "RISK_OFF"
+
+    def _pack(t):
+        st = pd.Series(results[t]["state"]).astype(object)
+        r = pd.Series(results[t]["ret_cc_full"]).reindex(st.index).astype(float)
+        C = (1.0 + r.fillna(0.0)).cumprod()
+        return st, r, C
+
+    rows.append({"블록": "A. 익일 채점", "섹터": "── 예측이 기저보다 나은가 ──",
+                 "설명": "'기저 상승 비율'보다 적중률이 높아야 정보가 있는 예측이다"})
+    for t in tks:
+        st, r, _ = _pack(t)
+        ok = r.notna() & st.notna()
+        if int(ok.sum()) < 60:
+            continue
+        st, r = st[ok], r[ok]
+        base = float((r > 0).mean())
+        mu, mn, md = st.eq(UP), st.eq(NU), st.eq(DN)
+        rows.append({"블록": "A. 익일 채점", "섹터": t, "표본일수": int(ok.sum()),
+                     "기저 상승 비율": round(base, 4),
+                     "상승예측 일수": int(mu.sum()),
+                     "상승예측 적중": round(float((r[mu] > 0).mean()), 4) if int(mu.sum()) >= 5 else np.nan,
+                     "상승 기저대비(%p)": round((float((r[mu] > 0).mean()) - base) * 100, 2) if int(mu.sum()) >= 5 else np.nan,
+                     "중립 일수": int(mn.sum()),
+                     "하락예측 일수": int(md.sum()),
+                     "하락예측 적중(=하락)": round(float((r[md] <= 0).mean()), 4) if int(md.sum()) >= 5 else np.nan,
+                     "하락 기저대비(%p)": round(((float((r[md] <= 0).mean())) - (1 - base)) * 100, 2) if int(md.sum()) >= 5 else np.nan,
+                     "상승예측일 평균(bp)": round(float(r[mu].mean()) * 1e4, 2) if int(mu.sum()) >= 5 else np.nan,
+                     "하락예측일 평균(bp)": round(float(r[md].mean()) * 1e4, 2) if int(md.sum()) >= 5 else np.nan})
+
+    rows.append({"블록": "B. 지평별", "섹터": "── 예측이 사는 지평 ──",
+                 "설명": "국면 예측은 하루가 아니라 몇 주를 노린다 — h가 길수록 벌어지는 것이 정상"})
+    for t in tks:
+        st, r, C = _pack(t)
+        for h in horizons:
+            f = C.shift(-h) / C - 1
+            m = f.notna() & st.notna()
+            if int(m.sum()) < 60:
+                continue
+            base = float((f[m] > 0).mean())
+            mu, md = st[m].eq(UP), st[m].eq(DN)
+            rows.append({"블록": "B. 지평별", "섹터": t, "구분": f"h={h}일", "표본일수": int(m.sum()),
+                         "기저 상승 비율": round(base, 4),
+                         "상승예측 적중": round(float((f[m][mu] > 0).mean()), 4) if int(mu.sum()) >= 5 else np.nan,
+                         "하락예측 적중(=하락)": round(float((f[m][md] <= 0).mean()), 4) if int(md.sum()) >= 5 else np.nan})
+
+    rows.append({"블록": "C. 크게 틀린 구간", "섹터": "── 예측이 방어적인데 크게 오른 달 ──",
+                 "설명": "사용자가 지적한 구간(예: XLK 2026-04~06)을 여기서 직접 찾을 수 있다"})
+    for t in tks:
+        st, r, _ = _pack(t)
+        ok = r.notna() & st.notna()
+        st, r = st[ok], r[ok]
+        low = st.isin([NU, DN])
+        if int(low.sum()) < 10:
+            continue
+        ym = pd.Series(r.index.to_period("M").astype(str), index=r.index)
+        g = pd.DataFrame({"ym": ym[low], "r": r[low]}).groupby("ym").agg(
+            일수=("r", "size"), 놓친수익=("r", lambda x: (1 + x).prod() - 1))
+        g = g[g["일수"] >= 5].sort_values("놓친수익", ascending=False).head(3)
+        for k, v in g.iterrows():
+            rows.append({"블록": "C. 크게 틀린 구간", "섹터": t, "구분": f"방어적이었는데 오름 · {k}",
+                         "표본일수": int(v["일수"]), "그 구간 실제(%)": round(float(v["놓친수익"]) * 100, 2)})
+        hi = st.eq(UP)
+        if int(hi.sum()) >= 10:
+            g2 = pd.DataFrame({"ym": ym[hi], "r": r[hi]}).groupby("ym").agg(
+                일수=("r", "size"), 실현=("r", lambda x: (1 + x).prod() - 1))
+            g2 = g2[g2["일수"] >= 5].sort_values("실현").head(2)
+            for k, v in g2.iterrows():
+                rows.append({"블록": "C. 크게 틀린 구간", "섹터": t, "구분": f"상승예측인데 빠짐 · {k}",
+                             "표본일수": int(v["일수"]), "그 구간 실제(%)": round(float(v["실현"]) * 100, 2)})
+
+    rows.append({"블록": "D. 연도별 상승예측 적중", "섹터": "── 어느 해에 흔들렸나 ──"})
+    for t in tks:
+        st, r, _ = _pack(t)
+        ok = r.notna() & st.notna()
+        st, r = st[ok], r[ok]
+        yr = pd.Series(r.index.year, index=r.index)
+        row = {"블록": "D. 연도별 상승예측 적중", "섹터": t}
+        for y in sorted(set(yr)):
+            m = yr.eq(y) & st.eq(UP)
+            row[str(y)] = round(float((r[m] > 0).mean()), 3) if int(m.sum()) >= 5 else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def build_prediction_accuracy(alloc: Dict[str, Any],
@@ -5168,6 +5381,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         # [v0.14.0] 사용자 판단기준("정확도가 중요해", "섹터별 일별 예측을 보면 맞는게 별로 없는거 같아")을
         #   매 실행이 스스로 채점하는 시트. 배분 규칙 무변경 — 순수 관측.
         sheets["13l_예측정확도"] = build_prediction_accuracy(alloc)
+    # [v0.16.0] 사용자 지시("섹터별로 실제랑 예측 틀린게 많은데 … 정확도 시트좀 따로 만들고") —
+    #   섹터별 자기 국면 예측을 실제 결과로 채점. 배분·신호 무변경.
+    sheets["01Y_섹터예측정확도"] = build_sector_prediction_accuracy(results, alloc)
     for t in ok_t:
         sheets[f"01_일별_{t}"] = results[t]["sheets"]["daily"]
     # [v0.9.0] 종전 '02_거래내역' — 각 섹터를 '그 섹터 하나만 100% 운용'했을 때의 M식 거래(11벌의 독립 백테스트)라 날짜가 겹친다.
