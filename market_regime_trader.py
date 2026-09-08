@@ -1,5 +1,23 @@
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.32.0 - 2026-09-08 - [⚠ 규칙 ⑧ 구조적 저점 승격 활성 + H 상한 0.70→0.50 · 신규 시트 12_예측정확도]
+#                       사용자 지시(리포트40): "왜 3월 30일 저점 근처에서 바로 비중 높여서 매수하지 않은거야
+#                       그 이후로도 엄청난 상승을 했는데 중립이라니 이건 좀 아닌거 같아".
+#                       [진단] 2026-03-30 저점 이후 +17.3% 구간에서 4/17~5/13의 19거래일이 전부 NEUTRAL 0.5.
+#                       원인은 복합점수 백분위가 0.16~0.21로 바닥에 붙어 규칙 ⑥의 점수 하한 0.30을 못 넘긴 것.
+#                       같은 구간 H는 0.001~0.14로 위험은 없었다 — '위험은 파란불인데 매크로 점수가 승격을 막는' 상태.
+#                       규칙 ⑧은 v1.18.0에서 바로 이 사례("2026-04 +20% 반등을 0.5로 통과")를 위해 만들어 놓고
+#                       'MDD 최우선' 지시 때문에 비활성이었다. 지시가 바뀌었고 엔진도 달라져 재측정했다.
+#                       [실측] H<0.50: CAGR +0.21pp · 샤프 -0.022 · **MDD ±0.00pp** · 2026 +2.3pp,
+#                       문제 구간 평균 목표비중 0.435→0.698. H<0.60/0.70은 MDD -0.55/-0.73pp로 열위.
+#                       ⚠ 저점 당일(3/30) 매수는 불가 — 그날 H 0.863·가격<200MA이고, v1.18.0의 21개 반등
+#                       전수 라벨링에서 유효저점과 데드캣은 확인 시점 지표로 구분되지 않았다. 이 라운드는
+#                       '저점 맞히기'가 아니라 '반등 확인 후 중립에 갇히지 않기'를 고친다.
+#                       ⚠ 섹터 파급: sector_cfg_for()가 규칙 스위치를 상속 → XLK도 2026-03-30~06-30
+#                       RISK_ON 4일→47일(그 구간 실제 +49.43%인데 종전엔 '상승' 예측이 0일이었다).
+#                       [신규] 시트 12_예측정확도 — 사용자 지시("정확도 시트좀 따로 만들고"). 국면 예측을
+#                       실제 결과로 채점한다: 상태×지평 적중률/평균수익, 보유·현금 혼동행렬, 연도별 적중률,
+#                       가장 크게 틀린 구간 목록(예측 하락인데 크게 오름 / 예측 상승인데 크게 빠짐).
 #  VERSION: v1.31.0 - 2026-09-07 - [⚠ 규칙 ⑭ 깊은낙폭 재진입 바닥 — 신호(위험) 파라미터 신설] 사용자 지시
 #                       (리포트16·37): "크게 상승했는데 회피하면 안된다고 … 정확도가 중요해".
 #                       [진단] 상위 5% 상승일 109일의 평균 보유노출이 0.291로 전체 평균(0.567)의 0.513배 —
@@ -2092,9 +2110,35 @@ class Config:
     # 트리거·H·점수·RSP/SPY·실현변동성·되돌림 비율 중앙값이 두 집단에서 사실상 동일 — 유효 저점과
     # 데드캣은 확인 시점에는 구별되지 않고 사후(신저점 여부)에만 드러난다(IMPROVEMENT_PLAN_v1.18.md
     # §B 표). 06c 보류 격자에 행을 두어 매 실행 실측한다.
-    USE_STRUCT_BOTTOM_PROMOTION: bool = False
+    # [v1.32.0 §A ⚠ 신호(위험) 파라미터 — 규칙 ⑧ 활성 + H 상한 0.70 → 0.50] 사용자 지시(리포트40):
+    #   "왜 3월 30일 저점 근처에서 바로 비중 높여서 매수하지 않은거야 그 이후로도 엄청난 상승을 했는데 중립이라니".
+    #   [실측 진단 — 지적이 정확했다] 2026-03-30 저점(631.97) 이후 5/20 741.25까지 +17.3%인데,
+    #   4/17~5/13의 19거래일이 전부 NEUTRAL 0.5였다. 원인은 복합점수다 — 그 구간 백분위가 0.16~0.21로
+    #   바닥에 붙어 있어 규칙 ⑥(추세승격)의 점수 하한 0.30을 한 번도 못 넘겼다. 그런데 같은 구간 H는
+    #   0.001~0.14로 위험은 사실상 없었다. 즉 '위험 계기는 전부 파란불인데 매크로 점수 하나가 승격을 막는'
+    #   상태였다. 규칙 ⑧은 정확히 이 경우(점수 하한 없이 200MA 위 + H 낮음 + 트리거 침묵)를 위해 v1.18.0에서
+    #   설계됐고 그때 코멘트에 "2026-04 +20% 반등을 0.5로 통과한 사례의 해법"이라고 적어 두고도 기본 비활성이었다.
+    #   [왜 그때 보류했나] v1.18.0 리플레이에서 H<0.70이면 MDD가 -8.98→-11.08%로 나빠졌고, 그때 사용자 지시가
+    #   "낙폭 최소화 최우선"이었다. 지금은 지시가 바뀌었고(상승 포착), 엔진도 규칙 ⑭까지 들어와 기준선이 다르다.
+    #   [현재 엔진 재측정 — 리포트40 원본을 재현하는 충실 리플레이(일간 중앙오차 0.03bp) 기준선 대비]
+    #     ⑧ H<0.50  CAGR +0.21pp  샤프 -0.022  **MDD ±0.00pp**  2026 +2.3pp   ← 채택
+    #     ⑧ H<0.60  CAGR -0.33pp  샤프 -0.107  MDD -0.55pp
+    #     ⑧ H<0.70  CAGR +0.58pp  샤프 -0.054  MDD -0.73pp (2018 -3.2pp)
+    #   H<0.50만이 MDD를 전혀 건드리지 않는다. 문제 구간(2026-03-30~05-20) 평균 목표비중 0.435 → 0.698.
+    #   [기각한 대안] 규칙 ⑥의 점수 하한을 낮추기: 0.25 +0.11pp/MDD 동일이나 2018 -3.2pp, 0.20 이하는
+    #     MDD -2.35~-3.78pp로 무너진다. 회복확인 임계(+5%→+2%)·위험회피 해제 안전판(H 0.70→0.55) 완화:
+    #     저점 이후 첫 진입일이 2026-04-09로 **전혀 앞당겨지지 않는다** — 그 진입을 막고 있던 것은
+    #     회복확인이나 H가 아니라 규칙 ⑤의 '가격 > 200일선' 조건이기 때문이다.
+    #   ⚠ 저점 당일(3/30) 매수는 이 규칙으로도 불가능하다: 그날 H는 0.863(상위 14%)이고 가격은 200일선
+    #     아래였다. v1.18.0의 21개 반등 전수 라벨링에서 유효저점과 데드캣은 확인 시점의 어떤 지표로도
+    #     구분되지 않았다(유효 9 vs 데드캣 12, 지표 중앙값이 사실상 동일). 그래서 이 라운드의 개선은
+    #     '저점을 맞히는 것'이 아니라 '반등이 확인된 뒤 중립에 갇히지 않는 것'이다.
+    #   ⚠ 섹터층 파급: sector_cfg_for()가 M의 규칙 스위치를 그대로 상속하므로 11개 섹터에도 함께 적용된다.
+    #     XLK 실측(리포트18): 2026-03-30~06-30 +49.43%인데 RISK_ON이 4일뿐이던 것이 47일로, 평균 목표비중
+    #     0.453 → 0.555로 바뀐다(XLK 단독 CAGR +1.15pp).
+    USE_STRUCT_BOTTOM_PROMOTION: bool = True
     STRUCT_BOTTOM_DD: float = -0.08      # '조정' 하한(고점→저점 순서 보장, RECOVERY_LOW_WINDOW 창)
-    STRUCT_BOTTOM_MAX_H: float = 0.70    # =HAZARD_BLOCK. 승격 시 H 상한(게이트 임계와 동일 → 게이트 무충돌)
+    STRUCT_BOTTOM_MAX_H: float = 0.50    # ⚠ [v1.32.0] 0.70→0.50. 0.70은 MDD -0.73pp·2018 -3.2pp, 0.50만 MDD 무변화
     # [v1.19.0 §A] 중립 위험감축(규칙 ⑨) — 확정 상태가 중립(0.5)인 날 H 백분위가 NEUTRAL_RISK_CUT_H
     # (=HAZARD_BLOCK 0.70, '능동 위험' 경계 재사용) 초과이면 그날 목표비중을 POS_NEUTRAL_HIGH_H로
     # 낮춘다(상태기계는 그대로, 확정 후 사이징 오버레이 — 이력현상·최소보유 무관, 인과: 그날 H).
@@ -7797,6 +7841,126 @@ def _append_next_day_row(daily: pd.DataFrame, nd: dict) -> pd.DataFrame:
     return pd.concat([daily, row_df], ignore_index=True)
 
 
+def build_prediction_accuracy(daily: pd.DataFrame, cfg: "Config") -> pd.DataFrame:
+    """[v1.32.0] 12_예측정확도 — 사용자 지시("국면도 그렇고 섹터별로 실제랑 예측 틀린게 많은데 너가 인식을
+    제대로 못하는 것 같애 정확도 시트좀 따로 만들고")에 대한 상설 채점표. 신호·배분은 전혀 건드리지 않는다.
+
+    ⚠ 정렬 규약: 이 리포트에서 '체결비중[t]'은 t일에 실제로 들고 있던 비중이고 '일간등락률[t]'은 그날의
+      종가등락이다. 따라서 두 열을 같은 행에서 비교하는 것이 곧 '그 예측으로 그날을 맞이했는가'다
+      (목표비중[t]는 t일 종가에 확정돼 t+1일에 체결되므로 여기서 쓰지 않는다).
+
+    블록:
+      A. 국면 예측 채점 — 상승/중립/하락 각각에서 그날 실제로 올랐는가, 평균 수익은 얼마였는가.
+         '전체 상승일 비율'(기저)과 나란히 놓는다. 기저보다 높지 않으면 그 예측은 정보가 없다는 뜻이다.
+      B. 지평별 — 같은 예측으로 5·21일을 보면 적중률이 어떻게 달라지는가. 이 시스템은 국면 지속을
+         노리므로 하루보다 몇 주에서 잘 맞는 것이 정상이다.
+      C. 혼동행렬 — 보유(비중≥0.5) vs 현금(≈0) × 실제 상승/하락. 사용자가 말한 '틀린 것'의 두 종류를
+         각각 센다: 보유했는데 하락(손실), 비웠는데 상승(기회 놓침).
+      D. 크게 틀린 구간 — 예측이 하락/현금인데 크게 오른 구간, 상승/보유인데 크게 빠진 구간 상위 목록.
+      E. 연도별 적중률.
+    """
+    if daily is None or len(daily) == 0:
+        return pd.DataFrame()
+    d = daily.copy()
+    dcol = "날짜" if "날짜" in d.columns else d.columns[0]
+    d[dcol] = pd.to_datetime(d[dcol])
+    d = d.sort_values(dcol).set_index(dcol)
+    need = {"시장상황", "체결비중", "일간등락률", "종가"}
+    if not need.issubset(set(d.columns)):
+        return pd.DataFrame()
+    r = pd.to_numeric(d["일간등락률"], errors="coerce") / 100.0
+    pos = pd.to_numeric(d["체결비중"], errors="coerce")
+    st = d["시장상황"].astype(str)
+    C = pd.to_numeric(d["종가"], errors="coerce")
+    ok = r.notna() & pos.notna()
+    r, pos, st, C = r[ok], pos[ok], st[ok], C[ok]
+    base = float((r > 0).mean())
+    rows: List[dict] = []
+
+    # ---- A. 국면 예측 채점 ----
+    rows.append({"블록": "A. 국면 예측 채점(익일)", "구분": "── 그 예측으로 맞이한 날의 실제 ──",
+                 "설명": f"전체 상승일 비율(기저) {base:.4f} — 이보다 높아야 정보가 있는 예측이다"})
+    for nm in ["상승(위험선호)", "중립", "하락(위험회피)"]:
+        m = st.eq(nm)
+        if int(m.sum()) < 5:
+            continue
+        rows.append({"블록": "A. 국면 예측 채점(익일)", "구분": nm, "일수": int(m.sum()),
+                     "실제 상승 비율": round(float((r[m] > 0).mean()), 4),
+                     "기저 대비(%p)": round((float((r[m] > 0).mean()) - base) * 100, 2),
+                     "평균 수익(bp)": round(float(r[m].mean()) * 1e4, 2),
+                     "평균 보유비중": round(float(pos[m].mean()), 4)})
+
+    # ---- B. 지평별 ----
+    rows.append({"블록": "B. 지평별 적중률", "구분": "── 예측 지속성 ──",
+                 "설명": "국면 예측은 하루가 아니라 몇 주를 노린다 — h가 길수록 벌어지는 것이 정상"})
+    for h in (1, 5, 21, 63):
+        f = (C.shift(-h) / C - 1)
+        bh = float((f.dropna() > 0).mean())
+        row = {"블록": "B. 지평별 적중률", "구분": f"h={h}일", "일수": int(f.notna().sum()),
+               "기저 상승 비율": round(bh, 4)}
+        for nm, key in (("상승(위험선호)", "상승예측 적중"), ("중립", "중립 적중"), ("하락(위험회피)", "하락예측 적중(=하락)")):
+            m = st.eq(nm) & f.notna()
+            if int(m.sum()) >= 5:
+                row[key] = round(float((f[m] > 0).mean()) if nm != "하락(위험회피)"
+                                 else float((f[m] <= 0).mean()), 4)
+        rows.append(row)
+
+    # ---- C. 혼동행렬 ----
+    hold, cash = pos >= 0.5, pos <= 1e-9
+    up = r > 0
+    rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": "── 틀린 것의 두 종류 ──",
+                 "설명": "보유했는데 하락 = 손실 / 비웠는데 상승 = 기회 놓침"})
+    for nm, m, good, lab in (("보유(비중≥0.5)", hold, up, "실제 상승"),
+                             ("현금(비중≈0)", cash, ~up, "실제 하락")):
+        if int(m.sum()) < 5:
+            continue
+        rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": nm, "일수": int(m.sum()),
+                     f"맞힘({lab})": int((m & good).sum()),
+                     "틀림": int((m & ~good).sum()),
+                     "적중률": round(float(good[m].mean()), 4),
+                     "평균 수익(bp)": round(float(r[m].mean()) * 1e4, 2),
+                     "틀린 날 평균(bp)": round(float(r[m & ~good].mean()) * 1e4, 2) if int((m & ~good).sum()) else np.nan})
+    miss = cash & (r >= 0.01)
+    bad = hold & (r <= -0.01)
+    rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": "비웠는데 +1% 이상 상승", "일수": int(miss.sum()),
+                 "합계 놓친 수익(%)": round(float(((1 + r[miss]).prod() - 1) * 100), 2)})
+    rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": "보유했는데 -1% 이상 하락", "일수": int(bad.sum()),
+                 "합계 놓친 수익(%)": round(float(((1 + r[bad]).prod() - 1) * 100), 2)})
+
+    # ---- D. 크게 틀린 구간 ----
+    rows.append({"블록": "D. 크게 틀린 구간(월별 상위)", "구분": "── 사용자가 지적한 그 구간을 여기서 찾는다 ──",
+                 "설명": "예측이 방어적인데 시장이 크게 오른 달 / 공격적인데 크게 빠진 달"})
+    ym = pd.Series(r.index.to_period("M").astype(str), index=r.index)
+    lowpos = pos < 0.5
+    g1 = pd.DataFrame({"ym": ym[lowpos], "r": r[lowpos], "p": pos[lowpos]}).groupby("ym").agg(
+        일수=("r", "size"), 놓친수익=("r", lambda x: (1 + x).prod() - 1), 평균비중=("p", "mean"))
+    g1 = g1[g1["일수"] >= 3].sort_values("놓친수익", ascending=False).head(8)
+    for k, v in g1.iterrows():
+        rows.append({"블록": "D. 크게 틀린 구간(월별 상위)", "구분": f"방어적이었는데 오름 · {k}",
+                     "일수": int(v["일수"]), "합계 놓친 수익(%)": round(float(v["놓친수익"]) * 100, 2),
+                     "평균 보유비중": round(float(v["평균비중"]), 3)})
+    hi = pos >= 0.5
+    g2 = pd.DataFrame({"ym": ym[hi], "r": r[hi], "p": pos[hi]}).groupby("ym").agg(
+        일수=("r", "size"), 실현손실=("r", lambda x: (1 + x).prod() - 1), 평균비중=("p", "mean"))
+    g2 = g2[g2["일수"] >= 3].sort_values("실현손실").head(8)
+    for k, v in g2.iterrows():
+        rows.append({"블록": "D. 크게 틀린 구간(월별 상위)", "구분": f"보유 중 빠짐 · {k}",
+                     "일수": int(v["일수"]), "합계 놓친 수익(%)": round(float(v["실현손실"]) * 100, 2),
+                     "평균 보유비중": round(float(v["평균비중"]), 3)})
+
+    # ---- E. 연도별 ----
+    rows.append({"블록": "E. 연도별", "구분": "── 어느 해에 예측이 흔들렸나 ──"})
+    yr = pd.Series(r.index.year, index=r.index)
+    for y in sorted(set(yr)):
+        m = yr.eq(y)
+        rows.append({"블록": "E. 연도별", "구분": str(y), "일수": int(m.sum()),
+                     "기저 상승 비율": round(float((r[m] > 0).mean()), 4),
+                     "보유일 적중률": round(float((r[m & hold] > 0).mean()), 4) if int((m & hold).sum()) >= 5 else np.nan,
+                     "현금일 적중률": round(float((r[m & cash] <= 0).mean()), 4) if int((m & cash).sum()) >= 5 else np.nan,
+                     "평균 보유비중": round(float(pos[m].mean()), 4)})
+    return pd.DataFrame(rows)
+
+
 def build_report(res: dict, cfg: Config = CFG) -> str:
     t0 = time.time()
     bt, sig, score, reason_txt = res["bt"], res["sig"], res["score"], res["reason"]
@@ -8067,6 +8231,8 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         "09_국면통계": regime_stats,
         "10_데이터품질": res["quality"],
         "11_룩어헤드감사": res["audit"],
+        # [v1.32.0] 사용자 지시("정확도 시트좀 따로 만들고") — 국면 예측을 실제 결과로 채점. 신호 무변경.
+        "12_예측정확도": build_prediction_accuracy(daily, cfg),
     }
 
     n_pass = int((val_full["판정"] == "PASS").sum())
@@ -8158,7 +8324,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.31.0 (2026-09-07)"),
+        ("버전", "v1.32.0 (2026-09-08)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -8401,7 +8567,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.31.0"
+BUNDLE_VERSION = "v1.32.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
