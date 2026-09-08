@@ -1,5 +1,69 @@
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.38.0 - 2026-09-08 - [⚠⚠ 규칙 ⑮를 '약세쪽만(bear_only)'으로 되살림 — v1.35.0에 심어둔
+#                       계측이 답을 냈고, 그 답이 v1.36.0 진단과 정확히 일치한다
+#                       + 06c 격자 전 행에 '정확도' 열 상설(_grid_accuracy) — 반복된 오판의 근본 원인 제거]
+#                       사용자 지시: "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해".
+#                       변경 모듈: `Config.USE_BREADTH_NEUTRAL`(False→**True**),
+#                       `Config.BREADTH_SIDE`("both"→**"bear_only"**), `_grid_accuracy()`(신규) +
+#                       17개 06c 격자 행에 정확도 6열 추가. 신호 로직 자체는 무변경.
+#
+#                       [§1 v1.37.0 실측 확인 — 채택안이 예측보다 잘 나왔다]
+#                       리포트45(v1.37.0 실행): CAGR 19.88 → **21.48%** · 샤프 1.838 → **1.934** ·
+#                       MDD -7.07 → -7.17% · 칼마 2.813 → **2.996**.
+#                       06c 예측은 20.97%/1.898이었는데 실제가 더 좋았다(+0.51pp).
+#                       그리고 미뤄뒀던 0.02/0.04가 이번에 실측됐다 — **0.03 채택이 옳았다**:
+#                         0.02  21.68% / 1.945 / **-8.42%** / 칼마 2.576
+#                         0.03  21.48% / 1.934 / **-7.17%** / 칼마 **2.996**  ← 채택값이 칼마 최고
+#                         0.04  21.50% / 1.938 / -7.79%    / 칼마 2.760
+#                       0.02는 CAGR·샤프가 약간 높지만 MDD가 1.25%p 터진다. **실제 엔진이 잰 값만
+#                       채택한다**는 원칙이 두 라운드 연속으로 옳았다.
+#
+#                       [§2 채택 — 규칙 ⑮ bear_only. v1.36.0을 뒤집는 게 아니라 확인하는 것이다]
+#                       v1.36.0에서 ⑮를 끄며 이렇게 적었다: "⑮가 한 일은 평범 이하의 날에 노출을 더
+#                       실은 것뿐이다." v1.35.0에서 그 가설을 가르려고 BREADTH_SIDE를 심어뒀고,
+#                       리포트45가 답을 냈다:
+#                         off (v1.37.0 현행)   CAGR 21.48%  샤프 1.934  MDD  -7.17%  칼마 2.996
+#                         both (비중 1.0/0.0)  CAGR 21.16%  샤프 1.793  MDD -10.48%  칼마 2.019
+#                         **bull_only**        CAGR 20.16%  샤프 1.710  MDD **-12.14%** 칼마 1.660 ← 최악
+#                         **bear_only**        CAGR 22.49%  샤프 **2.027** MDD **-7.07%** 칼마 **3.182** ← 채택
+#                       **bull_only가 전 행 중 최악**이라는 것이 v1.36.0 진단의 직접 실측 확인이다.
+#                       both의 손상(-10.48% MDD)은 전부 강세쪽이 만들고 있었다.
+#                       bear_only는 **노출을 낮추기만 하는 규칙**이라 CAGR이 오르면서 MDD가 개선된다
+#                       (-7.17 → -7.07%). 덜 싣고 더 벌었다 = 잘라낸 날들이 실제로 나빴다는 뜻이다.
+#                       근사 정확도: 큰상승일 평균노출 0.380 → **0.380(상승을 하나도 포기하지 않음)** ·
+#                       큰하락일 0.385 → 0.381 · 평균노출 0.600 → 0.585 · 놓친 큰상승 63 → 63일 ·
+#                       상승 적중 기저대비 +2.56 → **+2.94%p**.
+#
+#                       [§3 왜 지금 되살리는가 — ⑤와 ⑮는 상보적이지 경쟁적이지 않다]
+#                       v1.37.0에서 규칙 ⑤를 푼 뒤 중립 상태의 정보가 +0.26%p(없음) →
+#                       **-1.21%p(역방향)**으로 바뀌었다(12시트 A블록, 563일·평균노출 0.319).
+#                       좋은 회복일이 ⑤를 타고 중립 밖으로 빠져나가면서 **남은 중립이 더 나빠진** 것이다.
+#                       bear_only는 정확히 그 남은 중립을 깎는다. v1.37.0 회귀에서 확인한
+#                       "⑤=0.05일 때 ⑮(both)는 +1.09pp, ⑤=0.03일 때 -0.37pp"는 **강세쪽** 이야기였다.
+#
+#                       [§4 근본 원인 제거 — 06c 격자가 지금까지 '정확도'를 재지 않았다]
+#                       규칙 ⑮를 채택했다 되돌린 진짜 원인은 격자가 CAGR·샤프·MDD·칼마만 실었기
+#                       때문이다. 사용자 기준은 "수익률 숫자만 높게 나온다고 좋은 게 아니라고"인데,
+#                       그 기준으로 격자를 볼 수단이 리포트에 없었다. 사후 리플레이로는 폭처럼
+#                       이력 길이가 다른 규칙을 재현할 수 없다(v1.34.0의 함정).
+#                       → `_grid_accuracy()`를 신설해 **17개 격자 행 전부**에 상설로 싣는다:
+#                         상승/하락 적중 기저대비(%p) · 큰상승일 평균노출 · 큰하락일 평균노출 ·
+#                         놓친 큰상승일수 · 평균노출
+#                       ⚠ '회피율' 같은 평균노출 정규화 지표는 일부러 쓰지 않는다 — 노출을 낮추는
+#                       규칙이 분모까지 줄여 좋아 보이는 착시가 생긴다(이번 라운드에 실제로 겪었다).
+#
+#                       [§5 이번에 채택하지 않은 것 — 다음 실행이 새 기준선에서 재측정한다]
+#                       06c 격자에서 현행보다 좋아 보이는 행이 둘 더 있다:
+#                         HAZARD_ENTER 0.90/0.95  CAGR 22.36% 샤프 1.952 MDD -7.17% 칼마 3.118
+#                         TREND_PROMOTION 0.35    CAGR 21.38% 샤프 1.953 MDD -7.09% 칼마 3.015
+#                       둘 다 **bear_only 이전 기준선에 대해 잰 값**이다. 기준선이 바뀌면 다시 재야
+#                       한다(v1.34.0에서 측정하지 않은 조합을 채택해 실패했다). 격자에 그대로 남아
+#                       있으므로 다음 실행이 새 기준선에서, 이번엔 **정확도 열까지 붙여서** 답을 준다.
+#                       ⚠ HAZARD_ENTER 0.90은 큰상승일 노출(0.380→0.407)과 함께 **큰하락일 노출도
+#                       0.385→0.404로 같이 올린다** — ⑮ both와 같은 '양쪽 다 올리기' 모양이라
+#                       정확도 열 없이 채택하면 안 된다.
+#
 #  VERSION: v1.37.0 - 2026-09-08 - [⚠ 규칙 ⑤ 회복확인폭 0.05 → 0.03 — 사전등록된 06c 민감도가
 #                       6버전 만에 답을 냈다 + 노출을 '더하는' 규칙 감사 신설 + 기각 사유 14건 기록]
 #                       사용자 지시: "다시 수정 전으로 돌아가서 원인분석해서 **다른 방향으로** 개선해".
@@ -2532,7 +2596,30 @@ class Config:
     #   → 사용자 기준("수익률 숫자만 높게 나온다고 좋은게 아니라고 / 하락을 제대로 회피")에 정면으로
     #     어긋난다: 적중률 불변 · 큰하락 회피 0.357 → 0.348 악화 · 수익률만 상승. 그래서 끈다.
     #   되돌리려면 True로 두면 되고 06c 격자에 4개 수준이 그대로 남아 있다. False면 v1.33.0과 비트 동일.
-    USE_BREADTH_NEUTRAL: bool = False
+    # [v1.38.0 ⚠⚠ False → True, 단 BREADTH_SIDE="bear_only"로만. v1.36.0에서 끈 것을 되살리는 게
+    #  아니라, v1.35.0에서 심어둔 '한쪽만 적용' 계측이 답을 냈다 — 그리고 답은 내 v1.36.0 진단과
+    #  정확히 일치한다: **해로운 쪽은 강세(매수)쪽이었고, 약세(감축)쪽은 유익했다.**]
+    #  리포트45 06c(실제 엔진, 같은 격자):
+    #     off (현행)              CAGR 21.48%  샤프 1.934  MDD  -7.17%  칼마 2.996   ← v1.37.0
+    #     비중 1.0/0.0 (both)     CAGR 21.16%  샤프 1.793  MDD -10.48%  칼마 2.019
+    #     강세쪽만(bull_only)      CAGR 20.16%  샤프 1.710  MDD -12.14%  칼마 1.660   ← **최악**
+    #     약세쪽만(bear_only)      CAGR 22.49%  샤프 2.027  MDD  -7.07%  칼마 3.182   ← 채택
+    #  ⚠ bull_only가 모든 행 중 최악이라는 것이 v1.36.0 진단("⑮가 한 일은 평범 이하의 날에 노출을
+    #  더 실은 것뿐")의 직접적인 실측 확인이다. both(-10.48% MDD)의 손상은 강세쪽이 만들고 있었다.
+    #  bear_only는 **노출을 낮추기만 하는 규칙**이다(중립일 중 학습된 약세 분위에서 POS_HIGH로 감축,
+    #  강세쪽 상향은 하지 않는다). 그래서 CAGR이 오르면서 MDD가 -7.17 → -7.07%로 **개선**된다 —
+    #  덜 실었는데 더 벌었다는 뜻이고, 이는 잘라낸 날들이 실제로 나빴다는 증거다.
+    #  [정확도] 근사 폭 계열(2018년~, 실제 엔진은 1998년~이라 발동일수가 다르다 — 아래 ⚠ 참조):
+    #     큰상승일 평균노출 0.380 → 0.380 (**변화 없음 — 상승을 하나도 포기하지 않는다**)
+    #     큰하락일 평균노출 0.385 → 0.381 · 평균노출 0.600 → 0.585 · 놓친 큰상승 63일 → 63일
+    #     상승 적중 기저대비 +2.56 → +2.94%p · 하락 적중 +7.50 → +7.43%p
+    #  ⚠ 이 정확도 수치는 근사다(폭 계열 이력이 짧다). 그래서 v1.38.0에서 06c 격자 전 행에
+    #  정확도 열(_grid_accuracy)을 상설로 실었다 — **다음 실행부터는 실제 엔진이 직접 채점한다.**
+    #  [왜 지금인가] v1.37.0에서 규칙 ⑤를 푼 뒤 중립 상태의 정보가 +0.26%p(없음)에서
+    #  **-1.21%p(역방향)**으로 바뀌었다(12시트 A블록). 좋은 회복일이 ⑤를 타고 중립 밖으로 나가면서
+    #  남은 중립이 더 나빠진 것이다. bear_only는 바로 그 남은 중립을 깎는다 — 두 변경이 상보적이다.
+    #  되돌리려면 USE_BREADTH_NEUTRAL=False. 06c에 4개 변형이 그대로 남아 있다.
+    USE_BREADTH_NEUTRAL: bool = True
     BREADTH_MA: int = 50                    # 폭 정의: 섹터가 자기 이 일수 이동평균 위인가
     BREADTH_LO_Q: float = 0.30              # 중립일 폭 분포의 하위 분위
     BREADTH_HI_Q: float = 0.70              # 〃 상위 분위
@@ -2557,7 +2644,9 @@ class Config:
     #     "both"      : 강세쪽 ↑ · 약세쪽 ↓ (현행)
     #     "bull_only" : 강세쪽만 ↑ (약세쪽은 POS_NEUTRAL 유지) — CAGR 기여만 남기고 하방 개입을 뺀다
     #     "bear_only" : 약세쪽만 ↓ — MDD를 줄이려는 쪽. off 대비 MDD가 개선되는지 확인용
-    BREADTH_SIDE: str = "both"              # ⚠ "both" | "bull_only" | "bear_only"
+    BREADTH_SIDE: str = "bear_only"         # ⚠ [v1.38.0] "both" | "bull_only" | "bear_only"
+    #   ⚠ "both"/"bull_only"로 바꾸면 MDD가 -10.48% / -12.14%로 크게 나빠진다(리포트45 06c).
+    #   강세쪽 상향은 규칙 ⑤(회복승격)와 같은 일을 더 못하게 하는 것이라 반드시 꺼둔다.
     USE_DEEP_REENTRY_FLOOR: bool = True
     DEEP_REENTRY_DD: float = -0.20          # ⚠ 252일 고점 대비 낙폭 임계(베어마켓 경계)
     DEEP_REENTRY_HIGH_WINDOW: int = 252     # 낙폭 기준 창(거래일)
@@ -6334,6 +6423,50 @@ def perf_metrics(ret: pd.Series, label: str = "") -> Dict[str, float]:
     }
 
 
+def _grid_accuracy(b: pd.DataFrame) -> dict:
+    """[v1.38.0] 06c 격자의 모든 행에 **사용자 기준(정확도)** 열을 붙인다.
+
+    ⚠ 왜 필요한가 — 이 프로젝트의 반복된 실패 원인이 여기 있었다.
+    06c 격자는 지금까지 CAGR·샤프·MDD·칼마만 실었다. 그런데 사용자의 판정 기준은
+    "국면의 상승/하락을 제대로 예측해서 수익을 얻고 하락을 제대로 회피하는 것,
+    **수익률 숫자만 높게 나온다고 좋은 게 아니다**"였다.
+    규칙 ⑮(v1.34.0)를 채택했다가 v1.36.0에서 되돌린 이유가 정확히 이것이다 —
+    CAGR만 보고 골랐는데 방향 적중률은 하나도 안 움직였고 큰하락 회피는 오히려 나빠졌다.
+    그 판정을 하려면 **실제 엔진이 격자를 돌 때 같이 재야** 한다. 리플레이로 사후에 재면
+    폭(breadth) 같은 일부 규칙은 이력 길이가 달라 재현되지 않는다(v1.34.0의 함정).
+    그래서 격자 행마다 아래 6개 열을 상설로 싣는다.
+
+    ⚠ '큰하락 회피율' 같은 평균노출 정규화 지표는 쓰지 않는다 — 노출을 낮추는 규칙이
+    분모까지 줄여 좋아 보이는 착시가 생긴다. **절대 노출**을 그대로 싣는다.
+    """
+    out = {"상승적중 기저대비(%p)": np.nan, "하락적중 기저대비(%p)": np.nan,
+           "큰상승일 평균노출": np.nan, "큰하락일 평균노출": np.nan,
+           "놓친 큰상승일수": np.nan, "평균노출(정확도용)": np.nan}
+    try:
+        if b is None or len(b) < 60 or "ret_cc" not in b.columns or "pos_exec" not in b.columns:
+            return out
+        r = pd.to_numeric(b["ret_cc"], errors="coerce")
+        pe = pd.to_numeric(b["pos_exec"], errors="coerce")
+        ok = r.notna() & pe.notna()
+        r, pe = r[ok], pe[ok]
+        if len(r) < 60:
+            return out
+        base_up = float((r > 0).mean())
+        held = pe >= 0.5
+        hi, lo = r.quantile(0.95), r.quantile(0.05)
+        if int(held.sum()) >= 20:
+            out["상승적중 기저대비(%p)"] = round((float((r[held] > 0).mean()) - base_up) * 100, 2)
+        if int((~held).sum()) >= 20:
+            out["하락적중 기저대비(%p)"] = round((float((r[~held] <= 0).mean()) - (1 - base_up)) * 100, 2)
+        out["큰상승일 평균노출"] = round(float(pe[r >= hi].mean()), 4)
+        out["큰하락일 평균노출"] = round(float(pe[r <= lo].mean()), 4)
+        out["놓친 큰상승일수"] = int(((r >= hi) & (pe < 0.5)).sum())
+        out["평균노출(정확도용)"] = round(float(pe.mean()), 4)
+    except Exception:
+        pass
+    return out
+
+
 def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.DataFrame,
                           cfg: Config = CFG, rf_daily: Optional[pd.Series] = None,
                           haz_pct: Optional[pd.Series] = None,
@@ -6372,7 +6505,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             m = perf_metrics(b["strategy_ret"])
             rows.append({
                 "위험회피 백분위(<)": off, "위험선호 백분위(>)": on,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6414,7 +6547,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                                        base_state).sum())
                 haz_rows.append({
                     "HAZARD_ENTER": enter, "HAZARD_BLOCK": block,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                     "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6451,7 +6584,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             n_state_changed = int((cur_state.reindex(base_state.index) != base_state).sum())
             floor_rows.append({
                 "HAZARD_NEUTRAL_FLOOR": floor,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6494,7 +6627,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                 sig_gate = sg["buy_hold_gate"].loc[sg["buy_hold_gate"].index >= pd.Timestamp(cfg.SIGNAL_START)]
                 gate_rows.append({
                     "BUY_HOLD_GATE_THRESHOLD": gth,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                     "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6539,7 +6672,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             fw = fwd21.reindex(fire_dates).dropna()
             ft_rows.append({
                 "FAST_TRIGGER_PCT": fpct,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6585,7 +6718,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             rfire = sg["recovery_floor"].loc[sg["recovery_floor"].index >= pd.Timestamp(cfg.SIGNAL_START)]
             rf_rows.append({
                 "RECOVERY_CONFIRM_PCT": cpct,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6625,7 +6758,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             tfire = sg["trend_promotion"].loc[sg["trend_promotion"].index >= pd.Timestamp(cfg.SIGNAL_START)]
             tp_rows.append({
                 "TREND_PROMOTION_MIN_SCORE_PCT": msp,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6677,7 +6810,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             is_live = all(getattr(cfg, k) == v for k, v in over.items())
             held_rows.append({
                 "보류메커니즘 확인": lab,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6710,7 +6843,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                                         abs(lvl - cfg.POS_NEUTRAL_HIGH_H) < 1e-9)))
                 nc_rows.append({
                     "NEUTRAL_RISK_CUT": label,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                     "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -6748,7 +6881,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                                     and sm == cfg.EXTENSION_HAIRCUT_SMOOTH)))
             eh_rows.append({
                 "EXTENSION_HAIRCUT": label,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "평균비중": round(float(b["pos_exec"].mean()), 3),
@@ -6781,7 +6914,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             is_live = all(getattr(cfg, k) == v for k, v in over.items())
             lv_rows.append({
                 "LEVERAGE": label.replace("★", ""),
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "평균비중": round(float(b["pos_exec"].mean()), 3),
@@ -6813,7 +6946,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             is_live = abs(float(getattr(cfg, "EXPOSURE_MULTIPLIER", 1.0)) - k) < 1e-12
             ex_rows.append({
                 "EXPOSURE": f"노출배수 ×{k:.2f}" + ("(기본, 레버리지 없음)" if k == 1.0 else f"(상한 {k:.2f})"),
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "평균비중": round(float(b["pos_exec"].mean()), 3),
@@ -6866,7 +6999,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                        and "DEEP_REENTRY_EXIT_DD" not in _ov14)
             dr14_rows.append({
                 "규칙⑭(깊은낙폭재진입)": lab14, "발동일수": fired,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "평균비중": round(float(b["pos_exec"].mean()), 3),
                 "-1%손실일수": int((b["strategy_ret"] < -0.01).sum()),
@@ -6918,7 +7051,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                            and _ov15.get("BREADTH_SIDE", cfg.BREADTH_SIDE) == cfg.BREADTH_SIDE)
                 br15_rows.append({
                     "규칙⑮(폭 기반 중립조절)": lab15, "발동일수": fired,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "평균비중": round(float(b["pos_exec"].mean()), 3),
                     "기본설정": "★" if is_live else ""})
@@ -6970,7 +7103,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                             mode == live_mode and guard == live_guard))
                 dr_rows.append({
                     "DEEP_RECOVERY_DD": label,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                     "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7051,7 +7184,7 @@ def hazard_cap_sensitivity(vt_periods: List[dict], ind: pd.DataFrame,
         m = perf_metrics(b["strategy_ret"])
         rows.append({
             "위험트랙 카테고리 상한": "무제한(현행)" if cap is None else f"{cap:.2f}",
-            "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+            "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
             "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
             "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
             "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7105,7 +7238,7 @@ def half_life_sensitivity(ind: pd.DataFrame, px_adj: pd.Series, price: pd.DataFr
         label = f"{hl}일(~{hl/365:.1f}년)" if hl else "감쇠없음(균등가중)"
         rows.append({
             "반감기(HALF_LIFE_DAYS)": label,
-            "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+            "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
             "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
             "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
             "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -8902,7 +9035,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.37.0 (2026-09-08)"),
+        ("버전", "v1.38.0 (2026-09-08)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -9144,7 +9277,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.37.0"
+BUNDLE_VERSION = "v1.38.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
