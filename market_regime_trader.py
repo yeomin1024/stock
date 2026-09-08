@@ -1,5 +1,27 @@
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.33.0 - 2026-09-08 - [⚠ 12_예측정확도 계산 정정 — 신호·배분 무변경] 사용자 지시(리포트5·41):
+#                       "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해 틀린부분이 어딘지 파악해서
+#                       원인 분석하고 문제 개선해". 그 채점표 자체에 **결론을 뒤집는 오류 두 개**가 있었다.
+#                       (1) 정렬 — 시장상황[t]는 t일 종가 확정 신호이고 체결은 t+1인데(목표비중[t]=체결비중[t+1]
+#                       리포트에서 확인) v1.32.0은 같은 행 수익과 비교했다. 실측 차이: '하락에서 올라온 중립'의
+#                       익일 평균이 잘못된 정렬에서 +24.14bp였는데 정정하면 +17.06bp이고, 21일 기저대비 우위는
+#                       +로 보이던 것이 **-12.1%p로 부호가 뒤집힌다** — 그 숫자로 규칙을 만들 뻔했고 이 정정이 막았다.
+#                       (혼동행렬만은 체결비중[t] vs 수익[t]가 맞다 — 그날 실제 보유분이므로.)
+#                       (2) 기저 대비 — '하락 예측 적중률 0.382'는 0.5가 아니라 그 지평의 기저 하락률(0.262)과
+#                       비교해야 한다. 즉 **+12.0%p의 우위**인데 v1.32.0 표만 보면 '절반도 못 맞힌다'로 정반대로
+#                       읽힌다(실제로 그렇게 오독할 뻔했다). 모든 지평·모든 상태에 '기저 대비(%p)'와
+#                       '정보(있음/없음/역방향)' 판정을 나란히 넣었다.
+#                       (3) C블록의 '합계 놓친 수익'이 흩어진 날을 이어붙인 복리라 +1292% 같은 값이 나왔다 →
+#                       산술합·평균으로 바꿨다(달 단위인 D블록만 복리 유지).
+#                       [정정 후 결론] 세 국면 모두 기저 대비 우위가 있다: 상승 +2.4/+4.1/+6.7/+5.3%p(h=1/5/21/63),
+#                       하락 +8.0/+9.7/+11.9/+12.0%p, 중립 +0.3/-2.5/-7.5/-4.3%p. **가장 강한 것이 하락 예측이고
+#                       약한 것은 중립**이다(531일=24%). 다만 중립 비중은 이미 효율점이다 — POS_NEUTRAL 격자
+#                       실측: 0.2 CAGR -0.59pp(샤프 +0.014) · 0.3 -0.39(+0.015) · 0.5 기준 · 0.6 +0.19(MDD -0.51pp)
+#                       · 0.7 +0.36(MDD -1.34pp). 올리면 MDD, 내리면 CAGR이 나빠진다.
+#                       [기각] 방향 의존 중립(회복발↑/상승발↓) 전 조합: 회복발 중립의 h=21 우위가 -12.1%p라
+#                       하루짜리 우위(+2.5%p)가 지속되지 않는다. 상승발 중립만 낮추면 샤프 +0.017~+0.040에
+#                       CAGR -0.04~-0.25pp이고 연도별 부호가 뒤섞여(2021·2024 음, 2020·2022·2025 양) 우연이다.
 #  VERSION: v1.32.0 - 2026-09-08 - [⚠ 규칙 ⑧ 구조적 저점 승격 활성 + H 상한 0.70→0.50 · 신규 시트 12_예측정확도]
 #                       사용자 지시(리포트40): "왜 3월 30일 저점 근처에서 바로 비중 높여서 매수하지 않은거야
 #                       그 이후로도 엄청난 상승을 했는데 중립이라니 이건 좀 아닌거 같아".
@@ -7842,22 +7864,23 @@ def _append_next_day_row(daily: pd.DataFrame, nd: dict) -> pd.DataFrame:
 
 
 def build_prediction_accuracy(daily: pd.DataFrame, cfg: "Config") -> pd.DataFrame:
-    """[v1.32.0] 12_예측정확도 — 사용자 지시("국면도 그렇고 섹터별로 실제랑 예측 틀린게 많은데 너가 인식을
-    제대로 못하는 것 같애 정확도 시트좀 따로 만들고")에 대한 상설 채점표. 신호·배분은 전혀 건드리지 않는다.
+    """[v1.32.0 / v1.33.0 정정] 12_예측정확도 — 국면 예측을 실제 결과로 채점하는 상설 시트.
+    신호·배분은 전혀 건드리지 않는다.
 
-    ⚠ 정렬 규약: 이 리포트에서 '체결비중[t]'은 t일에 실제로 들고 있던 비중이고 '일간등락률[t]'은 그날의
-      종가등락이다. 따라서 두 열을 같은 행에서 비교하는 것이 곧 '그 예측으로 그날을 맞이했는가'다
-      (목표비중[t]는 t일 종가에 확정돼 t+1일에 체결되므로 여기서 쓰지 않는다).
+    ⚠⚠ [v1.33.0] 두 가지를 바로잡았다. v1.32.0판은 둘 다 **결론을 뒤집을 수 있는** 오류였다.
 
-    블록:
-      A. 국면 예측 채점 — 상승/중립/하락 각각에서 그날 실제로 올랐는가, 평균 수익은 얼마였는가.
-         '전체 상승일 비율'(기저)과 나란히 놓는다. 기저보다 높지 않으면 그 예측은 정보가 없다는 뜻이다.
-      B. 지평별 — 같은 예측으로 5·21일을 보면 적중률이 어떻게 달라지는가. 이 시스템은 국면 지속을
-         노리므로 하루보다 몇 주에서 잘 맞는 것이 정상이다.
-      C. 혼동행렬 — 보유(비중≥0.5) vs 현금(≈0) × 실제 상승/하락. 사용자가 말한 '틀린 것'의 두 종류를
-         각각 센다: 보유했는데 하락(손실), 비웠는데 상승(기회 놓침).
-      D. 크게 틀린 구간 — 예측이 하락/현금인데 크게 오른 구간, 상승/보유인데 크게 빠진 구간 상위 목록.
-      E. 연도별 적중률.
+    (1) 정렬. 시장상황[t]는 t일 종가에 확정된 신호이고 실제 체결은 t+1이다(목표비중[t] = 체결비중[t+1]을
+        리포트에서 확인). 따라서 국면 채점은 **상태[t] → 수익[t+1]**이어야 하는데 v1.32.0은 같은 행의
+        수익과 비교했다. 실측 차이: '회복발 중립'의 익일 평균이 잘못된 정렬에서 +24.14bp였는데 정정하면
+        +17.06bp이고, 21일 기저대비 우위는 +로 보이던 것이 **-12.1%p**로 부호가 뒤집힌다 — 그 숫자로
+        규칙을 만들었다면 잘못된 규칙이 나왔을 것이다(실제로 만들 뻔했고 이 정정이 막았다).
+        혼동행렬만은 체결비중[t] vs 수익[t]가 맞다(그날 실제로 들고 있던 비중이므로).
+
+    (2) 기저 대비. '하락 예측 적중률 0.388'은 0.5가 아니라 **그 지평의 기저 하락률(1-기저상승률=0.262)**과
+        비교해야 한다. 즉 +12.6%p의 우위인데 v1.32.0 표만 보면 '절반도 못 맞힌다'로 읽힌다.
+        그래서 모든 지평·모든 상태에 '기저 대비(%p)'와 '정보' 판정을 나란히 넣는다.
+
+    블록: A 익일 채점 · B 지평별(기저 대비 동반) · C 혼동행렬 · D 크게 틀린 달 · E 연도별
     """
     if daily is None or len(daily) == 0:
         return pd.DataFrame()
@@ -7874,79 +7897,89 @@ def build_prediction_accuracy(daily: pd.DataFrame, cfg: "Config") -> pd.DataFram
     C = pd.to_numeric(d["종가"], errors="coerce")
     ok = r.notna() & pos.notna()
     r, pos, st, C = r[ok], pos[ok], st[ok], C[ok]
-    base = float((r > 0).mean())
+    STATES = ["상승(위험선호)", "중립", "하락(위험회피)"]
     rows: List[dict] = []
 
-    # ---- A. 국면 예측 채점 ----
-    rows.append({"블록": "A. 국면 예측 채점(익일)", "구분": "── 그 예측으로 맞이한 날의 실제 ──",
-                 "설명": f"전체 상승일 비율(기저) {base:.4f} — 이보다 높아야 정보가 있는 예측이다"})
-    for nm in ["상승(위험선호)", "중립", "하락(위험회피)"]:
-        m = st.eq(nm)
+    def _fwd(h):        # 상태[t] → t+1부터 h일 (체결 t+1 시가 규약과 정합)
+        return C.shift(-h - 1) / C.shift(-1) - 1
+
+    # ---- A. 익일 채점 ----
+    f1 = _fwd(1)
+    m1 = f1.notna()
+    base1 = float((f1[m1] > 0).mean())
+    rows.append({"블록": "A. 익일 채점", "구분": "── 상태[t] → 수익[t+1] (체결 t+1 시가) ──",
+                 "설명": f"기저 상승 비율 {base1:.4f} · 기저 하락 비율 {1-base1:.4f} — 각 상태는 자기 기저와 비교한다"})
+    for nm in STATES:
+        m = m1 & st.eq(nm)
         if int(m.sum()) < 5:
             continue
-        rows.append({"블록": "A. 국면 예측 채점(익일)", "구분": nm, "일수": int(m.sum()),
-                     "실제 상승 비율": round(float((r[m] > 0).mean()), 4),
-                     "기저 대비(%p)": round((float((r[m] > 0).mean()) - base) * 100, 2),
-                     "평균 수익(bp)": round(float(r[m].mean()) * 1e4, 2),
+        is_dn = nm.startswith("하락")
+        hit = float((f1[m] <= 0).mean()) if is_dn else float((f1[m] > 0).mean())
+        bse = (1 - base1) if is_dn else base1
+        rows.append({"블록": "A. 익일 채점", "구분": nm, "일수": int(m.sum()),
+                     "적중률": round(hit, 4), "그 상태의 기저": round(bse, 4),
+                     "기저 대비(%p)": round((hit - bse) * 100, 2),
+                     "정보": "있음" if hit - bse > 0.005 else ("없음" if hit - bse > -0.005 else "역방향"),
+                     "다음날 평균(bp)": round(float(f1[m].mean()) * 1e4, 2),
                      "평균 보유비중": round(float(pos[m].mean()), 4)})
 
-    # ---- B. 지평별 ----
-    rows.append({"블록": "B. 지평별 적중률", "구분": "── 예측 지속성 ──",
-                 "설명": "국면 예측은 하루가 아니라 몇 주를 노린다 — h가 길수록 벌어지는 것이 정상"})
+    # ---- B. 지평별 (기저 대비 동반) ----
+    rows.append({"블록": "B. 지평별", "구분": "── 예측이 사는 지평 ──",
+                 "설명": "적중률만 보면 안 된다 — 하락 예측은 '기저 하락률'과 비교해야 한다"})
     for h in (1, 5, 21, 63):
-        f = (C.shift(-h) / C - 1)
-        bh = float((f.dropna() > 0).mean())
-        row = {"블록": "B. 지평별 적중률", "구분": f"h={h}일", "일수": int(f.notna().sum()),
-               "기저 상승 비율": round(bh, 4)}
-        for nm, key in (("상승(위험선호)", "상승예측 적중"), ("중립", "중립 적중"), ("하락(위험회피)", "하락예측 적중(=하락)")):
-            m = st.eq(nm) & f.notna()
-            if int(m.sum()) >= 5:
-                row[key] = round(float((f[m] > 0).mean()) if nm != "하락(위험회피)"
-                                 else float((f[m] <= 0).mean()), 4)
+        f = _fwd(h)
+        m = f.notna()
+        if int(m.sum()) < 60:
+            continue
+        bu = float((f[m] > 0).mean())
+        row = {"블록": "B. 지평별", "구분": f"h={h}일", "일수": int(m.sum()),
+               "기저 상승": round(bu, 4), "기저 하락": round(1 - bu, 4)}
+        for nm, key in (("상승(위험선호)", "상승"), ("중립", "중립"), ("하락(위험회피)", "하락")):
+            mm = m & st.eq(nm)
+            if int(mm.sum()) < 5:
+                continue
+            is_dn = nm.startswith("하락")
+            hit = float((f[mm] <= 0).mean()) if is_dn else float((f[mm] > 0).mean())
+            bse = (1 - bu) if is_dn else bu
+            row[f"{key} 적중"] = round(hit, 4)
+            row[f"{key} 기저대비(%p)"] = round((hit - bse) * 100, 2)
         rows.append(row)
 
-    # ---- C. 혼동행렬 ----
+    # ---- C. 혼동행렬 (체결비중[t] vs 수익[t] — 이건 같은 행이 맞다) ----
     hold, cash = pos >= 0.5, pos <= 1e-9
     up = r > 0
-    rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": "── 틀린 것의 두 종류 ──",
+    rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": "── 그날 실제로 들고 있던 비중 기준 ──",
                  "설명": "보유했는데 하락 = 손실 / 비웠는데 상승 = 기회 놓침"})
     for nm, m, good, lab in (("보유(비중≥0.5)", hold, up, "실제 상승"),
                              ("현금(비중≈0)", cash, ~up, "실제 하락")):
         if int(m.sum()) < 5:
             continue
         rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": nm, "일수": int(m.sum()),
-                     f"맞힘({lab})": int((m & good).sum()),
-                     "틀림": int((m & ~good).sum()),
+                     f"맞힘({lab})": int((m & good).sum()), "틀림": int((m & ~good).sum()),
                      "적중률": round(float(good[m].mean()), 4),
-                     "평균 수익(bp)": round(float(r[m].mean()) * 1e4, 2),
+                     "다음날 평균(bp)": round(float(r[m].mean()) * 1e4, 2),
                      "틀린 날 평균(bp)": round(float(r[m & ~good].mean()) * 1e4, 2) if int((m & ~good).sum()) else np.nan})
     miss = cash & (r >= 0.01)
     bad = hold & (r <= -0.01)
-    rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": "비웠는데 +1% 이상 상승", "일수": int(miss.sum()),
-                 "합계 놓친 수익(%)": round(float(((1 + r[miss]).prod() - 1) * 100), 2)})
-    rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": "보유했는데 -1% 이상 하락", "일수": int(bad.sum()),
-                 "합계 놓친 수익(%)": round(float(((1 + r[bad]).prod() - 1) * 100), 2)})
+    for nm, mm, sgn in (("비웠는데 +1% 이상 상승", miss, +1), ("보유했는데 -1% 이상 하락", bad, -1)):
+        rows.append({"블록": "C. 혼동행렬(보유 vs 현금)", "구분": nm, "일수": int(mm.sum()),
+                     # ⚠ [v1.33.0] 종전의 '복리 합계'는 흩어진 날을 이어붙인 값이라 +1292% 같은 오독을 낳았다.
+                     #   흩어진 날의 크기는 '산술 합'과 '평균'으로 본다.
+                     "그 날들 수익 산술합(%)": round(float(r[mm].sum()) * 100, 2),
+                     "다음날 평균(bp)": round(float(r[mm].mean()) * 1e4, 2) if int(mm.sum()) else np.nan})
 
-    # ---- D. 크게 틀린 구간 ----
-    rows.append({"블록": "D. 크게 틀린 구간(월별 상위)", "구분": "── 사용자가 지적한 그 구간을 여기서 찾는다 ──",
-                 "설명": "예측이 방어적인데 시장이 크게 오른 달 / 공격적인데 크게 빠진 달"})
+    # ---- D. 크게 틀린 달 ----
+    rows.append({"블록": "D. 크게 틀린 구간(월별 상위)", "구분": "── 방어적인데 오른 달 / 공격적인데 빠진 달 ──",
+                 "설명": "'그 달 수익(%)'은 그 달의 해당일만 이어붙인 복리 — 달 단위라 해석 가능"})
     ym = pd.Series(r.index.to_period("M").astype(str), index=r.index)
-    lowpos = pos < 0.5
-    g1 = pd.DataFrame({"ym": ym[lowpos], "r": r[lowpos], "p": pos[lowpos]}).groupby("ym").agg(
-        일수=("r", "size"), 놓친수익=("r", lambda x: (1 + x).prod() - 1), 평균비중=("p", "mean"))
-    g1 = g1[g1["일수"] >= 3].sort_values("놓친수익", ascending=False).head(8)
-    for k, v in g1.iterrows():
-        rows.append({"블록": "D. 크게 틀린 구간(월별 상위)", "구분": f"방어적이었는데 오름 · {k}",
-                     "일수": int(v["일수"]), "합계 놓친 수익(%)": round(float(v["놓친수익"]) * 100, 2),
-                     "평균 보유비중": round(float(v["평균비중"]), 3)})
-    hi = pos >= 0.5
-    g2 = pd.DataFrame({"ym": ym[hi], "r": r[hi], "p": pos[hi]}).groupby("ym").agg(
-        일수=("r", "size"), 실현손실=("r", lambda x: (1 + x).prod() - 1), 평균비중=("p", "mean"))
-    g2 = g2[g2["일수"] >= 3].sort_values("실현손실").head(8)
-    for k, v in g2.iterrows():
-        rows.append({"블록": "D. 크게 틀린 구간(월별 상위)", "구분": f"보유 중 빠짐 · {k}",
-                     "일수": int(v["일수"]), "합계 놓친 수익(%)": round(float(v["실현손실"]) * 100, 2),
-                     "평균 보유비중": round(float(v["평균비중"]), 3)})
+    for sel, lab, asc in ((pos < 0.5, "방어적이었는데 오름", False), (pos >= 0.5, "보유 중 빠짐", True)):
+        g = pd.DataFrame({"ym": ym[sel], "r": r[sel], "p": pos[sel]}).groupby("ym").agg(
+            일수=("r", "size"), 수익=("r", lambda x: (1 + x).prod() - 1), 평균비중=("p", "mean"))
+        g = g[g["일수"] >= 3].sort_values("수익", ascending=asc).head(8)
+        for k, v in g.iterrows():
+            rows.append({"블록": "D. 크게 틀린 구간(월별 상위)", "구분": f"{lab} · {k}",
+                         "일수": int(v["일수"]), "그 달 수익(%)": round(float(v["수익"]) * 100, 2),
+                         "평균 보유비중": round(float(v["평균비중"]), 3)})
 
     # ---- E. 연도별 ----
     rows.append({"블록": "E. 연도별", "구분": "── 어느 해에 예측이 흔들렸나 ──"})
@@ -7954,7 +7987,7 @@ def build_prediction_accuracy(daily: pd.DataFrame, cfg: "Config") -> pd.DataFram
     for y in sorted(set(yr)):
         m = yr.eq(y)
         rows.append({"블록": "E. 연도별", "구분": str(y), "일수": int(m.sum()),
-                     "기저 상승 비율": round(float((r[m] > 0).mean()), 4),
+                     "기저 상승": round(float((r[m] > 0).mean()), 4),
                      "보유일 적중률": round(float((r[m & hold] > 0).mean()), 4) if int((m & hold).sum()) >= 5 else np.nan,
                      "현금일 적중률": round(float((r[m & cash] <= 0).mean()), 4) if int((m & cash).sum()) >= 5 else np.nan,
                      "평균 보유비중": round(float(pos[m].mean()), 4)})
@@ -8324,7 +8357,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.32.0 (2026-09-08)"),
+        ("버전", "v1.33.0 (2026-09-08)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -8567,7 +8600,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.32.0"
+BUNDLE_VERSION = "v1.33.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
