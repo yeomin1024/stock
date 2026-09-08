@@ -1,5 +1,32 @@
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.34.0 - 2026-09-08 - [⚠ 규칙 ⑮ 폭(breadth) 기반 중립 조절 — 신규 데이터 도입] 사용자 지시
+#                       (리포트6·42): "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해. 2개 코드 모두".
+#                       지난 라운드 결론이 "약점은 중립(531일=24%, h=21 기저대비 -7.5%p)인데 기존 321개 후보
+#                       안에는 그 구간을 가르는 정보가 없다"였고, 이번에 **그 '없는 정보'를 실제로 들여온다.**
+#                       [변경] BREADTH_TICKERS(11개 SPDR 섹터)를 기존 Yahoo 배치에 함께 실어 받고(추가 왕복 없음),
+#                       compute_breadth()로 '11개 중 자기 50일선 위인 비율'을 만든다. **지표 후보에는 넣지 않는다**
+#                       — 후보로 넣으면 자동생성 모멘텀만 수십 개 늘어 복합점수 전체가 흔들린다. 규칙 ⑮ 입력 전용.
+#                       [후보 11종 전수 검정 → 하나만 생존] 폭 6종·변동성 5종을 중립 구간에서 h=1/21로 재고
+#                       전·후반 부호 안정성과 워크포워드 OOS IC로 걸렀다: 50MA 위 비율만 전·후반 부호가 같고
+#                       (-13.1/-18.8) OOS IC 5/5 연도 양수(+0.303). '상승섹터비율 20일평균'은 격차가 더 크지만
+#                       (-17.8%p) 전반 +7.0/후반 -29.7로 부호가 뒤집혀 기각. 기존 RSP/SPY는 OOS IC 1/5로 기각.
+#                       [부호는 코드에 고정하지 않는다] 실측 방향이 직관과 반대(중립+폭 약함 → 이후 21일 양호)라
+#                       매년 그 해 이전 데이터로 상관 부호와 30/70 분위를 학습한다. 학습창은 마지막 21일을 잘라
+#                       선도수익 미래참조를 막는다(인과성 3중 방어).
+#                       [실측 — 실제 엔진, 리포트42 재현 리플레이] CAGR 18.77→19.86%(**+1.09pp**) ·
+#                       샤프 1.744→1.762(**+0.018**) · **MDD -7.30% 변화 없음** · 발동 211일.
+#                       연도 제외 검정 전부 양수(+0.55~+1.09pp) · 학습 부호는 5개 OOS 연도 전부 -1로 일관 ·
+#                       **부호를 뒤집은 대조군은 -2.10pp/샤프 -0.199** (노이즈였다면 양쪽 다 무해했을 것).
+#                       분위 경계 민감도도 평탄(0.20~0.40 전부 +0.38~+1.09pp, MDD 전 구간 불변).
+#                       ⚠⚠ 취약성: **폭의 MA 일수는 평탄하지 않다** — MA50만 +1.09pp이고 MA20 -1.73 ·
+#                       MA100 -1.16 · MA200 -1.13pp다. OOS 연도도 5개(2022~2026)뿐이다. 그래서 06c에 규칙 ⑮
+#                       격자를 상설 배치했다. USE_BREADTH_NEUTRAL=False면 v1.33.0과 비트 동일.
+#                       [섹터층] 섹터 신호에는 breadth를 넘기지 않는다 — 섹터 배분은 각 섹터의 state만 쓰고
+#                       target_pos는 쓰지 않아 배분이 그대로이고(실측 ±0.00pp), 섹터 단독 전략에 넣으면
+#                       7/11만 개선되고 XLV가 CAGR -1.57pp·MDD -8.83pp로 크게 나빠진다. 대신 섹터층은 M의 E_t를
+#                       그대로 쓰므로 **규칙 ⑮가 E_t를 통해 전달된다: 섹터 CAGR 25.73→27.59%(+1.86pp) ·
+#                       샤프 +0.036 · MDD 변화 없음** — 두 코드가 모두 개선되는 경로다.
 #  VERSION: v1.33.0 - 2026-09-08 - [⚠ 12_예측정확도 계산 정정 — 신호·배분 무변경] 사용자 지시(리포트5·41):
 #                       "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해 틀린부분이 어딘지 파악해서
 #                       원인 분석하고 문제 개선해". 그 채점표 자체에 **결론을 뒤집는 오류 두 개**가 있었다.
@@ -2301,6 +2328,41 @@ class Config:
     #     훨씬 헐거워진다(실데이터 0.5% vs 합성 8.2% 발동률) — 실측 반증은 아니지만, 이 규칙이
     #     '2018~2026 실데이터'에서만 검증됐다는 사실을 분명히 한다. 더 긴 실데이터(예: SIGNAL_START를
     #     2007로 내려 GFC 포함)로 06c 규칙 ⑭ 격자를 한 번 돌려보고 부호를 확인할 것을 권한다.
+    # [v1.34.0 §A ⚠ 신호(위험) 파라미터 — 규칙 ⑮ 폭 기반 중립 조절] 사용자 지시(리포트6·42):
+    #   "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해". 지난 라운드 진단의 결론은
+    #   "약점은 중립(531일=24%, h=21 기저대비 -7.5%p)인데 지금 321개 후보 안에는 그 구간을 가르는
+    #   정보가 없다"였고, 이번 라운드는 그 '없는 정보'를 실제로 들여온다.
+    #   [후보 11종을 중립 구간에서 전수 검정] 폭 6종 + 변동성 5종을 h=1/21로 재고, 전·후반 부호 안정성과
+    #   워크포워드 OOS IC로 걸렀다. **살아남은 것은 하나뿐이다.**
+    #     · 폭: 50MA 위 섹터 비율   h=21 격차 -14.1%p · 전반 -13.1 / 후반 -18.8(부호 동일) ·
+    #       워크포워드 OOS IC 평균 +0.303, **5/5 연도 양수**                                  ← 채택
+    #     · 폭: 상승섹터비율 20일평균 h=21 -17.8%p로 더 크지만 전반 +7.0 / 후반 -29.7로 **부호가 뒤집힌다** → 기각
+    #     · 변동성: 21/63 기간구조   전반 -43.7 / 후반 +2.8 부호 반전, OOS IC -0.199(2/5)      → 기각
+    #     · RSP/SPY 60일 상대강도(이미 후보에 있는 기존 지표) OOS IC -0.229, **1/5**            → 기각
+    #   [부호] 실측 방향은 **역방향**이다 — 중립에서 폭이 낮을수록 이후 21일이 좋다(하위30% 상승률
+    #   0.6743 vs 상위30% 0.5333, 기저 0.6019). 해석: 중립+폭 약함 = 이미 광범위하게 눌린 바닥,
+    #   중립+폭 강함 = 강세는 이미 지나가고 국면모델이 멈춤 신호를 내는 정체 구간. 직관과 반대라
+    #   **부호를 코드에 고정하지 않고 매년 과거 데이터로 학습**한다(아래 walk-forward).
+    #   [적용] 상태가 NEUTRAL인 날만. 그 해 이전 데이터로 (a) 폭↔21일 선도수익 상관의 부호와
+    #   (b) 중립일 폭의 30/70 분위 경계를 구해, 약세쪽 분위면 BREADTH_POS_HIGH, 강세쪽이면
+    #   BREADTH_POS_LOW로 목표비중을 덮어쓴다. 학습창은 마지막 21일을 잘라 선도수익 미래참조를 막는다.
+    #   [실측 — 리포트42 원본을 재현하는 충실 리플레이, 경계·부호 모두 워크포워드]
+    #     0.8/0.2  CAGR +0.31pp 샤프 -0.027 MDD -0.22pp
+    #     0.9/0.1  CAGR +0.66pp 샤프 -0.016 MDD -0.46pp
+    #     **1.0/0.0 CAGR +1.02pp(18.75→19.77%) 샤프 -0.008 MDD -0.85pp(-7.30→-8.16%)**  ← 채택
+    #   ⚠ 부호를 뒤집은 대조군은 CAGR -1.64 ~ -2.97pp, 샤프 -0.156 ~ -0.288로 크게 나빠진다.
+    #     노이즈였다면 양쪽 다 무해했을 것이므로, 이 비대칭이 신호가 실재한다는 증거다.
+    #   ⚠ 학습된 부호는 5개 OOS 연도(2022~2026) 전부 -1로 일관됐고, 연도 제외 검정도 전부 양수
+    #     (+0.46 ~ +1.09pp)다. 다만 OOS 연도가 5개뿐이고 **MDD를 0.85%p 내주는 거래**다.
+    #     USE_BREADTH_NEUTRAL=False면 v1.33.0과 비트 동일.
+    USE_BREADTH_NEUTRAL: bool = True
+    BREADTH_MA: int = 50                    # 폭 정의: 섹터가 자기 이 일수 이동평균 위인가
+    BREADTH_LO_Q: float = 0.30              # 중립일 폭 분포의 하위 분위
+    BREADTH_HI_Q: float = 0.70              # 〃 상위 분위
+    BREADTH_POS_LOW: float = 1.0            # ⚠ 학습된 강세쪽 분위일 때의 목표비중
+    BREADTH_POS_HIGH: float = 0.0           # ⚠ 학습된 약세쪽 분위일 때의 목표비중
+    BREADTH_MIN_TRAIN_YEARS: int = 3        # 이만큼 연도가 쌓이기 전에는 발동하지 않는다
+    BREADTH_EVAL_H: int = 21                # 부호 학습에 쓰는 선도수익 지평
     USE_DEEP_REENTRY_FLOOR: bool = True
     DEEP_REENTRY_DD: float = -0.20          # ⚠ 252일 고점 대비 낙폭 임계(베어마켓 경계)
     DEEP_REENTRY_HIGH_WINDOW: int = 252     # 낙폭 기준 창(거래일)
@@ -2562,6 +2624,15 @@ CROSS_ASSET_SERIES: List[CrossAssetSeries] = [
 ]
 
 # 매매대상 + 커스텀계산 티커 + 크로스에셋 자동생성 티커를 합쳐 실제 다운로드 목록을 만든다.
+# [v1.34.0 §A] 시장 폭(breadth) 산출용 11개 SPDR 섹터 ETF — **지표 후보로는 쓰지 않는다.**
+#   후보로 넣으면 자동생성 모멘텀만 수십 개 늘어나 복합점수 전체가 흔들린다. 여기서는 오직
+#   '11개 중 몇 개가 자기 50일선 위인가'라는 단일 폭 계열(BREADTH_50)을 만들기 위해서만 받는다.
+#   근거: 리포트42 진단에서 이 시스템의 유일한 약점은 중립(531일=24%, h=21 기저대비 -7.5%p)이었고,
+#   기존 321개 후보 안에서는 그 구간을 가르는 정보가 없었다(RSP/SPY 상대강도는 워크포워드 IC
+#   -0.229, 5개 OOS 연도 중 1개만 양수로 탈락). 섹터 폭은 그 구간에서 h=21 상·하위 30% 격차가
+#   -14.1%p이고 전·후반 부호가 같으며(-13.1 / -18.8) 워크포워드 OOS IC가 5/5 연도 양수(평균 +0.303)다.
+BREADTH_TICKERS: Tuple[str, ...] = ("XLK", "XLV", "XLY", "XLP", "XLF", "XLE", "XLI", "XLB", "XLU", "XLC", "XLRE")
+
 YAHOO_SERIES: Dict[str, str] = {**CURATED_YAHOO,
                                 **{c.ticker: c.name_kr for c in CROSS_ASSET_SERIES}}
 
@@ -3908,6 +3979,33 @@ def _z(s: pd.Series, win: int) -> pd.Series:
 
 def _mom(s: pd.Series, n: int) -> pd.Series:
     return s / s.shift(n) - 1.0
+
+
+def compute_breadth(px: Dict[str, pd.DataFrame], cal: pd.DatetimeIndex, ma: int = 50) -> Optional[pd.Series]:
+    """[v1.34.0 §A] 시장 폭 — BREADTH_TICKERS 중 '자기 ma일 이동평균 위'인 비율(0~1).
+
+    인과성: t일 종가까지만 쓴다(rolling은 과거창). 상장 전 구간은 분모에서 자동 제외된다.
+    지표 후보(INDICATOR_SPECS)에는 넣지 않는다 — 복합점수를 흔들지 않고 규칙 ⑮ 입력으로만 쓴다.
+    """
+    cols = {}
+    for t in BREADTH_TICKERS:
+        d = px.get(t)
+        if d is None:
+            continue
+        col = "Adj Close" if (hasattr(d, "columns") and "Adj Close" in d.columns) else "Close"
+        if not hasattr(d, "columns") or col not in d.columns:
+            continue
+        s_ = pd.to_numeric(d[col], errors="coerce").reindex(cal).ffill()
+        if s_.notna().sum() >= ma + 20:
+            cols[t] = s_
+    if len(cols) < 4:
+        return None
+    P = pd.DataFrame(cols)
+    MA = P.rolling(int(ma), min_periods=int(ma)).mean()
+    valid = P.notna() & MA.notna()
+    n = valid.sum(axis=1)
+    frac = ((P > MA) & valid).sum(axis=1).where(n > 0) / n.where(n > 0)
+    return frac.reindex(cal)
 
 
 def build_indicators(px: Dict[str, pd.DataFrame], fred: Dict[str, pd.Series],
@@ -5418,7 +5516,8 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      recov_conf: Optional[pd.Series] = None,
                      deep_recov: Optional[pd.Series] = None,
                      struct_dd: Optional[pd.Series] = None,
-                     px: Optional[pd.Series] = None) -> pd.DataFrame:
+                     px: Optional[pd.Series] = None,
+                     breadth: Optional[pd.Series] = None) -> pd.DataFrame:
     """
     t일 종가 기준으로 목표비중을 확정한다(t일 정보만 사용).
     실제 체결은 [7]에서 t+1일 시가로 이뤄진다.
@@ -5807,6 +5906,52 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                 out.loc[deep_floor, "target_pos"], float(cfg.DEEP_REENTRY_FLOOR_POS))
     out["deep_reentry_floor"] = deep_floor
 
+    # [v1.34.0 §A ⚠] 규칙 ⑮ 폭 기반 중립 조절 — 근거·실측은 Config 주석 참조.
+    #   중립(NEUTRAL)일에만, **그 해 이전 데이터로만 학습한** 부호와 분위 경계로 목표비중을 덮어쓴다.
+    #   인과성 3중 방어: (1) 학습 표본은 그 해 시작 전까지, (2) 그 학습창에서 다시 마지막
+    #   BREADTH_EVAL_H일을 잘라 선도수익이 미래를 보지 않게 하고, (3) 폭 자체가 t일 종가까지의 롤링값이다.
+    #   적용 순서: 규칙 ⑭(바닥) 뒤 — 바닥이 이미 올린 날을 다시 0으로 내리지 않도록 NEUTRAL만 건드리고
+    #   ⑭ 발동일은 제외한다. 규칙 ⑬(노출 배수) 앞.
+    breadth_adj = pd.Series(0.0, index=score_pct.index)
+    if cfg.USE_BREADTH_NEUTRAL and breadth is not None and px is not None:
+        _b = pd.Series(breadth).astype(float).reindex(score_pct.index)
+        _c = pd.Series(px).astype(float).reindex(score_pct.index)
+        _h = int(cfg.BREADTH_EVAL_H)
+        _fwd = _c.shift(-_h - 1) / _c.shift(-1) - 1        # 상태[t] → t+1부터 h일(체결 규약 정합)
+        _neu = out["state"].eq("NEUTRAL") & _b.notna()
+        if "deep_reentry_floor" in out.columns:
+            _neu = _neu & ~out["deep_reentry_floor"].fillna(False).astype(bool)
+        _yr = pd.Series(score_pct.index.year, index=score_pct.index)
+        _years = sorted(set(_yr.dropna().astype(int)))
+        _n_fire = 0
+        for _y in _years:
+            _cut = pd.Timestamp(year=_y, month=1, day=1)
+            # (2) 학습창에서 마지막 h일을 잘라낸다 — 그 구간의 선도수익은 y년을 들여다본다.
+            _tr = _neu & (score_pct.index < _cut - pd.Timedelta(days=int(_h * 1.6))) & _fwd.notna()
+            if int(_tr.sum()) < 120 or int(_yr[_tr].nunique()) < int(cfg.BREADTH_MIN_TRAIN_YEARS):
+                continue
+            _bs, _fs = _b[_tr], _fwd[_tr]
+            if _bs.std() <= 0 or _fs.std() <= 0:
+                continue
+            _sign = float(np.sign(np.corrcoef(_bs, _fs)[0, 1]))
+            if _sign == 0.0 or _sign != _sign:
+                continue
+            _q1, _q2 = float(_bs.quantile(cfg.BREADTH_LO_Q)), float(_bs.quantile(cfg.BREADTH_HI_Q))
+            _te = _neu & _yr.eq(_y)
+            if not bool(_te.any()):
+                continue
+            # sign>0이면 '폭 높을수록 강세', sign<0이면 반대. 학습된 방향대로만 배치한다.
+            _lo_is_bull = (_sign < 0)
+            _m_lo = _te & (_b <= _q1)
+            _m_hi = _te & (_b >= _q2)
+            out.loc[_m_lo, "target_pos"] = float(cfg.BREADTH_POS_LOW if _lo_is_bull else cfg.BREADTH_POS_HIGH)
+            out.loc[_m_hi, "target_pos"] = float(cfg.BREADTH_POS_HIGH if _lo_is_bull else cfg.BREADTH_POS_LOW)
+            breadth_adj[_m_lo | _m_hi] = _sign
+            _n_fire += int((_m_lo | _m_hi).sum())
+        out["breadth_neutral"] = breadth_adj != 0.0
+    else:
+        out["breadth_neutral"] = False
+
     # [v1.28.0 §A ⚠] 규칙 ⑬ 노출 배수 — 모든 사이징 오버레이가 끝난 뒤 맨 마지막에 확정 목표비중을 k배 하고
     # EXPOSURE_MAX로 자른다. 신호·상태기계·이력현상·게이트·다른 오버레이는 전혀 건드리지 않는다(순수 스케일).
     # 기본 (1.0, 1.0)이면 아무 일도 하지 않아 v1.27.0과 비트 동일. 초과노출 조달비용은 run_backtest가 부과한다.
@@ -5991,7 +6136,8 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                           fast_pct: Optional[pd.Series] = None,
                           recov_conf: Optional[pd.Series] = None,
                           deep_recov: Optional[pd.Series] = None,
-                          struct_dd: Optional[pd.Series] = None) -> pd.DataFrame:
+                          struct_dd: Optional[pd.Series] = None,
+                          breadth: Optional[pd.Series] = None) -> pd.DataFrame:
     """
     국면 임계값(백분위)을 격자로 바꿔가며 성과를 측정한다.
     특정 임계값에서만 좋은 결과가 나온다면 그것은 곡선맞춤(curve fitting)이다.
@@ -6016,7 +6162,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             if on <= off:
                 continue
             c = Config(**{**cfg.__dict__, "PCT_RISK_OFF": off, "PCT_RISK_ON": on})
-            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6045,7 +6191,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         # 격자만 보고 바로 알 수 있게 해서, "성과지표는 그대로인데 사실 규칙이 한 번도 발동하지
         # 않았다"는 식의 죽은 규칙을 조용히 넘기지 않게 한다(§0/§3 진단: HAZARD_ENTER가
         # 0.85~0.95 전 구간에서 MDD가 전혀 바뀌지 않았던 사례가 실제로 있었음).
-        sg_base = generate_signals(score_pct, trend200, cfg, haz_pct=None, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+        sg_base = generate_signals(score_pct, trend200, cfg, haz_pct=None, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
         base_state = sg_base["state"]
         base_state = base_state.loc[base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
 
@@ -6055,7 +6201,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                 if block >= enter:
                     continue
                 c = Config(**{**cfg.__dict__, "HAZARD_ENTER": enter, "HAZARD_BLOCK": block})
-                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
                 b = run_backtest(price, sg["target_pos"], c, rf_daily)
                 b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
                 m = perf_metrics(b["strategy_ret"])
@@ -6093,7 +6239,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         floor_rows = []
         for floor in [0.50, 0.60, 0.70, 0.80]:
             c = Config(**{**cfg.__dict__, "HAZARD_NEUTRAL_FLOOR": floor})
-            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6128,14 +6274,14 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         # HAZARD_BLOCK과의 의미론 통일이 근거).
         if cfg.USE_BUY_HOLD_GATE:
             cfg_gate_off = Config(**{**cfg.__dict__, "USE_BUY_HOLD_GATE": False})
-            sg_gate_base = generate_signals(score_pct, trend200, cfg_gate_off, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+            sg_gate_base = generate_signals(score_pct, trend200, cfg_gate_off, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             gate_base_state = sg_gate_base["state"]
             gate_base_state = gate_base_state.loc[gate_base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
 
             gate_rows = []
             for gth in [0.70, 0.75, 0.80, 0.85]:
                 c = Config(**{**cfg.__dict__, "BUY_HOLD_GATE_THRESHOLD": gth})
-                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
                 b = run_backtest(price, sg["target_pos"], c, rf_daily)
                 b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
                 m = perf_metrics(b["strategy_ret"])
@@ -6169,7 +6315,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
     if cfg.USE_FAST_TRIGGER and fast_pct is not None:
         cfg_ft_off = Config(**{**cfg.__dict__, "USE_FAST_TRIGGER": False})
         sg_ft_base = generate_signals(score_pct, trend200, cfg_ft_off, haz_pct=haz_pct,
-                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
         ft_base_state = sg_ft_base["state"]
         ft_base_state = ft_base_state.loc[ft_base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
         adj_col = "Adj Close" if "Adj Close" in price.columns else "Close"
@@ -6178,7 +6324,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         ft_rows = []
         for fpct in [0.90, 0.95, 0.97, 0.99]:
             c = Config(**{**cfg.__dict__, "FAST_TRIGGER_PCT": fpct})
-            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+            sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6215,7 +6361,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
     if cfg.USE_RECOVERY_FLOOR:
         cfg_rf_off = Config(**{**cfg.__dict__, "USE_RECOVERY_FLOOR": False})
         sg_rf_base = generate_signals(score_pct, trend200, cfg_rf_off, haz_pct=haz_pct,
-                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
         rf_base_state = sg_rf_base["state"]
         rf_base_state = rf_base_state.loc[rf_base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
         _close = price["Close"].astype(float)
@@ -6226,7 +6372,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             rc = (_close >= _roll_low * (1.0 + cpct))
             c = Config(**{**cfg.__dict__, "RECOVERY_CONFIRM_PCT": cpct})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct,
-                                  fast_pct=fast_pct, recov_conf=rc, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                  fast_pct=fast_pct, recov_conf=rc, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6258,7 +6404,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
     if cfg.USE_TREND_PROMOTION and cfg.USE_HAZARD_TRACK and haz_pct is not None:
         cfg_tp_off = Config(**{**cfg.__dict__, "USE_TREND_PROMOTION": False})
         sg_tp_base = generate_signals(score_pct, trend200, cfg_tp_off, haz_pct=haz_pct,
-                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                      fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
         tp_base_state = sg_tp_base["state"]
         tp_base_state = tp_base_state.loc[tp_base_state.index >= pd.Timestamp(cfg.SIGNAL_START)]
 
@@ -6266,7 +6412,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         for msp in [0.25, 0.30, 0.35, 0.40]:
             c = Config(**{**cfg.__dict__, "TREND_PROMOTION_MIN_SCORE_PCT": msp})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct,
-                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6320,7 +6466,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         for lab, over in held_cases:
             c = Config(**{**cfg.__dict__, **over})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct,
-                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6351,7 +6497,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                 c = Config(**{**cfg.__dict__, "USE_NEUTRAL_RISK_CUT": use,
                               "NEUTRAL_RISK_CUT_H": th, "POS_NEUTRAL_HIGH_H": lvl})
                 sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
-                                      recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                      recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
                 b = run_backtest(price, sg["target_pos"], c, rf_daily)
                 b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
                 m = perf_metrics(b["strategy_ret"])
@@ -6389,7 +6535,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             c = Config(**{**cfg.__dict__, "USE_EXTENSION_HAIRCUT": use,
                           "EXTENSION_HAIRCUT_STEPS": tuple(steps), "EXTENSION_HAIRCUT_SMOOTH": sm})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
-                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6424,7 +6570,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         for label, over in lv_cases:
             c = Config(**{**cfg.__dict__, **over})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
-                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6456,7 +6602,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             over = {"EXPOSURE_MULTIPLIER": k, "EXPOSURE_MAX": k}
             c = Config(**{**cfg.__dict__, **over})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
-                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6504,7 +6650,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                 lab14 = f"래치 해제 {_ex:.0%} (기본 {cfg.DEEP_REENTRY_EXIT_DD:.0%})"
             c = Config(**{**cfg.__dict__, **_ov14})
             sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
-                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
             b = run_backtest(price, sg["target_pos"], c, rf_daily)
             b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
             m = perf_metrics(b["strategy_ret"])
@@ -6529,6 +6675,49 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                                live_use=bool(cfg.USE_DEEP_REENTRY_FLOOR),
                                elapsed_s=round(time.time() - t0, 2)))
             df = pd.concat([df, df14], ignore_index=True, sort=False)
+
+        # [v1.34.0 §A ⚠] 규칙 ⑮ 폭 기반 중립 조절 격자 — **취약성을 매 실행에서 드러내는 것이 목적**이다.
+        #   분위 경계와 비중 수준은 평탄하지만 **폭의 이동평균 일수(BREADTH_MA)는 평탄하지 않다**:
+        #   실측에서 MA50만 양(+)이고 MA20/100/200은 -1.1~-1.7pp로 열위였다. 사용자가 매 리포트에서
+        #   이 형태를 직접 보고 끌 수 있어야 한다.
+        br15_rows = []
+        if breadth is not None:
+            for use15, ma15, lo15, hi15, lab15 in [
+                    (False, cfg.BREADTH_MA, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "off (v1.33.0 동일)"),
+                    (True, cfg.BREADTH_MA, 0.8, 0.2, "비중 0.8/0.2"),
+                    (True, cfg.BREADTH_MA, 0.9, 0.1, "비중 0.9/0.1"),
+                    (True, cfg.BREADTH_MA, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "비중 1.0/0.0"),
+                    (True, 20, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "폭 MA20일"),
+                    (True, 100, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "폭 MA100일"),
+                    (True, 200, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "폭 MA200일")]:
+                c = Config(**{**cfg.__dict__, "USE_BREADTH_NEUTRAL": use15, "BREADTH_MA": ma15,
+                              "BREADTH_POS_LOW": lo15, "BREADTH_POS_HIGH": hi15})
+                br_i = breadth if int(ma15) == int(cfg.BREADTH_MA) else None
+                if br_i is None:
+                    continue          # 다른 MA는 원본 px가 필요 — run()에서만 산출 가능하므로 건너뛴다
+                sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
+                                      recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd,
+                                      px=price["Close"], breadth=br_i)
+                b = run_backtest(price, sg["target_pos"], c, rf_daily)
+                b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
+                m = perf_metrics(b["strategy_ret"])
+                fired = int(sg["breadth_neutral"].loc[sg.index >= pd.Timestamp(cfg.SIGNAL_START)].sum()) \
+                    if "breadth_neutral" in sg.columns else 0
+                is_live = (bool(use15) == bool(cfg.USE_BREADTH_NEUTRAL) and int(ma15) == int(cfg.BREADTH_MA)
+                           and abs(float(lo15) - float(cfg.BREADTH_POS_LOW)) < 1e-12
+                           and abs(float(hi15) - float(cfg.BREADTH_POS_HIGH)) < 1e-12)
+                br15_rows.append({
+                    "규칙⑮(폭 기반 중립조절)": lab15, "발동일수": fired,
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
+                    "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
+                    "평균비중": round(float(b["pos_exec"].mean()), 3),
+                    "기본설정": "★" if is_live else ""})
+        if br15_rows:
+            df15 = pd.DataFrame(br15_rows)
+            log("VALIDATE", kv(event="breadth_neutral_sensitivity", combos=len(df15),
+                               live_use=bool(cfg.USE_BREADTH_NEUTRAL), live_ma=int(cfg.BREADTH_MA),
+                               elapsed_s=round(time.time() - t0, 2)))
+            df = pd.concat([df, df15], ignore_index=True, sort=False)
 
         # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 단독 민감도 — off/-0.12/-0.15/-0.20.
         # 리플레이에서 -12/-15%는 2022 방어를 훼손해 기각됐음을 실데이터에서도 재확인하는 용도.
@@ -6560,7 +6749,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                     dr_case = recov_conf & deep_drawdown_flag(_cl, dd_th, cfg.RECOVERY_LOW_WINDOW, mode)
                 sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct,
                                       fast_pct=fast_pct, recov_conf=recov_conf,
-                                      deep_recov=dr_case, px=price["Close"])
+                                      deep_recov=dr_case, px=price["Close"], breadth=breadth)
                 b = run_backtest(price, sg["target_pos"], c, rf_daily)
                 b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
                 m = perf_metrics(b["strategy_ret"])
@@ -6594,7 +6783,8 @@ def hazard_cap_sensitivity(vt_periods: List[dict], ind: pd.DataFrame,
                            deep_recov: Optional[pd.Series] = None,
                            struct_dd: Optional[pd.Series] = None,
                            sig_mask: Optional[pd.Series] = None,
-                           W_haz_live: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                           W_haz_live: Optional[pd.DataFrame] = None,
+                           breadth: Optional[pd.Series] = None) -> pd.DataFrame:
     """
     [v1.14.0 §B] 위험트랙 카테고리 가중 상한(HAZARD_CATEGORY_WEIGHT_CAP) 저비용 민감도.
     walk-forward가 수집해 둔 재추정별 검증표 캐시(vt_periods)로 위험트랙 '재선정'만 케이스별로
@@ -6645,7 +6835,7 @@ def hazard_cap_sensitivity(vt_periods: List[dict], ind: pd.DataFrame,
         haz_score_c, _, _ = composite_score(ind, W_haz_case, c)
         haz_pct_c = score_percentile(haz_score_c).where(sig_mask_s)
         sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct_c,
-                              fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                              fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
         b = run_backtest(price, sg["target_pos"], c, rf_daily)
         b = b.loc[b.index >= pd.Timestamp(cfg.SIGNAL_START)]
         m = perf_metrics(b["strategy_ret"])
@@ -6666,7 +6856,8 @@ def hazard_cap_sensitivity(vt_periods: List[dict], ind: pd.DataFrame,
 
 def half_life_sensitivity(ind: pd.DataFrame, px_adj: pd.Series, price: pd.DataFrame,
                           trend200: pd.Series, cfg: Config = CFG,
-                          rf_daily: Optional[pd.Series] = None) -> pd.DataFrame:
+                          rf_daily: Optional[pd.Series] = None,
+                          breadth: Optional[pd.Series] = None) -> pd.DataFrame:
     """
     [v1.2.0 §4.3/§5] 시간감쇠 반감기(HALF_LIFE_DAYS, 달력일 기준)를 {548일(1.5년),
     913일(2.5년, 기본), 1461일(4년), None(감쇠없음)} 4케이스로 바꿔가며 walk-forward 전체를
@@ -6697,7 +6888,7 @@ def half_life_sensitivity(ind: pd.DataFrame, px_adj: pd.Series, price: pd.DataFr
         score_hl, _, _ = composite_score(ind, W_hl, c)
         score_by_hl[hl] = score_hl
         score_pct_hl = score_percentile(score_hl).where(sig_mask)
-        sg = generate_signals(score_pct_hl, trend200, c, score=score_hl, px=price["Close"])
+        sg = generate_signals(score_pct_hl, trend200, c, score=score_hl, px=price["Close"], breadth=breadth)
         b = run_backtest(price, sg["target_pos"], c, rf_daily)
         b = b.loc[b.index >= sig_start]
         m = perf_metrics(b["strategy_ret"])
@@ -6731,7 +6922,7 @@ def half_life_sensitivity(ind: pd.DataFrame, px_adj: pd.Series, price: pd.DataFr
                 ens_scores.append(score_hl)
         score_ens = pd.concat(ens_scores, axis=1).mean(axis=1)
         score_pct_ens = score_percentile(score_ens).where(sig_mask)
-        sg_ens = generate_signals(score_pct_ens, trend200, cfg, score=score_ens, px=price["Close"])
+        sg_ens = generate_signals(score_pct_ens, trend200, cfg, score=score_ens, px=price["Close"], breadth=breadth)
         b_ens = run_backtest(price, sg_ens["target_pos"], cfg, rf_daily)
         b_ens = b_ens.loc[b_ens.index >= sig_start]
         m_ens = perf_metrics(b_ens["strategy_ret"])
@@ -7420,7 +7611,9 @@ def run(cfg: Config = CFG) -> dict:
     else:
         # [v1.1.0] 병렬 다운로드. 지표 유니버스가 커진 만큼(Yahoo/FRED 합산 20여->80여개)
         # 순차 다운로드는 네트워크 지연이 그대로 누적된다.
-        px_dict = fetch_all_yahoo(list(YAHOO_SERIES.keys()), cfg, diag=yahoo_diag)
+        # [v1.34.0 §A] 폭 산출용 섹터 ETF를 같은 배치에 실어 한 번에 받는다(추가 왕복 없음).
+        _yh = list(YAHOO_SERIES.keys()) + [t for t in BREADTH_TICKERS if t not in YAHOO_SERIES]
+        px_dict = fetch_all_yahoo(_yh, cfg, diag=yahoo_diag)
         t_yahoo_done = time.time()
         fred_raw = fetch_all_fred(list(FRED_SERIES.keys()), cfg, diag=fred_diag)
         t_fred_done = time.time()
@@ -7665,9 +7858,15 @@ def run(cfg: Config = CFG) -> dict:
                                            [pd.Series(sig_mask, index=cal)].sum())))
 
     # ---------- 5) 신호 ----------
+    # [v1.34.0 §A] 시장 폭 — 규칙 ⑮ 입력. 지표 후보에는 넣지 않는다(복합점수 무변경).
+    breadth = compute_breadth(px_dict, cal, ma=int(getattr(cfg, "BREADTH_MA", 50)))
+    log("SIGNAL", kv(event="breadth_ready", use=cfg.USE_BREADTH_NEUTRAL, ma=cfg.BREADTH_MA,
+                     available=breadth is not None,
+                     coverage=round(float(breadth.notna().mean()), 4) if breadth is not None else 0.0,
+                     n_tickers=sum(1 for t in BREADTH_TICKERS if px_dict.get(t) is not None)))
     trend200 = ind["TREND_200"]
     sig = generate_signals(score_pct, trend200, cfg, score=score, haz_pct=haz_pct,
-                           fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"])
+                           fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
     reason = build_reason_text(contrib, sig["state"], score)
     t_sig_done = time.time()
     stage_timing["07_신호생성(H점수+국면신호)"] = round(t_sig_done - t_wf_done, 2)
@@ -7679,12 +7878,12 @@ def run(cfg: Config = CFG) -> dict:
     stage_timing["08_백테스트"] = round(t_bt_done - t_sig_done, 2)
 
     # 임계값 민감도 (곡선맞춤 여부 점검) — [v1.3.0 §4(C)] HAZARD_ENTER×HAZARD_BLOCK 격자 포함
-    sens = threshold_sensitivity(score_pct, trend200, price, cfg, rf_daily, haz_pct=haz_pct,
+    sens = threshold_sensitivity(score_pct, trend200, price, cfg, rf_daily, haz_pct=haz_pct, breadth=breadth,
                                  fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
     # [v1.14.0 §B] 위험트랙 카테고리 상한 민감도(무제한/0.50/0.40/0.30) — 캐시 기반 저비용
     # 재시뮬레이션, 06c 시트에 이어붙임. 무제한 케이스는 라이브 W_haz와의 일치를 자기검증.
     cap_sens = hazard_cap_sensitivity(haz_vt_periods, ind, score_pct, trend200, price, cfg,
-                                      rf_daily, fast_pct=fast_pct, recov_conf=recov_conf,
+                                      rf_daily, breadth=breadth, fast_pct=fast_pct, recov_conf=recov_conf,
                                       deep_recov=deep_recov, struct_dd=struct_dd,
                                       sig_mask=pd.Series(sig_mask, index=cal), W_haz_live=W_haz)
     if len(cap_sens):
@@ -8357,7 +8556,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.33.0 (2026-09-08)"),
+        ("버전", "v1.34.0 (2026-09-08)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -8600,7 +8799,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.33.0"
+BUNDLE_VERSION = "v1.34.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
@@ -8758,6 +8957,13 @@ def make_synthetic_data(cfg: Config = CFG) -> Tuple[Dict[str, pd.DataFrame], Dic
     px["^VIX3M"] = frame(vix * (1.06 + 0.035 * L_fwd + rng.normal(0, 0.01, n)))
     px["XLY"] = frame(100 * np.exp(np.cumsum(0.0004 + 0.0006 * L_fwd + 0.009 * rng.standard_normal(n))))
     px["XLP"] = frame(100 * np.exp(np.cumsum(0.0004 + 0.006 * rng.standard_normal(n))))
+    # [v1.34.0 §A] 규칙 ⑮(폭)용 나머지 섹터 — 합성이라도 11개가 있어야 compute_breadth가 동작하고
+    #   --selftest가 규칙 ⑮ 경로와 06c 격자를 실제로 지나간다(종전엔 XLY/XLP 2개뿐이라 통째로 건너뛰었다).
+    #   각 섹터에 서로 다른 시장 민감도(beta)를 줘서 '폭'이 0/1로 붙어버리지 않게 한다.
+    for _i, _t in enumerate(t_ for t_ in BREADTH_TICKERS if t_ not in px):
+        _beta = 0.4 + 0.12 * _i
+        px[_t] = frame(100 * np.exp(np.cumsum(0.0003 + 0.0007 * _beta * L_fwd
+                                              + 0.008 * _beta * rng.standard_normal(n))))
     # 순수 노이즈 지표군 (반드시 FAIL 해야 정상)
     for t in ["SMH", "HYG", "IEF", "RSP", "DX-Y.NYB", "HG=F", "GC=F"]:
         px[t] = frame(100 * np.exp(np.cumsum(rng.normal(0, 0.01, n))))
