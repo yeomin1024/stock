@@ -1,5 +1,32 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.15.0 - 2026-09-08 - [⚠ 배분(위험) 규칙 신설 — 하락국면 리더] 사용자 지시(리포트17): "무조건 SPY 전략
+#                       국면이 하락 예측 시에도 상승할 수 있는 섹터가 있으면 그걸로 거래하도록 해".
+#                       [진단] 종전에는 E_t=0(M 위험회피)이면 섹터 판단과 무관하게 전량 현금이었다 — 571일, 표본의 26%.
+#                       그런데 '무엇으로 고르느냐'가 전부였다. SPY 하락 390일에서 t일 정보만으로 고를 수 있는 규칙을
+#                       전수 비교한 익일 절대수익: 섹터 자체 국면이 '상승'인 섹터(요청 문자 그대로) -11.49bp
+#                       (풀링 116섹터-일 -25.77bp, t=-1.41) · 20일 모멘텀 1위 -1.69bp · 60일 모멘텀 1위 -5.78bp ·
+#                       변동성 최저 -6.87bp · 방어3종 중 순위1위 -0.23bp · 방어3종 동일가중 +2.47bp ·
+#                       현금 +1.07bp · **순환매 복합순위 1위 +12.89bp(5일 +1.17%, 21일 +3.52%)** ← 유일한 양(+).
+#                       하락장은 전 시장이 같이 빠지므로 '이 섹터 혼자 오른다'는 시계열 판단에는 정보가 없고,
+#                       '남들보다 앞선다'는 횡단면 순위만 살아남는다.
+#                       [변경] SectorConfig에 ROTATION_DOWN_REGIME_LEADER/POS/REQUIRE_GATE 신설(전부 ⚠ 위험
+#                       파라미터), build_sector_allocation()의 target_w 조립부에 주 전략 한정 오버라이드 1블록,
+#                       판단 라벨 '하락국면리더' 신설(13c·13i·00 시트 배선). 신규 신호는 만들지 않는다 —
+#                       상태기계가 이미 t일 정보로 뽑아 둔 명확 1위와 확신 게이트를 그대로 쓴다.
+#                       [실측] 리포트17 원본을 재현하는 충실 리플레이(T+1 시가·현금레그·비용) 기준선 대비:
+#                       발동 32일 · CAGR 19.75→21.16%(+1.41pp) · 샤프 1.774→1.839(+0.065) ·
+#                       **MDD -8.18% 불변** · 최악일 -5.85% 불변 · 평균노출 0.5717→0.5863.
+#                       투입 32일 성격: 적중률 65.6% · 최악일 -2.23% · 32일 복리 +15.60% vs 같은 날 SPY -7.59%
+#                       vs 현금 +0.35%. 에피소드 11개(2022 XLE 13일 = 사용자가 말한 바로 그 사례, 2023·2024·2026
+#                       XLC 16일, XLRE·XLV·XLF 각 1일)가 5개 섹터·4개 연도에 흩어져 있고 **11개 전부 제외 검정
+#                       통과**(+0.51~+1.70pp, MDD 전부 -8.18% 불변). 비중 민감도도 절벽 없음(0.3→1.0에서 MDD 불변).
+#                       ⚠ 확신 게이트가 안전장치 — 요구를 빼면 발동 84일에 MDD -1.50pp, 샤프 이득 +0.014로 소멸.
+#                       기각한 대안: 섹터 자체 국면 '상승' 사용 CAGR -0.53~-1.98pp·MDD -3.6~-11.7pp,
+#                       방어 바스켓 투입 -0.82~-3.31pp·MDD -4.6~-22.3pp.
+#                       [검증] 신규 test_sector_down_leader_v0150.py 6개 체크포인트. [5/6]은 리포트17 실데이터로
+#                       CHANGELOG 수치와 직접 대조한다 — 실제로 '순위 최소값'으로 재고 '상태기계 leader'로 구현하는
+#                       불일치(32일 중 1일, +1.57 vs +1.41pp)를 이 체크가 잡았다.
 #  VERSION: v0.14.0 - 2026-09-07 - [신규 진단 13l_예측정확도 — 배분 규칙 무변경] 사용자 판단기준(리포트16):
 #                       "국면·섹터별 상승/하락을 제대로 예측해서 수익을 얻고 하락을 제대로 회피하는거야 …
 #                       정확도가 중요해". 그리고 반복된 지적: "섹터별 일별 예측을 보면 맞는게 별로 없는거 같아".
@@ -693,7 +720,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.14.0"
+VERSION = "v0.15.0"
 VERSION_DATE = "2026-09-07"
 
 # =============================================================================
@@ -879,6 +906,38 @@ class SectorConfig:
     ROTATION_LEADER_WEIGHT: float = 1.0        # ⚠ 명확한 1위 섹터에 주는 E_t 대비 비중(1.0 = 그 섹터 하나만 매수 — 사용자 요청)
     ROTATION_FALLBACK: str = "spy"             # "spy" | "equal". 기본 spy: 균등 11섹터 바스켓은 이 기간 SPY보다 3.4%p/년 뒤졌고(대조군A
     #   15.1% vs SPY M 18.5%) 근거 없는 액티브 베팅(동일가중 vs 시총가중)이므로, 차이가 없을 때는 검증된 M 전략을 그대로 든다
+    # [v0.15.0 §A ⚠ 배분(위험) 파라미터 — 하락국면 리더] 사용자 지시(리포트17): "무조건 SPY 전략 국면이
+    #   하락 예측 시에도 상승할 수 있는 섹터가 있으면 그걸로 거래하도록 해".
+    #   종전에는 E_t=0(M이 위험회피 → 현금)이면 섹터 판단과 무관하게 전량 현금이었다(571일 = 표본의 26%).
+    #   [실측 — 무엇으로 고르느냐가 전부다] SPY 하락국면 390일에서 t일 정보만으로 고를 수 있는 규칙을 전수 비교
+    #   (익일 절대수익, 리포트17 데이터):
+    #     · **섹터 자체 국면이 '상승'인 섹터**(문자 그대로의 요청)  -11.49bp (풀링 116섹터-일 -25.77bp, t=-1.41)
+    #     · 20일 모멘텀 1위 -1.69bp · 60일 모멘텀 1위 -5.78bp · 20일 변동성 최저 -6.87bp
+    #     · 50일선 위 & 모멘텀 1위 -11.86bp · 방어3종 중 순위1위 -0.23bp
+    #     · **순환매 복합순위 1위 +12.89bp** (5일 +1.17% · 21일 +3.52%)  ← 유일하게 양(+)
+    #     · (기준) 방어3종 동일가중 +2.47bp · 현금(무위험) +1.07bp · 11섹터 동일가중 -2.42bp
+    #   즉 '그 섹터 혼자 오를 것 같다'는 시계열 판단은 하락장에서 정보가 없고(전 시장이 같이 빠지므로),
+    #   '남들보다 앞선다'는 횡단면 순위만 살아남는다. 그래서 이 규칙은 섹터 자체 국면이 아니라
+    #   **상태기계가 이미 뽑아 둔 명확한 1위(확신 게이트 통과)**를 쓴다 — 신규 신호를 만들지 않는다.
+    #   [포트폴리오 실측 — 리포트17 원본을 재현하는 충실 리플레이(T+1 시가·현금레그·비용) 기준선 대비]
+    #     · 섹터 자체 국면 '상승' 사용(요청 문자 그대로): CAGR -0.53~-1.98pp · MDD -3.6~-11.7pp  → 기각
+    #     · 방어 바스켓 투입: CAGR -0.82~-3.31pp · MDD -4.6~-22.3pp                              → 기각
+    #     · 게이트 요구 없이 투입(84일): CAGR +2.11pp이나 샤프는 +0.014뿐이고 MDD -1.50pp          → 기각
+    #     · **명확1위 & 확신게이트 통과(32일): CAGR +1.41pp · 샤프 +0.065 · MDD ±0.00pp**          → 채택
+    #   투입 32일의 성격: 적중률 65.6% · 최악일 -2.23%(시스템 기존 최악일 -5.85%보다 작다) ·
+    #     32일 복리 +15.60% vs 같은 날 SPY -7.59% vs 현금 +0.35% · SPY를 이긴 비율 62.5%.
+    #   에피소드 11개(2022-03·04·08·12 XLE / 2023-11·2024-06 XLC / 2026-02·03 XLC / 2026-06 XLRE /
+    #     2026-08 XLF)로 5개 섹터·4개 연도에 흩어져 있고, **11개 전부 제외 검정 통과**(하나씩 빼도 이득이
+    #     +0.51~+1.70pp로 남고 MDD는 전부 -8.18% 불변). 2022년 XLE는 사용자가 말한 바로 그 사례다.
+    #   연도별 기여: 2022 +9.04pp · 2026 +2.84pp · 2024 +1.35pp · 2023 -1.81pp · 나머지 5개 연도 정확히 0.00pp.
+    #   비중 민감도도 절벽이 없다: 0.3 +0.45pp · 0.5 +0.74pp · 0.7 +1.01pp · 1.0 +1.41pp, MDD는 전 구간 -8.18% 불변.
+    #   ⚠ 확신 게이트가 이 규칙의 안전장치다 — 빼면 발동 84일에 MDD가 -1.50pp 나빠지고 샤프 이득이 거의 사라진다.
+    #   ※ 개발 중 '순위 최소값'으로 재고 '상태기계 leader'로 구현하는 불일치가 있었다(32일 중 1일이 다름,
+    #   +1.57pp vs +1.41pp). 전용 테스트 [5/6]이 실데이터로 잡았고, 위 수치는 전부 실제 구현 기준이다. 끄려면
+    #   ROTATION_DOWN_REGIME_LEADER=False 하나로 v0.14.0과 비트 동일로 복귀한다.
+    ROTATION_DOWN_REGIME_LEADER: bool = True    # ⚠ E_t=0(하락국면)에도 명확 1위가 있으면 그 섹터로 거래
+    ROTATION_DOWN_REGIME_POS: float = 1.0       # ⚠ 그때의 총비중(E_t를 무시하고 이 값을 쓴다)
+    ROTATION_DOWN_REGIME_REQUIRE_GATE: bool = True   # ⚠ 확신 게이트 '통과'일로 한정(안전장치 — 끄면 MDD -5.34pp)
     ROTATION_MIN_HOLD_DAYS: int = 21           # 1위 섹터 최소 보유(거래일) — 월 리밸런스 관행. 적격 상실(하락 국면 등)은 즉시 청산
     ROTATION_TOP_K: int = 4                    # "topk" 모드의 K(11개의 약 1/3 — 상위 3분위). 상한 25%와 함께 K×25%=100%
     ROTATION_MAX_WEIGHT: float = 0.25          # 섹터 상한(E_t 대비 비율) — 상한 초과분은 워터필링으로 다른 적격 섹터에 재배분
@@ -3722,6 +3781,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 else:
                     tier_.iloc[i] = "폴백(여유부족)" if gate_blocked else "폴백"   # [v0.10.0 §1.B]
             if E.iloc[i] <= 1e-12:
+                # [v0.15.0 §A] 현금일이어도 leader_/gate_는 그대로 남긴다 — 하락국면 리더가 그 값을 쓴다.
                 tier_.iloc[i] = "현금"
         return {"frac_leader": frac, "tier": tier_, "leader_s": leader_, "laggard_s": laggard_,
                 "votes_leader": votes_leader_, "votes_laggard": votes_laggard_, "n_sel_s": n_sel_,
@@ -3804,8 +3864,28 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     listed_all = listed_all.reindex(columns=all_cols)
     bts: Dict[str, pd.DataFrame] = {}
     target_ws: Dict[str, pd.DataFrame] = {}
+    down_leader_days = pd.Series(False, index=eval_idx)      # [v0.15.0 §A] 하락국면 리더 발동일(진단·시트용)
     for label, frac in variants.items():
         tw = frac.reindex(columns=all_cols).mul(E, axis=0)
+        # [v0.15.0 §A ⚠] 하락국면 리더 — E_t=0이라 전량 현금이 되는 날에도, 상태기계가 이미 뽑아 둔
+        #   '명확한 1위'(확신 게이트 통과)가 있으면 그 섹터 하나로 거래한다. 근거·실측은 SectorConfig 주석 참조.
+        #   ★ 주 전략(label_leader)에만 적용한다 — 비교 변형까지 바꾸면 13시트 대조군이 오염된다.
+        #   신규 신호는 만들지 않는다(leader_s·gate_s는 이미 t일 정보로 계산된 값). 체결은 t+1 시가로 동일.
+        if (label == label_leader and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
+            dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
+            dl_m = tier.eq("현금") & leader_s.notna() & leader_s.isin(cols)
+            if getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True):
+                dl_m = dl_m & gate_s.eq("통과")
+            if dl_pos > 0 and bool(dl_m.any()):
+                for _d in eval_idx[dl_m.reindex(eval_idx).fillna(False).values]:
+                    tw.loc[_d, :] = 0.0
+                    tw.loc[_d, leader_s.loc[_d]] = dl_pos
+                down_leader_days = dl_m.reindex(eval_idx).fillna(False)
+                # 리포트가 '현금'이라 적으면서 섹터를 들고 있는 모순을 없앤다 — 전용 판단 라벨.
+                tier.loc[down_leader_days[down_leader_days].index] = "하락국면리더"
+                log("ROTATION", kv(event="down_regime_leader_applied", days=int(down_leader_days.sum()),
+                                   pos=dl_pos, require_gate=bool(getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True)),
+                                   sectors=dict(leader_s[down_leader_days].value_counts())), M=M)
         bad = (tw.abs() > 1e-12) & ~listed_all
         if bad.values.any():
             log("ROTATION", kv(event="weight_on_unlisted_sector_zeroed", strategy=label, cells=int(bad.values.sum())),
@@ -3925,6 +4005,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             "diag": diag, "signals": signals, "wf": wf, "ret_cc": ret_cc, "state": state, "cols": cols, "cand": cand,
             "spy_m_ret": spy_m_ret,                                                        # [v0.8.0] 13i 격차 분해용
             "spy_ret": spy_ret_cc, "spy_state_short": spy_state_short,                     # [v0.10.0 §1.C] vs SPY·SPY국면 분해용
+            "down_leader_days": down_leader_days,                                          # [v0.15.0 §A] 하락국면 리더 발동일
             "all_cols": all_cols,
             # [v0.9.0] 13j 배분거래내역(실제 포트폴리오 거래 로그)용 — 백테스트와 같은 수익 분해·초기 포지션·비용
             "ret_co": ret_co.reindex(columns=all_cols), "ret_oc": ret_oc.reindex(columns=all_cols),
@@ -4342,7 +4423,7 @@ def build_gap_attribution(alloc: Dict[str, Any]) -> pd.DataFrame:
     tier_x = alloc["tier"].shift(1).fillna("현금")          # t일 판단 → t+1일 체결
     lead_x = alloc["leader"].shift(1).fillna("")
     yrs = r_p.index.year
-    tiers = ["리더", "회피", "폴백", "폴백(여유부족)", "SPY우위", "현금"]   # [v0.10.0 §1.B] 확신 게이트 미달 폴백을 별도 분해
+    tiers = ["리더", "회피", "폴백", "폴백(여유부족)", "SPY우위", "하락국면리더", "현금"]   # [v0.10.0 §1.B] 게이트 미달 폴백 분해 · [v0.15.0 §A] 하락국면 리더
     rows: List[dict] = []
     for y in sorted(set(yrs)):
         m = yrs == y
@@ -4809,7 +4890,9 @@ def build_allocation_trades(alloc: Dict[str, Any], results: Dict[str, Dict[str, 
     n = len(idx)
     tier_kr_entry = {"리더": "리더 집중", "회피": "꼴찌 회피 바스켓", "폴백": "폴백(섹터 간 차이 없음 → SPY)",
                      "폴백(여유부족)": "폴백(1위는 있으나 확신 게이트 미달 → SPY)",   # [v0.10.0 §1.B]
-                     "SPY우위": "SPY우위(SPY가 후보 1위)", "현금": "현금"}
+                     "SPY우위": "SPY우위(SPY가 후보 1위)",
+                     "하락국면리더": "하락국면리더(E_t=0이나 명확1위·게이트 통과 → 그 섹터 단독)",   # [v0.15.0 §A]
+                     "현금": "현금"}
     state_kr = {"RISK_OFF": "하락(위험회피)", "TREND_ONLY_OUT": "추세필터-현금", "NO_SIGNAL": "신호없음"}
     rows: List[dict] = []
     for a in all_cols:
