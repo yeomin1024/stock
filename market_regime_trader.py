@@ -1,5 +1,87 @@
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.36.0 - 2026-09-08 - [⚠⚠ 규칙 ⑮ 기본값 OFF로 되돌림 + 중립 분리자 5종 전부 기각(정직한
+#                       음성) + 12시트 B2 '실제 운용 경로' 블록 신설] 사용자 지시: "국면 판단, 섹터 순환매
+#                       판단 정확도 더 높이도록 개선해 틀린부분이 어딘지 파악해서 원인 분석하고 문제 개선해".
+#                       변경 모듈: `Config.USE_BREADTH_NEUTRAL`(True→**False**),
+#                       `build_prediction_accuracy()`(B2 블록 신설), 헤더 주석. 신호 로직 자체는 무변경.
+#
+#                       [§1 이번에 개선한 것은 '규칙 추가'가 아니라 '내 이전 판단의 철회'다]
+#                       리포트42(⑮ off)와 43(⑮ on)은 같은 엔진·같은 표본 2181일이라 A/B가 깨끗하다.
+#                       규칙 ⑮의 방향 적중률 변화: 상승 0.578784 → 0.578980(**+0.020%p**),
+#                       하락 0.521968 → 0.521815(**-0.015%p**). 2181일 표본에서 보유일 1600여 일 기준
+#                       **하루가 뒤집히면 0.06%p가 움직인다** — 즉 이 변화는 '한 날의 절반'도 안 되고
+#                       0과 구별되지 않는다. 185일의 비중을 바꿔놓고 예측은 사실상 그대로다.
+#                       한 일은 평균 노출을 0.592 → 0.619로 올린 것뿐이고(185일에서 0.330 → 0.638),
+#                       그 185일의 시장수익 평균은 +0.0271%로 **전체 평균 +0.0618%의 절반도 안 된다.**
+#                       좋은 날을 고른 게 아니라 평범 이하의 날에 더 실었다.
+#                       대가: 샤프 1.838 → 1.806 · 소르티노 2.066 → 2.047 · MDD -7.07 → -8.17% ·
+#                       칼마 2.813 → 2.510 · 일간승률 0.6868 → 0.6823 · 큰하락 회피 0.357 → 0.348.
+#                       CAGR +0.62pp는 노출 +4.5%·변동성 +4.8%로 전부 설명되고 **노출 1단위당 CAGR은
+#                       0.3358 → 0.3312로 되레 1.4% 낮아졌다.** 섹터층도 ★ 한 배분에서만 좋아지고
+#                       비교 변형 7개 중 5개는 샤프가 나빠진다(회전율 12.78 → 19.17, 비용 0.0553 → 0.0830).
+#                       → 사용자 기준("수익률 숫자만 높게 나온다고 좋은게 아니라고")에 정면으로 어긋난다.
+#                       **USE_BREADTH_NEUTRAL = False.** v1.33.0과 비트 동일 상태로 돌아간다.
+#                       ⚠ 되돌림 비용(예상): M CAGR 20.50 → 19.88% · 섹터 ★ 30.83 → 28.37%.
+#                       대신 M MDD -8.17 → -7.07% · 샤프 1.806 → 1.838 · 칼마 2.51 → 2.81로 회복된다.
+#
+#                       [§2 중립 구간 분리자 5종 — 전부 기각. 다시 시도하지 말 것]
+#                       12시트 B블록에서 중립은 h=5/21/63에서 기저대비 -2.53/-7.53/-4.33%p로 찍히는데
+#                       평균 보유비중은 0.442다. "정보가 없는데 왜 0.44를 싣나"가 자연스러운 의심이라
+#                       중립 532일을 가를 사전지정 분리자 5종을 t 시점 값만으로 검정했다(격자탐색 아님):
+#                         ① 종가>MA200  ② 252일낙폭>-10%  ③ 복합점수백분위>0.50(표본부족 16일)
+#                         ④ 위험점수백분위 20일변화<0  ⑤ 20일 모멘텀>0
+#                       전표본 스프레드는 5개 **전부 직관과 반대 부호**였다(안전해 보이는 쪽이 선도수익이
+#                       낮다). 그러나 **연도별로 쪼개면 부호가 전부 흔들린다** — ① 판정가능 2년뿐,
+#                       ② 2/3(2018년 +3.04), ④ 3/5(+2.14/-4.13/+3.00/-0.24/-7.63), ⑤ 5/8.
+#                       전표본 유의성은 소수 연도가 만든 것이고 **안정된 분리자는 없다.**
+#
+#                       [§3 왜 중립을 건드리면 늘 실패했는가 — 원인 규명]
+#                       중립 변형 7종과 규칙 ⑮까지 8번 실패한 이유를 이번에 처음 설명할 수 있게 됐다.
+#                       B블록은 "상태[t]를 h일 얼려서 들고 있었다면"을 채점한다. **시스템은 그렇게 운용하지
+#                       않는다.** 중립일의 +21일 후 상태는 하락 19.6% · 상승 33.2% · 중립 47.2%로 재분류된다.
+#                       같은 구간을 실제 체결비중 경로로 채점하면(리포트43, 중립 532일, h=21):
+#                         시장 전액보유 +0.731% · 중립비중 0.442 고정유지 +0.323% · **실제 운용 +0.950%**
+#                       즉 **중립의 나쁜 21일 경로는 이미 상태전이가 처리하고 있고**, 매일 재판단이
+#                       고정유지 대비 +0.627%p를 벌고 있다. B의 음수 부호는 결함이 아니라 채점 착시였다.
+#                       그 착시가 8번의 실패를 낳았으므로, 시트에 **B2 '실제 운용 경로' 블록을 상설로**
+#                       넣어 다시는 같은 오독이 나오지 않게 한다(build_prediction_accuracy 내부).
+#
+#                       [§4 그래서 지금 진짜 약점은 어디인가 — 다음 라운드의 표적]
+#                       익일 채점 기저대비: 상승 +2.36%p(1260일) · 중립 +0.26%p(530일) · 하락 +7.98%p(389일).
+#                       지평을 늘리면 상승 +4.09/+6.74/+5.28%p, 하락 +9.74/+11.87/+12.01%p.
+#                       **하락 예측이 가장 강하고 상승 예측이 가장 약하다.** 큰상승 110일 중 68일을
+#                       비중 0.5 미만으로 보냈다(포착비율 0.572). 개선 여지는 중립이 아니라 **상승 쪽**에 있다.
+#
+#  VERSION: v1.35.0 - 2026-09-08 - [⚠ 예측 날짜 버그 수정(NYSE 휴장 캘린더) + v1.34.0 실측치 정정 +
+#                       규칙 ⑮ 한쪽 적용 옵션] 사용자 지시: "예측 날짜가 왜 최신화가 안돼 수정해" / "정확도
+#                       더 높이도록 개선해, 2개 코드 모두".
+#                       [§B 날짜 버그 — 사용자 지적이 정확했다] 리포트43(2026-09-08 실행)에서 데이터 마지막이
+#                       2026-09-04(금)인데 "다음 거래일 = 2026-09-07"로 찍혔다. **2026-09-07은 노동절 휴장**이고
+#                       정답은 2026-09-08이다. 원인은 next_trading_day()가 pd.offsets.BDay(1)로 주말만 건너뛴 것.
+#                       nyse_holidays()(규칙 기반, 외부 조회 없음 — 신정·MLK·대통령의날·성금요일·메모리얼·
+#                       준틴스·독립기념일·노동절·추수감사절·성탄절 + 주말 대체 규칙)를 넣어 실제 개장일을 찍는다.
+#                       검증: 2026-09-04→09-08 · 2026-11-25→11-27(추수감사절) · 2026-04-02→04-06(성금요일) ·
+#                       2026-07-03이 독립기념일 대체휴장으로 잡힘.
+#                       또한 "기준일이 오늘보다 4일 오래됨" 경고가 **오경보**였다 — 금요일 종가를 연휴 뒤
+#                       화요일에 보면 달력 4일이지만 놓친 개장일은 0일이다. trading_days_between()으로
+#                       거래일 기준 경고로 바꿨다(놓친 개장일 1일이면 "오늘 종가 미반영" 참고 문구).
+#                       [§A v1.34.0 실측치 정정 — 제 리플레이가 틀렸다] v1.34.0 주석·CHANGELOG의
+#                       "+1.09pp / 샤프 +0.018 / MDD 불변"은 섹터 리포트 시트(2018년~)로 폭을 재구성한
+#                       리플레이였다. 실제 실행은 M이 직접 받은 **1998년~ 섹터 이력**으로 워크포워드를 학습해
+#                       발동일이 211일이 아니라 **245일**이고 결과가 다르다. 리포트43 06c(같은 엔진의 격자)가 정답:
+#                         off 19.88%/샤프 1.838/MDD -7.07%  ·  0.8/0.2 19.89%/1.791/-7.55%
+#                         0.9/0.1 20.20%/1.800/-7.79%       ·  1.0/0.0 20.50%/1.806/-8.17% (현행)
+#                       **M에서는 어느 수준도 샤프를 못 올린다**(전부 off보다 낮다). CAGR +0.62pp를 MDD -1.10pp와
+#                       맞바꾸고 칼마는 2.81→2.51로 내려간다. 반면 **섹터층은 명확히 개선**된다(E_t 경로):
+#                       28.35→30.83%(+2.48pp)·샤프 1.941→1.971·MDD -10.49% 불변. 두 층의 방향이 갈린다.
+#                       [조치] 이 샌드박스에서는 1998년~ 섹터 이력을 받을 수 없어 충실 재측정이 불가능하다.
+#                       그래서 판단을 내리지 않고 **BREADTH_SIDE("both"/"bull_only"/"bear_only")를 신설해
+#                       06c 격자에 실어 다음 실행이 실측**하게 했다. bull_only는 하방 개입을 빼 MDD 악화 요인을
+#                       제거하고, bear_only는 off 대비 MDD가 실제로 개선되는지 본다. 기본값은 현행 "both" 유지 —
+#                       임의로 바꾸면 사용자가 이미 본 결과와 달라지고, 근거가 될 실측이 아직 없기 때문이다.
+#                       ⚠ 다음 실행의 06c 규칙⑮ 격자에서 bull_only의 샤프가 off(1.838)를 넘으면 그쪽으로
+#                       바꾸는 것이 맞고, 아무 행도 못 넘으면 USE_BREADTH_NEUTRAL=False가 맞다.
 #  VERSION: v1.34.0 - 2026-09-08 - [⚠ 규칙 ⑮ 폭(breadth) 기반 중립 조절 — 신규 데이터 도입] 사용자 지시
 #                       (리포트6·42): "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해. 2개 코드 모두".
 #                       지난 라운드 결론이 "약점은 중립(531일=24%, h=21 기저대비 -7.5%p)인데 기존 321개 후보
@@ -1658,6 +1740,7 @@
 # =============================================================================
 from __future__ import annotations
 
+import functools
 import io
 import os
 import sys
@@ -2355,7 +2438,26 @@ class Config:
     #   ⚠ 학습된 부호는 5개 OOS 연도(2022~2026) 전부 -1로 일관됐고, 연도 제외 검정도 전부 양수
     #     (+0.46 ~ +1.09pp)다. 다만 OOS 연도가 5개뿐이고 **MDD를 0.85%p 내주는 거래**다.
     #     USE_BREADTH_NEUTRAL=False면 v1.33.0과 비트 동일.
-    USE_BREADTH_NEUTRAL: bool = True
+    # [v1.36.0 ⚠ 기본값 True → False로 되돌린다 — 근거 4줄기가 전부 같은 방향]
+    #   ① 방향 정확도가 사실상 안 움직였다. 리포트42(off) vs 43(on) 동일표본 2181일 A/B:
+    #      상승 적중 0.578784 → 0.578980(+0.020%p) · 하락 적중 0.521968 → 0.521815(-0.015%p).
+    #      보유일이 1600여 일이라 **하루 뒤집힘 = 0.06%p**다. 둘 다 그보다 작다 = 0과 구별 불가.
+    #      예측을 개선한 것이 아니라 평균 노출만 0.592 → 0.619로 올렸다(185일에서 0.330 → 0.638).
+    #   ② 노출을 더 실은 그 185일의 시장수익 평균은 +0.0271%로 **전체 평균 +0.0618%보다 낮다.**
+    #      좋은 날을 골라 실은 것이 아니라, 평범 이하의 날에 더 실었다.
+    #   ③ 위험조정 지표가 전부 나빠진다(리포트42 → 43): 샤프 1.838 → 1.806 · 소르티노 2.066 → 2.047 ·
+    #      MDD -7.07 → -8.17% · 칼마 2.813 → 2.510 · 일간승률 0.6868 → 0.6823.
+    #      CAGR +0.62pp는 노출증가(+4.5%)와 변동성증가(+4.8%)로 전부 설명되고,
+    #      **노출 1단위당 CAGR은 0.3358 → 0.3312로 오히려 1.4% 낮아졌다.**
+    #   ④ 섹터층에서도 신호가 아니라 베타다. 리포트20 → 21에서 주력섹터 ★만 좋아지고
+    #      (28.37 → 30.83%, 샤프 1.942 → 1.971) **나머지 7개 비교 변형 중 5개는 샤프가 나빠진다**
+    #      (명확1위 1.808 → 1.709 · 중립만리더 1.828 → 1.722 · 리더자체비중 1.789 → 1.671 ·
+    #       확신사이징 1.861 → 1.808 · 상위4/순위가중만 소폭 개선). ★의 회전율은 12.78 → 19.17로
+    #      50% 늘고 누적비용은 0.0553 → 0.0830이 된다. 한 배분방식에서만 나오는 이득은 배타다.
+    #   → 사용자 기준("수익률 숫자만 높게 나온다고 좋은게 아니라고 / 하락을 제대로 회피")에 정면으로
+    #     어긋난다: 적중률 불변 · 큰하락 회피 0.357 → 0.348 악화 · 수익률만 상승. 그래서 끈다.
+    #   되돌리려면 True로 두면 되고 06c 격자에 4개 수준이 그대로 남아 있다. False면 v1.33.0과 비트 동일.
+    USE_BREADTH_NEUTRAL: bool = False
     BREADTH_MA: int = 50                    # 폭 정의: 섹터가 자기 이 일수 이동평균 위인가
     BREADTH_LO_Q: float = 0.30              # 중립일 폭 분포의 하위 분위
     BREADTH_HI_Q: float = 0.70              # 〃 상위 분위
@@ -2363,6 +2465,24 @@ class Config:
     BREADTH_POS_HIGH: float = 0.0           # ⚠ 학습된 약세쪽 분위일 때의 목표비중
     BREADTH_MIN_TRAIN_YEARS: int = 3        # 이만큼 연도가 쌓이기 전에는 발동하지 않는다
     BREADTH_EVAL_H: int = 21                # 부호 학습에 쓰는 선도수익 지평
+    # [v1.35.0 §A ⚠ 실측 정정] v1.34.0 주석의 "+1.09pp / 샤프 +0.018 / MDD 불변"은 **틀렸다.**
+    #   그 숫자는 섹터 리포트 시트(2018년~)로 폭을 재구성한 리플레이였고, 실제 실행은 M이 직접 받은
+    #   1998년~ 섹터 이력으로 워크포워드를 학습해 발동일이 211일이 아니라 245일이다.
+    #   **실제 실행(리포트43 06c, 같은 엔진의 격자)이 정답이다:**
+    #     off      CAGR 19.88%  샤프 1.838  MDD -7.07%
+    #     0.8/0.2  CAGR 19.89%  샤프 1.791  MDD -7.55%
+    #     0.9/0.1  CAGR 20.20%  샤프 1.800  MDD -7.79%
+    #     1.0/0.0  CAGR 20.50%  샤프 1.806  MDD -8.17%   ← 현행
+    #   즉 **M에서는 어느 수준도 샤프를 올리지 못하고**(전부 off의 1.838보다 낮다) CAGR +0.62pp를
+    #   MDD -1.10pp와 맞바꾼다. 칼마도 2.81 → 2.51로 내려간다.
+    #   반면 **섹터층은 명확히 개선된다**(E_t 경로): CAGR 28.35 → 30.83%(+2.48pp) · 샤프 1.941 → 1.971 ·
+    #   MDD -10.49% 불변. 두 층의 방향이 갈리므로 사용자가 고를 수 있어야 한다.
+    #   [BREADTH_SIDE] 그래서 한쪽만 적용하는 변형을 추가한다 — 이 샌드박스에서는 1998년~ 섹터 이력을
+    #   받을 수 없어 충실히 재측정할 수 없으므로, **판단하지 않고 06c 격자에 실어 다음 실행이 실측**하게 한다.
+    #     "both"      : 강세쪽 ↑ · 약세쪽 ↓ (현행)
+    #     "bull_only" : 강세쪽만 ↑ (약세쪽은 POS_NEUTRAL 유지) — CAGR 기여만 남기고 하방 개입을 뺀다
+    #     "bear_only" : 약세쪽만 ↓ — MDD를 줄이려는 쪽. off 대비 MDD가 개선되는지 확인용
+    BREADTH_SIDE: str = "both"              # ⚠ "both" | "bull_only" | "bear_only"
     USE_DEEP_REENTRY_FLOOR: bool = True
     DEEP_REENTRY_DD: float = -0.20          # ⚠ 252일 고점 대비 낙폭 임계(베어마켓 경계)
     DEEP_REENTRY_HIGH_WINDOW: int = 252     # 낙폭 기준 창(거래일)
@@ -5944,10 +6064,19 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
             _lo_is_bull = (_sign < 0)
             _m_lo = _te & (_b <= _q1)
             _m_hi = _te & (_b >= _q2)
-            out.loc[_m_lo, "target_pos"] = float(cfg.BREADTH_POS_LOW if _lo_is_bull else cfg.BREADTH_POS_HIGH)
-            out.loc[_m_hi, "target_pos"] = float(cfg.BREADTH_POS_HIGH if _lo_is_bull else cfg.BREADTH_POS_LOW)
-            breadth_adj[_m_lo | _m_hi] = _sign
-            _n_fire += int((_m_lo | _m_hi).sum())
+            # [v1.35.0 §A] 강세쪽/약세쪽 마스크를 학습된 부호로 배치한 뒤 BREADTH_SIDE로 거른다.
+            _m_bull = _m_lo if _lo_is_bull else _m_hi
+            _m_bear = _m_hi if _lo_is_bull else _m_lo
+            _side = str(getattr(cfg, "BREADTH_SIDE", "both") or "both")
+            _hit = pd.Series(False, index=score_pct.index)
+            if _side in ("both", "bull_only"):
+                out.loc[_m_bull, "target_pos"] = float(cfg.BREADTH_POS_LOW)
+                _hit = _hit | _m_bull
+            if _side in ("both", "bear_only"):
+                out.loc[_m_bear, "target_pos"] = float(cfg.BREADTH_POS_HIGH)
+                _hit = _hit | _m_bear
+            breadth_adj[_hit] = _sign
+            _n_fire += int(_hit.sum())
         out["breadth_neutral"] = breadth_adj != 0.0
     else:
         out["breadth_neutral"] = False
@@ -6687,11 +6816,16 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                     (True, cfg.BREADTH_MA, 0.8, 0.2, "비중 0.8/0.2"),
                     (True, cfg.BREADTH_MA, 0.9, 0.1, "비중 0.9/0.1"),
                     (True, cfg.BREADTH_MA, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "비중 1.0/0.0"),
-                    (True, 20, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "폭 MA20일"),
-                    (True, 100, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "폭 MA100일"),
-                    (True, 200, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "폭 MA200일")]:
-                c = Config(**{**cfg.__dict__, "USE_BREADTH_NEUTRAL": use15, "BREADTH_MA": ma15,
-                              "BREADTH_POS_LOW": lo15, "BREADTH_POS_HIGH": hi15})
+                    (True, cfg.BREADTH_MA, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "__SIDE:bull_only__"),
+                    (True, cfg.BREADTH_MA, cfg.BREADTH_POS_LOW, cfg.BREADTH_POS_HIGH, "__SIDE:bear_only__")]:
+                _ov15 = {"USE_BREADTH_NEUTRAL": use15, "BREADTH_MA": ma15,
+                         "BREADTH_POS_LOW": lo15, "BREADTH_POS_HIGH": hi15}
+                if lab15.startswith("__SIDE:"):
+                    _sd = lab15.strip("_").split(":")[1]
+                    _ov15["BREADTH_SIDE"] = _sd
+                    lab15 = ("강세쪽만 적용(하방 개입 없음)" if _sd == "bull_only"
+                             else "약세쪽만 적용(상방 개입 없음)")
+                c = Config(**{**cfg.__dict__, **_ov15})
                 br_i = breadth if int(ma15) == int(cfg.BREADTH_MA) else None
                 if br_i is None:
                     continue          # 다른 MA는 원본 px가 필요 — run()에서만 산출 가능하므로 건너뛴다
@@ -6705,7 +6839,8 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                     if "breadth_neutral" in sg.columns else 0
                 is_live = (bool(use15) == bool(cfg.USE_BREADTH_NEUTRAL) and int(ma15) == int(cfg.BREADTH_MA)
                            and abs(float(lo15) - float(cfg.BREADTH_POS_LOW)) < 1e-12
-                           and abs(float(hi15) - float(cfg.BREADTH_POS_HIGH)) < 1e-12)
+                           and abs(float(hi15) - float(cfg.BREADTH_POS_HIGH)) < 1e-12
+                           and _ov15.get("BREADTH_SIDE", cfg.BREADTH_SIDE) == cfg.BREADTH_SIDE)
                 br15_rows.append({
                     "규칙⑮(폭 기반 중립조절)": lab15, "발동일수": fired,
                     "CAGR": m.get("CAGR"), "샤프": m.get("샤프"),
@@ -7974,11 +8109,107 @@ _NEXT_DAY_STATE_KR = {"RISK_ON": "상승(위험선호)", "NEUTRAL": "중립", "R
                       "TREND_ONLY_OUT": "추세필터-현금(지표부족)", "NO_SIGNAL": "신호없음"}
 
 
+def _easter(year: int) -> dt.date:
+    """[v1.35.0] 그레고리력 부활절(익명 알고리즘). 성금요일(휴장) 산출에만 쓴다 — 외부 조회 없음."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    L = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * L) // 451
+    mo, day = divmod(h + L - 7 * m + 114, 31)
+    return dt.date(year, mo, day + 1)
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> dt.date:
+    """그 달의 n번째 weekday(월=0). n<0이면 마지막에서 |n|번째."""
+    if n > 0:
+        d = dt.date(year, month, 1)
+        d += dt.timedelta(days=(weekday - d.weekday()) % 7)
+        return d + dt.timedelta(weeks=n - 1)
+    nxt = dt.date(year + (month == 12), (month % 12) + 1, 1)
+    d = nxt - dt.timedelta(days=1)
+    d -= dt.timedelta(days=(d.weekday() - weekday) % 7)
+    return d - dt.timedelta(weeks=(-n) - 1)
+
+
+@functools.lru_cache(maxsize=64)
+def nyse_holidays(year: int) -> frozenset:
+    """[v1.35.0 §B] NYSE 정규 휴장일(연 9~10일). 규칙 기반이라 외부 데이터가 필요 없다.
+
+    미 연방공휴일과 다르다 — NYSE는 **성금요일에 쉬고 콜럼버스데이·재향군인의날에는 연다.**
+    주말 대체 규칙: 토요일 공휴일은 직전 금요일, 일요일 공휴일은 다음 월요일 휴장
+    (단 신정이 토요일이면 전년 12/31을 쉬지 않는다 — NYSE 관행).
+    ※ 대통령 서거 등 임시 휴장(예: 2018-12-05, 2025-01-09)은 규칙으로 알 수 없어 포함하지 않는다.
+      그런 날은 데이터가 없으므로 '다음 개장일' 추정이 하루 어긋날 수 있고, 그때는 그 다음 실행이
+      실제 데이터로 자동 교정한다.
+    """
+    out = set()
+
+    def _obs(d: dt.date) -> Optional[dt.date]:
+        if d.weekday() == 5:      # 토 → 직전 금
+            return d - dt.timedelta(days=1)
+        if d.weekday() == 6:      # 일 → 다음 월
+            return d + dt.timedelta(days=1)
+        return d
+
+    for m, day in ((1, 1), (7, 4), (12, 25)):
+        o = _obs(dt.date(year, m, day))
+        if o is not None and o.year == year:
+            out.add(o)
+    if year >= 2022:                                    # 준틴스(2022년부터 NYSE 휴장)
+        o = _obs(dt.date(year, 6, 19))
+        if o is not None and o.year == year:
+            out.add(o)
+    if year >= 1998:
+        out.add(_nth_weekday(year, 1, 0, 3))            # MLK — 1월 셋째 월요일
+    out.add(_nth_weekday(year, 2, 0, 3))                # 대통령의 날 — 2월 셋째 월요일
+    out.add(_nth_weekday(year, 5, 0, -1))               # 메모리얼데이 — 5월 마지막 월요일
+    out.add(_nth_weekday(year, 9, 0, 1))                # 노동절 — 9월 첫째 월요일
+    out.add(_nth_weekday(year, 11, 3, 4))               # 추수감사절 — 11월 넷째 목요일
+    out.add(_easter(year) - dt.timedelta(days=2))       # 성금요일
+    return frozenset(out)
+
+
+def is_trading_day(d) -> bool:
+    """[v1.35.0 §B] 주말도 NYSE 정규 휴장일도 아닌 날."""
+    ts = pd.Timestamp(d).normalize()
+    return ts.weekday() < 5 and ts.date() not in nyse_holidays(ts.year)
+
+
 def next_trading_day(last_date) -> pd.Timestamp:
-    """[v1.24.0] 마지막 거래일의 다음 '영업일'(월~금). 미국 공휴일 캘린더는 별도 조회가
-    필요해 여기서는 반영하지 않는다 — 호출부가 "다음 영업일 기준, 실제 휴장이면 그 다음
-    개장일" 문구를 항상 병기해 과신을 방지한다."""
-    return pd.Timestamp(last_date) + pd.offsets.BDay(1)
+    """[v1.24.0 / v1.35.0 §B 수정] 마지막 거래일의 다음 **개장일**.
+
+    ⚠ v1.34.0까지는 pd.offsets.BDay(1)로 주말만 건너뛰어 **미국 공휴일에 예측 날짜를 찍었다.**
+    실사용 리포트(2026-09-08 실행)에서 데이터 마지막이 2026-09-04(금)인데 다음 거래일을
+    2026-09-07로 표시했고 그날은 **노동절 휴장**이었다(정답 2026-09-08). 이제 NYSE 정규
+    휴장일 캘린더를 반영해 실제 개장일을 찍는다.
+    """
+    ts = pd.Timestamp(last_date).normalize() + pd.Timedelta(days=1)
+    for _ in range(15):
+        if is_trading_day(ts):
+            return ts
+        ts += pd.Timedelta(days=1)
+    return pd.Timestamp(last_date).normalize() + pd.offsets.BDay(1)
+
+
+def trading_days_between(a, b) -> int:
+    """[v1.35.0 §B] a(제외)부터 b(포함)까지의 개장일 수. 데이터 지연 경보를 '달력일'이 아니라
+    '놓친 거래일'로 세기 위한 것 — 금요일 종가를 연휴 뒤 화요일에 보면 달력으로는 4일이지만
+    놓친 거래일은 0일이다(v1.34.0까지 이 오경보가 매 리포트 상단에 떴다)."""
+    ts_a = pd.Timestamp(a).normalize()
+    ts_b = pd.Timestamp(b).normalize()
+    if ts_b <= ts_a:
+        return 0
+    n, cur = 0, ts_a + pd.Timedelta(days=1)
+    while cur <= ts_b and n < 400:
+        if is_trading_day(cur):
+            n += 1
+        cur += pd.Timedelta(days=1)
+    return n
 
 
 def _next_day_action(target: float, exec_now: float, lang: str = "kr") -> str:
@@ -8016,9 +8247,15 @@ def build_next_day_prediction(res: dict, cfg: Config = CFG) -> dict:
     stale_note = ""
     try:
         today = pd.Timestamp.now().normalize()
+        # [v1.35.0 §B] 달력일이 아니라 '놓친 개장일'로 센다. 금요일 종가를 연휴 뒤 화요일에 보면
+        #   달력으로는 4일이지만 놓친 거래일은 0일이다(종전엔 이 오경보가 매 리포트 상단에 떴다).
+        missed = trading_days_between(last, today)
         gap_days = (today - pd.Timestamp(last).normalize()).days
-        if gap_days >= 3:
-            stale_note = f" [주의: 기준일 데이터가 오늘({today.date()})보다 {gap_days}일 오래됨 — 주말/휴장/미실행 구간 확인]"
+        if missed >= 2:
+            stale_note = (f" [주의: 기준일 이후 개장일이 {missed}일 지났다(달력 {gap_days}일) — "
+                          f"오늘 {today.date()} 기준 미실행 구간 확인]")
+        elif missed == 1:
+            stale_note = f" [참고: 오늘({today.date()}) 종가가 아직 반영되지 않았다 — 장중이거나 데이터 미갱신]"
     except Exception:
         pass
     return {
@@ -8143,6 +8380,40 @@ def build_prediction_accuracy(daily: pd.DataFrame, cfg: "Config") -> pd.DataFram
             row[f"{key} 적중"] = round(hit, 4)
             row[f"{key} 기저대비(%p)"] = round((hit - bse) * 100, 2)
         rows.append(row)
+
+    # ---- B2. 실제 운용 경로 채점 [v1.36.0 신설] ----
+    # ⚠ B블록은 "상태[t]를 h일 동안 얼어붙은 채로 들고 있었다면"을 채점한다. 시스템은 그렇게 운용하지
+    #   않는다 — 매일 다시 판단해 상태를 바꾼다. 그래서 B의 '중립' 행이 h≥5에서 기저대비 음수로 찍히는데
+    #   (h=5 -2.53 · h=21 -7.53 · h=63 -4.33%p) 이것을 결함으로 읽으면 **틀린 규칙을 만들게 된다.**
+    #   실제로 그 오독으로 중립 관련 변형 7종과 규칙 ⑮까지 8번을 시도해 전부 실패했다.
+    #   B2는 같은 구간을 **실제 체결비중 경로대로** 채점해 그 착시를 제거한다.
+    #   리포트43 실측(중립 532일 · h=21): 시장 전액보유 +0.731% · 중립비중 0.442 고정유지 +0.323% ·
+    #   **실제 운용 +0.950%**. 즉 중립 구간의 나쁜 경로는 이미 상태전이로 처리되고 있다
+    #   (중립일의 +21일 후 상태: 하락 19.6% · 상승 33.2% · 중립 47.2%로 재분류된다).
+    rows.append({"블록": "B2. 실제 운용 경로", "구분": "── B의 착시 제거 ──",
+                 "설명": "B는 상태를 h일 얼려 채점한다. 시스템은 매일 재판단한다 — 여기서는 실제 체결비중 경로로 채점"})
+    strat_d = (pos * r).fillna(0.0)
+    for h in (5, 21, 63):
+        for nm in STATES:
+            m = st.eq(nm)
+            if int(m.sum()) < 20:
+                continue
+            locs = np.where(m.values)[0]
+            locs = locs[locs + h + 1 <= len(r)]
+            if len(locs) < 20:
+                continue
+            csum = strat_d.values.cumsum()
+            mkt = r.values.cumsum()
+            real = np.array([csum[i + h] - csum[i] for i in locs])
+            mktr = np.array([mkt[i + h] - mkt[i] for i in locs])
+            fix = float(pos[m].mean()) * mktr
+            rows.append({"블록": "B2. 실제 운용 경로", "구분": f"{nm} · h={h}일",
+                         "일수": int(len(locs)),
+                         "실제 운용(%)": round(float(real.mean()) * 100, 3),
+                         "비중고정 유지(%)": round(float(fix.mean()) * 100, 3),
+                         "시장 전액보유(%)": round(float(mktr.mean()) * 100, 3),
+                         "재판단 이득(%p)": round(float(real.mean() - fix.mean()) * 100, 3),
+                         "평균 보유비중": round(float(pos[m].mean()), 4)})
 
     # ---- C. 혼동행렬 (체결비중[t] vs 수익[t] — 이건 같은 행이 맞다) ----
     hold, cash = pos >= 0.5, pos <= 1e-9
@@ -8556,12 +8827,11 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.34.0 (2026-09-08)"),
+        ("버전", "v1.36.0 (2026-09-08)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
-        ("다음 거래일 예측 - 대상일", f"{nd['다음거래일'].date()} (다음 영업일 기준 — 미국 공휴일 미반영, "
-                                     f"실제 휴장이면 그 다음 개장일에 체결)"),
+        ("다음 거래일 예측 - 대상일", f"{nd['다음거래일'].date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영)"),
         ("다음 거래일 예측 - 확정 국면(t일 종가 기준)", nd["확정국면"]),
         ("다음 거래일 예측 - 목표비중", f"{nd['목표비중']:.2f}"),
         ("다음 거래일 예측 - 현재 체결비중(t일)", f"{nd['체결비중']:.2f}"),
@@ -8799,7 +9069,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.34.0"
+BUNDLE_VERSION = "v1.36.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
