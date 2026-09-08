@@ -1,5 +1,42 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.22.0 - 2026-09-08 - [⚠ 주 전략 ★의 위험조정 지표가 M 단독보다 나빠진 것을 진단하고
+#                       주력 상한 격자를 상설로 실었다 + M v1.38.0(규칙 ⑮ bear_only) 파급]
+#                       사용자 지시: "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해 틀린부분이
+#                       어딘지 파악해서 원인 분석하고 문제 개선해".
+#                       변경 모듈: `build_sector_allocation()`의 주력배분 블록을 `_build_primary(cap)`
+#                       함수로 분리(로직 무변경) + `primary_cap_variants` 등록, 헤더.
+#                       **채택 상한(0.8)은 바꾸지 않았다 — 재보기 전에는 고르지 않는다.**
+#
+#                       [§1 ⚠ 진단 — 주 전략이 M 단독보다 위험조정에서 밀린다]
+#                       리포트23(v0.21.0 / M v1.37.0) 13_섹터배분전략 실측:
+#                         주력섹터 중심 ★(상한 0.8)  CAGR 27.96%  샤프 1.889  MDD -10.49%  칼마 2.665
+#                         SPY 국면전략(M) 단독        CAGR 21.48%  샤프 **1.934**  MDD **-7.17%**  칼마 **2.996**
+#                       **CAGR은 +6.48pp 높은데 샤프·MDD·칼마가 전부 M보다 나쁘다.**
+#                       비교 변형 중에는 ★보다 위험조정이 나은 것이 여럿이다:
+#                         중립 국면만 리더   22.17% / 1.972 / **-7.07%** / **3.136**
+#                         확신 사이징        22.15% / **1.978** / -7.48% / 2.961
+#                         명확1위 100%       22.98% / 1.943 / -7.85% / 2.926
+#                       사용자 기준은 "수익률 숫자만 높게 나온다고 좋은 게 아니라고"이므로 이 상태를
+#                       그대로 두면 안 된다. 다만 XLK 주력은 사용자가 직접 지시한 설계이므로
+#                       ("섹터는 일단 XLK가 가장 중요해서 제대로 예측해야돼") 구조는 유지하고
+#                       **집중도(상한)**를 의심한다.
+#
+#                       [§2 조치 — 상한 격자를 상설로. 값은 바꾸지 않는다]
+#                       v0.16.0에서 상한을 한 번 쟀지만(1.0 MDD -12.34% … 0.5 -9.66%) 그때 기준선은
+#                       지금과 다르다(M이 v1.16 → v1.38로 바뀌었다). 사후 리플레이로 고르면
+#                       v1.34.0에서 겪은 실패를 반복한다. 그래서 0.5/0.6/0.7/0.9/1.0을
+#                       **13_섹터배분전략에 [상한격자] 행으로 상설 배치**해 다음 실행이 실제 엔진으로
+#                       재게 한다. 이 방식은 이미 두 번 답을 냈다 — v1.11.0의 회복확인폭 격자가
+#                       v1.37.0에서, v1.35.0의 BREADTH_SIDE가 v1.38.0에서.
+#                       ⚠ `_build_primary()`는 v0.16.0 로직을 그대로 옮긴 것이고 채택 상한 0.8의
+#                       결과는 비트 동일하다(회귀 테스트가 확인).
+#
+#                       [§3 13m 슬리브 시트 실측 확인 — 지난 라운드 진단이 재현됐다]
+#                       실제 배분 **+29.94%** vs 비주력 균등 +21.71% → **순환매 선택은 작동한다.**
+#                       전부 XLK였다면 +40.59%(집중위험의 대가). 새는 곳은 XLV **-0.97%**(103일) ·
+#                       XLU -0.08%. 경로 비중: XLK 보유 72.43% · 대피 **2.28%** · 전액현금 25.29%.
+#
 #  VERSION: v0.21.0 - 2026-09-08 - [M 규칙 ⑤ 확인폭 완화 파급 + 신규 진단시트 13m_잔여슬리브기여]
 #                       사용자 지시: "다시 수정 전으로 돌아가서 원인분석해서 다른 방향으로 개선해 …
 #                       섹터 순환매 판단 정확도 더 높이도록 개선해 틀린부분이 어딘지 파악해서".
@@ -849,7 +886,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.21.0"
+VERSION = "v0.22.0"
 VERSION_DATE = "2026-09-08"
 
 # =============================================================================
@@ -3991,6 +4028,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     #   신규 신호 없음 — results[t]["state"](각 섹터 자기 국면)와 기존 복합순위만 재사용한다.
     frac_primary_sector = None
     label_psec = None
+    primary_cap_variants = {}   # [v0.22.0] 주력 상한 격자
     _pri = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "")
     if getattr(scfg, "ROTATION_PRIMARY_MODE", False) and _pri in cols:
         _cap = float(getattr(scfg, "ROTATION_PRIMARY_CAP", 0.8) or 0.0)
@@ -4003,28 +4041,44 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         _has = _alt_rank.notna().any(axis=1) if len(_alt_rank.columns) else pd.Series(False, index=eval_idx)
         if bool(_has.any()):
             _alt.loc[_has] = _alt_rank.loc[_has].idxmin(axis=1)   # ⚠ rank_pos는 1이 최상위 → idxmin
-        fps = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
-        _n_pri = _n_alt = _n_eq = 0
-        for _d in eval_idx:
-            _pri_ok = bool(_hold.loc[_d, _pri]) if _pri in _hold.columns else False
-            _a = _alt.get(_d)
-            _a_ok = (isinstance(_a, str) and _a in _hold.columns and bool(_hold.loc[_d, _a])
-                     and bool(eligible.loc[_d, _a]) if _a in eligible.columns else False)
-            _share = _cap if _pri_ok else 0.0
-            if _pri_ok:
-                fps.loc[_d, _pri] = _share; _n_pri += 1
-            _rest = 1.0 - _share
-            if _rest > 1e-12:
-                if _a_ok:
-                    fps.loc[_d, _a] += _rest; _n_alt += 1
-                else:
-                    _ok = [c for c in cols if c != _pri and c in _hold.columns and bool(_hold.loc[_d, c])
-                           and bool(eligible.loc[_d, c])]
-                    if _ok:
-                        for c in _ok:
-                            fps.loc[_d, c] += _rest / len(_ok)
-                        _n_eq += 1
+        # [v0.22.0] 상한만 바꾼 변형을 만들 수 있도록 함수로 뺐다 — 로직은 v0.16.0과 완전히 동일하다.
+        #   ⚠ 왜 필요한가: 리포트23에서 주 전략 ★(상한 0.8)의 위험조정 지표가 M 단독보다 나빠졌다
+        #   (샤프 1.889 vs M 1.934 · MDD -10.49% vs -7.17% · 칼마 2.665 vs 2.996). CAGR은 27.96%로
+        #   높지만 사용자 기준은 "수익률 숫자만 높게 나온다고 좋은 게 아니라고"다. 집중도가 원인일
+        #   가능성이 크므로 **상한 격자를 상설로 실어 다음 실행이 실제 엔진으로 재게 한다**
+        #   (v1.11.0의 사전등록 격자가 v1.37.0에서, v1.35.0의 BREADTH_SIDE가 v1.38.0에서 답을 준 것과
+        #   같은 방식). 채택값은 바꾸지 않는다 — 재보기 전에는 고르지 않는다.
+        def _build_primary(cap_: float):
+            fps_ = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
+            n_pri_ = n_alt_ = n_eq_ = 0
+            for _d in eval_idx:
+                _pri_ok = bool(_hold.loc[_d, _pri]) if _pri in _hold.columns else False
+                _a = _alt.get(_d)
+                _a_ok = (isinstance(_a, str) and _a in _hold.columns and bool(_hold.loc[_d, _a])
+                         and bool(eligible.loc[_d, _a]) if _a in eligible.columns else False)
+                _share = cap_ if _pri_ok else 0.0
+                if _pri_ok:
+                    fps_.loc[_d, _pri] = _share; n_pri_ += 1
+                _rest = 1.0 - _share
+                if _rest > 1e-12:
+                    if _a_ok:
+                        fps_.loc[_d, _a] += _rest; n_alt_ += 1
+                    else:
+                        _ok = [c for c in cols if c != _pri and c in _hold.columns and bool(_hold.loc[_d, c])
+                               and bool(eligible.loc[_d, c])]
+                        if _ok:
+                            for c in _ok:
+                                fps_.loc[_d, c] += _rest / len(_ok)
+                            n_eq_ += 1
+            return fps_, n_pri_, n_alt_, n_eq_
+        fps, _n_pri, _n_alt, _n_eq = _build_primary(_cap)
         frac_primary_sector = fps
+        # 상한 격자(채택값 제외) — 13_섹터배분전략에 [비교] 행으로 실린다.
+        primary_cap_variants = {}
+        for _cv in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0):
+            if abs(_cv - _cap) < 1e-9:
+                continue
+            primary_cap_variants[f"주력섹터 중심 · {_pri} 상한 {_cv:.0%} [상한격자]"] = _build_primary(_cv)[0]
         label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
         log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
                            days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
@@ -4052,6 +4106,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         variants[label_score] = frac_score      # [v0.8.0]
     if frac_regime is not None:
         variants[label_regime] = frac_regime    # [v0.10.0 §1.D]
+    for _lab, _fr in primary_cap_variants.items():   # [v0.22.0] 주력 상한 격자(실제 엔진 측정)
+        variants[_lab] = _fr
     variants[ROT_LABEL_CTRL_A] = frac_ctrl_a
     variants[ROT_LABEL_CTRL_B] = frac_ctrl_b
 
