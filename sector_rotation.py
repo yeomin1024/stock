@@ -1,5 +1,40 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.21.0 - 2026-09-08 - [M 규칙 ⑤ 확인폭 완화 파급 + 신규 진단시트 13m_잔여슬리브기여]
+#                       사용자 지시: "다시 수정 전으로 돌아가서 원인분석해서 다른 방향으로 개선해 …
+#                       섹터 순환매 판단 정확도 더 높이도록 개선해 틀린부분이 어딘지 파악해서".
+#                       변경 모듈: `build_sleeve_attribution()`(신규), 시트 등록 1줄, 헤더.
+#                       **배분·신호 로직은 무변경.** M v1.37.0의 E_t 변화만 파급된다.
+#
+#                       [§1 진단 — '순환매'라고 부르지만 실체의 98%는 주력/현금 판단이다]
+#                       리포트22 실측으로 배분 경로를 셌다(2182일):
+#                         XLK 보유일 **1590일(72.9%)** · 전액 현금 **549일(25.2%)** · 대피일 **43일(2.0%)**
+#                       전액 현금 548일의 원인 분해:
+#                         M 게이트만 닫힘 182일(XLK 익일 -6.27bp, 누적 -11.41% → 현금이 옳았다)
+#                         둘 다 닫힘      355일(XLK 익일 -4.35bp, 누적 -15.45% → 현금이 옳았다)
+#                         XLK만 하락      **11일**(XLK 익일 +10.13bp → 현금이 틀렸으나 표본 무의미)
+#                       → **현금 판단의 98%(537/548)가 M의 E_t에서 온다.** 섹터층 고유 로직이
+#                       현금 판단에 기여하는 몫은 11일뿐이다. 즉 섹터 정확도를 올리는 가장 큰 지렛대는
+#                       섹터 코드가 아니라 **M의 국면 판단**이다 — 그래서 이번 라운드의 실질 개선은
+#                       M v1.37.0(규칙 ⑤ 확인폭 0.05→0.03)이고 섹터는 그 E_t를 그대로 받는다.
+#
+#                       [§2 대피 경로는 43일뿐이고 이득이 2022년 한 해에 몰려 있다]
+#                       대피일 43일에서 대피처는 같은 비중을 XLK에 실었을 때보다 +5.82%p 나았는데,
+#                       연도별로 2022년 15일 **+6.68%p**가 거의 전부다(2026년은 -1.96%p).
+#                       43일·1개년 집중 = 통계적으로 의지할 수 없다. 규칙을 바꾸지 않는다.
+#
+#                       [§3 그래서 새로 드러낸 것 — 13m_잔여슬리브기여]
+#                       비주력 섹터가 실제로 돈을 받는 날의 대부분은 대피일 43일이 아니라
+#                       **XLK를 들고 있는 1486일의 잔여 20% 슬리브**다. 종전 진단은 이 구간을
+#                       한 번도 보지 않았다. 실측:
+#                         실제 배분 **+29.20%** vs 비주력 균등 +20.85% → **선택이 균등보다 낫다(작동함)**
+#                         같은 비중 전부 XLK **+38.87%** → 차이는 집중위험의 대가
+#                         (상한 1.0은 v0.16.0에서 MDD -3.39pp 악화로 이미 기각)
+#                       섹터별로 XLV **-0.97%** · XLU -0.04% · XLY -0.03%가 새고, 01Y시트에서
+#                       XLV의 하락 예측은 '역방향'(-3.12%p), XLE는 상·하락 모두 '없음/역방향'이다.
+#                       ⚠ 무정보 섹터 배제는 이전 라운드 워크포워드에서 **-2.14pp**로 실패했으므로
+#                       규칙은 바꾸지 않고 **관측만** 상설화한다. 다음 라운드의 표적으로 남긴다.
+#
 #  VERSION: v0.20.0 - 2026-09-08 - [M의 규칙 ⑮ OFF 되돌림 파급 + 01Y시트 B2 '상태 지속성' 블록 신설]
 #                       사용자 지시: "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해 틀린부분이
 #                       어딘지 파악해서 원인 분석하고 문제 개선해 2개 코드 모두 개선해야한다고".
@@ -814,7 +849,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.20.0"
+VERSION = "v0.21.0"
 VERSION_DATE = "2026-09-08"
 
 # =============================================================================
@@ -4621,6 +4656,78 @@ def build_prediction_accuracy(alloc: Dict[str, Any],
     return pd.DataFrame(rows)
 
 
+def build_sleeve_attribution(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
+                             scfg: "SectorConfig") -> pd.DataFrame:
+    """[v0.21.0] 13m_잔여슬리브기여 — 주력섹터(XLK) 상한 밖으로 나간 '잔여 슬리브'가 실제로 무엇을
+    벌었는지 귀속시킨다. 배분 규칙은 전혀 건드리지 않는 순수 관측 시트다.
+
+    왜 필요한가(리포트22 실측 진단):
+      주력섹터 중심 배분에서 XLK는 상한 ROTATION_PRIMARY_CAP(기본 0.8)까지만 담고 나머지는
+      대피 후보들에게 간다. 그런데 **대피 경로(XLK 미보유)는 43일(2.0%)뿐**이고, 실제로 비주력
+      섹터가 돈을 받는 날의 대부분은 'XLK를 들고 있는 1486일의 잔여 20%'다. 성과 진단이 대피
+      경로만 보면 표본의 2%만 보는 셈이라, 슬리브 쪽을 상설로 드러낸다.
+      리포트22 실측: 슬리브 실제 +29.20% vs 10섹터 균등 +20.85% → **선택이 균등보다 낫다**(작동함).
+      다만 같은 비중을 전부 XLK에 넣었으면 +38.87%였다 — 그 차이가 집중위험의 대가다
+      (상한 1.0은 v0.16.0에서 MDD -3.39pp 악화로 이미 기각).
+      섹터별로는 XLV -0.97% · XLU -0.04% · XLY -0.03%로 새는 곳이 있고, 01Y시트에서 XLV의
+      하락 예측이 '역방향'(-3.12%p), XLE는 상·하락 모두 '없음/역방향'으로 찍힌다.
+      ⚠ 무정보 섹터 배제는 이전 라운드에서 워크포워드로 시도해 **-2.14pp**로 실패했다.
+      그래서 여기서는 규칙을 바꾸지 않고 **관측만** 한다.
+    """
+    if not alloc or "target_w" not in alloc:
+        return pd.DataFrame()
+    tw = alloc["target_w"]
+    prim = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+    if prim not in tw.columns:
+        return pd.DataFrame()
+    tks = [c for c in tw.columns if c in results and results[c].get("ret_cc_full") is not None]
+    if not tks:
+        return pd.DataFrame()
+    R = pd.DataFrame({t: pd.Series(results[t]["ret_cc_full"]) for t in tks}).reindex(tw.index).astype(float)
+    others = [c for c in tks if c != prim]
+    if not others or prim not in R.columns:
+        return pd.DataFrame()
+    hold = (tw[prim] > 1e-9) & R[tks].notna().all(axis=1)
+    sl_w = tw[others].sum(axis=1)
+    m = hold & (sl_w > 1e-9)
+    rows: List[dict] = []
+    if int(m.sum()) < 20:
+        return pd.DataFrame()
+    sl_r = (tw[others] * R[others]).sum(axis=1)
+    ew = R[others].mean(axis=1)
+    rows.append({"블록": "A. 슬리브 총괄", "구분": "── 주력 보유일의 잔여 비중이 무엇을 벌었나 ──",
+                 "설명": "같은 비중을 다른 곳에 넣었다면? (산술 누적, 배분 규칙 무변경 관측)"})
+    for nm, v in (("실제 배분", sl_r[m]),
+                  (f"전부 {prim}", sl_w[m] * R[prim][m]),
+                  ("전부 현금", pd.Series(0.0, index=sl_r[m].index)),
+                  ("비주력 균등", sl_w[m] * ew[m])):
+        rows.append({"블록": "A. 슬리브 총괄", "구분": nm, "일수": int(m.sum()),
+                     "평균 슬리브비중": round(float(sl_w[m].mean()), 4),
+                     "누적 기여(%)": round(float(v.sum()) * 100, 2),
+                     "평균(bp/일)": round(float(v.mean()) * 1e4, 2)})
+    rows.append({"블록": "B. 섹터별 귀속", "구분": "── 슬리브 안에서 누가 벌고 누가 새는가 ──",
+                 "설명": "누적 기여가 음수인 섹터는 01Y시트의 '상승 정보/하락 정보'와 함께 볼 것"})
+    for t in others:
+        w = tw[t][m]
+        nz = int((w > 1e-9).sum())
+        if nz < 5:
+            continue
+        rows.append({"블록": "B. 섹터별 귀속", "구분": t, "일수": nz,
+                     "평균 슬리브비중": round(float(w.mean()), 4),
+                     "누적 기여(%)": round(float((w * R[t][m]).sum()) * 100, 2),
+                     "평균(bp/일)": round(float(R[t][m].mean()) * 1e4, 2)})
+    rows.append({"블록": "C. 대피 경로", "구분": "── 주력 미보유일(대피)은 표본의 몇 %인가 ──",
+                 "설명": "여기가 얇으면 '순환매'의 실체는 주력 보유/현금 판단이다"})
+    esc = (tw[prim] <= 1e-9) & (tw[others].sum(axis=1) > 1e-9) & R[tks].notna().all(axis=1)
+    allw = R[tks].notna().all(axis=1)
+    for nm, mm in ((f"{prim} 보유일", hold), ("대피일(비주력만)", esc),
+                   ("전액 현금일", allw & (tw[tks].sum(axis=1) <= 1e-9))):
+        n = int(mm.sum())
+        rows.append({"블록": "C. 대피 경로", "구분": nm, "일수": n,
+                     "비중(%)": round(n / max(int(allw.sum()), 1) * 100, 2)})
+    return pd.DataFrame(rows)
+
+
 def build_regime_sector_structure(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
                                   horizons: Tuple[int, ...] = (1, 5, 21, 63)) -> pd.DataFrame:
     """[v0.12.0] 13k_국면섹터구조 — 사용자 질문("SPY 국면이 오르면 XLK가 오르고, 방어 섹터는 반대 아니냐,
@@ -5486,6 +5593,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         # [v0.12.0] 사용자 질문("SPY 국면↔섹터 상관관계를 더 철저히 분석해서 국면 정보를 더 참고하라")에 매 실행이
         #   스스로 답하는 진단 시트. 배분 규칙은 무변경 — 순수 관측.
         sheets["13k_국면섹터구조"] = build_regime_sector_structure(alloc, results)
+        # [v0.21.0] 잔여 슬리브(주력섹터 상한 밖 비중) 귀속 — 사용자 지시("섹터 순환매 판단 정확도
+        #   더 높이도록 개선해 틀린부분이 어딘지 파악해서"). 배분 규칙 무변경 — 순수 관측.
+        sheets["13m_잔여슬리브기여"] = build_sleeve_attribution(alloc, results, scfg)
         # [v0.14.0] 사용자 판단기준("정확도가 중요해", "섹터별 일별 예측을 보면 맞는게 별로 없는거 같아")을
         #   매 실행이 스스로 채점하는 시트. 배분 규칙 무변경 — 순수 관측.
         sheets["13l_예측정확도"] = build_prediction_accuracy(alloc)
