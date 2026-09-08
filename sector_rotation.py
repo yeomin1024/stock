@@ -1,5 +1,20 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.17.0 - 2026-09-08 - [⚠ 01Y_섹터예측정확도 계산 정정 — 배분·신호 무변경] M v1.33.0과 같은
+#                       두 오류를 바로잡았다: (1) 상태[t] → 수익[t+1] 정렬(체결이 t+1 시가), (2) 하락 예측은
+#                       0.5가 아니라 그 지평의 '기저 하락률'과 비교. 모든 지평·상태에 기저대비(%p)와
+#                       정보(있음/없음/역방향) 판정을 나란히 넣었다.
+#                       [정정 후 결론 — 리포트19] 상승 예측에 정보가 있는 섹터는 XLK +2.33%p · XLY +1.92 ·
+#                       XLF +1.79 · XLV +0.72 · XLP +0.62뿐이고, XLC +0.45 · XLI +0.30 · XLU +0.19 ·
+#                       XLRE +0.11 · XLB -0.09 · XLE -0.46은 정보가 없다. **XLK가 11섹터 중 1위** —
+#                       v0.16.0의 XLK 중심 구조가 수치로 뒷받침된다. 하락 예측은 대부분 정보가 있고
+#                       (XLY +5.62 · XLK +4.63 · XLC +4.24 · XLRE +3.69) XLV(-3.34)·XLE(-1.09)만 역방향이다.
+#                       [측정했으나 개선 없음 — 기록] ① 대피처 선택 규칙 비교: XLK가 RISK_OFF이면서 E_t>0인
+#                       날이 **21일뿐**(XLK가 하락이면 M도 대개 현금)이라 통계적으로 무의미. ② 잔여 슬리브(20%)
+#                       목적지: 현행 순위1위가 균등(-2.62pp)·20일모멘텀(-3.11pp)·현금(-4.61pp)보다 낫다.
+#                       ③ '상승 예측에 정보 없는 섹터'를 워크포워드로 슬리브 후보에서 배제: CAGR -2.14pp로 열위.
+#                       ④ XLK 상한 프런티어 재측정(규칙 ⑧ 반영 후): 0.7 -1.10pp(샤프 +0.010) · **0.8 현행** ·
+#                       0.9 +1.09pp(MDD -0.90pp) · 1.0 +2.15pp(MDD -1.80pp, 샤프 -0.064) — 0.8 유지가 타당.
 #  VERSION: v0.16.0 - 2026-09-08 - [⚠ 배분 구조 전환 — 주력섹터(XLK) 중심 · SPY 배분 제외 · 신규 시트
 #                       01Y_섹터예측정확도] 사용자 지시(리포트18): "SPY는 참고용일뿐이라고 섹터 예측에서는
 #                       빼야지 / 섹터는 일단 XLK가 가장 중요해서 제대로 예측해야돼 나머지는 XLK 하락 시
@@ -745,7 +760,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.16.0"
+VERSION = "v0.17.0"
 VERSION_DATE = "2026-09-08"
 
 # =============================================================================
@@ -4277,17 +4292,18 @@ ROTATION_DEFENSIVE_SECTORS: Tuple[str, ...] = ("XLP", "XLU", "XLV")
 def build_sector_prediction_accuracy(results: Dict[str, Dict[str, Any]],
                                      alloc: Optional[Dict[str, Any]] = None,
                                      horizons: Tuple[int, ...] = (1, 5, 21, 63)) -> pd.DataFrame:
-    """[v0.16.0] 01Y_섹터예측정확도 — 사용자 지시("섹터별로 실제랑 예측 틀린게 많은데 너가 인식을 제대로
-    못하는 것 같애 정확도 시트좀 따로 만들고")에 대한 상설 채점표. 신호·배분은 전혀 건드리지 않는다.
+    """[v0.16.0 / v0.17.0 정정] 01Y_섹터예측정확도 — 섹터별 국면 예측을 실제 결과로 채점.
+    배분·신호는 전혀 건드리지 않는다.
 
-    섹터마다 그 섹터의 **자기 국면 예측**(상승/중립/하락)을 실제 결과로 채점한다. 핵심은 두 열이다:
-      · '상승예측 적중' — 상승이라고 한 날 실제로 올랐는가
-      · '하락예측 적중' — 하락이라고 한 날 실제로 내렸는가
-    각 줄에 그 섹터의 '기저 상승 비율'을 나란히 둔다. **기저보다 높지 않으면 그 예측에는 정보가 없다.**
-    (리포트18 실측 사례: XLK는 2026-03-30~06-30에 +49.4%였는데 그 구간 '상승' 예측이 0일이었다 —
-     이런 것을 사용자가 리포트에서 직접 세어 볼 수 있게 하는 것이 이 시트의 목적이다.)
+    ⚠⚠ [v0.17.0] M의 12_예측정확도와 같은 두 오류를 바로잡았다.
+    (1) 정렬 — 상태[t]는 t일 종가 확정 신호이고 체결은 t+1이므로 **상태[t] → 수익[t+1]**로 채점한다.
+        v0.16.0은 같은 행 수익과 비교했다.
+    (2) 기저 대비 — 하락 예측의 '적중률 0.35'는 0.5가 아니라 **그 지평의 기저 하락률**과 비교해야 한다.
+        예: SPY h=63일 기저 하락률은 0.262라 적중률 0.382는 +12.0%p의 우위다. 0.5와 비교하면
+        '절반도 못 맞힌다'로 정반대로 읽힌다 — 실제로 그렇게 오독할 뻔했다.
+    그래서 모든 지평·모든 상태에 '기저 대비(%p)'와 '정보(있음/없음/역방향)' 판정을 나란히 넣는다.
 
-    블록 A: 지평 1일 요약(섹터 × 예측상태)   B: 지평별(섹터 × h)   C: 섹터별 크게 틀린 구간   D: 연도별
+    블록 A 익일 채점 · B 지평별(기저 대비 동반) · C 크게 틀린 구간 · D 연도별
     """
     if not results:
         return pd.DataFrame()
@@ -4304,79 +4320,95 @@ def build_sector_prediction_accuracy(results: Dict[str, Dict[str, Any]],
         C = (1.0 + r.fillna(0.0)).cumprod()
         return st, r, C
 
-    rows.append({"블록": "A. 익일 채점", "섹터": "── 예측이 기저보다 나은가 ──",
-                 "설명": "'기저 상승 비율'보다 적중률이 높아야 정보가 있는 예측이다"})
+    def _verdict(x):
+        return "있음" if x > 0.005 else ("없음" if x > -0.005 else "역방향")
+
+    rows.append({"블록": "A. 익일 채점", "섹터": "── 상태[t] → 수익[t+1] ──",
+                 "설명": "상승은 기저 상승률과, 하락은 기저 하락률과 비교한다 — 0.5와 비교하면 오독한다"})
     for t in tks:
-        st, r, _ = _pack(t)
-        ok = r.notna() & st.notna()
-        if int(ok.sum()) < 60:
+        st, r, C = _pack(t)
+        f1 = C.shift(-2) / C.shift(-1) - 1
+        m = f1.notna() & st.notna()
+        if int(m.sum()) < 60:
             continue
-        st, r = st[ok], r[ok]
-        base = float((r > 0).mean())
-        mu, mn, md = st.eq(UP), st.eq(NU), st.eq(DN)
-        rows.append({"블록": "A. 익일 채점", "섹터": t, "표본일수": int(ok.sum()),
-                     "기저 상승 비율": round(base, 4),
-                     "상승예측 일수": int(mu.sum()),
-                     "상승예측 적중": round(float((r[mu] > 0).mean()), 4) if int(mu.sum()) >= 5 else np.nan,
-                     "상승 기저대비(%p)": round((float((r[mu] > 0).mean()) - base) * 100, 2) if int(mu.sum()) >= 5 else np.nan,
+        base = float((f1[m] > 0).mean())
+        mu, mn, md = st[m].eq(UP), st[m].eq(NU), st[m].eq(DN)
+        hu = float((f1[m][mu] > 0).mean()) if int(mu.sum()) >= 5 else np.nan
+        hd = float((f1[m][md] <= 0).mean()) if int(md.sum()) >= 5 else np.nan
+        rows.append({"블록": "A. 익일 채점", "섹터": t, "표본일수": int(m.sum()),
+                     "기저 상승": round(base, 4), "기저 하락": round(1 - base, 4),
+                     "상승예측 일수": int(mu.sum()), "상승예측 적중": round(hu, 4) if hu == hu else np.nan,
+                     "상승 기저대비(%p)": round((hu - base) * 100, 2) if hu == hu else np.nan,
+                     "상승 정보": _verdict(hu - base) if hu == hu else "",
                      "중립 일수": int(mn.sum()),
-                     "하락예측 일수": int(md.sum()),
-                     "하락예측 적중(=하락)": round(float((r[md] <= 0).mean()), 4) if int(md.sum()) >= 5 else np.nan,
-                     "하락 기저대비(%p)": round(((float((r[md] <= 0).mean())) - (1 - base)) * 100, 2) if int(md.sum()) >= 5 else np.nan,
-                     "상승예측일 평균(bp)": round(float(r[mu].mean()) * 1e4, 2) if int(mu.sum()) >= 5 else np.nan,
-                     "하락예측일 평균(bp)": round(float(r[md].mean()) * 1e4, 2) if int(md.sum()) >= 5 else np.nan})
+                     "하락예측 일수": int(md.sum()), "하락예측 적중": round(hd, 4) if hd == hd else np.nan,
+                     "하락 기저대비(%p)": round((hd - (1 - base)) * 100, 2) if hd == hd else np.nan,
+                     "하락 정보": _verdict(hd - (1 - base)) if hd == hd else "",
+                     "상승예측일 다음날(bp)": round(float(f1[m][mu].mean()) * 1e4, 2) if int(mu.sum()) >= 5 else np.nan,
+                     "하락예측일 다음날(bp)": round(float(f1[m][md].mean()) * 1e4, 2) if int(md.sum()) >= 5 else np.nan})
 
     rows.append({"블록": "B. 지평별", "섹터": "── 예측이 사는 지평 ──",
-                 "설명": "국면 예측은 하루가 아니라 몇 주를 노린다 — h가 길수록 벌어지는 것이 정상"})
+                 "설명": "기저 대비가 양수인 칸만 정보가 있다"})
     for t in tks:
         st, r, C = _pack(t)
         for h in horizons:
-            f = C.shift(-h) / C - 1
+            f = C.shift(-h - 1) / C.shift(-1) - 1
             m = f.notna() & st.notna()
             if int(m.sum()) < 60:
                 continue
-            base = float((f[m] > 0).mean())
+            bu = float((f[m] > 0).mean())
             mu, md = st[m].eq(UP), st[m].eq(DN)
-            rows.append({"블록": "B. 지평별", "섹터": t, "구분": f"h={h}일", "표본일수": int(m.sum()),
-                         "기저 상승 비율": round(base, 4),
-                         "상승예측 적중": round(float((f[m][mu] > 0).mean()), 4) if int(mu.sum()) >= 5 else np.nan,
-                         "하락예측 적중(=하락)": round(float((f[m][md] <= 0).mean()), 4) if int(md.sum()) >= 5 else np.nan})
+            row = {"블록": "B. 지평별", "섹터": t, "구분": f"h={h}일", "표본일수": int(m.sum()),
+                   "기저 상승": round(bu, 4), "기저 하락": round(1 - bu, 4)}
+            if int(mu.sum()) >= 5:
+                hu = float((f[m][mu] > 0).mean())
+                row["상승 적중"] = round(hu, 4); row["상승 기저대비(%p)"] = round((hu - bu) * 100, 2)
+                row["상승 정보"] = _verdict(hu - bu)
+            if int(md.sum()) >= 5:
+                hd = float((f[m][md] <= 0).mean())
+                row["하락 적중"] = round(hd, 4); row["하락 기저대비(%p)"] = round((hd - (1 - bu)) * 100, 2)
+                row["하락 정보"] = _verdict(hd - (1 - bu))
+            rows.append(row)
 
-    rows.append({"블록": "C. 크게 틀린 구간", "섹터": "── 예측이 방어적인데 크게 오른 달 ──",
-                 "설명": "사용자가 지적한 구간(예: XLK 2026-04~06)을 여기서 직접 찾을 수 있다"})
+    rows.append({"블록": "C. 크게 틀린 구간", "섹터": "── 방어적인데 크게 오른 달 ──",
+                 "설명": "달 단위 복리라 해석 가능 — 지적하신 구간을 여기서 직접 찾을 수 있다"})
     for t in tks:
         st, r, _ = _pack(t)
         ok = r.notna() & st.notna()
-        st, r = st[ok], r[ok]
-        low = st.isin([NU, DN])
+        st2, r2 = st[ok], r[ok]
+        low = st2.isin([NU, DN])
         if int(low.sum()) < 10:
             continue
-        ym = pd.Series(r.index.to_period("M").astype(str), index=r.index)
-        g = pd.DataFrame({"ym": ym[low], "r": r[low]}).groupby("ym").agg(
-            일수=("r", "size"), 놓친수익=("r", lambda x: (1 + x).prod() - 1))
-        g = g[g["일수"] >= 5].sort_values("놓친수익", ascending=False).head(3)
+        ym = pd.Series(r2.index.to_period("M").astype(str), index=r2.index)
+        g = pd.DataFrame({"ym": ym[low], "r": r2[low]}).groupby("ym").agg(
+            일수=("r", "size"), 수익=("r", lambda x: (1 + x).prod() - 1))
+        g = g[g["일수"] >= 5].sort_values("수익", ascending=False).head(3)
         for k, v in g.iterrows():
             rows.append({"블록": "C. 크게 틀린 구간", "섹터": t, "구분": f"방어적이었는데 오름 · {k}",
-                         "표본일수": int(v["일수"]), "그 구간 실제(%)": round(float(v["놓친수익"]) * 100, 2)})
-        hi = st.eq(UP)
+                         "표본일수": int(v["일수"]), "그 달 수익(%)": round(float(v["수익"]) * 100, 2)})
+        hi = st2.eq(UP)
         if int(hi.sum()) >= 10:
-            g2 = pd.DataFrame({"ym": ym[hi], "r": r[hi]}).groupby("ym").agg(
-                일수=("r", "size"), 실현=("r", lambda x: (1 + x).prod() - 1))
-            g2 = g2[g2["일수"] >= 5].sort_values("실현").head(2)
+            g2 = pd.DataFrame({"ym": ym[hi], "r": r2[hi]}).groupby("ym").agg(
+                일수=("r", "size"), 수익=("r", lambda x: (1 + x).prod() - 1))
+            g2 = g2[g2["일수"] >= 5].sort_values("수익").head(2)
             for k, v in g2.iterrows():
                 rows.append({"블록": "C. 크게 틀린 구간", "섹터": t, "구분": f"상승예측인데 빠짐 · {k}",
-                             "표본일수": int(v["일수"]), "그 구간 실제(%)": round(float(v["실현"]) * 100, 2)})
+                             "표본일수": int(v["일수"]), "그 달 수익(%)": round(float(v["수익"]) * 100, 2)})
 
-    rows.append({"블록": "D. 연도별 상승예측 적중", "섹터": "── 어느 해에 흔들렸나 ──"})
+    rows.append({"블록": "D. 연도별 상승예측 기저대비(%p)", "섹터": "── 어느 해에 흔들렸나 ──",
+                 "설명": "값은 '그 해 상승예측 적중률 - 그 해 기저 상승률'(%p). 음수면 그 해엔 정보가 없었다"})
     for t in tks:
-        st, r, _ = _pack(t)
-        ok = r.notna() & st.notna()
-        st, r = st[ok], r[ok]
-        yr = pd.Series(r.index.year, index=r.index)
-        row = {"블록": "D. 연도별 상승예측 적중", "섹터": t}
+        st, r, C = _pack(t)
+        f1 = C.shift(-2) / C.shift(-1) - 1
+        ok = f1.notna() & st.notna()
+        st2, f2 = st[ok], f1[ok]
+        yr = pd.Series(f2.index.year, index=f2.index)
+        row = {"블록": "D. 연도별 상승예측 기저대비(%p)", "섹터": t}
         for y in sorted(set(yr)):
-            m = yr.eq(y) & st.eq(UP)
-            row[str(y)] = round(float((r[m] > 0).mean()), 3) if int(m.sum()) >= 5 else np.nan
+            my = yr.eq(y)
+            mu = my & st2.eq(UP)
+            if int(mu.sum()) >= 5 and int(my.sum()) >= 20:
+                row[str(y)] = round((float((f2[mu] > 0).mean()) - float((f2[my] > 0).mean())) * 100, 1)
         rows.append(row)
     return pd.DataFrame(rows)
 
