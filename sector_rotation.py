@@ -17,6 +17,55 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.27.0 - 2026-09-09 - [⚠⚠ 신규 규칙 — 전섹터 하락 시 SPY 잔여 참여. 이 층 최대의
+#                       구멍을 메운다] 변경 모듈: `SectorConfig.ROTATION_ALLDOWN_SPY_POS`(신규,
+#                       **0.5**), `build_sector_allocation` 오버라이드 블록(신규), 판단 라벨
+#                       '전섹터하락SPY' 신설(13c/13i/09b 배선), `[전섹터하락격자]`(0/25/75/100%).
+#                       회귀: `test_alldown_spy_v0270.py` 신규(7체크).
+#
+#                       [§1 v0.26.0 실측 확인 — 하락리더 0.25가 예측대로 나왔다]
+#                       리포트27 ★: CAGR **31.21%** · 샤프 **2.003** · MDD **-10.25%** · 칼마 3.046.
+#                       지난 라운드 예측(31.33 / 2.010 / -10.25 / 3.058)과 사실상 일치(거래일이
+#                       2,182→2,183으로 하루 늘어난 차이). 같은 실행의 [하락리더격자]에서 종전값
+#                       50%는 31.13 / 1.963 / 3.038로 채택값보다 전부 열위 — 채택이 옳았다.
+#                       13n IR 0.808 → **0.849**, 초과수익 곡선 MDD -21.74 → **-17.79%**.
+#                       [상한격자]도 재확인: 칼마 2.773/2.848/2.919/2.985/**3.046**(90% ★)/2.981 —
+#                       90%가 여전히 정점이다.
+#
+#                       [§2 ⚠⚠ 이번 라운드의 발견 — E_t>0인데 아무것도 안 든 날이 17일 있었다]
+#                       13c 전수 감사: **E_t>0(M이 "투자하라")인데 배분합계=0인 날이 17일**,
+#                       전부 2022년이고 그 날 E_t는 전부 1.0이었다(7/12~7/18 4일 · 10/18~10/27 7일 ·
+#                       11/02~11/09 6일 — 2022년 두 번의 베어마켓 랠리 구간과 정확히 겹친다).
+#                       원인: 그 17일은 **적격섹터수 = 0**(11개 섹터가 전부 자기 국면 RISK_OFF)이라
+#                       주력(XLK)도 대피처도 막히고, 순위 1위는 'SPY'로 찍히는데(판단='SPY우위')
+#                       ★는 사용자 지시로 SPY를 쓰지 않아 **실을 곳이 없어 전량 현금**이 됐다.
+#                       두 설계 결정이 겹쳐 만든 폴스루이지 판단의 결과가 아니다.
+#                       대가: 13i에서 'SPY우위' 58일 = **-13.53%p**로 **전 표본 유일한 마이너스
+#                       버킷**이고, 2022년만 17일에 -15.80%p — 2022 초과수익 -14.62%p의 사실상 전부다.
+#                       그 17일의 체결일에 M은 +10.82%p를 벌었고(평균 +0.64%/일, 양수 64.7%)
+#                       섹터층은 0을 벌었다.
+#
+#                       [§3 채택 — SPY 절반 참여(0.5). 왜 SPY이고 왜 절반인가]
+#                       ⚠ 왜 SPY인가: 그 날은 적격섹터가 0이라 **순위 자체가 없어** 대체 섹터를
+#                       고를 수 없다(13c의 섹터 순위 열이 전부 결측). 유일한 수단이 SPY다.
+#                       사용자 지시("SPY는 참고용, 섹터 예측에서 빼라", v0.16.0)는 **순위·예측에서
+#                       빼라**는 뜻이고, 여기서는 시스템이 스스로 'SPY우위'라고 판단한 날에 그
+#                       판단대로 실을 뿐이다 — 신규 신호를 만들지 않는다.
+#                       ⚠ 왜 0.5인가: 11개 섹터가 전부 하락 국면인 것 자체가 경고이므로 M의 노출을
+#                       그대로 따르지 않고 절반만 참여한다. 리플레이 기여 +5.41%p(1.0이면 +10.82%p).
+#                       ⚠ 리플레이 채택의 위험을 명시한다: v1.34.0에서 리플레이만 보고 채택했다가
+#                       기각한 전례가 있다. 다만 그때는 로컬 섹터 이력이 짧아 리플레이 자체가
+#                       불충실했고, 이번 개입은 **17일에만 닿고 상태기계 경로가 없어**(다른 날은
+#                       ★와 비트 동일) 리포트 자체 수치로 계산이 닫힌다. 그래도 확정은 다음 실행의
+#                       실제 엔진 수치로 하며, 0/25/75/100%를 [전섹터하락격자]에 상설로 실었다.
+#                       되돌리려면 `ROTATION_ALLDOWN_SPY_POS = 0.0` 한 줄이다.
+#
+#                       [§4 M(v1.42.0)은 이번 라운드에도 미측정 — 파일 교체가 필요하다]
+#                       리포트49의 버전 표기가 **v1.41.1**이다(01시트에 `폭조절(B)` 컬럼 없음,
+#                       06c NEUTRAL_RISK_CUT 5행 그대로). 지난 라운드에 보낸 M v1.42.0이 아직
+#                       Colab에 반영되지 않았다는 뜻이다. 그래서 (a) 규칙 ⑮ 감사 컬럼이 '설명 안 되던
+#                       75일'을 설명하는지, (b) 사전등록한 '⑤⑦⑧승격일 제외' 2행이 어떤 값을 내는지
+#                       둘 다 여전히 미측정이다. M은 이번 라운드에도 손대지 않는다(미측정 변경 누적 금지).
 #  VERSION: v0.26.0 - 2026-09-09 - [⚠ 하락국면리더 강도 0.5 → 0.25 — 지난 라운드에 "다음 라운드에
 #                       독립적으로 재본다"고 미뤄둔 값을 새 ★(상한 90%) 위에서 재측정한 결과]
 #                       변경 모듈: `SectorConfig.ROTATION_DOWN_REGIME_POS`(0.5→**0.25**).
@@ -1106,7 +1155,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.26.0"
+VERSION = "v0.27.0"
 VERSION_DATE = "2026-09-09"
 
 # =============================================================================
@@ -1351,6 +1400,24 @@ class SectorConfig:
     ROTATION_PRIMARY_SECTOR: str = "XLK"        # ⚠ 주력 섹터 — 이것이 기본 보유 대상
     ROTATION_PRIMARY_CAP: float = 0.9           # ⚠ 주력 섹터 최대 비중(나머지는 대피처로 분산) [v0.25.2] 0.8→0.9
     ROTATION_PRIMARY_EXIT_STATES: Tuple[str, ...] = ("RISK_OFF",)   # ⚠ 주력에서 대피하는 자기 국면
+    # [v0.27.0 ⚠⚠ 신규 규칙 — 전섹터 하락 시 SPY 잔여 참여] 리포트27 감사에서 찾은 이 층 최대의 구멍.
+    #   증상: **E_t>0(M이 "투자하라")인데 포트폴리오가 아무것도 들지 않은 날이 17일** 있었다.
+    #   전부 2022년(7/12~7/18 4일, 10/18~10/27 7일, 11/02~11/09 6일)이고 그 날 E_t는 전부 1.0이다.
+    #   원인: 그 17일은 **적격섹터수 = 0**(11개 섹터가 전부 자기 국면 RISK_OFF)이라 주력·대피처가
+    #   모두 막히고, 순위 1위가 'SPY'로 찍히는데(13c '1위 섹터'=SPY, 판단='SPY우위')
+    #   ★는 사용자 지시로 **SPY 미사용**(v0.16.0 "SPY는 참고용")이라 실을 곳이 없어 전량 현금이 됐다.
+    #   두 설계 결정이 겹쳐 만든 **폴스루(fall-through)**이지 판단의 결과가 아니다.
+    #   대가: 13i 격차분해에서 'SPY우위' 58일이 **-13.53%p**로 전 표본 유일한 마이너스 버킷이고,
+    #   2022년만 17일에 -15.80%p — 2022 초과수익 -14.62%p의 사실상 전부다. 그 17일의 체결일에
+    #   M은 +10.82%p(시가체결 기준, 평균 +0.64%/일, 양수 64.7%)를 벌었고 섹터층은 0을 벌었다.
+    #   ⚠ 왜 SPY인가: 그 날은 순위 자체가 없어(적격 0) 대체 섹터를 고를 수 없다 — 유일한 수단이
+    #   SPY다. 사용자 지시("SPY는 섹터 예측에서 빼라")는 **순위·예측에서 빼라는 뜻**이고, 여기서는
+    #   시스템이 이미 'SPY우위'라고 스스로 판단한 날에 그 판단대로 실을 뿐이다(신규 신호 없음).
+    #   ⚠ 왜 0.5인가: 11개 섹터가 전부 하락 국면인 것은 그 자체로 경고이므로 M의 노출을 그대로
+    #   따르지 않고 절반만 참여한다(리플레이 기여 +5.41%p). 0/0.25/0.75/1.0은 [전섹터하락격자]로
+    #   상설 측정 — 이 개입은 17일에만 닿고 상태기계 경로가 없어 리플레이 신뢰도가 높지만,
+    #   그래도 다음 실행의 실제 엔진 수치로 확정한다. 되돌리려면 POS=0.0 한 줄.
+    ROTATION_ALLDOWN_SPY_POS: float = 0.5       # ⚠ 전섹터 하락 & E_t>0 일 때 SPY 참여 비중(×E_t)
     ROTATION_DOWN_REGIME_LEADER: bool = True    # ⚠ E_t=0(하락국면)에도 명확 1위가 있으면 그 섹터로 거래
     # [v0.25.0 ⚠⚠ 1.0 → 0.5 — v0.24.0에 심어둔 [하락리더격자]가 답을 냈다. 이번 라운드 최대 개선]
     #  리포트26(실제 엔진, 같은 격자):
@@ -4371,6 +4438,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     bts: Dict[str, pd.DataFrame] = {}
     target_ws: Dict[str, pd.DataFrame] = {}
     down_leader_days = pd.Series(False, index=eval_idx)      # [v0.15.0 §A] 하락국면 리더 발동일(진단·시트용)
+    alldown_days = pd.Series(False, index=eval_idx)          # [v0.27.0] 전섹터 하락 SPY 참여 발동일(격자·시트용)
+    _ad_live_pos = 0.0                                       # [v0.27.0] ★에 실제로 적용된 참여 강도(격자 기준값)
     for label, frac in variants.items():
         tw = frac.reindex(columns=all_cols).mul(E, axis=0)
         # [v0.15.0 §A ⚠] 하락국면 리더 — E_t=0이라 전량 현금이 되는 날에도, 상태기계가 이미 뽑아 둔
@@ -4401,6 +4470,27 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 log("ROTATION", kv(event="down_regime_leader_applied", days=int(down_leader_days.sum()),
                                    pos=dl_pos, require_gate=bool(getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True)),
                                    sectors=dict(leader_s[down_leader_days].value_counts())), M=M)
+        # [v0.27.0 ⚠⚠ 신규 규칙 — 전섹터 하락 시 SPY 잔여 참여] 근거·실측은 SectorConfig 주석 참조.
+        #   조건: (i) E_t>0 (M이 투자하라고 한 날) (ii) 그런데 배분 합계가 0 (적격 섹터가 하나도 없음).
+        #   그 날만 SPY를 ROTATION_ALLDOWN_SPY_POS × E_t 만큼 싣는다. 신규 신호를 만들지 않으며
+        #   (E_t·적격여부 모두 t일 기존 계산값), 체결은 t+1 시가로 다른 규칙과 동일하다.
+        #   ★·집중배분·[상한격자]에만 적용 — 대조군(A/B)까지 바꾸면 비교가 오염된다.
+        #   하락국면리더(E_t=0)와는 조건이 배타적이라 서로 겹치지 않는다.
+        _ad_pos = float(getattr(scfg, "ROTATION_ALLDOWN_SPY_POS", 0.0) or 0.0)
+        if ((label in (label_leader, label_primary) or _is_cap_grid)
+                and _ad_pos > 0 and "SPY" in tw.columns):
+            _Ev = E.reindex(eval_idx).fillna(0.0).astype(float)
+            _idle = (_Ev > 1e-12) & (tw.reindex(eval_idx).sum(axis=1).abs() <= 1e-12)
+            if bool(_idle.any()):
+                _idx = _idle[_idle].index
+                tw.loc[_idx, "SPY"] = (_ad_pos * _Ev.loc[_idx]).values
+                tier.loc[_idx] = "전섹터하락SPY"
+                if label == label_primary:
+                    alldown_days = _idle.copy()
+                    _ad_live_pos = _ad_pos
+                log("ROTATION", kv(event="alldown_spy_applied", days=int(_idle.sum()), pos=_ad_pos,
+                                   strategy=str(label)[:40],
+                                   years=dict(pd.Series(_idx.year).value_counts().sort_index())), M=M)
         bad = (tw.abs() > 1e-12) & ~listed_all
         if bad.values.any():
             log("ROTATION", kv(event="weight_on_unlisted_sector_zeroed", strategy=label, cells=int(bad.values.sum())),
@@ -4472,6 +4562,18 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _idx = _dl_days.reindex(_w.index).fillna(False)
                 _w.loc[_idx.values, :] = _base.loc[_idx.values, :] * (_lv / _dl_live if _dl_live > 0 else 0.0)
                 _dl_variants[f"주력섹터 중심 · 하락국면리더 비중 {_lv:.0%} [하락리더격자]"] = _w
+    # [v0.27.0 ⚠⚠ 전섹터 하락 SPY 참여 강도 격자] 채택값(0.5)을 제외한 0/25/75/100%를 실제 엔진으로 잰다.
+    #   이 규칙은 17일(전부 2022)에만 닿으므로 격자 행 사이의 차이도 그 17일에서만 나온다 —
+    #   해석이 단순하고(다른 날은 ★와 비트 동일) 채택/기각 판정이 명확하다.
+    if _ad_live_pos > 0 and label_primary in target_ws and bool(alldown_days.any()):
+        _base = target_ws[label_primary]
+        _idx = alldown_days.reindex(_base.index).fillna(False)
+        for _lv in (0.0, 0.25, 0.50, 0.75, 1.0):
+            if abs(_lv - _ad_live_pos) < 1e-9:
+                continue
+            _w = _base.copy()
+            _w.loc[_idx.values, "SPY"] = _base.loc[_idx.values, "SPY"] * (_lv / _ad_live_pos)
+            _dl_variants[f"주력섹터 중심 · 전섹터하락 SPY {_lv:.0%} [전섹터하락격자]"] = _w
     for _lab, _fr in _dl_variants.items():
         target_ws[_lab] = _fr
         bts[_lab] = portfolio_backtest(_fr, ret_co, ret_oc, **bt_kw)
@@ -5325,7 +5427,7 @@ def build_gap_attribution(alloc: Dict[str, Any]) -> pd.DataFrame:
     tier_x = alloc["tier"].shift(1).fillna("현금")          # t일 판단 → t+1일 체결
     lead_x = alloc["leader"].shift(1).fillna("")
     yrs = r_p.index.year
-    tiers = ["리더", "회피", "폴백", "폴백(여유부족)", "SPY우위", "하락국면리더", "현금"]   # [v0.10.0 §1.B] 게이트 미달 폴백 분해 · [v0.15.0 §A] 하락국면 리더
+    tiers = ["리더", "회피", "폴백", "폴백(여유부족)", "SPY우위", "하락국면리더", "전섹터하락SPY", "현금"]   # [v0.10.0 §1.B] 게이트 미달 폴백 분해 · [v0.15.0 §A] 하락국면 리더 · [v0.27.0] 전섹터하락 SPY 참여
     rows: List[dict] = []
     for y in sorted(set(yrs)):
         m = yrs == y
@@ -5794,6 +5896,7 @@ def build_allocation_trades(alloc: Dict[str, Any], results: Dict[str, Dict[str, 
                      "폴백(여유부족)": "폴백(1위는 있으나 확신 게이트 미달 → SPY)",   # [v0.10.0 §1.B]
                      "SPY우위": "SPY우위(SPY가 후보 1위)",
                      "하락국면리더": "하락국면리더(E_t=0이나 명확1위·게이트 통과 → 그 섹터 단독)",   # [v0.15.0 §A]
+                     "전섹터하락SPY": "전섹터하락 SPY 참여(E_t>0인데 적격섹터 0 → SPY를 POS×E_t만큼)",   # [v0.27.0]
                      "현금": "현금"}
     state_kr = {"RISK_OFF": "하락(위험회피)", "TREND_ONLY_OUT": "추세필터-현금", "NO_SIGNAL": "신호없음"}
     rows: List[dict] = []
