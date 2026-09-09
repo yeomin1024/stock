@@ -1,5 +1,49 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.23.0 - 2026-09-09 - [⚠ 사용자 지적 정면 대응: "국면 판단이 잘나온거에 비해 섹터
+#                       수익률이 많이 안나온다" — 원인 귀속 시트 13n 신설 + 동일가중 혼합 변형 2종을
+#                       실제 엔진 측정용으로 상설 배치 + 개선 시도 3종 기각 기록]
+#                       변경 모듈: `build_sector_vs_m_attribution()`(신규), 혼합 변형 등록, 시트 등록 2줄.
+#                       **배분 규칙·주 전략은 무변경.**
+#
+#                       [§1 지적이 정확했다 — 숫자로 확인]
+#                       리포트24: 주 전략 ★ CAGR 29.24%(M 22.49%보다 +6.75pp)인데
+#                       **샤프 1.958 < M 2.027 · MDD -10.49% vs -7.07% · 칼마 2.787 < M 3.182.**
+#                       즉 섹터층은 M의 신호를 **더 높은 베타로 바꿔놓기만** 하고 위험조정 가치를
+#                       더하지 못한다. 일별 귀속:
+#                         시장 큰상승일 110일: 섹터가 M보다 **+6.1%p** 더 번다
+#                         시장 큰하락일 110일: 섹터가 M보다 **-15.5%p** 더 잃는다  ← 칼마 격차의 정체
+#                       구조적 사실 하나 더: '순환매'인데 **리더 판단은 504일(24%)뿐, 폴백 995일(47%)**
+#                       이고 **2018~2020년은 리더 판단이 0일**이다(그 시기 순환매 신호가 워크포워드
+#                       채택 t통계를 통과하지 못했다 — 13g). 초기 40% 구간은 사실상 주력+균등 보유였다.
+#
+#                       [§2 기각 3종 — 다시 시도하지 말 것]
+#                       (a) 주력 상한 격자 0.5~1.0(v0.22.0에 심어둔 것이 이번에 실측됐다):
+#                           0.5→칼마 2.573 / 0.6→2.639 / 0.7→2.700 / **0.8→2.787(정점)** / 0.9→2.528 /
+#                           1.0→2.420. **현행 0.8이 이미 칼마 최적**이다. 집중도 가설은 기각.
+#                       (b) 바스켓 위험 정규화(=M위험 / 1.15배 / 1.30배 상한): 샤프는 1.948 → 1.975까지
+#                           오르지만 칼마는 2.772 → 2.807에 그쳐 M(3.182)에 못 미치고 CAGR을 3.7~6.5pp
+#                           잃는다. 배수는 격자탐색이라 애초에 채택 대상이 아니다.
+#                       (c) 주력 비중 = XLK 자체 목표비중 스케일: 칼마 2.720~2.736으로 악화,
+#                           연도별 부호 2/9·3/9로 불안정.
+#
+#                       [§3 이번 라운드 최대 발견 — 동일가중 혼합의 분산 이득]
+#                       ★와 '확신 사이징'의 일별 상관은 **0.77**로 완전히 겹치지 않는다. 동일가중으로
+#                       섞으면(파라미터 탐색 아님, 1/n 고정):
+#                         ★ 단독         샤프 1.869 · 칼마 2.779 · MDD -10.49%
+#                         확신 단독       샤프 1.820 · 칼마 3.194 · MDD  -7.07%
+#                         **50/50        샤프 1.967 · 칼마 3.169 · MDD  -8.19% · CAGR 25.94%**
+#                         1/3씩          샤프 1.925 · 칼마 **3.224** · MDD -7.63% · CAGR 24.60%
+#                       **50/50의 샤프가 두 구성요소를 모두 넘는다.** 변동성 11.26%는 완전상관
+#                       가정치 11.95%보다 낮아 분산 이득이 실재한다. 무위험 가정을 0/2.74/5%로 바꿔도
+#                       샤프 순위가 뒤집히지 않는다.
+#                       ⚠ **그래도 주 전략은 바꾸지 않는다** — 위는 리플레이다. v1.34.0에서 리플레이로
+#                       고른 값을 채택했다가 실패했다. [혼합] 행으로 상설 배치해 **다음 실행의 실제
+#                       엔진이 재게** 한다. 이 방식은 v1.11.0·v1.35.0·v0.22.0에서 이미 세 번 답을 냈다.
+#
+#                       [§4 13n_섹터대M귀속 신설] 위 진단(초과수익 IR·꼬리 귀속·연도별·판단 비율)을
+#                       매 실행이 스스로 채점한다. 다음 라운드부터 이 시트만 보면 된다.
+#
 #  VERSION: v0.22.0 - 2026-09-08 - [⚠ 주 전략 ★의 위험조정 지표가 M 단독보다 나빠진 것을 진단하고
 #                       주력 상한 격자를 상설로 실었다 + M v1.38.0(규칙 ⑮ bear_only) 파급]
 #                       사용자 지시: "국면 판단, 섹터 순환매 판단 정확도 더 높이도록 개선해 틀린부분이
@@ -886,7 +930,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.22.0"
+VERSION = "v0.23.0"
 VERSION_DATE = "2026-09-08"
 
 # =============================================================================
@@ -4108,6 +4152,39 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         variants[label_regime] = frac_regime    # [v0.10.0 §1.D]
     for _lab, _fr in primary_cap_variants.items():   # [v0.22.0] 주력 상한 격자(실제 엔진 측정)
         variants[_lab] = _fr
+    # [v0.23.0 ⚠ 이번 라운드 최대 발견 — 동일가중 혼합의 분산 이득]
+    #   진단: 주 전략 ★는 CAGR은 높지만(29.24%) 샤프·MDD·칼마가 전부 M 단독보다 나쁘다.
+    #   반면 '확신 사이징'과 '중립만 리더' 변형은 M을 위험조정에서 근소하게 넘지만 CAGR이 M 수준이다.
+    #   두 성질이 **상관 0.77**로 완전히 겹치지 않는다는 점에 착안해 동일가중으로 섞어봤더니
+    #   (리포트24 곡선 기준 리플레이, 파라미터 탐색 아님 — 가중치는 1/n 고정):
+    #     ★ 단독        CAGR 29.15%  샤프 1.869  MDD -10.49%  칼마 2.779
+    #     확신 사이징 단독  CAGR 22.57%  샤프 1.820  MDD  -7.07%  칼마 3.194
+    #     **★+확신 50/50  CAGR 25.94%  샤프 1.967  MDD  -8.19%  칼마 3.169**  ← 샤프가 양쪽을 모두 넘는다
+    #     ★+확신+중립 1/3 CAGR 24.60%  샤프 1.925  MDD  -7.63%  칼마 **3.224** ← 칼마 최고
+    #   50/50의 변동성 11.26%는 완전상관 가정치(11.95%)보다 낮다 = **분산 이득이 실재한다.**
+    #   무위험 가정을 0%/2.74%/5%로 바꿔도 50/50의 샤프가 항상 두 구성요소보다 높다(순위 불변).
+    #   ⚠ 그럼에도 **주 전략(★)은 바꾸지 않는다.** 위 수치는 리플레이이고, 이 프로젝트는 v1.34.0에서
+    #   리플레이로 고른 값을 채택했다가 실패했다. 실제 엔진이 [혼합] 행으로 직접 재게 하고,
+    #   다음 실행의 13_섹터배분전략에서 확인한 뒤 고른다(v1.11.0 격자·v1.35.0 BREADTH_SIDE·
+    #   v0.22.0 상한격자가 모두 이 방식으로 답을 냈다).
+    _bl_src = {}
+    for _k in list(variants.keys()):
+        if str(_k).endswith("★"):
+            _bl_src["주력"] = variants[_k]
+        elif "확신 사이징" in str(_k):
+            _bl_src["확신"] = variants[_k]
+        elif "중립 국면만 리더" in str(_k):
+            _bl_src["중립"] = variants[_k]
+    def _blend(parts: List[pd.DataFrame]) -> pd.DataFrame:
+        out = parts[0].copy() * 0.0
+        for pdf in parts:
+            out = out.add(pdf.reindex_like(out).fillna(0.0), fill_value=0.0)
+        return out / float(len(parts))
+    if "주력" in _bl_src and "확신" in _bl_src:
+        variants["혼합: 주력★ + 확신사이징 50/50 [혼합]"] = _blend([_bl_src["주력"], _bl_src["확신"]])
+    if "주력" in _bl_src and "확신" in _bl_src and "중립" in _bl_src:
+        variants["혼합: 주력★ + 확신 + 중립만리더 1/3 [혼합]"] = _blend(
+            [_bl_src["주력"], _bl_src["확신"], _bl_src["중립"]])
     variants[ROT_LABEL_CTRL_A] = frac_ctrl_a
     variants[ROT_LABEL_CTRL_B] = frac_ctrl_b
 
@@ -4710,6 +4787,104 @@ def build_prediction_accuracy(alloc: Dict[str, Any],
                      "리더 지정일": int((isL & m).sum()),
                      "리더 비율": round(float((isL & m).mean() if m.sum() else np.nan), 4)})
     return pd.DataFrame(rows)
+
+
+def build_sector_vs_m_attribution(sres: dict, alloc: Dict[str, Any],
+                                  results: Dict[str, Dict[str, Any]], scfg: "SectorConfig") -> pd.DataFrame:
+    """[v0.23.0] 13n_섹터대M귀속 — **"국면 판단이 잘나온 것에 비해 섹터 수익률이 안 나온다"**는
+    사용자 지적을 매 실행이 스스로 채점하는 시트. 배분 규칙은 전혀 건드리지 않는 순수 관측이다.
+
+    왜 필요한가(리포트24 실측 진단):
+      주 전략 ★는 CAGR 29.24%로 M(22.49%)보다 +6.75pp 높은데, **샤프 1.958 < M 2.027 ·
+      MDD -10.49% vs -7.07% · 칼마 2.787 < M 3.182**로 위험조정 지표가 전부 M보다 나쁘다.
+      즉 섹터층은 M의 신호를 **더 높은 베타로 바꿔놓기만** 하고 위험조정 가치를 더하지 못한다.
+      그 원인을 일별로 귀속시키면 다음이 보인다(리포트24):
+        · 시장 큰상승일(상위 5%) 110일: 섹터가 M보다 **+6.1%p** 더 번다
+        · 시장 큰하락일(하위 5%) 110일: 섹터가 M보다 **-15.5%p** 더 잃는다
+        → 꼬리 순합 약 -9.4%p. 칼마 격차는 사실상 전부 여기서 나온다.
+      또 하나의 구조적 사실: '순환매'라고 부르지만 **리더 판단은 504일(24%)뿐이고 폴백이 995일(47%)**
+      이며, 2018~2020년은 **리더 판단이 0일**이다(워크포워드 채택 기준을 통과한 순환매 신호가
+      그 시기에 없었다 — 13g 로그의 t통계가 전부 미달). 즉 초기 40% 구간의 '순환매'는 사실상
+      주력+균등 슬리브 보유였다. 이것은 결함이 아니라 정직한 동작이지만, **기대와 실제의 간극**을
+      매 실행에서 보이게 해야 오해가 없다.
+      ⚠ 이번 라운드에 시도해 전부 기각한 것(다시 시도하지 말 것):
+        (a) 주력 상한 격자 0.5~1.0 — **0.8이 이미 칼마 정점**(2.787), 낮추면 CAGR만 1:1로 준다.
+        (b) 바스켓 위험 정규화(=M위험 / 1.15배 / 1.30배 상한) — 샤프는 1.948 → 1.975까지 오르지만
+            칼마가 2.772 → 2.807에 그쳐 M의 3.182에 못 미치고 CAGR을 3.7~6.5pp 잃는다.
+            배수(1.15/1.30)는 격자탐색이라 채택 대상도 아니다.
+        (c) 주력 비중 = XLK 자체 목표비중(0~1) 스케일 — 칼마 2.720~2.736으로 오히려 악화,
+            연도별 부호도 2/9·3/9로 불안정.
+    """
+    try:
+        pc = sres.get("portfolio_curve")
+        pp = sres.get("portfolio_perf")
+        if pc is None or len(pc) == 0 or pp is None or len(pp) == 0:
+            return pd.DataFrame()
+        if not alloc or "spy_m_ret" not in alloc:
+            return pd.DataFrame()
+        curve = pc.copy()
+        if "날짜" in curve.columns:
+            curve["날짜"] = pd.to_datetime(curve["날짜"]); curve = curve.set_index("날짜")
+        curve = curve.sort_index()
+        star = None
+        for c in curve.columns:
+            if str(c).endswith("★"):
+                star = c; break
+        if star is None:
+            star = curve.columns[0]
+        sr = curve[star].astype(float).pct_change()
+        mrr = pd.Series(alloc["spy_m_ret"]).reindex(sr.index).astype(float)
+        # 시장 대용치: 11섹터 동일가중 일간수익(SPY 원계열이 이 스코프에 없다 — 꼬리 구간을
+        # 가르는 용도로만 쓰며, 시트에도 '11섹터 균등' 기준임을 명시한다).
+        _rr = {t: pd.Series(results[t]["ret_cc_full"]) for t in results
+               if isinstance(results.get(t), dict) and results[t].get("ret_cc_full") is not None}
+        mkt = pd.DataFrame(_rr).reindex(sr.index).mean(axis=1).astype(float) if _rr else None
+        ok = sr.notna() & mrr.notna()
+        sr, mrr = sr[ok], mrr[ok]
+        if len(sr) < 120:
+            return pd.DataFrame()
+        exr = sr - mrr
+        rows: List[dict] = []
+        rows.append({"블록": "A. 총괄", "구분": "── 섹터 주 전략 vs SPY 국면전략(M) ──",
+                     "설명": "CAGR만 보지 말 것 — 위험조정에서 M을 넘는지가 이 층의 존재 이유다"})
+        rows.append({"블록": "A. 총괄", "구분": "일별 초과수익(섹터 − M)", "일수": int(len(exr)),
+                     "연율(%p)": round(float(exr.mean()) * 252 * 100, 2),
+                     "초과 변동성(%)": round(float(exr.std()) * np.sqrt(252) * 100, 2),
+                     "정보비율(IR)": round(float(exr.mean() / exr.std() * np.sqrt(252)), 3) if float(exr.std()) > 0 else np.nan,
+                     "양수일 비율": round(float((exr > 0).mean()), 4)})
+        eqe = (1.0 + exr).cumprod()
+        rows.append({"블록": "A. 총괄", "구분": "초과수익 곡선 최대낙폭",
+                     "연율(%p)": round(float((eqe / eqe.cummax() - 1).min()) * 100, 2),
+                     "설명": "초과수익이 꾸준한지, 특정 구간에 몰려 있는지"})
+        if mkt is not None and mkt.notna().sum() > 200:
+            mk = mkt[exr.index]
+            hi, lo = mk.quantile(0.95), mk.quantile(0.05)
+            rows.append({"블록": "B. 꼬리 귀속", "구분": "── 칼마 격차가 어디서 나오나 ──",
+                         "설명": "큰하락일에 섹터가 M보다 더 잃으면 그것이 곧 낙폭 격차다 (꼬리 구분 기준: 11섹터 동일가중)"})
+            for nm, msk in (("시장 큰상승일(상위5%)", mk >= hi), ("시장 큰하락일(하위5%)", mk <= lo),
+                            ("나머지 날", (mk > lo) & (mk < hi))):
+                if int(msk.sum()) < 5:
+                    continue
+                rows.append({"블록": "B. 꼬리 귀속", "구분": nm, "일수": int(msk.sum()),
+                             "섹터 합(%)": round(float(sr[msk].sum()) * 100, 2),
+                             "M 합(%)": round(float(mrr[msk].sum()) * 100, 2),
+                             "차이(%p)": round(float(exr[msk].sum()) * 100, 2)})
+        rows.append({"블록": "C. 연도별 초과수익", "구분": "── 어느 해에 벌고 어느 해에 잃나 ──"})
+        for y, g in exr.groupby(exr.index.year):
+            rows.append({"블록": "C. 연도별 초과수익", "구분": str(y), "일수": int(len(g)),
+                         "차이(%p)": round(float((1 + g).prod() - 1) * 100, 2)})
+        alloc_sheet = sres.get("alloc_sheet")
+        if alloc_sheet is not None and len(alloc_sheet) and "판단" in alloc_sheet.columns:
+            vc = alloc_sheet["판단"].astype(str).value_counts()
+            tot = int(vc.sum())
+            rows.append({"블록": "D. 순환매가 실제로 판단한 비율", "구분": "── '순환매'의 실체 ──",
+                         "설명": "리더 판단 비율이 낮으면 이 층의 성과는 주력 보유가 만든 것이다"})
+            for k, v in vc.items():
+                rows.append({"블록": "D. 순환매가 실제로 판단한 비율", "구분": str(k), "일수": int(v),
+                             "비중(%)": round(v / max(tot, 1) * 100, 2)})
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
 
 
 def build_sleeve_attribution(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
@@ -5652,6 +5827,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         # [v0.21.0] 잔여 슬리브(주력섹터 상한 밖 비중) 귀속 — 사용자 지시("섹터 순환매 판단 정확도
         #   더 높이도록 개선해 틀린부분이 어딘지 파악해서"). 배분 규칙 무변경 — 순수 관측.
         sheets["13m_잔여슬리브기여"] = build_sleeve_attribution(alloc, results, scfg)
+        # [v0.23.0] 사용자 지적("국면 판단이 잘나온거에 비해 섹터 수익률이 많이 안나온다")을
+        #   매 실행이 스스로 채점하는 시트. 배분 규칙 무변경 — 순수 관측.
+        sheets["13n_섹터대M귀속"] = build_sector_vs_m_attribution(sres, alloc, results, scfg)
         # [v0.14.0] 사용자 판단기준("정확도가 중요해", "섹터별 일별 예측을 보면 맞는게 별로 없는거 같아")을
         #   매 실행이 스스로 채점하는 시트. 배분 규칙 무변경 — 순수 관측.
         sheets["13l_예측정확도"] = build_prediction_accuracy(alloc)
