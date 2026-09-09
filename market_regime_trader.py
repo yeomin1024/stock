@@ -1,5 +1,40 @@
+from __future__ import annotations
+
+import functools
+import io
+import os
+import sys
+import json
+import time
+import math
+import logging
+import warnings
+import threading
+import zipfile                          # [v1.25.0] Colab 자동 다운로드를 여러 파일 1회 zip으로 묶는 데 사용
+import datetime as dt
+import dataclasses                     # [v1.22.0] 결과 번들의 cfg 직렬화(asdict/fields)
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.41.1 - 2026-09-09 - [구조 수정 · 신호 무변경] `from __future__ import annotations`를
+#                       포함한 import 블록 전체를 파일 맨 앞(1번째 줄)으로 이동. 사용자가
+#                       "SyntaxError: from __future__ imports must occur at the beginning of
+#                       the file"를 보고했다. ast.parse로 확인한 결과 v1.41.0 파일 자체는
+#                       이미 유효한 Python이었다 (future import 앞은 순수 주석 블록(1~1939행)
+#                       뿐이었고, 주석은 이 규칙에서 예외). 즉 오류의 진짜 원인은 파일이 아니라
+#                       실행 방식(코랩 셀에 이전 코드가 남아있는 상태로 새 코드를 이어붙여 붙여넣었거나,
+#                       파일 일부만 붙여넣은 경우 등)일 가능성이 높다 — 아래 리포트에 확인 방법과
+#                       권장 실행 절차를 안내했다. 그럼에도 "재발 자체를 원천 차단"하기 위해 파일
+#                       구조를 방어적으로 바꾼다: import 블록을 1번째 줄로, 버전 이력 주석 헤더를
+#                       그 뒤로 옮겼다. 스크립트로 기계적 블록 이동만 수행했고(collections.Counter로
+#                       원본↔결과 라인 멀티셋이 삽입된 빈 줄 1개를 빼면 완전히 동일함을 검증),
+#                       ast.parse 재검증 + 34개 회귀 테스트 + --selftest 전부 재실행해 통과 확인.
+#                       신호/설정값은 단 한 글자도 바뀌지 않았다.
 #  VERSION: v1.41.0 - 2026-09-09 - [⚠ 회복확인폭 0.03 → 0.02 (정확도 3지표 전부 개선) + E7 기각
 #                       (경계 확장이 제 역할을 했다) + 격자 경계 0.015 추가]
 #                       변경 모듈: `Config.RECOVERY_CONFIRM_PCT`, 06c 회복확인폭 격자. 신호 로직 무변경.
@@ -1937,26 +1972,6 @@
 #          - [ReportLayer]      11개 시트 Excel (일별로그/거래/지표검증/이벤트스터디/성과/연도별/가중치/데이터품질)
 #          - [AuditLayer]       룩어헤드 재계산 감사 + 합성데이터 SELF_TEST
 # =============================================================================
-from __future__ import annotations
-
-import functools
-import io
-import os
-import sys
-import json
-import time
-import math
-import logging
-import warnings
-import threading
-import zipfile                          # [v1.25.0] Colab 자동 다운로드를 여러 파일 1회 zip으로 묶는 데 사용
-import datetime as dt
-import dataclasses                     # [v1.22.0] 결과 번들의 cfg 직렬화(asdict/fields)
-from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
-
-import numpy as np
-import pandas as pd
 
 warnings.filterwarnings("ignore")
 
@@ -9168,7 +9183,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.41.0 (2026-09-09)"),
+        ("버전", "v1.41.1 (2026-09-09)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -9410,7 +9425,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.41.0"
+BUNDLE_VERSION = "v1.41.1"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
