@@ -1,5 +1,47 @@
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.24.0 - 2026-09-09 - [⚠⚠ 내 지난 라운드 계측 2건의 버그 수정 + 하락국면리더가 낙폭의
+#                       주범임을 규명 + 강도 격자 신설] 사용자 지시: "섹터 순환매는 국면 판단이
+#                       잘나온거에 비해 수익률이 많이 안나와서 개선을 많이 해야될거 같애".
+#                       변경 모듈: 하락국면리더 오버라이드 적용 범위(+[상한격자]), 혼합 등록 위치 이동,
+#                       `_dl_variants`(하락리더 강도 격자) 신설. **주 전략·채택 파라미터는 무변경.**
+#
+#                       [§1 ⚠ 버그 A — v0.23.0의 [혼합] 행이 통째로 등록되지 않았다]
+#                       리포트25에 [혼합] 행이 하나도 없다. 원인: 등록 코드를 `label_conv`(확신 사이징)
+#                       **생성 전에** 두어 구성요소를 못 찾았고, 조용히 아무 것도 만들지 않았다.
+#                       → 등록을 label_conv 뒤로 옮기고, **구성요소를 못 찾으면 warning 로그**를 남겨
+#                       같은 침묵 실패가 반복되지 않게 했다(blend_variants 이벤트).
+#
+#                       [§2 ⚠ 버그 B — v0.22.0 상한격자는 like-for-like 비교가 아니었다]
+#                       ★(label_primary)는 하락국면리더 오버라이드를 받는데 [상한격자] 행들은 못 받았다.
+#                       그래서 리포트25에서 ★의 MDD가 **-13.97%**인데 격자 행은 전부 -10.2%대로 찍혔다.
+#                       즉 v0.22.0에서 "0.8이 칼마 정점"이라고 내린 결론은 **다른 전략끼리 비교한 것**이라
+#                       무효다. → [상한격자]도 같은 오버라이드를 받도록 고쳤다. 다음 실행부터 유효하다.
+#
+#                       [§3 진단 — 낙폭의 주범을 특정했다: 하락국면리더(v0.15.0)]
+#                       리포트25에서 이 규칙이 **133일** 발동했다(v0.22.0의 73일 → 거의 두 배).
+#                       M이 HAZARD_ENTER 0.90으로 바뀌며 E_t=0 구간 구성이 달라진 결과다.
+#                       그 133일은 **M이 전량 현금(체결비중 0.000)인데 섹터층은 총비중 1.000**인 날 —
+#                       M의 위험회피 판단을 정면으로 뒤집는 구간이다.
+#                       충실 리플레이(리포트25 재현 CAGR 29.49 / MDD -13.83 / 칼마 2.132
+#                       vs 리포트 29.61 / -13.97 / 2.120):
+#                         ON (현행 POS=1.0)  CAGR 29.49%  샤프 1.814  MDD **-13.83%**  칼마 2.132
+#                         OFF               CAGR 29.34%  샤프 1.957  MDD **-10.50%**  칼마 **2.793**
+#                         참고 M 단독        CAGR 23.68%  샤프 1.986  MDD  -7.07%  칼마 3.351
+#                       **CAGR 0.15pp를 내주고 MDD 3.33%p·칼마 0.66을 되찾는다.**
+#                       발동일 자체는 +8.06%p를 벌지만(섹터 +11.25% vs M +3.19%) 낙폭 경로를 망친다.
+#                       ⚠ **끄지 않는다** — 사용자가 직접 지시한 규칙이다(v0.15.0). 대신 강도를
+#                       0%/25%/50%/75%로 [하락리더격자] 행에 실어 **실제 엔진이 재게** 한다.
+#                       중간 강도가 CAGR을 지키면서 낙폭을 줄이는지가 다음 라운드의 결정 근거다.
+#
+#                       [§4 섹터가 국면 대비 못 버는 이유 — 이번 실측으로 더 분명해졌다]
+#                       ★ CAGR 29.61%(M 23.69%보다 +5.92pp)인데 **샤프 1.829 < M 2.062 ·
+#                       MDD -13.97% vs -7.07% · 칼마 2.120 vs 3.351**로 격차가 지난 라운드보다 더 벌어졌다.
+#                       반면 [비교] '확신 사이징'은 CAGR 24.11% · 샤프 **2.086** · MDD **-7.07%** ·
+#                       칼마 **3.410**으로 **M을 전 지표에서 넘는 유일한 전략**이다.
+#                       주 전략 교체 후보이지만, 리플레이가 아니라 실제 엔진의 [혼합]·[하락리더격자]
+#                       결과를 보고 고른다.
+#
 #  VERSION: v0.23.0 - 2026-09-09 - [⚠ 사용자 지적 정면 대응: "국면 판단이 잘나온거에 비해 섹터
 #                       수익률이 많이 안나온다" — 원인 귀속 시트 13n 신설 + 동일가중 혼합 변형 2종을
 #                       실제 엔진 측정용으로 상설 배치 + 개선 시도 3종 기각 기록]
@@ -930,8 +972,8 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.23.0"
-VERSION_DATE = "2026-09-08"
+VERSION = "v0.24.0"
+VERSION_DATE = "2026-09-09"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -4152,39 +4194,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         variants[label_regime] = frac_regime    # [v0.10.0 §1.D]
     for _lab, _fr in primary_cap_variants.items():   # [v0.22.0] 주력 상한 격자(실제 엔진 측정)
         variants[_lab] = _fr
-    # [v0.23.0 ⚠ 이번 라운드 최대 발견 — 동일가중 혼합의 분산 이득]
-    #   진단: 주 전략 ★는 CAGR은 높지만(29.24%) 샤프·MDD·칼마가 전부 M 단독보다 나쁘다.
-    #   반면 '확신 사이징'과 '중립만 리더' 변형은 M을 위험조정에서 근소하게 넘지만 CAGR이 M 수준이다.
-    #   두 성질이 **상관 0.77**로 완전히 겹치지 않는다는 점에 착안해 동일가중으로 섞어봤더니
-    #   (리포트24 곡선 기준 리플레이, 파라미터 탐색 아님 — 가중치는 1/n 고정):
-    #     ★ 단독        CAGR 29.15%  샤프 1.869  MDD -10.49%  칼마 2.779
-    #     확신 사이징 단독  CAGR 22.57%  샤프 1.820  MDD  -7.07%  칼마 3.194
-    #     **★+확신 50/50  CAGR 25.94%  샤프 1.967  MDD  -8.19%  칼마 3.169**  ← 샤프가 양쪽을 모두 넘는다
-    #     ★+확신+중립 1/3 CAGR 24.60%  샤프 1.925  MDD  -7.63%  칼마 **3.224** ← 칼마 최고
-    #   50/50의 변동성 11.26%는 완전상관 가정치(11.95%)보다 낮다 = **분산 이득이 실재한다.**
-    #   무위험 가정을 0%/2.74%/5%로 바꿔도 50/50의 샤프가 항상 두 구성요소보다 높다(순위 불변).
-    #   ⚠ 그럼에도 **주 전략(★)은 바꾸지 않는다.** 위 수치는 리플레이이고, 이 프로젝트는 v1.34.0에서
-    #   리플레이로 고른 값을 채택했다가 실패했다. 실제 엔진이 [혼합] 행으로 직접 재게 하고,
-    #   다음 실행의 13_섹터배분전략에서 확인한 뒤 고른다(v1.11.0 격자·v1.35.0 BREADTH_SIDE·
-    #   v0.22.0 상한격자가 모두 이 방식으로 답을 냈다).
-    _bl_src = {}
-    for _k in list(variants.keys()):
-        if str(_k).endswith("★"):
-            _bl_src["주력"] = variants[_k]
-        elif "확신 사이징" in str(_k):
-            _bl_src["확신"] = variants[_k]
-        elif "중립 국면만 리더" in str(_k):
-            _bl_src["중립"] = variants[_k]
-    def _blend(parts: List[pd.DataFrame]) -> pd.DataFrame:
-        out = parts[0].copy() * 0.0
-        for pdf in parts:
-            out = out.add(pdf.reindex_like(out).fillna(0.0), fill_value=0.0)
-        return out / float(len(parts))
-    if "주력" in _bl_src and "확신" in _bl_src:
-        variants["혼합: 주력★ + 확신사이징 50/50 [혼합]"] = _blend([_bl_src["주력"], _bl_src["확신"]])
-    if "주력" in _bl_src and "확신" in _bl_src and "중립" in _bl_src:
-        variants["혼합: 주력★ + 확신 + 중립만리더 1/3 [혼합]"] = _blend(
-            [_bl_src["주력"], _bl_src["확신"], _bl_src["중립"]])
+    # [v0.24.0] 혼합 변형 등록은 label_conv(확신 사이징) 생성 **뒤로** 옮겼다 — v0.23.0에서
+    #   여기에 두었더니 그 시점에 확신 사이징이 아직 variants에 없어 **아무 것도 등록되지 않았다**
+    #   (리포트25에 [혼합] 행이 통째로 빠진 원인). 아래 label_conv 블록 다음을 볼 것.
     variants[ROT_LABEL_CTRL_A] = frac_ctrl_a
     variants[ROT_LABEL_CTRL_B] = frac_ctrl_b
 
@@ -4214,7 +4226,14 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #   신규 신호는 만들지 않는다(leader_s·gate_s는 이미 t일 정보로 계산된 값). 체결은 t+1 시가로 동일.
         # [v0.16.0] 하락국면 리더(v0.15.0)는 '집중배분' 계열의 규칙이다. 주력섹터 모드가 주 전략일 때도
         #   같은 근거(E_t=0이어도 명확1위가 게이트를 통과하면 거래)가 성립하므로 주 전략에 적용한다.
-        if (label in (label_leader, label_primary) and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
+        # [v0.24.0 ⚠ 버그 수정 — v0.22.0 상한격자는 like-for-like 비교가 아니었다]
+        #   ★(label_primary)는 아래 하락국면리더 오버라이드를 받는데 [상한격자] 행들은 못 받았다.
+        #   그래서 리포트25에서 ★의 MDD가 -13.97%인데 격자 행은 전부 -10.2%대로 찍혔고,
+        #   v0.22.0에서 "0.8이 칼마 정점"이라고 내린 결론은 **다른 전략끼리 비교한 것**이었다.
+        #   상한만 다르고 나머지는 같아야 격자의 의미가 있으므로 [상한격자]도 같은 오버라이드를 받는다.
+        _is_cap_grid = "[상한격자]" in str(label)
+        if ((label in (label_leader, label_primary) or _is_cap_grid)
+                and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
             dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
             dl_m = tier.eq("현금") & leader_s.notna() & leader_s.isin(cols)
             if getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True):
@@ -4273,6 +4292,77 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         target_ws[label_conv] = tw_conv
         bts[label_conv] = portfolio_backtest(tw_conv, ret_co, ret_oc, **bt_kw)
         variants[label_conv] = tw_conv
+    # [v0.24.0 ⚠⚠ 하락국면리더(v0.15.0) 강도 격자 — 이번 라운드 최대 진단]
+    #   리포트25에서 이 규칙이 **133일**(v0.22.0의 73일 → 거의 두 배) 발동했다. M이 HAZARD_ENTER
+    #   0.90으로 바뀌며 E_t=0 구간의 구성이 달라진 결과다. 그 133일은 **M이 전량 현금(체결비중 0.000)인데
+    #   섹터층은 총비중 1.000**인 날이다 — 즉 M의 위험회피 판단을 정면으로 뒤집는 구간이다.
+    #   충실 리플레이(리포트25 재현: CAGR 29.49% / MDD -13.83% / 칼마 2.132 vs 리포트 29.61 / -13.97 / 2.120):
+    #     하락국면리더 ON (현행 POS=1.0)  CAGR 29.49%  샤프 1.814  MDD **-13.83%**  칼마 2.132
+    #     하락국면리더 OFF               CAGR 29.34%  샤프 1.957  MDD **-10.50%**  칼마 **2.793**
+    #     참고 M 단독                    CAGR 23.68%  샤프 1.986  MDD  -7.07%  칼마 3.351
+    #   **CAGR을 0.15pp 내주고 MDD를 3.33%p·칼마를 0.66 되찾는다.** 발동일 자체는 +8.06%p를 벌지만
+    #   (섹터 +11.25% vs M +3.19%) 낙폭 경로를 크게 악화시킨다.
+    #   ⚠ 이 규칙은 사용자가 직접 지시한 것이다("무조건 spy 전략 국면이 하락 예측 시에도 상승 할 수
+    #   있는 섹터가 있으면 그걸로 거래하도록 해", v0.15.0). 그래서 **끄지 않는다.** 대신 강도를
+    #   0.25/0.50/0.75/OFF로 격자에 실어 **실제 엔진이 재게** 한다. 중간 강도가 CAGR을 지키면서
+    #   낙폭을 줄이는지가 다음 라운드의 결정 근거가 된다.
+    _dl_variants = {}
+    if getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False) and label_primary in target_ws:
+        _dl_live = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
+        _dl_days = (tier == "하락국면리더")
+        if bool(_dl_days.any()):
+            _base = target_ws[label_primary]
+            for _lv in (0.0, 0.25, 0.50, 0.75):
+                if abs(_lv - _dl_live) < 1e-9:
+                    continue
+                _w = _base.copy()
+                _idx = _dl_days.reindex(_w.index).fillna(False)
+                _w.loc[_idx.values, :] = _base.loc[_idx.values, :] * (_lv / _dl_live if _dl_live > 0 else 0.0)
+                _dl_variants[f"주력섹터 중심 · 하락국면리더 비중 {_lv:.0%} [하락리더격자]"] = _w
+    for _lab, _fr in _dl_variants.items():
+        target_ws[_lab] = _fr
+        bts[_lab] = portfolio_backtest(_fr, ret_co, ret_oc, **bt_kw)
+        variants[_lab] = _fr
+    if _dl_variants:
+        log("ROTATION", kv(event="down_leader_grid", levels=len(_dl_variants),
+                           live_pos=float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0))), M=M)
+
+    # [v0.24.0 ⚠ 동일가중 혼합 — v0.23.0에서 잘못된 위치에 두어 등록조차 되지 않았던 것을 고쳤다]
+    #   근거(리포트24 곡선 리플레이): ★와 '확신 사이징'의 일별 상관은 0.77로 완전히 겹치지 않아,
+    #   1/n 동일가중으로 섞으면 **샤프가 두 구성요소를 모두 넘는다**(1.967 vs 1.869 / 1.820).
+    #   가중치는 1/n 고정 — 파라미터 탐색이 아니다. 주 전략은 바꾸지 않고 [혼합] 행으로만 실어
+    #   **실제 엔진이 직접 재게** 한다(v1.11.0·v1.35.0·v0.22.0이 모두 이 방식으로 답을 냈다).
+    #   ⚠ v0.23.0의 교훈: 등록이 조용히 실패할 수 있으므로 **구성요소를 못 찾으면 로그로 알린다.**
+    _bl_src = {}
+    for _k in list(target_ws.keys()):
+        _ks = str(_k)
+        if _ks == label_primary:
+            _bl_src["주력"] = target_ws[_k]
+        elif "확신 사이징" in _ks:
+            _bl_src["확신"] = target_ws[_k]
+        elif "중립 국면만 리더" in _ks:
+            _bl_src["중립"] = target_ws[_k]
+
+    def _blend(parts: List[pd.DataFrame]) -> pd.DataFrame:
+        out = parts[0].copy() * 0.0
+        for _pdf in parts:
+            out = out.add(_pdf.reindex_like(out).fillna(0.0), fill_value=0.0)
+        return out / float(len(parts))
+
+    _blends = {}
+    if "주력" in _bl_src and "확신" in _bl_src:
+        _blends["혼합: 주력★ + 확신사이징 50/50 [혼합]"] = _blend([_bl_src["주력"], _bl_src["확신"]])
+    if len(_bl_src) == 3:
+        _blends["혼합: 주력★ + 확신 + 중립만리더 1/3 [혼합]"] = _blend(
+            [_bl_src["주력"], _bl_src["확신"], _bl_src["중립"]])
+    for _lab, _fr in _blends.items():
+        target_ws[_lab] = _fr
+        bts[_lab] = portfolio_backtest(_fr, ret_co, ret_oc, **bt_kw)
+        variants[_lab] = _fr
+    log("ROTATION", kv(event="blend_variants", found=sorted(_bl_src.keys()), registered=len(_blends),
+                       missing=sorted({"주력", "확신", "중립"} - set(_bl_src))), M=M,
+        level=("info" if len(_blends) else "warning"))
+
     # [v0.7.0] 참조: SPY 국면전략(M) 성과(같은 평가창, M의 bt 그대로) — 수용기준 ⑤(목표: CAGR ≥ SPY M)에 사용
     spy_m_ret = res["bt"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
     spy_m_pm = M.perf_metrics(spy_m_ret, "SPY 국면전략(M)")
