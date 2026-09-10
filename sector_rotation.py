@@ -17,6 +17,53 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.29.0 - 2026-09-10 - [진단: 큰하락일 열위의 원인은 '크기'가 아니라 '베타'였다 +
+#                       사전등록 [베타격자]] 변경 모듈: `SectorConfig.ROTATION_BETA_SCALE`(신규,
+#                       **0.0**), `ROTATION_BETA_MIN_OBS`(250), `_build_primary` 베타 승수,
+#                       `[베타격자]`(0/0.25/0.5/0.75/1.0), like-for-like 오버라이드 범위 확장.
+#                       **배분 로직·채택값 무변경 — v0.28.0과 비트 동일**(scale=0이면 승수 1.0).
+#
+#                       [§1 v0.28.0 실측 확인 — 예측과 거의 일치]
+#                       리포트29 ★: CAGR **33.92%** · 샤프 **2.112** · MDD -10.35% · 칼마 3.279
+#                       (예측 33.89 / 2.110 / -10.25 / 3.308). CAGR·샤프는 소수 셋째 자리까지 맞았고
+#                       MDD만 0.10%p 나빴다 — 격자 행은 ★ 프레임을 17일만 배수한 것이라 회전비용·
+#                       경로가 미세하게 다르다. 같은 실행 안에서는 다섯 수준의 MDD가 -10.35%로 완전
+#                       동일해 "수준 간 MDD 대가 0"이라는 채택 근거 자체는 유지된다.
+#                       효과는 예상보다 컸다: **2022 초과수익 -14.62%p → +0.52%p**, 'SPY우위' 버킷
+#                       -13.53%p → **+2.48%p**, 전체 초과 52.76 → **69.39%p**, 13n IR 0.849 →
+#                       **1.206**, 초과수익 곡선 MDD -17.79% → **-6.74%**.
+#                       전섹터하락SPY 17일의 기여가 0.00%p인 것은 정상이다 — 참여 1.0이면 그 날
+#                       M과 같은 것을 같은 크기로 들므로 초과수익이 정확히 0이어야 한다.
+#
+#                       [§2 ⚠ 이번 라운드 진단 — 남은 열위는 전부 '베타'다]
+#                       13n: 큰상승일 M 대비 **+10.26%p**(처음으로 앞섰다), 큰하락일 **-12.59%p**.
+#                       큰하락일 110일을 전수 분해했다:
+#                         · 명목 노출은 M과 사실상 동일 — 섹터 총비중 0.3577 vs E_t 0.3555
+#                         · **베타 가중 노출 0.4519 vs 0.3555 → 초과 베타 +0.096(약 27% 초과 위험)**
+#                           (XLK 베타 1.28이 그 날 보유의 87%를 차지)
+#                         · 실현 차이 -15.07%p 중 **-11.83%p가 "같은 비중을 SPY에 넣었을 때와의 차이"**
+#                       즉 **얼마나 담았나가 아니라 무엇을 담았나**의 문제이고, 이 층은 M의 위험
+#                       결정을 조용히 베타만큼 증폭하고 있었다.
+#
+#                       [§3 처방 — 베타 정규화(사전등록, 라이브 무변경)]
+#                       주력·대피처 비중에 **min(1, 1/베타^scale)** 을 곱한다. 승수를 1 이하로만
+#                       클립해 저베타 섹터에서 비중을 키우지 않으므로 "합계 ≤ E_t" 불변식이 유지되고,
+#                       규칙은 언제나 위험을 줄이는 방향으로만 작동한다. 베타는 **확장창 워크포워드**
+#                       (t 이전 자료만, 최소 250거래일)로 매일 재추정 — 룩어헤드 없음.
+#                       ⚠ 채택하지 않는다: 큰하락일을 줄이면 큰상승일 우위(+10.26%p)도 같이 줄어드는
+#                       **양방향 거래**다. 방향이 명확하지 않으므로 리플레이로 고르지 않고
+#                       0/0.25/0.5/0.75/1.0을 [베타격자]에 실어 실제 엔진이 칼마로 판정하게 한다.
+#                       ⚠ like-for-like: [베타격자] 행도 하락국면리더·전섹터하락 오버라이드를 받도록
+#                       범위를 넓혔다 — v0.24.0에서 [상한격자]가 그것을 못 받아 틀린 결론("상한 0.8이
+#                       최적")을 냈던 실수를 반복하지 않는다.
+#
+#                       [§4 다른 격자는 현행 유지가 최적]
+#                       [상한격자] 칼마 2.926/3.018/3.106/3.192/**3.279(90% ★)**/3.217 — 90% 정점 유지
+#                       (⚠ 샤프는 60%에서 2.192로 정점 — 두 지표의 최적이 갈리지만 이 프로젝트의
+#                       결정 지표는 칼마다). [하락리더격자] 3.274/**3.279(25% ★)**/3.278/3.274 — 유지.
+#                       [전섹터하락격자] 3.059/3.114/3.169/3.224/**3.279(100% ★)** — 채택 재확인.
+#                       [혼합] 1/3 칼마 3.554 · 50/50 3.530으로 ★(3.279)보다 높지만 CAGR을 4.5~6.3%p
+#                       내준다 — "CAGR 무손실" 조건을 못 넘어 자동 채택 대상이 아니다(상설 후보 유지).
 #  VERSION: v0.28.0 - 2026-09-10 - [⚠ 전섹터하락 SPY 참여 0.5 → 1.0 — 격자가 단조였고 MDD 대가가
 #                       0이었다. 의미는 "판단이 없을 때는 M을 뒤집지 않는다"]
 #                       변경 모듈: `SectorConfig.ROTATION_ALLDOWN_SPY_POS`(0.5→**1.0**).
@@ -1190,7 +1237,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.28.0"
+VERSION = "v0.29.0"
 VERSION_DATE = "2026-09-10"
 
 # =============================================================================
@@ -1453,6 +1500,25 @@ class SectorConfig:
     #   상설 측정 — 이 개입은 17일에만 닿고 상태기계 경로가 없어 리플레이 신뢰도가 높지만,
     #   그래도 다음 실행의 실제 엔진 수치로 확정한다. 되돌리려면 POS=0.0 한 줄.
     ROTATION_ALLDOWN_SPY_POS: float = 1.0       # ⚠ 전섹터 하락 & E_t>0 일 때 SPY 참여 비중(×E_t) [v0.28.0] 0.5→1.0
+    # [v0.29.0 사전등록 격자 — 기본 0.0(라이브 무변경, v0.28.0과 비트 동일)]
+    #   리포트29 진단: 이 층의 유일하게 남은 구조적 열위는 **큰하락일**이다(13n: M 대비 -12.59%p).
+    #   110일 전수 분해 결과 원인이 '얼마나 담았나'가 아니라 '무엇을 담았나'였다:
+    #     · 명목 노출은 M과 사실상 동일(섹터 총비중 0.3577 vs E_t 0.3555)
+    #     · 그런데 **베타 가중 노출은 0.4519 vs 0.3555 — 초과 베타 +0.096(약 27% 더 큰 시장위험)**
+    #       (XLK 베타 1.28이 그 날 보유의 87%를 차지하기 때문)
+    #     · 실현 차이 -15.07%p 중 **-11.83%p가 "같은 비중을 SPY에 넣었을 때와의 차이"**,
+    #       즉 크기가 아니라 종목(베타) 때문이다.
+    #   즉 이 층은 M의 위험 결정을 조용히 베타만큼 증폭하고 있다. 그 증폭분을 되돌리는 것이
+    #   ROTATION_BETA_SCALE이다: 주력/대피처 비중에 **min(1, 1/베타^scale)** 을 곱한다.
+    #   · scale=0 → 종전과 완전 동일. scale=1 → 베타 1.0 기준으로 시장위험을 M에 맞춘다.
+    #   · 승수를 **1 이하로만 클립**한다 — 저베타 섹터에서 비중을 키우지 않으므로 "합계 ≤ E_t"
+    #     불변식이 유지되고, 규칙은 언제나 위험을 줄이는 방향으로만 작동한다.
+    #   · 베타는 **확장창 워크포워드**(t 이전 자료만, 최소 250거래일)로 매일 재추정한다 — 룩어헤드 없음.
+    #   ⚠ 채택하지 않는다: 큰하락일을 줄이면 큰상승일(현재 M 대비 **+10.26%p**)도 같이 줄어드는
+    #   양방향 거래다. 리플레이로 고를 문제가 아니라 실제 엔진이 칼마로 판정할 문제다 →
+    #   0/0.25/0.5/0.75/1.0을 [베타격자]에 상설로 싣는다.
+    ROTATION_BETA_SCALE: float = 0.0            # ⚠ 주력/대피처 비중 베타 정규화 강도(0=off)
+    ROTATION_BETA_MIN_OBS: int = 250            # 베타 추정 최소 관측일(그 전에는 승수 1.0)
     ROTATION_DOWN_REGIME_LEADER: bool = True    # ⚠ E_t=0(하락국면)에도 명확 1위가 있으면 그 섹터로 거래
     # [v0.25.0 ⚠⚠ 1.0 → 0.5 — v0.24.0에 심어둔 [하락리더격자]가 답을 냈다. 이번 라운드 최대 개선]
     #  리포트26(실제 엔진, 같은 격자):
@@ -4389,7 +4455,26 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #   가능성이 크므로 **상한 격자를 상설로 실어 다음 실행이 실제 엔진으로 재게 한다**
         #   (v1.11.0의 사전등록 격자가 v1.37.0에서, v1.35.0의 BREADTH_SIDE가 v1.38.0에서 답을 준 것과
         #   같은 방식). 채택값은 바꾸지 않는다 — 재보기 전에는 고르지 않는다.
-        def _build_primary(cap_: float):
+        # [v0.29.0] 워크포워드 베타 승수 — t 이전 자료만으로 확장창 추정(룩어헤드 차단).
+        #   beta_t = cov(r_sec[:t-1], r_spy[:t-1]) / var(r_spy[:t-1]), 관측 < MIN_OBS 이면 승수 1.0.
+        def _beta_mult(scale_: float) -> pd.DataFrame:
+            out = pd.DataFrame(1.0, index=eval_idx, columns=all_cols)
+            if scale_ <= 0:
+                return out
+            _rs = ((1.0 + ret_co["SPY"]) * (1.0 + ret_oc["SPY"]) - 1.0).reindex(eval_idx).shift(1)
+            _minn = int(getattr(scfg, "ROTATION_BETA_MIN_OBS", 250))
+            _vs = _rs.expanding(min_periods=_minn).var()
+            for _t in cols:
+                _r = ret_cc[_t].reindex(eval_idx).shift(1)
+                _cv = _r.expanding(min_periods=_minn).cov(_rs)
+                _b = (_cv / _vs).replace([np.inf, -np.inf], np.nan)
+                _m = (1.0 / _b.clip(lower=0.2) ** float(scale_)).clip(upper=1.0)
+                out[_t] = _m.fillna(1.0)
+            return out
+
+        def _build_primary(cap_: float, bscale_: Optional[float] = None):
+            _bm = _beta_mult(float(getattr(scfg, "ROTATION_BETA_SCALE", 0.0) or 0.0)
+                             if bscale_ is None else float(bscale_))
             fps_ = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
             n_pri_ = n_alt_ = n_eq_ = 0
             for _d in eval_idx:
@@ -4399,17 +4484,18 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                          and bool(eligible.loc[_d, _a]) if _a in eligible.columns else False)
                 _share = cap_ if _pri_ok else 0.0
                 if _pri_ok:
-                    fps_.loc[_d, _pri] = _share; n_pri_ += 1
+                    # [v0.29.0] 베타 승수(≤1)만큼 덜 담는다 — 시장위험을 E_t에 맞춘다. scale=0이면 1.0.
+                    fps_.loc[_d, _pri] = _share * float(_bm.loc[_d, _pri]); n_pri_ += 1
                 _rest = 1.0 - _share
                 if _rest > 1e-12:
                     if _a_ok:
-                        fps_.loc[_d, _a] += _rest; n_alt_ += 1
+                        fps_.loc[_d, _a] += _rest * float(_bm.loc[_d, _a]); n_alt_ += 1
                     else:
                         _ok = [c for c in cols if c != _pri and c in _hold.columns and bool(_hold.loc[_d, c])
                                and bool(eligible.loc[_d, c])]
                         if _ok:
                             for c in _ok:
-                                fps_.loc[_d, c] += _rest / len(_ok)
+                                fps_.loc[_d, c] += (_rest / len(_ok)) * float(_bm.loc[_d, c])
                             n_eq_ += 1
             return fps_, n_pri_, n_alt_, n_eq_
         fps, _n_pri, _n_alt, _n_eq = _build_primary(_cap)
@@ -4420,6 +4506,13 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             if abs(_cv - _cap) < 1e-9:
                 continue
             primary_cap_variants[f"주력섹터 중심 · {_pri} 상한 {_cv:.0%} [상한격자]"] = _build_primary(_cv)[0]
+        # [v0.29.0] 베타 정규화 강도 격자 — 채택값 제외. 큰하락일 열위의 원인(초과 베타 +0.096)에
+        #   대한 처방을 실제 엔진이 칼마로 판정하게 한다. scale=0 행은 현행과 동일해야 한다(검증점).
+        _bs_live = float(getattr(scfg, "ROTATION_BETA_SCALE", 0.0) or 0.0)
+        for _bv in (0.0, 0.25, 0.50, 0.75, 1.0):
+            if abs(_bv - _bs_live) < 1e-9:
+                continue
+            primary_cap_variants[f"주력섹터 중심 · 베타정규화 {_bv:.2f} [베타격자]"] = _build_primary(_cap, _bv)[0]
         label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
         log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
                            days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
@@ -4488,7 +4581,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #   그래서 리포트25에서 ★의 MDD가 -13.97%인데 격자 행은 전부 -10.2%대로 찍혔고,
         #   v0.22.0에서 "0.8이 칼마 정점"이라고 내린 결론은 **다른 전략끼리 비교한 것**이었다.
         #   상한만 다르고 나머지는 같아야 격자의 의미가 있으므로 [상한격자]도 같은 오버라이드를 받는다.
-        _is_cap_grid = "[상한격자]" in str(label)
+        # [v0.29.0] 베타격자도 같은 오버라이드를 받아야 like-for-like다 — v0.24.0에서 상한격자가
+        #   오버라이드를 못 받아 "0.8이 최적"이라는 틀린 결론을 냈던 바로 그 실수를 반복하지 않는다.
+        _is_cap_grid = ("[상한격자]" in str(label)) or ("[베타격자]" in str(label))
         if ((label in (label_leader, label_primary) or _is_cap_grid)
                 and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
             dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
