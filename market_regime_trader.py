@@ -21,6 +21,72 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.46.0 - 2026-09-11 - [⚠⚠ 되돌림 + 방법론 수정 — 과열 헤어컷 E9 → **E3**,
+#                       채택 기준에 **④ 강건성 게이트** 신설]
+#                       변경 모듈: `Config.EXTENSION_HAIRCUT_STEPS`((0.10,0.5),(0.12,0.3) →
+#                       **((0.10,0.8),(0.12,0.6))**), `_grid_robust()`(신규),
+#                       `threshold_sensitivity()` 라이브 기준선 1회 계산 + 15개 격자 전 행에
+#                       강건성 3열 부착. **활성 신호 변경은 EXTENSION_HAIRCUT_STEPS 단독**(v1.4.0 §9).
+#
+#                       [§0 v1.45.0 검증 — 예고한 네 지점 중 셋은 통과, 하나가 방법론을 무너뜨렸다]
+#                       ① 국면정의 검증 **PASS**(위험선호 0.1149% > 위험회피 0.0443%).
+#                       ② 실측 CAGR 25.50 → **25.86%**, 샤프 2.194 → **2.300**(예측과 일치).
+#                       ③ DEEP 격자: 심어둔 -10%·-8%가 **MDD를 -11.84%로 무너뜨려** -12%가
+#                          **내부 최적점**임이 확인됐다(격자 끝이 아니었다). -12%는 ★(-15%)를
+#                          CAGR 26.24 vs 25.86% · 칼마 3.713 vs 3.659로 앞선다 — 다음 라운드
+#                          기준 ④ 판정 대상으로 남긴다(이번엔 한 커밋 한 파라미터).
+#                       ④ ⚠ **헤어컷 사다리는 E11·E13·바닥0에서도 계속 올라갔다**(칼마 3.683 ·
+#                          3.706 · **3.728**). 격자가 "더 조여라"를 다섯 라운드째 반복한 셈이라
+#                          이번에는 채택하지 않고 **사다리 자체를 검정했다.** 그 결과가 §A다.
+#
+#                       [§A ⚠⚠ 사다리 전수 검정 — 모든 단계가 통계적으로 무의미했다]
+#                       (1) 블록 부트스트랩(블록 21일, B=5000) — 전 단계 P(차이 ≤ 0):
+#                           E1 vs off 0.163 · E3 vs E1 0.167 · E5 vs E3 0.194 · E7 vs E5 0.206 ·
+#                           E9 vs E7 0.222 · E13 vs E9 0.224. **95% CI가 전부 0을 포함**한다.
+#                       (2) 상위 5일 제외 시 부호(연율 %p) — E3 위는 전부 뒤집힌다:
+#                           E5 vs E3 +0.137 → **-0.076** · E7 vs E5 +0.127 → **-0.085**
+#                           E9 vs E7 +0.123 → **-0.089** · E13 vs E9 +0.246 → **-0.179**
+#                           바닥0 vs E9 +0.381 → **-0.169**
+#                           반대 방향(off·E1이 E3보다 나쁘다)은 제외 후에도 부호가 **유지**된다.
+#                       (3) 규칙이 겨냥한 밴드의 실체(확정 위험선호일, 무위험 대비 초과):
+#                           <10%    850일  +17.42bp/일  연율샤프 +2.93  ← 초과수익은 사실상 전부 여기
+#                           10~12%  226일   +0.03bp/일  연율샤프 +0.01  누적 **+0.07%p**(사실상 0)
+#                           ≥12%    262일   -2.98bp/일  연율샤프 -0.56  누적 -7.79%p, **t = -0.57**
+#                           ≥12% 밴드는 **최악 5일만 빼면 +7.42%p로 뒤집힌다**
+#                           (부트스트랩 95%CI [-13.34, +7.02]bp · P(mean<0)=0.716 ·
+#                            262일 중 137일이 2021년이고 그 해는 **+3.37%p로 플러스**)
+#                       → v1.40.0(E5)·v1.45.0(E9) 채택은 **5일짜리 잡음을 따라간 것**이었다.
+#                       ⚠ 규칙 자체가 무의미한 것은 아니다: 두 확장 밴드는 **초과수익 0인데 향후
+#                       21일 낙폭이 -2.91% / -3.26%로 정상 밴드(-1.68%)의 약 1.8배**다.
+#                       '수익 없는 위험'을 줄이는 방향은 옳았고, 틀린 것은 **깊이를 CAGR 격자로
+#                       튜닝한 것**이다. 사용자 결정(2026-09-11)에 따라 강건성이 부호를 지키는
+#                       마지막 단계 **E3로 되돌린다**. 대가: CAGR 25.86 → 25.30%(-0.56%p),
+#                       칼마 3.659 → 3.579. E5~E13·바닥0 행은 **기각 근거로 격자에 남긴다.**
+#
+#                       [§B ⚠ 채택 기준 ④ — 강건성 게이트 신설(사용자 결정 2026-09-11)]
+#                       기준 ①(CAGR 무손실) ②(칼마 정점) ③(MDD)에는 유의성 관문이 없어서 **단조
+#                       in-sample 기울기면 매번 통과**한다. 그래서 기준을 하나 더 둔다:
+#                         ④ **★ 대비 초과수익의 부호가 상위 5일을 제외한 뒤에도 유지되지 않으면
+#                            채택하지 않는다.**
+#                       구현: `_grid_robust()`가 06c 15개 격자 전 행에 세 열을 붙인다 —
+#                       `★대비 초과(연율%p)` · `초과(상위5일 제외,연율%p)` · `강건성(기준④)`
+#                       (통과 / ⚠ 5일 의존 / 열위(강건) / 열위(불안정) / ★).
+#                       라이브 기준선은 시트당 **한 번만** 계산해 모든 행이 같은 규약으로 비교된다
+#                       (like-for-like). 이 게이트 하나면 §A의 다섯 라운드를 전부 걸러냈을 것이다.
+#                       섹터 층에도 같은 세 열을 13_섹터배분전략에 실었다(S v0.33.0).
+#
+#                       [§C 이번 라운드에 채택하지 않은 것]
+#                       · DEEP_RECOVERY_DD -12%: 내부 최적점이 확인됐고 ①②③을 통과하지만,
+#                         **기준 ④ 판정을 아직 못 받았다**(이번 리포트에는 그 열이 없다).
+#                         다음 리포트의 강건성 열을 보고 판정한다. 한 커밋 한 파라미터 원칙도 같다.
+#                       · 헤어컷 E5~E13·바닥0: 기준 ④ 불통과(⚠ 5일 의존).
+#
+#                       [§D 다음 리포트에서 확인할 것]
+#                       ① 06c·13 시트에 강건성 3열이 실렸는가, ★ 행이 0.000인가.
+#                       ② DEEP -12%의 `강건성(기준④)`이 '통과'인가 — 통과면 다음 라운드 채택.
+#                       ③ 헤어컷 E5 이상 행이 전부 '⚠ 5일 의존'으로 찍히는가(§A 재현).
+#                       ④ E3 되돌림 후 실측이 CAGR 25.30% / 칼마 3.579 부근인가.
+#
 #  VERSION: v1.45.0 - 2026-09-10 - [⚠ 신호(사이징) 변경 — 과열 헤어컷 E5 → E9 + 정확도 측정
 #                       결함 수정] 변경 모듈: `Config.EXTENSION_HAIRCUT_STEPS`
 #                       ((0.10,0.7),(0.12,0.5)) → **((0.10,0.5),(0.12,0.3))**,
@@ -2939,24 +3005,31 @@ class Config:
     #  ⚠ 이 규칙은 '이격도가 크면 비중 상한을 낮춘다'는 과열 해어컷이므로 강화는 곧 보수화다.
     #  단조성(off < E1 < E3 < E5)이 근거이고, E5가 격자의 끝이라 **그 너머는 미측정**이다 —
     #  더 강한 해어컷이 계속 좋은지는 다음 실행의 격자가 답해야 한다(임의로 더 낮추지 말 것).
-    # [v1.45.0 §A ⚠ 신호(사이징) 파라미터 변경 — E5 → E9] v1.44.0이 "새 라이브 위에서 다시
-    #  측정돼야 한다"고 미룬 판정을 리포트54가 냈다. PCT_RISK_OFF=0.10 기준선에서:
-    #     off  CAGR 24.49% 샤프 1.919 칼마 2.799 MDD -8.75%
-    #     E1   CAGR 24.90% 샤프 2.028 칼마 3.423 MDD -7.27%
-    #     E3   CAGR 25.30% 샤프 2.133 칼마 3.579 MDD -7.07%
-    #     E5   CAGR 25.50% 샤프 2.194 칼마 3.607 MDD -7.07%  ← 종전 ★
-    #     E7   CAGR 25.68% 샤프 2.250 칼마 3.633 MDD -7.07%
-    #     E9   CAGR **25.86%** 샤프 **2.300** 칼마 **3.659** MDD -7.07%  ← 채택. 06c 전체 칼마 정점
-    #  MDD가 E3~E9에서 -7.07%로 **완전히 고정**이라(최대낙폭 구간이 이격 국면이 아니다) 칼마는
-    #  사실상 CAGR을 따라간다. 채택 기준 ①(CAGR 무손실 — 오히려 +0.36%p) ②(칼마 정점)
-    #  ③(MDD 악화 0.00%p) 전부 통과.
-    #  ⚠ 대가: 평균노출 0.5884 → 0.5438, 놓친 큰상승 55 → 57일, 하락적중 +8.93 → +7.39%p.
-    #  (상승적중은 +3.17 → +4.57%p로 개선. 하락적중 하락분의 상당 부분은 _grid_accuracy가 비중
-    #   0.5로 이진 절단하기 때문에 생기는 착시다 — §C의 노출가중 열이 이를 분리해 보여준다.)
-    #  ⚠ E9도 여전히 사다리의 끝이다. v1.40.0/v1.44.0과 같은 원칙으로 **E11·E13·'바닥 0'** 세
-    #  행을 06c에 심어 다음 실행이 꺾이는 지점을 찾게 한다(임의로 더 낮추지 말 것).
-    #  되돌리려면 ((0.10, 0.7), (0.12, 0.5)) [v1.20.0~v1.44.0 채택값].
-    EXTENSION_HAIRCUT_STEPS: Tuple[Tuple[float, float], ...] = ((0.10, 0.5), (0.12, 0.3))   # [v1.45.0] E5→E9
+    # [v1.46.0 §A ⚠⚠ 되돌림 — E9 → E3. 사다리 전체가 통계적으로 무의미했다]
+    #  리포트55에서 이 사다리를 **전수 검정**했더니 지금까지의 채택 근거가 무너졌다.
+    #    (1) 블록 부트스트랩(길이 21일, B=5000) — 모든 단계가 유의하지 않다:
+    #        E1 vs off P(≤0)=0.163 · E3 vs E1 0.167 · E5 vs E3 0.194 · E7 vs E5 0.206 ·
+    #        E9 vs E7 0.222 · E13 vs E9 0.224 (95% CI가 전부 0을 포함)
+    #    (2) 상위 5일 제외 시 **E3 위의 모든 단계가 부호를 뒤집는다**(연율 %p):
+    #        E5 vs E3 +0.137 → -0.076 · E7 vs E5 +0.127 → -0.085 · E9 vs E7 +0.123 → -0.089
+    #        · E13 vs E9 +0.246 → -0.179 · 바닥0 vs E9 +0.381 → -0.169
+    #        반대로 off/E1/E3 방향(=덜 깎으면 나쁘다)은 제외 후에도 부호가 유지된다.
+    #    (3) 규칙이 겨냥한 밴드의 실체(확정 위험선호일 기준, 무위험 대비 초과):
+    #        이격도 <10%   850일  +17.42bp/일  연율샤프 +2.93   ← 초과수익은 사실상 전부 여기 있다
+    #        이격도 10~12% 226일   +0.03bp/일  연율샤프 +0.01   누적 초과 **+0.07%p**(사실상 0)
+    #        이격도 ≥12%   262일   -2.98bp/일  연율샤프 -0.56   누적 초과 -7.79%p, **t=-0.57**
+    #        ≥12% 밴드는 **최악 5일만 빼면 +7.42%p로 부호가 뒤집힌다**
+    #        (부트스트랩 95%CI [-13.34, +7.02]bp · P(mean<0)=0.716 · 2021년 137일은 +3.37%p로 플러스)
+    #  즉 v1.20.0(E3→E5는 v1.40.0)·v1.45.0(E9)의 "단조 증가" 근거는 **5일짜리 잡음**이었다.
+    #  ⚠ 그렇다고 규칙 자체가 무의미하지는 않다 — 두 확장 밴드는 **초과수익 0인데 향후 21일
+    #  낙폭이 -2.91%/-3.26%로 정상 밴드(-1.68%)의 약 1.8배**다. '수익 없는 위험'을 줄이는
+    #  방향은 옳다. 옳지 않았던 것은 **그 깊이를 CAGR 격자로 튜닝한 것**이다.
+    #  → 사용자 결정(2026-09-11): **강건성 검정이 부호를 지키는 마지막 단계인 E3로 되돌린다.**
+    #     대가: 실측 CAGR 25.86% → 25.30%(-0.56%p) · 칼마 3.659 → 3.579. 근거 없는 부분만 걷어낸다.
+    #  ⚠ 앞으로 이 축을 다시 조이려면 **기준 ④(강건성 게이트)** 를 통과해야 한다 — 06c의
+    #  '초과(상위5일 제외,연율%p)' 열이 매 실행 판정한다. E5~E13·바닥0 행은 **기각 근거로 유지**한다.
+    #  되돌리려면 ((0.10, 0.7), (0.12, 0.5))[E5] 또는 ((0.10, 0.5), (0.12, 0.3))[E9].
+    EXTENSION_HAIRCUT_STEPS: Tuple[Tuple[float, float], ...] = ((0.10, 0.8), (0.12, 0.6))   # [v1.46.0] E9→E3(되돌림)
     EXTENSION_HAIRCUT_SMOOTH: int = 5       # 이격도 이동평균 창(거래일). 1이면 당일값
     # [v1.21.0 §C] 레버리지 사다리(규칙 ⑪) — **기본 비활성(⚠ 위험 파라미터, 사용자 명시 승인 후에만 켤 것)**.
     # 사용자 목표 "B&H 총수익의 2배 이상"의 달성 가능성 분석(IMPROVEMENT_PLAN_v1.21.md §C): 비중 상한 1.0의 롱온리
@@ -6921,6 +6994,53 @@ def perf_metrics(ret: pd.Series, label: str = "") -> Dict[str, float]:
     }
 
 
+def _grid_robust(b: pd.DataFrame, base: Optional[pd.DataFrame], topk: int = 5) -> dict:
+    """[v1.46.0 §B ⚠ 채택 기준 ④ — 강건성 게이트] 격자 행이 ★를 이기는 것이 **며칠짜리인가**.
+
+    ⚠ 왜 필요한가 — 이 프로젝트가 실제로 저지른 실수가 여기 있다.
+    과열 헤어컷은 v1.20.0 E3 → v1.40.0 E5 → v1.45.0 E9로 세 번 조여졌고, 매번 근거는
+    "06c에서 CAGR·샤프·칼마가 단조 증가한다"였다. 리포트55에서 그 사다리를 전수 검정했더니:
+      · 블록 부트스트랩(길이 21일, B=5000): **모든 단계**가 P(차이≤0)=0.16~0.22로 무의미
+      · 각 단계의 우위는 **상위 5일만 제외하면 전부 부호가 뒤집힘**
+        (E5 vs E3 +0.137 → -0.076 · E7 vs E5 +0.127 → -0.085 · E9 vs E7 +0.123 → -0.089 %p)
+      · 규칙이 겨냥한 이격도 ≥12% 밴드 262일의 누적 초과수익은 -7.79%p인데
+        **최악 5일만 빼면 +7.42%p로 뒤집힌다**(부트스트랩 95%CI [-13.34, +7.02]bp)
+    즉 세 번의 채택은 5일짜리 잡음을 따라간 것이었다. 기준 ①②③(CAGR·칼마·MDD)에는
+    유의성·강건성 관문이 없어서 **단조 in-sample 기울기면 매번 통과**했다.
+
+    → 사용자 결정(2026-09-11)으로 기준 ④를 추가한다:
+      **★ 대비 초과수익의 부호가 상위 5일을 제외한 뒤에도 유지되지 않으면 채택하지 않는다.**
+    이 열은 그 판정을 매 실행 자동으로 보여준다. ★ 행 자신은 정의상 0이다.
+
+    계산: 일별 초과 = (후보 전략수익 - ★ 전략수익). 연율 환산은 산술 합 × 252/N.
+    """
+    out = {"★대비 초과(연율%p)": np.nan, "초과(상위5일 제외,연율%p)": np.nan,
+           "강건성(기준④)": ""}
+    try:
+        if b is None or base is None or "strategy_ret" not in b.columns:
+            return out
+        a = pd.to_numeric(b["strategy_ret"], errors="coerce")
+        c = pd.to_numeric(base["strategy_ret"], errors="coerce")
+        ex = (a - c).dropna()
+        if len(ex) < 60:
+            return out
+        ann = 252.0 / len(ex) * 100.0
+        tot = float(ex.sum()) * ann
+        top = ex.sort_values(ascending=False)
+        cut = float(ex.sum() - top.iloc[:max(1, int(topk))].sum()) * ann
+        out["★대비 초과(연율%p)"] = round(tot, 3)
+        out["초과(상위5일 제외,연율%p)"] = round(cut, 3)
+        if abs(tot) < 1e-9:
+            out["강건성(기준④)"] = "★"
+        elif tot > 0:
+            out["강건성(기준④)"] = "통과" if cut > 0 else "⚠ 5일 의존"
+        else:
+            out["강건성(기준④)"] = "열위(강건)" if cut < 0 else "열위(불안정)"
+    except Exception:
+        pass
+    return out
+
+
 def _grid_accuracy(b: pd.DataFrame) -> dict:
     """[v1.38.0] 06c 격자의 모든 행에 **사용자 기준(정확도)** 열을 붙인다.
 
@@ -7024,6 +7144,20 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
     """
     t0 = time.time()
     rows = []
+    # [v1.46.0 §B] 채택 기준 ④(강건성 게이트) 판정용 **라이브 기준선**을 한 번만 계산한다.
+    #   이 시트의 모든 행이 ★와 같은 규약(같은 인자 집합)으로 비교되므로 like-for-like가 유지된다.
+    #   백테스트 자체는 0.0초 수준이라 비용은 generate_signals 1회뿐이다.
+    try:
+        _sg_live = generate_signals(score_pct, trend200, cfg, haz_pct=haz_pct, fast_pct=fast_pct,
+                                    recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd,
+                                    px=price["Close"], breadth=breadth)
+        _bt_live = run_backtest(price, _sg_live["target_pos"], cfg, rf_daily)
+        _bt_live = _bt_live.loc[_bt_live.index >= pd.Timestamp(cfg.SIGNAL_START)]
+        log("VALIDATE", kv(event="grid_baseline_ready", days=len(_bt_live),
+                           cagr=round(float(perf_metrics(_bt_live["strategy_ret"]).get("CAGR", np.nan)), 4)))
+    except Exception as _e:
+        _bt_live = None
+        log("VALIDATE", kv(event="grid_baseline_failed", err=str(_e)[:120]), level="warning")
     # [v1.44.0 §B] 채택값(0.10)이 격자의 끝이라 **그 너머를 잰다** — 0.05와 0.00(=매크로
     #   위험회피 밴드 자체를 끔)을 추가. 0.00 행은 "매크로 RISK_OFF가 값을 하는가"라는 구조적
     #   질문에 매 실행 답한다(H트랙만으로 충분하면 0.00이 이길 것이고, 그러면 규칙 하나가
@@ -7042,7 +7176,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             m = perf_metrics(b["strategy_ret"])
             rows.append({
                 "위험회피 백분위(<)": off, "위험선호 백분위(>)": on,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7084,7 +7218,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                                        base_state).sum())
                 haz_rows.append({
                     "HAZARD_ENTER": enter, "HAZARD_BLOCK": block,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                     "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7121,7 +7255,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             n_state_changed = int((cur_state.reindex(base_state.index) != base_state).sum())
             floor_rows.append({
                 "HAZARD_NEUTRAL_FLOOR": floor,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7164,7 +7298,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                 sig_gate = sg["buy_hold_gate"].loc[sg["buy_hold_gate"].index >= pd.Timestamp(cfg.SIGNAL_START)]
                 gate_rows.append({
                     "BUY_HOLD_GATE_THRESHOLD": gth,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                     "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7209,7 +7343,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             fw = fwd21.reindex(fire_dates).dropna()
             ft_rows.append({
                 "FAST_TRIGGER_PCT": fpct,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7255,7 +7389,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             rfire = sg["recovery_floor"].loc[sg["recovery_floor"].index >= pd.Timestamp(cfg.SIGNAL_START)]
             rf_rows.append({
                 "RECOVERY_CONFIRM_PCT": cpct,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7298,7 +7432,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             tfire = sg["trend_promotion"].loc[sg["trend_promotion"].index >= pd.Timestamp(cfg.SIGNAL_START)]
             tp_rows.append({
                 "TREND_PROMOTION_MIN_SCORE_PCT": msp,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7350,7 +7484,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             is_live = all(getattr(cfg, k) == v for k, v in over.items())
             held_rows.append({
                 "보류메커니즘 확인": lab,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7392,7 +7526,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                                             abs(lvl - cfg.POS_NEUTRAL_HIGH_H) < 1e-9)))
                 nc_rows.append({
                     "NEUTRAL_RISK_CUT": label,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                     "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -7435,7 +7569,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                                     and sm == cfg.EXTENSION_HAIRCUT_SMOOTH)))
             eh_rows.append({
                 "EXTENSION_HAIRCUT": label,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "평균비중": round(float(b["pos_exec"].mean()), 3),
@@ -7468,7 +7602,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             is_live = all(getattr(cfg, k) == v for k, v in over.items())
             lv_rows.append({
                 "LEVERAGE": label.replace("★", ""),
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "평균비중": round(float(b["pos_exec"].mean()), 3),
@@ -7500,7 +7634,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
             is_live = abs(float(getattr(cfg, "EXPOSURE_MULTIPLIER", 1.0)) - k) < 1e-12
             ex_rows.append({
                 "EXPOSURE": f"노출배수 ×{k:.2f}" + ("(기본, 레버리지 없음)" if k == 1.0 else f"(상한 {k:.2f})"),
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                 "평균비중": round(float(b["pos_exec"].mean()), 3),
@@ -7553,7 +7687,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                        and "DEEP_REENTRY_EXIT_DD" not in _ov14)
             dr14_rows.append({
                 "규칙⑭(깊은낙폭재진입)": lab14, "발동일수": fired,
-                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                 "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                 "평균비중": round(float(b["pos_exec"].mean()), 3),
                 "-1%손실일수": int((b["strategy_ret"] < -0.01).sum()),
@@ -7605,7 +7739,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                            and _ov15.get("BREADTH_SIDE", cfg.BREADTH_SIDE) == cfg.BREADTH_SIDE)
                 br15_rows.append({
                     "규칙⑮(폭 기반 중립조절)": lab15, "발동일수": fired,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "평균비중": round(float(b["pos_exec"].mean()), 3),
                     "기본설정": "★" if is_live else ""})
@@ -7666,7 +7800,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                             mode == live_mode and guard == live_guard))
                 dr_rows.append({
                     "DEEP_RECOVERY_DD": label,
-                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b),
+                    "CAGR": m.get("CAGR"), "샤프": m.get("샤프"), **_grid_accuracy(b), **_grid_robust(b, _bt_live),
                     "최대낙폭": m.get("최대낙폭(MDD)"), "칼마": m.get("칼마(CAGR/MDD)"),
                     "투자시간비율": round(float((b["pos_exec"] > 0).mean()), 3),
                     "거래횟수": int((b["turnover"] > 1e-9).sum()),
@@ -9605,7 +9739,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.45.0 (2026-09-10)"),
+        ("버전", "v1.46.0 (2026-09-11)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -9847,7 +9981,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.45.0"
+BUNDLE_VERSION = "v1.46.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
