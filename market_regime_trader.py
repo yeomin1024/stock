@@ -21,6 +21,51 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.43.0 - 2026-09-10 - [⚠ 사전등록 격자 판정: ⑤⑦⑧ 제외 **기각** + 범위를 좁힌 '⑦⑧만'
+#                       행 추가] 변경 모듈: `Config.NEUTRAL_RISK_CUT_EXEMPT_SCOPE`(신규, "all"),
+#                       규칙 ⑨ 블록, 06c NEUTRAL_RISK_CUT 격자(7행 → **8행**), 로그 1필드.
+#                       **신호 로직·채택값 무변경 — v1.42.0과 비트 동일**(제외 자체가 여전히 off).
+#
+#                       [§1 v1.42.0 검증 완료 — 감사 구멍이 실제로 메워졌다]
+#                       리포트50에서 `폭조절(B)` 컬럼이 정상 출력됐고(발동 145일), **'확정 중립인데
+#                       목표비중 0이고 아무 규칙도 발동 안 한 날'이 397일 중 0일**이 됐다
+#                       (v1.42.0 이전 75일 → 그 중 76일이 폭조절(B)로 설명됨. 76은 데이터 개정으로
+#                       하루 늘어난 수치다). 예고한 검증 지점을 정확히 통과했다.
+#
+#                       [§2 ⚠ 사전등록 격자 판정 — 기각. 재보길 잘했다]
+#                       리포트50 06c(실제 엔진):
+#                         0.0@H>0.70 (★)      CAGR 24.23% 샤프 2.147 상승 3.08 하락 8.00 놓친 59 MDD -7.07% 칼마 3.428
+#                         0.0@H>0.70 ⑤⑦⑧제외   CAGR 23.84% 샤프 2.057 상승 2.14 하락 8.85 놓친 **47** MDD -7.45% 칼마 3.201
+#                         0.25@H>0.70 ⑤⑦⑧제외  CAGR 23.11% 샤프 1.996 상승 2.14 하락 8.85 놓친 47 MDD **-11.11%** 칼마 2.080
+#                       CAGR -0.39pp · 샤프 -0.09 · 칼마 -0.227 · MDD 0.38%p 악화 · 큰하락일 노출
+#                       0.3855 -> **0.4355**. → **기각.** 지난 라운드 리플레이가 "충돌일 익일평균
+#                       -0.031%"로 예고한 방향과 실제 엔진이 일치했다 — 리플레이만 보고 채택했다면
+#                       네 지표가 동시에 나빠졌을 것이다. 두 행은 **기각 근거로 격자에 남긴다.**
+#
+#                       [§3 그래도 남은 신호 — 놓친 큰상승을 12일 줄인 유일한 변형이었다]
+#                       기각 행은 06c 전체에서 **놓친 큰상승을 59 -> 47일로 줄인 유일한 변형**이고
+#                       하락 적중도 8.85로 격자 최고였다(NEUTRAL_RISK_CUT off는 43일까지 줄지만
+#                       MDD가 -14.66%로 무너진다). 대가는 꼬리(큰하락일 노출·MDD)에 몰려 있다.
+#                       가설: 대가는 **확인 조건이 약한 ⑤**(120일 저점 +2% 반등, 추세 확인 없음)에서
+#                       나오고, ⑦(-15% 낙폭 후 회복)·⑧(가격>200MA & H<0.50)은 이미 강한 확인을
+#                       요구하므로 꼬리를 덜 상한다. → 범위를 좁힌 **'⑦⑧만 제외(⑤ 유지)'** 행을
+#                       하나 더 심었다(같은 격자의 확장이지 새 탐색이 아니다). 라이브는 무변경.
+#
+#                       [§4 다른 격자는 전부 현행 유지가 최적]
+#                       회복확인폭 0.015 = 0.02(★) 동률(포화) · HAZARD_ENTER 0.90(★) CAGR·칼마·
+#                       놓친·하락적중 모두 최적 · FAST_TRIGGER 0.97(★) 최적 · 추세승격 0.30(★) 최적.
+#                       ⚠ 과열해어컷 E7이 이번에도 CAGR 24.36%/샤프 2.199/칼마 3.446으로 E5(★)를
+#                       앞섰지만, **하락 적중 8.00 -> 6.81 · 놓친 큰상승 59 -> 61**로 세 번째 리포트
+#                       연속 같은 패턴이다 — 사용자 기준("크게 상승했는데 회피하면 안 된다")에
+#                       어긋나므로 이번에도 채택하지 않는다.
+#
+#                       [§5 실측 차이의 출처 — 데이터 개정이지 코드가 아니다]
+#                       리포트49(v1.41.1) 24.02% -> 리포트50(v1.42.0) 24.23%. v1.42.0은 표시·격자만
+#                       바꿨으므로 신호가 달라질 수 없다. 두 리포트를 일자별로 대조하니 복합점수
+#                       백분위가 1,964일(최대 0.0285), H 백분위가 1,911일(최대 0.1343) 다르다 —
+#                       FRED 매크로 시리즈 개정으로 워크포워드 재추정 결과가 미세하게 이동한 것이고,
+#                       그 결과 **목표비중이 달라진 날은 2,184일 중 5일**뿐이다. 코드 변경의 결과가
+#                       아님을 기록해 둔다(재현성 판단 기준).
 #  VERSION: v1.42.0 - 2026-09-09 - [감사 누락 수정(규칙 ⑮ 컬럼 신설) + ⑤×⑨ 충돌 사전등록 격자]
 #                       변경 모듈: 01_일별기록 `폭조절(B)` 컬럼 신설, `generate_signals` 로그에
 #                       breadth 3필드 추가, `Config.NEUTRAL_RISK_CUT_EXEMPT_PROMO`(신규, 기본
@@ -2611,6 +2656,13 @@ class Config:
     #   2행을 실어 다음 실행이 실제 엔진·정확도 열로 판정하게 한다(v1.35.0 BREADTH_SIDE →
     #   v1.38.0 채택, v0.22.0 상한격자 → v0.25.2 채택과 같은 절차).
     NEUTRAL_RISK_CUT_EXEMPT_PROMO: bool = False
+    # [v1.43.0 §B] 제외 범위. "all"=⑤⑦⑧ 전부, "deep"=⑦⑧만(깊은 낙폭·구조적 저점).
+    #   리포트50이 "all"을 기각했지만(아래 §A) 그 행은 **놓친 큰상승을 59 → 47일로 줄인 유일한
+    #   변형**이었다 — 대가는 큰하락일 노출 0.3855 → 0.4355와 MDD -7.07 → -7.45%였다.
+    #   가설: 대가는 확인 조건이 약한 ⑤(120일 저점 +2% 반등, 추세 확인 없음)에서 나오고,
+    #   ⑦(-15% 낙폭 후 회복)·⑧(가격>200MA & H<0.50)은 이미 강한 확인을 요구하므로 꼬리를 덜 상한다.
+    #   그래서 범위를 좁힌 "deep" 행을 06c에 하나 더 심어 다음 실행이 판정하게 한다(라이브 무변경).
+    NEUTRAL_RISK_CUT_EXEMPT_SCOPE: str = "all"
     # [v1.26.0 §A ⚠ 규칙 ⑫ 급락 사전경보 감축] 사용자 지시(리포트34): "하락 조짐 보일 때 감축을 더 많이 해서
     #   손실이 -1% 이상 나지 않도록". 리포트34 실측 진단부터: 일간 -1% 초과 손실 76일 중 사전 경고
     #   (H>0.6 또는 급락트리거백분위>0.8 또는 ΔH/FT 발동)가 있던 날은 22일(29%)뿐이고, 경고일의 다음날
@@ -6313,9 +6365,11 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         #   승격시킨 중립은 ⑨의 감축 대상에서 뺀다 — 규칙 ④가 이미 같은 이유로 같은 날들을
         #   제외하고 있는 것과의 정합(Config NEUTRAL_RISK_CUT_EXEMPT_PROMO 주석에 실측 근거).
         if getattr(cfg, "NEUTRAL_RISK_CUT_EXEMPT_PROMO", False):
-            _promo = (recovery_floor.fillna(False).astype(bool)
-                      | deep_boost.fillna(False).astype(bool)
+            _scope = str(getattr(cfg, "NEUTRAL_RISK_CUT_EXEMPT_SCOPE", "all") or "all")
+            _promo = (deep_boost.fillna(False).astype(bool)
                       | struct_boost.fillna(False).astype(bool))
+            if _scope != "deep":      # "all" = 규칙 ⑤(회복 승격)까지 포함
+                _promo = _promo | recovery_floor.fillna(False).astype(bool)
             neutral_cut = neutral_cut & ~_promo
         out.loc[neutral_cut, "target_pos"] = np.minimum(out.loc[neutral_cut, "target_pos"],
                                                           cfg.POS_NEUTRAL_HIGH_H)
@@ -6544,6 +6598,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      breadth_adjust_days=int(out["breadth_neutral"].fillna(False).astype(bool).sum()),
                      # [v1.42.0 §B] ⑨의 ⑤⑦⑧ 승격일 제외 여부(사전등록 격자, 라이브 기본 False).
                      neutral_cut_exempt_promo=bool(getattr(cfg, "NEUTRAL_RISK_CUT_EXEMPT_PROMO", False)),
+                     neutral_cut_exempt_scope=str(getattr(cfg, "NEUTRAL_RISK_CUT_EXEMPT_SCOPE", "all")),
                      elapsed_s=round(time.time() - t0, 3)))
     return out
 
@@ -7046,15 +7101,18 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
         if haz_pct is not None:
             nc_rows = []
             # [v1.42.0 §B] 5번째 원소 = ⑤⑦⑧ 승격일 제외 여부(사전등록 격자, 라이브는 False).
-            nc_cases = [(False, cfg.NEUTRAL_RISK_CUT_H, cfg.POS_NEUTRAL_HIGH_H, False, "off(중립 0.5 유지)"),
-                        (True, 0.70, 0.25, False, "0.25 @ H>0.70"), (True, 0.70, 0.0, False, "0.0 @ H>0.70"),
-                        (True, 0.75, 0.0, False, "0.0 @ H>0.75"), (True, 0.80, 0.0, False, "0.0 @ H>0.80"),
-                        (True, 0.70, 0.0, True, "0.0 @ H>0.70 · ⑤⑦⑧승격일 제외"),
-                        (True, 0.70, 0.25, True, "0.25 @ H>0.70 · ⑤⑦⑧승격일 제외")]
-            for use, th, lvl, exempt, label in nc_cases:
+            # [v1.43.0 §B] 6번째 원소 = 제외 범위("all" | "deep"). 라이브는 제외 자체가 off.
+            nc_cases = [(False, cfg.NEUTRAL_RISK_CUT_H, cfg.POS_NEUTRAL_HIGH_H, False, "all", "off(중립 0.5 유지)"),
+                        (True, 0.70, 0.25, False, "all", "0.25 @ H>0.70"), (True, 0.70, 0.0, False, "all", "0.0 @ H>0.70"),
+                        (True, 0.75, 0.0, False, "all", "0.0 @ H>0.75"), (True, 0.80, 0.0, False, "all", "0.0 @ H>0.80"),
+                        (True, 0.70, 0.0, True, "all", "0.0 @ H>0.70 · ⑤⑦⑧승격일 제외"),
+                        (True, 0.70, 0.25, True, "all", "0.25 @ H>0.70 · ⑤⑦⑧승격일 제외"),
+                        (True, 0.70, 0.0, True, "deep", "0.0 @ H>0.70 · ⑦⑧만 제외(⑤ 유지)")]
+            for use, th, lvl, exempt, scope, label in nc_cases:
                 c = Config(**{**cfg.__dict__, "USE_NEUTRAL_RISK_CUT": use,
                               "NEUTRAL_RISK_CUT_H": th, "POS_NEUTRAL_HIGH_H": lvl,
-                              "NEUTRAL_RISK_CUT_EXEMPT_PROMO": exempt})
+                              "NEUTRAL_RISK_CUT_EXEMPT_PROMO": exempt,
+                              "NEUTRAL_RISK_CUT_EXEMPT_SCOPE": scope})
                 sg = generate_signals(score_pct, trend200, c, haz_pct=haz_pct, fast_pct=fast_pct,
                                       recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
                 b = run_backtest(price, sg["target_pos"], c, rf_daily)
@@ -7062,6 +7120,7 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                 m = perf_metrics(b["strategy_ret"])
                 is_live = (use == cfg.USE_NEUTRAL_RISK_CUT
                            and exempt == bool(getattr(cfg, "NEUTRAL_RISK_CUT_EXEMPT_PROMO", False))
+                           and (not exempt or scope == str(getattr(cfg, "NEUTRAL_RISK_CUT_EXEMPT_SCOPE", "all")))
                            and (not use or (abs(th - cfg.NEUTRAL_RISK_CUT_H) < 1e-9 and
                                             abs(lvl - cfg.POS_NEUTRAL_HIGH_H) < 1e-9)))
                 nc_rows.append({
@@ -9266,7 +9325,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.42.0 (2026-09-09)"),
+        ("버전", "v1.43.0 (2026-09-10)"),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -9508,7 +9567,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
 # [13b] [v1.22.0] 결과 데이터 번들 저장/로드 — 섹터 계층(sector_rotation.py)의 입력
 #       I/O 전용 계층. run()/build_report()의 어떤 계산에도 관여하지 않는다.
 # =============================================================================
-BUNDLE_VERSION = "v1.42.0"
+BUNDLE_VERSION = "v1.43.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
