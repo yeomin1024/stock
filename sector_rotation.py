@@ -17,6 +17,69 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.30.1 - 2026-09-10 - [★ 채택 기준 확정 — 사용자 결정 기록. 코드 동작 무변경]
+#                       v0.30.0에서 세 라운드째 같은 갈림길(수익을 내주고 매끄러움을 살 것인가)을
+#                       사용자에게 물었고, 답은 **"현행 유지 — CAGR 최우선"**이었다(2026-09-10).
+#                       이 결정을 앞으로 자동 적용되도록 아래 §채택기준에 명문화한다.
+#
+#                       [확정된 ★ 채택 기준 — 이후 모든 라운드에 적용]
+#                       ① 주 전략(★) 후보는 **CAGR을 잃지 않아야 한다.** 칼마·샤프·MDD가 아무리
+#                          좋아져도 CAGR이 유의하게(> 0.5%p) 낮아지는 안은 ★로 채택하지 않는다.
+#                       ② 그 조건을 넘은 후보들 사이에서는 **칼마 정점**을 고른다(종전과 동일).
+#                       ③ MDD 악화는 ①②를 통과한 경우에만, 그리고 작을 때만(≤ 0.5%p) 허용한다.
+#                       → 이 기준에 따라 현재 영구 보류되는 후보: **[혼합] 전 변형**(CAGR -4.5~6.3%p),
+#                          **[베타격자] 전 강도**(CAGR -1.6~5.7%p). 두 격자는 **계측용으로는 유지**한다 —
+#                          진단(어디서 위험이 오는가)에는 계속 쓸모가 있고, 시장 국면이 바뀌어 CAGR
+#                          손실이 사라지면 그때 ①을 통과할 수 있기 때문이다. 다만 **채택 후보로는
+#                          다시 제안하지 않는다**(사용자가 이미 판단한 사안이다).
+#
+#                       [이 기준이 바꾸지 않는 것]
+#                       사전등록 격자·기각 근거 보존·룩어헤드 차단·like-for-like 비교 등 방법론은
+#                       그대로다. 바뀌는 것은 **후보 목록을 좁히는 규칙 하나**뿐이다.
+#  VERSION: v0.30.0 - 2026-09-10 - [⚠ [베타격자] 판정: 칼마 정점(0.50)이지만 CAGR을 3.06%p 잃어
+#                       **미채택** + 약점을 고친 '재투입' 변형 사전등록]
+#                       변경 모듈: `SectorConfig.ROTATION_BETA_MODE`(신규, "trim"),
+#                       `_build_primary` 재투입 분기, `[베타재투입격자]`(0.25/0.5/0.75/1.0).
+#                       **배분 로직·채택값 무변경 — v0.29.0과 비트 동일**(scale=0이면 승수 1.0).
+#
+#                       [§1 진단은 옳았다 — 베타를 낮추니 낙폭이 실제로 줄었다]
+#                       리포트30 [베타격자](실제 엔진):
+#                         강도  CAGR    샤프    MDD      칼마    평균노출  회전율
+#                         0.00 33.92%  2.112  -10.35%  3.279   0.5867  13.13  ← ★(현행)
+#                         0.25 32.32%  2.129   -9.75%  3.313   0.5461  11.71
+#                         0.50 30.86%  2.136   -9.20%  **3.355**  0.5233  11.33  ← 칼마 정점
+#                         0.75 29.49%  2.143   -9.18%  3.213   0.5016  10.97
+#                         1.00 28.20%  **2.149**  -9.18%  3.073   0.4811  10.62
+#                       **MDD가 -10.35 → -9.20%로 1.15%p 줄었다** — "큰하락일 열위의 원인은 초과
+#                       베타(+0.096)"라는 v0.29.0 진단이 실제 엔진에서 확인됐다.
+#
+#                       [§2 ⚠ 그러나 채택하지 않는다 — 'CAGR 무손실' 조건을 못 넘는다]
+#                       칼마 정점 0.50은 **CAGR을 33.92 → 30.86%로 3.06%p 잃는다.** 이 프로젝트가
+#                       지금까지 채택에 써 온 기준은 일관되게 **"칼마 정점 + CAGR 무손실"**이었고
+#                       (상한 0.9·하락리더 0.25·전섹터하락 1.0 모두 그 형태였다), 같은 이유로
+#                       [혼합]을 세 라운드 연속 보류해 왔다. 여기서만 기준을 바꾸면 일관성이 깨진다.
+#
+#                       [§3 ⚠ 더 중요한 발견 — 베타 트리밍은 '칼마를 사는' 수단으로 비효율적이다]
+#                       CAGR 1%p를 내주고 사들이는 칼마로 환산하면:
+#                         베타 0.50   칼마 +0.076 / CAGR -3.06%p → **0.025 칼마/%p**
+#                         혼합 50/50  칼마 +0.251 / CAGR -4.52%p → **0.056 칼마/%p**
+#                         혼합 1/3    칼마 +0.275 / CAGR -6.35%p → 0.043 칼마/%p
+#                       **혼합이 베타 트리밍보다 2배 이상 효율적이다.** 즉 언젠가 수익을 내주고
+#                       매끄러움을 산다면 그 수단은 베타 정규화가 아니라 혼합이어야 한다.
+#                       이 비교는 이번 실측이 없었으면 알 수 없었다 — 기각도 정보다.
+#
+#                       [§4 원인이 분명하므로 약점을 고친 변형을 심는다]
+#                       trim의 손실 원인은 명확하다: 평균노출이 0.5867 → 0.5233으로 **그냥 덜
+#                       투자한다.** 그래서 깎은 비중을 현금이 아니라 **대피처(잔여 슬리브)로
+#                       재투입**하는 "redeploy" 모드를 만들었다 — 명목 노출은 E_t에 그대로 두고
+#                       포트폴리오 **베타만** 낮춘다(대피처는 XLV 0.70·XLU 0.59·XLP 0.53으로
+#                       XLK 1.28보다 훨씬 낮다). 0.25/0.5/0.75/1.0을 [베타재투입격자]로 상설 측정한다.
+#                       라이브는 여전히 scale=0(무변경)이다.
+#
+#                       [§5 다른 격자·M측]
+#                       [상한격자] 90%(★) 칼마 정점 유지 · [하락리더격자] 25%(★) · [전섹터하락격자]
+#                       100%(★) 전부 재확인. M은 리포트51과 목표비중이 **2,184일 중 0일 차이**로
+#                       완전히 동일해(신호 무변경 확인) 이번 라운드에도 변경하지 않는다.
 #  VERSION: v0.29.0 - 2026-09-10 - [진단: 큰하락일 열위의 원인은 '크기'가 아니라 '베타'였다 +
 #                       사전등록 [베타격자]] 변경 모듈: `SectorConfig.ROTATION_BETA_SCALE`(신규,
 #                       **0.0**), `ROTATION_BETA_MIN_OBS`(250), `_build_primary` 베타 승수,
@@ -1237,7 +1300,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.29.0"
+VERSION = "v0.30.1"
 VERSION_DATE = "2026-09-10"
 
 # =============================================================================
@@ -1518,6 +1581,18 @@ class SectorConfig:
     #   양방향 거래다. 리플레이로 고를 문제가 아니라 실제 엔진이 칼마로 판정할 문제다 →
     #   0/0.25/0.5/0.75/1.0을 [베타격자]에 상설로 싣는다.
     ROTATION_BETA_SCALE: float = 0.0            # ⚠ 주력/대피처 비중 베타 정규화 강도(0=off)
+    # ★ 채택 기준(사용자 결정 2026-09-10): **CAGR 최우선.** 칼마가 올라도 CAGR을 유의하게
+    #   (> 0.5%p) 잃는 안은 주 전략으로 채택하지 않는다. [혼합]·[베타격자]는 이 기준에 따라
+    #   영구 보류이며 **계측·진단용으로만** 남긴다(채택 후보로 다시 제안하지 않는다).
+    # [v0.30.0] 베타 정규화가 깎은 비중을 어떻게 할 것인가.
+    #   "trim"   = 현금으로 둔다(v0.29.0에서 측정한 방식). 리포트30 실측: 칼마는 0.50에서 3.355로
+    #              정점(★ 3.279 대비 +0.076)이지만 **CAGR을 33.92 → 30.86%로 3.06%p 잃는다.**
+    #              원인이 명확하다 — 평균노출이 0.5867 → 0.5233으로 **덜 투자하기 때문**이다.
+    #   "redeploy" = 깎은 만큼을 **대피처(잔여 슬리브)로 재투입**한다. 명목 노출은 E_t에 그대로 두고
+    #              포트폴리오 '베타'만 낮추는 방식이다(대피처는 XLV 0.70·XLU 0.59·XLP 0.53 등
+    #              XLK 1.28보다 훨씬 낮다). trim의 약점(그냥 덜 투자함)을 고치는 변형이라
+    #              **[베타재투입격자]로 상설 측정**한다. 라이브는 여전히 scale=0(무변경).
+    ROTATION_BETA_MODE: str = "trim"            # "trim" | "redeploy"
     ROTATION_BETA_MIN_OBS: int = 250            # 베타 추정 최소 관측일(그 전에는 승수 1.0)
     ROTATION_DOWN_REGIME_LEADER: bool = True    # ⚠ E_t=0(하락국면)에도 명확 1위가 있으면 그 섹터로 거래
     # [v0.25.0 ⚠⚠ 1.0 → 0.5 — v0.24.0에 심어둔 [하락리더격자]가 답을 냈다. 이번 라운드 최대 개선]
@@ -4472,9 +4547,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 out[_t] = _m.fillna(1.0)
             return out
 
-        def _build_primary(cap_: float, bscale_: Optional[float] = None):
+        def _build_primary(cap_: float, bscale_: Optional[float] = None, bmode_: Optional[str] = None):
             _bm = _beta_mult(float(getattr(scfg, "ROTATION_BETA_SCALE", 0.0) or 0.0)
                              if bscale_ is None else float(bscale_))
+            _mode = str(getattr(scfg, "ROTATION_BETA_MODE", "trim") if bmode_ is None else bmode_)
             fps_ = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
             n_pri_ = n_alt_ = n_eq_ = 0
             for _d in eval_idx:
@@ -4483,10 +4559,14 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _a_ok = (isinstance(_a, str) and _a in _hold.columns and bool(_hold.loc[_d, _a])
                          and bool(eligible.loc[_d, _a]) if _a in eligible.columns else False)
                 _share = cap_ if _pri_ok else 0.0
+                _pri_w = 0.0
                 if _pri_ok:
                     # [v0.29.0] 베타 승수(≤1)만큼 덜 담는다 — 시장위험을 E_t에 맞춘다. scale=0이면 1.0.
-                    fps_.loc[_d, _pri] = _share * float(_bm.loc[_d, _pri]); n_pri_ += 1
-                _rest = 1.0 - _share
+                    _pri_w = _share * float(_bm.loc[_d, _pri])
+                    fps_.loc[_d, _pri] = _pri_w; n_pri_ += 1
+                # [v0.30.0] "redeploy"면 베타로 깎인 만큼(_share - _pri_w)을 대피처 몫에 얹는다 —
+                #   명목 노출은 E_t에 두고 포트폴리오 베타만 낮춘다. "trim"이면 종전대로 현금으로 남긴다.
+                _rest = (1.0 - _pri_w) if (_mode == "redeploy") else (1.0 - _share)
                 if _rest > 1e-12:
                     if _a_ok:
                         fps_.loc[_d, _a] += _rest * float(_bm.loc[_d, _a]); n_alt_ += 1
@@ -4513,6 +4593,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             if abs(_bv - _bs_live) < 1e-9:
                 continue
             primary_cap_variants[f"주력섹터 중심 · 베타정규화 {_bv:.2f} [베타격자]"] = _build_primary(_cap, _bv)[0]
+        # [v0.30.0] 재투입 변형 — 깎은 비중을 현금이 아니라 대피처로 보낸다(명목 노출 유지).
+        for _bv in (0.25, 0.50, 0.75, 1.0):
+            primary_cap_variants[f"주력섹터 중심 · 베타재투입 {_bv:.2f} [베타재투입격자]"] = \
+                _build_primary(_cap, _bv, "redeploy")[0]
         label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
         log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
                            days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
@@ -4583,7 +4667,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #   상한만 다르고 나머지는 같아야 격자의 의미가 있으므로 [상한격자]도 같은 오버라이드를 받는다.
         # [v0.29.0] 베타격자도 같은 오버라이드를 받아야 like-for-like다 — v0.24.0에서 상한격자가
         #   오버라이드를 못 받아 "0.8이 최적"이라는 틀린 결론을 냈던 바로 그 실수를 반복하지 않는다.
-        _is_cap_grid = ("[상한격자]" in str(label)) or ("[베타격자]" in str(label))
+        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자]", "[베타격자]", "[베타재투입격자]"))
         if ((label in (label_leader, label_primary) or _is_cap_grid)
                 and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
             dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
