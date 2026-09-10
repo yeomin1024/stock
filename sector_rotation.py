@@ -17,6 +17,58 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.31.0 - 2026-09-10 - [⚠ [베타재투입격자] 판정: **기각** + 원인을 짚은
+#                       '방어 대피처' 사전등록] 변경 모듈: `SectorConfig.ROTATION_SHELTER_DEFENSIVE`
+#                       (신규, **0.0**), `_beta_raw()`(신규·캐시), `_beta_mult()`(캐시 재사용),
+#                       `_build_primary(shelter_def_)`, `[방어대피처격자]`(0.25/0.5/0.75/1.0),
+#                       `_is_cap_grid` 범위 확장. **배분 로직·채택값 무변경 — v0.30.1과 비트 동일**
+#                       (share=0이면 종전 경로만 탄다).
+#
+#                       [§1 사전등록 격자 판정 — 재투입은 기각이다]
+#                       리포트31 [베타재투입격자](실제 엔진):
+#                         강도   CAGR    샤프    MDD      칼마    평균노출
+#                         0.00  33.92%  2.112  -10.35%  3.279   0.5867  ← ★(현행)
+#                         0.25  33.28%  2.137  -10.32%  3.226   0.5696
+#                         0.50  32.70%  2.147  -10.29%  3.177   0.5685
+#                         0.75  32.12%  2.154  -10.27%  3.129   0.5670
+#                         1.00  31.55%  2.158  -10.24%  3.080   0.5652
+#                       **진단의 절반은 맞고 절반은 틀렸다.** 노출은 의도대로 되살아났다
+#                       (trim 0.5233 → redeploy 0.5652~0.5696, ★ 0.5867에 근접). 그런데
+#                       **MDD 개선이 1.15%p → 0.11%p로 거의 사라졌고 칼마는 단조 감소**했다.
+#                       기준 ①(CAGR -0.64~-2.37%p) ②(칼마 전부 ★ 미만) 둘 다 불통과 → 기각.
+#
+#                       [§2 ⚠ 왜 사라졌나 — 대피처가 대피처가 아니었다]
+#                       최대낙폭 구간(2019-04-23 ~ 06-03, 29거래일)을 전수 분해했다:
+#                         · E_t = 1.00 (M이 풀투자를 지시한 구간) · M은 -5.40%, 이 층은 -9.48%
+#                         · 보유: XLK 90%(베타 1.30) + **대피처 XLF 8.28% · XLE 1.72%**
+#                         · **대피처 가중 베타 0.99** — 주력보다 조금 낮을 뿐 사실상 시장 복제였다
+#                       재투입은 깎은 비중을 바로 이 슬리브로 되돌리므로 포트폴리오 베타가 거의
+#                       내려가지 않는다. 원인은 **대피처를 순위(모멘텀)로 뽑는 규칙**이다 —
+#                       선행하던 고베타 경기민감 섹터가 하락장에서도 그대로 1위로 뽑힌다.
+#                       (상한격자가 0.5~0.9 구간에서 MDD를 -10.16~-10.35%로 거의 못 바꾸는 것도
+#                        같은 이유다. 슬리브는 보험이 아니라 그냥 다른 주식이었다.)
+#
+#                       [§3 처방 — 방어 대피처(사전등록, 라이브 무변경)]
+#                       주력 보유일의 잔여 슬리브 중 `ROTATION_SHELTER_DEFENSIVE` 비중을 순위 1위가
+#                       아니라 **그날 적격 섹터 중 워크포워드 베타 최저**인 섹터로 보낸다.
+#                       · 베타는 v0.29.0과 같은 추정기(확장창, t 이전만, 최소 250일) — 룩어헤드 없음.
+#                       · **주력을 보유한 날의 잔여분에만** 적용한다. 전량 대피일(주력이 자기 국면
+#                         RISK_OFF)은 슬리브가 '분산'이 아니라 '수익원'이므로 종전 순위 규칙을 쓴다.
+#                       · share=0이면 종전과 **비트 동일**. 합계 ≤ E_t 불변식도 그대로다.
+#                       ⚠ 채택하지 않는다 — 로컬 리플레이 추정(★를 CAGR 33.82%/MDD -10.35%로 재현,
+#                       13n 꼬리 귀속과 소수점까지 일치)으로는 share 0.25에서 CAGR -0.26%p에
+#                       칼마 +0.071(효율 0.273 칼마/%p — [혼합] 0.056의 4.9배, [베타격자] 0.025의
+#                       10.9배)이지만, 이 크기는 리플레이 오차(CAGR 0.10%p)의 2.6배에 불과하다.
+#                       **v1.34.0 전례(리플레이만 보고 채택했다가 틀렸다)를 반복하지 않는다** —
+#                       0.25/0.50/0.75/1.00을 [방어대피처격자]로 싣고 실제 엔진이 판정한다.
+#
+#                       [§4 like-for-like·성능]
+#                       · `_is_cap_grid`에 [방어대피처격자]를 넣어 하락국면리더·전섹터하락
+#                         오버라이드를 똑같이 받게 했다(v0.24.0 버그 재발 방지).
+#                       · `_beta_raw()`를 **한 번만 계산해 캐시**하고 `_beta_mult()`가 재사용한다.
+#                         종전에는 [베타격자]·[베타재투입격자] 8행이 각각 11섹터 확장창 공분산을
+#                         다시 돌렸다 — 같은 결과에 8배 계산이었다.
+#
 #  VERSION: v0.30.1 - 2026-09-10 - [★ 채택 기준 확정 — 사용자 결정 기록. 코드 동작 무변경]
 #                       v0.30.0에서 세 라운드째 같은 갈림길(수익을 내주고 매끄러움을 살 것인가)을
 #                       사용자에게 물었고, 답은 **"현행 유지 — CAGR 최우선"**이었다(2026-09-10).
@@ -1300,7 +1352,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.30.1"
+VERSION = "v0.31.0"
 VERSION_DATE = "2026-09-10"
 
 # =============================================================================
@@ -1594,6 +1646,21 @@ class SectorConfig:
     #              **[베타재투입격자]로 상설 측정**한다. 라이브는 여전히 scale=0(무변경).
     ROTATION_BETA_MODE: str = "trim"            # "trim" | "redeploy"
     ROTATION_BETA_MIN_OBS: int = 250            # 베타 추정 최소 관측일(그 전에는 승수 1.0)
+    # [v0.31.0 §2·§3] ⚠ 대피처가 대피처가 아니었다 — 방어 대피처(사전등록, 기본 off).
+    #   리포트31에서 [베타재투입격자]를 기각한 뒤 최대낙폭 구간(2019-04-23~06-03, 29거래일)을
+    #   전수 분해했더니: E_t=1.00 · M -5.40% · 이 층 -9.48% · 보유는 XLK 90%(베타 1.30) +
+    #   **대피처 XLF 8.28% · XLE 1.72%(가중 베타 0.99)**였다. 대피처가 사실상 시장 복제였으니
+    #   재투입이 베타를 못 낮춘 것이 당연하다. 원인은 **대피처를 순위(모멘텀)로 뽑는 규칙**이다.
+    #   ROTATION_SHELTER_DEFENSIVE = 주력 보유일의 잔여 슬리브 중 이 비중만큼을 순위 1위가 아니라
+    #   **그날 적격 섹터 중 워크포워드 베타 최저**인 섹터로 보낸다(베타 추정기는 ROTATION_BETA_SCALE
+    #   과 동일 — 확장창·t 이전만·최소 ROTATION_BETA_MIN_OBS일이라 룩어헤드 없음).
+    #   · 전량 대피일(주력이 자기 국면 RISK_OFF)에는 적용하지 않는다 — 그 날 슬리브는 '분산'이
+    #     아니라 유일한 수익원이므로 순위 규칙이 맞다.
+    #   · 0.0이면 종전과 **비트 동일**. 합계 ≤ E_t 불변식은 그대로다.
+    #   ⚠ 리플레이 추정(참고, 채택 근거 아님): share 0.25 → CAGR -0.26%p / MDD +0.30%p /
+    #     칼마 +0.071(효율 0.273 칼마당 %p — [혼합] 0.056의 4.9배). 0.50에서 칼마가 포화(3.379)하고
+    #     그 위로는 CAGR만 더 잃는다. 실제 엔진 판정은 [방어대피처격자] 참조.
+    ROTATION_SHELTER_DEFENSIVE: float = 0.0     # ⚠ 주력 보유일 잔여 슬리브 중 최저베타 섹터로 보낼 비중(0=off)
     ROTATION_DOWN_REGIME_LEADER: bool = True    # ⚠ E_t=0(하락국면)에도 명확 1위가 있으면 그 섹터로 거래
     # [v0.25.0 ⚠⚠ 1.0 → 0.5 — v0.24.0에 심어둔 [하락리더격자]가 답을 냈다. 이번 라운드 최대 개선]
     #  리포트26(실제 엔진, 같은 격자):
@@ -4532,27 +4599,65 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #   같은 방식). 채택값은 바꾸지 않는다 — 재보기 전에는 고르지 않는다.
         # [v0.29.0] 워크포워드 베타 승수 — t 이전 자료만으로 확장창 추정(룩어헤드 차단).
         #   beta_t = cov(r_sec[:t-1], r_spy[:t-1]) / var(r_spy[:t-1]), 관측 < MIN_OBS 이면 승수 1.0.
-        def _beta_mult(scale_: float) -> pd.DataFrame:
-            out = pd.DataFrame(1.0, index=eval_idx, columns=all_cols)
-            if scale_ <= 0:
-                return out
+        # [v0.31.0 §4] 확장창 워크포워드 베타를 **한 번만** 계산해 캐시한다. 종전에는 _beta_mult가
+        #   호출될 때마다(=[베타격자]·[베타재투입격자] 8행) 11섹터 공분산을 다시 돌렸다 — 같은
+        #   결과에 8배 계산이었다. 추정 규약은 v0.29.0과 동일(t 이전 자료만 · 최소 MIN_OBS일).
+        _beta_cache: Dict[str, pd.DataFrame] = {}
+
+        def _beta_raw() -> pd.DataFrame:
+            if "raw" in _beta_cache:
+                return _beta_cache["raw"]
+            out = pd.DataFrame(np.nan, index=eval_idx, columns=list(cols), dtype=float)
             _rs = ((1.0 + ret_co["SPY"]) * (1.0 + ret_oc["SPY"]) - 1.0).reindex(eval_idx).shift(1)
             _minn = int(getattr(scfg, "ROTATION_BETA_MIN_OBS", 250))
             _vs = _rs.expanding(min_periods=_minn).var()
             for _t in cols:
                 _r = ret_cc[_t].reindex(eval_idx).shift(1)
                 _cv = _r.expanding(min_periods=_minn).cov(_rs)
-                _b = (_cv / _vs).replace([np.inf, -np.inf], np.nan)
+                out[_t] = (_cv / _vs).replace([np.inf, -np.inf], np.nan)
+            _beta_cache["raw"] = out
+            log("ROTATION", kv(event="beta_estimated", n=len(cols), min_obs=_minn,
+                               first_valid=str(out.dropna(how="all").index.min())[:10],
+                               median_beta=round(float(out.median(skipna=True).median()), 4)), M=M)
+            return out
+
+        def _beta_mult(scale_: float) -> pd.DataFrame:
+            out = pd.DataFrame(1.0, index=eval_idx, columns=all_cols)
+            if scale_ <= 0:
+                return out
+            _braw = _beta_raw()
+            for _t in cols:
+                _b = _braw[_t]
                 _m = (1.0 / _b.clip(lower=0.2) ** float(scale_)).clip(upper=1.0)
                 out[_t] = _m.fillna(1.0)
             return out
 
-        def _build_primary(cap_: float, bscale_: Optional[float] = None, bmode_: Optional[str] = None):
+        # [v0.31.0 §3] 방어 대피처 — 그날 적격(hold & eligible) 비주력 섹터 중 워크포워드 베타
+        #   최저인 티커. 베타가 아직 없는(관측 < MIN_OBS) 날은 None → 종전 순위 경로로 떨어진다.
+        def _defensive_alt(share_: float) -> pd.Series:
+            out = pd.Series(index=eval_idx, dtype=object)
+            if share_ <= 0:
+                return out
+            _br = _beta_raw()
+            _cand = [c for c in cols if c != _pri and c in _hold.columns and c in eligible.columns]
+            for _d in eval_idx:
+                _ok = [c for c in _cand
+                       if bool(_hold.loc[_d, c]) and bool(eligible.loc[_d, c]) and pd.notna(_br.loc[_d, c])]
+                if _ok:
+                    out.loc[_d] = min(_ok, key=lambda c: float(_br.loc[_d, c]))
+            return out
+
+        def _build_primary(cap_: float, bscale_: Optional[float] = None, bmode_: Optional[str] = None,
+                           shelter_def_: Optional[float] = None):
             _bm = _beta_mult(float(getattr(scfg, "ROTATION_BETA_SCALE", 0.0) or 0.0)
                              if bscale_ is None else float(bscale_))
             _mode = str(getattr(scfg, "ROTATION_BETA_MODE", "trim") if bmode_ is None else bmode_)
+            _sdef = float(getattr(scfg, "ROTATION_SHELTER_DEFENSIVE", 0.0) or 0.0
+                          if shelter_def_ is None else shelter_def_)
+            _sdef = min(max(_sdef, 0.0), 1.0)
+            _dalt = _defensive_alt(_sdef)
             fps_ = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
-            n_pri_ = n_alt_ = n_eq_ = 0
+            n_pri_ = n_alt_ = n_eq_ = n_def_ = 0
             for _d in eval_idx:
                 _pri_ok = bool(_hold.loc[_d, _pri]) if _pri in _hold.columns else False
                 _a = _alt.get(_d)
@@ -4568,6 +4673,15 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 #   명목 노출은 E_t에 두고 포트폴리오 베타만 낮춘다. "trim"이면 종전대로 현금으로 남긴다.
                 _rest = (1.0 - _pri_w) if (_mode == "redeploy") else (1.0 - _share)
                 if _rest > 1e-12:
+                    # [v0.31.0 §3] 주력을 보유한 날의 잔여분 중 _sdef 만큼은 '최저베타 적격섹터'로.
+                    #   전량 대피일(_pri_ok=False)에는 적용하지 않는다 — 그 날 슬리브는 분산이 아니라
+                    #   유일한 수익원이므로 순위 규칙이 맞다. _sdef=0이면 아래 두 줄은 무효과다.
+                    _dc = _dalt.get(_d) if (_sdef > 0 and _pri_ok) else None
+                    _r_def = _rest * _sdef if isinstance(_dc, str) else 0.0
+                    _rest = _rest - _r_def
+                    if _r_def > 1e-12:
+                        fps_.loc[_d, _dc] += _r_def * float(_bm.loc[_d, _dc]); n_def_ += 1
+                if _rest > 1e-12:
                     if _a_ok:
                         fps_.loc[_d, _a] += _rest * float(_bm.loc[_d, _a]); n_alt_ += 1
                     else:
@@ -4577,6 +4691,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                             for c in _ok:
                                 fps_.loc[_d, c] += (_rest / len(_ok)) * float(_bm.loc[_d, c])
                             n_eq_ += 1
+            if _sdef > 0:
+                log("ROTATION", kv(event="defensive_shelter_applied", share=round(_sdef, 4),
+                                   days=n_def_, cap=round(float(cap_), 4)), M=M)
             return fps_, n_pri_, n_alt_, n_eq_
         fps, _n_pri, _n_alt, _n_eq = _build_primary(_cap)
         frac_primary_sector = fps
@@ -4597,6 +4714,15 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         for _bv in (0.25, 0.50, 0.75, 1.0):
             primary_cap_variants[f"주력섹터 중심 · 베타재투입 {_bv:.2f} [베타재투입격자]"] = \
                 _build_primary(_cap, _bv, "redeploy")[0]
+        # [v0.31.0 §3] 방어 대피처 격자 — 채택값(라이브) 제외. 리포트31에서 최대낙폭 구간의 대피처
+        #   가중 베타가 0.99(주력 1.30)로 사실상 시장 복제였다는 진단에 대한 처방을, 리플레이가
+        #   아니라 실제 엔진이 칼마로 판정하게 한다. share=0 행은 현행과 동일해야 한다(검증점).
+        _sd_live = float(getattr(scfg, "ROTATION_SHELTER_DEFENSIVE", 0.0) or 0.0)
+        for _sv in (0.25, 0.50, 0.75, 1.0):
+            if abs(_sv - _sd_live) < 1e-9:
+                continue
+            primary_cap_variants[f"주력섹터 중심 · 방어대피처 {_sv:.2f} [방어대피처격자]"] = \
+                _build_primary(_cap, None, None, _sv)[0]
         label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
         log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
                            days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
@@ -4667,7 +4793,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #   상한만 다르고 나머지는 같아야 격자의 의미가 있으므로 [상한격자]도 같은 오버라이드를 받는다.
         # [v0.29.0] 베타격자도 같은 오버라이드를 받아야 like-for-like다 — v0.24.0에서 상한격자가
         #   오버라이드를 못 받아 "0.8이 최적"이라는 틀린 결론을 냈던 바로 그 실수를 반복하지 않는다.
-        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자]", "[베타격자]", "[베타재투입격자]"))
+        # [v0.31.0 §4] [방어대피처격자]도 같은 오버라이드를 받아야 like-for-like다 — v0.24.0에서
+        #   [상한격자]가 오버라이드를 못 받아 "상한 0.8이 최적"이라는 틀린 결론을 냈던 그 실수를
+        #   격자를 새로 심을 때마다 반복하지 않는다.
+        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자]", "[베타격자]", "[베타재투입격자]", "[방어대피처격자]"))
         if ((label in (label_leader, label_primary) or _is_cap_grid)
                 and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
             dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
