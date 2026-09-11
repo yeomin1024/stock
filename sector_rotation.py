@@ -17,6 +17,39 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.37.0 - 2026-09-11 - [⚠ 유니버스 변경 — XLB·XLE 예측·배분 대상 제외(사용자 지시) +
+#                       v0.36.0 검증 지점 3개 확인]
+#
+#                       [§1 리포트2(v0.36.0) 검증 — 지난 라운드 예측이 실제 엔진에서 그대로 맞았다]
+#                         · 00시트 "격자 수렴 상태(①②③④)" 두 리포트 모두 실림 — M 128행/섹터 34행 전부 통과 0행.
+#                         · 13o_낙폭에피소드: 1순위 2019-04-24~06-19 -9.75%, 상승 40/40일·E_t 1.00·XLK -1.31% vs
+#                           M +0.06%·M 동기간 -6.61%·집중 대가 -3.14%p — 수작업 진단과 소수점까지 일치.
+#                         · [분산게이트격자] 실제 엔진 판정(예측→실측 칼마): 하위25% 3.670→3.682 · 하위50% 3.708→**3.714** ·
+#                           하위75% 3.685→3.696 · [반증] 3.600→**3.618**(★ 3.671보다 나쁨 — 방향 확인).
+#                           하위50%는 초과 -0.014·5일컷 -0.536 → `열위(강건)` = **기준 ④ 불통과 → 채택 안 함(예정대로).**
+#                         · 데이터품질·룩어헤드 감사 이상 0건.
+#
+#                       [§2 ⚠ XLB·XLE 제외 — SectorConfig.SECTOR_EXCLUDE 신설, run() 첫 줄에서 유니버스 확정]
+#                       사용자 지시("XLB, XLE는 예측 대상에서 제외하자"). 수집·파이프라인·순위·대피처·시트·요약이
+#                       전부 9개만 본다. 12_섹터요약에 '제외(설정)' 행, 00시트에 '예측 제외 섹터(설정)' 줄.
+#                       대조군A 라벨의 '균등11'을 '전섹터균등'으로 바꿨다(9개에서 거짓 표기 방지).
+#                       ⚠ 비용을 숨기지 않는다 — 리포트2 비중 재현(★ MDD 정확 재현) 기준 사전 추정:
+#                         XLB·XLE 제외  CAGR 35.69→35.25% (-0.44%p) · MDD -9.75→-9.96% (-0.21%p) · 칼마 3.66→3.54
+#                         XLE 만 제외   -0.47%p / -0.21%p        XLB 만 제외  +0.06%p / 0.00%p
+#                       비용은 거의 전부 XLE — XLE는 2022년 XLK 대피일의 주 대피처였고 하락국면리더 136일 중 72일의
+#                       리더였다(13m B 슬리브 기여 +1.69%, 13i 하락국면리더 2022 +0.85%p). 반면 XLE는 01Y에서 유일하게
+#                       '상승 정보 없음'(기저대비 -0.21%p)이고 단독 전략 MDD -36.1%(최악)·리더일 초과 -2.82%p(유일 음수)다.
+#                       즉 "자기 국면은 못 맞히지만 남들이 빠질 때 버티는" 섹터였다 — 제외의 손익은 다음 실행이 판정한다.
+#                       (근사 한계: 재현에서 XLE가 리더였던 하락국면리더일을 현금으로 처리했으나 실제 엔진은 차순위
+#                        섹터를 리더로 뽑을 수 있어 실측 비용은 이보다 작을 가능성이 크다.)
+#
+#                       [§3 산업(업종) 계층 확장 — 이번 라운드는 설계서만] INDUSTRY_LAYER_SPEC_v0.1.md(프로젝트) 참조.
+#                       코드는 Sonnet 5.0이 설계서로부터 생성한다. 본 파일에는 손대지 않았다.
+#
+#                       변경 모듈: `SectorConfig.SECTOR_EXCLUDE`(신규 ⚠), `run()` 유니버스 확정 블록,
+#                       `fetch_sector_prices(..., tickers=)`, `ROT_LABEL_CTRL_A` 문구, 12/00 시트 각 1줄.
+#                       회귀: test_sector_exclude_v037.py 신규 + 기존 45개 재실행.
+#
 #  VERSION: v0.36.0 - 2026-09-11 - [⚠ 사전등록 격자 1개(분산 게이트, **기본 끔 — 라이브 비트 동일**) +
 #                       진단 시트 13o 신설 + 수렴 판정 1줄. **채택값·배분 로직 무변경**]
 #
@@ -1577,7 +1610,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.36.0"
+VERSION = "v0.37.0"
 VERSION_DATE = "2026-09-11"
 
 # =============================================================================
@@ -1621,6 +1654,15 @@ def _ensure_yahoo_expected_start(M) -> None:
 @dataclass
 class SectorConfig:
     SECTORS: Tuple[str, ...] = SECTORS
+    # [v0.37.0 ⚠ 사용자 지시 2026-09-11 "XLB, XLE는 예측 대상에서 제외하자"] 예측·배분 대상에서 뺀다.
+    #   run() 첫 줄에서 SECTORS에서 걸러 낸 뒤 모든 하류(수집·파이프라인·순위·대피처·시트)가 9개만 본다.
+    #   ⚠ 리포트2(v0.36.0) 비중 재현 엔진의 사전 추정(참고 — 실제 엔진이 다음 실행에 판정):
+    #     XLE 제외  ΔCAGR -0.47%p · ΔMDD -0.21%p · 칼마 3.66→3.54   (XLE는 2022년 XLK 대피일의 주 대피처였고
+    #                                                            하락국면리더 136일 중 72일의 리더였다)
+    #     XLB 제외  ΔCAGR +0.06%p · ΔMDD  0.00%p                (배분에 거의 닿지 않는다)
+    #   즉 비용은 거의 전부 XLE 쪽이며 '2022형 국면'의 분산 수단을 하나 잃는 구조적 비용이다 —
+    #   사용자 결정에 따라 적용하되 숫자를 숨기지 않는다. 되돌리려면 () 로.
+    SECTOR_EXCLUDE: Tuple[str, ...] = ("XLB", "XLE")
     ADJ_CLOSE_STALE_DAYS: int = 5              # Adj Close가 Close보다 이만큼 이상 늦게 끊기면 지연 판정·Close 수익률로 이어붙임
     # ---- 후보지표 구성 -------------------------------------------------------
     USE_MARKET_CANDIDATES: bool = True         # M의 후보지표 전부를 섹터 후보에 포함(그 섹터 수익에 대해 재검증)
@@ -2046,7 +2088,8 @@ def _indicator_spec_override(M, specs: List[Any]):
 # [3] 데이터 — 섹터 ETF 수집·무결성·Adj Close 지연 감지
 # =============================================================================
 def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
-                        sector_px_override: Optional[Dict[str, pd.DataFrame]] = None
+                        sector_px_override: Optional[Dict[str, pd.DataFrame]] = None,
+                        tickers: Optional[Tuple[str, ...]] = None,
                         ) -> Tuple[Dict[str, Optional[pd.DataFrame]], List[dict]]:
     """11개 섹터 ETF를 M.fetch_all_yahoo로 수집(퇴화수집 게이트·지연캐시 포함)하고, SPY까지
     포함해 M.validate_price_data로 무결성(시작일·교차오염) 검사한다. SPY는 res["px_dict"]["SPY"]
@@ -2056,12 +2099,14 @@ def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
     _ensure_yahoo_expected_start(M)
     cfg = res["cfg"]
     yahoo_diag: List[dict] = []
+    # [v0.37.0] 활성 유니버스만 수집한다(제외 섹터는 다운로드도 하지 않는다 — 불필요한 I/O 제거).
+    SECTORS_ = tuple(tickers) if tickers else SECTORS
     if sector_px_override is not None:
-        px = {t: sector_px_override.get(t) for t in SECTORS}
+        px = {t: sector_px_override.get(t) for t in SECTORS_}
         log("DATA", kv(event="sector_px_override", tickers=sum(1 for v in px.values() if v is not None),
                        note="수집 생략 — 직접 주입된 프레임 사용(합성/오프라인)"), M=M, level="warning")
     else:
-        px = M.fetch_all_yahoo(list(SECTORS), cfg, diag=yahoo_diag)
+        px = M.fetch_all_yahoo(list(SECTORS_), cfg, diag=yahoo_diag)
     for row in yahoo_diag:
         quality_rows.append({"시리즈": f"[Yahoo:{row.get('종류', '?')}] {row.get('시리즈', '?')}",
                              "행수": row.get("행수", 0), "시작": row.get("시작", "-"), "종료": row.get("종료", "-"),
@@ -2069,10 +2114,10 @@ def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
     combined = dict(px)
     combined["SPY"] = res["px_dict"]["SPY"]
     validated = M.validate_price_data(combined, cfg, quality_rows)
-    sector_px = {t: validated.get(t) for t in SECTORS}
+    sector_px = {t: validated.get(t) for t in SECTORS_}
     n_ok = sum(1 for v in sector_px.values() if v is not None and len(v) > 0)
-    log("DATA", kv(event="sector_fetch_done", tickers=len(SECTORS), ok=n_ok,
-                   missing=",".join(t for t in SECTORS if sector_px.get(t) is None) or "-"), M=M)
+    log("DATA", kv(event="sector_fetch_done", tickers=len(SECTORS_), ok=n_ok,
+                   missing=",".join(t for t in SECTORS_ if sector_px.get(t) is None) or "-"), M=M)
     return sector_px, yahoo_diag
 
 
@@ -3730,6 +3775,14 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
     sector_px_override: 합성/오프라인 테스트용 가격 주입(fetch_sector_prices 참조)."""
     scfg = scfg or CFG
     t_all = time.time()
+    # [v0.37.0 ⚠] 유니버스 확정 — SECTOR_EXCLUDE를 SECTORS에서 걸러 낸 설정으로 바꿔치기해 하류 전체가
+    #   같은 목록을 본다(수집·파이프라인·순위·대피처·시트·요약 전부). 제외 목록은 12_섹터요약에 남긴다.
+    _excl = tuple(t for t in (getattr(scfg, "SECTOR_EXCLUDE", ()) or ()) if t in scfg.SECTORS)
+    if _excl:
+        scfg = dataclasses.replace(scfg, SECTORS=tuple(t for t in scfg.SECTORS if t not in _excl))
+        log("START", kv(event="universe_exclude_applied", excluded=",".join(_excl),
+                        active=len(scfg.SECTORS), note="사용자 지시(2026-09-11) — 예측·배분 대상에서 제외"), M=M,
+            level="warning")
     res = _resolve_res(res_or_path, M)
     M_cfg = res["cfg"]
     cal = res["cal"]
@@ -3754,7 +3807,8 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
     # ---- 1) 데이터 ----
     t0 = time.time()
     quality: List[dict] = []
-    sector_px, yahoo_diag = fetch_sector_prices(res, M, quality, sector_px_override=sector_px_override)
+    sector_px, yahoo_diag = fetch_sector_prices(res, M, quality, sector_px_override=sector_px_override,
+                                                tickers=scfg.SECTORS)
     spy_df = res["px_dict"]["SPY"]
     spy_df = spy_df[~spy_df.index.duplicated(keep="last")].sort_index()
     spy_tr, _ = build_total_return_close(spy_df, cal, scfg.ADJ_CLOSE_STALE_DAYS)
@@ -3783,6 +3837,9 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             log("DATA", kv(ticker=t, event="adj_close_stale", gap_days=info["지연거래일수"],
                            adj_last=info["AdjClose마지막일"], close_last=info["Close마지막일"],
                            action="지연 구간은 Close 수익률로 이어붙임(배당 미포함 근사)"), M=M, level="warning")
+    for t in _excl:   # [v0.37.0] 제외 섹터도 유니버스 표에 남겨 '왜 없는지'가 리포트에서 보이게 한다
+        universe_rows.append({"티커": t, "섹터명": SECTOR_NAME_KR.get(t, ""),
+                              "상태": "제외(설정 SECTOR_EXCLUDE — 사용자 지시 2026-09-11)"})
     universe = pd.DataFrame(universe_rows)
     stage_timing["01_섹터데이터"] = round(time.time() - t0, 2)
     log("DATA", kv(event="universe_ready", ok=len(frames), excluded=len(scfg.SECTORS) - len(frames),
@@ -3980,7 +4037,8 @@ def build_portfolio_reference(results: Dict[str, Dict[str, Any]], res: dict, eva
 # =============================================================================
 ROT_LABEL_PRIMARY = "집중배분(순위가중·캡{cap:.0%}) ★"
 ROT_LABEL_TOPK = "집중배분(상위{k} 균등·캡{cap:.0%})"
-ROT_LABEL_CTRL_A = "대조군A: M노출×균등11(제외·캡 없음)"
+# [v0.37.0] 종전 "균등11" — 유니버스가 9개(XLB·XLE 제외)가 되면서 숫자를 라벨에서 뺐다(거짓 표기 방지).
+ROT_LABEL_CTRL_A = "대조군A: M노출×전섹터균등(제외·캡 없음)"
 ROT_LABEL_CTRL_B = "대조군B: M노출×균등(하락제외·캡)"
 
 
@@ -7325,6 +7383,10 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                         else "미실행(RUN_SELFTEST=False)")),
         ("섹터 실행 결과", f"{n_ok}/{len(scfg.SECTORS)} 정상" + (f", 실패: {', '.join(sres['failed'].keys())} — 전체 오류는 "
                         "12b_섹터오류상세 참조" if sres["failed"] else "")),
+        # [v0.37.0 ⚠] 유니버스에서 뺀 섹터를 첫 화면에 남긴다 — '왜 XLB·XLE가 없나'가 시트를 뒤지지 않아도 보이게.
+        ("예측 제외 섹터(설정)", (", ".join(_x for _x in (getattr(scfg, "SECTOR_EXCLUDE", ()) or ())) or "없음")
+                            + " — SectorConfig.SECTOR_EXCLUDE(사용자 지시 2026-09-11). 활성 유니버스 "
+                            f"{len(scfg.SECTORS)}개: {', '.join(scfg.SECTORS)}"),
         ("최근 예측", up_line),
         ("후보지표", f"섹터당 {n_cand}개 = M 후보 전부(변동성/신용/매크로/크로스에셋/추세/자동생성) "
                     f"+ 섹터 기술 8 + SPY대비 상대강도 10(§1.E REL_MA200_SLOPE 포함) + 섹터 매크로 8(§1.D 확장) "
