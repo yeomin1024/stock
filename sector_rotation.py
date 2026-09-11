@@ -17,6 +17,85 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.36.0 - 2026-09-11 - [⚠ 사전등록 격자 1개(분산 게이트, **기본 끔 — 라이브 비트 동일**) +
+#                       진단 시트 13o 신설 + 수렴 판정 1줄. **채택값·배분 로직 무변경**]
+#
+#                       [§1 리포트36 판정 — 섹터 격자도 수렴했다]
+#                       13_섹터배분전략 42개 변형 중 기준 ①(CAGR 손실 ≤ 0.5%p)을 통과한 행은
+#                       ★ 포함 9개, 그 중 칼마 정점은 `[M헤어컷격자·근사] E11` 3.757인데
+#                       **`⚠ 5일 의존`**(초과 +0.557 → 5일컷 -0.033)이라 ④ 불통과.
+#                       다음은 `방어대피처 0.75` 3.732 — ④가 `열위(강건)`이고 5일컷 -0.813이라
+#                       ④-b(ii)도 불통과. **①②③④를 모두 통과하는 행은 0개다.**
+#                       (아깝게 놓친 것도 기록해 둔다: `방어대피처 1.00`은 칼마 **3.775**로 표 전체
+#                        최고인데 CAGR 손실 0.68%p로 기준 ①을 **0.18%p 차이로** 못 넘고 ④도 불통과.)
+#
+#                       [§2 ★★ 이번 라운드 최대 발견 — 낙폭은 '국면 오판'이 아니다]
+#                       리포트36 비중을 재구성해 ★를 충실 재현(MDD -0.0975 소수점까지 일치, 일별
+#                       평균오차 0.0015%)한 뒤 낙폭 에피소드를 뜯었다. 최대낙폭 -9.75%는
+#                       **2019-04-24 ~ 2019-06-19**이고 그 40일 내내:
+#                         · M 시장상황 = 상승(위험선호) 40/40일   · E_t = 1.00 40/40일
+#                         · XLK 자기 국면 = 상승(위험선호) 40/40일 · H 백분위 최고 0.64 (진입선 0.90)
+#                       구간 누적 SPY **+0.06%** vs XLK **-1.31%**, 저점에서 SPY -6.6% vs XLK -9.8%.
+#                       M 자신의 같은 구간 낙폭은 -6.61% → **격차 3.14%p가 통째로 90% 집중의 대가**다.
+#                       상위 6개 에피소드 중 4개가 상승(위험선호)에서 저점을 찍는다.
+#                       ⇒ 위험(H)·국면에 연동한 조건부 축소는 **원리적으로** 이 낙폭을 줄일 수 없다.
+#                       이 진단을 상설화한 것이 신규 시트 **13o_낙폭에피소드**(build_drawdown_episodes()).
+#
+#                       [§3 그 가설을 실제로 검정하고 기각했다 — 상대강도 가드 18/18 열위]
+#                       "주력이 SPY 대비 약해지면 상한을 낮춘다"는 처방(주력 고유 낙폭을 직접 겨냥하므로
+#                       베타 정규화·상한과 구조가 다르다)을 재현 엔진으로 18개 변형 측정:
+#                         상대강도 21/63/126일 × 문턱 0.10/0.20/0.30 × 낮춘상한 0.5/0.0
+#                       **18행 전부 ★(칼마 3.654)보다 나쁘고 전부 `열위(강건)`**. 63·126일 변형은
+#                       MDD가 **0.00%p** 움직이면서 CAGR만 0.79~5.01%p 잃는다(2019-05 하락이 너무
+#                       빨라 후행 모멘텀 백분위가 끝내 발동하지 않는다). 21일 변형은 ΔMDD +0.57%p를
+#                       얻지만 CAGR -2.40%p — 같은 +0.57%p를 -1.63%p에 사는 베타정규화 0.25보다 나쁘다.
+#                       → 심지 않는다. 기각 근거를 남기는 것으로 끝낸다.
+#
+#                       [§4 레버별 '교환비'를 처음으로 한 표에 놓았다 — 왜 더 못 줄이는지의 답]
+#                       교환비 = MDD 1%p 개선에 지불하는 CAGR %p (작을수록 효율적, 음수면 공짜)
+#                         M헤어컷(섹터층) **-0.54**  ← 공짜. 이미 E7에서 포화(E9·E11 MDD 동일)
+#                         분산게이트(신규)   **-0.20**  ← 공짜지만 기준 ④ 불통과(아래 §5)
+#                         방어대피처          1.18   ← 가장 싼 실비용 레버. 0.50 채택중, 0.75/1.00은 ①/④ 불통과
+#                         주력상한            2.83
+#                         상대강도가드(신규)  4.21   ← §3에서 기각
+#                         베타재투입          4.80
+#                         베타정규화          7.00   ← MDD가 0.25에서 포화하므로 그 위는 전부 순비용
+#                       공짜인 두 레버는 이미 소진(헤어컷)했거나 강건하지 않다(분산게이트).
+#                       남은 레버는 전부 CAGR을 지불해야 하고, 기준 ①이 그 지불을 0.5%p로 묶는다.
+#                       **격자가 수렴한 이유가 우연이 아니라 구조라는 것을 이 표가 보여 준다.**
+#
+#                       [§5 ⚠ 심은 것 — 분산 게이트(ROTATION_DISPERSION_GATE, 기본 False)]
+#                       13e_순위스프레드 후행63일 횡단면 분산 4분위:
+#                         Q1 -3.08%/yr (t -0.67) · Q2 -2.49% (t -0.49) · Q3 +6.93% (t 0.60) ·
+#                         Q4 **+25.37%** (t **1.99**) — 순위 신호의 초과수익이 고분산일에만 있다.
+#                       처방: 저분산일에는 '순위 1위 집중'을 포기하고 적격 비주력 균등으로.
+#                       재현 엔진 실측: 하위25% 칼마 3.670 · **하위50% 3.708** · 하위75% 3.685 ·
+#                       [반증용] 고분산일 균등 **3.600**(★ 3.654보다 나쁨 — 방향은 실재한다) .
+#                       그런데 하위50%의 초과 +0.02 → **5일컷 -0.07 = `⚠ 5일 의존`**으로 ④ 불통과다.
+#                       v1.46.0에서 스스로 남긴 실패(유의성 검정 없이 단조 기울기만 보고 E5·E9 채택)를
+#                       되풀이하지 않기 위해 **채택하지 않고 격자로만 심는다** — 반증용 역방향 1행을
+#                       반드시 함께 실어, 실제 엔진이 다음 라운드에 방향까지 재판정하게 한다.
+#                       ⚠ 기본값 False이므로 이번 실행의 배분·예측·성과는 v0.35.0과 비트 동일하다.
+#
+#                       [§6 XLV 국면정의 FAIL — 기록만 하고 손대지 않는다]
+#                       09_국면통계에서 11개 중 XLV만 "주의: 하락국면의 익일수익률이 더 높음"
+#                       (하락 +0.1607%/일·연율 +40.5% vs 상승 +0.0510%·+12.9%). 다만 하락국면 272일의
+#                       일변동성이 1.90%라 평균의 표준오차가 0.115%p — 격차 0.11%p는 **약 1σ로 유의하지 않다.**
+#                       13m B 실측 기여도 -0.10%(114일)로 미미하다. v0.13.0의 저베타 사전방향 뒤집기는
+#                       이미 적용돼 있고(03_지표검증에서 XLV의 SPY층 후보 2개는 모두 FAIL·미사용),
+#                       '사전방향 불일치율'도 XLV 0.376으로 11섹터 평균(≈0.40)보다 오히려 낮다.
+#                       ⇒ 원인은 특정 후보의 부호가 아니라 표본 잡음. 새 규칙을 만들 근거가 없다.
+#
+#                       [§7 수렴 판정 1줄] 00_실행요약에 "격자 수렴 상태(①②③④)" 추가 —
+#                       격자 행수 · ① 통과수 · ④ 통과수 · **①②③④ 전부 통과 행수** · 칼마 정점을
+#                       매 실행이 스스로 센다(지난 다섯 라운드 손으로 하던 계산).
+#
+#                       변경 모듈: `SectorConfig.ROTATION_DISPERSION_*`(5개 신규, 기본 끔),
+#                       `_dispersion_gate()`(신규), `_build_primary(..., disp_pct_, disp_invert_)`,
+#                       `[분산게이트격자]` 4행 + 반증 1행, `_is_cap_grid` 범위 확장,
+#                       `build_drawdown_episodes()`(신규) → 시트 `13o_낙폭에피소드`, 00시트 1줄.
+#                       회귀: test_dispersion_gate_v036.py 신규 + 기존 45개 재실행.
+#
 #  VERSION: v0.35.0 - 2026-09-11 - [낙폭 형태 2열 추가(`상위3 낙폭평균`·`얼서지수`).
 #                       **배분 로직·채택값 무변경 — v0.34.0과 비트 동일**]
 #
@@ -1498,8 +1577,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.35.0"
-VERSION_DATE = "2026-09-10"
+VERSION = "v0.36.0"
+VERSION_DATE = "2026-09-11"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -1831,6 +1910,37 @@ class SectorConfig:
     #   ⚠ 더 보수적으로 가려면 0.25 — 칼마 이득의 68%(+0.083/+0.122)를 CAGR 비용 40%로 산다.
     #   되돌리려면 0.0.
     ROTATION_SHELTER_DEFENSIVE: float = 0.50    # ⚠ 주력 보유일 잔여 슬리브 중 최저베타 섹터로 보낼 비중(0=off) [v0.32.0] 0.0→0.50
+    # ------------------------------------------------------------------ [v0.36.0 §A 사전등록]
+    #   ROTATION_DISPERSION_GATE = 횡단면 분산이 낮은 날에는 '순위 1위 집중'을 포기하고
+    #   적격 비주력 균등으로 돌린다. **기본 False — 켜기 전에는 v0.35.0과 비트 동일하다.**
+    #
+    #   [근거 — 리포트36 13e_순위스프레드, 후행 63일 횡단면 분산 4분위]
+    #     Q1(저) 연환산 -3.08%  NW-t -0.67   상위1-SPY(21일) -0.257%
+    #     Q2      연환산 -2.49%  NW-t -0.49   상위1-SPY        -0.207%
+    #     Q3      연환산 +6.93%  NW-t  0.60   상위1-SPY        +0.578%
+    #     Q4(고) 연환산 **+25.37%** NW-t **1.99** 상위1-SPY **+2.115%**
+    #   순위 신호의 초과수익이 **분산이 큰 날에만** 존재한다. 분산이 작은 날은 11개 섹터가
+    #   사실상 같이 움직이므로 '1위를 맞히는' 정보가 없고, 집중만 남는다.
+    #
+    #   [룩어헤드 차단] 분산 = 11개 섹터 후행 LOOKBACK일 누적수익의 횡단면 표준편차를
+    #   **t-1까지의 값**으로 계산하고, 문턱은 전체표본 4분위가 아니라 **확장창 백분위**
+    #   (MIN_OBS일 이상, 자기 자신 제외)로 잡는다. 13e의 4분위는 진단용 전체표본 통계이므로
+    #   그 경계를 그대로 쓰면 표본내 정보가 샌다 — 그래서 백분위를 다시 만든다.
+    #
+    #   [⚠ 채택하지 않는 이유 — 리플레이는 참고일 뿐] 재현 엔진(리포트36 비중 재구성,
+    #   ★ MDD를 -0.0975로 정확히 재현) 실측:
+    #     하위25%→균등  CAGR +0.02%p  MDD +0.04%p  칼마 3.670   초과 +0.01 → 5일컷 -0.06  ⚠ 5일 의존
+    #     하위50%→균등  CAGR +0.03%p  MDD +0.13%p  칼마 **3.708** 초과 +0.02 → 5일컷 -0.07  ⚠ 5일 의존
+    #     하위75%→균등  CAGR -0.40%p  MDD +0.19%p  칼마 3.685   초과 -0.31 → 5일컷 -0.53  열위(강건)
+    #     [반증용] 고분산일→균등(방향 반대)  칼마 **3.600**(★ 3.654보다 나쁨) — 방향은 실재한다.
+    #   칼마 정점(3.708)은 ★(3.654)보다 높지만 **기준 ④를 통과하지 못한다**(상위 5일을 빼면
+    #   초과가 음수). v1.46.0에서 스스로 적어 둔 실패(유의성 검정 없이 단조 기울기만 보고 채택)를
+    #   되풀이하지 않기 위해, 여기서는 **격자로만 심고 실제 엔진이 다음 라운드에 판정**하게 한다.
+    ROTATION_DISPERSION_GATE: bool = False      # ⚠ 저분산일 순위집중 해제(기본 끔 — 켜면 배분이 바뀐다)
+    ROTATION_DISPERSION_PCT: float = 0.50       # ⚠ 이 확장창 백분위 미만이면 '저분산일'
+    ROTATION_DISPERSION_LOOKBACK: int = 63      # 횡단면 분산을 재는 후행 창(거래일)
+    ROTATION_DISPERSION_MIN_OBS: int = 250      # 백분위 산출 최소 관측일(그 전에는 게이트 꺼짐)
+    ROTATION_DISPERSION_INVERT: bool = False    # 반증용 — True면 '고분산일'을 균등으로 돌린다
     ROTATION_DOWN_REGIME_LEADER: bool = True    # ⚠ E_t=0(하락국면)에도 명확 1위가 있으면 그 섹터로 거래
     # [v0.25.0 ⚠⚠ 1.0 → 0.5 — v0.24.0에 심어둔 [하락리더격자]가 답을 냈다. 이번 라운드 최대 개선]
     #  리포트26(실제 엔진, 같은 격자):
@@ -4817,8 +4927,31 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     out.loc[_d] = min(_ok, key=lambda c: float(_br.loc[_d, c]))
             return out
 
+        # [v0.36.0 §A] 횡단면 분산 게이트 — 저분산일에는 '순위 1위 집중'을 포기하고 균등으로.
+        #   ⚠ 룩어헤드 차단 2중: (1) 분산 자체를 t-1까지의 후행 창으로 계산하고 shift(1),
+        #   (2) 문턱을 전체표본 4분위가 아니라 **확장창 백분위(자기 자신 제외)** 로 잡는다.
+        #   MIN_OBS 미만 구간은 백분위가 NaN → 게이트 꺼짐(기존 경로) — 조용히 켜지지 않는다.
+        _disp_cache: Dict[str, pd.Series] = {}
+
+        def _dispersion_gate(pct_: float, invert_: bool = False) -> pd.Series:
+            _lb = int(getattr(scfg, "ROTATION_DISPERSION_LOOKBACK", 63))
+            _mo = int(getattr(scfg, "ROTATION_DISPERSION_MIN_OBS", 250))
+            _key = f"{_lb}:{_mo}"
+            if _key not in _disp_cache:
+                _cum = (1.0 + ret_cc[list(cols)]).rolling(_lb).apply(np.prod, raw=True) - 1.0
+                _d = _cum.std(axis=1).reindex(eval_idx).shift(1)
+                _disp_cache[_key] = _d.expanding(min_periods=_mo).apply(
+                    lambda a: float((a[:-1] < a[-1]).mean()), raw=True)
+                log("ROTATION", kv(event="dispersion_ready", lookback=_lb, min_obs=_mo,
+                                   first_valid=str(_disp_cache[_key].dropna().index.min())[:10],
+                                   median=round(float(_d.median(skipna=True)), 6)), M=M)
+            _p = _disp_cache[_key]
+            _g = (_p >= float(pct_)) if bool(invert_) else (_p < float(pct_))
+            return _g.fillna(False)
+
         def _build_primary(cap_: float, bscale_: Optional[float] = None, bmode_: Optional[str] = None,
-                           shelter_def_: Optional[float] = None):
+                           shelter_def_: Optional[float] = None, disp_pct_: Optional[float] = None,
+                           disp_invert_: Optional[bool] = None):
             _bm = _beta_mult(float(getattr(scfg, "ROTATION_BETA_SCALE", 0.0) or 0.0)
                              if bscale_ is None else float(bscale_))
             _mode = str(getattr(scfg, "ROTATION_BETA_MODE", "trim") if bmode_ is None else bmode_)
@@ -4826,8 +4959,16 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                           if shelter_def_ is None else shelter_def_)
             _sdef = min(max(_sdef, 0.0), 1.0)
             _dalt = _defensive_alt(_sdef)
+            # [v0.36.0 §A] 저분산 게이트 — disp_pct_ 가 None이면 라이브 설정(기본 OFF)을 따른다.
+            _dgate = None
+            _dp = disp_pct_
+            _di = bool(getattr(scfg, "ROTATION_DISPERSION_INVERT", False)) if disp_invert_ is None else bool(disp_invert_)
+            if _dp is None and bool(getattr(scfg, "ROTATION_DISPERSION_GATE", False)):
+                _dp = float(getattr(scfg, "ROTATION_DISPERSION_PCT", 0.50) or 0.0)
+            if _dp is not None and float(_dp) > 0.0:
+                _dgate = _dispersion_gate(float(_dp), _di)
             fps_ = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
-            n_pri_ = n_alt_ = n_eq_ = n_def_ = 0
+            n_pri_ = n_alt_ = n_eq_ = n_def_ = n_dg_ = 0
             for _d in eval_idx:
                 _pri_ok = bool(_hold.loc[_d, _pri]) if _pri in _hold.columns else False
                 _a = _alt.get(_d)
@@ -4852,6 +4993,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     if _r_def > 1e-12:
                         fps_.loc[_d, _dc] += _r_def * float(_bm.loc[_d, _dc]); n_def_ += 1
                 if _rest > 1e-12:
+                    # [v0.36.0 §A] 저분산일이면 '순위 1위 집중'을 포기하고 아래 균등 분기로 내려간다.
+                    #   ⚠ 주력 비중(cap_)은 건드리지 않는다 — 바뀌는 것은 잔여 슬리브의 배분 방식뿐.
+                    if _dgate is not None and bool(_dgate.get(_d, False)):
+                        _a_ok = False; n_dg_ += 1
                     if _a_ok:
                         fps_.loc[_d, _a] += _rest * float(_bm.loc[_d, _a]); n_alt_ += 1
                     else:
@@ -4864,6 +5009,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             if _sdef > 0:
                 log("ROTATION", kv(event="defensive_shelter_applied", share=round(_sdef, 4),
                                    days=n_def_, cap=round(float(cap_), 4)), M=M)
+            if _dgate is not None:
+                log("ROTATION", kv(event="dispersion_gate_applied", pct=round(float(_dp), 4),
+                                   invert=bool(_di), gate_days=int(_dgate.sum()), rank_days_dropped=n_dg_,
+                                   cap=round(float(cap_), 4)), M=M)
             return fps_, n_pri_, n_alt_, n_eq_
         fps, _n_pri, _n_alt, _n_eq = _build_primary(_cap)
         frac_primary_sector = fps
@@ -4895,6 +5044,23 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 continue
             primary_cap_variants[f"주력섹터 중심 · 방어대피처 {_sv:.2f} [방어대피처격자]"] = \
                 _build_primary(_cap, None, None, _sv)[0]
+        # [v0.36.0 §A 사전등록] 분산 게이트 격자 — 라이브(기본 OFF)가 ★이므로 격자는 '켠' 변형들이다.
+        #   반증용 역방향 1행을 **반드시 같이** 싣는다: 방향이 진짜라면 역방향은 ★보다 나빠야 한다.
+        #   (리플레이 예측: 하위25% 3.670 · 하위50% 3.708 · 하위75% 3.685 · 역방향 3.600 · ★ 3.654)
+        _dg_live = float(getattr(scfg, "ROTATION_DISPERSION_PCT", 0.50) or 0.0) \
+            if bool(getattr(scfg, "ROTATION_DISPERSION_GATE", False)) else 0.0
+        _dg_inv_live = bool(getattr(scfg, "ROTATION_DISPERSION_INVERT", False))
+        for _dv in (0.25, 0.50, 0.75):
+            if abs(_dv - _dg_live) < 1e-9 and not _dg_inv_live:
+                continue
+            primary_cap_variants[f"주력섹터 중심 · 저분산일 균등 {_dv:.0%} [분산게이트격자]"] = \
+                _build_primary(_cap, None, None, None, _dv, False)[0]
+        if not (abs(0.50 - _dg_live) < 1e-9 and _dg_inv_live):
+            primary_cap_variants["주력섹터 중심 · 고분산일 균등 50% [분산게이트격자·반증]"] = \
+                _build_primary(_cap, None, None, None, 0.50, True)[0]
+        if _dg_live > 0:   # 게이트를 켠 뒤에는 '끈 상태'가 대조군으로 실려야 한다
+            primary_cap_variants["주력섹터 중심 · 분산게이트 off [분산게이트격자]"] = \
+                _build_primary(_cap, None, None, None, 0.0, False)[0]
         label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
         log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
                            days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
@@ -4968,7 +5134,12 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         # [v0.31.0 §4] [방어대피처격자]도 같은 오버라이드를 받아야 like-for-like다 — v0.24.0에서
         #   [상한격자]가 오버라이드를 못 받아 "상한 0.8이 최적"이라는 틀린 결론을 냈던 그 실수를
         #   격자를 새로 심을 때마다 반복하지 않는다.
-        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자]", "[베타격자]", "[베타재투입격자]", "[방어대피처격자]"))
+        # [v0.36.0 ⚠ 버그 수정] 종전에는 닫는 대괄호까지 포함해 비교했다 — 그래서
+        #   "[분산게이트격자·반증]" 처럼 **꼬리표가 붙은 라벨이 매칭에서 조용히 빠졌다**.
+        #   합성 E2E에서 반증 행이 [전섹터하락격자] 0% 와 비트 동일하게 나와 잡혔다(오버라이드 미적용).
+        #   → 여는 대괄호까지만 비교한다. v0.24.0의 "오버라이드를 못 받은 격자가 틀린 결론을 냈다"와
+        #     같은 종류의 실수이므로, 아래 회귀가 리포트의 모든 '격자' 라벨을 훑어 재발을 막는다.
+        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자", "[베타격자", "[베타재투입격자", "[방어대피처격자", "[분산게이트격자"))
         if ((label in (label_leader, label_primary) or _is_cap_grid)
                 and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
             dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
@@ -5849,6 +6020,118 @@ def build_sector_vs_m_attribution(sres: dict, alloc: Dict[str, Any],
                              "비중(%)": round(v / max(tot, 1) * 100, 2)})
         return pd.DataFrame(rows)
     except Exception:
+        return pd.DataFrame()
+
+
+def build_drawdown_episodes(sres: dict, alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
+                            scfg: "SectorConfig", top_n: int = 8) -> pd.DataFrame:
+    """[v0.36.0 §B] 13o_낙폭에피소드 — 주 전략(★)의 독립 낙폭 에피소드를 **그 구간에 어떤 판단이
+    내려져 있었는지**로 귀속시킨다. 배분 규칙은 전혀 건드리지 않는 순수 관측 시트다.
+
+    왜 필요한가(리포트36에서 손으로 뽑아 본 결과 — 이번 라운드 최대 발견):
+      ★의 최대낙폭 -9.75%는 **2019-04-24 ~ 2019-06-19**에 났는데, 그 40일 내내
+        · M 시장상황 = 상승(위험선호) — 40일 전부
+        · E_t = 1.00 — 40일 전부 (M은 한 번도 줄이지 않았다)
+        · XLK 자기 국면 = 상승(위험선호) — 40일 전부
+        · H 백분위 최고 0.64 (HAZARD_ENTER 0.90 근처에도 못 감)
+      구간 누적은 SPY **+0.06%** vs XLK **-1.31%**, 저점에서는 SPY -6.6% vs XLK -9.8%.
+      즉 **국면 판단이 틀린 사건이 아니라, 시장은 옳게 봤는데 주력 섹터 하나가 따로 빠진 사건**이다.
+      M 자신의 같은 구간 낙폭은 -6.61%로, 격차 3.14%p가 통째로 90% 집중의 대가다.
+      상위 6개 에피소드 중 4개가 상승(위험선호) 국면에서 저점을 찍는다 — 그래서 위험(H)·국면에
+      연동한 조건부 축소는 원리적으로 이 낙폭을 줄일 수 없다(v0.36.0 §C 상대강도 가드 18/18 기각).
+
+    이 시트가 있으면 매 라운드 같은 작업을 손으로 반복하지 않아도 된다.
+    """
+    try:
+        pc = sres.get("portfolio_curve") if isinstance(sres, dict) else None
+        if pc is None or not isinstance(pc, pd.DataFrame) or pc.empty:
+            return pd.DataFrame()
+        curve = pc.copy()
+        if "날짜" in curve.columns:
+            curve["날짜"] = pd.to_datetime(curve["날짜"]); curve = curve.set_index("날짜")
+        curve = curve.sort_index()
+        star = next((c for c in curve.columns if str(c).endswith("★")), None)
+        if star is None:
+            return pd.DataFrame()
+        eq = curve[star].astype(float).dropna()
+        if len(eq) < 120:
+            return pd.DataFrame()
+        dd = eq / eq.cummax() - 1.0
+        # 독립 낙폭 에피소드(고점 회복 시점에 끊는다)
+        eps: List[dict] = []
+        cur = None
+        for d, v in dd.items():
+            if v < 0 and cur is None:
+                cur = {"s": d, "e": d, "m": float(v), "t": d}
+            elif v < 0:
+                cur["e"] = d
+                if v < cur["m"]:
+                    cur["m"] = float(v); cur["t"] = d
+            elif cur is not None:
+                eps.append(cur); cur = None
+        if cur is not None:
+            eps.append(cur)
+        if not eps:
+            return pd.DataFrame()
+        eps = sorted(eps, key=lambda x: x["m"])[:int(top_n)]
+        prim = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+        E = pd.Series(alloc.get("E")) if isinstance(alloc, dict) and alloc.get("E") is not None else None
+        st_m = pd.Series(alloc.get("spy_state_short")) if isinstance(alloc, dict) and alloc.get("spy_state_short") is not None else None
+        mrr = pd.Series(alloc["spy_m_ret"]).astype(float) if isinstance(alloc, dict) and "spy_m_ret" in alloc else None
+        pst = None
+        if prim in results and isinstance(results.get(prim), dict):
+            _sh = results[prim].get("sheets", {}).get("daily")
+            if isinstance(_sh, pd.DataFrame) and "섹터상황" in _sh.columns and "날짜" in _sh.columns:
+                _t = _sh.copy(); _t["날짜"] = pd.to_datetime(_t["날짜"])
+                pst = _t.set_index("날짜")["섹터상황"]
+        R = {t: pd.Series(results[t]["ret_cc_full"]) for t in results
+             if isinstance(results.get(t), dict) and results[t].get("ret_cc_full") is not None}
+        pr = R.get(prim)
+        rows: List[dict] = []
+        rows.append({"구분": "── ★ 독립 낙폭 에피소드 상위 %d ──" % len(eps),
+                     "설명": "‘국면 판단이 틀렸나’ vs ‘판단은 옳았는데 주력이 따로 빠졌나’를 가른다"})
+        for e in eps:
+            seg = slice(e["s"], e["e"])
+            rec: dict = {"구분": f"{e['s'].date()}~{e['e'].date()}",
+                         "최대낙폭(%)": round(e["m"] * 100, 2),
+                         "저점일": str(e["t"].date()),
+                         "거래일수": int(((dd.index >= e["s"]) & (dd.index <= e["e"])).sum())}
+            if st_m is not None:
+                _v = st_m.loc[seg].astype(str)
+                if len(_v):
+                    _vc = _v.value_counts()
+                    rec["구간 최빈 시장상황"] = f"{_vc.index[0]} {int(_vc.iloc[0])}/{len(_v)}일"
+                    rec["저점일 시장상황"] = str(st_m.reindex([e["t"]]).iloc[0])
+            if E is not None:
+                _e = E.loc[seg].astype(float)
+                if len(_e):
+                    rec["구간 평균 E_t"] = round(float(_e.mean()), 3)
+                    rec["구간 최소 E_t"] = round(float(_e.min()), 3)
+            if pst is not None:
+                _p = pst.loc[seg].astype(str)
+                if len(_p):
+                    _pc2 = _p.value_counts()
+                    rec[f"{prim} 최빈 상태"] = f"{_pc2.index[0]} {int(_pc2.iloc[0])}/{len(_p)}일"
+            if pr is not None:
+                _x = pr.loc[seg].dropna()
+                if len(_x):
+                    rec[f"{prim} 구간수익(%)"] = round(float((1.0 + _x).prod() - 1.0) * 100, 2)
+            if mrr is not None:
+                _m2 = mrr.loc[seg].dropna()
+                if len(_m2):
+                    rec["M 구간수익(%)"] = round(float((1.0 + _m2).prod() - 1.0) * 100, 2)
+                    _me = (1.0 + mrr.loc[:e["e"]].dropna()).cumprod()
+                    _md = (_me / _me.cummax() - 1.0).loc[seg]
+                    if len(_md):
+                        rec["M 동기간 낙폭(%)"] = round(float(_md.min()) * 100, 2)
+                        rec["집중 대가(%p)"] = round(rec["최대낙폭(%)"] - rec["M 동기간 낙폭(%)"], 2)
+            rows.append(rec)
+        rows.append({"구분": "── 판정 ──",
+                     "설명": "‘저점일 시장상황 = 상승(위험선호)’ 이면 국면 판단 오류가 아니라 집중 위험이다 — "
+                             "위험(H)·국면 연동 축소로는 줄일 수 없고, 상한/대피처 같은 구조 레버만 듣는다"})
+        return pd.DataFrame(rows)
+    except Exception as _e:                                     # pragma: no cover
+        log("ROTATION", kv(event="drawdown_episodes_failed", err=str(_e)[:160]), level="warning")
         return pd.DataFrame()
 
 
@@ -6796,6 +7079,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         # [v0.23.0] 사용자 지적("국면 판단이 잘나온거에 비해 섹터 수익률이 많이 안나온다")을
         #   매 실행이 스스로 채점하는 시트. 배분 규칙 무변경 — 순수 관측.
         sheets["13n_섹터대M귀속"] = build_sector_vs_m_attribution(sres, alloc, results, scfg)
+        # [v0.36.0 §B] ★의 낙폭이 '국면 오판'인지 '주력 집중'인지를 매 실행이 스스로 가른다.
+        #   리포트36 수작업 진단(최대낙폭 2019-05, 40일 전부 상승국면·E_t=1.00)을 상설화. 규칙 무변경.
+        sheets["13o_낙폭에피소드"] = build_drawdown_episodes(sres, alloc, results, scfg)
         # [v0.14.0] 사용자 판단기준("정확도가 중요해", "섹터별 일별 예측을 보면 맞는게 별로 없는거 같아")을
         #   매 실행이 스스로 채점하는 시트. 배분 규칙 무변경 — 순수 관측.
         sheets["13l_예측정확도"] = build_prediction_accuracy(alloc)
@@ -6993,6 +7279,34 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                             (f"{'달성' if (pd.notna(vs) and vs >= float(getattr(scfg, 'ROTATION_ACCEPT_VS_SPY_M', 0.0))) else '미달'} — "
                              f"주 전략 {_pf2(dg['label_primary'])} vs SPY M {_pf2('SPY 국면전략(M)')} (CAGR 차 {vs:+.2%}p)" if pd.notna(vs)
                              else "계산불가") + own_txt + " — 13f ⑤"))
+            # [v0.36.0 §C] 격자 수렴 상태 한 줄 — 매 라운드 사람이 손으로 세던 것을 리포트가 직접 답한다.
+            #   기준 ① CAGR 손실 ≤ 0.5%p · ② ① 통과자 중 칼마 정점 · ③ MDD 악화 ≤ 0.5%p · ④ 강건성.
+            #   '①②③④ 전부 통과 0행'이면 격자가 수렴한 것이고, 이번 라운드에 채택할 후보가 없다는 뜻이다.
+            try:
+                _pt = sres.get("portfolio_perf")
+                if _pt is not None and len(_pt) and "칼마(CAGR/MDD)" in _pt.columns:
+                    _t = _pt.copy()
+                    _st = _t[_t["전략"].astype(str).str.endswith("★")]
+                    if len(_st):
+                        _sc = float(_st["CAGR"].iloc[0]); _sm = float(_st["최대낙폭(MDD)"].iloc[0])
+                        _sk = float(_st["칼마(CAGR/MDD)"].iloc[0])
+                        _g = _t[_t["전략"].astype(str).str.contains("격자", na=False)].copy()
+                        _g = _g[_g["CAGR"].notna() & _g["칼마(CAGR/MDD)"].notna()]
+                        _c1 = _g["CAGR"].astype(float) >= _sc - 0.005                  # ①
+                        _c3 = _g["최대낙폭(MDD)"].astype(float) >= _sm - 0.005          # ③
+                        _c4 = _g.get("강건성(기준④)", pd.Series("", index=_g.index)).astype(str).eq("통과")
+                        _s1 = _g[_c1]
+                        _peak = float(_s1["칼마(CAGR/MDD)"].astype(float).max()) if len(_s1) else np.nan
+                        _c2 = _g["칼마(CAGR/MDD)"].astype(float) >= max(_sk, _peak if pd.notna(_peak) else _sk)
+                        _all = _g[_c1 & _c2 & _c3 & _c4]
+                        _nm = str(_all["전략"].iloc[0])[:46] if len(_all) else "없음"
+                        nd_rows.append(("격자 수렴 상태(①②③④)",
+                                        f"격자 {len(_g)}행 — ① 통과 {int(_c1.sum())} · ④ 통과 {int(_c4.sum())} · "
+                                        f"**①②③④ 전부 통과 {len(_all)}행** (후보: {_nm}) | "
+                                        f"★ CAGR {_sc:.2%} 칼마 {_sk:.3f} MDD {_sm:.2%} · 격자 칼마 정점 "
+                                        f"{(f'{_peak:.3f}' if pd.notna(_peak) else '-')} — 0행이면 이번 라운드 채택 후보 없음"))
+            except Exception as _e:
+                log("SECTOR_ROTATION", kv(event="grid_convergence_line_failed", err=str(_e)[:120]), level="warning")
             nd_rows.append(("집중배분 vs 대조군", f"[주] {dg['label_primary']}: {_pf2(dg['label_primary'])} | "
                                               + " | ".join(f"[대안] {l}: {_pf2(l)}" for l in alts) + " | "
                                               f"[대조군A] {_pf2(ROT_LABEL_CTRL_A)} | [대조군B] {_pf2(ROT_LABEL_CTRL_B)} | "
