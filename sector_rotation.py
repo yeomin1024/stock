@@ -17,6 +17,39 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.35.0 - 2026-09-11 - [낙폭 형태 2열 추가(`상위3 낙폭평균`·`얼서지수`).
+#                       **배분 로직·채택값 무변경 — v0.34.0과 비트 동일**]
+#
+#                       [§1 v0.34.0 격자가 첫 라운드에 제 일을 했다]
+#                       리포트35 `[M헤어컷격자·근사]` 예측 대 실측(섹터 MDD):
+#                         off -15.50/-15.50 · E1 -13.37/-13.37 · E3 -11.21/-11.20 ·
+#                         E5 -9.85/-9.85 · E9 -9.75/-9.75 · E11 -9.75/-9.75 — **소수점까지 일치.**
+#                       **E9·E11이 E7(★)과 같은 -9.75%** 로 포화가 재확인됐고, 두 행은
+#                       `⚠ 5일 의존`(+0.281 → -0.014 / +0.557 → -0.033)이라 기준 ④-a도 불통과다.
+#                       M v1.47.0의 E7 복귀 효과: ★ MDD -11.20 → **-9.75%**, 칼마 3.112 → **3.669**,
+#                       CAGR 34.87 → **35.78%**, 그리고 **13f ② PASS 복귀**(악화 +0.23%p).
+#
+#                       [§2 ⚠ 그런데 함정이 하나 보였다 — 낙폭 지표를 넓히면 포화점이 밀린다]
+#                       같은 사다리에서 MDD는 **E7**, 상위3 낙폭평균은 **E9**, 상위5는 **E11**에서
+#                       포화하고 **얼서지수는 끝내 포화하지 않는다**(노출을 줄이면 언제나 좋아진다).
+#                       지표를 고를 자유를 두면 '포화했다'는 판정 자체가 튜닝 가능해지고 극단에서는
+#                       노출 0이 정답이 된다. → **포화는 수용기준이 쓰는 지표(MDD)로만 판정한다**
+#                       (13f ②도 기준 ③도 MDD를 쓴다). 이 기준으로 **E7 유지**가 재확인된다.
+#
+#                       [§3 두 열 추가]
+#                       13_섹터배분전략 전 행에 `상위3 낙폭평균`(독립 낙폭 에피소드 상위 3개 평균)과
+#                       `얼서지수`(낙폭 경로 RMS)를 싣는다. 전자는 "MDD가 단일 사건에 고정돼
+#                       헛포화한 것은 아닌가"를 교차 확인하는 **보조**, 후자는 **맥락 전용**이다.
+#                       ⚠ 둘 다 채택 판정에는 쓰지 않는다.
+#
+#                       [§4 이 라운드 배분 격자 판정]
+#                       기준 ④ '통과'는 `[상한격자] 100%` 한 행뿐인데(+1.421 → +0.899) MDD가
+#                       -9.75 → -10.43%로 0.68%p 악화해 **기준 ③(≤0.5%p) 불통과**다.
+#                       방어대피처 0.75·1.00은 칼마가 ★보다 높지만(3.732 / 3.775) 초과수익이
+#                       상위5일 제외 후에도 음수(-0.813 / -1.062)라 **수익을 강건하게 잃는** 안이고,
+#                       사용자 결정(2026-09-11)대로 **누적 CAGR 예산**에 걸려 0.50을 유지한다.
+#                       → 이 층도 **채택 후보 없음**.
+#
 #  VERSION: v0.34.0 - 2026-09-11 - [⚠⚠ `[M헤어컷격자·근사]` 신설 — M 혼자서는 보이지 않는
 #                       사이징 효과를 이 층에서 잰다. 배분 로직·채택값 무변경]
 #                       변경 모듈: `build_sector_allocation()` `_mh_variants` 블록(신규),
@@ -1465,7 +1498,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.34.0"
+VERSION = "v0.35.0"
 VERSION_DATE = "2026-09-10"
 
 # =============================================================================
@@ -5178,8 +5211,30 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     #   이 층도 같은 실수를 할 수 있으므로(방어대피처 격자가 M이 바뀔 때마다 정점을 한 칸씩 옮긴다)
     #   판정 근거를 리포트에 상설로 남긴다. ★ 행 자신은 정의상 0이다.
     _base_r = pd.to_numeric(bts[label_primary]["strategy_ret"], errors="coerce")
-    _rb_tot, _rb_cut, _rb_flag = [], [], []
+    _rb_tot, _rb_cut, _rb_flag, _rb_t3, _rb_ul = [], [], [], [], []
+
+    def _dd_shape(_r):
+        """[v0.35.0] 낙폭을 단일 사건에 묶이지 않게 두 지표로 요약한다.
+        상위3 낙폭평균 = 독립 낙폭 에피소드 중 깊은 셋의 평균(포화 교차확인용),
+        얼서지수 = 낙폭 경로의 RMS(노출을 줄이면 언제나 좋아지므로 **판정에는 쓰지 않는다**)."""
+        _r = pd.to_numeric(_r, errors="coerce").fillna(0.0)
+        if len(_r) < 60:
+            return np.nan, np.nan
+        _eq = (1.0 + _r).cumprod(); _dd = _eq / _eq.cummax() - 1.0
+        _eps, _st = [], None
+        for _t_, _u in (_dd < -1e-9).items():
+            if _u and _st is None:
+                _st = _t_
+            if (not _u) and _st is not None:
+                _eps.append(float(_dd.loc[_st:_t_].min())); _st = None
+        if _st is not None:
+            _eps.append(float(_dd.loc[_st:].min()))
+        _t3 = round(float(np.mean(sorted(_eps)[:3])), 4) if _eps else np.nan
+        return _t3, round(float(np.sqrt((_dd ** 2).mean())), 4)
+
     for l in order:
+        _t3, _ul = _dd_shape(bts[l]["strategy_ret"])
+        _rb_t3.append(_t3); _rb_ul.append(_ul)
         _ex = (pd.to_numeric(bts[l]["strategy_ret"], errors="coerce") - _base_r).dropna()
         if len(_ex) < 60:
             _rb_tot.append(np.nan); _rb_cut.append(np.nan); _rb_flag.append(""); continue
@@ -5193,6 +5248,11 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     perf["★대비 초과(연율%p)"] = _rb_tot
     perf["초과(상위5일 제외,연율%p)"] = _rb_cut
     perf["강건성(기준④)"] = _rb_flag
+    # ⚠ [v0.35.0] 포화 판정은 **수용기준이 쓰는 지표(MDD)** 로만 한다. 아래 두 열은 보조·맥락이다 —
+    #   지표를 넓힐수록 포화점이 뒤로 밀리기 때문에(MDD E7 → 상위3 E9 → 상위5 E11 → 얼서 무한),
+    #   지표 선택의 자유를 두면 '포화했다'는 판정 자체가 튜닝 가능해진다.
+    perf["상위3 낙폭평균"] = _rb_t3
+    perf["얼서지수"] = _rb_ul
     log("ROTATION", kv(event="robustness_gate_built", rows=len(order),
                        flagged=int(sum(1 for f in _rb_flag if f.startswith("⚠")))), M=M)
     curve = pd.DataFrame(index=eval_idx)
