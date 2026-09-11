@@ -17,6 +17,49 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.34.0 - 2026-09-11 - [⚠⚠ `[M헤어컷격자·근사]` 신설 — M 혼자서는 보이지 않는
+#                       사이징 효과를 이 층에서 잰다. 배분 로직·채택값 무변경]
+#                       변경 모듈: `build_sector_allocation()` `_mh_variants` 블록(신규),
+#                       13_섹터배분전략에 7행 중 6행 추가(라이브 제외).
+#
+#                       [§1 왜 — 리포트34에서 사고가 났다]
+#                       M v1.46.0이 과열 헤어컷을 E9 → E3로 되돌리자 이 층의 MDD가
+#                       **-9.75% → -11.20%**, 칼마 3.697 → 3.112로 무너지고 사전등록 수용기준
+#                       **13f ②(대조군A 대비 MDD 악화 ≤ 1%p)가 1.68%p로 FAIL**했다.
+#                       최대낙폭 구간도 2019-05에서 **2024-07-10~08-07(엔캐리 청산, 21거래일)** 로
+#                       옮겨갔다 — 그 구간 이 층은 -10.59%, M은 -5.04%였고 보유는 XLK 68.6%였다.
+#                       원인은 단순하다: **이 층은 E_t를 XLK 베타(~1.3)로 증폭**한다.
+#
+#                       [§2 M 단독 지표는 이 효과에 구조적으로 둔감하다]
+#                       M의 MDD는 2020 코로나 구간이 고정하고 있고 그 구간은 이격 국면이 아니라
+#                       헤어컷이 닿지 않는다 — **E3~E13 전부 -7.07%로 완전히 동일**하다(E1만 -7.27%).
+#                       변하지 않는 숫자로는 효과를 잴 수 없다. M v1.46.0이 "사다리는 전부
+#                       무의미"라고 판정한 것은 **수익 축에서는 맞고 낙폭 축에서는 잴 수 없었던 것**이다.
+#
+#                       [§3 격자 — E_t 재스케일 근사]
+#                       헤어컷이 닿은 날의 E_t만 후보 상한으로 바꾸고 배분비중을 같은 비율로
+#                       재스케일한다. 배분 '분수'는 순위·국면·적격성으로만 정해지고 E_t에
+#                       의존하지 않으므로 이 재스케일은 **정의상 정확**하다(반올림 차이만 남는다).
+#                       근사 검증: 이 방식의 E9 행(CAGR 36.15% / MDD -9.75% / 칼마 3.707)이
+#                       E9가 라이브였던 **리포트33 실측(36.05% / -9.75% / 3.697)과 거의 일치**한다.
+#                       off / E1 / E3 / E5 / E7 / E9 / E11 중 라이브를 뺀 6행을 상설로 싣는다.
+#
+#                       [§4 이 격자가 곧바로 낸 답 — M은 E7로 간다]
+#                         M헤어컷   섹터 CAGR  섹터 MDD    칼마    13f ②(≤1%p)
+#                         off       32.89%   -15.50%   2.122
+#                         E3(당시)   34.78%   -11.21%   3.104   **1.69%p FAIL**
+#                         E5        35.26%    -9.85%   3.578    0.34%p PASS
+#                         E7        35.71%  **-9.75%** 3.662    0.23%p PASS
+#                         E9        36.15%    -9.75%   3.707    0.23%p PASS
+#                       E7부터 최대낙폭 **구간이 2024-08에서 2019-05로 바뀌고** 더 조여도
+#                       -9.75%에서 움직이지 않는다 — **낙폭 포화점**이다. M v1.47.0이 E7을 채택했다.
+#                       ⚠ 수익 축은 여전히 5일 의존이다. 채택 근거는 **오직 낙폭**이다.
+#
+#                       [§5 이 라운드 성적표 — 정직하게 나쁘다]
+#                       ★ CAGR 36.05 → 34.87% · 칼마 3.697 → **3.112** · MDD -9.75 → **-11.20%**.
+#                       13f 종합 **FAIL**(② 미달). M v1.47.0의 E7 복귀로 다음 리포트에서
+#                       MDD -9.75% 부근·칼마 3.6~3.7·13f ② PASS로 복귀할 것으로 본다.
+#
 #  VERSION: v0.33.0 - 2026-09-11 - [⚠ 채택 기준 ④(강건성 게이트) 도입 + 방어대피처 래칫 정지.
 #                       배분 로직·채택값 무변경 — v0.32.0과 비트 동일]
 #                       변경 모듈: 13_섹터배분전략에 강건성 3열 추가(`★대비 초과(연율%p)` ·
@@ -1422,7 +1465,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.33.0"
+VERSION = "v0.34.0"
 VERSION_DATE = "2026-09-10"
 
 # =============================================================================
@@ -5013,6 +5056,61 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _w = _base.copy()
             _w.loc[_idx.values, "SPY"] = _base.loc[_idx.values, "SPY"] * (_lv / _ad_live_pos)
             _dl_variants[f"주력섹터 중심 · 전섹터하락 SPY {_lv:.0%} [전섹터하락격자]"] = _w
+    # [v0.34.0 ⚠⚠ M 과열 헤어컷 격자 — M 혼자서는 보이지 않는 것을 이 층에서 잰다]
+    #   리포트56에서 드러난 사실: M의 과열 헤어컷(규칙 ⑩) 깊이를 **M 단독 지표로 판정하면 낙폭
+    #   효과가 구조적으로 보이지 않는다.** M의 MDD는 2020 코로나 구간이 고정하고 있고 그 구간은
+    #   이격 국면이 아니라 헤어컷이 닿지 않기 때문이다(E3~E13 전부 -7.07%로 동일).
+    #   그런데 **이 층에서는 완전히 다르게 보인다** — 이 층은 E_t를 XLK 베타(~1.3)로 증폭하므로
+    #   M의 노출 상한이 곧 이 층의 꼬리를 결정한다. 리포트56 기준 근사 재현:
+    #     M헤어컷   섹터 CAGR  샤프    섹터 MDD    칼마    2024-07~08 구간
+    #     off       32.89%   1.829  **-15.50%**  2.122   -14.92%
+    #     E1        33.85%   1.960   -13.37%    2.532   -12.77%
+    #     E3(당시)   34.78%   2.088   -11.21%    3.104   -10.59%   ← 13f ② FAIL(악화 1.69%p)
+    #     E5        35.26%   2.166    -9.85%    3.578    -9.23%
+    #     E7        35.71%   2.238  **-9.75%**  3.662    -7.87%   ← 낙폭 **포화**(여기서 멈춘다)
+    #     E9        36.15%   2.305    -9.75%    3.707    -6.50%
+    #     E11       36.57%   2.364    -9.75%    3.751    -5.11%
+    #   E7부터 최대낙폭 구간이 2024-07-10~08-07(엔캐리 청산)에서 2019-04-23~06-03으로 **바뀌고**
+    #   더 조여도 -9.75%에서 움직이지 않는다 — 헤어컷이 걷어낼 수 있는 것을 다 걷어낸 지점이다.
+    #   (근사 검증: 이 방식으로 재현한 E9 행은 CAGR 36.15% / MDD -9.75% / 칼마 3.707로,
+    #    E9가 라이브였던 **리포트33 실측 36.05% / -9.75% / 3.697과 거의 일치**한다.)
+    #   ⚠ 이 격자는 **근사**다: M을 다시 돌리지 않고, 헤어컷이 닿은 날의 E_t만 후보 상한으로
+    #   바꾼 뒤 배분비중을 같은 비율로 재스케일한다. 배분 '분수'는 순위·국면·적격성으로만
+    #   정해지고 E_t에 의존하지 않으므로 이 재스케일은 정의상 정확하다(반올림 차이만 남는다).
+    #   목적은 채택이 아니라 **M의 사이징 파라미터를 이 층에서도 보이게 만드는 것**이다.
+    _mh_variants = {}
+    try:
+        _sig = res.get("sig")
+        _ec = _sig["ext_cap"].reindex(eval_idx).astype(float) if (_sig is not None and "ext_cap" in _sig.columns) else None
+        _eh = _sig["extension_haircut"].reindex(eval_idx).fillna(False).astype(bool) if (_sig is not None and "extension_haircut" in _sig.columns) else None
+        _live_steps = tuple(getattr(M.CFG, "EXTENSION_HAIRCUT_STEPS", ()) or ())
+        _cfgm = res.get("cfg")
+        if _cfgm is not None and getattr(_cfgm, "EXTENSION_HAIRCUT_STEPS", None):
+            _live_steps = tuple(_cfgm.EXTENSION_HAIRCUT_STEPS)
+        if _ec is not None and _eh is not None and len(_live_steps) == 2 and bool(_eh.any()):
+            _mid_live, _hi_live = float(_live_steps[0][1]), float(_live_steps[1][1])
+            _mid_days = _eh & np.isclose(_ec, _mid_live)
+            _hi_days = _eh & np.isclose(_ec, _hi_live)
+            _E = E.reindex(eval_idx).astype(float)
+            _base = target_ws[label_primary]
+            _LAD = ((1.0, 1.0, "off"), (0.9, 0.8, "E1"), (0.8, 0.6, "E3"), (0.7, 0.5, "E5"),
+                    (0.6, 0.4, "E7"), (0.5, 0.3, "E9"), (0.4, 0.2, "E11"))
+            for _m, _h, _nm in _LAD:
+                if abs(_m - _mid_live) < 1e-9 and abs(_h - _hi_live) < 1e-9:
+                    continue                      # 라이브는 ★ 행이 이미 있다
+                _E2 = _E.copy()
+                _E2[_mid_days] = _m
+                _E2[_hi_days] = _h
+                _ratio = (_E2 / _E.replace(0.0, np.nan)).fillna(1.0)
+                _mh_variants[f"주력섹터 중심 · M헤어컷 {_nm}({_m:.1f}/{_h:.1f}) [M헤어컷격자·근사]"] = \
+                    _base.mul(_ratio, axis=0)
+            log("ROTATION", kv(event="m_haircut_grid", levels=len(_mh_variants),
+                               live=f"{_mid_live:.1f}/{_hi_live:.1f}",
+                               mid_days=int(_mid_days.sum()), hi_days=int(_hi_days.sum())), M=M)
+    except Exception as _e:
+        log("ROTATION", kv(event="m_haircut_grid_failed", err=str(_e)[:140]), M=M, level="warning")
+    _dl_variants.update(_mh_variants)
+
     for _lab, _fr in _dl_variants.items():
         target_ws[_lab] = _fr
         bts[_lab] = portfolio_backtest(_fr, ret_co, ret_oc, **bt_kw)
