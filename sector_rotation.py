@@ -17,6 +17,30 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.38.0 - 2026-09-12 - [리포트37 판독 + 00시트 '실매매 적용 여부' 1줄 + write_sector_excel(title=)
+#                       — **신호·배분·채택값 무변경, v0.37.0과 비트 동일**]
+#
+#                       [§1 리포트37(v0.37.0, 9섹터) 판독 — XLB·XLE 제외의 실제 비용은 성과가 아니라 '검증'이었다]
+#                       성과: ★ CAGR 35.79→35.33% (-0.46%p) · MDD -9.75→-9.93% (-0.18%p) · 칼마 3.671→3.558.
+#                       v0.37.0 헤더의 사전 추정(-0.44%p / -0.21%p / 3.54)과 소수점 둘째 자리까지 일치 — 재현 엔진 확인.
+#                       그러나 예측하지 못한 것: **13f 수용기준이 PASS(5/5)에서 FAIL(②③ 미달)로 뒤집혔다.**
+#                         ③ 복합순위 상위1 스프레드 NW-t  +2.06 → **-0.77** (평균 +0.820%/21일 → -0.165%)
+#                         ② MDD 악화(vs 대조군A)          +0.23%p → +1.62%p (대조군A 자체가 -9.52→-8.31%로 좋아진 탓)
+#                         13g: SCORE_PCT의 연도별 t가 2023 2.83(엄격)→미채택, 2024 3.77→2.00, 2025 3.83→2.18, 2026 3.54→1.79.
+#                       해석: 11섹터 횡단면에서 순위 신호가 가진 정보의 큰 부분이 XLE(2022 유일한 상승 섹터·하락국면
+#                       리더 72일)에서 나왔다. XLE를 빼자 남은 9개의 횡단면 순위에는 검증 가능한 정보가 없다(t<0).
+#                       S★의 M 대비 초과(+9.81%p)는 여전히 크지만 그 원천은 'XLK 상한 90% 집중 + M 국면'이지
+#                       '섹터 순위'가 아니다 — 00시트 '순환매 예측 판정'이 그대로 "근거는 약함"으로 답하고 있다.
+#                       ⚠ 처방(코드 무변경 — 사용자 결정 사항): SECTOR_EXCLUDE=("XLB",)로 XLE만 되돌리면 ③·SCORE_PCT
+#                       채택이 리포트2 수준으로 복귀할 것으로 예상(XLB는 배분에 거의 닿지 않아 중립). 실행 셀의
+#                       S_EXCLUDE 한 줄로 바꿀 수 있게 run_pipeline.py에 노출했다.
+#
+#                       [§2 00시트 '⚠ 실매매 적용 여부' 1줄(사용자 지시)] M·S·I 세 리포트에 같은 문구 — 실매매 주문
+#                       근거는 market_regime_report.xlsx의 ★ SPY 국면전략뿐이고 S★·I★는 진단·연구용임을 첫 화면에 명시.
+#
+#                       변경 모듈: build_sector_report() meta 1줄, write_sector_excel(title=None) 인자 추가(기본 동작 동일),
+#                       버전 문자열. 회귀: 기존 테스트 재실행(신호·배분 무변경).
+#
 #  VERSION: v0.37.0 - 2026-09-11 - [⚠ 유니버스 변경 — XLB·XLE 예측·배분 대상 제외(사용자 지시) +
 #                       v0.36.0 검증 지점 3개 확인]
 #
@@ -1610,8 +1634,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.37.0"
-VERSION_DATE = "2026-09-11"
+VERSION = "v0.38.0"
+VERSION_DATE = "2026-09-12"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -7375,6 +7399,11 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     meta = [
         ("버전", f"sector_rotation.py {VERSION} ({VERSION_DATE}) — market_regime_trader.py 번들 "
                 f"{sres.get('m_bundle_meta', {}).get('bundle_version', '직접 res')}"),
+        # [v0.38.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
+        ("⚠ 실매매 적용 여부", "아니오 — 이 섹터 리포트는 진단·연구용이며 실매매 주문에 반영되지 않는다. 실매매 주문 근거는 "
+                          "market_regime_report.xlsx의 ★ SPY 국면전략(00_실행요약 '다음 거래일 예측' 행)이다. 이 리포트의 "
+                          "★(S★)는 M의 SPY 목표비중 E_t를 9개 섹터로 나눠 담는 연구 전략이며, 13f 수용기준을 통과해도 "
+                          "사용자가 명시적으로 전환하기 전에는 실매매에 쓰지 않는다(산업 계층 industry_regime_report.xlsx도 동일)."),
         ("예측 대상", "11개 SPDR 섹터 ETF 각각의 절대 상승/하락 국면(SPY와 동일 파이프라인을 섹터 가격에 적용)"),
         ("신호/백테스트 기간", f"{sres['signal_start']} ~ {sres['cal_end']} (M의 SIGNAL_START와 동일 — 모든 성과 비교는 같은 창)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단, M과 동일)"),
@@ -7451,8 +7480,10 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     return path
 
 
-def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]], M=None) -> None:
-    """M.write_excel과 같은 서식·조건부서식·자산곡선 차트(13b 시트 기준). 00시트 제목만 섹터용."""
+def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]], M=None,
+                       title: Optional[str] = None) -> None:
+    """M.write_excel과 같은 서식·조건부서식·자산곡선 차트(13b 시트 기준). 00시트 제목만 섹터용.
+    [v0.38.0] title: 00시트 제목 덮어쓰기(산업 계층 industry_rotation.py가 자기 제목으로 재사용) — None이면 종전 문구."""
     t0 = time.time()
     with pd.ExcelWriter(path, engine="xlsxwriter", datetime_format="yyyy-mm-dd", date_format="yyyy-mm-dd") as xl:
         wb = xl.book
@@ -7470,7 +7501,7 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
         ws = wb.add_worksheet("00_실행요약")
         xl.sheets["00_실행요약"] = ws
         ws.set_column(0, 0, 30); ws.set_column(1, 1, 110)
-        ws.write(0, 0, "미국 11개 섹터 국면(상승/하락) 예측 & 섹터별 매매 시스템 — SPY 파이프라인 재적용", f_title)
+        ws.write(0, 0, title or "미국 11개 섹터 국면(상승/하락) 예측 & 섹터별 매매 시스템 — SPY 파이프라인 재적용", f_title)
         r = 2
         for k, v in meta:
             ws.write(r, 0, str(k), f_key); ws.write(r, 1, str(v), f_val); r += 1

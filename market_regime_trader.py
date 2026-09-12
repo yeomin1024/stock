@@ -21,6 +21,30 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.50.0 - 2026-09-12 - [00시트 '⚠ 실매매 적용 전략' 1줄 + runtime_env()(Kaggle/Colab/로컬 판별) +
+#                        Kaggle에서는 다운로드 대신 /kaggle/working 보존 안내 — **신호·파라미터 무변경,
+#                        v1.49.0과 비트 동일**]
+#
+#                        [§1 리포트59 판독 — 성과 변화는 하루치 드리프트, 결함 아님]
+#                        리포트58(v1.48.0, 데이터 ~09-10) CAGR 25.68% / 샤프 2.25 / MDD -7.07% →
+#                        리포트59(v1.49.0, ~09-11) 25.52% / 2.237 / -7.07%. 차이 -0.16%p는 09-11 하루가 추가된
+#                        효과다: 그날 확정 국면이 '중립'(체결비중 0.50)이었는데 SPY가 올라(단순보유 CAGR 14.51→14.64%)
+#                        절반만 담은 만큼 뒤졌다. 09-11 종가 기준 다음 거래일(09-14) 예측은 상승(위험선호)·목표 1.00·
+#                        추가매수(추세승격⑥). 룩어헤드 감사 25/25 통과, 국면정의 검증 PASS, FRED 54/54 — 이상 없음.
+#                        v1.48.0→v1.49.0은 진단 1줄 추가뿐(비트 동일)이므로 버전 차이는 원인이 아니다.
+#
+#                        [§2 사용자 지시 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"]
+#                        00_실행요약 '버전' 바로 아래에 '⚠ 실매매 적용 전략' 줄을 넣었다 — 이 리포트의 ★ SPY 국면전략
+#                        (다음 거래일 예측 행)이 유일한 실매매 근거이고, 섹터(S★)·산업(I★) 리포트는 진단·연구용임을
+#                        세 리포트 모두 첫 화면에 같은 문구로 명시(sector_rotation v0.38.0 / industry_rotation v0.2.0).
+#
+#                        [§3 Kaggle 실행 지원] runtime_env()(신규): "kaggle"|"colab"|"local". maybe_colab_download()는
+#                        Kaggle이면 files.download 대신 '/kaggle/working 에 보존됨' 로그만 남긴다(노트북 Persistence
+#                        설정으로 세션 간 유지·커밋 시 Output으로 저장). 실행 셀·경로 배치는 run_pipeline.py 참조.
+#
+#                        변경 모듈: build_report() meta 1줄, runtime_env()(신규), maybe_colab_download() 분기 1개,
+#                        버전 문자열 3곳. 회귀: 기존 테스트 재실행(신호 무변경).
+#
 #  VERSION: v1.49.0 - 2026-09-11 - [격자 수렴을 리포트가 직접 판정한다 — **신호·파라미터 무변경,
 #                        v1.48.0과 비트 동일**. 진단 1줄 추가]
 #
@@ -9969,7 +9993,12 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.49.0 (2026-09-11)"),
+        ("버전", "v1.50.0 (2026-09-12)"),
+        # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
+        ("⚠ 실매매 적용 전략", "★ 이 리포트의 SPY 국면전략(아래 '다음 거래일 예측' 행이 실제 주문 근거 — 목표비중·예상 행동). "
+                          "섹터(sector_regime_report.xlsx S★)·산업(industry_regime_report.xlsx I★) 계층 리포트는 이 M 노출을 "
+                          "나눠 담는 연구 전략이며 진단·연구용 — 수용기준을 통과해도 사용자가 명시적으로 전환하기 전에는 "
+                          "실매매 주문에 반영되지 않는다."),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
@@ -10262,7 +10291,7 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.49.0"
+BUNDLE_VERSION = "v1.50.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
@@ -10569,12 +10598,30 @@ def self_test(cfg: Config = CFG) -> bool:
 # =============================================================================
 # [15] 엔트리포인트
 # =============================================================================
+def runtime_env() -> str:
+    """[v1.50.0] 실행 환경 판별 — "kaggle" | "colab" | "local". Kaggle은 KAGGLE_KERNEL_RUN_TYPE 환경변수 또는
+    /kaggle/working 디렉터리로, Colab은 google.colab 임포트 가능 여부로 판별한다. run_pipeline.py가 출력·캐시 경로를
+    이 값으로 정한다(Kaggle: /kaggle/working 아래 — 노트북 Persistence(Files) 설정 시 세션 간 유지)."""
+    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.path.isdir("/kaggle/working"):
+        return "kaggle"
+    try:
+        import google.colab  # type: ignore  # noqa: F401
+        return "colab"
+    except Exception:
+        return "local"
+
+
 def maybe_colab_download(path: str) -> bool:
     """[v1.13.0 §E] Colab 환경이면 산출 엑셀을 실행 종료 직후 브라우저 다운로드로 밀어준다
     (사용자 요청 "실행 끝나면 엑셀 파일 자동 다운로드"). Colab이 아니면(로컬/서버) 조용히
     건너뛴다. 부가 기능이므로 어떤 예외도 파이프라인 성공을 뒤집지 않는다(§5 견고성).
     [v1.25.0] 파일 1개만 내려받을 때 쓰는 저수준 함수 — 여러 개를 내려받을 땐
     maybe_colab_download_many()를 쓴다(아래 참조, 브라우저의 다중 다운로드 차단 회피)."""
+    if runtime_env() == "kaggle":
+        # [v1.50.0] Kaggle: 브라우저 다운로드 대신 /kaggle/working 에 남는다(Persistence 설정으로 세션 간 유지, 커밋 시 Output).
+        log("REPORT", kv(event="kaggle_output_persisted", file=path,
+                         note="/kaggle/working 보존 — 노트북 Output/Persistence에서 확인"))
+        return False
     try:
         from google.colab import files  # type: ignore
     except ImportError:
