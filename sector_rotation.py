@@ -17,6 +17,29 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.39.0 - 2026-09-12 - [⚠ 유니버스 복귀(XLB·XLE 재포함, 사용자 지시) + run_sector가 마스킹 전
+#                       점수 2키를 내보냄(산업층 §A1 결함 수정 지원). **S 자신의 신호·배분 로직은 무변경**]
+#
+#                       [§1 ⚠ SECTOR_EXCLUDE = () — 11섹터 전체 복귀]
+#                       사용자 지시 2026-09-12("다시 XLE, XLB 같이 예측"). 리포트41 §2가 근거를 이미 냈다:
+#                       9섹터에서 13f ③(복합순위 상위1 스프레드 NW-t)이 **+2.06 → -0.77**로 뒤집혀 "순위 신호에
+#                       정보 없음"이 됐고, SCORE_PCT의 연도별 t가 2024~26에 3.77/3.83/3.54 → 2.00/2.18/1.79로
+#                       내려앉았다(13g). 13e 분산4분위 Q4(고분산일) 상위1 스프레드는 +25.7%/년(t 2.01) → -2.7%.
+#                       XLE는 2022년 유일한 상승 섹터이자 하락국면리더 136일 중 72일의 리더였다 — 횡단면 순위
+#                       정보의 큰 부분이 거기서 나왔다. 복귀로 ③ PASS 회복을 기대하지만 **판정은 다음 실행의
+#                       13f/13g가 낸다**(성과 추정: v0.37.0 헤더 추정의 역방향 — CAGR +0.44%p·MDD +0.21%p 정도).
+#                       되돌리기 = RP.main(sector_exclude=("XLB","XLE")) 한 줄.
+#
+#                       [§2 §A1 지원 — run_sector 반환에 "score_full"/"haz_score_full" 2키 추가]
+#                       industry_rotation.py의 parent_layer_series가 부모 계층 특징(PARENT_SCORE_PCT·PBETA_X_*)을
+#                       만들 때 S의 **마스킹된** score_pct(SIGNAL_START 이후만 값)를 써서 산업층 커버리지 게이트가
+#                       2018~2023 내내 '표본부족'이었다(리포트41 §3.3(1): 학습 관측일 0~896 < 1000 → 6년간 리더 0일).
+#                       S 자신은 SPY 계층에 M의 마스킹 전 res["score"]를 쓴다(spy_layer_series) — I만 잘려 있었다.
+#                       이제 그 원시 시리즈를 그대로 내보낸다. S의 신호·배분·캐시키는 건드리지 않는다(순수 추가).
+#
+#                       변경 모듈: `SectorConfig.SECTOR_EXCLUDE`(⚠ 기본값), `run_sector()` 반환 2키, 00/12시트 문구,
+#                       버전 문자열. 회귀: test_sector_exclude_v037.py 갱신 + 기존 테스트 재실행.
+#
 #  VERSION: v0.38.0 - 2026-09-12 - [리포트37 판독 + 00시트 '실매매 적용 여부' 1줄 + write_sector_excel(title=)
 #                       — **신호·배분·채택값 무변경, v0.37.0과 비트 동일**]
 #
@@ -1634,7 +1657,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.38.0"
+VERSION = "v0.39.0"
 VERSION_DATE = "2026-09-12"
 
 # =============================================================================
@@ -1686,7 +1709,11 @@ class SectorConfig:
     #     XLB 제외  ΔCAGR +0.06%p · ΔMDD  0.00%p                (배분에 거의 닿지 않는다)
     #   즉 비용은 거의 전부 XLE 쪽이며 '2022형 국면'의 분산 수단을 하나 잃는 구조적 비용이다 —
     #   사용자 결정에 따라 적용하되 숫자를 숨기지 않는다. 되돌리려면 () 로.
-    SECTOR_EXCLUDE: Tuple[str, ...] = ("XLB", "XLE")
+    SECTOR_EXCLUDE: Tuple[str, ...] = ()   # [v0.39.0 ⚠ 사용자 지시 2026-09-12 "다시 XLE, XLB 같이 예측"] 11섹터 복귀.
+    #   근거(리포트41 §2): XLB·XLE를 뺀 9섹터에서 13f ③(상위1 스프레드 NW-t)이 +2.06 → -0.77로 뒤집혀
+    #   "순위 신호에 정보 없음"이 됐다(SCORE_PCT 연도별 t 3.8→1.8, 13e Q4 +25.7%/년 → -2.7%). 11섹터 복귀로
+    #   리포트2 수준(③ PASS) 회복을 기대한다 — 실제 판정은 다음 실행의 13f/13g가 낸다.
+    #   되돌리기: RP.main(sector_exclude=("XLB","XLE")) 또는 SectorConfig(SECTOR_EXCLUDE=("XLB","XLE")).
     ADJ_CLOSE_STALE_DAYS: int = 5              # Adj Close가 Close보다 이만큼 이상 늦게 끊기면 지연 판정·Close 수익률로 이어붙임
     # ---- 후보지표 구성 -------------------------------------------------------
     USE_MARKET_CANDIDATES: bool = True         # M의 후보지표 전부를 섹터 후보에 포함(그 섹터 수익에 대해 재검증)
@@ -3407,6 +3434,13 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "target_pos": sig["target_pos"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
             "score_pct": score_pct.loc[sig_mask], "haz_pct": haz_pct.loc[sig_mask],
             "haz_pct_sector": haz_pct_sector.loc[sig_mask],   # [v0.3.0 §1.B] 진단용(신호 미관여)
+            # [v0.39.0 §A1] 마스킹 전(SIGNAL_START 이전 포함) 원시 복합점수·위험점수 — industry_rotation.py의
+            #   parent_layer_series가 '부모 계층 특징'을 만들 때 쓴다. spy_layer_series가 M의 res["score"]를
+            #   쓰는 것과 같은 이유: score_pct는 리포트용 마스킹 시리즈라 그대로 쓰면 산업층 커버리지 게이트에서
+            #   2018~2023이 전멸한다(리포트41 §3.3(1) 실측 — 학습 관측일 0~896 < 1000 → 6년간 리더 0일).
+            #   M.score_percentile은 expanding rank(인과)이므로 호출부에서 백분위로 바꿔도 룩어헤드가 없다.
+            #   S 자신의 신호·배분·캐시에는 쓰이지 않는다(순수 추가, v0.38.0과 비트 동일).
+            "score_full": score, "haz_score_full": haz_score,
             "strategy_ret": bt["strategy_ret"], "bh_ret": bt["bh_ret"], "pos_exec": bt["pos_exec"],
             "ma_ret": bt_ma["strategy_ret"],
             # [v0.4.0 §1.F] 포트폴리오 백테스트용 수익 분해(M.run_backtest와 동일 정의: 전일종가→시가, 시가→종가) + 순위 신호
@@ -3863,7 +3897,7 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
                            action="지연 구간은 Close 수익률로 이어붙임(배당 미포함 근사)"), M=M, level="warning")
     for t in _excl:   # [v0.37.0] 제외 섹터도 유니버스 표에 남겨 '왜 없는지'가 리포트에서 보이게 한다
         universe_rows.append({"티커": t, "섹터명": SECTOR_NAME_KR.get(t, ""),
-                              "상태": "제외(설정 SECTOR_EXCLUDE — 사용자 지시 2026-09-11)"})
+                              "상태": "제외(설정 SECTOR_EXCLUDE)"})
     universe = pd.DataFrame(universe_rows)
     stage_timing["01_섹터데이터"] = round(time.time() - t0, 2)
     log("DATA", kv(event="universe_ready", ok=len(frames), excluded=len(scfg.SECTORS) - len(frames),
@@ -7400,11 +7434,14 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         ("버전", f"sector_rotation.py {VERSION} ({VERSION_DATE}) — market_regime_trader.py 번들 "
                 f"{sres.get('m_bundle_meta', {}).get('bundle_version', '직접 res')}"),
         # [v0.38.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
-        ("⚠ 실매매 적용 여부", "아니오 — 이 섹터 리포트는 진단·연구용이며 실매매 주문에 반영되지 않는다. 실매매 주문 근거는 "
-                          "market_regime_report.xlsx의 ★ SPY 국면전략(00_실행요약 '다음 거래일 예측' 행)이다. 이 리포트의 "
-                          "★(S★)는 M의 SPY 목표비중 E_t를 9개 섹터로 나눠 담는 연구 전략이며, 13f 수용기준을 통과해도 "
-                          "사용자가 명시적으로 전환하기 전에는 실매매에 쓰지 않는다(산업 계층 industry_regime_report.xlsx도 동일)."),
-        ("예측 대상", "11개 SPDR 섹터 ETF 각각의 절대 상승/하락 국면(SPY와 동일 파이프라인을 섹터 가격에 적용)"),
+        # [v0.39.0] 섹터 개수를 하드코딩하지 않는다 — SECTOR_EXCLUDE에 따라 11↔9로 바뀌므로 문구가 거짓말을 하면 안 된다.
+        ("⚠ 실매매 적용 여부", f"아니오 — 이 섹터 리포트는 진단·연구용이며 실매매 주문에 반영되지 않는다. 실매매 주문 근거는 "
+                          f"market_regime_report.xlsx의 ★ SPY 국면전략(00_실행요약 '다음 거래일 예측' 행)이다. 이 리포트의 "
+                          f"★(S★)는 M의 SPY 목표비중 E_t를 활성 {len(scfg.SECTORS)}개 섹터로 나눠 담는 연구 전략이며, "
+                          f"13f 수용기준을 통과해도 사용자가 명시적으로 전환하기 전에는 실매매에 쓰지 않는다"
+                          f"(산업 계층 industry_regime_report.xlsx도 동일)."),
+        ("예측 대상", f"활성 {len(scfg.SECTORS)}개 SPDR 섹터 ETF 각각의 절대 상승/하락 국면(SPY와 동일 파이프라인을 섹터 가격에 적용) "
+                   f"— 마스터 유니버스 {len(SECTORS)}개 중 SECTOR_EXCLUDE 적용 후"),
         ("신호/백테스트 기간", f"{sres['signal_start']} ~ {sres['cal_end']} (M의 SIGNAL_START와 동일 — 모든 성과 비교는 같은 창)"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결 (룩어헤드 구조적 차단, M과 동일)"),
         ("거래비용", f"편도 {M_cfg.COST_BPS:.0f}bp (M과 동일)"),
@@ -7414,7 +7451,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                         "12b_섹터오류상세 참조" if sres["failed"] else "")),
         # [v0.37.0 ⚠] 유니버스에서 뺀 섹터를 첫 화면에 남긴다 — '왜 XLB·XLE가 없나'가 시트를 뒤지지 않아도 보이게.
         ("예측 제외 섹터(설정)", (", ".join(_x for _x in (getattr(scfg, "SECTOR_EXCLUDE", ()) or ())) or "없음")
-                            + " — SectorConfig.SECTOR_EXCLUDE(사용자 지시 2026-09-11). 활성 유니버스 "
+                            + " — SectorConfig.SECTOR_EXCLUDE. 활성 유니버스 "
                             f"{len(scfg.SECTORS)}개: {', '.join(scfg.SECTORS)}"),
         ("최근 예측", up_line),
         ("후보지표", f"섹터당 {n_cand}개 = M 후보 전부(변동성/신용/매크로/크로스에셋/추세/자동생성) "

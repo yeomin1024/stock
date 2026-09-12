@@ -1,7 +1,9 @@
 # =============================================================================
 #  industry_rotation.py
-#  VERSION: v0.2.0 - 2026-09-12 - 리포트(실데이터 19산업) 판독으로 드러난 배분 결함 3개 수정 + S leader3 이식 +
-#                     유니버스 29개 확장 + fork 병렬 + 룩어헤드감사 시트 + 16_산업부모추종 + 실매매 표시
+#  VERSION: v0.3.0 - 2026-09-12 - IMPROVEMENT_PLAN_INDUSTRY_v0.3 전량 구현 — 부모 계층 표본 복원(A1),
+#                     다음 거래일 예측(A2), 13c 산업 전용 분리·잔여 모드(A3), ⚠ 폴백 0%·2D 격자(B1),
+#                     부모국면 리더 게이트(B2), 산업 자기점수 신호(B3), 역방향 회피(B4), 추종필터(B5),
+#                     베타중립 진단(B7), 13l·01Y 진단 시트(C1)
 #
 #  목적:
 #    market_regime_trader.py(M, v1.50.0)가 SPY 국면(E_t)을, sector_rotation.py(S, v0.38.0)가
@@ -30,6 +32,88 @@
 #
 #  CHANGELOG
 #  ---------------------------------------------------------------------------
+#  v0.3.1 | 2026-09-12 | [⚠ 결함 수정(신호 판단에 영향) — v0.3.0 회귀 검증 중 발견. 격자·채택값 무변경]
+#    (D1) ⚠ '부모 안 무변동 신호'가 판단을 오염시키고 있었다. leader3_group은 신호별 풀링 순위를 부모 그룹으로
+#         잘라 S._cs_rank01로 다시 0~1을 매긴다. 그런데 **부모 계층 신호(PARENT_SCORE_PCT)는 한 부모 아래
+#         모든 산업이 같은 값**이라 재정규화 결과가 전원 정확히 0.5가 된다(실측 확인: 4산업 부모 → A~D 전부 0.500).
+#         그대로 두면 두 가지가 조용히 망가진다:
+#           (1) 복합 평균에 0.5가 섞여 실제 신호를 가운데로 **희석** → 1위−2위 여유(margin)가 줄어 리더가 덜 나온다.
+#           (2) _row_arg(idxmax)가 동률 행에서 **첫 열을 임의로** 1위로 뽑아 교차확인 투표에 가짜 표를 넣는다
+#               — v0.1의 '임의 리더' 결함(v0.2.0 §0(B))과 같은 종류가 부모 계층 신호 경로에 남아 있었다.
+#         수정: rank_g를 만들 때 그 행의 부모 안 최대−최소 ≤ 1e-12면 **그 행만** NaN으로 비운다(행 단위 판정 —
+#         값이 실제로 갈리는 날은 전혀 건드리지 않는다). _nanmean_frames는 그 행에서 신호를 무시하고, _row_arg는
+#         전부 NaN이면 None을 돌려 표도 주지 않는다. 로그 `inert_signal_masked`, 00시트 '⚠ 부모 안 무변동 신호' 1줄.
+#    (D2) 함께 확인한 사실 — §A1은 **PBETA_X_SCORE를 복원했고, PARENT_SCORE_PCT는 원래 채택될 수 없는 신호였다.**
+#         13g의 '학습 관측일'은 상위1 스프레드 시계열의 표본 수인데, `_top1_spread_series`가 여유 게이트
+#         (margin_steps=1.0)를 적용하므로 **1위가 동률인 날은 표본에서 빠진다**. 부모 계층 신호는 같은 부모의
+#         산업들이 전부 동률이라 거의 모든 날이 빠진다(합성 E2E 실측: PARENT_SCORE_PCT 39일 고정 — 연도가 늘어도
+#         안 늘어난다). 반면 §A1 수정 후 PBETA_X_SCORE는 1,831 → 3,128일로 커버리지가 회복됐다
+#         (리포트41 실측에서는 0~896일로 전 연도 '표본부족'이었다 — 6년간 리더 0일의 원인).
+#         ⚠ 따라서 PARENT_SCORE_PCT는 후보 목록에 남기되(임의 제거는 사전등록 격자 프로토콜 위반) **구조적으로
+#         채택되지 않는 것이 정상**이며, 위 (D1)로 이제 '채택되더라도 해를 끼치지 않는다'. 다음 라운드에서
+#         후보 목록 정리 여부를 격자로 판정할 것.
+#    영향 함수: `leader3_group`(rank_g 구성 + 반환 inert_days) · `build_industry_allocation`(로그 1개 필드) ·
+#    `build_industry_report`(00시트 1줄). 회귀: `test_industry_e2e_synth.py`(§A1 검사를 PBETA_X_SCORE 기준으로
+#    정정 + 무변동 가드 검사) · `test_industry_reverse_avoid.py`(무변동 신호가 투표·복합평균에서 빠지는지).
+#
+#  v0.3.0 | 2026-09-12 | [⚠ 신호·배분 변경 — 사용자 지시 "개선사항대로 코드 수정". 근거는 전부
+#    REPORT41_63_READOUT_v1.50_v0.38_I0.2.0.md(실데이터 25산업 리포트 재계산), 설계는
+#    IMPROVEMENT_PLAN_INDUSTRY_v0.3.md. 실데이터 성과·수용기준 판정은 다음 실행이 낸다.]
+#
+#    [A. 필수 — 사용자 지시 + 결함]
+#    (A1) ⚠ 부모 계층 신호 표본 복원 — v0.2까지 parent_layer_series가 S의 **마스킹된** score_pct(2018~)를
+#         써서 13g의 PARENT_SCORE_PCT·PBETA_X_SCORE가 2018~2023 내내 '표본부족'(학습 관측일 0~896 < 1000)
+#         이었고, 그 6년은 채택 신호가 P_REL_MOM_21 하나뿐이라 교차확인 불가 → **리더가 단 하루도 없었다**
+#         (전부 폴백 균등). S 자신은 SPY 계층에 M의 마스킹 전 점수를 쓴다(spy_layer_series) — I만 잘려 있었다.
+#         수정: S v0.39.0이 내보내는 score_full/haz_score_full을 M.score_percentile(expanding rank, 인과)로
+#         백분위화해 쓴다. PARENT_LAYER_SOURCE 기본값 "masked_extend"→"full"(구버전 S면 자동 폴백+경고).
+#         industry_lookahead_audit도 score_full을 d까지 잘라 감사가 성립하게 고쳤다.
+#    (A2) 다음 거래일 예측 — 00시트에 산업별 예측 줄 + '다음 거래일 배분(I★)'(산업/잔여/부모별 판단) +
+#         격자 수렴 상태, 01Z·13c에 '구분'(실적/예측) 열과 예측 행 1개. **새 계산 없음** — S.build_sector_sheets가
+#         이미 만들어 둔 results[t]["sheets"]["next_day"](01_일별_<산업> 마지막 행)를 표시만 재구성(신규 industry_next_day).
+#    (A3) 사용자 지시 "일별배분비중에 섹터가 왜 포함되어 있어 산업만 배분하라" — 13c는 이제 **산업 열만**
+#         싣고, 부모ETF·SPY·XLU(= S★가 준 비중 중 산업으로 나누지 못한 잔여)는 13c2_잔여다리로 분리했다.
+#         잔여의 목적지를 고르는 ⚠ INDUSTRY_ONLY_MODE 신설: "parent"(기본, 잔여=부모ETF — 잔여가 정확히 S★로
+#         환원되어 I★−S★가 순수한 산업 판단 기여가 된다) | "industries"(잔여도 적격 산업 균등 = 문자 그대로
+#         '산업만 배분') | "cash"(잔여=현금, 총노출 ≤ S★ — 14_계층정합이 '≤'로 자동 완화). 세 모드 전부
+#         [잔여격자] 행으로 상설 측정한다 — ⚠ 리포트41 실측에서 잔여 전량 산업은 MDD −15.04%·칼마 2.385로
+#         가장 나빴다(기본값을 "industries"로 두지 않은 이유. 켜려면 숫자를 보고 결정할 것).
+#
+#    [B. 정확도 개선 — 전부 사전등록 격자가 판정, 채택은 다음 라운드]
+#    (B1) ⚠ INDUSTRY_FALLBACK_SHARE 기본값 0.5 → **0.0**. 리포트41 격자에서 '폴백 0%'가 CAGR 37.64%·
+#         MDD −9.93%(=S★)·칼마 3.790·강건 '통과'로 ①②③④를 전부 통과한 유일한 행이었다. 원인(§3.3(3)):
+#         동일가중 니치 산업 바스켓은 시총가중 부모(메가캡 주도)에 구조적으로 진다(산업↑·부모↑ 23,000일
+#         표본 향후 21일 −0.17%, 승률 0.47). "확신이 있을 때만 산업, 아니면 부모."
+#         격자도 1D 사다리 두 개 → **2D(cap×fb 4×4)**로 바꿨다 — (1.0, 0.0) 같은 조합이 종전엔 측정된 적이 없었다.
+#         13_산업배분전략에 ①②③④ 판정 열과 '격자판정'(채택후보) 열, 00시트에 격자 수렴 1줄(M/S와 같은 형식).
+#    (B2) ⚠ INDUSTRY_LEADER_REGIMES = ("RISK_ON",) 신설(기본 켬) — 그날 **부모 섹터 자기 국면**이 상승일 때만
+#         리더를 인정하고, 보유 중 벗어나면 최소보유를 기다리지 않고 즉시 청산(S의 §1.D 이식).
+#         근거: 리더 진입 시 부모 상승 30회 승률 0.50·+1.55% vs 중립 8회 **0.25·−0.86%** vs 하락 1회 −5.64%.
+#         v0.2의 리더는 사실상 '부모 상승국면 베타 틸트'였고(PBETA_X_SCORE가 부모 상승 시 베타 순위와 같아져
+#         XLI=JETS만 247일, XLK=SOXX만 292일), 횡보장(2024) 승률 0.18로 무너졌다 — 그 구간을 규칙으로 뺀다.
+#    (B3) ⚠ 순위 후보에 산업 **자기** 점수 추가 — SCORE_PCT·SCORE_MINUS_PARENT(산업−부모 백분위) 및
+#         P_REL_MOM_63·P_REL_RSI_14. S의 순환매에서 가장 자주 엄격 채택된 것이 '섹터 자기 SCORE_PCT'인데
+#         I에는 부모 것만 있고 자기 점수가 후보에 없었다. 채택은 워크포워드가 판정(코드가 고르지 않는다).
+#    (B4) ⚠ 역방향 회피(ROTATION_REVERSE_AVOID, 기본 끔) — 상위1 스프레드 NW-t ≤ −T인 신호는 "그 신호의
+#         1위를 **피하라**"는 뜻이다(13g 실측: P_REL_MOM_12_1이 9개 학습창 전부 t −2.4~−3.0, 하위1은 ≈0 —
+#         살 것은 없고 피할 것만 있다). 켜면 그 신호가 부모 안에서 지목한 1위를 그날 후보에서 제외한다.
+#    (B5) 추종필터(INDUSTRY_LEADER_MIN_CORR, 기본 끔) — 롤링 252일(1일 지연) 산업-부모 상관이 문턱 미만인
+#         산업은 **리더 후보에서만** 제외(바스켓엔 남김). 근거: 리더 상관≥0.8 17회 승률 0.53 vs <0.8 22회 0.36.
+#    (B7) 베타중립 진단(ROTATION_TARGET) — 타깃을 ind−β₂₅₂·parent로 바꿔 한 번 더 워크포워드를 돌려
+#         13g에 상위1 t를 나란히 싣는다. "리더 우위가 선택력인가 베타 틸트인가"를 리포트가 직접 답한다.
+#
+#    [C. 진단 시트 — 리포트41을 손으로 만들던 표를 리포트가 직접 낸다]
+#    (C1) 13l_산업리더적중률(지평별 리더>부모 비율·타산업 기준선·폴백 바스켓 / 게이트별 / 에피소드 전수와
+#         부모·연도·리더·진입국면별 승률) · 01Y_산업예측정확도(익일·지평별·상태 지속성·연도별, 전부 **기저 대비**
+#         + 부모 대비 bp). 13c에 국면 게이트·역방향회피·추종필터 열 추가.
+#
+#    영향 함수: parent_layer_series·industry_lookahead_audit·run_industry(rot_raw)·build_pooled_rotation·
+#    leader3_group·build_industry_allocation·build_hierarchy_check·build_industry_leader_columns·
+#    build_industry_prediction_matrix·build_industry_report·run + 신규 industry_next_day·
+#    build_industry_leader_accuracy·build_industry_prediction_accuracy·_fwd_ret + IndustryConfig 9개 필드.
+#    회귀: test_industry_* 5종 + test_run_pipeline_local 갱신 후 전부 그린(합성데이터, 네트워크 불필요).
+#    ⚠ 이번 라운드는 **신호·배분이 실제로 바뀐다**(A1·B1·B2·B3). 실데이터 판정은 다음 실행의 13f/13g/13l이 낸다.
+#
 #  v0.2.0 | 2026-09-12 | [⚠ 신호·배분 변경 — 첫 실데이터 리포트(industry_regime_report.xlsx, 19산업, 8,185초)
 #    판독 결과 I★가 S★에 -2.81%p CAGR·MDD -1.24%p로 뒤졌고(수용기준 5/5 FAIL), 원인 대부분이 산업 판단이 아니라
 #    배분 코드 결함이었다. 사용자 질문 "섹터 순환매 방식대로 한 거 맞아?"에 대한 정직한 답: v0.1은 아니었다.]
@@ -134,7 +218,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.2.0"
+VERSION = "v0.3.1"
 VERSION_DATE = "2026-09-12"
 
 # =============================================================================
@@ -230,7 +314,8 @@ class IndustryConfig:
     USE_INDUSTRY_BREADTH: bool = True
 
     # ---- 부모 계층 시리즈 소스(§4.3) ----
-    PARENT_LAYER_SOURCE: str = "masked_extend"   # "masked_extend"(기본) | "recompute"(v0.2 예정, 현재 masked_extend로 폴백)
+    PARENT_LAYER_SOURCE: str = "full"            # ⚠ [v0.3.0 §A1] "full"(기본, S v0.39.0의 마스킹 전 점수) |
+    #   "masked_extend"(종전 — 부모 신호가 2018~로 잘려 2018~2023 리더 0일이 됐던 동작, A/B 비교용)
 
     # ---- 학습/재추정(S와 동일 이름 — sector_cfg_for가 이 이름으로 읽는다) ----
     SECTOR_TRAIN_MIN_YEARS: int = 3              # = INDUSTRY_TRAIN_MIN_YEARS
@@ -248,9 +333,22 @@ class IndustryConfig:
 
     # ---- 풀링 횡단면 순환매(§6) — S.rotation_walkforward_select가 scfg.ROTATION_*를 그대로 읽는다 ----
     USE_ROTATION: bool = True
+    # ⚠ [v0.3.0 §B3] 순위 후보 신호. SCORE_PCT·SCORE_MINUS_PARENT 신규 — S의 순환매에서 가장 자주
+    #   엄격 채택된 것이 '섹터 자기 SCORE_PCT'인데(리포트38 13g) I에는 부모 것만 있고 산업 자기 점수가
+    #   후보에 없었다. P_REL_MOM_63/P_REL_RSI_14도 후보에 올린다(S의 상대강도 가족 중 I가 안 쓰던 것).
+    #   채택은 워크포워드(S.rotation_walkforward_select)가 판정 — 코드가 미리 고르지 않는다.
     ROTATION_SIGNALS: Tuple[str, ...] = ("PARENT_SCORE_PCT", "P_REL_MOM_126", "P_REL_MOM_12_1",
-                                         "P_REL_MOM_21", "P_REL_EXT_200", "RESID_MOM_12_1_PARENT",
-                                         "PBETA_X_SCORE")
+                                         "P_REL_MOM_21", "P_REL_MOM_63", "P_REL_EXT_200",
+                                         "P_REL_RSI_14", "RESID_MOM_12_1_PARENT",
+                                         "PBETA_X_SCORE", "SCORE_PCT", "SCORE_MINUS_PARENT")
+    # ⚠ [v0.3.0 §B7] 순환매 검증 타깃. "ratio"(기본) = 산업/부모 가격비율의 수익(베타 1 가정, 종전과 비트 동일)
+    #   | "beta_neutral" = ind − β₂₅₂·parent. 반대쪽은 항상 진단으로 함께 계산해 13g에 병기(ROTATION_TARGET_DIAGNOSTIC).
+    ROTATION_TARGET: str = "ratio"
+    ROTATION_TARGET_DIAGNOSTIC: bool = True
+    # ⚠ [v0.3.0 §B4] 역방향(반전) 회피 — 상위1 스프레드 NW-t ≤ −ROTATION_SELECT_T인 신호의 '1위'를 회피 후보로.
+    #   근거(리포트41 §3.3(4)): P_REL_MOM_12_1의 상위1 t가 9개 학습창 전부 −2.4~−3.0 — 살 것은 없고 피할 것만 있다.
+    #   기본 꺼짐(격자 [역회피격자]가 판정).
+    ROTATION_REVERSE_AVOID: bool = False
     ROTATION_SELECT_T: float = 2.0
     ROTATION_SELECT_MIN_DAYS: int = 1000
     ROTATION_SELECT_HORIZON: int = 21
@@ -274,8 +372,28 @@ class IndustryConfig:
 
     # ---- 산업 배분(§7) ----
     INDUSTRY_LEADER_CAP: float = 0.5              # ⚠ 리더 산업에 주는 섹터비중 몫(기본 "절반만 산업으로")
-    INDUSTRY_FALLBACK_SHARE: float = 0.5           # ⚠ 폴백일 적격산업 균등배분 몫
+    # ⚠ [v0.3.0 §B1 기본값 변경 0.5 → 0.0] 리더가 없는 날(폴백) 적격 산업에 균등배분하는 몫.
+    #   근거(리포트41 §3.1 격자 실측): 폴백 0% CAGR 37.64%·MDD −9.93%(=S★)·칼마 3.790·강건 '통과'로
+    #   ①②③④를 전부 통과한 유일한 행이었다. 반대로 폴백 100%(=잔여까지 전부 산업)는 MDD −15.04%·칼마 2.385로 최악.
+    #   이유(§3.3(3)): 동일가중·니치 산업 ETF 바스켓은 시총가중 부모(메가캡 주도)에 구조적으로 진다
+    #   (산업↑·부모↑ 23,000일 표본에서 향후 21일 −0.17%, 승률 0.47). "확신이 있을 때만 산업, 아니면 부모".
+    INDUSTRY_FALLBACK_SHARE: float = 0.0
     INDUSTRY_EXCLUDE_STATES: Tuple[str, ...] = ("RISK_OFF",)
+    # ⚠ [v0.3.0 §B2] 리더 인정 국면 제약 — 그날 **부모 섹터의 자기 국면**이 이 집합에 있을 때만 리더를 인정한다
+    #   (S의 ROTATION_LEADER_REGIMES를 부모 국면 기준으로 이식). None이면 제약 없음(v0.2.0 동작).
+    #   근거(리포트41 §3.2): 리더 진입 시 부모가 상승국면 30회 승률 0.50·평균초과 +1.55% vs 중립 8회 0.25·−0.86%
+    #   vs 하락 1회 −5.64%. 보유 중 부모 국면이 허용 밖으로 바뀌면 최소보유를 기다리지 않고 즉시 청산(S §1.D와 동일).
+    INDUSTRY_LEADER_REGIMES: Optional[Tuple[str, ...]] = ("RISK_ON",)
+    # ⚠ [v0.3.0 §B5] 리더 후보를 '부모를 잘 따라가는 산업'으로 제한(롤링 252일 상관 기준). None이면 제약 없음.
+    #   근거(리포트41 §3.2): 리더 상관≥0.8 17회 승률 0.53 vs <0.8 22회 0.36. 기본 꺼짐 — [추종필터격자]가 판정.
+    INDUSTRY_LEADER_MIN_CORR: Optional[float] = None
+    INDUSTRY_FOLLOW_CORR_WINDOW: int = 252
+    # ⚠ [v0.3.0 §A3 사용자 지시 "산업만 배분하라"] 부모 비중 중 산업으로 배분되지 않은 '잔여'를 어디에 두는가.
+    #   "parent"(기본) = 부모 ETF — 잔여가 정확히 S★로 환원되므로 I★−S★가 순수하게 산업 판단의 기여가 된다(§7.3).
+    #   "industries" = 잔여도 그 부모의 적격 산업 균등으로(= 사실상 cap·fb 1.0, 산업만 보유. ⚠ 리포트41 실측
+    #                  MDD −15.04%·칼마 2.385로 가장 나쁨 — 켜기 전에 13_산업배분전략의 해당 행을 볼 것).
+    #   "cash"    = 잔여를 현금으로(총노출이 S★보다 작아진다 — 14_계층정합의 '총노출=S★' 검사가 '≤'로 완화됨).
+    INDUSTRY_ONLY_MODE: str = "parent"
     COST_BPS_INDUSTRY: float = 10.0                # ⚠ 산업 ETF 편도(S·M의 5bp보다 큼 — 스프레드 반영)
     PARENT_COST_BPS: float = 5.0                   # ⚠ 부모 ETF 다리 편도(S·M과 동일)
 
@@ -369,21 +487,44 @@ def _mk_ispec(M, ind_ticker: str, raw: _RawSpec):
 
 
 # ---- 부모 계층 시리즈(§4.3) — masked_extend: S의 마스킹된 score_pct/haz_pct를 그대로 쓴다 ----
-def parent_layer_series(sres: dict, parent: str, M, mode: str = "masked_extend") -> Dict[str, pd.Series]:
-    """[§4.3] sres["sectors"][parent]는 S의 run_sector() 반환 dict — score_pct/haz_pct는
-    이미 '그 섹터의 SIGNAL_START 이후'만 값이 있는 마스킹 시리즈다(S가 그렇게 만들었다 — S의
-    run_sector 07~08단계: score_pct = M.score_percentile(score).where(sig_mask)). masked_extend
-    모드는 이 마스킹 시리즈를 그대로 후보값으로 쓴다 — coverage 게이트가 그 산업의 평가창에서
-    부모 신호가 충분히 있는지를 자연히 판정하므로(짧으면 FAIL로 자동 배제), 잘못 채택되기보다
-    안전하게 배제되는 쪽으로 수렴한다. recompute 모드(캐시에서 마스킹 전 score 복원)는 v0.2
-    예정 — 이번 버전은 항상 masked_extend로 동작(경고 로그)."""
+def parent_layer_series(sres: dict, parent: str, M, mode: str = "full") -> Dict[str, pd.Series]:
+    """[§4.3 · v0.3.0 §A1 ⚠ 신호 변경] 부모 섹터의 '계층 특징' 시리즈(SCORE_PCT·HAZ_PCT)를 만든다.
+
+    [v0.1~v0.2의 결함 — 리포트41 §3.3(1)] sres["sectors"][parent]["score_pct"]는 S의 run_sector가
+    `M.score_percentile(score).where(sig_mask)`로 만든 **리포트용 마스킹 시리즈**(그 섹터의
+    SIGNAL_START=2018-01-02 이후만 값)다. 그것을 그대로 후보값으로 쓰니 산업층 워크포워드의
+    커버리지 게이트(ROTATION_SELECT_MIN_DAYS=1000)에서 PARENT_SCORE_PCT·PBETA_X_SCORE가
+    2018~2023 내내 '표본부족'으로 떨어졌고(13g 실측: 학습 관측일 0/34/53/72/165/317/317/320/406),
+    그 6년 동안 채택 신호가 P_REL_MOM_21 하나뿐이라 교차확인(ROTATION_MIN_AGREE=2)이 불가능해
+    **리더가 단 하루도 나오지 않았다**(전부 폴백 균등). S 자신은 SPY 계층에 M의 마스킹 전
+    res["score"]를 쓴다(S.spy_layer_series) — I만 잘려 있었던 것이다.
+
+    [v0.3.0 수정] mode="full"(기본): S v0.39.0이 내보내는 마스킹 전 원시 점수
+    sr["score_full"]/["haz_score_full"]를 M.score_percentile로 백분위화해 쓴다. S.spy_layer_series와
+    **완전히 같은 산식**이며 expanding rank라 인과적이다(그날까지의 정보만 사용 — 룩어헤드 없음,
+    11_룩어헤드감사가 절단재계산으로 매 실행 검증).
+    mode="masked_extend": 종전 동작(구버전 S와의 호환·A/B 비교용).
+    S가 v0.39.0 미만이라 score_full이 없으면 자동으로 masked_extend로 폴백하고 경고를 남긴다."""
     sr = sres["sectors"].get(parent, {})
     out: Dict[str, pd.Series] = {}
-    out["SCORE_PCT"] = sr.get("score_pct", pd.Series(dtype=float))
-    out["HAZ_PCT"] = sr.get("haz_pct", pd.Series(dtype=float))
-    if mode != "masked_extend":
-        log("DATA", kv(event="parent_layer_source_fallback", parent=parent, requested=mode,
-                       used="masked_extend", note="recompute는 v0.2 예정"), M=M, level="warning")
+    use_full = (mode == "full") and isinstance(sr.get("score_full"), pd.Series) and len(sr.get("score_full", [])) > 0
+    if use_full:
+        out["SCORE_PCT"] = M.score_percentile(sr["score_full"])
+        hz = sr.get("haz_score_full")
+        out["HAZ_PCT"] = M.score_percentile(hz) if isinstance(hz, pd.Series) and len(hz) else sr.get("haz_pct", pd.Series(dtype=float))
+        _first = out["SCORE_PCT"].dropna()
+        log("DATA", kv(event="parent_layer_ready", parent=parent, source="full(마스킹 전)",
+                       first_valid=(str(_first.index[0].date()) if len(_first) else "-"), n=len(_first)), M=M)
+    else:
+        out["SCORE_PCT"] = sr.get("score_pct", pd.Series(dtype=float))
+        out["HAZ_PCT"] = sr.get("haz_pct", pd.Series(dtype=float))
+        if mode == "full":
+            log("DATA", kv(event="parent_layer_source_fallback", parent=parent, requested="full",
+                           used="masked_extend",
+                           note="S가 v0.39.0 미만(score_full 없음) — 부모 계층 신호가 2018~로 잘려 커버리지 게이트에서 탈락할 수 있음"),
+                M=M, level="warning")
+        else:
+            log("DATA", kv(event="parent_layer_ready", parent=parent, source="masked_extend"), M=M)
     return out
 
 
@@ -659,12 +800,15 @@ def industry_lookahead_audit(ind_ticker: str, parent: str, res: dict, sres: dict
                  "haz_score": res["haz_score"].loc[res["haz_score"].index <= d],
                  "cfg": res["cfg"]}
         spy_series_t = S.spy_layer_series(res_t, M)
-        # [§2b] parent_layer_series가 읽는 것은 sres["sectors"][parent]의 마스킹된 score_pct/haz_pct
-        # 뿐이다 — S를 재실행하지 않고 그 두 시리즈를 d까지 추가로 잘라 그대로 재사용한다.
+        # [§2b] parent_layer_series가 읽는 것은 sres["sectors"][parent]의 점수 시리즈뿐이다 —
+        # S를 재실행하지 않고 그 시리즈들을 d까지 추가로 잘라 그대로 재사용한다.
+        # [v0.3.0 §A1] PARENT_LAYER_SOURCE="full"이면 score_full/haz_score_full을 읽으므로 그것도 잘라야
+        # 감사가 성립한다(자르지 않으면 d 이후 정보로 만든 백분위가 섞여 '불일치'가 아니라 거짓 통과가 된다).
         sr = sres["sectors"].get(parent, {})
+        _cut = lambda k: (sr[k].loc[:d] if isinstance(sr.get(k), pd.Series) and len(sr.get(k, [])) else pd.Series(dtype=float))
         sres_t = {"sectors": {parent: {
-            "score_pct": sr.get("score_pct", pd.Series(dtype=float)).loc[:d],
-            "haz_pct": sr.get("haz_pct", pd.Series(dtype=float)).loc[:d]}}}
+            "score_pct": _cut("score_pct"), "haz_pct": _cut("haz_pct"),
+            "score_full": _cut("score_full"), "haz_score_full": _cut("haz_score_full")}}}
         parent_series_t = parent_layer_series(sres_t, parent, M, mode=icfg.PARENT_LAYER_SOURCE)
         breadth_t = industry_breadth.loc[industry_breadth.index <= d] if industry_breadth is not None else None
         pbreadth_t = parent_breadth.loc[parent_breadth.index <= d] if parent_breadth is not None else None
@@ -822,15 +966,34 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "P_REL_MOM_126": f"{ind_ticker}__P_REL_MOM_126", "P_REL_MOM_12_1": f"{ind_ticker}__P_REL_MOM_12_1",
         "P_REL_MOM_21": f"{ind_ticker}__P_REL_MOM_21", "P_REL_EXT_200": f"{ind_ticker}__P_REL_EXT_200",
         "RESID_MOM_12_1_PARENT": f"{ind_ticker}__RESID_MOM_12_1_PARENT",
+        "P_REL_MOM_63": f"{ind_ticker}__P_REL_MOM_63", "P_REL_RSI_14": f"{ind_ticker}__P_REL_RSI_14",
     }
     rot_raw = pd.DataFrame(index=idx_i)
     for name, col in rot_cols.items():
         rot_raw[name] = ind_i[col] if col in ind_i.columns else np.nan
+    # [v0.3.0 §B3 ⚠ 신규 순위 신호] 산업 '자기' 국면 점수 — S의 순환매에서 가장 자주 엄격 채택된 신호가
+    # 섹터 자기 SCORE_PCT인데(리포트38 13g: 2019·2020·2024~26), I에는 부모 것(PARENT_SCORE_PCT)만 있고
+    # 산업 자기 점수가 순위 후보에 없었다. 마스킹 전 백분위(expanding rank, 인과)를 그대로 싣는다.
+    #   SCORE_MINUS_PARENT = 산업 점수 백분위 − 부모 점수 백분위 = "부모보다 자기 국면이 강한 정도".
+    # 채택 여부는 워크포워드(S.rotation_walkforward_select)가 판정한다 — 코드가 미리 고르지 않는다.
+    rot_raw["SCORE_PCT"] = score_pct_full.reindex(idx_i)
+    rot_raw["HAZ_PCT"] = haz_pct_industry_full.reindex(idx_i)
+    _p_score = parent_series.get("SCORE_PCT", pd.Series(dtype=float)).reindex(idx_i)
+    rot_raw["SCORE_MINUS_PARENT"] = score_pct_full.reindex(idx_i) - _p_score
     # [§6.2] 풀링 순환매용 '부모초과수익' 일간수익률 — rel=산업/부모 가격비율(S의 상대강도 산식과
     # 동일 정의)의 일간수익률. 전체(마스킹 전) 이력 — rotation_walkforward_select가 SIGNAL_START
     # 이전 구간도 학습에 쓴다(S와 동일 관행).
-    rel_px = adj_i / parent_tr.reindex(idx_i).replace(0, np.nan)
+    _par_tr_i = parent_tr.reindex(idx_i)
+    rel_px = adj_i / _par_tr_i.replace(0, np.nan)
     rot_raw["REL_RET"] = rel_px.pct_change()
+    # [v0.3.0 §B7 진단] 베타중립 초과수익 — 비율(REL_RET)은 베타 1을 가정하므로 고베타 산업이 부모 상승
+    # 국면에서 구조적으로 앞선다(리포트41 §3.3(2): 리더가 사실상 '최고베타 산업'으로 수렴). 베타를 빼고도
+    # 남는 선택력을 재보려고 ind − β_252·parent(β는 1일 지연 롤링, 인과)를 병기한다. ROTATION_TARGET이
+    # "beta_neutral"일 때만 검증 타깃으로 쓰이고, 기본값에서는 13g 진단 열로만 나간다.
+    _r_i = adj_i.pct_change()
+    _r_p = _par_tr_i.pct_change()
+    _beta_bn = S.rolling_beta(np.log1p(_r_i), np.log1p(_r_p), window=252, lag=1)
+    rot_raw["REL_RET_BN"] = _r_i - _beta_bn * _r_p
     ret_cc_full = adj_i.pct_change()
 
     timing["06_run_industry합계"] = round(time.time() - t0, 2)
@@ -955,9 +1118,15 @@ def run_industries(tickers: List[str], ctx: Dict[str, Any], icfg: IndustryConfig
 def build_pooled_rotation(results: Dict[str, Dict[str, Any]], eval_idx: pd.DatetimeIndex,
                           icfg: IndustryConfig, M, S) -> Dict[str, Any]:
     """[§6.2] 횡단면 = 활성 산업 전부(SPY/부모는 후보 아님, ROTATION_INCLUDE_SPY_CANDIDATE=False).
-    ret_cc_full은 '산업가격/부모가격' 비율의 일간수익률 — S가 상대강도 전반에 쓰는 것과 같은
-    비율기반 정의로, 그 비율의 향후 h일 수익률이 정확히 '산업 h일 수익률 - 부모 h일 수익률'의
-    곱셈적(로그) 근사가 된다(§6.2 "부모 초과수익"의 구현)."""
+    타깃(ret_cc_full) = rot_raw["REL_RET"] — '산업가격/부모가격' 비율의 일간수익률. S가 상대강도
+    전반에 쓰는 것과 같은 비율기반 정의로, 그 비율의 향후 h일 수익률이 '산업 h일 수익률 − 부모 h일
+    수익률'의 곱셈적(로그) 근사가 된다(§6.2 "부모 초과수익"의 구현).
+    [v0.3.0 §B7] icfg.ROTATION_TARGET="beta_neutral"이면 타깃을 REL_RET_BN(ind − β₂₅₂·parent)으로 바꾼다
+    (기본 "ratio"는 종전과 비트 동일). 어느 쪽이든 두 타깃 모두로 워크포워드를 돌려 13g에 나란히 싣는다 —
+    "리더 우위가 선택력인가 베타 틸트인가"를 리포트가 직접 답하게 하기 위함(리포트41 §3.3(2)).
+    [v0.3.0 §B4] 반환에 reverse_avoid_by_year 추가 — 상위1 스프레드 NW-t ≤ −ROTATION_SELECT_T인 신호는
+    "그 신호의 1위를 **피하라**"는 뜻이다(13g 실측: P_REL_MOM_12_1이 9개 학습창 전부 t −2.4~−3.0).
+    S.rotation_walkforward_select는 손대지 않고, 그 selection_log에서 뽑아 leader3_group이 회피에 쓴다."""
     cols = list(results.keys())
     full_idx = None
     for t in cols:
@@ -965,22 +1134,65 @@ def build_pooled_rotation(results: Dict[str, Dict[str, Any]], eval_idx: pd.Datet
         full_idx = idx if full_idx is None else full_idx.union(idx)
     full_idx = full_idx.sort_values()
 
-    # ret_cc_full(풀링 순환매용) = rot_raw["REL_RET"](산업/부모 가격비율의 일간수익률, run_industry에서
-    # 이미 전체이력으로 계산됨) — 재계산 없음.
-    ret_cc_full = pd.DataFrame({t: results[t]["rot_raw"].get("REL_RET", pd.Series(dtype=float)) for t in cols})
-    ret_cc_full = ret_cc_full.reindex(full_idx)
-    listed_full = ret_cc_full.notna()
+    def _mat(key: str) -> pd.DataFrame:
+        return pd.DataFrame({t: results[t]["rot_raw"].get(key, pd.Series(dtype=float)) for t in cols}).reindex(full_idx)
+
+    ret_ratio = _mat("REL_RET")
+    ret_bn = _mat("REL_RET_BN")
+    target = str(getattr(icfg, "ROTATION_TARGET", "ratio")).lower()
+    if target not in ("ratio", "beta_neutral"):
+        log("ROT", kv(event="unknown_rotation_target", value=target, action="ratio로 대체"), M=M, level="warning")
+        target = "ratio"
+    ret_cc_full = ret_bn if target == "beta_neutral" else ret_ratio
+    listed_full = ret_ratio.notna()          # 상장 여부는 타깃과 무관(비율 기준) — 두 실행의 표본을 같게 유지
+    ret_cc_full = ret_cc_full.where(listed_full)
 
     sig_full: Dict[str, pd.DataFrame] = {}
     for name in icfg.ROTATION_SIGNALS:
-        mat = pd.DataFrame({t: results[t]["rot_raw"].get(name, pd.Series(dtype=float)) for t in cols})
-        sig_full[name] = mat.reindex(full_idx)
+        mat = _mat(name)
+        if mat.notna().any().any():
+            sig_full[name] = mat
+        else:
+            log("ROT", kv(event="signal_unavailable_all_industries", signal=name), M=M, level="warning")
+    if not sig_full:
+        raise RuntimeError("ROTATION_SIGNALS 중 사용 가능한 신호가 없습니다 — 배분 계층을 만들 수 없음")
 
     half_life = icfg.ROTATION_DECAY_HALF_LIFE_DAYS
     wf = S.rotation_walkforward_select(sig_full, ret_cc_full, listed_full, eval_idx, icfg, M,
                                        external=None, half_life_days=half_life)
+    wf["target"] = target
+
+    # [§B7 진단] 반대쪽 타깃으로도 한 번 더 — 채택에는 쓰지 않고 13g 병기용(상위1 t 비교).
+    wf["alt_log"] = pd.DataFrame()
+    if bool(getattr(icfg, "ROTATION_TARGET_DIAGNOSTIC", True)):
+        try:
+            alt = S.rotation_walkforward_select(sig_full, (ret_ratio if target == "beta_neutral" else ret_bn).where(listed_full),
+                                                listed_full, eval_idx, icfg, M, external=None, half_life_days=half_life)
+            lg = alt.get("selection_log")
+            if isinstance(lg, pd.DataFrame) and len(lg):
+                keep = [c for c in ("적용연도", "신호", "NW-HAC t", "NW-HAC t(상위1)", "학습 관측일") if c in lg.columns]
+                wf["alt_log"] = lg[keep].rename(columns={
+                    "NW-HAC t": f"NW-HAC t({'비율' if target=='beta_neutral' else '베타중립'})",
+                    "NW-HAC t(상위1)": f"NW-HAC t(상위1, {'비율' if target=='beta_neutral' else '베타중립'})",
+                    "학습 관측일": f"학습 관측일({'비율' if target=='beta_neutral' else '베타중립'})"})
+        except Exception as e:  # noqa
+            log("ROT", kv(event="alt_target_diag_failed", err=str(e)[:150]), M=M, level="warning")
+
+    # [§B4] 역방향(반전) 신호 — 상위1 스프레드 t ≤ −T 인 연도×신호. "그 신호의 1위를 피하라".
+    rev: Dict[int, List[str]] = {}
+    lg = wf.get("selection_log")
+    tcut = float(icfg.ROTATION_SELECT_T)
+    if isinstance(lg, pd.DataFrame) and len(lg) and "NW-HAC t(상위1)" in lg.columns:
+        for _, r in lg.iterrows():
+            tv = r.get("NW-HAC t(상위1)")
+            nn = r.get("학습 관측일", 0)
+            if pd.notna(tv) and float(tv) <= -tcut and float(nn or 0) >= icfg.ROTATION_SELECT_MIN_DAYS:
+                rev.setdefault(int(r["적용연도"]), []).append(str(r["신호"]))
+    wf["reverse_avoid_by_year"] = rev
     log("ROT", kv(event="pooled_rank_ready", n=len(cols), horizon=wf.get("horizon"),
-                  mode=wf.get("mode"), stat=wf.get("stat")), M=M)
+                  mode=wf.get("mode"), stat=wf.get("stat"), target=target,
+                  signals=len(sig_full),
+                  reverse_avoid=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(rev.items())) or "-"), M=M)
     return wf
 
 
@@ -1016,7 +1228,8 @@ def _row_arg(r: pd.DataFrame, fn: str) -> pd.Series:
 
 def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank_full: Dict[str, pd.DataFrame],
                   wf: Dict[str, Any], eligible: pd.DataFrame, listed: pd.DataFrame,
-                  icfg: IndustryConfig, S) -> Dict[str, Any]:
+                  icfg: IndustryConfig, S, parent_state: Optional[pd.Series] = None,
+                  follow_corr: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """[§7.2 · v0.2.0] S.build_sector_allocation의 _run_leader3 상태기계를 부모 그룹(inds)에 그대로 적용.
     입력 rank_full = 풀링 워크포워드(wf["rank_full"], 신호별 풀링 0~1 순위) — 부모 그룹으로 잘라
     S._cs_rank01로 다시 0~1 정규화하면 인접 순위 간격이 정확히 1/(n−1)이 되어 S의 여유 게이트
@@ -1024,7 +1237,20 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
       leader_ind(date×inds, 그날 보유 리더 1.0 원핫), basket_ind(date×inds, 폴백/회피 바스켓 균등 — 합 1.0),
       tier/leader/laggard/votes_leader/votes_laggard/margin/step/gate/n_ok/composite, switches.
     비중은 호출부가 leader_ind×INDUSTRY_LEADER_CAP + basket_ind×INDUSTRY_FALLBACK_SHARE로 만든다
-    (판단은 캡/폴백 비율과 무관 — 격자 변형이 같은 판단을 공유한다)."""
+    (판단은 캡/폴백 비율과 무관 — 격자 변형이 같은 판단을 공유한다).
+
+    [v0.3.0 ⚠ 신호 변경 3개 — 전부 리포트41 §3.2/§3.3 실측 근거]
+    (§B2 국면 게이트) parent_state가 주어지고 icfg.INDUSTRY_LEADER_REGIMES가 None이 아니면, 그날 **부모
+        섹터의 자기 국면**이 그 집합에 있을 때만 리더를 인정한다(S의 _run_leader3 regime_ok 이식). 보유 중
+        국면이 허용 밖으로 바뀌면 최소보유를 기다리지 않고 즉시 청산(S §1.D와 동일 — 위험 축소가 목적).
+        근거: 리더 진입 시 부모 상승 30회 승률 0.50·+1.55% vs 중립 8회 0.25·−0.86% vs 하락 1회 −5.64%.
+    (§B4 역방향 회피) wf["reverse_avoid_by_year"]의 신호(상위1 스프레드 t ≤ −T — "그 신호의 1위를 피하라")가
+        부모 안에서 지목한 1위는 그날 후보에서 통째로 제외한다(리더·바스켓 모두). 반전 신호는 이미 엄격
+        문턱의 반대편을 통과했으므로 단독으로 회피 자격이 있다(S가 엄격 신호의 단독 리더를 허용하는 것과
+        같은 논리). icfg.ROTATION_REVERSE_AVOID=False(기본)면 이 블록은 완전히 비활성.
+    (§B5 추종필터) follow_corr(롤링 252일 산업-부모 상관, 1일 지연 — 인과)가 주어지고
+        icfg.INDUSTRY_LEADER_MIN_CORR이 설정되면 상관이 문턱 미만인 산업은 **리더 후보에서만** 뺀다
+        (바스켓에는 남긴다). 근거: 리더 상관≥0.8 17회 승률 0.53 vs <0.8 22회 0.36."""
     smooth = int(icfg.ROTATION_SMOOTH_DAYS or 1)
     min_agree = max(1, int(icfg.ROTATION_MIN_AGREE))
     margin_steps = float(icfg.ROTATION_LEADER_MARGIN_STEPS or 0.0)
@@ -1035,12 +1261,47 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
     avoid_by_year = wf.get("avoid_by_year", sel_eff_by_year)
     lst = listed.reindex(index=eval_idx, columns=inds).fillna(False).astype(bool)
     elg = eligible.reindex(index=eval_idx, columns=inds).fillna(False).astype(bool)
+    # [§B2] 부모 국면 배열 — 없으면 제약 없음(v0.2.0 동작).
+    leader_regimes = getattr(icfg, "INDUSTRY_LEADER_REGIMES", None)
+    leader_regimes = tuple(leader_regimes) if leader_regimes else None
+    if parent_state is not None:
+        p_state_arr = parent_state.reindex(eval_idx).astype(object).where(parent_state.reindex(eval_idx).notna(), "-").values
+    else:
+        p_state_arr = np.array(["-"] * len(eval_idx), dtype=object)
+        if leader_regimes:
+            log("ROT", kv(event="leader_regime_unavailable", parent=parent, action="국면 제약 무시"), M=None, level="warning")
+            leader_regimes = None
+    # [§B4] 역방향 회피 연도별 신호
+    use_reverse = bool(getattr(icfg, "ROTATION_REVERSE_AVOID", False))
+    rev_by_year = wf.get("reverse_avoid_by_year", {}) if use_reverse else {}
+    # [§B5] 추종(상관) 필터
+    min_corr = getattr(icfg, "INDUSTRY_LEADER_MIN_CORR", None)
+    corr_g = follow_corr.reindex(index=eval_idx, columns=inds) if (follow_corr is not None and min_corr is not None) else None
 
     # 신호별 '부모 안' 0~1 순위 — 풀링 순위를 잘라 다시 정규화(단조 변환이라 원시값 순위와 동일)
     rank_g: Dict[str, pd.DataFrame] = {}
+    inert_days: Dict[str, int] = {}
     for name, rk in rank_full.items():
         r = rk.reindex(index=eval_idx, columns=inds).where(lst)
-        rank_g[name] = S._cs_rank01(r)
+        g = S._cs_rank01(r)
+        # [v0.3.1 ⚠ 결함 수정] '부모 안에서 값이 전부 같은 날'은 그 신호가 이 부모의 산업을 고를 정보가 0인 날이다.
+        #   대표 사례가 부모 계층 신호(PARENT_SCORE_PCT — 한 부모 아래 모든 산업이 같은 값). _cs_rank01은 그런 행에
+        #   전원 0.5를 준다. 그대로 두면 두 가지가 조용히 망가진다:
+        #     (1) 복합 평균에 0.5가 섞여 실제 신호를 가운데로 **희석** → 1위−2위 여유(margin)가 줄어 리더가 덜 나온다.
+        #     (2) _row_arg(idxmax)가 동률 행에서 **첫 열을 임의로** 1위로 뽑아 교차확인 투표에 가짜 표를 넣는다
+        #         (v0.1의 '임의 리더' 결함과 같은 종류 — v0.2.0 §0(B)에서 고친 것이 여기 남아 있었다).
+        #   해당 행만 NaN으로 비운다: _nanmean_frames는 그 행에서 이 신호를 무시하고, _row_arg는 전부 NaN이면
+        #   None을 돌려주어 표도 안 준다. 값이 실제로 변하는 날은 전혀 건드리지 않는다(행 단위 판정).
+        flat = (g.max(axis=1) - g.min(axis=1)).fillna(0.0) <= 1e-12
+        n_flat = int((flat & g.notna().any(axis=1)).sum())
+        if n_flat:
+            g = g.mask(flat)
+            inert_days[name] = n_flat
+        rank_g[name] = g
+    if inert_days:
+        log("ROT", kv(event="inert_signal_masked", parent=parent, n_days=len(eval_idx),
+                      detail=";".join(f"{k}={v}" for k, v in sorted(inert_days.items(), key=lambda x: -x[1])),
+                      note="부모 안 무변동일 — 복합평균·투표에서 제외(희석·임의1위 방지)"), M=None)
     # 연도별 복합순위 = 그 해 리더 판단에 쓰는 신호(sel_eff)의 부모 안 순위 평균 → 평활 → 적격 마스킹(S와 동일 순서)
     comp = pd.DataFrame(np.nan, index=eval_idx, columns=inds)
     for y in sorted(set(eval_idx.year)):
@@ -1061,6 +1322,7 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
     comp_vals = composite.values
     elig_vals = elg.values
     col_arr = np.array(inds)
+    idx_of = {c: j for j, c in enumerate(inds)}
     years_arr = eval_idx.year
     n = len(eval_idx)
     leader_ind = pd.DataFrame(0.0, index=eval_idx, columns=inds)
@@ -1073,6 +1335,9 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
     margin_ = pd.Series(np.nan, index=eval_idx, dtype=float)
     step_ = pd.Series(np.nan, index=eval_idx, dtype=float)
     gate_ = pd.Series("해당없음", index=eval_idx, dtype=object)
+    regime_gate_ = pd.Series("해당없음", index=eval_idx, dtype=object)   # [§B2] 통과/차단/해당없음
+    rev_avoid_ = pd.Series("", index=eval_idx, dtype=object)             # [§B4] 그날 역방향 회피된 산업
+    corr_block_ = pd.Series("", index=eval_idx, dtype=object)            # [§B5] 상관 문턱 미달로 리더에서 빠진 산업
     n_ok_ = pd.Series(0, index=eval_idx, dtype=int)
     cur_leader: Optional[str] = None
     held = 0
@@ -1083,38 +1348,67 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
         K = len(sel)
         need = 1 if tier_by_year.get(yr) == "엄격" else min_agree
         avoid_ok = [s for s in avoid_by_year.get(yr, sel) if s in rank_g]
+        rev_sel = [s for s in rev_by_year.get(yr, []) if s in rank_g]
         row = comp_vals[i]
-        ok = elig_vals[i] & ~np.isnan(row)
+        ok = (elig_vals[i] & ~np.isnan(row)).copy()
+        # [§B4] 역방향 회피 — 반전 신호(상위1 t ≤ −T)가 부모 안에서 지목한 1위를 그날 후보에서 제외.
+        if rev_sel:
+            _rev_hit = []
+            for sname in rev_sel:
+                c = am[sname].iloc[i]
+                if c is not None and c in idx_of and ok[idx_of[c]]:
+                    ok[idx_of[c]] = False
+                    _rev_hit.append(c)
+            if _rev_hit:
+                rev_avoid_.iloc[i] = ",".join(sorted(set(_rev_hit)))
         n_ok = int(ok.sum())
         n_ok_.iloc[i] = n_ok
+        # [§B5] 추종(상관) 필터 — 리더 후보 집합만 좁힌다(바스켓은 ok 그대로).
+        ok_lead = ok
+        if corr_g is not None and n_ok >= 1:
+            cvals = corr_g.iloc[i].values.astype(float)
+            bad = ok & ~(cvals >= float(min_corr))
+            if bad.any():
+                ok_lead = ok & ~bad
+                corr_block_.iloc[i] = ",".join(col_arr[bad].tolist())
+        n_lead_ok = int(ok_lead.sum())
         leader = laggard = None
         v_lead = v_lag = 0
         margin_i = step_i = np.nan
         gate_ok = False
-        if n_ok >= 1 and K > 0:
-            j1 = int(np.nanargmax(np.where(ok, row, -np.inf)))
+        if n_lead_ok >= 1 and K > 0:
+            j1 = int(np.nanargmax(np.where(ok_lead, row, -np.inf)))
             leader = col_arr[j1]
             v_lead = sum(1 for s in sel if s in am and am[s].iloc[i] == leader)
-            others = np.where(ok, row, -np.inf).astype(float)
+            others = np.where(ok_lead, row, -np.inf).astype(float)
             others[j1] = -np.inf
-            second = float(others.max()) if n_ok >= 2 else np.nan
+            second = float(others.max()) if n_lead_ok >= 2 else np.nan
             margin_i = float(row[j1] - second) if np.isfinite(second) else np.nan
-            step_i = margin_steps / max(n_ok - 1, 1)
+            step_i = margin_steps / max(n_lead_ok - 1, 1)
             gate_ok = (margin_steps <= 0) or (np.isfinite(margin_i) and margin_i >= step_i - 1e-9)
-            if n_ok >= 4:
-                laggard = col_arr[int(np.nanargmin(np.where(ok, row, np.inf)))]
-                v_lag = sum(1 for s in avoid_ok if s in an and an[s].iloc[i] == laggard)
+        if n_ok >= 4 and K > 0:
+            laggard = col_arr[int(np.nanargmin(np.where(ok, row, np.inf)))]
+            v_lag = sum(1 for s in avoid_ok if s in an and an[s].iloc[i] == laggard)
         margin_.iloc[i] = margin_i
         step_.iloc[i] = step_i
         lead_ok_votes = leader is not None and v_lead * 2 > K and v_lead >= need
-        clear_leader = lead_ok_votes and gate_ok
+        # [§B2] 국면 게이트 — 부모 자기 국면이 허용 집합에 있을 때만 리더 인정.
+        regime_ok = (leader_regimes is None) or (p_state_arr[i] in leader_regimes)
+        if leader_regimes is None:
+            regime_gate_.iloc[i] = "해당없음"
+        else:
+            regime_gate_.iloc[i] = "통과" if regime_ok else f"차단({p_state_arr[i]})"
+        clear_leader = lead_ok_votes and gate_ok and regime_ok
         gate_blocked = lead_ok_votes and not gate_ok
-        gate_.iloc[i] = "통과" if clear_leader else ("미달" if gate_blocked else "해당없음")
+        gate_.iloc[i] = "통과" if (lead_ok_votes and gate_ok) else ("미달" if gate_blocked else "해당없음")
         leader_lost = not (lead_ok_votes and leader == cur_leader)
         clear_laggard = laggard is not None and v_lag * 2 > K and v_lag >= need
         v_lead_.iloc[i], v_lag_.iloc[i] = v_lead, v_lag
         # 최소보유 상태기계(S v0.10.1 청산 규칙 분리 그대로: 게이트는 진입 전용, 청산은 순위·투표 기준 1위 상실)
-        if cur_leader is not None and not ok[inds.index(cur_leader)]:
+        if cur_leader is not None and not ok[idx_of[cur_leader]]:
+            cur_leader = None
+        # [§B2] 국면 제약은 '적격 상실'과 같은 즉시청산(S §1.D) — min_hold를 기다리지 않는다.
+        if cur_leader is not None and leader_regimes is not None and p_state_arr[i] not in leader_regimes:
             cur_leader = None
         if clear_leader and leader != cur_leader:
             if cur_leader is None or held >= min_hold:
@@ -1124,7 +1418,7 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
         elif leader_lost and cur_leader is not None and held >= min_hold:
             cur_leader = None
         if cur_leader is not None:
-            leader_ind.iat[i, inds.index(cur_leader)] = 1.0
+            leader_ind.iat[i, idx_of[cur_leader]] = 1.0
             tier_.iloc[i] = "리더"
             leader_.iloc[i] = cur_leader
             held += 1
@@ -1132,7 +1426,7 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
             basket = [c for j, c in enumerate(inds) if ok[j] and c != laggard]
             if basket:
                 for c in basket:
-                    basket_ind.iat[i, inds.index(c)] = 1.0 / len(basket)
+                    basket_ind.iat[i, idx_of[c]] = 1.0 / len(basket)
                 tier_.iloc[i] = "회피"
                 laggard_.iloc[i] = laggard
             else:
@@ -1147,6 +1441,9 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
     return {"parent": parent, "inds": inds, "leader_ind": leader_ind, "basket_ind": basket_ind,
             "tier": tier_, "leader": leader_, "laggard": laggard_, "votes_leader": v_lead_, "votes_laggard": v_lag_,
             "margin": margin_, "step": step_, "gate": gate_, "n_ok": n_ok_, "composite": composite,
+            "regime_gate": regime_gate_, "rev_avoid": rev_avoid_, "corr_block": corr_block_,   # [v0.3.0 §B2/§B4/§B5]
+            "parent_state": pd.Series(p_state_arr, index=eval_idx),
+            "inert_days": inert_days,                                  # [v0.3.1] 부모 안 무변동일 수(신호별)
             "switches": switches}
 
 
@@ -1248,12 +1545,30 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
     cost_map_repro = dict(cost_map)
     cost_map_repro.update({c: s_cost for c in active_parents + passthrough_cols})
 
+    # ---- [v0.3.0 §B2] 부모 자기 국면(S의 run_sector 결과) — 리더 인정 국면 제약에 쓴다 ----
+    parent_state = {p: sres["sectors"].get(p, {}).get("state", pd.Series(dtype=object)).reindex(eval_idx)
+                    for p in active_parents}
+    # ---- [v0.3.0 §B5] 산업-부모 롤링 상관(252일, 1일 지연 — 인과). 리더 후보 제한에만 쓴다 ----
+    follow_corr = None
+    if getattr(icfg, "INDUSTRY_LEADER_MIN_CORR", None) is not None:
+        w_corr = int(getattr(icfg, "INDUSTRY_FOLLOW_CORR_WINDOW", 252))
+        cc = {}
+        for t in cols:
+            p = parent_of[t]
+            r_i = results[t]["ret_cc_full"]
+            r_p = sres["sectors"].get(p, {}).get("bh_ret", pd.Series(dtype=float)).reindex(r_i.index)
+            cc[t] = r_i.rolling(w_corr, min_periods=w_corr // 2).corr(r_p).shift(1)
+        follow_corr = pd.DataFrame(cc).reindex(eval_idx)
+        log("ROTATION", kv(event="follow_corr_ready", window=w_corr, min_corr=icfg.INDUSTRY_LEADER_MIN_CORR,
+                           median=round(float(follow_corr.stack().median()), 3) if follow_corr.notna().any().any() else -99), M=M)
+
     # ---- 부모 그룹별 leader3 판단(캡·폴백 비율과 무관 — 격자 변형이 공유) ----
     rank_full = wf.get("rank_full", {})
     groups: Dict[str, Dict[str, Any]] = {}
     for p in active_parents:
         inds = [t for t in cols if parent_of[t] == p]
-        groups[p] = leader3_group(p, inds, eval_idx, rank_full, wf, eligible, listed, icfg, S)
+        groups[p] = leader3_group(p, inds, eval_idx, rank_full, wf, eligible, listed, icfg, S,
+                                  parent_state=parent_state.get(p), follow_corr=follow_corr)
         g = groups[p]
         tc = g["tier"].value_counts()
         log("ROTATION", kv(event="industry_leader_applied", parent=p, n_ind=len(inds),
@@ -1261,10 +1576,21 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                            days_fallback=int(tc.get("폴백", 0)), days_fallback_gate=int(tc.get("폴백(여유부족)", 0)),
                            days_parent_only=int(tc.get("부모ETF", 0)), switches=g["switches"],
                            gate_pass_rate=round(float((g["gate"] == "통과").mean()), 4),
+                           regime_block=int((g["regime_gate"].astype(str).str.startswith("차단")).sum()),
+                           rev_avoid_days=int((g["rev_avoid"] != "").sum()),
+                           corr_block_days=int((g["corr_block"] != "").sum()),
+                           inert=";".join(f"{k}={v}" for k, v in sorted((g.get("inert_days") or {}).items(),
+                                                                        key=lambda x: -x[1])) or "-",
                            leaders=";".join(f"{k}:{v}" for k, v in g["leader"][g["leader"] != ""].value_counts().items()) or "-"),
             M=M)
 
-    def _mk_target_w(leader_cap: float, fallback_share: float, use_rank: bool = True) -> pd.DataFrame:
+    def _mk_target_w(leader_cap: float, fallback_share: float, use_rank: bool = True,
+                     only_mode: Optional[str] = None) -> pd.DataFrame:
+        """[§7.2 + v0.3.0 §A3] 부모 비중 w_s[p]를 산업/부모ETF로 나눈다. only_mode는 '잔여'(산업으로
+        배분되지 않은 몫)의 목적지: "parent"(기본, 잔여=부모ETF — 잔여가 정확히 S★로 환원) |
+        "industries"(잔여도 그 부모의 적격 산업 균등 — 사용자 지시 '산업만 배분'. 적격 0개면 부모ETF) |
+        "cash"(잔여=현금 — 총노출이 S★보다 작아진다)."""
+        mode = (only_mode or getattr(icfg, "INDUSTRY_ONLY_MODE", "parent")).lower()
         tw = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
         for p in active_parents:
             g = groups[p]
@@ -1274,9 +1600,17 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             else:   # 대조군B: 순위 미사용 — 적격 산업 균등 × fallback_share(리더 개념 없음)
                 e = eligible[inds].astype(float)
                 frac = e.div(e.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0) * fallback_share
+            if mode == "industries":
+                resid = (1.0 - frac.sum(axis=1)).clip(lower=0.0)
+                e = eligible[inds].astype(float)
+                share = e.div(e.sum(axis=1).replace(0, np.nan), axis=0)     # 적격 0개인 날은 NaN → 0(부모로 남음)
+                frac = frac + share.mul(resid, axis=0).fillna(0.0)
             for t in inds:
                 tw[t] = frac[t].values * w_s[p].values
-            tw[p] = (1.0 - frac.sum(axis=1)).values * w_s[p].values
+            if mode == "cash":
+                tw[p] = 0.0                                                  # 잔여를 현금으로(총노출 ≤ S★)
+            else:
+                tw[p] = (1.0 - frac.sum(axis=1)).values * w_s[p].values
         for c in passthrough_cols:
             tw[c] = w_s_all[c].values
         return tw
@@ -1286,22 +1620,28 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                                             init_exec=init_exec, init_prev=init_prev)
 
     live_cap, live_fb = float(icfg.INDUSTRY_LEADER_CAP), float(icfg.INDUSTRY_FALLBACK_SHARE)
-    label_star = f"부모비중 안 산업리더 {live_cap:.0%}·하락 시 부모 ★"
+    live_mode = str(getattr(icfg, "INDUSTRY_ONLY_MODE", "parent")).lower()
+    label_star = f"부모비중 안 산업리더 {live_cap:.0%}·폴백 {live_fb:.0%}·잔여 {live_mode} ★"
     target_ws: Dict[str, pd.DataFrame] = {label_star: _mk_target_w(live_cap, live_fb)}
+    # [v0.3.0 §B1] 2D 사전등록 격자(cap × fb) — 1D 사다리 두 개로는 (1.0, 0.0) 같은 조합을 못 본다.
+    #   리포트41 격자에서 ①②③④를 전부 통과한 행이 '폴백 0%'였고 '리더캡 100%'도 강건 통과였는데,
+    #   그 둘의 조합은 측정된 적이 없었다. 라벨은 S의 _is_cap_grid 관행대로 여는 대괄호 접두로 매칭한다.
     for cv in (0.25, 0.5, 0.75, 1.0):
-        if abs(cv - live_cap) < 1e-9:
+        for fv in (0.0, 0.25, 0.5, 1.0):
+            if abs(cv - live_cap) < 1e-9 and abs(fv - live_fb) < 1e-9:
+                continue                                  # 라이브 조합은 ★ 행이 이미 있다
+            target_ws[f"리더 {cv:.0%}·폴백 {fv:.0%} [산업집중격자]"] = _mk_target_w(cv, fv)
+    # [v0.3.0 §A3] 잔여 처리 모드 격자 — "산업만 배분"이 실제로 무엇을 바꾸는지 숫자로 보여 준다.
+    for md in ("parent", "industries", "cash"):
+        if md == live_mode:
             continue
-        target_ws[f"산업리더 상한 {cv:.0%} [산업집중격자]"] = _mk_target_w(cv, live_fb)
-    for fv in (0.0, 0.25, 0.75, 1.0):
-        if abs(fv - live_fb) < 1e-9:
-            continue
-        target_ws[f"폴백 균등배분 {fv:.0%} [폴백격자]"] = _mk_target_w(live_cap, fv)
-    label_ctrl_b = f"대조군B: 부모비중 안 적격산업 균등 {live_fb:.0%}(순위 미사용)"
-    target_ws[label_ctrl_b] = _mk_target_w(0.0, live_fb, use_rank=False)
+        target_ws[f"잔여 {md} [잔여격자]"] = _mk_target_w(live_cap, live_fb, only_mode=md)
+    label_ctrl_b = "대조군B: 부모비중 안 적격산업 균등 50%(순위 미사용)"
+    target_ws[label_ctrl_b] = _mk_target_w(0.0, 0.5, use_rank=False, only_mode="parent")
     label_repro = "S★ 재현(I 백테스트 엔진, 산업 0% — 대조군A와 비트 동일해야 함)"
-    target_ws[label_repro] = _mk_target_w(0.0, 0.0)
+    target_ws[label_repro] = _mk_target_w(0.0, 0.0, only_mode="parent")
     label_ctrl_a = "대조군A: S★ 그대로(산업 미사용)"
-    target_ws[label_ctrl_a] = _mk_target_w(0.0, 0.0)
+    target_ws[label_ctrl_a] = _mk_target_w(0.0, 0.0, only_mode="parent")
 
     bts: Dict[str, pd.DataFrame] = {}
     star_label = next((c for c in s_alloc.get("bts", {}) if str(c).endswith("★")), None)
@@ -1345,6 +1685,31 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         robust_list.append(robust)
     perf["★대비 초과(연율%p)"] = excess_list
     perf["강건성(기준④)"] = robust_list
+    # [v0.3.0 §B1] 격자 수렴 판정 — M v1.49.0 _grid_convergence_line·S와 같은 4기준을 열로 직접 싣는다.
+    #   ① CAGR 손실 ≤ GRID_CAGR_LOSS_TOL · ② ① 통과자 중 칼마가 ★보다 높은가 · ③ MDD 악화 ≤ GRID_MDD_WORSE_TOL
+    #   · ④ 강건성 '통과'. 넷을 다 통과한 행만 다음 라운드 ★ 후보다(사후 최고 선택 금지 — 사전 고정 규칙).
+    _star_row = perf.set_index("전략").loc[label_star]
+    _c0, _m0, _k0 = float(_star_row["CAGR"]), float(_star_row["최대낙폭(MDD)"]), float(_star_row["칼마(CAGR/MDD)"])
+    g1, g2, g3, g4, gall = [], [], [], [], []
+    for l in order:
+        r = perf.set_index("전략").loc[l]
+        c1 = bool(float(r["CAGR"]) >= _c0 - float(icfg.GRID_CAGR_LOSS_TOL))
+        c2 = bool(float(r["칼마(CAGR/MDD)"]) > _k0)
+        c3 = bool(float(r["최대낙폭(MDD)"]) >= _m0 - float(icfg.GRID_MDD_WORSE_TOL))
+        c4 = bool(str(r["강건성(기준④)"]) == "통과")
+        is_star = (l == label_star)
+        g1.append("★" if is_star else ("O" if c1 else "X")); g2.append("★" if is_star else ("O" if c2 else "X"))
+        g3.append("★" if is_star else ("O" if c3 else "X")); g4.append("★" if is_star else ("O" if c4 else "X"))
+        gall.append("★" if is_star else ("채택후보" if (c1 and c2 and c3 and c4) else ""))
+    perf["①CAGR손실"], perf["②칼마정점"], perf["③MDD악화"], perf["④강건성"] = g1, g2, g3, g4
+    perf["격자판정"] = gall
+    _cand = [l for l, v in zip(order, gall) if v == "채택후보"]
+    grid_line = (f"격자 {len(order)}행 — ① 통과 {sum(1 for v in g1 if v=='O')} · ④ 통과 {sum(1 for v in g4 if v=='O')} · "
+                 f"**①②③④ 전부 통과 {len(_cand)}행** (후보: {', '.join(_cand) if _cand else '없음'}) | "
+                 f"★ CAGR {_c0:.2%} 칼마 {_k0:.3f} MDD {_m0:.2%} · 격자 칼마 정점 "
+                 f"{max(float(perf.set_index('전략').loc[l]['칼마(CAGR/MDD)']) for l in order):.3f} — 0행이면 이번 실행에 채택 후보 없음")
+    log("ROTATION", kv(event="grid_convergence", rows=len(order), pass_all=len(_cand),
+                       candidates=";".join(_cand) or "-"), M=M)
 
     curve = pd.DataFrame(index=eval_idx)
     curve["날짜"] = eval_idx.date
@@ -1364,6 +1729,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "curve": curve.reset_index(drop=True), "cols": cols, "active_parents": active_parents,
         "parent_of": parent_of, "all_cols": all_cols, "passthrough_cols": passthrough_cols,
         "eligible": eligible, "listed": listed, "state": state, "w_s": w_s, "w_s_all": w_s_all,
+        "grid_line": grid_line, "grid_candidates": _cand, "only_mode": live_mode,   # [v0.3.0 §B1/§A3]
+        "parent_state": parent_state, "follow_corr": follow_corr,
         "groups": groups, "label_star": label_star, "label_ctrl_a": label_ctrl_a, "label_ctrl_b": label_ctrl_b,
         "label_repro": label_repro, "repro_max_diff": repro_diff,
         "ret_co": ret_co, "ret_oc": ret_oc, "cost_bps_industry": icfg.COST_BPS_INDUSTRY,
@@ -1439,23 +1806,29 @@ def build_hierarchy_check(alloc: Dict[str, Any]) -> pd.DataFrame:
     (c) S★ 재현: I 백테스트 엔진에 '산업 0%'를 넣은 일간수익이 대조군A(S★ 그대로)와 비트 동일한지."""
     tw, cols, parent_of, active_parents, w_s = (alloc["target_w"], alloc["cols"], alloc["parent_of"],
                                                  alloc["active_parents"], alloc["w_s"])
+    # [v0.3.0 §A3] 잔여를 현금으로 두는 모드에서는 '='이 아니라 '≤'가 옳은 불변식이다(총노출이 S★보다 작아진다).
+    mode = str(alloc.get("only_mode", "parent")).lower()
+    _eq = (mode != "cash")
+    _lbl = "부모별 Σ산업+부모ETF = S★ 섹터비중" if _eq else "부모별 Σ산업+부모ETF ≤ S★ 섹터비중(잔여=현금)"
     rows, max_err_all, viol_all = [], 0.0, 0
     for p in active_parents:
         inds = [c for c in cols if parent_of[c] == p]
         total = tw[inds].sum(axis=1) + tw[p]
-        err = (total - w_s[p]).abs()
+        err = (total - w_s[p]).abs() if _eq else (total - w_s[p]).clip(lower=0.0)
         max_err = float(err.max()) if len(err) else 0.0
         n_viol = int((err > 1e-9).sum())
         max_err_all = max(max_err_all, max_err)
         viol_all += n_viol
-        rows.append({"검사": "부모별 Σ산업+부모ETF = S★ 섹터비중", "부모섹터": p, "산업수": len(inds),
+        rows.append({"검사": _lbl, "부모섹터": p, "산업수": len(inds),
                      "최대오차": max_err, "위반일수(>1e-9)": n_viol})
-    rows.append({"검사": "부모별 Σ산업+부모ETF = S★ 섹터비중", "부모섹터": "전체", "산업수": len(cols),
+    rows.append({"검사": _lbl, "부모섹터": "전체", "산업수": len(cols),
                  "최대오차": max_err_all, "위반일수(>1e-9)": viol_all})
     w_s_all = alloc.get("w_s_all")
     if w_s_all is not None:
-        err_tot = (tw.sum(axis=1) - w_s_all.sum(axis=1)).abs()
-        rows.append({"검사": "총노출 Σ(I★ 전체 열) = Σ(S★ 전체 열)", "부모섹터": "전체(통과 다리 " + (",".join(alloc.get("passthrough_cols", [])) or "없음") + " 포함)",
+        diff = tw.sum(axis=1) - w_s_all.sum(axis=1)
+        err_tot = diff.abs() if _eq else diff.clip(lower=0.0)
+        rows.append({"검사": ("총노출 Σ(I★ 전체 열) = Σ(S★ 전체 열)" if _eq else "총노출 Σ(I★) ≤ Σ(S★)(잔여=현금)"),
+                     "부모섹터": "전체(통과 다리 " + (",".join(alloc.get("passthrough_cols", [])) or "없음") + " 포함)",
                      "산업수": len(cols), "최대오차": float(err_tot.max()) if len(err_tot) else 0.0,
                      "위반일수(>1e-9)": int((err_tot > 1e-9).sum())})
     if "repro_max_diff" in alloc:
@@ -1566,6 +1939,236 @@ def build_parent_following_analysis(results: Dict[str, Dict[str, Any]], sres: di
     return out
 
 
+# =============================================================================
+# [6b] 진단 시트 — 13l_산업리더적중률 · 01Y_산업예측정확도 (v0.3.0 §C1 신설)
+#      리포트41 §3.2/부록A를 사람이 손으로 재계산해 만들었던 표를, 이제 리포트가 직접 낸다.
+#      둘 다 진단 전용 — 신호·배분에 전혀 관여하지 않는다.
+# =============================================================================
+def _fwd_ret(r: pd.DataFrame, h: int) -> pd.DataFrame:
+    """t일 확정 → t+1 시가 체결 규칙에 맞춘 향후 h일 누적수익(로그합 → 되돌림). r은 일간 단순수익."""
+    lr = np.log1p(r)
+    return np.exp(lr.shift(-1)[::-1].rolling(h, min_periods=h).sum()[::-1]) - 1.0
+
+
+def build_industry_leader_accuracy(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
+                                   sres: dict, icfg: IndustryConfig) -> pd.DataFrame:
+    """[13l_산업리더적중률, v0.3.0 §C1] "산업 순환매가 실제로 맞았나"에 리포트가 직접 답한다.
+    채점 기준은 전부 **부모 대비**다(이 계층의 일은 '어느 섹터가 오르나'가 아니라 '그 섹터 안에서
+    어느 산업이 앞서나'이므로 — §6.2와 같은 정의).
+      A. 지평별(h=1/5/21/63): 리더가 부모를 이긴 비율·평균초과 / 같은 부모의 다른 산업 평균초과(기준선) /
+         폴백 바스켓 초과. 리더 열이 타산업 열보다 높아야 '고른 것'에 값이 있다.
+      B. 확신 게이트·국면 게이트 효과(h=21): 통과/미달/해당없음, 차단된 날.
+      C. 리더 에피소드 전수(진입일 기준): 보유일·보유기간 초과 — 부모별/연도별/리더별 승률.
+      D. 진입 시 부모 국면별 승률.
+    한 줄이라도 계산할 수 없으면(리더 0일 등) 그 블록은 안내 행만 남긴다."""
+    groups = alloc.get("groups", {})
+    if not groups:
+        return pd.DataFrame([{"블록": "안내", "구분": "배분 결과 없음 — 13l 생략"}])
+    eval_idx = alloc["target_w"].index
+    cols, parent_of = alloc["cols"], alloc["parent_of"]
+    R = pd.DataFrame({t: results[t]["ret_cc_full"].reindex(eval_idx) for t in cols})
+    RP = pd.DataFrame({p: sres["sectors"].get(p, {}).get("bh_ret", pd.Series(dtype=float)).reindex(eval_idx)
+                       for p in alloc["active_parents"]})
+    rows: List[dict] = []
+
+    # ---- A. 지평별 ----
+    rows.append({"블록": "A. 지평별 리더 적중률", "구분": "── 리더가 '부모'를 이긴 비율 ──",
+                 "설명": "이 계층의 일은 섹터 선택이 아니라 섹터 안 산업 선택 — 그래서 기준선은 부모 ETF다. "
+                         "'타산업 평균초과'보다 '리더 평균초과'가 높아야 순위에 값이 있다."})
+    F = {h: _fwd_ret(R, h) for h in (1, 5, 21, 63)}
+    FP = {h: _fwd_ret(RP, h) for h in (1, 5, 21, 63)}
+    for h in (1, 5, 21, 63):
+        lead_ex, other_ex, bask_ex, n_lead, n_fb = [], [], [], 0, 0
+        for p, g in groups.items():
+            inds, tier, lead = g["inds"], g["tier"], g["leader"]
+            if p not in FP[h].columns:
+                continue
+            m = tier == "리더"
+            n_lead += int(m.sum())
+            for d in eval_idx[m]:
+                l = lead.at[d]
+                if not l or pd.isna(F[h].at[d, l]) or pd.isna(FP[h].at[d, p]):
+                    continue
+                lead_ex.append(F[h].at[d, l] - FP[h].at[d, p])
+                rest = [c for c in inds if c != l]
+                if rest:
+                    v = F[h].loc[d, rest].mean()
+                    if pd.notna(v):
+                        other_ex.append(v - FP[h].at[d, p])
+            fb = tier.isin(["폴백", "폴백(여유부족)", "회피"])
+            n_fb += int(fb.sum())
+            bw = g["basket_ind"].loc[fb]
+            for d in bw.index:
+                w = bw.loc[d]
+                w = w[w > 1e-9]
+                if len(w) and pd.notna(FP[h].at[d, p]):
+                    v = F[h].loc[d, list(w.index)].mean()
+                    if pd.notna(v):
+                        bask_ex.append(v - FP[h].at[d, p])
+        def _agg(a):
+            a = np.array([x for x in a if pd.notna(x)], dtype=float)
+            return (round(float((a > 0).mean()), 4), round(float(a.mean() * 100), 4), len(a)) if len(a) else (np.nan, np.nan, 0)
+        w1, m1, k1 = _agg(lead_ex); w2, m2, k2 = _agg(other_ex); w3, m3, k3 = _agg(bask_ex)
+        rows.append({"블록": "A. 지평별 리더 적중률", "구분": f"h={h}일", "리더일": n_lead,
+                     "리더>부모 비율": w1, f"리더 평균초과(%/{h}일)": m1,
+                     "타산업>부모 비율": w2, f"타산업 평균초과(%/{h}일)": m2,
+                     "폴백일": n_fb, "폴백바스켓>부모 비율": w3, f"폴백바스켓 평균초과(%/{h}일)": m3,
+                     "표본(리더)": k1})
+
+    # ---- B. 게이트 효과(h=21) ----
+    rows.append({"블록": "B. 게이트 효과(h=21일)", "구분": "── 게이트가 좋은 날만 통과시키나 ──",
+                 "설명": "통과일의 '1위>부모 비율'이 미달·해당없음보다 높아야 게이트가 제 일을 하는 것이다. "
+                         "국면 차단일은 리더 후보가 있었는데 부모 국면 때문에 막은 날이다(v0.3.0 §B2)."})
+    for key, sel in (("확신 게이트 통과", lambda g: g["gate"] == "통과"),
+                     ("확신 게이트 미달", lambda g: g["gate"] == "미달"),
+                     ("확신 게이트 해당없음", lambda g: g["gate"] == "해당없음"),
+                     ("국면 게이트 차단", lambda g: g["regime_gate"].astype(str).str.startswith("차단"))):
+        ex, n = [], 0
+        for p, g in groups.items():
+            if p not in FP[21].columns or key.startswith("국면") and "regime_gate" not in g:
+                continue
+            m = sel(g)
+            n += int(m.sum())
+            comp = g["composite"]
+            for d in eval_idx[m]:
+                r = comp.loc[d].dropna()
+                if not len(r) or pd.isna(FP[21].at[d, p]):
+                    continue
+                top = r.idxmax()
+                if pd.notna(F[21].at[d, top]):
+                    ex.append(F[21].at[d, top] - FP[21].at[d, p])
+        a = np.array(ex, dtype=float)
+        rows.append({"블록": "B. 게이트 효과(h=21일)", "구분": key, "리더일": n,
+                     "리더>부모 비율": round(float((a > 0).mean()), 4) if len(a) else np.nan,
+                     "리더 평균초과(%/21일)": round(float(a.mean() * 100), 4) if len(a) else np.nan,
+                     "표본(리더)": len(a)})
+
+    # ---- C. 리더 에피소드 전수 ----
+    eps: List[dict] = []
+    for p, g in groups.items():
+        tier, lead = g["tier"], g["leader"]
+        if p not in RP.columns:
+            continue
+        prev = lead.shift(1)
+        entry = (tier == "리더") & (lead != prev)
+        pst = g.get("parent_state")
+        for d in eval_idx[entry]:
+            l = lead.at[d]
+            j = eval_idx.get_loc(d)
+            k = j
+            while k + 1 < len(eval_idx) and tier.iloc[k + 1] == "리더" and lead.iloc[k + 1] == l:
+                k += 1
+            hold_i = R[l].iloc[j + 1:k + 2]
+            hold_p = RP[p].iloc[j + 1:k + 2]
+            exc = float(((1 + hold_i).prod() - (1 + hold_p).prod()) * 100) if len(hold_i) else np.nan
+            eps.append({"부모": p, "진입일": str(d.date()), "리더": l, "보유일": k - j + 1,
+                        "보유기간 초과(%)": round(exc, 3) if pd.notna(exc) else None,
+                        "진입시 부모국면": (str(pst.at[d]) if pst is not None else "-"),
+                        "연도": int(d.year)})
+    E = pd.DataFrame(eps)
+    rows.append({"블록": "C. 리더 에피소드", "구분": "── 진입일 기준 전수(보유기간 산업−부모) ──",
+                 "설명": f"총 {len(E)}회" + ("" if len(E) else " — 리더가 한 번도 나오지 않았다(신호 채택·게이트·국면 제약 확인)")})
+    if len(E):
+        ok = E["보유기간 초과(%)"].notna()
+        rows.append({"블록": "C. 리더 에피소드", "구분": "전체", "에피소드": len(E),
+                     "승률(부모대비)": round(float((E.loc[ok, "보유기간 초과(%)"] > 0).mean()), 4),
+                     "평균초과(%)": round(float(E.loc[ok, "보유기간 초과(%)"].mean()), 3),
+                     "중앙값초과(%)": round(float(E.loc[ok, "보유기간 초과(%)"].median()), 3),
+                     "평균보유일": round(float(E["보유일"].mean()), 1)})
+        for key, gcol in (("부모별", "부모"), ("연도별", "연도"), ("리더별", "리더"), ("진입시 부모국면별", "진입시 부모국면")):
+            for kk, sub in E.groupby(gcol):
+                o = sub["보유기간 초과(%)"].notna()
+                rows.append({"블록": f"C. 리더 에피소드 — {key}", "구분": str(kk), "에피소드": len(sub),
+                             "승률(부모대비)": round(float((sub.loc[o, "보유기간 초과(%)"] > 0).mean()), 4) if o.any() else np.nan,
+                             "평균초과(%)": round(float(sub.loc[o, "보유기간 초과(%)"].mean()), 3) if o.any() else np.nan})
+        for _, r in E.sort_values("진입일").iterrows():
+            rows.append({"블록": "D. 에피소드 전수", "구분": f"{r['부모']} · {r['진입일']} · {r['리더']}",
+                         "보유일": int(r["보유일"]), "보유기간 초과(%)": r["보유기간 초과(%)"],
+                         "진입시 부모국면": r["진입시 부모국면"]})
+    return pd.DataFrame(rows)
+
+
+def build_industry_prediction_accuracy(results: Dict[str, Dict[str, Any]], sres: dict,
+                                       eval_idx: pd.DatetimeIndex, icfg: IndustryConfig) -> pd.DataFrame:
+    """[01Y_산업예측정확도, v0.3.0 §C1] S의 01Y_섹터예측정확도와 같은 형식의 산업 버전.
+    ⚠ 적중률은 0.5가 아니라 **그 산업 자신의 기저 상승률**과 비교해야 한다(기저가 55%인 자산에서
+    적중 54%는 정보가 없는 것이다). 블록:
+      A. 익일 채점 — 상태[t] → 수익[t+1] (체결 t+1 시가). 상승/하락 예측 각각 기저 대비 %p.
+      A2. 부모 대비 — 상승예측일 다음날 (산업 − 부모) 평균 bp. 이 계층이 '부모보다 나은 산업'을 골랐는지.
+      B. 지평별(h=1/5/21/63) 상승·하락 기저 대비.
+      B2. 상태 지속성 — 상태[t]가 h일 뒤까지 유지되는 비율(낮으면 B의 h열은 실제 운용과 다르다).
+      C. 연도별 상승예측 기저대비(%p) — 어느 해에 흔들렸나."""
+    rows: List[dict] = []
+    rows.append({"블록": "A. 익일 채점", "구분": "── 상태[t] → 수익[t+1] ──",
+                 "설명": "상승은 기저 상승률과, 하락은 기저 하락률과 비교한다 — 0.5와 비교하면 오독한다"})
+    tickers = list(results.keys())
+    per_year: Dict[str, Dict[int, float]] = {}
+    for t in tickers:
+        r = results[t]["ret_cc_full"].reindex(eval_idx)
+        st = results[t]["state"].reindex(eval_idx)
+        p = results[t]["parent"]
+        rp = sres["sectors"].get(p, {}).get("bh_ret", pd.Series(dtype=float)).reindex(eval_idx)
+        nxt = r.shift(-1)
+        ok = nxt.notna() & st.notna()
+        base_up = float((nxt[ok] > 0).mean()) if ok.any() else np.nan
+        up, dn = (st == "RISK_ON") & ok, (st == "RISK_OFF") & ok
+        acc_up = float((nxt[up] > 0).mean()) if up.any() else np.nan
+        acc_dn = float((nxt[dn] < 0).mean()) if dn.any() else np.nan
+        ex = (nxt - rp.shift(-1))
+        rows.append({"블록": "A. 익일 채점", "구분": t, "부모": p, "산업명": INDUSTRY_NAME_KR.get(t, t),
+                     "표본일수": int(ok.sum()), "기저 상승": round(base_up, 4), "기저 하락": round(1 - base_up, 4),
+                     "상승예측 일수": int(up.sum()), "상승예측 적중": round(acc_up, 4) if pd.notna(acc_up) else None,
+                     "상승 기저대비(%p)": round((acc_up - base_up) * 100, 2) if pd.notna(acc_up) else None,
+                     "상승 정보": ("있음" if pd.notna(acc_up) and acc_up > base_up else ("없음" if pd.notna(acc_up) and abs(acc_up - base_up) < 0.002 else "역방향")),
+                     "중립 일수": int(((st == "NEUTRAL") & ok).sum()),
+                     "하락예측 일수": int(dn.sum()), "하락예측 적중": round(acc_dn, 4) if pd.notna(acc_dn) else None,
+                     "하락 기저대비(%p)": round((acc_dn - (1 - base_up)) * 100, 2) if pd.notna(acc_dn) else None,
+                     "상승예측일 다음날(bp)": round(float(nxt[up].mean() * 1e4), 1) if up.any() else None,
+                     "상승예측일 다음날 부모대비(bp)": round(float(ex[up].mean() * 1e4), 1) if up.any() and ex[up].notna().any() else None,
+                     "하락예측일 다음날 부모대비(bp)": round(float(ex[dn].mean() * 1e4), 1) if dn.any() and ex[dn].notna().any() else None})
+        yr: Dict[int, float] = {}
+        for y, sub in pd.DataFrame({"n": nxt, "s": st}).dropna().groupby(eval_idx[ok].year if False else lambda d: d.year):
+            b = float((sub["n"] > 0).mean())
+            u = sub[sub["s"] == "RISK_ON"]
+            if len(u) >= 20:
+                yr[int(y)] = round((float((u["n"] > 0).mean()) - b) * 100, 1)
+        per_year[t] = yr
+
+    rows.append({"블록": "B. 지평별", "구분": "── 예측이 사는 지평 ──", "설명": "기저 대비가 양수인 칸만 정보가 있다"})
+    for t in tickers:
+        r = results[t]["ret_cc_full"].reindex(eval_idx)
+        st = results[t]["state"].reindex(eval_idx)
+        for h in (1, 5, 21, 63):
+            f = _fwd_ret(r.to_frame("x"), h)["x"]
+            ok = f.notna() & st.notna()
+            if not ok.any():
+                continue
+            b = float((f[ok] > 0).mean())
+            up, dn = (st == "RISK_ON") & ok, (st == "RISK_OFF") & ok
+            au = float((f[up] > 0).mean()) if up.any() else np.nan
+            ad = float((f[dn] < 0).mean()) if dn.any() else np.nan
+            rows.append({"블록": "B. 지평별", "구분": t, "지평": f"h={h}일", "표본일수": int(ok.sum()),
+                         "기저 상승": round(b, 4),
+                         "상승 기저대비(%p)": round((au - b) * 100, 2) if pd.notna(au) else None,
+                         "하락 기저대비(%p)": round((ad - (1 - b)) * 100, 2) if pd.notna(ad) else None})
+    rows.append({"블록": "B2. 상태 지속성", "구분": "── B의 h열을 얼마나 믿을 수 있나 ──",
+                 "설명": "상태[t]가 h일 뒤까지 그대로인 비율. 낮으면 B의 h열은 실제 운용(매일 재판단)과 다르다"})
+    for t in tickers:
+        st = results[t]["state"].reindex(eval_idx)
+        rec = {"블록": "B2. 상태 지속성", "구분": t}
+        for h in (1, 5, 21, 63):
+            rec[f"h={h}일 유지율"] = round(float((st == st.shift(-h)).where(st.notna() & st.shift(-h).notna()).mean()), 4)
+        rows.append(rec)
+    rows.append({"블록": "C. 연도별 상승예측 기저대비(%p)", "구분": "── 어느 해에 흔들렸나 ──",
+                 "설명": "값은 '그 해 상승예측 적중률 − 그 해 기저 상승률'(%p). 음수면 그 해엔 정보가 없었다"})
+    years = sorted({y for v in per_year.values() for y in v})
+    for t in tickers:
+        rec = {"블록": "C. 연도별 상승예측 기저대비(%p)", "구분": t}
+        rec.update({str(y): per_year[t].get(y) for y in years})
+        rows.append(rec)
+    return pd.DataFrame(rows)
+
+
 def build_industry_leader_columns(alloc: Dict[str, Any]) -> pd.DataFrame:
     """[13c 보강, v0.2.0] 부모별 일별 판단(리더/회피/폴백/폴백(여유부족)/부모ETF)·리더·여유·게이트를 13c에 나란히 싣는다."""
     eval_idx = alloc["target_w"].index
@@ -1578,6 +2181,14 @@ def build_industry_leader_columns(alloc: Dict[str, Any]) -> pd.DataFrame:
         out[f"{p} 여유 문턱"] = g["step"].round(4).values
         out[f"{p} 확신 게이트"] = g["gate"].values
         out[f"{p} 적격산업수"] = g["n_ok"].values
+        # [v0.3.0] 신규 게이트 3종 — 왜 리더가 안 나왔는지를 13c에서 바로 읽을 수 있게
+        if "regime_gate" in g:
+            out[f"{p} 부모국면"] = g["parent_state"].values
+            out[f"{p} 국면 게이트"] = g["regime_gate"].values
+        if "rev_avoid" in g:
+            out[f"{p} 역방향회피"] = g["rev_avoid"].values
+        if "corr_block" in g:
+            out[f"{p} 추종필터 제외"] = g["corr_block"].values
     return out
 
 def build_industry_vs_sector_attribution(alloc: Dict[str, Any]) -> pd.DataFrame:
@@ -1604,9 +2215,24 @@ def build_industry_vs_sector_attribution(alloc: Dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def industry_next_day(results: Dict[str, Dict[str, Any]]) -> Dict[str, dict]:
+    """[v0.3.0 §A2] 산업별 '다음 거래일 예측' dict 모음. **새 계산이 전혀 없다** — S.build_sector_sheets가
+    이미 M.build_next_day_prediction으로 만들어 둔 results[t]["sheets"]["next_day"]를 그대로 모을 뿐이다
+    (01_일별_<산업> 마지막 행에 들어 있는 바로 그 값). 없으면 그 산업은 빠진다."""
+    out: Dict[str, dict] = {}
+    for t, r in results.items():
+        nd = (r.get("sheets") or {}).get("next_day")
+        if isinstance(nd, dict) and nd.get("다음거래일") is not None:
+            out[t] = nd
+    return out
+
+
 def build_industry_prediction_matrix(results: Dict[str, Dict[str, Any]], eval_idx: pd.DatetimeIndex,
-                                     icfg: IndustryConfig, S) -> pd.DataFrame:
-    """[01Z_산업일별예측] '다음 거래일 예측' 행은 v0.2 예정(헤더 CHANGELOG (c)) — 실적행만 낸다."""
+                                     icfg: IndustryConfig, S, nd_map: Optional[Dict[str, dict]] = None,
+                                     alloc: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    """[01Z_산업일별예측] 날짜 × 산업 예측·목표비중. [v0.3.0 §A2] nd_map이 주어지면 '구분'(실적/예측) 열을
+    넣고 맨 끝에 **예측 행 1개**를 붙인다 — S.build_prediction_matrix와 같은 관행(재계산 없음, t일 종가로
+    이미 확정된 값을 표시만 재구성). 성과·불변식 계산은 '실적' 행만 쓴다(이 시트는 참고용)."""
     df = pd.DataFrame(index=eval_idx)
     df["날짜"] = eval_idx.date
     n_up = pd.Series(0, index=eval_idx)
@@ -1620,7 +2246,28 @@ def build_industry_prediction_matrix(results: Dict[str, Dict[str, Any]], eval_id
         n_down = n_down.add((st == "RISK_OFF").astype(int), fill_value=0)
     df.insert(1, "상승예측 산업수", n_up.astype(int).values)
     df.insert(2, "하락예측 산업수", n_down.astype(int).values)
-    return df.reset_index(drop=True)
+    df.insert(1, "구분", "실적")
+    if alloc:
+        df.insert(4, "산업배분 합계", alloc["target_w"][alloc["cols"]].sum(axis=1).reindex(eval_idx).round(4).values)
+    df = df.reset_index(drop=True)
+    if nd_map:
+        nxt = max(nd["다음거래일"] for nd in nd_map.values())
+        row = {c: ("" if df[c].dtype == object else np.nan) for c in df.columns}
+        row["날짜"] = pd.Timestamp(nxt).date()
+        row["구분"] = "예측"
+        n_u = n_d = 0
+        for t, nd in nd_map.items():
+            if f"{t} 예측" in row:
+                row[f"{t} 예측"] = nd["확정국면"]
+                row[f"{t} 목표비중"] = nd["목표비중"]
+                n_u += int(nd.get("확정국면_원시") == "RISK_ON")
+                n_d += int(nd.get("확정국면_원시") == "RISK_OFF")
+        row["상승예측 산업수"], row["하락예측 산업수"] = n_u, n_d
+        if alloc and len(alloc["target_w"].index):
+            # 마지막 확정일의 산업 비중이 곧 다음 거래일에 체결할 비중(새 계산 없음)
+            row["산업배분 합계"] = round(float(alloc["target_w"][alloc["cols"]].iloc[-1].sum()), 4)
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    return df
 
 
 def build_industry_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, str],
@@ -1784,8 +2431,36 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         except Exception as e:
             log("DIAG", kv(event="parent_following_failed", err=str(e)[:200]), M=M, level="warning")
 
+    # [v0.3.0 §C1] 진단 시트 2종 — 13l_산업리더적중률 · 01Y_산업예측정확도(배분 실패해도 01Y는 나온다)
+    leader_acc = pd.DataFrame()
+    pred_acc = pd.DataFrame()
+    if results:
+        try:
+            pred_acc = build_industry_prediction_accuracy(results, sres, eval_idx, icfg)
+        except Exception as e:
+            log("DIAG", kv(event="prediction_accuracy_failed", err=str(e)[:200]), M=M, level="warning")
+    if alloc:
+        try:
+            leader_acc = build_industry_leader_accuracy(alloc, results, sres, icfg)
+            _a = leader_acc[leader_acc["구분"] == "전체"] if "구분" in leader_acc.columns else pd.DataFrame()
+            if len(_a):
+                log("DIAG", kv(event="leader_accuracy_ready", episodes=int(_a.iloc[0].get("에피소드", 0) or 0),
+                               win=_a.iloc[0].get("승률(부모대비)"), mean_excess=_a.iloc[0].get("평균초과(%)")), M=M)
+        except Exception as e:
+            log("DIAG", kv(event="leader_accuracy_failed", err=str(e)[:200],
+                           trace=traceback.format_exc()[-600:].replace("\n", " | ")), M=M, level="warning")
+
+    # [v0.3.0 §A2] 다음 거래일 예측 — 재계산 없음(01_일별_<산업> 마지막 행과 같은 값)
+    nd_map = industry_next_day(results)
+    nd_spy = sres.get("nd_spy")
+    if nd_map:
+        log("REPORT", kv(event="next_day_ready", n=len(nd_map),
+                         target=str(max(nd["다음거래일"] for nd in nd_map.values()).date()),
+                         up=sum(1 for nd in nd_map.values() if nd.get("확정국면_원시") == "RISK_ON"),
+                         down=sum(1 for nd in nd_map.values() if nd.get("확정국면_원시") == "RISK_OFF")), M=M)
+
     universe = pd.DataFrame(universe_rows)
-    matrix = build_industry_prediction_matrix(results, eval_idx, icfg, S)
+    matrix = build_industry_prediction_matrix(results, eval_idx, icfg, S, nd_map=nd_map, alloc=alloc)
     summary = build_industry_summary(results, failed, table, icfg)
     audit_all = pd.concat([r["audit"] for r in results.values() if isinstance(r.get("audit"), pd.DataFrame) and len(r["audit"])],
                           ignore_index=True) if results else pd.DataFrame()
@@ -1796,6 +2471,8 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "quality": pd.DataFrame(quality), "matrix": matrix, "summary": summary,
         "wf": wf, "alloc": alloc, "acceptance": accept_df, "hierarchy": hier_df,
         "attribution": attrib_df, "following": following_df, "leader_cols": leader_cols,
+        "leader_accuracy": leader_acc, "prediction_accuracy": pred_acc,   # [v0.3.0 §C1]
+        "next_day": nd_map, "nd_spy": nd_spy,                              # [v0.3.0 §A2]
         "audit": audit_all, "icfg": icfg,
         "signal_start": (str(eval_idx[0].date()) if len(eval_idx) else "-"),
         "cal_end": str(cal[-1].date()), "aborted": False, "stage_timing": stage_timing,
@@ -1827,21 +2504,55 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     if alloc:
         sheets["13_산업배분전략"] = alloc["perf"]
         sheets["13b_배분전략자산곡선"] = alloc["curve"]
-        tw = alloc["target_w"].round(4).copy()
-        tw.insert(0, "날짜", alloc["target_w"].index.date)
+        # [v0.3.0 §A3 사용자 지시 "일별배분비중에 섹터가 왜 포함되어 있어 산업만 배분하라"]
+        #   13c는 이제 **산업 열만** 싣는다. 부모ETF·SPY·XLU 열은 I가 새로 산 게 아니라 S★가 준 비중 중
+        #   산업으로 나누지 못한 '잔여'이고, 총노출 불변식(Σ=S★)을 눈으로 확인하려면 어딘가엔 있어야 하므로
+        #   13c2_잔여다리로 분리했다. 잔여를 실제로 산업에 밀어 넣으려면 INDUSTRY_ONLY_MODE="industries"
+        #   (⚠ 리포트41 실측 MDD −15.04%·칼마 2.385 — 13_산업배분전략의 [잔여격자] 행에서 숫자 확인 후 결정).
+        _ind_cols, _res_cols = alloc["cols"], (alloc["active_parents"] + alloc.get("passthrough_cols", []))
+        tw_ind = alloc["target_w"][_ind_cols].round(4).copy()
+        tw_ind.insert(0, "날짜", alloc["target_w"].index.date)
+        tw_ind.insert(1, "구분", "실적")
+        tw_ind.insert(2, "산업배분 합계", alloc["target_w"][_ind_cols].sum(axis=1).round(4).values)
         lc = ires.get("leader_cols", pd.DataFrame())
-        if isinstance(lc, pd.DataFrame) and len(lc):        # [v0.2.0] 부모별 판단·리더·여유·게이트 열
-            tw = pd.concat([tw.reset_index(drop=True), lc.reset_index(drop=True)], axis=1)
-        sheets["13c_일별배분비중"] = tw.reset_index(drop=True)
+        if isinstance(lc, pd.DataFrame) and len(lc):        # 부모별 판단·리더·여유·게이트·국면·회피 열
+            tw_ind = pd.concat([tw_ind.reset_index(drop=True), lc.reset_index(drop=True)], axis=1)
+        tw_ind = tw_ind.reset_index(drop=True)
+        # [§A2] 예측 행 — 마지막 확정일의 비중이 곧 다음 거래일 시가에 체결할 비중(새 계산 없음)
+        nd_map = ires.get("next_day") or {}
+        if nd_map and len(tw_ind):
+            _nxt = max(nd["다음거래일"] for nd in nd_map.values())
+            _row = tw_ind.iloc[-1].copy()
+            _row["날짜"] = pd.Timestamp(_nxt).date()
+            _row["구분"] = "예측(다음 거래일 체결)"
+            tw_ind = pd.concat([tw_ind, _row.to_frame().T], ignore_index=True)
+        sheets["13c_일별배분비중"] = tw_ind
+        tw_res = alloc["target_w"][_res_cols].round(4).copy()
+        tw_res.insert(0, "날짜", alloc["target_w"].index.date)
+        tw_res.insert(1, "잔여 합계", alloc["target_w"][_res_cols].sum(axis=1).round(4).values)
+        tw_res.insert(2, "산업 합계", alloc["target_w"][_ind_cols].sum(axis=1).round(4).values)
+        tw_res.insert(3, "총노출(=S★)", alloc["target_w"].sum(axis=1).round(4).values)
+        tw_res.insert(4, "S★ 총노출", alloc["w_s_all"].sum(axis=1).round(4).values)
+        sheets["13c2_잔여다리"] = tw_res.reset_index(drop=True)
         sheets["13f_산업수용기준"] = accept_df
         wf = ires.get("wf", {}) or {}
         if isinstance(wf.get("selection_log"), pd.DataFrame) and len(wf["selection_log"]):
-            sheets["13g_산업순환매신호채택"] = wf["selection_log"]     # [v0.2.0] 풀링 워크포워드 채택 근거(S 13g와 동일 형식)
+            _g = wf["selection_log"]
+            alt = wf.get("alt_log")
+            if isinstance(alt, pd.DataFrame) and len(alt):    # [v0.3.0 §B7] 반대쪽 타깃 t 병기
+                _g = _g.merge(alt, on=["적용연도", "신호"], how="left")
+            sheets["13g_산업순환매신호채택"] = _g
+        la = ires.get("leader_accuracy", pd.DataFrame())
+        if isinstance(la, pd.DataFrame) and len(la):
+            sheets["13l_산업리더적중률"] = la                              # [v0.3.0 §C1]
         sheets["14_계층정합"] = ires["hierarchy"]
         sheets["15_산업대섹터귀속"] = ires["attribution"]
     fol = ires.get("following", pd.DataFrame())
     if isinstance(fol, pd.DataFrame) and len(fol):
         sheets["16_산업부모추종"] = fol                                  # [v0.2.0] 산업이 부모 섹터를 얼마나 따라가는가
+    pa = ires.get("prediction_accuracy", pd.DataFrame())
+    if isinstance(pa, pd.DataFrame) and len(pa):
+        sheets["01Y_산업예측정확도"] = pa                                # [v0.3.0 §C1]
     for t, r in results.items():
         sheets[f"01_일별_{t}"] = r["sheets"].get("daily", pd.DataFrame())
     val_frames = [r["sheets"]["val_sheet"] for r in results.values() if r["sheets"].get("val_sheet") is not None
@@ -1864,11 +2575,70 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         audit_line = f"산업별 무작위 절단 재계산 {n_ok + n_mis}건 중 불일치 {n_mis}건 — " + ("전체 통과" if n_mis == 0 else "⚠ 불일치 있음(11시트)")
     else:
         audit_line = "미실행(RUN_LOOKAHEAD_AUDIT=False 또는 표본 부족)"
+    # [v0.3.1] 부모 안에서 값이 전부 같아 '산업을 고를 정보가 0'인 날이 있었던 신호(대표: PARENT_SCORE_PCT).
+    #   그런 날은 복합평균·투표에서 빠진다(희석·임의 1위 방지) — 리포트가 그 사실을 숨기지 않고 한 줄로 보고한다.
+    _inert: Dict[str, int] = {}
+    _n_eval_days = 0
+    for _p, _g in ((ires.get("alloc") or {}).get("groups") or {}).items():
+        _n_eval_days = max(_n_eval_days, len(_g.get("tier", [])))
+        for _k, _v in (_g.get("inert_days") or {}).items():
+            _inert[_k] = max(_inert.get(_k, 0), int(_v))
+    if _inert:
+        inert_line = ("; ".join(f"{k} {v}일" for k, v in sorted(_inert.items(), key=lambda x: -x[1]))
+                      + f" (부모별 최대, 평가 {_n_eval_days}일 중) — 해당 일자는 복합순위 평균·교차확인 투표에서 제외. "
+                        "부모 계층 신호는 한 부모 아래 모든 산업이 같은 값이라 '부모 안 순위'를 만들 수 없다"
+                        "(13g에서도 상위1 여유 게이트에 걸려 '표본부족'으로 남는다 — 채택되지 않는 것이 정상).")
+    else:
+        inert_line = "없음 — 모든 채택 신호가 부모 안에서 산업별로 값이 갈렸다"
     hier = ires.get("hierarchy", pd.DataFrame())
     hier_line = "-"
     if isinstance(hier, pd.DataFrame) and len(hier):
         hier_line = (f"위반 {int(hier['위반일수(>1e-9)'].sum())}일 · 최대오차 {float(hier['최대오차'].max()):.2e} "
                      f"(부모별 등식 + 총노출=S★ + S★ 재현 비트동일 — 14시트)")
+    # [v0.3.0 §A2 사용자 지시 "다음날 예측이 없어 추가"] — 새 계산 없음. results[t]["sheets"]["next_day"]는
+    #   S.build_sector_sheets가 이미 M.build_next_day_prediction으로 만들어 둔 값(01_일별_<산업> 마지막 행).
+    nd_map = ires.get("next_day") or {}
+    nd_spy = ires.get("nd_spy")
+    nd_rows: List[Tuple[str, str]] = []
+    if nd_map:
+        _nxt = max(nd["다음거래일"] for nd in nd_map.values())
+        _base = max(nd["기준일"] for nd in nd_map.values())
+        _stale = next((nd.get("기준일_경과주의", "") for nd in nd_map.values() if nd.get("기준일_경과주의")), "")
+        nd_rows.append(("다음 거래일 예측 - 기준일(데이터)", f"{pd.Timestamp(_base).date()}{_stale}"))
+        nd_rows.append(("다음 거래일 예측 - 대상일", f"{pd.Timestamp(_nxt).date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영)"))
+        if nd_spy is not None:
+            nd_rows.append(("다음 거래일 예측 - SPY(M ★ 실매매 근거)",
+                            f"{nd_spy['확정국면']} / 목표비중 {nd_spy['목표비중']:.2f} / {nd_spy['예상행동_kr']}"))
+        for t in sorted(nd_map, key=lambda x: (results[x]["parent"], x)):
+            nd = nd_map[t]
+            nd_rows.append((f"다음 거래일 예측 - {t}({results[t]['parent']}, {INDUSTRY_NAME_KR.get(t, t)})",
+                            f"{nd['확정국면']} / 목표비중 {nd['목표비중']:.2f} / {nd['예상행동_kr']}"))
+        nd_rows.append(("다음 거래일 예측 - 안내",
+                        "t일 종가로 확정된 target_pos를 t+1일 시가에 체결하는 기존 체결 규칙을 표시만 재구성한 것 — "
+                        "새 계산이 아니며 13/15 등 성과 시트에는 영향 없음. 01Z_산업일별예측 마지막 행(구분=예측)·"
+                        "01_일별_<산업> 마지막 행·13c 마지막 행에도 같은 값이 있음"))
+    else:
+        nd_rows.append(("다음 거래일 예측", "미제공(M 번들이 v1.24.0 미만이거나 계산 실패)"))
+    # [§A2] '다음 거래일 배분(I★)' — 마지막 확정일의 산업 비중 = 다음 거래일 시가에 체결할 비중(새 계산 없음).
+    if alloc:
+        _tw_last = alloc["target_w"].iloc[-1]
+        _ind_last = _tw_last[alloc["cols"]]
+        _ind_last = _ind_last[_ind_last > 1e-9].sort_values(ascending=False)
+        _res_cols2 = alloc["active_parents"] + alloc.get("passthrough_cols", [])
+        _res_last = _tw_last[_res_cols2]
+        _res_last = _res_last[_res_last > 1e-9].sort_values(ascending=False)
+        _tier_txt = "; ".join(f"{p}:{g['tier'].iloc[-1]}" + (f"({g['leader'].iloc[-1]})" if g["leader"].iloc[-1] else "")
+                              for p, g in alloc.get("groups", {}).items())
+        nd_rows.append(("다음 거래일 배분(I★) - 산업",
+                        (", ".join(f"{t} {v:.2%}" for t, v in _ind_last.items()) if len(_ind_last) else "없음(전액 잔여 다리)")
+                        + f" — 산업 합계 {float(_ind_last.sum()):.2%}"))
+        nd_rows.append(("다음 거래일 배분(I★) - 잔여 다리",
+                        (", ".join(f"{t} {v:.2%}" for t, v in _res_last.items()) if len(_res_last) else "없음")
+                        + f" — 잔여 합계 {float(_res_last.sum()):.2%} · 총노출 {float(_tw_last.sum()):.2%}"
+                        f"(S★ {float(alloc['w_s_all'].iloc[-1].sum()):.2%}) · 잔여 처리 모드 {alloc.get('only_mode', 'parent')}"))
+        nd_rows.append(("다음 거래일 배분(I★) - 부모별 판단", _tier_txt or "-"))
+        nd_rows.append(("격자 수렴 상태(①②③④)", alloc.get("grid_line", "-")))
+
     meta = [
         ("버전", f"industry_rotation.py {VERSION} ({VERSION_DATE}) — sector_rotation.py {getattr(S, 'VERSION', '?')} — "
                 f"market_regime_trader.py {getattr(M, 'BUNDLE_VERSION', '?')}"),
@@ -1878,20 +2648,32 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                           "섹터(S★)·산업(I★) 계층은 그 M 노출을 나눠 담는 연구 전략이고, 수용기준을 통과해도 사용자가 "
                           "명시적으로 전환하기 전에는 실매매에 쓰지 않는다."),
         ("판정", verdict),
+        *nd_rows,
         ("룩어헤드 감사", audit_line),
         ("계층정합", hier_line),
-        ("예측 대상", f"{len(results)}개 산업 ETF(부모섹터 하위) — 부모는 S.SECTOR_EXCLUDE(XLB·XLE 등) 제외 후 산업ETF가 있는 섹터만"),
+        ("예측 대상", f"{len(results)}개 산업 ETF(부모섹터 하위) — 부모는 S.SECTOR_EXCLUDE 제외 후 산업ETF가 있는 섹터만"),
         ("실패 산업", f"{n_fail_ind}개" if n_fail_ind else "없음"),
         ("신호/백테스트 기간", f"{ires.get('signal_start')} ~ {ires.get('cal_end')}"),
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결(M·S와 동일, 룩어헤드 구조적 차단)"),
         ("거래비용", f"산업 ETF 편도 {icfg.COST_BPS_INDUSTRY:.0f}bp · 부모 ETF 편도 {icfg.PARENT_COST_BPS:.0f}bp"),
         ("총 노출 불변식", "Σ산업비중 + 부모ETF비중 = S★의 그 섹터비중 — 14_계층정합 시트가 매일 이 등식을 검사(위반 0일이어야 함)"),
-        ("v0.2.0 범위(⚠ 명시적 축소 — 남은 것)",
-         "06c 임계값민감도·01Y 예측정확도·13d/13e/13h~13o 진단시트군·13h FF49외부검증(네트워크 필요)·"
-         "'다음 거래일 예측' 행은 v0.3 예정. v0.2.0에서 해소: MAX_WORKERS fork 병렬, 11 룩어헤드감사 시트, "
-         "회복플로어/깊은낙폭/구조적바닥 규칙(S와 동일), 13g 신호채택, 16 산업부모추종, SPY/XLU 통과 다리, "
-         "S leader3 상태기계 이식(교차확인 투표·여유 게이트·최소보유·꼴찌 회피). 풀링 순환매의 ③④ 수용기준은 "
-         "상위1-하위1 스프레드로 근사(top3-bottom3 헬퍼가 S에 별도 노출되어 있지 않음)."),
+        ("⚠ 산업 배분 규칙(v0.3.0)",
+         f"리더 산업에 부모비중의 {icfg.INDUSTRY_LEADER_CAP:.0%}(INDUSTRY_LEADER_CAP) · 리더 없는 날 적격 산업 균등 "
+         f"{icfg.INDUSTRY_FALLBACK_SHARE:.0%}(INDUSTRY_FALLBACK_SHARE) · 잔여는 {icfg.INDUSTRY_ONLY_MODE} · "
+         f"리더 인정 부모국면 {icfg.INDUSTRY_LEADER_REGIMES or '제약없음'} · 최소보유 {icfg.ROTATION_MIN_HOLD_DAYS}일 · "
+         f"역방향회피 {'켬' if icfg.ROTATION_REVERSE_AVOID else '끔'} · 추종필터 {icfg.INDUSTRY_LEADER_MIN_CORR or '끔'} · "
+         f"검증 타깃 {getattr(icfg, 'ROTATION_TARGET', 'ratio')}. 각 손잡이의 격자 변형은 13_산업배분전략 참조."),
+        ("⚠ 부모 안 무변동 신호(v0.3.1)", inert_line),
+        ("13c 읽는 법", "13c_일별배분비중은 **산업 열만** 싣는다(사용자 지시 2026-09-12). 부모ETF·SPY·XLU 열은 "
+                     "I가 새로 산 것이 아니라 S★가 준 비중 중 산업으로 나누지 못한 '잔여'이며 13c2_잔여다리에 있다. "
+                     "잔여까지 산업으로 밀어 넣으려면 INDUSTRY_ONLY_MODE=\"industries\" — 그 성과는 13_산업배분전략의 "
+                     "[잔여격자] 행에서 먼저 확인할 것(리포트41 실측: 잔여 전량 산업 = MDD가 가장 깊었다)."),
+        ("v0.3.0 범위(⚠ 명시적 축소 — 남은 것)",
+         "06c 임계값민감도·13d/13e/13h~13o 진단시트군·13h FF49외부검증(네트워크 필요)은 v0.4 예정. "
+         "v0.3.0에서 해소: 부모 계층 표본 복원(§A1 — 2018~2023 리더 0일의 원인), 다음 거래일 예측(§A2), "
+         "13c 산업 전용 분리·잔여 모드(§A3), 폴백 기본 0%·cap×fb 2D 격자(§B1), 부모국면 리더 게이트(§B2), "
+         "산업 자기 SCORE_PCT 순위 신호(§B3), 역방향 회피(§B4), 추종필터(§B5), 베타중립 진단(§B7), "
+         "13l_산업리더적중률·01Y_산업예측정확도(§C1). 수용기준 ③④는 여전히 상위1-하위1 스프레드 근사."),
         ("면책", "본 산출물은 연구·교육 목적의 백테스트 결과이며 투자 자문이 아닙니다. 과거 성과는 미래 수익을 보장하지 않습니다."),
     ]
     for k, v in ires.get("stage_timing", {}).items():

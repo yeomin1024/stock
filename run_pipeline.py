@@ -1,5 +1,9 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.0.1 - 2026-09-12 - [문서만 변경 — 실행 로직·기본값 무변경] S v0.39.0에서 SECTOR_EXCLUDE
+#                    기본값이 ("XLB","XLE") → ()(11섹터 전부 예측)로 돌아갔다(사용자 지시 "sector는 다시
+#                    XLE, XLB 같이 예측"). 아래 사용 예시의 기본값 설명과 되돌리기 한 줄을 그에 맞게 고쳤다.
+#                    main(sector_exclude=...)의 동작 자체는 그대로다(None이면 S 기본값 사용).
 #  VERSION: v1.0.0 - 2026-09-12 - M(시장국면) → S(섹터) → I(산업) 한 번에 실행하는 노트북 셀용 러너.
 #                    Colab / Kaggle / 로컬 공용 — 실행 환경을 M.runtime_env()로 판별해 출력·캐시 경로를 정한다.
 #
@@ -16,8 +20,9 @@
 #      !wget -q -O run_pipeline.py https://raw.githubusercontent.com/yeomin1024/stock/main/run_pipeline.py
 #      ... (market_regime_trader.py / sector_rotation.py / industry_rotation.py 도 같은 방식으로 받는다)
 #      import run_pipeline as RP
-#      out = RP.main()                                    # 기본: SECTOR_EXCLUDE=("XLB","XLE") 유지, 산업 계층 포함
-#      out = RP.main(sector_exclude=("XLB",))             # ⚠ XLE 되돌리기(CHANGELOG_SECTOR v0.38.0 §1 권고)
+#      out = RP.main()                                    # 기본: 11섹터 전부 예측(SECTOR_EXCLUDE=()), 산업 계층 포함
+#      out = RP.main(sector_exclude=("XLB", "XLE"))       # ⚠ 되돌리기: 9섹터로 다시 좁힌다(S v0.37~v0.38 상태)
+#      out = RP.main(sector_exclude=("XLB",))             # ⚠ XLB만 제외(XLE는 예측)
 #      out = RP.main(run_industry_layer=False)            # 산업 계층 생략(M+S만)
 #
 #  Kaggle 노트북 설정(오른쪽 패널): Internet = On, Persistence = "Files only"(또는 Variables & Files),
@@ -36,7 +41,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.0.0"
+VERSION = "v1.0.1"
 VERSION_DATE = "2026-09-12"
 
 MODULE_FILES = {
@@ -95,7 +100,8 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
          i_overrides: Optional[Dict[str, Any]] = None, base_dir: Optional[str] = None,
          _hooks: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """M → S → I 실행 + 리포트 + (Colab) 다운로드 / (Kaggle) 영구 보존 + 실매매 배너.
-    sector_exclude: None이면 sector_rotation.py의 기본(SECTOR_EXCLUDE=("XLB","XLE")) 그대로.
+    sector_exclude: None이면 sector_rotation.py의 기본 그대로 — v0.39.0부터 기본은 ()(11섹터 전부 예측).
+        ⚠ 9섹터로 되돌리려면 sector_exclude=("XLB","XLE"). 제외는 신호·배분·성과를 바꾸는 설정이다.
     *_overrides: 각 Config 필드 덮어쓰기(dataclasses.replace) — 예: s_overrides={"MAX_WORKERS": 2}.
     _hooks: 테스트 전용 — {"m_run": f(mcfg)->res, "s_run": f(res,M,scfg)->sres, "i_run": f(sres,res,M,S,icfg)->ires}
             (네트워크 없는 샌드박스에서 합성데이터로 러너 전체 경로를 검증하기 위한 주입점)."""
