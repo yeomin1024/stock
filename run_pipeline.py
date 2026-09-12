@@ -1,18 +1,43 @@
 # =============================================================================
 #  run_pipeline.py
-#  VERSION: v1.0.2 - 2026-09-12 - [문서만 변경 — 실행 로직·기본값 무변경] S v0.40.0 · I v0.4.0 · M v1.51.0에서
-#                    새로 켠 ⚠ 파라미터와 되돌리기 한 줄을 아래 '되돌리기' 절에 모았다. 러너는 그대로
-#                    S.run/I.run에 cfg를 넘기므로 s_overrides/i_overrides로 전부 제어할 수 있다.
+#  VERSION: v1.1.0 - 2026-09-12 - [문서 + 단계별 실행 레시피 — 실행 로직 무변경] S v0.41.0 · I v0.5.0 ·
+#                    M v1.51.0. 이번 라운드는 (1) S-A 되돌리기(§S1 블록캡·매크로 t문턱을 끈다)
+#                    (2) S-C 판정 잣대 교정(게이트·수용기준을 익일+에피소드로) (3) S-F 감사 결함수정
+#                    (4) 사전등록 격자 S-B·S-G (5) I-A 산업 계층 동결 기본 + I-B 회피분리 격자다.
+#                    러너는 그대로 S.run/I.run에 cfg를 넘기므로 s_overrides/i_overrides로 전부 제어한다.
 #
-#  ⚠ v0.40.0/v0.4.0에서 켠 것과 되돌리기(전부 신호층 — 격자가 아니라 기본값 변경이다):
-#    S: s_overrides={"SECTOR_MARKET_BLOCK_CAP": None}     # 공용 매크로 블록캡 0.5 끔(캐시 무효화)
-#       s_overrides={"SECTOR_MACRO_T_MIN": None}          # 매크로 후보 강화 t문턱 2.5 끔(캐시 무효화)
-#       s_overrides={"SECTOR_REGIME_GATE": False}         # 하락 정보 게이트 끔(캐시 영향 없음)
+#  ★ 단계별 실행 레시피(REPORT44 §5 실행 순서 — 한 번에 하나씩 판정하려면 이대로):
+#    1) v0.40.1 상당(결함수정만 확인): 판정 잣대는 옛것으로 두고 감사·기저 수정 효과만 본다
+#         out = RP.main(s_overrides={"SECTOR_MARKET_BLOCK_CAP": 0.5, "SECTOR_MACRO_T_MIN": 2.5,
+#                                    "SECTOR_REGIME_GATE_STAT": "fwd21", "REGIME_ACCEPT_STAT": "fwd21"})
+#         확인: 11_룩어헤드감사 132/132 OK · 09c 판정이 리포트40과 44/44 동일(기저만 교정)
+#    2) v0.41.0 S-A 단독(**기본값**): out = RP.main(s_overrides={"SECTOR_REGIME_GATE_STAT": "fwd21",
+#                                                              "REGIME_ACCEPT_STAT": "fwd21"})
+#         확인: 13g SCORE_PCT 학습 t 2.1~2.8 회복 · 13f ③ ≥ 2.0 · 13l h=21 리더>SPY ≥ 0.60 · 학습 관측일 3179
+#    3) v0.41.x S-C(잣대 교정 포함 = 아무 오버라이드 없이): out = RP.main()
+#         확인: 09c가 XLF·XLE·XLB·XLRE·XLI·XLY '유지' / XLV·XLU·XLC '강등'으로 갈리는가(§2.2 실측과 정합)
+#    4) v0.42.0 후보 격자 판정: 13_섹터배분전략의 [중립리더격자]·[역방향회피격자] 4기준 통과 행 확인
+#    5) I v0.5.0: 동결이 기본이라 I는 진단 시트만 낸다. I-B 실험을 돌리려면
+#         out = RP.main(i_overrides={"INDUSTRY_LAYER_FROZEN": False})   # [회피분리격자] 3행이 자동으로 실린다
+#    (단계를 밟지 않고 전부 켠 상태로 한 번에 보고 싶으면 그냥 RP.main() — 다만 S-A와 S-C가 같이 움직여
+#     13f/13l 회복의 원인 귀속이 흐려진다. 프로젝트 규칙 "한 번에 하나"를 지키려면 위 2)→3) 순서.)
+#
+#  ⚠ v0.41.0/v0.5.0의 기본값과 되돌리기 한 줄(전부 신호·판정층 — 격자가 아니라 기본값이다):
+#    S: s_overrides={"SECTOR_MARKET_BLOCK_CAP": 0.5}      # ⚠ 되살리기: 공용 매크로 블록캡(v0.40.0 상태, 캐시 무효화)
+#       s_overrides={"SECTOR_MACRO_T_MIN": 2.5}           # ⚠ 되살리기: 매크로 후보 강화 t문턱(캐시 무효화)
+#       s_overrides={"SECTOR_REGIME_GATE_STAT": "fwd21"}  # 게이트 통계를 전방 21일로(v0.40.0), 캐시 영향 없음
+#       s_overrides={"REGIME_ACCEPT_STAT": "fwd21"}       # 국면정의 수용기준을 h=21+MCC로(v0.40.0)
+#       s_overrides={"SECTOR_REGIME_GATE_SIGNAL_ONLY": False}  # 게이트 기저 표본을 전체 이력으로(v0.40.0 결함 상태)
+#       s_overrides={"SECTOR_REGIME_GATE": False}         # 하락 정보 게이트 자체를 끔
 #       s_overrides={"SECTOR_OVERRIDE_SCORE_PCT": 0.5, "SECTOR_OVERRIDE_NEED_MARKET": False}
 #       s_overrides={"USE_INDUSTRY_BREADTH": False}       # 산업폭 후보 끔(산업 가격 수집 생략)
-#       s_overrides={"REGIME_ACCEPT_HORIZON": 1}          # 국면정의 검증을 익일 기준으로 되돌림
-#    I: i_overrides={"ROTATION_VALIDATION_MODE": "pooled"} # 채택 검증을 v0.3.1 방식으로
-#       i_overrides={"INDUSTRY_LAYER_FROZEN": True}        # ⚠ 산업 배분·격자 생략(진단 시트만, 실행 대폭 단축)
+#       s_overrides={"USE_INDUSTRY_EXTRA_CANDIDATES": True}    # ⚠ I-C 확장 후보 2종 켬(S-A 판정 뒤 단독으로, 캐시 무효화)
+#       s_overrides={"ROTATION_NEUTRAL_LEADER_SHARE": 0.5}     # S-B 라이브 적용(격자 4기준 통과 뒤에만)
+#       s_overrides={"ROTATION_REVERSE_AVOID": True}           # S-G 라이브 적용(집중배분 계열만, 격자 통과 뒤에만)
+#    I: i_overrides={"INDUSTRY_LAYER_FROZEN": False}      # ⚠ 동결 해제(= v0.4.0 동작, 배분·격자 재실행 ≈ 38분)
+#       i_overrides={"ROTATION_VALIDATION_MODE": "pooled"} # 채택 검증을 v0.3.1 방식으로
+#       i_overrides={"INDUSTRY_LAYER_FROZEN": False, "ROTATION_AVOID_STANDALONE": True,
+#                    "INDUSTRY_AVOID_TO_PARENT": True, "INDUSTRY_FALLBACK_SHARE": 0.5}  # I-B 라이브 적용
 #
 #  VERSION: v1.0.1 - 2026-09-12 - [문서만 변경 — 실행 로직·기본값 무변경] S v0.39.0에서 SECTOR_EXCLUDE
 #                    기본값이 ("XLB","XLE") → ()(11섹터 전부 예측)로 돌아갔다(사용자 지시 "sector는 다시
@@ -34,10 +59,12 @@
 #      !wget -q -O run_pipeline.py https://raw.githubusercontent.com/yeomin1024/stock/main/run_pipeline.py
 #      ... (market_regime_trader.py / sector_rotation.py / industry_rotation.py 도 같은 방식으로 받는다)
 #      import run_pipeline as RP
-#      out = RP.main()                                    # 기본: 11섹터 전부 예측(SECTOR_EXCLUDE=()), 산업 계층 포함
+#      out = RP.main()                                    # 기본: 11섹터 전부 예측(SECTOR_EXCLUDE=()), 산업 계층은
+#                                                         #   v0.5.0부터 **동결**(진단 시트만 — 배분·격자 생략)
 #      out = RP.main(sector_exclude=("XLB", "XLE"))       # ⚠ 되돌리기: 9섹터로 다시 좁힌다(S v0.37~v0.38 상태)
 #      out = RP.main(sector_exclude=("XLB",))             # ⚠ XLB만 제외(XLE는 예측)
-#      out = RP.main(run_industry_layer=False)            # 산업 계층 생략(M+S만)
+#      out = RP.main(run_industry_layer=False)            # 산업 계층 자체를 생략(M+S만 — 리포트 2개)
+#      out = RP.main(i_overrides={"INDUSTRY_LAYER_FROZEN": False})   # ⚠ 산업 배분·격자 되살리기(I-B 실험 포함)
 #
 #  Kaggle 노트북 설정(오른쪽 패널): Internet = On, Persistence = "Files only"(또는 Variables & Files),
 #    Accelerator = None(CPU 4코어면 fork 병렬 4워커). Environment는 최신(Pin to original 아님) 권장.
@@ -55,7 +82,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.0.2"
+VERSION = "v1.1.0"
 VERSION_DATE = "2026-09-12"
 
 MODULE_FILES = {
