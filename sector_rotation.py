@@ -17,6 +17,91 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.41.0 - 2026-09-12 - [⚠ S-A 되돌리기 + S-C 판정 잣대 교정 + S-F 감사 결함수정
+#                       + 사전등록 격자 2종(S-B·S-G) + 진단 2종(S-D·S-E) + I-C 확장 후보(기본 꺼짐).
+#                       설계·근거는 REPORT44_READOUT_S40_I3_PLAN_S0.41_I0.5.md, M은 v1.51.0 그대로(SPY 비트 동일).
+#
+#                       [S-A ⚠ §S1 되돌리기 — 최우선] SECTOR_MARKET_BLOCK_CAP 0.5→None ·
+#                         SECTOR_MACRO_T_MIN 2.5→None. 리포트40 실측이 v0.40.0을 반증했다:
+#                           13f ③ 상위1 스프레드 NW-t 2.08(PASS) → 1.37(FAIL) · 13l 리더>SPY(h=21) 0.638 → 0.514
+#                           13g SCORE_PCT 학습 t(2023~26) 2.08/2.60/2.78/2.79 → 1.43/1.92/1.92/1.96(전 연도 하락)
+#                           채택 연도 8/9 → 6/9 · 학습 관측일 3179 → 2794 · 채택 지표 수 반감(XLV 18.6→8.6개)
+#                           재계산 M=상승 국면 리더 초과 +1.00% t2.33 → +0.16% **t0.53**(정보 소멸)
+#                         원인(§2.1): 캡은 목표(M공용 ≤50%)에 못 미친 채 재분배를 **SPY계층**(11섹터 공통값 →
+#                         횡단면 정보 0)으로 보냈고, t≥2.5는 섹터마다 다르게 채택되던 매크로 민감도
+#                         (금리→XLF/XLU/XLRE, 원유→XLE, 달러→XLB)를 잘라 냈다 — 그것이 강세장 순환매 정보의 실체였다.
+#                         ⚠ 캐시 무효화. 되살리기: s_overrides={"SECTOR_MARKET_BLOCK_CAP":0.5,"SECTOR_MACRO_T_MIN":2.5}
+#                         판정(다음 실행): 13g t 2.1~2.8 회복 · 13f ③ ≥ 2.0 · 13l h=21 ≥ 0.60 · 학습 관측일 3179.
+#
+#                       [S-C ⚠ 판정 잣대 교정 — 게이트·수용기준] REPORT44 §2.2·§2.3:
+#                         "하락일마다 향후 21일 수익"은 상태기계에 편향된 잣대다(뒤쪽 날들의 전방창이
+#                         **재진입 후 반등**을 포함한다). 에피소드(진입 종가→청산 익일 종가)로 재면
+#                         8/11 섹터의 하락 상태가 손실을 피하고 있었고(XLE −50.5% · XLRE −37.5% · XLF −34.1%),
+#                         진짜로 해로운 것은 XLV(+16.0% 놓침)·XLU·XLC 셋뿐이었다.
+#                         S-C-1 게이트 표본·기저를 **신호기간(상태가 존재하는 날)** 으로 제한
+#                                (SECTOR_REGIME_GATE_SIGNAL_ONLY=True) — v0.40.0은 1999~2017을 기저에 섞었다.
+#                         S-C-2 게이트 통계를 **익일 수익**으로(SECTOR_REGIME_GATE_STAT="next_day", NW lag 5).
+#                                두 통계(익일·전방 h일)를 09c에 **항상 병기**한다. 되돌리기 "fwd21".
+#                         S-C-3 **09d_하락에피소드** 신설(에피소드별 진입·청산·길이·회피수익·청산후 21일) +
+#                                09_국면통계·12_섹터요약에 요약 3열(에피소드 수·회피합·회피<0 비율).
+#                         S-C-4 국면정의 수용기준을 (가) 하락 상태 익일 평균 < 전체 익일 평균 **AND**
+#                                (나) 에피소드 회피수익 합 < 0 으로(REGIME_ACCEPT_STAT="next_day_episode").
+#                                h=21·MCC 열은 '정보'로 그대로 남는다. 되돌리기 "fwd21".
+#                         정합성 확인점: 새 잣대가 XLF·XLE·XLB·XLRE·XLI·XLY를 '유지', XLV·XLU·XLC를 '강등'으로
+#                         가르면 §2.2 실측과 맞는 것이다.
+#
+#                       [S-F ⚠ 결함수정 — 감사 커버리지] sector_lookahead_audit(industry_breadth=) 인자 추가,
+#                         절단 `industry_breadth.loc[:d]`를 build_sector_candidates에 전달. 리포트40의 불일치 4건은
+#                         전부 그날 H트랙이 '산업 폭'을 채택한 날이었다(교차표 4/4 vs 0/62) — 신호의 룩어헤드가
+#                         아니라 감사 함수가 그 열을 빼고 재계산한 결함. 판정: 11시트 132/132 OK.
+#
+#                       [S-B 사전등록 격자 — 배분층] ROTATION_NEUTRAL_LEADER_SHARE(라이브 0.0=무변경) +
+#                         [중립리더격자] 3행(25/50/100%). 중립일(E_t=0.5) 잔여 슬리브를 그날 리더에게 준다.
+#                         근거: 리더 정보는 M=중립에만 있다(재계산 t 3.50 vs 상승 0.53 — 두 버전 공통).
+#                         13l에 **블록 E(SPY 국면별 리더 적중률)** 신설 — 판정 기준 "중립 부분집합 ≥ 0.60".
+#
+#                       [S-G 사전등록 격자 — 배분층, 집중배분 계열 전용] ROTATION_REVERSE_AVOID(기본 끔) +
+#                         [역방향회피격자] 2행(t≤−2.0·−2.5) + **반증 1행**. 상위1 스프레드 t ≤ −T인 신호가
+#                         지목한 1위를 그날 후보에서 제외(산업층 §B4와 같은 경로). 근거: 13g REL_MOM_21
+#                         상위1 t −2.51(두 리포트 공통) = 1개월 승자의 반전. ⚠ S★에는 적용하지 않는다.
+#                         13g에 '역방향 회피 자격' 열 추가.
+#
+#                       [S-D·S-E 진단만 추가 — 규칙 변경 없음] 09b_규칙별기여에
+#                         (S-D) 하락상태 경과 1~5·6~20·21+일 구간별 익일 평균, 해제규칙(R·T·D·기타)별 해제 후 21일 수익
+#                         (S-E) H진입일 중 자기 200일선 위/아래 비율과 각각의 익일 평균 → 12_섹터요약에 3열 인용.
+#                         근거: 200일선 위 하락일 익일 −37.2bp(맞음) vs 아래 −8.9bp·21일 +1.72%(늦은 꼬리),
+#                         베타 0.9~1.1 −66.4bp vs 베타≤0.7 −4.2bp(저베타 섹터에서 SPY-H 전파가 헛돈다).
+#                         규칙 변경은 S-C 새 잣대의 결과를 보고 결정한다(§S-D·§S-E "보류").
+#
+#                       [S-H ⚠ 결함수정 — 격자 like-for-like 복원(이번 라운드에 발견)]
+#                         v0.15.0의 하락국면리더 오버라이드가 변형 루프에서 **공유 Series인 tier를 제자리에서**
+#                         바꾼다(`tier.loc[...] = "하락국면리더"`). ★가 variants의 첫 항목이라 ★만 오버라이드를
+#                         받고, 뒤따르는 [상한격자]·[베타격자]·[방어대피처격자]·[분산게이트격자] 전부가
+#                         `tier.eq("현금")` = False가 되어 **조용히 오버라이드를 못 받고 있었다**
+#                         (합성 픽스처 실측: 로그 down_regime_leader_applied가 38행 중 1회만 발생 → 수정 후 29회).
+#                         v0.24.0이 "[상한격자]가 오버라이드를 못 받아 '상한 0.8이 최적'이라는 틀린 결론을 냈다"며
+#                         고쳤던 그 실수가 **다른 경로로 되살아나 있었다.** → 판정은 루프 전 스냅샷(tier_cash0)으로,
+#                         라벨 변경은 ★에만. ★의 비중·성과는 **비트 동일**하고 격자 행만 제 값으로 바뀐다
+#                         (= 지금까지의 격자 비교는 전부 like-for-like가 아니었다 — 리포트44 이전 격자 판정은
+#                         이 관점에서 다시 읽어야 한다). 회귀: test_sector_v041_grids.py [15~16/16].
+#
+#                       [I-C 확장 후보 — ⚠ 기본 꺼짐(USE_INDUSTRY_EXTRA_CANDIDATES=False)]
+#                         INDUSTRY_DISPERSION_21(사전방향 −1) · INDUSTRY_TOPBETA_REL_MOM_63(+1)을 산업폭과 같은
+#                         통로에 사전등록. v0.41.0은 **S-A 단독 판정** 라운드라 후보를 늘리면 13g/13f 회복의
+#                         원인을 가릴 수 없어 기본은 끈다. S-A 판정 후 단독으로 켠다(⚠ 캐시 무효화).
+#
+#                       변경 함수: SectorConfig(⚠ 기본값 2 + 신규 필드 11) · regime_info_gate(통계 2종·표본 제한) ·
+#                       regime_off_episodes/regime_episode_summary(신규) · build_sector_sheets(수용기준·에피소드 열) ·
+#                       build_rule_contribution(trend200 인자·진단 8행) · build_sector_summary(6열) ·
+#                       sector_lookahead_audit(industry_breadth 인자) · build_sector_candidates/industry_breadth_specs/
+#                       _values/build_industry_breadth(확장 후보·parent_tr) · rotation_walkforward_select(역방향 자격) ·
+#                       _run_leader3(reverse_avoid 인자) · _build_primary(neutral_leader 인자) ·
+#                       build_prediction_accuracy(블록 E) · build_sector_report(09d·00 2줄) · run(parent_tr 전달) ·
+#                       build_sector_allocation(tier 스냅샷 — S-H 결함수정).
+#                       회귀: test_sector_v041_regime_stat.py(신규 12) · test_sector_v041_audit_breadth.py(신규 5) ·
+#                       test_sector_v041_grids.py(신규 7) + 기존 섹터·산업 테스트 전종.
+#                       ⚠ 실데이터 판정은 다음 실행의 13g·13f ③·13l(블록 A/B/E)·09·09c·09d·11이 낸다.
+#
 #  VERSION: v0.40.0 - 2026-09-12 - [⚠ 신호·검증 변경 4건 — 리포트39(11섹터) 판독으로 드러난
 #                       "섹터 국면이 SPY 국면의 잡음 섞인 복제"를 고친다. 설계는
 #                       IMPROVEMENT_PLAN_S0.40_I0.4.md, M은 v1.51.0 훅만 쓰고 SPY는 비트 동일.
@@ -1709,7 +1794,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.40.0"
+VERSION = "v0.41.0"
 VERSION_DATE = "2026-09-12"
 
 # =============================================================================
@@ -1788,6 +1873,15 @@ class SectorConfig:
     #   ⚠ 되돌리기: SectorConfig(USE_INDUSTRY_BREADTH=False). 후보가 늘어 검증표가 바뀌므로 캐시 무효화.
     USE_INDUSTRY_BREADTH: bool = True
     INDUSTRY_BREADTH_MIN_N: int = 2            # 산업 ETF가 이보다 적은 부모는 폭을 만들지 않는다(XLP·XLRE는 1개)
+    # [v0.41.0 I-C 사전등록 — ⚠ 기본 끔] 산업 데이터의 확장 후보 2종(각 1개, 사전방향 등록 완료):
+    #   INDUSTRY_DISPERSION_21     : 부모 안 산업들의 21일 수익 횡단면 표준편차(사전방향 −1 — 분산 확대는
+    #                                국면 전환·불안의 선행 신호라는 가설. REPORT44 §I-C)
+    #   INDUSTRY_TOPBETA_REL_MOM_63: 부모 대비 '최고베타 산업'의 63일 상대모멘텀(사전방향 +1 — 위험선호 프록시)
+    #   채택 여부는 03_지표검증의 기존 6기준·워크포워드가 정한다(조용한 채택 없음).
+    # ⚠ 왜 기본이 꺼져 있나: v0.41.0은 **S-A(§S1 되돌리기) 단독 판정** 라운드다(REPORT44 §5-2).
+    #   후보를 늘리면 검증표가 바뀌어 13g/13f ③ 회복이 S-A 덕인지 새 후보 덕인지 가릴 수 없다.
+    #   S-A 판정이 끝난 뒤 단독으로 켠다: s_overrides={"USE_INDUSTRY_EXTRA_CANDIDATES": True} (⚠ 캐시 무효화)
+    USE_INDUSTRY_EXTRA_CANDIDATES: bool = False
     # ---- 학습/재추정 ----------------------------------------------------------
     SECTOR_TRAIN_MIN_YEARS: int = 3            # 헤더 CHANGELOG [파라미터] 참조(M은 5)
     SECTOR_REWEIGHT_FREQ: Optional[str] = None # None=M과 동일(REWEIGHT_FREQ, 기본 "M"). "A"=연 1회(⚠ 약 5배 빠름, 신호 달라짐)
@@ -1809,17 +1903,31 @@ class SectorConfig:
     # 동작: M.MARKET_BLOCK_CATEGORIES로 시작하는 카테고리의 |가중치| 합이 이 값을 넘으면 축소하고
     #   나머지(섹터 고유·추세·크로스에셋)에 비례 재분배한다 — 추세트랙캡·기저시리즈캡과 같은 단일패스.
     #   블록 밖 채택 지표가 0개인 해는 축소하지 않는다(점수 스케일 보존).
-    # ⚠ 되돌리기 한 줄: SectorConfig(SECTOR_MARKET_BLOCK_CAP=None)  — v0.39.0과 완전히 같아진다.
+    # ⚠⚠ [v0.41.0 S-A 되돌리기 — 리포트44 §2.1 실측] 기본값 0.5 → **None(끔)**.
+    #   왜 되돌리는가(REPORT44_READOUT_S40_I3 §2.1, 리포트40 실측):
+    #     · 13f ③ 복합순위 상위1 스프레드 NW-t  2.08(PASS) → **1.37(FAIL)**
+    #     · 13l 리더>SPY 비율(h=21)             0.638 → **0.514**, 리더 평균초과 2.05 → 1.03%
+    #     · 13g SCORE_PCT 학습 t(2023~2026)     2.08/2.60/2.78/2.79 → 1.43/1.92/1.92/1.96 (전 연도 하락)
+    #     · 워크포워드 채택 연도                 8/9 → 6/9, SCORE_PCT 학습 관측일 3179 → 2794
+    #     · 재계산(SCORE_PCT 1위 − 11섹터 평균, M=상승 국면 1332일) +1.00% t 2.33 → +0.16% **t 0.53**
+    #   원인: 블록캡이 노린 'M공용 ≤50%'는 달성되지 못했고(캡 대상이 아닌 변동성·크로스에셋·SPY추세가
+    #   M공용에 섞여 있다), 재분배가 **SPY계층**(11섹터에 베타 배율 말고는 같은 값 → 횡단면 정보 0)으로
+    #   갔다. 섹터마다 다르게 채택되던 매크로 민감도(금리→XLF/XLU/XLRE, 원유→XLE, 달러→XLB)가
+    #   강세장 순환매 정보의 실체였는데 그것을 깎은 것이다.
+    #   ⚠ 되살리기(=v0.40.0 상태): SectorConfig(SECTOR_MARKET_BLOCK_CAP=0.5)
     #   이 값은 복합점수를 바꾸므로 검증/워크포워드 캐시가 무효화된다(섹터당 ~350초 재계산).
     #   신호층 파라미터라 13_섹터배분전략의 배분층 격자에는 실을 수 없다(격자 행은 하나의 신호를
     #   공유해야 하는데 이건 신호 자체를 바꾼다) — SECTOR_EXCLUDE·HAZARD_SOURCE와 같은 취급이며
-    #   **판정은 다음 실행의 01Y_섹터예측정확도·09_국면통계·13f가 낸다**.
-    SECTOR_MARKET_BLOCK_CAP: Optional[float] = 0.5
-    # [v0.40.0 §S5 ⚠ 검증 파라미터] 공용 시장 블록 후보에만 적용하는 강화된 |NW t| 문턱.
-    #   섹터는 같은 공용 후보 265개를 11번 따로 검정하므로 다중비교 문제가 M보다 11배 크다
-    #   (M은 SPY 하나에 한 번). 섹터 고유 후보(B2·E2·H·I·J)는 종전 1.65를 그대로 쓴다.
-    #   ⚠ 되돌리기: SectorConfig(SECTOR_MACRO_T_MIN=None). 검증표를 바꾸므로 캐시가 무효화된다.
-    SECTOR_MACRO_T_MIN: Optional[float] = 2.5
+    #   **판정은 다음 실행의 13g/13f ③/13l이 낸다**(회복 기준: 13g t 2.1~2.8 · ③ ≥ 2.0 · 13l ≥ 0.60).
+    SECTOR_MARKET_BLOCK_CAP: Optional[float] = None
+    # ⚠⚠ [v0.41.0 S-A 되돌리기] 공용 시장 블록 후보에만 적용하던 강화 |NW t| 문턱 2.5 → **None(끔)**.
+    #   근거(리포트44 §2.1 증거1, 08_워크포워드가중치): t≥2.5가 채택 지표 수를 절반 가까이 줄였다
+    #   (XLK 24.3→15.5 · XLV 18.6→8.6 · XLP 12.5→6.1 · XLU 8.2→5.2개). 5~6개 지표로 만든 복합점수는
+    #   잡음이 크고, 초기 재추정 구간에서 채택 0개가 되어 점수 결측일이 늘었다(학습 관측일 −281~−385일).
+    #   §2.1 증거는 블록캡보다 **이 t문턱**을 주범으로 가리킨다 — 둘을 같이 되돌리되, 분리가 필요하면
+    #   대안 실험 1회: s_overrides={"SECTOR_MARKET_BLOCK_CAP": 0.5}(캡만 유지·t문턱은 끔).
+    #   ⚠ 되살리기(=v0.40.0 상태): SectorConfig(SECTOR_MACRO_T_MIN=2.5). 검증표를 바꾸므로 캐시 무효화.
+    SECTOR_MACRO_T_MIN: Optional[float] = None
     # ---- [v0.40.0 §S3 ⚠ 신호 파라미터] 섹터 추세오버라이드 재정의 ----------------
     # 근거(§1.5 원인2, 리포트39 01_일별_* 규칙열 실측): 섹터 하락일 2,643일을 진입 규칙별로 가르면
     #   '추세오버라이드만'(급락트리거·H진입·점수<10% 아님) 진입일의 향후 21일 수익이
@@ -1848,14 +1956,40 @@ class SectorConfig:
     #   이 값은 검증/워크포워드 가중치에 관여하지 않으므로 캐시는 무효화되지 않는다.
     SECTOR_REGIME_GATE: bool = True
     SECTOR_REGIME_GATE_T: float = -1.0         # 하락일 초과수익 t가 이 값 이하일 때만 '정보 있음'
-    SECTOR_REGIME_GATE_HORIZON: int = 21       # 판정 지평(01Y B2 상태지속률 0.56~0.79 = 운용 지평)
+    SECTOR_REGIME_GATE_HORIZON: int = 21       # [v0.41.0] STAT="fwd21"일 때만 쓰는 전방 지평(정보 열로는 항상 계산)
     SECTOR_REGIME_GATE_MIN_DAYS: int = 500     # 학습창 최소 관측일
     SECTOR_REGIME_GATE_MIN_OFF_DAYS: int = 60  # 학습창 최소 하락일(이보다 적으면 판정 불가 → 유지)
-    # ---- [v0.40.0 §S4] 국면정의 검증(수용기준) 지평 ------------------------------
-    # 종전 기준은 '익일' 평균만 봤는데, 리포트39에서 익일 기저대비는 11섹터 중 10개가 양수인 반면
-    # 21일에서는 6개가 MCC<0이었다 — 기준이 문제를 못 잡았다. 09_국면통계 '국면정의 검증'과
-    # 00시트 n/11 카운트가 이 지평으로 판정한다(익일 값은 같은 문자열에 '참고'로 남는다).
+    # ---- [v0.41.0 S-C ⚠ 판정 잣대 변경] 게이트 통계를 '익일 수익'으로 -------------
+    # 근거(REPORT44 §2.2·§2.3): h=21 "모든 하락일의 전방 21일 수익"은 상태기계에 맞는 잣대가 아니다.
+    #   하락 상태 뒤쪽 날들의 전방창이 **재진입 후 반등 구간**을 포함해 통계가 양수로 기운다.
+    #   에피소드 기준(진입 종가→청산 익일 종가)으로 재면 8/11 섹터에서 하락 상태가 손실을 피했고
+    #   (XLE −50.5% · XLRE −37.5% · XLF −34.1% · XLB −23.4% 회피), 진짜로 해로운 것은 XLV(+16.0% 놓침)·
+    #   XLU·XLC 셋뿐이었다. 상태기계가 매일 거는 내기는 **다음 날 수익**이므로 그것으로 잰다.
+    #   "next_day": x[t] = r[t+1] − mean(r[t+1] | 신호기간), 하락일에 대해 NW-HAC(lag=GATE_LAG) t ≤ T면 유지.
+    #   "fwd21"   : v0.40.0 그대로(전방 SECTOR_REGIME_GATE_HORIZON일). 두 통계는 09c에 **항상 병기**된다.
+    # ⚠ 되돌리기 한 줄: SectorConfig(SECTOR_REGIME_GATE_STAT="fwd21")
+    SECTOR_REGIME_GATE_STAT: str = "next_day"
+    SECTOR_REGIME_GATE_LAG: int = 5            # 익일 통계의 NW-HAC(바틀렛) lag — 상태 군집(자기상관) 보정
+    # [v0.41.0 S-C-1 결함수정] 기저·표본을 '상태가 존재하는 날(신호기간)'로 제한한다.
+    #   v0.40.0은 cand = idx < cutoff 라 신호 시작(2018) 이전 1999~2017이 기저에 섞였고(하락일은 2018
+    #   이후에만 존재) 2000~02·2008 약세장이 기저를 낮춰 '하락일 초과수익'을 부풀렸다
+    #   (예: 2023 학습창 XLK 기저 0.66% vs 신호기간만 1.35%). 판정은 44/44 그대로였지만 통계가 틀린 값이었다.
+    #   ⚠ 되돌리기: SectorConfig(SECTOR_REGIME_GATE_SIGNAL_ONLY=False)
+    SECTOR_REGIME_GATE_SIGNAL_ONLY: bool = True
+    # ---- [v0.40.0 §S4 → v0.41.0 S-C-4] 국면정의 검증(수용기준) ---------------------
+    # v0.40.0은 h=21 전방수익으로 판정했다. REPORT44 §2.2가 그 잣대 자체를 반증했다(위 GATE_STAT 주석):
+    #   h=21 열은 '정보'로 남기고, 판정은 **익일 + 에피소드**로 한다.
+    #   "next_day_episode"(기본): (가) 하락 상태의 **익일 평균수익** < 전체 익일 평균  AND
+    #                              (나) **에피소드 회피수익 합 < 0**(진입 종가→청산 익일 종가의 누적이 음수
+    #                                   = 그 상태에 있는 동안 실제로 손실을 피했다)
+    #   "fwd21": v0.40.0 그대로(하락후 h일 평균 < 전체 AND MCC(h) > 0).
+    #   REGIME_ACCEPT_HORIZON은 "fwd21"에서만 판정에 쓰이고, 기본값에서는 **표시용 정보 지평**이다.
+    # ⚠ 되돌리기 한 줄: SectorConfig(REGIME_ACCEPT_STAT="fwd21")
+    REGIME_ACCEPT_STAT: str = "next_day_episode"
     REGIME_ACCEPT_HORIZON: int = 21
+    # [v0.41.0 S-C-3] 하락 에피소드(연속 RISK_OFF 구간) 통계를 09_국면통계에 열로 싣는다.
+    #   에피소드 수가 섹터당 2~10개라 **판정 보조**로만 쓴다(위 (나) 조건과 09c 보조 열).
+    SECTOR_EPISODE_STATS: bool = True
     # ---- 사이징 오버레이 변동성 정규화 [v0.3.0 §1.C ⚠ 사이징 파라미터] -----------
     # 근거(§0.5): 과열헤어컷·회복확인폭·깊은낙폭 임계값이 SPY(연변동성 ~18%) 기준 절대값이라 고변동
     # 섹터(XLK·XLE 25~30%)에서 훨씬 자주/일찍 걸린다. 섹터 자기 변동성/SPY 변동성 배율(훈련구간 초기
@@ -1945,6 +2079,27 @@ class SectorConfig:
     ROTATION_LEADER_REGIMES: Optional[Tuple[str, ...]] = None
     # [v0.10.0 §1.D] [비교] "중립 국면만 리더"(하드코딩 ("중립",) — 위 ROTATION_LEADER_REGIMES 설정과 무관하게 항상 산출) 13시트 산출 여부.
     ROTATION_ALT_LEADER_REGIME_NEUTRAL: bool = True
+    # ---- [v0.41.0 S-B 사전등록 격자] 중립 국면 리더 슬롯(배분층 — 라이브 기본 0.0 = 무변경) ----------
+    # 근거(REPORT44 §2.1 증거2, 재계산 SCORE_PCT 1위 − 11섹터 평균 h=21):
+    #   M=중립(605일) +2.03%/21일 **t 3.50**(v0.39도 t 3.46 — 두 버전 공통) · M=상승(1332일) t 0.53 ·
+    #   M=하락 t 0.31. 13i도 같은 말(1위−SPY: 중립 +2.82 / 상승 +0.32). 즉 **리더 정보는 중립 국면에 몰려 있다.**
+    #   S★(주력섹터 중심)은 중립일 E_t=0.5라 XLK가 45%이고 남는 잔여 슬리브는 대피처 규칙(순위 1위/방어/균등)이
+    #   가져간다. 그 잔여 슬리브를 '중립일에만' 리더(확신 게이트 통과 1위)에게 주는 변형을 격자로 심는다.
+    #   ⚠ 배분층이므로 하나의 신호(results)를 공유한다 — 격자 4기준(①CAGR ②칼마 ③MDD ④강건성) 전부 통과해야 채택.
+    #   라이브 적용(채택 시): SectorConfig(ROTATION_NEUTRAL_LEADER_SHARE=0.5) 같은 한 줄.
+    ROTATION_NEUTRAL_LEADER_SHARE: float = 0.0            # 라이브 강도(0=끔, v0.40.0과 비트 동일)
+    ROTATION_NEUTRAL_LEADER_GRID: Tuple[float, ...] = (0.25, 0.5, 1.0)   # 격자 3행(채택값과 같은 값은 자동 제외)
+    ROTATION_NEUTRAL_LEADER_REGIME: str = "중립"           # 어느 SPY 국면에서 슬롯을 넓히나(STATE_SHORT 라벨)
+    # ---- [v0.41.0 S-G 사전등록 격자] 1개월 상대모멘텀 반전 = 역방향 회피(집중배분 계열 전용) ----------
+    # 근거(REPORT44 §3.2 말미): S 13g `REL_MOM_21` 상위1 스프레드 t **−2.51**(2026 학습창, 리포트39도 −2.51) —
+    #   1개월 승자가 21일 뒤 평균을 −0.55% 밑돈다. 산업층 §B4와 같은 경로를 S에 신설한다:
+    #   상위1 t ≤ −ROTATION_REVERSE_AVOID_T 인 신호가 지목한 **그날 1위를 후보에서 제외**(꼴찌 회피와 같은 처리).
+    # ⚠ S★(주력섹터 중심)에는 적용하지 않는다 — XLK가 1개월 승자인 날 주력을 빼는 꼴이 되기 때문(§S-G).
+    #   집중배분 계열 격자 3행(t≤2.0 · t≤2.5 · 반증)으로만 판정한다.
+    ROTATION_REVERSE_AVOID: bool = False                  # 라이브 기본 끔(격자에서만 켠다)
+    ROTATION_REVERSE_AVOID_T: float = 2.0                 # |t| 문턱(엄격 문턱의 반대편)
+    ROTATION_REVERSE_AVOID_GRID: Tuple[float, ...] = (2.0, 2.5)
+    ROTATION_REVERSE_AVOID_COUNTER: bool = True           # 반증 1행(사전방향대로 t≥+T 신호의 1위를 회피 — 나빠야 정상)
     # [v0.9.0 ⚠ 증거 등급] 리포트 8(v0.8.1 실측): 교차확인이 '엄격(학습창 t≥2.0) 통과 신호'까지 약한 신호와 짝을 요구해 검증된 신호를 희석했다
     #   — 채택 두 신호(SCORE_PCT 엄격 + 잔차모멘텀 외부 지원)의 순위 평균인 복합순위의 상위1 t는 1.21로 SCORE_PCT 단독(3.96)보다 약했고
     #   리더일은 197일뿐. True: 그 해에 엄격 등급 신호가 있으면 복합순위·리더 판단은 엄격 신호만으로(단독이면 교차확인 불필요, 2개 이상이면
@@ -2914,8 +3069,9 @@ def resid_momentum_specs() -> List[_RawSpec]:
 
 
 # ---- (f) [v0.3.0 §1.E-2] 섹터 폭(breadth) — 11개 섹터 공통 시장 내부 지표 ------------------------
-def industry_breadth_specs() -> List[_RawSpec]:
+def industry_breadth_specs(cols: Optional[List[str]] = None) -> List[_RawSpec]:
     """[v0.40.0 §S5·§I5] 산업폭 — 그 섹터에 속한 산업 ETF 중 자기 200일선 위에 있는 비율.
+    cols=None(기본)이면 v0.40.0과 같이 산업폭 2종 + [v0.41.0] 확장 2종 전부, 목록을 주면 그 열만.
 
     왜 이 축인가(IMPROVEMENT_PLAN_S0.40_I0.4 §3.5(4)): 산업 계층의 진짜 정보는 **시계열 자기국면**이다
     (29산업 중 20개가 상승 판정에서 기저 대비 +2~8%p). 그런데 그것을 '부모 안 산업 선택'(횡단면)에 쓰면
@@ -2924,20 +3080,52 @@ def industry_breadth_specs() -> List[_RawSpec]:
     가격 정보라 매크로와 상관이 낮다.
 
     인과성: 각 산업의 그날 200일선 이격도 부호만 본다(자기 과거 가격만). 미래 정보 없음.
-    산업 가격이 없으면(수집 실패·오프라인) 후보 자체를 만들지 않는다."""
-    return [
+    산업 가격이 없으면(수집 실패·오프라인) 후보 자체를 만들지 않는다.
+
+    [v0.41.0 I-C] 확장 후보 2종을 같은 통로에 추가한다(SectorConfig.USE_INDUSTRY_EXTRA_CANDIDATES=True일 때만
+    값이 만들어지고, 값이 없으면 spec도 만들지 않는다 — 조용한 채택 없음). 근거는 REPORT44 §I-C:
+    "산업 데이터의 가치는 '산업 리더'가 아니라 '부모 국면의 폭 신호'에 있었다"(산업폭이 5개 섹터의 H트랙에
+    실제 채택됨). 그 축을 폭 하나에서 **분산도·위험선호**로 넓힌다."""
+    out = [
         _RawSpec("INDUSTRY_BREADTH_200", "산업 폭(그 섹터 산업ETF 중 200일선 상회 비율)", "J2.산업폭", +1,
                  "섹터를 구성하는 산업들이 폭넓게 추세 위에 있으면 그 섹터의 상승은 소수 종목이 아니라 구조적이다",
                  "섹터 내부 참여도(폭)가 좁아지면 상승이 먼저 흔들린다", "산업 ETF 종가(자기 200일선)"),
         _RawSpec("INDUSTRY_BREADTH_200_CHG20", "산업 폭 20일 변화", "J2.산업폭", +1,
                  "산업 폭이 넓어지는 '방향'은 레벨보다 빠른 참여 확산 신호",
                  "폭의 변화율이 레벨보다 전환을 먼저 잡는다", "산업 ETF 종가(자기 200일선)"),
+        # [v0.41.0 I-C-1] 사전방향 −1: 부모 안 산업 수익이 흩어질수록(분산 확대) 국면이 흔들린다는 가설.
+        _RawSpec("INDUSTRY_DISPERSION_21", "산업 간 분산도(부모 안 21일 수익 횡단면 σ)", "J2.산업폭", -1,
+                 "같은 섹터 안 산업들의 21일 수익이 크게 흩어지는 국면은 공통 요인이 약해지는 구간이라 "
+                 "추세의 연속성이 떨어진다(분산 확대 → 국면 전환 선행 가설)",
+                 "섹터 내부 공통성 약화가 국면 전환을 앞선다", "산업 ETF 종가(21일 수익 횡단면 표준편차)",
+                 eval_horizon=21),
+        # [v0.41.0 I-C-2] 사전방향 +1: 고베타 산업이 부모를 앞서면 위험선호(risk-on)라는 표준 프록시.
+        _RawSpec("INDUSTRY_TOPBETA_REL_MOM_63", "최고베타 산업의 부모 대비 63일 상대모멘텀", "J2.산업폭", +1,
+                 "섹터 안에서 가장 베타가 높은 산업이 부모 ETF를 앞서고 있으면 그 섹터 안의 위험선호가 살아 "
+                 "있다는 뜻이다(반대면 방어 쪽으로 자금이 이동 중)",
+                 "섹터 내부 위험선호(고베타 선호)가 국면을 앞선다",
+                 "산업·부모 ETF 총수익종가(252일 롤링 베타 lag1로 고른 최고베타 산업의 63일 상대수익)",
+                 trend_track=True, eval_horizon=63),
     ]
+    if cols is None:
+        return out
+    return [r for r in out if r.suffix in set(cols)]
 
 
-def industry_breadth_values(breadth: pd.Series, idx: pd.DatetimeIndex) -> pd.DataFrame:
+def industry_breadth_values(breadth: Any, idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """breadth: pd.Series(= 산업폭 하나, v0.40.0 호환) 또는 pd.DataFrame(= v0.41.0 I-C 확장 특징표).
+    어느 쪽이든 후보 열만 뽑아 idx에 맞춘다(재계산 없음 — 값은 build_industry_breadth가 1회 만든 것)."""
     out = pd.DataFrame(index=idx)
-    b = breadth.reindex(idx)
+    if isinstance(breadth, pd.DataFrame):
+        feat = breadth.reindex(idx)
+        b = feat["INDUSTRY_BREADTH_200"] if "INDUSTRY_BREADTH_200" in feat.columns else pd.Series(np.nan, index=idx)
+        out["INDUSTRY_BREADTH_200"] = b
+        out["INDUSTRY_BREADTH_200_CHG20"] = b - b.shift(20)
+        for c in ("INDUSTRY_DISPERSION_21", "INDUSTRY_TOPBETA_REL_MOM_63"):
+            if c in feat.columns:
+                out[c] = feat[c]
+        return out
+    b = pd.Series(breadth).reindex(idx)
     out["INDUSTRY_BREADTH_200"] = b
     out["INDUSTRY_BREADTH_200_CHG20"] = b - b.shift(20)
     return out
@@ -2945,11 +3133,18 @@ def industry_breadth_values(breadth: pd.Series, idx: pd.DatetimeIndex) -> pd.Dat
 
 def build_industry_breadth(res: dict, M, scfg: SectorConfig, cal: pd.DatetimeIndex,
                            industry_px_override: Optional[Dict[str, pd.DataFrame]] = None,
-                           offline: bool = False) -> Dict[str, pd.Series]:
+                           offline: bool = False,
+                           parent_tr: Optional[Dict[str, pd.Series]] = None) -> Dict[str, Any]:
     """[v0.40.0 §S5·§I5] 섹터별 산업폭 시리즈를 1회 계산해 돌려준다(섹터별 재계산 없음).
     산업 목록은 industry_rotation.INDUSTRIES를 지연 import로 읽는다(없으면 빈 dict → 후보 생략).
-    수집 실패·오프라인이면 조용히 건너뛴다 — 이 후보 하나 때문에 전체 실행이 죽으면 안 된다."""
-    out: Dict[str, pd.Series] = {}
+    수집 실패·오프라인이면 조용히 건너뛴다 — 이 후보 하나 때문에 전체 실행이 죽으면 안 된다.
+
+    [v0.41.0 I-C] scfg.USE_INDUSTRY_EXTRA_CANDIDATES=True면 부모별로 **DataFrame**(산업폭 + 분산도 +
+    최고베타 상대모멘텀)을 돌려준다. False(기본)면 v0.40.0과 똑같이 **Series**(산업폭)만 — 값·형식 모두 동일.
+    parent_tr: 부모(섹터) 총수익 종가 — 최고베타 상대모멘텀에 필요. 없으면 그 열만 생략한다.
+    인과성: 모든 열이 t일까지의 산업·부모 가격만 쓴다(베타는 252일 롤링·lag 1, 수익은 후행창)."""
+    out: Dict[str, Any] = {}
+    extra = bool(getattr(scfg, "USE_INDUSTRY_EXTRA_CANDIDATES", False))
     if not bool(getattr(scfg, "USE_INDUSTRY_BREADTH", False)):
         return out
     # [v0.40.0 §S5] 호출부가 섹터 가격을 직접 주입한 오프라인/합성 실행에서 산업 가격만 네트워크로
@@ -2981,12 +3176,14 @@ def build_industry_breadth(res: dict, M, scfg: SectorConfig, cal: pd.DatetimeInd
                        action="산업폭 후보 생략(다른 후보로 계속)"), M=M, level="warning")
         return out
     above: Dict[str, pd.Series] = {}
+    tr_map: Dict[str, pd.Series] = {}     # [v0.41.0 I-C] 확장 후보용 총수익 종가(재수집 없음)
     for t in tickers:
         df = px_map.get(t)
         if df is None or len(df) == 0:
             continue
         try:
             tr, _ = build_total_return_close(df, cal, scfg.ADJ_CLOSE_STALE_DAYS)
+            tr_map[t] = tr.astype(float)
             above[t] = (sector_technical_values(tr.astype(float))["TREND_200"] > 0)
         except Exception:   # noqa
             continue
@@ -2994,10 +3191,48 @@ def build_industry_breadth(res: dict, M, scfg: SectorConfig, cal: pd.DatetimeInd
         cols = [t for t in inds if t in above]
         if len(cols) < int(getattr(scfg, "INDUSTRY_BREADTH_MIN_N", 2)):
             continue
-        out[p] = pd.DataFrame({t: above[t] for t in cols}).reindex(cal).mean(axis=1, skipna=True)
+        b = pd.DataFrame({t: above[t] for t in cols}).reindex(cal).mean(axis=1, skipna=True)
+        if not extra:
+            out[p] = b                                   # v0.40.0과 동일(Series)
+            continue
+        feat = pd.DataFrame(index=cal)
+        feat["INDUSTRY_BREADTH_200"] = b
+        # (I-C-1) 부모 안 21일 수익의 횡단면 표준편차 — 그날까지의 가격만 사용(후행 21일 창).
+        r21 = pd.DataFrame({t: tr_map[t].reindex(cal) for t in cols}).pct_change(21)
+        feat["INDUSTRY_DISPERSION_21"] = r21.std(axis=1, skipna=True) if r21.shape[1] >= 2 else np.nan
+        # (I-C-2) 최고베타 산업(252일 롤링 베타 vs 부모, lag 1)의 부모 대비 63일 상대수익.
+        ptr = (parent_tr or {}).get(p)
+        if ptr is not None and len(cols) >= 2:
+            pr = pd.Series(ptr).reindex(cal).astype(float)
+            rp = np.log(pr.replace(0, np.nan)).diff()
+            betas = pd.DataFrame({t: rolling_beta(np.log(tr_map[t].reindex(cal).replace(0, np.nan)).diff(),
+                                                  rp, window=252, lag=1) for t in cols})
+            rel63 = pd.DataFrame({t: tr_map[t].reindex(cal).pct_change(63) for t in cols}).sub(
+                pr.pct_change(63), axis=0)
+            # 그날까지의 베타로 고른 최고베타 산업(인과). 전부 NaN인 행(창 워밍업 전)은 건너뛴다
+            #   — pandas idxmax는 all-NA 행에서 예외를 던진다(_row_arg와 같은 가드).
+            pick = pd.Series(index=cal, dtype=object)
+            _hasb = betas.notna().any(axis=1)
+            if bool(_hasb.any()):
+                pick.loc[_hasb] = betas.loc[_hasb].idxmax(axis=1).astype(object)
+            vals = pd.Series(np.nan, index=cal, dtype=float)
+            ok = pick.notna()
+            if bool(ok.any()):
+                vals.loc[ok] = [rel63.at[d, c] if (isinstance(c, str) and c in rel63.columns) else np.nan
+                                for d, c in pick[ok].items()]
+            feat["INDUSTRY_TOPBETA_REL_MOM_63"] = vals
+        out[p] = feat.replace([np.inf, -np.inf], np.nan)
+    def _last_breadth(v: Any) -> Optional[float]:
+        s = v["INDUSTRY_BREADTH_200"] if isinstance(v, pd.DataFrame) else v
+        s = pd.Series(s).dropna()
+        return float(s.iloc[-1]) if len(s) else None
     log("DATA", kv(event="industry_breadth_built", parents=len(out), industries=len(above),
+                   extra_candidates=("on" if extra else "off"),
+                   cols=";".join(sorted({c for v in out.values() if isinstance(v, pd.DataFrame) for c in v.columns}))
+                        or "INDUSTRY_BREADTH_200",
                    detail=";".join(f"{p}:{len([t for t in v if t in above])}" for p, v in sorted(by_parent.items())),
-                   last=";".join(f"{p}:{v.dropna().iloc[-1]:.2f}" for p, v in sorted(out.items()) if v.notna().any())), M=M)
+                   last=";".join(f"{p}:{_last_breadth(v):.2f}" for p, v in sorted(out.items())
+                                 if _last_breadth(v) is not None)), M=M)
     return out
 
 
@@ -3089,8 +3324,9 @@ def build_sector_candidates(ticker: str, res: dict, M, scfg: SectorConfig,
             specs.append(_mk_spec(M, ticker, raw))
     # [v0.40.0 §S5·§I5] 산업폭 — 그 섹터에 산업 ETF가 있을 때만(없으면 후보 자체를 만들지 않는다).
     if getattr(scfg, "USE_INDUSTRY_BREADTH", False) and industry_breadth is not None:
+        # [v0.41.0 I-C] 값이 있는 열에 대해서만 spec을 만든다 — 확장 후보가 꺼져 있으면 v0.40.0과 완전히 동일.
         ibv = industry_breadth_values(industry_breadth, idx)
-        for raw in industry_breadth_specs():
+        for raw in industry_breadth_specs(cols=list(ibv.columns)):
             sec[f"{ticker}__{raw.suffix}"] = ibv[raw.suffix]
             specs.append(_mk_spec(M, ticker, raw))
     frames.append(sec)
@@ -3535,61 +3771,155 @@ def regime_info_gate(ticker: str, state: pd.Series, adj_tr: pd.Series, eval_idx:
     t_cut = float(getattr(scfg, "SECTOR_REGIME_GATE_T", -1.0))
     min_days = int(getattr(scfg, "SECTOR_REGIME_GATE_MIN_DAYS", 500))
     min_off = int(getattr(scfg, "SECTOR_REGIME_GATE_MIN_OFF_DAYS", 60))
+    # [v0.41.0 S-C-2] 판정 통계 선택 — "next_day"(기본) | "fwd21"(v0.40.0). 둘 다 계산해 09c에 병기한다.
+    stat = str(getattr(scfg, "SECTOR_REGIME_GATE_STAT", "next_day")).lower()
+    if stat not in ("next_day", "fwd21"):
+        log("GATE", kv(ticker=ticker, event="unknown_gate_stat", value=stat, action="next_day로 대체"),
+            M=M, level="warning")
+        stat = "next_day"
+    lag_nd = int(getattr(scfg, "SECTOR_REGIME_GATE_LAG", 5) or 1)
+    signal_only = bool(getattr(scfg, "SECTOR_REGIME_GATE_SIGNAL_ONLY", True))
     idx = state.index
     floor = pd.Series(False, index=idx)
     rows: List[dict] = []
     if not bool(getattr(scfg, "SECTOR_REGIME_GATE", False)) or len(eval_idx) == 0:
         return floor, pd.DataFrame(rows)
     px = adj_tr.reindex(idx).astype(float)
-    fwd = px.shift(-h) / px - 1.0
+    fwd = px.shift(-h) / px - 1.0          # t → t+h 전방수익(v0.40.0 잣대)
+    nxt = px.shift(-1) / px - 1.0          # t → t+1 익일수익(v0.41.0 기본 잣대 — 상태가 매일 거는 내기)
     st = state.astype(str)
+    # [v0.41.0 S-C-1 결함수정] 표본을 '상태가 존재하는 날'로 제한 — 신호 시작 이전(1999~2017)이 기저에
+    #   섞이면 2000~02·2008 약세장이 기저를 낮춰 '하락일 초과수익'이 부풀려진다(REPORT44 §2.3-1).
+    live_mask = st.isin(["RISK_ON", "NEUTRAL", "RISK_OFF"]) if signal_only else pd.Series(True, index=idx)
+    h_stat = 1 if stat == "next_day" else h
+    lag_stat = lag_nd if stat == "next_day" else h
     for y in sorted({int(d.year) for d in eval_idx}):
         cutoff = pd.Timestamp(year=y, month=1, day=1) - pd.Timedelta(days=35)
-        # 전방수익 창이 cutoff를 넘지 않는 날만 — t+h ≤ cutoff
+        # 전방수익 창이 cutoff를 넘지 않는 날만 — t+h_stat ≤ cutoff (판정 통계 기준)
         cand = idx[(idx < cutoff)]
-        if len(cand) > h:
-            cand = cand[:-h]
+        if len(cand) > h_stat:
+            cand = cand[:-h_stat]
         else:
             cand = cand[:0]
-        cand = cand[pd.Series(fwd.reindex(cand)).notna().values] if len(cand) else cand
+        if len(cand):
+            cand = cand[live_mask.reindex(cand).fillna(False).values]
+        _r_stat = (nxt if stat == "next_day" else fwd)
+        cand = cand[pd.Series(_r_stat.reindex(cand)).notna().values] if len(cand) else cand
         rows_y = idx[(idx.year == y)]
         n_train = len(cand)
         off = cand[st.reindex(cand).eq("RISK_OFF").values] if n_train else cand
         n_off = len(off)
+        base_row = {"티커": ticker, "적용연도": y, "학습 마감": str(cutoff.date()),
+                    "판정 통계": ("익일(NW lag %d)" % lag_nd if stat == "next_day" else f"전방 {h}일"),
+                    "표본": ("신호기간만" if signal_only else "전체이력"),
+                    "학습일수": n_train, "하락일수": n_off}
         if n_train < min_days or n_off < min_off:
-            rows.append({"티커": ticker, "적용연도": y, "학습 마감": str(cutoff.date()), "학습일수": n_train,
-                         "하락일수": n_off, f"하락일 초과수익(%/{h}일)": np.nan, "NW-HAC t": np.nan,
+            rows.append({**base_row, "하락일 초과수익(bp/일)": np.nan, "NW-HAC t(익일)": np.nan,
+                         f"하락일 초과수익(%/{h}일)": np.nan, f"NW-HAC t({h}일)": np.nan, "NW-HAC t": np.nan,
                          "판정": "유지(표본부족)", "강등일수": 0})
             continue
-        base = float(fwd.reindex(cand).mean())
-        x = fwd.reindex(off) - base
-        m, tv, n = _nw_mean_tstat(x, lag=h)
+        # 두 통계를 항상 계산(판정에는 stat이 고른 하나만) — 09c에서 잣대 교체의 효과를 바로 비교할 수 있게.
+        base_nd = float(nxt.reindex(cand).mean())
+        m_nd, t_nd, _ = _nw_mean_tstat(nxt.reindex(off) - base_nd, lag=lag_nd)
+        # h일 통계용 표본은 '전방 h일 창이 cutoff를 넘지 않는 날'로 다시 자른다(룩어헤드 차단 — 날짜 기준).
+        _idx_pre = idx[idx < cutoff]
+        _idx_h = _idx_pre[:-h] if len(_idx_pre) > h else _idx_pre[:0]
+        _cand_h = cand.intersection(_idx_h) if len(cand) else cand
+        _off_h = _cand_h[st.reindex(_cand_h).eq("RISK_OFF").values] if len(_cand_h) else _cand_h
+        if len(_cand_h) and fwd.reindex(_cand_h).notna().any():
+            base_h = float(fwd.reindex(_cand_h).mean())
+            m_h, t_h, _ = _nw_mean_tstat(fwd.reindex(_off_h) - base_h, lag=h)
+        else:
+            m_h, t_h = np.nan, np.nan
+        m, tv = ((m_nd, t_nd) if stat == "next_day" else (m_h, t_h))
         keep = bool(pd.notna(tv) and tv <= t_cut)
         if not keep:
             floor.loc[rows_y] = True
-        rows.append({"티커": ticker, "적용연도": y, "학습 마감": str(cutoff.date()), "학습일수": n_train,
-                     "하락일수": n_off, f"하락일 초과수익(%/{h}일)": (round(m * 100, 3) if pd.notna(m) else np.nan),
+        rows.append({**base_row,
+                     "하락일 초과수익(bp/일)": (round(m_nd * 1e4, 2) if pd.notna(m_nd) else np.nan),
+                     "NW-HAC t(익일)": (round(float(t_nd), 2) if pd.notna(t_nd) else np.nan),
+                     f"하락일 초과수익(%/{h}일)": (round(m_h * 100, 3) if pd.notna(m_h) else np.nan),
+                     f"NW-HAC t({h}일)": (round(float(t_h), 2) if pd.notna(t_h) else np.nan),
                      "NW-HAC t": (round(float(tv), 2) if pd.notna(tv) else np.nan),
                      "판정": ("유지" if keep else "강등"),
                      "강등일수": (0 if keep else int(len(rows_y)))})
         if M is not None:
             log("GATE", kv(ticker=ticker, year=y, train_end=str(cutoff.date()), n_train=n_train,
-                                  n_off=n_off, horizon=h,
-                                  excess_pct=(round(m * 100, 3) if pd.notna(m) else "-"),
-                                  t=(round(float(tv), 2) if pd.notna(tv) else "-"), t_cut=t_cut,
+                                  n_off=n_off, stat=stat, horizon=h, sample=("signal" if signal_only else "all"),
+                                  excess_bp_next=(round(m_nd * 1e4, 2) if pd.notna(m_nd) else "-"),
+                                  t_next=(round(float(t_nd), 2) if pd.notna(t_nd) else "-"),
+                                  excess_pct_h=(round(m_h * 100, 3) if pd.notna(m_h) else "-"),
+                                  t_h=(round(float(t_h), 2) if pd.notna(t_h) else "-"),
+                                  t_used=(round(float(tv), 2) if pd.notna(tv) else "-"), t_cut=t_cut,
                                   verdict=("유지" if keep else "강등")), M=M)
     return floor, pd.DataFrame(rows)
+
+
+def regime_off_episodes(state: pd.Series, adj_tr: pd.Series, after_h: int = 21) -> pd.DataFrame:
+    """[v0.41.0 S-C-3] 하락(RISK_OFF) **에피소드**(연속 구간) 단위 실측 — REPORT44 §2.2의 표를 매 실행 자동 산출.
+
+    왜 필요한가: "하락일마다 향후 h일 수익"은 상태기계에 대해 편향된 잣대다. 하락 상태 뒤쪽 날들의
+      전방창이 **재진입 이후의 반등**을 포함하기 때문이다(전략은 그 반등을 이미 먹고 있다).
+      상태가 실제로 건 내기는 "그 상태에 있는 동안 피한 수익"이다.
+    정의(리포트44 §2.2와 동일): 회피수익 = 청산 **익일** 종가 / 진입일 종가 − 1.
+      진입일 = 연속 RISK_OFF 구간의 첫날(그날 종가에 신호 확정 → 익일 시가 청산), 청산일 = 마지막 날.
+      음수 = 그 구간 동안 손실을 피했다(상태가 제 일을 했다). 양수 = 상승을 놓쳤다.
+    열: 진입일 · 청산일 · 길이(거래일) · 회피수익(%) · 청산후 h일(%)."""
+    st = state.astype(str)
+    idx = st.index
+    px = adj_tr.reindex(idx).astype(float)
+    off = st.eq("RISK_OFF").values
+    rows: List[dict] = []
+    i = 0
+    n = len(idx)
+    while i < n:
+        if not off[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and off[j + 1]:
+            j += 1
+        p0 = float(px.iloc[i]) if pd.notna(px.iloc[i]) else np.nan
+        k = min(j + 1, n - 1)
+        p1 = float(px.iloc[k]) if pd.notna(px.iloc[k]) else np.nan
+        av = (p1 / p0 - 1.0) if (pd.notna(p0) and pd.notna(p1) and p0 > 0) else np.nan
+        k2 = min(k + after_h, n - 1)
+        aft = (float(px.iloc[k2]) / p1 - 1.0) if (pd.notna(p1) and p1 > 0 and k2 > k) else np.nan
+        rows.append({"진입일": idx[i].date(), "청산일": idx[j].date(), "길이(거래일)": int(j - i + 1),
+                     "회피수익(%)": (round(av * 100, 3) if pd.notna(av) else np.nan),
+                     f"청산후 {after_h}일(%)": (round(aft * 100, 3) if pd.notna(aft) else np.nan)})
+        i = j + 1
+    return pd.DataFrame(rows)
+
+
+def regime_episode_summary(ep: pd.DataFrame) -> Dict[str, Any]:
+    """[v0.41.0 S-C-3/S-C-4] 에피소드 표 → 판정에 쓰는 3개 값(에피소드 수 · 회피수익 합 · 회피<0 비율)."""
+    if not isinstance(ep, pd.DataFrame) or len(ep) == 0 or "회피수익(%)" not in ep.columns:
+        return {"n": 0, "sum": np.nan, "neg_share": np.nan, "median_len": np.nan}
+    v = pd.to_numeric(ep["회피수익(%)"], errors="coerce").dropna()
+    if len(v) == 0:
+        return {"n": 0, "sum": np.nan, "neg_share": np.nan, "median_len": np.nan}
+    return {"n": int(len(v)), "sum": float(v.sum()), "neg_share": float((v < 0).mean()),
+            "median_len": float(pd.to_numeric(ep["길이(거래일)"], errors="coerce").median())}
 
 
 def sector_lookahead_audit(ticker: str, res: dict, M, scfg: SectorConfig, cfg_i,
                            raw_df: pd.DataFrame, spy_raw_df: pd.DataFrame,
                            W: pd.DataFrame, W_haz: pd.DataFrame,
                            score_full: pd.Series, haz_full: pd.Series, n_dates: int,
-                           breadth: Optional[pd.Series] = None) -> pd.DataFrame:
+                           breadth: Optional[pd.Series] = None,
+                           industry_breadth: Optional[Any] = None) -> pd.DataFrame:
     """[M.lookahead_audit과 같은 방법] 무작위 검사일 d마다 '섹터·SPY 원시가격, M 지표값, M 점수'를
     d까지로 잘라 섹터 후보지표를 처음부터 다시 만들고(z-score 포함) 그날 가중치(W.loc[d])로 점수를
     재계산해 전체계산 점수와 비교한다. 섹터 지표 구성(롤링·ewm·베타 지연·상대가격·발표지연 시리즈)
-    어디에도 d 이후 정보가 섞이지 않았음을 확인하는 감사. M 지표 자체의 인과성은 M의 11시트가 담당."""
+    어디에도 d 이후 정보가 섞이지 않았음을 확인하는 감사. M 지표 자체의 인과성은 M의 11시트가 담당.
+
+    [v0.41.0 S-F ⚠ 결함수정 — 감사 커버리지] v0.40.0은 새 후보 **산업폭**(§S5·§I5)을 절단 재계산에
+    넘기지 않아, 그날 H트랙이 `[해저드][섹터] 산업 폭`을 채택한 날만 점수가 달라져 리포트40에서
+    **4건 불일치**(XLY/XLF 2018-11-07, XLF 2021-10-28, XLI 2024-08-27)가 났다. 교차표는 4/4 vs 0/62로
+    1:1 일치했다(REPORT44 §2.4) — 신호의 룩어헤드가 아니라 **감사 함수가 그 열을 빼고 재계산한 결함**이다.
+    이제 industry_breadth도 d까지 잘라(`.loc[:d]`) build_sector_candidates에 넘긴다 → 11시트 132/132 OK가 되어야 한다.
+    규칙(HANDOFF §4-4): **새 후보지표를 추가하면 감사 함수에도 반드시 넣는다.**"""
     rng = np.random.default_rng(cfg_i.RANDOM_SEED)
     cal = res["cal"]
     valid = score_full.dropna().index
@@ -3618,8 +3948,11 @@ def sector_lookahead_audit(ticker: str, res: dict, M, scfg: SectorConfig, cfg_i,
         # [v0.3.0 §1.E-2] 섹터 폭도 d까지로 절단해 재계산 감사에 포함 — d 이후 다른 섹터의 정보가
         # 섞여 있지 않은지 확인(다른 섹터 지표와 동일한 인과성 기준 적용).
         breadth_t = breadth.loc[breadth.index <= d] if breadth is not None else None
+        # [v0.41.0 S-F] 산업폭도 같은 기준으로 d까지 절단해 넘긴다(Series·DataFrame 양쪽 지원).
+        ibr_t = industry_breadth.loc[industry_breadth.index <= d] if industry_breadth is not None else None
         ind_t, _ = build_sector_candidates(ticker, res_t, M, scfg, price_t["Adj Close"], price_t["Close"],
-                                           spy_tr_t, spy_raw_t, spy_series_t, idx_t, breadth=breadth_t)
+                                           spy_tr_t, spy_raw_t, spy_series_t, idx_t, breadth=breadth_t,
+                                           industry_breadth=ibr_t)
         Z_t = pd.DataFrame({k: M.expanding_zscore(ind_t[k]) for k in ind_t.columns}, index=ind_t.index)
         z_row = Z_t.loc[d]
         for kind, Wm, full in (("복합점수", W, score_full), ("위험점수(H)", W_haz, haz_full)):
@@ -3766,7 +4099,8 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     audit = pd.DataFrame()
     if scfg.RUN_LOOKAHEAD_AUDIT:
         audit = sector_lookahead_audit(ticker, res, M, scfg, cfg_i, raw_df, ctx["spy_raw_df"], W, W_haz,
-                                       score, haz_score, scfg.AUDIT_SAMPLE, breadth=breadth)
+                                       score, haz_score, scfg.AUDIT_SAMPLE, breadth=breadth,
+                                       industry_breadth=ind_breadth)   # [v0.41.0 S-F] 감사 커버리지 수정
     adopted = sorted({k for k in W.columns if (W[k] != 0).any()})
     events = M.event_study(ind_i, adj_i, bt, adopted, cfg_i, haz_pct=haz_pct)
     trades = M.extract_trades(bt, reason, sig["state"])
@@ -3782,10 +4116,24 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                                  wlog, val_full, adopted, trades, episodes, events, sens, audit,
                                  haz_pct_sector=haz_pct_sector, spy_yearly_pos=spy_yearly_pos,
                                  daily_indicator_detail=scfg.DAILY_INDICATOR_DETAIL,
-                                 regime_accept_horizon=int(getattr(scfg, "REGIME_ACCEPT_HORIZON", 21) or 21))
+                                 regime_accept_horizon=int(getattr(scfg, "REGIME_ACCEPT_HORIZON", 21) or 21),
+                                 # [v0.41.0 S-C-4] 수용기준 잣대(익일+에피소드 / fwd21)와 에피소드 열 스위치
+                                 regime_accept_stat=str(getattr(scfg, "REGIME_ACCEPT_STAT", "next_day_episode")),
+                                 episode_stats=bool(getattr(scfg, "SECTOR_EPISODE_STATS", True)),
+                                 trend200=trend200)
     # [v0.40.0 §S2] 09c 시트 조각 — _concat(results, "regime_gate")이 sheets에서 찾는다.
     if isinstance(gate_log, pd.DataFrame) and len(gate_log):
         sheets["regime_gate"] = gate_log
+    # [v0.41.0 S-C-4] 수용기준 판정을 로그로도 남긴다 — 잣대를 바꾼 효과(전/후)가 로그 한 줄로 보이도록.
+    _eps = sheets.get("regime_episode_summary") or {}
+    log("REGIME", kv(ticker=ticker, accept_stat=str(getattr(scfg, "REGIME_ACCEPT_STAT", "next_day_episode")),
+                     accept_horizon=int(getattr(scfg, "REGIME_ACCEPT_HORIZON", 21) or 21),
+                     verdict=("PASS" if sheets.get("regime_validity") else
+                              ("FAIL" if sheets.get("regime_validity") is False else "N/A")),
+                     episodes=int(_eps.get("n", 0) or 0),
+                     avoid_sum_pct=(round(float(_eps["sum"]), 2) if pd.notna(_eps.get("sum", np.nan)) else "-"),
+                     avoid_neg_share=(round(float(_eps["neg_share"]), 3) if pd.notna(_eps.get("neg_share", np.nan)) else "-"),
+                     detail=str(sheets.get("regime_verdict", ""))[:180]), M=M)
     # [v0.5.0] 순환매 후보 순위신호 — '전체 이력'(SIGNAL_START 마스킹 없음: 횡단면 워크포워드 검증이 2018 이전 이력으로
     # 학습해야 하므로). 전부 그 섹터 후보지표 프레임/점수에서 그대로 꺼내거나 인과적으로 계산(재계산·미래 정보 없음).
     rot_raw = build_rotation_raw_signals(ticker, ind_i, score, adj_i, spy_tr, idx_i, M, res=res, scfg=scfg)
@@ -3834,7 +4182,8 @@ _CONTRIB_RULES: List[Tuple[str, str]] = [
 ]
 
 
-def build_rule_contribution(ticker: str, sig: pd.DataFrame, bt: pd.DataFrame) -> pd.DataFrame:
+def build_rule_contribution(ticker: str, sig: pd.DataFrame, bt: pd.DataFrame,
+                            trend200: Optional[pd.Series] = None) -> pd.DataFrame:
     """[v0.3.0 §1.G-1] 규칙별 발동일수·발동일의 '익일' B&H수익 평균(그 규칙이 비중을 줄이거나
     늘린 날 다음날 실제로 시장이 어느 방향으로 움직였는지 — §0.3 H진입일 검증과 같은 방법),
     비중=0(현금)인 날의 B&H 수익 합(=그 구간 동안 놓친/피한 수익, §0.2)을 상승일/하락일로
@@ -3863,6 +4212,73 @@ def build_rule_contribution(ticker: str, sig: pd.DataFrame, bt: pd.DataFrame) ->
     rows.append({"티커": ticker, "규칙": "[전체] 하락일 회피(비중=0 & B&H<0, %p — 음수=회피한 손실)", "발동일수": int(dn_mask.sum()),
                  "발동일 익일B&H평균수익(%)": np.nan,
                  "비중=0인 날 B&H수익 합(%p)": round(float(bt["bh_ret"].where(dn_mask).sum()) * 100, 4)})
+
+    # ==== [v0.41.0 S-D 진단 — 규칙 변경 없음] 하락 상태의 '늦은 꼬리'는 진입이 아니라 해제 문제인가 ====
+    # 근거(REPORT44 §2.2 하단 표, 풀링 1,340 섹터-하락일): 자기 200일선 **위**의 하락일은 익일 −37.2bp로
+    #   판정이 맞았고(21일 −2.70%), 200일선 **아래**(하락 후반 꼬리)는 익일 −8.9bp·21일 +1.72%로 틀렸다.
+    #   → 문제는 *진입*이 아니라 *해제 시점*이다. 임계값을 바로 바꾸면 섹터당 에피소드가 5~10개뿐이라
+    #   곧 과적합이므로, **먼저 어느 해제 규칙이 늦는지 시트로 본다**(§S-D "진단 먼저, 규칙 추가는 보류").
+    st = sig["state"].reindex(idx).astype(str) if "state" in sig.columns else pd.Series("", index=idx)
+    off = st.eq("RISK_OFF")
+    # (1) 하락 상태 경과일 구간별 익일 수익 — 1~5 / 6~20 / 21+
+    age = np.zeros(len(idx), dtype=int)
+    _c = 0
+    for _i, _v in enumerate(off.values):
+        _c = (_c + 1) if _v else 0
+        age[_i] = _c
+    age_s = pd.Series(age, index=idx)
+    for lo, hi, lab in ((1, 5, "1~5일"), (6, 20, "6~20일"), (21, 10 ** 6, "21일+")):
+        m = off & age_s.between(lo, hi)
+        n = int(m.sum())
+        rows.append({"티커": ticker, "규칙": f"[진단·S-D] 하락상태 경과 {lab}", "발동일수": n,
+                     "발동일 익일B&H평균수익(%)": (round(float(nxt.where(m).mean()) * 100, 4) if n > 0 else np.nan),
+                     "비중=0인 날 B&H수익 합(%p)": np.nan,
+                     "비고": "200일선 아래에 오래 머무는 '늦은 꼬리'는 익일 수익이 0에 가까워진다(REPORT44 §2.2)"})
+    # (2) 해제 규칙별 해제 후 h일 수익 — R(회복승격)·T(추세승격)·D(깊은낙폭회복)·기타
+    _C = (1.0 + bt["ret_cc"].fillna(0.0)).cumprod() if "ret_cc" in bt.columns else (1.0 + bt["bh_ret"].fillna(0.0)).cumprod()
+    _fwd_h = 21
+    _f = _C.shift(-_fwd_h - 1) / _C.shift(-1) - 1.0     # 해제 다음날부터 h일(체결 정렬)
+    exit_rule: Dict[str, List[float]] = {}
+    _ov = off.values
+    for _i in range(len(idx) - 1):
+        if _ov[_i] and not _ov[_i + 1]:                 # i = 마지막 하락일, i+1 = 해제일
+            d1 = idx[_i + 1]
+            lab = "기타(중립·상승 전환)"
+            for col, nm in (("recovery_floor", "R 회복승격"), ("trend_promotion", "T 추세승격"),
+                            ("deep_recovery", "D 깊은낙폭회복")):
+                if col in sig.columns and bool(sig[col].reindex(idx).fillna(False).iloc[_i + 1]):
+                    lab = nm
+                    break
+            v = float(_f.loc[d1]) if d1 in _f.index and pd.notna(_f.loc[d1]) else np.nan
+            exit_rule.setdefault(lab, []).append(v)
+    for lab, vals in sorted(exit_rule.items()):
+        vv = [v for v in vals if pd.notna(v)]
+        rows.append({"티커": ticker, "규칙": f"[진단·S-D] 해제규칙 {lab}", "발동일수": len(vals),
+                     "발동일 익일B&H평균수익(%)": np.nan, "비중=0인 날 B&H수익 합(%p)": np.nan,
+                     f"해제후 {_fwd_h}일 평균수익(%)": (round(float(np.mean(vv)) * 100, 3) if vv else np.nan),
+                     "비고": "해제가 늦으면 해제 후 수익이 낮다(너무 이르면 높다) — 규칙 변경 전 진단용"})
+
+    # ==== [v0.41.0 S-E 진단 — 규칙 변경 없음] 저베타 섹터의 SPY-H 전파가 헛도는가 ====
+    # 근거(REPORT44 §2.2): 베타 0.9~1.1 하락일 익일 −66.4bp vs 베타 ≤0.7(방어) −4.2bp — H진입(HAZARD_SOURCE
+    #   ="spy", 8섹터 동일 날짜)이 방어 섹터에서는 정보가 없다. 자기 200일선 **위**에서 H진입한 날이
+    #   얼마나 되는지(= SPY 사정으로만 들어간 날)와 그 익일 수익을 매 실행 보이게 한다. 규칙은 S-C 결과를 보고 결정.
+    if trend200 is not None and "hazard_entry" in sig.columns:
+        he = sig["hazard_entry"].reindex(idx).fillna(False).astype(bool)
+        tr_above = (pd.Series(trend200).reindex(idx) > 0)
+        n_he = int(he.sum())
+        m_above = he & tr_above
+        rows.append({"티커": ticker, "규칙": "[진단·S-E] H진입일 중 자기200일선 위", "발동일수": int(m_above.sum()),
+                     "발동일 익일B&H평균수익(%)": (round(float(nxt.where(m_above).mean()) * 100, 4)
+                                            if int(m_above.sum()) > 0 else np.nan),
+                     "비중=0인 날 B&H수익 합(%p)": np.nan,
+                     "비율": (round(float(m_above.sum()) / n_he, 4) if n_he > 0 else np.nan),
+                     "비고": "비율이 높고 익일 평균이 0 이상이면 SPY-H 전파가 이 섹터에서 헛돌고 있다는 신호"})
+        m_below = he & ~tr_above
+        rows.append({"티커": ticker, "규칙": "[진단·S-E] H진입일 중 자기200일선 아래", "발동일수": int(m_below.sum()),
+                     "발동일 익일B&H평균수익(%)": (round(float(nxt.where(m_below).mean()) * 100, 4)
+                                            if int(m_below.sum()) > 0 else np.nan),
+                     "비중=0인 날 B&H수익 합(%p)": np.nan,
+                     "비율": (round(float(m_below.sum()) / n_he, 4) if n_he > 0 else np.nan)})
     return pd.DataFrame(rows)
 
 
@@ -3901,7 +4317,10 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
                         haz_pct_sector: Optional[pd.Series] = None,
                         spy_yearly_pos: Optional[pd.Series] = None,
                         daily_indicator_detail: bool = False,
-                        regime_accept_horizon: int = 21) -> Dict[str, pd.DataFrame]:
+                        regime_accept_horizon: int = 21,
+                        regime_accept_stat: str = "next_day_episode",
+                        episode_stats: bool = True,
+                        trend200: Optional[pd.Series] = None) -> Dict[str, pd.DataFrame]:
     # daily_indicator_detail: [v0.9.1] SectorConfig.DAILY_INDICATOR_DETAIL을 그대로 전달받는다(cfg_i는
     # M.Config 사본이라 이 필드가 없음 — sector_cfg_for()가 M_cfg 필드만 복제하므로 여기서 직접 인자로 받는다).
     idx = bt.index
@@ -3980,7 +4399,8 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
             M=M, level="warning")
 
     # [v0.3.0 §1.G-1] 09b_규칙별기여 — bt(SIGNAL_START 이후)와 실제 신호에 쓰인 sig 기준(§1.B 반영).
-    rule_contrib = build_rule_contribution(ticker, sig, bt)
+    # [v0.41.0 S-D·S-E] trend200(자기 200일선 이격도)을 함께 넘겨 진단 행을 추가한다(규칙 변경 없음).
+    rule_contrib = build_rule_contribution(ticker, sig, bt, trend200=trend200)
 
     # ---- 03 지표검증 / 04 채택근거상세 ----
     val_cols = ["지표코드", "지표명", "카테고리", "검증트랙", "평가지평", "판정", "판정사유",
@@ -4100,27 +4520,85 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
                 mcc_h = (tp * tn - fp * fn) / den if den > 0 else np.nan
     except Exception as _e:   # noqa
         pass
-    if pd.notna(mu_dn_h) and pd.notna(mcc_h):
-        cond_a = bool(mu_dn_h < mu_all_h); cond_b = bool(mcc_h > 0)
-        regime_validity = bool(cond_a and cond_b)
-        verdict = (f"{'국면 정의 유효' if regime_validity else '주의: 국면 정의 미달'} "
-                   f"(h={h_acc}일 · 하락후 평균 {mu_dn_h*100:.3f}% {'<' if cond_a else '>='} 전체 {mu_all_h*100:.3f}%"
-                   f"{'✔' if cond_a else '✘'} · MCC {mcc_h:.4f}{'✔' if cond_b else '✘'}) {d1_txt}")
+    # ---- [v0.41.0 S-C-3/S-C-4 ⚠ 판정 잣대 교정] 익일 + 에피소드 -------------------------
+    # 왜(REPORT44 §2.2): h=21 "모든 하락일의 전방수익"은 뒤쪽 날들의 창이 **재진입 후 반등**을 포함해
+    #   양수로 기운다. 실제로 에피소드(진입 종가→청산 익일 종가)로 재면 8/11 섹터의 하락 상태가
+    #   손실을 피하고 있었다. 상태기계가 매일 거는 내기는 익일 수익이고, 구간 단위 성적은 에피소드다.
+    # 새 기본 기준("next_day_episode", 둘 다 충족해야 PASS):
+    #   (가) 하락 상태의 **익일 평균수익** < 전체 익일 평균     (그날그날의 내기에서 이겼는가)
+    #   (나) **에피소드 회피수익 합 < 0**                      (구간 전체로 손실을 피했는가)
+    #   h=21·MCC 열은 '정보'로 그대로 남긴다("fwd21"로 되돌리면 v0.40.0 판정).
+    mu_all_1 = mu_dn_1 = np.nan
+    n_dn_1 = 0
+    ep_df = pd.DataFrame()
+    ep_sum: Dict[str, Any] = {"n": 0, "sum": np.nan, "neg_share": np.nan, "median_len": np.nan}
+    try:
+        _st1 = sig["state"].reindex(bt.index).astype(str)
+        _nx1 = bt["ret_cc"].shift(-1)
+        _m1 = _nx1.notna() & _st1.isin(["RISK_ON", "NEUTRAL", "RISK_OFF"])
+        if int(_m1.sum()) >= 120:
+            mu_all_1 = float(_nx1[_m1].mean())
+            _dn1 = _st1[_m1].eq("RISK_OFF")
+            n_dn_1 = int(_dn1.sum())
+            if n_dn_1 >= 20:
+                mu_dn_1 = float(_nx1[_m1][_dn1].mean())
+        if episode_stats:
+            _C1 = (1.0 + bt["ret_cc"].fillna(0.0)).cumprod()
+            ep_df = regime_off_episodes(_st1, _C1, after_h=h_acc)
+            ep_sum = regime_episode_summary(ep_df)
+    except Exception as _e:   # noqa
+        pass
+    _stat = str(regime_accept_stat or "next_day_episode").lower()
+    if _stat == "fwd21":
+        if pd.notna(mu_dn_h) and pd.notna(mcc_h):
+            cond_a = bool(mu_dn_h < mu_all_h); cond_b = bool(mcc_h > 0)
+            regime_validity = bool(cond_a and cond_b)
+            verdict = (f"{'국면 정의 유효' if regime_validity else '주의: 국면 정의 미달'} "
+                       f"(h={h_acc}일 · 하락후 평균 {mu_dn_h*100:.3f}% {'<' if cond_a else '>='} 전체 {mu_all_h*100:.3f}%"
+                       f"{'✔' if cond_a else '✘'} · MCC {mcc_h:.4f}{'✔' if cond_b else '✘'}) {d1_txt}")
+        else:
+            regime_validity = d1_ok
+            verdict = f"h={h_acc}일 판정 불가(하락 표본 {n_dn_h}일) — 익일 기준으로 대체. {d1_txt}"
     else:
-        regime_validity = d1_ok
-        verdict = f"h={h_acc}일 판정 불가(하락 표본 {n_dn_h}일) — 익일 기준으로 대체. {d1_txt}"
+        _info = (f"[정보 h={h_acc}일] 하락후 "
+                 + (f"{mu_dn_h*100:.3f}%" if pd.notna(mu_dn_h) else "-")
+                 + " vs 전체 " + (f"{mu_all_h*100:.3f}%" if pd.notna(mu_all_h) else "-")
+                 + " · MCC " + (f"{mcc_h:.4f}" if pd.notna(mcc_h) else "-"))
+        if pd.notna(mu_dn_1) and pd.notna(mu_all_1):
+            cond_a = bool(mu_dn_1 < mu_all_1)
+            cond_b = bool(pd.notna(ep_sum["sum"]) and ep_sum["sum"] < 0)
+            _has_ep = bool(ep_sum["n"] > 0 and pd.notna(ep_sum["sum"]))
+            regime_validity = bool(cond_a and cond_b) if _has_ep else bool(cond_a)
+            verdict = (f"{'국면 정의 유효' if regime_validity else '주의: 국면 정의 미달'} "
+                       f"(익일 · 하락 {mu_dn_1*1e4:.1f}bp {'<' if cond_a else '>='} 전체 {mu_all_1*1e4:.1f}bp"
+                       f"{'✔' if cond_a else '✘'}"
+                       + (f" · 에피소드 {ep_sum['n']}개 회피합 {ep_sum['sum']:+.1f}%{'✔' if cond_b else '✘'}"
+                          f"(회피<0 비율 {ep_sum['neg_share']:.2f})" if _has_ep else " · 에피소드 표본 없음(익일만으로 판정)")
+                       + f") {_info}")
+        else:
+            regime_validity = d1_ok
+            verdict = f"익일 판정 불가(하락 표본 {n_dn_1}일) — 상승/하락 비교로 대체. {d1_txt} {_info}"
     regime_stats["국면정의 검증"] = verdict
+    regime_stats["판정 잣대"] = ("익일+에피소드" if _stat != "fwd21" else f"전방 {h_acc}일+MCC")
+    regime_stats["하락 익일 평균(bp)"] = (round(mu_dn_1 * 1e4, 2) if pd.notna(mu_dn_1) else np.nan)
+    regime_stats["전체 익일 평균(bp)"] = (round(mu_all_1 * 1e4, 2) if pd.notna(mu_all_1) else np.nan)
+    regime_stats["하락 에피소드 수"] = int(ep_sum["n"])
+    regime_stats["에피소드 회피수익 합(%)"] = (round(float(ep_sum["sum"]), 2) if pd.notna(ep_sum["sum"]) else np.nan)
+    regime_stats["에피소드 회피<0 비율"] = (round(float(ep_sum["neg_share"]), 3) if pd.notna(ep_sum["neg_share"]) else np.nan)
+    regime_stats["에피소드 중앙 길이(일)"] = (round(float(ep_sum["median_len"]), 1) if pd.notna(ep_sum["median_len"]) else np.nan)
     regime_stats[f"하락후 평균수익(%,{h_acc}일)"] = (round(mu_dn_h * 100, 3) if pd.notna(mu_dn_h) else np.nan)
     regime_stats[f"무조건 평균수익(%,{h_acc}일)"] = (round(mu_all_h * 100, 3) if pd.notna(mu_all_h) else np.nan)
     regime_stats[f"MCC({h_acc}일)"] = (round(float(mcc_h), 4) if pd.notna(mcc_h) else np.nan)
 
     for df in (val_sheet, detail, perf, extra, ann, wf, regime_stats, trades, episodes, events, sens, audit,
-              rule_contrib):
+              rule_contrib, ep_df):
         if isinstance(df, pd.DataFrame) and len(df) and "티커" not in df.columns:
             df.insert(0, "티커", ticker)
     return {"daily": daily, "trades": trades, "val_sheet": val_sheet, "detail": detail, "events": events,
             "episodes": episodes, "perf": perf, "extra": extra, "sens": sens, "annual": ann, "wf": wf,
             "regime_stats": regime_stats, "audit": audit, "regime_validity": regime_validity,
+            "regime_episodes": ep_df,                       # [v0.41.0 S-C-3] 09d_하락에피소드 조각
+            "regime_episode_summary": ep_sum,
             "regime_verdict": verdict, "n_strict_pass": int((val_full["판정"] == "PASS").sum()),
             "latest_adopted": (int(pd.to_numeric(pd.DataFrame(wlog)["채택지표수"], errors="coerce").dropna().iloc[-1])
                                if len(wlog) else 0),
@@ -4343,8 +4821,11 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
     # ---- 2) 섹터별 파이프라인 ----
     t0 = time.time()
     # [v0.40.0 §S5·§I5] 섹터별 산업폭 — 1회 계산해 ctx로(섹터별 재계산 없음).
+    # [v0.41.0 I-C] parent_tr — 확장 후보(최고베타 상대모멘텀)에 필요한 부모 총수익 종가. 이미 만들어 둔
+    #   frames를 그대로 넘긴다(재수집·재계산 없음). USE_INDUSTRY_EXTRA_CANDIDATES=False면 쓰이지 않는다.
     industry_breadth = build_industry_breadth(res, M, scfg, cal, industry_px_override=industry_px_override,
-                                              offline=bool(sector_px_override))
+                                              offline=bool(sector_px_override),
+                                              parent_tr={t: frames[t][0]["Adj Close"].astype(float) for t in frames})
     # [v0.40.0 §S3] 시장 확인 시리즈 — 11섹터가 공유(1회 계산, 재계산 없음).
     market_ok = market_ok_series(res, M)
     log("SIGNAL", kv(event="market_ok_ready", n=int(len(market_ok)), true_days=int(market_ok.sum()),
@@ -4706,6 +5187,8 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
     selected_eff_by_year: Dict[int, List[str]] = {}
     tier_by_year: Dict[int, str] = {}
     avoid_by_year: Dict[int, List[str]] = {}
+    reverse_avoid_by_year: Dict[int, List[str]] = {}          # [v0.41.0 S-G]
+    top_stats_by_year: Dict[int, Dict[str, Tuple[float, int]]] = {}   # [v0.41.0 S-G] 격자용 raw (t, n)
     for y in years:
         cutoff = pd.Timestamp(year=y, month=1, day=1) - pd.Timedelta(days=35)
         # [v0.10.0] 그 해 학습창(cutoff 이전)에만 감쇠 가중 — asof는 반드시 cutoff(데이터 마지막 날짜가 아님, 룩어헤드 차단).
@@ -4783,6 +5266,15 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
                         and stats_bot[n][1] <= -float(scfg.ROTATION_SELECT_T)]
         else:
             avoid_ok = list(sel_eff)
+        # [v0.41.0 S-G] 역방향 회피 자격 — **채택과 무관하게** 상위1 스프레드 t ≤ −ROTATION_REVERSE_AVOID_T인
+        #   신호("그 신호의 1위를 피하라"). 근거: 13g REL_MOM_21 상위1 t −2.51(2026 학습창, 리포트39도 −2.51)
+        #   = 1개월 승자가 21일 뒤 평균을 −0.55% 밑돈다(REPORT44 §3.2 말미). 산업층 §B4와 같은 경로다.
+        #   raw t는 top_stats_by_year에 그대로 실어 배분층 격자가 문턱을 바꿔 가며 판정할 수 있게 한다.
+        _rev_t = float(getattr(scfg, "ROTATION_REVERSE_AVOID_T", 2.0) or 2.0)
+        rev_ok = [n for n, (m, t, nn) in stats.items()
+                  if nn >= scfg.ROTATION_SELECT_MIN_DAYS and pd.notna(t) and t <= -_rev_t]
+        top_stats_by_year[y] = {n: (float(t) if pd.notna(t) else np.nan, int(nn)) for n, (m, t, nn) in stats.items()}
+        reverse_avoid_by_year[y] = rev_ok
         for name, (m, t, nn) in stats.items():
             ext_val = ext_y.get(name, np.nan)
             m_ic, t_ic, n_ic, _ = stats_ic_u[name]        # [v0.10.0] 기존 열은 항상 균등가중(v0.9.2와 동일값)
@@ -4818,6 +5310,8 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
                          f"학습 하위1 스프레드(%/{h}일)": round(m_bt * 100, 3) if pd.notna(m_bt) else np.nan,   # [v0.9.0]
                          "NW-HAC t(하위1)": round(t_bt, 2) if pd.notna(t_bt) else np.nan,
                          "회피 자격": ("Y" if name in avoid_ok else ("N" if name in sel_eff else "")),
+                         # [v0.41.0 S-G] 역방향(그 신호의 1위를 피하라) 자격 — 채택 여부와 무관하게 t ≤ −T면 Y
+                         "역방향 회피 자격": ("Y" if name in rev_ok else ""),
                          # [v0.10.0 §1.A] 감쇠가중 열 — decay_on=False면 위 균등가중 열과 항상 같은 값
                          "NW-HAC t(IC, 감쇠)": round(t_ic_d, 2) if pd.notna(t_ic_d) else np.nan,
                          f"학습 상위1 스프레드(감쇠,%/{h}일)": round(m_tp_d * 100, 3) if pd.notna(m_tp_d) else np.nan,
@@ -4843,6 +5337,7 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
                            # [v0.11.0] dedup=중복 제거로 뺀 신호(없으면 -), usable=이 해에 리더가 구조적으로 가능한가(교차확인 요구 수 충족)
                            dedup=",".join(sorted(dedup_reasons)) if dedup_reasons else "-",
                            usable=("yes" if usable_y else f"no(sel_eff={len(sel_eff)}<need={need_eff})"),
+                           reverse_avoid=",".join(rev_ok) if rev_ok else "-",   # [v0.41.0 S-G]
                            top_t=";".join(f"{n}={stats[n][1]:.2f}" for n in sorted(stats, key=lambda k: -(stats[k][1] if pd.notna(stats[k][1]) else -99))[:3]),
                            bottom_t=";".join(f"{n}={stats_bot[n][1]:.2f}" for n in sel_eff if pd.notna(stats_bot[n][1])) or "-",
                            decay=("on" if decay_on else "off"), half_life=(int(half_life_days) if decay_on else "-"),
@@ -4860,6 +5355,7 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
             "basis_by_year": basis_by_year, "ic_full": ic_full, "top1_full": top1_full, "bottom1_full": bottom1_full,
             "rank_full": rank_full, "horizon": h, "external": external, "mode": mode, "stat": stat, "smooth": smooth,
             "selected_eff_by_year": selected_eff_by_year, "tier_by_year": tier_by_year, "avoid_by_year": avoid_by_year,   # [v0.9.0]
+            "reverse_avoid_by_year": reverse_avoid_by_year, "top_stats_by_year": top_stats_by_year,   # [v0.41.0 S-G]
             "evidence_tier": evidence_tier, "avoid_validate": avoid_validate,
             "decay_on": decay_on, "half_life_days": (half_life_days if decay_on else None)}   # [v0.10.0]
 
@@ -5232,7 +5728,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     _spy_state_src = res["sig"]["state"] if "state" in res["sig"].columns else pd.Series(np.nan, index=full_idx)
     spy_regime_arr = _spy_state_src.reindex(eval_idx).map(STATE_SHORT).fillna("-").values
 
-    def _run_leader3(leader_regimes: Optional[Tuple[str, ...]]) -> Dict[str, Any]:
+    def _run_leader3(leader_regimes: Optional[Tuple[str, ...]],
+                     reverse_avoid_by_year: Optional[Dict[int, List[str]]] = None) -> Dict[str, Any]:
         """[v0.4.0 §1.F leader3 상태기계 — v0.10.0 §1.D로 국면 제약을 인자화] leader_regimes=None이면 전 국면(제약 없음,
         v0.9.2·§1.B와 완전히 동일). 튜플이면 그날 SPY 시장상황(STATE_SHORT 라벨)이 그 집합에 있을 때만 리더 인정 — 없으면
         새 tier를 만들지 않고 그대로 '폴백'(§1.D: "그 외는 폴백"). 교차확인 투표·확신 게이트(§1.B)·꼴찌 회피·최소보유 상태기계는
@@ -5248,6 +5745,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         margin_ = pd.Series(np.nan, index=eval_idx, dtype=float)     # 1위 여유(2위 대비) — 13c
         step_ = pd.Series(np.nan, index=eval_idx, dtype=float)       # 여유 문턱 — 13c
         gate_ = pd.Series("해당없음", index=eval_idx, dtype=object)  # 확신 게이트: 통과/미달/해당없음(투표상 리더 후보 자체가 없음) — 13c
+        rev_hits_ = np.zeros(len(eval_idx), dtype=int)               # [v0.41.0 S-G] 그날 역방향 회피로 제외된 후보 수
         cur_leader: Optional[str] = None
         held = 0
         switches_ = 0
@@ -5261,6 +5759,20 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             avoid_ok = avoid_by_year.get(yr, sel)
             row = comp_vals[i]
             ok = elig_vals[i] & ~np.isnan(row)
+            # [v0.41.0 S-G] 역방향 회피 — 상위1 스프레드 t ≤ −T인 신호가 그날 지목한 1위를 후보에서 통째로
+            #   제외한다(리더·회피 바스켓 모두). 산업층 §B4와 같은 처리이며, reverse_avoid_by_year가
+            #   None/빈 dict면 이 블록은 완전히 비활성 — v0.40.0과 비트 동일.
+            if reverse_avoid_by_year:
+                _rev = [s_ for s_ in reverse_avoid_by_year.get(yr, []) if s_ in am]
+                if _rev:
+                    ok = ok.copy()
+                    for s_ in _rev:
+                        _c = am[s_].iloc[i]
+                        if isinstance(_c, str) and _c in cand:
+                            _j = cand.index(_c)
+                            if ok[_j]:
+                                ok[_j] = False
+                                rev_hits_[i] += 1
             n_ok = int(ok.sum())
             leader = laggard = None
             v_lead = v_lag = 0
@@ -5359,9 +5871,28 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 tier_.iloc[i] = "현금"
         return {"frac_leader": frac, "tier": tier_, "leader_s": leader_, "laggard_s": laggard_,
                 "votes_leader": votes_leader_, "votes_laggard": votes_laggard_, "n_sel_s": n_sel_,
-                "margin_s": margin_, "step_s": step_, "gate_s": gate_, "switches": switches_, "n_spy_top": n_spy_top_}
+                "margin_s": margin_, "step_s": step_, "gate_s": gate_, "switches": switches_, "n_spy_top": n_spy_top_,
+                "rev_avoid_days": int((rev_hits_ > 0).sum())}   # [v0.41.0 S-G]
 
-    _lr3 = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None))
+    # [v0.41.0 S-G] 역방향 회피 연도별 집합 — wf의 raw (t, n)에서 문턱을 바꿔 가며 만든다(신호 재계산 없음).
+    #   direction=-1: t ≤ −thr("그 신호의 1위를 피하라" — 실측 근거가 있는 방향)
+    #   direction=+1: t ≥ +thr(반증용 — 사전방향대로 잘 맞는 신호의 1위를 피하면 **나빠져야** 정상)
+    def _rev_sets(thr: float, direction: int = -1) -> Dict[int, List[str]]:
+        out: Dict[int, List[str]] = {}
+        _min_d = int(getattr(scfg, "ROTATION_SELECT_MIN_DAYS", 250))
+        for _y, _d in (wf.get("top_stats_by_year") or {}).items():
+            out[int(_y)] = [n for n, (t_, nn_) in _d.items()
+                            if nn_ >= _min_d and pd.notna(t_) and ((t_ <= -float(thr)) if direction < 0
+                                                                   else (t_ >= float(thr)))]
+        return out
+
+    _rev_live = (_rev_sets(float(getattr(scfg, "ROTATION_REVERSE_AVOID_T", 2.0)))
+                 if bool(getattr(scfg, "ROTATION_REVERSE_AVOID", False)) else None)
+    _lr3 = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rev_live)
+    if _rev_live is not None:
+        log("ROTATION", kv(event="reverse_avoid_live", t=float(getattr(scfg, "ROTATION_REVERSE_AVOID_T", 2.0)),
+                           days=int(_lr3.get("rev_avoid_days", 0)),
+                           years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_rev_live.items()) if v) or "-"), M=M)
     frac_leader, tier, leader_s, laggard_s = _lr3["frac_leader"], _lr3["tier"], _lr3["leader_s"], _lr3["laggard_s"]
     votes_leader, votes_laggard, n_sel_s = _lr3["votes_leader"], _lr3["votes_laggard"], _lr3["n_sel_s"]
     margin_s, step_s, gate_s = _lr3["margin_s"], _lr3["step_s"], _lr3["gate_s"]
@@ -5399,6 +5930,28 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     frac_regime = None
     if getattr(scfg, "ROTATION_ALT_LEADER_REGIME_NEUTRAL", True):
         frac_regime = _run_leader3(("중립",))["frac_leader"]
+    # [v0.41.0 S-G 사전등록 격자] 1개월 상대모멘텀 반전 = 역방향 회피 — **집중배분 계열에서만** 판정한다.
+    #   S★(주력섹터)에는 붙이지 않는다: XLK가 1개월 승자인 날 주력을 빼는 꼴이 되기 때문(REPORT44 §S-G).
+    #   반증 1행을 반드시 같이 싣는다(v0.36.0 분산게이트 격자의 관행) — 방향이 진짜라면 반증 행은 나빠야 한다.
+    reverse_avoid_variants: Dict[str, pd.DataFrame] = {}
+    if bool(getattr(scfg, "ROTATION_REVERSE_AVOID_GRID", ())):
+        for _rt in tuple(getattr(scfg, "ROTATION_REVERSE_AVOID_GRID", ()) or ()):
+            _rs = _rev_sets(float(_rt))
+            if not any(_rs.values()):
+                log("ROTATION", kv(event="reverse_avoid_grid_empty", t=float(_rt),
+                                   note="그 문턱을 넘는 반전 신호가 한 해도 없음 — 행 생략"), M=M)
+                continue
+            _r3 = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rs)
+            reverse_avoid_variants[f"집중배분 · 역방향회피 t≤−{float(_rt):.1f} [역방향회피격자]"] = _r3["frac_leader"]
+            log("ROTATION", kv(event="reverse_avoid_grid", t=float(_rt), days=int(_r3.get("rev_avoid_days", 0)),
+                               years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_rs.items()) if v) or "-"), M=M)
+        if bool(getattr(scfg, "ROTATION_REVERSE_AVOID_COUNTER", True)):
+            _rt0 = float((tuple(getattr(scfg, "ROTATION_REVERSE_AVOID_GRID", (2.0,)) or (2.0,)))[0])
+            _rsc = _rev_sets(_rt0, direction=+1)
+            if any(_rsc.values()):
+                _r3c = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rsc)
+                reverse_avoid_variants[f"집중배분 · 반증: t≥+{_rt0:.1f} 신호의 1위 회피 [역방향회피격자·반증]"] = \
+                    _r3c["frac_leader"]
     # [v0.16.0 §A ⚠] 주력 섹터 중심 배분 — 근거·실측은 SectorConfig 주석 참조.
     #   주력(기본 XLK)이 자기 국면 RISK_OFF가 아니면 ROTATION_PRIMARY_CAP만큼 보유하고 나머지는 대피처로,
     #   RISK_OFF면 전량 대피처로 보낸다. 대피처 = 순환매 복합순위 1위(주력 제외 · 그 섹터도 RISK_OFF 아님),
@@ -5500,7 +6053,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
 
         def _build_primary(cap_: float, bscale_: Optional[float] = None, bmode_: Optional[str] = None,
                            shelter_def_: Optional[float] = None, disp_pct_: Optional[float] = None,
-                           disp_invert_: Optional[bool] = None):
+                           disp_invert_: Optional[bool] = None, neutral_leader_: Optional[float] = None):
             _bm = _beta_mult(float(getattr(scfg, "ROTATION_BETA_SCALE", 0.0) or 0.0)
                              if bscale_ is None else float(bscale_))
             _mode = str(getattr(scfg, "ROTATION_BETA_MODE", "trim") if bmode_ is None else bmode_)
@@ -5516,9 +6069,16 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _dp = float(getattr(scfg, "ROTATION_DISPERSION_PCT", 0.50) or 0.0)
             if _dp is not None and float(_dp) > 0.0:
                 _dgate = _dispersion_gate(float(_dp), _di)
+            # [v0.41.0 S-B] 중립 국면 리더 슬롯 — 잔여 슬리브 중 _nl 만큼을 그날 '확신 게이트를 통과한
+            #   리더'(leader_s)에게 준다. 근거(REPORT44 §2.1 증거2): SCORE_PCT 1위 초과수익은 M=중립에서만
+            #   t 3.50이고 상승에서는 t 0.53이다. 주력(_pri)이 리더인 날은 건너뛴다 — 상한의 의미를 지키려고.
+            _nl = float(getattr(scfg, "ROTATION_NEUTRAL_LEADER_SHARE", 0.0) or 0.0
+                        if neutral_leader_ is None else neutral_leader_)
+            _nl = min(max(_nl, 0.0), 1.0)
+            _nl_reg = str(getattr(scfg, "ROTATION_NEUTRAL_LEADER_REGIME", "중립"))
             fps_ = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
-            n_pri_ = n_alt_ = n_eq_ = n_def_ = n_dg_ = 0
-            for _d in eval_idx:
+            n_pri_ = n_alt_ = n_eq_ = n_def_ = n_dg_ = n_nl_ = 0
+            for _i_d, _d in enumerate(eval_idx):
                 _pri_ok = bool(_hold.loc[_d, _pri]) if _pri in _hold.columns else False
                 _a = _alt.get(_d)
                 _a_ok = (isinstance(_a, str) and _a in _hold.columns and bool(_hold.loc[_d, _a])
@@ -5541,6 +6101,16 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     _rest = _rest - _r_def
                     if _r_def > 1e-12:
                         fps_.loc[_d, _dc] += _r_def * float(_bm.loc[_d, _dc]); n_def_ += 1
+                # [v0.41.0 S-B] 중립 국면 리더 슬롯 — 방어 대피처 몫을 뗀 뒤, 순위 1위/균등 분기보다 먼저.
+                if _rest > 1e-12 and _nl > 0 and spy_regime_arr[_i_d] == _nl_reg:
+                    _ld = leader_s.get(_d)
+                    if (isinstance(_ld, str) and _ld and _ld != _pri and _ld in _hold.columns
+                            and _ld in eligible.columns and bool(_hold.loc[_d, _ld])
+                            and bool(eligible.loc[_d, _ld])):
+                        _r_ld = _rest * _nl
+                        _rest = _rest - _r_ld
+                        if _r_ld > 1e-12:
+                            fps_.loc[_d, _ld] += _r_ld * float(_bm.loc[_d, _ld]); n_nl_ += 1
                 if _rest > 1e-12:
                     # [v0.36.0 §A] 저분산일이면 '순위 1위 집중'을 포기하고 아래 균등 분기로 내려간다.
                     #   ⚠ 주력 비중(cap_)은 건드리지 않는다 — 바뀌는 것은 잔여 슬리브의 배분 방식뿐.
@@ -5562,6 +6132,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 log("ROTATION", kv(event="dispersion_gate_applied", pct=round(float(_dp), 4),
                                    invert=bool(_di), gate_days=int(_dgate.sum()), rank_days_dropped=n_dg_,
                                    cap=round(float(cap_), 4)), M=M)
+            if _nl > 0:
+                log("ROTATION", kv(event="neutral_leader_slot_applied", share=round(_nl, 4), regime=_nl_reg,
+                                   days=n_nl_, cap=round(float(cap_), 4)), M=M)
             return fps_, n_pri_, n_alt_, n_eq_
         fps, _n_pri, _n_alt, _n_eq = _build_primary(_cap)
         frac_primary_sector = fps
@@ -5610,6 +6183,18 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         if _dg_live > 0:   # 게이트를 켠 뒤에는 '끈 상태'가 대조군으로 실려야 한다
             primary_cap_variants["주력섹터 중심 · 분산게이트 off [분산게이트격자]"] = \
                 _build_primary(_cap, None, None, None, 0.0, False)[0]
+        # [v0.41.0 S-B 사전등록 격자] 중립 국면 리더 슬롯 — 잔여 슬리브의 25/50/100%를 그날 리더에게.
+        #   근거(REPORT44 §2.1 증거2·§S-B): 리더 정보는 M=중립에만 있다(t 3.50 vs 상승 0.53).
+        #   배분층이라 하나의 신호(results·leader_s)를 공유한다 → 격자 4기준으로 판정. 라이브는 0.0(무변경).
+        _nl_live = float(getattr(scfg, "ROTATION_NEUTRAL_LEADER_SHARE", 0.0) or 0.0)
+        for _nv in tuple(getattr(scfg, "ROTATION_NEUTRAL_LEADER_GRID", ()) or ()):
+            if abs(float(_nv) - _nl_live) < 1e-9:
+                continue
+            primary_cap_variants[f"주력섹터 중심 · 중립 리더슬롯 {float(_nv):.0%} [중립리더격자]"] = \
+                _build_primary(_cap, None, None, None, None, None, float(_nv))[0]
+        if _nl_live > 0:   # 켠 뒤에는 '끈 상태'가 대조군으로 실려야 한다
+            primary_cap_variants["주력섹터 중심 · 중립 리더슬롯 off [중립리더격자]"] = \
+                _build_primary(_cap, None, None, None, None, None, 0.0)[0]
         label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
         log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
                            days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
@@ -5639,6 +6224,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         variants[label_regime] = frac_regime    # [v0.10.0 §1.D]
     for _lab, _fr in primary_cap_variants.items():   # [v0.22.0] 주력 상한 격자(실제 엔진 측정)
         variants[_lab] = _fr
+    for _lab, _fr in reverse_avoid_variants.items():   # [v0.41.0 S-G] 역방향 회피 격자(집중배분 계열)
+        variants[_lab] = _fr
     # [v0.24.0] 혼합 변형 등록은 label_conv(확신 사이징) 생성 **뒤로** 옮겼다 — v0.23.0에서
     #   여기에 두었더니 그 시점에 확신 사이징이 아직 variants에 없어 **아무 것도 등록되지 않았다**
     #   (리포트25에 [혼합] 행이 통째로 빠진 원인). 아래 label_conv 블록 다음을 볼 것.
@@ -5662,6 +6249,15 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     listed_all = listed_all.reindex(columns=all_cols)
     bts: Dict[str, pd.DataFrame] = {}
     target_ws: Dict[str, pd.DataFrame] = {}
+    # [v0.41.0 S-H ⚠ 결함수정 — like-for-like 복원] 아래 변형 루프는 tier를 **공유**하는데 v0.15.0의
+    #   하락국면리더 오버라이드가 `tier.loc[...] = "하락국면리더"`로 그 Series를 제자리에서 바꿔 버린다.
+    #   ★(label_primary)가 variants의 첫 항목이라 ★만 오버라이드를 받고, 그 다음에 오는 **모든 격자 행**은
+    #   `tier.eq("현금")`이 이미 False가 되어 조용히 오버라이드를 못 받았다(합성 픽스처 실측: 로그
+    #   down_regime_leader_applied가 38행 중 1회만 발생). v0.24.0이 "[상한격자]가 오버라이드를 못 받아
+    #   '상한 0.8이 최적'이라는 틀린 결론을 냈다"며 고친 바로 그 실수가 **다른 경로로 되살아나 있었다.**
+    #   → 오버라이드 판정은 루프 전에 뜬 스냅샷(tier_cash0)으로만 하고, tier 라벨 변경은 ★에만 적용한다
+    #     (반환되는 tier/13c 표시는 종전과 동일 = ★ 기준).
+    tier_cash0 = tier.eq("현금").copy()
     down_leader_days = pd.Series(False, index=eval_idx)      # [v0.15.0 §A] 하락국면 리더 발동일(진단·시트용)
     alldown_days = pd.Series(False, index=eval_idx)          # [v0.27.0] 전섹터 하락 SPY 참여 발동일(격자·시트용)
     _ad_live_pos = 0.0                                       # [v0.27.0] ★에 실제로 적용된 참여 강도(격자 기준값)
@@ -5688,21 +6284,26 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #   합성 E2E에서 반증 행이 [전섹터하락격자] 0% 와 비트 동일하게 나와 잡혔다(오버라이드 미적용).
         #   → 여는 대괄호까지만 비교한다. v0.24.0의 "오버라이드를 못 받은 격자가 틀린 결론을 냈다"와
         #     같은 종류의 실수이므로, 아래 회귀가 리포트의 모든 '격자' 라벨을 훑어 재발을 막는다.
-        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자", "[베타격자", "[베타재투입격자", "[방어대피처격자", "[분산게이트격자"))
+        # [v0.41.0] 새 격자 2종도 같은 오버라이드를 받아야 like-for-like다(v0.24.0의 실수를 반복하지 않는다).
+        #   [중립리더격자]는 주력섹터 계열, [역방향회피격자]는 집중배분 계열 — 둘 다 ★/label_leader와 같은 처리.
+        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자", "[베타격자", "[베타재투입격자", "[방어대피처격자",
+                                                       "[분산게이트격자", "[중립리더격자", "[역방향회피격자"))
         if ((label in (label_leader, label_primary) or _is_cap_grid)
                 and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
             dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
-            dl_m = tier.eq("현금") & leader_s.notna() & leader_s.isin(cols)
+            dl_m = tier_cash0 & leader_s.notna() & leader_s.isin(cols)   # [v0.41.0 S-H] 스냅샷 기준
             if getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True):
                 dl_m = dl_m & gate_s.eq("통과")
             if dl_pos > 0 and bool(dl_m.any()):
                 for _d in eval_idx[dl_m.reindex(eval_idx).fillna(False).values]:
                     tw.loc[_d, :] = 0.0
                     tw.loc[_d, leader_s.loc[_d]] = dl_pos
-                down_leader_days = dl_m.reindex(eval_idx).fillna(False)
-                # 리포트가 '현금'이라 적으면서 섹터를 들고 있는 모순을 없앤다 — 전용 판단 라벨.
-                tier.loc[down_leader_days[down_leader_days].index] = "하락국면리더"
-                log("ROTATION", kv(event="down_regime_leader_applied", days=int(down_leader_days.sum()),
+                if label == label_primary:      # [v0.41.0 S-H] 라벨 변경은 ★에만(공유 Series 오염 방지)
+                    down_leader_days = dl_m.reindex(eval_idx).fillna(False)
+                    # 리포트가 '현금'이라 적으면서 섹터를 들고 있는 모순을 없앤다 — 전용 판단 라벨.
+                    tier.loc[down_leader_days[down_leader_days].index] = "하락국면리더"
+                log("ROTATION", kv(event="down_regime_leader_applied", label=str(label)[:40],
+                                   days=int(dl_m.reindex(eval_idx).fillna(False).sum()),
                                    pos=dl_pos, require_gate=bool(getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True)),
                                    sectors=dict(leader_s[down_leader_days].value_counts())), M=M)
         # [v0.27.0 ⚠⚠ 신규 규칙 — 전섹터 하락 시 SPY 잔여 참여] 근거·실측은 SectorConfig 주석 참조.
@@ -5719,8 +6320,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             if bool(_idle.any()):
                 _idx = _idle[_idle].index
                 tw.loc[_idx, "SPY"] = (_ad_pos * _Ev.loc[_idx]).values
-                tier.loc[_idx] = "전섹터하락SPY"
-                if label == label_primary:
+                if label == label_primary:      # [v0.41.0 S-H] 라벨 변경은 ★에만(공유 Series 오염 방지)
+                    tier.loc[_idx] = "전섹터하락SPY"
                     alldown_days = _idle.copy()
                     _ad_live_pos = _ad_pos
                 log("ROTATION", kv(event="alldown_spy_applied", days=int(_idle.sum()), pos=_ad_pos,
@@ -6567,6 +7168,38 @@ def build_prediction_accuracy(alloc: Dict[str, Any],
                      "표본일수": int(m.sum()),
                      "리더 지정일": int((isL & m).sum()),
                      "리더 비율": round(float((isL & m).mean() if m.sum() else np.nan), 4)})
+
+    # ---------- [v0.41.0 S-B] E. SPY 국면별 리더 적중률 ----------
+    # 왜(REPORT44 §2.1 증거2): 리더 정보는 **M=중립 국면에만** 있다(재계산 SCORE_PCT 1위−평균:
+    #   중립 t 3.50 · 상승 t 0.53 · 하락 t 0.31; 13i도 중립 +2.82 / 상승 +0.32). S-B(중립 리더슬롯 격자)의
+    #   판정 기준이 "중립 부분집합의 리더>SPY 비율 ≥ 0.60"이므로 그 숫자를 여기서 직접 낸다.
+    reg = alloc.get("spy_state_short")
+    if reg is not None:
+        reg = pd.Series(reg).reindex(idx).astype(str)
+        hE = 21 if 21 in horizons else horizons[-1]
+        fS = _fwd(lspy, hE)
+        fR = pd.DataFrame({c: _fwd(logs[c], hE) for c in cols})
+        rows.append({"블록": f"E. SPY 국면별 리더 적중률 (h={hE}일)", "구분": "── 리더 정보가 어느 국면에 있나 ──"})
+        for lab in ("상승", "중립", "하락"):
+            m = isL & fS.notna() & reg.eq(lab)
+            if int(m.sum()) < 20:
+                rows.append({"블록": f"E. SPY 국면별 리더 적중률 (h={hE}일)", "구분": lab,
+                             "표본일수": int(m.sum()), "설명": "표본 부족(<20일)"})
+                continue
+            lr = pd.Series([fR.loc[i, lead.loc[i]] for i in idx[m]], index=idx[m])
+            sp = fS[m]
+            eq = fR.loc[m, cols].mean(axis=1)
+            ok = lr.notna() & sp.notna()
+            if int(ok.sum()) < 20:
+                continue
+            rows.append({"블록": f"E. SPY 국면별 리더 적중률 (h={hE}일)", "구분": lab,
+                         "표본일수": int(ok.sum()),
+                         "리더>SPY 비율": round(float((lr[ok] > sp[ok]).mean()), 4),
+                         "무작위섹터>SPY 비율": round(float((eq[ok] > sp[ok]).mean()), 4),
+                         "리더 평균초과(%/지평)": round(float(np.expm1(lr[ok] - sp[ok]).mean()) * 100, 4)})
+        rows.append({"블록": f"E. SPY 국면별 리더 적중률 (h={hE}일)", "구분": "해석",
+                     "설명": "중립 국면의 '리더>SPY 비율'이 0.60 이상이고 상승 국면보다 뚜렷이 높으면 "
+                             "[중립리더격자] 행을 채택 후보로 본다(격자 4기준을 함께 통과해야 채택)."})
     return pd.DataFrame(rows)
 
 
@@ -7593,6 +8226,8 @@ def _rule_contrib_value(rule_contrib: pd.DataFrame, label: str, col: str) -> Any
     이 표를 유일한 소스로 삼도록(값 재계산 없이 그대로 인용)."""
     if rule_contrib is None or not len(rule_contrib) or "규칙" not in rule_contrib.columns:
         return np.nan
+    if col not in rule_contrib.columns:     # [v0.41.0] 새 진단 열이 없는 구버전 조각도 안전하게
+        return np.nan
     hit = rule_contrib.loc[rule_contrib["규칙"] == label, col]
     return hit.iloc[0] if len(hit) else np.nan
 
@@ -7668,6 +8303,20 @@ def build_sector_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, s
                          rc, "[전체] 상승일 미탑승(비중=0 & B&H>0, %p)", "비중=0인 날 B&H수익 합(%p)"),
                      "하락 회피(%p)": _rule_contrib_value(
                          rc, "[전체] 하락일 회피(비중=0 & B&H<0, %p — 음수=회피한 손실)", "비중=0인 날 B&H수익 합(%p)"),
+                     # [v0.41.0 S-E 진단] SPY-H 전파가 이 섹터에서 헛도는지 — 09b의 진단 행을 그대로 인용.
+                     "H진입 중 200일선 위 비율": _rule_contrib_value(rc, "[진단·S-E] H진입일 중 자기200일선 위", "비율"),
+                     "H진입(200일선 위) 익일평균(%)": _rule_contrib_value(
+                         rc, "[진단·S-E] H진입일 중 자기200일선 위", "발동일 익일B&H평균수익(%)"),
+                     "H진입(200일선 아래) 익일평균(%)": _rule_contrib_value(
+                         rc, "[진단·S-E] H진입일 중 자기200일선 아래", "발동일 익일B&H평균수익(%)"),
+                     # [v0.41.0 S-C-3 진단] 하락 에피소드 요약(09d와 같은 소스) — '회피합<0'이 수용기준 (나)다.
+                     "하락 에피소드 수": (sh.get("regime_episode_summary") or {}).get("n"),
+                     "에피소드 회피수익 합(%)": (round(float((sh.get("regime_episode_summary") or {}).get("sum")), 2)
+                                        if pd.notna((sh.get("regime_episode_summary") or {}).get("sum", np.nan))
+                                        else np.nan),
+                     "에피소드 회피<0 비율": (round(float((sh.get("regime_episode_summary") or {}).get("neg_share")), 3)
+                                     if pd.notna((sh.get("regime_episode_summary") or {}).get("neg_share", np.nan))
+                                     else np.nan),
                      **alloc_cols})
     return pd.DataFrame(rows)
 
@@ -7780,6 +8429,11 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     _gate_all = _concat(results, "regime_gate")
     if isinstance(_gate_all, pd.DataFrame) and len(_gate_all):
         sheets["09c_국면정보게이트"] = _gate_all
+    # [v0.41.0 S-C-3] 09d_하락에피소드 — 섹터×에피소드(진입·청산·길이·회피수익·청산후 h일).
+    #   REPORT44 §2.2 표를 매 실행 자동 재현한다. 판정 보조(에피소드 수가 2~10개라 단독 판정에는 안 쓴다).
+    _ep_all = _concat(results, "regime_episodes")
+    if isinstance(_ep_all, pd.DataFrame) and len(_ep_all):
+        sheets["09d_하락에피소드"] = _ep_all
     q = sres.get("quality", pd.DataFrame())
     u = sres.get("universe", pd.DataFrame())
     sheets["10_데이터품질"] = pd.concat([u, q], ignore_index=True, sort=False) if len(q) else u
@@ -7797,15 +8451,23 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     regime_pass = int(sum(1 for t in ok_t if results[t]["sheets"]["regime_validity"]))
     # [v0.40.0 §S1·§S2·§S3] 이번 라운드 규칙 3개 요약 + 게이트 결과 요약(00시트 2줄).
     _cap = getattr(scfg, "SECTOR_MARKET_BLOCK_CAP", None)
+    _tmin = getattr(scfg, "SECTOR_MACRO_T_MIN", None)
+    _gstat = str(getattr(scfg, "SECTOR_REGIME_GATE_STAT", "next_day"))
+    _astat = str(getattr(scfg, "REGIME_ACCEPT_STAT", "next_day_episode"))
     _regime_rule_line = (
-        f"매크로 블록캡 {('끔' if _cap is None else f'{float(_cap):.0%}')}(SECTOR_MARKET_BLOCK_CAP — "
-        f"B.신용·C.매크로·F.매크로확장 합산 상한, 넘으면 섹터 고유 지표로 재분배) · "
+        f"[v0.41.0 S-A 되돌림] 매크로 블록캡 {('끔' if _cap is None else f'{float(_cap):.0%}')}"
+        f"(SECTOR_MARKET_BLOCK_CAP) · 매크로 후보 t문턱 {('끔' if _tmin is None else f'{float(_tmin):.1f}')}"
+        f"(SECTOR_MACRO_T_MIN) — 리포트44 §2.1(③ 2.08→1.37 FAIL, 리더>SPY 63.8%→51.4%)로 v0.39.0 값으로 복귀. "
         f"추세오버라이드 점수문턱 {float(getattr(scfg, 'SECTOR_OVERRIDE_SCORE_PCT', 0.5)):.2f}"
-        f"{'·시장확인 요구' if getattr(scfg, 'SECTOR_OVERRIDE_NEED_MARKET', False) else '·시장확인 없음'}"
-        f"(SPY 200일선 하회 또는 M 하락국면인 날만 발동) · "
+        f"{'·시장확인 요구' if getattr(scfg, 'SECTOR_OVERRIDE_NEED_MARKET', False) else '·시장확인 없음'} · "
         f"하락 정보 게이트 {'켬' if getattr(scfg, 'SECTOR_REGIME_GATE', False) else '끔'}"
-        f"(t ≤ {float(getattr(scfg, 'SECTOR_REGIME_GATE_T', -1.0)):.1f}이면 유지, 아니면 그 해 하락→중립 강등). "
-        f"⚠ 전부 신호를 바꾸는 파라미터다 — 되돌리기는 SectorConfig(SECTOR_MARKET_BLOCK_CAP=None, "
+        f"(통계 {'익일 NW' if _gstat == 'next_day' else '전방 %d일' % int(getattr(scfg, 'SECTOR_REGIME_GATE_HORIZON', 21) or 21)}"
+        f", t ≤ {float(getattr(scfg, 'SECTOR_REGIME_GATE_T', -1.0)):.1f}이면 유지 · 표본 "
+        f"{'신호기간만' if getattr(scfg, 'SECTOR_REGIME_GATE_SIGNAL_ONLY', True) else '전체이력'}) · "
+        f"국면정의 수용기준 {'익일+에피소드' if _astat != 'fwd21' else '전방 %d일+MCC' % int(getattr(scfg, 'REGIME_ACCEPT_HORIZON', 21) or 21)}"
+        f"(S-C — 09d_하락에피소드 병기). "
+        f"⚠ 전부 신호·판정을 바꾸는 파라미터다 — 되돌리기는 SectorConfig(SECTOR_MARKET_BLOCK_CAP=0.5, "
+        f"SECTOR_MACRO_T_MIN=2.5, SECTOR_REGIME_GATE_STAT=\"fwd21\", REGIME_ACCEPT_STAT=\"fwd21\", "
         f"SECTOR_OVERRIDE_SCORE_PCT=0.5, SECTOR_OVERRIDE_NEED_MARKET=False, SECTOR_REGIME_GATE=False).")
     _gt = _concat(results, "regime_gate")
     if isinstance(_gt, pd.DataFrame) and len(_gt) and "판정" in _gt.columns:
@@ -8046,13 +8708,17 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                            f"이력현상 {M_cfg.HYSTERESIS_DAYS}일/최소보유 {M_cfg.MIN_HOLD_DAYS}일, 국면 임계 {M_cfg.PCT_RISK_OFF:.0%}/{M_cfg.PCT_RISK_ON:.0%}"),
         ("섹터 학습 최소연수", f"{scfg.SECTOR_TRAIN_MIN_YEARS}년 (M은 {M_cfg.TRAIN_MIN_YEARS}년 — XLRE/XLC의 신호 시작을 당기기 위한 "
                           f"명시적 파라미터, 12_섹터요약 '신호시작일' 참조)"),
-        # [v0.40.0 §S4] 기준이 h=21(하락후 평균수익 < 무조건 평균 AND MCC>0)로 바뀌었다 — 익일 기준은 참고로 병기.
+        # [v0.41.0 S-C-4] 기준을 '익일 + 에피소드 회피수익'으로 교정했다(h=21·MCC는 정보로 병기).
+        #   REPORT44 §2.2: h=21 전방수익은 재진입 반등을 포함해 상태기계에 편향된 잣대였다.
         ("국면정의 검증(수용기준)",
-         f"{regime_pass}/{n_ok} 섹터 PASS (h={int(getattr(scfg, 'REGIME_ACCEPT_HORIZON', 21) or 21)}일: "
-         f"하락 판정 뒤 평균수익 < 무조건 평균 **그리고** MCC>0) — 09_국면통계 · 섹터별 전체 표는 "
-         f"01Y_섹터예측정확도 블록 E(기저 대비 반대방향)·F(꼬리 포착)"),
-        # [v0.40.0 §S1·§S2·§S3] 이번 라운드에 켠 섹터 국면 규칙 3개를 한 줄로.
-        ("⚠ 섹터 국면 규칙(v0.40.0)", _regime_rule_line),
+         (f"{regime_pass}/{n_ok} 섹터 PASS ("
+          + (f"익일: 하락 상태 평균 < 전체 평균 **그리고** 에피소드 회피수익 합 < 0"
+             if str(getattr(scfg, 'REGIME_ACCEPT_STAT', 'next_day_episode')) != "fwd21"
+             else f"h={int(getattr(scfg, 'REGIME_ACCEPT_HORIZON', 21) or 21)}일: 하락후 평균 < 무조건 평균 그리고 MCC>0")
+          + ") — 09_국면통계 · 09d_하락에피소드 · 섹터별 전체 표는 01Y_섹터예측정확도 블록 E·F"
+          + " | ⚠ 되돌리기: SectorConfig(REGIME_ACCEPT_STAT=\"fwd21\")")),
+        # [v0.41.0] 이번 라운드의 ⚠ 파라미터·판정 잣대를 한 줄로.
+        ("⚠ 섹터 국면 규칙(v0.41.0)", _regime_rule_line),
         ("⚠ 국면 정보 게이트 결과", _gate_line),
         ("룩어헤드 감사", f"섹터별 무작위 {scfg.AUDIT_SAMPLE}개 날짜 절단 재계산: {audit_line} — 11_룩어헤드감사"),
         ("11섹터 균등분산 전략(참고)", _pf("11섹터 균등분산 전략(참고)")),
