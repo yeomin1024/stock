@@ -31,6 +31,51 @@
 #    (S.write_sector_excel(title=)·M.runtime_env()는 각자의 v0.38.0/v1.50.0에서 추가된 것을 쓴다 — 구버전이면 자동 폴백.)
 #
 #  CHANGELOG
+#  v0.5.0 | 2026-09-12 | [⚠ 기본값 변경 1건(동결) + 사전등록 격자 1종(회피 자격 분리) — 리포트3(I v0.4.0,
+#    29산업) 판독. 설계·근거는 REPORT44_READOUT_S40_I3_PLAN_S0.41_I0.5.md §3·§I-A·§I-B.
+#    전제: sector_rotation.py v0.41.0 · M v1.51.0. 신호 계산·계층 불변식·룩어헤드 경로는 무변경.]
+#
+#    [판독 — 리더 0일은 '고장'이 아니라 '정직한 결과'다] v0.4.0이 검증 대상을 실제 결정(부모 안 1위 −
+#    부모 ETF, h=21)으로 바꾸자 16개 후보 중 상위1 t ≥ 1.0은 P_REL_VOL_RATIO(0.8~1.4) 하나뿐이고 t ≥ 2.0은
+#    없었다. 교차확인(2개 일치) 규칙 때문에 그것도 쓰이지 않아 **9/9 연도 리더 0일**. 인샘플 스윕
+#    (24후보 × h=5/21/63/126)에서도 상위1 t 최댓값은 1.36(REL_NEAR_HIGH, h=21) — 어느 지평에도 |t| ≥ 2가 없다.
+#    격자 28행 중 24행이 리더 0일이라 S★와 **비트 동일**했고, 나머지 4행(잔여 industries 30.5%·MDD −13.8% /
+#    중립바스켓 34.1%·33.7% / 대조군B 32.5%)은 전부 S★(34.4%) 이하였다. 계층정합 위반 0·룩어헤드 174건 0
+#    불일치로 **배관은 정상**이다. 즉 "부모 안 21일 리더 예측"은 이 후보군으로 풀리지 않는다.
+#
+#    (I-A) ⚠ **INDUSTRY_LAYER_FROZEN 기본값 False → True**(동결). 배분·격자·수용기준을 만들지 않고
+#         진단 시트(01Y·13g·14·15·16 + 01_일별)만 낸다 — 실행 2,308초의 대부분이 배분·격자였다.
+#         **13g(신호 채택 통계)는 동결에서도 계속 낸다** — 다음 라운드가 볼 표이자 I-B의 근거이기 때문.
+#         ⚠ 되돌리기 한 줄: i_overrides={"INDUSTRY_LAYER_FROZEN": False}
+#    (I-B) **회피 자격을 채택과 분리**(ROTATION_AVOID_STANDALONE, 기본 끔 + [회피분리격자] 3행).
+#         근거(§3.2): 이 계층에서 유일하게 안정적인 통계는 리더가 아니라 회피다 — SCORE_PCT(사전방향 −1)의
+#         부모 안 **하위1 − 부모** t가 9개 학습창 전부 ≤ −2.0(−2.19~−2.77, −0.25%/21일, 베타중립 −2.42;
+#         SCORE_MINUS_PARENT −2.10~−2.77, 인샘플 rank IC h=21 t −2.64). 사전방향이 −1이므로 '하위1'은
+#         **그 부모 안에서 자기 국면 점수가 가장 높은(가장 뜨거운) 산업**이고, 그 산업이 다음 한 달 부모를
+#         밑돈다. 그런데 회피 투표는 '채택된 신호'에게만 열려 있어(avoid_ok ⊂ sel_eff) 이 통계는 한 번도
+#         쓰이지 못했다(SCORE_PCT 상위1 t −0.2~−0.7).
+#         동작: 상위1 채택과 무관하게 하위1 t ≤ −ROTATION_AVOID_STANDALONE_T(2.0)면 회피 자격 부여(단독 가능).
+#         INDUSTRY_AVOID_TO_PARENT=True면 회피된 산업의 균등 바스켓 몫(1/n)을 **부모 ETF로** 되돌린다
+#         (새 자산 없음 · 총노출 불변식 유지 · 부모 국면 게이트 그대로). 13g에 '회피 자격(분리)' 열 추가.
+#         구현 상세 2가지(의도적 선택): (a) 채택 0인 해에도 회피가 작동하도록, 분리 모드에서는 복합순위가
+#         없을 때 **적격 산업 전체**를 바스켓 후보로 연다(리더는 여전히 복합순위가 있어야만 나온다) —
+#         리포트2·3의 실제 상태가 '채택 0'이라 이 분기가 없으면 §3.2 통계는 영원히 검정되지 못한다.
+#         (b) 회피는 부모 안 적격 산업이 **4개 이상**일 때만 한다(기존 n_ok ≥ 4 유지 — XLK·XLV·XLY·XLF).
+#         2~3개짜리 부모에서 하나를 빼면 사실상 단일 종목 베팅이 되어 '회피'의 성격을 벗어나기 때문이다.
+#         판정: 13_산업배분전략 [회피분리격자] 2행(바스켓 50%·100%) + **반증 1행**(점수 최저 산업을 회피 —
+#         방향이 진짜라면 더 나빠야 한다)을 4기준(①CAGR ②칼마 ③MDD ④강건성)으로. 예상 효과는 작다
+#         (−0.25%/21일 × 산업 슬리브 비중) — ①을 지키며 ②가 오르지 않으면 폐기하고 I-A(동결)로 남는다.
+#         실험 실행: i_overrides={"INDUSTRY_LAYER_FROZEN": False} (동결만 풀면 격자 3행이 자동으로 실린다)
+#    (I-C) 산업 데이터의 확장 후보(산업 간 분산도 · 최고베타 상대모멘텀)는 **S쪽에** 사전등록했다
+#         (sector_rotation.py v0.41.0 USE_INDUSTRY_EXTRA_CANDIDATES, 기본 꺼짐) — 산업 데이터의 가치는
+#         '산업 리더'가 아니라 '부모 국면의 폭 신호'에 있었기 때문(§3.3: 산업폭이 5개 섹터 H트랙에 채택됨).
+#
+#    변경 함수: IndustryConfig(⚠ 기본값 1 + 신규 필드 5) · within_parent_walkforward_select(회피 자격 분리
+#    집합·하위1 raw 통계 반환·13g 열 1) · leader3_group(분리 회피 투표·부모 환원 분기) ·
+#    build_industry_allocation([회피분리격자] 3행) · run(동결에서도 13g 유지) · build_industry_report(00 2줄).
+#    회귀: test_industry_v05_avoid_standalone.py(신규 8) + 기존 산업 테스트 전종.
+#    ⚠ 판정은 다음 실행의 13g '회피 자격(분리)'·[회피분리격자] 4기준·14_계층정합(위반 0)이 낸다.
+#
 #  ---------------------------------------------------------------------------
 #  v0.4.0 | 2026-09-12 | [⚠ 검증 대상·사전방향·후보·격자 변경 — 리포트2(I v0.3.1, 29산업) 판독.
 #    설계는 IMPROVEMENT_PLAN_S0.40_I0.4.md. 전제: sector_rotation.py v0.40.0 · M v1.51.0.
@@ -278,7 +323,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.4.0"
+VERSION = "v0.5.0"
 VERSION_DATE = "2026-09-12"
 
 # =============================================================================
@@ -450,11 +495,41 @@ class IndustryConfig:
     INDUSTRY_NEUTRAL_BASKET_GRID: Tuple[float, ...] = (0.25, 0.5)
     #   분산게이트: 부모 안 63일 상대수익 횡단면 σ가 롤링 252일 상위 q분위일 때만 리더 인정(§3.4 H3).
     INDUSTRY_DISPERSION_GATE_GRID: Tuple[float, ...] = (0.5, 0.75)
-    # ---- [v0.4.0 §I6] 동결 스위치 ------------------------------------------------
+    # ---- [v0.4.0 §I6 → v0.5.0 I-A ⚠ 기본값 변경 False → True] 동결 스위치 ----------
     # I★가 두 라운드 연속 13f ①⑤ FAIL이고 격자 전 행이 ①②③④ 불통과면 진단 전용으로 동결한다는
     # 규칙의 코드 쪽 손잡이. True면 배분·격자·수용기준을 만들지 않고 **산업 자기국면 시트만** 낸다
     # (실행 2,420초 → 대폭 단축). 판정은 사람이 내리고, 이 플래그는 그 결정을 실행에 반영할 뿐이다.
-    INDUSTRY_LAYER_FROZEN: bool = False
+    # ⚠ [v0.5.0 I-A] 그 조건이 충족됐다 — **동결을 기본값으로 한다**(REPORT44 §3.1·§I-A):
+    #   · 리더 **0일**(9/9 연도), 부모 안 검증(v0.4.0)에서 상위1 t ≥ 1.0을 넘는 후보는 P_REL_VOL_RATIO
+    #     (0.8~1.4) 하나뿐이고 t ≥ 2.0은 없다. 인샘플 스윕(24후보 × h=5/21/63/126)에서도 최댓값 1.36.
+    #   · 격자 28행 중 24행이 리더 0일이라 **S★와 비트 동일** — 격자로 판정할 것이 없었다.
+    #   · 나머지 4행(잔여 industries 30.5% · 중립바스켓 34.1%/33.7% · 대조군B 32.5%)은 전부 S★(34.4%) 이하.
+    #   · 실행시간 2,308초의 대부분이 배분·격자였다.
+    #   즉 "부모 안 21일 리더 예측"은 이 후보군으로 풀리지 않는다 — 진단 시트(01Y·13g·14·15·16)만 유지한다.
+    # ⚠ 되돌리기 한 줄: i_overrides={"INDUSTRY_LAYER_FROZEN": False}  (= v0.4.0 동작, 격자 전체 재실행)
+    INDUSTRY_LAYER_FROZEN: bool = True
+    # ---- [v0.5.0 I-B 사전등록 실험] 회피 자격을 '채택'과 분리한다 --------------------
+    # 근거(REPORT44 §3.2): 이 계층에서 **유일하게 안정적인 통계**는 리더가 아니라 회피 쪽이다 —
+    #   SCORE_PCT(사전방향 −1)의 부모 안 **하위1 − 부모** t가 9개 학습창 전부 ≤ −2.0 (−2.19~−2.77,
+    #   −0.25%/21일, 베타중립 −2.42; SCORE_MINUS_PARENT도 −2.10~−2.77). 사전방향이 −1이므로 '하위1' =
+    #   그 부모 안에서 **자기 국면 점수가 가장 높은(가장 뜨거운) 산업**이고, 그 산업이 다음 한 달 부모를 밑돈다.
+    #   그런데 현재 회피 투표는 '채택된(상위1 t ≥ 1.0) 신호'에게만 열려 있어(avoid_ok ⊂ sel_eff)
+    #   이 통계는 **한 번도 쓰인 적이 없다**(SCORE_PCT 상위1 t는 −0.2~−0.7).
+    # 동작: True면 상위1 채택 여부와 무관하게 **하위1 t ≤ −ROTATION_AVOID_STANDALONE_T** 신호에 회피 자격을
+    #   준다(엄격 문턱의 반대편을 통과했으므로 단독 자격 — S가 엄격 신호의 단독 리더를 허용하는 것과 같은 논리).
+    #   INDUSTRY_AVOID_TO_PARENT=True면 회피된 산업의 균등 바스켓 몫(1/n)을 **부모 ETF로 되돌린다**
+    #   (새 자산 없음, 총노출 불변식 유지 — 14_계층정합이 계속 검사한다).
+    # ⚠ 라이브 기본은 꺼짐. 판정은 13_산업배분전략의 [회피분리격자] 3행(4기준)이 한다.
+    #   실험 실행: i_overrides={"INDUSTRY_LAYER_FROZEN": False}  (격자만 켜면 자동으로 3행이 실린다)
+    #   라이브 채택(격자 통과 시): i_overrides={"INDUSTRY_LAYER_FROZEN": False,
+    #                              "ROTATION_AVOID_STANDALONE": True, "INDUSTRY_AVOID_TO_PARENT": True,
+    #                              "INDUSTRY_FALLBACK_SHARE": 0.5}
+    ROTATION_AVOID_STANDALONE: bool = False
+    ROTATION_AVOID_STANDALONE_T: float = 2.0
+    INDUSTRY_AVOID_TO_PARENT: bool = False
+    INDUSTRY_AVOID_STANDALONE_GRID: Tuple[float, ...] = (0.5, 1.0)   # [회피분리격자] 폴백(균등 바스켓) 강도 2행
+    INDUSTRY_AVOID_STANDALONE_COUNTER: bool = True                    # + 반증 1행(반대쪽 산업을 회피 — 나빠야 정상)
+    INDUSTRY_AVOID_STANDALONE_INVERT: bool = False                    # 반증 행에서만 True(격자가 넘긴다)
     USE_EXTERNAL_VALIDATION: bool = False          # v0.2 예정(§6.4) — FF49 네트워크 필요, 이번 버전은 꺼둠
     EXTERNAL_T: float = 2.0
 
@@ -1433,6 +1508,8 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
     tier_by_year: Dict[int, str] = {}
     avoid_by_year: Dict[int, List[str]] = {}
     rev_by_year: Dict[int, List[str]] = {}
+    avoid_standalone_by_year: Dict[int, List[str]] = {}                  # [v0.5.0 I-B]
+    bot_stats_by_year: Dict[int, Dict[str, Tuple[float, int]]] = {}      # [v0.5.0 I-B] 격자용 raw (t, n)
     rows: List[dict] = []
     for y in years:
         cutoff = pd.Timestamp(year=y, month=1, day=1) - pd.Timedelta(days=35)
@@ -1464,6 +1541,15 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
             sel_eff = []
         avoid_ok = [n for n, (m, tv, nn) in stats_bot.items()
                     if n in sel_eff and nn >= min_days and pd.notna(tv) and tv <= -t_min]
+        # [v0.5.0 I-B] 회피 자격을 **채택과 분리**한 집합 — 상위1 채택 여부와 무관하게 하위1 t ≤ −T_AV.
+        #   근거(REPORT44 §3.2): SCORE_PCT 하위1−부모 t가 9/9 학습창 ≤ −2.0인데 상위1 t가 문턱에 못 미쳐
+        #   현재 규칙으로는 한 번도 쓰이지 못했다. 여기서는 **항상 계산만** 하고, 쓸지는 icfg가 정한다.
+        t_av = float(getattr(icfg, "ROTATION_AVOID_STANDALONE_T", 2.0) or 2.0)
+        avoid_sa = [n for n, (m, tv, nn) in stats_bot.items()
+                    if nn >= min_days and pd.notna(tv) and tv <= -t_av]
+        bot_stats_by_year[y] = {n: (float(tv) if pd.notna(tv) else np.nan, int(nn))
+                                for n, (m, tv, nn) in stats_bot.items()}
+        avoid_standalone_by_year[y] = avoid_sa
         rev = [n for n, (m, tv, nn) in stats.items()
                if nn >= min_days and pd.notna(tv) and tv <= -t_str]
         selected_by_year[y] = sel
@@ -1491,16 +1577,21 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
                                       ("미사용(교차확인 불가 — 사용 신호 %d개 < 필요 %d개)" % (len(sel), need)
                                        if (name in sel and not sel_eff) else "")),
                          "회피 자격": ("Y" if name in avoid_ok else ("N" if name in sel_eff else "")),
+                         # [v0.5.0 I-B] 채택과 분리된 회피 자격 — 하위1 t ≤ −T_AV면 Y(상위1 채택 여부 무관)
+                         "회피 자격(분리·하위1 t≤−%.1f)" % t_av: ("Y" if name in avoid_sa else ""),
                          "역방향(1위 회피 후보)": ("Y" if name in rev else "")})
         log("ROT", kv(event="within_parent_select", year=y, train_end=str(cutoff.date()), tier=tier,
                       horizon=h, n_parents=len(groups),
                       selected=",".join(sel) or "-", used=",".join(sel_eff) or "-",
-                      avoid_ok=",".join(avoid_ok) or "-", reverse=",".join(rev) or "-",
+                      avoid_ok=",".join(avoid_ok) or "-", avoid_standalone=",".join(avoid_sa) or "-",
+                      reverse=",".join(rev) or "-",
                       top_t=";".join(f"{n}={stats[n][1]:.2f}" for n in
                                      sorted(stats, key=lambda k: -(stats[k][1] if pd.notna(stats[k][1]) else -99))[:3])), M=M)
     out = {"rank_full": rank_full, "top1_full": top1_full, "bottom1_full": bottom1_full,
            "selected_by_year": selected_by_year, "selected_eff_by_year": selected_eff_by_year,
            "tier_by_year": tier_by_year, "avoid_by_year": avoid_by_year,
+           "avoid_standalone_by_year": avoid_standalone_by_year,        # [v0.5.0 I-B]
+           "bottom_stats_by_year": bot_stats_by_year,                   # [v0.5.0 I-B]
            "reverse_avoid_by_year": rev_by_year, "selection_log": pd.DataFrame(rows),
            "horizon": h, "mode": "within_parent", "stat": "top1_vs_parent",
            "smooth": int(icfg.ROTATION_SMOOTH_DAYS or 1),
@@ -1572,6 +1663,13 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
     sel_eff_by_year = wf.get("selected_eff_by_year", sel_by_year)
     tier_by_year = wf.get("tier_by_year", {})
     avoid_by_year = wf.get("avoid_by_year", sel_eff_by_year)
+    # [v0.5.0 I-B] 회피 자격 분리 — 켜져 있으면 '채택과 무관하게 하위1 t ≤ −T_AV'인 신호가 회피 투표를 한다.
+    #   투표 정족수도 그 집합 기준(엄격 문턱의 반대편을 통과한 단독 신호를 허용) — 근거는 IndustryConfig 주석.
+    avoid_standalone = bool(getattr(icfg, "ROTATION_AVOID_STANDALONE", False))
+    avoid_to_parent = bool(getattr(icfg, "INDUSTRY_AVOID_TO_PARENT", False))
+    avoid_invert = bool(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_INVERT", False))   # 반증 행 전용
+    if avoid_standalone:
+        avoid_by_year = wf.get("avoid_standalone_by_year", avoid_by_year)
     lst = listed.reindex(index=eval_idx, columns=inds).fillna(False).astype(bool)
     elg = eligible.reindex(index=eval_idx, columns=inds).fillna(False).astype(bool)
     # [§B2] 부모 국면 배열 — 없으면 제약 없음(v0.2.0 동작).
@@ -1670,6 +1768,12 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
         rev_sel = [s for s in rev_by_year.get(yr, []) if s in rank_g]
         row = comp_vals[i]
         ok = (elig_vals[i] & ~np.isnan(row)).copy()
+        # [v0.5.0 I-B] 회피 분리 모드에서는 **복합순위가 없어도**(= 그 해 채택된 리더 신호가 0개여도)
+        #   적격 산업이 바스켓 후보가 된다. 리포트2·3의 실제 상태가 '채택 0'이고(리더 0일), 그때 회피를
+        #   쓸 수 없으면 §3.2의 통계(하위1 t ≤ −2.0, 9/9 학습창)는 영원히 검정되지 못한다.
+        #   리더는 여전히 복합순위가 있어야만 나온다 — 이 분기는 '회피·바스켓' 경로만 연다.
+        if avoid_standalone and avoid_ok and not bool(ok.any()):
+            ok = elig_vals[i].copy()
         # [§B4] 역방향 회피 — 반전 신호(상위1 t ≤ −T)가 부모 안에서 지목한 1위를 그날 후보에서 제외.
         if rev_sel:
             _rev_hit = []
@@ -1705,9 +1809,19 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
             margin_i = float(row[j1] - second) if np.isfinite(second) else np.nan
             step_i = margin_steps / max(n_lead_ok - 1, 1)
             gate_ok = (margin_steps <= 0) or (np.isfinite(margin_i) and margin_i >= step_i - 1e-9)
-        if n_ok >= 4 and K > 0:
-            laggard = col_arr[int(np.nanargmin(np.where(ok, row, np.inf)))]
-            v_lag = sum(1 for s in avoid_ok if s in an and an[s].iloc[i] == laggard)
+        if n_ok >= 4 and (K > 0 or (avoid_standalone and avoid_ok)):
+            # [v0.5.0 I-B] 회피 분리 모드에서는 '그날 회피 신호가 지목한 산업'을 회피 대상으로 삼는다
+            #   (반증 행은 같은 신호의 반대쪽 = 상위1을 회피). 기본 모드는 v0.4.0과 완전히 동일(복합순위 꼴찌).
+            if avoid_standalone and avoid_ok:
+                _picks = [(am if avoid_invert else an)[s].iloc[i] for s in avoid_ok
+                          if s in (am if avoid_invert else an)]
+                _picks = [c for c in _picks if isinstance(c, str) and c in idx_of and ok[idx_of[c]]]
+                if _picks:
+                    laggard = max(set(_picks), key=_picks.count)
+                    v_lag = _picks.count(laggard)
+            else:
+                laggard = col_arr[int(np.nanargmin(np.where(ok, row, np.inf)))]
+                v_lag = sum(1 for s in avoid_ok if s in an and an[s].iloc[i] == laggard)
         margin_.iloc[i] = margin_i
         step_.iloc[i] = step_i
         lead_ok_votes = leader is not None and v_lead * 2 > K and v_lead >= need
@@ -1721,7 +1835,11 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
         gate_blocked = lead_ok_votes and not gate_ok
         gate_.iloc[i] = "통과" if (lead_ok_votes and gate_ok) else ("미달" if gate_blocked else "해당없음")
         leader_lost = not (lead_ok_votes and leader == cur_leader)
-        clear_laggard = laggard is not None and v_lag * 2 > K and v_lag >= need
+        if avoid_standalone and avoid_ok:
+            _Kav = len(avoid_ok)
+            clear_laggard = laggard is not None and v_lag * 2 > _Kav and v_lag >= 1
+        else:
+            clear_laggard = laggard is not None and v_lag * 2 > K and v_lag >= need
         v_lead_.iloc[i], v_lag_.iloc[i] = v_lead, v_lag
         # 최소보유 상태기계(S v0.10.1 청산 규칙 분리 그대로: 게이트는 진입 전용, 청산은 순위·투표 기준 1위 상실)
         if cur_leader is not None and not ok[idx_of[cur_leader]]:
@@ -1744,8 +1862,11 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
         elif clear_laggard:
             basket = [c for j, c in enumerate(inds) if ok[j] and c != laggard]
             if basket:
+                # [v0.5.0 I-B] avoid_to_parent면 회피된 산업 몫(1/n_ok)을 재분배하지 않고 **부모 ETF로**
+                #   남긴다(호출부가 1 − Σfrac 을 부모에 준다). 기본(False)은 v0.4.0대로 남은 산업에 재정규화.
+                _den = float(n_ok) if avoid_to_parent else float(len(basket))
                 for c in basket:
-                    basket_ind.iat[i, idx_of[c]] = 1.0 / len(basket)
+                    basket_ind.iat[i, idx_of[c]] = 1.0 / _den
                 tier_.iloc[i] = "회피"
                 laggard_.iloc[i] = laggard
             else:
@@ -2027,6 +2148,26 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                 g2["basket_ind"] = g0["basket_ind"]
                 gq[p_] = g2
             target_ws[f"분산게이트 상위{1 - float(q):.0%} [분산게이트격자]"] = _mk_target_w(live_cap, live_fb, groups_over=gq)
+    # [v0.5.0 I-B 사전등록 격자] 회피 자격 분리 — '자기 점수 최고 산업'만 부모 ETF로 되돌리고 나머지는 균등.
+    #   근거(REPORT44 §3.2): SCORE_PCT 하위1(사전방향 −1 → 자기 점수 최고) − 부모 t ≤ −2.0이 9/9 학습창.
+    #   크기는 작다(−0.25%/21일) — 판정은 13_산업배분전략 4기준(①CAGR ②칼마 ③MDD ④강건성)이 한다.
+    #   반증 1행(같은 신호의 반대쪽 = 점수 **최저** 산업을 회피)을 반드시 같이 싣는다 — 방향이 진짜라면 더 나빠야 한다.
+    _sa_years = {y: v for y, v in (wf.get("avoid_standalone_by_year") or {}).items() if v}
+    if _sa_years and bool(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_GRID", ())):
+        _g_av = _run_groups({"ROTATION_AVOID_STANDALONE": True, "INDUSTRY_AVOID_TO_PARENT": True})
+        for _fv in tuple(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_GRID", ()) or ()):
+            target_ws[f"회피분리 · 바스켓 {float(_fv):.0%}(점수최고 산업→부모) [회피분리격자]"] = \
+                _mk_target_w(live_cap, float(_fv), groups_over=_g_av)
+        if bool(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_COUNTER", True)):
+            _g_cn = _run_groups({"ROTATION_AVOID_STANDALONE": True, "INDUSTRY_AVOID_TO_PARENT": True,
+                                 "INDUSTRY_AVOID_STANDALONE_INVERT": True})
+            _fv0 = float((tuple(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_GRID", (0.5,)) or (0.5,)))[0])
+            target_ws[f"회피분리 · 반증: 점수최저 산업→부모, 바스켓 {_fv0:.0%} [회피분리격자·반증]"] = \
+                _mk_target_w(live_cap, _fv0, groups_over=_g_cn)
+        _av_days = sum(int((g["tier"] == "회피").sum()) for g in _g_av.values())
+        log("ROTATION", kv(event="avoid_standalone_grid", parents=len(_g_av), avoid_days=_av_days,
+                           years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_sa_years.items())) or "-",
+                           note="회피된 산업 몫은 부모 ETF로(총노출 불변)"), M=M)
     label_ctrl_b = "대조군B: 부모비중 안 적격산업 균등 50%(순위 미사용)"
     target_ws[label_ctrl_b] = _mk_target_w(0.0, 0.5, use_rank=False, only_mode="parent")
     label_repro = "S★ 재현(I 백테스트 엔진, 산업 0% — 대조군A와 비트 동일해야 함)"
@@ -2798,7 +2939,10 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         #   결정을 실행에 반영할 뿐이며, 켜면 실행시간 대부분(배분·격자 백테스트)이 사라진다.
         log("START", kv(event="industry_layer_frozen", note="INDUSTRY_LAYER_FROZEN=True — 배분·격자·수용기준 생략, "
                                                             "산업 자기국면 예측 시트만 산출"), M=M, level="warning")
-    if icfg.USE_ROTATION and results and not frozen:
+    # [v0.5.0 I-A] 동결이어도 **신호 채택 통계(13g)는 계속 낸다** — REPORT44 §5가 다음 실행에서 볼 것으로
+    #   "I 13g 하위1 t(SCORE_PCT)"를 지목했고, 회피 분리(I-B) 실험의 근거가 바로 그 표다. 동결이 생략하는 것은
+    #   **배분·격자·수용기준**(실행시간의 대부분)이지 진단 통계가 아니다.
+    if icfg.USE_ROTATION and results:
         try:
             # [v0.4.0 §I1 ⚠] 채택 판정의 '측정 대상'을 결정과 일치시킨다.
             #   pooled  = 종전 방식(전 산업 풀링 순위 · 상장평균 벤치) — 이제 **진단으로만** 13g에 병기.
@@ -2811,7 +2955,13 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                 wf["alt_log"] = pooled_wf.get("alt_log", pd.DataFrame())
             else:
                 wf = pooled_wf
-            alloc = build_industry_allocation(results, sres, res, eval_idx, icfg, M, S, wf, rf_daily=rf_daily)
+            if frozen:
+                _sa = {y: v for y, v in (wf.get("avoid_standalone_by_year") or {}).items() if v}
+                log("ROT", kv(event="frozen_signal_only", sheets="13g/13g2 유지, 배분·격자·수용기준 생략",
+                              avoid_standalone_years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_sa.items())) or "-",
+                              note="I-B 실험은 i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}로 격자를 켜면 판정된다"), M=M)
+            alloc = ({} if frozen else
+                     build_industry_allocation(results, sres, res, eval_idx, icfg, M, S, wf, rf_daily=rf_daily))
             if alloc:
                 accept_df = build_industry_acceptance(alloc, wf, icfg, M, S)
                 hier_df = build_hierarchy_check(alloc)
@@ -3071,6 +3221,23 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         ("체결 규칙", "t일 종가에 신호 확정 → t+1일 시가 체결(M·S와 동일, 룩어헤드 구조적 차단)"),
         ("거래비용", f"산업 ETF 편도 {icfg.COST_BPS_INDUSTRY:.0f}bp · 부모 ETF 편도 {icfg.PARENT_COST_BPS:.0f}bp"),
         ("총 노출 불변식", "Σ산업비중 + 부모ETF비중 = S★의 그 섹터비중 — 14_계층정합 시트가 매일 이 등식을 검사(위반 0일이어야 함)"),
+        # [v0.5.0 I-A ⚠ 기본값 변경] 동결 상태를 00시트 첫 화면에 명시한다.
+        ("⚠ 산업 계층 동결(v0.5.0 I-A)",
+         (("**동결(기본값)** — 배분·격자·수용기준을 만들지 않는다(진단 시트만). 근거(REPORT44 §3.1): "
+           "부모 안 검증에서 리더 **0일**(9/9 연도), 상위1 t≥2.0인 후보 없음(최댓값 1.36), "
+           "격자 28행 중 24행이 S★와 비트 동일. ⚠ 되돌리기: i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}")
+          if bool(getattr(icfg, "INDUSTRY_LAYER_FROZEN", True)) else
+          ("해제(INDUSTRY_LAYER_FROZEN=False) — 배분·격자 실행 중. [회피분리격자]" +
+           ("(I-B 실험 포함)" if (getattr(icfg, "INDUSTRY_AVOID_STANDALONE_GRID", ()) or ()) else "") +
+           " 결과를 13_산업배분전략에서 확인할 것"))),
+        # [v0.5.0 I-B] 회피 자격 분리 실험의 현재 상태.
+        ("⚠ 회피 자격 분리(v0.5.0 I-B)",
+         (f"라이브 {'켬' if getattr(icfg, 'ROTATION_AVOID_STANDALONE', False) else '끔'}"
+          f"(ROTATION_AVOID_STANDALONE · 하위1 t ≤ −{float(getattr(icfg, 'ROTATION_AVOID_STANDALONE_T', 2.0)):.1f}) · "
+          f"회피 몫 목적지 {'부모 ETF' if getattr(icfg, 'INDUSTRY_AVOID_TO_PARENT', False) else '남은 산업 재분배'}. "
+          "근거(REPORT44 §3.2): SCORE_PCT 하위1(=자기 점수 **최고** 산업) − 부모 t가 9/9 학습창 ≤ −2.0인데, "
+          "현재 회피 투표는 '채택된 신호'에게만 열려 있어 한 번도 쓰이지 않았다. "
+          "판정: 13_산업배분전략 [회피분리격자] 3행(반증 포함) 4기준. 13g '회피 자격(분리)' 열 참조.")),
         ("⚠ 산업 배분 규칙(v0.3.0)",
          f"리더 산업에 부모비중의 {icfg.INDUSTRY_LEADER_CAP:.0%}(INDUSTRY_LEADER_CAP) · 리더 없는 날 적격 산업 균등 "
          f"{icfg.INDUSTRY_FALLBACK_SHARE:.0%}(INDUSTRY_FALLBACK_SHARE) · 잔여는 {icfg.INDUSTRY_ONLY_MODE} · "
