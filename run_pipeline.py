@@ -1,5 +1,19 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.0.2 - 2026-09-12 - [문서만 변경 — 실행 로직·기본값 무변경] S v0.40.0 · I v0.4.0 · M v1.51.0에서
+#                    새로 켠 ⚠ 파라미터와 되돌리기 한 줄을 아래 '되돌리기' 절에 모았다. 러너는 그대로
+#                    S.run/I.run에 cfg를 넘기므로 s_overrides/i_overrides로 전부 제어할 수 있다.
+#
+#  ⚠ v0.40.0/v0.4.0에서 켠 것과 되돌리기(전부 신호층 — 격자가 아니라 기본값 변경이다):
+#    S: s_overrides={"SECTOR_MARKET_BLOCK_CAP": None}     # 공용 매크로 블록캡 0.5 끔(캐시 무효화)
+#       s_overrides={"SECTOR_MACRO_T_MIN": None}          # 매크로 후보 강화 t문턱 2.5 끔(캐시 무효화)
+#       s_overrides={"SECTOR_REGIME_GATE": False}         # 하락 정보 게이트 끔(캐시 영향 없음)
+#       s_overrides={"SECTOR_OVERRIDE_SCORE_PCT": 0.5, "SECTOR_OVERRIDE_NEED_MARKET": False}
+#       s_overrides={"USE_INDUSTRY_BREADTH": False}       # 산업폭 후보 끔(산업 가격 수집 생략)
+#       s_overrides={"REGIME_ACCEPT_HORIZON": 1}          # 국면정의 검증을 익일 기준으로 되돌림
+#    I: i_overrides={"ROTATION_VALIDATION_MODE": "pooled"} # 채택 검증을 v0.3.1 방식으로
+#       i_overrides={"INDUSTRY_LAYER_FROZEN": True}        # ⚠ 산업 배분·격자 생략(진단 시트만, 실행 대폭 단축)
+#
 #  VERSION: v1.0.1 - 2026-09-12 - [문서만 변경 — 실행 로직·기본값 무변경] S v0.39.0에서 SECTOR_EXCLUDE
 #                    기본값이 ("XLB","XLE") → ()(11섹터 전부 예측)로 돌아갔다(사용자 지시 "sector는 다시
 #                    XLE, XLB 같이 예측"). 아래 사용 예시의 기본값 설명과 되돌리기 한 줄을 그에 맞게 고쳤다.
@@ -41,7 +55,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.0.1"
+VERSION = "v1.0.2"
 VERSION_DATE = "2026-09-12"
 
 MODULE_FILES = {

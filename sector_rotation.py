@@ -17,6 +17,58 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.40.0 - 2026-09-12 - [⚠ 신호·검증 변경 4건 — 리포트39(11섹터) 판독으로 드러난
+#                       "섹터 국면이 SPY 국면의 잡음 섞인 복제"를 고친다. 설계는
+#                       IMPROVEMENT_PLAN_S0.40_I0.4.md, M은 v1.51.0 훅만 쓰고 SPY는 비트 동일.
+#
+#                       [판독 — 무엇이 틀렸나] 리포트39 h=21일 실측:
+#                         · 11섹터 중 6개(XLF·XLP·XLU·XLV·XLB·XLE)가 MCC<0 — 방향 판별력이 동전 이하.
+#                         · 8/11 섹터에서 **하락 판정 뒤 21일 수익이 무조건 평균보다 높았다**
+#                           (XLV +2.61% vs +0.75% · XLB +2.15% vs +0.67% · XLE/XLF +1.8%대 vs +0.9%대).
+#                           제 일을 한 것은 XLK(적중 +11.3%p)·XLC(+10.4%p)·XLU(수익 기준)뿐.
+#                         · 종전 '국면정의 검증'(익일 평균)은 그 6개 중 5개를 PASS로 통과시켰다 — 기준이 문제를 못 잡았다.
+#                       [원인 3개]
+#                         (1) 08_워크포워드가중치: 섹터 복합점수의 59~89%가 공용 FRED 매크로(XLV 0.89·XLB 0.89·
+#                             XLE 0.85), 섹터 고유는 0.02~0.06. 후보 321개 중 265개가 M 공용 매크로라
+#                             섹터마다 따로 검정하면 다중비교 승자가 가중치를 독식한다.
+#                             (위험회피진입(H)은 11섹터 129일이 날짜까지 동일 — HAZARD_SOURCE="spy" 공유)
+#                         (2) 하락 진입의 주경로가 추세오버라이드(가격<200MA & 점수<0.5). 그 진입일의 21일 뒤
+#                             수익이 XLRE +9.39% · XLI +5.51% · XLV +2.76%로 거꾸로였다. SPY가 상승인데
+#                             섹터만 하락인 218일은 78%가 올랐다(하락적중 0.216).
+#                         (3) 수용기준이 익일만 봤다.
+#                       [고침 — 전부 ⚠, 되돌리기 한 줄씩]
+#                       §S1 SECTOR_MARKET_BLOCK_CAP=0.5 (신규) — 공용 매크로 블록 |가중치| 합 상한, 초과분은
+#                            섹터 고유 지표로 재분배(M v1.51.0 MARKET_BLOCK_WEIGHT_CAP 훅).
+#                            되돌리기 SectorConfig(SECTOR_MARKET_BLOCK_CAP=None). ⚠ 캐시 무효화.
+#                       §S2 SECTOR_REGIME_GATE=True (신규 regime_info_gate + M regime_floor 훅) —
+#                            연도별 워크포워드로 "그 해 하락 판정에 정보가 있었나"를 재고(cutoff 이전 표본,
+#                            전방창도 cutoff 이내), NW-HAC t > −1.0이면 그 해 RISK_OFF를 **중립으로 강등**.
+#                            표본부족이면 '유지'(= v0.39.0 동작). 새 사이징 값 없음(M의 중립 0.5 그대로).
+#                            09c_국면정보게이트 시트 · 01_일별 '국면정보게이트(강등)' 열 · 00시트 1줄.
+#                            되돌리기 SectorConfig(SECTOR_REGIME_GATE=False). 캐시 영향 없음.
+#                       §S3 SECTOR_OVERRIDE_SCORE_PCT=0.2 · SECTOR_OVERRIDE_NEED_MARKET=True (신규) —
+#                            추세오버라이드를 '확신이 있을 때(점수 하위 20%)' + 'SPY 200일선 하회 또는 M
+#                            RISK_OFF'인 날로 좁힌다(신규 market_ok_series).
+#                            되돌리기 (0.5, False). 캐시 키에서 제외(검증·가중치 무관).
+#                       §S4 국면정의 검증을 **h=21**로: 하락후 평균수익 < 무조건 평균 **AND** MCC>0 둘 다.
+#                            09_국면통계에 3열 추가, 01Y에 블록 E(기저 대비 반대방향)·F(꼬리 포착) 신설,
+#                            13f에 정보 항목 ⑥(MCC21>0 섹터 수, 판정 제외).
+#                       §S5 SECTOR_MACRO_T_MIN=2.5 (공용 매크로 후보에만 강화된 |NW t|, M v1.51.0
+#                            MARKET_BLOCK_T_MIN 훅) + 신규 후보 REL_MA200_Z(평균회귀 축) +
+#                            USE_INDUSTRY_BREADTH=True(신규 INDUSTRY_BREADTH_200·_CHG20 — 산업 계층의
+#                            시계열 정보를 '부모 국면 예측'에 쓰는 통로, IMPROVEMENT_PLAN §I5).
+#                            ⚠ 캐시 무효화(검증표·후보 목록이 바뀐다).
+#
+#                       변경 함수: SectorConfig(⚠ 필드 9개) · sector_cfg_for(훅 4개 전파) ·
+#                       market_ok_series/regime_info_gate/industry_breadth_specs/industry_breadth_values/
+#                       build_industry_breadth(신규) · relative_strength_specs/_values(REL_MA200_Z) ·
+#                       build_sector_candidates(industry_breadth 인자) · run_sector(2패스 신호·게이트 로그) ·
+#                       build_sector_sheets(국면정의 검증 h=21·게이트 열·regime_accept_horizon 인자) ·
+#                       build_sector_prediction_accuracy(블록 E·F) · build_sector_report(09c·00 2줄·13f ⑥) ·
+#                       run(산업폭·market_ok 1회 계산, industry_px_override 인자) · _CACHE_KEY_IGNORE_FIELDS.
+#                       회귀: test_sector_regime_gate.py(신규) · 기존 섹터·산업 테스트 전종.
+#                       ⚠ 실데이터 판정은 다음 실행의 01Y 블록 E·09_국면통계·13f ⑥이 낸다.
+#
 #  VERSION: v0.39.0 - 2026-09-12 - [⚠ 유니버스 복귀(XLB·XLE 재포함, 사용자 지시) + run_sector가 마스킹 전
 #                       점수 2키를 내보냄(산업층 §A1 결함 수정 지원). **S 자신의 신호·배분 로직은 무변경**]
 #
@@ -1657,7 +1709,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.39.0"
+VERSION = "v0.40.0"
 VERSION_DATE = "2026-09-12"
 
 # =============================================================================
@@ -1730,6 +1782,12 @@ class SectorConfig:
     USE_RESID_MOMENTUM: bool = True            # §1.E-1: 잔차모멘텀(베타중립 12-1개월) — Blitz·Huij·Martens 2011
     RESID_MOM_WINDOW: int = 756                # 잔차 추정 롤링 회귀창(거래일, 약 36개월) — t-1까지의 데이터만 사용(인과)
     USE_SECTOR_BREADTH: bool = True            # §1.E-2: 섹터 폭(11섹터 중 자기 200일선 상회 비율) — 시장 내부 지표, 전 섹터 공통
+    # [v0.40.0 §S5·§I5] 산업폭 — 그 섹터 산업ETF 중 자기 200일선 상회 비율(+20일 변화).
+    #   산업 계층의 진짜 정보(시계열 자기국면)를 '부모 안 선택'이 아니라 **부모 국면 예측**에 쓰는 통로.
+    #   산업 가격을 추가로 수집한다(29티커 1회) — 실패하면 조용히 생략하고 나머지로 계속한다.
+    #   ⚠ 되돌리기: SectorConfig(USE_INDUSTRY_BREADTH=False). 후보가 늘어 검증표가 바뀌므로 캐시 무효화.
+    USE_INDUSTRY_BREADTH: bool = True
+    INDUSTRY_BREADTH_MIN_N: int = 2            # 산업 ETF가 이보다 적은 부모는 폭을 만들지 않는다(XLP·XLRE는 1개)
     # ---- 학습/재추정 ----------------------------------------------------------
     SECTOR_TRAIN_MIN_YEARS: int = 3            # 헤더 CHANGELOG [파라미터] 참조(M은 5)
     SECTOR_REWEIGHT_FREQ: Optional[str] = None # None=M과 동일(REWEIGHT_FREQ, 기본 "M"). "A"=연 1회(⚠ 약 5배 빠름, 신호 달라짐)
@@ -1739,6 +1797,65 @@ class SectorConfig:
     # 평균수익이 오히려 양(+)이었다(예측력 없음 — '위험 예측'이 아니라 '고금리·강달러 레벨 감지기'가 됨).
     # M이 SPY에서 이미 검증·교정(규칙 ①~⑨)한 H를 그대로 쓰는 "spy"를 기본값으로 한다.
     HAZARD_SOURCE: str = "spy"                 # "spy"(기본, M 번들의 마스킹 전 haz_pct 재사용) | "sector"(v0.2.0 현행) | "max"(둘 중 큰 값)
+    # ---- [v0.40.0 §S1 ⚠ 신호 파라미터] 공용 시장 블록 가중치 상한 ----------------
+    # 근거(IMPROVEMENT_PLAN_S0.40_I0.4 §1.5 원인1, 리포트39 08_워크포워드가중치 2018~2026 실측):
+    #   섹터 복합점수의 |가중치| 중 공용 FRED 매크로(B.신용·C.매크로·F.매크로확장-*) 비중이
+    #   XLV 0.89 · XLB 0.89 · XLI 0.86 · XLE 0.85 · XLP 0.81 · XLY 0.80 · XLF 0.77 …
+    #   이고 섹터 고유 지표(B2·E2·H·I·J)는 XLV 0.03 · XLE 0.02 · XLF 0.03 뿐이었다.
+    #   후보 321개 중 265개가 M 공용 매크로라 섹터마다 6기준 검증을 따로 통과한 '다중비교 승자'가
+    #   가중치를 독식한 결과다. 그래서 섹터 국면 ≈ SPY 국면 + 잡음이 됐고, 21일 지평 MCC가
+    #   11섹터 중 6개(XLF·XLP·XLU·XLV·XLB·XLE)에서 음수였다(방향 판별력이 동전 이하).
+    #   대조: 섹터 고유 비중이 큰 XLU(0.20)·XLRE(0.23)·XLK(0.21)·XLC(0.17)가 정확도 상위와 겹친다.
+    # 동작: M.MARKET_BLOCK_CATEGORIES로 시작하는 카테고리의 |가중치| 합이 이 값을 넘으면 축소하고
+    #   나머지(섹터 고유·추세·크로스에셋)에 비례 재분배한다 — 추세트랙캡·기저시리즈캡과 같은 단일패스.
+    #   블록 밖 채택 지표가 0개인 해는 축소하지 않는다(점수 스케일 보존).
+    # ⚠ 되돌리기 한 줄: SectorConfig(SECTOR_MARKET_BLOCK_CAP=None)  — v0.39.0과 완전히 같아진다.
+    #   이 값은 복합점수를 바꾸므로 검증/워크포워드 캐시가 무효화된다(섹터당 ~350초 재계산).
+    #   신호층 파라미터라 13_섹터배분전략의 배분층 격자에는 실을 수 없다(격자 행은 하나의 신호를
+    #   공유해야 하는데 이건 신호 자체를 바꾼다) — SECTOR_EXCLUDE·HAZARD_SOURCE와 같은 취급이며
+    #   **판정은 다음 실행의 01Y_섹터예측정확도·09_국면통계·13f가 낸다**.
+    SECTOR_MARKET_BLOCK_CAP: Optional[float] = 0.5
+    # [v0.40.0 §S5 ⚠ 검증 파라미터] 공용 시장 블록 후보에만 적용하는 강화된 |NW t| 문턱.
+    #   섹터는 같은 공용 후보 265개를 11번 따로 검정하므로 다중비교 문제가 M보다 11배 크다
+    #   (M은 SPY 하나에 한 번). 섹터 고유 후보(B2·E2·H·I·J)는 종전 1.65를 그대로 쓴다.
+    #   ⚠ 되돌리기: SectorConfig(SECTOR_MACRO_T_MIN=None). 검증표를 바꾸므로 캐시가 무효화된다.
+    SECTOR_MACRO_T_MIN: Optional[float] = 2.5
+    # ---- [v0.40.0 §S3 ⚠ 신호 파라미터] 섹터 추세오버라이드 재정의 ----------------
+    # 근거(§1.5 원인2, 리포트39 01_일별_* 규칙열 실측): 섹터 하락일 2,643일을 진입 규칙별로 가르면
+    #   '추세오버라이드만'(급락트리거·H진입·점수<10% 아님) 진입일의 향후 21일 수익이
+    #   XLRE +9.39% · XLI +5.51% · XLF +2.95% · XLB +2.91% · XLE +2.81% · XLV +2.76%로 **거꾸로**였다
+    #   (제 일을 한 것은 XLK −1.18% · XLU −1.03%뿐). M 식 `가격<200MA & 점수백분위<0.5`에서 점수 조건은
+    #   절반의 날에 참이라 사실상 '가격<200MA' 하나로 위험회피에 들어가는데, SPY에서는 그것이 폭락
+    #   군집이지만 개별 섹터에서는 섹터 고유 조정의 저점 근처다.
+    #   또 SPY가 상승인데 섹터만 하락인 218일은 21일 뒤 78%가 올랐다(하락적중 0.216, μ +2.33%).
+    # 동작: 점수 문턱을 0.5→0.2로 내리고(확신이 있을 때만), SPY가 하락 추세이거나 M 국면이 RISK_OFF인
+    #   날만 발동하게 한다(market_ok). 두 값은 M.Config의 TREND_OVERRIDE_* 훅으로 전달된다.
+    # ⚠ 되돌리기: SectorConfig(SECTOR_OVERRIDE_SCORE_PCT=0.5, SECTOR_OVERRIDE_NEED_MARKET=False)
+    SECTOR_OVERRIDE_SCORE_PCT: float = 0.2
+    SECTOR_OVERRIDE_NEED_MARKET: bool = True
+    # ---- [v0.40.0 §S2 ⚠ 신호 파라미터] 하락 판정 정보 게이트 ----------------------
+    # 근거(§1.2 리포트39 실측 h=21): 11섹터 중 6개가 MCC<0이고, 8/11 섹터에서 하락 판정 뒤
+    #   21일 수익이 무조건 평균보다 **높았다**(XLV +2.61% vs +0.75% · XLB +2.15% vs +0.67% ·
+    #   XLE +1.84% vs +0.96% · XLF +1.81% vs +0.86%). 반대로 XLK·XLC·XLU는 제 일을 했다.
+    #   §1.6 반사실 검사에서 '오버라이드 제거'·'SPY 동반만' 같은 **고정 필터로는 동전 수준을
+    #   못 벗어났다**(하락적중 0.387→0.419, μ는 여전히 양수). 그래서 섹터별로 손을 대는 대신
+    #   연도별 워크포워드가 "이 섹터의 하락 판정에 정보가 있었나"를 매년 다시 재게 한다.
+    # 동작: regime_info_gate()가 그 해 학습창(cutoff 이전, 전방창도 cutoff 이내)에서 하락일의
+    #   초과수익 NW-HAC t를 계산해 t ≤ SECTOR_REGIME_GATE_T면 '유지', 아니면 그 해 RISK_OFF를
+    #   중립(목표비중 0.5 — M의 기존 중립 규칙 그대로)으로 강등한다. **새 사이징 값은 없다.**
+    #   표본 부족이면 '유지'(= v0.39.0 동작)로 보수적 폴백.
+    # ⚠ 되돌리기 한 줄: SectorConfig(SECTOR_REGIME_GATE=False)
+    #   이 값은 검증/워크포워드 가중치에 관여하지 않으므로 캐시는 무효화되지 않는다.
+    SECTOR_REGIME_GATE: bool = True
+    SECTOR_REGIME_GATE_T: float = -1.0         # 하락일 초과수익 t가 이 값 이하일 때만 '정보 있음'
+    SECTOR_REGIME_GATE_HORIZON: int = 21       # 판정 지평(01Y B2 상태지속률 0.56~0.79 = 운용 지평)
+    SECTOR_REGIME_GATE_MIN_DAYS: int = 500     # 학습창 최소 관측일
+    SECTOR_REGIME_GATE_MIN_OFF_DAYS: int = 60  # 학습창 최소 하락일(이보다 적으면 판정 불가 → 유지)
+    # ---- [v0.40.0 §S4] 국면정의 검증(수용기준) 지평 ------------------------------
+    # 종전 기준은 '익일' 평균만 봤는데, 리포트39에서 익일 기저대비는 11섹터 중 10개가 양수인 반면
+    # 21일에서는 6개가 MCC<0이었다 — 기준이 문제를 못 잡았다. 09_국면통계 '국면정의 검증'과
+    # 00시트 n/11 카운트가 이 지평으로 판정한다(익일 값은 같은 문자열에 '참고'로 남는다).
+    REGIME_ACCEPT_HORIZON: int = 21
     # ---- 사이징 오버레이 변동성 정규화 [v0.3.0 §1.C ⚠ 사이징 파라미터] -----------
     # 근거(§0.5): 과열헤어컷·회복확인폭·깊은낙폭 임계값이 SPY(연변동성 ~18%) 기준 절대값이라 고변동
     # 섹터(XLK·XLE 25~30%)에서 훨씬 자주/일찍 걸린다. 섹터 자기 변동성/SPY 변동성 배율(훈련구간 초기
@@ -2359,6 +2476,17 @@ def relative_strength_specs() -> List[_RawSpec]:
         _RawSpec("REL_MA200_SLOPE", "상대가격(P_i/SPY) 200일선의 20일 기울기", "H.SPY대비상대", +1,
                  "상대가격 200일 이동평균 자체가 우상향으로 가속되는 것은 상대추세 전환이 구조적으로 굳어지는 신호",
                  "장기 상대추세의 방향 전환(가속도)", "P_i/SPY 비율의 200일 이동평균", trend_track=True, eval_horizon=63),
+        # [v0.40.0 §S5] 평균회귀 축 — 지금 후보군에 추세·모멘텀은 많은데 '상대 과매도'를 z로 정규화한
+        # 축이 없다. REL_EXT_200은 섹터·SPY 각자의 200MA 이격 '차'(레벨)이고, 이것은 상대가격 자체의
+        # 200MA 이격을 252일 롤링 z로 표준화한 값이라 서로 다른 변수다(교차 상관은 낮지 않을 수 있으나
+        # 스케일 정규화로 꼬리 구간의 신호가 살아난다). 사전방향 −: 상대 과매도(z≪0)일수록 이후 상승.
+        # 근거: IMPROVEMENT_PLAN_S0.40_I0.4 §1.5 원인2 — 하락 판정의 주경로인 '가격<200MA' 진입일이
+        # 21일 뒤 XLV +2.76% · XLI +5.51% · XLRE +9.39%로 되돌아왔다. 즉 이 구간엔 '평균회귀 정보'가
+        # 실제로 있는데 후보군에 그것을 표현하는 변수가 없어 국면 점수가 계속 추세 쪽만 봤다.
+        # 채택 여부는 6기준 검증 + 워크포워드가 정한다 — 코드가 미리 고르지 않는다.
+        _RawSpec("REL_MA200_Z", "상대가격 200일선 이격도(252일 z)", "H.SPY대비상대", -1,
+                 "상대가격이 자기 200일 이동평균에서 아래로 크게 벌어진 상태(z≪0)는 평균회귀로 되돌아온다",
+                 "상대 과매도의 평균회귀", "P_i/SPY 비율"),
     ]
 
 
@@ -2387,6 +2515,8 @@ def relative_strength_values(sector_tr: pd.Series, spy_tr: pd.Series,
     out["REL_EXT_200"] = ext_i - ext_spy
     # [v0.3.0 §1.E-3] 상대가격 200일선'기울기' — REL_MA_50_200(수준)과 다른 정보.
     out["REL_MA200_SLOPE"] = ma200 / ma200.shift(20) - 1.0
+    # [v0.40.0 §S5] 상대가격의 200MA 이격도를 252일 롤링 z로(인과 — M._z는 과거 창만 사용).
+    out["REL_MA200_Z"] = M._z(rel / ma200.replace(0, np.nan) - 1.0, 252)
     return out.replace([np.inf, -np.inf], np.nan)
 
 
@@ -2409,6 +2539,34 @@ def spy_layer_series(res: dict, M) -> Dict[str, pd.Series]:
     else:
         out["FAST_PCT"] = pd.Series(np.nan, index=ind.index)
     return out
+
+
+def market_ok_series(res: dict, M) -> pd.Series:
+    """[v0.40.0 §S3] 섹터 추세오버라이드의 '시장 확인' 시리즈 —
+    **SPY가 하락 추세(가격<200일선)이거나 M의 확정 국면이 RISK_OFF인 날만 True**.
+
+    왜: 리포트39 실측에서 SPY가 상승인데 섹터만 하락으로 판정된 218일은 21일 뒤 78%가 올랐다
+    (하락적중 0.216 · μ +2.33%). 섹터 단독 200일선 하회는 섹터 고유 조정의 저점 근처인 경우가
+    많아, 시장 확인 없이 강제 위험회피로 가면 반등을 안고 나온다.
+
+    룩어헤드: 두 입력 모두 t일 종가로 확정되는 값이다. res["ind"]["TREND_200"]은 M이 그날까지의
+    가격으로 만든 지표이고, res["sig"]["state"]는 M이 t일 종가로 확정한 국면(체결은 t+1 시가)이다.
+    미래 정보가 없다 — sector_lookahead_audit의 절단재계산이 이를 재확인한다.
+    둘 중 하나라도 없으면 전부 True를 돌려 '제약 없음'(= v0.39.0 동작)으로 안전하게 되돌아간다."""
+    idx = res["ind"].index
+    parts: List[pd.Series] = []
+    tr = res["ind"].get("TREND_200")
+    if tr is not None and tr.notna().any():
+        parts.append((tr < 0).reindex(idx).fillna(False))
+    sig = res.get("sig")
+    if isinstance(sig, pd.DataFrame) and "state" in sig.columns:
+        parts.append(sig["state"].reindex(idx).astype(str).eq("RISK_OFF").fillna(False))
+    if not parts:
+        return pd.Series(True, index=idx)
+    out = parts[0]
+    for q in parts[1:]:
+        out = out | q
+    return out.astype(bool)
 
 
 def spy_layer_specs(beta_med: Optional[float] = None, beta_conditional: bool = False) -> List[_RawSpec]:
@@ -2756,6 +2914,93 @@ def resid_momentum_specs() -> List[_RawSpec]:
 
 
 # ---- (f) [v0.3.0 §1.E-2] 섹터 폭(breadth) — 11개 섹터 공통 시장 내부 지표 ------------------------
+def industry_breadth_specs() -> List[_RawSpec]:
+    """[v0.40.0 §S5·§I5] 산업폭 — 그 섹터에 속한 산업 ETF 중 자기 200일선 위에 있는 비율.
+
+    왜 이 축인가(IMPROVEMENT_PLAN_S0.40_I0.4 §3.5(4)): 산업 계층의 진짜 정보는 **시계열 자기국면**이다
+    (29산업 중 20개가 상승 판정에서 기저 대비 +2~8%p). 그런데 그것을 '부모 안 산업 선택'(횡단면)에 쓰면
+    역방향이었다(부모 안 IC t −2.5~−2.8). 쓸 곳이 다르다 — **부모 섹터의 국면 예측**이다.
+    섹터 국면 점수가 공용 매크로에 눌려 있는 상태(§1.5 원인1)에서, 이건 그 섹터 '안'에서만 나오는
+    가격 정보라 매크로와 상관이 낮다.
+
+    인과성: 각 산업의 그날 200일선 이격도 부호만 본다(자기 과거 가격만). 미래 정보 없음.
+    산업 가격이 없으면(수집 실패·오프라인) 후보 자체를 만들지 않는다."""
+    return [
+        _RawSpec("INDUSTRY_BREADTH_200", "산업 폭(그 섹터 산업ETF 중 200일선 상회 비율)", "J2.산업폭", +1,
+                 "섹터를 구성하는 산업들이 폭넓게 추세 위에 있으면 그 섹터의 상승은 소수 종목이 아니라 구조적이다",
+                 "섹터 내부 참여도(폭)가 좁아지면 상승이 먼저 흔들린다", "산업 ETF 종가(자기 200일선)"),
+        _RawSpec("INDUSTRY_BREADTH_200_CHG20", "산업 폭 20일 변화", "J2.산업폭", +1,
+                 "산업 폭이 넓어지는 '방향'은 레벨보다 빠른 참여 확산 신호",
+                 "폭의 변화율이 레벨보다 전환을 먼저 잡는다", "산업 ETF 종가(자기 200일선)"),
+    ]
+
+
+def industry_breadth_values(breadth: pd.Series, idx: pd.DatetimeIndex) -> pd.DataFrame:
+    out = pd.DataFrame(index=idx)
+    b = breadth.reindex(idx)
+    out["INDUSTRY_BREADTH_200"] = b
+    out["INDUSTRY_BREADTH_200_CHG20"] = b - b.shift(20)
+    return out
+
+
+def build_industry_breadth(res: dict, M, scfg: SectorConfig, cal: pd.DatetimeIndex,
+                           industry_px_override: Optional[Dict[str, pd.DataFrame]] = None,
+                           offline: bool = False) -> Dict[str, pd.Series]:
+    """[v0.40.0 §S5·§I5] 섹터별 산업폭 시리즈를 1회 계산해 돌려준다(섹터별 재계산 없음).
+    산업 목록은 industry_rotation.INDUSTRIES를 지연 import로 읽는다(없으면 빈 dict → 후보 생략).
+    수집 실패·오프라인이면 조용히 건너뛴다 — 이 후보 하나 때문에 전체 실행이 죽으면 안 된다."""
+    out: Dict[str, pd.Series] = {}
+    if not bool(getattr(scfg, "USE_INDUSTRY_BREADTH", False)):
+        return out
+    # [v0.40.0 §S5] 호출부가 섹터 가격을 직접 주입한 오프라인/합성 실행에서 산업 가격만 네트워크로
+    # 가져오려 하면 (a) 수집이 실패해 후보가 어차피 생기지 않고 (b) 수십 초를 헛되게 쓴다.
+    # industry_px_override가 함께 오지 않았다면 그냥 건너뛴다 — 테스트가 명시적으로 주면 만든다.
+    if offline and not industry_px_override:
+        log("DATA", kv(event="industry_breadth_skipped", reason="오프라인 실행(sector_px_override)인데 "
+                                                                "industry_px_override가 없음 — 수집 시도 생략"), M=M)
+        return out
+    try:
+        import industry_rotation as _I
+        by_parent: Dict[str, List[str]] = {}
+        for row in getattr(_I, "INDUSTRIES", ()):
+            tk, parent = str(row[0]), str(row[1])
+            by_parent.setdefault(parent, []).append(tk)
+    except Exception as e:   # noqa
+        log("DATA", kv(event="industry_breadth_skipped", reason="industry_rotation 없음",
+                       err=type(e).__name__), M=M, level="warning")
+        return out
+    by_parent = {p: v for p, v in by_parent.items()
+                 if p in scfg.SECTORS and len(v) >= int(getattr(scfg, "INDUSTRY_BREADTH_MIN_N", 2))}
+    if not by_parent:
+        return out
+    tickers = tuple(sorted({t for v in by_parent.values() for t in v}))
+    try:
+        px_map, _ = fetch_sector_prices(res, M, [], sector_px_override=industry_px_override, tickers=tickers)
+    except Exception as e:   # noqa
+        log("DATA", kv(event="industry_breadth_fetch_failed", err=type(e).__name__, msg=str(e)[:150],
+                       action="산업폭 후보 생략(다른 후보로 계속)"), M=M, level="warning")
+        return out
+    above: Dict[str, pd.Series] = {}
+    for t in tickers:
+        df = px_map.get(t)
+        if df is None or len(df) == 0:
+            continue
+        try:
+            tr, _ = build_total_return_close(df, cal, scfg.ADJ_CLOSE_STALE_DAYS)
+            above[t] = (sector_technical_values(tr.astype(float))["TREND_200"] > 0)
+        except Exception:   # noqa
+            continue
+    for p, inds in by_parent.items():
+        cols = [t for t in inds if t in above]
+        if len(cols) < int(getattr(scfg, "INDUSTRY_BREADTH_MIN_N", 2)):
+            continue
+        out[p] = pd.DataFrame({t: above[t] for t in cols}).reindex(cal).mean(axis=1, skipna=True)
+    log("DATA", kv(event="industry_breadth_built", parents=len(out), industries=len(above),
+                   detail=";".join(f"{p}:{len([t for t in v if t in above])}" for p, v in sorted(by_parent.items())),
+                   last=";".join(f"{p}:{v.dropna().iloc[-1]:.2f}" for p, v in sorted(out.items()) if v.notna().any())), M=M)
+    return out
+
+
 def sector_breadth_specs() -> List[_RawSpec]:
     return [
         _RawSpec("SECTOR_BREADTH_200", "섹터 폭(자기 200일선 상회 섹터 비율)", "J.시장폭", +1,
@@ -2779,6 +3024,7 @@ def build_sector_candidates(ticker: str, res: dict, M, scfg: SectorConfig,
                             spy_tr: pd.Series, spy_raw: pd.Series,
                             spy_series: Dict[str, pd.Series], idx: pd.DatetimeIndex,
                             breadth: Optional[pd.Series] = None,
+                            industry_breadth: Optional[pd.Series] = None,
                             ) -> Tuple[pd.DataFrame, List[Any]]:
     """한 섹터의 후보지표 전체(값 DataFrame, M.IndicatorSpec 목록)를 만든다.
     = [M 후보 전부(res["ind"] 재사용, 재계산 없음)] + [섹터 기술 8] + [상대강도 10(v0.3.0: REL_MA200_SLOPE 추가)]
@@ -2840,6 +3086,12 @@ def build_sector_candidates(ticker: str, res: dict, M, scfg: SectorConfig,
         bv = breadth.reindex(idx)
         for raw in sector_breadth_specs():
             sec[f"{ticker}__{raw.suffix}"] = bv
+            specs.append(_mk_spec(M, ticker, raw))
+    # [v0.40.0 §S5·§I5] 산업폭 — 그 섹터에 산업 ETF가 있을 때만(없으면 후보 자체를 만들지 않는다).
+    if getattr(scfg, "USE_INDUSTRY_BREADTH", False) and industry_breadth is not None:
+        ibv = industry_breadth_values(industry_breadth, idx)
+        for raw in industry_breadth_specs():
+            sec[f"{ticker}__{raw.suffix}"] = ibv[raw.suffix]
             specs.append(_mk_spec(M, ticker, raw))
     frames.append(sec)
     ind = pd.concat(frames, axis=1).replace([np.inf, -np.inf], np.nan)
@@ -2922,7 +3174,13 @@ def sector_cfg_for(M_cfg, scfg: SectorConfig, ticker: str, idx_i: pd.DatetimeInd
                REWEIGHT_FREQ=scfg.SECTOR_REWEIGHT_FREQ or M_cfg.REWEIGHT_FREQ,
                RUN_LOOKAHEAD_AUDIT=scfg.RUN_LOOKAHEAD_AUDIT, AUDIT_SAMPLE=scfg.AUDIT_SAMPLE,
                RANDOM_SEED=scfg.RANDOM_SEED, OUT_XLSX=f"sector_{ticker}.xlsx",
-               EXPORT_RESULT_BUNDLE=False, EXPORT_DAILY_CSV=False)
+               EXPORT_RESULT_BUNDLE=False, EXPORT_DAILY_CSV=False,
+               # [v0.40.0 §S1·§S3] M v1.51.0의 훅 3개 — M/SPY 기본값(None/0.5/False)과 달리 섹터는
+               # 자기 값을 넣는다. M 자신의 cfg는 이 함수를 거치지 않으므로 SPY는 영향을 받지 않는다.
+               MARKET_BLOCK_WEIGHT_CAP=getattr(scfg, "SECTOR_MARKET_BLOCK_CAP", None),
+               MARKET_BLOCK_T_MIN=getattr(scfg, "SECTOR_MACRO_T_MIN", None),
+               TREND_OVERRIDE_SCORE_PCT=float(getattr(scfg, "SECTOR_OVERRIDE_SCORE_PCT", 0.5)),
+               TREND_OVERRIDE_NEED_MARKET=bool(getattr(scfg, "SECTOR_OVERRIDE_NEED_MARKET", False)))
     return dataclasses.replace(M_cfg, **{k: v for k, v in upd.items() if k in fields})
 
 
@@ -3170,7 +3428,13 @@ _CACHE_KEY_IGNORE_FIELDS = frozenset({
     "OUT_XLSX", "LOG_LEVEL", "EXPORT_RESULT_BUNDLE", "RESULT_BUNDLE_PATH", "EXPORT_DAILY_CSV", "DAILY_CSV_PATH",
     "RANDOM_SEED", "CACHE_DIR", "FRED_API_KEY", "FETCH_TIMEOUT_CONNECT", "FETCH_TIMEOUT_READ", "FETCH_RETRIES",
     "FETCH_MAX_WORKERS", "DRAWDOWN_EPISODE_THRESHOLD",
+    # [v0.40.0 §S3] 추세오버라이드 2필드는 generate_signals에서만 쓰이고 검증표·워크포워드 가중치에는
+    # 관여하지 않는다 → 캐시 키에서 제외해 이 값만 바꿔도 섹터당 ~350초 재검증이 일어나지 않게 한다.
+    # (§S1의 MARKET_BLOCK_WEIGHT_CAP은 반대로 가중치를 실제로 바꾸므로 **키에 남겨 둔다**.)
+    "TREND_OVERRIDE_SCORE_PCT", "TREND_OVERRIDE_NEED_MARKET",
 })
+# [v0.40.0 §S2] SectorConfig 쪽 게이트 필드는 cfg_i(M Config)에 실리지 않으므로 캐시 키와 무관하다
+# (regime_info_gate는 run_sector에서 신호 생성 직전에 scfg를 직접 읽는다) — 확인 사항으로 명시.
 
 
 def _cache_key(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M) -> str:
@@ -3237,6 +3501,84 @@ def _score_with_weights(Z_row: pd.Series, w_row: pd.Series) -> float:
     avail = Z_row.notna() & (w_row != 0)
     den = float((w_row.abs() * avail).sum())
     return float((Z_row * w_row).where(avail).sum() / den) if den > 0 else np.nan
+
+
+def regime_info_gate(ticker: str, state: pd.Series, adj_tr: pd.Series, eval_idx: pd.DatetimeIndex,
+                     scfg: SectorConfig, M=None) -> Tuple[pd.Series, pd.DataFrame]:
+    """[v0.40.0 §S2 ⚠ 신호 파라미터] 하락 판정 정보 게이트 — **연도별 워크포워드**로
+    "이 섹터의 하락(RISK_OFF) 판정에 과거 표본에서 정보가 있었나"를 재고, 없었던 해에는
+    그 해의 RISK_OFF를 중립으로 강등한다(M.generate_signals(regime_floor=)가 적용).
+
+    왜 필요한가(IMPROVEMENT_PLAN_S0.40_I0.4 §1.2, 리포트39 실측 h=21):
+      11섹터 중 6개(XLF·XLP·XLU·XLV·XLB·XLE)가 21일 지평 MCC<0 — 방향 판별력이 동전 이하였고,
+      8/11 섹터에서 **하락 판정 뒤 21일 수익이 무조건 평균보다 높았다**(하락이라 했는데 더 올랐다):
+        XLV +2.61% vs 전체 +0.75% (하락적중 0.283, 기저 0.420 → −14.1%p)
+        XLB +2.15% vs +0.67% (−11.1%p) · XLE +1.84% vs +0.96% (−6.8%p) · XLF +1.81% vs +0.86% (−6.8%p)
+      반면 XLK(−0.19%p 수익차, 적중 +11.3%p)·XLC(+10.4%p)·XLU는 하락 판정이 제 일을 했다.
+      섹터마다 손으로 규칙을 다르게 주는 대신 **데이터가 매년 정하게** 한다.
+
+    통계(그 해 학습창):
+      cutoff = (그 해 1월 1일 − 35일)  — S의 워크포워드 관행과 동일.
+      표본 = t < cutoff 이고 **t+h ≤ cutoff** 인 날(전방수익 창이 cutoff를 넘지 않게 — 룩어헤드 차단).
+      x[t] = (t의 향후 h일 수익) − (같은 표본 전체의 평균 향후 h일 수익)   ← 하락일에 대해서만 모은다
+      t값 = NW-HAC(바틀렛, lag=h) 평균-t  (_nw_mean_tstat 재사용)
+      판정: t ≤ SECTOR_REGIME_GATE_T(−1.0) 이면 '유지'(하락 판정에 정보 있음), 아니면 '강등'.
+      표본 부족(학습일 < MIN_DAYS 또는 하락일 < MIN_OFF_DAYS)이면 **'유지'**(= v0.39.0 동작)로
+      보수적으로 되돌아간다 — 초기 연도에서 게이트가 근거 없이 방어를 풀지 않도록.
+
+    인과성: 어떤 해 y의 판정도 cutoff(y) 이전 가격·상태만 쓴다. state는 M이 t일 종가로 확정한
+      것이고(1차 통과), adj_tr도 t일까지의 가격이다. 같은 이유로 **첫 평가연도는 학습창이 짧아
+      대개 '유지'가 되며**, 이것이 의도된 보수성이다.
+
+    반환: (floor_mask: eval 구간 전체 bool 시리즈, 로그 DataFrame(연도×판정))."""
+    h = int(getattr(scfg, "SECTOR_REGIME_GATE_HORIZON", 21) or 21)
+    t_cut = float(getattr(scfg, "SECTOR_REGIME_GATE_T", -1.0))
+    min_days = int(getattr(scfg, "SECTOR_REGIME_GATE_MIN_DAYS", 500))
+    min_off = int(getattr(scfg, "SECTOR_REGIME_GATE_MIN_OFF_DAYS", 60))
+    idx = state.index
+    floor = pd.Series(False, index=idx)
+    rows: List[dict] = []
+    if not bool(getattr(scfg, "SECTOR_REGIME_GATE", False)) or len(eval_idx) == 0:
+        return floor, pd.DataFrame(rows)
+    px = adj_tr.reindex(idx).astype(float)
+    fwd = px.shift(-h) / px - 1.0
+    st = state.astype(str)
+    for y in sorted({int(d.year) for d in eval_idx}):
+        cutoff = pd.Timestamp(year=y, month=1, day=1) - pd.Timedelta(days=35)
+        # 전방수익 창이 cutoff를 넘지 않는 날만 — t+h ≤ cutoff
+        cand = idx[(idx < cutoff)]
+        if len(cand) > h:
+            cand = cand[:-h]
+        else:
+            cand = cand[:0]
+        cand = cand[pd.Series(fwd.reindex(cand)).notna().values] if len(cand) else cand
+        rows_y = idx[(idx.year == y)]
+        n_train = len(cand)
+        off = cand[st.reindex(cand).eq("RISK_OFF").values] if n_train else cand
+        n_off = len(off)
+        if n_train < min_days or n_off < min_off:
+            rows.append({"티커": ticker, "적용연도": y, "학습 마감": str(cutoff.date()), "학습일수": n_train,
+                         "하락일수": n_off, f"하락일 초과수익(%/{h}일)": np.nan, "NW-HAC t": np.nan,
+                         "판정": "유지(표본부족)", "강등일수": 0})
+            continue
+        base = float(fwd.reindex(cand).mean())
+        x = fwd.reindex(off) - base
+        m, tv, n = _nw_mean_tstat(x, lag=h)
+        keep = bool(pd.notna(tv) and tv <= t_cut)
+        if not keep:
+            floor.loc[rows_y] = True
+        rows.append({"티커": ticker, "적용연도": y, "학습 마감": str(cutoff.date()), "학습일수": n_train,
+                     "하락일수": n_off, f"하락일 초과수익(%/{h}일)": (round(m * 100, 3) if pd.notna(m) else np.nan),
+                     "NW-HAC t": (round(float(tv), 2) if pd.notna(tv) else np.nan),
+                     "판정": ("유지" if keep else "강등"),
+                     "강등일수": (0 if keep else int(len(rows_y)))})
+        if M is not None:
+            log("GATE", kv(ticker=ticker, year=y, train_end=str(cutoff.date()), n_train=n_train,
+                                  n_off=n_off, horizon=h,
+                                  excess_pct=(round(m * 100, 3) if pd.notna(m) else "-"),
+                                  t=(round(float(tv), 2) if pd.notna(tv) else "-"), t_cut=t_cut,
+                                  verdict=("유지" if keep else "강등")), M=M)
+    return floor, pd.DataFrame(rows)
 
 
 def sector_lookahead_audit(ticker: str, res: dict, M, scfg: SectorConfig, cfg_i,
@@ -3322,8 +3664,9 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     # ---- 지표 ---- [v0.3.0 §1.E-2] breadth: run()에서 11섹터 공통으로 1회 계산된 값(재계산 없음).
     t0 = time.time()
     breadth = ctx.get("sector_breadth_200")
+    ind_breadth = (ctx.get("industry_breadth") or {}).get(ticker)   # [v0.40.0 §S5·§I5]
     ind_i, specs = build_sector_candidates(ticker, res, M, scfg, adj_i, close_i, spy_tr, spy_raw, spy_series, idx_i,
-                                           breadth=breadth)
+                                           breadth=breadth, industry_breadth=ind_breadth)
     trend200 = sector_technical_values(adj_i)["TREND_200"]
     timing["04_지표생성"] = round(time.time() - t0, 2)
     log("INDICATOR", kv(ticker=ticker, candidates=len(specs),
@@ -3376,8 +3719,33 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             deep_recov = recov_conf & deep
 
     # ---- 신호 / 백테스트 ----
-    sig = M.generate_signals(score_pct, trend200, cfg_i, score=score, haz_pct=haz_pct, fast_pct=fast_pct,
-                             recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+    # [v0.40.0 §S3] market_ok — cfg_i.TREND_OVERRIDE_NEED_MARKET이 False면 M이 무시한다(하위호환).
+    _sig_kw = dict(score=score, haz_pct=haz_pct, fast_pct=fast_pct, recov_conf=recov_conf,
+                   deep_recov=deep_recov, struct_dd=struct_dd, market_ok=ctx.get("market_ok"))
+    sig = M.generate_signals(score_pct, trend200, cfg_i, **_sig_kw)
+    # [v0.40.0 §S2] 하락 판정 정보 게이트 — 2패스.
+    #   1패스(위)로 나온 '게이트 이전' 상태를 표본으로 삼아 연도별 판정을 만들고(cutoff 이전 정보만),
+    #   2패스에서 그 마스크를 regime_floor로 넣어 상태기계(이력현상·최소보유)를 정상 통과시킨다.
+    #   1패스 자체가 인과적(t일 정보만)이므로 학습 표본도 인과적이다. 비용은 generate_signals 1회(~0.02초).
+    gate_log = pd.DataFrame()
+    regime_floor = None
+    if bool(getattr(scfg, "SECTOR_REGIME_GATE", False)):
+        eval_idx_g = idx_i[idx_i >= pd.Timestamp(cfg_i.SIGNAL_START)]
+        regime_floor, gate_log = regime_info_gate(ticker, sig["state"], adj_i, eval_idx_g, scfg, M=M)
+        if regime_floor is not None and bool(regime_floor.any()):
+            sig_ungated = sig
+            sig = M.generate_signals(score_pct, trend200, cfg_i, regime_floor=regime_floor, **_sig_kw)
+            _n_dg = int(sig["regime_gate_floor"].sum())
+            _yrs = ",".join(str(int(r["적용연도"])) for _, r in gate_log.iterrows() if str(r["판정"]) == "강등")
+            log("GATE", kv(ticker=ticker, event="gate_applied", downgraded_days=_n_dg,
+                                  downgraded_years=(_yrs or "-"),
+                                  risk_off_before=int(sig_ungated["state"].eq("RISK_OFF").sum()),
+                                  risk_off_after=int(sig["state"].eq("RISK_OFF").sum()),
+                                  mean_pos_before=round(float(sig_ungated["target_pos"].mean()), 4),
+                                  mean_pos_after=round(float(sig["target_pos"].mean()), 4)), M=M)
+        else:
+            log("GATE", kv(ticker=ticker, event="gate_no_downgrade",
+                                  years=int(len(gate_log)), note="전 연도 '유지' — 신호 무변경"), M=M)
     with _indicator_spec_override(M, specs):
         reason = M.build_reason_text(contrib, sig["state"], score)
     bt = M.run_backtest(price_i, sig["target_pos"], cfg_i, rf)
@@ -3413,7 +3781,11 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                                  haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
                                  wlog, val_full, adopted, trades, episodes, events, sens, audit,
                                  haz_pct_sector=haz_pct_sector, spy_yearly_pos=spy_yearly_pos,
-                                 daily_indicator_detail=scfg.DAILY_INDICATOR_DETAIL)
+                                 daily_indicator_detail=scfg.DAILY_INDICATOR_DETAIL,
+                                 regime_accept_horizon=int(getattr(scfg, "REGIME_ACCEPT_HORIZON", 21) or 21))
+    # [v0.40.0 §S2] 09c 시트 조각 — _concat(results, "regime_gate")이 sheets에서 찾는다.
+    if isinstance(gate_log, pd.DataFrame) and len(gate_log):
+        sheets["regime_gate"] = gate_log
     # [v0.5.0] 순환매 후보 순위신호 — '전체 이력'(SIGNAL_START 마스킹 없음: 횡단면 워크포워드 검증이 2018 이전 이력으로
     # 학습해야 하므로). 전부 그 섹터 후보지표 프레임/점수에서 그대로 꺼내거나 인과적으로 계산(재계산·미래 정보 없음).
     rot_raw = build_rotation_raw_signals(ticker, ind_i, score, adj_i, spy_tr, idx_i, M, res=res, scfg=scfg)
@@ -3447,7 +3819,8 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "ret_co": bt["ret_co"], "ret_oc": bt["ret_oc"], "rot_raw": rot_raw,
             # [v0.9.0] 13j 배분거래내역 표시용 원시 시가/종가(평가창) — 체결가는 시가(T+1 시가 체결 규칙)
             "px_open": price_i["Open"].astype(float).loc[sig_mask.values], "px_close": close_i.loc[sig_mask.values],
-            "ret_cc_full": ret_cc_full}   # [v0.5.0] 전체 이력(횡단면 워크포워드 검증의 미래수익 산출용)
+            "ret_cc_full": ret_cc_full,   # [v0.5.0] 전체 이력(횡단면 워크포워드 검증의 미래수익 산출용)
+            "regime_gate": gate_log}      # [v0.40.0 §S2] 연도별 하락 정보 게이트 판정(09c 시트·00시트 요약)
 
 
 # =============================================================================
@@ -3527,7 +3900,8 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
                         wlog, val_full, adopted, trades, episodes, events, sens, audit,
                         haz_pct_sector: Optional[pd.Series] = None,
                         spy_yearly_pos: Optional[pd.Series] = None,
-                        daily_indicator_detail: bool = False) -> Dict[str, pd.DataFrame]:
+                        daily_indicator_detail: bool = False,
+                        regime_accept_horizon: int = 21) -> Dict[str, pd.DataFrame]:
     # daily_indicator_detail: [v0.9.1] SectorConfig.DAILY_INDICATOR_DETAIL을 그대로 전달받는다(cfg_i는
     # M.Config 사본이라 이 필드가 없음 — sector_cfg_for()가 M_cfg 필드만 복제하므로 여기서 직접 인자로 받는다).
     idx = bt.index
@@ -3560,6 +3934,8 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
     daily["위험회피진입(H)"] = _flag("hazard_entry")
     daily["위험선호차단(H)"] = _flag("hazard_block")
     daily["위험회피해제안전판(H)"] = _flag("hazard_floor")
+    # [v0.40.0 §S2] 그 해 하락 판정에 정보가 없다고 판정돼 RISK_OFF가 중립으로 강등된 날.
+    daily["국면정보게이트(강등)"] = _flag("regime_gate_floor")
     daily["매수보류게이트(H)"] = _flag("buy_hold_gate")
     daily["급락트리거백분위"] = fast_pct.reindex(idx).round(4) if fast_pct is not None else np.nan
     daily["급락트리거(FT)"] = _flag("fast_trigger")
@@ -3683,16 +4059,60 @@ def build_sector_sheets(M, ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score,
     regime_stats["변동성"] = (regime_stats["변동성"] * 100).round(4)
     regime_stats["연율화수익률"] = (regime_stats["평균익일수익률"] / 100 * 252).round(4)
     regime_stats["국면"] = regime_stats["국면"].map(STATE_KR).fillna(regime_stats["국면"])
+    # ---- [v0.40.0 §S4 ⚠ 수용기준 변경] 국면정의 검증을 **h=21일 기준**으로 ----------------
+    # 왜: 종전 기준(상승 익일평균 > 하락 익일평균)은 1일 지평만 본다. 리포트39 실측에서 익일
+    #   기저대비는 11섹터 중 10개가 양수(+0.7~+6.2%p)라 "거의 다 맞는 것처럼" 보였지만, 운용 지평인
+    #   21일에서는 6개 섹터(XLF·XLP·XLU·XLV·XLB·XLE)가 MCC<0이었고 8개 섹터에서 하락 판정 뒤 수익이
+    #   무조건 평균보다 높았다. 종전 기준으로는 그 중 5개가 PASS였다 — 기준이 문제를 못 잡았다.
+    # 새 기준(둘 다 충족해야 PASS):
+    #   (가) 하락 판정 뒤 h일 평균수익 < 무조건 h일 평균수익   (하락 판정이 손실을 피했는가)
+    #   (나) MCC(h) > 0                                      (방향 판별력이 동전보다 나은가)
+    # 익일 기준은 '참고'로 같은 문자열에 남긴다(회귀 비교를 위해).
     regime_validity: Optional[bool] = None
+    h_acc = int(regime_accept_horizon or 21)
     try:
         r_on = float(regime_stats.loc[regime_stats["국면"] == STATE_KR["RISK_ON"], "평균익일수익률"].iloc[0])
         r_off = float(regime_stats.loc[regime_stats["국면"] == STATE_KR["RISK_OFF"], "평균익일수익률"].iloc[0])
-        regime_validity = bool(r_on > r_off)
-        verdict = (f"국면 정의 유효 (상승국면 익일평균 {r_on:.4f}% > 하락국면 {r_off:.4f}%)" if regime_validity
-                   else f"주의: 하락국면의 익일수익률이 더 높음 ({r_off:.4f}% >= {r_on:.4f}%)")
+        d1_ok = bool(r_on > r_off)
+        d1_txt = (f"[참고 익일] 상승 {r_on:.4f}% {'>' if d1_ok else '<='} 하락 {r_off:.4f}%")
     except Exception:
-        verdict = "판정 불가(상승 또는 하락 국면 표본 없음)"
+        d1_ok, d1_txt = None, "[참고 익일] 판정 불가(표본 없음)"
+    # h일 통계 — sig(전체 상태) + bt(수익)로 여기서 직접 계산(새 데이터 수집 없음).
+    mu_all_h = mu_dn_h = mcc_h = np.nan
+    n_dn_h = 0
+    try:
+        _st = sig["state"].reindex(bt.index).astype(str)
+        _C = (1.0 + bt["ret_cc"].fillna(0.0)).cumprod()
+        _f = _C.shift(-h_acc - 1) / _C.shift(-1) - 1.0
+        _m = _f.notna() & _st.isin(["RISK_ON", "NEUTRAL", "RISK_OFF"])
+        if int(_m.sum()) >= 120:
+            _fm, _sm = _f[_m], _st[_m]
+            mu_all_h = float(_fm.mean())
+            _dn = _sm.eq("RISK_OFF"); n_dn_h = int(_dn.sum())
+            if n_dn_h >= 20:
+                mu_dn_h = float(_fm[_dn].mean())
+            _sub = _sm.isin(["RISK_ON", "RISK_OFF"])
+            if int(_sub.sum()) >= 60 and int(_sm[_sub].eq("RISK_OFF").sum()) >= 10:
+                _ss, _ff = _sm[_sub], _fm[_sub]
+                tp = float(((_ss.eq("RISK_ON")) & (_ff > 0)).sum()); fn = float(((_ss.eq("RISK_OFF")) & (_ff > 0)).sum())
+                tn = float(((_ss.eq("RISK_OFF")) & (_ff <= 0)).sum()); fp = float(((_ss.eq("RISK_ON")) & (_ff <= 0)).sum())
+                den = math.sqrt(max((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn), 0.0))
+                mcc_h = (tp * tn - fp * fn) / den if den > 0 else np.nan
+    except Exception as _e:   # noqa
+        pass
+    if pd.notna(mu_dn_h) and pd.notna(mcc_h):
+        cond_a = bool(mu_dn_h < mu_all_h); cond_b = bool(mcc_h > 0)
+        regime_validity = bool(cond_a and cond_b)
+        verdict = (f"{'국면 정의 유효' if regime_validity else '주의: 국면 정의 미달'} "
+                   f"(h={h_acc}일 · 하락후 평균 {mu_dn_h*100:.3f}% {'<' if cond_a else '>='} 전체 {mu_all_h*100:.3f}%"
+                   f"{'✔' if cond_a else '✘'} · MCC {mcc_h:.4f}{'✔' if cond_b else '✘'}) {d1_txt}")
+    else:
+        regime_validity = d1_ok
+        verdict = f"h={h_acc}일 판정 불가(하락 표본 {n_dn_h}일) — 익일 기준으로 대체. {d1_txt}"
     regime_stats["국면정의 검증"] = verdict
+    regime_stats[f"하락후 평균수익(%,{h_acc}일)"] = (round(mu_dn_h * 100, 3) if pd.notna(mu_dn_h) else np.nan)
+    regime_stats[f"무조건 평균수익(%,{h_acc}일)"] = (round(mu_all_h * 100, 3) if pd.notna(mu_all_h) else np.nan)
+    regime_stats[f"MCC({h_acc}일)"] = (round(float(mcc_h), 4) if pd.notna(mcc_h) else np.nan)
 
     for df in (val_sheet, detail, perf, extra, ann, wf, regime_stats, trades, episodes, events, sens, audit,
               rule_contrib):
@@ -3828,9 +4248,11 @@ def _resolve_res(res_or_path, M) -> dict:
 
 
 def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
-        sector_px_override: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
+        sector_px_override: Optional[Dict[str, pd.DataFrame]] = None,
+        industry_px_override: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
     """섹터 11개 전체 실행. res_or_path: M.run() 반환 dict 또는 결과 번들 경로(market_regime_result.pkl.gz).
-    sector_px_override: 합성/오프라인 테스트용 가격 주입(fetch_sector_prices 참조)."""
+    sector_px_override: 합성/오프라인 테스트용 가격 주입(fetch_sector_prices 참조).
+    industry_px_override: [v0.40.0 §S5] 산업폭 후보용 산업 ETF 가격 주입(오프라인 테스트) — None이면 수집."""
     scfg = scfg or CFG
     t_all = time.time()
     # [v0.37.0 ⚠] 유니버스 확정 — SECTOR_EXCLUDE를 SECTORS에서 걸러 낸 설정으로 바꿔치기해 하류 전체가
@@ -3920,9 +4342,20 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
 
     # ---- 2) 섹터별 파이프라인 ----
     t0 = time.time()
+    # [v0.40.0 §S5·§I5] 섹터별 산업폭 — 1회 계산해 ctx로(섹터별 재계산 없음).
+    industry_breadth = build_industry_breadth(res, M, scfg, cal, industry_px_override=industry_px_override,
+                                              offline=bool(sector_px_override))
+    # [v0.40.0 §S3] 시장 확인 시리즈 — 11섹터가 공유(1회 계산, 재계산 없음).
+    market_ok = market_ok_series(res, M)
+    log("SIGNAL", kv(event="market_ok_ready", n=int(len(market_ok)), true_days=int(market_ok.sum()),
+                     share=round(float(market_ok.mean()), 4),
+                     need_market=bool(getattr(scfg, "SECTOR_OVERRIDE_NEED_MARKET", False)),
+                     override_score_pct=float(getattr(scfg, "SECTOR_OVERRIDE_SCORE_PCT", 0.5)),
+                     market_block_cap=getattr(scfg, "SECTOR_MARKET_BLOCK_CAP", None)), M=M)
     ctx = {"M": M, "res": res, "scfg": scfg, "frames": frames, "raw": raw, "spy_tr": spy_tr, "spy_raw": spy_raw,
            "spy_raw_df": spy_df, "spy_series": spy_series, "rf_daily": rf_daily,
-           "sector_breadth_200": sector_breadth_200}
+           "sector_breadth_200": sector_breadth_200, "market_ok": market_ok,
+           "industry_breadth": industry_breadth}
     results, failed = run_sectors(list(frames.keys()), ctx, scfg, M)
     stage_timing["02_섹터파이프라인"] = round(time.time() - t0, 2)
 
@@ -5906,6 +6339,102 @@ def build_sector_prediction_accuracy(results: Dict[str, Dict[str, Any]],
             if int(mu.sum()) >= 5 and int(my.sum()) >= 20:
                 row[str(y)] = round((float((f2[mu] > 0).mean()) - float((f2[my] > 0).mean())) * 100, 1)
         rows.append(row)
+
+    # ---- E. 기저 대비 '반대 방향' 정확도 [v0.40.0 §S4 신설] ------------------------
+    # 사용자 질문 그대로: "실제 상승이 많은 섹터는 하락 정확도가 높은지, 반대도 마찬가지".
+    # 기저↑ 내림차순으로 정렬해 **위쪽(상승이 많은 섹터)에서는 하락 판정을, 아래쪽에서는 상승 판정을**
+    # 먼저 보게 한다. 적중률만으로는 부족하다 — 적중률이 올라도 그 판정 뒤 실제 수익이 무조건 평균보다
+    # 높으면 '반등을 놓치는 하락 판정'이다(리포트39 XLY: 적중 +6.5%p인데 하락 뒤 μ +2.11% > 전체 +0.99%).
+    # 그래서 세 값을 나란히 둔다: 기저 대비 적중(%p) · 판정 뒤 평균수익 − 무조건 평균 · MCC.
+    # MCC는 상승/하락 판정만(중립 제외) 쓰는 기저율 무관 방향 판별력 — 0이면 동전, 음수면 거꾸로.
+    h_main = 21 if 21 in horizons else horizons[-1]
+    rows.append({"블록": "E. 기저 대비 반대방향", "섹터": f"── 상승 많은 섹터의 '하락' 정확도 (h={h_main}일) ──",
+                 "설명": "기저↑ 내림차순. 위쪽은 하락 판정을, 아래쪽은 상승 판정을 본다. "
+                        "적중이 올라도 '판정후μ−전체μ'가 양수면 반등을 놓치는 판정이고, MCC<0이면 방향이 거꾸로다"})
+    e_rows: List[dict] = []
+    for t in tks:
+        st, r, C = _pack(t)
+        for h in horizons:
+            f = C.shift(-h - 1) / C.shift(-1) - 1
+            m = f.notna() & st.notna()
+            if int(m.sum()) < 60:
+                continue
+            fm, sm = f[m], st[m]
+            bu = float((fm > 0).mean()); mu_all = float(fm.mean())
+            mup, mdn = sm.eq(UP), sm.eq(DN)
+            row = {"블록": "E. 기저 대비 반대방향", "섹터": t, "구분": f"h={h}일", "표본일수": int(m.sum()),
+                   "기저 상승": round(bu, 4), "무조건 평균수익(%)": round(mu_all * 100, 3)}
+            if int(mdn.sum()) >= 5:
+                hd = float((fm[mdn] <= 0).mean()); md_mu = float(fm[mdn].mean())
+                row["하락예측 일수"] = int(mdn.sum())
+                row["하락 적중"] = round(hd, 4)
+                row["하락 기저대비(%p)"] = round((hd - (1 - bu)) * 100, 2)
+                row["하락후 평균수익(%)"] = round(md_mu * 100, 3)
+                row["하락후μ − 전체μ(%p)"] = round((md_mu - mu_all) * 100, 3)
+                row["하락 판정"] = ("정보 있음" if (hd - (1 - bu)) > 0.005 and md_mu < mu_all else
+                                 ("적중↑·수익은 반대" if (hd - (1 - bu)) > 0.005 else
+                                  ("적중↓·수익은 맞음" if md_mu < mu_all else "역방향")))
+            if int(mup.sum()) >= 5:
+                hu = float((fm[mup] > 0).mean()); mu_mu = float(fm[mup].mean())
+                row["상승예측 일수"] = int(mup.sum())
+                row["상승 적중"] = round(hu, 4)
+                row["상승 기저대비(%p)"] = round((hu - bu) * 100, 2)
+                row["상승후 평균수익(%)"] = round(mu_mu * 100, 3)
+                row["상승후μ − 전체μ(%p)"] = round((mu_mu - mu_all) * 100, 3)
+                row["상승 판정"] = ("정보 있음" if (hu - bu) > 0.005 and mu_mu > mu_all else
+                                 ("적중↑·수익은 반대" if (hu - bu) > 0.005 else
+                                  ("적중↓·수익은 맞음" if mu_mu > mu_all else "역방향")))
+            # MCC(중립 제외) — 기저율에 무관한 방향 판별력
+            sub = sm.isin([UP, DN])
+            if int(sub.sum()) >= 60 and int((sm[sub].eq(DN)).sum()) >= 10:
+                ss, ff = sm[sub], fm[sub]
+                tp = float(((ss.eq(UP)) & (ff > 0)).sum()); fn = float(((ss.eq(DN)) & (ff > 0)).sum())
+                tn = float(((ss.eq(DN)) & (ff <= 0)).sum()); fp = float(((ss.eq(UP)) & (ff <= 0)).sum())
+                den = math.sqrt(max((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn), 0.0))
+                row["MCC"] = round((tp * tn - fp * fn) / den, 4) if den > 0 else np.nan
+            e_rows.append(row)
+    if e_rows:
+        eh = [x for x in e_rows if x["구분"] == f"h={h_main}일"]
+        order = [x["섹터"] for x in sorted(eh, key=lambda z: -float(z.get("기저 상승", 0)))]
+        rank = {t: i for i, t in enumerate(order)}
+        e_rows.sort(key=lambda z: (rank.get(z["섹터"], 999), int(str(z["구분"]).split("=")[1].rstrip("일"))))
+        rows.extend(e_rows)
+        n_neg = sum(1 for x in eh if pd.notna(x.get("MCC", np.nan)) and float(x.get("MCC", 0)) < 0)
+        n_rev = sum(1 for x in eh if float(x.get("하락후μ − 전체μ(%p)", -1) or -1) > 0)
+        rows.append({"블록": "E. 기저 대비 반대방향", "섹터": "요약", "구분": f"h={h_main}일",
+                     "설명": f"MCC<0(방향 판별력이 동전 이하) {n_neg}/{len(eh)}개 섹터 · "
+                            f"하락 판정 뒤 수익이 무조건 평균보다 높은(반등을 놓친) 섹터 {n_rev}/{len(eh)}개"})
+
+    # ---- F. 꼬리 포착 [v0.40.0 §S4 신설] ------------------------------------------
+    # "하락을 제대로 회피하는가"를 적중률이 아니라 **비중**으로 본다. 최악 10% 구간 시작일의 상태
+    # 분포와 그날 목표비중이 전체 평균 대비 얼마였나. 목표비중 배율이 1.0이면 무차별이다.
+    rows.append({"블록": "F. 꼬리 포착", "섹터": f"── 최악·최고 10% {h_main}일 구간 시작일 (h={h_main}) ──",
+                 "설명": "최악 구간을 하락/중립으로 잡았나, 그날 목표비중을 실제로 줄였나(배율<1.0이어야 함)"})
+    for t in tks:
+        st, r, C = _pack(t)
+        pos = results[t].get("target_pos")
+        f = C.shift(-h_main - 1) / C.shift(-1) - 1
+        m = f.notna() & st.notna()
+        if int(m.sum()) < 120:
+            continue
+        fm, sm = f[m], st[m]
+        pm = pd.Series(pos).reindex(fm.index).astype(float) if pos is not None else pd.Series(np.nan, index=fm.index)
+        q10, q90 = float(fm.quantile(0.10)), float(fm.quantile(0.90))
+        worst, best = fm <= q10, fm >= q90
+        base_pos = float(pm.mean()) if pm.notna().any() else np.nan
+        rows.append({"블록": "F. 꼬리 포착", "섹터": t, "표본일수": int(m.sum()),
+                     "최악10% 일수": int(worst.sum()),
+                     "최악10%: 하락상태": round(float(sm[worst].eq(DN).mean()), 4),
+                     "최악10%: 중립": round(float(sm[worst].eq(NU).mean()), 4),
+                     "최악10%: 상승(놓침)": round(float(sm[worst].eq(UP).mean()), 4),
+                     "최악10% 평균 목표비중": (round(float(pm[worst].mean()), 4) if pm.notna().any() else np.nan),
+                     "전체 평균 목표비중": (round(base_pos, 4) if base_pos == base_pos else np.nan),
+                     "최악10% 비중배율": (round(float(pm[worst].mean()) / base_pos, 3)
+                                    if (base_pos == base_pos and base_pos > 0) else np.nan),
+                     "최고10%: 상승상태": round(float(sm[best].eq(UP).mean()), 4),
+                     "최고10%: 하락(놓침)": round(float(sm[best].eq(DN).mean()), 4),
+                     "최고10% 비중배율": (round(float(pm[best].mean()) / base_pos, 3)
+                                    if (base_pos == base_pos and base_pos > 0) else np.nan)})
     return pd.DataFrame(rows)
 
 
@@ -7181,7 +7710,34 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         sheets["13c_일별배분비중"] = sres.get("alloc_sheet", pd.DataFrame())
         sheets["13d_횡단면IC"] = rot_val.get("ic_table", pd.DataFrame())
         sheets["13e_순위스프레드"] = rot_val.get("spread_table", pd.DataFrame())
-        sheets["13f_배분수용기준"] = rot_val.get("criteria", pd.DataFrame())
+        # [v0.40.0 §S4] 13f에 정보 항목 ⑥ — 섹터 국면 판별력(MCC21>0인 섹터 수). 판정에는 관여하지
+        #   않는다(다음 라운드에 판정 편입 여부를 결정). 13f는 '배분(순위)' 기준이고 ⑥은 '국면' 기준이라
+        #   성격이 다르므로 종합 PASS/FAIL 계산에서 제외한 채 같은 자리에 나란히 둔다.
+        _crit = rot_val.get("criteria", pd.DataFrame())
+        try:
+            _h = int(getattr(scfg, "REGIME_ACCEPT_HORIZON", 21) or 21)
+            _mcc_col = f"MCC({_h}일)"
+            _vals = {}
+            for t in ok_t:
+                _rs = results[t]["sheets"].get("regime_stats")
+                if isinstance(_rs, pd.DataFrame) and _mcc_col in _rs.columns and _rs[_mcc_col].notna().any():
+                    _vals[t] = float(_rs[_mcc_col].dropna().iloc[0])
+            if _vals and isinstance(_crit, pd.DataFrame) and len(_crit):
+                _pos = sorted([k for k, v in _vals.items() if v > 0], key=lambda k: -_vals[k])
+                _neg = sorted([k for k, v in _vals.items() if v <= 0], key=lambda k: _vals[k])
+                _row = pd.DataFrame([{
+                    "기준": f"⑥ 섹터 국면 MCC{_h} > 0인 섹터 수 (정보, 판정 제외)",
+                    "측정값": (f"{len(_pos)}/{len(_vals)} — 양수: "
+                            + ", ".join(f"{k} {_vals[k]:+.3f}" for k in _pos[:6])
+                            + (" …" if len(_pos) > 6 else "")
+                            + " | 음수(방향이 거꾸로): "
+                            + (", ".join(f"{k} {_vals[k]:+.3f}" for k in _neg) if _neg else "없음")
+                            + " — 01Y 블록 E, 09_국면통계"),
+                    "판정": "정보"}])
+                _crit = pd.concat([_crit, _row], ignore_index=True)
+        except Exception as _e:   # noqa
+            log("ROTATION", kv(event="crit6_failed", err=str(_e)[:120]), M=M, level="warning")
+        sheets["13f_배분수용기준"] = _crit
         sheets["13g_순환매신호채택"] = rot_val.get("selection_log", pd.DataFrame())   # [v0.5.0] 워크포워드 연도별 채택 로그
         sheets["13h_외부검증FF49"] = rot_val.get("external_log", pd.DataFrame())     # [v0.6.0] Ken French 49업종 외부 검증
         sheets["13i_SPY대비격차분해"] = rot_val.get("gap_table", pd.DataFrame())     # [v0.8.0] 연도×판단×리더 섹터 분해
@@ -7220,6 +7776,10 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     sheets["08_워크포워드가중치"] = _concat(results, "wf")
     sheets["09_국면통계"] = _concat(results, "regime_stats")
     sheets["09b_규칙별기여"] = _concat(results, "rule_contrib")  # [v0.3.0 §1.G-1]
+    # [v0.40.0 §S2] 09c_국면정보게이트 — 섹터×연도로 "그 해 하락 판정에 정보가 있었나"와 판정 결과.
+    _gate_all = _concat(results, "regime_gate")
+    if isinstance(_gate_all, pd.DataFrame) and len(_gate_all):
+        sheets["09c_국면정보게이트"] = _gate_all
     q = sres.get("quality", pd.DataFrame())
     u = sres.get("universe", pd.DataFrame())
     sheets["10_데이터품질"] = pd.concat([u, q], ignore_index=True, sort=False) if len(q) else u
@@ -7235,6 +7795,29 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     else:
         audit_line = "미실행"
     regime_pass = int(sum(1 for t in ok_t if results[t]["sheets"]["regime_validity"]))
+    # [v0.40.0 §S1·§S2·§S3] 이번 라운드 규칙 3개 요약 + 게이트 결과 요약(00시트 2줄).
+    _cap = getattr(scfg, "SECTOR_MARKET_BLOCK_CAP", None)
+    _regime_rule_line = (
+        f"매크로 블록캡 {('끔' if _cap is None else f'{float(_cap):.0%}')}(SECTOR_MARKET_BLOCK_CAP — "
+        f"B.신용·C.매크로·F.매크로확장 합산 상한, 넘으면 섹터 고유 지표로 재분배) · "
+        f"추세오버라이드 점수문턱 {float(getattr(scfg, 'SECTOR_OVERRIDE_SCORE_PCT', 0.5)):.2f}"
+        f"{'·시장확인 요구' if getattr(scfg, 'SECTOR_OVERRIDE_NEED_MARKET', False) else '·시장확인 없음'}"
+        f"(SPY 200일선 하회 또는 M 하락국면인 날만 발동) · "
+        f"하락 정보 게이트 {'켬' if getattr(scfg, 'SECTOR_REGIME_GATE', False) else '끔'}"
+        f"(t ≤ {float(getattr(scfg, 'SECTOR_REGIME_GATE_T', -1.0)):.1f}이면 유지, 아니면 그 해 하락→중립 강등). "
+        f"⚠ 전부 신호를 바꾸는 파라미터다 — 되돌리기는 SectorConfig(SECTOR_MARKET_BLOCK_CAP=None, "
+        f"SECTOR_OVERRIDE_SCORE_PCT=0.5, SECTOR_OVERRIDE_NEED_MARKET=False, SECTOR_REGIME_GATE=False).")
+    _gt = _concat(results, "regime_gate")
+    if isinstance(_gt, pd.DataFrame) and len(_gt) and "판정" in _gt.columns:
+        _dg = _gt[_gt["판정"].astype(str).eq("강등")]
+        _by_t = _dg.groupby("티커")["적용연도"].apply(lambda x: "+".join(str(int(v)) for v in sorted(x))).to_dict()
+        _keep_t = sorted(set(_gt["티커"]) - set(_by_t))
+        _gate_line = (f"강등(하락 판정에 정보 없음) {len(_dg)}개 섹터×연도 / 전체 {len(_gt)} — "
+                      + ("; ".join(f"{k}:{v}" for k, v in sorted(_by_t.items())) or "없음")
+                      + f" | 전 연도 유지(하락 판정 유효): {', '.join(_keep_t) if _keep_t else '없음'}"
+                      + " — 09c_국면정보게이트, 01_일별_* '국면정보게이트(강등)' 열")
+    else:
+        _gate_line = "게이트 꺼짐 또는 판정 없음 — 09c 시트 없음"
     # [v0.3.0 §1.A] '구분'==실적만 사용 — build_prediction_matrix()가 맨 끝에 붙이는 '예측' 행이
     # 여기 섞이면 "최근 예측"이 확정되지 않은 다음 거래일 값으로 잘못 표시된다.
     mtx = sres["matrix"]
@@ -7463,7 +8046,14 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                            f"이력현상 {M_cfg.HYSTERESIS_DAYS}일/최소보유 {M_cfg.MIN_HOLD_DAYS}일, 국면 임계 {M_cfg.PCT_RISK_OFF:.0%}/{M_cfg.PCT_RISK_ON:.0%}"),
         ("섹터 학습 최소연수", f"{scfg.SECTOR_TRAIN_MIN_YEARS}년 (M은 {M_cfg.TRAIN_MIN_YEARS}년 — XLRE/XLC의 신호 시작을 당기기 위한 "
                           f"명시적 파라미터, 12_섹터요약 '신호시작일' 참조)"),
-        ("국면정의 검증(수용기준)", f"{regime_pass}/{n_ok} 섹터 PASS (상승국면 익일평균수익 > 하락국면) — 09_국면통계"),
+        # [v0.40.0 §S4] 기준이 h=21(하락후 평균수익 < 무조건 평균 AND MCC>0)로 바뀌었다 — 익일 기준은 참고로 병기.
+        ("국면정의 검증(수용기준)",
+         f"{regime_pass}/{n_ok} 섹터 PASS (h={int(getattr(scfg, 'REGIME_ACCEPT_HORIZON', 21) or 21)}일: "
+         f"하락 판정 뒤 평균수익 < 무조건 평균 **그리고** MCC>0) — 09_국면통계 · 섹터별 전체 표는 "
+         f"01Y_섹터예측정확도 블록 E(기저 대비 반대방향)·F(꼬리 포착)"),
+        # [v0.40.0 §S1·§S2·§S3] 이번 라운드에 켠 섹터 국면 규칙 3개를 한 줄로.
+        ("⚠ 섹터 국면 규칙(v0.40.0)", _regime_rule_line),
+        ("⚠ 국면 정보 게이트 결과", _gate_line),
         ("룩어헤드 감사", f"섹터별 무작위 {scfg.AUDIT_SAMPLE}개 날짜 절단 재계산: {audit_line} — 11_룩어헤드감사"),
         ("11섹터 균등분산 전략(참고)", _pf("11섹터 균등분산 전략(참고)")),
         ("11섹터 균등 단순보유(참고)", _pf("11섹터 균등 단순보유(참고)")),

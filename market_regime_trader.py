@@ -21,6 +21,44 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.51.0 - 2026-09-12 - [⚠ 훅만 추가 — **M(SPY) 신호·가중치·성과는 v1.50.0과 비트 동일**.
+#                        섹터·산업 계층(IMPROVEMENT_PLAN_S0.40_I0.4 §S1·§S3)이 쓸 파라미터 3개를 M에
+#                        열어 둔 것이고, M 자신의 기본값은 전부 '기존 동작'이다. 이 사실은
+#                        test_result_bundle.py(자산곡선·국면 비트동일)가 회귀로 지킨다.
+#
+#                        [§S1] Config.MARKET_BLOCK_WEIGHT_CAP: Optional[float] = None (기본 None = 완전 비활성)
+#                        + 모듈 상수 MARKET_BLOCK_CATEGORIES = ("B.", "C.", "F.") (SPEC_BY_KEY 아래)
+#                        + _select_and_weight_period() 시리즈캡 직후에 '공용 시장 블록' 단일패스
+#                        축소+재분배 블록(추세트랙캡·시리즈캡과 동일 설계). None이면 블록 전체를
+#                        건너뛰므로 w_signed가 한 비트도 안 바뀐다. 블록 밖 채택 지표가 0개인 해는
+#                        축소하지 않고(점수 스케일 보존) info["market_block_cap_skipped"]만 남긴다.
+#                        왜 필요한가(섹터 실측): 08_워크포워드가중치에서 섹터 복합점수의 59~89%가
+#                        공용 FRED 매크로였고 섹터 고유 지표는 0.02~0.06 — 섹터 국면이 SPY 국면의
+#                        잡음 섞인 복제가 되어 21일 MCC<0 섹터가 11개 중 6개였다.
+#
+#                        [§S3] Config.TREND_OVERRIDE_SCORE_PCT: float = 0.5 (기존 하드코딩 값)
+#                        + Config.TREND_OVERRIDE_NEED_MARKET: bool = False (기존 = 제약 없음)
+#                        + generate_signals(market_ok: Optional[pd.Series] = None) 인자 추가.
+#                        오버라이드 식이 `(trend200<0) & (score_pct<TREND_OVERRIDE_SCORE_PCT) & notna()`
+#                        [& market_ok] 로 바뀌었고, 기본값을 넣으면 v1.50.0 식과 문자 그대로 같다.
+#                        market_ok=None이면 NEED_MARKET=True여도 제약이 걸리지 않는다(하위호환).
+#                        왜 필요한가(섹터 실측): 섹터에서 이 규칙이 하락 진입의 주경로인데 그 진입일의
+#                        21일 뒤 수익이 XLV +2.76% · XLI +5.51% · XLRE +9.39%로 거꾸로였다.
+#
+#                        [§S2] generate_signals(regime_floor: Optional[pd.Series] = None) 인자 추가
+#                        + 규칙 ⓪~⑨가 raw_state를 확정한 뒤(추세폴백·이력현상 루프 전) `regime_floor`가
+#                        True이면서 raw_state가 RISK_OFF인 날을 NEUTRAL로 올리는 블록 + 출력 열
+#                        "regime_gate_floor". 규칙 ③(해저드 안전판)·⑤(회복 승격)와 같은 '바닥' 방식이고,
+#                        다른 점은 근거가 그날의 시장 상태가 아니라 **그 자산의 하락 판정에 과거 표본에서
+#                        정보가 있었는가**라는 것이다. 마스크를 만드는 쪽(sector_rotation.regime_info_gate)이
+#                        연도별 워크포워드로 cutoff 이전 정보만 써서 만든다 — 여기서는 적용만 한다.
+#                        None(기본)이면 블록을 건너뛰므로 M의 raw_state/state/target_pos는 비트 동일.
+#
+#                        변경 함수: Config(필드 3개) · MARKET_BLOCK_CATEGORIES(신규 상수) ·
+#                        _select_and_weight_period(캡 블록 1개) · generate_signals(인자 2개·조건식 1줄·
+#                        바닥 블록 1개·출력 열 1개·로그 3필드) · BUNDLE_VERSION.
+#                        호출부 배선은 없다(전부 기본값 None/0.5/False).
+#
 #  VERSION: v1.50.0 - 2026-09-12 - [00시트 '⚠ 실매매 적용 전략' 1줄 + runtime_env()(Kaggle/Colab/로컬 판별) +
 #                        Kaggle에서는 다운로드 대신 /kaggle/working 보존 안내 — **신호·파라미터 무변경,
 #                        v1.49.0과 비트 동일**]
@@ -2565,6 +2603,16 @@ class Config:
     HYSTERESIS_DAYS: int = 2           # 국면 전환에 필요한 연속 확인일수
     MIN_HOLD_DAYS: int = 3             # 최소 보유일 (휩쏘 방지)
     USE_TREND_OVERRIDE: bool = True    # 200MA 하회 + 복합점수<0 -> 강제 위험회피
+    # [v1.51.0 §S3] 추세오버라이드 조건식 파라미터화 — **M/SPY 기본값은 기존 동작과 정확히 같다**
+    # (0.5 / False). 섹터·산업 계층이 sector_cfg_for로 자기 값을 넣기 위한 훅일 뿐이며,
+    # M 자신의 신호는 한 비트도 바뀌지 않는다(test_result_bundle·06c 격자로 증명).
+    #   TREND_OVERRIDE_SCORE_PCT: override 조건의 점수백분위 상한(< 이 값일 때만 발동).
+    #   TREND_OVERRIDE_NEED_MARKET: True면 generate_signals(market_ok=)가 True인 날만 발동.
+    # 근거(섹터 쪽): IMPROVEMENT_PLAN_S0.40_I0.4 §1.5 원인2 — 섹터에서는 이 규칙이 하락 진입의
+    # 주경로인데 '가격<200MA & 점수<0.5'는 섹터 고유 조정의 저점 근처를 잡아 21일 뒤 반등한다
+    # (XLV +2.76% · XLI +5.51% · XLRE +9.39%). SPY에서는 같은 조건이 폭락 군집을 잡아 유효하다.
+    TREND_OVERRIDE_SCORE_PCT: float = 0.5
+    TREND_OVERRIDE_NEED_MARKET: bool = False
     # ---- 검증 통과 기준 (PASS criteria) ---------------------------------
     VAL_HORIZONS: Tuple[int, ...] = (5, 21, 63)   # 선행성 검증 지평(거래일)
     VAL_PRIMARY_H: int = 21                        # 대표 지평 (약 1개월)
@@ -2722,6 +2770,20 @@ class Config:
     # 나온 지표들의 절대가중치 합이 이 값을 넘으면 축소 후 다른 시리즈에 비례 재분배한다
     # (TREND_TRACK_WEIGHT_CAP과 동일한 단일패스 설계, _select_and_weight_period에 구현).
     SERIES_WEIGHT_CAP: float = 0.20
+    # [v1.51.0 §S1] 공용 시장 지표 '블록' 가중치 상한 — 추세트랙캡·기저시리즈캡과 **같은 단일패스
+    # 축소+재분배** 설계를 카테고리 블록 단위로 한 번 더 적용한다. None이면 완전 비활성이며
+    # **M/SPY 기본값이 None이므로 M의 복합점수는 비트 동일**하다(이 필드는 섹터·산업 계층 전용 훅).
+    # 블록 정의: IndicatorSpec.category가 MARKET_BLOCK_CATEGORIES 접두 중 하나로 시작하는 지표
+    # 전체(= M이 SPY용으로 만든 공용 매크로/신용/크로스에셋 계열). 섹터 고유 지표(B2/E2/H/I/J)는
+    # 블록 밖이라 캡을 먹지 않고 재분배를 받는다.
+    # 근거(섹터 쪽): IMPROVEMENT_PLAN_S0.40_I0.4 §1.5 원인1 — 08_워크포워드가중치 실측에서 섹터
+    # 복합점수의 59~89%가 공용 FRED 매크로였고(XLV 0.89·XLB 0.89·XLE 0.85, 섹터 고유는 0.02~0.06),
+    # 그 결과 섹터 국면이 SPY 국면의 잡음 섞인 복제가 됐다(21일 MCC<0 섹터 6/11).
+    MARKET_BLOCK_WEIGHT_CAP: Optional[float] = None
+    # [v1.51.0 §S5] 공용 시장 블록 지표에만 적용하는 강화된 |NW t| 문턱(표준트랙 한정, 추세트랙 면제).
+    # None이면 MIN_ABS_TSTAT 그대로 — **M/SPY 기본값이 None이라 M의 검증표는 비트 동일**.
+    # 근거: 섹터는 같은 공용 후보군 265개를 11번 따로 검정하므로 다중비교 문제가 M보다 11배 크다.
+    MARKET_BLOCK_T_MIN: Optional[float] = None
     # ---- 위험(해저드) 트랙 (v1.3.0 §4/§5) ---------------------------------
     # ⚠ 위험(신호) 파라미터 — 아래 4개 필드는 매매신호 자체를 바꾸므로 CHANGELOG에 명시 플래그됨.
     # 배경: VIX_LEVEL(하락AUC 0.623)처럼 "IC(수익예측)로는 사전방향과 반대(공포=매수기회,
@@ -5013,6 +5075,13 @@ INDICATOR_SPECS.extend(_generate_universe_indicators(CFG))
 
 SPEC_BY_KEY = {s.key: s for s in INDICATOR_SPECS}
 
+# [v1.51.0 §S1] 공용 시장 블록 정의 — Config.MARKET_BLOCK_WEIGHT_CAP이 캡을 거는 카테고리 접두.
+#   B.신용 / C.매크로 / F.매크로확장-*  = M이 SPY용으로 만든 공용 매크로·신용 계열(총 265개 후보).
+#   포함하지 않는 것: A.변동성·D/G.크로스에셋(소수·이미 분산), E.추세(TREND_TRACK_WEIGHT_CAP이 따로 있음),
+#   그리고 섹터/산업 고유 카테고리(B2.섹터매크로·E2.섹터추세·H.SPY대비상대·I.SPY계층·J.시장폭) —
+#   이들은 블록 밖이라 캡을 먹지 않고 재분배를 받는다. "B2."는 "B."로 시작하지 않으므로 안전하다.
+MARKET_BLOCK_CATEGORIES: Tuple[str, ...] = ("B.", "C.", "F.")
+
 
 def _z(s: pd.Series, win: int) -> pd.Series:
     """롤링 z-score (지표 내부 정규화용). 룩어헤드 없음: 과거 win일만 사용."""
@@ -5856,11 +5925,21 @@ def validate_indicators(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
             reasons.append(f"가중 커버리지 {cov_w:.0%} < {eff_min_coverage:.0%}"
                             + ("(짧은이력 완화값 적용, v1.5.0 §A)" if is_short_hist else ""))
         if not spec.trend_track:
+            # [v1.51.0 §S5] 공용 시장 블록(MARKET_BLOCK_CATEGORIES)에만 더 높은 t 문턱을 적용할 수 있다.
+            # 왜: 섹터 후보 321개 중 265개가 M의 공용 매크로라, 섹터마다 같은 후보군을 따로 검정하면
+            # **다중비교 승자**가 가중치를 독식한다(리포트39 08시트: 섹터 복합점수의 59~89%가 공용 매크로).
+            # MARKET_BLOCK_T_MIN=None(기본, M/SPY)이면 종전과 완전히 동일 — 섹터만 값을 넣는다.
+            _t_min = cfg.MIN_ABS_TSTAT
+            _blk_t = getattr(cfg, "MARKET_BLOCK_T_MIN", None)
+            _in_blk = str(spec.category).startswith(MARKET_BLOCK_CATEGORIES)
+            if _blk_t is not None and _in_blk:
+                _t_min = max(_t_min, float(_blk_t))
             if pd.isna(ic_main) or abs(ic_main) < cfg.MIN_ABS_IC:
                 reasons.append(f"|IC({h}d)| {abs(ic_main):.3f} < {cfg.MIN_ABS_IC}"
                                if pd.notna(ic_main) else "IC 산출불가")
-            if pd.isna(t_nw) or abs(t_nw) < cfg.MIN_ABS_TSTAT:
-                reasons.append(f"|NW t| {abs(t_nw):.2f} < {cfg.MIN_ABS_TSTAT}"
+            if pd.isna(t_nw) or abs(t_nw) < _t_min:
+                reasons.append((f"|NW t| {abs(t_nw):.2f} < {_t_min}"
+                                + ("(공용 시장 블록 강화 문턱, v1.51.0 §S5)" if (_blk_t is not None and _in_blk) else ""))
                                if pd.notna(t_nw) else "t값 산출불가")
         if pd.isna(auc) or abs(auc - 0.5) < cfg.MIN_AUC_EDGE:
             reasons.append(f"하락판별력 부족(AUC {auc:.3f})" if pd.notna(auc) else "AUC 산출불가")
@@ -6100,6 +6179,32 @@ def _select_and_weight_period(vt: pd.DataFrame, cfg: Config
         info["series_cap_applied"] = True
         info["series_cap_detail"] = "; ".join(
             f"{e['series']}:{e['sum_before']:.3f}→{cfg.SERIES_WEIGHT_CAP:.2f}" for e in series_cap_events)
+
+    # [v1.51.0 §S1] 공용 시장 블록 캡 — 추세트랙캡·시리즈캡과 같은 단일패스 축소+재분배를
+    # '카테고리 블록' 단위로 한 번 더. cfg.MARKET_BLOCK_WEIGHT_CAP이 None이면 이 블록 전체가
+    # 건너뛰어지므로 **M/SPY(기본 None)의 가중치는 한 비트도 바뀌지 않는다**.
+    # 재분배 대상이 없으면(블록 밖 채택 지표가 0개) 축소만 하지 않고 **아무것도 하지 않는다** —
+    # 그렇지 않으면 가중치 합이 줄어 복합점수 스케일이 달라지고, 그건 캡이 의도한 바가 아니다.
+    blk_cap = getattr(cfg, "MARKET_BLOCK_WEIGHT_CAP", None)
+    if blk_cap is not None and float(blk_cap) < 1.0:
+        blk_mask = np.array([
+            (str(SPEC_BY_KEY[c].category).startswith(MARKET_BLOCK_CATEGORIES) if c in SPEC_BY_KEY else False)
+            for c in codes
+        ])
+        blk_sum = float(np.abs(w_signed[blk_mask]).sum()) if blk_mask.any() else 0.0
+        other_sum0 = float(np.abs(w_signed[~blk_mask]).sum()) if (~blk_mask).any() else 0.0
+        if blk_sum > float(blk_cap) and other_sum0 > 0:
+            scale = float(blk_cap) / blk_sum
+            freed = blk_sum - float(blk_cap)
+            w_signed[blk_mask] = w_signed[blk_mask] * scale
+            w_signed[~blk_mask] = w_signed[~blk_mask] * (1.0 + freed / other_sum0)
+            info["market_block_cap_applied"] = True
+            info["market_block_sum_before"] = round(blk_sum, 4)
+            info["market_block_n"] = int(blk_mask.sum())
+        elif blk_sum > float(blk_cap):
+            # 블록 밖 채택 지표가 하나도 없는 해 — 축소하면 점수 스케일만 줄어드니 그대로 두고 기록만.
+            info["market_block_cap_skipped"] = True
+            info["market_block_sum_before"] = round(blk_sum, 4)
 
     info["n_selected"] = len(passed)
     info["n_soft"] = int(passed["_보조채택"].sum())
@@ -6561,7 +6666,9 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      deep_recov: Optional[pd.Series] = None,
                      struct_dd: Optional[pd.Series] = None,
                      px: Optional[pd.Series] = None,
-                     breadth: Optional[pd.Series] = None) -> pd.DataFrame:
+                     breadth: Optional[pd.Series] = None,
+                     market_ok: Optional[pd.Series] = None,
+                     regime_floor: Optional[pd.Series] = None) -> pd.DataFrame:
     """
     t일 종가 기준으로 목표비중을 확정한다(t일 정보만 사용).
     실제 체결은 [7]에서 t+1일 시가로 이뤄진다.
@@ -6655,10 +6762,16 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         haz_vel = (score_pct.notna() & _dh.notna() & (_dh > cfg.HAZARD_VELOCITY_DELTA))
         raw_state[haz_vel & raw_state.eq("RISK_ON")] = "NEUTRAL"
 
-    # 추세 오버라이드: 200일선 하회 + 복합점수 음수 -> 강제 위험회피
+    # 추세 오버라이드: 200일선 하회 + 복합점수 백분위 < 문턱 -> 강제 위험회피
+    # [v1.51.0 §S3] 문턱과 '시장 확인' 요구를 cfg로 뺐다. **M/SPY 기본값(0.5 / False)은 기존 식과
+    # 완전히 동일**하다 — `(trend200<0) & (score_pct<0.5) & notna()`. market_ok가 None이면
+    # NEED_MARKET이 True여도 제약이 없다(하위호환: 시리즈를 못 받은 호출부는 종전 동작).
     override = pd.Series(False, index=score_pct.index)
     if cfg.USE_TREND_OVERRIDE:
-        override = (trend200 < 0) & (score_pct < 0.5) & score_pct.notna()
+        _ov_pct = float(getattr(cfg, "TREND_OVERRIDE_SCORE_PCT", 0.5))
+        override = (trend200 < 0) & (score_pct < _ov_pct) & score_pct.notna()
+        if getattr(cfg, "TREND_OVERRIDE_NEED_MARKET", False) and market_ok is not None:
+            override = override & market_ok.reindex(score_pct.index).fillna(False).astype(bool)
         raw_state[override] = "RISK_OFF"
 
     # [v1.3.0 §5] 위험회피 해제 안전판 — 위 세 경로(수익점수·해저드진입·추세오버라이드) 중
@@ -6742,6 +6855,20 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                         & haz_pct.notna() & (haz_pct < cfg.STRUCT_BOTTOM_MAX_H)
                         & ~fast_fire & ~haz_enter & ~haz_vel & ~soft_fire & raw_state.eq("NEUTRAL"))
         raw_state[struct_boost] = "RISK_ON"
+
+    # [v1.51.0 §S2] 국면 정보 게이트 — regime_floor[t]가 True인 날은 RISK_OFF를 NEUTRAL로 올린다.
+    # 규칙 ③(해저드 안전판)·⑤(회복 승격)와 **같은 방식의 바닥(floor)** 이며, 다른 점은 근거가
+    # '그날의 시장 상태'가 아니라 '이 자산의 하락 판정에 과거 표본에서 정보가 있었는가'라는 것이다.
+    # M/SPY는 regime_floor=None(기본)이라 이 블록을 건너뛴다 — **M 신호는 비트 동일**.
+    # 호출부(sector_rotation.regime_info_gate)가 연도별 워크포워드로 만들며, 그 통계는 그 해
+    # 학습 마감(cutoff) 이전 정보만 쓴다. 여기서는 마스크를 받아 적용만 한다(인과성은 호출부 책임).
+    # 위치: 모든 규칙(⓪~⑨)이 raw_state를 확정한 뒤, 추세폴백·이력현상 루프 전 — 그래야 강등된
+    # 상태가 최소보유·이력현상 상태기계를 정상적으로 통과한다.
+    regime_gate_floor = pd.Series(False, index=score_pct.index)
+    if regime_floor is not None:
+        regime_gate_floor = (regime_floor.reindex(score_pct.index).fillna(False).astype(bool)
+                             & raw_state.eq("RISK_OFF"))
+        raw_state[regime_gate_floor] = "NEUTRAL"
 
     # [v1.0.3] 채택지표가 부족해 복합점수가 없는 구간은 '현금'이 아니라
     # 가장 단순하고 오래 검증된 200일선 추세필터로 폴백한다.
@@ -6853,6 +6980,7 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         "deep_recovery": deep_boost,       # [v1.15.0 §A] 깊은 낙폭 회복 풀매수(규칙 ⑦) 발동일
         "soft_trigger": soft_fire,         # [v1.17.0 §B] 소프트 트리거 캡 발동일(기본 비활성 — 보류)
         "struct_bottom": struct_boost,     # [v1.18.0 §A] 구조적 저점 확인 승격(규칙 ⑧) 발동일
+        "regime_gate_floor": regime_gate_floor,  # [v1.51.0 §S2] 국면 정보 게이트로 RISK_OFF→중립 강등된 날
     })
     out["target_pos"] = out["target_pos"].fillna(0.0)
 
@@ -7032,6 +7160,10 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      trend_fallback=dist.get("TREND_ONLY_IN", 0) + dist.get("TREND_ONLY_OUT", 0),
                      no_signal=dist.get("NO_SIGNAL", 0),
                      overrides=int(override.sum()),
+                     # [v1.51.0 §S2·§S3] 섹터 계층이 켠 두 훅의 효과를 이 한 줄에서 바로 확인할 수 있게.
+                     override_score_pct=float(getattr(cfg, "TREND_OVERRIDE_SCORE_PCT", 0.5)),
+                     override_need_market=bool(getattr(cfg, "TREND_OVERRIDE_NEED_MARKET", False)),
+                     regime_gate_floors=int(regime_gate_floor.sum()),
                      # [v1.4.0 §4.2 ⚠ 신호(위험) 파라미터] 이번 실행에 실제 적용된 국면
                      # 전환 임계값을 매 실행 로그에 남겨, PCT_RISK_ON 변경(0.50->0.60)의
                      # 효과를 이후 리포트에서 실행별로 추적할 수 있게 한다.
@@ -9993,7 +10125,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.50.0 (2026-09-12)"),
+        ("버전", "v1.51.0 (2026-09-12)"),
         # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
         ("⚠ 실매매 적용 전략", "★ 이 리포트의 SPY 국면전략(아래 '다음 거래일 예측' 행이 실제 주문 근거 — 목표비중·예상 행동). "
                           "섹터(sector_regime_report.xlsx S★)·산업(industry_regime_report.xlsx I★) 계층 리포트는 이 M 노출을 "
@@ -10291,7 +10423,7 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.50.0"
+BUNDLE_VERSION = "v1.51.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
