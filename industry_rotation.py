@@ -1,5 +1,42 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.6.0 - 2026-09-13 - [I-D 산업 리포트 완성 · I-B 폐기] REPORT45 §5.2/§6.
+#    사용자 질문("industry regime은 왜 일별 배분 거래 내역 시트가 없어? 이외에도 sector regime이랑
+#    비교해서 누락된게 있으면 추가해")에 대한 구현. **신호·배분 로직은 한 줄도 바꾸지 않는다**(조립만) —
+#    I-B 격자 제거를 제외하면 v0.5.0과 비트 동일해야 하고, 회귀 테스트가 그것을 검사한다.
+#    (A′) 13g_산업순환매신호채택 쓰기를 `if alloc:` **밖으로** — v0.5.0 버그. 동결(기본값)에서 run()은
+#         within_parent_walkforward_select를 돌려 wf를 만들면서도(로그 frozen_signal_only) 리포트가
+#         그 표를 쓰지 않아, REPORT44 §5가 "다음 실행에서 볼 것"으로 지목한 'I 13g 하위1 t'를
+#         리포트41/4에서 볼 수 없었다. → build_industry_report()의 13g 블록을 alloc 블록 밖으로 이동.
+#    (C) `_concat` 11개 시트 신설 — run_industry가 S.build_sector_sheets로 조각을 전부 만들어 두고도
+#         리포트가 daily·val_sheet·audit 3개만 쓰고 있었다. 02_산업별단독거래(진단)·04_채택근거상세·
+#         05_이벤트스터디·05b_하락상승구간·06_성과요약·06b_운용통계·06c_임계값민감도·07_연도별성과·
+#         08_워크포워드가중치·09_국면통계·09b_규칙별기여·09d_하락에피소드. 계산 없음(dict 조회 + concat).
+#    (B) 13j_배분거래내역 신설 — build_industry_allocation_trades(). S의 build_allocation_trades를
+#         산업 계층으로 이식: 자산 = 산업 ETF + 부모 ETF + 통과 다리, 체결가 = 각 자산 시가(T+1 시가
+#         체결), 비용 = 산업 COST_BPS_INDUSTRY / 부모·통과 PARENT_COST_BPS(열별 — 백테스트와 동일),
+#         같은 구간 벤치 = **부모 ETF**(SPY 아님), 진입 판단 = 그 부모 그룹의 판단(리더/회피/폴백/부모ETF),
+#         청산 사유 = 부모비중0 / 적격상실 / 리더교체 / 폴백 / 회피 재구성. 동결이면 alloc이 없어 생략.
+#         이를 위해 build_industry_allocation 반환 dict에 init_exec·init_prev·cost_map 3키 추가(값은
+#         이미 계산돼 있던 지역변수 — 새 계산 없음).
+#    (E) 12_산업요약 확장 11열 → 33열 — S.build_sector_summary와 같은 열 세트(국면일수 3·전략/B&H
+#         CAGR·샤프·MDD·국면정의검증·룩어헤드감사·H진입 진단 3·에피소드 3·실행시간). 값은 전부
+#         results[t]["sheets"]에 이미 있다(09b 규칙별기여를 단일 소스로 인용 — 재계산 없음).
+#    (F) 00_실행요약 정리 — 동결이면 '계층정합 -' → '동결로 미산출', '13c 읽는 법' 줄 생략,
+#         '동결로 생략된 시트' 목록 명시, '09c 게이트 미적용(I-E 보류)' 명시, 실행시간을 단계별
+#         (01 지표생성/02 검증+워크포워드/03 신호생성/04 백테스트/05 이벤트+거래+구간/05b 감사)
+#         합계·산업당 평균으로 — 동결 실행이 2,256초인 이유가 리포트에서 바로 보이도록.
+#    (D) 06c_임계값민감도 — run_industry가 sens=빈 DF를 넘기고 있었다. INDUSTRY_RUN_SENSITIVITY
+#         (기본 False — 산업당 수 초 × 29)가 True일 때만 M.threshold_sensitivity 호출.
+#         ⚠ 되돌리기/켜기: i_overrides={"INDUSTRY_RUN_SENSITIVITY": True}
+#    [I-B 폐기] INDUSTRY_AVOID_STANDALONE_GRID = () — REPORT45 §4: 부모 안 하위1 스프레드의 기대효과가
+#         ≈ 0으로 재계산됐다. 격자 행만 끄고 13g '회피 자격(분리)' 진단 열과 라이브 스위치
+#         (ROTATION_AVOID_STANDALONE)는 그대로 남긴다. ⚠ 되돌리기: i_overrides={
+#         "INDUSTRY_AVOID_STANDALONE_GRID": (0.5, 1.0)}
+#    ※ 연구·교육용 도구이며 투자 자문이 아니다.
+#
+#  VERSION: v0.5.0 - 2026-09-12 - [I-A 산업 계층 동결 + I-B 회피 자격 분리] REPORT44 §3.1/§3.2.
+#  VERSION: v0.4.0 - 2026-09-12 - [§I1 부모 안 검증 · §I3 판단규칙 격자 · §I4 사전방향 레지스트리]
 #  VERSION: v0.3.0 - 2026-09-12 - IMPROVEMENT_PLAN_INDUSTRY_v0.3 전량 구현 — 부모 계층 표본 복원(A1),
 #                     다음 거래일 예측(A2), 13c 산업 전용 분리·잔여 모드(A3), ⚠ 폴백 0%·2D 격자(B1),
 #                     부모국면 리더 게이트(B2), 산업 자기점수 신호(B3), 역방향 회피(B4), 추종필터(B5),
@@ -323,8 +360,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.5.0"
-VERSION_DATE = "2026-09-12"
+VERSION = "v0.6.0"
+VERSION_DATE = "2026-09-13"
 
 # =============================================================================
 # [0] 산업 유니버스 — INDUSTRY_LAYER_SPEC_v0.1.md §2 + v0.2.0 확장(사용자 지시 "산업이 더 많은데 누락 확인")
@@ -527,7 +564,11 @@ class IndustryConfig:
     ROTATION_AVOID_STANDALONE: bool = False
     ROTATION_AVOID_STANDALONE_T: float = 2.0
     INDUSTRY_AVOID_TO_PARENT: bool = False
-    INDUSTRY_AVOID_STANDALONE_GRID: Tuple[float, ...] = (0.5, 1.0)   # [회피분리격자] 폴백(균등 바스켓) 강도 2행
+    # [v0.6.0 I-B 폐기] REPORT45 §4 — 부모 안 하위1 스프레드의 기대효과 재계산 결과 ≈ 0이라
+    #   격자 행(28행 중 3행)을 끈다. 라이브 스위치(ROTATION_AVOID_STANDALONE)와 13g의
+    #   '회피 자격(분리)' 진단 열은 그대로 — 자격 판정은 계속 보고된다.
+    #   ⚠ 되돌리기: i_overrides={"INDUSTRY_AVOID_STANDALONE_GRID": (0.5, 1.0)}
+    INDUSTRY_AVOID_STANDALONE_GRID: Tuple[float, ...] = ()           # [회피분리격자] 폐기(v0.6.0) — 종전 (0.5, 1.0)
     INDUSTRY_AVOID_STANDALONE_COUNTER: bool = True                    # + 반증 1행(반대쪽 산업을 회피 — 나빠야 정상)
     INDUSTRY_AVOID_STANDALONE_INVERT: bool = False                    # 반증 행에서만 True(격자가 넘긴다)
     USE_EXTERNAL_VALIDATION: bool = False          # v0.2 예정(§6.4) — FF49 네트워크 필요, 이번 버전은 꺼둠
@@ -576,6 +617,10 @@ class IndustryConfig:
     SELFTEST_MAX_NOISE_ADOPTED: int = 1
     RUN_LOOKAHEAD_AUDIT: bool = True               # [v0.2.0] 산업별 절단재계산 감사(11_룩어헤드감사 시트) — industry_lookahead_audit
     AUDIT_SAMPLE: int = 3                          # 산업당 무작위 검사일 수
+    # [v0.6.0 I-D(D)] 06c_임계값민감도 — v0.5.0까지 run_industry가 sens=빈 DF를 넘겨 시트 자체가 없었다.
+    #   S는 섹터당 수 초가 드는 M.threshold_sensitivity를 항상 돌리지만, I는 산업이 29개라 기본은 끈다
+    #   (REPORT45 §5.2 D행 "또는 동결이면 생략"). ⚠ 켜기: i_overrides={"INDUSTRY_RUN_SENSITIVITY": True}
+    INDUSTRY_RUN_SENSITIVITY: bool = False
 
     # ---- 성능 ----
     USE_CACHE: bool = True
@@ -1117,10 +1162,27 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             log("AUDIT", kv(event="lookahead_audit_failed", ticker=ind_ticker, err=str(e)[:120]), M=M, level="warning")
     timing["05b_룩어헤드감사"] = round(time.time() - t6, 2)
 
+    # [v0.6.0 I-D(D)] 06c_임계값민감도 — v0.5.0까지 여기서 빈 DataFrame을 넘겨 시트가 아예 없었다.
+    #   S.run_sector(4392행)와 **같은 호출**이다(새 산식 없음). 산업이 29개라 기본은 꺼 둔다.
+    sens = pd.DataFrame()
+    if bool(getattr(icfg, "INDUSTRY_RUN_SENSITIVITY", False)):
+        _t_sens = time.time()
+        try:
+            sens = M.threshold_sensitivity(score_pct, trend200, price_i, cfg_i, rf, haz_pct=haz_pct,
+                                           fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov,
+                                           struct_dd=struct_dd)
+        except Exception as e:
+            log("PIPE", kv(event="threshold_sensitivity_failed", ticker=ind_ticker, err=str(e)[:120],
+                           next_step="i_overrides={\"INDUSTRY_RUN_SENSITIVITY\": False}로 끄고 재실행"),
+                M=M, level="warning")
+        timing["05c_임계값민감도"] = round(time.time() - _t_sens, 2)
+        log("PIPE", kv(event="threshold_sensitivity_done", ticker=ind_ticker, rows=int(len(sens)),
+                       sec=timing["05c_임계값민감도"]), M=M)
+
     sheets = S.build_sector_sheets(
         M, ind_ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score, score_pct, n_used,
         haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
-        wlog, val_full, adopted, trades, episodes, events, pd.DataFrame(), audit,
+        wlog, val_full, adopted, trades, episodes, events, sens, audit,
         haz_pct_sector=haz_pct_industry, spy_yearly_pos=None, daily_indicator_detail=False)
 
     # 풀링 순환매용 원자료(§6.2) — 이미 계산된 후보열에서 부모/SPY 상대 신호를 그대로 뽑아 재사용(재계산 없음).
@@ -2267,6 +2329,9 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "label_repro": label_repro, "repro_max_diff": repro_diff,
         "ret_co": ret_co, "ret_oc": ret_oc, "cost_bps_industry": icfg.COST_BPS_INDUSTRY,
         "cost_bps_parent": icfg.PARENT_COST_BPS, "rf_daily": rf_daily,
+        # [v0.6.0 I-D(B)] 13j_배분거래내역용 — 백테스트가 쓴 바로 그 초기 포지션·열별 비용률을 그대로
+        #   넘긴다(재계산 금지: 거래 로그의 비용·기여가 13_산업배분전략의 성과와 어긋나면 안 된다).
+        "init_exec": init_exec, "init_prev": init_prev, "cost_map": cost_map,
     }
 
 
@@ -2747,6 +2812,234 @@ def build_industry_vs_sector_attribution(alloc: Dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_industry_allocation_trades(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
+                                     sres: dict, res: dict, icfg: IndustryConfig
+                                     ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.6.0 I-D(B)] 13j_배분거래내역 — I★(산업 배분)의 **실제 포트폴리오** 거래 로그.
+    S.build_allocation_trades(8516행)를 산업 계층으로 이식한 것이며 산식은 같다. 달라지는 것은 네 가지뿐:
+      ① 자산 = 산업 ETF + 부모 ETF + 통과 다리(SPY·XLU 등). 02_산업별단독거래(진단)는 각 산업을 '그 산업
+         하나만 100% 운용'했을 때의 M식 거래라 날짜가 겹치지만, 이 시트는 같은 날 비중 합이 S★ 총노출을
+         넘지 않는 **한 계좌의 실제 거래**다.
+      ② 거래비용이 **열별**이다 — 산업 COST_BPS_INDUSTRY(10bp) / 부모·통과 PARENT_COST_BPS(5bp).
+         _industry_portfolio_backtest가 쓰는 cost_map을 그대로 받아 쓴다(재계산 금지 — 13_산업배분전략의
+         성과와 어긋나면 안 된다).
+      ③ '같은 구간 벤치' = **부모 ETF**(SPY 아님). 산업의 상대 판단은 부모 안에서 내려지므로 부모를 이기는지가
+         유일한 질문이다(REPORT45 §5.2 B행). 부모·통과 다리 행의 벤치는 SPY(없으면 자기 자신).
+      ④ 진입 판단/청산 사유가 그 부모 그룹(leader3_group)의 판단 — 리더/회피/폴백/부모ETF와
+         부모비중 0(S★가 그 섹터를 비웠다)/적격 상실/리더 교체.
+    체결: t일 종가 확정 목표비중 → t+1 시가 체결(M 규칙). 구간 = 체결일(시가 매수) ~ 마지막 보유일,
+    청산 = 그 다음 거래일 시가. 자산수익 = 시가(진입)→시가(청산)의 총수익(ret_oc·ret_co 연쇄 — 백테스트와
+    같은 분해), 전략기여(%p) = Σ exec_w·oc + Σ prev_w·co − 그 자산의 거래비용.
+    동결(INDUSTRY_LAYER_FROZEN=True)이면 alloc이 비어 있어 빈 표를 돌려준다.
+    반환: (DataFrame, 요약 dict). ※ 연구·교육용이며 투자 자문이 아니다."""
+    if not alloc or "target_w" not in alloc:
+        return pd.DataFrame(), {}
+    tw = alloc["target_w"]
+    idx = tw.index
+    all_cols = list(tw.columns)
+    ind_cols = list(alloc.get("cols", []))
+    parents = list(alloc.get("active_parents", []))
+    pass_cols = list(alloc.get("passthrough_cols", []))
+    parent_of: Dict[str, str] = dict(alloc.get("parent_of", {}))
+    groups: Dict[str, Dict[str, Any]] = alloc.get("groups", {}) or {}
+    ret_co = alloc["ret_co"].reindex(index=idx, columns=all_cols).fillna(0.0)
+    ret_oc = alloc["ret_oc"].reindex(index=idx, columns=all_cols).fillna(0.0)
+    cost_map: Dict[str, float] = dict(alloc.get("cost_map", {}) or {})
+    if not cost_map:    # 구버전 alloc 호환 — 열 성격으로 재구성(값은 같다)
+        cost_map = {c: float(icfg.COST_BPS_INDUSTRY) for c in ind_cols}
+        cost_map.update({c: float(icfg.PARENT_COST_BPS) for c in parents + pass_cols})
+
+    # 체결·직전 비중 — _industry_portfolio_backtest(1890행)와 **같은 정의**여야 기여 합이 성과와 맞는다.
+    exec_w = tw.shift(1)
+    if alloc.get("init_exec") is not None and len(idx):
+        exec_w.iloc[0] = alloc["init_exec"].reindex(all_cols).fillna(0.0).values
+    exec_w = exec_w.fillna(0.0)
+    prev_w = exec_w.shift(1)
+    if alloc.get("init_prev") is not None and len(idx):
+        prev_w.iloc[0] = alloc["init_prev"].reindex(all_cols).fillna(0.0).values
+    prev_w = prev_w.fillna(0.0)
+
+    w_s_all = alloc.get("w_s_all")
+    state = alloc.get("state", pd.DataFrame(index=idx))
+    listed_df = alloc.get("listed", pd.DataFrame(index=idx))
+
+    # 표시용 원시 시가/종가 — 산업은 results, 부모·통과 다리는 sres['sectors'], SPY는 res['px_dict'].
+    px_open: Dict[str, pd.Series] = {}
+    px_close: Dict[str, pd.Series] = {}
+    for a in all_cols:
+        r = results.get(a) or (sres.get("sectors", {}) or {}).get(a) or {}
+        po = r.get("px_open")
+        pc = r.get("px_close")
+        if po is None or pc is None:
+            df_a = (res.get("px_dict", {}) or {}).get(a)
+            if isinstance(df_a, pd.DataFrame) and len(df_a):
+                df_a = df_a[~df_a.index.duplicated(keep="last")].sort_index()
+                po = (df_a["Open"] if "Open" in df_a.columns else df_a["Close"]).astype(float)
+                pc = df_a["Close"].astype(float)
+        px_open[a] = (po.reindex(idx) if po is not None else pd.Series(np.nan, index=idx))
+        px_close[a] = (pc.reindex(idx) if pc is not None else pd.Series(np.nan, index=idx))
+
+    # 벤치: 산업 → 그 부모 ETF / 부모·통과 → SPY(없으면 자기 자신)
+    _spy_bench = "SPY" if "SPY" in ret_co.columns else None
+    def _bench_of(a: str) -> str:
+        if a in ind_cols:
+            return parent_of.get(a, a)
+        return _spy_bench or a
+
+    tier_kr_entry = {"리더": "리더 집중", "회피": "꼴찌 회피 바스켓", "폴백": "폴백(부모 안 차이 없음 → 적격 산업 균등)",
+                     "폴백(여유부족)": "폴백(1위는 있으나 확신 게이트 미달)", "부모ETF": "부모 ETF(산업 판단 없음)",
+                     "현금": "현금"}
+    state_kr = {"RISK_OFF": "하락(위험회피)", "TREND_ONLY_OUT": "추세필터-현금", "NO_SIGNAL": "신호없음"}
+    n = len(idx)
+    rows: List[dict] = []
+    for a in all_cols:
+        p_a = parent_of.get(a, "")
+        g = groups.get(p_a, {}) if a in ind_cols else groups.get(a, {})
+        tier_a = g.get("tier", pd.Series("", index=idx, dtype=object)).reindex(idx).fillna("") if g else pd.Series("", index=idx, dtype=object)
+        lead_a = g.get("leader", pd.Series("", index=idx, dtype=object)).reindex(idx).fillna("") if g else pd.Series("", index=idx, dtype=object)
+        lag_a = g.get("laggard", pd.Series("", index=idx, dtype=object)).reindex(idx).fillna("") if g else pd.Series("", index=idx, dtype=object)
+        votes_a = g.get("votes_leader", pd.Series(0, index=idx)).reindex(idx).fillna(0).astype(int) if g else pd.Series(0, index=idx)
+        nok_a = g.get("n_ok", pd.Series(0, index=idx)).reindex(idx).fillna(0).astype(int) if g else pd.Series(0, index=idx)
+        gate_a = g.get("gate", pd.Series("", index=idx, dtype=object)).reindex(idx).fillna("") if g else pd.Series("", index=idx, dtype=object)
+        b = _bench_of(a)
+        b_oc = ret_oc[b] if b in ret_oc.columns else pd.Series(0.0, index=idx)
+        b_co = ret_co[b] if b in ret_co.columns else pd.Series(0.0, index=idx)
+        cost_rate = float(cost_map.get(a, 0.0)) / 1e4
+        w = exec_w[a].values
+        held = w > 1e-12
+        oc = ret_oc[a].values
+        co = ret_co[a].values
+        ew = exec_w[a].values
+        pw = prev_w[a].values
+        i = 0
+        k = 0
+        while i < n:
+            if not held[i]:
+                i += 1
+                continue
+            i0 = i
+            while i + 1 < n and held[i + 1]:
+                i += 1
+            i1 = i
+            i += 1
+            k += 1
+            has_exit = i1 + 1 < n
+            d_dec = idx[i0 - 1] if i0 >= 1 else None       # 진입 결정일(t) — 평가창 첫날이면 이월 포지션
+            d_entry = idx[i0]
+            d_exit = idx[i1 + 1] if has_exit else None
+            d_exit_dec = idx[i1]
+            gmul = 1.0
+            for d in range(i0, i1 + 1):
+                gmul *= (1.0 + oc[d])
+                if d + 1 <= i1 or (d == i1 and has_exit):
+                    gmul *= (1.0 + co[d + 1])
+            asset_ret = gmul - 1.0
+            contrib = 0.0
+            for d in range(i0, i1 + 1):
+                contrib += ew[d] * oc[d] + pw[d] * co[d]
+            if has_exit:
+                contrib += pw[i1 + 1] * co[i1 + 1]
+            last_cost_day = i1 + 1 if has_exit else i1
+            cost = sum(abs(ew[d] - pw[d]) for d in range(i0, last_cost_day + 1)) * cost_rate
+            contrib -= cost
+            gb = 1.0
+            for d in range(i0, i1 + 1):
+                gb *= (1.0 + float(b_oc.iloc[d]))
+                if d + 1 <= i1 or (d == i1 and has_exit):
+                    gb *= (1.0 + float(b_co.iloc[d + 1]))
+            bench_ret = gb - 1.0
+            # 진입 판단(결정일 기준)
+            if d_dec is None:
+                t_in = "평가창 이전부터 이월(S★ 비중)"
+            elif a not in ind_cols and a not in parents:
+                t_in = "S★ 통과 다리(그 섹터에 산업 ETF가 없음 — I가 나누지 않는다)"
+            else:
+                tr = str(tier_a.loc[d_dec]) if len(tier_a) else ""
+                if a in parents:
+                    t_in = f"부모 ETF 잔여({tier_kr_entry.get(tr, tr) or '산업으로 나누지 못한 몫'})"
+                elif tr == "리더":
+                    t_in = (f"리더 집중 — 부모 {p_a} 안 적격 {int(nok_a.loc[d_dec])}개 중 "
+                            f"{int(votes_a.loc[d_dec])}개 신호가 1위 지목({gate_a.loc[d_dec]})")
+                elif tr == "회피":
+                    t_in = f"꼴찌 {lag_a.loc[d_dec]} 회피 — 부모 {p_a} 안 적격 균등 바스켓"
+                else:
+                    t_in = tier_kr_entry.get(tr, tr)
+            # 청산 사유(청산 결정일 = 마지막 보유일)
+            if not has_exit:
+                t_out = "보유중(평가창 마지막 날)"
+            else:
+                dd = d_exit_dec
+                w_par = (float(w_s_all.loc[dd, p_a]) if (w_s_all is not None and p_a in getattr(w_s_all, "columns", []))
+                         else np.nan)
+                tr2 = str(tier_a.loc[dd]) if len(tier_a) else ""
+                if a in ind_cols and pd.notna(w_par) and w_par <= 1e-12:
+                    t_out = f"부모 비중 0(S★가 {p_a}를 비웠다)"
+                elif a in ind_cols and a in getattr(state, "columns", []) and str(state.loc[dd, a]) in state_kr:
+                    t_out = f"적격 상실({state_kr[str(state.loc[dd, a])]})"
+                elif a in ind_cols and a in getattr(listed_df, "columns", []) and not bool(listed_df.loc[dd, a]):
+                    t_out = "상장 전/데이터 없음"
+                elif tr2 == "리더":
+                    t_out = (f"리더 교체 → {lead_a.loc[dd]}" if str(lead_a.loc[dd]) != a
+                             else "리더 유지(비중 재조정)")
+                elif tr2 == "폴백(여유부족)":
+                    t_out = "여유 상실(확신 게이트 미달) → 폴백"
+                elif tr2 == "회피":
+                    t_out = f"회피 바스켓 재구성(꼴찌 {lag_a.loc[dd]})"
+                elif tr2 == "폴백":
+                    t_out = "판단 없음(부모 안 차이 없음) → 적격 균등 폴백"
+                elif tr2 == "부모ETF":
+                    t_out = "산업 판단 없음 → 부모 ETF로 회수"
+                else:
+                    t_out = tr2 or "목표비중 0"
+            w_seg = exec_w[a].iloc[i0:i1 + 1]
+            _po_in, _po_out, _pc_last = px_open[a].iloc[i0], (px_open[a].iloc[i1 + 1] if has_exit else np.nan), px_close[a].iloc[i1]
+            rows.append({"자산": a, "구분": ("산업" if a in ind_cols else ("부모ETF" if a in parents else "통과다리")),
+                         "부모섹터": p_a or "-", "자산 번호": k,
+                         "진입 결정일": (str(d_dec.date()) if d_dec is not None else "-"),
+                         "진입일(시가 체결)": str(d_entry.date()),
+                         "청산일(시가 체결)": (str(d_exit.date()) if has_exit else "보유중"),
+                         "보유거래일": int(i1 - i0 + 1),
+                         "진입가(시가)": round(float(_po_in), 2) if pd.notna(_po_in) else np.nan,
+                         "청산가(시가)": (round(float(_po_out), 2) if pd.notna(_po_out)
+                                       else (round(float(_pc_last), 2) if pd.notna(_pc_last) else np.nan)),
+                         "진입비중": round(float(w_seg.iloc[0]), 4), "평균비중": round(float(w_seg.mean()), 4),
+                         "최대비중": round(float(w_seg.max()), 4),
+                         "자산수익률(구간)": round(asset_ret, 4), "전략기여(%p)": round(contrib * 100, 3),
+                         "거래비용률(bp)": round(float(cost_map.get(a, 0.0)), 1),
+                         "거래비용(%p)": round(cost * 100, 3),
+                         "벤치": b, "벤치 수익률(동일구간)": round(bench_ret, 4),
+                         "벤치 대비(%p)": round((asset_ret - bench_ret) * 100, 2),
+                         "진입 판단": t_in,
+                         "진입 시 부모비중(S★)": (round(float(w_s_all.loc[d_dec, p_a]), 4)
+                                          if (d_dec is not None and w_s_all is not None
+                                              and p_a in getattr(w_s_all, "columns", [])) else np.nan),
+                         "청산 사유": t_out})
+    df = pd.DataFrame(rows)
+    if len(df):
+        df = df.sort_values(["진입일(시가 체결)", "구분", "자산"]).reset_index(drop=True)
+        df.insert(0, "번호", range(1, len(df) + 1))
+    summ: Dict[str, Any] = {}
+    if len(df):
+        ind_rows = df[df["구분"] == "산업"]
+        summ = {"n_trades": int(len(df)), "n_industry": int(len(ind_rows)),
+                "n_parent": int((df["구분"] == "부모ETF").sum()), "n_pass": int((df["구분"] == "통과다리").sum()),
+                "avg_hold": round(float(df["보유거래일"].mean()), 1),
+                "avg_hold_industry": round(float(ind_rows["보유거래일"].mean()), 1) if len(ind_rows) else np.nan,
+                "win_vs_parent": (round(float((ind_rows["자산수익률(구간)"] > ind_rows["벤치 수익률(동일구간)"]).mean()), 3)
+                                  if len(ind_rows) else np.nan),
+                "contrib_industry_pp": round(float(ind_rows["전략기여(%p)"].sum()), 2) if len(ind_rows) else 0.0,
+                "contrib_parent_pp": round(float(df.loc[df["구분"] != "산업", "전략기여(%p)"].sum()), 2),
+                "cost_pp": round(float(df["거래비용(%p)"].sum()), 2),
+                "max_concurrent": int((exec_w > 1e-12).sum(axis=1).max()),
+                "max_gross": round(float(exec_w.sum(axis=1).max()), 4),
+                "by_tier": {}}
+        for tr_name, pre in (("리더", "리더"), ("회피", "꼴찌"), ("폴백", "폴백"), ("부모ETF", "부모 ETF")):
+            m = df["진입 판단"].astype(str).str.startswith(pre)
+            if m.any():
+                summ["by_tier"][tr_name] = {"n": int(m.sum()), "contrib_pp": round(float(df.loc[m, "전략기여(%p)"].sum()), 2)}
+    return df, summ
+
+
 def industry_next_day(results: Dict[str, Dict[str, Any]]) -> Dict[str, dict]:
     """[v0.3.0 §A2] 산업별 '다음 거래일 예측' dict 모음. **새 계산이 전혀 없다** — S.build_sector_sheets가
     이미 M.build_next_day_prediction으로 만들어 둔 results[t]["sheets"]["next_day"]를 그대로 모을 뿐이다
@@ -2803,19 +3096,85 @@ def build_industry_prediction_matrix(results: Dict[str, Dict[str, Any]], eval_id
 
 
 def build_industry_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, str],
-                           active_table: List[Tuple[str, str, str]], icfg: IndustryConfig) -> pd.DataFrame:
+                           active_table: List[Tuple[str, str, str]], icfg: IndustryConfig,
+                           S=None, alloc: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    """[v0.6.0 I-D(E)] 12_산업요약 — v0.5.0은 11열(티커·산업명·부모·FF49·첫유효일·신호시작일·후보/채택
+    지표수·vol_scale·위험소스·상태)뿐이라, 산업별로 "국면을 며칠씩 어떻게 봤고 그 판단이 맞았는지"를
+    보려면 01_일별_<산업> 29장을 일일이 열어야 했다. S.build_sector_summary(8743행)와 **같은 열 세트**로
+    맞춘다 — 국면일수 3종 · 전략/B&H CAGR·샤프·MDD · 200일선벤치 · 국면정의검증 · 룩어헤드감사 ·
+    H진입 진단 3열 · 하락 에피소드 3열 · 실행시간. **새 계산은 없다**: 값은 전부 이미
+    results[t]["sheets"]에 있고, H진입·회피 3열은 09b_규칙별기여 표를 단일 소스로 그대로 인용한다
+    (S._rule_contrib_value — S가 없으면 그 열들만 비운다). alloc이 있으면(동결 해제) 배분 3열을 덧붙인다."""
+    def _rcv(rc, label: str, col: str):
+        if S is None or not hasattr(S, "_rule_contrib_value"):
+            return np.nan
+        return S._rule_contrib_value(rc, label, col)
+
     rows = []
     for ind, parent, ff49 in active_table:
-        if ind in results:
-            r = results[ind]
-            rows.append({"티커": ind, "산업명": INDUSTRY_NAME_KR.get(ind, ind), "부모섹터": parent,
-                        "FF49매핑": ff49, "첫유효일": r["info"].get("실제데이터시작"),
-                        "신호시작일": r.get("first_signal"), "후보지표수": r["n_candidates"],
-                        "채택지표수": len(r["adopted"]), "vol_scale": round(float(r["vol_scale"]), 3),
-                        "위험소스": r.get("hazard_source"), "상태": "성공"})
+        base = {"티커": ind, "산업명": INDUSTRY_NAME_KR.get(ind, ind), "부모섹터": parent, "FF49매핑": ff49}
+        if ind not in results:
+            rows.append({**base, "상태": f"실패: {failed.get(ind, '데이터없음')[:100]}"})
+            continue
+        r = results[ind]
+        sh = r["sheets"]
+        perf = sh["perf"].set_index("전략") if isinstance(sh.get("perf"), pd.DataFrame) and len(sh["perf"]) else pd.DataFrame()
+        p_s = perf.iloc[0] if len(perf) > 0 else {}
+        p_b = perf.iloc[1] if len(perf) > 1 else {}
+        p_m = perf.iloc[2] if len(perf) > 2 else {}
+        dist = r["state"].value_counts().to_dict()
+        aud = sh.get("audit")
+        if isinstance(aud, pd.DataFrame) and len(aud) and "일치" in aud.columns:
+            chk = aud[~aud["일치"].astype(str).str.startswith("N/A")]
+            audit_ok = "전체 통과" if (len(chk) == 0 or chk["일치"].astype(str).str.startswith("OK").all()) else "불일치 발생"
         else:
-            rows.append({"티커": ind, "산업명": INDUSTRY_NAME_KR.get(ind, ind), "부모섹터": parent,
-                        "FF49매핑": ff49, "상태": f"실패: {failed.get(ind, '데이터없음')[:100]}"})
+            audit_ok = "미실행"
+        rc = sh.get("rule_contrib")
+        ep = sh.get("regime_episode_summary") or {}
+        alloc_cols: Dict[str, Any] = {}
+        if alloc and ind in (alloc.get("cols") or []):
+            lst = alloc["listed"][ind]
+            tw_i = alloc["target_w"][ind].where(lst)
+            g = (alloc.get("groups") or {}).get(parent, {})
+            alloc_cols = {"배분 평균비중": round(float(tw_i.mean()), 4) if lst.any() else np.nan,
+                          "배분 적격일 비율": (round(float(alloc["eligible"][ind].where(lst).mean()), 4)
+                                        if lst.any() and ind in alloc["eligible"].columns else np.nan)}
+            if g:
+                alloc_cols["리더 보유일 비율"] = round(float((g["leader"] == ind).where(lst).mean()), 4) if lst.any() else np.nan
+                alloc_cols["꼴찌 회피일 비율"] = round(float((g["laggard"] == ind).where(lst).mean()), 4) if lst.any() else np.nan
+        rows.append({**base, "상태": "성공", "첫유효일": r["info"].get("실제데이터시작"),
+                     "신호시작일": r.get("first_signal"), "후보지표수": r["n_candidates"],
+                     "채택지표수": len(r["adopted"]), "vol_scale": round(float(r["vol_scale"]), 3),
+                     "위험소스": r.get("hazard_source"),
+                     # --- [v0.6.0 I-D(E)] 여기서부터 S 12시트와 같은 열 세트 ---
+                     "상승일수": dist.get("RISK_ON", 0), "중립일수": dist.get("NEUTRAL", 0),
+                     "하락일수": dist.get("RISK_OFF", 0),
+                     "추세필터일수": dist.get("TREND_ONLY_IN", 0) + dist.get("TREND_ONLY_OUT", 0),
+                     "신호없음일수": dist.get("NO_SIGNAL", 0),
+                     "전략CAGR": p_s.get("CAGR"), "전략샤프": p_s.get("샤프"), "전략MDD": p_s.get("최대낙폭(MDD)"),
+                     "B&H CAGR": p_b.get("CAGR"), "B&H샤프": p_b.get("샤프"), "B&H MDD": p_b.get("최대낙폭(MDD)"),
+                     "200일선벤치CAGR": p_m.get("CAGR"),
+                     "국면정의검증": ("PASS" if sh.get("regime_validity") else
+                                  ("FAIL" if sh.get("regime_validity") is False else "판정불가")),
+                     "룩어헤드감사": audit_ok, "캐시사용": r.get("cache_hit"),
+                     "AdjClose지연": r["info"].get("AdjClose지연"),
+                     # 09b_규칙별기여를 단일 소스로 인용(재계산 없음) — S 12시트와 같은 3+3열
+                     "H진입일 익일평균수익(%)": _rcv(rc, "위험회피진입①(H)", "발동일 익일B&H평균수익(%)"),
+                     "상승 미탑승(%p)": _rcv(rc, "[전체] 상승일 미탑승(비중=0 & B&H>0, %p)", "비중=0인 날 B&H수익 합(%p)"),
+                     "하락 회피(%p)": _rcv(rc, "[전체] 하락일 회피(비중=0 & B&H<0, %p — 음수=회피한 손실)",
+                                       "비중=0인 날 B&H수익 합(%p)"),
+                     "H진입 중 200일선 위 비율": _rcv(rc, "[진단·S-E] H진입일 중 자기200일선 위", "비율"),
+                     "H진입(200일선 위) 익일평균(%)": _rcv(rc, "[진단·S-E] H진입일 중 자기200일선 위",
+                                                 "발동일 익일B&H평균수익(%)"),
+                     "H진입(200일선 아래) 익일평균(%)": _rcv(rc, "[진단·S-E] H진입일 중 자기200일선 아래",
+                                                   "발동일 익일B&H평균수익(%)"),
+                     "하락 에피소드 수": ep.get("n"),
+                     "에피소드 회피수익 합(%)": (round(float(ep.get("sum")), 2)
+                                        if pd.notna(ep.get("sum", np.nan)) else np.nan),
+                     "에피소드 회피<0 비율": (round(float(ep.get("neg_share")), 3)
+                                     if pd.notna(ep.get("neg_share", np.nan)) else np.nan),
+                     "실행시간(초)": r["timing"].get("06_run_industry합계"),
+                     **alloc_cols})
     return pd.DataFrame(rows)
 
 
@@ -3017,12 +3376,52 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                          up=sum(1 for nd in nd_map.values() if nd.get("확정국면_원시") == "RISK_ON"),
                          down=sum(1 for nd in nd_map.values() if nd.get("확정국면_원시") == "RISK_OFF")), M=M)
 
+    # [v0.6.0 I-D(B)] 13j_배분거래내역 — 배분이 성공했을 때만(동결이면 alloc={}), 실패해도 리포트는 계속.
+    alloc_trades, alloc_trades_summary = pd.DataFrame(), {}
+    if alloc:
+        try:
+            alloc_trades, alloc_trades_summary = build_industry_allocation_trades(alloc, results, sres, res, icfg)
+            log("REPORT", kv(event="alloc_trades_ready", n=len(alloc_trades),
+                             n_industry=alloc_trades_summary.get("n_industry", 0),
+                             n_parent=alloc_trades_summary.get("n_parent", 0),
+                             avg_hold=alloc_trades_summary.get("avg_hold"),
+                             win_vs_parent=alloc_trades_summary.get("win_vs_parent"),
+                             contrib_industry_pp=alloc_trades_summary.get("contrib_industry_pp"),
+                             cost_pp=alloc_trades_summary.get("cost_pp")), M=M)
+        except Exception as e:
+            log("REPORT", kv(event="alloc_trades_failed", err=str(e)[:200],
+                             trace=traceback.format_exc()[-800:].replace("\n", " | "),
+                             next_step="13j 시트만 생략하고 나머지 리포트는 그대로 낸다"), M=M, level="warning")
+
     universe = pd.DataFrame(universe_rows)
     matrix = build_industry_prediction_matrix(results, eval_idx, icfg, S, nd_map=nd_map, alloc=alloc)
-    summary = build_industry_summary(results, failed, table, icfg)
+    summary = build_industry_summary(results, failed, table, icfg, S=S, alloc=alloc)   # [v0.6.0 I-D(E)] 33열
     audit_all = pd.concat([r["audit"] for r in results.values() if isinstance(r.get("audit"), pd.DataFrame) and len(r["audit"])],
                           ignore_index=True) if results else pd.DataFrame()
+    # [v0.6.0 I-D(F)] 실행시간을 **단계별로** 합산한다 — 종전에는 '00_전체' 한 줄뿐이라 동결 실행이
+    #   2,256초인 이유(산업당 검증+워크포워드 ~75초 × 29, 캐시 무효화)가 리포트에서 보이지 않았다.
+    #   값은 run_industry가 이미 기록한 timing dict의 합계·평균이며 새 측정이 아니다.
     stage_timing = {"00_전체": round(time.time() - t0, 1)}
+    if results:
+        _n_ok = len(results)
+        _agg: Dict[str, float] = {}
+        for _r in results.values():
+            for _k, _v in (_r.get("timing") or {}).items():
+                if _k == "06_run_industry합계":
+                    continue
+                _agg[_k] = _agg.get(_k, 0.0) + float(_v or 0.0)
+        for _k in sorted(_agg):
+            stage_timing[f"산업합계 {_k}"] = round(_agg[_k], 1)
+        _tot_ind = sum(float((_r.get("timing") or {}).get("06_run_industry합계", 0.0) or 0.0) for _r in results.values())
+        stage_timing["산업합계 06_run_industry(벽시계 아님·워커 병렬)"] = round(_tot_ind, 1)
+        stage_timing["산업당 평균(초)"] = round(_tot_ind / max(1, _n_ok), 1)
+        _slow = sorted(results.items(), key=lambda kv_: -float((kv_[1].get("timing") or {}).get("06_run_industry합계", 0.0) or 0.0))[:5]
+        stage_timing["최장 산업 5개"] = "; ".join(
+            f"{_t} {float((_r.get('timing') or {}).get('06_run_industry합계', 0.0) or 0.0):.0f}초" for _t, _r in _slow)
+        stage_timing["캐시 적중"] = f"{sum(1 for _r in results.values() if _r.get('cache_hit'))}/{_n_ok}개 산업"
+        log("REPORT", kv(event="stage_timing_ready", total_sec=stage_timing["00_전체"],
+                         per_industry_avg=stage_timing["산업당 평균(초)"],
+                         cache=stage_timing["캐시 적중"]), M=M)
 
     return {
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
@@ -3031,6 +3430,8 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "attribution": attrib_df, "following": following_df, "leader_cols": leader_cols,
         "leader_accuracy": leader_acc, "prediction_accuracy": pred_acc,   # [v0.3.0 §C1]
         "next_day": nd_map, "nd_spy": nd_spy,                              # [v0.3.0 §A2]
+        "alloc_trades": alloc_trades, "alloc_trades_summary": alloc_trades_summary,   # [v0.6.0 I-D(B)] 13j
+        "frozen": frozen,                                                  # [v0.6.0 I-D(F)] 00시트 '생략된 시트' 문구용
         "audit": audit_all, "icfg": icfg,
         "signal_start": (str(eval_idx[0].date()) if len(eval_idx) else "-"),
         "cal_end": str(cal[-1].date()), "aborted": False, "stage_timing": stage_timing,
@@ -3093,24 +3494,32 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         tw_res.insert(4, "S★ 총노출", alloc["w_s_all"].sum(axis=1).round(4).values)
         sheets["13c2_잔여다리"] = tw_res.reset_index(drop=True)
         sheets["13f_산업수용기준"] = accept_df
-        wf = ires.get("wf", {}) or {}
-        if isinstance(wf.get("selection_log"), pd.DataFrame) and len(wf["selection_log"]):
-            _g = wf["selection_log"]
-            # [v0.4.0 §I1] 풀링(종전 방식) 통계를 같은 행에 진단으로 병기 — "무엇이 달라졌나"를 리포트가 보여 준다.
-            _pl = (wf.get("pooled") or {}).get("selection_log")
-            if isinstance(_pl, pd.DataFrame) and len(_pl) and "NW-HAC t(상위1)" in _pl.columns:
-                _pk = _pl[["적용연도", "신호", "NW-HAC t(상위1)", "학습 관측일"]].rename(columns={
-                    "NW-HAC t(상위1)": "NW-HAC t(상위1, 풀링·종전)", "학습 관측일": "학습 관측일(풀링)"})
-                _g = _g.merge(_pk, on=["적용연도", "신호"], how="left")
-            alt = wf.get("alt_log")
-            if isinstance(alt, pd.DataFrame) and len(alt):    # [v0.3.0 §B7] 반대쪽 타깃 t 병기
-                _g = _g.merge(alt, on=["적용연도", "신호"], how="left")
-            sheets["13g_산업순환매신호채택"] = _g
         la = ires.get("leader_accuracy", pd.DataFrame())
         if isinstance(la, pd.DataFrame) and len(la):
             sheets["13l_산업리더적중률"] = la                              # [v0.3.0 §C1]
         sheets["14_계층정합"] = ires["hierarchy"]
         sheets["15_산업대섹터귀속"] = ires["attribution"]
+        # [v0.6.0 I-D(B)] 13j_배분거래내역 — I★ 한 계좌의 실제 거래(02 시트의 산업별 단독 거래와 다름).
+        _at = ires.get("alloc_trades", pd.DataFrame())
+        if isinstance(_at, pd.DataFrame) and len(_at):
+            sheets["13j_배분거래내역"] = _at
+    # [v0.6.0 I-D(A′) ⚠ 버그수정] 13g는 **배분과 무관한 진단 표**다. v0.5.0은 이 쓰기를 `if alloc:` 안에
+    #   두어, 동결(기본값)에서 run()이 within_parent_walkforward_select를 돌려 wf를 만들고도(로그
+    #   frozen_signal_only) 리포트에 13g가 실리지 않았다 — REPORT44 §5가 "다음 실행에서 볼 것"으로
+    #   지목한 'I 13g 하위1 t'를 리포트4에서 볼 수 없었던 원인. 이제 wf만 있으면 쓴다.
+    _wf = ires.get("wf", {}) or {}
+    if isinstance(_wf.get("selection_log"), pd.DataFrame) and len(_wf["selection_log"]):
+        _g = _wf["selection_log"]
+        # [v0.4.0 §I1] 풀링(종전 방식) 통계를 같은 행에 진단으로 병기 — "무엇이 달라졌나"를 리포트가 보여 준다.
+        _pl = (_wf.get("pooled") or {}).get("selection_log")
+        if isinstance(_pl, pd.DataFrame) and len(_pl) and "NW-HAC t(상위1)" in _pl.columns:
+            _pk = _pl[["적용연도", "신호", "NW-HAC t(상위1)", "학습 관측일"]].rename(columns={
+                "NW-HAC t(상위1)": "NW-HAC t(상위1, 풀링·종전)", "학습 관측일": "학습 관측일(풀링)"})
+            _g = _g.merge(_pk, on=["적용연도", "신호"], how="left")
+        alt = _wf.get("alt_log")
+        if isinstance(alt, pd.DataFrame) and len(alt):    # [v0.3.0 §B7] 반대쪽 타깃 t 병기
+            _g = _g.merge(alt, on=["적용연도", "신호"], how="left")
+        sheets["13g_산업순환매신호채택"] = _g
     fol = ires.get("following", pd.DataFrame())
     if isinstance(fol, pd.DataFrame) and len(fol):
         sheets["16_산업부모추종"] = fol                                  # [v0.2.0] 산업이 부모 섹터를 얼마나 따라가는가
@@ -3119,15 +3528,49 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         sheets["01Y_산업예측정확도"] = pa                                # [v0.3.0 §C1]
     for t, r in results.items():
         sheets[f"01_일별_{t}"] = r["sheets"].get("daily", pd.DataFrame())
-    val_frames = [r["sheets"]["val_sheet"] for r in results.values() if r["sheets"].get("val_sheet") is not None
-                 and len(r["sheets"]["val_sheet"])]
-    if val_frames:
-        sheets["03_지표검증"] = pd.concat(val_frames, ignore_index=True, sort=False)
+
+    # ---- [v0.6.0 I-D(C)] 계산은 이미 끝나 있는데 리포트가 쓰지 않던 11개 시트 ----
+    #   run_industry는 S.build_sector_sheets로 조각을 전부 만들어 results[t]["sheets"]에 넣어 두는데,
+    #   v0.5.0까지 리포트는 daily·val_sheet·audit 3개만 썼다(REPORT45 §5.2 C행). 아래는 dict 조회 +
+    #   concat일 뿐이라 신호·배분에 영향이 없다(비트 동일). 시트명은 S와 1:1로 맞춘다.
+    def _cat(key: str) -> pd.DataFrame:
+        if S is not None and hasattr(S, "_concat"):
+            return S._concat(results, key)
+        parts = [r["sheets"][key] for r in results.values()
+                 if isinstance(r["sheets"].get(key), pd.DataFrame) and len(r["sheets"][key])]
+        return pd.concat(parts, ignore_index=True, sort=False) if parts else pd.DataFrame()
+
+    _extra_sheets = [
+        # (시트명, sheets 키, 설명 — 00시트 '시트 안내'와 같은 순서)
+        ("02_산업별단독거래(진단)", "trades"), ("03_지표검증", "val_sheet"), ("04_채택근거상세", "detail"),
+        ("05_이벤트스터디", "events"), ("05b_하락상승구간", "episodes"), ("06_성과요약", "perf"),
+        ("06b_운용통계", "extra"), ("06c_임계값민감도", "sens"), ("07_연도별성과", "annual"),
+        ("08_워크포워드가중치", "wf"), ("09_국면통계", "regime_stats"), ("09b_규칙별기여", "rule_contrib"),
+        ("09d_하락에피소드", "regime_episodes"),
+    ]
+    _added: List[str] = []
+    for _name, _key in _extra_sheets:
+        _df = _cat(_key)
+        if isinstance(_df, pd.DataFrame) and len(_df):
+            sheets[_name] = _df
+            _added.append(f"{_name}({len(_df)}행)")
+    if M is not None:
+        log("REPORT", kv(event="industry_extra_sheets", n=len(_added), sheets=";".join(_added) or "-"), M=M)
+
     q, u = ires.get("quality", pd.DataFrame()), ires.get("universe", pd.DataFrame())
     sheets["10_데이터품질"] = pd.concat([u, q], ignore_index=True, sort=False) if len(q) else u
     au = ires.get("audit", pd.DataFrame())
     if isinstance(au, pd.DataFrame) and len(au):
         sheets["11_룩어헤드감사"] = au                                   # [v0.2.0] industry_lookahead_audit 결과(산업별 절단재계산)
+    # [v0.6.0 I-D] 12b_오류상세 — S.build_sector_error_detail 재사용(실패 산업의 전체 트레이스백).
+    _failed = ires.get("failed", {}) or {}
+    if _failed and S is not None and hasattr(S, "build_sector_error_detail"):
+        try:
+            _ed = S.build_sector_error_detail(_failed)
+            if isinstance(_ed, pd.DataFrame) and len(_ed):
+                sheets["12b_오류상세"] = _ed
+        except Exception as e:
+            log("REPORT", kv(event="error_detail_failed", err=str(e)[:120]), M=M, level="warning")
 
     verdict = ("산업 계층이 S★를 이긴다(수용기준 ①~⑤ 전부 PASS)" if passed else
               "산업 계층은 S★를 이기지 못함 — 운용은 S★ 그대로(설계서 §8 관행, 진단용으로만 유지)")
@@ -3154,8 +3597,14 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                         "(13g에서도 상위1 여유 게이트에 걸려 '표본부족'으로 남는다 — 채택되지 않는 것이 정상).")
     else:
         inert_line = "없음 — 모든 채택 신호가 부모 안에서 산업별로 값이 갈렸다"
+    # [v0.6.0 I-D(F)] 동결 실행에서 없는 시트를 가리키던 줄들을 정리한다 — 리포트4에는 '계층정합 -'처럼
+    #   내용 없는 줄이 남아 무엇이 왜 없는지 알 수 없었다(REPORT45 §5.2 A행).
+    _frozen = bool(ires.get("frozen", getattr(icfg, "INDUSTRY_LAYER_FROZEN", False)))
+    _skipped_sheets = ("13_산업배분전략 · 13b_배분전략자산곡선 · 13c_일별배분비중 · 13c2_잔여다리 · "
+                       "13f_산업수용기준 · 13j_배분거래내역 · 13l_산업리더적중률 · 14_계층정합 · 15_산업대섹터귀속")
     hier = ires.get("hierarchy", pd.DataFrame())
-    hier_line = "-"
+    hier_line = ("동결로 미산출 — 배분이 없으므로 검사할 등식도 없다(INDUSTRY_LAYER_FROZEN=True)"
+                 if _frozen else "-")
     if isinstance(hier, pd.DataFrame) and len(hier):
         hier_line = (f"위반 {int(hier['위반일수(>1e-9)'].sum())}일 · 최대오차 {float(hier['최대오차'].max()):.2e} "
                      f"(부모별 등식 + 총노출=S★ + S★ 재현 비트동일 — 14시트)")
@@ -3202,6 +3651,35 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                         f"(S★ {float(alloc['w_s_all'].iloc[-1].sum()):.2%}) · 잔여 처리 모드 {alloc.get('only_mode', 'parent')}"))
         nd_rows.append(("다음 거래일 배분(I★) - 부모별 판단", _tier_txt or "-"))
         nd_rows.append(("격자 수렴 상태(①②③④)", alloc.get("grid_line", "-")))
+    # [v0.6.0 I-D(B)] 실제 포트폴리오 거래 요약(13j) — 한 계좌에서 실제로 일어난 매매.
+    #   02_산업별단독거래(진단)는 각 산업을 '그 산업 하나만 100% 운용'했을 때라 날짜가 겹친다(다른 표다).
+    _ts = ires.get("alloc_trades_summary") or {}
+    if _ts:
+        _wp = _ts.get("win_vs_parent")
+        _ah = _ts.get("avg_hold_industry", np.nan)
+        nd_rows.append(("실제 포트폴리오 거래(13j)",
+                        f"{_ts['n_trades']}건(산업 {_ts.get('n_industry', 0)}건 + 부모ETF {_ts.get('n_parent', 0)}건 "
+                        f"+ 통과다리 {_ts.get('n_pass', 0)}건), 평균 보유 {_ts.get('avg_hold')}거래일"
+                        + (f" · 산업 평균 {_ah}거래일" if pd.notna(_ah) else "")
+                        + (f" · 산업이 **부모를 이긴 비율** {float(_wp):.1%}" if pd.notna(_wp) else "")
+                        + f" · 산업 기여 {_ts.get('contrib_industry_pp')}%p · 잔여 다리 기여 "
+                          f"{_ts.get('contrib_parent_pp')}%p · 거래비용 {_ts.get('cost_pp')}%p · "
+                          f"동시보유 최대 {_ts.get('max_concurrent')}자산"))
+        if _ts.get("by_tier"):
+            nd_rows.append(("실제 거래 판단별 기여(13j)",
+                            " · ".join(f"{k} {v['n']}건 {v['contrib_pp']:+.2f}%p" for k, v in _ts["by_tier"].items())))
+    elif not _frozen:
+        nd_rows.append(("실제 포트폴리오 거래(13j)", "거래 없음 또는 산출 실패(로그 alloc_trades_failed 확인)"))
+    if _frozen:
+        nd_rows.append(("동결로 생략된 시트(v0.6.0 I-D 명시)",
+                        _skipped_sheets + " — 전부 배분 산출물이다. 13g_산업순환매신호채택·01Y·16·"
+                        "02~09d 진단 시트는 동결에서도 나온다(v0.6.0에서 13g 누락 버그 수정). "
+                        "되돌리기: i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}"))
+    nd_rows.append(("09c_국면정보게이트 미적용(I-E 보류)",
+                    "S는 섹터 하락 국면에 정보 게이트(09c)를 걸지만 I는 산업 자기국면에 걸지 않는다 — "
+                    "적용 여부는 REPORT45 §6 I-E의 별도 판정 사항이다. 01Y_산업예측정확도 A블록(산업 하락 상태의 "
+                    "익일 부모대비: KBE −10.9 · KRE −11.8 · JETS −19.2 · XES −16.7bp)이 대체로 정보가 있음을 "
+                    "보여 주어 당장 필요하지 않다. 09d_하락에피소드(v0.6.0 신규)로 에피소드 단위 판정도 가능해졌다."))
 
     meta = [
         ("버전", f"industry_rotation.py {VERSION} ({VERSION_DATE}) — sector_rotation.py {getattr(S, 'VERSION', '?')} — "
@@ -3260,20 +3738,28 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
           f"검정되고 있었고, 하필 v0.3.1에서 유일하게 채택된 신호가 P_REL_RSI_14였다. 이제 S의 _RawSpec 표를 "
           f"그대로 읽어 쓴다(새 숫자 없음, 단일 출처). 13g '사전방향'·'사전방향 근거' 열에서 확인."),),
         ("⚠ 부모 안 무변동 신호(v0.3.1)", inert_line),
-        ("13c 읽는 법", "13c_일별배분비중은 **산업 열만** 싣는다(사용자 지시 2026-09-12). 부모ETF·SPY·XLU 열은 "
-                     "I가 새로 산 것이 아니라 S★가 준 비중 중 산업으로 나누지 못한 '잔여'이며 13c2_잔여다리에 있다. "
-                     "잔여까지 산업으로 밀어 넣으려면 INDUSTRY_ONLY_MODE=\"industries\" — 그 성과는 13_산업배분전략의 "
-                     "[잔여격자] 행에서 먼저 확인할 것(리포트41 실측: 잔여 전량 산업 = MDD가 가장 깊었다)."),
-        ("v0.3.0 범위(⚠ 명시적 축소 — 남은 것)",
-         "06c 임계값민감도·13d/13e/13h~13o 진단시트군·13h FF49외부검증(네트워크 필요)은 v0.4 예정. "
-         "v0.3.0에서 해소: 부모 계층 표본 복원(§A1 — 2018~2023 리더 0일의 원인), 다음 거래일 예측(§A2), "
-         "13c 산업 전용 분리·잔여 모드(§A3), 폴백 기본 0%·cap×fb 2D 격자(§B1), 부모국면 리더 게이트(§B2), "
-         "산업 자기 SCORE_PCT 순위 신호(§B3), 역방향 회피(§B4), 추종필터(§B5), 베타중립 진단(§B7), "
-         "13l_산업리더적중률·01Y_산업예측정확도(§C1). 수용기준 ③④는 여전히 상위1-하위1 스프레드 근사."),
+        # [v0.6.0 I-D(F)] 동결이면 13c 자체가 없으므로 이 안내를 생략한다(없는 시트를 가리키지 않는다).
+        *([("13c 읽는 법", "13c_일별배분비중은 **산업 열만** 싣는다(사용자 지시 2026-09-12). 부모ETF·SPY·XLU 열은 "
+                        "I가 새로 산 것이 아니라 S★가 준 비중 중 산업으로 나누지 못한 '잔여'이며 13c2_잔여다리에 있다. "
+                        "잔여까지 산업으로 밀어 넣으려면 INDUSTRY_ONLY_MODE=\"industries\" — 그 성과는 13_산업배분전략의 "
+                        "[잔여격자] 행에서 먼저 확인할 것(리포트41 실측: 잔여 전량 산업 = MDD가 가장 깊었다).")]
+          if alloc else []),
+        # [v0.6.0 I-D] 시트 범위 — REPORT45 §5.2의 A~F를 무엇까지 해소했는지 명시한다.
+        ("v0.6.0 시트 범위(I-D — 해소/남은 것)",
+         "해소: (A′) 13g_산업순환매신호채택을 `if alloc:` 밖으로 — 동결에서도 나온다(v0.5.0 버그). "
+         "(C) 02_산업별단독거래(진단)·03·04·05·05b·06·06b·06c·07·08·09·09b·09d 13개 시트 신설 — "
+         "run_industry가 이미 만들어 두고도 리포트가 쓰지 않던 조각(계산 없음). "
+         "(B) 13j_배분거래내역 신설(build_industry_allocation_trades — 벤치가 SPY가 아니라 **부모 ETF**). "
+         "(E) 12_산업요약을 S 12시트와 같은 열 세트로 확장. (F) 00시트 정리(동결 생략 목록·단계별 실행시간). "
+         "(D) 06c는 INDUSTRY_RUN_SENSITIVITY=True일 때만 계산(산업 29개 × 수 초). "
+         "남은 것: 13d 횡단면IC·13e 순위스프레드(부모 안 판으로 이식 예정)·13i·13m·13n·13o(각 1함수 이식)· "
+         "13h FF49외부검증(네트워크 필요). 13k는 S 전용(SPY 국면↔섹터)이라 I에서는 16_산업부모추종이 대신한다. "
+         "09c는 I-E 판정 전까지 미적용(위 줄 참조). 수용기준 ③④는 여전히 상위1-하위1 스프레드 근사."),
         ("면책", "본 산출물은 연구·교육 목적의 백테스트 결과이며 투자 자문이 아닙니다. 과거 성과는 미래 수익을 보장하지 않습니다."),
     ]
+    # [v0.6.0 I-D(F)] stage_timing은 이제 숫자(초)와 문자열(최장 산업·캐시 적중)이 섞인다.
     for k, v in ires.get("stage_timing", {}).items():
-        meta.append((f"실행시간 - {k}", f"{v:.1f}초"))
+        meta.append((f"실행시간 - {k}", (f"{v:.1f}초" if isinstance(v, (int, float)) else str(v))))
 
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:

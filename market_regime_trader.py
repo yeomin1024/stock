@@ -21,6 +21,24 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.52.0 - 2026-09-13 - [⚠ 훅 1개만 추가 — **M(SPY) 신호·가중치·성과는 v1.51.0과 비트 동일**.
+#                       generate_signals(hazard_confirm=None) — 위험(H)트랙 규칙 ①(위험급등 단독
+#                       위험회피 진입)에 호출부가 bool 마스크를 걸 수 있게 한다. False인 날은 ①을
+#                       발동시키지 않고 그 사실을 'hazard_confirm_block' 열로 돌려준다.
+#                       규칙 ②(haz_block)·③(안전판)·④(매수보류)는 건드리지 않는다.
+#
+#                       왜(REPORT45 §3.4 — 섹터 계층의 실측): S는 HAZARD_SOURCE="spy"로 M이 SPY에서
+#                       검증한 H를 11섹터가 공유하는데, 섹터에 따라 그 전파가 헛돈다 —
+#                       **XLE는 H진입 129회 중 119회(92%)가 자기 200일선 위**에서 발생했고 그 날들의
+#                       익일 수익은 +2.8bp(정보 0)였다. 그 결과 XLE가 +64.3% 오른 2022년에 하락 판정
+#                       123일(초과 −24.6%p), 2026년 −32.3%p. 반대로 XLK는 같은 조건에서 −115bp/일로
+#                       정확하다 → 전역 규칙이 아니라 **섹터별 워크포워드 게이트**여야 하고,
+#                       그 마스크를 만드는 쪽(sector_rotation.hazard_confirm_gate)이 이 훅을 쓴다.
+#
+#                       M/SPY는 이 인자를 주지 않으므로(기본 None) 코드 경로가 그대로다 —
+#                       회귀: test_market_hazard_confirm_v152.py(4케이스, SPY 비트 동일 증명) +
+#                       기존 test_market_block_hooks_v151.py.
+#
 #  VERSION: v1.51.0 - 2026-09-12 - [⚠ 훅만 추가 — **M(SPY) 신호·가중치·성과는 v1.50.0과 비트 동일**.
 #                        섹터·산업 계층(IMPROVEMENT_PLAN_S0.40_I0.4 §S1·§S3)이 쓸 파라미터 3개를 M에
 #                        열어 둔 것이고, M 자신의 기본값은 전부 '기존 동작'이다. 이 사실은
@@ -6668,7 +6686,8 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
                      px: Optional[pd.Series] = None,
                      breadth: Optional[pd.Series] = None,
                      market_ok: Optional[pd.Series] = None,
-                     regime_floor: Optional[pd.Series] = None) -> pd.DataFrame:
+                     regime_floor: Optional[pd.Series] = None,
+                     hazard_confirm: Optional[pd.Series] = None) -> pd.DataFrame:
     """
     t일 종가 기준으로 목표비중을 확정한다(t일 정보만 사용).
     실제 체결은 [7]에서 t+1일 시가로 이뤄진다.
@@ -6723,9 +6742,21 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
     # (NO_SIGNAL 구간은 기존 200일선 폴백(TREND_ONLY_*)이 전담, 여기서 건드리지 않는다).
     haz_enter = pd.Series(False, index=score_pct.index)
     haz_block = pd.Series(False, index=score_pct.index)
+    haz_confirm_block = pd.Series(False, index=score_pct.index)
     if cfg.USE_HAZARD_TRACK and haz_pct is not None:
         valid = score_pct.notna()
         haz_enter = valid & haz_pct.notna() & (haz_pct > cfg.HAZARD_ENTER)
+        # [v1.52.0 훅] hazard_confirm — 호출부(sector_rotation.hazard_confirm_gate)가 주는 bool 마스크.
+        #   False인 날은 ①(위험급등 단독 위험회피 진입)을 **발동시키지 않는다**. 다른 규칙(haz_block ②·
+        #   안전판 ③·매수보류 ④)은 건드리지 않는다 — 이 훅이 겨냥하는 것은 '자기 가격이 멀쩡한데 SPY의
+        #   H만 보고 위험회피로 들어가는 날'뿐이기 때문이다(리포트45 §3.4: XLE H진입의 92%가 자기
+        #   200일선 위에서 발생, 익일 +2.8bp로 정보 0).
+        #   ⚠ **M/SPY는 hazard_confirm=None(기본)이라 이 블록을 건너뛴다 — M 신호는 비트 동일**
+        #   (test_market_hazard_confirm_v152.py가 SPY 결과 비트 동일을 증명).
+        if hazard_confirm is not None:
+            _hc = hazard_confirm.reindex(score_pct.index).fillna(True).astype(bool)
+            haz_confirm_block = haz_enter & ~_hc
+            haz_enter = haz_enter & _hc
         haz_block = valid & haz_pct.notna() & (haz_pct > cfg.HAZARD_BLOCK)
         raw_state[haz_enter] = "RISK_OFF"
         raw_state[haz_block & raw_state.eq("RISK_ON")] = "NEUTRAL"
@@ -6981,6 +7012,8 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         "soft_trigger": soft_fire,         # [v1.17.0 §B] 소프트 트리거 캡 발동일(기본 비활성 — 보류)
         "struct_bottom": struct_boost,     # [v1.18.0 §A] 구조적 저점 확인 승격(규칙 ⑧) 발동일
         "regime_gate_floor": regime_gate_floor,  # [v1.51.0 §S2] 국면 정보 게이트로 RISK_OFF→중립 강등된 날
+        # [v1.52.0 훅] H진입 자기확인 게이트로 ①이 차단된 날(hazard_confirm=None이면 항상 False)
+        "hazard_confirm_block": haz_confirm_block,
     })
     out["target_pos"] = out["target_pos"].fillna(0.0)
 
@@ -10423,7 +10456,7 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.51.0"
+BUNDLE_VERSION = "v1.52.0"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 
