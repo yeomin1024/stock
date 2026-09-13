@@ -21,6 +21,12 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.53.1 - 2026-09-13 - [표시 문자열 1줄 수정 — **M(SPY) 신호·가중치·성과는 v1.53.0과 비트 동일**]
+#    (H7 ⚠ 표시 결함) 00_실행요약 '버전' 줄이 v1.24.0 이래 하드코딩이라 v1.52.0~v1.53.0에서 갱신되지 않았다.
+#    리포트66(번들 v1.53.0)이 00시트에 "v1.51.0 (2026-09-12)"을 찍어 판독자가 구버전 실행으로 오해할 수 있었다
+#    (REPORT49 §1 부수 발견). 이제 BUNDLE_VERSION·BUNDLE_VERSION_DATE 상수에서 읽는다.
+#    ※ 검증 캐시 키는 VALIDATION_SCHEMA("m1")를 쓰므로 이 번들 버전 변경으로 **캐시가 무효화되지 않는다**
+#      (v0.43.0 R7). 섹터/산업 29/29 적중은 그대로다.
 #  VERSION: v1.53.0 - 2026-09-13 - [리포트 시트 1개 추가 — **M(SPY) 신호·가중치·성과는 v1.52.1과 비트 동일**]
 #    13p_소수클래스정확도 신설(F5 ★). 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이 있다")를
 #    M 자신에게도 적용한다 — 그동안 S 리포트에서 우회 계산으로만 보이던 값이다. REPORT47 §2.2 실측(SPY, h=21):
@@ -10191,7 +10197,10 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           if (res.get("yahoo_degraded") or res.get("ft_degraded")) else ""))
 
     meta = [
-        ("버전", "v1.51.0 (2026-09-12)"),
+        # [v1.53.1 H7 ⚠ 표시 결함 수정] 이 줄은 v1.24.0 이래 **하드코딩 문자열**이었다. v1.52.0~v1.53.0에서
+        #   갱신되지 않아 리포트66 00시트가 번들 v1.53.0인데 "v1.51.0 (2026-09-12)"을 찍었다(REPORT49 §1).
+        #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
+        ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
         ("⚠ 실매매 적용 전략", "★ 이 리포트의 SPY 국면전략(아래 '다음 거래일 예측' 행이 실제 주문 근거 — 목표비중·예상 행동). "
                           "섹터(sector_regime_report.xlsx S★)·산업(industry_regime_report.xlsx I★) 계층 리포트는 이 M 노출을 "
@@ -10489,7 +10498,8 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.53.0"
+BUNDLE_VERSION = "v1.53.1"
+BUNDLE_VERSION_DATE = "2026-09-13"
 # [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
 #   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /
 #   decay_weights / composite 입력 스펙에만 의존한다. ⚠ 그 네 곳의 **산식**이 바뀔 때만 이 값을 올릴 것(안 올리면 오래된

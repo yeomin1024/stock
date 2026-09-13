@@ -1,5 +1,29 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.10.0 - 2026-09-13 - [★★ 산업 계층 구조 전환 — 독립 산업 슬리브] REPORT49 §5 H1·H2·H3.
+#    사용자 지시(2026-09-13): "왜 industry는 계속 발전이 없어? 산업도 섹터를 반드시 따라가는게 아닌데
+#    좀 제대로 수정해봐". 그 지적이 맞았다 — 세 라운드 연속 배분 0일의 원인은 신호가 아니라 **설계**다.
+#    (H1 ★★) [산업슬리브격자] — 산업에 **자체 예산 f × S★ 총노출**을 준다. 유니버스 29산업 **풀링**
+#         (부모 무관), 벤치 EW-N/시장, 예산은 ★ 비중을 (1−f)배 해서 확보(총노출 Σ = E_t 불변),
+#         보유는 풀링 복합순위 상위k 균등·21일 재구성·10bp. 부모 국면·산업 자기 국면을 쓰지 않고
+#         **M의 E_t만** 쓴다(16시트 국면 일치율 0.37~0.83 — 절반의 산업에 부모 국면 상속 근거가 없다).
+#         **대조군 2행 필수**: 같은 f를 SPY / 29산업 균등에 넣은 행 — 분산 효과와 산업 정보를 분리한다.
+#         실측 근거(REPORT49 §3.4): ★ 70% + 슬리브 30% → 칼마 2.33 → **3.06** · MDD −13.5 → **−9.6%**
+#         (SPY 혼합 대조 2.35 / −12.1%). 일간 상관 ★–슬리브 0.63. 슬리브가 든 것은 GDX·XME·XES·XHB·XOP —
+#         S★가 0~5%만 주는 부모의 산업들이라 종전 구조로는 **구조적으로 닿을 수 없던** 자리다.
+#         ⚠ 라이브 INDUSTRY_SLEEVE_SHARE=0.0(꺼짐) → I★는 v0.9.0과 비트 동일. 되돌리기: INDUSTRY_SLEEVE_GRID=()
+#         ⚠ 정직한 한계: 리더 예측기가 아니라 **분산기 + 약한 모멘텀 정보**(풀링 상위3 적중 0.17 vs
+#           무작위 0.103, 단독 CAGR은 M×SPY 아래). MDD 개선의 상당 부분이 2022 의존. 그래서 대조군이 필수다.
+#    (H2) 13g 풀링 진단 5열 — '풀링 상위3−EW N'·'NW-HAC t(풀링 상위3)'·'풀링 1위=실현 상위3 비율'·
+#         '풀링 무작위 기대(3/N)'·**'풀링 사전방향 판정'**. 채택에는 관여하지 않는다(병기만).
+#         왜: v0.9.0 I-F가 연 신호 P_REL_VOL_RATIO는 산업 풀링에서 **부호가 뒤집힌다**(저변동 1위의
+#         상위3 적중 0.050 · vs SPY −0.87%/21일 t −4.1) — 그래서 졌다(REPORT49 §3.5·§4 E2).
+#         이제 그런 신호는 채택 **전에** '반전(사전방향과 반대)'으로 13g에 찍힌다.
+#    (H3) within-parent 계층 격하 — INDUSTRY_GRID 기본 True → **False**(격자 28행 계산 생략,
+#         13·13c·14·13g·13p는 그대로) · INDUSTRY_LEADER_STANDALONE_GRID (0.03,0.07) → () 퇴역
+#         (리포트8 실측 −0.36/−0.37%p). ⚠ 계산 생략이라 **I★ 성과는 무변경**이다.
+#         되돌리기: i_overrides={"INDUSTRY_GRID": True, "INDUSTRY_LEADER_STANDALONE_GRID": (0.03, 0.07)}
+#    ※ 연구·교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.9.0 - 2026-09-13 - [단독 리더 자격 격자 — 산업 배분 0일의 구조적 원인 해제] REPORT48 후속(사용자 지시).
 #    왜: 산업 계층은 세 라운드 연속 **배분 0일**인데, 원인은 신호 품질이 아니라 **정족수**다. 13g 실측
 #    연도별 채택 신호 수: 2018:1 · 2019:1 · 2020:0 · 2021:1 · 2022:1 · 2023:0 · 2024:0 · 2025:0 · 2026:1.
@@ -406,7 +430,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.9.0"
+VERSION = "v0.10.0"
 VERSION_DATE = "2026-09-13"
 
 # =============================================================================
@@ -576,7 +600,14 @@ class IndustryConfig:
     # [v0.8.0 F6(a)] 배분 격자(28행) 산출 여부. 리포트6 실측: 부모 안 리더 판단이 **0일**이라 격자 28행이
     #   전부 S★와 비트 동일했다(정보 0). 끄면 13_산업배분전략에 ★ + 대조군 A/B만 남아 읽기 쉬워진다.
     #   ⚠ 끄기: i_overrides={"INDUSTRY_GRID": False}   (배분 시트 13·13b·13c·14·15는 그대로 나온다)
-    INDUSTRY_GRID: bool = True
+    # [v0.10.0 H3 ⚠ 기본값 전환 True → False] within-parent 격자(28행)는 **세 라운드 연속 정보 0**이었다:
+    #   리포트6~7은 리더 0일이라 전 행이 S★와 비트 동일했고, v0.9.0 I-F로 열린 리포트8도 전 행 '통과'에
+    #   ①②③④ 전부 통과 0행이었다(REPORT49 §1-8). 그 28행의 계산을 이번 라운드의 본체인
+    #   **[산업슬리브격자]**(H1)에 넘긴다 — 같은 실행시간으로 훨씬 정보가 많은 격자를 돌린다.
+    #   ⚠ 이것은 **계산 생략**이지 규칙 변경이 아니다 — I★·13·13c·14·13g·13p는 그대로 나오고
+    #     I★ 성과는 무변경이다(회귀 테스트가 직접 비교한다).
+    #   되돌리기: i_overrides={"INDUSTRY_GRID": True}
+    INDUSTRY_GRID: bool = False
     # [v0.4.0 §I3] 사전등록 격자 — 배분층이라 하나의 신호를 공유한다(격자로 싣는 것이 옳다).
     #   국면게이트: 리더를 인정하는 부모 자기국면 집합. 근거(§3.4 H1): 부모 **중립**일 때 고베타 1위의
     #     21일 부모초과가 +0.81%(t 1.94, 6/8년)로 가장 컸고, 부모 상승(+0.25, t 0.73)·하락(−0.21)은 약했다.
@@ -644,7 +675,20 @@ class IndustryConfig:
     #     CAGR이 거의 안 움직이는 것이 정상이다 — 판정 잣대는 블록 B가 무작위(1/부모안 산업수)를 넘느냐다.
     #   되돌리기: i_overrides={"INDUSTRY_LEADER_STANDALONE_GRID": ()}
     INDUSTRY_LEADER_STANDALONE_EDGE: Optional[float] = None           # 라이브(꺼짐)
-    INDUSTRY_LEADER_STANDALONE_GRID: Tuple[float, ...] = (0.03, 0.07)  # 격자 문턱(순서 잣대 여유)
+    # [v0.10.0 H3 퇴역] 리포트8 실측: 두 행 모두 −0.36/−0.37%p 열위. 원인은 정족수가 아니라 **신호**였다 —
+    #   이 격자가 연 P_REL_VOL_RATIO는 산업 풀링에서 부호가 뒤집힌 신호다(H2 진단열이 이제 그것을 표시한다).
+    #   되돌리기: i_overrides={"INDUSTRY_LEADER_STANDALONE_GRID": (0.03, 0.07)}
+    INDUSTRY_LEADER_STANDALONE_GRID: Tuple[float, ...] = ()
+    # ---- [v0.10.0 H1 ★★] 독립 산업 슬리브 — 산업 계층의 구조 전환 ----
+    #   자세한 근거는 파일 헤더 v0.10.0 (H1) 블록과 REPORT49 §3 참조.
+    #   SHARE: 라이브에서 S★ 총노출의 몇 %를 산업 슬리브에 줄 것인가(0.0 = 꺼짐 = I★ 비트 동일).
+    #   GRID: (몫 f, 상위k) 조합. 각 행마다 **대조군 2행**(같은 f를 SPY / N산업 균등에)이 자동으로 함께 실린다.
+    #   판정: ① 칼마 > 같은 f의 SPY 혼합 행 & MDD ≤ 그 행 ② 13p 풀링 적중 > 3/N ③ 격자 4기준.
+    #   ⚠ 라이브로 켜는 것(INDUSTRY_SLEEVE_SHARE > 0)은 I★의 정의를 바꾼다 — 판정 통과 뒤 사용자 결정.
+    INDUSTRY_SLEEVE_SHARE: float = 0.0                 # ⚠ 라이브 몫(0.0 = 꺼짐)
+    INDUSTRY_SLEEVE_K: int = 3                         # 라이브로 켤 때의 상위k
+    INDUSTRY_SLEEVE_GRID: Tuple[Tuple[float, int], ...] = ((0.1, 3), (0.2, 3), (0.3, 3), (0.2, 5))
+    INDUSTRY_SLEEVE_BEST_N: int = 2                    # 슬리브 신호 '최선 가용' 상위N(엄격 신호가 없을 때)
     INDUSTRY_AVOID_STANDALONE_COUNTER: bool = True                    # + 반증 1행(반대쪽 산업을 회피 — 나빠야 정상)
     INDUSTRY_AVOID_STANDALONE_INVERT: bool = False                    # 반증 행에서만 True(격자가 넘긴다)
     USE_EXTERNAL_VALIDATION: bool = False          # v0.2 예정(§6.4) — FF49 네트워크 필요, 이번 버전은 꺼둠
@@ -1671,6 +1715,48 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
     if not rank_full:
         raise RuntimeError("ROTATION_SIGNALS 중 사용 가능한 신호가 없습니다 — 배분 계층을 만들 수 없음")
 
+    # ---------------------------------------------------------------------
+    # [v0.10.0 H2 ★ 신규 진단 — 채택에는 관여하지 않는다] 풀링(부모 무관) 횡단면 검정.
+    #   왜(REPORT49 §3.2·§3.3): 산업은 부모를 부분적으로만 따라간다 — 21일 상관 평균 0.81(GDX 0.46·XBI 0.62),
+    #   방향 불일치 20%, '산업은 SPY를 이기는데 부모는 지는' 창이 15%. 그런데 현행 검증은 신호도 '부모 대비'
+    #   (P_REL_*)이고 벤치도 부모 ETF다. 원자료 재계산에서 **SPY 대비 신호 + 풀링 순위**가 순서·크기 모두
+    #   더 나았고(1위→실현 상위3 0.22 vs 무작위 0.103), 결정적으로 **REL_VOL_RATIO는 산업에서 부호가 뒤집힌다**
+    #   (저변동 1위의 상위3 적중 0.050, vs SPY −0.87%/21일 t −4.1). v0.9.0 I-F가 그 신호를 열어 진 원인이다.
+    #   → 채택 전에 '이 신호가 산업 풀링에서 사전방향대로 작동하나'를 13g에 드러낸다.
+    #   벤치는 **29산업 균등(EW-N)** — 자산군 드리프트를 빼고 순수 횡단면 순서 능력만 남긴다
+    #   (SPY 대비 크기 비교는 배분층 [산업슬리브격자]가 실제 엔진으로 한다).
+    _n_all = len(cols)
+    # 풀링 상위k의 k와 '그날 최소 몇 개가 있어야 선택으로 치나'. 상위3이 유니버스의 절반을 넘으면 '선택'이
+    #   아니므로 최소 2k를 요구한다(실제 29산업에서는 6 ≪ 29라 무영향, 소형 유니버스·테스트에서만 의미).
+    _TOPK_POOL = 3
+    _min_names_pool = max(2 * _TOPK_POOL, 5)
+    _ewN = fwd_i.mean(axis=1, skipna=True)
+    _exc_pool = fwd_i.sub(_ewN, axis=0)                 # 산업 − 29산업 균등
+    _rand_pool = float(_TOPK_POOL) / max(_n_all, 1)     # 상위3 무작위 기대
+    pool_stats_by_year: Dict[int, Dict[str, Tuple[float, float, int]]] = {}   # [v0.10.0 H1]
+    pool_hit_by_year: Dict[int, Dict[str, float]] = {}                        # [v0.10.0 H1]
+    pool_top3_full: Dict[str, pd.Series] = {}           # 풀링 상위3 평균 초과(vs EW-N)
+    pool_hit_full: Dict[str, pd.Series] = {}            # 풀링 1위가 실현 상위3이었나(0/1)
+    _rk_real_pool = fwd_i.rank(axis=1, ascending=False, method="min")
+    for name in list(rank_full):
+        mat = _mat(name)
+        sign = _SPECS.get(name, S.ROTATION_SIGNAL_SPECS.get(name, (+1, "", "")))[0]
+        xp = (mat * sign).where(listed)
+        _okp = xp.notna() & _exc_pool.notna()
+        _nokp = _okp.sum(axis=1)
+        xv = xp.where(_okp)
+        _ord = xv.rank(axis=1, ascending=False, method="first")
+        _top3 = (_ord <= _TOPK_POOL) & _okp
+        pool_top3_full[name] = _exc_pool.where(_top3).mean(axis=1).where(_nokp >= _min_names_pool)
+        _t1 = xv.fillna(-np.inf).idxmax(axis=1).where(_nokp >= _min_names_pool)
+        pool_hit_full[name] = pd.Series(
+            [(1.0 if (isinstance(c, str) and _rk_real_pool.at[i, c] <= 3) else 0.0) if isinstance(c, str) else np.nan
+             for i, c in _t1.items()], index=full_idx)
+    log("ROT", kv(event="pooled_diag_ready", signals=len(pool_top3_full), universe=_n_all,
+                  random_top3=round(_rand_pool, 3), bench=f"EW-N({_n_all}산업 균등)",
+                  min_names=_min_names_pool,
+                  note="H2 진단 — 채택 미관여. 부호가 사전방향과 반대인 신호를 13g '풀링 사전방향 판정'이 표시"), M=M)
+
     years = sorted({int(d.year) for d in eval_idx})
     selected_by_year: Dict[int, List[str]] = {}
     selected_eff_by_year: Dict[int, List[str]] = {}
@@ -1689,6 +1775,8 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
         stats_bot: Dict[str, Tuple[float, float, int]] = {}
         stats_alt: Dict[str, Tuple[float, float, int]] = {}       # [v0.8.0 F6(c)]
         stats_hit: Dict[str, Tuple[float, int]] = {}              # [v0.8.0 F6(c)]
+        stats_pool: Dict[str, Tuple[float, float, int]] = {}      # [v0.10.0 H2] 풀링 상위3 vs EW-N
+        stats_pool_hit: Dict[str, Tuple[float, int]] = {}         # [v0.10.0 H2] 풀링 1위→실현 상위3
         for name in rank_full:
             # 전방창이 cutoff를 넘지 않는 날만 — 룩어헤드 차단(S의 관행과 동일한 취지, 여기서는 명시적으로).
             sp = top1_full[name]
@@ -1705,6 +1793,13 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
             _sh = top1_hit_full.get(name)
             _hv = _sh.reindex(ix).dropna() if _sh is not None else pd.Series(dtype=float)
             stats_hit[name] = (float(_hv.mean()) if len(_hv) >= 30 else np.nan, int(len(_hv)))
+            # [v0.10.0 H2] 풀링(부모 무관·EW-N 벤치) 진단 — 같은 학습창·같은 룩어헤드 규칙.
+            _sp_pool = pool_top3_full.get(name)
+            stats_pool[name] = (S._nw_mean_tstat(_sp_pool.reindex(ix).dropna(), lag=h)
+                                if _sp_pool is not None and len(_sp_pool) else (np.nan, np.nan, 0))
+            _hp = pool_hit_full.get(name)
+            _hpv = _hp.reindex(ix).dropna() if _hp is not None else pd.Series(dtype=float)
+            stats_pool_hit[name] = (float(_hpv.mean()) if len(_hpv) >= 30 else np.nan, int(len(_hpv)))
         strict = [n for n, (m, tv, nn) in stats.items()
                   if nn >= min_days and pd.notna(tv) and tv >= t_str]
         basis = {n: f"엄격(t≥{t_str:.1f})" for n in strict}
@@ -1737,6 +1832,12 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
                                  for n in stats_hit if pd.notna(stats_hit[n][0])}
         rev = [n for n, (m, tv, nn) in stats.items()
                if nn >= min_days and pd.notna(tv) and tv <= -t_str]
+        # [v0.10.0 H1] 풀링 통계를 연도별로 내보낸다 — [산업슬리브격자]가 같은 학습창·같은 인과 규칙으로
+        #   슬리브 신호를 채택할 수 있게(신호 재계산 없음).
+        pool_stats_by_year[y] = {n: (float(v[0]) if pd.notna(v[0]) else np.nan,
+                                     float(v[1]) if pd.notna(v[1]) else np.nan, int(v[2]))
+                                 for n, v in stats_pool.items()}
+        pool_hit_by_year[y] = {n: (float(v[0]) if pd.notna(v[0]) else np.nan) for n, v in stats_pool_hit.items()}
         selected_by_year[y] = sel
         selected_eff_by_year[y] = sel_eff
         tier_by_year[y] = tier
@@ -1776,6 +1877,22 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
                          "회피 자격": ("Y" if name in avoid_ok else ("N" if name in sel_eff else "")),
                          # [v0.5.0 I-B] 채택과 분리된 회피 자격 — 하위1 t ≤ −T_AV면 Y(상위1 채택 여부 무관)
                          "회피 자격(분리·하위1 t≤−%.1f)" % t_av: ("Y" if name in avoid_sa else ""),
+                         # [v0.10.0 H2 진단 — 채택 미관여] 풀링(부모 무관·EW-N 벤치) 3열.
+                         #   '풀링 사전방향 판정'이 **반전**이면 그 신호는 산업 풀링에서 사전방향과 반대로
+                         #   움직인다는 뜻이다(예: REL_VOL_RATIO — 저변동이 1위인데 실제로는 고변동이 앞선다).
+                         #   그런 신호를 부모 안에서 채택하면 v0.9.0 I-F처럼 진다(REPORT49 §3.5).
+                         f"풀링 상위3−EW{_n_all}(%/{h}일)": (round(float(stats_pool.get(name, (np.nan,))[0]) * 100, 3)
+                                                       if pd.notna(stats_pool.get(name, (np.nan,))[0]) else np.nan),
+                         "NW-HAC t(풀링 상위3)": (round(float(stats_pool.get(name, (np.nan, np.nan))[1]), 2)
+                                            if pd.notna(stats_pool.get(name, (np.nan, np.nan))[1]) else np.nan),
+                         "풀링 1위=실현 상위3 비율": (round(float(stats_pool_hit.get(name, (np.nan, 0))[0]), 3)
+                                             if pd.notna(stats_pool_hit.get(name, (np.nan, 0))[0]) else np.nan),
+                         f"풀링 무작위 기대(3/{_n_all})": round(_rand_pool, 3),
+                         "풀링 사전방향 판정": (
+                             "반전(사전방향과 반대)" if (pd.notna(stats_pool.get(name, (np.nan, np.nan))[1])
+                                                and float(stats_pool[name][1]) <= -2.0)
+                             else ("정방향 유의" if (pd.notna(stats_pool.get(name, (np.nan, np.nan))[1])
+                                                and float(stats_pool[name][1]) >= 2.0) else "무의미")),
                          # [v0.9.0 I-F] 단독 리더 자격 — 순서 잣대 여유(= 위 두 열의 차). 격자 문턱과 비교해 읽는다.
                          "단독리더 여유(순서−무작위)": (round(float(leader_hit_by_year[y][name]), 3)
                                                 if name in leader_hit_by_year.get(y, {}) else np.nan),
@@ -1785,6 +1902,9 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
                       selected=",".join(sel) or "-", used=",".join(sel_eff) or "-",
                       avoid_ok=",".join(avoid_ok) or "-", avoid_standalone=",".join(avoid_sa) or "-",
                       reverse=",".join(rev) or "-",
+                      # [v0.10.0 H2] 풀링에서 부호가 뒤집힌 신호 — 부모 안 채택 전에 보이게
+                      pooled_reversed=",".join(n for n in stats_pool
+                                               if pd.notna(stats_pool[n][1]) and float(stats_pool[n][1]) <= -2.0) or "-",
                       top_t=";".join(f"{n}={stats[n][1]:.2f}" for n in
                                      sorted(stats, key=lambda k: -(stats[k][1] if pd.notna(stats[k][1]) else -99))[:3])), M=M)
     out = {"rank_full": rank_full, "top1_full": top1_full, "bottom1_full": bottom1_full,
@@ -1792,6 +1912,10 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
            "tier_by_year": tier_by_year, "avoid_by_year": avoid_by_year,
            "avoid_standalone_by_year": avoid_standalone_by_year,        # [v0.5.0 I-B]
            "leader_hit_by_year": leader_hit_by_year,                     # [v0.9.0 I-F]
+           # [v0.10.0 H2] 풀링 진단 시계열 — [산업슬리브격자](H1)가 신호 재계산 없이 그대로 쓴다.
+           "pool_top3_full": pool_top3_full, "pool_hit_full": pool_hit_full,
+           "pool_stats_by_year": pool_stats_by_year, "pool_hit_by_year": pool_hit_by_year,
+           "pool_rand": _rand_pool, "n_universe": _n_all,
            "bottom_stats_by_year": bot_stats_by_year,                   # [v0.5.0 I-B]
            "reverse_avoid_by_year": rev_by_year, "selection_log": pd.DataFrame(rows),
            "horizon": h, "mode": "within_parent", "stat": "top1_vs_parent",
@@ -2322,8 +2446,11 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
     _grid_on = bool(getattr(icfg, "INDUSTRY_GRID", True))
     if not _grid_on:
         log("ROTATION", kv(event="industry_grid_off",
-                           note="INDUSTRY_GRID=False — 13_산업배분전략에 ★ + 대조군만 싣는다(격자 28행 생략). "
-                                "리포트6에서 리더 판단 0일이라 전 행이 S★와 비트 동일했다. 되돌리기: True"), M=M)
+                           note="INDUSTRY_GRID=False(v0.10.0 H3 기본) — within-parent 격자 28행을 생략한다. "
+                                "리포트6~8에서 세 라운드 연속 정보 0(리더 0일 → 전 행 S★와 비트 동일, "
+                                "I-F로 열린 뒤에도 ①②③④ 전부 통과 0행). 그 계산을 [산업슬리브격자](H1)에 "
+                                "넘긴다 — 슬리브 격자는 INDUSTRY_SLEEVE_GRID가 따로 제어하므로 이 플래그와 무관하게 "
+                                "실린다. 13·13b·13c·14·15·13g·13p는 그대로. 되돌리기: True"), M=M)
     for cv in (0.25, 0.5, 0.75, 1.0):
         for fv in (0.0, 0.25, 0.5, 1.0):
             if not _grid_on:
@@ -2449,6 +2576,169 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                                leaders=";".join(f"{k}={v}" for k, v in _ls_top) or "-",
                                top_share=(round(_ls_top[0][1] / max(_ls_all, 1), 3) if _ls_top else 0.0),
                                years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_open.items())) or "-"), M=M)
+    # =====================================================================
+    # [v0.10.0 H1 ★★ 신규 — 산업 계층의 구조 전환] [산업슬리브격자]
+    #
+    #   왜(REPORT49 §3.1): 지금까지 산업 계층은 "S★가 준 섹터 비중 **안에서** 산업 ETF가 부모 ETF를
+    #   대체"하는 새장이었다. S★가 XLK에 90%를 주므로 무대는 사실상 'SOXX vs XLK' 하나였고, GDX·XOP·
+    #   KRE·XBI·JETS는 부모가 0~5%라 **구조적으로 닿지 않았다**. 세 라운드 연속 배분 0일의 진짜 원인이다.
+    #   (v0.9.0 I-F는 정족수만 풀었고 벤치·신호·예산 제약은 그대로라 −0.36%p로 졌다 — §3.5.)
+    #
+    #   무엇(사용자 지시 "산업도 섹터를 반드시 따라가는게 아닌데 제대로 수정해봐"):
+    #     · 유니버스 = **29산업 풀링**(부모 무관) · 벤치 = EW-N/시장 · 신호 = 풀링 통계로 채택(H2가 낸 값)
+    #     · 예산 = **자체 몫 f × S★ 총노출** — ★ 비중 전체를 (1−f)배 해서 확보한다(부모 비중 안이 아니다).
+    #       따라서 총노출 불변식 Σ = S★ 총노출(=E_t)이 그대로 유지된다(14_계층정합이 매일 검사).
+    #     · 보유 = 풀링 복합순위 상위k 균등, ROTATION_MIN_HOLD_DAYS(21일)마다 재구성, 산업 비용 10bp
+    #     · 국면 = 부모 국면·산업 자기 국면을 **쓰지 않는다**. M의 E_t만 쓴다 — 16_산업부모추종의 국면
+    #       일치율이 0.37~0.83으로 흩어져(GDX 0.65·FDN 0.37) 부모 국면 상속의 근거가 절반의 산업에 없다.
+    #
+    #   근거(REPORT49 §3.2~§3.4, 원자료 재계산):
+    #     · 산업–부모 21일 상관 평균 0.81(GDX 0.46·XBI 0.62), 방향 불일치 20%,
+    #       '산업은 SPY를 이기는데 부모는 지는' 창 15%, 횡단면 분산 29산업 5.43% vs 11섹터 3.76%.
+    #     · ★ 70% + 산업 모멘텀 슬리브 30% → 칼마 2.33 → **3.06**, MDD −13.5 → **−9.6%**
+    #       (같은 비율 SPY 혼합 대조군 2.35 / −12.1%). 일간 상관 ★–슬리브 0.63(vs SPY 0.91).
+    #     · 슬리브가 든 산업: GDX 630일·XME 546·XES 464·XHB 441·XOP 378 — S★가 0~5%만 주는 부모들이다.
+    #
+    #   ⚠ 정직한 한계: 이 슬리브는 **리더 예측기가 아니라 분산기 + 약한 모멘텀 정보**다
+    #     (풀링 상위3 적중 0.17 vs 무작위 0.103, 단독 CAGR은 M×SPY 아래). 그래서 **대조군 행이 필수**다 —
+    #     같은 f를 M×SPY / M×29균등에 넣은 행을 반드시 같이 싣고, 그 둘을 넘을 때만 값이 있다.
+    #     MDD 개선의 상당 부분이 2022에서 온다(§7 낙관 편향 경고).
+    #
+    #   판정(사전 고정): ① 칼마 > 같은 f의 SPY 혼합 행 **그리고** MDD ≤ 그 행 MDD
+    #                   ② 13p 풀링 블록에서 상위k → 실현 상위k > 3/N ③ 격자 4기준
+    #   ⚠ 라이브는 INDUSTRY_SLEEVE_SHARE=0.0(꺼짐) → **I★는 v0.9.0과 비트 동일**. 격자만 늘어난다.
+    #   되돌리기: i_overrides={"INDUSTRY_SLEEVE_GRID": ()}
+    # =====================================================================
+    _sl_grid = tuple(getattr(icfg, "INDUSTRY_SLEEVE_GRID", ()) or ())
+    _sl_live = float(getattr(icfg, "INDUSTRY_SLEEVE_SHARE", 0.0) or 0.0)
+    sleeve_diag: Dict[str, Any] = {}
+    if _sl_grid or _sl_live > 0:
+        _tot_star = w_s_all.sum(axis=1).reindex(eval_idx).fillna(0.0)      # S★ 총노출(=E_t)
+        # 사전방향 레지스트리 — 워크포워드와 **같은 단일 출처**(§I1-6)를 쓴다.
+        _SPECS_SL = industry_rotation_signal_specs(S)
+
+        def _raw_mat(key: str) -> pd.DataFrame:
+            """[v0.10.0 H1] 원시 신호값(rot_raw) — 풀링 순위를 만들기 위한 것. wf["rank_full"]은
+            **부모 안** 순위라 풀링에 쓸 수 없다. 신호를 새로 계산하지 않고 이미 만들어진 열을 읽을 뿐이다."""
+            return pd.DataFrame({t_: results[t_]["rot_raw"].get(key, pd.Series(dtype=float))
+                                 for t_ in cols}).reindex(eval_idx)
+
+        _pool_stats = wf.get("pool_stats_by_year") or {}
+        _pool_hit_y = wf.get("pool_hit_by_year") or {}
+        _rank_full_i = wf.get("rank_full") or {}
+        _t_str_sl = float(icfg.ROTATION_SELECT_T)
+        _t_min_sl = float(getattr(icfg, "ROTATION_SELECT_T_MIN", 1.0))
+        _best_n_sl = int(getattr(icfg, "INDUSTRY_SLEEVE_BEST_N", 2))
+        _min_days_sl = int(icfg.ROTATION_SELECT_MIN_DAYS)
+
+        # ---- (1) 연도별 슬리브 신호 채택 — S와 같은 등급 구조(엄격 → 최선 가용, 순서 잣대로 정렬) ----
+        _sl_sel_by_year: Dict[int, List[str]] = {}
+        for _y in sorted({int(d.year) for d in eval_idx}):
+            _st = _pool_stats.get(_y) or {}
+            _hy = _pool_hit_y.get(_y) or {}
+            _strict = [n for n, (m_, t_, nn_) in _st.items()
+                       if nn_ >= _min_days_sl and pd.notna(t_) and t_ >= _t_str_sl]
+            if _strict:
+                _sl_sel_by_year[_y] = sorted(_strict)
+                continue
+            _pool_c = [(n, t_) for n, (m_, t_, nn_) in _st.items()
+                       if nn_ >= _min_days_sl and pd.notna(t_) and t_ >= _t_min_sl]
+            # 순서 잣대(풀링 1위→실현 상위3) 우선 정렬 — S v0.44.0 F2와 같은 이유(크기 t는 소수의 큰 날에 끌린다)
+            _pool_c.sort(key=lambda kv_: (-(_hy.get(kv_[0], -np.inf) if pd.notna(_hy.get(kv_[0], np.nan)) else -np.inf),
+                                          -kv_[1]))
+            _sl_sel_by_year[_y] = sorted(n for n, _ in _pool_c[:max(_best_n_sl, 1)])
+
+        # ---- (2) 풀링 복합순위 — 채택 신호의 풀링 0~1 순위 평균(연도별) → 21일 평활 ----
+        _smooth_sl = int(icfg.ROTATION_SMOOTH_DAYS or 1)
+        _comp_sl = pd.DataFrame(np.nan, index=eval_idx, columns=cols)
+        for _y, _sel_y in _sl_sel_by_year.items():
+            _use = [n for n in _sel_y if n in _rank_full_i]
+            _rows_y = eval_idx[eval_idx.year == _y]
+            if not _use or len(_rows_y) == 0:
+                continue
+            # rank_full은 '부모 안' 순위라 풀링에 쓸 수 없다 — 원시값으로 풀링 순위를 다시 만든다(신호 재계산 아님).
+            _parts = []
+            for n in _use:
+                _sign = _SPECS_SL.get(n, S.ROTATION_SIGNAL_SPECS.get(n, (+1, "", "")))[0]
+                _xm = (_raw_mat(n) * _sign).reindex(index=eval_idx, columns=cols).where(listed.reindex(eval_idx))
+                _parts.append(S._cs_rank01(_xm).loc[_rows_y])
+            _comp_sl.loc[_rows_y] = S._nanmean_frames(_parts, _rows_y, cols).values
+        _comp_sl_s = (_comp_sl.rolling(_smooth_sl, min_periods=1).mean().where(listed.reindex(eval_idx))
+                      if _smooth_sl > 1 else _comp_sl)
+
+        # ---- (3) 상위k 균등 슬리브(21일마다 재구성) ----
+        _min_hold_sl = max(int(getattr(icfg, "ROTATION_MIN_HOLD_DAYS", 21)), 1)
+
+        def _sleeve_frac(k_: int) -> pd.DataFrame:
+            fr = pd.DataFrame(0.0, index=eval_idx, columns=cols)
+            cur: List[str] = []
+            for i_, d_ in enumerate(eval_idx):
+                if i_ % _min_hold_sl == 0 or not cur:
+                    xv = _comp_sl_s.loc[d_].dropna()
+                    xv = xv[[c for c in xv.index if bool(listed.at[d_, c])]] if len(xv) else xv
+                    if len(xv) >= k_:
+                        cur = list(xv.nlargest(k_).index)
+                if cur:
+                    for c_ in cur:
+                        if bool(listed.at[d_, c_]):
+                            fr.at[d_, c_] = 1.0
+            _n = fr.sum(axis=1).replace(0, np.nan)
+            return fr.div(_n, axis=0).fillna(0.0)
+
+        def _blend(base_tw: pd.DataFrame, add_frac: pd.DataFrame, f_: float) -> pd.DataFrame:
+            """base_tw를 (1−f)배 하고 add_frac(행합 1) × S★ 총노출 × f를 더한다 — Σ 불변."""
+            _form = add_frac.sum(axis=1) > 1e-12
+            _fv = pd.Series(np.where(_form.values, float(f_), 0.0), index=eval_idx)
+            out = base_tw.mul(1.0 - _fv, axis=0)
+            _amt = _tot_star * _fv
+            for c_ in add_frac.columns:
+                if c_ in out.columns:
+                    out[c_] = out[c_] + (add_frac[c_] * _amt).values
+            return out
+
+        _base_tw = target_ws[label_star]
+        _ew_frac = pd.DataFrame(0.0, index=eval_idx, columns=cols)
+        _lst = listed.reindex(index=eval_idx, columns=cols).fillna(False).astype(float)
+        _ew_frac = _lst.div(_lst.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
+        _spy_frac = None
+        if "SPY" in all_cols:
+            _spy_frac = pd.DataFrame(0.0, index=eval_idx, columns=["SPY"]); _spy_frac["SPY"] = 1.0
+
+        _frac_cache: Dict[int, pd.DataFrame] = {}
+        for _fv_, _k_ in _sl_grid:
+            _fv_ = float(_fv_); _k_ = int(_k_)
+            if _fv_ <= 0 or _k_ < 1:
+                continue
+            if _k_ not in _frac_cache:
+                _frac_cache[_k_] = _sleeve_frac(_k_)
+            _sf = _frac_cache[_k_]
+            # ⚠ [산업슬리브격자]는 INDUSTRY_GRID(within-parent 격자)와 **별개 스위치**다 — H3가 그 격자를
+            #   끈 이유가 바로 이 격자에 계산을 넘기기 위해서이므로, 여기서 _grid_on을 보면 안 된다.
+            target_ws[f"독립 산업 슬리브 {_fv_:.0%}·상위{_k_} [산업슬리브격자]"] = _blend(_base_tw, _sf, _fv_)
+            # ⚠ 대조군 2행 — 분산 효과와 산업 정보를 분리한다(같은 f, 같은 날, 자산만 다름).
+            if _spy_frac is not None:
+                target_ws[f"대조: 슬리브 {_fv_:.0%}를 SPY로 [산업슬리브격자·대조]"] = _blend(_base_tw, _spy_frac, _fv_)
+            target_ws[f"대조: 슬리브 {_fv_:.0%}를 {len(cols)}산업 균등으로 [산업슬리브격자·대조]"] = \
+                _blend(_base_tw, _ew_frac, _fv_)
+            _hold = (_sf > 0).sum()
+            _top = _hold.sort_values(ascending=False).head(5)
+            log("ROTATION", kv(event="industry_sleeve_grid", share=_fv_, k=_k_,
+                               days_formed=int((_sf.sum(axis=1) > 1e-12).sum()),
+                               holdings=";".join(f"{t_}({parent_of.get(t_, '?')}){int(v_)}" for t_, v_ in _top.items()),
+                               # 부모 쏠림: XLK 산업 몫이 크면 'S★ XLK 편향의 재탕'이지 새 정보가 아니다
+                               xlk_share=round(float(_sf[[c_ for c_ in cols if parent_of.get(c_) == "XLK"]].sum(axis=1).mean()), 3),
+                               years=";".join(f"{y_}:{'+'.join(v_)}" for y_, v_ in sorted(_sl_sel_by_year.items()) if v_) or "-"), M=M)
+        sleeve_diag = {"sel_by_year": _sl_sel_by_year, "frac": _frac_cache, "composite": _comp_sl_s,
+                       "share_live": _sl_live}
+        # 라이브 전환(사용자가 판정 통과 뒤 켤 때) — ★ 자체를 슬리브 혼합으로 바꾼다.
+        if _sl_live > 0:
+            _k_live = int(getattr(icfg, "INDUSTRY_SLEEVE_K", 3))
+            if _k_live not in _frac_cache:
+                _frac_cache[_k_live] = _sleeve_frac(_k_live)
+            target_ws[label_star] = _blend(_base_tw, _frac_cache[_k_live], _sl_live)
+            log("ROTATION", kv(event="industry_sleeve_live", share=_sl_live, k=_k_live,
+                               note="⚠ I★가 독립 산업 슬리브를 포함하도록 바뀌었다"), M=M, level="warning")
+
     label_ctrl_b = "대조군B: 부모비중 안 적격산업 균등 50%(순위 미사용)"
     target_ws[label_ctrl_b] = _mk_target_w(0.0, 0.5, use_rank=False, only_mode="parent")
     label_repro = "S★ 재현(I 백테스트 엔진, 산업 0% — 대조군A와 비트 동일해야 함)"
@@ -2550,6 +2840,7 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "cost_bps_parent": icfg.PARENT_COST_BPS, "rf_daily": rf_daily,
         # [v0.6.0 I-D(B)] 13j_배분거래내역용 — 백테스트가 쓴 바로 그 초기 포지션·열별 비용률을 그대로
         #   넘긴다(재계산 금지: 거래 로그의 비용·기여가 13_산업배분전략의 성과와 어긋나면 안 된다).
+        "sleeve_diag": sleeve_diag,          # [v0.10.0 H1] 13p 블록 P·판독용(슬리브 채택 신호·가중·복합순위)
         "init_exec": init_exec, "init_prev": init_prev, "cost_map": cost_map,
     }
 
@@ -3320,6 +3611,84 @@ def build_industry_minority_block_b(alloc: Dict[str, Any], results: Dict[str, Di
     return pd.DataFrame(rows), summ
 
 
+def build_industry_pooled_block(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]],
+                                h: int = 21) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.10.0 H1 판정 ②] 13p **블록 P: 풀링(부모 무관) 슬리브 소수 클래스**.
+
+    왜: [산업슬리브격자](H1)의 판정 기준 ②가 '상위k → 실현 상위k > 3/N'인데, 블록 B는 **부모 안** 리더만
+    센다(그리고 라이브가 꺼져 있으면 0일이다 — 리포트8이 1행뿐이었던 이유). 격자를 수익으로만 판정하고
+    닫는 일(REPORT49 §4 E4)을 산업에서도 막는다.
+
+    무엇: build_industry_allocation이 남긴 alloc["sleeve_diag"]["frac"](상위k 균등 가중, k별)을 읽어
+    그날 슬리브가 든 산업이 **29산업 공동 순위**에서 실현 상위k/하위k였는지를 센다. 신규 계산 없음.
+    무작위 기대 = k/N. 배분·신호를 바꾸지 않는 순수 관측이다."""
+    rows: List[dict] = []
+    summ: Dict[str, Any] = {}
+    sd = (alloc or {}).get("sleeve_diag") or {}
+    fracs = sd.get("frac") or {}
+    if not fracs:
+        return pd.DataFrame(), summ
+    cols = [t for t in (alloc.get("cols") or []) if t in results]
+    if len(cols) < 5:
+        return pd.DataFrame(), summ
+    idx = alloc["target_w"].index
+    P = pd.DataFrame({t: pd.Series(results[t]["px_close"]).astype(float).reindex(idx) for t in cols})
+    fwd = P.shift(-h) / P - 1.0
+    n_av = fwd.notna().sum(axis=1)
+    rk = fwd.rank(axis=1, ascending=False, method="min")
+    ew = fwd.mean(axis=1)
+    parent_of = (alloc or {}).get("parent_of") or {}
+    blk = f"P. 풀링 슬리브 소수클래스(h={h}일)"
+    for k_, fr in sorted(fracs.items()):
+        fr = fr.reindex(index=idx, columns=cols).fillna(0.0)
+        recs = []
+        # 그날 '상위k 선택'이 성립하려면 최소 2k개는 있어야 한다(k개가 유니버스의 절반을 넘으면 선택이 아니다).
+        #   실제 29산업에서는 6~10 ≪ 29라 무영향 — 소형 유니버스·테스트에서만 의미 있는 하한.
+        _min_n = max(2 * int(k_), 5)
+        for d in idx:
+            if n_av.loc[d] < _min_n:
+                continue
+            held = [c for c in cols if fr.at[d, c] > 1e-12]
+            if not held:
+                continue
+            nn = int(n_av.loc[d])
+            hit_top = np.mean([rk.at[d, c] <= k_ for c in held if pd.notna(rk.at[d, c])]) if held else np.nan
+            hit_bot = np.mean([rk.at[d, c] >= nn - k_ + 1 for c in held if pd.notna(rk.at[d, c])]) if held else np.nan
+            exc = np.mean([fwd.at[d, c] - ew.loc[d] for c in held if pd.notna(fwd.at[d, c])]) if held else np.nan
+            recs.append({"y": int(d.year), "top": hit_top, "bot": hit_bot, "exc": exc,
+                         "nn": nn, "held": tuple(held)})
+        if not recs:
+            continue
+        R = pd.DataFrame(recs)
+        _rand = float((k_ / R["nn"]).mean())
+
+        def _row(d_: pd.DataFrame, label: str) -> dict:
+            return {"블록": blk, "구분": f"상위{k_}", "항목": label, "표본일수": int(len(d_)),
+                    f"슬리브 → 실현 상위{k_} 비율": round(float(d_["top"].mean()), 4),
+                    f"슬리브 → 실현 하위{k_} 비율": round(float(d_["bot"].mean()), 4),
+                    f"슬리브 초과(EW-N, %/{h}일)": round(float(d_["exc"].mean()) * 100, 3),
+                    f"무작위 기대({k_}/N)": round(_rand, 3), "판독": ""}
+        for y_, d_ in R.groupby("y"):
+            rows.append(_row(d_, str(int(y_))))
+        tot = _row(R, "── 전체 ──")
+        # 부모 쏠림 — XLK 산업만 들면 'S★ XLK 편향의 재탕'이지 새 정보가 아니다
+        _cnt: Dict[str, int] = {}
+        for hv in R["held"]:
+            for c in hv:
+                _cnt[c] = _cnt.get(c, 0) + 1
+        _tp = sorted(_cnt.items(), key=lambda kv_: -kv_[1])[:5]
+        _xlk = sum(v for c, v in _cnt.items() if parent_of.get(c) == "XLK")
+        tot["판독"] = (f"상위{k_} 적중이 무작위({_rand:.3f})를 넘으면 풀링 순위에 정보가 있다 — [산업슬리브격자] "
+                      f"판정 기준 ②. 최다 보유: " + ", ".join(f"{c}({parent_of.get(c, '?')}) {v}일" for c, v in _tp)
+                      + f" · XLK 산업 몫 {(_xlk / max(sum(_cnt.values()), 1)):.1%}"
+                      + " — XLK 쏠림이 크면 S★ 편향의 재탕이지 새 정보가 아니다")
+        rows.append(tot)
+        summ[f"sleeve_top{k_}"] = float(R["top"].mean())
+        summ[f"sleeve_rand{k_}"] = _rand
+        summ[f"sleeve_days{k_}"] = int(len(R))
+    return pd.DataFrame(rows), summ
+
+
 def industry_next_day(results: Dict[str, Dict[str, Any]]) -> Dict[str, dict]:
     """[v0.3.0 §A2] 산업별 '다음 거래일 예측' dict 모음. **새 계산이 전혀 없다** — S.build_sector_sheets가
     이미 M.build_next_day_prediction으로 만들어 둔 results[t]["sheets"]["next_day"]를 그대로 모을 뿐이다
@@ -3681,6 +4050,11 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
             if hasattr(S, "build_minority_class_accuracy"):
                 minority_df, minority_summ = S.build_minority_class_accuracy(results, None, asset_label="산업")
             _b, _bs = build_industry_minority_block_b(alloc, results, sres)
+            # [v0.10.0 H1 판정 ②] 풀링 슬리브 블록 P — 격자를 '수익'만이 아니라 '예측'으로도 판정한다.
+            _pb, _pbs = build_industry_pooled_block(alloc, results)
+            if len(_pb):
+                _b = pd.concat([_b, _pb], ignore_index=True, sort=False) if len(_b) else _pb
+                _bs = {**(_bs or {}), **_pbs}
             if len(_b):
                 minority_df = pd.concat([minority_df, _b], ignore_index=True, sort=False) if len(minority_df) else _b
                 minority_summ.update(_bs)

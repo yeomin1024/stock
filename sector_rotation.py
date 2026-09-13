@@ -17,6 +17,27 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.46.0 - 2026-09-13 - [격자 변형별 소수 클래스 측정 · 대피처 격자 퇴역] REPORT49 §5 H4·H5.
+#    ※ 이번 라운드도 ⚠ 기본값(신호·채택·사이징) 변경 **0건** — 라이브 ★는 v0.45.0과 비트 동일하다.
+#    (H4 ★ 신규 측정 — 이번 라운드의 본체) 13p **블록 E: 격자 변형별 소수 클래스**.
+#         왜: v0.45.0이 넣은 [단독회피격자]·(산업) [단독리더격자]는 **판정 지표가 없는 채** CAGR만 보고
+#         기각됐다. 13p 블록 B는 `alloc["leader"]/["laggard"]`(= 라이브 배분)만 세는데, 그 격자들의 목적은
+#         "회피/리더 판단이 무작위를 넘는가"였고 라이브는 회피 0일이라 블록 B가 잴 것이 없었다
+#         (REPORT49 §1-5, §4 E4). 즉 '수익으로 졌다'는 알았지만 '예측으로도 졌는가'는 **모르는 채** 닫았다.
+#         해결: _run_leader3가 이미 만드는 tier/leader/laggard 시계열을 격자 변형별로 모아
+#         alloc["variants_diag"][label]에 남기고, 13p에 블록 E를 낸다(행 = 변형, 열 = 리더일·리더→상위3·
+#         회피일·회피→하위3·최빈 대상 집중도 top_share). **신규 계산·신규 신호 없음** — 이미 계산된
+#         시계열의 재집계다. 이제 다음 라운드부터 격자는 '수익'과 '예측' 두 축으로 판정된다.
+#    (H5) [대피처격자] 퇴역 — ROTATION_SHELTER_RULE_GRID ("votes2","votes2_nonup","leader_only") → ().
+#         리포트45 실측: 세 행 모두 열위(−0.110 / −0.226 / −0.089%p)이고 13m 블록 D의 슬리브 누적 기여도
+#         현행 10.64% > votes2 9.36% > nonup 9.01%로 **전부 뒤졌다**(비주력 균등 10.38%).
+#         원인(REPORT49 §2.3) 두 가지: ① 근거였던 13p 블록 D는 '결정일 t의 21일 전방 수익'이라 인접일의
+#         전방창이 20일씩 겹쳐 한 번의 나쁜 구간이 21번 세어진다 — 구조는 보여 주지만 P&L 크기를 과장한다.
+#         ② 잔여 슬리브가 평균 7.7%뿐인데 득표가 1↔2를 오가며 규칙이 1위↔균등을 자주 바꾼다(votes2가 ★와
+#         다른 날 1,066일) — 기대 이득이 회전으로 사라진다.
+#         13p 블록 D·13m 블록 D는 **유지**한다(진단: '어느 날 판단에 정보가 있나'의 지도).
+#         되돌리기: s_overrides={"ROTATION_SHELTER_RULE_GRID": ("votes2","votes2_nonup","leader_only")}
+#    ※ 연구·교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.45.0 - 2026-09-13 - [격자 ⑤ 버그수정 · 득표×국면 진단 · 대피처/단독회피 격자 · F1 퇴역] REPORT48 §7 G1~G9.
 #    ※ 이번 라운드 ⚠ 기본값(신호·채택·사이징) 변경 **0건** — 라이브 ★(주력섹터 중심)는 v0.44.0과 비트 동일하고,
 #      늘어난 것은 13 시트의 격자 행과 13p/13f/00의 진단 열뿐이다. 판독서의 G4(최소 학습창)는 **철회**했다(아래 G4′).
@@ -1958,7 +1979,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.45.0"
+VERSION = "v0.46.0"
 VERSION_DATE = "2026-09-13"
 
 # =============================================================================
@@ -2335,7 +2356,12 @@ class SectorConfig:
     #   '비주력 균등'을 넘느냐로 본다.
     #   되돌리기(격자 끄기): s_overrides={"ROTATION_SHELTER_RULE_GRID": ()}
     ROTATION_SHELTER_RULE: str = "composite"        # 라이브 — _SHELTER_RULES 키
-    ROTATION_SHELTER_RULE_GRID: Tuple[str, ...] = ("votes2", "votes2_nonup", "leader_only")
+    # [v0.46.0 H5 퇴역] 리포트45 실측이 전제를 뒤집었다 — 세 행 모두 ★ 대비 열위(−0.110 / −0.226 / −0.089%p)
+    #   이고 13m 블록 D의 슬리브 누적 기여도 현행 10.64% > votes2 9.36% > nonup 9.01% > (비주력 균등 10.38%)로
+    #   전부 뒤졌다. 근거였던 13p 블록 D는 **겹치는 21일 전방창**이라 P&L 크기를 과장했고(§2.3), 잔여 슬리브
+    #   7.7%에 회전(★와 다른 날 1,066일)이 겹쳐 기대 이득이 사라진다. 블록 D·13m D는 진단으로 유지.
+    #   되돌리기: s_overrides={"ROTATION_SHELTER_RULE_GRID": ("votes2","votes2_nonup","leader_only")}
+    ROTATION_SHELTER_RULE_GRID: Tuple[str, ...] = ()
     ROTATION_SHELTER_MIN_VOTES: int = 2             # votes2 계열의 득표 문턱(ROTATION_MIN_AGREE와 같은 값)
     # [v0.45.0 G5 ★ 신규 격자 — REPORT48 §2.3] 규칙 ②(꼴찌 회피)를 **순서 잣대** 자격 신호 단독으로 연다.
     #   왜: 현행 규칙 ②는 자격 신호 ≥ROTATION_MIN_AGREE표 & 과반을 요구하는데 자격 신호가 해마다 0~1개라
@@ -6756,17 +6782,28 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
 
     _rev_live = (_rev_sets(float(getattr(scfg, "ROTATION_REVERSE_AVOID_T", 2.0)))
                  if bool(getattr(scfg, "ROTATION_REVERSE_AVOID", False)) else None)
+    # [v0.46.0 H4] 격자 변형별 판단 시계열 — 13p 블록 E가 '수익'이 아니라 '예측'으로 격자를 판정하게 한다.
+    #   {라벨: {"tier","leader","laggard"}}. _run_leader3가 이미 만든 Series를 모으기만 한다(재계산 없음).
+    #   v0.45.0의 [단독회피격자]가 판정 지표 없이 기각된 일(REPORT49 §4 E4)을 되풀이하지 않기 위한 것.
+    variants_diag: Dict[str, Dict[str, pd.Series]] = {}
+
+    def _keep_diag(label_: str, r3_: Dict[str, Any]) -> None:
+        variants_diag[label_] = {"tier": r3_["tier"], "leader": r3_["leader_s"], "laggard": r3_["laggard_s"]}
+
     _lr3 = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rev_live)
     if _rev_live is not None:
         log("ROTATION", kv(event="reverse_avoid_live", t=float(getattr(scfg, "ROTATION_REVERSE_AVOID_T", 2.0)),
                            days=int(_lr3.get("rev_avoid_days", 0)),
                            years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_rev_live.items()) if v) or "-"), M=M)
     frac_leader, tier, leader_s, laggard_s = _lr3["frac_leader"], _lr3["tier"], _lr3["leader_s"], _lr3["laggard_s"]
+    # [v0.46.0 H4] 라이브 판단도 같은 형식으로 담아 블록 E의 기준 행이 되게 한다(라벨은 아래에서 확정).
+    _live_r3 = _lr3
     votes_leader, votes_laggard, n_sel_s = _lr3["votes_leader"], _lr3["votes_laggard"], _lr3["n_sel_s"]
     margin_s, step_s, gate_s = _lr3["margin_s"], _lr3["step_s"], _lr3["gate_s"]
     switches, n_spy_top = _lr3["switches"], _lr3["n_spy_top"]
     fallback_txt = "SPY" if fallback_spy else "균등"
     label_leader = f"집중배분(명확1위 {lw:.0%}·꼴찌회피·폴백{fallback_txt}) ★"
+    _keep_diag(label_leader + " [라이브 기준]", _live_r3)   # [v0.46.0 H4] 블록 E의 비교 기준 행
     # [v0.8.0] 비교 변형 '시스템 상승확률(SCORE_PCT) 1위 무조건' — 사용자 요청 문자 그대로(검증·교차확인·SPY 비교 없음, 섹터만,
     #   같은 21일 평활·최소보유·적격 조건·E_t). 워크포워드가 왜 그 신호를 채택/미채택했는지와 무관하게 '그냥 따랐다면'의 성과를 13시트에 병기.
     frac_score = None
@@ -6810,7 +6847,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                    note="그 문턱을 넘는 반전 신호가 한 해도 없음 — 행 생략"), M=M)
                 continue
             _r3 = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rs)
-            reverse_avoid_variants[f"집중배분 · 역방향회피 t≤−{float(_rt):.1f} [역방향회피격자]"] = _r3["frac_leader"]
+            _lab_rv = f"집중배분 · 역방향회피 t≤−{float(_rt):.1f} [역방향회피격자]"
+            reverse_avoid_variants[_lab_rv] = _r3["frac_leader"]
+            _keep_diag(_lab_rv, _r3)   # [v0.46.0 H4]
             log("ROTATION", kv(event="reverse_avoid_grid", t=float(_rt), days=int(_r3.get("rev_avoid_days", 0)),
                                years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_rs.items()) if v) or "-"), M=M)
         if bool(getattr(scfg, "ROTATION_REVERSE_AVOID_COUNTER", True)):
@@ -6818,8 +6857,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _rsc = _rev_sets(_rt0, direction=+1)
             if any(_rsc.values()):
                 _r3c = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rsc)
-                reverse_avoid_variants[f"집중배분 · 반증: t≥+{_rt0:.1f} 신호의 1위 회피 [역방향회피격자·반증]"] = \
-                    _r3c["frac_leader"]
+                _lab_rc = f"집중배분 · 반증: t≥+{_rt0:.1f} 신호의 1위 회피 [역방향회피격자·반증]"
+                reverse_avoid_variants[_lab_rc] = _r3c["frac_leader"]
+                _keep_diag(_lab_rc, _r3c)   # [v0.46.0 H4]
     # [v0.45.0 G5 ★ 신규 격자] [단독회피격자] — 규칙 ②(꼴찌 회피)를 순서 잣대 자격 신호 **단독**으로 연다.
     #   집중배분 계열에서만 판정한다(S★의 잔여 슬리브는 G3 [대피처격자]가 담당 — 두 격자가 같은 날을 서로
     #   다른 축으로 건드리므로 섞지 않는다). 자격 집합은 rotation_walkforward_select가 이미 만들었고
@@ -6841,7 +6881,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 continue
             _r3s = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rev_live, _sets)
             _lbl_sv = {"order": "순서 잣대", "size+order": "순서+크기"}.get(_sv, _sv)
-            standalone_avoid_variants[f"집중배분 · 단독회피({_lbl_sv}) [단독회피격자]"] = _r3s["frac_leader"]
+            _lab_sa = f"집중배분 · 단독회피({_lbl_sv}) [단독회피격자]"
+            standalone_avoid_variants[_lab_sa] = _r3s["frac_leader"]
+            _keep_diag(_lab_sa, _r3s)   # [v0.46.0 H4]
             _sc = _r3s.get("sa_lag_counts") or {}
             _sc_top = sorted(_sc.items(), key=lambda kv_: -int(kv_[1]))[:3]
             _sc_n = max(sum(int(v) for v in _sc.values()), 1)
@@ -7656,6 +7698,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             "margin": margin_s, "step": step_s, "gate": gate_s,   # [v0.10.0 §1.B] 일별 1위 여유·문턱·확신 게이트(통과/미달/해당없음) — 13c
             "eligible": eligible, "listed": listed, "E": E, "n_eligible": n_elig,
             "shortfall": pd.Series(0.0, index=eval_idx),
+            "variants_diag": variants_diag,      # [v0.46.0 H4] 13p 블록 E — 격자 변형별 판단 시계열
             "rank_pos": rank_pos, "bts": bts, "target_ws": target_ws, "perf": perf, "curve": curve.reset_index(drop=True),
             "diag": diag, "signals": signals, "wf": wf, "ret_cc": ret_cc, "state": state, "cols": cols, "cand": cand,
             "spy_m_ret": spy_m_ret,                                                        # [v0.8.0] 13i 격차 분해용
@@ -9769,6 +9812,57 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                                      "그 날에도 1위를 사는 현행 규칙이 손해라는 뜻이다 — [대피처격자](v0.45.0 G3) 행과 "
                                      "13m 블록 D가 그 판정을 낸다. REPORT48 §3 기준선: 0표 0.182 / 1표 0.296 / 2표 0.396 / "
                                      "3표 0.821 · 득표≤1·상승 0.227(−0.71%/21일, 644일)")})
+
+        # ---------- 블록 E [v0.46.0 H4 ★ 신규] 격자 변형별 소수 클래스 ----------
+        # 왜: v0.45.0의 [단독회피격자]·(산업) [단독리더격자]는 **판정 지표 없이** CAGR만 보고 기각됐다.
+        #   블록 B는 라이브 배분(alloc["leader"]/["laggard"])만 세는데 라이브는 회피 0일이라 잴 것이 없었고,
+        #   격자 행이 실제로 연 회피·리더일의 적중은 어느 시트에도 남지 않았다(REPORT49 §1-5·§4 E4).
+        #   → 격자가 '수익으로 졌다'만 알고 '예측으로도 졌는가'는 모르는 채 닫히는 것을 막는다.
+        # 무엇: build_sector_allocation이 alloc["variants_diag"][라벨] = {"tier","leader","laggard"}로 남긴
+        #   **이미 계산된 시계열**을 블록 B와 같은 정의(h_main 전방 순위)로 재집계한다. 신규 계산·신규 신호 없음.
+        # 읽는 법: 리더→상위3 · 회피→하위3이 '무작위 기대'를 넘는지, 그리고 top_share(최빈 대상 쏠림)가
+        #   작은지를 본다. top_share가 크면 그 규칙은 '그 섹터를 사고/빼는 규칙'이지 순환매 예측이 아니다.
+        _vdiag = (alloc or {}).get("variants_diag") or {}
+        if _vdiag:
+            _blk_e = f"E. 격자 변형별 소수 클래스(h={h_main}일)"
+            for _lab_v in sorted(_vdiag, key=lambda l_: ("[" in str(l_), str(l_))):
+                _dv = _vdiag.get(_lab_v) or {}
+                _tv = pd.Series(_dv.get("tier", pd.Series(dtype=object))).reindex(idx).astype(str)
+                _lv = pd.Series(_dv.get("leader", pd.Series(dtype=object))).reindex(idx).astype(str)
+                _gv = pd.Series(_dv.get("laggard", pd.Series(dtype=object))).reindex(idx).astype(str)
+                _held_v = _tv.eq("리더") | _tv.eq("하락국면리더")
+                _avoid_v = _tv.eq("회피")
+                _lh, _ah, _ax = [], [], []
+                for d in idx:
+                    if n_av.loc[d] < 5:
+                        continue
+                    rr = rk_real.loc[d]; nn = int(n_av.loc[d]); med = fwd.loc[d].median()
+                    if bool(_held_v.loc[d]):
+                        _c = _lv.loc[d]
+                        if _c in cols and pd.notna(rr.get(_c, np.nan)):
+                            _lh.append(float(rr[_c] <= 3))
+                    if bool(_avoid_v.loc[d]):
+                        _c = _gv.loc[d]
+                        if _c in cols and pd.notna(rr.get(_c, np.nan)):
+                            _ah.append(float(rr[_c] >= nn - 2)); _ax.append(float(fwd.loc[d, _c] - med))
+                _lag_vc = _gv[_avoid_v & _gv.isin(cols)].value_counts()
+                _lead_vc = _lv[_held_v & _lv.isin(cols)].value_counts()
+                rows.append({"블록": _blk_e, "티커": str(_lab_v)[:60], "지평(일)": h_main,
+                             "리더 판단일": int(len(_lh)),
+                             "리더 → 실현 상위3": (round(float(np.mean(_lh)), 4) if _lh else np.nan),
+                             "회피 지목일": int(len(_ah)),
+                             "회피 섹터 → 실현 하위3": (round(float(np.mean(_ah)), 4) if _ah else np.nan),
+                             "회피 섹터 초과(%/21일)": (round(float(np.mean(_ax)) * 100, 3) if _ax else np.nan),
+                             "무작위 기대(상위3/하위3)": round(rand, 3),
+                             "최빈 리더(집중도)": (f"{_lead_vc.index[0]} {float(_lead_vc.iloc[0]) / max(int(_lead_vc.sum()), 1):.2f}"
+                                             if len(_lead_vc) else ""),
+                             "최빈 회피(집중도)": (f"{_lag_vc.index[0]} {float(_lag_vc.iloc[0]) / max(int(_lag_vc.sum()), 1):.2f}"
+                                             if len(_lag_vc) else "")})
+            rows.append({"블록": _blk_e, "티커": "해석",
+                         "판독": ("격자 행을 **수익이 아니라 예측으로** 판정하는 표. 리더→상위3·회피→하위3이 무작위 기대를 "
+                                 "넘으면 그 규칙은 '예측으로는 성립'이고, CAGR이 져도 그 사실을 기록한다(반대로 둘 다 "
+                                 "무작위면 그 방향은 닫는다). 집중도(최빈 대상 비중)가 크면 '그 섹터를 사고/빼는 규칙'이지 "
+                                 "순환매가 아니다. v0.45.0은 이 표가 없어 [단독회피격자]를 CAGR만 보고 닫았다(REPORT49 §4 E4)")})
     df = pd.DataFrame(rows)
     if len(df):
         lead_cols = ["블록", "티커", "지평(일)", "표본일수"]
