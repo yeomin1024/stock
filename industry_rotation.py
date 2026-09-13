@@ -1,5 +1,25 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.9.0 - 2026-09-13 - [단독 리더 자격 격자 — 산업 배분 0일의 구조적 원인 해제] REPORT48 후속(사용자 지시).
+#    왜: 산업 계층은 세 라운드 연속 **배분 0일**인데, 원인은 신호 품질이 아니라 **정족수**다. 13g 실측
+#    연도별 채택 신호 수: 2018:1 · 2019:1 · 2020:0 · 2021:1 · 2022:1 · 2023:0 · 2024:0 · 2025:0 · 2026:1.
+#    채택이 0~1개인데 교차확인(ROTATION_MIN_AGREE=2)을 요구하니 within_parent_walkforward_select가
+#    `usable=False → sel_eff=[]`로 비워 복합순위 자체가 만들어지지 않는다 → 리더가 구조적으로 불가능하고
+#    13p 블록 B는 **1행**(잴 것이 없음)으로 남는다. 이 파일 747행이 v0.3.0 때 같은 증상을 이미 적어 두었다.
+#    (I-F ★ 신규 격자) [단독리더격자] — 그 해 채택 신호가 1개뿐이어도 **순서 잣대**가 무작위보다 충분히
+#         앞서면 교차확인을 면제하고 그 신호 단독으로 리더를 인정한다. 잣대는 13g가 이미 내는
+#         '학습창 1위=부모안 실현1위 비율' − '무작위 기대(1/부모안 산업수)' = **여유(edge)**다.
+#         부모마다 산업 수가 달라(XLB·XLE 2개 → 무작위 0.5, XLV 5개 → 0.2) 절대값 문턱은 부모를 뒤섞는다 —
+#         그래서 절대값이 아니라 여유로 판정한다. 리포트7 실측(채택 신호 P_REL_VOL_RATIO, 무작위 0.327):
+#           2018 0.428(+0.101) · 2019 0.420(+0.093) · 2021 0.411(+0.084) · 2022 0.406(+0.079) · 2026 0.396(+0.069)
+#         → 다섯 해 모두 무작위 위이고 여유는 +0.07~+0.10이다. 격자 문턱 (0.03, 0.07)은 그 분포를 가른다.
+#         ⚠ 라이브는 꺼짐(INDUSTRY_LEADER_STANDALONE_EDGE=None) → **I★는 v0.8.0과 비트 동일**. 격자만 늘어난다.
+#         되돌리기: i_overrides={"INDUSTRY_LEADER_STANDALONE_GRID": ()}
+#    ※ 정직한 기대치: 낮다. REPORT48 §5 실측에서 평가창(2018~26) 실현 적중은 신호 평균 0.35 vs 무작위 픽
+#      0.33이고, 부모 초과 t는 6신호 × 8부모 중 **≥2가 하나도 없다**. 그래도 격자로 재는 이유는 0일이면
+#      영원히 판정이 안 나기 때문이다 — 이번 실행에서 처음으로 산업 배분일이 생겨 13p 블록 B가 실제
+#      숫자를 내고, 무작위를 못 넘으면 그때 근거를 갖고 산업 계층을 닫을 수 있다.
+#    ※ 연구·교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.8.0 - 2026-09-13 - [부모 초과 타깃의 구조적 편향 측정 · 격자 플래그] REPORT47 §4·§6 F6.
 #    리포트6 실측(동결 해제 첫 실행): 13c 10부모 × 2,186일이 **전부 '부모ETF'**, 산업 편입 0일, 13j 산업 0건,
 #    격자 28행이 전부 S★와 비트 동일, 13p 블록 B "리더 판단일 없음". 원인 둘 —
@@ -386,7 +406,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.8.0"
+VERSION = "v0.9.0"
 VERSION_DATE = "2026-09-13"
 
 # =============================================================================
@@ -610,6 +630,21 @@ class IndustryConfig:
     #   '회피 자격(분리)' 진단 열은 그대로 — 자격 판정은 계속 보고된다.
     #   ⚠ 되돌리기: i_overrides={"INDUSTRY_AVOID_STANDALONE_GRID": (0.5, 1.0)}
     INDUSTRY_AVOID_STANDALONE_GRID: Tuple[float, ...] = ()           # [회피분리격자] 폐기(v0.6.0) — 종전 (0.5, 1.0)
+    # [v0.9.0 I-F ★ 신규 격자] 단독 리더 자격 — 그 해 채택 신호가 1개뿐이어도 **순서 잣대 여유**가
+    #   이 값 이상이면 교차확인(ROTATION_MIN_AGREE)을 면제하고 그 신호 단독으로 리더를 인정한다.
+    #   여유 = 13g '학습창 1위=부모안 실현1위 비율' − '무작위 기대(1/부모안 산업수)'.
+    #   왜 절대값이 아니라 여유인가: 부모마다 산업 수가 달라 무작위 기대가 0.2(XLV, 5개)~0.5(XLB·XLE, 2개)로
+    #   흩어진다 — 절대 문턱을 쓰면 산업이 적은 부모만 통과하는 셈이 된다.
+    #   배경(리포트7 13g 실측): 연도별 채택 신호 수가 0~1개뿐이라 교차확인이 구조적으로 불가능했고
+    #   (2018:1 2019:1 2020:0 2021:1 2022:1 2023:0 2024:0 2025:0 2026:1), 그래서 산업 배분이 세 라운드 연속
+    #   **0일**이며 13p 블록 B가 1행으로 비어 있다. 채택 신호 P_REL_VOL_RATIO의 여유는 다섯 해 모두
+    #   +0.069~+0.101로 무작위 위다.
+    #   ⚠ 라이브는 None(꺼짐) — I★는 v0.8.0과 비트 동일. 격자 4기준(①CAGR ②칼마 ③MDD ④강건성)과
+    #     13p 블록 B(부모 안 리더 → 부모 안 실현 1위)를 함께 보고 판정한다.
+    #     CAGR이 거의 안 움직이는 것이 정상이다 — 판정 잣대는 블록 B가 무작위(1/부모안 산업수)를 넘느냐다.
+    #   되돌리기: i_overrides={"INDUSTRY_LEADER_STANDALONE_GRID": ()}
+    INDUSTRY_LEADER_STANDALONE_EDGE: Optional[float] = None           # 라이브(꺼짐)
+    INDUSTRY_LEADER_STANDALONE_GRID: Tuple[float, ...] = (0.03, 0.07)  # 격자 문턱(순서 잣대 여유)
     INDUSTRY_AVOID_STANDALONE_COUNTER: bool = True                    # + 반증 1행(반대쪽 산업을 회피 — 나빠야 정상)
     INDUSTRY_AVOID_STANDALONE_INVERT: bool = False                    # 반증 행에서만 True(격자가 넘긴다)
     USE_EXTERNAL_VALIDATION: bool = False          # v0.2 예정(§6.4) — FF49 네트워크 필요, 이번 버전은 꺼둠
@@ -1644,6 +1679,9 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
     rev_by_year: Dict[int, List[str]] = {}
     avoid_standalone_by_year: Dict[int, List[str]] = {}                  # [v0.5.0 I-B]
     bot_stats_by_year: Dict[int, Dict[str, Tuple[float, int]]] = {}      # [v0.5.0 I-B] 격자용 raw (t, n)
+    # [v0.9.0 I-F] 연도별 '순서 잣대 여유' = 학습창 1위=부모안 실현1위 비율 − 무작위 기대(1/부모안 산업수).
+    #   [단독리더격자]가 이 값으로 교차확인 면제 여부를 정한다(신호 재계산 없음 — 13g가 이미 내는 값).
+    leader_hit_by_year: Dict[int, Dict[str, float]] = {}
     rows: List[dict] = []
     for y in years:
         cutoff = pd.Timestamp(year=y, month=1, day=1) - pd.Timedelta(days=35)
@@ -1693,6 +1731,10 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
         bot_stats_by_year[y] = {n: (float(tv) if pd.notna(tv) else np.nan, int(nn))
                                 for n, (m, tv, nn) in stats_bot.items()}
         avoid_standalone_by_year[y] = avoid_sa
+        # [v0.9.0 I-F] 그 해 모든 후보의 순서 잣대 여유(채택 여부와 무관하게 기록 — 격자가 고른다)
+        _rand_hit = float(np.mean([1.0 / len(v) for v in groups.values()]))
+        leader_hit_by_year[y] = {n: float(stats_hit[n][0]) - _rand_hit
+                                 for n in stats_hit if pd.notna(stats_hit[n][0])}
         rev = [n for n, (m, tv, nn) in stats.items()
                if nn >= min_days and pd.notna(tv) and tv <= -t_str]
         selected_by_year[y] = sel
@@ -1734,6 +1776,9 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
                          "회피 자격": ("Y" if name in avoid_ok else ("N" if name in sel_eff else "")),
                          # [v0.5.0 I-B] 채택과 분리된 회피 자격 — 하위1 t ≤ −T_AV면 Y(상위1 채택 여부 무관)
                          "회피 자격(분리·하위1 t≤−%.1f)" % t_av: ("Y" if name in avoid_sa else ""),
+                         # [v0.9.0 I-F] 단독 리더 자격 — 순서 잣대 여유(= 위 두 열의 차). 격자 문턱과 비교해 읽는다.
+                         "단독리더 여유(순서−무작위)": (round(float(leader_hit_by_year[y][name]), 3)
+                                                if name in leader_hit_by_year.get(y, {}) else np.nan),
                          "역방향(1위 회피 후보)": ("Y" if name in rev else "")})
         log("ROT", kv(event="within_parent_select", year=y, train_end=str(cutoff.date()), tier=tier,
                       horizon=h, n_parents=len(groups),
@@ -1746,6 +1791,7 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
            "selected_by_year": selected_by_year, "selected_eff_by_year": selected_eff_by_year,
            "tier_by_year": tier_by_year, "avoid_by_year": avoid_by_year,
            "avoid_standalone_by_year": avoid_standalone_by_year,        # [v0.5.0 I-B]
+           "leader_hit_by_year": leader_hit_by_year,                     # [v0.9.0 I-F]
            "bottom_stats_by_year": bot_stats_by_year,                   # [v0.5.0 I-B]
            "reverse_avoid_by_year": rev_by_year, "selection_log": pd.DataFrame(rows),
            "horizon": h, "mode": "within_parent", "stat": "top1_vs_parent",
@@ -1825,6 +1871,27 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
     avoid_invert = bool(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_INVERT", False))   # 반증 행 전용
     if avoid_standalone:
         avoid_by_year = wf.get("avoid_standalone_by_year", avoid_by_year)
+    # [v0.9.0 I-F ★] 단독 리더 자격 — 그 해 교차확인이 성립하지 않아(within_parent_walkforward_select가
+    #   usable=False로 sel_eff를 비워) 복합순위 자체가 없던 해를, **순서 잣대 여유**가 문턱 이상인
+    #   채택 신호로 되살린다. 교차확인의 목적(한 신호의 우연 거르기)을 여유가 대신하는 것이며,
+    #   S가 '엄격 신호는 단독 리더 가능'으로 두는 것과 같은 논리다(§B4 주석 참조).
+    #   None이면 이 블록은 완전히 비활성 = v0.8.0과 비트 동일.
+    _ls_edge = getattr(icfg, "INDUSTRY_LEADER_STANDALONE_EDGE", None)
+    standalone_leader_years: Dict[int, List[str]] = {}
+    if _ls_edge is not None:
+        _hits_by_y = wf.get("leader_hit_by_year") or {}
+        _sel_all = wf.get("selected_by_year", {}) or {}
+        _eff2 = dict(sel_eff_by_year)
+        for _y, _cands in _sel_all.items():
+            if sel_eff_by_year.get(_y):      # 이미 교차확인이 성립한 해는 건드리지 않는다
+                continue
+            _hy = _hits_by_y.get(_y) or {}
+            _q = [n for n in (_cands or [])
+                  if pd.notna(_hy.get(n, np.nan)) and float(_hy[n]) >= float(_ls_edge)]
+            if _q:
+                _eff2[int(_y)] = _q
+                standalone_leader_years[int(_y)] = list(_q)
+        sel_eff_by_year = _eff2
     lst = listed.reindex(index=eval_idx, columns=inds).fillna(False).astype(bool)
     elg = eligible.reindex(index=eval_idx, columns=inds).fillna(False).astype(bool)
     # [§B2] 부모 국면 배열 — 없으면 제약 없음(v0.2.0 동작).
@@ -1918,7 +1985,8 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
         yr = int(years_arr[i])
         sel = [s for s in sel_eff_by_year.get(yr, []) if s in rank_g]
         K = len(sel)
-        need = 1 if tier_by_year.get(yr) == "엄격" else min_agree
+        # [v0.9.0 I-F] 단독 자격 연도는 교차확인 면제(need=1) — 엄격 신호 단독 허용과 같은 취급.
+        need = 1 if (tier_by_year.get(yr) == "엄격" or yr in standalone_leader_years) else min_agree
         avoid_ok = [s for s in avoid_by_year.get(yr, sel) if s in rank_g]
         rev_sel = [s for s in rev_by_year.get(yr, []) if s in rank_g]
         row = comp_vals[i]
@@ -2033,7 +2101,11 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
             tier_.iloc[i] = "폴백(여유부족)" if gate_blocked else "폴백"
         else:
             tier_.iloc[i] = "부모ETF"
+    # [v0.9.0 I-F] 단독 자격으로 열린 해와 그 해의 리더 판단일(격자 판독용)
+    _sa_lead_days = int(sum(1 for i_ in range(n)
+                            if int(years_arr[i_]) in standalone_leader_years and tier_.iloc[i_] == "리더"))
     return {"parent": parent, "inds": inds, "leader_ind": leader_ind, "basket_ind": basket_ind,
+            "standalone_leader_years": standalone_leader_years, "sa_leader_days": _sa_lead_days,
             "tier": tier_, "leader": leader_, "laggard": laggard_, "votes_leader": v_lead_, "votes_laggard": v_lag_,
             "margin": margin_, "step": step_, "gate": gate_, "n_ok": n_ok_, "composite": composite,
             "regime_gate": regime_gate_, "rev_avoid": rev_avoid_, "corr_block": corr_block_,   # [v0.3.0 §B2/§B4/§B5]
@@ -2339,6 +2411,44 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         log("ROTATION", kv(event="avoid_standalone_grid", parents=len(_g_av), avoid_days=_av_days,
                            years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_sa_years.items())) or "-",
                            note="회피된 산업 몫은 부모 ETF로(총노출 불변)"), M=M)
+    # [v0.9.0 I-F ★ 신규 격자] [단독리더격자] — 교차확인 정족수 때문에 리더가 0일이던 해를 순서 잣대
+    #   여유로 연다. 신호 재계산 없음(_run_groups는 같은 rank_full로 판단 규칙만 바꿔 다시 돈다).
+    #   판정: 격자 4기준(①CAGR ②칼마 ③MDD ④강건성) **그리고** 13p 블록 B(부모 안 리더 → 부모 안 실현 1위)가
+    #   무작위(1/부모안 산업수)를 넘는가. CAGR은 거의 안 움직이는 것이 정상이다 — 이 격자의 목적은
+    #   '세 라운드째 0일이라 판정 자체가 불가능한 상태'를 푸는 것이다.
+    _ls_grid = tuple(getattr(icfg, "INDUSTRY_LEADER_STANDALONE_GRID", ()) or ())
+    if _ls_grid and _grid_on:
+        _lh = wf.get("leader_hit_by_year") or {}
+        _sel_all_y = wf.get("selected_by_year", {}) or {}
+        _eff_y = wf.get("selected_eff_by_year", {}) or {}
+        for _ev in _ls_grid:
+            _ev = float(_ev)
+            # 그 문턱에서 실제로 열리는 해가 없으면 행을 만들지 않는다(★와 비트 동일한 행 방지).
+            _open = {int(y): [n for n in (_sel_all_y.get(y) or [])
+                              if pd.notna((_lh.get(y) or {}).get(n, np.nan)) and float(_lh[y][n]) >= _ev]
+                     for y in _sel_all_y if not (_eff_y.get(y) or [])}
+            _open = {y: v for y, v in _open.items() if v}
+            if not _open:
+                log("ROTATION", kv(event="leader_standalone_grid_empty", edge=_ev,
+                                   note="그 여유를 넘는 채택 신호가 한 해도 없음 — 행 생략"), M=M)
+                continue
+            _g_ls = _run_groups({"INDUSTRY_LEADER_STANDALONE_EDGE": _ev})
+            target_ws[f"단독리더 · 순서 여유 ≥{_ev:.2f} [단독리더격자]"] = \
+                _mk_target_w(live_cap, live_fb, groups_over=_g_ls)
+            _ls_days = sum(int(g.get("sa_leader_days", 0)) for g in _g_ls.values())
+            _ls_all = sum(int((g["tier"] == "리더").sum()) for g in _g_ls.values())
+            _ls_sec = {}
+            for g in _g_ls.values():
+                for _t_, _c_ in g["leader"][g["tier"] == "리더"].value_counts().items():
+                    if _t_:
+                        _ls_sec[_t_] = _ls_sec.get(_t_, 0) + int(_c_)
+            _ls_top = sorted(_ls_sec.items(), key=lambda kv_: -kv_[1])[:3]
+            log("ROTATION", kv(event="leader_standalone_grid", edge=_ev, parents=len(_g_ls),
+                               standalone_leader_days=_ls_days, leader_days_total=_ls_all,
+                               # 집중도: 한 산업이 대부분이면 '그 산업을 사는 규칙'이지 순환매가 아니다
+                               leaders=";".join(f"{k}={v}" for k, v in _ls_top) or "-",
+                               top_share=(round(_ls_top[0][1] / max(_ls_all, 1), 3) if _ls_top else 0.0),
+                               years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_open.items())) or "-"), M=M)
     label_ctrl_b = "대조군B: 부모비중 안 적격산업 균등 50%(순위 미사용)"
     target_ws[label_ctrl_b] = _mk_target_w(0.0, 0.5, use_rank=False, only_mode="parent")
     label_repro = "S★ 재현(I 백테스트 엔진, 산업 0% — 대조군A와 비트 동일해야 함)"
