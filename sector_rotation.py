@@ -17,6 +17,34 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.47.0 - 2026-09-13 - [블록 E like-for-like 수정 · 단독회피격자 퇴역] REPORT50 §5 J1·J2·J5.
+#    ※ 이번 라운드도 ⚠ 기본값(신호·채택·사이징) 변경 **0건** — 라이브 ★는 v0.46.0과 비트 동일하다(격자·
+#      진단만 변경). 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
+#    (J1 ⚠ 결함수정 — REPORT50 §2.4 E1) 13p 블록 E가 like-for-like가 아니었다: `_keep_diag`(build_sector_
+#      allocation 내부)가 `_lr3["tier"]` **객체 자체**를 저장했는데, 그 뒤 ★(label_primary) 경로가
+#      `tier.loc[...] = "하락국면리더"`로 그 Series를 제자리 변경해(v0.41.0 S-H) 저장해 둔 스냅샷까지
+#      오염시켰다 — 라이브 기준 행이 875일(리더611+하락국면리더264)로 찍히는데 격자 행은 611일뿐이라
+#      기준이 서로 달랐다. 수정 2건: (a) `_keep_diag`가 이제 tier/leader_s/laggard_s의 **.copy()**를
+#      저장한다(★ 경로의 이후 제자리 변경으로부터 격리) — 라이브 기준 행이 611일(리더만)로 격자 행과
+#      같아진다. (b) 오버라이드가 실제로 적용되는 지점(하락국면리더 라벨을 붙이는 바로 그 줄) 바로 뒤에
+#      전용 스냅샷으로 '[★ 하락국면리더일]' 행을 새로 추가(264일) — 두 규칙을 표에서부터 분리한다.
+#      13p 블록 B도 같은 원인으로 '리더 판단일'이 교차 리더+하락국면리더를 합쳐서만 보여줬다 — '리더(교차)
+#      판단일'·'하락국면리더일' 두 열로 쪼갠다(재계산 없음, tier 라벨 재집계뿐). 판독 문구도 정정:
+#      "2026 리더 16일 → 실현 상위3 1.000"을 R2 성과로 인용해 온 REPORT47~49의 서사 오류(그 16일은 전부
+#      하락국면리더이고 2026 교차 리더는 0일, REPORT50 §2.2 E8)를 블록 B '판독' 열에 직접 남긴다.
+#      영향받는 함수: build_sector_allocation(_keep_diag·다운리더 오버라이드 블록), build_sector_prediction_
+#      accuracy(블록 B `_blk`·recs 루프, 블록 E 루프 — 자동으로 새 스냅샷을 읽는다). 결론에는 영향 없다
+#      (리더만 보면 라이브 0.4255 = [단독회피격자] 0.4255, 같은 리더 규칙이라 당연) — 다음 격자를 판정할
+#      표를 고치는 것이 목적.
+#    (J2 퇴역 — REPORT50 §2.3) [단독회피격자] ROTATION_AVOID_STANDALONE_GRID ("order","size+order") → **()**.
+#      13p 블록 E(세 번째 독립 측정)로도 회피 지목 60일 → 실현 하위3 **0.15**(무작위 0.273) · 초과
+#      **+0.986%/21일**(오히려 더 좋았다) · 최빈 회피 XLP 0.34 — 강세장 해에 방어 섹터가 상위3에 더 자주
+#      든다. 꼴찌/회피 방향은 이제 세 번째 독립 측정으로 닫힌다(§10 닫힌 방향에 등록). 13g '단독회피
+#      자격(순서)' 열·avoid_standalone_by_year 계산은 CFG와 무관하게 계속 돈다(진단 유지).
+#      되돌리기: s_overrides={"ROTATION_AVOID_STANDALONE_GRID": ("order", "size+order")}
+#    (J5 ★ 선택 신규 — REPORT50 §5) 13p 블록 B에 연도별 '최빈 리더(집중도, 교차만)' 열 — 2023~25 XLC 351일
+#      (리더일의 40%) 같은 정적 편향을 표에서 바로 드러낸다. 계산 없음(13c 판단 열 재집계, 블록 E와 같은 방식).
+#    ※ 연구·교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.46.0 - 2026-09-13 - [격자 변형별 소수 클래스 측정 · 대피처 격자 퇴역] REPORT49 §5 H4·H5.
 #    ※ 이번 라운드도 ⚠ 기본값(신호·채택·사이징) 변경 **0건** — 라이브 ★는 v0.45.0과 비트 동일하다.
 #    (H4 ★ 신규 측정 — 이번 라운드의 본체) 13p **블록 E: 격자 변형별 소수 클래스**.
@@ -87,6 +115,10 @@ import pandas as pd
 #  VERSION: v0.44.0 - 2026-09-13 - [채택 수리 · 꼴찌 격자 부활 · M 상속 격자 · 하락확률 보정] REPORT47 §6 F1~F7.
 #    리포트43 판정: R2(최근성)·R7(캐시)은 성공했고(2026 리더→상위3 0.22/100일 → 1.00/16일, S 1,117 → 147초),
 #    R3(꼴찌 후보)은 **부작용**을 냈다 — 2020 리더 판단 161일 → 12일(초과 +10.5 → −0.7%p).
+#    [v0.47.0 J1·REPORT50 §2.2 E8 정정 — 위 "2026 1.00/16일"의 귀속 오류] 그 16일은 전부 **하락국면리더**
+#    (E_t=0인데 명확1위를 게이트 통과로 보유, v0.15.0 §A)였고 2026년 **교차 순환매 리더는 0일**이다(4개
+#    채택 신호가 과반 3표를 채운 날이 16일뿐이라 리더가 열리지 않았다) — R2 자체의 효과와는 무관한 사례였다.
+#    역사 기록은 고치지 않고 여기 남긴다. 13p 블록 B가 이제 '리더(교차)'/'하락국면리더일' 열을 분리해 낸다.
 #    (F2 ⚠ 채택층 기본값 변경 — 이번 라운드의 유일한 ⚠) ROTATION_BEST_AVAILABLE_RANK_BY "t" → **"hit"**.
 #         원인(13g 실측): 2020 학습창에서 t≥1.0 후보 셋 중 t 순 상위2가 REL_DD_252H(t 1.46·순서 0.309)+
 #         SCORE_CS_Z(1.42·0.311)를 뽑아 SCORE_PCT(1.40·**0.319**)를 밀어냈고, 계열이 달라 1위에 합의하지
@@ -1979,7 +2011,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.46.0"
+VERSION = "v0.47.0"
 VERSION_DATE = "2026-09-13"
 
 # =============================================================================
@@ -2373,8 +2405,15 @@ class SectorConfig:
     #   미발동 / "size+order" = 2026만(2024·25는 하위1 감쇠 t −0.63/−0.88로 크기 자격 없음).
     #   2022~23은 HAZ_PCT_OWN이 아직 채택 전이라 어느 변형도 발동 불가.
     #   ⚠ 라이브는 격자만 — 판정 잣대는 CAGR이 아니라 13p ⑧('꼴찌 → 실현 하위3'이 발동일에 무작위 초과).
-    #   되돌리기: s_overrides={"ROTATION_AVOID_STANDALONE_GRID": ()}
-    ROTATION_AVOID_STANDALONE_GRID: Tuple[str, ...] = ("order", "size+order")
+    # [v0.47.0 J2 퇴역 — REPORT50 §2.3·§5] 13p 블록 E(세 번째 독립 측정)로도 회피 지목 60일 → 실현 하위3
+    #   **0.15**(무작위 0.273에 크게 못 미침) · 회피 섹터 초과 **+0.986%/21일**(오히려 더 좋았다) ·
+    #   최빈 회피 XLP 0.34. 강세장 해(2019·21·24·26)에는 복합순위 바닥(방어 섹터)이 오히려 상위3에 더
+    #   자주 든다 — G5의 목적("잴 것을 만든다")은 달성됐고 답은 '아니오'다. → 격자 **퇴역**(빈 튜플).
+    #   13g '단독회피 자격(순서)' 열과 avoid_standalone_by_year 계산은 그대로 유지(진단·부활 조건 판독용,
+    #   이 튜플이 비어도 그 계산은 CFG와 무관하게 항상 돈다). 회귀 테스트는 지우지 않고 이 되돌리기로
+    #   경로를 계속 태운다(관행 — §4 프로젝트 규약 7).
+    #   되돌리기: s_overrides={"ROTATION_AVOID_STANDALONE_GRID": ("order", "size+order")}
+    ROTATION_AVOID_STANDALONE_GRID: Tuple[str, ...] = ()
     ROTATION_AVOID_STANDALONE_HIT: Tuple[float, float] = (0.33, 0.40)   # (학습창 문턱, 최근 252일 문턱)
     RUN_DOWN_PROB: bool = True
     DOWN_PROB_HORIZON: int = 21          # 예측 지평(일) — 13p 블록 A의 h_main과 같게 두는 것이 읽기 쉽다
@@ -6788,7 +6827,13 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     variants_diag: Dict[str, Dict[str, pd.Series]] = {}
 
     def _keep_diag(label_: str, r3_: Dict[str, Any]) -> None:
-        variants_diag[label_] = {"tier": r3_["tier"], "leader": r3_["leader_s"], "laggard": r3_["laggard_s"]}
+        # [v0.47.0 J1 ⚠ 결함수정 — REPORT50 §2.4 E1] 이전엔 Series 객체 참조를 그대로 저장했다.
+        #   ★ 경로가 나중에 `tier.loc[...] = "하락국면리더"`로 그 Series를 제자리 변경하면(라인 ~7372,
+        #   v0.41.0 S-H) 라이브 기준 행의 스냅샷에도 그 변경이 새어 들어 라이브 875일(리더611+하락국면
+        #   리더264) vs 격자 611일이 되는 like-for-like 불일치가 생겼다. .copy()로 저장 시점 상태를 격리한다.
+        variants_diag[label_] = {"tier": pd.Series(r3_["tier"]).copy(),
+                                  "leader": pd.Series(r3_["leader_s"]).copy(),
+                                  "laggard": pd.Series(r3_["laggard_s"]).copy()}
 
     _lr3 = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rev_live)
     if _rev_live is not None:
@@ -7370,6 +7415,15 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     down_leader_days = dl_m.reindex(eval_idx).fillna(False)
                     # 리포트가 '현금'이라 적으면서 섹터를 들고 있는 모순을 없앤다 — 전용 판단 라벨.
                     tier.loc[down_leader_days[down_leader_days].index] = "하락국면리더"
+                    # [v0.47.0 J1 ★ 신규] 블록 E에 '★ 하락국면리더일' 행을 리더(교차) 행과 분리해 남긴다.
+                    #   REPORT50 §2.2 E8: "2026 리더 16일 1.000"은 전부 이 오버라이드 날이었지 교차 리더가
+                    #   아니었다(라이브 교차 리더는 2026년 0일) — 두 규칙을 표에서부터 섞이지 않게 한다.
+                    #   _dl_tier_diag는 이 콜만을 위한 전용 스냅샷(다른 어떤 것과도 공유하지 않음) — 리더
+                    #   태그가 붙은 날은 이 행에서 제외되도록 "기타"로 둔다(Block E의 held = 리더|하락국면리더).
+                    _dl_tier_diag = pd.Series("기타", index=tier.index, dtype=object)
+                    _dl_tier_diag.loc[down_leader_days[down_leader_days].index] = "하락국면리더"
+                    _keep_diag(label_leader + " [★ 하락국면리더일]",
+                               {"tier": _dl_tier_diag, "leader_s": leader_s, "laggard_s": laggard_s})
                 log("ROTATION", kv(event="down_regime_leader_applied", label=str(label)[:40],
                                    days=int(dl_m.reindex(eval_idx).fillna(False).sum()),
                                    pos=dl_pos, require_gate=bool(getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True)),
@@ -9646,6 +9700,10 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
             if held.loc[d] and L in cols and pd.notna(rr.get(L, np.nan)):
                 rec["lead"] = L; rec["lead_top3"] = float(rr[L] <= 3); rec["lead_bot3"] = float(rr[L] >= nn - 2)
                 rec["lead_med"] = float(fwd.loc[d, L] > med)
+                # [v0.47.0 J1] '리더'(교차 순환매 리더)와 '하락국면리더'(E_t=0·명확1위 보유, v0.15.0 §A)를
+                #   태그부터 분리한다 — REPORT50 §2.2 E8: "2026 16일 1.000"을 R2 성과로 잘못 인용한 원인이
+                #   두 규칙이 '리더 판단일' 한 열에 섞여 있었던 것이었다. 재계산 없음(tier 라벨만 읽는다).
+                rec["lead_type"] = str(tier.loc[d])
             tp1 = top_pred.loc[d]; bp1 = bot_pred.loc[d]
             if isinstance(tp1, str) and pd.notna(rr.get(tp1, np.nan)):
                 rec["top_top3"] = float(rr[tp1] <= 3)
@@ -9669,11 +9727,26 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
 
             def _blk(d: pd.DataFrame, label: str) -> dict:
                 L_ = d.dropna(subset=["lead"]) if "lead" in d.columns else d.iloc[0:0]
+                # [v0.47.0 J1] 리더 판단일을 유형별로 쪼갠다 — '교차'(순환매 복합순위 리더) vs
+                #   '하락국면리더'(E_t=0인데 명확1위를 게이트 통과로 보유, v0.15.0 §A). 합계(리더 판단일)는
+                #   하위 호환을 위해 그대로 두고, 두 유형 열을 나란히 낸다.
+                _lt = L_["lead_type"] if "lead_type" in L_.columns else pd.Series(dtype=object)
+                _Lx = L_[_lt.eq("리더")] if len(L_) else L_
+                _Ld = L_[_lt.eq("하락국면리더")] if len(L_) else L_
+                # [v0.47.0 J5(선택)] 연도별 최빈 리더(집중도) — 정적 편향(예: 2023~25 XLC)을 표에서 바로 드러낸다.
+                #   계산 없음(13c 판단 열의 재집계, Block E와 같은 방식).
+                _lead_vc_b = _Lx["lead"].value_counts() if len(_Lx) else pd.Series(dtype=object)
                 return {"블록": f"B. 순환매 소수클래스(연도별, h={h_main}일)", "티커": label, "지평(일)": h_main,
                         "리더 판단일": int(len(L_)),
                         "리더 → 실현 상위3": (round(float(L_["lead_top3"].mean()), 4) if len(L_) else np.nan),
                         "리더 → 실현 하위3": (round(float(L_["lead_bot3"].mean()), 4) if len(L_) else np.nan),
                         "리더 > 중앙값": (round(float(L_["lead_med"].mean()), 4) if len(L_) else np.nan),
+                        "리더(교차) 판단일": int(len(_Lx)),
+                        "리더(교차) → 실현 상위3": (round(float(_Lx["lead_top3"].mean()), 4) if len(_Lx) else np.nan),
+                        "하락국면리더일": int(len(_Ld)),
+                        "하락국면리더 → 실현 상위3": (round(float(_Ld["lead_top3"].mean()), 4) if len(_Ld) else np.nan),
+                        "최빈 리더(집중도, 교차만)": (f"{_lead_vc_b.index[0]} {float(_lead_vc_b.iloc[0]) / max(int(_lead_vc_b.sum()), 1):.2f}"
+                                                if len(_lead_vc_b) else ""),
                         "순위 있는 날": int(d["top_top3"].notna().sum()) if "top_top3" in d.columns else 0,
                         "모델 1위 → 실현 상위3": (round(float(d["top_top3"].mean()), 4) if "top_top3" in d.columns and d["top_top3"].notna().any() else np.nan),
                         "모델 꼴찌 → 실현 하위3": (round(float(d["bot_bot3"].mean()), 4) if "bot_bot3" in d.columns and d["bot_bot3"].notna().any() else np.nan),
@@ -9698,7 +9771,19 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                             "0.303(무작위 0.274보다 **크고**) 초과도 +0.25%/21일로, 채택 조건('뚜렷이 작고 초과가 음수')의 "
                             "정반대였다. 아래 '역방향 자격 신호' 줄은 진단으로 남는다. "
                             "[v0.45.0 G5] 하위 쪽 후속은 [단독회피격자] — 자격 신호가 1개뿐이어도 **순서 잣대**"
-                            "(학습창 꼴찌→하위3 ≥ 0.33 & 최근 252일 ≥ 0.40)를 넘으면 규칙 ②를 연다")
+                            "(학습창 꼴찌→하위3 ≥ 0.33 & 최근 252일 ≥ 0.40)를 넘으면 규칙 ②를 연다. "
+                            "[v0.47.0 J1·G5(3) 퇴역·REPORT50 §2.3] [단독회피격자]는 세 번째 독립 측정(13p 블록 E)에서도 "
+                            "회피→하위3 0.15·초과 +0.99%/21일로 무작위(0.273)에 크게 못 미쳐 **퇴역**했다(강세장 해에 방어 "
+                            "섹터가 오히려 상위3에 더 자주 든다) — 되돌리기: s_overrides={'ROTATION_AVOID_STANDALONE_GRID': "
+                            "('order','size+order')}. 13g '단독회피 자격(순서)' 열과 아래 계산은 진단으로 유지한다. "
+                            "[v0.47.0 J1] '리더 판단일'은 **교차 순환매 리더**(복합순위 리더)와 **하락국면리더**(E_t=0인데 "
+                            "명확1위를 게이트 통과로 보유, v0.15.0 §A)를 합친 값이다 — 인용은 옆의 '리더(교차)'/'하락국면리더일' "
+                            "두 열로 나눠서 할 것. 이전 세 라운드(REPORT47~49)가 \"2026 리더 16일 → 실현 상위3 1.000\"을 R2(최근성 "
+                            "문턱)의 성과로 인용했으나, 실측을 나눠 보면 그 16일은 **전부 하락국면리더**이고 2026년 교차 리더는 "
+                            "**0일**이다(그 해 4개 채택 신호 중 과반 3표가 든 날이 16일뿐이라 리더가 열리지 않았다) — 서사 오류 "
+                            "정정(REPORT50 §2.2 E8). 2023~25 교차 리더는 XLC가 351일(리더일의 40%, '최빈 리더(집중도, 교차만)' "
+                            "열 참조)로 몰려 있고 그중 2024·2025는 0.354·0.383으로 무작위(0.273) 근처다 — ★의 순환매 몫은 "
+                            "2020·2022·2023 세 에피소드에 크게 의존한다")
             rows.append(allrow)
             if rev_sigs_by_year:
                 rows.append({"블록": f"B. 순환매 소수클래스(연도별, h={h_main}일)", "티커": "역방향 자격 신호(연도별)",
@@ -9862,7 +9947,15 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                          "판독": ("격자 행을 **수익이 아니라 예측으로** 판정하는 표. 리더→상위3·회피→하위3이 무작위 기대를 "
                                  "넘으면 그 규칙은 '예측으로는 성립'이고, CAGR이 져도 그 사실을 기록한다(반대로 둘 다 "
                                  "무작위면 그 방향은 닫는다). 집중도(최빈 대상 비중)가 크면 '그 섹터를 사고/빼는 규칙'이지 "
-                                 "순환매가 아니다. v0.45.0은 이 표가 없어 [단독회피격자]를 CAGR만 보고 닫았다(REPORT49 §4 E4)")})
+                                 "순환매가 아니다. v0.45.0은 이 표가 없어 [단독회피격자]를 CAGR만 보고 닫았다(REPORT49 §4 E4). "
+                                 "[v0.47.0 J1] '[라이브 기준]' 행과 '[★ 하락국면리더일]' 행은 이제 분리된다 — 전자는 교차 순환매 "
+                                 "리더(611일)만, 후자는 E_t=0인데 명확1위를 게이트 통과로 보유한 날(264일)만 센다. 이전엔 "
+                                 "_keep_diag가 tier Series를 참조로 저장해 라이브 행이 두 규칙을 합쳐 875일로 찍혔다(REPORT50 "
+                                 "§2.4 E1) — 그 오염이 격자 판정 자체를 바꾸진 않았지만(리더만 보면 라이브 0.4255 = 격자 "
+                                 "0.4255) 표의 비교 기준이 격자 행(611일, 하락국면리더 오버라이드 미적용)과 어긋났다. "
+                                 "[v0.47.0 J1·REPORT50 §2.2 E8] 참고: 2026 '리더 16일 1.000'은 전부 '[★ 하락국면리더일]'류의 "
+                                 "판단이었다 — 그 해 교차 순환매 리더는 라이브 0일이다. 순환매 리더 성과를 인용할 때는 "
+                                 "'[라이브 기준]' 행만 볼 것")})
     df = pd.DataFrame(rows)
     if len(df):
         lead_cols = ["블록", "티커", "지평(일)", "표본일수"]
