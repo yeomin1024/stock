@@ -17,6 +17,39 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.44.0 - 2026-09-13 - [채택 수리 · 꼴찌 격자 부활 · M 상속 격자 · 하락확률 보정] REPORT47 §6 F1~F7.
+#    리포트43 판정: R2(최근성)·R7(캐시)은 성공했고(2026 리더→상위3 0.22/100일 → 1.00/16일, S 1,117 → 147초),
+#    R3(꼴찌 후보)은 **부작용**을 냈다 — 2020 리더 판단 161일 → 12일(초과 +10.5 → −0.7%p).
+#    (F2 ⚠ 채택층 기본값 변경 — 이번 라운드의 유일한 ⚠) ROTATION_BEST_AVAILABLE_RANK_BY "t" → **"hit"**.
+#         원인(13g 실측): 2020 학습창에서 t≥1.0 후보 셋 중 t 순 상위2가 REL_DD_252H(t 1.46·순서 0.309)+
+#         SCORE_CS_Z(1.42·0.311)를 뽑아 SCORE_PCT(1.40·**0.319**)를 밀어냈고, 계열이 달라 1위에 합의하지
+#         않았다. 같은 학습창의 **순서 잣대**(1위 실현상위3 비율)로 고르면 SCORE_PCT+SCORE_CS_Z(= v0.42.1
+#         조합)가 돌아온다. 2019·2021~26은 무변경(엄격 신호가 있거나 후보 집합이 같다).
+#         ⚠ 되돌리기: s_overrides={"ROTATION_BEST_AVAILABLE_RANK_BY": "t"}
+#         + ROTATION_BEST_AVAILABLE_MIN_HIT(사전등록·꺼짐) — 순서 잣대 하한 미달이면 강제 채택 자체를 막는다.
+#         ※ REPORT47 F2(b) 원안('복합순위를 sel_eff로')은 **내 오진이었다** — 복합순위는 v0.9.0부터 이미
+#           sel_eff로 만든다(rotation_walkforward_select). 희석 경로는 '최선 가용이 약한 후보를 넣는 것'이고
+#           그것은 위 RANK_BY가 고친다. 13f ③(2.43 → 1.62)의 회복도 같은 경로로 기대한다.
+#    (F1) [역방향회피격자] 부활 — ROTATION_REVERSE_AVOID_GRID () → (2.0, 2.5). 근거: R3로 넣은
+#         REL_VOL_RATIO의 상위1 t가 2024~26 −2.42/−2.19/−2.72(3년 연속 자격), 13d 전체 −3.19이고 그 1위
+#         (= 상대변동성 최저 섹터, 8/9년 XLP)는 실현 상위3에 **14.7%**만 든다(무작위 27%, 초과 −0.71%/21일).
+#         13p 블록 B에 '회피 섹터/역방향 대상 → 실현 하위3·상위3·초과' 열, 13f 정보 행 ⑨, 00시트 1줄.
+#         ⚠ 격자만 켠다(라이브 ROTATION_REVERSE_AVOID는 False 그대로). 되돌리기: GRID=()
+#    (F3) 절대 국면 M 상속 — (1) 13p 블록 A에 'M상속(M현금/M상승아님) 정밀도·균형정확도·MCC'와 'M상속
+#         우위(MCC차)' 비교열(진단 상설). 근거(REPORT47 §2.3): 섹터 자기 기계 MCC 0.055 vs M 현금 0.079 ·
+#         M 상승아님 0.088(9/11 섹터 개선)이고 M 자신은 0.160 — 섹터별 재추정이 방향 정보를 깎는다.
+#         (2) [국면상속격자] 2행 — 보유·적격 판정을 자기 국면 대신 M 국면("M 하락 아님"/"M 상승만")으로.
+#         _is_cap_grid에 태그 등록(S-H 재발 방지). 자기 국면기계는 01_일별·09·13p에 그대로 남는다.
+#    (F4 ★ 신규 측정) 13q_하락확률보정 — build_down_probability(): P(향후 21일 < 0)을 섹터별·연도별
+#         워크포워드 로지스틱(감쇠 가중, cutoff 이전 표본만·전방창 절단)으로 추정하고 신뢰도 곡선(십분위)·
+#         Brier·**기저율 문턱 운용점**(정밀도·재현율·MCC)을 낸다. 특징 3종은 전부 01_일별에 있는 값
+#         (복합점수 백분위·자기 위험 백분위·M 국면 더미). 왜: 하락 라벨이 7%뿐이라 재현율이 구조적으로
+#         ~10%에 갇힌다 — 확률을 내면 문턱을 기저율에 맞출 수 있고, 정보가 없으면 곡선이 평평해 바로 보인다.
+#         **배분·신호에는 쓰지 않는다**(측정 전용). 13f 정보 행 ⑩ · 00시트 1줄. ⚠ 끄기: RUN_DOWN_PROB=False
+#         + scikit-learn 의존 없이 IRLS로 직접 푼다(_fit_logistic_w).
+#    (F7) 격자 채택 기준에 ⑤ '주력 편향 몫이 늘지 않을 것' — 리포트43에서 ①②③④ 통과 행이 전부
+#         "XLK를 더·오래"였다(정적 편향 +8.02%p vs 순환매 +3.82%p). ⚠ 끄기: GRID_CRITERION_PRIMARY_BIAS=False
+#    ※ 연구·교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.43.0 - 2026-09-13 - [소수 클래스 잣대 상설 · 꼴찌용 후보 · ⚠ 최근성 조건 켬 · 캐시 키 수리] REPORT46.
 #    사용자 잣대: "실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이 있다". 리포트42 재계산(§1): 국면 하락 예측의
 #    정밀도 0.446 vs 기저 0.407(h=21), 재현율 0.074, MCC 0.017 — 하락 쪽 예측력 0. 2021·2023·2024·2026은 11섹터 하락
@@ -1879,7 +1912,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.43.0"
+VERSION = "v0.44.0"
 VERSION_DATE = "2026-09-13"
 
 # =============================================================================
@@ -2199,6 +2232,36 @@ class SectorConfig:
     #   13시트에서 대조군·SPY M과 나란히 확인할 것.
     ROTATION_SELECT_MODE: str = "best_available"   # "best_available" | "strict"
     ROTATION_BEST_N: int = 2                   # best_available에서 강제 채택하는 최대 후보 수(과반 규칙과 맞물림: 2개면 둘이 같은 1위여야 리더)
+    # [v0.44.0 F2 ⚠ 채택층 기본값 변경 — 이번 라운드의 유일한 ⚠] 최선 가용(best_available)의 상위N을 무엇으로 고르나.
+    #   "t"(v0.43.0까지) = 상위1 스프레드 NW-t(크기) 순 | "hit"(신규 기본) = **학습창 '1위 실현상위3 비율'**(순서) 순, 동률이면 t.
+    #   근거(REPORT47 §3.2, 리포트43 13g 실측): 2020 학습창에서 t≥1.0 후보는 REL_DD_252H(t 1.46·순서 0.309)·
+    #   SCORE_CS_Z(1.42·0.311)·SCORE_PCT(1.40·0.319) 셋인데 t 순 상위2가 REL_DD_252H+SCORE_CS_Z를 뽑았다. 둘은 계열이
+    #   달라 1위에 거의 합의하지 않아 그 해 리더 판단이 161일 → **12일**로 무너지고 초과가 +10.5 → −0.7%p가 됐다.
+    #   순서 잣대로 뽑으면 SCORE_PCT+SCORE_CS_Z(= v0.42.1과 같은 조합)가 돌아온다. 같은 학습창·같은 후보군을 쓰되
+    #   '얼마나 벌었나'(크기, 소수의 큰 사건에 끌림) 대신 '몇 번 맞혔나'(순서)로 고르는 것 — 새 데이터·새 창이 아니다.
+    #   ⚠ 되돌리기: s_overrides={"ROTATION_BEST_AVAILABLE_RANK_BY": "t"}
+    ROTATION_BEST_AVAILABLE_RANK_BY: str = "hit"        # "hit"(기본) | "t"
+    # [v0.44.0 F2-b 사전등록 — 기본 꺼짐] 최선 가용 강제 채택의 **순서 잣대 하한**. 설정하면 학습창 1위 실현상위3 비율이
+    #   이 값 미만인 후보는 t가 아무리 높아도 강제 채택하지 않는다(그 해는 폴백). 무작위 = 3/n ≈ 0.27.
+    #   ※ REPORT47 F2(b)의 원안('복합순위를 sel_eff로')은 **오진이었다** — 복합순위는 v0.9.0부터 이미 sel_eff로 만든다
+    #     (rotation_walkforward_select 5911행). 실제 희석 경로는 '최선 가용이 약한 후보를 sel_eff에 넣는 것'이고 그것은
+    #     위 RANK_BY가 고친다. 이 하한은 그보다 강한 선택지로 사전등록만 해 둔다.
+    #   켜기(단독 판정): s_overrides={"ROTATION_BEST_AVAILABLE_MIN_HIT": 0.27}
+    ROTATION_BEST_AVAILABLE_MIN_HIT: Optional[float] = None
+    # [v0.44.0 F4 ★ 신규 측정] 13q_하락확률보정 — P(향후 h일 수익 < 0)을 연도별 워크포워드로 추정하고
+    #   보정(신뢰도 곡선·Brier)과 '기저율 문턱' 운용점을 잰다. **배분·신호에는 쓰지 않는다**(측정 전용).
+    #   왜: 하락 라벨이 전체의 7%뿐이라 재현율이 구조적으로 ~10%에 갇힌다(REPORT47 §6 F4). 확률을 내면
+    #   문턱을 기저율에 맞출 수 있고, 정보가 없으면 곡선이 평평해 그 사실이 바로 보인다.
+    #   ⚠ 끄기(실행시간 절약): s_overrides={"RUN_DOWN_PROB": False}
+    # [v0.44.0 F7] 격자 채택 기준에 ⑤ '주력 섹터 편향 몫이 늘지 않을 것'을 더한다. 리포트43에서 ①②③④를
+    #   통과한 행이 전부 "주력을 더·오래 든다"(상한 100% · M헤어컷 E11)였고, 그건 표본 구간의 기술주 강세를
+    #   사후에 따라간 것이지 순환매 판단의 개선이 아니다. ⚠ 끄기: s_overrides={"GRID_CRITERION_PRIMARY_BIAS": False}
+    GRID_CRITERION_PRIMARY_BIAS: bool = True
+    RUN_DOWN_PROB: bool = True
+    DOWN_PROB_HORIZON: int = 21          # 예측 지평(일) — 13p 블록 A의 h_main과 같게 두는 것이 읽기 쉽다
+    DOWN_PROB_MIN_TRAIN: int = 250       # 그 해 학습 표본 최소 일수(미만이면 그 해 예측 없음)
+    DOWN_PROB_L2: float = 1.0            # 계수 L2 정규화(절편 제외) — 표본이 작은 해의 발산 방지
+    DOWN_PROB_BINS: int = 10             # 신뢰도 곡선 분위 수
     ROTATION_SELECT_T_MIN: float = 1.0         # best_available/외부검증 지원 채택의 최소 로컬 t(방향 일치 필수)
     # [v0.6.0] 외부 검증 — Kenneth French 49업종 일별 포트폴리오(무료)로 같은 신호의 rank IC를 더 넓은 횡단면에서 검증.
     #   외부 t ≥ EXTERNAL_T이고 11섹터 로컬 t ≥ ROTATION_SELECT_T_MIN(방향 일치)이면 '외부검증 지원'으로 채택.
@@ -2267,12 +2330,16 @@ class SectorConfig:
     #   집중배분 계열 격자 3행(t≤2.0 · t≤2.5 · 반증)으로만 판정한다.
     ROTATION_REVERSE_AVOID: bool = False                  # 라이브 기본 끔(격자에서만 켠다)
     ROTATION_REVERSE_AVOID_T: float = 2.0                 # |t| 문턱(엄격 문턱의 반대편)
-    # ⚠ [v0.42.0 S-G 폐기 — REPORT45 §2.6] 리포트41 실측에서 방향이 없었다: 집중배분(명확1위) 26.26%
-    #   대비 t≤−2.0 **−0.47%p** · t≤−2.5 +0.02%p · 반증(t≥+2.0) −0.93%p — 문턱 간 단조성도 없다.
-    #   13g '역방향 회피 자격'도 감쇠 t 기준으로는 9년 중 2년만 Y였다(1개월 반전은 옛 이력의 현상).
-    #   → **격자 행 생성을 끈다**(빈 튜플). 13g 진단 열과 실행 경로는 그대로 남겨 두어(되살리기 한 줄)
-    #   다음 라운드에 다시 보고 싶으면 `s_overrides={"ROTATION_REVERSE_AVOID_GRID": (2.0, 2.5)}`.
-    ROTATION_REVERSE_AVOID_GRID: Tuple[float, ...] = ()
+    # ⚠ [v0.42.0 S-G 폐기] 리포트41 실측에서 방향이 없어 격자를 껐었다(t≤−2.0 −0.47%p, 자격 9년 중 2년).
+    # ⚠ [v0.44.0 F1 부활 — REPORT47 §3.3] 리포트43에서 **자격 신호가 생겼다**: R3로 넣은 REL_VOL_RATIO의
+    #   상위1 t가 2024 −2.42 · 2025 −2.19 · 2026 −2.72(3년 연속 역방향 자격 Y), 13d 평가창 전체 −3.19이고
+    #   그 신호의 '1위'(= 상대변동성 최저 섹터, 8/9년 XLP)는 실현 상위3에 **14.7%**만 든다(무작위 27%).
+    #   원자료 재검증(21일 평활·h=21·2,149일): 실현 하위3 0.321 · 초과 **−0.71%/21일** · 부호 8/9년 일치.
+    #   즉 "강도 순위의 바닥(SCORE_PCT 꼴찌, 실현 하위3 0.297 = 무작위)"이 아니라 **변동성 순위의 바닥**이
+    #   꼴찌다. 기존 회피 규칙(하위1 t ≤ −2.0)은 사전방향이 반대라 이 신호를 볼 수 없다 — 역방향 경로가 맞다.
+    #   ⚠ 격자만 켠다(라이브 ROTATION_REVERSE_AVOID는 여전히 False). 4기준 통과 뒤에 사용자가 켤 일이다.
+    #   ⚠ 되돌리기: s_overrides={"ROTATION_REVERSE_AVOID_GRID": ()}
+    ROTATION_REVERSE_AVOID_GRID: Tuple[float, ...] = (2.0, 2.5)
     ROTATION_REVERSE_AVOID_COUNTER: bool = True           # 반증 1행(사전방향대로 t≥+T 신호의 1위를 회피 — 나빠야 정상)
     # [v0.9.0 ⚠ 증거 등급] 리포트 8(v0.8.1 실측): 교차확인이 '엄격(학습창 t≥2.0) 통과 신호'까지 약한 신호와 짝을 요구해 검증된 신호를 희석했다
     #   — 채택 두 신호(SCORE_PCT 엄격 + 잔차모멘텀 외부 지원)의 순위 평균인 복합순위의 상위1 t는 1.21로 SCORE_PCT 단독(3.96)보다 약했고
@@ -5347,6 +5414,27 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
         stage_timing["03a_집중배분"] = round(time.time() - t1, 2)
     matrix = build_prediction_matrix(results, res, eval_idx, scfg, nd_spy=nd_spy, alloc=alloc)
     summary = build_sector_summary(results, failed, universe, alloc=alloc)
+    # [v0.44.0 F4] 13q_하락확률보정 — 측정 전용(배분·신호 무영향). 실패해도 리포트는 계속.
+    downprob_df, downprob_summ = pd.DataFrame(), {}
+    if bool(getattr(scfg, "RUN_DOWN_PROB", True)) and results:
+        try:
+            _t13q = time.time()
+            downprob_df, _dp_series, downprob_summ = build_down_probability(
+                results, alloc if alloc else None, scfg, M,
+                h=int(getattr(scfg, "DOWN_PROB_HORIZON", 21)), asset_label="섹터")
+            log("DIAG", kv(event="down_prob_ready", rows=len(downprob_df), n=downprob_summ.get("n", 0),
+                           base=round(downprob_summ.get("base", np.nan), 4),
+                           brier=round(downprob_summ.get("brier", np.nan), 5),
+                           brier_gain=round(downprob_summ.get("brier_gain", np.nan), 5),
+                           slope=round(downprob_summ.get("slope", np.nan), 4),
+                           op_prec=round(downprob_summ.get("op_prec", np.nan), 3),
+                           op_rec=round(downprob_summ.get("op_rec", np.nan), 3),
+                           op_mcc=round(downprob_summ.get("op_mcc", np.nan), 3),
+                           elapsed_s=round(time.time() - _t13q, 2)), M=M)
+        except Exception as e:
+            log("DIAG", kv(event="down_prob_failed", err=type(e).__name__, msg=str(e)[:200],
+                           next_step="13q 시트만 생략 — s_overrides={\"RUN_DOWN_PROB\": False}로 끌 수 있다"),
+                M=M, level="warning")
     # [v0.43.0 R1] 13p_소수클래스정확도 — 사용자 잣대. 배분 실패해도 국면 블록(A·C)은 나온다.
     minority_df, minority_summ = pd.DataFrame(), {}
     try:
@@ -5376,6 +5464,7 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             # [v0.4.0 §1.F]
             "alloc": alloc, "rot_val": rot_val, "alloc_sheet": alloc_sheet,
             "minority": minority_df, "minority_summary": minority_summ,   # [v0.43.0 R1] 13p
+            "down_prob": downprob_df, "down_prob_summary": downprob_summ,  # [v0.44.0 F4] 13q
             # [v0.9.0] 13j 실제 포트폴리오 거래 로그 + 00시트 요약
             "alloc_trades": alloc_trades, "alloc_trades_summary": alloc_trades_summary}
 
@@ -5777,12 +5866,43 @@ def rotation_walkforward_select(sig_full: Dict[str, pd.DataFrame], ret_cc_full: 
         need = max(int(getattr(scfg, "ROTATION_MIN_AGREE", 2)), 1)
         strict_leads = evidence_tier and len(strict) > 0
         if mode == "best_available" and len(sel) < need and not strict_leads:
-            cands = sorted([(t, n) for n, (m, t, nn) in stats.items()
-                            if n not in sel and nn >= scfg.ROTATION_SELECT_MIN_DAYS and pd.notna(t) and t >= t_min], reverse=True)
+            # [v0.44.0 F2] 자격(t ≥ t_min·관측일)은 그대로, **정렬 잣대**만 RANK_BY가 정한다.
+            #   "hit": 학습창 1위 실현상위3 비율(순서) 우선, 동률이면 t — 소수의 큰 사건에 끌리지 않는다.
+            #   "t"(되돌리기): v0.43.0까지의 크기 순.
+            _rank_by = str(getattr(scfg, "ROTATION_BEST_AVAILABLE_RANK_BY", "hit")).lower()
+            _min_hit = getattr(scfg, "ROTATION_BEST_AVAILABLE_MIN_HIT", None)
+            _pool = [(n, t) for n, (m, t, nn) in stats.items()
+                     if n not in sel and nn >= scfg.ROTATION_SELECT_MIN_DAYS and pd.notna(t) and t >= t_min]
+            _skipped_low_hit: List[str] = []
+            if _min_hit is not None:
+                _keep = []
+                for _n, _t in _pool:
+                    _hv = full_hit_top.get(_n, np.nan)
+                    if pd.notna(_hv) and float(_hv) >= float(_min_hit):
+                        _keep.append((_n, _t))
+                    else:
+                        _skipped_low_hit.append(_n)
+                _pool = _keep
+            if _rank_by == "hit":
+                # 순서 잣대가 없는 후보(표본 부족)는 −inf로 두어 t 순 후보보다 뒤로 — 임의 채택을 막는다.
+                cands = sorted(_pool, key=lambda kv: (-(full_hit_top.get(kv[0], np.nan) if pd.notna(full_hit_top.get(kv[0], np.nan)) else -np.inf), -kv[1]))
+            else:
+                cands = sorted(_pool, key=lambda kv: -kv[1])
             room = max(best_n, need) - len(sel)
-            add = [n for t, n in cands[:max(room, 0)]]
-            basis.update({n: (f"최선 가용(t≥{t_min:.1f}, 상위{best_n})" if not sel else f"최선 가용(교차확인 보충, t≥{t_min:.1f})") for n in add})
+            add = [n for n, t in cands[:max(room, 0)]]
+            _by_txt = ("순서 잣대" if _rank_by == "hit" else "t")
+            basis.update({n: ((f"최선 가용(t≥{t_min:.1f}, {_by_txt} 상위{best_n}"
+                               + (f", 실현상위3 {float(full_hit_top[n]):.3f}" if pd.notna(full_hit_top.get(n, np.nan)) else "")
+                               + ")") if not sel else f"최선 가용(교차확인 보충, t≥{t_min:.1f}, {_by_txt})") for n in add})
             sel = sel + add
+            if M is not None and (add or _skipped_low_hit):
+                log("ROTATION", kv(event="best_available_pick", year=y, rank_by=_rank_by,
+                                   picked=";".join(f"{n}(t={dict(_pool).get(n, float('nan')):.2f},hit="
+                                                   + (f"{float(full_hit_top[n]):.3f})" if pd.notna(full_hit_top.get(n, np.nan)) else "-)")
+                                                   for n in add) or "-",
+                                   pool=";".join(n for n, _ in _pool) or "-",
+                                   skipped_low_hit=";".join(_skipped_low_hit) or "-",
+                                   min_hit=("-" if _min_hit is None else float(_min_hit))), M=M)
         # [v0.9.0] 리더 판단에 실제로 쓰는 집합(sel_eff)과 판단 등급: 엄격 신호가 있으면 엄격만(단독 가능), 없으면 채택 전부(교차확인 필요)
         if strict_leads:
             sel_eff, tier_y = list(strict), "엄격"
@@ -6543,6 +6663,19 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         _st = pd.DataFrame({t: pd.Series(results[t].get("state")).reindex(eval_idx).astype(object)
                             for t in cols if results.get(t) is not None and results[t].get("state") is not None})
         _hold = ~_st.isin(_exit) & _st.notna()          # 그 섹터를 보유해도 되는 날
+        # [v0.44.0 F3(2) 국면상속격자] 같은 판정을 **M(SPY) 국면**으로 내린 판(전 섹터 공통).
+        #   왜: REPORT47 §2.3 실측 — 섹터 하락 예측의 MCC가 자기 국면기계 0.055 vs M 현금 상속 0.079,
+        #   M '상승 아님' 상속 0.088(9/11 섹터에서 자기 기계보다 높다). M 자신은 소수 클래스에 정보가 있고
+        #   (현금 MCC 0.160·상승아님 0.187) 섹터별 재추정이 그 정보를 깎는다. 그렇다면 "자기 국면이
+        #   하락이라 대피"가 이득인지 손해인지는 **격자가 실제 엔진으로** 재야 한다. 신호 재계산 없음.
+        _m_state = pd.Series(_spy_state_src).reindex(eval_idx)
+        _hold_m_off = ~_m_state.isin(_exit) & _m_state.notna()            # M이 RISK_OFF가 아닌 날
+        _hold_m_up = _m_state.eq("RISK_ON")                                # M이 상승인 날만
+        def _bcast(v: pd.Series) -> pd.DataFrame:
+            return pd.DataFrame({c: v.values for c in _hold.columns}, index=eval_idx) & _st.notna()
+        _hold_m = {"m_off": _bcast(_hold_m_off), "m_up": _bcast(_hold_m_up)}
+        _elig_m = {k: (v & listed[[c for c in _hold.columns if c in listed.columns]].reindex(columns=_hold.columns).fillna(False))
+                   for k, v in _hold_m.items()}
         _alt_rank = rank_pos.reindex(columns=[c for c in cols if c != _pri and c in rank_pos.columns])
         _alt = pd.Series(index=eval_idx, dtype=object)
         _has = _alt_rank.notna().any(axis=1) if len(_alt_rank.columns) else pd.Series(False, index=eval_idx)
@@ -6630,7 +6763,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         def _build_primary(cap_: float, bscale_: Optional[float] = None, bmode_: Optional[str] = None,
                            shelter_def_: Optional[float] = None, disp_pct_: Optional[float] = None,
                            disp_invert_: Optional[bool] = None, neutral_leader_: Optional[float] = None,
-                           neutral_cap_: Optional[float] = None):
+                           neutral_cap_: Optional[float] = None, regime_src_: Optional[str] = None):
             _bm = _beta_mult(float(getattr(scfg, "ROTATION_BETA_SCALE", 0.0) or 0.0)
                              if bscale_ is None else float(bscale_))
             _mode = str(getattr(scfg, "ROTATION_BETA_MODE", "trim") if bmode_ is None else bmode_)
@@ -6661,13 +6794,18 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                      else None) if neutral_cap_ is None else float(neutral_cap_)
             if _ncap is not None:
                 _ncap = min(max(_ncap, 0.0), 1.0)
+            # [v0.44.0 F3(2)] 보유·적격 판정의 출처 — None/"own"이면 섹터 자기 국면(v0.43.0과 비트 동일),
+            #   "m_off"면 M이 RISK_OFF가 아닌 날, "m_up"이면 M이 상승인 날만 보유한다.
+            _rs = str(regime_src_ or "own").lower()
+            _h_eff = _hold if _rs == "own" else _hold_m.get(_rs, _hold)
+            _e_eff = eligible if _rs == "own" else _elig_m.get(_rs, eligible)
             fps_ = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
             n_pri_ = n_alt_ = n_eq_ = n_def_ = n_dg_ = n_nl_ = n_nc_ = 0
             for _i_d, _d in enumerate(eval_idx):
-                _pri_ok = bool(_hold.loc[_d, _pri]) if _pri in _hold.columns else False
+                _pri_ok = bool(_h_eff.loc[_d, _pri]) if _pri in _h_eff.columns else False
                 _a = _alt.get(_d)
-                _a_ok = (isinstance(_a, str) and _a in _hold.columns and bool(_hold.loc[_d, _a])
-                         and bool(eligible.loc[_d, _a]) if _a in eligible.columns else False)
+                _a_ok = (isinstance(_a, str) and _a in _h_eff.columns and bool(_h_eff.loc[_d, _a])
+                         and bool(_e_eff.loc[_d, _a]) if _a in _e_eff.columns else False)
                 # [v0.42.0 S-K] 중립일 주력 상한 인하(그 외 국면은 cap_ 그대로).
                 _cap_d = cap_
                 if _ncap is not None and spy_regime_arr[_i_d] == _nl_reg and _ncap < cap_:
@@ -6694,9 +6832,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 # [v0.41.0 S-B] 중립 국면 리더 슬롯 — 방어 대피처 몫을 뗀 뒤, 순위 1위/균등 분기보다 먼저.
                 if _rest > 1e-12 and _nl > 0 and spy_regime_arr[_i_d] == _nl_reg:
                     _ld = leader_s.get(_d)
-                    if (isinstance(_ld, str) and _ld and _ld != _pri and _ld in _hold.columns
-                            and _ld in eligible.columns and bool(_hold.loc[_d, _ld])
-                            and bool(eligible.loc[_d, _ld])):
+                    if (isinstance(_ld, str) and _ld and _ld != _pri and _ld in _h_eff.columns
+                            and _ld in _e_eff.columns and bool(_h_eff.loc[_d, _ld])
+                            and bool(_e_eff.loc[_d, _ld])):
                         _r_ld = _rest * _nl
                         _rest = _rest - _r_ld
                         if _r_ld > 1e-12:
@@ -6709,8 +6847,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     if _a_ok:
                         fps_.loc[_d, _a] += _rest * float(_bm.loc[_d, _a]); n_alt_ += 1
                     else:
-                        _ok = [c for c in cols if c != _pri and c in _hold.columns and bool(_hold.loc[_d, c])
-                               and bool(eligible.loc[_d, c])]
+                        _ok = [c for c in cols if c != _pri and c in _h_eff.columns and bool(_h_eff.loc[_d, c])
+                               and bool(_e_eff.loc[_d, c])]
                         if _ok:
                             for c in _ok:
                                 fps_.loc[_d, c] += (_rest / len(_ok)) * float(_bm.loc[_d, c])
@@ -6728,6 +6866,11 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             if _ncap is not None:
                 log("ROTATION", kv(event="neutral_cap_applied", neutral_cap=round(float(_ncap), 4), regime=_nl_reg,
                                    days=n_nc_, base_cap=round(float(cap_), 4)), M=M)
+            if _rs != "own":
+                log("ROTATION", kv(event="regime_inherit_applied", src=_rs, cap=round(float(cap_), 4),
+                                   days_primary_own=int(_hold[_pri].sum()) if _pri in _hold.columns else -1,
+                                   days_primary_inherit=int(_h_eff[_pri].sum()) if _pri in _h_eff.columns else -1,
+                                   note="주력 보유일이 늘면 '자기 국면 대피'가 비싼 규칙이었다는 뜻"), M=M)
             return fps_, n_pri_, n_alt_, n_eq_
         fps, _n_pri, _n_alt, _n_eq = _build_primary(_cap)
         frac_primary_sector = fps
@@ -6803,6 +6946,13 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         if _nc_live is not None:   # 켠 뒤에는 '끈 상태'(=상한 유지)가 대조군으로 실려야 한다
             primary_cap_variants[f"주력섹터 중심 · 중립일 상한 유지({_cap:.0%}) [중립상한격자]"] = \
                 _build_primary(_cap, None, None, None, None, None, None, _cap)[0]
+        # [v0.44.0 F3(2) 사전등록 격자] 절대 국면 판정을 섹터 자기 것 대신 **M(SPY)** 것으로 상속.
+        #   두 행: (가) M이 하락이 아니면 보유 (나) M이 상승일 때만 보유(더 엄격). 자기 국면기계는
+        #   01_일별·09·13p 진단으로 그대로 남는다 — 바뀌는 것은 '무엇으로 대피·적격을 판정하나'뿐.
+        #   판정: 격자 4기준 + 13p 블록 A의 'M 상속' MCC > 자기 MCC(§F3(1))가 함께 서야 채택 후보다.
+        for _rsrc, _lbl in (("m_off", "M 하락 아님"), ("m_up", "M 상승만")):
+            primary_cap_variants[f"주력섹터 중심 · 국면 M상속({_lbl}) [국면상속격자]"] = \
+                _build_primary(_cap, None, None, None, None, None, None, None, _rsrc)[0]
         label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
         log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
                            days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
@@ -6894,7 +7044,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         #     같은 종류의 실수이므로, 아래 회귀가 리포트의 모든 '격자' 라벨을 훑어 재발을 막는다.
         # [v0.41.0] 새 격자 2종도 같은 오버라이드를 받아야 like-for-like다(v0.24.0의 실수를 반복하지 않는다).
         #   [중립리더격자]는 주력섹터 계열, [역방향회피격자]는 집중배분 계열 — 둘 다 ★/label_leader와 같은 처리.
-        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자", "[베타격자", "[베타재투입격자", "[방어대피처격자",
+        _is_cap_grid = any(_g in str(label) for _g in ("[상한격자", "[베타격자", "[베타재투입격자", "[방어대피처격자", "[국면상속격자",
                                                        "[분산게이트격자", "[중립리더격자", "[역방향회피격자",
                                                        "[중립상한격자"))   # [v0.42.0 S-K]
         if ((label in (label_leader, label_primary) or _is_cap_grid)
@@ -8944,6 +9094,18 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
         return pd.DataFrame(), summ
     tickers = list(results.keys())
     h_main = 21 if 21 in horizons else horizons[-1]
+    # [v0.44.0 F3(1)] M(SPY) 상속 비교 — 그 섹터의 하락 예측을 **M의 판정**으로 대체했을 때의 같은 지표.
+    #   REPORT47 §2.3: 섹터 자기 기계 MCC 0.055 vs M 현금 0.079 vs M 상승아님 0.088(11섹터 평균, h=21).
+    #   M 자신은 정보가 있는데(현금 0.160) 섹터별 재추정이 깎는다 — 그 간극을 매 실행 자동으로 보인다.
+    #   alloc이 없으면(산업 계층) 이 열은 비워 둔다.
+    _m_cash = _m_notup = None
+    if alloc:
+        _E = alloc.get("E")
+        _ss = alloc.get("spy_state_short")
+        if _E is not None:
+            _m_cash = pd.Series(_E).astype(float) <= 1e-12
+        if _ss is not None:
+            _m_notup = ~pd.Series(_ss).astype(str).eq("상승")
 
     # ---------- 블록 A ----------
     per_h_bal: Dict[int, List[float]] = {h: [] for h in horizons}
@@ -8974,6 +9136,13 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
             big_pred = float(big[pred_down].mean()) if int(pred_down.sum()) else np.nan
             cash = (tp_ <= 1e-12)[ok] & tp_[ok].notna()
             mc = _binary_metrics(cash, real_down)
+            # [v0.44.0 F3(1)] 같은 표본에서 M 판정을 그 섹터의 예측으로 썼다면
+            _mm = {}
+            for _nm, _src in (("M현금", _m_cash), ("M상승아님", _m_notup)):
+                if _src is None:
+                    continue
+                _p = _src.reindex(st.index).fillna(False)[ok]
+                _mm[_nm] = _binary_metrics(_p, real_down)
             rows.append({"블록": "A. 국면 소수클래스(티커별)", "티커": t, "지평(일)": h, "표본일수": m["n"],
                          "기저 실현하락률": round(m["base_down"], 4),
                          "예측 하락 비율": round(m["pred_down"], 4),
@@ -8990,6 +9159,15 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                          "현금 기준 하락 재현율": (round(mc["rec_down"], 4) if pd.notna(mc["rec_down"]) else np.nan),
                          "현금 기준 균형정확도": (round(mc["balanced"], 4) if pd.notna(mc["balanced"]) else np.nan),
                          "현금 기준 MCC": (round(mc["mcc"], 4) if pd.notna(mc["mcc"]) else np.nan),
+                         # [v0.44.0 F3(1)] M 상속 비교 — 이 값이 '현금 기준'보다 높으면 섹터 재추정이 정보를 깎고 있다
+                         **{f"M상속({_nm}) 정밀도": (round(_v["prec_down"], 4) if pd.notna(_v["prec_down"]) else np.nan)
+                            for _nm, _v in _mm.items()},
+                         **{f"M상속({_nm}) 균형정확도": (round(_v["balanced"], 4) if pd.notna(_v["balanced"]) else np.nan)
+                            for _nm, _v in _mm.items()},
+                         **{f"M상속({_nm}) MCC": (round(_v["mcc"], 4) if pd.notna(_v["mcc"]) else np.nan)
+                            for _nm, _v in _mm.items()},
+                         "M상속 우위(MCC차)": (round(float(max(_v["mcc"] for _v in _mm.values() if pd.notna(_v["mcc"])) - (mc["mcc"] if pd.notna(mc["mcc"]) else 0.0)), 4)
+                                          if (_mm and any(pd.notna(_v["mcc"]) for _v in _mm.values())) else np.nan),
                          "판독": ("방향 정보 없음(정밀도 ≤ 기저율)" if (pd.notna(m["prec_down"]) and m["prec_down"] <= m["base_down"] + 1e-9)
                                  else ("약한 정보" if (pd.notna(m["mcc"]) and m["mcc"] < 0.10) else "정보 있음"))})
             if pd.notna(m["balanced"]): per_h_bal[h].append(m["balanced"])
@@ -9010,6 +9188,12 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                          "MCC": round(float(np.mean(per_h_mcc[h])), 4) if per_h_mcc[h] else np.nan,
                          "판독": "균형정확도 0.5 = 동전던지기, MCC 0 = 무정보. 정밀도가 기저율과 같으면 하락 예측에 정보가 없다"})
             if h == h_main:
+                _dfrows = [r for r in rows if r.get("블록", "").startswith("A.") and r.get("지평(일)") == h and r.get("티커") in tickers]
+                for _c, _k in (("M상속(M현금) MCC", "regime_m_cash_mcc"), ("M상속(M상승아님) MCC", "regime_m_notup_mcc"),
+                               ("현금 기준 MCC", "regime_cash_mcc")):
+                    _vals = [r[_c] for r in _dfrows if pd.notna(r.get(_c, np.nan))]
+                    if _vals:
+                        summ[_k] = float(np.mean(_vals))
                 summ["regime_balanced_mean"] = float(np.mean(per_h_bal[h]))
                 summ["regime_mcc_mean"] = float(np.mean(per_h_mcc[h])) if per_h_mcc[h] else np.nan
                 summ["regime_prec_mean"] = float(np.mean(per_h_prec[h])) if per_h_prec[h] else np.nan
@@ -9017,6 +9201,18 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                 summ["regime_rec_mean"] = float(np.mean(per_h_rec[h])) if per_h_rec[h] else np.nan
                 summ["regime_n_assets"] = len(per_h_bal[h])
                 summ["regime_n_mcc_pos"] = int(sum(1 for v in per_h_mcc[h] if v > 0))
+    if "regime_m_cash_mcc" in summ:
+        _own = summ.get("regime_cash_mcc", np.nan)
+        _best = max([v for v in (summ.get("regime_m_cash_mcc"), summ.get("regime_m_notup_mcc")) if pd.notna(v)] or [np.nan])
+        rows.append({"블록": "A. 국면 소수클래스(티커별)", "티커": f"── M 상속 비교(h={h_main}) ──",
+                     "지평(일)": h_main,
+                     "현금 기준 MCC": (round(_own, 4) if pd.notna(_own) else np.nan),
+                     "M상속(M현금) MCC": (round(summ.get("regime_m_cash_mcc", np.nan), 4) if pd.notna(summ.get("regime_m_cash_mcc", np.nan)) else np.nan),
+                     "M상속(M상승아님) MCC": (round(summ.get("regime_m_notup_mcc", np.nan), 4) if pd.notna(summ.get("regime_m_notup_mcc", np.nan)) else np.nan),
+                     "M상속 우위(MCC차)": (round(float(_best - _own), 4) if (pd.notna(_best) and pd.notna(_own)) else np.nan),
+                     "판독": ("M 상속 MCC가 자기 기계(현금 기준)보다 높으면 섹터별 재추정이 방향 정보를 깎고 있다는 뜻 — "
+                             "[국면상속격자] 2행을 채택 후보로 본다(격자 4기준을 함께 통과해야 한다). "
+                             "REPORT47 §2.3 기준선: 자기 0.055 · M현금 0.079 · M상승아님 0.088")})
     rows.append({"블록": "A. 국면 소수클래스(티커별)", "티커": "해석",
                  "판독": f"소수 클래스 = 실현 하락(기저율 < 0.5). '예측 하락'은 01_일별 예측이 하락인 날, '현금'은 목표비중 0인 날. "
                          f"정밀도 ≈ 기저율·재현율 ~10%·MCC ≈ 0이면 이 계층은 {asset_label} 하락을 예측하지 못한다(REPORT46 §1.1). "
@@ -9063,6 +9259,39 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
         if bool(_has.any()):
             top_pred[_has] = rk_pred[_has].idxmin(axis=1).values
             bot_pred[_has] = rk_pred[_has].idxmax(axis=1).values
+        # [v0.44.0 F1] 회피 쪽 두 계열을 함께 센다 — 이 잣대가 회피 규칙을 열지 말지를 정한다.
+        #   (가) 꼴찌 지목(alloc["laggard"], 규칙 ②) — 현행 회피 규칙이 실제로 피하는 섹터.
+        #   (나) 역방향 회피 대상 — 그 해 상위1 t ≤ −T였던 신호의 **1위**(REPORT47 §3.3의 REL_VOL_RATIO 경로).
+        #        wf의 rank_full·reverse_avoid_by_year로 직접 구한다(배분과 같은 평활 순위 정의, 재계산 없음).
+        lag = pd.Series(alloc.get("laggard", pd.Series("", index=idx))).reindex(idx).astype(str)
+        rev_target = pd.Series(np.nan, index=idx, dtype=object)
+        rev_sigs_by_year: Dict[int, List[str]] = {}
+        _wf = alloc.get("wf") or {}
+        _rev_by_y = _wf.get("reverse_avoid_by_year") or {}
+        _rank_full = _wf.get("rank_full") or {}
+        if _rev_by_y and _rank_full:
+            _sm = int(_wf.get("smooth", 1) or 1)
+            for _y, _sigs in _rev_by_y.items():
+                _use = [n for n in (_sigs or []) if n in _rank_full]
+                if not _use:
+                    continue
+                rev_sigs_by_year[int(_y)] = _use
+                _rows_y = idx[idx.year == int(_y)]
+                if len(_rows_y) == 0:
+                    continue
+                # 각 자격 신호의 1위를 모아 최빈(동률이면 첫 신호) — 여러 신호가 자격일 때의 합의 규칙
+                _picks = []
+                for n in _use:
+                    _r = _rank_full[n].reindex(index=idx, columns=cols)
+                    _rs = _r.rolling(_sm, min_periods=1).mean().where(_r.notna()) if _sm > 1 else _r
+                    _rs = _rs.loc[_rows_y]
+                    _ok = _rs.notna().sum(axis=1) >= 5
+                    _p = pd.Series(np.nan, index=_rows_y, dtype=object)
+                    if bool(_ok.any()):
+                        _p[_ok] = _rs[_ok].idxmax(axis=1).values      # rank01은 클수록 1위
+                    _picks.append(_p)
+                _PK = pd.concat(_picks, axis=1)
+                rev_target.loc[_rows_y] = _PK.mode(axis=1, dropna=True).iloc[:, 0].values if _PK.notna().any().any() else np.nan
         recs = []
         for d in idx:
             if n_av.loc[d] < 5:
@@ -9078,10 +9307,22 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                 rec["top_top3"] = float(rr[tp1] <= 3)
             if isinstance(bp1, str) and pd.notna(rr.get(bp1, np.nan)):
                 rec["bot_bot3"] = float(rr[bp1] >= nn - 2); rec["bot_top3"] = float(rr[bp1] <= 3); rec["bot"] = bp1
+            # [v0.44.0 F1] 회피 쪽 — 지목된 섹터가 실제로 뒤처졌나(초과는 그날 상장 평균 대비)
+            _lg = lag.loc[d]
+            if _lg in cols and pd.notna(rr.get(_lg, np.nan)):
+                rec["avoid_bot3"] = float(rr[_lg] >= nn - 2); rec["avoid_top3"] = float(rr[_lg] <= 3)
+                rec["avoid_exc"] = float(fwd.loc[d, _lg] - med)
+            _rv = rev_target.loc[d]
+            if isinstance(_rv, str) and _rv in cols and pd.notna(rr.get(_rv, np.nan)):
+                rec["rev_bot3"] = float(rr[_rv] >= nn - 2); rec["rev_top3"] = float(rr[_rv] <= 3)
+                rec["rev_exc"] = float(fwd.loc[d, _rv] - med); rec["rev"] = _rv
             recs.append(rec)
         R = pd.DataFrame(recs)
         if len(R):
             rand = 3.0 / max(1.0, float(n_av[n_av >= 5].mean()))
+            def _mn(d: pd.DataFrame, c: str):
+                return (round(float(d[c].mean()), 4) if (c in d.columns and d[c].notna().any()) else np.nan)
+
             def _blk(d: pd.DataFrame, label: str) -> dict:
                 L_ = d.dropna(subset=["lead"]) if "lead" in d.columns else d.iloc[0:0]
                 return {"블록": f"B. 순환매 소수클래스(연도별, h={h_main}일)", "티커": label, "지평(일)": h_main,
@@ -9093,14 +9334,34 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                         "모델 1위 → 실현 상위3": (round(float(d["top_top3"].mean()), 4) if "top_top3" in d.columns and d["top_top3"].notna().any() else np.nan),
                         "모델 꼴찌 → 실현 하위3": (round(float(d["bot_bot3"].mean()), 4) if "bot_bot3" in d.columns and d["bot_bot3"].notna().any() else np.nan),
                         "모델 꼴찌 → 실현 상위3": (round(float(d["bot_top3"].mean()), 4) if "bot_top3" in d.columns and d["bot_top3"].notna().any() else np.nan),
+                        # [v0.44.0 F1] 회피 쪽 — (가) 규칙 ② 꼴찌 지목일 (나) 역방향 회피 대상(상위1 t ≤ −T 신호의 1위)
+                        "회피 지목일": (int(d["avoid_bot3"].notna().sum()) if "avoid_bot3" in d.columns else 0),
+                        "회피 섹터 → 실현 하위3": _mn(d, "avoid_bot3"),
+                        "회피 섹터 → 실현 상위3": _mn(d, "avoid_top3"),
+                        "회피 섹터 초과(%/21일)": (round(_mn(d, "avoid_exc") * 100, 3) if pd.notna(_mn(d, "avoid_exc")) else np.nan),
+                        "역방향 회피 대상일": (int(d["rev_bot3"].notna().sum()) if "rev_bot3" in d.columns else 0),
+                        "역방향 대상 → 실현 하위3": _mn(d, "rev_bot3"),
+                        "역방향 대상 → 실현 상위3": _mn(d, "rev_top3"),
+                        "역방향 대상 초과(%/21일)": (round(_mn(d, "rev_exc") * 100, 3) if pd.notna(_mn(d, "rev_exc")) else np.nan),
                         "무작위 기대(상위3/하위3)": round(rand, 3),
                         "판독": ""}
             for y, d in R.groupby("y"):
                 rows.append(_blk(d, str(int(y))))
             allrow = _blk(R, "── 전체 ──")
             allrow["판독"] = ("리더→상위3가 무작위보다 크면 상위 쪽 정보 있음. 꼴찌→하위3가 무작위와 같으면 하위 쪽 정보 없음"
-                            "(회피 규칙이 열릴 수 없다). 연도별로 내려오면 채택 최근성(S-I②)이 걸러야 한다")
+                            "(회피 규칙이 열릴 수 없다). 연도별로 내려오면 채택 최근성(S-I②)이 걸러야 한다. "
+                            "[v0.44.0 F1] '역방향 대상 → 실현 상위3'이 무작위보다 뚜렷이 **작고** 초과가 음수면 "
+                            "역방향 회피 격자([역방향회피격자])를 채택 후보로 본다 — 격자 4기준을 함께 통과해야 한다")
             rows.append(allrow)
+            if rev_sigs_by_year:
+                rows.append({"블록": f"B. 순환매 소수클래스(연도별, h={h_main}일)", "티커": "역방향 자격 신호(연도별)",
+                             "판독": "; ".join(f"{y}:{'+'.join(v)}" for y, v in sorted(rev_sigs_by_year.items()))
+                                     + " — 그 해 학습창에서 상위1 t ≤ −ROTATION_REVERSE_AVOID_T였던 신호(13g '역방향 회피 자격' Y)"})
+            if "rev" in R.columns and R["rev"].notna().any():
+                _vc = R["rev"].value_counts().head(5)
+                rows.append({"블록": f"B. 순환매 소수클래스(연도별, h={h_main}일)", "티커": "역방향 회피 대상 분포",
+                             "판독": "; ".join(f"{k} {int(v)}일" for k, v in _vc.items())
+                                     + " — 한 섹터로 고정되면 '그 섹터를 빼는 규칙'이지 순환매 예측이 아니다(그래도 값이 있으면 격자가 잡는다)"})
             if "bot" in R.columns:
                 vc = R["bot"].value_counts().head(5)
                 rows.append({"블록": f"B. 순환매 소수클래스(연도별, h={h_main}일)", "티커": "모델 꼴찌 분포",
@@ -9111,6 +9372,12 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
             summ["rot_lead_days"] = int(len(L_all))
             summ["rot_bot_bot3"] = float(R["bot_bot3"].mean()) if "bot_bot3" in R.columns and R["bot_bot3"].notna().any() else np.nan
             summ["rot_random"] = rand
+            # [v0.44.0 F1] 00시트·13f ⑧에 실을 회피 쪽 요약
+            for _k, _c in (("rot_avoid_bot3", "avoid_bot3"), ("rot_avoid_top3", "avoid_top3"),
+                           ("rot_rev_bot3", "rev_bot3"), ("rot_rev_top3", "rev_top3")):
+                summ[_k] = (float(R[_c].mean()) if (_c in R.columns and R[_c].notna().any()) else np.nan)
+            summ["rot_rev_days"] = int(R["rev_bot3"].notna().sum()) if "rev_bot3" in R.columns else 0
+            summ["rot_rev_exc"] = (float(R["rev_exc"].mean()) if ("rev_exc" in R.columns and R["rev_exc"].notna().any()) else np.nan)
             _ly = R["y"].max()
             L_last = L_all[L_all["y"] == _ly] if len(L_all) else L_all
             summ["rot_last_year"] = int(_ly)
@@ -9121,6 +9388,227 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
         lead_cols = ["블록", "티커", "지평(일)", "표본일수"]
         df = df[[c for c in lead_cols if c in df.columns] + [c for c in df.columns if c not in lead_cols]]
     return df, summ
+
+
+def _fit_logistic_w(X: np.ndarray, y: np.ndarray, w: Optional[np.ndarray] = None,
+                    l2: float = 1.0, iters: int = 60, tol: float = 1e-7) -> Optional[np.ndarray]:
+    """[v0.44.0 F4] 가중 L2-정규화 로지스틱 회귀 — IRLS(뉴턴). scikit-learn 의존을 만들지 않으려고
+    직접 푼다(파이프라인의 나머지가 numpy/pandas만 쓴다). X는 절편 열을 **포함하지 않은** 설계행렬,
+    반환은 [절편, 계수...]. 수렴 실패·특이행렬이면 None(호출부는 그 해를 건너뛴다).
+    l2는 절편을 제외한 계수에만 건다(표본이 작은 해에 계수가 발산하지 않게)."""
+    n, k = X.shape
+    if n < 30 or k == 0:
+        return None
+    A = np.column_stack([np.ones(n), X])
+    w = np.ones(n) if w is None else np.asarray(w, dtype=float)
+    w = w / max(float(w.sum()), 1e-12) * n          # 평균 1로 정규화 — l2의 의미를 표본 수와 무관하게
+    beta = np.zeros(k + 1)
+    R = np.eye(k + 1) * float(l2)
+    R[0, 0] = 0.0                                    # 절편은 정규화하지 않는다
+    for _ in range(iters):
+        eta = np.clip(A @ beta, -30.0, 30.0)
+        p = 1.0 / (1.0 + np.exp(-eta))
+        s = np.clip(p * (1.0 - p), 1e-6, None) * w
+        g = A.T @ (w * (y - p)) - R @ beta
+        H = (A * s[:, None]).T @ A + R
+        try:
+            step = np.linalg.solve(H, g)
+        except np.linalg.LinAlgError:
+            return None
+        beta = beta + step
+        if not np.all(np.isfinite(beta)):
+            return None
+        if float(np.max(np.abs(step))) < tol:
+            break
+    return beta
+
+
+def _predict_logistic(beta: np.ndarray, X: np.ndarray) -> np.ndarray:
+    A = np.column_stack([np.ones(len(X)), X])
+    return 1.0 / (1.0 + np.exp(-np.clip(A @ beta, -30.0, 30.0)))
+
+
+def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[Dict[str, Any]], scfg: SectorConfig,
+                           M, h: int = 21, asset_label: str = "섹터") -> Tuple[pd.DataFrame, Dict[str, pd.Series], Dict[str, Any]]:
+    """[v0.44.0 F4 ★ 신규 측정 기능] 13q_하락확률보정 — **P(향후 h일 수익 < 0)** 을 섹터별·연도별
+    워크포워드로 추정하고, 그 확률이 실제와 맞는지(보정)를 신뢰도 곡선·Brier로 잰다.
+
+    왜 필요한가(REPORT47 §6 F4): 현재 계층은 3상태 라벨(상승/중립/하락)만 낸다. 하락 라벨이 전체의
+    7%뿐이라 **재현율이 구조적으로 10% 언저리에 갇힌다** — 잣대를 아무리 바꿔도 이 한계는 안 풀린다.
+    확률을 내면 (1) 운용점(문턱)을 기저율에 맞출 수 있고 (2) 정보가 없으면 신뢰도 곡선이 평평해
+    그 사실이 바로 보인다. **배분·신호에는 쓰지 않는다**(순수 측정) — 쓸지는 이 시트가 정한다.
+
+    설계(인과성):
+      · 특징 3개(전부 t일 종가까지 확정): 복합점수 백분위(score_pct) · 자기 위험 백분위(haz_pct_own)
+        · M 국면 더미(하락=1, 중립=0.5, 그 외 0). 전부 이미 01_일별에 있는 값이다.
+      · 매년 cutoff = 1/1 − 35일. 학습 표본 = t < cutoff 이면서 t+h ≤ cutoff 인 날(전방창이 cutoff를
+        넘지 않게 잘라 낸다 — regime_info_gate와 같은 관행). 감쇠 가중(M.decay_weights, asof=cutoff).
+      · 그 해의 예측은 학습된 계수로만 낸다. 학습 표본 < MIN_TRAIN이면 그 해는 NaN(예측 없음).
+    산출: (13q DataFrame, 섹터별 P 시계열 dict, 요약 dict). 요약은 00시트·13f 정보 행용.
+    ※ 연구·교육용 측정 도구이며 투자 자문이 아니다."""
+    rows: List[dict] = []
+    probs: Dict[str, pd.Series] = {}
+    summ: Dict[str, Any] = {}
+    if not results:
+        return pd.DataFrame(), probs, summ
+    min_train = int(getattr(scfg, "DOWN_PROB_MIN_TRAIN", 250))
+    n_bins = int(getattr(scfg, "DOWN_PROB_BINS", 10))
+    hl = getattr(scfg, "HALF_LIFE_DAYS", None)
+    # M 국면 더미 — alloc이 있으면 그 시리즈를, 없으면 특징에서 뺀다(산업 계층).
+    m_dummy = None
+    if alloc is not None and alloc.get("spy_state_short") is not None:
+        _ss = pd.Series(alloc["spy_state_short"]).astype(str)
+        m_dummy = _ss.map({"하락": 1.0, "중립": 0.5}).fillna(0.0)
+    feat_names = ["복합점수백분위", "자기위험백분위(H)"] + (["M국면더미"] if m_dummy is not None else [])
+    all_pred: List[pd.Series] = []
+    all_real: List[pd.Series] = []
+    for t in results:
+        r = results[t]
+        px = r.get("px_close")
+        sp = r.get("score_pct")
+        hz = r.get("haz_pct_sector")
+        if px is None or sp is None:
+            continue
+        px = pd.Series(px).astype(float)
+        idx = px.index
+        sp = pd.Series(sp).astype(float).reindex(idx)
+        hz = (pd.Series(hz).astype(float).reindex(idx) if hz is not None else pd.Series(np.nan, index=idx))
+        fwd = px.shift(-h) / px - 1.0
+        y_all = (fwd < 0).astype(float).where(fwd.notna())
+        X_cols = [sp, hz] + ([m_dummy.reindex(idx)] if m_dummy is not None else [])
+        X_all = pd.concat(X_cols, axis=1)
+        X_all.columns = feat_names
+        p_out = pd.Series(np.nan, index=idx, dtype=float)
+        yrs = sorted({int(d.year) for d in idx})
+        n_fit = 0
+        for yv in yrs:
+            cutoff = pd.Timestamp(year=yv, month=1, day=1) - pd.Timedelta(days=35)
+            rows_y = idx[idx.year == yv]
+            if len(rows_y) == 0:
+                continue
+            # 학습: t < cutoff 이고 전방창이 cutoff를 넘지 않는 날
+            cand = idx[(idx < cutoff)]
+            cand = cand[:-h] if len(cand) > h else cand[:0]
+            if len(cand) == 0:
+                continue
+            Xc = X_all.reindex(cand)
+            yc = y_all.reindex(cand)
+            ok = Xc.notna().all(axis=1) & yc.notna()
+            Xc, yc = Xc[ok], yc[ok]
+            if len(Xc) < min_train or float(yc.sum()) < 20 or float((1 - yc).sum()) < 20:
+                continue
+            wts = None
+            if hl is not None and hasattr(M, "decay_weights"):
+                try:
+                    _w = M.decay_weights(Xc.index, asof=cutoff, half_life_days=hl)
+                    wts = None if _w is None else _w.values
+                except Exception:   # noqa
+                    wts = None
+            beta = _fit_logistic_w(Xc.values, yc.values, wts, l2=float(getattr(scfg, "DOWN_PROB_L2", 1.0)))
+            if beta is None:
+                continue
+            Xp = X_all.reindex(rows_y)
+            okp = Xp.notna().all(axis=1)
+            if bool(okp.any()):
+                p_out.loc[rows_y[okp.values]] = _predict_logistic(beta, Xp[okp].values)
+                n_fit += 1
+        probs[t] = p_out
+        pv = p_out.dropna()
+        yv_ = y_all.reindex(pv.index)
+        m = pv.notna() & yv_.notna()
+        pv, yv_ = pv[m], yv_[m]
+        if len(pv) < 100:
+            rows.append({"블록": f"A. 섹터별 보정(h={h}일)", "티커": t, "표본일수": int(len(pv)),
+                         "판독": "표본 부족 — 학습창이 짧거나 특징 결측"})
+            continue
+        base = float(yv_.mean())
+        brier = float(np.mean((pv.values - yv_.values) ** 2))
+        brier_base = float(np.mean((base - yv_.values) ** 2))
+        # 십분위 신뢰도
+        try:
+            q = pd.qcut(pv, n_bins, labels=False, duplicates="drop")
+        except ValueError:
+            q = pd.Series(0, index=pv.index)
+        rel = pd.DataFrame({"p": pv, "y": yv_, "q": q}).groupby("q").agg(n=("y", "size"), 예측=("p", "mean"), 실현=("y", "mean"))
+        slope = (float(rel["실현"].iloc[-1] - rel["실현"].iloc[0]) if len(rel) >= 2 else np.nan)
+        # 운용점: 기저율 분위(예측 상위 base 비율을 '하락'으로) — 라벨 방식의 7%와 대비
+        thr = float(np.quantile(pv.values, 1.0 - base)) if 0 < base < 1 else np.nan
+        pred_op = pv >= thr if pd.notna(thr) else pd.Series(False, index=pv.index)
+        mo = _binary_metrics(pred_op, yv_.astype(bool))
+        rows.append({"블록": f"A. 섹터별 보정(h={h}일)", "티커": t, "표본일수": int(len(pv)),
+                     "학습 연도수": int(n_fit), "기저 실현하락률": round(base, 4),
+                     "평균 예측확률": round(float(pv.mean()), 4),
+                     "Brier": round(brier, 5), "Brier(기저율만)": round(brier_base, 5),
+                     "Brier 개선": round(brier_base - brier, 5),
+                     "신뢰도 기울기(상위십분위−하위십분위 실현)": (round(slope, 4) if pd.notna(slope) else np.nan),
+                     "운용점 문턱": (round(thr, 4) if pd.notna(thr) else np.nan),
+                     "운용점 정밀도": (round(mo["prec_down"], 4) if pd.notna(mo["prec_down"]) else np.nan),
+                     "운용점 재현율": (round(mo["rec_down"], 4) if pd.notna(mo["rec_down"]) else np.nan),
+                     "운용점 균형정확도": (round(mo["balanced"], 4) if pd.notna(mo["balanced"]) else np.nan),
+                     "운용점 MCC": (round(mo["mcc"], 4) if pd.notna(mo["mcc"]) else np.nan),
+                     "판독": ("방향 정보 있음" if (pd.notna(slope) and slope >= 0.10) else
+                             ("약함" if (pd.notna(slope) and slope > 0.0) else "정보 없음(곡선이 평평하거나 거꾸로)"))})
+        all_pred.append(pv); all_real.append(yv_)
+    # ---------- 블록 B: 전 섹터 pooled 신뢰도 곡선 ----------
+    if all_pred:
+        P = pd.concat(all_pred); Y = pd.concat(all_real)
+        base = float(Y.mean())
+        try:
+            q = pd.qcut(P, n_bins, labels=False, duplicates="drop")
+        except ValueError:
+            q = pd.Series(0, index=P.index)
+        rel = pd.DataFrame({"p": P.values, "y": Y.values, "q": q.values}).groupby("q").agg(
+            n=("y", "size"), 예측=("p", "mean"), 실현=("y", "mean"))
+        for qi, rr in rel.iterrows():
+            rows.append({"블록": f"B. 전{asset_label} 신뢰도 곡선(h={h}일, 십분위)", "티커": f"{int(qi) + 1}분위",
+                         "표본일수": int(rr["n"]), "평균 예측확률": round(float(rr["예측"]), 4),
+                         "기저 실현하락률": round(float(rr["실현"]), 4),
+                         "판독": ("예측확률과 실현하락률이 같이 올라가면 보정이 맞다(대각선). "
+                                 "평평하면 방향 정보가 없고, 예측이 실현보다 계속 크면 과대추정")})
+        brier = float(np.mean((P.values - Y.values) ** 2)); brier_base = float(np.mean((base - Y.values) ** 2))
+        slope = (float(rel["실현"].iloc[-1] - rel["실현"].iloc[0]) if len(rel) >= 2 else np.nan)
+        thr = float(np.quantile(P.values, 1.0 - base)) if 0 < base < 1 else np.nan
+        mo = _binary_metrics(P >= thr, Y.astype(bool)) if pd.notna(thr) else {}
+        summ = {"n": int(len(P)), "base": base, "brier": brier, "brier_base": brier_base,
+                "brier_gain": brier_base - brier, "slope": slope,
+                "op_prec": mo.get("prec_down", np.nan), "op_rec": mo.get("rec_down", np.nan),
+                "op_bal": mo.get("balanced", np.nan), "op_mcc": mo.get("mcc", np.nan),
+                "features": ",".join(feat_names)}
+        rows.append({"블록": f"B. 전{asset_label} 신뢰도 곡선(h={h}일, 십분위)", "티커": "── 전체 ──",
+                     "표본일수": int(len(P)), "기저 실현하락률": round(base, 4),
+                     "Brier": round(brier, 5), "Brier(기저율만)": round(brier_base, 5),
+                     "Brier 개선": round(brier_base - brier, 5),
+                     "신뢰도 기울기(상위십분위−하위십분위 실현)": (round(slope, 4) if pd.notna(slope) else np.nan),
+                     "운용점 문턱": (round(thr, 4) if pd.notna(thr) else np.nan),
+                     "운용점 정밀도": (round(mo.get("prec_down", np.nan), 4) if pd.notna(mo.get("prec_down", np.nan)) else np.nan),
+                     "운용점 재현율": (round(mo.get("rec_down", np.nan), 4) if pd.notna(mo.get("rec_down", np.nan)) else np.nan),
+                     "운용점 균형정확도": (round(mo.get("balanced", np.nan), 4) if pd.notna(mo.get("balanced", np.nan)) else np.nan),
+                     "운용점 MCC": (round(mo.get("mcc", np.nan), 4) if pd.notna(mo.get("mcc", np.nan)) else np.nan),
+                     "판독": (f"특징 {len(feat_names)}개({', '.join(feat_names)}) · 연도별 워크포워드 로지스틱(감쇠 가중). "
+                             "기울기 ≥ 0.10이면 방향 정보가 있다는 뜻 — 그때 비로소 '문턱을 기저율에 맞춰' "
+                             "재현율 한계(라벨 방식 ~10%)를 풀 수 있다. **배분에는 쓰지 않는다**(측정 전용)")})
+    # ---------- 블록 C: 연도별 ----------
+    if all_pred:
+        P = pd.concat(all_pred); Y = pd.concat(all_real)
+        D = pd.DataFrame({"p": P.values, "y": Y.values}, index=P.index)
+        for yv2, d in D.groupby(D.index.year):
+            if len(d) < 100:
+                continue
+            b = float(d["y"].mean())
+            th = float(np.quantile(d["p"].values, 1.0 - b)) if 0 < b < 1 else np.nan
+            mo2 = _binary_metrics(d["p"] >= th, d["y"].astype(bool)) if pd.notna(th) else {}
+            rows.append({"블록": f"C. 연도별(h={h}일, pooled)", "티커": str(int(yv2)), "표본일수": int(len(d)),
+                         "기저 실현하락률": round(b, 4), "평균 예측확률": round(float(d["p"].mean()), 4),
+                         "Brier": round(float(np.mean((d["p"].values - d["y"].values) ** 2)), 5),
+                         "운용점 정밀도": (round(mo2.get("prec_down", np.nan), 4) if pd.notna(mo2.get("prec_down", np.nan)) else np.nan),
+                         "운용점 재현율": (round(mo2.get("rec_down", np.nan), 4) if pd.notna(mo2.get("rec_down", np.nan)) else np.nan),
+                         "운용점 MCC": (round(mo2.get("mcc", np.nan), 4) if pd.notna(mo2.get("mcc", np.nan)) else np.nan),
+                         "판독": ""})
+    df = pd.DataFrame(rows)
+    if len(df):
+        lead = ["블록", "티커", "표본일수"]
+        df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    return df, probs, summ
 
 
 def minority_summary_text(summ: Dict[str, Any], asset_label: str = "섹터") -> str:
@@ -9140,6 +9628,9 @@ def minority_summary_text(summ: Dict[str, Any], asset_label: str = "섹터") -> 
         parts.append(f"순환매: 리더 → 실현 상위3 {summ['rot_lead_top3']:.3f}({summ['rot_lead_days']}일; "
                      f"{summ.get('rot_last_year')}년 {summ.get('rot_lead_top3_last', np.nan):.3f}/{summ.get('rot_lead_days_last', 0)}일) · "
                      f"모델 꼴찌 → 실현 하위3 {summ['rot_bot_bot3']:.3f} · 무작위 {summ['rot_random']:.2f}")
+    if pd.notna(summ.get("rot_rev_top3", np.nan)):   # [v0.44.0 F1]
+        parts.append(f"역방향 회피 대상 → 실현 상위3 {summ['rot_rev_top3']:.3f}(낮을수록 좋음) · 초과 "
+                     f"{summ.get('rot_rev_exc', np.nan) * 100:+.2f}%/21일({summ.get('rot_rev_days', 0)}일)")
     return " | ".join(parts) + " — 13p_소수클래스정확도"
 
 
@@ -9338,7 +9829,30 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                                f"꼴찌 쪽이 무작위와 같으면 회피 규칙이 열릴 수 없다. 13p 블록 B") if pd.notna(_ms.get("rot_lead_top3", np.nan))
                               else "배분 없음",
                        "판정": "정보"}
-                _crit = pd.concat([_crit, pd.DataFrame([_r7, _r8])], ignore_index=True)
+                # [v0.44.0 F1] ⑨ 회피 쪽 — 역방향 회피 격자를 채택 후보로 볼지의 판단 근거.
+                _r9 = {"기준": "⑨ 회피 쪽 소수 클래스: 역방향 회피 대상 → 실현 상위3(낮을수록 좋음) (정보, 판정 제외)",
+                       "측정값": ((f"역방향 대상→상위3 {_ms.get('rot_rev_top3', np.nan):.3f} · →하위3 {_ms.get('rot_rev_bot3', np.nan):.3f} · "
+                                f"초과 {_ms.get('rot_rev_exc', np.nan) * 100:+.2f}%/21일({_ms.get('rot_rev_days', 0)}일) | "
+                                f"규칙② 꼴찌 지목→하위3 {_ms.get('rot_avoid_bot3', np.nan):.3f} · →상위3 {_ms.get('rot_avoid_top3', np.nan):.3f} · "
+                                f"무작위 {_ms.get('rot_random', np.nan):.2f} — 상위3가 무작위보다 뚜렷이 작고 초과가 음수면 "
+                                f"[역방향회피격자] 행을 채택 후보로. 13p 블록 B")
+                               if pd.notna(_ms.get("rot_rev_top3", np.nan)) else
+                               (f"역방향 자격 신호 없음(그 해 상위1 t ≤ −{float(getattr(scfg, 'ROTATION_REVERSE_AVOID_T', 2.0)):.1f}인 신호 0개) · "
+                                f"규칙② 꼴찌 지목→하위3 {_ms.get('rot_avoid_bot3', np.nan):.3f}")),
+                       "판정": "정보"}
+                _rows78 = [_r7, _r8, _r9]
+                # [v0.44.0 F4] ⑩ 하락확률 보정 — 라벨 방식의 재현율 한계를 풀 수 있는지의 판정 근거.
+                _qs = sres.get("down_prob_summary") or {}
+                if _qs:
+                    _rows78.append({
+                        "기준": "⑩ 하락확률 보정: 신뢰도 곡선 기울기·Brier 개선·기저율 문턱 운용점 (정보, 판정 제외)",
+                        "측정값": (f"기울기 {_qs.get('slope', np.nan):+.3f}(≥0.10이면 방향 정보) · Brier {_qs.get('brier', np.nan):.5f} "
+                                f"vs 기저율만 {_qs.get('brier_base', np.nan):.5f}(개선 {_qs.get('brier_gain', np.nan):+.5f}) · "
+                                f"기저율 문턱 운용점: 정밀도 {_qs.get('op_prec', np.nan):.3f} · 재현율 {_qs.get('op_rec', np.nan):.3f} · "
+                                f"MCC {_qs.get('op_mcc', np.nan):+.3f}(라벨 방식 재현율 {_ms.get('regime_rec_mean', np.nan):.3f}와 대비) — "
+                                f"특징 [{_qs.get('features', '-')}]. 배분 미사용. 13q_하락확률보정"),
+                        "판정": "정보"})
+                _crit = pd.concat([_crit, pd.DataFrame(_rows78)], ignore_index=True)
         except Exception as _e:   # noqa
             log("ROTATION", kv(event="crit78_failed", err=str(_e)[:120]), M=M, level="warning")
         sheets["13f_배분수용기준"] = _crit
@@ -9350,6 +9864,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     _mdf = sres.get("minority")
     if isinstance(_mdf, pd.DataFrame) and len(_mdf):
         sheets["13p_소수클래스정확도"] = _mdf
+    _qdf = sres.get("down_prob")            # [v0.44.0 F4] 13q — 배분과 무관(측정 전용)
+    if isinstance(_qdf, pd.DataFrame) and len(_qdf):
+        sheets["13q_하락확률보정"] = _qdf
     if alloc:
         # [v0.12.0] 사용자 질문("SPY 국면↔섹터 상관관계를 더 철저히 분석해서 국면 정보를 더 참고하라")에 매 실행이
         #   스스로 답하는 진단 시트. 배분 규칙은 무변경 — 순수 관측.
@@ -9610,6 +10127,13 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             nd_rows.append(("순환매 예측 판정", rot_val.get("prediction_verdict", "-")))   # [v0.5.1]
             # [v0.43.0 R1] 소수 클래스 잣대 1줄 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도"). 13f ⑦⑧과 같은 값.
             nd_rows.append(("소수 클래스 정확도(13p, 정보)", minority_summary_text(sres.get("minority_summary") or {}, "섹터")))
+            _qs0 = sres.get("down_prob_summary") or {}   # [v0.44.0 F4]
+            if _qs0:
+                nd_rows.append(("하락확률 보정(13q, 정보·배분 미사용)",
+                                f"신뢰도 기울기 {_qs0.get('slope', np.nan):+.3f}(≥0.10이면 방향 정보) · Brier {_qs0.get('brier', np.nan):.5f} "
+                                f"vs 기저율만 {_qs0.get('brier_base', np.nan):.5f} · 기저율 문턱에서 정밀도 {_qs0.get('op_prec', np.nan):.3f}"
+                                f"·재현율 {_qs0.get('op_rec', np.nan):.3f}·MCC {_qs0.get('op_mcc', np.nan):+.3f} "
+                                f"(표본 {_qs0.get('n', 0)}일, 기저 {_qs0.get('base', np.nan):.3f}) — 13q_하락확률보정"))
             nd_rows.append(("집중배분 수용기준(§1.F.3, 사전 고정)", rot_val["verdict"]))
             pf = sres["portfolio_perf"].set_index("전략")
             # [v0.43.0 R5] ★ 수익 분해 — REPORT46 §2.1: ★ 35.5%는 XLK 90% 정적 편향이 대부분이었다([상한격자] 50%→100%에서
@@ -9685,13 +10209,39 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                         _s1 = _g[_c1]
                         _peak = float(_s1["칼마(CAGR/MDD)"].astype(float).max()) if len(_s1) else np.nan
                         _c2 = _g["칼마(CAGR/MDD)"].astype(float) >= max(_sk, _peak if pd.notna(_peak) else _sk)
-                        _all = _g[_c1 & _c2 & _c3 & _c4]
+                        # [v0.44.0 F7] ⑤ 주력 편향 몫이 늘지 않을 것 — 리포트43에서 ①②③④를 통과한 두 행
+                        #   ([상한격자] XLK 100% · M헤어컷 E11)이 **둘 다 "주력을 더·오래 든다"**였다.
+                        #   그건 2018~26 기술주 강세의 사후 결과이지 순환매 판단이 아니다(수익 분해: 정적 편향
+                        #   +8.02%p vs 순환매 +3.82%p). 주력 섹터의 평균 비중이 ★보다 늘어난 행은 후보에서 뺀다.
+                        #   ⚠ 끄기(종전 4기준으로): s_overrides={"GRID_CRITERION_PRIMARY_BIAS": False}
+                        _c5 = pd.Series(True, index=_g.index)
+                        _bias_on = bool(getattr(scfg, "GRID_CRITERION_PRIMARY_BIAS", True))
+                        _pri_g = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "") or "")
+                        _tws = (alloc or {}).get("target_ws") or {}
+                        _star_lab = (alloc or {}).get("label_primary")
+                        if _bias_on and _pri_g and _star_lab in _tws and _pri_g in _tws[_star_lab].columns:
+                            _w_star = float(_tws[_star_lab][_pri_g].mean())
+                            _wg = {}
+                            for _lab_g in _g["전략"].astype(str):
+                                _tw_g = _tws.get(_lab_g)
+                                _wg[_lab_g] = (float(_tw_g[_pri_g].mean())
+                                               if isinstance(_tw_g, pd.DataFrame) and _pri_g in _tw_g.columns else np.nan)
+                            _c5 = _g["전략"].astype(str).map(
+                                lambda l_: (True if pd.isna(_wg.get(l_, np.nan)) else _wg[l_] <= _w_star + 1e-6))
+                            _g["주력 평균비중"] = _g["전략"].astype(str).map(lambda l_: _wg.get(l_, np.nan)).round(4)
+                        _all = _g[_c1 & _c2 & _c3 & _c4 & _c5]
                         _nm = str(_all["전략"].iloc[0])[:46] if len(_all) else "없음"
-                        nd_rows.append(("격자 수렴 상태(①②③④)",
-                                        f"격자 {len(_g)}행 — ① 통과 {int(_c1.sum())} · ④ 통과 {int(_c4.sum())} · "
-                                        f"**①②③④ 전부 통과 {len(_all)}행** (후보: {_nm}) | "
+                        _bias_txt = (f" · ⑤ 통과 {int(_c5.sum())}(주력 {_pri_g} 평균비중 ≤ ★)" if _bias_on and _pri_g else "")
+                        _drop5 = _g[_c1 & _c2 & _c3 & _c4 & ~_c5]
+                        nd_rows.append(("격자 수렴 상태(①②③④⑤)" if _bias_on else "격자 수렴 상태(①②③④)",
+                                        f"격자 {len(_g)}행 — ① 통과 {int(_c1.sum())} · ④ 통과 {int(_c4.sum())}{_bias_txt} · "
+                                        f"**전부 통과 {len(_all)}행** (후보: {_nm}) | "
                                         f"★ CAGR {_sc:.2%} 칼마 {_sk:.3f} MDD {_sm:.2%} · 격자 칼마 정점 "
-                                        f"{(f'{_peak:.3f}' if pd.notna(_peak) else '-')} — 0행이면 이번 라운드 채택 후보 없음"))
+                                        f"{(f'{_peak:.3f}' if pd.notna(_peak) else '-')} — 0행이면 이번 라운드 채택 후보 없음"
+                                        + (f" | ⑤에서 걸러진 행({len(_drop5)}): "
+                                           + "; ".join(str(x)[:40] for x in _drop5["전략"].astype(str).head(3))
+                                           + " — ①~④는 통과했으나 주력 편향을 키운다(REPORT47 §F7)"
+                                           if len(_drop5) else "")))
             except Exception as _e:
                 log("SECTOR_ROTATION", kv(event="grid_convergence_line_failed", err=str(_e)[:120]), level="warning")
             nd_rows.append(("집중배분 vs 대조군", f"[주] {dg['label_primary']}: {_pf2(dg['label_primary'])} | "

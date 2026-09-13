@@ -1,5 +1,21 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.8.0 - 2026-09-13 - [부모 초과 타깃의 구조적 편향 측정 · 격자 플래그] REPORT47 §4·§6 F6.
+#    리포트6 실측(동결 해제 첫 실행): 13c 10부모 × 2,186일이 **전부 '부모ETF'**, 산업 편입 0일, 13j 산업 0건,
+#    격자 28행이 전부 S★와 비트 동일, 13p 블록 B "리더 판단일 없음". 원인 둘 —
+#      (1) 채택: 부모 안 t ≥ 1.0 후보가 P_REL_VOL_RATIO 하나뿐이라 교차확인(≥2)이 성립하지 않는다.
+#      (2) **구조**: 원자료 재검증에서 어떤 규칙으로 골라도 부모 ETF 초과 비율이 h=21/63 모두 0.45~0.49로
+#          0.5 미만이다(상대변동성 최저 0.487/0.475 · 자기 H 최고 0.467/0.451 · 자기 H 최저 0.468/0.470).
+#          부모 ETF는 시총가중이라 메가캡이 끌고 니치 산업 ETF가 뒤를 따른다 — 타깃 자체가 음의 기대값이다.
+#    (F6(c)) 13g에 진단 4열 신설(채택 미관여): '학습 상위1−그룹중앙값' · 'NW-HAC t(상위1, 중앙값벤치)' ·
+#         '학습창 1위=부모안 실현1위 비율' · '무작위 기대(1/부모안 산업수)'. 중앙값 벤치는 메가캡 편향을
+#         상쇄하므로, 그 t가 부모ETF 벤치 t보다 뚜렷이 크면 편향이 원인이었다는 뜻이고 둘 다 0 근처면
+#         산업 순위 자체에 정보가 없다는 뜻이다(배분을 접을 근거). 검증 타깃을 실제로 바꾸려면
+#         ⚠ i_overrides={"ROTATION_VALIDATION_BENCH": "group_median"} — 기본은 종전(parent_etf) 그대로.
+#    (F6(a)) INDUSTRY_GRID 플래그 신설(기본 True = 무변경). False면 13_산업배분전략에 ★ + 대조군 A/B만
+#         남기고 격자 28행을 생략한다 — 판단 0일이면 전 행이 비트 동일이라 정보가 없다.
+#         ⚠ 끄기: i_overrides={"INDUSTRY_GRID": False}   (13·13b·13c·14·15 시트는 그대로 나온다)
+#    ※ 연구·교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.7.0 - 2026-09-13 - [⚠ 동결 해제(사용자 지시) · 소수 클래스 잣대 13p] REPORT46 §4·§5 R1/R6.
 #    (R6 ⚠ 기본값 변경) INDUSTRY_LAYER_FROZEN True → **False** — 사용자 지시("industry regime은 왜 sector처럼 섹터 배분
 #         전략, 일별배분비중 시트가 없어? 산업 배분 전략, 배분비중 시트 만들어"). 시트가 없던 원인은 v0.5.0 I-A 동결
@@ -370,7 +386,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.7.0"
+VERSION = "v0.8.0"
 VERSION_DATE = "2026-09-13"
 
 # =============================================================================
@@ -531,6 +547,16 @@ class IndustryConfig:
     #   → 그 '반전'은 섹터 간 효과였고 S의 영역이다(IMPROVEMENT_PLAN_S0.40_I0.4 §3.3).
     # ⚠ 되돌리기: IndustryConfig(ROTATION_VALIDATION_MODE="pooled")
     ROTATION_VALIDATION_MODE: str = "within_parent"
+    # [v0.8.0 F6(c)] 부모 안 검증의 **벤치** — "parent_etf"(기본, 종전) | "group_median"(부모 그룹 중앙값).
+    #   근거(REPORT47 §4): 부모 ETF는 시총가중이라 메가캡이 끌고, 원자료 재검증에서 어떤 규칙으로 골라도
+    #   '부모 초과' 비율이 h=21/63 모두 0.45~0.49로 구조적으로 0.5 미만이었다. 중앙값 벤치는 그 편향을 뺀다.
+    #   ⚠ 기본은 종전 그대로 — 13g에 두 통계를 나란히 싣고(진단), 바꿀지는 다음 실행이 정한다.
+    #   켜기: i_overrides={"ROTATION_VALIDATION_BENCH": "group_median"}
+    ROTATION_VALIDATION_BENCH: str = "parent_etf"
+    # [v0.8.0 F6(a)] 배분 격자(28행) 산출 여부. 리포트6 실측: 부모 안 리더 판단이 **0일**이라 격자 28행이
+    #   전부 S★와 비트 동일했다(정보 0). 끄면 13_산업배분전략에 ★ + 대조군 A/B만 남아 읽기 쉬워진다.
+    #   ⚠ 끄기: i_overrides={"INDUSTRY_GRID": False}   (배분 시트 13·13b·13c·14·15는 그대로 나온다)
+    INDUSTRY_GRID: bool = True
     # [v0.4.0 §I3] 사전등록 격자 — 배분층이라 하나의 신호를 공유한다(격자로 싣는 것이 옳다).
     #   국면게이트: 리더를 인정하는 부모 자기국면 집합. 근거(§3.4 H1): 부모 **중립**일 때 고베타 1위의
     #     21일 부모초과가 +0.81%(t 1.94, 6/8년)로 가장 컸고, 부모 상승(+0.25, t 0.73)·하락(−0.21)은 약했다.
@@ -1545,11 +1571,31 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
     fwd_p = C_p.shift(-h) / C_p - 1.0
     exc = (fwd_i - fwd_p)                      # 산업 − 부모ETF (결정 관련량)
     listed = rel_ret.notna()
+    # [v0.8.0 F6(c)] 같은 지평을 **부모 그룹 중앙값** 대비로도 잰다(진단 상설 + 선택형 검증 타깃).
+    #   왜(REPORT47 §4): 부모 ETF는 시총가중이라 메가캡이 끌고 니치 산업 ETF가 그 뒤를 따른다 —
+    #   원자료 재검증에서 어떤 규칙으로 골라도 '부모 초과' 비율이 h=21/63 모두 0.45~0.49로 **구조적으로
+    #   0.5 미만**이었다. 그 편향을 뺀 뒤에도 순위에 정보가 없으면 산업 배분은 접는 것이 맞다.
+    #   중앙값 벤치는 '같은 부모 안에서 남들보다 나은가'만 물으므로 메가캡 편향이 상쇄된다.
+    #   ⚠ 기본은 종전 그대로(부모 ETF). 타깃을 바꾸려면
+    #     i_overrides={"ROTATION_VALIDATION_BENCH": "group_median"}
+    _bench_mode = str(getattr(icfg, "ROTATION_VALIDATION_BENCH", "parent_etf")).lower()
+    _grp_med = pd.DataFrame(np.nan, index=full_idx, columns=cols)
+    for _p, _inds in groups.items():
+        _m = fwd_i[_inds].median(axis=1, skipna=True)
+        for _c in _inds:
+            _grp_med[_c] = _m
+    exc_med = fwd_i - _grp_med                 # 산업 − 그 부모 그룹 중앙값(메가캡 편향 제거)
+    exc_used, exc_alt = ((exc_med, exc) if _bench_mode == "group_median" else (exc, exc_med))
+    log("ROT", kv(event="validation_bench", mode=_bench_mode,
+                  used=("부모 그룹 중앙값" if _bench_mode == "group_median" else "부모 ETF"),
+                  note="13g에 두 통계를 나란히 싣는다 — 'NW-HAC t(상위1, 중앙값벤치)'"), M=M)
 
     # 부모 안 0~1 순위(leader3_group이 쓰는 것과 같은 정의 — S._cs_rank01을 부모 그룹별로)
     rank_full: Dict[str, pd.DataFrame] = {}
     top1_full: Dict[str, pd.Series] = {}
     bottom1_full: Dict[str, pd.Series] = {}
+    top1_alt_full: Dict[str, pd.Series] = {}     # [v0.8.0 F6(c)] 대체 벤치 스프레드(진단)
+    top1_hit_full: Dict[str, pd.Series] = {}     # [v0.8.0 F6(c)] 1위 = 부모 안 실현 1위(0/1)
     for name in icfg.ROTATION_SIGNALS:
         mat = _mat(name)
         if not mat.notna().any().any():
@@ -1560,22 +1606,33 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
         rk = pd.DataFrame(np.nan, index=full_idx, columns=cols)
         tp_parts: List[pd.Series] = []
         bt_parts: List[pd.Series] = []
+        tp_alt_parts: List[pd.Series] = []      # [v0.8.0 F6(c)] 대체 벤치(진단)
+        hit_parts: List[pd.Series] = []         # [v0.8.0 F6(c)] 1위가 부모 안 실현 1위였나(순서 잣대)
         for p, inds in groups.items():
             sub = S._cs_rank01(x[inds])
             rk[inds] = sub
-            ok = sub.notna() & exc[inds].notna()
+            ok = sub.notna() & exc_used[inds].notna()
             n_ok = ok.sum(axis=1)
             v = sub.where(ok)
-            e = exc[inds].where(ok)
+            e = exc_used[inds].where(ok)
+            e2 = exc_alt[inds].where(ok)
             top = v.fillna(-np.inf).idxmax(axis=1).where(n_ok >= 2)
             bot = v.fillna(np.inf).idxmin(axis=1).where(n_ok >= 2)
             tp_parts.append(pd.Series([e.at[i, c] if isinstance(c, str) else np.nan for i, c in top.items()],
                                       index=full_idx))
             bt_parts.append(pd.Series([e.at[i, c] if isinstance(c, str) else np.nan for i, c in bot.items()],
                                       index=full_idx))
+            tp_alt_parts.append(pd.Series([e2.at[i, c] if isinstance(c, str) else np.nan for i, c in top.items()],
+                                          index=full_idx))
+            # 순서 잣대: 그날 부모 안 실현 1위(향후 h일 수익 최대)가 이 신호의 1위와 같은가
+            _rk_real = fwd_i[inds].where(ok).rank(axis=1, ascending=False, method="min")
+            hit_parts.append(pd.Series([(1.0 if (isinstance(c, str) and _rk_real.at[i, c] == 1) else 0.0)
+                                        if isinstance(c, str) else np.nan for i, c in top.items()], index=full_idx))
         rank_full[name] = rk
         top1_full[name] = pd.concat(tp_parts, axis=1).mean(axis=1) if tp_parts else pd.Series(dtype=float)
         bottom1_full[name] = pd.concat(bt_parts, axis=1).mean(axis=1) if bt_parts else pd.Series(dtype=float)
+        top1_alt_full[name] = pd.concat(tp_alt_parts, axis=1).mean(axis=1) if tp_alt_parts else pd.Series(dtype=float)
+        top1_hit_full[name] = pd.concat(hit_parts, axis=1).mean(axis=1) if hit_parts else pd.Series(dtype=float)
     if not rank_full:
         raise RuntimeError("ROTATION_SIGNALS 중 사용 가능한 신호가 없습니다 — 배분 계층을 만들 수 없음")
 
@@ -1592,6 +1649,8 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
         cutoff = pd.Timestamp(year=y, month=1, day=1) - pd.Timedelta(days=35)
         stats: Dict[str, Tuple[float, float, int]] = {}
         stats_bot: Dict[str, Tuple[float, float, int]] = {}
+        stats_alt: Dict[str, Tuple[float, float, int]] = {}       # [v0.8.0 F6(c)]
+        stats_hit: Dict[str, Tuple[float, int]] = {}              # [v0.8.0 F6(c)]
         for name in rank_full:
             # 전방창이 cutoff를 넘지 않는 날만 — 룩어헤드 차단(S의 관행과 동일한 취지, 여기서는 명시적으로).
             sp = top1_full[name]
@@ -1601,6 +1660,13 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
             stats[name] = S._nw_mean_tstat(sp.reindex(ix).dropna(), lag=h)
             sb = bottom1_full[name]
             stats_bot[name] = S._nw_mean_tstat(sb.reindex(ix).dropna(), lag=h)
+            # [v0.8.0 F6(c)] 진단 2종(채택에는 쓰지 않는다) — 대체 벤치 t · 부모 안 실현 1위 적중률.
+            _sa = top1_alt_full.get(name)
+            stats_alt[name] = (S._nw_mean_tstat(_sa.reindex(ix).dropna(), lag=h)
+                               if _sa is not None and len(_sa) else (np.nan, np.nan, 0))
+            _sh = top1_hit_full.get(name)
+            _hv = _sh.reindex(ix).dropna() if _sh is not None else pd.Series(dtype=float)
+            stats_hit[name] = (float(_hv.mean()) if len(_hv) >= 30 else np.nan, int(len(_hv)))
         strict = [n for n, (m, tv, nn) in stats.items()
                   if nn >= min_days and pd.notna(tv) and tv >= t_str]
         basis = {n: f"엄격(t≥{t_str:.1f})" for n in strict}
@@ -1640,13 +1706,25 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
             rows.append({"적용연도": y, "학습창 마감": str(cutoff.date()), "신호": name,
                          "사전방향": _SPECS.get(name, S.ROTATION_SIGNAL_SPECS.get(name, (0, "", "")))[0],
                          "사전방향 근거": _SPECS.get(name, (0, "", ""))[2][:120],
-                         "선택 통계": "부모 안 상위1 − 부모ETF",
+                         "선택 통계": ("부모 안 상위1 − 그룹중앙값" if _bench_mode == "group_median"
+                                    else "부모 안 상위1 − 부모ETF"),   # [v0.8.0 F6(c)] 어느 타깃으로 뽑았나
                          "학습 관측일": int(nn),
                          f"학습 상위1−부모(%/{h}일)": (round(m * 100, 3) if pd.notna(m) else np.nan),
                          "NW-HAC t(상위1)": (round(float(tv), 2) if pd.notna(tv) else np.nan),
                          "NW-HAC t": (round(float(tv), 2) if pd.notna(tv) else np.nan),
                          f"학습 하위1−부모(%/{h}일)": (round(mb * 100, 3) if pd.notna(mb) else np.nan),
                          "NW-HAC t(하위1)": (round(float(tb), 2) if pd.notna(tb) else np.nan),
+                         # [v0.8.0 F6(c)] 진단 2열(채택 미관여) — 메가캡 부모 편향을 뺀 벤치와 순서 잣대.
+                         #   REPORT47 §4: '부모 초과' 비율이 어떤 규칙으로도 0.5 미만이었다(구조적 편향).
+                         #   중앙값 벤치 t가 부모ETF 벤치 t보다 뚜렷이 크면 편향이 원인이었다는 뜻이고,
+                         #   둘 다 0 근처면 산업 순위 자체에 정보가 없다는 뜻이다(배분을 접을 근거).
+                         f"학습 상위1−그룹중앙값(%/{h}일)": (round(float(stats_alt.get(name, (np.nan,))[0]) * 100, 3)
+                                                     if pd.notna(stats_alt.get(name, (np.nan,))[0]) else np.nan),
+                         "NW-HAC t(상위1, 중앙값벤치)": (round(float(stats_alt.get(name, (np.nan, np.nan))[1]), 2)
+                                                 if pd.notna(stats_alt.get(name, (np.nan, np.nan))[1]) else np.nan),
+                         "학습창 1위=부모안 실현1위 비율": (round(float(stats_hit.get(name, (np.nan, 0))[0]), 3)
+                                                 if pd.notna(stats_hit.get(name, (np.nan, 0))[0]) else np.nan),
+                         "무작위 기대(1/부모안 산업수)": round(float(np.mean([1.0 / len(v) for v in groups.values()])), 3),
                          "채택": ("채택" if name in sel else
                                 ("표본부족" if nn < min_days else "미채택")),
                          "채택 근거": basis.get(name, ""),
@@ -2169,17 +2247,25 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
     # [v0.3.0 §B1] 2D 사전등록 격자(cap × fb) — 1D 사다리 두 개로는 (1.0, 0.0) 같은 조합을 못 본다.
     #   리포트41 격자에서 ①②③④를 전부 통과한 행이 '폴백 0%'였고 '리더캡 100%'도 강건 통과였는데,
     #   그 둘의 조합은 측정된 적이 없었다. 라벨은 S의 _is_cap_grid 관행대로 여는 대괄호 접두로 매칭한다.
+    _grid_on = bool(getattr(icfg, "INDUSTRY_GRID", True))
+    if not _grid_on:
+        log("ROTATION", kv(event="industry_grid_off",
+                           note="INDUSTRY_GRID=False — 13_산업배분전략에 ★ + 대조군만 싣는다(격자 28행 생략). "
+                                "리포트6에서 리더 판단 0일이라 전 행이 S★와 비트 동일했다. 되돌리기: True"), M=M)
     for cv in (0.25, 0.5, 0.75, 1.0):
         for fv in (0.0, 0.25, 0.5, 1.0):
+            if not _grid_on:
+                break
             if abs(cv - live_cap) < 1e-9 and abs(fv - live_fb) < 1e-9:
                 continue                                  # 라이브 조합은 ★ 행이 이미 있다
             target_ws[f"리더 {cv:.0%}·폴백 {fv:.0%} [산업집중격자]"] = _mk_target_w(cv, fv)
     # [v0.3.0 §A3] 잔여 처리 모드 격자 — "산업만 배분"이 실제로 무엇을 바꾸는지 숫자로 보여 준다.
     for md in ("parent", "industries", "cash"):
-        if md == live_mode:
+        if md == live_mode or not _grid_on:
             continue
         target_ws[f"잔여 {md} [잔여격자]"] = _mk_target_w(live_cap, live_fb, only_mode=md)
     # [v0.4.0 §I2 국면게이트격자] 리더를 인정하는 부모 자기국면 집합을 바꿔 다시 판단한다.
+    #   [v0.8.0 F6(a)] INDUSTRY_GRID=False면 아래 격자 4종을 전부 건너뛴다.
     #   근거(§3.4 H1): 부모 **중립**일 때 고베타 1위의 부모초과가 +0.81%/21일(t 1.94, 6/8년)로 가장 컸고
     #   부모 상승(+0.25, t 0.73)·하락(−0.21, t −0.32)은 약했다. v0.3.0이 켠 ("RISK_ON",)은 그 반대편이다.
     #   13l B블록 실측과도 맞는다: '국면 게이트 차단일'의 1위>부모 비율 0.531·+0.29% vs '해당없음' 0.471·−0.21%.
@@ -2189,6 +2275,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             continue
         lbl = "제약없음" if not rg else "+".join(rg)
         try:
+            if not _grid_on:
+                continue
             target_ws[f"리더국면 {lbl} [국면게이트격자]"] = _mk_target_w(
                 live_cap, live_fb, groups_over=_run_groups({"INDUSTRY_LEADER_REGIMES": (tuple(rg) if rg else None)}))
         except Exception as e:   # noqa
@@ -2196,6 +2284,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
     # [v0.4.0 §I3 중립바스켓격자] 부모 안 '자기국면 중립' 산업 균등 — 기존 폴백('적격=상승')과 다른 집합.
     #   §3.4 H2: 중립 바스켓 − 부모 +0.46%/21일(t 2.03, 6/9년). 부모 상승·중립 국면 모두에서 양수였다.
     for ns in (getattr(icfg, "INDUSTRY_NEUTRAL_BASKET_GRID", ()) or ()):
+        if not _grid_on:
+            continue
         target_ws[f"중립바스켓 {float(ns):.0%} [중립바스켓격자]"] = _mk_target_w(live_cap, live_fb, neutral_share=float(ns))
     # [v0.4.0 §I3 분산게이트격자] 부모 안 63일 상대수익 횡단면 σ가 롤링 252일 상위 q분위인 날만 리더 인정.
     #   §3.4 H3: 분산 Q4에서 REL_NEAR_HIGH 1위 +0.41%/21일 vs Q1 +0.02% — '고를 값어치가 있을 때만 고른다'.
@@ -2224,6 +2314,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                 g2["leader_ind"] = g0["leader_ind"].mul(keep.astype(float), axis=0)
                 g2["basket_ind"] = g0["basket_ind"]
                 gq[p_] = g2
+            if not _grid_on:
+                continue
             target_ws[f"분산게이트 상위{1 - float(q):.0%} [분산게이트격자]"] = _mk_target_w(live_cap, live_fb, groups_over=gq)
     # [v0.5.0 I-B 사전등록 격자] 회피 자격 분리 — '자기 점수 최고 산업'만 부모 ETF로 되돌리고 나머지는 균등.
     #   근거(REPORT44 §3.2): SCORE_PCT 하위1(사전방향 −1 → 자기 점수 최고) − 부모 t ≤ −2.0이 9/9 학습창.
@@ -2233,6 +2325,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
     if _sa_years and bool(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_GRID", ())):
         _g_av = _run_groups({"ROTATION_AVOID_STANDALONE": True, "INDUSTRY_AVOID_TO_PARENT": True})
         for _fv in tuple(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_GRID", ()) or ()):
+            if not _grid_on:
+                continue
             target_ws[f"회피분리 · 바스켓 {float(_fv):.0%}(점수최고 산업→부모) [회피분리격자]"] = \
                 _mk_target_w(live_cap, float(_fv), groups_over=_g_av)
         if bool(getattr(icfg, "INDUSTRY_AVOID_STANDALONE_COUNTER", True)):

@@ -21,6 +21,13 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.53.0 - 2026-09-13 - [리포트 시트 1개 추가 — **M(SPY) 신호·가중치·성과는 v1.52.1과 비트 동일**]
+#    13p_소수클래스정확도 신설(F5 ★). 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이 있다")를
+#    M 자신에게도 적용한다 — 그동안 S 리포트에서 우회 계산으로만 보이던 값이다. REPORT47 §2.2 실측(SPY, h=21):
+#    예측=하락 MCC +0.052 · **현금(목표비중 0) +0.160**(정밀도 0.442 vs 기저 0.317·재현율 0.362) ·
+#    '상승 아님' **+0.187**. 즉 M은 소수 클래스에 정보가 있고, 섹터 계층이 그것을 재추정하면서 깎는다
+#    (섹터 자기 기계 0.055 vs M 상속 0.079~0.088). sector_rotation.build_minority_class_accuracy를 그대로
+#    호출한다(함수 재사용 — M은 S에 의존하지 않으므로, 모듈이 없으면 조용히 건너뛴다). 신호·배분 무변경.
 #  VERSION: v1.52.1 - 2026-09-13 - [상수 1개 추가 — **M(SPY) 신호·가중치·성과는 v1.52.0과 비트 동일**]
 #    VALIDATION_SCHEMA = "m1" 신설. sector_rotation.py v0.43.0(R7)이 섹터/산업 검증표 캐시 키에 BUNDLE_VERSION
 #    대신 이 값을 쓴다 — 번들 버전은 문구만 바꿔도 오르는데 그때마다 40섹터·산업의 검증+워크포워드(≈3.7시간 CPU)가
@@ -10073,6 +10080,27 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         # [v1.32.0] 사용자 지시("정확도 시트좀 따로 만들고") — 국면 예측을 실제 결과로 채점. 신호 무변경.
         "12_예측정확도": build_prediction_accuracy(daily, cfg),
     }
+    # [v1.53.0 F5 ★] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이
+    #   있다")를 **M 자신에게도** 적용한다. 그동안 S 리포트에서 우회 계산으로만 보이던 값이다(REPORT47 §2.2:
+    #   SPY h=21 현금 기준 MCC +0.160 · '상승 아님' +0.187 — M은 소수 클래스에 정보가 있고 섹터 재추정이
+    #   그것을 깎는다). sector_rotation.build_minority_class_accuracy를 그대로 호출한다(함수 재사용, 신호 무변경).
+    #   sector_rotation을 못 찾으면 조용히 건너뛴다 — M은 S에 의존하지 않아야 한다.
+    try:
+        _S = sys.modules.get("sector_rotation")
+        if _S is not None and hasattr(_S, "build_minority_class_accuracy"):
+            _mres = {"SPY": {"state": sig["state"], "px_close": bt["Close"] if "Close" in bt.columns else res["px_adj"],
+                             "target_pos": sig["target_pos"]}}
+            _mdf, _msumm = _S.build_minority_class_accuracy(_mres, None, asset_label="시장")
+            if isinstance(_mdf, pd.DataFrame) and len(_mdf):
+                sheets["13p_소수클래스정확도"] = _mdf
+                res["minority_summary"] = _msumm
+                log("REPORT", kv(event="minority_class_ready_m", rows=len(_mdf),
+                                 prec=round(_msumm.get("regime_prec_mean", np.nan), 3),
+                                 base=round(_msumm.get("regime_base_mean", np.nan), 3),
+                                 mcc=round(_msumm.get("regime_mcc_mean", np.nan), 3),
+                                 balanced=round(_msumm.get("regime_balanced_mean", np.nan), 3)))
+    except Exception as _e:   # noqa
+        log("REPORT", kv(event="minority_class_failed_m", err=type(_e).__name__, msg=str(_e)[:150]), level="warning")
 
     n_pass = int((val_full["판정"] == "PASS").sum())
     # [v1.0.5 버그수정] 감사 표본이 부족하면 lookahead_audit()이 '일치' 컬럼이 없는
@@ -10461,7 +10489,7 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.52.1"
+BUNDLE_VERSION = "v1.53.0"
 # [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
 #   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /
 #   decay_weights / composite 입력 스펙에만 의존한다. ⚠ 그 네 곳의 **산식**이 바뀔 때만 이 값을 올릴 것(안 올리면 오래된

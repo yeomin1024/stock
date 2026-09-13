@@ -1,31 +1,46 @@
 # =============================================================================
 #  run_pipeline.py
-#  VERSION: v1.3.0 - 2026-09-13 - [문서 + 단계별 실행 레시피 — 실행 로직 무변경] S v0.43.0 · I v0.7.0 · M v1.52.1.
-#                    REPORT46(소수 클래스 잣대) 구현분: R1 13p_소수클래스정확도(S·I) · R2 ⚠ 최근성 조건 켬 ·
-#                    R3 꼴찌용 후보 3종 · R4 균등t 하한 사전등록 · R5 ★ 수익 분해 줄 · R6 ⚠ I 동결 해제(사용자 지시) ·
-#                    R7 검증 캐시 키 수리(문구 수정마다 3.7시간 재검증되던 것을 끊음).
+#  VERSION: v1.4.0 - 2026-09-13 - [문서 + 단계별 실행 레시피 — 실행 로직 무변경] S v0.44.0 · I v0.8.0 · M v1.53.0.
+#                    REPORT47 구현분: F1 역방향 회피 격자 부활 · F2 ⚠ 최선가용을 순서 잣대로 · F3 M 상속
+#                    (13p 비교열 + [국면상속격자]) · F4 ★ 13q 하락확률보정 · F5 ★ M 13p · F6 산업 벤치 진단·격자 플래그 ·
+#                    F7 격자 기준 ⑤(주력 편향).
 #
-#  ★ 단계별 실행 레시피(REPORT46 §6):
-#    1) **기본 실행**: out = RP.main()
-#       켜지는 것: 13p(S·I) · 13d/13g 꼴찌 적중 열 · 13f ⑦⑧ · 00시트 '소수 클래스 정확도'·'★ 수익 분해' · I 배분 시트
-#       (13_산업배분전략·13c_일별배분비중·13c2·13f·13j·13l·14·15 — 실행시간 +약 38분) · ⚠ R2(ROTATION_RECENT_MIN_T=2.0).
-#       볼 것: 13p 블록 A 11섹터 하락 균형정확도(기준선 0.503) · 블록 B 2026 리더→상위3(기준선 0.22, R2로 올라야 하고
-#       리더 판단일은 줄어야 정상) · 13g 신규 3후보(HAZ_PCT_OWN·REL_VOL_RATIO·REL_DD_252H)의 하위1 t·꼴찌 실현하위3 비율 ·
-#       I 13_산업배분전략/13c/13f/14 · **00시트 '캐시 적중'**(R7 — 종전 키 이관으로 이번 실행부터 적중해야 한다).
-#    2) R2 되돌리기 대조(원인 귀속 — 13p 블록 B만 비교): out = RP.main(s_overrides={"ROTATION_RECENT_MIN_T": None})
-#    3) R4 단독 판정: out = RP.main(s_overrides={"ROTATION_STRICT_REQUIRE_UNIFORM_T": 1.0})
-#    4) S-N 단독(종전 계획): out = RP.main(s_overrides={"SECTOR_HAZARD_CONFIRM_GATE": True})
-#    (한 번에 하나 — 2)~4)를 같이 켜면 13p 변화의 원인 귀속이 흐려진다.)
+#  ★ 단계별 실행 레시피(REPORT47 §7 — 한 번에 하나):
+#    1) **F2 단독 판정**(⚠ 채택층): out = RP.main()
+#       이번 기본 실행에서 ⚠는 F2 하나다(ROTATION_BEST_AVAILABLE_RANK_BY="hit"). 리포트43 13g로 재현한
+#       영향 범위는 **2020년 한 해**뿐이다(엄격 신호가 없어 최선가용이 발동하는 유일한 해 중 선택이 갈리는 해):
+#         v0.43 t 순 → REL_DD_252H(t 1.46·순서 0.309) + SCORE_CS_Z  → 리더 12일 · 초과 −0.7%p
+#         v0.44 순서 순 → SCORE_PCT(0.319) + SCORE_CS_Z(= v0.42.1 조합) → 리더 161일 · 초과 +10.5%p(기대)
+#       볼 것: 13p 블록 B **2020 리더 판단일·리더→상위3**(기준선 12일/0.083) · 13f ③(1.62 → 2.0 복귀하는가) ·
+#              2026은 무변경이어야 한다(16일/1.000 유지 — 그 해는 최선가용이 발동하지 않는다).
+#       되돌리기 대조: out = RP.main(s_overrides={"ROTATION_BEST_AVAILABLE_RANK_BY": "t"})
+#    2) 같은 실행에서 함께 나오는 진단·격자(신호 무변경 — 따로 돌릴 필요 없다):
+#       · 13p 블록 B '역방향 회피 대상 → 실현 상위3'(기준선: 상대변동성 최저 섹터 0.147) + 13_섹터배분전략
+#         **[역방향회피격자] 2행** → 4기준(+⑤) 통과하면 그때 라이브 스위치를 켠다(ROTATION_REVERSE_AVOID).
+#       · 13p 블록 A 'M상속(M현금/M상승아님) MCC'와 'M상속 우위(MCC차)'(기준선: 자기 0.055 · M현금 0.079 ·
+#         M상승아님 0.088) + **[국면상속격자] 2행**.
+#       · **13q_하락확률보정** — 신뢰도 기울기 ≥ 0.10이면 방향 정보가 있다는 뜻이고, 그때 비로소 문턱을
+#         기저율에 맞춰 재현율 한계(라벨 방식 ~0.074)를 풀 수 있다. **배분 미사용**.
+#       · M 리포트 **13p_소수클래스정확도**(기준선: SPY 현금 MCC +0.160 · 상승아님 +0.187).
+#       · 격자 수렴 줄이 **①②③④⑤**로 — ⑤에서 걸러진 행(주력 편향을 키우는 행)을 함께 보여 준다.
+#       · I 13g 진단 4열(중앙값 벤치 t · 부모 안 실현1위 비율) — 부모 초과 타깃의 구조적 편향(0.45~0.49)이
+#         원인인지, 산업 순위 자체에 정보가 없는지를 가른다.
+#    3) 그 다음 라운드 후보(각각 단독):
+#       s_overrides={"ROTATION_STRICT_REQUIRE_UNIFORM_T": 1.0}      # R4 균등 t 하한
+#       s_overrides={"SECTOR_HAZARD_CONFIRM_GATE": True}            # S-N
+#       i_overrides={"ROTATION_VALIDATION_BENCH": "group_median"}   # F6(c) 타깃 전환
 #
-#  ⚠ v0.43.0/v0.7.0 기본값과 되돌리기 한 줄:
-#    S: s_overrides={"ROTATION_RECENT_MIN_T": None}          # ⚠ R2 되돌리기(v0.42.1: 진단만)
-#       s_overrides={"ROTATION_STRICT_REQUIRE_UNIFORM_T": 1.0}  # ⚠ R4 켜기(기본 None)
-#       s_overrides={"ROTATION_SIGNALS": (...)}              # R3 후보 3종 제외하려면 목록에서 빼면 된다
-#       s_overrides={"SECTOR_HAZARD_CONFIRM_GATE": True}     # ⚠ S-N(기본 False)
-#       s_overrides={"SECTOR_REGIME_GATE_DECAY": False}      # ⚠ S-M 되돌리기
-#       s_overrides={"USE_CACHE": False}                     # R7 캐시를 아예 안 쓰려면
-#    I: i_overrides={"INDUSTRY_LAYER_FROZEN": True}          # ⚠ R6 되돌리기(동결 — 배분 시트 생략, −38분)
-#       i_overrides={"INDUSTRY_RUN_SENSITIVITY": True}       # 06c_임계값민감도 켬
+#  ⚠ v0.44.0/v0.8.0 기본값과 되돌리기 한 줄:
+#    S: s_overrides={"ROTATION_BEST_AVAILABLE_RANK_BY": "t"}   # ⚠ F2 되돌리기(v0.43.0 동작)
+#       s_overrides={"ROTATION_BEST_AVAILABLE_MIN_HIT": 0.27}  # F2-b 켜기(기본 None)
+#       s_overrides={"ROTATION_REVERSE_AVOID_GRID": ()}        # F1 격자 끄기
+#       s_overrides={"ROTATION_REVERSE_AVOID": True}           # ⚠ F1 라이브 적용(격자 통과 뒤에만)
+#       s_overrides={"RUN_DOWN_PROB": False}                   # F4 13q 끄기(실행시간 절약)
+#       s_overrides={"GRID_CRITERION_PRIMARY_BIAS": False}     # F7 끄기(종전 4기준)
+#       s_overrides={"ROTATION_RECENT_MIN_T": None}            # ⚠ R2 되돌리기
+#    I: i_overrides={"INDUSTRY_GRID": False}                   # F6(a) 격자 28행 생략(13·13c·14는 그대로)
+#       i_overrides={"ROTATION_VALIDATION_BENCH": "group_median"}  # ⚠ F6(c) 검증 타깃 전환
+#       i_overrides={"INDUSTRY_LAYER_FROZEN": True}            # ⚠ 동결(배분 시트 생략)
 #
 #  VERSION: v1.0.1 - 2026-09-12 - [문서만 변경 — 실행 로직·기본값 무변경] S v0.39.0에서 SECTOR_EXCLUDE
 #                    기본값이 ("XLB","XLE") → ()(11섹터 전부 예측)로 돌아갔다(사용자 지시 "sector는 다시
@@ -70,7 +85,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.3.0"
+VERSION = "v1.4.0"
 VERSION_DATE = "2026-09-13"
 
 MODULE_FILES = {
