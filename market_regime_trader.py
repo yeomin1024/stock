@@ -21,6 +21,11 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.52.1 - 2026-09-13 - [상수 1개 추가 — **M(SPY) 신호·가중치·성과는 v1.52.0과 비트 동일**]
+#    VALIDATION_SCHEMA = "m1" 신설. sector_rotation.py v0.43.0(R7)이 섹터/산업 검증표 캐시 키에 BUNDLE_VERSION
+#    대신 이 값을 쓴다 — 번들 버전은 문구만 바꿔도 오르는데 그때마다 40섹터·산업의 검증+워크포워드(≈3.7시간 CPU)가
+#    통째로 재계산되던 것(리포트42/5 실측: 캐시 적중 0/29)을 막는다. ⚠ validate_indicators / build_walkforward_weights /
+#    decay_weights / composite 입력 스펙의 **산식**이 바뀌면 이 값을 올려야 한다(안 올리면 오래된 캐시가 쓰인다).
 #  VERSION: v1.52.0 - 2026-09-13 - [⚠ 훅 1개만 추가 — **M(SPY) 신호·가중치·성과는 v1.51.0과 비트 동일**.
 #                       generate_signals(hazard_confirm=None) — 위험(H)트랙 규칙 ①(위험급등 단독
 #                       위험회피 진입)에 호출부가 bool 마스크를 걸 수 있게 한다. False인 날은 ①을
@@ -10456,7 +10461,12 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.52.0"
+BUNDLE_VERSION = "v1.52.1"
+# [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
+#   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /
+#   decay_weights / composite 입력 스펙에만 의존한다. ⚠ 그 네 곳의 **산식**이 바뀔 때만 이 값을 올릴 것(안 올리면 오래된
+#   캐시가 새 산식 대신 쓰인다). 동작 변화 없음 — 상수 추가뿐(SPY ★ 비트 동일).
+VALIDATION_SCHEMA = "m1"
 BUNDLE_REQUIRED_KEYS = ("cfg", "ind", "score", "score_pct", "haz_score", "haz_pct", "sig", "bt",
                         "cal", "px_dict", "fred", "px_adj", "price", "W", "W_haz")
 

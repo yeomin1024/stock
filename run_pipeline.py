@@ -1,60 +1,31 @@
 # =============================================================================
 #  run_pipeline.py
-#  VERSION: v1.2.0 - 2026-09-13 - [문서 + 단계별 실행 레시피 — 실행 로직 무변경] S v0.42.1 · I v0.6.0 ·
-#                    M v1.52.0. REPORT45 §6 구현분: S-I(채택 최근성 진단) · S-J(횡단면 후보 2종) ·
-#                    S-K([중립상한격자]) · S-L(13l 실보유 정의) · S-M(게이트 감쇠 t) · S-N(H자기확인, 기본 꺼짐) ·
-#                    S-O(06c 하락경과 행) · I-D(산업 리포트 완성: 13g 버그·13개 시트·13j·12 확장·00 정리) ·
-#                    S-G/I-B 폐기. 러너는 그대로 S.run/I.run에 cfg를 넘기므로 s_overrides/i_overrides로 전부 제어한다.
+#  VERSION: v1.3.0 - 2026-09-13 - [문서 + 단계별 실행 레시피 — 실행 로직 무변경] S v0.43.0 · I v0.7.0 · M v1.52.1.
+#                    REPORT46(소수 클래스 잣대) 구현분: R1 13p_소수클래스정확도(S·I) · R2 ⚠ 최근성 조건 켬 ·
+#                    R3 꼴찌용 후보 3종 · R4 균등t 하한 사전등록 · R5 ★ 수익 분해 줄 · R6 ⚠ I 동결 해제(사용자 지시) ·
+#                    R7 검증 캐시 키 수리(문구 수정마다 3.7시간 재검증되던 것을 끊음).
 #
-#  ★ 단계별 실행 레시피(REPORT45 §7 — 한 번에 하나씩 판정하려면 이대로):
-#    1) **이번 라운드 기본 실행**: out = RP.main()
-#       기본값으로 켜져 있는 것: S-I①(13g 최근창 진단 4열, 판정에는 미반영) · S-J(후보 2종 — 채택은
-#         매년 워크포워드가 정한다) · S-K([중립상한격자] 3행) · S-L(13l 실보유 정의 + 블록 F) ·
-#         S-M(09c 판정을 감쇠 t로) · S-O(06c 진단 4행) · I-D(리포트 시트 완성).
-#       기본값으로 **꺼져 있는** 것: S-I②(ROTATION_RECENT_MIN_T=None) · S-N(H자기확인) · I-C′ · I 동결 해제.
-#       이번 실행에서 볼 것(REPORT45 §7):
-#         · 13g: SCORE_PCT의 '최근 504일 t'와 '최근 252일 1위 실현상위3 비율'이 2024~26에 0/무작위(≈0.09)
-#                 근처인가 — 확장창 t 3.6~3.9와의 간극이 S-I②를 켤 근거다.
-#         · 13g: SCORE_CS_Z·SCORE_PCT_CHG_21이 채택되는 해가 있는가(포화하지 않는 척도가 실제로 이기는가).
-#         · 13_섹터배분전략 [중립상한격자] 3행의 4기준(①CAGR ②칼마 ③MDD ④강건성).
-#         · 09c: 감쇠 t로 XLE 2025·XLU 2022가 '유지'로 돌아오는가.
-#         · 09e: **비어 있는 것이 정상**(S-N이 꺼져 있다). 13l: 블록 A/B/E가 실보유 기준으로 바뀐 값.
-#         · I: 13g_산업순환매신호채택이 **처음으로** 리포트에 실린다(동결에서도) — 하위1 t를 여기서 본다.
-#              02~09d 13개 시트 + 12_산업요약 확장 열도 이번부터.
-#    2) S-N 단독 판정(⚠ 신호층 — 1)의 결과를 본 **뒤에** 따로 돌린다):
-#         out = RP.main(s_overrides={"SECTOR_HAZARD_CONFIRM_GATE": True})
-#         확인: 09e_H자기확인게이트에서 XLE가 '자기확인 요구'로, XLK가 '유지'로 갈리는가 ·
-#               12시트 'H진입 익일평균'이 XLE에서 음수로 돌아서는가 · XLV 국면정의검증이 PASS로 가는가 ·
-#               01_일별의 'H자기확인(차단)' 열에 실제 차단일이 서는가. ⚠ 되돌리기: 오버라이드를 빼면 끝.
-#    3) S-I② 최근성 조건(2)의 결과와 무관하게 1)의 13g를 보고 결정):
-#         out = RP.main(s_overrides={"ROTATION_RECENT_MIN_T": 0.0})
-#         확인: 2024~26 리더일이 줄고 13l '실보유 리더 > SPY'가 오르는가. ⚠ 되돌리기: None.
-#    4) I 동결 해제(13j_배분거래내역은 이때만 채워진다 — 배분이 없으면 실제 거래도 없다):
-#         out = RP.main(i_overrides={"INDUSTRY_LAYER_FROZEN": False})   # 배분·격자 재실행 ≈ 38분
-#         확인: 13j에서 산업이 **부모 ETF를 이긴 비율**(00시트 요약 1줄) · 14_계층정합 위반 0일.
-#    5) I-C′(산업 데이터를 S 후보로 — ⚠ 캐시 무효화, 단독으로):
-#         out = RP.main(s_overrides={"USE_INDUSTRY_EXTRA_CANDIDATES": True})
-#    (프로젝트 규칙 "한 번에 하나"를 지키려면 1) → 2) → 3) 순서. 2)와 3)을 같이 켜면 13l 변화의
-#     원인 귀속이 흐려진다.)
+#  ★ 단계별 실행 레시피(REPORT46 §6):
+#    1) **기본 실행**: out = RP.main()
+#       켜지는 것: 13p(S·I) · 13d/13g 꼴찌 적중 열 · 13f ⑦⑧ · 00시트 '소수 클래스 정확도'·'★ 수익 분해' · I 배분 시트
+#       (13_산업배분전략·13c_일별배분비중·13c2·13f·13j·13l·14·15 — 실행시간 +약 38분) · ⚠ R2(ROTATION_RECENT_MIN_T=2.0).
+#       볼 것: 13p 블록 A 11섹터 하락 균형정확도(기준선 0.503) · 블록 B 2026 리더→상위3(기준선 0.22, R2로 올라야 하고
+#       리더 판단일은 줄어야 정상) · 13g 신규 3후보(HAZ_PCT_OWN·REL_VOL_RATIO·REL_DD_252H)의 하위1 t·꼴찌 실현하위3 비율 ·
+#       I 13_산업배분전략/13c/13f/14 · **00시트 '캐시 적중'**(R7 — 종전 키 이관으로 이번 실행부터 적중해야 한다).
+#    2) R2 되돌리기 대조(원인 귀속 — 13p 블록 B만 비교): out = RP.main(s_overrides={"ROTATION_RECENT_MIN_T": None})
+#    3) R4 단독 판정: out = RP.main(s_overrides={"ROTATION_STRICT_REQUIRE_UNIFORM_T": 1.0})
+#    4) S-N 단독(종전 계획): out = RP.main(s_overrides={"SECTOR_HAZARD_CONFIRM_GATE": True})
+#    (한 번에 하나 — 2)~4)를 같이 켜면 13p 변화의 원인 귀속이 흐려진다.)
 #
-#  ⚠ v0.42.1/v0.6.0의 기본값과 되돌리기 한 줄(신호·판정층은 ⚠ 표시):
-#    S: s_overrides={"SECTOR_HAZARD_CONFIRM_GATE": True}    # ⚠ S-N H진입 자기확인(기본 False — 사전등록만)
-#       s_overrides={"ROTATION_RECENT_MIN_T": 0.0}          # ⚠ S-I② 최근성 강등(기본 None = 진단만)
-#       s_overrides={"SECTOR_REGIME_GATE_DECAY": False}     # ⚠ S-M 되돌리기: 게이트 판정을 균등가중 t로(v0.41.0)
-#       s_overrides={"ROTATION_NEUTRAL_CAP_GRID": ()}       # S-K 격자 끔(라이브 적용은 ROTATION_NEUTRAL_CAP=0.4 등)
-#       s_overrides={"ROTATION_NEUTRAL_LEADER_GRID": (0.25, 0.5, 1.0)}  # 폐기된 [중립리더격자] 되살리기
-#       s_overrides={"ROTATION_REVERSE_AVOID_GRID": (2.0, 2.5)}         # 폐기된 S-G 격자 되살리기
-#       s_overrides={"SECTOR_OFF_AGE_SENSITIVITY": False}   # S-O 06c 진단 4행 끔(실행시간 미미)
-#       s_overrides={"ROTATION_SIGNALS": (...)}             # S-J 후보 2종 제외하려면 목록에서 빼면 된다
-#       s_overrides={"SECTOR_MARKET_BLOCK_CAP": 0.5, "SECTOR_MACRO_T_MIN": 2.5}  # ⚠ S-A 되살리기(캐시 무효화)
-#       s_overrides={"SECTOR_REGIME_GATE_STAT": "fwd21", "REGIME_ACCEPT_STAT": "fwd21"}  # 판정 잣대 v0.40.0
-#       s_overrides={"SECTOR_REGIME_GATE": False}           # 하락 정보 게이트 자체를 끔
-#       s_overrides={"USE_INDUSTRY_BREADTH": False}         # 산업폭 후보 끔(산업 가격 수집 생략)
-#       s_overrides={"USE_INDUSTRY_EXTRA_CANDIDATES": True} # ⚠ I-C′ 확장 후보 2종 켬(단독으로, 캐시 무효화)
-#    I: i_overrides={"INDUSTRY_LAYER_FROZEN": False}        # ⚠ 동결 해제(배분·격자·13j·14·15 재실행 ≈ 38분)
-#       i_overrides={"INDUSTRY_RUN_SENSITIVITY": True}      # I-D(D) 06c_임계값민감도 켬(산업당 수 초 × 29)
-#       i_overrides={"INDUSTRY_AVOID_STANDALONE_GRID": (0.5, 1.0)}  # 폐기된 I-B 격자 되살리기
-#       i_overrides={"ROTATION_VALIDATION_MODE": "pooled"}  # 채택 검증을 v0.3.1 방식으로
+#  ⚠ v0.43.0/v0.7.0 기본값과 되돌리기 한 줄:
+#    S: s_overrides={"ROTATION_RECENT_MIN_T": None}          # ⚠ R2 되돌리기(v0.42.1: 진단만)
+#       s_overrides={"ROTATION_STRICT_REQUIRE_UNIFORM_T": 1.0}  # ⚠ R4 켜기(기본 None)
+#       s_overrides={"ROTATION_SIGNALS": (...)}              # R3 후보 3종 제외하려면 목록에서 빼면 된다
+#       s_overrides={"SECTOR_HAZARD_CONFIRM_GATE": True}     # ⚠ S-N(기본 False)
+#       s_overrides={"SECTOR_REGIME_GATE_DECAY": False}      # ⚠ S-M 되돌리기
+#       s_overrides={"USE_CACHE": False}                     # R7 캐시를 아예 안 쓰려면
+#    I: i_overrides={"INDUSTRY_LAYER_FROZEN": True}          # ⚠ R6 되돌리기(동결 — 배분 시트 생략, −38분)
+#       i_overrides={"INDUSTRY_RUN_SENSITIVITY": True}       # 06c_임계값민감도 켬
 #
 #  VERSION: v1.0.1 - 2026-09-12 - [문서만 변경 — 실행 로직·기본값 무변경] S v0.39.0에서 SECTOR_EXCLUDE
 #                    기본값이 ("XLB","XLE") → ()(11섹터 전부 예측)로 돌아갔다(사용자 지시 "sector는 다시
@@ -99,7 +70,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.2.0"
+VERSION = "v1.3.0"
 VERSION_DATE = "2026-09-13"
 
 MODULE_FILES = {

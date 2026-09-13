@@ -1,5 +1,15 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.7.0 - 2026-09-13 - [⚠ 동결 해제(사용자 지시) · 소수 클래스 잣대 13p] REPORT46 §4·§5 R1/R6.
+#    (R6 ⚠ 기본값 변경) INDUSTRY_LAYER_FROZEN True → **False** — 사용자 지시("industry regime은 왜 sector처럼 섹터 배분
+#         전략, 일별배분비중 시트가 없어? 산업 배분 전략, 배분비중 시트 만들어"). 시트가 없던 원인은 v0.5.0 I-A 동결
+#         기본값(내 판단)이며, 시트 정의는 v0.3.0~v0.6.0에 전부 구현돼 있다 → 해제만으로 13_산업배분전략·13b·13c_일별
+#         배분비중·13c2·13f·13j·13l·14·15가 생긴다. ⚠ 되돌리기: i_overrides={"INDUSTRY_LAYER_FROZEN": True}
+#    (R1) 13p_소수클래스정확도 — S.build_minority_class_accuracy 재사용(블록 A·C: 산업 자기국면 하락 예측의 정밀도·
+#         재현율·균형정확도·MCC; 리포트5 재계산 §1.1: 정밀도 0.437 vs 기저 0.432, MCC 0.004 — 2019 0.074·2024 0.170은
+#         거꾸로) + 산업판 블록 B(build_industry_minority_block_b: 부모 안 리더 → 부모 안 실현 1위·부모 ETF 초과, 배분
+#         해제 시에만). 00시트 1줄. 계산은 01_일별·13c 값의 재집계뿐 — 신호·배분 비트 동일.
+#    ※ 연구·교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.6.0 - 2026-09-13 - [I-D 산업 리포트 완성 · I-B 폐기] REPORT45 §5.2/§6.
 #    사용자 질문("industry regime은 왜 일별 배분 거래 내역 시트가 없어? 이외에도 sector regime이랑
 #    비교해서 누락된게 있으면 추가해")에 대한 구현. **신호·배분 로직은 한 줄도 바꾸지 않는다**(조립만) —
@@ -360,7 +370,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.6.0"
+VERSION = "v0.7.0"
 VERSION_DATE = "2026-09-13"
 
 # =============================================================================
@@ -544,7 +554,12 @@ class IndustryConfig:
     #   · 실행시간 2,308초의 대부분이 배분·격자였다.
     #   즉 "부모 안 21일 리더 예측"은 이 후보군으로 풀리지 않는다 — 진단 시트(01Y·13g·14·15·16)만 유지한다.
     # ⚠ 되돌리기 한 줄: i_overrides={"INDUSTRY_LAYER_FROZEN": False}  (= v0.4.0 동작, 격자 전체 재실행)
-    INDUSTRY_LAYER_FROZEN: bool = True
+    # ⚠ [v0.7.0 R6 — 사용자 지시 2026-09-13 "산업 배분 전략, 배분비중 시트 만들어"] **동결 해제를 기본값으로 되돌린다.**
+    #   v0.5.0의 동결은 내 판단(두 라운드 13f FAIL)이었고, 사용자가 13_산업배분전략·13c_일별배분비중을 요구했다.
+    #   해제하면 13·13b·13c·13c2·13f·13j·13l·14·15가 전부 생기고 실행시간 +약 38분(배분·격자 백테스트, 캐시와 무관).
+    #   판정은 종전대로 13f(수용기준)·13_산업배분전략(격자 4기준)이 낸다 — 시트가 생긴다고 I★를 운용하지는 않는다.
+    #   ⚠ 되돌리기(동결): i_overrides={"INDUSTRY_LAYER_FROZEN": True}
+    INDUSTRY_LAYER_FROZEN: bool = False
     # ---- [v0.5.0 I-B 사전등록 실험] 회피 자격을 '채택'과 분리한다 --------------------
     # 근거(REPORT44 §3.2): 이 계층에서 **유일하게 안정적인 통계**는 리더가 아니라 회피 쪽이다 —
     #   SCORE_PCT(사전방향 −1)의 부모 안 **하위1 − 부모** t가 9개 학습창 전부 ≤ −2.0 (−2.19~−2.77,
@@ -3040,6 +3055,67 @@ def build_industry_allocation_trades(alloc: Dict[str, Any], results: Dict[str, D
     return df, summ
 
 
+def build_industry_minority_block_b(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]], sres: dict,
+                                    h: int = 21) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.7.0 R1] 13p 산업판 블록 B — 부모 안 리더 판단의 소수 클래스 잣대. 부모 그룹은 산업이 2~5개라 '상위3'이
+    무의미하므로 (1) 리더가 부모 안 **실현 1위**였나(무작위 = 1/n) (2) 리더가 부모 ETF를 이겼나(무작위 0.5)
+    (3) 리더가 부모 안 실현 꼴찌였나 — 를 연도별·부모별로 센다. 배분이 없으면(동결) 빈 표."""
+    rows: List[dict] = []
+    summ: Dict[str, Any] = {}
+    groups = (alloc or {}).get("groups") or {}
+    if not groups:
+        return pd.DataFrame(), summ
+    recs: List[dict] = []
+    for p, g in groups.items():
+        inds = [t for t in g.get("inds", []) if t in results]
+        if len(inds) < 2:
+            continue
+        tier = pd.Series(g["tier"]).astype(str); lead = pd.Series(g["leader"]).astype(str)
+        idx = tier.index
+        P = pd.DataFrame({t: pd.Series(results[t]["px_close"]).astype(float).reindex(idx) for t in inds})
+        fwd = P.shift(-h) / P - 1.0
+        ppx = (sres.get("sectors", {}) or {}).get(p, {}).get("px_close")
+        fwd_p = (pd.Series(ppx).astype(float).reindex(idx).pipe(lambda s_: s_.shift(-h) / s_ - 1.0)
+                 if ppx is not None else pd.Series(np.nan, index=idx))
+        held = tier.eq("리더")
+        for d in idx[held.values]:
+            L = lead.loc[d]
+            if L not in inds or pd.isna(fwd.loc[d, L]):
+                continue
+            row = fwd.loc[d].dropna()
+            if len(row) < 2:
+                continue
+            rk = row.rank(ascending=False, method="min")
+            recs.append({"y": int(d.year), "p": p, "lead": L, "n": int(len(row)),
+                         "top1": float(rk[L] == 1), "last": float(rk[L] == len(row)),
+                         "beats_parent": (float(fwd.loc[d, L] > fwd_p.loc[d]) if pd.notna(fwd_p.loc[d]) else np.nan)})
+    if not recs:
+        rows.append({"블록": f"B. 산업 순환매 소수클래스(h={h}일)", "구분": "리더 판단일 없음",
+                     "판독": "부모 안 리더 판단이 한 번도 나오지 않았다(13c 판단 열 전부 폴백/부모ETF)"})
+        return pd.DataFrame(rows), summ
+    R = pd.DataFrame(recs)
+
+    def _blk(d: pd.DataFrame, label: str, kind: str) -> dict:
+        return {"블록": f"B. 산업 순환매 소수클래스(h={h}일)", "구분": kind, "항목": label, "리더 판단일": int(len(d)),
+                "리더 → 부모 안 실현 1위": round(float(d["top1"].mean()), 4),
+                "무작위 기대(1/n)": round(float((1.0 / d["n"]).mean()), 3),
+                "리더 → 부모 안 실현 꼴찌": round(float(d["last"].mean()), 4),
+                "리더 > 부모 ETF": (round(float(d["beats_parent"].mean()), 4) if d["beats_parent"].notna().any() else np.nan),
+                "판독": ""}
+    for y, d in R.groupby("y"):
+        rows.append(_blk(d, str(int(y)), "연도"))
+    for p, d in R.groupby("p"):
+        rows.append(_blk(d, p, "부모"))
+    tot = _blk(R, "── 전체 ──", "전체")
+    tot["판독"] = ("'실현 1위' 비율이 1/n(무작위)보다 크고 '부모 ETF 초과'가 0.5보다 크면 부모 안 리더 판단에 정보가 있다. "
+                 "둘 다 무작위면 13f ①⑤가 PASS여도 리더 판단은 우연이다")
+    rows.append(tot)
+    summ = {"ind_lead_days": int(len(R)), "ind_lead_top1": float(R["top1"].mean()),
+            "ind_random_top1": float((1.0 / R["n"]).mean()),
+            "ind_lead_beats_parent": (float(R["beats_parent"].mean()) if R["beats_parent"].notna().any() else np.nan)}
+    return pd.DataFrame(rows), summ
+
+
 def industry_next_day(results: Dict[str, Dict[str, Any]]) -> Dict[str, dict]:
     """[v0.3.0 §A2] 산업별 '다음 거래일 예측' dict 모음. **새 계산이 전혀 없다** — S.build_sector_sheets가
     이미 M.build_next_day_prediction으로 만들어 둔 results[t]["sheets"]["next_day"]를 그대로 모을 뿐이다
@@ -3393,6 +3469,30 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                              trace=traceback.format_exc()[-800:].replace("\n", " | "),
                              next_step="13j 시트만 생략하고 나머지 리포트는 그대로 낸다"), M=M, level="warning")
 
+    # [v0.7.0 R1] 13p_소수클래스정확도 — 산업 자기국면(블록 A·C, S 함수 재사용) + 부모 안 리더(블록 B, 배분 해제 시).
+    minority_df, minority_summ = pd.DataFrame(), {}
+    if results:
+        try:
+            _t13p = time.time()
+            if hasattr(S, "build_minority_class_accuracy"):
+                minority_df, minority_summ = S.build_minority_class_accuracy(results, None, asset_label="산업")
+            _b, _bs = build_industry_minority_block_b(alloc, results, sres)
+            if len(_b):
+                minority_df = pd.concat([minority_df, _b], ignore_index=True, sort=False) if len(minority_df) else _b
+                minority_summ.update(_bs)
+            log("DIAG", kv(event="minority_class_ready", rows=len(minority_df),
+                           regime_balanced=round(minority_summ.get("regime_balanced_mean", np.nan), 3),
+                           regime_prec=round(minority_summ.get("regime_prec_mean", np.nan), 3),
+                           regime_base=round(minority_summ.get("regime_base_mean", np.nan), 3),
+                           regime_mcc=round(minority_summ.get("regime_mcc_mean", np.nan), 3),
+                           ind_lead_days=minority_summ.get("ind_lead_days", 0),
+                           ind_lead_top1=round(minority_summ.get("ind_lead_top1", np.nan), 3),
+                           ind_lead_beats_parent=round(minority_summ.get("ind_lead_beats_parent", np.nan), 3),
+                           elapsed_s=round(time.time() - _t13p, 2)), M=M)
+        except Exception as e:
+            log("DIAG", kv(event="minority_class_failed", err=type(e).__name__, msg=str(e)[:200],
+                           next_step="13p 시트만 생략"), M=M, level="warning")
+
     universe = pd.DataFrame(universe_rows)
     matrix = build_industry_prediction_matrix(results, eval_idx, icfg, S, nd_map=nd_map, alloc=alloc)
     summary = build_industry_summary(results, failed, table, icfg, S=S, alloc=alloc)   # [v0.6.0 I-D(E)] 33열
@@ -3431,6 +3531,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "leader_accuracy": leader_acc, "prediction_accuracy": pred_acc,   # [v0.3.0 §C1]
         "next_day": nd_map, "nd_spy": nd_spy,                              # [v0.3.0 §A2]
         "alloc_trades": alloc_trades, "alloc_trades_summary": alloc_trades_summary,   # [v0.6.0 I-D(B)] 13j
+        "minority": minority_df, "minority_summary": minority_summ,                  # [v0.7.0 R1] 13p
         "frozen": frozen,                                                  # [v0.6.0 I-D(F)] 00시트 '생략된 시트' 문구용
         "audit": audit_all, "icfg": icfg,
         "signal_start": (str(eval_idx[0].date()) if len(eval_idx) else "-"),
@@ -3520,6 +3621,10 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         if isinstance(alt, pd.DataFrame) and len(alt):    # [v0.3.0 §B7] 반대쪽 타깃 t 병기
             _g = _g.merge(alt, on=["적용연도", "신호"], how="left")
         sheets["13g_산업순환매신호채택"] = _g
+    # [v0.7.0 R1] 13p — 동결 여부와 무관(국면 블록은 항상, 블록 B는 배분 있을 때).
+    _mdf = ires.get("minority")
+    if isinstance(_mdf, pd.DataFrame) and len(_mdf):
+        sheets["13p_소수클래스정확도"] = _mdf
     fol = ires.get("following", pd.DataFrame())
     if isinstance(fol, pd.DataFrame) and len(fol):
         sheets["16_산업부모추종"] = fol                                  # [v0.2.0] 산업이 부모 섹터를 얼마나 따라가는가
@@ -3675,6 +3780,14 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                         _skipped_sheets + " — 전부 배분 산출물이다. 13g_산업순환매신호채택·01Y·16·"
                         "02~09d 진단 시트는 동결에서도 나온다(v0.6.0에서 13g 누락 버그 수정). "
                         "되돌리기: i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}"))
+    # [v0.7.0 R1] 소수 클래스 잣대 1줄 — 사용자 잣대.
+    _ms = ires.get("minority_summary") or {}
+    if _ms:
+        _txt = (S.minority_summary_text(_ms, "산업") if hasattr(S, "minority_summary_text") else "13p_소수클래스정확도 참조")
+        if pd.notna(_ms.get("ind_lead_top1", np.nan)):
+            _txt += (f" | 부모 안 리더 → 실현 1위 {_ms['ind_lead_top1']:.3f}(무작위 {_ms.get('ind_random_top1', np.nan):.2f}, "
+                     f"{_ms.get('ind_lead_days', 0)}일) · 리더 > 부모 ETF {_ms.get('ind_lead_beats_parent', np.nan):.3f}")
+        nd_rows.append(("소수 클래스 정확도(13p, 정보)", _txt))
     nd_rows.append(("09c_국면정보게이트 미적용(I-E 보류)",
                     "S는 섹터 하락 국면에 정보 게이트(09c)를 걸지만 I는 산업 자기국면에 걸지 않는다 — "
                     "적용 여부는 REPORT45 §6 I-E의 별도 판정 사항이다. 01Y_산업예측정확도 A블록(산업 하락 상태의 "
