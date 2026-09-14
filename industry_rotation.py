@@ -1,5 +1,87 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.14.0 - 2026-09-14 - [⚠ 순서기반 채택(리더 0일 해소) · 결합국면 · 17_부모추종조건 · 연도판정]
+#    REPORT53. **이 라운드도 산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
+#    사용자 지시: "결과인데 전혀 나아진게 없어 각 산업별로 부모 섹터를 따라가는 경우는 언제이고 반대로
+#    움직이는 경우는 언제인지, 어떤 조건인지 파악해서 예측해야돼 그게 왜 안되는건지 원인 찾고 개선방법
+#    찾아서 수정해봐". 보고서 12(= v0.13.0 산출) 실측으로 원인 4개를 특정했다.
+#
+#    ── 원인 진단(보고서 12 실측) ────────────────────────────────────────────────
+#    (C1 ★ 치명) **9년 동안 산업 리더가 단 하루도 없었다.** 13l: "총 0회 — 리더가 한 번도 나오지 않았다",
+#      채택신호 없음 21,850일 · 국면 게이트 차단 10,445일. 13g 연도별 채택/리더판단사용:
+#        2018:1/0  2019:1/0  2020:0/0  2021:1/0  2022:1/0  2023:0/0  2024:0/0  2025:0/0  2026:1/0
+#      채택된 5개 연도는 **전부 P_REL_VOL_RATIO 단독**이고 근거는 전부 '최선 가용(t≥1.0, 상위2)'이며,
+#      곧바로 "미사용(교차확인 불가 — 사용 신호 1개 < 필요 2개)"로 폐기됐다. 즉 신호를 어떻게 고쳐도
+#      **선택이 일어나지 않으니** 사용자가 보는 결과는 변할 수가 없었다. 이것이 "전혀 나아진게 없어"의 절반이다.
+#    (C2 ★) **채택 게이트가 크기(t)로 재서 순서 정보를 전부 버린다.** 2018 학습창 13g 실측:
+#      순서가 무작위보다 나은 신호 **16/16**(부모안 1위 적중 0.392~0.450 vs 무작위 0.327),
+#      |t| ≥ 1.0 인 신호 **4/16**. t가 통과시킨 P_REL_VOL_RATIO는 풀링 상위3−EW29 = −0.071 로
+#      **부호가 뒤집힌 신호**다(v0.10.0 H3가 이미 같은 진단을 내렸다 — 그때는 정족수 격자를 퇴역시켰지만
+#      정작 고쳐야 할 것은 정족수가 아니라 **채택 잣대**였다). 프로젝트 원칙 재확인:
+#      "t는 크기의 진술이지 순서의 진술이 아니다".
+#    (C3) **v0.13.0 M상속은 설계대로 작동했으나 산업 고유정보를 0으로 만들었다.** 01_일별 섹터상황 분포가
+#      M과 비트 동일(상승 1340 / 중립 618 / 하락 227), conf_notup ≡ m_notup = 0.3867.
+#      13p ⑥ ≡ ⑨ 정확히 일치(29산업 MCC 0.0842 · 기술6 0.1147 · SOXX 0.1639), ⑤ ≡ ⑩(0.0634/0.0835).
+#      같은 날 29산업 예측의 **단면 상이도 = 0.0000** — 시장 신호 하나를 29번 복사한 것이라
+#      "SOXX 같은 기술 산업 하락을 맞춰라"는 구조적으로 답할 수 없다.
+#    (C4 ★ 판정 기준 잘못) **v0.13.0의 사전등록 문턱이 풀샘플이었다.** ⑥의 연도별 성적은
+#      h=21 정밀도>기저 **4/8년**, h=63 **2/8년**. 풀샘플 MCC 0.0842는 상관 높은 29계열을 6.3만행으로
+#      세어 얻은 합성 효과이며, 유효 표본은 '시장 1계열 × 9년'에 가깝다. PASS가 났는데 개선이 없었던 이유다.
+#
+#    ── 사용자 질문("언제 따라가고 언제 반대로 가는가")에 대한 실측 ───────────────────
+#    (M1) 역행(h=21, 부호 불일치) 기저 0.1974. 결합점수 하위20% → 역행 예측:
+#         정밀도 **0.2422 vs 기저 0.1997**, 재현율 0.2880, 29산업 중 **21개 MCC>0** —
+#         예측일이 산업별로 203~619일로 흩어지는 **산업 고유** 신호다(C3의 0.0000과 대조).
+#    (M2 ★ 핵심 구조) 가장 강한 관계는 **M 국면에 따라 부호가 뒤집힌다**:
+#         beta63 → 부모초과(rel21) 단면 IC = **+0.0511(M상승아님) / −0.0377(M상승)**, 무조건 평균 −0.0032.
+#         volratio도 +0.0309 / −0.0333. 즉 두 국면이 서로를 상쇄해 무조건 평균이 0이 된다.
+#         16_산업부모추종은 전이력 고정값이라 이 답을 평균해서 없애버린다 — 사용자 질문의 답이 바로 여기 있었다.
+#    (M3) 결합도는 **자기이력 백분위로 재야** 한다: corr63 자기이력 백분위 → fi21 상위3−하위3
+#         +0.851%p/21일 **7/8년**, 같은 corr63 원값은 +0.460%p **5/9년**(원값 단면 비교는 GDX 0.42 /
+#         KBE 0.93 같은 정적 정체성으로 줄세우는 셈이다 — 16 시트가 정확히 그 형태다).
+#    (M4) 엔진이 선택에 쓰는 점수는 부호가 반대다: score_gap → fi21 상위3−하위3 **−1.133%p/21일, 0/9년 양수**,
+#         own_score → rel21 −0.645%p **2/9년**. 코드의 사전방향은 이미 SCORE_PCT·SCORE_MINUS_PARENT를
+#         −1로 등록해 두었으므로(13g '사전방향 근거') **부호는 고치지 않는다** — 문제는 쓰이지 못한 것(C1)이다.
+#
+#    ── 이번 변경 ────────────────────────────────────────────────────────────────
+#    (P1 ⚠ 기본값 변경 · within_parent_walkforward_select) **ROTATION_ADOPT_BY "t" → "order"**.
+#      채택·정렬을 t 대신 **순서여유**(= 13g '학습창 1위=부모안 실현1위 비율' − '무작위 기대')로 하고
+#      상위 ROTATION_ORDER_TOP_K(=3)개를 채택한다. 교차확인(ROTATION_MIN_AGREE=2)은 **그대로 둔다** —
+#      이제 3개가 채택되므로 정족수가 비로소 성립한다(우연 거르기 목적은 유지, 구조적 불가능만 제거).
+#      순서여유는 새로 계산하지 않는다 — 13g가 이미 내던 stats_hit 값을 쓴다(C2의 잣대를 그대로 채택에 연결).
+#      시뮬레이션 실측(r53 pf8, 워크포워드·사전등록 부호 고정):
+#        리더일 **0 → 연 888~1,831일**, 부모안 적중 **0.378 vs 무작위 0.343 — 8/8년 무작위 초과**,
+#        리더 21일 부모초과 **+0.209%** vs 타산업 **−0.120%**(차이 +0.329%p, 5/8년 양수).
+#      ⚠ 판정 잣대는 **순서(적중>무작위)**다 — 수익 차이는 5/8년이므로 수익으로 판정하지 않는다(C4 교훈).
+#      ⚠ 되돌리기: i_overrides={"ROTATION_ADOPT_BY": "t"}
+#    (P2 신규 · build_coupling_state) **결합국면** — 산업↔부모 결합도를 인과·시변 상태로 만든다.
+#      결합점수 = mean(corr63 자기이력백분위, 1−idio_share 자기이력백분위, pvol21 자기이력백분위),
+#      하위 COUPLING_LO(1/3) = 탈동조 · 상위 COUPLING_HI(2/3) = 강결합 · 사이 = 보통.
+#      01_일별에 '결합점수백분위'·'결합국면' 2열 추가. 근거 M1·M3. 되돌리기: i_overrides={"COUPLING_STATE": False}
+#    (P3 신규 시트 17_부모추종조건 · build_parent_follow_conditions) 사용자 질문에 직접 답하는 시트.
+#      블록 A 결합국면 × M국면 조건부 추종/역행률(h=5/21/63) · 블록 B 산업별 역행 소수클래스
+#      (정밀도/재현율/균형/MCC + **연도 정밀도>기저 k/n**) · 블록 C 부호반전표(M상승 vs M상승아님에서
+#      beta63·volratio·corr63의 단면 IC) · 블록 D 해석. 기저(역행률)를 같은 행에 함께 실어 판정 가능하게 한다.
+#    (P4 ★ 판정 기준 변경) **연도별 부호일치를 1급 기준으로.** _down_metrics_yearly 추가 →
+#      13p 블록 A2 각 규칙 행에 '연도 정밀도>기저'(k/n)와 '연도 MCC>0'(k/n) 열을 싣고,
+#      00_실행요약의 국면 판정이 **풀샘플 MCC가 아니라 연도 k/n**을 보고 판정하게 바꾼다.
+#      v0.13.0 ⑥이 풀샘플 문턱을 전부 통과했는데도(29 MCC 0.0842≥0.06, 기술6 0.1147≥0.09, SOXX 0.1639≥0.12,
+#      재현율 0.4338≥0.35, 균형 0.5414>0.53) 사용자에게 개선으로 보이지 않은 원인이 C4이므로,
+#      같은 실수가 반복되지 않게 판정 자체를 고친다. 이번 P1·P2·P3의 사전등록 문턱도 전부 연도 k/n이다.
+#    (P5 · build_parent_following_analysis) 16_산업부모추종 **정직화** — 전이력 베타·상관·추종률 열 머리에
+#      '정적(예측불가)' 표시를 달고, 자기이력 백분위 기반 열(결합국면 분포·국면별 조건부 초과)을 추가한다.
+#      M3 근거: 원값 단면 비교는 5/9년, 자기이력 백분위는 7/8년.
+#
+#    [검증] 이번 라운드 사전등록 문턱(전부 **연도 k/n** 기준, 다음 실행에서 판정):
+#      P1 ① 13l 리더일 > 0 인 연도 ≥ 7/9  ② 13l '리더=부모안 실현1위' > 무작위 인 연도 ≥ 7/9
+#         ③ 13g 연도별 '리더 판단 사용' ≥ 2 인 연도 ≥ 7/9   ④ I★ CAGR·MDD는 판정에 쓰지 않는다
+#      P2 ⑤ 17 블록 A 에서 탈동조 구간 역행률 > 강결합 구간 역행률 인 연도 ≥ 6/8
+#      P3 ⑥ 17 블록 B 29산업 평균 역행 정밀도 > 기저 인 연도 ≥ 5/8  ⑦ MCC>0 산업 ≥ 18/29
+#      P4 ⑧ 13p 블록 A2 ⑥의 '연도 정밀도>기저'가 4/8로 보고되는지 확인(= C4 재현 — 보고서 12와 일치해야 한다)
+#    ⚠ 이것은 연구·교육용 도구이며 투자 조언이 아니다. 위험 파라미터(포지션 크기·손절)는 이번에 건드리지 않았다.
+#    ⚠ INDUSTRY_SLEEVE_SHARE(0.0) · INDUSTRY_LEADER_STANDALONE_EDGE(None)는 그대로 둔다 —
+#      후자는 v0.10.0 H3에서 이미 실패 판정(−0.36/−0.37%p)이며 P1이 그 문제를 정면으로 대체한다.
+#
 #  VERSION: v0.13.0 - 2026-09-14 - [배분 시트 상시 산출 · ⚠ 산업 국면을 M 상속으로 · 국면 라벨 비교 블록]
 #    REPORT52 §5 E1·S1~S3·§6 N1~N6. **이 라운드는 산업(I)만 고친다**(사용자 지시 "industry만 수정")
 #    — S v0.48.0 · M v1.53.1은 손대지 않았다. 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
@@ -606,6 +688,7 @@ import sys
 import time
 import traceback
 import dataclasses
+import math
 import multiprocessing as mp
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -613,8 +696,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.13.0"
+VERSION = "v0.14.0"
 VERSION_DATE = "2026-09-14"
+# [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
+#   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
+TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
 
 # =============================================================================
 # [0] 산업 유니버스 — INDUSTRY_LAYER_SPEC_v0.1.md §2 + v0.2.0 확장(사용자 지시 "산업이 더 많은데 누락 확인")
@@ -777,6 +863,29 @@ class IndustryConfig:
     ROTATION_SELECT_T_MIN: float = 1.0
     ROTATION_SMOOTH_DAYS: int = 21
     ROTATION_MIN_AGREE: int = 2
+    # ---- [v0.14.0 P1 ★★ 기본값 변경] 순서기반 채택 — 리더 0일(C1)의 정면 해소 ----
+    #   왜: 보고서 12 13l이 "총 0회 — 리더가 한 번도 나오지 않았다"였고, 13g 연도별 채택/리더판단사용이
+    #       2018:1/0 2019:1/0 2020:0/0 2021:1/0 2022:1/0 2023:0/0 2024:0/0 2025:0/0 2026:1/0 이다.
+    #       채택된 5년은 전부 P_REL_VOL_RATIO 단독('최선 가용(t≥1.0, 상위2)')이고 곧바로
+    #       "미사용(교차확인 불가 — 사용 신호 1개 < 필요 2개)"로 폐기됐다. 신호를 고쳐도 선택이 없으니
+    #       결과가 변할 수 없었다. 원인은 정족수가 아니라 **채택 잣대**다(v0.10.0 H3의 오진을 교정).
+    #   근거(2018 학습창 13g 실측): 순서가 무작위보다 나은 신호 16/16(0.392~0.450 vs 무작위 0.327),
+    #       |t| ≥ 1.0 인 신호 4/16. t가 통과시킨 P_REL_VOL_RATIO는 풀링 상위3−EW29 = −0.071(부호 반전).
+    #       프로젝트 원칙: "t는 크기의 진술이지 순서의 진술이 아니다".
+    #   "order": 채택·정렬을 **순서여유**로 한다. 순서여유 = 13g '학습창 1위=부모안 실현1위 비율'
+    #       − '무작위 기대(1/부모안 산업수)'. 새 통계를 만들지 않는다 — stats_hit을 그대로 쓴다.
+    #       왜 절대값이 아니라 여유인가: 부모별 산업 수가 2~5개라 무작위 기대가 0.2~0.5로 흩어진다.
+    #   교차확인(ROTATION_MIN_AGREE=2)은 유지한다 — TOP_K=3이 채택되므로 정족수가 비로소 성립한다.
+    #       우연 거르기 목적은 그대로 두고 '구조적 불가능'만 제거하는 것이다.
+    #   시뮬레이션 실측(r53 pf8 · 워크포워드 · 사전등록 부호 고정):
+    #       리더일 0 → 연 888~1,831일 / 부모안 적중 0.378 vs 무작위 0.343 — **8/8년 무작위 초과**
+    #       리더 21일 부모초과 +0.209% vs 타산업 −0.120%(차이 +0.329%p, 5/8년)
+    #   ⚠ 판정은 **순서(적중>무작위)** 로 한다 — 수익 차이는 5/8년이라 판정 잣대로 쓰지 않는다(C4 교훈).
+    #   ⚠ 되돌리기: i_overrides={"ROTATION_ADOPT_BY": "t"}
+    ROTATION_ADOPT_BY: str = "order"               # ⚠ "t"(v0.13.0까지) | "order"(v0.14.0 라이브)
+    ROTATION_ORDER_TOP_K: int = 3                  # 순서여유 상위 K개 채택(교차확인 2가 성립하도록 ≥ MIN_AGREE+1)
+    ROTATION_ORDER_MIN_EDGE: float = 0.0           # 순서여유 최소값(0.0 = 무작위보다 낫기만 하면 후보)
+    ROTATION_ORDER_T_FLOOR: Optional[float] = None # 부가 안전판(t 하한). None = 사용하지 않음(순서만으로 판단)
     ROTATION_LEADER_MARGIN_STEPS: float = 1.0
     ROTATION_MIN_HOLD_DAYS: int = 21               # [v0.2.0] 리더 최소보유(거래일) — S와 동일(월 리밸런스 관행)
     ROTATION_EVIDENCE_TIER: bool = True
@@ -923,6 +1032,28 @@ class IndustryConfig:
     #   이 격자가 연 P_REL_VOL_RATIO는 산업 풀링에서 부호가 뒤집힌 신호다(H2 진단열이 이제 그것을 표시한다).
     #   되돌리기: i_overrides={"INDUSTRY_LEADER_STANDALONE_GRID": (0.03, 0.07)}
     INDUSTRY_LEADER_STANDALONE_GRID: Tuple[float, ...] = ()
+    # ---- [v0.14.0 P2 신규] 결합국면(coupling state) — 산업↔부모 결합도를 인과·시변 상태로 ----
+    #   왜: 사용자 질문이 "각 산업별로 부모 섹터를 따라가는 경우는 언제이고 반대로 움직이는 경우는 언제인지,
+    #       어떤 조건인지"다. 기존 16_산업부모추종은 전이력 고정 베타·상관 한 줄뿐이라 '언제'에 답하지 못한다.
+    #   결합점수 = mean( corr(산업,부모) 63일 자기이력백분위,
+    #                   1 − 특이변동성비중 자기이력백분위,
+    #                   부모 21일 변동성 자기이력백분위 )
+    #   ⚠ 반드시 **자기이력 백분위**로 정규화한다 — 원값 단면 비교는 GDX 0.42 / KBE 0.93 같은
+    #     정적 정체성으로 줄세우는 셈이 된다(실측: corr63 원값 5/9년 vs 자기이력백분위 **7/8년**).
+    #   실측 근거(r53 pf1·pf2·pf7):
+    #     · 역행률(h=21, 기저 0.1974): corr63 하위20% 0.2297 → 상위20% 0.1573,
+    #       특이변동성비중 하위 0.1595 → 상위 0.2301, 부모낙폭 깊을 때 0.1465 / 신고가 근처 0.2182
+    #       (= 부모 급락기엔 전부 따라가고, 고점 근처에서 탈동조한다)
+    #     · 결합점수 하위20% → 역행 예측: 정밀도 0.2422 vs 기저 0.1997, 29산업 중 21개 MCC>0
+    #     · corr63 자기이력백분위 → 절대수익 fi21 상위3−하위3 +0.851%p/21일, 7/8년
+    #   되돌리기: i_overrides={"COUPLING_STATE": False}   (17 시트·01_일별 2열이 사라진다)
+    COUPLING_STATE: bool = True
+    COUPLING_CORR_WIN: int = 63                    # 산업↔부모 상관·베타 관측창(거래일)
+    COUPLING_VOL_WIN: int = 21                     # 부모 변동성·특이변동성 관측창
+    COUPLING_MIN_HIST: int = 250                   # 자기이력 백분위 최소 관측(1년)
+    COUPLING_LO: float = 1.0 / 3.0                 # 이 아래 = 탈동조
+    COUPLING_HI: float = 2.0 / 3.0                 # 이 위 = 강결합
+    COUPLING_HORIZONS: Tuple[int, ...] = (5, 21, 63)   # 17 시트 블록 A가 재는 지평
     # ---- [v0.10.0 H1 ★★] 독립 산업 슬리브 — 산업 계층의 구조 전환 ----
     #   자세한 근거는 파일 헤더 v0.10.0 (H1) 블록과 REPORT49 §3 참조.
     #   SHARE: 라이브에서 S★ 총노출의 몇 %를 산업 슬리브에 줄 것인가(0.0 = 꺼짐 = I★ 비트 동일).
@@ -1682,6 +1813,27 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         log("PIPE", kv(event="threshold_sensitivity_done", ticker=ind_ticker, rows=int(len(sens)),
                        sec=timing["05c_임계값민감도"]), M=M)
 
+    # [v0.14.0 P2] 결합국면 — 산업↔부모 결합도를 인과·시변 상태로. 01_일별 2열 + 17_부모추종조건의 조건 변수.
+    #   왜 여기인가: adj_i(산업 총수익)·parent_tr(부모 총수익)이 이미 있고 새 다운로드가 없다(성능 영향 없음).
+    coupling: Optional[Dict[str, pd.Series]] = None
+    if bool(getattr(icfg, "COUPLING_STATE", True)):
+        try:
+            coupling = build_coupling_state(adj_i, parent_tr, icfg)
+            _cs = coupling["state"].reindex(idx_i)
+            _vc = _cs[_cs != "-"].value_counts()
+            log("FEAT", kv(event="coupling_state_ready", ticker=ind_ticker, parent=parent,
+                          win=int(getattr(icfg, "COUPLING_CORR_WIN", 63)),
+                          강결합=int(_vc.get("강결합", 0)), 보통=int(_vc.get("보통", 0)),
+                          탈동조=int(_vc.get("탈동조", 0)),
+                          corr_med=(round(float(coupling["corr"].reindex(idx_i).median()), 3)
+                                    if coupling["corr"].reindex(idx_i).notna().any() else "-"),
+                          note="자기이력 백분위 기준 — 원값 단면 비교는 정적 정체성으로 줄세우는 셈(P2 주석)"), M=M)
+        except Exception as e:
+            coupling = None
+            log("FEAT", kv(event="coupling_state_failed", ticker=ind_ticker, err=str(e)[:140],
+                          note="결합국면 없이 진행한다 — 01_일별 2열과 17 시트의 해당 산업 행이 빠진다"),
+                M=M, level="warning")
+
     sheets = S.build_sector_sheets(
         M, ind_ticker, cfg_i, specs, price_i, bt, bt_ma, sig, score, score_pct, n_used,
         haz_score, haz_pct, fast_pct, recov_conf, reason, ind_i, contrib, W, W_haz,
@@ -1702,6 +1854,11 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         _dly["국면 소스"] = ("M 상속(" + regime_src + ")") if regime_src != "own" else "자기 기계(own)"
         _dly["자기국면"] = _os.values
         _dly["자기 목표비중"] = _op.values
+        # [v0.14.0 P2] 결합국면 2열 — 산업이 그날 부모를 '따라가는 상태'인지 '탈동조 상태'인지.
+        #   표시 + 17_부모추종조건 시트의 조건 변수. 값은 전부 t일까지의 정보로만 만든다(build_coupling_state).
+        if coupling is not None:
+            _dly["결합점수백분위"] = coupling["score"].reindex(_dix).ffill().round(4).values
+            _dly["결합국면"] = coupling["state"].reindex(_dix).ffill().fillna("-").values
         sheets["daily"] = _dly
 
     # 풀링 순환매용 원자료(§6.2) — [v0.12.0 L6] build_industry_rotation_raw_signals()로 추출(§2c 참조,
@@ -1740,6 +1897,14 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "own_state": own_state.loc[own_state.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
         "own_target_pos": own_target_pos.loc[own_target_pos.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
         "regime_source": regime_src,
+        # [v0.14.0 P2] 결합국면 — 17_부모추종조건(build_parent_follow_conditions)이 이 값으로 조건을 자른다.
+        "coupling_score": (coupling["score"].loc[coupling["score"].index >= pd.Timestamp(cfg_i.SIGNAL_START)]
+                           if coupling is not None else pd.Series(dtype=float)),
+        "coupling_state": (coupling["state"].loc[coupling["state"].index >= pd.Timestamp(cfg_i.SIGNAL_START)]
+                           if coupling is not None else pd.Series(dtype=object)),
+        "coupling_corr": (coupling["corr"] if coupling is not None else pd.Series(dtype=float)),
+        "coupling_beta": (coupling["beta"] if coupling is not None else pd.Series(dtype=float)),
+        "coupling_idio_share": (coupling["idio_share"] if coupling is not None else pd.Series(dtype=float)),
         "score_pct": score_pct.loc[sig_mask], "haz_pct": haz_pct.loc[sig_mask],
         "haz_pct_industry": haz_pct_industry.loc[sig_mask],
         "strategy_ret": bt["strategy_ret"], "bh_ret": bt["bh_ret"], "pos_exec": bt["pos_exec"],
@@ -2241,19 +2406,52 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
             stats_pool_hit[name] = (float(_hpv.mean()) if len(_hpv) >= 30 else np.nan, int(len(_hpv)))
         strict = [n for n, (m, tv, nn) in stats.items()
                   if nn >= min_days and pd.notna(tv) and tv >= t_str]
-        basis = {n: f"엄격(t≥{t_str:.1f})" for n in strict}
-        sel = list(strict)
-        if len(sel) < need:
-            cands = sorted([(tv, n) for n, (m, tv, nn) in stats.items()
-                            if n not in sel and nn >= min_days and pd.notna(tv) and tv >= t_min], reverse=True)
-            add = [n for tv, n in cands[:max(max(best_n, need) - len(sel), 0)]]
-            basis.update({n: f"최선 가용(t≥{t_min:.1f}, 상위{best_n})" for n in add})
-            sel = sel + add
-        tier = "엄격" if strict else ("최선 가용" if sel else "없음")
-        sel_eff = list(strict) if strict else list(sel)
-        usable = len(sel_eff) >= (1 if tier == "엄격" else need)
-        if not usable:
-            sel_eff = []
+        # [v0.14.0 P1] 순서여유 — 채택에 쓰기 위해 여기서 먼저 만든다(종전에는 아래 진단용으로만 계산했다).
+        #   여유 = 부모안 1위 적중률 − 무작위 기대(1/부모안 산업수). 새 통계가 아니라 stats_hit 재사용.
+        #   groups는 이미 len>=2로 걸러져 있다(위 구성부) — 따라서 이 값은 v0.13.0과 비트 동일하다.
+        _rand_hit = float(np.mean([1.0 / len(v) for v in groups.values()])) if groups else np.nan
+        _edge_y: Dict[str, float] = {}
+        for _n in stats_hit:
+            _hv, _hn = stats_hit[_n]
+            _edge_y[_n] = (float(_hv) - _rand_hit) if (pd.notna(_hv) and pd.notna(_rand_hit)) else np.nan
+        _adopt_by = str(getattr(icfg, "ROTATION_ADOPT_BY", "t") or "t").strip().lower()
+        if _adopt_by == "order":
+            # [v0.14.0 P1 ★] 순서기반 채택 — C1(리더 0일)·C2(t가 순서를 버린다)의 정면 해소.
+            #   ⚠ 교차확인(need)은 그대로 둔다. TOP_K(=3) ≥ need(=2)라 정족수가 비로소 성립한다.
+            _ok = int(getattr(icfg, "ROTATION_ORDER_TOP_K", 3) or 3)
+            _omin = float(getattr(icfg, "ROTATION_ORDER_MIN_EDGE", 0.0) or 0.0)
+            _ofl = getattr(icfg, "ROTATION_ORDER_T_FLOOR", None)
+            _cands = []
+            for _n, (_m, _tv, _nn) in stats.items():
+                _e = _edge_y.get(_n, np.nan)
+                if _nn < min_days or pd.isna(_e) or _e < _omin:
+                    continue
+                if _ofl is not None and not (pd.notna(_tv) and _tv >= float(_ofl)):
+                    continue
+                _cands.append((_e, _n))
+            _cands.sort(reverse=True)
+            sel = [_n for _e, _n in _cands[:max(_ok, 1)]]
+            basis = {_n: "순서 채택(여유 %+.3f, 상위%d)" % (_edge_y[_n], _ok) for _n in sel}
+            tier = "순서" if sel else "없음"
+            sel_eff = list(sel)
+            # 순서 경로에서도 교차확인 정족수를 요구한다 — 1개만 통과하면 쓰지 않는다(우연 거르기 유지).
+            usable = len(sel_eff) >= need
+            if not usable:
+                sel_eff = []
+        else:
+            basis = {n: f"엄격(t≥{t_str:.1f})" for n in strict}
+            sel = list(strict)
+            if len(sel) < need:
+                cands = sorted([(tv, n) for n, (m, tv, nn) in stats.items()
+                                if n not in sel and nn >= min_days and pd.notna(tv) and tv >= t_min], reverse=True)
+                add = [n for tv, n in cands[:max(max(best_n, need) - len(sel), 0)]]
+                basis.update({n: f"최선 가용(t≥{t_min:.1f}, 상위{best_n})" for n in add})
+                sel = sel + add
+            tier = "엄격" if strict else ("최선 가용" if sel else "없음")
+            sel_eff = list(strict) if strict else list(sel)
+            usable = len(sel_eff) >= (1 if tier == "엄격" else need)
+            if not usable:
+                sel_eff = []
         avoid_ok = [n for n, (m, tv, nn) in stats_bot.items()
                     if n in sel_eff and nn >= min_days and pd.notna(tv) and tv <= -t_min]
         # [v0.5.0 I-B] 회피 자격을 **채택과 분리**한 집합 — 상위1 채택 여부와 무관하게 하위1 t ≤ −T_AV.
@@ -2266,7 +2464,7 @@ def within_parent_walkforward_select(results: Dict[str, Dict[str, Any]], eval_id
                                 for n, (m, tv, nn) in stats_bot.items()}
         avoid_standalone_by_year[y] = avoid_sa
         # [v0.9.0 I-F] 그 해 모든 후보의 순서 잣대 여유(채택 여부와 무관하게 기록 — 격자가 고른다)
-        _rand_hit = float(np.mean([1.0 / len(v) for v in groups.values()]))
+        #   [v0.14.0 P1] _rand_hit/_edge_y는 위 채택 블록에서 이미 계산했다(같은 값 · 재계산하지 않는다).
         leader_hit_by_year[y] = {n: float(stats_hit[n][0]) - _rand_hit
                                  for n in stats_hit if pd.notna(stats_hit[n][0])}
         rev = [n for n, (m, tv, nn) in stats.items()
@@ -3470,6 +3668,278 @@ def build_hierarchy_check(alloc: Dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _follow_metrics(pred: pd.Series, real: pd.Series) -> Dict[str, float]:
+    """[v0.14.0 P3] 소수 클래스(역행) 판정 지표 — _down_metrics와 같은 정의·같은 판정 잣대.
+    pred/real은 같은 인덱스의 bool. 반환: base·prec·rec·bal·mcc·n_pred."""
+    d = pd.DataFrame({"p": pred, "y": real}).dropna()
+    if d.empty:
+        return {"base": np.nan, "prec": np.nan, "rec": np.nan, "bal": np.nan, "mcc": np.nan, "n_pred": 0, "n": 0}
+    pb = d["p"].astype(bool).values
+    yb = d["y"].astype(bool).values
+    tp = int((pb & yb).sum()); tn = int((~pb & ~yb).sum())
+    fp = int((pb & ~yb).sum()); fn = int((~pb & yb).sum())
+    den = float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    rec = tp / (tp + fn) if (tp + fn) else np.nan
+    spc = tn / (tn + fp) if (tn + fp) else np.nan
+    return {"base": float(yb.mean()), "prec": (tp / (tp + fp) if (tp + fp) else np.nan), "rec": rec,
+            "bal": (0.5 * (rec + spc) if pd.notna(rec) and pd.notna(spc) else np.nan),
+            "mcc": ((tp * tn - fp * fn) / math.sqrt(den) if den > 0 else np.nan),
+            "n_pred": int(pb.sum()), "n": int(len(d))}
+
+
+def _yearly_consistency(pred: pd.Series, real: pd.Series, min_days: int = 40) -> Dict[str, Any]:
+    """[v0.14.0 P4 ★ 판정 기준 변경] **연도별 부호일치**를 1급 판정 잣대로 만드는 공통 헬퍼.
+
+    왜 이게 필요한가(원인 진단 C4): v0.13.0의 사전등록 문턱은 전부 **풀샘플**이었다. 13p 블록 A2 ⑥이
+    29산업 MCC 0.0842 · 기술6 0.1147 · SOXX 0.1639 · 재현율 0.4338 · 균형 0.5414로 문턱을 전부
+    통과했는데도 사용자에게는 개선으로 보이지 않았다("전혀 나아진게 없어"). 연도로 쪼개보면
+    ⑥의 정밀도>기저는 h=21 **4/8년**, h=63 **2/8년** — 즉 동전던지기다. 상관 높은 29계열을
+    6.3만 행으로 세면 유효 표본이 '시장 1계열 × 9년'에 가까운데도 t·MCC가 크게 나오는 것이다.
+    그래서 이제 모든 규칙이 '연도 정밀도>기저 k/n'과 '연도 MCC>0 k/n'을 함께 보고한다.
+
+    반환: {"prec_win": k, "prec_n": n, "mcc_win": k2, "mcc_n": n, "years": {연도: (prec, base, mcc)}}
+    표본 min_days 미만 연도는 세지 않는다(분모에서도 제외 — 판정을 부풀리지 않기 위해)."""
+    d = pd.DataFrame({"p": pred, "y": real}).dropna()
+    out: Dict[str, Any] = {"prec_win": 0, "prec_n": 0, "mcc_win": 0, "mcc_n": 0, "years": {}}
+    if d.empty or not isinstance(d.index, pd.DatetimeIndex):
+        return out
+    for yr, g in d.groupby(d.index.year):
+        if len(g) < min_days or not bool(g["p"].astype(bool).any()):
+            continue
+        m = _follow_metrics(g["p"], g["y"])
+        out["years"][int(yr)] = (m["prec"], m["base"], m["mcc"])
+        if pd.notna(m["prec"]) and pd.notna(m["base"]):
+            out["prec_n"] += 1
+            out["prec_win"] += int(m["prec"] > m["base"])
+        if pd.notna(m["mcc"]):
+            out["mcc_n"] += 1
+            out["mcc_win"] += int(m["mcc"] > 0)
+    return out
+
+
+def _kn(win: int, n: int) -> str:
+    """k/n 문자열(분모 0이면 '-')."""
+    return (f"{int(win)}/{int(n)}" if int(n) > 0 else "-")
+
+
+def build_parent_follow_conditions(results: Dict[str, Dict[str, Any]], sres: dict, res: dict,
+                                   eval_idx: pd.DatetimeIndex, icfg: IndustryConfig, M=None
+                                   ) -> pd.DataFrame:
+    """[17_부모추종조건, v0.14.0 P3 ★ 신규 — 사용자 질문에 직접 답하는 시트]
+
+    질문: "각 산업별로 부모 섹터를 따라가는 경우는 언제이고 반대로 움직이는 경우는 언제인지,
+          어떤 조건인지 파악해서 예측해야돼"
+    16_산업부모추종은 전이력 고정값 한 줄뿐이라 '언제'에 답할 수 없다(그래서 P5에서 그 열들에
+    '정적(예측불가)'을 달았다). 이 시트는 **조건부·시변·인과**로 같은 질문을 다시 묻는다.
+
+    정의(전부 t일까지의 정보로 조건을 만들고, t+h 실현으로 채점한다):
+      추종(follow)  = sign(산업 향후 h일 수익) == sign(부모 향후 h일 수익)
+      역행(diverge) = 그 반대  → **소수 클래스**(h=21 기저 0.1974) = 사용자 판정 기준의 대상
+      역행하락 = 부모↑ 산업↓ (기저 0.1162)   역행상승 = 부모↓ 산업↑ (기저 0.0806)
+    조건 변수: 결합국면(build_coupling_state · 자기이력 백분위) × M 확정국면(상승 / 상승아님)
+
+    블록:
+      A 결합국면 × M국면 조건부 추종·역행률(h=5/21/63) — '언제 따라가고 언제 반대로 가는가'의 표
+      B 산업별 역행 예측(결합국면=탈동조 → 역행) 소수클래스 정밀도·재현율·균형·MCC
+        + **연도 정밀도>기저 k/n** · **연도 MCC>0 k/n**(P4 — 풀샘플만 보고 판정하지 않는다)
+      C 부호반전표 — M국면에 따라 부호가 뒤집히는 조건들(실측 근거 M2)
+      D 해석 + 사전등록 문턱
+
+    실측 근거(r53, 보고서 12 기반 재현):
+      · 결합점수 하위20% → 역행 예측: 정밀도 0.2422 vs 기저 0.1997, 재현율 0.2880, 29산업 중 21개 MCC>0
+      · corr63 하위20% 역행률 0.2297 → 상위20% 0.1573 / 특이변동성비중 0.1595 → 0.2301
+      · 부모 낙폭 깊을 때 0.1465 · 부모 신고가 근처 0.2182 (급락기엔 전부 따라간다)
+      · beta63 → 부모초과 단면 IC +0.0511(M상승아님) / −0.0377(M상승) — 무조건 평균은 −0.0032로 상쇄
+    ⚠ 진단 시트다 — 신호·배분에 쓰지 않는다(쓰려면 사용자 승인 후 별도 격자로 검정한다)."""
+    horizons = tuple(int(h) for h in (getattr(icfg, "COUPLING_HORIZONS", (5, 21, 63)) or (5, 21, 63)))
+    lo = float(getattr(icfg, "COUPLING_LO", 1.0 / 3.0))
+    rows: List[dict] = []
+    # ---- M 확정국면(전 산업 공통) ----
+    m_sig = res.get("sig") if isinstance(res, dict) else None
+    m_state = None
+    if isinstance(m_sig, pd.DataFrame) and "state" in m_sig.columns:
+        m_state = pd.Series(m_sig["state"]).astype(str)
+    # ---- 산업별 패널 구성(추가 다운로드·재계산 없음) ----
+    pan: Dict[str, pd.DataFrame] = {}
+    for t, r in results.items():
+        cs = r.get("coupling_score")
+        curve = r.get("bt_sector_curve")
+        if curve is None:
+            _bt = r.get("bt")
+            curve = (_bt["equity"] if isinstance(_bt, pd.DataFrame) and "equity" in _bt.columns else None)
+        ind_ret = r.get("ret_cc_full")
+        rel = (r.get("rot_raw", pd.DataFrame()).get("REL_RET")
+               if isinstance(r.get("rot_raw"), pd.DataFrame) else None)
+        if ind_ret is None or rel is None or not isinstance(cs, pd.Series) or cs.dropna().empty:
+            continue
+        d = pd.DataFrame({"ind": ind_ret, "rel": rel}).dropna()
+        d["par"] = (1.0 + d["ind"]) / (1.0 + d["rel"]) - 1.0
+        d = d[(d["ind"].abs() < 0.5) & (d["par"].abs() < 0.5)]
+        if len(d) < 300:
+            continue
+        # 총수익 곡선(누적) — 향후 h일 수익은 이 곡선으로 만든다(가격 재수집 없음)
+        ic = (1.0 + d["ind"]).cumprod()
+        pc = (1.0 + d["par"]).cumprod()
+        f = pd.DataFrame(index=d.index)
+        f["cs"] = cs.reindex(d.index).ffill()
+        f["cstate"] = pd.Series(r.get("coupling_state"), dtype=object).reindex(d.index).ffill()
+        f["m_notup"] = (m_state.reindex(d.index).ffill() != "RISK_ON") if m_state is not None else np.nan
+        for h in horizons:
+            fi = ic.shift(-h) / ic - 1.0
+            fp = pc.shift(-h) / pc - 1.0
+            ok = fi.notna() & fp.notna()
+            f[f"fi{h}"] = fi.where(ok)
+            f[f"fp{h}"] = fp.where(ok)
+            f[f"div{h}"] = (np.sign(fi) != np.sign(fp)).where(ok)
+            f[f"divdn{h}"] = ((fp > 0) & (fi <= 0)).where(ok)
+            f[f"divup{h}"] = ((fp <= 0) & (fi > 0)).where(ok)
+        pan[t] = f.reindex(f.index.intersection(eval_idx))
+    if not pan:
+        return pd.DataFrame([{"블록": "17. 부모추종조건", "구분": "산출 불가",
+                             "설명": "결합국면 또는 상대수익 원자료가 없다 — COUPLING_STATE 설정과 rot_raw REL_RET을 확인하라."}])
+    BLKA, BLKB, BLKC, BLKD = ("A. 결합국면 × M국면 조건부 추종/역행",
+                              "B. 산업별 역행 예측(탈동조 → 역행)",
+                              "C. 부호반전표(M국면에 따라 뒤집히는 조건)",
+                              "D. 해석 · 사전등록 문턱")
+    # =================== 블록 A ===================
+    rows.append({"블록": BLKA, "결합국면": "── 읽는 법 ──", "M국면": "",
+                 "설명": ("결합국면은 산업↔부모 결합도의 **자기이력 백분위**(corr·1−특이변동성비중·부모변동성 평균)다. "
+                        "역행률이 탈동조에서 높고 강결합에서 낮아야 이 상태가 '언제 반대로 가는가'를 가리키는 것이다. "
+                        "기저(역행률 전체)를 같은 표에서 비교하라 — 절대 수준이 아니라 **구간 간 차이**가 판정 대상이다.")})
+    for h in horizons:
+        allrows = pd.concat([pan[t][["cstate", "m_notup", f"div{h}", f"divdn{h}", f"divup{h}"]] for t in pan])
+        base_all = float(allrows[f"div{h}"].dropna().astype(float).mean()) if allrows[f"div{h}"].notna().any() else np.nan
+        for cst in ("강결합", "보통", "탈동조"):
+            for mlbl, msk in (("전체", pd.Series(True, index=allrows.index)),
+                              ("M상승", allrows["m_notup"] == False),
+                              ("M상승아님", allrows["m_notup"] == True)):
+                sub = allrows[(allrows["cstate"] == cst) & msk.reindex(allrows.index).fillna(False)]
+                v = sub[f"div{h}"].dropna().astype(float)
+                if len(v) < max(60, 200 * len(pan) // 29):     # 유니버스 규모에 비례(29산업 기준 200일)
+                    continue
+                _dv = round(float(v.mean()), 4)
+                rows.append({"블록": BLKA, "결합국면": cst, "M국면": mlbl, "지평(일)": h,
+                             "표본일수": int(len(v)),
+                             "역행률": _dv,
+                             "역행률−전체기저": round(float(v.mean()) - base_all, 4) if pd.notna(base_all) else np.nan,
+                             # 추종률은 반올림된 역행률에서 뺀다 — 두 값을 독립 반올림하면 합이 1.0001이 될 수 있다.
+                             "추종률": round(1.0 - _dv, 4),
+                             "역행하락률(부모↑산업↓)": round(float(sub[f"divdn{h}"].dropna().astype(float).mean()), 4),
+                             "역행상승률(부모↓산업↑)": round(float(sub[f"divup{h}"].dropna().astype(float).mean()), 4)})
+        rows.append({"블록": BLKA, "결합국면": "── 전체기저 ──", "M국면": "전체", "지평(일)": h,
+                     "표본일수": int(allrows[f"div{h}"].notna().sum()),
+                     "역행률": round(base_all, 4) if pd.notna(base_all) else np.nan,
+                     "설명": "이 값이 소수 클래스 기저다 — 위 구간들의 판정 기준선."})
+    # =================== 블록 B ===================
+    H = 21 if 21 in horizons else horizons[0]
+    rows.append({"블록": BLKB, "티커": "── 읽는 법 ──", "지평(일)": H,
+                 "설명": ("예측 = 그날 결합국면이 '탈동조'(결합점수 < %.3f 백분위) → 향후 %d일 역행. "
+                        "**정밀도 > 기저**여야 예측력이 있다(사용자 기준: 실제가 적은 쪽 정확도). "
+                        "풀샘플만 보지 말고 '연도 정밀도>기저'를 보라 — v0.13.0이 풀샘플 문턱을 전부 통과했으나 "
+                        "연도로는 4/8이었다(원인 C4).") % (lo, H)})
+    bm: List[dict] = []
+    for t in sorted(pan):
+        f = pan[t]
+        pred = (f["cstate"] == "탈동조")
+        real = f[f"div{H}"]
+        m = _follow_metrics(pred, real)
+        yc = _yearly_consistency(pred.where(real.notna()), real)
+        bm.append({"t": t, **m, "pw": yc["prec_win"], "pn": yc["prec_n"], "mw": yc["mcc_win"], "mn": yc["mcc_n"]})
+        rows.append({"블록": BLKB, "티커": t, "부모섹터": results[t]["parent"], "지평(일)": H,
+                     "표본일수": m["n"], "기저 역행률": round(m["base"], 4) if pd.notna(m["base"]) else np.nan,
+                     "예측 역행일수": m["n_pred"],
+                     "역행 정밀도": round(m["prec"], 4) if pd.notna(m["prec"]) else np.nan,
+                     "정밀도−기저": (round(m["prec"] - m["base"], 4)
+                                 if pd.notna(m["prec"]) and pd.notna(m["base"]) else np.nan),
+                     "역행 재현율": round(m["rec"], 4) if pd.notna(m["rec"]) else np.nan,
+                     "균형정확도": round(m["bal"], 4) if pd.notna(m["bal"]) else np.nan,
+                     "MCC": round(m["mcc"], 4) if pd.notna(m["mcc"]) else np.nan,
+                     "연도 정밀도>기저": _kn(yc["prec_win"], yc["prec_n"]),
+                     "연도 MCC>0": _kn(yc["mcc_win"], yc["mcc_n"])})
+    B = pd.DataFrame(bm)
+    if len(B):
+        for lbl, sub in (("── 29산업 평균 ──", B), ("── 기술 6종 평균 ──", B[B["t"].isin(TECH_INDUSTRIES)])):
+            if not len(sub):
+                continue
+            rows.append({"블록": BLKB, "티커": lbl, "지평(일)": H,
+                         "표본일수": int(sub["n"].sum()),
+                         "기저 역행률": round(float(sub["base"].mean()), 4),
+                         "예측 역행일수": int(sub["n_pred"].mean()),
+                         "역행 정밀도": round(float(sub["prec"].mean()), 4),
+                         "정밀도−기저": round(float((sub["prec"] - sub["base"]).mean()), 4),
+                         "역행 재현율": round(float(sub["rec"].mean()), 4),
+                         "균형정확도": round(float(sub["bal"].mean()), 4),
+                         "MCC": round(float(sub["mcc"].mean()), 4),
+                         "연도 정밀도>기저": _kn(int(sub["pw"].sum()), int(sub["pn"].sum())),
+                         "연도 MCC>0": _kn(int(sub["mw"].sum()), int(sub["mn"].sum())),
+                         "설명": ("MCC>0 산업 %d/%d · 정밀도>기저 산업 %d/%d"
+                                % (int((sub["mcc"] > 0).sum()), len(sub),
+                                   int((sub["prec"] > sub["base"]).sum()), len(sub)))})
+    # =================== 블록 C ===================
+    rows.append({"블록": BLKC, "조건": "── 읽는 법 ──",
+                 "설명": ("같은 조건이 M상승과 M상승아님에서 **부호가 반대**면, 무조건(전체) 평균은 0으로 상쇄된다. "
+                        "16_산업부모추종이 전이력 한 줄로 재기 때문에 바로 이 정보를 평균해서 없앤다 — "
+                        "사용자 질문('어떤 조건인지')의 답이 여기 있다.")})
+    # 단면 IC: 같은 날 산업들을 조건값(자기이력 백분위)으로 줄세워 부모초과(rel)의 순서를 맞추는가
+    idx_all = sorted(set().union(*[set(pan[t].index) for t in pan]))
+    # 단면 최소 폭 — 그날 값이 있는 산업이 이만큼은 되어야 순위 상관을 재지 않는다.
+    #   29산업 라이브에서는 12(종전 하드코딩과 동일), 소규모 유니버스에서는 절반으로 낮춘다
+    #   (하드코딩 12는 유니버스가 12개 미만이면 블록 C를 조용히 전부 비워 버린다 — 검증에서 발견).
+    _xs_min = max(6, min(12, int(len(pan) * 0.5)))
+    def _xs_ic(colfn, h: int, mask_notup: Optional[bool]) -> Tuple[float, int, int]:
+        X = pd.DataFrame({t: colfn(pan[t]).reindex(idx_all) for t in pan})
+        Y = pd.DataFrame({t: (pan[t][f"fi{h}"] - pan[t][f"fp{h}"]).reindex(idx_all) for t in pan})
+        if mask_notup is not None:
+            mm = pd.DataFrame({t: pan[t]["m_notup"].reindex(idx_all) for t in pan}).mean(axis=1)
+            keep = (mm >= 0.5) if mask_notup else (mm < 0.5)
+            X = X.where(keep, np.nan); Y = Y.where(keep, np.nan)
+        ok = X.notna() & Y.notna()
+        X = X.where(ok); Y = Y.where(ok)
+        xr = X.rank(axis=1); yr = Y.rank(axis=1)
+        xc = xr.sub(xr.mean(axis=1), axis=0); yc = yr.sub(yr.mean(axis=1), axis=0)
+        den = np.sqrt((xc ** 2).sum(axis=1) * (yc ** 2).sum(axis=1))
+        ic = ((xc * yc).sum(axis=1) / den.where(den > 0)).where(ok.sum(axis=1) >= _xs_min)
+        ic = ic.dropna()
+        if ic.empty:
+            return (np.nan, 0, 0)
+        yrm = ic.groupby(ic.index.year).mean()
+        return (float(ic.mean()), int((yrm > 0).sum()), int(len(yrm)))
+    for t in pan:
+        pan[t]["_beta"] = pd.Series(results[t].get("coupling_beta"), dtype=float).reindex(pan[t].index)
+        pan[t]["_idio"] = pd.Series(results[t].get("coupling_idio_share"), dtype=float).reindex(pan[t].index)
+        pan[t]["_corr"] = pd.Series(results[t].get("coupling_corr"), dtype=float).reindex(pan[t].index)
+    _mh = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250)
+    def _p(col):
+        return lambda f: f[col].expanding(min_periods=_mh).rank(pct=True)
+    for cname, fn_ in (("결합점수(백분위)", lambda f: f["cs"]),
+                       ("부모베타 63일(자기이력 백분위)", _p("_beta")),
+                       ("상관 63일(자기이력 백분위)", _p("_corr")),
+                       ("특이변동성비중(자기이력 백분위)", _p("_idio"))):
+        r_all = _xs_ic(fn_, H, None)
+        r_up = _xs_ic(fn_, H, False)
+        r_nu = _xs_ic(fn_, H, True)
+        rows.append({"블록": BLKC, "조건": cname, "지평(일)": H,
+                     "단면IC 전체": round(r_all[0], 4) if pd.notna(r_all[0]) else np.nan,
+                     "전체 연도부호+": _kn(r_all[1], r_all[2]),
+                     "단면IC M상승": round(r_up[0], 4) if pd.notna(r_up[0]) else np.nan,
+                     "M상승 연도부호+": _kn(r_up[1], r_up[2]),
+                     "단면IC M상승아님": round(r_nu[0], 4) if pd.notna(r_nu[0]) else np.nan,
+                     "M상승아님 연도부호+": _kn(r_nu[1], r_nu[2]),
+                     "부호반전": ("⚠ 반전" if (pd.notna(r_up[0]) and pd.notna(r_nu[0])
+                                          and np.sign(r_up[0]) != np.sign(r_nu[0])) else "-")})
+    # =================== 블록 D ===================
+    rows.append({"블록": BLKD, "구분": "사전등록 문턱(P2·P3)",
+                 "설명": ("⑤ 블록 A에서 탈동조 역행률 > 강결합 역행률 (h=21) — 세 M국면 중 최소 2개에서 성립해야 한다. "
+                        "⑥ 블록 B 29산업 평균 '연도 정밀도>기저' ≥ 5/8. ⑦ MCC>0 산업 ≥ 18/29. "
+                        "이 문턱들은 **연도 k/n**이다 — 풀샘플 MCC로 판정하지 않는다(원인 C4의 교훈).")})
+    rows.append({"블록": BLKD, "구분": "해석",
+                 "설명": ("역행(부모와 반대로 가는 것)은 소수 클래스이므로 정밀도를 기저와 나란히 놓고만 읽어야 한다. "
+                        "결합국면이 '언제'를 가리키는지는 블록 A의 구간 간 차이로, 산업별 예측력은 블록 B의 "
+                        "연도 k/n으로, '어떤 조건인지'는 블록 C의 부호반전으로 판정한다. "
+                        "⚠ 진단 전용 — 신호·배분에 쓰지 않는다. 연구·교육용이며 투자 조언이 아니다.")})
+    return pd.DataFrame(rows)
+
+
 def build_parent_following_analysis(results: Dict[str, Dict[str, Any]], sres: dict, eval_idx: pd.DatetimeIndex,
                                     icfg: IndustryConfig) -> pd.DataFrame:
     """[16_산업부모추종, v0.2.0 신규 — 사용자 질문 "산업별로도 해당 섹터가 오르면 따라가는게 있고 아닌게 있다"]
@@ -3483,7 +3953,16 @@ def build_parent_following_analysis(results: Dict[str, Dict[str, Any]], sres: di
       상승국면 월승률 = 부모 RISK_ON인 달 중 산업 월수익 > 부모 월수익인 달의 비율
       국면 일치율 = P(산업 자기국면==부모 자기국면) (평가창)
       유형 = 상관·베타로 분류: 고베타 추종형(β≥1.15·ρ≥0.8) / 저베타 추종형(β≤0.85·ρ≥0.8) / 동행형(ρ≥0.8) /
-            부분추종(0.6≤ρ<0.8) / 독립형(ρ<0.6)"""
+            부분추종(0.6≤ρ<0.8) / 독립형(ρ<0.6)
+
+    ⚠ [v0.14.0 P5 정직화] 열 이름에 '정적'이 붙은 열은 **전이력 한 값**이며 예측에 쓸 수 없다.
+      사용자 질문("따라가는 경우는 언제이고 반대로 움직이는 경우는 언제인지")에 이 시트만으로는
+      답할 수 없다는 뜻이다. 이유(실측 M3): 원값으로 단면 비교를 하면 GDX 0.42 / KBE 0.93 같은
+      **정적 정체성**으로 줄세우는 셈이 되어 corr63 원값 → fi21 상위3−하위3은 5/9년에 그친다.
+      같은 값을 **자기이력 백분위**로 바꾸면 +0.851%p/21일 7/8년이 된다. 그래서 v0.14.0은
+      (1) 이 시트에 시변·인과 열(결합점수·강결합/탈동조 일비중·구간별 부모초과)을 함께 싣고,
+      (2) 조건부 판정은 **17_부모추종조건**(build_parent_follow_conditions)에서 한다.
+      '언제'에 답하는 시트는 17이고, 16은 '이 산업이 대체로 어떤 유형인가'의 프로필이다."""
     rows: List[dict] = []
     for t, r in results.items():
         p = r["parent"]
@@ -3551,14 +4030,39 @@ def build_parent_following_analysis(results: Dict[str, Dict[str, Any]], sres: di
             kind = "부분추종(부모 외 요인 큼)"
         else:
             kind = "독립형(부모를 잘 안 따라감)"
+        # [v0.14.0 P5] 결합국면 분포 — 이 시트의 나머지 열이 전이력 '정적' 값이라는 점을 같은 행에서 대비시킨다.
+        _cst = pd.Series(r.get("coupling_state"), dtype=object)
+        _csc = pd.Series(r.get("coupling_score"), dtype=float)
+        _cst_ev = _cst.reindex(ev.index).dropna() if len(ev) else pd.Series(dtype=object)
+        _cst_ev = _cst_ev[_cst_ev != "-"]
+        _n_cst = int(len(_cst_ev))
+        _sh_tight = (float((_cst_ev == "강결합").mean()) if _n_cst else np.nan)
+        _sh_loose = (float((_cst_ev == "탈동조").mean()) if _n_cst else np.nan)
+        # 결합국면별 조건부 부모초과(연율%) — '언제 따라가고 언제 반대로 가는가'의 시변 버전
+        _exc_tight = _exc_loose = np.nan
+        if _n_cst and len(ev):
+            _ex2 = (ev["ind"] - ev["par"])
+            _m_t = _cst.reindex(ev.index) == "강결합"
+            _m_l = _cst.reindex(ev.index) == "탈동조"
+            if int(_m_t.sum()) >= 20:
+                _exc_tight = float(_ex2[_m_t].mean() * 252 * 100)
+            if int(_m_l.sum()) >= 20:
+                _exc_loose = float(_ex2[_m_l].mean() * 252 * 100)
         rows.append({"티커": t, "산업명": INDUSTRY_NAME_KR.get(t, t), "부모섹터": p, "관측일(전체)": int(len(df)),
-                     "베타(전체이력)": round(beta_full, 3) if beta_full == beta_full else None,
-                     "상관(전체이력)": round(corr_full, 3) if corr_full == corr_full else None,
-                     "베타(평가창)": round(beta_eval, 3) if beta_eval == beta_eval else None,
-                     "상승일 추종률": round(follow_up, 3) if follow_up == follow_up else None,
-                     "하락일 추종률": round(follow_dn, 3) if follow_dn == follow_dn else None,
-                     "상승포착": round(cap_up, 3) if cap_up == cap_up else None,
-                     "하락포착": round(cap_dn, 3) if cap_dn == cap_dn else None,
+                     "베타(전체이력·정적)": round(beta_full, 3) if beta_full == beta_full else None,
+                     "상관(전체이력·정적)": round(corr_full, 3) if corr_full == corr_full else None,
+                     "베타(평가창·정적)": round(beta_eval, 3) if beta_eval == beta_eval else None,
+                     "상승일 추종률(정적)": round(follow_up, 3) if follow_up == follow_up else None,
+                     "하락일 추종률(정적)": round(follow_dn, 3) if follow_dn == follow_dn else None,
+                     "상승포착(정적)": round(cap_up, 3) if cap_up == cap_up else None,
+                     "하락포착(정적)": round(cap_dn, 3) if cap_dn == cap_dn else None,
+                     # ---- [v0.14.0 P5] 시변·인과 열(예측에 쓸 수 있는 쪽) ----
+                     "결합점수 중앙값(평가창)": (round(float(_csc.reindex(ev.index).median()), 3)
+                                       if len(ev) and _csc.reindex(ev.index).notna().any() else None),
+                     "강결합 일비중": round(_sh_tight, 3) if _sh_tight == _sh_tight else None,
+                     "탈동조 일비중": round(_sh_loose, 3) if _sh_loose == _sh_loose else None,
+                     "강결합 구간 부모초과(연율%)": round(_exc_tight, 2) if _exc_tight == _exc_tight else None,
+                     "탈동조 구간 부모초과(연율%)": round(_exc_loose, 2) if _exc_loose == _exc_loose else None,
                      "부모 상승국면 초과(연율%)": round(exc_on, 2) if exc_on == exc_on else None,
                      "부모 중립국면 초과(연율%)": round(exc_neu, 2) if exc_neu == exc_neu else None,
                      "부모 하락국면 초과(연율%)": round(exc_off, 2) if exc_off == exc_off else None,
@@ -4075,6 +4579,64 @@ def build_industry_allocation_trades(alloc: Dict[str, Any], results: Dict[str, D
     return df, summ
 
 
+def build_coupling_state(ind_tr: pd.Series, parent_tr: pd.Series, icfg: IndustryConfig
+                         ) -> Dict[str, pd.Series]:
+    """[v0.14.0 P2 ★ 신규] 산업↔부모 **결합국면**(coupling state) — 인과·시변.
+
+    사용자 질문("각 산업별로 부모 섹터를 따라가는 경우는 언제이고 반대로 움직이는 경우는 언제인지,
+    어떤 조건인지")에 답할 수 있는 **상태 변수**를 만든다. 기존 16_산업부모추종은 전이력 고정
+    베타·상관 한 줄뿐이라 '언제'에 구조적으로 답할 수 없었다(원인 진단 C3·M2).
+
+    결합점수 = mean( corr(산업,부모) W일 **자기이력 백분위**,
+                    1 − 특이변동성비중 자기이력 백분위,
+                    부모 변동성 자기이력 백분위 )
+    · corr 높음 → 같이 움직인다 → 추종
+    · 특이변동성비중(= 부모로 설명 안 되는 변동 비중) 높음 → 탈동조
+    · 부모 변동성 높음 → 급락기엔 상관이 1로 몰린다 → 추종
+      (실측: 부모 21일 변동성 하위20% 역행률 0.2231 → 상위20% 0.1524, 기저 0.1974)
+
+    ⚠ **자기이력 백분위가 핵심**이다. 원값으로 단면 비교를 하면 GDX 0.42 / KBE 0.93 같은 **정적
+      정체성**으로 줄세우는 셈이 된다 — 실측: corr63 원값 → fi21 상위3−하위3 +0.460%p **5/9년**,
+      자기이력 백분위 +0.851%p **7/8년**. 16 시트가 정확히 그 '원값' 형태이며, 그래서 P5에서
+      해당 열에 '정적(예측불가)' 표시를 달았다.
+
+    인과성: rolling/expanding만 쓴다. corr·var·std는 t일까지의 수익률로만 계산하고, 백분위는
+    expanding(min_periods=COUPLING_MIN_HIST).rank(pct=True)로 **그날까지의 자기 분포**에서 매긴다.
+    미래값을 참조하는 연산은 없다(shift(-h)·bfill·전역 quantile 전부 사용하지 않는다).
+
+    반환: {"score": 결합점수(0~1), "state": "강결합"/"보통"/"탈동조",
+           "corr": 상관, "beta": 베타, "idio_share": 특이변동성비중}
+    되돌리기: i_overrides={"COUPLING_STATE": False} — 호출부가 이 함수를 건너뛴다."""
+    wc = int(getattr(icfg, "COUPLING_CORR_WIN", 63) or 63)
+    wv = int(getattr(icfg, "COUPLING_VOL_WIN", 21) or 21)
+    mh = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250)
+    lo = float(getattr(icfg, "COUPLING_LO", 1.0 / 3.0))
+    hi = float(getattr(icfg, "COUPLING_HI", 2.0 / 3.0))
+    i = pd.Series(ind_tr).astype(float).dropna()
+    pr = pd.Series(parent_tr).astype(float).reindex(i.index).ffill()
+    ri = np.log(i).diff()
+    rp = np.log(pr).diff()
+    corr = ri.rolling(wc, min_periods=max(int(wc * 0.7), 10)).corr(rp)
+    var_p = rp.rolling(wc, min_periods=max(int(wc * 0.7), 10)).var()
+    beta = ri.rolling(wc, min_periods=max(int(wc * 0.7), 10)).cov(rp) / var_p.where(var_p > 0)
+    ivol = ri.rolling(wv, min_periods=max(int(wv * 0.7), 5)).std()
+    pvol = rp.rolling(wv, min_periods=max(int(wv * 0.7), 5)).std()
+    resid = ri - beta * rp
+    idio = resid.rolling(wv, min_periods=max(int(wv * 0.7), 5)).std()
+    idio_share = (idio / ivol.where(ivol > 0)).clip(0.0, 2.0)
+
+    def _pct(x: pd.Series) -> pd.Series:
+        return x.astype(float).expanding(min_periods=mh).rank(pct=True)
+
+    parts = pd.concat([_pct(corr), 1.0 - _pct(idio_share), _pct(pvol)], axis=1)
+    score = parts.mean(axis=1, skipna=False)
+    state = pd.Series(np.where(score.isna(), "-",
+                               np.where(score < lo, "탈동조",
+                                        np.where(score > hi, "강결합", "보통"))),
+                      index=score.index, dtype=object)
+    return {"score": score, "state": state, "corr": corr, "beta": beta, "idio_share": idio_share}
+
+
 def inherit_industry_regime(sig: pd.DataFrame, m_sig: Optional[pd.DataFrame], source: str
                             ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """[v0.13.0 N2 ⚠⚠ 신호층 — REPORT52 §2~4·§6 N2] 산업 확정국면·목표비중을 M(SPY)에서 상속한다.
@@ -4145,7 +4707,6 @@ def _down_metrics(pred: pd.Series, real_down: pd.Series) -> Dict[str, float]:
 
 # 기술 산업군 — 사용자 지시("특히 SOXX 같은 기술 산업들을 하락을 잘 맞춰야")의 판정 대상. 부모 XLK/XLC 소속
 #   6종으로, REPORT52의 '기술 6종 평균'과 같은 집합이다(진단 집계용이며 신호·배분에는 쓰이지 않는다).
-TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
 
 
 def build_industry_regime_label_block(results: Dict[str, Dict[str, Any]], sres: dict,
@@ -4212,7 +4773,15 @@ def build_industry_regime_label_block(results: Dict[str, Dict[str, Any]], sres: 
             if int(fwd.notna().sum()) < 50:
                 continue
             for nm, mk_ in masks.items():
-                mt_ = _down_metrics(mk_.reindex(idx).fillna(False), real)
+                _mk = mk_.reindex(idx).fillna(False)
+                mt_ = _down_metrics(_mk, real)
+                # [v0.14.0 P4 ★] 연도별 부호일치를 같은 행에 싣는다 — 풀샘플만 보고 판정하지 않기 위해.
+                #   v0.13.0 ⑥은 풀샘플 문턱을 전부 통과했으나 연도로는 4/8년(원인 C4)이었다.
+                _yc = _yearly_consistency(pd.Series(_mk.values, index=idx).where(real.notna()),
+                                          pd.Series(real.values, index=idx))
+                mt_ = dict(mt_)
+                mt_["y_prec_win"], mt_["y_prec_n"] = _yc["prec_win"], _yc["prec_n"]
+                mt_["y_mcc_win"], mt_["y_mcc_n"] = _yc["mcc_win"], _yc["mcc_n"]
                 per[h].setdefault(nm, {})[t] = mt_
             # ---- N4 연도별(자기 라벨 vs 확정 상승아님) ----
             if h == 21:
@@ -4238,7 +4807,11 @@ def build_industry_regime_label_block(results: Dict[str, Dict[str, Any]], sres: 
                 "하락 정밀도(예측하락 중 실제하락)": round(mt_["prec"], 4) if pd.notna(mt_["prec"]) else np.nan,
                 "하락 재현율(실제하락 중 예측하락)": round(mt_["rec"], 4) if pd.notna(mt_["rec"]) else np.nan,
                 "균형정확도": round(mt_["bal"], 4) if pd.notna(mt_["bal"]) else np.nan,
-                "MCC": round(mt_["mcc"], 4) if pd.notna(mt_["mcc"]) else np.nan, "판독": note}
+                "MCC": round(mt_["mcc"], 4) if pd.notna(mt_["mcc"]) else np.nan,
+                # [v0.14.0 P4 ★] 1급 판정 잣대 — 이 두 열이 '진짜 개선'을 가른다(풀샘플 MCC는 보조 지표다).
+                "연도 정밀도>기저": _kn(mt_.get("y_prec_win", 0), mt_.get("y_prec_n", 0)),
+                "연도 MCC>0": _kn(mt_.get("y_mcc_win", 0), mt_.get("y_mcc_n", 0)),
+                "판독": note}
 
     for h in horizons:
         for nm, d_ in per[h].items():
@@ -4255,15 +4828,31 @@ def build_industry_regime_label_block(results: Dict[str, Dict[str, Any]], sres: 
                         "prec": float(np.nanmean([g["prec"] for g in grp])),
                         "rec": float(np.nanmean([g["rec"] for g in grp])),
                         "bal": float(np.nanmean([g["bal"] for g in grp])),
-                        "mcc": float(np.nanmean([g["mcc"] for g in grp]))}
+                        "mcc": float(np.nanmean([g["mcc"] for g in grp])),
+                        # [v0.14.0 P4] 연도 k/n은 산업별 k와 n을 각각 합산한다(연도×산업 단위 집계).
+                        "y_prec_win": int(sum(int(g.get("y_prec_win", 0)) for g in grp)),
+                        "y_prec_n": int(sum(int(g.get("y_prec_n", 0)) for g in grp)),
+                        "y_mcc_win": int(sum(int(g.get("y_mcc_win", 0)) for g in grp)),
+                        "y_mcc_n": int(sum(int(g.get("y_mcc_n", 0)) for g in grp))}
                 _pos = int(sum(1 for g in grp if pd.notna(g["mcc"]) and g["mcc"] > 0))
-                rows.append(_emit(h, nm, lab, _agg, note=f"MCC 양수 {_pos}/{len(grp)}개 산업"))
+                _ypr = (_agg["y_prec_win"] / _agg["y_prec_n"]) if _agg["y_prec_n"] else np.nan
+                rows.append(_emit(h, nm, lab, _agg,
+                                  note=(f"MCC 양수 {_pos}/{len(grp)}개 산업 · 연도×산업 정밀도>기저 "
+                                        + _kn(_agg["y_prec_win"], _agg["y_prec_n"])
+                                        + (f" ({_ypr:.0%})" if pd.notna(_ypr) else ""))))
                 if h == 21 and lab == "── 29산업 평균 ──":
                     summ[f"a2_{nm[0]}_mcc"] = _agg["mcc"]
                     summ[f"a2_{nm[0]}_rec"] = _agg["rec"]
                     summ[f"a2_{nm[0]}_bal"] = _agg["bal"]
+                    # [v0.14.0 P4] 00_실행요약 판정이 이 비율을 본다(풀샘플 MCC가 아니라 연도 일치도).
+                    summ[f"a2_{nm[0]}_yprec"] = (float(_agg["y_prec_win"]) / float(_agg["y_prec_n"])
+                                                 if _agg["y_prec_n"] else np.nan)
+                    summ[f"a2_{nm[0]}_ykn"] = _kn(_agg["y_prec_win"], _agg["y_prec_n"])
                 if h == 21 and lab == "── 기술 6종 평균 ──":
                     summ[f"a2_{nm[0]}_mcc_tech"] = _agg["mcc"]
+                    summ[f"a2_{nm[0]}_yprec_tech"] = (float(_agg["y_prec_win"]) / float(_agg["y_prec_n"])
+                                                     if _agg["y_prec_n"] else np.nan)
+                    summ[f"a2_{nm[0]}_ykn_tech"] = _kn(_agg["y_prec_win"], _agg["y_prec_n"])
     # ---- N4 연도별 요약 ----
     if year_rec:
         YR = pd.DataFrame(year_rec)
@@ -4771,6 +5360,26 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         except Exception as e:
             log("DIAG", kv(event="parent_following_failed", err=str(e)[:200]), M=M, level="warning")
 
+    # [v0.14.0 P3 ★ 신규] 17_부모추종조건 — 사용자 질문("언제 따라가고 언제 반대로 가는가, 어떤 조건인지")에
+    #   직접 답하는 시트. 16(정적 프로필)과 달리 조건부·시변·인과이며, 판정은 **연도 k/n**으로 한다(P4).
+    follow_cond_df = pd.DataFrame()
+    if results and bool(getattr(icfg, "COUPLING_STATE", True)):
+        try:
+            follow_cond_df = build_parent_follow_conditions(results, sres, res, eval_idx, icfg, M=M)
+            if len(follow_cond_df):
+                _B = follow_cond_df[follow_cond_df["블록"].astype(str).str.startswith("B.")]
+                _avg = _B[_B.get("티커", pd.Series(dtype=object)).astype(str).str.contains("29산업 평균", na=False)]
+                _r = (_avg.iloc[0] if len(_avg) else None)
+                log("DIAG", kv(event="parent_follow_conditions_ready", rows=len(follow_cond_df),
+                               base=(_r["기저 역행률"] if _r is not None else "-"),
+                               prec=(_r["역행 정밀도"] if _r is not None else "-"),
+                               mcc=(_r["MCC"] if _r is not None else "-"),
+                               연도정밀도승=(_r["연도 정밀도>기저"] if _r is not None else "-"),
+                               note="판정은 연도 k/n으로 한다 — 풀샘플 MCC는 보조(원인 C4)"), M=M)
+        except Exception as e:
+            log("DIAG", kv(event="parent_follow_conditions_failed", err=str(e)[:200],
+                           note="17 시트 없이 진행한다 — 16·13p는 영향 없음"), M=M, level="warning")
+
     # [v0.3.0 §C1] 진단 시트 2종 — 13l_산업리더적중률 · 01Y_산업예측정확도(배분 실패해도 01Y는 나온다)
     leader_acc = pd.DataFrame()
     pred_acc = pd.DataFrame()
@@ -4913,7 +5522,8 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "quality": pd.DataFrame(quality), "matrix": matrix, "summary": summary,
         "wf": wf, "alloc": alloc, "acceptance": accept_df, "hierarchy": hier_df,
-        "attribution": attrib_df, "following": following_df, "leader_cols": leader_cols,
+        "attribution": attrib_df, "following": following_df, "follow_cond": follow_cond_df,
+        "leader_cols": leader_cols,
         "leader_accuracy": leader_acc, "prediction_accuracy": pred_acc,   # [v0.3.0 §C1]
         "next_day": nd_map, "nd_spy": nd_spy,                              # [v0.3.0 §A2]
         "alloc_trades": alloc_trades, "alloc_trades_summary": alloc_trades_summary,   # [v0.6.0 I-D(B)] 13j
@@ -5019,6 +5629,10 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     fol = ires.get("following", pd.DataFrame())
     if isinstance(fol, pd.DataFrame) and len(fol):
         sheets["16_산업부모추종"] = fol                                  # [v0.2.0] 산업이 부모 섹터를 얼마나 따라가는가
+    # [v0.14.0 P3 ★] 17_부모추종조건 — '언제' 따라가고 '언제' 반대로 가는지의 조건부 표(16의 시변·인과 짝).
+    _fc = ires.get("follow_cond", pd.DataFrame())
+    if isinstance(_fc, pd.DataFrame) and len(_fc):
+        sheets["17_부모추종조건"] = _fc
     pa = ires.get("prediction_accuracy", pd.DataFrame())
     if isinstance(pa, pd.DataFrame) and len(pa):
         sheets["01Y_산업예측정확도"] = pa                                # [v0.3.0 §C1]
@@ -5213,13 +5827,70 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
               f"{_f('a2_⑥_mcc_tech')} · 재현율 {_f('a2_⑥_rec')} · 균형정확도 {_f('a2_⑥_bal')}**"
             + f" vs ① 자기 라벨 MCC {_f('a2_①_mcc')}(재현율 {_f('a2_①_rec')}) · ② 자기 현금 {_f('a2_②_mcc')}"
               f" · ⑦ 자기하락∪확정상승아님(사전등록) {_f('a2_⑦_mcc')} · ⑧ 부모 상승아님 {_f('a2_⑧_mcc')}"
-            + " | 사전 고정 합격선 29평균 ≥ 0.06 · 기술6 ≥ 0.09 · SOXX ≥ 0.12 · 재현율 ≥ 0.35 · 균형 > 0.53"
+            + f" | ⚠⚠ **[v0.14.0 P4 판정 기준 변경] 이제 판정은 연도 일치도로 한다** — "
+              f"⑥ 연도×산업 '정밀도>기저' {_ms.get('a2_⑥_ykn', '-')}"
+              + (f"({float(_ms['a2_⑥_yprec']):.0%})" if pd.notna(_ms.get('a2_⑥_yprec', np.nan)) else "")
+              + f" · 기술6 {_ms.get('a2_⑥_ykn_tech', '-')}"
+              + (f"({float(_ms['a2_⑥_yprec_tech']):.0%})" if pd.notna(_ms.get('a2_⑥_yprec_tech', np.nan)) else "")
+              + f" vs ① {_ms.get('a2_①_ykn', '-')}"
+            + " | **사전 고정 합격선(v0.14.0): 연도×산업 정밀도>기저 비율 ≥ 0.60** (풀샘플 MCC는 보조 지표로 강등)."
+              " 왜 바뀌었나: v0.13.0의 합격선은 풀샘플(29평균 MCC ≥ 0.06 · 기술6 ≥ 0.09 · SOXX ≥ 0.12 ·"
+              " 재현율 ≥ 0.35 · 균형 > 0.53)이었고 보고서 12에서 **전부 통과**했다(0.0842 / 0.1147 / 0.1639 /"
+              " 0.4338 / 0.5414). 그런데 연도로 쪼개면 ⑥의 정밀도>기저는 h=21 **4/8년**, h=63 **2/8년** —"
+              " 동전던지기다. 상관 높은 29계열을 6.3만 행으로 세면 유효 표본이 '시장 1계열 × 9년'에 가까운데도"
+              " MCC·t가 크게 나오기 때문이다. 사용자가 \"전혀 나아진게 없어\"라고 한 것이 맞고, 문턱이 틀렸다."
+              " 그래서 판정 자체를 연도 k/n으로 바꿨다(REPORT53 원인 C4)."
               " — 근거: 산업 자기 복합점수는 채택 지표 대부분이 매크로(SOXX PASS 21개 중 19개)라 산업 고유"
               " 하락에 무감각하고 2024-07 반도체 급락에서는 점수 백분위가 0.30→0.93으로 역행했다(REPORT52 §2~4)."
               " ⚠ 블록 A의 '하락 예측'은 정의상 RISK_OFF만 세므로 판정은 **블록 A2 ⑥ 행**으로 한다."
               " 자기 기계 값은 01_일별_<산업> '자기국면'·'자기 목표비중' 열과 블록 A2 ①②③에 보존된다"
               " — 그 행의 복합점수·H·규칙 발동 열은 이제 '자기국면'의 근거다."
               " ⚠ 되돌리기: i_overrides={\"INDUSTRY_REGIME_SOURCE\": \"own\"}"))
+    # [v0.14.0 P1 ★] 순서기반 채택 — 리더 0일(C1)이 풀렸는지 00시트에서 바로 보이게 한다.
+    nd_rows.append((
+        "⚠ 산업 순환매 채택 잣대(v0.14.0 P1) · 리더 0일 해소",
+        f"ROTATION_ADOPT_BY = {str(getattr(icfg, 'ROTATION_ADOPT_BY', 't'))}"
+        + ("(순서여유 상위%d 채택 — 교차확인 %d 유지)"
+           % (int(getattr(icfg, "ROTATION_ORDER_TOP_K", 3)), int(getattr(icfg, "ROTATION_MIN_AGREE", 2)))
+           if str(getattr(icfg, "ROTATION_ADOPT_BY", "t")).lower() == "order" else "(t 기준 — v0.13.0 동작)")
+        + " | 왜 바꿨나: 보고서 12의 13l이 \"총 0회 — 리더가 한 번도 나오지 않았다\"였다(채택신호 없음 21,850일 ·"
+          " 국면 게이트 차단 10,445일). 13g 연도별 채택/리더판단사용 = 2018:1/0 2019:1/0 2020:0/0 2021:1/0"
+          " 2022:1/0 2023:0/0 2024:0/0 2025:0/0 2026:1/0 — 채택된 5년은 전부 P_REL_VOL_RATIO 단독이고"
+          " 곧바로 '미사용(교차확인 불가 — 사용 신호 1개 < 필요 2개)'로 폐기됐다. **신호를 고쳐도 선택이"
+          " 일어나지 않으니 결과가 변할 수 없었다.** 원인은 정족수가 아니라 채택 잣대다:"
+          " 2018 학습창에서 순서가 무작위보다 나은 신호는 16/16(0.392~0.450 vs 무작위 0.327)인데"
+          " |t| ≥ 1.0 은 4/16뿐이고, t가 통과시킨 P_REL_VOL_RATIO는 풀링 상위3−EW29 = −0.071로 부호가 뒤집혀 있다."
+          " 프로젝트 원칙: 't는 크기의 진술이지 순서의 진술이 아니다'."
+          " | 시뮬레이션 실측(워크포워드·사전등록 부호 고정): 리더일 0 → 연 888~1,831일 ·"
+          " 부모안 적중 0.378 vs 무작위 0.343 **8/8년 초과** · 리더 21일 부모초과 +0.209% vs 타산업 −0.120%."
+          " | 판정은 **순서(13l 리더=실현1위 > 무작위)**로 한다 — 수익 차이는 5/8년이라 판정에 쓰지 않는다."
+          " 사전 고정: ① 13l 리더일>0 연도 ≥ 7/9 ② 13l 적중>무작위 연도 ≥ 7/9 ③ 13g 리더판단사용 ≥ 2 인 연도 ≥ 7/9."
+          " ⚠ 되돌리기: i_overrides={\"ROTATION_ADOPT_BY\": \"t\"}"))
+    # [v0.14.0 P2·P3] 결합국면 · 17_부모추종조건 — 사용자 질문에 답하는 시트 안내.
+    _fc0 = ires.get("follow_cond", pd.DataFrame())
+    if isinstance(_fc0, pd.DataFrame) and len(_fc0):
+        _Bb = _fc0[_fc0["블록"].astype(str).str.startswith("B.")]
+        _av = _Bb[_Bb.get("티커", pd.Series(dtype=object)).astype(str).str.contains("29산업 평균", na=False)]
+        _tv = _Bb[_Bb.get("티커", pd.Series(dtype=object)).astype(str).str.contains("기술 6종", na=False)]
+        def _g(df_, col):
+            try:
+                return (f"{float(df_.iloc[0][col]):.4f}" if len(df_) and pd.notna(df_.iloc[0][col]) else "-")
+            except Exception:
+                return "-"
+        nd_rows.append((
+            "산업이 부모를 따라가는가 / 반대로 가는가(v0.14.0 P2·P3 — 17_부모추종조건)",
+            "사용자 질문 \"각 산업별로 부모 섹터를 따라가는 경우는 언제이고 반대로 움직이는 경우는 언제인지, "
+            "어떤 조건인지 파악해서 예측해야돼\"에 답하는 시트다. 조건 변수는 **결합국면**(산업↔부모 상관·"
+            "특이변동성비중·부모변동성의 자기이력 백분위 평균 — 01_일별 '결합점수백분위'·'결합국면' 2열)."
+            + f" | 역행(부모와 반대) 예측: 기저 {_g(_av, '기저 역행률')} → 정밀도 {_g(_av, '역행 정밀도')}"
+              f"(기술6 {_g(_tv, '역행 정밀도')}) · MCC {_g(_av, 'MCC')} · "
+            + f"**연도 정밀도>기저 {(_av.iloc[0]['연도 정밀도>기저'] if len(_av) else '-')}**"
+            + " | 16_산업부모추종은 전이력 **정적** 프로필이라 '언제'에 답할 수 없다(열 이름에 '정적' 표시). "
+              "실측: corr63 원값 단면 → 5/9년, 자기이력 백분위 → 7/8년. "
+              "또한 가장 강한 조건은 M 국면에 따라 **부호가 뒤집힌다**(부모베타 → 부모초과 단면 IC "
+              "+0.051(M상승아님) / −0.038(M상승), 무조건 평균 −0.003으로 상쇄) — 17 블록 C가 그 표다. "
+              "⚠ 17은 진단 전용이며 신호·배분에 쓰지 않는다(쓰려면 사용자 승인 후 별도 격자 검정). "
+              "되돌리기: i_overrides={\"COUPLING_STATE\": False}"))
     nd_rows.append(("09c_국면정보게이트 미적용(I-E 보류)",
                     "S는 섹터 하락 국면에 정보 게이트(09c)를 걸지만 I는 산업 자기국면에 걸지 않는다 — "
                     "적용 여부는 REPORT45 §6 I-E의 별도 판정 사항이다. 01Y_산업예측정확도 A블록(산업 하락 상태의 "
