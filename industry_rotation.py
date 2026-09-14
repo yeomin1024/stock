@@ -1,5 +1,57 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.12.0 - 2026-09-14 - [중복 후보 제거·블록 P 분모 수정·CHANGELOG 정정·순환매신호 감사 신설·
+#    산업 계층 재동결] REPORT51 §4 E1~E3·§5 M1~M3+경로A·§7. 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
+#
+#    (M1 ⚠ 결함수정 — REPORT51 §3.4 E1) ABS_MOM_12_1을 INDUSTRY_POOLED_ONLY_SIGNALS에서 제거. 12-1 절대
+#      모멘텀은 모든 산업에 같은 SPY 계수를 더한 것뿐이라 S_REL_MOM_12_1과 횡단면 순위가 완전히 동치다
+#      (13g 9개 학습창의 t·적중·n이 소수점까지 일치) — 실질 후보 7종이 아니라 6종이었고, 사실상 같은 신호에
+#      투표가 두 번 실릴 여지가 있었다. ABS_MOM_12_1 자체 계산(rot_raw, run_industry)은 그대로 둔다 —
+#      제거는 _pool_universe/13g 풀링 진단/슬리브 채택 자격에서만이다(K2가 등록한 명단에서 한 줄 삭제,
+#      새 산식 없음). 되돌리기: IndustryConfig(INDUSTRY_POOLED_ONLY_SIGNALS=(..., "ABS_MOM_12_1")).
+#    (M2 ⚠ 결함수정 — REPORT51 §3.4 E3) 13p 블록 P '최빈 부모 몫'의 분모가 전체 평가일수(_n_eval 격)였다
+#      (`_sf[c].mean()`는 암묵적으로 전체일로 나눈다) — 라벨은 "형성일 기준"인데 산식은 전체일 기준이라
+#      형성 1,177일 기준으로 읽으면 표시값의 ≈1.9배(≈8.6%→≈16%)였다. 분모를 형성일수(`_n_form`)로 고쳤다
+#      (`build_industry_allocation`의 `_top_parent_by_k[_k_]` 계산 블록, `_parent_hold[_p_] += _sf[c_].sum() /
+#      max(_n_form, 1)`). 이번 판정(쏠림 없음)의 결론 자체는 바뀌지 않는다 — 라벨과 산식을 일치시키는
+#      표시 수정이며 배분·채택에는 영향이 없다.
+#    (M3 문서 정정 — REPORT51 §3.4 E2) v0.11.0 CHANGELOG(K2)의 "rot_raw가 11_룩어헤드감사 절단재계산
+#      대상에도 자동 등록된다"는 기재가 사실이 아니었다는 정정을 K2 항목 본문에 직접 추가했다(아래, 원문은
+#      보존). 실제로는 복합점수·위험점수(H) 두 값만 절단재계산됐다 — 그 공백을 아래 L6이 메운다.
+#    (L6 ★ 신규 시트 — REPORT51 §5 L6, sector_rotation.py L6과 같은 방법론) 11_룩어헤드감사가 검증하지
+#      않던 rot_raw 원시신호(P_REL_*·S_REL_*·ABS_MOM_12_1·REL_RET·REL_RET_BN·PARENT_BETA_252 등)를 절단
+#      재계산으로 검증한다. 신규 시트 11b_순환매신호감사. run_industry()의 인라인 rot_raw 블록을 먼저
+#      build_industry_rotation_raw_signals()로 추출했다(산식 변경 없음, 비트 동일 — 순수 리팩터). 이 함수의
+#      **직접 입력**(ind_i·adj_i·parent_tr·parent_series·score_pct_full·haz_pct_industry_full)만 무작위
+#      검사일 d까지 잘라 재호출하고 d 시점 값을 비교하는 industry_rotation_raw_lookahead_audit()이 감사
+#      본체다(ind_i 자체의 인과성은 기존 industry_lookahead_audit이 이미 검증하므로 중복 검사하지 않는다 —
+#      S 쪽과 같은 범위 설계). sector_rotation.py의 rotation_raw_lookahead_audit()을 그대로 재사용하지는
+#      "못했다" — 산업 rot_raw는 run_industry() 안에 인라인이라 시그니처가 달라(score/adj_i/spy_tr/haz_score
+#      직접 인자가 아니라 ind_i·parent_tr·parent_series·score_pct_full/haz_pct_industry_full) 쌍둥이 함수를
+#      새로 썼다(S 파일 v0.48.0 L6 changelog에도 이 정정을 남겼다). 변경 함수: run_industry(호출·rot_audit
+#      반환) · run(rot_audit 취합) · build_industry_report(11b 시트·00시트 1줄 "순환매신호 감사(L6)").
+#      RUN_LOOKAHEAD_AUDIT·AUDIT_SAMPLE 재사용(신규 설정 없음).
+#    (경로 A ⚠ 기본값 변경 — REPORT51 §7, 사용자 위임 후 내 선택) INDUSTRY_LAYER_FROZEN False → **True**
+#      (재동결). REPORT51 §3.1의 사전 등록 K7 문턱 둘 다 미달(①순서·크기를 동시에 가진 후보 없음 ②슬리브가
+#      대조군과 구별 불가)이었다 — 사전 고정 규칙대로면 이 결과는 No-Go(경로 A)다. 보고서가 권고한 경로
+#      B(사후 규칙 변경으로 게이트를 순서 우선으로 바꿔 한 번 더 시도)는 시뮬레이션조차 ★를 넘지 못했고
+#      (§3.3-c) 보고서 스스로 "성과 개선이 아니라 순서 정보의 존재를 기록하는 것"이라 적었다 — 사전 등록
+#      원칙(격자를 본 뒤 문턱을 바꾸지 않는다)을 깨면서까지 택할 값어치가 아니라고 판단했다. 상세 근거는
+#      IndustryConfig.INDUSTRY_LAYER_FROZEN 필드 주석(아래) 참조. 동결이어도 13g·13p·16 등 진단 시트는
+#      그대로 나온다 — 생략되는 것은 배분·격자·수용기준뿐이다(v0.5.0 I-A와 같은 관행).
+#      ⚠ 되돌리기: i_overrides={"INDUSTRY_LAYER_FROZEN": False}
+#
+#    [검증] M1(grep으로 ABS_MOM_12_1이 rot_raw 계산 자체에는 남아 있고 풀링 후보 명단에서만 빠졌음을 확인) ·
+#    M2(build_industry_allocation의 top_parent_by_k 블록이 13p 블록 P의 유일한 소스임을 코드 추적으로 확인) ·
+#    L6 신규 함수 2종을 합성데이터로 자체 단위테스트했다(scratch, 세션 로컬): (1) build_industry_rotation_
+#    raw_signals()의 출력 열 26개가 전부 채워지고 ABS_MOM_12_1/REL_RET/SCORE_MINUS_PARENT가 수기 재유도값과
+#    1e-12 이내로 일치, (2) 인과적(룩어헤드 없는) 합성 입력에서 절단재계산 156건 중 불일치·오류 0건,
+#    (3) 한 열에 의도적으로 미래 정보를 주입하면 감사가 정확히 그 열·그 날짜를 "불일치"로 검출. ast.parse·
+#    import 성공. **이 파일만으로는 검증되지 않은 것**: 프로젝트 정식 회귀 스위트(test_industry_v0*.py)는
+#    이번 세션에 파일이 없어 실행하지 못했다 — 실제 시장데이터·M 모듈로 (1) 기존 스위트 전종 재실행
+#    (2) INDUSTRY_LAYER_FROZEN=True 기본값 가드 갱신 (3) 11b_순환매신호감사 불일치 0건(§6 표 5번) 확인이
+#    로컬(Kaggle/Colab)에서 필요하다 — sector_rotation.py v0.48.0 CHANGELOG에도 같은 주의를 남겼다.
+#
 #  VERSION: v0.11.0 - 2026-09-13 - [슬리브 채택에서 부모 계층 신호 구조적 제외 · SPY대비 풀링 전용 후보 7종 ·
 #    대조군 like-for-like 수정] REPORT50 §5 K1~K6. ⚠ I★는 v0.10.0과 비트 동일(INDUSTRY_SLEEVE_SHARE=0.0
 #    그대로) — 이번 라운드도 풀링 전용 격자만 바뀐다. 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
@@ -22,6 +74,14 @@
 #      rot_raw를 통해 자동 등록된다. ⚠ 결함수정: 슬리브 composite 랭킹 코드가 `n in _rank_full_i`만
 #      허용해 풀링 전용 후보가 채택돼도 조용히 걸러지는 경로가 있었다 — `_pooled_only_names_sl`도
 #      허용하도록 고쳤다(안 고쳤으면 K2는 이름만 등록되고 실제로는 한 번도 못 쓰였을 것이다).
+#      [v0.12.0 M3 문서 정정 — REPORT51 §3.4 E2] 위 "11_룩어헤드감사 절단재계산 대상에도 rot_raw를 통해
+#      자동 등록된다"는 **사실이 아니었다**. sector_lookahead_audit()(11_룩어헤드감사)은 복합점수·위험점수
+#      (H) 두 값만 절단재계산하며 rot_raw(REL_MOM_*·S_REL_*·HAZ_PCT_OWN 등 순환매 원시신호)는 S의 v0.5.0
+#      이래 감사 대상이었던 적이 없다 — "등록됐다"는 것은 판독자(나)의 착오였다(rank_full/13g 풀링 진단에
+#      실린 것과 감사망에 실린 것을 혼동했다). S_REL_*는 명시적 shift(21/252)를 쓰므로 구조적 위험은
+#      낮지만, 실제 검증 없이 "등록됐다"고 기재한 것 자체가 규약 4 위반이었다. v0.12.0의 rotation_raw_
+#      lookahead_audit()(11b_순환매신호감사, sector_rotation.py L6과 공유)가 그 배선이다 — 아래 역사
+#      기록은 원문 그대로 보존하고 이 정정을 근거로 삼는다(K6과 같은 방식).
 #    (K3 ⚠ 결함수정 — REPORT50 §3.2 E5) [산업슬리브격자·대조] 2행이 **매일** f를 SPY/29산업균등에 넣었는데
 #      슬리브 자신은 **형성일만**(252일 모멘텀이 리포트 창 첫해에 계산 불가 — 655/2,186일만 형성) f를 쓴다.
 #      그래서 대조 행만 형성 전 구간(2018~2019, ★의 낙폭 구간)에 f 그대로가 실려 MDD가 좋아 보였다 —
@@ -469,8 +529,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.11.0"
-VERSION_DATE = "2026-09-13"
+VERSION = "v0.12.0"
+VERSION_DATE = "2026-09-14"
 
 # =============================================================================
 # [0] 산업 유니버스 — INDUSTRY_LAYER_SPEC_v0.1.md §2 + v0.2.0 확장(사용자 지시 "산업이 더 많은데 누락 확인")
@@ -605,9 +665,15 @@ class IndustryConfig:
     #   구성물이었다(풀링에서 일관되게 음수, §3.4) — SPY 대비(S_) 계열이 유일하게 반복되는 순서 정보였다.
     #   사전방향은 S의 _RawSpec과 같은 근거(SPY 대비 모멘텀 +, 변동성 −) — industry_rotation_signal_specs
     #   참조. 되돌리기(비우면 K1 이전 풀링 후보군으로 복귀): i_overrides={"INDUSTRY_POOLED_ONLY_SIGNALS": ()}
+    # [v0.12.0 M1 ⚠ 결함수정 — REPORT51 §3.4 E1] ABS_MOM_12_1 제거. 12-1 절대모멘텀 = 상대모멘텀 ×
+    #   (모든 산업에 같은 SPY 계수)라 그날 횡단면 순위가 S_REL_MOM_12_1과 완전히 같다(13g 9개 학습창의
+    #   t·적중·n이 소수점까지 일치 — REPORT51 §3.4). 후보 7종이 실제로는 6종이었고, 두 신호가 동시에
+    #   채택되는 경우가 있었다면 득표를 부풀렸을 것이다(이번 라운드 판정에는 영향 없음 — HAZ_PCT_OWN
+    #   단독 채택이었으므로, REPORT51 §3.2). 되돌리기: i_overrides={"INDUSTRY_POOLED_ONLY_SIGNALS":
+    #   ("S_REL_MOM_12_1","S_REL_MOM_126","S_REL_MOM_63","ABS_MOM_12_1","S_REL_DD_252H","S_REL_VOL_RATIO",
+    #   "HAZ_PCT_OWN")}
     INDUSTRY_POOLED_ONLY_SIGNALS: Tuple[str, ...] = ("S_REL_MOM_12_1", "S_REL_MOM_126", "S_REL_MOM_63",
-                                                      "ABS_MOM_12_1", "S_REL_DD_252H", "S_REL_VOL_RATIO",
-                                                      "HAZ_PCT_OWN")
+                                                      "S_REL_DD_252H", "S_REL_VOL_RATIO", "HAZ_PCT_OWN")
     # ⚠ [v0.3.0 §B7] 순환매 검증 타깃. "ratio"(기본) = 산업/부모 가격비율의 수익(베타 1 가정, 종전과 비트 동일)
     #   | "beta_neutral" = ind − β₂₅₂·parent. 반대쪽은 항상 진단으로 함께 계산해 13g에 병기(ROTATION_TARGET_DIAGNOSTIC).
     ROTATION_TARGET: str = "ratio"
@@ -686,7 +752,20 @@ class IndustryConfig:
     #   해제하면 13·13b·13c·13c2·13f·13j·13l·14·15가 전부 생기고 실행시간 +약 38분(배분·격자 백테스트, 캐시와 무관).
     #   판정은 종전대로 13f(수용기준)·13_산업배분전략(격자 4기준)이 낸다 — 시트가 생긴다고 I★를 운용하지는 않는다.
     #   ⚠ 되돌리기(동결): i_overrides={"INDUSTRY_LAYER_FROZEN": True}
-    INDUSTRY_LAYER_FROZEN: bool = False
+    # ⚠ [v0.12.0 경로 A — REPORT51 §5/§7, 사용자 위임("몰라 더 나은 개선방법으로 해") 후 내가 선택] **다시 동결한다
+    #   (기본값 False → True로 복귀).** REPORT51 §3.1이 사전 등록해 둔 K7 문턱(① 풀링 t≥2.0 ≥5/9창 & 1위→상위3
+    #   ≥0.15 신호 ≥1개, ② 슬리브가 형성일 대조 2행 모두를 칼마·MDD로 이기고 블록 P>0.103) 둘 다 실측에서
+    #   미달이었다(§3.1: "둘 다 미달" — ①은 순서·크기를 동시에 가진 후보 0개, ②는 대조군과 구별 불가). 보고서
+    #   §7은 경로 B(사후 규칙 변경으로 채택 게이트를 '순서 우선'으로 바꿔 한 번 더 시도)를 권고했지만, B는
+    #   보고서 자신도 "⚠ 사후 규칙 변경 — 마지막 한 번"이라 이름 붙인 대로 K7을 사전에 고정해 둔 취지(격자 결과를
+    #   본 뒤 문턱을 바꾸지 않는다)와 어긋난다. 시뮬레이션조차 ★를 넘지 못한다는 것을 이미 보여줬고(§3.3-c:
+    #   f=0.1 CAGR 35.4/칼마 3.71 vs ★ 35.9/3.76), 보고서 스스로도 "B의 목적은 성과 개선이 아니라 순서 정보가
+    #   있다는 것을 엔진에 확정 기록하는 것"이라고 적었다 — 사전 등록 원칙을 깨면서까지 기록할 값어치가 아니라고
+    #   판단해 **경로 A(동결)를 택한다**. M1(ABS_MOM_12_1 중복 제거)·M2(블록 P 분모 수정)·M3(CHANGELOG 정정)·
+    #   L6(rot_raw 감사 신설)은 경로 선택과 무관하게 그대로 적용된다(§5 "공통"). 13g(풀링 5열+n)·13p·16은
+    #   동결에서도 계속 나온다(v0.5.0 I-A 관행 그대로) — 배분·격자·수용기준(13·13b·13c·13c2·13f·13j·13l·14·15)만
+    #   생략된다. ⚠ 되돌리기(해제, 경로 B 재검토 시): i_overrides={"INDUSTRY_LAYER_FROZEN": False}
+    INDUSTRY_LAYER_FROZEN: bool = True
     # ---- [v0.5.0 I-B 사전등록 실험] 회피 자격을 '채택'과 분리한다 --------------------
     # 근거(REPORT44 §3.2): 이 계층에서 **유일하게 안정적인 통계**는 리더가 아니라 회피 쪽이다 —
     #   SCORE_PCT(사전방향 −1)의 부모 안 **하위1 − 부모** t가 9개 학습창 전부 ≤ −2.0 (−2.19~−2.77,
@@ -1219,6 +1298,126 @@ def industry_lookahead_audit(ind_ticker: str, parent: str, res: dict, sres: dict
 
 
 # =============================================================================
+# [2c] 풀링 순환매용 원자료(rot_raw) 구성 + 절단재계산 감사 — [v0.12.0 L6 신규, REPORT51 §5 L6·§3.4 E2]
+#     종전에는 run_industry() 안에 ~50줄이 인라인으로 박혀 있어(v0.11.0까지) 재사용도, 절단재계산 감사도
+#     불가능했다. 아래 두 함수로 뽑아냈다 — build_industry_rotation_raw_signals()는 산식 변경 없이 그
+#     인라인 코드를 그대로 옮긴 것뿐이고(비트 동일), industry_rotation_raw_lookahead_audit()이 새 감사다.
+#     S.rotation_raw_lookahead_audit()(sector_rotation.py)와 같은 설계: build_industry_rotation_raw_signals()의
+#     **직접 입력**만 d까지 잘라 그 함수를 다시 호출해 d 시점 값을 비교한다. ind_i 자체의 인과성(후보지표
+#     구성)은 industry_lookahead_audit()이 이미 절단재계산으로 검증하므로 중복 검증하지 않는다 — 이 감사는
+#     build_industry_rotation_raw_signals() 내부의 rolling/pct_change/rolling_beta 계산만 겨냥한다.
+# =============================================================================
+def build_industry_rotation_raw_signals(ind_ticker: str, ind_i: pd.DataFrame, idx_i: pd.DatetimeIndex,
+                                        adj_i: pd.Series, parent_tr: pd.Series,
+                                        parent_series: Dict[str, pd.Series], score_pct_full: pd.Series,
+                                        haz_pct_industry_full: pd.Series, S) -> pd.DataFrame:
+    """[v0.12.0 L6 준비 — run_industry() 인라인 블록의 순수 추출, 산식 변경 없음(비트 동일)] 풀링 순환매용
+    원시신호(rot_raw)를 만든다 — 이미 계산된 산업 후보지표(ind_i)·부모 총수익가격(parent_tr)·부모/자기 점수
+    백분위에서 값을 그대로 뽑거나(재계산 없음) ABS_MOM_12_1·REL_RET·REL_RET_BN·PARENT_BETA_252만 새로
+    계산한다. SCORE_MINUS_PARENT = 산업 점수 백분위 − 부모 점수 백분위. HAZ_PCT_OWN은
+    haz_pct_industry_full의 별칭(계산 없음). industry_rotation_raw_lookahead_audit()이 이 함수만 절단재계산
+    대상으로 삼는다(§5 L6)."""
+    rot_cols = {
+        "PARENT_SCORE_PCT": f"{ind_ticker}__PARENT_SCORE_PCT", "PBETA_X_SCORE": f"{ind_ticker}__PBETA_X_SCORE",
+        "P_REL_MOM_126": f"{ind_ticker}__P_REL_MOM_126", "P_REL_MOM_12_1": f"{ind_ticker}__P_REL_MOM_12_1",
+        "P_REL_MOM_21": f"{ind_ticker}__P_REL_MOM_21", "P_REL_EXT_200": f"{ind_ticker}__P_REL_EXT_200",
+        "RESID_MOM_12_1_PARENT": f"{ind_ticker}__RESID_MOM_12_1_PARENT",
+        "P_REL_MOM_63": f"{ind_ticker}__P_REL_MOM_63", "P_REL_RSI_14": f"{ind_ticker}__P_REL_RSI_14",
+        "P_REL_DD_252H": f"{ind_ticker}__P_REL_DD_252H", "P_REL_VOL_RATIO": f"{ind_ticker}__P_REL_VOL_RATIO",
+        "P_REL_MA_50_200": f"{ind_ticker}__P_REL_MA_50_200", "P_REL_MA200_Z": f"{ind_ticker}__P_REL_MA200_Z",
+    }
+    rot_raw = pd.DataFrame(index=idx_i)
+    for name, col in rot_cols.items():
+        rot_raw[name] = ind_i[col] if col in ind_i.columns else np.nan
+    rot_raw["SCORE_PCT"] = score_pct_full.reindex(idx_i)
+    rot_raw["HAZ_PCT"] = haz_pct_industry_full.reindex(idx_i)
+    _p_score = (parent_series or {}).get("SCORE_PCT", pd.Series(dtype=float)).reindex(idx_i)
+    rot_raw["SCORE_MINUS_PARENT"] = score_pct_full.reindex(idx_i) - _p_score
+    _par_tr_i = parent_tr.reindex(idx_i)
+    rel_px = adj_i / _par_tr_i.replace(0, np.nan)
+    rot_raw["REL_RET"] = rel_px.pct_change()
+    _r_i = adj_i.pct_change()
+    _r_p = _par_tr_i.pct_change()
+    _beta_bn = S.rolling_beta(np.log1p(_r_i), np.log1p(_r_p), window=252, lag=1)
+    rot_raw["REL_RET_BN"] = _r_i - _beta_bn * _r_p
+    rot_raw["PARENT_BETA_252"] = _beta_bn
+    _s_rel_cols = {
+        "S_REL_MOM_12_1": f"{ind_ticker}__S_REL_MOM_12_1", "S_REL_MOM_126": f"{ind_ticker}__S_REL_MOM_126",
+        "S_REL_MOM_63": f"{ind_ticker}__S_REL_MOM_63", "S_REL_DD_252H": f"{ind_ticker}__S_REL_DD_252H",
+        "S_REL_VOL_RATIO": f"{ind_ticker}__S_REL_VOL_RATIO",
+    }
+    for _name, _col in _s_rel_cols.items():
+        rot_raw[_name] = ind_i[_col] if _col in ind_i.columns else np.nan
+    rot_raw["ABS_MOM_12_1"] = adj_i.shift(21) / adj_i.shift(252) - 1.0
+    rot_raw["HAZ_PCT_OWN"] = haz_pct_industry_full.reindex(idx_i)
+    return rot_raw.replace([np.inf, -np.inf], np.nan)
+
+
+def industry_rotation_raw_lookahead_audit(ind_ticker: str, ind_i: pd.DataFrame, idx_i: pd.DatetimeIndex,
+                                          adj_i: pd.Series, parent_tr: pd.Series,
+                                          parent_series: Dict[str, pd.Series], score_pct_full: pd.Series,
+                                          haz_pct_industry_full: pd.Series, S, cfg_i, rot_raw_full: pd.DataFrame,
+                                          n_dates: int, M=None) -> pd.DataFrame:
+    """[v0.12.0 L6 ★ 신규 — REPORT51 §5 L6·§3.4 E2 정정, S.rotation_raw_lookahead_audit()의 산업 쌍둥이]
+    11_룩어헤드감사(industry_lookahead_audit)는 복합점수·위험점수(H) 두 값만 절단재계산한다 —
+    build_industry_rotation_raw_signals()의 출력(rot_raw: P_REL_*·S_REL_*·ABS_MOM_12_1·REL_RET·REL_RET_BN·
+    PARENT_BETA_252 등, 풀링 순환매 후보의 원시값)은 이제까지 감사 대상이었던 적이 없다 — v0.11.0
+    CHANGELOG의 "rot_raw가 11_룩어헤드감사에 자동 등록된다"는 기재가 사실이 아니었다는 정정(파일 헤더
+    v0.12.0 M3 참조)이 이 함수로 실행된다. 무작위 검사일 d마다 build_industry_rotation_raw_signals()의
+    **직접 입력**(ind_i·adj_i·parent_tr·parent_series·score_pct_full·haz_pct_industry_full)만 d까지 잘라 그
+    함수를 다시 호출하고, d 시점 행을 전체계산값과 비교한다. ind_i 자체의 인과성(후보지표 구성)은
+    industry_lookahead_audit이 이미 절단재계산으로 검증하므로 이 감사의 범위 밖이다(중복 검증하지 않음).
+    반환은 S와 같은 형식(티커·검사일·신호·전체계산값·절단재계산값·차이·일치)."""
+    rows: List[dict] = []
+    if rot_raw_full is None or not isinstance(rot_raw_full, pd.DataFrame) or rot_raw_full.empty:
+        return pd.DataFrame(rows)
+    rng = np.random.default_rng(int(getattr(cfg_i, "RANDOM_SEED", 20260831)) + 1009)   # S와 같은 오프셋(독립 표본)
+    valid = score_pct_full.dropna().index
+    valid = valid[(valid >= pd.Timestamp(cfg_i.SIGNAL_START))]
+    if len(valid) > 15:
+        valid = valid[:-15]     # 11_룩어헤드감사와 같은 이유(Adj Close 지연 이어붙임 구간 제외)
+    if len(valid) < 30:
+        return pd.DataFrame([{"티커": ind_ticker, "결과": "감사 생략(표본 부족)"}])
+    picks = sorted(rng.choice(valid, size=min(n_dates, len(valid)), replace=False))
+    for d in picks:
+        d = pd.Timestamp(d)
+        ind_t = ind_i.loc[ind_i.index <= d]
+        idx_t = idx_i[idx_i <= d]
+        adj_t = adj_i.loc[adj_i.index <= d]
+        parent_tr_t = parent_tr.loc[parent_tr.index <= d]
+        parent_series_t = {k: (v.loc[v.index <= d] if isinstance(v, pd.Series) else v)
+                           for k, v in (parent_series or {}).items()}
+        score_t = score_pct_full.loc[score_pct_full.index <= d]
+        haz_t = haz_pct_industry_full.loc[haz_pct_industry_full.index <= d]
+        try:
+            rr_t = build_industry_rotation_raw_signals(ind_ticker, ind_t, idx_t, adj_t, parent_tr_t,
+                                                        parent_series_t, score_t, haz_t, S)
+        except Exception as e:   # noqa — 절단 재계산 자체가 실패하면 그 검사일은 실패로 기록(무시하지 않는다)
+            rows.append({"티커": ind_ticker, "검사일": str(d.date()), "신호": "(절단재계산 실패)",
+                        "일치": "오류", "차이": np.nan, "판독": f"{type(e).__name__}: {str(e)[:150]}"})
+            log("AUDIT", kv(ticker=ind_ticker, event="rot_raw_audit_error", date=str(d.date()),
+                            err=type(e).__name__, msg=str(e)[:200]), M=M, level="error")
+            continue
+        row_t = rr_t.loc[d] if d in rr_t.index else pd.Series(dtype=float)
+        row_full = rot_raw_full.loc[d] if d in rot_raw_full.index else pd.Series(dtype=float)
+        for col in rot_raw_full.columns:
+            v_full = row_full.get(col, np.nan)
+            v_t = row_t.get(col, np.nan)
+            both_na = pd.isna(v_full) and pd.isna(v_t)
+            diff = abs(float(v_t) - float(v_full)) if (pd.notna(v_t) and pd.notna(v_full)) else np.nan
+            ok = both_na or bool(pd.notna(diff) and diff < 1e-8)
+            rows.append({"티커": ind_ticker, "검사일": str(d.date()), "신호": col,
+                        "전체계산값": (round(float(v_full), 8) if pd.notna(v_full) else np.nan),
+                        "절단재계산값": (round(float(v_t), 8) if pd.notna(v_t) else np.nan),
+                        "차이": diff, "일치": "OK" if ok else "불일치"})
+            if not ok:
+                log("AUDIT", kv(ticker=ind_ticker, event="rot_raw_audit_mismatch", date=str(d.date()), signal=col,
+                                full=v_full if pd.notna(v_full) else -99, truncated=v_t if pd.notna(v_t) else -99),
+                    M=M, level="error")
+    return pd.DataFrame(rows)
+
+
+# =============================================================================
 # [3] 단일 산업 파이프라인 — run_industry(ind_ticker, ctx). S.run_sector를 일반화 복제.
 # =============================================================================
 def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -1355,69 +1554,27 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         wlog, val_full, adopted, trades, episodes, events, sens, audit,
         haz_pct_sector=haz_pct_industry, spy_yearly_pos=None, daily_indicator_detail=False)
 
-    # 풀링 순환매용 원자료(§6.2) — 이미 계산된 후보열에서 부모/SPY 상대 신호를 그대로 뽑아 재사용(재계산 없음).
-    rot_cols = {
-        "PARENT_SCORE_PCT": f"{ind_ticker}__PARENT_SCORE_PCT", "PBETA_X_SCORE": f"{ind_ticker}__PBETA_X_SCORE",
-        "P_REL_MOM_126": f"{ind_ticker}__P_REL_MOM_126", "P_REL_MOM_12_1": f"{ind_ticker}__P_REL_MOM_12_1",
-        "P_REL_MOM_21": f"{ind_ticker}__P_REL_MOM_21", "P_REL_EXT_200": f"{ind_ticker}__P_REL_EXT_200",
-        "RESID_MOM_12_1_PARENT": f"{ind_ticker}__RESID_MOM_12_1_PARENT",
-        "P_REL_MOM_63": f"{ind_ticker}__P_REL_MOM_63", "P_REL_RSI_14": f"{ind_ticker}__P_REL_RSI_14",
-        # [v0.4.0 §I4] 이미 후보지표로 만들어 두고 순환매 후보에는 안 올렸던 것들 — 새로 계산하지 않는다.
-        #   근거(IMPROVEMENT_PLAN_S0.40_I0.4 §3.3 부모 안 실험 h=21): 부모 안 top1−부모ETF t가
-        #   REL_NEAR_HIGH(=P_REL_DD_252H) 1.36 · REL_MA200(=P_REL_MA200_Z) 0.98 · LOW_RVOL(=−P_REL_VOL_RATIO) 1.26(h=5)로
-        #   기존 채택 신호들보다 높았는데 후보 목록에 없어서 워크포워드가 볼 기회조차 없었다.
-        "P_REL_DD_252H": f"{ind_ticker}__P_REL_DD_252H", "P_REL_VOL_RATIO": f"{ind_ticker}__P_REL_VOL_RATIO",
-        "P_REL_MA_50_200": f"{ind_ticker}__P_REL_MA_50_200", "P_REL_MA200_Z": f"{ind_ticker}__P_REL_MA200_Z",
-    }
-    rot_raw = pd.DataFrame(index=idx_i)
-    for name, col in rot_cols.items():
-        rot_raw[name] = ind_i[col] if col in ind_i.columns else np.nan
-    # [v0.3.0 §B3 ⚠ 신규 순위 신호] 산업 '자기' 국면 점수 — S의 순환매에서 가장 자주 엄격 채택된 신호가
-    # 섹터 자기 SCORE_PCT인데(리포트38 13g: 2019·2020·2024~26), I에는 부모 것(PARENT_SCORE_PCT)만 있고
-    # 산업 자기 점수가 순위 후보에 없었다. 마스킹 전 백분위(expanding rank, 인과)를 그대로 싣는다.
-    #   SCORE_MINUS_PARENT = 산업 점수 백분위 − 부모 점수 백분위 = "부모보다 자기 국면이 강한 정도".
-    # 채택 여부는 워크포워드(S.rotation_walkforward_select)가 판정한다 — 코드가 미리 고르지 않는다.
-    rot_raw["SCORE_PCT"] = score_pct_full.reindex(idx_i)
-    rot_raw["HAZ_PCT"] = haz_pct_industry_full.reindex(idx_i)
-    _p_score = parent_series.get("SCORE_PCT", pd.Series(dtype=float)).reindex(idx_i)
-    rot_raw["SCORE_MINUS_PARENT"] = score_pct_full.reindex(idx_i) - _p_score
-    # [§6.2] 풀링 순환매용 '부모초과수익' 일간수익률 — rel=산업/부모 가격비율(S의 상대강도 산식과
-    # 동일 정의)의 일간수익률. 전체(마스킹 전) 이력 — rotation_walkforward_select가 SIGNAL_START
-    # 이전 구간도 학습에 쓴다(S와 동일 관행).
-    _par_tr_i = parent_tr.reindex(idx_i)
-    rel_px = adj_i / _par_tr_i.replace(0, np.nan)
-    rot_raw["REL_RET"] = rel_px.pct_change()
-    # [v0.3.0 §B7 진단] 베타중립 초과수익 — 비율(REL_RET)은 베타 1을 가정하므로 고베타 산업이 부모 상승
-    # 국면에서 구조적으로 앞선다(리포트41 §3.3(2): 리더가 사실상 '최고베타 산업'으로 수렴). 베타를 빼고도
-    # 남는 선택력을 재보려고 ind − β_252·parent(β는 1일 지연 롤링, 인과)를 병기한다. ROTATION_TARGET이
-    # "beta_neutral"일 때만 검증 타깃으로 쓰이고, 기본값에서는 13g 진단 열로만 나간다.
-    _r_i = adj_i.pct_change()
-    _r_p = _par_tr_i.pct_change()
-    _beta_bn = S.rolling_beta(np.log1p(_r_i), np.log1p(_r_p), window=252, lag=1)
-    rot_raw["REL_RET_BN"] = _r_i - _beta_bn * _r_p
-    # [v0.4.0 §I4] 부모 대비 순수 롤링 베타 — PBETA_X_SCORE(베타×점수)는 이미 후보였지만 베타 '자체'는
-    #   아니었다. §3.4 H1 실측: 부모 **중립** 국면에서 고베타 1위의 부모초과가 +0.81%/21일(t 1.94, 6/8년)로
-    #   가장 컸다(부모 상승 +0.25/t 0.73 · 하락 −0.21). 1일 지연 롤링이라 인과적이며 재계산도 없다.
-    rot_raw["PARENT_BETA_252"] = _beta_bn
-    # [v0.11.0 K2 ★ 신규 — REPORT50 §5 K2] 풀링 전용(부모 무관) 후보 7종의 원시값. **within-parent 채택
-    #   풀(icfg.ROTATION_SIGNALS/rank_full)에는 등록하지 않는다** — I★ 비트 동일을 유지하며 [산업슬리브격자]
-    #   (H1)의 풀링 채택과 13g 풀링 5열(+n, K4)에서만 쓰인다(within_parent_walkforward_select가 union으로
-    #   읽어들인다). S_REL_*는 USE_SPY_RELATIVE가 **이미 계산해 둔** SPY대비 상대강도 열을 rot_raw 키로
-    #   옮기는 것뿐 — 재계산이 아니다(REPORT50 §3.2: "SPY 대비 12-1 모멘텀... 그 계열은 엔진에 없었다"는
-    #   '엔진에 없다'가 실은 '순환매 후보 목록에 없다'였다 — 원시 후보지표에는 이미 있었다).
-    #   ABS_MOM_12_1(산업 자체 절대모멘텀)만 이번에 새로 계산하고, HAZ_PCT_OWN은 위 haz_pct_industry_full
-    #   (자기 위험백분위, 이미 계산됨)의 별칭이다.
-    _s_rel_cols = {
-        "S_REL_MOM_12_1": f"{ind_ticker}__S_REL_MOM_12_1", "S_REL_MOM_126": f"{ind_ticker}__S_REL_MOM_126",
-        "S_REL_MOM_63": f"{ind_ticker}__S_REL_MOM_63", "S_REL_DD_252H": f"{ind_ticker}__S_REL_DD_252H",
-        "S_REL_VOL_RATIO": f"{ind_ticker}__S_REL_VOL_RATIO",
-    }
-    for _name, _col in _s_rel_cols.items():
-        rot_raw[_name] = ind_i[_col] if _col in ind_i.columns else np.nan
-    # 절대모멘텀 12-1개월(부모·SPY 대비 아님) — S의 REL_MOM_12_1(3068행)과 같은 형태를 산업 자체 가격에 직접.
-    rot_raw["ABS_MOM_12_1"] = adj_i.shift(21) / adj_i.shift(252) - 1.0
-    rot_raw["HAZ_PCT_OWN"] = haz_pct_industry_full.reindex(idx_i)   # 자기 위험백분위 별칭(계산 없음)
+    # 풀링 순환매용 원자료(§6.2) — [v0.12.0 L6] build_industry_rotation_raw_signals()로 추출(§2c 참조,
+    #   산식 변경 없음·비트 동일). 이미 계산된 후보열에서 부모/SPY 상대 신호를 그대로 뽑아 재사용(재계산
+    #   없음), ABS_MOM_12_1·REL_RET·REL_RET_BN·PARENT_BETA_252만 새로 계산한다. SCORE_MINUS_PARENT = 산업
+    #   점수 백분위 − 부모 점수 백분위("부모보다 자기 국면이 강한 정도"). 채택 여부는 워크포워드
+    #   (S.rotation_walkforward_select 등)가 판정한다 — 코드가 미리 고르지 않는다.
+    rot_raw = build_industry_rotation_raw_signals(ind_ticker, ind_i, idx_i, adj_i, parent_tr, parent_series,
+                                                  score_pct_full, haz_pct_industry_full, S)
     ret_cc_full = adj_i.pct_change()
+
+    # [v0.12.0 L6 ★ 신규 — REPORT51 §5 L6·§3.4 E2 정정] 11b_순환매신호감사 — rot_raw 원시신호(위 P_REL_*·
+    #   S_REL_*·ABS_MOM_12_1 등)를 절단재계산으로 검증한다. sector_rotation.py L6(rotation_raw_lookahead_audit)
+    #   과 같은 자리·같은 설계의 산업 쌍둥이(industry_rotation_raw_lookahead_audit, §2c).
+    rot_audit = pd.DataFrame()
+    if icfg.RUN_LOOKAHEAD_AUDIT:
+        try:
+            rot_audit = industry_rotation_raw_lookahead_audit(
+                ind_ticker, ind_i, idx_i, adj_i, parent_tr, parent_series, score_pct_full, haz_pct_industry_full,
+                S, cfg_i, rot_raw, icfg.AUDIT_SAMPLE, M=M)
+        except Exception as e:
+            rot_audit = pd.DataFrame([{"티커": ind_ticker, "결과": f"감사 실패: {type(e).__name__}: {str(e)[:120]}"}])
+            log("AUDIT", kv(event="rot_raw_audit_failed", ticker=ind_ticker, err=str(e)[:120]), M=M, level="warning")
 
     timing["06_run_industry합계"] = round(time.time() - t0, 2)
     first_signal = score_pct.dropna().index.min()
@@ -1434,7 +1591,7 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "strategy_ret": bt["strategy_ret"], "bh_ret": bt["bh_ret"], "pos_exec": bt["pos_exec"],
         "ma_ret": bt_ma["strategy_ret"], "ret_co": bt["ret_co"], "ret_oc": bt["ret_oc"],
         "rot_raw": rot_raw, "px_open": price_i["Open"].astype(float).loc[sig_mask],
-        "px_close": close_i.loc[sig_mask], "ret_cc_full": ret_cc_full, "audit": audit,
+        "px_close": close_i.loc[sig_mask], "ret_cc_full": ret_cc_full, "audit": audit, "rot_audit": rot_audit,
     }
 
 
@@ -2902,10 +3059,17 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             #   xlk_share=0.0으로 찍혀 쏠림이 안 보였다). 부모별 보유 비중을 전부 계산해 최댓값·이름을 낸다.
             #   k에만 의존(f와 무관)하므로 k별로 한 번만 계산해 캐시(로그·13p 블록 P 둘 다 이 값을 쓴다).
             if _k_ not in _top_parent_by_k:
+                # [v0.12.0 M2 ⚠ 결함수정 — REPORT51 §3.4 E3] 분모가 전체일(len(_sf)=_n_tot)이었다 —
+                #   13p 블록 P의 '형성일/전체' 라벨(예: 1,177/2,185)과 어긋나 쏠림이 과소 표시됐다
+                #   (표시값의 ≈1.9배가 형성일 기준 실제 몫이었다, REPORT51 §3.4). _sf는 형성 전에는 항상
+                #   0이므로 분자(sum)는 그대로 두고 분모만 _n_form으로 바꾼다 — 이번 판정(쏠림 없음) 자체는
+                #   바뀌지 않는다(REPORT51 §3.4 K6 확인 사항과 같은 종류의 라벨-산식 불일치 정정).
+                #   되돌리기(전체일 분모로): 아래 `/ max(_n_form, 1)`을 `/ max(_n_tot, 1)`로.
                 _parent_hold: Dict[str, float] = {}
+                _denom_form = max(_n_form, 1)
                 for c_ in cols:
                     _p_ = parent_of.get(c_, "?")
-                    _parent_hold[_p_] = _parent_hold.get(_p_, 0.0) + float(_sf[c_].mean())
+                    _parent_hold[_p_] = _parent_hold.get(_p_, 0.0) + float(_sf[c_].sum()) / _denom_form
                 _top_parent_by_k[_k_] = (max(_parent_hold.items(), key=lambda kv_: kv_[1])
                                          if _parent_hold else ("-", 0.0))
             _top_parent, _top_parent_share = _top_parent_by_k[_k_]
@@ -4281,6 +4445,10 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
     summary = build_industry_summary(results, failed, table, icfg, S=S, alloc=alloc)   # [v0.6.0 I-D(E)] 33열
     audit_all = pd.concat([r["audit"] for r in results.values() if isinstance(r.get("audit"), pd.DataFrame) and len(r["audit"])],
                           ignore_index=True) if results else pd.DataFrame()
+    # [v0.12.0 L6] 11b_순환매신호감사 — 산업별 rot_audit(industry_rotation_raw_lookahead_audit)을 취합.
+    rot_audit_all = pd.concat([r["rot_audit"] for r in results.values()
+                              if isinstance(r.get("rot_audit"), pd.DataFrame) and len(r["rot_audit"])],
+                             ignore_index=True) if results else pd.DataFrame()
     # [v0.6.0 I-D(F)] 실행시간을 **단계별로** 합산한다 — 종전에는 '00_전체' 한 줄뿐이라 동결 실행이
     #   2,256초인 이유(산업당 검증+워크포워드 ~75초 × 29, 캐시 무효화)가 리포트에서 보이지 않았다.
     #   값은 run_industry가 이미 기록한 timing dict의 합계·평균이며 새 측정이 아니다.
@@ -4316,7 +4484,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "alloc_trades": alloc_trades, "alloc_trades_summary": alloc_trades_summary,   # [v0.6.0 I-D(B)] 13j
         "minority": minority_df, "minority_summary": minority_summ,                  # [v0.7.0 R1] 13p
         "frozen": frozen,                                                  # [v0.6.0 I-D(F)] 00시트 '생략된 시트' 문구용
-        "audit": audit_all, "icfg": icfg,
+        "audit": audit_all, "rot_audit": rot_audit_all, "icfg": icfg,
         "signal_start": (str(eval_idx[0].date()) if len(eval_idx) else "-"),
         "cal_end": str(cal[-1].date()), "aborted": False, "stage_timing": stage_timing,
         "active_table": table,
@@ -4450,6 +4618,9 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     au = ires.get("audit", pd.DataFrame())
     if isinstance(au, pd.DataFrame) and len(au):
         sheets["11_룩어헤드감사"] = au                                   # [v0.2.0] industry_lookahead_audit 결과(산업별 절단재계산)
+    rau = ires.get("rot_audit", pd.DataFrame())
+    if isinstance(rau, pd.DataFrame) and len(rau):
+        sheets["11b_순환매신호감사"] = rau                                # [v0.12.0 L6] rot_raw 원시신호 절단재계산(REPORT51 §5 L6)
     # [v0.6.0 I-D] 12b_오류상세 — S.build_sector_error_detail 재사용(실패 산업의 전체 트레이스백).
     _failed = ires.get("failed", {}) or {}
     if _failed and S is not None and hasattr(S, "build_sector_error_detail"):
@@ -4470,6 +4641,17 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         audit_line = f"산업별 무작위 절단 재계산 {n_ok + n_mis}건 중 불일치 {n_mis}건 — " + ("전체 통과" if n_mis == 0 else "⚠ 불일치 있음(11시트)")
     else:
         audit_line = "미실행(RUN_LOOKAHEAD_AUDIT=False 또는 표본 부족)"
+    # [v0.12.0 L6] 11b_순환매신호감사(rot_raw) 요약 — 11_룩어헤드감사(복합점수·H점수)와 별개 감사.
+    rau = ires.get("rot_audit", pd.DataFrame())
+    if isinstance(rau, pd.DataFrame) and len(rau) and "일치" in rau.columns:
+        _rn_mis = int((rau["일치"] == "불일치").sum())
+        _rn_err = int((rau["일치"] == "오류").sum())
+        _rn_ok = int((rau["일치"] == "OK").sum())
+        rot_audit_line = (f"산업별 rot_raw 원시신호 무작위 절단 재계산 {_rn_ok + _rn_mis + _rn_err}건 중 "
+                          f"불일치 {_rn_mis}건 · 오류 {_rn_err}건 — "
+                          + ("전체 통과" if (_rn_mis == 0 and _rn_err == 0) else "⚠ 확인 필요(11b시트)"))
+    else:
+        rot_audit_line = "미실행(RUN_LOOKAHEAD_AUDIT=False 또는 표본 부족)"
     # [v0.3.1] 부모 안에서 값이 전부 같아 '산업을 고를 정보가 0'인 날이 있었던 신호(대표: PARENT_SCORE_PCT).
     #   그런 날은 복합평균·투표에서 빠진다(희석·임의 1위 방지) — 리포트가 그 사실을 숨기지 않고 한 줄로 보고한다.
     _inert: Dict[str, int] = {}
@@ -4588,6 +4770,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         ("판정", verdict),
         *nd_rows,
         ("룩어헤드 감사", audit_line),
+        ("순환매신호 감사(L6)", f"[v0.12.0 신규] {rot_audit_line} — 11b_순환매신호감사(REPORT51 §3.4 E2 정정: "
+                          "rot_raw는 이제까지 감사 대상이 아니었다는 사실을 바로잡은 신규 배선, S L6과 같은 설계)"),
         ("계층정합", hier_line),
         ("예측 대상", f"{len(results)}개 산업 ETF(부모섹터 하위) — 부모는 S.SECTOR_EXCLUDE 제외 후 산업ETF가 있는 섹터만"),
         ("실패 산업", f"{n_fail_ind}개" if n_fail_ind else "없음"),

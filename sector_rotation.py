@@ -17,6 +17,61 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.48.0 - 2026-09-14 - [지평 진단·배분층 격자 2종·요약 귀속 수정·순환매신호 감사 신설] REPORT51 §5 L1~L6.
+#    ※ 이번 라운드도 ⚠ 기본값(신호·채택·사이징) 변경 **0건** — 라이브 ★는 v0.47.0과 비트 동일하다(진단 열·
+#      배분층 격자·감사 시트만 추가, 라이브는 전부 꺼짐). 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
+#
+#    (L1 ★ 신규 진단 — REPORT51 §2.2 "지평 불일치") 13p 블록 B·E에 h=21 옆으로 h=42·63·126의 '리더 → 실현
+#      상위3'을 병기(리더 판단일·태그는 그대로, 실현 순위를 재는 창만 다르다). 근거: 같은 611일 교차 리더
+#      판단을 h=63/126으로 재면 0.534/0.637(h=21은 0.4255) — 신호(12-1 모멘텀·점수 백분위·자기 위험 백분위)가
+#      원래 2~6개월을 가리키는데 판단·보유·검증은 21일로 고정돼 있다는 구조적 사실을 매 실행 드러낸다.
+#      변경 함수: build_minority_class_accuracy(신규 인자 rot_extra_horizons=(42,63,126), 블록 B `_blk`·블록 E
+#      루프에 열 추가) · minority_summary_text(00시트에 h=63 병기).
+#    (L2 ★ 신규 배분층 격자 — REPORT51 §2.4 E4) [득표상실청산격자] ROTATION_EXIT_ON_VOTE_LOSS_GRID=("majority",).
+#      보유 리더가 그날도 복합 1위인데 득표만 과반 아래로 떨어지면 min_hold를 기다리지 않고 그날 폴백(복합
+#      1위 자체가 바뀐 날은 현행대로 min_hold 유지). 근거: 득표를 잃은 채 보유된 25일의 적중 0.040·초과
+#      −4.1%/21일(REPORT51 §2.4 E4). 변경 함수: _run_leader3(신규 인자 exit_on_vote_loss·vote_loss_flag 반환) ·
+#      build_sector_allocation(격자 루프·_is_cap_grid 등록). ⚠ 라이브 기본값 `()`로 완전 비활성 — 격자만.
+#      되돌리기(이미 꺼짐): s_overrides={"ROTATION_EXIT_ON_VOTE_LOSS_GRID": ()}
+#    (L3 ★ 신규 배분층 격자 — REPORT51 §5) [보유기간격자] ROTATION_MIN_HOLD_GRID=(42, 63). 최소보유 21→42/63일
+#      (채택층·검증 지평 21일은 무변경 — 신호층 변경 아님). 채택 지평(SELECT_HORIZON) 21→63 자체는 이번
+#      라운드에 넣지 않는다(§5 L3 — 이 격자 결과를 본 뒤 다음 라운드 단독 판정). 변경 함수: _run_leader3(신규
+#      인자 min_hold_override) · build_sector_allocation(격자 루프·_is_cap_grid 등록). 라이브 기본값 `()`.
+#    (L4 ⚠ 결함수정 — REPORT51 §2.4 E5) 00시트 순환매 요약 줄이 '리더(교차)'+'하락국면리더'를 합산한 값을
+#      찍고 있었다(v0.47.0 J1은 13p 블록 B·E만 갈랐고 이 요약 줄은 그대로였다) — REPORT47~49의 "2026 리더
+#      16일 → 실현 상위3 1.000"류 귀속 오류가 이 줄에서 재발할 위험이 있었다. 이제 두 유형을 분리해서 낸다
+#      (기존 합산 키는 다른 소비처(13f 등) 하위호환을 위해 그대로 둔다). 변경 함수: build_minority_class_
+#      accuracy(summ에 rot_leadcross_*/rot_downleader_* 신설) · minority_summary_text(분기 표시).
+#    (L5 ★ 신규 진단 열 — L2 판독용) 13c_일별배분비중에 '득표 상실 중 보유' 열 — 그날 보유 리더가 복합
+#      1위인 채 득표만 과반 아래인지(L2의 vote_loss_only와 동일 조건, exit_on_vote_loss 값과 무관하게 항상
+#      기록). 변경 함수: _run_leader3(vote_loss_flag_ 반환) · build_sector_allocation("vote_loss_flag" 전달) ·
+#      build_allocation_sheet(열 추가).
+#    (L6 ★ 신규 시트·⚠ 결함수정 — REPORT51 §3.4 E2) 11_룩어헤드감사는 복합점수·위험점수(H) 두 값만 절단
+#      재계산한다 — build_rotation_raw_signals()의 출력(REL_MOM_*·HAZ_PCT_OWN·S_REL_*·BETA·MACRO_TAILWIND·
+#      MACRO_BETA_FCST 등, 순환매 채택 후보의 원시값)은 v0.5.0 이래 감사 대상이었던 적이 없다 — v0.11.0
+#      CHANGELOG의 "rot_raw가 11_룩어헤드감사에 자동 등록된다"는 기재는 사실이 아니었다(별도 배선 없이는
+#      감사되지 않는다). 신규 시트 11b_순환매신호감사: 무작위 검사일마다 build_rotation_raw_signals()의
+#      직접 입력(ind_i·score·adj_i·spy_tr·haz_score·res["fred"/"px_dict"])만 d까지 잘라 재호출하고 d 시점
+#      값을 비교(score/haz_score 자체의 인과성은 11_룩어헤드감사가 이미 검증하므로 중복 검사하지 않는다).
+#      신규 함수: rotation_raw_lookahead_audit(). 변경 함수: run_sector(호출·rot_audit 반환) ·
+#      build_sector_report(11b 시트·00시트 1줄, "순환매신호 감사(L6)"). RUN_LOOKAHEAD_AUDIT·AUDIT_SAMPLE을
+#      그대로 재사용(신규 설정 없음).
+#      [정정 — industry_rotation.py 작업 중 발견] 산업 계층에는 이 함수를 그대로 재사용하지 "않았다" —
+#      산업의 rot_raw는 run_industry() 안에 인라인으로 있어 build_rotation_raw_signals()와 같은 시그니처로
+#      호출할 수 없었다(입력이 score/adj_i/spy_tr/haz_score가 아니라 ind_i·parent_tr·parent_series·
+#      score_pct_full/haz_pct_industry_full). 대신 같은 설계(직접 입력만 d까지 잘라 재호출·전체계산값과
+#      비교)의 쌍둥이 함수 build_industry_rotation_raw_signals()·industry_rotation_raw_lookahead_audit()을
+#      산업 쪽에 새로 작성해 배선했다(industry_rotation.py v0.12.0 L6, 합성데이터 단위테스트 3종 통과 —
+#      인과 입력 0건 불일치, 의도적 룩어헤드 주입 시 정상 검출 확인).
+#
+#    [검증] 신규 로직 3종(vote_loss_only 상태기계 분기·rot_raw 절단재계산 비교·13p 지평 열 집계)을 합성
+#    데이터로 자체 단위테스트(scratch, 세션 로컬)했다 — 프로젝트 정식 회귀 스위트(test_sector_v0*.py 16개)는
+#    이번 세션에 파일이 없어 실행하지 못했다: HANDOFF §8이 이미 지시한 대로, 다음 실행 전에 로컬에서
+#    (1) 기존 스위트 전종 재실행 (2) 기본값 가드에 ROTATION_EXIT_ON_VOTE_LOSS_GRID=()·ROTATION_MIN_HOLD_GRID=()
+#    반영 (3) test_sector_v046_block_e에 '[득표상실청산격자]'·'[보유기간격자]' 신설 확인을 추가할 것. 이
+#    파일만으로는 이 세 항목이 검증되지 않은 채 배포된다 — §6 아래 "직접 확인 필요" 표를 볼 것.
+#
+#  ---- 이전 라운드 레시피(참고) ----
 #  VERSION: v0.47.0 - 2026-09-13 - [블록 E like-for-like 수정 · 단독회피격자 퇴역] REPORT50 §5 J1·J2·J5.
 #    ※ 이번 라운드도 ⚠ 기본값(신호·채택·사이징) 변경 **0건** — 라이브 ★는 v0.46.0과 비트 동일하다(격자·
 #      진단만 변경). 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
@@ -2011,8 +2066,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.47.0"
-VERSION_DATE = "2026-09-13"
+VERSION = "v0.48.0"
+VERSION_DATE = "2026-09-14"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -2415,6 +2470,20 @@ class SectorConfig:
     #   되돌리기: s_overrides={"ROTATION_AVOID_STANDALONE_GRID": ("order", "size+order")}
     ROTATION_AVOID_STANDALONE_GRID: Tuple[str, ...] = ()
     ROTATION_AVOID_STANDALONE_HIT: Tuple[float, float] = (0.33, 0.40)   # (학습창 문턱, 최근 252일 문턱)
+    # [v0.48.0 L2 ★ 신규 격자 — REPORT51 §5·§2.4 E4] [득표상실청산격자] — 보유 리더가 그날도 복합 1위인데
+    #   득표만 과반 아래로 떨어지면 min_hold를 기다리지 않고 그날 폴백한다(복합 1위 자체가 바뀐 경우는
+    #   현행대로 min_hold를 유지 — 그 46일은 REPORT51 실측 0.55로 문제없다). 근거: 득표를 잃은 채 보유된
+    #   25일의 적중 0.040·초과 −4.1%/21일(REPORT51 §2.4 E4). ⚠ 배분층 격자 — 라이브는 꺼짐(기본 ()).
+    #   판정: 13p 블록 E 리더 판단일 ≈586·적중 ≥0.44 및 격자 4~5기준(§5 L2). 값은 "majority" 하나뿐이라
+    #   격자는 실제로 최대 1행 — 그래도 다른 격자와 같은 관례(빈 튜플 = 완전 비활성)를 따른다.
+    #   되돌리기: s_overrides={"ROTATION_EXIT_ON_VOTE_LOSS_GRID": ()}
+    ROTATION_EXIT_ON_VOTE_LOSS_GRID: Tuple[str, ...] = ()
+    # [v0.48.0 L3 ★ 신규 격자 — REPORT51 §5] [보유기간격자] — 리더 최소보유를 21 → 42/63일로(청산 규칙은
+    #   그대로, 채택층·진입/검증 지평 21일은 무변경). 판정: 13p 블록 E의 h=21·63 적중, 리더 교체 횟수,
+    #   격자 4~5기준. 채택 지평(ROTATION_SELECT_HORIZON) 21→63 자체는 이번 라운드에 넣지 않는다(§5 L3
+    #   — 신호층 변경이라 이 격자 결과를 본 뒤 다음 라운드 단독 판정). ⚠ 라이브는 꺼짐(기본 ()).
+    #   되돌리기: s_overrides={"ROTATION_MIN_HOLD_GRID": ()}
+    ROTATION_MIN_HOLD_GRID: Tuple[int, ...] = ()
     RUN_DOWN_PROB: bool = True
     DOWN_PROB_HORIZON: int = 21          # 예측 지평(일) — 13p 블록 A의 h_main과 같게 두는 것이 읽기 쉽다
     DOWN_PROB_MIN_TRAIN: int = 250       # 그 해 학습 표본 최소 일수(미만이면 그 해 예측 없음)
@@ -4601,6 +4670,73 @@ def sector_lookahead_audit(ticker: str, res: dict, M, scfg: SectorConfig, cfg_i,
     return pd.DataFrame(rows)
 
 
+def rotation_raw_lookahead_audit(ticker: str, ind_i: pd.DataFrame, score: pd.Series, adj_i: pd.Series,
+                                 spy_tr: pd.Series, idx_i: pd.DatetimeIndex, M, res: dict, scfg: "SectorConfig",
+                                 cfg_i, haz_score: Optional[pd.Series], rot_raw_full: pd.DataFrame,
+                                 n_dates: int) -> pd.DataFrame:
+    """[v0.48.0 L6 ★ 신규 — REPORT51 §3.4 E2·§5 L6 정정] 11_룩어헤드감사(sector_lookahead_audit)는 복합점수·
+    위험점수(H) 두 값만 절단재계산한다 — build_rotation_raw_signals()의 출력(rot_raw: REL_MOM_*·HAZ_PCT_OWN·
+    S_REL_*·BETA·MACRO_TAILWIND·MACRO_BETA_FCST 등, 순환매 채택 후보의 원시값)은 v0.5.0 이래 감사 대상이었던
+    적이 없다. v0.11.0 CHANGELOG의 "rot_raw가 11_룩어헤드감사에 자동 등록된다"는 기재는 사실이 아니었다
+    (REPORT51 §3.4 E2 — 별도 배선 없이는 감사되지 않는다). 이 함수가 그 배선이다: 무작위 검사일 d마다
+    build_rotation_raw_signals()의 **직접 입력**(ind_i·score·adj_i·spy_tr·haz_score·res["fred"/"px_dict"])만
+    d까지 잘라 그 함수를 다시 호출하고, d 시점 행을 전체계산값과 비교한다. score/haz_score 자체의 인과성은
+    11_룩어헤드감사가 이미 절단재계산으로 검증하므로 이 감사의 범위 밖이다(중복 검증하지 않음 — 이 감사는
+    build_rotation_raw_signals() 내부의 rolling/expanding 계산만 겨냥한다). S_REL_* 계열(산업 계층, 부모
+    대비 상대화)은 shift(21/252) 등 명시적 지연을 쓰므로 구조적 위험은 낮지만(REPORT51 §3.4 E2), '등록됐다'는
+    주장 자체가 틀렸으므로 이 함수로 실제 검증한다. 반환은 11_룩어헤드감사와 같은 형식(티커·검사일·신호·
+    전체계산값·절단재계산값·차이·일치)."""
+    rows: List[dict] = []
+    if rot_raw_full is None or not isinstance(rot_raw_full, pd.DataFrame) or rot_raw_full.empty:
+        return pd.DataFrame(rows)
+    rng = np.random.default_rng(int(getattr(cfg_i, "RANDOM_SEED", 20260831)) + 1009)   # 11번과 다른 시드(독립 표본)
+    valid = score.dropna().index
+    valid = valid[(valid >= pd.Timestamp(cfg_i.SIGNAL_START))]
+    if len(valid) > 15:
+        valid = valid[:-15]     # 11_룩어헤드감사와 같은 이유(Adj Close 지연 이어붙임 구간 제외)
+    if len(valid) < 30:
+        return pd.DataFrame([{"티커": ticker, "결과": "감사 생략(표본 부족)"}])
+    picks = sorted(rng.choice(valid, size=min(n_dates, len(valid)), replace=False))
+    fred_full = (res or {}).get("fred") or {}
+    px_full = (res or {}).get("px_dict") or {}
+    for d in picks:
+        d = pd.Timestamp(d)
+        ind_t = ind_i.loc[ind_i.index <= d]
+        score_t = score.loc[score.index <= d]
+        adj_t = adj_i.loc[adj_i.index <= d]
+        spy_t = spy_tr.loc[spy_tr.index <= d]
+        haz_t = haz_score.loc[haz_score.index <= d] if haz_score is not None else None
+        idx_t = idx_i[idx_i <= d]
+        res_t = {"fred": {k: (v.loc[v.index <= d] if v is not None else None) for k, v in fred_full.items()},
+                 "px_dict": {k: (v.loc[v.index <= d] if v is not None else None) for k, v in px_full.items()}}
+        try:
+            rr_t = build_rotation_raw_signals(ticker, ind_t, score_t, adj_t, spy_t, idx_t, M,
+                                              res=res_t, scfg=scfg, haz_score=haz_t)
+        except Exception as e:   # noqa — 절단 재계산 자체가 실패하면 그 검사일은 실패로 기록(무시하지 않는다)
+            rows.append({"티커": ticker, "검사일": str(d.date()), "신호": "(절단재계산 실패)",
+                         "일치": "오류", "차이": np.nan, "판독": f"{type(e).__name__}: {str(e)[:150]}"})
+            log("AUDIT", kv(ticker=ticker, event="rot_raw_audit_error", date=str(d.date()),
+                            err=type(e).__name__, msg=str(e)[:200]), M=M, level="error")
+            continue
+        row_t = rr_t.loc[d] if d in rr_t.index else pd.Series(dtype=float)
+        row_full = rot_raw_full.loc[d] if d in rot_raw_full.index else pd.Series(dtype=float)
+        for col in rot_raw_full.columns:
+            v_full = row_full.get(col, np.nan)
+            v_t = row_t.get(col, np.nan)
+            both_na = pd.isna(v_full) and pd.isna(v_t)
+            diff = abs(float(v_t) - float(v_full)) if (pd.notna(v_t) and pd.notna(v_full)) else np.nan
+            ok = both_na or bool(pd.notna(diff) and diff < 1e-8)
+            rows.append({"티커": ticker, "검사일": str(d.date()), "신호": col,
+                         "전체계산값": (round(float(v_full), 8) if pd.notna(v_full) else np.nan),
+                         "절단재계산값": (round(float(v_t), 8) if pd.notna(v_t) else np.nan),
+                         "차이": diff, "일치": "OK" if ok else "불일치"})
+            if not ok:
+                log("AUDIT", kv(ticker=ticker, event="rot_raw_audit_mismatch", date=str(d.date()), signal=col,
+                                full=v_full if pd.notna(v_full) else -99, truncated=v_t if pd.notna(v_t) else -99),
+                    M=M, level="error")
+    return pd.DataFrame(rows)
+
+
 def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     """섹터 1개 전체 파이프라인. 반환 dict는 pandas/기본형만 담는다(프로세스 경계 통과 —
     Config/IndicatorSpec 인스턴스 없음). 시트 조각(01~11)도 여기서 만들어 부모는 조립만 한다."""
@@ -4832,6 +4968,12 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     # 학습해야 하므로). 전부 그 섹터 후보지표 프레임/점수에서 그대로 꺼내거나 인과적으로 계산(재계산·미래 정보 없음).
     rot_raw = build_rotation_raw_signals(ticker, ind_i, score, adj_i, spy_tr, idx_i, M, res=res, scfg=scfg,
                                          haz_score=haz_score)   # [v0.43.0 R3] 자기 H → HAZ_PCT_OWN(재계산 없음)
+    # [v0.48.0 L6 ★ 신규 — REPORT51 §3.4 E2·§5 L6] rot_raw 절단재계산 감사(11b_순환매신호감사). 11_룩어헤드감사와
+    #   같은 스위치(RUN_LOOKAHEAD_AUDIT)·같은 표본 크기(AUDIT_SAMPLE)를 쓴다 — 별도 설정을 늘리지 않는다.
+    rot_audit = pd.DataFrame()
+    if scfg.RUN_LOOKAHEAD_AUDIT:
+        rot_audit = rotation_raw_lookahead_audit(ticker, ind_i, score, adj_i, spy_tr, idx_i, M, res, scfg, cfg_i,
+                                                 haz_score, rot_raw, scfg.AUDIT_SAMPLE)
     ret_cc_full = adj_i.pct_change()   # 전체 이력 총수익(검증용 미래수익 산출 — 배분에는 미사용)
     timing["12_run_sector()합계"] = round(time.time() - t_all, 2)
     first_signal = score_pct.dropna().index[0] if score_pct.notna().any() else None
@@ -4860,6 +5002,7 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "ma_ret": bt_ma["strategy_ret"],
             # [v0.4.0 §1.F] 포트폴리오 백테스트용 수익 분해(M.run_backtest와 동일 정의: 전일종가→시가, 시가→종가) + 순위 신호
             "ret_co": bt["ret_co"], "ret_oc": bt["ret_oc"], "rot_raw": rot_raw,
+            "rot_audit": rot_audit,   # [v0.48.0 L6] 11b_순환매신호감사 원자료(티커별)
             # [v0.9.0] 13j 배분거래내역 표시용 원시 시가/종가(평가창) — 체결가는 시가(T+1 시가 체결 규칙)
             "px_open": price_i["Open"].astype(float).loc[sig_mask.values], "px_close": close_i.loc[sig_mask.values],
             "ret_cc_full": ret_cc_full,   # [v0.5.0] 전체 이력(횡단면 워크포워드 검증의 미래수익 산출용)
@@ -6641,7 +6784,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
 
     def _run_leader3(leader_regimes: Optional[Tuple[str, ...]],
                      reverse_avoid_by_year: Optional[Dict[int, List[str]]] = None,
-                     standalone_avoid_by_year: Optional[Dict[int, List[str]]] = None) -> Dict[str, Any]:
+                     standalone_avoid_by_year: Optional[Dict[int, List[str]]] = None,
+                     exit_on_vote_loss: bool = False,
+                     min_hold_override: Optional[int] = None) -> Dict[str, Any]:
         """[v0.4.0 §1.F leader3 상태기계 — v0.10.0 §1.D로 국면 제약을 인자화] leader_regimes=None이면 전 국면(제약 없음,
         v0.9.2·§1.B와 완전히 동일). 튜플이면 그날 SPY 시장상황(STATE_SHORT 라벨)이 그 집합에 있을 때만 리더 인정 — 없으면
         새 tier를 만들지 않고 그대로 '폴백'(§1.D: "그 외는 폴백"). 교차확인 투표·확신 게이트(§1.B)·꼴찌 회피·최소보유 상태기계는
@@ -6649,7 +6794,15 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         둘의 유일한 차이가 국면 제약뿐임을 보장한다(로직이 갈라져 비교가 오염되는 것을 방지).
         [v0.45.0 G5] standalone_avoid_by_year: {연도: [신호]} — 그 신호가 그날 지목한 꼴찌는 **득표 수·과반과
         무관하게** 규칙 ②를 연다(순서 잣대로 이미 자격을 검증했으므로 교차확인을 면제). None/빈 dict면
-        이 경로는 완전히 비활성 = v0.44.0과 비트 동일. SPY 바스켓 비교·최소보유·확신 게이트는 그대로 적용된다."""
+        이 경로는 완전히 비활성 = v0.44.0과 비트 동일. SPY 바스켓 비교·최소보유·확신 게이트는 그대로 적용된다.
+        [v0.48.0 L2] exit_on_vote_loss=True면 보유 리더가 그날도 복합 1위인데(=composite 1위가 바뀌지 않음)
+        득표만 과반 아래로 떨어진 날은 min_hold를 기다리지 않고 즉시 폴백한다. 복합 1위 자체가 바뀐 경우는
+        기본값(False)과 동일하게 min_hold를 지킨다 — 이 인자는 '그 조건 하나만' 바꾼다. 기본 False면 v0.47.0과
+        비트 동일.
+        [v0.48.0 L3] min_hold_override가 주어지면 이 호출 안에서만 최소보유일을 그 값으로 쓴다(None이면
+        scfg.ROTATION_MIN_HOLD_DAYS 그대로 — 기본값과 비트 동일)."""
+        _mh = int(min_hold_override) if min_hold_override is not None else min_hold
+        vote_loss_exit_ = np.zeros(len(eval_idx), dtype=int)   # [v0.48.0 L2] 진단·로그용
         frac = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
         tier_ = pd.Series("현금", index=eval_idx, dtype=object)
         leader_ = pd.Series("", index=eval_idx, dtype=object)
@@ -6662,6 +6815,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         gate_ = pd.Series("해당없음", index=eval_idx, dtype=object)  # 확신 게이트: 통과/미달/해당없음(투표상 리더 후보 자체가 없음) — 13c
         rev_hits_ = np.zeros(len(eval_idx), dtype=int)               # [v0.41.0 S-G] 그날 역방향 회피로 제외된 후보 수
         sa_hits_ = np.zeros(len(eval_idx), dtype=int)                # [v0.45.0 G5] 단독 자격으로 열린 회피일(0/1)
+        # [v0.48.0 L5] '득표 상실 중 보유' 진단 플래그 — vote_loss_only는 exit_on_vote_loss 값과 무관하게 매일
+        #   계산되므로(§L2), 라이브 실행(exit_on_vote_loss=False)에서도 '그날 조건이 성립했는가'를 그대로
+        #   기록해 13c에 낸다(L2 격자 판독용 — 배분·판단 자체는 바꾸지 않는다).
+        vote_loss_flag_ = pd.Series(False, index=eval_idx, dtype=bool)
         sa_lag_: List[str] = []                                      # [v0.45.0 G5] 그 날들의 회피 섹터(집중도 진단)
         cur_leader: Optional[str] = None
         held = 0
@@ -6763,12 +6920,21 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 cur_leader = None
             if cur_leader is not None and leader_regimes is not None and spy_regime_arr[i] not in leader_regimes:
                 cur_leader = None
+            # [v0.48.0 L2] vote_loss_only = 보유 리더가 그날도 복합 1위인데(구성 순위 불변) 투표만 실패한 날.
+            #   복합 1위 자체가 다른 섹터로 바뀐 날(leader != cur_leader)은 여기 해당하지 않는다 — 그 경우는
+            #   exit_on_vote_loss와 무관하게 항상 held >= _mh를 지켜야 한다(§5 L2 "복합 1위가 바뀐 경우는
+            #   현행대로 min_hold 유지").
+            vote_loss_only = (cur_leader is not None and leader_lost and leader is not None and leader == cur_leader)
+            vote_loss_flag_.iloc[i] = bool(vote_loss_only)   # [v0.48.0 L5] exit_on_vote_loss와 무관하게 항상 기록
             if clear_leader and leader != cur_leader:
-                if cur_leader is None or held >= min_hold:
+                if cur_leader is None or held >= _mh:
                     cur_leader = leader
                     held = 0
                     switches_ += 1
-            elif leader_lost and cur_leader is not None and held >= min_hold:
+            elif exit_on_vote_loss and vote_loss_only:
+                cur_leader = None                      # [v0.48.0 L2] min_hold 무시 — 즉시 청산
+                vote_loss_exit_[i] = 1
+            elif leader_lost and cur_leader is not None and held >= _mh:
                 cur_leader = None
             if cur_leader is not None:
                 frac.iat[i, all_cols.index(cur_leader)] = lw
@@ -6800,6 +6966,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         return {"frac_leader": frac, "tier": tier_, "leader_s": leader_, "laggard_s": laggard_,
                 "votes_leader": votes_leader_, "votes_laggard": votes_laggard_, "n_sel_s": n_sel_,
                 "margin_s": margin_, "step_s": step_, "gate_s": gate_, "switches": switches_, "n_spy_top": n_spy_top_,
+                "vote_loss_exit_days": int(vote_loss_exit_.sum()),   # [v0.48.0 L2] 즉시청산이 실제로 발동한 날 수
+                "vote_loss_flag": vote_loss_flag_,   # [v0.48.0 L5] 13c '득표 상실 중 보유' 열 원천(exit_on_vote_loss 무관)
                 "rev_avoid_days": int((rev_hits_ > 0).sum()),   # [v0.41.0 S-G]
                 "sa_avoid_days": int(sa_hits_.sum()),           # [v0.45.0 G5] 단독 자격으로 열린 회피일
                 "avoid_days": int((tier_ == "회피").sum()),     # [v0.45.0 G5] 실제 회피 tier 일수(격자 판독용)
@@ -6939,6 +7107,36 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                avoid_sectors=";".join(f"{k}={int(v)}" for k, v in _sc_top) or "-",
                                top_share=round(float(_sc_top[0][1]) / _sc_n, 3) if _sc_top else 0.0,
                                years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_sets.items()) if v) or "-"), M=M)
+    # [v0.48.0 L2 ★ 신규 격자 — REPORT51 §5·§2.4 E4] [득표상실청산격자] — 자세한 근거는 CFG 주석·_run_leader3
+    #   docstring 참조. 집중배분 계열에서만 판정한다(주력섹터 모드가 주 전략이어도 리더 규칙 자체는 이 상태기계를
+    #   공유하므로, 아래 _is_cap_grid 등록으로 하락국면리더·전섹터하락 오버라이드까지 like-for-like로 받는다).
+    vote_loss_exit_variants: Dict[str, pd.DataFrame] = {}
+    for _vl in tuple(getattr(scfg, "ROTATION_EXIT_ON_VOTE_LOSS_GRID", ()) or ()):
+        _vl = str(_vl).lower()
+        if _vl != "majority":
+            log("ROTATION", kv(event="vote_loss_exit_grid_skip", variant=_vl,
+                               note="정의된 값은 'majority'뿐 — 알 수 없는 값은 건너뜀"), M=M, level="warning")
+            continue
+        _r3v = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rev_live, exit_on_vote_loss=True)
+        _lab_vl = "집중배분 · 득표상실 즉시청산 [득표상실청산격자]"
+        vote_loss_exit_variants[_lab_vl] = _r3v["frac_leader"]
+        _keep_diag(_lab_vl, _r3v)   # [v0.48.0 L2] 13p 블록 E가 이 변형의 리더→상위3을 재게 한다
+        log("ROTATION", kv(event="vote_loss_exit_grid", variant=_vl,
+                           exit_days=int(_r3v.get("vote_loss_exit_days", 0)),
+                           switches=int(_r3v.get("switches", 0))), M=M)
+    # [v0.48.0 L3 ★ 신규 격자 — REPORT51 §5] [보유기간격자] — 최소보유 21 → 42/63일. 라이브값(min_hold)과
+    #   같은 값은 격자에서 뺀다(★와 같은 행을 두 번 싣지 않는다 — 다른 격자와 같은 관례).
+    min_hold_variants: Dict[str, pd.DataFrame] = {}
+    for _mhg in tuple(getattr(scfg, "ROTATION_MIN_HOLD_GRID", ()) or ()):
+        _mhg = int(_mhg)
+        if _mhg == min_hold or _mhg <= 0:
+            continue
+        _r3h = _run_leader3(getattr(scfg, "ROTATION_LEADER_REGIMES", None), _rev_live, min_hold_override=_mhg)
+        _lab_mh = f"집중배분 · 최소보유 {_mhg}일 [보유기간격자]"
+        min_hold_variants[_lab_mh] = _r3h["frac_leader"]
+        _keep_diag(_lab_mh, _r3h)   # [v0.48.0 L3]
+        log("ROTATION", kv(event="min_hold_grid", days=_mhg, switches=int(_r3h.get("switches", 0)),
+                           vote_loss_exit_days=int(_r3h.get("vote_loss_exit_days", 0))), M=M)
     # [v0.16.0 §A ⚠] 주력 섹터 중심 배분 — 근거·실측은 SectorConfig 주석 참조.
     #   주력(기본 XLK)이 자기 국면 RISK_OFF가 아니면 ROTATION_PRIMARY_CAP만큼 보유하고 나머지는 대피처로,
     #   RISK_OFF면 전량 대피처로 보낸다. 대피처 = 순환매 복합순위 1위(주력 제외 · 그 섹터도 RISK_OFF 아님),
@@ -7336,6 +7534,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         variants[_lab] = _fr
     for _lab, _fr in standalone_avoid_variants.items():   # [v0.45.0 G5] 단독 회피 격자(집중배분 계열)
         variants[_lab] = _fr
+    for _lab, _fr in vote_loss_exit_variants.items():   # [v0.48.0 L2] 득표상실 즉시청산 격자
+        variants[_lab] = _fr
+    for _lab, _fr in min_hold_variants.items():   # [v0.48.0 L3] 최소보유 격자
+        variants[_lab] = _fr
     # [v0.24.0] 혼합 변형 등록은 label_conv(확신 사이징) 생성 **뒤로** 옮겼다 — v0.23.0에서
     #   여기에 두었더니 그 시점에 확신 사이징이 아직 variants에 없어 **아무 것도 등록되지 않았다**
     #   (리포트25에 [혼합] 행이 통째로 빠진 원인). 아래 label_conv 블록 다음을 볼 것.
@@ -7400,7 +7602,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                                        "[분산게이트격자", "[중립리더격자", "[역방향회피격자",
                                                        "[중립상한격자",     # [v0.42.0 S-K]
                                                        "[대피처격자",       # [v0.45.0 G3]
-                                                       "[단독회피격자"))    # [v0.45.0 G5]
+                                                       "[단독회피격자",     # [v0.45.0 G5]
+                                                       "[득표상실청산격자",  # [v0.48.0 L2]
+                                                       "[보유기간격자"))     # [v0.48.0 L3]
         if ((label in (label_leader, label_primary) or _is_cap_grid)
                 and getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False)):
             dl_pos = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
@@ -7753,6 +7957,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             "eligible": eligible, "listed": listed, "E": E, "n_eligible": n_elig,
             "shortfall": pd.Series(0.0, index=eval_idx),
             "variants_diag": variants_diag,      # [v0.46.0 H4] 13p 블록 E — 격자 변형별 판단 시계열
+            "vote_loss_flag": _live_r3.get("vote_loss_flag"),   # [v0.48.0 L5] 13c '득표 상실 중 보유' 열
             "rank_pos": rank_pos, "bts": bts, "target_ws": target_ws, "perf": perf, "curve": curve.reset_index(drop=True),
             "diag": diag, "signals": signals, "wf": wf, "ret_cc": ret_cc, "state": state, "cols": cols, "cand": cand,
             "spy_m_ret": spy_m_ret,                                                        # [v0.8.0] 13i 격차 분해용
@@ -9241,6 +9446,8 @@ def build_allocation_sheet(alloc: Dict[str, Any], nd_spy: Optional[dict], scfg: 
         out["채택신호수"] = alloc["n_selected"]
         out["1위 득표"] = alloc["votes_leader"]
         out["꼴찌 득표"] = alloc["votes_laggard"]
+    if alloc.get("vote_loss_flag") is not None:   # [v0.48.0 L5] L2 격자 판독용 — 라이브 판단은 바꾸지 않는다
+        out["득표 상실 중 보유"] = pd.Series(alloc["vote_loss_flag"]).reindex(idx).fillna(False).values
     if "margin" in alloc:   # [v0.10.0 §1.B] 확신 게이트 진단 — 1위가 2위를 얼마나 앞섰는지·문턱·통과 여부
         out["1위 여유(2위 대비)"] = alloc["margin"].round(4)
         out["여유 문턱"] = alloc["step"].round(4)
@@ -9468,7 +9675,8 @@ def _binary_metrics(pred: pd.Series, real: pd.Series) -> Dict[str, float]:
 
 def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Optional[Dict[str, Any]] = None,
                                   horizons: Tuple[int, ...] = (1, 5, 21), big_move: float = 0.05,
-                                  asset_label: str = "섹터", exclude_rank: Tuple[str, ...] = ("SPY",)
+                                  asset_label: str = "섹터", exclude_rank: Tuple[str, ...] = ("SPY",),
+                                  rot_extra_horizons: Tuple[int, ...] = (42, 63, 126)
                                   ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """[v0.43.0 R1] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이 있다")를
     매 실행 자동으로 낸다. REPORT46 §1의 표를 그대로 코드로 옮긴 것이며 **새 계산·새 데이터 없음**(01_일별의 예측·종가,
@@ -9480,6 +9688,10 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
     블록 B(순환매·연도별, alloc이 있을 때): 리더 판단일의 '리더 → 실현 상위3'(소수 클래스 27%)·'리더 → 실현 하위3'·
       '리더 > 중앙값', 순위가 있는 모든 날의 '모델 1위 → 상위3'·'모델 꼴찌 → 하위3'·'모델 꼴찌 → 상위3' + 무작위 기대.
     블록 C(국면·연도별 pooled, h=21): 기저·예측하락일·정밀도·재현율·중립일 실현하락률.
+    [v0.48.0 L1 ★ 신규] 블록 B·E에 '판단일은 h=21로 고정, 실현 순위만 rot_extra_horizons(기본 42·63·126)로
+      다시 잰' 열을 h=21 옆에 병기한다(리더 태그·보유일은 그대로 — 판단 지평은 바꾸지 않는다, 계산 전용 진단).
+      근거: REPORT51 §2.2 — 같은 611일 교차 리더 판단을 h=63/126으로 재면 0.534/0.637(h=21은 0.4255)로
+      오른다. 지평 불일치(신호는 2~6개월인데 판단·검증은 21일)를 매 실행 드러낸다. 배분·채택 신호 변경 없음.
     반환: (DataFrame, 요약 dict — 13f ⑦⑧·00시트 1줄용)."""
     rows: List[dict] = []
     summ: Dict[str, Any] = {}
@@ -9647,6 +9859,26 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
         fwd = P_.shift(-h_main) / P_ - 1.0
         rk_real = fwd.rank(axis=1, ascending=False, method="min")
         n_av = fwd.notna().sum(axis=1)
+        # [v0.48.0 L1 ★ 신규] 같은 종가 매트릭스(P_)로 h_main 외 지평의 실현 순위도 미리 만들어 둔다.
+        #   판단일·리더 태그는 위 h_main 계산과 완전히 같다 — 바뀌는 것은 '실현 성적을 재는 창'뿐이라
+        #   룩어헤드가 늘지 않는다(전방 수익은 여전히 t일 이후만 본다, 다만 판독 시 인접일 중첩에 유의 — §11 함정).
+        _extra_rk: Dict[int, pd.DataFrame] = {}
+        _extra_nav: Dict[int, pd.Series] = {}
+        for _he in rot_extra_horizons:
+            if int(_he) == h_main or int(_he) <= 0:
+                continue
+            _fh = P_.shift(-int(_he)) / P_ - 1.0
+            _extra_rk[int(_he)] = _fh.rank(axis=1, ascending=False, method="min")
+            _extra_nav[int(_he)] = _fh.notna().sum(axis=1)
+
+        def _hit_top3_extra(d, c) -> Dict[int, float]:
+            """[v0.48.0 L1] 그날 실현 순위(지평별)로 c가 상위3인지 — n_av < 5인 지평은 NaN(비교 대상 부족)."""
+            out: Dict[int, float] = {}
+            for _he, _rk in _extra_rk.items():
+                _nn = int(_extra_nav[_he].loc[d]) if d in _extra_nav[_he].index else 0
+                _v = _rk.loc[d].get(c, np.nan) if d in _rk.index else np.nan
+                out[_he] = float(_v <= 3) if (_nn >= 5 and pd.notna(_v)) else np.nan
+            return out
         lead = pd.Series(alloc["leader"]).reindex(idx).astype(str)
         tier = pd.Series(alloc.get("tier", pd.Series("", index=idx))).reindex(idx).astype(str)
         held = tier.eq("리더") | tier.eq("하락국면리더")
@@ -9704,6 +9936,8 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                 #   태그부터 분리한다 — REPORT50 §2.2 E8: "2026 16일 1.000"을 R2 성과로 잘못 인용한 원인이
                 #   두 규칙이 '리더 판단일' 한 열에 섞여 있었던 것이었다. 재계산 없음(tier 라벨만 읽는다).
                 rec["lead_type"] = str(tier.loc[d])
+                for _he, _hv in _hit_top3_extra(d, L).items():   # [v0.48.0 L1]
+                    rec[f"lead_top3_h{_he}"] = _hv
             tp1 = top_pred.loc[d]; bp1 = bot_pred.loc[d]
             if isinstance(tp1, str) and pd.notna(rr.get(tp1, np.nan)):
                 rec["top_top3"] = float(rr[tp1] <= 3)
@@ -9736,6 +9970,18 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                 # [v0.47.0 J5(선택)] 연도별 최빈 리더(집중도) — 정적 편향(예: 2023~25 XLC)을 표에서 바로 드러낸다.
                 #   계산 없음(13c 판단 열의 재집계, Block E와 같은 방식).
                 _lead_vc_b = _Lx["lead"].value_counts() if len(_Lx) else pd.Series(dtype=object)
+                # [v0.48.0 L1] h_main(21) 옆에 지평 진단 열 — 판단·리더 태그는 동일, 실현 순위 창만 다르다.
+                _extra_h_cols: Dict[str, Any] = {}
+                for _he in rot_extra_horizons:
+                    if int(_he) == h_main:
+                        continue
+                    _c = f"lead_top3_h{int(_he)}"
+                    _extra_h_cols[f"리더 → 실현 상위3(h={int(_he)})"] = (
+                        round(float(L_[_c].mean()), 4) if (_c in L_.columns and L_[_c].notna().any()) else np.nan)
+                    _extra_h_cols[f"리더(교차) → 실현 상위3(h={int(_he)})"] = (
+                        round(float(_Lx[_c].mean()), 4) if (_c in _Lx.columns and _Lx[_c].notna().any()) else np.nan)
+                    _extra_h_cols[f"하락국면리더 → 실현 상위3(h={int(_he)})"] = (
+                        round(float(_Ld[_c].mean()), 4) if (_c in _Ld.columns and _Ld[_c].notna().any()) else np.nan)
                 return {"블록": f"B. 순환매 소수클래스(연도별, h={h_main}일)", "티커": label, "지평(일)": h_main,
                         "리더 판단일": int(len(L_)),
                         "리더 → 실현 상위3": (round(float(L_["lead_top3"].mean()), 4) if len(L_) else np.nan),
@@ -9745,6 +9991,7 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                         "리더(교차) → 실현 상위3": (round(float(_Lx["lead_top3"].mean()), 4) if len(_Lx) else np.nan),
                         "하락국면리더일": int(len(_Ld)),
                         "하락국면리더 → 실현 상위3": (round(float(_Ld["lead_top3"].mean()), 4) if len(_Ld) else np.nan),
+                        **_extra_h_cols,
                         "최빈 리더(집중도, 교차만)": (f"{_lead_vc_b.index[0]} {float(_lead_vc_b.iloc[0]) / max(int(_lead_vc_b.sum()), 1):.2f}"
                                                 if len(_lead_vc_b) else ""),
                         "순위 있는 날": int(d["top_top3"].notna().sum()) if "top_top3" in d.columns else 0,
@@ -9815,6 +10062,27 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
             summ["rot_last_year"] = int(_ly)
             summ["rot_lead_top3_last"] = float(L_last["lead_top3"].mean()) if len(L_last) else np.nan
             summ["rot_lead_days_last"] = int(len(L_last))
+            # [v0.48.0 L4 ⚠ 결함수정 — REPORT51 §2.4 E5] 00시트 요약이 리더(교차)+하락국면리더를 합산해
+            #   귀속 오류(REPORT47~49 "2026 16일 1.000"이 실은 전부 하락국면리더였던 것)를 재발시킬 위험이
+            #   있었다 — 분리해서 낸다. 기존 rot_lead_top3/rot_lead_days(합산, 위)는 13f 등 다른 소비처와의
+            #   하위호환을 위해 그대로 둔다.
+            _lt_all = L_all["lead_type"] if "lead_type" in L_all.columns else pd.Series(dtype=object)
+            _Lx_all = L_all[_lt_all.eq("리더")] if len(L_all) else L_all
+            _Ld_all = L_all[_lt_all.eq("하락국면리더")] if len(L_all) else L_all.iloc[0:0]
+            summ["rot_leadcross_top3"] = float(_Lx_all["lead_top3"].mean()) if len(_Lx_all) else np.nan
+            summ["rot_leadcross_days"] = int(len(_Lx_all))
+            summ["rot_downleader_top3"] = float(_Ld_all["lead_top3"].mean()) if len(_Ld_all) else np.nan
+            summ["rot_downleader_days"] = int(len(_Ld_all))
+            for _he in rot_extra_horizons:   # [v0.48.0 L1] 00시트 병기용(minority_summary_text가 h=63을 쓴다)
+                if int(_he) == h_main:
+                    continue
+                _c = f"lead_top3_h{int(_he)}"
+                if _c in _Lx_all.columns and _Lx_all[_c].notna().any():
+                    summ[f"rot_leadcross_top3_h{int(_he)}"] = float(_Lx_all[_c].mean())
+                if _c in L_all.columns and L_all[_c].notna().any():
+                    summ[f"rot_lead_top3_h{int(_he)}"] = float(L_all[_c].mean())
+                if _c in _Ld_all.columns and _Ld_all[_c].notna().any():
+                    summ[f"rot_downleader_top3_h{int(_he)}"] = float(_Ld_all[_c].mean())
 
         # ---------- 블록 D [v0.45.0 G2 ★ 신규] 1위 득표 × M 국면 ----------
         # 왜: REPORT48 §3 — 복합순위 1위의 실현 상위3 적중은 '그날 몇 개의 채택 신호가 그 섹터를 1위로
@@ -9918,6 +10186,7 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                 _held_v = _tv.eq("리더") | _tv.eq("하락국면리더")
                 _avoid_v = _tv.eq("회피")
                 _lh, _ah, _ax = [], [], []
+                _lh_extra: Dict[int, List[float]] = {int(_he): [] for _he in rot_extra_horizons if int(_he) != h_main}
                 for d in idx:
                     if n_av.loc[d] < 5:
                         continue
@@ -9926,15 +10195,22 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                         _c = _lv.loc[d]
                         if _c in cols and pd.notna(rr.get(_c, np.nan)):
                             _lh.append(float(rr[_c] <= 3))
+                            for _he, _hv in _hit_top3_extra(d, _c).items():   # [v0.48.0 L1]
+                                if pd.notna(_hv):
+                                    _lh_extra[_he].append(_hv)
                     if bool(_avoid_v.loc[d]):
                         _c = _gv.loc[d]
                         if _c in cols and pd.notna(rr.get(_c, np.nan)):
                             _ah.append(float(rr[_c] >= nn - 2)); _ax.append(float(fwd.loc[d, _c] - med))
                 _lag_vc = _gv[_avoid_v & _gv.isin(cols)].value_counts()
                 _lead_vc = _lv[_held_v & _lv.isin(cols)].value_counts()
+                # [v0.48.0 L1] 지평 진단 열 — 같은 held 일자(_lh와 동일 판단), 실현 순위 창만 다르다.
+                _extra_h_cols_e = {f"리더 → 실현 상위3(h={_he})": (round(float(np.mean(_v)), 4) if _v else np.nan)
+                                   for _he, _v in _lh_extra.items()}
                 rows.append({"블록": _blk_e, "티커": str(_lab_v)[:60], "지평(일)": h_main,
                              "리더 판단일": int(len(_lh)),
                              "리더 → 실현 상위3": (round(float(np.mean(_lh)), 4) if _lh else np.nan),
+                             **_extra_h_cols_e,
                              "회피 지목일": int(len(_ah)),
                              "회피 섹터 → 실현 하위3": (round(float(np.mean(_ah)), 4) if _ah else np.nan),
                              "회피 섹터 초과(%/21일)": (round(float(np.mean(_ax)) * 100, 3) if _ax else np.nan),
@@ -9955,7 +10231,9 @@ def build_minority_class_accuracy(results: Dict[str, Dict[str, Any]], alloc: Opt
                                  "0.4255) 표의 비교 기준이 격자 행(611일, 하락국면리더 오버라이드 미적용)과 어긋났다. "
                                  "[v0.47.0 J1·REPORT50 §2.2 E8] 참고: 2026 '리더 16일 1.000'은 전부 '[★ 하락국면리더일]'류의 "
                                  "판단이었다 — 그 해 교차 순환매 리더는 라이브 0일이다. 순환매 리더 성과를 인용할 때는 "
-                                 "'[라이브 기준]' 행만 볼 것")})
+                                 "'[라이브 기준]' 행만 볼 것. [v0.48.0 L1] '리더 → 실현 상위3(h=42/63/126)' 열은 같은 판단일에 "
+                                 "실현 순위를 재는 창만 늘린 진단이다 — h=21보다 크게 오르면 그 규칙의 신호가 h=21보다 느리다는 "
+                                 "뜻이지 h=21에서의 판단이 바뀐다는 뜻이 아니다(§9 지평 명시 규약: 지평 없이 적중률을 인용하지 말 것)")})
     df = pd.DataFrame(rows)
     if len(df):
         lead_cols = ["블록", "티커", "지평(일)", "표본일수"]
@@ -10197,7 +10475,18 @@ def minority_summary_text(summ: Dict[str, Any], asset_label: str = "섹터") -> 
                      f"· MCC {_f(summ.get('regime_mcc_mean'), '+.3f')}(양수 {summ.get('regime_n_mcc_pos', 0)}/{summ.get('regime_n_assets', 0)})")
     if summ.get("regime_zero_down_years"):
         parts.append(f"하락 예측 0일인 해: {', '.join(summ['regime_zero_down_years'])}")
-    if "rot_lead_top3" in summ and pd.notna(summ.get("rot_lead_top3", np.nan)):
+    if "rot_leadcross_top3" in summ and pd.notna(summ.get("rot_leadcross_top3", np.nan)):
+        # [v0.48.0 L4 ⚠ 결함수정 — REPORT51 §2.4 E5] 종전엔 리더(교차)+하락국면리더를 합산한 값을 이 줄에
+        #   찍었다(v0.47.0 J1은 13p 블록 B·E만 갈랐고 이 요약 줄은 그대로 두었다) — REPORT47~49가 "2026 리더
+        #   16일 → 실현 상위3 1.000"을 순환매 리더 성과로 인용한 귀속 오류가 이 줄에서 재발할 수 있었다.
+        #   이제 두 유형을 분리하고, [v0.48.0 L1] h=21 옆에 h=63을 병기한다(§9 지평 명시 규약).
+        _h63 = summ.get("rot_leadcross_top3_h63", np.nan)
+        parts.append(f"순환매: 리더(교차) → 실현 상위3 {summ['rot_leadcross_top3']:.3f}(h=21,{summ.get('rot_leadcross_days', 0)}일)"
+                     + (f"/h=63 {_h63:.3f}" if pd.notna(_h63) else "")
+                     + f" · 하락국면리더 → 실현 상위3 {_f(summ.get('rot_downleader_top3'))}(h=21,{summ.get('rot_downleader_days', 0)}일) · "
+                     f"모델 꼴찌 → 실현 하위3 {summ['rot_bot_bot3']:.3f} · 무작위 {summ['rot_random']:.2f}")
+    elif "rot_lead_top3" in summ and pd.notna(summ.get("rot_lead_top3", np.nan)):
+        # 하위호환 — lead_type이 없는 소비처(예: 산업 계층, 하락국면리더 개념이 없다)는 종전 합산 표기 그대로.
         parts.append(f"순환매: 리더 → 실현 상위3 {summ['rot_lead_top3']:.3f}({summ['rot_lead_days']}일; "
                      f"{summ.get('rot_last_year')}년 {summ.get('rot_lead_top3_last', np.nan):.3f}/{summ.get('rot_lead_days_last', 0)}일) · "
                      f"모델 꼴찌 → 실현 하위3 {summ['rot_bot_bot3']:.3f} · 무작위 {summ['rot_random']:.2f}")
@@ -10509,6 +10798,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     u = sres.get("universe", pd.DataFrame())
     sheets["10_데이터품질"] = pd.concat([u, q], ignore_index=True, sort=False) if len(q) else u
     sheets["11_룩어헤드감사"] = _concat(results, "audit")
+    # [v0.48.0 L6 ★ 신규 — REPORT51 §3.4 E2·§5 L6] rot_raw(순환매 원시신호) 절단재계산 감사. 11_룩어헤드감사가
+    #   다루지 않는 REL_MOM_*·HAZ_PCT_OWN·S_REL_*·BETA·MACRO_TAILWIND·MACRO_BETA_FCST 등을 별도로 감사한다.
+    sheets["11b_순환매신호감사"] = _concat(results, "rot_audit")
 
     # ---- 00 실행요약 ----
     n_ok = len(ok_t)
@@ -10519,6 +10811,14 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                       else "불일치 발생 - 확인 필요") + f" ({len(chk)}건 검사)"
     else:
         audit_line = "미실행"
+    # [v0.48.0 L6] rot_raw 감사 요약 — 11_룩어헤드감사와 같은 형식의 별도 줄(합치지 않는다, §5 L6).
+    rot_audit_all = sheets["11b_순환매신호감사"]
+    if len(rot_audit_all) and "일치" in rot_audit_all.columns:
+        _rchk = rot_audit_all[~rot_audit_all["일치"].astype(str).isin(("N/A", "오류"))]
+        rot_audit_line = ("전체 통과" if (len(_rchk) == 0 or _rchk["일치"].astype(str).eq("OK").all())
+                          else "불일치 발생 - 확인 필요") + f" ({len(_rchk)}건 검사, {rot_audit_all['티커'].nunique()}티커)"
+    else:
+        rot_audit_line = "미실행"
     regime_pass = int(sum(1 for t in ok_t if results[t]["sheets"]["regime_validity"]))
     # [v0.40.0 §S1·§S2·§S3] 이번 라운드 규칙 3개 요약 + 게이트 결과 요약(00시트 2줄).
     _cap = getattr(scfg, "SECTOR_MARKET_BLOCK_CAP", None)
@@ -10920,6 +11220,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         # [v0.42.0 S-N] H진입 자기확인 게이트(기본 꺼짐) 상태·결과 1줄.
         ("⚠ H진입 자기확인 게이트(v0.42.0 S-N)", _hconf_line),
         ("룩어헤드 감사", f"섹터별 무작위 {scfg.AUDIT_SAMPLE}개 날짜 절단 재계산: {audit_line} — 11_룩어헤드감사"),
+        ("순환매신호 감사(L6)", f"[v0.48.0 신규] rot_raw 원시신호(REL_MOM_*·HAZ_PCT_OWN·S_REL_* 등) 절단재계산: "
+                          f"{rot_audit_line} — 11b_순환매신호감사(REPORT51 §3.4 E2 정정: 11_룩어헤드감사는 "
+                          f"이 신호들을 다루지 않는다)"),
         ("11섹터 균등분산 전략(참고)", _pf("11섹터 균등분산 전략(참고)")),
         ("11섹터 균등 단순보유(참고)", _pf("11섹터 균등 단순보유(참고)")),
         ("SPY 국면전략(M)", _pf("SPY 국면전략(M)")),
