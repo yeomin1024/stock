@@ -1,5 +1,89 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.13.0 - 2026-09-14 - [배분 시트 상시 산출 · ⚠ 산업 국면을 M 상속으로 · 국면 라벨 비교 블록]
+#    REPORT52 §5 E1·S1~S3·§6 N1~N6. **이 라운드는 산업(I)만 고친다**(사용자 지시 "industry만 수정")
+#    — S v0.48.0 · M v1.53.1은 손대지 않았다. 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
+#
+#    (N1 ⚠ 기본값 변경 · 사용자 지시 — REPORT52 §1·§5 E1) INDUSTRY_LAYER_FROZEN **True → False**, 그리고
+#      **동결이 더 이상 배분 시트를 지우지 않는다.** v0.12.0의 경로 A(동결)가 13_산업배분전략(전략별 수익)·
+#      13b·13c_일별배분비중·13c2·13f·13j·13l·14·15를 통째로 없앴고 사용자가 "왜 산업 전략별 수익, 일별배분
+#      비중 시트 또 없앴어? 다시 생기게 해"라고 지적했다(R46 R6에 이어 **두 번째**). 구조를 고친다:
+#        · 기본값 False(해제) — 배분·격자·수용기준 전부 산출.
+#        · 동결(True)이어도 run()이 build_industry_allocation을 **격자만 꺼서** 호출한다
+#          (`_frozen_alloc_cfg()` 신설 — INDUSTRY_GRID=False + 이름이 `_GRID`로 끝나는 모든 필드를 ()로
+#          replace). 그래서 13·13b·13c·13c2·14는 ★·대조군A/B·S★재현 4행 기준으로 **항상** 나오고,
+#          생략되는 것은 격자 행과 13f(수용기준)·13j(거래내역)·13l(리더적중률)·15(귀속)뿐이다.
+#        · 규약에 고정: "동결로 13·13c를 없애지 않는다"(HANDOFF §4-10). 시간 절약(≈40분)은 격자에서 온다.
+#      변경 함수: IndustryConfig.INDUSTRY_LAYER_FROZEN(기본값·주석) · _frozen_alloc_cfg(신설) ·
+#        run(alloc 호출·13f/13j/13l/15 게이트) · build_industry_report(_frozen 게이트·00시트 생략 목록 문구).
+#      ⚠ 되돌리기(동결 복귀, 격자·13f·13j·13l·15만 생략): i_overrides={"INDUSTRY_LAYER_FROZEN": True}
+#
+#    (N2 ⚠⚠ 신호층 기본값 변경 — 이번 라운드의 유일한 ⚠, REPORT52 §2~4·§6 N2) 산업 확정국면·목표비중을
+#      **M(SPY) 국면 상속**으로 바꾼다. INDUSTRY_REGIME_SOURCE 신설(기본 "m_inherit").
+#      왜(원자료 23규칙 실측, REPORT52 §4 — 전부 2018-01-02~, 29산업, h=21 소수클래스 MCC):
+#        · 산업 **자기** 기계의 하락 라벨 = 0.007(29평균) / 0.057(기술6) / 0.060(SOXX) — 정보 없음.
+#          13p 실측으로는 29평균 **0.004** · 재현율 0.130(실현 하락의 87%를 '상승/중립'이라 했다).
+#          2022년에는 29산업 중 25개가 하락 예측 정밀도 < 기저율(= 떨어진 뒤에 하락이라 했다),
+#          2024년(SOXX −25%)에는 16개 산업이 하락 예측 **0일**, SOXX는 급락 중 자기 점수 백분위가
+#          0.30 → 0.93으로 **역행**하며 목표비중이 0.4 → 1.0으로 늘었다.
+#        · 원인은 신호가 아니라 구조다: 산업 복합점수의 채택 지표가 대부분 매크로(SOXX PASS 21개 중 19개,
+#          17개가 63일 지평 금리·물가·달러·신용)라 산업 고유 하락에 무감각하고 금리 하락기의 기술주 급락
+#          에는 역행한다. 위험(H)·급락트리거는 이미 SPY 것을 공유하므로 자기 고유 정보는 점수 문턱뿐이다.
+#        · **M 상승 아님(중립∪하락)** = 0.075 / 0.106 / SOXX 0.154(정밀 0.477·재현 0.482·균형 0.537,
+#          29산업 중 27개 양수) — 유일하게 재현율과 MCC를 동시에 갖는다. 자기 점수·자기 H·부모 H·
+#          200/50/20일선·모멘텀·낙폭·변동성 급등·형제산업 폭·급락트리거는 전부 무작위 이하이고, M과의
+#          & / | 조합도 M 단독을 넘지 못한다. h=63에서는 어느 규칙도 정보가 없다.
+#        · ⚠ **M의 '하락' 라벨만 상속하면 −0.004로 정보가 없다** — 정보는 '상승 아님'에 있다. 그래서
+#          M 중립일을 산업에서도 **중립(목표 0.5)**으로 상속하고, 판정은 '상승 아님' 기준으로 낸다
+#          (M 자신을 13p에서 '현금 기준'·'상승아님 기준'으로 재는 이 프로젝트의 기존 관행과 같다).
+#      무엇을 바꿨나(run_industry, generate_signals 직후 한 곳):
+#        · state = M 확정국면(RISK_ON/NEUTRAL/RISK_OFF)을 산업 거래일로 reindex+ffill,
+#          target_pos = M 목표비중(중립 0.5·규칙 ⑨ 감축 0.0 포함) 그대로. 라벨과 비중이 **같은 출처**라
+#          "현금이라 적고 보유" 모순이 생기지 않는다(v0.15.0 §A 교훈).
+#        · 자기 기계 값은 **버리지 않는다** — results["own_state"]/["own_target_pos"]로 보존하고
+#          01_일별_<산업>에 '자기국면'·'자기 목표비중'·'국면 소스' 3열을 덧붙인다(13p 블록 A2가 이 값으로
+#          매 실행 자기 vs 상속을 비교한다). 자기 복합점수·H·추세·규칙 발동 열은 전부 그대로 남는다
+#          (그 열들은 이제 '자기국면'의 근거이며 확정국면의 근거가 아니다 — 00시트에 명시).
+#        · 산업 순환매(13g 채택·리더)·슬리브·rot_raw는 **무관**(그 계산은 점수·가격에서 나온다). 적격
+#          판정(state=="RISK_ON")은 이제 M 상승일과 같아진다 — 리더는 여전히 교차확인(채택 0~1개)으로
+#          구조적 불가라 산업 배분 0일·**I★ ≡ S★**가 유지된다(14_계층정합이 매일 검사).
+#      사전등록(기본 꺼짐) — "m_inherit_own_down": M 상속 + **자기 기계가 하락이라 한 날은 하락 유지**
+#        (목표비중은 min(M, 자기)). 같은 실측에서 0.072 / 0.105 / 0.154로 순수 상속과 사실상 동률이고
+#        산업별 차이를 남긴다 — 다음 실행의 13p 블록 A2가 두 규칙을 같은 표에서 판정한 뒤 고른다.
+#        참고로 '자기 상승아님 ∪ M 상승아님'은 0.062 / 0.090 / 0.119로 **더 나빠서** 넣지 않았다
+#        (자기 중립일이 희석한다 — 이 라운드에서 새로 측정).
+#      ⚠ 되돌리기(v0.12.0 동작): i_overrides={"INDUSTRY_REGIME_SOURCE": "own"}
+#      사전 고정 판정(REPORT52 §6 N2, 다음 실행 13p 블록 A·A2 h=21): 29평균 MCC ≥ 0.06 · 기술6 ≥ 0.09 ·
+#        SOXX ≥ 0.12 · 재현율 ≥ 0.35 · 균형정확도 > 0.53. 미달이면 "own"으로 되돌리고 원인을 적는다.
+#
+#    (N3 ★ 신규 진단 — REPORT52 §5 E2·§6 N3) 13p에 **블록 A2 '국면 라벨 비교(하락 경고)'** 신설
+#      (build_industry_regime_label_block). 산업별 × 규칙 6종(자기 라벨 / 자기 현금 / 자기 상승아님 /
+#      확정 상승아님(=이번 라운드 규칙) / 자기하락 ∪ M상승아님(사전등록) / 부모 상승아님) × (예측일·정밀도·
+#      재현율·균형정확도·MCC) + '── 29산업 평균 ──'·'── 기술 6종 평균 ──' 행, h=21·h=5. 종전에는 산업 13p가
+#      S.build_minority_class_accuracy(alloc=None)만 써서 'M상속' 열이 전부 비어 있었고(그 함수는 alloc에서
+#      M 계열을 꺼낸다) 이번 판독을 시트만으로는 할 수 없었다 — run()이 이제 M 국면·목표비중을 그 함수에
+#      **합성 dict로 넘겨** 블록 A의 'M상속(M현금/M상승아님) 정밀도·균형정확도·MCC'·'M상속 우위(MCC차)'
+#      열도 채운다(S 코드는 손대지 않았다 — 인자만 채운다).
+#    (N4 ★ 신규 진단 — REPORT52 §6 N4) 같은 블록에 **연도별 요약 행** — 연도 × (29산업 하락 예측일 합·
+#      하락 예측 0일 산업 수·정밀도 < 기저 산업 수). "2024년 16개 산업 0일"·"2022년 25/29가 늦었다"를
+#      매 실행 감시한다(REPORT52 §2.2의 표를 시트로).
+#    (N6 문서) 위 근거를 이 CHANGELOG와 00시트에 남긴다. run_pipeline은 v1.9.0으로 레시피·되돌리기 갱신.
+#      REPORT52 §5 S3 — 산업 **고유** 조정(2024-07 반도체형)은 현재 후보군으로 21일 앞서 예측되지 않는다:
+#      시험해 닫은 23규칙을 HANDOFF §10 닫힌 방향에 등록했다(외부 데이터 없이는 다시 열지 않는다).
+#    (N5 보류) 슬리브 경로 B(INDUSTRY_SLEEVE_ADOPT_BY="hit")는 이번 라운드에 넣지 않는다 — N2가 유일한
+#      신호층 변경이어야 판정이 섞이지 않는다(REPORT52 §6 N5). 슬리브 격자·대조 2행은 N1로 13 시트가
+#      돌아오면서 v0.11.0과 같은 모습으로 다시 나온다(HAZ_PCT_OWN 채택, 기대치는 REPORT51 §3.1 그대로).
+#
+#    [검증] 이 세션에는 실제 시장데이터·M 모듈 실행 경로·정식 회귀 스위트(test_industry_v0*.py)가 없다.
+#    한 것: (1) py_compile·ast.parse 통과 (2) N2 상속 로직·N3/N4 블록을 합성데이터로 자체 단위테스트
+#    (scratch — M 중립일이 산업 중립·목표 0.5로, M 하락일이 하락·0.0으로 상속되고, 자기 값이 own_state로
+#    보존되며, 블록 A2의 MCC·정밀·재현이 수기 계산과 1e-12 이내 일치, "own"이면 v0.12.0과 동일 출력)
+#    (3) N1의 _frozen_alloc_cfg가 `_GRID` 6종 + INDUSTRY_GRID를 모두 끄는지 dataclasses.fields로 확인.
+#    **로컬에서 반드시 필요한 것**: REPORT52 §7 표 7항목 실측(특히 13p A2 29평균 MCC ≥ 0.06·SOXX ≥ 0.12,
+#    13·13c 시트 존재, 14 위반 0일, I★ = S★ 비트 동일), 회귀 스위트 전종 재실행 + 기본값 가드 갱신
+#    (INDUSTRY_LAYER_FROZEN=False·INDUSTRY_REGIME_SOURCE="m_inherit"), test_industry_v07_minority에
+#    블록 A2 존재·'own' 되돌리기 동등성 테스트 추가.
+#
 #  VERSION: v0.12.0 - 2026-09-14 - [중복 후보 제거·블록 P 분모 수정·CHANGELOG 정정·순환매신호 감사 신설·
 #    산업 계층 재동결] REPORT51 §4 E1~E3·§5 M1~M3+경로A·§7. 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
 #
@@ -529,7 +613,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.12.0"
+VERSION = "v0.13.0"
 VERSION_DATE = "2026-09-14"
 
 # =============================================================================
@@ -765,7 +849,38 @@ class IndustryConfig:
     #   L6(rot_raw 감사 신설)은 경로 선택과 무관하게 그대로 적용된다(§5 "공통"). 13g(풀링 5열+n)·13p·16은
     #   동결에서도 계속 나온다(v0.5.0 I-A 관행 그대로) — 배분·격자·수용기준(13·13b·13c·13c2·13f·13j·13l·14·15)만
     #   생략된다. ⚠ 되돌리기(해제, 경로 B 재검토 시): i_overrides={"INDUSTRY_LAYER_FROZEN": False}
-    INDUSTRY_LAYER_FROZEN: bool = True
+    # ⚠ [v0.13.0 N1 — 사용자 지시 2026-09-14 "왜 산업 전략별 수익, 일별배분비중 시트 또 없앴어? 다시 생기게 해"]
+    #   **기본값을 다시 False(해제)로 되돌리고, 동결의 의미 자체를 좁힌다.** v0.12.0 경로 A가 13_산업배분전략·
+    #   13c_일별배분비중을 통째로 없앴는데 그 두 시트는 사용자가 R46(R6)에서도 명시적으로 요구한 산출물이다
+    #   — 같은 일이 두 번 났으므로 플래그의 설계를 고쳤다(REPORT52 §1·§5 E1):
+    #     · 동결(True)이어도 run()이 build_industry_allocation을 **격자만 끈 cfg**(_frozen_alloc_cfg)로 호출한다
+    #       → 13_산업배분전략은 ★ + 대조군A/B + S★재현 4행으로, 13b·13c·13c2·14는 그대로 나온다.
+    #     · 동결이 생략하는 것은 **격자 행**과 13f(수용기준)·13j(배분거래내역)·13l(리더적중률)·15(귀속)뿐이다.
+    #       실행시간 절약(≈40분)은 원래도 격자 백테스트에서 나왔다 — 시트를 지워서 얻는 것이 아니었다.
+    #   즉 "동결"은 이제 **판정을 멈춘다**는 뜻이고 "리포트를 비운다"는 뜻이 아니다. 판정(K7)은 REPORT51에서
+    #   이미 No-Go로 끝났고, 그 결론은 이 플래그가 아니라 INDUSTRY_SLEEVE_SHARE=0.0(라이브 꺼짐)이 담는다.
+    #   ⚠ 되돌리기(동결 — 격자·13f·13j·13l·15만 생략): i_overrides={"INDUSTRY_LAYER_FROZEN": True}
+    INDUSTRY_LAYER_FROZEN: bool = False
+    # ---- [v0.13.0 N2 ⚠⚠ 신호층 — 산업 확정국면의 출처] ------------------------------
+    # "own"        : v0.12.0까지의 동작 — 산업 자기 복합점수·자기 200일선 + 공유 SPY H/급락트리거로 만든
+    #                자기 국면기계의 상태·목표비중을 그대로 쓴다.
+    # "m_inherit"  : (기본, REPORT52 §6 N2) **M(SPY) 확정국면·목표비중을 그대로 상속**한다.
+    #                근거(REPORT52 §4 원자료 실측, h=21 하락 소수클래스 MCC — 29평균/기술6/SOXX):
+    #                  자기 라벨 0.007 / 0.057 / 0.060 · 자기 현금 0.028 / 0.074 / 0.125
+    #                  자기 점수 하위10%(현행 문턱) 0.026 / 0.086 / 0.058 · 자기 H>0.7 0.014 / 0.085 / 0.088
+    #                  부모 H>0.7 0.028 / 0.045 / 0.091 · 부모 현금 0.027 / 0.073 / 0.117
+    #                  **M 상승아님 0.075 / 0.106 / 0.154**(정밀 0.477·재현 0.482·균형 0.537, 27/29 양수)
+    #                  M 현금 0.052 / 0.070 / 0.141 · ⚠ M '하락' 라벨만 −0.004 / 0.024 / 0.022(정보 없음)
+    #                → 정보는 '하락 라벨'이 아니라 **'상승 아님'**에 있다. 그래서 M 중립일을 산업에서도
+    #                  중립(목표 0.5)으로 상속하고, 판정은 13p 블록 A2가 '상승 아님' 기준으로 낸다.
+    #                자기 기계 값은 results["own_state"]/["own_target_pos"] + 01_일별 '자기국면'·'자기 목표비중'
+    #                열로 **보존**된다(진단·비교용). 산업 순환매 채택(13g)·슬리브·rot_raw는 영향 없음.
+    # "m_inherit_own_down" : (사전등록, 기본 꺼짐) M 상속 + **자기 기계가 하락이라 한 날은 하락 유지**
+    #                (목표비중 min(M, 자기)). 실측 0.072 / 0.105 / 0.154 — 순수 상속과 사실상 동률이면서
+    #                산업별 차이를 남긴다. 다음 실행의 13p 블록 A2가 두 규칙을 같은 표에서 비교해 고른다.
+    #                (참고: '자기 상승아님 ∪ M 상승아님'은 0.062 / 0.090 / 0.119로 더 나빠 후보에서 뺐다.)
+    # ⚠ 되돌리기: i_overrides={"INDUSTRY_REGIME_SOURCE": "own"}
+    INDUSTRY_REGIME_SOURCE: str = "m_inherit"
     # ---- [v0.5.0 I-B 사전등록 실험] 회피 자격을 '채택'과 분리한다 --------------------
     # 근거(REPORT44 §3.2): 이 계층에서 **유일하게 안정적인 통계**는 리더가 아니라 회피 쪽이다 —
     #   SCORE_PCT(사전방향 −1)의 부모 안 **하위1 − 부모** t가 9개 학습창 전부 ≤ −2.0 (−2.19~−2.77,
@@ -1497,6 +1612,25 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         sig = M.generate_signals(score_pct, trend200, cfg_i, score=score, haz_pct=haz_pct, fast_pct=fast_pct,
                                  recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
         reason = M.build_reason_text(contrib, sig["state"], score)
+
+    # [v0.13.0 N2 ⚠⚠ 신호층 변경 — REPORT52 §2~4·§6 N2] 산업 확정국면·목표비중의 출처를 M 상속으로.
+    #   자기 기계(위 generate_signals)의 결과는 **버리지 않고** own_state/own_target_pos로 보존한다 —
+    #   13p 블록 A2가 매 실행 '자기 vs 상속'을 같은 표에서 비교하고, 01_일별에 두 열이 나란히 실린다.
+    #   왜 여기인가: 이 한 곳만 바꾸면 백테스트(bt)·거래·에피소드·일별시트·다음거래일 예측·적격 판정이
+    #   전부 같은 출처를 보게 되어 "현금이라 적고 보유" 같은 라벨-비중 모순이 생기지 않는다(v0.15.0 §A).
+    own_state = pd.Series(sig["state"]).copy()
+    own_target_pos = pd.Series(sig["target_pos"]).astype(float).copy()
+    regime_src = str(getattr(icfg, "INDUSTRY_REGIME_SOURCE", "own") or "own").lower()
+    sig, _inh = inherit_industry_regime(sig, res.get("sig"), regime_src)
+    if _inh.get("applied"):
+        log("PIPE", kv(event="industry_regime_inherited", ticker=ind_ticker, source=regime_src,
+                       changed_days=_inh["changed_days"], n=_inh["n"],
+                       own_down=_inh["own_down"], new_down=_inh["new_down"], new_notup=_inh["new_notup"],
+                       note="하락 정보는 'M 상승 아님'(중립∪하락)에 있다 — 13p 블록 A2가 판정"), M=M)
+    elif regime_src != "own":
+        log("PIPE", kv(event="industry_regime_inherit_unavailable", ticker=ind_ticker, source=regime_src,
+                       reason=_inh.get("reason", "-"),
+                       note="자기 국면기계를 그대로 쓴다(결측을 만들지 않는다)"), M=M, level="warning")
     t4 = time.time()
     timing["03_신호생성"] = round(t4 - t3, 2)
 
@@ -1554,6 +1688,22 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         wlog, val_full, adopted, trades, episodes, events, sens, audit,
         haz_pct_sector=haz_pct_industry, spy_yearly_pos=None, daily_indicator_detail=False)
 
+    # [v0.13.0 N2] 01_일별_<산업>에 '국면 소스'·'자기국면'·'자기 목표비중' 3열을 덧붙인다(표시 전용 —
+    #   새 계산 없음). 확정국면이 M 상속이어도 자기 기계가 그날 무엇이라 했는지 한 줄에서 볼 수 있게 한다.
+    #   같은 행의 복합점수·H·추세오버라이드·규칙 발동 열들은 이제 **'자기국면'의 근거**다(확정국면의 근거가
+    #   아니다 — 00시트에도 같은 문구를 남겼다).
+    _dly = sheets.get("daily")
+    if isinstance(_dly, pd.DataFrame) and len(_dly) and "날짜" in _dly.columns:
+        _dix = pd.to_datetime(_dly["날짜"])
+        # 맨 끝 '예측(다음 거래일)' 행은 idx_i에 없는 날짜다 — 자기 기계의 다음 거래일 예측 = 마지막 확정값
+        #   이라는 M의 관행(build_next_day_prediction: sig.iloc[-1])과 같게 ffill로 채운다.
+        _os = own_state.reindex(_dix).ffill().map(lambda x: S.STATE_SHORT.get(x, "-") if pd.notna(x) else "-")
+        _op = own_target_pos.reindex(_dix).ffill()
+        _dly["국면 소스"] = ("M 상속(" + regime_src + ")") if regime_src != "own" else "자기 기계(own)"
+        _dly["자기국면"] = _os.values
+        _dly["자기 목표비중"] = _op.values
+        sheets["daily"] = _dly
+
     # 풀링 순환매용 원자료(§6.2) — [v0.12.0 L6] build_industry_rotation_raw_signals()로 추출(§2c 참조,
     #   산식 변경 없음·비트 동일). 이미 계산된 후보열에서 부모/SPY 상대 신호를 그대로 뽑아 재사용(재계산
     #   없음), ABS_MOM_12_1·REL_RET·REL_RET_BN·PARENT_BETA_252만 새로 계산한다. SCORE_MINUS_PARENT = 산업
@@ -1586,6 +1736,10 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "adopted": adopted, "sheets": sheets, "hazard_source": icfg.HAZARD_SOURCE, "vol_scale": vol_scale,
         "state": sig["state"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
         "target_pos": sig["target_pos"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
+        # [v0.13.0 N2] 자기 국면기계 값 보존 — 13p 블록 A2(자기 vs 상속 비교)·01_일별 진단 열의 단일 출처.
+        "own_state": own_state.loc[own_state.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
+        "own_target_pos": own_target_pos.loc[own_target_pos.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
+        "regime_source": regime_src,
         "score_pct": score_pct.loc[sig_mask], "haz_pct": haz_pct.loc[sig_mask],
         "haz_pct_industry": haz_pct_industry.loc[sig_mask],
         "strategy_ret": bt["strategy_ret"], "bh_ret": bt["bh_ret"], "pos_exec": bt["pos_exec"],
@@ -2567,6 +2721,24 @@ def _industry_portfolio_backtest(S, target_w: pd.DataFrame, ret_co: pd.DataFrame
     out["strategy_ret"] = (gross["strategy_ret"] - cost).fillna(0.0)
     out["equity"] = (1.0 + out["strategy_ret"]).cumprod()
     out["dd"] = out["equity"] / out["equity"].cummax() - 1.0
+    return out
+
+
+def _frozen_alloc_cfg(icfg: IndustryConfig, M=None) -> IndustryConfig:
+    """[v0.13.0 N1] 동결(INDUSTRY_LAYER_FROZEN=True)에서 배분을 만들 때 쓰는 cfg — **격자만 끈다**.
+
+    왜: v0.12.0까지 동결은 build_industry_allocation 자체를 건너뛰어 13_산업배분전략·13c_일별배분비중 등
+    9개 시트를 통째로 없앴고, 사용자가 두 번(R46·R52) 그 시트를 요구했다(REPORT52 §1·§5 E1). 동결의
+    목적인 실행시간 절약은 **격자 백테스트**에서 나오므로, 격자 스위치만 꺼서 ★·대조군A/B·S★재현 4행은
+    그대로 얻는다. 이름이 `_GRID`로 끝나는 모든 필드를 ()로, INDUSTRY_GRID는 False로 바꾼 복제를 돌려준다
+    (필드를 이름 규칙으로 찾으므로 앞으로 격자가 추가돼도 자동으로 포함된다 — 하드코딩 목록 없음).
+    icfg 자체는 바꾸지 않는다(dataclasses.replace로 복제 — 호출자의 설정·로그는 원본 그대로)."""
+    _off: Dict[str, Any] = {f.name: () for f in dataclasses.fields(icfg) if f.name.endswith("_GRID")}
+    _off["INDUSTRY_GRID"] = False
+    out = dataclasses.replace(icfg, **_off)
+    if M is not None:
+        log("ROT", kv(event="frozen_alloc_cfg", grids_off=",".join(sorted(_off)) or "-",
+                      note="[v0.13.0 N1] 동결에서도 배분은 만든다 — 격자만 끈다(13·13b·13c·13c2·14 유지)"), M=M)
     return out
 
 
@@ -3903,6 +4075,224 @@ def build_industry_allocation_trades(alloc: Dict[str, Any], results: Dict[str, D
     return df, summ
 
 
+def inherit_industry_regime(sig: pd.DataFrame, m_sig: Optional[pd.DataFrame], source: str
+                            ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.13.0 N2 ⚠⚠ 신호층 — REPORT52 §2~4·§6 N2] 산업 확정국면·목표비중을 M(SPY)에서 상속한다.
+
+    source: "own"(v0.12.0 동작 — 그대로 반환) | "m_inherit"(기본) | "m_inherit_own_down"(사전등록).
+      m_inherit          : state·target_pos를 M의 확정국면·목표비중으로 교체(M 중립 → 산업도 중립·0.5).
+      m_inherit_own_down : 위와 같고, **자기 기계가 하락이라 한 날은 하락을 유지**하고 비중은 min(M, 자기).
+
+    왜 이렇게 갈랐나(실측, h=21 하락 소수클래스 MCC 29평균/기술6/SOXX): 자기 라벨 0.007/0.057/0.060 ·
+    **M 상승아님 0.075/0.106/0.154** · ⚠ M '하락' 라벨만 −0.004/0.024/0.022. 즉 정보는 '하락 라벨'이 아니라
+    '상승 아님'(중립∪하락)에 있으므로 M 중립일을 산업에서도 중립으로 받고, 판정은 13p 블록 A2가 '상승 아님'
+    기준으로 낸다. 라벨과 비중을 **같은 출처**에서 받으므로 "현금이라 적고 보유"하는 모순이 없다(v0.15.0 §A).
+
+    인과성: M 국면을 산업 거래일로 reindex한 뒤 **ffill만** 한다(직전 확정값 — 미래값을 쓰지 않는다).
+    M 이력이 없는 앞 구간은 자기 기계 값으로 폴백해 결측을 만들지 않는다. 반환은 (새 sig, 진단 dict)이며
+    입력 sig는 변경하지 않는다(복제 후 교체 — 호출자의 own_state/own_target_pos가 오염되지 않는다)."""
+    src = str(source or "own").lower()
+    info: Dict[str, Any] = {"applied": False, "source": src, "reason": "-"}
+    if src == "own":
+        info["reason"] = "source=own"
+        return sig, info
+    if src not in ("m_inherit", "m_inherit_own_down"):
+        info["reason"] = f"알 수 없는 source={src}"
+        return sig, info
+    if not isinstance(m_sig, pd.DataFrame) or not {"state", "target_pos"} <= set(m_sig.columns):
+        info["reason"] = "res['sig']에 state/target_pos가 없다"
+        return sig, info
+    own_state = pd.Series(sig["state"]).astype(object)
+    own_pos = pd.Series(sig["target_pos"]).astype(float)
+    idx = sig.index
+    _ms = pd.Series(m_sig["state"]).astype(object).reindex(idx).ffill()
+    _mp = pd.Series(m_sig["target_pos"]).astype(float).reindex(idx).ffill()
+    new_state = _ms.where(_ms.notna(), own_state)
+    new_pos = _mp.where(_mp.notna(), own_pos)
+    if src == "m_inherit_own_down":
+        _own_dn = own_state.eq("RISK_OFF").fillna(False)
+        new_state = new_state.mask(_own_dn, "RISK_OFF")
+        new_pos = new_pos.mask(_own_dn, pd.concat([new_pos, own_pos], axis=1).min(axis=1))
+    out = sig.copy()
+    out["state"] = new_state
+    out["target_pos"] = new_pos.astype(float)
+    info.update({"applied": True, "n": int(len(out)),
+                 "changed_days": int((out["state"].astype(str) != own_state.astype(str)).sum()),
+                 "own_down": int(own_state.eq("RISK_OFF").sum()),
+                 "new_down": int(out["state"].eq("RISK_OFF").sum()),
+                 "new_notup": int((~out["state"].eq("RISK_ON")).sum()),
+                 "m_missing_days": int(_ms.isna().sum())})
+    return out, info
+
+
+def _down_metrics(pred: pd.Series, real_down: pd.Series) -> Dict[str, float]:
+    """하락(소수 클래스) 이진 판정 지표 — 정밀도·재현율·균형정확도·MCC. S._binary_metrics와 같은 정의이며
+    산업 블록 A2가 자체적으로 쓰는 로컬 헬퍼(S 시그니처 변화에 이 블록이 흔들리지 않게 독립시켰다)."""
+    p = pd.Series(pred).astype(bool)
+    y = pd.Series(real_down).astype(bool).reindex(p.index)
+    ok = y.notna()
+    p, y = p[ok], y[ok].astype(bool)
+    tp = float((p & y).sum()); fp = float((p & ~y).sum()); fn = float((~p & y).sum()); tn = float((~p & ~y).sum())
+    prec = tp / (tp + fp) if (tp + fp) > 0 else np.nan
+    rec = tp / (tp + fn) if (tp + fn) > 0 else np.nan
+    tnr = tn / (tn + fp) if (tn + fp) > 0 else np.nan
+    bal = ((rec + tnr) / 2.0) if (pd.notna(rec) and pd.notna(tnr)) else np.nan
+    den = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    mcc = ((tp * tn - fp * fn) / den) if den > 0 else np.nan
+    return {"n": int(len(p)), "n_pred": int(p.sum()), "base": float(y.mean()) if len(y) else np.nan,
+            "prec": prec, "rec": rec, "bal": bal, "mcc": mcc}
+
+
+# 기술 산업군 — 사용자 지시("특히 SOXX 같은 기술 산업들을 하락을 잘 맞춰야")의 판정 대상. 부모 XLK/XLC 소속
+#   6종으로, REPORT52의 '기술 6종 평균'과 같은 집합이다(진단 집계용이며 신호·배분에는 쓰이지 않는다).
+TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
+
+
+def build_industry_regime_label_block(results: Dict[str, Dict[str, Any]], sres: dict,
+                                      m_state_short: Optional[pd.Series] = None,
+                                      m_target: Optional[pd.Series] = None,
+                                      horizons: Tuple[int, ...] = (21, 5)
+                                      ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.13.0 N3·N4 ★ 신규] 13p **블록 A2 '국면 라벨 비교(하락 경고)'**.
+
+    왜: 산업 13p의 블록 A는 S.build_minority_class_accuracy를 재사용하는데 그 함수는 '하락 예측'을
+    **state == RISK_OFF**로만 세고, M 상속 비교 열은 alloc에서 M 계열을 꺼내므로 산업(alloc=None 관행)에서는
+    비어 있었다(REPORT52 §5 E2). 그런데 실측에서 하락 정보는 '하락 라벨'이 아니라 **'상승 아님'**(중립∪하락)에
+    있다(29평균 MCC 0.075 vs 라벨 0.004) — 그 잣대를 같은 표에서 규칙별로 직접 낸다. **새 계산·새 데이터
+    없음**: 01_일별의 확정/자기 상태·목표비중·종가, M 01_일별기록의 국면·목표비중, S의 부모 섹터 상태만 쓴다.
+
+    규칙 8종(전부 그날 아는 값 — 인과):
+      ① 자기 라벨(자기국면=하락)  ② 자기 현금(자기 목표비중 0)  ③ 자기 상승아님(자기국면≠상승)
+      ④ 확정 라벨(확정국면=하락)  ⑤ 확정 현금(확정 목표비중 0)  ⑥ **확정 상승아님 — 이번 라운드 채택 규칙**
+      ⑦ 자기하락 ∪ 확정 상승아님(사전등록 m_inherit_own_down의 잣대)  ⑧ 부모 상승아님(부모 섹터 확정국면≠상승)
+    h=21은 산업별 전 행 + 평균 2행, h=5는 평균 2행만(표 길이 관리). 마지막에 **N4 연도별 요약 행**:
+    그 해 29산업의 하락 예측일 합·하락 예측 0일 산업 수·정밀도 < 기저 산업 수를 자기 라벨과 확정 상승아님
+    두 규칙으로 나란히 낸다("2024년 16개 산업 0일"·"2022년 25/29가 늦었다"를 매 실행 감시)."""
+    rows: List[dict] = []
+    summ: Dict[str, Any] = {}
+    if not results:
+        return pd.DataFrame(), summ
+    blk = "A2. 국면 라벨 비교(하락 경고)"
+    _ms = pd.Series(m_state_short).astype(str) if m_state_short is not None else None
+    _mt = pd.Series(m_target).astype(float) if m_target is not None else None
+    _sec = (sres or {}).get("sectors", {}) or {}
+    per: Dict[int, Dict[str, Dict[str, Dict[str, float]]]] = {h: {} for h in horizons}   # h → rule → ticker → metrics
+    year_rec: List[dict] = []
+    for t, r in results.items():
+        st = r.get("state"); px = r.get("px_close")
+        if st is None or px is None or len(st) == 0:
+            continue
+        st = pd.Series(st).astype(str)
+        idx = st.index
+        px = pd.Series(px).astype(float).reindex(idx)
+        tp_ = pd.Series(r.get("target_pos", pd.Series(np.nan, index=idx))).astype(float).reindex(idx)
+        ost = pd.Series(r.get("own_state", st)).astype(str).reindex(idx)
+        otp = pd.Series(r.get("own_target_pos", tp_)).astype(float).reindex(idx)
+        _p = r.get("parent")
+        pst = pd.Series((_sec.get(_p, {}) or {}).get("state", pd.Series(dtype=object))).astype(str).reindex(idx)
+        # 규칙 마스크(그날 확정된 값만 — 미래 정보 없음)
+        masks = {
+            "① 자기 라벨(자기국면=하락)": ost.eq("RISK_OFF"),
+            "② 자기 현금(자기 목표비중 0)": otp.fillna(1.0) <= 1e-12,
+            "③ 자기 상승아님(자기국면≠상승)": ~ost.eq("RISK_ON"),
+            "④ 확정 라벨(확정국면=하락)": st.eq("RISK_OFF"),
+            "⑤ 확정 현금(확정 목표비중 0)": tp_.fillna(1.0) <= 1e-12,
+            "⑥ ★확정 상승아님(채택 규칙)": ~st.eq("RISK_ON"),
+            "⑦ 자기하락 ∪ 확정 상승아님(사전등록)": ost.eq("RISK_OFF") | (~st.eq("RISK_ON")),
+            "⑧ 부모 상승아님(부모 확정국면≠상승)": (~pst.eq("RISK_ON")) & pst.notna() & pst.ne("nan"),
+        }
+        if _ms is not None:
+            _msi = _ms.reindex(idx).ffill()
+            masks["⑨ M 상승아님(원천 확인)"] = ~_msi.eq("상승")
+        if _mt is not None:
+            masks["⑩ M 현금(원천 확인)"] = _mt.reindex(idx).ffill().fillna(1.0) <= 1e-12
+        for h in horizons:
+            fwd = px.shift(-h) / px - 1.0
+            real = (fwd < 0).where(fwd.notna())
+            if int(fwd.notna().sum()) < 50:
+                continue
+            for nm, mk_ in masks.items():
+                mt_ = _down_metrics(mk_.reindex(idx).fillna(False), real)
+                per[h].setdefault(nm, {})[t] = mt_
+            # ---- N4 연도별(자기 라벨 vs 확정 상승아님) ----
+            if h == 21:
+                _yv = pd.DataFrame({"y": idx.year, "real": real.values,
+                                    "own": masks["① 자기 라벨(자기국면=하락)"].reindex(idx).fillna(False).values,
+                                    "cur": masks["⑥ ★확정 상승아님(채택 규칙)"].reindex(idx).fillna(False).values},
+                                   index=idx).dropna(subset=["real"])
+                for y_, g_ in _yv.groupby("y"):
+                    _b = float(g_["real"].mean())
+                    for key, lab in (("own", "자기 라벨"), ("cur", "확정 상승아님")):
+                        _n = int(g_[key].sum())
+                        _pr = float(g_.loc[g_[key], "real"].mean()) if _n else np.nan
+                        year_rec.append({"y": int(y_), "rule": lab, "ticker": t, "n_pred": _n,
+                                         "prec": _pr, "base": _b, "late": bool(_n > 0 and pd.notna(_pr) and _pr < _b)})
+    if not per.get(horizons[0]):
+        return pd.DataFrame(), summ
+
+    def _emit(h: int, nm: str, ticker: str, mt_: Dict[str, float], note: str = "") -> dict:
+        return {"블록": blk, "티커": ticker, "규칙": nm, "지평(일)": h, "표본일수": mt_["n"],
+                "기저 실현하락률": round(mt_["base"], 4) if pd.notna(mt_["base"]) else np.nan,
+                "예측일수": mt_["n_pred"],
+                "예측 하락 비율": round(mt_["n_pred"] / mt_["n"], 4) if mt_["n"] else np.nan,
+                "하락 정밀도(예측하락 중 실제하락)": round(mt_["prec"], 4) if pd.notna(mt_["prec"]) else np.nan,
+                "하락 재현율(실제하락 중 예측하락)": round(mt_["rec"], 4) if pd.notna(mt_["rec"]) else np.nan,
+                "균형정확도": round(mt_["bal"], 4) if pd.notna(mt_["bal"]) else np.nan,
+                "MCC": round(mt_["mcc"], 4) if pd.notna(mt_["mcc"]) else np.nan, "판독": note}
+
+    for h in horizons:
+        for nm, d_ in per[h].items():
+            if h == horizons[0]:
+                for t in sorted(d_):
+                    rows.append(_emit(h, nm, t, d_[t]))
+            _all = list(d_.values())
+            _tech = [d_[t] for t in TECH_INDUSTRIES if t in d_]
+            for lab, grp in (("── 29산업 평균 ──", _all), ("── 기술 6종 평균 ──", _tech)):
+                if not grp:
+                    continue
+                _agg = {"n": int(np.mean([g["n"] for g in grp])), "n_pred": int(np.mean([g["n_pred"] for g in grp])),
+                        "base": float(np.nanmean([g["base"] for g in grp])),
+                        "prec": float(np.nanmean([g["prec"] for g in grp])),
+                        "rec": float(np.nanmean([g["rec"] for g in grp])),
+                        "bal": float(np.nanmean([g["bal"] for g in grp])),
+                        "mcc": float(np.nanmean([g["mcc"] for g in grp]))}
+                _pos = int(sum(1 for g in grp if pd.notna(g["mcc"]) and g["mcc"] > 0))
+                rows.append(_emit(h, nm, lab, _agg, note=f"MCC 양수 {_pos}/{len(grp)}개 산업"))
+                if h == 21 and lab == "── 29산업 평균 ──":
+                    summ[f"a2_{nm[0]}_mcc"] = _agg["mcc"]
+                    summ[f"a2_{nm[0]}_rec"] = _agg["rec"]
+                    summ[f"a2_{nm[0]}_bal"] = _agg["bal"]
+                if h == 21 and lab == "── 기술 6종 평균 ──":
+                    summ[f"a2_{nm[0]}_mcc_tech"] = _agg["mcc"]
+    # ---- N4 연도별 요약 ----
+    if year_rec:
+        YR = pd.DataFrame(year_rec)
+        for y_, g_ in YR.groupby("y"):
+            r_ = {"블록": blk, "티커": f"연도별 요약 {int(y_)}", "규칙": "자기 라벨 vs 확정 상승아님", "지평(일)": 21}
+            for lab, key in (("자기 라벨", "자기"), ("확정 상승아님", "확정")):
+                gg = g_[g_["rule"] == lab]
+                r_[f"{key}: 하락 예측일 합"] = int(gg["n_pred"].sum())
+                r_[f"{key}: 예측 0일 산업 수"] = int((gg["n_pred"] == 0).sum())
+                r_[f"{key}: 정밀도<기저 산업 수"] = int(gg["late"].sum())
+                r_[f"{key}: 정밀도 평균"] = (round(float(gg["prec"].mean(skipna=True)), 4)
+                                        if gg["prec"].notna().any() else np.nan)
+            r_["기저 실현하락률"] = round(float(g_["base"].mean()), 4)
+            r_["판독"] = ("'예측 0일 산업 수'가 크면 그 해엔 경고가 아예 없었다는 뜻이고(2024년 자기 라벨 16개), "
+                        "'정밀도<기저 산업 수'가 크면 떨어진 뒤에 하락이라 한 것이다(2022년 자기 라벨 25/29)")
+            rows.append(r_)
+    rows.append({"블록": blk, "티커": "해석", "규칙": "",
+                 "판독": ("산업 하락(소수 클래스)을 부르는 규칙을 같은 표에서 비교한다. **정보는 '하락 라벨'이 아니라 "
+                        "'상승 아님'(중립∪하락)에 있다** — REPORT52 §4 실측 29평균 MCC: 자기 라벨 0.007 · 자기 현금 "
+                        "0.028 · M 상승아님 **0.075**(기술 6종 0.106 · SOXX 0.154) · M 하락 라벨 −0.004. 그래서 "
+                        "v0.13.0 N2는 확정국면을 M 상속으로 바꿨고(⑥이 그 규칙), 블록 A의 '하락 예측'은 정의상 "
+                        "RISK_OFF만 세므로(S 함수 재사용) **이 블록의 ⑥ 행이 판정 기준**이다. 사전 고정 합격선: "
+                        "29산업 평균 MCC ≥ 0.06 · 기술 6종 ≥ 0.09 · SOXX ≥ 0.12 · 재현율 ≥ 0.35 · 균형정확도 > 0.53. "
+                        "①②③은 v0.12.0까지의 자기 기계(되돌리기 INDUSTRY_REGIME_SOURCE=\"own\"의 잣대)이고 "
+                        "⑦은 사전등록 변형(\"m_inherit_own_down\")의 잣대다 — 다음 라운드가 ⑥ vs ⑦을 이 표로 고른다. "
+                        "⑨⑩은 M 원천 확인용(상속이 제대로 됐으면 ⑥≈⑨·⑤≈⑩)")})
+    return pd.DataFrame(rows), summ
+
+
 def build_industry_minority_block_b(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]], sres: dict,
                                     h: int = 21) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """[v0.7.0 R1] 13p 산업판 블록 B — 부모 안 리더 판단의 소수 클래스 잣대. 부모 그룹은 산업이 2~5개라 '상위3'이
@@ -4080,6 +4470,10 @@ def build_industry_prediction_matrix(results: Dict[str, Dict[str, Any]], eval_id
     df["날짜"] = eval_idx.date
     n_up = pd.Series(0, index=eval_idx)
     n_down = pd.Series(0, index=eval_idx)
+    # [v0.13.0 N2] 확정국면이 M 상속이면 29산업의 '예측'이 같아진다(그것이 실측이 지지하는 라벨이다) —
+    #   산업별 차이를 보는 눈을 남기려고 **자기국면 기준 집계 2열**을 나란히 싣는다(표시 전용·새 계산 없음).
+    n_up_own = pd.Series(0, index=eval_idx)
+    n_down_own = pd.Series(0, index=eval_idx)
     for t, r in results.items():
         st = r["state"].reindex(eval_idx)
         tp = r["target_pos"].reindex(eval_idx)
@@ -4087,11 +4481,16 @@ def build_industry_prediction_matrix(results: Dict[str, Dict[str, Any]], eval_id
         df[f"{t} 목표비중"] = tp.round(4)
         n_up = n_up.add((st == "RISK_ON").astype(int), fill_value=0)
         n_down = n_down.add((st == "RISK_OFF").astype(int), fill_value=0)
+        _ost = pd.Series(r.get("own_state", r["state"])).reindex(eval_idx)
+        n_up_own = n_up_own.add((_ost == "RISK_ON").astype(int), fill_value=0)
+        n_down_own = n_down_own.add((_ost == "RISK_OFF").astype(int), fill_value=0)
     df.insert(1, "상승예측 산업수", n_up.astype(int).values)
     df.insert(2, "하락예측 산업수", n_down.astype(int).values)
+    df.insert(3, "상승예측 산업수(자기국면)", n_up_own.astype(int).values)
+    df.insert(4, "하락예측 산업수(자기국면)", n_down_own.astype(int).values)
     df.insert(1, "구분", "실적")
     if alloc:
-        df.insert(4, "산업배분 합계", alloc["target_w"][alloc["cols"]].sum(axis=1).reindex(eval_idx).round(4).values)
+        df.insert(6, "산업배분 합계", alloc["target_w"][alloc["cols"]].sum(axis=1).reindex(eval_idx).round(4).values)
     df = df.reset_index(drop=True)
     if nd_map:
         nxt = max(nd["다음거래일"] for nd in nd_map.values())
@@ -4311,11 +4710,13 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
     leader_cols = pd.DataFrame()
     frozen = bool(getattr(icfg, "INDUSTRY_LAYER_FROZEN", False))
     if frozen:
-        # [v0.4.0 §I6] 동결 — 배분·격자·수용기준을 만들지 않고 산업 자기국면 시트만 낸다.
-        #   판정은 사람이 내린다(두 라운드 연속 13f ①⑤ FAIL + 격자 전 행 불통과). 이 플래그는 그
-        #   결정을 실행에 반영할 뿐이며, 켜면 실행시간 대부분(배분·격자 백테스트)이 사라진다.
-        log("START", kv(event="industry_layer_frozen", note="INDUSTRY_LAYER_FROZEN=True — 배분·격자·수용기준 생략, "
-                                                            "산업 자기국면 예측 시트만 산출"), M=M, level="warning")
+        # [v0.4.0 §I6] 동결 — 판정(격자·수용기준)을 멈춘다. 판정은 사람이 내리고 이 플래그는 그 결정을
+        #   실행에 반영할 뿐이며, 켜면 실행시간 대부분(격자 백테스트)이 사라진다.
+        # [v0.13.0 N1] ⚠ 더 이상 배분 시트를 지우지 않는다 — 13·13b·13c·13c2·14는 항상 나온다(사용자 지시).
+        log("START", kv(event="industry_layer_frozen",
+                        note="INDUSTRY_LAYER_FROZEN=True — 격자·13f·13j·13l·15만 생략. [v0.13.0 N1] 배분 자체는 "
+                             "★·대조군A/B·S★재현 4행으로 계속 산출하므로 13_산업배분전략·13c_일별배분비중·13b·"
+                             "13c2·14_계층정합은 그대로 나온다"), M=M, level="warning")
     # [v0.5.0 I-A] 동결이어도 **신호 채택 통계(13g)는 계속 낸다** — REPORT44 §5가 다음 실행에서 볼 것으로
     #   "I 13g 하위1 t(SCORE_PCT)"를 지목했고, 회피 분리(I-B) 실험의 근거가 바로 그 표다. 동결이 생략하는 것은
     #   **배분·격자·수용기준**(실행시간의 대부분)이지 진단 통계가 아니다.
@@ -4334,21 +4735,25 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                 wf = pooled_wf
             if frozen:
                 _sa = {y: v for y, v in (wf.get("avoid_standalone_by_year") or {}).items() if v}
-                log("ROT", kv(event="frozen_signal_only", sheets="13g/13g2 유지, 배분·격자·수용기준 생략",
+                log("ROT", kv(event="frozen_signal_only", sheets="13·13b·13c·13c2·14 유지(N1), 격자·13f·13j·13l·15 생략",
                               avoid_standalone_years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_sa.items())) or "-",
-                              note="I-B 실험은 i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}로 격자를 켜면 판정된다"), M=M)
-            alloc = ({} if frozen else
-                     build_industry_allocation(results, sres, res, eval_idx, icfg, M, S, wf, rf_daily=rf_daily))
+                              note="[v0.13.0 N1] 동결은 이제 '판정을 멈춘다'는 뜻이며 배분 시트를 지우지 않는다 — "
+                                   "13_산업배분전략은 ★·대조군A/B·S★재현 4행으로 나온다"), M=M)
+            # [v0.13.0 N1] 동결이어도 배분은 만든다 — 격자만 끈 cfg로 호출(_frozen_alloc_cfg).
+            alloc = build_industry_allocation(results, sres, res, eval_idx,
+                                              (_frozen_alloc_cfg(icfg, M=M) if frozen else icfg),
+                                              M, S, wf, rf_daily=rf_daily)
             if alloc:
-                accept_df = build_industry_acceptance(alloc, wf, icfg, M, S)
-                hier_df = build_hierarchy_check(alloc)
-                attrib_df = build_industry_vs_sector_attribution(alloc)
-                leader_cols = build_industry_leader_columns(alloc)
-                log("ACCEPT", kv(event="acceptance", **{f"c{i+1}": accept_df.iloc[i]["판정"] for i in range(len(accept_df))}), M=M)
+                hier_df = build_hierarchy_check(alloc)                 # 14_계층정합 — 동결 여부와 무관(총노출 불변식)
+                leader_cols = build_industry_leader_columns(alloc)     # 13c의 부모별 판단·리더·게이트 열
                 _viol = int(hier_df["위반일수(>1e-9)"].sum()) if len(hier_df) else -1
                 log("HIER", kv(event="hierarchy_check", violations=_viol,
                                max_err=float(hier_df["최대오차"].max()) if len(hier_df) else -1), M=M,
                     level=("warning" if _viol else "info"))
+            if alloc and not frozen:       # [v0.13.0 N1] 13f·15는 판정 계열 — 동결이면 만들지 않는다
+                accept_df = build_industry_acceptance(alloc, wf, icfg, M, S)
+                attrib_df = build_industry_vs_sector_attribution(alloc)
+                log("ACCEPT", kv(event="acceptance", **{f"c{i+1}": accept_df.iloc[i]["판정"] for i in range(len(accept_df))}), M=M)
         except Exception as e:
             # 전체 트레이스백 꼬리를 남긴다 — v0.1 개발 중 str(e)만 남겨 원인 추적에 별도 스크립트가 필요했던 교훈.
             log("START", kv(event="allocation_failed", err=str(e)[:200],
@@ -4374,7 +4779,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
             pred_acc = build_industry_prediction_accuracy(results, sres, eval_idx, icfg)
         except Exception as e:
             log("DIAG", kv(event="prediction_accuracy_failed", err=str(e)[:200]), M=M, level="warning")
-    if alloc:
+    if alloc and not frozen:          # [v0.13.0 N1] 13l은 동결에서 생략(격자·판정 계열)
         try:
             leader_acc = build_industry_leader_accuracy(alloc, results, sres, icfg)
             _a = leader_acc[leader_acc["구분"] == "전체"] if "구분" in leader_acc.columns else pd.DataFrame()
@@ -4394,9 +4799,10 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                          up=sum(1 for nd in nd_map.values() if nd.get("확정국면_원시") == "RISK_ON"),
                          down=sum(1 for nd in nd_map.values() if nd.get("확정국면_원시") == "RISK_OFF")), M=M)
 
-    # [v0.6.0 I-D(B)] 13j_배분거래내역 — 배분이 성공했을 때만(동결이면 alloc={}), 실패해도 리포트는 계속.
+    # [v0.6.0 I-D(B)] 13j_배분거래내역 — 배분이 성공했을 때만, 실패해도 리포트는 계속.
+    #   [v0.13.0 N1] 동결이면 생략한다(13f·13l·15와 같은 판정·상세 계열) — 13·13b·13c·13c2·14는 나온다.
     alloc_trades, alloc_trades_summary = pd.DataFrame(), {}
-    if alloc:
+    if alloc and not frozen:
         try:
             alloc_trades, alloc_trades_summary = build_industry_allocation_trades(alloc, results, sres, res, icfg)
             log("REPORT", kv(event="alloc_trades_ready", n=len(alloc_trades),
@@ -4416,8 +4822,37 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
     if results:
         try:
             _t13p = time.time()
+            # [v0.13.0 N3] S의 블록 A는 M 상속 비교열을 **alloc에서** 꺼낸다(alloc["E"]·alloc["spy_state_short"]).
+            #   산업은 그 인자를 None으로 넘겨 왔기 때문에 그 열들이 내내 비어 있었다(REPORT52 §5 E2) —
+            #   S 코드는 손대지 않고, M의 목표비중·국면라벨만 **같은 키의 합성 dict**로 넘겨 채운다.
+            #   (배분 alloc과 섞지 않는다 — 블록 B/P는 아래에서 실제 alloc으로 따로 만든다.)
+            _m_sig = res.get("sig")
+            _m_state_short = _m_target = None
+            if isinstance(_m_sig, pd.DataFrame) and {"state", "target_pos"} <= set(_m_sig.columns):
+                _m_state_short = pd.Series(_m_sig["state"]).map(S.STATE_SHORT).reindex(eval_idx).ffill()
+                _m_target = pd.Series(_m_sig["target_pos"]).astype(float).reindex(eval_idx).ffill()
+            _m_for_block_a = ({"E": _m_target, "spy_state_short": _m_state_short}
+                              if _m_state_short is not None else None)
             if hasattr(S, "build_minority_class_accuracy"):
-                minority_df, minority_summ = S.build_minority_class_accuracy(results, None, asset_label="산업")
+                minority_df, minority_summ = S.build_minority_class_accuracy(results, _m_for_block_a,
+                                                                             asset_label="산업")
+            # [v0.13.0 N3·N4] 블록 A2 — 규칙 8~10종 × 산업 × (정밀·재현·균형·MCC) + 연도별 요약.
+            _a2, _a2s = build_industry_regime_label_block(results, sres, m_state_short=_m_state_short,
+                                                          m_target=_m_target)
+            if len(_a2):
+                minority_df = (pd.concat([minority_df, _a2], ignore_index=True, sort=False)
+                               if len(minority_df) else _a2)
+                minority_summ.update(_a2s)
+                log("DIAG", kv(event="regime_label_block_ready", rows=len(_a2),
+                               source=str(getattr(icfg, "INDUSTRY_REGIME_SOURCE", "own")),
+                               cur_mcc=round(_a2s.get("a2_⑥_mcc", np.nan), 3),
+                               cur_mcc_tech=round(_a2s.get("a2_⑥_mcc_tech", np.nan), 3),
+                               cur_recall=round(_a2s.get("a2_⑥_rec", np.nan), 3),
+                               cur_balanced=round(_a2s.get("a2_⑥_bal", np.nan), 3),
+                               own_mcc=round(_a2s.get("a2_①_mcc", np.nan), 3),
+                               verdict=("합격(사전 고정: 29평균 MCC ≥ 0.06)"
+                                        if (pd.notna(_a2s.get("a2_⑥_mcc", np.nan)) and _a2s.get("a2_⑥_mcc", 0) >= 0.06)
+                                        else "미달 — INDUSTRY_REGIME_SOURCE=\"own\"으로 되돌리고 원인을 적을 것")), M=M)
             _b, _bs = build_industry_minority_block_b(alloc, results, sres)
             # [v0.10.0 H1 판정 ②] 풀링 슬리브 블록 P — 격자를 '수익'만이 아니라 '예측'으로도 판정한다.
             _pb, _pbs = build_industry_pooled_block(alloc, results)
@@ -4545,12 +4980,17 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         tw_res.insert(3, "총노출(=S★)", alloc["target_w"].sum(axis=1).round(4).values)
         tw_res.insert(4, "S★ 총노출", alloc["w_s_all"].sum(axis=1).round(4).values)
         sheets["13c2_잔여다리"] = tw_res.reset_index(drop=True)
-        sheets["13f_산업수용기준"] = accept_df
+        # [v0.13.0 N1] 13f·13l·15는 '판정·상세' 계열 — 동결이면 생략한다(run()이 만들지 않는다).
+        #   13·13b·13c·13c2·14는 위/아래에서 **항상** 쓴다(사용자 지시: 이 시트를 없애지 않는다).
+        if isinstance(accept_df, pd.DataFrame) and len(accept_df):
+            sheets["13f_산업수용기준"] = accept_df
         la = ires.get("leader_accuracy", pd.DataFrame())
         if isinstance(la, pd.DataFrame) and len(la):
             sheets["13l_산업리더적중률"] = la                              # [v0.3.0 §C1]
         sheets["14_계층정합"] = ires["hierarchy"]
-        sheets["15_산업대섹터귀속"] = ires["attribution"]
+        _attr = ires.get("attribution", pd.DataFrame())
+        if isinstance(_attr, pd.DataFrame) and len(_attr):
+            sheets["15_산업대섹터귀속"] = _attr
         # [v0.6.0 I-D(B)] 13j_배분거래내역 — I★ 한 계좌의 실제 거래(02 시트의 산업별 단독 거래와 다름).
         _at = ires.get("alloc_trades", pd.DataFrame())
         if isinstance(_at, pd.DataFrame) and len(_at):
@@ -4633,6 +5073,10 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
 
     verdict = ("산업 계층이 S★를 이긴다(수용기준 ①~⑤ 전부 PASS)" if passed else
               "산업 계층은 S★를 이기지 못함 — 운용은 S★ 그대로(설계서 §8 관행, 진단용으로만 유지)")
+    if not len(accept_df):      # [v0.13.0 N1] 동결이면 13f를 만들지 않으므로 '미판정'임을 분명히 적는다
+        verdict = ("동결(INDUSTRY_LAYER_FROZEN=True) — 수용기준 13f를 산출하지 않아 **미판정**이다. "
+                   "배분 시트(13·13b·13c·13c2·14)는 그대로 나오며 격자·13f·13j·13l·15만 생략됐다. "
+                   "운용은 S★ 그대로(I★는 진단·연구용). 해제: i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}")
     n_fail_ind = len(ires.get("failed", {}))
     au = ires.get("audit", pd.DataFrame())
     if isinstance(au, pd.DataFrame) and len(au) and "일치" in au.columns:
@@ -4670,11 +5114,12 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     # [v0.6.0 I-D(F)] 동결 실행에서 없는 시트를 가리키던 줄들을 정리한다 — 리포트4에는 '계층정합 -'처럼
     #   내용 없는 줄이 남아 무엇이 왜 없는지 알 수 없었다(REPORT45 §5.2 A행).
     _frozen = bool(ires.get("frozen", getattr(icfg, "INDUSTRY_LAYER_FROZEN", False)))
-    _skipped_sheets = ("13_산업배분전략 · 13b_배분전략자산곡선 · 13c_일별배분비중 · 13c2_잔여다리 · "
-                       "13f_산업수용기준 · 13j_배분거래내역 · 13l_산업리더적중률 · 14_계층정합 · 15_산업대섹터귀속")
+    # [v0.13.0 N1] 동결이 생략하는 시트 목록을 줄였다 — 13·13b·13c·13c2·14는 이제 동결에서도 나온다.
+    _skipped_sheets = ("13f_산업수용기준 · 13j_배분거래내역 · 13l_산업리더적중률 · 15_산업대섹터귀속 "
+                       "(+ 13_산업배분전략의 격자 행) — **13_산업배분전략·13b·13c_일별배분비중·13c2·14_계층정합은 "
+                       "동결에서도 산출된다**(v0.13.0 N1, 사용자 지시)")
     hier = ires.get("hierarchy", pd.DataFrame())
-    hier_line = ("동결로 미산출 — 배분이 없으므로 검사할 등식도 없다(INDUSTRY_LAYER_FROZEN=True)"
-                 if _frozen else "-")
+    hier_line = "-"        # [v0.13.0 N1] 동결에서도 배분·14시트가 나오므로 '미산출' 문구는 더 이상 기본이 아니다
     if isinstance(hier, pd.DataFrame) and len(hier):
         hier_line = (f"위반 {int(hier['위반일수(>1e-9)'].sum())}일 · 최대오차 {float(hier['최대오차'].max()):.2e} "
                      f"(부모별 등식 + 총노출=S★ + S★ 재현 비트동일 — 14시트)")
@@ -4741,10 +5186,10 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     elif not _frozen:
         nd_rows.append(("실제 포트폴리오 거래(13j)", "거래 없음 또는 산출 실패(로그 alloc_trades_failed 확인)"))
     if _frozen:
-        nd_rows.append(("동결로 생략된 시트(v0.6.0 I-D 명시)",
-                        _skipped_sheets + " — 전부 배분 산출물이다. 13g_산업순환매신호채택·01Y·16·"
-                        "02~09d 진단 시트는 동결에서도 나온다(v0.6.0에서 13g 누락 버그 수정). "
-                        "되돌리기: i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}"))
+        nd_rows.append(("동결로 생략된 시트(v0.13.0 N1 — 목록이 줄었다)",
+                        _skipped_sheets + ". 13_산업배분전략·13b·13c_일별배분비중·13c2·14_계층정합·"
+                        "13g_산업순환매신호채택·13p·01Y·16·02~09d·11·11b는 동결에서도 나온다. "
+                        "해제: i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}"))
     # [v0.7.0 R1] 소수 클래스 잣대 1줄 — 사용자 잣대.
     _ms = ires.get("minority_summary") or {}
     if _ms:
@@ -4753,6 +5198,28 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             _txt += (f" | 부모 안 리더 → 실현 1위 {_ms['ind_lead_top1']:.3f}(무작위 {_ms.get('ind_random_top1', np.nan):.2f}, "
                      f"{_ms.get('ind_lead_days', 0)}일) · 리더 > 부모 ETF {_ms.get('ind_lead_beats_parent', np.nan):.3f}")
         nd_rows.append(("소수 클래스 정확도(13p, 정보)", _txt))
+    # [v0.13.0 N2·N3] 국면 라벨 비교 — 블록 A2의 핵심 수치를 00시트에 한 줄로. '하락 예측'을 RISK_OFF로만
+    #   세는 블록 A의 숫자와 혼동하지 않도록, 판정 기준(⑥ 확정 상승아님)과 자기 기계(① 라벨)를 나란히 적는다.
+    if _ms and any(k.startswith("a2_") for k in _ms):
+        def _f(k: str) -> str:
+            v = _ms.get(k, np.nan)
+            return f"{float(v):.3f}" if pd.notna(v) else "-"
+        nd_rows.append((
+            "⚠ 산업 국면 출처(v0.13.0 N2) · 하락 경고 판정(13p 블록 A2)",
+            f"출처 = {str(getattr(icfg, 'INDUSTRY_REGIME_SOURCE', 'own'))}"
+            + ("(M 상속 — 확정국면·목표비중을 M에서 받는다)" if str(getattr(icfg, "INDUSTRY_REGIME_SOURCE", "own")) != "own"
+               else "(자기 국면기계 — v0.12.0 동작)")
+            + f" | **⑥ 확정 상승아님(채택 규칙, h=21): 29산업 평균 MCC {_f('a2_⑥_mcc')} · 기술 6종 "
+              f"{_f('a2_⑥_mcc_tech')} · 재현율 {_f('a2_⑥_rec')} · 균형정확도 {_f('a2_⑥_bal')}**"
+            + f" vs ① 자기 라벨 MCC {_f('a2_①_mcc')}(재현율 {_f('a2_①_rec')}) · ② 자기 현금 {_f('a2_②_mcc')}"
+              f" · ⑦ 자기하락∪확정상승아님(사전등록) {_f('a2_⑦_mcc')} · ⑧ 부모 상승아님 {_f('a2_⑧_mcc')}"
+            + " | 사전 고정 합격선 29평균 ≥ 0.06 · 기술6 ≥ 0.09 · SOXX ≥ 0.12 · 재현율 ≥ 0.35 · 균형 > 0.53"
+              " — 근거: 산업 자기 복합점수는 채택 지표 대부분이 매크로(SOXX PASS 21개 중 19개)라 산업 고유"
+              " 하락에 무감각하고 2024-07 반도체 급락에서는 점수 백분위가 0.30→0.93으로 역행했다(REPORT52 §2~4)."
+              " ⚠ 블록 A의 '하락 예측'은 정의상 RISK_OFF만 세므로 판정은 **블록 A2 ⑥ 행**으로 한다."
+              " 자기 기계 값은 01_일별_<산업> '자기국면'·'자기 목표비중' 열과 블록 A2 ①②③에 보존된다"
+              " — 그 행의 복합점수·H·규칙 발동 열은 이제 '자기국면'의 근거다."
+              " ⚠ 되돌리기: i_overrides={\"INDUSTRY_REGIME_SOURCE\": \"own\"}"))
     nd_rows.append(("09c_국면정보게이트 미적용(I-E 보류)",
                     "S는 섹터 하락 국면에 정보 게이트(09c)를 걸지만 I는 산업 자기국면에 걸지 않는다 — "
                     "적용 여부는 REPORT45 §6 I-E의 별도 판정 사항이다. 01Y_산업예측정확도 A블록(산업 하락 상태의 "
@@ -4780,14 +5247,18 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         ("거래비용", f"산업 ETF 편도 {icfg.COST_BPS_INDUSTRY:.0f}bp · 부모 ETF 편도 {icfg.PARENT_COST_BPS:.0f}bp"),
         ("총 노출 불변식", "Σ산업비중 + 부모ETF비중 = S★의 그 섹터비중 — 14_계층정합 시트가 매일 이 등식을 검사(위반 0일이어야 함)"),
         # [v0.5.0 I-A ⚠ 기본값 변경] 동결 상태를 00시트 첫 화면에 명시한다.
-        ("⚠ 산업 계층 동결(v0.5.0 I-A)",
-         (("**동결(기본값)** — 배분·격자·수용기준을 만들지 않는다(진단 시트만). 근거(REPORT44 §3.1): "
-           "부모 안 검증에서 리더 **0일**(9/9 연도), 상위1 t≥2.0인 후보 없음(최댓값 1.36), "
-           "격자 28행 중 24행이 S★와 비트 동일. ⚠ 되돌리기: i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}")
-          if bool(getattr(icfg, "INDUSTRY_LAYER_FROZEN", True)) else
-          ("해제(INDUSTRY_LAYER_FROZEN=False) — 배분·격자 실행 중. [회피분리격자]" +
+        ("⚠ 산업 계층 동결(v0.5.0 I-A · v0.13.0 N1)",
+         (("**동결** — 판정(격자·수용기준)을 멈춘 상태. [v0.13.0 N1] 그러나 **배분 시트는 그대로 나온다**: "
+           "13_산업배분전략은 ★·대조군A/B·S★재현 4행, 13b·13c_일별배분비중·13c2·14_계층정합도 산출된다. "
+           "생략되는 것은 격자 행과 13f_산업수용기준·13j_배분거래내역·13l_산업리더적중률·15_산업대섹터귀속뿐이다 "
+           "(v0.12.0까지는 이 9개 시트를 통째로 없앴고 사용자가 두 번 지적했다 — REPORT52 §1). "
+           "⚠ 해제: i_overrides={\"INDUSTRY_LAYER_FROZEN\": False}")
+          if bool(getattr(icfg, "INDUSTRY_LAYER_FROZEN", False)) else
+          ("**해제(기본값, v0.13.0 N1)** — 배분·격자·수용기준 전부 실행 중. 13_산업배분전략(격자 포함)·13b·13c·"
+           "13c2·13f·13j·13l·14·15가 모두 나온다. [회피분리격자]" +
            ("(I-B 실험 포함)" if (getattr(icfg, "INDUSTRY_AVOID_STANDALONE_GRID", ()) or ()) else "") +
-           " 결과를 13_산업배분전략에서 확인할 것"))),
+           " 결과를 13_산업배분전략에서 확인할 것. ⚠ 동결(격자·13f·13j·13l·15만 생략): "
+           "i_overrides={\"INDUSTRY_LAYER_FROZEN\": True}"))),
         # [v0.5.0 I-B] 회피 자격 분리 실험의 현재 상태.
         ("⚠ 회피 자격 분리(v0.5.0 I-B)",
          (f"라이브 {'켬' if getattr(icfg, 'ROTATION_AVOID_STANDALONE', False) else '끔'}"
