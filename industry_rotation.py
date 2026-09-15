@@ -1,5 +1,83 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.18.0 - 2026-09-15 - [★ 확신 등급별 리더 캡(최대 1.0) + 추세 가드 · 노출 천장 분해 ·
+#                    산업집중격자 재개방 · 확신캡격자]
+#    REPORT57. **산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
+#    사용자 지시 두 갈래:
+#      (가) 종전과 같은 "각 산업별 하락 예측 정확도를 더 올리면서 수익 곡선 상승시키도록 개선해"
+#      (나) ★ 신규 "전체 산업 비중 1로 하고 상승이 확실하면 비중을 최대 1까지 늘려야지 왜 전체로 한 날이 없어"
+#
+#    ── (나)의 원인 확정(리포트16 13c에서 반사실 재구성 · 재구성 오차 0.0) ──────────────────────
+#      산업배분 합계: 평균 0.0804 · **중위 0.0000** · 최대 0.4778 · **0.5 이상인 날 0일** · 정확히 0인 날 1,414일(64.7%).
+#      원인은 곱해진 세 개이며, 각각 다른 축이다:
+#        (1) INDUSTRY_LEADER_CAP = 0.5      → 리더 산업에 부모비중의 **절반만**. 천장이 그대로 절반이 된다.
+#        (2) INDUSTRY_FALLBACK_SHARE = 0.0  → 리더 없는 날 산업 배분 0. **중위 0의 유일한 원인**이다.
+#        (3) 리더 성립 = 부모×일 조합의 13.3%(2,903/21,850) · 하루 리더 부모 1~2개 → 최대도 0.48에서 막힌다.
+#      반사실(13c 실측 재구성): 확신 게이트 통과일 CAP 1.0 → 최대 **0.9500** · 0.9 이상 **146일** · 0.5 이상 212일.
+#      ⇒ "확실하면 1까지"는 (1)만으로 달성된다. **중위 0은 (2)의 축**이라 CAP으로는 움직이지 않는다 — 두 축을 따로 잡는다.
+#
+#    ── ⚠ 구현 전에 플래그한 우려(사용자 규칙 §8) ────────────────────────────────────────────
+#      13f ⑥ 한계비율(리포트16 실측) **0.7410** vs S★ 칼마 **3.756**. 칼마 = CAGR/|MDD| 이므로
+#      한계비율이 기존 칼마보다 작은 다리를 **그냥 크게 키우면 칼마는 산술적으로 반드시 내려간다**.
+#      그래서 평탄한 CAP 1.0(순수 레버업)이 아니라 **확신 등급별 래더**(확신일 ↑ · 보유-미달일 ↓)로 넣는다.
+#      근거는 엔진 13l 블록 B 실측: 확신 게이트 통과 리더 평균초과 **+0.2897%/21일 vs 미달 +0.0597%**(4.85배).
+#      순수 레버업(무조건 CAP 1.0)과 **달력 대조군**은 격자에 같이 실어 다음 리포트가 둘을 가른다.
+#
+#    ── 버린 설계: margin ≥ 2×step '강한 확신' 등급 ────────────────────────────────────────
+#      13c 실측으로 9년 통틀어 **3일**밖에 안 나온다. 구조적으로 불가능하다 — 부모 안 산업이 n개면
+#      _cs_rank01 순위 간격이 정확히 1/(n−1)이라 1위−2위 여유의 **최대값이 1/(n−1)**인데
+#      문턱은 2×step = 2/(n−1)이다. n=4(XLK·XLY·XLF)면 최대 0.333 < 문턱 0.667. 등급을 만들 수 없다.
+#      ⇒ 확신 등급은 **확신 게이트(이진) + 하락경고 강등**으로만 만든다.
+#
+#    (W1) ★ **확신 등급별 리더 캡** — `_mk_target_w(cap_mat=...)` 신설. 리더 몫을 스칼라 캡이 아니라
+#         **날짜×산업 캡 행렬**로 받는다. 라이브 래더(INDUSTRY_CAP_BY_CONVICTION=True):
+#           · 확신 게이트 **통과** & 하락경고 없음 → CAP_CONVICTION = **1.0**  (부모비중 전부 산업으로 = 사용자 요청)
+#           · 확신 게이트 **통과** & 하락경고 있음 → INDUSTRY_LEADER_CAP = 0.5 (강등 — (가) 요청이 여기서 만난다)
+#           · 리더 **보유 중 확신 미달**          → CAP_HOLD = **0.25**       (감축 — 재배치의 재원)
+#         영향 함수: build_industry_allocation_trades → _mk_target_w / _cap_mat / _cap_mat_calendar.
+#         ⚠ 이것은 **비중(위험) 파라미터 변경**이다 — 사전등록 되돌림 조건을 [검증] ⑧에 박아 두었다.
+#         ⚠ 되돌리기(v0.17.0과 비트 동일): i_overrides={"INDUSTRY_CAP_BY_CONVICTION": False}
+#    (W2) 하락경고를 **청산이 아니라 확신 강등**으로 쓴다(CAP_WARN_DOWNGRADE). v0.15.0 R1 브레이크는
+#         경고일의 리더 몫을 **0으로** 만들어 세 기준 전부 실패하고 되돌렸다. 같은 신호를 '최상단 캡을 주지
+#         않는다'로만 쓰면 노출을 깎지 않고 **상향을 보류**하는 것이라 브레이크의 실패 양식을 반복하지 않는다.
+#         정의는 A3-3과 같다(vol21 자기이력 하위 1/3 & 탈동조) — 13p A3에서 정밀−기저 +14.3%p·연도비율 0.688.
+#    (W3) ★ **INDUSTRY_GRID False → True** — [산업집중격자](CAP 0.25/0.5/0.75/1.0 × 폴백 0/0.25/0.5/1.0, 15행)
+#         재개방. v0.10.0 H3가 끈 사유는 "리더 0일이라 28행이 전부 S★와 비트 동일"이었고, **v0.14.0 순서기반
+#         채택이 리더일을 0 → 2,903으로 되살린 뒤로 그 사유는 소멸했다**. 즉 CAP·폴백은 리더가 작동하는
+#         상태에서 **엔진이 한 번도 측정한 적이 없다**. 중위 0(폴백 축)을 재는 유일한 격자다.
+#    (W4) 신규 격자 **[확신캡격자]** — 래더 변형 × 3 + **무조건 동일캡 대조군**(순수 레버업) +
+#         **달력 대조군**(산업별 상향일수·하향일수가 같고 신호 없이 균등 간격). 대조군 둘을 **칼마·MDD 모두**
+#         이겨야 후보다. 이것이 "확신이 값을 하는가 vs 그냥 노출이 늘어서인가"를 가르는 유일한 잣대다.
+#    (W5) 신규 블록 **13l 블록 F — 총노출 천장 분해** + 00_실행요약 2행. 위 (1)(2)(3)을 상시 노출해
+#         "왜 전체로 한 날이 없어"가 리포트 안에서 스스로 답하게 만든다(다음 라운드에 다시 묻지 않도록).
+#    (W6) 신규 블록 **13p 블록 A4 — 하락경고 산업별 정확도**(정밀도 vs 기저 · 연도 k/n · 향후수익 격차).
+#         A3는 규칙별 집계라 "어느 산업에서 듣는가"를 못 본다. 산업별로 갈라야 다음 라운드에 산업별 문턱을 줄 수 있다.
+#    (W7) ★★ **추세 가드** — 강세 부모(ext200 자기이력 상위 1/3)의 리더일은 확신 게이트를 통과해도 상향하지 않는다.
+#         왜 이것이 W1의 필수 부품인가(리포트16 13l 블록 E 3분할 — **등크기 3버킷 99 에피소드, 네 열 모두 단조**):
+#           진입시 부모 추세  에피소드  승률(부모대비)  평균초과(%)  초과합(%p)  상승미달비율
+#             약세            33        0.6667         +2.030      +66.98      0.152
+#             중간            32        0.5938         +0.801      +25.62      0.312
+#             강세            33        **0.3939**     **−0.176**  **−5.79**   **0.364**
+#         산업 다리의 플러스 기여는 전부 약세·중간에서 나오고 **강세 버킷은 마이너스**다(리포트15 37건 → 리포트16 99건 재현).
+#         가드가 없으면 W1은 **기대값이 음수인 버킷에서 노출을 2배로** 올린다 — v0.15.0의 교훈(자기 측정과
+#         반대 방향인 설계를 정당화하지 않는다)을 정면으로 어기는 것이다. 그래서 W1과 W7은 한 몸이다.
+#         뉴스 대조(리포트16 최악 에피소드 8개 중 3개): KRE 2024-01-12 진입(부모 추세 **0.816**) → 1/31~2/2
+#           NYCB 상업용부동산 충격으로 −11.45%p, 그 사이 XLF는 계속 올랐다(① 상승미달). FDN 2025-01-28(0.786)
+#           −8.66%p · GDX 2026-06-16(0.839) −7.83%p도 같은 꼴 — 전부 **강세 부모 안에서 터진 산업 고유 사건**이고
+#           진입 시점의 어떤 순위 신호도 볼 수 없는 것이다. 볼 수 없는 위험에는 노출을 키우지 않는다.
+#         정의·계산원은 v0.17.0 T2 [리더추세게이트격자]와 완전히 동일(_parent_strong · 새 다운로드 없음).
+#         ⚠ 끄기(반증 행이 [확신캡격자] 2행에 있다): i_overrides={"CAP_TREND_GUARD": False}
+#
+#    [검증] ⑧ v0.18.0 사전등록 되돌림 조건(리포트17에서 판정 · 하나라도 걸리면 v0.19.0에서 되돌린다):
+#      (a) I★ 칼마가 v0.17.0 ★ **3.328 미만**이면 → INDUSTRY_CAP_BY_CONVICTION=False로 되돌린다.
+#      (b) I★ MDD가 v0.17.0 ★ 대비 **0.5%p 이상 악화**되면 → 되돌린다(노출을 늘렸으니 MDD 감시가 본선이다).
+#      (c) [확신캡격자]의 래더 행이 **무조건 동일캡 대조군**에 칼마로 지면 → 확신 선택에 값이 없다는 뜻이므로
+#          래더를 버리고 CAP 평탄 유지로 되돌린다(레버업만 남는 설계는 (a)의 산술에 반드시 진다).
+#      (d) 래더 행이 **달력 대조군**에 칼마·MDD 둘 중 하나라도 지면 → 되돌린다.
+#      (e) [확신캡격자] **2행(반증 — 강등 둘 다 끔)** 이 라이브 1행을 칼마로 이기면 → W2·W7 강등을 버리고
+#          단순 래더로 되돌린다(강등 조건에 값이 없다는 뜻).
+#      판정은 항상 **연도 k/n**과 **소수 클래스 기준(정밀도 vs 기저율)** 병기로 읽는다.
+#
 #  VERSION: v0.17.0 - 2026-09-15 - [브레이크 라벨 버그 · 리더추세게이트격자 · 실패유형 진단 · 산업별 경고 노출]
 #    REPORT56. **산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
 #    사용자 지시: "각 산업별 하락 예측 정확도를 더 올리면서 수익 곡선 상승시키도록 개선해 예측 틀린 부분이
@@ -1027,7 +1105,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.17.0"
+VERSION = "v0.18.0"
 VERSION_DATE = "2026-09-15"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -1247,7 +1325,14 @@ class IndustryConfig:
     #   ⚠ 이것은 **계산 생략**이지 규칙 변경이 아니다 — I★·13·13c·14·13g·13p는 그대로 나오고
     #     I★ 성과는 무변경이다(회귀 테스트가 직접 비교한다).
     #   되돌리기: i_overrides={"INDUSTRY_GRID": True}
-    INDUSTRY_GRID: bool = False
+    # [v0.18.0 W3 ★ 기본값 전환 False → True] 끈 사유가 **소멸했다**. H3의 근거는 딱 하나 — "리더 판단이
+    #   0일이라 격자 전 행이 S★와 비트 동일(정보 0)"이었다. v0.14.0 P1(순서기반 채택)이 리더일을
+    #   **0 → 2,903일**로 되살렸으므로 이제 각 행은 서로 다른 곡선을 만든다.
+    #   ⇒ CAP(0.25/0.5/0.75/1.0) × 폴백(0/0.25/0.5/1.0) 15행은 **리더가 작동하는 상태에서 한 번도 측정된 적이 없다**.
+    #   사용자 지시("전체 산업 비중 1로")의 두 축 중 **중위 0(폴백 축)** 을 재는 유일한 격자이기도 하다 —
+    #   CAP만 올려도 중위는 0에서 안 움직인다(리더 없는 날이 64.7%이므로).
+    #   ⚠ 되돌리기: i_overrides={"INDUSTRY_GRID": False}
+    INDUSTRY_GRID: bool = True
     # [v0.4.0 §I3] 사전등록 격자 — 배분층이라 하나의 신호를 공유한다(격자로 싣는 것이 옳다).
     #   국면게이트: 리더를 인정하는 부모 자기국면 집합. 근거(§3.4 H1): 부모 **중립**일 때 고베타 1위의
     #     21일 부모초과가 +0.81%(t 1.94, 6/8년)로 가장 컸고, 부모 상승(+0.25, t 0.73)·하락(−0.21)은 약했다.
@@ -1402,6 +1487,65 @@ class IndustryConfig:
 
     # ---- 산업 배분(§7) ----
     INDUSTRY_LEADER_CAP: float = 0.5              # ⚠ 리더 산업에 주는 섹터비중 몫(기본 "절반만 산업으로")
+    # ---- [v0.18.0 W1 ★★ 위험 파라미터 신규] 확신 등급별 리더 캡 — 사용자 지시 (나) ----
+    #   지시: "전체 산업 비중 1로 하고 상승이 확실하면 비중을 최대 1까지 늘려야지 왜 전체로 한 날이 없어".
+    #   왜 평탄한 CAP 1.0이 아닌가(구현 전에 플래그한 우려 — 파일 헤더 참조):
+    #     13f ⑥ 한계비율 0.7410 < S★ 칼마 3.756. 칼마=CAGR/|MDD|이므로 한계비율이 기존 칼마보다 낮은 다리를
+    #     **평탄하게 키우면 칼마는 산술적으로 반드시 내려간다**. 평탄 CAP 1.0은 노출을 0.0804 → 0.1607(2배)로
+    #     키우는 순수 레버업이고, 다섯 라운드 동안 이 산술을 넘은 설계는 없었다.
+    #   그래서 **래더**다 — 확신일은 올리고(1.0) 확신이 풀린 보유일은 내린다(0.25). 노출 증가는 +44%로 억제되고
+    #     (0.0804 → 0.1160, 13c 실측 재구성) 늘어난 노출이 **4.85배 좋은 날**에 집중된다.
+    #   근거(엔진 13l 블록 B 실측 — 내 시뮬레이션이 아니다): 확신 게이트 통과 리더 평균초과 +0.2897%/21일 vs
+    #     미달 +0.0597%. 리더일 2,904일의 게이트 분포도 퇴화하지 않는다 — 통과 1,776(61.2%) · 미달 1,009 · 해당없음 119
+    #     (미달일이 존재하는 이유: 게이트는 **진입 전용**이고 청산은 순위·투표 기준이므로 min_hold 동안 보유가 이어진다).
+    #   반사실(13c 재구성 · 오차 0.0): 확신일 CAP 1.0 → 최대 **0.9500** · 0.9 이상 **146일** · 0.5 이상 212일.
+    #     (1.0에 정확히 닿지 않는 이유: 하루에 리더 부모가 1~2개뿐이라 그 부모들의 w_s 합이 1 미만이다.
+    #      총합 1.0은 INDUSTRY_ONLY_MODE="industries"(잔여까지 산업)가 필요하며 그것은 [잔여격자]가 잰다.)
+    #   ⚠⚠ 비중(위험) 파라미터다. 사전등록 되돌림 조건 4개를 파일 헤더 [검증] ⑧에 박아 두었다.
+    #   ⚠ 되돌리기(v0.17.0과 **비트 동일**): i_overrides={"INDUSTRY_CAP_BY_CONVICTION": False}
+    INDUSTRY_CAP_BY_CONVICTION: bool = True
+    CAP_CONVICTION: float = 1.0                   # 확신 게이트 통과 & 하락경고 없음 → 부모비중 **전부** 산업으로
+    CAP_HOLD: float = 0.25                        # 리더 보유 중 확신 미달 → 감축(래더의 재원)
+    # [v0.18.0 W2] 하락경고 산업은 확신일에도 최상단 캡을 주지 않고 **기본 캡(0.5)으로 강등**한다.
+    #   왜 강등이고 청산이 아닌가: v0.15.0 R1 브레이크는 같은 계열 신호로 리더 몫을 **0으로** 만들어
+    #   사전등록 기준 3개 전부 실패하고 v0.16.0에서 되돌렸다. '상향 보류'는 노출을 깎지 않으므로
+    #   그 실패 양식(달력 대조군에 지는 노출 축소)을 구조적으로 반복하지 않는다.
+    #   정의는 13p A3-3과 동일(vol21 자기이력 하위 1/3 & 결합점수 하위 1/3 = 탈동조) — 정밀−기저 +14.3%p · 연도비율 0.688.
+    #   ⚠ 끄기: i_overrides={"CAP_WARN_DOWNGRADE": False}
+    CAP_WARN_DOWNGRADE: bool = True
+    CAP_WARN_VOL_Q: float = 1.0 / 3.0
+    CAP_WARN_NEED_DECOUPLE: bool = True
+    # ---- [v0.18.0 W7 ★ 추세 가드] 강세 부모의 리더일은 확신 게이트를 통과해도 상향하지 않는다 ----
+    #   왜(리포트16 13l 블록 E 3분할 — **등크기 3버킷 99 에피소드에서 네 열이 모두 단조**다):
+    #     진입시 부모 추세  에피소드  승률(부모대비)  평균초과(%)  초과합(%p)  상승미달비율
+    #       약세            33        0.6667         +2.030      +66.98      0.152
+    #       중간            32        0.5938         +0.801      +25.62      0.312
+    #       강세            33        **0.3939**     **−0.176**  **−5.79**   **0.364**
+    #     즉 **산업 다리의 플러스 기여는 전부 약세·중간 부모에서 나오고, 강세 부모 진입은 마이너스다.**
+    #     리포트15(37건)에서 처음 보였고 리포트16(99건)에서 표본 2.7배로 재현됐다 — 연도 편중도 아니다.
+    #   그래서 추세 가드가 없으면 W1은 **기대값이 음수인 버킷에서도 노출을 2배로** 올린다. 그것은
+    #     v0.15.0의 교훈(자기 측정과 반대 방향인 설계를 정당화하지 않는다)을 정면으로 어기는 것이다.
+    #   정의는 v0.17.0 T2 [리더추세게이트격자]와 동일(TREND_GATE_SRC·TREND_GATE_Q = ext200 자기이력 상위 1/3)
+    #     — 새 계산원·새 다운로드 없이 이미 있는 _parent_strong()을 쓴다.
+    #   뉴스 대조(리포트16 최악 에피소드): KRE 2024-01-12 진입(부모 추세 0.816) → 1/31~2/2 NYCB 상업용부동산
+    #     충격으로 −11.45%p, XLF는 계속 올랐다. FDN 2025-01-28(0.786) · GDX 2026-06-16(0.839)도 같은 꼴이다.
+    #     전부 **강세 부모 안에서 터진 산업 고유 사건**이고, 진입 시점의 어떤 순위 신호도 볼 수 없는 것이다.
+    #     → 볼 수 없는 위험에는 노출을 키우지 않는다. 이것이 가드의 논리다.
+    #   ⚠ 끄기(반증 행이 격자에 있다): i_overrides={"CAP_TREND_GUARD": False}
+    CAP_TREND_GUARD: bool = True
+    # [v0.18.0 W4 신규 격자] 확신캡 래더 변형 — 형식: (라벨, 확신캡, 보유미달캡, 경고강등, 추세가드)
+    #   각 행마다 **무조건 동일캡 대조군**(확신=보유=확신캡, 순수 레버업)과 **달력 대조군**(산업별 상향/하향
+    #   일수가 같고 신호 없이 균등 간격)이 자동으로 함께 실린다. 둘 다 칼마·MDD로 이겨야 후보다.
+    #   2행은 **반증 행**이다(경고강등·추세가드를 둘 다 끈 것) — 라이브 행이 반증 행을 못 이기면
+    #   두 강등 조건에 값이 없다는 뜻이고, 그때는 W2·W7을 버리고 단순 래더로 되돌린다.
+    #   ⚠ 되돌리기(격자만 끔): i_overrides={"INDUSTRY_CONV_CAP_GRID": ()}
+    INDUSTRY_CONV_CAP_GRID: Tuple[Tuple[str, float, float, bool, bool], ...] = (
+        ("확신1.0·보유0.25·경고강등·추세가드(=라이브)", 1.0, 0.25, True, True),
+        ("확신1.0·보유0.25·강등 둘 다 없음(반증)", 1.0, 0.25, False, False),
+        ("확신1.0·보유0.25·추세가드만", 1.0, 0.25, False, True),
+        ("확신1.0·보유0.0(노출 거의 중립)", 1.0, 0.0, True, True),
+        ("확신0.75·보유0.25", 0.75, 0.25, True, True),
+    )
     # ---- [v0.15.0 R1 ⚠⚠ 위험 파라미터 신규] 리더 하락 브레이크 ----
     #   왜(REPORT54 D1 — 백테스트 성적이 아니라 correctness 문제다):
     #     리더 에피소드 98개 중 낙폭이 2%p 이상 악화된 24개에서 복합점수백분위가 **오른** 경우 16개(66.7%),
@@ -3594,7 +3738,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                      neutral_share: float = 0.0,
                      brake: Optional[pd.DataFrame] = None,
                      brake_calendar: Optional[pd.DataFrame] = None,
-                     brake_frac: float = 1.0) -> pd.DataFrame:
+                     brake_frac: float = 1.0,
+                     cap_mat: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         """[§7.2 + v0.3.0 §A3] 부모 비중 w_s[p]를 산업/부모ETF로 나눈다. only_mode는 '잔여'(산업으로
         배분되지 않은 몫)의 목적지: "parent"(기본, 잔여=부모ETF — 잔여가 정확히 S★로 환원) |
         "industries"(잔여도 그 부모의 적격 산업 균등 — 사용자 지시 '산업만 배분'. 적격 0개면 부모ETF) |
@@ -3607,7 +3752,13 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             g = _G[p]
             inds = g["inds"]
             if use_rank:
-                frac = g["leader_ind"] * leader_cap + g["basket_ind"] * fallback_share
+                # [v0.18.0 W1] cap_mat이 주어지면 리더 몫 캡을 **날짜×산업 행렬**로 받는다(확신 등급별 래더).
+                #   cap_mat=None이면 스칼라 leader_cap — v0.17.0과 비트 동일.
+                if cap_mat is not None:
+                    _cm = cap_mat.reindex(index=eval_idx, columns=inds).astype(float).fillna(float(leader_cap))
+                    frac = g["leader_ind"].mul(_cm) + g["basket_ind"] * fallback_share
+                else:
+                    frac = g["leader_ind"] * leader_cap + g["basket_ind"] * fallback_share
                 # [v0.4.0 §I3 중립바스켓] 부모 안 '자기국면 중립' 산업 균등 — 기존 폴백('적격=상승')과
                 #   다른 집합이다. §3.4 H2 실측: 중립 바스켓 − 부모 +0.46%/21일(t 2.03, 6/9년).
                 #   리더가 있는 날에는 그 몫을 침범하지 않도록 (1−리더몫) 안에서만 준다.
@@ -3629,7 +3780,12 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             _bc = brake_calendar if brake_calendar is not None else None
             # ⚠ use_rank=False(대조군B: 리더 개념 없음)에는 적용하지 않는다 — 뺄 '리더 몫'이 없다.
             if use_rank and ((_bk is not None) or (_bc is not None)):
-                lead_frac = g["leader_ind"] * leader_cap
+                # [v0.18.0 W1] 제동으로 빼는 금액은 **실제로 준 리더 몫**과 같아야 한다 — cap_mat이 있으면 그것으로.
+                if cap_mat is not None:
+                    lead_frac = g["leader_ind"].mul(
+                        cap_mat.reindex(index=eval_idx, columns=inds).astype(float).fillna(float(leader_cap)))
+                else:
+                    lead_frac = g["leader_ind"] * leader_cap
                 for t in inds:
                     if t not in frac.columns:
                         continue
@@ -3644,6 +3800,20 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                     # [v0.16.0 R4] brake_frac < 1 이면 리더 몫을 그 비율만큼만 줄인다(절반 감축 행용).
                     frac[t] = frac[t] - float(brake_frac) * lead_frac[t].where(off, 0.0).fillna(0.0)
                 frac = frac.clip(lower=0.0)
+            # [v0.18.0 W1 안전장치] 부모 안 배분 합이 1을 넘으면 그 행만 1로 정규화한다.
+            #   왜 필요한가: CAP이 1.0까지 올라가면 (리더 몫 + 중립바스켓) 또는 수치오차로 합이 1을 넘을 수 있고,
+            #   그러면 아래 tw[p] = (1 − Σfrac)·w_s[p]가 음수가 되어 **부모 ETF를 공매도**하는 셈이 된다.
+            #   v0.17.0까지는 캡 최대 0.5여서 구조적으로 불가능했다 — 캡을 열었으니 방어를 같이 넣는다.
+            _fs = frac.sum(axis=1)
+            _ov = _fs > 1.0 + 1e-12
+            if bool(_ov.any()):
+                frac.loc[_ov] = frac.loc[_ov].div(_fs[_ov], axis=0)
+                _n_ov = int(_ov.sum())
+            else:
+                _n_ov = 0
+            if _n_ov:
+                log("ALLOC", kv(event="frac_renormalized", parent=p, n_days=_n_ov,
+                                note="부모 안 배분 합 > 1 → 그 행만 1로 정규화(부모 ETF 음수 방지)"), M=M, level="warning")
             if mode == "industries":
                 resid = (1.0 - frac.sum(axis=1)).clip(lower=0.0)
                 e = eligible[inds].astype(float)
@@ -3659,43 +3829,12 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             tw[c] = w_s_all[c].values
         return tw
 
-    def _bt(tw: pd.DataFrame, cmap: Dict[str, float]) -> pd.DataFrame:
-        return _industry_portfolio_backtest(S, tw, ret_co, ret_oc, rf_daily, cmap,
-                                            init_exec=init_exec, init_prev=init_prev)
-
-    live_cap, live_fb = float(icfg.INDUSTRY_LEADER_CAP), float(icfg.INDUSTRY_FALLBACK_SHARE)
-    live_mode = str(getattr(icfg, "INDUSTRY_ONLY_MODE", "parent")).lower()
-    label_star = f"부모비중 안 산업리더 {live_cap:.0%}·폴백 {live_fb:.0%}·잔여 {live_mode} ★"
-    # [v0.15.0 R1] ★에 라이브 브레이크를 연결한다(⚠ 위험 파라미터 — INDUSTRY_LEADER_BRAKE=False로 되돌림).
-    target_ws: Dict[str, pd.DataFrame] = {
-        label_star: _mk_target_w(live_cap, live_fb, brake=(_BRAKE_LIVE if _brake_live else None))}
-    # [v0.3.0 §B1] 2D 사전등록 격자(cap × fb) — 1D 사다리 두 개로는 (1.0, 0.0) 같은 조합을 못 본다.
-    #   리포트41 격자에서 ①②③④를 전부 통과한 행이 '폴백 0%'였고 '리더캡 100%'도 강건 통과였는데,
-    #   그 둘의 조합은 측정된 적이 없었다. 라벨은 S의 _is_cap_grid 관행대로 여는 대괄호 접두로 매칭한다.
-    _grid_on = bool(getattr(icfg, "INDUSTRY_GRID", True))
-    if not _grid_on:
-        log("ROTATION", kv(event="industry_grid_off",
-                           note="INDUSTRY_GRID=False(v0.10.0 H3 기본) — within-parent 격자 28행을 생략한다. "
-                                "리포트6~8에서 세 라운드 연속 정보 0(리더 0일 → 전 행 S★와 비트 동일, "
-                                "I-F로 열린 뒤에도 ①②③④ 전부 통과 0행). 그 계산을 [산업슬리브격자](H1)에 "
-                                "넘긴다 — 슬리브 격자는 INDUSTRY_SLEEVE_GRID가 따로 제어하므로 이 플래그와 무관하게 "
-                                "실린다. 13·13b·13c·14·15·13g·13p는 그대로. 되돌리기: True"), M=M)
-    for cv in (0.25, 0.5, 0.75, 1.0):
-        for fv in (0.0, 0.25, 0.5, 1.0):
-            if not _grid_on:
-                break
-            if abs(cv - live_cap) < 1e-9 and abs(fv - live_fb) < 1e-9:
-                continue                                  # 라이브 조합은 ★ 행이 이미 있다
-            target_ws[f"리더 {cv:.0%}·폴백 {fv:.0%} [산업집중격자]"] = _mk_target_w(cv, fv)
-
-    # ---- [v0.15.0 R2 신규 격자] [리더위험격자] — 브레이크 변형 + **달력 대조군** ----
-    #   왜 격자인가: R1의 반사실은 리포트만으로 재구성해 연율 0.21%p 잔차가 있었다(산업 다리 +0.642%p의 1/3).
-    #     수익곡선 판정은 근사가 아니라 **엔진이 직접** 재야 한다.
-    #   달력 대조군: 같은 산업에서 **같은 날수**만큼 리더 몫을 끄되 **신호 없이 균등 간격으로** 끈다.
-    #     이게 있어야 "브레이크가 좋은 날을 골랐는가"와 "그냥 노출을 줄여서 좋아졌는가"를 가를 수 있다
-    #     (노출만 줄이면 칼마는 대개 올라간다 — CAP 0.25가 3.584였던 것이 그 예다).
     def _calendar_mat(B: pd.DataFrame) -> pd.DataFrame:
-        """B와 산업별 **날수가 같은** 무신호 대조 행렬(균등 간격 · 난수 없음 → 재현 가능)."""
+        """B와 산업별 **날수가 같은** 무신호 대조 행렬(균등 간격 · 난수 없음 → 재현 가능).
+        [v0.18.0] 정의 위치를 _mk_target_w 뒤로 올렸다 — 아래 _warn_mat·_cap_mat이 라이브 ★ 구성에서
+        쓰이므로 이 헬퍼 묶음 전체를 ★ 앞으로 옮겼다. 계산 내용은 v0.15.0과 동일하다.
+        (_cap_mat_calendar는 상향·하향 두 집합을 겹치지 않게 배치해야 해서 이 함수를 쓰지 않고 같은 균등
+         간격 규칙을 직접 적용한다 — 규칙은 동일하다.)"""
         C = pd.DataFrame(False, index=eval_idx, columns=B.columns)
         n_all = len(eval_idx)
         for t in B.columns:
@@ -3705,29 +3844,49 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             pos = np.linspace(0, n_all - 1, num=k, dtype=int)
             C.iloc[np.unique(pos), C.columns.get_loc(t)] = True
         return C
-    # ---- [v0.16.0 R3 신규 격자] [리더분산격자] top-K + 알파벳 대조군 ----
-    #   _run_groups로 판단 규칙만 바꿔 다시 돈다(신호 재계산 없음 — 배분층 격자의 전제 유지).
-    for _k in tuple(getattr(icfg, "INDUSTRY_LEADER_TOPK_GRID", ()) or ()):
-        _k = int(_k)
-        if _k <= 1:
-            continue
-        try:
-            _gk = _run_groups({"ROTATION_LEADER_TOPK": _k})
-            _ga = _run_groups({"ROTATION_LEADER_TOPK": _k, "ROTATION_LEADER_TOPK_ALPHA": True})
-        except Exception as e:
-            log("ROTATION", kv(event="topk_grid_failed", k=_k, err=str(e)[:120]), M=M, level="warning")
-            continue
-        target_ws[f"리더분산 상위{_k} [리더분산격자]"] = _mk_target_w(live_cap, live_fb, groups_over=_gk)
-        target_ws[f"대조: 상위{_k} 알파벳순(순위 미사용) [리더분산격자·대조]"] = \
-            _mk_target_w(live_cap, live_fb, groups_over=_ga)
-        _nl = int(sum(int((g["leader_ind"] > 0).sum().sum()) for g in _gk.values()))
-        log("ROTATION", kv(event="topk_grid_row", k=_k, leader_industry_days=_nl,
-                           note="총 노출 불변 — 개별 산업 위험만 줄인다. 대조군(알파벳)이 순위 가치를 가른다"), M=M)
 
-    # ---- [v0.17.0 T2 신규 격자] [리더추세게이트격자] — 부모 강세일 때 역추세 집중을 하지 않는다 ----
-    #   근거 W3(부모 추세 3분할에서 약세 +5.04%p/상승미달 0.077 vs 강세 +0.32%p/0.417, ext200도 단조).
-    #   조건은 **부모** 상태이므로 그 부모의 모든 산업에 같은 날 적용된다(산업별 조건이 아니다).
+    # [v0.18.0 W2] _warn_mat 정의를 여기로 올렸다 — 확신 강등이 **라이브 ★**에서 이 행렬을 쓰기 때문이다
+    #   (종전에는 [하락경고격자] 바로 앞에 있어서 ★ 구성보다 뒤였다). 계산 내용은 v0.16.0과 동일하다.
+    _warn_cache: Dict[Tuple[float, bool], pd.DataFrame] = {}
+
+    def _warn_mat(vq: float, need_cs: bool) -> pd.DataFrame:
+        """[v0.18.0 §3] 같은 (vq, need_cs)로 반복 호출되므로 메모이즈한다 — 라이브 ★ + [확신캡격자] 4행 +
+        [하락경고격자] 3행이 모두 같은 문턱을 쓰면 expanding quantile을 29계열 × 8회가 아니라 1회만 돈다."""
+        _key = (float(vq), bool(need_cs))
+        if _key in _warn_cache:
+            return _warn_cache[_key]
+        return _warn_cache.setdefault(_key, _warn_mat_calc(vq, need_cs))
+
+    def _warn_mat_calc(vq: float, need_cs: bool) -> pd.DataFrame:
+        """저변동성(+탈동조) 경고 행렬. 전부 t일까지의 정보(자기이력 백분위)."""
+        W = pd.DataFrame(False, index=eval_idx, columns=cols)
+        _mh = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250)
+        for t in cols:
+            r = results.get(t, {})
+            vp = pd.Series(r.get("vol21_pct"), dtype=float)
+            if vp.empty:
+                continue
+            w = vp.le(float(vq))
+            if need_cs:
+                cs = pd.Series(r.get("coupling_score"), dtype=float)
+                if cs.empty:
+                    continue
+                w = w & cs.le(cs.expanding(min_periods=_mh).quantile(1.0 / 3.0))
+            W[t] = w.reindex(eval_idx).fillna(False).values
+        return W
+
+    _strong_cache: Dict[Tuple[str, float], pd.DataFrame] = {}
+
     def _parent_strong() -> pd.DataFrame:
+        """[v0.18.0 W7 §3] 라이브 ★ + [확신캡격자] 4행 + [리더추세게이트격자] 3행이 같은 행렬을 쓰므로
+        메모이즈한다(부모 9개 × expanding rank를 8회가 아니라 1회). 계산 내용은 v0.17.0 T2와 동일하다."""
+        _k = (str(getattr(icfg, "TREND_GATE_SRC", "ext200") or "ext200").lower(),
+              float(getattr(icfg, "TREND_GATE_Q", 2.0 / 3.0)))
+        if _k in _strong_cache:
+            return _strong_cache[_k]
+        return _strong_cache.setdefault(_k, _parent_strong_calc())
+
+    def _parent_strong_calc() -> pd.DataFrame:
         """부모별 '강세' 불리언(산업 열로 펼침). 전부 t일까지의 정보 — 자기이력 expanding 백분위."""
         src = str(getattr(icfg, "TREND_GATE_SRC", "ext200") or "ext200").lower()
         q = float(getattr(icfg, "TREND_GATE_Q", 2.0 / 3.0))
@@ -3754,6 +3913,237 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             for t_ in [x for x in cols if parent_of[x] == p_]:
                 out[t_] = strong.values
         return out
+
+    def _cap_mat(cap_base: float, cap_conv: float, cap_hold: float,
+                 warn: Optional[pd.DataFrame] = None,
+                 strong: Optional[pd.DataFrame] = None,
+                 groups_src: Optional[Dict[str, Dict[str, Any]]] = None) -> pd.DataFrame:
+        """[v0.18.0 W1 ★] 확신 등급별 **리더 캡 행렬**(날짜 × 산업).
+
+        세 등급뿐이며 전부 t일까지의 정보다(게이트·경고 모두 인과):
+          · 리더 & 확신 통과 & 경고 없음 & 부모 강세 아님 → cap_conv  (기본 1.0 — 부모비중 전부 산업으로)
+          · 리더 & 확신 통과 & 경고 있음                  → cap_base  (0.5로 강등 — W2)
+          · 리더 & 확신 통과 & **부모 강세**              → cap_base  (0.5로 강등 — W7 추세 가드)
+          · 리더 & 확신 게이트 미달/해당없음(보유중)  → cap_hold  (0.25로 감축 — 래더의 재원)
+          · 리더가 아닌 날                           → cap_base  (leader_ind가 0이라 값과 무관하다)
+        '보유중 미달'이 존재하는 이유: 게이트는 **진입 전용**이고 청산은 순위·투표 기준이므로
+        min_hold 동안 확신이 풀린 채 보유가 이어진다(리포트16 실측 미달 1,009일 + 해당없음 119일)."""
+        _G = groups_src or groups
+        C = pd.DataFrame(float(cap_base), index=eval_idx, columns=cols)
+        n_conv = n_hold = n_warn_dg = n_trend_dg = 0
+        for p in active_parents:
+            g = _G.get(p)
+            if not g:
+                continue
+            tier = g["tier"].reindex(eval_idx).astype(str)
+            gate = g["gate"].reindex(eval_idx).astype(str)
+            lead = tier.eq("리더")
+            conv = lead & gate.eq("통과")
+            hold = lead & ~gate.eq("통과")
+            for t in g["inds"]:
+                if t not in C.columns:
+                    continue
+                cm = conv
+                if warn is not None and t in warn.columns:
+                    wt = warn[t].reindex(eval_idx).fillna(False).astype(bool)
+                    n_warn_dg += int((conv & wt).sum())
+                    cm = cm & ~wt
+                if strong is not None and t in strong.columns:
+                    st_ = strong[t].reindex(eval_idx).fillna(False).astype(bool)
+                    n_trend_dg += int((conv & st_).sum())
+                    cm = cm & ~st_
+                col = pd.Series(float(cap_base), index=eval_idx)
+                col = col.where(~cm, float(cap_conv))
+                col = col.where(~hold, float(cap_hold))
+                C[t] = col.values
+                n_conv += int(cm.sum())
+                n_hold += int(hold.sum())
+        log("ALLOC", kv(event="cap_ladder_built", cap_base=float(cap_base), cap_conv=float(cap_conv),
+                        cap_hold=float(cap_hold), conv_industry_days=n_conv, hold_industry_days=n_hold,
+                        warn_downgraded_days=n_warn_dg, warn_used=bool(warn is not None),
+                        trend_downgraded_days=n_trend_dg, trend_guard_used=bool(strong is not None),
+                        note="⚠ 비중(위험) 파라미터 — 확신일 상향/보유미달일 하향. 등급은 전부 t일 정보"), M=M)
+        return C
+
+    def _cap_mat_calendar(cap_base: float, cap_conv: float, cap_hold: float,
+                          src: pd.DataFrame) -> pd.DataFrame:
+        """[v0.18.0 W4 대조군] src(신호 래더)와 **산업별 상향일수·하향일수가 같은** 무신호 캡 행렬.
+
+        상향일을 균등 간격으로 먼저 놓고, 하향일은 **남은 자리**에 균등 간격으로 놓는다 —
+        두 집합이 겹치지 않으므로 날수가 정확히 보존된다(난수 없음 → 재현 가능).
+        이 대조군이 있어야 "확신이 좋은 날을 골랐는가"와 "그냥 노출 분포를 바꿨을 뿐인가"를 가른다."""
+        C = pd.DataFrame(float(cap_base), index=eval_idx, columns=src.columns)
+        n_all = len(eval_idx)
+        for t in src.columns:
+            up = int((src[t] >= float(cap_conv) - 1e-12).sum()) if abs(cap_conv - cap_base) > 1e-12 else 0
+            dn = int((src[t] <= float(cap_hold) + 1e-12).sum()) if abs(cap_hold - cap_base) > 1e-12 else 0
+            j = C.columns.get_loc(t)
+            used = np.zeros(n_all, dtype=bool)
+            if 0 < up < n_all:
+                pos = np.unique(np.linspace(0, n_all - 1, num=up, dtype=int))
+                used[pos] = True
+                C.iloc[pos, j] = float(cap_conv)
+            if dn > 0:
+                free = np.flatnonzero(~used)
+                if 0 < dn <= len(free):
+                    pos2 = free[np.unique(np.linspace(0, len(free) - 1, num=dn, dtype=int))]
+                    C.iloc[pos2, j] = float(cap_hold)
+        return C
+
+    def _bt(tw: pd.DataFrame, cmap: Dict[str, float]) -> pd.DataFrame:
+        return _industry_portfolio_backtest(S, tw, ret_co, ret_oc, rf_daily, cmap,
+                                            init_exec=init_exec, init_prev=init_prev)
+
+    live_cap, live_fb = float(icfg.INDUSTRY_LEADER_CAP), float(icfg.INDUSTRY_FALLBACK_SHARE)
+    live_mode = str(getattr(icfg, "INDUSTRY_ONLY_MODE", "parent")).lower()
+    # ---- [v0.18.0 W1·W2 ★★] 라이브 확신캡 래더 ----
+    #   사용자 지시 (나) "상승이 확실하면 비중을 최대 1까지". 확신 = **확신 게이트 통과**(엔진이 이미 쓰는 잣대,
+    #   13l 블록 B 실측 +0.2897%/21일 vs 미달 +0.0597% = 4.85배). 경고 산업은 강등해 상향을 보류한다(W2).
+    _conv_on = bool(getattr(icfg, "INDUSTRY_CAP_BY_CONVICTION", False))
+    _cap_conv = float(getattr(icfg, "CAP_CONVICTION", 1.0))
+    _cap_hold = float(getattr(icfg, "CAP_HOLD", 0.25))
+    _warn_dg = bool(getattr(icfg, "CAP_WARN_DOWNGRADE", True))
+    _WARN_LIVE = None
+    if _conv_on and _warn_dg:
+        try:
+            _WARN_LIVE = _warn_mat(float(getattr(icfg, "CAP_WARN_VOL_Q", 1.0 / 3.0)),
+                                   bool(getattr(icfg, "CAP_WARN_NEED_DECOUPLE", True)))
+        except Exception as e:
+            # 실패해도 래더 자체는 살린다 — 강등만 못 한다(사용자 규칙 §5: 조용히 실패하지 않는다).
+            log("ALLOC", kv(event="cap_warn_mat_failed", err=str(e)[:160],
+                            action="경고 강등 없이 래더만 적용", suggest="CAP_WARN_DOWNGRADE=False로 명시적으로 끄는 것을 검토"),
+                M=M, level="warning")
+            _WARN_LIVE = None
+    # [v0.18.0 W7] 추세 가드 — 강세 부모의 리더일은 상향하지 않는다(13l 블록 E 3분할 단조 근거).
+    _STRONG_LIVE = None
+    if _conv_on and bool(getattr(icfg, "CAP_TREND_GUARD", True)):
+        try:
+            _STRONG_LIVE = _parent_strong()
+        except Exception as e:
+            log("ALLOC", kv(event="cap_trend_guard_failed", err=str(e)[:160],
+                            action="추세 가드 없이 래더 적용",
+                            suggest="sres['sectors'][p]['bh_ret'] 존재 확인 · 또는 CAP_TREND_GUARD=False로 명시적으로 끌 것"),
+                M=M, level="warning")
+            _STRONG_LIVE = None
+    _CAP_LIVE = (_cap_mat(live_cap, _cap_conv, _cap_hold, warn=_WARN_LIVE, strong=_STRONG_LIVE)
+                 if _conv_on else None)
+    if _conv_on:
+        label_star = (f"부모비중 안 산업리더 확신{_cap_conv:.0%}/강등{live_cap:.0%}/보유{_cap_hold:.0%}"
+                      + ("·추세가드" if _STRONG_LIVE is not None else "")
+                      + f"·폴백 {live_fb:.0%}·잔여 {live_mode} ★")
+    else:
+        label_star = f"부모비중 안 산업리더 {live_cap:.0%}·폴백 {live_fb:.0%}·잔여 {live_mode} ★"
+    # [v0.15.0 R1] ★에 라이브 브레이크를 연결한다(⚠ 위험 파라미터 — INDUSTRY_LEADER_BRAKE=False로 되돌림).
+    target_ws: Dict[str, pd.DataFrame] = {
+        label_star: _mk_target_w(live_cap, live_fb, brake=(_BRAKE_LIVE if _brake_live else None),
+                                 cap_mat=_CAP_LIVE)}
+    if _conv_on:
+        _tot = target_ws[label_star][cols].sum(axis=1)
+        log("ALLOC", kv(event="conviction_cap_live", cap_conv=_cap_conv, cap_base=live_cap, cap_hold=_cap_hold,
+                        warn_downgrade=bool(_WARN_LIVE is not None),
+                        trend_guard=bool(_STRONG_LIVE is not None),
+                        total_mean=round(float(_tot.mean()), 4), total_median=round(float(_tot.median()), 4),
+                        total_max=round(float(_tot.max()), 4),
+                        days_ge_50pct=int((_tot >= 0.5).sum()), days_ge_90pct=int((_tot >= 0.9).sum()),
+                        days_zero=int((_tot <= 1e-12).sum()), n_eval=len(eval_idx),
+                        note="⚠ 비중(위험) 파라미터 변경 — 사전등록 되돌림 조건은 파일 헤더 [검증] ⑧. "
+                             "중위가 0이면 그것은 CAP이 아니라 INDUSTRY_FALLBACK_SHARE=0의 결과다"), M=M)
+    # [v0.3.0 §B1] 2D 사전등록 격자(cap × fb) — 1D 사다리 두 개로는 (1.0, 0.0) 같은 조합을 못 본다.
+    #   리포트41 격자에서 ①②③④를 전부 통과한 행이 '폴백 0%'였고 '리더캡 100%'도 강건 통과였는데,
+    #   그 둘의 조합은 측정된 적이 없었다. 라벨은 S의 _is_cap_grid 관행대로 여는 대괄호 접두로 매칭한다.
+    _grid_on = bool(getattr(icfg, "INDUSTRY_GRID", True))
+    if not _grid_on:
+        log("ROTATION", kv(event="industry_grid_off",
+                           note="INDUSTRY_GRID=False(v0.10.0 H3 기본) — within-parent 격자 28행을 생략한다. "
+                                "리포트6~8에서 세 라운드 연속 정보 0(리더 0일 → 전 행 S★와 비트 동일, "
+                                "I-F로 열린 뒤에도 ①②③④ 전부 통과 0행). 그 계산을 [산업슬리브격자](H1)에 "
+                                "넘긴다 — 슬리브 격자는 INDUSTRY_SLEEVE_GRID가 따로 제어하므로 이 플래그와 무관하게 "
+                                "실린다. 13·13b·13c·14·15·13g·13p는 그대로. 되돌리기: True"), M=M)
+    # [v0.18.0 W3 ★] 기본값이 True로 돌아왔다 — 위 INDUSTRY_GRID 주석 참조(리더 0일 사유 소멸).
+    #   ⚠ 이 15행은 **확신 래더를 쓰지 않는 평탄 캡**이다(cap_mat 없음). 그래야 "평탄하게 올리면 어떻게 되는가"가
+    #     [확신캡격자]의 래더 행과 같은 잣대로 비교된다 — 즉 이 격자 자체가 래더의 대조군 역할을 겸한다.
+    _n_cap_rows = 0
+    for cv in (0.25, 0.5, 0.75, 1.0):
+        for fv in (0.0, 0.25, 0.5, 1.0):
+            if not _grid_on:
+                break
+            if (abs(cv - live_cap) < 1e-9 and abs(fv - live_fb) < 1e-9) and not _conv_on:
+                continue                                  # 라이브 조합은 ★ 행이 이미 있다(래더가 켜지면 ★ ≠ 평탄이라 실는다)
+            target_ws[f"리더 {cv:.0%}·폴백 {fv:.0%} [산업집중격자]"] = _mk_target_w(cv, fv)
+            _n_cap_rows += 1
+    if _grid_on:
+        log("ROTATION", kv(event="industry_grid_on", n_rows=_n_cap_rows,
+                           note="[v0.18.0 W3] v0.10.0 H3가 끈 사유(리더 0일 → 전 행 S★와 비트 동일)는 "
+                                "v0.14.0 P1이 리더일을 0 → 2,903으로 되살려 소멸했다. CAP·폴백은 리더가 "
+                                "작동하는 상태에서 처음 측정된다. 폴백 축이 '중위 0'을 재는 유일한 격자다"), M=M)
+
+    # ---- [v0.18.0 W4 신규 격자] [확신캡격자] — 래더 × (무조건 동일캡 대조 + 달력 대조) ----
+    #   왜 대조군이 두 개인가:
+    #     (ㄱ) **무조건 동일캡**: 확신 여부를 무시하고 모든 리더일에 확신캡을 준다 = 순수 레버업.
+    #          래더가 여기에 칼마로 지면 "확신 선택에 값이 없고 노출만 늘린 것"이므로 설계를 버린다([검증] ⑧(c)).
+    #     (ㄴ) **달력**: 산업별 상향일수·하향일수가 같고 신호 없이 균등 간격. 래더가 여기에 지면
+    #          "노출 분포를 흔든 효과"일 뿐이다([검증] ⑧(d)). v0.15.0 브레이크가 정확히 여기서 죽었다.
+    for _row in tuple(getattr(icfg, "INDUSTRY_CONV_CAP_GRID", ()) or ()):
+        # 형식은 (라벨, 확신캡, 보유캡, 경고강등[, 추세가드]) — 4-tuple 구버전 설정도 받는다.
+        _lbl, _cc, _ch, _use_warn = _row[0], _row[1], _row[2], _row[3]
+        _use_tg = bool(_row[4]) if len(_row) > 4 else False
+        try:
+            _Wm2 = None
+            if bool(_use_warn):
+                _Wm2 = _warn_mat(float(getattr(icfg, "CAP_WARN_VOL_Q", 1.0 / 3.0)),
+                                 bool(getattr(icfg, "CAP_WARN_NEED_DECOUPLE", True)))
+            _Sm2 = _parent_strong() if _use_tg else None
+            _CL = _cap_mat(live_cap, float(_cc), float(_ch), warn=_Wm2, strong=_Sm2)
+            _CU = _cap_mat(float(_cc), float(_cc), float(_cc))          # (ㄱ) 무조건 동일캡 = 평탄 레버업
+            _CC = _cap_mat_calendar(live_cap, float(_cc), float(_ch), _CL)   # (ㄴ) 달력
+        except Exception as e:
+            log("ROTATION", kv(event="conv_cap_grid_failed", row=str(_lbl), err=str(e)[:160]), M=M, level="warning")
+            continue
+        target_ws[f"확신캡 {_lbl} [확신캡격자]"] = _mk_target_w(live_cap, live_fb, cap_mat=_CL)
+        target_ws[f"대조: {_lbl} 무조건 동일캡(확신 무시) [확신캡격자·대조]"] = \
+            _mk_target_w(live_cap, live_fb, cap_mat=_CU)
+        target_ws[f"대조: {_lbl} 같은날수 달력(신호없음) [확신캡격자·대조]"] = \
+            _mk_target_w(live_cap, live_fb, cap_mat=_CC)
+        _t1 = target_ws[f"확신캡 {_lbl} [확신캡격자]"][cols].sum(axis=1)
+        _t2 = target_ws[f"대조: {_lbl} 무조건 동일캡(확신 무시) [확신캡격자·대조]"][cols].sum(axis=1)
+        _t3 = target_ws[f"대조: {_lbl} 같은날수 달력(신호없음) [확신캡격자·대조]"][cols].sum(axis=1)
+        log("ROTATION", kv(event="conv_cap_grid_row", row=str(_lbl), cap_conv=float(_cc), cap_hold=float(_ch),
+                           warn_downgrade=bool(_use_warn), trend_guard=bool(_use_tg),
+                           ladder_mean=round(float(_t1.mean()), 4), ladder_max=round(float(_t1.max()), 4),
+                           uncond_mean=round(float(_t2.mean()), 4), uncond_max=round(float(_t2.max()), 4),
+                           calendar_mean=round(float(_t3.mean()), 4),
+                           note="⚠ 라이브 판정 아님 — 래더가 무조건·달력 **둘 다** 칼마·MDD로 이겨야 후보"), M=M)
+
+    # ---- [v0.15.0 R2 신규 격자] [리더위험격자] — 브레이크 변형 + **달력 대조군** ----
+    #   왜 격자인가: R1의 반사실은 리포트만으로 재구성해 연율 0.21%p 잔차가 있었다(산업 다리 +0.642%p의 1/3).
+    #     수익곡선 판정은 근사가 아니라 **엔진이 직접** 재야 한다.
+    #   달력 대조군(정의는 _mk_target_w 뒤 _calendar_mat — v0.18.0에서 위로 옮겼다): 같은 산업에서
+    #     **같은 날수**만큼 리더 몫을 끄되 **신호 없이 균등 간격으로** 끈다. 이게 있어야 "브레이크가 좋은 날을
+    #     골랐는가"와 "그냥 노출을 줄여서 좋아졌는가"를 가를 수 있다(노출만 줄이면 칼마는 대개 올라간다 —
+    #     CAP 0.25가 3.584였던 것이 그 예다).
+    # ---- [v0.16.0 R3 신규 격자] [리더분산격자] top-K + 알파벳 대조군 ----
+    #   _run_groups로 판단 규칙만 바꿔 다시 돈다(신호 재계산 없음 — 배분층 격자의 전제 유지).
+    for _k in tuple(getattr(icfg, "INDUSTRY_LEADER_TOPK_GRID", ()) or ()):
+        _k = int(_k)
+        if _k <= 1:
+            continue
+        try:
+            _gk = _run_groups({"ROTATION_LEADER_TOPK": _k})
+            _ga = _run_groups({"ROTATION_LEADER_TOPK": _k, "ROTATION_LEADER_TOPK_ALPHA": True})
+        except Exception as e:
+            log("ROTATION", kv(event="topk_grid_failed", k=_k, err=str(e)[:120]), M=M, level="warning")
+            continue
+        target_ws[f"리더분산 상위{_k} [리더분산격자]"] = _mk_target_w(live_cap, live_fb, groups_over=_gk)
+        target_ws[f"대조: 상위{_k} 알파벳순(순위 미사용) [리더분산격자·대조]"] = \
+            _mk_target_w(live_cap, live_fb, groups_over=_ga)
+        _nl = int(sum(int((g["leader_ind"] > 0).sum().sum()) for g in _gk.values()))
+        log("ROTATION", kv(event="topk_grid_row", k=_k, leader_industry_days=_nl,
+                           note="총 노출 불변 — 개별 산업 위험만 줄인다. 대조군(알파벳)이 순위 가치를 가른다"), M=M)
+
+    # ---- [v0.17.0 T2 신규 격자] [리더추세게이트격자] — 부모 강세일 때 역추세 집중을 하지 않는다 ----
+    #   근거 W3(부모 추세 3분할에서 약세 +5.04%p/상승미달 0.077 vs 강세 +0.32%p/0.417, ext200도 단조).
+    #   조건은 **부모** 상태이므로 그 부모의 모든 산업에 같은 날 적용된다(산업별 조건이 아니다).
+    # [v0.18.0 W7] _parent_strong 정의를 위(헬퍼 묶음)로 옮겼다 — 라이브 ★ 추세 가드가 쓴다.
     _tg = tuple(getattr(icfg, "INDUSTRY_TREND_GATE_GRID", ()) or ())
     if _tg:
         try:
@@ -3800,23 +4190,6 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
     # ---- [v0.16.0 R4 신규 격자] [하락경고격자] 저변동성 경고 → 리더 감축 + 달력 대조군 ----
     #   ⚠ 경고는 13p 블록 A3에서 강하게 측정됐지만(A3-3 정밀도 +14.3%p · 연도비율 0.688) 리더 보유일과의
     #     겹침에서 격차 대부분을 IGV 한 종목이 만든다. 그래서 라이브가 아니라 격자로만 검정한다.
-    def _warn_mat(vq: float, need_cs: bool) -> pd.DataFrame:
-        """저변동성(+탈동조) 경고 행렬. 전부 t일까지의 정보(자기이력 백분위)."""
-        W = pd.DataFrame(False, index=eval_idx, columns=cols)
-        _mh = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250)
-        for t in cols:
-            r = results.get(t, {})
-            vp = pd.Series(r.get("vol21_pct"), dtype=float)
-            if vp.empty:
-                continue
-            w = vp.le(float(vq))
-            if need_cs:
-                cs = pd.Series(r.get("coupling_score"), dtype=float)
-                if cs.empty:
-                    continue
-                w = w & cs.le(cs.expanding(min_periods=_mh).quantile(1.0 / 3.0))
-            W[t] = w.reindex(eval_idx).fillna(False).values
-        return W
     for _lbl, _vq, _cs, _cut in tuple(getattr(icfg, "INDUSTRY_WARN_CUT_GRID", ()) or ()):
         try:
             _Wm = _warn_mat(float(_vq), bool(_cs))
@@ -4288,6 +4661,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "cost_bps_parent": icfg.PARENT_COST_BPS, "rf_daily": rf_daily,
         # [v0.6.0 I-D(B)] 13j_배분거래내역용 — 백테스트가 쓴 바로 그 초기 포지션·열별 비용률을 그대로
         #   넘긴다(재계산 금지: 거래 로그의 비용·기여가 13_산업배분전략의 성과와 어긋나면 안 된다).
+        # [v0.18.0 W1] 13c '리더 적용캡' 열용 — 라이브 확신캡 행렬(래더 끔이면 None).
+        "cap_live": _CAP_LIVE, "cap_base": live_cap,
         "sleeve_diag": sleeve_diag,          # [v0.10.0 H1] 13p 블록 P·판독용(슬리브 채택 신호·가중·복합순위)
         "init_exec": init_exec, "init_prev": init_prev, "cost_map": cost_map,
     }
@@ -5170,6 +5545,91 @@ def build_industry_leader_accuracy(alloc: Dict[str, Any], results: Dict[str, Dic
                                 "강세 12건 +0.32·**0.417**. ext200·m21·m63·m252·dd252 다섯 지표가 모두 같은 방향이고 "
                                 "연도 편중도 아니다. → **강세 구간에서 역추세 집중을 하지 않는다**가 대응이며 "
                                 "[리더추세게이트격자]가 그것을 검정한다. ⚠ 표본 37건이라 라이브가 아니다.")})
+    # =================== 블록 F [v0.18.0 W5 ★ 신규] ===================
+    #   사용자 지시 (나) "왜 전체로 한 날이 없어"에 **리포트가 스스로 답하게** 만든다.
+    #   종전에는 이 숫자가 어디에도 없어서, 사용자가 13c를 직접 훑어야 알 수 있었다.
+    try:
+        _tw = alloc.get("target_w")
+        _icols = [c for c in (alloc.get("cols") or []) if c in (_tw.columns if _tw is not None else [])]
+        if _tw is not None and len(_tw) and _icols:
+            blkF = "F. 총노출 천장 분해"
+            _tot = _tw[_icols].sum(axis=1)
+            _n = int(len(_tot))
+            rows.append({"블록": blkF, "구분": "── 읽는 법 ──",
+                         "설명": ("'산업배분 합계'는 그날 산업 ETF에 간 비중의 총합이다(나머지는 부모 ETF·SPY·현금). "
+                                "중위가 0이면 **절반 이상의 날에 산업 베팅이 하나도 없다**는 뜻이고, 그 원인은 "
+                                "CAP이 아니라 폴백이다 — 아래 (2)(3)을 분리해서 읽을 것.")})
+            rows.append({"블록": blkF, "구분": "산업배분 합계 분포", "에피소드": _n,
+                         "평균초과(%)": round(float(_tot.mean()), 4),
+                         "설명": (f"평균 {float(_tot.mean()):.4f} · 중위 {float(_tot.median()):.4f} · "
+                                f"최대 {float(_tot.max()):.4f} · 0.25이상 {int((_tot >= 0.25).sum())}일 · "
+                                f"0.5이상 {int((_tot >= 0.5).sum())}일 · 0.9이상 {int((_tot >= 0.9).sum())}일 · "
+                                f"정확히 0인 날 {int((_tot <= 1e-12).sum())}일"
+                                f"({float((_tot <= 1e-12).mean()):.1%})")})
+            # (1) 리더 성립 빈도 — 부모×일 조합 기준 + 하루 리더 부모 수
+            _G = alloc.get("groups", {}) or {}
+            _aps = [p for p in (alloc.get("active_parents") or []) if p in _G]
+            if _aps:
+                _pd_pairs = _n * len(_aps)
+                _lead_pd = int(sum(int(_G[p]["tier"].astype(str).eq("리더").sum()) for p in _aps))
+                _lead_cnt = None
+                for p in _aps:
+                    _c = _G[p]["tier"].astype(str).eq("리더").astype(int).reindex(_tot.index).fillna(0)
+                    _lead_cnt = _c if _lead_cnt is None else (_lead_cnt + _c)
+                rows.append({"블록": blkF, "구분": "(1) 리더 성립 빈도", "에피소드": _lead_pd,
+                             "설명": (f"부모×일 조합 {_pd_pairs:,}개 중 리더 판단 {_lead_pd:,}개"
+                                    f"({_lead_pd / max(_pd_pairs, 1):.1%}) · 리더 부모가 1개 이상인 날 "
+                                    f"{int((_lead_cnt > 0).sum()):,}일({float((_lead_cnt > 0).mean()):.1%}) · "
+                                    f"하루 최대 {int(_lead_cnt.max())}개 부모. "
+                                    "→ 하루에 리더 부모가 1~2개뿐이면 CAP을 100%로 줘도 총합은 그 부모들의 "
+                                    "섹터비중 합을 넘지 못한다(구조적 천장).")})
+                # 구조적 천장: 리더 부모의 w_s 합 최대치 — CAP을 1.0으로 줬을 때 도달 가능한 총합
+                _ws = alloc.get("w_s")
+                if _ws is not None and len(_ws):
+                    _cap_room = None
+                    for p in _aps:
+                        if p not in _ws.columns:
+                            continue
+                        _m = _G[p]["tier"].astype(str).eq("리더").reindex(_tot.index).fillna(False).astype(bool)
+                        _r = pd.Series(_ws[p]).reindex(_tot.index).astype(float).where(_m, 0.0).fillna(0.0)
+                        _cap_room = _r if _cap_room is None else (_cap_room + _r)
+                    if _cap_room is not None:
+                        rows.append({"블록": blkF, "구분": "(2) CAP 축 — 도달 가능 천장",
+                                     "평균초과(%)": round(float(_cap_room.mean()), 4),
+                                     "설명": (f"리더 부모의 섹터비중 합(= CAP 100%일 때의 총합): 평균 "
+                                            f"{float(_cap_room.mean()):.4f} · 최대 {float(_cap_room.max()):.4f} · "
+                                            f"0.9이상 {int((_cap_room >= 0.9).sum())}일. "
+                                            f"현재 실현 최대 {float(_tot.max()):.4f}. "
+                                            "격차가 곧 CAP이 깎는 몫이다 — [산업집중격자]·[확신캡격자]가 잰다.")})
+            # (3) 폴백 축 — 중위 0의 원인
+            _fb = float(getattr(icfg, "INDUSTRY_FALLBACK_SHARE", 0.0))
+            rows.append({"블록": blkF, "구분": "(3) 폴백 축 — 중위 0의 원인",
+                         "설명": (f"INDUSTRY_FALLBACK_SHARE = {_fb:.0%}. 0%면 리더가 없는 날 산업 배분이 "
+                                f"**정확히 0**이 되고, 그 날이 전체의 {float((_tot <= 1e-12).mean()):.1%}이므로 "
+                                "중위가 0이 된다. **CAP을 올려도 중위는 움직이지 않는다** — 축이 다르다. "
+                                "폴백 0%는 리포트41 격자에서 ①②③④를 통과한 유일한 행이었지만, 그것은 "
+                                "**리더가 0일이던 시절**의 측정이다. [산업집중격자](v0.18.0 W3 재개방)가 "
+                                "리더가 작동하는 상태에서 폴백 0/25/50/100%를 처음으로 다시 잰다.")})
+            _conv = bool(getattr(icfg, "INDUSTRY_CAP_BY_CONVICTION", False))
+            rows.append({"블록": blkF, "구분": "판독",
+                         "설명": (("★ v0.18.0 W1 확신캡 래더 **켬** — 확신 게이트 통과일 CAP "
+                                 f"{float(getattr(icfg, 'CAP_CONVICTION', 1.0)):.0%} / 보유 중 미달 "
+                                 f"{float(getattr(icfg, 'CAP_HOLD', 0.25)):.0%}"
+                                 + (" / 하락경고 강등 켬" if getattr(icfg, "CAP_WARN_DOWNGRADE", True) else "")
+                                 + (" / 강세부모 추세가드 켬(13l 블록 E 3분할 근거 — 강세 버킷 승률 0.394·"
+                                    "평균초과 −0.176%)" if getattr(icfg, "CAP_TREND_GUARD", True) else "")
+                                 + ". 위 '0.9이상' 일수는 (2)의 **도달 가능 천장**에 달려 있다 — "
+                                   "(2)의 '0.9이상'이 0이면 그것은 캡이 아니라 리더 부모 수의 한계다. "
+                                   "캡이 반영됐는지는 13c '리더 적용캡' 열에서 직접 확인할 것. "
+                                   "⚠ 판정은 13_산업배분전략 [확신캡격자]에서 **무조건 동일캡·달력 두 대조군을 "
+                                   "칼마·MDD 모두 이겼는가**로 한다 — 헤더 [검증] ⑧.")
+                                if _conv else
+                                ("확신캡 래더 **끔**(INDUSTRY_CAP_BY_CONVICTION=False) — 평탄 CAP "
+                                 f"{float(getattr(icfg, 'INDUSTRY_LEADER_CAP', 0.5)):.0%}. "
+                                 "'0.5이상 0일'은 결함이 아니라 이 설정의 산술적 결과다."))})
+    except Exception as e:
+        rows.append({"블록": "F. 총노출 천장 분해", "구분": "산출 실패",
+                     "설명": f"{type(e).__name__}: {str(e)[:200]} — 다음 단계: alloc의 target_w/groups/w_s 키 존재 확인"})
     return pd.DataFrame(rows)
 
 
@@ -5266,6 +5726,20 @@ def build_industry_leader_columns(alloc: Dict[str, Any]) -> pd.DataFrame:
         out[f"{p} 여유 문턱"] = g["step"].round(4).values
         out[f"{p} 확신 게이트"] = g["gate"].values
         out[f"{p} 적격산업수"] = g["n_ok"].values
+        # [v0.18.0 W1] 그날 **리더 산업에 실제로 적용된 캡**. 확신 게이트·하락경고 강등이 목표비중에
+        #   반영됐는지를 13c에서 한 열로 확인할 수 있게 한다(사용자 규칙 §2: 변경이 행동을 바꿨는지 확인 가능해야 한다).
+        #   리더가 아닌 날은 NaN(줄 캡이 없다). 래더가 꺼져 있으면 평탄 캡 상수가 찍힌다.
+        _CL = alloc.get("cap_live")
+        _cb = alloc.get("cap_base")
+        _lead_mask = g["tier"].astype(str).eq("리더").reindex(eval_idx).fillna(False).astype(bool)
+        if _CL is not None:
+            _ii = [t for t in g.get("inds", []) if t in _CL.columns]
+            if _ii:
+                _applied = (g["leader_ind"].reindex(index=eval_idx, columns=_ii).fillna(0.0) > 0) \
+                    .mul(_CL.reindex(index=eval_idx, columns=_ii).astype(float)).max(axis=1)
+                out[f"{p} 리더 적용캡"] = _applied.where(_lead_mask).round(4).values
+        elif _cb is not None:
+            out[f"{p} 리더 적용캡"] = pd.Series(float(_cb), index=eval_idx).where(_lead_mask).round(4).values
         # [v0.3.0] 신규 게이트 3종 — 왜 리더가 안 나왔는지를 13c에서 바로 읽을 수 있게
         if "regime_gate" in g:
             out[f"{p} 부모국면"] = g["parent_state"].values
@@ -6044,6 +6518,82 @@ def build_industry_decline_warning_block(results: Dict[str, Dict[str, Any]], icf
                          "격차(%p)": (round((float(np.nanmean(fw_all)) - float(np.nanmean(nf_all))) * 100, 3)
                                     if fw_all and nf_all else None),
                          "2024 격차(%p)": (round(float(np.nanmean(g24)) * 100, 3) if g24 else None)})
+    # =================== 블록 A4 [v0.18.0 W6 ★ 신규] ===================
+    #   왜: A3는 **규칙별 집계**(29산업 평균)라 "어느 산업에서 듣는가"를 못 본다. 사용자 지시가 "**각 산업별**
+    #   하락 예측 정확도"인데 지금까지 산업별로 갈라 본 적이 없다. 산업별로 나눠야 다음 라운드에
+    #   산업별 문턱(또는 산업별 경고 사용/미사용)을 근거 있게 줄 수 있다.
+    #   ⚠ 여전히 진단이다 — 산업별로 쪼개면 표본이 1/29이 되므로 **연도 k/n**을 반드시 같이 읽는다.
+    blk4 = "A4. 하락 경고 산업별 정확도(진단 · 연도 k/n)"
+    rows.append({"블록": blk4, "규칙": "── 읽는 법 ──",
+                 "판독": ("A3에서 가장 강했던 규칙(A3-3 = 확정 상승아님 & vol21 자기이력 하위1/3 & 탈동조)을 "
+                        "**산업별로** 분해한다. '정밀−기저'가 양수이고 '연도 정밀도>기저'가 과반인 산업에서만 "
+                        "경고가 실제로 듣는다. 확신캡 래더의 **강등**(v0.18.0 W2)은 이 표에서 듣는 산업에서만 "
+                        "값을 할 것이므로, 다음 라운드의 산업별 취사선택 근거가 여기다.")})
+    _mh4 = int(getattr(icfg, "BRAKE_MIN_HIST", 250) or 250)
+    _vq4 = float(getattr(icfg, "CAP_WARN_VOL_Q", 1.0 / 3.0))
+    _cs4 = bool(getattr(icfg, "CAP_WARN_NEED_DECOUPLE", True))
+    _h4 = int(horizons[0]) if horizons else 21
+    _agg = {"pw": 0, "pn": 0, "gw": 0, "gn": 0}
+    for t, r in sorted(results.items()):
+        try:
+            px = pd.Series(r.get("bh_ret"), dtype=float)
+            if px is None or not len(px):
+                continue
+            curve = (1.0 + px.fillna(0.0)).cumprod()
+            idx = curve.index
+            vp = pd.Series(r.get("vol21_pct"), dtype=float).reindex(idx)
+            cs = pd.Series(r.get("coupling_score"), dtype=float).reindex(idx)
+            stt = pd.Series(r.get("state"), dtype=object).reindex(idx)
+            fwd = curve.shift(-_h4) / curve - 1.0
+            real = (fwd < 0).where(fwd.notna())
+            pred = stt.astype(str).ne("RISK_ON") & vp.le(_vq4)
+            if _cs4:
+                pred = pred & cs.le(cs.expanding(min_periods=_mh4).quantile(1.0 / 3.0))
+            ok = real.notna() & vp.notna()
+            if int(ok.sum()) < 300:
+                continue
+            # ⚠ astype(bool) 필수 — object dtype이면 '~'가 비트 부정이 되어 .loc가 KeyError로 죽는다(v0.15.0 교훈).
+            pr = pred.where(ok).fillna(False).astype(bool)
+            m = _follow_metrics(pr[ok], real[ok])
+            if not m["n_pred"]:
+                continue
+            yc = _yearly_consistency(pr[ok], real[ok])
+            _agg["pw"] += yc["prec_win"]; _agg["pn"] += yc["prec_n"]
+            _prb = pr.astype(bool)
+            f_on = fwd[ok & _prb]; f_off = fwd[ok & ~_prb]
+            _gap = (float(f_on.mean() - f_off.mean()) if (len(f_on) and len(f_off)) else np.nan)
+            _gdf = pd.DataFrame({"p": pr[ok].astype(bool), "f": fwd[ok].astype(float)})
+            _gw = _gn = 0
+            for y_, g_ in _gdf.groupby(_gdf.index.year):
+                _pb = g_["p"].astype(bool)
+                if len(g_) < 40 or not bool(_pb.any()) or bool(_pb.all()):
+                    continue
+                _gn += 1
+                _gw += int(float(g_.loc[_pb, "f"].mean() - g_.loc[~_pb, "f"].mean()) < 0)
+            _agg["gw"] += _gw; _agg["gn"] += _gn
+            rows.append({"블록": blk4, "규칙": f"A3-3 · {t}", "지평(일)": _h4, "산업수": 1,
+                         "예측일수(평균)": int(m["n_pred"]),
+                         "기저 실현하락률": round(float(m["base"]), 4),
+                         "하락 정밀도": round(float(m["prec"]), 4),
+                         "정밀−기저": round(float(m["prec"] - m["base"]), 4),
+                         "하락 재현율": round(float(m["rec"]), 4),
+                         "MCC": (round(float(m["mcc"]), 4) if pd.notna(m["mcc"]) else None),
+                         "연도 정밀도>기저": _kn(yc["prec_win"], yc["prec_n"]),
+                         "연도비율": (round(yc["prec_win"] / yc["prec_n"], 3) if yc["prec_n"] else np.nan),
+                         "연도 격차음수": _kn(_gw, _gn),
+                         "경고일 향후수익%": (round(float(f_on.mean()) * 100, 3) if len(f_on) else None),
+                         "비경고일 향후수익%": (round(float(f_off.mean()) * 100, 3) if len(f_off) else None),
+                         "격차(%p)": (round(_gap * 100, 3) if pd.notna(_gap) else None)})
+        except Exception as e:
+            rows.append({"블록": blk4, "규칙": f"A3-3 · {t}", "판독": f"산출 실패 {type(e).__name__}: {str(e)[:120]}"})
+    if _agg["pn"]:
+        rows.append({"블록": blk4, "규칙": "★ 산업 합계(연도×산업)", "지평(일)": _h4,
+                     "연도 정밀도>기저": _kn(_agg["pw"], _agg["pn"]),
+                     "연도비율": round(_agg["pw"] / _agg["pn"], 3),
+                     "연도 격차음수": _kn(_agg["gw"], _agg["gn"]),
+                     "판독": ("이 합계가 0.50 근처면 '평균적으로 동전던지기'다. 그래도 산업별 행에서 "
+                            "0.65 이상인 산업이 여럿 있으면 **산업별 취사선택**의 여지가 있다는 뜻이다 — "
+                            "그 취사선택은 다음 라운드에 격자로 검정한다(지금 라이브로 올리지 않는다).")})
     rows.append({"블록": blk, "규칙": "── 승격 조건(사전등록) ──",
                  "판독": ("라이브 **승격** 조건 — 다음 라운드에 올리려면 **셋을 동시에** 만족해야 한다: "
                         "(1) 연도 정밀도>기저 비율 ≥ 0.60  (2) 연도 격차음수 ≥ 6/8  (3) **2024 격차 < 0**. "
@@ -7038,9 +7588,49 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 + " | ⚠ **왜 이 줄이 필요한가**: 위 산업별 예측이 전부 같은 값인 것은 산업 확정국면이"
                   " M(SPY)에서 상속되기 때문이다(INDUSTRY_REGIME_SOURCE=\"m_inherit\") — 라벨에는 산업별 차이가 0이다."
                   " 이 경고가 **산업별로 다른 유일한 하락 신호**다."
-                + " | ⚠ 진단 전용 — 목표비중에 반영되지 않는다. [하락경고격자]에서 리더 감축에 적용해 봤으나"
-                  " 3행 중 2행이 달력 대조군에 졌다(3.291 vs 3.338 · 3.310 vs 3.339). 예측력이 곧 수익은 아니다."
+                + (" | ★ **v0.18.0 W2 — 이제 목표비중에 반영된다**: 경고 걸린 산업은 확신 게이트를 통과해도"
+                   " 최상단 캡(CAP_CONVICTION)을 받지 못하고 기본 캡으로 **강등**된다. ⚠ 감축이 아니라"
+                   " **상향 보류**다 — v0.15.0 브레이크는 경고일의 리더 몫을 0으로 만들어 세 기준 전부 실패했고,"
+                   " 상향 보류는 노출을 깎지 않으므로 그 실패 양식(달력 대조군에 지는 노출 축소)을 반복하지 않는다."
+                   " 끄기: i_overrides={\"CAP_WARN_DOWNGRADE\": False}"
+                   if (getattr(icfg, "INDUSTRY_CAP_BY_CONVICTION", False)
+                       and getattr(icfg, "CAP_WARN_DOWNGRADE", True))
+                   else " | ⚠ 진단 전용 — 목표비중에 반영되지 않는다. [하락경고격자]에서 리더 감축에 적용해"
+                        " 봤으나 3행 중 2행이 달력 대조군에 졌다(3.291 vs 3.338 · 3.310 vs 3.339)."
+                        " 예측력이 곧 수익은 아니다.")
+                + " | 산업별 분해는 13p 블록 **A4**(v0.18.0 W6 신설)에서 정밀도·기저·연도 k/n으로 확인할 것."
                 + " 되돌리기: i_overrides={\"SHOW_DECLINE_WARN_SUMMARY\": False}"))
+        # ---- [v0.18.0 W5 ★] 총노출 천장 2행 — "왜 전체로 한 날이 없어"에 00시트가 직접 답한다 ----
+        try:
+            _al = ires.get("alloc") or {}
+            _twX = _al.get("target_w")
+            _icX = [c for c in (_al.get("cols") or []) if _twX is not None and c in _twX.columns]
+            if _twX is not None and len(_twX) and _icX:
+                _totX = _twX[_icX].sum(axis=1)
+                _convX = bool(getattr(icfg, "INDUSTRY_CAP_BY_CONVICTION", False))
+                nd_rows.append((
+                    "★ 산업 총노출(산업배분 합계) 분포 — v0.18.0 W5",
+                    f"평균 {float(_totX.mean()):.4f} · 중위 {float(_totX.median()):.4f} · "
+                    f"최대 {float(_totX.max()):.4f} · 0.5이상 {int((_totX >= 0.5).sum())}일 · "
+                    f"0.9이상 {int((_totX >= 0.9).sum())}일 · 정확히 0인 날 {int((_totX <= 1e-12).sum())}일"
+                    f"({float((_totX <= 1e-12).mean()):.1%}) / 전체 {len(_totX)}일"
+                    + (" | ★ 확신캡 래더 켬 — 확신 게이트 통과일 CAP "
+                       f"{float(getattr(icfg, 'CAP_CONVICTION', 1.0)):.0%}이므로 '0.9이상'이 0이 아니어야 정상"
+                       if _convX else
+                       f" | 확신캡 래더 끔 — 평탄 CAP {float(getattr(icfg, 'INDUSTRY_LEADER_CAP', 0.5)):.0%}")))
+                nd_rows.append((
+                    "★ 총노출 천장의 기계적 원인 3개 — v0.18.0 W5",
+                    "(1) 리더 캡 — 리더 산업에 주는 부모비중 몫. (2) **폴백 "
+                    f"{float(getattr(icfg, 'INDUSTRY_FALLBACK_SHARE', 0.0)):.0%}** — 0%면 리더 없는 날 산업 배분이 "
+                    "정확히 0이 되고 그것이 **중위 0의 유일한 원인**이다(CAP을 올려도 중위는 안 움직인다 — 축이 다르다). "
+                    "(3) 리더 성립 빈도 — 하루에 리더 부모가 1~2개뿐이면 CAP 100%로도 총합은 그 부모들의 섹터비중 합을 "
+                    "넘지 못한다(구조적 천장). | 상세 분해는 13l 블록 **F**. 판정 격자: CAP·폴백 2D는 "
+                    "[산업집중격자](v0.18.0 W3 재개방 — v0.10.0 H3가 '리더 0일'을 이유로 껐고 v0.14.0이 리더일을 "
+                    "0→2,903으로 되살려 그 사유가 소멸했다), 확신 등급별 상향은 [확신캡격자](무조건 동일캡·달력 두 대조군 병기), "
+                    "잔여를 산업으로 돌리는 것은 [잔여격자]."))
+        except Exception as _e:
+            nd_rows.append(("★ 산업 총노출 분포 — 산출 실패",
+                            f"{type(_e).__name__}: {str(_e)[:160]} — 다음 단계: ires['alloc']의 target_w/cols 키 확인"))
         nd_rows.append(("다음 거래일 예측 - 안내",
                         "t일 종가로 확정된 target_pos를 t+1일 시가에 체결하는 기존 체결 규칙을 표시만 재구성한 것 — "
                         "새 계산이 아니며 13/15 등 성과 시트에는 영향 없음. 01Z_산업일별예측 마지막 행(구분=예측)·"
@@ -7304,8 +7894,17 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
           "근거(REPORT44 §3.2): SCORE_PCT 하위1(=자기 점수 **최고** 산업) − 부모 t가 9/9 학습창 ≤ −2.0인데, "
           "현재 회피 투표는 '채택된 신호'에게만 열려 있어 한 번도 쓰이지 않았다. "
           "판정: 13_산업배분전략 [회피분리격자] 3행(반증 포함) 4기준. 13g '회피 자격(분리)' 열 참조.")),
-        ("⚠ 산업 배분 규칙(v0.3.0)",
-         f"리더 산업에 부모비중의 {icfg.INDUSTRY_LEADER_CAP:.0%}(INDUSTRY_LEADER_CAP) · 리더 없는 날 적격 산업 균등 "
+        ("⚠ 산업 배분 규칙(v0.3.0 · v0.18.0 W1 래더)",
+         ((f"★ **확신 등급별 리더 캡(v0.18.0 W1)** — 확신 게이트 통과 {float(getattr(icfg, 'CAP_CONVICTION', 1.0)):.0%}"
+           + (f" / 하락경고 강등 {icfg.INDUSTRY_LEADER_CAP:.0%}" if getattr(icfg, "CAP_WARN_DOWNGRADE", True) else "")
+           + f" / 보유 중 확신 미달 {float(getattr(icfg, 'CAP_HOLD', 0.25)):.0%}"
+           + (" / **강세 부모 추세가드 강등**" if getattr(icfg, "CAP_TREND_GUARD", True) else "")
+           + " (INDUSTRY_CAP_BY_CONVICTION). 사용자 지시 '상승이 확실하면 비중을 최대 1까지'. "
+             "⚠ 비중(위험) 파라미터 — 사전등록 되돌림 조건은 코드 헤더 [검증] ⑧. "
+             "되돌리기: i_overrides={\"INDUSTRY_CAP_BY_CONVICTION\": False}. ")
+          if getattr(icfg, "INDUSTRY_CAP_BY_CONVICTION", False) else
+          f"리더 산업에 부모비중의 {icfg.INDUSTRY_LEADER_CAP:.0%}(INDUSTRY_LEADER_CAP · 평탄 캡) · ")
+         + f"리더 없는 날 적격 산업 균등 "
          f"{icfg.INDUSTRY_FALLBACK_SHARE:.0%}(INDUSTRY_FALLBACK_SHARE) · 잔여는 {icfg.INDUSTRY_ONLY_MODE} · "
          f"리더 인정 부모국면 {icfg.INDUSTRY_LEADER_REGIMES or '제약없음'} · 최소보유 {icfg.ROTATION_MIN_HOLD_DAYS}일 · "
          f"역방향회피 {'켬' if icfg.ROTATION_REVERSE_AVOID else '끔'} · 추종필터 {icfg.INDUSTRY_LEADER_MIN_CORR or '끔'} · "
