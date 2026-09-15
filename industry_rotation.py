@@ -1,5 +1,107 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.19.0 - 2026-09-15 - [★ 확신캡 채택후보 승격(보유 0) · 하락경고 워크포워드 산업 게이트 ·
+#                    국면×확신캡격자 · A5 게이트 측정]
+#    REPORT57 → REPORT58. **산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
+#    사용자 지시(종전과 동일): "각 산업별 하락 예측 정확도를 더 올리면서 수익 곡선 상승시키도록 개선해
+#    예측 틀린 부분이 왜 틀렸는지 뉴스 같은 것도 참고하면서 분석하고 개선해"
+#
+#    ── 리포트17 판정: v0.18.0 사전등록 [검증] ⑧ **5조건 전부 PASS**(여섯 라운드 만의 첫 성공) ─────
+#      (a) I★ 칼마 3.479 ≥ 3.328 ✔  (b) MDD −0.1113 → **−0.1068 개선** ✔
+#      (c) 래더 3.479 > 무조건 동일캡 **2.771** ✔   (d) 달력 대조 3.419·−0.1081 둘 다 이김 ✔
+#      (e) 반증 행(강등 둘 다 끔) 3.463 < 라이브 3.479 ✔
+#      ⑥ 한계비율 **0.7410 → 1.1330**(+53%) — 다섯 라운드 동안 못 움직인 숫자다.
+#      평탄 CAP 50%(0.3704 / −0.1113 / 3.328) 대비 라이브는 CAGR·MDD·칼마 **셋 다** 좋아졌다.
+#      사용자 지시 (나) 반영 확인: 산업배분 합계 최대 **0.9500** · 0.9 이상 **88일** · 0.5 이상 **95일**
+#        (직전 라운드 0.5 이상 0일). 13c 적용캡 CAP1.0 857일 / 강등 0.5 919일 / 보유 0.25 1,128일.
+#
+#    ── W3이 답한 것: "전체 산업 비중 1"은 측정해 보니 **나쁘다** ──────────────────────────────
+#      [산업집중격자] 16행이 완벽하게 단조다(리더가 작동하는 상태의 첫 측정):
+#        CAP축(폴백 0%)  25% 0.3647/−0.1007/**3.620** · 50% 0.3704/−0.1113/3.328
+#                        75% 0.3757/−0.1244/3.021 · 100% **0.3807**/−0.1374/**2.771**
+#        폴백축          올릴수록 CAGR·칼마가 **둘 다** 내려간다(25% 3.452 · 50% 3.275 · 100% 2.943)
+#        [잔여격자] industries = 노출 **0.5674**인데 CAGR 0.3381(S★ −2.06%p) · 칼마 2.788
+#      ⇒ 리포트41의 "폴백 0%가 최선"이 **리더 0일의 산물이 아니었다**. 폴백은 올리지 않는다.
+#      ⇒ CAGR만 보면 평탄 CAP 100%가 최고(0.3807 · S★ +2.20%p)이고 칼마는 최악(2.771)이다. 상충은 실재한다.
+#
+#    ── ★ W3이 예상 밖으로 열어 준 것(INDUSTRY_GRID=False 동안 같이 생략돼 있었다) ──────────────
+#      **리더국면 NEUTRAL [국면게이트격자] 칼마 3.787 · MDD −0.0955(= S★와 동일) · CAGR 0.3616**
+#        → 프로젝트 최초로 S★ 칼마 3.758을 넘은 행. MDD 악화가 정확히 0이라 한계비율이 무한이다.
+#      분산게이트 상위25% 칼마 3.767 · MDD −0.0955.
+#      ⚠ 둘 다 노출이 0.0286 / 0.0138로 아주 작다("거의 베팅하지 않는" 쪽) + 3행·2행 격자의 우승이라
+#        인샘플 선택 위험이 있다. 다만 NEUTRAL은 v0.3.0의 독립 측정(부모 중립일 고베타 1위 +0.81%,
+#        t 1.94, 6/8년)이 따로 있어 단순 격자 우승이 아니다. **래더와 조합된 적이 없다** → X4가 잰다.
+#
+#    ── ★ 13p A4(v0.18.0 W6 신설)가 답한 것: 경고는 산업별로 극단적으로 갈린다 ────────────────
+#      29산업 중 정밀−기저 > 0 이 **24개**, (정밀−기저>0 & 연도비율≥0.60)이 **20개**.
+#      상위: JETS 정밀 0.9306/기저 0.4815(+0.449 · 연도 5/5 · 격차 −8.73%p) · XBI 0.8900(+0.433) ·
+#            SKYY 0.8182(+0.421) · XRT 0.8421(+0.401) · IGV 0.7778(+0.391)
+#      ★ 최하위: **SOXX 정밀도 0.0000(−0.3863) · 예측일 16 · 연도 0/3 · 경고일 향후수익 +11.364%**
+#            vs 비경고일 +2.553%. 즉 SOXX에서 경고는 쓸모없는 게 아니라 **역방향**이다.
+#      사용자가 다섯 라운드째 "특히 SOXX 같은 기술 산업"을 지목했는데, 경고를 29산업에 일률 적용한 것이
+#      바로 그 지점에서 가장 크게 틀리고 있었다.
+#
+#    ── 왜 SOXX에서 반대로 가는가(01_일별_SOXX 경고 33일 전수 + 뉴스 대조) ──────────────────
+#      2018-03 4일 −3.8~−8.5% **맞음** / 2018-06~07 7일 +3.0~+6.2% 틀림 /
+#      2021-11 6일 +2.1~+6.6% 틀림(전부 **탈동조**) /
+#      ★ 2023-04-24~05-11 8일 **+7.5~+24.0%** 크게 틀림 — 2023-05-24 NVIDIA Q1 FY24 가이던스 서프라이즈로
+#        시작된 AI 랠리 직전에 경고가 켜졌다(반도체 10년 최대 랠리) /
+#      2023-09~10 6일 −2.0~−7.4% 맞음 / 2024-06 2일 +7.0/+9.6% 틀림(둘 다 **탈동조**)
+#      → 33일 중 맞은 것 10일, 평균 향후 21일 **+4.87%**. 패턴: SOXX는 XLK의 고베타 엔진이라
+#        **탈동조가 '뒤처짐'이 아니라 '앞서 나감'을 뜻한다**. 저변동성도 하락의 전조가 아니라 **압축된 스프링**이고
+#        방향은 다른 것이 정한다. A3-3의 탈동조 항은 SOXX에서 부호가 반대다.
+#
+#    ── ⚠ 측정해 보고 버린 설계(다음 라운드가 다시 시도하지 않도록 기록) ───────────────────────
+#      "저변동성 경고에 방향 조건을 붙인다"(자체 21일·63일 모멘텀 < 0). 29산업 전수 실측:
+#        A3-3 현행      정밀−기저 **+0.0811** · 정밀>기저 19/26산업 · 연도비율 **0.627**
+#        A3-3 & mom21<0 +0.0330 · 9/15 · 0.414     A3-3 & mom63<0 +0.0432 · 8/13 · 0.451
+#        A3-2 & mom21<0 +0.0463 · 13/24 · 0.424    mom21<0 & mom63<0 +0.0448 · 12/21 · 0.415
+#      → **모멘텀 조건을 붙이면 전부 나빠진다.** SOXX의 실패는 방향 모멘텀으로 설명되지 않는다. 버린다.
+#
+#    (X1) ★ **CAP_HOLD 0.25 → 0.0** — 엔진이 '채택후보'로 표시한 [확신캡격자] 행을 승격한다.
+#         실측(리포트17): 확신1.0·보유0.0 CAGR 0.3699 · MDD **−0.1036** · 칼마 **3.571** ·
+#           한계비율 **1.383**(라이브 1.133) · 달력 대조(3.437 / −0.1071)를 칼마·MDD 둘 다 이김 ·
+#           누적비용 10.892 vs 10.739(회전 증가 무시 가능).
+#         뜻: 확신이 풀린 보유일(1,128일, 초과 +0.0597%/21일)의 몫을 **전부 부모 ETF로** 돌린다.
+#           = "확신이 유지되는 동안만 산업을 든다". v0.15.0 브레이크와 다른 점은 방아쇠가 **측정된 확신
+#           게이트**(4.85배)이고 측정 없는 낙폭·변동성이 아니라는 것, 그리고 달력 대조를 두 축 모두 이겼다는 것.
+#         영향 함수: IndustryConfig.CAP_HOLD(값만). 되돌리기: i_overrides={"CAP_HOLD": 0.25}
+#    (X2) ★ **하락경고 워크포워드 산업 게이트**(CAP_WARN_WF_GATE) — W2의 강등을, 적용 연도 **이전**
+#         데이터에서 경고가 실제로 들었던 산업에만 적용한다. 전수 적용은 SOXX처럼 역방향인 산업까지 강등한다.
+#         구현한 게이트 함수(build_warn_wf_gate)로 리포트17 시트값을 다시 먹여 측정한 결과 —
+#         ⚠ 엔진 리포트가 아니라 **그 함수의 오프라인 실행**이다. 판정은 리포트18의 13p A5가 낸다:
+#           ① 전 산업(현행)          정밀 0.4796 / 기저 0.4319 = **+0.0477** · 예측 7,654일 · 격차 −1.21 · 연도 6/8
+#           ② WF 완화(연도1·비율0.50) 정밀 **0.5162** = **+0.0843** · 3,340일 · −1.32 · 연도 4/7 · 평균 11.9산업
+#           ③ WF 표준(연도2·비율0.60) 0.5158 = +0.0839 · 3,003일 · −1.28 · 3/6 · 10.2산업
+#           ④ WF 엄격(연도2·비율0.75) 0.5027 = +0.0708 · 2,367일 · −1.06 · 3/6 · 7.2산업
+#           ⑤ 대조: 알파벳 12개       0.4351 = **+0.0032** · 3,627일 · −0.56 · 6/8
+#           ⑥ 대조: 알파벳 10개       0.4306 = **−0.0013**       ⑦ 대조: 알파벳 7개 0.4210 = **−0.0109**
+#         ★ 핵심: 게이트가 정밀−기저를 **0.048 → 0.084로 거의 두 배**로 올리고, 같은 개수의 알파벳 대조군은
+#           **0.000 근처**다 — 산업 수를 줄여서가 아니라 **어느 산업을 고르는가**가 값을 한다.
+#         ⚠ 정직하게 적어 둘 두 가지:
+#           (1) **연도 k/n은 오히려 나빠진다**(6/8 → 4/7). 분모가 달라 like-for-like가 아니고(2018·2019는
+#               게이트가 아무 산업도 못 골라 그 해가 세어지지 않는다) 산업 수가 줄어 연도 추정이 시끄러워진다.
+#               이 지표에서는 알파벳 대조군도 6/8이라 판별력이 없다 — 판별하는 것은 정밀−기저다.
+#           (2) **이것은 사후의 SOXX 수정이 아니다.** 게이트는 2020~2023년에 SOXX를 **선택한다**(2018-03의
+#               성공이 이력에 남아 있으므로). 2021·2023의 실패가 누적된 뒤인 **2024년부터** 제외한다.
+#               그것이 워크포워드의 대가이고, A4의 인샘플 격차(정밀 0.9306 ↔ 0.0000)보다 실현 이득이
+#               훨씬 작은 이유다.
+#         되돌리기: i_overrides={"CAP_WARN_WF_GATE": False}
+#    (X3) 신규 블록 **13p A5 — 하락경고 워크포워드 게이트**(3변형 + 알파벳 대조 + 인샘플 상한 + 연도별 선택 목록).
+#         X2를 엔진이 직접 재게 한다(내 시뮬레이션을 성과로 보고하지 않는다 — v0.15.0의 교훈).
+#    (X4) 신규 격자 **[국면×확신캡격자]** — INDUSTRY_LEADER_REGIMES 3종 × 확신캡 래더 + 달력 대조군.
+#         NEUTRAL(3.787)은 평탄 캡에서만 측정됐다. 래더와 겹치면 더 오르는지, 아니면 겹치지 않는지를 잰다.
+#    (X5) 판독문 정정 2건 — 13l 블록 F "하루 리더 부모 1~2개"는 실측 **최대 6개**였다(58.4%일에 1개 이상).
+#         13l 블록 E 3분할 판독문이 아직 보고서15(37건) 숫자를 인용하고 있다 → 현재 표(99건)로 갱신.
+#
+#    [검증] ⑨ v0.19.0 사전등록 되돌림 조건(리포트18에서 판정 · 하나라도 걸리면 v0.20.0에서 되돌린다):
+#      (a) I★ 칼마가 **3.479 미만**이면 → CAP_HOLD=0.25로 되돌린다(X1 무효).
+#      (b) I★ MDD가 **−0.1068보다 악화**되면 → 되돌린다.
+#      (c) 13p A5에서 WF 게이트 변형이 **알파벳 대조군**에 정밀−기저로 지면 → CAP_WARN_WF_GATE=False(X2 무효).
+#      (d) A5의 WF 게이트가 '전 산업(현행)' 행보다 정밀−기저·연도 k/n 둘 다에서 낫지 않으면 → X2 무효.
+#      (e) [국면×확신캡격자]의 NEUTRAL 행이 자기 달력 대조군에 칼마·MDD 중 하나라도 지면 → 승격 후보에서 제외.
+#      판정은 항상 **연도 k/n**과 **소수 클래스 기준(정밀도 vs 기저율)** 병기로 읽는다.
+#
 #  VERSION: v0.18.0 - 2026-09-15 - [★ 확신 등급별 리더 캡(최대 1.0) + 추세 가드 · 노출 천장 분해 ·
 #                    산업집중격자 재개방 · 확신캡격자]
 #    REPORT57. **산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
@@ -1105,7 +1207,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.18.0"
+VERSION = "v0.19.0"
 VERSION_DATE = "2026-09-15"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -1505,7 +1607,17 @@ class IndustryConfig:
     #   ⚠ 되돌리기(v0.17.0과 **비트 동일**): i_overrides={"INDUSTRY_CAP_BY_CONVICTION": False}
     INDUSTRY_CAP_BY_CONVICTION: bool = True
     CAP_CONVICTION: float = 1.0                   # 확신 게이트 통과 & 하락경고 없음 → 부모비중 **전부** 산업으로
-    CAP_HOLD: float = 0.25                        # 리더 보유 중 확신 미달 → 감축(래더의 재원)
+    # [v0.19.0 X1 ★ 기본값 전환 0.25 → 0.0] 엔진이 '채택후보'로 표시한 [확신캡격자] 행을 승격한다.
+    #   리포트17 실측: 확신1.0·보유0.0 CAGR 0.3699 · MDD **−0.1036** · 칼마 **3.571**(라이브 0.25는 3.479) ·
+    #     한계비율 **1.383**(라이브 1.133) · 달력 대조(3.437 / −0.1071)를 칼마·MDD **둘 다** 이김 ·
+    #     누적비용 10.892 vs 10.739(회전 증가 무시 가능).
+    #   뜻: 확신이 풀린 보유일(1,128일 · 초과 +0.0597%/21일 = 통과일 +0.2897%의 1/4.85)의 몫을
+    #     **전부 부모 ETF로** 돌린다 = "확신이 유지되는 동안만 산업을 든다".
+    #   ⚠ v0.15.0 브레이크(몫을 0으로 → 3기준 전부 실패)와 형태가 비슷하지만 다른 점이 둘 있다:
+    #     (1) 방아쇠가 **측정된 확신 게이트**(4.85배 · 13l 블록 B)이고 측정 없는 낙폭·고변동성이 아니다.
+    #     (2) 달력 대조군을 **두 축 모두** 이겼다(브레이크는 여기서 죽었다).
+    #   ⚠ 되돌리기: i_overrides={"CAP_HOLD": 0.25}
+    CAP_HOLD: float = 0.0                         # 리더 보유 중 확신 미달 → 전량 부모 ETF 환원
     # [v0.18.0 W2] 하락경고 산업은 확신일에도 최상단 캡을 주지 않고 **기본 캡(0.5)으로 강등**한다.
     #   왜 강등이고 청산이 아닌가: v0.15.0 R1 브레이크는 같은 계열 신호로 리더 몫을 **0으로** 만들어
     #   사전등록 기준 3개 전부 실패하고 v0.16.0에서 되돌렸다. '상향 보류'는 노출을 깎지 않으므로
@@ -1515,6 +1627,41 @@ class IndustryConfig:
     CAP_WARN_DOWNGRADE: bool = True
     CAP_WARN_VOL_Q: float = 1.0 / 3.0
     CAP_WARN_NEED_DECOUPLE: bool = True
+    # ---- [v0.19.0 X2 ★ 하락경고 워크포워드 **산업** 게이트] ----
+    #   왜: 13p A4(v0.18.0 W6)가 처음으로 산업별로 갈라 보니 경고의 성적이 극단적으로 다르다.
+    #     JETS 정밀 0.9306/기저 0.4815(+0.449 · 연도 5/5) ↔ **SOXX 정밀 0.0000(−0.3863) · 연도 0/3 ·
+    #     경고일 향후수익 +11.364% vs 비경고일 +2.553%** — SOXX에서 경고는 쓸모없는 게 아니라 **역방향**이다.
+    #     사용자가 다섯 라운드째 지목한 산업이 바로 거기다. 전수 적용은 그 지점에서 가장 크게 틀린다.
+    #   왜 SOXX에서 반대인가(01_일별_SOXX 경고 33일 전수 + 뉴스): 2023-04-24~05-11 8일이 향후 21일
+    #     **+7.5~+24.0%** — 2023-05 NVIDIA Q1 FY24 가이던스 서프라이즈로 시작된 AI 랠리 직전이었다.
+    #     2021-11·2024-06의 오경보도 전부 '탈동조'다. SOXX는 XLK의 고베타 엔진이라 **탈동조가 '뒤처짐'이
+    #     아니라 '앞서 나감'** 을 뜻하고, 저변동성은 하락의 전조가 아니라 **압축된 스프링**이다.
+    #   무엇을 하는가: 적용 연도 **이전** 데이터에서만 산업별 성적을 재고, 통과한 산업에서만 경고를 쓴다
+    #     (선택 자체가 워크포워드 — 풀샘플로 20개를 고르는 것은 인샘플 선택이다).
+    #   build_warn_wf_gate 오프라인 실행(⚠ 엔진 리포트 아님 — 판정은 13p A5가 낸다):
+    #     ① 전 산업(현행)        정밀 0.4796/기저 0.4319 = **+0.0477** · 7,654일 · 격차 −1.21 · 연도 6/8
+    #     ② WF 완화(연도1·0.50)  **0.5162 = +0.0843** · 3,340일 · −1.32 · 4/7 · 평균 11.9산업  ← 기본값
+    #     ③ WF 표준(연도2·0.60)  0.5158 = +0.0839 · 3,003일 · −1.28 · 3/6 · 10.2산업
+    #     ④ WF 엄격(연도2·0.75)  0.5027 = +0.0708 · 2,367일 · −1.06 · 3/6 · 7.2산업
+    #     ⑤ 대조: 알파벳 12개    0.4351 = **+0.0032**   ⑥ 알파벳 10개 **−0.0013**   ⑦ 알파벳 7개 **−0.0109**
+    #     ★ 정밀−기저가 0.048 → 0.084로 거의 두 배, 같은 개수 알파벳 대조군은 0.000 근처 —
+    #       **산업 수를 줄여서가 아니라 어느 산업을 고르는가**가 값을 한다.
+    #     ⚠ 연도 k/n은 오히려 나빠진다(6/8 → 4/7 · 분모가 달라 like-for-like 아님 · 알파벳도 6/8이라 판별력 없음).
+    #     ⚠ 사후의 SOXX 수정이 아니다 — 게이트는 2020~2023년에 SOXX를 **선택하고**(2018-03의 성공이 이력에
+    #       있으므로) 2021·2023 실패가 누적된 **2024년부터** 제외한다. 그것이 워크포워드의 대가다.
+    #   ⚠ 되돌리기: i_overrides={"CAP_WARN_WF_GATE": False}
+    CAP_WARN_WF_GATE: bool = True
+    WARN_WF_MIN_OBS: int = 250                     # 그 산업에서 적용연도 이전 유효 관측 최소(1년)
+    WARN_WF_MIN_PRED: int = 20                     # 적용연도 이전 경고일 최소(이보다 적으면 판정 불가 → 제외)
+    WARN_WF_MIN_YEARS: int = 1                     # 연도 일관성을 셀 수 있는 최소 연도 수
+    WARN_WF_NEED_RATIO: float = 0.50               # 적용연도 이전 '연도 정밀도>기저' 비율 하한
+    # [v0.19.0 X3 격자/블록 A5] 게이트 변형 — 형식: (라벨, 최소연도, 비율하한)
+    #   ⚠ 되돌리기(A5만 끔): i_overrides={"INDUSTRY_WARN_WF_GRID": ()}
+    INDUSTRY_WARN_WF_GRID: Tuple[Tuple[str, int, float], ...] = (
+        ("완화 연도1·비율0.50(=라이브)", 1, 0.50),
+        ("표준 연도2·비율0.60", 2, 0.60),
+        ("엄격 연도2·비율0.75", 2, 0.75),
+    )
     # ---- [v0.18.0 W7 ★ 추세 가드] 강세 부모의 리더일은 확신 게이트를 통과해도 상향하지 않는다 ----
     #   왜(리포트16 13l 블록 E 3분할 — **등크기 3버킷 99 에피소드에서 네 열이 모두 단조**다):
     #     진입시 부모 추세  에피소드  승률(부모대비)  평균초과(%)  초과합(%p)  상승미달비율
@@ -1539,12 +1686,27 @@ class IndustryConfig:
     #   2행은 **반증 행**이다(경고강등·추세가드를 둘 다 끈 것) — 라이브 행이 반증 행을 못 이기면
     #   두 강등 조건에 값이 없다는 뜻이고, 그때는 W2·W7을 버리고 단순 래더로 되돌린다.
     #   ⚠ 되돌리기(격자만 끔): i_overrides={"INDUSTRY_CONV_CAP_GRID": ()}
+    #   [v0.19.0 X1] 라이브가 (1.0, 0.0)으로 승격됐으므로 격자 라벨을 재정렬한다. 되돌림 후보(1.0, 0.25)를
+    #     반드시 남긴다 — 사전등록 조건 (a)(b)가 걸리면 그 행이 되돌릴 목표다.
     INDUSTRY_CONV_CAP_GRID: Tuple[Tuple[str, float, float, bool, bool], ...] = (
-        ("확신1.0·보유0.25·경고강등·추세가드(=라이브)", 1.0, 0.25, True, True),
-        ("확신1.0·보유0.25·강등 둘 다 없음(반증)", 1.0, 0.25, False, False),
-        ("확신1.0·보유0.25·추세가드만", 1.0, 0.25, False, True),
-        ("확신1.0·보유0.0(노출 거의 중립)", 1.0, 0.0, True, True),
-        ("확신0.75·보유0.25", 0.75, 0.25, True, True),
+        ("확신1.0·보유0.0·경고강등·추세가드(=라이브)", 1.0, 0.0, True, True),
+        ("확신1.0·보유0.25(v0.18.0 라이브 · 되돌림 후보)", 1.0, 0.25, True, True),
+        ("확신1.0·보유0.0·강등 둘 다 없음(반증)", 1.0, 0.0, False, False),
+        ("확신1.0·보유0.0·추세가드만", 1.0, 0.0, False, True),
+        ("확신0.75·보유0.0", 0.75, 0.0, True, True),
+    )
+    # ---- [v0.19.0 X4 신규 격자] [국면×확신캡격자] — 부모 국면 제약 × 확신캡 래더 ----
+    #   왜: W3이 [국면게이트격자]를 되살리자 **리더국면 NEUTRAL이 칼마 3.787 · MDD −0.0955(= S★와 동일)**로
+    #     프로젝트 최초로 S★ 칼마 3.758을 넘었다(MDD 악화 정확히 0 → 한계비율 무한).
+    #     그런데 그 측정은 **평탄 캡 50%**에서만 이뤄졌다 — 래더와 겹친 적이 없다.
+    #   ⚠ 인샘플 선택 위험: 3행 격자의 우승이고 노출이 0.0286(라이브의 1/3)이다. 다만 NEUTRAL은
+    #     v0.3.0의 독립 측정(부모 중립일 고베타 1위 21일 부모초과 +0.81% · t 1.94 · 6/8년)이 따로 있어
+    #     단순 격자 우승이 아니다. 그래서 라이브가 아니라 격자로, 달력 대조군과 함께 검정한다.
+    #   ⚠ 되돌리기: i_overrides={"INDUSTRY_REGIME_CAP_GRID": ()}
+    INDUSTRY_REGIME_CAP_GRID: Tuple[Tuple[str, Optional[Tuple[str, ...]]], ...] = (
+        ("NEUTRAL만", ("NEUTRAL",)),
+        ("RISK_ON+NEUTRAL", ("RISK_ON", "NEUTRAL")),
+        ("제약없음", None),
     )
     # ---- [v0.15.0 R1 ⚠⚠ 위험 파라미터 신규] 리더 하락 브레이크 ----
     #   왜(REPORT54 D1 — 백테스트 성적이 아니라 correctness 문제다):
@@ -3857,6 +4019,24 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             return _warn_cache[_key]
         return _warn_cache.setdefault(_key, _warn_mat_calc(vq, need_cs))
 
+    # [v0.19.0 X2] 하락경고 워크포워드 **산업** 게이트 — 적용 연도 이전 성적으로 산업을 고른다.
+    #   ⚠ 게이트는 **강등(W2)에만** 적용하고 [하락경고격자]의 감축 행에는 적용하지 않는다(그 격자는
+    #     v0.16.0 R4의 사전등록 대조 실험이므로 정의를 바꾸면 이전 라운드와 비교가 끊긴다).
+    _wf_gate = None
+    if bool(getattr(icfg, "CAP_WARN_WF_GATE", False)):
+        try:
+            _wf_gate = build_warn_wf_gate(results, icfg)
+            log("ALLOC", kv(event="warn_wf_gate_built",
+                            n_by_year=";".join(f"{y}:{n}" for y, n in sorted(_wf_gate["n_by_year"].items())),
+                            params=str(_wf_gate["params"]),
+                            note="⚠ 경고 강등을 '적용연도 이전에 경고가 들었던 산업'으로 제한한다 — "
+                                 "SOXX는 A4에서 정밀도 0.0000(역방향)이었다. 판정은 13p A5"), M=M)
+        except Exception as e:
+            log("ALLOC", kv(event="warn_wf_gate_failed", err=str(e)[:160],
+                            action="게이트 없이 전 산업에 강등 적용",
+                            suggest="CAP_WARN_WF_GATE=False로 명시적으로 끄는 것을 검토"), M=M, level="warning")
+            _wf_gate = None
+
     def _warn_mat_calc(vq: float, need_cs: bool) -> pd.DataFrame:
         """저변동성(+탈동조) 경고 행렬. 전부 t일까지의 정보(자기이력 백분위)."""
         W = pd.DataFrame(False, index=eval_idx, columns=cols)
@@ -3874,6 +4054,25 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                 w = w & cs.le(cs.expanding(min_periods=_mh).quantile(1.0 / 3.0))
             W[t] = w.reindex(eval_idx).fillna(False).values
         return W
+
+    def _warn_mat_gated(vq: float, need_cs: bool) -> pd.DataFrame:
+        """[v0.19.0 X2] _warn_mat에 워크포워드 산업 게이트를 씌운다 — **연도별로** 통과 산업만 남긴다.
+        게이트가 없으면 원본을 그대로 돌려준다(v0.18.0과 비트 동일)."""
+        W = _warn_mat(vq, need_cs)
+        if _wf_gate is None:
+            return W
+        G = W.copy()
+        _yr = pd.Series(eval_idx.year, index=eval_idx)
+        _by = _wf_gate.get("by_year", {}) or {}
+        _n_off = 0
+        for t in G.columns:
+            keep = _yr.map(lambda y: t in (_by.get(int(y)) or [])).astype(bool)
+            _n_off += int((G[t] & ~keep.values).sum())
+            G[t] = G[t].values & keep.values
+        log("ALLOC", kv(event="warn_wf_gate_applied", warn_days_before=int(W.values.sum()),
+                        warn_days_after=int(G.values.sum()), dropped=_n_off,
+                        note="게이트에서 탈락한 산업-연도의 경고일은 강등에 쓰지 않는다"), M=M)
+        return G
 
     _strong_cache: Dict[Tuple[str, float], pd.DataFrame] = {}
 
@@ -4006,8 +4205,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
     _WARN_LIVE = None
     if _conv_on and _warn_dg:
         try:
-            _WARN_LIVE = _warn_mat(float(getattr(icfg, "CAP_WARN_VOL_Q", 1.0 / 3.0)),
-                                   bool(getattr(icfg, "CAP_WARN_NEED_DECOUPLE", True)))
+            _WARN_LIVE = _warn_mat_gated(float(getattr(icfg, "CAP_WARN_VOL_Q", 1.0 / 3.0)),
+                                         bool(getattr(icfg, "CAP_WARN_NEED_DECOUPLE", True)))
         except Exception as e:
             # 실패해도 래더 자체는 살린다 — 강등만 못 한다(사용자 규칙 §5: 조용히 실패하지 않는다).
             log("ALLOC", kv(event="cap_warn_mat_failed", err=str(e)[:160],
@@ -4090,8 +4289,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         try:
             _Wm2 = None
             if bool(_use_warn):
-                _Wm2 = _warn_mat(float(getattr(icfg, "CAP_WARN_VOL_Q", 1.0 / 3.0)),
-                                 bool(getattr(icfg, "CAP_WARN_NEED_DECOUPLE", True)))
+                _Wm2 = _warn_mat_gated(float(getattr(icfg, "CAP_WARN_VOL_Q", 1.0 / 3.0)),
+                                       bool(getattr(icfg, "CAP_WARN_NEED_DECOUPLE", True)))
             _Sm2 = _parent_strong() if _use_tg else None
             _CL = _cap_mat(live_cap, float(_cc), float(_ch), warn=_Wm2, strong=_Sm2)
             _CU = _cap_mat(float(_cc), float(_cc), float(_cc))          # (ㄱ) 무조건 동일캡 = 평탄 레버업
@@ -4113,6 +4312,31 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                            uncond_mean=round(float(_t2.mean()), 4), uncond_max=round(float(_t2.max()), 4),
                            calendar_mean=round(float(_t3.mean()), 4),
                            note="⚠ 라이브 판정 아님 — 래더가 무조건·달력 **둘 다** 칼마·MDD로 이겨야 후보"), M=M)
+
+    # ---- [v0.19.0 X4 신규 격자] [국면×확신캡격자] — 부모 국면 제약 × 확신캡 래더 ----
+    #   왜: W3이 되살린 [국면게이트격자]에서 **리더국면 NEUTRAL이 칼마 3.787 · MDD −0.0955(= S★와 동일)**로
+    #     프로젝트 최초로 S★ 칼마 3.758을 넘었다. 그런데 그 측정은 **평탄 캡 50%**에서만 있었다.
+    #     래더와 겹치면 더 오르는가, 아니면 두 장치가 같은 위험을 두 번 줄여 겹치지 않는가 — 그것을 잰다.
+    #   ⚠ 라이브 아님. 각 행에 달력 대조군이 붙고, 사전등록 조건 (e)를 통과해야 승격 후보다.
+    for _rlbl, _rg in tuple(getattr(icfg, "INDUSTRY_REGIME_CAP_GRID", ()) or ()):
+        try:
+            _gr = _run_groups({"INDUSTRY_LEADER_REGIMES": (tuple(_rg) if _rg else None)})
+            _CLr = _cap_mat(live_cap, _cap_conv, _cap_hold, warn=_WARN_LIVE, strong=_STRONG_LIVE,
+                            groups_src=_gr)
+            _CCr = _cap_mat_calendar(live_cap, _cap_conv, _cap_hold, _CLr)
+        except Exception as e:
+            log("ROTATION", kv(event="regime_cap_grid_failed", row=str(_rlbl), err=str(e)[:160]),
+                M=M, level="warning")
+            continue
+        target_ws[f"국면×확신캡 {_rlbl} [국면확신캡격자]"] = \
+            _mk_target_w(live_cap, live_fb, groups_over=_gr, cap_mat=_CLr)
+        target_ws[f"대조: {_rlbl} 같은날수 달력(신호없음) [국면확신캡격자·대조]"] = \
+            _mk_target_w(live_cap, live_fb, groups_over=_gr, cap_mat=_CCr)
+        _nl = int(sum(int((g["leader_ind"] > 0).sum().sum()) for g in _gr.values()))
+        log("ROTATION", kv(event="regime_cap_grid_row", row=str(_rlbl),
+                           regimes=(",".join(_rg) if _rg else "제약없음"), leader_industry_days=_nl,
+                           note="⚠ 라이브 아님 — NEUTRAL은 평탄 캡에서 칼마 3.787·MDD=S★였다. "
+                                "래더와 겹치는지 확인 후 사전등록 (e)로 판정"), M=M)
 
     # ---- [v0.15.0 R2 신규 격자] [리더위험격자] — 브레이크 변형 + **달력 대조군** ----
     #   왜 격자인가: R1의 반사실은 리포트만으로 재구성해 연율 0.21%p 잔차가 있었다(산업 다리 +0.642%p의 1/3).
@@ -5541,10 +5765,16 @@ def build_industry_leader_accuracy(alloc: Dict[str, Any], results: Dict[str, Dic
                              "초과 합(%p)": round(float(_sub["보유기간 초과(%)"].sum()), 2),
                              "상승미달 비율": round(float(_up.mean()), 3)})
             rows.append({"블록": "E. 실패 유형 — 진입시 부모 추세 3분할", "구분": "판독",
-                         "설명": ("보고서15 실측(13j 기준): 약세 13건 +5.04%p·상승미달 0.077 / 중간 12건 −0.68·0.250 / "
-                                "강세 12건 +0.32·**0.417**. ext200·m21·m63·m252·dd252 다섯 지표가 모두 같은 방향이고 "
-                                "연도 편중도 아니다. → **강세 구간에서 역추세 집중을 하지 않는다**가 대응이며 "
-                                "[리더추세게이트격자]가 그것을 검정한다. ⚠ 표본 37건이라 라이브가 아니다.")})
+                         "설명": ("[v0.19.0 X5 갱신] 리포트16·17 실측(등크기 3버킷 99 에피소드 · **네 열 모두 단조**): "
+                                "약세 33건 승률 0.6667·평균초과 +2.030%·초과합 +66.98%p·상승미달 0.152 / "
+                                "중간 32건 0.5938·+0.801·+25.62·0.312 / "
+                                "강세 33건 **0.3939·−0.176·−5.79%p**·0.364. "
+                                "즉 이 계층의 플러스 기여는 **전부 약세·중간 부모에서** 나오고 강세 버킷은 마이너스다. "
+                                "리포트15(37건)에서 처음 보였고 표본 2.7배에서 재현됐다 — 연도 편중도 아니고 "
+                                "ext200·m21·m63·m252·dd252 다섯 지표가 모두 같은 방향이다. "
+                                "→ v0.18.0 W7이 이것을 **라이브 추세 가드**로 넣었다(강세 부모의 리더일은 확신 "
+                                "게이트를 통과해도 상향하지 않는다). 위 표는 그 가드가 올바른 방향인지를 매 실행 확인한다. "
+                                "[리더추세게이트격자]는 더 센 변형(리더 전면 끔·K=3 분산·몫 절반)을 계속 검정한다.")})
     # =================== 블록 F [v0.18.0 W5 ★ 신규] ===================
     #   사용자 지시 (나) "왜 전체로 한 날이 없어"에 **리포트가 스스로 답하게** 만든다.
     #   종전에는 이 숫자가 어디에도 없어서, 사용자가 13c를 직접 훑어야 알 수 있었다.
@@ -5580,9 +5810,12 @@ def build_industry_leader_accuracy(alloc: Dict[str, Any], results: Dict[str, Dic
                              "설명": (f"부모×일 조합 {_pd_pairs:,}개 중 리더 판단 {_lead_pd:,}개"
                                     f"({_lead_pd / max(_pd_pairs, 1):.1%}) · 리더 부모가 1개 이상인 날 "
                                     f"{int((_lead_cnt > 0).sum()):,}일({float((_lead_cnt > 0).mean()):.1%}) · "
-                                    f"하루 최대 {int(_lead_cnt.max())}개 부모. "
-                                    "→ 하루에 리더 부모가 1~2개뿐이면 CAP을 100%로 줘도 총합은 그 부모들의 "
-                                    "섹터비중 합을 넘지 못한다(구조적 천장).")})
+                                    f"하루 최대 {int(_lead_cnt.max())}개 부모 · 중앙값 "
+                                    f"{int(_lead_cnt.median())}개 · 평균 {float(_lead_cnt.mean()):.2f}개. "
+                                    "→ 하루 리더 부모가 소수면 CAP을 100%로 줘도 총합은 그 부모들의 섹터비중 "
+                                    "합을 넘지 못한다(구조적 천장). 그 합의 분포가 아래 (2)다. "
+                                    "[v0.19.0 X5 정정] 리포트17 실측은 최대 6개였다 — v0.18.0 판독문의 "
+                                    "'1~2개'는 최빈값이었고 최대값이 아니었다.")})
                 # 구조적 천장: 리더 부모의 w_s 합 최대치 — CAP을 1.0으로 줬을 때 도달 가능한 총합
                 _ws = alloc.get("w_s")
                 if _ws is not None and len(_ws):
@@ -6409,6 +6642,108 @@ def build_industry_regime_label_block(results: Dict[str, Dict[str, Any]], sres: 
     return pd.DataFrame(rows), summ
 
 
+def _warn_parts(r: Dict[str, Any], icfg: IndustryConfig, horizon: int = 21
+                ) -> Optional[Tuple[pd.Series, pd.Series, pd.Series]]:
+    """[v0.19.0 X2 보조] 한 산업의 (경고 불리언, 실현하락 불리언, 향후 h일 수익)을 만든다.
+
+    경고 정의는 13p A3-3 / CAP_WARN_* 설정과 **같은 하나의 정의**를 쓴다(정의가 두 곳에서 갈리면
+    강등과 측정이 어긋난다). 전부 t일까지의 정보다 — 자기이력 expanding 분위·확정국면 라벨.
+    유효 표본이 없으면 None."""
+    px = pd.Series(r.get("bh_ret"), dtype=float)
+    if px is None or not len(px):
+        return None
+    curve = (1.0 + px.fillna(0.0)).cumprod()
+    if not len(curve):
+        return None
+    idx = curve.index
+    vp = pd.Series(r.get("vol21_pct"), dtype=float).reindex(idx)
+    cs = pd.Series(r.get("coupling_score"), dtype=float).reindex(idx)
+    stt = pd.Series(r.get("state"), dtype=object).reindex(idx)
+    mh = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250)
+    fwd = curve.shift(-int(horizon)) / curve - 1.0
+    pred = stt.astype(str).ne("RISK_ON") & vp.le(float(getattr(icfg, "CAP_WARN_VOL_Q", 1.0 / 3.0)))
+    if bool(getattr(icfg, "CAP_WARN_NEED_DECOUPLE", True)):
+        pred = pred & cs.le(cs.expanding(min_periods=mh).quantile(1.0 / 3.0))
+    ok = fwd.notna() & vp.notna() & cs.notna()
+    # ⚠ astype(bool) 필수 — object dtype이면 '~'가 비트 부정이 되어 .loc가 KeyError로 죽는다(v0.15.0 교훈).
+    pr = pred.where(ok).fillna(False).astype(bool)
+    real = (fwd < 0).where(ok).fillna(False).astype(bool)
+    return pr[ok], real[ok], fwd[ok]
+
+
+def build_warn_wf_gate(results: Dict[str, Dict[str, Any]], icfg: IndustryConfig,
+                       min_years: Optional[int] = None, need_ratio: Optional[float] = None,
+                       horizon: int = 21) -> Dict[str, Any]:
+    """[v0.19.0 X2 ★ 신규] 하락경고를 **산업별로 워크포워드 채택**한다.
+
+    적용 연도 y의 판단에는 **y 이전 데이터만** 쓴다(선택 자체가 워크포워드여야 한다 — 풀샘플 성적으로
+    산업 20개를 고르는 것은 인샘플 선택이고, 그 차이가 A5의 ⑥행과 ②행의 차이다).
+
+    통과 조건(전부 y 이전):
+      (1) 유효 관측 ≥ WARN_WF_MIN_OBS        (2) 경고일 ≥ WARN_WF_MIN_PRED
+      (3) 경고일 정밀도 > 기저 실현하락률      (4) '연도 정밀도>기저' 비율 ≥ need_ratio (셀 수 있는 연도 ≥ min_years)
+
+    반환: {"by_year": {연도: [티커…]}, "stats": {티커: {연도: dict}}, "years": [...], "n_by_year": {...}}
+    구현은 **연도별 집계의 누적합**이다 — 산업×연도 표를 한 번 만들고 접두합으로 'y 이전'을 얻으므로
+    연도마다 전체 시계열을 다시 훑지 않는다(29산업 × 9년에서 O(산업×연도)).
+    """
+    mo = int(getattr(icfg, "WARN_WF_MIN_OBS", 250) or 250)
+    mp = int(getattr(icfg, "WARN_WF_MIN_PRED", 20) or 20)
+    my = int(min_years if min_years is not None else getattr(icfg, "WARN_WF_MIN_YEARS", 1) or 1)
+    nr = float(need_ratio if need_ratio is not None else getattr(icfg, "WARN_WF_NEED_RATIO", 0.50))
+    per: Dict[str, pd.DataFrame] = {}
+    years: set = set()
+    for t, r in results.items():
+        parts = _warn_parts(r, icfg, horizon)
+        if parts is None:
+            continue
+        pr, real, _fwd = parts
+        if not len(pr):
+            continue
+        df = pd.DataFrame({"p": pr.astype(bool), "y": real.astype(bool)})
+        g = df.groupby(df.index.year)
+        tab = pd.DataFrame({
+            "n": g.size(),
+            "real": g["y"].sum(),
+            "npred": g["p"].sum(),
+            "hit": g.apply(lambda x: int((x["p"] & x["y"]).sum()), include_groups=False),
+        })
+        # 그 해 단독으로 '정밀도>기저'였는가(연도 일관성 계산용 · 표본 40일 미만·경고 0일은 세지 않는다)
+        tab["cnt"] = ((tab["n"] >= 40) & (tab["npred"] > 0)).astype(int)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            _prec = tab["hit"] / tab["npred"].replace(0, np.nan)
+            _base = tab["real"] / tab["n"].replace(0, np.nan)
+        tab["win"] = ((tab["cnt"] == 1) & (_prec > _base)).astype(int)
+        per[t] = tab
+        years |= set(tab.index.tolist())
+    ys = sorted(int(y) for y in years)
+    by_year: Dict[int, List[str]] = {}
+    stats: Dict[str, Dict[int, dict]] = {t: {} for t in per}
+    for y in ys:
+        sel: List[str] = []
+        for t, tab in per.items():
+            prev = tab[tab.index < y]
+            if not len(prev):
+                continue
+            n = int(prev["n"].sum()); npred = int(prev["npred"].sum())
+            hit = int(prev["hit"].sum()); real = int(prev["real"].sum())
+            cnt = int(prev["cnt"].sum()); win = int(prev["win"].sum())
+            prec = (hit / npred) if npred else np.nan
+            base = (real / n) if n else np.nan
+            ratio = (win / cnt) if cnt else np.nan
+            passed = bool(n >= mo and npred >= mp and cnt >= my
+                          and pd.notna(prec) and pd.notna(base) and prec > base
+                          and pd.notna(ratio) and ratio >= nr)
+            stats[t][y] = {"n": n, "npred": npred, "prec": prec, "base": base,
+                           "kn": f"{win}/{cnt}", "ratio": ratio, "pass": passed}
+            if passed:
+                sel.append(t)
+        by_year[y] = sorted(sel)
+    return {"by_year": by_year, "stats": stats, "years": ys,
+            "n_by_year": {y: len(v) for y, v in by_year.items()},
+            "params": {"min_obs": mo, "min_pred": mp, "min_years": my, "need_ratio": nr}}
+
+
 def build_industry_decline_warning_block(results: Dict[str, Dict[str, Any]], icfg: IndustryConfig,
                                         horizons: Tuple[int, ...] = (21,)) -> pd.DataFrame:
     """[13p 블록 A3, v0.15.0 R4 ★ 신규] **하락 경고 후보**의 연도 안정성 + 향후수익 격차.
@@ -6508,7 +6843,10 @@ def build_industry_decline_warning_block(results: Dict[str, Dict[str, Any]], icf
                          "하락 정밀도": round(float(np.nanmean(P)), 4),
                          "정밀−기저": round(float(np.nanmean(P) - np.nanmean(B)), 4),
                          "하락 재현율": round(float(np.nanmean(R)), 4),
-                         "MCC": round(float(np.nanmean(MC)), 4),
+                         # [v0.19.0] MC가 전부 NaN이면 np.nanmean이 RuntimeWarning('Mean of empty slice')을
+                         #   내고 nan을 돌려준다 — 값이 없으면 None으로 두고 경고를 내지 않는다.
+                         "MCC": (round(float(np.nanmean(MC)), 4)
+                                 if any(pd.notna(v) for v in MC) else None),
                          "MCC>0 산업": f"{int(sum(1 for v in MC if pd.notna(v) and v > 0))}/{len(MC)}",
                          "연도 정밀도>기저": _kn(yw, yn),
                          "연도비율": (round(yw / yn, 3) if yn else np.nan),
@@ -6594,6 +6932,106 @@ def build_industry_decline_warning_block(results: Dict[str, Dict[str, Any]], icf
                      "판독": ("이 합계가 0.50 근처면 '평균적으로 동전던지기'다. 그래도 산업별 행에서 "
                             "0.65 이상인 산업이 여럿 있으면 **산업별 취사선택**의 여지가 있다는 뜻이다 — "
                             "그 취사선택은 다음 라운드에 격자로 검정한다(지금 라이브로 올리지 않는다).")})
+    # =================== 블록 A5 [v0.19.0 X3 ★ 신규] ===================
+    #   왜: A4가 산업별 격차를 드러냈지만(JETS 정밀 0.9306 ↔ SOXX 0.0000) 그 표는 **풀샘플**이라
+    #   "성적 좋은 산업만 고른다"를 그대로 따르면 인샘플 선택이다. 이 블록은 선택 자체를 **워크포워드**로
+    #   하고(적용 연도 이전 데이터만), 같은 개수를 **알파벳 순으로** 고르는 대조군을 나란히 둔다.
+    #   판정 규칙: 게이트 행이 (1) '전 산업(현행)' 행보다 정밀−기저가 높고 (2) 같은 개수 알파벳 대조군을
+    #   정밀−기저로 이겨야 값이 있다. (2)가 핵심이다 — 산업 수를 줄인 효과와 고른 효과를 가른다.
+    blk5 = "A5. 하락경고 워크포워드 산업 게이트(연도별 선택)"
+    rows.append({"블록": blk5, "규칙": "── 읽는 법 ──",
+                 "판독": ("A4는 풀샘플 성적표이고 이 블록은 **그 성적표를 쓸 수 있는가**를 잰다. "
+                        "게이트는 적용 연도 **이전** 데이터만으로 산업을 고른다(선택의 워크포워드). "
+                        "'대조: 알파벳 N개'가 게이트와 같은 개수를 신호 없이 고르는 행이다 — 게이트가 여기에 "
+                        "정밀−기저로 지면 '산업 수를 줄인 것'이 전부였다는 뜻이다. "
+                        "⚠ 연도 k/n은 분모가 행마다 다르다(게이트가 아무 산업도 못 고른 해는 세어지지 않는다) — "
+                        "정밀−기저와 함께 읽고 단독으로 판정하지 않는다.")})
+    _h5 = int(horizons[0]) if horizons else 21
+    _PARTS: Dict[str, Tuple[pd.Series, pd.Series, pd.Series]] = {}
+    for t, r in results.items():
+        try:
+            _pp = _warn_parts(r, icfg, _h5)
+        except Exception:
+            _pp = None
+        if _pp is not None and len(_pp[0]) >= 300:
+            _PARTS[t] = _pp
+
+    def _eval_gate(sel_by_year, label: str, extra: str = "") -> dict:
+        """선택 집합(연도→산업 목록, 또는 고정 목록)으로 풀링 정밀도·기저·연도 k/n·향후수익 격차를 센다."""
+        tp = fp = rs = n = kw = kn = 0
+        on: List[float] = []
+        off: List[float] = []
+        cnts: List[int] = []
+        _ys = sorted({int(y) for _v in _PARTS.values() for y in set(_v[0].index.year)})
+        for y in _ys:
+            pk = set(sel_by_year.get(y, []) if isinstance(sel_by_year, dict) else sel_by_year)
+            cnts.append(len(pk))
+            _pp: List[pd.Series] = []
+            _rr: List[pd.Series] = []
+            for t, (pr, real, fwd) in _PARTS.items():
+                m = (pr.index.year == y)
+                if not m.any():
+                    continue
+                use = pr[m] & (t in pk)
+                _pp.append(use); _rr.append(real[m])
+                on.extend(fwd[m][use].dropna().tolist())
+                off.extend(fwd[m][~use].dropna().tolist())
+            if not _pp:
+                continue
+            P_ = pd.concat(_pp); R_ = pd.concat(_rr)
+            tp += int((P_ & R_).sum()); fp += int((P_ & ~R_).sum())
+            rs += int(R_.sum()); n += len(R_)
+            if bool(P_.any()):
+                kn += 1; kw += int(float(R_[P_].mean()) > float(R_.mean()))
+        base = (rs / n) if n else np.nan
+        prec = (tp / (tp + fp)) if (tp + fp) else np.nan
+        return {"블록": blk5, "규칙": label, "지평(일)": _h5,
+                "산업수": (round(float(np.mean(cnts)), 1) if cnts else None),
+                "예측일수(평균)": int(tp + fp),
+                "기저 실현하락률": (round(float(base), 4) if pd.notna(base) else None),
+                "하락 정밀도": (round(float(prec), 4) if pd.notna(prec) else None),
+                "정밀−기저": (round(float(prec - base), 4) if pd.notna(prec) and pd.notna(base) else None),
+                "연도 정밀도>기저": _kn(kw, kn),
+                "연도비율": (round(kw / kn, 3) if kn else None),
+                "격차(%p)": (round((float(np.mean(on)) - float(np.mean(off))) * 100, 3) if on and off else None),
+                "판독": extra}
+    if _PARTS:
+        _all = {int(y): list(_PARTS) for y in range(1990, 2100)}
+        rows.append(_eval_gate(_all, "① 전 산업 사용(현행 · 기준선)",
+                               "v0.18.0 W2가 이렇게 썼다 — SOXX처럼 A4에서 역방향인 산업까지 강등한다."))
+        _grid = tuple(getattr(icfg, "INDUSTRY_WARN_WF_GRID", ()) or ())
+        for _glbl, _my, _nr in _grid:
+            try:
+                _g = build_warn_wf_gate(results, icfg, min_years=int(_my), need_ratio=float(_nr), horizon=_h5)
+            except Exception as e:
+                rows.append({"블록": blk5, "규칙": f"② WF {_glbl}",
+                             "판독": f"산출 실패 {type(e).__name__}: {str(e)[:140]}"})
+                continue
+            _yrs = ";".join(f"{y}:{n}" for y, n in sorted(_g["n_by_year"].items()))
+            rows.append(_eval_gate(_g["by_year"], f"② WF {_glbl}", f"연도별 선택 산업수 {_yrs}"))
+            _k = max(int(round(float(np.mean(list(_g["n_by_year"].values()) or [0])))), 1)
+            rows.append(_eval_gate(sorted(_PARTS)[:_k], f"   대조: 알파벳 {_k}개 고정 · {_glbl}",
+                                   "★ 같은 개수를 신호 없이 알파벳 순으로 — 게이트가 여기에 지면 값이 없다."))
+        # 참고 행: 풀샘플로 고른 집합(인샘플 상한 — **판정에 쓰지 않는다**)
+        _full = []
+        for t, (pr, real, _f) in _PARTS.items():
+            if int(pr.sum()) < int(getattr(icfg, "WARN_WF_MIN_PRED", 20) or 20):
+                continue
+            if float(real[pr].mean()) > float(real.mean()):
+                _full.append(t)
+        if _full:
+            rows.append(_eval_gate({int(y): _full for y in range(1990, 2100)},
+                                   f"③ (참고·인샘플) 풀샘플 게이트 {len(_full)}개",
+                                   "⚠ 미래를 보고 고른 집합이다 — 워크포워드 행이 여기에 못 미치는 것이 정상이고, "
+                                   "이 행은 상한(도달 가능한 최대)으로만 읽는다."))
+        rows.append({"블록": blk5, "규칙": "── 판정(사전등록) ──",
+                     "판독": ("v0.19.0 [검증] ⑨: (c) WF 게이트가 알파벳 대조군에 정밀−기저로 지면 "
+                            "CAP_WARN_WF_GATE=False로 되돌린다. (d) WF 게이트가 ① '전 산업' 행보다 "
+                            "정밀−기저·연도 k/n 둘 다에서 낫지 않으면 X2 무효. "
+                            "⚠ 연구·교육용이며 투자 조언이 아니다.")})
+    else:
+        rows.append({"블록": blk5, "규칙": "산출 불가",
+                     "판독": "유효 표본 300일 이상인 산업이 없다 — 다음 단계: results의 bh_ret·vol21_pct·coupling_score 확인"})
     rows.append({"블록": blk, "규칙": "── 승격 조건(사전등록) ──",
                  "판독": ("라이브 **승격** 조건 — 다음 라운드에 올리려면 **셋을 동시에** 만족해야 한다: "
                         "(1) 연도 정밀도>기저 비율 ≥ 0.60  (2) 연도 격차음수 ≥ 6/8  (3) **2024 격차 < 0**. "
@@ -7592,7 +8030,14 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                    " 최상단 캡(CAP_CONVICTION)을 받지 못하고 기본 캡으로 **강등**된다. ⚠ 감축이 아니라"
                    " **상향 보류**다 — v0.15.0 브레이크는 경고일의 리더 몫을 0으로 만들어 세 기준 전부 실패했고,"
                    " 상향 보류는 노출을 깎지 않으므로 그 실패 양식(달력 대조군에 지는 노출 축소)을 반복하지 않는다."
-                   " 끄기: i_overrides={\"CAP_WARN_DOWNGRADE\": False}"
+                   + (" ★ **v0.19.0 X2 — 강등은 워크포워드 산업 게이트를 통과한 산업에만** 적용된다"
+                      " (CAP_WARN_WF_GATE): 적용 연도 **이전** 데이터에서 경고가 실제로 들었던 산업만."
+                      " 이유는 13p A4 — SOXX는 정밀도 **0.0000**(경고일 향후수익 +11.364% vs 비경고일 +2.553%)로"
+                      " **역방향**이었는데 v0.18.0은 29산업에 일률 적용했다. 연도별 선택 목록과 알파벳 대조군은"
+                      " 13p 블록 **A5**에. 끄기: i_overrides={\"CAP_WARN_WF_GATE\": False}"
+                      if getattr(icfg, "CAP_WARN_WF_GATE", False) else
+                      " ⚠ 게이트 끔 — 29산업에 일률 적용(SOXX 포함). 13p A5 참조")
+                   + " 끄기: i_overrides={\"CAP_WARN_DOWNGRADE\": False}"
                    if (getattr(icfg, "INDUSTRY_CAP_BY_CONVICTION", False)
                        and getattr(icfg, "CAP_WARN_DOWNGRADE", True))
                    else " | ⚠ 진단 전용 — 목표비중에 반영되지 않는다. [하락경고격자]에서 리더 감축에 적용해"
