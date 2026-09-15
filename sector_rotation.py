@@ -17,7 +17,35 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.49.0 - 2026-09-15 - [★ 19_상승하락구간 신설 — S★ 배분이 어디서 문제인지] REPORT59.
+#  VERSION: v0.50.0 - 2026-09-15 - [★ 19 블록 C 신설 — B&H 대비 하락회피·상승참여를 올바른 단위로] REPORT60.
+#    사용자 지시: "buy and hold랑 비교했을 때 하락 기간을 피했는지(비중 최대로 감축) 상승을 타서 제대로
+#    수익을 최대한 많이 냈는지(비중 최대로) 판단해서 그렇지 못한 기간에서 문제 원인 찾아내서 개선해"
+#    ★ 신호층·배분층 변경 **0건**. 이 버전은 **진단 단위를 고치는 것**이다. 왜 그것이 이 지시의 정답인가:
+#
+#    ── v0.49.0의 19 시트를 읽고 발견한 구조적 결함 ───────────────────────────────────────
+#      블록 A(자산별)는 "그 **섹터**의 상승을 탔나"를 묻는다. 그런데 S★는 하루에 **상위 4개**만 든다.
+#      11섹터 각각에 그 질문을 하면 7개는 **정의상** 미참여가 되고 참여율 중위가 0 근처로 찍힌다.
+#      그것은 전략의 고장이 아니라 **질문의 단위가 틀린 것**이다. 사용자가 묻는 것은
+#      "**B&H 대비** 이 계층이 하락을 피했고 상승을 탔나" — 즉 **포트폴리오 단위**다.
+#
+#    (Z2) ★ 신규 **19 블록 C — 포트폴리오 구간**. build_portfolio_segments() 신설(I v0.21.0 C1과 같은 코드).
+#         구간은 **벤치 곡선**의 지그재그로 나누고, 그 구간에서 S★가 얼마나 먹었는지와 **총노출**의
+#         시작/최소/평균/최대/종료·첫 대응일·대응 지연을 붙인다. 벤치 **2종**을 나란히 싣는다:
+#           · **SPY 단순보유(B&H)** — 사용자가 말한 그 B&H
+#           · **11섹터 균등 B&H**   — 같은 자산군·같은 예산이므로 배분 기술만 남는 like-for-like 벤치
+#         판정 기준(사용자 문장을 그대로 수식화):
+#           · 하락구간 이상 = **전략수익 ≥ 0**("비중 최대로 감축"에 성공하면 손실이 없다)
+#           · 상승구간 이상 = **전략수익 ≥ 벤치수익**("비중 최대로"에 성공하면 벤치를 다 먹는다)
+#         요약 3행(하락구간 요약 / 상승구간 요약 / ★★ 종합)이 "방어형인가 공격형인가"를 부호로 답한다.
+#         ⚠ 진단 전용 — 구간 분할은 사후(전 구간)이며 목표비중 계산에 들어가지 않는다. 룩어헤드 아님.
+#
+#    [검증] ⑬ v0.50.0 사전등록(다음 리포트에서 판정):
+#      (a) 19 블록 C ★★ 종합 행이 **두 벤치 모두**에 대해 나오는가(SPY·11섹터균등 2행).
+#      (b) 하락구간 요약의 벤치대비 합이 **양수**인가(방어가 실제로 값을 만드는가).
+#      (c) 상승구간 요약의 **완전 참여 k/n**이 몇인가 — 이것이 다음 라운드의 개선 대상 1번이다.
+#      (d) 블록 A의 참여율 중위가 낮은 것과 블록 C의 종합 부호가 **모순되지 않는가**(모순이면 정의 오류).
+#
+#  v0.49.0 | 2026-09-15 | [★ 19_상승하락구간 신설 — S★ 배분이 어디서 문제인지] REPORT59.
 #    사용자 지시: "국면 판단 엑셀처럼 섹터별, 산업별 상승하락구간 시트 만들어서 어디가 문제인지 판단하도록
 #    수정해 (…) sector, industry regime 이렇게 2개 고치는 거야". 신호층 변경 **0건** — 시트 하나만 는다.
 #    사용자 확인: 30MB는 리포트 **파일 전체** 제약.
@@ -2112,7 +2140,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.49.0"
+VERSION = "v0.50.0"
 VERSION_DATE = "2026-09-15"
 
 # =============================================================================
@@ -10746,6 +10774,137 @@ def zigzag_segments(curve: pd.Series, min_move: float = 0.07, min_days: int = 3
     return [(k, a, b) for k, a, b in out if (b - a) >= int(min_days)]
 
 
+def build_portfolio_segments(port_curve: pd.Series, port_exposure: pd.Series,
+                             bench_curve: pd.Series, cfg: Any,
+                             bench_label: str = "B&H", layer: str = "계층",
+                             port_label: str = "★ 전략", M=None) -> pd.DataFrame:
+    """[19 블록 C, v0.50.0 C1 ★ 신규] **포트폴리오 단위** 상승·하락 구간.
+
+    왜 블록 A만으로는 부족한가(사용자 질문에 정확히 답하기 위해):
+      블록 A는 "그 **자산**의 상승을 탔나"를 묻는다. 그런데 로테이션 전략은 **하루에 하나만** 든다 —
+      11섹터 각각에 그것을 물으면 10개는 **정의상** 미참여가 되고(예산 전부를 한 자산에 주는 벤치는
+      도달 가능하지만 **동시에 모든 자산에 대해서는 불가능**하다) 참여율 중위가 0.000으로 찍힌다.
+      그것은 고장이 아니라 **단위가 틀린 질문**이다.
+    블록 C는 올바른 단위로 묻는다 — "**B&H 대비** 이 계층이 하락을 피했고 상승을 탔나".
+      구간은 **B&H 곡선**(시장/계층 벤치)의 지그재그로 나눈다. 그 구간에서:
+        · 전략 구간수익 vs B&H 구간수익 → **벤치대비(%p)**
+        · 총노출의 시작/최소/평균/최대/종료, 첫 대응일, 대응 지연
+        · 판정: 하락구간은 '덜 빠졌나', 상승구간은 'B&H만큼 먹었나'
+      ★ 하락구간의 이상은 **전략수익 ≥ 0**(피했다), 상승구간의 이상은 **전략수익 ≥ B&H**(다 먹었다).
+    ⚠ 진단 전용 — 구간 분할은 사후(전 구간)이고 목표비중 계산에 전혀 들어가지 않는다."""
+    rows: List[dict] = []
+    mm = float(getattr(cfg, "SEG_MIN_MOVE", 0.07))
+    md = int(getattr(cfg, "SEG_MIN_DAYS", 3))
+    eps = float(getattr(cfg, "SEG_RESPONSE_EPS", 0.02))
+    blk = "C. 포트폴리오 구간(B&H 대비)"
+    pc = pd.Series(port_curve).astype(float).dropna()
+    bc = pd.Series(bench_curve).astype(float).dropna()
+    ex = pd.Series(port_exposure).astype(float)
+    idx = pc.index.intersection(bc.index)
+    if len(idx) < 60:
+        rows.append({"블록": blk, "구분": "산출 불가",
+                     "설명": f"전략·벤치 공통 관측이 {len(idx)}일뿐이다 — 다음 단계: 두 곡선의 색인 정렬 확인"})
+        return pd.DataFrame(rows)
+    pc, bc, ex = pc.reindex(idx), bc.reindex(idx), ex.reindex(idx).fillna(0.0)
+    segs = zigzag_segments(bc, mm, md)
+    rows.append({"블록": blk, "구분": "── 읽는 법 ──",
+                 "설명": (f"구간은 **{bench_label} 곡선**을 지그재그(최소 변동 {mm:.0%} · 최소 {md}거래일)로 "
+                        f"나눈 것이다 — 즉 '{bench_label}가 오른/내린 기간'이다. 그 기간에 "
+                        f"**{port_label}이 얼마나 먹었고 노출이 어떻게 움직였나**를 붙였다. "
+                        "★ 하락구간은 **전략수익 ≥ 0**이면 피한 것이고(벤치대비는 항상 양수여야 정상), "
+                        "상승구간은 **전략수익 ≥ 벤치수익**이면 다 먹은 것이다. "
+                        "블록 A(자산별)의 '참여율'은 로테이션 계층에서 구조적으로 낮게 나온다 — "
+                        "하루에 한 자산만 들기 때문이다. **B&H와의 비교는 이 블록 C로 한다.**")})
+    dn_gap = []; up_gap = []; dn_hit = []; up_hit = []
+    for kind, a, b in segs:
+        i0, i1 = idx[a], idx[b]
+        bmv = float(bc.iloc[b] / bc.iloc[a] - 1.0)
+        pmv = float(pc.iloc[b] / pc.iloc[a] - 1.0)
+        gap = pmv - bmv
+        sl = slice(a + 1, b + 1)
+        es = ex.iloc[sl]
+        e0 = float(ex.iloc[a]); emin = float(es.min()) if len(es) else e0
+        emax = float(es.max()) if len(es) else e0
+        eavg = float(es.mean()) if len(es) else e0
+        eend = float(ex.iloc[b])
+        is_dn = kind.startswith("하락")
+        lag = None
+        if len(es):
+            dv = es - e0
+            hit = dv[dv <= -eps] if is_dn else dv[dv >= eps]
+            if len(hit):
+                lag = int(idx.get_loc(hit.index[0]) - a)
+        if is_dn:
+            dn_gap.append(gap); dn_hit.append(1 if pmv >= 0 else 0)
+            if pmv >= 0:
+                verdict = f"★ 하락 회피 성공(전략 {pmv * 100:+.1f}% · 노출 {e0:.2f}→{emin:.2f})"
+            elif pmv > bmv * 0.5:
+                verdict = f"부분 방어(하락의 {abs(pmv / bmv) if abs(bmv) > 1e-9 else 0:.0%}만 맞음"
+                verdict += (f", 감축 지연 {lag}거래일)" if lag is not None else ", 감축 없음)")
+            else:
+                verdict = (f"⚠ 방어 실패(하락의 {abs(pmv / bmv) if abs(bmv) > 1e-9 else 0:.0%}를 맞음"
+                           + (f", 감축 지연 {lag}거래일)" if lag is not None else ", 감축 없음 — 노출 "
+                              f"{eavg:.2f} 유지)"))
+        else:
+            up_gap.append(gap); up_hit.append(1 if pmv >= bmv - 1e-12 else 0)
+            _part = (pmv / bmv) if abs(bmv) > 1e-9 else np.nan
+            if pmv >= bmv - 1e-12:
+                verdict = f"★ 상승 완전 참여(전략 {pmv * 100:+.1f}% ≥ 벤치 {bmv * 100:+.1f}%)"
+            elif pd.notna(_part) and _part >= 0.7:
+                verdict = (f"부분 참여(벤치의 {_part:.0%}"
+                           + (f", 매수 지연 {lag}거래일)" if lag is not None else ", 노출 변화 없음)"))
+            else:
+                verdict = (f"⚠ 참여 실패(벤치의 {_part:.0%}만"
+                           + (f", 매수 지연 {lag}거래일" if lag is not None else ", 매수 없음")
+                           + f" · 노출 {e0:.2f}→최대 {emax:.2f})")
+        rows.append({"블록": blk, "구분": kind, "시작일(고점/저점)": i0, "종료일": i1,
+                     f"{bench_label} 등락률(%)": round(bmv * 100, 2),
+                     f"{port_label} 수익(%)": round(pmv * 100, 2),
+                     "벤치대비(%p)": round(gap * 100, 2), "거래일수": int(b - a),
+                     "시작시 총노출": round(e0, 4), "구간최소 총노출": round(emin, 4),
+                     "구간평균 총노출": round(eavg, 4), "구간최대 총노출": round(emax, 4),
+                     "종료시 총노출": round(eend, 4),
+                     "대응 지연(거래일)": (lag if lag is not None else "-"),
+                     "판정": verdict})
+    # ---- 요약 2행: 하락 / 상승 ----
+    if dn_gap:
+        rows.append({"블록": blk, "구분": "★ 하락구간 요약", "거래일수": len(dn_gap),
+                     "벤치대비(%p)": round(float(np.nansum(dn_gap)) * 100, 2),
+                     "판정": (f"하락 {len(dn_gap)}구간 · **회피 성공(전략수익 ≥ 0) "
+                            f"{int(np.nansum(dn_hit))}/{len(dn_hit)}** · 벤치대비 합 "
+                            f"{float(np.nansum(dn_gap)) * 100:+.1f}%p · 평균 "
+                            f"{float(np.nanmean(dn_gap)) * 100:+.2f}%p. "
+                            "벤치대비가 양수여야 '덜 빠졌다'는 뜻이다.")})
+    if up_gap:
+        rows.append({"블록": blk, "구분": "★ 상승구간 요약", "거래일수": len(up_gap),
+                     "벤치대비(%p)": round(float(np.nansum(up_gap)) * 100, 2),
+                     "판정": (f"상승 {len(up_gap)}구간 · **완전 참여(전략 ≥ 벤치) "
+                            f"{int(np.nansum(up_hit))}/{len(up_hit)}** · 벤치대비 합 "
+                            f"{float(np.nansum(up_gap)) * 100:+.1f}%p · 평균 "
+                            f"{float(np.nanmean(up_gap)) * 100:+.2f}%p.")})
+    if dn_gap and up_gap:
+        _d = float(np.nansum(dn_gap)) * 100; _u = float(np.nansum(up_gap)) * 100
+        rows.append({"블록": blk, "구분": "★★ 종합", "벤치대비(%p)": round(_d + _u, 2),
+                     "판정": (f"{bench_label} 대비 총 {_d + _u:+.1f}%p = 하락에서 {_d:+.1f} + "
+                            f"상승에서 {_u:+.1f}. "
+                            + ("**하락 방어로 벌고 상승 참여로 잃는** 전형적 방어형이다 — "
+                               "상승 참여를 올리는 것이 다음 개선 지점이다."
+                               if _d > 0 and _u < 0 else
+                               "**상승 참여로 벌고 하락에서 잃는** 공격형이다 — 방어가 다음 개선 지점이다."
+                               if _u > 0 and _d < 0 else
+                               "양쪽 다 플러스다(드문 경우 — 정의·데이터를 먼저 검산할 것)."
+                               if _d > 0 and _u > 0 else
+                               "⚠ 양쪽 다 마이너스다 — B&H보다 하락도 더 맞고 상승도 덜 먹었다는 뜻이므로 "
+                               "노출 규칙을 근본적으로 다시 봐야 한다."))})
+    log("ROT", kv(event="portfolio_segments_built", layer=str(layer), segments=len(segs),
+                  down=len(dn_gap), up=len(up_gap),
+                  down_avoided=(int(np.nansum(dn_hit)) if dn_hit else 0),
+                  up_full=(int(np.nansum(up_hit)) if up_hit else 0),
+                  bench=str(bench_label), min_move=mm,
+                  note="B&H 대비 하락 회피·상승 참여 — 블록 A(자산별)와 단위가 다르다"), M=M)
+    return pd.DataFrame(rows)
+
+
 def build_up_down_segments(curve_df: pd.DataFrame, exec_w: pd.DataFrame, ret_df: pd.DataFrame,
                            cfg: Any, name_map: Optional[Dict[str, str]] = None,
                            parent_map: Optional[Dict[str, str]] = None,
@@ -11150,8 +11309,44 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                     name_map={t: SECTOR_NAME_KR.get(t, "") for t in _sc},
                     parent_map={t: "SPY" for t in _sc},
                     bench_w=_bw, layer="섹터", M=M)
-                if isinstance(_seg, pd.DataFrame) and len(_seg):
-                    sheets["19_상승하락구간"] = _seg
+                # ---- [v0.50.0 C1 ★] 블록 C — **포트폴리오 단위** B&H 대비 ----
+                #   블록 A(자산별)의 '참여율'은 leader3가 하루에 한 섹터만 들기 때문에 구조적으로 0에 가깝다.
+                #   사용자 질문("B&H 대비 하락을 피했나·상승을 탔나")의 올바른 단위가 블록 C다.
+                _cbs: List[pd.DataFrame] = []
+                try:
+                    _pcv = sres.get("portfolio_curve")
+                    _pcur = None
+                    if isinstance(_pcv, pd.DataFrame) and len(_pcv):
+                        _scol = next((c for c in _pcv.columns if str(c).endswith("★")), None)
+                        if _scol is not None:
+                            _pcur = pd.to_numeric(_pcv[_scol], errors="coerce")
+                            _pcur.index = _tw.index[:len(_pcur)] if len(_pcur) == len(_tw) else _pcur.index
+                    if _pcur is None:
+                        _bt = (alloc.get("bts") or {}).get(alloc.get("label_star"))
+                        if _bt is not None and "strategy_ret" in _bt:
+                            _pcur = (1.0 + pd.Series(_bt["strategy_ret"]).astype(float).fillna(0.0)).cumprod()
+                    _tot_ex = _tw.sum(axis=1)            # 총노출(섹터 + SPY 폴백)
+                    _benches: List[Tuple[str, pd.Series]] = []
+                    if isinstance(_pcv, pd.DataFrame) and "SPY B&H" in _pcv.columns:
+                        _b = pd.to_numeric(_pcv["SPY B&H"], errors="coerce")
+                        if len(_b) == len(_tw):
+                            _b.index = _tw.index
+                        _benches.append(("SPY 단순보유(B&H)", _b))
+                    if isinstance(_pcv, pd.DataFrame) and "11섹터균등B&H" in _pcv.columns:
+                        _b2 = pd.to_numeric(_pcv["11섹터균등B&H"], errors="coerce")
+                        if len(_b2) == len(_tw):
+                            _b2.index = _tw.index
+                        _benches.append(("11섹터 균등 B&H", _b2))
+                    if _pcur is not None:
+                        for _bl, _bcur in _benches:
+                            _cbs.append(build_portfolio_segments(
+                                _pcur, _tot_ex, _bcur, scfg, bench_label=_bl, layer="섹터",
+                                port_label="S★", M=M))
+                except Exception as e:
+                    log("ROT", kv(event="portfolio_segments_failed", err=str(e)[:160]), M=M, level="warning")
+                _out = pd.concat([_seg] + _cbs, ignore_index=True) if _cbs else _seg
+                if isinstance(_out, pd.DataFrame) and len(_out):
+                    sheets["19_상승하락구간"] = _out
             else:
                 log("ROT", kv(event="updown_segments_skipped",
                               reason="alloc.target_w 또는 섹터 열이 비었다"), M=M)
