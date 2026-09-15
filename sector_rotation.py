@@ -17,6 +17,52 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.49.0 - 2026-09-15 - [★ 19_상승하락구간 신설 — S★ 배분이 어디서 문제인지] REPORT59.
+#    사용자 지시: "국면 판단 엑셀처럼 섹터별, 산업별 상승하락구간 시트 만들어서 어디가 문제인지 판단하도록
+#    수정해 (…) sector, industry regime 이렇게 2개 고치는 거야". 신호층 변경 **0건** — 시트 하나만 는다.
+#    사용자 확인: 30MB는 리포트 **파일 전체** 제약.
+#
+#    (Z1) ★ 신규 시트 **19_상승하락구간**. industry_rotation.py v0.20.0 Y3와 **같은 코드**를 복사했다
+#         (import가 아니라 복사인 이유: industry_rotation이 이 파일을 import하므로 반대 방향은 순환이다.
+#          그래서 두 함수를 처음부터 이 파일의 다른 부분에 의존하지 않는 **순수 함수**로 설계했다 —
+#          쓰는 것은 pandas·numpy와 log/kv뿐. 한쪽을 고치면 다른 쪽도 같이 고칠 것).
+#
+#         ⚠⚠ 기존 **05b_하락상승구간과 다른 시트**다. 혼동하지 말 것:
+#           05b = M.drawdown_episodes로 만든 **섹터 단독 전략**의 구간(02_섹터별단독거래의 짝).
+#                 "XLK 혼자 국면전략을 돌렸으면 어땠나"를 본다.
+#           19  = **S★ 배분**이 그 섹터를 실제로 얼마나 들고 있었나. 사용자 질문에 답하는 것은 이쪽이다.
+#
+#         구간 분할: 지그재그 — 고점→저점(하락) / 저점→고점(상승) 교대, 최소 변동 SEG_MIN_MOVE(섹터 5%),
+#           최소 SEG_MIN_DAYS(3)거래일. ⚠ 사후 분할이다(전 구간을 보고 나눈다) — 신호가 아니고 목표비중
+#           계산에 전혀 들어가지 않으므로 룩어헤드 개념이 적용되지 않는다. 비중·수익은 엔진이 실제로 쓴
+#           exec 비중(target_w(t−1))과 일간 총수익이다.
+#
+#         블록 A(자산별 요약 11행) — "어디가 문제인지"가 한 표에서 보인다:
+#           하락구간 수 · 평균 등락 · **방어 벤치대비 합(%p)** · 감축 성공률 /
+#           상승구간 수 · 평균 등락 · **참여 벤치대비 합(%p)** · 참여율(중위) /
+#           **문제 유형 판정**(하락 방어 실패 / 상승 미참여 / 양호) + ★ 전체 합계 행.
+#         블록 B(구간 상세): 시작·종료·등락률·거래일수·시작/최소/평균/최대/종료 비중·첫 대응일·대응 지연·
+#           그 자산 기여(%p)·벤치(%p)·**벤치대비(%p)**·판정 문자열(M 05b의 관행을 따른다).
+#
+#         ★ 벤치는 **도달 가능한 것**이어야 한다(I 계층에서 첫 구현의 결함을 찾아 고친 규약):
+#           상승구간 = **그날 S★가 섹터에 쓴 총 비중**(Σ섹터 target_w · SPY 폴백·현금 제외)을 그 섹터
+#             하나에 전부 넣었을 때. leader3는 명확한 1위에 섹터 슬리브 전부를 주므로 실제 천장이 이것이다.
+#             ⚠ '비중 1.0 완전 참여'를 벤치로 두면 M 노출 E_t가 1 미만인 날에는 구조적으로 닿을 수 없어
+#               '참여 부족'이 거대해지고 상승·하락 비교가 무의미해진다.
+#           하락구간 = 무포지션(0). 안 들고 있는 것은 언제나 도달 가능하다.
+#
+#         ★ 읽을 때 주의할 구조(시트 안에도 적혀 있다): 지그재그 상승구간은 **저점에서 시작**하고 그 시점의
+#           모멘텀은 음수다. 그래서 **역추세 신호는 상승 참여율이 높게** 나오고(저점에 이미 들고 있어 랠리
+#           초반을 먹는다) **추세추종 신호는 하락 감축 성공률이 높게** 나온다. 두 열을 따로 읽어야 하며
+#           한 열만 보고 "이 신호가 낫다"고 판단하면 안 된다.
+#
+#         크기 제어: SEG_DETAIL_MAX(기본 4000행) — 넘치면 |벤치대비| 큰 순으로 잘라 **최악 구간이 항상 남는다**.
+#           로그 updown_segments_built의 approx_bytes가 압축 전 상한이다(30MB 제약 감시).
+#         되돌리기: s_overrides={"SHOW_UPDOWN_SEGMENTS": False}
+#
+#    ⚠ 이 라운드에서 S의 신호·배분 규칙은 **한 줄도 바꾸지 않았다** — 13·13b·13c·05b·06·07 등 기존 시트는
+#      전부 v0.48.0과 비트 동일해야 한다. 리포트19에서 그것부터 확인할 것.
+#
 #  VERSION: v0.48.0 - 2026-09-14 - [지평 진단·배분층 격자 2종·요약 귀속 수정·순환매신호 감사 신설] REPORT51 §5 L1~L6.
 #    ※ 이번 라운드도 ⚠ 기본값(신호·채택·사이징) 변경 **0건** — 라이브 ★는 v0.47.0과 비트 동일하다(진단 열·
 #      배분층 격자·감사 시트만 추가, 라이브는 전부 꺼짐). 아래 함수/라인 참조는 이 파일의 현재 버전 기준.
@@ -2066,8 +2112,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.48.0"
-VERSION_DATE = "2026-09-14"
+VERSION = "v0.49.0"
+VERSION_DATE = "2026-09-15"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -2813,6 +2859,23 @@ class SectorConfig:
     ROTATION_MIN_HOLD_DAYS: int = 21           # 1위 섹터 최소 보유(거래일) — 월 리밸런스 관행. 적격 상실(하락 국면 등)은 즉시 청산
     ROTATION_TOP_K: int = 4                    # "topk" 모드의 K(11개의 약 1/3 — 상위 3분위). 상한 25%와 함께 K×25%=100%
     ROTATION_MAX_WEIGHT: float = 0.25          # 섹터 상한(E_t 대비 비율) — 상한 초과분은 워터필링으로 다른 적격 섹터에 재배분
+    # ---- [v0.49.0 Z1 ★ 신규 시트] 19_상승하락구간 — 사용자 지시 ----
+    #   "국면 판단 엑셀처럼 섹터별, 산업별 상승하락구간 시트 만들어서 어디가 문제인지 판단하도록 수정해"
+    #   M 리포트 05b_하락상승구간과 같은 꼴을 **S★ 배분 기준으로** 섹터 11개에 낸다.
+    #   ⚠ 이 파일의 기존 05b_하락상승구간과 다른 시트다 — 05b는 '섹터 단독 전략'(02 시트의 짝)이고
+    #     19는 **S★가 그 섹터를 실제로 얼마나 들고 있었나**를 본다. 사용자 질문에 답하는 것은 19다.
+    #   벤치 정의(도달 가능한 것이어야 한다):
+    #     상승구간 = **그날 S★가 섹터에 쓴 총 비중**(= Σ섹터 target_w)을 그 섹터 하나에 전부 넣었을 때.
+    #       leader3는 명확한 1위에 섹터 슬리브 전부를 주므로 이것이 실제 도달 가능한 천장이다.
+    #       ⚠ '비중 1.0 완전 참여'를 벤치로 두면 M 노출(E_t)이 1 미만인 날에는 닿을 수 없어 비교가 깨진다.
+    #     하락구간 = 무포지션(0). 안 들고 있는 것은 언제나 도달 가능하다.
+    #   ⚠ 진단 전용 — 구간 분할은 사후(전 구간)이고 목표비중 계산에 전혀 들어가지 않는다.
+    #   되돌리기: s_overrides={"SHOW_UPDOWN_SEGMENTS": False}
+    SHOW_UPDOWN_SEGMENTS: bool = True
+    SEG_MIN_MOVE: float = 0.05        # 섹터는 산업(7%)보다 변동이 작아 5%로 시작한다
+    SEG_DETAIL_MAX: int = 4000        # 블록 B 최대 행수 — 넘치면 |벤치대비| 큰 순으로 남긴다
+    SEG_RESPONSE_EPS: float = 0.01    # '첫 대응일' 판정 문턱(비중 변화 절대값) — 섹터 비중이 산업보다 작다
+    SEG_MIN_DAYS: int = 3
     ROTATION_CAP_STRICT: bool = True           # True: 적격 섹터가 적어(<1/상한) 예산을 다 못 채우면 남는 노출은 현금(상한 엄수)
     ROTATION_EXCLUDE_STATES: Tuple[str, ...] = ("RISK_OFF", "TREND_ONLY_OUT", "NO_SIGNAL")  # 배분 제외 국면
     ROTATION_IC_HORIZON: int = 21              # 횡단면 rank IC 검정 지평(거래일) — 수용기준 판정용(다른 지평은 참고 표시)
@@ -10623,6 +10686,273 @@ def _concat(results: Dict[str, Dict[str, Any]], key: str) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True, sort=False) if parts else pd.DataFrame()
 
 
+# =============================================================================
+# [S-6c] 19_상승하락구간 (v0.49.0 Z1 ★ 신설 · 사용자 지시 "섹터별, 산업별 상승하락구간 시트")
+#      ⚠ **industry_rotation.py v0.20.0 Y3의 같은 이름 함수를 그대로 복사한 것**이다(내용 동일).
+#        왜 import가 아니라 복사인가: industry_rotation이 sector_rotation을 import하므로 반대 방향으로
+#        의존하면 순환이 된다. 그래서 두 함수는 처음부터 **이 파일의 다른 부분에 의존하지 않는 순수 함수**로
+#        설계했다(쓰는 것은 pandas·numpy와 이 파일의 log/kv뿐). 한쪽을 고치면 다른 쪽도 같이 고칠 것.
+#      ⚠ 기존 05b_하락상승구간과 **다른 시트**다. 05b는 M.drawdown_episodes로 만든 '섹터 단독 전략'의
+#        구간이고(02_섹터별단독거래의 짝), 19는 **S★ 배분이 그 섹터를 실제로 얼마나 들고 있었나**를 본다.
+#        사용자 질문("어디가 문제인지")에 답하는 것은 19다.
+# =============================================================================
+def zigzag_segments(curve: pd.Series, min_move: float = 0.07, min_days: int = 3
+                    ) -> List[Tuple[str, int, int]]:
+    """[v0.49.0 Z1 · I v0.20.0 Y3와 동일 코드] 누적 총수익 곡선을 **고점→저점(하락) / 저점→고점(상승)** 교대 구간으로 나눈다.
+
+    전환 규칙: 현재 방향의 극값에서 min_move(비율) 이상 되돌리면 그 극값을 전환점으로 확정한다.
+    반환은 (구간유형, 시작 위치, 종료 위치) 리스트 — 위치는 curve의 정수 인덱스다.
+    마지막 미확정 구간은 '…(진행중)'으로 붙인다(M의 05b와 같은 관행).
+
+    ⚠ 이것은 **진단용 사후 분할**이다. 전 구간을 보고 나누므로 신호로 쓸 수 없고, 쓰지도 않는다
+      (룩어헤드 감사 대상이 아닌 이유 — 목표비중 계산에 전혀 들어가지 않는다).
+    ⚠ min_days보다 짧은 구간은 잡음으로 버린다. 버릴 때 **앞 구간과 병합하지 않는다** — 병합하면
+      '고점→저점' 정의가 깨져 등락률이 실제 스윙보다 작아진다. 그냥 표에서 제외한다."""
+    s = pd.Series(curve).dropna().astype(float)
+    if len(s) < 3 or not np.isfinite(s.values).all() or float(s.min()) <= 0:
+        # 0 이하 값이 있으면 비율 전환을 쓸 수 없다(총수익 곡선은 양수여야 한다)
+        return []
+    v = s.values
+    n = len(v)
+    out: List[Tuple[str, int, int]] = []
+    hi_i = lo_i = 0
+    dir_ = 0            # 0 미정 · +1 상승 추적 · −1 하락 추적
+    piv = 0
+    ext = 0
+    for i in range(1, n):
+        if dir_ == 0:
+            if v[i] > v[hi_i]:
+                hi_i = i
+            if v[i] < v[lo_i]:
+                lo_i = i
+            if v[i] <= v[hi_i] * (1.0 - min_move):
+                dir_, piv, ext = -1, hi_i, i
+            elif v[i] >= v[lo_i] * (1.0 + min_move):
+                dir_, piv, ext = 1, lo_i, i
+        elif dir_ == 1:
+            if v[i] > v[ext]:
+                ext = i
+            elif v[i] <= v[ext] * (1.0 - min_move):
+                out.append(("상승", piv, ext))
+                piv, dir_, ext = ext, -1, i
+        else:
+            if v[i] < v[ext]:
+                ext = i
+            elif v[i] >= v[ext] * (1.0 + min_move):
+                out.append(("하락", piv, ext))
+                piv, dir_, ext = ext, 1, i
+    if dir_ != 0 and ext > piv:
+        out.append((("상승" if dir_ == 1 else "하락") + "(진행중)", piv, ext))
+    return [(k, a, b) for k, a, b in out if (b - a) >= int(min_days)]
+
+
+def build_up_down_segments(curve_df: pd.DataFrame, exec_w: pd.DataFrame, ret_df: pd.DataFrame,
+                           cfg: Any, name_map: Optional[Dict[str, str]] = None,
+                           parent_map: Optional[Dict[str, str]] = None,
+                           bench_w: Optional[pd.DataFrame] = None,
+                           layer: str = "산업", M=None) -> pd.DataFrame:
+    """[19_상승하락구간, v0.49.0 Z1 ★ · I v0.20.0 Y3와 동일 코드] 자산별 상승·하락 구간과 **그 구간에서 비중이 어떻게 움직였는지**.
+
+    입력
+      curve_df : 날짜 × 자산 — 누적 **총수익** 곡선(구간 분할의 기준)
+      exec_w   : 날짜 × 자산 — 그날 실제로 **집행된** 비중(exec_w(t) = target_w(t−1) 규칙 적용 후)
+      ret_df   : 날짜 × 자산 — 일간 총수익률(기여 계산용)
+      cfg      : SEG_MIN_MOVE·SEG_DETAIL_MAX·SEG_RESPONSE_EPS·SEG_MIN_DAYS를 읽는다
+
+    블록 A(자산별 요약) — "어디가 문제인지"를 한 표에서 본다:
+      하락구간 수·평균 등락·**방어 이득 합(%p)**(= −Σ기여, 0 대비) · 감축 성공률(구간 최소비중 < 시작비중)
+      상승구간 수·평균 등락·**참여 부족 합(%p)**(= Σ(기여 − 등락률)) · 참여율(기여/등락률 중위)
+      문제 유형: 두 합의 절대값을 비교해 '하락 방어 실패' / '상승 미참여' / '양호'
+    블록 B(구간 상세): M의 05b와 같은 열 구성 + 벤치대비(%p).
+
+    벤치 정의(중요 · v0.20.0에서 한 번 고쳤다) —
+      상승구간: **그 계층이 실제로 쓸 수 있는 비중 예산**(bench_w)을 그 자산에 전부 넣었을 때의 수익.
+        산업 계층이면 부모 섹터의 그날 비중(w_s)이다. ⚠ '비중 1.0 완전 참여'를 벤치로 두면 안 된다 —
+        산업 한 칸은 부모 비중의 일부만 받을 수 있으므로(최대 = 부모 비중) 도달 불가능한 벤치가 되고,
+        그러면 '참여 부족'이 구조적으로 거대해져 하락·상승 비교가 무의미해진다(첫 구현의 결함).
+        bench_w가 None이면 1.0(완전 참여)로 되돌아간다 — 계층 예산이 1.0인 자산(예: M의 SPY)용이다.
+      하락구간: **무포지션**(0). 안 들고 있는 것은 언제나 도달 가능하므로 벤치로 옳다.
+    그래서 '벤치대비'가 음수면 그 구간에서 **도달 가능한 것 대비** 돈을 잃은 것이고,
+      음수 합을 상승·하락으로 나누면 손실의 출처가 갈린다."""
+    rows: List[dict] = []
+    mm = float(getattr(cfg, "SEG_MIN_MOVE", 0.07))
+    md = int(getattr(cfg, "SEG_MIN_DAYS", 3))
+    eps = float(getattr(cfg, "SEG_RESPONSE_EPS", 0.02))
+    cap = int(getattr(cfg, "SEG_DETAIL_MAX", 4000))
+    cols = [c for c in curve_df.columns if c in exec_w.columns and c in ret_df.columns]
+    rows.append({"블록": "A. 자산별 요약", "자산": "── 읽는 법 ──",
+                 "판정": (f"지그재그 최소 변동 {mm:.0%} · 최소 {md}거래일. **벤치대비**가 판정의 중심이다 — "
+                        + (f"상승구간은 **그 계층이 쓸 수 있는 비중 예산**({layer} 계층이 그 자산 하나에 줄 수 "
+                           "있는 최대 — 산업이면 부모 섹터 비중, 섹터면 그날 섹터에 쓴 총 비중)을 그 자산에 "
+                           "전부 넣었을 때 대비, 하락구간은 무포지션(0) 대비. 둘 다 **도달 가능한** 벤치다 "
+                           "(비중 1.0을 벤치로 두면 산업 한 칸은 절대 닿을 수 없어 비교가 무의미해진다). "
+                           if bench_w is not None else
+                           "상승구간은 완전 참여(비중 1.0 = 등락률) 대비, 하락구간은 무포지션(0) 대비. ")
+                        + "'참여 부족 합'이 '방어 이득 합'보다 크면 이 계층의 문제는 하락 방어가 아니라 "
+                        "**상승 참여**다(13l 블록 E의 손실 분해와 같은 결론이어야 한다). "
+                        "'감축 성공률'은 하락구간 안에서 비중이 시작보다 낮아진 적이 있는 구간의 비율이다. "
+                        "⚠ 읽을 때 주의할 구조 하나 — 지그재그 상승구간은 **저점에서 시작**하고 그 시점의 "
+                        "모멘텀은 음수다. 그래서 **역추세 신호는 상승 참여율이 높게** 나오고(저점에 이미 들고 "
+                        "있으므로 랠리 초반을 먹는다) **추세추종 신호는 하락 감축 성공률이 높게** 나온다. "
+                        "두 열을 따로 읽어야 하며 한 열만 보고 '이 신호가 낫다'고 판단하면 안 된다 "
+                        "(I 계층에서 역추세 신호가 평균초과는 플러스인데 '리더>부모'는 0.4711인 것과 같은 구조다).")})
+    detail: List[dict] = []
+    for t in cols:
+        cur = curve_df[t].dropna()
+        if len(cur) < 30:
+            continue
+        segs = zigzag_segments(cur, mm, md)
+        if not segs:
+            continue
+        w = exec_w[t].reindex(cur.index).astype(float)
+        r = ret_df[t].reindex(cur.index).astype(float)
+        bw = (bench_w[t].reindex(cur.index).astype(float)
+              if (bench_w is not None and t in bench_w.columns) else None)
+        dn_bench = []; up_bench = []; dn_cut = []; up_part = []
+        dn_mv = []; up_mv = []
+        for kind, a, b in segs:
+            i0, i1 = cur.index[a], cur.index[b]
+            mv = float(cur.iloc[b] / cur.iloc[a] - 1.0)
+            # 구간 안(시작 다음날 ~ 종료일)의 집행 비중·수익으로 그 자산의 기여를 만든다
+            sl = slice(a + 1, b + 1)
+            ws = w.iloc[sl]; rs = r.iloc[sl]
+            contrib = float((ws.fillna(0.0) * rs.fillna(0.0)).sum())
+            w0 = float(w.iloc[a]) if pd.notna(w.iloc[a]) else 0.0
+            wmin = float(ws.min()) if len(ws) else w0
+            wmax = float(ws.max()) if len(ws) else w0
+            wavg = float(ws.mean()) if len(ws) else w0
+            wend = float(w.iloc[b]) if pd.notna(w.iloc[b]) else 0.0
+            is_dn = kind.startswith("하락")
+            if is_dn:
+                bench = 0.0
+            elif bw is not None:
+                bench = float((bw.iloc[sl].fillna(0.0) * rs.fillna(0.0)).sum())
+            else:
+                bench = mv
+            gap = contrib - bench
+            # 첫 대응일 — 하락이면 '줄인' 첫 날, 상승이면 '늘린' 첫 날.
+            #   ⚠ 반대 방향(하락 중 '늘린' 날)도 따로 잡는다 — 그것이 M 05b의 '하락 중 진입'이고
+            #     진단에서 가장 중요한 실패 유형 하나다(비중 0에서 하락 중에 사 버린 경우).
+            resp_d = None; lag = None; opp_d = None; opp_lag = None
+            if len(ws):
+                dv = (ws - w0)
+                _down = dv[dv <= -eps]
+                _up_ = dv[dv >= eps]
+                hit = _down if is_dn else _up_
+                opp = _up_ if is_dn else _down
+                if len(hit):
+                    resp_d = hit.index[0]
+                    lag = int(cur.index.get_loc(resp_d) - a)
+                if len(opp):
+                    opp_d = opp.index[0]
+                    opp_lag = int(cur.index.get_loc(opp_d) - a)
+            if is_dn:
+                dn_bench.append(gap); dn_mv.append(mv)
+                dn_cut.append(1 if wmin < w0 - eps else 0)
+            else:
+                up_bench.append(gap); up_mv.append(mv)
+                up_part.append((contrib / bench) if abs(bench) > 1e-9 else np.nan)
+            # 판정 문자열(M 05b의 관행을 따른다)
+            if is_dn:
+                if wavg <= eps and wmax <= eps:
+                    verdict = "무포지션 통과(전 구간 0)"
+                elif w0 <= eps and wmax > eps:
+                    # ★ 비중 0으로 시작했는데 하락 중에 샀다 — M 05b의 '하락 중 진입'과 같은 유형.
+                    #   v0.20.0/v0.49.0 첫 구현에서 이 경우가 '선행 감축'으로 잘못 붙었다(기여는 음수인데
+                    #   라벨은 방어 성공처럼 읽혔다). 순서를 바꿔 먼저 잡는다.
+                    verdict = (f"⚠ 구간내 매수(하락 중 진입"
+                               + (f", 고점 후 {opp_lag}거래일" if opp_lag is not None else "")
+                               + f", 0.00→{wmax:.2f})")
+                elif wmin < w0 - eps and lag is not None:
+                    verdict = f"기간내 감축(지연 {lag}거래일, {w0:.2f}→{wmin:.2f})"
+                elif w0 <= eps:
+                    verdict = "선행 감축(구간 시작 시 이미 0)"
+                else:
+                    verdict = f"감축 없음(비중 {wavg:.2f} 보유 통과)"
+            else:
+                if wavg <= eps:
+                    verdict = "매수 없음(미참여)"
+                elif w0 >= wmax - eps and w0 > eps:
+                    verdict = f"저점 보유(구간 내내 {wavg:.2f} 유지)"
+                elif lag is not None:
+                    _frac = float((cur.iloc[min(a + lag, b)] / cur.iloc[a] - 1.0) / mv) if abs(mv) > 1e-9 else np.nan
+                    verdict = (f"매수(저점 후 {lag}거래일"
+                               + (f", 상승분 {_frac:.0%} 지점" if pd.notna(_frac) else "")
+                               + f", {w0:.2f}→{wmax:.2f})")
+                else:
+                    verdict = f"비중 유지({wavg:.2f})"
+            detail.append({"블록": "B. 구간 상세", "자산": t,
+                           "이름": (name_map or {}).get(t, ""),
+                           "부모": (parent_map or {}).get(t, ""),
+                           "구간유형": kind, "시작일(고점/저점)": i0, "종료일": i1,
+                           "등락률(%)": round(mv * 100, 2), "거래일수": int(b - a),
+                           "시작시 비중": round(w0, 4), "구간최소비중": round(wmin, 4),
+                           "구간평균비중": round(wavg, 4), "구간최대비중": round(wmax, 4),
+                           "종료시 비중": round(wend, 4),
+                           "첫 대응일": (resp_d.date().isoformat() if resp_d is not None else "-"),
+                           "대응 지연(거래일)": (lag if lag is not None else "-"),
+                           "그 자산 기여(%p)": round(contrib * 100, 3),
+                           "벤치(%p)": round(bench * 100, 3),
+                           "벤치비중(평균)": (round(float(bw.iloc[sl].mean()), 4)
+                                        if (bw is not None and len(bw.iloc[sl])) else None),
+                           "벤치대비(%p)": round(gap * 100, 3),
+                           "판정": verdict})
+        _dn_sum = float(np.nansum(dn_bench)) * 100 if dn_bench else 0.0
+        _up_sum = float(np.nansum(up_bench)) * 100 if up_bench else 0.0
+        if abs(_up_sum) < 1e-9 and abs(_dn_sum) < 1e-9:
+            prob = "구간 없음"
+        elif _up_sum < 0 and abs(_up_sum) >= abs(min(_dn_sum, 0.0)):
+            prob = "★ 상승 미참여가 더 크다"
+        elif _dn_sum < 0:
+            prob = "★ 하락 방어 실패가 더 크다"
+        else:
+            prob = "양호(둘 다 플러스)"
+        rows.append({"블록": "A. 자산별 요약", "자산": t,
+                     "이름": (name_map or {}).get(t, ""), "부모": (parent_map or {}).get(t, ""),
+                     "하락구간 수": len(dn_bench),
+                     "하락 평균등락(%)": (round(float(np.nanmean(dn_mv)) * 100, 2) if dn_mv else None),
+                     "방어 벤치대비 합(%p)": round(_dn_sum, 2),
+                     "감축 성공률": (round(float(np.mean(dn_cut)), 3) if dn_cut else None),
+                     "상승구간 수": len(up_bench),
+                     "상승 평균등락(%)": (round(float(np.nanmean(up_mv)) * 100, 2) if up_mv else None),
+                     "참여 벤치대비 합(%p)": round(_up_sum, 2),
+                     "참여율(중위)": (round(float(np.nanmedian(up_part)), 3)
+                                    if (up_part and any(pd.notna(x) for x in up_part)) else None),
+                     "판정": prob})
+    # 전체 합계 행 — 13l 블록 E의 손실 분해와 같은 방향인지 여기서 바로 비교한다
+    _A = [r for r in rows if r.get("블록") == "A. 자산별 요약" and r.get("자산") != "── 읽는 법 ──"]
+    if _A:
+        _dn = float(np.nansum([r.get("방어 벤치대비 합(%p)") or 0.0 for r in _A]))
+        _up = float(np.nansum([r.get("참여 벤치대비 합(%p)") or 0.0 for r in _A]))
+        _neg = abs(min(_dn, 0.0)) + abs(min(_up, 0.0))
+        rows.append({"블록": "A. 자산별 요약", "자산": "★ 전체 합계",
+                     "하락구간 수": int(np.nansum([r.get("하락구간 수") or 0 for r in _A])),
+                     "방어 벤치대비 합(%p)": round(_dn, 2),
+                     "상승구간 수": int(np.nansum([r.get("상승구간 수") or 0 for r in _A])),
+                     "참여 벤치대비 합(%p)": round(_up, 2),
+                     "벤치": (f"계층 비중 예산({layer} 계층이 그 자산 하나에 쓸 수 있는 최대)"
+                            if bench_w is not None else "완전 참여(비중 1.0)"),
+                     "판정": (f"음수 합 기준 손실 출처 — 상승 미참여 "
+                            f"{(abs(min(_up, 0.0)) / _neg if _neg > 1e-9 else 0):.0%} vs 하락 방어 실패 "
+                            f"{(abs(min(_dn, 0.0)) / _neg if _neg > 1e-9 else 0):.0%}. "
+                            "13l 블록 E의 '상승미달이 손실의 63%'와 같은 방향이어야 한다 — "
+                            "다르면 두 정의 중 하나가 틀렸다는 뜻이므로 어느 쪽도 믿지 말고 정의를 먼저 맞춘다.")})
+    # 블록 B 크기 제어 — 넘치면 |벤치대비| 큰 순으로 남긴다(최악 구간이 항상 표에 있다)
+    _n_all = len(detail)
+    if _n_all > cap:
+        detail = sorted(detail, key=lambda d: -abs(float(d.get("벤치대비(%p)") or 0.0)))[:cap]
+        detail = sorted(detail, key=lambda d: (str(d["자산"]), str(d["시작일(고점/저점)"])))
+    out = pd.DataFrame(rows + detail)
+    # [v0.20.0] pandas 2.x에서 DataFrame.applymap이 제거됐다 — 열별 문자 길이 합으로 대체한다.
+    _bytes = int(sum(int(out[c].astype(str).str.len().sum()) for c in out.columns)) if len(out) else 0
+    log("ROT", kv(event="updown_segments_built", layer=str(layer), assets=len(cols),
+                  segments_all=_n_all, segments_kept=len(detail), rows=len(out),
+                  approx_bytes=_bytes, min_move=mm, min_days=md,
+                  note="⚠ 진단 전용 — 구간 분할은 사후(전 구간)이고 목표비중 계산에 들어가지 않는다. "
+                       "approx_bytes는 문자 길이 합(압축 전 상한) — 리포트 30MB 제약 감시용"), M=M)
+    return out
+
+
 def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None) -> str:
     t0 = time.time()
     scfg: SectorConfig = sres.get("scfg", CFG)
@@ -10798,6 +11128,36 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     u = sres.get("universe", pd.DataFrame())
     sheets["10_데이터품질"] = pd.concat([u, q], ignore_index=True, sort=False) if len(q) else u
     sheets["11_룩어헤드감사"] = _concat(results, "audit")
+
+    # ---- [v0.49.0 Z1 ★] 19_상승하락구간 — 사용자 지시("어디가 문제인지 판단하도록") ----
+    #   05b_하락상승구간과 **다른 시트**다: 05b는 섹터 단독 전략(02의 짝), 19는 **S★ 배분**이 그 섹터를
+    #   실제로 얼마나 들고 있었나를 본다. 비중은 엔진 체결 규칙 그대로 exec_w(t) = target_w(t−1).
+    if bool(getattr(scfg, "SHOW_UPDOWN_SEGMENTS", True)) and alloc:
+        try:
+            _tw = alloc.get("target_w")
+            _sc = [t for t in ok_t if _tw is not None and t in _tw.columns and t in results]
+            if _tw is not None and len(_tw) and _sc:
+                _ret = pd.DataFrame({t: pd.Series(results[t].get("bh_ret"), dtype=float) for t in _sc})
+                _ret = _ret.reindex(_tw.index).astype(float)
+                _cur = (1.0 + _ret.fillna(0.0)).cumprod()
+                _ex = _tw[_sc].shift(1).fillna(0.0)
+                # 벤치 = 그날 S★가 **섹터에 쓴 총 비중**(SPY 폴백·현금 제외)을 그 섹터 하나에 전부 넣었을 때.
+                #   leader3는 명확한 1위에 섹터 슬리브 전부를 주므로 실제 도달 가능한 천장이다.
+                _budget = _tw[_sc].sum(axis=1).shift(1).fillna(0.0)
+                _bw = pd.DataFrame({t: _budget for t in _sc})
+                _seg = build_up_down_segments(
+                    _cur, _ex, _ret, scfg,
+                    name_map={t: SECTOR_NAME_KR.get(t, "") for t in _sc},
+                    parent_map={t: "SPY" for t in _sc},
+                    bench_w=_bw, layer="섹터", M=M)
+                if isinstance(_seg, pd.DataFrame) and len(_seg):
+                    sheets["19_상승하락구간"] = _seg
+            else:
+                log("ROT", kv(event="updown_segments_skipped",
+                              reason="alloc.target_w 또는 섹터 열이 비었다"), M=M)
+        except Exception as e:
+            log("ROT", kv(event="updown_segments_failed", err=str(e)[:200],
+                          suggest="alloc['target_w']와 results[t]['bh_ret'] 존재 확인"), M=M, level="warning")
     # [v0.48.0 L6 ★ 신규 — REPORT51 §3.4 E2·§5 L6] rot_raw(순환매 원시신호) 절단재계산 감사. 11_룩어헤드감사가
     #   다루지 않는 REL_MOM_*·HAZ_PCT_OWN·S_REL_*·BETA·MACRO_TAILWIND·MACRO_BETA_FCST 등을 별도로 감사한다.
     sheets["11b_순환매신호감사"] = _concat(results, "rot_audit")

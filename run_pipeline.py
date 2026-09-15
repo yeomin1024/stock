@@ -1,5 +1,72 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.16.0 - 2026-09-15 - [문서 + 실행 레시피] **I v0.19.0 → v0.20.0** · ★ 신규 4번째 계층
+#                    **stock_regime.py v0.1.0(K) 실행 추가** · S v0.48.0 · M v1.53.1 무변경.
+#
+#  사용자 지시(REPORT59): "국면 판단 엑셀처럼 섹터별, 산업별 상승하락구간 시트 만들어서 어디가 문제인지
+#  판단하도록 수정해 (…) sector, industry regime 이렇게 2개 고치는 거야 그리고 이제 가장 마지막 층인
+#  개별 주식도 똑같이 예측하도록 해 일단 샘플로 각 산업별 대표 티커 하나씩하고 펀더멘탈, 어닝 같은것도 보도록해"
+#  사용자 확인: 30MB는 **리포트 파일 전체** 제약 · 주식 계층은 **신규 파일** · 데이터는 **yfinance**.
+#  ⚠ S(sector_rotation.py) 수정은 **사용자가 v0.48.0을 업로드한 뒤** 같은 19 시트를 이식한다
+#    (작업 폴더에는 낡은 v0.47.0만 있어 그 위에 작업하면 v0.48.0의 L1·L4 변경분이 날아간다).
+#
+#  ★★ 리포트18 판정 — v0.19.0 [검증] ⑨ (a)(b)(e) PASS · **(c)(d) FAIL**
+#    (a) 칼마 **3.568** ≥ 3.479 ✔  (b) MDD **−0.1036**(개선) ✔  (e) NEUTRAL 3.770 vs 달력 3.740 ✔(간신히)
+#    X1(CAP_HOLD 0)은 예측과 거의 일치(0.3695 / −0.1036 / 3.568 vs 예측 0.3699 / −0.1036 / 3.571).
+#    ★ **13f ② MDD 악화 기준이 처음으로 PASS**(0.0081 ≤ 0.010) — 이제 ①②③ PASS, ④⑤만 FAIL.
+#    총노출: 최대 0.9500 · **0.9 이상 102일** · 0.5 이상 114일.
+#    (c)(d): 13p A5에서 ① 전 산업 +0.1402(연도 6/7) vs ② WF 완화 +0.0893(2/3) · **대조 알파벳 6개 +0.1205** ·
+#      알파벳 3개 **+0.1358(7/7)**. 같은 개수를 알파벳으로 골라도 게이트보다 낫다 → 산업별 선택은 값이 없다.
+#    ★ 그리고 격자가 더 큰 것을 잡았다 — **강등 두 개가 이제 손해**:
+#      반증(강등 둘 다 없음) 0.3749 / −0.1036 / **3.620** / 한계비율 **2.000**
+#      추세가드만            0.3696 / −0.1036 / 3.568
+#      라이브(둘 다)         0.3695 / −0.1036 / 3.568
+#      MDD가 같은데 반증이 CAGR +0.54%p·칼마 +0.052 높다. v0.18.0 ⑧(e)가 그대로 발동한다.
+#      원인: **X1(보유 0)이 이미 그 위험을 제거했다** — 두 위험 축소 장치가 겹치면 수익만 깎인다
+#      ([국면확신캡격자] NEUTRAL×래더 3.770 < 평탄캡 시절 3.787도 같은 현상).
+#
+#  ── I v0.20.0 변경분 ─────────────────────────────────────────────────────────────────
+#    (Y1) ★ 되돌림 3건(사전등록 규칙 발동): CAP_WARN_WF_GATE·CAP_WARN_DOWNGRADE·CAP_TREND_GUARD → False.
+#         라이브 = **단순 확신 래더**(확신 통과 CAP 1.0 / 보유 중 미달 0.0).
+#         기대: 리포트18 '강등 둘 다 없음' 행과 일치 — CAGR 0.3749 · MDD −0.1036 · 칼마 3.620.
+#    (Y2) [확신캡격자] 6행 — 강등 **4조합(없음/경고만/추세만/둘 다)** 이 처음 다 실린다. 리포트18에는
+#         '경고강등만'이 없어서 그 단독 효과가 측정되지 않았다.
+#    (Y3) ★ 신규 시트 **19_상승하락구간** — 사용자 지시의 본체. 지그재그(고점→저점/저점→고점, 최소 7%)로
+#         구간을 나누고 그 구간에서 **그 산업의 비중이 어떻게 움직였는지**를 붙인다.
+#         블록 A 29행 = "어디가 문제인지" 요약(하락 방어 벤치대비 합 · 감축 성공률 · 상승 참여 벤치대비 합 ·
+#           참여율 · **문제 유형 판정**) / 블록 B = 구간 상세(M 05b와 같은 열 + 벤치대비).
+#         ★ 벤치는 **도달 가능한 것**이어야 한다 — 상승구간은 '부모 섹터 비중을 그 산업에 전부' 대비,
+#           하락구간은 무포지션(0) 대비. (첫 구현에서 '비중 1.0 완전참여'를 벤치로 뒀다가 산업 한 칸은
+#           절대 닿을 수 없어 참여 부족이 구조적으로 거대해지는 결함을 발견해 고쳤다.)
+#
+#  ── ★ 신규 파일 stock_regime.py v0.1.0 (K = 4번째 계층) ────────────────────────────────
+#    표본: 산업 ETF 29개마다 대표 티커 1개(SOXX→NVDA · IGV→MSFT · … · GDX→NEM). STOCK_UNIVERSE만 고치면 교체된다.
+#    ★ v0.1.0의 자리매김: **배분·백테스트가 아니라 예측 채점**이 본체다. 라이브 규칙은 의도적으로 가장
+#      단순한 것 하나(200일선 위/아래)로 고정하고, 펀더멘탈·어닝 후보 18종은 03 시트에서 소수 클래스
+#      잣대로 먼저 측정한다. 이유: I 계층에서 '그럴듯한 근거로 라이브를 바꿨다가 세 라운드 연속 실패'했다.
+#    ★★ 펀더멘탈 인과 처리(이 파일에서 가장 조심한 부분): 분기 재무는 **기간말이 아니라 유효일** 기준
+#      as-of로만 쓴다 — (a) 실제 발표일 우선 (b) 없으면 기간말 + 60일(10-K 기한). '다음 어닝까지 며칠' 류는
+#      과거 시점에 알 수 없으므로 **특성에 넣지 않았다**. 11_룩어헤드감사가 절단재계산으로 매 실행 검증한다.
+#    시트: 00_실행요약 · 01Z_주식일별예측 · 01_일별_<티커>×29 · 02_티커요약 · 03_예측규칙정확도 ·
+#      04_펀더멘탈원장(유효일·출처 포함) · 05_어닝이벤트(서프라이즈·PEAD 1/5/21일) · 06_성과요약 ·
+#      11_룩어헤드감사 · 19_상승하락구간.
+#    실행: run_pipeline.main(run_stock_layer=True) — 기본 True. 끄기: run_stock_layer=False.
+#
+#  ── 이번 실행에서 확인할 것(순서대로) ──────────────────────────────────────────────────
+#    1) ★ **13f** — I★ 칼마 ≈ **3.620** · MDD ≈ **−0.1036** · CAGR ≈ **0.3749** · 한계비율 ≈ **2.000**
+#       (리포트18 [확신캡격자] '강등 둘 다 없음' 행과 일치해야 한다 — 어긋나면 되돌림이 불완전하다).
+#       ② MDD 악화 ≤ 0.010 **유지**되는지도 같이 본다.
+#    2) ★ **19_상승하락구간 블록 A 29행** — 어느 산업이 '하락 방어 실패'이고 어느 산업이 '상승 미참여'인가.
+#       그리고 ★ 전체 합계 행의 손실 출처 비율이 13l 블록 E의 '상승미달 63%'와 **같은 방향**인가(⑩(d)).
+#    3) ★ **[확신캡격자] '경고강등만' 행**이 '강등 없음'을 칼마로 이기는가 — 이기면 W2만 다시 켠다(⑩(c)).
+#    4) ★ **stock_regime_report.xlsx 03_예측규칙정확도 B블록** — F·E 계열(펀더멘탈·어닝) 중 연도비율 ≥ 0.60
+#       & 정밀>기저 종목 ≥ 20/29 & 향후수익 격차 < 0 을 **동시에** 만족하는 규칙이 있는가(승격 후보).
+#    5) **stock 11_룩어헤드감사 불일치 0건** · 02_티커요약의 '유효일 출처'가 '발표일'인 티커 수.
+#    6) **리포트 3개(+K = 4개) 파일 크기 전부 30MB 이하** — 각 리포트 로그의 size_mb 확인.
+#    7) [리더분산격자] 상위3(3.683) 재현 · 감사 11/11b·14 위반 0.
+#    ⚠ 되돌리기 한 줄: i_overrides={"CAP_WARN_DOWNGRADE": True, "CAP_TREND_GUARD": True,
+#      "CAP_WARN_WF_GATE": True} → v0.19.0과 비트 동일. 주식 계층 끄기: run_stock_layer=False.
+#
 #  VERSION: v1.15.0 - 2026-09-15 - [문서 + 실행 레시피 — 실행 로직 무변경] **I v0.18.0 → v0.19.0만** ·
 #                    S v0.48.0 · M v1.53.1 무변경. REPORT58 구현분 — 산업(I)만.
 #
@@ -970,13 +1037,14 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.15.0"
+VERSION = "v1.16.0"
 VERSION_DATE = "2026-09-15"
 
 MODULE_FILES = {
     "market_regime_trader": "market_regime_trader.py",
     "sector_rotation": "sector_rotation.py",
     "industry_rotation": "industry_rotation.py",
+    "stock_regime": "stock_regime.py",          # [v1.16.0] 4번째 계층(K) — 개별 주식
 }
 
 
@@ -1024,9 +1092,11 @@ def _banner(lines) -> None:
 
 
 def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: bool = True,
+         run_stock_layer: bool = True,
          download: bool = True, keep_history: bool = True,
          m_overrides: Optional[Dict[str, Any]] = None, s_overrides: Optional[Dict[str, Any]] = None,
-         i_overrides: Optional[Dict[str, Any]] = None, base_dir: Optional[str] = None,
+         i_overrides: Optional[Dict[str, Any]] = None,
+         k_overrides: Optional[Dict[str, Any]] = None, base_dir: Optional[str] = None,
          _hooks: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """M → S → I 실행 + 리포트 + (Colab) 다운로드 / (Kaggle) 영구 보존 + 실매매 배너.
     sector_exclude: None이면 sector_rotation.py의 기본 그대로 — v0.39.0부터 기본은 ()(11섹터 전부 예측).
@@ -1084,8 +1154,24 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     if I is not None:
         ires = (hk.get("i_run") or I.run)(sres, res, M, S, icfg)
         path3 = I.build_industry_report(ires, M=M, S=S)
-    paths = [p for p in (path, path2, path3) if p and os.path.exists(p)]
+    # ---- [v1.16.0] 4번째 계층 K(개별 주식) — 실패해도 M·S·I 리포트는 이미 만들어져 있다 ----
+    kres, path4 = None, None
+    if run_stock_layer:
+        try:
+            K = load_module("stock_regime")
+            assert hasattr(K, "run") and hasattr(K, "build_report"), \
+                "stock_regime.py에 run/build_report가 없음 — 파일을 다시 확인하세요"
+            kres = K.run(K.CFG, k_overrides)
+            path4 = K.build_report(kres, I=I)          # I를 넘기면 19_상승하락구간이 함께 나온다
+        except Exception as e:
+            print(f"[runner] ⚠ 주식 계층(K) 실패 — M·S·I 리포트는 정상입니다: {type(e).__name__}: {e}")
+            print("[runner]   다음 단계: (1) yfinance 설치·네트워크 확인 (2) run_stock_layer=False로 건너뛰기")
+    paths = [p for p in (path, path2, path3, path4) if p and os.path.exists(p)]
     print("생성 완료:", " / ".join(paths))
+    for _p in paths:                                    # 사용자 제약: 리포트 파일 전체 30MB 이하
+        _mb = os.path.getsize(_p) / 1e6
+        _flag = " ⚠ 30MB 초과" if _mb > 30.0 else ""
+        print(f"[runner]   {os.path.basename(_p)} {_mb:.1f}MB{_flag}")
 
     # ---- 이력 보관(reports/YYYY-MM-DD/) — Kaggle Persistence·커밋 Output에 그대로 남는다 ----
     hist_dir = None
@@ -1126,7 +1212,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
               "Persistence(Files) 설정이면 다음 세션에도 캐시·리포트가 그대로 남음. 커밋(Save & Run All)하면 버전별 Output으로 저장.")
     print(f"[runner] 총 소요 {time.time() - t_all:.0f}초")
     return {"env": env, "base": base, "paths": paths, "history_dir": hist_dir, "res": res, "sres": sres, "ires": ires,
-            "mcfg": mcfg, "scfg": scfg, "icfg": icfg}
+            "kres": kres, "mcfg": mcfg, "scfg": scfg, "icfg": icfg}
 
 
 if __name__ == "__main__":
