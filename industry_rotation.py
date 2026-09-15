@@ -1,5 +1,116 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.16.0 - 2026-09-14 - [⚠ 브레이크 되돌림(사전등록 규칙) · 리더분산격자 · 하락경고격자 · 순서판정 정정]
+#    REPORT55. **산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
+#    사용자 지시: "결과인데 수익곡선이 더 안좋아졌잖아 각 산업별 하락 예측 정확도를 더 올리면서
+#    수익 곡선 상승시키도록 개선해 예측 틀린 부분이 왜 틀렸는지 뉴스 같은 것도 참고하면서 분석하고 개선해"
+#    → 사용자 지적이 맞다. v0.15.0 R1(리더 하락 브레이크)의 사전등록 3기준이 **전부 실패**했다.
+#
+#    ── 보고서 14 판정: R1 전면 실패 ────────────────────────────────────────────
+#      항목                  보고서13(v0.14.0)   보고서14(v0.15.0)   사전등록 기준      판정
+#      CAGR                  0.3704              0.3606             ≥ 0.3654         **FAIL**(③)
+#      MDD                   −0.1113             −0.1060            악화 ≤ 0.010 → 0.0105  **FAIL**(①)
+#      칼마                   3.328               3.403              > S★ 3.758       **FAIL**(②)
+#      13f ① CAGR 기준        PASS                **FAIL**(0.0019)   —                퇴행
+#      18 병리 에피소드        6개                  4개                ≤ 2개            **FAIL**(⑤)
+#      13j '하락 브레이크' 청산  0건                  24건               ≥ 5건            PASS(④)
+#    v0.15.0 헤더에 "①②③ 중 하나라도 미달이면 되돌린다"고 사전등록했으므로 **되돌린다**(R1a).
+#
+#    ── 왜 실패했나: 2024년 한 에피소드에 과적합 ───────────────────────────────
+#    (E1 ★) 연도별 I★−S★(%p) 변화 — 브레이크가 **2024년만 개선하고 나머지를 악화**시켰다:
+#        2018 −0.83→−0.83 · 2019 −5.39→−5.22 · **2020 −3.46→−7.16(−3.70)** · 2021 +1.20→+1.52
+#        · 2022 0→0 · 2023 +2.18→+2.18 · **2024 +3.83→+4.62(+0.79)** · **2025 +8.76→+2.59(−6.17)**
+#        · **2026 +4.06→+2.59(−1.47)**
+#      나는 SOXX 2024-06~08 한 에피소드를 근거로 브레이크를 설계했고, 그 한 해만 좋아지고 2020·2025·2026을
+#      망쳤다. 전형적인 단일 에피소드 과적합이다.
+#    (E2 ★ 내 판단 착오) **깊은 낙폭 + 고변동성은 바닥 근처이고, 그 다음 21일 수익은 플러스다.**
+#      13j 브레이크 청산 24건을 낙폭 깊이로 갈라 보면:
+#        dd63 ≤ −10% 로 끊은 9건 → 평균수익 −0.0056 · **전략기여 −2.740%p**
+#        dd63 > −10% 로 끊은 15건 → 평균수익 +0.0356 · 전략기여 +16.079%p
+#      ⚠ 이건 v0.15.0 헤더에 내가 **이미 써 놓은 실측과 모순된다**: "vol21 상위20%는 향후 21일 하락을
+#      맞추지 못한다(연도비율 0.396 · 정밀−기저 −0.0198)". 그 함의는 '고변동성 구간에서 팔면 반등을 놓친다'인데,
+#      나는 "수익률이 아니라 correctness"라는 프레임으로 그 함의를 무시하고 **반대 방향의 장치**를 만들었다.
+#      correctness 논거(비중이 낙폭 중에 커지는 것은 틀렸다)는 타당했지만, 그 교정 수단으로 고른 것이
+#      내 데이터가 반대라고 말한 바로 그 신호였다.
+#    (E3 격자는 제 일을 했다) [리더위험격자] 3행이 **전부 달력 대조군을 이겼다**(신호는 무작위보다 낫다):
+#        dd10만 3.207 vs 대조 3.108 · park0.90만 **3.419** vs 대조 3.387 · dd20+park 3.372 vs 대조 2.858
+#      그런데 **전부 S★ 칼마 3.758 미달**이고, dd 조건은 MDD를 **악화**시킨다(dd10만 −0.1138 < ★ −0.1060).
+#      즉 '신호가 무작위보다 낫다'와 '전략이 좋아진다'는 별개다 — 대조군을 넣어 둔 것이 이번에 값을 했다.
+#
+#    ── ⚠ 지난 라운드 내 보고 오류 정정 ──────────────────────────────────────
+#    v0.15.0 헤더에 "부모안 적중 0.378 vs 무작위 0.343 — **8/8년 무작위 초과**"라고 썼다. 그것은
+#    **엔진이 아니라 내 시뮬레이션(r53 pf8)** 값이고, 신호 집합·선택 규칙이 엔진과 달랐다.
+#    **엔진 자신의 13p 블록 B**(보고서 13·14 동일)는 다르게 말한다:
+#      연도      2018  2019  2020  2021  2022  2023  2024  2025  2026
+#      리더→실현1위 0.228 0.370 0.426 0.227 0.059 0.047 0.253 0.510 0.419
+#      무작위     0.258 0.353 0.317 0.277 0.306 0.279 0.306 0.330 0.319
+#      → **무작위 초과 4/9년**(v0.14.0에서 내가 건 문턱은 7/9였다 — 즉 ②도 미달이었는데 지난 라운드에
+#        CAGR만 보고 P1을 '성공'으로 보고했다). 2022·2023은 0.059/0.047로 참담하다.
+#      또 **'리더 > 부모 ETF' 평균 0.4711** — 동전던지기 미달이다.
+#      리더의 평균 초과(+0.517%/21일)는 **순서가 아니라 편포**에서 나온다(왜도 +0.746 · 첨도 20.43).
+#    이 정정을 00시트 헤드라인으로 올려(R2) 다시 놓치지 않게 한다.
+#
+#    ── 칼마가 오르지 않는 산술 ──────────────────────────────────────────────
+#    (E4 ★) 산업 다리를 더하면 CAGR +1.17%p · MDD 악화 +1.58%p(보고서13 기준).
+#      **한계비율 = 1.17 / 1.58 = 0.74** 인데 S★ 칼마는 **3.756**이다.
+#      칼마 = CAGR/|MDD| 이므로, 한계비율이 기존 칼마보다 작은 다리를 더하면 **칼마는 반드시 내려간다.**
+#      노출을 줄이거나(CAP 0.25 → 3.584) 타이밍을 재는 것(브레이크 → 3.403~3.419)으로는
+#      이 산술을 못 넘는다 — 실제로 넘지 못했다. 넘는 길은 둘뿐이다:
+#        (가) 다리의 **정보비율을 올린다**(현재 0.240)  (나) 다리의 **개별 산업 위험을 줄인다**
+#      (나)가 이번 라운드의 격자다: 같은 노출을 유지하면서 top-1 대신 top-K로 나누면 수익은 조금 줄고
+#      아이디오싱크라틱 분산은 더 줄어 한계비율이 올라갈 수 있다. **이것이 산술을 정면으로 공격하는 유일한 레버다.**
+#      13f에 '한계비율' 행을 추가해(R5) 매 실행 이 산술이 보이게 한다.
+#
+#    ── 하락 예측은 실제로 올랐다(엔진 실측 · 이번 라운드의 유일한 성공) ──────────
+#    (E5 ★) 13p 블록 A3(v0.15.0 R4가 신설) 전 기간·29산업 실측:
+#      규칙                      정밀도   기저    정밀−기저  연도비율  격차(%p)  2024격차  MCC>0
+#      ⑥ 확정 상승아님(현행)       0.4762  0.4263  +0.050   0.471    −0.84    **+0.226**  27/29
+#      A3-1 ⑥ & vol21 하위50%    0.5251  0.4263  +0.099   0.636    −1.651   −0.144    25/29
+#      A3-2 ⑥ & vol21 하위1/3    0.5527  0.4263  +0.126   0.632    −2.052   −1.025    24/29
+#      **A3-3 ⑥ & vol33 & 탈동조  0.5695  0.4263  +0.143   0.688    −2.403   −1.05**   24/29
+#      **A3-4 vol21 하위20%(⑥없이) 0.5263  0.4263  +0.100   0.677    −2.004   −2.707**  25/29
+#      A3-5 ⑥ & 탈동조           0.5160  0.4263  +0.090   0.635    −1.308   +0.017    23/29
+#      다섯 라운드 중 가장 강한 예측 결과이고, 지난 라운드의 걸림돌이던 **2024년 격차가 음수로 돌아섰다**.
+#      승격 조건(연도비율 ≥0.60 & 연도격차음수 ≥0.75 & 2024격차<0) 중 A3-3은 0.688 / 0.742 / −1.05 —
+#      두 번째가 0.742로 0.75에 **아주 살짝 미달**이다.
+#    (E6 ⚠ 그런데 리더에 적용할 근거는 아직 얇다) 경고가 **리더 보유일**과 겹치는 부분을 재 보면:
+#      vol20 경고 & 리더보유 = 934일 중 **255일(27.5%)** · 향후21일 격차 −4.102%p — 좋아 보이지만
+#      산업별로 뜯으면 경고&보유 ≥20일인 산업이 7개뿐이고 격차가 음수인 것은 **IGV(−7.38%p, 32일)·IYZ뿐**이며
+#      SOXX(+1.71) · IHE(+1.88) · IHF(+2.98)는 **양수**다. 즉 총계가 IGV 한 종목에 끌린다.
+#      ⚠ R1이 실패한 것과 같은 함정이므로 **라이브로 넣지 않고 격자로 검정한다**(R4).
+#
+#    ── 이번 변경 ────────────────────────────────────────────────────────────
+#    (R1a ⚠ 되돌림 · 라이브) **INDUSTRY_LEADER_BRAKE True → False.** 사전등록 규칙 집행.
+#      CAGR 0.3606 → 0.3704 복원(13f ① 다시 PASS), MDD −0.1060 → −0.1113로 되돌아간다.
+#      브레이크 코드·18시트·격자는 **지우지 않는다** — 되돌리기 한 줄로 언제든 재검정할 수 있게 남긴다
+#      (프로젝트 규약: 퇴역한 격자는 검정 가능성을 살려 둔다). [리더위험격자]는 격자로 유지한다.
+#      ⚠ 되돌리기(다시 켜기): i_overrides={"INDUSTRY_LEADER_BRAKE": True}
+#    (R2 정정 · 00시트) **순서 판정을 엔진 기준으로 헤드라인화.** 00시트에 13p 블록 B의
+#      '리더→실현1위 > 무작위' 연도 k/n 과 '리더>부모 ETF' 평균을 싣고, v0.15.0의 "8/8년" 주장이
+#      내 시뮬레이션이었음을 명시한다. 순환매는 순서로 판정한다는 사용자 잣대를 엔진 숫자로 집행하는 것이다.
+#    (R3 신규 격자) **[리더분산격자]** ROTATION_LEADER_TOPK — 리더 몫을 부모 안 **복합순위 상위 K개**에
+#      균등 분할한다(K=1이 현행·비트 동일). 총 노출은 그대로이고 개별 산업 위험만 줄인다(E4 (나)).
+#      격자 (2, 3) + 각 K마다 **대조군**(같은 K개를 순위 대신 **알파벳 순**으로 골라 같은 몫 — 순위 정보가
+#      실제로 값을 하는지 가른다). min_hold·국면게이트·회피 로직은 전부 그대로 둔다(K만 바뀐다).
+#      ⚠ 되돌리기: i_overrides={"INDUSTRY_LEADER_TOPK_GRID": ()}
+#    (R4 신규 격자) **[하락경고격자]** — A3-3/A3-4 경고가 켜진 날 리더 몫을 줄인다(전량/절반) +
+#      **달력 대조군**(같은 날수를 신호 없이 균등 간격). E5의 예측력이 곡선으로 번역되는지 엔진이 판정한다.
+#      ⚠ 되돌리기: i_overrides={"INDUSTRY_WARN_CUT_GRID": ()}
+#    (R5 진단) **13f에 '한계비율' 행 추가** — (I★ CAGR − S★ CAGR) / (I★ MDD 악화)를 S★ 칼마와 나란히.
+#      이 값이 S★ 칼마보다 작으면 칼마는 구조적으로 오를 수 없다는 것을 매 실행 보이게 한다(E4).
+#
+#    [검증] 사전등록 문턱(다음 실행):
+#      R1a ① 13f ① CAGR 기준이 **PASS로 복귀**(I★ CAGR ≥ 0.3687) · ② MDD −0.1113 · 칼마 3.328로 복귀
+#          (= 보고서13과 일치해야 한다. 다르면 되돌림이 불완전한 것이다)
+#      R3  ③ [리더분산격자] K=2 또는 3이 **(a) 칼마 > 3.328(K=1) 그리고 (b) 같은 K의 알파벳 대조군보다 높음**
+#          → 둘을 다 만족하는 행만 다음 라운드 채택 후보. (b)가 없으면 '순위가 아니라 분산 덕'이다.
+#          ④ 그 행의 MDD 악화가 K=1보다 작아야 한다(분산의 목적이 그것이므로).
+#      R4  ⑤ [하락경고격자] 각 행이 달력 대조군을 **칼마·MDD 둘 다** 이겨야 후보.
+#      R5  ⑥ 13f '한계비율' 행이 산출되고, 어떤 격자 행의 한계비율이 S★ 칼마를 넘는지 확인.
+#      ⚠ 이번 라운드는 **라이브 신호·위험 파라미터 변경이 되돌림 1건뿐**이다. 두 라운드 연속으로
+#        그럴듯한 장치를 라이브에 넣어 실패했으므로, 새 아이디어는 전부 격자에서 대조군과 함께 검정한다.
+#    ⚠ 연구·교육용 도구이며 투자 조언이 아니다.
+#
 #  VERSION: v0.15.0 - 2026-09-14 - [⚠ 리더 하락 브레이크(위험 파라미터) · 리더위험격자 · 18_리더위험진단 · 하락경고]
 #    REPORT54. **산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
 #    사용자 지시: "이제야 좀 의미있어진 것 같은데 아직 멀었어 각 산업별 하락 예측 정확도를 더 올리면서
@@ -804,7 +915,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.15.0"
+VERSION = "v0.16.0"
 VERSION_DATE = "2026-09-14"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -1199,12 +1310,48 @@ class IndustryConfig:
     #   반사실 추정(⚠ 리포트 재구성이라 연율 0.21%p 잔차 있음 — 정확 판정은 격자 R2):
     #     MDD −0.1113 → −0.1060 · 칼마 3.318 → 3.479 · CAGR −0.0006
     #   ⚠ 되돌리기: i_overrides={"INDUSTRY_LEADER_BRAKE": False}
-    INDUSTRY_LEADER_BRAKE: bool = True                 # ⚠⚠ 위험 파라미터(비중) — 라이브 ON
+    # ⚠⚠ [v0.16.0 R1a 되돌림] True → **False**. v0.15.0 헤더에 "사전등록 ①②③ 중 하나라도 미달이면
+    #   되돌린다"고 적어 두었고 보고서 14에서 셋 다 미달했다(CAGR 0.3606 < 0.3654 · MDD 악화 0.0105 > 0.010
+    #   · 칼마 3.403 < 3.758). 게다가 연도별로 2024년만 개선하고 2020(−3.70%p)·2025(−6.17%p)·2026(−1.47%p)을
+    #   악화시켰다 — 단일 에피소드 과적합. 원인은 E2: 깊은 낙폭+고변동성은 바닥 근처이고 그 다음 21일 수익이
+    #   플러스다(dd63 ≤ −10%로 끊은 9건의 전략기여 −2.740%p). 코드와 격자는 남겨 둔다(재검정 가능성 보존).
+    #   ⚠ 다시 켜기: i_overrides={"INDUSTRY_LEADER_BRAKE": True}
+    INDUSTRY_LEADER_BRAKE: bool = False                # ⚠⚠ 위험 파라미터(비중) — v0.16.0에서 되돌림(OFF)
     BRAKE_DD_Q: float = 0.10                           # 자체 dd63 자기이력 분위(이 아래면 제동)
     BRAKE_VOL_Q: float = 0.90                          # park5 자기이력 백분위(이 위면 제동)
     BRAKE_MIN_HIST: int = 250                          # 자기이력 백분위 최소 관측(1년)
     BRAKE_USE_DD: bool = True                          # (a) 낙폭 조건 사용
     BRAKE_USE_VOL: bool = True                         # (b) 변동성 조건 사용
+    # ---- [v0.16.0 R3 신규 격자] 리더 분산(top-K) — 칼마 산술을 정면으로 공격하는 유일한 레버 ----
+    #   왜(E4): 산업 다리를 더하면 CAGR +1.17%p · MDD 악화 +1.58%p → **한계비율 0.74**인데 S★ 칼마는 3.756이다.
+    #     칼마 = CAGR/|MDD| 이므로 한계비율이 기존 칼마보다 작은 다리를 더하면 칼마는 **반드시** 내려간다.
+    #     노출 축소(CAP 0.25 → 3.584)나 타이밍(브레이크 → 3.403~3.419)으로는 이 산술을 못 넘는다 — 못 넘었다.
+    #     넘는 길은 (가) 정보비율 올리기(현재 0.240) 또는 (나) **개별 산업 위험 줄이기**뿐이고, 이것이 (나)다.
+    #   무엇을 하는가: 리더 몫(INDUSTRY_LEADER_CAP)을 부모 안 **복합순위 상위 K개**에 균등 분할한다.
+    #     총 노출은 그대로 — 줄이는 것은 한 산업에 몰린 아이디오싱크라틱 분산뿐이다.
+    #     K=1이 현행이며 **비트 동일**이다(라이브 기본값을 바꾸지 않는다).
+    #   근거 보강: 엔진 13p 블록 B 실측으로 리더의 **순서 우위가 4/9년**이고 '리더>부모 ETF'가 평균 0.4711
+    #     (동전던지기 미달)이다. 순서가 약하면 top-1 집중은 보상 없는 위험이다 — 분산이 옳은 방향이다.
+    #   ⚠ 대조군(알파벳 순 K개)이 함께 실린다: 순위 정보가 값을 하는지 vs 그냥 분산 덕인지를 가른다.
+    #   ⚠ 되돌리기: i_overrides={"INDUSTRY_LEADER_TOPK_GRID": ()}
+    ROTATION_LEADER_TOPK: int = 1                       # 라이브 = 1(현행·비트 동일)
+    ROTATION_LEADER_TOPK_ALPHA: bool = False            # True면 순위 대신 알파벳 순으로 K개(대조군 전용)
+    INDUSTRY_LEADER_TOPK_GRID: Tuple[int, ...] = (2, 3)
+    # ---- [v0.16.0 R4 신규 격자] 하락 경고 기반 리더 감축 ----
+    #   경고 자체는 엔진 실측으로 강하다(13p 블록 A3): A3-3(⑥ & vol21 하위1/3 & 탈동조) 정밀도 0.5695 vs
+    #     기저 0.4263(**+14.3%p**) · 연도비율 0.688 · 향후21일 격차 −2.403%p · 2024 격차 −1.05 · 24/29 산업.
+    #   ⚠ 그런데 **리더에 적용할 근거는 얇다**: 경고 & 리더보유가 934일 중 255일(27.5%)로 겹치긴 하지만,
+    #     경고&보유 ≥20일인 산업 7개 중 격차가 음수인 것은 IGV(−7.38%p)·IYZ뿐이고 SOXX(+1.71)·IHE(+1.88)·
+    #     IHF(+2.98)는 양수다. 총계가 IGV 한 종목에 끌린다 — R1이 실패한 것과 같은 함정이다.
+    #   그래서 **라이브로 넣지 않고** 격자로만 검정한다. 형식: (라벨, vol 분위, 탈동조 요구, 감축 비율).
+    #     감축 비율 1.0 = 전량 부모로, 0.5 = 절반만.
+    #   각 행에 **달력 대조군**(같은 날수를 신호 없이 균등 간격)이 자동으로 붙는다.
+    #   ⚠ 되돌리기: i_overrides={"INDUSTRY_WARN_CUT_GRID": ()}
+    INDUSTRY_WARN_CUT_GRID: Tuple[Tuple[str, float, bool, float], ...] = (
+        ("A3-4 vol20 전량", 0.20, False, 1.0),
+        ("A3-4 vol20 절반", 0.20, False, 0.5),
+        ("A3-3 vol33+탈동조 전량", 1.0 / 3.0, True, 1.0),
+    )
     # [리더위험격자] 브레이크 변형 — 각 행에 '같은 날수·같은 몫을 신호 없이 줄이는 달력 대조군'이 붙는다.
     #   형식: (라벨, dd분위 또는 None, vol분위 또는 None). 빈 tuple이면 격자 끔.
     #   ⚠ 되돌리기(격자만 끔): i_overrides={"INDUSTRY_LEADER_BRAKE_GRID": ()}
@@ -2936,6 +3083,9 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
     rev_avoid_ = pd.Series("", index=eval_idx, dtype=object)             # [§B4] 그날 역방향 회피된 산업
     corr_block_ = pd.Series("", index=eval_idx, dtype=object)            # [§B5] 상관 문턱 미달로 리더에서 빠진 산업
     n_ok_ = pd.Series(0, index=eval_idx, dtype=int)
+    # [v0.16.0 R3] 리더 분산 설정 — 루프 밖에서 한 번만 읽는다(성능).
+    _topk = max(int(getattr(icfg, "ROTATION_LEADER_TOPK", 1) or 1), 1)
+    _topk_alpha = bool(getattr(icfg, "ROTATION_LEADER_TOPK_ALPHA", False))
     cur_leader: Optional[str] = None
     held = 0
     switches = 0
@@ -3036,7 +3186,24 @@ def leader3_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, rank
         elif leader_lost and cur_leader is not None and held >= min_hold:
             cur_leader = None
         if cur_leader is not None:
-            leader_ind.iat[i, idx_of[cur_leader]] = 1.0
+            # [v0.16.0 R3] 리더 몫을 부모 안 **복합순위 상위 K개**에 균등 분할한다(K=1이면 종전과 비트 동일).
+            #   왜: 엔진 13p 블록 B 실측으로 리더의 순서 우위가 4/9년이고 '리더>부모 ETF'가 평균 0.4711
+            #   (동전던지기 미달)이다. 순서가 약한데 top-1에 몰면 보상 없는 개별 위험만 진다(E4 (나)).
+            #   총 노출은 그대로 — leader_ind 합이 항상 1.0이므로 호출부의 ×LEADER_CAP이 변하지 않는다.
+            #   cur_leader는 **항상 포함**한다(min_hold·교체 로직의 의미를 보존하기 위해).
+            if _topk <= 1:
+                leader_ind.iat[i, idx_of[cur_leader]] = 1.0
+            else:
+                _cand = [c for j, c in enumerate(inds) if ok[j] and c != cur_leader]
+                if _topk_alpha:
+                    # 대조군: 순위를 쓰지 않고 알파벳 순으로 채운다 — '순위가 값을 하는가'를 가르는 잣대.
+                    _cand = sorted(_cand)
+                else:
+                    _cand = sorted(_cand, key=lambda c: (-(row[idx_of[c]] if pd.notna(row[idx_of[c]]) else -np.inf), c))
+                _pick = [cur_leader] + _cand[:max(_topk - 1, 0)]
+                _w = 1.0 / float(len(_pick))
+                for c in _pick:
+                    leader_ind.iat[i, idx_of[c]] = _w
             tier_.iloc[i] = "리더"
             leader_.iloc[i] = cur_leader
             held += 1
@@ -3277,7 +3444,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                      only_mode: Optional[str] = None, groups_over: Optional[Dict[str, Dict[str, Any]]] = None,
                      neutral_share: float = 0.0,
                      brake: Optional[pd.DataFrame] = None,
-                     brake_calendar: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                     brake_calendar: Optional[pd.DataFrame] = None,
+                     brake_frac: float = 1.0) -> pd.DataFrame:
         """[§7.2 + v0.3.0 §A3] 부모 비중 w_s[p]를 산업/부모ETF로 나눈다. only_mode는 '잔여'(산업으로
         배분되지 않은 몫)의 목적지: "parent"(기본, 잔여=부모ETF — 잔여가 정확히 S★로 환원) |
         "industries"(잔여도 그 부모의 적격 산업 균등 — 사용자 지시 '산업만 배분'. 적격 0개면 부모ETF) |
@@ -3324,7 +3492,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                         off = c2 if off is None else (off | c2)
                     if off is None or not bool(off.any()):
                         continue
-                    frac[t] = frac[t] - lead_frac[t].where(off, 0.0).fillna(0.0)
+                    # [v0.16.0 R4] brake_frac < 1 이면 리더 몫을 그 비율만큼만 줄인다(절반 감축 행용).
+                    frac[t] = frac[t] - float(brake_frac) * lead_frac[t].where(off, 0.0).fillna(0.0)
                 frac = frac.clip(lower=0.0)
             if mode == "industries":
                 resid = (1.0 - frac.sum(axis=1)).clip(lower=0.0)
@@ -3387,6 +3556,64 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             pos = np.linspace(0, n_all - 1, num=k, dtype=int)
             C.iloc[np.unique(pos), C.columns.get_loc(t)] = True
         return C
+    # ---- [v0.16.0 R3 신규 격자] [리더분산격자] top-K + 알파벳 대조군 ----
+    #   _run_groups로 판단 규칙만 바꿔 다시 돈다(신호 재계산 없음 — 배분층 격자의 전제 유지).
+    for _k in tuple(getattr(icfg, "INDUSTRY_LEADER_TOPK_GRID", ()) or ()):
+        _k = int(_k)
+        if _k <= 1:
+            continue
+        try:
+            _gk = _run_groups({"ROTATION_LEADER_TOPK": _k})
+            _ga = _run_groups({"ROTATION_LEADER_TOPK": _k, "ROTATION_LEADER_TOPK_ALPHA": True})
+        except Exception as e:
+            log("ROTATION", kv(event="topk_grid_failed", k=_k, err=str(e)[:120]), M=M, level="warning")
+            continue
+        target_ws[f"리더분산 상위{_k} [리더분산격자]"] = _mk_target_w(live_cap, live_fb, groups_over=_gk)
+        target_ws[f"대조: 상위{_k} 알파벳순(순위 미사용) [리더분산격자·대조]"] = \
+            _mk_target_w(live_cap, live_fb, groups_over=_ga)
+        _nl = int(sum(int((g["leader_ind"] > 0).sum().sum()) for g in _gk.values()))
+        log("ROTATION", kv(event="topk_grid_row", k=_k, leader_industry_days=_nl,
+                           note="총 노출 불변 — 개별 산업 위험만 줄인다. 대조군(알파벳)이 순위 가치를 가른다"), M=M)
+
+    # ---- [v0.16.0 R4 신규 격자] [하락경고격자] 저변동성 경고 → 리더 감축 + 달력 대조군 ----
+    #   ⚠ 경고는 13p 블록 A3에서 강하게 측정됐지만(A3-3 정밀도 +14.3%p · 연도비율 0.688) 리더 보유일과의
+    #     겹침에서 격차 대부분을 IGV 한 종목이 만든다. 그래서 라이브가 아니라 격자로만 검정한다.
+    def _warn_mat(vq: float, need_cs: bool) -> pd.DataFrame:
+        """저변동성(+탈동조) 경고 행렬. 전부 t일까지의 정보(자기이력 백분위)."""
+        W = pd.DataFrame(False, index=eval_idx, columns=cols)
+        _mh = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250)
+        for t in cols:
+            r = results.get(t, {})
+            vp = pd.Series(r.get("vol21_pct"), dtype=float)
+            if vp.empty:
+                continue
+            w = vp.le(float(vq))
+            if need_cs:
+                cs = pd.Series(r.get("coupling_score"), dtype=float)
+                if cs.empty:
+                    continue
+                w = w & cs.le(cs.expanding(min_periods=_mh).quantile(1.0 / 3.0))
+            W[t] = w.reindex(eval_idx).fillna(False).values
+        return W
+    for _lbl, _vq, _cs, _cut in tuple(getattr(icfg, "INDUSTRY_WARN_CUT_GRID", ()) or ()):
+        try:
+            _Wm = _warn_mat(float(_vq), bool(_cs))
+        except Exception as e:
+            log("ROTATION", kv(event="warn_grid_failed", row=str(_lbl), err=str(e)[:120]), M=M, level="warning")
+            continue
+        if not bool(_Wm.values.any()):
+            log("ROTATION", kv(event="warn_grid_empty", row=str(_lbl)), M=M)
+            continue
+        _frac_cut = float(_cut)
+        # 감축 비율 < 1이면 '절반만' — brake 인자는 전량이므로 부분 감축은 별도 인자로 넘긴다.
+        target_ws[f"하락경고 {_lbl} [하락경고격자]"] = \
+            _mk_target_w(live_cap, live_fb, brake=_Wm, brake_frac=_frac_cut)
+        target_ws[f"대조: {_lbl} 같은날수 달력(신호없음) [하락경고격자·대조]"] = \
+            _mk_target_w(live_cap, live_fb, brake_calendar=_calendar_mat(_Wm), brake_frac=_frac_cut)
+        log("ROTATION", kv(event="warn_grid_row", row=str(_lbl), vq=float(_vq), need_cs=bool(_cs),
+                           cut=_frac_cut, warn_industry_days=int(_Wm.values.sum()),
+                           note="⚠ 라이브 아님 — 달력 대조군을 칼마·MDD 둘 다 이겨야 후보"), M=M)
+
     _bg = tuple(getattr(icfg, "INDUSTRY_LEADER_BRAKE_GRID", ()) or ())
     for _lbl, _dq, _vq in _bg:
         try:
@@ -3903,6 +4130,26 @@ def build_industry_acceptance(alloc: Dict[str, Any], wf: Dict[str, Any], icfg: I
          "실측": round(calmar_i - calmar_s, 3) if (calmar_i == calmar_i and calmar_s == calmar_s) else None,
          "판정": "PASS" if (calmar_i == calmar_i and calmar_s == calmar_s and calmar_i > calmar_s) else "FAIL"},
     ]
+    # ---- [v0.16.0 R5 ★ 신규 진단 행] 한계비율 — 칼마가 오를 수 있는지의 산술 ----
+    #   왜: 두 라운드 동안 '노출을 줄이는 장치'(브레이크·CAP)로 칼마를 올리려 했고 전부 실패했다.
+    #   이유는 타이밍이 아니라 산술이다. I★ = S★ + 산업다리이고,
+    #     한계비율 = (I★ CAGR − S★ CAGR) / (I★ MDD 악화)
+    #   이 값이 **S★ 칼마보다 작으면** 다리를 더할수록 칼마는 내려간다(가중평균이므로).
+    #   보고서13 실측: 1.17 / 1.58 = **0.74** vs S★ 칼마 3.756 → 그래서 어떤 축소·타이밍도 못 넘었다.
+    #   넘는 길은 (가) 다리의 정보비율 올리기(현재 0.240) 또는 (나) 개별 산업 위험 줄이기([리더분산격자]).
+    #   ⚠ 이 행은 판정이 아니라 **진단**이다 — 격자 행들의 한계비율을 13_산업배분전략과 나란히 읽을 것.
+    _gain = (cagr_i - cagr_s) if (cagr_i == cagr_i and cagr_s == cagr_s) else float("nan")
+    _worse = (mdd_s - mdd_i) if (mdd_i == mdd_i and mdd_s == mdd_s) else float("nan")
+    _mr = (_gain / _worse) if (_worse == _worse and abs(_worse) > 1e-12) else float("nan")
+    rows.append({
+        "기준": "⑥ (진단) 한계비율 = CAGR 이득 / MDD 악화 — S★ 칼마보다 커야 칼마가 오를 수 있다",
+        "I★": (round(_mr, 3) if _mr == _mr else None),
+        "S★": (round(calmar_s, 3) if calmar_s == calmar_s else None),
+        "기준값": (round(calmar_s, 3) if calmar_s == calmar_s else None),
+        "실측": (round(_mr - calmar_s, 3) if (_mr == _mr and calmar_s == calmar_s) else None),
+        "판정": ("구조적 개선 가능" if (_mr == _mr and calmar_s == calmar_s and _mr > calmar_s)
+               else ("MDD 개선(악화 없음)" if (_worse == _worse and _worse <= 0)
+                     else "⚠ 산술상 칼마 하락 — 노출 축소·타이밍으로는 해결 불가"))})
     return pd.DataFrame(rows)
 
 
@@ -6530,6 +6777,45 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
               "+0.051(M상승아님) / −0.038(M상승), 무조건 평균 −0.003으로 상쇄) — 17 블록 C가 그 표다. "
               "⚠ 17은 진단 전용이며 신호·배분에 쓰지 않는다(쓰려면 사용자 승인 후 별도 격자 검정). "
               "되돌리기: i_overrides={\"COUPLING_STATE\": False}"))
+    # ---- [v0.16.0 R2 ★ 정정 · 00시트 헤드라인] 순서 판정을 **엔진 기준**으로 ----
+    #   왜: v0.15.0 헤더에 "부모안 적중 0.378 vs 무작위 0.343 — 8/8년 무작위 초과"라고 적었는데, 그것은
+    #   엔진이 아니라 **내 시뮬레이션(r53 pf8)** 값이었고 신호 집합·선택 규칙이 엔진과 달랐다.
+    #   엔진 자신의 13p 블록 B는 '무작위 초과 4/9년'이라고 말한다(v0.14.0에서 내가 건 문턱은 7/9였다 —
+    #   즉 그 기준도 미달이었는데 지난 라운드에 CAGR만 보고 P1을 '성공'으로 보고했다).
+    #   사용자 잣대가 "순환매는 순서로 판정한다"이므로, 그 판정을 엔진 숫자로 00시트 앞에 세운다.
+    _bB = None
+    _mdf0 = ires.get("minority")
+    if isinstance(_mdf0, pd.DataFrame) and len(_mdf0) and "블록" in _mdf0.columns:
+        _bB = _mdf0[_mdf0["블록"].astype(str).str.startswith("B.")]
+    _ord_txt = "13p 블록 B 없음(배분 미산출)"
+    if _bB is not None and len(_bB):
+        _yr = _bB[_bB.get("구분", pd.Series(dtype=object)).astype(str).eq("연도")].copy()
+        c1, c2, c3 = "리더 → 부모 안 실현 1위", "무작위 기대(1/n)", "리더 > 부모 ETF"
+        if c1 in _yr.columns and c2 in _yr.columns:
+            _a = pd.to_numeric(_yr[c1], errors="coerce")
+            _b = pd.to_numeric(_yr[c2], errors="coerce")
+            _ok = _a.notna() & _b.notna()
+            _w, _n = int((_a[_ok] > _b[_ok]).sum()), int(_ok.sum())
+            _bp = (float(pd.to_numeric(_yr[c3], errors="coerce").mean()) if c3 in _yr.columns else np.nan)
+            _ord_txt = (f"**리더 → 부모 안 실현 1위 > 무작위 인 연도 {_w}/{_n}**"
+                        + (f" · **리더 > 부모 ETF 평균 {_bp:.4f}**" if pd.notna(_bp) else "")
+                        + " | 연도별: "
+                        + " · ".join(f"{str(r.get('항목'))} {pd.to_numeric(r.get(c1), errors='coerce'):.3f}"
+                                     f"/{pd.to_numeric(r.get(c2), errors='coerce'):.3f}"
+                                     for _, r in _yr.iterrows()
+                                     if pd.notna(pd.to_numeric(r.get(c1), errors="coerce"))))
+    nd_rows.append((
+        "★ 산업 순환매 순서 판정(v0.16.0 R2 — **엔진 기준**)",
+        _ord_txt
+        + " | ⚠ **정정**: v0.15.0 문서의 '부모안 적중 0.378 vs 무작위 0.343 · 8/8년 초과'는 엔진이 아니라"
+          " 작성자 시뮬레이션(r53) 값이었다. 엔진의 블록 B가 정본이며 위 숫자가 그것이다."
+          " 2022·2023은 0.059/0.047로 무작위(0.306/0.279)에 크게 미달한다."
+        + " | 해석: 리더의 평균 초과(13l h=21 +0.517% vs 타산업 +0.170%)는 **순서가 아니라 편포**에서 나온다"
+          "(산업 다리 왜도 +0.746 · 첨도 20.43 · 정보비율 0.240). 순서가 약한데 리더 몫을 한 산업에 몰면"
+          " 보상 없는 개별 위험을 진다 — 그래서 v0.16.0은 [리더분산격자](top-K)로 그 집중을 검정한다."
+        + " | ⚠ 사용자 잣대(순환매는 순서로 판정)에 따르면 이 4/9는 **미달**이다. CAGR이 올라간 것과"
+          " 순서가 맞는 것은 별개이며, 13f ①이 PASS여도 순서 판정이 미달이면 순환매로서는 검증되지 않았다."))
+
     # [v0.15.0 R1·R3 ⚠ 위험 파라미터] 리더 하락 브레이크 — 00시트에서 바로 보이게(사용자 규칙 §7).
     _bk_on = bool(getattr(icfg, "INDUSTRY_LEADER_BRAKE", False))
     _lrd = ires.get("leader_risk", pd.DataFrame())
@@ -6545,7 +6831,7 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         + (f" — 리더 산업의 자체 낙폭 dd63 ≤ 자기이력 {float(getattr(icfg,'BRAKE_DD_Q',0.10)):.0%} 분위"
            f" **또는** park5(고가−저가 5일 변동성) 자기이력 백분위 ≥ {float(getattr(icfg,'BRAKE_VOL_Q',0.90)):.2f}"
            f" 이면 그날 그 산업 몫을 **부모 ETF로 되돌린다**(현금화 아님 — 총노출·14 불변)."
-           if _bk_on else " (꺼짐 — v0.14.0 동작)")
+           if _bk_on else " (**v0.16.0 R1a에서 되돌림 — 꺼짐**)")
         + f" | 18_리더위험진단 병리 에피소드 **{_pat}개**(보고서 13 기준선 6개, 사전등록 ⑤ ≤ 2개)"
         + " | 왜 바꿨나(REPORT54 D1): 리더 에피소드 98개 중 낙폭이 2%p 이상 악화된 24개에서 복합점수백분위가"
           " **오른** 경우 16개(66.7%) · 위험점수 H가 **내린** 경우 17개(70.8%)였다. 즉 선택 점수와 위험 점수가"
@@ -6562,7 +6848,15 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
           " ④ 13j '하락 브레이크' 청산 ≥ 5건 ⑤ 병리 ≤ 2개. ①②③ 중 하나라도 미달이면 되돌린다."
           " ⚠ [리더위험격자]의 **달력 대조군**(같은 날수를 신호 없이 끈다)을 반드시 함께 볼 것 —"
           " 노출만 줄여도 칼마는 대개 오른다(CAP 0.25가 3.584였던 것이 그 예다)."
-        + " ⚠ 되돌리기: i_overrides={\"INDUSTRY_LEADER_BRAKE\": False}"))
+        + (" | ⚠⚠ **v0.16.0 R1a 되돌림 근거**: 보고서 14에서 사전등록 3기준이 전부 미달했다"
+           "(CAGR 0.3606 < 0.3654 · MDD 악화 0.0105 > 0.010 · 칼마 3.403 < 3.758). 연도별로는 2024년만"
+           " 개선(+0.79%p)하고 2020(−3.70)·2025(−6.17)·2026(−1.47)을 악화시켰다 — 단일 에피소드 과적합."
+           " 원인: 깊은 낙폭+고변동성은 바닥 근처이고 그 다음 21일 수익이 플러스다"
+           "(dd63 ≤ −10%로 끊은 9건의 전략기여 −2.740%p). v0.15.0 헤더에 이미 적어 둔 실측"
+           "('vol21 상위20%는 하락을 못 맞춘다 · 연도비율 0.396')과 모순되는 방향으로 만든 것이 착오였다."
+           " 코드·격자·18시트는 재검정을 위해 남겨 두었다."
+           if not _bk_on else "")
+        + " ⚠ 다시 켜기: i_overrides={\"INDUSTRY_LEADER_BRAKE\": True}"))
     nd_rows.append(("09c_국면정보게이트 미적용(I-E 보류)",
                     "S는 섹터 하락 국면에 정보 게이트(09c)를 걸지만 I는 산업 자기국면에 걸지 않는다 — "
                     "적용 여부는 REPORT45 §6 I-E의 별도 판정 사항이다. 01Y_산업예측정확도 A블록(산업 하락 상태의 "
