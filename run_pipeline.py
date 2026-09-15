@@ -1,5 +1,19 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.16.1 - 2026-09-15 - [배너에 K.VERSION 추가 · stock_regime.py 사전 점검] 사용자 보고 대응.
+#    증상: 실행 배너가 "M.VERSION … | S.VERSION … | I.VERSION … | runner: v1.16.0"으로만 찍혀
+#      **주식 계층이 파이프라인에 있는지 알 수 없었다**(사용자 질문: "stock regime도 실행되는거야?").
+#    원인 두 개:
+#      (1) v1.16.0은 K를 **맨 끝에서** 로드하고 배너에 넣지 않았다 → 배너만 보면 K가 없는 것처럼 보인다.
+#      (2) stock_regime.py를 노트북 상단 wget 목록에 안 넣었으면 load_module이 FileNotFoundError를 내고
+#          try/except가 삼켜서 건너뛴다 — 그것도 **M·S·I를 다 돌린 20분 뒤**에야 알게 된다.
+#    수정: K를 M·S·I와 **같은 자리에서 로드**해 배너에 `K.VERSION`을 찍고, 파일이 없으면 시작 직후
+#      한 줄로 "wget 목록에 추가하세요"까지 알린다. 의도적으로 끈 경우(run_stock_layer=False)도 구분해 찍는다.
+#      ⚠ 로드 위치만 앞으로 옮겼고 **실행 순서는 그대로**다 — K의 다운로드·리포트는 여전히 M·S·I 리포트가
+#      끝난 뒤 마지막이다(K가 실패해도 앞 세 리포트는 이미 파일로 남아 있어야 하므로).
+#    확인법: 배너에 `K.VERSION: v0.1.0`이 보이고, 실행 끝의 "생성 완료:" 줄에 stock_regime_report.xlsx가
+#      네 번째로 들어오며 그 아래 파일 크기 목록에도 나온다.
+#
 #  VERSION: v1.16.0 - 2026-09-15 - [문서 + 실행 레시피] **I v0.19.0 → v0.20.0** · ★ 신규 4번째 계층
 #                    **stock_regime.py v0.1.0(K) 실행 추가** · S v0.48.0 · M v1.53.1 무변경.
 #
@@ -1037,7 +1051,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.16.0"
+VERSION = "v1.16.1"
 VERSION_DATE = "2026-09-15"
 
 MODULE_FILES = {
@@ -1108,8 +1122,37 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     M = load_module("market_regime_trader")
     S = load_module("sector_rotation")
     I = load_module("industry_rotation") if run_industry_layer else None
+    # ---- [v1.16.1] K(주식 계층)를 **여기서 미리 로드**한다 ----
+    #   왜 앞으로 옮겼나: v1.16.0은 K를 맨 끝에서 로드했고 배너에 K가 없었다. 그래서 (1) 배너만 보면
+    #   주식 계층이 파이프라인에 없는 것처럼 보이고 (2) stock_regime.py를 wget 목록에 안 넣었으면
+    #   **M·S·I를 20분 돌린 뒤에야** "파일 없음"을 알게 된다. 둘 다 사용자가 바로 겪은 문제다.
+    #   이제 배너에 K 버전이 같이 찍히고, 파일이 없으면 **시작 5초 안에** 고치는 방법까지 알려 준다.
+    #   ⚠ 여기서는 **로드만** 한다 — 실제 실행(다운로드·리포트)은 M·S·I 리포트가 끝난 뒤다.
+    K, K_note = None, ""
+    if run_stock_layer:
+        _kp = MODULE_FILES["stock_regime"]
+        if not os.path.exists(_kp):
+            K_note = (f"⚠ {_kp} 없음 → 주식 계층 건너뜀. "
+                      f"노트북 상단 wget 목록에 {_kp}를 추가하세요(M·S·I와 같은 GitHub raw 경로). "
+                      f"의도한 것이면 main(run_stock_layer=False)로 명시하면 이 경고가 사라집니다")
+        else:
+            try:
+                K = load_module("stock_regime")
+                assert hasattr(K, "run") and hasattr(K, "build_report"), \
+                    "stock_regime.py에 run/build_report가 없음 — 파일이 낡았는지 확인하세요"
+            except Exception as e:
+                K, K_note = None, f"⚠ 주식 계층 로드 실패({type(e).__name__}: {str(e)[:90]}) → 건너뜀"
+    else:
+        K_note = "주식 계층 끔(run_stock_layer=False)"
     print("M.VERSION:", getattr(M, "BUNDLE_VERSION", "??"), "| S.VERSION:", getattr(S, "VERSION", "??"),
-          "| I.VERSION:", (getattr(I, "VERSION", "??") if I is not None else "(생략)"), "| runner:", VERSION)
+          "| I.VERSION:", (getattr(I, "VERSION", "??") if I is not None else "(생략)"),
+          "| K.VERSION:", (getattr(K, "VERSION", "??") if K is not None else "(생략)"),
+          "| runner:", VERSION)
+    if K_note:
+        print(f"[runner] {K_note}")
+    elif K is not None:
+        print(f"[runner] 주식 계층 K 켜짐 — 대표 티커 {len(getattr(K, 'STOCK_UNIVERSE', {}))}종 · "
+              f"리포트는 M·S·I가 끝난 **뒤** 마지막에 생성됩니다(펀더멘탈·어닝 다운로드가 있어 몇 분 걸립니다)")
     assert hasattr(S, "run"), "S.run이 없음 - GitHub에 올린 sector_rotation.py를 다시 확인하세요"
     if I is not None:
         assert hasattr(I, "run"), "I.run이 없음 - GitHub에 올린 industry_rotation.py를 다시 확인하세요"
@@ -1155,17 +1198,18 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         ires = (hk.get("i_run") or I.run)(sres, res, M, S, icfg)
         path3 = I.build_industry_report(ires, M=M, S=S)
     # ---- [v1.16.0] 4번째 계층 K(개별 주식) — 실패해도 M·S·I 리포트는 이미 만들어져 있다 ----
+    #   [v1.16.1] 모듈은 위에서 이미 로드했다(배너에 버전이 찍혔고 파일 없음도 거기서 알렸다).
     kres, path4 = None, None
-    if run_stock_layer:
+    if K is not None:
         try:
-            K = load_module("stock_regime")
-            assert hasattr(K, "run") and hasattr(K, "build_report"), \
-                "stock_regime.py에 run/build_report가 없음 — 파일을 다시 확인하세요"
+            print("[runner] 주식 계층(K) 시작 — 가격 + 펀더멘탈·어닝 다운로드(캐시 있으면 건너뜀)")
             kres = K.run(K.CFG, k_overrides)
             path4 = K.build_report(kres, I=I)          # I를 넘기면 19_상승하락구간이 함께 나온다
         except Exception as e:
             print(f"[runner] ⚠ 주식 계층(K) 실패 — M·S·I 리포트는 정상입니다: {type(e).__name__}: {e}")
-            print("[runner]   다음 단계: (1) yfinance 설치·네트워크 확인 (2) run_stock_layer=False로 건너뛰기")
+            print("[runner]   다음 단계: (1) `pip install -q yfinance`로 설치 확인 "
+                  "(2) stock_regime.py의 02_티커요약 '선택 항목'·'유효일 출처' 열로 필드 매칭 확인 "
+                  "(3) 건너뛰려면 main(run_stock_layer=False)")
     paths = [p for p in (path, path2, path3, path4) if p and os.path.exists(p)]
     print("생성 완료:", " / ".join(paths))
     for _p in paths:                                    # 사용자 제약: 리포트 파일 전체 30MB 이하
