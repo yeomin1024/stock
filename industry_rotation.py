@@ -1,5 +1,117 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.17.0 - 2026-09-15 - [브레이크 라벨 버그 · 리더추세게이트격자 · 실패유형 진단 · 산업별 경고 노출]
+#    REPORT56. **산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
+#    사용자 지시: "각 산업별 하락 예측 정확도를 더 올리면서 수익 곡선 상승시키도록 개선해 예측 틀린 부분이
+#    왜 틀렸는지 뉴스 같은 것도 참고하면서 분석하고 개선해"
+#
+#    ── 보고서 15 판정: 되돌림 완전 · [리더분산격자] 통과 · [하락경고격자] 실패 ──────
+#    (V1 ① 되돌림 완전성 **PASS**) 13f가 보고서13과 비트 동일 — CAGR 0.3704 · MDD −0.1113 · 칼마 3.328
+#      · ① PASS. 18_리더위험진단 병리 6개 복귀. ⑥ 한계비율 **0.7410**(v0.16.0에서 예측한 0.74와 일치).
+#    (V2 ② [리더분산격자] **PASS — 세 기준 전부**)
+#        구성      CAGR    이득      MDD      악화     칼마    알파벳대조 칼마
+#        ★ K=1    0.3704  +1.17%p  −0.1113  +1.58%p  3.328   —
+#        K=2      0.3567  −0.20%p  −0.0982  +0.28%p  3.631   3.368
+#        K=3      0.3553  −0.34%p  **−0.0965**  **+0.10%p**  **3.683**   3.367
+#        S★       0.3587  —        −0.0955  —        3.758   —
+#      (a) 칼마 > 3.328 ✓  (b) 알파벳 대조군을 칼마·MDD 둘 다 이김 ✓  (c) MDD 악화 1.58 → **0.10%p** ✓
+#      2024년 MDD가 −0.1113 → **−0.0816**으로 S★(−0.0850)보다도 좋아졌다.
+#      ⚠ 그런데 칼마가 여전히 S★ 미달(3.683 < 3.758)이고 이유가 숫자로 드러났다:
+#      **분산이 수익을 죽인다.** 이득 K=1 +1.17%p → K=2 −0.20%p → K=3 −0.34%p.
+#      **수익 전체가 top-1 한 칸에 있다**(편포 때문이다 — 왜도 +0.746). 그래서 분산은 위험만 줄이고
+#      칼마를 S★ 아래에서 위로 수렴시킬 뿐 넘지 못한다(CAP 축소와 같은 한계).
+#    (V3 ⑤ [하락경고격자] **FAIL**) 3행 중 2행이 **달력 대조군에 졌다**:
+#        A3-4 vol20 전량 3.291 vs 대조 **3.338** · A3-4 절반 3.310 vs 대조 **3.339** ·
+#        A3-3 vol33+탈동조 전량 3.281 vs 대조 3.156(이 행만 이김)
+#      경고의 예측력은 진짜인데(13p A3) 리더에 적용하면 **무작위 날짜 제거보다 못하다.**
+#      v0.16.0에서 라이브로 넣지 않고 격자로 돌린 판단이 맞았다.
+#    (V4 ⑦ A3 불변 **PASS**) 보고서14와 완전히 동일(A3-3 정밀도 0.5695 · 기저 0.4263 · 연도비율 0.688 ·
+#      격차 −2.403%p · 2024 격차 −1.05 · 24/29 산업). 리더와 무관한 산업 단위 진단이므로 정상이다.
+#
+#    ── ★ 새 진단: 손실의 62%는 '하락'이 아니라 '상승 미달'이다(W1) ──────────────
+#    리더 거래 52건을 부모 대비 결과로 4분류하면:
+#        유형                        건수  평균 벤치대비  벤치대비 합   기여합
+#        ① 부모 랠리에서 뒤처짐(상승 미달)  **16**  −2.81      **−44.89%p**  +4.06
+#        ② 부모 하락보다 더 빠짐(하락 증폭)  8    −3.43      −27.40%p     −0.05
+#        ③ 부모 하락에서 방어(성공)        6    +1.96      —            −2.07
+#        ④ 부모 랠리 초과(성공)          22    +4.80      —            **+56.91**
+#      → 벤치 미달 24건 중 **16건이 상승 미달**이고 손실 크기도 62%(−44.89 / −72.29)가 거기서 나온다.
+#      사용자는 '하락 예측'을 요구하는데, 다리의 실제 손실은 **상승 참여 실패**가 더 크다.
+#      ⚠ 이 사실이 지금까지 어느 시트에도 없었다 — 13j는 손익만, 13l은 적중률만 낸다. T3가 이것을 싣는다.
+#    (W2 원인은 채택 신호에 있다) 엔진 13g 채택 집계: **SCORE_PCT(−1) 9년 · SCORE_MINUS_PARENT(−1) 9년**
+#      · P_REL_MOM_63(+1) 7년 · PARENT_BETA_252(+1) 2년.
+#      즉 채택 신호-연도의 2/3이 **사전방향 −1인 점수 신호**다 — 부모 안에서 **점수가 가장 낮은 산업**을
+#      고르는 **역추세(평균회귀) 베팅**이다. 그래서 '리더>부모 ETF'가 0.4711(동전던지기 미달)인데도
+#      평균 초과는 플러스다(이길 때 크게 이긴다 · 왜도 +0.746 · 첨도 20.43).
+#      ⚠ 부호를 고칠 일이 아니다 — 13g '사전방향 근거'에 이미 '부모 안에서는 평균회귀(rank IC t −2.5~−2.8)'로
+#      등록돼 있고 독립 측정도 같다(score_gap → fi21 상위3−하위3 0/9년 양수).
+#    (W3 ★ 언제 깨지는가 — 부모가 이미 강세일 때) 진입 시점 정보만으로 부모 상태를 3분할:
+#        부모 63일 모멘텀   건수  평균 벤치대비  상승미달 비율  기여합
+#        약세             13   **+5.04%p**  **0.077**   **+39.9**
+#        중간             12   −0.68        0.250       +4.2
+#        강세             12   +0.32        **0.417**   +14.7
+#      ext200(200일선 이격)으로 바꿔도 단조: 약세 +3.91/0.231/+39.4 · 중간 +1.62/0.083/+15.0 ·
+#        강세 **−0.75**/**0.417**/+4.4.  m21·m252·dd252 네 지표 모두 같은 방향이다.
+#      상승미달 16건의 진입 시점 부모 상태 중위값이 나머지보다 일관되게 높다:
+#        m63 +0.1038 vs +0.0511 · ext200 +0.1734 vs +0.1061 · m252 +0.4417 vs +0.3146
+#      연도 편중도 아니다(약세 버킷에 2019·2020·2023·2024·2025·2026 분산).
+#      → **역추세 신호는 씻겨나간 구간에서 먹히고 추세 구간에서 깨진다**(평균회귀의 교과서적 성질).
+#      ⚠ 표본 37건 · 버킷당 12~13건이므로 **라이브로 넣지 않고 격자(T2)로 검정한다.**
+#
+#    ── 뉴스 대조(사용자 지시) ────────────────────────────────────────────────
+#    W3의 '강세 부모 → 급반전' 패턴이 **데이터 마감 직전(2026-09-10)에 또 나왔다**:
+#      구리가 **4거래일 연속 신고가**를 낸 직후 하루 −5.4%($6.5220/lb), 은 −5.9%($64.575), 금 −1.6%,
+#      백금·팔라듐 각 −6% 이상. Freeport·Teck −6~7%(Freeport 시총 1,020억 달러 아래로, 8월 신고가 랠리 소멸).
+#      원인은 (1) 백악관이 정제구리 관세를 아직 결정하지 않았다는 Reuters 보도('affordability'로 초점 이동)
+#      (2) 생산자물가 + 유가 $105 돌파로 **9월 연준 인상 확률 ~70%**.
+#      기사 표현 그대로 **"가격 추세에 사전 경고가 없었다"**. XME·GDX가 이 시스템의 29산업에 포함되고
+#      데이터 마감이 2026-09-11이므로 **이 사건은 표본 안에 있다**.
+#    앞선 라운드 확인분(유효): 2026-07 SOX −21%(6/30 Burry 공매도 공개 → 7/16 Kimi K3 오픈소스 →
+#      레버리지 AI 펀드 마진콜) · 2026-02(1/30 Warsh 지명 → 1/31 AI 대체 내러티브, 소프트웨어 하루 −6%
+#      → 2/4~5 고용 부진) · 2024-08-05 엔 캐리 청산. **넷 다 추세에 선행 경고가 없었다.**
+#    → 뉴스가 말하는 것과 데이터가 말하는 것이 일치한다: 이런 사건은 **추세·모멘텀으로 예측 불가**이고,
+#      그래서 '예측해서 피한다'가 아니라 **'강세 구간에서 역추세 집중을 하지 않는다'**가 현실적 대응이다(T2).
+#
+#    ── ⚠ 그리고 산업별 하락 예측이 라벨 차원에서는 존재하지 않는다(W4) ──────────
+#    00_실행요약의 '다음 거래일 예측'을 보면 **29산업 전부 "상승(위험선호) / 목표비중 1.00 / 추가매수"**로
+#    똑같다. INDUSTRY_REGIME_SOURCE="m_inherit"이므로 산업별 라벨 차이가 **0**이다(v0.14.0 C3의 귀결).
+#    사용자가 다섯 라운드째 요구하는 "**각 산업별** 하락 예측"이 라벨로는 아직 없는 것이다.
+#    A3 경고(13p 블록 A3 · 정밀도 0.5695 vs 기저 0.4263 · 산업별로 다름)는 01_일별에만 있고
+#    요약 시트에 없다. **T4가 그것을 00·01Z에 올린다** — 신호를 바꾸지 않고 이미 측정된 것을 보이게 하는 것이다.
+#
+#    ── 이번 변경 ────────────────────────────────────────────────────────────
+#    (T1 버그 수정) 13j 청산 사유의 '하락 브레이크'가 **INDUSTRY_LEADER_BRAKE를 확인하지 않았다.**
+#      v0.16.0에서 브레이크를 껐는데도 보고서 15의 13j에 '하락 브레이크' 청산이 **8건** 찍혔다 —
+#      브레이크 시계열(results[t]["brake"])은 설정과 무관하게 계산되고, 라벨이 그것만 보고 있었기 때문이다.
+#      배분에는 영향이 없었지만(18 병리 6개·13f 비트 동일이 그 증거) **청산 원인을 잘못 적는 것은
+#      진단을 오염시킨다**. config 게이트를 추가한다. 영향 함수: build_industry_allocation_trades.
+#    (T2 신규 격자) **[리더추세게이트격자]** INDUSTRY_TREND_GATE_GRID — 부모가 강세일 때 리더를 어떻게 다룰지.
+#      조건: 부모 ext200(200일선 이격) 또는 m63이 **자기이력 상위 TREND_GATE_Q(1/3)** 이상.
+#      행: (a) 리더 끔(부모 ETF로) (b) 리더를 K=3으로 분산 (c) 리더 몫 절반.
+#      각 행에 **달력 대조군**(같은 날수·신호 없이 균등 간격)이 붙는다.
+#      근거 W3. ⚠ 라이브 아님 — 표본 37건이므로 엔진이 판정한다.
+#      ⚠ 되돌리기: i_overrides={"INDUSTRY_TREND_GATE_GRID": ()}
+#    (T3 진단) **실패 유형 분류** — 13j에 '결과 유형' 열(① 상승미달 / ② 하락증폭 / ③ 방어성공 / ④ 랠리초과)과
+#      '진입시 부모 ext200 자기이력pct' 열, 13l에 **블록 D '실패 유형 집계'**(유형별 건수·벤치대비 합·기여합
+#      + 부모 추세 3분할). W1이 다섯 라운드 동안 안 보였던 이유가 이 표의 부재다.
+#    (T4 진단) **산업별 하락 경고를 요약 시트에 올린다** — 00_실행요약의 각 산업 '다음 거래일 예측' 줄에
+#      A3 경고 상태를 덧붙이고(⚠경고 / -), 01Z에 '하락경고 산업수' 열을 추가한다.
+#      ⚠ 라벨·목표비중은 바꾸지 않는다(신호층 무변경) — 이미 측정된 진단을 보이게 하는 것뿐이다.
+#      되돌리기: i_overrides={"SHOW_DECLINE_WARN_SUMMARY": False}
+#
+#    [검증] 사전등록 문턱(다음 실행):
+#      T1 ① 13j '하락 브레이크' 청산 **0건**(브레이크 OFF 상태이므로). 13f·18은 변하지 않아야 한다.
+#      T2 ② [리더추세게이트격자] 각 행이 **(a) 칼마 > 3.328** 그리고 **(b) 같은 행의 달력 대조군보다
+#         칼마·MDD 둘 다 높음** → 둘 다 만족한 행만 후보. ③ 그 행의 상승미달 건수가 16건보다 **줄어야** 한다
+#         (13l 블록 D로 확인 — 이것이 T2의 작동 증거다).
+#      T3 ④ 13l 블록 D가 산출되고 ① 16건 −44.89%p · ② 8건 −27.40%p · ④ 22건 +56.91%p를 재현.
+#      T4 ⑤ 00시트 산업 줄에 경고 표시가 붙고, 경고 산업이 **29개 전부가 아니어야** 한다
+#         (전부면 산업별 차이가 없다는 뜻이므로 A3 배선을 확인).
+#      ⑥ 13f ①~⑥ · 13l A/B · 13p A3 · 18 시트는 T1을 제외하면 보고서15와 **동일**해야 한다(진단만 추가).
+#    ⚠ 라이브 신호·위험 파라미터 변경 **0건**. 세 라운드째 '그럴듯한 장치'를 라이브에 넣어 실패했으므로
+#      (R1 브레이크 · 판정 기준 착오 · 경고 격자 FAIL) 새 아이디어는 전부 격자 + 대조군으로만 검정한다.
+#    ⚠ 연구·교육용 도구이며 투자 조언이 아니다.
+#
 #  VERSION: v0.16.0 - 2026-09-14 - [⚠ 브레이크 되돌림(사전등록 규칙) · 리더분산격자 · 하락경고격자 · 순서판정 정정]
 #    REPORT55. **산업(I)만 고친다** — S v0.48.0 · M v1.53.1 무수정.
 #    사용자 지시: "결과인데 수익곡선이 더 안좋아졌잖아 각 산업별 하락 예측 정확도를 더 올리면서
@@ -915,8 +1027,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.16.0"
-VERSION_DATE = "2026-09-14"
+VERSION = "v0.17.0"
+VERSION_DATE = "2026-09-15"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -1337,6 +1449,43 @@ class IndustryConfig:
     ROTATION_LEADER_TOPK: int = 1                       # 라이브 = 1(현행·비트 동일)
     ROTATION_LEADER_TOPK_ALPHA: bool = False            # True면 순위 대신 알파벳 순으로 K개(대조군 전용)
     INDUSTRY_LEADER_TOPK_GRID: Tuple[int, ...] = (2, 3)
+    # ---- [v0.17.0 T2 신규 격자] 리더 추세 게이트 — 부모가 이미 강세일 때 역추세 집중을 하지 않는다 ----
+    #   왜(REPORT56 W1~W3): 리더 거래 52건의 손실 중 **62%가 '하락'이 아니라 '상승 미달'**이다
+    #     (① 부모 랠리에서 뒤처짐 16건 −44.89%p vs ② 부모 하락보다 더 빠짐 8건 −27.40%p).
+    #   원인: 채택 신호-연도의 2/3이 사전방향 −1인 점수 신호(SCORE_PCT 9년 · SCORE_MINUS_PARENT 9년)여서
+    #     리더는 **부모 안에서 점수가 가장 낮은 산업**을 고르는 역추세(평균회귀) 베팅이다.
+    #     그래서 '리더>부모'가 0.4711(동전던지기 미달)인데 평균 초과는 플러스다(왜도 +0.746).
+    #   언제 깨지는가(진입 시점 정보만으로 3분할, 부모 63일 모멘텀):
+    #     약세 13건 벤치대비 **+5.04%p** 상승미달 **0.077** 기여 **+39.9**
+    #     중간 12건 −0.68%p 0.250 +4.2
+    #     강세 12건 +0.32%p **0.417** +14.7
+    #     ext200으로 바꿔도 단조(약세 +3.91 / 중간 +1.62 / 강세 **−0.75**), m21·m252·dd252 모두 같은 방향.
+    #     연도 편중 아님(약세 버킷에 2019·2020·2023·2024·2025·2026 분산).
+    #   → 역추세 신호는 씻겨나간 구간에서 먹히고 **추세 구간에서 깨진다**(평균회귀의 교과서적 성질).
+    #   뉴스도 같은 것을 말한다: 2026-09-10 구리가 4거래일 연속 신고가 직후 −5.4%, Freeport·Teck −6~7%,
+    #     "가격 추세에 사전 경고가 없었다"(정제구리 관세 미결정 + 유가 $105·연준 인상 확률 70%).
+    #     이런 사건은 예측 불가이므로 '피한다'가 아니라 **'강세 구간에서 역추세 집중을 하지 않는다'**가 대응이다.
+    #   형식: (라벨, 모드). 모드 "off"=리더 끔(부모 ETF) / "topk"=K개로 분산 / "half"=몫 절반.
+    #   ⚠ 표본 37건 · 버킷당 12~13건이므로 **라이브가 아니라 격자**다. 각 행에 달력 대조군이 붙는다.
+    #   ⚠ 되돌리기: i_overrides={"INDUSTRY_TREND_GATE_GRID": ()}
+    TREND_GATE_Q: float = 2.0 / 3.0                    # 부모 추세 자기이력 백분위 — 이 위가 '강세'
+    TREND_GATE_SRC: str = "ext200"                     # "ext200"(200일선 이격) | "m63"(63일 모멘텀)
+    TREND_GATE_TOPK: int = 3                           # 모드 "topk"에서 쓸 K
+    INDUSTRY_TREND_GATE_GRID: Tuple[Tuple[str, str], ...] = (
+        ("강세부모 리더끔", "off"),
+        ("강세부모 K=3분산", "topk"),
+        ("강세부모 몫절반", "half"),
+    )
+    # [v0.17.0 T4] 산업별 하락 경고를 요약 시트(00·01Z)에 노출한다.
+    #   왜: 00_실행요약의 '다음 거래일 예측'이 **29산업 전부 "상승 / 목표비중 1.00"**으로 똑같다
+    #     (INDUSTRY_REGIME_SOURCE="m_inherit"이므로 산업별 라벨 차이가 0 — v0.14.0 C3의 귀결).
+    #     사용자가 다섯 라운드째 요구하는 "**각 산업별** 하락 예측"이 라벨로는 아직 없다.
+    #     A3 경고(13p 블록 A3 · 정밀도 0.5695 vs 기저 0.4263 · **산업별로 다르다**)는 01_일별에만 있고
+    #     요약에 없어서 보이지 않았다. 신호를 바꾸지 않고 **이미 측정된 것을 보이게** 한다.
+    #   ⚠ 라벨·목표비중은 바꾸지 않는다(신호층 무변경). 되돌리기: i_overrides={"SHOW_DECLINE_WARN_SUMMARY": False}
+    SHOW_DECLINE_WARN_SUMMARY: bool = True
+    WARN_SUMMARY_VOL_Q: float = 1.0 / 3.0              # A3-3과 같은 정의(vol21 자기이력 하위 1/3)
+    WARN_SUMMARY_NEED_DECOUPLE: bool = True            # A3-3과 같이 탈동조도 요구
     # ---- [v0.16.0 R4 신규 격자] 하락 경고 기반 리더 감축 ----
     #   경고 자체는 엔진 실측으로 강하다(13p 블록 A3): A3-3(⑥ & vol21 하위1/3 & 탈동조) 정밀도 0.5695 vs
     #     기저 0.4263(**+14.3%p**) · 연도비율 0.688 · 향후21일 격차 −2.403%p · 2024 격차 −1.05 · 24/29 산업.
@@ -3575,6 +3724,79 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         log("ROTATION", kv(event="topk_grid_row", k=_k, leader_industry_days=_nl,
                            note="총 노출 불변 — 개별 산업 위험만 줄인다. 대조군(알파벳)이 순위 가치를 가른다"), M=M)
 
+    # ---- [v0.17.0 T2 신규 격자] [리더추세게이트격자] — 부모 강세일 때 역추세 집중을 하지 않는다 ----
+    #   근거 W3(부모 추세 3분할에서 약세 +5.04%p/상승미달 0.077 vs 강세 +0.32%p/0.417, ext200도 단조).
+    #   조건은 **부모** 상태이므로 그 부모의 모든 산업에 같은 날 적용된다(산업별 조건이 아니다).
+    def _parent_strong() -> pd.DataFrame:
+        """부모별 '강세' 불리언(산업 열로 펼침). 전부 t일까지의 정보 — 자기이력 expanding 백분위."""
+        src = str(getattr(icfg, "TREND_GATE_SRC", "ext200") or "ext200").lower()
+        q = float(getattr(icfg, "TREND_GATE_Q", 2.0 / 3.0))
+        mh = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250)
+        out = pd.DataFrame(False, index=eval_idx, columns=cols)
+        for p_ in active_parents:
+            # 부모 ETF 총수익 — 이 파일이 이미 쓰는 경로와 같다(build_industry_vs_sector_attribution 등:
+            #   sres["sectors"][p]["bh_ret"]). 새 다운로드·새 계산원 없음.
+            _sr = (sres.get("sectors", {}) or {}).get(p_, {}) if isinstance(sres, dict) else {}
+            _bh = _sr.get("bh_ret")
+            if not (isinstance(_bh, pd.Series) and len(_bh)):
+                continue
+            _cv = (1.0 + pd.Series(_bh).astype(float).fillna(0.0)).cumprod()
+            if not len(_cv):
+                continue
+            _cv = pd.Series(_cv).astype(float).dropna()
+            if src == "m63":
+                raw = _cv / _cv.shift(63) - 1.0
+            else:
+                ma = _cv.rolling(200, min_periods=150).mean()
+                raw = _cv / ma - 1.0
+            pct = raw.expanding(min_periods=mh).rank(pct=True)
+            strong = (pct >= q).reindex(eval_idx).fillna(False)
+            for t_ in [x for x in cols if parent_of[x] == p_]:
+                out[t_] = strong.values
+        return out
+    _tg = tuple(getattr(icfg, "INDUSTRY_TREND_GATE_GRID", ()) or ())
+    if _tg:
+        try:
+            _PS = _parent_strong()
+        except Exception as e:
+            _PS = None
+            log("ROTATION", kv(event="trend_gate_build_failed", err=str(e)[:140],
+                               note="[리더추세게이트격자] 생략 — 부모 총수익 곡선을 찾지 못했다"), M=M, level="warning")
+        if _PS is not None and bool(_PS.values.any()):
+            _tk = int(getattr(icfg, "TREND_GATE_TOPK", 3) or 3)
+            for _lbl, _mode in _tg:
+                _mode = str(_mode).lower()
+                try:
+                    if _mode == "off":
+                        tw_ = _mk_target_w(live_cap, live_fb, brake=_PS, brake_frac=1.0)
+                        tw_c = _mk_target_w(live_cap, live_fb, brake_calendar=_calendar_mat(_PS), brake_frac=1.0)
+                    elif _mode == "half":
+                        tw_ = _mk_target_w(live_cap, live_fb, brake=_PS, brake_frac=0.5)
+                        tw_c = _mk_target_w(live_cap, live_fb, brake_calendar=_calendar_mat(_PS), brake_frac=0.5)
+                    elif _mode == "topk":
+                        # 강세일에만 K로 분산: K=1 결과와 K=_tk 결과를 강세 마스크로 섞는다(비중 수준 혼합).
+                        _g1 = groups
+                        _gk = _run_groups({"ROTATION_LEADER_TOPK": _tk})
+                        _w1 = _mk_target_w(live_cap, live_fb, groups_over=_g1)
+                        _wk = _mk_target_w(live_cap, live_fb, groups_over=_gk)
+                        _m = _PS.reindex(index=eval_idx, columns=_w1.columns).fillna(False)
+                        tw_ = _w1.where(~_m, _wk)
+                        _mc = _calendar_mat(_PS).reindex(index=eval_idx, columns=_w1.columns).fillna(False)
+                        tw_c = _w1.where(~_mc, _wk)
+                    else:
+                        continue
+                except Exception as e:
+                    log("ROTATION", kv(event="trend_gate_row_failed", row=str(_lbl), err=str(e)[:120]),
+                        M=M, level="warning")
+                    continue
+                target_ws[f"추세게이트 {_lbl} [리더추세게이트격자]"] = tw_
+                target_ws[f"대조: {_lbl} 같은날수 달력(신호없음) [리더추세게이트격자·대조]"] = tw_c
+                log("ROTATION", kv(event="trend_gate_row", row=str(_lbl), mode=_mode,
+                                   src=str(getattr(icfg, "TREND_GATE_SRC", "ext200")),
+                                   q=float(getattr(icfg, "TREND_GATE_Q", 2 / 3)),
+                                   strong_industry_days=int(_PS.values.sum()),
+                                   note="⚠ 라이브 아님 — 달력 대조군을 칼마·MDD 둘 다 이겨야 후보(표본 37건)"), M=M)
+
     # ---- [v0.16.0 R4 신규 격자] [하락경고격자] 저변동성 경고 → 리더 감축 + 달력 대조군 ----
     #   ⚠ 경고는 13p 블록 A3에서 강하게 측정됐지만(A3-3 정밀도 +14.3%p · 연도비율 0.688) 리더 보유일과의
     #     겹침에서 격차 대부분을 IGV 한 종목이 만든다. 그래서 라이브가 아니라 격자로만 검정한다.
@@ -4843,8 +5065,37 @@ def build_industry_leader_accuracy(alloc: Dict[str, Any], results: Dict[str, Dic
             hold_i = R[l].iloc[j + 1:k + 2]
             hold_p = RP[p].iloc[j + 1:k + 2]
             exc = float(((1 + hold_i).prod() - (1 + hold_p).prod()) * 100) if len(hold_i) else np.nan
+            # [v0.17.0 T3] 실패 유형 분류 — 부모 보유기간 수익의 부호로 '상승미달'과 '하락증폭'을 가른다.
+            _pr = float((1 + hold_p).prod() - 1.0) if len(hold_p) else np.nan
+            _ir = float((1 + hold_i).prod() - 1.0) if len(hold_i) else np.nan
+            if pd.notna(_pr) and pd.notna(_ir):
+                if _pr > 0 and _ir < _pr:
+                    _ty = "① 상승미달"
+                elif _pr <= 0 and _ir < _pr:
+                    _ty = "② 하락증폭"
+                elif _pr <= 0:
+                    _ty = "③ 방어성공"
+                else:
+                    _ty = "④ 랠리초과"
+            else:
+                _ty = "-"
+            # 진입 시점 부모 추세(자기이력 백분위) — W3의 조건 변수. 진입일까지의 정보만 사용한다.
+            _ext = np.nan
+            try:
+                _cvp = (1.0 + RP[p].fillna(0.0)).cumprod()
+                _cvp = _cvp[_cvp.index <= d]
+                if len(_cvp) >= 250:
+                    _ma = _cvp.rolling(200, min_periods=150).mean()
+                    _rr = (_cvp / _ma - 1.0).dropna()
+                    if len(_rr) >= 250:
+                        _ext = float((_rr.rank(pct=True)).iloc[-1])
+            except Exception:
+                pass
             eps.append({"부모": p, "진입일": str(d.date()), "리더": l, "보유일": k - j + 1,
                         "보유기간 초과(%)": round(exc, 3) if pd.notna(exc) else None,
+                        "부모 보유기간(%)": (round(_pr * 100, 3) if pd.notna(_pr) else None),
+                        "결과 유형": _ty,
+                        "진입시 부모 추세pct": (round(_ext, 3) if pd.notna(_ext) else None),
                         "진입시 부모국면": (str(pst.at[d]) if pst is not None else "-"),
                         "연도": int(d.year)})
     E = pd.DataFrame(eps)
@@ -4866,7 +5117,59 @@ def build_industry_leader_accuracy(alloc: Dict[str, Any], results: Dict[str, Dic
         for _, r in E.sort_values("진입일").iterrows():
             rows.append({"블록": "D. 에피소드 전수", "구분": f"{r['부모']} · {r['진입일']} · {r['리더']}",
                          "보유일": int(r["보유일"]), "보유기간 초과(%)": r["보유기간 초과(%)"],
+                         "결과 유형": r.get("결과 유형"),
+                         "진입시 부모 추세pct": r.get("진입시 부모 추세pct"),
                          "진입시 부모국면": r["진입시 부모국면"]})
+        # ---- [v0.17.0 T3 ★ 신규] E. 실패 유형 집계 · 부모 추세 3분할 ----
+        #   왜: 다리의 손실이 '하락' 때문인지 '상승 미달' 때문인지 보여 주는 표가 없었다.
+        #   보고서15 실측(13j 52건): ① 상승미달 16건 −44.89%p · ② 하락증폭 8건 −27.40%p ·
+        #   ③ 방어성공 6건 · ④ 랠리초과 22건 기여 +56.91%p → **손실의 62%가 상승 미달**이다.
+        #   사용자는 '하락 예측'을 요구하는데 실제 손실은 '상승 참여 실패'가 더 크다는 것이 요점이다.
+        rows.append({"블록": "E. 실패 유형", "구분": "── 읽는 법 ──",
+                     "설명": ("① 상승미달 = 부모가 올랐는데 리더가 덜 오름 · ② 하락증폭 = 부모가 내렸는데 리더가 더 내림 "
+                            "· ③ 방어성공 · ④ 랠리초과. **①의 합이 ②보다 크면 이 계층의 문제는 하락 예측이 아니라 "
+                            "상승 참여다.** 리더 신호가 역추세(SCORE_PCT·SCORE_MINUS_PARENT 사전방향 −1)여서 "
+                            "부모 랠리에서 뒤처지는 구조다 — 부호 문제가 아니라 조건(언제 쓰나)의 문제다.")})
+        _okE = E["보유기간 초과(%)"].notna()
+        for _ty2, _sub in E[_okE].groupby("결과 유형"):
+            rows.append({"블록": "E. 실패 유형", "구분": str(_ty2), "에피소드": len(_sub),
+                         "승률(부모대비)": round(float((_sub["보유기간 초과(%)"] > 0).mean()), 4),
+                         "평균초과(%)": round(float(_sub["보유기간 초과(%)"].mean()), 3),
+                         "초과 합(%p)": round(float(_sub["보유기간 초과(%)"].sum()), 2),
+                         "평균보유일": round(float(_sub["보유일"].mean()), 1)})
+        _neg = E[_okE & (E["보유기간 초과(%)"] < 0)]
+        if len(_neg):
+            _n1 = _neg[_neg["결과 유형"].astype(str).str.startswith("①")]
+            _n2 = _neg[_neg["결과 유형"].astype(str).str.startswith("②")]
+            _s1 = float(_n1["보유기간 초과(%)"].sum()); _s2 = float(_n2["보유기간 초과(%)"].sum())
+            _tot = _s1 + _s2
+            rows.append({"블록": "E. 실패 유형", "구분": "★ 손실 분해", "에피소드": len(_neg),
+                         "초과 합(%p)": round(_tot, 2),
+                         "설명": (f"미달 {len(_neg)}건 = 상승미달 {len(_n1)}건({_s1:+.2f}%p) + "
+                                f"하락증폭 {len(_n2)}건({_s2:+.2f}%p)"
+                                + (f" → 상승미달이 손실의 **{abs(_s1) / abs(_tot):.0%}**"
+                                   if abs(_tot) > 1e-9 else ""))})
+        # 부모 추세 3분할 — W3(역추세 신호는 추세 구간에서 깨진다)을 매 실행 확인한다.
+        _tr = E[_okE & E["진입시 부모 추세pct"].notna()].copy()
+        if len(_tr) >= 9:
+            try:
+                _tr["구간"] = pd.qcut(_tr["진입시 부모 추세pct"], 3, labels=["약세", "중간", "강세"])
+            except Exception:
+                _tr["구간"] = pd.cut(_tr["진입시 부모 추세pct"], [0, 1 / 3, 2 / 3, 1.0],
+                                   labels=["약세", "중간", "강세"], include_lowest=True)
+            for _q, _sub in _tr.groupby("구간", observed=True):
+                _up = _sub["결과 유형"].astype(str).str.startswith("①")
+                rows.append({"블록": "E. 실패 유형 — 진입시 부모 추세 3분할", "구분": str(_q),
+                             "에피소드": len(_sub),
+                             "승률(부모대비)": round(float((_sub["보유기간 초과(%)"] > 0).mean()), 4),
+                             "평균초과(%)": round(float(_sub["보유기간 초과(%)"].mean()), 3),
+                             "초과 합(%p)": round(float(_sub["보유기간 초과(%)"].sum()), 2),
+                             "상승미달 비율": round(float(_up.mean()), 3)})
+            rows.append({"블록": "E. 실패 유형 — 진입시 부모 추세 3분할", "구분": "판독",
+                         "설명": ("보고서15 실측(13j 기준): 약세 13건 +5.04%p·상승미달 0.077 / 중간 12건 −0.68·0.250 / "
+                                "강세 12건 +0.32·**0.417**. ext200·m21·m63·m252·dd252 다섯 지표가 모두 같은 방향이고 "
+                                "연도 편중도 아니다. → **강세 구간에서 역추세 집중을 하지 않는다**가 대응이며 "
+                                "[리더추세게이트격자]가 그것을 검정한다. ⚠ 표본 37건이라 라이브가 아니다.")})
     return pd.DataFrame(rows)
 
 
@@ -5159,7 +5462,14 @@ def build_industry_allocation_trades(alloc: Dict[str, Any], results: Dict[str, D
                 tr2 = str(tier_a.loc[dd]) if len(tier_a) else ""
                 # [v0.15.0 R1/D2 ★] 하락 브레이크 청산 — 종전에는 청산 사유에 '하락' 항목이 **0건**이었다.
                 #   브레이크가 그날 켜져 있었으면 다른 사유보다 먼저 이 사유로 기록한다(원인이 그것이므로).
-                _bk_a = results.get(a, {}).get("brake") if isinstance(results, dict) else None
+                # [v0.17.0 T1 ★ 버그 수정] **INDUSTRY_LEADER_BRAKE를 확인한다.**
+                #   종전에는 설정을 보지 않고 results[t]["brake"] 시계열만 봤다. 그 시계열은 설정과 무관하게
+                #   항상 계산되므로, v0.16.0에서 브레이크를 껐는데도 보고서 15의 13j에 '하락 브레이크'
+                #   청산이 **8건** 찍혔다. 배분에는 영향이 없었지만(13f·18이 그 증거) 청산 원인을 잘못
+                #   적으면 진단이 오염된다 — 다음 라운드가 '브레이크가 일했다'고 오독할 수 있다.
+                _brake_active = bool(getattr(icfg, "INDUSTRY_LEADER_BRAKE", False))
+                _bk_a = (results.get(a, {}).get("brake") if (isinstance(results, dict) and _brake_active)
+                         else None)
                 _bk_on = False
                 if _bk_a is not None and len(_bk_a) and a in ind_cols:
                     try:
@@ -5212,6 +5522,18 @@ def build_industry_allocation_trades(alloc: Dict[str, Any], results: Dict[str, D
                          "거래비용(%p)": round(cost * 100, 3),
                          "벤치": b, "벤치 수익률(동일구간)": round(bench_ret, 4),
                          "벤치 대비(%p)": round((asset_ret - bench_ret) * 100, 2),
+                         # [v0.17.0 T3 ★] 결과 유형 — 손실이 '하락' 때문인지 '상승 미달' 때문인지 가른다.
+                         #   보고서15 실측: 벤치 미달 24건 중 **16건이 상승 미달**이고 손실 크기의 62%가
+                         #   거기서 나온다(① −44.89%p vs ② −27.40%p). 사용자는 하락 예측을 요구하지만
+                         #   다리의 실제 손실은 **상승 참여 실패**가 더 크다 — 이 사실이 어느 시트에도 없었다.
+                         "결과 유형": (("① 상승미달(부모 랠리에서 뒤처짐)"
+                                    if (bench_ret > 0 and asset_ret < bench_ret) else
+                                    ("② 하락증폭(부모보다 더 빠짐)"
+                                     if (bench_ret <= 0 and asset_ret < bench_ret) else
+                                     ("③ 방어성공(부모 하락에서 덜 빠짐)"
+                                      if bench_ret <= 0 else "④ 랠리초과(부모 상승 초과)")))
+                                   if (a in ind_cols and pd.notna(asset_ret) and pd.notna(bench_ret))
+                                   else ""),
                          "진입 판단": t_in,
                          "진입 시 부모비중(S★)": (round(float(w_s_all.loc[d_dec, p_a]), 4)
                                           if (d_dec is not None and w_s_all is not None
@@ -5926,9 +6248,35 @@ def build_industry_prediction_matrix(results: Dict[str, Dict[str, Any]], eval_id
     df.insert(2, "하락예측 산업수", n_down.astype(int).values)
     df.insert(3, "상승예측 산업수(자기국면)", n_up_own.astype(int).values)
     df.insert(4, "하락예측 산업수(자기국면)", n_down_own.astype(int).values)
+    # [v0.17.0 T4] 하락경고 산업수 — 라벨(확정국면)은 M 상속이라 산업별 차이가 0이지만 이 경고는
+    #   산업별로 다르다. 그래서 '하락예측 산업수'가 0 또는 29로 붙어 있는 날에도 이 열은 변한다.
+    #   정의는 13p 블록 A3-3과 같다(확정국면≠상승 & vol21 자기이력 하위1/3 & 탈동조).
+    try:
+        _wq = float(getattr(icfg, "WARN_SUMMARY_VOL_Q", 1.0 / 3.0)) if icfg is not None else 1.0 / 3.0
+        _need = bool(getattr(icfg, "WARN_SUMMARY_NEED_DECOUPLE", True)) if icfg is not None else True
+        _mh = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250) if icfg is not None else 250
+        _wm = pd.DataFrame(False, index=eval_idx, columns=list(results.keys()))
+        for _t, _r in results.items():
+            _vp = pd.Series(_r.get("vol21_pct"), dtype=float).reindex(eval_idx)
+            _st = pd.Series(_r.get("state"), dtype=object).reindex(eval_idx)
+            if _vp.dropna().empty or _st.dropna().empty:
+                continue
+            _w = _st.astype(str).ne("RISK_ON") & _vp.le(_wq)
+            if _need:
+                _cs = pd.Series(_r.get("coupling_score"), dtype=float)
+                if not _cs.dropna().empty:
+                    _thr = _cs.expanding(min_periods=_mh).quantile(1.0 / 3.0)
+                    _w = _w & _cs.le(_thr).reindex(eval_idx).fillna(False)
+                else:
+                    _w = pd.Series(False, index=eval_idx)
+            _wm[_t] = _w.fillna(False).values
+        df.insert(5, "하락경고 산업수(A3-3)", _wm.sum(axis=1).astype(int).values)
+    except Exception:
+        pass
     df.insert(1, "구분", "실적")
     if alloc:
-        df.insert(6, "산업배분 합계", alloc["target_w"][alloc["cols"]].sum(axis=1).reindex(eval_idx).round(4).values)
+        # [v0.17.0 T4] 앞에 '하락경고 산업수(A3-3)' 열이 하나 끼었으므로 6 → 7로 옮긴다(표시 위치 유지).
+        df.insert(7, "산업배분 합계", alloc["target_w"][alloc["cols"]].sum(axis=1).reindex(eval_idx).round(4).values)
     df = df.reset_index(drop=True)
     if nd_map:
         nxt = max(nd["다음거래일"] for nd in nd_map.values())
@@ -6637,10 +6985,62 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         if nd_spy is not None:
             nd_rows.append(("다음 거래일 예측 - SPY(M ★ 실매매 근거)",
                             f"{nd_spy['확정국면']} / 목표비중 {nd_spy['목표비중']:.2f} / {nd_spy['예상행동_kr']}"))
+        # [v0.17.0 T4 ★] 산업별 **하락 경고**를 같은 줄에 붙인다.
+        #   왜: 이 줄들이 29산업 전부 "상승 / 목표비중 1.00"으로 똑같다(INDUSTRY_REGIME_SOURCE="m_inherit"이라
+        #   산업별 라벨 차이가 0 — v0.14.0 C3의 귀결). 사용자가 다섯 라운드째 요구하는 "**각 산업별** 하락
+        #   예측"이 라벨로는 존재하지 않는 것이다. A3 경고는 산업별로 다르고 엔진이 이미 측정했으므로
+        #   (13p 블록 A3: 정밀도 0.5695 vs 기저 0.4263 · 연도비율 0.688 · 24/29 산업) 그것을 여기 올린다.
+        #   ⚠ 라벨·목표비중은 바꾸지 않는다 — 신호층 무변경이고, 표시만 추가한다.
+        _show_warn = bool(getattr(icfg, "SHOW_DECLINE_WARN_SUMMARY", True))
+        _wq = float(getattr(icfg, "WARN_SUMMARY_VOL_Q", 1.0 / 3.0))
+        _wneed = bool(getattr(icfg, "WARN_SUMMARY_NEED_DECOUPLE", True))
+        _mh_w = int(getattr(icfg, "COUPLING_MIN_HIST", 250) or 250)
+        _warn_now: Dict[str, Optional[bool]] = {}
+        if _show_warn:
+            for t in results:
+                try:
+                    vp = pd.Series(results[t].get("vol21_pct"), dtype=float).dropna()
+                    st = pd.Series(results[t].get("state"), dtype=object).dropna()
+                    if vp.empty or st.empty:
+                        _warn_now[t] = None; continue
+                    ok_ = bool(str(st.iloc[-1]) != "RISK_ON") and bool(vp.iloc[-1] <= _wq)
+                    if ok_ and _wneed:
+                        cs = pd.Series(results[t].get("coupling_score"), dtype=float)
+                        if cs.dropna().empty:
+                            ok_ = None
+                        else:
+                            thr = cs.expanding(min_periods=_mh_w).quantile(1.0 / 3.0)
+                            _last = cs.dropna().index[-1]
+                            ok_ = (bool(cs.loc[_last] <= thr.loc[_last])
+                                   if pd.notna(thr.get(_last, np.nan)) else None)
+                    _warn_now[t] = ok_
+                except Exception:
+                    _warn_now[t] = None
         for t in sorted(nd_map, key=lambda x: (results[x]["parent"], x)):
             nd = nd_map[t]
+            _w = _warn_now.get(t)
+            _wtxt = ("" if not _show_warn else
+                     (" / ⚠ 하락경고(A3-3)" if _w is True else
+                      (" / 경고 없음" if _w is False else " / 경고 산정불가")))
             nd_rows.append((f"다음 거래일 예측 - {t}({results[t]['parent']}, {INDUSTRY_NAME_KR.get(t, t)})",
-                            f"{nd['확정국면']} / 목표비중 {nd['목표비중']:.2f} / {nd['예상행동_kr']}"))
+                            f"{nd['확정국면']} / 목표비중 {nd['목표비중']:.2f} / {nd['예상행동_kr']}{_wtxt}"))
+        if _show_warn and _warn_now:
+            _non = [k for k, v in _warn_now.items() if v is True]
+            _cnt = len(_non); _tot_w = sum(1 for v in _warn_now.values() if v is not None)
+            nd_rows.append((
+                "⚠ 산업별 하락 경고 요약(v0.17.0 T4 · 진단)",
+                f"경고 {_cnt}/{_tot_w}개 산업"
+                + (f" — {', '.join(sorted(_non))}" if _non else " — 없음")
+                + " | 정의: 확정국면 ≠ 상승 **그리고** 자체 vol21 자기이력 하위 1/3"
+                + (" **그리고** 결합국면 탈동조" if _wneed else "")
+                + " (13p 블록 A3-3와 같은 정의). 엔진 실측: 하락 정밀도 **0.5695 vs 기저 0.4263(+14.3%p)** ·"
+                  " 연도 정밀도>기저 비율 0.688 · 향후 21일 수익 격차 −2.403%p · 2024년 격차 −1.05 · 24/29 산업 MCC>0."
+                + " | ⚠ **왜 이 줄이 필요한가**: 위 산업별 예측이 전부 같은 값인 것은 산업 확정국면이"
+                  " M(SPY)에서 상속되기 때문이다(INDUSTRY_REGIME_SOURCE=\"m_inherit\") — 라벨에는 산업별 차이가 0이다."
+                  " 이 경고가 **산업별로 다른 유일한 하락 신호**다."
+                + " | ⚠ 진단 전용 — 목표비중에 반영되지 않는다. [하락경고격자]에서 리더 감축에 적용해 봤으나"
+                  " 3행 중 2행이 달력 대조군에 졌다(3.291 vs 3.338 · 3.310 vs 3.339). 예측력이 곧 수익은 아니다."
+                + " 되돌리기: i_overrides={\"SHOW_DECLINE_WARN_SUMMARY\": False}"))
         nd_rows.append(("다음 거래일 예측 - 안내",
                         "t일 종가로 확정된 target_pos를 t+1일 시가에 체결하는 기존 체결 규칙을 표시만 재구성한 것 — "
                         "새 계산이 아니며 13/15 등 성과 시트에는 영향 없음. 01Z_산업일별예측 마지막 행(구분=예측)·"
