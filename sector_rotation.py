@@ -17,6 +17,98 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.52.0 - 2026-09-15 - [★★ 구버전 실행 방지 · 00A 실패 무음 금지 · 잔여 슬리브 · 블록 C] REPORT62.
+#    ── ★★★ R61에서 일어난 일: 코드는 고쳤는데 **구버전으로 실행**됐다 ──────────────────
+#      사용자 지적: "내가 시트 새로 생성해서 맨앞에 넣으라고 했는데 왜 안했어 (…) 비중 1 문제도 안고쳤어"
+#      업로드된 리포트의 버전 줄이 답이다 — S **v0.50.0** · I **v0.21.0** · K **v0.2.1**.
+#      즉 R61 산출물(S v0.51.0 · I v0.22.0 · K v0.3.0)이 실행에 반영되지 않았고, 노트북 상단 wget이
+#      저장소의 **이전 파일**을 가져왔다. 배너에 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없어서
+#      그것만 보고는 알 수 없었다. ⇒ 이번 라운드는 **그 혼동을 코드로 불가능하게 만드는 것**이 본체다.
+#    (E3) ★★ **00A 실패 무음 금지** — 00A 생성이 실패하면 경고 로그만 남고 시트가 **조용히 사라지는**
+#         구조였다. 이제 실패해도 **사유·역추적·다음 단계를 담은 00A 시트를 반드시 쓴다.**
+#         로그 수준도 warning → **error**. K는 I 모듈을 못 받은 경우도 시트로 알린다.
+#    (E4) 00_실행요약에 **★ 00A_수익비교 시트** 줄과 **★★ 전체자산 1.0 확인** 줄을 넣었다 —
+#         00A를 열지 않아도 비중 합계 최대·1.0 초과일이 첫 화면에서 보인다.
+#    (E5) 감사 판정문을 **초과 규모로 나눴다**. v0.51.0은 최대 1.0002(8일)를 잡고 "총 1.0배 레버리지가
+#         된다"고 써서 우스꽝스러웠다 — 부동소수 잔차(≤1.001)는 **△ 반올림 문제**로, 실제 초과는
+#         **⚠⚠ 제약 위반**으로 갈라 쓴다. 처방이 다르기 때문이다(반올림 vs 배분층 재설계).
+#    ⇒ runner v1.19.0이 **최소 버전을 알고 있고** 미달이면 어느 파일을 갱신해야 하는지 크게 알린다.
+#      배너에 기능 체크리스트(00A_수익비교 / 19블록C / 배분층)도 함께 찍는다.
+#
+#    ── ★★ 업로드된 리포트를 00A 코드에 실제로 먹여 얻은 것(실데이터 검증) ──────────────────
+#      배선까지 실형상으로 통과시켰다 — 함수만 스모크하면 R61처럼 배선에서 빠질 수 있다.
+#      (1) ★ **예산 사용률이 두 계층에서 정반대다**:
+#            S = 중위 **1.000** · 예산을 덜 쓴 날 123일뿐 → **천장은 M의 E_t**(R61 진단 확인)
+#            I = 중위 **0.000** · 예산을 덜 쓴 날 **1,855/2,186(85%)** → **천장은 확신 게이트**
+#          같은 지표가 처방을 완전히 갈랐다. 사전등록 ⑮(d)·⑯(b)가 이렇게 판정됐다.
+#      (2) ★★ **단위 오류를 잡았다** — 산업 칸만 더하면 단순합 85.28%로 동일가중 B&H(116.3%)에
+#          **지는 것처럼** 보인다. 그런데 산업 계층은 자본의 87%를 부모 섹터 ETF로 보낸다.
+#          잔여 슬리브를 포함하면 **287.26% · 복리 1492.36% · MDD −10.36%** 로 두 벤치를 압도한다
+#          (동일가중 B&H 116.3/164.4/−39.51 · 단독예측 동일가중 103.39/166.76/−14.33).
+#          ⇒ (E1) 00A에 **슬리브 기여 행 + ★★ 전략 합계 행**을 넣었다. R59의 '도달 가능한 벤치'와
+#            같은 종류의 오류이고, 이번에는 **내 새 시트가 스스로 만든** 오류였다.
+#      (3) ★★★ **새 원인 발견 — 배분이 예측 성적을 반영하지 않는다**(E2 블록 C 신설):
+#            I: 예측의 값(②−①) vs 전략 평균비중 상관 **피어슨 −0.1697 · 스피어만 −0.3146**
+#               비중 상위9 ∩ 예측 상위9 = **1개**(무작위 기대 2.8개 — **무작위보다 나쁘다**)
+#               비중 상위9의 평균 예측값 **−19.65%p** vs 전체 평균 −12.91%p
+#               비중 1·2위: SOXX(예측 −19.3%p · 기여 +61.5%) · IGV(예측 **−47.6%p** · 기여 +17.1%)
+#            S: 피어슨 **−0.3146** · XLK가 자본의 **50.9%**인데 예측값 −22.48%p,
+#               유일하게 예측이 B&H를 이긴 XLF(+16.96%p)는 비중 **0.004**
+#          ⇒ 선택 점수(복합점수·리더 점수)는 **모멘텀·상대강도**이고 '그 자산의 국면 예측이 맞는지'는
+#            전혀 보지 않는다. 사용자가 계속 '예측'을 개선하라고 하는데 **예측이 배분에 연결돼 있지
+#            않다**는 것이 구조적 사실이다.
+#          ⚠ 단 음수 상관이 곧 손해는 아니다 — SOXX는 B&H 단순합 289.38%로 가장 강한 산업이고
+#            전략기여 +61.5%로 최대다. **모멘텀 선택이 예측보다 잘 듣고 있다**는 뜻이기도 하다.
+#            그래서 블록 C는 상관과 **전략기여를 같은 행에** 싣고 둘을 함께 읽게 한다.
+#          ⇒ 다음 개선 후보: **예측 성적(②−①)을 워크포워드로 측정해 선택 점수에 섞는다.**
+#            라이브가 아니라 **격자로 채점**한다(그럴듯한 근거로 라이브를 바꿔 3회 실패한 교훈).
+#
+#  VERSION: v0.51.0 - 2026-09-15 - [★ 00A_수익비교 시트(맨 앞) · ★★ 상승 미참여의 천장은 M이라는 진단] REPORT61.
+#    사용자 지시: "맨 앞에 시트 새로 하나 생성해서 각 섹터별 buy and hold시 수익률(이 때 수익률은 복리가
+#    아닌 변동률 합산)과 단독 예측으로 거래 시 수익률 비교하고 전략 수익률도 같이 표시해" +
+#    "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서 각 총합이 1이되도록" + 하락회피·상승참여 판정
+#    ★ 신호층·배분층 변경 **0건**. 시트 하나가 늘고 진단이 하나 추가된다.
+#
+#    ── ★★ 리포트50 블록 C 판독: S★는 방어형이고 **상승 참여의 천장은 S가 아니다** ──────────
+#      SPY B&H 대비: 하락 30구간 회피성공 7/30 **+171.9%p** · 상승 29구간 완전참여 12/29 **−41.0%p**
+#                   ★★ 종합 **+130.9%p** — 방어로 벌고 참여로 잃는다(사용자 판정 기준 그대로).
+#      11섹터 균등 B&H 대비: 하락 8/25 +184.1 · 상승 10/24 −35.2 · 종합 **+148.9%p**
+#      ⇒ S★는 두 벤치를 **모두** 이긴다. 문제는 "상승에서 −41%p를 왜 잃나"다.
+#
+#      ★★★ 원인을 특정했다 — **S 계층이 아니라 M 계층의 E_t(SPY 목표비중)가 천장이다.**
+#        13c 실측: **배분합계 < E_t 인 날이 2,186일 중 0일(0%)** — 섹터층은 M이 준 예산을
+#          **한 번도** 덜 쓰지 않았다. 즉 S는 주어진 예산을 늘 전부 쓴다.
+#        상승 미참여 최악 3구간을 열어 보면:
+#          2020-10-30~2021-09-02 (211일 · −14.82%p): **E_t 평균 0.439 · E_t=1.0인 날 2%**.
+#            시작 노출 1.00 → 구간평균 0.436. 사상 최대 강세장에서 예산 자체가 0.44였다.
+#          2023-10-27~2024-03-27 (103일 · −12.51%p): E_t 평균 0.458 · 1.0인 날 21%.
+#          2020-03-23~03-30 (코로나 저점 5일 · −17.36%p): **E_t = 0.000 전 구간** · 적격섹터 0개.
+#            섹터층은 쓸 예산이 아예 없었다.
+#        교차검증(13n B블록): 시장 **큰상승일 상위5%** 110일에 섹터 합 128.03% vs M 합 105.89%
+#          = **+22.14%p**. 섹터층은 큰상승일에 M보다 **더** 번다. 13n A블록: 초과수익 연율
+#          **+8.43%p** · IR **1.271**. ⇒ S는 이미 자기 몫을 하고 있다.
+#      ⇒ **결론: S를 더 고쳐도 상승 참여는 올라가지 않는다.** 올리려면 M의 E_t를 손대야 하고
+#        그것은 이번 라운드 범위(사용자: "sector, industry, stock")가 아니다. 그래서 **고치는 대신
+#        리포트가 그 사실을 매 실행 말하게 했다**(D1 블록 B의 '예산 사용률' 행) — 그러지 않으면
+#        다음 라운드에도 S를 두드리며 못 올라갈 벽을 밀게 된다.
+#
+#    (D1) ★ 신규 시트 **00A_수익비교**(맨 앞 · build_asset_return_compare + sheets_to_front 신설):
+#         섹터 한 줄에 ① B&H **단순합**(Σr · 복리 아님, 지시대로) ② 단독예측 단순합 ③ 전략기여 단순합.
+#         복리를 같은 행에 병기한다 — 단순합은 "며칠 맞았나", 복리는 "얼마 남나"를 말한다.
+#         블록 B는 **전체자산 1.0** 기준: ★ 11섹터 동일가중 B&H / ★ 단독예측 동일가중 / ★★ 전략(배분)
+#         + **비중 합계 감사**(평균·최대·1.0 초과일) + ★ **예산 사용률**(M의 E_t 대비).
+#         ⚠ 비중 합계 감사 실측(리포트50): 최대 **1.0002** — 1.0 초과일 1일. 부동소수 잔차이고
+#           시트 자체 '배분합계'는 1.0로 잘려 있지만, 이제 그 1일이 매 실행 보인다.
+#    (D2) build_asset_return_compare는 I·K와 **같은 코드**다(I에 복사 · K는 I 함수를 재사용).
+#         테스트가 두 사본의 표류를 감시한다.
+#
+#    [검증] ⑮ v0.51.0 사전등록(다음 리포트에서 판정):
+#      (a) 00A가 **맨 앞**(00_실행요약 다음)에 오는가.
+#      (b) 블록 B에서 ★★ 전략(배분)이 ★ 동일가중 B&H와 ★ 단독예측 동일가중을 **둘 다** 이기는가.
+#      (c) 비중 합계 감사의 1.0 초과일이 몇 일인가(1.0002 1일이 재현되는가).
+#      (d) 예산 사용률 중위가 1.0 근처인가 — 그렇다면 상승 참여 개선은 **M 계층의 일**이라는 뜻이다.
+#      (e) ② 단독예측이 ① B&H를 이기는 섹터가 몇 개인가 — 섹터별 예측 자체의 값이다.
+#
 #  VERSION: v0.50.0 - 2026-09-15 - [★ 19 블록 C 신설 — B&H 대비 하락회피·상승참여를 올바른 단위로] REPORT60.
 #    사용자 지시: "buy and hold랑 비교했을 때 하락 기간을 피했는지(비중 최대로 감축) 상승을 타서 제대로
 #    수익을 최대한 많이 냈는지(비중 최대로) 판단해서 그렇지 못한 기간에서 문제 원인 찾아내서 개선해"
@@ -2140,7 +2232,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.50.0"
+VERSION = "v0.52.0"
 VERSION_DATE = "2026-09-15"
 
 # =============================================================================
@@ -10905,6 +10997,246 @@ def build_portfolio_segments(port_curve: pd.Series, port_exposure: pd.Series,
     return pd.DataFrame(rows)
 
 
+def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg: Any,
+                               solo_w: Optional[pd.DataFrame] = None,
+                               name_map: Optional[Dict[str, str]] = None,
+                               parent_map: Optional[Dict[str, str]] = None,
+                               layer: str = "자산",
+                               bench_curves: Optional[List[Tuple[str, pd.Series]]] = None,
+                               budget: Optional[pd.Series] = None,
+                               extra_contrib: Optional[List[Tuple[str, pd.Series, pd.Series]]] = None,
+                               M=None) -> pd.DataFrame:
+    """[00A_수익비교, v0.51.0 D1 ★ 신규] 사용자 지시로 만든 **맨 앞 시트**.
+
+    지시: "각 섹터, 산업, 주식별 buy and hold시 수익률(이 때 수익률은 복리가 아닌 변동률 합산)과
+          단독 예측으로 거래 시 수익률 비교하고 전략 수익률도 같이 표시해"
+      ⇒ 자산 한 줄에 **세 수익**을 나란히 놓는다:
+        ① **B&H 단순합**   = Σ r_t          — 그 자산을 그냥 들고 있었을 때(복리 아님, 지시대로)
+        ② **단독예측 단순합** = Σ (w_solo·r) — 그 자산 **자기 신호만**으로 0/1 거래했을 때
+        ③ **전략기여 단순합** = Σ (w_alloc·r) — **배분 전략**에서 그 자산이 실제로 기여한 몫
+      왜 단순합인가(지시의 이유를 살리는 설명): 복리는 **경로**에 좌우되므로 세 계열의 '신호 품질'을
+        비교할 때 큰 수익 한 번이 전부를 덮는다. 단순합은 일별 기여를 그대로 더하므로
+        "며칠 벌었고 며칠 잃었나"가 보존된다. ⚠ 단 **실제로 손에 남는 것은 복리**이므로
+        복리 열을 같은 행에 함께 싣는다(판정은 둘을 같이 본다 — 소수 클래스 규칙과 같은 정신).
+      ★ ③은 자산별로 **복리를 쓰지 않는다**. 배분 전략에서 한 자산의 기여는 그 자산만의 곡선이
+        아니기 때문이다(다른 자산과 현금이 같은 자본을 나눠 쓴다). 그래서 ③의 복리는
+        **포트폴리오 블록에서만** 계산한다 — 그것이 수학적으로 옳은 유일한 지점이다.
+
+    블록 B(포트폴리오)가 사용자의 두 번째 지시에 답한다:
+      "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서 각 총합이 1이 되도록 하라고
+       왜 자꾸 각 티커별로 비중이 1이냐고"
+      ⇒ **비중 합계 감사** 행이 매 실행 합계의 최대·평균·1.0 초과일수를 찍는다.
+        초과가 1일이라도 있으면 ⚠로 표시된다 — 조용히 넘어가지 않는다."""
+    rows: List[dict] = []
+    blkA = "A. 자산별 수익 비교"
+    blkB = "B. 포트폴리오(전체자산 1.0)"
+    cols = [c for c in ret_df.columns if c in alloc_w.columns]
+    if not cols:
+        return pd.DataFrame([{"블록": blkA, "자산": "산출 불가",
+                              "판정": "ret_df와 alloc_w에 공통 자산이 없다 — 색인·열 정렬을 확인할 것"}])
+    idx = ret_df.index
+    R = ret_df[cols].astype(float)
+    WA = alloc_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+    WS = (solo_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+          if solo_w is not None else None)
+
+    def _mdd(r: pd.Series) -> float:
+        c = (1.0 + pd.Series(r).astype(float).fillna(0.0)).cumprod()
+        return float((c / c.cummax() - 1.0).min())
+
+    def _cmp(r: pd.Series) -> float:
+        return float((1.0 + pd.Series(r).astype(float).fillna(0.0)).prod() - 1.0)
+
+    rows.append({"블록": blkA, "자산": "── 읽는 법 ──",
+                 "판정": ("**단순합**은 일간 변동률을 그대로 더한 값이다(복리 아님 — 사용자 지시). "
+                        "같은 행의 **복리**와 함께 읽을 것: 단순합은 '신호가 며칠 맞았나'를, "
+                        "복리는 '실제로 얼마가 남나'를 말한다. "
+                        "① B&H = 그냥 보유 · ② 단독예측 = 그 자산 **자기 신호만**으로 0/1 거래 · "
+                        "③ 전략기여 = **배분 전략**에서 그 자산이 실제로 기여한 몫(비중 × 수익). "
+                        f"③은 {layer} 계층이 전체자산 1.0을 나눠 쓴 결과이므로 자산별 합이 B&H보다 "
+                        "작은 것이 **정상**이다 — 한 자산에 자본 전부를 주지 않기 때문이다. "
+                        "따라서 ③은 B&H와 직접 비교하지 말고 **블록 B의 포트 합계**와 비교할 것. "
+                        "②와 ①의 차이가 그 자산 **예측의 값**이고, 그것이 이 시트의 판정 대상이다.")})
+
+    solo_tot = pd.Series(0.0, index=idx); n_ok = 0
+    _pv: List[dict] = []          # [E2] 블록 C용 (자산, 예측의 값, 평균비중, 기여)
+    for t in cols:
+        r = R[t]
+        ok = r.notna()
+        n = int(ok.sum())
+        if n < 20:
+            rows.append({"블록": blkA, "자산": t, "이름": (name_map or {}).get(t, ""),
+                         "부모": (parent_map or {}).get(t, ""), "관측일": n,
+                         "판정": f"⚠ 관측 {n}일 — 20일 미만이라 건너뜀"})
+            continue
+        rf = r.fillna(0.0)
+        bh_s = float(rf.sum()) * 100.0
+        bh_c = _cmp(rf) * 100.0
+        wa = WA[t]
+        st_s = float((wa * rf).sum()) * 100.0
+        row = {"블록": blkA, "자산": t, "이름": (name_map or {}).get(t, ""),
+               "부모": (parent_map or {}).get(t, ""), "관측일": n,
+               "① B&H 단순합(%)": round(bh_s, 2), "① B&H 복리(%)": round(bh_c, 2),
+               "① B&H MDD(%)": round(_mdd(rf) * 100.0, 2)}
+        if WS is not None:
+            ws = WS[t]
+            so = ws * rf
+            solo_tot = solo_tot + so
+            n_ok += 1
+            so_s = float(so.sum()) * 100.0
+            row.update({"② 단독예측 단순합(%)": round(so_s, 2),
+                        "② 단독예측 복리(%)": round(_cmp(so) * 100.0, 2),
+                        "② 단독예측 MDD(%)": round(_mdd(so) * 100.0, 2),
+                        "② 평균비중": round(float(ws.mean()), 4),
+                        "②−① 단순합(%p)": round(so_s - bh_s, 2)})
+            _v = ("★ 예측이 B&H를 이겼다" if so_s > bh_s else
+                  "예측이 B&H에 미달 — 참여 부족" if float(ws.mean()) < 0.95 else
+                  "예측이 B&H에 미달 — 비중은 찼으니 타이밍 문제")
+        else:
+            _v = "단독예측 비중 미제공"
+        row.update({"③ 전략기여 단순합(%)": round(st_s, 2),
+                    "③ 전략 평균비중": round(float(wa.mean()), 4),
+                    "③ 전략 최대비중": round(float(wa.max()), 4),
+                    "판정": _v})
+        rows.append(row)
+        if WS is not None:
+            _pv.append({"자산": t, "pred": so_s - bh_s, "w": float(wa.mean()), "contrib": st_s})
+
+    # ---------------- 블록 B: 포트폴리오 ----------------
+    RF = R.fillna(0.0)
+    nA = max(1, len(cols))
+    port_r = (RF * WA).sum(axis=1)                 # 배분 전략 포트 일간수익(총합 ≤ 1.0)
+    eq_r = RF.mean(axis=1)                         # 동일가중 B&H(총 1.0)
+    wsum = WA.sum(axis=1)
+    rows.append({"블록": blkB, "자산": "── 읽는 법 ──",
+                 "판정": ("여기서만 **총자본 1.0** 기준이다. 세 줄을 같은 잣대로 비교할 수 있는 곳은 "
+                        "이 블록뿐이다 — 블록 A의 ③은 자산 한 칸의 기여일 뿐이기 때문이다. "
+                        "맨 아래 **비중 합계 감사**가 '전체자산 1.0'이 실제로 지켜졌는지 매 실행 확인한다.")})
+    _mk = lambda lbl, s, w, note: rows.append(
+        {"블록": blkB, "자산": lbl, "관측일": int(len(s)),
+         "① B&H 단순합(%)": round(float(s.sum()) * 100.0, 2),
+         "① B&H 복리(%)": round(_cmp(s) * 100.0, 2),
+         "① B&H MDD(%)": round(_mdd(s) * 100.0, 2),
+         "③ 전략 평균비중": (round(float(w.mean()), 4) if w is not None else None),
+         "③ 전략 최대비중": (round(float(w.max()), 4) if w is not None else None),
+         "판정": note})
+    _mk(f"★ {len(cols)}{'개' if layer != '개별주식' else '종목'} 동일가중 B&H (총 1.0)", eq_r,
+        pd.Series(1.0, index=idx),
+        "같은 자산군·같은 자본을 신호 없이 균등 보유 — **배분 기술만 남는 like-for-like 벤치**다")
+    if WS is not None and n_ok:
+        _mk("★ 단독예측 동일가중 (총 1.0)", solo_tot / float(n_ok), WS.mean(axis=1),
+            "각 자산이 자기 신호로 0/1 거래하고 그것을 균등가중 — **예측만의 값**을 본다")
+    _mk(f"★★ 전략(배분 · {layer} 계층)", port_r, wsum,
+        "엔진이 실제로 집행한 배분. 위 두 줄을 **둘 다** 이겨야 이 계층이 값을 한 것이다")
+    # ---- [v0.23.0 E1 ★] 이 계층이 쓰는 **다른 슬리브**(부모 ETF·잔여·현금대체)의 기여 ----
+    #   왜 필요한가: 산업 계층은 자본의 일부만 산업 칸에 넣고 나머지를 **부모 섹터 ETF**로 보낸다.
+    #     그래서 '산업 칸의 기여 합'만 더하면 전체 포트가 아니고, 그것을 동일가중 B&H와 비교하면
+    #     **이 계층이 진다는 잘못된 결론**이 나온다(실측: 산업 칸만 85.28% vs B&H 116.3%).
+    #     R59에서 고친 '도달 가능한 벤치'와 같은 종류의 오류다 — 단위를 맞춰야 비교가 성립한다.
+    _ex_tot = None
+    for _lbl, _r, _w in (extra_contrib or []):
+        _rr = pd.Series(_r).astype(float).reindex(idx).fillna(0.0)
+        _ww = (pd.Series(_w).astype(float).reindex(idx).fillna(0.0)
+               if _w is not None else pd.Series(0.0, index=idx))
+        _ex_tot = _rr if _ex_tot is None else (_ex_tot + _rr)
+        _mk(f"  └ {_lbl}", _rr, _ww, "이 계층이 산업/섹터 칸 밖으로 보낸 자본의 기여(참고)")
+    if _ex_tot is not None:
+        _mk("★★ 전략 합계(배분 + 위 슬리브 전부)", port_r + _ex_tot, wsum + (
+            sum(pd.Series(_w).astype(float).reindex(idx).fillna(0.0)
+                for _, _, _w in (extra_contrib or []) if _w is not None)
+            if any(_w is not None for _, _, _w in (extra_contrib or [])) else pd.Series(0.0, index=idx)),
+            "★ 이 줄이 **이 계층의 실제 포트**다 — 동일가중 B&H와 비교할 단위는 이것이다")
+    for _bl, _bc in (bench_curves or []):
+        _b = pd.Series(_bc).astype(float).reindex(idx).ffill()
+        _br = _b.pct_change().fillna(0.0)
+        _mk(f"참고: {_bl}", _br, None, "외부 벤치(참고용)")
+    # ---- 비중 합계 감사 ----
+    #   ★ 판정을 **초과 규모로 나눈다**. v0.51.0 첫 실행에서 최대 1.0002(8일)를 잡고
+    #     "총 1.0배 레버리지가 된다"고 써서 우스꽝스러웠다 — 부동소수 잔차와 실제 레버리지는
+    #     전혀 다른 문제이고 **처방도 다르다**(반올림 vs 배분층 재설계).
+    _over = int((wsum > 1.0 + 1e-6).sum())
+    _bad = int((WA > 1.0 + 1e-9).sum().sum())
+    _mx = float(wsum.max())
+    _resid = (_over > 0 and _mx <= 1.001 and _bad == 0)     # 1.001 이하 = 부동소수 잔차
+    if _over == 0 and _bad == 0:
+        _verd = "★ 전체자산 1.0 제약이 지켜졌다(초과 0일)."
+    elif _resid:
+        _verd = (f"△ 부동소수 잔차 — 최대 {_mx:.6f}(초과분 {(_mx - 1.0) * 1e4:.1f}bp)가 {_over}일. "
+                 "레버리지가 아니라 **반올림 문제**다. 배분 로직은 정상이며, 합계를 소수 6자리로 "
+                 "맞추는 것으로 해결된다(자본 영향 사실상 0).")
+    else:
+        _verd = (f"⚠⚠ **제약 위반** — 합계가 1.0을 넘는 날이 {_over}일, 최대 **{_mx:.2f}배**다. "
+                 f"전체자산을 1로 두고 나눠 담아야 한다. 자산마다 1.0을 주면 총 {_mx:.1f}배 "
+                 "레버리지이며 이것은 배분이 아니다 — 배분층을 확인할 것."
+                 + (f" 개별 자산이 1.0을 넘은 칸도 {_bad}개 있다." if _bad else ""))
+    rows.append({"블록": blkB, "자산": "★ 비중 합계 감사",
+                 "③ 전략 평균비중": round(float(wsum.mean()), 4),
+                 "③ 전략 최대비중": round(_mx, 6),
+                 "관측일": int(len(wsum)),
+                 "판정": (f"일별 비중 합계: 평균 {float(wsum.mean()):.4f} · 최대 {_mx:.6f} · "
+                        f"**1.0 초과일 {_over}일** · 개별 자산이 1.0을 넘은 칸 {_bad}개. " + _verd)})
+    if budget is not None and len(budget):
+        _bg = pd.Series(budget).astype(float).reindex(idx).fillna(0.0)
+        _use = (wsum / _bg.replace(0.0, np.nan))
+        rows.append({"블록": blkB, "자산": "★ 예산 사용률(상위 계층 대비)",
+                     "③ 전략 평균비중": round(float(_bg.mean()), 4),
+                     "③ 전략 최대비중": round(float(_bg.max()), 4),
+                     "판정": (f"상위 계층이 준 예산 평균 {float(_bg.mean()):.4f}(최대 {float(_bg.max()):.4f}) 중 "
+                            f"이 계층이 쓴 비율 중위 **{float(_use.median()):.3f}** · "
+                            f"예산을 덜 쓴 날 {int((wsum < _bg - 1e-9).sum())}일. "
+                            "★ 사용률이 1.0에 가까우면 **상승 참여의 천장은 이 계층이 아니라 상위 계층의 "
+                            "예산**이다 — 그 경우 이 계층을 고쳐도 참여는 올라가지 않는다.")})
+    # ---- [v0.23.0 E2 ★★ 신규 블록 C] 예측의 값 vs 배분이 준 비중 ----
+    #   사용자 질문("상승을 제대로 탔나 · 못했으면 원인")에 대한 **새로운 층의 답**:
+    #     ②−①(그 자산 예측의 값)과 ③ 전략 평균비중의 관계를 본다.
+    #     양수 상관 = 잘 맞추는 자산에 비중을 준다(예측이 배분에 연결돼 있다).
+    #     음수 상관 = **예측을 잘하는 자산에는 비중을 안 주고 못하는 자산에 준다.**
+    #   ⚠ 음수라고 곧 손해는 아니다 — 선택이 모멘텀으로 이뤄지고 그것이 더 잘 듣는 경우일 수 있다.
+    #     그래서 '전략기여'도 같이 싣고, 두 열을 함께 읽게 한다.
+    if WS is not None and len(_pv) >= 5:
+        _d = pd.DataFrame(_pv)
+        _pe = float(_d["pred"].corr(_d["w"])) if _d["w"].std() > 0 else float("nan")
+        _sp = float(_d["pred"].corr(_d["w"], method="spearman")) if _d["w"].std() > 0 else float("nan")
+        _k = max(1, len(_d) // 3)
+        _tw_set = set(_d.nlargest(_k, "w")["자산"]); _tp_set = set(_d.nlargest(_k, "pred")["자산"])
+        _ov = len(_tw_set & _tp_set); _exp = _k * _k / max(1, len(_d))
+        _hi = _d.nlargest(_k, "w")["pred"].mean(); _all = _d["pred"].mean()
+        rows.append({"블록": "C. 예측의 값 vs 배분 비중", "자산": "── 읽는 법 ──",
+                     "판정": ("②−①(그 자산 **예측의 값**)과 ③(배분이 준 **평균비중**)의 관계다. "
+                            "양수면 '잘 맞추는 자산에 비중을 준다'(예측이 배분에 연결돼 있다), "
+                            "음수면 '**예측을 잘하는 자산에 비중을 안 준다**'는 뜻이다. "
+                            "⚠ 음수가 곧 손해는 아니다 — 선택이 모멘텀으로 이뤄지고 그쪽이 더 잘 듣는 "
+                            "경우일 수 있다. 그래서 같은 블록의 **전략기여**를 반드시 함께 볼 것.")})
+        rows.append({"블록": "C. 예측의 값 vs 배분 비중", "자산": "★ 상관(피어슨)",
+                     "③ 전략 평균비중": (round(_pe, 4) if pd.notna(_pe) else None),
+                     "판정": f"피어슨 {_pe:+.4f} · 스피어만 {_sp:+.4f} (자산 {len(_d)}개)"})
+        rows.append({"블록": "C. 예측의 값 vs 배분 비중", "자산": f"★ 비중 상위{_k} ∩ 예측 상위{_k}",
+                     "관측일": _ov,
+                     "판정": (f"겹침 **{_ov}개** / 무작위 기대 {_exp:.1f}개. "
+                            + ("★ 무작위보다 많다 — 배분이 예측 성적을 어느 정도 반영한다."
+                               if _ov > _exp + 1e-9 else
+                               "⚠ 무작위 이하다 — **배분이 예측 성적을 반영하지 않는다.**"))})
+        rows.append({"블록": "C. 예측의 값 vs 배분 비중", "자산": f"★★ 비중 상위{_k}의 평균 예측값",
+                     "②−① 단순합(%p)": round(float(_hi), 2),
+                     "판정": (f"비중 상위{_k} 자산의 ②−① 평균 **{_hi:+.2f}%p** vs 전체 평균 {_all:+.2f}%p. "
+                            + ("★ 비중을 준 쪽이 예측도 더 좋다."
+                               if _hi > _all else
+                               "⚠ **비중을 많이 준 자산이 평균보다 예측을 더 못한다.** "
+                               "선택 점수가 '그 자산의 국면 예측이 맞는지'를 보지 않기 때문이다 — "
+                               "다음 개선 후보는 **예측 성적을 선택 점수에 섞는 것**이며, "
+                               "라이브가 아니라 **격자로 채점**해야 한다(과거 3회 실패 교훈)."))})
+        _bw = _d.nlargest(3, "w")[["자산", "pred", "w", "contrib"]]
+        rows.append({"블록": "C. 예측의 값 vs 배분 비중", "자산": "비중 상위3 상세",
+                     "판정": " · ".join(f"{r['자산']}: 예측 {r['pred']:+.1f}%p · 비중 {r['w']:.4f} · "
+                                      f"기여 {r['contrib']:+.1f}%" for _, r in _bw.iterrows())})
+    log("ROT", kv(event="asset_return_compare_built", layer=str(layer), assets=len(cols),
+                  port_simple_sum=round(float(port_r.sum()) * 100.0, 2),
+                  eq_bh_simple_sum=round(float(eq_r.sum()) * 100.0, 2),
+                  w_sum_max=round(float(wsum.max()), 4), w_over_1=_over,
+                  note="단순합(복리 아님) = 사용자 지시"), M=M)
+    return pd.DataFrame(rows)
+
+
 def build_up_down_segments(curve_df: pd.DataFrame, exec_w: pd.DataFrame, ret_df: pd.DataFrame,
                            cfg: Any, name_map: Optional[Dict[str, str]] = None,
                            parent_map: Optional[Dict[str, str]] = None,
@@ -11803,6 +12135,18 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                    "회피) / 10 데이터품질(섹터 유니버스·Adj Close 지연) / 11 룩어헤드감사 — 02~11(09b 포함)은 전부 '티커' 열로 구분"),
         ("면책", "본 산출물은 연구·교육 목적의 백테스트 결과이며 투자 자문이 아닙니다. 과거 성과는 미래 수익을 보장하지 않습니다."),
     ]
+    # [v0.52.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다 — 00A를 열지 않아도 보이게.
+    _a0 = sheets.get("00A_수익비교")
+    if isinstance(_a0, pd.DataFrame) and len(_a0):
+        _au0 = _a0[_a0["자산"].astype(str).str.contains("비중 합계 감사", na=False)]
+        meta.insert(1, ("★ 00A_수익비교 시트",
+                        "맨 앞에 있음 — B&H 단순합(복리 아님) vs 단독예측 vs 전략(배분) + 비중 합계 감사"
+                        + (" · ⚠ 산출 실패(해당 시트의 '판정' 열 참조)"
+                           if (_a0["자산"].astype(str) == "⚠ 산출 실패").any() else "")))
+        if len(_au0):
+            meta.insert(2, ("★★ 전체자산 1.0 확인", str(_au0["판정"].iloc[0])[:400]))
+    else:
+        meta.insert(1, ("⚠ 00A_수익비교 시트", "생성되지 않았다 — 로그에서 asset_return_compare_failed 확인"))
     meta = [meta[0]] + nd_rows + meta[1:]  # [v0.3.0 §1.A] 버전 다음에 '다음 거래일 예측' 블록 삽입(M과 동일 패턴)
     for k, v in sorted(sres.get("stage_timing", {}).items()):
         meta.append((f"실행시간 - {k}", f"{v:.1f}초"))
@@ -11811,6 +12155,84 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         meta.append((f"실행시간 - 섹터 {t}", f"{tm.get('12_run_sector()합계', 0):.1f}초 (검증+워크포워드 "
                      f"{tm.get('05_06_검증+워크포워드', 0):.1f}초{', 캐시' if results[t]['cache_hit'] else ''})"))
 
+    # ---- [v0.51.0 D1 ★ 신규 시트] 00A_수익비교 — 사용자 지시("맨 앞에 시트 새로 하나 생성해서") ----
+    #   ① B&H 단순합(복리 아님) · ② 단독예측 · ③ 전략기여를 섹터 한 줄에 놓고,
+    #   블록 B에서 **전체자산 1.0** 기준으로 포트 합계와 **비중 합계 감사**를 낸다.
+    if alloc:
+        try:
+            _tw2 = alloc.get("target_w")
+            _sc2 = [t for t in ok_t if _tw2 is not None and t in _tw2.columns and t in results]
+            if _tw2 is not None and len(_tw2) and _sc2:
+                _ret2 = pd.DataFrame({t: pd.Series(results[t].get("bh_ret"), dtype=float)
+                                      for t in _sc2}).reindex(_tw2.index).astype(float)
+                _ex2 = _tw2[_sc2].shift(1).fillna(0.0)          # 체결 규칙 exec_w(t)=target_w(t-1)
+                # 단독예측 비중 = 각 섹터의 **자기 신호만**으로 낸 목표비중(01_일별의 '자기 목표비중',
+                #   없으면 '목표비중'). 02_섹터별단독거래와 같은 개념이다.
+                _solo = {}
+                for t in _sc2:
+                    _d = results[t]["sheets"].get("daily")
+                    if not isinstance(_d, pd.DataFrame) or not len(_d):
+                        continue
+                    _dd = _d.copy()
+                    if "날짜" in _dd.columns:
+                        _dd = _dd.set_index(pd.to_datetime(_dd["날짜"], errors="coerce"))
+                    _c = next((c for c in ("자기 목표비중", "목표비중") if c in _dd.columns), None)
+                    if _c is not None:
+                        _solo[t] = pd.to_numeric(_dd[_c], errors="coerce").reindex(_tw2.index).ffill()
+                _sw = (pd.DataFrame(_solo).shift(1).fillna(0.0) if _solo else None)
+                # 상위 계층 예산 = M의 E_t(SPY 목표비중). 사용률이 1이면 천장은 M이다.
+                _bg = None
+                _as = sres.get("alloc_sheet")
+                if isinstance(_as, pd.DataFrame) and "E_t(SPY목표비중)" in _as.columns:
+                    _b0 = _as.copy()
+                    if "날짜" in _b0.columns:
+                        _b0 = _b0.set_index(pd.to_datetime(_b0["날짜"], errors="coerce"))
+                    _bg = pd.to_numeric(_b0["E_t(SPY목표비중)"], errors="coerce").reindex(_tw2.index).shift(1)
+                _bcs: List[Tuple[str, pd.Series]] = []
+                _pcv2 = sres.get("portfolio_curve")
+                if isinstance(_pcv2, pd.DataFrame) and "SPY B&H" in _pcv2.columns:
+                    _sb = pd.to_numeric(_pcv2["SPY B&H"], errors="coerce")
+                    if len(_sb) == len(_tw2):
+                        _sb.index = _tw2.index
+                    _bcs.append(("SPY 단순보유(B&H)", _sb))
+                # [v0.52.0 E1] 섹터 칸 밖으로 간 자본(SPY 폴백·현금)의 기여를 같이 싣는다 —
+                #   그러지 않으면 '섹터 칸 합'을 동일가중 B&H와 비교하게 되어 단위가 틀린다.
+                _extra = None
+                try:
+                    _bt0 = (alloc.get("bts") or {}).get(alloc.get("label_star"))
+                    if _bt0 is not None and "strategy_ret" in _bt0:
+                        _sr = pd.Series(_bt0["strategy_ret"]).astype(float)
+                        if len(_sr) == len(_tw2):
+                            _sr.index = _tw2.index
+                        _sr = _sr.reindex(_tw2.index).fillna(0.0)
+                        _own = (_ex2 * _ret2.fillna(0.0)).sum(axis=1)
+                        _extra = [("SPY 폴백·현금 등 섹터 밖 자본", _sr - _own,
+                                   (1.0 - _ex2.sum(axis=1)).clip(lower=0.0))]
+                except Exception as _e:
+                    log("REPORT", kv(event="extra_contrib_skipped", err=type(_e).__name__), M=M)
+                _cmpdf = build_asset_return_compare(
+                    _ret2, _ex2, scfg, solo_w=_sw,
+                    name_map={t: SECTOR_NAME_KR.get(t, "") for t in _sc2},
+                    parent_map={t: "SPY" for t in _sc2}, layer="섹터",
+                    bench_curves=_bcs, budget=_bg, extra_contrib=_extra, M=M)
+                if isinstance(_cmpdf, pd.DataFrame) and len(_cmpdf):
+                    sheets["00A_수익비교"] = _cmpdf
+        except Exception as e:
+            # ★★ [v0.52.0 E3] 실패해도 **시트는 반드시 쓴다**. v0.51.0은 경고 로그만 남기고
+            #   시트를 조용히 빠뜨리는 구조였고, 그러면 사용자는 "왜 안 만들었어"만 볼 수 있다.
+            #   사유·다음 단계를 담은 한 줄짜리 00A를 남겨 **무엇이 실패했는지 리포트에서** 보이게 한다.
+            import traceback as _tb
+            log("REPORT", kv(event="asset_return_compare_failed", err=str(e)[:200],
+                             suggest="alloc['target_w']와 results[t]['sheets']['daily'] 확인"),
+                M=M, level="error")
+            sheets["00A_수익비교"] = pd.DataFrame([{
+                "블록": "A. 자산별 수익 비교", "자산": "⚠ 산출 실패",
+                "판정": (f"00A 생성 중 예외: {type(e).__name__}: {str(e)[:220]} / "
+                       "다음 단계: (1) 13c_일별배분비중에 섹터 배분비중 열이 있는지 "
+                       "(2) 01_일별_* 시트에 '자기 목표비중'이 있는지 "
+                       "(3) 로그에서 event=asset_return_compare_failed 줄의 전체 메시지를 확인."),
+                "추적": _tb.format_exc()[-800:]}])
+    sheets = sheets_to_front(sheets, "00A_수익비교")
     write_sector_excel(path, sheets, meta, M=M)
     if scfg.EXPORT_DAILY_CSV:
         try:
@@ -11828,6 +12250,16 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     log("REPORT", kv(event="report_ready", file=path, sheets=len(sheets) + 2, sectors=n_ok,
                      elapsed_s=round(time.time() - t0, 2)), M=M)
     return path
+
+
+def sheets_to_front(sheets: Dict[str, pd.DataFrame], *names: str) -> Dict[str, pd.DataFrame]:
+    """[v0.51.0 D1] 지정한 시트를 dict 맨 앞으로 옮긴다 — 엑셀 탭 순서가 dict 삽입 순서이기 때문이다.
+    사용자 지시 "맨 앞에 시트 새로 하나 생성해서"를 지키려면 이 재정렬이 필요하다
+    (00_실행요약은 write_sector_excel이 직접 먼저 쓰므로 그 다음 자리가 된다)."""
+    front = [n for n in names if n in sheets]
+    if not front:
+        return sheets
+    return {**{n: sheets[n] for n in front}, **{k: v for k, v in sheets.items() if k not in front}}
 
 
 def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]], M=None,

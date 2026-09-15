@@ -1,5 +1,44 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.18.0 - 2026-09-15 - [ROUND61 — S v0.51.0 · I v0.22.0 · K v0.3.0] 00A 시트 · 배분층 · 다음날.
+#    사용자 지시 넷: (1) "각각 맨 앞에 시트 새로 하나 생성해서 각 섹터, 산업, 주식별 buy and hold시
+#    수익률(이 때 수익률은 복리가 아닌 변동률 합산)과 단독 예측으로 거래 시 수익률 비교하고 전략 수익률도
+#    같이 표시해" (2) "다음날 예측이 빠지는데 하도록 수정하고" (3) ★★ "배분전략 거래 할거면 전체자산을
+#    1로 해서 그걸 배분해서 각 총합이 1이되도록 하라고 왜 자꾸 각 티커별로 비중이 1이냐고"
+#    (4) 하락회피·상승참여 판정 후 원인 개선
+#
+#    ── ★★★ (3)의 지적이 정확했다 — K 계층이 28배 레버리지였다 ─────────────────────────
+#      stock 01Z 실측: 목표비중 합계 **평균 26.46 · 최대 28.0**(28종목 × 각 1.0). 배분층이 없었다.
+#      S·I는 문제없었다(S 배분합계 최대 1.0002=부동소수 잔차 · I 산업배분 합계 최대 0.95 · 초과일 0).
+#      ⇒ K v0.3.0에 **build_allocation() 신설**. 라이브 `equal_fixed` = 종목마다 1/N 고정 슬리브,
+#        단독 신호가 감축이면 그 슬리브는 **현금**. 합계가 1을 넘으면 **코드가 정규화**한다.
+#      ⇒ **[배분격자] 6행 + 동일가중 B&H 기준선** 신설. 이 runner가 **I의 산업 비중을 K에 넘겨**
+#        '★ I계층 산업비중 연동(4계층 정합)' 행을 살린다 — 4계층 설계가 처음으로 실제로 연결된다.
+#
+#    ── (1) 00A_수익비교: 세 리포트 **맨 앞**에 같은 꼴로 ─────────────────────────────────
+#      ① B&H **단순합**(Σr · 복리 아님, 지시대로) ② 단독예측 단순합 ③ 전략기여 단순합 + 복리 병기.
+#      블록 B는 **전체자산 1.0** 기준 포트 비교 + **비중 합계 감사** + **예산 사용률**(상위 계층 대비).
+#
+#    ── ★★ (4)의 답 — 상승 미참여의 천장은 S가 아니라 M이다 ────────────────────────────
+#      S 13c 실측: **배분합계 < E_t 인 날이 0일(0%)** — 섹터층은 M 예산을 한 번도 덜 쓰지 않았다.
+#      2020-10~2021-09 최대 강세장 211일에 **E_t 평균 0.439 · E_t=1.0인 날 2%**(벤치대비 −14.82%p).
+#      2020-03 코로나 저점 5일은 **E_t=0.000 전 구간**(−17.36%p) — 섹터층은 쓸 예산이 아예 없었다.
+#      13n 교차검증: 큰상승일 상위5% 110일에 섹터 합 128.03% vs M 합 105.89% = **+22.14%p**,
+#        초과수익 연율 **+8.43%p** · IR **1.271**. ⇒ S는 이미 자기 몫을 한다.
+#      ⇒ S/I를 더 고쳐도 상승 참여는 안 올라간다. M의 E_t를 손대야 하고 그것은 사용자가 지정한
+#        이번 범위("sector, industry, stock") 밖이다. **그래서 고치는 대신 00A가 매 실행
+#        '예산 사용률'을 찍게 했다** — 그러지 않으면 다음 라운드에도 못 올라갈 벽을 밀게 된다.
+#
+#    ── (2) 다음날 예측 ────────────────────────────────────────────────────────────
+#      S·I는 이미 있었다(01Z 구분='예측' 행 + 00시트 '다음 거래일 예측' 블록). **K만 없었다** →
+#      01Z 맨 끝에 구분='예측(다음 거래일 집행)' 행 추가. t일 확정 → t+1일 집행 규칙의 명시다.
+#
+#    [실행] 변경 없음 — main(run_stock_layer=True)가 기본. 되돌리기:
+#      K 배분층 끄기(합계 항상 1.0 · 방어 없음): k_overrides={"STOCK_ALLOC_MODE": "equal_eligible"}
+#      K 배분격자 끄기: k_overrides={"ALLOC_GRID": ()}
+#      I 국면 제약 복원: i_overrides={"INDUSTRY_LEADER_REGIMES": ("RISK_ON",)}
+#      00A 시트는 항상 나온다(끄는 스위치를 두지 않았다 — 사용자가 맨 앞에 요구한 시트다).
+#
 #  VERSION: v1.17.0 - 2026-09-15 - [ROUND60 — S v0.50.0 · I v0.21.0 · K v0.2.1] 하락회피·상승참여 판정.
 #    사용자 지시: "결과인데 각각 문제 찾아서 최대한 개선해 buy and hold랑 비교했을 때 하락 기간을 피했는지
 #    (비중 최대로 감축) 상승을 타서 제대로 수익을 최대한 많이 냈는지(비중 최대로) 판단해서 그렇지 못한
@@ -1090,7 +1129,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.17.0"
+VERSION = "v1.19.0"
 VERSION_DATE = "2026-09-15"
 
 MODULE_FILES = {
@@ -1192,6 +1231,56 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     elif K is not None:
         print(f"[runner] 주식 계층 K 켜짐 — 대표 티커 {len(getattr(K, 'STOCK_UNIVERSE', {}))}종 · "
               f"리포트는 M·S·I가 끝난 **뒤** 마지막에 생성됩니다(펀더멘탈·어닝 다운로드가 있어 몇 분 걸립니다)")
+    # ---- [v1.19.0 ★★ 신규] 구버전 파일 감지 — 사용자가 "왜 안 고쳤어"를 두 번 말하지 않도록 ----
+    #   R61에서 실제로 일어난 일: 코드는 고쳐졌는데 노트북이 **GitHub의 이전 파일**을 wget해서
+    #   S v0.50.0 / I v0.21.0 / K v0.2.1로 돌았다. 리포트에 00A 시트가 없고 비중 합계도 그대로였다.
+    #   배너만 보고는 그것을 알 수 없었다 — 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없었다.
+    #   ⇒ 이제 최소 버전을 코드가 알고 있고, 미달이면 **어느 파일을 갱신해야 하는지** 크게 알린다.
+    _MIN = {"sector_rotation.py": ("S", "v0.52.0", S),
+            "industry_rotation.py": ("I", "v0.23.0", I),
+            "stock_regime.py": ("K", "v0.3.1", K)}
+    def _vt(x):
+        try:
+            return tuple(int(p) for p in str(x).lstrip("v").split(".")[:3])
+        except Exception:
+            return (0, 0, 0)
+    _stale = []
+    for _fn, (_tag, _min, _mod) in _MIN.items():
+        if _mod is None:
+            continue
+        _got = str(getattr(_mod, "VERSION", "v0.0.0"))
+        if _vt(_got) < _vt(_min):
+            _stale.append((_fn, _tag, _got, _min))
+    print("[runner] ── 기능 점검(이 실행에 무엇이 들어 있나) ─────────────────────────")
+    for _fn, (_tag, _min, _mod) in _MIN.items():
+        if _mod is None:
+            print(f"[runner]   {_tag} {_fn:22s} 없음(건너뜀)")
+            continue
+        _got = str(getattr(_mod, "VERSION", "?"))
+        _ok = "OK " if _vt(_got) >= _vt(_min) else "⚠ 구버전"
+        _feat = []
+        # K의 00A와 배분층은 v0.3.0에 함께 들어갔으므로 build_allocation 유무로 함께 판정한다
+        #   (K는 00A 함수를 자기가 갖지 않고 I의 것을 재사용하므로 hasattr로는 구분되지 않는다).
+        if hasattr(_mod, "build_asset_return_compare") or (_tag == "K" and hasattr(_mod, "build_allocation")):
+            _feat.append("00A_수익비교")
+        if hasattr(_mod, "build_portfolio_segments"):
+            _feat.append("19블록C")
+        if _tag == "K" and hasattr(_mod, "build_allocation"):
+            _feat.append("배분층(총합1.0)")
+        print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
+              + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
+    if _stale:
+        print("[runner] " + "=" * 74)
+        print("[runner] ⚠⚠⚠ 구버전 파일로 실행 중입니다 — 새 시트·기능이 리포트에 나오지 않습니다")
+        for _fn, _tag, _got, _min in _stale:
+            print(f"[runner]     {_tag}: {_fn} = {_got}  →  {_min} 이상 필요")
+        print("[runner]   원인: 노트북 상단 wget이 GitHub의 **이전 파일**을 가져왔습니다.")
+        print("[runner]   조치: 위 파일을 저장소(main)에 덮어쓴 뒤 다시 실행하거나,")
+        print("[runner]         Kaggle 세션의 .py 캐시를 지우고(런타임 재시작) wget을 다시 받으세요.")
+        print("[runner]   확인: 실행 후 리포트 **맨 앞에 00A_수익비교 시트**가 있으면 갱신된 것입니다.")
+        print("[runner] " + "=" * 74)
+    else:
+        print("[runner]   ★ 전부 최신 — 리포트 맨 앞에 00A_수익비교 시트가 나옵니다")
     assert hasattr(S, "run"), "S.run이 없음 - GitHub에 올린 sector_rotation.py를 다시 확인하세요"
     if I is not None:
         assert hasattr(I, "run"), "I.run이 없음 - GitHub에 올린 industry_rotation.py를 다시 확인하세요"
@@ -1242,8 +1331,24 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     if K is not None:
         try:
             print("[runner] 주식 계층(K) 시작 — 가격 + 펀더멘탈·어닝 다운로드(캐시 있으면 건너뜀)")
-            kres = K.run(K.CFG, k_overrides)
-            path4 = K.build_report(kres, I=I)          # I를 넘기면 19_상승하락구간이 함께 나온다
+            # [v1.18.0] ★ I 계층의 **산업 ETF 비중**을 K에 넘긴다 — K의 [배분격자]
+            #   'I계층 산업비중 연동' 행(4계층 정합의 본래 설계)이 이것 없이는 산출되지 않는다.
+            _pw = None
+            try:
+                _ia = (ires or {}).get("alloc") or {}
+                _itw = _ia.get("target_w")
+                _icols = [c for c in (_ia.get("cols") or []) if _itw is not None and c in _itw.columns]
+                if _itw is not None and _icols:
+                    _pw = _itw[_icols].copy()
+                    print(f"[runner]   K에 I 산업비중 전달 — {len(_icols)}산업 × {len(_pw)}일 "
+                          f"(배분격자 '4계층 정합' 행이 살아납니다)")
+                else:
+                    print("[runner]   ⚠ I 산업비중이 비어 K 배분격자의 '4계층 정합' 행은 생략됩니다"
+                          " (I 동결·배분 실패 시 정상)")
+            except Exception as _e:
+                print(f"[runner]   ⚠ I 산업비중 추출 실패({type(_e).__name__}) — K는 그 행만 빼고 진행합니다")
+            kres = K.run(K.CFG, k_overrides, parent_w=_pw)
+            path4 = K.build_report(kres, I=I)          # I를 넘기면 19·00A 시트가 함께 나온다
         except Exception as e:
             print(f"[runner] ⚠ 주식 계층(K) 실패 — M·S·I 리포트는 정상입니다: {type(e).__name__}: {e}")
             print("[runner]   다음 단계: (1) `pip install -q yfinance`로 설치 확인 "

@@ -1,5 +1,107 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.3.1 - 2026-09-15 - [★★ 00A 실패 무음 금지 · 00 시트에 비중 합계 노출] REPORT62.
+#    ── ★★★ R61에서 일어난 일: 코드는 고쳤는데 **구버전으로 실행**됐다 ──────────────────
+#      사용자 지적: "내가 시트 새로 생성해서 맨앞에 넣으라고 했는데 왜 안했어 (…) 비중 1 문제도 안고쳤어"
+#      업로드된 리포트의 버전 줄이 답이다 — S **v0.50.0** · I **v0.21.0** · K **v0.2.1**.
+#      즉 R61 산출물(S v0.51.0 · I v0.22.0 · K v0.3.0)이 실행에 반영되지 않았고, 노트북 상단 wget이
+#      저장소의 **이전 파일**을 가져왔다. 배너에 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없어서
+#      그것만 보고는 알 수 없었다. ⇒ 이번 라운드는 **그 혼동을 코드로 불가능하게 만드는 것**이 본체다.
+#    (E3) ★★ **00A 실패 무음 금지** — 00A 생성이 실패하면 경고 로그만 남고 시트가 **조용히 사라지는**
+#         구조였다. 이제 실패해도 **사유·역추적·다음 단계를 담은 00A 시트를 반드시 쓴다.**
+#         로그 수준도 warning → **error**. K는 I 모듈을 못 받은 경우도 시트로 알린다.
+#    (E4) 00_실행요약에 **★ 00A_수익비교 시트** 줄과 **★★ 전체자산 1.0 확인** 줄을 넣었다 —
+#         00A를 열지 않아도 비중 합계 최대·1.0 초과일이 첫 화면에서 보인다.
+#    (E5) 감사 판정문을 **초과 규모로 나눴다**. v0.51.0은 최대 1.0002(8일)를 잡고 "총 1.0배 레버리지가
+#         된다"고 써서 우스꽝스러웠다 — 부동소수 잔차(≤1.001)는 **△ 반올림 문제**로, 실제 초과는
+#         **⚠⚠ 제약 위반**으로 갈라 쓴다. 처방이 다르기 때문이다(반올림 vs 배분층 재설계).
+#    ⇒ runner v1.19.0이 **최소 버전을 알고 있고** 미달이면 어느 파일을 갱신해야 하는지 크게 알린다.
+#      배너에 기능 체크리스트(00A_수익비교 / 19블록C / 배분층)도 함께 찍는다.
+#    ⚠ K는 배분층·00A·다음날 예측이 v0.3.0에 이미 들어갔다 — 이번 라운드는 **그것이 실행에
+#      반영되지 않았을 때 알아채는 장치**만 더한다. 라이브 규칙·배분 로직 변경 0건.
+#
+#  VERSION: v0.3.0 - 2026-09-15 - [★★★ 배분층 신설(전체자산 1.0) · 00A 수익비교 시트 · 다음날 예측]
+#    사용자 지시 넷: "각각 맨 앞에 시트 새로 하나 생성해서 각 주식별 buy and hold시 수익률(이 때 수익률은
+#    복리가 아닌 변동률 합산)과 단독 예측으로 거래 시 수익률 비교하고 전략 수익률도 같이 표시해" +
+#    "다음날 예측이 빠지는데 하도록 수정하고" + ★★ "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서
+#    각 총합이 1이되도록 하라고 왜 자꾸 각 티커별로 비중이 1이냐고" + 하락회피·상승참여 판정
+#
+#    ── ★★★ 사용자 지적이 정확했다 — v0.2.1은 28배 레버리지였다 ──────────────────────────
+#      01Z 시트 실측: 목표비중 합계 **평균 26.46 · 최대 28.0**(28종목 × 각 1.0).
+#      build_positions가 티커마다 **독립적으로** 0/1을 주는 구조였고, 그 위에 배분층이 아예 없었다.
+#      06 시트의 '★ 포트(동일가중)' 행은 내가 **리포트 단계에서 사후로** 28로 나눠 만든 것이라
+#      엔진이 집행한 비중이 아니었다. 즉 **리포트와 엔진이 다른 포트를 말하고 있었다.**
+#    (D2) ★★ **배분층 build_allocation() 신설** — 전체자산 1.0을 종목에 나눠 담고, 행 합계가 1을
+#         넘으면 **코드가 정규화한다**(상한을 주석이 아니라 코드로 보장한다).
+#         라이브 `equal_fixed` = 종목마다 **1/N 고정 슬리브**, 단독 신호가 감축이면 그 슬리브는 **현금**.
+#           · 전 종목 보유일 합계 = 1.0  ← 사용자 요구 "상승을 타서 비중 최대로"
+#           · 감축일수만큼 합계 하락      ← 사용자 요구 "하락 기간을 피했는지(비중 최대로 감축)"
+#           **두 요구를 동시에 만족하는 유일한 단순 규칙**이다. 감축분을 남은 종목에 재배분하면
+#           합계가 항상 1.0이 되어 방어가 사라진다(그 변형은 격자 `equal_eligible`로 검정한다).
+#         신규 **[배분격자]** 6행 + 동일가중 B&H 기준선: 고정슬리브 / 적격균등재배분 / mom63 상위8 /
+#           상위4 / 변동성 역가중 / **★ I계층 산업비중 연동**(4계층 정합의 본래 설계 — run_pipeline이
+#           I의 산업 비중을 넘겨 주면 살아난다). 판정은 **엔진 시트**가 한다.
+#         ⚠ build_positions는 그대로 남는다 — 그것은 이제 '그 종목 **단독** 신호'이고 00A ②열과
+#           03 채점이 쓴다. 포트는 배분층이 만든다. 두 개념을 시트에서 분리했다.
+#    (D1) ★ **00A_수익비교 신규 시트(맨 앞)** — 자산 한 줄에 세 수익:
+#         ① B&H **단순합**(Σr · 복리 아님, 지시대로) ② 단독예측 단순합 ③ 전략기여 단순합.
+#         각 행에 복리를 **함께** 싣는다 — 단순합은 "며칠 맞았나", 복리는 "얼마 남나"를 말하므로
+#         둘을 같이 봐야 한다(소수 클래스 규칙과 같은 정신). ③의 복리는 자산별로 계산하지 않는다
+#         (한 자산의 기여는 독립 곡선이 아니다) — 포트 블록에서만 낸다.
+#         블록 B가 **전체자산 1.0** 기준으로 ★ 동일가중 B&H / ★ 단독예측 동일가중 / ★★ 전략(배분)을
+#         나란히 놓고, 마지막에 **비중 합계 감사**(평균·최대·1.0 초과일)를 찍는다.
+#    (D3) ★ **다음 거래일 예측 행** — 01Z 맨 끝에 구분='예측(다음 거래일 집행)' 행. S·I는 이미 있었고
+#         K만 없었다. t일 확정 → t+1일 집행이므로 마지막 확정 행의 목표비중이 곧 다음 거래일 집행
+#         비중이다(새 계산이 아니라 체결 규칙의 명시). 13_주식배분전략·13c_일별배분비중도 신설.
+#    (D4) 블록 C(19 시트)가 이제 **배분층의 실제 비중**을 쓴다 — 총노출 = 비중 합계.
+#
+#    ── 리포트1(v0.2.1) 판정: 사전등록 ⑫·⑫-b ────────────────────────────────────────────
+#      (g) **PASS** 라이브 평균노출 0.9500 ≥ 0.70 — E3만 남긴 K7 정정이 의도대로 작동했다.
+#      (d) **PASS** K1 어닝 기반이 측정 가능해졌다: EPS YoY 유효비율 중위 **1.000**(v0.1.0은 0.000) ·
+#          어닝 이벤트 중위 **100분기**. 재무제표 기반 매출 YoY 유효비율은 0.017로 역시 쓸 수 없었다.
+#      (f) **PASS** 02 시트 29행 · AVB는 '가격 다운로드 실패'로 사유와 함께 남았다.
+#      (b) **FAIL** 포트 칼마 라이브 0.589 < 매수보유 0.613. 종목별 중위도 0.246 < 0.255.
+#      ★★ (h)의 답이 내 v0.2.1 판단을 **부분적으로 반증했다** — 종목별 중위 칼마:
+#            **3규칙 OR 0.3065** vs 달력 대조 0.1455(마진 **+0.161**) vs B&H 0.2545 → **유일한 승자**
+#            E3만(라이브) 0.2460 vs 달력 0.2495 → **패** / 동의2 0.2415 vs 0.2660 → **패**
+#            빠른방어 동의2 0.2460 vs 0.2615 → **패** / 200일선 0.1645 → 최악
+#          포트 단위에서도 3규칙 OR이 0.541 vs 달력 0.398(마진 +0.143)로 **두 단위 모두 일관되게** 이긴다.
+#      ★ 왜 두 단위가 부호가 다른가(일관된 설명): 동일가중 28종목 포트는 **분산으로 이미** MDD가
+#        −0.359로 줄어 있고(종목별은 −0.527) 감축 규칙의 가치는 **개별 종목의 큰 낙폭을 피하는 것**이다.
+#        분산이 감축의 가치를 지운 것이다. ⇒ **배분층이 총 1.0을 소수에 집중하면 그 가치가 되살아난다.**
+#        즉 사용자가 지적한 구조 결함과 (b) FAIL은 **같은 원인**이었다.
+#      ⇒ 라이브 감축 규칙은 E3 하나를 유지한다(노출 0.95로 사용자 요구에 맞고, 대조군을 포트 단위에서는
+#        이긴다). 3규칙 OR은 격자에 그대로 두고 **배분층이 생긴 뒤** 다시 판정한다 — 조건이 바뀌었으므로
+#        v0.2.1의 판정을 그대로 적용하지 않는다.
+#    ⚠ K3 빠른 방어 후보 6종은 **전부 실패**: P7 −0.0138 · P8 −0.0226 · P9 −0.0396 · P10 −0.0155 ·
+#      P11 +0.0052 · P12 +0.0194(P2가 끌고 있다). "200일선이 늦다"는 진단은 맞았지만 **창을 줄이는
+#      처방은 틀렸다** — 개별 주식에서 가격 기반 하락 예측은 창 길이를 바꿔도 안 된다.
+#    ⚠ K1 G계열도 대부분 실패: G1 −0.0016 · G2 −0.0322 · G3 +0.0041 · G4 −0.0271 · G5 −0.0348.
+#      향후수익 격차가 **양수**다(G2 +1.132 · G5 +2.098) = **역방향**. EPS 저점이 주가 저점 근처라는
+#      알려진 현상이다. **K1은 측정 가능하게 만드는 데 성공했고, 측정 결과는 "값이 없다"였다.**
+#      정직하게 기록한다 — 25년치 EPS를 얻은 것은 성과지만 그것으로 하락을 예측할 수는 없다.
+#    ★ 내 판독 오류 1건(즉시 정정 · 기록): 처음에 "03 B블록 '정밀>기저 종목' 열이 전부 NaN이다"라고
+#      읽었는데 **틀렸다** — 그 열은 102/102 전부 채워져 있고, 내가 "16/25" 같은 **문자열 칸에**
+#      pd.to_numeric을 걸어서 NaN을 만든 것이었다. 규약 추가: **"k/n" 꼴 문자열 열에 to_numeric을
+#      쓰지 않는다.** 판독 전에 열의 dtype을 먼저 본다.
+#    ⇒ 그래서 승격 3조건을 실제로 판정할 수 있었다. **3조건 동시 충족 규칙: 없음.**
+#      2조건 충족 셋: E2(20/28 · 격차 −0.894 · 연도 0.508) · F2 · F3(둘 다 표본 24일 · 1/1종목이라 무의미).
+#      조건 (1) 연도비율 ≥ 0.60을 넘는 것은 F2·F3(1.000)뿐이고 **표본 24일**이다. 최선인 E3도 0.466.
+#      ⇒ **라이브 승격 후보 없음**이 이번 라운드의 정직한 결론이다. 개별 주식 하락 예측은 이 신호
+#        집합(P 12 · F 6 · E 6 · G 6 = 25종)으로는 안 된다. 다음 방향은 **하락 예측이 아니라
+#        상승 선택**이어야 한다 — 그래서 D2 배분격자에 mom63 집중 행을 넣었다.
+#
+#    [검증] ⑭ v0.3.0 사전등록(다음 리포트에서 판정):
+#      (a) 01Z '★ 배분비중 합계'의 **최대가 1.0 이하**인가(1.0 초과일 0일). 이것이 사용자 지시의 직접 확인이다.
+#      (b) [배분격자]에서 `고정슬리브 1/N`이 **동일가중 B&H 기준선**을 칼마로 이기는가.
+#          지면 K 계층은 아직 B&H를 못 이기는 것이며 그 사실을 그대로 보고한다.
+#      (c) 집중 행(mom63 상위8·상위4)이 고정슬리브를 칼마로 이기는가 — 이기면 **선택에 값이 있다**는
+#          첫 증거다(지금까지 K에는 상승 선택 신호가 없었다).
+#      (d) `I계층 산업비중 연동` 행이 산출되는가(run_pipeline이 parent_w를 넘겼는가).
+#      (e) 19 블록 C 총노출이 이제 0~1 범위인가(v0.2.1은 사후 나눗셈이었다).
+#      (f) 00A 블록 B에서 ★★ 전략(배분)이 ★ 동일가중 B&H와 ★ 단독예측 동일가중을 **둘 다** 이기는가.
+#      (g) 01Z 마지막 행이 '예측(다음 거래일 집행)'인가.
+#
 #  VERSION: v0.2.1 - 2026-09-15 - [★★ 내 설계 오류 정정: 점화 빈도를 보지 않고 감축 규칙을 골랐다]
 #    ── 회귀 테스트가 v0.2.0을 **출하 전에** 반증했다 ────────────────────────────────────
 #      v0.2.0은 CUT_RULES에 세 규칙을 OR로 넣었다 — E3 · P2(vol21 자기이력 **하위 1/3**) ·
@@ -177,7 +279,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.2.1"
+VERSION = "v0.3.1"
 VERSION_DATE = "2026-09-15"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -289,6 +391,29 @@ class StockConfig:
     #     리스크 파라미터를 조용히 바꾸지 않기 위해 경고만 하고 값은 그대로 둔다.
     CUT_EXPOSURE_FLOOR_WARN: float = 0.70
     CUT_WEIGHT: float = 0.0            # 감축일 목표비중(0.0 = 전량 회피 · 0.5 = 절반)
+    # ---- [v0.3.0 D2 ★★ 신규] 배분층 — 전체자산 1.0 ----
+    #   사용자 지시: "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서 각 총합이 1이되도록 하라고
+    #                왜 자꾸 각 티커별로 비중이 1이냐고"
+    #   v0.2.1까지 01Z 시트의 목표비중 합계가 실측 평균 **26.46**(최대 28.0)이었다 — 28배 레버리지다.
+    #   라이브 "equal_fixed" = 종목마다 1/N 고정 슬리브, 감축이면 그 슬리브는 **현금**.
+    #     전 종목 보유일 합계 1.0("비중 최대로") · 감축일수만큼 합계 하락("비중 최대로 감축").
+    #   ⚠ 되돌리기: k_overrides={"STOCK_ALLOC_MODE": "equal_eligible"} (합계 항상 1.0 · 방어 없음)
+    STOCK_ALLOC_MODE: str = "equal_fixed"
+    STOCK_MAX_WEIGHT: float = 0.10     # 종목 한 칸 상한(1/28 = 0.0357이므로 라이브에서는 안 걸린다)
+    STOCK_TOP_K: int = 8               # topk_mom 모드에서만 쓴다
+    # [노출격자]와 별도로 **배분격자** — 배분 방식의 값을 엔진이 판정한다(내 계산이 아니라).
+    #   (라벨, mode, max_weight, top_k)
+    #   ⚠ 되돌리기: k_overrides={"ALLOC_GRID": ()}
+    ALLOC_GRID: Tuple[Tuple[str, str, float, int], ...] = (
+        ("고정슬리브 1/N(=라이브)", "equal_fixed", 0.10, 0),
+        # ⚠ 재배분 모드의 상한은 **1/N보다 넉넉해야** 한다. 상한이 1/N이면 재배분이 불가능해져
+        #   고정슬리브와 수치가 완전히 같아진다(v0.3.0 첫 구현에서 실제로 그랬다).
+        ("적격 균등재배분(상한 25%)", "equal_eligible", 0.25, 0),
+        ("mom63 상위8 집중", "topk_mom", 0.20, 8),
+        ("mom63 상위4 집중", "topk_mom", 0.30, 4),
+        ("변동성 역가중", "inv_vol", 0.15, 0),
+        ("★ I계층 산업비중 연동(4계층 정합)", "parent_linked", 0.20, 0),
+    )
     # [v0.2.0 K4] 노출 격자 — (라벨, LIVE_RULE, CUT_WEIGHT[, CUT_RULES, CUT_MIN_AGREE]).
     #   달력 대조군은 코드가 자동으로 붙인다. 4·5번째 원소는 생략 가능(생략 시 CFG 값).
     #   ⚠ 되돌리기: k_overrides={"EXPOSURE_GRID": ()}
@@ -1045,6 +1170,144 @@ def build_positions(feat: pd.DataFrame, cfg: StockConfig,
 
 
 # =============================================================================
+# [4b] ★★ v0.3.0 D2 신규 — 배분층(전체자산 1.0)
+#   사용자 지시: "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서 각 총합이 1이되도록 하라고
+#                왜 자꾸 각 티커별로 비중이 1이냐고"
+#   지적이 정확했다. v0.2.1까지 build_positions는 **티커마다 독립적으로** 0/1을 줬고, 28종목이면
+#   목표비중 합계가 실측 평균 **26.46**(최대 28.0)이었다 — 28배 레버리지다. 01Z 시트에 그 값이
+#   그대로 찍혀 있었고 사용자가 그것을 봤다.
+#   ⇒ 이제 배분층이 **전체자산 1.0을 나눠 담는다.** build_positions는 '그 종목 단독 신호'를 내는
+#     진단·채점용으로 남고(00A 시트 ②열·03 시트가 쓴다), 실제 포트는 이 함수가 만든다.
+# =============================================================================
+def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame],
+                     cfg: StockConfig, mode: Optional[str] = None,
+                     max_weight: Optional[float] = None, top_k: Optional[int] = None,
+                     parent_w: Optional[pd.DataFrame] = None,
+                     parent_of: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """전체자산 **1.0**을 종목에 배분한다. 반환 target_w의 **행 합계는 절대 1.0을 넘지 않는다**.
+
+    체결 규칙은 M·S·I와 같다 — t일 확정, t+1일 집행(exec_w(t) = target_w(t−1)).
+
+    모드(STOCK_ALLOC_MODE):
+      **"equal_fixed"(라이브 · 기본)** — 종목마다 **1/N의 고정 슬리브**를 준다(N = 유니버스 종목수).
+        그 종목의 단독 신호가 '감축'이면 그 슬리브는 **현금**으로 간다(다른 종목에 안 넘긴다).
+        ⇒ 전 종목 보유일 합계 = 1.0(사용자 요구 '비중 최대로'의 상한), 감축일수만큼 합계가 내려간다
+          (사용자 요구 '비중 최대로 감축'). **두 요구를 동시에 만족하는 유일한 단순 규칙이다.**
+        왜 재배분하지 않는가: 감축분을 남은 종목에 넘기면 합계가 항상 1.0이 되어 **방어가 사라진다**
+          (단순한 순환매가 된다). 방어를 원하면 그 슬리브는 현금이어야 한다.
+      "equal_eligible" — 보유 적격 종목에 **균등 재배분**(합계 항상 1.0 · 방어 없음 · 대조군).
+      "topk_mom"       — mom63 자기이력 분위 상위 top_k에 균등(선택에 값이 있는지 검정).
+      "inv_vol"        — 적격 종목을 vol21 역수 가중(위험 균등).
+      "parent_linked"  — **I 계층이 그 종목의 부모 산업에 준 비중**을 그대로 쓴다(4계층 정합의 본래 설계).
+                         parent_w(날짜×산업ETF)와 parent_of가 있어야 하고, 없으면 equal_fixed로 되돌린다.
+
+    ⚠ 모든 모드에서 마지막에 **행 합계 > 1.0이면 정규화**한다(안전장치 — 상한을 코드로 보장한다).
+    ⚠ 룩어헤드 없음: 쓰는 값은 그날까지의 자기이력 분위와 그날 확정된 단독 신호뿐이다.
+       순위·분위는 expanding만 쓴다(정렬은 그날 횡단면이므로 미래를 보지 않는다)."""
+    mode = str(mode if mode is not None else getattr(cfg, "STOCK_ALLOC_MODE", "equal_fixed")).lower()
+    mw = float(max_weight if max_weight is not None else getattr(cfg, "STOCK_MAX_WEIGHT", 0.10))
+    tk = int(top_k if top_k is not None else getattr(cfg, "STOCK_TOP_K", 8))
+    tickers = sorted(panel)
+    if not tickers:
+        return {"target_w": pd.DataFrame(), "mode": mode, "note": "종목 없음"}
+    idx = pos[tickers[0]].index
+    for t in tickers:
+        idx = idx.union(pos[t].index)
+    idx = pd.DatetimeIndex(sorted(idx))
+    # 단독 신호(그날 보유 적격인가) — build_positions의 목표비중 > 0
+    solo = pd.DataFrame({t: pd.to_numeric(pos[t]["목표비중"], errors="coerce").reindex(idx)
+                         for t in tickers})
+    hold = (solo.fillna(0.0) > 1e-9)
+    # 관측 여부(그 종목이 그날 존재했나) — 없는 종목에 슬리브를 주면 현금이 과대평가된다
+    live = pd.DataFrame({t: pd.to_numeric(panel[t]["종가"], errors="coerce").reindex(idx).notna()
+                         for t in tickers})
+    n_uni = max(1, len(tickers))
+    W = pd.DataFrame(0.0, index=idx, columns=tickers)
+
+    if mode == "equal_fixed":
+        # 고정 슬리브 = 1/N. 관측되지 않는 종목의 슬리브도 현금(그 종목을 살 수 없었다).
+        #   부분 감축(CUT_WEIGHT>0)은 그 비율만큼만 담는다 — solo 값을 그대로 곱한다.
+        W = solo.fillna(0.0).clip(lower=0.0, upper=1.0) * (1.0 / float(n_uni))
+        W = W.where(live, 0.0)
+    elif mode == "equal_eligible":
+        elig = (hold & live)
+        cnt = elig.sum(axis=1).replace(0, np.nan)
+        W = elig.astype(float).div(cnt, axis=0).fillna(0.0)
+    elif mode == "topk_mom":
+        mom = pd.DataFrame({t: pd.to_numeric(panel[t].get("mom63_pct"), errors="coerce").reindex(idx)
+                            for t in tickers})
+        mom = mom.where(hold & live)
+        rnk = mom.rank(axis=1, ascending=False, method="first")
+        sel = (rnk <= float(max(1, tk))) & mom.notna()
+        cnt = sel.sum(axis=1).replace(0, np.nan)
+        W = sel.astype(float).div(cnt, axis=0).fillna(0.0)
+    elif mode == "inv_vol":
+        vol = pd.DataFrame({t: pd.to_numeric(panel[t].get("vol21"), errors="coerce").reindex(idx)
+                            for t in tickers})
+        inv = (1.0 / vol.where(vol > 1e-9)).where(hold & live)
+        W = inv.div(inv.sum(axis=1), axis=0).fillna(0.0)
+    elif mode == "parent_linked":
+        if parent_w is None or parent_of is None or not len(parent_w):
+            log("ALLOC", kv(event="parent_linked_unavailable", fallback="equal_fixed",
+                            note="I 계층 산업비중(parent_w)이 없다 — run_pipeline이 I를 넘겼는지 확인"),
+                level="warning")
+            return build_allocation(pos, panel, cfg, mode="equal_fixed",
+                                    max_weight=mw, top_k=tk)
+        cols = {t: parent_of.get(t, "") for t in tickers}
+        W = pd.DataFrame({t: (pd.to_numeric(parent_w[cols[t]], errors="coerce").reindex(idx).fillna(0.0)
+                              if cols[t] in parent_w.columns else pd.Series(0.0, index=idx))
+                          for t in tickers})
+        W = W.where(hold & live, 0.0)
+    else:
+        log("ALLOC", kv(event="unknown_mode", mode=mode, fallback="equal_fixed"), level="warning")
+        return build_allocation(pos, panel, cfg, mode="equal_fixed", max_weight=mw, top_k=tk)
+
+    # ---- 상한·정규화(코드로 보장하는 두 가지 제약) ----
+    #   ★★ v0.3.0 D2 버그 수정(테스트가 잡았다): 종목 상한이 **총예산을 깎고 있었다**.
+    #     8종목 × 1/8 = 0.125인데 상한 0.10에 걸려 합계 최대가 **0.8**이 됐고, 그래서
+    #     equal_fixed와 equal_eligible이 **같은 결과**로 나왔다(둘 다 상한에 눌려서).
+    #     상한의 목적은 **집중 억제**(topk·inv_vol 모드)이고 균등 슬리브를 깎는 것이 아니다.
+    #   ⇒ 유효 상한 = max(설정 상한, 1/N). 균등 슬리브는 절대 상한에 걸리지 않고,
+    #     집중 모드에서는 설정 상한이 그대로 작동한다.
+    #   ⚠ 이 완화는 **equal_fixed에만** 적용한다. 슬리브가 정의상 1/N이기 때문이다.
+    #     재배분 모드(equal_eligible 등)에까지 올리면 1/N이 상한이 되어 **두 모드가 같아진다**
+    #     (테스트가 그 붕괴를 잡았다: 적격 4종목이면 각 0.25를 원하는데 0.125로 잘려 합계 0.5,
+    #      즉 고정슬리브와 완전히 동일한 표가 나왔다). 재배분 모드는 설정 상한이 그대로 지배하고,
+    #     그래서 적격이 적은 날에는 합계가 1.0에 못 미친다 — 그것은 상한의 **실제 성질**이므로
+    #     감추지 않고 로그와 격자의 '비중합 평균'에 그대로 드러낸다.
+    _mw_eff = (max(mw, 1.0 / float(n_uni)) if mode == "equal_fixed" else mw)
+    if _mw_eff > mw + 1e-12:
+        log("ALLOC", kv(event="cap_lifted_to_equal_sleeve", mode=mode, cap_set=mw,
+                        cap_used=round(_mw_eff, 6), n=n_uni,
+                        note="고정슬리브는 정의상 1/N이므로 상한을 1/N까지 올린다(재배분 모드는 제외)"))
+    W = W.clip(lower=0.0, upper=_mw_eff)                 # 종목 한 칸 상한
+    _ssum = W.sum(axis=1)
+    _ov = _ssum > 1.0 + 1e-12
+    if bool(_ov.any()):
+        W.loc[_ov] = W.loc[_ov].div(_ssum[_ov], axis=0)  # ★ 합계 1.0 초과분 정규화
+    tot = W.sum(axis=1)
+    exec_w = W.shift(1).fillna(0.0)
+    ret = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce").reindex(idx)
+                        for t in tickers}).fillna(0.0)
+    port_ret = (exec_w * ret).sum(axis=1)
+    log("ALLOC", kv(event="allocation_built", mode=mode, tickers=len(tickers),
+                    max_weight=mw, cap_used=round(_mw_eff, 6),
+                    top_k=(tk if mode == "topk_mom" else None),
+                    w_sum_mean=round(float(tot.mean()), 4), w_sum_max=round(float(tot.max()), 4),
+                    days_sum_over_1=int((tot > 1.0 + 1e-6).sum()),
+                    days_sum_ge_09=int((tot >= 0.9).sum()),
+                    single_max=round(float(W.max().max()), 4),
+                    note="★ 전체자산 1.0 — 행 합계가 1을 넘으면 정규화한다(사용자 지시)"))
+    if float(tot.max()) > 1.0 + 1e-6:
+        log("ALLOC", kv(event="weight_sum_over_one", w_sum_max=round(float(tot.max()), 4),
+                        suggest="정규화가 동작하지 않았다 — clip/정규화 순서를 확인할 것"),
+            level="error")
+    return {"target_w": W, "exec_w": exec_w, "total_w": tot, "port_ret": port_ret,
+            "solo_w": solo.fillna(0.0), "ret": ret, "mode": mode,
+            "max_weight": mw, "cap_used": _mw_eff, "top_k": tk}
+
+
+# =============================================================================
 # [5] 룩어헤드 감사 — 절단재계산(M·S·I와 같은 방식)
 # =============================================================================
 def build_lookahead_audit(prices: Dict[str, pd.DataFrame], fund: Dict[str, Dict[str, Any]],
@@ -1102,9 +1365,12 @@ def build_lookahead_audit(prices: Dict[str, pd.DataFrame], fund: Dict[str, Dict[
 # =============================================================================
 # [6] 실행 · 리포트
 # =============================================================================
-def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]] = None
-        ) -> Dict[str, Any]:
-    """[K 계층 본체] 데이터 → 특성 → 규칙 채점 → 포지션 → 감사 → 리포트 dict."""
+def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]] = None,
+        parent_w: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """[K 계층 본체] 데이터 → 특성 → 규칙 채점 → **배분(총합 1.0)** → 감사 → 리포트 dict.
+
+    parent_w: [v0.3.0 D2] I 계층이 낸 **산업 ETF 비중**(날짜 × 산업ETF). run_pipeline이 넘겨 주면
+      배분격자의 'I계층 산업비중 연동' 행이 살아난다(4계층 정합의 본래 설계). None이면 그 행만 빠진다."""
     cfg = cfg or CFG
     if s_overrides:
         cfg = dataclasses.replace(cfg, **s_overrides)
@@ -1249,6 +1515,59 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                                 if float(s.std()) > 0 else None),
                          "일간승률": round(float((s > 0).mean()), 4),
                          "평균노출": round(float(_w.mean()), 4)})
+    # ---- [v0.3.0 D2 ★★] 배분층 — 전체자산 1.0 ----
+    #   사용자 지적("왜 자꾸 각 티커별로 비중이 1이냐")의 직접 해결. build_positions는 단독 신호를
+    #   계속 내지만(00A ②열·03 채점이 쓴다) **포트는 이제 이 배분층이 만든다**.
+    alloc = build_allocation(pos, panel, cfg, parent_w=parent_w, parent_of=parent_of)
+    alloc_rows: List[dict] = []
+    for _g in tuple(getattr(cfg, "ALLOC_GRID", ()) or ()):
+        _lbl, _md, _mw, _tk = _g[0], _g[1], _g[2], _g[3]
+        try:
+            _a = build_allocation(pos, panel, cfg, mode=_md, max_weight=_mw,
+                                  top_k=(_tk or None), parent_w=parent_w, parent_of=parent_of)
+            _pr = _a.get("port_ret")
+            if _pr is None or not len(_pr):
+                continue
+            _cur = (1.0 + _pr.fillna(0.0)).cumprod()
+            _yrs = max(len(_pr) / 252.0, 1e-9)
+            _cg = float(_cur.iloc[-1]) ** (1.0 / _yrs) - 1.0
+            _md_ = float((_cur / _cur.cummax() - 1.0).min())
+            _tw = _a["total_w"]
+            alloc_rows.append({"배분방식": _lbl, "mode": _a["mode"],
+                               "종목상한": _mw, "top_k": (_tk or None),
+                               "총수익배수": round(float(_cur.iloc[-1]), 4),
+                               "단순합(%)": round(float(_pr.sum()) * 100.0, 2),
+                               "CAGR": round(_cg, 4), "최대낙폭(MDD)": round(_md_, 4),
+                               "칼마(CAGR/MDD)": (round(_cg / abs(_md_), 3) if _md_ < -1e-9 else None),
+                               "연변동성": round(float(_pr.std() * math.sqrt(252.0)), 4),
+                               "비중합 평균": round(float(_tw.mean()), 4),
+                               "비중합 최대": round(float(_tw.max()), 4),
+                               "비중합 0.9이상 일수": int((_tw >= 0.9).sum()),
+                               "★ 1.0 초과일": int((_tw > 1.0 + 1e-6).sum()),
+                               "종목 최대비중": round(float(_a["target_w"].max().max()), 4)})
+        except Exception as e:
+            log("ALLOC", kv(event="alloc_grid_row_failed", row=str(_lbl), err=str(e)[:120]),
+                level="warning")
+    # 동일가중 B&H 기준선 한 줄(비교 기준 — 배분격자와 같은 잣대)
+    try:
+        _eq = alloc["ret"].mean(axis=1)
+        _c = (1.0 + _eq.fillna(0.0)).cumprod()
+        _y = max(len(_eq) / 252.0, 1e-9)
+        _cg = float(_c.iloc[-1]) ** (1.0 / _y) - 1.0
+        _mdv = float((_c / _c.cummax() - 1.0).min())
+        alloc_rows.insert(0, {"배분방식": f"★ 기준선: {len(panel)}종목 동일가중 B&H(총 1.0)",
+                              "mode": "bh_equal", "종목상한": round(1.0 / max(1, len(panel)), 4),
+                              "top_k": None, "총수익배수": round(float(_c.iloc[-1]), 4),
+                              "단순합(%)": round(float(_eq.sum()) * 100.0, 2),
+                              "CAGR": round(_cg, 4), "최대낙폭(MDD)": round(_mdv, 4),
+                              "칼마(CAGR/MDD)": (round(_cg / abs(_mdv), 3) if _mdv < -1e-9 else None),
+                              "연변동성": round(float(_eq.std() * math.sqrt(252.0)), 4),
+                              "비중합 평균": 1.0, "비중합 최대": 1.0,
+                              "비중합 0.9이상 일수": int(len(_eq)), "★ 1.0 초과일": 0,
+                              "종목 최대비중": round(1.0 / max(1, len(panel)), 4)})
+    except Exception as e:
+        log("ALLOC", kv(event="alloc_baseline_failed", err=str(e)[:120]), level="warning")
+
     # ---- (K6 ★ 신규) 동일가중 포트폴리오 행 — 06 시트 맨 앞에 붙는다 ----
     _port: List[dict] = []
     for lbl, items in _agg.items():
@@ -1287,6 +1606,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     note="포트 행은 동일가중 · 중위 행은 종목별 — 두 값은 일치하지 않는 것이 정상이다"))
     return {"cfg": cfg, "panel": panel, "pos": pos, "prices": prices, "fund": fund,
             "parent_of": parent_of, "accuracy": acc, "audit": audit,
+            "alloc": alloc, "alloc_grid": pd.DataFrame(alloc_rows),
             "quality": pd.DataFrame(quality), "perf": pd.DataFrame(perf),
             "fund_ledger": (pd.concat(fund_ledgers, ignore_index=True) if fund_ledgers
                             else pd.DataFrame()),
@@ -1310,17 +1630,75 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     # ---- 01Z 일별 예측 매트릭스(전 종목 한 시트) ----
     idx = sorted(set().union(*[set(v.index) for v in panel.values()]))
     idx = pd.DatetimeIndex(idx)
+    # ---- 01Z [v0.3.0 D2·D3 전면 개편] ----
+    #   D2: **배분비중**(총합 ≤ 1.0)이 주 열이 된다. 단독 신호(0/1)는 '단독신호' 열로 남겨 정보를 잃지 않는다.
+    #       v0.2.1까지 '목표비중'이 티커마다 1.0이라 합계가 26.46이었다 — 사용자가 그것을 지적했다.
+    #   D3: 맨 끝에 **다음 거래일 예측 행**을 붙인다(구분='예측'). S·I는 이미 있었고 K만 없었다.
+    _aw = (res.get("alloc") or {}).get("target_w")
+    # [v0.3.1 E4] 00_실행요약에도 비중 합계를 싣는다 — 00A를 열지 않아도 바로 보이게.
+    _wsum_note = "배분층 없음"
+    if isinstance(_aw, pd.DataFrame) and len(_aw):
+        _ws = _aw.sum(axis=1)
+        _ov = int((_ws > 1.0 + 1e-6).sum())
+        _wsum_note = (f"일별 비중 합계 평균 {float(_ws.mean()):.4f} · 최대 {float(_ws.max()):.6f} · "
+                      f"**1.0 초과일 {_ov}일** · 종목 최대비중 {float(_aw.max().max()):.4f} "
+                      + ("→ ★ 전체자산 1.0 제약 준수" if _ov == 0 else "→ ⚠⚠ 제약 위반, 배분층 확인"))
     Z = pd.DataFrame(index=idx)
     for t in sorted(panel):
         Z[f"{t} 확정국면"] = pos[t]["확정국면"].reindex(idx)
-        Z[f"{t} 목표비중"] = pos[t]["목표비중"].reindex(idx)
-    Z.insert(0, "상승 종목수", sum((pos[t]["목표비중"].reindex(idx).fillna(0) > 0).astype(int)
+        Z[f"{t} 단독신호"] = pos[t]["목표비중"].reindex(idx)
+        Z[f"{t} 배분비중"] = (pd.to_numeric(_aw[t], errors="coerce").reindex(idx)
+                           if isinstance(_aw, pd.DataFrame) and t in _aw.columns
+                           else pd.Series(np.nan, index=idx))
+    _wcols = [c for c in Z.columns if str(c).endswith("배분비중")]
+    _tot = Z[_wcols].apply(pd.to_numeric, errors="coerce").sum(axis=1) if _wcols else pd.Series(0.0, index=idx)
+    Z.insert(0, "현금", (1.0 - _tot).round(6))
+    Z.insert(0, "★ 배분비중 합계", _tot.round(6))          # ★ 사용자 지적의 직접 확인 열
+    Z.insert(0, "보유 종목수", sum((pos[t]["목표비중"].reindex(idx).fillna(0) > 0).astype(int)
                                 for t in sorted(panel)))
+    Z.insert(0, "구분", "실적")
+    # ---- D3 다음 거래일 예측 행 ----
+    #   t일 확정 → t+1일 집행이므로 **마지막 확정 행의 목표비중이 곧 다음 거래일의 집행 비중**이다.
+    #   그것을 날짜만 다음 영업일로 바꿔 한 행 더 쓴다(새 계산이 아니라 체결 규칙의 명시다).
+    try:
+        if len(idx):
+            # ★ 미국 공휴일을 건너뛴다 — 단순 bdate_range는 2026-01-01(신년)을 영업일로 본다
+            #   (테스트가 잡았다). 달력을 못 만들면 영업일로 되돌린다.
+            _nd = None
+            try:
+                from pandas.tseries.holiday import USFederalHolidayCalendar
+                from pandas.tseries.offsets import CustomBusinessDay
+                _cbd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
+                _nd = (idx[-1] + _cbd).normalize()
+            except Exception:
+                _nd = None
+            if _nd is None:
+                _nd = pd.bdate_range(idx[-1] + pd.Timedelta(days=1), periods=1)[0]
+            _last = Z.iloc[[-1]].copy()
+            _last.index = pd.DatetimeIndex([_nd])
+            _last["구분"] = "예측(다음 거래일 집행)"
+            Z = pd.concat([Z, _last])
+            log("REPORT", kv(event="next_day_row_added", base=str(idx[-1].date()),
+                             target=str(_nd.date()), w_sum=round(float(_tot.iloc[-1]), 4),
+                             note="t일 확정 → t+1일 집행 규칙의 명시(새 계산 아님)"))
+    except Exception as e:
+        log("REPORT", kv(event="next_day_row_failed", err=str(e)[:150]), level="warning")
     sheets["01Z_주식일별예측"] = Z.reset_index().rename(columns={"index": "날짜"})
+    # ---- [v0.3.0 D2] 13_주식배분전략 · 13c_일별배분비중 ----
+    _ag = res.get("alloc_grid")
+    if isinstance(_ag, pd.DataFrame) and len(_ag):
+        sheets["13_주식배분전략"] = _ag
+    if isinstance(_aw, pd.DataFrame) and len(_aw):
+        _c13 = _aw.copy()
+        _c13.insert(0, "★ 합계", _aw.sum(axis=1).round(6))
+        _c13.insert(1, "현금", (1.0 - _aw.sum(axis=1)).round(6))
+        sheets["13c_일별배분비중"] = _c13.reset_index().rename(columns={"index": "날짜"})
 
     # ---- 00 실행요약 ----
     meta: List[Tuple[str, Any]] = [
         ("제목", "미국 개별 주식 국면 예측 — M(시장)→S(섹터)→I(산업)→**K(개별 주식)** 4계층의 마지막 층"),
+        ("★★ 전체자산 1.0 확인", _wsum_note),
+        ("★ 00A_수익비교 시트", "맨 앞에 있음 — B&H 단순합 vs 단독예측 vs 전략(배분) 비교 + 비중 합계 감사"),
         ("버전", f"stock_regime.py {VERSION} ({VERSION_DATE})"),
         ("⚠ 실매매 적용 여부",
          "아니오 — 진단·연구용이다. 실매매 주문 근거는 market_regime_report.xlsx의 ★ SPY 국면전략이며, "
@@ -1399,23 +1777,84 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             #   · 전략 포트 = 29종목 **동일가중**, 각 종목은 자기 집행비중만큼 참여
             #   · 벤치      = 29종목 **동일가중 B&H**(항상 1.0) — 같은 종목·같은 가중이므로 도달 가능
             #   · 총노출    = 집행비중의 종목 평균(0~1). 1.0이면 전량 보유, 0이면 전량 현금.
+            # [v0.3.0 D2] ★ 블록 C는 **배분층의 실제 비중**을 쓴다(총합 ≤ 1.0).
+            #   v0.2.1까지는 ex(티커별 0/1)를 종목수로 나눠 '동일가중인 척' 만들었는데, 그것은
+            #   엔진이 실제로 집행한 비중이 아니었다. 이제 배분층이 있으므로 그럴 필요가 없다.
+            _alw = (res.get("alloc") or {}).get("exec_w")
             _n = max(1, ret.shape[1])
-            _bh_r = ret.fillna(0.0).mean(axis=1)                    # 동일가중 B&H 일간수익
-            _st_r = (ret.fillna(0.0) * ex).sum(axis=1) / float(_n)  # 전략 일간수익(미보유=현금 0%)
-            _expo = ex.mean(axis=1)                                 # 포트 총노출(0~1)
+            _bh_r = ret.fillna(0.0).mean(axis=1)                    # 동일가중 B&H(총 1.0)
+            if isinstance(_alw, pd.DataFrame) and len(_alw):
+                _aex = _alw.reindex(index=idx, columns=ret.columns).astype(float).fillna(0.0)
+                _st_r = (ret.fillna(0.0) * _aex).sum(axis=1)        # 배분 포트 일간수익
+                _expo = _aex.sum(axis=1)                            # ★ 총노출 = 비중 합계(0~1)
+                _plabel = f"★ 전략(배분 · {(res.get('alloc') or {}).get('mode', '?')})"
+            else:
+                _st_r = (ret.fillna(0.0) * ex).sum(axis=1) / float(_n)
+                _expo = ex.mean(axis=1)
+                _plabel = "★ 전략(동일가중 · 배분층 없음)"
             segc = I.build_portfolio_segments(
                 (1.0 + _st_r).cumprod(), _expo, (1.0 + _bh_r).cumprod(), cfg,
                 bench_label=f"{ret.shape[1]}종목 동일가중 B&H", layer="개별주식",
-                port_label="★ 전략(동일가중)", M=None)
+                port_label=_plabel, M=None)
             if isinstance(segc, pd.DataFrame) and len(segc):
                 seg = pd.concat([seg, segc], ignore_index=True) if isinstance(seg, pd.DataFrame) else segc
             if isinstance(seg, pd.DataFrame) and len(seg):
                 sheets["19_상승하락구간"] = seg
         except Exception as e:
             log("REPORT", kv(event="updown_segments_failed", err=str(e)[:200]), level="warning")
+    # ---- [v0.3.0 D1 ★ 신규 시트] 00A_수익비교 (맨 앞) ----
+    #   사용자 지시: "각 주식별 buy and hold시 수익률(복리가 아닌 변동률 합산)과 단독 예측으로
+    #   거래 시 수익률 비교하고 전략 수익률도 같이 표시해"
+    if I is not None and hasattr(I, "build_asset_return_compare"):
+        try:
+            _a = res.get("alloc") or {}
+            _ret0 = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce")
+                                  for t in sorted(panel)}).reindex(idx)
+            _aex0 = (_a.get("exec_w") if isinstance(_a.get("exec_w"), pd.DataFrame) else None)
+            _aex0 = (_aex0.reindex(index=idx, columns=_ret0.columns).fillna(0.0)
+                     if _aex0 is not None else
+                     pd.DataFrame(0.0, index=idx, columns=_ret0.columns))
+            # 단독예측 비중 = build_positions의 집행비중(티커마다 0/1 — 그 종목만 100% 운용했을 때)
+            _sw0 = pd.DataFrame({t: pd.to_numeric(pos[t]["집행비중"], errors="coerce")
+                                 for t in sorted(panel)}).reindex(idx).fillna(0.0)
+            _cmp0 = I.build_asset_return_compare(
+                _ret0, _aex0, cfg, solo_w=_sw0,
+                name_map={t: STOCK_NAME_KR.get(t, "") for t in sorted(panel)},
+                parent_map={t: parent_of.get(t, "") for t in sorted(panel)},
+                layer="개별주식", M=None)
+            if isinstance(_cmp0, pd.DataFrame) and len(_cmp0):
+                sheets["00A_수익비교"] = _cmp0
+        except Exception as e:
+            # ★★ [v0.3.1 E3] 실패해도 시트는 반드시 쓴다 — 조용히 빠지면 사용자는 "왜 안 만들었어"만 본다.
+            import traceback as _tb
+            log("REPORT", kv(event="asset_return_compare_failed", err=str(e)[:200]), level="error")
+            sheets["00A_수익비교"] = pd.DataFrame([{
+                "블록": "A. 자산별 수익 비교", "자산": "⚠ 산출 실패",
+                "판정": (f"00A 생성 중 예외: {type(e).__name__}: {str(e)[:220]} / "
+                       "다음 단계: (1) run_pipeline이 I 모듈을 넘겼는지(I=None이면 00A가 안 나온다) "
+                       "(2) res['alloc']['exec_w']가 있는지 (3) 로그 전체 메시지 확인."),
+                "추적": _tb.format_exc()[-800:]}])
+    elif I is None:
+        # I를 못 받으면 00A 함수 자체가 없다 — 그것도 시트로 알린다(무음 금지).
+        sheets["00A_수익비교"] = pd.DataFrame([{
+            "블록": "A. 자산별 수익 비교", "자산": "⚠ 생략됨",
+            "판정": ("I(industry_rotation) 모듈을 받지 못해 00A를 만들 수 없었다. "
+                   "K는 I의 build_asset_return_compare를 재사용한다. "
+                   "다음 단계: run_pipeline.main()으로 실행하거나 "
+                   "stock_regime.main(I=industry_rotation)처럼 I를 넘길 것.")}])
     for t in sorted(panel):
         d = pd.concat([panel[t], pos[t]], axis=1)
+        if isinstance((res.get("alloc") or {}).get("target_w"), pd.DataFrame):
+            _tw0 = (res["alloc"]["target_w"])
+            if t in _tw0.columns:
+                d["배분목표비중"] = pd.to_numeric(_tw0[t], errors="coerce").reindex(d.index)
+                d["배분집행비중"] = pd.to_numeric(res["alloc"]["exec_w"][t],
+                                            errors="coerce").reindex(d.index)
         sheets[f"01_일별_{t}"] = d.reset_index().rename(columns={"index": "날짜"})
+    # 맨 앞으로: 00A → 01Z → 00 → 나머지
+    _front = [n for n in ("00A_수익비교", "01Z_주식일별예측", "00_실행요약") if n in sheets]
+    sheets = {**{n: sheets[n] for n in _front},
+              **{k: v for k, v in sheets.items() if k not in _front}}
     _write(path, sheets)
     _mb = (os.path.getsize(path) / 1e6) if os.path.exists(path) else float("nan")
     log("REPORT", kv(event="written", path=path, sheets=len(sheets), size_mb=round(_mb, 2),
@@ -1434,9 +1873,11 @@ def _write(path: str, sheets: Dict[str, pd.DataFrame]) -> None:
             d.to_excel(xw, sheet_name=str(name)[:31], index=False)
 
 
-def main(s_overrides: Optional[Dict[str, Any]] = None, I=None) -> str:
-    """단독 실행 진입점. run_pipeline이 I 모듈을 넘겨 주면 19 시트가 함께 나온다."""
-    res = run(CFG, s_overrides)
+def main(s_overrides: Optional[Dict[str, Any]] = None, I=None,
+         parent_w: Optional[pd.DataFrame] = None) -> str:
+    """단독 실행 진입점. run_pipeline이 I 모듈을 넘겨 주면 19·00A 시트가 함께 나오고,
+    parent_w(I의 산업 비중)를 넘겨 주면 배분격자의 4계층 정합 행이 살아난다."""
+    res = run(CFG, s_overrides, parent_w=parent_w)
     return build_report(res, I=I)
 
 
