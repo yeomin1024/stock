@@ -19,6 +19,8 @@
 #  VERSION: v1.19.0 - 2026-09-15 - [구버전 실행 방지 가드 · 기능 체크리스트] REPORT62.
 #    R61에서 코드는 고쳤는데 노트북이 구버전을 wget해 새 시트가 없었다. _MIN 표 + ⚠⚠⚠ 경고 신설.
 #
+#  VERSION: v1.22.0 - 2026-09-16 - [ROUND68 — I v0.26.0 · S v0.58.0] 최소버전 상향 + 산업 신규 2건 확인.
+#
 #  VERSION: v1.21.0 - 2026-09-16 - [ROUND67 — S v0.57.0] 최소버전 상향 + 신선도/예측품질 확인 추가.
 #    · _MIN의 S 최소버전 v0.56.0 → **v0.57.0**.
 #    · 기능 체크리스트에 **★데이터신선도가드**(ensure_fresh_sector_prices)와 **★23_예측품질검정** 추가.
@@ -1159,7 +1161,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.21.0"
+VERSION = "v1.22.0"
 VERSION_DATE = "2026-09-16"
 
 MODULE_FILES = {
@@ -1266,8 +1268,8 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     #   S v0.50.0 / I v0.21.0 / K v0.2.1로 돌았다. 리포트에 00A 시트가 없고 비중 합계도 그대로였다.
     #   배너만 보고는 그것을 알 수 없었다 — 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없었다.
     #   ⇒ 이제 최소 버전을 코드가 알고 있고, 미달이면 **어느 파일을 갱신해야 하는지** 크게 알린다.
-    _MIN = {"sector_rotation.py": ("S", "v0.57.0", S),
-            "industry_rotation.py": ("I", "v0.25.0", I),
+    _MIN = {"sector_rotation.py": ("S", "v0.58.0", S),
+            "industry_rotation.py": ("I", "v0.26.0", I),
             "stock_regime.py": ("K", "v0.3.1", K)}
     def _vt(x):
         try:
@@ -1308,6 +1310,11 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
             _feat.append("★23_예측품질검정")
         if _tag == "S" and hasattr(_mod, "build_curve_compare"):
             _feat.append("★00B_곡선그래프")
+        # [v1.22.0 ROUND68] 산업 계층의 신규 2건
+        if hasattr(_mod, "build_industry_curve_compare"):
+            _feat.append("★산업 00B 4곡선")
+        if hasattr(_mod, "build_industry_prediction_quality"):
+            _feat.append("★산업 23_예측품질검정")
         print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
               + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
     if _stale:

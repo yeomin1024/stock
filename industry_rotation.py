@@ -1,5 +1,51 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.26.0 - 2026-09-16 - [★★★ 산업 4곡선 그래프 · 예측품질 검정 · 라이브=E_t 발견] REPORT68.
+#    사용자 지시: "이제 산업 수정하자 산업도 섹터랑 똑같이 단일 산업별 비교 곡선 시트 만들고 수익 비교
+#    시트 만들고 **변동률 높은 산업은 섹터보다 훨씬 수익률 좋아야해** 개선하고 문제 있는거 최대한 좋게 개선해"
+#
+#  [★★★ 이번 라운드의 발견 — 먼저 읽을 것] **산업 라이브 목표비중은 M의 E_t와 29/29 산업에서 소수점까지
+#    동일하다.** 01_일별의 '국면 소스'가 2,186일 **전부 m_inherit(M 상속)**이기 때문이다.
+#    ⇒ 이 계층의 라이브 노출에는 **산업 자기 예측도, 부모 섹터 예측도 들어 있지 않다** — 시장 국면의
+#      순수 통과다. 그래서 산업 신호를 고쳐도 13 배분·06 성과가 움직이지 않는다.
+#    이 사실을 매 실행 보이게 하려고 23_예측품질검정에 **블록 Z(라이브 노출 감사)**를 맨 앞에 두었다.
+#
+#  [L1 ★ 신규 시트] **00B_수익곡선비교 · 00C_곡선데이터 · 00B_곡선그래프(실제 꺾은선 차트)**
+#    — 사용자가 "섹터랑 똑같이"라고 한 것을 산업에 옮겼다. 산업에는 부모가 하나 더 있으므로 곡선이 **넷**이다:
+#      ① B&H · ② **단일 산업 예측**(자기 국면) · ③ **섹터 예측**(부모 섹터 목표비중) · ④ 현행(라이브)
+#    ⇒ **②−③가 이 계층의 존재 이유**이고, 사용자 요구는 "②가 ③보다 훨씬 커야 한다"이다.
+#    차트는 S.write_sector_excel의 차트 코드를 그대로 재사용한다(S v0.58.0에서 name_map 인자를 받아
+#    산업 한글명으로 제목을 쓰고 계열 라벨 4종을 인식하게 일반화했다).
+#
+#    ★ 리포트21(+섹터 리포트5) 결합 실측 — 사용자 요구는 **현재 충족되지 않는다**:
+#      ② 단일 산업 : B&H 초과 **18/29** · 중위복리 132.4 · 중위MDD −26.50 · 중위칼마 0.36
+#      ③ 섹터(부모): B&H 초과 **29/29** · 중위복리 388.1 · 중위MDD −23.00 · 중위칼마 0.95
+#      ④ 현행(=E_t): B&H 초과 **29/29** · 중위복리 **405.2** · 중위MDD **−19.73** · 중위칼마 **1.01**
+#      ⇒ **② > ③ 는 0/29**. 산업을 따로 보는 것이 부모 섹터 하나를 쓰는 것보다 **한 산업도 낫지 않다.**
+#
+#  [L2 ★★ 신규 시트] **23_예측품질검정** — S v0.57.0의 같은 시트를 산업용으로. 전부 **체결정합**
+#    (t 신호 → **t+1** 수익). 블록 Z(라이브 노출 감사) / A(하락 예측) / B(부모 위 추가정보) / C(초과보유) / D(종합).
+#    ★ 리포트21 실측:
+#      · 블록 A **하락 예측은 작동한다 — 22/29**(중위 −0.1275%p). 강한 쪽 XES −0.35 · XOP −0.32 ·
+#        JETS −0.31 · KRE −0.30 · KBE −0.27. **반전 7개**(SKYY +0.041 · IHF +0.055 · SOCL +0.055 ·
+#        IHE +0.036 · FDN +0.017 · GDX +0.012 · IBB +0.003).
+#      · 블록 B **부모 위의 추가정보는 없다** — 부모비중>0로 고정하면 Q5>Q1이 **13/29**이고 풀링이
+#        **역전·비단조**(Q1 +0.1487 · Q4 +0.0665 · Q5 +0.1183).
+#      · 블록 C ★★ **초과보유(자기>부모)는 25/29에서 손해** — 풀링 **−0.1082%/일 · 6,696일**.
+#        ⇒ S가 섹터에 쓴 `max(자기, 부모)` 결합을 산업에 그대로 쓰면 **안 된다**(섹터와 부호가 반대다).
+#
+#  [L5 ★ 신규 격자 · 측정 전용] **[노출결합격자] 4행** — max/min/비례/하락일제외.
+#    ⚠ 내 오프라인 측정은 **네 변형 전부 현행보다 열위**였다(부모바닥+퇴출 353.2/−24.03/0.89 ·
+#      E_t바닥+퇴출 348.7/−22.31/0.94 · 부모×자기 179.0/−20.04/0.59 · 부모바닥(퇴출없음) 299.5/−25.51/0.65
+#      vs 현행 405.2/−19.73/1.01). **그래서 라이브를 바꾸지 않았다.**
+#      격자로 남기는 이유는 내 계산이 **버전이 다른 두 리포트를 결합**한 것이라 엔진이 같은 실행 안에서
+#      다시 재야 권위가 있기 때문이다(누적 교훈 24 — 재현 없는 추정으로 라이브를 바꾸지 않는다).
+#    ★ 다만 오프라인 하네스는 **엔진 ②를 29/29 산업에서 소수점까지 재현**했으므로(자기 목표비중 기준),
+#      ②·③·④ 비교 수치 자체는 신뢰할 수 있다. 재현하지 못한 것은 **배분(13) 곡선**뿐이다.
+#
+#  [L4] 부모 섹터 목표비중·시장 E_t를 run()에서 뽑아 ires["parent_pos"]/["market_pos"]로 실어 보낸다
+#    (build_industry_report는 ires만 받으므로 이것이 가장 작은 변경이다).
+#
 #  VERSION: v0.24.0 - 2026-09-15 - [★★ 00A 판정 행 · 회피일 분해 · 노출 상향 격자] REPORT63.
 #    사용자 지시: "결과인데 예측 수익이 buy and hold 보다 훨씬 많이 나와야해 지금 보니까 그런게 없어
 #    다시 섹터랑 산업부터 문제 찾아서 개선방법 찾아서 수정해 2개만"
@@ -1478,8 +1524,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.25.0"
-VERSION_DATE = "2026-09-15"
+VERSION = "v0.26.0"
+VERSION_DATE = "2026-09-16"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -1706,6 +1752,12 @@ class IndustryConfig:
     #   CAP만 올려도 중위는 0에서 안 움직인다(리더 없는 날이 64.7%이므로).
     #   ⚠ 되돌리기: i_overrides={"INDUSTRY_GRID": False}
     INDUSTRY_GRID: bool = True
+    # ---- [v0.26.0 L1] 00B_수익곡선비교 블록 B에 연도별로 실을 '지정 산업' ----
+    CURVE_FOCUS: Tuple[str, ...] = ("SOXX", "IGV", "XHB", "KRE", "XES")
+    # ---- [v0.26.0 L5] 노출 결합 격자(측정 전용 · 라이브 아님) ----
+    #   왜: 산업 라이브 목표비중이 M의 E_t와 29/29 동일(m_inherit) — 산업 예측이 노출에 미사용.
+    #   내 오프라인 측정은 네 변형 전부 열위였으나, 엔진이 같은 실행에서 다시 재야 권위가 있다.
+    EXPOSURE_MIX_GRID: bool = True
     # [v0.4.0 §I3] 사전등록 격자 — 배분층이라 하나의 신호를 공유한다(격자로 싣는 것이 옳다).
     #   국면게이트: 리더를 인정하는 부모 자기국면 집합. 근거(§3.4 H1): 부모 **중립**일 때 고베타 1위의
     #     21일 부모초과가 +0.81%(t 1.94, 6/8년)로 가장 컸고, 부모 상승(+0.25, t 0.73)·하락(−0.21)은 약했다.
@@ -5114,6 +5166,47 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
     label_ctrl_a = "대조군A: S★ 그대로(산업 미사용)"
     target_ws[label_ctrl_a] = _mk_target_w(0.0, 0.0, only_mode="parent")
 
+    # ---- [v0.26.0 L5 ★ 신규 격자 · 측정 전용] 노출 결합 격자 ----
+    #   ── 사용자 지시 "변동률 높은 산업은 섹터보다 훨씬 수익률 좋아야해 개선하고" ──
+    #   ★ 먼저 밝혀진 사실(23_예측품질검정 블록 Z): 산업 라이브 목표비중은 국면 소스가 전부 m_inherit이라
+    #     **M의 E_t와 소수점까지 같다** — 산업 예측도 부모 섹터 예측도 라이브 노출에 들어 있지 않다.
+    #   ⇒ '산업 자기 비중을 노출에 섞으면 어떻게 되는가'를 **엔진이 직접 재게** 한다. 라이브는 바꾸지 않는다.
+    #   ⚠ 내 오프라인 측정(리포트21 + 섹터리포트5 결합)은 네 변형 **전부 현행보다 열위**였다:
+    #     현행(E_t) 중위복리 405.2 · MDD −19.73 · 칼마 1.01 → 부모바닥+퇴출 353.2/−24.03/0.89 ·
+    #     E_t바닥+퇴출 348.7/−22.31/0.94 · 부모×자기 179.0/−20.04/0.59 · 부모바닥(퇴출없음) 299.5/−25.51/0.65.
+    #     원인은 23 블록 C가 찍는다 — **초과보유일(자기>부모) 다음날 수익이 29산업 중 25개에서 음수**
+    #     (풀링 −0.1082%/일 · 6,696일). 즉 산업 자기 비중을 부모 위로 올리면 구조적으로 손해다.
+    #   그래도 격자로 남기는 이유: 내 계산은 서로 다른 버전의 두 리포트를 결합한 것이라 **엔진이 같은
+    #     실행 안에서 다시 재야** 권위가 있다(누적 교훈 24 — 재현 없는 추정으로 라이브를 바꾸지 않는다).
+    if bool(getattr(icfg, "EXPOSURE_MIX_GRID", True)):
+        try:
+            _base_mix = target_ws.get(label_star)
+            _ownmix = pd.DataFrame({t: pd.to_numeric(results[t].get("own_target_pos"), errors="coerce")
+                                    .reindex(eval_idx).ffill()
+                                    for t in cols if t in results}).clip(lower=0.0, upper=1.0)
+            if _base_mix is not None and len(_ownmix.columns):
+                _ownmix = _ownmix.reindex(columns=_base_mix.columns).fillna(1.0)
+                _mix = {}
+                #  ① 자기 바닥(max) — S v0.56.0이 섹터에 쓴 결합을 산업에 그대로
+                _mix["노출결합: max(배분, 산업자기) [노출결합격자]"] = _base_mix.where(
+                    _base_mix >= _ownmix, _ownmix)
+                #  ② 자기 상한(min) — 23 블록 C가 '초과보유가 손해'라고 하면 이쪽이 맞는 방향이다
+                _mix["노출결합: min(배분, 산업자기) [노출결합격자]"] = _base_mix.where(
+                    _base_mix <= _ownmix, _ownmix)
+                #  ③ 자기 비례 — 가장 강한 결합
+                _mix["노출결합: 배분 × 산업자기 [노출결합격자]"] = _base_mix * _ownmix
+                #  ④ 자기 하락 veto만 — 자기 비중 0인 날만 빼고 나머지는 그대로(하락 신호만 쓴다)
+                _mix["노출결합: 산업자기 하락일만 제외 [노출결합격자]"] = _base_mix * (_ownmix > 1e-9).astype(float)
+                for _lab, _fr in _mix.items():
+                    target_ws[_lab] = _fr.fillna(0.0).clip(lower=0.0)
+                log("ROTATION", kv(event="exposure_mix_grid", rows=len(_mix),
+                                   base_mean_exposure=round(float(_base_mix.sum(axis=1).mean()), 4),
+                                   own_mean=round(float(_ownmix.mean().mean()), 4),
+                                   note="★ 측정 전용 — 라이브 무변경. 23 블록 C가 예상 부호를 낸다"), M=M)
+        except Exception as _e:
+            log("ROTATION", kv(event="exposure_mix_grid_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                               action="격자 없이 배분 계속(주 전략 무영향)"), M=M, level="warning")
+
     bts: Dict[str, pd.DataFrame] = {}
     star_label = next((c for c in s_alloc.get("bts", {}) if str(c).endswith("★")), None)
     for label, tw in target_ws.items():
@@ -6374,6 +6467,351 @@ def build_portfolio_segments(port_curve: pd.Series, port_exposure: pd.Series,
                   note="B&H 대비 하락 회피·상승 참여 — 블록 A(자산별)와 단위가 다르다"), M=M)
     return pd.DataFrame(rows)
 
+
+
+
+def build_industry_prediction_quality(results: Dict[str, Dict[str, Any]], parent_w: Optional[pd.DataFrame],
+                                      market_w: Optional[pd.Series], cfg: Any,
+                                      name_map: Optional[Dict[str, str]] = None,
+                                      parent_map: Optional[Dict[str, str]] = None, M=None) -> pd.DataFrame:
+    """[23_예측품질검정, v0.26.0 L2 ★★ 신규] 사용자 지시 "문제 있는거 최대한 좋게 개선해"에 답하려면
+    먼저 **무엇이 문제인지**를 매 실행 재야 한다. S v0.57.0의 같은 이름 시트를 산업용으로 옮긴 것이다.
+
+    ★★ 모든 숫자는 **체결정합**이다 — t일 신호를 **t+1일** 수익과 맞춘다(엔진 exec_w(t)=target_w(t−1)).
+      같은 날 수익과 맞추면 거래 불가능한 수치가 나오고, 그것이 이 프로젝트에서 네 번 반복된 오류다.
+
+    블록 Z — ★★★ **라이브 노출 감사**: 현행 목표비중이 부모 섹터 비중·시장 E_t와 얼마나 같은가.
+             리포트21 실측에서 **29/29 산업이 M의 E_t와 소수점까지 동일**했다(국면 소스 m_inherit 100%).
+             = 라이브 노출에 **산업 자기 예측도 부모 섹터 예측도 들어 있지 않다**. 이것이 1번 문제다.
+    블록 A — **하락 예측 검정**: 산업 자기 하락국면(t) → 다음날 수익 vs 그 외. 음수면 맞은 것.
+    블록 B — **부모 위의 추가정보 검정**: 부모 비중 > 0인 날만 골라 자기 복합점수 5분위별 다음날 수익.
+    블록 C — **초과보유 검정**: 자기 비중 > 부모 비중인 날의 다음날 수익. ★ 이 부호가 ②>③ 성적을 가른다.
+    블록 D — **종합 판정**.
+    """
+    Z, A, B, C, D = ("Z. 라이브 노출 감사(★★★ 먼저 볼 것)", "A. 하락 예측 검정",
+                     "B. 부모 위의 추가정보 검정", "C. 초과보유 검정(②가 ③을 이기는 유일한 출처)", "D. 종합 판정")
+    rows: List[dict] = []
+    cols = [t for t in results if isinstance(results.get(t), dict)]
+    if not cols:
+        return pd.DataFrame([{"블록": Z, "산업": "산출 불가", "판정": "results 비어 있음"}])
+
+    def _parts(t):
+        r = pd.to_numeric(results[t].get("bh_ret"), errors="coerce")
+        if r is None or not len(r):
+            return None
+        if float(pd.Series(r).abs().max() or 0.0) < 1.0:
+            r = r * 100.0
+        ost = pd.Series(results[t].get("own_state")).astype(str).reindex(r.index)
+        ow = pd.to_numeric(results[t].get("own_target_pos"), errors="coerce").reindex(r.index)
+        lw = pd.to_numeric(results[t].get("target_pos"), errors="coerce").reindex(r.index)
+        pw = (pd.to_numeric(parent_w[t], errors="coerce").reindex(r.index).ffill()
+              if (parent_w is not None and t in getattr(parent_w, "columns", [])) else None)
+        mw = (pd.to_numeric(pd.Series(market_w), errors="coerce").reindex(r.index).ffill()
+              if market_w is not None else None)
+        return r, ost, ow, lw, pw, mw
+
+    # ---------- 블록 Z ----------
+    rows.append({"블록": Z, "산업": "── 읽는 법 ──",
+                 "판정": ("현행 라이브 목표비중이 **부모 섹터 비중**·**시장 E_t**와 며칠이나 같은지 센다. "
+                        "'E_t와 같은 일수'가 전체 일수와 같으면 그 산업의 라이브 노출은 **시장 국면의 "
+                        "순수 통과**이고, 산업 예측도 섹터 예측도 쓰이지 않는다는 뜻이다. "
+                        "★ 이 블록이 '왜 개선해도 숫자가 안 변하나'에 먼저 답한다.")})
+    n_et = n_pw = n_tot = 0
+    for t in cols:
+        p = _parts(t)
+        if p is None:
+            continue
+        r, ost, ow, lw, pw, mw = p
+        n_tot += 1
+        d_et = (int((lw.sub(mw).abs() < 1e-9).sum()) if mw is not None else None)
+        d_pw = (int((lw.sub(pw).abs() < 1e-9).sum()) if pw is not None else None)
+        nn = int(lw.notna().sum())
+        same_et = bool(d_et is not None and nn and d_et >= nn - 1)
+        same_pw = bool(d_pw is not None and nn and d_pw >= nn - 1)
+        n_et += int(same_et)
+        n_pw += int(same_pw)
+        rows.append({"블록": Z, "산업": t, "이름": (name_map or {}).get(t, ""),
+                     "부모": (parent_map or {}).get(t, ""), "일수": nn,
+                     "E_t와 같은 일수": d_et, "부모비중과 같은 일수": d_pw,
+                     "라이브 평균비중": round(float(lw.mean()), 4),
+                     "자기 평균비중": round(float(ow.mean()), 4) if ow is not None else None,
+                     "판정": ("⚠⚠ **라이브 = 시장 E_t 그대로**(산업·섹터 예측 미사용)" if same_et else
+                            ("⚠ 라이브 = 부모 섹터 비중 그대로" if same_pw else "★ 라이브가 독자 값을 갖는다"))})
+    rows.append({"블록": Z, "산업": "★★★ 종합",
+                 "판정": (f"라이브 노출이 **시장 E_t와 동일한 산업 {n_et}/{n_tot}** · 부모 섹터 비중과 동일 {n_pw}/{n_tot}. "
+                        + ("⚠⚠⚠ **이 계층의 라이브 노출에는 산업 예측이 전혀 들어 있지 않다** — 국면 소스가 "
+                           "전부 m_inherit(M 상속)이기 때문이다. 그래서 산업 신호를 아무리 고쳐도 "
+                           "13 배분·06 성과가 움직이지 않는다. 고칠 곳은 신호가 아니라 **노출 결합 규칙**이다."
+                           if n_et * 2 > max(n_tot, 1) else
+                           "★ 라이브가 독자 노출을 갖는다 — 산업 신호 개선이 성과에 반영될 수 있다."))})
+
+    # ---------- 블록 A ----------
+    rows.append({"블록": A, "산업": "── 읽는 법 ──",
+                 "판정": ("산업이 **하락**이라고 말한 날(t)의 **다음날** 수익을 그 외 날과 비교한다. "
+                        "'차'가 음수면 하락 예측이 맞은 것이고, 양수면 그 산업은 **신호가 반전**돼 있다.")})
+    nA = nAok = 0
+    for t in cols:
+        p = _parts(t)
+        if p is None:
+            continue
+        r, ost, ow, lw, pw, mw = p
+        rn = r.shift(-1)
+        f5 = r.rolling(5).sum().shift(-5)
+        off = ost.str.upper().eq("RISK_OFF") & rn.notna()
+        non = (~ost.str.upper().eq("RISK_OFF")) & rn.notna()
+        if not int(off.sum()):
+            continue
+        mo, mn = float(rn[off].mean()), float(rn[non].mean())
+        nA += 1
+        nAok += int(mo < mn)
+        rows.append({"블록": A, "산업": t, "이름": (name_map or {}).get(t, ""),
+                     "부모": (parent_map or {}).get(t, ""), "일수": int(off.sum()),
+                     "다음날 평균(%)": round(mo, 4), "그 외 다음날 평균(%)": round(mn, 4),
+                     "차(%p)": round(mo - mn, 4),
+                     "향후5일 평균(%)": (round(float(f5[off].mean()), 4) if f5[off].notna().any() else None),
+                     "판정": ("★ 하락 예측이 맞다" if mo < mn else
+                            "⚠⚠ **신호 반전** — 하락이라고 한 날이 오히려 더 좋았다")})
+    rows.append({"블록": A, "산업": "★★ 종합", "일수": nA,
+                 "판정": (f"하락 예측이 맞은 산업 **{nAok}/{nA}**. "
+                        + ("★ 하락 예측은 전반적으로 작동한다 — 이 계층에서 **살아 있는 유일한 신호**일 수 있다."
+                           if nAok * 2 > nA else "⚠ 절반 이하 — 하락 신호 자체를 재검토할 것."))})
+
+    # ---------- 블록 B ----------
+    rows.append({"블록": B, "산업": "── 읽는 법 ──",
+                 "판정": ("**부모 섹터 비중 > 0인 날만** 골라(= 부모를 고정하고) 산업 자기 복합점수 5분위별 "
+                        "**다음날** 수익을 본다. Q5가 Q1보다 높아야 '산업 점수에 부모를 넘는 정보가 있다'고 "
+                        "말할 수 있다. ★ 사용자 요구('산업이 섹터보다 훨씬 좋아야')가 가능한지의 직접 검정이다.")})
+    nB = nBok = 0
+    pooled: Dict[int, List[pd.Series]] = {}
+    for t in cols:
+        p = _parts(t)
+        if p is None or p[4] is None:
+            continue
+        r, ost, ow, lw, pw, mw = p
+        sp = pd.to_numeric(results[t].get("score_pct"), errors="coerce")
+        if sp is None or not len(sp):
+            continue
+        sp = sp.reindex(r.index)
+        rn = r.shift(-1)
+        m = (pw > 0) & rn.notna() & sp.notna()
+        if int(m.sum()) < 250:
+            continue
+        try:
+            q = pd.qcut(sp[m], 5, labels=False, duplicates="drop")
+        except Exception:
+            continue
+        row = {"블록": B, "산업": t, "이름": (name_map or {}).get(t, ""), "일수": int(m.sum())}
+        v = []
+        for k in range(int(q.max()) + 1):
+            idx = sp[m][q == k].index
+            val = float(rn.loc[idx].mean())
+            row[f"Q{k + 1} 다음날(%)"] = round(val, 4)
+            v.append(val)
+            pooled.setdefault(k, []).append(rn.loc[idx])
+        if len(v) >= 2:
+            nB += 1
+            nBok += int(v[-1] > v[0])
+            row["Q5−Q1(%p)"] = round(v[-1] - v[0], 4)
+            row["판정"] = ("★ 상위가 하위보다 낫다" if v[-1] > v[0] else "✗ 상위가 하위보다 못하다")
+        rows.append(row)
+    if nB:
+        pr = {"블록": B, "산업": "★★ 종합(풀링)"}
+        pv = []
+        for k in sorted(pooled):
+            s = pd.concat(pooled[k])
+            pr[f"Q{k + 1} 다음날(%)"] = round(float(s.mean()), 4)
+            pr["일수"] = int(len(s))
+            pv.append(float(s.mean()))
+        mono = len(pv) >= 2 and all(pv[i] <= pv[i + 1] for i in range(len(pv) - 1))
+        pr["판정"] = (f"Q5 > Q1 인 산업 **{nBok}/{nB}**" +
+                    (" · 풀링 단조 증가 ⇒ ★ 산업 점수에 부모를 넘는 정보가 있다."
+                     if mono else
+                     " · 풀링이 **단조가 아니다** ⇒ ⚠⚠ 산업 자기 점수는 부모를 고정하면 **다음날 방향 정보를 "
+                     "거의 주지 못한다**. 이 경우 비중 규칙으로는 ②를 ③ 위로 올릴 수 없고 **신호를 새로 찾아야** 한다."))
+        rows.append(pr)
+
+    # ---------- 블록 C ----------
+    rows.append({"블록": C, "산업": "── 읽는 법 ──",
+                 "판정": ("산업 자기 비중이 **부모 섹터 비중보다 높은 날**(초과보유)의 다음날 수익이다. "
+                        "③은 그 날 부모 비중만 들고 ②는 자기 비중을 드니 **초과분이 먹는 수익**이 이 값이다. "
+                        "★ 양수면 ②가 ③을 이기고 음수면 진다 — 이 계층 고유 알파의 유일한 출처다.")})
+    nC = nCok = 0
+    for t in cols:
+        p = _parts(t)
+        if p is None or p[4] is None or p[2] is None:
+            continue
+        r, ost, ow, lw, pw, mw = p
+        rn = r.shift(-1)
+        over = (ow > pw + 1e-9) & rn.notna()
+        if not int(over.sum()):
+            continue
+        mo = float(rn[over].mean())
+        nC += 1
+        nCok += int(mo > 0)
+        rows.append({"블록": C, "산업": t, "이름": (name_map or {}).get(t, ""),
+                     "부모": (parent_map or {}).get(t, ""), "일수": int(over.sum()),
+                     "다음날 평균(%)": round(mo, 4),
+                     "평균 초과분": round(float((ow - pw)[over].mean()), 4),
+                     "판정": ("★ 초과보유가 번다" if mo > 0 else
+                            "⚠ 초과보유가 잃는다 — 이 산업은 부모 비중을 넘지 않는 편이 낫다")})
+    rows.append({"블록": C, "산업": "★★ 종합", "일수": nC,
+                 "판정": (f"초과보유 다음날 수익이 **양수인 산업 {nCok}/{nC}**. "
+                        + ("★ 초과보유에 값이 있다 — 바닥(max) 결합이 정당화된다."
+                           if nCok * 2 > nC else
+                           "⚠⚠ **과반이 음수** — 산업 자기 비중을 부모 위로 올리면 **손해**다. "
+                           "S v0.56.0이 섹터에서 쓴 `max(자기, 부모)` 결합을 산업에 그대로 쓰면 안 된다는 뜻이고, "
+                           "실제로 그 변형은 측정에서 전부 열위였다(13 시트 [노출결합격자] 참조)."))})
+
+    rows.append({"블록": D, "산업": "★★★ 종합 판정",
+                 "판정": ("블록 Z가 '라이브 = E_t'라고 하고 블록 B·C가 음성이면, 이 계층의 상태는 "
+                        "**'산업 예측이 라이브에 쓰이지 않고, 쓰이게 해도 더 나빠진다'**이다. "
+                        "그 경우 개선의 길은 두 개뿐이다: (1) **새 신호**(지금 것은 전부 산업 자체 시계열 — "
+                        "부모 안 횡단면 상대 신호는 아직 제대로 안 썼다) (2) **선택**(어느 산업을 담을지 = "
+                        "13 배분 계층). 비중 규칙 재조합은 측정으로 닫혔다.")})
+    log("PRED_Q", kv(event="industry_prediction_quality_built", industries=len(cols),
+                     live_eq_market=f"{n_et}/{n_tot}", down_ok=f"{nAok}/{nA}",
+                     score_ok=f"{nBok}/{nB}", over_ok=f"{nCok}/{nC}",
+                     note="전부 체결정합(t 신호 → t+1 수익)"), M=M)
+    return pd.DataFrame(rows)
+
+def build_industry_curve_compare(ret_df: pd.DataFrame, own_w: pd.DataFrame, parent_w: pd.DataFrame,
+                                 live_w: pd.DataFrame, cfg: Any,
+                                 name_map: Optional[Dict[str, str]] = None,
+                                 parent_map: Optional[Dict[str, str]] = None,
+                                 focus: Optional[Tuple[str, ...]] = None, M=None
+                                 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """[00B_수익곡선비교, v0.26.0 L1 ★ 신규] 사용자 지시 "산업도 섹터랑 똑같이 단일 산업별 비교 곡선
+    시트 만들고 수익 비교 시트 만들고 **변동률 높은 산업은 섹터보다 훨씬 수익률 좋아야**".
+
+    섹터 계층의 00B와 같은 꼴이되, 산업에는 부모가 하나 더 있으므로 곡선이 **네 개**다(전부 복리·시작 1.0):
+      ① **B&H**          — 그 산업을 그냥 보유
+      ② **단일 산업 예측** — 그 산업 **자기 국면**(own_target_pos)만으로 거래 ← 사용자가 말한 '단일 산업'
+      ③ **섹터 예측**     — **부모 섹터의 목표비중**을 그 산업에 그대로 적용 ← 사용자가 말한 '섹터'
+      ④ **현행(라이브)**   — 이 계층이 실제로 쓰는 목표비중
+    ⇒ **②−③가 이 계층의 존재 이유**다: 산업을 따로 보는 것이 부모 섹터 하나를 쓰는 것보다 나은가.
+      사용자 요구는 "②가 ③보다 훨씬 커야 한다"이고, 판정 행이 매 실행 그 수를 찍는다.
+
+    ★★ 리포트21 실측에서 드러난 것(이 시트를 만든 이유):
+      **④ 현행 목표비중이 M의 E_t와 29/29 산업에서 소수점까지 동일하다**(국면 소스 = m_inherit 2,186일 전부).
+      즉 이 계층의 라이브 노출에는 **산업 자기 예측도, 부모 섹터 예측도 들어 있지 않다** — 시장 국면의
+      순수 통과다. 그래서 ②−③를 재는 것만으로는 부족하고 ④를 같이 그려야 상태가 보인다.
+
+    반환: (표 DataFrame, 일별 곡선 DataFrame[00C_곡선데이터 · 차트 원본])
+    """
+    cols = [c for c in ret_df.columns if c in own_w.columns]
+    if not cols:
+        return (pd.DataFrame([{"블록": "A. 산업별 4곡선 비교", "산업": "산출 불가",
+                               "판정": "ret_df와 own_w에 공통 산업이 없다"}]), pd.DataFrame())
+    idx = ret_df.index
+    R = ret_df[cols].astype(float).fillna(0.0)
+    W2 = own_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+    W3 = (parent_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+          if parent_w is not None else None)
+    W4 = (live_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+          if live_w is not None else None)
+    rows: List[dict] = []
+    curves: Dict[str, pd.Series] = {}
+
+    def _m(s: pd.Series) -> dict:
+        c = (1.0 + pd.Series(s).fillna(0.0)).cumprod()
+        mdd = float((c / c.cummax() - 1.0).min())
+        y = max(len(s) / 252.0, 1e-9)
+        g = float(c.iloc[-1]) ** (1.0 / y) - 1.0
+        return {"복리": (float(c.iloc[-1]) - 1.0) * 100.0, "MDD": mdd * 100.0,
+                "칼마": (g / abs(mdd) if mdd < -1e-9 else float("nan")), "curve": c}
+
+    rows.append({"블록": "A. 산업별 4곡선 비교", "산업": "── 읽는 법 ──",
+                 "판정": ("① **B&H** = 그냥 보유 · ② **단일 산업 예측** = 그 산업 **자기 국면**으로 거래 · "
+                        "③ **섹터 예측** = **부모 섹터의 목표비중**을 그 산업에 그대로 적용 · "
+                        "④ **현행(라이브)** = 이 계층이 실제로 쓰는 비중. "
+                        "★ **②−③가 이 계층의 존재 이유**다 — 산업을 따로 보는 것이 부모 섹터 하나보다 나은가. "
+                        "판정은 **복리와 칼마를 함께** 본다. 그래프는 **00B_곡선그래프** 탭, 일별 원본은 00C_곡선데이터.")})
+    n2 = n3 = n4 = n23 = n43 = 0
+    for t in cols:
+        r = R[t]
+        a = _m(r)
+        b = _m(W2[t].shift(1).fillna(0.0) * r)
+        c3 = _m(W3[t].shift(1).fillna(0.0) * r) if W3 is not None else None
+        c4 = _m(W4[t].shift(1).fillna(0.0) * r) if W4 is not None else None
+        curves[f"{t} ① B&H"] = a["curve"]
+        curves[f"{t} ② 단일산업"] = b["curve"]
+        if c3 is not None:
+            curves[f"{t} ③ 섹터"] = c3["curve"]
+        if c4 is not None:
+            curves[f"{t} ④ 현행"] = c4["curve"]
+        n2 += int(b["복리"] > a["복리"])
+        if c3 is not None:
+            n3 += int(c3["복리"] > a["복리"])
+            n23 += int(b["복리"] > c3["복리"])
+            if c4 is not None:
+                n43 += int(c4["복리"] > c3["복리"])
+        if c4 is not None:
+            n4 += int(c4["복리"] > a["복리"])
+        row = {"블록": "A. 산업별 4곡선 비교", "산업": t, "이름": (name_map or {}).get(t, ""),
+               "부모": (parent_map or {}).get(t, ""), "관측일": int(len(r)),
+               "① B&H 복리(%)": round(a["복리"], 1), "① B&H MDD(%)": round(a["MDD"], 2),
+               "② 단일산업 복리(%)": round(b["복리"], 1), "② 단일산업 MDD(%)": round(b["MDD"], 2),
+               "② 단일산업 칼마": round(b["칼마"], 2), "② 평균비중": round(float(W2[t].mean()), 4)}
+        if c3 is not None:
+            row.update({"③ 섹터 복리(%)": round(c3["복리"], 1), "③ 섹터 MDD(%)": round(c3["MDD"], 2),
+                        "③ 섹터 칼마": round(c3["칼마"], 2), "③ 평균비중": round(float(W3[t].mean()), 4),
+                        "②−③ 복리(%p)": round(b["복리"] - c3["복리"], 1)})
+        if c4 is not None:
+            row.update({"④ 현행 복리(%)": round(c4["복리"], 1), "④ 현행 MDD(%)": round(c4["MDD"], 2),
+                        "④ 현행 칼마": round(c4["칼마"], 2), "④ 평균비중": round(float(W4[t].mean()), 4)})
+        row["②−① 복리(%p)"] = round(b["복리"] - a["복리"], 1)
+        row["판정"] = (("★" if b["복리"] > a["복리"] else "✗") + f" ②vs① {b['복리'] - a['복리']:+.1f}%p"
+                     + (((" · " + ("★" if b["복리"] > c3["복리"] else "✗"))
+                         + f" **②vs③ {b['복리'] - c3['복리']:+.1f}%p(산업을 따로 본 것의 값)**")
+                        if c3 is not None else "")
+                     + ((f" · ④현행 {c4['복리']:.0f}%") if c4 is not None else ""))
+        rows.append(row)
+    n = len(cols)
+    rows.append({"블록": "A. 산업별 4곡선 비교", "산업": "★★ 승패 요약",
+                 "판정": (f"② 단일산업 > ① B&H : **{n2}/{n}** · ③ 섹터 > ① : {n3}/{n} · "
+                        f"④ 현행 > ① : {n4}/{n} · **② > ③ : {n23}/{n}** · ④ > ③ : {n43}/{n}. "
+                        + ("★ ②가 과반에서 ③을 이긴다 — 산업을 따로 보는 데 값이 있다."
+                           if n23 * 2 > n else
+                           "⚠⚠ **②가 ③을 과반에서 못 이긴다** — 산업을 따로 보는 것이 부모 섹터 하나를 "
+                           "쓰는 것보다 낫지 않다는 뜻이다. 사용자 요구('산업이 섹터보다 훨씬 좋아야')는 "
+                           "이 수가 과반을 넘고 ②−③가 크게 양수여야 충족된다. 23_예측품질검정 블록 B·C가 "
+                           "'왜 못 넘는가'를 재고, 그 답이 음성이면 **비중 규칙이 아니라 신호를 바꿔야 한다**."))})
+    # ---- 블록 B: 지정 산업 연도별 ----
+    _fc = [t for t in (focus or ()) if t in cols]
+    if _fc:
+        rows.append({"블록": "B. 지정 산업 연도별", "산업": "── 읽는 법 ──",
+                     "판정": f"지목 {len(_fc)}산업을 연도별로 쪼갰다. 어느 해에 ②가 ③에 뒤지는지 보면 개선 구간이 특정된다."})
+        for t in _fc:
+            for y, g in R.groupby(pd.DatetimeIndex(R.index).year):
+                _i = g.index
+                _a = float((1.0 + R.loc[_i, t]).prod() - 1.0) * 100
+                _b = float((1.0 + W2[t].shift(1).fillna(0.0).loc[_i] * R.loc[_i, t]).prod() - 1.0) * 100
+                _c = (float((1.0 + W3[t].shift(1).fillna(0.0).loc[_i] * R.loc[_i, t]).prod() - 1.0) * 100
+                      if W3 is not None else None)
+                _d = round(_b - (_c if _c is not None else _a), 1)
+                rows.append({"블록": "B. 지정 산업 연도별", "산업": t, "연도": int(y), "관측일": int(y),
+                             "① B&H 복리(%)": round(_a, 1), "② 단일산업 복리(%)": round(_b, 1),
+                             "③ 섹터 복리(%)": (round(_c, 1) if _c is not None else None),
+                             "②−③ 복리(%p)": _d,
+                             "판정": ("★ 그 해 산업이 섹터를 이겼다" if _d > 0.0 else
+                                    ("= 그 해 섹터와 동일" if abs(_d) < 0.05 else
+                                     f"✗ 그 해 {_d:+.1f}%p 뒤졌다 — 개선 대상 구간"))})
+    # ---- 00C_곡선데이터 ----
+    curve_daily = pd.DataFrame()
+    if curves:
+        _C = pd.DataFrame(curves)
+        _order = [t for t in (focus or ()) if t in cols] + [t for t in cols if t not in (focus or ())]
+        _cc = [f"{t} {lbl}" for t in _order for lbl in ("① B&H", "② 단일산업", "③ 섹터", "④ 현행")
+               if f"{t} {lbl}" in _C.columns]
+        _C = _C[_cc].round(6)
+        curve_daily = _C.reset_index()
+        curve_daily = curve_daily.rename(columns={curve_daily.columns[0]: "날짜"})
+    log("ROT", kv(event="industry_curve_compare_built", industries=n,
+                  solo_beats_bh=n2, parent_beats_bh=n3, live_beats_bh=n4,
+                  solo_beats_parent=n23, live_beats_parent=n43,
+                  curve_rows=len(curve_daily),
+                  note="① B&H · ② 단일 산업 · ③ 부모 섹터 · ④ 현행 — 그래프는 00B_곡선그래프"), M=M)
+    return pd.DataFrame(rows), curve_daily
 
 def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg: Any,
                                solo_w: Optional[pd.DataFrame] = None,
@@ -8948,8 +9386,32 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                          per_industry_avg=stage_timing["산업당 평균(초)"],
                          cache=stage_timing["캐시 적중"]), M=M)
 
+    # [v0.26.0 L1] 00B·23 시트가 쓸 **부모 섹터 목표비중**과 **시장 E_t**를 여기서 뽑아 실어 보낸다.
+    #   build_industry_report()는 sres/res를 받지 않으므로(ires만 받는다) 이 두 개를 ires에 담는 것이
+    #   가장 작은 변경이다. 실패해도 리포트는 계속(그 경우 00B의 ③ 열이 빈다).
+    _parent_pos = pd.DataFrame()
+    _market_pos = pd.Series(dtype=float)
+    try:
+        _sr = (sres.get("results") or {}) if isinstance(sres, dict) else {}
+        _pp = {}
+        for _t, _r in results.items():
+            _p = (_r or {}).get("parent")
+            _ps = (_sr.get(_p) or {}).get("target_pos") if _p else None
+            if _ps is not None and len(_ps):
+                _pp[_t] = pd.to_numeric(_ps, errors="coerce")
+        _parent_pos = pd.DataFrame(_pp) if _pp else pd.DataFrame()
+        _rs = (res.get("sig") if isinstance(res, dict) else None)
+        if isinstance(_rs, pd.DataFrame) and "target_pos" in _rs.columns:
+            _market_pos = pd.to_numeric(_rs["target_pos"], errors="coerce")
+        log("REPORT", kv(event="parent_market_pos_ready", industries=len(_parent_pos.columns),
+                         market_rows=len(_market_pos),
+                         note="00B_수익곡선비교 ③ 열과 23_예측품질검정 블록 Z의 입력"), M=M)
+    except Exception as _e:
+        log("REPORT", kv(event="parent_market_pos_failed", err=type(_e).__name__, msg=str(_e)[:140],
+                         action="00B의 ③(섹터) 곡선이 빈 채로 리포트 계속"), M=M, level="warning")
     return {
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
+        "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
         "quality": pd.DataFrame(quality), "matrix": matrix, "summary": summary,
         "wf": wf, "alloc": alloc, "acceptance": accept_df, "hierarchy": hier_df,
         "attribution": attrib_df, "following": following_df, "follow_cond": follow_cond_df,
@@ -9781,8 +10243,62 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                    "(2) 01_일별_* 시트에 '자기 목표비중'이 있는지 "
                    "(3) 로그 event=asset_return_compare_failed 전체 메시지 확인."),
             "추적": _tb.format_exc()[-800:]}])
+    # ---- [v0.26.0 L1·L2 ★ 신규 시트] 00B_수익곡선비교 / 00C_곡선데이터 / 23_예측품질검정 ----
+    #   사용자 지시: "산업도 섹터랑 똑같이 단일 산업별 비교 곡선 시트 만들고 수익 비교 시트 만들고
+    #   변동률 높은 산업은 섹터보다 훨씬 수익률 좋아야해 개선하고 문제 있는거 최대한 좋게 개선해"
+    #   ★ 부모 섹터 비중(③)은 sres["results"][부모]["target_pos"]에서 온다 — S가 같은 실행에서 만든 값이다.
+    try:
+        _ppL = ires.get("parent_pos")
+        _mpL = ires.get("market_pos")
+        _icL = [t for t in results if isinstance(results.get(t), dict)]
+        _idxL = None
+        for t in _icL:
+            _r0 = results[t].get("bh_ret")
+            if _r0 is not None and len(_r0):
+                _idxL = pd.Index(_r0.index) if _idxL is None else _idxL.union(pd.Index(_r0.index))
+        if _idxL is not None and len(_idxL) and _icL:
+            _idxL = _idxL.sort_values()
+            _retL = pd.DataFrame({t: pd.to_numeric(results[t].get("bh_ret"), errors="coerce")
+                                  .reindex(_idxL) for t in _icL})
+            if float(_retL.abs().max().max() or 0.0) > 1.0:     # %면 소수로 맞춘다(곡선 계산 단위 통일)
+                _retL = _retL / 100.0
+            _ownL = pd.DataFrame({t: pd.to_numeric(results[t].get("own_target_pos"), errors="coerce")
+                                  .reindex(_idxL).ffill() for t in _icL})
+            _liveL = pd.DataFrame({t: pd.to_numeric(results[t].get("target_pos"), errors="coerce")
+                                   .reindex(_idxL).ffill() for t in _icL})
+            _pmapL = {t: results[t].get("parent", "") for t in _icL}
+            _parL = None
+            if isinstance(_ppL, pd.DataFrame) and len(_ppL.columns):
+                _cc = [t for t in _icL if t in _ppL.columns]
+                if _cc:
+                    _parL = _ppL[_cc].apply(pd.to_numeric, errors="coerce").reindex(_idxL).ffill()
+            _mktL = (pd.to_numeric(pd.Series(_mpL), errors="coerce").reindex(_idxL).ffill()
+                     if (_mpL is not None and len(_mpL)) else None)
+            _cvL, _cvdL = build_industry_curve_compare(
+                _retL, _ownL, _parL, _liveL, icfg,
+                name_map={t: INDUSTRY_NAME_KR.get(t, "") for t in _icL},
+                parent_map=_pmapL,
+                focus=tuple(getattr(icfg, "CURVE_FOCUS", ()) or ()), M=M)
+            if isinstance(_cvL, pd.DataFrame) and len(_cvL):
+                sheets["00B_수익곡선비교"] = _cvL
+            if isinstance(_cvdL, pd.DataFrame) and len(_cvdL):
+                sheets["00C_곡선데이터"] = _cvdL
+            _pqL = build_industry_prediction_quality(
+                results, _parL, _mktL, icfg,
+                name_map={t: INDUSTRY_NAME_KR.get(t, "") for t in _icL},
+                parent_map=_pmapL, M=M)
+            if isinstance(_pqL, pd.DataFrame) and len(_pqL):
+                sheets["23_예측품질검정"] = _pqL
+    except Exception as e:
+        import traceback as _tbL
+        log("REPORT", kv(event="industry_curve_quality_failed", err=str(e)[:200]), M=M, level="error")
+        sheets["00B_수익곡선비교"] = pd.DataFrame([{
+            "블록": "A. 산업별 4곡선 비교", "산업": "⚠ 산출 실패",
+            "판정": f"{type(e).__name__}: {str(e)[:220]} / 다음 단계: results[t]의 'bh_ret'·'own_target_pos'·"
+                   "'target_pos'와 sres['results'][부모]['target_pos'] 확인.",
+            "추적": _tbL.format_exc()[-800:]}])
     if S is not None and hasattr(S, "sheets_to_front"):
-        sheets = S.sheets_to_front(sheets, "00A_수익비교")
+        sheets = S.sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
 
     # [v0.23.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다.
     _a0 = sheets.get("00A_수익비교")
@@ -9799,7 +10315,12 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:
         import inspect as _inspect
-        if "title" in _inspect.signature(S.write_sector_excel).parameters:
+        _wp = _inspect.signature(S.write_sector_excel).parameters
+        if "title" in _wp and "name_map" in _wp:
+            # [v0.26.0 L1] 00B_곡선그래프 차트 제목에 산업 한글명을 쓴다(S v0.58.0+).
+            S.write_sector_excel(path, sheets, meta, M=M, title=_title,
+                                 name_map=dict(INDUSTRY_NAME_KR))
+        elif "title" in _wp:
             S.write_sector_excel(path, sheets, meta, M=M, title=_title)
         else:   # 구버전 S(v0.37 이하) 호환
             S.write_sector_excel(path, sheets, meta, M=M)

@@ -17,6 +17,11 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.58.0 - 2026-09-16 - [산업 계층이 00B 차트를 재사용할 수 있게 일반화] REPORT68.
+#    write_sector_excel(name_map=) 인자 추가 — 차트 제목의 한글 이름표를 호출자가 준다(미전달 시 종전 동작).
+#    계열 라벨 인식을 4종으로 확장(② 단일산업 / ③ 섹터 / ④ 현행)하고 전체비교 차트가 '② 단일산업'도 잡게 했다.
+#    ★ 섹터 계층 동작·수치는 **무변경**(라벨 문자열 인식과 인자 추가뿐).
+#
 #  VERSION: v0.57.0 - 2026-09-16 - [★★★ 데이터 신선도 가드 · 예측품질 검정 · 배분 연결 격자] REPORT67.
 #    사용자 지시: "오늘 기준이면 예측일이 9월 16일인데 14일이 예측일이야? 누락된거 수정하고 / 5개 섹터중
 #    국면보다 변동률 높은 섹터는 국면보다 훨씬 수익률 좋아야해 개선하고 / 모든 단일섹터 수익이 국면 판단이랑
@@ -2525,7 +2530,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.57.0"
+VERSION = "v0.58.0"
 VERSION_DATE = "2026-09-16"
 
 # =============================================================================
@@ -13994,6 +13999,7 @@ def sheets_to_front(sheets: Dict[str, pd.DataFrame], *names: str) -> Dict[str, p
 
 
 def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]], M=None,
+                       name_map: Optional[Dict[str, str]] = None,
                        title: Optional[str] = None) -> None:
     """M.write_excel과 같은 서식·조건부서식·자산곡선 차트(13b 시트 기준). 00시트 제목만 섹터용.
     [v0.38.0] title: 00시트 제목 덮어쓰기(산업 계층 industry_rotation.py가 자기 제목으로 재사용) — None이면 종전 문구."""
@@ -14089,21 +14095,22 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
                 _t = str(c).split(" ")[0]
                 if _t not in _seen:
                     _seen.add(_t); _tk_order.append(_t)
-            _pal = {"① B&H": "#7F7F7F", "② 단일예측": "#C00000", "③ 국면예측": "#1F3864"}
+            _pal = {"① B&H": "#7F7F7F", "② 단일예측": "#C00000", "③ 국면예측": "#1F3864",
+                    "② 단일산업": "#C00000", "③ 섹터": "#1F3864", "④ 현행": "#548235"}
             _row_at = 3
             # (0) 전체 비교 — 11섹터 ②만
             try:
                 ch0 = wb.add_chart({"type": "line"})
                 _n2 = 0
                 for c in dcols[1:]:
-                    if not str(c).endswith("② 단일예측"):
+                    if not (str(c).endswith("② 단일예측") or str(c).endswith("② 단일산업")):
                         continue
                     ci = dcols.index(c)
                     ch0.add_series({"name": str(c), "categories": [dname, 1, 0, nrow, 0],
                                     "values": [dname, 1, ci, nrow, ci], "line": {"width": 1.25}})
                     _n2 += 1
                 if _n2:
-                    ch0.set_title({"name": "전체 섹터 ② 단일 섹터 예측 누적배수 비교"})
+                    ch0.set_title({"name": "전체 ② 단일 예측 누적배수 비교"})
                     ch0.set_y_axis({"log_base": 10, "name": "누적배수(로그)"})
                     ch0.set_x_axis({"name": "날짜", "date_axis": True})
                     ch0.set_size({"width": 1180, "height": 420})
@@ -14116,19 +14123,23 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
                 try:
                     ch = wb.add_chart({"type": "line"})
                     _ns = 0
-                    for lbl in ("① B&H", "② 단일예측", "③ 국면예측"):
+                    for lbl in ("① B&H", "② 단일예측", "③ 국면예측", "② 단일산업", "③ 섹터", "④ 현행"):
                         cn = f"{_t} {lbl}"
                         if cn not in dcols:
                             continue
                         ci = dcols.index(cn)
                         ch.add_series({"name": lbl, "categories": [dname, 1, 0, nrow, 0],
                                        "values": [dname, 1, ci, nrow, ci],
-                                       "line": {"color": _pal[lbl], "width": (2.5 if lbl.startswith("②") else 1.5)}})
+                                       "line": {"color": _pal.get(lbl, "#7030A0"),
+                                                "width": (2.5 if lbl.startswith("②") else 1.5)}})
                         _ns += 1
                     if not _ns:
                         continue
-                    _nm = SECTOR_NAME_KR.get(_t, "") if "SECTOR_NAME_KR" in globals() else ""
-                    ch.set_title({"name": f"{_t}{(' · ' + _nm) if _nm else ''} — ① B&H / ② 단일 섹터 예측 / ③ 국면 예측"})
+                    # [v0.58.0] 산업 계층이 이 함수를 재사용하므로 이름표를 인자로 받는다
+                    #   (name_map 미전달 시 종전대로 섹터 이름표를 쓴다).
+                    _nm = (name_map or {}).get(_t) or (SECTOR_NAME_KR.get(_t, "") if "SECTOR_NAME_KR" in globals() else "")
+                    _lbls = [str(c).split(" ", 1)[1] for c in dcols[1:] if str(c).startswith(_t + " ")]
+                    ch.set_title({"name": f"{_t}{(' · ' + _nm) if _nm else ''} — " + " / ".join(dict.fromkeys(_lbls))})
                     ch.set_y_axis({"log_base": 10, "name": "누적배수(로그)"})
                     ch.set_x_axis({"name": "날짜", "date_axis": True})
                     ch.set_size({"width": 1180, "height": 400})
