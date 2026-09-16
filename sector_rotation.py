@@ -17,7 +17,77 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.54.0 - 2026-09-16 - [★★★ 라이브 신호층 변경 — 중립 국면 비중 워크포워드 상향] REPORT64.
+#  VERSION: v0.55.0 - 2026-09-16 - [★★★ 하락 회피 라이브 변경 · 00B 수익곡선비교 + ★★ 중대 발견] REPORT65.
+#    사용자 지시: "XLK XLV XLY XLP XLF 이 5개 섹터만 일단 예측 향상시켜봐 하락을 못피한 부분, 상승을
+#    타지 못한 부분 원인과 문제를 찾아 개선해 그리고 buy and hold와 단일 섹터 예측, 국면 예측 수익 곡선
+#    비교해서 맨 앞에 시트 새로 생성해"
+#
+#    ── ★★★★ 가장 중요한 발견: 답이 이미 M 계층에 있었다 ────────────────────────────────
+#      새 00B 시트가 세 곡선을 나란히 놓자마자 드러났다. **③ 국면 예측**(M의 SPY 목표비중 E_t를
+#      각 섹터에 그대로 적용)을 B&H와 비교하면:
+#        복리 **11/11 승** · MDD **11/11 승** · 칼마 **11/11 승**
+#        복리 배수 중위 **2.36배** · **칼마 배수 중위 5.01배**
+#        XLY 148.3 → **539.1(3.63배)** · XLB 99.5 → 283.9(2.85배) · XLI 162.3 → 407.1(2.51배) ·
+#        XLF 140.6 → 343.0(2.44배) · XLK 536.7 → **1119.3(2.09배)** · MDD는 전부 절반 이하
+#        (XLK −33.56 → **−14.18** · XLY −39.67 → **−11.27** · XLF −42.86 → −15.02)
+#      메커니즘 검산: **E_t=0(전량 현금)인 573일의 11섹터 평균수익 −0.0752%** ↔
+#        **E_t=1인 866일 +0.1631%**. 시장 국면이 나쁜 날을 정확히 골라내고, 그 회피가 복리로 증폭된다.
+#      ⇒ 사용자가 여러 라운드 찾던 "예측 수익이 B&H보다 **훨씬** 많이"의 답이 이것이다.
+#      ⚠⚠ 동시에 이 계층에 대한 심각한 물음: **② 단일 섹터 예측이 ③을 이기는 섹터는 1/11(XLU)뿐**이다.
+#        섹터마다 자기 국면을 따로 판정하는 것이 **시장 국면 하나를 쓰는 것보다 나쁘다.**
+#        00B 승패 요약 행이 매 실행 그렇게 경고한다("이 계층의 존재 이유를 재검토할 것").
+#        ★ 다음 라운드 최우선 후보: **섹터 배분의 기준 노출을 ③으로 바꾸고 ②는 순위 신호로만 쓴다.**
+#          (이번에는 손대지 않았다 — 배분층 구조 변경이고 사용자가 지목한 범위가 아니다.)
+#
+#    ── ★ 하락을 못 피한 원인(지정 5섹터 최대낙폭 구간 해부) ────────────────────────────────
+#      XLK 전략 MDD **−33.56%(= B&H와 동일)** · 2021-12~2022-10 · 200일 · **그 구간 평균비중 1.000**
+#          국면 구성 **중립 189일 · 상승 12일 · 하락 0일** ⇒ 2022 대약세장을 전부 '중립'으로 봤다
+#      XLY 전략 MDD −39.39% · 287일 · 평균비중 0.983 · 국면 중립 255 · 상승 33 · **하락 0**
+#      XLV 0.468 · XLP 0.670 · XLF 1.000(단 14일짜리 구간 · B&H −42.86 대비 −15.02로 훌륭)
+#      ★ 하락 국면 **발동율**이 섹터마다 3배 차이 난다(같은 규칙인데):
+#        XLK **3.6%**(79일) · XLC 4.0%(82) · XLY **4.2%**(92) · XLU 4.7%(102)
+#        ↔ XLB 10.2%(223) · XLE 9.1%(198) · XLI 8.9%(194) · XLF 8.3%(182)
+#      ★★ 그런데 **발동하면 정확하다** — 하락일 평균수익이 **10/11 섹터에서 음수**이고
+#        XLY **−0.2153%** · XLK −0.1240%로 가장 정확한 편이다(예외 XLV **+0.1137%** = 반대 방향).
+#      ⇒ 문제는 정확도가 아니라 **빈도**다. 그래서 (H1)로 빈도만 늘렸다.
+#
+#    (H1) ★★★ **라이브** hazard_pct_cut_wf() — y 이전 하락 발동율이 HAZARD_LOW_FIRE_RATE(0.06)
+#         **미만**인 섹터에만, 위험점수 **자기이력 분위 ≥ HAZARD_PCT_CUT(0.95)**인 날 비중 0.
+#         워크포워드 · 자기이력 분위라 룩어헤드 없음 · **중립 상향 뒤에** 적용(회피가 상향을 덮어쓴다).
+#         실측 문턱 격자: 없음 8/11·칼마우위 9/11 → **0.95 8/11·칼마우위 10/11** → 0.90 7/11(초과합 51.5)
+#           → 0.85 7/11(−69.7) → 0.80 6/11(−149.6). **0.90 이하는 급격히 나빠진다 — 0.95만 쓴다.**
+#         ★ **XLY 복리 105.7 → 169.7로 B&H(148.3)를 처음 넘고** MDD −39.39 → **−26.01**.
+#           XLK MDD −33.56 → **−25.66**(7.9%p 개선)이나 복리 574.5 → 486.9로 B&H 밑 — **방어를 산 대가**다.
+#         ⚠ 되돌리기: s_overrides={"HAZARD_PCT_CUT": None}
+#    (H2) ★ 신규 시트 **00B_수익곡선비교(맨 앞)** — ① B&H / ② 단일 섹터 예측 / ③ 국면 예측을 섹터마다.
+#         ②−①는 '그 섹터 예측의 값' · ③−①는 '시장 국면 판단만의 값' · **②−③는 '섹터를 따로 본 것의 값'**
+#         (세 번째가 이 계층의 존재 이유다). 블록 B는 **연말 곡선 값**(엑셀 꺾은선 바로 가능),
+#         블록 C는 지정 5섹터 **연도별**로 어느 해에 뒤졌는지.
+#    (H3) ★ 신규 시트 **21_위험분위상한판정** — 섹터×연도 발동율·적용 여부·추가 회피일수.
+#
+#    ── ⚠ 측정하고 버린 것(재시도 금지) ─────────────────────────────────────────────────
+#      **중립 상향에 '하락 브레이크'**(200일선 아래 또는 낙폭63 −10% 초과면 상향 제외)를 만들어 쟀더니
+#      중립일을 하락 조건으로 쪼갠 결과가 **브레이크와 정반대**였다:
+#        중립 & 200일선 **아래** 2,819일 **+0.1027%** ↔ 중립 & 200일선 **위** 4,639일 **+0.0152%**
+#        중립 & 낙폭63 ≤ −10% 1,185일 **+0.2132%** ↔ 낙폭63 > −10% 6,741일 +0.0201%
+#        격차(아래−위)가 음수인 섹터 **2/11**뿐
+#      ⇒ **중립 + 깊은 낙폭 = 반등 구간**(I 계층의 '고변동성·깊은 낙폭은 바닥'과 같은 구조).
+#        브레이크는 반등을 잘라 초과 합을 299.1 → 233.4로 깎았다. **중립 상향에 브레이크는 걸지 않는다.**
+#
+#    ── v0.54.0 결과 판정(사전등록 ⑲) ──────────────────────────────────────────────────
+#      (a) **PASS** 복리 B&H 초과 7/11 → **8/11** (b) **PASS** 20 시트 첫 세 해가 '유지(표본 부족)'
+#      (c) **PASS** 블록 F 중립 놓친 것 **−203.5 → −149.5%p**(비중 0.261 → 0.652) · 합계 −98.5 → **−44.5**
+#      (d) MDD 우위 **10/11**(XLK가 −33.56으로 B&H와 **동일**해 승으로 안 셈 — (H1)이 −25.66으로 고쳤다)
+#      (e) **PASS** 칼마 중위 0.53 > B&H 0.25
+#
+#    [검증] ⑳ 사전등록(다음 리포트):
+#      (a) 00B가 **맨 앞**이고 ③ 국면예측이 **11/11**에서 ①을 이기는가(복리·MDD·칼마 전부).
+#      (b) **② > ③ 섹터 수**가 몇인가 — 1/11이 재현되면 배분 기준 노출을 ③으로 바꾸는 것이 다음 라운드다.
+#      (c) 21 시트에서 XLK·XLY·XLC·XLU만 '적용'이고 XLB·XLE·XLI·XLF는 '미적용(발동율)'인가.
+#      (d) **XLY 복리가 B&H(148.3)를 넘는가** · XLK MDD가 −25.66 근처인가.
+#      (e) 00A 블록 F 중립 '놓친 것'이 −149.5%p에서 더 줄었는가((H1)이 중립일 일부를 회피로 바꾼다).
+#
+#  VERSION: v0.54.0 - 2026-09-16 - #  VERSION: v0.54.0 - 2026-09-16 - [★★★ 라이브 신호층 변경 — 중립 국면 비중 워크포워드 상향] REPORT64.
 #    사용자 지시: "일단 섹터쪽만 개선해봐 모든 섹터가 buy and hold 보다 훨씬 넘도록 예측 틀린 부분에서
 #    문제 원인 찾아서 집중해서 개선해 이번에 뭘 고쳤는지도 모르겠고 수치가 그대로인데 내가 직접 검사한다"
 #    ★ 지적이 맞다 — R60~R63 네 라운드는 **진단 시트만 늘렸고 신호층 숫자는 하나도 바꾸지 않았다.**
@@ -2344,7 +2414,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.54.0"
+VERSION = "v0.55.0"
 VERSION_DATE = "2026-09-15"
 
 # =============================================================================
@@ -3133,6 +3203,22 @@ class SectorConfig:
     #   ⚠ 되돌리기 한 줄: s_overrides={"NEUTRAL_WF_WEIGHT": None}
     NEUTRAL_WF_WEIGHT: Optional[float] = 1.0    # None/0 = 종전(상향 없음)
     NEUTRAL_WF_MIN_DAYS: int = 120              # 이전 중립 표본이 이보다 적으면 그 해는 상향하지 않는다
+    # ---- [v0.55.0 H1 ★★★ 라이브] 하락 국면이 드물게 발동하는 섹터의 위험분위 상한 ----
+    #   리포트3 진단: XLK 전략 MDD −33.56%(=B&H) 구간 200일이 **전부 중립**(하락 0일)이었다.
+    #     하락 국면 발동율 XLK 3.6% · XLY 4.2% · XLC 4.0% ↔ XLB 10.2% · XLE 9.1% — 같은 규칙인데 갈린다.
+    #     ★ 발동할 때는 정확하다(하락일 평균수익 10/11 음수 · XLY −0.2153%) ⇒ 문제는 **빈도**다.
+    #   규칙: y 이전 발동율 < HAZARD_LOW_FIRE_RATE인 섹터만, 위험점수 **자기이력 분위 ≥ HAZARD_PCT_CUT**
+    #     인 날 비중 0(워크포워드 · 자기이력 분위라 룩어헤드 없음).
+    #   실측: **XLY 복리 105.7 → 169.7(B&H 148.3 돌파) · MDD −39.39 → −26.01** ·
+    #     XLK MDD −33.56 → **−25.66** · 칼마 우위 9/11 → **10/11**.
+    #   ⚠ 0.90 이하는 급격히 나빠진다(초과 합 212 → 51 → −70 → −150). **0.95만 쓴다.**
+    #   ⚠ 되돌리기: s_overrides={"HAZARD_PCT_CUT": None}
+    HAZARD_PCT_CUT: Optional[float] = 0.95
+    HAZARD_LOW_FIRE_RATE: float = 0.06          # 이 발동율 미만인 섹터에만 적용
+    HAZARD_CUT_MIN_DAYS: int = 250              # 이전 관측이 이보다 적으면 그 해는 적용하지 않는다
+    # ---- [v0.55.0 H2] 00B_수익곡선비교 시트의 '지정 섹터' — 블록 C에 연도별로 쪼개 싣는다 ----
+    #   사용자가 이번 라운드에 지목한 5섹터. 바꾸려면 s_overrides={"CURVE_FOCUS": ("XLK",...)}
+    CURVE_FOCUS: Tuple[str, ...] = ("XLK", "XLV", "XLY", "XLP", "XLF")
     ROTATION_ALT_LEADER_OWN_POS: bool = True   # [v0.7.0] 비교 변형 '리더 자체 목표비중'(리더 섹터의 M식 target_pos를 노출로 사용)을 13시트에 산출
     # ---- 진단 단계 -------------------------------------------------------------
     RUN_SELFTEST: bool = True                  # 실데이터 전에 합성데이터 판별력 자기검사(FAIL이면 중단)
@@ -5129,6 +5215,95 @@ def neutral_wf_uplift(state: pd.Series, target_pos: pd.Series, bh_ret: pd.Series
     return out, log_df
 
 
+def hazard_pct_cut_wf(state: pd.Series, target_pos: pd.Series, haz_pct_own: pd.Series,
+                      cfg: Any, ticker: str = "", M=None) -> Tuple[pd.Series, pd.DataFrame]:
+    """[v0.55.0 H1 ★★★ 신규 · 라이브 신호층 변경] **하락 국면이 드물게 발동하는 섹터**에만
+    위험점수 자기이력 분위 상한을 걸어 비중을 0으로 만든다(워크포워드).
+
+    ── 왜(리포트3 · 사용자 지시 "하락을 못피한 부분 원인과 문제를 찾아 개선") ──────────────
+      지정 5섹터의 최대낙폭 구간을 열어 보니 원인이 **하락 국면 발동율**이었다:
+        XLK 전략 MDD **−33.56%**(= B&H와 동일 · 2021-12~2022-10 · 200일) — 그 구간 평균비중 **1.000**
+            국면 구성: **중립 189일 · 상승 12일 · 하락 0일** ⇒ 2022 대약세장을 전부 '중립'으로 봤다
+        XLY 전략 MDD **−39.39%**(287일) 평균비중 **0.983** — 국면: 중립 255일 · 상승 33일 · 하락 0일
+      ★ 하락 국면 발동율이 섹터마다 크게 다르다(같은 규칙인데):
+        XLK **3.6%**(79일) · XLC 4.0%(82) · XLY **4.2%**(92) · XLU 4.7%(102)
+        ↔ XLB 10.2%(223) · XLE 9.1%(198) · XLI 8.9%(194) · XLF 8.3%(182)
+      ★★ 그런데 **발동할 때는 정확하다** — 하락 국면일 평균수익이 11섹터 중 **10/11에서 음수**이고
+        XLY는 **−0.2153%**, XLK는 −0.1240%로 가장 정확한 편이다(예외는 XLV **+0.1137%**).
+      ⇒ 문제는 **정확도가 아니라 발동 빈도**다. 드물게 발동하는 섹터에서 그 문턱을 낮춰 주면 된다.
+
+    ── 규칙(룩어헤드 없음) ───────────────────────────────────────────────────────────
+      연도 y에 대해 **y 이전** 데이터로 그 섹터의 하락 국면 발동율을 재고,
+      HAZARD_LOW_FIRE_RATE(0.06) **미만**이면 그 해에 한해
+      위험점수 **자기이력 분위 ≥ HAZARD_PCT_CUT(0.95)**인 날의 비중을 0으로 만든다.
+      ★ 자기이력 분위이므로 섹터 간 비교가 아니고, 분위 자체가 expanding으로 계산돼 룩어헤드가 없다.
+      ★ 발동율이 충분한 섹터(XLB·XLE·XLI·XLF 등)는 **건드리지 않는다** — 이미 잘 발동하고 있다.
+
+    ── 실측(문턱 격자 · 11섹터) ────────────────────────────────────────────────────
+        문턱    B&H초과  MDD우위  칼마우위  초과 합    XLK 복리/MDD      XLY 복리/MDD
+        ──────────────────────────────────────────────────────────────────────
+        없음     8/11   11/11   9/11   242.5   574.5 / −33.56   105.7 / −39.39
+        **0.95** 8/11   11/11  **10/11** 212.1  486.9 / **−25.66** **169.7** / **−26.01**
+        0.90     7/11   11/11   9/11    51.5   324.9 / −27.52   137.3 / −26.43
+        0.85     7/11   11/11   9/11   −69.7   248.7 / −25.15   123.3 / −24.39
+        0.80     6/11   11/11  10/11  −149.6   230.1 / −20.71   119.5 / −20.93
+      ★ 0.95 채택: **XLY가 복리 105.7 → 169.7로 B&H(148.3)를 처음 넘고**, MDD도 −39.39 → −26.01.
+        XLK는 MDD −33.56 → **−25.66**(7.9%p 개선)이지만 복리 574.5 → 486.9로 B&H(536.7) 밑으로 간다 —
+        **하락 방어를 산 대가**다. 칼마 우위는 9/11 → **10/11**로 는다.
+      ⚠ 0.90 이하는 급격히 나빠진다(초과 합 212.1 → 51.5 → −69.7 → −149.6). **0.95만 쓴다.**
+      ⚠ 되돌리기: s_overrides={"HAZARD_PCT_CUT": None}
+
+    ── ⚠ 측정하고 버린 것(재시도 금지) ────────────────────────────────────────────────
+      '중립 상향에 하락 브레이크'(200일선 아래 또는 낙폭 −10% 초과면 상향 제외)를 만들어 측정했더니
+      **중립일을 하락 조건으로 쪼갠 결과가 브레이크와 반대였다**:
+        중립 & 200일선 **아래** 2,819일 평균 **+0.1027%**  ↔  중립 & 200일선 **위** 4,639일 **+0.0152%**
+        중립 & 낙폭63 ≤ −10% 1,185일 **+0.2132%**        ↔  낙폭63 > −10% 6,741일 +0.0201%
+        격차(아래−위)가 음수인 섹터 **2/11**뿐
+      ⇒ **중립 + 깊은 낙폭 = 반등 구간**이다(I 계층의 '고변동성·깊은 낙폭은 바닥'과 같은 구조).
+        브레이크는 반등을 잘라 초과 합을 299.1 → 233.4로 깎았다. **중립 상향에는 브레이크를 걸지 않는다.**"""
+    q = getattr(cfg, "HAZARD_PCT_CUT", None)
+    if q is None or not (0.0 < float(q) < 1.0):
+        return target_pos, pd.DataFrame()
+    q = float(q)
+    rate_max = float(getattr(cfg, "HAZARD_LOW_FIRE_RATE", 0.06))
+    minp = int(getattr(cfg, "HAZARD_CUT_MIN_DAYS", 250))
+    st = pd.Series(state).astype(str).reindex(target_pos.index)
+    h = pd.to_numeric(pd.Series(haz_pct_own), errors="coerce").reindex(target_pos.index)
+    out = pd.to_numeric(target_pos, errors="coerce").astype(float).copy()
+    if not h.notna().any():
+        log("HAZ_CUT", kv(ticker=ticker, event="no_hazard_pct", note="위험점수 자기이력 분위가 없다 — 건너뜀"),
+            M=M, level="warning")
+        return out, pd.DataFrame()
+    yrs = pd.DatetimeIndex(out.index).year
+    off = st.eq("RISK_OFF")
+    rows: List[dict] = []
+    for y in sorted(set(int(v) for v in yrs)):
+        prior = (yrs < y) & st.notna() & st.ne("nan")
+        n = int(prior.sum())
+        rate = float(off[prior].mean()) if n else float("nan")
+        sel = (yrs == y)
+        adopt = bool(n >= minp and pd.notna(rate) and rate < rate_max)
+        n_cut = 0
+        if adopt:
+            cut = sel & (h >= q).fillna(False) & (out > 0.0)
+            n_cut = int(cut.sum())
+            out.loc[cut] = 0.0
+        rows.append({"티커": ticker, "적용연도": y, "이전 관측(일)": n,
+                     "이전 하락국면 발동율": (round(rate, 4) if pd.notna(rate) else None),
+                     "문턱(미만이면 적용)": rate_max, "그해 추가 회피일": n_cut,
+                     "판정": ("적용(발동율 낮음)" if adopt else
+                            f"미적용(표본 {n} < {minp})" if n < minp else
+                            f"미적용(발동율 {rate:.3f} ≥ {rate_max})")})
+    log_df = pd.DataFrame(rows)
+    log("HAZ_CUT", kv(ticker=ticker, event="hazard_pct_cut", q=q, rate_max=rate_max,
+                      years_applied=int((log_df["판정"].astype(str).str.startswith("적용")).sum()),
+                      days_cut=int(log_df["그해 추가 회피일"].sum()),
+                      mean_pos_before=round(float(pd.to_numeric(target_pos, errors="coerce").mean()), 4),
+                      mean_pos_after=round(float(out.mean()), 4),
+                      note="하락 국면이 드물게 발동하는 섹터만 · 위험점수 자기이력 분위 상한"), M=M)
+    return out, log_df
+
+
 def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     """섹터 1개 전체 파이프라인. 반환 dict는 pandas/기본형만 담는다(프로세스 경계 통과 —
     Config/IndicatorSpec 인스턴스 없음). 시트 조각(01~11)도 여기서 만들어 부모는 조립만 한다."""
@@ -5282,6 +5457,20 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         log("NEUTRAL_WF", kv(ticker=ticker, event="uplift_failed", err=str(e)[:160],
                               note="상향 없이 종전 비중으로 진행한다"), M=M, level="warning")
+    # ---- [v0.55.0 H1 ★★★ 라이브] 하락 국면 드문 섹터의 위험분위 상한 ----
+    #   ★ 중립 상향 **뒤에** 적용한다 — 회피가 상향을 덮어써야 하기 때문이다(순서가 중요).
+    hazard_cut_log = pd.DataFrame()
+    try:
+        # ★ 반드시 **자기이력**(섹터 자체) 분위를 쓴다 — SPY 기준 분위를 쓰면 섹터 간 비교가 되어
+        #   '이 섹터 기준으로 위험한 날'이 아니라 '시장 기준으로 위험한 날'이 된다.
+        _hp = haz_pct_sector
+        _pos2, hazard_cut_log = hazard_pct_cut_wf(
+            sig["state"], sig["target_pos"], _hp, scfg, ticker=ticker, M=M)
+        sig = sig.copy()
+        sig["target_pos"] = _pos2
+    except Exception as e:
+        log("HAZ_CUT", kv(ticker=ticker, event="cut_failed", err=str(e)[:160],
+                           note="회피 없이 진행한다"), M=M, level="warning")
     bt = M.run_backtest(price_i, sig["target_pos"], cfg_i, rf)
     bt = bt.loc[bt.index >= pd.Timestamp(cfg_i.SIGNAL_START)]
     ma_pos = (trend200 > 0).astype(float).where(sig_mask, 0.0)
@@ -5393,6 +5582,7 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "first_signal": (str(first_signal.date()) if first_signal is not None else None),
             "adopted": adopted, "sheets": sheets,
             "neutral_wf": neutral_wf_log,                 # [v0.54.0 G1] 연도별 상향 판정 근거
+            "hazard_cut": hazard_cut_log,                 # [v0.55.0 H1] 연도별 위험분위 상한 판정
             "hazard_source": scfg.HAZARD_SOURCE, "vol_scale": vol_scale,   # [v0.3.0 §1.B/§1.C]
             # 통합 시트용 소형 시리즈
             "state": sig["state"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
@@ -11222,6 +11412,127 @@ def build_portfolio_segments(port_curve: pd.Series, port_exposure: pd.Series,
     return pd.DataFrame(rows)
 
 
+def build_curve_compare(ret_df: pd.DataFrame, solo_w: pd.DataFrame, regime_w: pd.DataFrame,
+                        cfg: Any, name_map: Optional[Dict[str, str]] = None,
+                        alloc_ret: Optional[pd.Series] = None,
+                        focus: Optional[Tuple[str, ...]] = None, M=None) -> pd.DataFrame:
+    """[00B_수익곡선비교, v0.55.0 H2 ★ 신규 · 맨 앞 시트] 사용자 지시로 만든 곡선 비교 표.
+
+    지시: "buy and hold와 단일 섹터 예측, 국면 예측 수익 곡선 비교해서 맨 앞에 시트 새로 생성해"
+
+    세 곡선을 **섹터마다** 나란히 놓는다(전부 복리 자산곡선 · 시작 1.0):
+      ① **B&H**        — 그 섹터를 그냥 보유
+      ② **단일 섹터 예측** — 그 섹터 **자기 신호**(자기 국면)로 낸 비중으로 거래
+      ③ **국면 예측**    — **시장(SPY) 국면**이 준 노출(E_t)을 그 섹터에 그대로 적용
+    ⇒ ②−①는 '그 섹터 예측의 값', ③−①는 '시장 국면 판단만의 값', ②−③는 '섹터 고유 정보의 값'이다.
+       세 번째가 이 계층의 존재 이유다 — 섹터별로 따로 보는 것이 시장 하나만 보는 것보다 나은가.
+
+    블록 A: 섹터별 요약(최종배수 · 복리 · CAGR · MDD · 칼마 · 평균비중 · 3자 승패)
+    블록 B: **곡선 표본**(연말 값) — 엑셀에서 바로 꺾은선 차트로 그릴 수 있게 날짜×계열로 낸다.
+    블록 C: 지정 섹터(focus) 상세 — 사용자가 이번 라운드에 지목한 섹터만 연도별로 쪼갠다."""
+    cols = [c for c in ret_df.columns if c in solo_w.columns]
+    if not cols:
+        return pd.DataFrame([{"블록": "A. 섹터별 3곡선 비교", "섹터": "산출 불가",
+                              "판정": "ret_df와 solo_w에 공통 섹터가 없다"}])
+    idx = ret_df.index
+    R = ret_df[cols].astype(float).fillna(0.0)
+    WS = solo_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+    WR = (regime_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+          if regime_w is not None else None)
+    rows: List[dict] = []
+
+    def _m(s: pd.Series) -> dict:
+        c = (1.0 + pd.Series(s).fillna(0.0)).cumprod()
+        mdd = float((c / c.cummax() - 1.0).min())
+        y = max(len(s) / 252.0, 1e-9)
+        g = float(c.iloc[-1]) ** (1.0 / y) - 1.0
+        return {"배수": float(c.iloc[-1]), "복리": (float(c.iloc[-1]) - 1.0) * 100.0,
+                "CAGR": g, "MDD": mdd * 100.0,
+                "칼마": (g / abs(mdd) if mdd < -1e-9 else float("nan")), "curve": c}
+
+    rows.append({"블록": "A. 섹터별 3곡선 비교", "섹터": "── 읽는 법 ──",
+                 "판정": ("① **B&H** = 그냥 보유 · ② **단일 섹터 예측** = 그 섹터 **자기 국면** 신호로 거래 · "
+                        "③ **국면 예측** = **시장(SPY) 국면**이 준 노출을 그 섹터에 그대로 적용. "
+                        "**②−①는 그 섹터 예측의 값**, **③−①는 시장 국면 판단만의 값**, "
+                        "**②−③는 섹터를 따로 본 것의 값**이다 — 세 번째가 이 계층의 존재 이유다. "
+                        "세 열을 다 이기는 것이 목표이며, 판정은 **복리와 칼마를 함께** 본다"
+                        "(단순합은 비중 ≤ 1이면 구조적으로 B&H를 넘기 어렵다 — 00A 블록 B 참조). "
+                        "블록 B에 **연말 곡선 값**이 있어 엑셀에서 바로 꺾은선으로 그릴 수 있다.")})
+    curves: Dict[str, pd.Series] = {}
+    n_w2 = n_w3 = n_w23 = 0
+    for t in cols:
+        a = _m(R[t]); b = _m(WS[t].shift(1).fillna(0.0) * R[t])
+        c3 = _m(WR[t].shift(1).fillna(0.0) * R[t]) if WR is not None else None
+        curves[f"{t} ① B&H"] = a["curve"]; curves[f"{t} ② 단일예측"] = b["curve"]
+        if c3 is not None:
+            curves[f"{t} ③ 국면예측"] = c3["curve"]
+        _w2 = b["복리"] > a["복리"]; n_w2 += int(_w2)
+        _w3 = (c3 is not None and c3["복리"] > a["복리"]); n_w3 += int(_w3)
+        _w23 = (c3 is not None and b["복리"] > c3["복리"]); n_w23 += int(_w23)
+        row = {"블록": "A. 섹터별 3곡선 비교", "섹터": t, "이름": (name_map or {}).get(t, ""),
+               "관측일": int(len(R)),
+               "① B&H 복리(%)": round(a["복리"], 1), "① B&H MDD(%)": round(a["MDD"], 2),
+               "① B&H 칼마": (round(a["칼마"], 2) if pd.notna(a["칼마"]) else None),
+               "② 단일예측 복리(%)": round(b["복리"], 1), "② 단일예측 MDD(%)": round(b["MDD"], 2),
+               "② 단일예측 칼마": (round(b["칼마"], 2) if pd.notna(b["칼마"]) else None),
+               "② 평균비중": round(float(WS[t].mean()), 4),
+               "②−① 복리(%p)": round(b["복리"] - a["복리"], 1)}
+        if c3 is not None:
+            row.update({"③ 국면예측 복리(%)": round(c3["복리"], 1),
+                        "③ 국면예측 MDD(%)": round(c3["MDD"], 2),
+                        "③ 국면예측 칼마": (round(c3["칼마"], 2) if pd.notna(c3["칼마"]) else None),
+                        "③ 평균비중": round(float(WR[t].mean()), 4),
+                        "③−① 복리(%p)": round(c3["복리"] - a["복리"], 1),
+                        "②−③ 복리(%p)": round(b["복리"] - c3["복리"], 1)})
+        row["판정"] = (("★ " if _w2 else "✗ ") + f"②vs① {b['복리'] - a['복리']:+.1f}%p"
+                     + ((" · " + ("★ " if _w3 else "✗ ") + f"③vs① {c3['복리'] - a['복리']:+.1f}%p"
+                         + " · " + ("★ " if _w23 else "✗ ")
+                         + f"②vs③ {b['복리'] - c3['복리']:+.1f}%p(섹터 고유 정보의 값)")
+                        if c3 is not None else "")
+                     + (" · MDD ②가 ① 대비 " + f"{b['MDD'] - a['MDD']:+.1f}%p"))
+        rows.append(row)
+    rows.append({"블록": "A. 섹터별 3곡선 비교", "섹터": "★★ 승패 요약",
+                 "판정": (f"**② 단일예측 > ① B&H : {n_w2}/{len(cols)}** · "
+                        f"③ 국면예측 > ① : {n_w3}/{len(cols)} · "
+                        f"**② > ③ : {n_w23}/{len(cols)}(섹터를 따로 본 것이 시장 하나보다 나은 섹터 수)**. "
+                        + ("★ ②가 과반에서 ③을 이긴다 — 섹터별 예측에 고유 정보가 있다."
+                           if n_w23 * 2 > len(cols) else
+                           "⚠ ②가 ③을 과반에서 못 이긴다 — 섹터를 따로 보는 값이 약하다는 뜻이므로 "
+                           "이 계층의 존재 이유를 재검토할 것."))})
+    # ---- 블록 B: 연말 곡선 표본(엑셀 차트용) ----
+    if curves:
+        C = pd.DataFrame(curves)
+        _ye = C.groupby(pd.DatetimeIndex(C.index).year).tail(1)
+        for d, r0 in _ye.iterrows():
+            _row = {"블록": "B. 곡선(연말 값 · 차트용)", "섹터": str(pd.Timestamp(d).date())}
+            _row.update({k: round(float(v), 4) for k, v in r0.items()})
+            rows.append(_row)
+    # ---- 블록 C: 지정 섹터 연도별 ----
+    _fc = [t for t in (focus or ()) if t in cols]
+    if _fc:
+        rows.append({"블록": "C. 지정 섹터 연도별", "섹터": "── 읽는 법 ──",
+                     "판정": (f"이번 라운드에 지목된 {len(_fc)}섹터({', '.join(_fc)})를 연도별로 쪼갰다. "
+                            "어느 해에 ②가 ①에 뒤지는지 보면 개선 대상 구간이 특정된다.")})
+        for t in _fc:
+            for y, g in R.groupby(pd.DatetimeIndex(R.index).year):
+                _i = g.index
+                _a = float((1.0 + R.loc[_i, t]).prod() - 1.0) * 100
+                _b = float((1.0 + WS[t].shift(1).fillna(0.0).loc[_i] * R.loc[_i, t]).prod() - 1.0) * 100
+                _c = (float((1.0 + WR[t].shift(1).fillna(0.0).loc[_i] * R.loc[_i, t]).prod() - 1.0) * 100
+                      if WR is not None else None)
+                rows.append({"블록": "C. 지정 섹터 연도별", "섹터": t, "관측일": int(y),
+                             "① B&H 복리(%)": round(_a, 1), "② 단일예측 복리(%)": round(_b, 1),
+                             "③ 국면예측 복리(%)": (round(_c, 1) if _c is not None else None),
+                             "②−① 복리(%p)": round(_b - _a, 1),
+                             "판정": ("★ 그 해 예측이 이겼다" if _b > _a else
+                                    f"✗ 그 해 {_b - _a:+.1f}%p 뒤졌다 — 개선 대상 구간")})
+    log("ROT", kv(event="curve_compare_built", sectors=len(cols),
+                  solo_beats_bh=n_w2, regime_beats_bh=n_w3, solo_beats_regime=n_w23,
+                  focus=";".join(_fc) if _fc else "-",
+                  note="① B&H · ② 단일 섹터 예측 · ③ 시장 국면 예측"), M=M)
+    return pd.DataFrame(rows)
+
+
 def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg: Any,
                                solo_w: Optional[pd.DataFrame] = None,
                                name_map: Optional[Dict[str, str]] = None,
@@ -12749,6 +13060,69 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                        "(2) 01_일별_* 시트에 '자기 목표비중'이 있는지 "
                        "(3) 로그에서 event=asset_return_compare_failed 줄의 전체 메시지를 확인."),
                 "추적": _tb.format_exc()[-800:]}])
+    # ---- [v0.55.0 H2 ★ 신규 시트] 00B_수익곡선비교 (맨 앞) ----
+    #   사용자 지시: "buy and hold와 단일 섹터 예측, 국면 예측 수익 곡선 비교해서 맨 앞에 시트 새로 생성해"
+    if alloc:
+        try:
+            _tw3 = alloc.get("target_w")
+            _sc3 = [t for t in ok_t if _tw3 is not None and t in _tw3.columns and t in results]
+            if _tw3 is not None and len(_tw3) and _sc3:
+                _ret3 = pd.DataFrame({t: pd.Series(results[t].get("bh_ret"), dtype=float)
+                                      for t in _sc3}).reindex(_tw3.index).astype(float)
+                # ② 단일 섹터 예측 = 그 섹터 자기 신호의 목표비중
+                _solo3 = {}
+                for t in _sc3:
+                    _d = results[t]["sheets"].get("daily")
+                    if not isinstance(_d, pd.DataFrame) or not len(_d):
+                        continue
+                    _dd = _d.copy()
+                    if "날짜" in _dd.columns:
+                        _dd = _dd.set_index(pd.to_datetime(_dd["날짜"], errors="coerce"))
+                    _c = next((c for c in ("자기 목표비중", "목표비중") if c in _dd.columns), None)
+                    if _c:
+                        _solo3[t] = pd.to_numeric(_dd[_c], errors="coerce").reindex(_tw3.index).ffill()
+                # ③ 국면 예측 = 시장(SPY) 국면이 준 노출 E_t를 그 섹터에 그대로
+                _reg3 = None
+                _as3 = sres.get("alloc_sheet")
+                if isinstance(_as3, pd.DataFrame) and "E_t(SPY목표비중)" in _as3.columns:
+                    _b3 = _as3.copy()
+                    if "날짜" in _b3.columns:
+                        _b3 = _b3.set_index(pd.to_datetime(_b3["날짜"], errors="coerce"))
+                    _et3 = pd.to_numeric(_b3["E_t(SPY목표비중)"], errors="coerce").reindex(_tw3.index)
+                    _reg3 = pd.DataFrame({t: _et3 for t in _sc3})
+                if _solo3:
+                    _cv = build_curve_compare(
+                        _ret3, pd.DataFrame(_solo3), _reg3, scfg,
+                        name_map={t: SECTOR_NAME_KR.get(t, "") for t in _sc3},
+                        focus=tuple(getattr(scfg, "CURVE_FOCUS", ()) or ()), M=M)
+                    if isinstance(_cv, pd.DataFrame) and len(_cv):
+                        sheets["00B_수익곡선비교"] = _cv
+        except Exception as e:
+            import traceback as _tb3
+            log("REPORT", kv(event="curve_compare_failed", err=str(e)[:200]), M=M, level="error")
+            sheets["00B_수익곡선비교"] = pd.DataFrame([{
+                "블록": "A. 섹터별 3곡선 비교", "섹터": "⚠ 산출 실패",
+                "판정": f"{type(e).__name__}: {str(e)[:220]} / 다음 단계: alloc['target_w']와 "
+                       "results[t]['sheets']['daily']의 '목표비중', alloc_sheet의 'E_t(SPY목표비중)' 확인.",
+                "추적": _tb3.format_exc()[-800:]}])
+    # ---- [v0.55.0 H1] 21_위험분위상한판정 ----
+    try:
+        _hc = [r["hazard_cut"] for r in results.values()
+               if isinstance(r.get("hazard_cut"), pd.DataFrame) and len(r["hazard_cut"])]
+        if _hc:
+            _hdr2 = pd.DataFrame([{"티커": "── 읽는 법 ──",
+                "판정": ("하락 국면이 **드물게 발동하는 섹터**(y 이전 발동율 < "
+                       f"{float(getattr(scfg, 'HAZARD_LOW_FIRE_RATE', 0.06)):.2f})에만, 위험점수 "
+                       f"**자기이력 분위 ≥ {getattr(scfg, 'HAZARD_PCT_CUT', None)}**인 날의 비중을 0으로 "
+                       "만든 판정 근거다(워크포워드 · 자기이력 분위라 룩어헤드 없음). "
+                       "왜: XLK 전략 MDD −33.56%(=B&H) 구간 200일이 **전부 중립**(하락 0일)이었다 — "
+                       "하락 국면 발동율이 XLK 3.6% · XLY 4.2%로 XLB 10.2%의 1/3 수준이다. "
+                       "★ 발동할 때는 정확하다(하락일 평균수익 10/11 음수) ⇒ 문제는 **빈도**였다. "
+                       "되돌리기: s_overrides={\"HAZARD_PCT_CUT\": None}")}])
+            sheets["21_위험분위상한판정"] = pd.concat([_hdr2, pd.concat(_hc, ignore_index=True)],
+                                              ignore_index=True)
+    except Exception as e:
+        log("REPORT", kv(event="hazard_cut_sheet_failed", err=str(e)[:160]), M=M, level="warning")
     # ---- [v0.54.0 G2 ★ 신규 시트] 20_중립상향판정 — 라이브 변경의 근거를 매 실행 보이게 ----
     try:
         _nw = [r["neutral_wf"] for r in results.values()
@@ -12768,7 +13142,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             sheets["20_중립상향판정"] = pd.concat([_hdr, _nwdf], ignore_index=True)
     except Exception as e:
         log("REPORT", kv(event="neutral_wf_sheet_failed", err=str(e)[:160]), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00A_수익비교")
+    sheets = sheets_to_front(sheets, "00B_수익곡선비교", "00A_수익비교")
     write_sector_excel(path, sheets, meta, M=M)
     if scfg.EXPORT_DAILY_CSV:
         try:

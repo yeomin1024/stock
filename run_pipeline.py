@@ -1148,7 +1148,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.19.2"
+VERSION = "v1.19.3"
 VERSION_DATE = "2026-09-15"
 
 MODULE_FILES = {
@@ -1255,7 +1255,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     #   S v0.50.0 / I v0.21.0 / K v0.2.1로 돌았다. 리포트에 00A 시트가 없고 비중 합계도 그대로였다.
     #   배너만 보고는 그것을 알 수 없었다 — 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없었다.
     #   ⇒ 이제 최소 버전을 코드가 알고 있고, 미달이면 **어느 파일을 갱신해야 하는지** 크게 알린다.
-    _MIN = {"sector_rotation.py": ("S", "v0.54.0", S),
+    _MIN = {"sector_rotation.py": ("S", "v0.55.0", S),
             "industry_rotation.py": ("I", "v0.25.0", I),
             "stock_regime.py": ("K", "v0.3.1", K)}
     def _vt(x):
