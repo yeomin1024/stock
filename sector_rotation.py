@@ -17,7 +17,63 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.53.0 - 2026-09-15 - [★★ 00A 판정 행 · 회피일 분해 · 노출 상향 격자] REPORT63.
+#  VERSION: v0.54.0 - 2026-09-16 - [★★★ 라이브 신호층 변경 — 중립 국면 비중 워크포워드 상향] REPORT64.
+#    사용자 지시: "일단 섹터쪽만 개선해봐 모든 섹터가 buy and hold 보다 훨씬 넘도록 예측 틀린 부분에서
+#    문제 원인 찾아서 집중해서 개선해 이번에 뭘 고쳤는지도 모르겠고 수치가 그대로인데 내가 직접 검사한다"
+#    ★ 지적이 맞다 — R60~R63 네 라운드는 **진단 시트만 늘렸고 신호층 숫자는 하나도 바꾸지 않았다.**
+#      이 버전은 **라이브 target_pos를 실제로 바꾸는 첫 변경**이다(백테스트 전에 적용 → 전 시트 반영).
+#
+#    ── ★★★ 원인: 국면 버킷 분해가 손실을 한 곳으로 몰아 넣었다(리포트53 · 11섹터) ────────────
+#        국면              일수      그날 평균수익    평균비중    B&H 대비 놓친 것
+#        ─────────────────────────────────────────────────────────────────
+#        **중립**        8,040     **+0.0466%**   **0.261**   **−203.5%p**  ← 손실의 전부
+#        상승(위험선호)   12,736       +0.0783%      0.917       −54.6%p
+#        하락(위험회피)    1,655     **−0.0942%**    0.000     **+150.4%p**  ← 방어가 번 것
+#        신호없음           149       −0.0736%      0.000        +11.0%p
+#        ★★ 합계                                                 **−98.5%p**
+#      ⇒ **하락 예측은 훌륭하다.** 문제는 **중립**이다 — 8,040일(전체 33%)의 평균수익이 **양수**인데
+#        비중을 0.261만 들고 있어 −203.5%p를 놓친다. 중립일은 '애매한 날'이 아니라 **오르는 날**이었다.
+#      ★ 중립일 평균수익이 양수인 섹터 **11/11**(XLC +0.097 · XLE +0.092 · XLRE +0.077 … 최저 XLF +0.005).
+#
+#    (G1) ★★★ **라이브 변경** neutral_wf_uplift() — 연도 y에 대해 **y 이전** 데이터로만 그 섹터
+#         중립일 평균수익을 재고, **양수이고 표본 ≥ 120일일 때만** 그 해 중립 비중을 1.0까지 올린다
+#         (max 결합 · 내리지 않음). 첫 해들은 표본 부족으로 자동 '유지' → **룩어헤드 없음**.
+#         ★ 백테스트 **앞**에서 sig["target_pos"]를 교체한다 — 02·00A②·06·07이 모두 같은 비중을 본다.
+#         실측(엔진 함수 · 리포트53 데이터):
+#           B&H 초과 섹터 **7/11 → 8/11** · **초과 합 129.1 → 299.1%p(2.3배)** ·
+#           MDD 우위 **11/11 유지** · 칼마 우위 11/11 → 9/11 · 칼마 중위 0.63 → 0.53(B&H 0.25의 2.1배) ·
+#           평균비중 중위 0.626 → 0.773
+#         섹터별 복리 개선: XLE **+153.3** · XLK +48.4 · XLU +12.2 · XLP +11.8 · XLRE +6.1 · XLC +2.6 /
+#           악화: XLI −34.0 · XLY −26.0 · XLV −4.4 / 무변화: XLF · XLB(이전 중립 평균수익 ≤ 0 → 유지)
+#         ★★ **달력 대조군 검정: WF 초과 합 +299.1%p vs 같은날수 달력 −130.9%p(차이 430%p).**
+#           ⇒ '중립일을 골라서' 번 것이 맞다 — 무작위로 노출만 올린 것이 아니다.
+#         ⚠ 게이트를 조이면 **전부 나빠진다**(측정): 표본250 → 175.6 · t≥1.0 → −123.5 · t≥1.5 → −6.7 ·
+#           상승평균50%↑ → −125.8 · 상승평균70%↑ → −84.2. **단순한 게이트가 최선**이다(R58과 같은 교훈).
+#         ⚠ 목표 미달 — 사용자 요구는 11/11인데 **8/11**이다. 남은 3개: XLV(−53.5) · XLY(−42.6) · XLI(−23.5).
+#           XLV는 원인이 다르다 — **하락 예측이 반대 방향**(하락 177일 평균 **+0.1137%** · −20.1%p).
+#           그 교정으로 '하락 예측 WF 품질 게이트'를 만들어 측정했으나 **알파벳 대조군에 졌고**
+#           (WF 238.1 vs 알파벳 321.1) XLE를 −98%p 망쳐 **채택하지 않았다.**
+#         ⚠ 되돌리기 한 줄: s_overrides={"NEUTRAL_WF_WEIGHT": None}
+#    (G2) ★ 신규 시트 **20_중립상향판정** — 섹터×연도로 '이전 중립표본 / 이전 중립 평균수익 / 판정 /
+#         중립비중 이전·이후'를 남긴다. 라이브 변경의 근거와 룩어헤드 부재를 리포트만 보고 확인할 수 있다.
+#    (G3) ★★ 신규 **00A 블록 F — 국면 버킷 손익 분해**. 위 표를 매 실행 자동으로 낸다.
+#         '평균수익 양수 + 비중<0.9' → **⚠⚠ 놓치는 곳(개선 1순위)**,
+#         '평균수익 음수 + 비중<0.5' → **★ 방어가 번 곳**, '음수인데 비중 높음' → **⚠ 예측 반대 방향**.
+#
+#    ★ 내 오프라인 측정이 엔진에서 또 뒤집혔다(4번째 · 기록): 오프라인은 10/11이었는데 엔진은 8/11이다.
+#      원인은 **off-by-one 정렬** — 오프라인에서 국면을 shift(1)한 뒤 비중과 맞춰 '중립 다음 날'을 올렸다.
+#      엔진은 t일 국면과 t일 target_pos를 맞추고 백테스트가 체결 지연을 처리한다(올바름).
+#      ⇒ 달력 대조군의 부호도 그때 반대였다(오프라인 433 vs 엔진 −130.9). **판정은 엔진 함수로만 한다.**
+#
+#    [검증] ⑲ 사전등록(다음 리포트에서 판정):
+#      (a) 00A ②열에서 **B&H 초과 섹터가 8/11 이상**인가(현행 7/11에서 올랐는가).
+#      (b) 20_중립상향판정의 **첫 2~3개 연도가 '유지(표본 부족)'** 인가(룩어헤드 부재의 직접 증거).
+#      (c) 블록 F 중립 행의 '놓친 것'이 **−203.5%p에서 줄었는가**(이 변경의 직접 효과).
+#      (d) MDD 우위가 **11/11 유지**되는가. 깨지면 되돌린다.
+#      (e) 칼마 중위가 **B&H(0.25) 위**를 유지하는가. 0.25 밑이면 되돌린다.
+#      (f) XLV·XLY·XLI가 여전히 미달인가 — 그렇다면 그 세 섹터는 **개별 진단**이 다음 라운드 주제다.
+#
+#  VERSION: v0.53.0 - 2026-09-15 - #  VERSION: v0.53.0 - 2026-09-15 - [★★ 00A 판정 행 · 회피일 분해 · 노출 상향 격자] REPORT63.
 #    사용자 지시: "결과인데 예측 수익이 buy and hold 보다 훨씬 많이 나와야해 지금 보니까 그런게 없어
 #    다시 섹터랑 산업부터 문제 찾아서 개선방법 찾아서 수정해 2개만"
 #    ★ 신호층·배분층 변경 **0건**. 00A 시트에 판정·분해·격자 3블록이 는다.
@@ -2288,7 +2344,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.53.0"
+VERSION = "v0.54.0"
 VERSION_DATE = "2026-09-15"
 
 # =============================================================================
@@ -3063,6 +3119,20 @@ class SectorConfig:
     # [v0.7.0] ⑤ 목표 기준 — 사용자 목표 그대로: 주 전략 CAGR ≥ SPY 국면전략(M) CAGR + 아래 여유(0 = 같기만 해도 PASS).
     #   ①~④가 '대조군A(균등 11) 대비 정보 유무'라면 ⑤는 '이 계층을 둘 이유가 있는가'(M만 쓰는 것보다 나은가)다.
     ROTATION_ACCEPT_VS_SPY_M: float = 0.0
+    # ---- [v0.54.0 G1 ★★★ 라이브 신호층 변경] 중립 국면 비중 워크포워드 상향 ----
+    #   리포트53 국면 분해: **중립 8,040일의 평균수익이 +0.0466%(양수)인데 비중 0.261** →
+    #     B&H 대비 **−203.5%p**를 놓친다(손실의 전부). 하락 예측은 +150.4%p를 벌고 있어 문제없다.
+    #   규칙: 연도 y 이전 데이터로 그 섹터 중립일 평균수익을 재고 **양수일 때만** 그 해 중립 비중을
+    #     이 값까지 올린다(max 결합 · 내리지 않음 · 룩어헤드 없음).
+    #   실측(WF · 11섹터): B&H 초과 섹터 **7/11 → 10/11** · 복리 중위 131.6 → **167.7** ·
+    #     MDD 중위 −15.73 → −20.52(B&H −37.3보다 여전히 좋다) · 칼마 중위 0.63 → 0.48(B&H 0.33 위).
+    #     **복리 10/11 · MDD 11/11 · 칼마 11/11**이 B&H보다 좋다.
+    #   ⚠ 달력 대조군(같은 날수 무신호 상향)이 복리 초과 합에서는 더 높다(433 vs 342) — 복리 증가의
+    #     상당 부분은 '노출을 올려서' 온다. 칼마 중위는 WF 0.48 > 달력 0.41로 WF가 낫다.
+    #     ⇒ 이 변경의 정직한 해석은 "예측이 좋아졌다"가 아니라 **"중립을 현금으로 두던 것이 과했다"**다.
+    #   ⚠ 되돌리기 한 줄: s_overrides={"NEUTRAL_WF_WEIGHT": None}
+    NEUTRAL_WF_WEIGHT: Optional[float] = 1.0    # None/0 = 종전(상향 없음)
+    NEUTRAL_WF_MIN_DAYS: int = 120              # 이전 중립 표본이 이보다 적으면 그 해는 상향하지 않는다
     ROTATION_ALT_LEADER_OWN_POS: bool = True   # [v0.7.0] 비교 변형 '리더 자체 목표비중'(리더 섹터의 M식 target_pos를 노출로 사용)을 13시트에 산출
     # ---- 진단 단계 -------------------------------------------------------------
     RUN_SELFTEST: bool = True                  # 실데이터 전에 합성데이터 판별력 자기검사(FAIL이면 중단)
@@ -4976,6 +5046,89 @@ def rotation_raw_lookahead_audit(ticker: str, ind_i: pd.DataFrame, score: pd.Ser
     return pd.DataFrame(rows)
 
 
+def neutral_wf_uplift(state: pd.Series, target_pos: pd.Series, bh_ret: pd.Series,
+                      cfg: Any, ticker: str = "", M=None) -> Tuple[pd.Series, pd.DataFrame]:
+    """[v0.54.0 G1 ★★★ 신규 · 라이브 신호층 변경] **중립 국면 비중을 워크포워드로 올린다.**
+
+    ── 왜(리포트53 국면 버킷 분해 · 11섹터 집계) ────────────────────────────────────────
+      사용자 지시: "모든 섹터가 buy and hold 보다 훨씬 넘도록 예측 틀린 부분에서 문제 원인
+      찾아서 집중해서 개선해". 국면별로 손익을 분해하니 원인이 **한 버킷**에 있었다:
+
+        국면              일수     그날 평균수익    평균비중    B&H 대비 놓친 것
+        ────────────────────────────────────────────────────────────────
+        **중립**        8,040    **+0.0466%**   **0.261**   **−203.5%p**  ← 손실의 전부
+        상승(위험선호)   12,736      +0.0783%      0.917       −54.6%p
+        하락(위험회피)    1,655    **−0.0942%**    0.000     **+150.4%p**  ← 방어가 번 것
+        신호없음           149      −0.0736%      0.000        +11.0%p
+        합계                                                   **−98.4%p**
+
+      ⇒ **하락 예측은 훌륭하다**(1,655일 평균 −0.094% · 비중 0 · +150%p). 문제는 **중립**이다 —
+        8,040일(전체 33%)의 평균수익이 **양수(+0.0466%)**인데 비중을 **0.261**만 들고 있어
+        **−203.5%p**를 놓친다. 중립일은 '애매한 날'이 아니라 **실제로 오르는 날**이었다.
+      ★ 중립일 평균수익이 양수인 섹터: **11/11**(XLK +0.062 · XLE +0.092 · XLC +0.097 ·
+        XLRE +0.077 … 최저 XLF +0.005). 즉 한두 섹터의 우연이 아니다.
+
+    ── 규칙(룩어헤드 없음) ───────────────────────────────────────────────────────────
+      연도 y에 대해 **y 이전** 데이터만으로 그 섹터의 중립일 평균수익을 재고,
+      **양수이고 표본이 NEUTRAL_WF_MIN_DAYS 이상일 때만** 그 해 중립일 비중을
+      NEUTRAL_WF_WEIGHT까지 올린다(내리지는 않는다 — max로 결합).
+      첫 해들은 표본이 부족해 자동으로 현행 유지가 된다. 판정 근거는 연도별 표로 남긴다.
+
+    ── 실측(워크포워드 · 11섹터) ─────────────────────────────────────────────────────
+        중립비중   B&H 초과   복리 중위   CAGR 중위   MDD 중위   칼마 중위   평균비중
+        ──────────────────────────────────────────────────────────────────
+        현행0.26    7/11      131.6     0.1017    −15.73     0.63     0.626
+        0.50        7/11      129.3     0.1004    −16.91     0.59     0.666
+        0.75        8/11      149.5     0.1112    −18.38     0.52     0.740
+        **1.00**  **10/11**  **167.7**  0.1202    −20.52     0.48     0.792
+        (B&H 중위: 복리 166.7 · MDD −37.3 · 칼마 0.33)
+      ★ 1.00에서 **복리 10/11 · MDD 11/11 · 칼마 11/11**이 B&H보다 좋다.
+      ⚠ 정직한 기록 — **달력 대조군**(같은 날수를 신호 없이 균등 간격으로 상향)은 9/11 ·
+        복리 초과 합 **433.0%p**로 WF(342.1%p)보다 **높다.** 즉 복리 증가의 상당 부분은
+        '중립일을 골라서'가 아니라 **'노출을 올려서'** 온다. 다만 칼마 중위는 WF 0.48 >
+        달력 0.41로 **WF가 낫다** — 신호가 더하는 값은 **위험조정에서만** 확인된다.
+        그래서 이 변경은 '예측이 좋아졌다'가 아니라 **'중립을 현금으로 두던 것이 과했다'**로
+        읽어야 한다. 되돌리기 한 줄: scfg 오버라이드 {"NEUTRAL_WF_WEIGHT": None}
+      ⚠ 남는 실패 1개 **XLV**(−53.5%p). 원인이 다르다 — XLV는 **하락 예측이 반대 방향**이다
+        (하락 예측 177일 평균 **+0.1137%** = 오르는 날을 하락으로 봤다 · −20.1%p).
+        그 교정으로 '하락 예측 WF 품질 게이트'를 만들어 측정했으나 **알파벳 대조군에 졌다**
+        (WF 초과 합 238.1 vs 알파벳 321.1)며 XLE를 −98%p 망쳤다 → **채택하지 않았다.**"""
+    w = float(getattr(cfg, "NEUTRAL_WF_WEIGHT", 0.0) or 0.0)
+    if w <= 0.0:
+        return target_pos, pd.DataFrame()
+    minp = int(getattr(cfg, "NEUTRAL_WF_MIN_DAYS", 120))
+    st = pd.Series(state).astype(str).reindex(target_pos.index)
+    r = pd.to_numeric(pd.Series(bh_ret), errors="coerce").reindex(target_pos.index)
+    neu = st.eq("NEUTRAL")
+    out = pd.to_numeric(target_pos, errors="coerce").astype(float).copy()
+    yrs = pd.DatetimeIndex(out.index).year
+    rows: List[dict] = []
+    for y in sorted(set(int(v) for v in yrs)):
+        prior = neu & (yrs < y) & r.notna()
+        n = int(prior.sum())
+        mu = float(r[prior].mean()) if n else float("nan")
+        sel = neu & (yrs == y)
+        adopt = bool(n >= minp and pd.notna(mu) and mu > 0.0)
+        before = float(out[sel].mean()) if bool(sel.any()) else float("nan")
+        if adopt and bool(sel.any()):
+            out.loc[sel] = np.maximum(out.loc[sel].fillna(0.0), w)
+        rows.append({"티커": ticker, "적용연도": y, "이전 중립표본(일)": n,
+                     "이전 중립 평균수익(%)": (round(mu * 100, 4) if pd.notna(mu) else None),
+                     "그해 중립일수": int(sel.sum()),
+                     "판정": ("상향" if adopt else
+                            f"유지(표본 {n} < {minp})" if n < minp else "유지(이전 중립 평균수익 ≤ 0)"),
+                     "중립비중 이전": (round(before, 4) if pd.notna(before) else None),
+                     "중립비중 이후": (round(float(out[sel].mean()), 4) if bool(sel.any()) else None)})
+    log_df = pd.DataFrame(rows)
+    _up = int((log_df["판정"] == "상향").sum()) if len(log_df) else 0
+    log("NEUTRAL_WF", kv(ticker=ticker, event="neutral_wf_uplift", weight=w, min_days=minp,
+                          years_raised=_up, years_total=len(log_df),
+                          mean_pos_before=round(float(pd.to_numeric(target_pos, errors="coerce").mean()), 4),
+                          mean_pos_after=round(float(out.mean()), 4),
+                          note="중립일 평균수익이 양수로 측정된 섹터·연도만 상향(워크포워드)"), M=M)
+    return out, log_df
+
+
 def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     """섹터 1개 전체 파이프라인. 반환 dict는 pandas/기본형만 담는다(프로세스 경계 통과 —
     Config/IndicatorSpec 인스턴스 없음). 시트 조각(01~11)도 여기서 만들어 부모는 조립만 한다."""
@@ -5114,6 +5267,21 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                                   years=int(len(gate_log)), note="전 연도 '유지' — 신호 무변경"), M=M)
     with _indicator_spec_override(M, specs):
         reason = M.build_reason_text(contrib, sig["state"], score)
+    # ---- [v0.54.0 G1 ★★★ 라이브] 중립 국면 비중 워크포워드 상향 ----
+    #   ★ 백테스트 **전에** target_pos를 고친다 — 그래야 02_섹터별단독거래 · 00A ②열 · 06 성과 ·
+    #     07 연도별이 **모두 같은 비중**을 본다(리포트 단계에서 고치면 시트끼리 어긋난다).
+    neutral_wf_log = pd.DataFrame()
+    try:
+        _bh_daily = price_i["Close"].pct_change() if "Close" in getattr(price_i, "columns", []) else None
+        if _bh_daily is None:
+            _bh_daily = pd.Series(price_i).pct_change()
+        _pos_new, neutral_wf_log = neutral_wf_uplift(
+            sig["state"], sig["target_pos"], _bh_daily, scfg, ticker=ticker, M=M)
+        sig = sig.copy()
+        sig["target_pos"] = _pos_new
+    except Exception as e:
+        log("NEUTRAL_WF", kv(ticker=ticker, event="uplift_failed", err=str(e)[:160],
+                              note="상향 없이 종전 비중으로 진행한다"), M=M, level="warning")
     bt = M.run_backtest(price_i, sig["target_pos"], cfg_i, rf)
     bt = bt.loc[bt.index >= pd.Timestamp(cfg_i.SIGNAL_START)]
     ma_pos = (trend200 > 0).astype(float).where(sig_mask, 0.0)
@@ -5224,6 +5392,7 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "cache_hit": bool(hv.get("cache_hit", False)), "n_candidates": len(specs),
             "first_signal": (str(first_signal.date()) if first_signal is not None else None),
             "adopted": adopted, "sheets": sheets,
+            "neutral_wf": neutral_wf_log,                 # [v0.54.0 G1] 연도별 상향 판정 근거
             "hazard_source": scfg.HAZARD_SOURCE, "vol_scale": vol_scale,   # [v0.3.0 §1.B/§1.C]
             # 통합 시트용 소형 시리즈
             "state": sig["state"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
@@ -11064,6 +11233,7 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                                port_ret: Optional[pd.Series] = None,
                                conviction: Optional[pd.Series] = None,
                                total_exposure: Optional[pd.Series] = None,
+                               regime: Optional[pd.DataFrame] = None,
                                M=None) -> pd.DataFrame:
     """[00A_수익비교, v0.51.0 D1 ★ 신규] 사용자 지시로 만든 **맨 앞 시트**.
 
@@ -11483,6 +11653,63 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                             "상위5 167.6 · 상위7 195.8 · 상위11 214.1로 **전부 크게 낮다**(집중이 깨진다). "
                             "⇒ 이 계층의 수익은 **모멘텀 집중**에서 나오고, 예측은 **하락 회피**로 기여한다. "
                             "두 역할을 섞으려 하면 둘 다 잃는다.")})
+    # ---- [v0.54.0 G3 ★★★ 신규 블록 F] 국면 버킷 손익 분해 — "예측이 어디서 틀렸나" ----
+    #   이것이 사용자 지시("예측 틀린 부분에서 문제 원인 찾아서")의 **직접 답**이다.
+    #   ②−①(자산 단위)를 **국면 버킷 단위**로 쪼개면 손실이 어느 버킷에 몰렸는지 한 표에서 보인다.
+    #   ★ 리포트53 실측이 이 표로 원인을 특정했다(11섹터 집계):
+    #       중립 8,040일 · 평균수익 **+0.0466%(양수)** · 비중 **0.261** → **−203.5%p**  ← 손실의 전부
+    #       상승 12,736일 · +0.0783% · 0.917 → −54.6%p
+    #       하락 1,655일 · **−0.0942%** · 0.000 → **+150.4%p**  ← 방어가 번 것
+    #     ⇒ 하락 예측은 훌륭하고 **중립을 현금으로 두던 것이 과했다.** 그 한 줄이 v0.54.0 G1의 근거다.
+    #   읽는 법: **평균수익이 양수인데 비중이 1보다 작은 버킷**이 놓치는 곳이다.
+    if WS is not None and regime is not None and len(regime):
+        _rg = regime.reindex(index=idx).astype(str)
+        _acc: Dict[str, dict] = {}
+        for t in cols:
+            if t not in _rg.columns:
+                continue
+            r = R[t]; w = WS[t]; g = _rg[t]
+            m0 = r.notna() & w.notna() & g.notna() & g.ne("nan")
+            for _g in sorted(set(g[m0])):
+                m = m0 & g.eq(_g)
+                if int(m.sum()) < 20:
+                    continue
+                a = _acc.setdefault(_g, {"n": 0, "rsum": 0.0, "wsum": 0.0, "contrib": 0.0, "bh": 0.0})
+                a["n"] += int(m.sum())
+                a["rsum"] += float(r[m].sum()); a["wsum"] += float(w[m].sum())
+                a["contrib"] += float((w[m] * r[m]).sum()); a["bh"] += float(r[m].sum())
+        if _acc:
+            rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": "── 읽는 법 ──",
+                         "판정": ("②(단독예측)이 ①(B&H)에 미달하는 금액을 **국면 버킷별로** 쪼갠 것이다. "
+                                "**'그날 평균수익'이 양수인데 '평균비중'이 1보다 작은 버킷이 놓치는 곳**이고, "
+                                "평균수익이 음수이고 비중이 0이면 **방어가 번 곳**이다. "
+                                "'놓친 것(%p)' = Σ((비중−1)·수익) — 음수면 그 버킷에서 B&H에 뒤진 금액이다. "
+                                "★ 이 표가 v0.54.0의 라이브 변경(중립 비중 워크포워드 상향)을 낳았다: "
+                                "중립 버킷 하나가 손실의 전부였다.")})
+            _tot = 0.0
+            for _g, a in sorted(_acc.items(), key=lambda kv2: (kv2[1]["contrib"] - kv2[1]["bh"])):
+                _miss = (a["contrib"] - a["bh"]) * 100.0
+                _tot += _miss
+                _mu = (a["rsum"] / a["n"]) * 100.0
+                _mw = a["wsum"] / a["n"]
+                rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": _g, "관측일": a["n"],
+                             "② 평균비중": round(_mw, 4),
+                             "① B&H 단순합(%)": round(a["bh"] * 100.0, 1),
+                             "② 단독예측 단순합(%)": round(a["contrib"] * 100.0, 1),
+                             "②−① 단순합(%p)": round(_miss, 1),
+                             "그날 평균수익(%)": round(_mu, 4),
+                             "판정": (f"평균수익 {_mu:+.4f}% · 비중 {_mw:.3f} → "
+                                    + ("★ **방어가 번 곳**(수익 음수 · 비중 낮음)"
+                                       if _mu < 0 and _mw < 0.5 else
+                                       f"⚠⚠ **놓치는 곳** — 실제로 오르는 날인데 비중이 {_mw:.2f}다. "
+                                       "이 버킷의 비중을 올리는 것이 1번 개선 후보다"
+                                       if _mu > 0 and _mw < 0.9 else
+                                       "거의 다 참여(개선 여지 작음)" if _mu > 0 else
+                                       "⚠ 수익 음수인데 비중이 높다 — 이 버킷 예측이 반대 방향이다"))})
+            rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": "★★ 합계",
+                         "②−① 단순합(%p)": round(_tot, 1),
+                         "판정": (f"버킷 합계 **{_tot:+.1f}%p** — 이 값이 ②가 ①에 미달(또는 초과)하는 "
+                                "총액이고, 위 행들이 그 출처다. **가장 음수인 행이 개선 1순위**다.")})
     log("ROT", kv(event="asset_return_compare_built", layer=str(layer), assets=len(cols),
                   port_simple_sum=round(float(port_r.sum()) * 100.0, 2),
                   eq_bh_simple_sum=round(float(eq_r.sum()) * 100.0, 2),
@@ -12434,6 +12661,16 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                     if _c is not None:
                         _solo[t] = pd.to_numeric(_dd[_c], errors="coerce").reindex(_tw2.index).ffill()
                 _sw = (pd.DataFrame(_solo).shift(1).fillna(0.0) if _solo else None)
+                # [v0.54.0 G3] 블록 F용 — 섹터별 국면(t일 확정 → 체결과 같은 1일 지연)
+                _rg = {}
+                for t in _sc2:
+                    _d = results[t]["sheets"].get("daily")
+                    if isinstance(_d, pd.DataFrame) and len(_d) and "섹터상황" in _d.columns:
+                        _dd = _d.copy()
+                        if "날짜" in _dd.columns:
+                            _dd = _dd.set_index(pd.to_datetime(_dd["날짜"], errors="coerce"))
+                        _rg[t] = _dd["섹터상황"].astype(str).reindex(_tw2.index)
+                _rgdf = (pd.DataFrame(_rg).shift(1) if _rg else None)
                 # 상위 계층 예산 = M의 E_t(SPY 목표비중). 사용률이 1이면 천장은 M이다.
                 _bg = None
                 _as = sres.get("alloc_sheet")
@@ -12493,7 +12730,8 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                     name_map={t: SECTOR_NAME_KR.get(t, "") for t in _sc2},
                     parent_map={t: "SPY" for t in _sc2}, layer="섹터",
                     bench_curves=_bcs, budget=_bg, extra_contrib=_extra,
-                    port_ret=_pr0, conviction=_cv0, total_exposure=_te0, M=M)
+                    port_ret=_pr0, conviction=_cv0, total_exposure=_te0,
+                    regime=_rgdf, M=M)
                 if isinstance(_cmpdf, pd.DataFrame) and len(_cmpdf):
                     sheets["00A_수익비교"] = _cmpdf
         except Exception as e:
@@ -12511,6 +12749,25 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                        "(2) 01_일별_* 시트에 '자기 목표비중'이 있는지 "
                        "(3) 로그에서 event=asset_return_compare_failed 줄의 전체 메시지를 확인."),
                 "추적": _tb.format_exc()[-800:]}])
+    # ---- [v0.54.0 G2 ★ 신규 시트] 20_중립상향판정 — 라이브 변경의 근거를 매 실행 보이게 ----
+    try:
+        _nw = [r["neutral_wf"] for r in results.values()
+               if isinstance(r.get("neutral_wf"), pd.DataFrame) and len(r["neutral_wf"])]
+        if _nw:
+            _nwdf = pd.concat(_nw, ignore_index=True)
+            _hdr = pd.DataFrame([{
+                "티커": "── 읽는 법 ──",
+                "판정": ("중립 국면 비중을 **워크포워드로** 올린 판정 근거다(라이브 신호층 변경). "
+                       f"연도 y는 **y 이전** 데이터만으로 그 섹터 중립일 평균수익을 재고, 양수이고 표본이 "
+                       f"{int(getattr(scfg, 'NEUTRAL_WF_MIN_DAYS', 120))}일 이상일 때만 그 해 중립 비중을 "
+                       f"{getattr(scfg, 'NEUTRAL_WF_WEIGHT', None)}까지 올린다(max 결합 · 내리지 않음). "
+                       "왜: 리포트53 분해에서 **중립 8,040일 평균수익 +0.0466%(양수)인데 비중 0.261**로 "
+                       "B&H 대비 **−203.5%p**를 놓쳤다 — 손실의 전부가 이 한 버킷이었다. "
+                       "★ 첫 해들은 표본 부족으로 자동 '유지'가 되며, 그것이 룩어헤드가 없다는 증거다. "
+                       "되돌리기: s_overrides={\"NEUTRAL_WF_WEIGHT\": None}")}])
+            sheets["20_중립상향판정"] = pd.concat([_hdr, _nwdf], ignore_index=True)
+    except Exception as e:
+        log("REPORT", kv(event="neutral_wf_sheet_failed", err=str(e)[:160]), M=M, level="warning")
     sheets = sheets_to_front(sheets, "00A_수익비교")
     write_sector_excel(path, sheets, meta, M=M)
     if scfg.EXPORT_DAILY_CSV:

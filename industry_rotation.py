@@ -1478,7 +1478,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.24.0"
+VERSION = "v0.25.0"
 VERSION_DATE = "2026-09-15"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -6386,6 +6386,7 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                                port_ret: Optional[pd.Series] = None,
                                conviction: Optional[pd.Series] = None,
                                total_exposure: Optional[pd.Series] = None,
+                               regime: Optional[pd.DataFrame] = None,
                                M=None) -> pd.DataFrame:
     """[00A_수익비교, v0.22.0 D1 ★ 신규] 사용자 지시로 만든 **맨 앞 시트**.
 
@@ -6805,6 +6806,63 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                             "상위5 167.6 · 상위7 195.8 · 상위11 214.1로 **전부 크게 낮다**(집중이 깨진다). "
                             "⇒ 이 계층의 수익은 **모멘텀 집중**에서 나오고, 예측은 **하락 회피**로 기여한다. "
                             "두 역할을 섞으려 하면 둘 다 잃는다.")})
+    # ---- [v0.54.0 G3 ★★★ 신규 블록 F] 국면 버킷 손익 분해 — "예측이 어디서 틀렸나" ----
+    #   이것이 사용자 지시("예측 틀린 부분에서 문제 원인 찾아서")의 **직접 답**이다.
+    #   ②−①(자산 단위)를 **국면 버킷 단위**로 쪼개면 손실이 어느 버킷에 몰렸는지 한 표에서 보인다.
+    #   ★ 리포트53 실측이 이 표로 원인을 특정했다(11섹터 집계):
+    #       중립 8,040일 · 평균수익 **+0.0466%(양수)** · 비중 **0.261** → **−203.5%p**  ← 손실의 전부
+    #       상승 12,736일 · +0.0783% · 0.917 → −54.6%p
+    #       하락 1,655일 · **−0.0942%** · 0.000 → **+150.4%p**  ← 방어가 번 것
+    #     ⇒ 하락 예측은 훌륭하고 **중립을 현금으로 두던 것이 과했다.** 그 한 줄이 v0.54.0 G1의 근거다.
+    #   읽는 법: **평균수익이 양수인데 비중이 1보다 작은 버킷**이 놓치는 곳이다.
+    if WS is not None and regime is not None and len(regime):
+        _rg = regime.reindex(index=idx).astype(str)
+        _acc: Dict[str, dict] = {}
+        for t in cols:
+            if t not in _rg.columns:
+                continue
+            r = R[t]; w = WS[t]; g = _rg[t]
+            m0 = r.notna() & w.notna() & g.notna() & g.ne("nan")
+            for _g in sorted(set(g[m0])):
+                m = m0 & g.eq(_g)
+                if int(m.sum()) < 20:
+                    continue
+                a = _acc.setdefault(_g, {"n": 0, "rsum": 0.0, "wsum": 0.0, "contrib": 0.0, "bh": 0.0})
+                a["n"] += int(m.sum())
+                a["rsum"] += float(r[m].sum()); a["wsum"] += float(w[m].sum())
+                a["contrib"] += float((w[m] * r[m]).sum()); a["bh"] += float(r[m].sum())
+        if _acc:
+            rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": "── 읽는 법 ──",
+                         "판정": ("②(단독예측)이 ①(B&H)에 미달하는 금액을 **국면 버킷별로** 쪼갠 것이다. "
+                                "**'그날 평균수익'이 양수인데 '평균비중'이 1보다 작은 버킷이 놓치는 곳**이고, "
+                                "평균수익이 음수이고 비중이 0이면 **방어가 번 곳**이다. "
+                                "'놓친 것(%p)' = Σ((비중−1)·수익) — 음수면 그 버킷에서 B&H에 뒤진 금액이다. "
+                                "★ 이 표가 v0.54.0의 라이브 변경(중립 비중 워크포워드 상향)을 낳았다: "
+                                "중립 버킷 하나가 손실의 전부였다.")})
+            _tot = 0.0
+            for _g, a in sorted(_acc.items(), key=lambda kv2: (kv2[1]["contrib"] - kv2[1]["bh"])):
+                _miss = (a["contrib"] - a["bh"]) * 100.0
+                _tot += _miss
+                _mu = (a["rsum"] / a["n"]) * 100.0
+                _mw = a["wsum"] / a["n"]
+                rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": _g, "관측일": a["n"],
+                             "② 평균비중": round(_mw, 4),
+                             "① B&H 단순합(%)": round(a["bh"] * 100.0, 1),
+                             "② 단독예측 단순합(%)": round(a["contrib"] * 100.0, 1),
+                             "②−① 단순합(%p)": round(_miss, 1),
+                             "그날 평균수익(%)": round(_mu, 4),
+                             "판정": (f"평균수익 {_mu:+.4f}% · 비중 {_mw:.3f} → "
+                                    + ("★ **방어가 번 곳**(수익 음수 · 비중 낮음)"
+                                       if _mu < 0 and _mw < 0.5 else
+                                       f"⚠⚠ **놓치는 곳** — 실제로 오르는 날인데 비중이 {_mw:.2f}다. "
+                                       "이 버킷의 비중을 올리는 것이 1번 개선 후보다"
+                                       if _mu > 0 and _mw < 0.9 else
+                                       "거의 다 참여(개선 여지 작음)" if _mu > 0 else
+                                       "⚠ 수익 음수인데 비중이 높다 — 이 버킷 예측이 반대 방향이다"))})
+            rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": "★★ 합계",
+                         "②−① 단순합(%p)": round(_tot, 1),
+                         "판정": (f"버킷 합계 **{_tot:+.1f}%p** — 이 값이 ②가 ①에 미달(또는 초과)하는 "
+                                "총액이고, 위 행들이 그 출처다. **가장 음수인 행이 개선 1순위**다.")})
     log("ROT", kv(event="asset_return_compare_built", layer=str(layer), assets=len(cols),
                   port_simple_sum=round(float(port_r.sum()) * 100.0, 2),
                   eq_bh_simple_sum=round(float(eq_r.sum()) * 100.0, 2),
@@ -9639,6 +9697,18 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 if _c is not None:
                     _solo2[t] = pd.to_numeric(_dd[_c], errors="coerce").reindex(_tw2.index).ffill()
             _sw2 = (pd.DataFrame(_solo2).shift(1).fillna(0.0) if _solo2 else None)
+            # [v0.25.0 G3] 블록 F용 — 산업별 자기국면(체결과 같은 1일 지연)
+            _rg2 = {}
+            for t in _ic2:
+                _d = results[t]["sheets"].get("daily")
+                if isinstance(_d, pd.DataFrame) and len(_d):
+                    _dd = _d.copy()
+                    if "날짜" in _dd.columns:
+                        _dd = _dd.set_index(pd.to_datetime(_dd["날짜"], errors="coerce"))
+                    _c = next((c for c in ("자기국면", "섹터상황") if c in _dd.columns), None)
+                    if _c:
+                        _rg2[t] = _dd[_c].astype(str).reindex(_tw2.index)
+            _rgdf2 = (pd.DataFrame(_rg2).shift(1) if _rg2 else None)
             # 부모 예산 = 그날 S★가 그 산업의 부모 섹터에 준 비중의 합(산업이 쓸 수 있는 천장).
             _bg2 = None
             _ws2 = _al2.get("w_s")
@@ -9694,7 +9764,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 name_map={t: INDUSTRY_NAME_KR.get(t, "") for t in _ic2},
                 parent_map={t: results[t].get("parent", "") for t in _ic2}, layer="산업",
                 bench_curves=_bcs2, budget=_bg2, extra_contrib=_extra2,
-                port_ret=_pr1, conviction=_cv1, total_exposure=_te1, M=M)
+                port_ret=_pr1, conviction=_cv1, total_exposure=_te1,
+                regime=_rgdf2, M=M)
             if isinstance(_cmpdf2, pd.DataFrame) and len(_cmpdf2):
                 sheets["00A_수익비교"] = _cmpdf2
     except Exception as e:
