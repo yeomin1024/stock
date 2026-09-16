@@ -17,6 +17,65 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.57.0 - 2026-09-16 - [★★★ 데이터 신선도 가드 · 예측품질 검정 · 배분 연결 격자] REPORT67.
+#    사용자 지시: "오늘 기준이면 예측일이 9월 16일인데 14일이 예측일이야? 누락된거 수정하고 / 5개 섹터중
+#    국면보다 변동률 높은 섹터는 국면보다 훨씬 수익률 좋아야해 개선하고 / 모든 단일섹터 수익이 국면 판단이랑
+#    비슷해보이는데 예측이 잘 된건지 확인하고 / 하락 예측도 잘됐는지 확인하고 / 전략배분은 왜 계속 그대로야?
+#    모든 섹터 예측 잘되면 올라야 하는거 아니야?"
+#
+#  [K1 ★★★ 예측일이 과거였던 원인 — 수집 단계였다] `ensure_fresh_sector_prices()` 신설.
+#    리포트5 실측: 오늘 2026-09-16인데 11섹터 **전부 마지막 데이터가 2026-09-11** → '다음 거래일 = 09-14'.
+#    원인은 예측 코드가 아니라 **아무도 마지막일을 검사하지 않은 것**이다. 두 구멍이 겹쳤다:
+#      (1) `M._yahoo_degenerate()`는 **행수와 시작일만** 본다 — 마지막일을 보지 않아 최근 며칠이 빠진
+#          프레임도 '정상'으로 통과한다.
+#      (2) `M._read_cache()`의 TTL은 12시간이고, TTL 안이면 **내용의 최신성을 묻지 않고** 그대로 돌려준다.
+#    ⇒ 기존 코드는 '기준일 경과주의' **경고만 띄우고 고치지는 않았다** — 사용자가 본 것이 정확히 그 상태다.
+#    이제: 기대 마지막 개장일(expected_last_trading_day · NYSE 정규 휴장일 반영 · 보수적으로 '오늘 직전
+#    개장일')보다 DATA_STALE_MAX_TRADING_DAYS(1) 이상 뒤처지면 **M.fetch_yahoo(use_cache=False)로 캐시를
+#    건너뛰고 재수집**하고, 성공/실패/변화없음을 **전부** 10_데이터품질과 [DATA] 로그에 남긴다.
+#    ★ 재수집해도 최신이 아니면 제공자 쪽 문제이므로 더 시도하지 않고 **그대로 보고**한다(조용히 넘어가지 않는다).
+#
+#  [K3 ★★ "예측이 잘 된 건지 / 하락 예측도 잘됐는지" — 매 실행 자동 판정] 신규 시트 **23_예측품질검정**.
+#    ★★ 이 시트의 모든 숫자는 **체결정합**이다(t 신호 → t+1 수익). 같은 날 수익과 맞추면 거래 불가능한
+#      숫자가 나오고 그것이 이 프로젝트에서 네 번 반복된 오류다(누적 교훈 20).
+#    리포트5 실측 결과(그래서 이 시트가 필요하다):
+#      · 블록 A **하락 예측은 잘 된다** — 하락일 다음날이 그 외보다 낮은 섹터 **10/11**(중위 −0.1447%p),
+#        향후 5일은 더 뚜렷하다(XLY −1.05% · XLRE −0.88% · XLE −0.84%). **예외는 XLV 하나**(+0.0759%p
+#        = 신호 반전, 4라운드째 같은 결론).
+#      · 블록 B **국면 위의 추가정보는 거의 없다** — E_t>0으로 고정하고 섹터 자기 복합점수 5분위별 다음날
+#        수익을 보면 Q5>Q1이 **5/11**이고 풀링이 **단조가 아니다**(Q1 +0.1517 · Q3 +0.0627 · Q5 +0.1364).
+#        위험점수 분위는 더 뚜렷하게 역방향이다(H5 +0.1817 > H1 +0.1116 — 높은 자기위험이 다음날 더 좋다).
+#      · 블록 C **②가 ③을 이기는 유일한 출처는 초과보유일**이고, 그 다음날 수익의 **부호가 성적과 1:1**이다:
+#        양수 8섹터 전부 ②>③ / 음수 3섹터(XLY −0.0088 · XLI −0.0691 · XLB −0.0324) 전부 ②<③.
+#    ⇒ ★★★ **②가 ③과 비슷해 보이는 것은 버그가 아니라 v0.56.0 규칙의 귀결이다**: `max(w, E_t)`는
+#      w < E_t인 날(전체의 70~85%) **정의상 ③과 완전히 같다**. 차이는 초과보유일 15~31%에서만 난다.
+#      그리고 블록 B가 음성이므로 **비중 규칙만으로는 그 차이를 '훨씬' 키울 수 없다** — 신호를 새로 찾아야 한다.
+#      (실제로 초과보유 증폭 D1 = 초과일 풀노출을 재보니 중위격차는 20.5 → 25.3으로 늘지만 ③초과가
+#       8/11 → 7/11로 줄고 MDD −14.28 → −15.31, 칼마 1.08 → 1.03으로 나빠진다 — 채택하지 않았다.)
+#
+#  [K2 ★★ 라이브] `overweight_wf_guard()` — **무죄추정 초과보유 게이트**.
+#    블록 C가 '초과보유가 유일한 알파이고 3섹터에서 마이너스'라고 하므로, y 이전 초과보유일의 **다음날**
+#    평균수익이 음수이고 표본 ≥ OVERWEIGHT_GUARD_MIN_DAYS(250)인 연도만 초과보유를 끈다(= E_t로 되돌린다).
+#    ★ '이기는 것을 골라 켜는' 게 아니라 **'지는 것이 증명된 것만 끈다'**(엄격판은 ③초과 6/11로 더 나빴다).
+#    실측: ③초과 **8/11 → 9/11** · 중위칼마 1.08 → **1.14** · XLB 267.6 → **292.0**(③ 283.9 돌파) ·
+#      평균비중 0.673 → 0.670 · B&H 초과 11/11 유지. 차단은 XLI 2025·2026, XLB 2025·2026, XLY 2026뿐.
+#    ⚠ 정직하게: 개선폭은 **작다**. XLY·XLI의 초과보유 손실은 초기 연도에 났고 워크포워드로는 구조적으로
+#      잡을 수 없다(그 해에는 아직 증거가 없다). 신규 시트 **24_초과보유판정**에 연도별 근거를 전부 싣는다.
+#    ⚠ 되돌리기: s_overrides={"OVERWEIGHT_GUARD_ENABLE": False}
+#
+#  [K4 ★★★ "전략배분은 왜 계속 그대로야?" — 기계적 원인 규명 + 연결 격자]
+#    ★ 답: **배분 계층은 `results[t]["target_pos"]`를 한 번도 읽지 않는다.** 읽는 것은 (1) `state`(적격 판정)
+#      (2) 순위신호 행렬(리더 선택) (3) SPY의 `target_pos`(= E_t)뿐이다. 그래서 v0.54~v0.56이 바꾼 것은
+#      전부 섹터 target_pos였고 배분 성과표는 **소수점까지 동일**했다(리포트4 ↔ 5: 총배수 14.266 / CAGR
+#      0.3587 / MDD −0.0955 / 칼마 3.758 — 전부 같다). **버그가 아니라 두 계층이 연결돼 있지 않았던 것**이고
+#      사용자 지적이 정확했다. 참고로 배분의 실체는 '섹터 순환매'가 아니라 **XLK 집중**이다(폴백일 XLK 평균
+#      비중 0.711 · 리더일 0.646 · 폴백이 833일 = 38%).
+#    신규 **[배분연결격자]** 3행(측정 전용 · 라이브 무변경 · 전부 총합 ≤ E_t 유지):
+#      ① 배분 × 섹터 자기비중 **상한**  ② 배분 × 섹터 자기비중 **비례**  ③ **자기비중 0 섹터 제외(합계 보존)**
+#    ⚠ 라이브를 바꾸지 않은 이유: 오프라인 하네스로 배분 곡선을 **재현하지 못했다**(11.391 vs 엔진 14.266 —
+#      체결 규약이 종가기준이 아니라 ret_co/ret_oc 분해다). 재현 없는 추정으로 라이브를 바꾸지 않는다(교훈 24).
+#      **다음 리포트의 이 3행이 엔진의 답이고, 그것을 보고 채택 여부를 정한다.**
+#
 #  VERSION: v0.56.0 - 2026-09-16 - [★★★ 라이브: 시장 예산 E_t 바닥·퇴출 · ★ 수익곡선 실제 그래프] REPORT66.
 #    사용자 지시: "아니 **수익 곡선 비교를 그래프로 나타내라고** XLK XLV XLY XLP XLF 이 5개 섹터만 일단
 #    예측 향상시켜봐 하락을 못피한 부분, 상승을 타지 못한 부분 원인과 문제를 찾아 개선해"
@@ -2466,7 +2525,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.56.0"
+VERSION = "v0.57.0"
 VERSION_DATE = "2026-09-16"
 
 # =============================================================================
@@ -3286,6 +3345,22 @@ class SectorConfig:
     MKT_FLOOR_MODE: str = "max"                 # "max"(채택) | "mult"(측정 9/11, 열등) | "off"(퇴출만)
     MKT_FLOOR_EXIT_ON_ZERO: bool = True         # E_t <= MKT_FLOOR_MIN_ET인 날 비중 0
     MKT_FLOOR_MIN_ET: float = 0.0
+    # ---- [v0.57.0 K1] 데이터 신선도 — '오늘 기준 마지막 개장일'까지 왔는지 확인하고 아니면 재수집 ----
+    #   왜: 리포트5에서 오늘 2026-09-16인데 데이터가 2026-09-11까지라 **이미 지나간 09-14**의 예측이 나왔다.
+    #     M._yahoo_degenerate는 마지막일을 보지 않고 M._read_cache TTL(12h)은 내용 최신성을 묻지 않는다.
+    DATA_FRESHNESS_CHECK: bool = True
+    DATA_STALE_MAX_TRADING_DAYS: int = 1        # 기대 마지막 개장일보다 이만큼 이상 뒤처지면 캐시 우회 재수집
+    # ---- [v0.57.0 K2 ★★ 라이브] 무죄추정 초과보유 게이트 ----
+    #   규칙: y 이전 초과보유일(w>E_t)의 **다음날** 평균수익이 음수이고 표본 ≥ MIN_DAYS면 그 해 초과보유 차단.
+    #   실측: ③초과 8/11 → **9/11** · 중위칼마 1.08 → **1.14** · XLB 267.6 → **292.0**. 차단은 XLI·XLB·XLY 후반뿐.
+    #   ⚠ 되돌리기: s_overrides={"OVERWEIGHT_GUARD_ENABLE": False}
+    OVERWEIGHT_GUARD_ENABLE: bool = True
+    OVERWEIGHT_GUARD_MIN_DAYS: int = 250        # 120은 더 나빴다(③초과 7/11) — 250만 쓴다
+    # ---- [v0.57.0 K4] 배분 연결 격자(측정 전용 · 라이브 아님) ----
+    #   왜: 배분 계층은 results[t]["state"]와 순위신호만 읽고 **target_pos를 한 번도 읽지 않는다** —
+    #     그래서 v0.54~v0.56의 신호층 개선이 13 시트를 **소수점까지 그대로** 두었다(사용자 지적).
+    #   이 격자가 '연결했다면 어땠을지'를 엔진이 직접 재서 13 시트에 행으로 낸다. 채택은 다음 라운드.
+    ALLOC_LINK_GRID: bool = True
     # ---- [v0.55.0 H2] 00B_수익곡선비교 시트의 '지정 섹터' — 블록 C에 연도별로 쪼개 싣는다 ----
     #   사용자가 이번 라운드에 지목한 5섹터. 바꾸려면 s_overrides={"CURVE_FOCUS": ("XLK",...)}
     CURVE_FOCUS: Tuple[str, ...] = ("XLK", "XLV", "XLY", "XLP", "XLF")
@@ -3360,6 +3435,7 @@ def _indicator_spec_override(M, specs: List[Any]):
 def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
                         sector_px_override: Optional[Dict[str, pd.DataFrame]] = None,
                         tickers: Optional[Tuple[str, ...]] = None,
+                        scfg: Optional["SectorConfig"] = None,
                         ) -> Tuple[Dict[str, Optional[pd.DataFrame]], List[dict]]:
     """11개 섹터 ETF를 M.fetch_all_yahoo로 수집(퇴화수집 게이트·지연캐시 포함)하고, SPY까지
     포함해 M.validate_price_data로 무결성(시작일·교차오염) 검사한다. SPY는 res["px_dict"]["SPY"]
@@ -3377,6 +3453,14 @@ def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
                        note="수집 생략 — 직접 주입된 프레임 사용(합성/오프라인)"), M=M, level="warning")
     else:
         px = M.fetch_all_yahoo(list(SECTORS_), cfg, diag=yahoo_diag)
+        # [v0.57.0 K1 ★] 받은 뒤 **최신성**을 확인하고 뒤처졌으면 캐시를 건너뛰고 다시 받는다.
+        #   사용자 지적("오늘 9/16인데 예측일이 9/14")의 직접 원인이 여기였다 — 종전에는 경고만 했다.
+        try:
+            px, _fresh_rows = ensure_fresh_sector_prices(px, M, (scfg or CFG), cfg, quality_rows)
+        except Exception as e:
+            log("DATA", kv(event="freshness_check_failed", err=type(e).__name__, msg=str(e)[:150],
+                           action="신선도 검사 없이 계속 — 기준일 경고는 00시트에 그대로 뜬다"),
+                M=M, level="error")
     for row in yahoo_diag:
         quality_rows.append({"시리즈": f"[Yahoo:{row.get('종류', '?')}] {row.get('시리즈', '?')}",
                              "행수": row.get("행수", 0), "시작": row.get("시작", "-"), "종료": row.get("종료", "-"),
@@ -3390,6 +3474,121 @@ def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
                    missing=",".join(t for t in SECTORS_ if sector_px.get(t) is None) or "-"), M=M)
     return sector_px, yahoo_diag
 
+
+
+def expected_last_trading_day(today: Optional[pd.Timestamp] = None) -> pd.Timestamp:
+    """[v0.57.0 K1] '오늘 기준 마지막으로 종가가 존재해야 하는 개장일'. NYSE 정규 휴장일 반영.
+    장중이면 오늘 종가는 아직 없으므로 **직전 개장일**을 기대값으로 삼는다(오경보 방지).
+    미국 동부 16:00 마감이나 실행 환경의 타임존을 신뢰할 수 없으므로 보수적으로 '전 개장일'을 쓴다."""
+    from pandas.tseries.holiday import USFederalHolidayCalendar
+    from pandas.tseries.offsets import CustomBusinessDay
+    bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
+    t = pd.Timestamp(today or pd.Timestamp.now()).normalize()
+    return pd.Timestamp((t - bd).date())
+
+
+def ensure_fresh_sector_prices(px: Dict[str, Optional[pd.DataFrame]], M, scfg: Any,
+                               cfg: Any, quality_rows: List[dict],
+                               today: Optional[pd.Timestamp] = None) -> Tuple[Dict[str, Optional[pd.DataFrame]], List[dict]]:
+    """[v0.57.0 K1 ★★★ 신규 · 사용자 지적 직접 대응] 수집된 가격이 **오늘 기준으로 최신인지** 확인하고,
+    뒤처져 있으면 **캐시를 건너뛰고 다시 받는다**.
+
+    ── 왜(사용자 지적: "오늘 기준이면 예측일이 9월 16일인데 14일이 예측일이야?") ────────────────
+      리포트5 실측: 오늘 2026-09-16인데 11섹터 **전부 데이터 마지막일이 2026-09-11**이었고,
+      그래서 '다음 거래일 = 2026-09-14'라는 **이미 지나간 날**의 예측이 나왔다.
+      ★ 원인은 예측 코드가 아니라 **수집 단계**다. 두 가지가 겹쳤다:
+        (1) `M._yahoo_degenerate()`는 **행수와 시작일만** 본다 — **마지막일을 보지 않는다.**
+            그래서 최근 며칠이 빠진 프레임도 '정상'으로 통과한다.
+        (2) `M._read_cache()`의 기본 TTL은 12시간이고, TTL 안이면 **내용의 최신성을 묻지 않고**
+            그대로 돌려준다. 12시간 전에 쓰인 '09-11까지의 캐시'는 오늘도 그대로 쓰인다.
+      ⇒ 두 검사 모두 '뒤처짐'을 볼 수 없는 구조였다. 경고문(기준일_경과주의)은 떴지만
+        **경고만 하고 고치지는 않았다** — 사용자가 본 것이 정확히 그 상태다.
+
+    ── 규칙 ─────────────────────────────────────────────────────────────────────
+      기대 마지막 개장일 = expected_last_trading_day()(오늘 직전 개장일 · NYSE 정규 휴장일 반영).
+      티커별 실제 마지막일이 그보다 **DATA_STALE_MAX_TRADING_DAYS(기본 1) 개장일 이상** 뒤처지면:
+        ① `M.fetch_yahoo(ticker, use_cache=False)`로 **캐시를 건너뛰고** 재수집
+        ② 새로 받은 프레임이 더 최신이면 교체(아니면 종전 프레임 유지 — 데이터를 잃지 않는다)
+        ③ 결과를 10_데이터품질과 로그에 **반드시** 남긴다(성공/실패/변화없음 모두)
+      ★ 재수집해도 최신이 아니면 그것은 **데이터 제공자 쪽이 아직 그 날을 안 준 것**이므로
+        더 시도하지 않고 그대로 보고한다 — 조용히 넘어가지 않는 것이 이 함수의 목적이다.
+
+    연구/교육용 도구이며 투자 조언이 아니다.
+
+    반환: (갱신된 px, 신선도 판정 행 리스트)
+    """
+    rows: List[dict] = []
+    if not bool(getattr(scfg, "DATA_FRESHNESS_CHECK", True)):
+        return px, rows
+    try:
+        exp = expected_last_trading_day(today)
+    except Exception as e:
+        log("DATA", kv(event="freshness_calendar_failed", err=type(e).__name__,
+                       note="신선도 검사를 건너뛴다(리포트는 계속)"), M=M, level="warning")
+        return px, rows
+    max_lag = int(getattr(scfg, "DATA_STALE_MAX_TRADING_DAYS", 1))
+    refetched = fixed = 0
+    for t, df in list(px.items()):
+        if df is None or len(df) == 0:
+            continue
+        try:
+            last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
+        except Exception:
+            continue
+        lag = int(M.trading_days_between(last, exp)) if hasattr(M, "trading_days_between") else               int(len(pd.bdate_range(last, exp)) - 1)
+        if lag < max_lag:
+            continue
+        # ---- 뒤처졌다 → 캐시 건너뛰고 재수집 ----
+        refetched += 1
+        new = None
+        try:
+            new = M.fetch_yahoo(t, cfg, use_cache=False)          # ★ 캐시 우회가 이 함수의 핵심
+        except Exception as e:
+            log("DATA", kv(event="freshness_refetch_error", series=t, err=type(e).__name__,
+                           msg=str(e)[:120]), M=M, level="warning")
+        new_last = None
+        if new is not None and len(new):
+            try:
+                new_last = pd.Timestamp(pd.DatetimeIndex(new.index).max()).normalize()
+            except Exception:
+                new_last = None
+        if new_last is not None and new_last > last:
+            px[t] = new
+            fixed += 1
+            verdict = f"★ 재수집 성공 — {last.date()} → {new_last.date()}"
+            lvl = "info"
+        elif new_last is not None:
+            verdict = (f"⚠ 재수집했으나 그대로({new_last.date()}) — 데이터 제공자가 아직 "
+                       f"{exp.date()}까지 주지 않는다. 예측 대상일이 과거일 수 있으니 확인할 것")
+            lvl = "warning"
+        else:
+            verdict = (f"⚠⚠ 재수집 실패 — {last.date()}까지의 데이터로 진행한다. "
+                       f"기대 마지막 개장일은 {exp.date()}")
+            lvl = "warning"
+        rows.append({"시리즈": f"[신선도] {t}", "행수": int(len(px[t]) if px[t] is not None else 0),
+                     "시작": str(last.date()), "종료": str((new_last or last).date()),
+                     "무결성판정": f"{verdict} (뒤처짐 {lag}개장일 · 기대 {exp.date()})"})
+        log("DATA", kv(event="freshness_refetch", series=t, was=str(last.date()),
+                       now=str((new_last or last).date()), expected=str(exp.date()),
+                       lag_trading_days=lag, fixed=bool(new_last is not None and new_last > last)),
+            M=M, level=lvl)
+    if refetched == 0:
+        log("DATA", kv(event="freshness_ok", expected_last=str(exp.date()), tickers=len(px),
+                       note="전 티커가 기대 개장일까지 최신"), M=M)
+        rows.append({"시리즈": "[신선도] 전체", "행수": len(px), "시작": "-", "종료": str(exp.date()),
+                     "무결성판정": f"★ 전 티커 최신(기대 마지막 개장일 {exp.date()})"})
+    else:
+        log("DATA", kv(event="freshness_summary", checked=len(px), stale=refetched, fixed=fixed,
+                       expected_last=str(exp.date()),
+                       note="⚠ 뒤처진 티커를 캐시 우회 재수집했다"), M=M, level="warning")
+        rows.append({"시리즈": "[신선도] 전체", "행수": len(px), "시작": "-", "종료": str(exp.date()),
+                     "무결성판정": (f"⚠ 뒤처진 티커 {refetched}개 중 {fixed}개 재수집 성공 "
+                                f"(기대 마지막 개장일 {exp.date()}). ★ 원인: M._yahoo_degenerate가 "
+                                "마지막일을 보지 않고 _read_cache TTL(12h)이 내용 최신성을 묻지 않는다 — "
+                                "이 검사가 그 구멍을 막는다")})
+    for r in rows:
+        quality_rows.append(dict(r))
+    return px, rows
 
 def adj_close_lag_check(df: Optional[pd.DataFrame], ticker: str, cfg_min_stale_days: int
                         ) -> Tuple[bool, int, Optional[pd.Timestamp], Optional[pd.Timestamp]]:
@@ -5375,6 +5574,81 @@ def hazard_pct_cut_wf(state: pd.Series, target_pos: pd.Series, haz_pct_own: pd.S
 
 
 
+
+def overweight_wf_guard(target_pos: pd.Series, Et: pd.Series, bh_ret: pd.Series,
+                        cfg: Any, ticker: str = "", M=None) -> Tuple[pd.Series, pd.DataFrame]:
+    """[v0.57.0 K2 ★★ 신규 · 라이브 신호층] **무죄추정 초과보유 게이트** — 섹터가 시장 예산 E_t보다
+    더 들겠다고 한 것(w > E_t)이 **이전 연도들에서 실제로 손해였던 섹터만** 그 해 초과보유를 끈다.
+
+    ── 왜(리포트5 · 체결정합 측정) ──────────────────────────────────────────────────
+      v0.56.0에서 ②가 ③(순수 E_t)을 이기는 이유는 **초과보유일 하나뿐**이다. 그 날들의
+      **다음날**(= 그 비중이 실제로 먹는 수익) 평균을 재면 부호가 성적과 정확히 일치한다:
+        양수 8섹터 → 전부 ② > ③   /   음수 3섹터(XLY −0.0088 · XLI −0.0691 · XLB −0.0324) → 전부 ② < ③
+      ⇒ **초과보유가 이 계층의 유일한 고유 알파이고, 그것이 마이너스인 섹터가 3개 있다.**
+
+    ── 규칙(무죄추정 · 룩어헤드 없음) ────────────────────────────────────────────────
+      연도 y에 대해 **y 이전**의 초과보유일 다음날 수익 평균을 재고,
+      표본이 OVERWEIGHT_GUARD_MIN_DAYS(250) 이상이면서 **평균이 음수일 때만** 그 해 초과보유를 끈다
+      (= w를 E_t로 되돌린다). 그 밖에는 **건드리지 않는다**.
+      ★ '이기는 것을 골라 켜는' 게 아니라 **'지는 것이 증명된 것만 끈다'**. 엄격판(평균>0일 때만 켬)은
+        측정에서 더 나빴다(③초과 6/11 · 초기 연도 표본부족으로 수익 구간까지 꺼 버린다).
+
+    ── 실측(리포트5 목표비중 · 체결정합 하네스) ───────────────────────────────────────
+        v0.56.0 현행 : B&H 초과 11/11 · **③ 초과 8/11** · 중위복리 361.1 · 중위칼마 1.08 · 평균비중 0.673
+        **이 게이트** : B&H 초과 11/11 · **③ 초과 9/11** · 중위복리 361.1 · 중위칼마 **1.14** · 평균비중 0.670
+      ★ XLB 267.6 → **292.0**(③ 283.9를 넘어섰다) · 차단된 연도는 XLI 2025·2026, XLB 2025·2026,
+        XLY 2026뿐이고 **나머지 8섹터는 한 해도 차단되지 않았다**(= 이기던 것을 끄지 않았다).
+      ⚠ 정직하게: 개선폭은 **작다**(+1섹터 · 칼마 +0.06). XLY·XLI는 게이트가 늦게(2025~) 걸려
+        여전히 ③ 아래다 — 초과보유 손실이 초기 연도에 났기 때문이고, 그것은 워크포워드로는
+        구조적으로 잡을 수 없다(그 해에는 아직 증거가 없다).
+
+    반환: (교정된 target_pos, 판정 로그 DataFrame[24_초과보유판정])
+    """
+    pos = pd.Series(target_pos).astype(float).copy()
+    if not bool(getattr(cfg, "OVERWEIGHT_GUARD_ENABLE", True)) or Et is None:
+        return pos, pd.DataFrame([{"티커": ticker, "적용연도": "전체", "판정": "미적용(설정 OFF 또는 E_t 없음)"}])
+    e = pd.to_numeric(pd.Series(Et), errors="coerce").reindex(pos.index).ffill().fillna(0.0)
+    r = pd.to_numeric(pd.Series(bh_ret), errors="coerce").reindex(pos.index)
+    if r.abs().max() is not None and float(r.abs().max() or 0.0) < 1.0:
+        r = r * 100.0                                   # 소수 수익률이면 %로 맞춘다
+    # ★ 체결정합: t에 정한 비중이 먹는 수익은 t+1의 수익이다(엔진 exec_w(t)=target_w(t-1)).
+    rn = r.shift(-1)
+    over = (pos > e + 1e-9)
+    minp = int(getattr(cfg, "OVERWEIGHT_GUARD_MIN_DAYS", 250))
+    yrs = pd.DatetimeIndex(pos.index).year
+    out = pos.copy()
+    rows: List[dict] = []
+    for y in sorted(set(int(v) for v in yrs)):
+        prior = over & (yrs < y) & rn.notna()
+        n = int(prior.sum())
+        mu = float(rn[prior].mean()) if n else float("nan")
+        block = bool(n >= minp and mu < 0.0)
+        sel = (yrs == y) & over.values
+        n_blk = 0
+        if block:
+            n_blk = int(sel.sum())
+            out.loc[sel] = e.loc[sel].values           # 초과분만 되돌린다(E_t 아래로는 내리지 않는다)
+        rows.append({"티커": ticker, "적용연도": int(y),
+                     "이전 초과보유일수": n,
+                     "이전 초과보유일 다음날 평균수익(%)": (round(mu, 4) if n else None),
+                     "그 해 초과보유일": int(sel.sum()), "되돌린 일수": n_blk,
+                     "판정": ("⚠ 차단(이전 증거가 음수)" if block else
+                            ("유지(표본 부족 — 무죄추정)" if n < minp else "유지(이전 증거가 양수)"))})
+    n_total = int((out < pos - 1e-12).sum())
+    rows.append({"티커": ticker, "적용연도": "전체", "이전 초과보유일수": int(over.sum()),
+                 "이전 초과보유일 다음날 평균수익(%)": (round(float(rn[over & rn.notna()].mean()), 4)
+                                            if int((over & rn.notna()).sum()) else None),
+                 "그 해 초과보유일": int(over.sum()), "되돌린 일수": n_total,
+                 "판정": (f"{'★★ 적용' if n_total else '변경없음'} — 되돌린 일수 {n_total} · "
+                        f"평균비중 {float(pos.mean()):.3f}→{float(out.mean()):.3f}. "
+                        "되돌리기: s_overrides={\"OVERWEIGHT_GUARD_ENABLE\": False}")})
+    log("OVER_GUARD", kv(ticker=ticker, event="applied", reverted_days=n_total,
+                         over_days=int(over.sum()), min_days=minp,
+                         mean_pos_before=round(float(pos.mean()), 4),
+                         mean_pos_after=round(float(out.mean()), 4),
+                         note="무죄추정 — 이전 증거가 음수인 연도만 초과보유 차단"), M=M)
+    return out, pd.DataFrame(rows)
+
 def market_exposure_floor(state: pd.Series, target_pos: pd.Series, Et: pd.Series,
                           cfg: Any, ticker: str = "", M=None) -> Tuple[pd.Series, pd.DataFrame]:
     """[v0.56.0 J1 ★★★ 신규 · 라이브 신호층 변경 · ⚠ 위험 파라미터(노출) 변경] 섹터 자기 신호의
@@ -5679,6 +5953,24 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         log("MKT_FLOOR", kv(ticker=ticker, event="floor_failed", err=str(e)[:160],
                             note="E_t 교정 없이 v0.55.0 동작으로 진행한다"), M=M, level="warning")
+    # ---- [v0.57.0 K2 ★★ 라이브] 무죄추정 초과보유 게이트 — 바닥·퇴출 **뒤에** ----
+    #   ★ 순서: 이 게이트는 'w > E_t'를 판정 대상으로 삼으므로 바닥(max)이 적용된 **뒤**여야 한다.
+    #     바닥 전에 두면 아직 E_t가 반영되지 않은 비중을 보게 되어 판정 집합이 달라진다.
+    over_guard_log = pd.DataFrame()
+    try:
+        _Et2 = None
+        _rsig2 = res.get("sig") if isinstance(res, dict) else None
+        if isinstance(_rsig2, pd.DataFrame) and "target_pos" in _rsig2.columns:
+            _Et2 = pd.to_numeric(_rsig2["target_pos"], errors="coerce").astype(float)
+        _bh2 = price_i["Close"].pct_change() * 100.0 if "Close" in getattr(price_i, "columns", []) \
+            else pd.Series(price_i).pct_change() * 100.0
+        _pos4, over_guard_log = overweight_wf_guard(
+            sig["target_pos"], _Et2, _bh2, scfg, ticker=ticker, M=M)
+        sig = sig.copy()
+        sig["target_pos"] = _pos4
+    except Exception as e:
+        log("OVER_GUARD", kv(ticker=ticker, event="guard_failed", err=str(e)[:160],
+                             note="게이트 없이 v0.56.0 동작으로 진행한다"), M=M, level="warning")
     bt = M.run_backtest(price_i, sig["target_pos"], cfg_i, rf)
     bt = bt.loc[bt.index >= pd.Timestamp(cfg_i.SIGNAL_START)]
     ma_pos = (trend200 > 0).astype(float).where(sig_mask, 0.0)
@@ -5792,6 +6084,7 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "neutral_wf": neutral_wf_log,                 # [v0.54.0 G1] 연도별 상향 판정 근거
             "hazard_cut": hazard_cut_log,                 # [v0.55.0 H1] 연도별 위험분위 상한 판정
             "mkt_floor": mkt_floor_log,                   # [v0.56.0 J1] 연도별 E_t 바닥·퇴출 판정
+            "over_guard": over_guard_log,                 # [v0.57.0 K2] 연도별 초과보유 게이트 판정
             "hazard_source": scfg.HAZARD_SOURCE, "vol_scale": vol_scale,   # [v0.3.0 §1.B/§1.C]
             # 통합 시트용 소형 시리즈
             "state": sig["state"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
@@ -6413,7 +6706,7 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
     # ---- 1) 데이터 ----
     t0 = time.time()
     quality: List[dict] = []
-    sector_px, yahoo_diag = fetch_sector_prices(res, M, quality, sector_px_override=sector_px_override,
+    sector_px, yahoo_diag = fetch_sector_prices(res, M, quality, scfg=scfg, sector_px_override=sector_px_override,
                                                 tickers=scfg.SECTORS)
     spy_df = res["px_dict"]["SPY"]
     spy_df = spy_df[~spy_df.index.duplicated(keep="last")].sort_index()
@@ -8641,6 +8934,52 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     log("ROTATION", kv(event="blend_variants", found=sorted(_bl_src.keys()), registered=len(_blends),
                        missing=sorted({"주력", "확신", "중립"} - set(_bl_src))), M=M,
         level=("info" if len(_blends) else "warning"))
+
+    # ---- [v0.57.0 K4 ★★★ 신규 격자 · 측정 전용] 배분 ↔ 섹터 자기비중 연결 ----
+    #   ── 사용자 지적: "전략배분은 왜 계속 그대로야? 모든 섹터 예측 잘되면 올라야 하는거 아니야?" ──
+    #   ★ 답(코드로 확인되는 기계적 사실): **배분 계층은 results[t]["target_pos"]를 한 번도 읽지 않는다.**
+    #     읽는 것은 (1) results[t]["state"](적격 판정) (2) 순위신호 행렬(리더 선택) (3) SPY의 target_pos(=E_t)뿐이다.
+    #     그래서 v0.54.0(중립 상향)·v0.55.0(하락분위 상한)·v0.56.0(E_t 바닥·퇴출)은 전부 **섹터 target_pos만**
+    #     바꿨고, 배분 성과표는 **소수점까지 그대로**였다(리포트4 ↔ 리포트5: 총배수 14.266 동일). 버그가 아니라
+    #     두 계층이 애초에 연결돼 있지 않았던 것이고, 사용자 지적이 정확했다.
+    #   ⇒ 여기서 '연결했다면 어땠을지'를 **엔진이 직접 재서** 13 시트에 행으로 낸다. 라이브는 바꾸지 않는다
+    #     (오프라인 하네스로 배분 곡선을 재현하지 못했으므로 내 추정치를 근거로 라이브를 바꾸지 않는다 — 누적 교훈 24).
+    #   세 변형 모두 **총합 ≤ E_t를 유지**한다(사용자 판정 기준 8: 전체자산 = 1.0).
+    if bool(getattr(scfg, "ALLOC_LINK_GRID", True)):
+        try:
+            _own = pd.DataFrame({t: pd.to_numeric(results[t].get("target_pos"), errors="coerce")
+                                 .reindex(eval_idx).ffill() for t in cols if t in results})
+            _own = _own.clip(lower=0.0, upper=1.0)
+            if "SPY" in target_ws[label_primary].columns:
+                _own["SPY"] = 1.0                      # SPY 폴백 슬리브는 이 격자의 대상이 아니다
+            _base_w = target_ws[label_primary]
+            _own = _own.reindex(index=_base_w.index, columns=_base_w.columns).fillna(1.0)
+            _link = {}
+            #  ① 상한: 섹터가 스스로 정한 노출을 **넘지 않게** 깎는다(합계는 줄기만 한다 → 상한 유지)
+            _link["배분 × 섹터 자기비중 상한 [배분연결격자]"] = _base_w.where(_base_w <= _own, _own)
+            #  ② 비례: 섹터 자기비중에 **비례**해 줄인다(가장 강한 연결 · 노출이 가장 많이 준다)
+            _link["배분 × 섹터 자기비중 비례 [배분연결격자]"] = _base_w * _own
+            #  ③ 적격: 자기비중이 0인 섹터만 **빼고**, 뺀 몫을 남은 섹터에 그 비율대로 되돌린다
+            #     (합계를 보존하므로 ①②와 달리 노출이 줄지 않는다 — 순수한 '선택' 효과만 본다)
+            _keep = (_own > 1e-9).astype(float)
+            _m3 = _base_w * _keep
+            _s0, _s1 = _base_w.sum(axis=1), _m3.sum(axis=1)
+            _scale = (_s0 / _s1.replace(0.0, np.nan)).clip(upper=4.0).fillna(0.0)
+            _link["배분 × 자기비중 0 섹터 제외(합계 보존) [배분연결격자]"] = _m3.mul(_scale, axis=0)
+            for _lab, _fr in _link.items():
+                _fr = _fr.fillna(0.0).clip(lower=0.0)
+                target_ws[_lab] = _fr
+                bts[_lab] = portfolio_backtest(_fr, ret_co, ret_oc, **bt_kw)
+                variants[_lab] = _fr
+            log("ROTATION", kv(event="alloc_link_grid", rows=len(_link),
+                               base_mean_exposure=round(float(_base_w.sum(axis=1).mean()), 4),
+                               cap_mean=round(float(_link["배분 × 섹터 자기비중 상한 [배분연결격자]"].sum(axis=1).mean()), 4),
+                               prop_mean=round(float(_link["배분 × 섹터 자기비중 비례 [배분연결격자]"].sum(axis=1).mean()), 4),
+                               note="★ 배분층은 지금까지 섹터 target_pos를 읽지 않았다 — 이 격자가 연결 효과를 측정한다"),
+                M=M)
+        except Exception as e:
+            log("ROTATION", kv(event="alloc_link_grid_failed", err=type(e).__name__, msg=str(e)[:160],
+                               action="격자 없이 배분 계속(주 전략 무영향)"), M=M, level="warning")
 
     # [v0.7.0] 참조: SPY 국면전략(M) 성과(같은 평가창, M의 bt 그대로) — 수용기준 ⑤(목표: CAGR ≥ SPY M)에 사용
     spy_m_ret = res["bt"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
@@ -11621,6 +11960,184 @@ def build_portfolio_segments(port_curve: pd.Series, port_exposure: pd.Series,
     return pd.DataFrame(rows)
 
 
+
+def build_prediction_quality(results: Dict[str, Dict[str, Any]], Et: Optional[pd.Series],
+                             cfg: Any, name_map: Optional[Dict[str, str]] = None, M=None) -> pd.DataFrame:
+    """[23_예측품질검정, v0.57.0 K3 ★★ 신규] 사용자 질문 두 개에 **매 실행 자동으로** 답하는 시트.
+
+      질문 1: "모든 단일섹터 수익이 국면 판단이랑 비슷해보이는데 **예측이 잘 된건지 확인**"
+      질문 2: "**하락 예측도 잘됐는지** 확인"
+
+    ★★ 이 시트의 모든 숫자는 **체결정합**이다 — t일에 정해진 신호를 t+1일 수익과 맞춘다
+      (엔진 규칙 exec_w(t)=target_w(t−1)). 같은 날 수익과 맞추면 거래 불가능한 수치가 나오고,
+      그것이 이 프로젝트에서 네 번 반복된 오류다(누적 교훈 20).
+
+    블록 A — **하락 예측 검정**: 섹터 자기 하락국면(t) → 다음날·향후5일 수익 vs 그 외.
+             음수면 예측이 맞은 것. **반대 부호면 그 섹터는 신호가 반전된 것**이다.
+    블록 B — **국면 위의 추가정보 검정**: E_t > 0인 날만 골라 섹터 자기 복합점수 5분위별 다음날 수익.
+             단조 증가면 섹터 점수에 시장 국면을 넘는 정보가 있다는 뜻이다.
+    블록 C — **초과보유 검정**: w > E_t인 날(②가 ③보다 더 드는 날)의 다음날 수익.
+             ★ 이 부호가 ②>③ 성적과 1:1로 일치한다 — 이 계층 고유 알파의 **유일한** 출처다.
+    블록 D — **종합 판정**: 왜 ②가 ③과 비슷해 보이는지를 한 문장으로.
+    """
+    blkA, blkB, blkC, blkD = ("A. 하락 예측 검정", "B. 국면 위의 추가정보 검정",
+                              "C. 초과보유 검정(②가 ③을 이기는 유일한 출처)", "D. 종합 판정")
+    rows: List[dict] = []
+    cols = [t for t in results if isinstance(results[t], dict)]
+    if not cols:
+        return pd.DataFrame([{"블록": blkA, "섹터": "산출 불가", "판정": "results 비어 있음"}])
+    E = (pd.to_numeric(pd.Series(Et), errors="coerce") if Et is not None else None)
+
+    def _parts(t):
+        r = pd.to_numeric(results[t].get("bh_ret"), errors="coerce")
+        if r is None or not len(r):
+            return None
+        if float(pd.Series(r).abs().max() or 0.0) < 1.0:
+            r = r * 100.0
+        st = pd.Series(results[t].get("state")).astype(str).reindex(r.index)
+        w = pd.to_numeric(results[t].get("target_pos"), errors="coerce").reindex(r.index)
+        e = (E.reindex(r.index).ffill().fillna(0.0) if E is not None else None)
+        return r, st, w, e
+
+    # ---------- 블록 A ----------
+    rows.append({"블록": blkA, "섹터": "── 읽는 법 ──",
+                 "판정": ("섹터가 **하락**이라고 말한 날(t)의 **다음날** 수익을 그 외 날과 비교한다"
+                        "(t+1 체결 규칙에 맞춘 것 — 같은 날 수익과 비교하면 거래 불가능한 숫자가 된다). "
+                        "**'차'가 음수면 하락 예측이 맞은 것**이고, 양수면 그 섹터는 **신호가 반전**돼 있다.")})
+    nA = nA_ok = 0
+    for t in cols:
+        p = _parts(t)
+        if p is None:
+            continue
+        r, st, w, e = p
+        rn = r.shift(-1)
+        f5 = r.rolling(5).sum().shift(-5)
+        off = st.str.upper().eq("RISK_OFF") & rn.notna()
+        non = (~st.str.upper().eq("RISK_OFF")) & rn.notna()
+        if not int(off.sum()):
+            continue
+        mo, mn = float(rn[off].mean()), float(rn[non].mean())
+        nA += 1
+        nA_ok += int(mo < mn)
+        rows.append({"블록": blkA, "섹터": t, "이름": (name_map or {}).get(t, ""),
+                     "일수": int(off.sum()), "비율(%)": round(float(off.sum()) / max(len(rn.dropna()), 1) * 100, 1),
+                     "다음날 평균(%)": round(mo, 4), "그 외 다음날 평균(%)": round(mn, 4),
+                     "차(%p)": round(mo - mn, 4),
+                     "향후5일 평균(%)": (round(float(f5[off].mean()), 4) if f5[off].notna().any() else None),
+                     "판정": ("★ 하락 예측이 맞다(뺀 날이 실제로 더 나빴다)" if mo < mn else
+                            "⚠⚠ **신호 반전** — 하락이라고 한 날이 오히려 더 좋았다. 이 섹터의 하락 신호는 쓰지 말 것")})
+    rows.append({"블록": blkA, "섹터": "★★ 종합", "일수": nA,
+                 "판정": (f"하락 예측이 맞은 섹터 **{nA_ok}/{nA}**. "
+                        + ("★ 하락 예측은 전반적으로 작동한다." if nA_ok * 2 > nA else
+                           "⚠ 절반 이하 — 하락 신호 자체를 재검토할 것.")
+                        + " ⚠ 단, 섹터 하락국면의 대부분은 시장(E_t=0)과 겹친다 — 블록 C가 '겹치지 않는 부분'의 값을 잰다.")})
+
+    # ---------- 블록 B ----------
+    rows.append({"블록": blkB, "섹터": "── 읽는 법 ──",
+                 "판정": ("**E_t > 0인 날만** 골라(= 시장 국면을 고정하고) 섹터 자기 복합점수 5분위별 "
+                        "**다음날** 수익을 본다. Q5(점수 최상위)가 Q1(최하위)보다 높아야 '섹터 점수에 "
+                        "시장 국면을 넘는 정보가 있다'고 말할 수 있다. ★ 이것이 사용자 질문 "
+                        "'단일섹터 수익이 국면이랑 비슷한데 예측이 잘 된 건가'에 대한 직접 검정이다.")})
+    nB = nB_ok = 0
+    pooled = {k: [] for k in range(5)}
+    for t in cols:
+        p = _parts(t)
+        if p is None or p[3] is None:
+            continue
+        r, st, w, e = p
+        sp = pd.to_numeric(results[t].get("score_pct"), errors="coerce")
+        if sp is None or not len(sp):
+            continue
+        sp = sp.reindex(r.index)
+        rn = r.shift(-1)
+        m = (e > 0) & rn.notna() & sp.notna()
+        if int(m.sum()) < 250:
+            continue
+        try:
+            q = pd.qcut(sp[m], 5, labels=False, duplicates="drop")
+        except Exception:
+            continue
+        row = {"블록": blkB, "섹터": t, "이름": (name_map or {}).get(t, ""), "일수": int(m.sum())}
+        vals = []
+        for k in range(int(q.max()) + 1):
+            idx = sp[m][q == k].index
+            v = float(rn.loc[idx].mean())
+            row[f"Q{k + 1} 다음날(%)"] = round(v, 4)
+            vals.append(v)
+            pooled.setdefault(k, []).append(rn.loc[idx])
+        if len(vals) >= 2:
+            nB += 1
+            nB_ok += int(vals[-1] > vals[0])
+            row["Q5−Q1(%p)"] = round(vals[-1] - vals[0], 4)
+            row["판정"] = ("★ 상위가 하위보다 낫다" if vals[-1] > vals[0] else
+                         "✗ 상위가 하위보다 못하다 — 이 섹터 점수는 국면 위에 정보를 더하지 못한다")
+        rows.append(row)
+    if nB:
+        prow = {"블록": blkB, "섹터": "★★ 종합(풀링)"}
+        pv = []
+        for k in sorted(pooled):
+            if not pooled[k]:
+                continue
+            s = pd.concat(pooled[k])
+            prow[f"Q{k + 1} 다음날(%)"] = round(float(s.mean()), 4)
+            prow["일수"] = int(len(s))
+            pv.append(float(s.mean()))
+        mono = len(pv) >= 2 and all(pv[i] <= pv[i + 1] for i in range(len(pv) - 1))
+        prow["판정"] = (f"Q5 > Q1 인 섹터 **{nB_ok}/{nB}**" +
+                      (" · 풀링이 단조 증가 ⇒ ★ 섹터 점수에 국면을 넘는 정보가 있다." if mono else
+                       " · 풀링이 **단조가 아니다** ⇒ ⚠⚠ 섹터 자기 점수는 시장 국면을 고정하면 "
+                       "**다음날 방향 정보를 거의 주지 못한다**. ②가 ③과 비슷해 보이는 근본 이유가 이것이고, "
+                       "비중 규칙을 바꿔 키울 수 있는 것이 아니다 — 신호 자체를 바꿔야 한다."))
+        rows.append(prow)
+
+    # ---------- 블록 C ----------
+    rows.append({"블록": blkC, "섹터": "── 읽는 법 ──",
+                 "판정": ("②(단일 섹터 예측)가 ③(국면 예측)보다 **더 드는 날**(w > E_t)의 다음날 수익이다. "
+                        "③은 그 날 E_t만 들고 ②는 w를 드니, **초과분 (w−E_t)가 먹는 수익이 바로 이 값**이다. "
+                        "★ 이 값의 **부호가 ②>③ 성적과 1:1로 일치한다** — 양수면 ②가 이기고 음수면 진다. "
+                        "즉 이 계층의 고유 알파는 전부 여기서 나온다. 키우려면 이 값을 키워야 한다.")})
+    nC = nC_ok = 0
+    for t in cols:
+        p = _parts(t)
+        if p is None or p[3] is None or p[2] is None:
+            continue
+        r, st, w, e = p
+        rn = r.shift(-1)
+        over = (w > e + 1e-9) & rn.notna()
+        base = (w <= e + 1e-9) & (e > 0) & rn.notna()
+        if not int(over.sum()):
+            continue
+        mo = float(rn[over].mean())
+        nC += 1
+        nC_ok += int(mo > 0)
+        rows.append({"블록": blkC, "섹터": t, "이름": (name_map or {}).get(t, ""),
+                     "일수": int(over.sum()),
+                     "비율(%)": round(float(over.sum()) / max(len(rn.dropna()), 1) * 100, 1),
+                     "다음날 평균(%)": round(mo, 4),
+                     "평균 초과분": round(float((w - e)[over].mean()), 4),
+                     "그 외 다음날 평균(%)": (round(float(rn[base].mean()), 4) if int(base.sum()) else None),
+                     "판정": ("★ 초과보유가 번다 — ② > ③ 이 되는 섹터" if mo > 0 else
+                            "⚠ 초과보유가 잃는다 — ② < ③ 이 되는 섹터. 워크포워드 게이트(24 시트) 대상")})
+    rows.append({"블록": blkC, "섹터": "★★ 종합", "일수": nC,
+                 "판정": (f"초과보유 다음날 수익이 **양수인 섹터 {nC_ok}/{nC}** — 이 수가 곧 ②가 ③을 "
+                        "이기는 섹터 수다. ★ 개선하려면 (a) 초과보유일을 **더 잘 고르거나** "
+                        "(b) 지는 섹터의 초과보유를 **끄는**(24_초과보유판정) 두 길뿐이다. "
+                        "(a)는 블록 B가 '점수에 추가정보가 없다'고 말하면 막혀 있는 길이다.")})
+
+    # ---------- 블록 D ----------
+    rows.append({"블록": blkD, "섹터": "★★★ 왜 ②가 ③과 비슷한가",
+                 "판정": ("v0.56.0 규칙은 `w = 0 if E_t<=0 else max(w_sector, E_t)`다. "
+                        "w_sector < E_t인 날에는 **정의상 ③과 완전히 같아진다** — 그런 날이 전체의 "
+                        "약 70~85%다. 따라서 ②와 ③이 비슷한 것은 **버그가 아니라 규칙의 귀결**이고, "
+                        "차이는 블록 C의 초과보유일(15~31%)에서만 생긴다. "
+                        "★ 그 차이를 '훨씬' 키우려면 블록 B가 양성이어야 하는데, 측정 결과가 음성이면 "
+                        "**비중 규칙으로는 불가능하고 신호를 새로 찾아야 한다**. "
+                        "이 시트가 매 실행 그 판정을 낸다.")})
+    log("PRED_Q", kv(event="prediction_quality_built", sectors=len(cols),
+                     down_ok=f"{nA_ok}/{nA}", score_ok=f"{nB_ok}/{nB}", over_ok=f"{nC_ok}/{nC}",
+                     note="전부 체결정합(t 신호 → t+1 수익)"), M=M)
+    return pd.DataFrame(rows)
+
 def build_curve_compare(ret_df: pd.DataFrame, solo_w: pd.DataFrame, regime_w: pd.DataFrame,
                         cfg: Any, name_map: Optional[Dict[str, str]] = None,
                         alloc_ret: Optional[pd.Series] = None,
@@ -13406,6 +13923,46 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                                               ignore_index=True)
     except Exception as e:
         log("REPORT", kv(event="mkt_floor_sheet_failed", err=str(e)[:160]), M=M, level="warning")
+    # ---- [v0.57.0 K3 ★★ 신규 시트] 23_예측품질검정 — "예측이 잘 된 건지 / 하락 예측도 잘됐는지" ----
+    try:
+        _Etq = None
+        _asq = sres.get("alloc_sheet")
+        if isinstance(_asq, pd.DataFrame) and "E_t(SPY목표비중)" in _asq.columns:
+            _bq = _asq.copy()
+            if "날짜" in _bq.columns:
+                _bq = _bq.set_index(pd.to_datetime(_bq["날짜"], errors="coerce"))
+            _Etq = pd.to_numeric(_bq["E_t(SPY목표비중)"], errors="coerce")
+        _pq = build_prediction_quality(results, _Etq, scfg,
+                                       name_map={t: SECTOR_NAME_KR.get(t, "") for t in results}, M=M)
+        if isinstance(_pq, pd.DataFrame) and len(_pq):
+            sheets["23_예측품질검정"] = _pq
+    except Exception as e:
+        import traceback as _tb4
+        log("REPORT", kv(event="prediction_quality_failed", err=str(e)[:200]), M=M, level="error")
+        sheets["23_예측품질검정"] = pd.DataFrame([{
+            "블록": "A. 하락 예측 검정", "섹터": "⚠ 산출 실패",
+            "판정": f"{type(e).__name__}: {str(e)[:220]} / 다음 단계: results[t]의 'bh_ret'·'state'·"
+                   "'target_pos'·'score_pct'와 alloc_sheet의 'E_t(SPY목표비중)' 확인.",
+            "추적": _tb4.format_exc()[-800:]}])
+    # ---- [v0.57.0 K2] 24_초과보유판정 ----
+    try:
+        _og = [r["over_guard"] for r in results.values()
+               if isinstance(r.get("over_guard"), pd.DataFrame) and len(r["over_guard"])]
+        if _og:
+            _hdr4 = pd.DataFrame([{"티커": "── 읽는 법 ──",
+                "판정": ("**무죄추정 초과보유 게이트**의 연도별 판정이다(라이브 신호층). "
+                       "규칙: y 이전 초과보유일(w > E_t)의 **다음날** 평균수익이 음수이고 표본이 "
+                       f"{int(getattr(scfg, 'OVERWEIGHT_GUARD_MIN_DAYS', 250))}일 이상일 때만 그 해 "
+                       "초과보유를 끈다(= E_t로 되돌린다). 그 밖에는 건드리지 않는다. "
+                       "왜: 리포트5 체결정합 측정에서 초과보유일 다음날 수익의 **부호가 ②>③ 성적과 "
+                       "1:1로 일치**했다(양수 8섹터 전부 승 · 음수 3섹터 XLY·XLI·XLB 전부 패). "
+                       "실측: ③초과 8/11 → **9/11** · 중위칼마 1.08 → **1.14** · XLB 267.6 → **292.0**. "
+                       "★ '이기는 것을 골라 켜는' 엄격판은 더 나빴다(6/11) — 초기 표본부족으로 수익 구간까지 껐다. "
+                       "되돌리기: s_overrides={\"OVERWEIGHT_GUARD_ENABLE\": False}")}])
+            sheets["24_초과보유판정"] = pd.concat([_hdr4, pd.concat(_og, ignore_index=True)],
+                                            ignore_index=True)
+    except Exception as e:
+        log("REPORT", kv(event="over_guard_sheet_failed", err=str(e)[:160]), M=M, level="warning")
     sheets = sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     write_sector_excel(path, sheets, meta, M=M)
     if scfg.EXPORT_DAILY_CSV:
