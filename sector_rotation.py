@@ -17,6 +17,62 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.53.0 - 2026-09-15 - [★★ 00A 판정 행 · 회피일 분해 · 노출 상향 격자] REPORT63.
+#    사용자 지시: "결과인데 예측 수익이 buy and hold 보다 훨씬 많이 나와야해 지금 보니까 그런게 없어
+#    다시 섹터랑 산업부터 문제 찾아서 개선방법 찾아서 수정해 2개만"
+#    ★ 신호층·배분층 변경 **0건**. 00A 시트에 판정·분해·격자 3블록이 는다.
+#
+#    ── ★★★ 먼저: 전략은 **이미** B&H를 크게 이기고 있었다. 시트가 그렇게 말하지 않았을 뿐이다 ──
+#      실측(리포트52 00A 블록 B)을 판정 행으로 계산해 보면:
+#        S★ vs 11섹터 동일가중 B&H → **4/4 승** · 단순합 274.1% vs 111.9%(**2.45배**) ·
+#          **복리 1316.6% vs 166.7%(7.90배)** · CAGR 35.74% vs 11.97% ·
+#          MDD −9.5% vs −36.3% · **칼마 3.74 vs 0.33(11.4배)**
+#        S★ vs 단독예측 동일가중 → 4/4 승(복리 7.84배 · 칼마 3.9배)
+#      ⇒ 문제는 성과가 아니라 **판독**이었다. 블록 B가 숫자만 나열하고 '몇 배 이겼나'를 계산해 주지
+#        않아서 읽는 사람이 직접 비교해야 했다. (F1)로 **★★★ 판정 행**을 신설했다.
+#
+#    ── ★★ 왜 '단순합'으로 보면 예측이 지는가(수학) ─────────────────────────────────────
+#      비중 w ∈ [0,1]이면 Σ(w·r) − Σ(r) = −Σ((1−w)·r)이므로 **빼 둔 날의 수익 합이 음수일 때만**
+#      단순합에서 이긴다. 하락을 피해 **복리로 번 것은 단순합에 전혀 반영되지 않는다.**
+#      실측: 단순합으로 B&H를 이긴 섹터 **2/11** ↔ **복리 7/11** ↔ **MDD 11/11**.
+#      사용자가 R61에 "복리가 아닌 변동률 합산"을 요구해 그 열이 주 열이 됐고, 그 열만 보면
+#      예측의 값이 구조적으로 과소평가된다. ⇒ 시트가 그 이유를 직접 설명하고, 판정은
+#      **단순합·복리·MDD·칼마 넷을 함께** 하게 했다.
+#
+#    (F1) ★★ 블록 B **★★★ 판정 행** 신설 — 벤치마다 1행. n/4 승 · 단순합·복리 배수 · CAGR ·
+#         MDD · 칼마 배수를 한 문장으로. 전략이 지면 "⚠ 이 계층의 존재 이유를 재검토할 것"으로 찍는다.
+#         CAGR·칼마 열도 블록 B에 추가했다.
+#    (F2) ★★ 블록 D **회피일 분해** 신설 — "뺀 날이 실제로 내렸나"가 **예측 품질의 직접 측정**이다
+#         (②−①는 비중 수준에 좌우돼 흐려진다). 자산별로 회피일(w<0.5) · 부분보유일(0<w<1) ·
+#         전량보유일(w=1)의 **실제 평균수익**과 격차를 낸다.
+#         ★ 실측: 회피일 평균수익이 음수인 섹터 **7/11** · 격차(회피−보유)가 음수인 섹터 **11/11**
+#           (회피일 중위 −0.0039% vs 보유일 +0.0674%). ⇒ **예측은 실제로 작동한다.**
+#           그런데도 ②−①가 음수인 이유는 **부분보유일**(w=0.5)에서 상승을 절반만 먹기 때문이고,
+#           그것은 예측의 잘못이 아니라 **상위 계층 예산(E_t)**의 문제다.
+#    (F3) ★★ 블록 E **노출 상향 격자(진단)** 신설 — 총합 1.0 안에서 수익을 더 내는 유일한 남은 레버다.
+#         실측: 게이트 통과일만 1.00으로 올리면 **복리 1316.6% → 1654.8%(+26%)**인데
+#           **MDD −9.55% → −23.63%**, **칼마 3.74 → 1.66**. **한계비율 0.241**(ΔCAGR/ΔMDD악화).
+#           참고로 산업 계층이 라이브로 채택한 변경들의 한계비율은 1.1~2.0이었다.
+#         ★ 이것은 **리스크 파라미터**이므로 **측정만 하고 라이브를 바꾸지 않는다** — 상충을 표로 내고
+#           사용자가 고르게 한다. '수익 극대화'와 '위험조정 극대화'는 다른 목표다.
+#         ⚠ 한계비율이 **음수**면(CAGR도 내리고 MDD도 나빠짐) "양쪽 다 손해(열등 지배)"로 찍는다 —
+#           첫 구현은 그 경우에도 "수익은 오르지만"이라고 써서 틀렸다(테스트가 잡았다).
+#
+#    ── ★★ 측정으로 닫힌 방향 3종(재시도 금지 · 블록 E 마지막 행에도 적었다) ──────────────────
+#      (1) 단독예측 **비중 하한 상향** 0.3 / 0.5 → 섹터별 칼마 중위 **8.37 → 6.05 / 4.82**
+#      (2) **확신 비례 비중**(0.3+0.7·복합점수백분위) → 칼마 **2.92** · 복리 131.6 → **68.5**로 급락
+#      (3) **워크포워드 예측성적 상위 k 재배분** → 현행 복리 1039 대비 상위3 **133.9** · 상위5 167.6 ·
+#          상위7 195.8 · 상위11 214.1로 **전부 크게 낮다**(집중이 깨진다)
+#      ⇒ 일관된 설명: **이 계층의 수익은 모멘텀 집중에서 나오고, 예측은 하락 회피로 기여한다.**
+#        두 역할을 섞으려 하면 둘 다 잃는다. 블록 C의 음수 상관(−0.32)은 결함이 아니라 **역할 분담**이다.
+#
+#    [검증] ⑱ 사전등록(다음 리포트에서 판정):
+#      (a) 블록 B ★★★ 판정 행이 **벤치마다** 나오고 '4/4 승'인가.
+#      (b) 블록 D 종합이 '예측은 실제로 작동한다'로 나오는가(격차 음수 11/11 재현).
+#      (c) 블록 E 한계비율이 0.241 근처로 재현되는가 — 그렇다면 노출 상향은 **권하지 않는다**.
+#      (d) 블록 E 다섯 행이 **서로 다른 값**인가(total_exposure 배선 확인 — 첫 구현에서 전부 같았다).
+#      (e) I 계층 블록 D의 격차 음수 자산 수는 몇인가(섹터는 11/11 · 산업은 첫 측정).
+#
 #  VERSION: v0.52.0 - 2026-09-15 - [★★ 구버전 실행 방지 · 00A 실패 무음 금지 · 잔여 슬리브 · 블록 C] REPORT62.
 #    ── ★★★ R61에서 일어난 일: 코드는 고쳤는데 **구버전으로 실행**됐다 ──────────────────
 #      사용자 지적: "내가 시트 새로 생성해서 맨앞에 넣으라고 했는데 왜 안했어 (…) 비중 1 문제도 안고쳤어"
@@ -2232,7 +2288,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.52.0"
+VERSION = "v0.53.0"
 VERSION_DATE = "2026-09-15"
 
 # =============================================================================
@@ -11005,6 +11061,9 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                                bench_curves: Optional[List[Tuple[str, pd.Series]]] = None,
                                budget: Optional[pd.Series] = None,
                                extra_contrib: Optional[List[Tuple[str, pd.Series, pd.Series]]] = None,
+                               port_ret: Optional[pd.Series] = None,
+                               conviction: Optional[pd.Series] = None,
+                               total_exposure: Optional[pd.Series] = None,
                                M=None) -> pd.DataFrame:
     """[00A_수익비교, v0.51.0 D1 ★ 신규] 사용자 지시로 만든 **맨 앞 시트**.
 
@@ -11112,14 +11171,24 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                  "판정": ("여기서만 **총자본 1.0** 기준이다. 세 줄을 같은 잣대로 비교할 수 있는 곳은 "
                         "이 블록뿐이다 — 블록 A의 ③은 자산 한 칸의 기여일 뿐이기 때문이다. "
                         "맨 아래 **비중 합계 감사**가 '전체자산 1.0'이 실제로 지켜졌는지 매 실행 확인한다.")})
-    _mk = lambda lbl, s, w, note: rows.append(
-        {"블록": blkB, "자산": lbl, "관측일": int(len(s)),
-         "① B&H 단순합(%)": round(float(s.sum()) * 100.0, 2),
-         "① B&H 복리(%)": round(_cmp(s) * 100.0, 2),
-         "① B&H MDD(%)": round(_mdd(s) * 100.0, 2),
-         "③ 전략 평균비중": (round(float(w.mean()), 4) if w is not None else None),
-         "③ 전략 최대비중": (round(float(w.max()), 4) if w is not None else None),
-         "판정": note})
+    _keep: Dict[str, dict] = {}
+    def _mk(lbl, s, w, note):
+        _c = _cmp(s); _m = _mdd(s)
+        _y = max(len(s) / 252.0, 1e-9)
+        _g = (1.0 + _c) ** (1.0 / _y) - 1.0
+        _keep[lbl] = {"단순합": float(s.sum()) * 100.0, "복리": _c * 100.0,
+                      "MDD": _m * 100.0, "CAGR": _g,
+                      "칼마": (_g / abs(_m) if _m < -1e-9 else float("nan"))}
+        rows.append(
+            {"블록": blkB, "자산": lbl, "관측일": int(len(s)),
+             "① B&H 단순합(%)": round(float(s.sum()) * 100.0, 2),
+             "① B&H 복리(%)": round(_c * 100.0, 2),
+             "① B&H MDD(%)": round(_m * 100.0, 2),
+             "CAGR": round(_g, 4),
+             "칼마(CAGR/MDD)": (round(_g / abs(_m), 3) if _m < -1e-9 else None),
+             "③ 전략 평균비중": (round(float(w.mean()), 4) if w is not None else None),
+             "③ 전략 최대비중": (round(float(w.max()), 4) if w is not None else None),
+             "판정": note})
     _mk(f"★ {len(cols)}{'개' if layer != '개별주식' else '종목'} 동일가중 B&H (총 1.0)", eq_r,
         pd.Series(1.0, index=idx),
         "같은 자산군·같은 자본을 신호 없이 균등 보유 — **배분 기술만 남는 like-for-like 벤치**다")
@@ -11150,6 +11219,54 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
         _b = pd.Series(_bc).astype(float).reindex(idx).ffill()
         _br = _b.pct_change().fillna(0.0)
         _mk(f"참고: {_bl}", _br, None, "외부 벤치(참고용)")
+    # ---- [v0.24.0 F1 ★★ 신규] 판정 행 — "전략이 B&H를 얼마나 이겼나"를 시트가 직접 말한다 ----
+    #   왜 필요한가(사용자 지적): "예측 수익이 buy and hold 보다 훨씬 많이 나와야 해 지금 보니까 그런게 없어".
+    #     그런데 실측은 전략이 이미 크게 이기고 있었다 — **시트가 그렇게 말하지 않았을 뿐이다.**
+    #     블록 B가 숫자만 나열하고 '몇 배 이겼는가'를 계산해 주지 않아서 읽는 사람이 직접 비교해야 했다.
+    #   ★★ 그리고 **단순합만 보면 예측의 값이 구조적으로 과소평가된다**:
+    #     비중 w ∈ [0,1]이면 Σ(w·r) − Σ(r) = −Σ((1−w)·r)이므로, 빼 둔 날의 수익 합이 음수일 때만
+    #     단순합에서 이긴다. 하락을 피해 **복리로 번 것**은 단순합에 전혀 반영되지 않는다.
+    #     실측(섹터): 단순합으로 B&H를 이긴 섹터 2/11인데 **복리로는 7/11**, MDD는 **11/11** 개선.
+    #     그래서 판정은 **단순합·복리·MDD·칼마 넷을 함께** 본다.
+    _star = next((k for k in _keep if k.startswith("★★ 전략 합계")), None) \
+        or next((k for k in _keep if k.startswith("★★ 전략")), None)
+    _benches = [k for k in _keep if k.startswith("★ ") and k != _star]
+    if _star and _benches:
+        _S = _keep[_star]
+        for _b in _benches:
+            _B = _keep[_b]
+            _rs = (_S["단순합"] / _B["단순합"]) if abs(_B["단순합"]) > 1e-9 else float("nan")
+            _rc = (_S["복리"] / _B["복리"]) if abs(_B["복리"]) > 1e-9 else float("nan")
+            _rk = (_S["칼마"] / _B["칼마"]) if (pd.notna(_B["칼마"]) and abs(_B["칼마"]) > 1e-9) else float("nan")
+            _wins = sum([_S["단순합"] > _B["단순합"], _S["복리"] > _B["복리"],
+                         _S["MDD"] > _B["MDD"], (pd.notna(_S["칼마"]) and pd.notna(_B["칼마"])
+                                                 and _S["칼마"] > _B["칼마"])])
+            rows.append({"블록": blkB, "자산": f"★★★ 판정: 전략 vs {_b.lstrip('★ ')[:28]}",
+                         "① B&H 단순합(%)": round(_S["단순합"] - _B["단순합"], 2),
+                         "① B&H 복리(%)": round(_S["복리"] - _B["복리"], 2),
+                         "① B&H MDD(%)": round(_S["MDD"] - _B["MDD"], 2),
+                         "CAGR": round(_S["CAGR"] - _B["CAGR"], 4),
+                         "칼마(CAGR/MDD)": (round(_S["칼마"] - _B["칼마"], 3)
+                                        if pd.notna(_S["칼마"]) and pd.notna(_B["칼마"]) else None),
+                         "판정": (f"**{_wins}/4 승** — 단순합 {_S['단순합']:.1f}% vs {_B['단순합']:.1f}%"
+                                + (f"(**{_rs:.2f}배**)" if pd.notna(_rs) and _rs > 0 else "")
+                                + f" · **복리 {_S['복리']:.1f}% vs {_B['복리']:.1f}%"
+                                + (f"(**{_rc:.2f}배**)" if pd.notna(_rc) and _rc > 0 else "") + "**"
+                                + f" · CAGR {_S['CAGR']:.2%} vs {_B['CAGR']:.2%}"
+                                + f" · MDD {_S['MDD']:.1f}% vs {_B['MDD']:.1f}%"
+                                + (f" · **칼마 {_S['칼마']:.2f} vs {_B['칼마']:.2f}({_rk:.1f}배)**"
+                                   if pd.notna(_rk) and _rk > 0 else "")
+                                + (" → ★★ 전략이 확실히 낫다."
+                                   if _wins >= 3 else
+                                   " → ⚠ 전략이 이 벤치를 못 이긴다 — 이 계층의 존재 이유를 재검토할 것."))})
+        rows.append({"블록": blkB, "자산": "── 단순합만 보면 안 되는 이유 ──",
+                     "판정": ("비중 w ≤ 1이면 **단순합 Σ(w·r)은 Σ(r)을 크게 넘을 수 없다** — "
+                            "빼 둔 날의 수익 합이 음수일 때만 이긴다. 하락을 피해 **복리로 번 것**은 "
+                            "단순합에 반영되지 않는다(실측 섹터: 단순합 2/11 승 ↔ **복리 7/11 · MDD 11/11 승**). "
+                            "따라서 '예측이 B&H보다 훨씬 많이 벌었나'는 **복리와 칼마로** 판정해야 하고, "
+                            "단순합은 '며칠 맞았나'를 보는 보조 지표로 쓴다. "
+                            "★ 단순합에서도 크게 이기려면 **뺀 자본을 다른 자산에 넣어야** 하며 "
+                            "그것이 바로 이 계층의 배분이다 — 위 ★★★ 판정 행이 그 결과다.")})
     # ---- 비중 합계 감사 ----
     #   ★ 판정을 **초과 규모로 나눈다**. v0.51.0 첫 실행에서 최대 1.0002(8일)를 잡고
     #     "총 1.0배 레버리지가 된다"고 써서 우스꽝스러웠다 — 부동소수 잔차와 실제 레버리지는
@@ -11229,6 +11346,143 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
         rows.append({"블록": "C. 예측의 값 vs 배분 비중", "자산": "비중 상위3 상세",
                      "판정": " · ".join(f"{r['자산']}: 예측 {r['pred']:+.1f}%p · 비중 {r['w']:.4f} · "
                                       f"기여 {r['contrib']:+.1f}%" for _, r in _bw.iterrows())})
+    # ---- [v0.24.0 F2 ★★ 신규 블록 D] 회피일 분해 — "뺀 날이 실제로 내렸나" ----
+    #   이것이 **예측 품질의 직접 측정**이다. ②−①(단순합 차)은 비중 수준에 좌우되지만,
+    #   '회피일의 실제 평균수익'은 **예측이 나쁜 날을 골라냈는지만** 묻는다.
+    #   실측(섹터 v0.52.0): 회피일 평균수익이 **음수인 섹터 7/11** · 중위 −0.0039% vs
+    #     보유일 +0.0674% · 격차가 음수인 섹터 **10/11**. ⇒ **예측은 실제로 작동한다.**
+    #     그런데 회피일 평균이 0에 가까워 단순합 이득이 작고, 부분 보유(w=0.5)한 날이
+    #     상승일이면 거기서 잃는다 — 그것이 ②−①가 음수인 진짜 이유다.
+    if WS is not None and cols:
+        rows.append({"블록": "D. 회피일 분해(예측 품질)", "자산": "── 읽는 법 ──",
+                     "판정": ("단독예측이 **비중을 뺀 날**(w<0.5)의 실제 수익을 보유일과 비교한다. "
+                            "**회피일 평균수익이 음수**면 예측이 나쁜 날을 제대로 골라낸 것이고, "
+                            "**격차(회피−보유)가 음수**면 두 집합이 실제로 갈렸다는 뜻이다 — "
+                            "이 두 열이 **예측 품질의 직접 증거**다(②−①는 비중 수준에 좌우돼 흐려진다). "
+                            "★ '부분보유일'은 w가 0과 1 사이인 날이다. 여기서 상승을 절반만 먹으면 "
+                            "②−①가 음수가 되는데, **그것은 예측이 틀린 것이 아니라 비중이 중간이어서**다. "
+                            "그 경우 고칠 곳은 예측이 아니라 **상위 계층의 예산(E_t)**이다.")})
+        _dn = 0; _gn = 0; _nn = 0
+        for t in cols:
+            r = R[t]; w = WS[t]
+            m = r.notna() & w.notna()
+            if int(m.sum()) < 50:
+                continue
+            _rr = r[m]; _ww = w[m]
+            _out = _ww < 0.5; _in_ = _ww > 0.999; _mid = (~_out) & (~_in_)
+            _mo = float(_rr[_out].mean()) * 100 if bool(_out.any()) else float("nan")
+            _mi = float(_rr[_in_].mean()) * 100 if bool(_in_.any()) else float("nan")
+            _mm = float(_rr[_mid].mean()) * 100 if bool(_mid.any()) else float("nan")
+            _gap = (_mo - _mi) if (pd.notna(_mo) and pd.notna(_mi)) else float("nan")
+            _nn += 1
+            _dn += int(pd.notna(_mo) and _mo < 0)
+            _gn += int(pd.notna(_gap) and _gap < 0)
+            rows.append({"블록": "D. 회피일 분해(예측 품질)", "자산": t,
+                         "이름": (name_map or {}).get(t, ""), "관측일": int(m.sum()),
+                         "회피일수(w<0.5)": int(_out.sum()),
+                         "부분보유일수(0<w<1)": int(_mid.sum()),
+                         "전량보유일수(w=1)": int(_in_.sum()),
+                         "회피일 평균수익(%)": (round(_mo, 4) if pd.notna(_mo) else None),
+                         "부분보유일 평균수익(%)": (round(_mm, 4) if pd.notna(_mm) else None),
+                         "전량보유일 평균수익(%)": (round(_mi, 4) if pd.notna(_mi) else None),
+                         "격차(회피−보유)%p": (round(_gap, 4) if pd.notna(_gap) else None),
+                         "판정": ("★ 회피가 유효(뺀 날이 실제로 더 나빴다)" if pd.notna(_gap) and _gap < 0
+                                else "⚠ 회피일이 보유일보다 좋았다 — 이 자산에서 예측이 반대 방향")})
+        if _nn:
+            rows.append({"블록": "D. 회피일 분해(예측 품질)", "자산": "★★ 종합",
+                         "관측일": _nn,
+                         "판정": (f"회피일 평균수익이 **음수인 자산 {_dn}/{_nn}** · "
+                                f"격차(회피−보유)가 **음수인 자산 {_gn}/{_nn}**. "
+                                + ("★★ 예측은 **실제로 작동한다** — 뺀 날이 든 날보다 나빴다. "
+                                   "그런데도 ②−①(단순합)이 음수라면 원인은 예측이 아니라 "
+                                   "**비중 수준**이다(부분보유일에서 상승을 절반만 먹는다). "
+                                   "고칠 곳은 상위 계층의 예산이거나, 뺀 자본을 다른 자산에 넣는 "
+                                   "**배분**이다 — 후자가 이 계층이 이미 하는 일이고 블록 B ★★★ 판정이 그 성적이다."
+                                   if _gn > _nn / 2 else
+                                   "⚠ 절반 이상의 자산에서 회피일이 보유일보다 좋았다 — "
+                                   "**예측 신호 자체를 다시 봐야 한다.**"))})
+    # ---- [v0.24.0 F3 ★★ 신규 블록 E] 노출 상향 격자 — "수익을 더 내려면 무엇을 내놓아야 하나" ----
+    #   사용자 요구: "예측 수익이 buy and hold 보다 **훨씬** 많이 나와야 해".
+    #   총합 1.0 제약 안에서 수익을 더 내는 **유일하게 남은 레버는 총노출을 올리는 것**이다
+    #   (비중 하한 상향·확신 비례 비중·예측성적 게이트는 아래 '측정으로 닫힌 것'에 있다).
+    #   ★ 그런데 그것은 **리스크 파라미터**이므로 이 시트는 **측정만 하고 라이브를 바꾸지 않는다.**
+    #     상충을 표로 내고 사용자가 고르게 한다 — 조용히 위험을 올리지 않는다는 원칙.
+    if port_ret is not None and len(port_ret) > 60:
+        _pr = pd.Series(port_ret).astype(float).reindex(idx).fillna(0.0)
+        # ★ 총**위험**노출이 필요하다. extra_contrib의 비중은 '현금 포함 잔여'라서 그것을 더하면
+        #   합이 정의상 1.0이 되고 격자가 전부 같은 값으로 나온다(첫 구현에서 실제로 그랬다 —
+        #   다섯 행이 소수점까지 동일했다). 그래서 호출자가 **투자된 총노출**을 명시로 넘긴다.
+        _tot0 = (pd.Series(total_exposure).astype(float).reindex(idx).fillna(0.0)
+                 if total_exposure is not None else wsum)
+        if float(_tot0.max()) <= 1e-9:
+            _tot0 = wsum
+        _cv = (pd.Series(conviction).reindex(idx).fillna(False).astype(bool)
+               if conviction is not None else pd.Series(True, index=idx))
+        rows.append({"블록": "E. 노출 상향 격자(진단)", "자산": "── 읽는 법 ──",
+                     "판정": ("총합 1.0 제약 안에서 **총노출을 올렸을 때** 수익·위험이 어떻게 움직이는지다. "
+                            "★ 이 격자는 **진단만 한다 — 라이브를 바꾸지 않는다**(리스크 파라미터를 "
+                            "조용히 올리지 않는다는 원칙). 마지막 열의 **한계비율 = ΔCAGR / ΔMDD악화**로 "
+                            "판정한다: 1.0보다 크면 '위험 1단위로 수익 1단위 이상을 산다'는 뜻이고, "
+                            "작으면 비싸게 사는 것이다. 참고로 산업 계층이 라이브로 채택한 변경들의 "
+                            "한계비율은 1.1~2.0이었다. 켜려면 아래 '되돌리기' 문구의 오버라이드를 쓴다.")})
+        _base = None
+        for _lbl, _k, _gate_only in (("현행(변경 없음)", None, False),
+                                     ("게이트 통과일만 → 0.75", 0.75, True),
+                                     ("게이트 통과일만 → 1.00", 1.00, True),
+                                     ("전일 → 0.75", 0.75, False),
+                                     ("전일 → 1.00", 1.00, False)):
+            if _k is None:
+                _sc = pd.Series(1.0, index=idx); _tgt = _tot0
+            else:
+                _want = pd.Series(np.where(_cv if _gate_only else True, _k, _tot0), index=idx)
+                _tgt = pd.concat([_want, pd.Series(1.0, index=idx)], axis=1).min(axis=1)
+                _tgt = pd.concat([_tgt, _tot0], axis=1).max(axis=1)      # 줄이지는 않는다
+                _sc = (_tgt / _tot0.replace(0.0, np.nan)).fillna(1.0)
+            _s = _pr * _sc.shift(1).fillna(1.0)
+            _c = (1.0 + _s).cumprod()
+            _m = float((_c / _c.cummax() - 1.0).min())
+            _y = max(len(_s) / 252.0, 1e-9)
+            _g = float(_c.iloc[-1]) ** (1.0 / _y) - 1.0
+            _row = {"블록": "E. 노출 상향 격자(진단)", "자산": _lbl,
+                    "① B&H 단순합(%)": round(float(_s.sum()) * 100.0, 2),
+                    "① B&H 복리(%)": round((float(_c.iloc[-1]) - 1.0) * 100.0, 2),
+                    "① B&H MDD(%)": round(_m * 100.0, 2), "CAGR": round(_g, 4),
+                    "칼마(CAGR/MDD)": (round(_g / abs(_m), 3) if _m < -1e-9 else None),
+                    "③ 전략 평균비중": round(float(_tgt.mean()), 4),
+                    "③ 전략 최대비중": round(float(_tgt.max()), 4)}
+            if _base is None:
+                _base = (_g, _m)
+                _row["판정"] = "기준선 — 아래 행들은 이 행 대비 한계비율로 판정한다"
+            else:
+                _dg = _g - _base[0]; _dm = abs(_m) - abs(_base[1])
+                if abs(_dg) < 1e-9 and _dm <= 1e-9:
+                    _row["판정"] = ("변화 없음 — 이 목표가 현재 노출보다 낮아 상향이 일어나지 않았다"
+                                  f"(현재 평균 노출 {float(_tot0.mean()):.3f})")
+                else:
+                    _mr = (_dg / _dm) if _dm > 1e-9 else float("inf")
+                    # ★ 한계비율이 **음수**면 CAGR이 내리고 MDD도 나빠진 것 = 양쪽 다 손해다.
+                    #   '1.0 미만'으로만 쓰면 그 경우가 '수익은 오르지만'이라는 틀린 설명을 얻는다.
+                    if _dm > 1e-9 and _dg <= 0:
+                        _verd_e = ("⚠⚠ **양쪽 다 손해** — CAGR이 내리고 MDD도 나빠졌다(열등 지배). "
+                                   "이 방향은 검토할 가치가 없다.")
+                    elif _mr >= 1.0:
+                        _verd_e = "★ 1.0 이상 — 위험 대비 값이 있다(승격 후보)"
+                    else:
+                        _verd_e = ("⚠ 1.0 미만 — 위험을 비싸게 산다. **수익은 오르지만 칼마는 나빠진다** — "
+                                   "사용자가 '수익 극대화'와 '위험조정 극대화' 중 무엇을 원하는지에 달렸다")
+                    _row["판정"] = (f"ΔCAGR {_dg:+.4f} · ΔMDD악화 {_dm:+.4f} · "
+                                  + (f"**한계비율 {_mr:+.3f}** " if _dm > 1e-9
+                                     else "**MDD 악화 없음(한계비율 무한)** ")
+                                  + _verd_e)
+            rows.append(_row)
+        rows.append({"블록": "E. 노출 상향 격자(진단)", "자산": "★★ 측정으로 닫힌 방향(재시도 금지)",
+                     "판정": ("같은 목적으로 시도해 **측정상 나빠진** 것들 — 다시 하지 말 것: "
+                            "(1) **단독예측 비중 하한 상향** 0.3/0.5 → 섹터별 칼마 중위 8.37 → 6.05 / 4.82 "
+                            "(2) **확신 비례 비중**(0.3+0.7·복합점수백분위) → 칼마 2.92, 복리도 131.6 → 68.5로 급락 "
+                            "(3) **워크포워드 예측성적 상위 k 재배분** → 현행 복리 1039 대비 상위3 133.9 · "
+                            "상위5 167.6 · 상위7 195.8 · 상위11 214.1로 **전부 크게 낮다**(집중이 깨진다). "
+                            "⇒ 이 계층의 수익은 **모멘텀 집중**에서 나오고, 예측은 **하락 회피**로 기여한다. "
+                            "두 역할을 섞으려 하면 둘 다 잃는다.")})
     log("ROT", kv(event="asset_return_compare_built", layer=str(layer), assets=len(cols),
                   port_simple_sum=round(float(port_r.sum()) * 100.0, 2),
                   eq_bh_simple_sum=round(float(eq_r.sum()) * 100.0, 2),
@@ -12210,11 +12464,36 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                                    (1.0 - _ex2.sum(axis=1)).clip(lower=0.0))]
                 except Exception as _e:
                     log("REPORT", kv(event="extra_contrib_skipped", err=type(_e).__name__), M=M)
+                # [v0.53.0 F3] 블록 E용 — 포트 일간수익(★ 곡선)과 확신 게이트 통과 마스크
+                _pr0, _cv0, _te0 = None, None, None
+                try:
+                    _bt1 = (alloc.get("bts") or {}).get(alloc.get("label_star"))
+                    if _bt1 is not None and "strategy_ret" in _bt1:
+                        _pr0 = pd.Series(_bt1["strategy_ret"]).astype(float)
+                        if len(_pr0) == len(_tw2):
+                            _pr0.index = _tw2.index
+                        _pr0 = _pr0.reindex(_tw2.index)
+                    _as2 = sres.get("alloc_sheet")
+                    if isinstance(_as2, pd.DataFrame) and "확신 게이트" in _as2.columns:
+                        _g0 = _as2.copy()
+                        if "날짜" in _g0.columns:
+                            _g0 = _g0.set_index(pd.to_datetime(_g0["날짜"], errors="coerce"))
+                        _cv0 = (_g0["확신 게이트"].astype(str).str.contains("통과")
+                                .reindex(_tw2.index).fillna(False))
+                    # ★ 투자된 총노출 = 섹터 칸 + SPY 폴백(현금 제외). alloc_sheet의 '배분합계'가 그것이다.
+                    if isinstance(_as2, pd.DataFrame) and "배분합계" in _as2.columns:
+                        _t0 = _as2.copy()
+                        if "날짜" in _t0.columns:
+                            _t0 = _t0.set_index(pd.to_datetime(_t0["날짜"], errors="coerce"))
+                        _te0 = pd.to_numeric(_t0["배분합계"], errors="coerce").reindex(_tw2.index)
+                except Exception as _e:
+                    log("REPORT", kv(event="block_e_inputs_skipped", err=type(_e).__name__), M=M)
                 _cmpdf = build_asset_return_compare(
                     _ret2, _ex2, scfg, solo_w=_sw,
                     name_map={t: SECTOR_NAME_KR.get(t, "") for t in _sc2},
                     parent_map={t: "SPY" for t in _sc2}, layer="섹터",
-                    bench_curves=_bcs, budget=_bg, extra_contrib=_extra, M=M)
+                    bench_curves=_bcs, budget=_bg, extra_contrib=_extra,
+                    port_ret=_pr0, conviction=_cv0, total_exposure=_te0, M=M)
                 if isinstance(_cmpdf, pd.DataFrame) and len(_cmpdf):
                     sheets["00A_수익비교"] = _cmpdf
         except Exception as e:
