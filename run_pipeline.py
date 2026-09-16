@@ -19,6 +19,12 @@
 #  VERSION: v1.19.0 - 2026-09-15 - [구버전 실행 방지 가드 · 기능 체크리스트] REPORT62.
 #    R61에서 코드는 고쳤는데 노트북이 구버전을 wget해 새 시트가 없었다. _MIN 표 + ⚠⚠⚠ 경고 신설.
 #
+#  VERSION: v1.20.0 - 2026-09-16 - [ROUND66 — S v0.56.0] 구버전 가드 최소버전 상향 + 신규 기능 2건 확인.
+#    · _MIN의 S 최소버전 v0.55.0 → **v0.56.0**.
+#    · 기능 체크리스트에 **★E_t바닥·퇴출(라이브)**(market_exposure_floor)과 **★00B_곡선그래프**를 추가 —
+#      사용자가 "뭘 고쳤는지도 모르겠고 수치가 그대로인데"라고 지적한 R64 사고(구버전 파일로 실행)의
+#      재발 방지. 갱신 확인 문구도 "2번째 탭이 00B_곡선그래프 · 22_시장예산바닥판정 존재"로 바꿨다.
+#
 #  VERSION: v1.18.0 - 2026-09-15 - [ROUND61 — S v0.51.0 · I v0.22.0 · K v0.3.0] 00A 시트 · 배분층 · 다음날.
 #    사용자 지시 넷: (1) "각각 맨 앞에 시트 새로 하나 생성해서 각 섹터, 산업, 주식별 buy and hold시
 #    수익률(이 때 수익률은 복리가 아닌 변동률 합산)과 단독 예측으로 거래 시 수익률 비교하고 전략 수익률도
@@ -1148,8 +1154,8 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.19.3"
-VERSION_DATE = "2026-09-15"
+VERSION = "v1.20.0"
+VERSION_DATE = "2026-09-16"
 
 MODULE_FILES = {
     "market_regime_trader": "market_regime_trader.py",
@@ -1255,7 +1261,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     #   S v0.50.0 / I v0.21.0 / K v0.2.1로 돌았다. 리포트에 00A 시트가 없고 비중 합계도 그대로였다.
     #   배너만 보고는 그것을 알 수 없었다 — 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없었다.
     #   ⇒ 이제 최소 버전을 코드가 알고 있고, 미달이면 **어느 파일을 갱신해야 하는지** 크게 알린다.
-    _MIN = {"sector_rotation.py": ("S", "v0.55.0", S),
+    _MIN = {"sector_rotation.py": ("S", "v0.56.0", S),
             "industry_rotation.py": ("I", "v0.25.0", I),
             "stock_regime.py": ("K", "v0.3.1", K)}
     def _vt(x):
@@ -1286,6 +1292,12 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
             _feat.append("19블록C")
         if _tag == "K" and hasattr(_mod, "build_allocation"):
             _feat.append("배분층(총합1.0)")
+        # [v1.20.0 ROUND66] S의 이번 라운드 신규 2건을 이름으로 확인한다 — 사용자가 "뭘 고쳤는지
+        #   모르겠고 수치가 그대로"라고 지적한 R64 사고의 재발 방지. 둘 중 하나라도 없으면 구버전이다.
+        if hasattr(_mod, "market_exposure_floor"):
+            _feat.append("★E_t바닥·퇴출(라이브)")
+        if _tag == "S" and hasattr(_mod, "build_curve_compare"):
+            _feat.append("★00B_곡선그래프")
         print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
               + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
     if _stale:
@@ -1296,10 +1308,12 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         print("[runner]   원인: 노트북 상단 wget이 GitHub의 **이전 파일**을 가져왔습니다.")
         print("[runner]   조치: 위 파일을 저장소(main)에 덮어쓴 뒤 다시 실행하거나,")
         print("[runner]         Kaggle 세션의 .py 캐시를 지우고(런타임 재시작) wget을 다시 받으세요.")
-        print("[runner]   확인: 실행 후 리포트 **맨 앞에 00A_수익비교 시트**가 있으면 갱신된 것입니다.")
+        print("[runner]   확인: 실행 후 섹터 리포트 **2번째 탭이 00B_곡선그래프(실제 꺾은선 차트)**이고")
+        print("[runner]         **22_시장예산바닥판정** 시트가 있으면 v0.56.0으로 갱신된 것입니다.")
         print("[runner] " + "=" * 74)
     else:
-        print("[runner]   ★ 전부 최신 — 리포트 맨 앞에 00A_수익비교 시트가 나옵니다")
+        print("[runner]   ★ 전부 최신 — 섹터 리포트 2번째 탭에 00B_곡선그래프(실제 그래프) · "
+              "22_시장예산바닥판정이 나옵니다")
     assert hasattr(S, "run"), "S.run이 없음 - GitHub에 올린 sector_rotation.py를 다시 확인하세요"
     if I is not None:
         assert hasattr(I, "run"), "I.run이 없음 - GitHub에 올린 industry_rotation.py를 다시 확인하세요"

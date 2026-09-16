@@ -17,6 +17,58 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.56.0 - 2026-09-16 - [★★★ 라이브: 시장 예산 E_t 바닥·퇴출 · ★ 수익곡선 실제 그래프] REPORT66.
+#    사용자 지시: "아니 **수익 곡선 비교를 그래프로 나타내라고** XLK XLV XLY XLP XLF 이 5개 섹터만 일단
+#    예측 향상시켜봐 하락을 못피한 부분, 상승을 타지 못한 부분 원인과 문제를 찾아 개선해"
+#
+#  [J3 ★ 사용자 지시 직접 대응 — 표가 아니라 그래프] v0.55.0은 00B에 **연말 값 표**만 냈다. 이번에
+#    xlsxwriter 꺾은선 차트를 **실제로 그린다**:
+#      · 신규 시트 **00B_곡선그래프**(탭 맨 앞 · 00_실행요약 다음) — 섹터마다 차트 1개 · 계열 3개
+#        (① B&H / ② 단일 섹터 예측 / ③ 국면 예측), 맨 위에 11섹터 ② 전체 비교 차트 1개. y축 로그.
+#      · 신규 시트 **00C_곡선데이터** — 차트가 참조하는 **일별** 날짜×계열 표(연말 표본이 아니라 전체).
+#      · 차트 워크시트를 ExcelWriter 진입 직후에 add_worksheet한다 — xlsxwriter는 생성 순서가 탭
+#        순서이고 나중에 재정렬이 안 되기 때문이다(차트 계열의 시트명 참조는 close() 때 해석된다).
+#      · build_curve_compare 반환이 **(표, 일별곡선) 2튜플**로 바뀌었다(실패 경로도 동일 모양).
+#      · 블록 C 수정 2건: 연도를 '관측일'이 아니라 **연도** 열에 넣고(리포트4에서 헷갈렸다),
+#        차이 0인 해를 "✗ 뒤졌다"로 쓰지 않는다 → "= 동일(그 해 비중이 줄지 않았다)".
+#
+#  [J1 ★★★ 라이브 신호층 변경 · ⚠ 위험 파라미터(노출) 변경] market_exposure_floor() —
+#    섹터 자기 신호의 **노출 수준**을 시장 국면 예산 E_t로 교정한다(방향은 섹터, 수준은 시장).
+#      w(t) = 0 if E_t(t) <= 0 else max(w_sector(t), E_t(t))      ← 적합시킨 문턱 0개
+#    ── 왜(리포트4가 이 계층의 근본 문제를 드러냈다) ──
+#      00B: **③ 국면예측(E_t 그대로)이 ① B&H를 11/11로 이기는데 ② 단일 섹터 예측은 8/11**,
+#      그리고 **②가 ③을 이기는 섹터는 0/11**이었다(v0.55.0 사전등록 예측은 1/11 — XLU도 뒤집혔다).
+#      00A 블록 D는 섹터 신호의 **방향은 맞다**고 말한다(회피−보유 격차 10/11 음수 = 뺀 날이 더 나빴다).
+#      ⇒ 틀린 것은 방향이 아니라 **노출 수준**이고, 리포트4로 두 갈래로 분해해 각각 측정했다:
+#        ⓐ **하락을 못 피한 곳** — E_t=0(시장 대피)인데 섹터 국면은 하락 아님:
+#           **4,813 자산일 · 실제 평균 −0.0313%/일 · 합 −150.6%** (계속 들고 있었다)
+#        ⓑ **상승을 못 탄 곳** — E_t > 섹터비중(시장 풀노출, 섹터 부분보유):
+#           **2,513 자산일 · 실제 평균 +0.1041%/일**(전 버킷 중 **최고 수익일 집합**) · 합 +261.7%인데
+#           기존 비중으로는 135.5%만 먹었다 ⇒ **가장 좋은 날에 정확히 비중이 낮았다**
+#    ── 실측(검증된 오프라인 하네스 — 엔진 ②를 11섹터 전부 소수점까지 재현한 뒤 측정) ──
+#        기존 ②  : B&H 초과 **8/11** · 중위복리 147.1% · 중위MDD −20.47 · 중위칼마 0.50 · 평균비중 0.720
+#        ③ 순수  : B&H 초과 11/11 · 중위복리 336.1% · 중위MDD −14.27 · 중위칼마 1.17 · 평균비중 0.565
+#        **신규** : B&H 초과 **11/11** · 중위복리 **361.1%** · 중위MDD **−14.28** · 중위칼마 1.08 ·
+#                  평균비중 **0.673**(노출이 **줄면서** 수익↑ MDD↑ — 노출 확대로 산 수익이 아니다)
+#        ★ 지목 5섹터 전부 B&H 대폭 초과 **5/5**: XLK 462→**1212**(B&H 537) · XLV 81→**171**(131) ·
+#          XLY 170→**496**(148) · XLP 87→**148**(84) · XLF 188→**361**(141)
+#        ★★ **② > ③ 가 0/11 → 8/11** — 이 계층이 '시장 하나만 보는 것'보다 나아진 첫 라운드다.
+#        ★ 달력 대조군(같은 0-비중 일수를 신호 없이 균등 배치) **11/11 초과** · 중위 361.1 vs 118.0.
+#        ★ 레버리지 유입 없음 — 리포트4 11섹터 전부 신규 최대비중 1.000 확인(E_t<=1 · w_s<=1 ⇒ max<=1).
+#        ★ 섹터 고유 정보 유지 — w_s > E_t인 날이 섹터당 **15.1~30.9%**이고 그 날 비중은 섹터가 정한다.
+#        ⚠ 정직한 비용: 저변동 상승장(2021 · 2023)에서 E_t=0 오경보만큼 뒤진다(섹터당 −0.2~−15.2%p).
+#          ③도 같은 비용을 낸다 — E_t의 오경보를 물려받는 것이 이 규칙의 대가다.
+#        ⚠ 섹터 자기 하락 veto는 **일부러 넣지 않았다**: E_t>0인데 섹터만 하락인 날이 11섹터 합
+#          **177일**뿐이고 평균 **+0.0023%/일(≈0)** — 측정상 무가치하고, XLV(하락일 평균 **+0.1137%**
+#          = 신호 반전)에서는 −38.5%p 손해였다. WF 게이트를 씌운 변형은 floor-only와 **완전히 동일한
+#          수치**가 나와(=veto가 실질 no-op) 복잡도만 늘리므로 채택하지 않았다.
+#    ⚠⚠ **위험 파라미터 변경 고지(사용자 규칙 7)**: target_pos(노출)를 바꾼다 — E_t=0 구간 비중 0 강제,
+#        E_t > 섹터비중 구간 비중을 E_t까지 상향. 로그 [MKT_FLOOR]와 시트 22_시장예산바닥판정에 전부 남는다.
+#        **되돌리기: s_overrides={"MKT_FLOOR_ENABLE": False} ⇒ v0.55.0 동작으로 정확히 복귀**
+#
+#  [J2 ★ 신규 시트] **22_시장예산바닥판정** — 섹터×연도로 ⓐ 퇴출일수 / ⓑ 바닥발동일수 / 평균비중
+#    이전·이후를 낸다. 사용자가 "뭘 고쳤는지 모르겠고 수치가 그대로"라고 한 R64 지적의 재발 방지책이다.
+#
 #  VERSION: v0.55.0 - 2026-09-16 - [★★★ 하락 회피 라이브 변경 · 00B 수익곡선비교 + ★★ 중대 발견] REPORT65.
 #    사용자 지시: "XLK XLV XLY XLP XLF 이 5개 섹터만 일단 예측 향상시켜봐 하락을 못피한 부분, 상승을
 #    타지 못한 부분 원인과 문제를 찾아 개선해 그리고 buy and hold와 단일 섹터 예측, 국면 예측 수익 곡선
@@ -2414,8 +2466,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.55.0"
-VERSION_DATE = "2026-09-15"
+VERSION = "v0.56.0"
+VERSION_DATE = "2026-09-16"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -3216,6 +3268,24 @@ class SectorConfig:
     HAZARD_PCT_CUT: Optional[float] = 0.95
     HAZARD_LOW_FIRE_RATE: float = 0.06          # 이 발동율 미만인 섹터에만 적용
     HAZARD_CUT_MIN_DAYS: int = 250              # 이전 관측이 이보다 적으면 그 해는 적용하지 않는다
+    # ---- [v0.56.0 J1 ★★★ 라이브 · ⚠ 위험 파라미터(노출)] 시장 국면 예산 E_t 바닥·퇴출 ----
+    #   규칙(파라미터 0개): w = 0 if E_t <= MKT_FLOOR_MIN_ET else max(w_sector, E_t).
+    #   왜: 리포트4 00B — ③ 국면예측(E_t 그대로)이 B&H를 11/11로 이기는데 ②는 8/11이고 **②>③ 0/11**.
+    #     섹터 신호는 방향은 맞고(00A 블록 D 격차 10/11 음수) **노출 수준이 양방향으로 틀렸다**:
+    #       ⓐ E_t=0인데 섹터는 하락 아님 4,813일 · 평균 −0.0313%/일 (하락을 못 피한 곳)
+    #       ⓑ E_t > 섹터비중        2,513일 · 평균 +0.1041%/일 (전 버킷 최고 · 상승을 못 탄 곳)
+    #   실측: B&H 초과 **8/11 → 11/11** · 중위복리 147.1 → **361.1** · 중위MDD −20.47 → **−14.28** ·
+    #     평균비중 0.720 → **0.673**(노출은 줄고 수익은 늘었다) · **②>③ 0/11 → 8/11** ·
+    #     지목 5섹터 XLK 462→1212 · XLV 81→171 · XLY 170→496 · XLP 87→148 · XLF 188→361 (5/5) ·
+    #     달력 대조군 11/11 초과(중위 361.1 vs 118.0).
+    #   ⚠ 비용: 저변동 상승장(2021·2023)에서 E_t=0 오경보만큼 뒤진다 — ③도 같은 비용을 낸다.
+    #   ⚠ 섹터 자기 하락 veto는 **일부러 뺐다**: E_t>0인데 섹터만 하락인 날이 11섹터 합 177일뿐이고
+    #     평균 +0.0023%/일(≈0)로 무가치했으며, XLV(하락일 평균 +0.1137% = 신호 반전)에서는 −38.5%p 손해.
+    #   ⚠ 되돌리기: s_overrides={"MKT_FLOOR_ENABLE": False} ⇒ v0.55.0 동작으로 정확히 복귀
+    MKT_FLOOR_ENABLE: bool = True
+    MKT_FLOOR_MODE: str = "max"                 # "max"(채택) | "mult"(측정 9/11, 열등) | "off"(퇴출만)
+    MKT_FLOOR_EXIT_ON_ZERO: bool = True         # E_t <= MKT_FLOOR_MIN_ET인 날 비중 0
+    MKT_FLOOR_MIN_ET: float = 0.0
     # ---- [v0.55.0 H2] 00B_수익곡선비교 시트의 '지정 섹터' — 블록 C에 연도별로 쪼개 싣는다 ----
     #   사용자가 이번 라운드에 지목한 5섹터. 바꾸려면 s_overrides={"CURVE_FOCUS": ("XLK",...)}
     CURVE_FOCUS: Tuple[str, ...] = ("XLK", "XLV", "XLY", "XLP", "XLF")
@@ -5304,6 +5374,125 @@ def hazard_pct_cut_wf(state: pd.Series, target_pos: pd.Series, haz_pct_own: pd.S
     return out, log_df
 
 
+
+def market_exposure_floor(state: pd.Series, target_pos: pd.Series, Et: pd.Series,
+                          cfg: Any, ticker: str = "", M=None) -> Tuple[pd.Series, pd.DataFrame]:
+    """[v0.56.0 J1 ★★★ 신규 · 라이브 신호층 변경 · ⚠ 위험 파라미터(노출) 변경] 섹터 자기 신호의
+    **노출 수준**을 시장 국면 예산 E_t로 교정한다 — 방향은 섹터가, 수준은 시장이 정한다.
+
+    ── 왜(리포트4 · 사용자 지시 "하락을 못피한 부분, 상승을 타지 못한 부분 원인과 문제를 찾아 개선") ──
+      리포트4 00B가 이 계층의 근본 문제를 드러냈다: **③ 국면예측(= E_t를 그 섹터에 그대로 적용)이
+      ① B&H를 11/11로 이기는데, ② 단일 섹터 예측은 8/11이고 ②가 ③을 이기는 섹터는 0/11**이었다.
+      즉 섹터 자기 신호는 **방향은 맞지만 노출 수준이 양방향으로 틀렸다**(00A 블록 D: 회피−보유
+      격차가 10/11에서 음수 = 뺀 날이 실제로 더 나빴다 ⇒ 방향은 옳다).
+
+      그 '수준 오류'를 리포트4 데이터로 두 갈래로 분해해 각각 측정했다(11섹터 풀링 · 24,035 자산일):
+        ⓐ **하락을 못 피한 곳** — E_t = 0(시장은 대피 지시)인데 섹터 자기 국면은 하락이 아닌 날
+           **4,813일 · 실제 평균 −0.0313%/일 · 합 −150.6%** — 그 구간을 계속 들고 있었다.
+        ⓑ **상승을 못 탄 곳** — E_t > 섹터 비중(시장은 풀노출, 섹터는 부분보유)인 날
+           **2,513일 · 실제 평균 +0.1041%/일 · 합 +261.7%**(전 버킷 중 **최고 수익일 집합**)인데
+           기존 비중으로는 135.5%만 먹었다 ⇒ **가장 좋은 날에 정확히 비중이 낮았다**.
+      ⇒ ⓐ는 '내리는 날을 피하지 못한 것', ⓑ는 '오르는 날을 타지 못한 것'이고 **둘 다 E_t가 이미
+        알고 있던 것**이다. 섹터 신호를 버리지 않고 E_t를 **바닥(floor)과 퇴출(exit)로만** 얹는다.
+
+    ── 규칙(파라미터 0개 · 룩어헤드 없음) ──────────────────────────────────────────────
+        w_new(t) = 0                              if E_t(t) <= MKT_FLOOR_MIN_ET   (시장 대피 → 퇴출)
+                 = max(w_sector(t), E_t(t))       otherwise                        (시장 예산 → 바닥)
+      ★ **적합시킨 문턱이 하나도 없다** — 섹터별 튜닝도, 연도별 채택도 없다(그래서 과최적화 여지가 없다).
+      ★ 룩어헤드 없음: E_t(t)는 SPY가 **t 종가까지의 정보로** 정한 목표비중이고 섹터 신호도 같은 t
+        기준이다. 둘을 t에서 맞추고 체결 지연(t+1)은 백테스트가 처리한다 — 배분 계층이 이미 쓰는 규칙과 동일.
+      ★ 레버리지 유입 없음: E_t <= 1, w_sector <= 1 ⇒ max(·) <= 1 (리포트4 11섹터 전부 최대 1.000 확인).
+      ★ 섹터 고유 정보는 남는다: w_sector > E_t인 날이 섹터당 **15.1~30.9%**이고 그 날 비중을 정하는
+        것은 섹터 신호다. 섹터의 자기 하락 국면 veto는 **의도적으로 뺐다** — E_t > 0인데 섹터만 하락인
+        날이 11섹터 합쳐 **177일뿐이고 그 날 평균수익이 +0.0023%/일(≈0)**로 측정상 무가치했고,
+        XLV(하락 국면 평균 **+0.1137%** = 신호 반전)에서는 오히려 −38.5%p 손해였다.
+
+    ── 측정(리포트4 목표비중 = ② 기존 대비 · 검증된 오프라인 하네스로 엔진 ②를 소수점까지 재현) ──
+        기존 ②      : B&H 초과 **8/11** · 중위복리 147.1% · 중위MDD −20.47 · 중위칼마 0.50 · 평균비중 0.720
+        ③ 순수 E_t  : B&H 초과 11/11 · 중위복리 336.1% · 중위MDD −14.27 · 중위칼마 1.17 · 평균비중 0.565
+        **신규**     : B&H 초과 **11/11** · 중위복리 **361.1%** · 중위MDD **−14.28** · 중위칼마 1.08 · 평균비중 **0.673**
+        ★ 지목 5섹터 전부 B&H 크게 초과: XLK 462→**1212**(B&H 537) · XLV 81→**171**(131) ·
+          XLY 170→**496**(148) · XLP 87→**148**(84) · XLF 188→**361**(141)  ⇒ **5/5**
+        ★★ **② > ③ 가 0/11 → 8/11** — 이 계층이 '시장 하나만 보는 것'보다 나아진 첫 라운드다.
+        ★ 달력 대조군(같은 0-비중 일수를 신호 없이 균등 배치) **11/11 초과** · 중위 361.1 vs 118.0.
+        ★ 평균비중이 0.720 → 0.673으로 **내려가면서** 수익이 오르고 MDD가 좋아진다 ⇒ 노출 확대로
+          산 수익이 아니다(한계비 양호 · 열등 지배 아님).
+        ⚠ 정직한 비용: 저변동 상승장(2021 · 2023)에서 E_t = 0 오경보로 섹터당 −0.2~−15.2%p 뒤진다.
+          ③도 같은 비용을 낸다 — E_t의 오경보를 물려받는 것이 이 규칙의 대가다.
+
+    ⚠⚠ **위험 파라미터 변경 고지**(사용자 규칙 7) — 이 함수는 target_pos(노출)를 바꾼다:
+        E_t = 0 구간에서 비중을 **0으로 강제**(방어 강화)하고, E_t > 섹터비중 구간에서 비중을
+        **E_t까지 올린다**(참여 강화). 총노출 평균은 내려가지만 개별일 최대 노출은 오를 수 있다(<= 1.0).
+        MKT_FLOOR_ENABLE = False로 끄면 v0.55.0 동작으로 정확히 되돌아간다.
+
+    연구/교육용 도구이며 투자 조언이 아니다.
+
+    반환: (교정된 target_pos, 판정 로그 DataFrame[22_시장예산바닥판정])
+    """
+    pos = pd.Series(target_pos).astype(float).copy()
+    st = pd.Series(state).astype(str).reindex(pos.index)
+    if not bool(getattr(cfg, "MKT_FLOOR_ENABLE", True)):
+        log("MKT_FLOOR", kv(ticker=ticker, event="disabled",
+                            note="MKT_FLOOR_ENABLE=False — v0.55.0 동작 유지"), M=M)
+        return pos, pd.DataFrame([{"티커": ticker, "적용연도": "전체", "판정": "미적용(설정 OFF)",
+                                   "사유": "MKT_FLOOR_ENABLE=False"}])
+    if Et is None:
+        log("MKT_FLOOR", kv(ticker=ticker, event="no_market_budget",
+                            note="E_t 없음 — 교정 없이 진행"), M=M, level="warning")
+        return pos, pd.DataFrame([{"티커": ticker, "적용연도": "전체", "판정": "미적용(E_t 없음)",
+                                   "사유": "res['sig']['target_pos'] 미존재"}])
+    e = pd.to_numeric(pd.Series(Et), errors="coerce").reindex(pos.index)
+    n_na = int(e.isna().sum())          # ★ ffill **전에** 센다 — 이월한 일수를 로그에 정직하게 남기려고
+    e = e.ffill().fillna(0.0)           #   (선행 결측은 ffill로도 못 메우므로 0 = 대피로 본다)
+    mode = str(getattr(cfg, "MKT_FLOOR_MODE", "max")).lower()
+    min_et = float(getattr(cfg, "MKT_FLOOR_MIN_ET", 0.0))
+    exit_zero = bool(getattr(cfg, "MKT_FLOOR_EXIT_ON_ZERO", True))
+    before = pos.copy()
+    if mode == "max":
+        out = np.maximum(pos.values, e.values)
+    elif mode == "mult":
+        out = pos.values * e.values
+    else:                                   # "off" — 퇴출만 적용, 바닥 없음
+        out = pos.values.copy()
+    out = pd.Series(out, index=pos.index).astype(float)
+    m_exit = (e <= min_et) if exit_zero else pd.Series(False, index=pos.index)
+    out.loc[m_exit] = 0.0
+    out = out.clip(lower=0.0, upper=float(max(1.0, float(np.nanmax(before.values)) if len(before) else 1.0)))
+    # ---- 판정 로그: 두 메커니즘을 분리해서 연도별로 센다(변경이 실제로 일어났음을 확인할 수 있게) ----
+    off = st.str.upper().eq("RISK_OFF")
+    lifted = (out > before + 1e-12)
+    cutted = (out < before - 1e-12)
+    rows: List[dict] = []
+    yrs = pd.DatetimeIndex(pos.index).year
+    for y in sorted(set(int(v) for v in yrs)):
+        m = (yrs == y)
+        rows.append({"티커": ticker, "적용연도": int(y), "일수": int(m.sum()),
+                     "ⓐ 퇴출일수(E_t=0인데 섹터는 하락아님)": int((m & m_exit.values & (~off.values)).sum()),
+                     "ⓐ 퇴출일수(섹터도 하락 — 이미 0)": int((m & m_exit.values & off.values).sum()),
+                     "ⓑ 바닥발동일수(E_t가 비중을 올림)": int((m & lifted.values).sum()),
+                     "비중 내린 일수": int((m & cutted.values).sum()),
+                     "평균비중 이전": round(float(before[m].mean()), 4),
+                     "평균비중 이후": round(float(out[m].mean()), 4),
+                     "판정": ("적용" if int((m & (lifted | cutted).values).sum()) > 0 else "변경없음")})
+    rows.append({"티커": ticker, "적용연도": "전체", "일수": int(len(pos)),
+                 "ⓐ 퇴출일수(E_t=0인데 섹터는 하락아님)": int((m_exit & (~off)).sum()),
+                 "ⓐ 퇴출일수(섹터도 하락 — 이미 0)": int((m_exit & off).sum()),
+                 "ⓑ 바닥발동일수(E_t가 비중을 올림)": int(lifted.sum()),
+                 "비중 내린 일수": int(cutted.sum()),
+                 "평균비중 이전": round(float(before.mean()), 4),
+                 "평균비중 이후": round(float(out.mean()), 4),
+                 "판정": (f"★★ 적용(mode={mode}) — 올린 날 {int(lifted.sum())} · 내린 날 {int(cutted.sum())}"
+                        f" · 평균비중 {float(before.mean()):.3f}→{float(out.mean()):.3f}"
+                        + (f" · E_t 결측 {n_na}일은 직전값 이월" if n_na else "")
+                        + " ⚠ 위험 파라미터(노출) 변경 — MKT_FLOOR_ENABLE=False로 v0.55.0 복귀")})
+    log("MKT_FLOOR", kv(ticker=ticker, event="applied", mode=mode,
+                        exit_days=int(m_exit.sum()), lift_days=int(lifted.sum()), cut_days=int(cutted.sum()),
+                        mean_pos_before=round(float(before.mean()), 4),
+                        mean_pos_after=round(float(out.mean()), 4),
+                        max_pos_after=round(float(out.max()), 4), et_ffilled=n_na,
+                        note="⚠ 위험 파라미터(노출) 변경 — E_t 바닥+퇴출"), M=M)
+    return out, pd.DataFrame(rows)
+
 def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     """섹터 1개 전체 파이프라인. 반환 dict는 pandas/기본형만 담는다(프로세스 경계 통과 —
     Config/IndicatorSpec 인스턴스 없음). 시트 조각(01~11)도 여기서 만들어 부모는 조립만 한다."""
@@ -5471,6 +5660,25 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         log("HAZ_CUT", kv(ticker=ticker, event="cut_failed", err=str(e)[:160],
                            note="회피 없이 진행한다"), M=M, level="warning")
+    # ---- [v0.56.0 J1 ★★★ 라이브 · ⚠ 위험 파라미터(노출) 변경] 시장 국면 예산 E_t를 바닥·퇴출로 얹는다 ----
+    #   ★ 체인의 **맨 마지막**에 둔다 — E_t = 0 퇴출은 앞의 중립 상향(v0.54.0)을 덮어써야 하고,
+    #     E_t 바닥은 하락분위 상한(v0.55.0)이 이미 0으로 만든 날에는 걸리지 않아야 하기 때문이다.
+    #     (순서가 중요: 바닥 → 퇴출 순으로 같은 함수 안에서 처리한다.)
+    #   ★ 룩어헤드 없음: E_t(t)는 SPY가 t 종가까지의 정보로 정한 목표비중 — 섹터 신호와 같은 t 기준이며
+    #     체결 지연(t+1)은 M.run_backtest가 처리한다(배분 계층이 이미 쓰는 규칙과 동일).
+    mkt_floor_log = pd.DataFrame()
+    try:
+        _Et = None
+        _rsig = res.get("sig") if isinstance(res, dict) else None
+        if isinstance(_rsig, pd.DataFrame) and "target_pos" in _rsig.columns:
+            _Et = pd.to_numeric(_rsig["target_pos"], errors="coerce").astype(float)
+        _pos3, mkt_floor_log = market_exposure_floor(
+            sig["state"], sig["target_pos"], _Et, scfg, ticker=ticker, M=M)
+        sig = sig.copy()
+        sig["target_pos"] = _pos3
+    except Exception as e:
+        log("MKT_FLOOR", kv(ticker=ticker, event="floor_failed", err=str(e)[:160],
+                            note="E_t 교정 없이 v0.55.0 동작으로 진행한다"), M=M, level="warning")
     bt = M.run_backtest(price_i, sig["target_pos"], cfg_i, rf)
     bt = bt.loc[bt.index >= pd.Timestamp(cfg_i.SIGNAL_START)]
     ma_pos = (trend200 > 0).astype(float).where(sig_mask, 0.0)
@@ -5583,6 +5791,7 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "adopted": adopted, "sheets": sheets,
             "neutral_wf": neutral_wf_log,                 # [v0.54.0 G1] 연도별 상향 판정 근거
             "hazard_cut": hazard_cut_log,                 # [v0.55.0 H1] 연도별 위험분위 상한 판정
+            "mkt_floor": mkt_floor_log,                   # [v0.56.0 J1] 연도별 E_t 바닥·퇴출 판정
             "hazard_source": scfg.HAZARD_SOURCE, "vol_scale": vol_scale,   # [v0.3.0 §1.B/§1.C]
             # 통합 시트용 소형 시리즈
             "state": sig["state"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
@@ -11427,13 +11636,19 @@ def build_curve_compare(ret_df: pd.DataFrame, solo_w: pd.DataFrame, regime_w: pd
     ⇒ ②−①는 '그 섹터 예측의 값', ③−①는 '시장 국면 판단만의 값', ②−③는 '섹터 고유 정보의 값'이다.
        세 번째가 이 계층의 존재 이유다 — 섹터별로 따로 보는 것이 시장 하나만 보는 것보다 나은가.
 
+    [v0.56.0 J3] 반환이 **(표, 일별곡선 DataFrame) 2튜플**로 바뀌었다. 두 번째가 00C_곡선데이터가 되고,
+      write_sector_excel가 그것을 참조하는 **실제 꺾은선 차트**를 00B_곡선그래프 시트에 그린다
+      (사용자 지시: "아니 수익 곡선 비교를 **그래프로** 나타내라고" — v0.55.0은 표만 냈다).
+
     블록 A: 섹터별 요약(최종배수 · 복리 · CAGR · MDD · 칼마 · 평균비중 · 3자 승패)
     블록 B: **곡선 표본**(연말 값) — 엑셀에서 바로 꺾은선 차트로 그릴 수 있게 날짜×계열로 낸다.
     블록 C: 지정 섹터(focus) 상세 — 사용자가 이번 라운드에 지목한 섹터만 연도별로 쪼갠다."""
     cols = [c for c in ret_df.columns if c in solo_w.columns]
     if not cols:
-        return pd.DataFrame([{"블록": "A. 섹터별 3곡선 비교", "섹터": "산출 불가",
-                              "판정": "ret_df와 solo_w에 공통 섹터가 없다"}])
+        # [v0.56.0 J3] 반환이 (표, 일별곡선) 2튜플로 바뀌었다 — 실패 경로도 같은 모양을 지켜야
+        #   호출부의 언팩이 깨지지 않는다.
+        return (pd.DataFrame([{"블록": "A. 섹터별 3곡선 비교", "섹터": "산출 불가",
+                               "판정": "ret_df와 solo_w에 공통 섹터가 없다"}]), pd.DataFrame())
     idx = ret_df.index
     R = ret_df[cols].astype(float).fillna(0.0)
     WS = solo_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
@@ -11499,12 +11714,16 @@ def build_curve_compare(ret_df: pd.DataFrame, solo_w: pd.DataFrame, regime_w: pd
                            if n_w23 * 2 > len(cols) else
                            "⚠ ②가 ③을 과반에서 못 이긴다 — 섹터를 따로 보는 값이 약하다는 뜻이므로 "
                            "이 계층의 존재 이유를 재검토할 것."))})
-    # ---- 블록 B: 연말 곡선 표본(엑셀 차트용) ----
+    # ---- 블록 B: 연말 곡선 표본(표로 읽는 용도 — 그래프는 00B_곡선그래프 시트) ----
+    #   [v0.56.0 J3] 사용자 지시 "수익 곡선 비교를 **그래프로** 나타내라" ⇒ 실제 꺾은선 차트는
+    #   00B_곡선그래프 시트에 xlsxwriter로 그리고, 그 데이터 원본은 00C_곡선데이터(일별 전체)다.
+    #   이 블록 B는 숫자를 직접 읽고 싶을 때를 위한 연말 표본으로 남긴다.
     if curves:
         C = pd.DataFrame(curves)
         _ye = C.groupby(pd.DatetimeIndex(C.index).year).tail(1)
         for d, r0 in _ye.iterrows():
-            _row = {"블록": "B. 곡선(연말 값 · 차트용)", "섹터": str(pd.Timestamp(d).date())}
+            _row = {"블록": "B. 곡선(연말 값 · 표로 읽기용 · 그래프는 00B_곡선그래프)",
+                    "섹터": str(pd.Timestamp(d).date())}
             _row.update({k: round(float(v), 4) for k, v in r0.items()})
             rows.append(_row)
     # ---- 블록 C: 지정 섹터 연도별 ----
@@ -11520,17 +11739,36 @@ def build_curve_compare(ret_df: pd.DataFrame, solo_w: pd.DataFrame, regime_w: pd
                 _b = float((1.0 + WS[t].shift(1).fillna(0.0).loc[_i] * R.loc[_i, t]).prod() - 1.0) * 100
                 _c = (float((1.0 + WR[t].shift(1).fillna(0.0).loc[_i] * R.loc[_i, t]).prod() - 1.0) * 100
                       if WR is not None else None)
-                rows.append({"블록": "C. 지정 섹터 연도별", "섹터": t, "관측일": int(y),
+                # [v0.56.0 J4] 연도를 '관측일'이 아니라 **연도** 열에 넣는다(리포트4에서 헷갈렸다),
+                #   그리고 차이가 0인 해를 '뒤졌다'로 쓰지 않는다(0은 동일 — 비중이 전 기간 1.0인 해다).
+                _d = round(_b - _a, 1)
+                rows.append({"블록": "C. 지정 섹터 연도별", "섹터": t, "연도": int(y), "관측일": int(y),
                              "① B&H 복리(%)": round(_a, 1), "② 단일예측 복리(%)": round(_b, 1),
                              "③ 국면예측 복리(%)": (round(_c, 1) if _c is not None else None),
-                             "②−① 복리(%p)": round(_b - _a, 1),
-                             "판정": ("★ 그 해 예측이 이겼다" if _b > _a else
-                                    f"✗ 그 해 {_b - _a:+.1f}%p 뒤졌다 — 개선 대상 구간")})
+                             "②−① 복리(%p)": _d,
+                             "판정": ("★ 그 해 예측이 이겼다" if _d > 0.0 else
+                                    ("= 그 해 B&H와 동일(그 해 비중이 줄지 않았다)" if abs(_d) < 0.05 else
+                                     f"✗ 그 해 {_d:+.1f}%p 뒤졌다 — 개선 대상 구간"))})
+    # ---- [v0.56.0 J3 ★ 신규] 00C_곡선데이터 — 실제 꺾은선 차트가 참조하는 **일별** 날짜×계열 표 ----
+    #   사용자 지시: "아니 수익 곡선 비교를 **그래프로** 나타내라고". xlsxwriter 차트는 워크시트의
+    #   셀 범위만 참조할 수 있으므로, 차트가 가리킬 데이터 시트를 따로 낸다(write_sector_excel가 그린다).
+    #   ★ 지정 섹터(focus)를 앞에 두어 차트 계열 순서가 사용자가 지목한 순서와 같게 한다.
+    curve_daily = pd.DataFrame()
+    if curves:
+        _C = pd.DataFrame(curves)
+        _order = [t for t in (focus or ()) if t in cols] + [t for t in cols if t not in (focus or ())]
+        _cc = [f"{t} {lbl}" for t in _order for lbl in ("① B&H", "② 단일예측", "③ 국면예측")
+               if f"{t} {lbl}" in _C.columns]
+        _C = _C[_cc].round(6)
+        curve_daily = _C.reset_index().rename(columns={_C.index.name or "index": "날짜"})
+        if curve_daily.columns[0] != "날짜":
+            curve_daily = curve_daily.rename(columns={curve_daily.columns[0]: "날짜"})
     log("ROT", kv(event="curve_compare_built", sectors=len(cols),
                   solo_beats_bh=n_w2, regime_beats_bh=n_w3, solo_beats_regime=n_w23,
-                  focus=";".join(_fc) if _fc else "-",
-                  note="① B&H · ② 단일 섹터 예측 · ③ 시장 국면 예측"), M=M)
-    return pd.DataFrame(rows)
+                  focus=";".join(_fc) if _fc else "-", curve_rows=len(curve_daily),
+                  curve_series=(len(curve_daily.columns) - 1 if len(curve_daily) else 0),
+                  note="① B&H · ② 단일 섹터 예측 · ③ 시장 국면 예측 · 그래프는 00B_곡선그래프"), M=M)
+    return pd.DataFrame(rows), curve_daily
 
 
 def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg: Any,
@@ -13091,12 +13329,15 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                     _et3 = pd.to_numeric(_b3["E_t(SPY목표비중)"], errors="coerce").reindex(_tw3.index)
                     _reg3 = pd.DataFrame({t: _et3 for t in _sc3})
                 if _solo3:
-                    _cv = build_curve_compare(
+                    # [v0.56.0 J3] 표 + **일별 곡선 데이터**를 함께 받는다 — 후자가 실제 그래프의 원본
+                    _cv, _cvd = build_curve_compare(
                         _ret3, pd.DataFrame(_solo3), _reg3, scfg,
                         name_map={t: SECTOR_NAME_KR.get(t, "") for t in _sc3},
                         focus=tuple(getattr(scfg, "CURVE_FOCUS", ()) or ()), M=M)
                     if isinstance(_cv, pd.DataFrame) and len(_cv):
                         sheets["00B_수익곡선비교"] = _cv
+                    if isinstance(_cvd, pd.DataFrame) and len(_cvd):
+                        sheets["00C_곡선데이터"] = _cvd
         except Exception as e:
             import traceback as _tb3
             log("REPORT", kv(event="curve_compare_failed", err=str(e)[:200]), M=M, level="error")
@@ -13142,7 +13383,30 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             sheets["20_중립상향판정"] = pd.concat([_hdr, _nwdf], ignore_index=True)
     except Exception as e:
         log("REPORT", kv(event="neutral_wf_sheet_failed", err=str(e)[:160]), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00B_수익곡선비교", "00A_수익비교")
+    # ---- [v0.56.0 J2 ★ 신규 시트] 22_시장예산바닥판정 — 라이브 변경의 근거를 매 실행 보이게 ----
+    try:
+        _mf = [r["mkt_floor"] for r in results.values()
+               if isinstance(r.get("mkt_floor"), pd.DataFrame) and len(r["mkt_floor"])]
+        if _mf:
+            _hdr3 = pd.DataFrame([{"티커": "── 읽는 법 ──",
+                "판정": ("섹터 자기 신호의 **노출 수준**을 시장 국면 예산 E_t로 교정한 판정 근거다"
+                       "(라이브 신호층 변경 · ⚠ 위험 파라미터(노출) 변경). 규칙은 파라미터 0개: "
+                       "**E_t = 0이면 비중 0(퇴출)**, 그 밖에는 **max(섹터비중, E_t)(바닥)**. "
+                       "왜: 리포트4 00B에서 ③ 국면예측이 B&H를 11/11로 이기는데 ② 단일 섹터 예측은 8/11이고 "
+                       "**②가 ③을 이기는 섹터가 0/11**이었다 — 섹터 신호는 방향은 맞고(00A 블록 D 격차 "
+                       "10/11 음수) **노출 수준이 양방향으로 틀렸다**. 리포트4로 분해하니 "
+                       "ⓐ E_t=0인데 섹터는 하락 아님 **4,813일 · 평균 −0.0313%/일**(하락을 못 피한 곳)와 "
+                       "ⓑ E_t > 섹터비중 **2,513일 · 평균 +0.1041%/일**(전 버킷 최고 · 상승을 못 탄 곳)이 "
+                       "손실의 두 출처였다. 측정: B&H 초과 **8/11 → 11/11** · 중위복리 147.1 → **361.1** · "
+                       "중위MDD −20.47 → **−14.28** · 평균비중 0.720 → **0.673**(노출은 줄고 수익은 늘었다) · "
+                       "**②>③ 0/11 → 8/11** · 달력 대조군 11/11 초과. "
+                       "⚠ 비용: 저변동 상승장(2021·2023)에서 E_t=0 오경보만큼 뒤진다. "
+                       "되돌리기: s_overrides={\"MKT_FLOOR_ENABLE\": False} ⇒ v0.55.0 동작으로 정확히 복귀")}])
+            sheets["22_시장예산바닥판정"] = pd.concat([_hdr3, pd.concat(_mf, ignore_index=True)],
+                                              ignore_index=True)
+    except Exception as e:
+        log("REPORT", kv(event="mkt_floor_sheet_failed", err=str(e)[:160]), M=M, level="warning")
+    sheets = sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     write_sector_excel(path, sheets, meta, M=M)
     if scfg.EXPORT_DAILY_CSV:
         try:
@@ -13192,6 +13456,13 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
 
         ws = wb.add_worksheet("00_실행요약")
         xl.sheets["00_실행요약"] = ws
+        # [v0.56.0 J3 ★ 신규] 00B_곡선그래프 — 사용자 지시 "수익 곡선 비교를 **그래프로** 나타내라".
+        #   ★ 여기서 **먼저** 워크시트를 만들어야 탭 순서가 맨 앞(00_실행요약 다음)이 된다 —
+        #     xlsxwriter는 add_worksheet 호출 순서가 곧 탭 순서이고 나중에 재정렬할 수 없다.
+        #     차트 계열이 가리키는 00C_곡선데이터는 close() 시점에 시트명으로 해석되므로
+        #     데이터 시트를 나중에 써도 참조가 깨지지 않는다.
+        cws = wb.add_worksheet("00B_곡선그래프") if ("00C_곡선데이터" in sheets
+                                                and len(sheets.get("00C_곡선데이터", ())) > 0) else None
         ws.set_column(0, 0, 30); ws.set_column(1, 1, 110)
         ws.write(0, 0, title or "미국 11개 섹터 국면(상승/하락) 예측 & 섹터별 매매 시스템 — SPY 파이프라인 재적용", f_title)
         r = 2
@@ -13240,6 +13511,77 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
                 cj = cols.index("판정")
                 w.conditional_format(1, cj, len(df), cj, {"type": "cell", "criteria": "==", "value": '"PASS"', "format": f_pass})
                 w.conditional_format(1, cj, len(df), cj, {"type": "cell", "criteria": "==", "value": '"FAIL"', "format": f_fail})
+
+        # ---- [v0.56.0 J3 ★★★ 신규] 00B_곡선그래프 — ①B&H vs ②단일 섹터 예측 vs ③국면 예측 꺾은선 ----
+        #   사용자 지시 "아니 수익 곡선 비교를 **그래프로** 나타내라고" — v0.55.0은 표(연말 값)만 냈다.
+        #   섹터마다 차트 1개 · 계열 3개(①②③)로 그린다. 지정 섹터(CURVE_FOCUS)가 앞에 오고,
+        #   0행에는 11섹터 ②만 모은 전체 비교 차트를 둔다. y축은 로그(누적배수라 후반이 다 눌린다).
+        if cws is not None:
+            dname = "00C_곡선데이터"
+            dcv = sheets[dname]
+            dcols = list(dcv.columns)
+            nrow = len(dcv)
+            cws.set_column(0, 0, 3)
+            cws.write(0, 1, "수익 곡선 비교 — ① B&H vs ② 단일 섹터 예측 vs ③ 국면(시장 SPY) 예측", f_title)
+            cws.write(1, 1, ("각 차트는 누적배수(시작 1.0 · 복리 · 같은 평가창)다. y축 로그. "
+                             "① 그냥 보유 · ② 그 섹터 자기 국면 신호로 거래 · ③ 시장 국면이 준 노출 E_t를 "
+                             "그 섹터에 그대로 적용. 숫자로 읽으려면 00B_수익곡선비교(블록 A/B/C), "
+                             "원본 일별 데이터는 00C_곡선데이터."), f_val)
+            _tk_order, _seen = [], set()
+            for c in dcols[1:]:
+                _t = str(c).split(" ")[0]
+                if _t not in _seen:
+                    _seen.add(_t); _tk_order.append(_t)
+            _pal = {"① B&H": "#7F7F7F", "② 단일예측": "#C00000", "③ 국면예측": "#1F3864"}
+            _row_at = 3
+            # (0) 전체 비교 — 11섹터 ②만
+            try:
+                ch0 = wb.add_chart({"type": "line"})
+                _n2 = 0
+                for c in dcols[1:]:
+                    if not str(c).endswith("② 단일예측"):
+                        continue
+                    ci = dcols.index(c)
+                    ch0.add_series({"name": str(c), "categories": [dname, 1, 0, nrow, 0],
+                                    "values": [dname, 1, ci, nrow, ci], "line": {"width": 1.25}})
+                    _n2 += 1
+                if _n2:
+                    ch0.set_title({"name": "전체 섹터 ② 단일 섹터 예측 누적배수 비교"})
+                    ch0.set_y_axis({"log_base": 10, "name": "누적배수(로그)"})
+                    ch0.set_x_axis({"name": "날짜", "date_axis": True})
+                    ch0.set_size({"width": 1180, "height": 420})
+                    cws.insert_chart(_row_at, 1, ch0)
+                    _row_at += 23
+            except Exception as _e0:   # noqa
+                log("REPORT", kv(event="curve_chart_all_failed", err=str(_e0)[:160]), M=M, level="warning")
+            # (1..n) 섹터별 3계열 차트 — ②가 굵게(판단 대상)
+            for _t in _tk_order:
+                try:
+                    ch = wb.add_chart({"type": "line"})
+                    _ns = 0
+                    for lbl in ("① B&H", "② 단일예측", "③ 국면예측"):
+                        cn = f"{_t} {lbl}"
+                        if cn not in dcols:
+                            continue
+                        ci = dcols.index(cn)
+                        ch.add_series({"name": lbl, "categories": [dname, 1, 0, nrow, 0],
+                                       "values": [dname, 1, ci, nrow, ci],
+                                       "line": {"color": _pal[lbl], "width": (2.5 if lbl.startswith("②") else 1.5)}})
+                        _ns += 1
+                    if not _ns:
+                        continue
+                    _nm = SECTOR_NAME_KR.get(_t, "") if "SECTOR_NAME_KR" in globals() else ""
+                    ch.set_title({"name": f"{_t}{(' · ' + _nm) if _nm else ''} — ① B&H / ② 단일 섹터 예측 / ③ 국면 예측"})
+                    ch.set_y_axis({"log_base": 10, "name": "누적배수(로그)"})
+                    ch.set_x_axis({"name": "날짜", "date_axis": True})
+                    ch.set_size({"width": 1180, "height": 400})
+                    cws.insert_chart(_row_at, 1, ch)
+                    _row_at += 22
+                except Exception as _e1:   # noqa
+                    log("REPORT", kv(event="curve_chart_failed", ticker=_t, err=str(_e1)[:160]), M=M, level="warning")
+            log("REPORT", kv(event="curve_charts_drawn", sheet="00B_곡선그래프",
+                             charts=len(_tk_order) + 1, series_cols=len(dcols) - 1, rows=nrow,
+                             note="사용자 지시 '수익 곡선 비교를 그래프로' — 실제 꺾은선 차트"), M=M)
 
         curve_name = "13b_배분전략자산곡선"
         if curve_name in sheets and len(sheets[curve_name]) > 0:
