@@ -21,6 +21,40 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.54.1 - 2026-09-17 - [v1.54.0 표시 결함 수정 — **신호·데이터 자체는 비트 동일**]
+#    사용자가 v1.54.0 실행 리포트(리포트71)와 이전 리포트(70)를 직접 비교하다가 발견. 실제로 이번
+#    실행에서 ^VIX3M이 FRED VXVCLS로 정상 대체됐는데(10시트 [FRED대체] ^VIX3M 행 존재), 두 곳이
+#    이를 숨기거나 잘못 표시했다:
+#    (1) fetch_all_yahoo()의 배치퇴화→개별재수집 후처리 블록이 "지연캐시"만 확인하고 그 외 성공은
+#        전부 "재수집"으로 단정 → FRED로 성공한 것에도 "배치 퇴화 → 개별 재수집 정상"이라는 거짓
+#        사유를 diag에 중복 기록(10시트에 [FRED대체]와 [재수집]이 같은 티커로 나란히 찍힘).
+#    (2) run()의 00시트 "급락트리거 데이터 커버리지" 줄이 참조하는 _yd 필터가 "FRED대체"를 인식
+#        목록에 넣지 않아, (1)의 오표기가 없었어도 이 줄에서 FRED 대체 사실 자체가 조용히
+#        사라질 뻔했다(사용자 지침 §7 — 위험 파라미터 경로 변경은 절대 조용히 넘기지 않는다).
+#    수정: fetch_all_yahoo()에 이미 "지연캐시"나 "FRED대체"로 diag에 기록됐으면 "재수집" 중복
+#    기록을 생략하는 조건 추가. run()의 _yd 필터 튜플에 "FRED대체" 추가. ⚠ **px_dict에 들어가는
+#    실제 가격 데이터·신호·백테스트 결과는 이 버그와 무관하게 항상 옳았다** — FRED df는 처음부터
+#    fetch_yahoo()가 정상 반환했고 이후 로직은 그 값을 그대로 썼다. 영향은 00/10시트의 "왜"
+#    설명 문구뿐(투명성 결함이지 신호 결함이 아님).
+#  VERSION: v1.54.0 - 2026-09-17 - [report23 대응 — ^VIX3M Yahoo 결측 시 FRED VXVCLS 자동 대체 신설]
+#    사용자가 실제 Kaggle 실행에서 [중단/데이터수집] yahoo_critical_abort(missing=^VIX3M)를 겪음.
+#    사용자가 직접 실행한 진단 스크립트(vix_diag.py, 이 세션이 작성) 결과: query1/query2 두 Yahoo
+#    엣지 서버 모두 HTTP 200 + 유효 종가를 주면서도 요청한 5일 중 오늘 1일치만 반환 — IP차단·
+#    yfinance버전·계정문제를 전부 배제하고 "Yahoo 원천 이력 자체의 결측"으로 확정(13시간 이상 지속).
+#    같은 증상(^VIX9D)도 확인했으나 FRED에 동일 시리즈가 없고(변동성지수 카테고리에 VIXCLS/
+#    VXVCLS/VXDCLS/GVZCLS/OVXCLS만 존재) CBOE 자체 무료 CSV는 2015-05-29에 멈춘 정적 아카이브라
+#    대체 불가 — 다행히 ^VIX9D는 SIGNAL_CRITICAL_TICKERS 밖이라 실패해도 자동 제외로 계속 진행됨.
+#    ^VIX3M은 FRED VXVCLS("CBOE S&P 500 3-Month Volatility Index")로 대체 가능함을 웹 조사로
+#    확인(무료·키 불필요·확인 시점 2026-09-14까지 정상 갱신). fetch_yahoo()의 개별 재시도·지연캐시가
+#    모두 실패한 마지막 단계에서만 시도하는 3단계 방어(_fred_fallback_for_yahoo_ticker 신설):
+#      (1) FRED_FALLBACK_MIN_ROWS(250) 미달이면 거부 (2) 나이 무시한 기존 Yahoo 캐시가 있으면
+#      겹치는 최근일 값과 대조해 FRED_FALLBACK_MAX_DIFF_RATIO(25%) 넘게 다르면 거부(재현 없는
+#      대체 금지 — 사용자 지침 §4) (3) 채택 시 diag "FRED대체"로 00/10시트에 반드시 노출.
+#    ⚠ 신호(위험) 파라미터 경로 변경 — 급락트리거(규칙 ⓪) 입력이 이 경로를 타면 Yahoo가 아닌
+#    FRED VXVCLS가 됨. 신규 Config: YAHOO_CRITICAL_FRED_FALLBACK({"^VIX3M":"VXVCLS"}),
+#    FRED_FALLBACK_MIN_ROWS(250), FRED_FALLBACK_MAX_DIFF_RATIO(0.25). 영향 함수: fetch_yahoo()
+#    (호출 지점 추가), run()의 10_데이터품질 라벨 매핑(dict에 "FRED대체" 키 추가). 평소(Yahoo
+#    정상)에는 이 경로가 전혀 호출되지 않으므로 기존 실행 결과에는 영향이 없다(회귀 없음).
 #  VERSION: v1.53.1 - 2026-09-13 - [표시 문자열 1줄 수정 — **M(SPY) 신호·가중치·성과는 v1.53.0과 비트 동일**]
 #    (H7 ⚠ 표시 결함) 00_실행요약 '버전' 줄이 v1.24.0 이래 하드코딩이라 v1.52.0~v1.53.0에서 갱신되지 않았다.
 #    리포트66(번들 v1.53.0)이 00시트에 "v1.51.0 (2026-09-12)"을 찍어 판독자가 구버전 실행으로 오해할 수 있었다
@@ -2755,6 +2789,23 @@ class Config:
     YAHOO_MIN_ROWS: int = 250                  # 이보다 짧은 일별 프레임은 퇴화 수집으로 간주(1년 미만)
     YAHOO_STALE_CACHE_MAX_DAYS: float = 30.0   # 퇴화/실패 시 이 일수 이내의 만료 캐시를 지연캐시로 대체(0이면 비활성)
     YAHOO_CRITICAL_RETRY_WAIT_S: float = 10.0  # 퇴화 수집 개별 재시도 전 대기(초). 음수면 재시도 비활성
+    # [v1.54.0 §A 견고성] report23 사고 대응 — Yahoo가 ^VIX3M(그리고 비신호핵심인 ^VIX9D)의
+    # 과거 이력 자체를 몇 시간~며칠째 결측(HTTP 200 + 유효 종가지만 요청한 5일 중 오늘 1일치만
+    # 반환 — query1/query2 두 엣지 서버 동일, IP차단·yfinance버그·계정문제 전부 배제 확인됨,
+    # 사용자 진단 스크립트 실행 결과 기반). 개별 재시도·지연캐시 모두 실패한 신호핵심 티커에
+    # 한해, 매핑된 FRED 공식 시리즈로 마지막 대체를 시도한다(_fred_fallback_for_yahoo_ticker,
+    # fetch_yahoo() 최종 실패 직전 호출). ^VIX3M → FRED VXVCLS("CBOE S&P 500 3-Month Volatility
+    # Index", 확인 시점 2026-09-14까지 정상 갱신 중, 무료·키 불필요)로 확정. ^VIX9D는 FRED에
+    # 동일 시리즈가 없고(변동성지수 카테고리에 VIXCLS/VXVCLS/VXDCLS/GVZCLS/OVXCLS만 존재) CBOE
+    # 자체 무료 CSV는 2015-05-29에서 멈춘 정적 아카이브라 대체 불가로 판단 — 다행히 ^VIX9D는
+    # SIGNAL_CRITICAL_TICKERS 밖이라 실패해도 자동 제외로 계속 진행되므로 급하지 않다.
+    # ⚠ 신호(위험) 파라미터 경로 변경 — 급락트리거(규칙 ⓪) 입력이 Yahoo가 아닌 FRED로 바뀔 수
+    # 있다는 뜻이라 diag에 "FRED대체"로 반드시 남기고(00/10시트 노출), 겹치는 기존 캐시가 있으면
+    # 겹치는 최근일 값을 대조해 FRED_FALLBACK_MAX_DIFF_RATIO를 넘게 다르면 채택을 거부한다
+    # (재현/검증 없는 대체를 라이브에 조용히 넣지 않는다 — 사용자 지침 §4/§7).
+    YAHOO_CRITICAL_FRED_FALLBACK: Dict[str, str] = field(default_factory=lambda: {"^VIX3M": "VXVCLS"})
+    FRED_FALLBACK_MIN_ROWS: int = 250          # Yahoo의 YAHOO_MIN_ROWS와 동일 기준 — 이보다 짧으면 대체도 거부
+    FRED_FALLBACK_MAX_DIFF_RATIO: float = 0.25  # 겹치는 기존 캐시 최근일 대비 이 비율 넘게 다르면 대체 거부(안전판)
     FAST_TRIGGER_MIN_COVERAGE: float = 0.90    # 신호구간 급락트리거 백분위 커버리지 하한(미만이면 중단 게이트)
     # [v1.4.0 §2] FRED가 구조적으로 짧은 이력만 반환하는 것으로 확인된 시리즈(BAML 신용
     # 스프레드 9종, log3.txt에서 JSON 양쪽 변형 모두 "실제시작 2023-09-01"로 일관되게 확인
@@ -4116,6 +4167,68 @@ def _yahoo_stale_fallback(ticker: str, cfg: Config = CFG,
     return stale
 
 
+def _fred_fallback_for_yahoo_ticker(ticker: str, fred_sid: str, cfg: Config = CFG,
+                                    diag: Optional[List[dict]] = None) -> Optional[pd.DataFrame]:
+    """[v1.54.0 §A] Yahoo가 ticker를 정상 이력으로 못 주면(개별 재시도·지연캐시 모두 실패)
+    FRED 공식 시리즈(fred_sid)로 마지막 대체를 시도한다. report23 사고 — Yahoo가 ^VIX3M
+    원천 이력 자체를 몇 시간째 결측(HTTP 200이지만 요청한 5일 중 오늘 1일치만 반환, query1/
+    query2 두 엣지 서버 동일)임을 사용자 진단 스크립트로 직접 확인한 뒤 도입했다.
+    ⚠ 급락트리거(규칙 ⓪) 입력 소스가 Yahoo가 아닌 FRED로 바뀌므로, 이 함수가 채택한 건
+    diag에 반드시 "FRED대체"로 남기고(00/10시트 노출), 겹치는 기존 캐시가 있으면 그 최근일
+    값과 대조해 정합성을 확인한 뒤에만 채택한다(재현·검증 없는 대체를 라이브에 조용히
+    넣지 않는다 — 사용자 지침 §4/§7)."""
+    try:
+        s = fetch_fred(fred_sid, cfg)
+    except Exception as e:
+        log("DATA", kv(event="fred_fallback_error", series=ticker, fred_series=fred_sid,
+                       err=type(e).__name__), "error")
+        return None
+    if s is None:
+        log("DATA", kv(event="fred_fallback_unavailable", series=ticker, fred_series=fred_sid), "warning")
+        return None
+    s = s.dropna().sort_index()
+    if len(s) < cfg.FRED_FALLBACK_MIN_ROWS:
+        log("DATA", kv(event="fred_fallback_insufficient", series=ticker, fred_series=fred_sid,
+                       rows=len(s), min_rows=cfg.FRED_FALLBACK_MIN_ROWS), "warning")
+        return None
+
+    # 정합성 대조: 나이 무시하고 읽은 기존 캐시(있다면)와 겹치는 가장 최근일 값을 비교한다.
+    diff_note = "대조할 기존 캐시 없음(최초 대체 — 00시트 확인 권장)"
+    stale = _read_cache(f"YH_{ticker}", max_age_hours=None, cfg=cfg)
+    if stale is not None and len(stale) > 0:
+        col = "Adj Close" if "Adj Close" in stale.columns else "Close"
+        common = stale.index.intersection(s.index)
+        if len(common) > 0:
+            last_common = common.max()
+            yh_v = float(stale.loc[last_common, col])
+            fr_v = float(s.loc[last_common])
+            diff_ratio = abs(fr_v - yh_v) / abs(yh_v) if yh_v else float("nan")
+            if not np.isnan(diff_ratio) and diff_ratio > cfg.FRED_FALLBACK_MAX_DIFF_RATIO:
+                log("DATA", kv(event="fred_fallback_rejected_mismatch", series=ticker, fred_series=fred_sid,
+                               asof=str(last_common.date()), yahoo_v=round(yh_v, 4), fred_v=round(fr_v, 4),
+                               diff_ratio=round(diff_ratio, 3), max_allowed=cfg.FRED_FALLBACK_MAX_DIFF_RATIO),
+                    "error")
+                if diag is not None:
+                    diag.append({"시리즈": ticker, "종류": "제외",
+                                 "사유": f"FRED대체 정합성 실패({fred_sid} {last_common.date()}: "
+                                         f"Yahoo {yh_v:.2f} vs FRED {fr_v:.2f}, {diff_ratio:.1%} 차이 "
+                                         f"> 허용 {cfg.FRED_FALLBACK_MAX_DIFF_RATIO:.0%})",
+                                 "행수": 0, "시작": "-", "종료": "-"})
+                return None
+            diff_note = f"{fred_sid} vs 캐시 {last_common.date()} 대조: {diff_ratio:.2%} 차이 — 정상범위"
+
+    df = pd.DataFrame({"Open": s, "High": s, "Low": s, "Close": s, "Adj Close": s,
+                       "Volume": 0.0})
+    log("DATA", kv(event="fred_fallback_accepted", series=ticker, fred_series=fred_sid,
+                   rows=len(df), start=str(df.index.min().date()), end=str(df.index.max().date()),
+                   note=diff_note), "warning")
+    if diag is not None:
+        diag.append({"시리즈": ticker, "종류": "FRED대체",
+                     "사유": f"⚠Yahoo 결측 → FRED {fred_sid}로 대체(급락트리거 입력소스 변경). {diff_note}",
+                     "행수": int(len(df)), "시작": str(df.index.min().date()), "종료": str(df.index.max().date())})
+    return df
+
+
 def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None,
                 use_cache: bool = True, diag: Optional[List[dict]] = None) -> Optional[pd.DataFrame]:
     """단일 Yahoo 티커 다운로드(순차, 스레드 미사용). 배치 다운로드에서 빠진 티커의 개별
@@ -4169,6 +4282,14 @@ def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None,
     stale = _yahoo_stale_fallback(ticker, cfg, diag, reason="개별 재시도 전부 실패/퇴화")
     if stale is not None:
         return stale
+    # [v1.54.0 §A] report23 대응 — 지연캐시까지 없으면(이번처럼 Yahoo 원천 이력 자체가 결측인
+    # 경우) 마지막으로 매핑된 FRED 시리즈를 시도한다. 매핑이 없는 티커(예: ^VIX9D)는 그대로
+    # 아래의 기존 실패 경로로 진행된다.
+    fred_sid = cfg.YAHOO_CRITICAL_FRED_FALLBACK.get(ticker)
+    if fred_sid:
+        fb = _fred_fallback_for_yahoo_ticker(ticker, fred_sid, cfg, diag)
+        if fb is not None:
+            return fb
     log("DATA", kv(event="yahoo_fail", series=ticker, elapsed_s=round(time.time() - t0, 1),
                    next_step="해당 지표는 자동 제외되고 나머지 지표로 진행됩니다"
                              "(신호핵심 티커면 run()의 게이트가 중단)"), "error")
@@ -4613,8 +4734,15 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG,
     for t in still_missing:
         out[t] = fetch_yahoo(t, cfg, use_cache=False, diag=diag)
         if out[t] is not None and t in degenerate and diag is not None:
-            kind = "지연캐시" if any(d.get("시리즈") == t and d.get("종류") == "지연캐시" for d in diag) else "재수집"
-            if kind == "재수집":
+            # [v1.54.1 버그수정] fetch_yahoo()가 v1.54.0의 FRED 대체로 성공한 경우, 이 블록이
+            # "지연캐시"만 확인하고 그 외 성공은 전부 "재수집"으로 단정해 실제로는 Yahoo가 아니라
+            # FRED에서 받은 데이터에 "배치 퇴화 → 개별 재수집 정상"이라는 거짓 사유를 중복 기록했다
+            # (리포트71 실측: [FRED대체] ^VIX3M 바로 아래 [재수집] ^VIX3M이 잘못 덧붙음 — 데이터
+            # 자체는 항상 올바르게 FRED df를 썼으니 신호에는 영향 없으나, 00/10시트 표시가 틀렸다).
+            # 이미 "지연캐시"나 "FRED대체"로 기록됐으면 이 블록은 아무것도 추가하지 않는다.
+            already_labeled = any(d.get("시리즈") == t and d.get("종류") in ("지연캐시", "FRED대체")
+                                  for d in diag)
+            if not already_labeled:
                 diag.append({"시리즈": t, "종류": "재수집", "사유": f"배치 퇴화({degenerate[t]}) → 개별 재수집 정상",
                              "행수": int(len(out[t])), "시작": str(out[t].index.min().date()),
                              "종료": str(out[t].index.max().date())})
@@ -9186,7 +9314,8 @@ def run(cfg: Config = CFG) -> dict:
     # [v1.21.0 §A] Yahoo 진단 행을 10_데이터품질에 노출 + 신호핵심 티커 게이트(report22 사고 재발 방지).
     for d in yahoo_diag:
         kind = d.get("종류")
-        label = {"지연캐시": "[지연캐시]", "재수집": "[재수집]", "제외": "[Yahoo제외]"}.get(kind, "[Yahoo]")
+        label = {"지연캐시": "[지연캐시]", "재수집": "[재수집]", "FRED대체": "[FRED대체]",
+                 "제외": "[Yahoo제외]"}.get(kind, "[Yahoo]")
         quality.append({"시리즈": f"{label} {d['시리즈']}", "행수": d.get("행수", 0), "결측": 0, "결측비율(%)": np.nan,
                         "중복인덱스": 0, "무한값": 0, "최대공백(일)": 0, "시작": d.get("시작", "-"),
                         "종료": d.get("종료", "-"), "무결성판정": f"{'수용' if kind != '제외' else '제외'}({kind}): {d['사유']}"})
@@ -10180,7 +10309,11 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # 00시트 상단에서 바로 알 수 있게 한다(FRED 수집률 라인과 대칭).
     _ftc = res.get("ft_coverage")
     _nsig = res.get("signal_days") or 0
-    _yd = [d for d in res.get("yahoo_diag", []) if d.get("종류") in ("지연캐시", "재수집", "제외")]
+    # [v1.54.1 버그수정] "FRED대체"(v1.54.0 신설)가 이 필터에 없어 00시트 요약 줄이 급락트리거
+    # 핵심 입력이 Yahoo가 아닌 FRED로 바뀐 사실을 조용히 숨기고 있었다(리포트71 실측 — 10시트에는
+    # [FRED대체] ^VIX3M이 있는데 00시트는 "^VIX3M 재수집"만 보여줌). 사용자 지침 §7(위험 파라미터
+    # 변경은 조용히 넘기지 않는다)과 직결되는 투명성 결함이라 즉시 수정한다.
+    _yd = [d for d in res.get("yahoo_diag", []) if d.get("종류") in ("지연캐시", "재수집", "FRED대체", "제외")]
     _yd_note = ("; ".join(f"{d['시리즈']} {d['종류']}" for d in _yd) if _yd else "정상")
     if cfg.SELF_TEST:
         ft_cov_line = "N/A(합성데이터)"
@@ -10498,8 +10631,8 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.53.1"
-BUNDLE_VERSION_DATE = "2026-09-13"
+BUNDLE_VERSION = "v1.54.1"
+BUNDLE_VERSION_DATE = "2026-09-17"
 # [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
 #   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /
 #   decay_weights / composite 입력 스펙에만 의존한다. ⚠ 그 네 곳의 **산식**이 바뀔 때만 이 값을 올릴 것(안 올리면 오래된

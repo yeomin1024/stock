@@ -17,6 +17,26 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.59.0 - 2026-09-18 - [★★★ 성능 회귀 수정 — 검증 캐시 전면 미스(≈3.7시간 CPU) 원인 제거]
+#    사용자 보고: "industry가 원래 오래 안 걸렸는데 수정하고 나서 너무 오래걸려".
+#    원인은 R68(I v0.26.0)이 아니라 **내가 R69에서 M v1.54.0에 넣은 Config 3필드**였다.
+#    _cache_key()가 dataclasses.asdict(cfg_i) 전체를 해시하는데, 수집 전용으로 추가한
+#    YAHOO_CRITICAL_FRED_FALLBACK · FRED_FALLBACK_MIN_ROWS · FRED_FALLBACK_MAX_DIFF_RATIO가
+#    _CACHE_KEY_IGNORE_FIELDS에 없어 키가 통째로 바뀌었다 → 29산업·11섹터 캐시 적중 0
+#    → 검증+워크포워드 재계산(산업당 ~325초 · 섹터당 ~355초 ≈ **3.7시간 CPU**)이 매 실행 반복.
+#    실측 대조: R68이 새로 넣은 로직은 00B 곡선 0.21초 + 23 예측품질 0.26초 + 00C 쓰기 2.11초
+#    = **총 2.6초**로 원인의 0.03%도 안 된다(추측이 아니라 29산업×2,185일 합성으로 직접 쟀다).
+#    수정 3가지:
+#      (1) 3필드를 _CACHE_KEY_IGNORE_FIELDS에 추가 — 해시가 v1.53.1 시절 값(4af986b48f54791d)으로
+#          **정확히 복원**되어 기존 캐시가 다시 적중한다. 안전한 이유: 이 필드들은 '어느 소스에서
+#          받는가'만 정하고, 소스가 달라 **값이 실제로 바뀌면** 같은 키 안의 지표·가격 체크섬이
+#          달라져 캐시가 정상 무효화된다(정확성은 체크섬이 지킨다 — FRED_API_KEY·FETCH_*와 같은 부류).
+#      (2) v1.54.0 키로 저장된 캐시 구제 경로(_CACHE_V1540_UNIGNORE + _cache_key(ignore=)) — 그 한
+#          라운드에 이미 3.7시간을 치러 만들어 둔 결과를 읽어 새 키로 이관한다(두 번 계산하지 않게).
+#      (3) ★ 재발 방지: 캐시 사이드카 메타(.meta.json) + _diagnose_cache_miss() — 미스가 나면
+#          '무엇이 달라져서 미스인지'를 **필드 이름 단위로** 로그에 찍는다. 이번 사고는 로그에
+#          '캐시 적중 0/29'로만 보여 사람이 코드를 뒤져야 했다(누적 교훈: 감지했으면 왜인지까지 남긴다).
+#    ⚠ 신호·가중치·성과는 **비트 동일**(캐시 키·로깅만 변경).
 #  VERSION: v0.58.0 - 2026-09-16 - [산업 계층이 00B 차트를 재사용할 수 있게 일반화] REPORT68.
 #    write_sector_excel(name_map=) 인자 추가 — 차트 제목의 한글 이름표를 호출자가 준다(미전달 시 종전 동작).
 #    계열 라벨 인식을 4종으로 확장(② 단일산업 / ③ 섹터 / ④ 현행)하고 전체비교 차트가 '② 단일산업'도 잡게 했다.
@@ -2530,8 +2550,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.58.0"
-VERSION_DATE = "2026-09-16"
+VERSION = "v0.59.0"
+VERSION_DATE = "2026-09-18"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -4870,6 +4890,14 @@ _CACHE_KEY_IGNORE_FIELDS = frozenset({
     "OUT_XLSX", "LOG_LEVEL", "EXPORT_RESULT_BUNDLE", "RESULT_BUNDLE_PATH", "EXPORT_DAILY_CSV", "DAILY_CSV_PATH",
     "RANDOM_SEED", "CACHE_DIR", "FRED_API_KEY", "FETCH_TIMEOUT_CONNECT", "FETCH_TIMEOUT_READ", "FETCH_RETRIES",
     "FETCH_MAX_WORKERS", "DRAWDOWN_EPISODE_THRESHOLD",
+    # [v0.59.0 §P1 성능 회귀 수정] M v1.54.0이 신설한 **수집 전용** 3필드. 이것들이 키에 들어가는 바람에
+    #   v1.54.0 실행에서 29산업·11섹터 캐시가 전부 미스 나 검증+워크포워드(산업당 ~325초·섹터당 ~355초,
+    #   합계 ≈3.7시간 CPU)가 통째로 재계산됐다(사용자 보고: "산업이 원래 오래 안 걸렸는데 너무 오래걸려").
+    #   ★ 제외해도 안전한 이유: 이 필드들은 '어느 소스에서 받아오는가'만 바꾸고 검증·가중치 산식에는
+    #   전혀 관여하지 않는다. 그리고 소스가 바뀌어 **값이 실제로 달라지면** 같은 키에 이미 들어 있는
+    #   지표행렬·가격 체크섬(nansum/제곱합/결측수)이 달라져 캐시가 정상적으로 무효화된다 — 즉 정확성은
+    #   체크섬이 지키고, 이 필드들은 중복 무효화만 일으키던 것이다(FRED_API_KEY·FETCH_* 와 같은 부류).
+    "YAHOO_CRITICAL_FRED_FALLBACK", "FRED_FALLBACK_MIN_ROWS", "FRED_FALLBACK_MAX_DIFF_RATIO",
     # [v0.40.0 §S3] 추세오버라이드 2필드는 generate_signals에서만 쓰이고 검증표·워크포워드 가중치에는
     # 관여하지 않는다 → 캐시 키에서 제외해 이 값만 바꿔도 섹터당 ~350초 재검증이 일어나지 않게 한다.
     # (§S1의 MARKET_BLOCK_WEIGHT_CAP은 반대로 가중치를 실제로 바꾸므로 **키에 남겨 둔다**.)
@@ -4891,7 +4919,15 @@ VALIDATION_CACHE_SCHEMA = "s1"
 _CACHE_LEGACY_HEADERS: Tuple[Tuple[str, str], ...] = (("v0.42.1", "v1.52.0"),)
 
 
-def _cache_key(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M, header: Optional[str] = None) -> str:
+# [v0.59.0 §P1] M v1.54.0 한 라운드 동안만 유효했던 키를 재현하기 위한 집합 — 그때(=이 3필드가 키에
+#   들어가 있던 동안) 저장된 캐시를 버리지 않고 살려 쓴다. 이미 3.7시간을 치른 사용자가 같은 값을
+#   또 계산하지 않도록 하는 목적이며, 한 번 읽으면 새 키로 다시 저장해 다음 실행부터는 바로 적중한다.
+_CACHE_V1540_UNIGNORE = frozenset({"YAHOO_CRITICAL_FRED_FALLBACK", "FRED_FALLBACK_MIN_ROWS",
+                                   "FRED_FALLBACK_MAX_DIFF_RATIO"})
+
+
+def _cache_key(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M, header: Optional[str] = None,
+               ignore: Optional[frozenset] = None) -> str:
     """검증/워크포워드 캐시 키 — 검증 스키마·M 검증 스키마·섹터 cfg(리포트/I/O 전용 필드 제외)·지표 열 목록·인덱스 범위·
     값 체크섬. 이 중 하나라도 다르면 다른 키(재계산). 값 체크섬은 nan을 제외한 합/제곱합/결측수.
     header를 주면 그 문자열을 '코드 버전' 자리에 쓴다(종전 키 재현용)."""
@@ -4899,7 +4935,8 @@ def _cache_key(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M, head
     h = hashlib.sha1()
     _hdr = header if header is not None else f"{VALIDATION_CACHE_SCHEMA}|{getattr(M, 'VALIDATION_SCHEMA', getattr(M, 'BUNDLE_VERSION', '?'))}"
     h.update(f"{_hdr}|{ticker}".encode())
-    cfg_d = {k: v for k, v in dataclasses.asdict(cfg_i).items() if k not in _CACHE_KEY_IGNORE_FIELDS}
+    _ign = _CACHE_KEY_IGNORE_FIELDS if ignore is None else ignore
+    cfg_d = {k: v for k, v in dataclasses.asdict(cfg_i).items() if k not in _ign}
     h.update(json.dumps(cfg_d, sort_keys=True, default=str).encode())
     h.update("|".join(map(str, ind.columns)).encode())
     h.update(f"{ind.index[0]}|{ind.index[-1]}|{len(ind)}".encode())
@@ -4908,6 +4945,70 @@ def _cache_key(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M, head
     pa = px_adj.to_numpy(dtype=float)
     h.update(np.array([np.nansum(pa), np.nansum(pa * pa), float(np.isnan(pa).sum())]).tobytes())
     return h.hexdigest()
+
+
+def _cache_meta(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M) -> dict:
+    """[v0.59.0 §P1] 캐시 키를 이루는 구성요소를 '사람이 읽을 수 있는' 형태로 요약한다.
+    ⚠ 이것으로 키를 만들지 않는다(_cache_key는 손대지 않는다 — 부동소수 직렬화가 끼면 키가 미세하게
+    달라져 캐시가 또 통째로 날아갈 수 있다). 오직 미스 원인 진단·사이드카 기록 전용."""
+    arr = ind.to_numpy(dtype=float)
+    pa = px_adj.to_numpy(dtype=float)
+    return {
+        "ticker": ticker,
+        "schema": f"{VALIDATION_CACHE_SCHEMA}|{getattr(M, 'VALIDATION_SCHEMA', getattr(M, 'BUNDLE_VERSION', '?'))}",
+        "cfg": {k: str(v) for k, v in dataclasses.asdict(cfg_i).items() if k not in _CACHE_KEY_IGNORE_FIELDS},
+        "n_cols": int(ind.shape[1]),
+        "cols_head": list(map(str, ind.columns[:5])),
+        "idx": f"{ind.index[0]}|{ind.index[-1]}|{len(ind)}",
+        "ind_chk": [round(float(np.nansum(arr)), 6), round(float(np.nansum(arr * arr)), 6), int(np.isnan(arr).sum())],
+        "px_chk": [round(float(np.nansum(pa)), 6), round(float(np.nansum(pa * pa)), 6), int(np.isnan(pa).sum())],
+    }
+
+
+def _diagnose_cache_miss(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M, scfg) -> None:
+    """[v0.59.0 §P1] 캐시 미스가 났을 때 **왜** 미스인지 직전 실행의 사이드카 메타와 대조해 로그로 남긴다.
+
+    왜 필요한가: v1.54.0이 M.Config에 수집 전용 필드 3개를 추가한 것만으로 29산업·11섹터의 캐시 키가
+    전부 바뀌어 ≈3.7시간 CPU가 매 실행 재계산됐는데, 로그에는 그냥 '캐시 적중 0/29'로만 보였다 —
+    원인을 찾으려면 사람이 코드를 뒤져야 했다. 누적 교훈: **감지했으면 왜인지까지 남긴다.**
+    비용: 미스 1건당 작은 JSON 1개 읽기(재계산 325초에 비하면 무시 가능)."""
+    import json
+    import glob as _glob
+    try:
+        metas = sorted(_glob.glob(os.path.join(scfg.CACHE_DIR, f"{ticker}_*.pkl.gz.meta.json")),
+                       key=os.path.getmtime, reverse=True)
+        if not metas:
+            log("CACHE", kv(ticker=ticker, event="cache_miss_reason",
+                            reason="직전 캐시 메타 없음(최초 실행·캐시 폴더 초기화·v0.59.0 이전 캐시)",
+                            note="다음 실행부터는 미스 원인이 필드 단위로 찍힌다"), M=M, level="warning")
+            return
+        with open(metas[0], encoding="utf-8") as f:
+            prev = json.load(f)
+        now = _cache_meta(ticker, cfg_i, ind, px_adj, M)
+        pc, nc = prev.get("cfg", {}) or {}, now["cfg"]
+        cfg_diff = sorted(k for k in (set(pc) | set(nc)) if str(pc.get(k, "<없음>")) != str(nc.get(k, "<없음>")))
+        data_changed = (prev.get("ind_chk") != now["ind_chk"]) or (prev.get("px_chk") != now["px_chk"])
+        cols_changed = (prev.get("n_cols") != now["n_cols"]) or (prev.get("idx") != now["idx"])
+        schema_changed = prev.get("schema") != now["schema"]
+        # 가장 흔하고 가장 비싼 오작동: '데이터는 그대로인데 설정 필드만 바뀌어' 전부 재계산되는 경우
+        if cfg_diff and not (data_changed or cols_changed or schema_changed):
+            log("CACHE", kv(ticker=ticker, event="cache_miss_reason", cause="설정 필드만 변경",
+                            changed_fields=",".join(cfg_diff[:8]) + (" …" if len(cfg_diff) > 8 else ""),
+                            n_changed=len(cfg_diff),
+                            action="이 필드들이 검증표·워크포워드 가중치에 영향이 없다면 "
+                                   "sector_rotation._CACHE_KEY_IGNORE_FIELDS에 추가하라 — 아니면 매 실행 "
+                                   "산업당 ~325초·섹터당 ~355초가 반복된다"), M=M, level="warning")
+        else:
+            log("CACHE", kv(ticker=ticker, event="cache_miss_reason",
+                            cause=";".join([x for x in (
+                                ("데이터 값 변경" if data_changed else ""),
+                                ("지표열/기간 변경" if cols_changed else ""),
+                                ("검증 스키마 변경" if schema_changed else ""),
+                                (f"설정 {len(cfg_diff)}필드 변경" if cfg_diff else "")) if x]) or "원인 불명",
+                            changed_fields=",".join(cfg_diff[:8]) if cfg_diff else "-",
+                            note="데이터·스키마가 바뀐 재계산은 정상(정확성을 위해 필요)"), M=M)
+    except Exception as e:      # 진단이 본 실행을 절대 막지 않는다
+        log("CACHE", kv(ticker=ticker, event="cache_miss_diagnose_failed", err=type(e).__name__), M=M, level="debug")
 
 
 def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Series, cfg_i,
@@ -4951,6 +5052,40 @@ def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Serie
                     return cached
             except Exception as e:
                 log("CACHE", kv(ticker=ticker, event="cache_legacy_read_failed", err=type(e).__name__), M=M, level="warning")
+    # [v0.59.0 §P1] M v1.54.0(한 라운드) 동안 쓰였던 키로 저장된 캐시 구조 — 그 실행에서 이미
+    # 산업당 ~325초를 치르고 만들어 둔 결과이므로, 버리지 않고 읽어서 새 키로 옮긴다(다음 실행부터 바로 적중).
+    # 값 자체는 동일하다: 그 3필드는 검증·가중치 산식에 관여하지 않고, 데이터가 달랐다면 같은 키 안의
+    # 지표·가격 체크섬이 이미 달라져 여기까지 오지도 않는다.
+    if scfg.USE_CACHE:
+        try:
+            _k154 = _cache_key(ticker, cfg_i, ind_i, adj_i, M,
+                               ignore=_CACHE_KEY_IGNORE_FIELDS - _CACHE_V1540_UNIGNORE)
+            _p154 = os.path.join(scfg.CACHE_DIR, f"{ticker}_{_k154[:16]}.pkl.gz")
+            if _k154 != key and os.path.exists(_p154):
+                cached = pd.read_pickle(_p154, compression="gzip")
+                if cached.get("key") == _k154 and all(k in cached for k in ("val_full", "W", "wlog", "W_haz")):
+                    cached["key"] = key
+                    try:
+                        os.makedirs(scfg.CACHE_DIR, exist_ok=True)
+                        tmp = f"{path}.tmp{os.getpid()}"
+                        pd.to_pickle(cached, tmp, compression="gzip", protocol=4)
+                        os.replace(tmp, path)
+                    except Exception as e2:   # noqa — 이관 실패해도 이번 실행은 캐시 값으로 계속
+                        log("CACHE", kv(ticker=ticker, event="cache_migrate_write_failed",
+                                        err=type(e2).__name__), M=M, level="warning")
+                    log("CACHE", kv(ticker=ticker, event="cache_hit_v1540",
+                                    migrated_to=os.path.basename(path), periods=len(cached["wlog"]),
+                                    note="v1.54.0 키로 저장된 캐시 재사용 — 재계산 생략",
+                                    elapsed_s=round(time.time() - t0, 2)), M=M)
+                    cached["cache_hit"] = True
+                    return cached
+        except Exception as e:
+            log("CACHE", kv(ticker=ticker, event="cache_v1540_read_failed", err=type(e).__name__), M=M, level="warning")
+
+    # [v0.59.0 §P1] 여기 도달 = 캐시 미스 확정(신규 키·레거시 키 모두 실패). 왜 미스인지 남긴다 —
+    # 재계산은 산업당 ~325초라 '조용한 전면 미스'는 곧바로 몇 시간짜리 성능 회귀가 된다.
+    if scfg.USE_CACHE:
+        _diagnose_cache_miss(ticker, cfg_i, ind_i, adj_i, M, scfg)
     idx = ind_i.index
     with _indicator_spec_override(M, specs):
         w_report = M.decay_weights(idx, asof=idx[-1], half_life_days=cfg_i.HALF_LIFE_DAYS)
@@ -4969,6 +5104,14 @@ def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Serie
             tmp = f"{path}.tmp{os.getpid()}"
             pd.to_pickle(out, tmp, compression="gzip", protocol=4)
             os.replace(tmp, path)     # 원자적 교체 — 중단된 실행이 잘린 캐시 파일을 남기지 않게
+            # [v0.59.0 §P1] 사이드카 메타(작은 JSON) — 다음 실행에서 미스가 나면 이걸 읽어
+            # '무엇이 달라져서 미스인지'를 필드 단위로 찍는다(_diagnose_cache_miss).
+            try:
+                import json as _json
+                with open(f"{path}.meta.json", "w", encoding="utf-8") as _mf:
+                    _json.dump(_cache_meta(ticker, cfg_i, ind_i, adj_i, M), _mf, ensure_ascii=False)
+            except Exception as _me:   # noqa — 메타 실패는 본체 캐시에 영향 없음
+                log("CACHE", kv(ticker=ticker, event="cache_meta_write_failed", err=type(_me).__name__), M=M, level="debug")
             log("CACHE", kv(ticker=ticker, event="cache_saved", file=os.path.basename(path),
                             size_mb=round(os.path.getsize(path) / 1e6, 1)), M=M)
         except Exception as e:

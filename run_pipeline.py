@@ -1161,8 +1161,8 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.22.0"
-VERSION_DATE = "2026-09-16"
+VERSION = "v1.23.0"
+VERSION_DATE = "2026-09-18"
 
 MODULE_FILES = {
     "market_regime_trader": "market_regime_trader.py",
@@ -1268,7 +1268,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     #   S v0.50.0 / I v0.21.0 / K v0.2.1로 돌았다. 리포트에 00A 시트가 없고 비중 합계도 그대로였다.
     #   배너만 보고는 그것을 알 수 없었다 — 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없었다.
     #   ⇒ 이제 최소 버전을 코드가 알고 있고, 미달이면 **어느 파일을 갱신해야 하는지** 크게 알린다.
-    _MIN = {"sector_rotation.py": ("S", "v0.58.0", S),
+    _MIN = {"sector_rotation.py": ("S", "v0.59.0", S),
             "industry_rotation.py": ("I", "v0.26.0", I),
             "stock_regime.py": ("K", "v0.3.1", K)}
     def _vt(x):
@@ -1315,6 +1315,10 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
             _feat.append("★산업 00B 4곡선")
         if hasattr(_mod, "build_industry_prediction_quality"):
             _feat.append("★산업 23_예측품질검정")
+        # [v1.23.0 ROUND71] 검증 캐시 전면 미스(≈3.7시간 CPU) 수정이 실린 파일인지 — 이것이 없으면
+        # 산업 실행이 매번 몇 시간씩 걸린다(원인: M v1.54.0 Config 3필드가 캐시 키에 섞여 들어감).
+        if _tag == "S" and hasattr(_mod, "_diagnose_cache_miss"):
+            _feat.append("★캐시키 회귀수정+미스원인로그")
         print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
               + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
     if _stale:
