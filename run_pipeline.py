@@ -1,5 +1,14 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.26.0 - 2026-09-19 - [R74 — M v1.56.1 · S v0.61.1 · I v0.28.0 · K v0.3.3] 종가결측 배너 · 캐시 폴더 상태 · 최소버전 상향.
+#    PLAN74 §1-4·§4-5(사용자 지시 2026-09-19 "개선방법 대로 코드 수정해").
+#    · 신설 _last_close_banner() — S·I 실행 뒤 last_close_missing(M 달력 마지막일에 유효 종가가 없는 티커)이 있으면 ⚠⚠⚠ 3줄,
+#      없으면 "마지막 날 종가 ★ 전부 유효" 1줄(구버전 S/I면 침묵).
+#    · 신설 _cache_folder_report() — 실행 전 M·S·I 캐시 폴더의 파일 수·최근 수정 시각·wf_periods 수. 경계 캐시가 0개면
+#      "이전 세션 캐시 없음 — 경계 전면 재계산" 경고(리포트24: 산업 13개가 산업당 ≈300초였는데 원인이 시트에 없었다).
+#    · _MIN: M v1.56.1 · S v0.61.1 · I v0.28.0 · K v0.3.3. 기능 점검 ★종가결측가드(M) · ★[종가결측] 경고(S) ·
+#      ★26_신호부호검정·격자 연도일관(I).
+#    ※ 러너 실행 경로·기본값·위험 파라미터 무변경.
 #  VERSION: v1.25.0 - 2026-09-19 - [R73 — M v1.56.0 · S v0.61.0 · I v0.27.0 · K v0.3.2] 날짜 신선도 배너 · 최소버전 상향.
 #    사용자 지적(2026-09-19): "날짜 지나면 캐시 갱신 — 오늘 날짜면 19일 예측해야 하는데 갱신 안 돼서 안 된다".
 #    · M 실행 직후 res["data_freshness"](M v1.56.0 신선도 감사)를 읽어 배너에 **데이터 마지막일 vs 기대 개장일**을 찍는다.
@@ -1178,9 +1187,9 @@ import time
 import dataclasses
 import datetime as dt
 import importlib.util
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v1.25.0"
+VERSION = "v1.26.0"
 VERSION_DATE = "2026-09-19"
 
 MODULE_FILES = {
@@ -1232,6 +1241,45 @@ def _banner(lines) -> None:
     for l in lines:
         print(f"  {l}")
     print("=" * width)
+
+
+def _cache_folder_report(folders: List[Tuple[str, str]]) -> None:
+    """[v1.26.0 R74 §4-5] 캐시 폴더별 존재 · 파일 수 · 최근 수정 시각 · wf_periods(경계 캐시) 파일 수를 1줄씩 찍는다.
+    wf_periods가 0개인데 검증 폴더가 있으면 '이전 세션 캐시 없음' 경고 — Kaggle 세션이 캐시를 보존하지 않은 경우다."""
+    import datetime as _dt
+    for _lab, _d in folders:
+        try:
+            if not _d or not os.path.isdir(_d):
+                print(f"[runner] 캐시 {_lab}: 폴더 없음({_d}) — 첫 실행 또는 세션 초기화 → 전면 재수집·재계산")
+                continue
+            _fs = [os.path.join(_d, f) for f in os.listdir(_d) if os.path.isfile(os.path.join(_d, f))]
+            _wp = os.path.join(_d, "wf_periods")
+            _nw = len(os.listdir(_wp)) if os.path.isdir(_wp) else 0
+            _mt = max((os.path.getmtime(f) for f in _fs), default=None)
+            _mts = _dt.datetime.fromtimestamp(_mt).strftime("%Y-%m-%d %H:%M") if _mt else "-"
+            _warn = ("  ⚠ 경계 캐시 0개 — 이번 실행은 워크포워드 경계 전면 재계산(산업당 ≈300초). "
+                     "Kaggle 노트북 Persistence(Files)를 켜거나 캐시 폴더를 Dataset으로 보존하세요"
+                     if (_lab != "M 가격·FRED" and _nw == 0) else "")
+            print(f"[runner] 캐시 {_lab}: 파일 {len(_fs)}개 · 최근 {_mts} · 경계(wf_periods) {_nw}개{_warn}")
+        except Exception as e:      # 진단이 실행을 막지 않는다
+            print(f"[runner] 캐시 {_lab}: 상태 확인 실패({type(e).__name__})")
+
+
+def _last_close_banner(label: str, r: Optional[dict]) -> None:
+    """[v1.26.0 R74 §1-4] S·I가 반환한 last_close_missing(M 달력 마지막일에 유효 종가가 없는 티커)을 크게 알린다."""
+    _lm = list((r or {}).get("last_close_missing") or [])
+    if not _lm:
+        if r is not None and "last_close_missing" in r:
+            print(f"[runner] {label} 마지막 날 종가 ★ 전부 유효")
+        return
+    _d = (r or {}).get("last_close_day")
+    _ds = str(getattr(_d, "date", lambda: _d)()) if _d is not None else "-"
+    print("[runner] " + "=" * 74)
+    print(f"[runner] ⚠⚠⚠ {label} 마지막 날({_ds}) 종가 결측 {len(_lm)}개: {', '.join(map(str, _lm[:10]))}"
+          + (" …" if len(_lm) > 10 else ""))
+    print("[runner]   이 티커들은 전일 종가로 채워져 그날 수익 0 · 자기 신호·배분 입력이 하루 정체됩니다(라이브 산업 목표는 M 상속이라 무관).")
+    print("[runner]   조치: 잠시 뒤 재실행 — 필요하면 cache_market_data/v*_YH_*.csv(Yahoo 가격 캐시)만 지우고 다시 실행")
+    print("[runner] " + "=" * 74)
 
 
 def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: bool = True,
@@ -1289,10 +1337,11 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     #   ⇒ 이제 최소 버전을 코드가 알고 있고, 미달이면 **어느 파일을 갱신해야 하는지** 크게 알린다.
     # [v1.24.0 R72] M을 표에 추가(최소 v1.55.0 — 워크포워드 경계 캐시). M은 VERSION이 없고 BUNDLE_VERSION을 쓴다.
     # [v1.25.0 R73] 최소버전 상향 — 날짜 신선도(M·S·K) · 00A 라이브②(I).
-    _MIN = {"market_regime_trader.py": ("M", "v1.56.0", M),
-            "sector_rotation.py": ("S", "v0.61.0", S),
-            "industry_rotation.py": ("I", "v0.27.0", I),
-            "stock_regime.py": ("K", "v0.3.2", K)}
+    # [v1.26.0 R74] 최소버전 상향 — 종가 미확정 봉 가드(M·S·K) · 26_신호부호검정·격자 연도 일관성(I).
+    _MIN = {"market_regime_trader.py": ("M", "v1.56.1", M),
+            "sector_rotation.py": ("S", "v0.61.1", S),
+            "industry_rotation.py": ("I", "v0.28.0", I),
+            "stock_regime.py": ("K", "v0.3.3", K)}
     def _vt(x):
         try:
             return tuple(int(p) for p in str(x).lstrip("v").split(".")[:3])
@@ -1358,6 +1407,13 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
             _feat.append("★00A 라이브②·19 A′")
         if _tag == "K" and hasattr(_mod, "_prices_freshness"):
             _feat.append("★가격캐시 신선도")
+        # [v1.26.0 R74] 종가 미확정 봉(시가·고가·저가만 있고 종가가 빈 끝 행) — 리포트24에서 ETF 40개 09-18 수익이 0이 된 원인
+        if _tag == "M" and hasattr(_mod, "_drop_incomplete_tail"):
+            _feat.append("★종가결측가드(M)")
+        if _tag == "S" and hasattr(_mod, "_last_close_missing_check"):
+            _feat.append("★[종가결측] 경고")
+        if _tag == "I" and hasattr(_mod, "build_signal_sign_tests"):
+            _feat.append("★26_신호부호검정·격자 연도일관")
         print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
               + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
     if _stale:
@@ -1368,12 +1424,12 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         print("[runner]   원인: 노트북 상단 wget이 GitHub의 **이전 파일**을 가져왔습니다.")
         print("[runner]   조치: 위 파일을 저장소(main)에 덮어쓴 뒤 다시 실행하거나,")
         print("[runner]         Kaggle 세션의 .py 캐시를 지우고(런타임 재시작) wget을 다시 받으세요.")
-        print("[runner]   확인: 세 리포트 00시트에 **'데이터 신선도'** 행이 있으면 M v1.56.0·S v0.61.0 이상,")
-        print("[runner]         산업 00A에 '②′ 자기 복리(%)' 열과 19 시트 블록 A′가 있으면 I v0.27.0입니다.")
+        print("[runner]   확인: 산업 리포트에 **26_신호부호검정** 시트와 00A 블록 'F2. 연도 × 국면 버킷'이 있으면 I v0.28.0,")
+        print("[runner]         섹터 00시트에 '★ 00A_수익비교 시트 맨 앞에 있음'(거짓 경보 해소)이 있으면 S v0.61.1 이상입니다.")
         print("[runner] " + "=" * 74)
     else:
-        print("[runner]   ★ 전부 최신 — 날짜 신선도 가드(M v1.56.0) 포함: 캐시가 기대 개장일보다 뒤처지면 재수집하고, "
-              "각 리포트 00시트 '데이터 신선도' 행에 기대일·실제 마지막일이 찍힙니다")
+        print("[runner]   ★ 전부 최신 — 종가 미확정 봉 가드(M v1.56.1) 포함: 신선도를 '유효 종가 마지막일'로 판정하고, "
+              "마지막 날 종가가 빈 티커는 재수집 → 남으면 00시트·10시트 [종가결측]과 이 배너에 찍힙니다")
     assert hasattr(S, "run"), "S.run이 없음 - GitHub에 올린 sector_rotation.py를 다시 확인하세요"
     if I is not None:
         assert hasattr(I, "run"), "I.run이 없음 - GitHub에 올린 industry_rotation.py를 다시 확인하세요"
@@ -1407,6 +1463,10 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         i_kw.update(i_overrides or {})
         icfg = dataclasses.replace(I.CFG, **i_kw)
     print(f"[runner] 섹터 제외(SECTOR_EXCLUDE) = {tuple(getattr(scfg, 'SECTOR_EXCLUDE', ()) or ()) or '없음'}")
+    # ---- [v1.26.0 R74 §4-5] 캐시 폴더 상태 — 이전 세션 캐시가 남아 있나(없으면 이번 실행은 경계 전면 재계산) ----
+    #   리포트24: 산업 13개가 산업당 ≈300초(경계 캐시 미적중). 시트만으로는 '세션 초기화'인지 알 수 없었다.
+    _cache_folder_report([("M 가격·FRED", mcfg.CACHE_DIR), ("S 검증", scfg.CACHE_DIR)]
+                         + ([("I 검증", icfg.CACHE_DIR)] if icfg is not None else []))
 
     # ---- 실행 ----
     hk = _hooks or {}
@@ -1434,10 +1494,12 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     path = M.build_report(res, mcfg)
     sres = (hk.get("s_run") or S.run)(res, M, scfg)
     path2 = S.build_sector_report(sres, M=M)
+    _last_close_banner("S(섹터)", sres)
     ires, path3 = None, None
     if I is not None:
         ires = (hk.get("i_run") or I.run)(sres, res, M, S, icfg)
         path3 = I.build_industry_report(ires, M=M, S=S)
+        _last_close_banner("I(산업·부모)", ires)
     # ---- [v1.16.0] 4번째 계층 K(개별 주식) — 실패해도 M·S·I 리포트는 이미 만들어져 있다 ----
     #   [v1.16.1] 모듈은 위에서 이미 로드했다(배너에 버전이 찍혔고 파일 없음도 거기서 알렸다).
     kres, path4 = None, None

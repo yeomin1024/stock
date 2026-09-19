@@ -17,6 +17,25 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.61.1 - 2026-09-19 - [R74 종가 미확정 봉 가드 · 00A 거짓 경보 수정 · 캐시 미스 사유 반환 — 신호·비중 무변경]
+#    PLAN74 §1-4·§4-1·§4-5. 리포트5(S v0.61.0): 11섹터 09-18 행이 시가·고가·저가만 있고 종가가 비어(10시트
+#    Close마지막일 09-17 · 달력정렬결측 1) 전일 종가로 채워졌는데 [신선도]는 "★ 전 티커 최신"이라 적었다.
+#    (1) 신설 _s_last_valid_close(df, M) — M v1.56.1 _last_valid_close 위임(구버전 M이면 사본). ensure_fresh_sector_prices·
+#        _calendar_truncation_check·run()의 절단 목록이 **유효 종가 마지막일**로 판정한다(종가 미확정 봉은 뒤처짐 → 재수집).
+#    (2) 신설 _last_close_missing(px, cal, M)(순수) · _last_close_missing_check()(fetch_sector_prices 끝) — M 달력 마지막일에
+#        유효 종가가 없는 티커를 로그 calendar_last_close_missing(error) + 10시트 [종가결측] 행으로. run() 반환에
+#        last_close_missing·last_close_day. 00시트 '데이터 신선도' 줄 끝에 "⚠⚠ 마지막 날 종가 결측 n개"(M 문구 재사용).
+#        I는 이 S 함수를 쓰므로 자동 적용.
+#    (3) ★ 00시트 거짓 경보 수정: "⚠ 00A_수익비교 시트 생성되지 않았다"가 00A가 정상인데도 항상 찍혔다 — 00A 존재 판정이
+#        00A 생성보다 **먼저** 실행됐기 때문(리포트5·합성 리포트 재현). 판정 블록을 sheets_to_front 직전으로 옮겼다
+#        (삽입 위치 = 다음 거래일 예측 블록 바로 뒤 — 종전과 같은 자리). '★★ 전체자산 1.0 확인' 행도 이제 나온다.
+#    (4) _diagnose_cache_miss가 사유 문자열을 **반환**(로그 유지) → validate_and_weight_sector 반환 hv["cache_miss_reason"]
+#        (전체키 피클 저장 뒤에 부착). I 12_산업요약 '캐시 미스 원인' 열의 출처.
+#    (5) _CACHE_KEY_IGNORE_FIELDS(구버전 M 폴백 사본)에 M v1.56.1 신설 DROP_INCOMPLETE_TAIL — 정본과 표류 없음(교훈 31).
+#        ⇒ 전체키·경계 캐시 해시 v0.61.0과 동일.
+#    영향 함수: _s_last_valid_close/_last_close_missing/_last_close_missing_check(신설) · _calendar_truncation_check ·
+#      ensure_fresh_sector_prices · fetch_sector_prices(끝 1줄) · _diagnose_cache_miss · validate_and_weight_sector(2줄) ·
+#      run(반환 2키·절단 목록 기준) · build_sector_report(00 신선도 인자·00A 판정 위치). 신호·비중·성과 무변경.
 #  VERSION: v0.61.0 - 2026-09-19 - [R73 날짜 갱신 — 기대일 M 위임 · [달력절단] 경고 · 00시트 신선도 1행 — 신호·비중 무변경]
 #    사용자 지적(2026-09-19 "19일이면 19일 예측해야 하는데 갱신 안 돼서 안 된다"). 리포트23: 섹터·산업 ETF는 09-18까지 받았는데
 #    M 달력(SPY)이 09-17에서 끝나 전부 09-17로 절단됐고 그 사실을 어떤 시트도 말하지 않았다. PLAN73 §1-4:
@@ -2588,7 +2607,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.61.0"
+VERSION = "v0.61.1"
 VERSION_DATE = "2026-09-19"
 
 # =============================================================================
@@ -3536,7 +3555,64 @@ def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
     log("DATA", kv(event="sector_fetch_done", tickers=len(SECTORS_), ok=n_ok,
                    missing=",".join(t for t in SECTORS_ if sector_px.get(t) is None) or "-"), M=M)
     _calendar_truncation_check(sector_px, res, M, quality_rows)
+    _last_close_missing_check(sector_px, res, M, quality_rows)     # [v0.61.1 R74 §1-4] 마지막 날 종가 결측
     return sector_px, yahoo_diag
+
+
+def _s_last_valid_close(df: Optional[pd.DataFrame], M=None) -> Optional[pd.Timestamp]:
+    """[v0.61.1 R74 §1-4] 종가가 **유효한** 마지막 날짜. M(v1.56.1+)의 _last_valid_close로 위임하고, 구버전 M이면 사본.
+    리포트24: ETF 40개의 인덱스 마지막일 09-18 · 유효 종가 마지막일 09-17 — 인덱스만 보던 검사가 전부 '최신'으로 통과했다."""
+    if M is not None and hasattr(M, "_last_valid_close"):
+        return M._last_valid_close(df)
+    if df is None or len(df) == 0:
+        return None
+    c = "Close" if "Close" in df.columns else ("Adj Close" if "Adj Close" in df.columns else None)
+    if c is None:
+        return None
+    ok = pd.to_numeric(df[c], errors="coerce").notna().values
+    if not ok.any():
+        return None
+    return pd.Timestamp(pd.DatetimeIndex(df.index)[ok].max()).normalize()
+
+
+def _last_close_missing(px: Dict[str, Optional[pd.DataFrame]], cal, M=None) -> List[str]:
+    """[v0.61.1 R74 §1-4] M 달력 마지막일(cal[-1])에 **유효 종가가 없는** 티커(순수 함수 — 로그·시트 없음).
+    그 티커는 build_total_return_close가 전일 종가로 채우므로 마지막 날 수익 0 · 자기 신호 입력이 하루 정체된다."""
+    out: List[str] = []
+    if cal is None or not len(cal):
+        return out
+    cal_last = pd.Timestamp(cal[-1]).normalize()
+    for t, df in (px or {}).items():
+        if df is None or not len(df):
+            continue
+        lv = _s_last_valid_close(df, M)
+        if lv is None or lv < cal_last:
+            out.append(t)
+    return sorted(out)
+
+
+def _last_close_missing_check(px: Dict[str, Optional[pd.DataFrame]], res: dict, M,
+                              quality_rows: List[dict]) -> List[str]:
+    """[v0.61.1 R74 §1-4 ★] 마지막 날 종가 결측을 **10시트 [종가결측] 행 + error 로그**로 남긴다(조용히 넘어가지 않는다 — 교훈 12).
+    신선도 재수집(ensure_fresh_sector_prices)을 거친 뒤에도 남은 것만 잡힌다 = 제공자가 아직 그 날 종가를 주지 않았다."""
+    out: List[str] = []
+    try:
+        cal = res.get("cal")
+        out = _last_close_missing(px, cal, M)
+        if out:
+            cal_last = pd.Timestamp(cal[-1]).normalize()
+            log("DATA", kv(event="calendar_last_close_missing", n=len(out),
+                           tickers=",".join(out[:8]) + (" …" if len(out) > 8 else ""), day=str(cal_last.date()),
+                           action="잠시 뒤 재실행(Yahoo 가격 캐시 cache_market_data/v*_YH_*.csv 삭제 후) — 이번 실행은 전일 종가로 채운다"),
+                M=M, level="error")
+            quality_rows.append({"시리즈": f"[종가결측] {len(out)}개 티커", "행수": len(out), "시작": str(cal_last.date()),
+                                 "종료": str(cal_last.date()),
+                                 "무결성판정": (f"⚠⚠ M 달력 마지막일 {cal_last.date()}에 유효 종가가 없다 → 전일 종가로 채움"
+                                            f"(그날 수익 0 · 자기 신호·순위 입력 정체). 재수집 후에도 남은 것 = 제공자 미갱신. "
+                                            f"대상: {', '.join(out[:12])}{' …' if len(out) > 12 else ''}")})
+    except Exception as e:     # 진단이 본 실행을 막지 않는다
+        log("DATA", kv(event="last_close_missing_check_failed", err=type(e).__name__), M=M, level="debug")
+    return out
 
 
 def _calendar_truncation_check(px: Dict[str, Optional[pd.DataFrame]], res: dict, M,
@@ -3556,8 +3632,8 @@ def _calendar_truncation_check(px: Dict[str, Optional[pd.DataFrame]], res: dict,
         for t, df in px.items():
             if df is None or not len(df):
                 continue
-            last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
-            if last > cal_last:
+            last = _s_last_valid_close(df, M)          # [v0.61.1 R74] 인덱스가 아니라 유효 종가 기준
+            if last is not None and last > cal_last:
                 ahead[t] = last
         if ahead:
             out = sorted(ahead)
@@ -3642,7 +3718,9 @@ def ensure_fresh_sector_prices(px: Dict[str, Optional[pd.DataFrame]], M, scfg: A
         if df is None or len(df) == 0:
             continue
         try:
-            last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
+            last = _s_last_valid_close(df, M)            # [v0.61.1 R74] 종가 미확정 봉(인덱스만 있는 끝 행)은 최신이 아니다
+            if last is None:
+                last = pd.Timestamp(pd.DatetimeIndex(df.index).min()).normalize()
         except Exception:
             continue
         lag = int(M.trading_days_between(last, exp)) if hasattr(M, "trading_days_between") else               int(len(pd.bdate_range(last, exp)) - 1)
@@ -3659,7 +3737,7 @@ def ensure_fresh_sector_prices(px: Dict[str, Optional[pd.DataFrame]], M, scfg: A
         new_last = None
         if new is not None and len(new):
             try:
-                new_last = pd.Timestamp(pd.DatetimeIndex(new.index).max()).normalize()
+                new_last = _s_last_valid_close(new, M)   # [v0.61.1 R74] 유효 종가 기준
             except Exception:
                 new_last = None
         if new_last is not None and new_last > last:
@@ -4993,6 +5071,8 @@ _CACHE_KEY_IGNORE_FIELDS = frozenset({
     #   교훈 31: M Config에 필드를 더하면 같은 변경에서 무시 목록(정본 + 이 폴백 사본)에 같이 넣는다.
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",
+    # [v0.61.1 R74] M v1.56.1 신설 1필드(종가 미확정 봉 제거 — 수집 전용).
+    "DROP_INCOMPLETE_TAIL",
 })
 # [v0.60.0 R72 §3-3 ★ 단일 정본] 위 목록은 이제 **구버전 M(v1.55.0 미만) 폴백 전용 사본**이다. 실제 키 계산은
 #   M.CACHE_KEY_IGNORE_FIELDS(M v1.55.0이 정본)를 읽는다 — M에 Config 필드를 더하는 라운드가 S를 따로 고치지 않아도
@@ -5069,13 +5149,14 @@ def _cache_meta(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M) -> 
     }
 
 
-def _diagnose_cache_miss(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M, scfg) -> None:
+def _diagnose_cache_miss(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M, scfg) -> str:
     """[v0.59.0 §P1] 캐시 미스가 났을 때 **왜** 미스인지 직전 실행의 사이드카 메타와 대조해 로그로 남긴다.
 
     왜 필요한가: v1.54.0이 M.Config에 수집 전용 필드 3개를 추가한 것만으로 29산업·11섹터의 캐시 키가
     전부 바뀌어 ≈3.7시간 CPU가 매 실행 재계산됐는데, 로그에는 그냥 '캐시 적중 0/29'로만 보였다 —
     원인을 찾으려면 사람이 코드를 뒤져야 했다. 누적 교훈: **감지했으면 왜인지까지 남긴다.**
-    비용: 미스 1건당 작은 JSON 1개 읽기(재계산 325초에 비하면 무시 가능)."""
+    비용: 미스 1건당 작은 JSON 1개 읽기(재계산 325초에 비하면 무시 가능).
+    [v0.61.1 R74 §4-5] 사유 문자열을 **반환**한다(로그는 그대로) — I 12_산업요약 '캐시 미스 원인' 열이 시트에서 보이게."""
     import json
     import glob as _glob
     try:
@@ -5085,7 +5166,7 @@ def _diagnose_cache_miss(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Serie
             log("CACHE", kv(ticker=ticker, event="cache_miss_reason",
                             reason="직전 캐시 메타 없음(최초 실행·캐시 폴더 초기화·v0.59.0 이전 캐시)",
                             note="다음 실행부터는 미스 원인이 필드 단위로 찍힌다"), M=M, level="warning")
-            return
+            return "이전 캐시 없음(최초·폴더 초기화·세션 미보존)"
         with open(metas[0], encoding="utf-8") as f:
             prev = json.load(f)
         now = _cache_meta(ticker, cfg_i, ind, px_adj, M)
@@ -5102,6 +5183,7 @@ def _diagnose_cache_miss(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Serie
                             action="이 필드들이 검증표·워크포워드 가중치에 영향이 없다면 "
                                    "market_regime_trader.CACHE_KEY_IGNORE_FIELDS(정본, v1.55.0)에 추가하라 — 아니면 매 실행 "
                                    "산업당 ~325초·섹터당 ~355초가 반복된다"), M=M, level="warning")
+            return "설정 필드만 변경: " + ",".join(cfg_diff[:4]) + (" …" if len(cfg_diff) > 4 else "")
         else:
             log("CACHE", kv(ticker=ticker, event="cache_miss_reason",
                             cause=";".join([x for x in (
@@ -5111,8 +5193,13 @@ def _diagnose_cache_miss(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Serie
                                 (f"설정 {len(cfg_diff)}필드 변경" if cfg_diff else "")) if x]) or "원인 불명",
                             changed_fields=",".join(cfg_diff[:8]) if cfg_diff else "-",
                             note="데이터·스키마가 바뀐 재계산은 정상(정확성을 위해 필요)"), M=M)
+            return (";".join([x for x in (("데이터 값 변경(새 거래일·과거 값 수정)" if data_changed else ""),
+                                          ("지표열/기간 변경" if cols_changed else ""),
+                                          ("검증 스키마 변경" if schema_changed else ""),
+                                          (f"설정 {len(cfg_diff)}필드 변경" if cfg_diff else "")) if x]) or "원인 불명")
     except Exception as e:      # 진단이 본 실행을 절대 막지 않는다
         log("CACHE", kv(ticker=ticker, event="cache_miss_diagnose_failed", err=type(e).__name__), M=M, level="debug")
+    return "진단 실패"
 
 
 def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Series, cfg_i,
@@ -5188,8 +5275,9 @@ def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Serie
 
     # [v0.59.0 §P1] 여기 도달 = 캐시 미스 확정(신규 키·레거시 키 모두 실패). 왜 미스인지 남긴다 —
     # 재계산은 산업당 ~325초라 '조용한 전면 미스'는 곧바로 몇 시간짜리 성능 회귀가 된다.
+    _miss_reason = "캐시 끔(USE_CACHE=False)"
     if scfg.USE_CACHE:
-        _diagnose_cache_miss(ticker, cfg_i, ind_i, adj_i, M, scfg)
+        _miss_reason = _diagnose_cache_miss(ticker, cfg_i, ind_i, adj_i, M, scfg) or "-"
     idx = ind_i.index
     # [v0.60.0 R72 §3-8(2)] 전체키가 미스여도(새 거래일 = 데이터 최종일이 바뀜) 워크포워드는 **재추정 경계 단위**로
     #   재사용한다 — M v1.55.0 WFPeriodCache. 라벨=티커, 위치={scfg.CACHE_DIR}/wf_periods(I는 icfg.CACHE_DIR 기준으로
@@ -5245,6 +5333,7 @@ def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Serie
     #   섞이지 않게). run()의 '캐시 적중' 줄이 "전체키 a/n · 경계 h/N" 두 층을 같이 보여 주는 데 쓴다.
     out["wf_cache"] = {"hit": int(_wfs.get("hit", 0)), "miss": int(_wfs.get("miss", 0)),
                        "enabled": bool(_wfs.get("enabled", False)), "recomputed": _wf_rc[:24]}
+    out["cache_miss_reason"] = _miss_reason      # [v0.61.1 R74 §4-5] 저장 뒤에 붙인다(다음 적중본에 낡은 사유가 섞이지 않게)
     return out
 
 
@@ -6988,7 +7077,10 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
                                                 tickers=scfg.SECTORS)
     # [v0.61.0 R73] M 달력보다 최신인데 절단된 섹터(fetch_sector_prices가 10시트 [달력절단] 행을 이미 남겼다 — 00시트용 목록)
     _cal_trunc = sorted(t for t, _df in sector_px.items()
-                        if _df is not None and len(_df) and pd.Timestamp(_df.index.max()).normalize() > pd.Timestamp(cal[-1]).normalize())
+                        if _df is not None and len(_df) and (_s_last_valid_close(_df, M) or pd.Timestamp(_df.index.min()))
+                        > pd.Timestamp(cal[-1]).normalize())     # [v0.61.1 R74] 유효 종가 기준
+    # [v0.61.1 R74 §1-4] M 달력 마지막일에 유효 종가가 없는 섹터(10시트 [종가결측] 행은 fetch_sector_prices가 이미 남겼다)
+    _lc_missing = _last_close_missing(sector_px, cal, M)
     spy_df = res["px_dict"]["SPY"]
     spy_df = spy_df[~spy_df.index.duplicated(keep="last")].sort_index()
     spy_tr, _ = build_total_return_close(spy_df, cal, scfg.ADJ_CLOSE_STALE_DAYS)
@@ -7169,6 +7261,8 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             "m_bundle_meta": res.get("bundle_meta", {}), "nd_spy": nd_spy,
             "data_freshness": res.get("data_freshness"),     # [v0.61.0 R73] M 신선도 감사 결과(00시트 1행)
             "calendar_truncated": _cal_trunc,                  # [v0.61.0 R73] M 달력보다 최신인데 절단된 섹터
+            "last_close_missing": _lc_missing,                 # [v0.61.1 R74] 마지막 날 유효 종가 없는 섹터(전일 종가로 채움)
+            "last_close_day": (pd.Timestamp(cal[-1]) if len(cal) else None),
             # [v0.4.0 §1.F]
             "alloc": alloc, "rot_val": rot_val, "alloc_sheet": alloc_sheet,
             "minority": minority_df, "minority_summary": minority_summ,   # [v0.43.0 R1] 13p
@@ -13674,7 +13768,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     if nd_spy is not None:
         # [v0.61.0 R73] 데이터 신선도 1행(M v1.56.0 freshness_summary_line 재사용 — 단일 출처) + 대상일 경과 표시
         if hasattr(M, "freshness_summary_line"):
-            _fl = M.freshness_summary_line({"data_freshness": sres.get("data_freshness"), "cfg": sres.get("M_cfg")})
+            _fl = M.freshness_summary_line({"data_freshness": sres.get("data_freshness"), "cfg": sres.get("M_cfg"),
+                                            "last_close_missing": sres.get("last_close_missing"),     # [v0.61.1 R74]
+                                            "last_close_day": sres.get("last_close_day")})
             if sres.get("calendar_truncated"):
                 _fl += f" · ⚠ [달력절단] 섹터 {len(sres['calendar_truncated'])}개가 M 달력보다 최신(10시트)"
             nd_rows.append(("데이터 신선도", _fl))
@@ -14030,18 +14126,8 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                    "회피) / 10 데이터품질(섹터 유니버스·Adj Close 지연) / 11 룩어헤드감사 — 02~11(09b 포함)은 전부 '티커' 열로 구분"),
         ("면책", "본 산출물은 연구·교육 목적의 백테스트 결과이며 투자 자문이 아닙니다. 과거 성과는 미래 수익을 보장하지 않습니다."),
     ]
-    # [v0.52.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다 — 00A를 열지 않아도 보이게.
-    _a0 = sheets.get("00A_수익비교")
-    if isinstance(_a0, pd.DataFrame) and len(_a0):
-        _au0 = _a0[_a0["자산"].astype(str).str.contains("비중 합계 감사", na=False)]
-        meta.insert(1, ("★ 00A_수익비교 시트",
-                        "맨 앞에 있음 — B&H 단순합(복리 아님) vs 단독예측 vs 전략(배분) + 비중 합계 감사"
-                        + (" · ⚠ 산출 실패(해당 시트의 '판정' 열 참조)"
-                           if (_a0["자산"].astype(str) == "⚠ 산출 실패").any() else "")))
-        if len(_au0):
-            meta.insert(2, ("★★ 전체자산 1.0 확인", str(_au0["판정"].iloc[0])[:400]))
-    else:
-        meta.insert(1, ("⚠ 00A_수익비교 시트", "생성되지 않았다 — 로그에서 asset_return_compare_failed 확인"))
+    # [v0.61.1 R74 §4-1] 00A 존재 판정(v0.52.0 E4)은 **00A를 만든 뒤**(sheets_to_front 직전)로 옮겼다 —
+    #   종전엔 여기서 판정해 00A가 정상이어도 항상 "⚠ 생성되지 않았다"가 찍혔다(리포트5·합성 리포트 모두 재현).
     meta = [meta[0]] + nd_rows + meta[1:]  # [v0.3.0 §1.A] 버전 다음에 '다음 거래일 예측' 블록 삽입(M과 동일 패턴)
     # [v0.60.0 R72] stage_timing에 문자열('캐시 적중')이 섞인다 — I(v0.6.0)와 같은 방식으로 숫자만 '초'로 적는다.
     for k, v in sorted(sres.get("stage_timing", {}).items()):
@@ -14315,6 +14401,20 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                                             ignore_index=True)
     except Exception as e:
         log("REPORT", kv(event="over_guard_sheet_failed", err=str(e)[:160]), M=M, level="warning")
+    # [v0.52.0 E4 → v0.61.1 R74 §4-1 위치 이동] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다 — 00A를 열지 않아도 보이게.
+    #   삽입 위치 = '다음 거래일 예측' 블록(nd_rows) 바로 뒤(종전 위치와 같은 자리).
+    _i00 = 1 + len(nd_rows)
+    _a0 = sheets.get("00A_수익비교")
+    if isinstance(_a0, pd.DataFrame) and len(_a0):
+        _au0 = _a0[_a0["자산"].astype(str).str.contains("비중 합계 감사", na=False)]
+        meta.insert(_i00, ("★ 00A_수익비교 시트",
+                           "맨 앞에 있음 — B&H 단순합(복리 아님) vs 단독예측 vs 전략(배분) + 비중 합계 감사"
+                           + (" · ⚠ 산출 실패(해당 시트의 '판정' 열 참조)"
+                              if (_a0["자산"].astype(str) == "⚠ 산출 실패").any() else "")))
+        if len(_au0):
+            meta.insert(_i00 + 1, ("★★ 전체자산 1.0 확인", str(_au0["판정"].iloc[0])[:400]))
+    else:
+        meta.insert(_i00, ("⚠ 00A_수익비교 시트", "생성되지 않았다 — 로그에서 asset_return_compare_failed 확인"))
     sheets = sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     write_sector_excel(path, sheets, meta, M=M)
     if scfg.EXPORT_DAILY_CSV:

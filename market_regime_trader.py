@@ -22,6 +22,25 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.56.1 - 2026-09-19 - [R74 ★★★ 종가 미확정 봉 가드 — 신선도를 '유효 종가 마지막일'로 판정 · 신호·가중치 산식 무변경]
+#    PLAN74 §1(사용자 지시 2026-09-19 "개선방법 대로 코드 수정해"). 리포트24(09-19 17:21 KST): 섹터 11·산업 29 ETF의
+#    09-18 행이 시가·고가·저가만 있고 **종가가 비어** 있었다(Yahoo 미확정 봉). 신선도 검사 5곳이 전부 인덱스 마지막일
+#    (09-18 = 기대일)만 봐서 통과했고, S/I가 전일 종가로 채워 09-18 일간등락률이 40/40 전부 0.000이 됐다(10시트 무결성
+#    종료 09-17과 [신선도] "★ 최신"이 모순된 채 나란히 있었다 — 교훈 22 반복).
+#    (a) 신설 _close_col() · _last_valid_close(df) — 종가(Close, 없으면 Adj Close)가 유효한 마지막 날짜.
+#        ⚠ 방법서 §1-3(a)는 'Close 또는 Adj Close'였으나 **Close 기준으로 좁혔다**: Adj Close만 빈 끝 행은 기존
+#        'Adj Close 지연'(S adj_close_lag_check · Close 수익률 대체)이 처리하며, 미확정으로 치면 유효한 Close 며칠을 잃는다.
+#    (b) 신설 _drop_incomplete_tail(ticker, df, cfg, where) — 끝에서부터 Close가 빈 행만 제거(중간 결측 불변), 로그
+#        yahoo_incomplete_bar_dropped. 호출: _drop_partial_bars 바로 뒤 4경로(fetch_yahoo 캐시·다운로드, fetch_all_yahoo
+#        캐시·배치, _yahoo_stale_fallback) — 캐시에는 제거 뒤 프레임만 쓴다. Config DROP_INCOMPLETE_TAIL=True 신설 →
+#        CACHE_KEY_IGNORE_FIELDS 정본 등재(교훈 31 · S 폴백 사본도 같은 라운드에).
+#    (c) _yahoo_is_stale — 마지막일 = _last_valid_close(사유에 "마지막 행 …는 종가 미확정").
+#    (d) ensure_fresh_yahoo — 뒤처짐·교체 조건·앵커 마지막일 모두 유효 종가 기준.
+#    (e) freshness_summary_line — S/I가 넘기는 res["last_close_missing"]을 신설 last_close_missing_note()로 붙인다
+#        (판정 생략 실행에서도). 00시트 '데이터 신선도' 한 줄이 M·S·I 공통 출처로 유지된다.
+#    영향 함수: Config · CACHE_KEY_IGNORE_FIELDS · _close_col/_last_valid_close/_drop_incomplete_tail/last_close_missing_note(신설) ·
+#      _yahoo_is_stale · fetch_yahoo · fetch_all_yahoo · _yahoo_stale_fallback · ensure_fresh_yahoo · freshness_summary_line.
+#    신호·가중치·검증 산식 무변경. 합성(SELF_TEST)은 수집 경로를 타지 않으므로 결과 비트 동일. VALIDATION_SCHEMA 그대로.
 #  VERSION: v1.56.0 - 2026-09-19 - [R73 ★★★ 날짜 갱신(데이터 신선도) + 06e 재진입감사 — **신호·가중치 산식 무변경**]
 #    사용자 지적(2026-09-19): "날짜 지나면 캐시 좀 갱신하도록 … 오늘 날짜면 19일 예측해야 하는데 갱신 안 돼서 안 되잖아".
 #    산업 리포트23(09-19 토 실행) 실측: 기준일 09-17 · 대상일 09-18(이미 지난 날). S/I는 09-18 종가를 받아 놓고도
@@ -2869,6 +2888,10 @@ class Config:
     DATA_SETTLE_MINUTES: int = 60              # ET 16:00 마감 후 이만큼 지나야 '오늘 봉이 있어야 한다'로 본다
     DATA_STALE_MAX_TRADING_DAYS: int = 1       # 기대 개장일보다 이만큼(개장일) 이상 뒤처지면 재수집
     DROP_PARTIAL_LAST_BAR: bool = True         # 기대일보다 미래 날짜의 봉(장중 미완성 봉)은 버리고 캐시에도 쓰지 않는다
+    # [v1.56.1 R74 §1-3(b)] 끝에서부터 Close가 비어 있는 행(시가·고가·저가만 있는 **종가 미확정 봉**)을 버린다.
+    #   리포트24: ETF 40개의 09-18 행이 이 상태였고 '인덱스 마지막일'만 보는 신선도 검사 5곳을 전부 통과해
+    #   전일 종가로 채워졌다(일간등락률 0.000 40/40). 수집 전용 → CACHE_KEY_IGNORE_FIELDS 등재(교훈 31).
+    DROP_INCOMPLETE_TAIL: bool = True
     FRED_REFRESH_ET_HOUR: float = 8.5          # FRED 캐시는 ET 이 시각(08:30)을 지나면 '하루 지난 것'으로 본다
     # [v1.54.0 §A 견고성] report23 사고 대응 — Yahoo가 ^VIX3M(그리고 비신호핵심인 ^VIX9D)의
     # 과거 이력 자체를 몇 시간~며칠째 결측(HTTP 200 + 유효 종가지만 요청한 5일 중 오늘 1일치만
@@ -4262,6 +4285,7 @@ def _yahoo_stale_fallback(ticker: str, cfg: Config = CFG,
     stale = _read_cache(f"YH_{ticker}", max_age_hours=cfg.YAHOO_STALE_CACHE_MAX_DAYS * 24.0, cfg=cfg)
     if stale is not None and _freshness_active(cfg):   # [v1.56.0 R73] 옛 캐시에 남은 장중 미완성 봉도 제거
         stale = _drop_partial_bars(ticker, stale, expected_last_trading_day(cfg=cfg), cfg, where="stale_cache")
+    stale = _drop_incomplete_tail(ticker, stale, cfg, where="stale_cache")   # [v1.56.1 R74] 종가 미확정 봉
     bad, why = _yahoo_degenerate(ticker, stale, cfg)
     if stale is None or bad:
         return None
@@ -4351,6 +4375,7 @@ def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None,
         cached = _read_cache(f"YH_{ticker}", cfg=cfg)
         if cached is not None and len(cached) > 0:
             cached = _drop_partial_bars(ticker, cached, _exp, cfg, where="cache")
+            cached = _drop_incomplete_tail(ticker, cached, cfg, where="cache")   # [v1.56.1 R74]
             bad, why = _yahoo_degenerate(ticker, cached, cfg)
             stale, why_s = (_yahoo_is_stale(ticker, cached, _exp, cfg) if _exp is not None else (False, ""))
             if not bad and not stale:
@@ -4383,6 +4408,7 @@ def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None,
             df.index = pd.to_datetime(df.index).tz_localize(None)
             df = df.dropna(how="all")
             df = _drop_partial_bars(ticker, df, _exp, cfg, where="download")   # [v1.56.0 R73 §1-3(d)]
+            df = _drop_incomplete_tail(ticker, df, cfg, where="download")      # [v1.56.1 R74 §1-3(b)] 캐시 쓰기 전
             if df is None or len(df) == 0:
                 raise ValueError("empty frame after dropna")
             bad, why = _yahoo_degenerate(ticker, df, cfg)
@@ -4804,6 +4830,7 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG,
         cached = _read_cache(f"YH_{t}", cfg=cfg)
         if cached is not None and len(cached) > 0:
             cached = _drop_partial_bars(t, cached, _exp, cfg, where="cache")
+            cached = _drop_incomplete_tail(t, cached, cfg, where="cache")   # [v1.56.1 R74]
             bad, why = _yahoo_degenerate(t, cached, cfg)
             if bad:   # [v1.21.0 §A(1)] 12시간 이내 캐시라도 퇴화면(report22의 1행 캐시) 무시하고 재수집
                 log("DATA", kv(event="yahoo_cache_degenerate_ignored", series=t, rows=len(cached), reason=why), "warning")
@@ -4845,6 +4872,7 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG,
                     sub = sub.loc[~sub.index.duplicated(keep="last")].sort_index()
                     sub.index = pd.to_datetime(sub.index).tz_localize(None)
                     sub = _drop_partial_bars(t, sub, _exp, cfg, where="batch")   # [v1.56.0 R73 §1-3(d)]
+                    sub = _drop_incomplete_tail(t, sub, cfg, where="batch")      # [v1.56.1 R74 §1-3(b)] 캐시 쓰기 전
                     if sub is None or len(sub) == 0:
                         continue
                     bad, why = _yahoo_degenerate(t, sub, cfg)
@@ -6695,6 +6723,7 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
+    "DROP_INCOMPLETE_TAIL",                                                                     # [v1.56.1 R74 §1] 종가 미확정 봉(수집 전용)
 })
 
 # 경계 키에 넣는 지표 스펙 속성 — validate_indicators/_select_and_weight_*가 실제로 읽는 계산용 필드만
@@ -10205,16 +10234,70 @@ def _freshness_active(cfg: Config) -> bool:
     return bool(getattr(cfg, "DATA_FRESHNESS_CHECK", True)) and not cfg.SELF_TEST and not cfg.DATA_END
 
 
+def _close_col(df: Optional[pd.DataFrame]) -> Optional[str]:
+    """[v1.56.1 R74] 종가 유효성 판정에 쓰는 열 — Close(없으면 Adj Close)."""
+    if df is None:
+        return None
+    return "Close" if "Close" in df.columns else ("Adj Close" if "Adj Close" in df.columns else None)
+
+
+def _last_valid_close(df: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
+    """[v1.56.1 R74 §1-3(a)] **종가가 유효한** 마지막 날짜(정규화). 인덱스 마지막일이 아니다.
+    리포트24: ETF 40개의 인덱스 마지막일은 09-18이었지만 유효 종가 마지막일은 09-17이었다 — 신선도 판정은 이것을 본다.
+    ⚠ Close 기준이다(Adj Close만 비고 Close가 있는 행은 'Adj Close 지연' — S adj_close_lag_check·Close 수익률 대체가
+      따로 처리한다. 여기서 그 행을 미확정으로 치면 유효한 Close 며칠을 잃는다: 방법서 §1-3(a)의 'Close 또는 Adj Close'
+      문구를 이렇게 좁혔다)."""
+    c = _close_col(df)
+    if df is None or len(df) == 0 or c is None:
+        return None
+    v = pd.to_numeric(df[c], errors="coerce")
+    ok = v.notna().values
+    if not ok.any():
+        return None
+    return pd.Timestamp(pd.DatetimeIndex(df.index)[ok].max()).normalize()
+
+
+def _drop_incomplete_tail(ticker: str, df: Optional[pd.DataFrame], cfg: Config = CFG,
+                          where: str = "") -> Optional[pd.DataFrame]:
+    """[v1.56.1 R74 §1-3(b)] 끝에서부터 **Close가 비어 있는 행**(시가·고가·저가만 있는 종가 미확정 봉)을 잘라 낸다.
+    중간 결측은 건드리지 않는다(종전 무결성·ffill 규칙 소관). 캐시에는 잘라 낸 뒤의 프레임만 쓴다(호출부 순서).
+    왜: Yahoo가 장 마감 직후 준 봉은 종가가 비어 있을 수 있다. 이 행이 남으면 인덱스 마지막일이 기대일과 같아
+      신선도 검사를 통과하고, S/I build_total_return_close가 전일 종가로 채워 그날 수익 0 · 지표 입력 정체가 된다."""
+    if df is None or len(df) == 0 or not bool(getattr(cfg, "DROP_INCOMPLETE_TAIL", True)):
+        return df
+    c = _close_col(df)
+    if c is None:
+        return df
+    ok = pd.to_numeric(df[c], errors="coerce").notna().values
+    if ok.all():
+        return df
+    nz = np.flatnonzero(ok)
+    keep = int(nz[-1]) + 1 if len(nz) else 0
+    n_drop = len(df) - keep
+    if n_drop <= 0:
+        return df
+    idx = pd.DatetimeIndex(df.index)
+    log("DATA", kv(event="yahoo_incomplete_bar_dropped", series=ticker,
+                   dates=",".join(str(d.date()) for d in idx[keep:keep + 3]), n=n_drop, where=where or "-",
+                   note="끝 행 종가 미확정(시가·고가·저가만) → 제거 · 신선도는 유효 종가 기준으로 판정"), "warning")
+    return df.iloc[:keep]
+
+
 def _yahoo_is_stale(ticker: str, df: Optional[pd.DataFrame], expected: pd.Timestamp,
                     cfg: Config = CFG) -> Tuple[bool, str]:
     """[v1.56.0 R73 §1-3(c)] 프레임의 마지막일이 기대 개장일보다 DATA_STALE_MAX_TRADING_DAYS 개장일 이상 앞이면 뒤처짐.
-    _yahoo_degenerate()가 보지 않는 '끝'을 본다(교훈 22 — 검사 함수의 이름이 곧 검사 범위)."""
+    _yahoo_degenerate()가 보지 않는 '끝'을 본다(교훈 22 — 검사 함수의 이름이 곧 검사 범위).
+    [v1.56.1 R74] '마지막일' = **유효 종가 마지막일**(_last_valid_close). 인덱스만 보면 종가 미확정 봉이 통과한다."""
     if df is None or len(df) == 0:
         return True, "빈 프레임"
-    last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
+    last = _last_valid_close(df)
+    if last is None:
+        return True, "유효 종가 없음"
+    idx_last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
     lag = trading_days_between(last, expected)
     if lag >= int(cfg.DATA_STALE_MAX_TRADING_DAYS):
-        return True, f"마지막 {last.date()} < 기대 {pd.Timestamp(expected).date()}({lag}개장일)"
+        tail = f" · 마지막 행 {idx_last.date()}는 종가 미확정" if idx_last > last else ""
+        return True, f"마지막 {last.date()} < 기대 {pd.Timestamp(expected).date()}({lag}개장일){tail}"
     return False, ""
 
 
@@ -10265,7 +10348,9 @@ def ensure_fresh_yahoo(px_dict: Dict[str, Optional[pd.DataFrame]], cfg: Config =
         stale, why = _yahoo_is_stale(t, df, exp, cfg)
         if not stale:
             continue
-        last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
+        last = _last_valid_close(df)                      # [v1.56.1 R74] 인덱스가 아니라 유효 종가 마지막일
+        if last is None:
+            last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
         if t in fred_fb:
             info["fred_lag"].append(t)
             log("DATA", kv(event="fred_fallback_lag", series=t, last=str(last.date()), expected=str(exp.date()),
@@ -10277,12 +10362,11 @@ def ensure_fresh_yahoo(px_dict: Dict[str, Optional[pd.DataFrame]], cfg: Config =
             new = fetch_yahoo(t, cfg, use_cache=False, diag=None, allow_fallback=False)
         except Exception as e:
             log("DATA", kv(event="freshness_refetch_error", series=t, err=type(e).__name__, msg=str(e)[:120]), "warning")
-        new_last = (pd.Timestamp(pd.DatetimeIndex(new.index).max()).normalize()
-                    if new is not None and len(new) else None)
+        new_last = (_last_valid_close(new) if new is not None and len(new) else None)   # [v1.56.1 R74] 유효 종가 기준
         if new_last is not None and new_last > last:
             px_dict[t] = new
             info["fixed"].append(t)
-            verdict = f"★ 재수집 성공 — {last.date()} → {new_last.date()}"
+            verdict = f"★ 재수집 성공 — {last.date()} → {new_last.date()}" + (" (종가 미확정 봉 해소)" if "종가 미확정" in why else "")
             lvl = "info"
         elif new_last is not None:
             verdict = (f"⚠ 재수집했으나 그대로({new_last.date()}) — 데이터 제공자가 아직 {exp.date()}를 주지 않는다")
@@ -10303,7 +10387,9 @@ def ensure_fresh_yahoo(px_dict: Dict[str, Optional[pd.DataFrame]], cfg: Config =
                          "종료": str(pd.Timestamp(_cur.index.max()).date())})
     anc = px_dict.get(cfg.TRADE_TICKER)
     if anc is not None and len(anc):
-        a_last = pd.Timestamp(pd.DatetimeIndex(anc.index).max()).normalize()
+        a_last = _last_valid_close(anc)                                         # [v1.56.1 R74] 유효 종가 기준
+        if a_last is None:
+            a_last = pd.Timestamp(pd.DatetimeIndex(anc.index).max()).normalize()
         info["last"] = a_last
         info["lag_trading_days"] = int(trading_days_between(a_last, exp))
     if not info["refetched"]:
@@ -10331,7 +10417,7 @@ def freshness_summary_line(res: dict) -> str:
         why = ("합성데이터(SELF_TEST)" if (cfg_ is not None and getattr(cfg_, "SELF_TEST", False))
                else ("DATA_END 고정 실행" if (cfg_ is not None and getattr(cfg_, "DATA_END", None))
                      else "검사 안 함(DATA_FRESHNESS_CHECK=False 또는 구버전 번들)"))
-        return f"판정 생략 — {why}"
+        return f"판정 생략 — {why}" + last_close_missing_note(res)
     exp = pd.Timestamp(fi["expected"]).date()
     last = pd.Timestamp(fi["last"]).date() if fi.get("last") is not None else "-"
     lag = int(fi.get("lag_trading_days") or 0)
@@ -10342,7 +10428,20 @@ def freshness_summary_line(res: dict) -> str:
         tail += f" · 여전히 뒤처짐: {', '.join(fi['still_stale'][:6])}"
     if fi.get("fred_lag"):
         tail += f" · FRED대체(하루 늦음·정상): {', '.join(fi['fred_lag'])}"
+    tail += last_close_missing_note(res)
     return head + tail
+
+
+def last_close_missing_note(res: dict) -> str:
+    """[v1.56.1 R74 §1-4] S·I가 넘기는 res["last_close_missing"](M 달력 마지막일에 유효 종가가 없는 티커)을 00시트 문구로.
+    판정을 생략한 실행(SELF_TEST 등)에서도 목록이 있으면 적는다 — 조용히 넘어가지 않는다(교훈 12)."""
+    lm = res.get("last_close_missing") or []
+    if not lm:
+        return ""
+    day = res.get("last_close_day")
+    day_s = f"({pd.Timestamp(day).date()})" if day is not None else ""
+    return (f" · ⚠⚠ 마지막 날{day_s} 종가 결측 {len(lm)}개 — 전일 종가로 채움(그날 수익 0 · 자기 신호 혼합 입력): "
+            + ", ".join(map(str, lm[:8])) + (" …" if len(lm) > 8 else ""))
 
 
 def _next_day_action(target: float, exec_now: float, lang: str = "kr") -> str:
@@ -11404,7 +11503,7 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.56.0"
+BUNDLE_VERSION = "v1.56.1"
 BUNDLE_VERSION_DATE = "2026-09-19"
 # [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
 #   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /

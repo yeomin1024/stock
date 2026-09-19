@@ -1,5 +1,9 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.3.3 - 2026-09-19 - [R74 종가 미확정 봉 — 신선도를 유효 종가 마지막일로 판정 · 일부 종목 결측 경고]
+#    PLAN74 §1-4. _prices_freshness(): 마지막일 = Close가 유효한 마지막 날짜(인덱스 아님). 전 종목 최신일보다 뒤처진
+#    종목은 로그 prices_last_close_missing(warning)으로 알린다(재다운로드 루프는 만들지 않는다 — v0.3.2의 max 규칙 유지).
+#    download_prices()는 이미 dropna(subset=["Close"])라 신규 다운로드 결과는 동일하다. 신호·배분 무변경.
 #  VERSION: v0.3.2 - 2026-09-19 - [R73 날짜 갱신 — 가격 캐시를 내용(기대 개장일)으로도 판정 · 장중 미완성 봉 제거]
 #    사용자 지적(2026-09-19 "날짜 지나면 캐시 갱신 — 19일이면 19일 예측"). download_prices()의 캐시는 CACHE_DAYS(1일) **나이만**
 #    봤다 — M·S와 같은 결함. 신설 expected_last_trading_day()(M v1.56.0 위임 · 없으면 보수 사본)와 _prices_freshness():
@@ -284,7 +288,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.3.2"
+VERSION = "v0.3.3"
 VERSION_DATE = "2026-09-19"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -542,12 +546,30 @@ def _prices_freshness(out: Dict[str, pd.DataFrame], cfg: StockConfig, where: str
     if n_drop:
         log("DATA", kv(event="partial_bar_dropped", rows=n_drop, expected=str(exp.date()), where=where,
                        note="기대 개장일 이후 봉 = 장중 미완성 봉 → 제거"))
-    lasts = [pd.Timestamp(df.index.max()).normalize() for df in out.values() if df is not None and len(df)]
-    if not lasts:
+    # [v0.3.3 R74 §1-4] '마지막일' = **유효 종가 마지막일**(Close가 빈 끝 행 = 종가 미확정 봉은 최신이 아니다).
+    #   download_prices()는 이미 dropna(subset=["Close"])를 하지만, 다른 경로(구버전 캐시·외부 주입)에서 온 프레임도
+    #   같은 기준으로 판정하도록 여기서 명시적으로 본다(리포트24 — 인덱스만 보던 검사 5곳이 전부 통과한 결함, 교훈 39).
+    lastd: Dict[str, pd.Timestamp] = {}
+    for t, df in out.items():
+        if df is None or not len(df):
+            continue
+        if "Close" in df.columns:
+            ok = pd.to_numeric(df["Close"], errors="coerce").notna().values
+            if not ok.any():
+                continue
+            lastd[t] = pd.Timestamp(pd.DatetimeIndex(df.index)[ok].max()).normalize()
+        else:
+            lastd[t] = pd.Timestamp(df.index.max()).normalize()
+    if not lastd:
         return out, False, ""
-    mx = max(lasts)
+    mx = max(lastd.values())
+    behind = sorted(t for t, d in lastd.items() if d < mx)
+    if behind:   # 전체는 최신인데 일부 종목만 마지막 날 종가가 없다 — 재다운로드 루프는 만들지 않고 알린다
+        log("DATA", kv(event="prices_last_close_missing", n=len(behind), tickers=",".join(behind[:8]),
+                       latest=str(mx.date()), where=where,
+                       note="이 종목들은 마지막 날 종가가 없다 — 패널 정렬 시 전일 값으로 채워질 수 있다"), level="warning")
     if mx < exp:
-        return out, True, f"캐시 최신일 {mx.date()} < 기대 {exp.date()}"
+        return out, True, f"캐시 최신일(유효 종가) {mx.date()} < 기대 {exp.date()}"
     return out, False, ""
 
 
