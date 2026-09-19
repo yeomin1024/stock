@@ -17,6 +17,29 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.60.0 - 2026-09-18 - [R72 실행시간 단축 — 워크포워드 경계 캐시 연결 · 배분 엔진 루프 제거 · 결과 비트 동일]
+#    사용자 요청(R72): "실행시간이 아직도 길어 … 결과 달라지지 않는 선에서". PLAN72_실행시간단축_방법서 §3·§3b 구현.
+#    (P1 §3-8(2)) validate_and_weight_sector(): 전체키(_cache_key) 미스 시 M v1.55.0 WFPeriodCache를 넘긴다 —
+#      라벨=티커, 위치={CACHE_DIR}/wf_periods(I는 icfg.CACHE_DIR 기준 cache_industry/wf_periods로 자동 분리).
+#      새 거래일 첫 실행: 섹터당 검증+워크포워드 ≈355초 → ≈5초(새 경계 0~1개만 재계산). 전체키 캐시는 그대로 둔다
+#      (같은 날 재실행은 그쪽이 0.2초로 가장 빠르다). 구버전 M이거나 USE_CACHE=False·USE_WF_PERIOD_CACHE=False면 끔.
+#    (P2 §3-3) _CACHE_KEY_IGNORE_FIELDS 단일 정본을 M(CACHE_KEY_IGNORE_FIELDS)으로 옮겼다 — 신설
+#      _cache_ignore_fields(M)가 M 목록을 읽고(구버전 M이면 S 폴백 사본) _cache_key/_cache_meta/v1.54.0 구제 경로가
+#      전부 이것을 쓴다. 폴백 사본에도 M 신설 3필드(USE_WF_PERIOD_CACHE·WF_PERIOD_CACHE_DIR·RUN_THRESHOLD_SENSITIVITY)를 넣었다.
+#      ⇒ 전체키 해시는 v0.59.0과 **동일**(신설 필드가 무시 목록에 있어 cfg 직렬화가 같다) — 기존 캐시 그대로 적중.
+#    (P3 §3-7 로그) VALIDATE에 wf_cache·wf_hit·wf_miss·wf_recomputed(재계산 경계 날짜), CACHE sector_cache_summary,
+#      stage_timing["캐시 적중"] = "전체키 a/n · 경계 h/N"(00시트 실행시간 줄) · 섹터별 실행시간 줄에 ", 경계캐시 h/N".
+#      00시트 실행시간 표가 문자열 값을 받도록(I v0.6.0 방식) 한 줄 고쳤다.
+#    (P4 §3b) build_sector_allocation(): ① _defensive_alt — share>0이면 결과가 share와 무관하므로 **1회만 계산해 25회
+#      공유**(_dalt_cache) + 벡터화(+inf 센티널 행별 argmin — 원본 min()과 같은 '첫 최소' 동률 규칙). 원본 루프는
+#      _defensive_alt_loop로 남겨 축 불일치 시 폴백·동일성 테스트에 쓴다. ② _build_primary — 일별 루프의 `.loc[_d, c]`
+#      13곳을 numpy 위치 인덱싱(_H·_E·_B·F + 이름→위치 dict)으로. 루프 구조·분기·부동소수 연산 순서는 무변경.
+#      기대(Kaggle): 03a_집중배분 58~67초 → ≈5~10초.
+#    영향 함수: validate_and_weight_sector · _cache_key · _cache_meta · _diagnose_cache_miss(안내 문구) ·
+#      _cache_ignore_fields(신설) · run_sector(반환 wf_cache) · run(stage_timing 캐시 줄) · build_sector_report(실행시간 줄) ·
+#      build_sector_allocation(_defensive_alt/_build_primary).
+#    ⚠ VALIDATION_CACHE_SCHEMA("s1")는 올리지 않았다(검증 산식 무변경). 위험 파라미터·신호·비중·성과 **무변경**.
+#    검증: test_v060_r72.py — 배분 엔진 전후 fps 25행·카운트·13/13c/13j equals · 전체키 해시 불변 · 경계 캐시 공존.
 #  VERSION: v0.59.0 - 2026-09-18 - [★★★ 성능 회귀 수정 — 검증 캐시 전면 미스(≈3.7시간 CPU) 원인 제거]
 #    사용자 보고: "industry가 원래 오래 안 걸렸는데 수정하고 나서 너무 오래걸려".
 #    원인은 R68(I v0.26.0)이 아니라 **내가 R69에서 M v1.54.0에 넣은 Config 3필드**였다.
@@ -2550,7 +2573,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.59.0"
+VERSION = "v0.60.0"
 VERSION_DATE = "2026-09-18"
 
 # =============================================================================
@@ -4902,7 +4925,22 @@ _CACHE_KEY_IGNORE_FIELDS = frozenset({
     # 관여하지 않는다 → 캐시 키에서 제외해 이 값만 바꿔도 섹터당 ~350초 재검증이 일어나지 않게 한다.
     # (§S1의 MARKET_BLOCK_WEIGHT_CAP은 반대로 가중치를 실제로 바꾸므로 **키에 남겨 둔다**.)
     "TREND_OVERRIDE_SCORE_PCT", "TREND_OVERRIDE_NEED_MARKET",
+    # [v0.60.0 R72] M v1.55.0 신설 3필드(경계 캐시 on/off·위치 · 06c 진단 스위치) — 구버전 M 폴백 사본에도 같이 둔다.
+    "USE_WF_PERIOD_CACHE", "WF_PERIOD_CACHE_DIR", "RUN_THRESHOLD_SENSITIVITY",
 })
+# [v0.60.0 R72 §3-3 ★ 단일 정본] 위 목록은 이제 **구버전 M(v1.55.0 미만) 폴백 전용 사본**이다. 실제 키 계산은
+#   M.CACHE_KEY_IGNORE_FIELDS(M v1.55.0이 정본)를 읽는다 — M에 Config 필드를 더하는 라운드가 S를 따로 고치지 않아도
+#   S/I 전체키 캐시가 깨지지 않게(R71 사고: M에 3필드를 넣고 S 목록을 안 고쳐 ≈3.7시간 CPU 회귀). M은 S를 import할 수
+#   없으므로 목록이 M에 있어야 M 자신의 경계 캐시(build_walkforward_weights)도 같은 목록을 쓴다.
+#   (S는 모듈 로드 시 M을 import하지 않고 인자로 받으므로 '참조'는 호출 시점 함수로 한다.)
+
+
+def _cache_ignore_fields(M) -> frozenset:
+    """[v0.60.0 R72] 캐시 키 무시 필드 — M.CACHE_KEY_IGNORE_FIELDS(정본)가 있으면 그것, 없으면(구버전 M) S 폴백 사본."""
+    _m = getattr(M, "CACHE_KEY_IGNORE_FIELDS", None) if M is not None else None
+    return frozenset(_m) if _m else _CACHE_KEY_IGNORE_FIELDS
+
+
 # [v0.40.0 §S2] SectorConfig 쪽 게이트 필드는 cfg_i(M Config)에 실리지 않으므로 캐시 키와 무관하다
 # (regime_info_gate는 run_sector에서 신호 생성 직전에 scfg를 직접 읽는다) — 확인 사항으로 명시.
 
@@ -4935,7 +4973,7 @@ def _cache_key(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M, head
     h = hashlib.sha1()
     _hdr = header if header is not None else f"{VALIDATION_CACHE_SCHEMA}|{getattr(M, 'VALIDATION_SCHEMA', getattr(M, 'BUNDLE_VERSION', '?'))}"
     h.update(f"{_hdr}|{ticker}".encode())
-    _ign = _CACHE_KEY_IGNORE_FIELDS if ignore is None else ignore
+    _ign = _cache_ignore_fields(M) if ignore is None else ignore      # [v0.60.0 R72] M 정본 참조
     cfg_d = {k: v for k, v in dataclasses.asdict(cfg_i).items() if k not in _ign}
     h.update(json.dumps(cfg_d, sort_keys=True, default=str).encode())
     h.update("|".join(map(str, ind.columns)).encode())
@@ -4956,7 +4994,7 @@ def _cache_meta(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Series, M) -> 
     return {
         "ticker": ticker,
         "schema": f"{VALIDATION_CACHE_SCHEMA}|{getattr(M, 'VALIDATION_SCHEMA', getattr(M, 'BUNDLE_VERSION', '?'))}",
-        "cfg": {k: str(v) for k, v in dataclasses.asdict(cfg_i).items() if k not in _CACHE_KEY_IGNORE_FIELDS},
+        "cfg": {k: str(v) for k, v in dataclasses.asdict(cfg_i).items() if k not in _cache_ignore_fields(M)},
         "n_cols": int(ind.shape[1]),
         "cols_head": list(map(str, ind.columns[:5])),
         "idx": f"{ind.index[0]}|{ind.index[-1]}|{len(ind)}",
@@ -4996,7 +5034,7 @@ def _diagnose_cache_miss(ticker: str, cfg_i, ind: pd.DataFrame, px_adj: pd.Serie
                             changed_fields=",".join(cfg_diff[:8]) + (" …" if len(cfg_diff) > 8 else ""),
                             n_changed=len(cfg_diff),
                             action="이 필드들이 검증표·워크포워드 가중치에 영향이 없다면 "
-                                   "sector_rotation._CACHE_KEY_IGNORE_FIELDS에 추가하라 — 아니면 매 실행 "
+                                   "market_regime_trader.CACHE_KEY_IGNORE_FIELDS(정본, v1.55.0)에 추가하라 — 아니면 매 실행 "
                                    "산업당 ~325초·섹터당 ~355초가 반복된다"), M=M, level="warning")
         else:
             log("CACHE", kv(ticker=ticker, event="cache_miss_reason",
@@ -5059,7 +5097,7 @@ def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Serie
     if scfg.USE_CACHE:
         try:
             _k154 = _cache_key(ticker, cfg_i, ind_i, adj_i, M,
-                               ignore=_CACHE_KEY_IGNORE_FIELDS - _CACHE_V1540_UNIGNORE)
+                               ignore=_cache_ignore_fields(M) - _CACHE_V1540_UNIGNORE)
             _p154 = os.path.join(scfg.CACHE_DIR, f"{ticker}_{_k154[:16]}.pkl.gz")
             if _k154 != key and os.path.exists(_p154):
                 cached = pd.read_pickle(_p154, compression="gzip")
@@ -5087,17 +5125,38 @@ def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Serie
     if scfg.USE_CACHE:
         _diagnose_cache_miss(ticker, cfg_i, ind_i, adj_i, M, scfg)
     idx = ind_i.index
+    # [v0.60.0 R72 §3-8(2)] 전체키가 미스여도(새 거래일 = 데이터 최종일이 바뀜) 워크포워드는 **재추정 경계 단위**로
+    #   재사용한다 — M v1.55.0 WFPeriodCache. 라벨=티커, 위치={scfg.CACHE_DIR}/wf_periods(I는 icfg.CACHE_DIR 기준으로
+    #   자동 분리 — cache_industry/wf_periods). 전체키 캐시(위)는 그대로 둔다: 같은 날 재실행은 그쪽이 0.2초로 가장 빠르다.
+    #   끄기: scfg.USE_CACHE=False 또는 M Config USE_WF_PERIOD_CACHE=False. 구버전 M(v1.55.0 미만)이면 자동으로 끔.
+    _wf_pc = None
+    if (scfg.USE_CACHE and bool(getattr(cfg_i, "USE_WF_PERIOD_CACHE", False))
+            and hasattr(M, "WFPeriodCache")):
+        try:
+            _wf_pc = M.WFPeriodCache(ticker, cfg_i, cache_dir=os.path.join(scfg.CACHE_DIR, "wf_periods"))
+        except Exception as e:     # 캐시는 결코 실행을 막지 않는다
+            log("CACHE", kv(ticker=ticker, event="wf_period_cache_init_failed", err=type(e).__name__), M=M, level="warning")
+            _wf_pc = None
     with _indicator_spec_override(M, specs):
         w_report = M.decay_weights(idx, asof=idx[-1], half_life_days=cfg_i.HALF_LIFE_DAYS)
         t1 = time.time()
         val_full = M.validate_indicators(ind_i, adj_i, cfg_i, weights=w_report, verbose=False)
         t2 = time.time()
-        W, wlog, W_haz = M.build_walkforward_weights(ind_i, adj_i, cfg_i)
+        if _wf_pc is not None:
+            W, wlog, W_haz = M.build_walkforward_weights(ind_i, adj_i, cfg_i, period_cache=_wf_pc)
+        else:
+            W, wlog, W_haz = M.build_walkforward_weights(ind_i, adj_i, cfg_i)
         t3 = time.time()
     out = {"key": key, "val_full": val_full, "W": W, "wlog": wlog, "W_haz": W_haz, "cache_hit": False,
            "t_validate": round(t2 - t1, 2), "t_walkforward": round(t3 - t2, 2)}
+    _wfs = dict(getattr(_wf_pc, "stats", None) or {}) if _wf_pc is not None else {}
+    _wf_rc = list(_wfs.get("recomputed", []) or [])
     log("VALIDATE", kv(ticker=ticker, candidates=len(specs), strict_pass=int((val_full["판정"] == "PASS").sum()),
-                       reestimations=len(wlog), t_validate_s=out["t_validate"], t_walkforward_s=out["t_walkforward"]), M=M)
+                       reestimations=len(wlog), t_validate_s=out["t_validate"], t_walkforward_s=out["t_walkforward"],
+                       wf_cache=("on" if _wfs.get("enabled") else "off"),
+                       wf_hit=int(_wfs.get("hit", 0)), wf_miss=int(_wfs.get("miss", 0)),
+                       wf_recomputed=((",".join(_wf_rc[:6]) + (f",…+{len(_wf_rc) - 6}" if len(_wf_rc) > 6 else ""))
+                                      if _wf_rc else "-")), M=M)
     if scfg.USE_CACHE:
         try:
             os.makedirs(scfg.CACHE_DIR, exist_ok=True)
@@ -5116,6 +5175,10 @@ def validate_and_weight_sector(ticker: str, ind_i: pd.DataFrame, adj_i: pd.Serie
                             size_mb=round(os.path.getsize(path) / 1e6, 1)), M=M)
         except Exception as e:
             log("CACHE", kv(ticker=ticker, event="cache_write_failed", err=type(e).__name__), M=M, level="warning")
+    # [v0.60.0 R72] 경계 캐시 적중 통계 — 전체키 피클 **저장 뒤에** 붙인다(다음 실행의 전체키 적중본에 낡은 통계가
+    #   섞이지 않게). run()의 '캐시 적중' 줄이 "전체키 a/n · 경계 h/N" 두 층을 같이 보여 주는 데 쓴다.
+    out["wf_cache"] = {"hit": int(_wfs.get("hit", 0)), "miss": int(_wfs.get("miss", 0)),
+                       "enabled": bool(_wfs.get("enabled", False)), "recomputed": _wf_rc[:24]}
     return out
 
 
@@ -6227,6 +6290,7 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                    cache_hit=hv.get("cache_hit", False), elapsed_s=timing["12_run_sector()합계"]), M=M)
     return {"ticker": ticker, "info": info, "cfg_dict": dataclasses.asdict(cfg_i), "timing": timing,
             "cache_hit": bool(hv.get("cache_hit", False)), "n_candidates": len(specs),
+            "wf_cache": hv.get("wf_cache"),              # [v0.60.0 R72] 경계 캐시 적중 통계(전체키 적중이면 None)
             "first_signal": (str(first_signal.date()) if first_signal is not None else None),
             "adopted": adopted, "sheets": sheets,
             "neutral_wf": neutral_wf_log,                 # [v0.54.0 G1] 연도별 상향 판정 근거
@@ -6928,6 +6992,16 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
            "industry_breadth": industry_breadth}
     results, failed = run_sectors(list(frames.keys()), ctx, scfg, M)
     stage_timing["02_섹터파이프라인"] = round(time.time() - t0, 2)
+    # [v0.60.0 R72 §3-7] 캐시 두 층을 한 줄로 — "전체키 a/n · 경계 h/N". 새 거래일 첫 실행은 전체키가 정상적으로
+    #   0/n이고(키에 데이터 최종일이 들어 있음) 경계가 거의 전부 적중해야 한다. 경계가 대량 미스면 VALIDATE 로그의
+    #   wf_recomputed(재계산 경계 날짜)와 CACHE wf_period_cache_full_miss(원인)를 본다.
+    _n_full = sum(1 for _r in results.values() if _r.get("cache_hit"))
+    _wf_h = sum(int((_r.get("wf_cache") or {}).get("hit", 0)) for _r in results.values())
+    _wf_m = sum(int((_r.get("wf_cache") or {}).get("miss", 0)) for _r in results.values())
+    stage_timing["캐시 적중"] = (f"전체키 {_n_full}/{len(results)} · 경계 {_wf_h:,}/{_wf_h + _wf_m:,}"
+                                 + (" (전체키 적중 섹터는 경계 캐시를 읽지 않는다)" if _n_full else ""))
+    log("CACHE", kv(event="sector_cache_summary", full_key_hit=_n_full, sectors=len(results),
+                    wf_hit=_wf_h, wf_miss=_wf_m), M=M)
 
     # ---- 3) 통합 ----
     t0 = time.time()
@@ -8462,7 +8536,16 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
 
         # [v0.31.0 §3] 방어 대피처 — 그날 적격(hold & eligible) 비주력 섹터 중 워크포워드 베타
         #   최저인 티커. 베타가 아직 없는(관측 < MIN_OBS) 날은 None → 종전 순위 경로로 떨어진다.
-        def _defensive_alt(share_: float) -> pd.Series:
+        # [v0.60.0 R72 §3b(1) 성능 — 결과 비트 동일] 종전에는 2,185일×후보 10개를 파이썬 루프로 돌며 `.loc` 스칼라를
+        #   44만 회 읽었고(03a_집중배분의 ≈50%), 그 계산을 _build_primary 25회(라이브 1+격자 24)가 **같은 입력으로**
+        #   반복했다. share_>0이면 결과가 share_ 값과 무관하게 _hold·eligible·베타에만 의존하므로(원본 share 0.25/1.0
+        #   결과 equals 실측) ① 1회만 계산해 공유(_dalt_cache) ② 벡터화: 적격 아닌 칸을 +inf로 두고 행별 argmin.
+        #   동률 처리 동일 — 원본 min(_ok, key=…)은 _cand 순서의 **첫 최소**, np.argmin도 첫 최소. 베타는 ±inf가
+        #   NaN으로 치환돼 있어(_beta_raw) +inf 센티널과 충돌하지 않는다. 미설정일은 원본처럼 NaN(object Series).
+        #   축이 eval_idx와 다르면(방어적) 원본 루프로 계산한다.
+        _dalt_cache: Dict[str, pd.Series] = {}
+
+        def _defensive_alt_loop(share_: float) -> pd.Series:     # 원본(v0.31.0) — 동일성 테스트·폴백용
             out = pd.Series(index=eval_idx, dtype=object)
             if share_ <= 0:
                 return out
@@ -8474,6 +8557,30 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 if _ok:
                     out.loc[_d] = min(_ok, key=lambda c: float(_br.loc[_d, c]))
             return out
+
+        def _defensive_alt(share_: float) -> pd.Series:
+            if share_ <= 0:
+                return pd.Series(index=eval_idx, dtype=object)
+            if "pos" in _dalt_cache:
+                return _dalt_cache["pos"].copy()
+            _br = _beta_raw()
+            _cand = [c for c in cols if c != _pri and c in _hold.columns and c in eligible.columns]
+            if not (_hold.index.equals(eval_idx) and eligible.index.equals(eval_idx) and _br.index.equals(eval_idx)):
+                out = _defensive_alt_loop(share_)
+            else:
+                out = pd.Series(index=eval_idx, dtype=object)
+                if _cand:
+                    _bra = _br[_cand].to_numpy(dtype=float)                                   # (일수, 후보)
+                    _okm = (_hold[_cand].to_numpy(dtype=bool) & eligible[_cand].to_numpy(dtype=bool)
+                            & ~np.isnan(_bra))
+                    _j = np.where(_okm, _bra, np.inf).argmin(axis=1)
+                    _has = _okm.any(axis=1)
+                    if bool(_has.any()):
+                        out.iloc[np.flatnonzero(_has)] = np.array(_cand, dtype=object)[_j[_has]]
+            _dalt_cache["pos"] = out
+            log("ROTATION", kv(event="defensive_alt_built", days=int(out.notna().sum()), candidates=len(_cand),
+                               note="1회 계산 후 _build_primary 호출 전체가 공유(v0.60.0 R72 §3b)"), M=M)
+            return out.copy()
 
         # [v0.36.0 §A] 횡단면 분산 게이트 — 저분산일에는 '순위 1위 집중'을 포기하고 균등으로.
         #   ⚠ 룩어헤드 차단 2중: (1) 분산 자체를 t-1까지의 후행 창으로 계산하고 shift(1),
@@ -8548,13 +8655,27 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _min_votes = int(getattr(scfg, "ROTATION_SHELTER_MIN_VOTES", 2) or 2)
             _votes_arr = (votes_leader.reindex(eval_idx).fillna(0).astype(int).values
                           if _shr in ("votes2", "votes2_nonup") else np.zeros(len(eval_idx), dtype=int))
-            fps_ = pd.DataFrame(0.0, index=eval_idx, columns=all_cols)
+            # [v0.60.0 R72 §3b(2) 성능 — 결과 비트 동일] 일별 루프의 `.loc[_d, c]` 스칼라 읽기/쓰기 13곳을 numpy 위치
+            #   인덱싱으로 바꿨다(루프 구조·분기·부동소수 연산 순서는 한 줄도 바꾸지 않음 — 같은 float64 값에 같은 순서로
+            #   같은 연산). 행은 eval_idx 순서로 맞춘 사본(.loc[eval_idx])에서, 열은 이름→위치 dict로 찾는다(없는 열은
+            #   원본과 같이 KeyError). fps_는 루프 끝에서 F로 한 번에 만든다.
+            _Hdf = _h_eff.loc[eval_idx]
+            _Edf = _e_eff.loc[eval_idx]
+            _Bdf = _bm.loc[eval_idx]
+            _H = _Hdf.to_numpy(dtype=bool)
+            _E = _Edf.to_numpy(dtype=bool)
+            _B = _Bdf.to_numpy(dtype=float)
+            _ci_h = {c: i for i, c in enumerate(_Hdf.columns)}
+            _ci_e = {c: i for i, c in enumerate(_Edf.columns)}
+            _ci_b = {c: i for i, c in enumerate(_Bdf.columns)}
+            _ci_f = {c: i for i, c in enumerate(all_cols)}
+            F = np.zeros((len(eval_idx), len(all_cols)), dtype=float)
             n_pri_ = n_alt_ = n_eq_ = n_def_ = n_dg_ = n_nl_ = n_nc_ = n_sh_ = 0
             for _i_d, _d in enumerate(eval_idx):
-                _pri_ok = bool(_h_eff.loc[_d, _pri]) if _pri in _h_eff.columns else False
+                _pri_ok = bool(_H[_i_d, _ci_h[_pri]]) if _pri in _ci_h else False
                 _a = _alt.get(_d)
-                _a_ok = (isinstance(_a, str) and _a in _h_eff.columns and bool(_h_eff.loc[_d, _a])
-                         and bool(_e_eff.loc[_d, _a]) if _a in _e_eff.columns else False)
+                _a_ok = (isinstance(_a, str) and _a in _ci_h and bool(_H[_i_d, _ci_h[_a]])
+                         and bool(_E[_i_d, _ci_e[_a]]) if _a in _ci_e else False)
                 # [v0.42.0 S-K] 중립일 주력 상한 인하(그 외 국면은 cap_ 그대로).
                 _cap_d = cap_
                 if _ncap is not None and spy_regime_arr[_i_d] == _nl_reg and _ncap < cap_:
@@ -8564,8 +8685,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _pri_w = 0.0
                 if _pri_ok:
                     # [v0.29.0] 베타 승수(≤1)만큼 덜 담는다 — 시장위험을 E_t에 맞춘다. scale=0이면 1.0.
-                    _pri_w = _share * float(_bm.loc[_d, _pri])
-                    fps_.loc[_d, _pri] = _pri_w; n_pri_ += 1
+                    _pri_w = _share * float(_B[_i_d, _ci_b[_pri]])
+                    F[_i_d, _ci_f[_pri]] = _pri_w; n_pri_ += 1
                 # [v0.30.0] "redeploy"면 베타로 깎인 만큼(_share - _pri_w)을 대피처 몫에 얹는다 —
                 #   명목 노출은 E_t에 두고 포트폴리오 베타만 낮춘다. "trim"이면 종전대로 현금으로 남긴다.
                 _rest = (1.0 - _pri_w) if (_mode == "redeploy") else (1.0 - _share)
@@ -8577,17 +8698,17 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     _r_def = _rest * _sdef if isinstance(_dc, str) else 0.0
                     _rest = _rest - _r_def
                     if _r_def > 1e-12:
-                        fps_.loc[_d, _dc] += _r_def * float(_bm.loc[_d, _dc]); n_def_ += 1
+                        F[_i_d, _ci_f[_dc]] += _r_def * float(_B[_i_d, _ci_b[_dc]]); n_def_ += 1
                 # [v0.41.0 S-B] 중립 국면 리더 슬롯 — 방어 대피처 몫을 뗀 뒤, 순위 1위/균등 분기보다 먼저.
                 if _rest > 1e-12 and _nl > 0 and spy_regime_arr[_i_d] == _nl_reg:
                     _ld = leader_s.get(_d)
-                    if (isinstance(_ld, str) and _ld and _ld != _pri and _ld in _h_eff.columns
-                            and _ld in _e_eff.columns and bool(_h_eff.loc[_d, _ld])
-                            and bool(_e_eff.loc[_d, _ld])):
+                    if (isinstance(_ld, str) and _ld and _ld != _pri and _ld in _ci_h
+                            and _ld in _ci_e and bool(_H[_i_d, _ci_h[_ld]])
+                            and bool(_E[_i_d, _ci_e[_ld]])):
                         _r_ld = _rest * _nl
                         _rest = _rest - _r_ld
                         if _r_ld > 1e-12:
-                            fps_.loc[_d, _ld] += _r_ld * float(_bm.loc[_d, _ld]); n_nl_ += 1
+                            F[_i_d, _ci_f[_ld]] += _r_ld * float(_B[_i_d, _ci_b[_ld]]); n_nl_ += 1
                 if _rest > 1e-12:
                     # [v0.36.0 §A] 저분산일이면 '순위 1위 집중'을 포기하고 아래 균등 분기로 내려간다.
                     #   ⚠ 주력 비중(cap_)은 건드리지 않는다 — 바뀌는 것은 잔여 슬리브의 배분 방식뿐.
@@ -8619,14 +8740,15 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                         if not _a_ok:
                             n_sh_ += 1
                     if _a_ok:
-                        fps_.loc[_d, _a] += _rest * float(_bm.loc[_d, _a]); n_alt_ += 1
+                        F[_i_d, _ci_f[_a]] += _rest * float(_B[_i_d, _ci_b[_a]]); n_alt_ += 1
                     else:
-                        _ok = [c for c in cols if c != _pri and c in _h_eff.columns and bool(_h_eff.loc[_d, c])
-                               and bool(_e_eff.loc[_d, c])]
+                        _ok = [c for c in cols if c != _pri and c in _ci_h and bool(_H[_i_d, _ci_h[c]])
+                               and bool(_E[_i_d, _ci_e[c]])]
                         if _ok:
                             for c in _ok:
-                                fps_.loc[_d, c] += (_rest / len(_ok)) * float(_bm.loc[_d, c])
+                                F[_i_d, _ci_f[c]] += (_rest / len(_ok)) * float(_B[_i_d, _ci_b[c]])
                             n_eq_ += 1
+            fps_ = pd.DataFrame(F, index=eval_idx, columns=all_cols)
             if _sdef > 0:
                 log("ROTATION", kv(event="defensive_shelter_applied", share=round(_sdef, 4),
                                    days=n_def_, cap=round(float(cap_), 4)), M=M)
@@ -13843,12 +13965,16 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     else:
         meta.insert(1, ("⚠ 00A_수익비교 시트", "생성되지 않았다 — 로그에서 asset_return_compare_failed 확인"))
     meta = [meta[0]] + nd_rows + meta[1:]  # [v0.3.0 §1.A] 버전 다음에 '다음 거래일 예측' 블록 삽입(M과 동일 패턴)
+    # [v0.60.0 R72] stage_timing에 문자열('캐시 적중')이 섞인다 — I(v0.6.0)와 같은 방식으로 숫자만 '초'로 적는다.
     for k, v in sorted(sres.get("stage_timing", {}).items()):
-        meta.append((f"실행시간 - {k}", f"{v:.1f}초"))
+        meta.append((f"실행시간 - {k}", (f"{v:.1f}초" if isinstance(v, (int, float)) else str(v))))
     for t in ok_t:
         tm = results[t]["timing"]
+        _wfc = results[t].get("wf_cache") or {}
+        _wfc_s = (f", 경계캐시 {int(_wfc.get('hit', 0))}/{int(_wfc.get('hit', 0)) + int(_wfc.get('miss', 0))}"
+                  if _wfc.get("enabled") else "")
         meta.append((f"실행시간 - 섹터 {t}", f"{tm.get('12_run_sector()합계', 0):.1f}초 (검증+워크포워드 "
-                     f"{tm.get('05_06_검증+워크포워드', 0):.1f}초{', 캐시' if results[t]['cache_hit'] else ''})"))
+                     f"{tm.get('05_06_검증+워크포워드', 0):.1f}초{', 캐시' if results[t]['cache_hit'] else ''}{_wfc_s})"))
 
     # ---- [v0.51.0 D1 ★ 신규 시트] 00A_수익비교 — 사용자 지시("맨 앞에 시트 새로 하나 생성해서") ----
     #   ① B&H 단순합(복리 아님) · ② 단독예측 · ③ 전략기여를 섹터 한 줄에 놓고,

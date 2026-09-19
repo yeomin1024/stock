@@ -11,6 +11,7 @@ import logging
 import warnings
 import threading
 import zipfile                          # [v1.25.0] Colab 자동 다운로드를 여러 파일 1회 zip으로 묶는 데 사용
+import hashlib                          # [v1.55.0 R72] 워크포워드 경계 캐시 키(sha1)
 import datetime as dt
 import dataclasses                     # [v1.22.0] 결과 번들의 cfg 직렬화(asdict/fields)
 from dataclasses import dataclass, field
@@ -21,6 +22,35 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.55.0 - 2026-09-18 - [R72 실행시간 단축 — 워크포워드 재추정 **경계별 증분 캐시** · 결과 비트 동일]
+#    사용자 요청(R72): "실행시간이 아직도 길어 … 결과 달라지지 않는 선에서". PLAN72_실행시간단축_방법서 §3 구현.
+#    원인(실측): 06_워크포워드재추정이 M 실행의 81~87%(230초)이고 캐시가 없었다. S/I는 전체키 캐시가 있지만 키에
+#      데이터 최종일이 들어 있어 **새 거래일마다 40티커 전면 미스**(섹터당 355초·산업당 325초 → 첫 실행 ≈60분).
+#      그런데 경계 t의 결과는 ind[:t-1]·px[:t-1]·cfg·스펙에만 의존한다(R72 하네스 T1·T2 비트 동일 실측).
+#    변경(신호·가중치·성과 산식은 한 줄도 바꾸지 않았다 — validate_indicators() 호출 **횟수**만 줄인다):
+#      (1) build_walkforward_weights(…, period_cache=None) 인자 신설. None이면 v1.54.1과 완전히 같은 경로.
+#          경계 키 = WF_PERIOD_CACHE_SCHEMA("p1")·VALIDATION_SCHEMA·라벨·cfg 지문(CACHE_KEY_IGNORE_FIELDS 제외)·
+#          지표 스펙 지문(계산용 11속성+MARKET_BLOCK_CATEGORIES)·지표열·경계일·학습종료일·주기·**접두 해시**
+#          (_wf_prefix_hashes: 학습종료일까지 ind·px 원자료 값/결측마스크/날짜 바이트의 누적 sha1, 1패스 ≈0.05초).
+#          적중 시 validate_indicators()+_select_and_weight_*() 산출물(codes·w·info·위험트랙 3종·5열 vt)을 재사용하고,
+#          n_eff·직전가중치 유지·W 조립·wlog·로그는 매번 그대로 실행한다.
+#      (2) WFPeriodCache 신설 — `{CACHE_DIR}/wf_periods/{라벨}.pkl.gz` 티커당 1파일, 이번 실행에서 쓴 키만
+#          tmp→os.replace 저장(낡은 키 자연 소멸), 변경 없으면 재기록 생략, 모든 I/O 예외는 로그 후 재계산(실행 불차단).
+#          전 경계 미스 시 diagnose_full_miss()가 원인(스키마/스펙/지표열/설정 필드명/과거 데이터)을 로그로 남긴다.
+#      (3) CACHE_KEY_IGNORE_FIELDS를 S(v0.59.0 _CACHE_KEY_IGNORE_FIELDS)에서 **M으로 이관 — 단일 정본**.
+#          신설 Config 2필드 USE_WF_PERIOD_CACHE(True)·WF_PERIOD_CACHE_DIR(None)를 **같은 변경에서** 등재(R71 교훈 31)
+#          ⇒ S/I 전체키(`_cache_key`) 해시는 v1.54.1과 동일 — 기존 캐시 그대로 적중.
+#      (4) run(): WFPeriodCache(TRADE_TICKER[+"_selftest"], cfg)를 넘긴다(합성 실행이 실데이터 파일을 덮지 않게).
+#      (5) 로그: COMPOSITE walkforward_done에 period_cache=on/off · period_cache_hit · period_cache_miss ·
+#          recomputed_boundaries(재계산 경계 날짜, 최대 12개) 추가. CACHE wf_period_cache_loaded/saved/full_miss 등.
+#      (6) [§5 스위치] RUN_THRESHOLD_SENSITIVITY(기본 True) 신설 — 방법서는 '기존'이라 적었으나 M에는 없었다.
+#          기본값에서는 종전과 완전히 같은 경로(06c 임계값 격자 산출). 리포트 전용이라 무시 목록에 같은 변경에서 등재.
+#    영향 함수: build_walkforward_weights · run()(06 단계 호출 1줄 · 09 단계 스위치) · Config(필드 3) · 신설 WFPeriodCache/
+#      _wf_prefix_hashes/_wf_fingerprints/_wf_cfg_dict/CACHE_KEY_IGNORE_FIELDS/WF_PERIOD_CACHE_SCHEMA. import hashlib.
+#    ⚠ VALIDATION_SCHEMA("m1")는 **올리지 않았다**(검증 산식 무변경 — 올리면 S/I 캐시 전면 무효화로 첫 실행이 다시 1시간).
+#    ⚠ 위험 파라미터 변경 없음. 기대: 06_워크포워드재추정 230초 → 수 초(같은 날 0 재계산 · 새 거래일 0~1 경계).
+#    검증: test_v155_r72.py — None/빈캐시/예열캐시 W·W_haz·wlog 비트 동일 · 증분성(호출 수 == 새 경계 수) ·
+#      정확한 무효화 · 스펙 덮어쓰기 · 설정 필드 · 손상 파일/잘못된 경로 견고성.
 #  VERSION: v1.54.1 - 2026-09-17 - [v1.54.0 표시 결함 수정 — **신호·데이터 자체는 비트 동일**]
 #    사용자가 v1.54.0 실행 리포트(리포트71)와 이전 리포트(70)를 직접 비교하다가 발견. 실제로 이번
 #    실행에서 ^VIX3M이 FRED VXVCLS로 정상 대체됐는데(10시트 [FRED대체] ^VIX3M 행 존재), 두 곳이
@@ -2705,6 +2735,14 @@ class Config:
     RANDOM_SEED: int = 20260831
     # ---- 입출력 ---------------------------------------------------------
     CACHE_DIR: str = "./cache_market_data"
+    # [v1.55.0 R72 성능 — 결과 비트 동일] 워크포워드 재추정 **경계별 증분 캐시**(PLAN72 §3). 경계 t의 선정·가중치는
+    #   ind[:t-1]·px[:t-1]·cfg·지표 스펙에만 의존하므로(R72 하네스 T1: W·W_haz 9,558/9,558행·경계 128/128 비트 동일)
+    #   경계 단위로 저장해 두고 새 거래일에는 **새로 생긴 경계만** 다시 계산한다(새 거래일 첫 실행 ≈60분 → ≈7분).
+    #   ⚠ 캐시 on/off·위치만 정하는 필드라 검증·가중치 산식과 무관 → 두 필드 모두 CACHE_KEY_IGNORE_FIELDS에
+    #   **같은 변경에서** 등재했다(R71 교훈 31 — 안 넣으면 S/I 전체키 캐시가 통째로 미스 나 몇 시간이 늘어난다).
+    #   끄기: USE_WF_PERIOD_CACHE=False(v1.54.1과 완전히 같은 경로). 위치 None = CACHE_DIR/wf_periods.
+    USE_WF_PERIOD_CACHE: bool = True
+    WF_PERIOD_CACHE_DIR: Optional[str] = None
     OUT_XLSX: str = "market_regime_report.xlsx"
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
@@ -3645,6 +3683,12 @@ class Config:
     SELF_TEST: bool = False            # True = 합성데이터로 파이프라인 자체검증
     RUN_LOOKAHEAD_AUDIT: bool = True   # 룩어헤드 재계산 감사 실행
     AUDIT_SAMPLE: int = 12             # 감사 표본 날짜 수
+    # [v1.55.0 R72 §5] 06c 임계값 민감도 격자(threshold_sensitivity, Kaggle ≈17초) 스위치 — **기본 True(무변경)**.
+    #   PLAN72 §5는 이 스위치를 '기존'으로 적었지만 v1.54.1까지 M에는 없었다(S에만 있었다) → 스위치만 신설한다.
+    #   끄면 06c 시트의 임계값 격자 행이 빠진다(진단 산출물이라 결과 불변 조건상 기본은 켬). 위험트랙 캡 민감도
+    #   (hazard_cap_sensitivity, 캐시 기반 저비용)는 이 스위치와 무관하게 그대로 06c에 붙는다.
+    #   ⚠ 리포트 전용 필드 → CACHE_KEY_IGNORE_FIELDS에 같은 변경에서 등재(R71 교훈 31).
+    RUN_THRESHOLD_SENSITIVITY: bool = True
     # [v1.2.0] 반감기 민감도(06d 시트)는 HALF_LIFE_DAYS 4케이스마다 walk-forward 전체를
     # 다시 계산해야 해 비용이 크다(기본 REWEIGHT_FREQ="M" 기준 케이스당 약 4~5분 추가).
     # [v1.4.0 §1(A) 성능 — 실사용 실측] 사용자 Colab 실행(market_regime_report_3.xlsx,
@@ -6524,10 +6568,244 @@ def _reestimation_boundaries(idx: pd.DatetimeIndex, start: pd.Timestamp, end: pd
     return raw
 
 
+# =============================================================================
+# [v1.55.0 R72] 워크포워드 재추정 **경계별 증분 캐시** (PLAN72_실행시간단축_방법서 §3)
+# =============================================================================
+# 왜: 티커 1개당 validate_indicators()가 ≈128회(재추정 경계 수) 불리는데, 새 거래일이 와도 그중 127~128회는
+#   어제 실행과 입력이 비트 단위로 같다. 경계 t의 계산 입력은 ind[:t-1]·px[:t-1]·cfg·지표 스펙뿐이므로
+#   (R72 하네스 T1·T2 실측: 절단 입력 결과 == 전체 입력 결과[:T], W·W_haz 9,558/9,558행 · 경계 128/128 동일)
+#   경계 단위로 validate_indicators() 직후 산출물(선정 코드·가중치·info)만 저장하고 다음 실행에서 재사용한다.
+# 정확성: 키에 '그 경계의 학습종료일까지' 원자료 바이트의 누적 sha1(접두 해시)이 들어간다 — 값 하나만 달라도
+#   (배당 재조정·FRED 소급 수정) 그 날짜 이후 경계만 정확히 미스, 미래 데이터는 키에도 값에도 없다(룩어헤드 없음).
+# 캐시는 결코 실행을 막지 않는다: 읽기/쓰기/경로 실패는 로그만 남기고 재계산으로 진행.
+# ⚠ VALIDATION_SCHEMA("m1")는 올리지 않았다 — 검증 산식은 한 줄도 바뀌지 않았다(올리면 S/I 캐시 전면 무효화).
+WF_PERIOD_CACHE_SCHEMA = "p1"
+
+# [v1.55.0 R72] 검증표·워크포워드 가중치에 **영향이 없는** Config 필드 — 캐시 키(S/I 전체키 `_cache_key`와
+#   이 모듈의 경계 키 모두)에서 제외한다. **단일 정본**: sector_rotation.py(v0.60.0)는 자기 사본 대신 이 값을 읽는다.
+#   목록 내용은 S v0.59.0 `_CACHE_KEY_IGNORE_FIELDS`를 그대로 옮기고 v1.55.0 신설 2필드를 **같은 변경에서** 더했다.
+#   ★ R71 교훈 31: Config에 필드를 추가하면 그 즉시 여기에 넣을지 판단하라(수집·리포트·캐시 전용이면 넣는다,
+#     신호·검증·가중치에 영향이 있으면 넣지 않는다). 안 넣으면 S/I 전체키 캐시가 조용히 전부 미스 난다.
+CACHE_KEY_IGNORE_FIELDS = frozenset({
+    "AUDIT_SAMPLE", "RUN_LOOKAHEAD_AUDIT", "RUN_HALF_LIFE_SENSITIVITY", "HL_SENS_REWEIGHT_FREQ", "ENSEMBLE_HALF_LIVES",
+    "OUT_XLSX", "LOG_LEVEL", "EXPORT_RESULT_BUNDLE", "RESULT_BUNDLE_PATH", "EXPORT_DAILY_CSV", "DAILY_CSV_PATH",
+    "RANDOM_SEED", "CACHE_DIR", "FRED_API_KEY", "FETCH_TIMEOUT_CONNECT", "FETCH_TIMEOUT_READ", "FETCH_RETRIES",
+    "FETCH_MAX_WORKERS", "DRAWDOWN_EPISODE_THRESHOLD",
+    "YAHOO_CRITICAL_FRED_FALLBACK", "FRED_FALLBACK_MIN_ROWS", "FRED_FALLBACK_MAX_DIFF_RATIO",   # v1.54.0 수집 전용(S v0.59.0 §P1)
+    "TREND_OVERRIDE_SCORE_PCT", "TREND_OVERRIDE_NEED_MARKET",                                  # generate_signals 전용(S v0.40.0 §S3)
+    "USE_WF_PERIOD_CACHE", "WF_PERIOD_CACHE_DIR",                                              # [v1.55.0 R72] 캐시 on/off·위치
+    "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
+})
+
+# 경계 키에 넣는 지표 스펙 속성 — validate_indicators/_select_and_weight_*가 실제로 읽는 계산용 필드만
+#   (name_kr·rationale 등 설명 문구는 제외: 문구 수정으로 캐시가 날아가지 않게). S가 _indicator_spec_override로
+#   섹터 후보를 덮어쓰면 이 지문이 달라져 전 경계가 미스 난다(섹터 간 오염 방지 — PLAN72 §6-4).
+_WF_SPEC_FIELDS = ("key", "category", "prior_sign", "auto", "series_id", "series_kind", "transform", "window",
+                   "eval_horizon", "trend_track", "base_series")
+_WF_MISS_LIST_MAX = 12          # 로그에 나열할 재계산 경계 수 상한(나머지는 '…+n')
+
+
+def _wf_json_default(o):
+    """cfg 지문 직렬화 — set/frozenset은 정렬해 프로세스마다 순서가 달라지지 않게(PYTHONHASHSEED 무관)."""
+    if isinstance(o, (set, frozenset)):
+        return sorted(map(str, o))
+    return str(o)
+
+
+def _wf_cfg_dict(cfg: "Config") -> Dict[str, str]:
+    """캐시 키용 cfg 요약(무시 필드 제외, 값은 문자열) — 경계 키 지문과 미스 원인 진단(필드 단위 diff)에 함께 쓴다."""
+    return {k: json.dumps(v, sort_keys=True, default=_wf_json_default)
+            for k, v in dataclasses.asdict(cfg).items() if k not in CACHE_KEY_IGNORE_FIELDS}
+
+
+def _wf_fingerprints(ind: pd.DataFrame, cfg: "Config", label: str) -> Dict[str, str]:
+    """경계와 무관한 키 성분 지문 — 스키마·라벨·cfg·지표 스펙(현재 INDICATOR_SPECS)·지표열 목록."""
+    cfg_fp = hashlib.sha1(json.dumps(_wf_cfg_dict(cfg), sort_keys=True).encode()).hexdigest()
+    spec_rows = [[str(getattr(s, f, "")) for f in _WF_SPEC_FIELDS] for s in INDICATOR_SPECS]
+    h = hashlib.sha1(json.dumps(spec_rows, ensure_ascii=False).encode())
+    h.update(str(MARKET_BLOCK_CATEGORIES).encode())
+    spec_fp = h.hexdigest()
+    cols_fp = hashlib.sha1("|".join(map(str, ind.columns)).encode()).hexdigest()
+    schema = f"{WF_PERIOD_CACHE_SCHEMA}|{VALIDATION_SCHEMA}"
+    return {"schema": schema, "label": str(label), "cfg": cfg_fp, "spec": spec_fp, "cols": cols_fp}
+
+
+def _wf_prefix_hashes(ind: pd.DataFrame, px_adj: pd.Series, cut_dates: List[pd.Timestamp]) -> Dict[pd.Timestamp, str]:
+    """[v1.55.0 R72 §3-4] 각 절단일 d(=학습종료일)에 대해 ind[:d]·px_adj[:d](d 포함)의 **원자료 바이트** 누적 sha1.
+    한 번의 순방향 패스(≈25MB, ≈0.05초)로 모든 경계의 접두 해시를 만든다. 체크섬(합·제곱합)이 아니라 바이트
+    그대로라 부동소수 합산 순서 문제가 없고, NaN은 0으로 정규화한 값 + 별도 결측 마스크로 해시한다(NaN 비트패턴 무관).
+    인덱스(날짜) 바이트도 함께 해시한다(과거 거래일이 끼어들거나 빠지면 그 이후 경계는 미스).
+    스트림 6개(값·마스크·날짜 × ind/px)를 따로 누적해 청크 경계와 무관한 해시가 된다(경계 목록이 달라도 같은 접두 → 같은 해시)."""
+    a = np.ascontiguousarray(ind.to_numpy(dtype=float))
+    ma = np.isnan(a)
+    a0 = np.ascontiguousarray(np.where(ma, 0.0, a))
+    ma8 = np.ascontiguousarray(ma).view(np.uint8)
+    p = np.ascontiguousarray(px_adj.to_numpy(dtype=float))
+    mp_ = np.isnan(p)
+    p0 = np.ascontiguousarray(np.where(mp_, 0.0, p))
+    mp8 = np.ascontiguousarray(mp_).view(np.uint8)
+    ia = np.ascontiguousarray(ind.index.asi8)
+    ip = np.ascontiguousarray(px_adj.index.asi8)
+    hs = {k: hashlib.sha1() for k in ("a", "ma", "ia", "p", "mp", "ip")}
+    qa0 = qp0 = 0
+    out: Dict[pd.Timestamp, str] = {}
+    for d in sorted(set(cut_dates)):
+        qa = int(ind.index.searchsorted(d, side="right"))
+        qp = int(px_adj.index.searchsorted(d, side="right"))
+        if qa > qa0:
+            hs["a"].update(a0[qa0:qa].tobytes()); hs["ma"].update(ma8[qa0:qa].tobytes())
+            hs["ia"].update(ia[qa0:qa].tobytes())
+            qa0 = qa
+        if qp > qp0:
+            hs["p"].update(p0[qp0:qp].tobytes()); hs["mp"].update(mp8[qp0:qp].tobytes())
+            hs["ip"].update(ip[qp0:qp].tobytes())
+            qp0 = qp
+        hh = hashlib.sha1(f"{a.shape[1]}|{qa}|{qp}".encode())
+        for k in ("a", "ma", "ia", "p", "mp", "ip"):
+            hh.update(hs[k].copy().digest())
+        out[d] = hh.hexdigest()
+    return out
+
+
+class WFPeriodCache:
+    """[v1.55.0 R72 §3-6] 재추정 경계별 산출물 저장소 — 티커(라벨)당 파일 1개 `{dir}/{label}.pkl.gz`.
+
+    내용: {"schema", "label", "meta"(지문·cfg 요약 — 미스 원인 진단용), "entries": {경계키 → 산출물}}.
+    - 로드: 생성 시 1회(없거나 깨졌으면 빈 저장소 + 로그). 저장: build_walkforward_weights() 루프 끝에
+      **이번 실행에서 get(적중)/put(신규)한 키만** 담아 tmp → os.replace(원자적). 배당 재조정 등으로 낡은 키는
+      다음 저장에서 자연 소멸(가비지 누적 없음). 바뀐 것이 없으면 쓰지 않는다(중복 I/O 금지).
+    - 동시성: S/I는 fork 워커가 티커별로 나뉘어 파일이 겹치지 않는다. M은 메인 프로세스.
+    - 실패 정책: 어떤 예외도 밖으로 던지지 않는다 — 캐시는 결코 실행을 막지 않는다(S 기존 정책과 동일).
+    - stats: 마지막 build_walkforward_weights() 호출의 {periods, hit, miss, recomputed, enabled} — 호출부가 로그·리포트에 쓴다."""
+
+    def __init__(self, label: str, cfg: Optional["Config"] = None, cache_dir: Optional[str] = None):
+        self.label = str(label)
+        self.enabled = True
+        self.path: Optional[str] = None
+        self._store: Dict[str, dict] = {}
+        self._used: Dict[str, dict] = {}
+        self._n_put = 0
+        self.prev_meta: dict = {}
+        self.meta: dict = {}
+        self.stats: dict = {"periods": 0, "hit": 0, "miss": 0, "recomputed": [], "enabled": False}
+        try:
+            c = cfg if cfg is not None else CFG
+            d = cache_dir or getattr(c, "WF_PERIOD_CACHE_DIR", None) or os.path.join(c.CACHE_DIR, "wf_periods")
+            safe = "".join(ch if (ch.isalnum() or ch in "-_.") else "_" for ch in self.label) or "_"
+            self.path = os.path.join(str(d), f"{safe}.pkl.gz")
+        except Exception as e:
+            self.enabled = False
+            log("CACHE", kv(event="wf_period_cache_disabled", label=self.label, err=type(e).__name__,
+                            msg=str(e)[:120], next_step="CACHE_DIR/WF_PERIOD_CACHE_DIR 설정 확인 — 이번 실행은 캐시 없이 전부 계산"),
+                "warning")
+            return
+        self._load()
+
+    def _load(self) -> None:
+        t0 = time.time()
+        if not self.path or not os.path.exists(self.path):
+            log("CACHE", kv(event="wf_period_cache_empty", label=self.label, file=self.path,
+                            note="최초 실행·캐시 폴더 초기화 — 이번 실행은 전 경계 계산 후 저장"))
+            return
+        try:
+            obj = pd.read_pickle(self.path, compression="gzip")
+            if (not isinstance(obj, dict) or obj.get("schema") != WF_PERIOD_CACHE_SCHEMA
+                    or not isinstance(obj.get("entries"), dict)):
+                log("CACHE", kv(event="wf_period_cache_schema_mismatch", label=self.label,
+                                found=(obj.get("schema") if isinstance(obj, dict) else type(obj).__name__),
+                                expected=WF_PERIOD_CACHE_SCHEMA, action="빈 저장소로 시작(재계산 후 새 형식으로 저장)"),
+                    "warning")
+                return
+            self._store = obj["entries"]
+            self.prev_meta = obj.get("meta") or {}
+            log("CACHE", kv(event="wf_period_cache_loaded", label=self.label, entries=len(self._store),
+                            file=os.path.basename(self.path), elapsed_s=round(time.time() - t0, 3)))
+        except Exception as e:
+            self._store = {}
+            log("CACHE", kv(event="cache_period_read_failed", label=self.label, file=self.path,
+                            err=type(e).__name__, msg=str(e)[:120],
+                            action="재계산으로 진행 — 루프 끝에 새 파일로 덮어쓴다"), "warning")
+
+    def get(self, key: str) -> Optional[dict]:
+        if not self.enabled:
+            return None
+        e = self._store.get(key)
+        if e is not None:
+            self._used[key] = e
+        return e
+
+    def put(self, key: str, entry: dict) -> None:
+        if not self.enabled:
+            return
+        self._used[key] = entry
+        self._n_put += 1
+
+    def save(self) -> bool:
+        """이번 실행에서 쓴 키만 원자적으로 저장. 변경이 없으면(신규 0 · 키 집합 동일 · 메타 동일) 쓰지 않는다."""
+        if not self.enabled or not self.path:
+            return False
+        if (self._n_put == 0 and set(self._used) == set(self._store)
+                and self.meta == self.prev_meta):
+            log("CACHE", kv(event="wf_period_cache_unchanged", label=self.label, entries=len(self._used),
+                            note="전 경계 적중 — 파일 재기록 생략"), "debug")
+            return False
+        t0 = time.time()
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            tmp = f"{self.path}.tmp{os.getpid()}"
+            pd.to_pickle({"schema": WF_PERIOD_CACHE_SCHEMA, "label": self.label, "meta": self.meta,
+                          "entries": dict(self._used)}, tmp, compression="gzip", protocol=4)
+            os.replace(tmp, self.path)        # 원자적 교체 — 중단된 실행이 잘린 파일을 남기지 않게
+            log("CACHE", kv(event="wf_period_cache_saved", label=self.label, entries=len(self._used),
+                            new=self._n_put, dropped=len(set(self._store) - set(self._used)),
+                            size_kb=round(os.path.getsize(self.path) / 1e3, 1), elapsed_s=round(time.time() - t0, 3)))
+            self._store = dict(self._used)
+            self.prev_meta = dict(self.meta)
+            self._n_put = 0
+            return True
+        except Exception as e:
+            log("CACHE", kv(event="cache_period_write_failed", label=self.label, file=self.path,
+                            err=type(e).__name__, msg=str(e)[:120],
+                            next_step="디스크 여유·쓰기 권한 확인 — 결과에는 영향 없음(다음 실행이 다시 계산)"), "warning")
+            return False
+
+    def diagnose_full_miss(self, first_miss: Optional[str]) -> None:
+        """[R71 철학 — 감지했으면 왜인지까지] 저장된 경계가 있었는데 하나도 못 맞혔을 때 원인을 로그로 남긴다."""
+        try:
+            pm, nm = self.prev_meta or {}, self.meta or {}
+            causes = []
+            if pm.get("schema") != nm.get("schema"):
+                causes.append("스키마 변경")
+            if pm.get("spec") != nm.get("spec"):
+                causes.append("지표 스펙 변경")
+            if pm.get("cols") != nm.get("cols"):
+                causes.append("지표열 변경")
+            cfg_diff: List[str] = []
+            if pm.get("cfg") != nm.get("cfg"):
+                pc, nc = pm.get("cfg_fields") or {}, nm.get("cfg_fields") or {}
+                cfg_diff = sorted(k for k in (set(pc) | set(nc)) if pc.get(k) != nc.get(k))
+                causes.append(f"설정 {len(cfg_diff)}필드 변경")
+            if not causes:
+                causes.append("과거 데이터 값 변경(배당·분할 재조정·FRED 소급 수정 등)")
+            log("CACHE", kv(event="wf_period_cache_full_miss", label=self.label, cause=";".join(causes),
+                            changed_fields=(",".join(cfg_diff[:8]) + (" …" if len(cfg_diff) > 8 else "")) if cfg_diff else "-",
+                            first_recomputed=first_miss or "-",
+                            note="데이터·스키마가 바뀐 재계산은 정상(정확성을 위해 필요). 설정 필드가 검증과 무관하면 "
+                                 "M.CACHE_KEY_IGNORE_FIELDS에 추가하라"), "warning")
+        except Exception as e:   # 진단이 본 실행을 막지 않는다
+            log("CACHE", kv(event="wf_period_cache_diagnose_failed", label=self.label, err=type(e).__name__), "debug")
+
+
 def build_walkforward_weights(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config = CFG,
-                              collect_vt: Optional[List[dict]] = None
+                              collect_vt: Optional[List[dict]] = None,
+                              period_cache: Optional["WFPeriodCache"] = None
                               ) -> Tuple[pd.DataFrame, List[dict], pd.DataFrame]:
     """
+    [v1.55.0 R72] period_cache(WFPeriodCache)를 주면 재추정 경계별로 validate_indicators() 직후 산출물(선정 코드·
+    가중치·info, collect_vt가 있으면 5열 vt)을 재사용한다 — 경계 키 = 스키마·라벨·cfg(무시필드 제외)·지표 스펙·
+    지표열·경계일·학습종료일·주기·**학습종료일까지 원자료 접두 해시**. None(기본)이면 v1.54.1과 완전히 같은 경로.
+    n_eff·w_decay·직전가중치 유지 분기·W 조립·wlog·로그는 캐시와 무관하게 매번 그대로 실행한다(결과 비트 동일).
+
     '그 재추정 시점 이전 데이터만' 사용해 재검증 -> PASS(+보조채택) 지표와 가중치 결정.
     가중치 = |IC(평가지평)| 비례(부호는 실증방향), 절대값 합이 1이 되도록 정규화(추세트랙
     상한 적용 후에도 유지).
@@ -6600,6 +6878,25 @@ def build_walkforward_weights(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config 
     # 대상에서 제외했다 — validate_indicators() docstring의 §1(B) 절 참조(부분윈도우 불일치).
     fwd_full = {h: forward_return(px_adj, h) for h in cfg.VAL_HORIZONS}
 
+    # [v1.55.0 R72 §3-3·§3-4] 경계 키 준비 — 경계와 무관한 지문 1회 + 전 경계 접두 해시 1패스(≈0.05초).
+    #   실패하면 캐시만 끄고(로그) 본 계산은 v1.54.1 경로 그대로 진행한다 — 캐시는 결코 실행을 막지 않는다.
+    _pc = period_cache if (period_cache is not None and getattr(period_cache, "enabled", False)) else None
+    _pc_base: Optional[str] = None
+    _pc_prefix: Dict[pd.Timestamp, str] = {}
+    n_pc_hit = n_pc_miss = 0
+    pc_recomputed: List[str] = []
+    if _pc is not None:
+        try:
+            _fp = _wf_fingerprints(ind, cfg, _pc.label)
+            _pc.meta = {**_fp, "cfg_fields": _wf_cfg_dict(cfg)}
+            _pc_base = hashlib.sha1("|".join(_fp[k] for k in ("schema", "label", "cfg", "spec", "cols"))
+                                    .encode()).hexdigest()
+            _pc_prefix = _wf_prefix_hashes(ind, px_adj, [b - pd.Timedelta(days=1) for b in bounds])
+        except Exception as e:
+            log("CACHE", kv(event="wf_period_key_failed", label=getattr(_pc, "label", "?"), err=type(e).__name__,
+                            msg=str(e)[:120], action="이번 호출은 경계 캐시 없이 전부 계산(결과 동일)"), "warning")
+            _pc = None
+
     for i, t in enumerate(bounds):
         cadence = "연간(워밍업)" if t < sig_start else cfg.REWEIGHT_FREQ
         train_end = t - pd.Timedelta(days=1)
@@ -6646,23 +6943,46 @@ def build_walkforward_weights(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config 
                 collect_vt.append({"t": t, "mask": mask.copy(), "vt": None})
             continue
 
-        # [v1.4.0 §1(B)1·2] full_report=False(h_eval IC만 계산) + 전역 fwd_full 재사용 —
-        # PASS/FAIL 판정·가중치 산정 결과는 기존과 동일(단위테스트로 확인됨).
-        vt = validate_indicators(ind, px_adj, cfg,
-                                 eval_end=train_end, verbose=False,
-                                 compute_quintiles=False, weights=w_decay,
-                                 full_report=False, fwd_full=fwd_full)
-        codes, w_signed, info = _select_and_weight_period(vt, cfg)
-        # [v1.3.0 §4(B)] 위험트랙 가중치 — 같은 vt 재사용(validate_indicators() 재호출 없음).
-        codes_haz, w_signed_haz, info_haz = (
-            _select_and_weight_hazard_period(vt, cfg) if cfg.USE_HAZARD_TRACK else (None, None, {}))
-        # [v1.14.0 §B] 캡 재시뮬레이션용 수집 — 위험트랙 재선정에 필요한 5컬럼만 복사(저용량).
-        # 이 캐시로 hazard_cap_sensitivity()가 validate_indicators() 재실행 없이(비용 지배
-        # 요인 회피) 카테고리 상한 케이스별 W_haz를 재구축할 수 있다.
-        if collect_vt is not None:
+        # [v1.55.0 R72 §3-5] 경계 캐시 조회 — 키는 이 경계의 학습종료일까지 입력만으로 만든다(룩어헤드 없음).
+        #   collect_vt가 필요한 호출(M run)인데 저장본에 5열 vt가 없으면 적중으로 치지 않고 재계산한다.
+        _key_t: Optional[str] = None
+        _hit: Optional[dict] = None
+        if _pc is not None and _pc_base is not None:
+            _key_t = hashlib.sha1(f"{_pc_base}|{t}|{train_end}|{cadence}|{_pc_prefix.get(train_end, '')}"
+                                  .encode()).hexdigest()
+            _hit = _pc.get(_key_t)
+            if _hit is not None and collect_vt is not None and _hit.get("vt_slim") is None:
+                _hit = None
+        if _hit is None:
+            # [v1.4.0 §1(B)1·2] full_report=False(h_eval IC만 계산) + 전역 fwd_full 재사용 —
+            # PASS/FAIL 판정·가중치 산정 결과는 기존과 동일(단위테스트로 확인됨).
+            vt = validate_indicators(ind, px_adj, cfg,
+                                     eval_end=train_end, verbose=False,
+                                     compute_quintiles=False, weights=w_decay,
+                                     full_report=False, fwd_full=fwd_full)
+            codes, w_signed, info = _select_and_weight_period(vt, cfg)
+            # [v1.3.0 §4(B)] 위험트랙 가중치 — 같은 vt 재사용(validate_indicators() 재호출 없음).
+            codes_haz, w_signed_haz, info_haz = (
+                _select_and_weight_hazard_period(vt, cfg) if cfg.USE_HAZARD_TRACK else (None, None, {}))
+            # [v1.14.0 §B] 캡 재시뮬레이션용 수집 — 위험트랙 재선정에 필요한 5컬럼만 복사(저용량).
+            # 이 캐시로 hazard_cap_sensitivity()가 validate_indicators() 재실행 없이(비용 지배
+            # 요인 회피) 카테고리 상한 케이스별 W_haz를 재구축할 수 있다.
             _vt_cols = [c for c in ["지표코드", "카테고리", "위험트랙판정", "위험트랙AUC엣지",
                                     "사전방향"] if c in vt.columns]
-            collect_vt.append({"t": t, "mask": mask.copy(), "vt": vt[_vt_cols].copy()})
+            _vt_slim = vt[_vt_cols].copy() if collect_vt is not None else None
+            n_pc_miss += 1
+            if _key_t is not None:
+                pc_recomputed.append(str(t.date()))
+                _pc.put(_key_t, {"codes": codes, "w": w_signed, "info": info,
+                                 "codes_haz": codes_haz, "w_haz": w_signed_haz, "info_haz": info_haz,
+                                 "vt_slim": _vt_slim})
+        else:
+            codes, w_signed, info = _hit["codes"], _hit["w"], _hit["info"]
+            codes_haz, w_signed_haz, info_haz = _hit["codes_haz"], _hit["w_haz"], _hit["info_haz"]
+            _vt_slim = _hit.get("vt_slim")
+            n_pc_hit += 1
+        if collect_vt is not None:
+            collect_vt.append({"t": t, "mask": mask.copy(), "vt": _vt_slim.copy()})
 
         if info.get("soft_adopt"):
             log("COMPOSITE", kv(event="soft_adopt", reestim_date=str(t.date()),
@@ -6739,10 +7059,25 @@ def build_walkforward_weights(ind: pd.DataFrame, px_adj: pd.Series, cfg: Config 
         prev_codes, prev_w = codes, w_signed
         prev_codes_haz, prev_w_haz = codes_haz, w_signed_haz
 
+    # [v1.55.0 R72 §3-7] 이 변경이 실제로 작동하는지 로그만으로 보이게 — 적중/미스 수와 재계산된 경계 날짜.
+    #   미스가 2개 이상이면 그 날짜들이 곧 '어느 날짜부터 데이터가 달라졌는지'다(배당 재조정·소급 수정 등).
+    if period_cache is not None:
+        period_cache.stats = {"periods": n_pc_hit + n_pc_miss, "hit": n_pc_hit, "miss": n_pc_miss,
+                              "recomputed": list(pc_recomputed), "enabled": _pc is not None}
+        if _pc is not None:
+            if n_pc_hit == 0 and n_pc_miss > 0 and _pc.prev_meta:
+                _pc.diagnose_full_miss(pc_recomputed[0] if pc_recomputed else None)
+            _pc.save()
+    _rb = (",".join(pc_recomputed[:_WF_MISS_LIST_MAX])
+           + (f",…+{len(pc_recomputed) - _WF_MISS_LIST_MAX}" if len(pc_recomputed) > _WF_MISS_LIST_MAX else "")
+           ) if pc_recomputed else "-"
     log("COMPOSITE", kv(event="walkforward_done", periods=len(wlog),
                         warmup_freq=cfg.WARMUP_REWEIGHT_FREQ, main_freq=cfg.REWEIGHT_FREQ,
                         half_life_days=cfg.HALF_LIFE_DAYS,
                         use_hazard_track=cfg.USE_HAZARD_TRACK,
+                        period_cache=("on" if _pc is not None else "off"),
+                        period_cache_hit=n_pc_hit, period_cache_miss=n_pc_miss,
+                        recomputed_boundaries=(_rb if _pc is not None else "-"),
                         elapsed_s=round(time.time() - t0, 2)))
     return W, wlog, W_haz
 
@@ -9383,7 +9718,14 @@ def run(cfg: Config = CFG) -> dict:
     # ---------- 4) walk-forward 가중치 & 복합점수 ----------
     # [v1.14.0 §B] 카테고리 상한 재시뮬레이션용 재추정별 검증표 캐시(5컬럼 축약, 저용량).
     haz_vt_periods: List[dict] = []
-    W, wlog, W_haz = build_walkforward_weights(ind, px_adj, cfg, collect_vt=haz_vt_periods)
+    # [v1.55.0 R72 §3-8(1)] 재추정 경계별 증분 캐시 — 같은 날 재실행은 전 경계 적중, 새 거래일은 새로 생긴
+    #   경계(월초)만 재계산한다(230초 → 수 초). hazard_cap_sensitivity()가 쓰는 5열 vt(haz_vt_periods)도 적중 시
+    #   저장본으로 채운다. 라벨에 SELF_TEST 접미사를 붙여 합성데이터 실행이 실데이터 캐시 파일을 덮어쓰지 않게 한다.
+    #   끄기: Config.USE_WF_PERIOD_CACHE=False(v1.54.1 경로와 완전히 동일).
+    _wf_pc = (WFPeriodCache(f"{cfg.TRADE_TICKER}{'_selftest' if cfg.SELF_TEST else ''}", cfg)
+              if cfg.USE_WF_PERIOD_CACHE else None)
+    W, wlog, W_haz = build_walkforward_weights(ind, px_adj, cfg, collect_vt=haz_vt_periods,
+                                               period_cache=_wf_pc)
     score, contrib, n_used = composite_score(ind, W, cfg)
     score_pct = score_percentile(score)                       # 자기 과거분포 대비 백분위
     score_pct = score_pct.where(pd.Series(sig_mask, index=cal))
@@ -9484,8 +9826,14 @@ def run(cfg: Config = CFG) -> dict:
     stage_timing["08_백테스트"] = round(t_bt_done - t_sig_done, 2)
 
     # 임계값 민감도 (곡선맞춤 여부 점검) — [v1.3.0 §4(C)] HAZARD_ENTER×HAZARD_BLOCK 격자 포함
-    sens = threshold_sensitivity(score_pct, trend200, price, cfg, rf_daily, haz_pct=haz_pct, breadth=breadth,
-                                 fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+    # [v1.55.0 R72 §5] 스위치 신설(기본 True — 종전과 동일 경로). 끄면 06c 임계값 격자만 비고 신호·성과는 불변.
+    if cfg.RUN_THRESHOLD_SENSITIVITY:
+        sens = threshold_sensitivity(score_pct, trend200, price, cfg, rf_daily, haz_pct=haz_pct, breadth=breadth,
+                                     fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd)
+    else:
+        sens = pd.DataFrame()
+        log("VALIDATE", kv(event="threshold_sensitivity_skipped", reason="RUN_THRESHOLD_SENSITIVITY=False",
+                           note="06c 임계값 격자 생략(진단 전용 — 신호·성과 무영향)"), "warning")
     # [v1.14.0 §B] 위험트랙 카테고리 상한 민감도(무제한/0.50/0.40/0.30) — 캐시 기반 저비용
     # 재시뮬레이션, 06c 시트에 이어붙임. 무제한 케이스는 라이브 W_haz와의 일치를 자기검증.
     cap_sens = hazard_cap_sensitivity(haz_vt_periods, ind, score_pct, trend200, price, cfg,
@@ -10631,8 +10979,8 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.54.1"
-BUNDLE_VERSION_DATE = "2026-09-17"
+BUNDLE_VERSION = "v1.55.0"
+BUNDLE_VERSION_DATE = "2026-09-18"
 # [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
 #   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /
 #   decay_weights / composite 입력 스펙에만 의존한다. ⚠ 그 네 곳의 **산식**이 바뀔 때만 이 값을 올릴 것(안 올리면 오래된

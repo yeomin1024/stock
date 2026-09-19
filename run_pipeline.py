@@ -1,5 +1,15 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.24.0 - 2026-09-18 - [R72 — M v1.55.0 · S v0.60.0] 실행시간 단축(PLAN72) 파일 확인 · 최소버전 상향.
+#    · _MIN에 **M(market_regime_trader.py) 최소 v1.55.0** 추가(종전 표에 M이 없었다 — M은 VERSION 대신
+#      BUNDLE_VERSION을 쓰므로 _ver()가 둘 다 읽는다) · S 최소 v0.59.0 → **v0.60.0**.
+#    · 기능 점검 줄: M **★워크포워드 경계캐시**(WFPeriodCache) · S **★경계캐시 연결·배분엔진 가속**(_cache_ignore_fields).
+#      구버전 M/S로 돌면 새 거래일 첫 실행이 다시 ≈60분 걸린다 — 그 사실을 시작 5초 안에 알린다.
+#    · 갱신 확인 문구: 섹터 00시트 '실행시간 - 캐시 적중'이 "전체키 a/n · 경계 h/N" 형식이면 v0.60.0이다.
+#    · 캐시 폴더는 종전 그대로(기준 폴더 아래 cache_market_data / cache_sector / cache_industry) — 경계 캐시는
+#      각 폴더의 wf_periods/ 하위에 티커당 1파일로 쌓인다(Kaggle Persistence "Files only"면 세션 간 유지).
+#    ※ 러너 실행 경로·기본값·위험 파라미터 무변경.
+#
 #  VERSION: v1.19.1 - 2026-09-15 - [ROUND63 — S v0.53.0 · I v0.24.0] 00A 판정·분해·격자 3블록.
 #    사용자 지시: "예측 수익이 buy and hold 보다 훨씬 많이 나와야해 지금 보니까 그런게 없어
 #    다시 섹터랑 산업부터 문제 찾아서 개선방법 찾아서 수정해 2개만" ⇒ S·I만 수정(K 무변경).
@@ -1161,7 +1171,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.23.0"
+VERSION = "v1.24.0"
 VERSION_DATE = "2026-09-18"
 
 MODULE_FILES = {
@@ -1268,7 +1278,9 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     #   S v0.50.0 / I v0.21.0 / K v0.2.1로 돌았다. 리포트에 00A 시트가 없고 비중 합계도 그대로였다.
     #   배너만 보고는 그것을 알 수 없었다 — 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없었다.
     #   ⇒ 이제 최소 버전을 코드가 알고 있고, 미달이면 **어느 파일을 갱신해야 하는지** 크게 알린다.
-    _MIN = {"sector_rotation.py": ("S", "v0.59.0", S),
+    # [v1.24.0 R72] M을 표에 추가(최소 v1.55.0 — 워크포워드 경계 캐시). M은 VERSION이 없고 BUNDLE_VERSION을 쓴다.
+    _MIN = {"market_regime_trader.py": ("M", "v1.55.0", M),
+            "sector_rotation.py": ("S", "v0.60.0", S),
             "industry_rotation.py": ("I", "v0.26.0", I),
             "stock_regime.py": ("K", "v0.3.1", K)}
     def _vt(x):
@@ -1276,11 +1288,13 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
             return tuple(int(p) for p in str(x).lstrip("v").split(".")[:3])
         except Exception:
             return (0, 0, 0)
+    def _ver(_m, default="v0.0.0"):
+        return str(getattr(_m, "VERSION", None) or getattr(_m, "BUNDLE_VERSION", None) or default)
     _stale = []
     for _fn, (_tag, _min, _mod) in _MIN.items():
         if _mod is None:
             continue
-        _got = str(getattr(_mod, "VERSION", "v0.0.0"))
+        _got = _ver(_mod)
         if _vt(_got) < _vt(_min):
             _stale.append((_fn, _tag, _got, _min))
     print("[runner] ── 기능 점검(이 실행에 무엇이 들어 있나) ─────────────────────────")
@@ -1288,7 +1302,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         if _mod is None:
             print(f"[runner]   {_tag} {_fn:22s} 없음(건너뜀)")
             continue
-        _got = str(getattr(_mod, "VERSION", "?"))
+        _got = _ver(_mod, "?")
         _ok = "OK " if _vt(_got) >= _vt(_min) else "⚠ 구버전"
         _feat = []
         # K의 00A와 배분층은 v0.3.0에 함께 들어갔으므로 build_allocation 유무로 함께 판정한다
@@ -1319,6 +1333,12 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         # 산업 실행이 매번 몇 시간씩 걸린다(원인: M v1.54.0 Config 3필드가 캐시 키에 섞여 들어감).
         if _tag == "S" and hasattr(_mod, "_diagnose_cache_miss"):
             _feat.append("★캐시키 회귀수정+미스원인로그")
+        # [v1.24.0 R72] 실행시간 단축(PLAN72) — M: 재추정 경계별 증분 캐시 · S: 그 캐시 연결 + 배분 엔진 루프 가속.
+        #   이 둘이 없으면 새 거래일 첫 실행이 ≈60분(40티커 워크포워드 전면 재계산)으로 돌아간다.
+        if _tag == "M" and hasattr(_mod, "WFPeriodCache"):
+            _feat.append("★워크포워드 경계캐시")
+        if _tag == "S" and hasattr(_mod, "_cache_ignore_fields"):
+            _feat.append("★경계캐시 연결·배분엔진 가속")
         print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
               + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
     if _stale:
@@ -1329,12 +1349,12 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         print("[runner]   원인: 노트북 상단 wget이 GitHub의 **이전 파일**을 가져왔습니다.")
         print("[runner]   조치: 위 파일을 저장소(main)에 덮어쓴 뒤 다시 실행하거나,")
         print("[runner]         Kaggle 세션의 .py 캐시를 지우고(런타임 재시작) wget을 다시 받으세요.")
-        print("[runner]   확인: 섹터 리포트에 **23_예측품질검정**·**24_초과보유판정** 시트가 있고")
-        print("[runner]         10_데이터품질에 **[신선도]** 행이 있으면 v0.57.0으로 갱신된 것입니다.")
+        print("[runner]   확인: 섹터 리포트 00시트 '실행시간 - 캐시 적중'이 \"전체키 a/n · 경계 h/N\" 형식이면")
+        print("[runner]         S v0.60.0, 로그 walkforward_done에 period_cache=on이 찍히면 M v1.55.0입니다.")
         print("[runner] " + "=" * 74)
     else:
-        print("[runner]   ★ 전부 최신 — 섹터 리포트에 23_예측품질검정 · 24_초과보유판정 · "
-              "10_데이터품질 [신선도] 행이 나옵니다")
+        print("[runner]   ★ 전부 최신 — 워크포워드 경계캐시(M v1.55.0·S v0.60.0) 포함: 새 거래일 첫 실행도 "
+              "새로 생긴 재추정 경계만 계산합니다(섹터 00시트 '실행시간 - 캐시 적중' 줄로 확인)")
     assert hasattr(S, "run"), "S.run이 없음 - GitHub에 올린 sector_rotation.py를 다시 확인하세요"
     if I is not None:
         assert hasattr(I, "run"), "I.run이 없음 - GitHub에 올린 industry_rotation.py를 다시 확인하세요"
