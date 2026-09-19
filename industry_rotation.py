@@ -1,5 +1,35 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.27.0 - 2026-09-19 - [R73 리포트 정직성 — 00A ②=라이브 단독 · 19 블록 A′ · 진단 스위치 · 헤어컷상속격자 · 25 재진입감사]
+#    사용자 지시(2026-09-19): "모든 단일 산업 예측이 buy and hold가 피하지 못한 하락은 제대로 피하고 상승을 같이 타는지 확인…
+#    원인 분석해서 개선" → PLAN73(R73). ★★ 발견: 00A의 '② 단독예측'은 **라이브가 아니었다** — 조립부가 '자기 목표비중'(산업
+#    자기 국면기계)을 먼저 찾아 ②로 썼다. 라이브(= M E_t 상속)는 B&H 대비 **복리·MDD·칼마 29/29**(리포트23 실측)인데 00A는
+#    "예측이 B&H에 미달 17/29"라고 적었다. 19 블록 A "상승 미참여가 더 크다 29/29"는 **배분 비중(I★)** 기준이라 단일 예측
+#    판정에 쓸 수 없다(R60 교훈). **신호·비중·배분·성과 산식 무변경** — 무엇을 판정하는지만 바로잡는다(교훈 36).
+#    (§4-1) 00A: ② = 라이브 단독 노출('목표비중'), ②′ = 자기 국면기계(진단 4열), 판정 = 복리·MDD·칼마 3지표(verdict_by="risk" —
+#      단순합은 w≤1이면 구조적으로 불리), 블록 B '참고: 단독예측(자기 국면기계·진단)' 1행, 블록 D·F는 ②·②′ 두 벌
+#      (② 블록 F 버킷 = M 국면 × E_t 수준: 상승·E=1 / 상승·헤어컷 / 중립·0.5 / 중립·0(H감축) / 하락·0 …).
+#      build_asset_return_compare에 선택 인자 5개(solo_w_alt·regime_alt·solo_variants·verdict_by·solo_desc) — K 등 기존 호출은 비트 동일.
+#      19: 신설 build_single_live_segments() → **블록 A′(단독 라이브 노출 기준 — ★ 단일 예측 판정)** 맨 앞(자산별 하락 회피/부분/못피함·
+#      방어이득 · 상승 참여/부분/미참여·참여손실 · 순효과 · 회피율/참여율 + 라이브 합계 + 자기 국면기계 합계). 블록 A 라벨에
+#      '(배분 비중 I★ 기준 — 참고)'. IndustryConfig.SEG_JUDGE_THRESHOLDS=(0.25,0.60,0.50,0.90).
+#      00시트: '★ 단일 산업 라이브 예측 vs B&H'(single_live_verdict_line — 수치는 00A·19 A′에서 읽는다) · '⚠ 자기 국면기계 = 진단 전용'
+#      안내 · '데이터 신선도'(M v1.56.0) · 대상일 '⚠ 이미 지난 날'. 00B 읽는 법: ② = 자기(진단), ④ 현행 = 라이브 단일 예측
+#      (곡선 라벨은 S 차트 인식과 묶여 있어 바꾸지 않았다).
+#    (§4-2 사전등록) [헤어컷상속격자] 3행 — M 상승·E_t<1 날 산업 단독 노출 1.0: (a) 자기 과열헤어컷 발동일 (b) 63일 상대강도 상위1/3
+#      (c) 반증: 자기 과열 아닌 날. 00A 블록 B 행 + ② 대비 판정 행(CAGR 손실 없음·칼마 상승·MDD 악화 ≤0.5%p·반증 열위) + 블록 A ②h 2열.
+#      **라이브 무변경**. IndustryConfig.HAIRCUT_INHERIT_GRID(True)·HAIRCUT_INHERIT_RS_WINDOW(63).
+#    (§4-3) IndustryConfig.INDUSTRY_OWN_OVERLAYS(True = 비트 동일) — False면 own_target_pos를 국면만(1/0.5/0)으로(진단).
+#      합성 E2E 실측: 라이브 target_pos·★ 배분·target_w·exec_w 비트 동일. 정의상 '산업자기'를 쓰는 13 시트 [노출결합격자] 4행과
+#      그 격자 요약 줄만 바뀐다(방법서 "13 비트 동일"의 정정 — 그 4행은 자기 목표비중의 파생이다).
+#    (§4-4) 25_재진입감사(M.reentry_audit 재사용, 29산업 asset_ret) · IndustryConfig.REENTRY_AUDIT(True).
+#    (§1) run() 반환에 data_freshness·m_cfg·calendar_truncated(산업+부모 티커 목록 — M 달력보다 최신인데 절단된 것;
+#      S._calendar_truncation_check가 10시트 [달력절단] 행을 남긴다).
+#    (§4-1(4) 정정) 방법서는 "13p·01Y·23 = 자기 국면기계"라 했으나 코드 확인 결과 01Y·13p 블록 A는 확정국면(= 라이브) 기준이고
+#      13p 블록 A2·23은 자기/라이브 둘 다 싣는다. 시트 이름은 바꾸지 않고 00시트 '⚠ 자기 국면기계 = 진단 전용' 행에 정확한 목록을 적었다.
+#    ⚠ IndustryConfig 필드는 검증 캐시 키(cfg_i = M Config 파생)에 들어가지 않는다 — S/I 전체키·경계 캐시 해시 불변.
+#    영향 함수: IndustryConfig · run_industry(스위치 1블록) · run(반환 5키·25 계산) · build_asset_return_compare · build_single_live_segments(신설) ·
+#      single_live_verdict_line(신설) · build_industry_curve_compare(읽는 법 문구) · build_industry_report(00A 조립·19·00시트·25).
 #  VERSION: v0.26.0 - 2026-09-16 - [★★★ 산업 4곡선 그래프 · 예측품질 검정 · 라이브=E_t 발견] REPORT68.
 #    사용자 지시: "이제 산업 수정하자 산업도 섹터랑 똑같이 단일 산업별 비교 곡선 시트 만들고 수익 비교
 #    시트 만들고 **변동률 높은 산업은 섹터보다 훨씬 수익률 좋아야해** 개선하고 문제 있는거 최대한 좋게 개선해"
@@ -1524,8 +1554,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.26.0"
-VERSION_DATE = "2026-09-16"
+VERSION = "v0.27.0"
+VERSION_DATE = "2026-09-19"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -2062,6 +2092,23 @@ class IndustryConfig:
     SEG_DETAIL_MAX: int = 4000          # 블록 B 최대 행수 — 넘치면 |벤치대비| 큰 순으로 남긴다
     SEG_RESPONSE_EPS: float = 0.02      # '첫 대응일' 판정 문턱(비중 변화 절대값)
     SEG_MIN_DAYS: int = 3               # 이보다 짧은 구간은 잡음으로 보고 버린다
+    # ---- [v0.27.0 R73 PLAN73 §4] 리포트 정직성 · 진단 스위치 · 사전등록 격자 · 계측 ----------------------------
+    #   §4-1 19 블록 A′(단독 **라이브** 노출 기준) 구간 판정 문턱 — (하락 회피 ≤, 하락 부분회피 ≤, 상승 부분참여 ≥,
+    #        상승 참여 ≥) 구간 평균 체결비중 기준. 블록 A(배분 비중 I★ 기준)는 리더가 아닌 날 비중 0이라 단일 예측
+    #        판정에 쓸 수 없다(R60 교훈: 로테이션 계층에 자산별 참여율을 묻지 않는다) — A′가 판정 블록이다.
+    SEG_JUDGE_THRESHOLDS: Tuple[float, float, float, float] = (0.25, 0.60, 0.50, 0.90)
+    #   §4-3 자기 국면기계 오버레이(과열헤어컷·중립감축 등) 진단 스위치 — **기본 True = 현행 비트 동일**.
+    #        False면 own_target_pos(01_일별 '자기 목표비중'·00A ②′·00B ②·13p·[노출결합격자] 입력)를 **국면만**
+    #        (상승 1.0 / 중립 0.5 / 하락 0.0 / 추세보유 1.0 / 추세현금 0.0)으로 만든다. 라이브(m_inherit)·배분 ★·14 계층정합은
+    #        영향 없음. 근거(PLAN73 §3-W5): 오버레이 3개가 산업에서 −683%p 역부호, 국면만이면 +452%p.
+    INDUSTRY_OWN_OVERLAYS: bool = True
+    #   §4-2 [헤어컷상속격자](사전등록 · 라이브 무변경) — M 상승·E_t<1(과열 헤어컷) 날 산업 단독 노출을 1.0으로 올리는
+    #        3변형을 00A 블록 B에 싣는다: (a) 자기 과열헤어컷 발동일 (b) 상대강도(vs SPY) 상위 1/3 (c) 반증: 자기 과열 아닌 날.
+    #        채택 기준: ② 라이브 단독 대비 CAGR 손실 없음 · 칼마 상승 · MDD 악화 ≤0.5%p · 반증 행 열위. 못 넘으면 닫는다.
+    HAIRCUT_INHERIT_GRID: bool = True
+    HAIRCUT_INHERIT_RS_WINDOW: int = 63
+    #   §4-4 25_재진입감사(계측 전용) — M RISK_OFF 종료 후 N일 29산업 수익·노출·놓친 몫(M.reentry_audit 재사용).
+    REENTRY_AUDIT: bool = True
     # ---- [v0.19.0 X4 신규 격자] [국면×확신캡격자] — 부모 국면 제약 × 확신캡 래더 ----
     #   왜: W3이 [국면게이트격자]를 되살리자 **리더국면 NEUTRAL이 칼마 3.787 · MDD −0.0955(= S★와 동일)**로
     #     프로젝트 최초로 S★ 칼마 3.758을 넘었다(MDD 악화 정확히 0 → 한계비율 무한).
@@ -2870,6 +2917,16 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     #   전부 같은 출처를 보게 되어 "현금이라 적고 보유" 같은 라벨-비중 모순이 생기지 않는다(v0.15.0 §A).
     own_state = pd.Series(sig["state"]).copy()
     own_target_pos = pd.Series(sig["target_pos"]).astype(float).copy()
+    # [v0.27.0 R73 §4-3] 자기 국면기계 오버레이 진단 스위치(기본 True = 비트 동일). False면 자기 목표비중을 국면만으로.
+    #   라이브는 아래 inherit_industry_regime()이 M에서 받으므로(m_inherit) 영향이 없다.
+    if not bool(getattr(icfg, "INDUSTRY_OWN_OVERLAYS", True)):
+        _pos_map = {"RISK_ON": float(cfg_i.POS_RISK_ON), "NEUTRAL": float(cfg_i.POS_NEUTRAL),
+                    "RISK_OFF": float(cfg_i.POS_RISK_OFF), "TREND_ONLY_IN": 1.0, "TREND_ONLY_OUT": 0.0}
+        _reg_only = own_state.map(_pos_map)
+        _n_diff = int(((_reg_only - own_target_pos).abs() > 1e-12).sum())
+        own_target_pos = _reg_only.where(_reg_only.notna(), own_target_pos).astype(float)
+        log("PIPE", kv(event="own_overlays_off", ticker=ind_ticker, changed_days=_n_diff,
+                       note="자기 목표비중 = 국면만(진단) — 라이브 무영향"), M=M)
     regime_src = str(getattr(icfg, "INDUSTRY_REGIME_SOURCE", "own") or "own").lower()
     sig, _inh = inherit_industry_regime(sig, res.get("sig"), regime_src)
     if _inh.get("applied"):
@@ -6721,9 +6778,10 @@ def build_industry_curve_compare(ret_df: pd.DataFrame, own_w: pd.DataFrame, pare
                 "칼마": (g / abs(mdd) if mdd < -1e-9 else float("nan")), "curve": c}
 
     rows.append({"블록": "A. 산업별 4곡선 비교", "산업": "── 읽는 법 ──",
-                 "판정": ("① **B&H** = 그냥 보유 · ② **단일 산업 예측** = 그 산업 **자기 국면**으로 거래 · "
+                 "판정": ("① **B&H** = 그냥 보유 · ② **단일 산업 예측** = 그 산업 **자기 국면기계**로 거래(⚠ 진단 — 라이브 아님; "
+                        "00A의 ②′와 같은 것) · "
                         "③ **섹터 예측** = **부모 섹터의 목표비중**을 그 산업에 그대로 적용 · "
-                        "④ **현행(라이브)** = 이 계층이 실제로 쓰는 비중. "
+                        "④ **현행(라이브)** = 이 계층이 실제로 쓰는 비중 = **단일 산업 라이브 예측**(00A ②·19 블록 A′와 같은 비중). "
                         "★ **②−③가 이 계층의 존재 이유**다 — 산업을 따로 보는 것이 부모 섹터 하나보다 나은가. "
                         "판정은 **복리와 칼마를 함께** 본다. 그래프는 **00B_곡선그래프** 탭, 일별 원본은 00C_곡선데이터.")})
     n2 = n3 = n4 = n23 = n43 = 0
@@ -6825,8 +6883,21 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                                conviction: Optional[pd.Series] = None,
                                total_exposure: Optional[pd.Series] = None,
                                regime: Optional[pd.DataFrame] = None,
-                               M=None) -> pd.DataFrame:
+                               M=None,
+                               solo_w_alt: Optional[pd.DataFrame] = None,
+                               regime_alt: Optional[pd.DataFrame] = None,
+                               solo_variants: Optional[List[Tuple[str, pd.DataFrame]]] = None,
+                               verdict_by: str = "sum",
+                               solo_desc: Optional[str] = None) -> pd.DataFrame:
     """[00A_수익비교, v0.22.0 D1 ★ 신규] 사용자 지시로 만든 **맨 앞 시트**.
+
+    [v0.27.0 R73 PLAN73 §4-1·§4-2] 새 인자(전부 선택 — K·구 호출자는 종전과 비트 동일):
+      solo_w_alt  : ②′ 진단용 단독 비중(I: 자기 국면기계 '자기 목표비중'). 블록 A에 ②′ 4열, 블록 B에 참고 1행,
+                    블록 D·F를 '(자기 국면기계·진단)' 꼬리표로 1벌 더.
+      regime_alt  : 블록 F(②′용) 국면 라벨. regime은 ②용.
+      solo_variants: [(라벨, 단독 비중)] — 블록 B의 [헤어컷상속격자] 행 + ② 대비 채택 판정 행. 첫 변형은 블록 A에 ②h 2열.
+      verdict_by  : "sum"(종전: 단순합) / "risk"(복리·MDD·칼마 3지표 — 단순합은 w≤1이면 구조적으로 불리, 사용자 기준 4·9).
+      solo_desc   : 블록 A '읽는 법'에서 ②를 설명하는 문구(I: '라이브 단독 노출 = M E_t 상속').
 
     지시: "각 섹터, 산업, 주식별 buy and hold시 수익률(이 때 수익률은 복리가 아닌 변동률 합산)과
           단독 예측으로 거래 시 수익률 비교하고 전략 수익률도 같이 표시해"
@@ -6859,6 +6930,19 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
     WA = alloc_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
     WS = (solo_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
           if solo_w is not None else None)
+    # [v0.27.0 R73] ②′(진단) · 변형(격자) 비중 — 없으면 None(종전 경로)
+    WSA = (solo_w_alt.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+           if solo_w_alt is not None else None)
+    VARS = [(str(_lb), _vw.reindex(index=idx, columns=cols).astype(float).fillna(0.0))
+            for _lb, _vw in (solo_variants or []) if _vw is not None]
+    _risk = str(verdict_by).lower() == "risk"
+
+    def _cagr_calmar(x: pd.Series) -> Tuple[float, float]:
+        _c = (1.0 + pd.Series(x).astype(float).fillna(0.0)).cumprod()
+        _y = max(len(_c) / 252.0, 1e-9)
+        _g = float(_c.iloc[-1]) ** (1.0 / _y) - 1.0 if len(_c) else float("nan")
+        _m = float((_c / _c.cummax() - 1.0).min()) if len(_c) else float("nan")
+        return _g, (_g / abs(_m) if _m < -1e-9 else float("nan"))
 
     def _mdd(r: pd.Series) -> float:
         c = (1.0 + pd.Series(r).astype(float).fillna(0.0)).cumprod()
@@ -6871,8 +6955,9 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                  "판정": ("**단순합**은 일간 변동률을 그대로 더한 값이다(복리 아님 — 사용자 지시). "
                         "같은 행의 **복리**와 함께 읽을 것: 단순합은 '신호가 며칠 맞았나'를, "
                         "복리는 '실제로 얼마가 남나'를 말한다. "
-                        "① B&H = 그냥 보유 · ② 단독예측 = 그 자산 **자기 신호만**으로 0/1 거래 · "
-                        "③ 전략기여 = **배분 전략**에서 그 자산이 실제로 기여한 몫(비중 × 수익). "
+                        "① B&H = 그냥 보유 · "
+                        + (solo_desc or "② 단독예측 = 그 자산 **자기 신호만**으로 0/1 거래 · ")
+                        + "③ 전략기여 = **배분 전략**에서 그 자산이 실제로 기여한 몫(비중 × 수익). "
                         f"③은 {layer} 계층이 전체자산 1.0을 나눠 쓴 결과이므로 자산별 합이 B&H보다 "
                         "작은 것이 **정상**이다 — 한 자산에 자본 전부를 주지 않기 때문이다. "
                         "따라서 ③은 B&H와 직접 비교하지 말고 **블록 B의 포트 합계**와 비교할 것. "
@@ -6909,11 +6994,35 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                         "② 단독예측 MDD(%)": round(_mdd(so) * 100.0, 2),
                         "② 평균비중": round(float(ws.mean()), 4),
                         "②−① 단순합(%p)": round(so_s - bh_s, 2)})
-            _v = ("★ 예측이 B&H를 이겼다" if so_s > bh_s else
-                  "예측이 B&H에 미달 — 참여 부족" if float(ws.mean()) < 0.95 else
-                  "예측이 B&H에 미달 — 비중은 찼으니 타이밍 문제")
+            if _risk:
+                # [v0.27.0 R73 §4-1] 판정 = 복리·MDD·칼마 3지표(단순합은 w≤1이면 구조적으로 불리 — 블록 B 설명 참조)
+                _g1, _k1 = _cagr_calmar(rf); _g2, _k2 = _cagr_calmar(so)
+                _c1, _c2 = _cmp(rf), _cmp(so); _m1, _m2 = _mdd(rf), _mdd(so)
+                _w3 = int(_c2 > _c1) + int(_m2 > _m1) + int(pd.notna(_k1) and pd.notna(_k2) and _k2 > _k1)
+                row.update({"① 칼마": (round(_k1, 3) if pd.notna(_k1) else None),
+                            "② 칼마": (round(_k2, 3) if pd.notna(_k2) else None),
+                            "② 승(복리·MDD·칼마)": f"{_w3}/3"})
+                _v = (f"★ 라이브 예측이 B&H를 이겼다({_w3}/3: 복리·MDD·칼마)" if _w3 == 3 else
+                      f"△ 부분 승({_w3}/3) — " + ("복리 " if _c2 <= _c1 else "") + ("MDD " if _m2 <= _m1 else "")
+                      + ("칼마 " if not (pd.notna(_k2) and pd.notna(_k1) and _k2 > _k1) else "") + "에서 미달"
+                      if _w3 >= 1 else "⚠ 라이브 예측이 B&H에 미달(복리·MDD·칼마 전부)")
+            else:
+                _v = ("★ 예측이 B&H를 이겼다" if so_s > bh_s else
+                      "예측이 B&H에 미달 — 참여 부족" if float(ws.mean()) < 0.95 else
+                      "예측이 B&H에 미달 — 비중은 찼으니 타이밍 문제")
         else:
             _v = "단독예측 비중 미제공"
+        if WSA is not None:
+            # [v0.27.0 R73] ②′ 진단(자기 국면기계) — 라이브가 아니다. 종전 00A의 ②가 이것이었다.
+            _sa = WSA[t] * rf
+            row.update({"②′ 자기 단순합(%)": round(float(_sa.sum()) * 100.0, 2),
+                        "②′ 자기 복리(%)": round(_cmp(_sa) * 100.0, 2),
+                        "②′ 자기 MDD(%)": round(_mdd(_sa) * 100.0, 2),
+                        "②′ 평균비중": round(float(WSA[t].mean()), 4)})
+        if VARS:
+            _sh = VARS[0][1][t] * rf
+            row.update({"②h 헤어컷상속(a) 복리(%)": round(_cmp(_sh) * 100.0, 2),
+                        "②h 헤어컷상속(a) MDD(%)": round(_mdd(_sh) * 100.0, 2)})
         row.update({"③ 전략기여 단순합(%)": round(st_s, 2),
                     "③ 전략 평균비중": round(float(wa.mean()), 4),
                     "③ 전략 최대비중": round(float(wa.max()), 4),
@@ -6955,7 +7064,46 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
         "같은 자산군·같은 자본을 신호 없이 균등 보유 — **배분 기술만 남는 like-for-like 벤치**다")
     if WS is not None and n_ok:
         _mk("★ 단독예측 동일가중 (총 1.0)", solo_tot / float(n_ok), WS.mean(axis=1),
-            "각 자산이 자기 신호로 0/1 거래하고 그것을 균등가중 — **예측만의 값**을 본다")
+            ("각 자산이 **라이브 단독 노출**로 거래하고 그것을 균등가중 — **예측만의 값**을 본다" if _risk else
+             "각 자산이 자기 신호로 0/1 거래하고 그것을 균등가중 — **예측만의 값**을 본다"))
+    # [v0.27.0 R73] ②′(진단) 동일가중 — '참고:' 접두라 ★★★ 판정 벤치로 잡히지 않는다(판정은 라이브 ②·B&H 기준).
+    if WSA is not None and len(cols):
+        _mk("참고: 단독예측(자기 국면기계·진단) 동일가중", (RF * WSA).mean(axis=1), WSA.mean(axis=1),
+            "산업 **자기 국면기계**(라이브 아님) — v0.26.0까지 00A가 '②'라고 부르던 것. 라이브(= M E_t 상속)와 비교용")
+    # ---- [v0.27.0 R73 §4-2 사전등록] [헤어컷상속격자] — ② 라이브 단독 대비 채택 판정(라이브 무변경) ----
+    if VARS and WS is not None and n_ok:
+        _live_key = "★ 단독예측 동일가중 (총 1.0)"
+        for _lb, _vw in VARS:
+            _mk(f"[헤어컷상속격자] {_lb}", (RF * _vw).mean(axis=1), _vw.mean(axis=1),
+                "M 상승·과열헤어컷(E_t<1)인 날 산업 단독 노출을 1.0으로 — 사전등록 격자(라이브 무변경)")
+        _L = _keep.get(_live_key)
+        if _L is not None:
+            _res = {}
+            for _lb, _ in VARS:
+                _V = _keep.get(f"[헤어컷상속격자] {_lb}")
+                if _V is None:
+                    continue
+                _dg = _V["CAGR"] - _L["CAGR"]; _dm = abs(_V["MDD"]) - abs(_L["MDD"])
+                _dk = (_V["칼마"] - _L["칼마"]) if (pd.notna(_V["칼마"]) and pd.notna(_L["칼마"])) else float("nan")
+                _ok = (_dg >= -1e-12) and (pd.notna(_dk) and _dk > 0) and (_dm <= 0.5)
+                _res[_lb] = (_ok, _dg, _dm, _dk)
+            _fals = [k for k in _res if "반증" in k]
+            _cand = [k for k in _res if "반증" not in k]
+            _fals_ok = all((not _res[k][0]) and (pd.notna(_res[k][3]) and _res[k][3] < 0) for k in _fals) if _fals else True
+            for _lb in _res:
+                _ok, _dg, _dm, _dk = _res[_lb]
+                rows.append({"블록": blkB, "자산": f"★★★ [헤어컷상속격자] 판정: {_lb}",
+                             "CAGR": round(_dg, 4), "① B&H MDD(%)": round(-_dm, 2),
+                             "칼마(CAGR/MDD)": (round(_dk, 3) if pd.notna(_dk) else None),
+                             "판정": (f"② 라이브 단독 대비 ΔCAGR {_dg:+.2%} · MDD 악화 {_dm:+.2f}%p · Δ칼마 "
+                                    + (f"{_dk:+.3f}" if pd.notna(_dk) else "-") + " → "
+                                    + (("반증 행 — 열위여야 정상: " + ("★ 열위(방향 확인)" if (pd.notna(_dk) and _dk < 0) else "⚠ 열위 아님 — 방향 의심"))
+                                       if "반증" in _lb else
+                                       ("★ 채택 기준 통과(CAGR 손실 없음·칼마 상승·MDD 악화 ≤0.5%p)"
+                                        + (" · 반증 열위 ✓ → **승격 후보(사용자 확인 후)**" if _fals_ok else " · ⚠ 반증도 통과 — 채택 보류")
+                                        if _ok else "✗ 기준 미달 → 닫는다(헤어컷 상속은 그대로)")))})
+            log("ROT", kv(event="haircut_inherit_grid", variants=len(_res),
+                          passed=",".join(k for k in _cand if _res[k][0]) or "-", falsification_ok=_fals_ok), M=M)
     _mk(f"★★ 전략(배분 · {layer} 계층)", port_r, wsum,
         "엔진이 실제로 집행한 배분. 위 두 줄을 **둘 다** 이겨야 이 계층이 값을 한 것이다")
     # ---- [v0.23.0 E1 ★] 이 계층이 쓰는 **다른 슬리브**(부모 ETF·잔여·현금대체)의 기여 ----
@@ -7114,54 +7262,56 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
     #     보유일 +0.0674% · 격차가 음수인 섹터 **10/11**. ⇒ **예측은 실제로 작동한다.**
     #     그런데 회피일 평균이 0에 가까워 단순합 이득이 작고, 부분 보유(w=0.5)한 날이
     #     상승일이면 거기서 잃는다 — 그것이 ②−①가 음수인 진짜 이유다.
-    if WS is not None and cols:
-        rows.append({"블록": "D. 회피일 분해(예측 품질)", "자산": "── 읽는 법 ──",
-                     "판정": ("단독예측이 **비중을 뺀 날**(w<0.5)의 실제 수익을 보유일과 비교한다. "
-                            "**회피일 평균수익이 음수**면 예측이 나쁜 날을 제대로 골라낸 것이고, "
-                            "**격차(회피−보유)가 음수**면 두 집합이 실제로 갈렸다는 뜻이다 — "
-                            "이 두 열이 **예측 품질의 직접 증거**다(②−①는 비중 수준에 좌우돼 흐려진다). "
-                            "★ '부분보유일'은 w가 0과 1 사이인 날이다. 여기서 상승을 절반만 먹으면 "
-                            "②−①가 음수가 되는데, **그것은 예측이 틀린 것이 아니라 비중이 중간이어서**다. "
-                            "그 경우 고칠 곳은 예측이 아니라 **상위 계층의 예산(E_t)**이다.")})
-        _dn = 0; _gn = 0; _nn = 0
-        for t in cols:
-            r = R[t]; w = WS[t]
-            m = r.notna() & w.notna()
-            if int(m.sum()) < 50:
-                continue
-            _rr = r[m]; _ww = w[m]
-            _out = _ww < 0.5; _in_ = _ww > 0.999; _mid = (~_out) & (~_in_)
-            _mo = float(_rr[_out].mean()) * 100 if bool(_out.any()) else float("nan")
-            _mi = float(_rr[_in_].mean()) * 100 if bool(_in_.any()) else float("nan")
-            _mm = float(_rr[_mid].mean()) * 100 if bool(_mid.any()) else float("nan")
-            _gap = (_mo - _mi) if (pd.notna(_mo) and pd.notna(_mi)) else float("nan")
-            _nn += 1
-            _dn += int(pd.notna(_mo) and _mo < 0)
-            _gn += int(pd.notna(_gap) and _gap < 0)
-            rows.append({"블록": "D. 회피일 분해(예측 품질)", "자산": t,
-                         "이름": (name_map or {}).get(t, ""), "관측일": int(m.sum()),
-                         "회피일수(w<0.5)": int(_out.sum()),
-                         "부분보유일수(0<w<1)": int(_mid.sum()),
-                         "전량보유일수(w=1)": int(_in_.sum()),
-                         "회피일 평균수익(%)": (round(_mo, 4) if pd.notna(_mo) else None),
-                         "부분보유일 평균수익(%)": (round(_mm, 4) if pd.notna(_mm) else None),
-                         "전량보유일 평균수익(%)": (round(_mi, 4) if pd.notna(_mi) else None),
-                         "격차(회피−보유)%p": (round(_gap, 4) if pd.notna(_gap) else None),
-                         "판정": ("★ 회피가 유효(뺀 날이 실제로 더 나빴다)" if pd.notna(_gap) and _gap < 0
-                                else "⚠ 회피일이 보유일보다 좋았다 — 이 자산에서 예측이 반대 방향")})
-        if _nn:
-            rows.append({"블록": "D. 회피일 분해(예측 품질)", "자산": "★★ 종합",
-                         "관측일": _nn,
-                         "판정": (f"회피일 평균수익이 **음수인 자산 {_dn}/{_nn}** · "
-                                f"격차(회피−보유)가 **음수인 자산 {_gn}/{_nn}**. "
-                                + ("★★ 예측은 **실제로 작동한다** — 뺀 날이 든 날보다 나빴다. "
-                                   "그런데도 ②−①(단순합)이 음수라면 원인은 예측이 아니라 "
-                                   "**비중 수준**이다(부분보유일에서 상승을 절반만 먹는다). "
-                                   "고칠 곳은 상위 계층의 예산이거나, 뺀 자본을 다른 자산에 넣는 "
-                                   "**배분**이다 — 후자가 이 계층이 이미 하는 일이고 블록 B ★★★ 판정이 그 성적이다."
-                                   if _gn > _nn / 2 else
-                                   "⚠ 절반 이상의 자산에서 회피일이 보유일보다 좋았다 — "
-                                   "**예측 신호 자체를 다시 봐야 한다.**"))})
+    # [v0.27.0 R73 §4-1] 블록 D를 ②(라이브)와 ②′(자기 국면기계·진단)로 두 벌 — WSA가 없으면 종전과 같은 한 벌.
+    for _WD, _sfxD in ([(WS, "")] + ([(WSA, " (자기 국면기계·진단)")] if WSA is not None else [])):
+        if _WD is not None and cols:
+            rows.append({"블록": "D. 회피일 분해(예측 품질)" + _sfxD, "자산": "── 읽는 법 ──",
+                         "판정": ("단독예측이 **비중을 뺀 날**(w<0.5)의 실제 수익을 보유일과 비교한다. "
+                                "**회피일 평균수익이 음수**면 예측이 나쁜 날을 제대로 골라낸 것이고, "
+                                "**격차(회피−보유)가 음수**면 두 집합이 실제로 갈렸다는 뜻이다 — "
+                                "이 두 열이 **예측 품질의 직접 증거**다(②−①는 비중 수준에 좌우돼 흐려진다). "
+                                "★ '부분보유일'은 w가 0과 1 사이인 날이다. 여기서 상승을 절반만 먹으면 "
+                                "②−①가 음수가 되는데, **그것은 예측이 틀린 것이 아니라 비중이 중간이어서**다. "
+                                "그 경우 고칠 곳은 예측이 아니라 **상위 계층의 예산(E_t)**이다.")})
+            _dn = 0; _gn = 0; _nn = 0
+            for t in cols:
+                r = R[t]; w = _WD[t]
+                m = r.notna() & w.notna()
+                if int(m.sum()) < 50:
+                    continue
+                _rr = r[m]; _ww = w[m]
+                _out = _ww < 0.5; _in_ = _ww > 0.999; _mid = (~_out) & (~_in_)
+                _mo = float(_rr[_out].mean()) * 100 if bool(_out.any()) else float("nan")
+                _mi = float(_rr[_in_].mean()) * 100 if bool(_in_.any()) else float("nan")
+                _mm = float(_rr[_mid].mean()) * 100 if bool(_mid.any()) else float("nan")
+                _gap = (_mo - _mi) if (pd.notna(_mo) and pd.notna(_mi)) else float("nan")
+                _nn += 1
+                _dn += int(pd.notna(_mo) and _mo < 0)
+                _gn += int(pd.notna(_gap) and _gap < 0)
+                rows.append({"블록": "D. 회피일 분해(예측 품질)" + _sfxD, "자산": t,
+                             "이름": (name_map or {}).get(t, ""), "관측일": int(m.sum()),
+                             "회피일수(w<0.5)": int(_out.sum()),
+                             "부분보유일수(0<w<1)": int(_mid.sum()),
+                             "전량보유일수(w=1)": int(_in_.sum()),
+                             "회피일 평균수익(%)": (round(_mo, 4) if pd.notna(_mo) else None),
+                             "부분보유일 평균수익(%)": (round(_mm, 4) if pd.notna(_mm) else None),
+                             "전량보유일 평균수익(%)": (round(_mi, 4) if pd.notna(_mi) else None),
+                             "격차(회피−보유)%p": (round(_gap, 4) if pd.notna(_gap) else None),
+                             "판정": ("★ 회피가 유효(뺀 날이 실제로 더 나빴다)" if pd.notna(_gap) and _gap < 0
+                                    else "⚠ 회피일이 보유일보다 좋았다 — 이 자산에서 예측이 반대 방향")})
+            if _nn:
+                rows.append({"블록": "D. 회피일 분해(예측 품질)" + _sfxD, "자산": "★★ 종합",
+                             "관측일": _nn,
+                             "판정": (f"회피일 평균수익이 **음수인 자산 {_dn}/{_nn}** · "
+                                    f"격차(회피−보유)가 **음수인 자산 {_gn}/{_nn}**. "
+                                    + ("★★ 예측은 **실제로 작동한다** — 뺀 날이 든 날보다 나빴다. "
+                                       "그런데도 ②−①(단순합)이 음수라면 원인은 예측이 아니라 "
+                                       "**비중 수준**이다(부분보유일에서 상승을 절반만 먹는다). "
+                                       "고칠 곳은 상위 계층의 예산이거나, 뺀 자본을 다른 자산에 넣는 "
+                                       "**배분**이다 — 후자가 이 계층이 이미 하는 일이고 블록 B ★★★ 판정이 그 성적이다."
+                                       if _gn > _nn / 2 else
+                                       "⚠ 절반 이상의 자산에서 회피일이 보유일보다 좋았다 — "
+                                       "**예측 신호 자체를 다시 봐야 한다.**"))})
     # ---- [v0.24.0 F3 ★★ 신규 블록 E] 노출 상향 격자 — "수익을 더 내려면 무엇을 내놓아야 하나" ----
     #   사용자 요구: "예측 수익이 buy and hold 보다 **훨씬** 많이 나와야 해".
     #   총합 1.0 제약 안에서 수익을 더 내는 **유일하게 남은 레버는 총노출을 올리는 것**이다
@@ -7253,59 +7403,176 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
     #       하락 1,655일 · **−0.0942%** · 0.000 → **+150.4%p**  ← 방어가 번 것
     #     ⇒ 하락 예측은 훌륭하고 **중립을 현금으로 두던 것이 과했다.** 그 한 줄이 v0.54.0 G1의 근거다.
     #   읽는 법: **평균수익이 양수인데 비중이 1보다 작은 버킷**이 놓치는 곳이다.
-    if WS is not None and regime is not None and len(regime):
-        _rg = regime.reindex(index=idx).astype(str)
-        _acc: Dict[str, dict] = {}
-        for t in cols:
-            if t not in _rg.columns:
-                continue
-            r = R[t]; w = WS[t]; g = _rg[t]
-            m0 = r.notna() & w.notna() & g.notna() & g.ne("nan")
-            for _g in sorted(set(g[m0])):
-                m = m0 & g.eq(_g)
-                if int(m.sum()) < 20:
+    # [v0.27.0 R73 §4-1] 블록 F도 ②(라이브: M 국면·E_t 수준 버킷)와 ②′(자기 국면기계·진단) 두 벌.
+    for _WF, _RG, _sfxF in ([(WS, regime, "")]
+                            + ([(WSA, regime_alt, " (자기 국면기계·진단)")] if WSA is not None else [])):
+        if _WF is not None and _RG is not None and len(_RG):
+            _rg = _RG.reindex(index=idx).astype(str)
+            _acc: Dict[str, dict] = {}
+            for t in cols:
+                if t not in _rg.columns:
                     continue
-                a = _acc.setdefault(_g, {"n": 0, "rsum": 0.0, "wsum": 0.0, "contrib": 0.0, "bh": 0.0})
-                a["n"] += int(m.sum())
-                a["rsum"] += float(r[m].sum()); a["wsum"] += float(w[m].sum())
-                a["contrib"] += float((w[m] * r[m]).sum()); a["bh"] += float(r[m].sum())
-        if _acc:
-            rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": "── 읽는 법 ──",
-                         "판정": ("②(단독예측)이 ①(B&H)에 미달하는 금액을 **국면 버킷별로** 쪼갠 것이다. "
-                                "**'그날 평균수익'이 양수인데 '평균비중'이 1보다 작은 버킷이 놓치는 곳**이고, "
-                                "평균수익이 음수이고 비중이 0이면 **방어가 번 곳**이다. "
-                                "'놓친 것(%p)' = Σ((비중−1)·수익) — 음수면 그 버킷에서 B&H에 뒤진 금액이다. "
-                                "★ 이 표가 v0.54.0의 라이브 변경(중립 비중 워크포워드 상향)을 낳았다: "
-                                "중립 버킷 하나가 손실의 전부였다.")})
-            _tot = 0.0
-            for _g, a in sorted(_acc.items(), key=lambda kv2: (kv2[1]["contrib"] - kv2[1]["bh"])):
-                _miss = (a["contrib"] - a["bh"]) * 100.0
-                _tot += _miss
-                _mu = (a["rsum"] / a["n"]) * 100.0
-                _mw = a["wsum"] / a["n"]
-                rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": _g, "관측일": a["n"],
-                             "② 평균비중": round(_mw, 4),
-                             "① B&H 단순합(%)": round(a["bh"] * 100.0, 1),
-                             "② 단독예측 단순합(%)": round(a["contrib"] * 100.0, 1),
-                             "②−① 단순합(%p)": round(_miss, 1),
-                             "그날 평균수익(%)": round(_mu, 4),
-                             "판정": (f"평균수익 {_mu:+.4f}% · 비중 {_mw:.3f} → "
-                                    + ("★ **방어가 번 곳**(수익 음수 · 비중 낮음)"
-                                       if _mu < 0 and _mw < 0.5 else
-                                       f"⚠⚠ **놓치는 곳** — 실제로 오르는 날인데 비중이 {_mw:.2f}다. "
-                                       "이 버킷의 비중을 올리는 것이 1번 개선 후보다"
-                                       if _mu > 0 and _mw < 0.9 else
-                                       "거의 다 참여(개선 여지 작음)" if _mu > 0 else
-                                       "⚠ 수익 음수인데 비중이 높다 — 이 버킷 예측이 반대 방향이다"))})
-            rows.append({"블록": "F. 국면 버킷 손익 분해", "자산": "★★ 합계",
-                         "②−① 단순합(%p)": round(_tot, 1),
-                         "판정": (f"버킷 합계 **{_tot:+.1f}%p** — 이 값이 ②가 ①에 미달(또는 초과)하는 "
-                                "총액이고, 위 행들이 그 출처다. **가장 음수인 행이 개선 1순위**다.")})
+                r = R[t]; w = _WF[t]; g = _rg[t]
+                m0 = r.notna() & w.notna() & g.notna() & g.ne("nan")
+                for _g in sorted(set(g[m0])):
+                    m = m0 & g.eq(_g)
+                    if int(m.sum()) < 20:
+                        continue
+                    a = _acc.setdefault(_g, {"n": 0, "rsum": 0.0, "wsum": 0.0, "contrib": 0.0, "bh": 0.0})
+                    a["n"] += int(m.sum())
+                    a["rsum"] += float(r[m].sum()); a["wsum"] += float(w[m].sum())
+                    a["contrib"] += float((w[m] * r[m]).sum()); a["bh"] += float(r[m].sum())
+            if _acc:
+                rows.append({"블록": "F. 국면 버킷 손익 분해" + _sfxF, "자산": "── 읽는 법 ──",
+                             "판정": ("②(단독예측)이 ①(B&H)에 미달하는 금액을 **국면 버킷별로** 쪼갠 것이다. "
+                                    "**'그날 평균수익'이 양수인데 '평균비중'이 1보다 작은 버킷이 놓치는 곳**이고, "
+                                    "평균수익이 음수이고 비중이 0이면 **방어가 번 곳**이다. "
+                                    "'놓친 것(%p)' = Σ((비중−1)·수익) — 음수면 그 버킷에서 B&H에 뒤진 금액이다. "
+                                    "★ 이 표가 v0.54.0의 라이브 변경(중립 비중 워크포워드 상향)을 낳았다: "
+                                    "중립 버킷 하나가 손실의 전부였다.")})
+                _tot = 0.0
+                for _g, a in sorted(_acc.items(), key=lambda kv2: (kv2[1]["contrib"] - kv2[1]["bh"])):
+                    _miss = (a["contrib"] - a["bh"]) * 100.0
+                    _tot += _miss
+                    _mu = (a["rsum"] / a["n"]) * 100.0
+                    _mw = a["wsum"] / a["n"]
+                    rows.append({"블록": "F. 국면 버킷 손익 분해" + _sfxF, "자산": _g, "관측일": a["n"],
+                                 "② 평균비중": round(_mw, 4),
+                                 "① B&H 단순합(%)": round(a["bh"] * 100.0, 1),
+                                 "② 단독예측 단순합(%)": round(a["contrib"] * 100.0, 1),
+                                 "②−① 단순합(%p)": round(_miss, 1),
+                                 "그날 평균수익(%)": round(_mu, 4),
+                                 "판정": (f"평균수익 {_mu:+.4f}% · 비중 {_mw:.3f} → "
+                                        + ("★ **방어가 번 곳**(수익 음수 · 비중 낮음)"
+                                           if _mu < 0 and _mw < 0.5 else
+                                           f"⚠⚠ **놓치는 곳** — 실제로 오르는 날인데 비중이 {_mw:.2f}다. "
+                                           "이 버킷의 비중을 올리는 것이 1번 개선 후보다"
+                                           if _mu > 0 and _mw < 0.9 else
+                                           "거의 다 참여(개선 여지 작음)" if _mu > 0 else
+                                           "⚠ 수익 음수인데 비중이 높다 — 이 버킷 예측이 반대 방향이다"))})
+                rows.append({"블록": "F. 국면 버킷 손익 분해" + _sfxF, "자산": "★★ 합계",
+                             "②−① 단순합(%p)": round(_tot, 1),
+                             "판정": (f"버킷 합계 **{_tot:+.1f}%p** — 이 값이 ②가 ①에 미달(또는 초과)하는 "
+                                    "총액이고, 위 행들이 그 출처다. **가장 음수인 행이 개선 1순위**다.")})
     log("ROT", kv(event="asset_return_compare_built", layer=str(layer), assets=len(cols),
                   port_simple_sum=round(float(port_r.sum()) * 100.0, 2),
                   eq_bh_simple_sum=round(float(eq_r.sum()) * 100.0, 2),
                   w_sum_max=round(float(wsum.max()), 4), w_over_1=_over,
                   note="단순합(복리 아님) = 사용자 지시"), M=M)
+    return pd.DataFrame(rows)
+
+
+def build_single_live_segments(curve_df: pd.DataFrame, live_exec: pd.DataFrame, ret_df: pd.DataFrame, cfg: Any,
+                               own_exec: Optional[pd.DataFrame] = None,
+                               name_map: Optional[Dict[str, str]] = None,
+                               parent_map: Optional[Dict[str, str]] = None, M=None) -> pd.DataFrame:
+    """[19 블록 A′, v0.27.0 R73 PLAN73 §4-1 ★] **단일 산업 라이브 예측**이 B&H가 못 피한 하락을 피했고 상승을 탔는가.
+
+    왜 새 블록인가: 블록 A는 **배분 비중(I★)** 기준이다. 산업 계층은 리더가 아닌 날 그 산업 비중이 0이라 A는
+      29/29 '상승 미참여가 더 크다'로 찍힌다 — 배분층 설계의 귀결이지 예측 실패가 아니다(R60 교훈). 사용자 질문
+      ("모든 단일 산업 예측이 하락을 피하고 상승을 같이 타는가")의 단위는 **그 산업을 단독으로 거래할 때의 노출**이다.
+      라이브 단독 노출 = 01_일별 '목표비중'(m_inherit이면 M의 E_t)을 t+1에 체결(live_exec = target.shift(1)).
+    구간: 블록 A·B와 같은 zigzag_segments(SEG_MIN_MOVE·SEG_MIN_DAYS) — 총수익 곡선 기준, 사후 분할(진단 전용).
+    판정(구간 평균 체결비중, 문턱 = cfg.SEG_JUDGE_THRESHOLDS): 하락 ≤a 회피 · ≤b 부분회피 · 그 외 못피함 /
+      상승 ≥d 참여 · ≥c 부분참여 · 그 외 미참여. 방어이득·참여손실(%p) = 그 구간의 Σ(w·r) − Σr(= −Σ(1−w)·r).
+      순효과 = 둘의 합 = 그 산업 ②−① 단순합(구간 밖 날 제외).
+    own_exec(자기 국면기계 체결비중)를 주면 맨 아래에 같은 집계를 '(자기 국면기계·진단)' 합계 행으로 붙인다."""
+    th = tuple(getattr(cfg, "SEG_JUDGE_THRESHOLDS", (0.25, 0.60, 0.50, 0.90)))
+    a_av, a_part, u_part, u_full = (float(x) for x in th)
+    mm = float(getattr(cfg, "SEG_MIN_MOVE", 0.07))
+    md = int(getattr(cfg, "SEG_MIN_DAYS", 3))
+    blk = "A′. 단독 라이브 노출 기준(★ 단일 예측 판정)"
+    rows: List[dict] = [{"블록": blk, "자산": "── 읽는 법 ──",
+                         "판정": (f"★ **이 블록이 단일 산업 예측의 판정 블록이다.** 비중 = 그 산업을 단독으로 거래할 때의 라이브 "
+                                f"노출(01_일별 '목표비중' — 국면 소스가 m_inherit이면 M의 E_t)을 t+1에 체결한 것. 지그재그 "
+                                f"{mm:.0%}·{md}거래일 구간마다 평균 체결비중으로 판정: 하락 ≤{a_av:.2f} 회피 · ≤{a_part:.2f} 부분회피 · "
+                                f"그 외 **못 피함** / 상승 ≥{u_full:.2f} 참여 · ≥{u_part:.2f} 부분참여 · 그 외 **미참여**. "
+                                "방어이득 = 하락구간에서 B&H보다 덜 잃은 %p, 참여손실 = 상승구간에서 B&H보다 덜 번 %p(단순합). "
+                                "순효과가 양수면 그 산업의 단일 예측이 B&H보다 나았다. 블록 A(아래)는 **배분 비중(I★)** 기준이라 "
+                                "리더가 아닌 날 0이다 — 참고용.")}]
+    tot = {"dn": 0, "dn_av": 0, "dn_part": 0, "dn_held": 0, "gain": 0.0,
+           "up": 0, "up_full": 0, "up_part": 0, "up_miss": 0, "loss": 0.0, "n": 0}
+    tot_own = dict(tot)
+    cols = [c for c in curve_df.columns if c in live_exec.columns and c in ret_df.columns]
+    for label, W, acc, emit in (("live", live_exec, tot, True), ("own", own_exec, tot_own, False)):
+        if W is None:
+            continue
+        for t in cols:
+            if t not in W.columns:
+                continue
+            cur = curve_df[t].dropna()
+            if len(cur) < 30:
+                continue
+            segs = zigzag_segments(cur, mm, md)
+            if not segs:
+                continue
+            w = W[t].reindex(cur.index).astype(float).fillna(0.0)
+            r = ret_df[t].reindex(cur.index).astype(float).fillna(0.0)
+            c = {"dn": 0, "dn_av": 0, "dn_part": 0, "dn_held": 0, "gain": 0.0,
+                 "up": 0, "up_full": 0, "up_part": 0, "up_miss": 0, "loss": 0.0}
+            for kind, a, b in segs:
+                sl = slice(a + 1, b + 1)
+                ws = w.iloc[sl]; rs = r.iloc[sl]
+                if not len(ws):
+                    continue
+                wavg = float(ws.mean())
+                diff = float((ws * rs).sum() - rs.sum()) * 100.0
+                if kind.startswith("하락"):
+                    c["dn"] += 1; c["gain"] += diff
+                    if wavg <= a_av:
+                        c["dn_av"] += 1
+                    elif wavg <= a_part:
+                        c["dn_part"] += 1
+                    else:
+                        c["dn_held"] += 1
+                else:
+                    c["up"] += 1; c["loss"] += diff
+                    if wavg >= u_full:
+                        c["up_full"] += 1
+                    elif wavg >= u_part:
+                        c["up_part"] += 1
+                    else:
+                        c["up_miss"] += 1
+            for k in c:
+                acc[k] += c[k]
+            acc["n"] += 1
+            if emit:
+                _av = (c["dn_av"] + c["dn_part"]) / c["dn"] if c["dn"] else float("nan")
+                _pt = (c["up_full"] + c["up_part"]) / c["up"] if c["up"] else float("nan")
+                _net = c["gain"] + c["loss"]
+                rows.append({"블록": blk, "자산": t, "이름": (name_map or {}).get(t, ""),
+                             "부모": (parent_map or {}).get(t, ""),
+                             "하락구간 수": c["dn"], "하락 회피": c["dn_av"], "하락 부분회피": c["dn_part"],
+                             "하락 못피함": c["dn_held"], "방어이득(%p)": round(c["gain"], 2),
+                             "상승구간 수": c["up"], "상승 참여": c["up_full"], "상승 부분참여": c["up_part"],
+                             "상승 미참여": c["up_miss"], "참여손실(%p)": round(c["loss"], 2),
+                             "순효과(%p)": round(_net, 2),
+                             "회피율(전부+부분)": (round(_av, 3) if _av == _av else None),
+                             "참여율(전부+부분)": (round(_pt, 3) if _pt == _pt else None),
+                             "판정": ("★ 단일 예측이 B&H보다 나았다(방어이득 > 참여손실)" if _net > 0 else
+                                    "⚠ 단일 예측이 B&H에 미달 — 참여손실이 방어이득보다 크다")})
+    for nm, acc in (("★★ 합계(라이브)", tot), ("참고: 합계(자기 국면기계·진단 — 라이브 아님)", tot_own)):
+        if not acc["n"]:
+            continue
+        _av = (acc["dn_av"] + acc["dn_part"]) / acc["dn"] if acc["dn"] else float("nan")
+        _pt = (acc["up_full"] + acc["up_part"]) / acc["up"] if acc["up"] else float("nan")
+        _net = acc["gain"] + acc["loss"]
+        rows.append({"블록": blk, "자산": nm, "산업 수": acc["n"],
+                     "하락구간 수": acc["dn"], "하락 회피": acc["dn_av"], "하락 부분회피": acc["dn_part"],
+                     "하락 못피함": acc["dn_held"], "방어이득(%p)": round(acc["gain"], 1),
+                     "상승구간 수": acc["up"], "상승 참여": acc["up_full"], "상승 부분참여": acc["up_part"],
+                     "상승 미참여": acc["up_miss"], "참여손실(%p)": round(acc["loss"], 1),
+                     "순효과(%p)": round(_net, 1),
+                     "회피율(전부+부분)": (round(_av, 3) if _av == _av else None),
+                     "참여율(전부+부분)": (round(_pt, 3) if _pt == _pt else None),
+                     "판정": (f"{acc['n']}개 산업 · 하락 {acc['dn']}구간 중 회피 {acc['dn_av']}·부분 {acc['dn_part']}·"
+                            f"못피함 {acc['dn_held']} · 상승 {acc['up']}구간 중 참여 {acc['up_full']}·부분 {acc['up_part']}·"
+                            f"미참여 {acc['up_miss']} · 순효과 {_net:+.1f}%p")})
+    log("ROT", kv(event="single_live_segments_built", industries=tot["n"], dn=tot["dn"], up=tot["up"],
+                  avoid_rate=round((tot["dn_av"] + tot["dn_part"]) / max(1, tot["dn"]), 3),
+                  part_rate=round((tot["up_full"] + tot["up_part"]) / max(1, tot["up"]), 3),
+                  net_pp=round(tot["gain"] + tot["loss"], 1),
+                  own_net_pp=(round(tot_own["gain"] + tot_own["loss"], 1) if tot_own["n"] else "-")), M=M)
     return pd.DataFrame(rows)
 
 
@@ -9409,9 +9676,30 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
     except Exception as _e:
         log("REPORT", kv(event="parent_market_pos_failed", err=type(_e).__name__, msg=str(_e)[:140],
                          action="00B의 ③(섹터) 곡선이 빈 채로 리포트 계속"), M=M, level="warning")
+    # ---- [v0.27.0 R73 §4-4] 25_재진입감사 — M RISK_OFF 종료 후 N일 29산업 수익·노출·놓친 몫(계측 전용) ----
+    _reentry = pd.DataFrame()
+    if bool(getattr(icfg, "REENTRY_AUDIT", True)) and hasattr(M, "reentry_audit") and isinstance(res, dict):
+        try:
+            _ar = pd.DataFrame({t: pd.to_numeric(pd.Series(r.get("bh_ret")), errors="coerce")
+                                for t, r in results.items() if isinstance(r, dict) and r.get("bh_ret") is not None})
+            if len(_ar.columns) and float(_ar.abs().max().max() or 0.0) > 1.0:
+                _ar = _ar / 100.0
+            _reentry = M.reentry_audit(res["sig"], res["bt"], res["cfg"], asset_ret=_ar, asset_label="산업")
+        except Exception as _e:
+            log("REPORT", kv(event="reentry_audit_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
+    # [v0.27.0 R73 §1] M 달력보다 최신인데 절단된 산업/부모(S._calendar_truncation_check가 10시트 행을 이미 남겼다)
+    #   티커 목록(산업+부모) — 00시트 '데이터 신선도' 행이 개수를 센다(품질행 수가 아니라 티커 수).
+    _cal_last = pd.Timestamp(cal[-1]).normalize() if len(cal) else None
+    _cal_trunc_i = sorted({t for _pxd in (ind_px, par_px) for t, _df in (_pxd or {}).items()
+                           if _cal_last is not None and _df is not None and len(_df)
+                           and pd.Timestamp(pd.DatetimeIndex(_df.index).max()).normalize() > _cal_last})
     return {
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
+        "reentry_audit": _reentry,                                # [v0.27.0 R73 §4-4] 25_재진입감사
+        "data_freshness": (res.get("data_freshness") if isinstance(res, dict) else None),   # [v0.27.0 R73 §1]
+        "m_cfg": (res.get("cfg") if isinstance(res, dict) else None),
+        "calendar_truncated": _cal_trunc_i,
         "quality": pd.DataFrame(quality), "matrix": matrix, "summary": summary,
         "wf": wf, "alloc": alloc, "acceptance": accept_df, "hierarchy": hier_df,
         "attribution": attrib_df, "following": following_df, "follow_cond": follow_cond_df,
@@ -9431,6 +9719,40 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
 # =============================================================================
 # [8] 리포트
 # =============================================================================
+def single_live_verdict_line(sheets: Dict[str, pd.DataFrame]) -> str:
+    """[v0.27.0 R73 §4-1] 00시트 '★ 단일 산업 라이브 예측 vs B&H' 문구 — 수치는 전부 시트에서 읽는다(하드코딩 금지).
+    00A 블록 A: ②(라이브 단독) vs ① 복리·MDD·칼마·단순합 승 수 / 19 블록 A′ 합계: 회피율·참여율·순효과 / 예외 산업."""
+    parts: List[str] = []
+    a = sheets.get("00A_수익비교")
+    if isinstance(a, pd.DataFrame) and len(a) and "② 단독예측 복리(%)" in a.columns:
+        A = a[a["블록"].astype(str).eq("A. 자산별 수익 비교") & a["② 단독예측 복리(%)"].notna()].copy()
+        if len(A):
+            n = len(A)
+            w_c = int((pd.to_numeric(A["② 단독예측 복리(%)"]) > pd.to_numeric(A["① B&H 복리(%)"])).sum())
+            w_m = int((pd.to_numeric(A["② 단독예측 MDD(%)"]) > pd.to_numeric(A["① B&H MDD(%)"])).sum())
+            w_s = int((pd.to_numeric(A["② 단독예측 단순합(%)"]) > pd.to_numeric(A["① B&H 단순합(%)"])).sum())
+            w_k = "-"
+            if "② 칼마" in A.columns and "① 칼마" in A.columns:
+                w_k = str(int((pd.to_numeric(A["② 칼마"], errors="coerce") > pd.to_numeric(A["① 칼마"], errors="coerce")).sum()))
+            lose = A.loc[pd.to_numeric(A["② 단독예측 복리(%)"]) <= pd.to_numeric(A["① B&H 복리(%)"]), "자산"].astype(str).tolist()
+            lose_s = A.loc[pd.to_numeric(A["② 단독예측 단순합(%)"]) <= pd.to_numeric(A["① B&H 단순합(%)"]), "자산"].astype(str).tolist()
+            parts.append(f"복리 {w_c}/{n} · MDD {w_m}/{n} · 칼마 {w_k}/{n} · 단순합 {w_s}/{n}")
+            if lose or lose_s:
+                parts.append("예외(복리 미달): " + (", ".join(lose) if lose else "없음")
+                             + (" · 단순합 미달: " + ", ".join(lose_s) if lose_s else ""))
+            if "②′ 자기 복리(%)" in A.columns:
+                w_o = int((pd.to_numeric(A["②′ 자기 복리(%)"]) > pd.to_numeric(A["① B&H 복리(%)"])).sum())
+                parts.append(f"(참고: 자기 국면기계 ②′ 복리 {w_o}/{n})")
+    g = sheets.get("19_상승하락구간")
+    if isinstance(g, pd.DataFrame) and len(g) and "자산" in g.columns:
+        T = g[g["자산"].astype(str).eq("★★ 합계(라이브)")]
+        if len(T):
+            r = T.iloc[0]
+            parts.append(f"19 A′: 하락 회피(전부+부분) {float(r['회피율(전부+부분)']):.0%} · 상승 참여(전부+부분) "
+                         f"{float(r['참여율(전부+부분)']):.0%} · 순효과 {float(r['순효과(%p)']):+.1f}%p(산업 합)")
+    return " | ".join(parts) if parts else "산출 불가(00A·19 A′ 없음)"
+
+
 def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[str] = None) -> str:
     icfg = ires.get("icfg", CFG)
     path = path or icfg.OUT_XLSX
@@ -9557,6 +9879,22 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                     _bw = _bw.shift(1).fillna(0.0)          # exec 규칙과 같은 1일 지연
                 _seg = build_up_down_segments(_cur, _ex, _ret, icfg, name_map=_nm, parent_map=_pm,
                                              bench_w=_bw, layer="산업", M=M)
+                # [v0.27.0 R73 §4-1] 블록 A는 배분 비중(I★) 기준 — 라벨로 명시(참고용). 판정은 새 블록 A′가 한다.
+                if isinstance(_seg, pd.DataFrame) and "블록" in _seg.columns:
+                    _seg.loc[_seg["블록"] == "A. 자산별 요약", "블록"] = "A. 자산별 요약(배분 비중 I★ 기준 — 참고)"
+                # ---- [v0.27.0 R73 §4-1 ★] 블록 A′ — 단독 **라이브** 노출 기준(단일 예측 판정 블록, 맨 앞) ----
+                _ap = None
+                try:
+                    _lv = pd.DataFrame({t: pd.to_numeric(results[t].get("target_pos"), errors="coerce")
+                                        .reindex(_tw.index).ffill() for t in _ic}).shift(1).fillna(0.0)
+                    _ow = pd.DataFrame({t: pd.to_numeric(results[t].get("own_target_pos"), errors="coerce")
+                                        .reindex(_tw.index).ffill() for t in _ic
+                                        if results[t].get("own_target_pos") is not None}).shift(1).fillna(0.0)
+                    _ap = build_single_live_segments(_cur, _lv, _ret, icfg, own_exec=(_ow if len(_ow.columns) else None),
+                                                     name_map=_nm, parent_map=_pm, M=M)
+                except Exception as e:
+                    log("ROT", kv(event="single_live_segments_failed", err=type(e).__name__, msg=str(e)[:160]),
+                        M=M, level="warning")
                 # ---- [v0.21.0 C1 ★] 블록 C — **포트폴리오 단위** B&H 대비 ----
                 #   블록 A(자산별)의 '참여율'은 로테이션 계층에서 구조적으로 0에 가깝다(하루에 한 산업만
                 #   든다). 사용자 질문("B&H 대비 하락을 피했나·상승을 탔나")의 올바른 단위가 블록 C다.
@@ -9587,7 +9925,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                                 port_label="I★", M=M))
                 except Exception as e:
                     log("ROT", kv(event="portfolio_segments_failed", err=str(e)[:160]), M=M, level="warning")
-                _out = pd.concat([_seg] + _cbs, ignore_index=True) if _cbs else _seg
+                _parts = ([_ap] if isinstance(_ap, pd.DataFrame) and len(_ap) else []) + [_seg] + _cbs
+                _out = pd.concat(_parts, ignore_index=True) if len(_parts) > 1 else _seg
                 if isinstance(_out, pd.DataFrame) and len(_out):
                     sheets["19_상승하락구간"] = _out
             else:
@@ -9710,8 +10049,16 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         _nxt = max(nd["다음거래일"] for nd in nd_map.values())
         _base = max(nd["기준일"] for nd in nd_map.values())
         _stale = next((nd.get("기준일_경과주의", "") for nd in nd_map.values() if nd.get("기준일_경과주의")), "")
+        # [v0.27.0 R73 §1] 데이터 신선도 1행(M v1.56.0 freshness_summary_line 재사용) + 대상일 경과 표시
+        if M is not None and hasattr(M, "freshness_summary_line"):
+            _fl = M.freshness_summary_line({"data_freshness": ires.get("data_freshness"), "cfg": ires.get("m_cfg")})
+            if ires.get("calendar_truncated"):
+                _fl += f" · ⚠ [달력절단] 산업/부모 {len(ires['calendar_truncated'])}개가 M 달력보다 최신(10시트)"
+            nd_rows.append(("데이터 신선도", _fl))
+        _passed = any(bool(nd.get("대상일_경과")) for nd in nd_map.values())
         nd_rows.append(("다음 거래일 예측 - 기준일(데이터)", f"{pd.Timestamp(_base).date()}{_stale}"))
-        nd_rows.append(("다음 거래일 예측 - 대상일", f"{pd.Timestamp(_nxt).date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영)"))
+        nd_rows.append(("다음 거래일 예측 - 대상일", f"{pd.Timestamp(_nxt).date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영)"
+                        + ("  ⚠ 실행 시점에 이미 지난 날" if _passed else "")))
         if nd_spy is not None:
             nd_rows.append(("다음 거래일 예측 - SPY(M ★ 실매매 근거)",
                             f"{nd_spy['확정국면']} / 목표비중 {nd_spy['목표비중']:.2f} / {nd_spy['예상행동_kr']}"))
@@ -10147,7 +10494,11 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             _ret2 = pd.DataFrame({t: pd.Series(results[t].get("bh_ret"), dtype=float)
                                   for t in _ic2}).reindex(_tw2.index).astype(float)
             _ex2 = _tw2[_ic2].shift(1).fillna(0.0)
-            _solo2 = {}
+            # ★★ [v0.27.0 R73 §4-1] ②의 원천을 **라이브 단독 노출**('목표비중' — m_inherit이면 M의 E_t)으로 바꾼다.
+            #   v0.26.0까지는 '자기 목표비중'(산업 자기 국면기계)을 먼저 찾아 ②로 썼다 — 실매매에도 배분에도 쓰지 않는
+            #   기계의 성적표가 "예측이 B&H에 미달 17/29"로 읽혔다(PLAN73 §2-0: 라이브는 복리·MDD·칼마 29/29 승).
+            #   자기 국면기계는 ②′(진단) 열·블록 D/F 두 번째 벌로 남긴다.
+            _solo2, _soloA2, _rg2, _rgL2, _st2, _ext2 = {}, {}, {}, {}, {}, {}
             for t in _ic2:
                 _d = results[t]["sheets"].get("daily")
                 if not isinstance(_d, pd.DataFrame) or not len(_d):
@@ -10155,22 +10506,68 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _dd = _d.copy()
                 if "날짜" in _dd.columns:
                     _dd = _dd.set_index(pd.to_datetime(_dd["날짜"], errors="coerce"))
-                _c = next((c for c in ("자기 목표비중", "목표비중") if c in _dd.columns), None)
+                _dd = _dd[~_dd.index.duplicated(keep="first")]
+                _c = next((c for c in ("목표비중", "자기 목표비중") if c in _dd.columns), None)
                 if _c is not None:
                     _solo2[t] = pd.to_numeric(_dd[_c], errors="coerce").reindex(_tw2.index).ffill()
+                if "자기 목표비중" in _dd.columns:
+                    _soloA2[t] = pd.to_numeric(_dd["자기 목표비중"], errors="coerce").reindex(_tw2.index).ffill()
+                # [v0.25.0 G3] 블록 F용 — ②′: 산업별 자기국면 / ②: M 국면 × E_t 수준(PLAN73 §2-2 버킷)
+                if "자기국면" in _dd.columns:
+                    _rg2[t] = _dd["자기국면"].astype(str).reindex(_tw2.index)
+                if "섹터상황" in _dd.columns and _c is not None:
+                    _sh = _dd["섹터상황"].astype(str).str.split("(").str[0].reindex(_tw2.index)
+                    _st2[t] = _sh
+                    _ev = _solo2[t]
+                    _lab = pd.Series("기타", index=_tw2.index, dtype=object)
+                    _up = _sh.eq("상승"); _nt = _sh.eq("중립"); _dn = _sh.eq("하락")
+                    _lab[_up & (_ev >= 0.999)] = "상승·E=1"
+                    _lab[_up & (_ev < 0.999)] = "상승·헤어컷(E<1)"
+                    _lab[_nt & (_ev >= 0.499)] = "중립·0.5"
+                    _lab[_nt & (_ev > 0.001) & (_ev < 0.499)] = "중립·부분(0<E<0.5)"
+                    _lab[_nt & (_ev <= 0.001)] = "중립·0(H감축)"
+                    _lab[_dn & (_ev >= 0.999)] = "하락·추세오버라이드1.0"
+                    _lab[_dn & (_ev <= 0.001)] = "하락·0"
+                    _lab[_dn & (_ev > 0.001) & (_ev < 0.999)] = "하락·부분"
+                    _oth = ~(_up | _nt | _dn) & _sh.notna()
+                    _lab[_oth] = _sh[_oth].astype(str)
+                    _rgL2[t] = _lab.where(_sh.notna())
+                if "과열헤어컷(E)" in _dd.columns:
+                    _e = _dd["과열헤어컷(E)"].reindex(_tw2.index)
+                    _ext2[t] = _e.notna() & _e.astype(str).str.strip().ne("") & _e.astype(str).ne("nan") & _e.astype(str).ne("None")
             _sw2 = (pd.DataFrame(_solo2).shift(1).fillna(0.0) if _solo2 else None)
-            # [v0.25.0 G3] 블록 F용 — 산업별 자기국면(체결과 같은 1일 지연)
-            _rg2 = {}
-            for t in _ic2:
-                _d = results[t]["sheets"].get("daily")
-                if isinstance(_d, pd.DataFrame) and len(_d):
-                    _dd = _d.copy()
-                    if "날짜" in _dd.columns:
-                        _dd = _dd.set_index(pd.to_datetime(_dd["날짜"], errors="coerce"))
-                    _c = next((c for c in ("자기국면", "섹터상황") if c in _dd.columns), None)
-                    if _c:
-                        _rg2[t] = _dd[_c].astype(str).reindex(_tw2.index)
+            _swA2 = (pd.DataFrame(_soloA2).shift(1).fillna(0.0) if _soloA2 else None)
             _rgdf2 = (pd.DataFrame(_rg2).shift(1) if _rg2 else None)
+            _rgL2df = (pd.DataFrame(_rgL2).shift(1) if _rgL2 else None)
+            # ---- [v0.27.0 R73 §4-2 사전등록] [헤어컷상속격자] 3변형(결정 t → 체결 t+1, 라이브 무변경) ----
+            _vars2: List[Tuple[str, pd.DataFrame]] = []
+            if bool(getattr(icfg, "HAIRCUT_INHERIT_GRID", True)) and _solo2 and _st2:
+                try:
+                    _E = pd.DataFrame(_solo2)
+                    _ST = pd.DataFrame(_st2).reindex(columns=_E.columns)
+                    _hc = _ST.eq("상승") & (_E < 0.999) & (_E > 0.001)
+                    _EXT = (pd.DataFrame(_ext2).reindex(index=_E.index, columns=_E.columns).fillna(False).astype(bool)
+                            if _ext2 else pd.DataFrame(False, index=_E.index, columns=_E.columns))
+                    _vars2.append(("(a) 자기 과열헤어컷 발동일 → 1.0", _E.where(~(_hc & _EXT), 1.0).shift(1).fillna(0.0)))
+                    # (b) 63일 상대강도(vs SPY) 상위 1/3 — SPY 총수익은 배분 엔진의 ret_co·ret_oc(19 블록 C와 같은 원천)
+                    _rco, _roc = _al2.get("ret_co"), _al2.get("ret_oc")
+                    if (_rco is not None and _roc is not None and "SPY" in getattr(_rco, "columns", [])
+                            and "SPY" in getattr(_roc, "columns", [])):
+                        _spy_r = ((1.0 + pd.Series(_rco["SPY"]).astype(float).fillna(0.0))
+                                  * (1.0 + pd.Series(_roc["SPY"]).astype(float).fillna(0.0)) - 1.0).reindex(_E.index).fillna(0.0)
+                        _nrs = int(getattr(icfg, "HAIRCUT_INHERIT_RS_WINDOW", 63))
+                        _lc = np.log((1.0 + _ret2.reindex(columns=_E.columns).fillna(0.0)).cumprod())
+                        _ls = np.log((1.0 + _spy_r).cumprod())
+                        _rs = _lc.diff(_nrs).sub(_ls.diff(_nrs), axis=0)
+                        _top = _rs.rank(axis=1, pct=True).gt(2.0 / 3.0).fillna(False)
+                        _vars2.append((f"(b) {_nrs}일 상대강도 상위1/3 → 1.0", _E.where(~(_hc & _top), 1.0).shift(1).fillna(0.0)))
+                    _vars2.append(("(c) 반증: 자기 과열 아닌 날 → 1.0", _E.where(~(_hc & ~_EXT), 1.0).shift(1).fillna(0.0)))
+                    log("REPORT", kv(event="haircut_inherit_grid_inputs", variants=len(_vars2),
+                                     haircut_days=int(_hc.sum().sum()), own_ext_days=int((_hc & _EXT).sum().sum())), M=M)
+                except Exception as _e:
+                    log("REPORT", kv(event="haircut_inherit_grid_failed", err=type(_e).__name__, msg=str(_e)[:140]),
+                        M=M, level="warning")
+                    _vars2 = []
             # 부모 예산 = 그날 S★가 그 산업의 부모 섹터에 준 비중의 합(산업이 쓸 수 있는 천장).
             _bg2 = None
             _ws2 = _al2.get("w_s")
@@ -10227,7 +10624,12 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 parent_map={t: results[t].get("parent", "") for t in _ic2}, layer="산업",
                 bench_curves=_bcs2, budget=_bg2, extra_contrib=_extra2,
                 port_ret=_pr1, conviction=_cv1, total_exposure=_te1,
-                regime=_rgdf2, M=M)
+                regime=(_rgL2df if _rgL2df is not None else _rgdf2), M=M,
+                # [v0.27.0 R73 §4-1·§4-2] ② = 라이브 단독 · ②′ = 자기 국면기계(진단) · 판정 = 복리·MDD·칼마 · 격자
+                solo_w_alt=_swA2, regime_alt=_rgdf2, solo_variants=_vars2, verdict_by="risk",
+                solo_desc=("② 단독예측 = 그 산업을 **라이브 단독 노출**(01_일별 '목표비중' — 국면 소스 m_inherit이면 "
+                           "M의 E_t)로 거래 — 실제로 쓰는 예측이다. ②′ = 산업 **자기 국면기계**(진단 — 라이브 아님, "
+                           "v0.26.0까지 '②'였던 것) · "))
             if isinstance(_cmpdf2, pd.DataFrame) and len(_cmpdf2):
                 sheets["00A_수익비교"] = _cmpdf2
     except Exception as e:
@@ -10297,6 +10699,10 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             "판정": f"{type(e).__name__}: {str(e)[:220]} / 다음 단계: results[t]의 'bh_ret'·'own_target_pos'·"
                    "'target_pos'와 sres['results'][부모]['target_pos'] 확인.",
             "추적": _tbL.format_exc()[-800:]}])
+    # [v0.27.0 R73 §4-4] 25_재진입감사(계측 전용 — M RISK_OFF 종료 후 N일 산업 수익·노출·놓친 몫)
+    _re = ires.get("reentry_audit")
+    if isinstance(_re, pd.DataFrame) and len(_re):
+        sheets["25_재진입감사"] = _re
     if S is not None and hasattr(S, "sheets_to_front"):
         sheets = S.sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
 
@@ -10312,6 +10718,16 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             meta.insert(2, ("★★ 전체자산 1.0 확인", str(_au0["판정"].iloc[0])[:400]))
     else:
         meta.insert(1, ("⚠ 00A_수익비교 시트", "생성되지 않았다 — 로그에서 asset_return_compare_failed 확인"))
+    # ---- [v0.27.0 R73 §4-1 ★] 단일 산업 **라이브** 예측 vs B&H 1행 — 00A 블록 A(②·①)와 19 블록 A′ 합계에서 읽는다 ----
+    try:
+        meta.insert(1, ("★ 단일 산업 라이브 예측 vs B&H", single_live_verdict_line(sheets)))
+        meta.insert(2, ("⚠ 자기 국면기계 = 진단 전용",
+                        "00A ②′·블록 D/F '(자기 국면기계·진단)'·19 A′ '참고: 합계(자기 국면기계…)'·00B 곡선 ② 단일산업·"
+                        "13p 블록 A2 '자기' 행·23 '자기' 열·01_일별 '자기국면/자기 목표비중'은 산업 **자기 국면기계**의 "
+                        "성적표다 — 라이브(국면 소스 m_inherit = M 상속)가 아니다. 01Y·13p 블록 A는 확정국면(= 라이브) 기준. "
+                        "라이브 판정은 00A ②(라이브 단독)·19 블록 A′·00B ④ 현행."))
+    except Exception as _e:
+        log("REPORT", kv(event="single_live_verdict_failed", err=type(_e).__name__), M=M, level="warning")
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:
         import inspect as _inspect

@@ -1,5 +1,14 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.25.0 - 2026-09-19 - [R73 — M v1.56.0 · S v0.61.0 · I v0.27.0 · K v0.3.2] 날짜 신선도 배너 · 최소버전 상향.
+#    사용자 지적(2026-09-19): "날짜 지나면 캐시 갱신 — 오늘 날짜면 19일 예측해야 하는데 갱신 안 돼서 안 된다".
+#    · M 실행 직후 res["data_freshness"](M v1.56.0 신선도 감사)를 읽어 배너에 **데이터 마지막일 vs 기대 개장일**을 찍는다.
+#      SPY(달력 앵커)가 뒤처지면 구버전 가드와 같은 크기의 ⚠⚠⚠ 경고 — S·I·K가 전부 그 날짜로 절단되기 때문이다.
+#      판정이 생략된 실행(SELF_TEST·DATA_END·스위치 끔)은 '생략' 1줄, 결과 자체가 없으면(M 구버전) 경고 1줄.
+#    · _MIN: M v1.56.0 · S v0.61.0 · I v0.27.0 · K v0.3.2. 기능 점검 줄 ★신선도가드(M) · ★달력절단 경고(S) ·
+#      ★00A 라이브②·19 A′(I) · ★가격캐시 신선도(K).
+#    ※ 러너 실행 경로·기본값·위험 파라미터 무변경.
+#
 #  VERSION: v1.24.0 - 2026-09-18 - [R72 — M v1.55.0 · S v0.60.0] 실행시간 단축(PLAN72) 파일 확인 · 최소버전 상향.
 #    · _MIN에 **M(market_regime_trader.py) 최소 v1.55.0** 추가(종전 표에 M이 없었다 — M은 VERSION 대신
 #      BUNDLE_VERSION을 쓰므로 _ver()가 둘 다 읽는다) · S 최소 v0.59.0 → **v0.60.0**.
@@ -1171,8 +1180,8 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "v1.24.0"
-VERSION_DATE = "2026-09-18"
+VERSION = "v1.25.0"
+VERSION_DATE = "2026-09-19"
 
 MODULE_FILES = {
     "market_regime_trader": "market_regime_trader.py",
@@ -1279,10 +1288,11 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     #   배너만 보고는 그것을 알 수 없었다 — 버전 숫자는 찍혔지만 **무엇이 있어야 하는지**가 없었다.
     #   ⇒ 이제 최소 버전을 코드가 알고 있고, 미달이면 **어느 파일을 갱신해야 하는지** 크게 알린다.
     # [v1.24.0 R72] M을 표에 추가(최소 v1.55.0 — 워크포워드 경계 캐시). M은 VERSION이 없고 BUNDLE_VERSION을 쓴다.
-    _MIN = {"market_regime_trader.py": ("M", "v1.55.0", M),
-            "sector_rotation.py": ("S", "v0.60.0", S),
-            "industry_rotation.py": ("I", "v0.26.0", I),
-            "stock_regime.py": ("K", "v0.3.1", K)}
+    # [v1.25.0 R73] 최소버전 상향 — 날짜 신선도(M·S·K) · 00A 라이브②(I).
+    _MIN = {"market_regime_trader.py": ("M", "v1.56.0", M),
+            "sector_rotation.py": ("S", "v0.61.0", S),
+            "industry_rotation.py": ("I", "v0.27.0", I),
+            "stock_regime.py": ("K", "v0.3.2", K)}
     def _vt(x):
         try:
             return tuple(int(p) for p in str(x).lstrip("v").split(".")[:3])
@@ -1339,6 +1349,15 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
             _feat.append("★워크포워드 경계캐시")
         if _tag == "S" and hasattr(_mod, "_cache_ignore_fields"):
             _feat.append("★경계캐시 연결·배분엔진 가속")
+        # [v1.25.0 R73] 날짜 신선도 — 이것이 없으면 KST 아침 실행이 '어제의 어제' 종가로 예측한다(리포트23 사고).
+        if _tag == "M" and hasattr(_mod, "expected_last_trading_day"):
+            _feat.append("★신선도가드(M)")
+        if _tag == "S" and hasattr(_mod, "_calendar_truncation_check"):
+            _feat.append("★달력절단 경고")
+        if _tag == "I" and hasattr(_mod, "build_single_live_segments"):
+            _feat.append("★00A 라이브②·19 A′")
+        if _tag == "K" and hasattr(_mod, "_prices_freshness"):
+            _feat.append("★가격캐시 신선도")
         print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
               + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
     if _stale:
@@ -1349,12 +1368,12 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         print("[runner]   원인: 노트북 상단 wget이 GitHub의 **이전 파일**을 가져왔습니다.")
         print("[runner]   조치: 위 파일을 저장소(main)에 덮어쓴 뒤 다시 실행하거나,")
         print("[runner]         Kaggle 세션의 .py 캐시를 지우고(런타임 재시작) wget을 다시 받으세요.")
-        print("[runner]   확인: 섹터 리포트 00시트 '실행시간 - 캐시 적중'이 \"전체키 a/n · 경계 h/N\" 형식이면")
-        print("[runner]         S v0.60.0, 로그 walkforward_done에 period_cache=on이 찍히면 M v1.55.0입니다.")
+        print("[runner]   확인: 세 리포트 00시트에 **'데이터 신선도'** 행이 있으면 M v1.56.0·S v0.61.0 이상,")
+        print("[runner]         산업 00A에 '②′ 자기 복리(%)' 열과 19 시트 블록 A′가 있으면 I v0.27.0입니다.")
         print("[runner] " + "=" * 74)
     else:
-        print("[runner]   ★ 전부 최신 — 워크포워드 경계캐시(M v1.55.0·S v0.60.0) 포함: 새 거래일 첫 실행도 "
-              "새로 생긴 재추정 경계만 계산합니다(섹터 00시트 '실행시간 - 캐시 적중' 줄로 확인)")
+        print("[runner]   ★ 전부 최신 — 날짜 신선도 가드(M v1.56.0) 포함: 캐시가 기대 개장일보다 뒤처지면 재수집하고, "
+              "각 리포트 00시트 '데이터 신선도' 행에 기대일·실제 마지막일이 찍힙니다")
     assert hasattr(S, "run"), "S.run이 없음 - GitHub에 올린 sector_rotation.py를 다시 확인하세요"
     if I is not None:
         assert hasattr(I, "run"), "I.run이 없음 - GitHub에 올린 industry_rotation.py를 다시 확인하세요"
@@ -1392,6 +1411,26 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     # ---- 실행 ----
     hk = _hooks or {}
     res = (hk.get("m_run") or M.run)(mcfg)
+    # ---- [v1.25.0 R73 ★★★] 날짜 신선도 배너 — SPY(달력 앵커)가 뒤처지면 S·I·K가 전부 그 날짜로 절단된다 ----
+    _fi = (res or {}).get("data_freshness") or {}
+    if _fi.get("checked"):
+        _exp = str(getattr(_fi.get("expected"), "date", lambda: _fi.get("expected"))())
+        _last = str(getattr(_fi.get("last"), "date", lambda: _fi.get("last"))())
+        _lag = int(_fi.get("lag_trading_days") or 0)
+        if _lag == 0:
+            print(f"[runner] M 데이터 마지막일 {_last} = 기대 개장일 {_exp} ★ 최신"
+                  + (f" (캐시 우회 재수집 {len(_fi.get('fixed', []))}건)" if _fi.get("refetched") else ""))
+        else:
+            print("[runner] " + "=" * 74)
+            print(f"[runner] ⚠⚠⚠ M 달력이 뒤처짐: SPY 마지막 {_last} < 기대 {_exp} ({_lag}개장일)")
+            print("[runner]   S·I·K 전부 이 날짜로 절단되고, '다음 거래일 예측'은 이미 지난 날일 수 있습니다.")
+            print("[runner]   원인: Yahoo가 아직 그 날 종가를 주지 않음(재수집 실패). 조치: 잠시 뒤 재실행 · "
+                  "M 10시트 [신선도] 행 확인")
+            print("[runner] " + "=" * 74)
+    elif _fi:
+        print("[runner] M 신선도 판정 생략 — SELF_TEST · DATA_END 고정 기간 · DATA_FRESHNESS_CHECK=False 중 하나")
+    elif not getattr(mcfg, "SELF_TEST", False):
+        print("[runner] ⚠ M 신선도 감사 결과 없음 — market_regime_trader.py가 v1.56.0 미만이면 날짜 갱신이 안 됩니다")
     path = M.build_report(res, mcfg)
     sres = (hk.get("s_run") or S.run)(res, M, scfg)
     path2 = S.build_sector_report(sres, M=M)

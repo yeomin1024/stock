@@ -17,6 +17,21 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.61.0 - 2026-09-19 - [R73 날짜 갱신 — 기대일 M 위임 · [달력절단] 경고 · 00시트 신선도 1행 — 신호·비중 무변경]
+#    사용자 지적(2026-09-19 "19일이면 19일 예측해야 하는데 갱신 안 돼서 안 된다"). 리포트23: 섹터·산업 ETF는 09-18까지 받았는데
+#    M 달력(SPY)이 09-17에서 끝나 전부 09-17로 절단됐고 그 사실을 어떤 시트도 말하지 않았다. PLAN73 §1-4:
+#    (1) expected_last_trading_day(today, M=None, cfg=None) — M v1.56.0이 있으면 M.expected_last_trading_day로 위임
+#        (ET 16:00+여유·NYSE 달력; 종전 사본은 연방공휴일 달력이라 성금요일·콜럼버스데이·재향군인의날 주에 하루 어긋나고
+#        시각을 보지 않았다). ensure_fresh_sector_prices()가 M을 넘긴다. M이 없거나 구버전이면 종전 계산(하위호환).
+#    (2) _calendar_truncation_check() 신설 — fetch_sector_prices() 끝에서 ETF 마지막일 > M 달력 마지막일이면 로그
+#        calendar_truncation(warning) + 10시트 [달력절단] 행(I도 S 함수를 쓰므로 자동 적용). run() 반환에
+#        data_freshness(M 감사 결과)·calendar_truncated(섹터 목록).
+#    (3) 00시트 "데이터 신선도" 1행(M.freshness_summary_line 재사용) · 대상일 줄에 "⚠ 실행 시점에 이미 지난 날".
+#    영향 함수: expected_last_trading_day · ensure_fresh_sector_prices(1줄) · fetch_sector_prices(끝 1줄) ·
+#      _calendar_truncation_check(신설) · run(반환 2키) · build_sector_report(00시트 2줄). 신호·비중·성과 무변경.
+#    (4) _CACHE_KEY_IGNORE_FIELDS(구버전 M 폴백 사본)에 M v1.56.0 신설 5필드(DATA_FRESHNESS_CHECK·DATA_SETTLE_MINUTES·
+#        DATA_STALE_MAX_TRADING_DAYS·DROP_PARTIAL_LAST_BAR·FRED_REFRESH_ET_HOUR) — 정본(M)과 표류 없음(교훈 31).
+#        ⇒ 전체키 해시는 v0.60.0과 동일(기존 캐시 그대로 적중).
 #  VERSION: v0.60.0 - 2026-09-18 - [R72 실행시간 단축 — 워크포워드 경계 캐시 연결 · 배분 엔진 루프 제거 · 결과 비트 동일]
 #    사용자 요청(R72): "실행시간이 아직도 길어 … 결과 달라지지 않는 선에서". PLAN72_실행시간단축_방법서 §3·§3b 구현.
 #    (P1 §3-8(2)) validate_and_weight_sector(): 전체키(_cache_key) 미스 시 M v1.55.0 WFPeriodCache를 넘긴다 —
@@ -2573,8 +2588,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.60.0"
-VERSION_DATE = "2026-09-18"
+VERSION = "v0.61.0"
+VERSION_DATE = "2026-09-19"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -3520,14 +3535,61 @@ def fetch_sector_prices(res: dict, M, quality_rows: List[dict],
     n_ok = sum(1 for v in sector_px.values() if v is not None and len(v) > 0)
     log("DATA", kv(event="sector_fetch_done", tickers=len(SECTORS_), ok=n_ok,
                    missing=",".join(t for t in SECTORS_ if sector_px.get(t) is None) or "-"), M=M)
+    _calendar_truncation_check(sector_px, res, M, quality_rows)
     return sector_px, yahoo_diag
 
 
+def _calendar_truncation_check(px: Dict[str, Optional[pd.DataFrame]], res: dict, M,
+                               quality_rows: List[dict]) -> List[str]:
+    """[v0.61.0 R73 §1-4 ★] 이 계층이 받은 ETF 데이터가 **M 달력(SPY 인덱스)보다 최신인데** 절단되는지 알린다.
 
-def expected_last_trading_day(today: Optional[pd.Timestamp] = None) -> pd.Timestamp:
+    리포트23(09-19 실행) 실측: 산업·섹터 ETF는 09-18까지 받았는데(10시트 [신선도] ★ 기대 09-18) M 달력이 09-17에서
+    끝나 전 계층이 09-17로 잘렸고, 그 사실을 **아무 시트도 말하지 않았다**(교훈 12 — 조용히 삼키지 마라). 이제
+    10시트에 [달력절단] 행 + 로그 경고를 남긴다. 신호·비중 계산은 그대로(달력은 M이 정한다 — 고칠 곳은 M 수집, v1.56.0)."""
+    out: List[str] = []
+    try:
+        cal = res.get("cal")
+        if cal is None or not len(cal):
+            return out
+        cal_last = pd.Timestamp(cal[-1]).normalize()
+        ahead = {}
+        for t, df in px.items():
+            if df is None or not len(df):
+                continue
+            last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
+            if last > cal_last:
+                ahead[t] = last
+        if ahead:
+            out = sorted(ahead)
+            _mx = max(ahead.values())
+            log("DATA", kv(event="calendar_truncation", tickers=",".join(out[:8]) + (" …" if len(out) > 8 else ""),
+                           n=len(out), etf_last=str(_mx.date()), cal_last=str(cal_last.date()),
+                           action="M(market_regime_trader) 재수집 필요 — v1.56.0 신선도 가드가 SPY를 갱신해야 한다"),
+                M=M, level="warning")
+            quality_rows.append({"시리즈": f"[달력절단] {len(out)}개 티커", "행수": len(out), "시작": str(cal_last.date()),
+                                 "종료": str(_mx.date()),
+                                 "무결성판정": (f"⚠⚠ 이 계층 데이터는 {_mx.date()}까지 있으나 M 달력(SPY)이 {cal_last.date()}에서 끝나 "
+                                            f"{cal_last.date()}로 절단됨 → market_regime_trader 재수집 필요(M 00시트 '데이터 신선도' 확인). "
+                                            f"대상: {', '.join(out[:12])}{' …' if len(out) > 12 else ''}")})
+    except Exception as e:     # 진단이 본 실행을 막지 않는다
+        log("DATA", kv(event="calendar_truncation_check_failed", err=type(e).__name__), M=M, level="debug")
+    return out
+
+
+
+def expected_last_trading_day(today: Optional[pd.Timestamp] = None, M=None, cfg: Any = None) -> pd.Timestamp:
     """[v0.57.0 K1] '오늘 기준 마지막으로 종가가 존재해야 하는 개장일'. NYSE 정규 휴장일 반영.
     장중이면 오늘 종가는 아직 없으므로 **직전 개장일**을 기대값으로 삼는다(오경보 방지).
-    미국 동부 16:00 마감이나 실행 환경의 타임존을 신뢰할 수 없으므로 보수적으로 '전 개장일'을 쓴다."""
+    미국 동부 16:00 마감이나 실행 환경의 타임존을 신뢰할 수 없으므로 보수적으로 '전 개장일'을 쓴다.
+    [v0.61.0 R73 §1-3(b)] M(v1.56.0+)을 주면 **M.expected_last_trading_day로 위임**한다 — 종전 사본은 연방공휴일 달력
+      (NYSE는 성금요일 휴장·콜럼버스데이/재향군인의날 개장 — 그 주에 하루 어긋남)을 쓰고 시각을 보지 않았다(ET 마감 후
+      같은 날 실행이면 오늘 종가를 기대해야 한다). today를 주면 그것을 ET 시각으로 해석한다(테스트 주입). M이 없거나
+      구버전이면 아래 종전 계산(하위호환)."""
+    if M is not None and hasattr(M, "expected_last_trading_day"):
+        try:
+            return M.expected_last_trading_day(now=today, cfg=(cfg if cfg is not None else M.CFG))
+        except Exception as e:
+            log("DATA", kv(event="expected_day_delegate_failed", err=type(e).__name__, note="종전 계산으로"), M=M, level="warning")
     from pandas.tseries.holiday import USFederalHolidayCalendar
     from pandas.tseries.offsets import CustomBusinessDay
     bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
@@ -3569,7 +3631,7 @@ def ensure_fresh_sector_prices(px: Dict[str, Optional[pd.DataFrame]], M, scfg: A
     if not bool(getattr(scfg, "DATA_FRESHNESS_CHECK", True)):
         return px, rows
     try:
-        exp = expected_last_trading_day(today)
+        exp = expected_last_trading_day(today, M=M, cfg=cfg)     # [v0.61.0 R73] M 위임(ET 시각·NYSE 달력)
     except Exception as e:
         log("DATA", kv(event="freshness_calendar_failed", err=type(e).__name__,
                        note="신선도 검사를 건너뛴다(리포트는 계속)"), M=M, level="warning")
@@ -4927,6 +4989,10 @@ _CACHE_KEY_IGNORE_FIELDS = frozenset({
     "TREND_OVERRIDE_SCORE_PCT", "TREND_OVERRIDE_NEED_MARKET",
     # [v0.60.0 R72] M v1.55.0 신설 3필드(경계 캐시 on/off·위치 · 06c 진단 스위치) — 구버전 M 폴백 사본에도 같이 둔다.
     "USE_WF_PERIOD_CACHE", "WF_PERIOD_CACHE_DIR", "RUN_THRESHOLD_SENSITIVITY",
+    # [v0.61.0 R73] M v1.56.0 신설 5필드(데이터 신선도 가드 — 수집 경로만 바꾸고 신호 계산엔 관여 안 함).
+    #   교훈 31: M Config에 필드를 더하면 같은 변경에서 무시 목록(정본 + 이 폴백 사본)에 같이 넣는다.
+    "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",
+    "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",
 })
 # [v0.60.0 R72 §3-3 ★ 단일 정본] 위 목록은 이제 **구버전 M(v1.55.0 미만) 폴백 전용 사본**이다. 실제 키 계산은
 #   M.CACHE_KEY_IGNORE_FIELDS(M v1.55.0이 정본)를 읽는다 — M에 Config 필드를 더하는 라운드가 S를 따로 고치지 않아도
@@ -6920,6 +6986,9 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
     quality: List[dict] = []
     sector_px, yahoo_diag = fetch_sector_prices(res, M, quality, scfg=scfg, sector_px_override=sector_px_override,
                                                 tickers=scfg.SECTORS)
+    # [v0.61.0 R73] M 달력보다 최신인데 절단된 섹터(fetch_sector_prices가 10시트 [달력절단] 행을 이미 남겼다 — 00시트용 목록)
+    _cal_trunc = sorted(t for t, _df in sector_px.items()
+                        if _df is not None and len(_df) and pd.Timestamp(_df.index.max()).normalize() > pd.Timestamp(cal[-1]).normalize())
     spy_df = res["px_dict"]["SPY"]
     spy_df = spy_df[~spy_df.index.duplicated(keep="last")].sort_index()
     spy_tr, _ = build_total_return_close(spy_df, cal, scfg.ADJ_CLOSE_STALE_DAYS)
@@ -7098,6 +7167,8 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             "summary": summary, "stage_timing": stage_timing, "scfg": scfg, "M_cfg": M_cfg,
             "signal_start": str(sig_start.date()), "cal_end": str(cal[-1].date()), "aborted": False,
             "m_bundle_meta": res.get("bundle_meta", {}), "nd_spy": nd_spy,
+            "data_freshness": res.get("data_freshness"),     # [v0.61.0 R73] M 신선도 감사 결과(00시트 1행)
+            "calendar_truncated": _cal_trunc,                  # [v0.61.0 R73] M 달력보다 최신인데 절단된 섹터
             # [v0.4.0 §1.F]
             "alloc": alloc, "rot_val": rot_val, "alloc_sheet": alloc_sheet,
             "minority": minority_df, "minority_summary": minority_summ,   # [v0.43.0 R1] 13p
@@ -13601,9 +13672,16 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     nd_spy = sres.get("nd_spy")
     nd_rows: List[Tuple[str, str]] = []
     if nd_spy is not None:
+        # [v0.61.0 R73] 데이터 신선도 1행(M v1.56.0 freshness_summary_line 재사용 — 단일 출처) + 대상일 경과 표시
+        if hasattr(M, "freshness_summary_line"):
+            _fl = M.freshness_summary_line({"data_freshness": sres.get("data_freshness"), "cfg": sres.get("M_cfg")})
+            if sres.get("calendar_truncated"):
+                _fl += f" · ⚠ [달력절단] 섹터 {len(sres['calendar_truncated'])}개가 M 달력보다 최신(10시트)"
+            nd_rows.append(("데이터 신선도", _fl))
         nd_rows.append(("다음 거래일 예측 - 기준일(데이터)", f"{nd_spy['기준일'].date()}{nd_spy['기준일_경과주의']}"))
         nd_rows.append(("다음 거래일 예측 - 대상일",
-                        f"{nd_spy['다음거래일'].date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영)"))
+                        f"{nd_spy['다음거래일'].date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영)"
+                        + ("  ⚠ 실행 시점에 이미 지난 날" if nd_spy.get("대상일_경과") else "")))
         nd_rows.append(("다음 거래일 예측 - SPY", f"{nd_spy['확정국면']} / 목표비중 {nd_spy['목표비중']:.2f} / "
                                                f"{nd_spy['예상행동_kr']}"))
         for t in scfg.SECTORS:

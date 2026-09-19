@@ -22,6 +22,36 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.56.0 - 2026-09-19 - [R73 ★★★ 날짜 갱신(데이터 신선도) + 06e 재진입감사 — **신호·가중치 산식 무변경**]
+#    사용자 지적(2026-09-19): "날짜 지나면 캐시 좀 갱신하도록 … 오늘 날짜면 19일 예측해야 하는데 갱신 안 돼서 안 되잖아".
+#    산업 리포트23(09-19 토 실행) 실측: 기준일 09-17 · 대상일 09-18(이미 지난 날). S/I는 09-18 종가를 받아 놓고도
+#    (10시트 [신선도] ★ 기대 09-18) M 달력(SPY 인덱스)이 09-17에서 끝나 전 계층이 09-17로 절단됐다([무결성] 종료 09-17).
+#    원인: (1) _read_cache TTL 12h가 **나이만** 보고 내용의 최신성을 묻지 않음 (2) _yahoo_degenerate가 마지막일을 안 봄
+#    (3) M에 신선도 가드 없음 (4) 00시트 "오늘 종가 미반영" 문구가 '어제 종가 누락'을 오판 (5) 장중 미완성 봉이 캐시에
+#    들어갈 수 있음(잠재 결함). PLAN73 §1 구현:
+#      (a) Config 5필드 DATA_FRESHNESS_CHECK(True)·DATA_SETTLE_MINUTES(60)·DATA_STALE_MAX_TRADING_DAYS(1)·
+#          DROP_PARTIAL_LAST_BAR(True)·FRED_REFRESH_ET_HOUR(8.5) — 전부 수집 전용 → CACHE_KEY_IGNORE_FIELDS 등재(교훈 31).
+#      (b) now_et()·previous_trading_day()·expected_last_trading_day() 신설 — ET 16:00+settle이 지난 개장일이면 오늘,
+#          아니면 직전 개장일(nyse_holidays 반영). S·K가 이 함수로 위임한다.
+#      (c) _yahoo_is_stale() 신설 · fetch_all_yahoo()/fetch_yahoo()의 캐시 판정에 적용 — TTL 안이어도 기대일보다
+#          뒤처졌으면 재수집(로그 yahoo_cache_stale_refetch / yahoo_cache_stale_summary).
+#      (d) _drop_partial_bars() — 기대일 이후 봉(장중 미완성)을 다운로드·배치·캐시 읽기·지연캐시 경로 모두에서 제거.
+#      (e) ensure_fresh_yahoo() — run() 수집 직후 신선도 감사(캐시 우회 1회 재수집, allow_fallback=False), diag 새 종류
+#          "신선도"(10시트 [신선도]; 교훈 32 — 라벨 dict·critical gate 카운트·already_labeled 튜플 갱신, 00시트 커버리지
+#          _yd 필터에는 넣지 않음 — 수집 사유가 아니므로). res["data_freshness"] 신설. SPY가 끝내 뒤처지면
+#          [DATA] calendar_stale(error) + 00시트 2번째 줄 "⚠⚠ 데이터 뒤처짐".
+#      (f) build_next_day_prediction(): 문구를 기대일 기준으로("⚠ 데이터 뒤처짐 … 대상일 이미 지났을 수 있다" /
+#          "장중/마감 직후 — 오늘 종가 미반영(정상)" / 정상은 빈 문자열) + 반환 키 "대상일_경과".
+#      (g) _read_cache(et_cutoff_hour=) — FRED 캐시는 '가장 최근 ET 08:30 이후에 받았나'로 판정.
+#      (h) 00시트 "데이터 신선도" 1행(항상) · 10시트 "[신선도] 전체" 1행 · freshness_summary_line()(S·I 공용).
+#      fetch_yahoo(allow_fallback=True) 인자 추가 — False면 지연캐시·FRED 대체를 타지 않는다(신선도 재수집 전용).
+#    [§4-4] reentry_audit() + 06e_재진입감사 시트 — RISK_OFF 종료 후 5/10/21/42일 SPY·노출·놓친 몫(계측 전용).
+#    ⚠ 신호·가중치·백테스트 산식 무변경(합성데이터 비트 동일 확인 — test_v156_r73.py). SELF_TEST·DATA_END 실행은
+#      신선도 판정을 하지 않는다. 위험 파라미터 변경 없음. VALIDATION_SCHEMA("m1") 무변경.
+#    영향 함수: Config · CACHE_KEY_IGNORE_FIELDS · _read_cache · fetch_yahoo · fetch_all_yahoo · _yahoo_stale_fallback ·
+#      fetch_fred(캐시 1줄) · _yahoo_critical_gate(로그 카운트) · run()(수집 직후·10시트·res) · build_next_day_prediction ·
+#      build_report(00시트 2줄·06e) · 신설 now_et/previous_trading_day/expected_last_trading_day/_freshness_active/
+#      _yahoo_is_stale/_drop_partial_bars/ensure_fresh_yahoo/freshness_summary_line/reentry_audit.
 #  VERSION: v1.55.0 - 2026-09-18 - [R72 실행시간 단축 — 워크포워드 재추정 **경계별 증분 캐시** · 결과 비트 동일]
 #    사용자 요청(R72): "실행시간이 아직도 길어 … 결과 달라지지 않는 선에서". PLAN72_실행시간단축_방법서 §3 구현.
 #    원인(실측): 06_워크포워드재추정이 M 실행의 81~87%(230초)이고 캐시가 없었다. S/I는 전체키 캐시가 있지만 키에
@@ -2827,6 +2857,19 @@ class Config:
     YAHOO_MIN_ROWS: int = 250                  # 이보다 짧은 일별 프레임은 퇴화 수집으로 간주(1년 미만)
     YAHOO_STALE_CACHE_MAX_DAYS: float = 30.0   # 퇴화/실패 시 이 일수 이내의 만료 캐시를 지연캐시로 대체(0이면 비활성)
     YAHOO_CRITICAL_RETRY_WAIT_S: float = 10.0  # 퇴화 수집 개별 재시도 전 대기(초). 음수면 재시도 비활성
+    # [v1.56.0 R73 §1 ★★★ 날짜 갱신] 사용자 지적(2026-09-19): "오늘 날짜면 19일 예측해야 하는데 갱신 안 돼서 안 된다".
+    #   산업 리포트23 실측 — S/I는 09-18 종가를 받아 놓고도(10시트 [신선도] ★ 기대 09-18) M 달력(SPY 인덱스)이
+    #   09-17에서 끝나 전 계층이 09-17로 절단됐다. 원인: _read_cache TTL(12h)이 **나이만** 보고 내용의 최신성을
+    #   묻지 않았고, _yahoo_degenerate는 마지막일을 보지 않았으며, M에는 신선도 가드가 없었다.
+    #   ⇒ 캐시 유효성을 '나이'가 아니라 '기대 마지막 개장일까지 내용이 있는가'로 판정한다(교훈 35).
+    #   기대일 = expected_last_trading_day(): 미국 동부시각(ET) 16:00 + DATA_SETTLE_MINUTES가 지난 개장일이면 오늘,
+    #   아니면 직전 개장일(NYSE 정규 휴장일 반영). SELF_TEST·DATA_END 실행은 검사하지 않는다.
+    #   ⚠ 전부 수집 전용 필드 → CACHE_KEY_IGNORE_FIELDS에 같은 변경에서 등재(교훈 31).
+    DATA_FRESHNESS_CHECK: bool = True          # 수집 후 신선도 감사 + 뒤처진 캐시 우회 재수집
+    DATA_SETTLE_MINUTES: int = 60              # ET 16:00 마감 후 이만큼 지나야 '오늘 봉이 있어야 한다'로 본다
+    DATA_STALE_MAX_TRADING_DAYS: int = 1       # 기대 개장일보다 이만큼(개장일) 이상 뒤처지면 재수집
+    DROP_PARTIAL_LAST_BAR: bool = True         # 기대일보다 미래 날짜의 봉(장중 미완성 봉)은 버리고 캐시에도 쓰지 않는다
+    FRED_REFRESH_ET_HOUR: float = 8.5          # FRED 캐시는 ET 이 시각(08:30)을 지나면 '하루 지난 것'으로 본다
     # [v1.54.0 §A 견고성] report23 사고 대응 — Yahoo가 ^VIX3M(그리고 비신호핵심인 ^VIX9D)의
     # 과거 이력 자체를 몇 시간~며칠째 결측(HTTP 200 + 유효 종가지만 요청한 5일 중 오늘 1일치만
     # 반환 — query1/query2 두 엣지 서버 동일, IP차단·yfinance버그·계정문제 전부 배제 확인됨,
@@ -4105,14 +4148,33 @@ def _cache_path(name: str, cfg: Config = CFG) -> str:
     # 저장된(잠재적으로 오염된) 캐시 파일은 자동으로 무시되고 새로 수집된다.
     return os.path.join(cfg.CACHE_DIR, f"v{cfg.CACHE_SCHEMA_VERSION}_{safe}.csv")
 
-def _read_cache(name: str, max_age_hours: float = 12.0, cfg: Config = CFG) -> Optional[pd.DataFrame]:
+def _read_cache(name: str, max_age_hours: float = 12.0, cfg: Config = CFG,
+                et_cutoff_hour: Optional[float] = None) -> Optional[pd.DataFrame]:
     """불필요한 재다운로드 방지 (성능 요구사항: 변경 없는 데이터 재수신 금지).
-    [v1.21.0 §A] max_age_hours=None 이면 나이를 무시하고 읽는다(지연캐시 대체용)."""
+    [v1.21.0 §A] max_age_hours=None 이면 나이를 무시하고 읽는다(지연캐시 대체용).
+    [v1.56.0 R73 §1-3(g)] et_cutoff_hour를 주면 **나이 대신 ET 일 경계**로 판정한다: 가장 최근의 'ET h시'(예: 08:30)
+      이후에 쓴 캐시만 유효. FRED 일별 시리즈는 ET 아침에 전날 값이 붙으므로 '오늘 아침 이후에 받았나'를 묻는다
+      (12h TTL은 KST 아침 실행에서 전날 낮 캐시를 그대로 돌려줬다)."""
     p = _cache_path(name, cfg)
     if not os.path.exists(p):
         return None
     age_h = (time.time() - os.path.getmtime(p)) / 3600.0
-    if max_age_hours is not None and age_h > max_age_hours:
+    if et_cutoff_hour is not None:
+        try:
+            _now = now_et()
+            _cut = _now.normalize() + pd.Timedelta(hours=float(et_cutoff_hour))
+            if _now < _cut:
+                _cut -= pd.Timedelta(days=1)
+            _mt = pd.Timestamp(os.path.getmtime(p), unit="s", tz="UTC").tz_convert(_now.tz)
+            if _mt < _cut:
+                log("DATA", kv(event="cache_expired_et_cutoff", series=name, written=str(_mt)[:16],
+                               cutoff=str(_cut)[:16]), "debug")
+                return None
+        except Exception as e:   # ET 계산 실패 시 종전 나이 규칙으로
+            log("DATA", kv(event="cache_et_cutoff_failed", series=name, err=type(e).__name__), "warning")
+            if max_age_hours is not None and age_h > max_age_hours:
+                return None
+    elif max_age_hours is not None and age_h > max_age_hours:
         return None
     try:
         df = pd.read_csv(p, index_col=0, parse_dates=True)
@@ -4198,6 +4260,8 @@ def _yahoo_stale_fallback(ticker: str, cfg: Config = CFG,
     if cfg.YAHOO_STALE_CACHE_MAX_DAYS <= 0:
         return None
     stale = _read_cache(f"YH_{ticker}", max_age_hours=cfg.YAHOO_STALE_CACHE_MAX_DAYS * 24.0, cfg=cfg)
+    if stale is not None and _freshness_active(cfg):   # [v1.56.0 R73] 옛 캐시에 남은 장중 미완성 봉도 제거
+        stale = _drop_partial_bars(ticker, stale, expected_last_trading_day(cfg=cfg), cfg, where="stale_cache")
     bad, why = _yahoo_degenerate(ticker, stale, cfg)
     if stale is None or bad:
         return None
@@ -4274,19 +4338,29 @@ def _fred_fallback_for_yahoo_ticker(ticker: str, fred_sid: str, cfg: Config = CF
 
 
 def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None,
-                use_cache: bool = True, diag: Optional[List[dict]] = None) -> Optional[pd.DataFrame]:
+                use_cache: bool = True, diag: Optional[List[dict]] = None,
+                allow_fallback: bool = True) -> Optional[pd.DataFrame]:
     """단일 Yahoo 티커 다운로드(순차, 스레드 미사용). 배치 다운로드에서 빠진 티커의 개별
     재시도 용도로 쓰인다. 실패 시 None (조용히 실패하지 않고 로그 남김).
     [v1.21.0 §A] 퇴화 수집(_yahoo_degenerate)은 성공으로 치지 않고 캐시에도 쓰지 않는다 —
-    재시도 후에도 퇴화면 지연캐시 대체를 시도하고, 그것도 없으면 None."""
+    재시도 후에도 퇴화면 지연캐시 대체를 시도하고, 그것도 없으면 None.
+    [v1.56.0 R73 §1] 캐시는 기대 개장일까지 내용이 있을 때만 쓴다(뒤처지면 재수집) · 장중 미완성 봉 제거.
+    allow_fallback=False면 지연캐시·FRED 대체를 타지 않는다(신선도 재수집 전용 — '더 최신'만 원한다)."""
+    _exp = expected_last_trading_day(cfg=cfg) if _freshness_active(cfg) else None
     if use_cache:
         cached = _read_cache(f"YH_{ticker}", cfg=cfg)
         if cached is not None and len(cached) > 0:
+            cached = _drop_partial_bars(ticker, cached, _exp, cfg, where="cache")
             bad, why = _yahoo_degenerate(ticker, cached, cfg)
-            if not bad:
+            stale, why_s = (_yahoo_is_stale(ticker, cached, _exp, cfg) if _exp is not None else (False, ""))
+            if not bad and not stale:
                 return cached
-            log("DATA", kv(event="yahoo_cache_degenerate_ignored", series=ticker, rows=len(cached),
-                           reason=why), "warning")
+            if bad:
+                log("DATA", kv(event="yahoo_cache_degenerate_ignored", series=ticker, rows=len(cached),
+                               reason=why), "warning")
+            else:
+                log("DATA", kv(event="yahoo_cache_stale_refetch", series=ticker, reason=why_s,
+                               age_h=round(_cache_age_hours(f"YH_{ticker}", cfg) or -1, 1)))
     try:
         import yfinance as yf
     except ImportError:
@@ -4308,7 +4382,8 @@ def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None,
             df = df.loc[~df.index.duplicated(keep="last")].sort_index()
             df.index = pd.to_datetime(df.index).tz_localize(None)
             df = df.dropna(how="all")
-            if len(df) == 0:
+            df = _drop_partial_bars(ticker, df, _exp, cfg, where="download")   # [v1.56.0 R73 §1-3(d)]
+            if df is None or len(df) == 0:
                 raise ValueError("empty frame after dropna")
             bad, why = _yahoo_degenerate(ticker, df, cfg)
             if bad:   # [v1.21.0 §A(1)] 퇴화 수집은 성공이 아니다 — 캐시에 쓰지 않고 재시도
@@ -4323,6 +4398,9 @@ def fetch_yahoo(ticker: str, cfg: Config = CFG, retries: Optional[int] = None,
                            err=type(e).__name__, msg=str(e)[:80]), "warning")
             if attempt < n_try:
                 time.sleep(min(1.2 * attempt, 5.0))
+    if not allow_fallback:     # [v1.56.0 R73] 신선도 재수집은 대체 경로를 타지 않는다(호출부가 종전 프레임을 유지)
+        log("DATA", kv(event="yahoo_refetch_no_fallback", series=ticker, elapsed_s=round(time.time() - t0, 1)), "warning")
+        return None
     stale = _yahoo_stale_fallback(ticker, cfg, diag, reason="개별 재시도 전부 실패/퇴화")
     if stale is not None:
         return stale
@@ -4526,7 +4604,8 @@ def fetch_fred(series_id: str, cfg: Config = CFG, retries: Optional[int] = None,
     2차 피해 방지. (3) 재시도 라운드에서 diag를 쓸 때 1차 라운드의 시도 경로(_prior_attempts)
     를 함께 남긴다 — report16의 10시트에는 2차(회로 열린 뒤) JSON 2경로만 보여 CSV가 시도
     됐는지조차 리포트로 알 수 없었다."""
-    cached = _read_cache(f"FRED_{series_id}", cfg=cfg)
+    cached = _read_cache(f"FRED_{series_id}", cfg=cfg,
+                         et_cutoff_hour=(cfg.FRED_REFRESH_ET_HOUR if _freshness_active(cfg) else None))   # [v1.56.0 R73]
     if cached is not None and len(cached) > 0:
         return cached.iloc[:, 0]
     # [v1.4.0 §1(C)] 네거티브 캐시 — 최근 제외 확정된 시리즈는 재시도하지 않는다.
@@ -4718,17 +4797,32 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG,
     out: Dict[str, Optional[pd.DataFrame]] = {}
     to_fetch: List[str] = []
     degenerate: Dict[str, str] = {}   # [v1.21.0 §A] 배치에서 퇴화로 판정된 티커 → 사유
+    # [v1.56.0 R73 §1-3(c)] 캐시 유효성 = '나이 12h'가 아니라 '기대 마지막 개장일까지 내용이 있는가'.
+    _exp = expected_last_trading_day(cfg=cfg) if _freshness_active(cfg) else None
+    n_stale_cache = 0
     for t in tickers:
         cached = _read_cache(f"YH_{t}", cfg=cfg)
         if cached is not None and len(cached) > 0:
+            cached = _drop_partial_bars(t, cached, _exp, cfg, where="cache")
             bad, why = _yahoo_degenerate(t, cached, cfg)
             if bad:   # [v1.21.0 §A(1)] 12시간 이내 캐시라도 퇴화면(report22의 1행 캐시) 무시하고 재수집
                 log("DATA", kv(event="yahoo_cache_degenerate_ignored", series=t, rows=len(cached), reason=why), "warning")
+                to_fetch.append(t)
+                continue
+            stale, why_s = (_yahoo_is_stale(t, cached, _exp, cfg) if _exp is not None else (False, ""))
+            if stale:   # [v1.56.0 R73] TTL 안이어도 내용이 뒤처졌으면 재수집(사용자 지적 "19일인데 17일 예측")
+                n_stale_cache += 1
+                log("DATA", kv(event="yahoo_cache_stale_refetch", series=t, reason=why_s,
+                               age_h=round(_cache_age_hours(f"YH_{t}", cfg) or -1, 1)))
                 to_fetch.append(t)
             else:
                 out[t] = cached
         else:
             to_fetch.append(t)
+    if n_stale_cache:
+        log("DATA", kv(event="yahoo_cache_stale_summary", stale=n_stale_cache, cached=len(tickers) - len(to_fetch) + n_stale_cache,
+                       expected_last=str(_exp.date()) if _exp is not None else "-",
+                       note="12시간 TTL 안이지만 기대 개장일보다 뒤처진 캐시 — 재수집"))
 
     if to_fetch:
         try:
@@ -4750,6 +4844,9 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG,
                         continue
                     sub = sub.loc[~sub.index.duplicated(keep="last")].sort_index()
                     sub.index = pd.to_datetime(sub.index).tz_localize(None)
+                    sub = _drop_partial_bars(t, sub, _exp, cfg, where="batch")   # [v1.56.0 R73 §1-3(d)]
+                    if sub is None or len(sub) == 0:
+                        continue
                     bad, why = _yahoo_degenerate(t, sub, cfg)
                     if bad:   # [v1.21.0 §A(1)] 퇴화 수집 — 캐시에 쓰지 않고 개별 재시도 대상으로
                         degenerate[t] = why
@@ -4784,8 +4881,8 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG,
             # (리포트71 실측: [FRED대체] ^VIX3M 바로 아래 [재수집] ^VIX3M이 잘못 덧붙음 — 데이터
             # 자체는 항상 올바르게 FRED df를 썼으니 신호에는 영향 없으나, 00/10시트 표시가 틀렸다).
             # 이미 "지연캐시"나 "FRED대체"로 기록됐으면 이 블록은 아무것도 추가하지 않는다.
-            already_labeled = any(d.get("시리즈") == t and d.get("종류") in ("지연캐시", "FRED대체")
-                                  for d in diag)
+            already_labeled = any(d.get("시리즈") == t and d.get("종류") in ("지연캐시", "FRED대체", "신선도")
+                                  for d in diag)   # [v1.56.0 R73] 새 종류 "신선도"도 인식(교훈 32 — 전 참조처 갱신)
             if not already_labeled:
                 diag.append({"시리즈": t, "종류": "재수집", "사유": f"배치 퇴화({degenerate[t]}) → 개별 재수집 정상",
                              "행수": int(len(out[t])), "시작": str(out[t].index.min().date()),
@@ -4948,7 +5045,8 @@ def _yahoo_critical_gate(px_dict: Dict[str, Optional[pd.DataFrame]], cfg: Config
         else:
             log("DATA", kv(event="yahoo_critical_ok", tickers=",".join(cfg.SIGNAL_CRITICAL_TICKERS),
                            stale_used=sum(1 for d in yahoo_diag if d.get("종류") == "지연캐시"),
-                           refetched=sum(1 for d in yahoo_diag if d.get("종류") == "재수집")))
+                           refetched=sum(1 for d in yahoo_diag if d.get("종류") == "재수집"),
+                           freshness_refetched=sum(1 for d in yahoo_diag if d.get("종류") == "신선도")))   # [v1.56.0 R73]
     return yahoo_degraded
 
 
@@ -6595,6 +6693,8 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "TREND_OVERRIDE_SCORE_PCT", "TREND_OVERRIDE_NEED_MARKET",                                  # generate_signals 전용(S v0.40.0 §S3)
     "USE_WF_PERIOD_CACHE", "WF_PERIOD_CACHE_DIR",                                              # [v1.55.0 R72] 캐시 on/off·위치
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
+    "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
+    "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
 })
 
 # 경계 키에 넣는 지표 스펙 속성 — validate_indicators/_select_and_weight_*가 실제로 읽는 계산용 필드만
@@ -9542,6 +9642,9 @@ def run(cfg: Config = CFG) -> dict:
     # 만으로 바로 확인할 수 있게 한다(IMPROVEMENT_PLAN_v1.4.md §1 진단표와 동일한 단계 구분을
     # 그대로 따름). 순수 계측 코드만 추가한 것이며 기존 로직/반환값에는 영향이 없다.
     stage_timing: Dict[str, float] = {}
+    # [v1.56.0 R73] 신선도 감사 결과(합성·DATA_END 실행은 checked=False) — res["data_freshness"]로 싣는다.
+    data_freshness: dict = {"checked": False, "expected": None, "anchor": cfg.TRADE_TICKER, "last": None,
+                            "lag_trading_days": 0, "refetched": [], "fixed": [], "still_stale": [], "fred_lag": []}
 
     # ---------- 1) 데이터 ----------
     if cfg.SELF_TEST:
@@ -9554,6 +9657,9 @@ def run(cfg: Config = CFG) -> dict:
         # [v1.34.0 §A] 폭 산출용 섹터 ETF를 같은 배치에 실어 한 번에 받는다(추가 왕복 없음).
         _yh = list(YAHOO_SERIES.keys()) + [t for t in BREADTH_TICKERS if t not in YAHOO_SERIES]
         px_dict = fetch_all_yahoo(_yh, cfg, diag=yahoo_diag)
+        # [v1.56.0 R73 §1-3(e) ★★★] 수집 직후 신선도 감사 — 기대 마지막 개장일보다 뒤처진 티커는 캐시 우회 재수집.
+        #   SPY(달력 앵커)가 뒤처지면 S·I·K가 새 데이터를 받았어도 전부 그 날짜로 절단된다(리포트23: 09-17로 절단).
+        px_dict, data_freshness = ensure_fresh_yahoo(px_dict, cfg, diag=yahoo_diag)
         t_yahoo_done = time.time()
         fred_raw = fetch_all_fred(list(FRED_SERIES.keys()), cfg, diag=fred_diag)
         t_fred_done = time.time()
@@ -9650,10 +9756,16 @@ def run(cfg: Config = CFG) -> dict:
     for d in yahoo_diag:
         kind = d.get("종류")
         label = {"지연캐시": "[지연캐시]", "재수집": "[재수집]", "FRED대체": "[FRED대체]",
-                 "제외": "[Yahoo제외]"}.get(kind, "[Yahoo]")
+                 "제외": "[Yahoo제외]", "신선도": "[신선도]"}.get(kind, "[Yahoo]")   # [v1.56.0 R73] "신선도" 추가
         quality.append({"시리즈": f"{label} {d['시리즈']}", "행수": d.get("행수", 0), "결측": 0, "결측비율(%)": np.nan,
                         "중복인덱스": 0, "무한값": 0, "최대공백(일)": 0, "시작": d.get("시작", "-"),
                         "종료": d.get("종료", "-"), "무결성판정": f"{'수용' if kind != '제외' else '제외'}({kind}): {d['사유']}"})
+    # [v1.56.0 R73 §1-3(h)] 신선도 판정 요약 1행(항상) — 뒤처짐이 없어도 '검사했고 최신'임을 남긴다.
+    if data_freshness.get("checked"):
+        quality.append({"시리즈": "[신선도] 전체", "행수": len(px_dict), "결측": 0, "결측비율(%)": np.nan,
+                        "중복인덱스": 0, "무한값": 0, "최대공백(일)": 0, "시작": "-",
+                        "종료": str(pd.Timestamp(data_freshness["expected"]).date()),
+                        "무결성판정": freshness_summary_line({"data_freshness": data_freshness, "cfg": cfg})})
     yahoo_degraded = _yahoo_critical_gate(px_dict, cfg, yahoo_diag, quality)
 
     price = px_dict[cfg.TRADE_TICKER].copy()
@@ -9899,6 +10011,7 @@ def run(cfg: Config = CFG) -> dict:
             "fred_degraded": fred_degraded,   # [v1.15.1 §A(3)] 수집률 미달 상태로 강행한 실행인지
             # [v1.21.0 §A] Yahoo 신호핵심 게이트/트리거 커버리지 — 00시트 표기용
             "yahoo_degraded": yahoo_degraded, "yahoo_diag": yahoo_diag,
+            "data_freshness": data_freshness,   # [v1.56.0 R73 §1-3(e)] S·I·runner가 읽는다
             "ft_coverage": ft_coverage, "ft_degraded": ft_degraded, "signal_days": _n_sig,
             "stage_timing": stage_timing}
 
@@ -10031,6 +10144,207 @@ def trading_days_between(a, b) -> int:
     return n
 
 
+# =============================================================================
+# [v1.56.0 R73 §1 ★★★] 데이터 신선도 — '캐시 나이'가 아니라 '기대 마지막 개장일까지 내용이 있는가'로 판정
+# =============================================================================
+# 사용자 지적(2026-09-19): "오늘 날짜면 19일 예측해야 하는데 갱신 안 돼서 안 된다". 산업 리포트23: 09-19(토) 실행인데
+#   기준일 09-17 · 대상일 09-18(이미 지난 날). S/I는 09-18을 받아 놓고도(10시트 [신선도] ★) M 달력(SPY 인덱스)이
+#   09-17에서 끝나 전부 절단됐다. 원인 셋: (1) _read_cache TTL 12h가 내용의 최신성을 묻지 않음 (2) _yahoo_degenerate가
+#   마지막일을 보지 않음 (3) M에 신선도 가드가 없음(S v0.57.0 K1은 섹터·산업 ETF만 고쳤다).
+# 여기 함수들이 그 셋을 막는다. SELF_TEST·DATA_END(고정 기간) 실행에서는 전부 꺼진다(_freshness_active).
+_ET_TZ = "America/New_York"
+
+
+def now_et(now=None) -> pd.Timestamp:
+    """[v1.56.0 R73] 현재(또는 주입된) 시각을 미국 동부시각(tz-aware)으로. now가 naive면 **ET로 해석**한다(테스트 주입용).
+    tz 데이터가 없는 환경이면 경고 후 UTC−5 고정(보수적 — 서머타임 중에는 1시간 늦게 '마감'으로 본다)."""
+    try:
+        if now is None:
+            return pd.Timestamp.now(tz="UTC").tz_convert(_ET_TZ)
+        ts = pd.Timestamp(now)
+        return ts.tz_localize(_ET_TZ) if ts.tzinfo is None else ts.tz_convert(_ET_TZ)
+    except Exception as e:
+        log("DATA", kv(event="et_timezone_fallback", err=type(e).__name__, note="UTC−5 고정으로 계산"), "warning")
+        ts = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+        if ts.tzinfo is None:
+            return ts.tz_localize("Etc/GMT+5")
+        return ts.tz_convert("Etc/GMT+5")
+
+
+def previous_trading_day(d) -> pd.Timestamp:
+    """[v1.56.0 R73] d(제외) 직전의 NYSE 개장일."""
+    ts = pd.Timestamp(d).normalize() - pd.Timedelta(days=1)
+    for _ in range(15):
+        if is_trading_day(ts):
+            return ts
+        ts -= pd.Timedelta(days=1)
+    return pd.Timestamp(d).normalize() - pd.offsets.BDay(1)
+
+
+def expected_last_trading_day(now=None, settle_minutes: Optional[int] = None, cfg: Config = CFG) -> pd.Timestamp:
+    """[v1.56.0 R73 §1-3(b)] '지금 종가가 존재해야 하는 마지막 개장일'(naive 날짜).
+
+    ET 기준 오늘이 개장일이고 16:00 + settle_minutes(기본 cfg.DATA_SETTLE_MINUTES=60)가 지났으면 **오늘**,
+    아니면 **직전 개장일**. NYSE 정규 휴장일(성금요일 휴장·콜럼버스데이/재향군인의날 개장)은 nyse_holidays()로 반영.
+    DATA_END가 있으면 min(기대일, DATA_END).
+    ⚠ 조기폐장일(추수감사절 다음날·7/3·12/24, 13:00 마감)은 규칙에 없어 17:00 전까지 **전 개장일**을 기대한다
+      (보수적 — 오경보 없이 한 번 더 재수집할 뿐이다).
+    예: 금 15:00 ET → 목 · 금 17:30 → 금 · 토/일 → 금 · 월 08:00 → 금 · 월 17:30 → 월."""
+    et = now_et(now)
+    settle = int(cfg.DATA_SETTLE_MINUTES if settle_minutes is None else settle_minutes)
+    today = pd.Timestamp(et.date())
+    ready = et >= et.normalize() + pd.Timedelta(hours=16, minutes=settle)
+    exp = today if (is_trading_day(today) and ready) else previous_trading_day(today)
+    if cfg.DATA_END:
+        exp = min(exp, pd.Timestamp(cfg.DATA_END).normalize())
+    return exp
+
+
+def _freshness_active(cfg: Config) -> bool:
+    """[v1.56.0 R73] 신선도 판정을 할 실행인가 — 합성(SELF_TEST)·고정 기간(DATA_END) 실행은 아니다."""
+    return bool(getattr(cfg, "DATA_FRESHNESS_CHECK", True)) and not cfg.SELF_TEST and not cfg.DATA_END
+
+
+def _yahoo_is_stale(ticker: str, df: Optional[pd.DataFrame], expected: pd.Timestamp,
+                    cfg: Config = CFG) -> Tuple[bool, str]:
+    """[v1.56.0 R73 §1-3(c)] 프레임의 마지막일이 기대 개장일보다 DATA_STALE_MAX_TRADING_DAYS 개장일 이상 앞이면 뒤처짐.
+    _yahoo_degenerate()가 보지 않는 '끝'을 본다(교훈 22 — 검사 함수의 이름이 곧 검사 범위)."""
+    if df is None or len(df) == 0:
+        return True, "빈 프레임"
+    last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
+    lag = trading_days_between(last, expected)
+    if lag >= int(cfg.DATA_STALE_MAX_TRADING_DAYS):
+        return True, f"마지막 {last.date()} < 기대 {pd.Timestamp(expected).date()}({lag}개장일)"
+    return False, ""
+
+
+def _drop_partial_bars(ticker: str, df: Optional[pd.DataFrame], expected: Optional[pd.Timestamp],
+                       cfg: Config = CFG, where: str = "") -> Optional[pd.DataFrame]:
+    """[v1.56.0 R73 §1-3(d)] 기대 개장일보다 **미래 날짜**의 봉 = 장중 미완성 봉(현재가가 Close로 들어간 봉)을 버린다.
+    정의상 기대일 이후의 봉은 아직 확정되지 않았다 — 시각 판단은 expected_last_trading_day()가 이미 했다.
+    이 봉이 캐시에 써지면 12시간 동안 '장중 가격으로 계산한 종가 신호'가 된다(잠재 결함, R73 발견)."""
+    if (df is None or len(df) == 0 or expected is None or not bool(getattr(cfg, "DROP_PARTIAL_LAST_BAR", True))):
+        return df
+    idx = pd.DatetimeIndex(df.index).normalize()
+    fut = idx > pd.Timestamp(expected)
+    if not fut.any():
+        return df
+    dropped = sorted({str(d.date()) for d in idx[fut]})
+    log("DATA", kv(event="yahoo_partial_bar_dropped", series=ticker, dropped=",".join(dropped[:3]),
+                   n=int(fut.sum()), expected=str(pd.Timestamp(expected).date()), where=where or "-",
+                   note="기대 개장일 이후 봉 = 장중 미완성 봉 → 제거(캐시에도 쓰지 않는다)"))
+    return df.loc[~fut]
+
+
+def ensure_fresh_yahoo(px_dict: Dict[str, Optional[pd.DataFrame]], cfg: Config = CFG,
+                       diag: Optional[List[dict]] = None, now=None) -> Tuple[Dict[str, Optional[pd.DataFrame]], dict]:
+    """[v1.56.0 R73 §1-3(e)] 수집 직후 신선도 감사 — S v0.57.0 K1(ensure_fresh_sector_prices)과 같은 설계를 M에.
+
+    기대일(expected_last_trading_day)보다 뒤처진 티커는 **캐시를 건너뛰고 1회 재수집**(fetch_yahoo(use_cache=False,
+    allow_fallback=False) — 지연캐시·FRED 대체 경로를 타지 않는다: 이 함수의 목적은 '더 최신'이지 '무엇이든'이 아니다).
+    더 최신이면 교체, 아니면 종전 유지(데이터를 잃지 않는다). 결과를 diag 종류 "신선도"로 **반드시** 남긴다.
+    diag 종류가 "FRED대체"인 티커는 제외(FRED VXVCLS는 하루 늦게 발표돼 항상 1일 뒤처져 보인다 — 오경보 방지, 로그만).
+    반환: (px_dict, info) — info = {checked, expected, anchor(=TRADE_TICKER), last, lag_trading_days, refetched,
+    fixed, still_stale, fred_lag}. run()이 res["data_freshness"]로 싣고 00/10시트·runner 배너가 읽는다."""
+    info: dict = {"checked": False, "expected": None, "anchor": cfg.TRADE_TICKER, "last": None,
+                  "lag_trading_days": 0, "refetched": [], "fixed": [], "still_stale": [], "fred_lag": []}
+    if not _freshness_active(cfg):
+        return px_dict, info
+    try:
+        exp = expected_last_trading_day(now, cfg=cfg)
+    except Exception as e:
+        log("DATA", kv(event="freshness_calendar_failed", err=type(e).__name__,
+                       note="신선도 감사를 건너뛴다(리포트는 계속)"), "warning")
+        return px_dict, info
+    info.update(checked=True, expected=exp)
+    fred_fb = {d.get("시리즈") for d in (diag or []) if d.get("종류") == "FRED대체"}
+    for t in list(px_dict.keys()):
+        df = px_dict.get(t)
+        if df is None or len(df) == 0:
+            continue
+        stale, why = _yahoo_is_stale(t, df, exp, cfg)
+        if not stale:
+            continue
+        last = pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
+        if t in fred_fb:
+            info["fred_lag"].append(t)
+            log("DATA", kv(event="fred_fallback_lag", series=t, last=str(last.date()), expected=str(exp.date()),
+                           note="FRED 대체 시리즈는 하루 늦게 발표된다 — 재수집하지 않음"))
+            continue
+        info["refetched"].append(t)
+        new = None
+        try:
+            new = fetch_yahoo(t, cfg, use_cache=False, diag=None, allow_fallback=False)
+        except Exception as e:
+            log("DATA", kv(event="freshness_refetch_error", series=t, err=type(e).__name__, msg=str(e)[:120]), "warning")
+        new_last = (pd.Timestamp(pd.DatetimeIndex(new.index).max()).normalize()
+                    if new is not None and len(new) else None)
+        if new_last is not None and new_last > last:
+            px_dict[t] = new
+            info["fixed"].append(t)
+            verdict = f"★ 재수집 성공 — {last.date()} → {new_last.date()}"
+            lvl = "info"
+        elif new_last is not None:
+            verdict = (f"⚠ 재수집했으나 그대로({new_last.date()}) — 데이터 제공자가 아직 {exp.date()}를 주지 않는다")
+            lvl = "warning"
+        else:
+            verdict = f"⚠⚠ 재수집 실패 — {last.date()}까지의 데이터로 진행(기대 {exp.date()})"
+            lvl = "warning"
+        if not (new_last is not None and new_last > last) or _yahoo_is_stale(t, px_dict[t], exp, cfg)[0]:
+            info["still_stale"].append(t)
+        lag = trading_days_between(last, exp)
+        log("DATA", kv(event="freshness_refetch", series=t, was=str(last.date()),
+                       now=str((new_last or last).date()), expected=str(exp.date()), lag_trading_days=lag,
+                       fixed=bool(new_last is not None and new_last > last)), lvl)
+        if diag is not None:
+            _cur = px_dict[t]
+            diag.append({"시리즈": t, "종류": "신선도", "사유": f"{verdict} (뒤처짐 {lag}개장일 · 기대 {exp.date()})",
+                         "행수": int(len(_cur)), "시작": str(pd.Timestamp(_cur.index.min()).date()),
+                         "종료": str(pd.Timestamp(_cur.index.max()).date())})
+    anc = px_dict.get(cfg.TRADE_TICKER)
+    if anc is not None and len(anc):
+        a_last = pd.Timestamp(pd.DatetimeIndex(anc.index).max()).normalize()
+        info["last"] = a_last
+        info["lag_trading_days"] = int(trading_days_between(a_last, exp))
+    if not info["refetched"]:
+        log("DATA", kv(event="freshness_ok", expected_last=str(exp.date()), tickers=len(px_dict),
+                       anchor_last=str(info["last"].date()) if info["last"] is not None else "-",
+                       note="전 티커가 기대 개장일까지 최신"))
+    else:
+        log("DATA", kv(event="freshness_summary", checked=len(px_dict), stale=len(info["refetched"]),
+                       fixed=len(info["fixed"]), still_stale=",".join(info["still_stale"]) or "-",
+                       expected_last=str(exp.date()), note="뒤처진 티커를 캐시 우회 재수집했다"), "warning")
+    if info["lag_trading_days"] > 0:
+        # 달력 앵커(SPY)가 뒤처지면 S·I·K가 새 데이터를 받았어도 전부 이 날짜로 절단된다 — 크게 알린다.
+        log("DATA", kv(event="calendar_stale", anchor=cfg.TRADE_TICKER, last=str(info["last"].date()),
+                       expected=str(exp.date()), lag_trading_days=info["lag_trading_days"],
+                       next_step="Yahoo가 그 날 종가를 아직 주지 않는다 — 잠시 뒤 재실행하거나 10시트 [신선도] 행 확인"),
+            "error")
+    return px_dict, info
+
+
+def freshness_summary_line(res: dict) -> str:
+    """[v1.56.0 R73 §1-3(h)] 00시트 '데이터 신선도' 1행 — M·S·I 공용(단일 출처)."""
+    fi = res.get("data_freshness") or {}
+    if not fi.get("checked"):
+        cfg_ = res.get("cfg")
+        why = ("합성데이터(SELF_TEST)" if (cfg_ is not None and getattr(cfg_, "SELF_TEST", False))
+               else ("DATA_END 고정 실행" if (cfg_ is not None and getattr(cfg_, "DATA_END", None))
+                     else "검사 안 함(DATA_FRESHNESS_CHECK=False 또는 구버전 번들)"))
+        return f"판정 생략 — {why}"
+    exp = pd.Timestamp(fi["expected"]).date()
+    last = pd.Timestamp(fi["last"]).date() if fi.get("last") is not None else "-"
+    lag = int(fi.get("lag_trading_days") or 0)
+    head = (f"기대 마지막 개장일 {exp} · {fi.get('anchor', 'SPY')} 마지막 {last} "
+            + ("★ 최신" if lag == 0 else f"⚠⚠ {lag}개장일 뒤처짐 — S·I·K 전부 {last}로 절단"))
+    tail = f" · 재수집 {len(fi.get('refetched', []))}건(성공 {len(fi.get('fixed', []))})"
+    if fi.get("still_stale"):
+        tail += f" · 여전히 뒤처짐: {', '.join(fi['still_stale'][:6])}"
+    if fi.get("fred_lag"):
+        tail += f" · FRED대체(하루 늦음·정상): {', '.join(fi['fred_lag'])}"
+    return head + tail
+
+
 def _next_day_action(target: float, exec_now: float, lang: str = "kr") -> str:
     """[v1.24.0] action_labels()와 동일한 판정 규칙(d=target-exec_now의 부호, 시작/종료가
     0 이하인지)을 '현재 체결비중 -> 다음 거래일 목표비중' 전환 1건에 재적용한다."""
@@ -10042,6 +10356,96 @@ def _next_day_action(target: float, exec_now: float, lang: str = "kr") -> str:
         return ("전량매도" if target <= eps else "부분매도") if lang == "kr" else \
                ("SELL" if target <= eps else "REDUCE")
     return "보유/관망" if lang == "kr" else "HOLD"
+
+
+def reentry_audit(sig: pd.DataFrame, bt: pd.DataFrame, cfg: Config = CFG,
+                  asset_ret: Optional[pd.DataFrame] = None, asset_label: str = "자산",
+                  horizons: Tuple[int, ...] = (5, 10, 21, 42)) -> pd.DataFrame:
+    """[v1.56.0 R73 §4-4 · 계측 전용 — 라이브 파라미터 무변경] 06e_재진입감사.
+
+    M 국면이 RISK_OFF → (중립/상승/추세) 로 바뀐 **전환일마다** 이후 N거래일의 수익·노출·놓친 몫을 잰다.
+    왜: PLAN73 §3-W2 — 산업 상승 미참여 469구간 중 227건이 M 하락 국면 안에서 시작했다. 그것이 '재진입이 늦어서'인지
+      '재진입 뒤 재하락을 피한 대가'인지를 매 실행 자동으로 보이게 한다(R73 실측 16회: 21일 놓친 몫 +159%p(29합)로 작고,
+      42일이면 재하락 3회가 상쇄해 −557). 이 시트는 M 정밀도 라운드(HANDOFF §8-6)의 **재료**다 — 여기서 고르지 않는다.
+    정의(근사·진단): 수익 r = bt['ret_cc'](종가→종가) · 노출 w = bt['pos_exec'](t−1 종가 결정 → t 체결).
+      놓친(%p) = Σ_{t+1..t+N} (1−w)·r × 100 — 양수면 그만큼 상승을 못 담았고, 음수면 그만큼 하락을 피했다.
+      전량 복귀(거래일) = 전환 후 w ≥ 0.9가 처음 된 날까지. 창이 데이터 끝을 넘으면 '미완'.
+    asset_ret(열=자산, 일간 단순수익)를 주면 같은 전환일에 자산 평균·중위 누적과 자산별 21일 놓친 몫 블록(C)을 붙인다
+      (I 계층 25_재진입감사가 29산업 bh_ret로 호출). 체결 노출은 같은 M 노출(m_inherit)이다."""
+    rows: List[dict] = []
+    try:
+        sig_start = pd.Timestamp(cfg.SIGNAL_START)
+        st = sig["state"].astype(object)
+        st = st.loc[st.index >= sig_start]
+        idx = st.index
+        r = bt["ret_cc"].reindex(idx).astype(float).fillna(0.0)
+        w = bt["pos_exec"].reindex(idx).astype(float).fillna(0.0)
+        prev = st.shift(1)
+        trans = idx[(prev == "RISK_OFF").values & (st != "RISK_OFF").values]
+        AR = asset_ret.reindex(idx).astype(float).fillna(0.0) if asset_ret is not None and len(asset_ret.columns) else None
+        blk = "A. 전환 사건별"
+        rows.append({"블록": blk, "전환일": "── 읽는 법 ──",
+                     "설명": ("M 국면 RISK_OFF가 끝난 날(전환일) 이후 N거래일: SPY 누적(%) · 노출 평균 · 놓친(%p)=Σ(1−노출)·수익. "
+                            "놓친 > 0 이면 재진입이 늦어 상승을 덜 담은 것, < 0 이면 재진입을 미뤄 재하락을 피한 것. "
+                            "근사(종가수익×체결비중) · 진단 전용 — 라이브 규칙을 바꾸지 않는다.")})
+        pos_of = {d: i for i, d in enumerate(idx)}
+        agg: Dict[int, List[Tuple[float, float, float]]] = {h: [] for h in horizons}
+        asset_miss21: Dict[str, float] = {}
+        for d in trans:
+            i = pos_of[d]
+            j = i - 1
+            run_len = 0
+            while j >= 0 and st.iloc[j] == "RISK_OFF":
+                run_len += 1
+                j -= 1
+            full = np.flatnonzero(w.values[i + 1:] >= 0.9)
+            back = int(full[0] + 1) if len(full) else np.nan
+            row = {"블록": blk, "전환일": str(d.date()), "직전 RISK_OFF 연속(거래일)": run_len,
+                   "전환 후 국면": str(st.iloc[i]), "전량 복귀(거래일)": back}
+            for h in horizons:
+                seg = slice(i + 1, i + 1 + h)
+                n_ok = len(r.values[seg])
+                cum = float(r.values[seg].sum()) * 100.0
+                wm = float(w.values[seg].mean()) if n_ok else np.nan
+                miss = float(((1.0 - w.values[seg]) * r.values[seg]).sum()) * 100.0
+                row[f"SPY {h}일(%)"] = round(cum, 2)
+                row[f"노출 {h}일"] = round(wm, 3) if n_ok else np.nan
+                row[f"놓친 {h}일(%p)"] = round(miss, 2)
+                if AR is not None:
+                    a_cum = AR.values[seg].sum(axis=0) * 100.0
+                    a_miss = ((1.0 - w.values[seg])[:, None] * AR.values[seg]).sum(axis=0) * 100.0
+                    row[f"{asset_label} 평균 {h}일(%)"] = round(float(np.mean(a_cum)), 2)
+                    row[f"{asset_label} 놓친 합 {h}일(%p)"] = round(float(np.sum(a_miss)), 1)
+                    if h == 21:
+                        for k, c in enumerate(AR.columns):
+                            asset_miss21[c] = asset_miss21.get(c, 0.0) + float(a_miss[k])
+                if n_ok == h:
+                    agg[h].append((cum, wm, miss))
+            row["창"] = "완결" if (i + max(horizons) < len(idx)) else "미완(최근)"
+            rows.append(row)
+        blk = "B. 요약"
+        for h in horizons:
+            v = agg[h]
+            if not v:
+                rows.append({"블록": blk, "전환일": f"N={h}", "설명": "완결된 창 없음"})
+                continue
+            a = np.array(v)
+            rows.append({"블록": blk, "전환일": f"N={h}일", "설명": f"완결 사건 {len(v)}개",
+                         f"SPY {h}일(%)": round(float(a[:, 0].mean()), 2), f"노출 {h}일": round(float(a[:, 1].mean()), 3),
+                         f"놓친 {h}일(%p)": round(float(a[:, 2].sum()), 2),
+                         "직전 RISK_OFF 연속(거래일)": np.nan,
+                         "전환 후 국면": f"SPY 중위 {float(np.median(a[:, 0])):+.2f}% · 놓친 양수 {int((a[:, 2] > 0).sum())}/{len(v)}"})
+        if asset_miss21:
+            blk = "C. 자산별 21일 놓친 합"
+            for c, v in sorted(asset_miss21.items(), key=lambda kv_: -kv_[1]):
+                rows.append({"블록": blk, "전환일": c, f"놓친 21일(%p)": round(v, 2),
+                             "설명": "전환일 전부의 합 — 양수가 큰 자산일수록 M 재진입 지연의 비용이 컸다"})
+        log("REPORT", kv(event="reentry_audit_ready", transitions=len(trans), assets=(len(AR.columns) if AR is not None else 0),
+                         miss21_sum=round(sum(x[2] for x in agg.get(21, [])), 2) if 21 in agg else "-"))
+    except Exception as e:
+        log("REPORT", kv(event="reentry_audit_failed", err=type(e).__name__, msg=str(e)[:160]), "warning")
+        rows.append({"블록": "오류", "전환일": "-", "설명": f"산출 실패: {type(e).__name__}: {str(e)[:120]}"})
+    return pd.DataFrame(rows)
 
 
 def build_next_day_prediction(res: dict, cfg: Config = CFG) -> dict:
@@ -10064,21 +10468,30 @@ def build_next_day_prediction(res: dict, cfg: Config = CFG) -> dict:
              if col in sig.columns and bool(sig[col].iloc[-1])]
     reason = res["reason"].iloc[-1] if "reason" in res and len(res["reason"]) else ""
     stale_note = ""
+    target_passed = False
+    # [v1.56.0 R73 §1-3(f)] 문구를 '기대 마지막 개장일'(ET 16:00+여유 · NYSE 달력) 기준으로 바꾼다.
+    #   종전(v1.35.0)은 놓친 개장일이 1이면 무조건 "오늘 종가 미반영(장중이거나 미갱신)"이라 적었다 — 리포트23(09-19 토)에서
+    #   빠진 것은 '오늘'이 아니라 **어제(09-18 금)** 종가였고, 대상일 09-18은 이미 지난 날이었다(사용자 지적).
     try:
-        today = pd.Timestamp.now().normalize()
-        # [v1.35.0 §B] 달력일이 아니라 '놓친 개장일'로 센다. 금요일 종가를 연휴 뒤 화요일에 보면
-        #   달력으로는 4일이지만 놓친 거래일은 0일이다(종전엔 이 오경보가 매 리포트 상단에 떴다).
-        missed = trading_days_between(last, today)
-        gap_days = (today - pd.Timestamp(last).normalize()).days
-        if missed >= 2:
-            stale_note = (f" [주의: 기준일 이후 개장일이 {missed}일 지났다(달력 {gap_days}일) — "
-                          f"오늘 {today.date()} 기준 미실행 구간 확인]")
-        elif missed == 1:
-            stale_note = f" [참고: 오늘({today.date()}) 종가가 아직 반영되지 않았다 — 장중이거나 데이터 미갱신]"
-    except Exception:
-        pass
+        if cfg.SELF_TEST or cfg.DATA_END:
+            stale_note = " [고정 기간 실행(SELF_TEST/DATA_END) — 신선도 판정 생략]"
+        else:
+            et = now_et()
+            today_et = pd.Timestamp(et.date())
+            exp = expected_last_trading_day(cfg=cfg)
+            last_n = pd.Timestamp(last).normalize()
+            if last_n < exp:
+                n_lag = trading_days_between(last_n, exp)
+                stale_note = (f" [⚠ 데이터 뒤처짐: 마지막 {last_n.date()} < 기대 {exp.date()}({n_lag}개장일) — "
+                              f"재수집 실패/제공자 미갱신. 이 예측의 대상일 {pd.Timestamp(nxt).date()}은 이미 지났을 수 있다]")
+            elif is_trading_day(today_et) and exp < today_et:
+                stale_note = " [장중/마감 직후 — 오늘 종가 미반영(정상)]"
+            target_passed = bool(pd.Timestamp(nxt).normalize() < today_et and is_trading_day(nxt))
+    except Exception as e:
+        log("REPORT", kv(event="next_day_stale_note_failed", err=type(e).__name__), "debug")
     return {
         "기준일": last, "기준일_경과주의": stale_note, "다음거래일": nxt,
+        "대상일_경과": target_passed,   # [v1.56.0 R73] 대상일이 실행 시점에 이미 지났나(00시트 ⚠ 표시)
         "확정국면": state_txt, "확정국면_원시": state_raw,
         "목표비중": round(target, 2), "체결비중": round(exec_now, 2),
         "예상행동_kr": _next_day_action(target, exec_now, "kr"),
@@ -10555,6 +10968,8 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         "06b_운용통계": extra,
         "06c_임계값민감도": res.get("sens", pd.DataFrame()),
         "06d_반감기민감도": res.get("hl_sens", pd.DataFrame()),
+        # [v1.56.0 R73 §4-4] 재진입 감사(계측 전용 — RISK_OFF 종료 후 N일 SPY·노출·놓친 몫)
+        "06e_재진입감사": reentry_audit(res["sig"], res["bt"], cfg),
         "07_연도별성과": ann,
         "08_워크포워드가중치": wf,
         "09_국면통계": regime_stats,
@@ -10689,8 +11104,11 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                           "실매매 주문에 반영되지 않는다."),
         # [v1.24.0 §1.A] 다음 거래일 예측 — 새 계산 없음, t일 확정 신호(target_pos)를 표시만
         # 재구성(§0.7: bt["pos_exec"]가 이미 shift(1)이라 계산은 원래부터 t+1 예측이었음).
+        # [v1.56.0 R73 §1-3(h)] 데이터 신선도 1행(항상) — 기대 마지막 개장일 대비 SPY(달력 앵커) 마지막일.
+        ("데이터 신선도", freshness_summary_line(res)),
         ("다음 거래일 예측 - 기준일(데이터)", f"{nd['기준일'].date()}{nd['기준일_경과주의']}"),
-        ("다음 거래일 예측 - 대상일", f"{nd['다음거래일'].date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영)"),
+        ("다음 거래일 예측 - 대상일", f"{nd['다음거래일'].date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영)"
+                                  + ("  ⚠ 실행 시점에 이미 지난 날" if nd.get("대상일_경과") else "")),
         ("다음 거래일 예측 - 확정 국면(t일 종가 기준)", nd["확정국면"]),
         ("다음 거래일 예측 - 목표비중", f"{nd['목표비중']:.2f}"),
         ("다음 거래일 예측 - 현재 체결비중(t일)", f"{nd['체결비중']:.2f}"),
@@ -10904,6 +11322,13 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # 만드는 중에 그 표를 포함한 시트를 쓰는 시간을 알 수 없음) 때문에 이 표에는 넣지 않고,
     # 대신 REPORT 로그의 report_ready 이벤트(elapsed_s)로 별도 확인한다(하위 log 호출 참조).
     # 하위호환: 옛 res(stage_timing 없는 캐시된 결과)가 들어오면 표를 조용히 생략한다.
+    # [v1.56.0 R73 §1-3(e)] 달력 앵커(SPY)가 재수집 후에도 뒤처졌으면 00시트 **2번째 줄**에 크게 — 조용히 넘어가지 않는다.
+    _fi = res.get("data_freshness") or {}
+    if _fi.get("checked") and int(_fi.get("lag_trading_days") or 0) > 0:
+        meta.insert(1, ("⚠⚠ 데이터 뒤처짐",
+                        f"SPY 마지막 {pd.Timestamp(_fi['last']).date()} < 기대 {pd.Timestamp(_fi['expected']).date()} "
+                        f"({int(_fi['lag_trading_days'])}개장일) — 재수집 실패(제공자 미갱신). 아래 '다음 거래일 예측'은 "
+                        f"{next_trading_day(_fi['last']).date()}용이며 이미 지난 날일 수 있다. 잠시 뒤 재실행할 것."))
     _stage_timing = res.get("stage_timing")
     if _stage_timing:
         _run_total = _stage_timing.get("12_run()합계",
@@ -10979,8 +11404,8 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.55.0"
-BUNDLE_VERSION_DATE = "2026-09-18"
+BUNDLE_VERSION = "v1.56.0"
+BUNDLE_VERSION_DATE = "2026-09-19"
 # [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
 #   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /
 #   decay_weights / composite 입력 스펙에만 의존한다. ⚠ 그 네 곳의 **산식**이 바뀔 때만 이 값을 올릴 것(안 올리면 오래된

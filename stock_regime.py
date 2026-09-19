@@ -1,5 +1,10 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.3.2 - 2026-09-19 - [R73 날짜 갱신 — 가격 캐시를 내용(기대 개장일)으로도 판정 · 장중 미완성 봉 제거]
+#    사용자 지적(2026-09-19 "날짜 지나면 캐시 갱신 — 19일이면 19일 예측"). download_prices()의 캐시는 CACHE_DAYS(1일) **나이만**
+#    봤다 — M·S와 같은 결함. 신설 expected_last_trading_day()(M v1.56.0 위임 · 없으면 보수 사본)와 _prices_freshness():
+#    캐시 전 종목의 최신 마지막일 < 기대일이면 재다운로드(로그 prices_cache_stale_refetch), 기대일 이후 봉 제거.
+#    StockConfig.DATA_FRESHNESS_CHECK(True) 신설(END 지정 실행은 검사 안 함). 라이브 규칙·배분·신호 무변경.
 #  VERSION: v0.3.1 - 2026-09-15 - [★★ 00A 실패 무음 금지 · 00 시트에 비중 합계 노출] REPORT62.
 #    ── ★★★ R61에서 일어난 일: 코드는 고쳤는데 **구버전으로 실행**됐다 ──────────────────
 #      사용자 지적: "내가 시트 새로 생성해서 맨앞에 넣으라고 했는데 왜 안했어 (…) 비중 1 문제도 안고쳤어"
@@ -279,8 +284,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.3.1"
-VERSION_DATE = "2026-09-15"
+VERSION = "v0.3.2"
+VERSION_DATE = "2026-09-19"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -334,6 +339,10 @@ class StockConfig:
     END: Optional[str] = None          # None이면 최신
     CACHE_DIR: str = "./_stock_cache"
     CACHE_DAYS: int = 1                # 캐시 유효기간(일) — 같은 날 재실행은 재다운로드하지 않는다
+    # [v0.3.2 R73 §1-4] 캐시 유효성을 '나이'가 아니라 '기대 마지막 개장일까지 내용이 있는가'로도 판정한다
+    #   (M v1.56.0과 같은 규칙 — M이 로드돼 있으면 M.expected_last_trading_day로 위임). 기대일보다 미래의 봉
+    #   (장중 미완성 봉)은 버린다. END를 지정한 실행에서는 검사하지 않는다.
+    DATA_FRESHNESS_CHECK: bool = True
     UNIVERSE: Dict[str, str] = field(default_factory=lambda: dict(STOCK_UNIVERSE))
 
     # ---- ★ 펀더멘탈 인과 처리(파일 헤더 참조) ----
@@ -496,18 +505,72 @@ def _cache_fresh(path: str, days: int) -> bool:
     return age <= max(float(days), 0.0)
 
 
+def expected_last_trading_day(now=None, M=None) -> pd.Timestamp:
+    """[v0.3.2 R73 §1-4] 지금 종가가 있어야 하는 마지막 미국 개장일. M(v1.56.0+)이 있으면(인자 또는 이미 로드된
+    sys.modules['market_regime_trader']) M.expected_last_trading_day로 **위임**(ET 16:00+여유 · NYSE 달력 — 단일 정본).
+    없으면 보수적 사본: 오늘(로컬) 직전 평일(주말만 건너뜀 — 휴장일엔 하루 일찍 기대해 오경보 없이 한 번 더 받을 뿐)."""
+    _m = M if M is not None else sys.modules.get("market_regime_trader")
+    if _m is not None and hasattr(_m, "expected_last_trading_day"):
+        try:
+            return _m.expected_last_trading_day(now=now)
+        except Exception as e:
+            log("DATA", kv(event="expected_day_delegate_failed", err=type(e).__name__), level="warning")
+    t = pd.Timestamp(now if now is not None else pd.Timestamp.now()).normalize()
+    t -= pd.Timedelta(days=1)
+    while t.weekday() >= 5:
+        t -= pd.Timedelta(days=1)
+    return t
+
+
+def _prices_freshness(out: Dict[str, pd.DataFrame], cfg: StockConfig, where: str) -> Tuple[Dict[str, pd.DataFrame], bool, str]:
+    """[v0.3.2 R73] (미래 봉 제거된 out, 뒤처짐 여부, 사유). 전 종목 중 **가장 최신 마지막일**이 기대일보다 앞이면 뒤처짐
+    (한 종목의 상장폐지·결측이 매 실행 재다운로드를 부르지 않게 max로 본다). 미래 봉 = 장중 미완성 → 제거."""
+    if not cfg.DATA_FRESHNESS_CHECK or cfg.END or not out:
+        return out, False, ""
+    try:
+        exp = expected_last_trading_day()
+    except Exception as e:
+        log("DATA", kv(event="freshness_calendar_failed", err=type(e).__name__), level="warning")
+        return out, False, ""
+    n_drop = 0
+    for t in list(out):
+        df = out[t]
+        fut = pd.DatetimeIndex(df.index).normalize() > exp
+        if fut.any():
+            out[t] = df.loc[~fut]
+            n_drop += int(fut.sum())
+    if n_drop:
+        log("DATA", kv(event="partial_bar_dropped", rows=n_drop, expected=str(exp.date()), where=where,
+                       note="기대 개장일 이후 봉 = 장중 미완성 봉 → 제거"))
+    lasts = [pd.Timestamp(df.index.max()).normalize() for df in out.values() if df is not None and len(df)]
+    if not lasts:
+        return out, False, ""
+    mx = max(lasts)
+    if mx < exp:
+        return out, True, f"캐시 최신일 {mx.date()} < 기대 {exp.date()}"
+    return out, False, ""
+
+
 def download_prices(tickers: List[str], cfg: StockConfig) -> Dict[str, pd.DataFrame]:
-    """OHLCV + 배당·분할 반영 종가. 실패한 티커는 건너뛰고 **이유를 남긴다**(조용히 빠지지 않게)."""
+    """OHLCV + 배당·분할 반영 종가. 실패한 티커는 건너뛰고 **이유를 남긴다**(조용히 빠지지 않게).
+    [v0.3.2 R73] 캐시는 나이(CACHE_DAYS) **그리고** 내용(기대 개장일까지 있는가)으로 판정 · 미래 봉 제거."""
     out: Dict[str, pd.DataFrame] = {}
     failed: Dict[str, str] = {}
     cp = _cache_path(cfg, f"px_{cfg.START}_{cfg.END or 'now'}.pkl")
     if _cache_fresh(cp, cfg.CACHE_DAYS):
         try:
             out = pd.read_pickle(cp)
-            log("DATA", kv(event="prices_from_cache", tickers=len(out), path=os.path.basename(cp)))
-            return out
+            out, _stale, _why = _prices_freshness(out, cfg, where="cache")
+            if not _stale:
+                log("DATA", kv(event="prices_from_cache", tickers=len(out), path=os.path.basename(cp)))
+                return out
+            log("DATA", kv(event="prices_cache_stale_refetch", reason=_why,
+                           note="캐시 나이는 유효하지만 내용이 뒤처짐 — 재다운로드(사용자 지적: 19일인데 17일 예측)"),
+                level="warning")
+            out = {}
         except Exception as e:
             log("DATA", kv(event="cache_read_failed", err=str(e)[:120], action="재다운로드"), level="warning")
+            out = {}
     try:
         import yfinance as yf
     except Exception as e:
@@ -531,6 +594,10 @@ def download_prices(tickers: List[str], cfg: StockConfig) -> Dict[str, pd.DataFr
             out[t] = df
         except Exception as e:
             failed[t] = f"{type(e).__name__}: {str(e)[:80]}"
+    out, _stale, _why = _prices_freshness(out, cfg, where="download")    # [v0.3.2 R73] 미래 봉 제거 + 뒤처짐 경고
+    if _stale:
+        log("DATA", kv(event="prices_still_stale", reason=_why, note="제공자가 아직 그 날 종가를 주지 않는다 — 진행"),
+            level="warning")
     log("DATA", kv(event="prices_downloaded", ok=len(out), failed=len(failed),
                    detail=(";".join(f"{k}={v}" for k, v in failed.items()) or "-"),
                    start=cfg.START, end=(cfg.END or "now")))
