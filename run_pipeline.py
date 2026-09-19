@@ -1,5 +1,10 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.28.0 - 2026-09-20 - [R76 — M v1.56.1 · S v0.61.2 · I v0.30.0 · K v0.3.3] 최소버전 상향.
+#    사용자 지시(2026-09-20) "의도대로 산업별 흐름을 예측했는지 확인하고 문제 찾아서 개선해" — I v0.30.0(신용 요인 대체 · 적응 부호 B4 ·
+#    요인 지속성 B3 · 전향 추적 F · 격자·26 적응 기본).
+#    · _MIN: I v0.29.0 → v0.30.0. 기능 점검 ★적응 부호·요인 지속성(I). 배너(_driver_banner)는 그대로 — 27 집계 줄이 새 항목을 싣는다.
+#    ※ 러너 실행 경로·기본값·위험 파라미터 무변경.
 #  VERSION: v1.27.0 - 2026-09-19 - [R75 — M v1.56.1 · S v0.61.2 · I v0.29.0 · K v0.3.3] 산업 고유 요인 배너 · 최소버전 상향.
 #    사용자 지시(2026-09-19) "그렇게 수정해보고"(같은 섹터 안 산업 흐름 차이 — 산업 고유 요인 예측 + 탈동조 산업 독립 취급).
 #    · 신설 _driver_banner() — I 실행 뒤 27_산업고유요인검정 '★ 판정 집계' 1줄과 [드라이버순환매격자] 1줄(구버전 I면 침묵).
@@ -1194,8 +1199,8 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v1.27.0"
-VERSION_DATE = "2026-09-19"
+VERSION = "v1.28.0"
+VERSION_DATE = "2026-09-20"
 
 MODULE_FILES = {
     "market_regime_trader": "market_regime_trader.py",
@@ -1359,7 +1364,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     # [v1.27.0 R75] 최소버전 상향 — 27_산업고유요인검정·[드라이버순환매격자]·[독립산업격자](I) · 00B ① 첫날 정렬(S).
     _MIN = {"market_regime_trader.py": ("M", "v1.56.1", M),
             "sector_rotation.py": ("S", "v0.61.2", S),
-            "industry_rotation.py": ("I", "v0.29.0", I),
+            "industry_rotation.py": ("I", "v0.30.0", I),   # [v1.28.0 R76] 적응 부호·요인 지속성·전향 추적
             "stock_regime.py": ("K", "v0.3.3", K)}
     def _vt(x):
         try:
@@ -1436,6 +1441,9 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         # [v1.27.0 R75] 같은 섹터 안 산업 흐름 차이 — 산업 고유 요인(금·유가·구리·금리곡선 …) 검정·격자
         if _tag == "I" and hasattr(_mod, "build_industry_driver_tests"):
             _feat.append("★27_산업고유요인검정·요인 격자")
+        # [v1.28.0 R76] 적응 부호(과거 노출 β̂) · 요인 지속성(B3) · 전향 추적(F)
+        if _tag == "I" and hasattr(_mod, "driver_comp"):
+            _feat.append("★적응 부호·요인 지속성")
         print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
               + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
     if _stale:
@@ -1446,7 +1454,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         print("[runner]   원인: 노트북 상단 wget이 GitHub의 **이전 파일**을 가져왔습니다.")
         print("[runner]   조치: 위 파일을 저장소(main)에 덮어쓴 뒤 다시 실행하거나,")
         print("[runner]         Kaggle 세션의 .py 캐시를 지우고(런타임 재시작) wget을 다시 받으세요.")
-        print("[runner]   확인: 산업 리포트에 **27_산업고유요인검정** 시트와 00시트 '[드라이버순환매격자]' 행이 있으면 I v0.29.0,")
+        print("[runner]   확인: 산업 리포트 27_산업고유요인검정에 'B3. 요인 지속성'·'B4. 적응 부호' 블록이 있으면 I v0.30.0,")
         print("[runner]         섹터 00B '읽는 법'에 '라이브 최종 비중'이 있으면 S v0.61.2 이상입니다.")
         print("[runner] " + "=" * 74)
     else:
