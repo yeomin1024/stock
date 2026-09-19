@@ -1,5 +1,10 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.27.0 - 2026-09-19 - [R75 — M v1.56.1 · S v0.61.2 · I v0.29.0 · K v0.3.3] 산업 고유 요인 배너 · 최소버전 상향.
+#    사용자 지시(2026-09-19) "그렇게 수정해보고"(같은 섹터 안 산업 흐름 차이 — 산업 고유 요인 예측 + 탈동조 산업 독립 취급).
+#    · 신설 _driver_banner() — I 실행 뒤 27_산업고유요인검정 '★ 판정 집계' 1줄과 [드라이버순환매격자] 1줄(구버전 I면 침묵).
+#    · _MIN: S v0.61.1 → v0.61.2 · I v0.28.0 → v0.29.0. 기능 점검 ★27_산업고유요인검정·요인 격자(I).
+#    ※ 러너 실행 경로·기본값·위험 파라미터 무변경.
 #  VERSION: v1.26.0 - 2026-09-19 - [R74 — M v1.56.1 · S v0.61.1 · I v0.28.0 · K v0.3.3] 종가결측 배너 · 캐시 폴더 상태 · 최소버전 상향.
 #    PLAN74 §1-4·§4-5(사용자 지시 2026-09-19 "개선방법 대로 코드 수정해").
 #    · 신설 _last_close_banner() — S·I 실행 뒤 last_close_missing(M 달력 마지막일에 유효 종가가 없는 티커)이 있으면 ⚠⚠⚠ 3줄,
@@ -1189,7 +1194,7 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v1.26.0"
+VERSION = "v1.27.0"
 VERSION_DATE = "2026-09-19"
 
 MODULE_FILES = {
@@ -1265,6 +1270,19 @@ def _cache_folder_report(folders: List[Tuple[str, str]]) -> None:
             print(f"[runner] 캐시 {_lab}: 상태 확인 실패({type(e).__name__})")
 
 
+def _driver_banner(I, ires: Optional[dict]) -> None:
+    """[v1.27.0 R75] I 실행 뒤 27_산업고유요인검정 집계 1줄 + [드라이버순환매격자] 1줄. 구버전 I(키 없음)면 침묵."""
+    try:
+        if not isinstance(ires, dict) or "driver_tests" not in ires or not hasattr(I, "driver_summary_line"):
+            return
+        print(f"[runner] I 산업 고유 요인(27): {I.driver_summary_line(ires.get('driver_tests'))[:300]}")
+        _g = (ires.get("driver_rot_grid") or {}).get("line")
+        if _g:
+            print(f"[runner] I [드라이버순환매격자]: {str(_g)[:300]}")
+    except Exception as e:      # 진단이 실행을 막지 않는다
+        print(f"[runner] I 산업 고유 요인 배너 실패({type(e).__name__}) — 리포트 27 시트를 확인하세요")
+
+
 def _last_close_banner(label: str, r: Optional[dict]) -> None:
     """[v1.26.0 R74 §1-4] S·I가 반환한 last_close_missing(M 달력 마지막일에 유효 종가가 없는 티커)을 크게 알린다."""
     _lm = list((r or {}).get("last_close_missing") or [])
@@ -1338,9 +1356,10 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
     # [v1.24.0 R72] M을 표에 추가(최소 v1.55.0 — 워크포워드 경계 캐시). M은 VERSION이 없고 BUNDLE_VERSION을 쓴다.
     # [v1.25.0 R73] 최소버전 상향 — 날짜 신선도(M·S·K) · 00A 라이브②(I).
     # [v1.26.0 R74] 최소버전 상향 — 종가 미확정 봉 가드(M·S·K) · 26_신호부호검정·격자 연도 일관성(I).
+    # [v1.27.0 R75] 최소버전 상향 — 27_산업고유요인검정·[드라이버순환매격자]·[독립산업격자](I) · 00B ① 첫날 정렬(S).
     _MIN = {"market_regime_trader.py": ("M", "v1.56.1", M),
-            "sector_rotation.py": ("S", "v0.61.1", S),
-            "industry_rotation.py": ("I", "v0.28.0", I),
+            "sector_rotation.py": ("S", "v0.61.2", S),
+            "industry_rotation.py": ("I", "v0.29.0", I),
             "stock_regime.py": ("K", "v0.3.3", K)}
     def _vt(x):
         try:
@@ -1414,6 +1433,9 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
             _feat.append("★[종가결측] 경고")
         if _tag == "I" and hasattr(_mod, "build_signal_sign_tests"):
             _feat.append("★26_신호부호검정·격자 연도일관")
+        # [v1.27.0 R75] 같은 섹터 안 산업 흐름 차이 — 산업 고유 요인(금·유가·구리·금리곡선 …) 검정·격자
+        if _tag == "I" and hasattr(_mod, "build_industry_driver_tests"):
+            _feat.append("★27_산업고유요인검정·요인 격자")
         print(f"[runner]   {_tag} {_fn:22s} {_got:9s} (최소 {_min}) {_ok}"
               + (f" | {' · '.join(_feat)}" if _feat else " | ⚠ 신규 기능 없음"))
     if _stale:
@@ -1424,8 +1446,8 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         print("[runner]   원인: 노트북 상단 wget이 GitHub의 **이전 파일**을 가져왔습니다.")
         print("[runner]   조치: 위 파일을 저장소(main)에 덮어쓴 뒤 다시 실행하거나,")
         print("[runner]         Kaggle 세션의 .py 캐시를 지우고(런타임 재시작) wget을 다시 받으세요.")
-        print("[runner]   확인: 산업 리포트에 **26_신호부호검정** 시트와 00A 블록 'F2. 연도 × 국면 버킷'이 있으면 I v0.28.0,")
-        print("[runner]         섹터 00시트에 '★ 00A_수익비교 시트 맨 앞에 있음'(거짓 경보 해소)이 있으면 S v0.61.1 이상입니다.")
+        print("[runner]   확인: 산업 리포트에 **27_산업고유요인검정** 시트와 00시트 '[드라이버순환매격자]' 행이 있으면 I v0.29.0,")
+        print("[runner]         섹터 00B '읽는 법'에 '라이브 최종 비중'이 있으면 S v0.61.2 이상입니다.")
         print("[runner] " + "=" * 74)
     else:
         print("[runner]   ★ 전부 최신 — 종가 미확정 봉 가드(M v1.56.1) 포함: 신선도를 '유효 종가 마지막일'로 판정하고, "
@@ -1500,6 +1522,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         ires = (hk.get("i_run") or I.run)(sres, res, M, S, icfg)
         path3 = I.build_industry_report(ires, M=M, S=S)
         _last_close_banner("I(산업·부모)", ires)
+        _driver_banner(I, ires)                      # [v1.27.0 R75]
     # ---- [v1.16.0] 4번째 계층 K(개별 주식) — 실패해도 M·S·I 리포트는 이미 만들어져 있다 ----
     #   [v1.16.1] 모듈은 위에서 이미 로드했다(배너에 버전이 찍혔고 파일 없음도 거기서 알렸다).
     kres, path4 = None, None

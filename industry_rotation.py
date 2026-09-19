@@ -1,5 +1,44 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.29.0 - 2026-09-19 - [R75 산업 고유 요인 — 27_산업고유요인검정 · [드라이버순환매격자] · [독립산업격자] · 26 요인 조건 2 · R74c 결함 4 — 라이브 무변경]
+#    사용자 질문(2026-09-19) "같은 섹터인데 산업 흐름이 다른 건 어떻게 설명할건데" → R74c 측정(리포트24): 산업 수익의 부모 설명력 R² 중위
+#    0.70 · 같은 섹터 안 연도 격차 중위 22%p · 72 섹터-연도 중 23개는 부호 반대 · 가격 상대모멘텀 6종은 부모 안 순위 정보 없음(최대 |t| 1.07).
+#    → 사용자 지시 "그렇게 수정해보고"(산업 고유 요인으로 예측 + 부모와 상관 낮은 산업의 독립 취급). 시작 v0.28.0 → 목표 v0.29.0.
+#    (§1) ★ 신설 INDUSTRY_DRIVER_TABLE(사전등록 · 23산업 31요인 · 6산업은 INDUSTRY_DRIVER_NONE에 '붙이지 않은 사유') ·
+#      _driver_series() · _expanding_z() · build_industry_driver_panel() — M 번들(res px_dict·fred 발표지연본)에 이미 있는 계열만 쓴다
+#      (추가 다운로드 0). 요인 → 확장 z(t까지, 최소 252일, ±4 절단) × 사전방향 → 산업 합성 z. 탈동조 = 부모 대비 252일 롤링 R² <
+#      DECOUPLE_R2(0.40, t까지의 창). run()이 ires["drivers"]로 싣는다.
+#    (§2) ★ 신설 27_산업고유요인검정 — build_industry_driver_tests(): 블록 B 예측(요인 z_t → t+1..t+21 부모 대비 로그 초과수익 · 21일 간격
+#      비중첩 · 전 이력 · IC·타이밍 평균·t·적중·연도 k/n·2018 전/후) · B2 사후 설명(같은 21일 요인 변화 ↔ 초과수익 상관 — 예측 아님) ·
+#      C 부모 안 횡단면(합성 z 1위 − 꼴찌 향후 21일) · D 탈동조 표 · A 집계. 후보 = 사전방향 ∧ t ≥ DRIVER_TEST_MIN_T ∧ 연도 ≥2/3 ∧
+#      N ≥ DRIVER_TEST_MIN_N ∧ 2018 전·후 모두 양수. 사전방향과 반대로 유의해도 **뒤집어 쓰지 않는다**(사후 부호 맞춤 금지). 본페로니 t 병기.
+#    (§3) ★ [드라이버순환매격자] build_driver_rotation_grid() — ROTATION_SIGNALS + DRIVER_Z(합성 z, 사전방향 +1)로 부모 안 워크포워드 채택을
+#      다시 돌리고(within_parent_walkforward_select) 격자 끈 cfg로 배분 1회 → ★ 대비 CAGR·칼마·MDD·상위5일 강건성·연도 일관. 27 블록 E·00 1행.
+#      **라이브 ★ 무변경** — DRIVER_Z 열은 results의 얕은 복제에만 붙는다.
+#    (§4) ★ [독립산업격자] 00A 블록 B 3행(탈동조일만, 결정 t → 체결 t+1): (a) 요인 역풍 → 0 (b) 요인 순풍 → 1.0 (c) 반증: 순풍 → 0.
+#      ⚠ 오프라인 사전측정(리포트24 재실행분, r75/decouple_offline.py): 탈동조일에 E_t 대신 B&H 1.0이면 XBI 311→139% · GDX 397→288% ·
+#      IYZ 219→176%(MDD 악화) — 부모와 상관이 낮아도 시장 E_t는 값이 있다. 그래서 '독립'은 E_t를 버리지 않고 요인을 **덧붙이는** 두 방향만 잰다.
+#      build_asset_return_compare: 변형 라벨이 '[태그] …'이면 그 태그로 행·판정·반증을 **가족별로** 묶는다(태그 없는 헤어컷 변형은 비트 동일).
+#    (§5) 26_신호부호검정 조건 2 추가(34 → 36): '산업 요인 역풍(합성z≤−1)'(보유일 → 컷 후보 검정) · '산업 요인 순풍(합성z≥+1)'(컷·헤어컷·
+#      중립일 → 완화 후보 검정). _sign_panel(driver_z=)·build_signal_sign_tests(driver_z=). 요인 없는 산업은 NaN → 조건 거짓.
+#    (§6) R74c 결함 수정(표시·리포트 — 신호 무관):
+#      (a) 00B: ③ 결측 산업은 ③ 비교에서 빼고 분모를 따로 센다 · ③이 전부 없으면 '판정 불가'(종전: 0/29 + ⚠⚠ 거짓 결론) · 블록 B ③ 결측이면
+#          '②−③' 공란 + '②−①(참고)'(종전: ②−①을 '②−③'·"산업이 섹터를 이겼다"로 표기). ③ 설명 = 부모 섹터 **라이브 최종 비중**(섹터 신호 +
+#          E_t 바닥·퇴출 + 초과보유 게이트). '④ 엔진 복리(%)' 열(다음날 시가 체결·편도 비용·현금이자 = 06·01_일별 전략자산곡선) 추가.
+#      (b) 00B/00C ① 첫날 정렬 — ①만 첫날 수익을 포함해 ②③④보다 하루 길었다(SOXX +2.7%). ①의 첫날 수익을 0으로(모두 1.0 시작).
+#      (c) 02_산업별단독거래 진입/청산 근거 — m_inherit면 **M 근거**("[M 상속] …" = res["reason"])를 쓴다(종전: M 국면 라벨 옆에 산업 자기
+#          점수·근거가 붙어 "위험선호 | 점수 −0.267" 같은 모순). 01_일별 '근거요약'은 종전대로 자기 국면기계 근거(00시트 안내 유지).
+#      (d) 06_성과요약·12·99 '200일선 단독(벤치마크)' — bt_ma를 SIGNAL_START로 자른다(S·M과 같게). 종전: 산업 상장일부터 전 이력 →
+#          SOXX 총수익배수 6.17인데 CAGR 7.5%(25년 분모). ⚠ 200일선 벤치 수치가 바뀐다(벤치 전용 — 라이브 무관).
+#    IndustryConfig 신설: INDUSTRY_DRIVERS · DRIVER_Z_MIN_PERIODS · DRIVER_Z_CLIP · DRIVER_TEST_H · DRIVER_TEST_MIN_N · DRIVER_TEST_MIN_T ·
+#      DECOUPLE_R2 · DECOUPLE_WIN · DRIVER_ROTATION_GRID · DECOUPLE_GRID — 전부 리포트/진단(검증 캐시 키는 M Config 파생 cfg_i라 무관).
+#      ⚠ 위험 파라미터(노출) 변경 없음 — 격자 행은 사전등록 비교일 뿐 라이브 비중을 바꾸지 않는다.
+#    영향 함수: IndustryConfig · run_industry(02 근거·bt_ma 절단) · industry_rotation_signal_specs(DRIVER_Z 등록) · INDUSTRY_DRIVER_TABLE/
+#      INDUSTRY_DRIVER_NONE/_driver_series/_expanding_z/build_industry_driver_panel/_driver_pred_stats/_driver_verdict/build_industry_driver_tests/
+#      build_driver_rotation_grid/driver_summary_line(신설) · _SIGN_SIGNALS(+2)·_sign_panel·build_signal_sign_tests · build_asset_return_compare
+#      (가족별 격자) · build_industry_curve_compare(③ 결측·① 첫날·엔진 열) · run(요인 패널·격자·26 인자·반환 3키) · build_industry_report
+#      (27·00 3행·독립산업격자·엔진 곡선 입력).
+#    연구/교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.28.0 - 2026-09-19 - [R74 판정 일관성 · 26_신호부호검정 · 00A F2 · 캐시 가시화 · 종가결측 표시 — 신호·비중·배분 무변경]
 #    PLAN74(사용자 지시 2026-09-19 "개선방법 대로 코드 수정해"). 리포트24 판정: 라이브 단일 산업 예측은 B&H 대비 복리·MDD·칼마
 #    29/29지만 [헤어컷상속격자]가 전 기간 합계만 보고 "승격 후보"라 적었고(연도 3/7 · 산업 18/29), '틀린 곳을 고칠 신호가
@@ -1586,7 +1625,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.28.0"
+VERSION = "v0.29.0"
 VERSION_DATE = "2026-09-19"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2161,6 +2200,22 @@ class IndustryConfig:
     #   다중비교에서 우연 후보를 줄인다. 두 문턱 모두 **후보 판정에만** 쓰인다(라이브 무관).
     SIGN_TEST_MIN_BP: float = 2.0
     SIGN_TEST_MIN_T: float = 2.0
+    # ---- [v0.29.0 R75] 산업 고유 요인(드라이버) · 탈동조 · 격자 2종 — 전부 리포트/진단(라이브·검증 캐시 키 밖) ----------
+    #   INDUSTRY_DRIVERS: 27_산업고유요인검정 · 26 요인 조건 · [독립산업격자] · [드라이버순환매격자]의 입력(요인 패널) 산출 스위치.
+    #   요인은 INDUSTRY_DRIVER_TABLE(사전등록)에서 오고 M 번들 계열만 쓴다(추가 다운로드 없음). 끄면 네 산출물이 모두 빠진다.
+    INDUSTRY_DRIVERS: bool = True
+    DRIVER_Z_MIN_PERIODS: int = 252          # 확장 z 최소 표본(거래일) — 그 전은 NaN(판단 없음)
+    DRIVER_Z_CLIP: float = 4.0               # z 절단(급변 1회가 합성 z를 지배하지 않게)
+    DRIVER_TEST_H: int = 21                  # 예측 지평(거래일) — 표본 간격도 같다(비중첩 → t가 독립 표본 t)
+    DRIVER_TEST_MIN_N: int = 60              # 후보 판정 최소 표본(비중첩 월 수)
+    DRIVER_TEST_MIN_T: float = 2.0           # 후보 판정 t(사전방향 일치). 본페로니 t는 시트에 병기(참고)
+    #   탈동조 = 부모 대비 252일 롤링 R² < DECOUPLE_R2(t까지의 창). 리포트24 전 기간 R²: GDX 0.12 · XBI 0.37 · IYZ 0.50 · 중위 0.70.
+    DECOUPLE_R2: float = 0.40
+    DECOUPLE_WIN: int = 252
+    #   [드라이버순환매격자] — 부모 안 리더 채택 후보에 DRIVER_Z를 더해 배분을 1회 더 돌린다(★ 무변경 · 비용 ≈ 배분 1회).
+    DRIVER_ROTATION_GRID: bool = True
+    #   [독립산업격자] — 00A 블록 B 3행(탈동조일: 요인 역풍 → 0 · 순풍 → 1.0 · 반증 순풍 → 0).
+    DECOUPLE_GRID: bool = True
     # ---- [v0.19.0 X4 신규 격자] [국면×확신캡격자] — 부모 국면 제약 × 확신캡 래더 ----
     #   왜: W3이 [국면게이트격자]를 되살리자 **리더국면 NEUTRAL이 칼마 3.787 · MDD −0.0955(= S★와 동일)**로
     #     프로젝트 최초로 S★ 칼마 3.758을 넘었다(MDD 악화 정확히 0 → 한계비율 무한).
@@ -2997,6 +3052,9 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     bt = bt.loc[bt.index >= pd.Timestamp(cfg_i.SIGNAL_START)]
     ma_pos = (trend200 > 0).astype(float).where(sig_mask, 0.0)
     bt_ma = M.run_backtest(price_i, ma_pos, cfg_i, rf)
+    # [v0.29.0 R75 §6(d)] S(6344행)·M(10019행)과 같게 신호 시작일부터 — 종전엔 산업 상장일부터 전 이력이라 06 '200일선 단독' CAGR이
+    #   25년 분모였다(SOXX 총수익배수 6.17 ↔ CAGR 7.5%, R74c). 벤치 전용 — 라이브 무관.
+    bt_ma = bt_ma.loc[bt_ma.index >= pd.Timestamp(cfg_i.SIGNAL_START)]
     t5 = time.time()
     timing["04_백테스트"] = round(t5 - t4, 2)
 
@@ -3006,7 +3064,19 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         events = pd.DataFrame()
         log("PIPE", kv(event="event_study_failed", ticker=ind_ticker, err=str(e)[:120]), M=M, level="warning")
-    trades = M.extract_trades(bt, reason, sig["state"])
+    # [v0.29.0 R75 §6(c)] 02_산업별단독거래 근거 = 거래를 실제로 만든 쪽의 근거. m_inherit면 M(SPY) 근거(res["reason"])를 쓴다 —
+    #   종전엔 '진입시 국면'(M 상속 라벨) 옆에 산업 **자기** 점수·근거가 붙어 "위험선호 | 점수 −0.267" 같은 모순이 났다(R74c).
+    #   01_일별 '근거요약'은 그대로 자기 국면기계 근거다(00시트 '⚠ 자기 국면기계 = 진단 전용' 안내).
+    _trade_reason = reason
+    if _inh.get("applied") and isinstance(res.get("reason"), pd.Series) and len(res["reason"]):
+        try:
+            _mr = res["reason"].copy()
+            _mr.index = pd.DatetimeIndex(_mr.index)
+            _trade_reason = "[M 상속] " + _mr.astype(str)
+        except Exception as _e:
+            log("PIPE", kv(event="trade_reason_m_failed", ticker=ind_ticker, err=type(_e).__name__,
+                           note="자기 국면기계 근거로 계속(02 근거 열만 영향)"), M=M, level="warning")
+    trades = M.extract_trades(bt, _trade_reason, sig["state"])
     episodes = M.drawdown_episodes(bt, cfg_i)
     t6 = time.time()
     timing["05_이벤트+거래+구간"] = round(t6 - t5, 2)
@@ -3410,6 +3480,10 @@ def industry_rotation_signal_specs(S) -> Dict[str, Tuple[int, str, str]]:
                                "SCORE_PCT와 같은 이유로 부모 안에서는 평균회귀(부모 안 IC t −2.78)"),
         "RESID_MOM_12_1_PARENT": (+1, "부모 베타중립 12−1개월 잔차모멘텀",
                                   "베타를 뺀 순수 상대 모멘텀(전통 모멘텀 팩터의 산업 버전)"),
+        # [v0.29.0 R75 §3] [드라이버순환매격자] 전용 — ROTATION_SIGNALS(★)에는 없다(격자 복제 cfg에만 추가). 등록만으로 ★는 비트 동일.
+        "DRIVER_Z": (+1, "산업 고유 요인 합성 z(사전방향 정렬)",
+                     "그 산업에만 해당하는 요인(금·유가·구리·금리곡선·실질금리 …)이 순풍일수록 부모 안에서 앞선다 — "
+                     "INDUSTRY_DRIVER_TABLE(사전등록) · 27_산업고유요인검정 블록 C가 같은 질문을 전 이력으로 잰다"),
     })
     return out
 
@@ -6789,7 +6863,8 @@ def build_industry_curve_compare(ret_df: pd.DataFrame, own_w: pd.DataFrame, pare
                                  live_w: pd.DataFrame, cfg: Any,
                                  name_map: Optional[Dict[str, str]] = None,
                                  parent_map: Optional[Dict[str, str]] = None,
-                                 focus: Optional[Tuple[str, ...]] = None, M=None
+                                 focus: Optional[Tuple[str, ...]] = None, M=None,
+                                 engine_ret: Optional[pd.DataFrame] = None
                                  ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """[00B_수익곡선비교, v0.26.0 L1 ★ 신규] 사용자 지시 "산업도 섹터랑 똑같이 단일 산업별 비교 곡선
     시트 만들고 수익 비교 시트 만들고 **변동률 높은 산업은 섹터보다 훨씬 수익률 좋아야**".
@@ -6815,9 +6890,18 @@ def build_industry_curve_compare(ret_df: pd.DataFrame, own_w: pd.DataFrame, pare
                                "판정": "ret_df와 own_w에 공통 산업이 없다"}]), pd.DataFrame())
     idx = ret_df.index
     R = ret_df[cols].astype(float).fillna(0.0)
+    # [v0.29.0 R75 §6(b)] ① 첫날 정렬 — ②③④는 첫날 비중이 0(shift(1))이라 첫날 수익을 못 받는데 ①만 받았다(하루 더 긴 곡선,
+    #   SOXX +2.7%). 첫날 수익을 0으로 두어 네 곡선이 같은 날(첫 종가) 1.0에서 출발한다. ②③④ 값은 불변.
+    if len(R):
+        R.iloc[0] = 0.0
     W2 = own_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
+    # [v0.29.0 R75 §6(a)] ③ 결측 산업 — 부모 비중이 없는 산업을 0 비중(= 0% 곡선)으로 만들어 '② > ③'가 공짜로 참이 되거나,
+    #   ③이 통째로 없을 때 0/29 + '⚠⚠ ②가 ③을 못 이긴다'는 거짓 결론을 쓰던 것(리포트24)을 막는다. 있는 산업만 센다.
+    _avail3 = {t: bool(parent_w is not None and t in getattr(parent_w, "columns", [])
+                       and pd.to_numeric(parent_w[t], errors="coerce").notna().any()) for t in cols}
     W3 = (parent_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
-          if parent_w is not None else None)
+          if parent_w is not None and any(_avail3.values()) else None)
+    WE = (engine_ret.reindex(index=idx).astype(float) if isinstance(engine_ret, pd.DataFrame) else None)
     W4 = (live_w.reindex(index=idx, columns=cols).astype(float).fillna(0.0)
           if live_w is not None else None)
     rows: List[dict] = []
@@ -6834,16 +6918,21 @@ def build_industry_curve_compare(ret_df: pd.DataFrame, own_w: pd.DataFrame, pare
     rows.append({"블록": "A. 산업별 4곡선 비교", "산업": "── 읽는 법 ──",
                  "판정": ("① **B&H** = 그냥 보유 · ② **단일 산업 예측** = 그 산업 **자기 국면기계**로 거래(⚠ 진단 — 라이브 아님; "
                         "00A의 ②′와 같은 것) · "
-                        "③ **섹터 예측** = **부모 섹터의 목표비중**을 그 산업에 그대로 적용 · "
+                        "③ **섹터 예측** = **부모 섹터의 라이브 최종 비중**(섹터 자기 신호 + 시장 예산 E_t 바닥·퇴출 + 초과보유 게이트 — "
+                        "S 01_일별 '목표비중')을 그 산업에 그대로 적용 · "
                         "④ **현행(라이브)** = 이 계층이 실제로 쓰는 비중 = **단일 산업 라이브 예측**(00A ②·19 블록 A′와 같은 비중). "
+                        "①~④는 전부 **종가 체결·무비용**(전날 비중 × 오늘 종가→종가 수익) — '④ 엔진 복리'가 같은 비중을 **다음날 시가 체결·"
+                        "편도 비용·현금이자**로 돌린 06·01_일별 전략자산곡선 값이다. ① 첫날 수익은 0(네 곡선 같은 날 출발). "
                         "★ **②−③가 이 계층의 존재 이유**다 — 산업을 따로 보는 것이 부모 섹터 하나보다 나은가. "
                         "판정은 **복리와 칼마를 함께** 본다. 그래프는 **00B_곡선그래프** 탭, 일별 원본은 00C_곡선데이터.")})
     n2 = n3 = n4 = n23 = n43 = 0
+    n3_den = 0
     for t in cols:
         r = R[t]
         a = _m(r)
         b = _m(W2[t].shift(1).fillna(0.0) * r)
-        c3 = _m(W3[t].shift(1).fillna(0.0) * r) if W3 is not None else None
+        c3 = _m(W3[t].shift(1).fillna(0.0) * r) if (W3 is not None and _avail3.get(t)) else None
+        n3_den += int(c3 is not None)
         c4 = _m(W4[t].shift(1).fillna(0.0) * r) if W4 is not None else None
         curves[f"{t} ① B&H"] = a["curve"]
         curves[f"{t} ② 단일산업"] = b["curve"]
@@ -6871,6 +6960,12 @@ def build_industry_curve_compare(ret_df: pd.DataFrame, own_w: pd.DataFrame, pare
         if c4 is not None:
             row.update({"④ 현행 복리(%)": round(c4["복리"], 1), "④ 현행 MDD(%)": round(c4["MDD"], 2),
                         "④ 현행 칼마": round(c4["칼마"], 2), "④ 평균비중": round(float(W4[t].mean()), 4)})
+        # [v0.29.0 R75 §6(a)] ④ 엔진 — 같은 라이브 비중을 다음날 시가 체결·편도 비용·현금이자로(06·01_일별 전략자산곡선)
+        if WE is not None and t in WE.columns and WE[t].notna().any():
+            _e4 = _m(WE[t].fillna(0.0))
+            row.update({"④ 엔진 복리(%)": round(_e4["복리"], 1), "④ 엔진 MDD(%)": round(_e4["MDD"], 2)})
+            if c4 is not None:
+                row["④ 엔진−④ 종가(%p)"] = round(_e4["복리"] - c4["복리"], 1)
         row["②−① 복리(%p)"] = round(b["복리"] - a["복리"], 1)
         row["판정"] = (("★" if b["복리"] > a["복리"] else "✗") + f" ②vs① {b['복리'] - a['복리']:+.1f}%p"
                      + (((" · " + ("★" if b["복리"] > c3["복리"] else "✗"))
@@ -6879,11 +6974,19 @@ def build_industry_curve_compare(ret_df: pd.DataFrame, own_w: pd.DataFrame, pare
                      + ((f" · ④현행 {c4['복리']:.0f}%") if c4 is not None else ""))
         rows.append(row)
     n = len(cols)
-    rows.append({"블록": "A. 산업별 4곡선 비교", "산업": "★★ 승패 요약",
-                 "판정": (f"② 단일산업 > ① B&H : **{n2}/{n}** · ③ 섹터 > ① : {n3}/{n} · "
-                        f"④ 현행 > ① : {n4}/{n} · **② > ③ : {n23}/{n}** · ④ > ③ : {n43}/{n}. "
+    # [v0.29.0 R75 §6(a)] ③ 분모 = ③이 있는 산업 수. 전부 없으면 판정 불가(종전: 0/29 + ⚠⚠ 거짓 결론 — 리포트24).
+    _d3 = f"{n3_den}" + (f"(③ 있는 산업 {n3_den}/{n})" if 0 < n3_den < n else "")
+    if n3_den == 0:
+        rows.append({"블록": "A. 산업별 4곡선 비교", "산업": "★★ 승패 요약",
+                     "판정": (f"② 단일산업 > ① B&H : **{n2}/{n}** · ④ 현행 > ① : {n4}/{n} · "
+                            "⚠ **③ 섹터 결측** — 부모 섹터 비중을 받지 못해 ③ > ① · ② > ③ · ④ > ③를 **판정할 수 없다** "
+                            "(로그 parent_market_pos_ready/failed 확인). ③ 관련 결론을 내리지 말 것.")})
+    else:
+        rows.append({"블록": "A. 산업별 4곡선 비교", "산업": "★★ 승패 요약",
+                 "판정": (f"② 단일산업 > ① B&H : **{n2}/{n}** · ③ 섹터 > ① : {n3}/{_d3} · "
+                        f"④ 현행 > ① : {n4}/{n} · **② > ③ : {n23}/{_d3}** · ④ > ③ : {n43}/{_d3}. "
                         + ("★ ②가 과반에서 ③을 이긴다 — 산업을 따로 보는 데 값이 있다."
-                           if n23 * 2 > n else
+                           if n23 * 2 > n3_den else
                            "⚠⚠ **②가 ③을 과반에서 못 이긴다** — 산업을 따로 보는 것이 부모 섹터 하나를 "
                            "쓰는 것보다 낫지 않다는 뜻이다. 사용자 요구('산업이 섹터보다 훨씬 좋아야')는 "
                            "이 수가 과반을 넘고 ②−③가 크게 양수여야 충족된다. 23_예측품질검정 블록 B·C가 "
@@ -6899,11 +7002,19 @@ def build_industry_curve_compare(ret_df: pd.DataFrame, own_w: pd.DataFrame, pare
                 _a = float((1.0 + R.loc[_i, t]).prod() - 1.0) * 100
                 _b = float((1.0 + W2[t].shift(1).fillna(0.0).loc[_i] * R.loc[_i, t]).prod() - 1.0) * 100
                 _c = (float((1.0 + W3[t].shift(1).fillna(0.0).loc[_i] * R.loc[_i, t]).prod() - 1.0) * 100
-                      if W3 is not None else None)
-                _d = round(_b - (_c if _c is not None else _a), 1)
+                      if (W3 is not None and _avail3.get(t)) else None)
+                if _c is None:
+                    # [v0.29.0 R75 §6(a)] ③ 결측 — 종전엔 ②−①을 '②−③'로 쓰고 "산업이 섹터를 이겼다"라 적었다(리포트24).
+                    _d1 = round(_b - _a, 1)
+                    rows.append({"블록": "B. 지정 산업 연도별", "산업": t, "연도": int(y), "관측일": int(y),
+                                 "① B&H 복리(%)": round(_a, 1), "② 단일산업 복리(%)": round(_b, 1),
+                                 "③ 섹터 복리(%)": None, "②−③ 복리(%p)": None, "②−① 복리(%p)": _d1,
+                                 "판정": f"③ 결측 — 섹터와 비교 불가(참고: ②−① {_d1:+.1f}%p)"})
+                    continue
+                _d = round(_b - _c, 1)
                 rows.append({"블록": "B. 지정 산업 연도별", "산업": t, "연도": int(y), "관측일": int(y),
                              "① B&H 복리(%)": round(_a, 1), "② 단일산업 복리(%)": round(_b, 1),
-                             "③ 섹터 복리(%)": (round(_c, 1) if _c is not None else None),
+                             "③ 섹터 복리(%)": round(_c, 1),
                              "②−③ 복리(%p)": _d,
                              "판정": ("★ 그 해 산업이 섹터를 이겼다" if _d > 0.0 else
                                     ("= 그 해 섹터와 동일" if abs(_d) < 0.05 else
@@ -7073,8 +7184,10 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                         "②′ 자기 복리(%)": round(_cmp(_sa) * 100.0, 2),
                         "②′ 자기 MDD(%)": round(_mdd(_sa) * 100.0, 2),
                         "②′ 평균비중": round(float(WSA[t].mean()), 4)})
-        if VARS:
-            _sh = VARS[0][1][t] * rf
+        # [v0.29.0 R75 §4] ②h = **헤어컷 가족**의 첫 변형(태그 없는 라벨). 다른 가족만 있으면 ②h 열을 만들지 않는다.
+        _VH = [_v for _v in VARS if not str(_v[0]).startswith("[")]
+        if _VH:
+            _sh = _VH[0][1][t] * rf
             row.update({"②h 헤어컷상속(a) 복리(%)": round(_cmp(_sh) * 100.0, 2),
                         "②h 헤어컷상속(a) MDD(%)": round(_mdd(_sh) * 100.0, 2)})
         row.update({"③ 전략기여 단순합(%)": round(st_s, 2),
@@ -7125,19 +7238,38 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
         _mk("참고: 단독예측(자기 국면기계·진단) 동일가중", (RF * WSA).mean(axis=1), WSA.mean(axis=1),
             "산업 **자기 국면기계**(라이브 아님) — v0.26.0까지 00A가 '②'라고 부르던 것. 라이브(= M E_t 상속)와 비교용")
     # ---- [v0.27.0 R73 §4-2 사전등록] [헤어컷상속격자] — ② 라이브 단독 대비 채택 판정(라이브 무변경) ----
+    # [v0.29.0 R75 §4] 변형 라벨이 '[태그] …'이면 그 **태그 가족**으로 묶는다 — 행·판정·반증 열위 확인을 가족 안에서만 한다
+    #   (다른 가족의 반증이 이 가족의 채택을 막지 않게). 태그 없는 라벨 = [헤어컷상속격자](종전 호출 — 출력 비트 동일).
     if VARS and WS is not None and n_ok:
         _live_key = "★ 단독예측 동일가중 (총 1.0)"
+
+        def _vtag(_lb0: str) -> Tuple[str, str]:
+            _s0 = str(_lb0)
+            if _s0.startswith("[") and "]" in _s0:
+                _i0 = _s0.index("]")
+                return _s0[:_i0 + 1], _s0[_i0 + 1:].strip()
+            return "[헤어컷상속격자]", _s0
+        _VDESC = {"[헤어컷상속격자]": "M 상승·과열헤어컷(E_t<1)인 날 산업 단독 노출을 1.0으로 — 사전등록 격자(라이브 무변경)",
+                  "[독립산업격자]": ("탈동조(부모 대비 R² < DECOUPLE_R2) 산업에서 E_t 위에 산업 고유 요인을 덧붙인다 — "
+                                   "사전등록 격자(라이브 무변경)")}
+        _VKEEP = {"[헤어컷상속격자]": "헤어컷 상속은 그대로"}
+        _fams: Dict[str, List[Tuple[str, pd.DataFrame]]] = {}
         for _lb, _vw in VARS:
-            _mk(f"[헤어컷상속격자] {_lb}", (RF * _vw).mean(axis=1), _vw.mean(axis=1),
-                "M 상승·과열헤어컷(E_t<1)인 날 산업 단독 노출을 1.0으로 — 사전등록 격자(라이브 무변경)")
-        _L = _keep.get(_live_key)
-        if _L is not None:
+            _tg0, _sh0 = _vtag(_lb)
+            _fams.setdefault(_tg0, []).append((_sh0, _vw))
+        for _tg, _FV in _fams.items():
+            for _lb, _vw in _FV:
+                _mk(f"{_tg} {_lb}", (RF * _vw).mean(axis=1), _vw.mean(axis=1),
+                    _VDESC.get(_tg, "사전등록 격자(라이브 무변경)"))
+            _L = _keep.get(_live_key)
+            if _L is None:
+                continue
             _res = {}
             _cons: Dict[str, dict] = {}
             _ysh = float(getattr(cfg, "GRID_YEAR_MIN_SHARE", 2.0 / 3.0))
             _ash = float(getattr(cfg, "GRID_ASSET_MIN_SHARE", 2.0 / 3.0))
-            for _lb, _vw in VARS:
-                _V = _keep.get(f"[헤어컷상속격자] {_lb}")
+            for _lb, _vw in _FV:
+                _V = _keep.get(f"{_tg} {_lb}")
                 if _V is None:
                     continue
                 _dg = _V["CAGR"] - _L["CAGR"]; _dm = abs(_V["MDD"]) - abs(_L["MDD"])
@@ -7157,7 +7289,7 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                 if "반증" in _lb:
                     _verd = "반증 행 — 열위여야 정상: " + ("★ 열위(방향 확인)" if (pd.notna(_dk) and _dk < 0) else "⚠ 열위 아님 — 방향 의심")
                 elif not _ok:
-                    _verd = "✗ 기준 미달 → 닫는다(헤어컷 상속은 그대로)"
+                    _verd = f"✗ 기준 미달 → 닫는다({_VKEEP.get(_tg, '라이브 그대로')})"
                 elif not _c.get("ok", False):
                     # [v0.28.0 R74 §4-2 ★] 전 기간 3기준만 보고 '승격 후보'라 쓰지 않는다 — 연도·산업 일관성 미달이면 보류.
                     _verd = (f"⚠ 보류 — 전 기간 3기준(CAGR 손실 없음·칼마 상승·MDD 악화 ≤0.5%p)은 통과했지만 {_cs} 미달 "
@@ -7166,7 +7298,7 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                     _verd = f"★ 채택 기준 통과(3기준 + {_cs}) · 반증 열위 ✓ → **승격 후보(사용자 확인 후)**"
                 else:
                     _verd = f"★ 3기준·일관성 통과({_cs}) · ⚠ 반증도 통과 — 채택 보류"
-                rows.append({"블록": blkB, "자산": f"★★★ [헤어컷상속격자] 판정: {_lb}",
+                rows.append({"블록": blkB, "자산": f"★★★ {_tg} 판정: {_lb}",
                              "CAGR": round(_dg, 4), "① B&H MDD(%)": round(-_dm, 2),
                              "칼마(CAGR/MDD)": (round(_dk, 3) if pd.notna(_dk) else None),
                              "연도 일관(k/n)": f"{_c.get('y_ok', 0)}/{_c.get('y_n', 0)}",
@@ -7174,13 +7306,17 @@ def build_asset_return_compare(ret_df: pd.DataFrame, alloc_w: pd.DataFrame, cfg:
                              "판정": (f"② 라이브 단독 대비 ΔCAGR {_dg:+.2%} · MDD 악화 {_dm:+.2f}%p · Δ칼마 "
                                     + (f"{_dk:+.3f}" if pd.notna(_dk) else "-") + " · " + _cs + " → " + _verd
                                     + (f" · 연도별(29합 %p): {_c.get('years', '-')}" if _c.get("years") else ""))})
-            log("ROT", kv(event="haircut_inherit_grid", variants=len(_res),
-                          passed=",".join(k for k in _cand if _res[k][0] and (_cons.get(k) or {}).get("ok")) or "-",
-                          full_period_only=",".join(k for k in _cand if _res[k][0] and not (_cons.get(k) or {}).get("ok")) or "-",
-                          falsification_ok=_fals_ok,
-                          consistency=";".join(f"{k[:3]}:{(_cons.get(k) or {}).get('y_ok', 0)}/{(_cons.get(k) or {}).get('y_n', 0)}y"
-                                               f",{(_cons.get(k) or {}).get('i_ok', 0)}/{(_cons.get(k) or {}).get('i_n', 0)}a"
-                                               for k in _res)), M=M)
+            _lkw = dict(variants=len(_res),
+                        passed=",".join(k for k in _cand if _res[k][0] and (_cons.get(k) or {}).get("ok")) or "-",
+                        full_period_only=",".join(k for k in _cand if _res[k][0] and not (_cons.get(k) or {}).get("ok")) or "-",
+                        falsification_ok=_fals_ok,
+                        consistency=";".join(f"{k[:3]}:{(_cons.get(k) or {}).get('y_ok', 0)}/{(_cons.get(k) or {}).get('y_n', 0)}y"
+                                             f",{(_cons.get(k) or {}).get('i_ok', 0)}/{(_cons.get(k) or {}).get('i_n', 0)}a"
+                                             for k in _res))
+            if _tg == "[헤어컷상속격자]":
+                log("ROT", kv(event="haircut_inherit_grid", **_lkw), M=M)
+            else:
+                log("ROT", kv(event="solo_variant_grid", family=_tg, **_lkw), M=M)
     _mk(f"★★ 전략(배분 · {layer} 계층)", port_r, wsum,
         "엔진이 실제로 집행한 배분. 위 두 줄을 **둘 다** 이겨야 이 계층이 값을 한 것이다")
     # ---- [v0.23.0 E1 ★] 이 계층이 쓰는 **다른 슬리브**(부모 ETF·잔여·현금대체)의 기여 ----
@@ -9396,6 +9532,9 @@ _SIGN_SIGNALS: Dict[str, Any] = {
     "부모 하락∧자기 하락": lambda X: X["pM"].eq("하락") & X["own"].eq("하락"),
     "부모 상승∧자기 상승": lambda X: X["pM"].eq("상승") & X["own"].eq("상승"),
     "자기 과열∧부모 과열": lambda X: X["ext"] & X["pext"],
+    # [v0.29.0 R75 §5] 산업 고유 요인 합성 z(사전방향 정렬, t까지) — 요인 없는 산업은 NaN → 거짓
+    "산업 요인 역풍(합성z≤−1)": lambda X: X["drv"] <= -1.0,
+    "산업 요인 순풍(합성z≥+1)": lambda X: X["drv"] >= 1.0,
 }
 # (날짜집합 키, 블록 이름, 방향) — 방향 'cut' = 신호일 평균이 음수여야 컷 후보 · 'relax' = 양수여야 완화/상향 후보
 _SIGN_SETS = (("HOLD", "B. 보유일(M 상승·E_t=1) — 컷 후보 검정", "cut"),
@@ -9422,7 +9561,8 @@ def _sign_daily(d: Any) -> Optional[pd.DataFrame]:
 
 
 def _sign_panel(results: Dict[str, Dict[str, Any]], sres: Optional[dict],
-                exclude_last: Optional[set] = None, last_day: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+                exclude_last: Optional[set] = None, last_day: Optional[pd.Timestamp] = None,
+                driver_z: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """산업×날짜 패널(벡터화, 산업마다 1회). 값은 전부 results[t]['sheets']['daily'](01_일별과 같은 출처)와 부모 섹터의
     S 01_일별에서 읽는다. 수익 = results[t]['bh_ret'](없으면 01_일별 '일간등락률'/100). exclude_last에 든 티커는
     last_day 수익을 NaN으로(마지막 날 종가 결측 — 전일 종가로 채운 가짜 0% — §1)."""
@@ -9449,6 +9589,9 @@ def _sign_panel(results: Dict[str, Dict[str, Any]], sres: Optional[dict],
         for col, key in _SIGN_FLAG_COLS:
             X[key] = _sign_flag(d[col]) if col in d.columns else False
         X["coup"] = d["결합국면"].astype(str) if "결합국면" in d.columns else "nan"
+        # [v0.29.0 R75 §5] 산업 요인 합성 z(t까지) — 없으면 NaN(조건 거짓)
+        X["drv"] = (pd.to_numeric(driver_z[t], errors="coerce").reindex(d.index)
+                    if isinstance(driver_z, pd.DataFrame) and t in driver_z.columns else np.nan)
         for col, key in (("vol21 자기이력pct", "vol21"), ("park5 자기이력pct", "park5"), ("낙폭63일", "dd63"),
                          ("위험점수백분위(H,섹터자체)", "Hown"), ("복합점수백분위", "sp")):
             X[key] = pd.to_numeric(d[col], errors="coerce") if col in d.columns else np.nan
@@ -9479,7 +9622,8 @@ def _sign_panel(results: Dict[str, Dict[str, Any]], sres: Optional[dict],
 
 def build_signal_sign_tests(results: Dict[str, Dict[str, Any]], sres: Optional[dict], icfg: Any, M=None,
                             exclude_last: Optional[set] = None,
-                            last_day: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+                            last_day: Optional[pd.Timestamp] = None,
+                            driver_z: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """[26_신호부호검정] 후보 신호 × 날짜집합 4개의 다음날 수익 부호표 + 판정. 반환 DataFrame(블록 A 요약 · B~E 상세).
     판정(사전등록, 문턱은 IndustryConfig):
       보유일(HOLD) '★ 컷 후보' = 신호일 평균 r(t+1) < 0 ∧ 음수인 해 ≥ SIGN_TEST_SHARE ∧ 음수인 산업 ≥ SIGN_TEST_SHARE ∧ 산업-일 ≥ SIGN_TEST_MIN_N
@@ -9497,7 +9641,7 @@ def build_signal_sign_tests(results: Dict[str, Dict[str, Any]], sres: Optional[d
         log("REPORT", kv(event="signal_sign_registry_unknown", names=",".join(unknown[:6]),
                          note="_SIGN_SIGNALS에 없는 이름 — 건너뛴다"), M=M, level="warning")
     reg = tuple(k for k in reg if k in _SIGN_SIGNALS)
-    P = _sign_panel(results, sres, exclude_last, last_day)
+    P = _sign_panel(results, sres, exclude_last, last_day, driver_z=driver_z)
     if not len(P):
         return pd.DataFrame([{"블록": "A. 요약", "신호": "⚠ 산출 불가", "판정": "01_일별 패널이 비었다(results[t]['sheets']['daily'])"}])
     P = P[P["r1"].notna() & P["E"].notna()]
@@ -9615,6 +9759,611 @@ def signal_sign_line(df: Optional[pd.DataFrame]) -> str:
         return "산출 불가(26 없음)"
     r = df[df["신호"].astype(str).eq("★ 판정 집계")]
     return str(r["판정"].iloc[0]) if len(r) else "산출 불가(26 집계 행 없음)"
+
+
+# =============================================================================
+# [v0.29.0 R75 ★ 신규] 산업 고유 요인(드라이버) — 27_산업고유요인검정 · [드라이버순환매격자] · [독립산업격자] · 26 요인 조건 2종
+# =============================================================================
+# 왜(사용자 질문 2026-09-19 "같은 섹터인데 산업 흐름이 다른 건 어떻게 설명할건데" → 지시 "그렇게 수정해보고"):
+#   R74c 측정(리포트24): 산업 수익의 부모 설명력 R² 중위 0.70 · 같은 섹터 안 연도 격차 중위 22%p · 72 섹터-연도 중 23개는 부호 반대.
+#   그런데 라이브 단일 산업 예측은 29산업 전부 M E_t(같은 값)이고, 가격 기반 상대모멘텀 6종은 부모 안 순서 정보가 없었다(최대 |t| 1.07).
+#   같은 섹터 안 산업을 가르는 것은 **산업 고유 요인**(금·유가·구리·금리곡선·실질금리·모기지금리 …)이다. 그 요인이
+#     (1) 부모 대비 초과수익을 **미리** 알려 주는가(예측 — 블록 B)  (2) 같은 기간 초과수익을 **설명**하는가(사후 — 블록 B2)
+#     (3) 부모 안에서 어느 산업이 앞설지 **순위**를 가르는가(횡단면 — 블록 C)
+#   를 매 실행 잰다. **사전등록** — 요인·창·사전방향은 경제적 근거로 먼저 정했고, 검정 결과가 반대 부호여도 뒤집어 쓰지 않는다.
+# 데이터: M 번들(res["px_dict"]·res["fred"] — FRED는 M이 발표지연을 이미 적용한 계열)에 있는 것만 쓴다 → **추가 다운로드 0**.
+# 룩어헤드: 요인값·z는 t까지(확장 평균·표준편차), 예측 결과는 t+1..t+h, 탈동조 R²는 t까지의 창. 블록 B2만 '같은 기간'(설명 전용).
+# 라이브 무변경: 신호·비중·★ 배분은 그대로다. 격자·검정은 진단/사전등록이며 승격은 사용자 확인 후.
+_DriverRow = Tuple[str, str, str, str, int, int, str]
+# (요인 키, 한글명, 종류, 원천 계열, 창(거래일), 사전방향(그 산업의 **부모 대비** 초과수익에 대해), 경제적 근거)
+#   종류: yh_mom = log(가격_t / 가격_{t−창}) · fred_chg = 값_t − 값_{t−창} · fred_pct = 값_t / 값_{t−창} − 1
+_DR_RR10 = ("RR10_CHG63", "10년 실질금리 63일 변화", "fred_chg", "DFII10", 63, -1)
+INDUSTRY_DRIVER_TABLE: Dict[str, List[_DriverRow]] = {
+    "SOXX": [("CU_MOM63", "구리 63일 모멘텀", "yh_mom", "HG=F", 63, +1,
+              "반도체는 IT 안에서 가장 경기민감한 업종 — 산업금속이 경기 확장을 가리킬 때 소프트웨어보다 앞선다(재고·설비 사이클)"),
+             ("EEM_MOM63", "신흥국 주식 63일 모멘텀", "yh_mom", "EEM", 63, +1,
+              "반도체 공급망·최종 수요가 아시아 수출 사이클과 겹친다(대만·한국 비중이 큰 EEM)")],
+    "IGV": [_DR_RR10 + ("소프트웨어는 IT 안에서 이익의 무게중심이 먼 미래(긴 듀레이션) — 실질금리 상승에 상대 약세",)],
+    "SKYY": [_DR_RR10 + ("클라우드는 IT 안에서 고밸류·긴 듀레이션 — 실질금리 상승에 상대 약세",)],
+    "HACK": [_DR_RR10 + ("사이버보안은 IT 안에서 고성장·긴 듀레이션 — 실질금리 상승에 상대 약세",)],
+    "IBB": [("UST2_CHG63", "2년 국채금리 63일 변화", "fred_chg", "DGS2", 63, -1,
+             "바이오텍은 헬스케어 안에서 장기 파이프라인 비중이 커 단기금리(할인율·자금조달 비용) 상승에 약하다")],
+    "XBI": [("UST2_CHG63", "2년 국채금리 63일 변화", "fred_chg", "DGS2", 63, -1,
+             "중소형 바이오는 적자 기업 비중이 커 단기금리 상승에 헬스케어 안에서 가장 민감"),
+            ("HY_CHG21", "하이일드 스프레드 21일 변화", "fred_chg", "BAMLH0A0HYM2", 21, -1,
+             "중소형 바이오는 외부 자금조달에 의존 — 신용 여건이 조일 때 헬스케어 안에서 가장 먼저 밀린다")],
+    "XRT": [("RSAFS_PCT63", "소매판매 63일 변화율", "fred_pct", "RSAFS", 63, +1,
+             "소매업 매출이 직접 받는 지표 — 임의소비재 안에서 소매 판매 모멘텀에 가장 민감"),
+            ("SENT_CHG63", "미시간대 소비자심리 63일 변화", "fred_chg", "UMCSENT", 63, +1,
+             "소비심리 개선은 오프라인 소매의 객수로 먼저 나타난다")],
+    "XHB": [("MORT30_CHG63", "30년 모기지금리 63일 변화", "fred_chg", "MORTGAGE30US", 63, -1,
+             "주택 구매력(월 상환액) 채널 — 임의소비재 안에서 주택건설이 금리에 가장 민감"),
+            ("PERMIT_PCT63", "건축허가 63일 변화율", "fred_pct", "PERMIT", 63, +1,
+             "착공의 선행지표 — 주택건설 수주 파이프라인")],
+    "PEJ": [("OIL_MOM63", "WTI 원유 63일 모멘텀", "yh_mom", "CL=F", 63, -1,
+             "여행·레저는 연료비·가계 에너지 지출 부담에 민감 — 유가 급등은 여가 지출을 줄인다"),
+            ("SENT_CHG63", "미시간대 소비자심리 63일 변화", "fred_chg", "UMCSENT", 63, +1,
+             "여가 지출은 소비심리에 민감")],
+    "CARZ": [("UST2_CHG63", "2년 국채금리 63일 변화", "fred_chg", "DGS2", 63, -1,
+              "자동차는 할부 구매 비중이 커 단기금리 상승이 수요를 직접 누른다")],
+    "KBE": [("CURVE_CHG63", "10년-2년 금리차 63일 변화", "fred_chg", "T10Y2Y", 63, +1,
+             "은행 순이자마진은 장단기 금리차에 비례 — 금융 안에서 은행이 가장 직접 받는다")],
+    "KRE": [("CURVE_CHG63", "10년-2년 금리차 63일 변화", "fred_chg", "T10Y2Y", 63, +1,
+             "지역은행은 예대마진 의존이 대형은행보다 커 금리차에 더 민감"),
+            ("HY_CHG21", "하이일드 스프레드 21일 변화", "fred_chg", "BAMLH0A0HYM2", 21, -1,
+             "지역은행은 상업용부동산·중소기업 신용위험에 노출 — 신용 경색(2023년 3월)에 금융 안에서 가장 약했다")],
+    "KIE": [("UST10_CHG63", "10년 국채금리 63일 변화", "fred_chg", "DGS10", 63, +1,
+             "보험사는 채권 운용수익(재투자 금리)으로 번다 — 금리 상승이 금융 안에서 보험에 상대 우호적")],
+    "KCE": [("HY_CHG21", "하이일드 스프레드 21일 변화", "fred_chg", "BAMLH0A0HYM2", 21, -1,
+             "자본시장(증권·거래소·운용)은 발행·거래 활동으로 번다 — 신용 여건이 조이면 발행이 멈춘다")],
+    "IYT": [("OIL_MOM63", "WTI 원유 63일 모멘텀", "yh_mom", "CL=F", 63, -1,
+             "연료비는 운송업 영업비용의 핵심 — 산업재 평균보다 유가에 민감"),
+            ("CU_MOM63", "구리 63일 모멘텀", "yh_mom", "HG=F", 63, +1,
+             "물동량은 산업 경기와 같이 움직인다")],
+    "JETS": [("OIL_MOM63", "WTI 원유 63일 모멘텀", "yh_mom", "CL=F", 63, -1,
+              "항공유는 항공사 영업비용의 20~30% — 산업재 안에서 유가에 가장 민감")],
+    "IYZ": [("UST10_CHG63", "10년 국채금리 63일 변화", "fred_chg", "DGS10", 63, -1,
+             "통신은 고배당 채권 대용 업종 — 커뮤니케이션 안에서 금리 상승에 가장 약하다")],
+    "FDN": [_DR_RR10 + ("인터넷 성장주 — 커뮤니케이션 안에서 듀레이션이 길다",)],
+    "SOCL": [_DR_RR10 + ("소셜미디어 성장주 — 커뮤니케이션 안에서 듀레이션이 길다",)],
+    "XOP": [("OIL_MOM63", "WTI 원유 63일 모멘텀", "yh_mom", "CL=F", 63, +1,
+             "탐사·생산은 에너지 안에서 유가 베타가 가장 크다(통합 메이저는 정제·배당으로 완충)")],
+    "XES": [("OIL_MOM126", "WTI 원유 126일 모멘텀", "yh_mom", "CL=F", 126, +1,
+             "장비·서비스는 유가가 E&P 설비투자로 번지는 시차만큼 늦게 반응 — 창을 두 배로")],
+    "XME": [("CU_MOM63", "구리 63일 모멘텀", "yh_mom", "HG=F", 63, +1,
+             "금속·광업은 소재 안에서 산업금속 가격에 직접 노출(화학·포장은 원가로 받는다)")],
+    "GDX": [("GOLD_MOM63", "금 63일 모멘텀", "yh_mom", "GC=F", 63, +1,
+             "금광 이익 = 금값 − 채굴원가 → 금값에 2~3배 영업 레버리지"),
+            _DR_RR10 + ("금은 이자 없는 자산 — 실질금리 상승은 금 보유 기회비용을 올린다",)],
+}
+# 요인을 붙이지 않은 산업 — 억지로 붙이면 검정 수만 늘어 우연 후보가 생긴다(교훈 42). 27 블록 D에 사유를 적는다.
+INDUSTRY_DRIVER_NONE: Dict[str, str] = {
+    "IHE": "제약 — 헬스케어 안에서 제약만 가르는 공개 일간 요인이 없다(약가 정책·특허는 가격 계열이 아니다)",
+    "IHI": "의료기기 — 시술 건수·병원 설비투자는 일간 공개 계열이 없다",
+    "IHF": "헬스케어서비스·보험 — 의료비 추세·수가 정책은 가격 계열이 아니다",
+    "PBJ": "식음료 — 부모(XLP)와 같은 채널(방어·원가)이고 부모 안 다른 산업이 없다",
+    "ITA": "항공우주·방산 — 국방 예산·수주는 일간 공개 계열이 없다",
+    "REZ": "주거·헬스케어 리츠 — 부모(XLRE) 안 다른 산업이 없고 금리 채널이 부모와 같다",
+}
+
+
+def _driver_series(kind: str, sid: str, window: int, res: dict, cal: pd.DatetimeIndex) -> Optional[pd.Series]:
+    """요인 원시값(t까지의 정보). yh_mom = log(P_t/P_{t−창})(Adj Close, 결측은 5일까지만 이월) · fred_chg = X_t − X_{t−창} ·
+    fred_pct = X_t / X_{t−창} − 1. FRED는 M이 발표지연을 이미 적용한 res['fred']를 쓴다(룩어헤드 없음). 없으면 None."""
+    try:
+        w = int(window)
+        if kind == "yh_mom":
+            d = (res.get("px_dict") or {}).get(sid)
+            if d is None or not len(d):
+                return None
+            col = "Adj Close" if "Adj Close" in d.columns else "Close"
+            p = pd.to_numeric(d[col], errors="coerce")
+            p.index = pd.DatetimeIndex(p.index)
+            p = p[~p.index.duplicated(keep="last")].sort_index().reindex(cal).ffill(limit=5)
+            return np.log(p.where(p > 0)).diff(w)
+        if kind in ("fred_chg", "fred_pct"):
+            s = (res.get("fred") or {}).get(sid)
+            if s is None or not len(s):
+                return None
+            s = pd.to_numeric(pd.Series(s), errors="coerce")
+            s.index = pd.DatetimeIndex(s.index)
+            s = s[~s.index.duplicated(keep="last")].sort_index().reindex(cal).ffill()
+            return (s - s.shift(w)) if kind == "fred_chg" else (s / s.shift(w).replace(0, np.nan) - 1.0)
+    except Exception:
+        return None
+    return None
+
+
+def _expanding_z(x: pd.Series, min_periods: int, clip: float) -> pd.Series:
+    """확장 z = (x_t − 평균_{≤t}) / 표준편차_{≤t} — t까지의 정보만(룩어헤드 없음). ±clip 절단."""
+    x = pd.Series(x).astype(float)
+    mu = x.expanding(min_periods=int(min_periods)).mean()
+    sd = x.expanding(min_periods=int(min_periods)).std()
+    return ((x - mu) / sd.replace(0, np.nan)).clip(-float(clip), float(clip))
+
+
+def build_industry_driver_panel(results: Dict[str, Dict[str, Any]], res: dict, icfg: Any, M=None) -> Dict[str, Any]:
+    """[v0.29.0 R75 §1] 산업 고유 요인 패널 + 탈동조 판정. 반환(없으면 {}):
+      table     — 사전등록표 + 데이터 유무·시작일(27 블록 D)
+      z         — {산업: DataFrame(요인 → 사전방향 정렬 확장 z)}(M 달력)
+      comp      — DataFrame(M 달력 × 산업) 합성 z = 그 산업 요인 z의 평균(요인 없는 산업은 열 없음)
+      chg       — {산업: DataFrame(요인 → 사전방향 정렬 21일 변화)} — 블록 B2(사후 설명) 전용. 월간 거시(fred_pct)는 제외
+      rel       — DataFrame(산업 달력 합집합 × 산업) 부모 대비 일간 로그 초과수익 = log1p(rot_raw REL_RET)
+      r2        — 부모 대비 롤링 R²(DECOUPLE_WIN, t까지) · corr_spy — SPY 대비 롤링 상관 · decoupled — r2 < DECOUPLE_R2
+    새 다운로드 없음(res px_dict·fred·px_adj 재사용). 요인 계열이 없으면 그 요인만 '데이터 없음'으로 적고 계속한다."""
+    t0 = time.time()
+    try:
+        cal = pd.DatetimeIndex(res.get("cal")) if isinstance(res, dict) and res.get("cal") is not None else None
+    except Exception:
+        cal = None
+    if cal is None or not len(cal) or not results:
+        log("DRIVER", kv(event="driver_panel_skipped", reason="res['cal'] 또는 results 없음"), M=M, level="warning")
+        return {}
+    mp = int(getattr(icfg, "DRIVER_Z_MIN_PERIODS", 252))
+    clip = float(getattr(icfg, "DRIVER_Z_CLIP", 4.0))
+    h = int(getattr(icfg, "DRIVER_TEST_H", 21))
+    win = int(getattr(icfg, "DECOUPLE_WIN", 252))
+    thr = float(getattr(icfg, "DECOUPLE_R2", 0.40))
+    raw_cache: Dict[Tuple[str, str, int], Optional[pd.Series]] = {}
+    z_cache: Dict[Tuple[str, str, int], pd.Series] = {}
+
+    def _get(kind: str, sid: str, w: int) -> Optional[pd.Series]:
+        k = (kind, sid, int(w))
+        if k not in raw_cache:
+            raw_cache[k] = _driver_series(kind, sid, int(w), res, cal)
+        return raw_cache[k]
+
+    rows: List[dict] = []
+    zmap: Dict[str, pd.DataFrame] = {}
+    chgmap: Dict[str, pd.DataFrame] = {}
+    comp: Dict[str, pd.Series] = {}
+    missing: List[str] = []
+    for t in results:
+        zt: Dict[str, pd.Series] = {}
+        ct: Dict[str, pd.Series] = {}
+        for key, name, kind, sid, w, prior, why in INDUSTRY_DRIVER_TABLE.get(t, []):
+            x = _get(kind, sid, w)
+            ok = x is not None and int(x.notna().sum()) > mp
+            if ok:
+                zk = (kind, sid, int(w))
+                if zk not in z_cache:
+                    z_cache[zk] = _expanding_z(x, mp, clip)
+                zt[key] = z_cache[zk] * float(prior)
+                if kind in ("yh_mom", "fred_chg"):
+                    c21 = _get(kind, sid, h)
+                    if c21 is not None:
+                        ct[key] = c21 * float(prior)
+            else:
+                missing.append(f"{t}:{key}({sid})")
+            _fv = x.first_valid_index() if (ok and x is not None) else None
+            rows.append({"산업": t, "요인": key, "이름": name, "원천": f"{kind}:{sid}", "창": int(w),
+                         "사전방향": int(prior), "근거": why,
+                         "데이터": ("있음" if ok else "없음(M 번들에 계열 없음 또는 표본 부족)"),
+                         "시작": (str(pd.Timestamp(_fv).date()) if _fv is not None else "-")})
+        if zt:
+            zmap[t] = pd.DataFrame(zt)
+            comp[t] = zmap[t].mean(axis=1, skipna=True)
+        if ct:
+            chgmap[t] = pd.DataFrame(ct)
+    comp_df = pd.DataFrame(comp).reindex(cal) if comp else pd.DataFrame(index=cal)
+    # ---- 부모 대비 로그 초과수익 · 탈동조 R² · SPY 상관(t까지의 창) ----
+    spy = None
+    try:
+        _pa = pd.to_numeric(pd.Series(res.get("px_adj")), errors="coerce")
+        _pa.index = pd.DatetimeIndex(_pa.index)
+        spy = np.log(_pa.where(_pa > 0)).diff()
+    except Exception:
+        spy = None
+    rel: Dict[str, pd.Series] = {}
+    r2: Dict[str, pd.Series] = {}
+    cs: Dict[str, pd.Series] = {}
+    _mpw = max(win // 2, 20)
+    for t, r in results.items():
+        rr = (r or {}).get("rot_raw")
+        ri = (r or {}).get("ret_cc_full")
+        if not isinstance(rr, pd.DataFrame) or "REL_RET" not in rr.columns or ri is None:
+            continue
+        li = np.log1p(pd.to_numeric(pd.Series(ri), errors="coerce"))
+        li.index = pd.DatetimeIndex(li.index)
+        lr = np.log1p(pd.to_numeric(rr["REL_RET"], errors="coerce"))
+        lr.index = pd.DatetimeIndex(lr.index)
+        lr = lr.reindex(li.index)
+        lp = li - lr
+        rel[t] = lr
+        r2[t] = li.rolling(win, min_periods=_mpw).corr(lp) ** 2
+        if spy is not None:
+            cs[t] = li.rolling(win, min_periods=_mpw).corr(spy.reindex(li.index))
+    rel_df = pd.DataFrame(rel).sort_index()
+    r2_df = pd.DataFrame(r2).sort_index()
+    cs_df = pd.DataFrame(cs).sort_index()
+    dec = (r2_df < thr) & r2_df.notna()
+    _last = {t: (bool(dec[t].dropna().iloc[-1]) if t in dec.columns and dec[t].notna().any() else False) for t in dec.columns}
+    log("DRIVER", kv(event="driver_panel_built", industries_with_drivers=len(comp), drivers=len(rows),
+                     missing=(";".join(missing[:8]) or "-"), n_missing=len(missing),
+                     decouple_r2=thr, decouple_win=win, decoupled_now=",".join(t for t, v in _last.items() if v) or "-",
+                     z_min_periods=mp, z_clip=clip, elapsed_s=round(time.time() - t0, 2),
+                     note="M 번들 계열만(추가 다운로드 0) · z·R²는 t까지의 정보 · 라이브 무변경"), M=M)
+    return {"table": pd.DataFrame(rows), "z": zmap, "comp": comp_df, "chg": chgmap, "rel": rel_df, "r2": r2_df,
+            "corr_spy": cs_df, "decoupled": dec, "none": dict(INDUSTRY_DRIVER_NONE), "missing": missing,
+            "params": {"z_min_periods": mp, "z_clip": clip, "h": h, "decouple_r2": thr, "decouple_win": win}}
+
+
+def _fwd_sum(L: pd.Series, h: int) -> pd.Series:
+    """t+1..t+h 합(전부 유효할 때만). 로그 수익이므로 합 = 기간 로그 수익."""
+    return L[::-1].rolling(int(h), min_periods=int(h)).sum()[::-1].shift(-1)
+
+
+def _driver_pred_stats(x: pd.Series, y: pd.Series, h: int, split: pd.Timestamp) -> Dict[str, Any]:
+    """비중첩 예측 통계 — 표본일 = x·y가 모두 유효한 날의 h 간격(첫 유효일 기준). 타이밍 = sign(x)·y(요인 방향으로 부모 대비 초과
+    포지션을 잡았을 때의 월 로그 수익). t = 평균/(표준편차/√N) — 표본이 겹치지 않으므로 독립 표본 t다."""
+    ok = x.notna() & y.notna()
+    ds = ok[ok].index[::int(h)]
+    out: Dict[str, Any] = {"N": int(len(ds))}
+    if len(ds) < 3:
+        return out
+    xs = x.loc[ds].astype(float)
+    ys = y.loc[ds].astype(float)
+    tim = np.sign(xs) * ys
+    n = int(len(tim))
+    m = float(tim.mean())
+    sd = float(tim.std(ddof=1))
+    di = pd.DatetimeIndex(ds)
+    by = tim.groupby(di.year).mean()
+    pre = di < pd.Timestamp(split)
+    out.update({"IC": float(xs.rank().corr(ys.rank())), "mean": m,
+                "t": (m / (sd / np.sqrt(n)) if sd > 0 else float("nan")),
+                "hit": float((tim > 0).mean()), "y_ok": int((by > 0).sum()), "y_n": int(by.notna().sum()),
+                "pre_n": int(pre.sum()), "pre_mean": (float(tim[pre].mean()) if pre.any() else float("nan")),
+                "post_n": int((~pre).sum()), "post_mean": (float(tim[~pre].mean()) if (~pre).any() else float("nan")),
+                "start": str(di[0].date()), "end": str(di[-1].date())})
+    return out
+
+
+def _driver_verdict(st: Dict[str, Any], min_n: int, min_t: float, share: float, min_years: int,
+                    t_bonf: float, show_ic: bool = True) -> Tuple[str, str]:
+    """(판정, 분류) — 분류 ∈ {후보, 반대, 부족, 닫힘}. 사전방향과 반대로 유의해도 뒤집어 쓰지 않는다(사후 부호 맞춤 금지)."""
+    n = int(st.get("N", 0))
+    if n < int(min_n) or "t" not in st:
+        return f"표본 부족({n} < {int(min_n)}개월)", "부족"
+    ic, m, tt = st.get("IC", float("nan")), st.get("mean", float("nan")), st.get("t", float("nan"))
+    y_ok, y_n = int(st.get("y_ok", 0)), int(st.get("y_n", 0))
+    cons = y_n >= int(min_years) and y_n > 0 and y_ok / y_n >= share - 1e-9
+    pre_ok = (st.get("pre_n", 0) < 24) or (st.get("pre_mean", float("nan")) > 0)
+    post_ok = (st.get("post_n", 0) < 24) or (st.get("post_mean", float("nan")) > 0)
+    _bf = " · ★★ 본페로니 통과" if (tt == tt and tt >= t_bonf) else ""
+    if ic > 0 and m > 0 and tt >= min_t and cons and pre_ok and post_ok:
+        return (f"★ 예측 후보 — 사전방향 일치 · t {tt:+.2f} · 연도 {y_ok}/{y_n}{_bf} → 격자 사전등록 대상(라이브 무변경)", "후보")
+    if ic < 0 and tt == tt and tt <= -min_t:
+        return (f"✗ 사전방향과 반대로 유의(t {tt:+.2f}) — 뒤집어 쓰지 않는다(사후 부호 맞춤 금지) · 경제적 해석을 다시 볼 대상", "반대")
+    if ic > 0 and m > 0 and tt >= min_t:
+        _why = (f"연도 일관 미달({y_ok}/{y_n})" if not cons else "2018 전·후 부호 불일치(한 구간에서만 작동)")
+        return f"닫힘 — 유의하지만 {_why}", "닫힘"
+    return f"닫힘 — 유의성 미달(t {tt:+.2f}, 기준 {min_t:.1f})" + (f" · IC {ic:+.3f}" if show_ic else ""), "닫힘"
+
+
+def build_industry_driver_tests(drv: Dict[str, Any], results: Dict[str, Dict[str, Any]], icfg: Any,
+                                signal_start: Any = "2018-01-02", M=None) -> pd.DataFrame:
+    """[v0.29.0 R75 §2] 27_산업고유요인검정. 블록 A 집계 · B 예측 · B2 사후 설명 · C 부모 안 횡단면 · D 탈동조 표.
+    (블록 E 격자 판정은 build_industry_report가 [드라이버순환매격자]·[독립산업격자] 결과를 붙인다.)"""
+    t0 = time.time()
+    if not isinstance(drv, dict) or not drv or not isinstance(drv.get("rel"), pd.DataFrame):
+        return pd.DataFrame([{"블록": "A. 요약", "산업": "⚠ 산출 불가", "판정": "요인 패널이 없다(INDUSTRY_DRIVERS=False 또는 res 부족)"}])
+    import statistics as _stats
+    h = int(getattr(icfg, "DRIVER_TEST_H", 21))
+    min_n = int(getattr(icfg, "DRIVER_TEST_MIN_N", 60))
+    min_t = float(getattr(icfg, "DRIVER_TEST_MIN_T", 2.0))
+    share = float(getattr(icfg, "GRID_YEAR_MIN_SHARE", 2.0 / 3.0))
+    min_years = int(getattr(icfg, "GRID_MIN_YEARS", 3))
+    split = pd.Timestamp(signal_start or "2018-01-02")
+    rel = drv["rel"]
+    F = rel.apply(lambda c: _fwd_sum(c, h))
+    Bk = rel.rolling(h, min_periods=h).sum()           # t−h+1..t 합(블록 B2 — 같은 기간)
+    zmap, comp, chg = drv.get("z") or {}, drv.get("comp"), drv.get("chg") or {}
+    parent_of = {t: (results.get(t) or {}).get("parent", "") for t in results}
+    # 검정 목록(본페로니 분모): 요인별 + 요인이 2개 이상인 산업의 합성
+    tests: List[Tuple[str, str, str, pd.Series]] = []
+    tab = drv.get("table") if isinstance(drv.get("table"), pd.DataFrame) else pd.DataFrame()
+    nm = {(r["산업"], r["요인"]): r for _, r in tab.iterrows()} if len(tab) else {}
+    for t, zt in zmap.items():
+        if t not in rel.columns:
+            continue
+        for k in zt.columns:
+            tests.append((t, k, "요인", zt[k].reindex(rel.index)))
+        if zt.shape[1] >= 2 and isinstance(comp, pd.DataFrame) and t in comp.columns:
+            tests.append((t, "합성", "합성", comp[t].reindex(rel.index)))
+    k_tests = max(len(tests), 1)
+    t_bonf = float(_stats.NormalDist().inv_cdf(1.0 - 0.05 / (2.0 * k_tests)))
+    rows: List[dict] = []
+    cnt = {"후보": 0, "반대": 0, "부족": 0, "닫힘": 0}
+    cands: List[str] = []
+    for t, k, kind, x in tests:
+        st = _driver_pred_stats(x, F[t], h, split)
+        verd, cls = _driver_verdict(st, min_n, min_t, share, min_years, t_bonf)
+        cnt[cls] += 1
+        if cls == "후보":
+            cands.append(f"{t}:{k}")
+        _r = nm.get((t, k), {})
+        rows.append({"블록": "B. 예측 — 요인 z(t) → 향후 21일 부모 대비 초과수익", "산업": t, "부모": parent_of.get(t, ""),
+                     "요인": k, "이름": (_r.get("이름", "") if len(_r) else "요인 z 평균(사전방향 정렬)"),
+                     "사전방향": (_r.get("사전방향", None) if len(_r) else "+1(정렬됨)"),
+                     "N(월)": st.get("N"), "기간": (f"{st.get('start', '-')}~{st.get('end', '-')}" if "start" in st else "-"),
+                     "IC": (round(st["IC"], 3) if "IC" in st else None),
+                     "월평균(%)": (round(st["mean"] * 100.0, 3) if "mean" in st else None),
+                     "t": (round(st["t"], 2) if st.get("t") == st.get("t") and "t" in st else None),
+                     "적중률": (round(st["hit"], 3) if "hit" in st else None),
+                     "연도 k/n": (f"{st.get('y_ok', 0)}/{st.get('y_n', 0)}" if "y_n" in st else None),
+                     "2018 전 N·월평균(%)": (f"{st.get('pre_n', 0)} · {st.get('pre_mean', float('nan')) * 100:+.3f}"
+                                         if st.get("pre_n", 0) else "-"),
+                     "2018 후 N·월평균(%)": (f"{st.get('post_n', 0)} · {st.get('post_mean', float('nan')) * 100:+.3f}"
+                                         if st.get("post_n", 0) else "-"),
+                     "판정": verd, "근거": (_r.get("근거", "") if len(_r) else "")})
+    # ---- B2. 사후 설명(같은 21일) — 예측이 아니라 '흐름 차이가 무엇과 같이 움직였나' ----
+    rows_b2: List[dict] = []
+    n_expl = n_expl_tot = 0
+    for t, ct in chg.items():
+        if t not in rel.columns:
+            continue
+        for k in ct.columns:
+            x = ct[k].reindex(rel.index)
+            ok = x.notna() & Bk[t].notna()
+            ds = ok[ok].index[::h]
+            if len(ds) < 12:
+                continue
+            xs, ys = x.loc[ds].astype(float), Bk[t].loc[ds].astype(float)
+            r = float(xs.corr(ys))
+            n = int(len(ds))
+            tr = (r * np.sqrt((n - 2) / max(1e-12, 1.0 - r * r))) if (r == r and abs(r) < 1) else float("nan")
+            n_expl_tot += 1
+            good = (r == r) and r > 0 and tr >= min_t
+            n_expl += int(good)
+            _r = nm.get((t, k), {})
+            rows_b2.append({"블록": "B2. 사후 설명 — 같은 21일 요인 변화 ↔ 부모 대비 초과수익(예측 아님)", "산업": t,
+                            "부모": parent_of.get(t, ""), "요인": k, "이름": (_r.get("이름", "") if len(_r) else ""),
+                            "N(월)": n, "상관": round(r, 3) if r == r else None, "R²": (round(r * r, 3) if r == r else None),
+                            "t": (round(tr, 2) if tr == tr else None),
+                            "판정": ("★ 설명력 있음 — 이 요인이 오를(사전방향) 때 부모보다 앞섰다(같은 기간)" if good else
+                                   ("✗ 사전방향과 반대로 같이 움직였다" if (r == r and r < 0 and tr <= -min_t) else "설명 약함"))})
+    # ---- C. 부모 안 횡단면 — 합성 z 1위 − 꼴찌의 향후 21일(= 부모 안 순위를 요인이 가르나) ----
+    rows_c: List[dict] = []
+    groups: Dict[str, List[str]] = {}
+    if isinstance(comp, pd.DataFrame):
+        for t in comp.columns:
+            if t in rel.columns and parent_of.get(t):
+                groups.setdefault(parent_of[t], []).append(t)
+    groups = {p: v for p, v in groups.items() if len(v) >= 2}
+    cs_stat: Dict[str, Any] = {"N": 0}
+    if groups:
+        Zc = comp.reindex(rel.index)
+        per_g: Dict[str, pd.Series] = {}
+        for p, inds in groups.items():
+            z = Zc[inds]; f = F[inds]
+            okm = z.notna() & f.notna()
+            zz = z.where(okm)
+            # 동률 처리: 같은 요인을 쓰는 산업(예: IGV·SKYY·HACK = 실질금리)은 z가 같다 → 1위·꼴찌 **집단의 평균**으로 잰다
+            #   (첫 열을 임의로 고르지 않는다). 전원 동률이면 그날은 순위 정보가 없다(NaN).
+            zmax, zmin = zz.max(axis=1), zz.min(axis=1)
+            ftop = f.where(zz.eq(zmax, axis=0) & okm).mean(axis=1)
+            fbot = f.where(zz.eq(zmin, axis=0) & okm).mean(axis=1)
+            per_g[p] = (ftop - fbot).where((okm.sum(axis=1) >= 2) & (zmax > zmin + 1e-12))
+        G = pd.DataFrame(per_g)
+        avg = G.mean(axis=1, skipna=True)
+        x1 = pd.Series(1.0, index=avg.index).where(avg.notna())      # 방향은 이미 '1위 − 꼴찌'
+        cs_stat = _driver_pred_stats(x1, avg, h, split)
+        # 횡단면 스프레드는 방향이 이미 '1위 − 꼴찌'라 IC 대신 평균 부호로 사전방향 일치를 본다(IC 표기 생략)
+        verd, cls = _driver_verdict({**cs_stat, "IC": (1.0 if cs_stat.get("mean", 0) > 0 else -1.0)}, min_n, min_t, share,
+                                    min_years, t_bonf, show_ic=False)
+        rows_c.append({"블록": "C. 부모 안 횡단면 — 합성 z 1위 − 꼴찌(향후 21일)", "산업": "(부모 평균)",
+                       "요인": "합성", "N(월)": cs_stat.get("N"),
+                       "기간": (f"{cs_stat.get('start', '-')}~{cs_stat.get('end', '-')}" if "start" in cs_stat else "-"),
+                       "월평균(%)": (round(cs_stat["mean"] * 100.0, 3) if "mean" in cs_stat else None),
+                       "t": (round(cs_stat["t"], 2) if cs_stat.get("t") == cs_stat.get("t") and "t" in cs_stat else None),
+                       "적중률": (round(cs_stat["hit"], 3) if "hit" in cs_stat else None),
+                       "연도 k/n": (f"{cs_stat.get('y_ok', 0)}/{cs_stat.get('y_n', 0)}" if "y_n" in cs_stat else None),
+                       "2018 전 N·월평균(%)": (f"{cs_stat.get('pre_n', 0)} · {cs_stat.get('pre_mean', float('nan')) * 100:+.3f}"
+                                           if cs_stat.get("pre_n", 0) else "-"),
+                       "2018 후 N·월평균(%)": (f"{cs_stat.get('post_n', 0)} · {cs_stat.get('post_mean', float('nan')) * 100:+.3f}"
+                                           if cs_stat.get("post_n", 0) else "-"),
+                       "판정": verd.replace("예측 후보", "부모 안 순위 후보"),
+                       "근거": f"부모 그룹 {len(groups)}개(요인 있는 산업 ≥2): " + " · ".join(f"{p}={'/'.join(v)}" for p, v in groups.items())})
+        for p in groups:
+            s1 = G[p]
+            x1p = pd.Series(1.0, index=s1.index).where(s1.notna())
+            sp_st = _driver_pred_stats(x1p, s1, h, split)
+            rows_c.append({"블록": "C. 부모 안 횡단면 — 합성 z 1위 − 꼴찌(향후 21일)", "산업": p, "요인": "합성",
+                           "N(월)": sp_st.get("N"),
+                           "월평균(%)": (round(sp_st["mean"] * 100.0, 3) if "mean" in sp_st else None),
+                           "t": (round(sp_st["t"], 2) if sp_st.get("t") == sp_st.get("t") and "t" in sp_st else None),
+                           "적중률": (round(sp_st["hit"], 3) if "hit" in sp_st else None),
+                           "연도 k/n": (f"{sp_st.get('y_ok', 0)}/{sp_st.get('y_n', 0)}" if "y_n" in sp_st else None),
+                           "판정": ("부모별 참고(판정은 위 부모 평균 행)" if sp_st.get("N", 0) else
+                                  "순위 정보 없음 — 그룹 산업이 같은 요인이라 합성 z가 늘 같다(동률)"),
+                           "근거": "/".join(groups[p])})
+    # ---- D. 탈동조(독립 산업) 표 ----
+    rows_d: List[dict] = []
+    r2, cs_, dec = drv.get("r2"), drv.get("corr_spy"), drv.get("decoupled")
+    thr = float((drv.get("params") or {}).get("decouple_r2", 0.40))
+    now_dec: List[str] = []
+    for t in results:
+        if not isinstance(r2, pd.DataFrame) or t not in r2.columns:
+            continue
+        s = r2[t].dropna()
+        post = s[s.index >= split]
+        last = float(s.iloc[-1]) if len(s) else float("nan")
+        _dnow = bool(last == last and last < thr)
+        if _dnow:
+            now_dec.append(t)
+        _c = (cs_[t].dropna() if isinstance(cs_, pd.DataFrame) and t in cs_.columns else pd.Series(dtype=float))
+        _n_drv = len(INDUSTRY_DRIVER_TABLE.get(t, []))
+        rows_d.append({"블록": "D. 탈동조(부모 대비 R²) — [독립산업격자] 대상", "산업": t, "부모": parent_of.get(t, ""),
+                       "최근 R²": (round(last, 3) if last == last else None),
+                       "2018 후 R² 중위": (round(float(post.median()), 3) if len(post) else None),
+                       "2018 후 탈동조일 비율": (round(float((post < thr).mean()), 3) if len(post) else None),
+                       "최근 SPY 상관": (round(float(_c.iloc[-1]), 3) if len(_c) else None),
+                       "요인 수": _n_drv,
+                       "판정": (("★ 탈동조(오늘) — " if _dnow else "결합 — ") +
+                              (f"요인 {_n_drv}개" if _n_drv else f"요인 없음: {INDUSTRY_DRIVER_NONE.get(t, '미등록')}"))})
+    # ---- A. 요약 ----
+    _cs_line = ("부모 안 순위(합성 z 1위−꼴찌): " +
+                (f"월 {cs_stat['mean'] * 100:+.3f}% · t {cs_stat['t']:+.2f} · 연도 {cs_stat.get('y_ok', 0)}/{cs_stat.get('y_n', 0)} · "
+                 f"N {cs_stat.get('N', 0)}" if ("mean" in cs_stat and cs_stat.get("t") == cs_stat.get("t")) else "산출 불가"))
+    head = [{"블록": "A. 요약", "산업": "── 읽는 법 ──",
+             "판정": ("**같은 섹터 안에서 산업 흐름이 갈리는 것을 산업 고유 요인이 설명·예측하나**를 매 실행 잰다. 요인·창·사전방향은 "
+                    "INDUSTRY_DRIVER_TABLE에 **경제적 근거로 먼저 등록**했다(6산업은 근거가 약해 붙이지 않음 — 블록 D). "
+                    f"B 예측: 요인 z(t, 확장 표준화·t까지) → t+1..t+{h} **부모 대비** 로그 초과수익, {h}일 간격 비중첩 · 전 이력 · "
+                    "타이밍 = sign(z)×초과수익. 후보 = 사전방향 일치(IC>0·평균>0) ∧ "
+                    f"t ≥{min_t:.1f} ∧ 연도 ≥{share:.0%}(≥{min_years}년) ∧ N ≥{min_n}개월 ∧ 2018 전·후 모두 양수. "
+                    f"검정 {k_tests}개 → 본페로니 t {t_bonf:.2f}(참고). 사전방향과 반대로 유의해도 **뒤집어 쓰지 않는다**. "
+                    "B2 사후 설명: 같은 21일 요인 변화와 초과수익의 상관(흐름 차이가 무엇과 같이 움직였나 — **거래에 못 쓴다**). "
+                    "C 부모 안 횡단면: 부모마다 합성 z 1위 − 꼴찌 산업의 향후 21일 수익 차(부모 안 순위를 가르나). "
+                    "D 탈동조: 부모 대비 252일 R² < " + f"{thr:.2f} = [독립산업격자] 대상. "
+                    "E 격자: [드라이버순환매격자]·[독립산업격자] ★★★ 판정(라이브 무변경 · 승격은 사용자 확인 후). "
+                    "⚠ 데이터는 M 번들 계열만(추가 다운로드 0) — 계열이 없으면 그 요인은 '데이터 없음'.")},
+            {"블록": "A. 요약", "산업": "★ 판정 집계",
+             "판정": (f"예측 검정 {k_tests}개 — 후보 {cnt['후보']} · 사전방향 반대(유의) {cnt['반대']} · 표본 부족 {cnt['부족']} · "
+                    f"닫힘 {cnt['닫힘']}" + (f" | 후보: {', '.join(cands[:6])}" if cands else " | 예측 후보 없음")
+                    + f" | 사후 설명력 있음 {n_expl}/{n_expl_tot} | {_cs_line}"
+                    + f" | 탈동조(오늘 R²<{thr:.2f}): {', '.join(now_dec) or '없음'}"
+                    + (f" | ⚠ 데이터 없음 {len(drv.get('missing') or [])}개: {', '.join((drv.get('missing') or [])[:5])}"
+                       if drv.get("missing") else ""))}]
+    log("DRIVER", kv(event="driver_tests_built", tests=k_tests, cand=cnt["후보"], opposite=cnt["반대"], small=cnt["부족"],
+                     closed=cnt["닫힘"], expl=f"{n_expl}/{n_expl_tot}", t_bonf=round(t_bonf, 2),
+                     cs_mean=(round(cs_stat["mean"] * 100.0, 3) if "mean" in cs_stat else "-"),
+                     cs_t=(round(cs_stat["t"], 2) if cs_stat.get("t") == cs_stat.get("t") and "t" in cs_stat else "-"),
+                     decoupled_now=",".join(now_dec) or "-", elapsed_s=round(time.time() - t0, 2)), M=M)
+    return pd.DataFrame(head + rows + rows_b2 + rows_c + rows_d)
+
+
+def driver_summary_line(df: Optional[pd.DataFrame]) -> str:
+    """[v0.29.0 R75] 00시트 '산업 고유 요인(27)' 1행 — 27시트 블록 A '★ 판정 집계' 행에서 그대로 읽는다(하드코딩 금지)."""
+    if not isinstance(df, pd.DataFrame) or not len(df) or "산업" not in df.columns:
+        return "산출 불가(27 없음)"
+    r = df[df["산업"].astype(str).eq("★ 판정 집계")]
+    return str(r["판정"].iloc[0]) if len(r) else "산출 불가(27 집계 행 없음)"
+
+
+def decouple_grid_line(sheets: Dict[str, pd.DataFrame]) -> str:
+    """[v0.29.0 R75] 00시트 '[독립산업격자]' 1행 — 00A 블록 B '★★★ [독립산업격자] 판정' 행의 '→ 판정'만 모아 읽는다(하드코딩 금지)."""
+    _a = sheets.get("00A_수익비교") if isinstance(sheets, dict) else None
+    if not isinstance(_a, pd.DataFrame) or "자산" not in _a.columns:
+        return "산출 없음(00A 없음)"
+    _v = _a[_a["자산"].astype(str).str.startswith("★★★ [독립산업격자] 판정")]
+    if not len(_v):
+        return "산출 없음(탈동조 산업·요인 없음 또는 DECOUPLE_GRID=False)"
+    parts = []
+    for _, r in _v.iterrows():
+        lab = str(r["자산"]).replace("★★★ [독립산업격자] 판정: ", "")
+        txt = str(r.get("판정", ""))
+        verd = txt.split(" → ", 1)[1] if " → " in txt else txt
+        parts.append(f"{lab[:3]} {verd.split(' · 연도별')[0][:90]}")
+    return " | ".join(parts)
+
+
+def build_driver_rotation_grid(results: Dict[str, Dict[str, Any]], sres: dict, res: dict, eval_idx: pd.DatetimeIndex,
+                               icfg: Any, M, S, pooled_wf: Dict[str, Any], alloc: Dict[str, Any],
+                               drv: Dict[str, Any], rf_daily: Optional[pd.Series] = None) -> Dict[str, Any]:
+    """[v0.29.0 R75 §3] [드라이버순환매격자] — 부모 안 리더 채택 후보(ROTATION_SIGNALS)에 DRIVER_Z(산업 합성 요인 z, 사전방향 +1)를
+    더해 워크포워드 채택(within_parent_walkforward_select)과 배분(격자 끈 cfg)을 1회 더 돌린다. **★ 무변경** — results의 얕은 복제에만
+    rot_raw['DRIVER_Z']를 붙이고, cfg는 dataclasses.replace 복제다. 판정 = ★ 대비 ① CAGR 손실 없음 ② 칼마 상승 ③ MDD 악화 ≤0.5%p
+    ④ 상위 5일 제외 후에도 초과 > 0 ⑤ 연도 일관 ≥ GRID_YEAR_MIN_SHARE(손댄 해 ≥ GRID_MIN_YEARS). 반환 {rows, line, ok, adopted_years …}."""
+    t0 = time.time()
+    out: Dict[str, Any] = {"ok": False, "rows": [], "line": "산출 불가"}
+    blk = "E. 격자 — [드라이버순환매격자](부모 안 리더 후보 + DRIVER_Z)"
+    try:
+        comp = drv.get("comp") if isinstance(drv, dict) else None
+        if not isinstance(comp, pd.DataFrame) or not len(comp.columns):
+            out["line"] = "산출 불가 — 요인 합성 z 없음"
+            return out
+        _lbl0 = alloc.get("label_star") if isinstance(alloc, dict) else None
+        _bt0 = ((alloc.get("bts") or {}).get(_lbl0) if _lbl0 else None)
+        if _bt0 is None or "strategy_ret" not in _bt0:
+            out["line"] = "산출 불가 — ★ 배분 결과 없음"
+            return out
+        res_v: Dict[str, Dict[str, Any]] = {}
+        n_att = 0
+        for t, r in results.items():
+            rr = dict(r)
+            rot = r.get("rot_raw")
+            if isinstance(rot, pd.DataFrame):
+                rot = rot.copy()
+                if t in comp.columns:
+                    rot["DRIVER_Z"] = comp[t].reindex(pd.DatetimeIndex(rot.index))
+                    n_att += 1
+                else:
+                    rot["DRIVER_Z"] = np.nan
+                rr["rot_raw"] = rot
+            res_v[t] = rr
+        icfg_v = dataclasses.replace(icfg, ROTATION_SIGNALS=tuple(icfg.ROTATION_SIGNALS) + ("DRIVER_Z",))
+        wf_v = within_parent_walkforward_select(res_v, eval_idx, icfg_v, M, S, pooled_wf)
+        alloc_v = build_industry_allocation(res_v, sres, res, eval_idx, _frozen_alloc_cfg(icfg_v), M, S, wf_v,
+                                            rf_daily=rf_daily)
+        _bt1 = (alloc_v.get("bts") or {}).get(alloc_v.get("label_star")) if alloc_v else None
+        if _bt1 is None or "strategy_ret" not in _bt1:
+            out["line"] = "산출 불가 — 변형 배분 실패"
+            return out
+        s0 = pd.Series(_bt0["strategy_ret"]).astype(float).fillna(0.0)
+        s1 = pd.Series(_bt1["strategy_ret"]).astype(float).fillna(0.0).reindex(s0.index).fillna(0.0)
+        p0, p1 = M.perf_metrics(s0, "★"), M.perf_metrics(s1, "변형")
+        d = s1 - s0
+        dg = float(p1.get("CAGR", np.nan) - p0.get("CAGR", np.nan))
+        dk = float(p1.get("칼마(CAGR/MDD)", np.nan) - p0.get("칼마(CAGR/MDD)", np.nan))
+        dm = float(abs(p1.get("최대낙폭(MDD)", np.nan)) - abs(p0.get("최대낙폭(MDD)", np.nan))) * 100.0
+        tot = float(d.sum())
+        top5 = float(d.nlargest(5).sum()) if len(d) else 0.0
+        robust = (tot > 0) and (tot - top5 > 0)
+        gy = d.groupby(pd.DatetimeIndex(d.index).year).sum()
+        act = gy.abs() > 1e-9
+        y_ok, y_n = int((gy[act] > 0).sum()), int(act.sum())
+        share = float(getattr(icfg, "GRID_YEAR_MIN_SHARE", 2.0 / 3.0))
+        min_years = int(getattr(icfg, "GRID_MIN_YEARS", 3))
+        cons = y_n >= min_years and y_ok / max(y_n, 1) >= share - 1e-9
+        _tw0 = alloc.get("target_w"); _tw1 = alloc_v.get("target_w")
+        chg_days = 0
+        if isinstance(_tw0, pd.DataFrame) and isinstance(_tw1, pd.DataFrame):
+            _cc = [c for c in _tw0.columns if c in _tw1.columns]
+            chg_days = int(((_tw1[_cc].reindex(_tw0.index).fillna(0.0) - _tw0[_cc].fillna(0.0)).abs().sum(axis=1) > 1e-9).sum())
+        sel = wf_v.get("selected_by_year") or {}
+        eff = wf_v.get("selected_eff_by_year") or {}
+        adopted = sorted(int(y) for y, v in sel.items() if "DRIVER_Z" in (v or []))
+        used = sorted(int(y) for y, v in eff.items() if "DRIVER_Z" in (v or []))
+        c1, c2, c3 = dg >= -1e-12, (dk == dk and dk > 0), dm <= 0.5
+        if not adopted:
+            verd = ("워크포워드가 DRIVER_Z를 **한 해도 채택하지 않았다**(부모 안 순서 정보가 기존 후보보다 낫지 않다) → 닫는다"
+                    + (" · ★와 비트 동일" if chg_days == 0 else f" · 그래도 배분이 {chg_days}일 달라졌다(순위 동률 처리 등)"))
+        elif c1 and c2 and c3 and robust and cons:
+            verd = "★ 채택 기준 통과(①②③④ + 연도 일관) → **승격 후보(사용자 확인 후)** — 라이브 무변경"
+        elif c1 and c2 and c3 and robust:
+            verd = f"⚠ 보류 — 전 기간 4기준은 통과했지만 연도 {y_ok}/{y_n} 미달 → 라이브 승격 금지"
+        else:
+            _f = [n for n, ok in (("① CAGR 손실", c1), ("② 칼마", c2), ("③ MDD", c3), ("④ 상위5일 강건성", robust)) if not ok]
+            verd = "✗ 기준 미달(" + "·".join(_f) + ") → 닫는다(★ 그대로)"
+        line = (f"ΔCAGR {dg:+.2%} · Δ칼마 {dk:+.3f} · MDD 악화 {dm:+.2f}%p · 초과 {tot * 100:+.2f}%p(상위5일 제외 "
+                f"{(tot - top5) * 100:+.2f}%p) · 연도 {y_ok}/{y_n} · DRIVER_Z 채택 {len(adopted)}년"
+                + (f"({','.join(map(str, adopted))})" if adopted else "") + f" · 사용 {len(used)}년 · 배분 달라진 날 {chg_days} → {verd}")
+        out.update({"ok": True, "line": line, "adopted_years": adopted, "used_years": used, "changed_days": chg_days,
+                    "d_cagr": dg, "d_calmar": dk, "d_mdd_pp": dm, "excess": tot, "excess_ex_top5": tot - top5,
+                    "y_ok": y_ok, "y_n": y_n,
+                    "rows": [{"블록": blk, "산업": "★ 라이브(현행 후보 16종)", "요인": "-",
+                              "CAGR": round(float(p0.get("CAGR", np.nan)), 4),
+                              "칼마": p0.get("칼마(CAGR/MDD)"), "MDD(%)": round(float(p0.get("최대낙폭(MDD)", np.nan)) * 100, 2),
+                              "판정": "기준(★ — 13_산업배분전략 1행과 같은 곡선)"},
+                             {"블록": blk, "산업": "변형: 후보 + DRIVER_Z", "요인": "DRIVER_Z",
+                              "CAGR": round(float(p1.get("CAGR", np.nan)), 4),
+                              "칼마": p1.get("칼마(CAGR/MDD)"), "MDD(%)": round(float(p1.get("최대낙폭(MDD)", np.nan)) * 100, 2),
+                              "연도 k/n": f"{y_ok}/{y_n}",
+                              "판정": line,
+                              "근거": ("연도별 초과(%p): " + " · ".join(f"{int(y)} {v * 100:+.2f}" for y, v in gy[act].items()))
+                              if y_n else "-"}]})
+        log("ROT", kv(event="driver_rotation_grid", industries_with_z=n_att, adopted=",".join(map(str, adopted)) or "-",
+                      used=",".join(map(str, used)) or "-", changed_days=chg_days, d_cagr=round(dg, 5),
+                      d_calmar=(round(dk, 4) if dk == dk else "-"), d_mdd_pp=round(dm, 3), excess_pp=round(tot * 100, 3),
+                      excess_ex_top5_pp=round((tot - top5) * 100, 3), years=f"{y_ok}/{y_n}",
+                      elapsed_s=round(time.time() - t0, 2), note="★ 무변경 — 격자 복제 cfg·results에서만"), M=M)
+    except Exception as e:
+        out["line"] = f"산출 실패 — {type(e).__name__}: {str(e)[:160]}"
+        log("ROT", kv(event="driver_rotation_grid_failed", err=type(e).__name__, msg=str(e)[:200],
+                      trace=traceback.format_exc()[-600:].replace("\n", " | "),
+                      next_step="i_overrides={'DRIVER_ROTATION_GRID': False}로 끄고 재실행(★ 무관)"), M=M, level="warning")
+    return out
 
 
 def build_industry_summary(results: Dict[str, Dict[str, Any]], failed: Dict[str, str],
@@ -9869,6 +10618,26 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                             trace=traceback.format_exc()[-1200:].replace("\n", " | ")), M=M, level="error")
             wf, alloc = {}, {}
 
+    # ---- [v0.29.0 R75 §1·§3] 산업 고유 요인 패널 · [드라이버순환매격자] — 진단/격자(★·라이브 무변경) ----
+    _drv: Dict[str, Any] = {}
+    _drv_grid: Dict[str, Any] = {}
+    if bool(getattr(icfg, "INDUSTRY_DRIVERS", True)) and results:
+        try:
+            _drv = build_industry_driver_panel(results, res, icfg, M=M)
+        except Exception as _e:
+            _drv = {}
+            log("DRIVER", kv(event="driver_panel_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                             trace=traceback.format_exc()[-500:].replace("\n", " | "),
+                             next_step="i_overrides={'INDUSTRY_DRIVERS': False}로 끄고 재실행(라이브 무관)"), M=M, level="warning")
+        if (_drv and alloc and not frozen and bool(getattr(icfg, "DRIVER_ROTATION_GRID", True))
+                and str(getattr(icfg, "ROTATION_VALIDATION_MODE", "within_parent")).lower() == "within_parent"):
+            _drv_grid = build_driver_rotation_grid(results, sres, res, eval_idx, icfg, M, S, (wf.get("pooled") or {}),
+                                                   alloc, _drv, rf_daily=rf_daily)
+        elif _drv:
+            _drv_grid = {"ok": False, "rows": [], "line": ("생략 — " + ("동결(INDUSTRY_LAYER_FROZEN)" if frozen else
+                                                                   ("배분 없음" if not alloc else
+                                                                    ("DRIVER_ROTATION_GRID=False" if not bool(getattr(icfg, "DRIVER_ROTATION_GRID", True))
+                                                                     else "ROTATION_VALIDATION_MODE≠within_parent"))))}
     # [v0.2.0] 16_산업부모추종 — 배분과 무관하게 항상 산출(진단 전용)
     following_df = pd.DataFrame()
     if results:
@@ -10132,11 +10901,21 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
     if bool(getattr(icfg, "SIGN_TESTS", True)):
         try:
             _sign = build_signal_sign_tests(results, sres, icfg, M=M, exclude_last=set(_lc_missing),
-                                            last_day=(_cal_last if len(cal) else None))
+                                            last_day=(_cal_last if len(cal) else None),
+                                            driver_z=(_drv.get("comp") if _drv else None))   # [v0.29.0 R75 §5]
         except Exception as _e:
             log("REPORT", kv(event="signal_sign_tests_failed", err=type(_e).__name__, msg=str(_e)[:160]),
                 M=M, level="warning")
+    # ---- [v0.29.0 R75 §2] 27_산업고유요인검정(진단 전용 — 목표비중 계산과 무관) ----
+    _drv_tests = pd.DataFrame()
+    if _drv:
+        try:
+            _drv_tests = build_industry_driver_tests(_drv, results, icfg, signal_start=res["cfg"].SIGNAL_START, M=M)
+        except Exception as _e:
+            log("DRIVER", kv(event="driver_tests_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                             trace=traceback.format_exc()[-500:].replace("\n", " | ")), M=M, level="warning")
     return {
+        "drivers": _drv, "driver_tests": _drv_tests, "driver_rot_grid": _drv_grid,   # [v0.29.0 R75] 27·26·00A·00
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
         "reentry_audit": _reentry,                                # [v0.27.0 R73 §4-4] 25_재진입감사
@@ -11015,6 +11794,31 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                     log("REPORT", kv(event="haircut_inherit_grid_failed", err=type(_e).__name__, msg=str(_e)[:140]),
                         M=M, level="warning")
                     _vars2 = []
+            # ---- [v0.29.0 R75 §4 사전등록] [독립산업격자] 3변형 — 탈동조(부모 R² < DECOUPLE_R2)일만 · 결정 t → 체결 t+1 ----
+            #   ⚠ 오프라인 사전측정(r75/decouple_offline.py): 탈동조일에 E_t를 버리고 1.0이면 XBI 311→139% · GDX 397→288% ·
+            #   IYZ 219→176%(MDD 악화) — E_t를 기반으로 두고 요인을 **덧붙이는** 두 방향만 잰다:
+            #   (a) 요인 역풍(합성 z<0) → 0  (b) 요인 순풍(z≥0) → 1.0(시장이 빼도 들고 간다)  (c) 반증: 순풍 → 0(열위여야 정상)
+            _drvR = ires.get("drivers") or {}
+            if (bool(getattr(icfg, "DECOUPLE_GRID", True)) and _solo2 and isinstance(_drvR.get("decoupled"), pd.DataFrame)
+                    and isinstance(_drvR.get("comp"), pd.DataFrame)):
+                try:
+                    _E3 = pd.DataFrame(_solo2)
+                    _DEC = (_drvR["decoupled"].reindex(index=_E3.index, columns=_E3.columns)
+                            .fillna(False).astype(bool))
+                    _Z3 = _drvR["comp"].reindex(index=_E3.index, columns=_E3.columns)
+                    _zv = _Z3.notna()
+                    _neg = _DEC & _zv & (_Z3 < 0)
+                    _pos = _DEC & _zv & (_Z3 >= 0)
+                    _vars2.append(("[독립산업격자] (a) 탈동조 산업 · 요인 역풍일 → 0", _E3.where(~_neg, 0.0).shift(1).fillna(0.0)))
+                    _vars2.append(("[독립산업격자] (b) 탈동조 산업 · 요인 순풍일 → 1.0", _E3.where(~_pos, 1.0).shift(1).fillna(0.0)))
+                    _vars2.append(("[독립산업격자] (c) 반증: 탈동조 산업 · 요인 순풍일 → 0", _E3.where(~_pos, 0.0).shift(1).fillna(0.0)))
+                    log("REPORT", kv(event="decouple_grid_inputs", decoupled_days=int(_DEC.sum().sum()),
+                                     headwind_days=int(_neg.sum().sum()), tailwind_days=int(_pos.sum().sum()),
+                                     industries=",".join(c for c in _E3.columns if bool(_DEC[c].any())) or "-",
+                                     note="사전등록 격자 — 라이브 무변경"), M=M)
+                except Exception as _e:
+                    log("REPORT", kv(event="decouple_grid_failed", err=type(_e).__name__, msg=str(_e)[:140]),
+                        M=M, level="warning")
             # 부모 예산 = 그날 S★가 그 산업의 부모 섹터에 준 비중의 합(산업이 쓸 수 있는 천장).
             _bg2 = None
             _ws2 = _al2.get("w_s")
@@ -11123,11 +11927,15 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                     _parL = _ppL[_cc].apply(pd.to_numeric, errors="coerce").reindex(_idxL).ffill()
             _mktL = (pd.to_numeric(pd.Series(_mpL), errors="coerce").reindex(_idxL).ffill()
                      if (_mpL is not None and len(_mpL)) else None)
+            # [v0.29.0 R75 §6(a)] ④ 엔진(다음날 시가 체결·편도 비용·현금이자) = results[t]['strategy_ret'](06·01_일별 전략자산곡선)
+            _engL = pd.DataFrame({t: pd.to_numeric(pd.Series(results[t].get("strategy_ret")), errors="coerce").reindex(_idxL)
+                                  for t in _icL if results[t].get("strategy_ret") is not None})
             _cvL, _cvdL = build_industry_curve_compare(
                 _retL, _ownL, _parL, _liveL, icfg,
                 name_map={t: INDUSTRY_NAME_KR.get(t, "") for t in _icL},
                 parent_map=_pmapL,
-                focus=tuple(getattr(icfg, "CURVE_FOCUS", ()) or ()), M=M)
+                focus=tuple(getattr(icfg, "CURVE_FOCUS", ()) or ()), M=M,
+                engine_ret=(_engL if len(_engL.columns) else None))
             if isinstance(_cvL, pd.DataFrame) and len(_cvL):
                 sheets["00B_수익곡선비교"] = _cvL
             if isinstance(_cvdL, pd.DataFrame) and len(_cvdL):
@@ -11154,6 +11962,22 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     _sg = ires.get("sign_tests")
     if isinstance(_sg, pd.DataFrame) and len(_sg):
         sheets["26_신호부호검정"] = _sg
+    # [v0.29.0 R75 §2] 27_산업고유요인검정(진단 전용) + 블록 E(격자 판정 — [드라이버순환매격자] · [독립산업격자] 00A 사본)
+    _dt = ires.get("driver_tests")
+    if isinstance(_dt, pd.DataFrame) and len(_dt):
+        _dg0 = ires.get("driver_rot_grid") or {}
+        _eRows: List[dict] = list(_dg0.get("rows") or [])
+        if not _eRows and _dg0.get("line"):
+            _eRows = [{"블록": "E. 격자 — [드라이버순환매격자](부모 안 리더 후보 + DRIVER_Z)", "산업": "판정",
+                       "판정": str(_dg0.get("line"))}]
+        _a0x = sheets.get("00A_수익비교")
+        if isinstance(_a0x, pd.DataFrame) and "자산" in _a0x.columns:
+            _dv = _a0x[_a0x["자산"].astype(str).str.startswith("★★★ [독립산업격자] 판정")]
+            for _, _rr in _dv.iterrows():
+                _eRows.append({"블록": "E. 격자 — [독립산업격자](00A 블록 B 판정 사본)",
+                               "산업": str(_rr["자산"]).replace("★★★ [독립산업격자] 판정: ", ""),
+                               "연도 k/n": _rr.get("연도 일관(k/n)"), "판정": str(_rr.get("판정", ""))})
+        sheets["27_산업고유요인검정"] = (pd.concat([_dt, pd.DataFrame(_eRows)], ignore_index=True) if _eRows else _dt)
     if S is not None and hasattr(S, "sheets_to_front"):
         sheets = S.sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
 
@@ -11181,6 +12005,17 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                         "라이브 판정은 00A ②(라이브 단독)·19 블록 A′·00B ④ 현행."))
     except Exception as _e:
         log("REPORT", kv(event="single_live_verdict_failed", err=type(_e).__name__), M=M, level="warning")
+    # ---- [v0.29.0 R75] 00시트 3행 — 27 집계 · [드라이버순환매격자] · [독립산업격자](수치는 시트에서 읽는다) ----
+    try:
+        if isinstance(sheets.get("27_산업고유요인검정"), pd.DataFrame):
+            _p27 = next((i for i, m in enumerate(meta) if m and m[0] == "⚠ 자기 국면기계 = 진단 전용"), 2) + 1
+            meta.insert(_p27, ("산업 고유 요인(27) — 같은 섹터 안 산업 흐름을 요인이 설명·예측하나",
+                               driver_summary_line(sheets.get("27_산업고유요인검정"))))
+            meta.insert(_p27 + 1, ("[드라이버순환매격자] — 부모 안 리더 후보 + 산업 요인(★ 무변경)",
+                                   str((ires.get("driver_rot_grid") or {}).get("line", "산출 없음"))[:600]))
+            meta.insert(_p27 + 2, ("[독립산업격자] — 탈동조 산업에 요인 덧붙이기(라이브 무변경)", decouple_grid_line(sheets)))
+    except Exception as _e:
+        log("REPORT", kv(event="driver_meta_failed", err=type(_e).__name__), M=M, level="warning")
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:
         import inspect as _inspect
