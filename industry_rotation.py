@@ -1,5 +1,31 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.32.0 - 2026-09-20 - [R78 ★★ 다른 방법 — ML 워크포워드(풀링 그래디언트 부스팅) · 부분 노출일 라이브 = ML 컷(위험 파라미터) · 00D 블록 E(크기별)·F(ML 진단)]
+#    사용자 지시(2026-09-20) "이 데이터들로 모든 산업별·주식별 흐름을 예측 못하는게 말이 돼? 다시 다른 방법 찾아서 개선해". 시작 v0.31.0 → 목표 v0.32.0.
+#    ── 다른 방법 1 — 손 규칙이 아니라 데이터가 규칙을 찾게 한다: 29산업 풀링 HistGradientBoosting(깊이 3·학습률 0.05·200회·잎 300·L2 1.0·
+#       시드 20260920), 특징 32개(자기 수익·이격·기울기·변동성·낙폭·RSI·시장 대비·베타·상관 · 시장 수익·변동성·낙폭·200일선·폭 ·
+#       M E_t·변화·유지일수), 목표 = 다음 21거래일 수익 > 0, **연 1회 과거로만 재학습 · 엠바고 21일**(r78/ml.py·ml_lr.py·ml_eval.py).
+#       표본 밖 AUC(2020~2026): 자기 가격 정보만 0.49~0.52(**동전 던지기**) · M 포함 0.546 < **E_t 단독 0.559** · 선형(로지스틱)도 같다.
+#       ⇒ 산업의 '다음 한 달 방향'에 쓸 정보는 시장 국면(M) 안에 이미 다 있다 — 산업 기술지표는 방향 정보를 더하지 못한다(26·27과 같은 결론).
+#    ── 다른 방법 2 — 앙상블(M·부모 섹터 라이브·자기 국면기계의 평균·다수결·min)(r78/ens.py): 전부 v0.31.0 이하.
+#    ── 찾은 것: ML은 M을 **대신**하지 못하지만, M이 부분 노출(0<E_t<1)을 준 날 **어느 날을 비울지**는 고른다(r78/ml_ctrl.py·ml_rob*.py):
+#       표본 밖 2021-01~2026-09 v0.31.0(추세컷) 대비 CAGR 17.59→18.68% · MDD −14.90→−13.47% · 칼마 1.300→1.580(23/29) · 연도 5/6.
+#       같은 비율(62%)을 21일 블록으로 **무작위로** 비운 대조 30회: 칼마 1.336±0.046(최대 1.423) → 우연 이상(≈5σ).
+#       하이퍼파라미터 6조합(깊이 2~4 · 잎 100~1000 · 100~400회) 전부 CAGR +0.9~+1.7%p · 칼마 1.51~1.59. ⚠ 목표 지평 5·10·42일은 칼마만 개선.
+#       업종 평균 확률로 같은 날 같은 결정을 해도 칼마 1.62 — **정보는 산업 고유가 아니라 '시장 중립기 안의 시장 타이밍'**이다.
+#    (§1 ★★ 위험 파라미터) SINGLE_MID_RULE 기본 "trend_cut" → **"ml_cut"**: 부분 노출일에 p < 그 해 학습 중위면 0 · ML 없는 날 trend_cut 대체.
+#       run(): 산업 루프 **전** ml_timing_walkforward(frames Adj Close · SPY 총수익 · M res["sig"] 목표비중) 1회 → ctx["ml"] → run_industry.
+#       11 감사: 중립일 규칙 절단재계산에 ML 확률 전달. 로그 ml_year_fitted(연도·학습 기간·엠바고·행수·시드·AUC) · ml_walkforward_done.
+#       되돌리기: {"SINGLE_MID_RULE": "trend_cut"}(v0.31.0) · {"SINGLE_MID_RULE": "inherit"}(v0.30.0).
+#    (§2) 00D: 블록 **E 크기별**(하락 ≤−30%…−10% / 상승 ≥+30%…+10% 회피율·참여율 — '모든 흐름'을 크기로 쪼갠다) · 블록 **F ML 진단**(연도별 학습·시험
+#       기간·AUC ML/자기 정보만/E_t 단독 · 상태별 AUC · 표본 밖 거래 CAGR·MDD·칼마) · 후보 행 'ML 부분 노출일'·'ML 단독'·반증 'p≥중위 컷' ·
+#       연도 k/n은 두 변형이 같은 해를 세지 않는다(표본 밖 전용 후보의 분모 왜곡 수정). K(stock_regime v0.5.0)도 같은 함수를 쓴다.
+#    IndustryConfig 신설 9필드(ML_COMPARE · ML_HORIZON · ML_MIN_TRAIN_YEARS · ML_MAX_DEPTH · ML_LR · ML_MAX_ITER · ML_MIN_LEAF · ML_L2 · ML_SEED)
+#      — 검증 캐시 키 밖. 의존성: scikit-learn(Kaggle 기본 설치) — 없으면 ML 생략·trend_cut 대체·00시트에 사유.
+#    영향 함수: build_ml_panel·ml_timing_walkforward·ml_variants_from·ml_oos_rows·_append_ml_block·_ml_rsi(신설) · apply_single_mid_rule('ml_cut') ·
+#      single_mid_rule_audit(ml_p/ml_q) · run(ML·ctx) · run_industry(ML 전달) · build_updown_improvement_compare(블록 E·연도 분모) ·
+#      _build_industry_updown_compare(ML 행·반증) · build_industry_report(00 규칙 행).
+#    연구/교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.31.0 - 2026-09-20 - [R77 ★★ 단일 산업 라이브 = M E_t + 부분 노출일 추세컷(위험 파라미터) · 00D_하락상승개선비교 신설 · 불필요 시트 5개 제거 · K에 M 예산 통로]
 #    사용자 지시(2026-09-20) "산업별·주식별이 B&H가 피하지 못했던 하락을 모두 피했고 상승은 같이 타야 — 그렇게 했는지 확인하고, 못 했으면 원인
 #    분석해서 코드 수정 · 비교 시트 새로 하나(개선 방향용) · 정말 불필요한 시트 제거 · 이번에는 산업·주식 2개 코드만 바로 수정". 시작 v0.30.0 → 목표 v0.31.0.
@@ -1683,7 +1709,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.31.0"
+VERSION = "v0.32.0"
 VERSION_DATE = "2026-09-20"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2299,7 +2325,14 @@ class IndustryConfig:
     #     반증(추세 **위**에서 컷) CAGR 18.74% — 방향이 맞다. SMA 20/50/100에서도 CAGR·칼마 모두 개선(창에 둔감).
     #   ⚠ 참여율은 내려간다(상승구간 중 중립일·추세 아래 구간을 비운다) — 00D 시트가 매 실행 되판정한다.
     #   되돌리기(v0.30.0과 비트 동일): i_overrides={"SINGLE_MID_RULE": "inherit"}
-    SINGLE_MID_RULE: str = "trend_cut"       # "inherit"(v0.30.0) | "trend_cut"(라이브) | "zero"(중립일 전부 0 — 비교용)
+    #   ★ [v0.32.0 R78 ⚠ 위험 파라미터 변경] 기본값 "trend_cut" → **"ml_cut"** — 부분 노출일에 29산업 풀링 ML(아래 ML_* ·
+    #     연 1회 과거로만 재학습)의 다음 21일 상승확률이 그 해 학습 중위 미만이면 0. ML 확률이 없는 날은 trend_cut으로 대체.
+    #     오프라인(리포트26 일봉 · 2018~ 학습 · 표본 밖 2021-01~2026-09, r78/ml_ctrl·ml_rob·ml_rob2.py): v0.31.0 대비
+    #     CAGR 17.59→18.68% · MDD −14.90→−13.47% · 칼마 1.300→1.580(23/29) · 연도 5/6(2026 −0.9%p) · 같은 비율 무작위 21일 블록 컷
+    #     30회 칼마 1.336±0.046(최대 1.423) — 우연 이상 · 하이퍼파라미터 6조합 전부 CAGR·MDD·칼마 개선. ⚠ 목표 지평 5·10·42일은
+    #     칼마만 개선(CAGR −0.3~−0.5%p) — 21일은 사전 기본값. 전 기간 19 A′: 회피 70.9→75.0% · 참여 51.7→46.4% · 순효과 +2,074→+2,287%p.
+    #     되돌리기: {"SINGLE_MID_RULE": "trend_cut"}(v0.31.0) · {"SINGLE_MID_RULE": "inherit"}(v0.30.0)
+    SINGLE_MID_RULE: str = "ml_cut"          # "inherit"(v0.30.0) | "trend_cut"(v0.31.0) | "zero"(비교용) | "ml_cut"(★ v0.32.0 라이브)
     SINGLE_MID_TREND_SMA: int = 200          # trend_cut의 자기 추세선(거래일, 총수익 종가, t까지)
     SINGLE_MID_CUT_WEIGHT: float = 0.0       # 추세 아래 중립일의 비중(0.0 = 전량 회피)
     SINGLE_MID_AUDIT_N: int = 4              # 중립일 규칙 절단재계산 감사 표본(산업당) — 11_룩어헤드감사에 행 추가
@@ -2312,6 +2345,19 @@ class IndustryConfig:
     #   되돌리기: i_overrides={"REPORT_DROP_SHEETS": ()}
     REPORT_DROP_SHEETS: Tuple[str, ...] = ("03_지표검증", "04_채택근거상세", "05_이벤트스터디",
                                            "05b_하락상승구간", "08_워크포워드가중치")
+    # ---- [v0.32.0 R78 ★] ML 워크포워드 타이밍(진단·후보 — 라이브 아님) — 00D 블록 F · 후보 행 2 ----
+    #   사용자 지시(2026-09-20) "다시 다른 방법 찾아서 개선해" — 손 규칙이 아닌 데이터 학습 계열(풀링 그래디언트 부스팅, 연 1회 재학습).
+    #   사전 측정(리포트26 일봉, r78/ml.py): 표본 밖 2020~2026 AUC — 자기 정보만 0.49~0.52 · M 포함 0.546 < E_t 단독 0.559.
+    #   엔진은 산업 전 이력(2006~)으로 11년 더 학습해 매 실행 다시 판정한다. ⚠ 라이브 비중 무변경. 끄기: {"ML_COMPARE": False}
+    ML_COMPARE: bool = True
+    ML_HORIZON: int = 21                     # 목표 = 다음 H거래일 수익 > 0 · 엠바고도 H일
+    ML_MIN_TRAIN_YEARS: int = 3              # 첫 시험 연도 = max(SIGNAL_START 연도, 첫 데이터 연도 + 이 값)
+    ML_MAX_DEPTH: int = 3
+    ML_LR: float = 0.05
+    ML_MAX_ITER: int = 200
+    ML_MIN_LEAF: int = 300
+    ML_L2: float = 1.0
+    ML_SEED: int = 20260920
     # ---- [v0.19.0 X4 신규 격자] [국면×확신캡격자] — 부모 국면 제약 × 확신캡 래더 ----
     #   왜: W3이 [국면게이트격자]를 되살리자 **리더국면 NEUTRAL이 칼마 3.787 · MDD −0.0955(= S★와 동일)**로
     #     프로젝트 최초로 S★ 칼마 3.758을 넘었다(MDD 악화 정확히 0 → 한계비율 무한).
@@ -3147,9 +3193,15 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     _mid_rule = str(getattr(icfg, "SINGLE_MID_RULE", "inherit") or "inherit").lower()
     _mid_info: Dict[str, Any] = {"rule": _mid_rule, "applied": False}
     if _inh.get("applied") and _mid_rule != "inherit":
+        _mlc = ctx.get("ml") or {}
+        _mlp = (_mlc.get("p")[ind_ticker] if isinstance(_mlc.get("p"), pd.DataFrame) and ind_ticker in _mlc.get("p").columns else None)
+        _mlq = (_mlc.get("q50")[ind_ticker] if isinstance(_mlc.get("q50"), pd.DataFrame) and ind_ticker in _mlc.get("q50").columns else None)
+        if _mid_rule == "ml_cut" and _mlp is None:
+            log("PIPE", kv(event="ml_cut_without_probs", ticker=ind_ticker,
+                           note="ML 확률 없음(ML 실패·sklearn 없음) — trend_cut으로 대체"), M=M, level="warning")
         _newtp, _mid_info = apply_single_mid_rule(
             m_target_pos, adj_i, _mid_rule, int(getattr(icfg, "SINGLE_MID_TREND_SMA", 200)),
-            float(getattr(icfg, "SINGLE_MID_CUT_WEIGHT", 0.0)))
+            float(getattr(icfg, "SINGLE_MID_CUT_WEIGHT", 0.0)), ml_p=_mlp, ml_q=_mlq)
         sig = sig.copy()
         sig["target_pos"] = _newtp
         _sm = idx_i >= pd.Timestamp(cfg_i.SIGNAL_START)
@@ -3215,7 +3267,8 @@ def run_industry(ind_ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     if icfg.RUN_LOOKAHEAD_AUDIT and _mid_info.get("applied"):
         try:
             _ma = single_mid_rule_audit(ind_ticker, m_target_pos, sig["target_pos"], adj_i, icfg,
-                                        int(getattr(icfg, "SINGLE_MID_AUDIT_N", 4)), int(icfg.RANDOM_SEED))
+                                        int(getattr(icfg, "SINGLE_MID_AUDIT_N", 4)), int(icfg.RANDOM_SEED),
+                                        ml_p=_mlp, ml_q=_mlq)
             if len(_ma):
                 audit = pd.concat([audit, _ma], ignore_index=True, sort=False) if len(audit) else _ma
                 _bad = int((_ma["일치"] != "OK").sum())
@@ -8050,6 +8103,8 @@ def build_updown_improvement_compare(curve_df: pd.DataFrame, ret_df: pd.DataFram
     desc = dict(descriptions or {})
     A, B, C, D = ("A. 변형별 요약(같은 구간·같은 잣대)", "B. 격차 분해 — 시장 예산 상태별(누가 고칠 수 있나)",
                   f"C. {layer}별 — ★ 라이브 vs 구 라이브 vs B&H vs 오라클", "D. 판정 · 개선 방향")
+    E_ = "E. 크기별 — 큰 하락을 피했나 · 큰 상승을 탔나(★ 라이브·구 라이브)"      # [v0.32.0 R78]
+    segrec: Dict[str, List[Tuple[str, float, float]]] = {}
     rows: List[dict] = []
     cols = [c for c in curve_df.columns if c in ret_df.columns]
     if not cols or ref_label not in variants:
@@ -8099,11 +8154,14 @@ def build_updown_improvement_compare(curve_df: pd.DataFrame, ret_df: pd.DataFram
             c = dict(dn=0, dn_av=0, dn_part=0, dn_held=0, gain=0.0, up=0, up_full=0, up_part=0, up_miss=0, loss=0.0,
                      up_cap=0.0, up_tot=0.0, dn_take=0.0, dn_tot=0.0)
             lab = np.zeros(len(idx), dtype=int)   # +1 상승구간 날 · −1 하락구간 날
+            _rec = segrec.setdefault(lbl, []) if lbl in (ref_label, old_label) else None
             for kind, a, b in segs:
                 ws, rs = w[a + 1:b + 1], r[a + 1:b + 1]
                 if not len(ws):
                     continue
                 wavg = float(ws.mean())
+                if _rec is not None:
+                    _rec.append(("dn" if kind.startswith("하락") else "up", float(np.prod(1.0 + rs) - 1.0), wavg))
                 diff = float((ws * rs).sum() - rs.sum()) * 100.0
                 if kind.startswith("하락"):
                     lab[a + 1:b + 1] = -1
@@ -8173,7 +8231,7 @@ def build_updown_improvement_compare(curve_df: pd.DataFrame, ret_df: pd.DataFram
             d = [float(yearly[lbl][t].get(y, np.nan) - yearly[ref_label][t].get(y, np.nan)) for t in common
                  if t in yearly[lbl] and t in yearly[ref_label]]
             d = [x for x in d if np.isfinite(x)]
-            if not d:
+            if not d or max(abs(x) for x in d) < 1e-12:      # [v0.32.0 R78] 두 변형이 같은 해(예: ML 표본 밖 이전)는 세지 않는다
                 continue
             n += 1
             k += int(np.median(d) > 1e-12)
@@ -8291,6 +8349,33 @@ def build_updown_improvement_compare(curve_df: pd.DataFrame, ret_df: pd.DataFram
                      "오라클 순효과(%p)": (round(pa["gain"] + pa["loss"], 1) if pa else None),
                      "판정": ("★ B&H보다 칼마 우위" if pb and pr["cal"] > pb["cal"] else "⚠ B&H 칼마 미달")})
 
+    # ---------------- 블록 E [v0.32.0 R78] 크기별 ----------------
+    #   '모두 피하고 모두 탄다'를 크기로 쪼갠다 — 7% 흔들림과 −30% 폭락을 같은 1구간으로 세면 판정이 작은 흔들림에 지배된다.
+    rows.append({"블록": E_, "변형": "── 읽는 법 ──",
+                 "판정": (f"구간을 등락 크기로 나눠 회피율(평균 체결비중 ≤{a_part:.2f})·완전 회피(≤{a_av:.2f})·참여율(≥{u_part:.2f})·"
+                        f"완전 참여(≥{u_full:.2f})를 따로 센다. 작은 흔들림(7~10%)은 사후에만 보이는 잡음에 가깝고, "
+                        "큰 폭락·큰 랠리를 어떻게 다뤘는지가 수익 곡선을 결정한다.")})
+    _dnb = [(-1e9, -0.30, "하락 ≤ −30%"), (-0.30, -0.20, "하락 −30~−20%"), (-0.20, -0.15, "하락 −20~−15%"),
+            (-0.15, -0.10, "하락 −15~−10%"), (-0.10, 0.0, "하락 −10%까지")]
+    _upb = [(0.30, 1e9, "상승 ≥ +30%"), (0.20, 0.30, "상승 +20~+30%"), (0.15, 0.20, "상승 +15~+20%"),
+            (0.10, 0.15, "상승 +10~+15%"), (0.0, 0.10, "상승 +10%까지")]
+    for lbl in [x for x in (ref_label, old_label) if x and x in segrec]:
+        sr = segrec[lbl]
+        for lo, hi, nm in _dnb:
+            g = [w for k, mv, w in sr if k == "dn" and lo < mv <= hi]
+            if g:
+                g = np.asarray(g)
+                rows.append({"블록": E_, "변형": lbl, "크기": nm, "구간 수": int(len(g)),
+                             "회피율(전부+부분)": round(float((g <= a_part).mean()), 3), "완전 회피": round(float((g <= a_av).mean()), 3),
+                             "못 피함": round(float((g > a_part).mean()), 3), "평균 체결비중": round(float(g.mean()), 3)})
+        for lo, hi, nm in _upb:
+            g = [w for k, mv, w in sr if k == "up" and lo <= mv < hi]
+            if g:
+                g = np.asarray(g)
+                rows.append({"블록": E_, "변형": lbl, "크기": nm, "구간 수": int(len(g)),
+                             "참여율(전부+부분)": round(float((g >= u_part).mean()), 3), "완전 참여": round(float((g >= u_full).mean()), 3),
+                             "미참여": round(float((g < u_part).mean()), 3), "평균 체결비중": round(float(g.mean()), 3)})
+
     # ---------------- 블록 D ----------------
     lines: List[Tuple[str, str]] = []
     if ref:
@@ -8311,6 +8396,17 @@ def build_updown_improvement_compare(curve_df: pd.DataFrame, ret_df: pd.DataFram
         lines.append(("누가 고칠 수 있나", (f"격차의 {_m_share:.0%}가 M이 확신한 날(E=0·E=1)에 있다 → **시장 국면(M) 개선**이 가장 큰 칸이다"
                                         f"(상승 놓침은 M 재진입 속도, 하락 잃음은 M 하락 예측). 이 계층이 바꿀 수 있는 부분 노출일 몫은 "
                                         f"{1.0 - _m_share:.0%}.")))
+    if ref_label in segrec:
+        _sr = segrec[ref_label]
+        _big_dn = [w for k, mv, w in _sr if k == "dn" and mv <= -0.20]
+        _sml_dn = [w for k, mv, w in _sr if k == "dn" and mv > -0.10]
+        _big_up = [w for k, mv, w in _sr if k == "up" and mv >= 0.30]
+        _sml_up = [w for k, mv, w in _sr if k == "up" and mv < 0.10]
+        if _big_dn and _big_up:
+            lines.append(("크기별(★ 라이브)", (f"큰 하락(≤−20%) 회피 {np.mean(np.asarray(_big_dn) <= a_part):.0%} vs 작은 하락(−10%까지) "
+                                          f"{np.mean(np.asarray(_sml_dn) <= a_part) if _sml_dn else float('nan'):.0%} · 큰 상승(≥+30%) 참여 "
+                                          f"{np.mean(np.asarray(_big_up) >= u_part):.0%} vs 작은 상승(+10%까지) "
+                                          f"{np.mean(np.asarray(_sml_up) >= u_part) if _sml_up else float('nan'):.0%} — 블록 E")))
     passed = [l for l in candidate_labels if str(_judge(l, T.get(l) or {}, _vs_ref(l))).startswith("★ 후보")]
     both = [l for l in allv if l not in (ORA, BH, ref_label) and T.get(l) and ref
             and T[l]["avoid"] > ref["avoid"] and T[l]["part"] > ref["part"]]
@@ -8340,6 +8436,276 @@ def updown_compare_line(df: Optional[pd.DataFrame]) -> str:
     return " | ".join(f"{a}: {b}" for a, b in zip(d["변형"].astype(str), d["판정"].astype(str)))[:900] or "산출 없음"
 
 
+# =============================================================================
+# [v0.32.0 R78 ★ 신규] ML 워크포워드 타이밍(진단·후보 — 라이브 아님) — 사용자 지시(2026-09-20)
+#   "이 데이터들로 모든 산업별·주식별 흐름을 예측 못하는게 말이 돼? 다시 다른 방법 찾아서 개선해".
+#   손으로 만든 규칙(추세·요인·폭·베타·탈동조)이 아니라 **데이터가 스스로 규칙을 찾게** 하는 다른 계열의 방법이다:
+#   자산 29개를 한데 모은(pooled) 그래디언트 부스팅 분류기가 '다음 H거래일 수익 > 0'을 맞히도록, **해마다 과거로만** 다시 학습한다.
+#   특징(전부 t일 종가까지): 자기 수익 1·5·21·63·126·252일 · 이동평균 이격 20·50·200 · 50일선 기울기 · 변동성 21·63·비율 ·
+#     낙폭 63·252 · RSI14 · 시장 대비 21·63 · 베타·상관 · 시장 수익·변동성·낙폭·200일선 · 폭(50·200일선 위 비율) ·
+#     M 시장 예산 E_t와 그 변화(5·21일)·유지 일수.
+#   ★ 룩어헤드 차단: 시험 연도 Y의 모델은 '목표가 Y 시작 전에 끝나는 행'(시험 시작 H+1거래일 전까지)으로만 학습(엠바고) ·
+#     특징은 rolling만(center 없음) · 시드 고정·분할 기간을 표와 로그에 남긴다.
+#   ⚠ 사전 측정(리포트26 일봉, 2018~ 학습 · 2020~2026 표본 밖, r78/ml.py): 산업 자기 정보만(M 제외) AUC 0.49~0.52(동전 던지기) ·
+#     M 포함 0.546 < E_t 단독 0.559 — **E_t를 못 이겼다**. 엔진은 산업 이력 전체(2006~)와 M 워밍업 E_t로 **11년 더** 학습하므로
+#     이 표가 매 실행 다시 판정한다(후보 사전등록: 00D 블록 A 기준 + F의 표본 밖 AUC가 E_t 단독보다 높을 것).
+# =============================================================================
+_ML_M_FEATS = ("E", "E_chg5", "E_chg21", "E_days_same")
+
+
+def _ml_rsi(p: pd.Series, n: int = 14) -> pd.Series:
+    d = p.diff()
+    up = d.clip(lower=0).rolling(n, min_periods=n).mean()
+    dn = (-d.clip(upper=0)).rolling(n, min_periods=n).mean()
+    return 100.0 - 100.0 / (1.0 + up / dn.replace(0, np.nan))
+
+
+def build_ml_panel(curves: Dict[str, pd.Series], market_e: Optional[pd.Series],
+                   mkt_curve: Optional[pd.Series], horizon: int = 21) -> pd.DataFrame:
+    """자산별 특징 + 목표(다음 horizon거래일 수익) 긴 표. curves = 총수익 종가(전 이력). 전부 t일까지의 값(rolling만)."""
+    cur = {t: pd.to_numeric(pd.Series(c), errors="coerce").dropna() for t, c in curves.items()}
+    cur = {t: c[~c.index.duplicated(keep="last")].sort_index() for t, c in cur.items() if len(c) > 260}
+    if not cur:
+        return pd.DataFrame()
+    idx = pd.DatetimeIndex(sorted(set().union(*[set(c.index) for c in cur.values()])))
+    W = pd.DataFrame({t: c.reindex(idx) for t, c in cur.items()})
+    if mkt_curve is not None and len(pd.Series(mkt_curve).dropna()) > 260:
+        mc = pd.to_numeric(pd.Series(mkt_curve), errors="coerce")
+        mc = mc[~mc.index.duplicated(keep="last")].sort_index().reindex(idx).ffill()
+    else:   # 시장 곡선이 없으면(K) 자산 동일가중 곡선을 시장 대용으로(t까지의 평균 수익)
+        mc = (1.0 + W.pct_change(fill_method=None).mean(axis=1).fillna(0.0)).cumprod()
+    mr = mc.pct_change(fill_method=None)
+    sq = math.sqrt(252.0)
+    mk = pd.DataFrame(index=idx)
+    for n in (5, 21, 63):
+        mk[f"mkt_r{n}"] = mc.pct_change(n, fill_method=None)
+    mk["mkt_vol21"] = mr.rolling(21, min_periods=15).std() * sq
+    mk["mkt_dd252"] = mc / mc.rolling(252, min_periods=60).max() - 1.0
+    mk["mkt_sma200"] = mc / mc.rolling(200, min_periods=150).mean() - 1.0
+    mk["breadth50"] = (W > W.rolling(50, min_periods=38).mean()).where(W.notna()).mean(axis=1)
+    mk["breadth200"] = (W > W.rolling(200, min_periods=150).mean()).where(W.notna()).mean(axis=1)
+    if market_e is not None and len(pd.Series(market_e).dropna()):
+        E = pd.to_numeric(pd.Series(market_e), errors="coerce")
+        E = E[~E.index.duplicated(keep="last")].sort_index()
+        E = E.reindex(E.index.union(idx)).ffill().reindex(idx)
+        mk["E"] = E
+        mk["E_chg5"] = E - E.shift(5)
+        mk["E_chg21"] = E - E.shift(21)
+        _g = (E != E.shift()).cumsum()
+        mk["E_days_same"] = E.groupby(_g).cumcount().where(E.notna())
+    frames: List[pd.DataFrame] = []
+    for t, c in cur.items():
+        p = W[t]
+        r = p.pct_change(fill_method=None)
+        f = pd.DataFrame(index=idx)
+        for n in (1, 5, 21, 63, 126, 252):
+            f[f"r{n}"] = p.pct_change(n, fill_method=None)
+        for n in (20, 50, 200):
+            f[f"sma{n}"] = p / p.rolling(n, min_periods=int(n * 0.75)).mean() - 1.0
+        f["sma50_slope"] = p.rolling(50, min_periods=38).mean().pct_change(10, fill_method=None)
+        f["vol21"] = r.rolling(21, min_periods=15).std() * sq
+        f["vol63"] = r.rolling(63, min_periods=45).std() * sq
+        f["volratio"] = f["vol21"] / (r.rolling(252, min_periods=120).std() * sq)
+        f["dd63"] = p / p.rolling(63, min_periods=30).max() - 1.0
+        f["dd252"] = p / p.rolling(252, min_periods=60).max() - 1.0
+        f["rsi14"] = _ml_rsi(p)
+        f["rel_mkt21"] = f["r21"] - mc.pct_change(21, fill_method=None)
+        f["rel_mkt63"] = f["r63"] - mc.pct_change(63, fill_method=None)
+        f["beta"] = r.rolling(252, min_periods=120).cov(mr) / mr.rolling(252, min_periods=120).var()
+        f["corr63"] = r.rolling(63, min_periods=45).corr(mr)
+        f = f.join(mk)
+        f["fwd"] = p.shift(-int(horizon)) / p - 1.0
+        f["asset"] = t
+        f = f[p.notna()]
+        frames.append(f)
+    P = pd.concat(frames)
+    P.index.name = "date"
+    return P.reset_index()
+
+
+def ml_timing_walkforward(curves: Dict[str, pd.Series], market_e: Optional[pd.Series],
+                          mkt_curve: Optional[pd.Series], cfg: Any, first_test_year: Optional[int] = None,
+                          layer: str = "산업", M=None) -> Dict[str, Any]:
+    """연 1회 재학습 워크포워드. 반환 {"ok","p"(날짜×자산 확률),"q50"(그 해 학습 예측의 중위 — 날짜×자산),"diag"(표),"oos_start","note"}.
+    두 모델을 같은 분할로 학습한다: ALL(모든 특징) · NO_M(M E_t 4특징 제외 = 자기 가격 정보만). 비교 기준 = E_t 단독 점수의 AUC."""
+    out: Dict[str, Any] = {"ok": False, "p": pd.DataFrame(), "q50": pd.DataFrame(), "diag": pd.DataFrame(),
+                           "oos_start": None, "note": ""}
+    try:
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        from sklearn.metrics import roc_auc_score
+    except Exception as _e:
+        out["note"] = f"scikit-learn 없음({type(_e).__name__}) — ML 비교 생략. 조치: pip install scikit-learn"
+        log("ML", kv(event="ml_unavailable", layer=layer, err=type(_e).__name__), M=M, level="warning")
+        return out
+    H = int(getattr(cfg, "ML_HORIZON", 21))
+    _live_use = str(getattr(cfg, "SINGLE_MID_RULE", "") or "").lower() == "ml_cut"
+    t0 = time.time()
+    P = build_ml_panel(curves, market_e, mkt_curve, H)
+    if not len(P):
+        out["note"] = "특징 패널이 비었다(자산 이력 260일 미만)"
+        return out
+    P["y"] = (P["fwd"] > 0).astype(float).where(P["fwd"].notna())
+    feats = [c for c in P.columns if c not in ("date", "asset", "fwd", "y")]
+    feats_nm = [c for c in feats if c not in _ML_M_FEATS]
+    has_e = "E" in P.columns
+    dates = np.sort(P["date"].unique())
+    years = sorted({int(pd.Timestamp(d).year) for d in dates})
+    min_y = int(getattr(cfg, "ML_MIN_TRAIN_YEARS", 3))
+    fy = max(years[0] + min_y, int(first_test_year) if first_test_year else years[0] + min_y)
+    seed = int(getattr(cfg, "ML_SEED", 20260920))
+    prm = dict(max_depth=int(getattr(cfg, "ML_MAX_DEPTH", 3)), learning_rate=float(getattr(cfg, "ML_LR", 0.05)),
+               max_iter=int(getattr(cfg, "ML_MAX_ITER", 200)), min_samples_leaf=int(getattr(cfg, "ML_MIN_LEAF", 300)),
+               l2_regularization=float(getattr(cfg, "ML_L2", 1.0)), early_stopping=False, random_state=seed)
+    rows: List[dict] = []
+    preds: List[pd.DataFrame] = []
+    for Y in [y for y in years if y >= fy]:
+        ts, te_ = pd.Timestamp(f"{Y}-01-01"), pd.Timestamp(f"{Y}-12-31")
+        di = int(np.searchsorted(dates, np.datetime64(ts)))
+        if di - H - 1 < 0:
+            continue
+        emb = pd.Timestamp(dates[di - H - 1])           # 학습 마지막 날: 목표(t+H)가 시험 시작 전에 끝난다
+        tr = P[(P["date"] <= emb) & P["y"].notna()]
+        te = P[(P["date"] >= ts) & (P["date"] <= te_)]
+        if len(tr) < 2000 or not len(te) or tr["y"].nunique() < 2:
+            continue
+        mA = HistGradientBoostingClassifier(**prm).fit(tr[feats], tr["y"])
+        mN = HistGradientBoostingClassifier(**prm).fit(tr[feats_nm], tr["y"])
+        pA = mA.predict_proba(te[feats])[:, 1]
+        pN = mN.predict_proba(te[feats_nm])[:, 1]
+        q50 = float(np.median(mA.predict_proba(tr[feats])[:, 1]))
+        preds.append(pd.DataFrame({"date": te["date"].values, "asset": te["asset"].values, "p": pA, "pN": pN,
+                                   "q50": q50, "y": te["y"].values, "E": (te["E"].values if has_e else np.nan)}))
+        ok = te["y"].notna().values
+        def _auc(s):
+            try:
+                yy, ss = te["y"].values[ok], np.asarray(s)[ok]
+                m_ = np.isfinite(ss)
+                return float(roc_auc_score(yy[m_], ss[m_])) if len(np.unique(yy[m_])) > 1 else np.nan
+            except Exception:
+                return np.nan
+        rows.append({"블록": "F. ML 워크포워드(진단)", "구분": f"{Y}년 시험",
+                     "학습 기간": f"{pd.Timestamp(tr['date'].min()).date()} ~ {emb.date()}(엠바고 {H}일)",
+                     "시험 기간": f"{pd.Timestamp(te['date'].min()).date()} ~ {pd.Timestamp(te['date'].max()).date()}",
+                     "학습 행": int(len(tr)), "시험 행": int(ok.sum()), "기저(상승 비율)": round(float(te["y"][ok].mean()), 3),
+                     "AUC ML(전체 특징)": _auc(pA), "AUC ML(M 제외 — 자기 정보만)": _auc(pN),
+                     "AUC E_t 단독": (_auc(te["E"].values) if has_e else np.nan), "훈련 예측 중위(q50)": round(q50, 4)})
+        log("ML", kv(event="ml_year_fitted", layer=layer, year=Y, train_start=str(pd.Timestamp(tr["date"].min()).date()),
+                     train_end=str(emb.date()), n_train=len(tr), n_test=int(ok.sum()), seed=seed,
+                     auc_all=round(rows[-1]["AUC ML(전체 특징)"], 4) if rows[-1]["AUC ML(전체 특징)"] == rows[-1]["AUC ML(전체 특징)"] else "-",
+                     auc_e=round(rows[-1]["AUC E_t 단독"], 4) if rows[-1]["AUC E_t 단독"] == rows[-1]["AUC E_t 단독"] else "-"), M=M)
+    if not preds:
+        out["note"] = f"시험 연도 없음(첫 시험 {fy}년 · 학습 최소 {min_y}년)"
+        return out
+    D = pd.concat(preds, ignore_index=True)
+    ok = D["y"].notna()
+    def _auc2(s, m):
+        try:
+            yy, ss = D.loc[m, "y"].values, np.asarray(s)[m.values]
+            f_ = np.isfinite(ss)
+            return float(roc_auc_score(yy[f_], ss[f_])) if len(np.unique(yy[f_])) > 1 else np.nan
+        except Exception:
+            return np.nan
+    tot = {"블록": "F. ML 워크포워드(진단)", "구분": "★ 표본 밖 전체",
+           "시험 기간": f"{pd.Timestamp(D['date'].min()).date()} ~ {pd.Timestamp(D['date'].max()).date()}",
+           "시험 행": int(ok.sum()), "기저(상승 비율)": round(float(D.loc[ok, 'y'].mean()), 3),
+           "AUC ML(전체 특징)": _auc2(D["p"].values, ok), "AUC ML(M 제외 — 자기 정보만)": _auc2(D["pN"].values, ok),
+           "AUC E_t 단독": (_auc2(D["E"].values, ok) if has_e else np.nan)}
+    for c in ("AUC ML(전체 특징)", "AUC ML(M 제외 — 자기 정보만)", "AUC E_t 단독"):
+        for r in rows + [tot]:
+            if c in r and r[c] == r[c] and r[c] is not None:
+                r[c] = round(float(r[c]), 4)
+    st_rows = []
+    if has_e:
+        for nm, m in (("E_t=0 날", D["E"] <= 1e-9), ("0<E_t<1 날", (D["E"] > 1e-9) & (D["E"] < 1 - 1e-9)),
+                      ("E_t=1 날", D["E"] >= 1 - 1e-9)):
+            mm = ok & m
+            st_rows.append({"블록": "F. ML 워크포워드(진단)", "구분": f"상태별 — {nm}", "시험 행": int(mm.sum()),
+                            "기저(상승 비율)": (round(float(D.loc[mm, 'y'].mean()), 3) if mm.any() else None),
+                            "AUC ML(전체 특징)": (round(_auc2(D["p"].values, mm), 4) if mm.any() else None),
+                            "AUC ML(M 제외 — 자기 정보만)": (round(_auc2(D["pN"].values, mm), 4) if mm.any() else None)})
+    _gain = (tot["AUC ML(전체 특징)"] - tot["AUC E_t 단독"]) if has_e and tot["AUC E_t 단독"] == tot["AUC E_t 단독"] else np.nan
+    verdict = ("★ ML이 E_t 단독보다 표본 밖 AUC가 높다(+{:.4f}) — 00D 후보 행의 거래 성과로 다시 확인".format(_gain)
+               if _gain == _gain and _gain > 0.005 else
+               ("✗ 방향 전체(AUC)는 E_t 단독을 못 넘는다(차 {:+.4f}) — ML이 M을 대신할 수는 없다 · 자기 가격 정보만(M 제외)은 AUC {} "
+                "(0.5 = 동전) · ML이 쓸모 있을 수 있는 곳은 'M이 부분 노출을 준 날 어느 날을 비울지'뿐 — 블록 A의 ML 후보 행과 "
+                "아래 '표본 밖 거래' 행이 판정한다").format(_gain if _gain == _gain else float("nan"),
+                                                     round(tot["AUC ML(M 제외 — 자기 정보만)"], 4)
+                                                     if tot["AUC ML(M 제외 — 자기 정보만)"] == tot["AUC ML(M 제외 — 자기 정보만)"] else "-"))
+    tot["판정"] = verdict
+    rd = pd.DataFrame([{"블록": "F. ML 워크포워드(진단)", "구분": "── 읽는 법 ──",
+                        "판정": (f"{layer} {len(curves)}개를 한데 모은 그래디언트 부스팅(깊이 {prm['max_depth']} · 학습률 {prm['learning_rate']} · "
+                               f"{prm['max_iter']}회 · 잎 최소 {prm['min_samples_leaf']} · 시드 {seed})이 '다음 {H}거래일 수익 > 0'을 맞히도록 "
+                               f"해마다 과거로만 다시 학습한다(엠바고 {H}일). 특징 {len(feats)}개(M E_t 4개 포함). AUC 0.5 = 동전 던지기. "
+                               "'M 제외' 열 = 자기 가격·시장 가격 정보만(M 예산 없이). 'E_t 단독' = M 목표비중을 점수로 그대로 쓴 AUC(비교 기준). "
+                               + ("★ 이 확률을 라이브가 쓴다 — SINGLE_MID_RULE='ml_cut': M이 부분 노출(0<E_t<1)을 준 날 p < 그 해 학습 중위면 0."
+                                  if _live_use else "⚠ 진단·후보 전용 — 라이브 비중에 들어가지 않는다."))}]
+                      + rows + [tot] + st_rows)
+    p = D.pivot_table(index="date", columns="asset", values="p", aggfunc="last")
+    q = D.pivot_table(index="date", columns="asset", values="q50", aggfunc="last")
+    out.update({"ok": True, "p": p, "q50": q, "diag": rd, "oos_start": pd.Timestamp(D["date"].min()),
+                "note": verdict, "auc_all": tot["AUC ML(전체 특징)"], "auc_e": tot["AUC E_t 단독"],
+                "auc_nom": tot["AUC ML(M 제외 — 자기 정보만)"], "features": feats, "seed": seed, "horizon": H})
+    log("ML", kv(event="ml_walkforward_done", layer=layer, assets=len(curves), rows=len(P), feats=len(feats),
+                 first_test=fy, oos_auc_all=tot["AUC ML(전체 특징)"], oos_auc_no_m=tot["AUC ML(M 제외 — 자기 정보만)"],
+                 oos_auc_e=tot["AUC E_t 단독"], seed=seed, sec=round(time.time() - t0, 1),
+                 note=("★ 라이브 부분 노출일 규칙(ml_cut)이 사용" if _live_use else "진단·후보 전용 — 라이브 무관")), M=M)
+    return out
+
+
+def ml_variants_from(target: Dict[str, pd.Series], live: Dict[str, pd.Series], ml: Dict[str, Any]
+                     ) -> Dict[str, Dict[str, pd.Series]]:
+    """ML 확률로 만든 **목표비중**(t 확정) 두 벌 — 체결 지연은 호출자가 붙인다. ML이 없는 날은 라이브 값 그대로.
+      mid_cut : 부분 노출일(0<E<1)에 p < 그 해 학습 중위면 0(E_t=0·1인 날은 무변경 — 라이브 규칙의 ML판)
+      solo    : p ≥ 학습 중위면 1, 아니면 0(M 없이 ML 단독 — 참고)"""
+    p, q = ml.get("p"), ml.get("q50")
+    mid_cut: Dict[str, pd.Series] = {}
+    solo: Dict[str, pd.Series] = {}
+    for t, tp in target.items():
+        tp = pd.to_numeric(pd.Series(tp), errors="coerce")
+        lv = pd.to_numeric(pd.Series(live.get(t, tp)), errors="coerce").reindex(tp.index)
+        if not isinstance(p, pd.DataFrame) or t not in p.columns:
+            mid_cut[t] = lv; solo[t] = lv
+            continue
+        pp = p[t].reindex(tp.index); qq = q[t].reindex(tp.index)
+        has = pp.notna() & qq.notna()
+        mid = (tp > _MID_EPS) & (tp < 1.0 - _MID_EPS)
+        mid_cut[t] = lv.where(~has, tp.where(~(mid & (pp < qq)), 0.0))
+        solo[t] = lv.where(~has, (pp >= qq).astype(float))
+    return {"mid_cut": mid_cut, "solo": solo}
+
+
+def ml_oos_rows(variants: Dict[str, pd.DataFrame], ret: pd.DataFrame, oos_start: Optional[pd.Timestamp],
+                ref_label: str, cost_bps: float = 10.0, layer: str = "산업") -> pd.DataFrame:
+    """00D 블록 F 보조 — **표본 밖 날짜만**(oos_start 이후) 변형별 비용 반영 CAGR·MDD·칼마(자산 평균)와 ★ 대비 칼마 승 수."""
+    if oos_start is None or not variants:
+        return pd.DataFrame()
+    rows: List[dict] = []
+    per: Dict[str, Dict[str, Tuple[float, float, float, float]]] = {}
+    for lbl, W in variants.items():
+        per[lbl] = {}
+        for t in ret.columns:
+            if t not in W.columns:
+                continue
+            r = pd.to_numeric(ret[t], errors="coerce")
+            m = (r.index >= oos_start) & r.notna().values
+            if m.sum() < 60:
+                continue
+            w = pd.to_numeric(W[t], errors="coerce").reindex(r.index).fillna(0.0).clip(0, 1).values[m]
+            per[lbl][t] = _ud_perf(w, r.values[m], float(cost_bps) / 1e4)
+    ref = per.get(ref_label, {})
+    for lbl, P in per.items():
+        if not P:
+            continue
+        a = np.array(list(P.values()))
+        cw = sum(1 for t, v in P.items() if t in ref and np.isfinite(v[2]) and np.isfinite(ref[t][2]) and v[2] > ref[t][2])
+        rows.append({"블록": "F. ML 워크포워드(진단)", "구분": f"표본 밖 거래 — {lbl}",
+                     "시험 기간": f"{pd.Timestamp(oos_start).date()} ~",
+                     "CAGR 평균(%)": round(float(np.nanmean(a[:, 0])), 2), "MDD 평균(%)": round(float(np.nanmean(a[:, 1])), 2),
+                     "칼마 평균": round(float(np.nanmean(a[:, 2])), 3), "평균 노출": round(float(np.nanmean(a[:, 3])), 3),
+                     "칼마 승(vs ★)": (f"{cw}/{len(P)}" if lbl != ref_label else "기준")})
+    return pd.DataFrame(rows)
+
+
 def _build_industry_updown_compare(results: Dict[str, Dict[str, Any]], ires: Dict[str, Any], icfg: Any,
                                    cur: pd.DataFrame, ret: pd.DataFrame, cols: List[str],
                                    name_map: Optional[Dict[str, str]] = None,
@@ -8356,7 +8722,8 @@ def _build_industry_updown_compare(results: Dict[str, Dict[str, Any]], ires: Dic
     n_live = int(getattr(icfg, "SINGLE_MID_TREND_SMA", 200))
     cm = float(getattr(icfg, "SINGLE_MID_CUT_WEIGHT", 0.0))
     ref = (f"★ 라이브({VERSION} · 중립일 "
-           + {"trend_cut": f"추세컷 SMA{n_live}", "zero": "전부 0", "inherit": "M 그대로"}.get(rule, rule) + ")")
+           + {"trend_cut": f"추세컷 SMA{n_live}", "zero": "전부 0", "inherit": "M 그대로",
+              "ml_cut": "ML 컷(p<학습중위)"}.get(rule, rule) + ")")
     old = "구 라이브(v0.30.0 · M E_t 상속 그대로)"
     live_t = {t: pd.to_numeric(results[t].get("target_pos"), errors="coerce") for t in cols}
     m_t = {t: pd.to_numeric(results[t].get("m_target_pos", results[t].get("target_pos")), errors="coerce") for t in cols}
@@ -8407,13 +8774,60 @@ def _build_industry_updown_compare(results: Dict[str, Dict[str, Any]], ires: Dic
             lbl = "참고: 부모 섹터 라이브 비중(③)"
             V[lbl] = _ex(_d)
             desc[lbl] = "부모 섹터의 라이브 최종 비중을 그 산업에(00B ③과 같은 것)"
+    # [v0.32.0 R78] ML 워크포워드 후보 2행(표본 밖 날만 ML — 그 전은 ★와 같다)
+    _ml = ires.get("ml") or {}
+    _ml_lbls: List[str] = []
+    if _ml.get("ok"):
+        _mv = ml_variants_from(m_t, live_t, _ml)
+        if rule != "ml_cut":
+            lbl = f"후보: ML(GBM) 부분 노출일 — p<학습중위면 0({int(_ml.get('horizon', 21))}일 목표)"
+            V[lbl] = _ex(_mv["mid_cut"]); desc[lbl] = "0<E_t<1 날에 추세선 대신 ML 확률로 컷 — 표본 밖 연도만(그 전은 ★)"
+            cands.append(lbl); _ml_lbls.append(lbl)
+        else:
+            _pp, _qq = _ml.get("p"), _ml.get("q50")
+            _fd = {}
+            for t in cols:
+                tp = m_t[t]
+                if isinstance(_pp, pd.DataFrame) and t in _pp.columns:
+                    pp_, qq_ = _pp[t].reindex(tp.index), _qq[t].reindex(tp.index)
+                    mid_ = (tp > _MID_EPS) & (tp < 1.0 - _MID_EPS)
+                    _fd[t] = live_t[t].where(~(pp_.notna() & qq_.notna()), tp.where(~(mid_ & (pp_ >= qq_)), tp * cm))
+                else:
+                    _fd[t] = live_t[t]
+            fl = "반증: 부분 노출일 ML p≥학습중위에서 컷"
+            V[fl] = _ex(_fd); desc[fl] = "ML 컷의 방향을 뒤집은 것 — 열위여야 ML 확률에 값이 있다"
+            fals = tuple(fals) + (fl,)
+        lbl = "참고: ML(GBM) 단독 — p≥학습중위면 1"
+        V[lbl] = _ex(_mv["solo"]); desc[lbl] = "M 예산 없이 ML 확률만으로 0/1 — 표본 밖 연도만(그 전은 ★)"
+        _ml_lbls.append(lbl)
     _mp = ires.get("market_pos")
     mexec = (pd.to_numeric(pd.Series(_mp), errors="coerce").reindex(idx).ffill().shift(1)
              if _mp is not None and len(pd.Series(_mp).dropna()) else None)
-    return build_updown_improvement_compare(
+    ud = build_updown_improvement_compare(
         cur, ret, V, icfg, ref_label=ref, old_label=(old if old in V else None), market_exec=mexec,
         candidate_labels=tuple(cands), falsify_labels=fals, descriptions=desc, name_map=name_map,
         parent_map=parent_map, layer="산업", cost_bps=float(getattr(icfg, "COST_BPS_INDUSTRY", 10.0)), M=M)
+    _tc200 = f"후보: 중립일 추세컷 SMA{n_live}"
+    return _append_ml_block(ud, _ml, V, ret, ref, [l for l in (ref, old, _tc200) if l in V] + _ml_lbls,
+                            float(getattr(icfg, "COST_BPS_INDUSTRY", 10.0)), "산업")
+
+
+def _append_ml_block(ud: pd.DataFrame, ml: Dict[str, Any], V: Dict[str, pd.DataFrame], ret: pd.DataFrame,
+                     ref: str, labels: List[str], cost_bps: float, layer: str) -> pd.DataFrame:
+    """[v0.32.0 R78] 00D 끝에 블록 F(ML 진단 표 + 표본 밖 거래 비교)와 블록 D 요약 1줄을 붙인다. ML이 없으면 사유 1행."""
+    add: List[pd.DataFrame] = []
+    if ml.get("ok"):
+        add.append(ml["diag"])
+        _o = ml_oos_rows({l: V[l] for l in labels if l in V}, ret, ml.get("oos_start"), ref, cost_bps, layer)
+        if len(_o):
+            add.append(_o)
+        d_row = pd.DataFrame([{"블록": "D. 판정 · 개선 방향", "변형": "다른 방법 — ML 워크포워드(블록 F)",
+                               "판정": (f"표본 밖 AUC: ML {ml.get('auc_all')} · 자기 정보만 {ml.get('auc_nom')} · E_t 단독 {ml.get('auc_e')} — "
+                                      + str(ml.get("note", "")))}])
+        add.insert(0, d_row)
+    else:
+        add.append(pd.DataFrame([{"블록": "F. ML 워크포워드(진단)", "구분": "산출 없음", "판정": str(ml.get("note", "-"))}]))
+    return pd.concat([ud] + add, ignore_index=True, sort=False)
 
 
 def build_up_down_segments(curve_df: pd.DataFrame, exec_w: pd.DataFrame, ret_df: pd.DataFrame,
@@ -9214,13 +9628,16 @@ _MID_EPS = 1e-9
 
 
 def apply_single_mid_rule(target_pos: pd.Series, px_tr: pd.Series, rule: str = "trend_cut",
-                          sma_n: int = 200, cut_mult: float = 0.0) -> Tuple[pd.Series, Dict[str, Any]]:
+                          sma_n: int = 200, cut_mult: float = 0.0,
+                          ml_p: Optional[pd.Series] = None, ml_q: Optional[pd.Series] = None) -> Tuple[pd.Series, Dict[str, Any]]:
     """부분 노출일(0<E_t<1)의 단일 산업 목표비중 규칙. 반환 (새 목표비중, 진단 dict) — 입력은 바꾸지 않는다.
 
     rule:
       "inherit"   — 그대로(v0.30.0 · M E_t 상속 그대로).
       "trend_cut" — 부분 노출일에 그 산업 총수익 종가 < 자기 SMA(sma_n)이면 E_t × cut_mult(기본 0 = 회피). ★ 라이브 기본.
       "zero"      — 부분 노출일 전부 E_t × cut_mult(비교용 — 00D 후보 행).
+      "ml_cut"    — [v0.32.0 R78] 부분 노출일에 ML 확률 p < 그 해 학습 중위(ml_q)면 E_t × cut_mult. ML 확률이 없는 날
+                    (첫 시험 연도 전)은 trend_cut으로 대체한다. p는 연 1회 과거로만 학습한 모델의 값(ml_timing_walkforward).
     인과성: SMA는 t일 종가까지(rolling, min_periods=sma_n) — t일 확정 → t+1일 체결(M·S와 같은 체결 규칙).
       SMA가 아직 없는 날(상장 초기 sma_n일)은 규칙을 적용하지 않는다(E_t 그대로 — 결측을 만들지 않는다).
     E_t=0·E_t=1인 날은 어떤 규칙에서도 바꾸지 않는다(측정상 그 칸은 M이 옳다)."""
@@ -9230,11 +9647,26 @@ def apply_single_mid_rule(target_pos: pd.Series, px_tr: pd.Series, rule: str = "
                             "n": int(tp.notna().sum()), "mid_days": 0, "cut_days": 0, "no_sma_days": 0}
     if rule == "inherit":
         return tp, info
-    if rule not in ("trend_cut", "zero"):
+    if rule not in ("trend_cut", "zero", "ml_cut"):
         info["rule"] = f"알 수 없음({rule}) → inherit"
         return tp, info
     mid = (tp > _MID_EPS) & (tp < 1.0 - _MID_EPS)
     info["mid_days"] = int(mid.sum())
+    if rule == "ml_cut":
+        _tc, _ = apply_single_mid_rule(tp, px_tr, "trend_cut", sma_n, cut_mult)
+        pp = (pd.to_numeric(pd.Series(ml_p), errors="coerce").reindex(tp.index) if ml_p is not None
+              else pd.Series(np.nan, index=tp.index))
+        qq = (pd.to_numeric(pd.Series(ml_q), errors="coerce").reindex(tp.index) if ml_q is not None
+              else pd.Series(np.nan, index=tp.index))
+        has = pp.notna() & qq.notna()
+        new = _tc.where(~has, tp.where(~(mid & (pp < qq)), tp * float(cut_mult)))
+        info.update({"applied": True, "ml_days": int((mid & has).sum()),
+                     "cut_days": int(((new - tp).abs() > 1e-12).sum()),
+                     "fallback_trend_days": int((mid & ~has).sum()),
+                     "cut_share_of_mid": round(float(((new - tp).abs() > 1e-12).sum()) / max(1, int(mid.sum())), 4),
+                     "mean_before": round(float(tp.mean()), 4) if tp.notna().any() else None,
+                     "mean_after": round(float(new.mean()), 4) if new.notna().any() else None})
+        return new.astype(float), info
     if rule == "zero":
         cut = mid
     else:
@@ -9253,7 +9685,8 @@ def apply_single_mid_rule(target_pos: pd.Series, px_tr: pd.Series, rule: str = "
 
 
 def single_mid_rule_audit(ind_ticker: str, target_before: pd.Series, target_after: pd.Series, px_tr: pd.Series,
-                          icfg: Any, n_dates: int, seed: int) -> pd.DataFrame:
+                          icfg: Any, n_dates: int, seed: int,
+                          ml_p: Optional[pd.Series] = None, ml_q: Optional[pd.Series] = None) -> pd.DataFrame:
     """[v0.31.0 R77 룩어헤드 가드] 중립일 규칙을 **d일까지 잘라** 다시 계산해 전체 계산의 d일 값과 비교한다.
     11_룩어헤드감사에 '감사종류 = 중립일 규칙' 행으로 붙는다. 부분 노출일(규칙이 실제로 작동할 수 있는 날)에서 뽑는다."""
     tb = pd.Series(target_before).astype(float)
@@ -9271,7 +9704,9 @@ def single_mid_rule_audit(ind_ticker: str, target_before: pd.Series, target_afte
         d = pd.Timestamp(d)
         t_cut, _ = apply_single_mid_rule(tb.loc[:d], px.loc[:d], getattr(icfg, "SINGLE_MID_RULE", "trend_cut"),
                                          int(getattr(icfg, "SINGLE_MID_TREND_SMA", 200)),
-                                         float(getattr(icfg, "SINGLE_MID_CUT_WEIGHT", 0.0)))
+                                         float(getattr(icfg, "SINGLE_MID_CUT_WEIGHT", 0.0)),
+                                         ml_p=(ml_p.loc[:d] if ml_p is not None else None),
+                                         ml_q=(ml_q.loc[:d] if ml_q is not None else None))
         v_t = float(t_cut.loc[d]) if d in t_cut.index else np.nan
         v_f = float(ta.loc[d]) if d in ta.index else np.nan
         diff = abs(v_t - v_f) if (pd.notna(v_t) and pd.notna(v_f)) else np.nan
@@ -11466,7 +11901,25 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         flags = [(S.sector_technical_values(tr)["TREND_200"] > 0).reindex(cal) for tr in parent_tr.values()]
         parent_breadth_200 = pd.concat(flags, axis=1).mean(axis=1)
 
+    # ---- [v0.32.0 R78] ML 워크포워드 타이밍 — 산업 루프 **전**에 1회(풀링 모델이라 29산업이 다 있어야 한다).
+    #   곡선 = run_industry가 쓰는 것과 같은 총수익 종가(frames[t][0]["Adj Close"]) · 시장 = SPY 총수익 · M = res["sig"] 목표비중.
+    #   진단·후보(00D 블록 F)가 기본이고, SINGLE_MID_RULE="ml_cut"이면 라이브 부분 노출일 규칙이 이 확률을 쓴다(ctx["ml"]).
+    _ml: Dict[str, Any] = {"ok": False, "note": "끔(ML_COMPARE=False)"}
+    if bool(getattr(icfg, "ML_COMPARE", True)) or str(getattr(icfg, "SINGLE_MID_RULE", "")).lower() == "ml_cut":
+        try:
+            _curves = {t: v[0]["Adj Close"].astype(float) for t, v in frames.items()}
+            _msig = res.get("sig") if isinstance(res, dict) else None
+            _me = (pd.to_numeric(_msig["target_pos"], errors="coerce")
+                   if isinstance(_msig, pd.DataFrame) and "target_pos" in _msig.columns else None)
+            _ml = ml_timing_walkforward(_curves, _me, spy_tr, icfg,
+                                        first_test_year=int(pd.Timestamp(res["cfg"].SIGNAL_START).year), layer="산업", M=M)
+        except Exception as _e:
+            _ml = {"ok": False, "note": f"실패 {type(_e).__name__}: {str(_e)[:140]}"}
+            log("ML", kv(event="ml_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                         trace=traceback.format_exc()[-400:].replace("\n", " | ")), M=M, level="warning")
+
     ctx = {"M": M, "res": res, "sres": sres, "S": S, "icfg": icfg, "frames": frames, "raw": raw,
+          "ml": ({"p": _ml.get("p"), "q50": _ml.get("q50")} if _ml.get("ok") else None),   # [v0.32.0 R78]
           "parent_of": parent_of, "parent_tr": parent_tr, "parent_raw": parent_raw,
           "raw_parent": {p: par_px[p] for p in active_parents},       # [v0.2.0] 부모 원시 OHLC — 룩어헤드 감사 절단용
           "spy_raw_df": spy_df,                                        # [v0.2.0] SPY 원시 OHLC — 룩어헤드 감사 절단용
@@ -11842,6 +12295,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "calendar_truncated": _cal_trunc_i,
         "last_close_missing": _lc_missing, "last_close_day": (pd.Timestamp(cal[-1]) if len(cal) else None),   # [v0.28.0 R74]
         "sign_tests": _sign,                                      # [v0.28.0 R74 §4-3] 26_신호부호검정
+        "ml": _ml,                                                # [v0.32.0 R78] 00D 블록 F · ML 후보 행
         "quality": pd.DataFrame(quality), "matrix": matrix, "summary": summary,
         "wf": wf, "alloc": alloc, "acceptance": accept_df, "hierarchy": hier_df,
         "attribution": attrib_df, "following": following_df, "follow_cond": follow_cond_df,
@@ -12950,12 +13404,22 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         _mi = [r.get("mid_rule") or {} for r in results.values() if isinstance(r, dict)]
         _mid = sum(int(x.get("mid_days", 0) or 0) for x in _mi)
         _cut = sum(int(x.get("cut_days", 0) or 0) for x in _mi)
-        meta.insert(_p, ("⚠⚠ 단일 산업 라이브 규칙(v0.31.0 R77 · 위험 파라미터)",
-                         (f"SINGLE_MID_RULE = {_rule} · 추세선 SMA{int(getattr(icfg, 'SINGLE_MID_TREND_SMA', 200))} · "
-                          f"컷 배율 {float(getattr(icfg, 'SINGLE_MID_CUT_WEIGHT', 0.0)):g} — M이 **부분 노출(0<E_t<1)**을 준 날, 그 산업 총수익 "
-                          f"종가가 자기 추세선 아래면 비중 0(E_t=0·1인 날과 상태 라벨·I★ 배분은 무변경). 29산업 합계 부분 노출일 {_mid:,}일 중 "
-                          f"컷 {_cut:,}일(전 이력 기준). 근거: 리포트26 분해 — 부분 노출일 산업 일평균 ≈0(20/29 음수) · E_t=0 −10bp · E_t=1 +20bp. "
-                          "되돌리기(v0.30.0 비트 동일): i_overrides={'SINGLE_MID_RULE': 'inherit'}")
+        _mld = sum(int(x.get("ml_days", 0) or 0) for x in _mi)
+        _mlfb = sum(int(x.get("fallback_trend_days", 0) or 0) for x in _mi)
+        _mlr = ires.get("ml") or {}
+        meta.insert(_p, ("⚠⚠ 단일 산업 라이브 규칙(v0.32.0 R78 · 위험 파라미터)",
+                         ((f"SINGLE_MID_RULE = ml_cut — M이 **부분 노출(0<E_t<1)**을 준 날, 29산업 풀링 ML(그래디언트 부스팅 · 연 1회 과거로만 재학습 · "
+                           f"다음 {int(getattr(icfg, 'ML_HORIZON', 21))}일 상승확률)이 그 해 학습 중위 미만이면 비중 0. ML 확률이 없는 날은 추세컷"
+                           f"(SMA{int(getattr(icfg, 'SINGLE_MID_TREND_SMA', 200))} 아래면 0). E_t=0·1인 날·상태 라벨·I★ 배분은 무변경. "
+                           f"29산업 합계 부분 노출일 {_mid:,}일 중 컷 {_cut:,}일 · ML 판단일 {_mld:,} · 추세컷 대체일 {_mlfb:,}(전 이력). "
+                           f"ML 상태: {'정상' if _mlr.get('ok') else '⚠ 실패 — ' + str(_mlr.get('note', '-'))[:120]}. "
+                           "되돌리기: i_overrides={'SINGLE_MID_RULE': 'trend_cut'}(v0.31.0) · {'SINGLE_MID_RULE': 'inherit'}(v0.30.0)")
+                          if _rule.lower() == "ml_cut" else
+                          (f"SINGLE_MID_RULE = {_rule} · 추세선 SMA{int(getattr(icfg, 'SINGLE_MID_TREND_SMA', 200))} · "
+                           f"컷 배율 {float(getattr(icfg, 'SINGLE_MID_CUT_WEIGHT', 0.0)):g} — M이 **부분 노출(0<E_t<1)**을 준 날, 그 산업 총수익 "
+                           f"종가가 자기 추세선 아래면 비중 0(E_t=0·1인 날과 상태 라벨·I★ 배분은 무변경). 29산업 합계 부분 노출일 {_mid:,}일 중 "
+                           f"컷 {_cut:,}일(전 이력 기준). 근거: 리포트26 분해 — 부분 노출일 산업 일평균 ≈0(20/29 음수) · E_t=0 −10bp · E_t=1 +20bp. "
+                           "되돌리기(v0.30.0 비트 동일): i_overrides={'SINGLE_MID_RULE': 'inherit'}"))
                          if _rule.lower() != "inherit" else
                          "SINGLE_MID_RULE = inherit — 라이브 = M E_t 상속 그대로(v0.30.0과 같음)"))
         if isinstance(sheets.get("00D_하락상승개선비교"), pd.DataFrame):

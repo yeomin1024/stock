@@ -1,5 +1,13 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.5.0 - 2026-09-20 - [R78 00D에 ML 워크포워드 후보·블록 E·F(I v0.32.0 함수 재사용) — 라이브 무변경]
+#    사용자 지시(2026-09-20) "다시 다른 방법 찾아서 개선해". 시작 v0.4.0 → 목표 v0.5.0.
+#    00D_하락상승개선비교에 '후보: + 부분 노출일 ML 컷(p<학습중위)'·'참고: ML(GBM) 단독' 2행과 블록 F(ML 진단: 연도별 학습·시험 기간·AUC·
+#    상태별 AUC·표본 밖 거래)·블록 E(크기별)를 싣는다 — I.ml_timing_walkforward(종목 가격 전 이력 START부터 · M E_t · 시장 대용 = 종목 동일가중).
+#    ⚠ 종목 라이브는 그대로(min(base1_cut, M E_t)) — 실제 종목 가격으로 한 번도 재지 않았다(샌드박스는 산업 ETF 대용으로만: 표본 밖 칼마
+#    0.98→1.22 · 연도 5/6). 다음 K 리포트의 00D가 통과하면 다음 라운드에 라이브로 올린다(사전등록).
+#    StockConfig 신설 4필드(ML_COMPARE · ML_HORIZON · ML_MIN_TRAIN_YEARS · ML_SEED). 영향: build_report(00D 블록).
+#    연구/교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.4.0 - 2026-09-20 - [R77 ★★ 단일 종목 라이브 = base1_cut × M 시장 예산 E_t(위험 파라미터) · 00D_하락상승개선비교 · 19 A′ · 00 판정 3행 · 04 원장 제거]
 #    사용자 지시(2026-09-20) "산업별·주식별이 B&H가 피하지 못했던 하락을 모두 피했고 상승은 같이 타야 — 확인하고 못 했으면 원인 분석해서
 #    코드 수정 · 비교 시트 새로 하나(개선 방향용) · 정말 불필요한 시트 제거 · 산업·주식 2개 코드만". 시작 v0.3.3 → 목표 v0.4.0.
@@ -309,7 +317,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.4.0"
+VERSION = "v0.5.0"
 VERSION_DATE = "2026-09-20"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -445,6 +453,13 @@ class StockConfig:
     #   04_펀더멘탈원장: 분기 재무 원장(F 계열 규칙용 — 매출 YoY 유효비율 0.017로 측정 불가 판정 · 라이브 미사용).
     #   티커별 '유효일 출처'·'선택 항목'은 02_티커요약에 이미 있다. 되돌리기: k_overrides={"REPORT_DROP_SHEETS": ()}
     REPORT_DROP_SHEETS: Tuple[str, ...] = ("04_펀더멘탈원장",)
+    # ---- [v0.5.0 R78] ML 워크포워드 타이밍(진단·후보 — 라이브 아님) — I.ml_timing_walkforward 재사용(단일 출처) ----
+    #   29종목 풀링 그래디언트 부스팅 · 연 1회 과거로만 재학습(엠바고 21일) · 가격 이력 START(2015)부터. 00D 블록 F·후보 2행.
+    #   끄기: k_overrides={"ML_COMPARE": False}
+    ML_COMPARE: bool = True
+    ML_HORIZON: int = 21
+    ML_MIN_TRAIN_YEARS: int = 3
+    ML_SEED: int = 20260920
     # ---- [v0.3.0 D2 ★★ 신규] 배분층 — 전체자산 1.0 ----
     #   사용자 지시: "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서 각 총합이 1이되도록 하라고
     #                왜 자꾸 각 티커별로 비중이 1이냐고"
@@ -2178,13 +2193,40 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                                       for t in sorted(panel)}).reindex(idx)
                 _cur1 = (1.0 + _ret1.fillna(0.0)).cumprod().where(_ret1.notna() | _ret1.ffill().notna())
                 _V = {k: v.reindex(idx) for k, v in (_udv.get("variants") or {}).items()}
+                # [v0.5.0 R78] ML 워크포워드 후보 — 종목 가격 전 이력(START부터)·M E_t·시장 대용(종목 동일가중)
+                _mlk: Dict[str, Any] = {"ok": False, "note": "끔(ML_COMPARE=False) 또는 I에 ML 함수 없음"}
+                _ml_lbls: List[str] = []
+                _cands = list(_udv.get("cands") or ())
+                if bool(getattr(cfg, "ML_COMPARE", True)) and hasattr(I, "ml_timing_walkforward"):
+                    try:
+                        _curv = {t: pd.to_numeric(res["prices"][t]["Close"], errors="coerce") for t in sorted(panel)
+                                 if t in (res.get("prices") or {})}
+                        _mlk = I.ml_timing_walkforward(_curv, res.get("market_w"), None, cfg,
+                                                       first_test_year=int(pd.Timestamp(cfg.EVAL_START).year),
+                                                       layer="종목", M=None)
+                        if _mlk.get("ok"):
+                            _tgt = {t: pd.to_numeric(pos[t]["목표비중"], errors="coerce") for t in sorted(panel)}
+                            _mv = I.ml_variants_from(_tgt, _tgt, _mlk)
+                            _exs = lambda d: pd.DataFrame(d).reindex(idx).ffill().shift(1).fillna(0.0)
+                            _l1 = "후보: + 부분 노출일 ML 컷(p<학습중위)"
+                            _l2 = "참고: ML(GBM) 단독 — p≥학습중위면 1"
+                            _V[_l1] = _exs(_mv["mid_cut"]); _V[_l2] = _exs(_mv["solo"])
+                            (_udv.get("desc") or {}).update({_l1: "0<E_t<1 날 ML 확률이 학습 중위 미만이면 0 — 표본 밖 연도만",
+                                                             _l2: "M 예산 없이 ML 확률만으로 0/1 — 표본 밖 연도만"})
+                            _cands.append(_l1); _ml_lbls = [_l1, _l2]
+                    except Exception as e:
+                        _mlk = {"ok": False, "note": f"실패 {type(e).__name__}: {str(e)[:140]}"}
+                        log("REPORT", kv(event="ml_compare_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
                 _ud = I.build_updown_improvement_compare(
                     _cur1, _ret1, _V, cfg, ref_label=_udv["ref"], old_label=_udv.get("old"),
-                    market_exec=_udv.get("market_exec"), candidate_labels=tuple(_udv.get("cands") or ()),
+                    market_exec=_udv.get("market_exec"), candidate_labels=tuple(_cands),
                     falsify_labels=tuple(_udv.get("fals") or ()), descriptions=_udv.get("desc"),
                     name_map={t: STOCK_NAME_KR.get(t, "") for t in sorted(panel)},
                     parent_map={t: parent_of.get(t, "") for t in sorted(panel)},
                     layer="종목", cost_bps=10.0, M=None)
+                if hasattr(I, "_append_ml_block"):
+                    _ud = I._append_ml_block(_ud, _mlk, _V, _ret1, _udv["ref"],
+                                             [l for l in (_udv["ref"], _udv.get("old")) if l and l in _V] + _ml_lbls, 10.0, "종목")
                 if isinstance(_ud, pd.DataFrame) and len(_ud):
                     sheets["00D_하락상승개선비교"] = _ud
             except Exception as e:
