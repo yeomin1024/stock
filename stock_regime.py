@@ -1,5 +1,29 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.6.0 - 2026-09-21 - [R79 ★★ 임의 티커 설계 — 입력·정규화·산업 ETF 자동 매핑 · 사전등록 홀드아웃 일반화 검증(00G) · 캐시 결함 수정]
+#    사용자 지시(2026-09-20) "주식은 다른 티커를 입력해도 예측이 잘되도록 설계해야돼 지금 하고 있는 티커만 잘돼면 안된다고". 시작 v0.5.0 → 목표 v0.6.0.
+#    ── 진단(코드 판독): 라이브 규칙 min(base1_cut(E3), M E_t)은 이미 티커와 무관하다(티커별 모수 0개). 티커에 묶인 것은 셋이었다 —
+#       ① 유니버스가 29종목 사전등록 표에 고정(입력 수단 없음) ② ⚠ **가격·펀더멘탈 캐시가 티커 목록과 무관한 한 파일** — 새 티커를 넣어도
+#       옛 캐시가 돌아와 새 티커가 '다운로드 실패'로 조용히 빠지거나(가격) 어닝 없이 E3 컷 없이 돌았다(펀더멘탈) ③ 규칙이 **설계 종목에서만**
+#       검증됐다(E3 선택·M 예산 채택 판단이 전부 같은 29종목 리포트 위에서 이뤄졌다 — 일반화 여부를 잰 적이 없다).
+#    (§1 ★) 입력: k_overrides={"TICKERS": (…)}(설계 대신) · {"EXTRA_TICKERS": (…)}(더하기) · normalize_ticker(대문자·'.'→'-') · 중복·빈 값 제외 사유 표시.
+#       산업 ETF 자동 매핑 auto_map_industry: 사전등록 → Yahoo 업종 표(YAHOO_INDUSTRY_TO_ETF, 구체 우선) → Yahoo 섹터 → 섹터 ETF → **상관 폴백**
+#       (평가창 시작 **전** 504일 일간수익 상관 최대 ETF · ρ≥0.30 · 인과) → '미분류'. info 캐시 30일(실패는 캐시 안 함). 매핑은 표시·배분격자에만 —
+#       라이브 무관. 02 시트에 '역할'·'매핑 방법' 열 · 어닝 자료 없는 종목은 '정상(⚠ 어닝 자료 없음 — E3 컷 없이 M E_t만)'.
+#    (§2 ★★) 일반화 검증: 사전등록 홀드아웃 29종목(STOCK_HOLDOUT — 산업마다 설계 대표와 다른 1종목, 설계에 한 번도 쓰지 않음)을 **같은 규칙·같은 E_t**로
+#       실행 — 배분 포트·06 포트·00D에는 넣지 않는다(오염 방지). 신설 **00G_일반화검증**(00D 다음): A 집합별(설계·홀드아웃·사용자) 칼마·MDD 개선 비율·
+#       중위 Δ칼마·상승 포착률·하락 노출률·동일가중 포트 · B 종목별 · C ML 티커 제외 교차검증(설계 종목으로만 학습 → 처음 보는 종목 AUC · 시장 대용도
+#       설계 종목만) · D 판정(사전등록: ① 홀드아웃 칼마 개선 비율 ≥ 설계 − 0.15 ② 홀드아웃 중위 Δ칼마 > 0 ③ 홀드아웃 포트 MDD 개선). 00시트 2행.
+#       ⚠ 실행 시간: 홀드아웃 29종목 가격·어닝 다운로드가 늘어난다(첫 실행 1~2분 · 이후 캐시). 끄기: {"GENERALIZATION_CHECK": False}.
+#    (§3 ⚠ 결함 수정) download_prices·download_fundamentals **증분 캐시** — 캐시에 없는 티커만 받아 합친다 · 가격 실패 1회 재시도 · 실패 사유(_FAILED_PX)를
+#       02·00에 싣는다(예: AVB '빈 응답(티커 오타·상장폐지·지역 제한 확인)').
+#    (§4) 00D '연도 k/n'은 I v0.33.0 수정(중위→평균)을 그대로 받는다 — K 'M E_t만' 행의 0/9 표시 결함 해소.
+#    ⚠ 라이브 규칙·위험 파라미터 무변경(min(base1_cut, M E_t) · E3 · 1/N 고정 슬리브). 설계 29종목·GENERALIZATION_CHECK=False면 v0.5.0과 배분 비트 동일.
+#    StockConfig 신설 10필드(TICKERS · EXTRA_TICKERS · HOLDOUT_TICKERS · GENERALIZATION_CHECK · AUTO_MAP · AUTO_MAP_CACHE_DAYS · AUTO_MAP_CORR_WIN ·
+#      AUTO_MAP_MIN_CORR · GEN_PASS_SHARE_GAP · GEN_ML_LTO). 모듈 훅 INFO_FETCHER_OVERRIDE(테스트 주입).
+#    영향 함수: normalize_ticker·resolve_universe·_yahoo_info·map_by_yahoo·auto_map_industry·_seg_capture·_perf3·build_generalization_sheet(신설) ·
+#      download_prices·download_fundamentals(증분) · run(역할·매핑·홀드아웃·반환 7키) · build_report(00G·00 2행·이름·표본 문구).
+#    연구/교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.5.0 - 2026-09-20 - [R78 00D에 ML 워크포워드 후보·블록 E·F(I v0.32.0 함수 재사용) — 라이브 무변경]
 #    사용자 지시(2026-09-20) "다시 다른 방법 찾아서 개선해". 시작 v0.4.0 → 목표 v0.5.0.
 #    00D_하락상승개선비교에 '후보: + 부분 노출일 ML 컷(p<학습중위)'·'참고: ML(GBM) 단독' 2행과 블록 F(ML 진단: 연도별 학습·시험 기간·AUC·
@@ -317,8 +341,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.5.0"
-VERSION_DATE = "2026-09-20"
+VERSION = "v0.6.0"
+VERSION_DATE = "2026-09-21"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -362,6 +386,12 @@ STOCK_NAME_KR: Dict[str, str] = {
     "GOOGL": "알파벳", "META": "메타", "AVB": "아발론베이", "EOG": "EOG리소시스",
     "SLB": "슐럼버거", "FCX": "프리포트맥모란", "NEM": "뉴몬트",
 }
+
+
+# [v0.6.0 R79] 사전등록 홀드아웃 티커(설계 대표와 다른 산업별 1종목) — 상세 표는 [일반화] 구역의 STOCK_HOLDOUT
+STOCK_HOLDOUT_DEFAULT: Tuple[str, ...] = ("AMD", "ADBE", "CSCO", "FTNT", "GILD", "EXEL", "MRK", "SYK", "CI", "ROST", "LEN",
+                                          "MAR", "GM", "KO", "BAC", "RF", "TRV", "MS", "LMT", "CSX", "LUV", "T", "AMZN",
+                                          "PINS", "EQR", "COP", "HAL", "NUE", "AEM")
 
 
 @dataclass
@@ -460,6 +490,19 @@ class StockConfig:
     ML_HORIZON: int = 21
     ML_MIN_TRAIN_YEARS: int = 3
     ML_SEED: int = 20260920
+    # ---- [v0.6.0 R79 ★★] 임의 티커 입력 · 산업 ETF 자동 매핑 · 사전등록 홀드아웃 일반화 검증(20_일반화검증) ----
+    #   사용 예: k_overrides={"TICKERS": ("AAPL", "AMD", "BRK.B")}(설계 29종목 대신) · {"EXTRA_TICKERS": ("AAPL",)}(더하기)
+    #   라이브 규칙은 티커와 무관(min(base1_cut, M E_t))하다 — 매핑은 표시·배분격자(I 산업비중 연동)에만 쓴다.
+    TICKERS: Tuple[str, ...] = ()            # 비어 있지 않으면 설계 유니버스 대신 이 티커들(역할 '사용자')
+    EXTRA_TICKERS: Tuple[str, ...] = ()      # 설계(또는 TICKERS) 유니버스에 더할 티커(역할 '사용자')
+    HOLDOUT_TICKERS: Tuple[str, ...] = tuple(sorted(STOCK_HOLDOUT_DEFAULT))   # 사전등록 홀드아웃(검증 전용 · 배분 제외)
+    GENERALIZATION_CHECK: bool = True        # 홀드아웃 실행·20 시트(끄면 다운로드 29종목 절약)
+    AUTO_MAP: bool = True                    # 사전등록에 없는 티커를 Yahoo 업종·섹터 → 상관 폴백으로 산업 ETF에 매핑
+    AUTO_MAP_CACHE_DAYS: int = 30            # Yahoo info 캐시(CACHE_DIR/automap.json)
+    AUTO_MAP_CORR_WIN: int = 504             # 상관 폴백 창(평가창 시작 전 거래일)
+    AUTO_MAP_MIN_CORR: float = 0.30          # 이 미만이면 '미분류'
+    GEN_PASS_SHARE_GAP: float = 0.15         # 판정 ①: 홀드아웃 칼마 개선 비율 ≥ 설계 비율 − 이 값
+    GEN_ML_LTO: bool = True                  # 20 블록 C — ML 티커 제외 교차검증(설계로만 학습 → 홀드아웃 시험)
     # ---- [v0.3.0 D2 ★★ 신규] 배분층 — 전체자산 1.0 ----
     #   사용자 지시: "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서 각 총합이 1이되도록 하라고
     #                왜 자꾸 각 티커별로 비중이 1이냐고"
@@ -634,60 +677,86 @@ def _prices_freshness(out: Dict[str, pd.DataFrame], cfg: StockConfig, where: str
 
 def download_prices(tickers: List[str], cfg: StockConfig) -> Dict[str, pd.DataFrame]:
     """OHLCV + 배당·분할 반영 종가. 실패한 티커는 건너뛰고 **이유를 남긴다**(조용히 빠지지 않게).
-    [v0.3.2 R73] 캐시는 나이(CACHE_DAYS) **그리고** 내용(기대 개장일까지 있는가)으로 판정 · 미래 봉 제거."""
-    out: Dict[str, pd.DataFrame] = {}
+    [v0.3.2 R73] 캐시는 나이(CACHE_DAYS) **그리고** 내용(기대 개장일까지 있는가)으로 판정 · 미래 봉 제거.
+    [v0.6.0 R79 ⚠ 결함 수정] 캐시가 티커 목록과 무관한 한 파일이라 **새 티커를 넣어도 옛 캐시가 그대로 돌아와** 새 티커가
+      '가격 다운로드 실패'로 조용히 빠졌다. 이제 캐시에 **없는 티커만** 받아 합친다(증분) · 실패 티커는 1회 재시도."""
     failed: Dict[str, str] = {}
+    want = list(dict.fromkeys(normalize_ticker(t) for t in tickers if normalize_ticker(t)))
     cp = _cache_path(cfg, f"px_{cfg.START}_{cfg.END or 'now'}.pkl")
+    cached: Dict[str, pd.DataFrame] = {}
     if _cache_fresh(cp, cfg.CACHE_DAYS):
         try:
-            out = pd.read_pickle(cp)
-            out, _stale, _why = _prices_freshness(out, cfg, where="cache")
-            if not _stale:
-                log("DATA", kv(event="prices_from_cache", tickers=len(out), path=os.path.basename(cp)))
-                return out
-            log("DATA", kv(event="prices_cache_stale_refetch", reason=_why,
-                           note="캐시 나이는 유효하지만 내용이 뒤처짐 — 재다운로드(사용자 지적: 19일인데 17일 예측)"),
-                level="warning")
-            out = {}
+            cached = pd.read_pickle(cp)
+            cached, _stale, _why = _prices_freshness(cached, cfg, where="cache")
+            if _stale:
+                log("DATA", kv(event="prices_cache_stale_refetch", reason=_why,
+                               note="캐시 나이는 유효하지만 내용이 뒤처짐 — 재다운로드(사용자 지적: 19일인데 17일 예측)"),
+                    level="warning")
+                cached = {}
         except Exception as e:
             log("DATA", kv(event="cache_read_failed", err=str(e)[:120], action="재다운로드"), level="warning")
-            out = {}
+            cached = {}
+    out: Dict[str, pd.DataFrame] = {t: cached[t] for t in want if t in cached}
+    missing = [t for t in want if t not in out]
+    if not missing:
+        log("DATA", kv(event="prices_from_cache", tickers=len(out), path=os.path.basename(cp)))
+        return out
+    if out:
+        log("DATA", kv(event="prices_cache_partial", cached=len(out), missing=len(missing),
+                       tickers=",".join(missing[:12]), note="캐시에 없는 티커만 받는다(v0.6.0 증분)"))
     try:
         import yfinance as yf
     except Exception as e:
         log("DATA", kv(event="yfinance_import_failed", err=str(e)[:160],
                        suggest="pip install yfinance"), level="error")
         raise
-    for t in tickers:
+    new: Dict[str, pd.DataFrame] = {}
+
+    def _one(t: str) -> Tuple[Optional[pd.DataFrame], str]:
         try:
             df = yf.Ticker(t).history(start=cfg.START, end=cfg.END, auto_adjust=True,
                                       actions=True, raise_errors=False)
             if df is None or not len(df):
-                failed[t] = "빈 응답"
-                continue
+                return None, "빈 응답(티커 오타·상장폐지·지역 제한 확인)"
             df = df.rename(columns=str.title)
             df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
             keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
             df = df[keep].dropna(subset=["Close"])
             if len(df) < 300:
-                failed[t] = f"관측 부족({len(df)})"
-                continue
-            out[t] = df
+                return None, f"관측 부족({len(df)} < 300 — 상장 1년 남짓 미만)"
+            return df, ""
         except Exception as e:
-            failed[t] = f"{type(e).__name__}: {str(e)[:80]}"
-    out, _stale, _why = _prices_freshness(out, cfg, where="download")    # [v0.3.2 R73] 미래 봉 제거 + 뒤처짐 경고
+            return None, f"{type(e).__name__}: {str(e)[:80]}"
+    for t in missing:
+        df, why = _one(t)
+        if df is None and not why.startswith("관측 부족"):
+            time.sleep(1.0)
+            df, why2 = _one(t)                                  # 1회 재시도(일시 오류 · 속도 제한)
+            if df is None:
+                why = why2 or why
+        if df is None:
+            failed[t] = why
+        else:
+            new[t] = df
+    new, _stale, _why = _prices_freshness(new, cfg, where="download")    # [v0.3.2 R73] 미래 봉 제거 + 뒤처짐 경고
     if _stale:
         log("DATA", kv(event="prices_still_stale", reason=_why, note="제공자가 아직 그 날 종가를 주지 않는다 — 진행"),
             level="warning")
-    log("DATA", kv(event="prices_downloaded", ok=len(out), failed=len(failed),
+    out.update(new)
+    log("DATA", kv(event="prices_downloaded", ok=len(new), failed=len(failed), from_cache=len(out) - len(new),
                    detail=(";".join(f"{k}={v}" for k, v in failed.items()) or "-"),
-                   start=cfg.START, end=(cfg.END or "now")))
-    if out:
+                   start=cfg.START, end=(cfg.END or "now")), level=("warning" if failed else "info"))
+    _FAILED_PX.update(failed)
+    if new:
         try:
-            pd.to_pickle(out, cp)
+            pd.to_pickle({**cached, **new}, cp)
         except Exception as e:
             log("DATA", kv(event="cache_write_failed", err=str(e)[:100]), level="warning")
     return out
+
+
+# [v0.6.0 R79] 마지막 다운로드 실패 사유(02·20 시트가 읽는다 — '왜 빠졌나'를 리포트에서 바로 본다)
+_FAILED_PX: Dict[str, str] = {}
 
 
 def download_fundamentals(tickers: List[str], cfg: StockConfig) -> Dict[str, Dict[str, Any]]:
@@ -696,17 +765,25 @@ def download_fundamentals(tickers: List[str], cfg: StockConfig) -> Dict[str, Dic
     ⚠ 여기서는 **아무 것도 가공하지 않는다** — 인과 처리는 build_fundamental_asof가 전담한다."""
     out: Dict[str, Dict[str, Any]] = {}
     cp = _cache_path(cfg, "fund.pkl")
+    cached: Dict[str, Dict[str, Any]] = {}
     if _cache_fresh(cp, max(cfg.CACHE_DAYS, 7)):     # 재무제표는 분기마다 바뀌므로 1주 캐시
         try:
-            out = pd.read_pickle(cp)
-            log("DATA", kv(event="fundamentals_from_cache", tickers=len(out)))
-            return out
+            cached = pd.read_pickle(cp)
         except Exception as e:
             log("DATA", kv(event="fund_cache_read_failed", err=str(e)[:120]), level="warning")
+            cached = {}
+    # [v0.6.0 R79 ⚠ 결함 수정] 증분 — 캐시에 없는 티커만 받는다(새 티커가 어닝 없이 E3 컷 없이 조용히 돌던 결함)
+    out = {t: cached[t] for t in tickers if t in cached}
+    todo = [t for t in tickers if t not in out]
+    if not todo:
+        log("DATA", kv(event="fundamentals_from_cache", tickers=len(out)))
+        return out
+    if out:
+        log("DATA", kv(event="fundamentals_cache_partial", cached=len(out), missing=len(todo), tickers=",".join(todo[:12])))
     import yfinance as yf
     n_q = n_e = 0
     problems: Dict[str, str] = {}
-    for t in tickers:
+    for t in todo:
         rec: Dict[str, Any] = {"q": pd.DataFrame(), "earn": pd.DataFrame()}
         tk = yf.Ticker(t)
         # (1) 분기 손익계산서 — 항목명이 버전·티커마다 달라 방어적으로 고른다
@@ -751,10 +828,429 @@ def download_fundamentals(tickers: List[str], cfg: StockConfig) -> Dict[str, Dic
                    problems=(";".join(f"{k}={v.strip()}" for k, v in problems.items()) or "-"),
                    note="발표일이 없는 티커는 기간말 + FUND_PUBLISH_LAG_DAYS로 인과 처리한다"))
     try:
-        pd.to_pickle(out, cp)
+        pd.to_pickle({**cached, **out}, cp)
     except Exception as e:
         log("DATA", kv(event="fund_cache_write_failed", err=str(e)[:100]), level="warning")
     return out
+
+
+# =============================================================================
+# [v0.6.0 R79 ★★] 임의 티커 — 입력·정규화·산업 ETF 자동 매핑 · 사전등록 홀드아웃 일반화 검증
+# =============================================================================
+#   사용자 지시(2026-09-20) "주식은 다른 티커를 입력해도 예측이 잘되도록 설계해야돼 지금 하고 있는 티커만 잘돼면 안된다고".
+#   (1) 입력: k_overrides={"TICKERS": ("AAPL", "AMD", …)}(설계 29종목 대신) · {"EXTRA_TICKERS": (…)}(더하기).
+#       정규화(대문자·공백 제거·'.'→'-' — BRK.B → BRK-B). 산업 ETF가 사전등록에 없으면 자동 매핑:
+#       Yahoo 업종(info['industry']) → 표(YAHOO_INDUSTRY_TO_ETF) · 없으면 Yahoo 섹터 → 섹터 ETF · 없으면 **상관 폴백**
+#       (평가창 시작 **전** AUTO_MAP_CORR_WIN일의 일간수익 상관 최대 ETF — 인과) · 그래도 없으면 '미분류'.
+#       매핑은 표시·배분격자(I 산업비중 연동)에만 쓰인다 — 라이브 규칙(min(base1_cut, M E_t))은 티커와 무관하다.
+#   (2) 일반화 검증: 사전등록 홀드아웃 29종목(산업마다 설계 대표와 다른 1종목 — 설계에 한 번도 쓰지 않았다)을 **같은 규칙·같은 E_t**로
+#       돌려 설계 집합과 나란히 판정(20_일반화검증). 홀드아웃은 배분 포트·06 포트 행·00D에 들어가지 않는다(오염 방지).
+#       ML은 '티커 제외 교차검증' — 설계 종목으로만 학습해 **처음 보는** 홀드아웃 종목에서 AUC를 잰다.
+#   (3) 캐시 결함 수정: 가격·펀더멘탈 캐시가 티커 목록과 무관한 한 파일이라 **새 티커를 넣어도 옛 캐시가 돌아와**
+#       새 티커가 '다운로드 실패'로 조용히 빠졌다 → 캐시에 없는 티커만 받아 합친다(증분).
+#   연구/교육용 도구이며 투자 자문이 아니다.
+STOCK_HOLDOUT: Dict[str, str] = {
+    "SOXX": "AMD", "IGV": "ADBE", "SKYY": "CSCO", "HACK": "FTNT", "IBB": "GILD", "XBI": "EXEL", "IHE": "MRK",
+    "IHI": "SYK", "IHF": "CI", "XRT": "ROST", "XHB": "LEN", "PEJ": "MAR", "CARZ": "GM", "PBJ": "KO",
+    "KBE": "BAC", "KRE": "RF", "KIE": "TRV", "KCE": "MS", "ITA": "LMT", "IYT": "CSX", "JETS": "LUV",
+    "IYZ": "T", "FDN": "AMZN", "SOCL": "PINS", "REZ": "EQR", "XOP": "COP", "XES": "HAL", "XME": "NUE", "GDX": "AEM",
+}
+STOCK_NAME_KR.update({
+    "AMD": "AMD", "ADBE": "어도비", "CSCO": "시스코", "FTNT": "포티넷", "GILD": "길리어드", "EXEL": "엑셀리시스",
+    "MRK": "머크", "SYK": "스트라이커", "CI": "시그나", "ROST": "로스스토어스", "LEN": "레나", "MAR": "메리어트",
+    "GM": "GM", "KO": "코카콜라", "BAC": "뱅크오브아메리카", "RF": "리전스파이낸셜", "TRV": "트래블러스",
+    "MS": "모건스탠리", "LMT": "록히드마틴", "CSX": "CSX", "LUV": "사우스웨스트항공", "T": "AT&T", "AMZN": "아마존",
+    "PINS": "핀터레스트", "EQR": "에퀴티레지덴셜", "COP": "코노코필립스", "HAL": "핼리버튼", "NUE": "뉴코어",
+    "AEM": "애그니코이글",
+})
+# Yahoo 업종 문자열(소문자 부분일치) → 산업 ETF. **구체적인 것을 먼저** 둔다(첫 일치 채택).
+YAHOO_INDUSTRY_TO_ETF: Tuple[Tuple[str, str], ...] = (
+    ("semiconductor", "SOXX"),
+    ("software", "IGV"),
+    ("information technology services", "SKYY"), ("computer hardware", "SKYY"), ("communication equipment", "SKYY"),
+    ("biotechnology", "IBB"),
+    ("drug manufacturers", "IHE"), ("pharmaceutical", "IHE"),
+    ("medical devices", "IHI"), ("medical instruments", "IHI"), ("diagnostics", "IHI"),
+    ("healthcare plans", "IHF"), ("medical care facilities", "IHF"), ("health information", "IHF"),
+    ("medical distribution", "IHF"),
+    ("home improvement retail", "XRT"), ("specialty retail", "XRT"), ("discount stores", "XRT"),
+    ("department stores", "XRT"), ("apparel retail", "XRT"), ("grocery", "XRT"),
+    ("residential construction", "XHB"), ("building products", "XHB"),
+    ("travel services", "PEJ"), ("lodging", "PEJ"), ("resorts", "PEJ"), ("restaurants", "PEJ"),
+    ("leisure", "PEJ"), ("gambling", "PEJ"), ("entertainment", "PEJ"),
+    ("auto manufacturers", "CARZ"), ("auto parts", "CARZ"),
+    ("beverages", "PBJ"), ("packaged foods", "PBJ"), ("confectioners", "PBJ"), ("farm products", "PBJ"),
+    ("food distribution", "PBJ"),
+    ("banks—diversified", "KBE"), ("banks - diversified", "KBE"), ("banks-diversified", "KBE"),
+    ("banks—regional", "KRE"), ("banks - regional", "KRE"), ("banks-regional", "KRE"),
+    ("insurance", "KIE"),
+    ("capital markets", "KCE"), ("asset management", "KCE"), ("financial data", "KCE"),
+    ("aerospace", "ITA"),
+    ("airlines", "JETS"),
+    ("railroads", "IYT"), ("trucking", "IYT"), ("integrated freight", "IYT"), ("marine shipping", "IYT"),
+    ("telecom", "IYZ"),
+    ("internet retail", "FDN"), ("internet content", "FDN"),
+    ("reit—residential", "REZ"), ("reit - residential", "REZ"), ("reit-residential", "REZ"),
+    ("oil & gas e&p", "XOP"), ("oil & gas integrated", "XOP"),
+    ("oil & gas equipment", "XES"), ("oil & gas drilling", "XES"),
+    ("gold", "GDX"), ("silver", "GDX"),
+    ("steel", "XME"), ("copper", "XME"), ("aluminum", "XME"), ("industrial metals", "XME"),
+)
+YAHOO_SECTOR_TO_ETF: Dict[str, str] = {
+    "technology": "XLK", "healthcare": "XLV", "financial services": "XLF", "consumer cyclical": "XLY",
+    "consumer defensive": "XLP", "industrials": "XLI", "energy": "XLE", "basic materials": "XLB",
+    "communication services": "XLC", "real estate": "XLRE", "utilities": "XLU",
+}
+SECTOR_ETFS: Tuple[str, ...] = ("XLK", "XLV", "XLF", "XLY", "XLP", "XLI", "XLE", "XLB", "XLC", "XLRE", "XLU")
+# 테스트·오프라인 주입용(기본 None = yfinance). callable(ticker) → dict(sector, industry, shortName)
+INFO_FETCHER_OVERRIDE: Optional[Any] = None
+
+
+def normalize_ticker(t: Any) -> str:
+    """입력 티커 정규화 — 대문자·공백/$ 제거·'.'→'-'(Yahoo 표기: BRK.B → BRK-B). 빈 문자열이면 ''."""
+    s = str(t or "").strip().upper().replace("$", "").replace(" ", "")
+    return s.replace(".", "-")
+
+
+def resolve_universe(cfg: "StockConfig") -> Dict[str, Any]:
+    """역할별 티커 목록. 반환 {main: [..](설계 또는 사용자 입력 + 추가), holdout: [..], role: {티커: 역할}, registered: {티커: ETF},
+    dropped: [(원문, 사유)]}. 역할 = '설계'(사전등록 29) · '사용자'(TICKERS/EXTRA_TICKERS) · '홀드아웃'(검증 전용).
+    홀드아웃과 겹치는 사용자 티커는 **사용자**로 본다(사용자가 예측을 원한 종목) — 그 티커는 홀드아웃 집합에서 빠진다(00·20에 표시)."""
+    reg: Dict[str, str] = {}
+    for etf, tk in dict(getattr(cfg, "UNIVERSE", STOCK_UNIVERSE) or {}).items():
+        reg[normalize_ticker(tk)] = etf
+    hold_reg = {normalize_ticker(tk): etf for etf, tk in STOCK_HOLDOUT.items()}
+    role: Dict[str, str] = {}
+    dropped: List[Tuple[str, str]] = []
+    user_in = tuple(getattr(cfg, "TICKERS", ()) or ())
+    extra_in = tuple(getattr(cfg, "EXTRA_TICKERS", ()) or ())
+    main: List[str] = []
+    if user_in:
+        for raw in user_in:
+            t = normalize_ticker(raw)
+            if not t:
+                dropped.append((str(raw), "빈 티커")); continue
+            if t in role:
+                dropped.append((str(raw), "중복")); continue
+            role[t] = "사용자"; main.append(t)
+    else:
+        for t in sorted(reg):
+            role[t] = "설계"; main.append(t)
+    for raw in extra_in:
+        t = normalize_ticker(raw)
+        if not t:
+            dropped.append((str(raw), "빈 티커")); continue
+        if t in role:
+            dropped.append((str(raw), f"중복(이미 {role[t]})")); continue
+        role[t] = "사용자"; main.append(t)
+    holdout: List[str] = []
+    if bool(getattr(cfg, "GENERALIZATION_CHECK", True)):
+        for raw in tuple(getattr(cfg, "HOLDOUT_TICKERS", ()) or ()):
+            t = normalize_ticker(raw)
+            if not t or t in role:
+                if t in role:
+                    dropped.append((str(raw), f"홀드아웃에서 제외(이미 {role[t]} 종목)"))
+                continue
+            role[t] = "홀드아웃"; holdout.append(t)
+    registered = {**{t: e for t, e in hold_reg.items() if t in role}, **{t: e for t, e in reg.items() if t in role}}
+    log("RUN", kv(event="universe_resolved", main=len(main), holdout=len(holdout),
+                  design=sum(1 for v in role.values() if v == "설계"), user=sum(1 for v in role.values() if v == "사용자"),
+                  dropped=(";".join(f"{a}:{b}" for a, b in dropped)[:200] or "-")))
+    return {"main": main, "holdout": holdout, "role": role, "registered": registered, "dropped": dropped}
+
+
+def _yahoo_info(t: str) -> Dict[str, Any]:
+    if INFO_FETCHER_OVERRIDE is not None:
+        return dict(INFO_FETCHER_OVERRIDE(t) or {})
+    import yfinance as yf
+    inf = yf.Ticker(t).info or {}
+    return {"sector": inf.get("sector"), "industry": inf.get("industry"),
+            "shortName": inf.get("shortName") or inf.get("longName"), "quoteType": inf.get("quoteType")}
+
+
+def map_by_yahoo(sector: Any, industry: Any) -> Tuple[Optional[str], str]:
+    """Yahoo 업종 → 산업 ETF(표 첫 일치) · 없으면 섹터 → 섹터 ETF. (ETF, 방법) — 못 찾으면 (None, '-')."""
+    ind = str(industry or "").strip().lower()
+    if ind:
+        for key, etf in YAHOO_INDUSTRY_TO_ETF:
+            if key in ind:
+                return etf, "Yahoo 업종"
+    sec = str(sector or "").strip().lower()
+    if sec in YAHOO_SECTOR_TO_ETF:
+        return YAHOO_SECTOR_TO_ETF[sec], "Yahoo 섹터"
+    return None, "-"
+
+
+def auto_map_industry(tickers: List[str], registered: Dict[str, str], cfg: "StockConfig",
+                      prices: Optional[Dict[str, pd.DataFrame]] = None,
+                      etf_prices: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Dict[str, Any]]:
+    """티커 → {etf, method, sector, industry, name, corr}. 순서: 사전등록 → Yahoo 업종·섹터(캐시 AUTO_MAP_CACHE_DAYS) →
+    상관 폴백(etf_prices 필요 · 평가창 시작 **전** AUTO_MAP_CORR_WIN일 — 전 이력이 평가창 뒤에서 시작하면 첫 N일을 쓰고 ⚠ 표시) → 미분류.
+    실패는 전부 사유로 남는다(무음 금지)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    cp = _cache_path(cfg, "automap.json")
+    cache: Dict[str, Any] = {}
+    try:
+        if os.path.exists(cp) and _cache_fresh(cp, int(getattr(cfg, "AUTO_MAP_CACHE_DAYS", 30))):
+            with open(cp, "r", encoding="utf-8") as fh:
+                cache = json.load(fh) or {}
+    except Exception as e:
+        log("MAP", kv(event="automap_cache_read_failed", err=type(e).__name__), level="warning")
+        cache = {}
+    need_info = [t for t in tickers if t not in registered and bool(getattr(cfg, "AUTO_MAP", True))]
+    fetched = 0
+    for t in tickers:
+        if t in registered:
+            out[t] = {"etf": registered[t], "method": "사전등록", "sector": "-", "industry": "-",
+                      "name": STOCK_NAME_KR.get(t, t), "corr": None}
+            continue
+        rec = {"etf": None, "method": "미분류", "sector": None, "industry": None, "name": STOCK_NAME_KR.get(t, t), "corr": None}
+        if t in need_info:
+            info = cache.get(t)
+            if info is None:
+                try:
+                    info = _yahoo_info(t); fetched += 1
+                    cache[t] = info
+                except Exception as e:
+                    info = {"error": f"{type(e).__name__}: {str(e)[:80]}"}      # 실패는 캐시하지 않는다(다음 실행 재시도)
+            rec["sector"], rec["industry"] = info.get("sector"), info.get("industry")
+            if info.get("shortName"):
+                rec["name"] = str(info.get("shortName"))[:40]
+            etf, how = map_by_yahoo(info.get("sector"), info.get("industry"))
+            if etf:
+                rec["etf"], rec["method"] = etf, how
+            elif info.get("error"):
+                rec["method"] = f"미분류(info 실패: {info['error'][:40]})"
+        out[t] = rec
+    # 상관 폴백 — Yahoo가 못 준 티커만
+    todo = [t for t, r in out.items() if r["etf"] is None]
+    if todo and prices and etf_prices:
+        win = int(getattr(cfg, "AUTO_MAP_CORR_WIN", 504))
+        min_c = float(getattr(cfg, "AUTO_MAP_MIN_CORR", 0.30))
+        ev0 = pd.Timestamp(cfg.EVAL_START)
+        E = pd.DataFrame({e: pd.to_numeric(d["Close"], errors="coerce") for e, d in etf_prices.items()
+                          if isinstance(d, pd.DataFrame) and "Close" in d.columns}).pct_change(fill_method=None)
+        for t in todo:
+            if t not in prices:
+                continue
+            r = pd.to_numeric(prices[t]["Close"], errors="coerce").pct_change(fill_method=None)
+            pre = r[r.index < ev0].dropna()
+            flag = ""
+            if len(pre) >= 252:
+                seg = pre.iloc[-win:]
+            else:
+                seg = r.dropna().iloc[:win]
+                flag = " ⚠ 평가창 이전 이력 부족 → 첫 구간 사용(평가창 자료)"
+            if len(seg) < 126:
+                out[t]["method"] = "미분류(상관 표본 부족)"
+                continue
+            c = E.reindex(seg.index).corrwith(seg).dropna()
+            if not len(c):
+                continue
+            ind_c = c[[e for e in c.index if e not in SECTOR_ETFS]]
+            best = (ind_c.idxmax() if len(ind_c) else c.idxmax())
+            if float(c.get(best, np.nan)) < min_c and len(c):
+                best = c.idxmax()
+            if float(c[best]) >= min_c:
+                out[t].update({"etf": str(best), "method": f"상관 폴백(ρ={float(c[best]):.2f}){flag}", "corr": round(float(c[best]), 3)})
+            else:
+                out[t]["method"] = f"미분류(최대 상관 {float(c.max()):.2f} < {min_c:.2f})"
+    try:
+        with open(cp, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh, ensure_ascii=False)
+    except Exception as e:
+        log("MAP", kv(event="automap_cache_write_failed", err=type(e).__name__), level="warning")
+    log("MAP", kv(event="auto_map_done", tickers=len(tickers), registered=sum(1 for r in out.values() if r["method"] == "사전등록"),
+                  yahoo=sum(1 for r in out.values() if str(r["method"]).startswith("Yahoo")),
+                  corr=sum(1 for r in out.values() if str(r["method"]).startswith("상관")),
+                  unmapped=sum(1 for r in out.values() if r["etf"] is None), info_fetched=fetched,
+                  detail=";".join(f"{t}={r['etf'] or '-'}({r['method'][:10]})" for t, r in out.items()
+                                  if r["method"] != "사전등록")[:300] or "-"))
+    return out
+
+
+def _seg_capture(ret: pd.Series, w: pd.Series, cfg: "StockConfig", I=None) -> Tuple[float, float]:
+    """상승 포착률 · 하락 노출률(00D 블록 A와 같은 연속 지표 — B&H 곡선 지그재그 SEG_MIN_MOVE). I 없으면 (nan, nan)."""
+    if I is None or not hasattr(I, "zigzag_segments"):
+        return float("nan"), float("nan")
+    r = pd.to_numeric(ret, errors="coerce").fillna(0.0)
+    ww = pd.to_numeric(w, errors="coerce").reindex(r.index).fillna(0.0).clip(0.0, 1.0)
+    cur = (1.0 + r).cumprod()
+    segs = I.zigzag_segments(cur, float(getattr(cfg, "SEG_MIN_MOVE", 0.10)), int(getattr(cfg, "SEG_MIN_DAYS", 3)))
+    up_c = up_t = dn_c = dn_t = 0.0
+    rv, wv = r.to_numpy(), ww.to_numpy()
+    for kind, a, b in segs or []:
+        rs, ws = rv[a + 1:b + 1], wv[a + 1:b + 1]
+        if kind.startswith("하락"):
+            dn_c += float((ws * rs).sum()); dn_t += float(rs.sum())
+        else:
+            up_c += float((ws * rs).sum()); up_t += float(rs.sum())
+    return (up_c / up_t if abs(up_t) > 1e-12 else float("nan")), (dn_c / dn_t if abs(dn_t) > 1e-12 else float("nan"))
+
+
+def _perf3(r: pd.Series) -> Tuple[float, float, float]:
+    r = pd.to_numeric(r, errors="coerce").fillna(0.0)
+    if not len(r):
+        return float("nan"), float("nan"), float("nan")
+    cur = (1.0 + r).cumprod()
+    yrs = max(len(r) / 252.0, 1e-9)
+    cg = float(cur.iloc[-1]) ** (1.0 / yrs) - 1.0
+    mdd = float((cur / cur.cummax() - 1.0).min())
+    return cg, mdd, (cg / abs(mdd) if mdd < -1e-9 else float("nan"))
+
+
+def build_generalization_sheet(res: Dict[str, Any], I=None) -> Tuple[pd.DataFrame, str]:
+    """[20_일반화검증] A 집합별 요약(설계·홀드아웃·사용자) · B 종목별 · C ML 티커 제외 교차검증 · D 판정(사전등록).
+    같은 라이브 규칙(min(base1_cut, M E_t))을 **설계에 쓰지 않은 종목**에 그대로 적용해 개선이 재현되는지 본다."""
+    cfg = res.get("cfg", CFG)
+    A, B, C, D = ("A. 집합별 요약(같은 규칙 · 같은 E_t · 평가창)", "B. 종목별", "C. ML 티커 제외 교차검증(설계 종목으로만 학습)",
+                  "D. 판정(사전등록)")
+    rows: List[dict] = []
+    role = res.get("roles") or {}
+    amap = res.get("automap") or {}
+    sets: Dict[str, Dict[str, Tuple[pd.DataFrame, pd.DataFrame]]] = {"설계": {}, "사용자": {}, "홀드아웃": {}}
+    for t in sorted(res.get("panel") or {}):
+        sets.setdefault(role.get(t, "설계"), {})[t] = (res["panel"][t], res["pos"][t])
+    for t in sorted(res.get("panel_h") or {}):
+        sets["홀드아웃"][t] = (res["panel_h"][t], res["pos_h"][t])
+    rows.append({"블록": A, "집합": "── 읽는 법 ──",
+                 "판정": ("홀드아웃 = 설계(규칙 선택·임계값·과거 라운드 판단)에 한 번도 쓰지 않은 사전등록 종목(산업마다 1개). "
+                        "같은 라이브 규칙과 같은 M 시장 예산을 그대로 적용해 '설계 종목에서 본 개선(하락 회피·칼마)이 처음 보는 종목에서도 "
+                        "나오는가'를 잰다. 홀드아웃은 배분 포트·06 포트·00D에 넣지 않는다(오염 방지). 사용자 = TICKERS/EXTRA_TICKERS로 입력한 종목. "
+                        "칼마 = CAGR/|MDD| · 상승 포착률 = 상승구간 번 몫/B&H(오라클 100%) · 하락 노출률 = 하락구간 잃은 몫/B&H(오라클 0%). "
+                        "판정 기준(사전등록): ① 홀드아웃 칼마 개선 비율 ≥ 설계 비율 − GEN_PASS_SHARE_GAP ② 홀드아웃 중위 Δ칼마 > 0 "
+                        "③ 홀드아웃 동일가중 포트 MDD 개선. 연구·교육용, 투자 자문 아님.")})
+    summ: Dict[str, Dict[str, float]] = {}
+    for nm, S_ in sets.items():
+        if not S_:
+            continue
+        per = []
+        live_R, bh_R = {}, {}
+        for t, (pnl, ps) in S_.items():
+            rb = pd.to_numeric(pnl["일간수익"], errors="coerce").fillna(0.0)
+            rl = pd.to_numeric(ps["전략일간수익"], errors="coerce").reindex(rb.index).fillna(0.0)
+            w = pd.to_numeric(ps["집행비중"], errors="coerce").reindex(rb.index)
+            cb, mb, kb = _perf3(rb)
+            cl, ml_, kl = _perf3(rl)
+            upc, dne = _seg_capture(rb, w, cfg, I)
+            live_R[t], bh_R[t] = rl, rb
+            e = amap.get(t, {})
+            per.append({"블록": B, "집합": nm, "티커": t, "이름": e.get("name", STOCK_NAME_KR.get(t, t)),
+                        "산업ETF": e.get("etf") or res.get("parent_of", {}).get(t, "") or "-", "매핑 방법": e.get("method", "-"),
+                        "관측일": int(len(rb)), "평균 노출": round(float(w.mean()), 4) if len(w) else None,
+                        "B&H CAGR": round(cb, 4), "라이브 CAGR": round(cl, 4), "B&H MDD": round(mb, 4), "라이브 MDD": round(ml_, 4),
+                        "B&H 칼마": (round(kb, 3) if kb == kb else None), "라이브 칼마": (round(kl, 3) if kl == kl else None),
+                        "Δ칼마": (round(kl - kb, 3) if kl == kl and kb == kb else None),
+                        "칼마 개선": bool(kl == kl and kb == kb and kl > kb), "MDD 개선": bool(ml_ > mb),
+                        "상승 포착률": (round(upc, 3) if upc == upc else None), "하락 노출률": (round(dne, 3) if dne == dne else None),
+                        "E3 가능(어닝 자료)": bool(pd.to_numeric(pnl.get("어닝_서프라이즈%"), errors="coerce").notna().any())
+                        if "어닝_서프라이즈%" in pnl.columns else False})
+        rows.extend(per)
+        P_ = pd.DataFrame(per)
+        LR = pd.DataFrame(live_R).fillna(0.0).mean(axis=1)
+        BR = pd.DataFrame(bh_R).fillna(0.0).mean(axis=1)
+        pc, pm, pk = _perf3(LR)
+        bc, bm, bk = _perf3(BR)
+        s = {"n": len(per), "share_cal": float(P_["칼마 개선"].mean()), "share_mdd": float(P_["MDD 개선"].mean()),
+             "med_dcal": float(pd.to_numeric(P_["Δ칼마"], errors="coerce").median()),
+             "port_mdd_l": pm, "port_mdd_b": bm, "port_cal_l": pk, "port_cal_b": bk}
+        summ[nm] = s
+        rows.append({"블록": A, "집합": nm, "종목 수": len(per),
+                     "칼마 개선 비율": round(s["share_cal"], 3), "MDD 개선 비율": round(s["share_mdd"], 3),
+                     "중위 B&H 칼마": round(float(pd.to_numeric(P_["B&H 칼마"], errors="coerce").median()), 3),
+                     "중위 라이브 칼마": round(float(pd.to_numeric(P_["라이브 칼마"], errors="coerce").median()), 3),
+                     "중위 Δ칼마": round(s["med_dcal"], 3),
+                     "중위 B&H MDD": round(float(P_["B&H MDD"].median()), 4), "중위 라이브 MDD": round(float(P_["라이브 MDD"].median()), 4),
+                     "중위 B&H CAGR": round(float(P_["B&H CAGR"].median()), 4), "중위 라이브 CAGR": round(float(P_["라이브 CAGR"].median()), 4),
+                     "중위 상승 포착률": round(float(pd.to_numeric(P_["상승 포착률"], errors="coerce").median()), 3),
+                     "중위 하락 노출률": round(float(pd.to_numeric(P_["하락 노출률"], errors="coerce").median()), 3),
+                     "동일가중 포트 B&H CAGR/MDD/칼마": f"{bc:.4f} / {bm:.4f} / {bk:.3f}",
+                     "동일가중 포트 라이브 CAGR/MDD/칼마": f"{pc:.4f} / {pm:.4f} / {pk:.3f}"})
+    # ---- C. ML 티커 제외 교차검증 ----
+    ml_line = "생략"
+    if bool(getattr(cfg, "GEN_ML_LTO", True)) and I is not None and hasattr(I, "build_ml_panel") and summ.get("홀드아웃"):
+        try:
+            from sklearn.ensemble import HistGradientBoostingClassifier
+            prices = res.get("prices") or {}
+            des = [t for t in (res.get("panel") or {}) if t in prices]
+            hol = [t for t in (res.get("panel_h") or {}) if t in prices]
+            curves = {t: pd.to_numeric(prices[t]["Close"], errors="coerce") for t in des + hol}
+            dr = pd.DataFrame({t: curves[t].pct_change(fill_method=None) for t in des})
+            mkt = (1.0 + dr.mean(axis=1).fillna(0.0)).cumprod()        # 시장 대용 = **설계 종목만** 동일가중
+            H = int(getattr(cfg, "ML_HORIZON", 21))
+            Pn = I.build_ml_panel(curves, res.get("market_w"), mkt, H)
+            Pn["y"] = (Pn["fwd"] > 0).astype(float).where(Pn["fwd"].notna())
+            feats = [c for c in Pn.columns if c not in ("date", "asset", "fwd", "y")]
+            seed = int(getattr(cfg, "ML_SEED", 20260920))
+            prm = dict(max_depth=3, learning_rate=0.05, max_iter=200, min_samples_leaf=300, l2_regularization=1.0,
+                       early_stopping=False, random_state=seed)
+            dates = np.sort(Pn["date"].unique())
+            y0 = int(pd.Timestamp(cfg.EVAL_START).year)
+            mny = int(getattr(cfg, "ML_MIN_TRAIN_YEARS", 3))
+            fy = max(y0, int(pd.Timestamp(dates[0]).year) + mny)
+            aucs = {"설계(표본 밖 연도)": [], "홀드아웃(처음 보는 종목)": []}
+            ys_d, ps_d, ys_h, ps_h = [], [], [], []
+            for Y in range(fy, int(pd.Timestamp(dates[-1]).year) + 1):
+                ts = pd.Timestamp(f"{Y}-01-01")
+                di = int(np.searchsorted(dates, np.datetime64(ts)))
+                if di - H - 1 < 0:
+                    continue
+                emb = pd.Timestamp(dates[di - H - 1])
+                tr = Pn[(Pn["date"] <= emb) & Pn["y"].notna() & Pn["asset"].isin(des)]
+                if len(tr) < 2000 or tr["y"].nunique() < 2:
+                    continue
+                m = HistGradientBoostingClassifier(**prm).fit(tr[feats], tr["y"])
+                te = Pn[(Pn["date"] >= ts) & (Pn["date"] <= pd.Timestamp(f"{Y}-12-31")) & Pn["y"].notna()]
+                for grp, lst, ys, ps in (("설계(표본 밖 연도)", des, ys_d, ps_d), ("홀드아웃(처음 보는 종목)", hol, ys_h, ps_h)):
+                    g = te[te["asset"].isin(lst)]
+                    if not len(g) or g["y"].nunique() < 2:
+                        continue
+                    p = m.predict_proba(g[feats])[:, 1]
+                    ys.append(g["y"].values); ps.append(p)
+                    a = I._auc_score(g["y"].values, p) if hasattr(I, "_auc_score") else float("nan")
+                    ae = I._auc_score(g["y"].values, g["E"].values) if ("E" in g.columns and hasattr(I, "_auc_score")) else float("nan")
+                    aucs[grp].append(a)
+                    rows.append({"블록": C, "집합": grp, "연도": int(Y), "학습(설계 종목)": f"~{emb.date()} · {len(tr):,}행",
+                                 "시험 행": int(len(g)), "AUC ML": round(a, 4) if a == a else None,
+                                 "AUC E_t 단독": round(ae, 4) if ae == ae else None})
+            tot = {}
+            for grp, ys, ps in (("설계(표본 밖 연도)", ys_d, ps_d), ("홀드아웃(처음 보는 종목)", ys_h, ps_h)):
+                if ys:
+                    tot[grp] = I._auc_score(np.concatenate(ys), np.concatenate(ps))
+                    rows.append({"블록": C, "집합": grp, "연도": "전체", "AUC ML": round(tot[grp], 4),
+                                 "판정": ("0.5 = 동전 — ML은 진단 전용(라이브 아님)")})
+            if len(tot) == 2:
+                gap = tot["홀드아웃(처음 보는 종목)"] - tot["설계(표본 밖 연도)"]
+                ml_line = (f"ML AUC 설계 {tot['설계(표본 밖 연도)']:.4f} vs 처음 보는 종목 {tot['홀드아웃(처음 보는 종목)']:.4f}"
+                           f"(차 {gap:+.4f} — {'종목이 바뀌어도 같은 수준' if abs(gap) <= 0.02 else '⚠ 종목 의존'})")
+        except Exception as e:
+            ml_line = f"ML 교차검증 실패 {type(e).__name__}: {str(e)[:100]}"
+            log("REPORT", kv(event="gen_ml_lto_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
+    # ---- D. 판정 ----
+    gap_ok = float(getattr(cfg, "GEN_PASS_SHARE_GAP", 0.15))
+    d_, h_ = summ.get("설계"), summ.get("홀드아웃")
+    if d_ and h_:
+        c1 = h_["share_cal"] >= d_["share_cal"] - gap_ok
+        c2 = h_["med_dcal"] > 0
+        c3 = h_["port_mdd_l"] > h_["port_mdd_b"]
+        ok_all = c1 and c2 and c3
+        line = (("✓ 일반화 통과" if ok_all else "✗ 일반화 미달 — 설계 종목에만 맞는 규칙일 수 있다")
+                + f" · 칼마 개선 비율 설계 {d_['share_cal']:.2f} vs 홀드아웃 {h_['share_cal']:.2f}({'O' if c1 else 'X'})"
+                + f" · 홀드아웃 중위 Δ칼마 {h_['med_dcal']:+.3f}({'O' if c2 else 'X'})"
+                + f" · 홀드아웃 포트 MDD {h_['port_mdd_b']:.3f}→{h_['port_mdd_l']:.3f}({'O' if c3 else 'X'})"
+                + f" · {ml_line}")
+    elif d_ or summ.get("사용자"):
+        line = "홀드아웃 없음(GENERALIZATION_CHECK=False 또는 다운로드 실패) — 판정 불가 · " + ml_line
+    else:
+        line = "산출 불가(종목 없음)"
+    for nm in ("사용자",):
+        u = summ.get(nm)
+        if u:
+            line += f" | 사용자 입력 {u['n']}종목: 칼마 개선 {u['share_cal']:.2f} · 중위 Δ칼마 {u['med_dcal']:+.3f}"
+    rows.append({"블록": D, "집합": "판정", "판정": line})
+    log("REPORT", kv(event="generalization_ready", line=line[:300]),
+        level=("info" if line.startswith("✓") else "warning"))
+    return pd.DataFrame(rows), line
 
 
 # =============================================================================
@@ -1678,16 +2174,36 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     if s_overrides:
         cfg = dataclasses.replace(cfg, **s_overrides)
         log("RUN", kv(event="overrides", detail=json.dumps(s_overrides, ensure_ascii=False)[:300]))
-    uni = dict(cfg.UNIVERSE)
-    tickers = sorted(set(uni.values()))
-    log("RUN", kv(event="start", version=VERSION, tickers=len(tickers),
+    # [v0.6.0 R79 ★★] 임의 티커 — 역할(설계·사용자·홀드아웃) · 정규화 · 자동 매핑
+    U = resolve_universe(cfg)
+    tickers = list(U["main"])
+    holdout = list(U["holdout"])
+    roles = dict(U["role"])
+    log("RUN", kv(event="start", version=VERSION, tickers=len(tickers), holdout=len(holdout),
                   eval_start=cfg.EVAL_START, live_rule=cfg.LIVE_RULE,
                   fund_lag_days=cfg.FUND_PUBLISH_LAG_DAYS))
-    prices = download_prices(tickers, cfg)
+    _FAILED_PX.clear()
+    prices_all = download_prices(tickers + holdout, cfg)
+    prices = {t: prices_all[t] for t in tickers if t in prices_all}
+    prices_h = {t: prices_all[t] for t in holdout if t in prices_all}
     if not prices:
-        log("RUN", kv(event="aborted", reason="가격 데이터 0건"), level="error")
-        return {"aborted": True, "note": "가격 데이터를 하나도 받지 못했다", "cfg": cfg}
-    fund = download_fundamentals(list(prices), cfg)
+        log("RUN", kv(event="aborted", reason="가격 데이터 0건", failed=";".join(f"{k}={v}" for k, v in _FAILED_PX.items())[:300]),
+            level="error")
+        return {"aborted": True, "note": "가격 데이터를 하나도 받지 못했다 — " + "; ".join(f"{k}: {v}" for k, v in list(_FAILED_PX.items())[:10]),
+                "cfg": cfg}
+    fund = download_fundamentals(list(prices) + list(prices_h), cfg)
+    # 산업 ETF 매핑(사전등록 → Yahoo 업종·섹터 → 상관 폴백) — 표시·배분격자(I 산업비중 연동)에만 쓴다
+    try:
+        amap = auto_map_industry(tickers + holdout, U["registered"], cfg, prices=prices_all)
+        if bool(getattr(cfg, "AUTO_MAP", True)) and any(r["etf"] is None and t in prices_all for t, r in amap.items()):
+            _etf_px = download_prices(sorted(set(STOCK_UNIVERSE) | set(SECTOR_ETFS)), cfg)
+            amap = auto_map_industry(tickers + holdout, U["registered"], cfg, prices=prices_all, etf_prices=_etf_px)
+    except Exception as e:
+        log("MAP", kv(event="auto_map_failed", err=type(e).__name__, msg=str(e)[:160], action="사전등록만 쓰고 계속"),
+            level="warning")
+        amap = {t: {"etf": U["registered"].get(t), "method": ("사전등록" if t in U["registered"] else "미분류(매핑 실패)"),
+                    "sector": None, "industry": None, "name": STOCK_NAME_KR.get(t, t), "corr": None} for t in tickers + holdout}
+    _nm = {t: (STOCK_NAME_KR.get(t) or (amap.get(t) or {}).get("name") or t) for t in tickers + holdout}
     # [v0.4.0 R77 ★★] 시장 예산(M E_t) — 출처를 먼저 정한다(없으면 경고 + 구 규칙 · 00시트에 표시)
     try:
         _plast = max(pd.Timestamp(v.index[-1]) for v in prices.values() if v is not None and len(v))
@@ -1700,32 +2216,32 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     fund_ledgers: List[pd.DataFrame] = []
     earn_ledgers: List[pd.DataFrame] = []
     quality: List[dict] = []
-    parent_of = {v: k for k, v in uni.items()}
-    for t, df in prices.items():
+    parent_of = {t: ((amap.get(t) or {}).get("etf") or "") for t in tickers + holdout}
+    panel_h: Dict[str, pd.DataFrame] = {}      # [v0.6.0 R79] 홀드아웃(검증 전용 — 배분·06 포트·00D 제외)
+    pos_h: Dict[str, pd.DataFrame] = {}
+
+    def _one_ticker(t: str, df: pd.DataFrame, role_: str) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
+        """한 종목: 특성(가격·펀더멘탈·어닝) → 평가창 → 라이브 비중. 티커와 무관한 같은 산식(설계·사용자·홀드아웃 공통)."""
         pf = build_price_features(df, cfg)
         ff, fl = build_fundamental_asof(fund.get(t, {}), df.index, cfg)
         ef, el = build_earnings_features(fund.get(t, {}), df.index, pf["종가"], cfg)
         gf = build_earnings_fundamentals(fund.get(t, {}), df.index, cfg)   # [v0.2.0 K1]
         feat = pd.concat([pf, ff, ef, gf], axis=1)
         feat = feat.loc[feat.index >= pd.Timestamp(cfg.EVAL_START)]
+        _base = {"티커": t, "역할": role_, "산업ETF": parent_of.get(t, ""), "매핑 방법": (amap.get(t) or {}).get("method", "-"),
+                 "이름": _nm.get(t, "")}
         if len(feat) < 250:
             # [v0.2.0 K6] 제외 사유를 02 시트에 **같은 열 구성으로** 남긴다 — v0.1.0은 열이 달라
             #   AVB가 표에서 통째로 사라졌고, 왜 빠졌는지 리포트만 보고는 알 수 없었다.
-            quality.append({"티커": t, "산업ETF": parent_of.get(t, ""), "이름": STOCK_NAME_KR.get(t, ""),
-                            "관측일(평가창)": len(feat), "상태": f"⚠ 제외 — 평가창 관측 {len(feat)} < 250",
+            quality.append({**_base, "관측일(평가창)": len(feat), "상태": f"⚠ 제외 — 평가창 관측 {len(feat)} < 250(상장 1년 미만 등)",
                             "시작": (str(feat.index[0].date()) if len(feat) else "-"),
                             "종료": (str(feat.index[-1].date()) if len(feat) else "-")})
-            log("FEAT", kv(event="ticker_excluded", ticker=t, obs=len(feat),
+            log("FEAT", kv(event="ticker_excluded", ticker=t, role=role_, obs=len(feat),
                            reason="평가창 관측 250일 미만"), level="warning")
-            continue
-        panel[t] = feat
-        pos[t] = build_positions(feat, cfg, ticker=t, market_w=mkt)
-        if len(fl):
-            fl2 = fl.copy(); fl2.insert(0, "티커", t); fund_ledgers.append(fl2.reset_index(drop=True))
-        if len(el):
-            el2 = el.copy(); el2.insert(0, "티커", t); earn_ledgers.append(el2)
-        quality.append({"티커": t, "산업ETF": parent_of.get(t, ""), "이름": STOCK_NAME_KR.get(t, ""),
-                        "관측일(평가창)": len(feat),
+            return None
+        ps = build_positions(feat, cfg, ticker=t, market_w=mkt)
+        _has_e = bool(pd.to_numeric(feat.get("어닝_서프라이즈%"), errors="coerce").notna().any()) if "어닝_서프라이즈%" in feat.columns else False
+        quality.append({**_base, "관측일(평가창)": len(feat),
                         "시작": str(feat.index[0].date()), "종료": str(feat.index[-1].date()),
                         "펀더멘탈 분기수": (int(pd.to_numeric(feat.get("펀더멘탈_분기수"),
                                                         errors="coerce").max())
@@ -1744,18 +2260,45 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                         "매출 YoY(재무제표) 유효비율": (round(float(pd.to_numeric(feat.get("매출_YoY"),
                                                                         errors="coerce").notna().mean()), 4)
                                                if "매출_YoY" in feat.columns else 0.0),
-                        "상태": "정상",
+                        "상태": ("정상" if _has_e else "정상(⚠ 어닝 자료 없음 — E3 컷 없이 M E_t만)"),
                         "결측 비율(ext200)": round(float(feat["ext200"].isna().mean()), 4)})
+        return feat, ps, fl, el
+
+    for t in tickers:
+        df = prices.get(t)
+        if df is None:
+            continue
+        o = _one_ticker(t, df, roles.get(t, "설계"))
+        if o is None:
+            continue
+        feat, ps, fl, el = o
+        panel[t] = feat
+        pos[t] = ps
+        if len(fl):
+            fl2 = fl.copy(); fl2.insert(0, "티커", t); fund_ledgers.append(fl2.reset_index(drop=True))
+        if len(el):
+            el2 = el.copy(); el2.insert(0, "티커", t); earn_ledgers.append(el2)
+    for t in holdout:
+        df = prices_h.get(t)
+        if df is None:
+            continue
+        o = _one_ticker(t, df, "홀드아웃")
+        if o is not None:
+            panel_h[t], pos_h[t] = o[0], o[1]
     # [v0.2.0 K6] 다운로드 자체가 실패한 티커도 02 시트에 남긴다 — prices에 없으면 위 루프를
     #   아예 통과하지 못해 v0.1.0에서는 '29개 요청 → 28행'의 차이를 리포트로 설명할 수 없었다.
-    for t in tickers:
-        if t not in prices:
-            quality.append({"티커": t, "산업ETF": parent_of.get(t, ""),
-                            "이름": STOCK_NAME_KR.get(t, ""), "관측일(평가창)": 0,
-                            "상태": "⚠ 제외 — 가격 다운로드 실패(로그 DATA 단계 참조)",
+    for t in tickers + holdout:
+        if t not in prices_all:
+            _why = _FAILED_PX.get(t, "로그 DATA 단계 참조")
+            quality.append({"티커": t, "역할": roles.get(t, "-"), "산업ETF": parent_of.get(t, ""),
+                            "매핑 방법": (amap.get(t) or {}).get("method", "-"),
+                            "이름": _nm.get(t, ""), "관측일(평가창)": 0,
+                            "상태": f"⚠ 제외 — 가격 다운로드 실패: {_why}",
                             "시작": "-", "종료": "-"})
-            log("FEAT", kv(event="ticker_excluded", ticker=t, obs=0,
-                           reason="가격 다운로드 실패"), level="warning")
+            log("FEAT", kv(event="ticker_excluded", ticker=t, role=roles.get(t, "-"), obs=0,
+                           reason=f"가격 다운로드 실패({_why})"), level="warning")
+    for _raw, _why in U.get("dropped") or []:
+        quality.append({"티커": _raw, "역할": "입력 제외", "상태": f"⚠ 입력 제외 — {_why}", "관측일(평가창)": 0})
     if not panel:
         return {"aborted": True, "note": "평가창 관측이 충분한 티커가 없다", "cfg": cfg,
                 "quality": pd.DataFrame(quality)}
@@ -1818,7 +2361,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             yrs = max(len(s) / 252.0, 1e-9)
             cagr = float(cur.iloc[-1]) ** (1.0 / yrs) - 1.0
             mdd = float((cur / cur.cummax() - 1.0).min())
-            perf.append({"티커": t, "이름": STOCK_NAME_KR.get(t, ""),
+            perf.append({"티커": t, "이름": _nm.get(t, ""),
                          "산업ETF": parent_of.get(t, ""), "전략": lbl,
                          "총수익배수": round(float(cur.iloc[-1]), 4), "CAGR": round(cagr, 4),
                          "최대낙폭(MDD)": round(mdd, 4),
@@ -1924,7 +2467,9 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             _ud = _updown_variants(panel, pos, cfg, mkt)
         except Exception as e:
             log("PERF", kv(event="updown_variants_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
-    return {"cfg": cfg, "panel": panel, "pos": pos, "prices": prices, "fund": fund,
+    return {"cfg": cfg, "panel": panel, "pos": pos, "prices": {**prices, **prices_h}, "fund": fund,
+            "panel_h": panel_h, "pos_h": pos_h, "roles": roles, "automap": amap,           # [v0.6.0 R79]
+            "universe": U, "names": _nm, "failed_px": dict(_FAILED_PX),
             "market_budget": mkt_info, "market_w": mkt, "updown": _ud, "live_label": _live_lbl,
             "parent_of": parent_of, "accuracy": acc, "audit": audit,
             "alloc": alloc, "alloc_grid": pd.DataFrame(alloc_rows),
@@ -1947,6 +2492,8 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     panel: Dict[str, pd.DataFrame] = res["panel"]
     pos: Dict[str, pd.DataFrame] = res["pos"]
     parent_of = res["parent_of"]
+    _NM: Dict[str, str] = dict(res.get("names") or {})            # [v0.6.0 R79] 임의 티커 이름(Yahoo shortName · 없으면 티커)
+    _roles: Dict[str, str] = dict(res.get("roles") or {})
 
     # ---- 01Z 일별 예측 매트릭스(전 종목 한 시트) ----
     idx = sorted(set().union(*[set(v.index) for v in panel.values()]))
@@ -2024,8 +2571,10 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         ("⚠ 실매매 적용 여부",
          "아니오 — 진단·연구용이다. 실매매 주문 근거는 market_regime_report.xlsx의 ★ SPY 국면전략이며, "
          "이 주식 계층은 v0.1.0(첫 버전)으로 **예측 채점**이 본체다."),
-        ("표본", f"산업 ETF {len(cfg.UNIVERSE)}개마다 대표 티커 1개 = {len(panel)}종목 "
-                f"(사용자 지시 '일단 샘플로 각 산업별 대표 티커 하나씩')"),
+        ("표본", (f"설계 {sum(1 for t in panel if _roles.get(t) == '설계')}종목(산업 ETF마다 대표 1개) · "
+                 f"사용자 입력 {sum(1 for t in panel if _roles.get(t) == '사용자')}종목 = 라이브·배분 {len(panel)}종목"
+                 f" · 홀드아웃(검증 전용) {len(res.get('panel_h') or {})}종목 — 입력: k_overrides={{'TICKERS': (…)}} 또는 "
+                 "{'EXTRA_TICKERS': (…)} · 산업 ETF 자동 매핑(02 '매핑 방법')")),
         ("평가창", f"{cfg.EVAL_START} ~ {str(idx[-1].date()) if len(idx) else '-'} "
                  f"({len(idx)}거래일) · 특성 워밍업 {cfg.START}부터"),
         ("★ 라이브 규칙(v0.4.0 R77 · ⚠⚠ 위험 파라미터)",
@@ -2063,7 +2612,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                      f"칼마 {st['칼마(CAGR/MDD)'].median(skipna=True):.3f} vs "
                      f"매수보유 CAGR {bh['CAGR'].median():.4f} · MDD {bh['최대낙폭(MDD)'].median():.4f} · "
                      f"칼마 {bh['칼마(CAGR/MDD)'].median(skipna=True):.3f} "
-                     f"(29종목 중위값 — 개별 종목 표는 06 시트)"))
+                     f"({len(panel)}종목 중위값 — 개별 종목 표는 06 시트)"))
     # 다음 거래일 예측
     if len(idx):
         last = idx[-1]
@@ -2071,7 +2620,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         for t in sorted(panel):
             p = pos[t]
             if last in p.index:
-                nd.append(f"{t}({STOCK_NAME_KR.get(t, '')}) {p['확정국면'].loc[last]}/"
+                nd.append(f"{t}({_NM.get(t, STOCK_NAME_KR.get(t, t))}) {p['확정국면'].loc[last]}/"
                           f"{float(p['목표비중'].loc[last]):.2f}")    # [v0.4.0] E_t 부분 노출(0.4~0.6)을 반올림하지 않는다
         meta.append((f"다음 거래일 예측({last.date()} 확정 → 익일 집행)", " · ".join(nd)))
     sheets["00_실행요약"] = pd.DataFrame(meta, columns=["항목", "값"])
@@ -2096,7 +2645,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                                for t in sorted(panel)}).reindex(idx).fillna(0.0)
             seg = I.build_up_down_segments(
                 cur, ex, ret, cfg,
-                name_map={t: STOCK_NAME_KR.get(t, "") for t in sorted(panel)},
+                name_map={t: _NM.get(t, STOCK_NAME_KR.get(t, t)) for t in sorted(panel)},
                 parent_map={t: parent_of.get(t, "") for t in sorted(panel)},
                 bench_w=None,          # 주식 계층의 비중 예산은 1.0이므로 완전 참여가 도달 가능한 벤치다
                 layer="개별주식", M=None)
@@ -2105,7 +2654,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 try:
                     _ap = I.build_single_live_segments(
                         cur, ex, ret, cfg, own_exec=None,
-                        name_map={t: STOCK_NAME_KR.get(t, "") for t in sorted(panel)},
+                        name_map={t: _NM.get(t, STOCK_NAME_KR.get(t, t)) for t in sorted(panel)},
                         parent_map={t: parent_of.get(t, "") for t in sorted(panel)}, M=None)
                     if isinstance(_ap, pd.DataFrame) and len(_ap):
                         seg = pd.concat([_ap, seg], ignore_index=True) if isinstance(seg, pd.DataFrame) else _ap
@@ -2161,7 +2710,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                                  for t in sorted(panel)}).reindex(idx).fillna(0.0)
             _cmp0 = I.build_asset_return_compare(
                 _ret0, _aex0, cfg, solo_w=_sw0,
-                name_map={t: STOCK_NAME_KR.get(t, "") for t in sorted(panel)},
+                name_map={t: _NM.get(t, STOCK_NAME_KR.get(t, t)) for t in sorted(panel)},
                 parent_map={t: parent_of.get(t, "") for t in sorted(panel)},
                 layer="개별주식", M=None)
             if isinstance(_cmp0, pd.DataFrame) and len(_cmp0):
@@ -2221,7 +2770,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                     _cur1, _ret1, _V, cfg, ref_label=_udv["ref"], old_label=_udv.get("old"),
                     market_exec=_udv.get("market_exec"), candidate_labels=tuple(_cands),
                     falsify_labels=tuple(_udv.get("fals") or ()), descriptions=_udv.get("desc"),
-                    name_map={t: STOCK_NAME_KR.get(t, "") for t in sorted(panel)},
+                    name_map={t: _NM.get(t, STOCK_NAME_KR.get(t, t)) for t in sorted(panel)},
                     parent_map={t: parent_of.get(t, "") for t in sorted(panel)},
                     layer="종목", cost_bps=10.0, M=None)
                 if hasattr(I, "_append_ml_block"):
@@ -2237,6 +2786,15 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             sheets["00D_하락상승개선비교"] = pd.DataFrame([{"블록": "A", "변형": "⚠ 생략됨",
                                                        "판정": ("I(industry_rotation v0.31.0+) 모듈이 없거나 변형이 비었다 — "
                                                               "run_pipeline.main()으로 실행하거나 build_report(res, I=industry_rotation)")}])
+    # ---- [v0.6.0 R79 ★★] 00G_일반화검증 — 설계 종목 vs 처음 보는(홀드아웃) 종목, 같은 규칙 ----
+    _gen_line = "-"
+    try:
+        _gdf, _gen_line = build_generalization_sheet(res, I=I)
+        if isinstance(_gdf, pd.DataFrame) and len(_gdf):
+            sheets["00G_일반화검증"] = _gdf
+    except Exception as e:
+        _gen_line = f"산출 실패 {type(e).__name__}: {str(e)[:140]}"
+        log("REPORT", kv(event="generalization_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
     # ---- [v0.4.0 R77] 00시트 판정 3행 — 수치는 시트에서 읽는다 ----
     try:
         _m0 = list(sheets["00_실행요약"].itertuples(index=False, name=None))
@@ -2250,6 +2808,15 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         if _dd:
             _add.append(("제거한 시트(v0.4.0 R77)", ", ".join(_dd) + " — F 계열(라이브 미사용) 원장 · 티커별 유효일 출처는 02에 있다. "
                          "되돌리기: k_overrides={'REPORT_DROP_SHEETS': ()}"))
+        _add.append(("★ 00G_일반화검증 — 처음 보는 종목에서도 되나(사전등록 홀드아웃)", _gen_line))
+        _am = res.get("automap") or {}
+        _ur = res.get("universe") or {}
+        _add.append(("유니버스 · 산업 ETF 매핑(v0.6.0)",
+                     " · ".join(f"{k} {v}" for k, v in pd.Series([str((_am.get(t) or {}).get('method', '-')).split('(')[0]
+                                                                   for t in _am]).value_counts().items())
+                     + (" · 입력 제외: " + ", ".join(f"{a}({b})" for a, b in (_ur.get("dropped") or [])) if _ur.get("dropped") else "")
+                     + (" · 다운로드 실패: " + ", ".join(f"{k}({v[:40]})" for k, v in (res.get("failed_px") or {}).items())
+                        if res.get("failed_px") else "")))
         if _add:
             sheets["00_실행요약"] = pd.DataFrame(_m0[:2] + _add + _m0[2:], columns=["항목", "값"])
     except Exception as e:
@@ -2264,7 +2831,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                                             errors="coerce").reindex(d.index)
         sheets[f"01_일별_{t}"] = d.reset_index().rename(columns={"index": "날짜"})
     # 맨 앞으로: 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00A_수익비교", "00D_하락상승개선비교", "01Z_주식일별예측", "00_실행요약") if n in sheets]
+    _front = [n for n in ("00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "01Z_주식일별예측", "00_실행요약") if n in sheets]
     sheets = {**{n: sheets[n] for n in _front},
               **{k: v for k, v in sheets.items() if k not in _front and k not in _drop}}
     _write(path, sheets)

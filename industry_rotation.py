@@ -1,5 +1,48 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.33.0 - 2026-09-21 - [R79 ★★ 산업 이익 모멘텀 검정(구성종목 EPS) · 부모 예산 안 산업 상승확률 1위 매수/반대면 매도(위험 파라미터) · 00E·28 시트]
+#    사용자 지시(2026-09-20) "산업은 산업 이익 모멘텀 검정 방식을 구현하고 그것과 다른 지표들을 사용해서 섹터 비중이 있다면 그 비중 안에서
+#    산업별 가장 상승 확률을 계산해서 그걸 매수하도록 해 매도 반대로 하면 되고". 시작 v0.32.0 → 목표 v0.33.0. (K는 stock_regime v0.6.0)
+#    ── 사전검증(업로드 리포트 i27·s8·k5, r79/prob79·psim79c~i.py — 2021-01~2026-09 표본 밖, S★ 대비 초과, 편도 10bp):
+#       현 I★(복합순위 리더·확신 게이트) +3.47%/년 · IR 0.72 · 6/6년 · 포트 MDD −9.94%.
+#       ML(GBM) P(상승)·P(부모초과) 1위 · 나이브 베이즈 1위: 전부 음수(−1.6 ~ −10%/년) — 확률 폭이 좁아(0.44~0.51) 절대 문턱이 거의 안 걸린다.
+#       P(부모초과) = I★ 채택 신호 복합순위의 워크포워드 로지스틱(AUC 0.504) · 기저율 대비 판단 · **M 전액예산일(E_t=1)만 산업 보유**:
+#         +9.36%/년 · IR 1.19 · 6/6년 · MDD −9.89%(현행과 같음) · 포트 CAGR 37.7→45.6%. 같은 게이트 무작위 산업 200회 평균 −0.69%/년(최대 +7.16 —
+#         초과 0회). 게이트 없이 늘 보유 +9.30%/년이지만 MDD −15.9%(그래서 M 게이트가 '매도 반대로'의 핵심이다). 최소보유 1일 +4.35%(MDD −18.7%).
+#       ⚠ 정직한 한계: 이득 거의 전부가 XLK 안 SOXX(2025·2026)다 — 'E_t=1일 때 SOXX 고정' +9.74%/년 ≥ 확률 규칙. 선택 능력보다 반도체
+#         강세장 몫이 크다 → 13 [확률격자]에 무작위·베타 최고 산업 대조 행을 넣어 매 실행 다시 판정한다.
+#       ⚠ 이익 모멘텀(대표주 1종목 근사): 전 기간 부모 안 1위−꼴찌 epsacc t 1.90(8/9년)으로 유망했지만, 워크포워드 게이트(학습창 t≥2)는
+#         2021~2026 한 해도 통과 못 했다(t 0.95~1.78). 게이트 없이 넣으면 +2.4%/년(악화). → 구성종목 5~6개 중위수로 잡음을 줄이고
+#         (엔진은 2002년~ 발표 원장·2006년~ ETF로 학습창이 길다) **게이트를 통과한 해에만** 확률 모형에 넣는다.
+#    (§1 ★★ 위험 파라미터 — 비중) INDUSTRY_SELECT_MODE="prob"(신설 · 라이브): 부모(산업 2개 이상)마다 P(산업 > 부모 ETF, 21거래일) − 기저 1위를
+#       부모 예산 **전액**(CAP_CONVICTION 1.0 — 값은 무변경, 그러나 캡 1.0이 적용되는 **날 수가 늘어난다**: 리포트27 XLK 리더일 29% →
+#       사전검증 M 전액예산일 대부분)으로 매수. 매도(→ 부모 ETF) = 보유 P − 기저 < 0 · 자기 RISK_OFF · **M 시장 예산 E_t < 1**(즉시 · 최소보유 무관).
+#       교체 = 1위가 PROB_SWITCH_MARGIN(0.005) 초과 & ROTATION_MIN_HOLD_DAYS(21) 경과. 결정 점수 = (P − 기저) 5일 평활. 산업 1개 부모(XLP·XLRE)는 종전.
+#       leader3_group(v0.32.0 판단)은 그대로 계산해 비교 행·13c '구 라이브 리더' 열에 남긴다. 로그 prob_leader_applied(부모별 보유일·매도 사유·마지막 판단).
+#       되돌리기(v0.32.0 배분 비트 동일): i_overrides={"INDUSTRY_SELECT_MODE": "composite"}.
+#    (§2 ★) 산업 이익 모멘텀 — INDUSTRY_EPS_CONSTITUENTS(29산업 × 4~6 대형 보유 종목, 사전등록 · ⚠ 생존 편향 명시) · yfinance get_earnings_dates
+#       (limit 100 · 스레드 6 · 2회 시도 · 티커별 캐시 7일 · 실패 사유 표) · 발표일 + 1달력일부터 as-of(장 마감 후 발표 방어) · 95일 넘은 발표 무효 ·
+#       E_ACC(EPS YoY 변화) · E_YOY · E_SURP4 · E_BEAT4 = 구성종목 중위수(유효 2종목 이상). 신설 **28_산업이익모멘텀검정**: A 전 기간(부모 안 1위−꼴찌
+#       21일 초과 · 비중첩 월 t · IC · 연도 k/n · 본페로니 2.50) · B 부모별 · C 연도별 · D 적용연도별 워크포워드 게이트(t≥2 · 월≥36 · 연도≥2/3) ·
+#       E 구성종목 자료 상태 · F 커버리지.
+#    (§3 ★) 신설 **00E_산업상승확률**(맨 앞): 읽는 법 · 연도별 모형(학습 기간·엠바고 22일·기저율·특징·계수·시험 AUC·Brier) · 보정표(10분위) ·
+#       마지막 거래일 부모별 산업 P(부모초과)·기저·P(상승, R78 ML·표시 전용)·판단 사유 · 결정 요약. 13c 부모별 6열(확률 판단 사유·확률 1위·
+#       1위 P·기저율·1위 P(상승)·M 전액예산)+구 라이브 리더 · 01Z 산업별 'P(부모초과)'·'P(상승,ML)' · 00 규칙·상태·28 요약 3행 ·
+#       다음 거래일 배분에 '산업별 확률' 행.
+#    (§4) 13 [확률격자] 6행: 구 라이브(v0.32.0) · 확률 1위 M 게이트 없음 · 이익 특징 게이트 무시(반증) · ML P(상승) 1위(참고) · 무작위 산업(대조 ·
+#       시드 20260920 · 21일 블록) · 부모 대비 베타 최고 산업(대조 — '고베타 쏠림'이면 이 행과 같다). 같은 캡 래더·엔진·비용 · ①②③④ 판정.
+#       [드라이버순환매격자]도 ★가 확률이면 변형을 **같은 확률 규칙**으로 재계산(사과-사과 비교).
+#    (§5) 11_룩어헤드감사: 확률 P(d)·이익 특징(d)을 d까지 자료로 절단재계산(PROB_AUDIT_N=3일 × 2항목) — 합성 E2E 6/6 통과.
+#    (§6 ⚠ 표시 결함 수정) 00D '연도 k/n'의 해마다 판정을 자산 **중위 → 평균** 수익 차로 — 소수 자산만 다른 변형(K 'M E_t만')이 늘 0/9로 찍혔다.
+#    IndustryConfig 신설 25필드(USE_EARNINGS_MOMENTUM · EPS_CONSTITUENTS · EPS_LIMIT · EPS_CACHE_DAYS · EPS_FETCH_WORKERS · EPS_REPORT_LAG_DAYS ·
+#      EPS_STALE_DAYS · EPS_MIN_NAMES · EPS_GATE_T · EPS_GATE_MIN_MONTHS · EPS_GATE_YEAR_SHARE · EPS_BONFERRONI_T · INDUSTRY_SELECT_MODE · PROB_HORIZON ·
+#      PROB_MIN_TRAIN_ROWS · PROB_C · PROB_SMOOTH_DAYS · PROB_BUY_EDGE · PROB_SELL_EDGE · PROB_SWITCH_MARGIN · PROB_MKT_FULL_ONLY · PROB_GRID ·
+#      PROB_RANDOM_SEED · PROB_AUDIT_N) — 검증 캐시 키 밖. 모듈 훅 EPS_FETCHER_OVERRIDE(테스트·오프라인 주입).
+#    영향 함수: fetch_constituent_earnings·constituent_eps_daily·build_industry_eps_features·industry_eps_test·industry_prob_walkforward·
+#      market_full_mask·prob_leader_group·industry_prob_lookahead_audit·run_industry_prob_layer·build_industry_prob_sheet·prob_summary_line(신설) ·
+#      build_industry_allocation(prob_pack·확률 판단 교체·★ 라벨·[확률격자]·반환 4키) · build_industry_leader_columns(13c) · build_industry_prediction_matrix(01Z) ·
+#      build_driver_rotation_grid(같은 규칙) · build_updown_improvement_compare(연도 k/n) · run(확률 계층·반환 prob_pack) · build_industry_report(00E·28·11·00).
+#    연구/교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.32.0 - 2026-09-20 - [R78 ★★ 다른 방법 — ML 워크포워드(풀링 그래디언트 부스팅) · 부분 노출일 라이브 = ML 컷(위험 파라미터) · 00D 블록 E(크기별)·F(ML 진단)]
 #    사용자 지시(2026-09-20) "이 데이터들로 모든 산업별·주식별 흐름을 예측 못하는게 말이 돼? 다시 다른 방법 찾아서 개선해". 시작 v0.31.0 → 목표 v0.32.0.
 #    ── 다른 방법 1 — 손 규칙이 아니라 데이터가 규칙을 찾게 한다: 29산업 풀링 HistGradientBoosting(깊이 3·학습률 0.05·200회·잎 300·L2 1.0·
@@ -1709,8 +1752,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.32.0"
-VERSION_DATE = "2026-09-20"
+VERSION = "v0.33.0"
+VERSION_DATE = "2026-09-21"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -1767,6 +1810,42 @@ INDUSTRY_EXPECTED_START: Dict[str, str] = {
     "SOCL": "2011-11-14", "REZ": "2007-05-01",
     "XOP": "2006-06-19", "XES": "2006-06-19", "XME": "2006-06-19", "GDX": "2006-05-16",
     "BJK": "2008-01-22", "SRVR": "2018-06-01", "INDS": "2018-06-01",
+}
+
+# [v0.33.0 R79] 산업 이익 모멘텀용 **구성종목(사전등록)** — 산업 ETF의 대표 대형 보유 종목 5~6개(2026-09 기준 판단).
+#   ⚠ 생존 편향: 오늘의 대형 종목을 과거에 적용한다(과거 구성과 다르다). 부모 안 **상대** 비교라 산업 간에 일부 상쇄되지만 완전하지 않다 —
+#     28_산업이익모멘텀검정 읽는 법에 명시. 등급B(BJK·SRVR·INDS)는 목록이 없다(자료 없음 = 중립 0.5).
+#   바꾸려면 i_overrides={"EPS_CONSTITUENTS": {...}} — 결과가 달라지므로 사전등록 원칙상 라운드 단위로만 바꾼다.
+INDUSTRY_EPS_CONSTITUENTS: Dict[str, Tuple[str, ...]] = {
+    "SOXX": ("NVDA", "AVGO", "AMD", "QCOM", "TXN", "MU"),
+    "IGV": ("MSFT", "ORCL", "CRM", "ADBE", "NOW", "INTU"),
+    "SKYY": ("ANET", "IBM", "CSCO", "NTAP", "AKAM", "PSTG"),
+    "HACK": ("PANW", "FTNT", "CHKP", "CRWD", "ZS", "OKTA"),
+    "IBB": ("AMGN", "GILD", "VRTX", "REGN", "BIIB"),
+    "XBI": ("INCY", "EXEL", "NBIX", "SRPT", "UTHR", "ALNY"),
+    "IHE": ("LLY", "JNJ", "MRK", "PFE", "BMY", "ZTS"),
+    "IHI": ("ISRG", "ABT", "SYK", "BSX", "MDT", "EW"),
+    "IHF": ("UNH", "ELV", "CI", "HUM", "CVS", "HCA"),
+    "XRT": ("TGT", "BBY", "ROST", "TJX", "DG", "ULTA"),
+    "XHB": ("DHI", "LEN", "PHM", "NVR", "TOL", "MAS"),
+    "PEJ": ("BKNG", "MAR", "HLT", "RCL", "LVS", "DRI"),
+    "CARZ": ("TSLA", "GM", "F", "TM", "HMC"),
+    "PBJ": ("PEP", "KO", "MDLZ", "KHC", "GIS", "HSY"),
+    "KBE": ("JPM", "BAC", "WFC", "C", "PNC", "MTB"),
+    "KRE": ("USB", "TFC", "RF", "KEY", "HBAN", "FITB"),
+    "KIE": ("PGR", "TRV", "ALL", "CB", "AIG", "MET"),
+    "KCE": ("GS", "MS", "SCHW", "BLK", "ICE", "CME"),
+    "ITA": ("RTX", "BA", "LMT", "GE", "NOC", "GD"),
+    "IYT": ("UNP", "UPS", "CSX", "NSC", "FDX", "ODFL"),
+    "JETS": ("DAL", "UAL", "LUV", "AAL", "ALK"),
+    "IYZ": ("VZ", "T", "TMUS", "CMCSA", "CHTR"),
+    "FDN": ("AMZN", "GOOGL", "NFLX", "EBAY", "PYPL"),
+    "SOCL": ("META", "PINS", "SNAP", "MTCH"),
+    "REZ": ("AVB", "EQR", "ESS", "MAA", "INVH", "UDR"),
+    "XOP": ("EOG", "COP", "DVN", "OXY", "FANG", "APA"),
+    "XES": ("SLB", "HAL", "BKR", "NOV", "FTI", "HP"),
+    "XME": ("FCX", "NUE", "STLD", "AA", "CLF", "RS"),
+    "GDX": ("NEM", "AEM", "KGC", "WPM", "FNV", "AU"),
 }
 
 PARENTS: Tuple[str, ...] = tuple(sorted({p for _, p, _ in INDUSTRIES}))  # 10개(XLU 제외 — 산업 ETF 없음)
@@ -2358,6 +2437,33 @@ class IndustryConfig:
     ML_MIN_LEAF: int = 300
     ML_L2: float = 1.0
     ML_SEED: int = 20260920
+    # ---- [v0.33.0 R79 ★★] 산업 이익 모멘텀 검정 · 부모 예산 안 산업 상승확률 선택(위험 파라미터 — 파일 헤더 참조) ----
+    #   사용자 지시(2026-09-20) "산업 이익 모멘텀 검정 방식을 구현하고 그것과 다른 지표들을 사용해서 섹터 비중 안에서 산업별 가장 상승 확률을
+    #   계산해서 그걸 매수 · 매도 반대로". 되돌리기(v0.32.0 비트 동일 배분): i_overrides={"INDUSTRY_SELECT_MODE": "composite"}.
+    USE_EARNINGS_MOMENTUM: bool = True       # 구성종목 EPS 수집·28 검정(끄면 확률 모형은 COMP만)
+    EPS_CONSTITUENTS: Dict[str, Tuple[str, ...]] = field(default_factory=lambda: dict(INDUSTRY_EPS_CONSTITUENTS))
+    EPS_LIMIT: int = 100                     # get_earnings_dates(limit=) — 100분기 ≈ 2002년부터(K 실측)
+    EPS_CACHE_DAYS: int = 7                  # 티커별 원장 캐시(CACHE_DIR/eps_<티커>.pkl) 유효 일수
+    EPS_FETCH_WORKERS: int = 6               # 수집 스레드(I/O) — 속도 제한이 걸리면 낮춘다
+    EPS_REPORT_LAG_DAYS: int = 1             # 발표일 + 1달력일부터 사용(장 마감 후 발표를 그날 종가 판단에 쓰지 않는다)
+    EPS_STALE_DAYS: int = 95                 # 마지막 발표가 이보다 오래되면 그 종목 특징 = NaN
+    EPS_MIN_NAMES: int = 2                   # 산업 특징 = 유효 구성종목 중위수(이 수 이상일 때만)
+    EPS_GATE_T: float = 2.0                  # 워크포워드 게이트: 학습창 월 표본 t ≥ 이 값
+    EPS_GATE_MIN_MONTHS: int = 36            #   · 월 수 ≥ 이 값
+    EPS_GATE_YEAR_SHARE: float = 2.0 / 3.0   #   · 연도 양수 비율 ≥ 이 값
+    EPS_BONFERRONI_T: float = 2.50           # 28 블록 A '유의' 문턱(특징 4개 · 양측 5% 본페로니)
+    INDUSTRY_SELECT_MODE: str = "prob"       # ★ "prob"(v0.33.0 라이브) | "composite"(v0.32.0 복합순위 리더·확신 게이트)
+    PROB_HORIZON: int = 21                   # 목표 = 향후 21거래일 '산업 > 부모 ETF' · 엠바고 22거래일
+    PROB_MIN_TRAIN_ROWS: int = 2000
+    PROB_C: float = 1.0                      # 로지스틱 L2 역강도
+    PROB_SMOOTH_DAYS: int = 5                # 결정 점수(P − 기저)의 평활 일수(하루 잡음으로 사고팔지 않게)
+    PROB_BUY_EDGE: float = 0.0               # 매수: 1위 P − 기저 ≥ 이 값
+    PROB_SELL_EDGE: float = 0.0              # 매도: 보유 P − 기저 < 이 값
+    PROB_SWITCH_MARGIN: float = 0.005        # 교체: 1위가 보유보다 이만큼 높고 ROTATION_MIN_HOLD_DAYS 경과
+    PROB_MKT_FULL_ONLY: bool = True          # ⚠ M 시장 예산 E_t=1(전액)인 날만 산업 보유 · 아니면 부모 ETF(매도)
+    PROB_GRID: bool = True                   # 13 [확률격자] 대조 행(구 라이브 · 게이트 없음 · 이익 강제 · ML P(상승) · 무작위 · 베타 최고)
+    PROB_RANDOM_SEED: int = 20260920         # 무작위 대조 행 시드
+    PROB_AUDIT_N: int = 3                    # 11_룩어헤드감사 확률·이익 특징 절단재계산 표본 날짜 수
     # ---- [v0.19.0 X4 신규 격자] [국면×확신캡격자] — 부모 국면 제약 × 확신캡 래더 ----
     #   왜: W3이 [국면게이트격자]를 되살리자 **리더국면 NEUTRAL이 칼마 3.787 · MDD −0.0955(= S★와 동일)**로
     #     프로젝트 최초로 S★ 칼마 3.758을 넘었다(MDD 악화 정확히 0 → 한계비율 무한).
@@ -4498,7 +4604,8 @@ def _frozen_alloc_cfg(icfg: IndustryConfig, M=None) -> IndustryConfig:
 
 def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, res: dict,
                               eval_idx: pd.DatetimeIndex, icfg: IndustryConfig, M, S,
-                              wf: Dict[str, Any], rf_daily: Optional[pd.Series] = None
+                              wf: Dict[str, Any], rf_daily: Optional[pd.Series] = None,
+                              prob_pack: Optional[Dict[str, Any]] = None
                               ) -> Dict[str, Any]:
     """[§7 · v0.2.0] S★ target_w(모든 열: 9섹터 + SPY)를 받아 '산업이 있는 부모'만 부모 안에서 나누고
     나머지 열(SPY 폴백·XLU 등)은 그대로 통과 → 총노출 = S★ 총노출(매일, 14_계층정합). 반환 dict 키는
@@ -4613,6 +4720,71 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                                                                         key=lambda x: -x[1])) or "-",
                            leaders=";".join(f"{k}:{v}" for k, v in g["leader"][g["leader"] != ""].value_counts().items()) or "-"),
             M=M)
+
+    # ---- [v0.33.0 R79 ★★] 부모 예산 안 산업 상승확률 선택 — P(부모초과) − 기저 1위 매수 · 반대면 매도(→ 부모 ETF) ----
+    #   leader3_group(복합순위 리더·확신 게이트 = v0.32.0 라이브)은 그대로 계산해 groups_leader3에 남긴다(구 라이브 비교 행 · 13c 병기).
+    #   INDUSTRY_SELECT_MODE="prob"이고 확률이 산출됐으면 **산업 2개 이상 부모**의 판단을 확률 상태기계로 바꾼다(산업 1개 부모는 종전 그대로).
+    #   이후 _mk_target_w·_cap_mat·13c·13j·14는 같은 키(leader_ind·tier·gate …)를 그대로 받는다 — 리더일 캡 = CAP_CONVICTION(1.0, 무변경).
+    groups_leader3: Dict[str, Dict[str, Any]] = dict(groups)
+    _sel_mode = str(getattr(icfg, "INDUSTRY_SELECT_MODE", "composite") or "composite").lower()
+    _prob = (prob_pack or {}).get("prob") or {}
+    _prob_ok = bool(_prob.get("ok"))
+    _mkt_full = market_full_mask(res, eval_idx, M=M) if _prob_ok else None
+    _mkt_gate_on = bool(getattr(icfg, "PROB_MKT_FULL_ONLY", True))
+    if _prob_ok and _mkt_gate_on and _mkt_full is None:
+        log("ROTATION", kv(event="prob_market_gate_unavailable", note="M res['sig']['target_pos'] 없음 — M 전액예산 게이트 없이 확률 선택",
+                           action="00시트·28b에 표시"), M=M, level="warning")
+    _psm = int(getattr(icfg, "PROB_SMOOTH_DAYS", 5) or 1)
+
+    def _prob_score(Pm: pd.DataFrame, base_s: Optional[pd.Series]) -> pd.DataFrame:
+        """결정 점수 = (P − 기저)의 PROB_SMOOTH_DAYS 평활(t까지). 기저가 없으면 P 그대로."""
+        X = Pm.reindex(index=eval_idx, columns=cols).astype(float)
+        if base_s is not None:
+            X = X.sub(base_s.reindex(eval_idx), axis=0)
+        return X.rolling(_psm, min_periods=1).mean().where(X.notna()) if _psm > 1 else X
+
+    def _prob_groups(score: Optional[pd.DataFrame], mkt: Optional[pd.Series],
+                     prob_df: Optional[pd.DataFrame] = None, base_s: Optional[pd.Series] = None,
+                     p_up: Optional[pd.DataFrame] = None) -> Dict[str, Dict[str, Any]]:
+        out_g = dict(groups_leader3)
+        if score is None:
+            return out_g
+        for p_ in active_parents:
+            inds_ = [t for t in cols if parent_of[t] == p_]
+            if len(inds_) < 2:
+                continue
+            out_g[p_] = prob_leader_group(p_, inds_, eval_idx, score, eligible, listed, icfg,
+                                          mkt_ok=mkt, prob=prob_df, base=base_s, p_up=p_up,
+                                          parent_state=parent_state.get(p_))
+        return out_g
+
+    _P_live = _prob.get("P") if _prob_ok else None
+    _B_live = _prob.get("base") if _prob_ok else None
+    _S_live = _prob_score(_P_live, _B_live) if _prob_ok else None
+    groups_prob: Dict[str, Dict[str, Any]] = (
+        _prob_groups(_S_live, (_mkt_full if _mkt_gate_on else None), _P_live, _B_live, _prob.get("P_up"))
+        if _prob_ok else {})
+    select_mode = "composite"
+    if _sel_mode == "prob":
+        if _prob_ok:
+            groups = groups_prob
+            select_mode = "prob"
+            for p in active_parents:
+                g = groups[p]
+                if g.get("select_mode") != "prob":
+                    continue
+                tc = g["tier"].value_counts()
+                _ld = g["leader"][g["leader"] != ""].value_counts()
+                log("ROTATION", kv(event="prob_leader_applied", parent=p, n_ind=len(g["inds"]),
+                                   days_leader=int(tc.get("리더", 0)), days_parent=int(tc.get("부모ETF", 0)),
+                                   switches=g["switches"], sells=";".join(f"{k}={v}" for k, v in (g.get("sell_counts") or {}).items()),
+                                   mkt_gate=bool(_mkt_gate_on and _mkt_full is not None),
+                                   leaders=";".join(f"{k}:{v}" for k, v in _ld.items()) or "-",
+                                   last=f"{g['leader'].iloc[-1] or '부모ETF'}({g['prob_reason'].iloc[-1]})"), M=M)
+        else:
+            log("ROTATION", kv(event="prob_select_fallback", reason=str(_prob.get("note", "확률 없음"))[:160],
+                               action="복합순위 리더(v0.32.0)로 대체 — 00시트에 표시"), M=M,
+                level=("warning" if prob_pack is not None else "info"))
 
     # ---- [v0.15.0 R1] 리더 하락 브레이크 행렬(산업×평가일) ----
     #   results[t]["brake"]를 평가창에 맞춰 모은다. t일 판단 → 그날 목표비중에 반영(엔진의 다른 신호와 동일한
@@ -4985,6 +5157,10 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                       + f"·폴백 {live_fb:.0%}·잔여 {live_mode} ★")
     else:
         label_star = f"부모비중 안 산업리더 {live_cap:.0%}·폴백 {live_fb:.0%}·잔여 {live_mode} ★"
+    if select_mode == "prob":      # [v0.33.0 R79] 라벨이 규칙을 말하게 한다(13·00·15가 이 라벨을 읽는다)
+        label_star = (f"부모비중 안 산업 상승확률 1위(P(부모초과)≥기저"
+                      + ("·M 전액예산일" if (_mkt_gate_on and _mkt_full is not None) else "")
+                      + f")·캡 {_cap_conv:.0%}·잔여 {live_mode} ★")
     # [v0.15.0 R1] ★에 라이브 브레이크를 연결한다(⚠ 위험 파라미터 — INDUSTRY_LEADER_BRAKE=False로 되돌림).
     target_ws: Dict[str, pd.DataFrame] = {
         label_star: _mk_target_w(live_cap, live_fb, brake=(_BRAKE_LIVE if _brake_live else None),
@@ -5000,6 +5176,55 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                         days_zero=int((_tot <= 1e-12).sum()), n_eval=len(eval_idx),
                         note="⚠ 비중(위험) 파라미터 변경 — 사전등록 되돌림 조건은 파일 헤더 [검증] ⑧. "
                              "중위가 0이면 그것은 CAP이 아니라 INDUSTRY_FALLBACK_SHARE=0의 결과다"), M=M)
+    # ---- [v0.33.0 R79 ★] [확률격자] — 확률 선택이 '선택 능력'인지 '베타·반도체 쏠림'인지를 매 실행 가른다(사전등록 대조) ----
+    #   행: 구 라이브(v0.32.0 복합순위 리더·확신 게이트) · 확률 1위 M 게이트 없음 · 이익 특징 강제 포함(반증) · ML P(상승) 1위(참고) ·
+    #       무작위 산업 같은 M 게이트(대조, 시드 고정 · 21일 블록) · 베타 최고 산업 같은 M 게이트(대조 — PARENT_BETA_252, 1일 지연).
+    #   모든 행이 같은 캡 래더(리더일 CAP_CONVICTION)와 같은 엔진·비용을 쓴다. 판정은 아래 ①②③④ 격자 열이 한다.
+    if bool(getattr(icfg, "PROB_GRID", True)) and _prob_ok:
+        try:
+            def _cm_for(gsrc: Dict[str, Dict[str, Any]]) -> Optional[pd.DataFrame]:
+                return (_cap_mat(live_cap, _cap_conv, _cap_hold, warn=_WARN_LIVE, strong=_STRONG_LIVE, groups_src=gsrc)
+                        if _conv_on else None)
+            _mg = (_mkt_full if _mkt_gate_on else None)
+            _rows_p: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            if select_mode == "prob":
+                _rows_p[f"구 라이브 v0.32.0 — 복합순위 리더·확신 게이트 {_PROB_GRID_TAG}"] = groups_leader3
+            else:
+                _rows_p[f"확률 1위 · M 전액예산일(설정상 라이브 후보) {_PROB_GRID_TAG}"] = groups_prob
+            if _mg is not None:
+                _rows_p[f"확률 1위 · M 게이트 없음 {_PROB_GRID_TAG}"] = _prob_groups(_S_live, None, _P_live, _B_live)
+            _pf = ((prob_pack or {}).get("prob_force") or {})
+            if _pf.get("ok"):
+                _rows_p[f"확률 1위 · 이익 특징 게이트 무시(반증) {_PROB_GRID_TAG}"] = _prob_groups(
+                    _prob_score(_pf["P"], _pf.get("base")), _mg, _pf["P"], _pf.get("base"))
+            _Pu, _Qu = _prob.get("P_up"), _prob.get("q_up")
+            if isinstance(_Pu, pd.DataFrame) and _Pu.notna().any().any():
+                _su = _Pu.reindex(index=eval_idx, columns=cols).astype(float)
+                if isinstance(_Qu, pd.DataFrame) and len(_Qu):
+                    _su = _su - _Qu.reindex(index=eval_idx, columns=cols).astype(float)
+                _rows_p[f"ML P(상승 21일) 1위 · M 전액예산일(참고 — 부모 대비가 아님) {_PROB_GRID_TAG}"] = _prob_groups(
+                    _su.rolling(_psm, min_periods=1).mean().where(_su.notna()) if _psm > 1 else _su, _mg)
+            _rng = np.random.default_rng(int(getattr(icfg, "PROB_RANDOM_SEED", 20260920)))
+            _blk = max(int(getattr(icfg, "ROTATION_MIN_HOLD_DAYS", 21)), 1)
+            _R = pd.DataFrame(_rng.random((len(eval_idx), len(cols))), index=eval_idx, columns=cols)
+            _R = _R.iloc[::_blk].reindex(eval_idx).ffill().where(_S_live.notna()) if _S_live is not None else _R
+            _rows_p[f"무작위 산업 · 같은 M 게이트(대조 · 시드 고정) {_PROB_GRID_TAG}"] = _prob_groups(_R - 0.5, _mg)
+            _beta = pd.DataFrame({t: results[t]["rot_raw"].get("PARENT_BETA_252", pd.Series(dtype=float)) for t in cols}
+                                 ).reindex(eval_idx)
+            if _beta.notna().any().any():
+                _bs = _beta.sub(_beta.mean(axis=1), axis=0).where(_S_live.notna() if _S_live is not None else _beta.notna())
+                _rows_p[f"부모 대비 베타 최고 산업 · 같은 M 게이트(대조 — '고베타 쏠림'이면 이 행과 같다) {_PROB_GRID_TAG}"] = \
+                    _prob_groups(_bs, _mg)
+            for _lb, _gg in _rows_p.items():
+                target_ws[_lb] = _mk_target_w(live_cap, live_fb, groups_over=_gg, cap_mat=_cm_for(_gg))
+            _nl = {k: int(sum(int((g["tier"] == "리더").sum()) for g in v.values())) for k, v in _rows_p.items()}
+            log("ROTATION", kv(event="prob_grid_built", rows=len(_rows_p), select_mode=select_mode,
+                               leader_days=";".join(f"{k.split(' [')[0][:28]}={v}" for k, v in _nl.items()),
+                               note="대조(무작위·베타 최고)를 넘을 때만 '선택 능력' — 13 격자판정 열"), M=M)
+        except Exception as _e:
+            log("ROTATION", kv(event="prob_grid_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                               trace=traceback.format_exc()[-400:].replace("\n", " | "), action="격자 없이 계속(★ 무영향)"),
+                M=M, level="warning")
     # [v0.3.0 §B1] 2D 사전등록 격자(cap × fb) — 1D 사다리 두 개로는 (1.0, 0.0) 같은 조합을 못 본다.
     #   리포트41 격자에서 ①②③④를 전부 통과한 행이 '폴백 0%'였고 '리더캡 100%'도 강건 통과였는데,
     #   그 둘의 조합은 측정된 적이 없었다. 라벨은 S의 _is_cap_grid 관행대로 여는 대괄호 접두로 매칭한다.
@@ -5674,6 +5899,9 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "grid_line": grid_line, "grid_candidates": _cand, "only_mode": live_mode,   # [v0.3.0 §B1/§A3]
         "parent_state": parent_state, "follow_corr": follow_corr,
         "groups": groups, "label_star": label_star, "label_ctrl_a": label_ctrl_a, "label_ctrl_b": label_ctrl_b,
+        "select_mode": select_mode, "groups_leader3": groups_leader3,                 # [v0.33.0 R79]
+        "prob_pack": prob_pack,                                                        # [v0.33.0 R79] 드라이버 격자 재사용(참조)
+        "prob_market_gate": bool(_mkt_gate_on and _mkt_full is not None),
         "label_repro": label_repro, "repro_max_diff": repro_diff,
         "ret_co": ret_co, "ret_oc": ret_oc, "cost_bps_industry": icfg.COST_BPS_INDUSTRY,
         "cost_bps_parent": icfg.PARENT_COST_BPS, "rf_daily": rf_daily,
@@ -8234,7 +8462,9 @@ def build_updown_improvement_compare(curve_df: pd.DataFrame, ret_df: pd.DataFram
             if not d or max(abs(x) for x in d) < 1e-12:      # [v0.32.0 R78] 두 변형이 같은 해(예: ML 표본 밖 이전)는 세지 않는다
                 continue
             n += 1
-            k += int(np.median(d) > 1e-12)
+            # [v0.33.0 R79 ⚠ 표시 결함 수정] 중위 → **평균**(= 자산 동일가중 포트의 그 해 수익 차). 중위는 소수 자산만 다른 변형
+            #   (예: K 'M E_t만' — 29종목 중 몇 개만 차이)에서 늘 0이 되어 '0/9'로 찍혔다(R78 리포트 K 00D). 평균은 차이가 있으면 반영된다.
+            k += int(float(np.mean(d)) > 1e-12)
         return {"cal_w": cal_w, "cg_w": cg_w, "nc": len(common), "yk": k, "yn": n}
 
     # ---------------- 블록 A ----------------
@@ -8245,7 +8475,7 @@ def build_updown_improvement_compare(curve_df: pd.DataFrame, ret_df: pd.DataFram
                         "'상승 포착률' = 상승구간에서 번 몫 / B&H가 번 몫(오라클 100%) · '하락 노출률' = 하락구간에서 잃은 몫 / B&H가 잃은 몫"
                         "(오라클 0%) — 문턱에 민감하지 않은 연속 지표다. '오라클 격차 해소' = 순효과 / 오라클 순효과. "
                         f"CAGR·MDD·칼마는 편도 {cost_bps:g}bp 비용 반영 · {layer} 평균. '★ 대비' 열은 현 라이브 대비(칼마 승 {layer} 수 · "
-                        f"연도 k/n = 그 해 {layer} 중위 수익 차 > 0). ⚠ 진단 전용 — 구간은 사후 분할이다.")})
+                        f"연도 k/n = 그 해 {layer} 평균 수익 차 > 0 — v0.33.0부터 중위→평균). ⚠ 진단 전용 — 구간은 사후 분할이다.")})
 
     def _judge(lbl: str, s: dict, v: dict) -> str:
         if lbl == ORA:
@@ -9152,6 +9382,17 @@ def build_industry_leader_columns(alloc: Dict[str, Any]) -> pd.DataFrame:
             out[f"{p} 역방향회피"] = g["rev_avoid"].values
         if "corr_block" in g:
             out[f"{p} 추종필터 제외"] = g["corr_block"].values
+        # [v0.33.0 R79] 확률 선택 열 — 왜 샀고 왜 팔았는지를 13c 한 줄에서 읽는다(사용자 규칙 §2).
+        if "prob_reason" in g:
+            out[f"{p} 확률 판단 사유"] = g["prob_reason"].values
+            out[f"{p} 확률 1위"] = g["prob_top"].values
+            out[f"{p} 1위 P(부모초과)"] = pd.to_numeric(g["prob_top_p"], errors="coerce").round(4).values
+            out[f"{p} 기저율"] = pd.to_numeric(g["prob_base"], errors="coerce").round(4).values
+            out[f"{p} 1위 P(상승,ML·표시)"] = pd.to_numeric(g["prob_top_up"], errors="coerce").round(4).values
+            out[f"{p} M 전액예산"] = g["mkt_full"].values
+            _g3 = (alloc.get("groups_leader3") or {}).get(p)
+            if _g3 is not None:
+                out[f"{p} 구 라이브 리더(v0.32.0)"] = _g3["leader"].where(_g3["tier"].astype(str).eq("리더"), "").values
     return out
 
 def build_industry_vs_sector_attribution(alloc: Dict[str, Any]) -> pd.DataFrame:
@@ -10511,7 +10752,8 @@ def industry_next_day(results: Dict[str, Dict[str, Any]]) -> Dict[str, dict]:
 
 def build_industry_prediction_matrix(results: Dict[str, Dict[str, Any]], eval_idx: pd.DatetimeIndex,
                                      icfg: IndustryConfig, S, nd_map: Optional[Dict[str, dict]] = None,
-                                     alloc: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+                                     alloc: Optional[Dict[str, Any]] = None,
+                                     prob: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     """[01Z_산업일별예측] 날짜 × 산업 예측·목표비중. [v0.3.0 §A2] nd_map이 주어지면 '구분'(실적/예측) 열을
     넣고 맨 끝에 **예측 행 1개**를 붙인다 — S.build_prediction_matrix와 같은 관행(재계산 없음, t일 종가로
     이미 확정된 값을 표시만 재구성). 성과·불변식 계산은 '실적' 행만 쓴다(이 시트는 참고용)."""
@@ -10528,6 +10770,14 @@ def build_industry_prediction_matrix(results: Dict[str, Dict[str, Any]], eval_id
         tp = r["target_pos"].reindex(eval_idx)
         df[f"{t} 예측"] = st.map(lambda x: S.STATE_SHORT.get(x, "-") if pd.notna(x) else "-")
         df[f"{t} 목표비중"] = tp.round(4)
+        # [v0.33.0 R79] 부모 예산 안 선택 확률(표시) — P(부모초과 21일)·P(상승 21일, ML). 산업 1개 부모·확률 없음이면 빈칸.
+        if isinstance(prob, dict) and prob.get("ok"):
+            _Pz = prob.get("P")
+            if isinstance(_Pz, pd.DataFrame) and t in _Pz.columns and _Pz[t].notna().any():
+                df[f"{t} P(부모초과)"] = _Pz[t].reindex(eval_idx).round(4).values
+            _Uz = prob.get("P_up")
+            if isinstance(_Uz, pd.DataFrame) and t in _Uz.columns and _Uz[t].notna().any():
+                df[f"{t} P(상승,ML)"] = _Uz[t].reindex(eval_idx).round(4).values
         n_up = n_up.add((st == "RISK_ON").astype(int), fill_value=0)
         n_down = n_down.add((st == "RISK_OFF").astype(int), fill_value=0)
         _ost = pd.Series(r.get("own_state", r["state"])).reindex(eval_idx)
@@ -11646,8 +11896,18 @@ def build_driver_rotation_grid(results: Dict[str, Dict[str, Any]], sres: dict, r
             res_v[t] = rr
         icfg_v = dataclasses.replace(icfg, ROTATION_SIGNALS=tuple(icfg.ROTATION_SIGNALS) + ("DRIVER_Z",))
         wf_v = within_parent_walkforward_select(res_v, eval_idx, icfg_v, M, S, pooled_wf)
+        # [v0.33.0 R79] ★가 확률 선택이면 변형도 **같은 규칙**(확률 워크포워드 + 같은 M 게이트)으로 — 사과와 사과를 비교한다.
+        _pp0 = alloc.get("prob_pack") if (isinstance(alloc, dict) and alloc.get("select_mode") == "prob") else None
+        _pp_v = None
+        if _pp0:
+            _pr0 = _pp0.get("prob") or {}
+            _pv = industry_prob_walkforward(res_v, wf_v, eval_idx, ((_pp0.get("eps_pack") or {}).get("feats")
+                                                                   if _pp0.get("eps_ok") else None),
+                                            _pp0.get("eps_gate") or {}, icfg_v, M=M, ml=None, quiet=True)
+            _pv["P_up"], _pv["q_up"] = _pr0.get("P_up"), _pr0.get("q_up")
+            _pp_v = {"prob": _pv}
         alloc_v = build_industry_allocation(res_v, sres, res, eval_idx, _frozen_alloc_cfg(icfg_v), M, S, wf_v,
-                                            rf_daily=rf_daily)
+                                            rf_daily=rf_daily, prob_pack=_pp_v)
         _bt1 = (alloc_v.get("bts") or {}).get(alloc_v.get("label_star")) if alloc_v else None
         if _bt1 is None or "strategy_ret" not in _bt1:
             out["line"] = "산출 불가 — 변형 배분 실패"
@@ -11949,6 +12209,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
     # [v0.5.0 I-A] 동결이어도 **신호 채택 통계(13g)는 계속 낸다** — REPORT44 §5가 다음 실행에서 볼 것으로
     #   "I 13g 하위1 t(SCORE_PCT)"를 지목했고, 회피 분리(I-B) 실험의 근거가 바로 그 표다. 동결이 생략하는 것은
     #   **배분·격자·수용기준**(실행시간의 대부분)이지 진단 통계가 아니다.
+    _prob_pack: Dict[str, Any] = {"prob": {"ok": False, "note": "배분 계층 미실행"}}     # [v0.33.0 R79]
     if icfg.USE_ROTATION and results:
         try:
             # [v0.4.0 §I1 ⚠] 채택 판정의 '측정 대상'을 결정과 일치시킨다.
@@ -11968,10 +12229,21 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                               avoid_standalone_years=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(_sa.items())) or "-",
                               note="[v0.13.0 N1] 동결은 이제 '판정을 멈춘다'는 뜻이며 배분 시트를 지우지 않는다 — "
                                    "13_산업배분전략은 ★·대조군A/B·S★재현 4행으로 나온다"), M=M)
+            # [v0.33.0 R79 ★★] 구성종목 EPS → 산업 이익 모멘텀 → 28 검정·게이트 → 확률 워크포워드 → 감사(배분 전 1회).
+            #   실패해도 배분은 계속한다(확률이 없으면 복합순위 리더로 대체 · 00시트·로그에 사유).
+            try:
+                _prob_pack = run_industry_prob_layer(results, wf, eval_idx, icfg, M=M,
+                                                     ml=(_ml if _ml.get("ok") else None),
+                                                     earn_fetcher=EPS_FETCHER_OVERRIDE)
+            except Exception as _e:
+                _prob_pack = {"prob": {"ok": False, "note": f"{type(_e).__name__}: {str(_e)[:140]}"}}
+                log("PROB", kv(event="prob_layer_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                               trace=traceback.format_exc()[-600:].replace("\n", " | "),
+                               action="복합순위 리더(v0.32.0)로 배분 계속"), M=M, level="warning")
             # [v0.13.0 N1] 동결이어도 배분은 만든다 — 격자만 끈 cfg로 호출(_frozen_alloc_cfg).
             alloc = build_industry_allocation(results, sres, res, eval_idx,
                                               (_frozen_alloc_cfg(icfg, M=M) if frozen else icfg),
-                                              M, S, wf, rf_daily=rf_daily)
+                                              M, S, wf, rf_daily=rf_daily, prob_pack=_prob_pack)
             if alloc:
                 hier_df = build_hierarchy_check(alloc)                 # 14_계층정합 — 동결 여부와 무관(총노출 불변식)
                 leader_cols = build_industry_leader_columns(alloc)     # 13c의 부모별 판단·리더·게이트 열
@@ -12178,7 +12450,8 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                            next_step="13p 시트만 생략"), M=M, level="warning")
 
     universe = pd.DataFrame(universe_rows)
-    matrix = build_industry_prediction_matrix(results, eval_idx, icfg, S, nd_map=nd_map, alloc=alloc)
+    matrix = build_industry_prediction_matrix(results, eval_idx, icfg, S, nd_map=nd_map, alloc=alloc,
+                                              prob=(_prob_pack or {}).get("prob"))
     summary = build_industry_summary(results, failed, table, icfg, S=S, alloc=alloc)   # [v0.6.0 I-D(E)] 33열
     audit_all = pd.concat([r["audit"] for r in results.values() if isinstance(r.get("audit"), pd.DataFrame) and len(r["audit"])],
                           ignore_index=True) if results else pd.DataFrame()
@@ -12296,6 +12569,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "last_close_missing": _lc_missing, "last_close_day": (pd.Timestamp(cal[-1]) if len(cal) else None),   # [v0.28.0 R74]
         "sign_tests": _sign,                                      # [v0.28.0 R74 §4-3] 26_신호부호검정
         "ml": _ml,                                                # [v0.32.0 R78] 00D 블록 F · ML 후보 행
+        "prob_pack": _prob_pack,                                  # [v0.33.0 R79] 28·28b·13c·00 · 11 감사
         "quality": pd.DataFrame(quality), "matrix": matrix, "summary": summary,
         "wf": wf, "alloc": alloc, "acceptance": accept_df, "hierarchy": hier_df,
         "attribution": attrib_df, "following": following_df, "follow_cond": follow_cond_df,
@@ -12310,6 +12584,912 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "cal_end": str(cal[-1].date()), "aborted": False, "stage_timing": stage_timing,
         "active_table": table,
     }
+
+
+# =============================================================================
+# [v0.33.0 R79 ★★] 산업 이익 모멘텀(구성종목 EPS) 검정 · 부모 예산 안 산업 상승확률 → 1위 매수 / 반대면 매도
+# =============================================================================
+#   사용자 지시(2026-09-20) "산업은 산업 이익 모멘텀 검정 방식을 구현하고 그것과 다른 지표들을 사용해서 섹터 비중이 있다면
+#   그 비중 안에서 산업별 가장 상승 확률을 계산해서 그걸 매수하도록 해 매도 반대로 하면 되고".
+#   (1) 이익 모멘텀 = 산업 ETF 구성종목(사전등록 5~6개)의 실제 EPS 발표 원장(yfinance get_earnings_dates)을
+#       발표일 + EPS_REPORT_LAG_DAYS(1일)부터 as-of로 펼쳐 **구성종목 중위수**로 모은다(E_ACC·E_YOY·E_SURP4·E_BEAT4).
+#       검정(28_산업이익모멘텀검정) = 월말마다 부모 안 1위 − 꼴찌 산업의 향후 21거래일 '산업 − 부모 ETF' 수익(비중첩 월 표본 t),
+#       부모 안 순위 IC, 연도 k/n, 본페로니 문턱 병기 · 적용연도별 워크포워드 게이트(학습창에서만 t·연도비율을 잰다).
+#   (2) 상승확률 = P(산업이 부모 ETF를 향후 21거래일 이긴다) — 연 1회 과거로만 학습하는 로지스틱(엠바고 21일).
+#       특징 = I★ 워크포워드 채택 신호의 부모 안 복합순위(COMP) + 그 해 게이트를 통과한 이익 모멘텀 순위.
+#       기저율(학습창 '산업 > 부모' 비율)을 함께 낸다 — 부모 ETF가 시총가중이라 기저율이 0.5보다 낮다(구조적).
+#       P(상승 21일) = R78 ML(HistGradientBoosting) 확률을 그대로 보여 준다(표시 전용 · 선택에는 P(부모초과)를 쓴다 —
+#       부모 예산이 S★로 정해진 뒤 산업 선택이 바꾸는 것은 '산업 − 부모' 수익뿐이기 때문).
+#   (3) 결정(부모마다, 산업 2개 이상): P(부모초과) − 기저 1위를 **부모 예산 전액**으로 매수(CAP_CONVICTION 1.0) ·
+#       반대(매도 → 부모 ETF): 보유 산업의 P − 기저 < PROB_SELL_EDGE · 부적격(자기 RISK_OFF) · **M 시장 예산 E_t < 1**.
+#       교체 = 다른 산업이 PROB_SWITCH_MARGIN 이상 높고 최소보유(ROTATION_MIN_HOLD_DAYS) 경과. 매도는 최소보유를 기다리지 않는다.
+#   오프라인 사전검증(r79/psim79h.py — 업로드 리포트 i27·s8 · 2021-01~2026-09 표본 밖 · S★ 대비 초과):
+#     현 I★ +3.47%/년(IR 0.72 · MDD −9.94%) → 확률 1위 · M 전액예산일 +9.36%/년(IR 1.19 · 6/6년 · MDD −9.89%).
+#     같은 M 게이트 무작위 산업 −0.69%/년(200회 중 초과 0회). ⚠ 'E_t=1일 때 SOXX 고정'이 +9.74%/년 — 이득 대부분이 XLK 안 SOXX다.
+#     ⚠ 이익 모멘텀(대표주 1종목 근사)은 워크포워드 게이트를 한 해도 통과하지 못했다(t 0.95~1.78) · 게이트 없이 넣으면 +2.4%/년(악화).
+#   연구/교육용 도구이며 투자 자문이 아니다.
+# 테스트·오프라인 주입용(기본 None = yfinance). callable(ticker) → get_earnings_dates 모양의 DataFrame.
+EPS_FETCHER_OVERRIDE: Optional[Any] = None
+_EPS_FEAT_SRC: Dict[str, str] = {"E_ACC": "epsacc", "E_YOY": "epsyoy", "E_SURP4": "surp4", "E_BEAT4": "beat4"}
+_EPS_FEAT_KR: Dict[str, str] = {"E_ACC": "EPS 성장 가속(YoY 변화)", "E_YOY": "EPS 전년동기 대비 성장률",
+                                "E_SURP4": "최근 4분기 서프라이즈 평균(%)", "E_BEAT4": "최근 4분기 예상 상회 비율"}
+_PROB_GRID_TAG = "[확률격자]"
+
+
+def _eps_cache_path(icfg: Any, tk: str) -> str:
+    d = str(getattr(icfg, "CACHE_DIR", "./cache_industry") or "./cache_industry")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"eps_{str(tk).replace('/', '_')}.pkl")
+
+
+def _normalize_earnings_frame(e: Any) -> pd.DataFrame:
+    """yfinance get_earnings_dates 결과 → 표준형(발표일 index · est · rep · surp). 미래 예정 행(rep NaN)은 남긴다(호출부가 거른다).
+    시간대: 인식 시각이면 현지(미 동부) 벽시계 날짜로 떨어뜨린다(tz_localize(None))."""
+    if not isinstance(e, pd.DataFrame) or not len(e):
+        return pd.DataFrame(columns=["est", "rep", "surp"], dtype=float)
+    e = e.copy()
+    ix = pd.to_datetime(pd.Index(e.index), errors="coerce")
+    if getattr(ix, "tz", None) is not None:
+        ix = ix.tz_localize(None)
+    e.index = ix
+    e = e[e.index.notna()]
+    e.index = pd.DatetimeIndex(e.index).normalize()
+    scol = next((c for c in e.columns if "surprise" in str(c).lower()), None)
+    rcol = next((c for c in e.columns if "reported" in str(c).lower()), None)
+    ecol = next((c for c in e.columns if "estimate" in str(c).lower()), None)
+    out = pd.DataFrame(index=e.index)
+    out["est"] = pd.to_numeric(e[ecol], errors="coerce") if ecol else np.nan
+    out["rep"] = pd.to_numeric(e[rcol], errors="coerce") if rcol else np.nan
+    out["surp"] = pd.to_numeric(e[scol], errors="coerce") if scol else np.nan
+    out = out.sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+    return out
+
+
+def fetch_constituent_earnings(tickers: List[str], icfg: Any, M=None,
+                               fetcher: Optional[Any] = None) -> Tuple[Dict[str, pd.DataFrame], List[dict]]:
+    """구성종목 EPS 발표 원장. 티커별 캐시(EPS_CACHE_DAYS일) → 없으면 yfinance(스레드 EPS_FETCH_WORKERS · 2회 시도).
+    실패는 사유와 함께 상태 표에 남긴다(무음 금지). fetcher = 테스트·오프라인 주입용 callable(ticker) → DataFrame."""
+    out: Dict[str, pd.DataFrame] = {}
+    status: List[dict] = []
+    t0 = time.time()
+    days = float(getattr(icfg, "EPS_CACHE_DAYS", 7) or 7)
+    use_cache = bool(getattr(icfg, "USE_CACHE", True))
+    todo: List[str] = []
+    for tk in sorted(set(tickers)):
+        cp = _eps_cache_path(icfg, tk)
+        if use_cache and fetcher is None and os.path.exists(cp) and (time.time() - os.path.getmtime(cp)) < days * 86400.0:
+            try:
+                out[tk] = pd.read_pickle(cp)
+                status.append({"티커": tk, "출처": "캐시", "사유": "-"})
+                continue
+            except Exception as _e:
+                log("EPS", kv(event="eps_cache_read_failed", ticker=tk, err=type(_e).__name__, action="재다운로드"),
+                    M=M, level="warning")
+        todo.append(tk)
+    if todo:
+        if fetcher is None:
+            try:
+                import yfinance as yf          # noqa
+                _lim = int(getattr(icfg, "EPS_LIMIT", 100) or 100)
+
+                def fetcher(tk: str) -> Any:      # noqa: E306
+                    return yf.Ticker(tk).get_earnings_dates(limit=_lim)
+            except Exception as _e:
+                for tk in todo:
+                    status.append({"티커": tk, "출처": "실패", "사유": f"yfinance 없음({type(_e).__name__})"})
+                log("EPS", kv(event="eps_fetch_unavailable", err=type(_e).__name__, n=len(todo),
+                              suggest="pip install yfinance — 없으면 이익 모멘텀 특징 없이 진행(확률 모형은 COMP만)"),
+                    M=M, level="warning")
+                fetcher = None
+        if fetcher is not None:
+            def _one(tk: str) -> Tuple[str, Optional[pd.DataFrame], Optional[str]]:
+                last = None
+                for attempt in range(2):
+                    try:
+                        df = _normalize_earnings_frame(fetcher(tk))
+                        if len(df):
+                            return tk, df, None
+                        last = "빈 응답"
+                    except Exception as _e:
+                        last = f"{type(_e).__name__}: {str(_e)[:80]}"
+                    time.sleep(0.5 * (attempt + 1))
+                return tk, None, last
+            nw = max(1, int(getattr(icfg, "EPS_FETCH_WORKERS", 6) or 1))
+            try:
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=nw) as ex:
+                    got = list(ex.map(_one, todo))
+            except Exception:
+                got = [_one(tk) for tk in todo]
+            for tk, df, err in got:
+                if df is None:
+                    status.append({"티커": tk, "출처": "실패", "사유": err or "빈 응답"})
+                    continue
+                out[tk] = df
+                status.append({"티커": tk, "출처": "다운로드", "사유": "-"})
+                if use_cache:
+                    try:
+                        pd.to_pickle(df, _eps_cache_path(icfg, tk))
+                    except Exception as _e:
+                        log("EPS", kv(event="eps_cache_write_failed", ticker=tk, err=type(_e).__name__), M=M, level="warning")
+    for r in status:
+        df = out.get(r["티커"])
+        past = df[df["rep"].notna()] if isinstance(df, pd.DataFrame) and len(df) else pd.DataFrame()
+        r["과거 발표수"] = int(len(past))
+        r["첫 발표일"] = (str(past.index.min().date()) if len(past) else "-")
+        r["마지막 발표일"] = (str(past.index.max().date()) if len(past) else "-")
+        r["서프라이즈 유효비율"] = (round(float(past["surp"].notna().mean()), 3) if len(past) else 0.0)
+    n_fail = sum(1 for r in status if r["출처"] == "실패")
+    log("EPS", kv(event="constituent_earnings_ready", tickers=len(set(tickers)), ok=len(out), failed=n_fail,
+                  cache=sum(1 for r in status if r["출처"] == "캐시"), sec=round(time.time() - t0, 1),
+                  failed_list=(";".join(r["티커"] for r in status if r["출처"] == "실패")[:300] or "-")),
+        M=M, level=("warning" if n_fail else "info"))
+    return out, status
+
+
+def constituent_eps_daily(E: Optional[pd.DataFrame], idx: pd.DatetimeIndex, lag_days: int = 1, stale_days: int = 95,
+                          asof: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """한 종목의 발표 원장 → 일별 as-of 특징(surp·surp4·beat4·epsyoy·epsacc·days_since).
+    유효일 = 발표일 + lag_days(달력일) — 장 마감 후 발표를 그날 종가 판단에 쓰지 않는다. merge_asof(backward)라 룩어헤드 없음.
+    epsyoy = (EPS − 4분기 전 EPS)/max(|4분기 전|, 0.05)(±3 절단) — 4행 전 발표가 300~430일 전일 때만(분기 결측 방어).
+    마지막 유효 발표가 stale_days(95)일보다 오래되면 전부 NaN(낡은 정보). asof = 절단재계산 감사용(그 날 이후 유효 발표 버림)."""
+    cols = ["surp", "surp4", "beat4", "epsyoy", "epsacc"]
+    out = pd.DataFrame(np.nan, index=idx, columns=cols + ["days_since"])
+    if E is None or not len(E) or not len(idx):
+        return out
+    P = E[pd.to_numeric(E["rep"], errors="coerce").notna()].sort_index()
+    eff = pd.DatetimeIndex(P.index) + pd.Timedelta(days=int(lag_days))
+    if asof is not None:
+        keep = eff <= pd.Timestamp(asof)
+        P, eff = P[keep], eff[keep]
+    if not len(P):
+        return out
+    s = pd.to_numeric(P["surp"], errors="coerce").clip(-100.0, 100.0)
+    eps = pd.to_numeric(P["rep"], errors="coerce")
+    d = pd.Series(pd.DatetimeIndex(P.index), index=P.index)
+    gap = (d - d.shift(4)).dt.days
+    ly = eps.shift(4).where((gap >= 300) & (gap <= 430))
+    yoy = ((eps - ly) / ly.abs().clip(lower=0.05)).clip(-3.0, 3.0)
+    f = pd.DataFrame(index=eff)
+    f["surp"] = s.values
+    f["surp4"] = s.rolling(4, min_periods=2).mean().values
+    f["beat4"] = (s > 0).astype(float).where(s.notna()).rolling(4, min_periods=2).mean().values
+    f["epsyoy"] = yoy.values
+    f["epsacc"] = (yoy - yoy.shift(1)).values
+    f = f[~f.index.duplicated(keep="last")]
+    f["_last"] = f.index
+    f.index.name = "날짜"
+    base = pd.DataFrame({"날짜": pd.DatetimeIndex(idx)}).sort_values("날짜")
+    m = pd.merge_asof(base, f.reset_index().sort_values("날짜"), on="날짜", direction="backward").set_index("날짜")
+    m = m.reindex(idx)
+    ds = (pd.Series(pd.DatetimeIndex(idx), index=idx) - pd.to_datetime(m["_last"])).dt.days
+    out[cols] = m[cols].values
+    out["days_since"] = ds.values
+    stale = ~(ds <= int(stale_days))
+    out.loc[stale.values, cols] = np.nan
+    return out
+
+
+def build_industry_eps_features(earn: Dict[str, pd.DataFrame], constituents: Dict[str, Tuple[str, ...]],
+                                industries: List[str], idx: pd.DatetimeIndex, icfg: Any,
+                                asof: Optional[pd.Timestamp] = None) -> Dict[str, Any]:
+    """구성종목 일별 특징 → 산업별 **중위수**(유효 종목 EPS_MIN_NAMES 이상일 때만). 반환 feats{E_*: 날짜×산업} · coverage(유효 종목 수)."""
+    lag = int(getattr(icfg, "EPS_REPORT_LAG_DAYS", 1))
+    stale = int(getattr(icfg, "EPS_STALE_DAYS", 95))
+    mn = int(getattr(icfg, "EPS_MIN_NAMES", 2))
+    need = sorted({tk for ind in industries for tk in (constituents.get(ind) or ()) if tk in earn})
+    per = {tk: constituent_eps_daily(earn.get(tk), idx, lag, stale, asof=asof) for tk in need}
+    feats = {f: pd.DataFrame(np.nan, index=idx, columns=industries) for f in _EPS_FEAT_SRC}
+    cov = pd.DataFrame(0, index=idx, columns=industries, dtype=int)
+    for ind in industries:
+        names = [tk for tk in (constituents.get(ind) or ()) if tk in per]
+        if not names:
+            continue
+        valid = pd.concat([per[tk]["days_since"].le(stale) for tk in names], axis=1)
+        cov[ind] = valid.sum(axis=1).astype(int).values
+        for f, c in _EPS_FEAT_SRC.items():
+            X = pd.concat([per[tk][c] for tk in names], axis=1)
+            feats[f][ind] = X.median(axis=1).where(X.notna().sum(axis=1) >= mn).values
+    return {"feats": feats, "coverage": cov, "per_ticker": per}
+
+
+def _industry_fwd_rel(results: Dict[str, Dict[str, Any]], h: int, asof: Optional[pd.Timestamp] = None
+                      ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DatetimeIndex]:
+    """산업·부모 향후 h일 총수익(within_parent_walkforward_select와 같은 정의 — rot_raw REL_RET 역산으로 부모 수익 복원).
+    asof가 주어지면 그 날까지의 수익만 써서 다시 만든다(절단재계산 감사 — 그 날 이후 목표는 NaN이 된다)."""
+    cols = list(results.keys())
+    full_idx = None
+    for t in cols:
+        ix = results[t]["ret_cc_full"].index
+        full_idx = ix if full_idx is None else full_idx.union(ix)
+    full_idx = pd.DatetimeIndex(full_idx).sort_values()
+    if asof is not None:
+        full_idx = full_idx[full_idx <= pd.Timestamp(asof)]
+    ind_ret = pd.DataFrame({t: results[t]["ret_cc_full"] for t in cols}).reindex(full_idx)
+    rel_ret = pd.DataFrame({t: results[t]["rot_raw"].get("REL_RET", pd.Series(dtype=float)) for t in cols}).reindex(full_idx)
+    par_ret = (1.0 + ind_ret) / (1.0 + rel_ret) - 1.0
+    C_i = (1.0 + ind_ret.fillna(0.0)).cumprod().where(ind_ret.notna())
+    C_p = (1.0 + par_ret.fillna(0.0)).cumprod().where(par_ret.notna())
+    fwd_i = C_i.shift(-h) / C_i - 1.0
+    fwd_p = C_p.shift(-h) / C_p - 1.0
+    return fwd_i, fwd_p, rel_ret.notna(), full_idx
+
+
+def _multi_groups(parent_of: Dict[str, str], cols: List[str]) -> Dict[str, List[str]]:
+    g: Dict[str, List[str]] = {}
+    for t in cols:
+        g.setdefault(parent_of[t], []).append(t)
+    return {p: v for p, v in g.items() if len(v) >= 2}
+
+
+def _wrank01(X: pd.DataFrame, groups: Dict[str, List[str]]) -> pd.DataFrame:
+    """부모 안 0~1 순위(동률 평균). 그날 유효 산업이 2개 미만이면 NaN. 산업 1개 부모는 NaN."""
+    out = pd.DataFrame(np.nan, index=X.index, columns=X.columns)
+    for _p, inds in groups.items():
+        c = [t for t in inds if t in X.columns]
+        if len(c) < 2:
+            continue
+        sub = X[c]
+        n = sub.notna().sum(axis=1)
+        out[c] = (sub.rank(axis=1) - 1.0).div((n - 1.0).where(n >= 2), axis=0).values
+    return out
+
+
+def _auc_score(y: np.ndarray, s: np.ndarray) -> float:
+    """AUC(맨-휘트니) — sklearn 없이도 계산(동률 평균 순위)."""
+    y = np.asarray(y, dtype=float)
+    s = np.asarray(s, dtype=float)
+    m = np.isfinite(y) & np.isfinite(s)
+    y, s = y[m], s[m]
+    n1 = int((y > 0.5).sum())
+    n0 = int(len(y) - n1)
+    if n1 == 0 or n0 == 0:
+        return float("nan")
+    r = pd.Series(s).rank().to_numpy()
+    return float((r[y > 0.5].sum() - n1 * (n1 + 1) / 2.0) / (n1 * n0))
+
+
+def _month_end_days(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    if not len(idx):
+        return pd.DatetimeIndex([])
+    s = pd.Series(idx, index=idx)
+    return pd.DatetimeIndex(s.groupby(idx.to_period("M")).max().values)
+
+
+def industry_eps_test(feats: Dict[str, pd.DataFrame], results: Dict[str, Dict[str, Any]], eval_idx: pd.DatetimeIndex,
+                      icfg: Any, coverage: Optional[pd.DataFrame] = None, fetch_status: Optional[List[dict]] = None,
+                      M=None) -> Tuple[pd.DataFrame, Dict[int, List[str]], Dict[str, Any]]:
+    """[28_산업이익모멘텀검정] 결정과 같은 잣대: 월말마다 부모 안 특징 1위 산업 − 꼴찌 산업의 향후 h일 '산업 − 부모 ETF' 수익 →
+    그 달 부모 평균(비중첩 월 표본 → 평범한 t가 독립 표본 t). 부모 안 순위 IC(특징 순위 vs 수익 순위, 월 평균) · 연도 k/n ·
+    본페로니 문턱(EPS_BONFERRONI_T) 병기. 워크포워드 게이트: 적용연도 y마다 **목표가 y 시작 전에 끝나는 달만**으로
+    t ≥ EPS_GATE_T · 월 수 ≥ EPS_GATE_MIN_MONTHS · 연도 양수 비율 ≥ EPS_GATE_YEAR_SHARE 를 모두 만족한 특징만 그 해 확률 모형에 넣는다.
+    반환 (시트 표, gate{연도: [특징]}, 원자료 dict)."""
+    h = int(getattr(icfg, "PROB_HORIZON", 21) or 21)
+    fwd_i, fwd_p, _lst, full_idx = _industry_fwd_rel(results, h)
+    cols = list(results.keys())
+    parent_of = {t: results[t]["parent"] for t in cols}
+    groups = _multi_groups(parent_of, cols)
+    rel = fwd_i - fwd_p
+    mdays = _month_end_days(full_idx)
+    t_gate = float(getattr(icfg, "EPS_GATE_T", 2.0))
+    n_gate = int(getattr(icfg, "EPS_GATE_MIN_MONTHS", 36))
+    y_gate = float(getattr(icfg, "EPS_GATE_YEAR_SHARE", 2.0 / 3.0))
+    t_bonf = float(getattr(icfg, "EPS_BONFERRONI_T", 2.50))
+    A, B, C, Dg, E_, F_ = ("A. 전 기간 요약(특징별)", "B. 부모별 1위−꼴찌", "C. 연도별 1위−꼴찌(%p/21일)",
+                           "D. 워크포워드 게이트(적용연도별 — 확률 모형 입력 여부)", "E. 구성종목 자료 상태", "F. 산업별 커버리지")
+    rows: List[dict] = [{"블록": A, "특징": "── 읽는 법 ──",
+                         "판정": (f"결정과 같은 질문: '부모 섹터 예산 안에서 이 특징 1위 산업을 사면 부모 ETF보다 나은가'. 월말마다 부모(산업 2개 이상) 안 "
+                                f"특징 1위 − 꼴찌 산업의 향후 {h}거래일 '산업 − 부모 ETF' 수익 → 그 달 부모 평균. 월 표본은 겹치지 않아 t가 독립 표본 t다. "
+                                f"IC = 부모 안 특징 순위와 수익 순위의 상관(월 평균). 판정: t ≥ {t_bonf:.2f}(본페로니 · 특징 {len(feats)}개) '유의' · "
+                                f"t ≥ {t_gate:.1f} '약한 증거' · 그 외 '증거 없음'. 구성종목 = 현재 대형 보유 종목 사전등록 목록 → "
+                                "⚠ 생존 편향(오늘 큰 회사가 과거에도 잘 벌었다)이 들어 있다 — 부모 안 **상대** 비교라 편향이 산업 간에 일부 상쇄되지만 "
+                                "완전하지 않다. 게이트(블록 D)는 적용연도 전 학습창만 본다(룩어헤드 없음).")}]
+    raw: Dict[str, Any] = {"spread": {}, "ic": {}, "by_parent": {}}
+    gate: Dict[int, List[str]] = {}
+    eval_years = sorted({int(d.year) for d in eval_idx})
+    for f, X0 in feats.items():
+        X = X0.reindex(index=full_idx, columns=cols)
+        R = _wrank01(X, groups)
+        Rr = _wrank01(rel.where(X.notna()), groups)
+        sp_rows: List[Tuple[pd.Timestamp, float]] = []
+        ic_rows: List[Tuple[pd.Timestamp, float]] = []
+        byp: Dict[str, List[Tuple[pd.Timestamp, float]]] = {}
+        for d in mdays:
+            vals = []
+            xs, ys = [], []
+            for p, inds in groups.items():
+                s = X.loc[d, inds]
+                r = rel.loc[d, inds]
+                ok = s.notna() & r.notna()
+                if int(ok.sum()) < 2:
+                    continue
+                s, r = s[ok], r[ok]
+                if float(s.max() - s.min()) <= 1e-12:
+                    continue
+                v = float(r[s == s.max()].mean() - r[s == s.min()].mean())
+                vals.append(v)
+                byp.setdefault(p, []).append((d, v))
+                a = R.loc[d, list(s.index)]
+                b = Rr.loc[d, list(s.index)]
+                okab = a.notna() & b.notna()
+                xs += list(a[okab].values)
+                ys += list(b[okab].values)
+            if vals:
+                sp_rows.append((d, float(np.mean(vals))))
+            if len(xs) >= 4 and np.std(xs) > 0 and np.std(ys) > 0:
+                ic_rows.append((d, float(np.corrcoef(xs, ys)[0, 1])))
+        S_ = pd.Series(dict(sp_rows), dtype=float).sort_index()
+        I_ = pd.Series(dict(ic_rows), dtype=float).sort_index()
+        raw["spread"][f], raw["ic"][f], raw["by_parent"][f] = S_, I_, byp
+
+        def _t(x: pd.Series) -> float:
+            x = x.dropna()
+            return float(x.mean() / x.std() * np.sqrt(len(x))) if len(x) > 2 and x.std() > 0 else float("nan")
+        yr = S_.groupby(S_.index.year).mean() if len(S_) else pd.Series(dtype=float)
+        tt = _t(S_)
+        verdict = ("유의(본페로니 통과)" if tt == tt and tt >= t_bonf else
+                   ("약한 증거(t≥{:.1f}, 본페로니 미달)".format(t_gate) if tt == tt and tt >= t_gate else
+                    ("증거 없음" if tt == tt else "산출 불가(표본 부족)")))
+        rows.append({"블록": A, "특징": f, "설명": _EPS_FEAT_KR.get(f, f), "월 수": int(len(S_)),
+                     "시작": (str(S_.index.min().date()) if len(S_) else "-"),
+                     "부모 안 1위−꼴찌(%p/21일)": (round(float(S_.mean()) * 100, 3) if len(S_) else None),
+                     "t": (round(tt, 2) if tt == tt else None),
+                     "연도 k/n": f"{int((yr > 0).sum())}/{int(len(yr))}",
+                     "IC 평균": (round(float(I_.mean()), 4) if len(I_) else None), "IC t": (round(_t(I_), 2) if len(I_) > 2 else None),
+                     "판정": verdict})
+        for p, lst in sorted(byp.items()):
+            sp = pd.Series(dict(lst), dtype=float)
+            ypp = sp.groupby(sp.index.year).mean()
+            rows.append({"블록": B, "특징": f, "부모": p, "산업": ",".join(groups.get(p, [])), "월 수": int(len(sp)),
+                         "부모 안 1위−꼴찌(%p/21일)": round(float(sp.mean()) * 100, 3),
+                         "t": (round(_t(sp), 2) if len(sp) > 2 else None), "연도 k/n": f"{int((ypp > 0).sum())}/{int(len(ypp))}"})
+        if len(yr):
+            rows.append({"블록": C, "특징": f, **{str(int(y)): round(float(v) * 100, 3) for y, v in yr.items()}})
+        # 워크포워드 게이트 — 적용연도 y: 목표(월말 + h거래일)가 y 첫 거래일 전에 끝나는 달만
+        for y in eval_years:
+            fd = full_idx[full_idx >= pd.Timestamp(f"{y}-01-01")]
+            if not len(fd):
+                continue
+            pos = int(full_idx.searchsorted(fd[0]))
+            if pos - h - 1 < 0:
+                continue
+            emb = full_idx[pos - h - 1]
+            tr = S_[S_.index <= emb]
+            tyr = tr.groupby(tr.index.year).mean() if len(tr) else pd.Series(dtype=float)
+            tyr = tyr[tr.groupby(tr.index.year).size() >= 6] if len(tr) else tyr
+            tv = _t(tr)
+            share = float((tyr > 0).mean()) if len(tyr) else float("nan")
+            ok = bool(len(tr) >= n_gate and tv == tv and tv >= t_gate and share == share and share >= y_gate)
+            if ok:
+                gate.setdefault(int(y), []).append(f)
+            rows.append({"블록": Dg, "특징": f, "적용연도": int(y), "학습창 마감(목표 끝)": str(emb.date()),
+                         "월 수": int(len(tr)), "부모 안 1위−꼴찌(%p/21일)": (round(float(tr.mean()) * 100, 3) if len(tr) else None),
+                         "t": (round(tv, 2) if tv == tv else None),
+                         "연도 양수 비율": (round(share, 3) if share == share else None),
+                         "판정": ("✓ 통과 → 그 해 확률 모형 입력" if ok else
+                                f"✗ 미통과(t≥{t_gate:.1f} · 월≥{n_gate} · 연도비율≥{y_gate:.2f} 필요)")})
+    for r in (fetch_status or []):
+        rows.append({"블록": E_, **r})
+    if isinstance(coverage, pd.DataFrame) and len(coverage.columns):
+        cv = coverage.reindex(full_idx)
+        for ind in list(cv.columns):
+            c = cv[ind]
+            first = c[c >= int(getattr(icfg, "EPS_MIN_NAMES", 2))]
+            rows.append({"블록": F_, "특징": "-", "산업": ind, "부모": parent_of.get(ind, "-"),
+                         "구성종목": ",".join((getattr(icfg, "EPS_CONSTITUENTS", {}) or {}).get(ind, ()) or ()),
+                         "유효 시작(≥최소 종목수)": (str(first.index.min().date()) if len(first) else "-"),
+                         "평가창 평균 유효 종목수": round(float(c.reindex(eval_idx).mean()), 2) if len(eval_idx) else None,
+                         "마지막 유효 종목수": (int(c.dropna().iloc[-1]) if c.notna().any() else 0)})
+    df = pd.DataFrame(rows)
+    log("EPS", kv(event="eps_test_ready", features=len(feats), months=max((len(v) for v in raw["spread"].values()), default=0),
+                  summary=";".join(f"{f}:t={r.get('t')}" for f, r in ((rr["특징"], rr) for rr in rows if rr.get("블록") == A and rr.get("특징") != "── 읽는 법 ──")),
+                  gate=";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(gate.items())) or "없음(어느 해도 통과 못 함)",
+                  note="게이트 통과 특징만 그 해 확률 모형에 들어간다"), M=M)
+    return df, gate, raw
+
+
+def industry_prob_walkforward(results: Dict[str, Dict[str, Any]], wf: Dict[str, Any], eval_idx: pd.DatetimeIndex,
+                              eps_feats: Optional[Dict[str, pd.DataFrame]], eps_gate: Optional[Dict[int, List[str]]],
+                              icfg: Any, M=None, ml: Optional[Dict[str, Any]] = None, force_eps: bool = False,
+                              asof: Optional[pd.Timestamp] = None, years_only: Optional[List[int]] = None,
+                              quiet: bool = False) -> Dict[str, Any]:
+    """[v0.33.0 ★] P(산업 향후 h일 수익 > 부모 ETF 향후 h일 수익) — 적용연도마다 과거로만 학습하는 로지스틱(엠바고 h+1일).
+    특징(연도별): COMP = 그 해 I★ 채택 신호(wf selected_eff_by_year)의 부모 안 순위 평균 → ROTATION_SMOOTH_DAYS 평활 → 부모 안 0~1 재순위
+      + 그 해 게이트(eps_gate[y])를 통과한 이익 모멘텀 특징의 부모 안 순위(자료 없는 산업 = 0.5 중립). force_eps=True면 게이트 무시(반증 행).
+    학습 표본 = 산업 2개 이상 부모의 산업 × 날짜(목표가 적용연도 첫날 전에 끝나는 날만). 기저율 = 학습 표본 '산업 > 부모' 비율.
+    반환 {ok, P(평가일×산업), base(평가일), log(연도별 표), feats_by_year, P_up(ML P(상승) · 표시 전용), q_up(ML 학습 중위)}."""
+    out: Dict[str, Any] = {"ok": False, "P": pd.DataFrame(), "base": pd.Series(dtype=float), "log": pd.DataFrame(),
+                           "feats_by_year": {}, "P_up": pd.DataFrame(), "q_up": pd.DataFrame(), "note": ""}
+    try:
+        from sklearn.linear_model import LogisticRegression
+    except Exception as _e:
+        out["note"] = f"scikit-learn 없음({type(_e).__name__}) — 확률 선택 불가 → 복합순위 리더(v0.32.0)로 대체"
+        log("PROB", kv(event="prob_unavailable", err=type(_e).__name__, action="INDUSTRY_SELECT_MODE=composite로 대체"),
+            M=M, level="warning")
+        return out
+    t0 = time.time()
+    h = int(getattr(icfg, "PROB_HORIZON", 21) or 21)
+    cols = list(results.keys())
+    parent_of = {t: results[t]["parent"] for t in cols}
+    groups = _multi_groups(parent_of, cols)
+    multi = [t for p in sorted(groups) for t in groups[p]]
+    if not multi:
+        out["note"] = "산업 2개 이상인 부모가 없다 — 부모 안 선택이 성립하지 않는다"
+        return out
+    fwd_i, fwd_p, listed, full_idx = _industry_fwd_rel(results, h, asof=asof)
+    beat = (fwd_i > fwd_p).astype(float).where(fwd_i.notna() & fwd_p.notna())
+    rank_full = wf.get("rank_full") or {}
+    sel_eff = wf.get("selected_eff_by_year") or wf.get("selected_by_year") or {}
+    smooth = int(getattr(icfg, "ROTATION_SMOOTH_DAYS", 21) or 1)
+    min_rows = int(getattr(icfg, "PROB_MIN_TRAIN_ROWS", 2000) or 2000)
+    Cc = float(getattr(icfg, "PROB_C", 1.0) or 1.0)
+    ev = pd.DatetimeIndex(eval_idx)
+    if asof is not None:
+        ev = ev[ev <= pd.Timestamp(asof)]
+    E_rank: Dict[str, pd.DataFrame] = {}
+    for f, X in (eps_feats or {}).items():
+        E_rank[f] = _wrank01(X.reindex(index=full_idx, columns=cols), groups)
+    P = pd.DataFrame(np.nan, index=ev, columns=cols)
+    base = pd.Series(np.nan, index=ev)
+    logs: List[dict] = []
+    years = sorted({int(d.year) for d in ev})
+    if years_only is not None:
+        years = [y for y in years if y in set(int(v) for v in years_only)]
+    comp_cache: Dict[Tuple[str, ...], pd.DataFrame] = {}
+    for y in years:
+        td = ev[ev.year == y]
+        if not len(td):
+            continue
+        sel = tuple(sorted(s for s in (sel_eff.get(y) or []) if s in rank_full))
+        X: Dict[str, pd.DataFrame] = {}
+        if sel:
+            if sel not in comp_cache:
+                parts = np.stack([rank_full[s].reindex(index=full_idx, columns=cols).to_numpy(dtype=float) for s in sel])
+                with np.errstate(all="ignore"):
+                    import warnings as _w
+                    with _w.catch_warnings():
+                        _w.simplefilter("ignore", category=RuntimeWarning)
+                        comp = pd.DataFrame(np.nanmean(parts, axis=0), index=full_idx, columns=cols)
+                if smooth > 1:
+                    comp = comp.rolling(smooth, min_periods=1).mean()
+                comp_cache[sel] = _wrank01(comp.where(listed), groups)
+            X["COMP"] = comp_cache[sel]
+        eps_used = sorted(E_rank) if force_eps else [f for f in (eps_gate or {}).get(int(y), []) if f in E_rank]
+        for f in eps_used:
+            X[f] = E_rank[f]
+        feats_y = list(X.keys())
+        if not feats_y:
+            logs.append({"적용연도": int(y), "특징": "-", "판정": "특징 없음(그 해 I★ 채택 신호 0 · 이익 게이트 0) → 선택 없음(부모 ETF)"})
+            continue
+        pos = int(full_idx.searchsorted(td[0]))
+        if pos - h - 1 < 0:
+            logs.append({"적용연도": int(y), "특징": "+".join(feats_y), "판정": "학습창 없음(이력 부족)"})
+            continue
+        emb = full_idx[pos - h - 1]
+        tr_idx = full_idx[full_idx <= emb]
+
+        def _stack(ix: pd.DatetimeIndex) -> Tuple[np.ndarray, np.ndarray]:
+            mats = []
+            for f in feats_y:
+                v = X[f].reindex(index=ix, columns=multi).to_numpy(dtype=float)
+                if f != "COMP":
+                    v = np.where(np.isfinite(v), v, 0.5)       # 이익 자료 없는 산업·날 = 중립
+                mats.append(v.reshape(-1))
+            Xm = np.column_stack(mats) - 0.5
+            yv = beat.reindex(index=ix, columns=multi).to_numpy(dtype=float).reshape(-1)
+            return Xm, yv
+        Xtr, ytr = _stack(tr_idx)
+        ok = np.isfinite(Xtr).all(axis=1) & np.isfinite(ytr)
+        if int(ok.sum()) < min_rows or len(np.unique(ytr[ok])) < 2:
+            logs.append({"적용연도": int(y), "특징": "+".join(feats_y), "학습 행": int(ok.sum()),
+                         "판정": f"학습 행 부족(<{min_rows}) → 선택 없음(부모 ETF)"})
+            continue
+        mdl = LogisticRegression(C=Cc, max_iter=500).fit(Xtr[ok], ytr[ok])
+        b = float(ytr[ok].mean())
+        Xte, yte = _stack(td)
+        okt = np.isfinite(Xte).all(axis=1)
+        pt = np.full(len(Xte), np.nan)
+        if okt.any():
+            pt[okt] = mdl.predict_proba(Xte[okt])[:, 1]
+        Pm = pt.reshape(len(td), len(multi))
+        P.loc[td, multi] = Pm
+        base.loc[td] = b
+        yv = yte.reshape(len(td), len(multi))
+        m_ok = np.isfinite(pt) & np.isfinite(yte)
+        auc = _auc_score(yte[m_ok], pt[m_ok]) if m_ok.any() else float("nan")
+        br = float(np.mean((pt[m_ok] - yte[m_ok]) ** 2)) if m_ok.any() else float("nan")
+        br0 = float(np.mean((b - yte[m_ok]) ** 2)) if m_ok.any() else float("nan")
+        pr_tr = mdl.predict_proba(Xtr[ok])[:, 1]
+        logs.append({"적용연도": int(y), "학습 시작": str(pd.Timestamp(tr_idx[0]).date()),
+                     "학습 마감(엠바고 후)": str(pd.Timestamp(emb).date()), "엠바고(거래일)": h + 1,
+                     "학습 행": int(ok.sum()), "시험 행(목표 확정)": int(m_ok.sum()), "기저율(산업>부모)": round(b, 4),
+                     "특징": "+".join(feats_y),
+                     "I★ 채택 신호": ("+".join(sel) if sel else "-"),
+                     "이익 특징(게이트 통과)": ("+".join(eps_used) if eps_used else "-") + (" (⚠ 게이트 무시 — 반증 행)" if force_eps else ""),
+                     "계수": " ".join(f"{f}:{c:+.3f}" for f, c in zip(feats_y, mdl.coef_[0])),
+                     "학습 확률 범위": f"{float(np.min(pr_tr)):.3f}~{float(np.max(pr_tr)):.3f}",
+                     "시험 AUC": (round(auc, 4) if auc == auc else None),
+                     "시험 Brier": (round(br, 5) if br == br else None), "기저 Brier": (round(br0, 5) if br0 == br0 else None),
+                     "판정": ("시험 AUC>0.5" if auc == auc and auc > 0.5 else ("시험 AUC≤0.5" if auc == auc else "시험 목표 미확정"))})
+    ok_any = bool(P.notna().any().any())
+    # ML P(상승) — 표시 전용(R78 ml_timing_walkforward 산출)
+    if isinstance(ml, dict) and ml.get("ok") and isinstance(ml.get("p"), pd.DataFrame):
+        out["P_up"] = ml["p"].reindex(index=ev).reindex(columns=cols)
+        if isinstance(ml.get("q50"), pd.DataFrame):
+            out["q_up"] = ml["q50"].reindex(index=ev).reindex(columns=cols)
+    lg = pd.DataFrame(logs)
+    out.update({"ok": ok_any, "P": P, "base": base, "log": lg, "horizon": h, "force_eps": force_eps,
+                "feats_by_year": {int(r["적용연도"]): str(r.get("특징", "-")) for r in logs},
+                "groups": groups, "note": ("" if ok_any else "어느 해도 모형을 세우지 못했다")})
+    if not quiet:
+        _auc_all = np.nan
+        try:
+            _yy = beat.reindex(index=ev, columns=multi).to_numpy(dtype=float).reshape(-1)
+            _pp = P.reindex(columns=multi).to_numpy(dtype=float).reshape(-1)
+            _auc_all = _auc_score(_yy, _pp)
+        except Exception:
+            pass
+        out["auc_oos"] = _auc_all
+        log("PROB", kv(event="prob_walkforward_done", years=len(logs), force_eps=force_eps, industries=len(multi),
+                       oos_auc=(round(_auc_all, 4) if _auc_all == _auc_all else "-"),
+                       feats=";".join(f"{r['적용연도']}:{r.get('특징', '-')}" for r in logs)[:400],
+                       sec=round(time.time() - t0, 1),
+                       note="P(부모초과 21일) — 선택 키 · 기저율 대비로 매수/매도"), M=M)
+    return out
+
+
+def market_full_mask(res: Any, eval_idx: pd.DatetimeIndex, M=None) -> Optional[pd.Series]:
+    """M 시장 예산 E_t(res['sig']['target_pos'], t일 확정)가 1(전액)인 날 True. 없으면 None(호출부가 경고·00 표시)."""
+    try:
+        sig = res.get("sig") if isinstance(res, dict) else None
+        if isinstance(sig, pd.DataFrame) and "target_pos" in sig.columns:
+            e = pd.to_numeric(sig["target_pos"], errors="coerce").reindex(eval_idx).ffill()
+            return (e >= 1.0 - 1e-6).fillna(False)
+    except Exception as _e:
+        log("PROB", kv(event="market_full_mask_failed", err=type(_e).__name__), M=M, level="warning")
+    return None
+
+
+def prob_leader_group(parent: str, inds: List[str], eval_idx: pd.DatetimeIndex, score: pd.DataFrame,
+                      eligible: pd.DataFrame, listed: pd.DataFrame, icfg: Any, mkt_ok: Optional[pd.Series] = None,
+                      prob: Optional[pd.DataFrame] = None, base: Optional[pd.Series] = None,
+                      p_up: Optional[pd.DataFrame] = None, parent_state: Optional[pd.Series] = None,
+                      min_hold: Optional[int] = None) -> Dict[str, Any]:
+    """[v0.33.0 ★] 부모 예산 안 '상승확률 1위 매수 · 반대면 매도' 상태기계. score = P(부모초과) − 기저(또는 비교 행의 임의 점수).
+    매일(t 종가 확정 → t+1 체결 — 호출부 엔진 규칙):
+      매도(→ 부모 ETF): 보유 산업이 부적격(자기 RISK_OFF)·점수 없음 · 점수 < PROB_SELL_EDGE · M 전액예산 아님(mkt_ok False) — 최소보유 무관 즉시.
+      교체: 1위가 보유보다 PROB_SWITCH_MARGIN 초과 & 최소보유 경과 & 1위 ≥ PROB_BUY_EDGE.
+      매수: 미보유 & M 전액예산 & 1위 점수 ≥ PROB_BUY_EDGE.
+    반환 dict는 leader3_group과 **같은 키**(_mk_target_w·_cap_mat·13c·13j가 그대로 받는다) + 확률 열(prob_*)."""
+    buy_e = float(getattr(icfg, "PROB_BUY_EDGE", 0.0))
+    sell_e = float(getattr(icfg, "PROB_SELL_EDGE", 0.0))
+    marg = float(getattr(icfg, "PROB_SWITCH_MARGIN", 0.005))
+    mh = int(min_hold if min_hold is not None else getattr(icfg, "ROTATION_MIN_HOLD_DAYS", 21))
+    n = len(eval_idx)
+    S_ = score.reindex(index=eval_idx, columns=inds).to_numpy(dtype=float)
+    ok_m = (eligible.reindex(index=eval_idx, columns=inds).fillna(False).astype(bool).to_numpy()
+            & listed.reindex(index=eval_idx, columns=inds).fillna(False).astype(bool).to_numpy())
+    mk = (mkt_ok.reindex(eval_idx).fillna(False).astype(bool).to_numpy() if mkt_ok is not None else np.ones(n, dtype=bool))
+    Pp = prob.reindex(index=eval_idx, columns=inds).to_numpy(dtype=float) if prob is not None else None
+    Pu = p_up.reindex(index=eval_idx, columns=inds).to_numpy(dtype=float) if p_up is not None else None
+    bs = base.reindex(eval_idx).to_numpy(dtype=float) if base is not None else None
+    leader_ind = np.zeros((n, len(inds)))
+    tier = np.array(["부모ETF"] * n, dtype=object)
+    leader = np.array([""] * n, dtype=object)
+    reason = np.array([""] * n, dtype=object)
+    top_nm = np.array([""] * n, dtype=object)
+    top_p = np.full(n, np.nan)
+    top_up = np.full(n, np.nan)
+    margin = np.full(n, np.nan)
+    n_ok = np.zeros(n, dtype=int)
+    gate = np.array(["해당없음"] * n, dtype=object)
+    cur = -1
+    held = 0
+    switches = 0
+    n_sell = {"M 예산<1": 0, "P<기저": 0, "부적격": 0}
+    for i in range(n):
+        row = np.where(ok_m[i] & np.isfinite(S_[i]), S_[i], np.nan)
+        valid = np.isfinite(row)
+        n_ok[i] = int(valid.sum())
+        b = int(np.nanargmax(row)) if valid.any() else -1
+        bv = float(row[b]) if b >= 0 else np.nan
+        if b >= 0:
+            top_nm[i] = inds[b]
+            if Pp is not None:
+                top_p[i] = Pp[i, b]
+            if Pu is not None:
+                top_up[i] = Pu[i, b]
+            if int(valid.sum()) >= 2:
+                o = row.copy(); o[b] = -np.inf
+                margin[i] = float(bv - np.nanmax(o))
+        why = ""
+        if cur >= 0:
+            held += 1
+            cv = row[cur]
+            if not mk[i]:
+                cur, held, why = -1, 0, "매도(M 시장예산 E_t<1 → 부모 ETF)"; n_sell["M 예산<1"] += 1
+            elif not np.isfinite(cv):
+                cur, held, why = -1, 0, "매도(보유 산업 부적격·점수 없음 → 부모 ETF)"; n_sell["부적격"] += 1
+            elif cv < sell_e:
+                cur, held, why = -1, 0, "매도(P(부모초과) < 기저 → 부모 ETF)"; n_sell["P<기저"] += 1
+            elif b >= 0 and b != cur and bv > cv + marg and held >= mh and bv >= buy_e:
+                cur, held, why = b, 0, f"교체({inds[b]} 확률이 {marg:.3f} 이상 높음)"
+                switches += 1
+            else:
+                why = "보유"
+        if cur < 0 and b >= 0 and mk[i] and bv >= buy_e:
+            cur, held = b, 0
+            why = (why + " → " if why else "") + "매수(부모 안 확률 1위)"
+            switches += 1
+        if cur < 0 and not why:
+            why = ("대기(M 시장예산 E_t<1)" if not mk[i] else
+                   ("대기(적격 산업 없음)" if b < 0 else "대기(1위 P(부모초과) < 기저)"))
+        if cur >= 0:
+            leader_ind[i, cur] = 1.0
+            tier[i] = "리더"
+            leader[i] = inds[cur]
+            gate[i] = "통과"
+        reason[i] = why
+    idx_ = eval_idx
+    lead_df = pd.DataFrame(leader_ind, index=idx_, columns=inds)
+    out = {"parent": parent, "inds": inds, "leader_ind": lead_df,
+           "basket_ind": pd.DataFrame(0.0, index=idx_, columns=inds),
+           "standalone_leader_years": {}, "sa_leader_days": 0,
+           "tier": pd.Series(tier, index=idx_, dtype=object), "leader": pd.Series(leader, index=idx_, dtype=object),
+           "laggard": pd.Series("", index=idx_, dtype=object),
+           "votes_leader": pd.Series(0, index=idx_, dtype=int), "votes_laggard": pd.Series(0, index=idx_, dtype=int),
+           "margin": pd.Series(margin, index=idx_), "step": pd.Series(marg, index=idx_),
+           "gate": pd.Series(gate, index=idx_, dtype=object), "n_ok": pd.Series(n_ok, index=idx_),
+           "composite": score.reindex(index=idx_, columns=inds),
+           "regime_gate": pd.Series("해당없음", index=idx_, dtype=object),
+           "rev_avoid": pd.Series("", index=idx_, dtype=object), "corr_block": pd.Series("", index=idx_, dtype=object),
+           "parent_state": (parent_state.reindex(idx_) if parent_state is not None else pd.Series("-", index=idx_, dtype=object)),
+           "inert_days": {}, "switches": switches,
+           "prob_reason": pd.Series(reason, index=idx_, dtype=object), "prob_top": pd.Series(top_nm, index=idx_, dtype=object),
+           "prob_top_p": pd.Series(top_p, index=idx_), "prob_top_up": pd.Series(top_up, index=idx_),
+           "prob_base": (pd.Series(bs, index=idx_) if bs is not None else pd.Series(np.nan, index=idx_)),
+           "mkt_full": pd.Series(mk, index=idx_), "sell_counts": n_sell, "select_mode": "prob"}
+    return out
+
+
+def industry_prob_lookahead_audit(results: Dict[str, Dict[str, Any]], wf: Dict[str, Any], eval_idx: pd.DatetimeIndex,
+                                  eps_pack: Dict[str, Any], eps_gate: Dict[int, List[str]], full_P: pd.DataFrame,
+                                  icfg: Any, M=None) -> pd.DataFrame:
+    """[11_룩어헤드감사 행] 확률 P(d)와 이익 특징(d)을 **d까지의 자료만으로** 다시 계산해 전체 계산값과 비교(절단재계산).
+    표본 날짜 = 평가창에서 고정 간격 PROB_AUDIT_N개(난수 없음). 차이 ≤ 1e-9면 통과."""
+    rows: List[dict] = []
+    k = int(getattr(icfg, "PROB_AUDIT_N", 3) or 0)
+    if k <= 0 or not len(eval_idx) or not isinstance(full_P, pd.DataFrame) or not full_P.notna().any().any():
+        return pd.DataFrame()
+    have = full_P.dropna(how="all").index
+    if not len(have):
+        return pd.DataFrame()
+    picks = [have[int(j)] for j in np.unique(np.linspace(0, len(have) - 1, num=min(k, len(have)), dtype=int))]
+    feats_full = (eps_pack or {}).get("feats") or {}
+    for d in picks:
+        try:
+            pr = industry_prob_walkforward(results, wf, eval_idx, feats_full if not (eps_pack or {}).get("earn") else
+                                           build_industry_eps_features(eps_pack["earn"], eps_pack["constituents"],
+                                                                       eps_pack["industries"], eps_pack["idx"], icfg,
+                                                                       asof=d)["feats"],
+                                           eps_gate, icfg, M=M, asof=d, years_only=[int(d.year)], quiet=True)
+            a = full_P.loc[d]
+            b = pr["P"].reindex(columns=full_P.columns).loc[d] if d in pr["P"].index else pd.Series(np.nan, index=full_P.columns)
+            both = a.notna() & b.notna()
+            diff = float((a[both] - b[both]).abs().max()) if both.any() else float("nan")
+            nan_mismatch = int((a.notna() != b.notna()).sum())
+            ok = (diff == diff and diff <= 1e-9 and nan_mismatch == 0) or (not both.any() and nan_mismatch == 0)
+            rows.append({"항목": "산업 상승확률 P(부모초과)", "산업": "(전 산업)", "검사일": str(pd.Timestamp(d).date()),
+                         "최대차": (round(diff, 12) if diff == diff else None), "NaN 불일치": nan_mismatch,
+                         "판정": ("통과" if ok else "⚠ 불일치 — 확률 계산에 d 이후 정보가 섞였다")})
+        except Exception as _e:
+            rows.append({"항목": "산업 상승확률 P(부모초과)", "검사일": str(pd.Timestamp(d).date()),
+                         "판정": f"감사 실패 {type(_e).__name__}: {str(_e)[:120]}"})
+        if (eps_pack or {}).get("earn"):
+            try:
+                ef = build_industry_eps_features(eps_pack["earn"], eps_pack["constituents"], eps_pack["industries"],
+                                                 eps_pack["idx"], icfg, asof=d)["feats"]
+                mx = 0.0
+                mism = 0
+                for f, X in ef.items():
+                    a = feats_full[f].loc[d]
+                    b = X.loc[d]
+                    both = a.notna() & b.notna()
+                    if both.any():
+                        mx = max(mx, float((a[both] - b[both]).abs().max()))
+                    mism += int((a.notna() != b.notna()).sum())
+                rows.append({"항목": "이익 모멘텀 특징(E_*)", "산업": "(전 산업)", "검사일": str(pd.Timestamp(d).date()),
+                             "최대차": round(mx, 12), "NaN 불일치": mism,
+                             "판정": ("통과" if (mx <= 1e-9 and mism == 0) else "⚠ 불일치 — 발표일 지연 처리 확인")})
+            except Exception as _e:
+                rows.append({"항목": "이익 모멘텀 특징(E_*)", "검사일": str(pd.Timestamp(d).date()),
+                             "판정": f"감사 실패 {type(_e).__name__}: {str(_e)[:120]}"})
+    df = pd.DataFrame(rows)
+    if len(df):
+        log("AUDIT", kv(event="prob_lookahead_audit", n=len(df), pass_=int((df["판정"] == "통과").sum()),
+                        fail=int((~df["판정"].astype(str).eq("통과")).sum())), M=M,
+            level=("info" if bool((df["판정"] == "통과").all()) else "warning"))
+    return df
+
+
+def run_industry_prob_layer(results: Dict[str, Dict[str, Any]], wf: Dict[str, Any], eval_idx: pd.DatetimeIndex,
+                            icfg: Any, M=None, ml: Optional[Dict[str, Any]] = None,
+                            earn_fetcher: Optional[Any] = None) -> Dict[str, Any]:
+    """run()에서 1회: 구성종목 EPS 수집 → 산업 이익 특징 → 28 검정·게이트 → 확률 워크포워드(★ · 반증: 게이트 무시) → 감사.
+    어느 단계가 실패해도 다음 단계는 가능한 만큼 진행하고 사유를 남긴다(무음 금지)."""
+    pack: Dict[str, Any] = {"eps_ok": False, "eps_test": pd.DataFrame(), "eps_gate": {}, "prob": {"ok": False},
+                            "prob_force": {"ok": False}, "audit": pd.DataFrame(), "eps_status": [], "notes": []}
+    cols = list(results.keys())
+    full_idx = None
+    for t in cols:
+        ix = results[t]["ret_cc_full"].index
+        full_idx = ix if full_idx is None else full_idx.union(ix)
+    full_idx = pd.DatetimeIndex(full_idx).sort_values() if full_idx is not None else pd.DatetimeIndex([])
+    eps_pack: Dict[str, Any] = {}
+    if bool(getattr(icfg, "USE_EARNINGS_MOMENTUM", True)) and len(full_idx):
+        try:
+            cons = dict(getattr(icfg, "EPS_CONSTITUENTS", {}) or {})
+            tick = sorted({tk for ind in cols for tk in (cons.get(ind) or ())})
+            earn, status = fetch_constituent_earnings(tick, icfg, M=M, fetcher=earn_fetcher)
+            pack["eps_status"] = status
+            ef = build_industry_eps_features(earn, cons, cols, full_idx, icfg)
+            eps_pack = {"earn": earn, "constituents": cons, "industries": cols, "idx": full_idx,
+                        "feats": ef["feats"], "coverage": ef["coverage"]}
+            _nz = {f: int(X.notna().any().sum()) for f, X in ef["feats"].items()}
+            pack["eps_ok"] = any(v > 0 for v in _nz.values())
+            log("EPS", kv(event="industry_eps_features_ready", industries=len(cols), constituents=len(tick), fetched=len(earn),
+                          with_data=";".join(f"{f}={v}" for f, v in _nz.items()),
+                          lag_days=int(getattr(icfg, "EPS_REPORT_LAG_DAYS", 1)), stale_days=int(getattr(icfg, "EPS_STALE_DAYS", 95)),
+                          min_names=int(getattr(icfg, "EPS_MIN_NAMES", 2))), M=M)
+            if pack["eps_ok"]:
+                pack["eps_test"], pack["eps_gate"], pack["eps_raw"] = industry_eps_test(
+                    ef["feats"], results, eval_idx, icfg, coverage=ef["coverage"], fetch_status=status, M=M)
+            else:
+                pack["notes"].append("이익 특징 자료 없음 — 확률 모형은 COMP(I★ 채택 신호)만 쓴다")
+                pack["eps_test"] = pd.DataFrame([{"블록": "A. 전 기간 요약(특징별)", "특징": "-",
+                                                  "판정": "구성종목 EPS 자료 없음(다운로드 실패 또는 끔) — 블록 E의 사유 참조"}]
+                                                + [{"블록": "E. 구성종목 자료 상태", **r} for r in status])
+        except Exception as _e:
+            pack["notes"].append(f"이익 모멘텀 실패 {type(_e).__name__}: {str(_e)[:140]}")
+            log("EPS", kv(event="industry_eps_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                          trace=traceback.format_exc()[-500:].replace("\n", " | "),
+                          action="이익 특징 없이 확률 모형 진행"), M=M, level="warning")
+    feats = eps_pack.get("feats") if pack["eps_ok"] else None
+    try:
+        pack["prob"] = industry_prob_walkforward(results, wf, eval_idx, feats, pack["eps_gate"], icfg, M=M, ml=ml)
+    except Exception as _e:
+        pack["prob"] = {"ok": False, "note": f"{type(_e).__name__}: {str(_e)[:140]}"}
+        log("PROB", kv(event="prob_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                       trace=traceback.format_exc()[-500:].replace("\n", " | "), action="복합순위 리더(v0.32.0)로 대체"),
+            M=M, level="warning")
+    if feats and bool(getattr(icfg, "PROB_GRID", True)):
+        try:
+            pack["prob_force"] = industry_prob_walkforward(results, wf, eval_idx, feats, pack["eps_gate"], icfg, M=M,
+                                                           ml=None, force_eps=True, quiet=False)
+        except Exception as _e:
+            log("PROB", kv(event="prob_force_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
+    if pack["prob"].get("ok"):
+        try:
+            pack["audit"] = industry_prob_lookahead_audit(results, wf, eval_idx, eps_pack, pack["eps_gate"],
+                                                          pack["prob"]["P"], icfg, M=M)
+        except Exception as _e:
+            log("AUDIT", kv(event="prob_audit_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
+    pack["eps_pack"] = {k: v for k, v in eps_pack.items() if k in ("feats", "coverage", "constituents")}
+    return pack
+
+
+def build_industry_prob_sheet(ires: Dict[str, Any]) -> pd.DataFrame:
+    """[28b_산업상승확률] A 읽는 법 · B 연도별 모형 · C 보정표(표본 밖) · D 마지막 거래일 확률표 · E 결정 요약."""
+    pk = ires.get("prob_pack") or {}
+    pr = pk.get("prob") or {}
+    alloc = ires.get("alloc") or {}
+    icfg = ires.get("icfg")
+    A, B, C, D, E_ = ("A. 읽는 법", "B. 연도별 모형(워크포워드)", "C. 보정표(표본 밖 — 확률 10분위)",
+                      "D. 마지막 거래일 — 부모 예산 안 산업별 확률(다음 거래일 체결)", "E. 결정 요약(부모별)")
+    rows: List[dict] = []
+    mode = str(getattr(icfg, "INDUSTRY_SELECT_MODE", "composite")).lower() if icfg is not None else "-"
+    live_prob = bool(alloc.get("select_mode") == "prob")
+    rows.append({"블록": A, "항목": "선택 규칙",
+                 "내용": (("★ 라이브 = 확률 선택(INDUSTRY_SELECT_MODE='prob'). " if live_prob else
+                          f"라이브 = 복합순위 리더(설정 {mode}{' · 확률 산출 실패로 대체' if mode == 'prob' else ''}). ")
+                         + "부모 섹터 예산(S★ 비중)은 그대로 두고, 그 안에서 P(산업이 향후 21거래일 부모 ETF를 이긴다) − 기저율이 가장 높은 산업을 "
+                         "부모 예산 **전액**으로 산다. 매도(반대) = 보유 산업의 P − 기저 < 0 · 자기 RISK_OFF · **M 시장 예산 E_t < 1**(이날은 산업 대신 "
+                         "부모 ETF — 산업의 높은 베타를 시장이 확실히 강할 때만 진다). 교체 = 다른 산업 확률이 0.005 이상 높고 21거래일 보유 후.")})
+    rows.append({"블록": A, "항목": "확률의 뜻",
+                 "내용": ("로지스틱 회귀를 **적용연도마다 과거로만** 다시 학습(엠바고 22거래일). 특징 = I★가 워크포워드로 채택한 신호의 부모 안 복합순위 + "
+                         "그 해 이익 모멘텀 게이트(28 블록 D)를 통과한 특징. 기저율 = 학습창에서 '산업 > 부모'였던 비율 — 시총가중 부모 ETF를 "
+                         "니치 산업 ETF가 이기기 어려워 0.5보다 낮다(구조). 그래서 **절대 0.5가 아니라 기저율 대비**로 판단한다. "
+                         "P(상승 21일) 열은 R78 ML(그래디언트 부스팅) 확률로 **표시 전용**이다(선택에 쓰지 않는다 — 예산이 정해진 뒤 산업 선택이 "
+                         "바꾸는 것은 '산업 − 부모' 수익뿐). ⚠ 확률 폭이 좁다(±1~3%p) — 순서 정보가 약하다는 정직한 표시다. "
+                         "특징이 COMP 하나뿐인 해에는 확률이 **부모 안 순위(1위·2위…)만으로** 정해져 부모가 달라도 같은 값이 나온다 — "
+                         "이익 특징이 게이트를 통과하면 산업마다 달라진다(블록 B '특징' 열).")})
+    rows.append({"블록": A, "항목": "주의",
+                 "내용": ("사전검증(업로드 리포트 · 2021~2026 표본 밖): 현 I★ +3.47%/년 → 확률 1위·M 전액예산일 +9.36%/년(MDD 동일). 같은 게이트 무작위 산업 "
+                         "−0.69%/년. ⚠ 'E_t=1일 때 SOXX 고정'이 +9.74%/년 — 이득 대부분이 반도체 강세장이다. 13_산업배분전략의 [확률격자] 대조 행"
+                         "(무작위 · 베타 최고 산업 · 게이트 없음 · 구 라이브)이 매 실행 이것을 다시 판정한다. 연구·교육용, 투자 자문 아님.")})
+    lg = pr.get("log")
+    if isinstance(lg, pd.DataFrame) and len(lg):
+        for r in lg.to_dict("records"):
+            rows.append({"블록": B, **r})
+    fr = (pk.get("prob_force") or {}).get("log")
+    if isinstance(fr, pd.DataFrame) and len(fr):
+        for r in fr.to_dict("records"):
+            rows.append({"블록": B, "구분": "반증(이익 특징 게이트 무시)", **r})
+    P = pr.get("P")
+    groups = pr.get("groups") or {}
+    if isinstance(P, pd.DataFrame) and len(P) and ires.get("industries"):
+        try:
+            res_ = ires["industries"]
+            h = int(pr.get("horizon", 21))
+            fwd_i, fwd_p, _l, _fi = _industry_fwd_rel(res_, h)
+            y = (fwd_i > fwd_p).astype(float).where(fwd_i.notna() & fwd_p.notna()).reindex(index=P.index, columns=P.columns)
+            pv, yv = P.to_numpy(dtype=float).reshape(-1), y.to_numpy(dtype=float).reshape(-1)
+            m = np.isfinite(pv) & np.isfinite(yv)
+            if m.sum() >= 50:
+                q = pd.qcut(pd.Series(pv[m]).rank(method="first"), 10, labels=False)
+                dd = pd.DataFrame({"p": pv[m], "y": yv[m], "q": q.values})
+                for qq, g in dd.groupby("q"):
+                    rows.append({"블록": C, "항목": f"{int(qq) + 1}분위", "평균 확률": round(float(g["p"].mean()), 4),
+                                 "실현 '산업>부모' 비율": round(float(g["y"].mean()), 4), "표본": int(len(g))})
+                rows.append({"블록": C, "항목": "전체", "평균 확률": round(float(dd["p"].mean()), 4),
+                             "실현 '산업>부모' 비율": round(float(dd["y"].mean()), 4), "표본": int(len(dd)),
+                             "내용": f"표본 밖 AUC {_auc_score(dd['y'].values, dd['p'].values):.4f} (0.5 = 동전)"})
+        except Exception as _e:
+            rows.append({"블록": C, "항목": "산출 실패", "내용": f"{type(_e).__name__}: {str(_e)[:140]}"})
+        last = P.index[-1]
+        base = pr.get("base")
+        Pu = pr.get("P_up")
+        grp = alloc.get("groups") or {}
+        for p in sorted(groups):
+            g = grp.get(p, {})
+            for t in groups[p]:
+                pv_ = P.at[last, t] if t in P.columns else np.nan
+                bv_ = float(base.loc[last]) if isinstance(base, pd.Series) and last in base.index and pd.notna(base.loc[last]) else np.nan
+                pu_ = (Pu.at[last, t] if isinstance(Pu, pd.DataFrame) and t in Pu.columns and last in Pu.index else np.nan)
+                _ls = g.get("leader") if isinstance(g, dict) else None
+                held = bool(isinstance(_ls, pd.Series) and len(_ls) and str(_ls.iloc[-1]) == t)
+                rows.append({"블록": D, "부모": p, "산업": t, "산업명": INDUSTRY_NAME_KR.get(t, t), "기준일": str(pd.Timestamp(last).date()),
+                             "P(부모초과 21일)": (round(float(pv_), 4) if pd.notna(pv_) else None),
+                             "기저율": (round(bv_, 4) if bv_ == bv_ else None),
+                             "P − 기저": (round(float(pv_) - bv_, 4) if pd.notna(pv_) and bv_ == bv_ else None),
+                             "P(상승 21일, ML·표시)": (round(float(pu_), 4) if pd.notna(pu_) else None),
+                             "다음 거래일": ("★ 보유(부모 예산 전액)" if held else "-"),
+                             "판단 사유": (str(g["prob_reason"].iloc[-1]) if "prob_reason" in g else "-")})
+        for p in sorted(groups):
+            g = grp.get(p, {})
+            if "prob_reason" not in g:
+                continue
+            tr = g["tier"].astype(str)
+            ld = g["leader"][tr.eq("리더")].value_counts()
+            rows.append({"블록": E_, "부모": p, "산업": ",".join(groups[p]),
+                         "보유일": int(tr.eq("리더").sum()), "부모ETF일": int((~tr.eq("리더")).sum()),
+                         "매수·교체 횟수": int(g.get("switches", 0)),
+                         "매도 사유": " · ".join(f"{k} {v}회" for k, v in (g.get("sell_counts") or {}).items()),
+                         "보유 분포": " · ".join(f"{k} {v}일" for k, v in ld.items()) or "-"})
+    elif pr.get("note"):
+        rows.append({"블록": B, "항목": "산출 안 됨", "내용": str(pr.get("note"))})
+    return pd.DataFrame(rows)
+
+
+def prob_summary_line(ires: Dict[str, Any]) -> str:
+    """00시트 한 줄 — 확률 선택의 상태(라이브 여부 · 표본 밖 AUC · 이익 게이트 · 마지막 날 부모별 보유)."""
+    pk = ires.get("prob_pack") or {}
+    pr = pk.get("prob") or {}
+    alloc = ires.get("alloc") or {}
+    if not pr.get("ok"):
+        return f"확률 산출 안 됨 — {pr.get('note', '-') or '-'} · 라이브는 복합순위 리더(v0.32.0)"
+    live = alloc.get("select_mode") == "prob"
+    auc = pr.get("auc_oos", np.nan)
+    gate = pk.get("eps_gate") or {}
+    gtxt = (";".join(f"{y}:{'+'.join(v)}" for y, v in sorted(gate.items())) if gate else "없음 — 확률은 I★ 채택 신호만")
+    parts = [f"{p}:{str(g['leader'].iloc[-1]) or '부모ETF'}" for p, g in sorted((alloc.get("groups") or {}).items())
+             if "prob_reason" in g and len(g["leader"])]
+    s = "★ 라이브(확률 선택)" if live else "진단(라이브 아님)"
+    if auc == auc:
+        s += f" · 표본 밖 AUC {auc:.4f}(0.5=동전)"
+    s += f" · 이익 게이트 통과: {gtxt} · 다음 거래일 보유 {' '.join(parts) or '-'}"
+    return s
 
 
 # =============================================================================
@@ -12584,6 +13764,9 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     q, u = ires.get("quality", pd.DataFrame()), ires.get("universe", pd.DataFrame())
     sheets["10_데이터품질"] = pd.concat([u, q], ignore_index=True, sort=False) if len(q) else u
     au = ires.get("audit", pd.DataFrame())
+    _pau = (ires.get("prob_pack") or {}).get("audit")                    # [v0.33.0 R79] 확률·이익 특징 절단재계산 행
+    if isinstance(_pau, pd.DataFrame) and len(_pau):
+        au = pd.concat([au, _pau], ignore_index=True, sort=False) if isinstance(au, pd.DataFrame) and len(au) else _pau
     if isinstance(au, pd.DataFrame) and len(au):
         sheets["11_룩어헤드감사"] = au                                   # [v0.2.0] industry_lookahead_audit 결과(산업별 절단재계산)
     rau = ires.get("rot_audit", pd.DataFrame())
@@ -12802,6 +13985,29 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                         + f" — 잔여 합계 {float(_res_last.sum()):.2%} · 총노출 {float(_tw_last.sum()):.2%}"
                         f"(S★ {float(alloc['w_s_all'].iloc[-1].sum()):.2%}) · 잔여 처리 모드 {alloc.get('only_mode', 'parent')}"))
         nd_rows.append(("다음 거래일 배분(I★) - 부모별 판단", _tier_txt or "-"))
+        # [v0.33.0 R79] 부모 예산 안 산업별 확률(마지막 확정일 = 다음 거래일 체결 근거)
+        try:
+            _pr0 = ((ires.get("prob_pack") or {}).get("prob") or {})
+            _P0, _B0, _U0 = _pr0.get("P"), _pr0.get("base"), _pr0.get("P_up")
+            if isinstance(_P0, pd.DataFrame) and len(_P0) and _pr0.get("ok"):
+                _l0 = _P0.index[-1]
+                _b0 = float(_B0.loc[_l0]) if isinstance(_B0, pd.Series) and _l0 in _B0.index and pd.notna(_B0.loc[_l0]) else np.nan
+                _parts0 = []
+                for _p_, _inds_ in sorted((_pr0.get("groups") or {}).items()):
+                    _v = _P0.loc[_l0, [t for t in _inds_ if t in _P0.columns]].dropna().sort_values(ascending=False)
+                    if not len(_v):
+                        continue
+                    _g0 = (alloc.get("groups") or {}).get(_p_, {})
+                    _why = str(_g0["prob_reason"].iloc[-1]) if "prob_reason" in _g0 else "-"
+                    _parts0.append(f"{_p_}[" + ", ".join(
+                        f"{t} {float(v):.3f}"
+                        + (f"/상승 {float(_U0.at[_l0, t]):.2f}" if isinstance(_U0, pd.DataFrame) and t in _U0.columns
+                           and _l0 in _U0.index and pd.notna(_U0.at[_l0, t]) else "")
+                        for t, v in _v.items()) + f" → {_why}]")
+                nd_rows.append(("다음 거래일 배분(I★) - 산업별 확률(P(부모초과)/P(상승))",
+                                (f"기저율 {_b0:.3f} · " if _b0 == _b0 else "") + " ; ".join(_parts0)))
+        except Exception as _e:
+            nd_rows.append(("다음 거래일 배분(I★) - 산업별 확률", f"산출 실패 {type(_e).__name__}: {str(_e)[:120]}"))
         nd_rows.append(("격자 수렴 상태(①②③④)", alloc.get("grid_line", "-")))
     # [v0.6.0 I-D(B)] 실제 포트폴리오 거래 요약(13j) — 한 계좌에서 실제로 일어난 매매.
     #   02_산업별단독거래(진단)는 각 산업을 '그 산업 하나만 100% 운용'했을 때라 날짜가 겹친다(다른 표다).
@@ -13365,13 +14571,26 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                                "산업": str(_rr["자산"]).replace("★★★ [독립산업격자] 판정: ", ""),
                                "연도 k/n": _rr.get("연도 일관(k/n)"), "판정": str(_rr.get("판정", ""))})
         sheets["27_산업고유요인검정"] = (pd.concat([_dt, pd.DataFrame(_eRows)], ignore_index=True) if _eRows else _dt)
+    # [v0.33.0 R79 ★] 00E_산업상승확률(맨 앞 — 부모 예산 안 산업별 확률·판단) · 28_산업이익모멘텀검정(검정·게이트·자료 상태)
+    _pk = ires.get("prob_pack") or {}
+    _et = _pk.get("eps_test")
+    if isinstance(_et, pd.DataFrame) and len(_et):
+        sheets["28_산업이익모멘텀검정"] = _et
+    try:
+        _pbs = build_industry_prob_sheet(ires)
+        if isinstance(_pbs, pd.DataFrame) and len(_pbs):
+            sheets["00E_산업상승확률"] = _pbs
+    except Exception as _e:
+        log("REPORT", kv(event="prob_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                         trace=traceback.format_exc()[-400:].replace("\n", " | ")), M=M, level="warning")
     # [v0.31.0 R77] 드롭 목록의 나머지(위 _extra_sheets 밖에서 만들어진 시트)도 뺀다 — 00시트에 무엇을 뺐는지 남긴다.
     for _n in list(sheets):
         if _n in _drop and _n not in _dropped:
             sheets.pop(_n, None)
             _dropped.append(_n)
     if S is not None and hasattr(S, "sheets_to_front"):
-        sheets = S.sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교")
+        sheets = S.sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교",
+                                   "00E_산업상승확률")
 
     # [v0.23.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다.
     _a0 = sheets.get("00A_수익비교")
@@ -13442,6 +14661,28 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             meta.insert(_p27 + 2, ("[독립산업격자] — 탈동조 산업에 요인 덧붙이기(라이브 무변경)", decouple_grid_line(sheets)))
     except Exception as _e:
         log("REPORT", kv(event="driver_meta_failed", err=type(_e).__name__), M=M, level="warning")
+    # ---- [v0.33.0 R79 ★★] 00시트 — 산업 선택 규칙(위험 파라미터 고지) · 확률 상태 · 이익 모멘텀 검정 요약 ----
+    try:
+        _p0 = next((i for i, m in enumerate(meta) if m and m[0] == "★ 단일 산업 라이브 예측 vs B&H"), 0)
+        _alc = ires.get("alloc") or {}
+        _sm = _alc.get("select_mode", "-")
+        meta.insert(_p0, ("⚠⚠ 산업 선택 규칙(v0.33.0 R79 · 위험 파라미터)",
+                          ("INDUSTRY_SELECT_MODE = prob — 부모 섹터 예산(S★) 안에서 P(산업 > 부모 ETF, 향후 21거래일) − 기저율 1위 산업을 "
+                           f"부모 예산 전액(캡 {float(getattr(icfg, 'CAP_CONVICTION', 1.0)):.0%})으로 매수 · 반대(P − 기저 < 0 · 자기 RISK_OFF · "
+                           + ("M 시장 예산 E_t < 1" if _alc.get("prob_market_gate") else "M 게이트 없음(⚠ M 신호 없음)")
+                           + ")면 부모 ETF로 매도. 교체는 21거래일 보유 후. 되돌리기(v0.32.0): i_overrides={'INDUSTRY_SELECT_MODE': 'composite'}")
+                          if _sm == "prob" else
+                          (f"복합순위 리더·확신 게이트(v0.32.0) — 설정 {getattr(icfg, 'INDUSTRY_SELECT_MODE', '-')}"
+                           + (" · ⚠ 확률 산출 실패로 대체: " + str(((_pk.get('prob') or {}).get('note', '-')))[:160]
+                              if str(getattr(icfg, 'INDUSTRY_SELECT_MODE', '')).lower() == 'prob' else ""))))
+        meta.insert(_p0 + 1, ("★ 00E_산업상승확률 — 부모 예산 안 산업별 P(부모초과)·P(상승)", prob_summary_line(ires)))
+        _et0 = sheets.get("28_산업이익모멘텀검정")
+        if isinstance(_et0, pd.DataFrame) and len(_et0) and "특징" in _et0.columns:
+            _A0 = _et0[_et0["블록"].astype(str).str.startswith("A.") & ~_et0["특징"].astype(str).isin(["── 읽는 법 ──", "-"])]
+            _txt = " · ".join(f"{r['특징']} t {r.get('t')} ({r.get('연도 k/n')}) {r.get('판정')}" for _, r in _A0.iterrows())
+            meta.insert(_p0 + 2, ("산업 이익 모멘텀 검정(28) — 부모 안 1위−꼴찌(구성종목 EPS)", _txt or "산출 없음(블록 E 사유 참조)"))
+    except Exception as _e:
+        log("REPORT", kv(event="prob_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:
         import inspect as _inspect
