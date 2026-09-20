@@ -1,5 +1,26 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.4.0 - 2026-09-20 - [R77 ★★ 단일 종목 라이브 = base1_cut × M 시장 예산 E_t(위험 파라미터) · 00D_하락상승개선비교 · 19 A′ · 00 판정 3행 · 04 원장 제거]
+#    사용자 지시(2026-09-20) "산업별·주식별이 B&H가 피하지 못했던 하락을 모두 피했고 상승은 같이 타야 — 확인하고 못 했으면 원인 분석해서
+#    코드 수정 · 비교 시트 새로 하나(개선 방향용) · 정말 불필요한 시트 제거 · 산업·주식 2개 코드만". 시작 v0.3.3 → 목표 v0.4.0.
+#    ── 원인(코드 판독 — 결정적): 단일 종목 라이브 base1_cut = **기본 1.0**, E3(음의 어닝 서프라이즈 후 21일)만 0. **M(시장 국면)을 전혀 보지 않았다.**
+#       평균 노출 ≈0.95(v0.2.1 리포트 실측 0.9500) — 사실상 B&H라 2020-03·2022 같은 **시장 하락을 구조적으로 피할 수 없다**.
+#       I 계층은 R68부터 M E_t를 상속해 29산업 B&H 대비 복리·MDD·칼마 29/29(리포트26 · 평균 CAGR 9.5→19.2% · MDD −50→−22%).
+#    (§1 ★★ 위험 파라미터) 목표비중 = min(base1_cut, **M E_t**) — build_positions(market_w=). 상태 라벨 '시장컷(M E_t=0)'·'시장부분(M)'.
+#       E_t 출처(_resolve_market_budget): run(m_sig=) → I 모듈 통로(I v0.31.0 market_budget_handoff — I.run이 M res['sig']를 남김) →
+#       MARKET_BUDGET_CSV(M 일별 CSV) → 없으면 **경고 + 구 규칙**(00시트 '⚠ 시장 예산(M E_t) 출처'에 표시 · 무음 금지). runner 무변경.
+#       E_t가 가격 마지막일보다 MARKET_BUDGET_MAX_STALE_DAYS(5) 달력일 넘게 늦으면 쓰지 않는다(낡은 CSV 방지). 되돌리기: {"MARKET_BUDGET": "none"}.
+#       노출 하한 경고(CUT_EXPOSURE_FLOOR_WARN)는 **시장 예산 전** 비중으로 잰다(감축 규칙의 과점화 감시 — 의도 보존).
+#    (§2 ★) 00D_하락상승개선비교(00A 다음) — I.build_updown_improvement_compare 재사용: ◎ 오라클 · ① B&H · ★ 라이브 · 구 라이브(v0.3.3) ·
+#       후보(M E_t만 · +부분 노출일 추세컷 SMA200 · +부분 노출일 전부 0) · 반증 · 참고(200일선). 19에 **블록 A′**(I와 같은 판정) 맨 앞.
+#       00시트: '★ 단일 종목 라이브 예측 vs B&H'(00A·19 A′에서 읽음) · '★ 00D 개선 방향' · '제거한 시트'.
+#    (§3) 노출격자 6번째 원소 = 시장 예산 적용 — '★ M E_t × E3 전량(=라이브)' · 'M E_t만(E3 컷 없음)' 신설, 종전 base1_cut 행은 '(M 예산 없음)'으로 개명.
+#    (§4) 불필요 시트 제거 — REPORT_DROP_SHEETS=("04_펀더멘탈원장",)(F 계열 원장 · 라이브 미사용 · 티커별 요약은 02). 되돌리기 {"REPORT_DROP_SHEETS": ()}.
+#    (§5) 버그 2건(표시): 00 '라이브 규칙 성과(중위)'가 v0.2.0부터 라벨 불일치로 NaN · '다음 거래일 예측' 비중을 정수로 반올림(0.5→0) — 수정.
+#       00 '★ 라이브 규칙(v0.1.0) 200일선…' 낡은 문구 교체.
+#    StockConfig 신설 6필드(MARKET_BUDGET · MARKET_BUDGET_CSV · MARKET_BUDGET_MAX_STALE_DAYS · UPDOWN_COMPARE · UPDOWN_COMPARE_SMA · REPORT_DROP_SHEETS).
+#    영향 함수: build_positions(market_w·'m_only') · _resolve_market_budget·_updown_variants(신설) · run(m_sig·격자 6번째 원소·반환 4키) · build_report.
+#    연구/교육용 도구이며 투자 자문이 아니다.
 #  VERSION: v0.3.3 - 2026-09-19 - [R74 종가 미확정 봉 — 신선도를 유효 종가 마지막일로 판정 · 일부 종목 결측 경고]
 #    PLAN74 §1-4. _prices_freshness(): 마지막일 = Close가 유효한 마지막 날짜(인덱스 아님). 전 종목 최신일보다 뒤처진
 #    종목은 로그 prices_last_close_missing(warning)으로 알린다(재다운로드 루프는 만들지 않는다 — v0.3.2의 max 규칙 유지).
@@ -288,8 +309,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.3.3"
-VERSION_DATE = "2026-09-19"
+VERSION = "v0.4.0"
+VERSION_DATE = "2026-09-20"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -404,6 +425,26 @@ class StockConfig:
     #     리스크 파라미터를 조용히 바꾸지 않기 위해 경고만 하고 값은 그대로 둔다.
     CUT_EXPOSURE_FLOOR_WARN: float = 0.70
     CUT_WEIGHT: float = 0.0            # 감축일 목표비중(0.0 = 전량 회피 · 0.5 = 절반)
+    # ---- [v0.4.0 R77 ★★ 위험 파라미터 — 시장 예산(M E_t) 상속] ----
+    #   사용자 지시(2026-09-20) "산업별·주식별이 B&H가 피하지 못했던 하락을 모두 피했고 상승은 같이 타야 — 못 했으면 원인 분석해서 수정".
+    #   원인(코드 판독): v0.3.3까지 단일 종목 라이브 = base1_cut = **기본 1.0**, E3(음의 어닝 서프라이즈 후 21일)만 0 → 평균 노출 ≈0.95.
+    #     M(시장 국면)을 전혀 보지 않았다 — 2020-03·2022 같은 시장 하락을 구조적으로 피할 수 없다(B&H와 거의 같은 노출).
+    #   처방: 목표비중 = min(base1_cut, M E_t) — I 계층이 R68부터 쓰는 것과 같은 시장 예산(E_t=0 날 0 · 부분 노출일 E_t · 1.0 날 1).
+    #     리포트26(I) 실측: 같은 E_t 상속이 29산업 B&H 대비 복리·MDD·칼마 29/29(평균 CAGR 9.5→19.2% · MDD −50→−22%).
+    #     E_t=0 날 산업 일평균 −10bp(28/29 음수) · E_t=1 날 +20bp(29/29 양수) — 시장 예산의 정보는 산업을 넘어 주식에도 걸린다.
+    #   ⚠ 참여율은 내려간다(평균 노출 ≈0.95 → ≈0.55 예상) — 00D_하락상승개선비교가 매 실행 구 라이브와 나란히 판정한다.
+    #   E_t 출처(순서): run(m_sig=…) → I 모듈 통로(industry_rotation.market_budget_handoff — I.run이 남김) → MARKET_BUDGET_CSV(M 일별 CSV)
+    #     → 없으면 **경고 후 구 규칙**(00시트에 출처 표시 · 무음 금지). runner 무변경(사용자 지시: 산업·주식 코드만).
+    #   되돌리기(v0.3.3 비트 동일): k_overrides={"MARKET_BUDGET": "none"}
+    MARKET_BUDGET: str = "m_inherit"                     # "m_inherit"(라이브) | "none"(v0.3.3)
+    MARKET_BUDGET_CSV: str = "market_regime_daily.csv"   # 통로가 없을 때의 폴백(M.main/export가 쓰는 일별 CSV · '목표비중' 열)
+    MARKET_BUDGET_MAX_STALE_DAYS: int = 5                # E_t 마지막일이 가격 마지막일보다 이 달력일수 넘게 뒤처지면 쓰지 않는다
+    # ---- [v0.4.0 R77] 00D_하락상승개선비교(I의 build_updown_improvement_compare 재사용) · 불필요 시트 제거 ----
+    UPDOWN_COMPARE: bool = True
+    UPDOWN_COMPARE_SMA: int = 200                        # 후보 행 '부분 노출일 추세컷'의 추세선(I 라이브와 같은 200일)
+    #   04_펀더멘탈원장: 분기 재무 원장(F 계열 규칙용 — 매출 YoY 유효비율 0.017로 측정 불가 판정 · 라이브 미사용).
+    #   티커별 '유효일 출처'·'선택 항목'은 02_티커요약에 이미 있다. 되돌리기: k_overrides={"REPORT_DROP_SHEETS": ()}
+    REPORT_DROP_SHEETS: Tuple[str, ...] = ("04_펀더멘탈원장",)
     # ---- [v0.3.0 D2 ★★ 신규] 배분층 — 전체자산 1.0 ----
     #   사용자 지시: "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서 각 총합이 1이되도록 하라고
     #                왜 자꾸 각 티커별로 비중이 1이냐고"
@@ -433,8 +474,8 @@ class StockConfig:
     EXPOSURE_GRID: Tuple[Tuple, ...] = (
         ("항상 1.0(= B&H)", "always", 1.0),
         ("200일선(v0.1.0 라이브)", "ext200", 0.0),
-        ("base1_cut E3만 전량(=라이브)", "base1_cut", 0.0),
-        ("base1_cut E3만 절반", "base1_cut", 0.5),
+        ("base1_cut E3만 전량(v0.3.3 라이브 · M 예산 없음)", "base1_cut", 0.0),
+        ("base1_cut E3만 절반(M 예산 없음)", "base1_cut", 0.5),
         # ★ v0.2.1 신규 — 퇴출된 3규칙 OR을 **격자로 내려** 실제로 나쁜지 리포트가 판정한다.
         #   내 오프라인 계산이 아니라 엔진 시트가 판정한다(이 원칙을 세 번 어겨서 세 번 틀렸다).
         ("base1_cut 3규칙 OR(구 라이브안)", "base1_cut", 0.0,
@@ -448,6 +489,9 @@ class StockConfig:
         ("base1_cut 빠른방어 동의2", "base1_cut", 0.0,
          ("P9 낙폭 −10% 돌파", "P11 20일선 하향교차 당일",
           "E3 발표 후 21일 이내 & 서프라이즈<0"), 2),
+        # ★ v0.4.0 R77 — 6번째 원소 True = **M 시장 예산(E_t) 적용**. 4·5번째 None = CFG 값.
+        ("★ M E_t × E3 전량(=라이브)", "base1_cut", 0.0, None, None, True),
+        ("M E_t만(E3 컷 없음)", "m_only", 0.0, None, None, True),
     )
 
     # ---- 19_상승하락구간 ----
@@ -1165,7 +1209,8 @@ def build_positions(feat: pd.DataFrame, cfg: StockConfig,
                     cut_rules: Optional[Tuple[str, ...]] = None,
                     calendar_control: bool = False,
                     cut_min_agree: Optional[int] = None,
-                    ticker: str = "") -> pd.DataFrame:
+                    ticker: str = "",
+                    market_w: Optional[pd.Series] = None) -> pd.DataFrame:
     """[K2 ★ v0.2.0] 목표비중. 체결 규칙은 M·S·I와 같다 — t일 확정, t+1일 집행(exec_w(t)=target_w(t−1)).
 
     규칙 3종:
@@ -1174,6 +1219,11 @@ def build_positions(feat: pd.DataFrame, cfg: StockConfig,
       "ext200"    (v0.1.0) — 200일선 위 1 / 아래 0. ⚠ 03 시트 측정에서 정밀−기저 −0.0198로 **반대 방향**이었다.
       "always"    (대조군) — 항상 1.0 = 사실상 B&H. 격자의 기준선이다.
 
+      "m_only"    (v0.4.0 격자) — 기본 1.0에 감축 규칙 없음(시장 예산만 — market_w가 있어야 의미가 있다).
+
+    market_w [v0.4.0 R77 ★★]: M의 목표비중 E_t(t일 확정, 날짜 인덱스). 주면 **목표비중 = min(규칙 비중, E_t)**.
+      E_t는 종목 거래일로 reindex 후 ffill만(직전 확정값 — 미래값 없음). E_t가 없는 날(M 이력 이전)은 규칙 비중 그대로.
+      "always"(B&H 대조군)에는 적용하지 않는다.
     calendar_control=True면 **같은 감축 일수만큼 신호 없이 균등 간격으로** 감축한다(달력 대조군).
       이게 있어야 "신호가 좋은 날을 골랐나"와 "그냥 노출을 줄여 MDD가 좋아졌나"를 가른다 —
       I 계층에서 이 대조군이 세 번 설계를 살렸다(v0.15.0 브레이크·v0.16.0 경고격자·v0.18.0 확신캡).
@@ -1185,6 +1235,9 @@ def build_positions(feat: pd.DataFrame, cfg: StockConfig,
     if rule == "always":
         tgt = pd.Series(1.0, index=feat.index)
         state = pd.Series("보유(항상 1.0)", index=feat.index)
+    elif rule == "m_only":
+        tgt = pd.Series(1.0, index=feat.index)
+        state = pd.Series("보유", index=feat.index)
     elif rule == "ext200":
         up = (ext > 0)
         tgt = up.astype(float).where(ext.notna(), np.nan).ffill().fillna(0.0)
@@ -1251,6 +1304,25 @@ def build_positions(feat: pd.DataFrame, cfg: StockConfig,
                                     "CUT_RULES에서 빼고 이벤트형 규칙만 남길 것 — "
                                     "사용자 요구는 '상승을 타서 비중 최대로'다")),
                 level="warning")
+    # ---- [v0.4.0 R77 ★★ 위험 파라미터] 시장 예산(M E_t) — 목표비중 = min(규칙 비중, E_t) ----
+    if market_w is not None and rule != "always":
+        _E = pd.to_numeric(pd.Series(market_w), errors="coerce")
+        _E.index = pd.DatetimeIndex(_E.index)
+        _E = _E[~_E.index.duplicated(keep="last")].sort_index()
+        _E = _E.reindex(_E.index.union(feat.index)).ffill().reindex(feat.index).clip(0.0, 1.0)
+        _has = _E.notna()
+        _pre = tgt.copy()
+        tgt = pd.Series(np.where(_has, np.minimum(_pre.values, _E.fillna(1.0).values), _pre.values), index=feat.index)
+        _mcut = _has & (_E <= 1e-9) & (_pre > 1e-9)
+        _mpart = _has & (_E > 1e-9) & (_E < 1.0 - 1e-9) & (_pre > 1e-9)
+        state = pd.Series(np.where(_mcut, "시장컷(M E_t=0)", np.where(_mpart, "시장부분(M)", state.astype(str))),
+                          index=feat.index)
+        out["시장예산(M E_t)"] = _E
+        log("POS", kv(event="market_budget_applied", ticker=ticker, rule=rule,
+                       days=int(len(feat)), no_budget_days=int((~_has).sum()),
+                       market_cut_days=int(_mcut.sum()), market_partial_days=int(_mpart.sum()),
+                       mean_w_before=round(float(_pre.mean()), 4), mean_w_after=round(float(tgt.mean()), 4)),
+            level="debug")
     out["확정국면"] = state
     out["목표비중"] = tgt
     out["집행비중"] = tgt.shift(1).fillna(0.0)
@@ -1454,8 +1526,135 @@ def build_lookahead_audit(prices: Dict[str, pd.DataFrame], fund: Dict[str, Dict[
 # =============================================================================
 # [6] 실행 · 리포트
 # =============================================================================
+# =============================================================================
+# [4c] ★★ v0.4.0 R77 — 시장 예산(M E_t) 출처 결정
+#   runner는 K.run(K.CFG, k_overrides, parent_w=…)만 부른다(사용자 지시로 runner 무변경). 그래서 K가 스스로 찾는다:
+#     (1) run(m_sig=…) 인자  (2) I 모듈 통로 market_budget_handoff() — I.run()이 M res["sig"]를 남긴다(같은 프로세스)
+#     (3) MARKET_BUDGET_CSV(M 일별 CSV '목표비중')  (4) 없으면 경고 + 구 규칙(M 예산 없음) — 00시트에 출처를 적는다.
+#   값은 **M이 t일 종가로 확정한 목표비중**이다. 체결 지연(t+1)은 build_positions의 집행 규칙이 적용한다.
+# =============================================================================
+def _resolve_market_budget(cfg: StockConfig, m_sig: Any = None,
+                           price_last: Optional[pd.Timestamp] = None) -> Tuple[Optional[pd.Series], Dict[str, Any]]:
+    mode = str(getattr(cfg, "MARKET_BUDGET", "none") or "none").lower()
+    info: Dict[str, Any] = {"mode": mode, "source": "-", "asof": "-", "rows": 0, "ok": False, "note": ""}
+    if mode == "none":
+        info.update({"source": "끔(MARKET_BUDGET='none') — v0.3.3 규칙", "note": "구 규칙(base1_cut만)"})
+        return None, info
+    if mode != "m_inherit":
+        info.update({"source": f"알 수 없는 MARKET_BUDGET={mode}", "note": "구 규칙으로 계속"})
+        log("RUN", kv(event="market_budget_unknown_mode", mode=mode), level="warning")
+        return None, info
+    s: Optional[pd.Series] = None
+    src = "-"
+    try:
+        if isinstance(m_sig, pd.DataFrame) and "target_pos" in m_sig.columns:
+            s, src = m_sig["target_pos"], "run(m_sig=…) 인자"
+        elif isinstance(m_sig, pd.Series):
+            s, src = m_sig, "run(m_sig=…) 인자(Series)"
+    except Exception:
+        s = None
+    if s is None:
+        for _nm, _mod in list(sys.modules.items()):
+            try:
+                _fn = getattr(_mod, "market_budget_handoff", None)
+            except Exception:
+                continue
+            if callable(_fn):
+                try:
+                    _h = _fn()
+                except Exception as _e:
+                    log("RUN", kv(event="market_handoff_read_failed", module=_nm, err=type(_e).__name__), level="warning")
+                    continue
+                if isinstance(_h, dict) and isinstance(_h.get("target_pos"), pd.Series) and len(_h["target_pos"]):
+                    s, src = _h["target_pos"], f"I 모듈 통로({_nm}.market_budget_handoff · {_h.get('source', '-')})"
+                    break
+    if s is None:
+        _p = str(getattr(cfg, "MARKET_BUDGET_CSV", "") or "")
+        if _p and os.path.exists(_p):
+            try:
+                _d = pd.read_csv(_p, encoding="utf-8-sig")
+                _d["날짜"] = pd.to_datetime(_d["날짜"], errors="coerce")
+                _d = _d.dropna(subset=["날짜"])
+                s = pd.Series(pd.to_numeric(_d["목표비중"], errors="coerce").values, index=pd.DatetimeIndex(_d["날짜"]))
+                src = f"M 일별 CSV({_p})"
+            except Exception as _e:
+                log("RUN", kv(event="market_budget_csv_failed", path=_p, err=type(_e).__name__, msg=str(_e)[:120]),
+                    level="warning")
+                s = None
+    if s is None:
+        info.update({"source": "없음 — I 통로·M CSV 모두 없음", "note": "⚠ 구 규칙(base1_cut만)으로 실행 — 시장 하락을 못 피한다"})
+        log("RUN", kv(event="market_budget_missing", mode=mode,
+                      next_step=("run_pipeline.main()으로 I와 함께 돌리거나 stock_regime.run(m_sig=M결과['sig'])로 넘길 것 — "
+                                 "그 전까지 K 라이브는 M 예산 없이(v0.3.3) 돈다")), level="warning")
+        return None, info
+    s = pd.to_numeric(pd.Series(s), errors="coerce")
+    s.index = pd.DatetimeIndex(s.index)
+    s = s[~s.index.duplicated(keep="last")].sort_index().dropna().clip(0.0, 1.0)
+    info.update({"source": src, "rows": int(len(s)), "asof": (str(s.index[-1].date()) if len(s) else "-"),
+                 "mean": (round(float(s.mean()), 4) if len(s) else None)})
+    if not len(s):
+        info["note"] = "⚠ E_t 값이 비어 있다 — 구 규칙"
+        return None, info
+    _stale = int(getattr(cfg, "MARKET_BUDGET_MAX_STALE_DAYS", 5))
+    if price_last is not None and (pd.Timestamp(price_last) - s.index[-1]).days > _stale:
+        info.update({"note": f"⚠ E_t 마지막일 {s.index[-1].date()}가 가격 마지막일 {pd.Timestamp(price_last).date()}보다 "
+                             f"{(pd.Timestamp(price_last) - s.index[-1]).days}일 뒤처져 쓰지 않는다 — 구 규칙"})
+        log("RUN", kv(event="market_budget_stale", source=src, asof=str(s.index[-1].date()),
+                      price_last=str(pd.Timestamp(price_last).date()), max_stale_days=_stale), level="warning")
+        return None, info
+    info.update({"ok": True, "note": "적용 — 목표비중 = min(base1_cut, E_t)"})
+    log("RUN", kv(event="market_budget_resolved", source=src[:80], rows=len(s), asof=info["asof"],
+                  mean_e=info["mean"], zero_share=round(float((s <= 1e-9).mean()), 4),
+                  partial_share=round(float(((s > 1e-9) & (s < 1 - 1e-9)).mean()), 4)))
+    return s, info
+
+
+def _updown_variants(panel: Dict[str, pd.DataFrame], pos: Dict[str, pd.DataFrame], cfg: StockConfig,
+                     mkt: Optional[pd.Series]) -> Dict[str, Any]:
+    """[v0.4.0 R77] 00D용 변형(체결 비중 = 목표 shift(1)) — 라이브·구 라이브·후보·반증·참고. build_positions를 그대로 다시 부른다
+    (산식 단일 출처). 부분 노출일 추세컷은 K의 ext200 대신 **UPDOWN_COMPARE_SMA일 SMA**를 종가로 새로 계산(I 라이브와 같은 정의)."""
+    tick = sorted(panel)
+    ex = lambda d: pd.DataFrame(d)
+    ref = f"★ 라이브({VERSION} · base1_cut × M E_t)" if mkt is not None else f"★ 라이브({VERSION} · base1_cut — M 예산 없음)"
+    V: Dict[str, pd.DataFrame] = {ref: ex({t: pd.to_numeric(pos[t]["집행비중"], errors="coerce") for t in tick})}
+    desc = {ref: ("단일 종목 라이브: 기본 1.0 · E3(음의 서프라이즈 후 21일) 0 · 시장 예산 E_t 상한" if mkt is not None
+                  else "단일 종목 라이브(시장 예산 출처 없음 — 구 규칙과 같다)")}
+    cands: List[str] = []
+    fals: List[str] = []
+    old = None
+    if mkt is not None:
+        old = "구 라이브(v0.3.3 · base1_cut · M 예산 없음)"
+        V[old] = ex({t: build_positions(panel[t], cfg, ticker=t)["집행비중"] for t in tick})
+        desc[old] = "기본 1.0 · E3만 0 — 평균 노출 ≈0.95(사실상 B&H)"
+        lbl = "후보: M E_t만(E3 컷 없음)"
+        V[lbl] = ex({t: build_positions(panel[t], cfg, rule="m_only", ticker=t, market_w=mkt)["집행비중"] for t in tick})
+        desc[lbl] = "E3 컷의 값 — 이 행이 ★보다 나으면 E3가 손해"
+        cands.append(lbl)
+        n = int(getattr(cfg, "UPDOWN_COMPARE_SMA", 200))
+        tc, zr, fl = {}, {}, {}
+        for t in tick:
+            tp = pd.to_numeric(pos[t]["목표비중"], errors="coerce")
+            px = pd.to_numeric(panel[t]["종가"], errors="coerce")
+            sma = px.rolling(n, min_periods=n).mean()
+            _E = pd.to_numeric(pos[t].get("시장예산(M E_t)", pd.Series(np.nan, index=tp.index)), errors="coerce")
+            mid = (_E > 1e-9) & (_E < 1.0 - 1e-9)
+            ok = px.notna() & sma.notna()
+            tc[t] = tp.where(~(mid & ok & (px < sma)), 0.0).shift(1).fillna(0.0)
+            zr[t] = tp.where(~mid, 0.0).shift(1).fillna(0.0)
+            fl[t] = tp.where(~(mid & ok & (px >= sma)), 0.0).shift(1).fillna(0.0)
+        for lbl, d, ds, bucket in ((f"후보: + 부분 노출일 추세컷 SMA{n}", tc, f"0<E_t<1 날 종가 < SMA{n}이면 0(I 라이브 규칙)", cands),
+                                   ("후보: + 부분 노출일 전부 0", zr, "0<E_t<1 날 전부 0 — M이 확신한 날만", cands),
+                                   (f"반증: 부분 노출일 추세 '위'에서 컷(SMA{n})", fl, "추세컷의 방향을 뒤집은 것 — 열위여야 정상", fals)):
+            V[lbl] = ex(d); desc[lbl] = ds; bucket.append(lbl)
+    lbl = "참고: 200일선(v0.1.0 라이브)"
+    V[lbl] = ex({t: build_positions(panel[t], cfg, rule="ext200", ticker=t)["집행비중"] for t in tick})
+    desc[lbl] = "종가 > 200일선이면 1 — v0.1.0에서 양쪽 다 늦다고 판정"
+    return {"variants": V, "ref": ref, "old": old, "cands": tuple(cands), "fals": tuple(fals), "desc": desc,
+            "market_exec": (mkt.shift(1) if mkt is not None else None)}
+
+
 def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]] = None,
-        parent_w: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+        parent_w: Optional[pd.DataFrame] = None, m_sig: Any = None) -> Dict[str, Any]:
     """[K 계층 본체] 데이터 → 특성 → 규칙 채점 → **배분(총합 1.0)** → 감사 → 리포트 dict.
 
     parent_w: [v0.3.0 D2] I 계층이 낸 **산업 ETF 비중**(날짜 × 산업ETF). run_pipeline이 넘겨 주면
@@ -1474,6 +1673,12 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         log("RUN", kv(event="aborted", reason="가격 데이터 0건"), level="error")
         return {"aborted": True, "note": "가격 데이터를 하나도 받지 못했다", "cfg": cfg}
     fund = download_fundamentals(list(prices), cfg)
+    # [v0.4.0 R77 ★★] 시장 예산(M E_t) — 출처를 먼저 정한다(없으면 경고 + 구 규칙 · 00시트에 표시)
+    try:
+        _plast = max(pd.Timestamp(v.index[-1]) for v in prices.values() if v is not None and len(v))
+    except Exception:
+        _plast = None
+    mkt, mkt_info = _resolve_market_budget(cfg, m_sig=m_sig, price_last=_plast)
 
     panel: Dict[str, pd.DataFrame] = {}
     pos: Dict[str, pd.DataFrame] = {}
@@ -1499,7 +1704,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                            reason="평가창 관측 250일 미만"), level="warning")
             continue
         panel[t] = feat
-        pos[t] = build_positions(feat, cfg, ticker=t)
+        pos[t] = build_positions(feat, cfg, ticker=t, market_w=mkt)
         if len(fl):
             fl2 = fl.copy(); fl2.insert(0, "티커", t); fund_ledgers.append(fl2.reset_index(drop=True))
         if len(el):
@@ -1553,6 +1758,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     #   ★ 달력 대조군이 함께 실린다 — "신호가 좋은 날을 골랐나"와 "그냥 노출을 줄여 MDD가 좋아졌나"를
     #     가르는 유일한 방법이다(I 계층에서 이 대조군이 세 번 설계를 살렸다).
     perf: List[dict] = []
+    _live_lbl = f"★ 라이브({cfg.LIVE_RULE}{' × M E_t' if mkt is not None else ''})"    # [v0.4.0 R77]
     _grid = tuple(getattr(cfg, "EXPOSURE_GRID", ()) or ())
     # (K6 ★) 라벨별로 (티커, 일간수익, 집행비중)을 모아 **동일가중 포트폴리오** 행을 만든다.
     #   왜: 사용자 질문("B&H 대비 하락을 피했고 상승을 탔나")의 단위는 종목이 아니라 계층이다.
@@ -1565,23 +1771,26 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         # ★ (lbl, 일간수익, **그 행의 집행비중**) — v0.2.0 이전에는 모든 격자 행이 라이브 노출을
         #   찍어서 "평균노출" 열이 전부 같은 값이었다. 격자의 핵심 지표가 노출이므로 치명적이었다.
         _rows: List[Tuple[str, pd.Series, pd.Series]] = [
-            (f"★ 라이브({cfg.LIVE_RULE})", r, _lw),
+            (_live_lbl, r, _lw),
             ("매수보유", b, pd.Series(1.0, index=b.index))]
         for _g in _grid:
             # (라벨, 규칙, 감축비중[, CUT_RULES, CUT_MIN_AGREE]) — 뒤 2개는 생략 가능
             _lbl, _rule, _cw = _g[0], _g[1], _g[2]
             _cr = _g[3] if len(_g) > 3 else None
             _ma = _g[4] if len(_g) > 4 else None
+            _mk = (mkt if (len(_g) > 5 and bool(_g[5])) else None)     # [v0.4.0 R77] 6번째 = 시장 예산 적용
+            if len(_g) > 5 and bool(_g[5]) and mkt is None:
+                continue                                             # 출처가 없으면 그 행은 구 규칙과 같다 — 싣지 않는다
             try:
                 _pp = build_positions(panel[t], cfg, rule=_rule, cut_weight=_cw,
-                                      cut_rules=_cr, cut_min_agree=_ma, ticker=t)
+                                      cut_rules=_cr, cut_min_agree=_ma, ticker=t, market_w=_mk)
                 _rows.append((f"[노출격자] {_lbl}",
                               pd.to_numeric(_pp["전략일간수익"], errors="coerce").fillna(0.0),
                               pd.to_numeric(_pp["집행비중"], errors="coerce")))
                 if str(_rule).lower() == "base1_cut":
                     _pc = build_positions(panel[t], cfg, rule=_rule, cut_weight=_cw,
                                           cut_rules=_cr, cut_min_agree=_ma,
-                                          calendar_control=True, ticker=t)
+                                          calendar_control=True, ticker=t, market_w=_mk)
                     _rows.append((f"[노출격자·대조] {_lbl} 같은날수 달력(신호없음)",
                                   pd.to_numeric(_pc["전략일간수익"], errors="coerce").fillna(0.0),
                                   pd.to_numeric(_pc["집행비중"], errors="coerce")))
@@ -1681,7 +1890,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                       "평균노출": round(float(_W.mean(axis=1).mean()), 4)})
     perf = _port + perf
     _pdf = pd.DataFrame(perf) if perf else pd.DataFrame(columns=["티커", "전략", "칼마(CAGR/MDD)"])
-    _live = f"★ 라이브({cfg.LIVE_RULE})"
+    _live = _live_lbl
     def _pick_calmar(lbl: str, tick: str = "★ 포트(동일가중)"):
         _m = _pdf[(_pdf["전략"] == lbl) & (_pdf["티커"] == tick)]["칼마(CAGR/MDD)"]
         return (round(float(_m.iloc[0]), 3) if len(_m) and pd.notna(_m.iloc[0]) else None)
@@ -1693,7 +1902,15 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     port_calmar_live=_pick_calmar(_live), port_calmar_bh=_pick_calmar("매수보유"),
                     median_calmar_live=_med(_live), median_calmar_bh=_med("매수보유"),
                     note="포트 행은 동일가중 · 중위 행은 종목별 — 두 값은 일치하지 않는 것이 정상이다"))
+    # [v0.4.0 R77] 00D 변형(체결 비중) — build_report가 I.build_updown_improvement_compare로 판정한다
+    _ud = None
+    if bool(getattr(cfg, "UPDOWN_COMPARE", True)):
+        try:
+            _ud = _updown_variants(panel, pos, cfg, mkt)
+        except Exception as e:
+            log("PERF", kv(event="updown_variants_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
     return {"cfg": cfg, "panel": panel, "pos": pos, "prices": prices, "fund": fund,
+            "market_budget": mkt_info, "market_w": mkt, "updown": _ud, "live_label": _live_lbl,
             "parent_of": parent_of, "accuracy": acc, "audit": audit,
             "alloc": alloc, "alloc_grid": pd.DataFrame(alloc_rows),
             "quality": pd.DataFrame(quality), "perf": pd.DataFrame(perf),
@@ -1796,10 +2013,16 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 f"(사용자 지시 '일단 샘플로 각 산업별 대표 티커 하나씩')"),
         ("평가창", f"{cfg.EVAL_START} ~ {str(idx[-1].date()) if len(idx) else '-'} "
                  f"({len(idx)}거래일) · 특성 워밍업 {cfg.START}부터"),
-        ("★ 라이브 규칙(v0.1.0)",
-         f"{cfg.LIVE_RULE} — 200일선 위면 비중 1, 아래면 0. **의도적으로 가장 단순한 기준선**이며 "
-         "펀더멘탈·어닝 후보는 03_예측규칙정확도에서 먼저 채점한다(I 계층에서 '그럴듯한 근거로 라이브를 "
-         "바꿨다가 세 라운드 연속 실패'한 이력 때문). 승격 조건은 03 시트 마지막 행에 사전등록해 두었다."),
+        ("★ 라이브 규칙(v0.4.0 R77 · ⚠⚠ 위험 파라미터)",
+         (f"{cfg.LIVE_RULE} × M 시장 예산 — 목표비중 = min(기본 1.0 · E3(음의 어닝 서프라이즈 후 21일) 0, **M E_t**). "
+          "v0.3.3까지는 M을 보지 않아(평균 노출 ≈0.95) 시장 하락을 구조적으로 피할 수 없었다. I 계층과 같은 시장 예산을 쓴다. "
+          "되돌리기: k_overrides={'MARKET_BUDGET': 'none'}")
+         if (res.get("market_budget") or {}).get("ok") else
+         (f"{cfg.LIVE_RULE} — 기본 1.0, E3(음의 어닝 서프라이즈 후 21일)만 0. ⚠ 시장 예산(M E_t) **미적용** — "
+          f"사유: {(res.get('market_budget') or {}).get('note', '-')}")),
+        ("⚠ 시장 예산(M E_t) 출처",
+         (lambda _m: (f"{_m.get('source', '-')} · 마지막일 {_m.get('asof', '-')} · {_m.get('rows', 0)}행 · "
+                      f"평균 E_t {_m.get('mean', '-')} · {_m.get('note', '')}"))(res.get("market_budget") or {})),
         ("★ 펀더멘탈 인과 처리",
          f"분기 재무는 **기간말이 아니라 유효일** 기준 as-of로만 쓴다 — 실제 발표일 우선, 없으면 "
          f"기간말 + {cfg.FUND_PUBLISH_LAG_DAYS}일(10-K 기한 60일 기준의 보수 상한). "
@@ -1816,8 +2039,10 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                                  + (" — 통과" if bad == 0 else " ⚠ 조사 필요")))
     pf = res.get("perf", pd.DataFrame())
     if len(pf):
-        st = pf[pf["전략"].astype(str).str.startswith("전략")]
-        bh = pf[pf["전략"].astype(str).eq("매수보유")]
+        # [v0.4.0 R77 버그수정] 라이브 행 라벨은 v0.2.0부터 '★ 라이브(…)'였다 — '전략'으로 찾아 늘 빈 표(NaN)였다.
+        _ll = str(res.get("live_label") or f"★ 라이브({cfg.LIVE_RULE})")
+        st = pf[pf["전략"].astype(str).eq(_ll) & (pf["티커"].astype(str) != "★ 포트(동일가중)")]
+        bh = pf[pf["전략"].astype(str).eq("매수보유") & (pf["티커"].astype(str) != "★ 포트(동일가중)")]
         meta.append(("라이브 규칙 성과(중위)",
                      f"전략 CAGR {st['CAGR'].median():.4f} · MDD {st['최대낙폭(MDD)'].median():.4f} · "
                      f"칼마 {st['칼마(CAGR/MDD)'].median(skipna=True):.3f} vs "
@@ -1832,12 +2057,13 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             p = pos[t]
             if last in p.index:
                 nd.append(f"{t}({STOCK_NAME_KR.get(t, '')}) {p['확정국면'].loc[last]}/"
-                          f"{float(p['목표비중'].loc[last]):.0f}")
+                          f"{float(p['목표비중'].loc[last]):.2f}")    # [v0.4.0] E_t 부분 노출(0.4~0.6)을 반올림하지 않는다
         meta.append((f"다음 거래일 예측({last.date()} 확정 → 익일 집행)", " · ".join(nd)))
     sheets["00_실행요약"] = pd.DataFrame(meta, columns=["항목", "값"])
     sheets["02_티커요약"] = res["quality"]
     sheets["03_예측규칙정확도"] = res["accuracy"]
-    if len(res.get("fund_ledger", pd.DataFrame())):
+    _drop = set(tuple(getattr(cfg, "REPORT_DROP_SHEETS", ()) or ()))       # [v0.4.0 R77]
+    if len(res.get("fund_ledger", pd.DataFrame())) and "04_펀더멘탈원장" not in _drop:
         sheets["04_펀더멘탈원장"] = res["fund_ledger"]
     if len(res.get("earn_ledger", pd.DataFrame())):
         sheets["05_어닝이벤트"] = res["earn_ledger"]
@@ -1859,6 +2085,18 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 parent_map={t: parent_of.get(t, "") for t in sorted(panel)},
                 bench_w=None,          # 주식 계층의 비중 예산은 1.0이므로 완전 참여가 도달 가능한 벤치다
                 layer="개별주식", M=None)
+            # [v0.4.0 R77] 블록 A′(단독 라이브 판정 — I와 같은 함수·같은 문턱) 맨 앞. 00시트 '★ 단일 종목 라이브 예측 vs B&H'의 출처.
+            if hasattr(I, "build_single_live_segments"):
+                try:
+                    _ap = I.build_single_live_segments(
+                        cur, ex, ret, cfg, own_exec=None,
+                        name_map={t: STOCK_NAME_KR.get(t, "") for t in sorted(panel)},
+                        parent_map={t: parent_of.get(t, "") for t in sorted(panel)}, M=None)
+                    if isinstance(_ap, pd.DataFrame) and len(_ap):
+                        seg = pd.concat([_ap, seg], ignore_index=True) if isinstance(seg, pd.DataFrame) else _ap
+                except Exception as e:
+                    log("REPORT", kv(event="single_live_segments_failed", err=type(e).__name__, msg=str(e)[:160]),
+                        level="warning")
             # ---- (K5 ★ 신규) 블록 C — 포트폴리오 구간(동일가중 B&H 대비) ----
             # 왜 필요한가: 블록 A는 "그 **종목**의 상승을 탔나"를 묻는다. 주식 계층은 종목마다
             # 예산이 1.0이라 블록 A도 도달 가능한 벤치를 쓰지만, "이 **계층 전체**가 B&H 대비
@@ -1931,6 +2169,49 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                    "K는 I의 build_asset_return_compare를 재사용한다. "
                    "다음 단계: run_pipeline.main()으로 실행하거나 "
                    "stock_regime.main(I=industry_rotation)처럼 I를 넘길 것.")}])
+    # ---- [v0.4.0 R77 ★] 00D_하락상승개선비교 — I.build_updown_improvement_compare(단일 출처) ----
+    _udv = res.get("updown")
+    if bool(getattr(cfg, "UPDOWN_COMPARE", True)):
+        if I is not None and hasattr(I, "build_updown_improvement_compare") and isinstance(_udv, dict):
+            try:
+                _ret1 = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce")
+                                      for t in sorted(panel)}).reindex(idx)
+                _cur1 = (1.0 + _ret1.fillna(0.0)).cumprod().where(_ret1.notna() | _ret1.ffill().notna())
+                _V = {k: v.reindex(idx) for k, v in (_udv.get("variants") or {}).items()}
+                _ud = I.build_updown_improvement_compare(
+                    _cur1, _ret1, _V, cfg, ref_label=_udv["ref"], old_label=_udv.get("old"),
+                    market_exec=_udv.get("market_exec"), candidate_labels=tuple(_udv.get("cands") or ()),
+                    falsify_labels=tuple(_udv.get("fals") or ()), descriptions=_udv.get("desc"),
+                    name_map={t: STOCK_NAME_KR.get(t, "") for t in sorted(panel)},
+                    parent_map={t: parent_of.get(t, "") for t in sorted(panel)},
+                    layer="종목", cost_bps=10.0, M=None)
+                if isinstance(_ud, pd.DataFrame) and len(_ud):
+                    sheets["00D_하락상승개선비교"] = _ud
+            except Exception as e:
+                log("REPORT", kv(event="updown_compare_failed", err=type(e).__name__, msg=str(e)[:200]), level="warning")
+                sheets["00D_하락상승개선비교"] = pd.DataFrame([{"블록": "A", "변형": "⚠ 산출 실패",
+                                                           "판정": f"{type(e).__name__}: {str(e)[:220]}"}])
+        else:
+            sheets["00D_하락상승개선비교"] = pd.DataFrame([{"블록": "A", "변형": "⚠ 생략됨",
+                                                       "판정": ("I(industry_rotation v0.31.0+) 모듈이 없거나 변형이 비었다 — "
+                                                              "run_pipeline.main()으로 실행하거나 build_report(res, I=industry_rotation)")}])
+    # ---- [v0.4.0 R77] 00시트 판정 3행 — 수치는 시트에서 읽는다 ----
+    try:
+        _m0 = list(sheets["00_실행요약"].itertuples(index=False, name=None))
+        _add: List[Tuple[str, Any]] = []
+        if I is not None and hasattr(I, "single_live_verdict_line"):
+            _add.append(("★ 단일 종목 라이브 예측 vs B&H(하락 회피·상승 참여)",
+                         str(I.single_live_verdict_line(sheets)).replace("(산업 합)", "(종목 합)")))
+        if isinstance(sheets.get("00D_하락상승개선비교"), pd.DataFrame) and I is not None and hasattr(I, "updown_compare_line"):
+            _add.append(("★ 00D_하락상승개선비교 — 개선 방향", I.updown_compare_line(sheets["00D_하락상승개선비교"])))
+        _dd = [n for n in sorted(_drop) if n == "04_펀더멘탈원장" and len(res.get("fund_ledger", pd.DataFrame()))]
+        if _dd:
+            _add.append(("제거한 시트(v0.4.0 R77)", ", ".join(_dd) + " — F 계열(라이브 미사용) 원장 · 티커별 유효일 출처는 02에 있다. "
+                         "되돌리기: k_overrides={'REPORT_DROP_SHEETS': ()}"))
+        if _add:
+            sheets["00_실행요약"] = pd.DataFrame(_m0[:2] + _add + _m0[2:], columns=["항목", "값"])
+    except Exception as e:
+        log("REPORT", kv(event="r77_meta_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
     for t in sorted(panel):
         d = pd.concat([panel[t], pos[t]], axis=1)
         if isinstance((res.get("alloc") or {}).get("target_w"), pd.DataFrame):
@@ -1941,9 +2222,9 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                                             errors="coerce").reindex(d.index)
         sheets[f"01_일별_{t}"] = d.reset_index().rename(columns={"index": "날짜"})
     # 맨 앞으로: 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00A_수익비교", "01Z_주식일별예측", "00_실행요약") if n in sheets]
+    _front = [n for n in ("00A_수익비교", "00D_하락상승개선비교", "01Z_주식일별예측", "00_실행요약") if n in sheets]
     sheets = {**{n: sheets[n] for n in _front},
-              **{k: v for k, v in sheets.items() if k not in _front}}
+              **{k: v for k, v in sheets.items() if k not in _front and k not in _drop}}
     _write(path, sheets)
     _mb = (os.path.getsize(path) / 1e6) if os.path.exists(path) else float("nan")
     log("REPORT", kv(event="written", path=path, sheets=len(sheets), size_mb=round(_mb, 2),
