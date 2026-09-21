@@ -1,5 +1,17 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.36.0 - 2026-09-21 - [R82 ★★ 신뢰도 판정 · 산업 고유 상대예측(29 전체 + 부모 안) · 00R 시트 — 배분 무변경]
+#    시작 v0.35.0 → 목표 v0.36.0. 사용자 지시는 S v0.64.0 머리 주석 참조(같은 라운드).
+#    (§1 ★★) run()이 S.reliability_audit()(단일 정본)를 부른다 — 산업 상장 이후 전체 이력 · 부모 섹터 가격 · M E_t ·
+#      결합점수(build_coupling_state를 **전체 이력으로 다시** 계산 — results의 coupling_score는 SIGNAL_START 이후로 잘려 있다).
+#      시트 **00R_신뢰도판정**(맨 앞) + 00 줄. 블록 C 산업별 타이밍 · D 29산업 선택 · E 부모 안 선택 · F 오늘 예측 · G 보정표.
+#    (§2) 사전등록(발견 표본 2018~2026):
+#      29산업 선택 REL_COMBO_INDUSTRY = COUPLING + BETA_X_REGIME — 보유 달 IC +0.078 · t 2.12 · 7/8년 → '중간(발견 표본)'.
+#      부모 안 선택 REL_COMBO_WITHIN = REL_PARENT_BETA_X_REGIME — 전체 날짜 IC +0.096 · t 2.73 · 7/8년 → '중간(발견 표본)'.
+#        (부모 안에서 모멘텀·복합점수·결합점수는 전부 IC ≈ 0 — 산업층이 부모 ETF에 주차하던 이유가 이것이다.)
+#      ⚠ 둘 다 발견 표본에서 고른 것 — 확정은 2017 이전 독립 구간의 부호로 엔진이 판정한다.
+#    (§3) 산업별 타이밍(M 상속): 중앙 t 1.39 · 29개 중 20개 t ≥ 1. ⚠ 에너지(XOP −0.46 · XES 0.06)는 M 타이밍이 통하지 않는다.
+#    ⚠ 배분(I★)은 바꾸지 않는다. 끄기: i_overrides={"RELIABILITY_AUDIT": False}. 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.35.0 - 2026-09-21 - [R81 ★ K 통로에 산업 결합점수 추가 — 산업 라이브 배분 무변경]
 #    시작 v0.34.0 → 목표 v0.35.0. 사용자 지시(2026-09-21) "비중 0.035 이런 식으로 다 똑같이 주지 말라니까 — 섹터, 산업, 나머지 지표
 #      참고해서 가장 상승 확률 높은 거에 비중을 주라고".
@@ -1783,7 +1795,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.35.0"
+VERSION = "v0.36.0"
 VERSION_DATE = "2026-09-21"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2491,6 +2503,25 @@ class IndustryConfig:
     #   확률 모형 자체는 진단으로 남긴다 — 00E_산업상승확률 · 28_이익모멘텀검정 · [확률격자] 행은 계속 산출된다.
     #   ⚠ 다시 켜려면(재측정 목적): i_overrides={"INDUSTRY_SELECT_MODE": "prob"}.
     INDUSTRY_SELECT_MODE: str = "composite"  # ★ "composite"(v0.32.0·v0.34.0 라이브) | "prob"(v0.33.0 — 사전등록 기준 미통과)
+    # ---- [v0.36.0 R82 ★★ 신규] 신뢰도 판정(타이밍·선택·부모 안 선택 분리) + 산업 고유 상대예측 — 진단 전용(배분 무변경) ----
+    #   함수 본체는 S.reliability_audit()(단일 정본 — S v0.64.0). 기준값도 S와 같게 둔다(층 사이 공정 비교).
+    #   되돌리기(끄기): i_overrides={"RELIABILITY_AUDIT": False}
+    RELIABILITY_AUDIT: bool = True
+    REL_H: int = 21
+    REL_WARMUP: int = 252
+    REL_MIN_ASSETS: int = 5
+    REL_ERA_SPLIT: str = "2018-01-01"
+    REL_ERA1_MIN_MONTHS: int = 24
+    REL_MID_T: float = 1.96
+    REL_MID_YEARS: float = 2.0 / 3.0
+    REL_HIGH_T: float = 3.0
+    REL_HIGH_YEARS: float = 0.75
+    REL_LOW_T: float = 1.0
+    #   사전등록(R82 발견 표본 2018~2026, M 켬 달 55개): 29산업 결합[COUPLING+BETA_X_REGIME] IC +0.078 · t 2.12 · 7/8년.
+    #   부모 안: REL_PARENT_BETA_X_REGIME IC +0.096 · t 2.73 · 7/8년(전체 날짜 — M 꺼진 달엔 부호가 뒤집혀 저베타 선호).
+    #   ⚠ 둘 다 **발견 표본에서 고른 것**이다 — 확정 '중간'은 2017 이전 독립 구간이 같은 부호를 보여야 한다.
+    REL_COMBO_INDUSTRY: Tuple[str, ...] = ("COUPLING", "BETA_X_REGIME")
+    REL_COMBO_WITHIN: Tuple[str, ...] = ("REL_PARENT_BETA_X_REGIME",)
     PROB_HORIZON: int = 21                   # 목표 = 향후 21거래일 '산업 > 부모 ETF' · 엠바고 22거래일
     PROB_MIN_TRAIN_ROWS: int = 2000
     PROB_C: float = 1.0                      # 로지스틱 L2 역강도
@@ -12653,8 +12684,53 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         except Exception as _e:
             log("DRIVER", kv(event="driver_tests_failed", err=type(_e).__name__, msg=str(_e)[:160],
                              trace=traceback.format_exc()[-500:].replace("\n", " | ")), M=M, level="warning")
+    # ---- [v0.36.0 R82 ★★] 신뢰도 판정(00R 시트) — 산업 상장 이후 전체 이력으로(진단 전용) ----
+    _rel_aud = None
+    if bool(getattr(icfg, "RELIABILITY_AUDIT", True)) and hasattr(S, "reliability_audit"):
+        try:
+            _pof = {t: p for t, p, _ in table}
+            _lv = {}
+            for _t, _r in results.items():
+                _rc = (_r or {}).get("ret_cc_full")
+                if isinstance(_rc, pd.Series) and len(_rc.dropna()) > 300:
+                    _lv[_t] = (1.0 + _rc.fillna(0.0)).cumprod().where(_rc.notna())
+            _close_i = pd.DataFrame(_lv).sort_index()
+            _ssec = ((sres.get("sectors") or sres.get("results") or {}) if isinstance(sres, dict) else {})
+            _pl = {}
+            for _p in sorted({p for p in _pof.values() if p}):
+                _rc = ((_ssec.get(_p) or {}).get("ret_cc_full"))
+                if isinstance(_rc, pd.Series) and len(_rc.dropna()) > 300:
+                    _pl[_p] = (1.0 + _rc.fillna(0.0)).cumprod().where(_rc.notna())
+            _close_p = pd.DataFrame(_pl).reindex(_close_i.index)
+            #   결합점수 — 전체 이력으로 다시 만든다(results의 coupling_score는 SIGNAL_START 이후로 잘려 있다). 인과 계산.
+            _cp = {}
+            for _t in _close_i.columns:
+                _p = _pof.get(_t)
+                if _p in _close_p.columns:
+                    try:
+                        _cp[_t] = build_coupling_state(_close_i[_t].dropna(), _close_p[_p], icfg)["score"]
+                    except Exception:
+                        pass
+            _extra = {"COUPLING": pd.DataFrame(_cp).reindex(_close_i.index)} if _cp else {}
+            _spy = res.get("px_adj") if isinstance(res, dict) else None
+            _reg = (res["sig"]["target_pos"] if isinstance(res, dict) and isinstance(res.get("sig"), pd.DataFrame)
+                    and "target_pos" in res["sig"].columns else None)
+            if len(_close_i.columns) >= int(getattr(icfg, "REL_MIN_ASSETS", 5)):
+                _rel_aud = S.reliability_audit(_close_i, _spy, _reg, icfg, "산업",
+                                               tuple(getattr(icfg, "REL_COMBO_INDUSTRY", ("COUPLING", "BETA_X_REGIME"))),
+                                               extra=_extra, parent_close=_close_p,
+                                               parent_of={t: p for t, p in _pof.items() if t in _close_i.columns},
+                                               within_combo=tuple(getattr(icfg, "REL_COMBO_WITHIN", ("REL_PARENT_BETA_X_REGIME",))),
+                                               names=dict(INDUSTRY_NAME_KR), M=M)
+                _rel_aud["regime_coverage"] = (str(pd.Series(_reg).dropna().index.min().date()) if _reg is not None
+                                               and len(pd.Series(_reg).dropna()) else "-")
+        except Exception as _e:
+            log("RELIABILITY", kv(event="audit_failed", layer="산업", err=type(_e).__name__, msg=str(_e)[:160],
+                                  trace=traceback.format_exc()[-400:].replace("\n", " | ")), M=M, level="warning")
+            _rel_aud = {"error": f"{type(_e).__name__}: {str(_e)[:160]}"}
     return {
         "drivers": _drv, "driver_tests": _drv_tests, "driver_rot_grid": _drv_grid,   # [v0.29.0 R75] 27·26·00A·00
+        "reliability": _rel_aud,                                  # [v0.36.0 R82] 00R_신뢰도판정
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
         "reentry_audit": _reentry,                                # [v0.27.0 R73 §4-4] 25_재진입감사
@@ -14684,8 +14760,15 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             sheets.pop(_n, None)
             _dropped.append(_n)
     if S is not None and hasattr(S, "sheets_to_front"):
-        sheets = S.sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교",
-                                   "00E_산업상승확률")
+        # ---- [v0.36.0 R82 ★★] 00R_신뢰도판정(맨 앞) ----
+        _ra = ires.get("reliability")
+        if isinstance(_ra, dict) and _ra.get("grades") is not None and hasattr(S, "build_reliability_sheet"):
+            try:
+                sheets["00R_신뢰도판정"] = S.build_reliability_sheet(_ra, icfg)
+            except Exception as _e:
+                log("REPORT", kv(event="reliability_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
+        sheets = S.sheets_to_front(sheets, "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교",
+                                   "00D_하락상승개선비교", "00E_산업상승확률")
 
     # [v0.23.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다.
     _a0 = sheets.get("00A_수익비교")
@@ -14811,6 +14894,20 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                          "정보가 없다**는 실측의 결과다(R81: 복합점수 IC −0.02 · 결합점수 +0.02). 산업 간 차등은 K가 결합점수로 한다."))
     except Exception as _e:
         log("REPORT", kv(event="sector_mix_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
+    # ---- [v0.36.0 R82 ★★] 신뢰도 판정 줄(00 시트 두 번째 자리부터) ----
+    try:
+        _ra2 = ires.get("reliability")
+        if isinstance(_ra2, dict) and _ra2.get("grades") is not None and hasattr(S, "reliability_lines"):
+            _ln = S.reliability_lines(_ra2)
+            _ln.append(("신뢰도 판정 — 자료 범위",
+                        f"산업 가격 {(_ra2.get('grades') or {}).get('dates', '-')} · M 국면(E_t) 시작 {_ra2.get('regime_coverage', '-')} "
+                        "· 결합점수는 전체 이력으로 다시 계산(인과) · 2017 이전 = 설계에 쓰지 않은 독립 구간"))
+            for _k, _v in reversed(_ln):
+                meta.insert(1, (_k, _v))
+        elif isinstance(_ra2, dict) and _ra2.get("error"):
+            meta.insert(1, ("⚠ 신뢰도 판정(R82)", f"산출 실패 — {_ra2['error']}"))
+    except Exception as _e:
+        log("REPORT", kv(event="reliability_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     meta.append(("★ 노란색 표시(M·S·I·K 공통 약속 · R80)",
                  "노란색 행 = **실제 거래에 쓰는 전략**이다. I는 13_산업배분전략의 ★ 행이 노란색이다. "
                  "나머지 행은 전부 격자·대조군(측정 전용)이며 거래에 쓰지 않는다."))
