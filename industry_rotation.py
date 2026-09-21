@@ -1,5 +1,18 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.37.0 - 2026-09-21 - [R83 ★★ 산업 결합 교체(독립 구간 실패 → FIP+MOM_12_1) · 21개 시작일 평균 t · FF49 외부 검정 — 배분 무변경]
+#    시작 v0.36.0 → 목표 v0.37.0. 사용자 지시는 S v0.65.0 머리 주석 참조(같은 라운드).
+#    ── R82 판정(엔진 i28): 29산업 결합[COUPLING+BETA_X_REGIME] ~2017 IC −0.0098(보유 · t −0.36) ↔ 2018~ +0.0766 → **없음**
+#       — 2018+ 발견 표본에만 맞춘 조합(과적합 확인). 구성원도 각각 실패(COUPLING ~2017 +0.008 · BETA_X_REGIME −0.012).
+#       FIP 단독은 두 범위·두 구간 모두 양수(보유 t 2.14 · ~2017 +0.044 · 2018~ +0.047) → '중간'. 부모 안 결합 t 1.90 → 낮음(~2017 +0.021).
+#    (§1 ★★ 사전등록 교체) REL_COMBO_INDUSTRY = ("FIP", "MOM_12_1") — 규칙: 두 범위 × 두 구간 IC 전부 양수 + 문헌 사전근거
+#      (MOM_12는 MOM_12_1과 중복이라 제외). = 섹터 결합에서 실패 성분을 뺀 '모멘텀 핵'. ⚠ 독립 구간을 본 뒤의 교체라 확정 조건을
+#      하나 더 건다: 외부 FF49 ~1998(한 번도 본 적 없는 표본)에서 t̄ ≤ 0이면 한 단계 강등.
+#    (§2) 부모 안 결합 REL_COMBO_WITHIN은 그대로(실패하지 않음). 통계는 S v0.65.0의 21개 시작일 평균 t(t̄) — 같은 잣대.
+#    (§3) run(): S.fetch_ff49_daily(sres["scfg"])로 FF49를 받아 S.reliability_audit(external=)에 넘긴다(S와 같은 프로세스면 결과 재사용).
+#    (§4) IndustryConfig: REL_METHOD · REL_MIN_YEAR_DAYS · REL_EXTERNAL · REL_EXT_ERA_END · REL_EXT_DOWNGRADE.
+#    ⚠ 배분(I★)·위험 파라미터 변경 없음. 되돌리기: i_overrides={"REL_COMBO_INDUSTRY": ("COUPLING", "BETA_X_REGIME"), "REL_METHOD": "legacy"}.
+#    연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.36.0 - 2026-09-21 - [R82 ★★ 신뢰도 판정 · 산업 고유 상대예측(29 전체 + 부모 안) · 00R 시트 — 배분 무변경]
 #    시작 v0.35.0 → 목표 v0.36.0. 사용자 지시는 S v0.64.0 머리 주석 참조(같은 라운드).
 #    (§1 ★★) run()이 S.reliability_audit()(단일 정본)를 부른다 — 산업 상장 이후 전체 이력 · 부모 섹터 가격 · M E_t ·
@@ -1795,7 +1808,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.36.0"
+VERSION = "v0.37.0"
 VERSION_DATE = "2026-09-21"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2520,8 +2533,24 @@ class IndustryConfig:
     #   사전등록(R82 발견 표본 2018~2026, M 켬 달 55개): 29산업 결합[COUPLING+BETA_X_REGIME] IC +0.078 · t 2.12 · 7/8년.
     #   부모 안: REL_PARENT_BETA_X_REGIME IC +0.096 · t 2.73 · 7/8년(전체 날짜 — M 꺼진 달엔 부호가 뒤집혀 저베타 선호).
     #   ⚠ 둘 다 **발견 표본에서 고른 것**이다 — 확정 '중간'은 2017 이전 독립 구간이 같은 부호를 보여야 한다.
-    REL_COMBO_INDUSTRY: Tuple[str, ...] = ("COUPLING", "BETA_X_REGIME")
+    #   ⚠⚠ [v0.37.0 R83 — 사전등록 교체] R82 결합[COUPLING+BETA_X_REGIME]은 엔진 판정(리포트 i28)에서 **독립 구간 실패**:
+    #     ~2017 IC −0.0098(보유 달 · t −0.36) ↔ 2018~ +0.0766 — 2018+ 발견 표본에만 맞춘 조합이었다(과적합 확인 → 폐기).
+    #     구성원도 각각 실패: COUPLING ~2017 +0.008(t 0.28) · BETA_X_REGIME ~2017 −0.012(t −0.38).
+    #   교체 규칙(사후지만 기계적): 두 범위(전체·보유) × 두 구간(~2017·2018~)에서 IC가 전부 양수이고 문헌 사전근거가 있는 후보 →
+    #     FIP(i28 보유 달 t 2.14 · ~2017 +0.044 · 2018~ +0.047) · MOM_12_1(t 1.78 · +0.068 · +0.008).
+    #     = 섹터 결합에서 실패 성분(BETA_X_REGIME)을 뺀 것과 같은 '모멘텀 핵'. MOM_12(= MOM_12_1과 거의 중복)는 넣지 않는다.
+    #   ⚠ 독립 구간 결과를 본 뒤의 교체다 — 그래서 **확정 조건**을 하나 더 건다: 외부 FF49 ~1998(ETF 이전 · 한 번도 본 적 없는
+    #     표본)에서 같은 코드로 t̄ ≤ 0(반증)이면 한 단계 강등(REL_EXT_DOWNGRADE). 되돌리기: i_overrides={"REL_COMBO_INDUSTRY": ("COUPLING", "BETA_X_REGIME")}
+    REL_COMBO_INDUSTRY: Tuple[str, ...] = ("FIP", "MOM_12_1")
+    #   부모 안: R82 등록 REL_PARENT_BETA_X_REGIME은 ~2017에서도 IC > 0(+0.021) — 실패하지 않았으므로 유지(사전등록 원칙).
     REL_COMBO_WITHIN: Tuple[str, ...] = ("REL_PARENT_BETA_X_REGIME",)
+    #   [v0.37.0 R83] '어떻게 재나'(S v0.65.0과 같은 값 — 층 사이 같은 잣대). 근거는 S.rel_daily_ic() 위 머리 주석.
+    #   되돌리기(R82 추정량): i_overrides={"REL_METHOD": "legacy"}
+    REL_METHOD: str = "phase"          # 21개 시작일 단순 t의 평균(t̄ · 보수적) | "legacy"
+    REL_MIN_YEAR_DAYS: int = 21
+    REL_EXTERNAL: bool = True          # FF49 ~1998 외부 장기 검정(블록 H)
+    REL_EXT_ERA_END: str = "1998-12-31"
+    REL_EXT_DOWNGRADE: bool = True     # ⚠ 외부 ~1998 t̄ ≤ 0(반증)이면 결합 등급 한 단계 강등
     PROB_HORIZON: int = 21                   # 목표 = 향후 21거래일 '산업 > 부모 ETF' · 엠바고 22거래일
     PROB_MIN_TRAIN_ROWS: int = 2000
     PROB_C: float = 1.0                      # 로지스틱 L2 역강도
@@ -12716,12 +12745,17 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
             _reg = (res["sig"]["target_pos"] if isinstance(res, dict) and isinstance(res.get("sig"), pd.DataFrame)
                     and "target_pos" in res["sig"].columns else None)
             if len(_close_i.columns) >= int(getattr(icfg, "REL_MIN_ASSETS", 5)):
+                #   [v0.37.0 R83] 외부 장기 검정 자료(FF49 — S가 13h용으로 받아 둔 캐시 · 같은 프로세스면 결과도 재사용)
+                _ff = None
+                if (bool(getattr(icfg, "REL_EXTERNAL", True)) and str(getattr(icfg, "REL_METHOD", "phase")) == "phase"
+                        and hasattr(S, "fetch_ff49_daily") and isinstance(sres, dict) and sres.get("scfg") is not None):
+                    _ff = S.fetch_ff49_daily(sres["scfg"], M=M)
                 _rel_aud = S.reliability_audit(_close_i, _spy, _reg, icfg, "산업",
-                                               tuple(getattr(icfg, "REL_COMBO_INDUSTRY", ("COUPLING", "BETA_X_REGIME"))),
+                                               tuple(getattr(icfg, "REL_COMBO_INDUSTRY", ("FIP", "MOM_12_1"))),
                                                extra=_extra, parent_close=_close_p,
                                                parent_of={t: p for t, p in _pof.items() if t in _close_i.columns},
                                                within_combo=tuple(getattr(icfg, "REL_COMBO_WITHIN", ("REL_PARENT_BETA_X_REGIME",))),
-                                               names=dict(INDUSTRY_NAME_KR), M=M)
+                                               names=dict(INDUSTRY_NAME_KR), M=M, external=_ff)
                 _rel_aud["regime_coverage"] = (str(pd.Series(_reg).dropna().index.min().date()) if _reg is not None
                                                and len(pd.Series(_reg).dropna()) else "-")
         except Exception as _e:
@@ -14901,11 +14935,13 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             _ln = S.reliability_lines(_ra2)
             _ln.append(("신뢰도 판정 — 자료 범위",
                         f"산업 가격 {(_ra2.get('grades') or {}).get('dates', '-')} · M 국면(E_t) 시작 {_ra2.get('regime_coverage', '-')} "
-                        "· 결합점수는 전체 이력으로 다시 계산(인과) · 2017 이전 = 설계에 쓰지 않은 독립 구간"))
+                        "· 결합점수는 전체 이력으로 다시 계산(인과) · 2017 이전 = 설계에 쓰지 않은 독립 구간"
+                        + (" · R83: 21개 시작일 평균 t(t̄) · 결합 교체 FIP+MOM_12_1 · FF49 ~1998 외부 검정(블록 H)"
+                           if str(_ra2.get("method", "")) == "phase" else "")))
             for _k, _v in reversed(_ln):
                 meta.insert(1, (_k, _v))
         elif isinstance(_ra2, dict) and _ra2.get("error"):
-            meta.insert(1, ("⚠ 신뢰도 판정(R82)", f"산출 실패 — {_ra2['error']}"))
+            meta.insert(1, ("⚠ 신뢰도 판정(R82·R83)", f"산출 실패 — {_ra2['error']}"))
     except Exception as _e:
         log("REPORT", kv(event="reliability_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     meta.append(("★ 노란색 표시(M·S·I·K 공통 약속 · R80)",
