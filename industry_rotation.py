@@ -1,5 +1,21 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.39.0 - 2026-09-22 - [R85 ★★ S★ 섹터근거 부분채움(S v0.67.0)이 I★로 전달 · 'OFF 기준' 전후 비교 행 · 00 줄 — I 자체 규칙 무변경]
+#    시작 v0.38.0 → 목표 v0.39.0. 사용자 지시는 S v0.67.0 머리 주석 참조(같은 라운드 · "시장 국면은 참고만, 섹터별 상승·하락 근거").
+#    ── 왜 I★가 바뀌나: I★는 S★ 섹터 비중 **안에서만** 산업을 고른다(계층 정합: 산업 + 부모 = S★ 섹터 비중). S★가 부분예산일(0<E_t<1)에
+#       상승 근거 섹터를 채우면(⚠ 노출↑) I★도 그 섹터 몫을 같은 규칙(리더 산업/부모)으로 담는다 — I의 규칙은 한 글자도 안 바뀐다.
+#    ── 산업층 자기 근거는 왜 안 넣었나(오프라인 r85/iexp85.py · I★ 하네스 · 2018-11~ · I★ 12.486배 · MDD −9.01% · 칼마 4.208):
+#       보유 산업 자기 하락(200일선 아래) → 부모 11.814배 · 칼마 4.112(열위 · 무작위 칸 대비 백분위 0) · 형제 산업으로 11.558(열위)
+#       부모 잔여다리 → 자기근거 1위 산업 13.390배지만 MDD −11.93% · 칼마 3.281(위험만 늘어남). ⇒ 산업층 규칙은 바꾸지 않는다.
+#    ── S★ 채움이 I★에 주는 영향(r85/iprop85.py 근사 — 새 섹터 몫은 부모 ETF로): 채움 25%(라이브) I★ 12.486 → 12.763(+2.2%) ·
+#       MDD −9.01 → −9.10% · 칼마 4.208 → 4.208 | 50%였다면 13.019 · MDD −9.53% · 칼마 4.054 — 그래서 S는 25%를 골랐다.
+#       실제 값은 엔진의 [섹터근거전달] OFF 행 대비로 본다(엔진은 새 섹터 몫도 리더 산업/부모 규칙으로 나눈다).
+#    ⚠ 사전등록(R85 (e)): I★ MDD가 OFF 행보다 0.5%p 넘게 나빠지면 S의 OWN_EVIDENCE_FILL을 0으로 되돌린다.
+#    (§1 측정) build_industry_allocation(): S가 넘긴 target_w_off(채움 이전 S★)로 **'I★ · S★ 섹터근거 채움 OFF 기준'** 행을 만든다 —
+#       부모별로 I★의 부모 안 비율을 그대로 두고 부모 몫만 OFF 값으로 바꾼다(부모 안 배분은 부모 비중의 비율로 정해지므로 같은 날 같은 판단).
+#       13_산업배분전략에 [섹터근거전달] 행으로 실린다. S가 채움을 끄면(target_w_off = S★) 이 행은 I★와 같다.
+#    (§2) i_yellow_lines(label_off=): OFF 행이 있으면 '노란색(I★)이 R85에서 바뀐 이유'(OFF → 라이브 배수·CAGR·MDD·칼마)를, 없으면 R84 줄.
+#    ⚠ I 자체의 위험 파라미터 변경 없음(노출 변화는 S★에서 온다 — S v0.67.0 OWN_EVIDENCE_FILL). 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.38.0 - 2026-09-22 - [R84 ★ '노란색(I★)이 왜 그대로인가' 00 줄 · 신호 자체 신뢰도(H2)·검정력은 S v0.66.0 공용 — 배분 무변경]
 #    시작 v0.37.0 → 목표 v0.38.0. 사용자 지시는 S v0.66.0 머리 주석 참조(같은 라운드).
 #    ── R83 판정(엔진 i30): 산업 선택 FIP+MOM_12_1(보유 날) t̄ 1.71 · 연도 14/22 = 64% · 두 구간 양수 · 외부 지지 → 낮음.
@@ -1817,7 +1833,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.38.0"
+VERSION = "v0.39.0"
 VERSION_DATE = "2026-09-22"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -5917,6 +5933,45 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             log("ROTATION", kv(event="exposure_mix_grid_failed", err=type(_e).__name__, msg=str(_e)[:160],
                                action="격자 없이 배분 계속(주 전략 무영향)"), M=M, level="warning")
 
+    # ---- [v0.39.0 R85 ★★ 측정] S★ 섹터근거 채움 전후를 I★에서도 보이게 — 'OFF 기준' 행 ----
+    #   S v0.67.0이 부분예산일에 상승 근거 섹터를 채운다(⚠ S의 노출↑). I★는 그 섹터 비중 안에서 같은 규칙으로 산업을 고르므로
+    #   I★도 바뀐다. 전후를 같은 표에서 보려고, I★의 부모 안 비율은 그대로 두고 부모 몫만 S가 넘긴 target_w_off(채움 이전 S★)로
+    #   바꾼 행을 싣는다. 부모 안 배분(리더 확신100%/강등50%/보유0% · 잔여 parent)은 부모 비중의 **비율**로 정해지므로 같은 날 같은 판단이다.
+    label_s_off = None
+    try:
+        _s_off = s_alloc.get("target_w_off")
+        if isinstance(_s_off, pd.DataFrame) and len(_s_off) and label_star in target_ws:
+            _w_off_all = _s_off.reindex(index=eval_idx, columns=s_all_cols).fillna(0.0).astype(float)
+            _tw_live = target_ws[label_star]
+            _tw_off = pd.DataFrame(0.0, index=eval_idx, columns=_tw_live.columns)
+            _odd_n = 0
+            for _p in active_parents:
+                _grp = [c for c in [t for t in cols if parent_of[t] == _p] + [_p] if c in _tw_live.columns]
+                _wp = w_s_all[_p]
+                _wo = _w_off_all[_p]
+                _ratio = (_wo / _wp.where(_wp > 1e-12)).fillna(0.0)
+                _tw_off[_grp] = _tw_live[_grp].mul(_ratio, axis=0)
+                _odd = (_wp <= 1e-12) & (_wo > 1e-12)       # 라이브 0 · OFF > 0(채움은 위로만이라 정상이면 0일) → 부모 열로
+                if bool(_odd.any()) and _p in _tw_off.columns:
+                    _tw_off.loc[_odd, _p] = _wo[_odd]
+                    _odd_n += int(_odd.sum())
+            for _c in passthrough_cols:
+                if _c in _tw_off.columns:
+                    _tw_off[_c] = _w_off_all[_c]
+            label_s_off = "I★ · S★ 섹터근거 채움 OFF 기준(= S v0.66.0 틀) [섹터근거전달]"
+            target_ws[label_s_off] = _tw_off
+            _gap = float((_tw_off.sum(axis=1) - _w_off_all.sum(axis=1)).abs().max())
+            log("ROTATION", kv(event="s_own_fill_off_row", rows=len(_tw_off), odd_days=_odd_n,
+                               exposure_live=round(float(_tw_live.sum(axis=1).mean()), 4),
+                               exposure_off=round(float(_tw_off.sum(axis=1).mean()), 4),
+                               hierarchy_gap_max=round(_gap, 12),
+                               note="측정 전용 — I★(라이브)는 S★(채움 포함)를 따른다"), M=M,
+                level=("info" if _gap < 1e-9 else "warning"))
+    except Exception as _e:
+        log("ROTATION", kv(event="s_own_fill_off_row_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                           action="OFF 기준 행만 생략 — I★ 무영향"), M=M, level="warning")
+        label_s_off = None
+
     bts: Dict[str, pd.DataFrame] = {}
     star_label = next((c for c in s_alloc.get("bts", {}) if str(c).endswith("★")), None)
     for label, tw in target_ws.items():
@@ -6006,6 +6061,7 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "grid_line": grid_line, "grid_candidates": _cand, "only_mode": live_mode,   # [v0.3.0 §B1/§A3]
         "parent_state": parent_state, "follow_corr": follow_corr,
         "groups": groups, "label_star": label_star, "label_ctrl_a": label_ctrl_a, "label_ctrl_b": label_ctrl_b,
+        "label_s_off": label_s_off,                                                    # [v0.39.0 R85] S★ 채움 OFF 기준 행
         "select_mode": select_mode, "groups_leader3": groups_leader3,                 # [v0.33.0 R79]
         "prob_pack": prob_pack,                                                        # [v0.33.0 R79] 드라이버 격자 재사용(참조)
         "prob_market_gate": bool(_mkt_gate_on and _mkt_full is not None),
@@ -13743,8 +13799,10 @@ def single_live_verdict_line(sheets: Dict[str, pd.DataFrame]) -> str:
     return " | ".join(parts) if parts else "산출 불가(00A·19 A′ 없음)"
 
 
-def i_yellow_lines(perf: Optional[pd.DataFrame], label_star: Optional[str], rel: Optional[dict]) -> List[Tuple[str, str]]:
-    """[v0.38.0 R84] 00 시트 줄 — 노란색(I★ 라이브) 수익배수가 왜 그대로인가(사용자 질문 2026-09-22)."""
+def i_yellow_lines(perf: Optional[pd.DataFrame], label_star: Optional[str], rel: Optional[dict],
+                   label_off: Optional[str] = None) -> List[Tuple[str, str]]:
+    """[v0.38.0 R84 → v0.39.0 R85] 00 시트 줄 — 노란색(I★ 라이브) 수익배수. label_off('S★ 채움 OFF 기준' 행)가 있고 I★와 다르면
+    'R85에서 바뀐 이유'(OFF → 라이브)를, 아니면 R84의 '왜 그대로인가'를 싣는다."""
     out: List[Tuple[str, str]] = []
     if not (isinstance(perf, pd.DataFrame) and len(perf) and "전략" in perf.columns and label_star):
         return out
@@ -13755,6 +13813,20 @@ def i_yellow_lines(perf: Optional[pd.DataFrame], label_star: Optional[str], rel:
     f = lambda c: float(pd.to_numeric(r0.get(c), errors="coerce")) if c in row.columns else float("nan")
     wi = (((rel or {}).get("grades") or {}).get("within") or {}) if isinstance(rel, dict) else {}
     se = (((rel or {}).get("grades") or {}).get("selection") or {}) if isinstance(rel, dict) else {}
+    if label_off:
+        rw = perf[perf["전략"].astype(str) == str(label_off)]
+        if len(rw):
+            o0 = rw.iloc[0]
+            g = lambda c: float(pd.to_numeric(o0.get(c), errors="coerce")) if c in rw.columns else float("nan")
+            if abs(g("총수익배수") - f("총수익배수")) > 1e-9:
+                out.append(("★★★ 노란색(I★ 라이브) 수익배수 — R85에서 바뀐 이유",
+                            f"I★ 배수 {g('총수익배수'):.3f} → **{f('총수익배수'):.3f}** · CAGR {g('CAGR') * 100:.2f}% → {f('CAGR') * 100:.2f}% · "
+                            f"MDD {g('최대낙폭(MDD)') * 100:.2f}% → {f('최대낙폭(MDD)') * 100:.2f}% · 칼마 {g('칼마(CAGR/MDD)'):.3f} → "
+                            f"{f('칼마(CAGR/MDD)'):.3f}(왼쪽 = 13의 [섹터근거전달] OFF 행). I의 규칙은 그대로다 — S★가 부분예산일에 "
+                            "**섹터 자신의 상승 근거**(자기 국면 상승 · 자기 추세 · 상대 추세)로 남는 현금 일부(S 설정 OWN_EVIDENCE_FILL · 기본 25%)를 채우면서(⚠ S의 노출↑), I★도 그 섹터 "
+                            "몫을 같은 규칙(리더 산업/부모)으로 담는다. 산업층 자기 근거(자기 하락 → 부모 등)는 오프라인에서 전부 열위라 넣지 않았다. "
+                            "되돌리기는 S에서: s_overrides={'OWN_EVIDENCE_FILL': 0.0}."))
+                return out
     out.append(("★★ 노란색(I★ 라이브) 수익배수가 왜 그대로인가(R84)",
                 f"현재 I★ 총수익배수 {f('총수익배수'):.3f} · CAGR {f('CAGR') * 100:.2f}% · MDD {f('최대낙폭(MDD)') * 100:.2f}% · "
                 f"칼마 {f('칼마(CAGR/MDD)'):.3f}. R82·R83·R84는 신뢰도를 **재는 방법**(00R)만 바꿨고 산업 배분 규칙은 R81 이후 그대로다. "
@@ -14986,7 +15058,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                  "나머지 행은 전부 격자·대조군(측정 전용)이며 거래에 쓰지 않는다."))
     # ---- [v0.38.0 R84 ★★] '노란색(I★) 수익배수가 왜 그대로인가' — 신뢰도 줄 바로 다음에 둔다 ----
     try:
-        _yl = i_yellow_lines(sheets.get("13_산업배분전략"), (alloc or {}).get("label_star"), ires.get("reliability"))
+        _yl = i_yellow_lines(sheets.get("13_산업배분전략"), (alloc or {}).get("label_star"), ires.get("reliability"),
+                             (alloc or {}).get("label_s_off"))
         for _k, _v in reversed(_yl):
             meta.insert(1 + int(_n_rel), (_k, _v))
     except Exception as _e:

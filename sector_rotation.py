@@ -17,6 +17,34 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.67.0 - 2026-09-22 - [R85 ★★★ 섹터 자기 근거로 M 예산 위를 채움(라이브 · ⚠ 노출↑) + [섹터근거격자] + 장기 검증(1999~)]
+#    사용자 지시(2026-09-22, 리포트 s13·i31) "노란색 수익배수 또 그대로야 내가 신뢰도를 높이라는건 하락 잘 피하고 상승 잘타는 건데 …",
+#      "시장 국면은 냅둬 섹터별로 시장 국면별로 안따라갈때도 있잖아 내가 시장 국면은 그냥 참고만 하고 섹터별 상승, 하락 근거 따로
+#      찾으라고 했잖아", "그렇게 수정해봐". 시작 v0.66.0 → 목표 v0.67.0. M(market_regime_trader.py)은 한 줄도 바꾸지 않았다.
+#    ── 오프라인 탐색(r85/*.py · ★ 재현 하네스 · 2018-11~ · ★ 10.541배 · MDD −8.57% · 칼마 4.080) ──
+#      M이 끄는 날(E_t=0, 544일) 11개 섹터 **전부** 평균 음수 · E_t=1(743일) 전부 양수 → 이 표본에서 '국면을 안 따라가는 섹터'는 드물다.
+#      하락 근거로 빼기(M 켬일): 칼마 1.2~2.1(열위) · 상승 근거로 들기(M 끔일): 배수 9.39(열위) · XLK 자기 약세 회전: 8.4~9.0(열위).
+#      하락 근거 교체(대피처): 원시 종가 +1.8% → **총수익 지수(엔진 정의) +0.1%**(배당락 착시 — R80 교훈대로 엔진 정의로 다시 쟀다).
+#      **부분예산일(0<E_t<1) 남는 현금 일부 → 상승 근거 상위2** — 배수를 올리면서 MDD를 안 늘리는 유일한 규칙군:
+#        채움 25%: S★ 10.795(+2.4%) · MDD −8.57%(동일) · 칼마 4.128(+0.048) · 무작위 2섹터 대비 백분위 100 · 균등 채움 10.602
+#        채움 50%: S★ 11.032(+4.7%) · MDD 동일 · 칼마 4.171 — 그러나 I★(근사)에선 MDD −9.01 → −9.53%(−0.52%p) · 칼마 4.208 → 4.054.
+#        ⇒ **25%를 라이브로** 고른 이유: S·I 두 층 모두 배수↑·MDD 불변(I★ 12.486 → 12.763 · MDD −9.10% · 칼마 4.208 그대로)인
+#          가장 작은 값. 50%는 S만 좋아지고 I는 위험조정이 나빠진다(사용자 기준 "수익률 숫자만 높게 나온다고 좋은 게 아니라고").
+#      ⚠ 한계(25%): 칼마 +0.048은 R84 기준 (i) +0.05에 **한 끗 모자람** · 부트스트랩 P(칼마↑) 0.42 · P(배수↑) 0.76 · MDD 악화 하위 5% −1.03%p
+#        · 연도 4/8 · 독립 FF12 1999~2017 선택 효과 없음(백분위 7). 채움 이득의 상당 부분은 **노출(주식 위험 프리미엄)**이다.
+#    (§1 ★★★ 라이브 ⚠ 위험 파라미터 — 노출↑) build_sector_allocation() [섹터근거] 블록: OWN_EVIDENCE_FILL 0 → **0.25**.
+#      부분예산일 평균 총비중 0.496 → 0.603(오프라인). 되돌리기 s_overrides={"OWN_EVIDENCE_FILL": 0.0} ⇒ v0.66.0 ★와 비트 동일.
+#      ★ 라벨 = 기존 라벨 + " · 섹터근거 부분채움 25% ★"('★'로 끝남 — S·I가 endswith("★")로 찾는다).
+#    (§2 측정) [섹터근거격자] 13 시트 행: OFF(v0.66.0 ★) · 채움 25/75/100% · 균등 채움(근거 없음) · 하락근거 교체(진단) · 대조군 12.
+#    (§3 측정) own_long_audit(): 엔진 전체 이력(섹터 1999~ · M E_t)으로 M 단독 vs ①SPY 채움 vs ②상승근거 채움 vs ③E_t=0 상승근거
+#      vs ④예산 전부 상승근거 — 2000~2017(독립) · 2018~ · 하락포착/상승포착 · 대조군. 오프라인엔 2018 이전 자료가 없어 엔진만 잴 수 있다.
+#    (§4) run_sector() 반환에 "state_full"(국면기계 상태 전체 이력 — 장기 검증용, 기존 "state"는 그대로) 추가.
+#    (§5) 00S_섹터자기근거 시트(맨 앞) + 00 줄 3개(노란색이 바뀐 이유 · 사전등록 판정 · 장기 검증). R84 '왜 그대로인가' 줄은 채움이 켜져
+#      있으면 이 줄로 대체된다. 반환 dict에 "target_w_off"(채움 이전 ★ — I가 I★ 전후 비교에 쓴다).
+#    ⚠ 사전등록(R85 → 다음 리포트, 엔진 값): (a) ★ 칼마 < OFF (b) ★ ≤ 대조군 95% (c) MDD 0.5%p 넘게 악화
+#      (d) 2000~2017 ②가 ①과 대조군 95%를 둘 다 못 이김 (e) I★ MDD가 I의 [섹터근거전달] OFF 행보다 0.5%p 넘게 악화
+#      — 하나라도 해당하면 되돌린다(OWN_EVIDENCE_FILL=0.0).
+#    ⚠ 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.66.0 - 2026-09-22 - [R84 ★★ '노란색이 왜 그대로인가' 답 + [모멘텀연결격자](예측→배분 · 측정 전용) + 신호 자체 신뢰도(H2) · 검정력]
 #    사용자 지시(2026-09-22, 리포트 s11·i30) "섹터랑 산업층 신뢰도 높음으로 … 도대체 뭐가 문제야? 지표? 아니면 검증방법? …
 #      그리고 고치고 있는거 맞아? 왜 노란색 표시된 수익배수는 그대로야". 시작 v0.65.0 → 목표 v0.66.0.
@@ -2723,7 +2751,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.66.0"
+VERSION = "v0.67.0"
 VERSION_DATE = "2026-09-22"
 
 # =============================================================================
@@ -3381,6 +3409,24 @@ class SectorConfig:
     ALLOC_LINK_LAMBDAS: Tuple[float, ...] = (0.5, 1.0)       # 비중 기울임 강도
     ALLOC_LINK_CONTROLS: int = 12      # 변형마다 같은 구조 무작위 대조군 수
     ALLOC_LINK_SEED: int = 20260922    # 대조군 씨앗(재현성)
+    # ---- [v0.67.0 R85 ★★★ 신규 · 라이브] 섹터 자기 근거(상승·하락) — M(E_t)은 참고(예산), 섹터 편입은 섹터 자신의 근거로 ----
+    #   근거·실측·한계·사전등록 되돌림 조건은 build_sector_allocation()의 [섹터근거] 블록 주석.
+    #   ⚠ OWN_EVIDENCE_FILL은 **노출을 늘리는 위험 파라미터**다(부분예산일 남는 현금 중 채우는 비율).
+    #     되돌리기: s_overrides={"OWN_EVIDENCE_FILL": 0.0} ⇒ v0.66.0 ★와 비트 동일. 블록 전체 끄기: {"OWN_EVIDENCE_ENABLE": False}.
+    OWN_EVIDENCE_ENABLE: bool = True
+    OWN_EVIDENCE_FILL: float = 0.25            # ⚠ [v0.67.0] 0.0 → 0.25 — 부분예산일(0<E_t<1) 남는 현금 중 상승근거 섹터로 채울 비율
+    OWN_EVIDENCE_FILL_K: int = 2               # 채울 섹터 수(상승 근거 · 63일 상대수익 상위 · 주력 제외)
+    OWN_EVIDENCE_N_LONG: int = 200             # 자기 추세 장기선(총수익 지수)
+    OWN_EVIDENCE_N_SHORT: int = 50             # 자기 추세 단기선
+    OWN_EVIDENCE_N_REL: int = 50               # 상대 추세(섹터/섹터평균 비율)의 기준선
+    OWN_EVIDENCE_N_RS: int = 63                # 순위용 상대수익 기간
+    OWN_EVIDENCE_GRID_FILLS: Tuple[float, ...] = (0.25, 0.5, 0.75, 1.0)   # [섹터근거격자] 채움 비율(라이브 값은 자동 제외)
+    OWN_EVIDENCE_CONTROLS: int = 12            # 같은 날·같은 몫 무작위 대조군 수
+    OWN_EVIDENCE_SEED: int = 20260923          # 대조군 씨앗(재현성)
+    OWN_EVIDENCE_LONG_AUDIT: bool = True       # 장기 검증(엔진 전체 이력 · 측정 전용)
+    OWN_EVIDENCE_FILL_AUDIT: Optional[float] = None   # 장기 검증의 채움 비율 — None이면 라이브 값(라이브가 0이면 0.25)
+    OWN_EVIDENCE_OFF_POS: float = 0.25         # 장기 검증 ③(E_t=0일 상승근거 섹터) 비중 — 하락국면리더와 같은 값
+    OWN_EVIDENCE_LONG_USE_STATE: bool = False  # 장기 검증에 국면기계 상태 조건을 넣을지 — 2018 이전 상태는 추세필터 폴백뿐이라 기본 끔
     SECTOR_SELF_CUT_Q: float = 1.0 / 3.0        # 하위 몇 분위를 깎는가(0.25/0.33/0.5를 격자가 함께 잰다)
     SECTOR_SELF_CUT_FRAC: float = 0.25          # ⚠ 깎는 폭(0.25/0.50/1.00을 격자가 함께 잰다)
     SECTOR_SELF_CUT_CONTROLS: int = 12          # 같은 개수 무작위 대조군 행 수(0이면 끔) — 13 시트에서 직접 판정
@@ -6631,6 +6677,7 @@ def run_sector(ticker: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "hazard_source": scfg.HAZARD_SOURCE, "vol_scale": vol_scale,   # [v0.3.0 §1.B/§1.C]
             # 통합 시트용 소형 시리즈
             "state": sig["state"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
+            "state_full": sig["state"],   # [v0.67.0 R85 §4] 국면기계 상태 전체 이력 — 섹터 자기근거 장기 검증용(배분·리포트 무관)
             "target_pos": sig["target_pos"].loc[sig.index >= pd.Timestamp(cfg_i.SIGNAL_START)],
             "score_pct": score_pct.loc[sig_mask], "haz_pct": haz_pct.loc[sig_mask],
             "haz_pct_sector": haz_pct_sector.loc[sig_mask],   # [v0.3.0 §1.B] 진단용(신호 미관여)
@@ -8280,6 +8327,394 @@ def external_validation_ff49(scfg: SectorConfig, M, years: List[int], spy_series
     return ext, pd.DataFrame(rows)
 
 
+# =============================================================================
+# [v0.67.0 R85 ★★★ 신규] 섹터 자기 근거(상승·하락) — M(E_t)은 참고(예산), 섹터 편입은 섹터 자신의 근거로
+# =============================================================================
+#   사용자 지시(2026-09-22) "시장 국면은 냅둬 섹터별로 시장 국면별로 안따라갈때도 있잖아 내가 시장 국면은 그냥 참고만 하고
+#     섹터별 상승, 하락 근거 따로 찾으라고 했잖아", "그렇게 수정해봐".
+#   '상승 근거'(날짜×섹터, 전부 t일 종가까지) = 자기 국면기계 상승(RISK_ON) & 자기 추세 상승(총수익 지수 > 200일선 & > 50일선)
+#     & 상대 추세 상승(섹터/섹터평균 비율 > 그 50일선). 순위 = 63일 상대수익(섹터 − 섹터평균).
+#   '하락 근거' = 자기 추세 하락(총수익 지수 < 200일선).
+#   ⚠ 지표 정의는 **엔진이 쓰는 총수익 지수**(ret_cc_full 누적)다. R80 자기근거 컷은 오프라인에서 다른 점수(리포트 백분위)로
+#     재서 엔진과 어긋났다(누적 교훈). 이번에는 오프라인도 00C의 B&H(=총수익) 지수로 쟀고, 원시 종가로 재면 '하락 근거 교체'가
+#     +1.8%로 보이던 것이 총수익 지수로는 +0.1%로 줄었다(배당락이 고배당 섹터를 200일선 아래로 보이게 만든 착시) — r85/eng85.py.
+
+def own_evidence_frames(level: pd.DataFrame, state: Optional[pd.DataFrame] = None, n_long: int = 200,
+                        n_short: int = 50, n_rel: int = 50, n_rs: int = 63) -> Dict[str, pd.DataFrame]:
+    """섹터 자기 근거 행렬(날짜×섹터) — **t일 종가까지의 정보만** 쓴다(체결은 호출부 규약대로 t+1 시가).
+    level : 섹터 총수익 지수(상장 전 NaN). 시장 기준 = 상장된 섹터들의 **평균 일수익** 누적(SPY가 아니라 섹터 평균 —
+            '이 섹터가 다른 섹터들과 다르게 움직이는가'를 본다).
+    state : 섹터 자기 국면기계 상태("RISK_ON"/"NEUTRAL"/"RISK_OFF"…) — None이면 조건에서 뺀다(장기 검증의 폴백).
+    반환  : own_up · own_dn · rel_up · rs · st_up · cand(= own_up & rel_up & st_up)."""
+    L = level.astype(float)
+    sl = L.rolling(int(n_long), min_periods=int(n_long)).mean()
+    ss = L.rolling(int(n_short), min_periods=int(n_short)).mean()
+    mr = L.pct_change(fill_method=None).mean(axis=1)
+    mk = (1.0 + mr.fillna(0.0)).cumprod()
+    rel = L.div(mk, axis=0)
+    rel_up = rel > rel.rolling(int(n_rel), min_periods=int(n_rel)).mean()
+    own_up = (L > sl) & (L > ss) & sl.notna()
+    own_dn = (L < sl) & sl.notna()
+    rs = (L / L.shift(int(n_rs)) - 1.0).sub(mk / mk.shift(int(n_rs)) - 1.0, axis=0)
+    if state is not None:
+        st_up = state.reindex(index=L.index, columns=L.columns).eq("RISK_ON")
+    else:
+        st_up = pd.DataFrame(True, index=L.index, columns=L.columns)
+    cand = own_up & rel_up & st_up
+    return {"own_up": own_up, "own_dn": own_dn, "rel_up": rel_up, "rs": rs, "st_up": st_up, "cand": cand}
+
+
+def _own_top_by(score: pd.DataFrame, cand: pd.DataFrame, k: int) -> pd.DataFrame:
+    """날마다 cand 안에서 score 상위 k개를 균등(합 1) — 후보가 없으면 0행. 동률은 열 순서가 앞선 쪽."""
+    sc = score.where(cand.fillna(False).astype(bool))
+    rk = sc.rank(axis=1, ascending=False, method="first")
+    sel = (rk <= int(k)) & sc.notna()
+    return sel.div(sel.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
+
+
+def _own_rand_sel(pool: pd.DataFrame, k: int, seed: int) -> pd.DataFrame:
+    """대조군: 날마다 pool(True) 안에서 **무작위 k개** 균등 — 벡터화(무작위 점수의 상위 k)."""
+    rng = np.random.default_rng(int(seed))
+    rnd = pd.DataFrame(rng.random(pool.shape), index=pool.index, columns=pool.columns)
+    return _own_top_by(rnd, pool, k)
+
+
+def own_evidence_fill(W: pd.DataFrame, fr: Dict[str, pd.DataFrame], secs: List[str], primary: str,
+                      days: pd.Series, frac: float, k: int = 2, sel: Optional[pd.DataFrame] = None
+                      ) -> Tuple[pd.DataFrame, pd.Series]:
+    """[⚠ 노출 증가] M이 '일부만'(0<E_t<1) 준 날(days), 남는 현금(1 − 그날 합계)의 frac을 상승 근거 섹터 상위 k(주력 제외)로 채운다.
+    위로만 더한다(기존 비중 무변경) · 합계는 1.0을 넘지 않는다. sel을 주면 그 선택으로(대조군). 반환: (새 비중, 채운 몫)."""
+    d = days.reindex(W.index).fillna(False).astype(bool)
+    if sel is None:
+        cf = fr["cand"].reindex(index=W.index, columns=secs).fillna(False).astype(bool).copy()
+        if primary in cf.columns:
+            cf[primary] = False
+        sel = _own_top_by(fr["rs"].reindex(index=W.index, columns=secs), cf, k)
+    sel = sel.reindex(index=W.index, columns=secs).fillna(0.0).mul(d.astype(float), axis=0)
+    rem = (1.0 - W.fillna(0.0).sum(axis=1)).clip(lower=0.0) * float(frac)
+    add = rem.where(d & (sel.sum(axis=1) > 0), 0.0)
+    Wn = W.copy()
+    Wn[secs] = Wn[secs].fillna(0.0).add(sel.mul(add, axis=0), fill_value=0.0)
+    return Wn, add
+
+
+def own_evidence_swap(W: pd.DataFrame, fr: Dict[str, pd.DataFrame], secs: List[str], primary: str,
+                      days: pd.Series) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """[진단 · 노출 불변] M 예산이 있는 날(days), 주력 외 보유 섹터 중 **하락 근거**(200일선 아래) 칸을 빼고 그 몫을
+    상승 근거 섹터 중 63일 상대수익 1위(미보유 · 주력 제외)로 옮긴다. 대체 후보가 없으면 그대로 둔다(빼기만 하면 나빠진다 —
+    r85/swap85.py: 현금으로 빼면 배수 10.54→9.34). 반환: (새 비중, 교체 칸 mask)."""
+    Wn = W.copy()
+    oth = [c for c in secs if c != primary and c in W.columns]
+    d = days.reindex(W.index).fillna(False).astype(bool).values
+    held = W[oth].fillna(0.0) > 1e-9
+    bad = fr["own_dn"].reindex(index=W.index, columns=oth).fillna(False).astype(bool) & held
+    bad = bad.values & d[:, None]
+    cf = fr["cand"].reindex(index=W.index, columns=secs).fillna(False).astype(bool) & (W[secs].fillna(0.0) <= 1e-9)
+    if primary in cf.columns:
+        cf[primary] = False
+    repl = _own_top_by(fr["rs"].reindex(index=W.index, columns=secs), cf, 1).mul(d.astype(float), axis=0)
+    has = repl.sum(axis=1).values > 0
+    mm = bad & has[:, None]
+    freed = (W[oth].fillna(0.0).values * mm).sum(axis=1)
+    Wn[oth] = np.where(mm, 0.0, W[oth].fillna(0.0).values)
+    Wn[secs] = Wn[secs].fillna(0.0).values + repl.values * freed[:, None]
+    return Wn, pd.DataFrame(mm, index=W.index, columns=oth)
+
+
+def _own_perf(r: pd.Series, spy: Optional[pd.Series] = None) -> Dict[str, float]:
+    """배수·CAGR·MDD·칼마 + (spy가 있으면) 하락포착·상승포착 = SPY 하락(상승)일 평균 전략수익 / SPY 평균수익."""
+    r = pd.to_numeric(r, errors="coerce").fillna(0.0)
+    if len(r) < 60:
+        return {"배수": np.nan, "CAGR": np.nan, "MDD": np.nan, "칼마": np.nan, "하락포착": np.nan, "상승포착": np.nan}
+    eq = (1.0 + r).cumprod()
+    cg = float(eq.iloc[-1] ** (252.0 / len(r)) - 1.0)
+    md = float((eq / eq.cummax() - 1.0).min())
+    out = {"배수": float(eq.iloc[-1]), "CAGR": cg, "MDD": md, "칼마": (cg / abs(md) if md < 0 else np.nan)}
+    if spy is not None:
+        s = pd.to_numeric(spy.reindex(r.index), errors="coerce")
+        dn, up = s < 0, s > 0
+        out["하락포착"] = float(r[dn].mean() / s[dn].mean()) if dn.sum() > 20 else np.nan
+        out["상승포착"] = float(r[up].mean() / s[up].mean()) if up.sum() > 20 else np.nan
+    return out
+
+
+def own_long_audit(level: pd.DataFrame, state: Optional[pd.DataFrame], E: pd.Series, spy_ret: pd.Series,
+                   rf: Optional[pd.Series], cfg, cost_bps: float = 5.0, M=None,
+                   spy_level: Optional[pd.Series] = None) -> Dict[str, Any]:
+    """[R85 ★★ 측정 전용] 장기 검증 — '섹터 자기 근거가 M(E_t) 위에서 값을 하는가'를 **엔진의 전체 이력(1999~)**으로 잰다.
+    왜: 오프라인 하네스는 2018~ 8년(11섹터)뿐이라 검정력이 없다. 사용자 가설('섹터는 시장 국면을 안 따라갈 때가 있다')이
+    가장 크게 드러난 구간(2000~02 기술 붕괴 · 2008)은 ★ 평가창 밖에 있다. 엔진에는 그 자료(섹터 1999~ · M E_t)가 있다.
+    기준선 = M 단독(E_t×SPY + 현금) — 주력 XLK 고정은 이 표본의 사후 최선이라(2018~) 장기 검증의 기준선으로 쓰지 않는다.
+    행(구간마다):
+      M 단독 | ① 부분예산일 남는 현금 × f → SPY(같은 날·같은 몫 · 근거 없음) | ② 같은 몫 → 상승 근거 상위 k(라이브 규칙의 장기판)
+      | ③ E_t=0일 상승 근거 1위 × pos(시장 국면을 안 따라가는 섹터 — 사용자 가설 직접 검정) | ③' 같은 날 SPY × pos(비교)
+      | ④ E_t>0일 예산 전부를 상승 근거 상위 k로(없으면 SPY). ②·③·④는 같은 구조 무작위 대조군(백분위)을 함께 싣는다.
+    대조군 풀: ②·④ = 그날 상장(& 상태를 쓰면 자기 국면 상승) 섹터 중 무작위 k · ③ = 상장 섹터 중 무작위 1개.
+    ⚠ 예산 출처: 그 구간에 M E_t의 부분예산일(0<E_t<1)이 60일 미만이면(합성 실행: 2018 이전 E_t는 0/1뿐) 그 구간은
+      **M 대용 3상태**(SPY > 200일선 & 12개월 수익 > 0 → 1 · 둘 다 아니면 0 · 엇갈리면 0.5 — r85/ff85.py와 같은 정의)로 잰다.
+      어느 쪽을 썼는지 '예산 출처' 열에 적는다. spy_level이 없으면 대용을 만들 수 없어 그 구간 ①·②는 발동 0일이다.
+    체결: t일 결정 → **t+2일 종가수익부터**(보수적 — t+1 시가~종가 몫을 버린다: 여기엔 시가 자료가 없다). 모든 행 같은 규약.
+    ⚠ 주력 제외 없음(기준선이 SPY라 주력이 없다). 상태를 쓰면 상태 없는 날은 st_up=False라 후보에서 빠진다."""
+    t0 = time.time()
+    _fa = getattr(cfg, "OWN_EVIDENCE_FILL_AUDIT", None)
+    f = float(_fa) if _fa is not None else float(getattr(cfg, "OWN_EVIDENCE_FILL", 0.0) or 0.0)
+    f = f if f > 0 else 0.25                    # 라이브가 꺼져 있어도 장기 검증은 잰다
+    k = int(getattr(cfg, "OWN_EVIDENCE_FILL_K", 2) or 2)
+    pos = float(getattr(cfg, "OWN_EVIDENCE_OFF_POS", 0.25) or 0.25)
+    nctl = int(getattr(cfg, "OWN_EVIDENCE_CONTROLS", 12) or 0)
+    seed = int(getattr(cfg, "OWN_EVIDENCE_SEED", 20260923))
+    lag = 2
+    L = level.sort_index()
+    idx = L.index
+    secs = list(L.columns)
+    fr = own_evidence_frames(L, state, int(getattr(cfg, "OWN_EVIDENCE_N_LONG", 200)),
+                             int(getattr(cfg, "OWN_EVIDENCE_N_SHORT", 50)), int(getattr(cfg, "OWN_EVIDENCE_N_REL", 50)),
+                             int(getattr(cfg, "OWN_EVIDENCE_N_RS", 63)))
+    R = L.pct_change(fill_method=None)
+    sp = pd.to_numeric(spy_ret.reindex(idx), errors="coerce")
+    rfv = (pd.to_numeric(rf.reindex(idx), errors="coerce").fillna(0.0) if rf is not None else pd.Series(0.0, index=idx))
+    listed = L.notna()
+    cb = float(cost_bps) / 1e4
+    E_m = pd.to_numeric(E.reindex(idx), errors="coerce").fillna(0.0).clip(lower=0.0)
+    E_px = None
+    if spy_level is not None and len(pd.Series(spy_level).dropna()) > 300:
+        _P = pd.to_numeric(pd.Series(spy_level), errors="coerce").reindex(idx).ffill()
+        _tr = _P > _P.rolling(200, min_periods=200).mean()
+        _mo = (_P / _P.shift(252) - 1.0) > 0
+        _ok = _P.rolling(252, min_periods=252).mean().notna()
+        E_px = pd.Series(np.where(_tr & _mo, 1.0, np.where((~_tr) & (~_mo), 0.0, 0.5)), index=idx).where(_ok, 0.0)
+
+    def _run(Ws: pd.DataFrame, Wp: pd.Series) -> pd.Series:
+        ws = Ws.reindex(columns=secs).fillna(0.0)
+        wp = Wp.reindex(idx).fillna(0.0)
+        g = (ws.shift(lag).fillna(0.0) * R.fillna(0.0)).sum(axis=1) + wp.shift(lag).fillna(0.0) * sp.fillna(0.0)
+        ex = ws.shift(lag).fillna(0.0).sum(axis=1) + wp.shift(lag).fillna(0.0)
+        tn = (ws.diff().abs().sum(axis=1) + wp.diff().abs()).shift(lag).fillna(0.0)
+        return g + (1.0 - ex).clip(lower=0.0) * rfv - tn * cb
+
+    zero = pd.DataFrame(0.0, index=idx, columns=secs)
+    rs = fr["rs"]
+    cand = fr["cand"] & listed
+    pool = (listed & fr["st_up"]) if state is not None else listed
+    sel_k = _own_top_by(rs, cand, k)
+    sel_1 = _own_top_by(rs, cand, 1)
+    has_k = sel_k.sum(axis=1) > 0
+    has_1 = sel_1.sum(axis=1) > 0
+
+    def _suite(Ev: pd.Series) -> Dict[str, Any]:
+        part = (Ev > 1e-12) & (Ev < 1.0 - 1e-12)
+        off = Ev <= 1e-12
+        on = Ev > 1e-12
+        rem = ((1.0 - Ev).clip(lower=0.0) * f).where(part & has_k, 0.0)
+        offd = off & has_1
+        ond = on & has_k
+        runs: Dict[str, pd.Series] = {}
+        runs["M 단독(E_t×SPY)"] = _run(zero, Ev)
+        runs[f"① 부분예산일 남는 현금×{f:.0%} → SPY(근거 없음)"] = _run(zero, Ev + rem)
+        runs[f"② 부분예산일 남는 현금×{f:.0%} → 상승 근거 상위{k}"] = _run(sel_k.mul(rem, axis=0), Ev)
+        runs[f"③ E_t=0일 상승 근거 1위 × {pos:.0%}(시장 국면을 안 따라가는 섹터)"] = _run(sel_1.mul(pos * offd.astype(float), axis=0), Ev)
+        runs[f"③' 같은 날 SPY × {pos:.0%}(비교)"] = _run(zero, Ev + pos * offd.astype(float))
+        runs[f"④ E_t>0일 예산 전부 → 상승 근거 상위{k}(없으면 SPY)"] = _run(sel_k.mul(Ev.where(ond, 0.0), axis=0), Ev.where(~ond, 0.0))
+        ctl: Dict[str, List[pd.Series]] = {"②": [], "③": [], "④": []}
+        for j in range(nctl):
+            rk = _own_rand_sel(pool, k, seed + j)
+            ctl["②"].append(_run(rk.mul(rem.where(rk.sum(axis=1) > 0, 0.0), axis=0), Ev))
+            r1 = _own_rand_sel(listed, 1, seed + 1000 + j)
+            ctl["③"].append(_run(r1.mul(pos * offd.astype(float), axis=0), Ev))
+            rk2 = _own_rand_sel(pool, k, seed + 2000 + j)
+            ctl["④"].append(_run(rk2.mul(Ev.where(ond, 0.0), axis=0), Ev.where(~ond, 0.0)))
+        return {"runs": runs, "ctl": ctl, "rem": rem, "offd": offd, "ond": ond, "part": part}
+
+    suites = {"M E_t": _suite(E_m)}
+    eras = (("2000~2017(독립 · ★ 설계 이전)", pd.Timestamp("2000-01-01"), pd.Timestamp("2017-12-31")),
+            ("2018~(★ 평가창)", pd.Timestamp("2018-01-01"), idx[-1] if len(idx) else pd.Timestamp("2018-01-01")))
+    rows: List[Dict[str, Any]] = []
+    src_used: Dict[str, str] = {}
+    for en, s0, s1 in eras:
+        m = (idx >= s0) & (idx <= s1)
+        if int(m.sum()) < 250:
+            continue
+        src = "M E_t"
+        if int((suites["M E_t"]["part"] & m).sum()) < 60 and E_px is not None:
+            if "M 대용 3상태" not in suites:
+                suites["M 대용 3상태"] = _suite(E_px)
+            src = "M 대용 3상태"
+        src_used[en] = src
+        su = suites[src]
+        spy_e = sp[m]
+        base = _own_perf(su["runs"]["M 단독(E_t×SPY)"][m], spy_e)
+        for lab, r in su["runs"].items():
+            p = _own_perf(r[m], spy_e)
+            row = {"구간": en, "예산 출처": src, "변형": lab,
+                   **{kk: (round(v, 4) if isinstance(v, float) and v == v else v) for kk, v in p.items()},
+                   "칼마 − M단독": (round(p["칼마"] - base["칼마"], 3) if p["칼마"] == p["칼마"] else np.nan)}
+            key = lab.split(" ")[0]              # "②" · "③" · "④" (③'은 비교 행 — 대조군 없음)
+            if key in su["ctl"] and su["ctl"][key]:
+                cs = np.asarray([_own_perf(c[m], None)["칼마"] for c in su["ctl"][key]], dtype=float)
+                cs = cs[cs == cs]
+                row.update({"대조군 칼마 중앙": round(float(np.median(cs)), 3) if len(cs) else np.nan,
+                            "대조군 칼마 95%": round(float(np.quantile(cs, 0.95)), 3) if len(cs) else np.nan,
+                            "대조군 대비 백분위": round(float((cs < p["칼마"]).mean() * 100.0), 1) if len(cs) else np.nan})
+            if lab.startswith("②") or lab.startswith("①"):
+                row["발동일"] = int(((su["rem"] > 0) & m).sum())
+            elif lab.startswith("③"):
+                row["발동일"] = int((su["offd"] & m).sum())
+            elif lab.startswith("④"):
+                row["발동일"] = int((su["ond"] & m).sum())
+            rows.append(row)
+    tab = pd.DataFrame(rows)
+    out = {"enabled": True, "table": tab, "fill": f, "k": k, "pos": pos, "controls": nctl, "seed": seed,
+           "state_used": state is not None, "budget_source": src_used,
+           "first_signal": (str(cand.any(axis=1).idxmax().date()) if bool(cand.any(axis=1).any()) else "-"),
+           "sec": round(time.time() - t0, 1)}
+    for r_ in rows:
+        log("OWN", kv(event="long_audit_row", era=r_["구간"][:9], src=r_["예산 출처"], variant=str(r_["변형"])[:28],
+                      mult=r_.get("배수"), calmar=r_.get("칼마"), mdd=r_.get("MDD"), down_cap=r_.get("하락포착"),
+                      up_cap=r_.get("상승포착"), ctl_q95=r_.get("대조군 칼마 95%"), pctile=r_.get("대조군 대비 백분위"),
+                      days=r_.get("발동일")), M=M)
+    log("OWN", kv(event="long_audit_done", rows=len(rows), fill=f, k=k, pos=pos, controls=nctl, seed=seed,
+                  state_used=state is not None, budget_source=";".join(f"{a[:9]}={b}" for a, b in src_used.items()) or "-",
+                  first_signal=out["first_signal"], sec=out["sec"],
+                  note="측정 전용 — ★ 무변경 · 체결 t+2 종가수익(보수적)"), M=M)
+    return out
+
+
+def build_own_evidence_sheet(sres: Dict[str, Any]) -> pd.DataFrame:
+    """[v0.67.0 R85] 00S_섹터자기근거 — ★ 전후(채움 OFF ↔ 라이브) · [섹터근거격자] · 대조군 · 사전등록 판정 · 장기 검증(1999~)."""
+    al = sres.get("alloc") or {}
+    od = (al.get("diag") or {}).get("own_evidence") or {}
+    rows: List[Dict[str, Any]] = []
+
+    def _r(blk: str, item: str, val: str = "", **kw) -> None:
+        rows.append({"블록": blk, "항목": item, "값": val, **kw})
+    _r("A. 읽는 법", "무엇을 바꿨나(R85)",
+       "사용자 지시 '시장 국면은 참고만 하고 섹터별 상승·하락 근거를 따로 찾아라'를 ★(노란색) 규칙으로 옮겼다. "
+       "M이 예산을 **일부만** 준 날(0<E_t<1), 남는 현금의 일부를 '상승 근거'가 있는 섹터(주력 제외 상위 2개)로 채운다. "
+       "E_t=0(하락국면)·E_t=1(전액)인 날과 기존 비중은 그대로다.")
+    _r("A. 읽는 법", "상승 근거(섹터 자신의 것)",
+       "자기 국면기계 상승 & 자기 추세 상승(총수익 지수 > 200일선 & > 50일선) & 상대 추세 상승(섹터/11섹터 평균 비율 > 그 50일선). "
+       "순위 = 63일 상대수익. 전부 t일 종가까지 → t+1 시가 체결.")
+    _r("A. 읽는 법", "하락 근거(진단 행)", "자기 추세 하락(총수익 지수 < 200일선). 대피처가 하락 근거면 상승 근거 1위로 교체(노출 불변).")
+    _r("A. 읽는 법", "⚠ 위험",
+       "채움은 **노출을 늘린다**(부분예산일 평균 총비중 약 0.50 → 0.60, 오프라인 · 25%). 되돌리기 s_overrides={'OWN_EVIDENCE_FILL': 0.0} "
+       "⇒ v0.66.0 ★와 비트 동일(아래 OFF 행). 연구·교육용이며 투자 자문이 아니다.")
+    if not od.get("enabled"):
+        _r("B. ★ 전후", "상태", f"비활성 또는 실패 — {od.get('error', 'OWN_EVIDENCE_ENABLE=False')}")
+        return pd.DataFrame(rows)
+    o, l_ = od.get("off", {}), od.get("live", {})
+
+    def _fmt(d: Dict[str, Any]) -> str:
+        return (f"배수 {d.get('배수', np.nan):.3f} · CAGR {d.get('CAGR', np.nan) * 100:.2f}% · MDD {d.get('MDD', np.nan) * 100:.2f}% · "
+                f"칼마 {d.get('칼마', np.nan):.3f}")
+    _r("B. ★ 전후(엔진 · 평가창)", "OFF = v0.66.0 ★(채움 없음)", _fmt(o))
+    _r("B. ★ 전후(엔진 · 평가창)", f"라이브 = 채움 {od.get('fill', 0):.0%} · 상위{od.get('k', 2)}", _fmt(l_))
+    _r("B. ★ 전후(엔진 · 평가창)", "발동",
+       f"부분예산일 {od.get('partial_days', 0)}일 중 {od.get('fill_days', 0)}일 채움 · 평균 추가 비중 {od.get('mean_add', 0):.3f} · "
+       f"섹터별 채움 일수 {', '.join(f'{a} {b}' for a, b in sorted((od.get('picked') or {}).items(), key=lambda x: -x[1])) or '-'}")
+    _r("B. ★ 전후(엔진 · 평가창)", "대조군(같은 날·같은 몫·자기 국면 상승 섹터 중 무작위 2개)",
+       f"{od.get('controls', 0)}개 · 칼마 중앙 {od.get('ctl_median', np.nan):.3f} · 95% {od.get('ctl_q95', np.nan):.3f} · "
+       f"라이브 백분위 {od.get('pctile', np.nan):.0f} · 씨앗 {od.get('seed', '-')}")
+    _r("B. ★ 전후(엔진 · 평가창)", "OFF 대비 초과(연율)",
+       f"{od.get('excess_ann', np.nan):+.3f}%p · 상위 5일 제외 {od.get('excess_ann_ex5', np.nan):+.3f}%p")
+    for k_, v_ in (od.get("criteria") or {}).items():
+        _r("C. 사전등록 판정(R84 기준 · 엔진 값)", k_, "통과" if v_ else "미통과")
+    _r("C. 사전등록 판정(R84 기준 · 엔진 값)", "R85 되돌림 조건(a)(b)(c)",
+       ("⚠ 해당 — 다음 라운드에 OWN_EVIDENCE_FILL=0.0으로 되돌린다" if od.get("revert_next") else
+        "해당 없음 — 라이브 유지(장기 검증 (d)와 I 리포트 (e)도 함께 본다)"))
+    for rr in od.get("rows") or []:
+        _r("D. [섹터근거격자] 행(엔진)", str(rr.get("변형")), "",
+           배수=rr.get("배수"), CAGR=rr.get("CAGR"), MDD=rr.get("MDD"), 칼마=rr.get("칼마"),
+           평균노출=rr.get("평균노출"), 부분예산일평균노출=rr.get("부분예산일 평균노출"))
+    lg = od.get("long") or {}
+    if lg.get("enabled") and isinstance(lg.get("table"), pd.DataFrame) and len(lg["table"]):
+        _r("E. 장기 검증(엔진 전체 이력 · M E_t)", "읽는 법",
+           "기준선 = M 단독(E_t×SPY). 주력 XLK 고정은 2018~의 사후 최선이라 기준선으로 쓰지 않는다. 체결은 t+2 종가수익부터(보수적). "
+           "'하락포착' = SPY 하락일 평균 전략수익 ÷ SPY 하락일 평균수익(낮을수록 하락을 잘 피함) · '상승포착' = 상승일 같은 비(높을수록 "
+           f"상승을 잘 탐). 국면기계 상태 사용: {'예' if lg.get('state_used') else '아니오(2018 이전 상태는 추세필터 폴백뿐 — 자기 추세 & 상대 추세만)'} · "
+           f"첫 상승근거일 {lg.get('first_signal', '-')}. "
+           "'값' 열 = 예산 출처(그 구간 M E_t에 부분예산일이 60일 미만이면 M 대용 3상태: SPY > 200일선 & 12개월 수익 > 0 → 1 · "
+           "둘 다 아니면 0 · 엇갈리면 0.5). R85 되돌림 조건 (d): 2000~2017에서 ②가 ①과 대조군 95%를 둘 다 못 이기면 되돌린다. "
+           f"채움 비율 {lg.get('fill', 0):.0%}(라이브와 같은 값).")
+        for _, rr in lg["table"].iterrows():
+            _r("E. 장기 검증(엔진 전체 이력 · M E_t)", f"{rr.get('구간')} · {rr.get('변형')}", str(rr.get("예산 출처", "")),
+               배수=rr.get("배수"), CAGR=rr.get("CAGR"), MDD=rr.get("MDD"), 칼마=rr.get("칼마"),
+               하락포착=rr.get("하락포착"), 상승포착=rr.get("상승포착"), 칼마_M단독대비=rr.get("칼마 − M단독"),
+               대조군칼마95=rr.get("대조군 칼마 95%"), 대조군백분위=rr.get("대조군 대비 백분위"), 발동일=rr.get("발동일"))
+    elif lg.get("error"):
+        _r("E. 장기 검증(엔진 전체 이력 · M E_t)", "상태", f"산출 실패 — {lg['error']}")
+    for it, tx in OWN_EVIDENCE_OFFLINE_NOTES:
+        _r("F. 오프라인 탐색 기록(R85 · 2018-11~ 하네스 · 엔진 정의)", it, tx)
+    return pd.DataFrame(rows)
+
+
+# [v0.67.0 R85] 오프라인 탐색 기록 — 무엇을 시험했고 왜 이 규칙만 라이브로 갔는가(리포트에서 바로 보이게).
+OWN_EVIDENCE_OFFLINE_NOTES: Tuple[Tuple[str, str], ...] = (
+    ("M이 끄는 날 섹터들은?", "2018-11~ E_t=0인 544일에 11개 섹터 **전부** 평균이 음수(연율 −5%~−42%) · E_t=1인 743일엔 전부 양수 — "
+     "이 표본에선 '시장 국면을 안 따라가는 섹터'가 드물다(예외: 2022 XLE +10.3%, 2026 XLE +14.3%)."),
+    ("하락 근거로 빼기(M 켬일)", "200일선·6개월 음수 등으로 보유 섹터를 빼면 칼마 4.08 → 1.2~2.1(무작위보다도 나쁨) — 추세는 늦고 "
+     "M은 반등에 먼저 들어간다. R80 자기근거 컷도 엔진에서 백분위 50으로 되돌렸다."),
+    ("상승 근거로 들기(M 끔일)", "하락국면리더를 '자기 상승 & 상대 상승 1위'로 바꾸면 배수 10.54 → 9.39 · 추가하면 9.39. "
+     "독립 구간 FF12 1999~2017에서도 시장 하락기 자기 상승 보유는 12업종 중 2곳만 유효."),
+    ("주력(XLK) 자기 근거", "XLK 약세(50일선·20일선·고점대비 −7%) 때 절반을 옮기면 배수 8.4~9.0 — XLK 고정은 이 표본의 사후 최선이라 떠나면 진다."),
+    ("하락 근거 교체(대피처)", "원시 종가로는 +1.8%로 보였으나 **총수익 지수(엔진 정의)로는 +0.1%** — 배당락 착시. 진단 행으로만 둔다."),
+    ("부분예산일 채움(라이브 25%)", "S★ 배수 +2.4% · MDD 동일 · 칼마 +0.048 · 무작위 선택 대비 백분위 100 · 균등 채움(근거 없음) +0.6%. "
+     "I★(근사) 배수 +2.2% · MDD −0.09%p · 칼마 동일. 50%는 S★ +4.7%지만 I★ MDD −0.52%p·칼마 −0.15라 고르지 않았다. "
+     "한계: 부트스트랩 P(칼마↑) 0.42 · 연도 4/8 · 독립 구간 선택 효과는 1999~2017에서 없음 · 이득의 상당 부분은 노출. "
+     "그래서 되돌림 조건 (a)~(e)를 사전등록했다."),
+    ("산업층(I★)", "산업 자기 하락(200일선 아래) → 부모로: 배수 12.49 → 11.81(열위) · 부모다리 → 자기근거 1위 산업: 13.39배지만 MDD −9.0 → −11.9%. "
+     "I★는 S★ 비중을 따르므로 이번 채움이 그대로 전달된다."),
+)
+
+
+def own_evidence_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """[v0.67.0 R85] 00 줄 — 노란색이 이번에 왜 바뀌었나 · 사전등록 판정 · 장기 검증 요약."""
+    out: List[Tuple[str, str]] = []
+    od = (((sres.get("alloc") or {}).get("diag") or {}).get("own_evidence")) or {}
+    if not od.get("enabled"):
+        if od.get("error"):
+            out.append(("⚠ 섹터 자기근거 채움(R85)", f"산출 실패 — {od['error']} · ★는 v0.66.0 그대로"))
+        return out
+    o, l_ = od.get("off", {}), od.get("live", {})
+    if float(od.get("fill", 0) or 0) > 0:
+        out.append(("★★★ 노란색(라이브) 수익배수 — R85에서 바뀐 이유",
+                    f"사용자 지시대로 **섹터 자신의 상승 근거**로 M 예산 위를 채웠다: M이 일부만 준 날(0<E_t<1) 남는 현금의 "
+                    f"{od['fill']:.0%}를 상승 근거 섹터 상위 {od.get('k', 2)}개(주력 제외)로. "
+                    f"★ 배수 {o.get('배수', np.nan):.3f} → **{l_.get('배수', np.nan):.3f}** · CAGR {o.get('CAGR', np.nan) * 100:.2f}% → "
+                    f"{l_.get('CAGR', np.nan) * 100:.2f}% · MDD {o.get('MDD', np.nan) * 100:.2f}% → {l_.get('MDD', np.nan) * 100:.2f}% · "
+                    f"칼마 {o.get('칼마', np.nan):.3f} → {l_.get('칼마', np.nan):.3f} · 발동 {od.get('fill_days', 0)}일. "
+                    "⚠ 노출을 늘리는 위험 파라미터 변경이다 — 되돌리기 s_overrides={'OWN_EVIDENCE_FILL': 0.0}. 세부는 00S 시트."))
+    else:
+        out.append(("★★ 섹터 자기근거 채움(R85)", f"끔(OWN_EVIDENCE_FILL=0) — ★는 v0.66.0과 같다. 격자·장기 검증만 00S에 싣는다."))
+    cr = od.get("criteria") or {}
+    out.append(("★★ [섹터근거격자] 사전등록 판정(R85 · 엔진 값)",
+                " · ".join(f"{k} {'O' if v else 'X'}" for k, v in cr.items())
+                + f" | 대조군(같은 날·같은 몫 무작위) 95% {od.get('ctl_q95', np.nan):.3f} · 백분위 {od.get('pctile', np.nan):.0f}"
+                + (" → ⚠ 되돌림 조건 해당(다음 라운드 OWN_EVIDENCE_FILL=0.0)" if od.get("revert_next") else " → 되돌림 조건 해당 없음")))
+    lg = od.get("long") or {}
+    tb = lg.get("table") if isinstance(lg, dict) else None
+    if isinstance(tb, pd.DataFrame) and len(tb):
+        parts = []
+        for era in tb["구간"].unique():
+            t_ = tb[tb["구간"] == era].set_index("변형")
+            try:
+                b = t_[t_.index.str.startswith("M 단독")].iloc[0]
+                f1 = t_[t_.index.str.startswith("①")].iloc[0]
+                f2 = t_[t_.index.str.startswith("②")].iloc[0]
+                f3 = t_[t_.index.str.startswith("③ ")].iloc[0]
+                _src = str(t_["예산 출처"].iloc[0]) if "예산 출처" in t_.columns else "M E_t"
+                parts.append(f"{era}[{_src}]: 기준 칼마 {b['칼마']:.3f} | ①SPY 채움 {f1['칼마']:.3f} · ②상승근거 채움 {f2['칼마']:.3f}"
+                             f"(대조군 95% {f2.get('대조군 칼마 95%', np.nan):.3f} · 백분위 {f2.get('대조군 대비 백분위', np.nan):.0f}) | "
+                             f"③E_t=0 상승근거 {f3['칼마']:.3f}(백분위 {f3.get('대조군 대비 백분위', np.nan):.0f}) · "
+                             f"하락포착 {b['하락포착']:.2f}→{f3['하락포착']:.2f}")
+            except Exception:
+                continue
+        if parts:
+            out.append(("★★ 섹터 자기근거 장기 검증(엔진 1999~ · M E_t · 측정 전용)", " || ".join(parts)))
+    elif isinstance(lg, dict) and lg.get("error"):
+        out.append(("⚠ 섹터 자기근거 장기 검증", f"산출 실패 — {lg['error']}"))
+    return out
+
+
 def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_idx: pd.DatetimeIndex,
                             scfg: SectorConfig, M, rf_daily: Optional[pd.Series] = None,
                             spy_series: Optional[Dict[str, pd.Series]] = None) -> Dict[str, Any]:
@@ -9754,6 +10189,217 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                action="컷 없이 계속(v0.61.2와 동일) — 00 시트에 실패를 적는다"), M=M, level="warning")
             _sc_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
 
+    # ---- [v0.67.0 R85 ★★★ 라이브 · ⚠ 위험 파라미터(노출)] 섹터 자기 근거 부분채움 + [섹터근거격자] + 장기 검증 ----
+    #   사용자 지시(2026-09-22): "시장 국면은 냅둬 … 시장 국면은 그냥 참고만 하고 섹터별 상승, 하락 근거 따로 찾으라고 했잖아",
+    #     "그렇게 수정해봐". 시작 v0.66.0 → 목표 v0.67.0.
+    #   규칙(라이브): M이 예산을 **일부만** 준 날(0 < E_t < 1 — 부분예산일, 2018-11~ 692일 중 약 634일 발동),
+    #     남는 현금의 OWN_EVIDENCE_FILL(25%)을 '상승 근거' 섹터 상위 2개(주력 XLK 제외 · 63일 상대수익 순)로 채운다.
+    #     상승 근거 = 자기 국면기계 상승 & 자기 추세 상승(총수익 지수 > 200일선 & > 50일선) & 상대 추세 상승(섹터/섹터평균 > 50일선).
+    #     기존 ★ 비중은 한 칸도 줄이지 않는다(위로만 더한다) · 합계 ≤ 1.0 · E_t=0·E_t=1인 날은 무변경.
+    #   ⚠ 이것은 **노출을 늘리는 위험 파라미터 변경**이다: 부분예산일 평균 총비중 0.496 → 0.603(오프라인 하네스).
+    #     되돌리기: s_overrides={"OWN_EVIDENCE_FILL": 0.0} ⇒ v0.66.0 ★와 **비트 동일**(격자의 OFF 행이 그 값이다).
+    #   오프라인 하네스(r85/eng85b.py · 엔진 정의 = 총수익 지수 · 2018-11~ · ★ 10.541배 · MDD −8.57% · 칼마 4.080):
+    #     채움 25%(라이브) 10.795배 · MDD −8.57% · 칼마 4.128 | 50% 11.032 · 4.171 | 75% 11.260 · 4.213 | 100% 11.475 · −8.88% · 4.102
+    #     같은 날·같은 몫 무작위 2섹터(자기 국면 상승 중) 40회 칼마 95% 4.033 → 백분위 100 | 같은 몫 균등(근거 없음) 10.602 · 4.091
+    #     엔진 창(2018-01~) 근사: 11.279 → 11.552(+2.4%) · 칼마 3.665 → 3.707 · MDD 동일 · OFF 대비 초과 +0.34%p/년(상위 5일 제외 +0.06)
+    #     I★(r85/iprop85.py 근사 — 새 섹터 몫은 부모 ETF로): 25% 12.486 → 12.763 · MDD −9.01 → −9.10% · 칼마 4.208 → 4.208
+    #                                                       50% → 13.019 · MDD −9.53% · 칼마 4.054 ← 50%를 고르지 않은 이유
+    #   ⚠⚠ 정직한 한계(숨기지 않는다 — 사용자 규칙 7):
+    #     ① 정지 블록 부트스트랩(21일 · 2000회 · 25%): P(배수↑) 0.76 · **P(칼마↑) 0.42** · MDD 악화 중앙 −0.17%p · 하위 5% −1.03%p.
+    #        표본 안 MDD가 그대로인 것은 최대낙폭 구간(2019-05 · E_t=1)에 규칙이 닿지 않아서다 — 운이 섞여 있다.
+    #     ② 연도별 4/8해만 이긴다(2021 +3.6%p · 2024 +1.3%p ↔ 2025 −2.4%p · 2020 −0.9%p). 2023~ 칼마는 5.22 → 5.18.
+    #     ③ 독립 구간(FF 12업종 월간 · M 대용 3상태 · r85/ff85.py): 채움은 두 시대 모두 배수를 올리지만(1950~98 253→313 ·
+    #        1999~2017 4.24→4.42), 선택(상위 업종) 대 무작위는 1950~98 백분위 88 · **1999~2017 백분위 7**.
+    #     ⇒ R84 사전등록 4조건(하네스): (i) 칼마 +0.048 — **한 끗 미달** · (ii) 대조군 95% 초과 통과 · (iii) 상위 5일 제외 초과 +0.06 통과(얇다)
+    #        · (iv) MDD 동일 통과. 이번 라이브 전환의 근거는 '사용자의 명시적 설계 지시 + S·I 두 층 배수↑·MDD 불변 + 무작위 선택 대비
+    #        백분위 100'이다 — 통계적 확신이 아니다. 그래서 아래 되돌림 조건을 사전등록한다.
+    #   ⚠ 사전등록(R85 → 다음 리포트, 엔진 값으로 판정): 아래 넷 중 하나라도 해당하면 **되돌린다**(OWN_EVIDENCE_FILL=0).
+    #     (a) 엔진 ★ 칼마 < OFF 행 칼마 (b) ★ 칼마 ≤ 같은 날·같은 몫 무작위 대조군 95% (c) ★ MDD가 OFF보다 0.5%p 넘게 나쁨
+    #     (d) 장기 검증 2000~2017에서 '② 상승 근거 채움'이 '① 같은 몫 SPY'와 대조군 95%를 **둘 다** 못 이김.
+    #     (e) I★ MDD가 I 리포트 [섹터근거전달] OFF 행보다 0.5%p 넘게 악화.
+    #   ⚠ 다른 격자와의 관계: 이 채움은 R81 자기근거 컷과 같이 **마지막에 ★에만** 적용한다. [섹터근거격자]의 OFF 행이 곧 v0.66.0 ★이고,
+    #     이 블록 **앞**에서 만든 격자 행들(상한·베타·방어대피처·하락리더 …)은 채움 이전 기준으로 서로 비교된다.
+    #     이 블록 **뒤**의 [모멘텀연결격자]는 새 ★(채움 포함)를 기준으로 잰다.
+    #   룩어헤드 없음: 지표는 전부 t일 종가까지(롤링·shift는 과거 방향), 비중은 t일 목표 → portfolio_backtest가 t+1 시가 체결.
+    _own_diag: Dict[str, Any] = {"enabled": False}
+    target_w_off = None
+    if bool(getattr(scfg, "OWN_EVIDENCE_ENABLE", True)) and label_primary in target_ws:
+        try:
+            _to0 = time.time()
+            _pri_o = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+            _base_o = target_ws[label_primary].copy()
+            _seco = [c for c in cols if c in _base_o.columns and c in ret_cc_full.columns]
+            _rcf_o = ret_cc_full[_seco]
+            _lvl_full = (1.0 + _rcf_o.fillna(0.0)).cumprod().where(_rcf_o.notna())
+            _st_full = pd.DataFrame({t: pd.Series(results[t].get("state_full") if results[t].get("state_full") is not None
+                                                  else results[t].get("state")).reindex(full_idx) for t in _seco})
+            _nl_o = int(getattr(scfg, "OWN_EVIDENCE_N_LONG", 200)); _ns_o = int(getattr(scfg, "OWN_EVIDENCE_N_SHORT", 50))
+            _nr_o = int(getattr(scfg, "OWN_EVIDENCE_N_REL", 50)); _nrs_o = int(getattr(scfg, "OWN_EVIDENCE_N_RS", 63))
+            _fr_full = own_evidence_frames(_lvl_full, _st_full, _nl_o, _ns_o, _nr_o, _nrs_o)
+            _fr = {_k: _v.reindex(eval_idx) for _k, _v in _fr_full.items()}
+            _Ev = E.reindex(eval_idx).fillna(0.0).astype(float)
+            _part = (_Ev > 1e-12) & (_Ev < 1.0 - 1e-12)
+            _on = _Ev > 1e-12
+            _f_live = float(getattr(scfg, "OWN_EVIDENCE_FILL", 0.0) or 0.0)
+            _f_live = min(max(_f_live, 0.0), 1.0)
+            _k_o = max(1, int(getattr(scfg, "OWN_EVIDENCE_FILL_K", 2) or 2))
+            _fcmp = _f_live if _f_live > 0 else 0.5
+            target_w_off = _base_o
+            log("OWN", kv(event="evidence_ready", sectors=len(_seco), primary=_pri_o, n_long=_nl_o, n_short=_ns_o,
+                          n_rel=_nr_o, n_rs=_nrs_o, state_full=all(results[t].get("state_full") is not None for t in _seco),
+                          partial_days=int(_part.sum()), on_days=int(_on.sum()),
+                          cand_per_day=round(float(_fr["cand"][_seco].sum(axis=1)[_part].mean()), 3) if bool(_part.any()) else 0,
+                          first_cand=str(_fr_full["cand"].any(axis=1).idxmax().date()) if bool(_fr_full["cand"].any(axis=1).any()) else "-"),
+                M=M)
+            _grid_o: Dict[str, pd.DataFrame] = {}
+            _lab_off = "주력섹터 중심 · 섹터근거 채움 OFF(v0.66.0 ★) [섹터근거격자]"
+            _grid_o[_lab_off] = _base_o
+            for _fv in tuple(getattr(scfg, "OWN_EVIDENCE_GRID_FILLS", (0.25, 0.5, 0.75, 1.0)) or ()):
+                if abs(float(_fv) - _f_live) < 1e-9:
+                    continue                                     # 라이브는 ★ 행이 이미 있다
+                _grid_o[f"주력섹터 중심 · 섹터근거 채움 {float(_fv):.0%}(상위{_k_o}) [섹터근거격자]"] = \
+                    own_evidence_fill(_base_o, _fr, _seco, _pri_o, _part, float(_fv), _k_o)[0]
+            _lst = _lvl_full.reindex(eval_idx)[_seco].notna()
+            _eqm = _lst.copy()
+            if _pri_o in _eqm.columns:
+                _eqm[_pri_o] = False
+            _eqw = _eqm.astype(float).div(_eqm.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
+            _lab_eq = f"주력섹터 중심 · [비교] 채움 {_fcmp:.0%} → 주력 외 균등(근거 없음) [섹터근거격자]"
+            _grid_o[_lab_eq] = own_evidence_fill(_base_o, _fr, _seco, _pri_o, _part, _fcmp, _k_o, sel=_eqw)[0]
+            _w_sw, _m_sw = own_evidence_swap(_base_o, _fr, _seco, _pri_o, _on)
+            _lab_sw = "주력섹터 중심 · 하락근거 교체(대피처 200일선 아래 → 상승근거 1위 · 노출 불변) [섹터근거격자·진단]"
+            _grid_o[_lab_sw] = _w_sw
+            _nctl_o = int(getattr(scfg, "OWN_EVIDENCE_CONTROLS", 12) or 0)
+            _seed_o = int(getattr(scfg, "OWN_EVIDENCE_SEED", 20260923))
+            _pool_o = (_fr["st_up"][_seco].fillna(False).astype(bool) & _lst).copy()
+            if _pri_o in _pool_o.columns:
+                _pool_o[_pri_o] = False
+            _ctrl_o: List[str] = []
+            for _j in range(_nctl_o):
+                _lbl_c = f"주력섹터 중심 · 대조군{_j}: 같은 날·같은 몫 무작위 {_k_o}섹터 [섹터근거격자·대조]"
+                _grid_o[_lbl_c] = own_evidence_fill(_base_o, _fr, _seco, _pri_o, _part, _fcmp, _k_o,
+                                                    sel=_own_rand_sel(_pool_o, _k_o, _seed_o + _j))[0]
+                _ctrl_o.append(_lbl_c)
+            for _lab, _fw in _grid_o.items():
+                _fw = _fw.fillna(0.0).clip(lower=0.0)
+                target_ws[_lab] = _fw
+                bts[_lab] = portfolio_backtest(_fw, ret_co, ret_oc, **bt_kw)
+                variants[_lab] = _fw
+
+            def _cal_o(_b: pd.DataFrame) -> Tuple[float, float, float, float]:
+                _r = pd.to_numeric(_b["strategy_ret"], errors="coerce").fillna(0.0)
+                _eq = (1.0 + _r).cumprod()
+                _cg = float(_eq.iloc[-1] ** (252.0 / max(len(_r), 1)) - 1.0)
+                _md = float((_eq / _eq.cummax() - 1.0).min())
+                return _cg, _md, (_cg / abs(_md) if _md < 0 else np.nan), float(_eq.iloc[-1])
+            _cg_off, _md_off, _cm_off, _mu_off = _cal_o(bts[_lab_off])
+            _add_live = pd.Series(0.0, index=eval_idx)
+            _sel_live_cnt: Dict[str, int] = {}
+            if _f_live > 0:
+                _w_live_o, _add_live = own_evidence_fill(_base_o, _fr, _seco, _pri_o, _part, _f_live, _k_o)
+                _w_live_o = _w_live_o.fillna(0.0).clip(lower=0.0)
+                _dw = (_w_live_o[_seco] - _base_o[_seco].fillna(0.0)) > 1e-12
+                _sel_live_cnt = {c: int(_dw[c].sum()) for c in _seco if int(_dw[c].sum()) > 0}
+                target_ws[label_primary] = _w_live_o
+                variants[label_primary] = _w_live_o
+                bts[label_primary] = portfolio_backtest(_w_live_o, ret_co, ret_oc, **bt_kw)
+                #   ⚠ 라벨은 **'★'로 끝나야 한다** — S(10712·10798·14113·14446)·I(star_label)가 endswith("★")로 ★ 행을 찾는다.
+                _lp_new = (label_primary[:-1].rstrip() if label_primary.endswith("★") else label_primary) \
+                    + f" · 섹터근거 부분채움 {_f_live:.0%} ★"
+
+                def _rename_o(d: dict, old_k: str, new_k: str) -> None:
+                    """★ 라벨만 바꾼다 — 순서 보존(13 성과표에서 ★가 첫 행으로 남아야 한다)."""
+                    items = [((new_k if k_ == old_k else k_), v_) for k_, v_ in d.items()]
+                    d.clear()
+                    d.update(items)
+                for _d_ in (target_ws, variants, bts):
+                    _rename_o(_d_, label_primary, _lp_new)
+                label_primary = _lp_new
+                #   반환 frac_w(= E_t 대비 분수)도 같은 채움을 받아야 target_w와 어긋나지 않는다(E_t>0인 부분예산일만).
+                try:
+                    if isinstance(frac_primary, pd.DataFrame) and len(frac_primary):
+                        _pe = _part & (_add_live > 0)
+                        _cc = [c for c in _seco if c in frac_primary.columns]
+                        frac_primary = frac_primary.copy()
+                        frac_primary.loc[_pe.values, _cc] = (_w_live_o.loc[_pe.values, _cc]
+                                                             .div(_Ev[_pe].values, axis=0)).values
+                except Exception as _e3:
+                    log("OWN", kv(event="frac_sync_failed", err=type(_e3).__name__,
+                                  note="frac_w만 동기화 실패 — target_w(라이브)는 정상"), M=M, level="warning")
+            _cg_l, _md_l, _cm_l, _mu_l = _cal_o(bts[label_primary])
+            _ctl_cm = np.asarray([_cal_o(bts[l_])[2] for l_ in _ctrl_o], dtype=float)
+            _ctl_cm = _ctl_cm[_ctl_cm == _ctl_cm]
+            _q95_o = float(np.quantile(_ctl_cm, 0.95)) if len(_ctl_cm) else np.nan
+            _pct_o = float((_ctl_cm < _cm_l).mean() * 100.0) if len(_ctl_cm) else np.nan
+            _ex_o = (pd.to_numeric(bts[label_primary]["strategy_ret"], errors="coerce")
+                     - pd.to_numeric(bts[_lab_off]["strategy_ret"], errors="coerce")).dropna()
+            _ann_o = 252.0 / max(len(_ex_o), 1) * 100.0
+            _ex_tot = float(_ex_o.sum()) * _ann_o
+            _ex_cut = float(_ex_o.sum() - _ex_o.sort_values(ascending=False).iloc[:5].sum()) * _ann_o if len(_ex_o) > 5 else np.nan
+            _crit = {"(i) 칼마 ≥ OFF+0.05": bool(_cm_l == _cm_l and _cm_l >= _cm_off + 0.05),
+                     "(ii) 대조군 95% 초과": bool(len(_ctl_cm) and _cm_l > _q95_o),
+                     "(iii) 강건성(상위5일 제외 초과 > 0)": bool(_ex_tot > 0 and _ex_cut == _ex_cut and _ex_cut > 0),
+                     "(iv) MDD 악화 ≤ 0.5%p": bool(_md_l >= _md_off - 0.005)}
+            _revert = bool((_cm_l == _cm_l and _cm_l < _cm_off) or not _crit["(ii) 대조군 95% 초과"]
+                           or not _crit["(iv) MDD 악화 ≤ 0.5%p"])
+            _rows_o = []
+            for _lab in [label_primary] + list(_grid_o.keys()):
+                _cg_, _md_, _cm_, _mu_ = _cal_o(bts[_lab])
+                _rows_o.append({"변형": _lab, "배수": round(_mu_, 3), "CAGR": round(_cg_, 4), "MDD": round(_md_, 4),
+                                "칼마": round(_cm_, 3) if _cm_ == _cm_ else np.nan,
+                                "평균노출": round(float(bts[_lab]["exposure"].mean()), 4),
+                                "부분예산일 평균노출": round(float(bts[_lab]["exposure"].shift(-1).reindex(eval_idx)[_part].mean()), 4)
+                                if bool(_part.any()) else np.nan})
+            _own_diag = {"enabled": True, "fill": _f_live, "k": _k_o, "primary": _pri_o, "label_off": _lab_off,
+                         "label_live": label_primary, "label_eq": _lab_eq, "label_swap": _lab_sw,
+                         "control_labels": _ctrl_o, "controls": len(_ctrl_o), "seed": _seed_o,
+                         "fill_days": int((_add_live > 0).sum()), "partial_days": int(_part.sum()),
+                         "mean_add": round(float(_add_live[_add_live > 0].mean()), 4) if bool((_add_live > 0).any()) else 0.0,
+                         "picked": _sel_live_cnt, "swap_days": int(_m_sw.any(axis=1).sum()),
+                         "off": {"배수": _mu_off, "CAGR": _cg_off, "MDD": _md_off, "칼마": _cm_off},
+                         "live": {"배수": _mu_l, "CAGR": _cg_l, "MDD": _md_l, "칼마": _cm_l},
+                         "ctl_q95": _q95_o, "ctl_median": (float(np.median(_ctl_cm)) if len(_ctl_cm) else np.nan),
+                         "pctile": _pct_o, "excess_ann": round(_ex_tot, 3), "excess_ann_ex5": (round(_ex_cut, 3) if _ex_cut == _ex_cut else np.nan),
+                         "criteria": _crit, "revert_next": _revert, "rows": _rows_o}
+            log("OWN", kv(event="fill_applied" if _f_live > 0 else "fill_off", fill=_f_live, k=_k_o,
+                          fill_days=_own_diag["fill_days"], partial_days=_own_diag["partial_days"],
+                          mean_add=_own_diag["mean_add"], picked=";".join(f"{a}:{b}" for a, b in sorted(_sel_live_cnt.items())) or "-",
+                          mult=f"{_mu_off:.3f}→{_mu_l:.3f}", calmar=f"{_cm_off:.3f}→{_cm_l:.3f}",
+                          mdd=f"{_md_off * 100:.2f}→{_md_l * 100:.2f}", cagr=f"{_cg_off * 100:.2f}→{_cg_l * 100:.2f}",
+                          ctl_q95=round(_q95_o, 3) if _q95_o == _q95_o else None,
+                          pctile=round(_pct_o, 1) if _pct_o == _pct_o else None,
+                          crit="|".join(f"{k_}={'O' if v_ else 'X'}" for k_, v_ in _crit.items()),
+                          revert_next=_revert, grid_rows=len(_grid_o), sec=round(time.time() - _to0, 1),
+                          note="⚠ 위험 파라미터(노출↑) — 되돌리기 s_overrides={'OWN_EVIDENCE_FILL': 0.0}"), M=M)
+            if _revert and _f_live > 0:
+                log("OWN", kv(event="prereg_revert_condition_met", calmar_live=round(_cm_l, 3), calmar_off=round(_cm_off, 3),
+                              ctl_q95=round(_q95_o, 3) if _q95_o == _q95_o else None,
+                              next_step="사전등록(R85)에 따라 다음 라운드에 OWN_EVIDENCE_FILL=0.0으로 되돌린다 — 이번 실행 ★는 그대로 둔다"),
+                    M=M, level="warning")
+            if bool(getattr(scfg, "OWN_EVIDENCE_LONG_AUDIT", True)):
+                try:
+                    #   ⚠ SPY 수익은 M의 bt(평가창 2018~만)가 아니라 **px_adj 전체 이력**에서 — 합성 E2E에서 bt["ret_cc"]가
+                    #     2018 이전 NaN이라 2000~2017 'M 단독'이 현금만 번 것으로 나왔다(r85 합성 실행에서 잡음).
+                    _pxa = res.get("px_adj") if isinstance(res, dict) else None
+                    _spy_long = (pd.Series(_pxa).astype(float).pct_change(fill_method=None).reindex(full_idx)
+                                 if _pxa is not None and len(pd.Series(_pxa).dropna()) > 300 else spy_cc_full)
+                    #   ⚠ 국면기계 상태는 2018 이전엔 추세필터 폴백(TREND_ONLY_*)뿐이라 RISK_ON이 없다(합성 실행 실측) —
+                    #     장기 검증은 기본으로 **상태 조건 없이**(자기 추세 & 상대 추세만) 잰다. OWN_EVIDENCE_LONG_USE_STATE=True면 상태 포함.
+                    _st_long = _st_full if bool(getattr(scfg, "OWN_EVIDENCE_LONG_USE_STATE", False)) else None
+                    _own_diag["long"] = own_long_audit(_lvl_full, _st_long, E_full, _spy_long, rf_daily, scfg,
+                                                       cost_bps=float(res["cfg"].COST_BPS), M=M,
+                                                       spy_level=(pd.Series(_pxa).reindex(full_idx) if _pxa is not None else None))
+                except Exception as _e4:
+                    log("OWN", kv(event="long_audit_failed", err=type(_e4).__name__, msg=str(_e4)[:160],
+                                  trace=traceback.format_exc()[-300:].replace("\n", " | "),
+                                  action="장기 검증만 생략 — ★는 영향 없음"), M=M, level="warning")
+                    _own_diag["long"] = {"enabled": False, "error": f"{type(_e4).__name__}: {str(_e4)[:160]}"}
+        except Exception as _e:
+            log("OWN", kv(event="own_evidence_failed", err=type(_e).__name__, msg=str(_e)[:180],
+                          trace=traceback.format_exc()[-400:].replace("\n", " | "),
+                          action="섹터근거 블록 생략 — ★가 이미 교체됐다면 그대로, 아니면 v0.66.0 ★"), M=M, level="warning")
+            _own_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
+
     # ---- [v0.66.0 R84 ★★ 신규 · 측정 전용] [모멘텀연결격자] — '예측을 배분에 넣으면 노란색(★) 성과가 나아지나' ----
     #   사용자 질문(2026-09-22): "고치고 있는거 맞아? 왜 노란색 표시된 수익배수는 그대로야".
     #   답: R82·R83은 신뢰도 **측정**만 바꿨고 ★(실제 거래 규칙)은 R81 이후 그대로라 수익배수 12.368도 그대로다.
@@ -9968,6 +10614,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         "label_primary": label_primary, "label_leader": label_leader, "label_topk": label_topk, "label_linear": label_lin,
         "self_cut": _sc_diag,                                                        # [v0.62.0 R80]
         "alloc_link": _link_diag,                                                    # [v0.66.0 R84] [모멘텀연결격자]
+        "own_evidence": _own_diag,                                                   # [v0.67.0 R85] 섹터 자기근거 채움
         "label_alt": (label_topk if mode == "leader3" else label_leader),
         "label_own": (label_own if label_own in bts else None), "spy_m": spy_m,          # [v0.7.0]
         "label_score": (label_score if label_score in bts else None),                   # [v0.8.0]
@@ -9996,7 +10643,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     }
     log("ROTATION", kv(event="allocation_built",
                        **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year", "spy_m",
-                                                                     "tier_by_year", "avoid_by_year", "alloc_link")},
+                                                                     "tier_by_year", "avoid_by_year", "alloc_link", "own_evidence")},
                        tiers=";".join(f"{k}:{v}" for k, v in sorted(diag["tier_by_year"].items())) or "-",
                        avoid_ok=";".join(f"{k}:{'+'.join(v) if v else '-'}" for k, v in sorted(diag["avoid_by_year"].items())) or "-",
                        spy_m_cagr=spy_m["CAGR"], spy_m_mdd=spy_m["MDD"],
@@ -10021,7 +10668,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             "all_cols": all_cols,
             # [v0.9.0] 13j 배분거래내역(실제 포트폴리오 거래 로그)용 — 백테스트와 같은 수익 분해·초기 포지션·비용
             "ret_co": ret_co.reindex(columns=all_cols), "ret_oc": ret_oc.reindex(columns=all_cols),
-            "init_exec": init_exec, "init_prev": init_prev, "cost_bps": cost_bps, "rf_daily": rf_daily}
+            "init_exec": init_exec, "init_prev": init_prev, "cost_bps": cost_bps, "rf_daily": rf_daily,
+            "target_w_off": target_w_off}                    # [v0.67.0 R85] 섹터근거 채움 이전 ★(I★ 전후 비교용 · None이면 블록 꺼짐)
 
 
 def _nw_mean_tstat(x: pd.Series, lag: int) -> Tuple[float, float, int]:
@@ -14961,7 +15609,16 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             log("REPORT", kv(event="reliability_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
     elif isinstance(_ra, dict) and _ra.get("error"):
         meta.insert(1, ("⚠ 신뢰도 판정(R82·R83)", f"산출 실패 — {_ra['error']}"))
-    sheets = sheets_to_front(sheets, "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
+    # ---- [v0.67.0 R85 ★★★] 00S_섹터자기근거 — 노란색이 왜 바뀌었나 · 격자 · 사전등록 판정 · 장기 검증(맨 앞) ----
+    try:
+        _od85 = (((sres.get("alloc") or {}).get("diag") or {}).get("own_evidence")) or {}
+        if _od85:
+            sheets["00S_섹터자기근거"] = build_own_evidence_sheet(sres)
+            for _k, _v in reversed(own_evidence_lines(sres)):
+                meta.insert(1, (_k, _v))
+    except Exception as _e:
+        log("REPORT", kv(event="own_evidence_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
+    sheets = sheets_to_front(sheets, "00S_섹터자기근거", "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
     _lm_s = None
     try:
@@ -16006,7 +16663,8 @@ def reliability_lines(aud: Dict[str, Any]) -> List[Tuple[str, str]]:
 
 
 def s_yellow_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """[v0.66.0 R84] 00 시트 줄 2개 — ① 노란색(★ 라이브) 수익배수가 왜 그대로인가 ② [모멘텀연결격자] 판정.
+    """[v0.66.0 R84 → v0.67.0 R85] 00 시트 줄 — ① 노란색(★ 라이브) 수익배수가 왜 그대로인가(R85 섹터근거 채움이 꺼져 있을 때만)
+    ② [모멘텀연결격자] 판정. 채움이 켜져 있으면 ①은 own_evidence_lines()의 '이번에 왜 바뀌었나'가 대신한다(00S 블록이 맨 앞에 넣음).
     사용자 질문(2026-09-22) "고치고 있는거 맞아? 왜 노란색 표시된 수익배수는 그대로야"에 리포트가 직접 답하게 한다."""
     out: List[Tuple[str, str]] = []
     al = sres.get("alloc") or {}
@@ -16022,6 +16680,9 @@ def s_yellow_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
             return float(pd.to_numeric(pfi.loc[lbl, col], errors="coerce"))
         except Exception:
             return float("nan")
+    # [v0.67.0 R85] 섹터 자기근거 채움이 켜져 있으면 '왜 그대로인가'(R84) 대신 '이번에 왜 바뀌었나'를 싣는다.
+    #   (R85 줄 자체는 00S 블록이 00 맨 앞 — 버전 바로 다음 — 에 넣는다: 여기서 넣으면 '다음 거래일' 블록 뒤로 밀린다.)
+    _own_live = bool((dg.get("own_evidence") or {}).get("enabled")) and float((dg.get("own_evidence") or {}).get("fill", 0) or 0) > 0
     mcol = "총수익배수" if "총수익배수" in pf.columns else None
     star = (f"총수익배수 {_g(lp, mcol):.3f} · " if mcol else "") + (
         f"CAGR {_g(lp, 'CAGR') * 100:.2f}% · MDD {_g(lp, '최대낙폭(MDD)') * 100:.2f}% · 칼마 {_g(lp, '칼마(CAGR/MDD)'):.3f}")
@@ -16032,7 +16693,8 @@ def s_yellow_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
         cap_txt = (f" 노란색 수익배수를 올리는 가장 직접적인 손잡이는 **위험**이다: 주력 상한 90%면 배수 {_g(l9, mcol):.3f} · "
                    f"MDD {_g(l9, '최대낙폭(MDD)') * 100:.2f}% · 칼마 {_g(l9, '칼마(CAGR/MDD)'):.3f}(R80에 사용자 지시로 0.9→0.8 — "
                    "기술 편중 축소). 바꾸려면 s_overrides={'ROTATION_PRIMARY_CAP': 0.9}.")
-    out.append(("★★ 노란색(라이브) 수익배수가 왜 그대로인가(R84)",
+    if not _own_live:
+        out.append(("★★ 노란색(라이브) 수익배수가 왜 그대로인가(R84)",
                 f"현재 ★ {star}. R82·R83·R84는 **신뢰도를 재는 방법**(00R 시트)만 바꿨고, 실제 거래 규칙(★ = 주력 XLK 상한 80% + "
                 "대피처 2개, 총노출 = M의 E_t)은 R81 이후 **한 글자도 바뀌지 않았다** — 그래서 배수도 R81과 같다. "
                 "규칙을 바꾸지 않은 이유: 섹터 선택 신호가 '중간' 문턱을 넘지 못했고(00R), 넘지 못한 신호로 라이브를 바꾸면 "
