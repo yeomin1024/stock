@@ -1,5 +1,30 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.8.0 - 2026-09-21 - [R81 ★★ 배분 = 상승확률 기울임(prob_tilt) — 1/N 균등 폐기 · R80 산업연동은 격자 전용으로]
+#    사용자 지시(2026-09-21) "비중 0.035 이런 식으로 다 똑같이 주지 말라니까 — 섹터, 산업, 나머지 지표 참고해서
+#      가장 상승 확률 높은 거에 비중을 주라고", "예측 성능이 전보다 안좋아 진것 같은데 문제 찾아서 해결해". 시작 v0.7.0 → 목표 v0.8.0.
+#    ── 진단(리포트 k7) ──
+#      R80 industry_tilt: 칼마 **2.718** < 1/N 2.877 · 무작위 대조군 백분위 **7** — 성능을 깎았다.
+#      00시트: 연동 적용 종목비율 0.2685 · **1/N만 쓴 날 1,436일** — MIN_COVER(0.5) 스위치가 기울임 전체를 꺼
+#      13c 마지막 날 28종목 전부 **0.035714(=1/28)**. 사용자가 본 화면이 정확히 이것이다.
+#      근본 원인: I 계층이 산업을 거의 사지 않아(하루 0.40개) '산업 비중'에 종목을 구분할 정보가 없었다.
+#    (§1 ★★ 라이브) STOCK_ALLOC_MODE "industry_tilt" → **"prob_tilt"**. 산업 **비중** 대신 산업 **점수**를 쓴다:
+#      점수 = 종목의 산업 ETF **결합점수 백분위**(I build_coupling_state — 산업↔섹터 상관 · 특이변동성비중 · 섹터 변동성,
+#      전부 자기이력 백분위 · 인과). 형태 = 0.5·(1/N) + 0.5·(점수⁴ 비례), **총노출은 1/N 규칙과 날마다 동일**, 종목 상한 10%.
+#      점수가 없는 종목은 0.5(중립) — 기울임 전체를 끄는 스위치를 없앴다(ALLOC_TILT_MIN_COVER 0.5→0.0도 같은 이유).
+#    (§2 ★ 사전등록 측정 — r81/k81*.py · 하네스는 엔진 1/N(24.90/−8.66/2.877)과 R80 라이브(25.05/−9.21/2.718)를 소수점까지 재현,
+#      그리고 **엔진 함수 _prob_tilt_weights가 오프라인 결과를 비중 차 0.0으로 재현**(r81/check_engine_repro.py) — R80의 빈틈을 막았다)
+#      1/N                 CAGR 24.90% · MDD −8.66% · 칼마 2.877 · 상위5종목 몫 17.9%
+#      ★ λ0.5·제곱4·상한10% CAGR **27.64%** · MDD −8.98% · 칼마 **3.079** · 상위5종목 몫 **39.0%** · 1/N 이긴 해 6/9
+#      순열 대조군 40회 백분위 **칼마 95 · CAGR 100** · 워크포워드(과거 연도로만 신호·모양 선택) CAGR 26.54% · 칼마 2.987
+#      시험한 후보 20여 개 중 이것만 유의했다: 종목 자기 지표(모멘텀 −0.03·추세 −0.02·펀더멘털 +0.01)는 IC 없음/음수,
+#      섹터·산업·종목 지표를 합친 **워크포워드 로지스틱은 표본 밖 AUC 0.47~0.53(IC +0.003) — 정보 없음**.
+#    ⚠ 정직한 비용: MDD −0.32%p(−8.66→−8.98). 결합점수의 정보 상당 부분은 '섹터 변동성이 높았던 뒤의 반등' 성분이다 —
+#      2022 같은 긴 하락장에서는 1/N보다 약간 뒤졌다(−0.36%p). 종목 상한(0.10)은 올리지 않았다.
+#    (§3) [배분격자] PROB_TILT_GRID 5행 + 대조군이 **라이브 모드를 따라간다**(prob_tilt면 결합점수를 섞는다). R80 industry_tilt 행은
+#      격자 전용으로 남긴다. 00시트 판정 줄 = 사전등록(칼마 백분위 ≥ 90 그리고 칼마 ≥ 1/N) — 미통과면 다음 라운드에 되돌린다.
+#    되돌리기: k_overrides={"STOCK_ALLOC_MODE": "equal_fixed"} (v0.6.0과 비트 동일).
+#    ⚠ 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.7.0 - 2026-09-21 - [R80 ★★ 배분에 산업 비중 반영(industry_tilt) · 실제 거래 전략 노란색 표시]
 #    사용자 지시(2026-09-21) "주식은 분배부터 아예 똑같이 비중배분해서 틀렸어 주식도 똑같이 산업 비중을 참고해서 해야해",
 #      "각 계층별로 어떤 전략이 실제 거래에 사용되는지 노란색으로 표시해". 시작 v0.6.0 → 목표 v0.7.0.
@@ -365,7 +390,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.7.0"
+VERSION = "v0.8.0"
 VERSION_DATE = "2026-09-21"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -549,11 +574,40 @@ class StockConfig:
     #   ⚠ λ·상한은 보수적으로 고정했다: 상한을 15%로 올리면 CAGR 27.12%로 오르지만 MDD가 −9.02%로 나빠진다.
     #     종목 상한은 **위험 파라미터**이므로 STOCK_MAX_WEIGHT(0.10)를 올리지 않는 쪽을 택했다(사용자 사전 동의 없이 올리지 않는다).
     #   ⚠ 되돌리기: k_overrides={"STOCK_ALLOC_MODE": "equal_fixed"} (v0.6.0과 비트 동일)
-    STOCK_ALLOC_MODE: str = "industry_tilt"
-    ALLOC_TILT_LAMBDA: float = 0.25    # 연동 비중(0 = 현행 1/N · 1 = 순수 연동 → 평균 4종목으로 쏠려 칼마 0.67, 쓰지 않는다)
+    # ---- [v0.8.0 R81 ★★ 라이브 변경] "industry_tilt" → **"prob_tilt"**(상승확률 기울임) ----
+    #   R80 industry_tilt의 엔진 실측(리포트 k7 13 시트): 칼마 **2.718** < 1/N 2.877 · 무작위 대조군 백분위 **7**.
+    #   원인 ① I 계층이 산업을 거의 사지 않았다 — 하루 평균 산업 다리 **0.40개**, 2,191일 중 **1,485일은 0개**
+    #          (예산이 부모 섹터 ETF에 주차). 그래서 '산업 비중'이 종목을 구분할 재료가 없었다.
+    #   원인 ② MIN_COVER(0.5) 스위치 — 연동 받은 종목이 26.85%뿐이라 **1,436일 동안 기울임 전체가 꺼져 1/N**만 남았다
+    #          (13c 마지막 날 28종목 전부 0.035714 — 사용자가 지적한 화면).
+    #   ⇒ 산업 '비중'이 아니라 산업 **점수**(결합점수 — 섹터·산업·변동성 지표)를 상승확률로 쓴다. _prob_tilt_weights 참조.
+    #   ★ 실측(r81/k81alloc·k81wf2·k81wf3.py · 하네스가 엔진 1/N·R80 라이브를 소수점까지 재현):
+    #       1/N(v0.6.0)           CAGR 24.90% · MDD −8.66% · 칼마 2.877 · 상위5종목 몫 17.9%
+    #       ★ λ0.5·제곱4·상한10%   CAGR **27.64%** · MDD −8.98% · 칼마 **3.079** · 상위5종목 몫 **39.0%** · 1/N 이긴 해 6/9
+    #       순열 대조군 40회 대비 백분위 **칼마 95 · CAGR 100**
+    #       워크포워드(과거 연도로만 신호·모양 선택 — 사후선택 보정) CAGR 26.54% · MDD −8.89% · 칼마 2.987 (> 1/N)
+    #     후보 20여 개를 같은 하네스로 쟀다: 종목 자기 지표(모멘텀·추세·펀더멘털)는 IC가 없거나 음수였고,
+    #     섹터·산업·종목 지표를 합친 워크포워드 로지스틱은 표본 밖 AUC 0.47~0.53(IC +0.003)으로 **정보가 없었다**.
+    #   ⚠ 정직한 비용: MDD가 0.32%p 나빠진다(−8.66→−8.98). 종목 상한(STOCK_MAX_WEIGHT 0.10)은 올리지 않았다.
+    #   ⚠ 되돌리기: k_overrides={"STOCK_ALLOC_MODE": "equal_fixed"} (v0.6.0과 비트 동일)
+    STOCK_ALLOC_MODE: str = "prob_tilt"
+    PROB_TILT_LAMBDA: float = 0.50     # 상승확률 형태의 비중(0 = 1/N · 1 = 점수만)
+    PROB_TILT_POWER: float = 4.0       # 점수^power — 클수록 상승확률 상위 종목에 몰린다(사용자 지시 '가장 높은 것에')
+    PROB_TILT_CAP: float = 0.10        # 종목 상한(= STOCK_MAX_WEIGHT · 위험 파라미터 그대로)
+    #   (라벨, λ, power, 상한) — 라이브 행도 이 격자의 한 행으로 찍혀 13 시트에서 대조군과 바로 비교된다.
+    PROB_TILT_GRID: Tuple[Tuple[str, float, float, float], ...] = (
+        ("★ 상승확률 기울임 λ0.5·제곱4·상한10%(v0.8.0 라이브)", 0.50, 4.0, 0.10),
+        ("상승확률 기울임 λ0.5·제곱2", 0.50, 2.0, 0.10),
+        ("상승확률 기울임 λ1.0·제곱2", 1.00, 2.0, 0.10),
+        ("상승확률 기울임 λ1.0·제곱4", 1.00, 4.0, 0.10),
+        ("상승확률 기울임 λ0.25·제곱4", 0.25, 4.0, 0.10),
+    )
+    ALLOC_TILT_LAMBDA: float = 0.25    # [industry_tilt · 격자 전용] 연동 비중
     ALLOC_TILT_CAP: float = 0.10       # industry_tilt의 종목 상한(넘친 몫은 같은 날 다른 종목으로 재분배)
     ALLOC_TILT_SOURCE: str = "industry"  # "industry"(산업비중+부모잔여) | "sector"(섹터비중만 · 상한 15%에서 MDD −11%로 악화)
-    ALLOC_TILT_MIN_COVER: float = 0.50   # 연동 비중을 받은 종목이 이 비율 미만이면 그날은 연동을 쓰지 않는다(자료 부족 방어)
+    #   [v0.8.0 R81] 0.50 → **0.0**. 이 스위치가 R80에서 1,436일 동안 기울임 전체를 꺼 1/N만 남겼다(결함).
+    #     연동 비중이 없는 종목은 (1−λ)·1/N 몫을 그대로 받으므로 스위치 없이도 안전하다. 격자 행이 실제 효과를 재게 한다.
+    ALLOC_TILT_MIN_COVER: float = 0.0
     STOCK_MAX_WEIGHT: float = 0.10     # 종목 한 칸 상한(1/28 = 0.0357이므로 라이브에서는 안 걸린다)
     STOCK_TOP_K: int = 8               # topk_mom 모드에서만 쓴다
     # [노출격자]와 별도로 **배분격자** — 배분 방식의 값을 엔진이 판정한다(내 계산이 아니라).
@@ -575,7 +629,7 @@ class StockConfig:
     #   '연동이 정말 정보인가'를 내 말이 아니라 표로 판정하기 위한 행이다(R79의 교훈: 오프라인 계산을 믿지 않는다).
     #   ⚠ 되돌리기: k_overrides={"ALLOC_TILT_GRID": ()}
     ALLOC_TILT_GRID: Tuple[Tuple[str, float, float, str], ...] = (
-        ("★ 산업비중 참고 기울임 λ0.25·상한10%(v0.7.0 라이브)", 0.25, 0.10, "industry"),
+        ("산업비중 참고 기울임 λ0.25·상한10%(v0.7.0 라이브였음 · R81 격자 전용)", 0.25, 0.10, "industry"),
         ("산업비중 참고 λ0.25·상한15%", 0.25, 0.15, "industry"),
         ("산업비중 참고 λ0.50·상한10%", 0.50, 0.10, "industry"),
         ("산업비중 참고 λ0.50·상한15%", 0.50, 0.15, "industry"),
@@ -1957,8 +2011,17 @@ def _resolve_industry_alloc(cfg: StockConfig, parent_w: Optional[pd.DataFrame] =
                     industries=info["industries"], parents=info["parents"], asof=info["asof"],
                     rows=int(len(iw)), mean_ind_sum=round(float(iw.sum(axis=1).mean()), 4),
                     mean_par_sum=(round(float(pw.sum(axis=1).mean()), 4) if len(pw) else None)))
+    _cs = H.get("coupling_score")
+    if isinstance(_cs, pd.DataFrame) and len(_cs):
+        _cs = _cs.apply(pd.to_numeric, errors="coerce")
+        _cs.index = pd.DatetimeIndex(_cs.index)
+        _cs = _cs[~_cs.index.duplicated(keep="last")].sort_index().clip(0.0, 1.0)
+        info["coupling_cols"] = int(_cs.shape[1])
+    else:
+        _cs = None
+        info["coupling_cols"] = 0
     return {"industry_w": iw, "parent_w": pw, "ind2sec": dict(H.get("parent_of") or {}),
-            "label": str(H.get("label", "-"))}, info
+            "coupling_score": _cs, "label": str(H.get("label", "-"))}, info
 
 
 def _industry_tilt_weights(solo: pd.DataFrame, live: pd.DataFrame, idx: pd.DatetimeIndex,
@@ -2051,6 +2114,73 @@ def _industry_tilt_weights(solo: pd.DataFrame, live: pd.DataFrame, idx: pd.Datet
     return W, diag
 
 
+def _prob_tilt_weights(solo: pd.DataFrame, live: pd.DataFrame, idx: pd.DatetimeIndex,
+                       tickers: List[str], score: Optional[pd.DataFrame], parent_of: Dict[str, str],
+                       lam: float, power: float, cap: float, perm: Optional[np.ndarray] = None
+                       ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.8.0 R81 ★★] **상승확률 기울임** — 1/N 균등을 버리고 '상승 확률이 높은 종목'에 더 준다(사용자 지시).
+
+    사용자 지시(2026-09-21): "비중 0.035 이런 식으로 다 똑같이 주지 말라니까 — 섹터, 산업, 나머지 지표 참고해서
+    가장 상승 확률 높은 거에 비중을 주라고".
+    점수 = 그 종목의 산업 ETF **결합점수 백분위**(I build_coupling_state: 산업↔부모 상관 · 1−특이변동성비중 ·
+      부모(섹터) 변동성 — 전부 자기이력 백분위, 인과). 섹터·산업·변동성 지표를 합친 값이다.
+      R81 실측(리포트 i26·k7): 29개 산업 횡단면 향후 21일 IC **+0.059 · t 2.67 · 8/9년 양수** — 같은 리포트에서
+      시험한 후보 20여 개 가운데 유일하게 유의했다(복합점수 −0.018 · 종목 모멘텀 −0.03 · 워크포워드 로지스틱 +0.003).
+
+    단계: (1) 기준 형태 b = elig/N (v0.6.0 1/N 고정슬리브 — 감축·미관측 종목 0)
+          (2) 점수 형태 g = score^power (보유 적격 종목만) — power가 클수록 상위 종목에 몰린다
+          (3) 형태 = (1−λ)·b/Σb + λ·g/Σg → **1/N 규칙의 그날 총노출로 스케일**(방어 불변)
+          (4) 종목 상한 cap(그날 평균비중 밑으로는 내리지 않는다) · 초과분 같은 날 재분배 4회
+    점수가 없는 종목(산업 ETF 매핑 실패 · 결합점수 이력 부족)은 **0.5(중립)** — 연동을 끄는 스위치가 아니다
+      (v0.7.0의 MIN_COVER 스위치가 65% 날짜에서 기울임 전체를 꺼 1/N만 남긴 결함을 되풀이하지 않는다).
+    perm: 무작위 대조군용 — 점수 열을 종목에 무작위로 재배정(분포·집중도는 같고 매핑만 무작위).
+    ⚠ 룩어헤드 없음: 점수는 I가 t일까지로 확정한 값(reindex는 ffill만), 체결은 build_allocation이 t+1로 민다."""
+    n = max(1, len(tickers))
+    elig = solo.fillna(0.0).clip(lower=0.0, upper=1.0).where(live, 0.0)
+    base = elig / float(n)
+    tot = base.sum(axis=1)
+    held = elig > 1e-9
+    n_elig = held.sum(axis=1)
+    covered = 0
+    S = pd.DataFrame(0.5, index=idx, columns=tickers)
+    if isinstance(score, pd.DataFrame) and len(score):
+        sc = score.reindex(score.index.union(idx)).sort_index().ffill().reindex(idx)
+        for t in tickers:
+            e = str(parent_of.get(t, "") or "")
+            if e and e in sc.columns:
+                S[t] = pd.to_numeric(sc[e], errors="coerce").values
+                covered += 1
+    S = S.clip(0.0, 1.0).fillna(0.5)
+    if perm is not None:
+        S = pd.DataFrame(S.values[:, np.asarray(perm)], index=idx, columns=tickers)
+    g = (S ** float(power)).where(held, 0.0)
+    g = g.div(g.sum(axis=1).replace(0.0, np.nan), axis=0).fillna(0.0)
+    b = base.div(tot.replace(0.0, np.nan), axis=0).fillna(0.0)
+    Sh = (1.0 - float(lam)) * b + float(lam) * g
+    W = Sh.mul(tot, axis=0)
+    cap_in = float(cap)
+    cap_row = pd.Series(cap_in, index=idx).clip(lower=(tot / n_elig.replace(0, np.nan)).fillna(cap_in))
+    rounds = 0
+    for _ in range(4):
+        over = W.sub(cap_row, axis=0).clip(lower=0.0)
+        if float(over.values.sum()) < 1e-12:
+            break
+        rounds += 1
+        W = W.clip(upper=cap_row, axis=0)
+        room = ((-W).add(cap_row, axis=0)).clip(lower=0.0) * (Sh > 0)
+        W = W + room.div(room.sum(axis=1).replace(0.0, np.nan), axis=0).mul(over.sum(axis=1), axis=0).fillna(0.0)
+    W = W.clip(lower=0.0).clip(upper=cap_row, axis=0)
+    hw = W.where(W > 1e-9)
+    diag = {"lam": float(lam), "power": float(power), "cap": cap_in, "covered": int(covered), "n": int(n),
+            "cap_lift_days": int((cap_row > cap_in + 1e-12).sum()), "redistribute_rounds": rounds,
+            "tot_gap_max": round(float((W.sum(axis=1) - tot).abs().max()), 8),
+            "cv_mean": (round(float((hw.std(axis=1) / hw.mean(axis=1)).mean()), 3) if len(hw.dropna(how="all")) else None),
+            "top5_share": round(float((W.apply(lambda r_: r_.nlargest(5).sum(), axis=1)
+                                       / W.sum(axis=1).replace(0.0, np.nan)).mean()), 4),
+            "score_ok": bool(isinstance(score, pd.DataFrame) and len(score) and covered > 0)}
+    return W, diag
+
+
 # =============================================================================
 # [4b] ★★ v0.3.0 D2 신규 — 배분층(전체자산 1.0)
 #   사용자 지시: "배분전략 거래 할거면 전체자산을 1로 해서 그걸 배분해서 각 총합이 1이되도록 하라고
@@ -2069,7 +2199,8 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                      ind_alloc: Optional[Dict[str, Any]] = None,
                      tilt_lambda: Optional[float] = None, tilt_cap: Optional[float] = None,
                      tilt_source: Optional[str] = None,
-                     tilt_perm: Optional[np.ndarray] = None) -> Dict[str, Any]:
+                     tilt_perm: Optional[np.ndarray] = None,
+                     prob_power: Optional[float] = None) -> Dict[str, Any]:
     """전체자산 **1.0**을 종목에 배분한다. 반환 target_w의 **행 합계는 절대 1.0을 넘지 않는다**.
 
     체결 규칙은 M·S·I와 같다 — t일 확정, t+1일 집행(exec_w(t) = target_w(t−1)).
@@ -2086,7 +2217,10 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
       "inv_vol"        — 적격 종목을 vol21 역수 가중(위험 균등).
       "parent_linked"  — **I 계층이 그 종목의 부모 산업에 준 비중**을 그대로 쓴다(4계층 정합의 본래 설계).
                          parent_w(날짜×산업ETF)와 parent_of가 있어야 하고, 없으면 equal_fixed로 되돌린다.
-      **"industry_tilt"(v0.7.0 R80 라이브 · 기본)** — 사용자 지시 "주식도 산업 비중을 참고해서 배분".
+      **"prob_tilt"(v0.8.0 R81 라이브 · 기본)** — 사용자 지시 "다 똑같이 주지 말고 가장 상승 확률 높은 거에 비중".
+        총노출은 equal_fixed와 날마다 동일(방어 불변). 그 노출을 산업 **결합점수**(섹터·산업·변동성 지표)의
+        power 제곱에 비례해 기울인다. 자세한 근거·실측은 _prob_tilt_weights와 CFG 주석 참조.
+      "industry_tilt"(v0.7.0 R80 · R81부터 격자 전용) — 사용자 지시 "주식도 산업 비중을 참고해서 배분".
         **총노출은 equal_fixed와 날마다 동일**하게 두고(방어 불변), 그 노출을 산업/섹터 비중을 참고해
         종목 간에 다시 나눈다: 형태 = (1−λ)·1/N + λ·(산업비중 + 그 섹터 부모ETF 잔여다리 균등분배),
         종목 상한 ALLOC_TILT_CAP, 넘친 몫은 같은 날 다른 종목에 재분배. 산업비중 출처가 없으면
@@ -2120,6 +2254,28 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
         #   부분 감축(CUT_WEIGHT>0)은 그 비율만큼만 담는다 — solo 값을 그대로 곱한다.
         W = solo.fillna(0.0).clip(lower=0.0, upper=1.0) * (1.0 / float(n_uni))
         W = W.where(live, 0.0)
+    elif mode == "prob_tilt":
+        _ia = ind_alloc if ind_alloc is not None else _resolve_industry_alloc(cfg, parent_w)[0]
+        _sc = (_ia or {}).get("coupling_score")
+        if not isinstance(_sc, pd.DataFrame) or not len(_sc):
+            log("ALLOC", kv(event="prob_tilt_unavailable", fallback="equal_fixed",
+                            note="I 결합점수 통로가 없다 — run_pipeline.main()으로 I와 함께 돌릴 것(I v0.35.0+)"),
+                level="warning")
+            _r = build_allocation(pos, panel, cfg, mode="equal_fixed", max_weight=mw, top_k=tk)
+            _r["tilt"] = {"ok": False, "note": "I 결합점수 출처 없음 — 1/N 고정슬리브로 되돌림"}
+            return _r
+        _lam = float(tilt_lambda if tilt_lambda is not None else getattr(cfg, "PROB_TILT_LAMBDA", 0.5))
+        _pw = float(prob_power if prob_power is not None else getattr(cfg, "PROB_TILT_POWER", 4.0))
+        _cap = float(tilt_cap if tilt_cap is not None else getattr(cfg, "PROB_TILT_CAP", 0.10))
+        W, _tdiag = _prob_tilt_weights(solo, live, idx, tickers, _sc, dict(parent_of or {}),
+                                       lam=_lam, power=_pw, cap=_cap, perm=tilt_perm)
+        _tdiag["ok"] = True
+        _tdiag["source"] = "coupling"
+        log("ALLOC", kv(event="prob_tilt_built", lam=_lam, power=_pw, cap=_cap, covered=_tdiag["covered"],
+                        n=_tdiag["n"], cv_mean=_tdiag["cv_mean"], top5_share=_tdiag["top5_share"],
+                        cap_lift_days=_tdiag["cap_lift_days"], tot_gap_max=_tdiag["tot_gap_max"],
+                        control=(tilt_perm is not None),
+                        note="★ 총노출은 1/N 규칙과 동일 — 상승확률(결합점수) 높은 종목에 더 준다"))
     elif mode == "industry_tilt":
         _ia = ind_alloc if ind_alloc is not None else _resolve_industry_alloc(cfg, parent_w)[0]
         if not _ia:
@@ -2194,7 +2350,7 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                else (max(mw, 1.0 / float(n_uni),
                          float(tilt_cap if tilt_cap is not None else getattr(cfg, "ALLOC_TILT_CAP", 0.10)),
                          float(W.max().max()) if len(W) else 0.0)
-                     if mode == "industry_tilt" else mw))
+                     if mode in ("industry_tilt", "prob_tilt") else mw))
     if _mw_eff > mw + 1e-12:
         log("ALLOC", kv(event="cap_lifted_to_equal_sleeve", mode=mode, cap_set=mw,
                         cap_used=round(_mw_eff, 6), n=n_uni,
@@ -2224,7 +2380,7 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
     return {"target_w": W, "exec_w": exec_w, "total_w": tot, "port_ret": port_ret,
             "solo_w": solo.fillna(0.0), "ret": ret, "mode": mode,
             "max_weight": mw, "cap_used": _mw_eff, "top_k": tk,
-            "tilt": (_tdiag if mode == "industry_tilt" else None)}
+            "tilt": (_tdiag if mode in ("industry_tilt", "prob_tilt") else None)}
 
 
 # =============================================================================
@@ -2664,12 +2820,34 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         except Exception as e:
             log("ALLOC", kv(event="alloc_grid_row_failed", row=str(_lbl), err=str(e)[:120]),
                 level="warning")
-    # ---- [v0.7.0 R80 ★★] 산업비중 참고 기울임 격자 + 무작위 대조군 ----
-    #   사용자 지시("주식도 산업 비중을 참고해서 배분")를 **그대로 구현한 뒤 그 값을 엔진이 판정하게** 한다.
-    #   대조군: 산업비중 열을 종목에 무작위로 배정한다. 집중도(형태의 분산)는 그대로이고 **매핑만** 무작위이므로,
-    #   라이브가 대조군 분포 안에 묻히면 '연동에 정보가 있다'는 주장은 이 표본에서 성립하지 않는다.
+    # ---- [v0.7.0 R80 · v0.8.0 R81 ★★] 기울임 격자 + 무작위 대조군 ----
+    #   사용자 지시를 **그대로 구현한 뒤 그 값을 엔진이 판정하게** 한다.
+    #   대조군: 점수(또는 산업비중) 열을 종목에 무작위로 배정한다. 집중도(형태의 분산)는 그대로이고 **매핑만**
+    #   무작위이므로, 라이브가 대조군 분포 안에 묻히면 '그 점수에 정보가 있다'는 주장은 이 표본에서 성립하지 않는다.
+    #   [v0.8.0] 대조군은 **라이브 모드를 따라간다**(prob_tilt면 결합점수를 섞고, industry_tilt면 산업비중을 섞는다).
+    #   ⚠ 지역변수 이름 주의: 이 함수에는 이미 _nm(종목 이름 사전)·_c·_r·_v가 있다 — R80 첫 구현에서 루프 변수
+    #     _nm이 그것을 덮어써 리포트가 죽었다(E2E 시험이 잡았다). 이 블록의 임시 이름에는 전부 _tc 접두사를 붙인다.
     _ctrl_rows: List[dict] = []
+    _live_mode = str(getattr(cfg, "STOCK_ALLOC_MODE", "equal_fixed")).lower()
+    _live_alloc_label: Optional[str] = None
     if ind_alloc:
+        _has_cs = isinstance(ind_alloc.get("coupling_score"), pd.DataFrame) and len(ind_alloc.get("coupling_score"))
+        if _has_cs:
+            for _t in tuple(getattr(cfg, "PROB_TILT_GRID", ()) or ()):
+                _lbl, _lam, _pw, _cap = _t[0], float(_t[1]), float(_t[2]), float(_t[3])
+                try:
+                    _tc_a = build_allocation(pos, panel, cfg, mode="prob_tilt", parent_w=parent_w,
+                                              parent_of=parent_of, ind_alloc=ind_alloc,
+                                              tilt_lambda=_lam, tilt_cap=_cap, prob_power=_pw)
+                    _tc_r = _alloc_row(_lbl, _tc_a, _cap, None)
+                    if _tc_r:
+                        _tc_r.update({"λ(연동비중)": _lam, "점수제곱": _pw, "연동출처": "산업 결합점수(상승확률)",
+                                      "상위5종목 몫": ((_tc_a.get("tilt") or {}).get("top5_share"))})
+                        alloc_rows.append(_tc_r)
+                        if str(_lbl).startswith("★") and _live_mode == "prob_tilt":
+                            _live_alloc_label = str(_lbl)
+                except Exception as e:
+                    log("ALLOC", kv(event="alloc_prob_row_failed", row=str(_lbl), err=str(e)[:120]), level="warning")
         for _t in tuple(getattr(cfg, "ALLOC_TILT_GRID", ()) or ()):
             _lbl, _lam, _cap, _src = _t[0], float(_t[1]), float(_t[2]), str(_t[3])
             try:
@@ -2680,19 +2858,33 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 if _tc_r:
                     _tc_r.update({"λ(연동비중)": _lam, "연동출처": ("산업비중+부모잔여" if _src == "industry" else "섹터비중")})
                     alloc_rows.append(_tc_r)
+                    if str(_lbl).startswith("★") and _live_mode == "industry_tilt":
+                        _live_alloc_label = str(_lbl)
             except Exception as e:
                 log("ALLOC", kv(event="alloc_tilt_row_failed", row=str(_lbl), err=str(e)[:120]), level="warning")
         _nc = int(getattr(cfg, "ALLOC_TILT_CONTROLS", 0) or 0)
-        if _nc > 0:
+        _ctl_mode = _live_mode if _live_mode in ("prob_tilt", "industry_tilt") else None
+        if _ctl_mode == "prob_tilt" and not _has_cs:
+            _ctl_mode = None
+        if _nc > 0 and _ctl_mode:
             _rng = np.random.default_rng(int(getattr(cfg, "ALLOC_TILT_SEED", 20260921)))
-            _lam0 = float(getattr(cfg, "ALLOC_TILT_LAMBDA", 0.25))
-            _cap0 = float(getattr(cfg, "ALLOC_TILT_CAP", 0.10))
+            if _ctl_mode == "prob_tilt":
+                _lam0 = float(getattr(cfg, "PROB_TILT_LAMBDA", 0.5))
+                _cap0 = float(getattr(cfg, "PROB_TILT_CAP", 0.10))
+                _pw0 = float(getattr(cfg, "PROB_TILT_POWER", 4.0))
+                _ctl_desc = f"결합점수를 종목에 무작위 배정(λ{_lam0}·제곱{_pw0:g}·상한{_cap0:.0%})"
+            else:
+                _lam0 = float(getattr(cfg, "ALLOC_TILT_LAMBDA", 0.25))
+                _cap0 = float(getattr(cfg, "ALLOC_TILT_CAP", 0.10))
+                _pw0 = None
+                _ctl_desc = f"산업비중을 종목에 무작위 배정(λ{_lam0}·상한{_cap0:.0%})"
             _src0 = str(getattr(cfg, "ALLOC_TILT_SOURCE", "industry"))
             for _k in range(_nc):
                 try:
-                    _tc_a2 = build_allocation(pos, panel, cfg, mode="industry_tilt", parent_w=parent_w,
+                    _tc_a2 = build_allocation(pos, panel, cfg, mode=_ctl_mode, parent_w=parent_w,
                                               parent_of=parent_of, ind_alloc=ind_alloc,
                                               tilt_lambda=_lam0, tilt_cap=_cap0, tilt_source=_src0,
+                                              prob_power=_pw0,
                                               tilt_perm=_rng.permutation(len(sorted(panel))))
                     _tc_r2 = _alloc_row(f"대조군{_k}", _tc_a2, _cap0, None)
                     if _tc_r2:
@@ -2701,11 +2893,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     log("ALLOC", kv(event="alloc_tilt_control_failed", k=_k, err=str(e)[:120]), level="warning")
             if _ctrl_rows:
                 _cdf = pd.DataFrame(_ctrl_rows)
-                #   ⚠ 지역변수 이름 주의: 이 함수에는 이미 _nm(종목 이름 사전)·_c·_r·_v가 있다.
-                #     R80 첫 구현에서 루프 변수 _nm이 그것을 덮어써 리포트가 죽었다(E2E 시험이 잡았다).
-                #     그래서 이 블록의 임시 이름에는 전부 _tc 접두사를 붙인다.
                 for _tc_q, _tc_nm in ((0.50, "중앙값"), (0.95, "상위5%")):
-                    _tc_row = {"배분방식": f"[무작위 대조군 {_nc}회 · {_tc_nm}] 산업비중을 종목에 무작위 배정(λ{_lam0}·상한{_cap0:.0%})",
+                    _tc_row = {"배분방식": f"[무작위 대조군 {_nc}회 · {_tc_nm}] {_ctl_desc}",
                                "mode": "tilt_control", "종목상한": _cap0, "top_k": None, "λ(연동비중)": _lam0,
                                "연동출처": "무작위(대조군)"}
                     for _tc_col in ("총수익배수", "단순합(%)", "CAGR", "최대낙폭(MDD)", "칼마(CAGR/MDD)", "연변동성",
@@ -2715,15 +2904,15 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                                             if len(_tc_v) else None)
                     alloc_rows.append(_tc_row)
                 _live_cal = next((r.get("칼마(CAGR/MDD)") for r in alloc_rows
-                                  if str(r.get("배분방식", "")).startswith("★ 산업비중 참고 기울임")), None)
+                                  if _live_alloc_label and str(r.get("배분방식", "")) == _live_alloc_label), None)
                 _cq = pd.to_numeric(_cdf["칼마(CAGR/MDD)"], errors="coerce").dropna()
-                log("ALLOC", kv(event="tilt_control_summary", n=_nc, seed=int(getattr(cfg, "ALLOC_TILT_SEED", 0)),
-                                live_calmar=_live_cal,
+                log("ALLOC", kv(event="tilt_control_summary", mode=_ctl_mode, n=_nc,
+                                seed=int(getattr(cfg, "ALLOC_TILT_SEED", 0)), live_calmar=_live_cal,
                                 ctrl_median=(round(float(_cq.median()), 3) if len(_cq) else None),
                                 ctrl_p95=(round(float(_cq.quantile(0.95)), 3) if len(_cq) else None),
                                 pct_rank=((round(float((_cq < float(_live_cal)).mean()) * 100.0, 1)
                                            if (_live_cal is not None and len(_cq)) else None)),
-                                note="라이브가 대조군 상위5%보다 낮으면 '산업 연동에 정보가 있다'는 주장은 이 표본에서 미성립"))
+                                note="라이브가 대조군 상위5%보다 낮으면 '그 점수에 정보가 있다'는 주장은 이 표본에서 미성립"))
     # 동일가중 B&H 기준선 한 줄(비교 기준 — 배분격자와 같은 잣대)
     try:
         _eq = alloc["ret"].mean(axis=1)
@@ -2823,6 +3012,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             "parent_of": parent_of, "accuracy": acc, "audit": audit,
             "alloc": alloc, "alloc_grid": pd.DataFrame(alloc_rows),
             "ind_alloc_info": ind_info, "alloc_controls": pd.DataFrame(_ctrl_rows),   # [v0.7.0 R80]
+            "alloc_live_label": _live_alloc_label,                                     # [v0.8.0 R81]
             "quality": pd.DataFrame(quality), "perf": pd.DataFrame(perf),
             "fund_ledger": (pd.concat(fund_ledgers, ignore_index=True) if fund_ledgers
                             else pd.DataFrame()),
@@ -3159,27 +3349,33 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             _add.append(("제거한 시트(v0.4.0 R77)", ", ".join(_dd) + " — F 계열(라이브 미사용) 원장 · 티커별 유효일 출처는 02에 있다. "
                          "되돌리기: k_overrides={'REPORT_DROP_SHEETS': ()}"))
         _add.append(("★ 00G_일반화검증 — 처음 보는 종목에서도 되나(사전등록 홀드아웃)", _gen_line))
-        # ---- [v0.7.0 R80] 배분: 산업 비중 참고 기울임 ----
+        # ---- [v0.7.0 R80 · v0.8.0 R81] 배분 방식 · 출처 · 대조군 판정 ----
         _ii = dict(res.get("ind_alloc_info") or {})
         _al = res.get("alloc") or {}
         _td = dict(_al.get("tilt") or {})
-        _add.append(("★ 배분 방식(v0.7.0 · 사용자 지시 '주식도 산업 비중을 참고')",
-                     (f"mode={_al.get('mode', '-')} · λ(연동비중)={_td.get('lam', '-')} · 종목상한 "
-                      f"{float(_td.get('cap', cfg.STOCK_MAX_WEIGHT)):.0%} · 출처="
-                      f"{'산업비중+부모ETF 잔여다리' if str(_td.get('source', 'industry')) == 'industry' else '섹터비중'} · "
-                      f"연동 적용 종목비율 평균 {_td.get('cover_mean', '-')} · 자료부족으로 1/N만 쓴 날 {_td.get('thin_days', '-')}일 · "
-                      f"상한 재분배 {_td.get('redistribute_rounds', 0)}회 · 총노출 오차 최대 {_td.get('tot_gap_max', 0)}"
-                      if _td.get("ok") else
-                      f"mode={_al.get('mode', '-')} — ⚠ {str(_td.get('note') or _ii.get('note') or '산업비중 출처 없음')}")
-                     + " ★ 총노출(=방어)은 v0.6.0 1/N 규칙과 날마다 동일하다 — 바뀐 것은 그 노출의 종목 간 분배뿐이다."))
-        _add.append(("산업/섹터 비중 출처(K는 runner 수정 없이 스스로 찾는다)",
-                     f"{_ii.get('source', '-')} · 산업 {_ii.get('industries', 0)}개 · 부모(섹터) 다리 {_ii.get('parents', 0)}개 · "
-                     f"기준일 {_ii.get('asof', '-')} · {_ii.get('note', '-')}"))
+        _md = str(_al.get("mode", "-"))
+        if _md == "prob_tilt" and _td.get("ok"):
+            _mline = (f"mode=prob_tilt(상승확률 기울임) · λ={_td.get('lam')} · 점수제곱={_td.get('power')} · 종목상한 "
+                      f"{float(_td.get('cap', cfg.STOCK_MAX_WEIGHT)):.0%} · 점수=산업 **결합점수 백분위**(섹터·산업·변동성 지표) · "
+                      f"점수 받은 종목 {_td.get('covered')}/{_td.get('n')} · 보유종목 비중 변동계수 {_td.get('cv_mean')} · "
+                      f"**상위5종목 몫 {float(_td.get('top5_share') or 0) * 100:.1f}%**(1/N이면 {500.0 / max(1, int(_td.get('n') or 1)):.1f}%) · "
+                      f"총노출 오차 최대 {_td.get('tot_gap_max', 0)}")
+        elif _md == "industry_tilt" and _td.get("ok"):
+            _mline = (f"mode=industry_tilt · λ={_td.get('lam', '-')} · 연동 적용 종목비율 평균 {_td.get('cover_mean', '-')} · "
+                      f"자료부족으로 1/N만 쓴 날 {_td.get('thin_days', '-')}일")
+        else:
+            _mline = f"mode={_md} — ⚠ {str(_td.get('note') or _ii.get('note') or '점수 출처 없음 — 1/N 고정슬리브')}"
+        _add.append(("★ 배분 방식(v0.8.0 · 사용자 지시 '다 똑같이 주지 말고 상승확률 높은 것에')",
+                     _mline + " ★ 총노출(=방어)은 v0.6.0 1/N 규칙과 날마다 동일하다 — 바뀐 것은 그 노출의 종목 간 분배뿐이다."))
+        _add.append(("점수·비중 출처(K는 runner 수정 없이 I 통로에서 스스로 찾는다)",
+                     f"{_ii.get('source', '-')} · 결합점수 산업 {_ii.get('coupling_cols', 0)}개 · 산업비중 {_ii.get('industries', 0)}개 · "
+                     f"부모(섹터) 다리 {_ii.get('parents', 0)}개 · 기준일 {_ii.get('asof', '-')} · {_ii.get('note', '-')}"))
         try:
             _ag2 = res.get("alloc_grid")
             _cdf2 = res.get("alloc_controls")
             if isinstance(_ag2, pd.DataFrame) and len(_ag2) and isinstance(_cdf2, pd.DataFrame) and len(_cdf2):
-                _lv = _ag2[_ag2["배분방식"].astype(str).str.startswith("★ 산업비중 참고 기울임")]
+                _lvl = str(res.get("alloc_live_label") or "")
+                _lv = _ag2[_ag2["배분방식"].astype(str) == _lvl] if _lvl else _ag2.iloc[0:0]
                 _bs = _ag2[_ag2["배분방식"].astype(str).str.startswith("고정슬리브 1/N")]
                 _cq = pd.to_numeric(_cdf2["칼마(CAGR/MDD)"], errors="coerce").dropna()
                 _cg2 = pd.to_numeric(_cdf2["CAGR"], errors="coerce").dropna()
@@ -3187,19 +3383,20 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                     _lc = float(pd.to_numeric(_lv["칼마(CAGR/MDD)"], errors="coerce").iloc[0])
                     _lg = float(pd.to_numeric(_lv["CAGR"], errors="coerce").iloc[0])
                     _bc = (float(pd.to_numeric(_bs["칼마(CAGR/MDD)"], errors="coerce").iloc[0]) if len(_bs) else float("nan"))
+                    _bg = (float(pd.to_numeric(_bs["CAGR"], errors="coerce").iloc[0]) if len(_bs) else float("nan"))
                     _pr_c = float((_cq < _lc).mean()) * 100.0
                     _pr_g = float((_cg2 < _lg).mean()) * 100.0
-                    _add.append(("★ 산업 연동에 정보가 있나 — 무작위 대조군 판정(13 시트)",
-                                 f"라이브 칼마 {_lc:.3f} · 1/N {_bc:.3f} · 대조군({len(_cq)}회) 중앙값 {_cq.median():.3f} · "
-                                 f"상위5% {_cq.quantile(0.95):.3f} → 라이브 백분위 칼마 {_pr_c:.0f} · CAGR {_pr_g:.0f} "
-                                 + ("→ ★ 대조군 상위5%를 넘는다(연동에 정보가 있다는 쪽)"
-                                    if _pr_c >= 95.0 else
-                                    "→ ⚠ 대조군 상위5%를 넘지 못한다. 이 표본에서 '산업 연동이 정보다'는 **증명되지 않았다** — "
-                                    "사용자 지시(설계 요구)로 라이브에 넣었고, λ·상한을 보수적으로 잡아 총노출·MDD를 거의 건드리지 않았다. "
+                    _pass = (_pr_c >= 90.0) and (_lc >= _bc - 1e-9)
+                    _add.append(("★ 점수에 정보가 있나 — 무작위 대조군 판정(13 시트 · 사전등록 R81)",
+                                 f"라이브 CAGR {_lg * 100:.2f}% · 칼마 {_lc:.3f} | 1/N CAGR {_bg * 100:.2f}% · 칼마 {_bc:.3f} | "
+                                 f"대조군({len(_cq)}회) 칼마 중앙 {_cq.median():.3f} · 상위5% {_cq.quantile(0.95):.3f} → "
+                                 f"라이브 백분위 칼마 {_pr_c:.0f} · CAGR {_pr_g:.0f} "
+                                 + ("→ ★ 통과(사전등록: 칼마 백분위 ≥ 90 그리고 칼마 ≥ 1/N)" if _pass else
+                                    "→ ⚠ 미통과(사전등록: 칼마 백분위 ≥ 90 그리고 칼마 ≥ 1/N) — 다음 라운드에 되돌린다. "
                                     "되돌리기: k_overrides={'STOCK_ALLOC_MODE': 'equal_fixed'}")))
         except Exception as e:
             log("REPORT", kv(event="tilt_verdict_line_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
-        _add.append(("★ 노란색 표시(M·S·I·K 공통 약속 · v0.7.0 R80)",
+        _add.append(("★ 노란색 표시(M·S·I·K 공통 약속 · R80~)",
                      "노란색 행 = **실제 거래에 쓰는 전략**이다. K는 13_주식배분전략의 라이브 배분 행과 "
                      "06_성과요약의 '★★ 실제 거래 포트' 행이 노란색이다. 06의 '★ 포트(동일가중)' 행들은 "
                      "종목별 단독 신호를 동일가중한 **진단용**이고 실제 거래가 아니다."))
@@ -3233,7 +3430,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     try:
         _ag = res.get("alloc_grid")
         if isinstance(_ag, pd.DataFrame) and "배분방식" in _ag.columns:
-            _liveb = next((str(v) for v in _ag["배분방식"].astype(str) if v.startswith("★ 산업비중 참고 기울임")), None)
+            _liveb = str(res.get("alloc_live_label") or "") or None
             if _liveb is None:
                 _liveb = next((str(v) for v in _ag["배분방식"].astype(str) if "라이브" in v), None)
             if _liveb:

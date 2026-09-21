@@ -1,5 +1,19 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.35.0 - 2026-09-21 - [R81 ★ K 통로에 산업 결합점수 추가 — 산업 라이브 배분 무변경]
+#    시작 v0.34.0 → 목표 v0.35.0. 사용자 지시(2026-09-21) "비중 0.035 이런 식으로 다 똑같이 주지 말라니까 — 섹터, 산업, 나머지 지표
+#      참고해서 가장 상승 확률 높은 거에 비중을 주라고".
+#    ── 진단(리포트 i26 13c·13c2 실측) ──
+#      산업 다리를 **하루 평균 0.40개**만 들고 2,191일 중 **1,485일은 산업 0개** — 예산이 부모 섹터 ETF에 주차돼 있다
+#      (산업 다리 합 평균 0.111 · 부모 다리 합 0.458). R80 K의 '산업 비중 연동'이 구분할 재료가 없었던 직접 원인이다.
+#    ── 그런데 산업층 선택 규칙은 **바꾸지 않는다** — 근거(r81/si81ic.py, 29개 산업 · 향후 21일) ──
+#      부모 **안** 산업 순위의 정보: 복합점수 IC −0.021(t −0.84) · 결합점수 +0.017(t 0.04) — **어느 점수로도 없다**.
+#      그래서 부모 ETF에 주차하는 현행 규칙이 합리적이다(부모 안에서 고를 근거가 없으면 부모를 든다). I★ 칼마 3.744.
+#      정보가 있는 것은 **29개 산업 전체 횡단면**의 결합점수(IC +0.059 · t 2.67 · 8/9년)다 — 그런데 그 정보의 대부분은
+#      부모(섹터) 변동성 성분이라 부모 안 선택에는 쓸 수 없고, 섹터 예산을 흔들면 계층 정합(산업+부모 = S★)이 깨진다.
+#      ⇒ 그 신호는 **계층 제약이 없는 K(전 종목 횡단면)**가 쓴다.
+#    (§1) _set_alloc_handoff(results=…) — 통로에 **coupling_score**(날짜×산업, build_coupling_state의 인과 백분위 사본) 추가.
+#    ⚠ 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.34.0 - 2026-09-21 - [R80 ★★ 확률 선택 되돌림(사전등록 미통과) · K로 산업비중 통로 개방 · 섹터별 배분 분포 공개 · 노란색 표시]
 #    시작 v0.33.0 → 목표 v0.34.0.
 #    (§1 ★★ 사전등록대로 되돌림) INDUSTRY_SELECT_MODE **"prob" → "composite"**.
@@ -1769,7 +1783,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.34.0"
+VERSION = "v0.35.0"
 VERSION_DATE = "2026-09-21"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -10009,7 +10023,7 @@ def _set_market_handoff(res: Any, M=None) -> None:
 _ALLOC_HANDOFF: Dict[str, Any] = {}
 
 
-def _set_alloc_handoff(alloc: Dict[str, Any], M=None) -> None:
+def _set_alloc_handoff(alloc: Dict[str, Any], M=None, results: Optional[Dict[str, Any]] = None) -> None:
     """[v0.34.0 R80] K(주식)가 **산업/섹터 비중을 참고해 배분**할 수 있도록 I★ 배분을 통로에 남긴다.
     runner를 고치지 않고 K가 sys.modules에서 industry_alloc_handoff()를 찾아 읽는다(R77 시장예산 통로와 같은 방식).
     남기는 것: 산업 ETF 비중(날짜×산업) · 잔여 부모 ETF 다리(날짜×섹터) · 총노출 · 라이브 라벨. 새 계산 없음(alloc의 사본)."""
@@ -10030,7 +10044,24 @@ def _set_alloc_handoff(alloc: Dict[str, Any], M=None) -> None:
             "source": f"industry_rotation {VERSION} run() ← I★ 배분",
             "asof": str(pd.Timestamp(tw.index[-1]).date()),
             "set_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        # [v0.35.0 R81 ★] 산업별 **결합점수 백분위**(날짜×산업) — K의 상승확률 기울임 점수.
+        #   R81 실측(리포트 i26·k7): 29개 산업 횡단면에서 향후 21일 수익과의 IC **+0.059 · t 2.67 · 8/9년 양수**
+        #   (같은 리포트의 복합점수는 −0.018 · 2/9년). 새 계산 없음 — build_coupling_state가 이미 낸 인과 값의 사본.
+        try:
+            _cs = {str(t): pd.Series((r or {}).get("coupling_score"), dtype=float)
+                   for t, r in (results or {}).items()
+                   if isinstance(r, dict) and r.get("coupling_score") is not None}
+            _cs = {k: v for k, v in _cs.items() if len(v.dropna())}
+            if _cs:
+                _cdf = pd.DataFrame(_cs).sort_index()
+                _cdf.index = pd.DatetimeIndex(_cdf.index)
+                _ALLOC_HANDOFF["coupling_score"] = _cdf
+        except Exception as _e2:
+            log("START", kv(event="coupling_handoff_failed", err=type(_e2).__name__, msg=str(_e2)[:120],
+                            note="K는 결합점수 없이 1/N으로 돈다 — K 00시트에 표시"), M=M, level="warning")
         log("START", kv(event="alloc_handoff_set", industries=len(cols), parents=len(pars),
+                        coupling_cols=(int(_ALLOC_HANDOFF["coupling_score"].shape[1])
+                                       if isinstance(_ALLOC_HANDOFF.get("coupling_score"), pd.DataFrame) else 0),
                         asof=_ALLOC_HANDOFF["asof"], mean_total=round(float(tw.sum(axis=1).mean()), 4),
                         note="K(주식)가 이 통로로 산업·섹터 비중을 받아 배분에 참고한다"), M=M)
     except Exception as _e:
@@ -12308,7 +12339,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                                               (_frozen_alloc_cfg(icfg, M=M) if frozen else icfg),
                                               M, S, wf, rf_daily=rf_daily, prob_pack=_prob_pack)
             if alloc:
-                _set_alloc_handoff(alloc, M=M)                         # [v0.34.0 R80] K가 산업·섹터 비중을 참고하는 통로
+                _set_alloc_handoff(alloc, M=M, results=results)        # [v0.34.0 R80 · v0.35.0 R81 결합점수 추가] K 통로
                 hier_df = build_hierarchy_check(alloc)                 # 14_계층정합 — 동결 여부와 무관(총노출 불변식)
                 leader_cols = build_industry_leader_columns(alloc)     # 13c의 부모별 판단·리더·게이트 열
                 _viol = int(hier_df["위반일수(>1e-9)"].sum()) if len(hier_df) else -1
@@ -14775,8 +14806,9 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                          f"산업 다리 기준 섹터 몫 — {_sec_line} | 산업 상위: {_top_line} | 부모ETF 잔여다리: {_par_line or '없음'} "
                          f"→ **XLK 산업 몫 {_xlk:.1f}%**. "
                          "이 비율을 정하는 것은 산업층이 아니라 **S★의 섹터 비중**이다(산업층은 그 예산 안에서만 고른다). "
-                         "R80에서 S의 ROTATION_PRIMARY_CAP을 0.9→0.8로 내리고 S에 '섹터 자기 근거 컷'을 넣었으므로 "
-                         "이 줄의 XLK 몫이 내려가고 다른 섹터 산업 몫이 올라가야 한다 — 다음 실행에서 이 한 줄로 확인할 것."))
+                         "R80에서 S의 ROTATION_PRIMARY_CAP을 0.9→0.8로 내렸다(리포트 i26: 95.8% → 90.5%). "
+                         "⚠ 산업 다리 합이 부모 다리 합보다 훨씬 작은 것(부모 ETF 주차)은 결함이 아니라 **부모 안 산업 순위에 "
+                         "정보가 없다**는 실측의 결과다(R81: 복합점수 IC −0.02 · 결합점수 +0.02). 산업 간 차등은 K가 결합점수로 한다."))
     except Exception as _e:
         log("REPORT", kv(event="sector_mix_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     meta.append(("★ 노란색 표시(M·S·I·K 공통 약속 · R80)",
