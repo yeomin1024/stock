@@ -17,6 +17,30 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.62.0 - 2026-09-21 - [R80 ★★★ 섹터 자기 근거 컷(국면 비중은 참고만·아래로만 자율) · 주력상한 0.9→0.8 · 실제 거래 전략 노란색]
+#    사용자 지시(2026-09-21) "섹터도 국면 비중을 전적으로 따라가지 말고 참고만 해야해. 국면에서는 폭이 크지 않지만 섹터별로 보면 폭이 클 수 있어.
+#      섹터만의 판단할 수 있는 근거가 있어야해", "너무 기술 산업에만 치중되어 있어", "각 계층별로 어떤 전략이 실제 거래에 사용되는지 노란색으로 표시해".
+#      시작 v0.61.2 → 목표 v0.62.0.
+#    ── 진단(리포트6 13c 실측) ── 배분 합계 == E_t 인 날 81.7% · E_t 초과 12.9%(대부분 하락국면리더 265일) · **E_t 미만 5.5%**.
+#      섹터층은 M 예산을 사실상 전부 썼다 — '섹터 자신의 판단으로 덜 드는' 길이 아예 없었다. 사용자 지적이 정확했다.
+#      또 산업 배분의 **95.8%가 XLK 산업**으로 갔고, 그 원인은 산업층이 아니라 **S★의 XLK 상한 0.9**였다(섹터 평균비중 XLK 51% · 나머지 ~2%).
+#    (§1 ★★★ 라이브) **SECTOR_SELF_CUT** — 그날 복합점수 횡단면 **하위 1/3** 보유 섹터의 비중을 **−25%** 하고 그 몫은 현금.
+#      위로는 절대 올리지 않는다(합계 ≤ E_t 유지 · 레버리지 유입 없음). 새 신호 없음 — 13d가 이미 재고 있는 복합점수 순위를 쓴다.
+#      사전등록 측정(r80/var80f~h.py · 시뮬레이터는 엔진 곡선 재현 검증 통과):
+#        기준선(E_t 그대로) CAGR 33.98%·MDD −9.50%·칼마 3.579·샤프 2.124·노출 0.597
+#        ★ 채택           CAGR 32.55%·MDD **−8.68%**·칼마 **3.750**·샤프 2.167·노출 0.555
+#        같은 개수 무작위 대조군 150회 대비 백분위 **칼마 97 · CAGR 99 · 샤프 99** · 반증(상위1/3을 대신 깎음) 칼마 3.193(열위)
+#      ⚠⚠ 정직한 비용: **CAGR −1.43%p** · 연도별로 이긴 해 **4/9**(2020 −6.2%p · 2026 −5.6%p). 수용기준 ①(CAGR 손실 없음)은 **미통과**다.
+#        채택 근거는 칼마 정점 + MDD 개선 + 무작위·반증 대조 통과 + 사용자의 명시적 설계 요구다. 되돌리기 s_overrides={"SECTOR_SELF_CUT_ENABLE": False}.
+#      ⚠ 왜 '아래로만'인가: E_t **위로** 올리는 변형(고분산일 초과보유 등)은 무작위 대조군을 이기지 못했다(대조군 칼마 3.478 ≥ 규칙 3.123).
+#      [자기근거격자] OFF(=v0.61.2 라이브)·하위1/4·1/3·1/2 × −25/50/100% · 반증 · **같은 개수 무작위 대조군 12행**을 13 시트에 상설로 싣는다.
+#        ⚠ 대조군은 반드시 '날마다 같은 개수'여야 한다 — 칸수가 다른 대조군은 노출 차이를 정보로 착각하게 만든다(R80에서 실제로 한 번 속았다).
+#    (§2 ⚠⚠ 위험 파라미터) ROTATION_PRIMARY_CAP **0.9 → 0.8**. 근거는 내 계산이 아니라 **엔진이 스스로 낸 [주력상한격자]**다:
+#      상한 0.8 칼마 **3.834**(정점) · 0.9(당시 라이브) 3.754. 사용자가 지적한 기술 편중이 이 한 줄에서 줄고, 대피처(2~3위 섹터)로 넘어간 비중이
+#      I·K 계층의 산업·종목 분산으로 그대로 이어진다. 되돌리기 s_overrides={"ROTATION_PRIMARY_CAP": 0.9}.
+#    (§3 ★ 노란색) write_sector_excel(live_marks=…) — 13_섹터배분전략의 ★ 행을 노란색으로 칠한다(M v1.57.0 apply_live_marks 공용 서식).
+#      ★ 라벨에 컷 설정이 들어간다: "주력섹터 중심(…) ★ · 섹터자기근거컷 하위33% −25%" — 라벨만 보고도 무엇이 거래되는지 알 수 있게.
+#    ⚠ 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.61.2 - 2026-09-19 - [R75 00B 표시 정정 — ① 첫날 정렬 · ② 설명 = 라이브 최종 비중 — 신호·비중·배분 무변경]
 #    사용자 질문(2026-09-19) "섹터 예측은 어떻게 하고 있는데" 확인 중 발견(R74c). 시작 v0.61.1 → 목표 v0.61.2.
 #    (1) build_curve_compare: ① B&H만 첫날 수익을 포함해 ②③보다 하루 긴 곡선이었다(XLK +1.2%). ②③은 첫날 비중 0(shift(1))이라
@@ -2615,8 +2639,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.61.2"
-VERSION_DATE = "2026-09-19"
+VERSION = "v0.62.0"
+VERSION_DATE = "2026-09-21"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -3216,7 +3240,26 @@ class SectorConfig:
     #   ⚠ ROTATION_PRIMARY_MODE=False면 v0.15.0과 비트 동일로 복귀한다.
     ROTATION_PRIMARY_MODE: bool = True          # ⚠ 주력 섹터 중심 배분(끄면 v0.15.0 동일)
     ROTATION_PRIMARY_SECTOR: str = "XLK"        # ⚠ 주력 섹터 — 이것이 기본 보유 대상
-    ROTATION_PRIMARY_CAP: float = 0.9           # ⚠ 주력 섹터 최대 비중(나머지는 대피처로 분산) [v0.25.2] 0.8→0.9
+    #   [v0.62.0 R80 ⚠⚠ 위험 파라미터] 0.9 → **0.8**. 사용자 지시 "너무 기술 산업에만 치중되어 있어".
+    #     근거는 내 오프라인 계산이 아니라 **엔진이 스스로 낸 [주력상한격자]**다(리포트6 13 시트):
+    #       상한 0.8 칼마 **3.834**(정점) · 0.9(당시 라이브) 3.754 · 1.0 3.6xx.
+    #     실측 결과(리포트6 13c): 산업 배분의 95.8%가 XLK 산업에 갔고 그 원인이 이 상한이다
+    #     (섹터 평균비중 XLK 51% · 나머지 ~2%). 상한을 내리면 대피처(2~3위 섹터)로 10%p가 넘어가
+    #     I·K 계층의 산업·종목 분산이 함께 살아난다 — 사용자가 지적한 '순환매로 다른 섹터가 오를 때
+    #     그쪽 산업에도 비중이 있어야 한다'가 이 한 줄에서 결정된다.
+    #     ⚠ 되돌리기: s_overrides={"ROTATION_PRIMARY_CAP": 0.9} ⇒ v0.61.2 집중도로 복귀.
+    ROTATION_PRIMARY_CAP: float = 0.8           # ⚠ 주력 섹터 최대 비중(나머지는 대피처로 분산) [v0.62.0] 0.9→0.8
+    # ---- [v0.62.0 R80 ★★★ 신규 · 라이브] 섹터 자기 근거 컷(아래로만 자율) ----
+    #   사용자 지시: "섹터도 국면 비중을 전적으로 따라가지 말고 참고만 해야해 … 섹터만의 판단 근거가 있어야해".
+    #   규칙: 그날 복합점수 **횡단면 하위 Q 분위**인 보유 섹터의 비중을 FRAC만큼 깎고, 깎은 몫은 **현금**.
+    #     위로는 절대 올리지 않는다(E_t 초과 변형은 무작위 대조군을 못 이겼다 — rotation_allocation 주석 참조).
+    #   실측·대조군·비용은 rotation_allocation()의 [v0.62.0 R80] 블록 주석에 전부 적었다(CAGR −1.43%p가 비용이다).
+    #   ⚠ 되돌리기: s_overrides={"SECTOR_SELF_CUT_ENABLE": False} ⇒ v0.61.2와 비트 동일.
+    SECTOR_SELF_CUT_ENABLE: bool = True
+    SECTOR_SELF_CUT_Q: float = 1.0 / 3.0        # 하위 몇 분위를 깎는가(0.25/0.33/0.5를 격자가 함께 잰다)
+    SECTOR_SELF_CUT_FRAC: float = 0.25          # ⚠ 깎는 폭(0.25/0.50/1.00을 격자가 함께 잰다)
+    SECTOR_SELF_CUT_CONTROLS: int = 12          # 같은 개수 무작위 대조군 행 수(0이면 끔) — 13 시트에서 직접 판정
+    SECTOR_SELF_CUT_SEED: int = 20260921        # 대조군 씨앗(재현성)
     ROTATION_PRIMARY_EXIT_STATES: Tuple[str, ...] = ("RISK_OFF",)   # ⚠ 주력에서 대피하는 자기 국면
     # [v0.27.0 ⚠⚠ 신규 규칙 — 전섹터 하락 시 SPY 잔여 참여] 리포트27 감사에서 찾은 이 층 최대의 구멍.
     #   증상: **E_t>0(M이 "투자하라")인데 포트폴리오가 아무것도 들지 않은 날이 17일** 있었다.
@@ -9424,6 +9467,141 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             log("ROTATION", kv(event="alloc_link_grid_failed", err=type(e).__name__, msg=str(e)[:160],
                                action="격자 없이 배분 계속(주 전략 무영향)"), M=M, level="warning")
 
+    # ---- [v0.62.0 R80 ★★★ 라이브 변경] 섹터 자기 근거 컷 — "국면 비중은 참고만, 아래로만 자율" ----
+    #   ── 사용자 지시(2026-09-21) ──
+    #     "섹터도 국면 비중을 전적으로 따라가지 말고 참고만 해야해. 국면에서는 폭이 크지 않지만 섹터별로 보면
+    #      폭이 클 수 있어. 섹터만의 판단할 수 있는 근거가 있어야해."
+    #   ── 지금까지의 사실(실측 · 리포트6 13c) ──
+    #     배분 합계 == E_t 인 날 81.7% · E_t 초과 12.9%(대부분 하락국면리더 265일) · **E_t 미만 5.5%**.
+    #     즉 섹터층은 M이 준 예산을 사실상 전부 썼고, '섹터 자신의 판단으로 덜 드는' 길이 없었다.
+    #   ── 무엇을 근거로 삼는가(이미 이 층이 가진 것 · 새 신호 없음) ──
+    #     그날 횡단면 **복합점수 순위**다. 13d가 이미 그 값을 재고 있다(SCORE_PCT 상위1 스프레드
+    #     +1.503%/21일 · NW-t 4.21). 그 근거로 **점수 하위 1/3 섹터의 비중만 깎고, 깎은 몫은 현금**으로 둔다.
+    #   ── 왜 '아래로만'인가 ──
+    #     E_t **위로** 올리는 변형(고분산일 초과보유 등)은 무작위 대조군을 못 이겼다(대조군 칼마 3.478 ≥ 규칙 3.123).
+    #     반대로 **아래로 깎는 쪽**은 같은 개수 무작위 대조군을 뚜렷이 이긴다. 그래서 자율은 아래쪽으로만 준다.
+    #     ⇒ 레버리지 유입 없음 · 합계 ≤ E_t 유지(사용자 판정 기준 8 그대로).
+    #   ── 사전등록 측정(r80/var80f~h.py · 엔진 13c 비중을 그대로 변형 · 시뮬레이터는 엔진 곡선 재현 검증 통과) ──
+    #     기준선(E_t 그대로)        CAGR 33.98% · MDD −9.50% · 칼마 3.579 · 샤프 2.124 · 평균노출 0.597
+    #     ★ 하위1/3 −25%(채택)     CAGR 32.55% · MDD **−8.68%** · 칼마 **3.750** · 샤프 2.167 · 평균노출 0.555
+    #     같은 개수 무작위 대조군 150회: 칼마 중앙 3.468 · 상위5% 3.734 → ★ 백분위 **칼마 97 · CAGR 99 · 샤프 99**
+    #     반증(상위 1/3을 대신 깎음): 칼마 3.193 · CAGR 30.32% ← 규칙보다 나쁘다(방향이 맞다)
+    #   ⚠⚠ 정직한 비용(사용자 규칙 7 — 숨기지 않는다):
+    #     ① **CAGR가 1.43%p 줄어든다**(33.98 → 32.55). 수용기준 ①(CAGR 손실 없음)은 **통과하지 못한다**.
+    #     ② 연도별로 규칙이 이긴 해는 **4/9**다(2020 −6.2%p · 2026 −5.6%p가 가장 큰 손실).
+    #     ③ 그럼에도 채택하는 이유: 사용자 지시가 '섹터 자율'을 **설계 요구**로 명시했고, 이 규칙은
+    #        칼마(이 프로젝트의 대표 지표) 정점이며 MDD가 좋아지고 무작위·반증 대조를 모두 통과한다.
+    #     되돌리기: s_overrides={"SECTOR_SELF_CUT_ENABLE": False} ⇒ v0.61.2와 **비트 동일**.
+    #   ⚠ 룩어헤드 없음: composite는 워크포워드 선택된 신호의 그날 값이고, 횡단면 순위는 그날 정보만 쓴다.
+    #   ⚠ 다른 격자와의 관계: 이 컷은 **마지막에 ★에만** 적용한다. 그래서 [자기근거격자]의 'OFF' 행이 곧
+    #     v0.61.2 라이브이고, 다른 격자 행들은 컷 이전 기준으로 서로 비교된다(격자별로 한 번에 한 가지만 바뀐다).
+    _sc_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(scfg, "SECTOR_SELF_CUT_ENABLE", False)) and label_primary in target_ws:
+        try:
+            _q = float(getattr(scfg, "SECTOR_SELF_CUT_Q", 1.0 / 3.0))
+            _f = float(getattr(scfg, "SECTOR_SELF_CUT_FRAC", 0.25))
+            _base_sc = target_ws[label_primary]
+            _seccols = [c for c in cols if c in _base_sc.columns]          # SPY 폴백 다리는 대상이 아니다
+            _pctl = composite[_seccols].rank(axis=1, pct=True)             # 1.0 = 그날 최고 점수
+
+            def _weak_mask(qq: float) -> pd.DataFrame:
+                """그날 보유 중이면서 복합점수 횡단면 하위 qq 분위인 섹터(SPY 제외)."""
+                m = pd.DataFrame(False, index=_base_sc.index, columns=_base_sc.columns)
+                mm = (_pctl <= float(qq)) & _pctl.notna()
+                #   ⚠ reindex가 NaN을 넣으면 object dtype이 되어 pandas 미래 버전에서 fillna 동작이 바뀐다
+                #     (Kaggle의 pandas가 이 환경보다 최신일 수 있다) — 명시적으로 bool로 굳힌다.
+                m[_seccols] = mm.reindex(index=_base_sc.index, columns=_seccols).fillna(False).astype(bool)
+                return m & (_base_sc > 1e-9)
+
+            def _apply_cut(qq: float, ff: float, mask: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                m = _weak_mask(qq) if mask is None else mask
+                return _base_sc.mask(m, _base_sc * (1.0 - float(ff)))
+
+            def _rand_same(mask: pd.DataFrame, seed: int) -> pd.DataFrame:
+                """날마다 **같은 개수**의 보유 섹터를 무작위로 고른다 — 선택에 정보가 있는지 재는 대조군.
+                (칸수가 다른 대조군은 노출 차이를 정보로 착각하게 만든다 — R80에서 실제로 한 번 속았다.)"""
+                rng = np.random.default_rng(int(seed))
+                held = (_base_sc[_seccols] > 1e-9).values
+                kk = mask[_seccols].values.sum(axis=1)
+                out = np.zeros((len(_base_sc), len(_seccols)), dtype=bool)
+                for i in range(len(_base_sc)):
+                    h = np.flatnonzero(held[i])
+                    k = int(kk[i])
+                    if k and len(h):
+                        out[i, rng.choice(h, size=min(k, len(h)), replace=False)] = True
+                m = pd.DataFrame(False, index=_base_sc.index, columns=_base_sc.columns)
+                m[_seccols] = out
+                return m
+            _m_live = _weak_mask(_q)
+            _w_live = _apply_cut(_q, _f, _m_live)
+            # [자기근거격자] — OFF(= v0.61.2 라이브) · 다른 폭/범위 · 반증 · 무작위 대조군
+            _sc_grid: Dict[str, pd.DataFrame] = {
+                "주력섹터 중심 · 섹터 자기근거 컷 OFF(v0.61.2 라이브) [자기근거격자]": _base_sc}
+            for _qq, _qn in ((0.25, "하위1/4"), (1.0 / 3.0, "하위1/3"), (0.5, "하위1/2")):
+                for _ff in (0.25, 0.50, 1.00):
+                    if abs(_qq - _q) < 1e-9 and abs(_ff - _f) < 1e-9:
+                        continue                                    # 라이브는 ★ 행이 이미 있다
+                    _sc_grid[f"주력섹터 중심 · 자기근거 컷 {_qn} −{_ff:.0%} [자기근거격자]"] = _apply_cut(_qq, _ff)
+            _sc_grid[f"주력섹터 중심 · 반증: 상위 1/3을 대신 −{_f:.0%} [자기근거격자·반증]"] = \
+                _base_sc.mask((_pctl.reindex(index=_base_sc.index, columns=_seccols) > 1.0 - _q)
+                              .reindex(columns=_base_sc.columns).fillna(False).astype(bool) & (_base_sc > 1e-9),
+                              _base_sc * (1.0 - _f))
+            _nctrl = int(getattr(scfg, "SECTOR_SELF_CUT_CONTROLS", 0) or 0)
+            _ctrl_lbls: List[str] = []
+            for _k in range(_nctrl):
+                _lbl_c = f"주력섹터 중심 · 대조군{_k}: 같은 개수 무작위 −{_f:.0%} [자기근거격자·대조]"
+                _sc_grid[_lbl_c] = _apply_cut(_q, _f, _rand_same(_m_live, int(getattr(scfg, "SECTOR_SELF_CUT_SEED", 20260921)) + _k))
+                _ctrl_lbls.append(_lbl_c)
+            for _lab, _fr in _sc_grid.items():
+                _fr = _fr.fillna(0.0).clip(lower=0.0)
+                target_ws[_lab] = _fr
+                bts[_lab] = portfolio_backtest(_fr, ret_co, ret_oc, **bt_kw)
+                variants[_lab] = _fr
+            # ★ 라이브 교체 — 여기서부터 ★는 '자기근거 컷'이 들어간 비중이다
+            target_ws[label_primary] = _w_live
+            variants[label_primary] = _w_live
+            bts[label_primary] = portfolio_backtest(_w_live, ret_co, ret_oc, **bt_kw)
+            label_primary_new = label_primary + f" · 섹터자기근거컷 하위{_q:.0%} −{_f:.0%}"
+
+            def _rename_key(d: dict, old_k: str, new_k: str) -> None:
+                """★ 라벨만 바꾼다 — **순서를 보존**해야 13 성과표에서 ★가 첫 행으로 남는다
+                (pop 후 대입하면 맨 뒤로 밀린다 — 리뷰에서 잡은 결함)."""
+                items = [((new_k if k == old_k else k), v) for k, v in d.items()]
+                d.clear()
+                d.update(items)
+            for _d in (target_ws, variants, bts):
+                _rename_key(_d, label_primary, label_primary_new)
+            label_primary = label_primary_new
+            #   반환 dict의 frac_w(= E_t 대비 분수)도 같은 컷을 받아야 target_w와 어긋나지 않는다.
+            #   (지금은 소비처가 없지만, 어긋난 값을 반환해 두면 다음 라운드가 그것을 믿고 틀린다.)
+            try:
+                if isinstance(frac_primary, pd.DataFrame) and len(frac_primary):
+                    _fm = _m_live.reindex(index=frac_primary.index,
+                                          columns=frac_primary.columns).fillna(False).astype(bool)
+                    frac_primary = frac_primary.mask(_fm, frac_primary * (1.0 - _f))
+            except Exception as _e2:
+                log("ROTATION", kv(event="self_cut_frac_sync_failed", err=type(_e2).__name__,
+                                   note="frac_w만 동기화 실패 — target_w(라이브)는 정상"), M=M, level="warning")
+            _e0 = float(_base_sc.sum(axis=1).mean()); _e1 = float(_w_live.sum(axis=1).mean())
+            _sc_diag = {"enabled": True, "q": _q, "frac": _f, "controls": _nctrl,
+                        "control_labels": _ctrl_lbls,
+                        "cut_cells_per_day": round(float(_m_live[_seccols].sum(axis=1).mean()), 3),
+                        "held_per_day": round(float((_base_sc[_seccols] > 1e-9).sum(axis=1).mean()), 3),
+                        "cut_days": int((_m_live.sum(axis=1) > 0).sum()),
+                        "mean_exposure_before": round(_e0, 4), "mean_exposure_after": round(_e1, 4),
+                        "label_off": "주력섹터 중심 · 섹터 자기근거 컷 OFF(v0.61.2 라이브) [자기근거격자]"}
+            log("ROTATION", kv(event="sector_self_cut_applied", q=_q, frac=_f,
+                               cut_days=_sc_diag["cut_days"], cells_per_day=_sc_diag["cut_cells_per_day"],
+                               held_per_day=_sc_diag["held_per_day"], grid_rows=len(_sc_grid),
+                               controls=_nctrl,
+                               mean_exposure=f"{_e0:.4f}→{_e1:.4f}",
+                               note="⚠ 위험 파라미터(노출) 변경 — 섹터 자기 근거로 E_t보다 **적게** 든다(위로는 안 넘는다). "
+                                    "되돌리기 s_overrides={'SECTOR_SELF_CUT_ENABLE': False}"), M=M)
+        except Exception as _e:
+            log("ROTATION", kv(event="sector_self_cut_failed", err=type(_e).__name__, msg=str(_e)[:180],
+                               action="컷 없이 계속(v0.61.2와 동일) — 00 시트에 실패를 적는다"), M=M, level="warning")
+            _sc_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
+
     # [v0.7.0] 참조: SPY 국면전략(M) 성과(같은 평가창, M의 bt 그대로) — 수용기준 ⑤(목표: CAGR ≥ SPY M)에 사용
     spy_m_ret = res["bt"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
     spy_m_pm = M.perf_metrics(spy_m_ret, "SPY 국면전략(M)")
@@ -9502,6 +9680,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     tier_counts = tier.value_counts().to_dict()
     diag = {
         "label_primary": label_primary, "label_leader": label_leader, "label_topk": label_topk, "label_linear": label_lin,
+        "self_cut": _sc_diag,                                                        # [v0.62.0 R80]
         "label_alt": (label_topk if mode == "leader3" else label_leader),
         "label_own": (label_own if label_own in bts else None), "spy_m": spy_m,          # [v0.7.0]
         "label_score": (label_score if label_score in bts else None),                   # [v0.8.0]
@@ -14141,6 +14320,45 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     ]
     # [v0.61.1 R74 §4-1] 00A 존재 판정(v0.52.0 E4)은 **00A를 만든 뒤**(sheets_to_front 직전)로 옮겼다 —
     #   종전엔 여기서 판정해 00A가 정상이어도 항상 "⚠ 생성되지 않았다"가 찍혔다(리포트5·합성 리포트 모두 재현).
+    # ---- [v0.62.0 R80] 섹터 자기 근거 컷 · 노란색 표시 설명 ----
+    try:
+        _sd = dict(((sres.get("alloc") or {}).get("diag") or {}).get("self_cut") or {})
+        _pf = (sres.get("alloc") or {}).get("perf")
+        if _sd.get("enabled"):
+            _line = (f"★ 적용 — 그날 복합점수 **하위 {float(_sd['q']):.0%}** 보유 섹터의 비중을 **−{float(_sd['frac']):.0%}** 하고 "
+                     f"그 몫은 현금(위로는 절대 올리지 않는다 · 합계 ≤ E_t 유지). "
+                     f"하루 평균 {_sd['cut_cells_per_day']}개 / 보유 {_sd['held_per_day']}개를 깎고 "
+                     f"평균 노출 {_sd['mean_exposure_before']} → {_sd['mean_exposure_after']}. "
+                     f"컷이 닿은 날 {_sd['cut_days']}일.")
+            if isinstance(_pf, pd.DataFrame) and len(_pf) and "전략" in _pf.columns:
+                _col = "칼마(CAGR/MDD)" if "칼마(CAGR/MDD)" in _pf.columns else None
+                _cl = [l for l in _sd.get("control_labels", []) if l in set(_pf["전략"].astype(str))]
+                if _col and _cl:
+                    _cv = pd.to_numeric(_pf[_pf["전략"].astype(str).isin(_cl)][_col], errors="coerce").dropna()
+                    _lv = pd.to_numeric(_pf[_pf["전략"].astype(str) == str(((sres.get("alloc") or {}).get("diag") or {}).get("label_primary"))][_col],
+                                        errors="coerce").dropna()
+                    _off = pd.to_numeric(_pf[_pf["전략"].astype(str) == str(_sd.get("label_off"))][_col],
+                                         errors="coerce").dropna()
+                    if len(_cv) and len(_lv):
+                        _p = float((_cv < float(_lv.iloc[0])).mean()) * 100.0
+                        _line += (f" ★ 판정(엔진이 직접 잰 값): ★ 칼마 {float(_lv.iloc[0]):.3f} · "
+                                  + (f"컷 OFF(v0.61.2) {float(_off.iloc[0]):.3f} · " if len(_off) else "")
+                                  + f"같은 개수 무작위 대조군 {len(_cv)}행 중앙값 {float(_cv.median()):.3f} → **백분위 {_p:.0f}**"
+                                  + (" (대조군을 뚜렷이 이긴다 — 섹터 점수에 정보가 있다)" if _p >= 90 else
+                                     " ⚠ (대조군을 못 이긴다 — 이 표본에서는 섹터 점수의 정보가 확인되지 않는다. "
+                                     "되돌리기: s_overrides={'SECTOR_SELF_CUT_ENABLE': False})"))
+            _line += (" ⚠ 정직한 비용: 사전측정에서 CAGR가 33.98%→32.55%로 **1.43%p 줄었고** 연도별로 이긴 해는 4/9였다. "
+                      "칼마 정점·MDD 개선·대조군 통과를 근거로 채택했고, 되돌리기는 "
+                      "s_overrides={'SECTOR_SELF_CUT_ENABLE': False}다.")
+        else:
+            _line = ("끔 — 배분은 M 예산 E_t를 그대로 쓴다(v0.61.2 동작)."
+                     + (f" ⚠ 적용 실패: {_sd['error']}" if _sd.get("error") else ""))
+        meta.append(("★ 섹터 자기 근거 컷(v0.62.0 · 국면 비중은 참고 · 아래로만 자율)", _line))
+    except Exception as _e:
+        log("REPORT", kv(event="self_cut_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
+    meta.append(("★ 노란색 표시(M·S·I·K 공통 약속 · R80)",
+                 "노란색 행 = **실제 거래에 쓰는 전략**이다. S는 13_섹터배분전략의 ★ 행이 노란색이다. "
+                 "나머지 행은 전부 격자·대조군(측정 전용)이며 거래에 쓰지 않는다."))
     meta = [meta[0]] + nd_rows + meta[1:]  # [v0.3.0 §1.A] 버전 다음에 '다음 거래일 예측' 블록 삽입(M과 동일 패턴)
     # [v0.60.0 R72] stage_timing에 문자열('캐시 적중')이 섞인다 — I(v0.6.0)와 같은 방식으로 숫자만 '초'로 적는다.
     for k, v in sorted(sres.get("stage_timing", {}).items()):
@@ -14429,7 +14647,15 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     else:
         meta.insert(_i00, ("⚠ 00A_수익비교 시트", "생성되지 않았다 — 로그에서 asset_return_compare_failed 확인"))
     sheets = sheets_to_front(sheets, "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
-    write_sector_excel(path, sheets, meta, M=M)
+    # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
+    _lm_s = None
+    try:
+        _lbl_live = ((sres.get("alloc") or {}).get("diag") or {}).get("label_primary")
+        if _lbl_live:
+            _lm_s = {"13_섹터배분전략": ("전략", str(_lbl_live))}
+    except Exception:
+        _lm_s = None
+    write_sector_excel(path, sheets, meta, M=M, live_marks=_lm_s)
     if scfg.EXPORT_DAILY_CSV:
         try:
             sres["matrix"].to_csv(scfg.DAILY_CSV_PATH, index=False, encoding="utf-8-sig")
@@ -14460,7 +14686,8 @@ def sheets_to_front(sheets: Dict[str, pd.DataFrame], *names: str) -> Dict[str, p
 
 def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]], M=None,
                        name_map: Optional[Dict[str, str]] = None,
-                       title: Optional[str] = None) -> None:
+                       title: Optional[str] = None,
+                       live_marks: Optional[Dict[str, Any]] = None) -> None:
     """M.write_excel과 같은 서식·조건부서식·자산곡선 차트(13b 시트 기준). 00시트 제목만 섹터용.
     [v0.38.0] title: 00시트 제목 덮어쓰기(산업 계층 industry_rotation.py가 자기 제목으로 재사용) — None이면 종전 문구."""
     t0 = time.time()
@@ -14476,6 +14703,29 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
         f_fail = wb.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006"})
         f_up = wb.add_format({"bg_color": "#C6EFCE"})
         f_down = wb.add_format({"bg_color": "#FFC7CE"})
+        # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 = 노란색(사용자 지시). M v1.57.0의 공통 함수를 쓰고, 구버전 M이면 여기서 직접.
+        f_live = wb.add_format({"bg_color": "#FFF200", "bold": True, "border": 1})
+
+        def _mark_live(w_, df_, name_):
+            if not live_marks or name_ not in live_marks or df_ is None or not len(df_):
+                return
+            if M is not None and hasattr(M, "apply_live_marks"):
+                M.apply_live_marks(w_, wb, df_, name_, live_marks, f_live)
+                return
+            try:
+                from xlsxwriter.utility import xl_col_to_name
+            except Exception:
+                return
+            mk = live_marks[name_]
+            mk = [mk] if isinstance(mk, tuple) else list(mk or [])
+            cs = list(df_.columns)
+            for col_, val_ in mk:
+                if col_ not in cs:
+                    continue
+                w_.conditional_format(1, 0, len(df_), len(cs) - 1,
+                                      {"type": "formula",
+                                       "criteria": f'=${xl_col_to_name(cs.index(col_))}2="{str(val_)}"',
+                                       "format": f_live})
 
         ws = wb.add_worksheet("00_실행요약")
         xl.sheets["00_실행요약"] = ws
@@ -14525,6 +14775,7 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
                     if col.endswith(" 예측") or col in ("SPY 시장상황", "예측"):
                         w.conditional_format(1, j, len(df), j, {"type": "cell", "criteria": "==", "value": '"상승"', "format": f_up})
                         w.conditional_format(1, j, len(df), j, {"type": "cell", "criteria": "==", "value": '"하락"', "format": f_down})
+            _mark_live(w, df, name)      # [v0.62.0 R80] 실매매 전략 행 노란색
             if name.startswith("13c"):   # [v0.4.0] 섹터별 배분비중 데이터바 — 어느 섹터에 몰렸는지 한눈에
                 for j, col in enumerate(cols):
                     if col.endswith(" 배분비중") or col in ("배분합계", "현금"):

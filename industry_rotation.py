@@ -1,5 +1,22 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.34.0 - 2026-09-21 - [R80 ★★ 확률 선택 되돌림(사전등록 미통과) · K로 산업비중 통로 개방 · 섹터별 배분 분포 공개 · 노란색 표시]
+#    시작 v0.33.0 → 목표 v0.34.0.
+#    (§1 ★★ 사전등록대로 되돌림) INDUSTRY_SELECT_MODE **"prob" → "composite"**.
+#      R79에서 사전등록한 수용기준을 **엔진 결과가 통과하지 못했다**(리포트 i25 13 시트):
+#        확률 선택(v0.33.0 라이브) 칼마 **2.091** · MDD **−17.83%**  ↔  복합순위(v0.32.0) 칼마 **3.795** · MDD −9.94%
+#      원인은 내 오프라인 추정이 **체결 규약(t+1 시가)과 현금 이자를 빼먹어 MDD를 과소평가**한 것이었다(추정 MDD −9.89%).
+#      ⇒ 약속대로 되돌린다. 확률 모형은 **진단으로 존치** — 00E_산업상승확률 · 28_이익모멘텀검정 · [확률격자]는 계속 나온다.
+#      ⚠ 교훈(누적): 오프라인 하네스는 **엔진 곡선을 먼저 재현**하지 못하면 어떤 판단 근거로도 쓰지 않는다. R80에서는 이 절차를
+#        S·K 양쪽에 모두 적용했고, K에서 실제로 잘못된 기준선(두 번 shift)을 그 절차가 잡아냈다.
+#    (§2 ★★ 신규 통로) **industry_alloc_handoff()** — K(주식)가 산업·섹터 비중을 참고해 배분할 수 있도록 I★ 배분(산업비중 · 부모ETF 잔여다리 ·
+#      산업→섹터 맵 · 총노출 · 라이브 라벨)을 같은 프로세스 통로에 남긴다. runner는 고치지 않는다(사용자 지시) — K가 sys.modules에서 찾아 읽는다.
+#      R77의 market_budget_handoff()와 같은 방식이고 새 계산은 없다(alloc의 사본).
+#    (§3 ★ 00시트) **섹터별 산업 배분 분포** 한 줄 신설 — 사용자 지적 "너무 기술 산업에만 치중되어 있어"를 매 실행 첫 화면에서 추적한다.
+#      진단 결과 그 편중을 정하는 것은 **산업층이 아니라 S★의 섹터 비중**이었다(실측: 산업 배분의 95.8%가 XLK 산업 · IGV 18.24% · SOXX 12.28%).
+#      그래서 R80의 실제 처방은 S에 있다(ROTATION_PRIMARY_CAP 0.9→0.8 · 섹터 자기근거 컷). 이 줄로 다음 실행에서 효과를 확인한다.
+#    (§4 ★ 노란색) 13_산업배분전략의 ★ 행을 노란색으로 칠한다(M v1.57.0 apply_live_marks 공용 서식 · 사용자 지시).
+#    ⚠ 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.33.0 - 2026-09-21 - [R79 ★★ 산업 이익 모멘텀 검정(구성종목 EPS) · 부모 예산 안 산업 상승확률 1위 매수/반대면 매도(위험 파라미터) · 00E·28 시트]
 #    사용자 지시(2026-09-20) "산업은 산업 이익 모멘텀 검정 방식을 구현하고 그것과 다른 지표들을 사용해서 섹터 비중이 있다면 그 비중 안에서
 #    산업별 가장 상승 확률을 계산해서 그걸 매수하도록 해 매도 반대로 하면 되고". 시작 v0.32.0 → 목표 v0.33.0. (K는 stock_regime v0.6.0)
@@ -1752,7 +1769,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.33.0"
+VERSION = "v0.34.0"
 VERSION_DATE = "2026-09-21"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2452,7 +2469,14 @@ class IndustryConfig:
     EPS_GATE_MIN_MONTHS: int = 36            #   · 월 수 ≥ 이 값
     EPS_GATE_YEAR_SHARE: float = 2.0 / 3.0   #   · 연도 양수 비율 ≥ 이 값
     EPS_BONFERRONI_T: float = 2.50           # 28 블록 A '유의' 문턱(특징 4개 · 양측 5% 본페로니)
-    INDUSTRY_SELECT_MODE: str = "prob"       # ★ "prob"(v0.33.0 라이브) | "composite"(v0.32.0 복합순위 리더·확신 게이트)
+    # ---- [v0.34.0 R80 ★★ 사전등록 판정에 따른 되돌림] "prob" → **"composite"** ----
+    #   R79에서 사전등록한 수용기준을 **실제 엔진 결과가 통과하지 못했다**(리포트 i25 13 시트):
+    #     확률 선택(v0.33.0 라이브) 칼마 **2.091** · MDD **−17.83%**  ↔  복합순위(v0.32.0) 칼마 **3.795** · MDD −9.94%
+    #   원인은 내 오프라인 추정이 **체결 규약(t+1 시가)과 현금 이자를 빼먹어** MDD를 과소평가한 것이었다
+    #   (내 추정 +9.36%/년 · MDD −9.89% → 실제는 위와 같다). 사전등록의 약속대로 **되돌린다**.
+    #   확률 모형 자체는 진단으로 남긴다 — 00E_산업상승확률 · 28_이익모멘텀검정 · [확률격자] 행은 계속 산출된다.
+    #   ⚠ 다시 켜려면(재측정 목적): i_overrides={"INDUSTRY_SELECT_MODE": "prob"}.
+    INDUSTRY_SELECT_MODE: str = "composite"  # ★ "composite"(v0.32.0·v0.34.0 라이브) | "prob"(v0.33.0 — 사전등록 기준 미통과)
     PROB_HORIZON: int = 21                   # 목표 = 향후 21거래일 '산업 > 부모 ETF' · 엠바고 22거래일
     PROB_MIN_TRAIN_ROWS: int = 2000
     PROB_C: float = 1.0                      # 로지스틱 L2 역강도
@@ -9982,6 +10006,45 @@ def _set_market_handoff(res: Any, M=None) -> None:
                         note="K는 M 예산 없이(구 규칙) 돈다 — K 00시트에 표시"), M=M, level="warning")
 
 
+_ALLOC_HANDOFF: Dict[str, Any] = {}
+
+
+def _set_alloc_handoff(alloc: Dict[str, Any], M=None) -> None:
+    """[v0.34.0 R80] K(주식)가 **산업/섹터 비중을 참고해 배분**할 수 있도록 I★ 배분을 통로에 남긴다.
+    runner를 고치지 않고 K가 sys.modules에서 industry_alloc_handoff()를 찾아 읽는다(R77 시장예산 통로와 같은 방식).
+    남기는 것: 산업 ETF 비중(날짜×산업) · 잔여 부모 ETF 다리(날짜×섹터) · 총노출 · 라이브 라벨. 새 계산 없음(alloc의 사본)."""
+    try:
+        tw = (alloc or {}).get("target_w")
+        cols = list((alloc or {}).get("cols") or [])
+        pars = list((alloc or {}).get("active_parents") or []) + list((alloc or {}).get("passthrough_cols") or [])
+        if tw is None or not len(tw) or not cols:
+            return
+        _ALLOC_HANDOFF.clear()
+        _ALLOC_HANDOFF.update({
+            "industry_w": tw[[c for c in cols if c in tw.columns]].copy(),
+            "parent_w": tw[[c for c in pars if c in tw.columns]].copy(),
+            "parent_of": dict((alloc or {}).get("parent_of") or {}),
+            "total": tw.sum(axis=1).copy(),
+            "label": str((alloc or {}).get("label_star", "")),
+            "select_mode": str((alloc or {}).get("select_mode", "-")),
+            "source": f"industry_rotation {VERSION} run() ← I★ 배분",
+            "asof": str(pd.Timestamp(tw.index[-1]).date()),
+            "set_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        log("START", kv(event="alloc_handoff_set", industries=len(cols), parents=len(pars),
+                        asof=_ALLOC_HANDOFF["asof"], mean_total=round(float(tw.sum(axis=1).mean()), 4),
+                        note="K(주식)가 이 통로로 산업·섹터 비중을 받아 배분에 참고한다"), M=M)
+    except Exception as _e:
+        log("START", kv(event="alloc_handoff_failed", err=type(_e).__name__, msg=str(_e)[:120],
+                        note="K는 1/N 고정슬리브로 돈다 — K 00시트에 표시"), M=M, level="warning")
+
+
+def industry_alloc_handoff() -> Optional[Dict[str, Any]]:
+    """[v0.34.0 R80] 마지막 I.run()의 I★ 배분(산업/부모 비중). 없으면 None. K가 호출한다."""
+    if not _ALLOC_HANDOFF:
+        return None
+    return {k: (v.copy() if isinstance(v, (pd.Series, pd.DataFrame)) else v) for k, v in _ALLOC_HANDOFF.items()}
+
+
 def market_budget_handoff() -> Optional[Dict[str, Any]]:
     """[v0.31.0 R77] 마지막 I.run()이 받은 M 목표비중(E_t, t일 확정값)·국면. 없으면 None. K가 호출한다."""
     if not _MARKET_HANDOFF:
@@ -12245,6 +12308,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                                               (_frozen_alloc_cfg(icfg, M=M) if frozen else icfg),
                                               M, S, wf, rf_daily=rf_daily, prob_pack=_prob_pack)
             if alloc:
+                _set_alloc_handoff(alloc, M=M)                         # [v0.34.0 R80] K가 산업·섹터 비중을 참고하는 통로
                 hier_df = build_hierarchy_check(alloc)                 # 14_계층정합 — 동결 여부와 무관(총노출 불변식)
                 leader_cols = build_industry_leader_columns(alloc)     # 13c의 부모별 판단·리더·게이트 열
                 _viol = int(hier_df["위반일수(>1e-9)"].sum()) if len(hier_df) else -1
@@ -14683,14 +14747,57 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             meta.insert(_p0 + 2, ("산업 이익 모멘텀 검정(28) — 부모 안 1위−꼴찌(구성종목 EPS)", _txt or "산출 없음(블록 E 사유 참조)"))
     except Exception as _e:
         log("REPORT", kv(event="prob_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
+    # ---- [v0.34.0 R80 ★] 00시트 — **섹터별 산업 배분 분포**(기술 편중이 보이게) · 노란색 설명 ----
+    #   사용자 지적 "산업도 섹터 간 비중을 참고하여 분배가 되야하는데 너무 기술 산업에만 치중되어 있어".
+    #   숫자를 숨기지 않고 매 실행 첫 화면에 싣는다 — 다음 라운드에서 개선 여부를 이 한 줄로 바로 확인할 수 있다.
+    try:
+        _alc2 = ires.get("alloc") or {}
+        _tw2 = _alc2.get("target_w")
+        _cols2 = list(_alc2.get("cols") or [])
+        _pof2 = dict(_alc2.get("parent_of") or {})
+        _pars2 = list(_alc2.get("active_parents") or []) + list(_alc2.get("passthrough_cols") or [])
+        if isinstance(_tw2, pd.DataFrame) and len(_tw2) and _cols2:
+            _tot2 = float(_tw2.sum(axis=1).sum())
+            _by_sec: Dict[str, float] = {}
+            for _c in _cols2:
+                if _c in _tw2.columns:
+                    _by_sec[str(_pof2.get(_c, "?"))] = _by_sec.get(str(_pof2.get(_c, "?")), 0.0) + float(_tw2[_c].sum())
+            _par_sum = {str(_c): float(_tw2[_c].sum()) for _c in _pars2 if _c in _tw2.columns}
+            _ind_top = sorted(((str(_c), float(_tw2[_c].sum())) for _c in _cols2 if _c in _tw2.columns),
+                              key=lambda kv_: -kv_[1])[:6]
+            _sec_line = " · ".join(f"{k} {v / max(_tot2, 1e-9) * 100:.1f}%"
+                                   for k, v in sorted(_by_sec.items(), key=lambda kv_: -kv_[1]))
+            _par_line = " · ".join(f"{k} {v / max(_tot2, 1e-9) * 100:.1f}%"
+                                   for k, v in sorted(_par_sum.items(), key=lambda kv_: -kv_[1])[:5])
+            _top_line = " · ".join(f"{k} {v / max(_tot2, 1e-9) * 100:.2f}%" for k, v in _ind_top)
+            _xlk = _by_sec.get("XLK", 0.0) / max(sum(_by_sec.values()), 1e-9) * 100.0
+            meta.append(("★ 섹터별 산업 배분 분포(v0.34.0 · 기술 편중 추적)",
+                         f"산업 다리 기준 섹터 몫 — {_sec_line} | 산업 상위: {_top_line} | 부모ETF 잔여다리: {_par_line or '없음'} "
+                         f"→ **XLK 산업 몫 {_xlk:.1f}%**. "
+                         "이 비율을 정하는 것은 산업층이 아니라 **S★의 섹터 비중**이다(산업층은 그 예산 안에서만 고른다). "
+                         "R80에서 S의 ROTATION_PRIMARY_CAP을 0.9→0.8로 내리고 S에 '섹터 자기 근거 컷'을 넣었으므로 "
+                         "이 줄의 XLK 몫이 내려가고 다른 섹터 산업 몫이 올라가야 한다 — 다음 실행에서 이 한 줄로 확인할 것."))
+    except Exception as _e:
+        log("REPORT", kv(event="sector_mix_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
+    meta.append(("★ 노란색 표시(M·S·I·K 공통 약속 · R80)",
+                 "노란색 행 = **실제 거래에 쓰는 전략**이다. I는 13_산업배분전략의 ★ 행이 노란색이다. "
+                 "나머지 행은 전부 격자·대조군(측정 전용)이며 거래에 쓰지 않는다."))
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:
         import inspect as _inspect
         _wp = _inspect.signature(S.write_sector_excel).parameters
+        # [v0.34.0 R80] 실제 거래에 쓰는 전략 행을 노란색으로(사용자 지시) — 13_산업배분전략 ★ 행.
+        _lm = None
+        if alloc and alloc.get("label_star"):
+            _lm = {"13_산업배분전략": ("전략", str(alloc["label_star"]))}
         if "title" in _wp and "name_map" in _wp:
             # [v0.26.0 L1] 00B_곡선그래프 차트 제목에 산업 한글명을 쓴다(S v0.58.0+).
-            S.write_sector_excel(path, sheets, meta, M=M, title=_title,
-                                 name_map=dict(INDUSTRY_NAME_KR))
+            if "live_marks" in _wp:
+                S.write_sector_excel(path, sheets, meta, M=M, title=_title,
+                                     name_map=dict(INDUSTRY_NAME_KR), live_marks=_lm)
+            else:
+                S.write_sector_excel(path, sheets, meta, M=M, title=_title,
+                                     name_map=dict(INDUSTRY_NAME_KR))
         elif "title" in _wp:
             S.write_sector_excel(path, sheets, meta, M=M, title=_title)
         else:   # 구버전 S(v0.37 이하) 호환

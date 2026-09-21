@@ -9562,8 +9562,40 @@ def lookahead_audit(px_dict: Dict[str, pd.DataFrame], fred_raw: Dict[str, pd.Ser
 # =============================================================================
 # [11] 리포트 레이어 (Excel)
 # =============================================================================
+def _live_row_format(wb):
+    """[v1.57.0 R80] '실제 거래에 쓰는 전략' 행 강조 서식(노란색) — M·S·I·K 리포트 공통 약속."""
+    return wb.add_format({"bg_color": "#FFF200", "bold": True, "border": 1})
+
+
+def apply_live_marks(w, wb, df: pd.DataFrame, name: str, live_marks: Optional[Dict[str, Any]], fmt=None) -> int:
+    """[v1.57.0 R80 · 사용자 지시 "각 계층별로 어떤 전략이 실제 거래에 사용되는지 노란색으로 표시"]
+    live_marks = {시트명: (열이름, 값) 또는 [(열이름, 값), …]}. 그 열의 값이 정확히 일치하는 **행 전체**를 노랗게 칠한다.
+    표시 전용 — 수치·판정은 건드리지 않는다. 반환: 칠한 규칙 수(0이면 그 시트에 라이브 행이 없다)."""
+    if not live_marks or name not in live_marks or df is None or not len(df):
+        return 0
+    try:
+        from xlsxwriter.utility import xl_col_to_name
+    except Exception:
+        return 0
+    marks = live_marks[name]
+    marks = [marks] if isinstance(marks, tuple) else list(marks or [])
+    cols = list(df.columns)
+    fmt = fmt if fmt is not None else _live_row_format(wb)
+    n = 0
+    for col, val in marks:
+        if col not in cols:
+            continue
+        cl = xl_col_to_name(cols.index(col))
+        v = str(val).replace('"', '""')
+        w.conditional_format(1, 0, len(df), len(cols) - 1,
+                             {"type": "formula", "criteria": f'=${cl}2="{v}"', "format": fmt})
+        n += 1
+    return n
+
+
 def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
-                meta: List[Tuple[str, str]], cfg: Config = CFG) -> None:
+                meta: List[Tuple[str, str]], cfg: Config = CFG,
+                live_marks: Optional[Dict[str, Any]] = None) -> None:
     t0 = time.time()
     with pd.ExcelWriter(path, engine="xlsxwriter",
                         datetime_format="yyyy-mm-dd", date_format="yyyy-mm-dd") as xl:
@@ -9577,6 +9609,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
         f_val = wb.add_format({"border": 1, "text_wrap": True})
         f_pass = wb.add_format({"bg_color": "#C6EFCE", "font_color": "#006100", "bold": True})
         f_fail = wb.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006"})
+        f_live = _live_row_format(wb)                                # [v1.57.0 R80] 실매매 전략 행
 
         # ---- 00 실행요약 ----
         ws = wb.add_worksheet("00_실행요약")
@@ -9628,6 +9661,7 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
                 cj = list(df.columns).index("목표비중")
                 w.conditional_format(1, cj, len(df), cj,
                     {"type": "data_bar", "bar_color": "#638EC6"})
+            apply_live_marks(w, wb, df, name, live_marks, f_live)   # [v1.57.0 R80] 실매매 전략 행 노란색
 
         # ---- 자산곡선 차트 ----
         if "01_일별기록" in sheets and len(sheets["01_일별기록"]) > 0:
@@ -11197,6 +11231,9 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
+        ("★ 노란색 표시", "각 리포트에서 **노란색 행 = 실제 거래에 쓰는 전략**이다(M 06_성과요약 '복합지표 전략' · "
+                      "S 13_섹터배분전략 ★ · I 13_산업배분전략 ★ · K 13_주식배분전략 ★). 나머지 행은 같은 잣대로 비교하는 "
+                      "격자·대조군이며 주문에 쓰지 않는다. [v1.57.0 R80 사용자 지시]"),
         ("⚠ 실매매 적용 전략", "★ 이 리포트의 SPY 국면전략(아래 '다음 거래일 예측' 행이 실제 주문 근거 — 목표비중·예상 행동). "
                           "섹터(sector_regime_report.xlsx S★)·산업(industry_regime_report.xlsx I★) 계층 리포트는 이 M 노출을 "
                           "나눠 담는 연구 전략이며 진단·연구용 — 수용기준을 통과해도 사용자가 명시적으로 전환하기 전에는 "
@@ -11445,7 +11482,9 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         log("REPORT", kv(event="stage_timing_summary", run_total_s=round(_run_total, 1),
                          **{k: v for k, v in _stage_timing.items() if not k.startswith("12_")}))
 
-    write_excel(cfg.OUT_XLSX, sheets, bt, meta, cfg)
+    # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
+    write_excel(cfg.OUT_XLSX, sheets, bt, meta, cfg,
+                live_marks={"06_성과요약": ("전략", "복합지표 전략")})
     log("REPORT", kv(event="report_ready", file=cfg.OUT_XLSX, rows_daily=len(daily),
                      trades=len(trades), adopted=len(adopted),
                      elapsed_s=round(time.time() - t0, 2)))
@@ -11503,8 +11542,8 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.56.1"
-BUNDLE_VERSION_DATE = "2026-09-19"
+BUNDLE_VERSION = "v1.57.0"
+BUNDLE_VERSION_DATE = "2026-09-21"
 # [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
 #   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /
 #   decay_weights / composite 입력 스펙에만 의존한다. ⚠ 그 네 곳의 **산식**이 바뀔 때만 이 값을 올릴 것(안 올리면 오래된
