@@ -1,5 +1,14 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.38.0 - 2026-09-22 - [R84 ★ '노란색(I★)이 왜 그대로인가' 00 줄 · 신호 자체 신뢰도(H2)·검정력은 S v0.66.0 공용 — 배분 무변경]
+#    시작 v0.37.0 → 목표 v0.38.0. 사용자 지시는 S v0.66.0 머리 주석 참조(같은 라운드).
+#    ── R83 판정(엔진 i30): 산업 선택 FIP+MOM_12_1(보유 날) t̄ 1.71 · 연도 14/22 = 64% · 두 구간 양수 · 외부 지지 → 낮음.
+#       부모 안 REL_PARENT_BETA_X_REGIME t̄ 1.08 · 57% → 낮음(R82 단일 시작일 t 1.90은 시작일 운이 섞인 값이었다).
+#       FIP 단독(진단) 보유 t̄ 1.91 · 15/22 = 68% — 한 끗 모자람. 외부 49업종에선 같은 신호가 1999~ t̄ 2.43 · 75%.
+#    (§1 ★) i_yellow_lines(): 00 시트 신뢰도 줄 다음에 '노란색(I★ 라이브) 수익배수가 왜 그대로인가' — I★ 배수·CAGR·MDD·칼마,
+#      R81 이후 규칙 무변경, 계층 정합(산업 + 부모 = S★ 섹터 비중) 때문에 S★가 그대로면 틀도 그대로, 부모 안 신호 등급.
+#    (§2) 00R의 H2(신호 자체 신뢰도)·검정력 줄은 S.reliability_audit()이 만든다(단일 정본) — I는 호출만 한다.
+#    ⚠ 배분(I★)·위험 파라미터 변경 없음. 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.37.0 - 2026-09-21 - [R83 ★★ 산업 결합 교체(독립 구간 실패 → FIP+MOM_12_1) · 21개 시작일 평균 t · FF49 외부 검정 — 배분 무변경]
 #    시작 v0.36.0 → 목표 v0.37.0. 사용자 지시는 S v0.65.0 머리 주석 참조(같은 라운드).
 #    ── R82 판정(엔진 i28): 29산업 결합[COUPLING+BETA_X_REGIME] ~2017 IC −0.0098(보유 · t −0.36) ↔ 2018~ +0.0766 → **없음**
@@ -1808,8 +1817,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.37.0"
-VERSION_DATE = "2026-09-21"
+VERSION = "v0.38.0"
+VERSION_DATE = "2026-09-22"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -13734,6 +13743,31 @@ def single_live_verdict_line(sheets: Dict[str, pd.DataFrame]) -> str:
     return " | ".join(parts) if parts else "산출 불가(00A·19 A′ 없음)"
 
 
+def i_yellow_lines(perf: Optional[pd.DataFrame], label_star: Optional[str], rel: Optional[dict]) -> List[Tuple[str, str]]:
+    """[v0.38.0 R84] 00 시트 줄 — 노란색(I★ 라이브) 수익배수가 왜 그대로인가(사용자 질문 2026-09-22)."""
+    out: List[Tuple[str, str]] = []
+    if not (isinstance(perf, pd.DataFrame) and len(perf) and "전략" in perf.columns and label_star):
+        return out
+    row = perf[perf["전략"].astype(str) == str(label_star)]
+    if not len(row):
+        return out
+    r0 = row.iloc[0]
+    f = lambda c: float(pd.to_numeric(r0.get(c), errors="coerce")) if c in row.columns else float("nan")
+    wi = (((rel or {}).get("grades") or {}).get("within") or {}) if isinstance(rel, dict) else {}
+    se = (((rel or {}).get("grades") or {}).get("selection") or {}) if isinstance(rel, dict) else {}
+    out.append(("★★ 노란색(I★ 라이브) 수익배수가 왜 그대로인가(R84)",
+                f"현재 I★ 총수익배수 {f('총수익배수'):.3f} · CAGR {f('CAGR') * 100:.2f}% · MDD {f('최대낙폭(MDD)') * 100:.2f}% · "
+                f"칼마 {f('칼마(CAGR/MDD)'):.3f}. R82·R83·R84는 신뢰도를 **재는 방법**(00R)만 바꿨고 산업 배분 규칙은 R81 이후 그대로다. "
+                "I★는 S★가 정한 섹터 비중 **안에서만** 산업을 고른다(계층 정합: 산업 + 부모 = S★ 섹터 비중) — S★가 그대로면 틀도 그대로다. "
+                f"부모 안에서 산업을 가르는 신호는 여전히 약하다(부모 안 선택 {wi.get('grade', '-')}"
+                + (f" · t̄ {wi['t']:.2f}" if wi.get('t') == wi.get('t') and wi.get('t') is not None else "")
+                + f" · 29산업 전체 선택 {se.get('grade', '-')}"
+                + (f" t̄ {se['t']:.2f}" if se.get('t') == se.get('t') and se.get('t') is not None else "")
+                + ") — 그래서 부모 ETF에 주차하는 현행 규칙을 바꿀 근거가 없다. 예측을 비중에 넣는 실험은 S 리포트 "
+                "[모멘텀연결격자]에 있다(★를 못 이기면 바꾸지 않는다)."))
+    return out
+
+
 def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[str] = None) -> str:
     icfg = ires.get("icfg", CFG)
     path = path or icfg.OUT_XLSX
@@ -14929,6 +14963,7 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     except Exception as _e:
         log("REPORT", kv(event="sector_mix_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     # ---- [v0.36.0 R82 ★★] 신뢰도 판정 줄(00 시트 두 번째 자리부터) ----
+    _n_rel = 0
     try:
         _ra2 = ires.get("reliability")
         if isinstance(_ra2, dict) and _ra2.get("grades") is not None and hasattr(S, "reliability_lines"):
@@ -14940,13 +14975,22 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                            if str(_ra2.get("method", "")) == "phase" else "")))
             for _k, _v in reversed(_ln):
                 meta.insert(1, (_k, _v))
+            _n_rel = len(_ln)
         elif isinstance(_ra2, dict) and _ra2.get("error"):
             meta.insert(1, ("⚠ 신뢰도 판정(R82·R83)", f"산출 실패 — {_ra2['error']}"))
+            _n_rel = 1
     except Exception as _e:
         log("REPORT", kv(event="reliability_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     meta.append(("★ 노란색 표시(M·S·I·K 공통 약속 · R80)",
                  "노란색 행 = **실제 거래에 쓰는 전략**이다. I는 13_산업배분전략의 ★ 행이 노란색이다. "
                  "나머지 행은 전부 격자·대조군(측정 전용)이며 거래에 쓰지 않는다."))
+    # ---- [v0.38.0 R84 ★★] '노란색(I★) 수익배수가 왜 그대로인가' — 신뢰도 줄 바로 다음에 둔다 ----
+    try:
+        _yl = i_yellow_lines(sheets.get("13_산업배분전략"), (alloc or {}).get("label_star"), ires.get("reliability"))
+        for _k, _v in reversed(_yl):
+            meta.insert(1 + int(_n_rel), (_k, _v))
+    except Exception as _e:
+        log("REPORT", kv(event="yellow_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:
         import inspect as _inspect

@@ -17,6 +17,30 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.66.0 - 2026-09-22 - [R84 ★★ '노란색이 왜 그대로인가' 답 + [모멘텀연결격자](예측→배분 · 측정 전용) + 신호 자체 신뢰도(H2) · 검정력]
+#    사용자 지시(2026-09-22, 리포트 s11·i30) "섹터랑 산업층 신뢰도 높음으로 … 도대체 뭐가 문제야? 지표? 아니면 검증방법? …
+#      그리고 고치고 있는거 맞아? 왜 노란색 표시된 수익배수는 그대로야". 시작 v0.65.0 → 목표 v0.66.0.
+#    ── R83 판정(엔진 s11 · 사전등록대로) ──
+#      섹터 선택(보유 날) t̄ **2.17**(≥ 1.96 통과) · 연도 17/27 = 63%(< 67% 미달) · 두 구간 양수 · 외부 지지 → **낮음**(연도 하나로).
+#      M 타이밍 t̄ 1.43 · 연도 45% → 낮음 — **같은 잣대로 섹터 선택(2.17)이 M 타이밍(1.43)보다 강하다.**
+#      외부 FF49(49업종 · 같은 코드): FIP+MOM_12_1 ~1998 t̄ **8.15**(63/72년) · 1999~ t̄ **2.43**(21/28년 = 75%).
+#    ── 답: **지표는 문제가 아니다. 문제는 우리 ETF 자산 수(11·29)로 재는 '연도' 기준의 검정력이다** ──
+#      같은 신호가 49업종에선 1999년 이후에도 연도 75%로 통과한다. 11개 섹터에선 진짜 효과여도 해마다 부호가 흔들려
+#      연도 기준 통과 확률이 절반 안팎이다(독립 자료 FF 12업종 1999~2017: 약 20% — r84/power84.py). 기준값은 바꾸지 않는다.
+#    ── 노란색(★)이 그대로인 이유: R82·R83은 **측정만** 바꿨다. ★ 규칙은 R81 이후 무변경 → 배수 12.368 그대로 ──
+#      이번에 예측을 ★ 비중에 넣는 네 방식을 엔진 재현 하네스(r84/alloc84.py)로 쟀다: ★ 칼마 4.170(2019~) 대비
+#      대피처=모멘텀 4.088 · 기울임 λ1 4.237(무작위 95% 4.491 안) · 주력상한=모멘텀순위 4.137 · 주력=모멘텀1위 2.762.
+#      ⇒ ★를 이기는 연결이 없다. **라이브는 바꾸지 않는다**(사전등록 R84 — 격자가 네 조건을 모두 넘을 때만 다음 라운드에 교체 검토).
+#    (§1 ★★ 신규 · 측정 전용) build_sector_allocation(): [모멘텀연결격자] 4행(대피처 2개=모멘텀 상위2 · 기울임 λ0.5/λ1 ·
+#      주력 상한=주력 모멘텀 순위) + 변형마다 같은 구조 무작위 대조군 12개(지속성 있는 가짜 점수 · 씨앗 20260922) →
+#      diag["alloc_link"](칼마·대조군 95%·백분위·사전등록 통과 여부). ★ 비중은 한 칸도 바꾸지 않는다(시험 1-3).
+#    (§2 ★★) s_yellow_lines(): 00 시트 버전 다음에 '노란색(라이브) 수익배수가 왜 그대로인가' · '[모멘텀연결격자] 판정' 두 줄.
+#    (§3 ★) rel_external_ff49(): 블록 **H2 신호 자체 신뢰도** — 결합 신호를 49업종에 ETF와 **같은 규칙**(_rel_decide)으로 등급화
+#      (전체 1927~ 구간 ~1998/1999~ · 현대 1999~ 구간 ~2017/2018~). '우리 ETF 적용 등급'(블록 B 선택)과 줄을 나눠 싣는다.
+#    (§4 ★) _rel_years_power(): 검정력 진단 — 관측 효과가 진짜라면 연도 기준을 통과할 확률(판정에 안 씀). 00R B · 00 줄.
+#    (§5) SectorConfig: ALLOC_LINK_GRID · ALLOC_LINK_SIGNAL · ALLOC_LINK_SMOOTH · ALLOC_LINK_LAMBDAS · ALLOC_LINK_CONTROLS · ALLOC_LINK_SEED.
+#    ⚠ 라이브·위험 파라미터 변경 없음(★ = XLK 상한 0.8 · 대피처 · E_t). 끄기: s_overrides={"ALLOC_LINK_GRID": False}.
+#    연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.65.0 - 2026-09-21 - [R83 ★★ 신뢰도 '재는 방법' 교체: 21개 시작일 평균 t(시작일 운 제거) + FF49 외부 장기 검정 — 배분 무변경]
 #    사용자 지시(2026-09-21, 리포트 s9·i28) "섹터랑 산업층 신뢰도 높음으로 되도록 … 도대체 뭐가 문제야? 지표? 아니면 검증방법?
 #      계속 다른 방법을 찾아보라고 적어도 국면처럼 신뢰도 중간까지는 되게 해야지 — 섹터, 산업만 코드 수정". 시작 v0.64.0 → 목표 v0.65.0.
@@ -2699,8 +2723,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.65.0"
-VERSION_DATE = "2026-09-21"
+VERSION = "v0.66.0"
+VERSION_DATE = "2026-09-22"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -3349,6 +3373,14 @@ class SectorConfig:
     REL_EXTERNAL: bool = True          # 외부 장기 검정(FF49 49업종 일별 · 13h와 같은 캐시 FF49_CACHE)
     REL_EXT_ERA_END: str = "1998-12-31"   # 외부 독립 구간 끝(ETF 이전)
     REL_EXT_DOWNGRADE: bool = True     # ⚠ 외부 ~1998 t̄ ≤ 0(반증)이면 결합 등급 한 단계 강등(R83 사전등록)
+    # ---- [v0.66.0 R84 ★★ 신규 · 측정 전용] [모멘텀연결격자] — 예측을 ★ 비중에 넣으면 나아지나(★·라이브 무변경) ----
+    #   근거·사전등록 기준은 build_sector_allocation()의 [모멘텀연결격자] 주석. 끄기: s_overrides={"ALLOC_LINK_GRID": False}
+    ALLOC_LINK_GRID: bool = True
+    ALLOC_LINK_SIGNAL: Tuple[str, ...] = ("FIP", "MOM_12_1")   # 외부 49업종에서 검증된 모멘텀 핵(블록 H·H2)
+    ALLOC_LINK_SMOOTH: int = 21        # 점수 평활 일수(회전 억제 — 엔진 ROTATION_SMOOTH_DAYS와 같은 값)
+    ALLOC_LINK_LAMBDAS: Tuple[float, ...] = (0.5, 1.0)       # 비중 기울임 강도
+    ALLOC_LINK_CONTROLS: int = 12      # 변형마다 같은 구조 무작위 대조군 수
+    ALLOC_LINK_SEED: int = 20260922    # 대조군 씨앗(재현성)
     SECTOR_SELF_CUT_Q: float = 1.0 / 3.0        # 하위 몇 분위를 깎는가(0.25/0.33/0.5를 격자가 함께 잰다)
     SECTOR_SELF_CUT_FRAC: float = 0.25          # ⚠ 깎는 폭(0.25/0.50/1.00을 격자가 함께 잰다)
     SECTOR_SELF_CUT_CONTROLS: int = 12          # 같은 개수 무작위 대조군 행 수(0이면 끔) — 13 시트에서 직접 판정
@@ -9722,6 +9754,140 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                action="컷 없이 계속(v0.61.2와 동일) — 00 시트에 실패를 적는다"), M=M, level="warning")
             _sc_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
 
+    # ---- [v0.66.0 R84 ★★ 신규 · 측정 전용] [모멘텀연결격자] — '예측을 배분에 넣으면 노란색(★) 성과가 나아지나' ----
+    #   사용자 질문(2026-09-22): "고치고 있는거 맞아? 왜 노란색 표시된 수익배수는 그대로야".
+    #   답: R82·R83은 신뢰도 **측정**만 바꿨고 ★(실제 거래 규칙)은 R81 이후 그대로라 수익배수 12.368도 그대로다.
+    #   이 격자는 외부 49업종에서 검증된 모멘텀 핵(FIP+MOM_12_1)을 ★의 비중에 **네 가지 방식**으로 연결하고,
+    #   같은 구조의 무작위 점수(지속성 있는 가짜 신호) 대조군과 함께 엔진이 직접 잰다:
+    #     ① 대피처 2개 = 모멘텀 상위2(주력 제외) ② 비중 기울임 λ(보유 섹터 비중 × (1 + λ(순위 − 0.5)) · 그날 합계 유지)
+    #     ③ 주력(XLK) 상한 = 주력의 모멘텀 순위(1~2위 0.9 · 6위 이하 0.6 · 그 밖 0.8)
+    #   오프라인 하네스(r84/alloc84.py · 2019~ · ★ 칼마 4.170): ① 4.088(무작위 95% 3.995 — 정보는 있으나 ★ 대피처보다 못함)
+    #     ② λ1 4.237(무작위 95% 4.491 — 우연 범위) ③ 4.137(무작위 중앙 4.047 — 정보 없음). ⇒ **지금은 ★를 바꿀 근거가 없다.**
+    #   ⚠ 사전등록(R84 · 다음 리포트 판정): 한 변형이 ★를 대체하려면 네 조건을 **모두** 만족해야 한다 —
+    #     (i) 칼마 ≥ ★ + 0.05 (ii) 같은 구조 무작위 대조군 칼마 95백분위 초과 (iii) 13 강건성(기준④) '통과'
+    #     (iv) MDD가 ★보다 0.5%p 넘게 나쁘지 않음. 판정은 사람이 다음 라운드에 한다(엔진이 스스로 라이브를 바꾸지 않는다).
+    #   룩어헤드 없음: 신호는 t일까지의 가격(전체 이력으로 계산 → 평가창에 재색인), 변형은 ★의 t일 목표비중에만 곱한다(t+1 시가 체결).
+    _link_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(scfg, "ALLOC_LINK_GRID", True)) and label_primary in target_ws:
+        try:
+            _tl0 = time.time()
+            _base_l = target_ws[label_primary].copy()
+            _secl = [c for c in cols if c in _base_l.columns]
+            _pri_l = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+            _rcf = ret_cc_full[[c for c in cols if c in ret_cc_full.columns]]
+            _Pl = (1.0 + _rcf.fillna(0.0)).cumprod().where(_rcf.notna())
+            _sg = rel_price_signals(_Pl, None, None)
+            _mq = rel_combo(_sg, tuple(getattr(scfg, "ALLOC_LINK_SIGNAL", ("FIP", "MOM_12_1"))))
+            _smd = int(getattr(scfg, "ALLOC_LINK_SMOOTH", 21) or 1)
+            _mq = _mq.rolling(_smd, min_periods=1).mean().reindex(eval_idx)[_secl]
+            _avail_l = _base_l[_secl].notna() & ret_cc.reindex(columns=_secl).notna()
+
+            def _shelter_mom(score: pd.DataFrame, k: int = 2) -> pd.DataFrame:
+                w = _base_l.copy()
+                non = [c for c in _secl if c != _pri_l]
+                sh = w[non].sum(axis=1)
+                rr_ = score[non].where(_avail_l[non]).rank(axis=1, ascending=False, method="first")
+                okk = rr_.notna().sum(axis=1) >= k
+                neww = pd.DataFrame(0.0, index=w.index, columns=non)
+                for j in range(1, k + 1):
+                    neww = neww + (rr_ == j).astype(float).mul(sh / k, axis=0)
+                w.loc[okk, non] = neww.loc[okk]
+                return w
+
+            def _tilt(score: pd.DataFrame, lam: float) -> pd.DataFrame:
+                w = _base_l.copy()
+                ws = w[_secl]
+                pct = score.where(_avail_l).rank(axis=1, pct=True)
+                m = (1.0 + float(lam) * (pct - 0.5)).where(ws > 1e-12, 0.0).fillna(1.0)
+                nw = ws * m
+                tot0 = ws.sum(axis=1); tot1 = nw.sum(axis=1)
+                sc = (tot0 / tot1.replace(0.0, np.nan)).fillna(0.0)
+                w[_secl] = nw.mul(sc, axis=0)
+                return w
+
+            def _pri_cap(score: pd.DataFrame, hi: float = 0.9, mid: float = 0.8, lo: float = 0.6) -> pd.DataFrame:
+                w = _base_l.copy()
+                if _pri_l not in _secl:
+                    return w
+                rkp = score.where(_avail_l).rank(axis=1, ascending=False)[_pri_l]
+                capv = pd.Series(mid, index=w.index); capv[rkp <= 2] = hi; capv[rkp >= 6] = lo
+                tot = w[_secl].sum(axis=1)
+                held = w[_pri_l] > 1e-12
+                newp = (tot * capv).where(held, w[_pri_l])
+                non = [c for c in _secl if c != _pri_l]
+                rest = w[non]; rs = rest.sum(axis=1)
+                sc = ((tot - newp).clip(lower=0.0) / rs.replace(0.0, np.nan)).fillna(0.0)
+                w.loc[held, _pri_l] = newp[held]
+                w.loc[held, non] = rest.loc[held].mul(sc[held], axis=0)
+                ok_ = rkp.notna()
+                w.loc[~ok_] = _base_l.loc[~ok_]
+                return w
+
+            _lams = tuple(float(x) for x in (getattr(scfg, "ALLOC_LINK_LAMBDAS", (0.5, 1.0)) or ()))
+            _makers = [("대피처 2개 = 모멘텀 상위2", lambda sc_: _shelter_mom(sc_))]
+            _makers += [(f"비중 기울임 λ{lv:g}", (lambda lv_: (lambda sc_: _tilt(sc_, lv_)))(lv)) for lv in _lams]
+            _makers += [(f"주력 상한 = 주력 모멘텀 순위(0.9/0.8/0.6)", lambda sc_: _pri_cap(sc_))]
+            _nctl = int(getattr(scfg, "ALLOC_LINK_CONTROLS", 12) or 0)
+            _seed_l = int(getattr(scfg, "ALLOC_LINK_SEED", 20260922))
+            _base_bt = bts[label_primary]
+
+            def _calmar(bt_: pd.DataFrame) -> Tuple[float, float, float]:
+                r_ = pd.to_numeric(bt_["strategy_ret"], errors="coerce").fillna(0.0)
+                eq_ = (1.0 + r_).cumprod(); n_ = max(len(r_), 1)
+                cg_ = float(eq_.iloc[-1] ** (252.0 / n_) - 1.0) if n_ > 1 else np.nan
+                mdd_ = float((eq_ / eq_.cummax() - 1.0).min())
+                return cg_, mdd_, (cg_ / abs(mdd_) if mdd_ < 0 else np.nan)
+            _cg0, _md0, _cm0 = _calmar(_base_bt)
+            _rows_l = []
+            # 무작위 점수: 섹터마다 지속성 있는 AR(0.995) 과정의 그날 순위 — 모멘텀 핵과 같은 평활·같은 가용 마스크
+            _rng_l = np.random.default_rng(_seed_l)
+            _rand_scores = []
+            for _k in range(_nctl):
+                _e = _rng_l.standard_normal((len(eval_idx), len(_secl)))
+                _a = np.empty_like(_e); _a[0] = _e[0]
+                for _i in range(1, len(_e)):
+                    _a[_i] = 0.995 * _a[_i - 1] + math.sqrt(1 - 0.995 ** 2) * _e[_i]
+                _rs = pd.DataFrame(_a, index=eval_idx, columns=_secl).where(_avail_l).rank(axis=1, pct=True)
+                _rs = _rs.where(_mq.notna())
+                _rand_scores.append(_rs)
+            for _nm, _mk in _makers:
+                _lab = f"주력섹터 중심 · {_nm} [모멘텀연결격자]"
+                _w = _mk(_mq).fillna(0.0).clip(lower=0.0)
+                target_ws[_lab] = _w
+                bts[_lab] = portfolio_backtest(_w, ret_co, ret_oc, **bt_kw)
+                variants[_lab] = _w
+                _cg, _md, _cm = _calmar(bts[_lab])
+                _ctl = []
+                for _k, _rs in enumerate(_rand_scores):
+                    _wc = _mk(_rs).fillna(0.0).clip(lower=0.0)
+                    _ctl.append(_calmar(portfolio_backtest(_wc, ret_co, ret_oc, **bt_kw))[2])
+                _ctl = np.asarray([c_ for c_ in _ctl if c_ == c_], dtype=float)
+                _pctile = float((_ctl < _cm).mean() * 100.0) if len(_ctl) else np.nan
+                _q95 = float(np.quantile(_ctl, 0.95)) if len(_ctl) else np.nan
+                _pass = bool((_cm == _cm) and _cm >= _cm0 + 0.05 and (len(_ctl) and _cm > _q95)
+                             and (_md >= _md0 - 0.005))
+                _rows_l.append({"변형": _nm, "라벨": _lab, "CAGR": _cg, "MDD": _md, "칼마": _cm,
+                                "★ 칼마": _cm0, "★ MDD": _md0, "대조군 수": int(len(_ctl)),
+                                "대조군 칼마 중앙": (float(np.median(_ctl)) if len(_ctl) else np.nan),
+                                "대조군 칼마 95%": _q95, "대조군 대비 백분위": _pctile,
+                                "사전등록 (i)(ii)(iv) 통과": _pass})
+                log("ROTATION", kv(event="alloc_link_variant", variant=_nm, calmar=round(_cm, 3), calmar_star=round(_cm0, 3),
+                                   cagr=round(_cg * 100, 2), mdd=round(_md * 100, 2), ctl_median=round(float(np.median(_ctl)), 3)
+                                   if len(_ctl) else None, ctl_q95=round(_q95, 3) if _q95 == _q95 else None,
+                                   pctile=round(_pctile, 1) if _pctile == _pctile else None, prereg_pass=_pass), M=M)
+            _link_diag = {"enabled": True, "rows": _rows_l, "controls": _nctl, "seed": _seed_l,
+                          "signal": "+".join(getattr(scfg, "ALLOC_LINK_SIGNAL", ("FIP", "MOM_12_1"))),
+                          "star_calmar": _cm0, "star_mdd": _md0, "star_cagr": _cg0,
+                          "any_pass": any(r_["사전등록 (i)(ii)(iv) 통과"] for r_ in _rows_l)}
+            log("ROTATION", kv(event="alloc_link_grid_done", variants=len(_rows_l), controls=_nctl, seed=_seed_l,
+                               any_prereg_pass=_link_diag["any_pass"], sec=round(time.time() - _tl0, 1),
+                               note="측정 전용 — ★(라이브) 무변경"), M=M)
+        except Exception as _e:
+            log("ROTATION", kv(event="alloc_link_grid_failed", err=type(_e).__name__, msg=str(_e)[:180],
+                               trace=traceback.format_exc()[-300:].replace("\n", " | "),
+                               action="격자만 생략 — ★(라이브)는 영향 없음"), M=M, level="warning")
+            _link_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
+
     # [v0.7.0] 참조: SPY 국면전략(M) 성과(같은 평가창, M의 bt 그대로) — 수용기준 ⑤(목표: CAGR ≥ SPY M)에 사용
     spy_m_ret = res["bt"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
     spy_m_pm = M.perf_metrics(spy_m_ret, "SPY 국면전략(M)")
@@ -9801,6 +9967,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     diag = {
         "label_primary": label_primary, "label_leader": label_leader, "label_topk": label_topk, "label_linear": label_lin,
         "self_cut": _sc_diag,                                                        # [v0.62.0 R80]
+        "alloc_link": _link_diag,                                                    # [v0.66.0 R84] [모멘텀연결격자]
         "label_alt": (label_topk if mode == "leader3" else label_leader),
         "label_own": (label_own if label_own in bts else None), "spy_m": spy_m,          # [v0.7.0]
         "label_score": (label_score if label_score in bts else None),                   # [v0.8.0]
@@ -9829,7 +9996,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     }
     log("ROTATION", kv(event="allocation_built",
                        **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year", "spy_m",
-                                                                     "tier_by_year", "avoid_by_year")},
+                                                                     "tier_by_year", "avoid_by_year", "alloc_link")},
                        tiers=";".join(f"{k}:{v}" for k, v in sorted(diag["tier_by_year"].items())) or "-",
                        avoid_ok=";".join(f"{k}:{'+'.join(v) if v else '-'}" for k, v in sorted(diag["avoid_by_year"].items())) or "-",
                        spy_m_cagr=spy_m["CAGR"], spy_m_mdd=spy_m["MDD"],
@@ -14482,6 +14649,13 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     meta.append(("★ 노란색 표시(M·S·I·K 공통 약속 · R80)",
                  "노란색 행 = **실제 거래에 쓰는 전략**이다. S는 13_섹터배분전략의 ★ 행이 노란색이다. "
                  "나머지 행은 전부 격자·대조군(측정 전용)이며 거래에 쓰지 않는다."))
+    # ---- [v0.66.0 R84 ★★] '노란색 수익배수가 왜 그대로인가' + [모멘텀연결격자] 판정 — 00 맨 앞쪽(버전 다음)에 둔다 ----
+    try:
+        _yl = s_yellow_lines(sres)
+        for _k, _v in reversed(_yl):
+            meta.insert(1, (_k, _v))
+    except Exception as _e:
+        log("REPORT", kv(event="yellow_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     meta = [meta[0]] + nd_rows + meta[1:]  # [v0.3.0 §1.A] 버전 다음에 '다음 거래일 예측' 블록 삽입(M과 동일 패턴)
     # [v0.60.0 R72] stage_timing에 문자열('캐시 적중')이 섞인다 — I(v0.6.0)와 같은 방식으로 숫자만 '초'로 적는다.
     for k, v in sorted(sres.get("stage_timing", {}).items()):
@@ -15198,6 +15372,30 @@ def _rel_decide(z: float, ys: float, m1: float, z1: float, n1m: int, m2: float, 
     return "없음", (f"{stat} {z:.2f}" if ok(z) else "계산 불가")
 
 
+def _rel_years_power(s: pd.Series, cfg, min_year_days: int = 21) -> Dict[str, Any]:
+    """[v0.66.0 R84] 검정력 진단 — '관측된 효과가 진짜라면 연도 기준(≥ REL_MID_YEARS)을 통과할 확률'.
+    연 평균 IC의 평균·표준편차로 한 해가 양수일 확률 p = Φ(평균/표준편차)를 잡고, n년 중 기준 이상이 양수일 이항확률.
+    ⚠ 판정에는 쓰지 않는다(기준값은 사전등록 그대로). 자산이 적으면(11개) 진짜 효과도 연도 부호가 흔들린다는 것을
+    숫자로 보이는 용도다 — 독립 자료(FF 12업종 1999~2017)에서 모멘텀의 이 확률은 약 20%였다(r84/power84.py)."""
+    from statistics import NormalDist
+    out = {"years_p_expected": np.nan, "years_pass_prob": np.nan}
+    try:
+        s = pd.Series(s, dtype=float).dropna()
+        if not len(s):
+            return out
+        yg = s.groupby(s.index.year)
+        yr = yg.mean()[yg.size() >= int(min_year_days)]
+        if len(yr) < 8 or float(yr.std(ddof=1)) <= 0:
+            return out
+        p = float(NormalDist().cdf(float(yr.mean()) / float(yr.std(ddof=1))))
+        n = int(len(yr)); need = int(math.ceil(float(getattr(cfg, "REL_MID_YEARS", 2.0 / 3.0)) * n - 1e-9))
+        pp = float(sum(math.comb(n, k) * p ** k * (1.0 - p) ** (n - k) for k in range(need, n + 1)))
+        out.update({"years_p_expected": p, "years_pass_prob": pp})
+    except Exception:
+        pass
+    return out
+
+
 def rel_grade_phase(dic: pd.Series, valid_days: pd.DatetimeIndex, scope_mask: np.ndarray, cfg,
                     era_split: Optional[str] = None) -> Dict[str, Any]:
     """[R83] 등급 = R82 규칙 그대로, 통계만 '시작일 평균 t'(21개 시작일 단순 t의 평균 — 보수적).
@@ -15217,6 +15415,7 @@ def rel_grade_phase(dic: pd.Series, valid_days: pd.DatetimeIndex, scope_mask: np
     ph = rel_phase_ts(dic, valid_days, sm, h)
     fin = ph[np.isfinite(ph)]
     tbar = float(fin.mean()) if len(fin) else np.nan
+    res.update(_rel_years_power(s, cfg, my))                        # [v0.66.0 R84] 검정력 진단(판정에는 안 쓴다)
     res.update({"n": st["months"], "mean": st["mean"], "t": tbar, "pos_share": st["pos_month_share"],
                 "years_pos": f"{st['years_pos']}/{st['years_n']}", "years_share": st["years_share"],
                 "phase": ({"t0": float(ph[0]), "min": float(fin.min()), "med": float(np.median(fin)),
@@ -15321,7 +15520,7 @@ def rel_external_ff49(ff: Optional[pd.DataFrame], cfg, combos: Tuple[Tuple[str, 
     ~1998(ETF 이전 · 설계에 쓴 적 없는 독립 표본)과 1999~(ETF 시대 · 감쇠 확인)를 잰다. 통계 = 시작일 평균 t(보수적).
     BETA_X_REGIME(M 필요)·COUPLING(부모 필요)은 계산 불가 — 결합은 계산 가능한 구성원만으로 잰다(표에 명시)."""
     cols = ["블록", "신호", "구간", "일수", "월 표본", "평균 IC", "시작일 평균 t", "시작일 21개 t 범위(최소~최대)",
-            "연도 양수", "외부 판정", "비고"]
+            "연도 양수", "외부 판정", "등급", "근거", "비고"]
     if ff is None or not isinstance(ff, pd.DataFrame) or len(ff) < 2000:
         return pd.DataFrame(columns=cols)
     t0 = time.time()
@@ -15369,6 +15568,25 @@ def rel_external_ff49(ff: Optional[pd.DataFrame], cfg, combos: Tuple[Tuple[str, 
                            "시작일 21개 t 범위(최소~최대)": (f"{fin.min():+.2f} ~ {fin.max():+.2f}" if len(fin) else "-"),
                            "연도 양수": f"{st['years_pos']}/{st['years_n']}", "외부 판정": verdict,
                            "비고": ("결합(계산 가능한 구성원만 · 순위 평균)" if len(mem) > 1 else REL_SIGNAL_DESC.get(nm, ""))})
+            if len(mem) > 1:
+                #   [v0.66.0 R84 ★ 신호 신뢰도(외부 · 같은 규칙)] 결합 신호 자체의 등급을 **ETF와 똑같은 규칙**(_rel_decide)으로 매긴다.
+                #   ① 전체 1927~: 구간 = ~1998 / 1999~(독립 / 현대) ② 현대 1999~: 구간 = ~2017 / 2018~(ETF와 같은 구간).
+                #   ⚠ 이것은 '신호가 업종 수익을 예측하는가'의 등급이다. '우리 ETF 11·29개에 적용한 등급'(블록 B의 선택)과
+                #     섞지 않는다 — 두 줄을 따로 싣는다. 49업종이라 자산 수 잡음이 작고 기간이 길어 검정력이 훨씬 크다.
+                for lab2, msk2, split2 in (("신호 신뢰도 — 전체 1927~ (구간 ~1998 / 1999~)", np.ones(len(valid), dtype=bool),
+                                            str((era_end + pd.Timedelta(days=1)).date())),
+                                           ("신호 신뢰도 — 현대 1999~ (구간 ~2017 / 2018~)", np.asarray(valid > era_end),
+                                            str(getattr(cfg, "REL_ERA_SPLIT", "2018-01-01")))):
+                    gg = rel_grade_phase(dic, valid, msk2, cfg, era_split=split2)
+                    rr.append({"블록": "H2. 신호 신뢰도(외부 49업종 · ETF와 같은 규칙)", "신호": nm, "구간": lab2,
+                               "일수": gg.get("days"), "월 표본": gg.get("n"),
+                               "평균 IC": (round(gg["mean"], 4) if gg.get("mean") == gg.get("mean") else None),
+                               "시작일 평균 t": (round(gg["t"], 2) if gg.get("t") == gg.get("t") else None),
+                               "시작일 21개 t 범위(최소~최대)": ((f"{gg['phase']['min']:+.2f} ~ {gg['phase']['max']:+.2f}")
+                                                           if gg.get("phase") else "-"),
+                               "연도 양수": gg.get("years_pos"), "외부 판정": "-", "등급": gg.get("grade"),
+                               "근거": f"{gg.get('reason', '')} · 구간1 {gg.get('era1', '-')} · 구간2 {gg.get('era2', '-')}",
+                               "비고": "신호 자체의 등급(업종 49개 · 긴 이력). 우리 ETF 적용 등급은 블록 B"})
             _REL_EXT_CACHE[ck] = rr
             log("RELIABILITY", kv(event="external_signal", signal=nm, t_pre1999=rr[0]["시작일 평균 t"],
                                   t_post1999=rr[1]["시작일 평균 t"], ic_pre1999=rr[0]["평균 IC"], ic_post1999=rr[1]["평균 IC"],
@@ -15585,6 +15803,12 @@ def reliability_audit(close: pd.DataFrame, mkt_close: Optional[pd.Series], regim
     elif comp == () and combo:
         ext_note = "외부 검정 불가(결합 구성원이 전부 M·부모 의존)"
     grades["external_note"] = ext_note
+    #   [v0.66.0 R84] 신호 자체 신뢰도(외부 49업종 · 같은 규칙) — 블록 H2에서 결합 행을 뽑아 요약에 싣는다.
+    grades["signal_external"] = []
+    if isinstance(ext_df, pd.DataFrame) and len(ext_df) and ext_name and "등급" in ext_df.columns:
+        _h2 = ext_df[(ext_df["신호"] == ext_name) & ext_df["블록"].astype(str).str.startswith("H2")]
+        grades["signal_external"] = [{"구간": str(r_["구간"]), "등급": str(r_["등급"]), "t": r_["시작일 평균 t"],
+                                      "연도": str(r_["연도 양수"])} for _, r_ in _h2.iterrows()]
     if grades.get("within"):
         grades["within"]["external_note"] = "외부 검정 불가(FF49엔 부모 섹터·M 국면이 없다)"
     #   선택 표(D)의 ★ 행 등급을 강등 반영값으로 다시 쓴다(표와 요약이 같은 등급을 보이게)
@@ -15709,6 +15933,18 @@ def build_reliability_sheet(aud: Dict[str, Any], cfg) -> pd.DataFrame:
                           f"~2017 {sel.get('era1', '-')} · 2018~ {sel.get('era2', '-')} · 참고: 전체 날짜 등급 "
                           f"{(g.get('selection_all') or {}).get('grade', '-')}" + _leg_txt(sel)
                           + (f" · {g.get('external_note')}" if g.get("external_note") else "")})
+    if sel and sel.get("years_pass_prob") == sel.get("years_pass_prob") and sel.get("years_pass_prob") is not None:
+        B.append({"블록": "B. 등급 요약", "항목": f"{lay} 선택 — 검정력(판정에 안 씀)", "등급": "-",
+                  "내용": (f"관측 효과가 진짜라면 한 해가 양수일 확률 ≈ {sel.get('years_p_expected', float('nan')):.0%} → "
+                           f"연도 기준(≥ {getattr(cfg, 'REL_MID_YEARS', 2/3):.0%})을 통과할 확률 ≈ {sel['years_pass_prob']:.0%}. "
+                           "자산이 적으면(섹터 11 · 산업 29) 진짜 효과도 해마다 부호가 흔들려 '중간'과 '낮음' 사이를 오간다 — "
+                           "독립 자료(FF 12업종 1999~2017)에서 모멘텀의 이 확률은 약 20%였다.")})
+    for _se in (g.get("signal_external") or []):
+        B.append({"블록": "B. 등급 요약", "항목": f"신호 자체 신뢰도(외부 49업종 · 같은 규칙) — {_se['구간']}",
+                  "등급": _se["등급"],
+                  "내용": (f"결합 신호의 계산 가능한 구성원을 Ken French 49업종 일별에 같은 코드·같은 등급 규칙으로 적용 · "
+                           f"t̄ {_se['t']} · 연도 {_se['연도']}. ⚠ '신호가 업종 수익을 예측하는가'의 등급이다 — 위 '{lay} 선택'"
+                           "(우리 ETF에 적용한 등급)과 다르다.")})
     wi = g.get("within") or {}
     if wi:
         B.append({"블록": "B. 등급 요약", "항목": "부모 안 산업 선택(사전등록 결합)", "등급": wi.get("grade"),
@@ -15751,7 +15987,11 @@ def reliability_lines(aud: Dict[str, Any]) -> List[Tuple[str, str]]:
           f"2018~ {sel.get('era2', '-')} · 전체 날짜 {(g.get('selection_all') or {}).get('grade', '-')}"
           + (f" · 구 추정 {leg.get('grade', '-')}" if leg else "") + ")" if sel else None),
          (f"부모 안 선택 **{wi.get('grade', '-')}**({wi.get('reason', '-')})" if wi else None),
-         (g.get("external_note") if perm and g.get("external_note") else None)]
+         (g.get("external_note") if perm and g.get("external_note") else None),
+         (("신호 자체(외부 49업종 · 같은 규칙) " + " · ".join(f"{x['구간'].split('(')[0].replace('신호 신뢰도 — ', '').strip()} **{x['등급']}**"
+                                                     for x in g.get("signal_external"))) if g.get("signal_external") else None),
+         ((f"검정력: 관측 효과가 진짜여도 연도 기준 통과 확률 ≈ {sel['years_pass_prob']:.0%}")
+          if sel and sel.get("years_pass_prob") == sel.get("years_pass_prob") and sel.get("years_pass_prob") is not None else None)]
     out.append((f"★ 신뢰도 판정({tag} · 00R 시트) — {lay}", " | ".join(x for x in s if x)
                 + " — 타이밍과 선택을 분리해 M과 같은 잣대로 쟀다(기준값은 R82 사전등록 그대로). 배분은 바꾸지 않았다."))
     fc = aud.get("forecast")
@@ -15762,6 +16002,56 @@ def reliability_lines(aud: Dict[str, Any]) -> List[Tuple[str, str]]:
         out.append((f"★ {lay} 고유 예측(오늘 · 평균 대비 · {g.get('forecast_asof', '-')})",
                     "상위: " + ", ".join(fmt(r) for _, r in top.iterrows()) + " | 하위: " + ", ".join(fmt(r) for _, r in bot.iterrows())
                     + f" — 선택 등급 {sel.get('grade', '-')}. 등급이 '낮음·없음'이면 이 순위는 참고용이다."))
+    return out
+
+
+def s_yellow_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """[v0.66.0 R84] 00 시트 줄 2개 — ① 노란색(★ 라이브) 수익배수가 왜 그대로인가 ② [모멘텀연결격자] 판정.
+    사용자 질문(2026-09-22) "고치고 있는거 맞아? 왜 노란색 표시된 수익배수는 그대로야"에 리포트가 직접 답하게 한다."""
+    out: List[Tuple[str, str]] = []
+    al = sres.get("alloc") or {}
+    pf = al.get("perf")
+    dg = al.get("diag") or {}
+    lp = str(dg.get("label_primary", ""))
+    if not (isinstance(pf, pd.DataFrame) and len(pf) and "전략" in pf.columns):
+        return out
+    pfi = pf.set_index(pf["전략"].astype(str))
+
+    def _g(lbl: str, col: str) -> float:
+        try:
+            return float(pd.to_numeric(pfi.loc[lbl, col], errors="coerce"))
+        except Exception:
+            return float("nan")
+    mcol = "총수익배수" if "총수익배수" in pf.columns else None
+    star = (f"총수익배수 {_g(lp, mcol):.3f} · " if mcol else "") + (
+        f"CAGR {_g(lp, 'CAGR') * 100:.2f}% · MDD {_g(lp, '최대낙폭(MDD)') * 100:.2f}% · 칼마 {_g(lp, '칼마(CAGR/MDD)'):.3f}")
+    cap90 = [l for l in pfi.index if "상한 90%" in l and "[상한격자]" in l]
+    cap_txt = ""
+    if cap90 and mcol:
+        l9 = cap90[0]
+        cap_txt = (f" 노란색 수익배수를 올리는 가장 직접적인 손잡이는 **위험**이다: 주력 상한 90%면 배수 {_g(l9, mcol):.3f} · "
+                   f"MDD {_g(l9, '최대낙폭(MDD)') * 100:.2f}% · 칼마 {_g(l9, '칼마(CAGR/MDD)'):.3f}(R80에 사용자 지시로 0.9→0.8 — "
+                   "기술 편중 축소). 바꾸려면 s_overrides={'ROTATION_PRIMARY_CAP': 0.9}.")
+    out.append(("★★ 노란색(라이브) 수익배수가 왜 그대로인가(R84)",
+                f"현재 ★ {star}. R82·R83·R84는 **신뢰도를 재는 방법**(00R 시트)만 바꿨고, 실제 거래 규칙(★ = 주력 XLK 상한 80% + "
+                "대피처 2개, 총노출 = M의 E_t)은 R81 이후 **한 글자도 바뀌지 않았다** — 그래서 배수도 R81과 같다. "
+                "규칙을 바꾸지 않은 이유: 섹터 선택 신호가 '중간' 문턱을 넘지 못했고(00R), 넘지 못한 신호로 라이브를 바꾸면 "
+                "우연을 쫓게 된다. 성과의 대부분은 M의 타이밍(평균 노출 약 0.60)과 XLK 집중에서 나온다." + cap_txt))
+    ld = dg.get("alloc_link") or {}
+    if ld.get("enabled") and ld.get("rows"):
+        parts = []
+        for r_ in ld["rows"]:
+            parts.append(f"{r_['변형']} 칼마 {r_['칼마']:.3f}(대조군 95% {r_['대조군 칼마 95%']:.3f} · 백분위 "
+                         f"{r_['대조군 대비 백분위']:.0f}){' ✓' if r_['사전등록 (i)(ii)(iv) 통과'] else ''}")
+        out.append(("★★ [모멘텀연결격자] — 예측(모멘텀 핵 FIP+MOM_12_1)을 ★ 비중에 넣으면?(R84 · 측정 전용)",
+                    f"★ 칼마 {ld['star_calmar']:.3f} 기준 · 같은 구조 무작위 대조군 {ld['controls']}개/변형(씨앗 {ld['seed']}): "
+                    + " | ".join(parts)
+                    + (" → ✓ 표시 변형이 사전등록 (i)(ii)(iv)를 통과 — 13 강건성(기준④)까지 '통과'면 다음 라운드에 라이브 교체를 검토한다."
+                       if ld.get("any_pass") else
+                       " → 어느 변형도 사전등록(칼마 ≥ ★+0.05 · 대조군 95% 초과 · MDD 0.5%p 이내)을 통과하지 못했다 — "
+                       "이 예측을 비중에 넣어도 ★를 이기지 못한다. 그래서 ★를 바꾸지 않는다.")))
+    elif ld.get("error"):
+        out.append(("⚠ [모멘텀연결격자](R84)", f"산출 실패 — {ld['error']}"))
     return out
 
 
