@@ -17,6 +17,27 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.65.0 - 2026-09-21 - [R83 ★★ 신뢰도 '재는 방법' 교체: 21개 시작일 평균 t(시작일 운 제거) + FF49 외부 장기 검정 — 배분 무변경]
+#    사용자 지시(2026-09-21, 리포트 s9·i28) "섹터랑 산업층 신뢰도 높음으로 되도록 … 도대체 뭐가 문제야? 지표? 아니면 검증방법?
+#      계속 다른 방법을 찾아보라고 적어도 국면처럼 신뢰도 중간까지는 되게 해야지 — 섹터, 산업만 코드 수정". 시작 v0.64.0 → 목표 v0.65.0.
+#    ── R82 판정(엔진 s9): 섹터 결합(보유) t 2.07 · 18/28년(64% < 67%) → 낮음 · 독립 구간 ~2017 IC +0.047(부호 확인). M 타이밍 t 2.16 · 53% → 낮음.
+#    ── 답: **검증 방법에 운이 섞여 있었고, 지표의 천장은 '중간'이다** ──
+#      ① 시작일 운: 21거래일마다 한 번만 뽑는 표본은 시작일이 21가지 — 같은 자료에서 t가 섹터 FIP 0.44~2.04, 섹터 결합(보유)
+#         1.07~3.08, 부모 안 0.77~4.11. R82가 M에 준 '중간(경계)' t 1.95는 21개 중 **최댓값**이었다(중앙 0.65).
+#      ② 고침: 21개 시작일 t의 **평균(t̄)** — 가짜 신호(순수 귀무) 검증에서 표준편차 0.79~1.00 · 거짓 양성 0.7~5.7%
+#         (구 추정량은 0.89~1.11 · 1.7~8.7%). 보수적이고 무작위 요소가 없다(재현 100%).
+#      ③ 시험하고 버린 것(부풀림): 전 거래일 + NW 표준오차(거짓 양성 7~10%) · 라벨 순열 위약(군집 신호 29산업 10.7% · 부모 안 24.7%) ·
+#         시간 이동 위약(느린 모멘텀은 1~2년 밀어도 장기 추세가 남아 귀무 오염).
+#      ④ 지표: FF 12업종 월간 1949~2017(독립 자료)에서 모멘텀 계열 t가 1950~98 구간마다 3~6 → 1999~2017 최강 2.06(감쇠).
+#         '높음'(t ≥ 3)은 가격 신호로 현실적으로 어렵다. 계절성·국면전환 직후 붕괴 방어는 독립 자료에서 근거 없음 → 넣지 않음.
+#    (§1 ★★) rel_daily_ic()·rel_daily_ic_within()(전 날짜 벡터화 IC — 구 _xs_ic와 같은 값) · rel_phase_ts() · rel_grade_phase() ·
+#      rel_timing_phase() · _rel_decide()(R82 규칙 그대로) · reliability_audit(external=) · build_reliability_sheet()(A 읽는 법 갱신 ·
+#      '시작일 평균 t' · '구 추정 t(시작일 1개 · R82)' · '구 등급' · '시작일 21개 t 범위' 열 병기) · reliability_lines().
+#    (§2 ★ 신규 블록 H) rel_external_ff49(): 13h와 같은 FF49 캐시로 FIP·MOM_12_1·MOM_12·EXT200·결합(계산 가능 구성원)을
+#      ~1998(ETF 이전 · 독립)과 1999~(감쇠)로 잰다. 사전등록(R83): ~1998 t̄ ≤ 0(반증)이면 결합 등급 한 단계 강등(REL_EXT_DOWNGRADE).
+#    (§3) 섹터 결합 REL_COMBO_SECTOR는 **그대로**(독립 구간에서 실패하지 않았다 — 사전등록 유지). 기준값(1.96·67%·두 구간·3.0/75%/1.5)도 그대로.
+#    (§4) SectorConfig: REL_METHOD("phase"|"legacy") · REL_MIN_YEAR_DAYS · REL_EXTERNAL · REL_EXT_ERA_END · REL_EXT_DOWNGRADE (M 캐시 키와 무관).
+#    ⚠ 배분·위험 파라미터 변경 없음. 되돌리기: s_overrides={"REL_METHOD": "legacy", "REL_EXTERNAL": False}. 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.64.0 - 2026-09-21 - [R82 ★★ 신뢰도 판정(타이밍·선택 분리 · M과 같은 잣대) + 섹터 고유 상대예측 · 00R 시트 — 배분 무변경]
 #    사용자 지시(2026-09-21) "섹터랑 산업층 신뢰도 높음으로 되도록 … 도대체 뭐가 문제야? 지표? 아니면 검증방법? 계속 다른 방법을 찾아보라고
 #      적어도 국면처럼 신뢰도 중간까지는 되게 해야지 — 섹터, 산업만 코드 수정". 시작 v0.63.0 → 목표 v0.64.0.
@@ -2678,7 +2699,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.64.0"
+VERSION = "v0.65.0"
 VERSION_DATE = "2026-09-21"
 
 # =============================================================================
@@ -3320,6 +3341,14 @@ class SectorConfig:
     #   사전등록 결합(적합 없음 · 순위 평균). R82 발견 표본(2018~2026 · M 켬 달 55개): IC +0.110 · t 2.21 · 6/8년.
     #   FIP·MOM_12_1은 2017 이전(독립 구간)에서도 재진다. BETA_X_REGIME은 M E_t가 있는 구간에서만 값이 있다.
     REL_COMBO_SECTOR: Tuple[str, ...] = ("FIP", "MOM_12_1", "BETA_X_REGIME")
+    #   [v0.65.0 R83 ★★] '어떻게 재나' 교체(기준값은 위 R82 그대로) — 근거는 rel_daily_ic() 위 머리 주석.
+    #   R82 판정: 이 결합은 독립 구간(~2017)에서도 IC > 0(보유 달 +0.047) — 실패하지 않았으므로 **바꾸지 않는다**(사전등록 유지).
+    #   되돌리기(R82 추정량): s_overrides={"REL_METHOD": "legacy"}
+    REL_METHOD: str = "phase"          # "phase" = 21개 시작일 단순 t의 평균(t̄ · 보수적) | "legacy" = 시작일 1개 단순 t(R82)
+    REL_MIN_YEAR_DAYS: int = 21        # 연도 양수 판정에 넣을 최소 일수(보유일 범위에서 며칠뿐인 해 제외)
+    REL_EXTERNAL: bool = True          # 외부 장기 검정(FF49 49업종 일별 · 13h와 같은 캐시 FF49_CACHE)
+    REL_EXT_ERA_END: str = "1998-12-31"   # 외부 독립 구간 끝(ETF 이전)
+    REL_EXT_DOWNGRADE: bool = True     # ⚠ 외부 ~1998 t̄ ≤ 0(반증)이면 결합 등급 한 단계 강등(R83 사전등록)
     SECTOR_SELF_CUT_Q: float = 1.0 / 3.0        # 하위 몇 분위를 깎는가(0.25/0.33/0.5를 격자가 함께 잰다)
     SECTOR_SELF_CUT_FRAC: float = 0.25          # ⚠ 깎는 폭(0.25/0.50/1.00을 격자가 함께 잰다)
     SECTOR_SELF_CUT_CONTROLS: int = 12          # 같은 개수 무작위 대조군 행 수(0이면 끔) — 13 시트에서 직접 판정
@@ -7383,9 +7412,12 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             _reg = (res["sig"]["target_pos"] if isinstance(res, dict) and isinstance(res.get("sig"), pd.DataFrame)
                     and "target_pos" in res["sig"].columns else None)
             if len(_close_full.columns) >= int(getattr(scfg, "REL_MIN_ASSETS", 5)):
+                #   [v0.65.0 R83] 외부 장기 검정 자료(FF49) — 13h와 같은 캐시(없으면 내려받기 · 실패하면 None → 블록 H 생략)
+                _ff = (fetch_ff49_daily(scfg, M=M) if (bool(getattr(scfg, "REL_EXTERNAL", True))
+                                                      and str(getattr(scfg, "REL_METHOD", "phase")) == "phase") else None)
                 rel_aud = reliability_audit(_close_full, _spy, _reg, scfg, "섹터",
                                             tuple(getattr(scfg, "REL_COMBO_SECTOR", ("FIP", "MOM_12_1", "BETA_X_REGIME"))),
-                                            names=dict(SECTOR_NAME_KR), M=M)
+                                            names=dict(SECTOR_NAME_KR), M=M, external=_ff)
                 rel_aud["regime_coverage"] = (str(pd.Series(_reg).dropna().index.min().date()) if _reg is not None
                                               and len(pd.Series(_reg).dropna()) else "-")
         except Exception as _e:
@@ -14746,13 +14778,15 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             _cov = _ra.get("regime_coverage", "-")
             _lines.append(("신뢰도 판정 — 자료 범위",
                            f"섹터 가격 {(_ra.get('grades') or {}).get('dates', '-')} · M 국면(E_t) 시작 {_cov} "
-                           "(BETA_X_REGIME·타이밍은 E_t가 있는 구간만) · 2017 이전 = 설계에 쓰지 않은 독립 구간"))
+                           "(BETA_X_REGIME·타이밍은 E_t가 있는 구간만) · 2017 이전 = 설계에 쓰지 않은 독립 구간"
+                           + (" · R83: 21개 시작일 평균 t(t̄) · FF49 ~1998 외부 검정(블록 H)"
+                              if str(_ra.get("method", "")) == "phase" else "")))
             for _k, _v in reversed(_lines):
                 meta.insert(1, (_k, _v))
         except Exception as _e:
             log("REPORT", kv(event="reliability_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
     elif isinstance(_ra, dict) and _ra.get("error"):
-        meta.insert(1, ("⚠ 신뢰도 판정(R82)", f"산출 실패 — {_ra['error']}"))
+        meta.insert(1, ("⚠ 신뢰도 판정(R82·R83)", f"산출 실패 — {_ra['error']}"))
     sheets = sheets_to_front(sheets, "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
     _lm_s = None
@@ -14808,7 +14842,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
 #   연구·교육용 — 투자 자문이 아니다.
 # =============================================================================
 REL_SIGNAL_DESC: Dict[str, str] = {
-    "MOM_12_1": "12개월 수익(최근 1개월 제외) — 산업 모멘텀(Moskowitz-Grinblatt). 외부 FF49 장기 IC t≈9.6",
+    "MOM_12_1": "12개월 수익(최근 1개월 제외) — 산업 모멘텀(Moskowitz-Grinblatt). 외부 장기 검정은 블록 H(FF49 ~1998)",
     "MOM_12": "12개월 수익(최근 1개월 포함)",
     "EXT200": "200일선 대비 이격 — 추세 위치",
     "BETA_X_REGIME": "베타 순위 × M 국면 부호 — M이 켜지면 고베타, 꺼지면 저베타가 앞선다(CAPM 조건부). M의 신뢰도를 선택으로 옮긴다",
@@ -15027,13 +15061,340 @@ def rel_calibrate(score: pd.DataFrame, target: pd.DataFrame, dates: List[pd.Time
     return g.reset_index()
 
 
+# =============================================================================
+# [v0.65.0 R83 ★★] 신뢰도 판정 '재는 방법' 교체 — 시작일 운 제거(21개 시작일 평균 t) + 외부 장기(FF49) 검정
+#   사용자 지시(2026-09-21, 리포트 s9·i28): "섹터랑 산업층 신뢰도 높음으로 되도록 … 도대체 뭐가 문제야? 지표? 아니면
+#     검증방법? 계속 다른 방법을 찾아보라고 적어도 국면처럼 신뢰도 중간까지는 되게 해야지".
+#   ── R82 판정 결과(엔진 실측 s9·i28) ──
+#     섹터 결합(보유 달) t 2.07 · 18/28년(64% < 67%) → 낮음 · 독립 구간 ~2017 IC +0.047 — 부호는 확인됐다.
+#     산업 결합[COUPLING+BETA_X_REGIME] ~2017 IC −0.010 → 없음 — 2018+ 발견 표본에만 맞춘 조합이었다(과적합 확인).
+#     FIP 단독은 두 층 · 두 구간 모두 양수(섹터 보유 달 t 2.29 · 산업 2.14) — 문헌 사전근거가 있는 신호만 살아남았다.
+#     M 자신도 같은 잣대(1999~2026)로 t 2.16 · 연도 53% → 낮음.
+#   ── 새로 찾은 검증 방법의 결함: '시작일 운'(r83/eff83*.py · mtim.py) ──
+#     21거래일마다 한 번만 표본을 뽑으면 시작일이 21가지다. 같은 신호 · 같은 데이터(2018+ ETF)에서 시작일만 바꿔도
+#     t가 섹터 FIP 0.44~2.04 · 섹터 결합(보유) 1.07~3.08 · 부모 안 0.77~4.11. **R82가 M에 준 '중간(경계)'(t 1.95)은
+#     21개 시작일 중 최댓값이었다**(중앙 0.65 · 범위 −0.29~1.95). 등급의 상당 부분이 시작일 운이었다.
+#   ── 고친 방법: 21개 시작일 각각의 단순 t(= R82 추정량)를 모두 재서 **평균**한다(시작일 평균 t) ──
+#     · 한 시작일의 t는 귀무에서 보정돼 있다(가짜 신호 검증: 표준편차 1.00~1.09). 평균은 그보다 흩어짐이 작아
+#       기준 1.96을 그대로 쓰면 **보수적**이다(거짓 양성 ≤ 5%) — 운으로 등급이 오르지 않는다.
+#     · 연도 양수는 모든 거래일의 연 평균 IC(≥ 21일)로 판정 — 한 해 12개 표본의 운도 줄인다.
+#   ── 시험하고 **버린** 방법(부풀림 확인 — 기록) ──
+#     · 전 거래일 IC + 단순 NW 표준오차: 지속성 있는 가짜 신호에서 |t| ≥ 1.96 이 7~10%(명목 5%).
+#     · 라벨 순열 위약 z: 독립 가짜 신호에선 맞지만, **군집 구조가 있는 가짜 신호**(같은 부모 산업끼리 닮은 신호 —
+#       실제 신호가 그렇다)에서 29산업 표준편차 1.20 · 거짓 양성 10.7%, 부모 안 1.76 · 24.7%. 자산을 서로 바꿔도 되는
+#       것으로 가정하는데 산업은 부모별로 뭉쳐 있어서다. → 쓰면 등급이 부풀려진다.
+#     · 시간 이동 위약: 모멘텀처럼 느린 신호는 1~2년 밀어도 장기 추세 정보가 남아 귀무가 오염된다(과도하게 보수적).
+#   ── 외부 장기 검정(블록 H): FF49 49업종 일별(엔진이 13h용으로 이미 받는 자료) ~1998 = ETF 이전 · 설계에 쓴 적
+#     없는 표본에서 **같은 신호 코드**를 잰다. 반증(시작일 평균 t ≤ 0)이면 등급 한 단계 강등 · 지지(≥ 1.96)면 표시.
+#   ── 지표 쪽 사실(FF 12업종 월간 1949~2017, linearmodels 번들 자료 — 독립 표본) ──
+#     모멘텀 계열 IC: 1950~74 · 1975~98엔 신호마다 t 3~6 → 1999~2017엔 최강(잔차모멘텀)도 t 2.06(IC 0.048).
+#     ⇒ 1999년 이후 가격 신호로 '높음'(t ≥ 3)은 현실적으로 어렵다 — 천장은 '중간'. 계절성(Heston-Sadka)은 1999 이후
+#        10년 창 IC −0.007, 국면 전환 직후 모멘텀 붕괴 방어는 독립 표본에서 근거 없음(오히려 IC가 더 높았다) → 넣지 않았다.
+#   ⚠ 등급 기준값(1.96 · 67% · 두 구간 양수 · 높음 3.0/75%/두 구간 1.5)은 R82 그대로다. 바뀐 것은 '어떻게 재나'.
+#     구 추정량(시작일 1개 t · 구 등급)과 시작일 21개 t 범위를 같은 행에 병기한다(감사·비교용).
+#   ⚠ 룩어헤드 없음: 신호는 t일까지, 목표는 t→t+21 종가. 연구·교육용 — 투자 자문이 아니다.
+# =============================================================================
+_REL_EXT_CACHE: Dict[Any, Any] = {}      # 외부(FF49) 검정 결과 — S·I가 같은 프로세스에서 한 번만 계산
+
+
+def rel_daily_ic(X: pd.DataFrame, T: pd.DataFrame, minn: int = 5) -> pd.Series:
+    """날짜별 횡단면 Spearman IC(그날 신호·목표가 둘 다 있는 자산만) — 전 날짜 벡터화.
+    _xs_ic(구 추정량)와 같은 날의 값은 수치적으로 같다(평균 순위의 피어슨 상관)."""
+    cols = [c for c in X.columns if c in T.columns]
+    if not cols:
+        return pd.Series(np.nan, index=X.index, dtype=float)
+    Xa = X[cols].astype(float)
+    Ta = T.reindex(index=X.index)[cols].astype(float)
+    m = Xa.notna() & Ta.notna()
+    a = Xa.where(m).rank(axis=1)
+    b = Ta.where(m).rank(axis=1)
+    a = a.sub(a.mean(axis=1), axis=0)
+    b = b.sub(b.mean(axis=1), axis=0)
+    num = (a * b).sum(axis=1)
+    den = np.sqrt((a * a).sum(axis=1) * (b * b).sum(axis=1))
+    with np.errstate(all="ignore"):
+        ic = num / den.where(den > 1e-12)
+    return ic.where(m.sum(axis=1) >= int(minn)).astype(float)
+
+
+def rel_daily_ic_within(X: pd.DataFrame, T: pd.DataFrame, groups: Dict[str, List[str]], minn: int = 3) -> pd.Series:
+    """부모 그룹 안 횡단면 IC의 그날 평균(그룹 IC가 있는 것만) — _xs_ic_within(구)의 전 날짜판."""
+    parts = []
+    for g, mem in groups.items():
+        mem = [c for c in mem if c in X.columns and c in T.columns]
+        if len(mem) < minn:
+            continue
+        parts.append(rel_daily_ic(X[mem], T[mem], minn).rename(g))
+    if not parts:
+        return pd.Series(np.nan, index=X.index, dtype=float)
+    return pd.concat(parts, axis=1).mean(axis=1, skipna=True)
+
+
+def _rel_t(x: pd.Series) -> float:
+    x = pd.Series(x, dtype=float).dropna()
+    if len(x) < 6:
+        return np.nan
+    sd = float(x.std())
+    return float(x.mean() / sd * math.sqrt(len(x))) if sd > 0 else np.nan
+
+
+def rel_phase_ts(dic: pd.Series, valid_days: pd.DatetimeIndex, scope_mask: np.ndarray, h: int,
+                 era_mask: Optional[np.ndarray] = None) -> np.ndarray:
+    """구 추정량(h거래일마다 비중복 1개 · 단순 t)을 시작일 h가지로 모두 잰다(시작일0 = R82 엔진이 쓴 것).
+    scope_mask·era_mask는 valid_days 정렬 불리언. 반환 = 길이 h 배열(표본 < 6이면 NaN)."""
+    v = pd.Series(dic, dtype=float).reindex(valid_days).to_numpy()
+    msk = np.asarray(scope_mask, dtype=bool) & (np.asarray(era_mask, dtype=bool) if era_mask is not None else True)
+    out = np.full(int(h), np.nan)
+    for o in range(int(h)):
+        idx = np.arange(o, len(v), int(h))
+        idx = idx[msk[idx]]
+        out[o] = _rel_t(pd.Series(v[idx]))
+    return out
+
+
+def _rel_obs_stats(s: pd.Series, min_year_days: int = 21) -> Dict[str, Any]:
+    """범위 안 날짜의 일별 IC(결측 제거) → 평균 IC(보유일 가중) · 월 수 · 연도(≥ min_year_days일) 양수 · IC>0 월 비율."""
+    out = {"mean": np.nan, "months": 0, "days": int(len(s)), "years_pos": 0, "years_n": 0, "years_share": np.nan,
+           "pos_month_share": np.nan}
+    if len(s) == 0:
+        return out
+    per = s.index.to_period("M")
+    mon = s.groupby(per).mean()
+    yg = s.groupby(s.index.year)
+    yr = yg.mean()[yg.size() >= int(min_year_days)]
+    out.update({"mean": float(s.mean()), "months": int(per.nunique()), "years_pos": int((yr > 0).sum()),
+                "years_n": int(len(yr)), "years_share": (float((yr > 0).mean()) if len(yr) else np.nan),
+                "pos_month_share": float((mon > 0).mean()) if len(mon) else np.nan})
+    return out
+
+
+def _rel_decide(z: float, ys: float, m1: float, z1: float, n1m: int, m2: float, z2: float, n2m: int, mu: float,
+                cfg, stat: str = "t̄") -> Tuple[str, str]:
+    """R82 사전등록 등급 규칙 그대로(통계만 시작일 평균 t) — 중간 = t̄ ≥ 1.96 · 연도 ≥ 67% · 두 구간 양수(표본 ≥ 6개월인
+    구간만) · 독립 구간 < 24개월이면 '중간(발견 표본)' | 높음 = t̄ ≥ 3.0 · 연도 ≥ 75% · 두 구간 t̄ ≥ 1.5 | 낮음 = 양수 · t̄ ≥ 1.0."""
+    hi_t = float(getattr(cfg, "REL_HIGH_T", 3.0)); hi_y = float(getattr(cfg, "REL_HIGH_YEARS", 0.75))
+    mid_t = float(getattr(cfg, "REL_MID_T", 1.96)); mid_y = float(getattr(cfg, "REL_MID_YEARS", 2.0 / 3.0))
+    lo_t = float(getattr(cfg, "REL_LOW_T", 1.0)); e1_min = int(getattr(cfg, "REL_ERA1_MIN_MONTHS", 24))
+    ok = lambda v: v is not None and v == v
+    eras_ok_mid = ((m1 > 0) if n1m >= 6 and ok(m1) else True) and ((m2 > 0) if n2m >= 6 and ok(m2) else True)
+    eras_ok_hi = ((z1 >= 1.5) if n1m >= 6 and ok(z1) else False) and ((z2 >= 1.5) if n2m >= 6 and ok(z2) else False)
+    indep_ok = n1m >= e1_min
+    if ok(z) and z >= hi_t and ok(ys) and ys >= hi_y and eras_ok_hi and indep_ok:
+        return "높음", f"{stat} {z:.2f} ≥ {hi_t} · 연도 {ys:.0%} ≥ {hi_y:.0%} · 두 구간 {stat} ≥ 1.5"
+    if ok(z) and z >= mid_t and ok(ys) and ys >= mid_y and eras_ok_mid:
+        if indep_ok:
+            return "중간", (f"{stat} {z:.2f} ≥ {mid_t} · 연도 {ys:.0%} ≥ {mid_y:.0%} · 독립 구간(~2017) {n1m}개월에서도 IC > 0")
+        return "중간(발견 표본)", (f"{stat} {z:.2f} ≥ {mid_t} · 연도 {ys:.0%} ≥ {mid_y:.0%} — ⚠ 독립 구간(~2017) {n1m}개월 "
+                                  f"< {e1_min} → 설계 구간에서만 확인됨(확정 '중간' 아님)")
+    if ok(mu) and mu > 0 and ok(z) and z >= lo_t:
+        why = []
+        if not (z >= mid_t):
+            why.append(f"{stat} < {mid_t}")
+        if not (ok(ys) and ys >= mid_y):
+            why.append(f"연도 {ys:.0%} < {mid_y:.0%}" if ok(ys) else "연도 판정 불가")
+        if not eras_ok_mid:
+            why.append("한 구간 IC ≤ 0")
+        return "낮음", f"IC > 0 · {stat} {z:.2f} ≥ {lo_t} — 중간 미달: " + (", ".join(why) or "-")
+    return "없음", (f"{stat} {z:.2f}" if ok(z) else "계산 불가")
+
+
+def rel_grade_phase(dic: pd.Series, valid_days: pd.DatetimeIndex, scope_mask: np.ndarray, cfg,
+                    era_split: Optional[str] = None) -> Dict[str, Any]:
+    """[R83] 등급 = R82 규칙 그대로, 통계만 '시작일 평균 t'(21개 시작일 단순 t의 평균 — 보수적).
+    평균 IC·연도·월 비율은 범위 안 모든 거래일로 잰다. 구간(~2017/2018~)도 시작일 평균 t."""
+    h = int(getattr(cfg, "REL_H", 21)); my = int(getattr(cfg, "REL_MIN_YEAR_DAYS", 21))
+    valid_days = pd.DatetimeIndex(valid_days)
+    dic = pd.Series(dic, dtype=float).reindex(valid_days)
+    sm = np.asarray(scope_mask, dtype=bool) & dic.notna().to_numpy()
+    s = dic[sm]
+    split = pd.Timestamp(era_split or getattr(cfg, "REL_ERA_SPLIT", "2018-01-01"))
+    e1 = np.asarray(valid_days < split)
+    res: Dict[str, Any] = {"method": "phase", "n": 0, "days": int(len(s)), "mean": np.nan, "t": np.nan,
+                           "pos_share": np.nan, "years_pos": "-", "years_share": np.nan, "era1": "-", "era2": "-",
+                           "era1_mean": np.nan, "era1_t": np.nan, "era2_mean": np.nan, "era2_t": np.nan,
+                           "era1_months": 0, "era2_months": 0, "grade": "판정불가", "reason": ""}
+    st = _rel_obs_stats(s, my)
+    ph = rel_phase_ts(dic, valid_days, sm, h)
+    fin = ph[np.isfinite(ph)]
+    tbar = float(fin.mean()) if len(fin) else np.nan
+    res.update({"n": st["months"], "mean": st["mean"], "t": tbar, "pos_share": st["pos_month_share"],
+                "years_pos": f"{st['years_pos']}/{st['years_n']}", "years_share": st["years_share"],
+                "phase": ({"t0": float(ph[0]), "min": float(fin.min()), "med": float(np.median(fin)),
+                           "max": float(fin.max()), "mean": tbar, "n": int(len(fin))} if len(fin) else {})})
+    if st["months"] < 12 or not (tbar == tbar):
+        res["reason"] = (f"표본 {st['months']}개월 < 12" if st["months"] < 12 else "시작일 t 계산 불가")
+        return res
+    s1 = _rel_obs_stats(dic[sm & e1], my); s2 = _rel_obs_stats(dic[sm & ~e1], my)
+    p1 = rel_phase_ts(dic, valid_days, sm, h, e1); p2 = rel_phase_ts(dic, valid_days, sm, h, ~e1)
+    t1 = float(np.nanmean(p1)) if np.isfinite(p1).any() else np.nan
+    t2 = float(np.nanmean(p2)) if np.isfinite(p2).any() else np.nan
+    fmt = lambda x, tt: (f"{x['mean']:+.4f} (t̄ {tt:+.2f}, {x['months']}개월)" if x["months"] >= 6 and tt == tt
+                         else f"표본 {x['months']}개월")
+    res.update({"era1": fmt(s1, t1), "era2": fmt(s2, t2), "era1_mean": s1["mean"], "era1_t": t1, "era2_mean": s2["mean"],
+                "era2_t": t2, "era1_months": s1["months"], "era2_months": s2["months"]})
+    g, why = _rel_decide(tbar, st["years_share"], s1["mean"], t1, s1["months"], s2["mean"], t2, s2["months"],
+                         st["mean"], cfg, "t̄")
+    res.update({"grade": g, "reason": why,
+                "both_pos": bool((s1["mean"] > 0) and (s2["mean"] > 0)) if (s1["months"] and s2["months"]) else False})
+    return res
+
+
+def _rel_welch(a: np.ndarray, b: np.ndarray) -> float:
+    a = a[np.isfinite(a)]; b = b[np.isfinite(b)]
+    if len(a) < 6 or len(b) < 6:
+        return np.nan
+    se = math.sqrt(float(a.var(ddof=1)) / len(a) + float(b.var(ddof=1)) / len(b))
+    return float((a.mean() - b.mean()) / se) if se > 0 else np.nan
+
+
+def rel_timing_phase(budget: pd.Series, close: pd.Series, valid_days: pd.DatetimeIndex, h: int, cfg) -> Dict[str, Any]:
+    """[R83] 타이밍: 켬−끔 향후 h일 수익 차이 — 통계 = 21개 시작일 Welch t의 평균(보수적). 차이·연도는 모든 거래일."""
+    split = pd.Timestamp(getattr(cfg, "REL_ERA_SPLIT", "2018-01-01"))
+    close = pd.Series(close).astype(float)
+    f = (close.shift(-h) / close - 1.0).reindex(valid_days).to_numpy()
+    e = pd.Series(budget).reindex(close.index).ffill().reindex(valid_days).to_numpy(dtype=float)
+    ok = np.isfinite(f) & np.isfinite(e)
+    on = ok & (e >= 0.5); off = ok & (e < 0.5)
+    idx = pd.DatetimeIndex(valid_days)
+    res: Dict[str, Any] = {"method": "phase", "n_on": int(idx[on].to_period("M").nunique()) if on.any() else 0,
+                           "n_off": int(idx[off].to_period("M").nunique()) if off.any() else 0,
+                           "on": np.nan, "off": np.nan, "diff": np.nan, "t": np.nan, "years_pos": "-",
+                           "years_share": np.nan, "era1": "-", "era2": "-", "grade": "판정불가", "reason": ""}
+    if on.sum() < 126 or off.sum() < 126:
+        res["reason"] = f"켬 {int(on.sum())}·끔 {int(off.sum())}일 — 126일 미만"
+        return res
+    e1 = np.asarray(idx < split)
+
+    def _pt(mask):
+        ts = []
+        for o in range(int(h)):
+            ii = np.arange(o, len(f), int(h))
+            ts.append(_rel_welch(f[ii][(on & mask)[ii]], f[ii][(off & mask)[ii]]))
+        arr = np.asarray(ts, dtype=float)
+        return arr
+
+    def _d(mask, mind=21):
+        a = f[on & mask]; b = f[off & mask]
+        return float(a.mean() - b.mean()) if len(a) >= mind and len(b) >= mind else np.nan
+    allm = np.ones(len(f), dtype=bool)
+    ph = _pt(allm); fin = ph[np.isfinite(ph)]
+    tbar = float(fin.mean()) if len(fin) else np.nan
+    d = _d(allm); d1 = _d(e1); d2 = _d(~e1)
+    p1 = _pt(e1); p2 = _pt(~e1)
+    t1 = float(np.nanmean(p1)) if np.isfinite(p1).any() else np.nan
+    t2 = float(np.nanmean(p2)) if np.isfinite(p2).any() else np.nan
+    yrs = {}
+    for yy in sorted(set(idx.year)):
+        ym = np.asarray(idx.year == yy)
+        v = _d(ym, mind=10)
+        if v == v:
+            yrs[yy] = v
+    yr = pd.Series(yrs, dtype=float)
+    ys = float((yr > 0).mean()) if len(yr) else np.nan
+    mid_t = float(getattr(cfg, "REL_MID_T", 1.96)); mid_y = float(getattr(cfg, "REL_MID_YEARS", 2.0 / 3.0))
+    hi_t = float(getattr(cfg, "REL_HIGH_T", 3.0)); hi_y = float(getattr(cfg, "REL_HIGH_YEARS", 0.75))
+    lo_t = float(getattr(cfg, "REL_LOW_T", 1.0))
+    eras_ok = all((v > 0) for v in (d1, d2) if v == v)
+    if tbar == tbar and tbar >= hi_t and ys >= hi_y and eras_ok and d1 == d1 and d2 == d2:
+        g = "높음"
+    elif tbar == tbar and tbar >= mid_t and ys >= mid_y and eras_ok:
+        g = "중간"
+    elif tbar == tbar and tbar >= mid_t - 0.1 and ys >= mid_y and eras_ok:
+        g = "중간(경계)"
+    elif d == d and d > 0 and tbar == tbar and tbar >= lo_t:
+        g = "낮음"
+    else:
+        g = "없음"
+    res.update({"on": float(f[on].mean()), "off": float(f[off].mean()), "diff": d, "t": tbar,
+                "years_pos": f"{int((yr > 0).sum())}/{len(yr)}", "years_share": ys,
+                "era1": (f"{d1 * 100:+.2f}%p (t̄ {t1:+.2f})" if d1 == d1 else "표본 없음"),
+                "era2": (f"{d2 * 100:+.2f}%p (t̄ {t2:+.2f})" if d2 == d2 else "표본 없음"),
+                "era1_diff": d1, "era2_diff": d2, "era1_t": t1, "era2_t": t2, "grade": g,
+                "phase": ({"t0": float(ph[0]), "min": float(fin.min()), "med": float(np.median(fin)),
+                           "max": float(fin.max()), "mean": tbar} if len(fin) else {}),
+                "reason": f"켬−끔 {d * 100:+.2f}%p · t̄ {tbar:.2f} · 연도 {ys:.0%}"})
+    return res
+
+
+def rel_external_ff49(ff: Optional[pd.DataFrame], cfg, combos: Tuple[Tuple[str, ...], ...] = (), M=None) -> pd.DataFrame:
+    """[R83] 외부 장기 검정 — Ken French 49업종 일별(1926~). **같은 신호 코드**(rel_price_signals · rel_combo)로
+    ~1998(ETF 이전 · 설계에 쓴 적 없는 독립 표본)과 1999~(ETF 시대 · 감쇠 확인)를 잰다. 통계 = 시작일 평균 t(보수적).
+    BETA_X_REGIME(M 필요)·COUPLING(부모 필요)은 계산 불가 — 결합은 계산 가능한 구성원만으로 잰다(표에 명시)."""
+    cols = ["블록", "신호", "구간", "일수", "월 표본", "평균 IC", "시작일 평균 t", "시작일 21개 t 범위(최소~최대)",
+            "연도 양수", "외부 판정", "비고"]
+    if ff is None or not isinstance(ff, pd.DataFrame) or len(ff) < 2000:
+        return pd.DataFrame(columns=cols)
+    t0 = time.time()
+    h = int(getattr(cfg, "REL_H", 21)); warm = int(getattr(cfg, "REL_WARMUP", 252))
+    era_end = pd.Timestamp(getattr(cfg, "REL_EXT_ERA_END", "1998-12-31"))
+    mid_t = float(getattr(cfg, "REL_MID_T", 1.96)); my = int(getattr(cfg, "REL_MIN_YEAR_DAYS", 21))
+    ff = ff.sort_index()
+    ff = ff[~ff.index.duplicated(keep="last")].astype(float)
+    ffkey = (ff.shape, str(ff.index[0].date()), str(ff.index[-1].date()),
+             round(float(np.nansum(ff.values[-60:])), 8), h, warm, str(era_end.date()))
+    base = ("FIP", "MOM_12_1", "MOM_12", "EXT200")
+    todo: List[Tuple[str, Tuple[str, ...]]] = [(k, (k,)) for k in base]
+    for mem in combos:
+        comp = tuple(m for m in mem if m in base)
+        if len(comp) >= 2 and ("+".join(comp), comp) not in todo:
+            todo.append(("+".join(comp), comp))
+    need = [nm for nm, _ in todo if (ffkey, nm) not in _REL_EXT_CACHE]
+    rows: List[dict] = []
+    if need:
+        P = (1.0 + ff.fillna(0.0)).cumprod().where(ff.notna())
+        sigs = rel_price_signals(P, None, None)
+        fwd = P.shift(-h) / P - 1.0
+        T = fwd.sub(fwd.mean(axis=1), axis=0)
+        valid = P.index[warm: max(warm, len(P.index) - h)]
+        Tv = T.reindex(valid)
+    for nm, mem in todo:
+        ck = (ffkey, nm)
+        if ck not in _REL_EXT_CACHE:
+            t1 = time.time()
+            X = (sigs[nm] if len(mem) == 1 else rel_combo(sigs, mem)).reindex(valid)
+            dic = rel_daily_ic(X, Tv, minn=10)
+            rr = []
+            for lab, msk in (("~1998 (ETF 이전 · 독립)", np.asarray(valid <= era_end)),
+                             ("1999~ (ETF 시대 · 감쇠 확인)", np.asarray(valid > era_end))):
+                sm = msk & dic.notna().to_numpy()
+                st = _rel_obs_stats(dic[sm], my)
+                ph = rel_phase_ts(dic, valid, sm, h)
+                fin = ph[np.isfinite(ph)]
+                tb = float(fin.mean()) if len(fin) else np.nan
+                verdict = ("지지" if tb == tb and tb >= mid_t else ("반증" if tb == tb and tb <= 0 else
+                                                                  ("중립" if tb == tb else "판정불가")))
+                rr.append({"블록": "H. 외부 장기 검정(FF49 49업종 일별)", "신호": nm, "구간": lab, "일수": st["days"],
+                           "월 표본": st["months"], "평균 IC": (round(st["mean"], 4) if st["mean"] == st["mean"] else None),
+                           "시작일 평균 t": (round(tb, 2) if tb == tb else None),
+                           "시작일 21개 t 범위(최소~최대)": (f"{fin.min():+.2f} ~ {fin.max():+.2f}" if len(fin) else "-"),
+                           "연도 양수": f"{st['years_pos']}/{st['years_n']}", "외부 판정": verdict,
+                           "비고": ("결합(계산 가능한 구성원만 · 순위 평균)" if len(mem) > 1 else REL_SIGNAL_DESC.get(nm, ""))})
+            _REL_EXT_CACHE[ck] = rr
+            log("RELIABILITY", kv(event="external_signal", signal=nm, t_pre1999=rr[0]["시작일 평균 t"],
+                                  t_post1999=rr[1]["시작일 평균 t"], ic_pre1999=rr[0]["평균 IC"], ic_post1999=rr[1]["평균 IC"],
+                                  sec=round(time.time() - t1, 1)), M=M)
+        rows.extend(_REL_EXT_CACHE[ck])
+    log("RELIABILITY", kv(event="external_done", rows=len(rows), span=f"{ff.index[0].date()}~{ff.index[-1].date()}",
+                          era_end=str(era_end.date()), computed=len(need), cached=len(todo) - len(need),
+                          sec=round(time.time() - t0, 1)), M=M)
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _rel_downgrade(g: str) -> str:
+    return {"높음": "중간", "중간": "낮음", "중간(발견 표본)": "낮음", "중간(경계)": "낮음", "낮음": "없음"}.get(g, g)
+
+
 def reliability_audit(close: pd.DataFrame, mkt_close: Optional[pd.Series], regime: Optional[pd.Series], cfg,
                       layer: str, combo: Tuple[str, ...], extra: Optional[Dict[str, pd.DataFrame]] = None,
                       parent_close: Optional[pd.DataFrame] = None, parent_of: Optional[Dict[str, str]] = None,
                       within_combo: Tuple[str, ...] = (), names: Optional[Dict[str, str]] = None,
-                      include_market_timing: bool = True, M=None) -> Dict[str, Any]:
-    """한 층(섹터 또는 산업)의 신뢰도 판정 전부. 반환: 표 여러 개 + 등급 + 00시트 줄."""
+                      include_market_timing: bool = True, M=None,
+                      external: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """한 층(섹터 또는 산업)의 신뢰도 판정 전부. 반환: 표 여러 개 + 등급 + 00시트 줄.
+    [v0.65.0 R83] cfg.REL_METHOD = "phase"(기본 · 21개 시작일 평균 t) | "legacy"(R82 — 시작일 1개 단순 t).
+    external = FF49 일별 수익(없으면 블록 H 생략 · 강등 규칙 미적용)."""
     t0 = time.time()
+    method = str(getattr(cfg, "REL_METHOD", "phase")).lower()
     h = int(getattr(cfg, "REL_H", 21)); warm = int(getattr(cfg, "REL_WARMUP", 252))
     minn = int(getattr(cfg, "REL_MIN_ASSETS", 5))
     P = close.sort_index().astype(float)
@@ -15043,36 +15404,69 @@ def reliability_audit(close: pd.DataFrame, mkt_close: Optional[pd.Series], regim
     sigs = rel_price_signals(P, mkt_ret, regime, extra)
     fwd = P.shift(-h) / P - 1.0
     T = fwd.sub(fwd.mean(axis=1), axis=0)
-    dates = _rel_dates(P.index, h, warm)
+    dates = _rel_dates(P.index, h, warm)                                   # 구 추정량(R82) 표본일 = valid[0::h]
+    valid = P.index[warm: len(P.index) - h] if len(P.index) > warm + h else P.index[:0]
     reg = pd.Series(regime).reindex(P.index).ffill() if regime is not None else None
-    held = [d for d in dates if reg is not None and float(reg.get(d, np.nan) if reg is not None else np.nan) >= 0.5]
+    held = [d for d in dates if reg is not None and float(reg.get(d, np.nan)) >= 0.5]
+    on_days = (valid[np.asarray(reg.reindex(valid).fillna(-1.0).values >= 0.5)] if reg is not None and len(valid) else valid[:0])
+    Tv = T.reindex(valid)
+    all_mask = np.ones(len(valid), dtype=bool)
+    on_mask = np.asarray(valid.isin(on_days)) if len(valid) else all_mask
+    log("RELIABILITY", kv(event="audit_start", layer=layer, method=method, assets=P.shape[1], days=len(valid),
+                          on_days=len(on_days), legacy_months=len(dates), phases=h, combo="+".join(combo)), M=M)
+
+    def _ph(ph: Dict[str, float]) -> str:
+        return (f"{ph['min']:+.2f} ~ {ph['med']:+.2f} ~ {ph['max']:+.2f}" if ph.get("med") == ph.get("med") else "-")
+
+    def _grade_pair(dic: pd.Series, leg_days: List[pd.Timestamp], scope_mask: np.ndarray) -> Dict[str, Any]:
+        g_leg = rel_grade(dic.reindex(leg_days), cfg)                    # R82 구 추정량 — _xs_ic와 같은 값
+        if method != "phase":
+            return g_leg
+        g = rel_grade_phase(dic, valid, scope_mask, cfg)
+        g["legacy"] = g_leg
+        return g
+
+    def _row(block: str, target: str, nm: str, scope: str, g: Dict[str, Any], main: bool, desc: str) -> dict:
+        leg = g.get("legacy") or {}
+        ph = g.get("phase") or {}
+        return {"블록": block, "대상": target, "후보": nm, "범위": scope,
+                "월 표본": g.get("n"), "일수": g.get("days"),
+                "평균 IC": (round(g["mean"], 4) if g.get("mean") == g.get("mean") else None),
+                ("시작일 평균 t" if method == "phase" else "t"): (round(g["t"], 2) if g.get("t") == g.get("t") else None),
+                "IC>0 월 비율": (round(g["pos_share"], 3) if g.get("pos_share") == g.get("pos_share") else None),
+                "연도 양수": g.get("years_pos"), "~2017": g.get("era1"), "2018~": g.get("era2"),
+                "등급": (g.get("grade") if main else f"(진단) {g.get('grade')}"), "근거": g.get("reason"),
+                "구 추정 t(시작일 1개 · R82)": (round(leg["t"], 2) if leg.get("t") == leg.get("t") and leg else None),
+                "구 등급(R82 방식)": leg.get("grade") if leg else None,
+                "시작일 21개 t 범위(최소~중앙~최대)": _ph(ph) if ph else None,
+                "설명": desc}
+
     # ---- (b) 선택: 후보별 · 사전등록 결합 ----
     sel_rows: List[dict] = []
-    grades: Dict[str, Any] = {}
+    grades: Dict[str, Any] = {"method": method}
     cands = [(k, v) for k, v in sigs.items() if not k.startswith("_")]
     cmb = rel_combo(sigs, combo)
+    main_name = f"★ 사전등록 결합[{'+'.join(combo)}]"
     if cmb is not None:
-        cands = [(f"★ 사전등록 결합[{'+'.join(combo)}]", cmb)] + cands
-    ic_combo_all = None
+        cands = [(main_name, cmb)] + cands
     for nm, X in cands:
-        for scope, dd in (("전체 날짜", dates), ("M 켬(보유일)", held)):
-            ic = _xs_ic(X, T, dd, minn)
-            g = rel_grade(ic, cfg)
-            #   ★ 선택 등급의 **주 범위 = M이 켜진(보유) 달**. M이 꺼지면 어느 섹터를 골라도 현금이라 선택이 성과에
+        t1 = time.time()
+        is_main = nm.startswith("★")
+        Xv = X.reindex(valid)
+        dic = rel_daily_ic(Xv, Tv, minn)
+        for scope, dd_leg, smask in (("전체 날짜", dates, all_mask), ("M 켬(보유일)", held, on_mask)):
+            g = _grade_pair(dic, dd_leg, smask)
+            #   ★ 선택 등급의 **주 범위 = M이 켜진(보유) 날**. M이 꺼지면 어느 섹터를 골라도 현금이라 선택이 성과에
             #     영향을 주지 않는다. 전체 날짜 등급은 '예측 정확도' 참고로 함께 싣는다.
-            if nm.startswith("★") and scope == "전체 날짜":
-                ic_combo_all = ic
+            if is_main and scope == "전체 날짜":
                 grades["selection_all"] = g
-            if nm.startswith("★") and scope == "M 켬(보유일)":
+            if is_main and scope == "M 켬(보유일)":
                 grades["selection"] = g
-            sel_rows.append({"블록": "D. 선택(무엇을)", "대상": f"{layer} 횡단면", "후보": nm, "범위": scope,
-                             "월 표본": g["n"], "평균 IC": (round(g["mean"], 4) if g["mean"] == g["mean"] else None),
-                             "t": (round(g["t"], 2) if g["t"] == g["t"] else None),
-                             "IC>0 월 비율": (round(g["pos_share"], 3) if g["pos_share"] == g["pos_share"] else None),
-                             "연도 양수": g["years_pos"], "~2017": g["era1"], "2018~": g["era2"],
-                             "등급": (g["grade"] if nm.startswith("★") else f"(진단) {g['grade']}"),
-                             "근거": g["reason"], "설명": REL_SIGNAL_DESC.get(nm.split("[")[0].replace("★ 사전등록 결합", "").strip(), "")
-                             if not nm.startswith("★") else "사전등록 결합(적합 없음 · 구성 신호 순위 평균)"})
+            sel_rows.append(_row("D. 선택(무엇을)", f"{layer} 횡단면", nm, scope, g, is_main,
+                                 (REL_SIGNAL_DESC.get(nm, "") if not is_main else "사전등록 결합(적합 없음 · 구성 신호 순위 평균)")))
+        log("RELIABILITY", kv(event="candidate", layer=layer, cand=nm, ic_all=round(float(dic.mean()), 4) if dic.notna().any() else None,
+                              tbar_held=round(float((grades.get("selection") or {}).get("t", np.nan)), 2) if is_main else None,
+                              sec=round(time.time() - t1, 2)), M=M, level=("info" if is_main else "debug"))
     # ---- 부모 안 선택(산업층) ----
     if parent_close is not None and parent_of:
         pc = parent_close.reindex(P.index).astype(float)
@@ -15099,42 +15493,52 @@ def reliability_audit(close: pd.DataFrame, mkt_close: Optional[pd.Series], regim
         wsigs = {**{k: v for k, v in sigs.items() if k not in ("BETA_X_REGIME",) and not k.startswith("_")}, **rel_mom}
         wcmb = rel_combo(wsigs, within_combo) if within_combo else None
         wc = ([(f"★ 사전등록 결합[{'+'.join(within_combo)}]", wcmb)] if wcmb is not None else []) + list(wsigs.items())
+        TWv = TW.reindex(valid)
         for nm, X in wc:
-            ic = _xs_ic_within(X, TW, dates, groups)
-            g = rel_grade(ic, cfg)
-            if nm.startswith("★"):
+            t1 = time.time()
+            is_main = nm.startswith("★")
+            Xv = X.reindex(index=valid, columns=TW.columns)
+            dic = rel_daily_ic_within(Xv, TWv, groups)
+            g = _grade_pair(dic, dates, all_mask)
+            if is_main:
                 grades["within"] = g
-            sel_rows.append({"블록": "E. 부모 안 선택", "대상": "산업 − 부모 섹터", "후보": nm, "범위": "전체 날짜",
-                             "월 표본": g["n"], "평균 IC": (round(g["mean"], 4) if g["mean"] == g["mean"] else None),
-                             "t": (round(g["t"], 2) if g["t"] == g["t"] else None),
-                             "IC>0 월 비율": (round(g["pos_share"], 3) if g["pos_share"] == g["pos_share"] else None),
-                             "연도 양수": g["years_pos"], "~2017": g["era1"], "2018~": g["era2"],
-                             "등급": (g["grade"] if nm.startswith("★") else f"(진단) {g['grade']}"), "근거": g["reason"],
-                             "설명": "부모 섹터 대비 초과수익을 부모 안에서 줄 세운다(그룹별 IC 평균)"})
+            sel_rows.append(_row("E. 부모 안 선택", "산업 − 부모 섹터", nm, "전체 날짜", g, is_main,
+                                 "부모 섹터 대비 초과수익을 부모 안에서 줄 세운다(그룹별 IC 평균)"))
+            log("RELIABILITY", kv(event="within_candidate", layer=layer, cand=nm, sec=round(time.time() - t1, 1)),
+                M=M, level=("info" if is_main else "debug"))
     # ---- (a) 타이밍: 시장 · 자산별 ----
     tim_rows: List[dict] = []
+
+    def _tim(px: pd.Series, key: str) -> Dict[str, Any]:
+        g_leg = rel_timing_grade(reg, px, dates, h, cfg)
+        if method != "phase":
+            return g_leg
+        g = rel_timing_phase(reg, px, valid, h, cfg)
+        g["legacy"] = g_leg
+        return g
+
+    def _trow(asset: str, nm: str, g: Dict[str, Any]) -> dict:
+        leg = g.get("legacy") or {}
+        return {"블록": "C. 타이밍(살까 말까)", "자산": asset, "이름": nm, "켬 월": g["n_on"], "끔 월": g["n_off"],
+                "켬 평균(%)": (round(g["on"] * 100, 2) if g["on"] == g["on"] else None),
+                "끔 평균(%)": (round(g["off"] * 100, 2) if g["off"] == g["off"] else None),
+                "차이(%p)": (round(g["diff"] * 100, 2) if g["diff"] == g["diff"] else None),
+                ("시작일 평균 t" if method == "phase" else "t"): (round(g["t"], 2) if g["t"] == g["t"] else None),
+                "연도 양수": g["years_pos"], "~2017": g.get("era1", "-"), "2018~": g.get("era2", "-"), "등급": g["grade"],
+                "구 추정 t(시작일 1개 · R82)": (round(leg["t"], 2) if leg and leg.get("t") == leg.get("t") else None),
+                "구 등급(R82 방식)": leg.get("grade") if leg else None,
+                "시작일 21개 t 범위(최소~중앙~최대)": (_ph(g.get("phase") or {}) if g.get("phase") else None)}
     if reg is not None:
+        t1 = time.time()
         if include_market_timing and mkt_close is not None:
-            g = rel_timing_grade(reg, pd.Series(mkt_close).reindex(P.index).astype(float), dates, h, cfg)
+            g = _tim(pd.Series(mkt_close).reindex(P.index).astype(float), "SPY")
             grades["market_timing"] = g
-            tim_rows.append({"블록": "C. 타이밍(살까 말까)", "자산": "SPY(시장)", "이름": "시장 국면 M",
-                             "켬 월": g["n_on"], "끔 월": g["n_off"],
-                             "켬 평균(%)": (round(g["on"] * 100, 2) if g["on"] == g["on"] else None),
-                             "끔 평균(%)": (round(g["off"] * 100, 2) if g["off"] == g["off"] else None),
-                             "차이(%p)": (round(g["diff"] * 100, 2) if g["diff"] == g["diff"] else None),
-                             "t": (round(g["t"], 2) if g["t"] == g["t"] else None), "연도 양수": g["years_pos"],
-                             "~2017": g.get("era1", "-"), "2018~": g.get("era2", "-"), "등급": g["grade"]})
+            tim_rows.append(_trow("SPY(시장)", "시장 국면 M", g))
         tg = []
         for c in P.columns:
-            g = rel_timing_grade(reg, P[c], dates, h, cfg)
+            g = _tim(P[c], c)
             tg.append(g)
-            tim_rows.append({"블록": "C. 타이밍(살까 말까)", "자산": c, "이름": (names or {}).get(c, ""),
-                             "켬 월": g["n_on"], "끔 월": g["n_off"],
-                             "켬 평균(%)": (round(g["on"] * 100, 2) if g["on"] == g["on"] else None),
-                             "끔 평균(%)": (round(g["off"] * 100, 2) if g["off"] == g["off"] else None),
-                             "차이(%p)": (round(g["diff"] * 100, 2) if g["diff"] == g["diff"] else None),
-                             "t": (round(g["t"], 2) if g["t"] == g["t"] else None), "연도 양수": g["years_pos"],
-                             "~2017": g.get("era1", "-"), "2018~": g.get("era2", "-"), "등급": g["grade"]})
+            tim_rows.append(_trow(c, (names or {}).get(c, ""), g))
         ts = pd.Series([g["t"] for g in tg], dtype=float)
         order = {"높음": 4, "중간": 3, "중간(경계)": 2.5, "낮음": 1, "없음": 0, "판정불가": -1}
         gs = pd.Series([order.get(g["grade"], -1) for g in tg], dtype=float)
@@ -15142,6 +15546,52 @@ def reliability_audit(close: pd.DataFrame, mkt_close: Optional[pd.Series], regim
                                   "n": int(len(tg)), "n_mid": int((gs >= 2.5).sum()), "n_low": int((gs == 1).sum()),
                                   "n_none": int((gs <= 0).sum()),
                                   "weak": [c for c, g in zip(P.columns, tg) if order.get(g["grade"], -1) <= 0]}
+        log("RELIABILITY", kv(event="timing_done", layer=layer, assets=len(tg), phases=h,
+                              mkt_grade=(grades.get("market_timing") or {}).get("grade"),
+                              mkt_tbar=round(float((grades.get("market_timing") or {}).get("t", np.nan)), 2),
+                              mkt_legacy_t=round(float(((grades.get("market_timing") or {}).get("legacy") or {}).get("t", np.nan)), 2),
+                              sec=round(time.time() - t1, 1)), M=M)
+    # ---- 외부 장기 검정(FF49) + 강등 규칙(사전등록 R83) ----
+    ext_df = pd.DataFrame()
+    if method == "phase" and bool(getattr(cfg, "REL_EXTERNAL", True)) and external is not None:
+        try:
+            ext_df = rel_external_ff49(external, cfg, combos=(tuple(combo),), M=M)
+        except Exception as _e:
+            log("RELIABILITY", kv(event="external_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                                  next_step="블록 H 생략 — FF49 캐시(FF49_CACHE) 확인"), M=M, level="warning")
+            ext_df = pd.DataFrame()
+    grades["external"] = ext_df
+    comp = tuple(m for m in combo if m in ("FIP", "MOM_12_1", "MOM_12", "EXT200"))
+    ext_name = "+".join(comp) if comp else None
+    ext_note = "외부 검정 없음(FF49 미가용 또는 끔)"
+    if isinstance(ext_df, pd.DataFrame) and len(ext_df) and ext_name:
+        rr = ext_df[(ext_df["신호"] == ext_name) & (ext_df["구간"].astype(str).str.startswith("~1998"))]
+        if len(rr):
+            v = str(rr.iloc[0]["외부 판정"]); zz = rr.iloc[0]["시작일 평균 t"]
+            miss = [m for m in combo if m not in comp]
+            ext_note = (f"외부 FF49 ~1998 [{ext_name}] t̄ {zz} → {v}"
+                        + (f" (계산 불가 구성원 제외: {', '.join(miss)})" if miss else ""))
+            grades["external_verdict"] = v
+            for key in ("selection", "selection_all"):
+                gg = grades.get(key)
+                if not gg:
+                    continue
+                if v == "반증" and bool(getattr(cfg, "REL_EXT_DOWNGRADE", True)):
+                    gg["grade_before_external"] = gg["grade"]
+                    gg["grade"] = _rel_downgrade(gg["grade"])
+                    gg["reason"] = f"{gg['reason']} · ⚠ 외부 반증 → 한 단계 강등"
+                elif v == "지지":
+                    gg["reason"] = f"{gg['reason']} · 외부 장기 지지"
+    elif comp == () and combo:
+        ext_note = "외부 검정 불가(결합 구성원이 전부 M·부모 의존)"
+    grades["external_note"] = ext_note
+    if grades.get("within"):
+        grades["within"]["external_note"] = "외부 검정 불가(FF49엔 부모 섹터·M 국면이 없다)"
+    #   선택 표(D)의 ★ 행 등급을 강등 반영값으로 다시 쓴다(표와 요약이 같은 등급을 보이게)
+    for r in sel_rows:
+        if r["후보"] == main_name and r["블록"].startswith("D."):
+            gg = grades.get("selection" if r["범위"].startswith("M 켬") else "selection_all") or {}
+            r["등급"] = gg.get("grade", r["등급"]); r["근거"] = gg.get("reason", r["근거"])
     # ---- 오늘 예측(자산 고유) ----
     fc = pd.DataFrame()
     if cmb is not None and len(dates):
@@ -15174,70 +15624,111 @@ def reliability_audit(close: pd.DataFrame, mkt_close: Optional[pd.Series], regim
             fc = pd.DataFrame(rows)
             grades["forecast_asof"] = str(pd.Timestamp(last.name).date())
             grades["calibration"] = cal
-    grades["dates"] = (str(dates[0].date()) + "~" + str(dates[-1].date())) if dates else "-"
-    grades["n_months"] = len(dates)
-    log("RELIABILITY", kv(event="audit_done", layer=layer, months=len(dates), held_months=len(held),
-                          sel_grade=(grades.get("selection") or {}).get("grade"),
-                          sel_t=round(float((grades.get("selection") or {}).get("t", np.nan)), 2)
-                          if (grades.get("selection") or {}).get("t") == (grades.get("selection") or {}).get("t") else None,
+    grades["dates"] = (str(valid[0].date()) + "~" + str(valid[-1].date())) if len(valid) else "-"
+    grades["n_months"] = int(pd.DatetimeIndex(valid).to_period("M").nunique()) if len(valid) else 0
+    grades["n_days"] = int(len(valid)); grades["n_legacy_months"] = len(dates)
+    _sel = grades.get("selection") or {}
+    _leg = _sel.get("legacy") or {}
+    _phs = _sel.get("phase") or {}
+    log("RELIABILITY", kv(event="audit_done", layer=layer, method=method, months=grades["n_months"], days=len(valid),
+                          held_days=len(on_days), legacy_months=len(dates), held_months=len(held),
+                          sel_grade=_sel.get("grade"),
+                          sel_tbar=(round(float(_sel.get("t")), 2) if _sel.get("t") == _sel.get("t") else None),
+                          sel_legacy_t=(round(float(_leg.get("t")), 2) if _leg and _leg.get("t") == _leg.get("t") else None),
+                          sel_legacy_grade=_leg.get("grade"),
+                          phase_t=(f"{_phs.get('min', np.nan):.2f}~{_phs.get('max', np.nan):.2f}" if _phs else None),
                           within_grade=(grades.get("within") or {}).get("grade"),
                           mkt_timing=(grades.get("market_timing") or {}).get("grade"),
+                          external=grades.get("external_verdict", "-"),
                           asset_timing_median_t=round(float((grades.get("asset_timing") or {}).get("median_t", np.nan)), 2)
                           if (grades.get("asset_timing") or {}).get("median_t") == (grades.get("asset_timing") or {}).get("median_t") else None,
                           sec=round(time.time() - t0, 1)), M=M)
     return {"selection": pd.DataFrame(sel_rows), "timing": pd.DataFrame(tim_rows), "forecast": fc,
-            "grades": grades, "layer": layer, "combo": combo, "within_combo": within_combo}
+            "grades": grades, "layer": layer, "combo": combo, "within_combo": within_combo, "method": method}
 
 
 def build_reliability_sheet(aud: Dict[str, Any], cfg) -> pd.DataFrame:
-    """00R_신뢰도판정 — 한 층의 판정을 한 시트에. 블록 A 읽는 법 · B 등급 요약 · C 타이밍 · D 선택 · E 부모 안 · F 오늘 예측 · G 보정표."""
+    """00R_신뢰도판정 — 한 층의 판정을 한 시트에. A 읽는 법 · B 등급 요약 · C 타이밍 · D 선택 · E 부모 안 · F 오늘 예측 ·
+    G 보정표 · H 외부 장기 검정(R83)."""
     g = aud.get("grades") or {}
     lay = aud.get("layer", "-")
+    perm = str(aud.get("method", g.get("method", "legacy"))) == "phase"
+    stat = "시작일 평균 t(t̄)" if perm else "t"
     A = [{"블록": "A. 읽는 법", "항목": "무엇을 재나",
-          "내용": "'살까 말까(타이밍)'와 '무엇을(선택)'을 분리해 같은 잣대로 잰다. 타이밍 = M 예산 켬/끔 달의 향후 21거래일 수익 차이. "
-                  "선택 = 향후 21거래일 '평균 대비 초과수익'과 신호 순위의 월 단위(비중복) 횡단면 IC."},
-         {"블록": "A. 읽는 법", "항목": "등급 기준(사전등록 R82)",
-          "내용": f"중간 = t ≥ {getattr(cfg, 'REL_MID_T', 1.96)} · 연도 양수 ≥ {getattr(cfg, 'REL_MID_YEARS', 2/3):.0%} · "
-                  f"두 구간(~2017 / 2018~) 모두 양수 | 높음 = t ≥ {getattr(cfg, 'REL_HIGH_T', 3.0)} · 연도 ≥ "
-                  f"{getattr(cfg, 'REL_HIGH_YEARS', 0.75):.0%} · 두 구간 t ≥ 1.5 | 낮음 = 양수 · t ≥ {getattr(cfg, 'REL_LOW_T', 1.0)} | "
-                  "그 밖은 없음. **M(시장 국면)에도 똑같은 잣대를 쓴다** — 층 사이 비교가 공정하도록."},
+          "내용": "'살까 말까(타이밍)'와 '무엇을(선택)'을 분리해 같은 잣대로 잰다. 타이밍 = M 예산 켬/끔 날의 향후 21거래일 수익 차이. "
+                  "선택 = 향후 21거래일 '평균 대비 초과수익'과 신호 순위의 횡단면 IC."},
+         {"블록": "A. 읽는 법", "항목": "어떻게 재나(R83)" if perm else "어떻게 재나(R82)",
+          "내용": ("21거래일마다 한 번만 뽑는 R82 방식은 시작일이 21가지라 같은 신호·같은 자료에서도 t가 크게 흔들렸다"
+                   "('시작일 21개 t 범위' 열 — R82가 M에 준 '중간(경계)'는 21개 중 최댓값이었다). 그래서 21개 시작일 각각의 t를 모두 재 "
+                   "**평균**한다(t̄). 한 시작일의 t는 가짜 신호에서 보정돼 있고 평균은 흩어짐이 더 작아 기준 1.96이 **보수적**이다 — "
+                   "운으로 등급이 오르지 않는다. 연도 양수·평균 IC는 모든 거래일로 잰다. 시험하고 버린 방법: 단순 NW 표준오차(거짓 양성 "
+                   "7~10%), 라벨 순열 위약(군집 신호에서 거짓 양성 11~25%), 시간 이동 위약(느린 신호는 귀무가 오염)." if perm else
+                   "21거래일마다 하나씩 뽑은 비중복 월 표본의 단순 t.")},
+         {"블록": "A. 읽는 법", "항목": "등급 기준(사전등록 R82 — 값 그대로)",
+          "내용": f"중간 = {stat} ≥ {getattr(cfg, 'REL_MID_T', 1.96)} · 연도 양수 ≥ {getattr(cfg, 'REL_MID_YEARS', 2/3):.0%} · "
+                  f"두 구간(~2017 / 2018~) 모두 양수 | 높음 = {stat} ≥ {getattr(cfg, 'REL_HIGH_T', 3.0)} · 연도 ≥ "
+                  f"{getattr(cfg, 'REL_HIGH_YEARS', 0.75):.0%} · 두 구간 {stat} ≥ 1.5 | 낮음 = 양수 · {stat} ≥ {getattr(cfg, 'REL_LOW_T', 1.0)} | "
+                  "그 밖은 없음. **M(시장 국면)에도 똑같은 잣대를 쓴다** — 층 사이 비교가 공정하도록."
+                  + (" 외부 장기 검정(블록 H)에서 ~1998 t̄ ≤ 0(반증)이면 한 단계 강등(R83 사전등록)." if perm else "")},
          {"블록": "A. 읽는 법", "항목": "왜 2017 이전을 따로 보나",
           "내용": "시스템 설계·튜닝은 전부 2018 이후 리포트로 했다. 2017 이전은 설계에 쓰지 않은 **독립 구간**이라, 거기서도 같은 부호가 "
-                  "나와야 우연이 아니라고 본다."},
+                  "나와야 우연이 아니라고 본다. FF49 ~1998(블록 H)은 ETF 이전이라 더 멀리 떨어진 독립 표본이다."},
+         {"블록": "A. 읽는 법", "항목": "'높음'이 어려운 이유",
+          "내용": "독립 자료(FF 12업종 월간 1949~2017)에서 업종 모멘텀 계열은 1950~1998엔 25년 구간마다 t 3~6이었지만 1999~2017엔 최강 "
+                  "신호도 t ≈ 2다(공개 후 감쇠). 11~29개 자산 · 27년 표본에서 가격 신호로 t̄ ≥ 3은 현실적으로 어렵고 '중간'이 천장이다."},
          {"블록": "A. 읽는 법", "항목": "⚠ 한계",
           "내용": "등급은 과거 통계일 뿐이며 미래를 보장하지 않는다. 연구·교육용 — 투자 자문이 아니다."}]
     B = []
+
+    def _leg_txt(x: Dict[str, Any]) -> str:
+        leg = x.get("legacy") or {}
+        ph = x.get("phase") or {}
+        if not leg:
+            return ""
+        s = f" · 구 추정(R82) t {leg.get('t', float('nan')):.2f} → {leg.get('grade', '-')}"
+        if ph and ph.get("med") == ph.get("med"):
+            s += f" · 시작일 21개 t {ph['min']:.2f}~{ph['max']:.2f}"
+        return s
     mt = g.get("market_timing") or {}
     if mt:
         B.append({"블록": "B. 등급 요약", "항목": "시장 타이밍(M · 기준점)", "등급": mt.get("grade"),
-                  "내용": f"{mt.get('reason', '')} · ~2017 {mt.get('era1', '-')} · 2018~ {mt.get('era2', '-')}"})
+                  "내용": f"{mt.get('reason', '')} · ~2017 {mt.get('era1', '-')} · 2018~ {mt.get('era2', '-')}"
+                          + _leg_txt(mt)})
     at = g.get("asset_timing") or {}
     if at:
         B.append({"블록": "B. 등급 요약", "항목": f"{lay}별 타이밍(M 상속)",
                   "등급": ("중간" if at.get("n_mid", 0) >= max(1, at.get("n", 1)) * 0.5 else
                          ("낮음" if (at.get("n_mid", 0) + at.get("n_low", 0)) >= max(1, at.get("n", 1)) * 0.5 else "없음")),
                   "내용": f"자산 {at.get('n')}개 중 중간 이상 {at.get('n_mid')} · 낮음 {at.get('n_low')} · 없음 {at.get('n_none')} · "
-                          f"중앙 t {at.get('median_t', float('nan')):.2f}"
+                          f"중앙 {stat} {at.get('median_t', float('nan')):.2f}"
                           + (f" · ⚠ M 타이밍이 통하지 않는 자산: {', '.join(at.get('weak') or [])}" if at.get("weak") else "")})
     sel = g.get("selection") or {}
     if sel:
         B.append({"블록": "B. 등급 요약", "항목": f"{lay} 선택(상대예측 · 사전등록 결합)", "등급": sel.get("grade"),
-                  "내용": f"[주 범위 = M 켬(보유) 달] {sel.get('reason', '')} · 평균 IC {sel.get('mean', float('nan')):+.4f} · "
+                  "내용": f"[주 범위 = M 켬(보유) 날] {sel.get('reason', '')} · 평균 IC {sel.get('mean', float('nan')):+.4f} · "
                           f"~2017 {sel.get('era1', '-')} · 2018~ {sel.get('era2', '-')} · 참고: 전체 날짜 등급 "
-                          f"{(g.get('selection_all') or {}).get('grade', '-')}"})
+                          f"{(g.get('selection_all') or {}).get('grade', '-')}" + _leg_txt(sel)
+                          + (f" · {g.get('external_note')}" if g.get("external_note") else "")})
     wi = g.get("within") or {}
     if wi:
         B.append({"블록": "B. 등급 요약", "항목": "부모 안 산업 선택(사전등록 결합)", "등급": wi.get("grade"),
                   "내용": f"{wi.get('reason', '')} · 평균 IC {wi.get('mean', float('nan')):+.4f} · ~2017 {wi.get('era1', '-')} · "
-                          f"2018~ {wi.get('era2', '-')}"})
+                          f"2018~ {wi.get('era2', '-')}" + _leg_txt(wi)
+                          + (f" · {wi.get('external_note')}" if wi.get("external_note") else "")})
     B.append({"블록": "B. 등급 요약", "항목": "검정 구간", "등급": "-",
-              "내용": f"월 표본 {g.get('n_months', 0)}개 · {g.get('dates', '-')} · 지평 {getattr(cfg, 'REL_H', 21)}거래일(비중복)"})
+              "내용": (f"거래일 {g.get('n_days', 0)}일(월 {g.get('n_months', 0)}개) · {g.get('dates', '-')} · 지평 "
+                       f"{getattr(cfg, 'REL_H', 21)}거래일 · 시작일 {getattr(cfg, 'REL_H', 21)}개 평균 t(무작위 요소 없음 — 재현 100%)" if perm else
+                       f"월 표본 {g.get('n_legacy_months', g.get('n_months', 0))}개 · {g.get('dates', '-')} · 지평 "
+                       f"{getattr(cfg, 'REL_H', 21)}거래일(비중복)")})
     parts = [pd.DataFrame(A), pd.DataFrame(B), aud.get("timing", pd.DataFrame()), aud.get("selection", pd.DataFrame()),
              aud.get("forecast", pd.DataFrame())]
     cal = g.get("calibration")
     if isinstance(cal, pd.DataFrame) and len(cal):
         c2 = cal.copy(); c2.insert(0, "블록", f"G. 보정표(결합 점수 순위 구간 → 과거 실현 빈도 · {g.get('calibration_scope', '-')})")
         parts.append(c2)
+    ext = g.get("external")
+    if isinstance(ext, pd.DataFrame) and len(ext):
+        parts.append(ext)
     return pd.concat([p for p in parts if isinstance(p, pd.DataFrame) and len(p)], ignore_index=True, sort=False)
 
 
@@ -15245,19 +15736,24 @@ def reliability_lines(aud: Dict[str, Any]) -> List[Tuple[str, str]]:
     """00_실행요약에 넣을 줄."""
     g = aud.get("grades") or {}
     lay = aud.get("layer", "-")
+    perm = str(aud.get("method", g.get("method", "legacy"))) == "phase"
+    tag = "R83 · 21개 시작일 평균 t" if perm else "R82"
     out: List[Tuple[str, str]] = []
     mt = g.get("market_timing") or {}
     at = g.get("asset_timing") or {}
     sel = g.get("selection") or {}
     wi = g.get("within") or {}
+    leg = (sel.get("legacy") or {}) if sel else {}
     s = [f"시장 타이밍(M) **{mt.get('grade', '-')}**({mt.get('reason', '-')})" if mt else None,
-         (f"{lay}별 타이밍(M 상속) 중간 이상 {at.get('n_mid')}/{at.get('n')} · 중앙 t {at.get('median_t', float('nan')):.2f}"
-          if at else None),
-         (f"{lay} 선택(상대예측 · 보유 달) **{sel.get('grade', '-')}**({sel.get('reason', '-')} · ~2017 {sel.get('era1', '-')} · "
-          f"2018~ {sel.get('era2', '-')} · 전체 날짜 {(g.get('selection_all') or {}).get('grade', '-')})" if sel else None),
-         (f"부모 안 선택 **{wi.get('grade', '-')}**({wi.get('reason', '-')})" if wi else None)]
-    out.append((f"★ 신뢰도 판정(R82 · 00R 시트) — {lay}", " | ".join(x for x in s if x)
-                + " — 타이밍과 선택을 분리해 M과 같은 잣대로 쟀다(사전등록). 배분은 바꾸지 않았다."))
+         (f"{lay}별 타이밍(M 상속) 중간 이상 {at.get('n_mid')}/{at.get('n')} · 중앙 {'t̄' if perm else 't'} "
+          f"{at.get('median_t', float('nan')):.2f}" if at else None),
+         (f"{lay} 선택(상대예측 · 보유 날) **{sel.get('grade', '-')}**({sel.get('reason', '-')} · ~2017 {sel.get('era1', '-')} · "
+          f"2018~ {sel.get('era2', '-')} · 전체 날짜 {(g.get('selection_all') or {}).get('grade', '-')}"
+          + (f" · 구 추정 {leg.get('grade', '-')}" if leg else "") + ")" if sel else None),
+         (f"부모 안 선택 **{wi.get('grade', '-')}**({wi.get('reason', '-')})" if wi else None),
+         (g.get("external_note") if perm and g.get("external_note") else None)]
+    out.append((f"★ 신뢰도 판정({tag} · 00R 시트) — {lay}", " | ".join(x for x in s if x)
+                + " — 타이밍과 선택을 분리해 M과 같은 잣대로 쟀다(기준값은 R82 사전등록 그대로). 배분은 바꾸지 않았다."))
     fc = aud.get("forecast")
     if isinstance(fc, pd.DataFrame) and len(fc):
         top = fc.head(3); bot = fc.tail(3)
