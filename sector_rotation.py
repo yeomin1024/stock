@@ -17,28 +17,6 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.68.0 - 2026-09-22 - [R86 ★★★ 신뢰도 = 사용자 정의(하락 회피·상승 참여) · R85 채움 되돌림(사전등록 (d)) · 섹터 거시 근거 측정]
-#    사용자 지시(2026-09-22, 리포트 s14·i32) "섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정 방법을 잘 좀 생각해봐 …
-#      신뢰도는 내가 얘기했던 방법인거 알지?"(= 하락 잘 피하고 상승 잘 타는 것 → 노란색 배수). 시작 v0.67.0 → 목표 v0.68.0. M 무변경.
-#    ── 엔진 판정(s14) ──
-#      R85 채움 25%: ★ 12.765 → 12.966(+1.6%) · MDD 그대로 · 칼마 3.888 → 3.915 · 무작위 대비 백분위 100 · 상위5일 제외 초과 −0.04%p.
-#      **장기 검증 2000~2017(독립): ②상승근거 채움 칼마 0.329 < ①SPY 채움 0.362 · 대조군 95% 0.366(백분위 33) → 사전등록 (d) 해당.**
-#      ③ E_t=0일 섹터 자기 근거 0.230 < M 단독 0.359(백분위 42 · 하락포착 0.54 → 0.57 악화) — '국면을 안 따라가는 섹터'를
-#      가격 근거로 잡는 가설은 독립 18년에서 성립하지 않았다.
-#    ── 사용자 정의 신뢰도(r86/rel86.py · SPY 지그재그 5% · 2018~) ──
-#      M 회피 74.0% · 참여 64.7%(낮음) | S★ 61.6% · 85.8%(중간) | I★ 60.6% · 88.4%(중간) | 섹터 단일 예측 62.3% · 63.6%(낮음)
-#      13 격자 100여 행 중 '높음'(회피 ≥70% & 참여 ≥90%) 도달 **0행** — 한쪽을 올리면 다른 쪽이 내려간다(프런티어). XLK 상한 100%는
-#      참여 93.5%지만 회피 58.6% · 하락국면리더 끔은 회피 67.9%지만 참여 81.3%. 둘 다 올리려면 M보다 나은 타이밍 정보가 필요하다.
-#      M의 연속 위험점수(H)를 참고로 쓰는 변형(부분일 채움·끔일 재진입·켬일 베타 낮춤)도 전부 무작위 수준(r86/expB86.py).
-#    (§1 ⚠ 라이브 되돌림) OWN_EVIDENCE_FILL 0.25 → **0.0**(R85 사전등록 (d)) ⇒ ★는 v0.66.0 규칙으로 돌아간다(노란색 배수 12.966 → 약 12.77).
-#      다시 켜기: s_overrides={"OWN_EVIDENCE_FILL": 0.25}. [섹터근거격자]·장기 검증은 그대로 싣는다.
-#    (§2 ★★★) 신뢰도 정의 교체: user_grade · user_rel_portfolio · user_rel_single · user_reliability_pack · build_user_reliability_sheet ·
-#      user_reliability_lines → 시트 **00U_사용자신뢰도**(맨 앞) + 00 맨 앞 줄. 등급(사전등록): 높음 = 회피 ≥70% & 참여 ≥90% ·
-#      중간 = 회피 ≥50% & 참여 ≥70%. R82~R84의 IC·t̄ 등급 줄은 '참고: 선택 신호 통계'로 이름만 바꿨다(계산 무변경).
-#    (§3 측정 · 신규 근거) macro_driver_states · macro_long_audit · [섹터거시근거격자] G1~G4 + 대조군 24 — 섹터 고유 경제 동인
-#      (XLE←유가 · XLB·XLI←구리 · XLF←장단기 금리차 · XLU·XLRE←10년 금리(−) · XLK←실질금리(−) · XLY←HY 스프레드(−)).
-#      오프라인엔 이 자료가 없어(샌드박스 차단) **엔진만 잴 수 있다**. 사전등록 승격 조건은 블록 주석 참조. ★ 무변경.
-#    ⚠ 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.67.0 - 2026-09-22 - [R85 ★★★ 섹터 자기 근거로 M 예산 위를 채움(라이브 · ⚠ 노출↑) + [섹터근거격자] + 장기 검증(1999~)]
 #    사용자 지시(2026-09-22, 리포트 s13·i31) "노란색 수익배수 또 그대로야 내가 신뢰도를 높이라는건 하락 잘 피하고 상승 잘타는 건데 …",
 #      "시장 국면은 냅둬 섹터별로 시장 국면별로 안따라갈때도 있잖아 내가 시장 국면은 그냥 참고만 하고 섹터별 상승, 하락 근거 따로
@@ -2773,7 +2751,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.68.0"
+VERSION = "v0.67.0"
 VERSION_DATE = "2026-09-22"
 
 # =============================================================================
@@ -3436,9 +3414,7 @@ class SectorConfig:
     #   ⚠ OWN_EVIDENCE_FILL은 **노출을 늘리는 위험 파라미터**다(부분예산일 남는 현금 중 채우는 비율).
     #     되돌리기: s_overrides={"OWN_EVIDENCE_FILL": 0.0} ⇒ v0.66.0 ★와 비트 동일. 블록 전체 끄기: {"OWN_EVIDENCE_ENABLE": False}.
     OWN_EVIDENCE_ENABLE: bool = True
-    #   ⚠ [v0.68.0 R86 되돌림] 0.25 → **0.0** — R85 사전등록 (d) 해당(엔진 s14 장기 검증 2000~2017: ② 0.329 < ① 0.362 ·
-    #     대조군 95% 0.366). 다시 켜기: s_overrides={"OWN_EVIDENCE_FILL": 0.25}.
-    OWN_EVIDENCE_FILL: float = 0.0             # ⚠ 부분예산일(0<E_t<1) 남는 현금 중 상승근거 섹터로 채울 비율(v0.67.0 0.25 → v0.68.0 0.0)
+    OWN_EVIDENCE_FILL: float = 0.25            # ⚠ [v0.67.0] 0.0 → 0.25 — 부분예산일(0<E_t<1) 남는 현금 중 상승근거 섹터로 채울 비율
     OWN_EVIDENCE_FILL_K: int = 2               # 채울 섹터 수(상승 근거 · 63일 상대수익 상위 · 주력 제외)
     OWN_EVIDENCE_N_LONG: int = 200             # 자기 추세 장기선(총수익 지수)
     OWN_EVIDENCE_N_SHORT: int = 50             # 자기 추세 단기선
@@ -3451,24 +3427,6 @@ class SectorConfig:
     OWN_EVIDENCE_FILL_AUDIT: Optional[float] = None   # 장기 검증의 채움 비율 — None이면 라이브 값(라이브가 0이면 0.25)
     OWN_EVIDENCE_OFF_POS: float = 0.25         # 장기 검증 ③(E_t=0일 상승근거 섹터) 비중 — 하락국면리더와 같은 값
     OWN_EVIDENCE_LONG_USE_STATE: bool = False  # 장기 검증에 국면기계 상태 조건을 넣을지 — 2018 이전 상태는 추세필터 폴백뿐이라 기본 끔
-    # ---- [v0.68.0 R86 ★★★] 사용자 정의 신뢰도(하락 회피·상승 참여) — 00U 시트 · 00 맨 앞 줄(진단 · 배분 무관) ----
-    USER_REL_ENABLE: bool = True
-    USER_REL_SEG_PORT: Tuple[float, int] = (0.05, 3)    # 포트폴리오: SPY 곡선 지그재그(최소 변동 · 최소 거래일)
-    USER_REL_SEG_ASSET: Tuple[float, int] = (0.07, 3)   # 단일 예측: 자산 B&H 지그재그(I 00D와 같은 값)
-    USER_REL_HIGH: Tuple[float, float] = (0.70, 0.90)   # 높음 = 회피율 ≥ · 참여율 ≥ (R86 사전등록 — 바꾸지 않는다)
-    USER_REL_MID: Tuple[float, float] = (0.50, 0.70)    # 중간
-    USER_REL_SPLIT: str = "2022-01-01"                  # 안정성 판정용 앞/뒤 절반 경계
-    # ---- [v0.68.0 R86 ★★ 측정 전용] 섹터 거시 근거(경제 동인) — [섹터거시근거격자] · 장기 검증. 끄기: {"MACRO_EVIDENCE_ENABLE": False} ----
-    MACRO_EVIDENCE_ENABLE: bool = True
-    MACRO_LONG_AUDIT: bool = True
-    SECTOR_MACRO_DRIVERS: Dict[str, Tuple[str, int]] = dataclasses.field(default_factory=lambda: {
-        "XLE": ("CL=F", +1), "XLB": ("HG=F", +1), "XLI": ("HG=F", +1), "XLF": ("T10Y2Y", +1),
-        "XLU": ("DGS10", -1), "XLRE": ("DGS10", -1), "XLK": ("DFII10", -1), "XLY": ("BAMLH0A0HYM2", -1)})
-    MACRO_LOOKBACK: int = 63                   # 동인 변화 기간(거래일)
-    MACRO_FILL: float = 0.25                   # G3·L3 부분예산일 채움 비율(측정용 — 라이브 아님)
-    MACRO_OFF_POS: float = 0.25                # G2·L2 E_t=0일 비중(하락국면리더와 같은 값)
-    MACRO_CONTROLS: int = 12
-    MACRO_SEED: int = 20260924
     SECTOR_SELF_CUT_Q: float = 1.0 / 3.0        # 하위 몇 분위를 깎는가(0.25/0.33/0.5를 격자가 함께 잰다)
     SECTOR_SELF_CUT_FRAC: float = 0.25          # ⚠ 깎는 폭(0.25/0.50/1.00을 격자가 함께 잰다)
     SECTOR_SELF_CUT_CONTROLS: int = 12          # 같은 개수 무작위 대조군 행 수(0이면 끔) — 13 시트에서 직접 판정
@@ -8726,10 +8684,7 @@ def own_evidence_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
                     f"칼마 {o.get('칼마', np.nan):.3f} → {l_.get('칼마', np.nan):.3f} · 발동 {od.get('fill_days', 0)}일. "
                     "⚠ 노출을 늘리는 위험 파라미터 변경이다 — 되돌리기 s_overrides={'OWN_EVIDENCE_FILL': 0.0}. 세부는 00S 시트."))
     else:
-        out.append(("★★ 노란색(라이브) 수익배수 — R86: R85 채움 되돌림",
-                    f"R85 사전등록 (d)대로 채움을 껐다(OWN_EVIDENCE_FILL=0) — ★는 v0.66.0 규칙과 같다(채움 OFF 행 = ★). 근거: 엔진 장기 검증 "
-                    "2000~2017(독립)에서 섹터 자기 근거 채움이 SPY 채움과 무작위 섹터보다 나빴다(R85: 칼마 0.329 vs 0.362 · 대조군 95% 0.366). "
-                    "표본 안(2018~) 배수 +1.6%는 표본 운일 가능성이 크다. 다시 켜기 s_overrides={'OWN_EVIDENCE_FILL': 0.25}. 이번 판정은 00S."))
+        out.append(("★★ 섹터 자기근거 채움(R85)", f"끔(OWN_EVIDENCE_FILL=0) — ★는 v0.66.0과 같다. 격자·장기 검증만 00S에 싣는다."))
     cr = od.get("criteria") or {}
     out.append(("★★ [섹터근거격자] 사전등록 판정(R85 · 엔진 값)",
                 " · ".join(f"{k} {'O' if v else 'X'}" for k, v in cr.items())
@@ -8757,437 +8712,6 @@ def own_evidence_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
             out.append(("★★ 섹터 자기근거 장기 검증(엔진 1999~ · M E_t · 측정 전용)", " || ".join(parts)))
     elif isinstance(lg, dict) and lg.get("error"):
         out.append(("⚠ 섹터 자기근거 장기 검증", f"산출 실패 — {lg['error']}"))
-    return out
-
-
-# =============================================================================
-# [v0.68.0 R86 ★★★ 신규] 사용자 정의 신뢰도 — "하락을 잘 피하고 상승을 잘 타는가"(노란색 배수로 드러나는 것)
-# =============================================================================
-#   사용자 지시(2026-09-22): "신뢰도를 높이라는건 하락 잘 피하고 상승 잘타는 건데 그걸 잘하면 수익배수도 늘어나게 되는데",
-#     "신뢰도는 내가 얘기했던 방법인거 알지?". ⇒ R82~R84의 '신뢰도'(IC·t̄ 등급)는 **선택 신호 통계**로 이름을 바꾸고,
-#     00 맨 앞의 '신뢰도'는 이 정의로 잰다.
-#   정의(같은 잣대로 M·S★·I★·단일 예측을 잰다 — 진단 전용, 사후 구간 분할이라 신호에 쓰지 않는다):
-#     포트폴리오(노란색 행) — SPY 단순보유 곡선의 지그재그 구간(USER_REL_SEG_PORT = 5% · 3거래일)마다 전략 수익(구간 복리):
-#       하락 회피율 = 1 − Σ(하락구간 전략 수익) / Σ(하락구간 SPY 수익)   (SPY가 잃은 것 중 피한 몫 · 1.0 = 전부 피함)
-#       상승 참여율 = Σ(상승구간 전략 수익) / Σ(상승구간 SPY 수익)       (SPY가 번 것 중 탄 몫 · 1.0 = 다 탐 · >1 = 더 탐)
-#     단일 예측(섹터·산업별 라이브 단독 노출) — 그 자산 B&H 지그재그(USER_REL_SEG_ASSET = 7% · 3거래일 · I 00D와 같다):
-#       하락 회피율 = 1 − Σ_하락(w·r) / Σ_하락(r) · 상승 참여율 = Σ_상승(w·r) / Σ_상승(r)  (자산-일 단순합 · 전 자산 합산)
-#   등급(R86 사전등록 — 숫자를 보기 전에 정한 둥근 값, 바꾸지 않는다):
-#     높음 = 회피율 ≥ 0.70 그리고 참여율 ≥ 0.90 · 중간 = 회피율 ≥ 0.50 그리고 참여율 ≥ 0.70 · 낮음 = 그 밖(순효과 > 0) · 없음 = 순효과 ≤ 0.
-#     구간 안정성: 앞(2018~2021)·뒤(2022~) 절반의 등급이 같으면 '확정', 다르면 '(구간 불안정)'을 붙인다.
-
-def user_grade(av: float, pa: float, net: float, cfg) -> str:
-    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
-    mid = tuple(getattr(cfg, "USER_REL_MID", (0.50, 0.70)))
-    if not (av == av and pa == pa):
-        return "-"
-    if net == net and net <= 0:
-        return "없음"
-    if av >= hi[0] and pa >= hi[1]:
-        return "높음"
-    if av >= mid[0] and pa >= mid[1]:
-        return "중간"
-    return "낮음"
-
-
-def _zz_valid(level: pd.Series, mm: float, md: int) -> List[Tuple[str, pd.Timestamp, pd.Timestamp]]:
-    s = pd.Series(level).dropna().astype(float)
-    out = []
-    for kind, a, b in zigzag_segments(s, mm, md):
-        if str(kind) not in ("상승", "하락") or b - a < int(md):
-            continue
-        out.append((str(kind), s.index[a], s.index[b]))
-    return out
-
-
-def user_rel_portfolio(rets: Dict[str, pd.Series], spy_ret: pd.Series, cfg,
-                       split: Optional[str] = None) -> pd.DataFrame:
-    """노란색(포트폴리오) 행들의 사용자 신뢰도. rets: {라벨: 일수익}, spy_ret: SPY 일수익(같은 창)."""
-    mm, md = tuple(getattr(cfg, "USER_REL_SEG_PORT", (0.05, 3)))
-    sp = pd.to_numeric(pd.Series(spy_ret), errors="coerce").fillna(0.0)
-    lev = (1.0 + sp).cumprod()
-    segs = _zz_valid(lev, float(mm), int(md))
-    spl = pd.Timestamp(split or getattr(cfg, "USER_REL_SPLIT", "2022-01-01"))
-    rows = []
-    for lab, r in rets.items():
-        rr = pd.to_numeric(pd.Series(r), errors="coerce").reindex(sp.index).fillna(0.0)
-        eq = (1.0 + rr).cumprod()
-
-        def _agg(sel):
-            dn_s = dn_b = up_s = up_b = 0.0
-            nd = nu = 0
-            for kind, a, b in sel:
-                bs = float(lev.loc[b] / lev.loc[a] - 1.0)
-                ss = float(eq.loc[b] / eq.loc[a] - 1.0)
-                if kind == "하락":
-                    dn_s += ss; dn_b += bs; nd += 1
-                else:
-                    up_s += ss; up_b += bs; nu += 1
-            av = 1.0 - dn_s / dn_b if dn_b < 0 else np.nan
-            pa = up_s / up_b if up_b > 0 else np.nan
-            net = (dn_s - dn_b + up_s - up_b) * 100.0
-            return av, pa, net, nd, nu
-        av, pa, net, nd, nu = _agg(segs)
-        a1, p1, n1, _, _ = _agg([x for x in segs if x[1] < spl])
-        a2, p2, n2, _, _ = _agg([x for x in segs if x[1] >= spl])
-        g, g1, g2 = user_grade(av, pa, net, cfg), user_grade(a1, p1, n1, cfg), user_grade(a2, p2, n2, cfg)
-        n = len(rr)
-        cg = float(eq.iloc[-1] ** (252.0 / max(n, 1)) - 1.0) if n else np.nan
-        mdd = float((eq / eq.cummax() - 1.0).min()) if n else np.nan
-        rows.append({"전략": lab, "하락구간 수": nd, "상승구간 수": nu,
-                     "하락 회피율": round(av, 4) if av == av else np.nan, "상승 참여율": round(pa, 4) if pa == pa else np.nan,
-                     "순효과(%p)": round(net, 1), "등급": g,
-                     f"앞 절반(~{spl.year - 1}) 회피/참여": (f"{a1:.3f}/{p1:.3f}" if a1 == a1 and p1 == p1 else "-"),
-                     f"뒤 절반({spl.year}~) 회피/참여": (f"{a2:.3f}/{p2:.3f}" if a2 == a2 and p2 == p2 else "-"),
-                     "절반 등급": f"{g1}/{g2}", "안정성": ("확정" if g1 == g2 == g else "(구간 불안정)"),
-                     "배수": round(float(eq.iloc[-1]), 3) if n else np.nan, "MDD": round(mdd, 4),
-                     "칼마": (round(cg / abs(mdd), 3) if mdd < 0 else np.nan)})
-    return pd.DataFrame(rows)
-
-
-def user_rel_single(pos: pd.DataFrame, ret: pd.DataFrame, cfg) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """단일 예측(자산별 라이브 단독 노출 w, **체결** 기준)의 사용자 신뢰도 — 자산별 + 전 자산 합산(I 00D와 같은 산식)."""
-    mm, md = tuple(getattr(cfg, "USER_REL_SEG_ASSET", (0.07, 3)))
-    rows = []
-    T = {"dn_s": 0.0, "dn_b": 0.0, "up_s": 0.0, "up_b": 0.0}
-    for c in ret.columns:
-        r = pd.to_numeric(ret[c], errors="coerce")
-        w = pd.to_numeric(pos[c], errors="coerce").reindex(r.index) if c in pos.columns else None
-        m = r.notna()
-        if w is None or int(m.sum()) < 120:
-            continue
-        r = r[m]; w = w[m].fillna(0.0)
-        lev = (1.0 + r).cumprod()
-        d = {"dn_s": 0.0, "dn_b": 0.0, "up_s": 0.0, "up_b": 0.0}
-        for kind, a, b in _zz_valid(lev, float(mm), int(md)):
-            sel = (r.index > a) & (r.index <= b)
-            k = "dn" if kind == "하락" else "up"
-            d[k + "_s"] += float((w[sel] * r[sel]).sum()); d[k + "_b"] += float(r[sel].sum())
-        for k in T:
-            T[k] += d[k]
-        av = 1.0 - d["dn_s"] / d["dn_b"] if d["dn_b"] < 0 else np.nan
-        pa = d["up_s"] / d["up_b"] if d["up_b"] > 0 else np.nan
-        net = (d["dn_s"] - d["dn_b"] + d["up_s"] - d["up_b"]) * 100.0
-        rows.append({"자산": c, "하락 회피율": round(av, 4) if av == av else np.nan,
-                     "상승 참여율": round(pa, 4) if pa == pa else np.nan, "순효과(%p)": round(net, 1),
-                     "등급": user_grade(av, pa, net, cfg)})
-    av = 1.0 - T["dn_s"] / T["dn_b"] if T["dn_b"] < 0 else np.nan
-    pa = T["up_s"] / T["up_b"] if T["up_b"] > 0 else np.nan
-    net = (T["dn_s"] - T["dn_b"] + T["up_s"] - T["up_b"]) * 100.0
-    agg = {"하락 회피율": av, "상승 참여율": pa, "순효과(%p)": net, "등급": user_grade(av, pa, net, cfg), "자산 수": len(rows)}
-    return pd.DataFrame(rows), agg
-
-
-# =============================================================================
-# [v0.68.0 R86 ★★ 신규 · 측정 전용] 섹터 거시 근거 — 가격 추세가 아닌 **섹터 고유 경제 동인**으로 '국면을 안 따라가는 섹터'를 찾는다
-# =============================================================================
-#   왜: R85에서 섹터 자기 가격 근거(자기 추세·상대 추세·국면기계)는 엔진 장기 검증 2000~2017에서 SPY·무작위보다 나빴다
-#     (② 칼마 0.329 < ① 0.362 · 대조군 95% 0.366 · ③ E_t=0 0.230 < M 단독 0.359). 남은 '섹터별 근거'는 섹터마다 다른 경제 동인이다.
-#   동인(사전 지정 — 교과서적 방향 하나씩, 결과를 보고 바꾸지 않는다):
-#     XLE ← 유가 CL=F(+) · XLB ← 구리 HG=F(+) · XLI ← 구리 HG=F(+) · XLF ← 장단기 금리차 T10Y2Y(+)
-#     XLU ← 10년 금리 DGS10(−) · XLRE ← 10년 금리 DGS10(−) · XLK ← 10년 실질금리 DFII10(−) · XLY ← 하이일드 스프레드 BAMLH0A0HYM2(−)
-#     XLP·XLV·XLC ← 없음(방어·혼합 — 억지로 붙이지 않는다).
-#   순풍 = 부호 × (X_t − X_{t−63}) > 0 · 역풍 = < 0. FRED는 M의 발표 지연(lag_days)만큼 늦춘다(없으면 1일). 전부 t일까지의 값.
-#   M에 있는 자료만 쓴다(res["px_dict"] · res["fred"]). 없는 동인은 그 섹터를 '동인 없음'으로 두고 로그에 남긴다.
-
-def macro_driver_states(res: dict, idx: pd.DatetimeIndex, secs: List[str], cfg, M=None
-                        ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
-    drv = dict(getattr(cfg, "SECTOR_MACRO_DRIVERS", {}) or {})
-    lb = int(getattr(cfg, "MACRO_LOOKBACK", 63))
-    px = (res or {}).get("px_dict") or {}
-    fred = (res or {}).get("fred") or {}
-    lagmap = {}
-    try:
-        lagmap = {k: int(v[1]) for k, v in dict(getattr(M, "FRED_SERIES", {}) or {}).items()}
-    except Exception:
-        lagmap = {}
-    tail = pd.DataFrame(False, index=idx, columns=secs)
-    head = pd.DataFrame(False, index=idx, columns=secs)
-    info: Dict[str, Any] = {}
-    for s in secs:
-        spec = drv.get(s)
-        if not spec:
-            info[s] = "동인 없음(사전 지정)"
-            continue
-        sid, sgn = str(spec[0]), float(spec[1])
-        x = None
-        try:
-            if sid in px and isinstance(px[sid], pd.DataFrame) and len(px[sid]):
-                _d = px[sid]
-                _c = "Adj Close" if "Adj Close" in _d.columns else ("Close" if "Close" in _d.columns else None)
-                if _c is not None:
-                    x = pd.to_numeric(_d[_c], errors="coerce")
-                    x = x[~x.index.duplicated(keep="last")].sort_index().reindex(idx).ffill()
-                    x = np.log(x.where(x > 0))                   # 가격은 로그 변화
-            elif sid in fred and fred[sid] is not None and len(pd.Series(fred[sid]).dropna()):
-                _f = pd.to_numeric(pd.Series(fred[sid]), errors="coerce")
-                _f = _f[~_f.index.duplicated(keep="last")].sort_index()
-                x = _f.reindex(idx).ffill().shift(max(1, int(lagmap.get(sid, 1))))   # 발표 지연만큼 늦춘다(룩어헤드 차단)
-        except Exception as _e:
-            info[s] = f"{sid} 읽기 실패 {type(_e).__name__}"
-            continue
-        if x is None or int(x.notna().sum()) < lb + 60:
-            info[s] = f"{sid} 없음/부족 — 동인 없음 처리"
-            continue
-        ch = (x - x.shift(lb)) * sgn
-        tail[s] = (ch > 0).fillna(False)
-        head[s] = (ch < 0).fillna(False)
-        info[s] = f"{sid}({'+' if sgn > 0 else '−'}) · 첫 값 {str(ch.first_valid_index())[:10]} · 순풍 비율 {float(tail[s][ch.notna()].mean()):.2f}"
-    return tail, head, info
-
-
-def macro_long_audit(level: pd.DataFrame, E: pd.Series, spy_ret: pd.Series, spy_level: Optional[pd.Series],
-                     tail: pd.DataFrame, rf: Optional[pd.Series], cfg, cost_bps: float = 5.0, M=None) -> Dict[str, Any]:
-    """[R86 측정 전용] 장기 검증(엔진 전체 이력) — 기준선 M 단독(E_t×SPY) 위에:
-       L2 E_t=0일 거시 순풍 & 자기 추세 상승 섹터 1위 × pos(사용자 가설: 국면을 안 따라가는 섹터를 **경제 동인**으로)
-       L3 부분예산일 남는 현금 × f → 거시 순풍 & 자기 추세 상승 상위 k
-       각각 같은 날·같은 몫 무작위 섹터 대조군과 비교하고, **사용자 신뢰도(회피율·참여율)**와 칼마를 구간(2000~2017 · 2018~)별로 싣는다.
-       예산: 그 구간에 M E_t 부분예산일이 60일 미만이면 M 대용 3상태(SPY 200일선·12개월 — own_long_audit과 같은 정의)."""
-    t0 = time.time()
-    f = float(getattr(cfg, "MACRO_FILL", 0.25) or 0.25)
-    k = int(getattr(cfg, "OWN_EVIDENCE_FILL_K", 2) or 2)
-    pos = float(getattr(cfg, "MACRO_OFF_POS", 0.25) or 0.25)
-    nctl = int(getattr(cfg, "MACRO_CONTROLS", 12) or 0)
-    seed = int(getattr(cfg, "MACRO_SEED", 20260924))
-    L = level.sort_index(); idx = L.index; secs = list(L.columns)
-    fr = own_evidence_frames(L, None, int(getattr(cfg, "OWN_EVIDENCE_N_LONG", 200)), int(getattr(cfg, "OWN_EVIDENCE_N_SHORT", 50)),
-                             int(getattr(cfg, "OWN_EVIDENCE_N_REL", 50)), int(getattr(cfg, "OWN_EVIDENCE_N_RS", 63)))
-    R = L.pct_change(fill_method=None)
-    sp = pd.to_numeric(spy_ret.reindex(idx), errors="coerce")
-    rfv = (pd.to_numeric(rf.reindex(idx), errors="coerce").fillna(0.0) if rf is not None else pd.Series(0.0, index=idx))
-    listed = L.notna()
-    cand = tail.reindex(index=idx, columns=secs).fillna(False).astype(bool) & fr["own_up"] & listed
-    pool = fr["own_up"] & listed
-    E_m = pd.to_numeric(E.reindex(idx), errors="coerce").fillna(0.0).clip(lower=0.0)
-    E_px = None
-    if spy_level is not None and len(pd.Series(spy_level).dropna()) > 300:
-        _P = pd.to_numeric(pd.Series(spy_level), errors="coerce").reindex(idx).ffill()
-        _tr = _P > _P.rolling(200, min_periods=200).mean()
-        _mo = (_P / _P.shift(252) - 1.0) > 0
-        _ok = _P.rolling(252, min_periods=252).mean().notna()
-        E_px = pd.Series(np.where(_tr & _mo, 1.0, np.where((~_tr) & (~_mo), 0.0, 0.5)), index=idx).where(_ok, 0.0)
-    cb = float(cost_bps) / 1e4
-    zero = pd.DataFrame(0.0, index=idx, columns=secs)
-
-    def _run(Ws: pd.DataFrame, Wp: pd.Series) -> pd.Series:
-        ws = Ws.reindex(columns=secs).fillna(0.0); wp = Wp.reindex(idx).fillna(0.0)
-        g = (ws.shift(2).fillna(0.0) * R.fillna(0.0)).sum(axis=1) + wp.shift(2).fillna(0.0) * sp.fillna(0.0)
-        ex = ws.shift(2).fillna(0.0).sum(axis=1) + wp.shift(2).fillna(0.0)
-        tn = (ws.diff().abs().sum(axis=1) + wp.diff().abs()).shift(2).fillna(0.0)
-        return g + (1.0 - ex).clip(lower=0.0) * rfv - tn * cb
-    sel_k = _own_top_by(fr["rs"], cand, k); sel_1 = _own_top_by(fr["rs"], cand, 1)
-
-    def _suite(Ev: pd.Series) -> Dict[str, Any]:
-        part = (Ev > 1e-12) & (Ev < 1.0 - 1e-12); off = Ev <= 1e-12
-        rem = ((1.0 - Ev).clip(lower=0.0) * f).where(part & (sel_k.sum(axis=1) > 0), 0.0)
-        offd = off & (sel_1.sum(axis=1) > 0)
-        runs = {"M 단독(E_t×SPY)": _run(zero, Ev),
-                f"L2 E_t=0일 거시 순풍 섹터 1위 × {pos:.0%}": _run(sel_1.mul(pos * offd.astype(float), axis=0), Ev),
-                f"L2' 같은 날 SPY × {pos:.0%}(비교)": _run(zero, Ev + pos * offd.astype(float)),
-                f"L3 부분예산일 남는 현금×{f:.0%} → 거시 순풍 상위{k}": _run(sel_k.mul(rem, axis=0), Ev),
-                f"L3' 같은 몫 SPY(비교)": _run(zero, Ev + rem)}
-        ctl = {"L2": [], "L3": []}
-        for j in range(nctl):
-            r1 = _own_rand_sel(pool, 1, seed + j)
-            ctl["L2"].append(_run(r1.mul(pos * (off & (r1.sum(axis=1) > 0) & offd).astype(float), axis=0), Ev))
-            rk = _own_rand_sel(pool, k, seed + 500 + j)
-            ctl["L3"].append(_run(rk.mul(rem.where(rk.sum(axis=1) > 0, 0.0), axis=0), Ev))
-        return {"runs": runs, "ctl": ctl, "rem": rem, "offd": offd, "part": part}
-    suites = {"M E_t": _suite(E_m)}
-    eras = (("2000~2017(독립)", pd.Timestamp("2000-01-01"), pd.Timestamp("2017-12-31")),
-            ("2018~(★ 평가창)", pd.Timestamp("2018-01-01"), idx[-1] if len(idx) else pd.Timestamp("2018-01-01")))
-    rows: List[Dict[str, Any]] = []
-    for en, s0, s1 in eras:
-        m = (idx >= s0) & (idx <= s1)
-        if int(m.sum()) < 250:
-            continue
-        src = "M E_t"
-        if int((suites["M E_t"]["part"] & m).sum()) < 60 and E_px is not None:
-            if "M 대용 3상태" not in suites:
-                suites["M 대용 3상태"] = _suite(E_px)
-            src = "M 대용 3상태"
-        su = suites[src]
-        ur = user_rel_portfolio({lab: r[m] for lab, r in su["runs"].items()}, sp[m].fillna(0.0), cfg)
-        urc = {key: user_rel_portfolio({f"c{j}": c[m] for j, c in enumerate(cl)}, sp[m].fillna(0.0), cfg)
-               for key, cl in su["ctl"].items()}
-        b = ur.iloc[0]
-        for _, u in ur.iterrows():
-            lab = str(u["전략"]); key = lab.split(" ")[0]
-            row = {"구간": en, "예산 출처": src, "변형": lab, "하락 회피율": u["하락 회피율"], "상승 참여율": u["상승 참여율"],
-                   "Δ회피(%p)": round((u["하락 회피율"] - b["하락 회피율"]) * 100, 2),
-                   "Δ참여(%p)": round((u["상승 참여율"] - b["상승 참여율"]) * 100, 2),
-                   "등급": u["등급"], "배수": u["배수"], "MDD": u["MDD"], "칼마": u["칼마"],
-                   "발동일": (int((su["offd"] & m).sum()) if key.startswith("L2") else
-                             (int(((su["rem"] > 0) & m).sum()) if key.startswith("L3") else None))}
-            if key in urc:
-                cc = urc[key]["칼마"].astype(float).dropna().values
-                cs = (urc[key]["하락 회피율"] + urc[key]["상승 참여율"]).astype(float).dropna().values
-                row.update({"대조군 칼마 95%": round(float(np.quantile(cc, 0.95)), 3) if len(cc) else np.nan,
-                            "대조군 칼마 백분위": round(float((cc < u["칼마"]).mean() * 100), 1) if len(cc) else np.nan,
-                            "대조군 (회피+참여) 95%": round(float(np.quantile(cs, 0.95)), 4) if len(cs) else np.nan})
-            rows.append(row)
-    tab = pd.DataFrame(rows)
-    verdict = {}
-    for key in ("L2", "L3"):
-        ok = []
-        for en, _, _ in eras:
-            t_ = tab[(tab["구간"] == en) & (tab["변형"].str.startswith(key + " "))] if len(tab) else tab
-            if not len(t_):
-                ok.append(None); continue
-            r_ = t_.iloc[0]
-            ok.append(bool(r_["Δ회피(%p)"] >= -1.0 and r_["Δ참여(%p)"] >= -1.0 and (r_["Δ회피(%p)"] + r_["Δ참여(%p)"]) >= 2.0
-                           and r_["칼마"] == r_["칼마"] and r_.get("대조군 칼마 95%") == r_.get("대조군 칼마 95%")
-                           and r_["칼마"] > r_["대조군 칼마 95%"]))
-        verdict[key] = {"eras": ok, "pass": bool(ok and all(x is True for x in ok))}
-    for r_ in rows:
-        log("MACRO", kv(event="long_audit_row", era=r_["구간"][:9], src=r_["예산 출처"], variant=str(r_["변형"])[:30],
-                        avoid=r_["하락 회피율"], part=r_["상승 참여율"], d_avoid=r_["Δ회피(%p)"], d_part=r_["Δ참여(%p)"],
-                        calmar=r_["칼마"], ctl_q95=r_.get("대조군 칼마 95%"), days=r_.get("발동일")), M=M)
-    log("MACRO", kv(event="long_audit_done", rows=len(rows), L2_pass=verdict.get("L2", {}).get("pass"),
-                    L3_pass=verdict.get("L3", {}).get("pass"), fill=f, pos=pos, controls=nctl, seed=seed,
-                    sec=round(time.time() - t0, 1), note="측정 전용 — ★ 무변경"), M=M)
-    return {"enabled": True, "table": tab, "verdict": verdict, "fill": f, "pos": pos, "controls": nctl, "seed": seed}
-
-
-def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
-    """[v0.68.0 R86] 리포트 단계에서 사용자 신뢰도를 한 번에 계산 — M · S★ · ★ 계열 격자(프런티어) · 섹터 단일 예측."""
-    al = sres.get("alloc") or {}
-    dg = al.get("diag") or {}
-    bts = al.get("bts") or {}
-    lp = dg.get("label_primary")
-    spy = al.get("spy_ret")
-    out: Dict[str, Any] = {"enabled": False}
-    if not (lp in bts and spy is not None and len(pd.Series(spy).dropna())):
-        out["error"] = "S★ 또는 SPY 수익 없음"
-        return out
-    spy = pd.to_numeric(pd.Series(spy), errors="coerce").fillna(0.0)
-    rets = {lp: bts[lp]["strategy_ret"]}
-    mret = al.get("spy_m_ret")
-    if mret is not None:
-        rets["M(SPY 국면전략)"] = mret
-    rets["SPY 단순보유(B&H)"] = spy
-    head = user_rel_portfolio(rets, spy, cfg)
-    fr_labels = [l for l in bts if l != lp and "대조" not in str(l)]
-    front = user_rel_portfolio({l: bts[l]["strategy_ret"] for l in fr_labels}, spy, cfg) if fr_labels else pd.DataFrame()
-    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
-    if len(front):
-        front["높음까지 거리(%p)"] = ((np.maximum(0.0, hi[0] - front["하락 회피율"]) + np.maximum(0.0, hi[1] - front["상승 참여율"])) * 100).round(1)
-        front = front.sort_values("높음까지 거리(%p)").reset_index(drop=True)
-    secs = sres.get("sectors") or {}
-    pos = pd.DataFrame({t: pd.Series(r.get("pos_exec")) for t, r in secs.items() if isinstance(r, dict) and r.get("pos_exec") is not None})
-    ret = pd.DataFrame({t: pd.Series(r.get("bh_ret")) for t, r in secs.items() if isinstance(r, dict) and r.get("bh_ret") is not None})
-    single, sagg = (user_rel_single(pos, ret, cfg) if len(pos.columns) and len(ret.columns) else (pd.DataFrame(), {}))
-    out.update({"enabled": True, "head": head, "front": front, "single": single, "single_agg": sagg, "label_primary": lp,
-                "n_front": int(len(front)), "n_high": int((front["등급"] == "높음").sum()) if len(front) else 0})
-    return out
-
-
-def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[str, Any]] = None,
-                                 layer: str = "섹터") -> pd.DataFrame:
-    """[v0.68.0 R86] 00U_사용자신뢰도 — 사용자 정의 신뢰도(하락 회피·상승 참여) 판정 시트(맨 앞). layer="산업"이면 I가 같은 함수로 쓴다."""
-    pk = pack if pack is not None else user_reliability_pack(sres, cfg)
-    _star = "S★" if layer == "섹터" else "I★"
-    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90))); mid = tuple(getattr(cfg, "USER_REL_MID", (0.50, 0.70)))
-    pm = tuple(getattr(cfg, "USER_REL_SEG_PORT", (0.05, 3))); am = tuple(getattr(cfg, "USER_REL_SEG_ASSET", (0.07, 3)))
-    parts: List[pd.DataFrame] = []
-
-    def _t(blk: str, rows: List[Dict[str, Any]]) -> None:
-        parts.append(pd.DataFrame([{"블록": blk, **r} for r in rows]))
-    _t("A. 읽는 법", [
-        {"항목": "신뢰도(사용자 정의)", "값": "하락을 잘 피하고 상승을 잘 타는가 — 잘하면 노란색(라이브) 수익배수가 오른다. R82~R84의 IC·t̄ 등급은 "
-                                       "'선택 신호 통계'(00R · 참고)로 이름을 바꿨다."},
-        {"항목": "포트폴리오(노란색 행)", "값": f"SPY 단순보유 곡선 지그재그 구간({pm[0]:.0%} · {int(pm[1])}거래일). 하락 회피율 = 1 − Σ하락구간 전략수익 / "
-                                         "Σ하락구간 SPY수익 · 상승 참여율 = Σ상승구간 전략수익 / Σ상승구간 SPY수익(1.0 초과 = SPY보다 더 탐)."},
-        {"항목": f"단일 예측({layer}별)", "값": f"그 {layer} B&H 지그재그({am[0]:.0%} · {int(am[1])}거래일) · 라이브 단독 체결비중 w: 회피율 = 1 − Σ하락(w·r)/Σ하락(r) · "
-                                      f"참여율 = Σ상승(w·r)/Σ상승(r) · 전 {layer} 합산(I 00D와 같은 산식)."},
-        {"항목": "등급(R86 사전등록 · 바꾸지 않음)", "값": f"높음 = 회피 ≥ {hi[0]:.0%} & 참여 ≥ {hi[1]:.0%} · 중간 = 회피 ≥ {mid[0]:.0%} & 참여 ≥ {mid[1]:.0%} · "
-                                                   "낮음 = 그 밖(순효과 > 0) · 없음 = 순효과 ≤ 0. 앞(~2021)·뒤(2022~) 절반 등급이 같으면 '확정'."},
-        {"항목": "⚠", "값": "구간은 사후 분할이다 — 판정(진단)에만 쓰고 신호에는 쓰지 않는다. 연구·교육용이며 투자 자문이 아니다."}])
-    if not pk.get("enabled"):
-        _t("B. 등급", [{"항목": "상태", "값": f"산출 실패 — {pk.get('error', '-')}"}])
-        return pd.concat(parts, ignore_index=True, sort=False)
-    hd = pk["head"].copy(); hd.insert(0, "항목", hd.pop("전략"))
-    parts.append(hd.assign(블록=f"B. 등급 — 노란색({_star})·M·SPY"))
-    sa = pk.get("single_agg") or {}
-    if sa:
-        _t(f"B. 등급 — 노란색({_star})·M·SPY", [{"항목": f"{layer} 단일 예측 합산({sa.get('자산 수', 0)}개)",
-                                          "하락 회피율": round(sa["하락 회피율"], 4), "상승 참여율": round(sa["상승 참여율"], 4),
-                                          "순효과(%p)": round(sa["순효과(%p)"], 1), "등급": sa["등급"]}])
-    sg = pk.get("single")
-    if isinstance(sg, pd.DataFrame) and len(sg):
-        s2 = sg.copy(); s2.insert(0, "항목", s2.pop("자산"))
-        parts.append(s2.assign(블록=f"C. {layer}별 단일 예측"))
-    fr = pk.get("front")
-    if isinstance(fr, pd.DataFrame) and len(fr):
-        _t("D. 프런티어 — 지금 가진 손잡이로 어디까지 가나", [{"항목": "읽는 법", "값": (
-            f"13 시트의 모든 비교·격자 행({len(fr)}행 · 대조군 제외)을 같은 잣대로 잰 것. '높음' 도달 {pk.get('n_high', 0)}행. "
-            "위에서부터 '높음까지 거리'(회피·참여 부족분 합)가 가까운 순. 한쪽을 올리면 다른 쪽이 내려가면 **프런티어 위를 움직일 뿐**이다 — "
-            "둘 다 올리려면 M보다 나은 타이밍 정보(새 근거)가 필요하다.")}])
-        f2 = fr.copy(); f2.insert(0, "항목", f2.pop("전략"))
-        parts.append(f2.assign(블록="D. 프런티어 — 지금 가진 손잡이로 어디까지 가나"))
-    md = (((sres.get("alloc") or {}).get("diag") or {}).get("macro_evidence")) or {}
-    if md.get("enabled"):
-        _t("E. 섹터 거시 근거(R86 · 측정)", [{"항목": "동인", "값": " | ".join(f"{k}: {v}" for k, v in (md.get("drivers") or {}).items())},
-                                           {"항목": "기준(★)", "값": " · ".join(f"{k} {v}" for k, v in (md.get("base") or {}).items())}])
-        e1 = pd.DataFrame(md.get("rows") or [])
-        if len(e1):
-            e1.insert(0, "항목", e1.pop("변형"))
-            parts.append(e1.assign(블록="E. 섹터 거시 근거(R86 · 측정)"))
-        lg = md.get("long") or {}
-        if isinstance(lg.get("table"), pd.DataFrame) and len(lg["table"]):
-            e2 = lg["table"].copy(); e2.insert(0, "항목", e2["구간"].astype(str) + " · " + e2["변형"].astype(str))
-            parts.append(e2.drop(columns=["구간", "변형"]).assign(블록="E2. 섹터 거시 근거 장기 검증(엔진 1999~)"))
-        _t("E. 섹터 거시 근거(R86 · 측정)", [{"항목": "사전등록 승격(다음 라운드)", "값": " · ".join(
-            f"{g}: {'✓ 조건 충족 — 라이브 후보' if v else '미충족'}" for g, v in (md.get("promote") or {}).items())}])
-    elif md.get("error"):
-        _t("E. 섹터 거시 근거(R86 · 측정)", [{"항목": "상태", "값": f"산출 실패 — {md['error']}"}])
-    df = pd.concat(parts, ignore_index=True, sort=False)
-    lead = ["블록", "항목", "값"]
-    return df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
-
-
-def user_reliability_lines(sres: Dict[str, Any], cfg, pack: Optional[Dict[str, Any]] = None, layer: str = "섹터"
-                           ) -> List[Tuple[str, str]]:
-    """[v0.68.0 R86] 00 맨 앞 줄 — 사용자 정의 신뢰도(하락 회피·상승 참여)."""
-    pk = pack if pack is not None else user_reliability_pack(sres, cfg)
-    out: List[Tuple[str, str]] = []
-    if not pk.get("enabled"):
-        out.append((f"⚠ 신뢰도(사용자 기준) — {layer}", f"산출 실패 — {pk.get('error', '-')}"))
-        return out
-    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
-    hd = pk["head"].set_index("전략")
-
-    def _f(lbl: str) -> str:
-        if lbl not in hd.index:
-            return "-"
-        r = hd.loc[lbl]
-        return (f"**{r['등급']}**(회피 {r['하락 회피율']:.1%} · 참여 {r['상승 참여율']:.1%} · 순효과 {r['순효과(%p)']:+.0f}%p · "
-                f"앞/뒤 절반 {r['절반 등급']})")
-    sa = pk.get("single_agg") or {}
-    fr = pk.get("front")
-    near = ""
-    if isinstance(fr, pd.DataFrame) and len(fr):
-        n0 = fr.iloc[0]
-        near = (f" · 가장 가까운 행: {str(n0['전략'])[:40]} (회피 {n0['하락 회피율']:.1%} · 참여 {n0['상승 참여율']:.1%} · "
-                f"거리 {n0['높음까지 거리(%p)']:.1f}%p)")
-    _star = "S★" if layer == "섹터" else "I★"
-    out.append((f"★★★ 신뢰도(사용자 기준 — 하락 회피·상승 참여) · {layer}",
-                f"노란색 {_star} {_f(pk['label_primary'])} | M {_f('M(SPY 국면전략)')} | "
-                + (f"{layer} 단일 예측 **{sa['등급']}**(회피 {sa['하락 회피율']:.1%} · 참여 {sa['상승 참여율']:.1%}) | " if sa else "")
-                + f"높음 = 회피 ≥ {hi[0]:.0%} & 참여 ≥ {hi[1]:.0%} — 격자 {pk.get('n_front', 0)}행 중 도달 {pk.get('n_high', 0)}행{near}. 세부 00U."))
-    md = (((sres.get("alloc") or {}).get("diag") or {}).get("macro_evidence")) or {}
-    if md.get("enabled"):
-        rr = md.get("rows") or []
-        seg = " | ".join(f"{str(r['변형']).split('·')[1].strip()[:22]} Δ회피 {r['Δ회피(%p)']:+.1f} · Δ참여 {r['Δ참여(%p)']:+.1f}"
-                         for r in rr if "·" in str(r["변형"]))
-        lv = ((md.get("long") or {}).get("verdict") or {})
-        out.append(("★★ 섹터 거시 근거(R86 · 유가·구리·금리·신용 — 측정 전용)",
-                    seg + " || 장기 검증(두 구간 모두 조건): " + " · ".join(f"{k} {'통과' if (v or {}).get('pass') else '미통과'}"
-                                                              for k, v in lv.items())
-                    + " → 승격: " + " · ".join(f"{g} {'✓' if v else '✗'}" for g, v in (md.get("promote") or {}).items())
-                    + " (사전등록 — 두 구간 모두 회피·참여를 함께 올리고 무작위를 이겨야 다음 라운드 라이브 후보)."))
-    elif md.get("error"):
-        out.append(("⚠ 섹터 거시 근거(R86)", f"산출 실패 — {md['error']}"))
     return out
 
 
@@ -10876,165 +10400,6 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                           action="섹터근거 블록 생략 — ★가 이미 교체됐다면 그대로, 아니면 v0.66.0 ★"), M=M, level="warning")
             _own_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
 
-    # ---- [v0.68.0 R86 ★★ 측정 전용] [섹터거시근거격자] — 섹터 고유 경제 동인(유가·구리·금리·신용)으로 '국면을 안 따라가는 섹터' ----
-    #   사용자 지시(2026-09-22): "섹터별로 시장 국면별로 안따라갈때도 있잖아 … 섹터별 상승, 하락 근거 따로 찾으라고",
-    #     "신뢰도는 내가 얘기했던 방법(하락 잘 피하고 상승 잘 타는 것)". 시작 v0.67.0 → 목표 v0.68.0.
-    #   R85 판정(엔진 s14): 섹터 **가격** 근거(자기 추세·상대 추세·국면기계)는 2000~2017 독립 구간에서 SPY·무작위보다 나빴다 →
-    #     R85 채움은 사전등록 (d)로 되돌렸다(OWN_EVIDENCE_FILL 0.25 → 0.0). 남은 '섹터별 근거'는 경제 동인이다 — 여기서 처음 잰다.
-    #   행(★ 기준 · 한 번에 한 가지만 바꾼다):
-    #     G1 하락국면리더(E_t=0) — 리더 섹터가 거시 **역풍/동인 없음**이면 들지 않는다(현금)
-    #     G2 E_t=0일 — 리더 대신 '거시 순풍 & 자기 추세 상승' 섹터 1위(63일 상대수익) × 0.25(없으면 현금)
-    #     G3 부분예산일(0<E_t<1) — 남는 현금 25%를 '거시 순풍 & 자기 추세 상승' 상위 2(주력 제외)로
-    #     G4 E_t>0일 — 주력 외 보유 섹터가 거시 역풍이면 '거시 순풍 & 자기 추세 상승' 1위(미보유)로 교체(노출 불변)
-    #   G2·G3는 같은 날·같은 몫 무작위 섹터 대조군(자기 추세 상승 섹터 중) 12개와 비교한다. 장기 검증(macro_long_audit)이 G2·G3의
-    #   독립 구간판(L2·L3)을 잰다. ⚠ 사전등록(R86 → 다음 리포트): G2 또는 G3를 라이브로 올리는 조건 —
-    #     (1) 장기 검증 **두 구간 모두** Δ회피 ≥ −1%p · Δ참여 ≥ −1%p · Δ회피+Δ참여 ≥ +2%p · 칼마 > 무작위 대조군 95%
-    #     (2) 평가창 ★ 변형: Δ회피+Δ참여 ≥ +2%p · MDD 악화 ≤ 0.5%p · 칼마 > 무작위 대조군 95%.
-    #     G1·G4는 독립 구간판이 없어 **진단**이다(승격 불가). 엔진은 스스로 라이브를 바꾸지 않는다.
-    #   룩어헤드 없음: 동인은 t일까지(FRED는 발표 지연만큼 더 늦춤) · 자기 추세는 t일 종가까지 · 비중은 t+1 시가 체결.
-    _macro_diag: Dict[str, Any] = {"enabled": False}
-    if bool(getattr(scfg, "MACRO_EVIDENCE_ENABLE", True)) and label_primary in target_ws:
-        try:
-            _tm0 = time.time()
-            _pri_m = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
-            _base_m = target_ws[label_primary].copy()
-            _secm = [c for c in cols if c in _base_m.columns and c in ret_cc_full.columns]
-            _rcf_m = ret_cc_full[_secm]
-            _lvl_m = (1.0 + _rcf_m.fillna(0.0)).cumprod().where(_rcf_m.notna())
-            _tail_f, _head_f, _minfo = macro_driver_states(res, full_idx, _secm, scfg, M)
-            _frm_f = own_evidence_frames(_lvl_m, None, int(getattr(scfg, "OWN_EVIDENCE_N_LONG", 200)),
-                                         int(getattr(scfg, "OWN_EVIDENCE_N_SHORT", 50)), int(getattr(scfg, "OWN_EVIDENCE_N_REL", 50)),
-                                         int(getattr(scfg, "OWN_EVIDENCE_N_RS", 63)))
-            _tail = _tail_f.reindex(eval_idx).fillna(False).astype(bool)
-            _head = _head_f.reindex(eval_idx).fillna(False).astype(bool)
-            _own_up = _frm_f["own_up"].reindex(eval_idx).fillna(False).astype(bool)
-            _rs_m = _frm_f["rs"].reindex(eval_idx)
-            _candm = (_tail & _own_up)
-            _Evm = E.reindex(eval_idx).fillna(0.0).astype(float)
-            _offm = _Evm <= 1e-12
-            _partm = (_Evm > 1e-12) & (_Evm < 1.0 - 1e-12)
-            _onm = _Evm > 1e-12
-            log("MACRO", kv(event="drivers_ready", sectors=len(_secm), lookback=int(getattr(scfg, "MACRO_LOOKBACK", 63)),
-                            drivers=" | ".join(f"{k}:{v}" for k, v in _minfo.items())[:900],
-                            cand_per_day=round(float(_candm.sum(axis=1).mean()), 3)), M=M)
-            _gm: Dict[str, pd.DataFrame] = {}
-            # G1 — 하락국면리더를 거시 순풍일 때만
-            _dl = down_leader_days.reindex(eval_idx).fillna(False).astype(bool)
-            _ls = leader_s.reindex(eval_idx)
-            _okl = pd.Series([bool(_tail.at[d_, s_]) if isinstance(s_, str) and s_ in _tail.columns else False
-                              for d_, s_ in _ls.items()], index=eval_idx)
-            _w1 = _base_m.copy()
-            _drop1 = _dl & ~_okl
-            _w1.loc[_drop1.values, _secm] = 0.0
-            _gm["주력섹터 중심 · G1 하락국면리더는 거시 순풍일 때만 [섹터거시근거격자·진단]"] = _w1
-            # G2 — E_t=0일 거시 순풍 섹터 1위 × pos
-            _pos_m = float(getattr(scfg, "MACRO_OFF_POS", 0.25) or 0.25)
-            _sel1 = _own_top_by(_rs_m[_secm], _candm[_secm], 1)
-            _w2 = _base_m.copy()
-            _w2.loc[_offm.values, _secm] = 0.0
-            _w2[_secm] = _w2[_secm].add(_sel1.mul(_pos_m * _offm.astype(float), axis=0), fill_value=0.0)
-            _lab_g2 = f"주력섹터 중심 · G2 E_t=0일 거시 순풍 섹터 1위 {_pos_m:.0%}(리더 대체) [섹터거시근거격자]"
-            _gm[_lab_g2] = _w2
-            # G3 — 부분예산일 거시 순풍 채움
-            _f_m = float(getattr(scfg, "MACRO_FILL", 0.25) or 0.25)
-            _cm3 = _candm[_secm].copy()
-            if _pri_m in _cm3.columns:
-                _cm3[_pri_m] = False
-            _sel3 = _own_top_by(_rs_m[_secm], _cm3, int(getattr(scfg, "OWN_EVIDENCE_FILL_K", 2) or 2))
-            _w3, _add3 = own_evidence_fill(_base_m, {"cand": _cm3, "rs": _rs_m}, _secm, _pri_m, _partm, _f_m,
-                                           int(getattr(scfg, "OWN_EVIDENCE_FILL_K", 2) or 2), sel=_sel3)
-            _lab_g3 = f"주력섹터 중심 · G3 부분예산일 남는 현금 {_f_m:.0%} → 거시 순풍 상위2 [섹터거시근거격자]"
-            _gm[_lab_g3] = _w3
-            # G4 — 대피처 거시 역풍 교체(노출 불변)
-            _w4, _m4 = own_evidence_swap(_base_m, {"own_dn": _head[_secm], "cand": _candm[_secm], "rs": _rs_m[_secm]},
-                                         _secm, _pri_m, _onm)
-            _gm["주력섹터 중심 · G4 대피처 거시 역풍 → 순풍 섹터로 교체(노출 불변) [섹터거시근거격자·진단]"] = _w4
-            # 대조군(G2·G3 — 같은 날·같은 몫, 자기 추세 상승 섹터 중 무작위)
-            _nctl_m = int(getattr(scfg, "MACRO_CONTROLS", 12) or 0)
-            _seed_m = int(getattr(scfg, "MACRO_SEED", 20260924))
-            _pool2 = _own_up[_secm].copy()
-            _pool3 = _pool2.copy()
-            if _pri_m in _pool3.columns:
-                _pool3[_pri_m] = False
-            _c2, _c3 = [], []
-            _has1 = _sel1.sum(axis=1) > 0
-            for _j in range(_nctl_m):
-                _r1 = _own_rand_sel(_pool2, 1, _seed_m + _j).mul(_has1.astype(float), axis=0)
-                _wc = _base_m.copy(); _wc.loc[_offm.values, _secm] = 0.0
-                _wc[_secm] = _wc[_secm].add(_r1.mul(_pos_m * _offm.astype(float), axis=0), fill_value=0.0)
-                _l = f"주력섹터 중심 · 대조군{_j}: G2 같은 날 무작위 섹터 [섹터거시근거격자·대조]"
-                _gm[_l] = _wc; _c2.append(_l)
-                _rk = _own_rand_sel(_pool3, int(getattr(scfg, "OWN_EVIDENCE_FILL_K", 2) or 2), _seed_m + 500 + _j)
-                _rk = _rk.mul((_sel3.sum(axis=1) > 0).astype(float), axis=0)
-                _l = f"주력섹터 중심 · 대조군{_j}: G3 같은 날·같은 몫 무작위 2섹터 [섹터거시근거격자·대조]"
-                _gm[_l] = own_evidence_fill(_base_m, {"cand": _cm3, "rs": _rs_m}, _secm, _pri_m, _partm, _f_m, 2, sel=_rk)[0]
-                _c3.append(_l)
-            for _lab, _fw in _gm.items():
-                _fw = _fw.fillna(0.0).clip(lower=0.0)
-                target_ws[_lab] = _fw
-                bts[_lab] = portfolio_backtest(_fw, ret_co, ret_oc, **bt_kw)
-                variants[_lab] = _fw
-            _spy_e = ((1.0 + ret_co["SPY"].fillna(0.0)) * (1.0 + ret_oc["SPY"].fillna(0.0)) - 1.0).reindex(eval_idx).fillna(0.0)
-            _ur = user_rel_portfolio({l_: bts[l_]["strategy_ret"] for l_ in [label_primary] + list(_gm.keys())}, _spy_e, scfg)
-            _uri = _ur.set_index("전략")
-            _b = _uri.loc[label_primary]
-            _rows_m = []
-            _prereg_eval = {}
-            for _lab in _gm:
-                if "·대조]" in _lab:
-                    continue
-                _u = _uri.loc[_lab]
-                _da = (float(_u["하락 회피율"]) - float(_b["하락 회피율"])) * 100.0
-                _dp = (float(_u["상승 참여율"]) - float(_b["상승 참여율"])) * 100.0
-                _cl = _c2 if "G2" in _lab else (_c3 if "G3" in _lab else [])
-                _cc = np.asarray([float(_uri.loc[l_, "칼마"]) for l_ in _cl], dtype=float)
-                _cc = _cc[_cc == _cc]
-                _q95 = float(np.quantile(_cc, 0.95)) if len(_cc) else np.nan
-                _ok = bool((_da + _dp) >= 2.0 and float(_u["MDD"]) >= float(_b["MDD"]) - 0.005
-                           and len(_cc) and float(_u["칼마"]) > _q95)
-                if "G2" in _lab or "G3" in _lab:
-                    _prereg_eval["G2" if "G2" in _lab else "G3"] = _ok
-                _rows_m.append({"변형": _lab, "하락 회피율": _u["하락 회피율"], "상승 참여율": _u["상승 참여율"],
-                                "Δ회피(%p)": round(_da, 2), "Δ참여(%p)": round(_dp, 2), "등급": _u["등급"],
-                                "배수": _u["배수"], "MDD": _u["MDD"], "칼마": _u["칼마"],
-                                "대조군 칼마 95%": (round(_q95, 3) if _q95 == _q95 else np.nan),
-                                "평가창 사전등록(2) 통과": (_ok if ("G2" in _lab or "G3" in _lab) else "진단")})
-            _macro_diag = {"enabled": True, "drivers": _minfo, "rows": _rows_m, "base": {"하락 회피율": _b["하락 회피율"],
-                           "상승 참여율": _b["상승 참여율"], "배수": _b["배수"], "MDD": _b["MDD"], "칼마": _b["칼마"]},
-                           "prereg_eval": _prereg_eval, "controls": _nctl_m, "seed": _seed_m,
-                           "g1_days_dropped": int(_drop1.sum()), "g1_leader_days": int(_dl.sum()),
-                           "g2_days": int((_offm & _has1).sum()), "g3_days": int((_add3 > 0).sum()),
-                           "g4_days": int(_m4.any(axis=1).sum())}
-            for _r in _rows_m:
-                log("MACRO", kv(event="grid_row", variant=str(_r["변형"])[:48], avoid=_r["하락 회피율"], part=_r["상승 참여율"],
-                                d_avoid=_r["Δ회피(%p)"], d_part=_r["Δ참여(%p)"], mult=_r["배수"], mdd=_r["MDD"], calmar=_r["칼마"],
-                                ctl_q95=_r["대조군 칼마 95%"], prereg=_r["평가창 사전등록(2) 통과"]), M=M)
-            if bool(getattr(scfg, "MACRO_LONG_AUDIT", True)):
-                try:
-                    _pxa_m = res.get("px_adj") if isinstance(res, dict) else None
-                    _spy_lm = (pd.Series(_pxa_m).astype(float).pct_change(fill_method=None).reindex(full_idx)
-                               if _pxa_m is not None and len(pd.Series(_pxa_m).dropna()) > 300 else spy_cc_full)
-                    _macro_diag["long"] = macro_long_audit(_lvl_m, E_full, _spy_lm,
-                                                           (pd.Series(_pxa_m).reindex(full_idx) if _pxa_m is not None else None),
-                                                           _tail_f, rf_daily, scfg, cost_bps=float(res["cfg"].COST_BPS), M=M)
-                except Exception as _e5:
-                    log("MACRO", kv(event="long_audit_failed", err=type(_e5).__name__, msg=str(_e5)[:160],
-                                    trace=traceback.format_exc()[-300:].replace("\n", " | "), action="장기 검증만 생략"), M=M,
-                        level="warning")
-                    _macro_diag["long"] = {"enabled": False, "error": f"{type(_e5).__name__}: {str(_e5)[:160]}"}
-            _lv = (_macro_diag.get("long") or {}).get("verdict") or {}
-            _macro_diag["promote"] = {g: bool(_prereg_eval.get(g) and (_lv.get("L" + g[1:]) or {}).get("pass")) for g in ("G2", "G3")}
-            log("MACRO", kv(event="grid_done", rows=len(_rows_m), controls=_nctl_m, seed=_seed_m,
-                            g1_dropped=_macro_diag["g1_days_dropped"], g2_days=_macro_diag["g2_days"],
-                            g3_days=_macro_diag["g3_days"], g4_days=_macro_diag["g4_days"],
-                            promote=";".join(f"{k}={v}" for k, v in _macro_diag["promote"].items()),
-                            sec=round(time.time() - _tm0, 1), note="측정 전용 — ★(라이브) 무변경"), M=M)
-        except Exception as _e:
-            log("MACRO", kv(event="macro_grid_failed", err=type(_e).__name__, msg=str(_e)[:180],
-                            trace=traceback.format_exc()[-400:].replace("\n", " | "), action="격자만 생략 — ★ 무영향"),
-                M=M, level="warning")
-            _macro_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
-
     # ---- [v0.66.0 R84 ★★ 신규 · 측정 전용] [모멘텀연결격자] — '예측을 배분에 넣으면 노란색(★) 성과가 나아지나' ----
     #   사용자 질문(2026-09-22): "고치고 있는거 맞아? 왜 노란색 표시된 수익배수는 그대로야".
     #   답: R82·R83은 신뢰도 **측정**만 바꿨고 ★(실제 거래 규칙)은 R81 이후 그대로라 수익배수 12.368도 그대로다.
@@ -11250,7 +10615,6 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         "self_cut": _sc_diag,                                                        # [v0.62.0 R80]
         "alloc_link": _link_diag,                                                    # [v0.66.0 R84] [모멘텀연결격자]
         "own_evidence": _own_diag,                                                   # [v0.67.0 R85] 섹터 자기근거 채움
-        "macro_evidence": _macro_diag,                                               # [v0.68.0 R86] 섹터 거시 근거(측정)
         "label_alt": (label_topk if mode == "leader3" else label_leader),
         "label_own": (label_own if label_own in bts else None), "spy_m": spy_m,          # [v0.7.0]
         "label_score": (label_score if label_score in bts else None),                   # [v0.8.0]
@@ -11279,7 +10643,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     }
     log("ROTATION", kv(event="allocation_built",
                        **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year", "spy_m",
-                                                                     "tier_by_year", "avoid_by_year", "alloc_link", "own_evidence", "macro_evidence")},
+                                                                     "tier_by_year", "avoid_by_year", "alloc_link", "own_evidence")},
                        tiers=";".join(f"{k}:{v}" for k, v in sorted(diag["tier_by_year"].items())) or "-",
                        avoid_ok=";".join(f"{k}:{'+'.join(v) if v else '-'}" for k, v in sorted(diag["avoid_by_year"].items())) or "-",
                        spy_m_cagr=spy_m["CAGR"], spy_m_mdd=spy_m["MDD"],
@@ -16254,26 +15618,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                 meta.insert(1, (_k, _v))
     except Exception as _e:
         log("REPORT", kv(event="own_evidence_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
-    # ---- [v0.68.0 R86 ★★★] 00U_사용자신뢰도 — 신뢰도 = 사용자 정의(하락 회피·상승 참여) · 00 맨 앞 줄(00S 줄보다 앞) ----
-    if bool(getattr(scfg, "USER_REL_ENABLE", True)):
-        try:
-            _upk = user_reliability_pack(sres, scfg)
-            if not _upk.get("enabled") and not (sres.get("alloc") or {}).get("bts"):
-                raise LookupError("배분(alloc) 없음 — 노란색 행이 없어 사용자 신뢰도를 잴 대상이 없다")
-            sheets["00U_사용자신뢰도"] = build_user_reliability_sheet(sres, scfg, _upk)
-            for _k, _v in reversed(user_reliability_lines(sres, scfg, _upk, "섹터")):
-                meta.insert(1, (_k, _v))
-            _h0 = _upk.get("head")
-            if isinstance(_h0, pd.DataFrame) and len(_h0):
-                for _, _r0 in _h0.iterrows():
-                    log("USER_REL", kv(event="grade", layer="섹터", strategy=str(_r0["전략"])[:40], avoid=_r0["하락 회피율"],
-                                       part=_r0["상승 참여율"], net=_r0["순효과(%p)"], grade=_r0["등급"], halves=_r0["절반 등급"]), M=M)
-            log("USER_REL", kv(event="frontier", rows=_upk.get("n_front"), high=_upk.get("n_high"),
-                               single=(_upk.get("single_agg") or {}).get("등급")), M=M)
-        except Exception as _e:
-            log("REPORT", kv(event="user_reliability_failed", err=type(_e).__name__, msg=str(_e)[:160],
-                             trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00U_사용자신뢰도", "00S_섹터자기근거", "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
+    sheets = sheets_to_front(sheets, "00S_섹터자기근거", "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
     _lm_s = None
     try:
@@ -17304,7 +16649,7 @@ def reliability_lines(aud: Dict[str, Any]) -> List[Tuple[str, str]]:
                                                      for x in g.get("signal_external"))) if g.get("signal_external") else None),
          ((f"검정력: 관측 효과가 진짜여도 연도 기준 통과 확률 ≈ {sel['years_pass_prob']:.0%}")
           if sel and sel.get("years_pass_prob") == sel.get("years_pass_prob") and sel.get("years_pass_prob") is not None else None)]
-    out.append((f"참고: 선택 신호 통계({tag} · 00R 시트 — 사용자 신뢰도 아님) — {lay}", " | ".join(x for x in s if x)
+    out.append((f"★ 신뢰도 판정({tag} · 00R 시트) — {lay}", " | ".join(x for x in s if x)
                 + " — 타이밍과 선택을 분리해 M과 같은 잣대로 쟀다(기준값은 R82 사전등록 그대로). 배분은 바꾸지 않았다."))
     fc = aud.get("forecast")
     if isinstance(fc, pd.DataFrame) and len(fc):
@@ -17337,7 +16682,7 @@ def s_yellow_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
             return float("nan")
     # [v0.67.0 R85] 섹터 자기근거 채움이 켜져 있으면 '왜 그대로인가'(R84) 대신 '이번에 왜 바뀌었나'를 싣는다.
     #   (R85 줄 자체는 00S 블록이 00 맨 앞 — 버전 바로 다음 — 에 넣는다: 여기서 넣으면 '다음 거래일' 블록 뒤로 밀린다.)
-    _own_live = bool((dg.get("own_evidence") or {}).get("enabled"))   # [v0.68.0] 켜짐·끔 모두 own_evidence_lines가 '노란색' 줄을 낸다
+    _own_live = bool((dg.get("own_evidence") or {}).get("enabled")) and float((dg.get("own_evidence") or {}).get("fill", 0) or 0) > 0
     mcol = "총수익배수" if "총수익배수" in pf.columns else None
     star = (f"총수익배수 {_g(lp, mcol):.3f} · " if mcol else "") + (
         f"CAGR {_g(lp, 'CAGR') * 100:.2f}% · MDD {_g(lp, '최대낙폭(MDD)') * 100:.2f}% · 칼마 {_g(lp, '칼마(CAGR/MDD)'):.3f}")

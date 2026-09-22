@@ -1,16 +1,5 @@
 # =============================================================================
 #  industry_rotation.py
-#  VERSION: v0.40.0 - 2026-09-22 - [R86 ★★★ 신뢰도 = 사용자 정의(하락 회피·상승 참여) — I★·산업 단일 예측 · R85 채움 되돌림 반영 — I 규칙 무변경]
-#    시작 v0.39.0 → 목표 v0.40.0. 사용자 지시는 S v0.68.0 머리 주석 참조(같은 라운드 · "신뢰도는 내가 얘기했던 방법인거 알지?").
-#    ── 엔진 판정(i32): I★ 채움 OFF 14.488 → 라이브 14.571(+0.6%) · MDD −9.02 → −9.12% · 칼마 3.992 → 3.955(되돌림 조건 (e)는 미해당 —
-#       그러나 S의 (d)가 해당해 S가 채움을 껐다 → I★도 v0.38.0 틀로 돌아간다).
-#    ── 사용자 정의 신뢰도(r86 · SPY 지그재그 5% · 2018~): I★ 회피 60.6% · 참여 88.4% → **중간** · M 74.0% · 64.7% → 낮음 ·
-#       산업 단일 예측(00D ★ 라이브) 하락 노출 25.7%(= 회피 74.3%) · 상승 포착 49.4% → 낮음. 격자에 '높음'(회피 ≥70% & 참여 ≥90%) 행 없음.
-#    (§1 ★★★) 00U_사용자신뢰도 시트(맨 앞) + 00 맨 앞 줄 — S.user_reliability_pack/build_user_reliability_sheet/user_reliability_lines를
-#       layer="산업"으로 그대로 쓴다(단일 정본 = S). run() 반환에 "user_rel_src"(S의 SPY·M 일수익 — 같은 창) 추가.
-#    (§2) i_yellow_lines: S★ 채움이 꺼져 OFF 행 = I★이면 'R86 되돌림' 줄(R84 '왜 그대로인가' 문구 대신).
-#    (§3) IndustryConfig: USER_REL_* (S와 같은 값 — 00U 등급 기준).
-#    ⚠ 배분(I★)·위험 파라미터 변경 없음(I★ 변화는 S★ 되돌림에서 온다). 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.39.0 - 2026-09-22 - [R85 ★★ S★ 섹터근거 부분채움(S v0.67.0)이 I★로 전달 · 'OFF 기준' 전후 비교 행 · 00 줄 — I 자체 규칙 무변경]
 #    시작 v0.38.0 → 목표 v0.39.0. 사용자 지시는 S v0.67.0 머리 주석 참조(같은 라운드 · "시장 국면은 참고만, 섹터별 상승·하락 근거").
 #    ── 왜 I★가 바뀌나: I★는 S★ 섹터 비중 **안에서만** 산업을 고른다(계층 정합: 산업 + 부모 = S★ 섹터 비중). S★가 부분예산일(0<E_t<1)에
@@ -1844,7 +1833,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.40.0"
+VERSION = "v0.39.0"
 VERSION_DATE = "2026-09-22"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2556,13 +2545,6 @@ class IndustryConfig:
     #   함수 본체는 S.reliability_audit()(단일 정본 — S v0.64.0). 기준값도 S와 같게 둔다(층 사이 공정 비교).
     #   되돌리기(끄기): i_overrides={"RELIABILITY_AUDIT": False}
     RELIABILITY_AUDIT: bool = True
-    # ---- [v0.40.0 R86 ★★★] 사용자 정의 신뢰도(하락 회피·상승 참여) — S와 같은 기준(00U 시트 · 00 맨 앞 줄 · 진단) ----
-    USER_REL_ENABLE: bool = True
-    USER_REL_SEG_PORT: Tuple[float, int] = (0.05, 3)
-    USER_REL_SEG_ASSET: Tuple[float, int] = (0.07, 3)
-    USER_REL_HIGH: Tuple[float, float] = (0.70, 0.90)
-    USER_REL_MID: Tuple[float, float] = (0.50, 0.70)
-    USER_REL_SPLIT: str = "2022-01-01"
     REL_H: int = 21
     REL_WARMUP: int = 252
     REL_MIN_ASSETS: int = 5
@@ -12848,9 +12830,6 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
     return {
         "drivers": _drv, "driver_tests": _drv_tests, "driver_rot_grid": _drv_grid,   # [v0.29.0 R75] 27·26·00A·00
         "reliability": _rel_aud,                                  # [v0.36.0 R82] 00R_신뢰도판정
-        # [v0.40.0 R86] 사용자 신뢰도 입력 — S가 이미 계산한 같은 창의 SPY·M 일수익(재계산 없음)
-        "user_rel_src": {"spy_ret": ((sres or {}).get("alloc") or {}).get("spy_ret"),
-                         "spy_m_ret": ((sres or {}).get("alloc") or {}).get("spy_m_ret")},
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
         "reentry_audit": _reentry,                                # [v0.27.0 R73 §4-4] 25_재진입감사
@@ -13839,14 +13818,6 @@ def i_yellow_lines(perf: Optional[pd.DataFrame], label_star: Optional[str], rel:
         if len(rw):
             o0 = rw.iloc[0]
             g = lambda c: float(pd.to_numeric(o0.get(c), errors="coerce")) if c in rw.columns else float("nan")
-            if abs(g("총수익배수") - f("총수익배수")) <= 1e-9:
-                # [v0.40.0 R86] S가 R85 채움을 사전등록 (d)로 껐다 → OFF 행 = I★. R84 '왜 그대로인가' 문구는 더 이상 맞지 않는다.
-                out.append(("★★ 노란색(I★ 라이브) 수익배수 — R86: S★ 채움 되돌림 반영",
-                            f"I★ 총수익배수 {f('총수익배수'):.3f} · CAGR {f('CAGR') * 100:.2f}% · MDD {f('최대낙폭(MDD)') * 100:.2f}% · "
-                            f"칼마 {f('칼마(CAGR/MDD)'):.3f} — S가 R85 부분채움을 사전등록 (d)(2000~2017 독립 구간에서 SPY·무작위보다 나쁨)로 "
-                            "껐으므로 I★는 v0.38.0 틀과 같다(13의 [섹터근거전달] OFF 행 = I★). I의 규칙은 그대로다. 신뢰도(하락 회피·상승 참여) "
-                            "판정은 00U."))
-                return out
             if abs(g("총수익배수") - f("총수익배수")) > 1e-9:
                 out.append(("★★★ 노란색(I★ 라이브) 수익배수 — R85에서 바뀐 이유",
                             f"I★ 배수 {g('총수익배수'):.3f} → **{f('총수익배수'):.3f}** · CAGR {g('CAGR') * 100:.2f}% → {f('CAGR') * 100:.2f}% · "
@@ -14936,27 +14907,7 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 sheets["00R_신뢰도판정"] = S.build_reliability_sheet(_ra, icfg)
             except Exception as _e:
                 log("REPORT", kv(event="reliability_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
-        # ---- [v0.40.0 R86 ★★★] 00U_사용자신뢰도 — S와 같은 함수·같은 기준(layer="산업") ----
-        _upk_i = None
-        if bool(getattr(icfg, "USER_REL_ENABLE", True)) and hasattr(S, "user_reliability_pack") and alloc:
-            try:
-                _src = ires.get("user_rel_src") or {}
-                _ps = {"alloc": {"bts": alloc.get("bts") or {}, "diag": {"label_primary": alloc.get("label_star")},
-                                 "spy_ret": _src.get("spy_ret"), "spy_m_ret": _src.get("spy_m_ret")},
-                       "sectors": results}
-                _upk_i = S.user_reliability_pack(_ps, icfg)
-                sheets["00U_사용자신뢰도"] = S.build_user_reliability_sheet(_ps, icfg, _upk_i, "산업")
-                _h0 = _upk_i.get("head")
-                if isinstance(_h0, pd.DataFrame) and len(_h0):
-                    for _, _r0 in _h0.iterrows():
-                        log("USER_REL", kv(event="grade", layer="산업", strategy=str(_r0["전략"])[:40], avoid=_r0["하락 회피율"],
-                                           part=_r0["상승 참여율"], net=_r0["순효과(%p)"], grade=_r0["등급"],
-                                           halves=_r0["절반 등급"]), M=M)
-            except Exception as _e:
-                log("REPORT", kv(event="user_reliability_failed", err=type(_e).__name__, msg=str(_e)[:160],
-                                 trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
-                _upk_i = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:120]}"}
-        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교",
+        sheets = S.sheets_to_front(sheets, "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교",
                                    "00D_하락상승개선비교", "00E_산업상승확률")
 
     # [v0.23.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다.
@@ -15113,16 +15064,6 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             meta.insert(1 + int(_n_rel), (_k, _v))
     except Exception as _e:
         log("REPORT", kv(event="yellow_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
-    # ---- [v0.40.0 R86 ★★★] 사용자 정의 신뢰도 줄 — 00 맨 앞(버전 다음) ----
-    try:
-        if S is not None and hasattr(S, "user_reliability_lines") and isinstance(locals().get("_upk_i"), dict):
-            _src2 = ires.get("user_rel_src") or {}
-            _ps2 = {"alloc": {"bts": (alloc or {}).get("bts") or {}, "diag": {"label_primary": (alloc or {}).get("label_star")},
-                              "spy_ret": _src2.get("spy_ret"), "spy_m_ret": _src2.get("spy_m_ret")}, "sectors": results}
-            for _k, _v in reversed(S.user_reliability_lines(_ps2, icfg, locals().get("_upk_i"), "산업")):
-                meta.insert(1, (_k, _v))
-    except Exception as _e:
-        log("REPORT", kv(event="user_reliability_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:
         import inspect as _inspect
