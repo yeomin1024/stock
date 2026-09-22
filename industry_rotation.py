@@ -1,5 +1,32 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.42.0 - 2026-09-23 - [R89 표시: 계층 버전 점검 줄 · 00U 블록 G(S의 M 사이징 긴 이력 판정) 전달 — I 규칙·배분 무변경]
+#    리포트 i35는 I v0.39.0(R85 파일)이었다(M만 v1.58.0). 시작 v0.41.0 → 목표 v0.42.0.
+#    (§1) 00 '계층 버전 점검(R89)' 줄 — S.layer_version_note("industry_rotation"). S가 예전 파일이면 그 사실을 적는다.
+#    (§2) run() user_rel_src.s_msizing_ff · _i_relcmp_diag에 msizing_ff 전달 → I 00U 블록 G(S와 같은 값).
+#    (§3) S [회피참여비교] '표본 안 높음 후보(R89)' 행은 relcmp_frames로 자동 전달된다(I 비교 행 7개).
+#    연구·교육용 — 투자 자문이 아니다.
+#  VERSION: v0.41.0 - 2026-09-22 - [R88 ★★★ I★ = S★ 양쪽형(사용자 선택)을 따른다 · 회피형·참여형·양쪽형 비교 I 행 · 00U 블록 F — I 자체 규칙 무변경]
+#    사용자 지시(2026-09-22): "M도 필요하면 개선해 그리고 회피, 참여 둘다해서 비교해보면 되잖아 다시 신뢰도 높도록 코드 수정해봐" → 양쪽형 선택.
+#    시작 v0.40.0 → 목표 v0.41.0. 라이브 변화는 M v1.58.0(헤어컷 E11·중립 0.6)과 S v0.69.0(상한 0.9·방어대피처 0·하락국면리더 0)에서 온다 —
+#      I★는 S★ 섹터 비중 안에서 같은 규칙(리더 산업/부모)으로 담으므로 I의 위험 파라미터는 바꾸지 않았다.
+#    (§1) build_industry_allocation(): S가 넘긴 relcmp_frames(모드별 S 비중)로 I 비교 행 6개 — [섹터근거전달]과 같은 부모 비율 방식.
+#         계층 정합(산업 + 부모 = S 모드 섹터 비중) 오차를 로그(RELCMP i_modes_built hierarchy_gap_max)로 남긴다.
+#    (§2) 00U 블록 F(I 행 비교) · F2(섹터층 독립 구간 장기 검증 — S 값 그대로) · 00 줄(S.relcmp_lines · layer="산업").
+#    (§3) run() 반환 user_rel_src.s_relcmp · 배분 반환 relcmp_labels · _i_relcmp_diag() 신설. R86 노란색 줄은 R88 줄로 대체.
+#    하네스 예상(I★ ≈ S★ + 산업 베타): S★ 회피 63.4→68.1% · 참여 83.4→88.1%. I★는 참여가 S★보다 2~3%p 높았다(R86: 86.5 vs 83.7).
+#    연구·교육용 — 투자 자문이 아니다.
+#  VERSION: v0.40.0 - 2026-09-22 - [R86 ★★★ 신뢰도 = 사용자 정의(하락 회피·상승 참여) — I★·산업 단일 예측 · R85 채움 되돌림 반영 — I 규칙 무변경]
+#    시작 v0.39.0 → 목표 v0.40.0. 사용자 지시는 S v0.68.0 머리 주석 참조(같은 라운드 · "신뢰도는 내가 얘기했던 방법인거 알지?").
+#    ── 엔진 판정(i32): I★ 채움 OFF 14.488 → 라이브 14.571(+0.6%) · MDD −9.02 → −9.12% · 칼마 3.992 → 3.955(되돌림 조건 (e)는 미해당 —
+#       그러나 S의 (d)가 해당해 S가 채움을 껐다 → I★도 v0.38.0 틀로 돌아간다).
+#    ── 사용자 정의 신뢰도(r86 · SPY 지그재그 5% · 2018~): I★ 회피 60.6% · 참여 88.4% → **중간** · M 74.0% · 64.7% → 낮음 ·
+#       산업 단일 예측(00D ★ 라이브) 하락 노출 25.7%(= 회피 74.3%) · 상승 포착 49.4% → 낮음. 격자에 '높음'(회피 ≥70% & 참여 ≥90%) 행 없음.
+#    (§1 ★★★) 00U_사용자신뢰도 시트(맨 앞) + 00 맨 앞 줄 — S.user_reliability_pack/build_user_reliability_sheet/user_reliability_lines를
+#       layer="산업"으로 그대로 쓴다(단일 정본 = S). run() 반환에 "user_rel_src"(S의 SPY·M 일수익 — 같은 창) 추가.
+#    (§2) i_yellow_lines: S★ 채움이 꺼져 OFF 행 = I★이면 'R86 되돌림' 줄(R84 '왜 그대로인가' 문구 대신).
+#    (§3) IndustryConfig: USER_REL_* (S와 같은 값 — 00U 등급 기준).
+#    ⚠ 배분(I★)·위험 파라미터 변경 없음(I★ 변화는 S★ 되돌림에서 온다). 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.39.0 - 2026-09-22 - [R85 ★★ S★ 섹터근거 부분채움(S v0.67.0)이 I★로 전달 · 'OFF 기준' 전후 비교 행 · 00 줄 — I 자체 규칙 무변경]
 #    시작 v0.38.0 → 목표 v0.39.0. 사용자 지시는 S v0.67.0 머리 주석 참조(같은 라운드 · "시장 국면은 참고만, 섹터별 상승·하락 근거").
 #    ── 왜 I★가 바뀌나: I★는 S★ 섹터 비중 **안에서만** 산업을 고른다(계층 정합: 산업 + 부모 = S★ 섹터 비중). S★가 부분예산일(0<E_t<1)에
@@ -1833,7 +1860,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.39.0"
+VERSION = "v0.42.0"
 VERSION_DATE = "2026-09-22"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2545,6 +2572,13 @@ class IndustryConfig:
     #   함수 본체는 S.reliability_audit()(단일 정본 — S v0.64.0). 기준값도 S와 같게 둔다(층 사이 공정 비교).
     #   되돌리기(끄기): i_overrides={"RELIABILITY_AUDIT": False}
     RELIABILITY_AUDIT: bool = True
+    # ---- [v0.40.0 R86 ★★★] 사용자 정의 신뢰도(하락 회피·상승 참여) — S와 같은 기준(00U 시트 · 00 맨 앞 줄 · 진단) ----
+    USER_REL_ENABLE: bool = True
+    USER_REL_SEG_PORT: Tuple[float, int] = (0.05, 3)
+    USER_REL_SEG_ASSET: Tuple[float, int] = (0.07, 3)
+    USER_REL_HIGH: Tuple[float, float] = (0.70, 0.90)
+    USER_REL_MID: Tuple[float, float] = (0.50, 0.70)
+    USER_REL_SPLIT: str = "2022-01-01"
     REL_H: int = 21
     REL_WARMUP: int = 252
     REL_MIN_ASSETS: int = 5
@@ -5972,6 +6006,46 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
                            action="OFF 기준 행만 생략 — I★ 무영향"), M=M, level="warning")
         label_s_off = None
 
+    # ---- [v0.41.0 R88 ★★★] [회피참여비교] — S가 넘긴 모드별 S 비중(relcmp_frames)으로 I 행을 만든다(부모 안 비율은 I★ 그대로) ----
+    #   S v0.69.0 라이브 = 양쪽형(사용자 선택). 비교 행은 현행(R86 설정) · M 개선만 · 회피형 · 참여형 · 예전 지시 유지형 · 양쪽형(M 종전).
+    #   방법은 위 [섹터근거전달]과 같다: 부모별 I★ 산업·부모 비중 × (모드 부모 비중 / 라이브 부모 비중). 라이브 부모 0 · 모드 > 0인 날
+    #   (예: 하락국면리더를 켠 모드의 E_t=0일)은 부모 ETF 열로 담는다(근사 — 그날 I★에는 판단이 없다). 계층 정합 오차를 로그로 남긴다.
+    relcmp_labels: Dict[str, str] = {}
+    try:
+        _rcf = s_alloc.get("relcmp_frames") or {}
+        if isinstance(_rcf, dict) and _rcf and label_star in target_ws:
+            _tw_live = target_ws[label_star]
+            _gap_max = 0.0; _odd_all = 0
+            for _nm, _sf in _rcf.items():
+                if not (isinstance(_sf, pd.DataFrame) and len(_sf)):
+                    continue
+                _sfa = _sf.reindex(index=eval_idx, columns=s_all_cols).fillna(0.0).astype(float)
+                _tw_m = pd.DataFrame(0.0, index=eval_idx, columns=_tw_live.columns)
+                for _p in active_parents:
+                    _grp = [c for c in [t for t in cols if parent_of[t] == _p] + [_p] if c in _tw_live.columns]
+                    _wp = w_s_all[_p]
+                    _wo = _sfa[_p]
+                    _ratio = (_wo / _wp.where(_wp > 1e-12)).fillna(0.0)
+                    _tw_m[_grp] = _tw_live[_grp].mul(_ratio, axis=0)
+                    _odd = (_wp <= 1e-12) & (_wo > 1e-12)
+                    if bool(_odd.any()) and _p in _tw_m.columns:
+                        _tw_m.loc[_odd, _p] = _wo[_odd]
+                        _odd_all += int(_odd.sum())
+                for _c in passthrough_cols:
+                    if _c in _tw_m.columns:
+                        _tw_m[_c] = _sfa[_c]
+                _lab = f"R88 비교 · {_nm} (I · 부모 비중 = S 같은 모드) [회피참여비교]"
+                target_ws[_lab] = _tw_m
+                relcmp_labels[_nm] = _lab
+                _gap_max = max(_gap_max, float((_tw_m.sum(axis=1) - _sfa.sum(axis=1)).abs().max()))
+            log("RELCMP", kv(event="i_modes_built", rows=len(relcmp_labels), odd_days=_odd_all, hierarchy_gap_max=round(_gap_max, 12),
+                             note="측정 전용 — I★(라이브)는 S★(양쪽형)를 따른다"), M=M,
+                level=("info" if _gap_max < 1e-9 else "warning"))
+    except Exception as _e:
+        log("RELCMP", kv(event="i_modes_failed", err=type(_e).__name__, msg=str(_e)[:160], action="비교 행만 생략 — I★ 무영향"),
+            M=M, level="warning")
+        relcmp_labels = {}
+
     bts: Dict[str, pd.DataFrame] = {}
     star_label = next((c for c in s_alloc.get("bts", {}) if str(c).endswith("★")), None)
     for label, tw in target_ws.items():
@@ -6062,6 +6136,7 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "parent_state": parent_state, "follow_corr": follow_corr,
         "groups": groups, "label_star": label_star, "label_ctrl_a": label_ctrl_a, "label_ctrl_b": label_ctrl_b,
         "label_s_off": label_s_off,                                                    # [v0.39.0 R85] S★ 채움 OFF 기준 행
+        "relcmp_labels": relcmp_labels,                                                # [v0.41.0 R88] 회피형·참여형·양쪽형 비교 행
         "select_mode": select_mode, "groups_leader3": groups_leader3,                 # [v0.33.0 R79]
         "prob_pack": prob_pack,                                                        # [v0.33.0 R79] 드라이버 격자 재사용(참조)
         "prob_market_gate": bool(_mkt_gate_on and _mkt_full is not None),
@@ -12830,6 +12905,13 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
     return {
         "drivers": _drv, "driver_tests": _drv_tests, "driver_rot_grid": _drv_grid,   # [v0.29.0 R75] 27·26·00A·00
         "reliability": _rel_aud,                                  # [v0.36.0 R82] 00R_신뢰도판정
+        # [v0.40.0 R86] 사용자 신뢰도 입력 — S가 이미 계산한 같은 창의 SPY·M 일수익(재계산 없음)
+        "user_rel_src": {"spy_ret": ((sres or {}).get("alloc") or {}).get("spy_ret"),
+                         "spy_m_ret": ((sres or {}).get("alloc") or {}).get("spy_m_ret"),
+                         # [v0.41.0 R88] S의 [회피참여비교] 진단(독립 구간 장기 검증 포함) — I 00U 블록 F2는 섹터층 값을 그대로 싣는다
+                         "s_relcmp": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("relcmp")),
+                         # [v0.42.0 R89] S의 M 사이징 긴 이력 판정(FF 1927~1998) — I 00U 블록 G도 같은 값
+                         "s_msizing_ff": (sres or {}).get("msizing_ff")},
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
         "reentry_audit": _reentry,                                # [v0.27.0 R73 §4-4] 25_재진입감사
@@ -13799,6 +13881,18 @@ def single_live_verdict_line(sheets: Dict[str, pd.DataFrame]) -> str:
     return " | ".join(parts) if parts else "산출 불가(00A·19 A′ 없음)"
 
 
+def _i_relcmp_diag(alloc: Optional[dict], src: Optional[dict]) -> Dict[str, Any]:
+    """[v0.41.0 R88] I 00U용 relcmp 진단 — 라벨은 I 행, 장기 검증은 S(섹터층) 값을 그대로(같은 규칙의 섹터층 검증)."""
+    labs = (alloc or {}).get("relcmp_labels") or {}
+    if not labs:
+        return {"enabled": False}
+    sr = (src or {}).get("s_relcmp") or {}
+    return {"enabled": True, "labels": labs, "long": sr.get("long") or {}, "repro_max_diff": sr.get("repro_max_diff"),
+            "msizing_ff": (src or {}).get("s_msizing_ff") or {},
+            "haircut_days": sr.get("haircut_days"), "neutral_days": sr.get("neutral_days"), "leader_days": sr.get("leader_days"),
+            "m_approx_ok": sr.get("m_approx_ok", True)}
+
+
 def i_yellow_lines(perf: Optional[pd.DataFrame], label_star: Optional[str], rel: Optional[dict],
                    label_off: Optional[str] = None) -> List[Tuple[str, str]]:
     """[v0.38.0 R84 → v0.39.0 R85] 00 시트 줄 — 노란색(I★ 라이브) 수익배수. label_off('S★ 채움 OFF 기준' 행)가 있고 I★와 다르면
@@ -13818,6 +13912,14 @@ def i_yellow_lines(perf: Optional[pd.DataFrame], label_star: Optional[str], rel:
         if len(rw):
             o0 = rw.iloc[0]
             g = lambda c: float(pd.to_numeric(o0.get(c), errors="coerce")) if c in rw.columns else float("nan")
+            if abs(g("총수익배수") - f("총수익배수")) <= 1e-9:
+                # [v0.40.0 R86] S가 R85 채움을 사전등록 (d)로 껐다 → OFF 행 = I★. R84 '왜 그대로인가' 문구는 더 이상 맞지 않는다.
+                out.append(("★★ 노란색(I★ 라이브) 수익배수 — R86: S★ 채움 되돌림 반영",
+                            f"I★ 총수익배수 {f('총수익배수'):.3f} · CAGR {f('CAGR') * 100:.2f}% · MDD {f('최대낙폭(MDD)') * 100:.2f}% · "
+                            f"칼마 {f('칼마(CAGR/MDD)'):.3f} — S가 R85 부분채움을 사전등록 (d)(2000~2017 독립 구간에서 SPY·무작위보다 나쁨)로 "
+                            "껐으므로 I★는 v0.38.0 틀과 같다(13의 [섹터근거전달] OFF 행 = I★). I의 규칙은 그대로다. 신뢰도(하락 회피·상승 참여) "
+                            "판정은 00U."))
+                return out
             if abs(g("총수익배수") - f("총수익배수")) > 1e-9:
                 out.append(("★★★ 노란색(I★ 라이브) 수익배수 — R85에서 바뀐 이유",
                             f"I★ 배수 {g('총수익배수'):.3f} → **{f('총수익배수'):.3f}** · CAGR {g('CAGR') * 100:.2f}% → {f('CAGR') * 100:.2f}% · "
@@ -14520,6 +14622,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     meta = [
         ("버전", f"industry_rotation.py {VERSION} ({VERSION_DATE}) — sector_rotation.py {getattr(S, 'VERSION', '?')} — "
                 f"market_regime_trader.py {getattr(M, 'BUNDLE_VERSION', '?')}"),
+        ("계층 버전 점검(R89)", (S.layer_version_note("industry_rotation", M=M) if S is not None and hasattr(S, "layer_version_note")
+                               else f"⚠ sector_rotation {getattr(S, 'VERSION', '?')}에 점검 함수 없음 — S가 이 I보다 예전 파일이다(교체 필요)")),
         # [v0.2.0 사용자 지시 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] 세 리포트 공통 문구.
         ("⚠ 실매매 적용 여부", "아니오 — 이 산업 계층 리포트는 진단·연구용이며 실매매 주문에 반영되지 않는다. "
                           "실매매 주문 근거는 market_regime_report.xlsx의 ★ SPY 국면전략(00_실행요약 '다음 거래일 예측' 행). "
@@ -14907,7 +15011,28 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 sheets["00R_신뢰도판정"] = S.build_reliability_sheet(_ra, icfg)
             except Exception as _e:
                 log("REPORT", kv(event="reliability_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
-        sheets = S.sheets_to_front(sheets, "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교",
+        # ---- [v0.40.0 R86 ★★★] 00U_사용자신뢰도 — S와 같은 함수·같은 기준(layer="산업") ----
+        _upk_i = None
+        if bool(getattr(icfg, "USER_REL_ENABLE", True)) and hasattr(S, "user_reliability_pack") and alloc:
+            try:
+                _src = ires.get("user_rel_src") or {}
+                _ps = {"alloc": {"bts": alloc.get("bts") or {}, "diag": {"label_primary": alloc.get("label_star"),
+                                                                           "relcmp": _i_relcmp_diag(alloc, _src)},
+                                 "spy_ret": _src.get("spy_ret"), "spy_m_ret": _src.get("spy_m_ret")},
+                       "sectors": results}
+                _upk_i = S.user_reliability_pack(_ps, icfg)
+                sheets["00U_사용자신뢰도"] = S.build_user_reliability_sheet(_ps, icfg, _upk_i, "산업")
+                _h0 = _upk_i.get("head")
+                if isinstance(_h0, pd.DataFrame) and len(_h0):
+                    for _, _r0 in _h0.iterrows():
+                        log("USER_REL", kv(event="grade", layer="산업", strategy=str(_r0["전략"])[:40], avoid=_r0["하락 회피율"],
+                                           part=_r0["상승 참여율"], net=_r0["순효과(%p)"], grade=_r0["등급"],
+                                           halves=_r0["절반 등급"]), M=M)
+            except Exception as _e:
+                log("REPORT", kv(event="user_reliability_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                                 trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
+                _upk_i = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:120]}"}
+        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교",
                                    "00D_하락상승개선비교", "00E_산업상승확률")
 
     # [v0.23.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다.
@@ -15058,12 +15183,24 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                  "나머지 행은 전부 격자·대조군(측정 전용)이며 거래에 쓰지 않는다."))
     # ---- [v0.38.0 R84 ★★] '노란색(I★) 수익배수가 왜 그대로인가' — 신뢰도 줄 바로 다음에 둔다 ----
     try:
-        _yl = i_yellow_lines(sheets.get("13_산업배분전략"), (alloc or {}).get("label_star"), ires.get("reliability"),
-                             (alloc or {}).get("label_s_off"))
+        _yl = ([] if ((alloc or {}).get("relcmp_labels")) else   # [v0.41.0 R88] 노란색 줄은 relcmp_lines가 낸다
+               i_yellow_lines(sheets.get("13_산업배분전략"), (alloc or {}).get("label_star"), ires.get("reliability"),
+                              (alloc or {}).get("label_s_off")))
         for _k, _v in reversed(_yl):
             meta.insert(1 + int(_n_rel), (_k, _v))
     except Exception as _e:
         log("REPORT", kv(event="yellow_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
+    # ---- [v0.40.0 R86 ★★★] 사용자 정의 신뢰도 줄 — 00 맨 앞(버전 다음) ----
+    try:
+        if S is not None and hasattr(S, "user_reliability_lines") and isinstance(locals().get("_upk_i"), dict):
+            _src2 = ires.get("user_rel_src") or {}
+            _ps2 = {"alloc": {"bts": (alloc or {}).get("bts") or {}, "diag": {"label_primary": (alloc or {}).get("label_star"),
+                                                                                "relcmp": _i_relcmp_diag(alloc, _src2)},
+                              "spy_ret": _src2.get("spy_ret"), "spy_m_ret": _src2.get("spy_m_ret")}, "sectors": results}
+            for _k, _v in reversed(S.user_reliability_lines(_ps2, icfg, locals().get("_upk_i"), "산업")):
+                meta.insert(1, (_k, _v))
+    except Exception as _e:
+        log("REPORT", kv(event="user_reliability_meta_failed", err=type(_e).__name__, msg=str(_e)[:140]), M=M, level="warning")
     _title = "미국 산업(업종) ETF 국면 예측 & 부모 섹터 안 산업 배분 — S(섹터)→I(산업) 계층 [진단·연구용, 실매매 미적용]"
     try:
         import inspect as _inspect

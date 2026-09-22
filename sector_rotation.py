@@ -17,6 +17,74 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.70.0 - 2026-09-23 - [R89 ★★ 측정: M 사이징 긴 이력(FF 1927~1998) · 표본 안 '높음' 후보 비교 행 · 계층 버전 점검 — 라이브(양쪽형) 무변경]
+#    사용자 지시(2026-09-23, 리포트 m3·s17·i35): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정 방법을 잘 좀
+#      생각해봐 … 신뢰도는 내가 얘기했던 방법인거 알지?". 시작 v0.69.0 → 목표 v0.70.0.
+#    ── 엔진 판정(m3·s17·i35) ── ⚠ M은 v1.58.0(R88)인데 S v0.67.0 · I v0.39.0(R85 파일)이 함께 돌았다 → S·I 노란색은 R88 규칙이 아니다.
+#      사용자 신뢰도(SPY 지그재그 5% · 2018~): M 76.4%·63.9%(낮음 · R86 74.0·64.8) · S★(R85 채움) 64.2·85.4(중간) · I★ 63.4·87.6(중간).
+#      M 개선 확인: 같은 R86 설정 S★(13 '채움 OFF' 행) 회피 63.6 → 66.8% · 참여 83.7 → 83.1% · 배수 12.77 → 13.76 · 칼마 3.89 → 4.02
+#        (R88 하네스 예측 66.5·82.8과 일치 — E_t 재스케일 근사가 엔진에서 맞았다). R88 양쪽형 예상(새 M 기준 · 엔진 보정): 68.4% · 88.3%.
+#    ── 문제 파악(r89/) ──
+#      (1) 표본 안(2018~)에서 '높음'에 닿는 조합은 과열 헤어컷 상단을 0으로(이격 ≥12%면 현금) + 중립 0.7 + E=1일 기술 100%뿐이다
+#          (하네스 108행 중 부족분 합 최소 0.16%p · 헤어컷 0.2 유지하면 최소 2.2%p — r89/grid89.py).
+#      (2) ⚠ 긴 이력(1927~2018 월별 Fama-French · r89/ffm89.py): 이격 ≥12% 달의 다음달 수익은 1927~1949 +1.31% · 1950~1998 +1.28%(상승 68%)로
+#          평균보다 **좋았다**. 헤어컷을 넣으면 회피+참여 합이 1927~49 −7.4%p · 1950~98 −2.8%p(R86 E7 vs 없음), R88 E11은 R86보다 −2.8 · −1.4%p.
+#          1999~2018에서만 헤어컷이 이득(+1.2 · E11 +0.8%p). ⇒ 과열 헤어컷은 1999년 이후 국면에서만 통하는 규칙일 수 있다 → 더 깊게 하지 않는다.
+#    ── 이번 변경(측정 · 라이브 무변경) ──
+#      (a) msizing_ff_audit() · fetch_ff_factors_daily() · parse_ff_factors_daily_csv(): FF 3요인 일별 시장(1926~)으로 M 사이징 6변형을
+#          사용자 신뢰도로 · 사전등록: 라이브(E11·0.6) − R86(E7·0.5) ≥ 0 이 1927~49 · 1950~98 둘 다면 지지, 아니면 반증(다음 라운드 상의).
+#          FF3 실패 시 FF49 동일가중·RF 0 대체. 00U 블록 G · 00 줄.
+#      (b) [회피참여비교] '표본 안 높음 후보(R89 · 측정)' 행: E=1일 상한 1.0 · 그 밖 0.8 · 방어대피처 0 · 리더 0 · M 헤어컷 0.4/0.0 · 중립 0.7.
+#          E 재스케일을 일반화(_E_for) · 상태별 상한 분수 · 장기 검증(relcmp_long_audit cap_part)·FF 판정에 후보 비교(cand_verdict) 추가.
+#          승격 조건(사전등록): 섹터 ETF 독립 두 반쪽 vs 양쪽형 · FF 1927~1998 vs 라이브 사이징 **둘 다** 통과.
+#      (c) layer_version_note(): 00 '계층 버전 점검(R89)' 줄 · 불일치 경고 로그(S·I 공통 · M v1.58.1도 같은 줄).
+#    연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v0.69.0 - 2026-09-22 - [R88 ★★★ 라이브 = 양쪽형(사용자 선택) · 회피형·참여형·양쪽형 비교 · 독립 구간 장기 검증 · ⚠ 위험 파라미터 3개]
+#    사용자 지시(2026-09-22, 리포트 s16·i34 = R86 코드 첫 실행): "M도 필요하면 개선해 그리고 회피, 참여 둘다해서 비교해보면 되잖아
+#      다시 신뢰도 높도록 코드 수정해봐". 네 안(회피형·참여형·예전 지시 유지형·양쪽형)을 보여 주고 물었더니 **양쪽형**을 골랐다.
+#      시작 v0.68.0 → 목표 v0.69.0. M v1.58.0(헤어컷 E7→E11 · 중립 0.5→0.6)과 한 묶음이다.
+#    ── 엔진 판정(s16 · R86 코드) ──
+#      사용자 신뢰도: S★ 중간(회피 63.6% · 참여 83.7%) · M 낮음(74.0% · 64.8%) · 격자 60행 중 높음 0행.
+#      R86 섹터 거시 근거: G2·G3 장기 검증 L2·L3 미통과 → 승격 ✗ → **닫음**(MACRO_EVIDENCE_ENABLE=False).
+#    ── 문제 파악(r88/dec87·hc88·grid88·cand88 · 하네스는 엔진 ★ 곡선을 일간 상관 0.99999 · 회피/참여 ±0.3%p로 재현) ──
+#      하락구간 손실의 59%가 M이 E=1인 날 · 놓친 상승의 대부분이 E=0인 날 → 한 손잡이로는 프런티어 위를 움직일 뿐이다.
+#      그런데 손잡이끼리는 **다른 날**에 작동한다(헤어컷 = 이격 ≥10% 날 · 리더 = E=0날 · 상한/대피처 = E>0날의 구성) → 조합하면 둘 다 오른다.
+#      하네스 조합 격자 90행: 높음 도달 0 · 가장 가까운 행(상한 1.0 — 기술 100%라 제외) 회피 68.4% · 참여 89.1%.
+#    ── 이번 변경(⚠ 위험 파라미터 · 되돌리기 한 줄씩) ──
+#      ROTATION_PRIMARY_CAP 0.8 → 0.9 (참여) · ROTATION_SHELTER_DEFENSIVE 0.5 → 0.0 (참여) · ROTATION_DOWN_REGIME_POS 0.25 → 0.0 (회피).
+#      하네스 예상(양쪽형): 회피 63.4 → 68.1% · 참여 83.4 → 88.1% · 배수 12.5 → 16.5 · MDD −8.75 → −10.05% · 칼마 3.85 → 3.79.
+#      **높음(70%·90%)은 아직 아니다 — 부족 회피 1.9%p · 참여 1.9%p.** 등급은 중간 그대로일 가능성이 크다.
+#      ⚠ R80 사용자 지시(기술 편중 축소 → 상한 0.8)와 v0.15.0 사용자 지시(하락국면에도 오를 섹터로 거래)를 되돌린다 — 사용자가 알고 골랐다.
+#    ── 신설 ──
+#      (a) [회피참여비교] 6행(현행 R86 설정 · M 개선만 · 회피형 · 참여형 · 예전 지시 유지형 · 양쪽형 M 종전) — 같은 날 분수 × 모드별 E_t.
+#          M 쪽은 E_t 재스케일 근사([M헤어컷격자]와 같은 방식). 자기 검증: 라이브 설정 재현 행 = ★(비중 차 0 · 로그 RELCMP star_repro).
+#      (b) relcmp_long_audit() — 독립 구간(2000~2008 · 2009~2017) 섹터 ETF + M 대용 3상태로 같은 모드 비교. 사전등록: 양쪽형 (회피+참여) ≥
+#          현행 & MDD 악화 ≤ 3%p · 두 반쪽 모두 → 미통과면 다음 라운드 되돌림 후보.
+#      (c) 00U 블록 F·F2 · 00 줄 3개(노란색 R88 · 비교 · 장기 검증) · relcmp_lines() · 반환 키 relcmp_frames(I가 쓴다).
+#      (d) [하락리더격자]: 라이브 0이면 리더 판정일에서 25%·50% 행을 직접 만든다(_apply_leader).
+#    연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v0.68.0 - 2026-09-22 - [R86 ★★★ 신뢰도 = 사용자 정의(하락 회피·상승 참여) · R85 채움 되돌림(사전등록 (d)) · 섹터 거시 근거 측정]
+#    사용자 지시(2026-09-22, 리포트 s14·i32) "섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정 방법을 잘 좀 생각해봐 …
+#      신뢰도는 내가 얘기했던 방법인거 알지?"(= 하락 잘 피하고 상승 잘 타는 것 → 노란색 배수). 시작 v0.67.0 → 목표 v0.68.0. M 무변경.
+#    ── 엔진 판정(s14) ──
+#      R85 채움 25%: ★ 12.765 → 12.966(+1.6%) · MDD 그대로 · 칼마 3.888 → 3.915 · 무작위 대비 백분위 100 · 상위5일 제외 초과 −0.04%p.
+#      **장기 검증 2000~2017(독립): ②상승근거 채움 칼마 0.329 < ①SPY 채움 0.362 · 대조군 95% 0.366(백분위 33) → 사전등록 (d) 해당.**
+#      ③ E_t=0일 섹터 자기 근거 0.230 < M 단독 0.359(백분위 42 · 하락포착 0.54 → 0.57 악화) — '국면을 안 따라가는 섹터'를
+#      가격 근거로 잡는 가설은 독립 18년에서 성립하지 않았다.
+#    ── 사용자 정의 신뢰도(r86/rel86.py · SPY 지그재그 5% · 2018~) ──
+#      M 회피 74.0% · 참여 64.7%(낮음) | S★ 61.6% · 85.8%(중간) | I★ 60.6% · 88.4%(중간) | 섹터 단일 예측 62.3% · 63.6%(낮음)
+#      13 격자 100여 행 중 '높음'(회피 ≥70% & 참여 ≥90%) 도달 **0행** — 한쪽을 올리면 다른 쪽이 내려간다(프런티어). XLK 상한 100%는
+#      참여 93.5%지만 회피 58.6% · 하락국면리더 끔은 회피 67.9%지만 참여 81.3%. 둘 다 올리려면 M보다 나은 타이밍 정보가 필요하다.
+#      M의 연속 위험점수(H)를 참고로 쓰는 변형(부분일 채움·끔일 재진입·켬일 베타 낮춤)도 전부 무작위 수준(r86/expB86.py).
+#    (§1 ⚠ 라이브 되돌림) OWN_EVIDENCE_FILL 0.25 → **0.0**(R85 사전등록 (d)) ⇒ ★는 v0.66.0 규칙으로 돌아간다(노란색 배수 12.966 → 약 12.77).
+#      다시 켜기: s_overrides={"OWN_EVIDENCE_FILL": 0.25}. [섹터근거격자]·장기 검증은 그대로 싣는다.
+#    (§2 ★★★) 신뢰도 정의 교체: user_grade · user_rel_portfolio · user_rel_single · user_reliability_pack · build_user_reliability_sheet ·
+#      user_reliability_lines → 시트 **00U_사용자신뢰도**(맨 앞) + 00 맨 앞 줄. 등급(사전등록): 높음 = 회피 ≥70% & 참여 ≥90% ·
+#      중간 = 회피 ≥50% & 참여 ≥70%. R82~R84의 IC·t̄ 등급 줄은 '참고: 선택 신호 통계'로 이름만 바꿨다(계산 무변경).
+#    (§3 측정 · 신규 근거) macro_driver_states · macro_long_audit · [섹터거시근거격자] G1~G4 + 대조군 24 — 섹터 고유 경제 동인
+#      (XLE←유가 · XLB·XLI←구리 · XLF←장단기 금리차 · XLU·XLRE←10년 금리(−) · XLK←실질금리(−) · XLY←HY 스프레드(−)).
+#      오프라인엔 이 자료가 없어(샌드박스 차단) **엔진만 잴 수 있다**. 사전등록 승격 조건은 블록 주석 참조. ★ 무변경.
+#    ⚠ 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.67.0 - 2026-09-22 - [R85 ★★★ 섹터 자기 근거로 M 예산 위를 채움(라이브 · ⚠ 노출↑) + [섹터근거격자] + 장기 검증(1999~)]
 #    사용자 지시(2026-09-22, 리포트 s13·i31) "노란색 수익배수 또 그대로야 내가 신뢰도를 높이라는건 하락 잘 피하고 상승 잘타는 건데 …",
 #      "시장 국면은 냅둬 섹터별로 시장 국면별로 안따라갈때도 있잖아 내가 시장 국면은 그냥 참고만 하고 섹터별 상승, 하락 근거 따로
@@ -2751,8 +2819,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.67.0"
-VERSION_DATE = "2026-09-22"
+VERSION = "v0.70.0"
+VERSION_DATE = "2026-09-23"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -3185,6 +3253,9 @@ class SectorConfig:
     EXTERNAL_START: Optional[str] = None
     FF49_URL: str = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/49_Industry_Portfolios_daily_CSV.zip"
     FF49_CACHE: str = "./cache_sector/ff49_daily.csv"
+    # [v0.70.0 R89] Fama-French 3요인 일별(시장 = Mkt-RF + RF · 1926~) — M 사이징 긴 이력 판정(00U 블록 G)용. 실패하면 FF49 동일가중·RF 0으로 대체.
+    FF3_URL: str = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_daily_CSV.zip"
+    FF3_CACHE: str = "./cache_sector/ff3_daily.csv"
     ROTATION_SMOOTH_DAYS: int = 21             # 복합순위점수의 후행 이동평균 창(거래일, 인과). 1=평활 없음. 근거: 일별 순위 뒤집힘이
     #   그대로 비중 변화가 되면 회전율이 연 28회(합성 11섹터 실측)로 치솟아 비용이 성과를 잠식 — 문헌·§0.6의 검증 단위인
     #   '월 1회 리밸런스'에 맞춘 1개월(21일) 평활. 적격 여부(하락 제외)와 E_t 변화는 평활 없이 당일 즉시 반영된다.
@@ -3360,7 +3431,11 @@ class SectorConfig:
     #     I·K 계층의 산업·종목 분산이 함께 살아난다 — 사용자가 지적한 '순환매로 다른 섹터가 오를 때
     #     그쪽 산업에도 비중이 있어야 한다'가 이 한 줄에서 결정된다.
     #     ⚠ 되돌리기: s_overrides={"ROTATION_PRIMARY_CAP": 0.9} ⇒ v0.61.2 집중도로 복귀.
-    ROTATION_PRIMARY_CAP: float = 0.8           # ⚠ 주력 섹터 최대 비중(나머지는 대피처로 분산) [v0.62.0] 0.9→0.8
+    #   [v0.69.0 R88 ⚠⚠ 위험 파라미터 · 사용자 선택 '양쪽형'] 0.8 → **0.9**. 사용자 신뢰도(하락 회피·상승 참여)의 '참여' 손잡이.
+    #     ⚠ R80 사용자 지시("너무 기술 산업에만 치중")로 내린 값을 되돌린다 — 사용자가 이 충돌을 알고 양쪽형을 골랐다(2026-09-22).
+    #     엔진 s16 [상한격자] 0.9 행: 회피 63.6→61.1% · 참여 83.7→88.6% · 배수 12.77→14.55 · MDD −8.75→−9.51%.
+    #     되돌리기: s_overrides={"ROTATION_PRIMARY_CAP": 0.8}(R86 값 · 비교 행 [회피참여비교] '현행(R86 설정)'에 매 실행 실린다).
+    ROTATION_PRIMARY_CAP: float = 0.9           # ⚠ 주력 섹터 최대 비중 [v0.62.0] 0.9→0.8 · [v0.69.0 R88] 0.8→0.9(사용자 선택 양쪽형)
     # ---- [v0.62.0 R80 ★★★ 신규 · 라이브] 섹터 자기 근거 컷(아래로만 자율) ----
     #   사용자 지시: "섹터도 국면 비중을 전적으로 따라가지 말고 참고만 해야해 … 섹터만의 판단 근거가 있어야해".
     #   규칙: 그날 복합점수 **횡단면 하위 Q 분위**인 보유 섹터의 비중을 FRAC만큼 깎고, 깎은 몫은 **현금**.
@@ -3414,7 +3489,9 @@ class SectorConfig:
     #   ⚠ OWN_EVIDENCE_FILL은 **노출을 늘리는 위험 파라미터**다(부분예산일 남는 현금 중 채우는 비율).
     #     되돌리기: s_overrides={"OWN_EVIDENCE_FILL": 0.0} ⇒ v0.66.0 ★와 비트 동일. 블록 전체 끄기: {"OWN_EVIDENCE_ENABLE": False}.
     OWN_EVIDENCE_ENABLE: bool = True
-    OWN_EVIDENCE_FILL: float = 0.25            # ⚠ [v0.67.0] 0.0 → 0.25 — 부분예산일(0<E_t<1) 남는 현금 중 상승근거 섹터로 채울 비율
+    #   ⚠ [v0.68.0 R86 되돌림] 0.25 → **0.0** — R85 사전등록 (d) 해당(엔진 s14 장기 검증 2000~2017: ② 0.329 < ① 0.362 ·
+    #     대조군 95% 0.366). 다시 켜기: s_overrides={"OWN_EVIDENCE_FILL": 0.25}.
+    OWN_EVIDENCE_FILL: float = 0.0             # ⚠ 부분예산일(0<E_t<1) 남는 현금 중 상승근거 섹터로 채울 비율(v0.67.0 0.25 → v0.68.0 0.0)
     OWN_EVIDENCE_FILL_K: int = 2               # 채울 섹터 수(상승 근거 · 63일 상대수익 상위 · 주력 제외)
     OWN_EVIDENCE_N_LONG: int = 200             # 자기 추세 장기선(총수익 지수)
     OWN_EVIDENCE_N_SHORT: int = 50             # 자기 추세 단기선
@@ -3427,6 +3504,49 @@ class SectorConfig:
     OWN_EVIDENCE_FILL_AUDIT: Optional[float] = None   # 장기 검증의 채움 비율 — None이면 라이브 값(라이브가 0이면 0.25)
     OWN_EVIDENCE_OFF_POS: float = 0.25         # 장기 검증 ③(E_t=0일 상승근거 섹터) 비중 — 하락국면리더와 같은 값
     OWN_EVIDENCE_LONG_USE_STATE: bool = False  # 장기 검증에 국면기계 상태 조건을 넣을지 — 2018 이전 상태는 추세필터 폴백뿐이라 기본 끔
+    # ---- [v0.68.0 R86 ★★★] 사용자 정의 신뢰도(하락 회피·상승 참여) — 00U 시트 · 00 맨 앞 줄(진단 · 배분 무관) ----
+    USER_REL_ENABLE: bool = True
+    USER_REL_SEG_PORT: Tuple[float, int] = (0.05, 3)    # 포트폴리오: SPY 곡선 지그재그(최소 변동 · 최소 거래일)
+    USER_REL_SEG_ASSET: Tuple[float, int] = (0.07, 3)   # 단일 예측: 자산 B&H 지그재그(I 00D와 같은 값)
+    USER_REL_HIGH: Tuple[float, float] = (0.70, 0.90)   # 높음 = 회피율 ≥ · 참여율 ≥ (R86 사전등록 — 바꾸지 않는다)
+    USER_REL_MID: Tuple[float, float] = (0.50, 0.70)    # 중간
+    USER_REL_SPLIT: str = "2022-01-01"                  # 안정성 판정용 앞/뒤 절반 경계
+    # ---- [v0.68.0 R86 ★★ 측정 전용] 섹터 거시 근거(경제 동인) — [섹터거시근거격자] · 장기 검증. 끄기: {"MACRO_EVIDENCE_ENABLE": False} ----
+    # [v0.69.0 R88] R86 사전등록 판정(엔진 s16): 장기 검증 L2·L3 미통과 → G2 ✗ · G3 ✗ → **닫는다**(False). 다시 재기: {"MACRO_EVIDENCE_ENABLE": True}
+    MACRO_EVIDENCE_ENABLE: bool = False
+    MACRO_LONG_AUDIT: bool = True
+    SECTOR_MACRO_DRIVERS: Dict[str, Tuple[str, int]] = dataclasses.field(default_factory=lambda: {
+        "XLE": ("CL=F", +1), "XLB": ("HG=F", +1), "XLI": ("HG=F", +1), "XLF": ("T10Y2Y", +1),
+        "XLU": ("DGS10", -1), "XLRE": ("DGS10", -1), "XLK": ("DFII10", -1), "XLY": ("BAMLH0A0HYM2", -1)})
+    MACRO_LOOKBACK: int = 63                   # 동인 변화 기간(거래일)
+    MACRO_FILL: float = 0.25                   # G3·L3 부분예산일 채움 비율(측정용 — 라이브 아님)
+    MACRO_OFF_POS: float = 0.25                # G2·L2 E_t=0일 비중(하락국면리더와 같은 값)
+    MACRO_CONTROLS: int = 12
+    MACRO_SEED: int = 20260924
+    # ---- [v0.69.0 R88 ★★★] 회피형·참여형·양쪽형 비교(사용자 지시 "회피, 참여 둘다해서 비교해보면 되잖아") — [회피참여비교] 행 · 00U 블록 F ----
+    #   라이브(★) = 양쪽형(사용자 선택). 비교 행은 같은 엔진·같은 날의 비중으로 만든다(M 쪽 차이는 E_t 재스케일 근사 — [M헤어컷격자]와 같은 방식).
+    #   R86 설정(되돌릴 때의 값): 주력 상한 0.8 · 방어대피처 0.5 · 하락국면리더 0.25 · M 헤어컷 E7 · M 중립 0.5.
+    RELCMP_ENABLE: bool = True
+    RELCMP_REF_CAP: float = 0.8
+    RELCMP_REF_DEF: float = 0.5
+    RELCMP_REF_LEADER: float = 0.25
+    RELCMP_REF_M_STEPS: Tuple[Tuple[float, float], ...] = ((0.10, 0.6), (0.12, 0.4))
+    RELCMP_REF_M_NEUTRAL: float = 0.5
+    RELCMP_LONG_AUDIT: bool = True             # 독립 구간(2000~2008 · 2009~2017) 장기 검증 — 엔진 섹터 ETF 1999~ + M 대용 3상태
+    RELCMP_LONG_MDD_TOL: float = 0.03          # 사전등록: 양쪽형 MDD가 현행보다 이만큼 넘게 나쁘면 미통과
+    # ---- [v0.70.0 R89 · 측정 전용] 표본 안(2018~) '높음' 경계 후보 — 비교 행만(라이브 아님). 긴 이력 판정 전에는 올리지 않는다 ----
+    #   하네스(r89/grid89.py · 엔진 OFF 행 보정): 회피 69.9% · 참여 90.0% · 배수 19.0 · MDD −10.43%.
+    #   ⚠ 1927~1998 월별(r89/ffm89.py): 과열 헤어컷은 회피+참여 합을 오히려 낮췄다(헤어컷 없음 대비 R86 −7.4·−2.8%p) → 후보는 과적합 위험이 크다.
+    RELCMP_CAND_ENABLE: bool = True
+    RELCMP_CAND_CAP_FULL: float = 1.0          # E_t=1(전부 보유)일 주력 상한
+    RELCMP_CAND_CAP_PART: float = 0.8          # 부분 노출일 주력 상한
+    RELCMP_CAND_DEF: float = 0.0
+    RELCMP_CAND_M_STEPS: Tuple[Tuple[float, float], ...] = ((0.10, 0.4), (0.12, 0.0))
+    RELCMP_CAND_M_NEUTRAL: float = 0.7
+    # ---- [v0.70.0 R89 ★★ 측정 전용] M 사이징 긴 이력 판정(1927~1998 · Fama-French 일별 시장) — 00U 블록 G ----
+    #   사전등록: 라이브 M 사이징(R88: 헤어컷 E11·중립 0.6)의 (회피+참여) − R86 사이징(E7·0.5) ≥ 0 이 1927~1949 · 1950~1998 **둘 다**면 '지지',
+    #   아니면 '반증' → 다음 라운드에 E11(또는 헤어컷 자체) 되돌림을 사용자와 상의한다. 엔진은 스스로 라이브를 바꾸지 않는다.
+    MSIZING_FF_AUDIT: bool = True
     SECTOR_SELF_CUT_Q: float = 1.0 / 3.0        # 하위 몇 분위를 깎는가(0.25/0.33/0.5를 격자가 함께 잰다)
     SECTOR_SELF_CUT_FRAC: float = 0.25          # ⚠ 깎는 폭(0.25/0.50/1.00을 격자가 함께 잰다)
     SECTOR_SELF_CUT_CONTROLS: int = 12          # 같은 개수 무작위 대조군 행 수(0이면 끔) — 13 시트에서 직접 판정
@@ -3519,7 +3639,10 @@ class SectorConfig:
     #   0.75 이상은 칼마가 더 오르지 않고 CAGR만 잃으므로 **0.50이 내부 최적점**이다.
     #   ⚠ 더 보수적으로 가려면 0.25 — 칼마 이득의 68%(+0.083/+0.122)를 CAGR 비용 40%로 산다.
     #   되돌리려면 0.0.
-    ROTATION_SHELTER_DEFENSIVE: float = 0.50    # ⚠ 주력 보유일 잔여 슬리브 중 최저베타 섹터로 보낼 비중(0=off) [v0.32.0] 0.0→0.50
+    # [v0.69.0 R88 ⚠⚠ 위험 파라미터 · 사용자 선택 '양쪽형'] 0.50 → **0.0** — 대피처를 최저베타 대신 복합순위 1위로(참여 손잡이).
+    #   엔진 s16 [방어대피처격자] 0.00 행: 회피 63.6→63.1% · 참여 83.7→86.4% · 배수 12.77→13.78 · MDD −8.75→−9.13%.
+    #   되돌리기: s_overrides={"ROTATION_SHELTER_DEFENSIVE": 0.5}.
+    ROTATION_SHELTER_DEFENSIVE: float = 0.0     # ⚠ 주력 보유일 잔여 슬리브 중 최저베타 섹터로 보낼 비중(0=off) [v0.32.0] 0.0→0.50 · [v0.69.0] 0.50→0.0
     # ------------------------------------------------------------------ [v0.36.0 §A 사전등록]
     #   ROTATION_DISPERSION_GATE = 횡단면 분산이 낮은 날에는 '순위 1위 집중'을 포기하고
     #   적격 비주력 균등으로 돌린다. **기본 False — 켜기 전에는 v0.35.0과 비트 동일하다.**
@@ -3571,7 +3694,13 @@ class SectorConfig:
     #  발동 → E_t=0 구간 감소 → 하락국면리더 발동일 감소) 상쇄가 아니라 보강이며, 격자는 상설이라
     #  다음 실행이 새 기준선에서 다시 잰다.
     #  되돌리려면 1.0.
-    ROTATION_DOWN_REGIME_POS: float = 0.25      # ⚠ 그때의 총비중(E_t를 무시하고 이 값을 쓴다) [v0.26.0] 0.5→0.25
+    # [v0.69.0 R88 ⚠⚠ 위험 파라미터 · 사용자 선택 '양쪽형'] 0.25 → **0.0** — E_t=0일 하락국면리더 보유를 끈다(회피 손잡이).
+    #   ⚠ v0.15.0 사용자 지시("하락 예측 시에도 상승할 수 있는 섹터가 있으면 그걸로 거래")를 끄는 것이다 — 사용자가 알고 골랐다(2026-09-22).
+    #   근거: 엔진 s16 [하락리더격자] 0% 행 회피 63.6→67.9% · 참여 83.7→81.3% · 배수 12.77→12.58 · MDD 동일. 독립 구간(엔진 장기 검증
+    #     2000~2017 · R85 ③): E_t=0일 섹터 보유 칼마 0.230 < M 단독 0.359 · 하락포착 악화 — 표본 밖에서도 손해였다.
+    #   ROTATION_DOWN_REGIME_LEADER=True는 그대로 둔다(리더 판정·[하락리더격자] 25%/50% 비교 행은 매 실행 계속 잰다).
+    #   되돌리기: s_overrides={"ROTATION_DOWN_REGIME_POS": 0.25}.
+    ROTATION_DOWN_REGIME_POS: float = 0.0       # ⚠ 그때의 총비중(E_t를 무시하고 이 값을 쓴다) [v0.26.0] 0.5→0.25 · [v0.69.0 R88] 0.25→0.0
     ROTATION_DOWN_REGIME_REQUIRE_GATE: bool = True   # ⚠ 확신 게이트 '통과'일로 한정(안전장치 — 끄면 MDD -5.34pp)
     ROTATION_MIN_HOLD_DAYS: int = 21           # 1위 섹터 최소 보유(거래일) — 월 리밸런스 관행. 적격 상실(하락 국면 등)은 즉시 청산
     ROTATION_TOP_K: int = 4                    # "topk" 모드의 K(11개의 약 1/3 — 상위 3분위). 상한 25%와 함께 K×25%=100%
@@ -7503,7 +7632,37 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             log("RELIABILITY", kv(event="audit_failed", layer="섹터", err=type(_e).__name__, msg=str(_e)[:160],
                                   trace=traceback.format_exc()[-400:].replace("\n", " | ")), M=M, level="warning")
             rel_aud = {"error": f"{type(_e).__name__}: {str(_e)[:160]}"}
+    # ---- [v0.70.0 R89 ★★ 측정 전용] M 사이징 긴 이력 판정(Fama-French 1926~) — 00U 블록 G ----
+    msz = {"enabled": False}
+    if bool(getattr(scfg, "MSIZING_FF_AUDIT", True)):
+        try:
+            _mc = res.get("cfg") if isinstance(res, dict) and res.get("cfg") is not None else M.CFG
+            _var = [{"name": "헤어컷 없음 · 중립 0.5", "steps": (), "neutral": 0.5},
+                    {"name": "R86: 헤어컷 E7(0.6/0.4) · 중립 0.5", "steps": tuple(getattr(scfg, "RELCMP_REF_M_STEPS", ((0.10, 0.6), (0.12, 0.4)))),
+                     "neutral": float(getattr(scfg, "RELCMP_REF_M_NEUTRAL", 0.5)), "ref": True},
+                    {"name": f"라이브 M: 헤어컷 {'/'.join(f'{c:.1f}' for _, c in sorted(tuple(_mc.EXTENSION_HAIRCUT_STEPS or ())))} · 중립 {float(_mc.POS_NEUTRAL):.1f}",
+                     "steps": tuple(_mc.EXTENSION_HAIRCUT_STEPS or ()), "neutral": float(_mc.POS_NEUTRAL), "live": True},
+                    {"name": "헤어컷만 E11 · 중립 0.5", "steps": ((0.10, 0.4), (0.12, 0.2)), "neutral": 0.5},
+                    {"name": "중립만 0.6 · 헤어컷 E7", "steps": ((0.10, 0.6), (0.12, 0.4)), "neutral": 0.6},
+                    {"name": "R89 후보: 헤어컷 0.4/0.0 · 중립 0.7", "steps": tuple(getattr(scfg, "RELCMP_CAND_M_STEPS", ((0.10, 0.4), (0.12, 0.0)))),
+                     "neutral": float(getattr(scfg, "RELCMP_CAND_M_NEUTRAL", 0.7)), "cand": True}]
+            _f3 = fetch_ff_factors_daily(scfg, M=M)
+            if isinstance(_f3, pd.DataFrame) and {"Mkt-RF", "RF"} <= set(_f3.columns):
+                msz = msizing_ff_audit(_f3["Mkt-RF"] + _f3["RF"], _f3["RF"], _var, scfg, M=M)
+            else:
+                _f49 = locals().get("_ff")
+                if not isinstance(_f49, pd.DataFrame):
+                    _f49 = fetch_ff49_daily(scfg, M=M)
+                if isinstance(_f49, pd.DataFrame) and len(_f49):
+                    msz = msizing_ff_audit(_f49.mean(axis=1, skipna=True), None, _var, scfg, M=M, src="FF49 동일가중(RF 0 — 대체)")
+                else:
+                    msz = {"enabled": False, "error": "FF 자료를 받을 수 없음(네트워크)"}
+        except Exception as _e:
+            log("MSIZING", kv(event="ff_audit_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                              trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
+            msz = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
     return {"sectors": results, "failed": failed, "selftest": st, "universe": universe, "quality": pd.DataFrame(quality),
+            "msizing_ff": msz,                                 # [v0.70.0 R89] M 사이징 긴 이력 판정(00U 블록 G)
             "matrix": matrix, "portfolio_perf": portfolio_perf, "portfolio_curve": portfolio_curve,
             "summary": summary, "stage_timing": stage_timing, "scfg": scfg, "M_cfg": M_cfg,
             "signal_start": str(sig_start.date()), "cal_end": str(cal[-1].date()), "aborted": False,
@@ -8182,6 +8341,156 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.58.1", "sector_rotation": "v0.70.0", "industry_rotation": "v0.42.0"}
+
+
+def layer_version_note(skip: str = "", M=None) -> str:
+    """[v0.70.0 R89] 같은 프로세스의 M·S·I 버전을 이 라운드 최소 버전(LAYER_MIN_VERSIONS)과 비교한 00 한 줄(표시·로그 전용).
+    R88 실행에서 M만 새 파일이고 S·I는 R85 파일이었다 — 리포트만 보고 바로 알 수 있게 한다."""
+    def _vt(v):
+        try:
+            return tuple(int(x) for x in str(v).lstrip("v").split(".")[:3])
+        except Exception:
+            return (0, 0, 0)
+    parts, bad = [], []
+    for mod, need in LAYER_MIN_VERSIONS.items():
+        if mod == skip:
+            continue
+        m_ = sys.modules.get(mod)
+        if m_ is None:
+            parts.append(f"{mod} 미적재")
+            continue
+        got = str(getattr(m_, "VERSION", None) or getattr(m_, "BUNDLE_VERSION", "?"))
+        ok_ = _vt(got) >= _vt(need)
+        parts.append(f"{mod} {got}" + ("" if ok_ else f" ⚠ < {need}"))
+        if not ok_:
+            bad.append(f"{mod} {got} < {need}")
+    if bad:
+        log("CONFIG", kv(event="layer_version_mismatch", bad=";".join(bad), action="같은 라운드 파일로 교체"), M=M, level="warning")
+        return "⚠ 버전 불일치 — " + " · ".join(parts) + " — 같은 라운드 파일로 교체할 것(섞이면 노란색·비교 행이 예전 규칙으로 계산된다)."
+    return "정상 — " + " · ".join(parts)
+
+
+def parse_ff_factors_daily_csv(text: str) -> pd.DataFrame:
+    """[v0.70.0 R89] Ken French 'F-F_Research_Data_Factors_daily.CSV' → DataFrame(index=날짜, 열=Mkt-RF·SMB·HML·RF, 값=일수익 소수).
+    8자리 날짜로 시작하는 행만 읽는다(헤더·저작권 줄 무시)."""
+    header = None
+    rows: List[List[str]] = []
+    for ln in text.splitlines():
+        st = ln.strip()
+        if not st:
+            continue
+        parts = [x.strip() for x in st.split(",")]
+        if header is None and "Mkt-RF" in st:
+            header = [x for x in parts if x]
+            continue
+        if header is not None and parts[0][:8].isdigit() and len(parts[0]) == 8:
+            rows.append(parts[:1 + len(header)])
+    if header is None or not rows:
+        raise ValueError("FF3 CSV: 헤더/데이터 행 파싱 실패")
+    df = pd.DataFrame([r[1:] for r in rows], columns=header, index=pd.to_datetime([r[0] for r in rows], format="%Y%m%d"))
+    df = df.apply(pd.to_numeric, errors="coerce").mask(lambda x: x <= -99.0) / 100.0
+    df.index.name = "date"
+    return df.sort_index()
+
+
+def fetch_ff_factors_daily(scfg, M=None) -> Optional[pd.DataFrame]:
+    """[v0.70.0 R89] 캐시(FF3_CACHE) → 없으면 FF3_URL zip. 실패하면 None(호출부가 FF49 동일가중으로 대체 · 로그)."""
+    t0 = time.time()
+    cache = getattr(scfg, "FF3_CACHE", "")
+    if cache and os.path.exists(cache):
+        try:
+            df = pd.read_csv(cache, index_col=0, parse_dates=True)
+            log("EXTERNAL", kv(event="ff3_cache_hit", file=cache, rows=len(df), span=f"{df.index[0].date()}~{df.index[-1].date()}"), M=M)
+            return df
+        except Exception as e:
+            log("EXTERNAL", kv(event="ff3_cache_read_failed", err=type(e).__name__), M=M, level="warning")
+    try:
+        import io, zipfile, urllib.request
+        req = urllib.request.Request(getattr(scfg, "FF3_URL", ""), headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            blob = r.read()
+        zf = zipfile.ZipFile(io.BytesIO(blob))
+        name = [n for n in zf.namelist() if n.lower().endswith(".csv")][0]
+        df = parse_ff_factors_daily_csv(zf.read(name).decode("latin-1"))
+        if cache:
+            os.makedirs(os.path.dirname(cache) or ".", exist_ok=True)
+            df.to_csv(cache)
+        log("EXTERNAL", kv(event="ff3_downloaded", rows=len(df), span=f"{df.index[0].date()}~{df.index[-1].date()}",
+                           elapsed_s=round(time.time() - t0, 1)), M=M)
+        return df
+    except Exception as e:
+        log("EXTERNAL", kv(event="ff3_unavailable", err=type(e).__name__, msg=str(e)[:120],
+                           action="FF49 동일가중 시장·RF 0으로 대체"), M=M, level="warning")
+        return None
+
+
+def msizing_ff_audit(mkt_ret: pd.Series, rf: Optional[pd.Series], variants: List[Dict[str, Any]], cfg, M=None,
+                     src: str = "FF3 시장(Mkt-RF+RF)") -> Dict[str, Any]:
+    """[v0.70.0 R89 · 측정 전용] M 사이징(과열 헤어컷 사다리 · 중립 비중)의 **긴 이력** 판정 — 사용자 신뢰도(회피·참여)로.
+    시장 = Fama-French 일별(1926~). M 대용 = 3상태(시장 200일선 위 & 12개월 > 0 → 1 · 둘 다 아니면 0 · 섞이면 '중립').
+    헤어컷 = 상태 1인 날 5일 평균 200일선 이격 ≥ 임계 → 그 사다리 상한(M 규칙 ⑩과 같은 정의). 결정 t 종가 → t+1 종가 수익 · 비용 5bp ·
+    현금 RF. 구간: 1927~1949 · 1950~1998(**독립** — 설계에 한 번도 안 쓴 70년) · 1999~2017 · 2018~(참고).
+    ⚠ 대용 M은 실제 M(지표 워크포워드)이 아니다 — 여기서 재는 것은 '사이징 규칙 자체'가 긴 이력에서 회피+참여를 올리는가다."""
+    t0 = time.time()
+    r = pd.to_numeric(pd.Series(mkt_ret), errors="coerce").dropna().sort_index()
+    idx = r.index
+    rfv = (pd.to_numeric(pd.Series(rf), errors="coerce").reindex(idx).fillna(0.0) if rf is not None else pd.Series(0.0, index=idx))
+    P = (1.0 + r).cumprod()
+    sma = P.rolling(200, min_periods=200).mean()
+    tr = P > sma
+    mo = (P / P.shift(252) - 1.0) > 0
+    ok = P.rolling(252, min_periods=252).mean().notna()
+    E0 = pd.Series(np.where(tr & mo, 1.0, np.where((~tr) & (~mo), 0.0, 0.5)), index=idx).where(ok, 0.0)
+    ext5 = (P / sma - 1.0).rolling(5, min_periods=5).mean()
+    on = E0.ge(1.0)
+    runs: Dict[str, pd.Series] = {}
+    info: Dict[str, Any] = {}
+    for v in variants:
+        Ev = E0.copy()
+        Ev[E0.eq(0.5)] = float(v["neutral"])
+        for thr, capv in sorted(tuple(v.get("steps") or ())):
+            Ev[on & (ext5 >= float(thr))] = float(capv)
+        ex = Ev.shift(1).fillna(0.0)
+        runs[str(v["name"])] = ex * r + (1.0 - ex) * rfv - Ev.diff().abs().shift(1).fillna(0.0) * 5e-4
+        info[str(v["name"])] = {"avg_E": round(float(Ev.mean()), 4)}
+    eras = (("1927~1949(독립)", "1927-01-01", "1949-12-31"), ("1950~1998(독립)", "1950-01-01", "1998-12-31"),
+            ("1999~2017(참고)", "1999-01-01", "2017-12-31"), ("2018~(참고)", "2018-01-01", str(idx[-1].date()) if len(idx) else "2018-01-01"))
+    rows: List[Dict[str, Any]] = []
+    verdict: Dict[str, Any] = {}
+    live = next((str(v["name"]) for v in variants if v.get("live")), None)
+    ref = next((str(v["name"]) for v in variants if v.get("ref")), None)
+    cand = next((str(v["name"]) for v in variants if v.get("cand")), None)
+    cand_verdict: Dict[str, Any] = {}
+    for en, a, b in eras:
+        m = (idx >= pd.Timestamp(a)) & (idx <= pd.Timestamp(b))
+        if int(m.sum()) < 500:
+            continue
+        ur = user_rel_portfolio({k: x[m] for k, x in runs.items()}, r[m], cfg).set_index("전략")
+        base = ur.loc[ref] if ref in ur.index else None
+        for k, u in ur.iterrows():
+            rows.append({"구간": en, "변형": k, "하락 회피율": u["하락 회피율"], "상승 참여율": u["상승 참여율"],
+                         "회피+참여": round(float(u["하락 회피율"]) + float(u["상승 참여율"]), 4),
+                         "Δ(회피+참여)(%p) vs R86": (round((float(u["하락 회피율"]) + float(u["상승 참여율"])
+                                                         - float(base["하락 회피율"]) - float(base["상승 참여율"])) * 100, 2)
+                                                  if base is not None else np.nan),
+                         "등급": u["등급"], "배수": u["배수"], "MDD": u["MDD"], "칼마": u["칼마"], "시장 출처": src})
+        if live in ur.index and ref in ur.index and "독립" in en:
+            d = float(ur.loc[live, "하락 회피율"] + ur.loc[live, "상승 참여율"] - ur.loc[ref, "하락 회피율"] - ur.loc[ref, "상승 참여율"])
+            verdict[en] = {"d_sum": round(d * 100, 2), "pass": bool(d >= -1e-9)}
+            if cand in ur.index:
+                dc = float(ur.loc[cand, "하락 회피율"] + ur.loc[cand, "상승 참여율"] - ur.loc[live, "하락 회피율"] - ur.loc[live, "상승 참여율"])
+                cand_verdict[en] = {"d_sum": round(dc * 100, 2), "pass": bool(dc >= -1e-9)}
+    allp = bool(verdict) and all(v["pass"] for v in verdict.values())
+    tab = pd.DataFrame(rows)
+    for en, v in verdict.items():
+        log("MSIZING", kv(event="ff_verdict", era=en, d_sum_pp=v["d_sum"], passed=v["pass"], src=src), M=M)
+    log("MSIZING", kv(event="ff_done", variants=len(variants), rows=len(tab), span=(f"{idx[0].date()}~{idx[-1].date()}" if len(idx) else "-"),
+                      supported=allp, sec=round(time.time() - t0, 1), note="측정 전용 — 라이브 무변경"), M=M)
+    return {"enabled": True, "table": tab, "verdict": verdict, "supported": allp, "live": live, "ref": ref, "src": src, "info": info,
+            "cand": cand, "cand_verdict": cand_verdict, "cand_pass": bool(cand_verdict) and all(v["pass"] for v in cand_verdict.values())}
+
+
 def fetch_ff49_daily(scfg: SectorConfig, M=None) -> Optional[pd.DataFrame]:
     """캐시(FF49_CACHE) → 없으면 FF49_URL의 zip을 내려받아 파싱·캐시. 네트워크/파싱 실패면 None(외부 검증 생략, 로그)."""
     t0 = time.time()
@@ -8683,8 +8992,11 @@ def own_evidence_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
                     f"{l_.get('CAGR', np.nan) * 100:.2f}% · MDD {o.get('MDD', np.nan) * 100:.2f}% → {l_.get('MDD', np.nan) * 100:.2f}% · "
                     f"칼마 {o.get('칼마', np.nan):.3f} → {l_.get('칼마', np.nan):.3f} · 발동 {od.get('fill_days', 0)}일. "
                     "⚠ 노출을 늘리는 위험 파라미터 변경이다 — 되돌리기 s_overrides={'OWN_EVIDENCE_FILL': 0.0}. 세부는 00S 시트."))
-    else:
-        out.append(("★★ 섹터 자기근거 채움(R85)", f"끔(OWN_EVIDENCE_FILL=0) — ★는 v0.66.0과 같다. 격자·장기 검증만 00S에 싣는다."))
+    elif not ((((sres.get("alloc") or {}).get("diag") or {}).get("relcmp")) or {}).get("enabled"):
+        out.append(("★★ 노란색(라이브) 수익배수 — R86: R85 채움 되돌림",
+                    f"R85 사전등록 (d)대로 채움을 껐다(OWN_EVIDENCE_FILL=0) — ★는 v0.66.0 규칙과 같다(채움 OFF 행 = ★). 근거: 엔진 장기 검증 "
+                    "2000~2017(독립)에서 섹터 자기 근거 채움이 SPY 채움과 무작위 섹터보다 나빴다(R85: 칼마 0.329 vs 0.362 · 대조군 95% 0.366). "
+                    "표본 안(2018~) 배수 +1.6%는 표본 운일 가능성이 크다. 다시 켜기 s_overrides={'OWN_EVIDENCE_FILL': 0.25}. 이번 판정은 00S."))
     cr = od.get("criteria") or {}
     out.append(("★★ [섹터근거격자] 사전등록 판정(R85 · 엔진 값)",
                 " · ".join(f"{k} {'O' if v else 'X'}" for k, v in cr.items())
@@ -8712,6 +9024,669 @@ def own_evidence_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
             out.append(("★★ 섹터 자기근거 장기 검증(엔진 1999~ · M E_t · 측정 전용)", " || ".join(parts)))
     elif isinstance(lg, dict) and lg.get("error"):
         out.append(("⚠ 섹터 자기근거 장기 검증", f"산출 실패 — {lg['error']}"))
+    return out
+
+
+# =============================================================================
+# [v0.68.0 R86 ★★★ 신규] 사용자 정의 신뢰도 — "하락을 잘 피하고 상승을 잘 타는가"(노란색 배수로 드러나는 것)
+# =============================================================================
+#   사용자 지시(2026-09-22): "신뢰도를 높이라는건 하락 잘 피하고 상승 잘타는 건데 그걸 잘하면 수익배수도 늘어나게 되는데",
+#     "신뢰도는 내가 얘기했던 방법인거 알지?". ⇒ R82~R84의 '신뢰도'(IC·t̄ 등급)는 **선택 신호 통계**로 이름을 바꾸고,
+#     00 맨 앞의 '신뢰도'는 이 정의로 잰다.
+#   정의(같은 잣대로 M·S★·I★·단일 예측을 잰다 — 진단 전용, 사후 구간 분할이라 신호에 쓰지 않는다):
+#     포트폴리오(노란색 행) — SPY 단순보유 곡선의 지그재그 구간(USER_REL_SEG_PORT = 5% · 3거래일)마다 전략 수익(구간 복리):
+#       하락 회피율 = 1 − Σ(하락구간 전략 수익) / Σ(하락구간 SPY 수익)   (SPY가 잃은 것 중 피한 몫 · 1.0 = 전부 피함)
+#       상승 참여율 = Σ(상승구간 전략 수익) / Σ(상승구간 SPY 수익)       (SPY가 번 것 중 탄 몫 · 1.0 = 다 탐 · >1 = 더 탐)
+#     단일 예측(섹터·산업별 라이브 단독 노출) — 그 자산 B&H 지그재그(USER_REL_SEG_ASSET = 7% · 3거래일 · I 00D와 같다):
+#       하락 회피율 = 1 − Σ_하락(w·r) / Σ_하락(r) · 상승 참여율 = Σ_상승(w·r) / Σ_상승(r)  (자산-일 단순합 · 전 자산 합산)
+#   등급(R86 사전등록 — 숫자를 보기 전에 정한 둥근 값, 바꾸지 않는다):
+#     높음 = 회피율 ≥ 0.70 그리고 참여율 ≥ 0.90 · 중간 = 회피율 ≥ 0.50 그리고 참여율 ≥ 0.70 · 낮음 = 그 밖(순효과 > 0) · 없음 = 순효과 ≤ 0.
+#     구간 안정성: 앞(2018~2021)·뒤(2022~) 절반의 등급이 같으면 '확정', 다르면 '(구간 불안정)'을 붙인다.
+
+def user_grade(av: float, pa: float, net: float, cfg) -> str:
+    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
+    mid = tuple(getattr(cfg, "USER_REL_MID", (0.50, 0.70)))
+    if not (av == av and pa == pa):
+        return "-"
+    if net == net and net <= 0:
+        return "없음"
+    if av >= hi[0] and pa >= hi[1]:
+        return "높음"
+    if av >= mid[0] and pa >= mid[1]:
+        return "중간"
+    return "낮음"
+
+
+def _zz_valid(level: pd.Series, mm: float, md: int) -> List[Tuple[str, pd.Timestamp, pd.Timestamp]]:
+    s = pd.Series(level).dropna().astype(float)
+    out = []
+    for kind, a, b in zigzag_segments(s, mm, md):
+        if str(kind) not in ("상승", "하락") or b - a < int(md):
+            continue
+        out.append((str(kind), s.index[a], s.index[b]))
+    return out
+
+
+def user_rel_portfolio(rets: Dict[str, pd.Series], spy_ret: pd.Series, cfg,
+                       split: Optional[str] = None) -> pd.DataFrame:
+    """노란색(포트폴리오) 행들의 사용자 신뢰도. rets: {라벨: 일수익}, spy_ret: SPY 일수익(같은 창)."""
+    mm, md = tuple(getattr(cfg, "USER_REL_SEG_PORT", (0.05, 3)))
+    sp = pd.to_numeric(pd.Series(spy_ret), errors="coerce").fillna(0.0)
+    lev = (1.0 + sp).cumprod()
+    segs = _zz_valid(lev, float(mm), int(md))
+    spl = pd.Timestamp(split or getattr(cfg, "USER_REL_SPLIT", "2022-01-01"))
+    rows = []
+    for lab, r in rets.items():
+        rr = pd.to_numeric(pd.Series(r), errors="coerce").reindex(sp.index).fillna(0.0)
+        eq = (1.0 + rr).cumprod()
+
+        def _agg(sel):
+            dn_s = dn_b = up_s = up_b = 0.0
+            nd = nu = 0
+            for kind, a, b in sel:
+                bs = float(lev.loc[b] / lev.loc[a] - 1.0)
+                ss = float(eq.loc[b] / eq.loc[a] - 1.0)
+                if kind == "하락":
+                    dn_s += ss; dn_b += bs; nd += 1
+                else:
+                    up_s += ss; up_b += bs; nu += 1
+            av = 1.0 - dn_s / dn_b if dn_b < 0 else np.nan
+            pa = up_s / up_b if up_b > 0 else np.nan
+            net = (dn_s - dn_b + up_s - up_b) * 100.0
+            return av, pa, net, nd, nu
+        av, pa, net, nd, nu = _agg(segs)
+        a1, p1, n1, _, _ = _agg([x for x in segs if x[1] < spl])
+        a2, p2, n2, _, _ = _agg([x for x in segs if x[1] >= spl])
+        g, g1, g2 = user_grade(av, pa, net, cfg), user_grade(a1, p1, n1, cfg), user_grade(a2, p2, n2, cfg)
+        n = len(rr)
+        cg = float(eq.iloc[-1] ** (252.0 / max(n, 1)) - 1.0) if n else np.nan
+        mdd = float((eq / eq.cummax() - 1.0).min()) if n else np.nan
+        rows.append({"전략": lab, "하락구간 수": nd, "상승구간 수": nu,
+                     "하락 회피율": round(av, 4) if av == av else np.nan, "상승 참여율": round(pa, 4) if pa == pa else np.nan,
+                     "순효과(%p)": round(net, 1), "등급": g,
+                     f"앞 절반(~{spl.year - 1}) 회피/참여": (f"{a1:.3f}/{p1:.3f}" if a1 == a1 and p1 == p1 else "-"),
+                     f"뒤 절반({spl.year}~) 회피/참여": (f"{a2:.3f}/{p2:.3f}" if a2 == a2 and p2 == p2 else "-"),
+                     "절반 등급": f"{g1}/{g2}", "안정성": ("확정" if g1 == g2 == g else "(구간 불안정)"),
+                     "배수": round(float(eq.iloc[-1]), 3) if n else np.nan, "MDD": round(mdd, 4),
+                     "칼마": (round(cg / abs(mdd), 3) if mdd < 0 else np.nan)})
+    return pd.DataFrame(rows)
+
+
+def user_rel_single(pos: pd.DataFrame, ret: pd.DataFrame, cfg) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """단일 예측(자산별 라이브 단독 노출 w, **체결** 기준)의 사용자 신뢰도 — 자산별 + 전 자산 합산(I 00D와 같은 산식)."""
+    mm, md = tuple(getattr(cfg, "USER_REL_SEG_ASSET", (0.07, 3)))
+    rows = []
+    T = {"dn_s": 0.0, "dn_b": 0.0, "up_s": 0.0, "up_b": 0.0}
+    for c in ret.columns:
+        r = pd.to_numeric(ret[c], errors="coerce")
+        w = pd.to_numeric(pos[c], errors="coerce").reindex(r.index) if c in pos.columns else None
+        m = r.notna()
+        if w is None or int(m.sum()) < 120:
+            continue
+        r = r[m]; w = w[m].fillna(0.0)
+        lev = (1.0 + r).cumprod()
+        d = {"dn_s": 0.0, "dn_b": 0.0, "up_s": 0.0, "up_b": 0.0}
+        for kind, a, b in _zz_valid(lev, float(mm), int(md)):
+            sel = (r.index > a) & (r.index <= b)
+            k = "dn" if kind == "하락" else "up"
+            d[k + "_s"] += float((w[sel] * r[sel]).sum()); d[k + "_b"] += float(r[sel].sum())
+        for k in T:
+            T[k] += d[k]
+        av = 1.0 - d["dn_s"] / d["dn_b"] if d["dn_b"] < 0 else np.nan
+        pa = d["up_s"] / d["up_b"] if d["up_b"] > 0 else np.nan
+        net = (d["dn_s"] - d["dn_b"] + d["up_s"] - d["up_b"]) * 100.0
+        rows.append({"자산": c, "하락 회피율": round(av, 4) if av == av else np.nan,
+                     "상승 참여율": round(pa, 4) if pa == pa else np.nan, "순효과(%p)": round(net, 1),
+                     "등급": user_grade(av, pa, net, cfg)})
+    av = 1.0 - T["dn_s"] / T["dn_b"] if T["dn_b"] < 0 else np.nan
+    pa = T["up_s"] / T["up_b"] if T["up_b"] > 0 else np.nan
+    net = (T["dn_s"] - T["dn_b"] + T["up_s"] - T["up_b"]) * 100.0
+    agg = {"하락 회피율": av, "상승 참여율": pa, "순효과(%p)": net, "등급": user_grade(av, pa, net, cfg), "자산 수": len(rows)}
+    return pd.DataFrame(rows), agg
+
+
+# =============================================================================
+# [v0.68.0 R86 ★★ 신규 · 측정 전용] 섹터 거시 근거 — 가격 추세가 아닌 **섹터 고유 경제 동인**으로 '국면을 안 따라가는 섹터'를 찾는다
+# =============================================================================
+#   왜: R85에서 섹터 자기 가격 근거(자기 추세·상대 추세·국면기계)는 엔진 장기 검증 2000~2017에서 SPY·무작위보다 나빴다
+#     (② 칼마 0.329 < ① 0.362 · 대조군 95% 0.366 · ③ E_t=0 0.230 < M 단독 0.359). 남은 '섹터별 근거'는 섹터마다 다른 경제 동인이다.
+#   동인(사전 지정 — 교과서적 방향 하나씩, 결과를 보고 바꾸지 않는다):
+#     XLE ← 유가 CL=F(+) · XLB ← 구리 HG=F(+) · XLI ← 구리 HG=F(+) · XLF ← 장단기 금리차 T10Y2Y(+)
+#     XLU ← 10년 금리 DGS10(−) · XLRE ← 10년 금리 DGS10(−) · XLK ← 10년 실질금리 DFII10(−) · XLY ← 하이일드 스프레드 BAMLH0A0HYM2(−)
+#     XLP·XLV·XLC ← 없음(방어·혼합 — 억지로 붙이지 않는다).
+#   순풍 = 부호 × (X_t − X_{t−63}) > 0 · 역풍 = < 0. FRED는 M의 발표 지연(lag_days)만큼 늦춘다(없으면 1일). 전부 t일까지의 값.
+#   M에 있는 자료만 쓴다(res["px_dict"] · res["fred"]). 없는 동인은 그 섹터를 '동인 없음'으로 두고 로그에 남긴다.
+
+def macro_driver_states(res: dict, idx: pd.DatetimeIndex, secs: List[str], cfg, M=None
+                        ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    drv = dict(getattr(cfg, "SECTOR_MACRO_DRIVERS", {}) or {})
+    lb = int(getattr(cfg, "MACRO_LOOKBACK", 63))
+    px = (res or {}).get("px_dict") or {}
+    fred = (res or {}).get("fred") or {}
+    lagmap = {}
+    try:
+        lagmap = {k: int(v[1]) for k, v in dict(getattr(M, "FRED_SERIES", {}) or {}).items()}
+    except Exception:
+        lagmap = {}
+    tail = pd.DataFrame(False, index=idx, columns=secs)
+    head = pd.DataFrame(False, index=idx, columns=secs)
+    info: Dict[str, Any] = {}
+    for s in secs:
+        spec = drv.get(s)
+        if not spec:
+            info[s] = "동인 없음(사전 지정)"
+            continue
+        sid, sgn = str(spec[0]), float(spec[1])
+        x = None
+        try:
+            if sid in px and isinstance(px[sid], pd.DataFrame) and len(px[sid]):
+                _d = px[sid]
+                _c = "Adj Close" if "Adj Close" in _d.columns else ("Close" if "Close" in _d.columns else None)
+                if _c is not None:
+                    x = pd.to_numeric(_d[_c], errors="coerce")
+                    x = x[~x.index.duplicated(keep="last")].sort_index().reindex(idx).ffill()
+                    x = np.log(x.where(x > 0))                   # 가격은 로그 변화
+            elif sid in fred and fred[sid] is not None and len(pd.Series(fred[sid]).dropna()):
+                _f = pd.to_numeric(pd.Series(fred[sid]), errors="coerce")
+                _f = _f[~_f.index.duplicated(keep="last")].sort_index()
+                x = _f.reindex(idx).ffill().shift(max(1, int(lagmap.get(sid, 1))))   # 발표 지연만큼 늦춘다(룩어헤드 차단)
+        except Exception as _e:
+            info[s] = f"{sid} 읽기 실패 {type(_e).__name__}"
+            continue
+        if x is None or int(x.notna().sum()) < lb + 60:
+            info[s] = f"{sid} 없음/부족 — 동인 없음 처리"
+            continue
+        ch = (x - x.shift(lb)) * sgn
+        tail[s] = (ch > 0).fillna(False)
+        head[s] = (ch < 0).fillna(False)
+        info[s] = f"{sid}({'+' if sgn > 0 else '−'}) · 첫 값 {str(ch.first_valid_index())[:10]} · 순풍 비율 {float(tail[s][ch.notna()].mean()):.2f}"
+    return tail, head, info
+
+
+def macro_long_audit(level: pd.DataFrame, E: pd.Series, spy_ret: pd.Series, spy_level: Optional[pd.Series],
+                     tail: pd.DataFrame, rf: Optional[pd.Series], cfg, cost_bps: float = 5.0, M=None) -> Dict[str, Any]:
+    """[R86 측정 전용] 장기 검증(엔진 전체 이력) — 기준선 M 단독(E_t×SPY) 위에:
+       L2 E_t=0일 거시 순풍 & 자기 추세 상승 섹터 1위 × pos(사용자 가설: 국면을 안 따라가는 섹터를 **경제 동인**으로)
+       L3 부분예산일 남는 현금 × f → 거시 순풍 & 자기 추세 상승 상위 k
+       각각 같은 날·같은 몫 무작위 섹터 대조군과 비교하고, **사용자 신뢰도(회피율·참여율)**와 칼마를 구간(2000~2017 · 2018~)별로 싣는다.
+       예산: 그 구간에 M E_t 부분예산일이 60일 미만이면 M 대용 3상태(SPY 200일선·12개월 — own_long_audit과 같은 정의)."""
+    t0 = time.time()
+    f = float(getattr(cfg, "MACRO_FILL", 0.25) or 0.25)
+    k = int(getattr(cfg, "OWN_EVIDENCE_FILL_K", 2) or 2)
+    pos = float(getattr(cfg, "MACRO_OFF_POS", 0.25) or 0.25)
+    nctl = int(getattr(cfg, "MACRO_CONTROLS", 12) or 0)
+    seed = int(getattr(cfg, "MACRO_SEED", 20260924))
+    L = level.sort_index(); idx = L.index; secs = list(L.columns)
+    fr = own_evidence_frames(L, None, int(getattr(cfg, "OWN_EVIDENCE_N_LONG", 200)), int(getattr(cfg, "OWN_EVIDENCE_N_SHORT", 50)),
+                             int(getattr(cfg, "OWN_EVIDENCE_N_REL", 50)), int(getattr(cfg, "OWN_EVIDENCE_N_RS", 63)))
+    R = L.pct_change(fill_method=None)
+    sp = pd.to_numeric(spy_ret.reindex(idx), errors="coerce")
+    rfv = (pd.to_numeric(rf.reindex(idx), errors="coerce").fillna(0.0) if rf is not None else pd.Series(0.0, index=idx))
+    listed = L.notna()
+    cand = tail.reindex(index=idx, columns=secs).fillna(False).astype(bool) & fr["own_up"] & listed
+    pool = fr["own_up"] & listed
+    E_m = pd.to_numeric(E.reindex(idx), errors="coerce").fillna(0.0).clip(lower=0.0)
+    E_px = None
+    if spy_level is not None and len(pd.Series(spy_level).dropna()) > 300:
+        _P = pd.to_numeric(pd.Series(spy_level), errors="coerce").reindex(idx).ffill()
+        _tr = _P > _P.rolling(200, min_periods=200).mean()
+        _mo = (_P / _P.shift(252) - 1.0) > 0
+        _ok = _P.rolling(252, min_periods=252).mean().notna()
+        E_px = pd.Series(np.where(_tr & _mo, 1.0, np.where((~_tr) & (~_mo), 0.0, 0.5)), index=idx).where(_ok, 0.0)
+    cb = float(cost_bps) / 1e4
+    zero = pd.DataFrame(0.0, index=idx, columns=secs)
+
+    def _run(Ws: pd.DataFrame, Wp: pd.Series) -> pd.Series:
+        ws = Ws.reindex(columns=secs).fillna(0.0); wp = Wp.reindex(idx).fillna(0.0)
+        g = (ws.shift(2).fillna(0.0) * R.fillna(0.0)).sum(axis=1) + wp.shift(2).fillna(0.0) * sp.fillna(0.0)
+        ex = ws.shift(2).fillna(0.0).sum(axis=1) + wp.shift(2).fillna(0.0)
+        tn = (ws.diff().abs().sum(axis=1) + wp.diff().abs()).shift(2).fillna(0.0)
+        return g + (1.0 - ex).clip(lower=0.0) * rfv - tn * cb
+    sel_k = _own_top_by(fr["rs"], cand, k); sel_1 = _own_top_by(fr["rs"], cand, 1)
+
+    def _suite(Ev: pd.Series) -> Dict[str, Any]:
+        part = (Ev > 1e-12) & (Ev < 1.0 - 1e-12); off = Ev <= 1e-12
+        rem = ((1.0 - Ev).clip(lower=0.0) * f).where(part & (sel_k.sum(axis=1) > 0), 0.0)
+        offd = off & (sel_1.sum(axis=1) > 0)
+        runs = {"M 단독(E_t×SPY)": _run(zero, Ev),
+                f"L2 E_t=0일 거시 순풍 섹터 1위 × {pos:.0%}": _run(sel_1.mul(pos * offd.astype(float), axis=0), Ev),
+                f"L2' 같은 날 SPY × {pos:.0%}(비교)": _run(zero, Ev + pos * offd.astype(float)),
+                f"L3 부분예산일 남는 현금×{f:.0%} → 거시 순풍 상위{k}": _run(sel_k.mul(rem, axis=0), Ev),
+                f"L3' 같은 몫 SPY(비교)": _run(zero, Ev + rem)}
+        ctl = {"L2": [], "L3": []}
+        for j in range(nctl):
+            r1 = _own_rand_sel(pool, 1, seed + j)
+            ctl["L2"].append(_run(r1.mul(pos * (off & (r1.sum(axis=1) > 0) & offd).astype(float), axis=0), Ev))
+            rk = _own_rand_sel(pool, k, seed + 500 + j)
+            ctl["L3"].append(_run(rk.mul(rem.where(rk.sum(axis=1) > 0, 0.0), axis=0), Ev))
+        return {"runs": runs, "ctl": ctl, "rem": rem, "offd": offd, "part": part}
+    suites = {"M E_t": _suite(E_m)}
+    eras = (("2000~2017(독립)", pd.Timestamp("2000-01-01"), pd.Timestamp("2017-12-31")),
+            ("2018~(★ 평가창)", pd.Timestamp("2018-01-01"), idx[-1] if len(idx) else pd.Timestamp("2018-01-01")))
+    rows: List[Dict[str, Any]] = []
+    for en, s0, s1 in eras:
+        m = (idx >= s0) & (idx <= s1)
+        if int(m.sum()) < 250:
+            continue
+        src = "M E_t"
+        if int((suites["M E_t"]["part"] & m).sum()) < 60 and E_px is not None:
+            if "M 대용 3상태" not in suites:
+                suites["M 대용 3상태"] = _suite(E_px)
+            src = "M 대용 3상태"
+        su = suites[src]
+        ur = user_rel_portfolio({lab: r[m] for lab, r in su["runs"].items()}, sp[m].fillna(0.0), cfg)
+        urc = {key: user_rel_portfolio({f"c{j}": c[m] for j, c in enumerate(cl)}, sp[m].fillna(0.0), cfg)
+               for key, cl in su["ctl"].items()}
+        b = ur.iloc[0]
+        for _, u in ur.iterrows():
+            lab = str(u["전략"]); key = lab.split(" ")[0]
+            row = {"구간": en, "예산 출처": src, "변형": lab, "하락 회피율": u["하락 회피율"], "상승 참여율": u["상승 참여율"],
+                   "Δ회피(%p)": round((u["하락 회피율"] - b["하락 회피율"]) * 100, 2),
+                   "Δ참여(%p)": round((u["상승 참여율"] - b["상승 참여율"]) * 100, 2),
+                   "등급": u["등급"], "배수": u["배수"], "MDD": u["MDD"], "칼마": u["칼마"],
+                   "발동일": (int((su["offd"] & m).sum()) if key.startswith("L2") else
+                             (int(((su["rem"] > 0) & m).sum()) if key.startswith("L3") else None))}
+            if key in urc:
+                cc = urc[key]["칼마"].astype(float).dropna().values
+                cs = (urc[key]["하락 회피율"] + urc[key]["상승 참여율"]).astype(float).dropna().values
+                row.update({"대조군 칼마 95%": round(float(np.quantile(cc, 0.95)), 3) if len(cc) else np.nan,
+                            "대조군 칼마 백분위": round(float((cc < u["칼마"]).mean() * 100), 1) if len(cc) else np.nan,
+                            "대조군 (회피+참여) 95%": round(float(np.quantile(cs, 0.95)), 4) if len(cs) else np.nan})
+            rows.append(row)
+    tab = pd.DataFrame(rows)
+    verdict = {}
+    for key in ("L2", "L3"):
+        ok = []
+        for en, _, _ in eras:
+            t_ = tab[(tab["구간"] == en) & (tab["변형"].str.startswith(key + " "))] if len(tab) else tab
+            if not len(t_):
+                ok.append(None); continue
+            r_ = t_.iloc[0]
+            ok.append(bool(r_["Δ회피(%p)"] >= -1.0 and r_["Δ참여(%p)"] >= -1.0 and (r_["Δ회피(%p)"] + r_["Δ참여(%p)"]) >= 2.0
+                           and r_["칼마"] == r_["칼마"] and r_.get("대조군 칼마 95%") == r_.get("대조군 칼마 95%")
+                           and r_["칼마"] > r_["대조군 칼마 95%"]))
+        verdict[key] = {"eras": ok, "pass": bool(ok and all(x is True for x in ok))}
+    for r_ in rows:
+        log("MACRO", kv(event="long_audit_row", era=r_["구간"][:9], src=r_["예산 출처"], variant=str(r_["변형"])[:30],
+                        avoid=r_["하락 회피율"], part=r_["상승 참여율"], d_avoid=r_["Δ회피(%p)"], d_part=r_["Δ참여(%p)"],
+                        calmar=r_["칼마"], ctl_q95=r_.get("대조군 칼마 95%"), days=r_.get("발동일")), M=M)
+    log("MACRO", kv(event="long_audit_done", rows=len(rows), L2_pass=verdict.get("L2", {}).get("pass"),
+                    L3_pass=verdict.get("L3", {}).get("pass"), fill=f, pos=pos, controls=nctl, seed=seed,
+                    sec=round(time.time() - t0, 1), note="측정 전용 — ★ 무변경"), M=M)
+    return {"enabled": True, "table": tab, "verdict": verdict, "fill": f, "pos": pos, "controls": nctl, "seed": seed}
+
+
+def relcmp_long_audit(level: pd.DataFrame, spy_level: pd.Series, spy_ret: pd.Series, rf: Optional[pd.Series],
+                      modes: List[Dict[str, Any]], cfg, cost_bps: float = 5.0, M=None) -> Dict[str, Any]:
+    """[v0.69.0 R88 · 측정 전용] 회피형·참여형·양쪽형 **독립 구간** 장기 검증(엔진 섹터 ETF 1999~ · M 대용 3상태).
+    ★ 구조를 단순화해 같은 규칙을 1999~2017에 그대로 돌린다(2018 이전 M E_t는 0/1뿐이라 대용 예산을 쓴다 — R85 교훈 9):
+      예산 E = SPY 3상태(200일선 위 & 12개월 > 0 → 1 · 둘 다 아니면 0 · 섞이면 '중립') → 중립은 모드의 M 중립 비중,
+              E=1일 SPY 5일 평균 200일선 이격 ≥ 임계면 모드의 헤어컷 상한(M 규칙 ⑩과 같은 정의).
+      섹터 = 주력(XLK)이 자기 200일선 위면 상한×E, 아니면 0(대피) · 나머지는 방어몫 → 적격 중 252일 베타 최저, 그 밖 → 적격 중 63일
+              상대수익 1위(적격 = 자기 200·50일선 위 · 주력 제외) · 적격이 없으면 현금 · E=0일 리더 비중 → 자기 추세 위 상대수익 1위.
+      체결은 t 종가 결정 → t+2 종가 수익(보수적 근사 — R86 macro_long_audit과 같은 _run 규약) · 비용 cost_bps · 현금 무위험.
+    사전등록(R88): 양쪽형(★)의 (회피율+참여율)이 현행(R86 설정) 이상 **그리고** MDD 악화 ≤ RELCMP_LONG_MDD_TOL — 두 독립 반쪽
+      (2000~2008 · 2009~2017) **모두**. 미통과면 다음 라운드에 라이브를 되돌릴 근거가 된다(엔진은 스스로 라이브를 바꾸지 않는다)."""
+    t0 = time.time()
+    L = level.sort_index().astype(float); idx = L.index; secs = list(L.columns)
+    pri = str(getattr(cfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+    R = L.pct_change(fill_method=None)
+    P = pd.to_numeric(pd.Series(spy_level), errors="coerce").reindex(idx).ffill()
+    sp = pd.to_numeric(pd.Series(spy_ret), errors="coerce").reindex(idx)
+    rfv = (pd.to_numeric(rf.reindex(idx), errors="coerce").fillna(0.0) if rf is not None else pd.Series(0.0, index=idx))
+    sma = P.rolling(200, min_periods=200).mean()
+    tr = P > sma
+    mo = (P / P.shift(252) - 1.0) > 0
+    ok = P.rolling(252, min_periods=252).mean().notna()
+    E0 = pd.Series(np.where(tr & mo, 1.0, np.where((~tr) & (~mo), 0.0, 0.5)), index=idx).where(ok, 0.0)
+    ext5 = (P / sma - 1.0).rolling(5, min_periods=5).mean()
+    fr = own_evidence_frames(L, None, 200, 50, 50, 63)
+    own_up = fr["own_up"].reindex(index=idx, columns=secs).fillna(False).astype(bool) & L.notna()
+    rs = fr["rs"].reindex(index=idx, columns=secs)
+    cov = R.rolling(252, min_periods=200).cov(sp)
+    var = sp.rolling(252, min_periods=200).var()
+    beta = cov.div(var, axis=0)
+    elig = own_up.copy()
+    if pri in elig.columns:
+        elig[pri] = False
+    top_rs = _own_top_by(rs, elig, 1)
+    low_b = _own_top_by(-beta, elig & beta.notna(), 1)
+    lead1 = _own_top_by(rs, own_up, 1)
+    hold_pri = ((L[pri] > L[pri].rolling(200, min_periods=200).mean()) if pri in L.columns
+                else pd.Series(False, index=idx)).fillna(False)
+    cb = float(cost_bps) / 1e4
+
+    def _run(ws: pd.DataFrame) -> pd.Series:
+        ws = ws.reindex(columns=secs).fillna(0.0)
+        g = (ws.shift(2).fillna(0.0) * R.fillna(0.0)).sum(axis=1)
+        ex = ws.shift(2).fillna(0.0).sum(axis=1)
+        tn = ws.diff().abs().sum(axis=1).shift(2).fillna(0.0)
+        return g + (1.0 - ex).clip(lower=0.0) * rfv - tn * cb
+
+    runs: Dict[str, pd.Series] = {}
+    info: Dict[str, Dict[str, Any]] = {}
+    for md in modes:
+        nm = str(md["name"])
+        Ev = E0.copy()
+        Ev[E0.eq(0.5)] = float(md["neutral"])
+        on = E0.ge(1.0)
+        for thr, capv in sorted(tuple(md["steps"] or ())):
+            Ev[on & (ext5 >= float(thr))] = float(capv)
+        cap = float(md["cap"]); dfs = float(md["def"]); ld = float(md["leader"])
+        capp = float(md.get("cap_part", cap))          # [v0.70.0 R89] 상태별 상한(E=1일 cap · 그 밖 cap_part)
+        capv_s = pd.Series(np.where(Ev >= 1.0 - 1e-12, cap, capp), index=idx)
+        w_pri = (capv_s * Ev).where(hold_pri & (Ev > 0), 0.0)
+        rest = (Ev - w_pri).clip(lower=0.0)
+        W = pd.DataFrame(0.0, index=idx, columns=secs)
+        if pri in W.columns:
+            W[pri] = w_pri
+        W = W.add(low_b.mul(rest * dfs, axis=0), fill_value=0.0).add(top_rs.mul(rest * (1.0 - dfs), axis=0), fill_value=0.0)
+        if ld > 0:
+            W = W.add(lead1.mul(ld * Ev.le(1e-12).astype(float), axis=0), fill_value=0.0)
+        runs[nm] = _run(W)
+        info[nm] = {"avg_exposure": round(float(W.sum(axis=1).mean()), 4),
+                    "haircut_days": int(sum(int((on & (ext5 >= float(t))).sum()) for t, _ in tuple(md["steps"] or ())[:1])),
+                    "neutral_days": int(E0.eq(0.5).sum())}
+    eras = (("2000~2008(독립)", pd.Timestamp("2000-01-01"), pd.Timestamp("2008-12-31")),
+            ("2009~2017(독립)", pd.Timestamp("2009-01-01"), pd.Timestamp("2017-12-31")),
+            ("2018~(참고 · 대용 M)", pd.Timestamp("2018-01-01"), idx[-1] if len(idx) else pd.Timestamp("2018-01-01")))
+    rows: List[Dict[str, Any]] = []
+    verdict: Dict[str, Any] = {}
+    star = next((str(m["name"]) for m in modes if m.get("star")), None)
+    ref = next((str(m["name"]) for m in modes if m.get("ref")), None)
+    cand = next((str(m["name"]) for m in modes if m.get("cand")), None)
+    cand_verdict: Dict[str, Any] = {}
+    tol = float(getattr(cfg, "RELCMP_LONG_MDD_TOL", 0.03) or 0.03)
+    for en, s0, s1 in eras:
+        m = (idx >= s0) & (idx <= s1)
+        if int(m.sum()) < 250:
+            continue
+        ur = user_rel_portfolio({k: v[m] for k, v in runs.items()}, sp[m].fillna(0.0), cfg)
+        urb = ur.set_index("전략")
+        for _, u in ur.iterrows():
+            rows.append({"구간": en, "변형": u["전략"], "하락 회피율": u["하락 회피율"], "상승 참여율": u["상승 참여율"],
+                         "회피+참여": round(float(u["하락 회피율"]) + float(u["상승 참여율"]), 4), "등급": u["등급"],
+                         "배수": u["배수"], "MDD": u["MDD"], "칼마": u["칼마"], "예산 출처": "M 대용 3상태"})
+        if star in urb.index and ref in urb.index and "독립" in en:
+            a = urb.loc[star]; b = urb.loc[ref]
+            ds = float(a["하락 회피율"] + a["상승 참여율"] - b["하락 회피율"] - b["상승 참여율"])
+            dm = float(a["MDD"] - b["MDD"])
+            verdict[en] = {"d_sum": round(ds * 100, 2), "d_mdd": round(dm * 100, 2),
+                           "pass": bool(ds >= -1e-9 and dm >= -tol - 1e-12)}     # 부동소수 잡음 허용(같은 설정이면 통과)
+            if cand in urb.index:          # [v0.70.0 R89] 후보 vs 양쪽형(★)
+                c_ = urb.loc[cand]
+                dsc = float(c_["하락 회피율"] + c_["상승 참여율"] - a["하락 회피율"] - a["상승 참여율"])
+                dmc = float(c_["MDD"] - a["MDD"])
+                cand_verdict[en] = {"d_sum": round(dsc * 100, 2), "d_mdd": round(dmc * 100, 2), "pass": bool(dsc >= -1e-9 and dmc >= -tol - 1e-12)}
+    allp = bool(verdict) and all(v["pass"] for v in verdict.values())
+    tab = pd.DataFrame(rows)
+    if M is not None:
+        for en, v in verdict.items():
+            log("RELCMP", kv(event="long_verdict", era=en, d_sum_pp=v["d_sum"], d_mdd_pp=v["d_mdd"], passed=v["pass"]), M=M)
+        log("RELCMP", kv(event="long_done", modes=len(modes), rows=len(tab), all_pass=allp, sec=round(time.time() - t0, 1),
+                         note="측정 전용 — 사전등록(양쪽형 ≥ 현행 · MDD 악화 ≤ tol · 독립 두 반쪽 모두)"), M=M)
+    return {"enabled": True, "table": tab, "verdict": verdict, "all_pass": allp, "info": info, "star": star, "ref": ref,
+            "tol_mdd": tol, "cand": cand, "cand_verdict": cand_verdict,
+            "cand_pass": bool(cand_verdict) and all(v["pass"] for v in cand_verdict.values())}
+
+
+def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
+    """[v0.68.0 R86] 리포트 단계에서 사용자 신뢰도를 한 번에 계산 — M · S★ · ★ 계열 격자(프런티어) · 섹터 단일 예측."""
+    al = sres.get("alloc") or {}
+    dg = al.get("diag") or {}
+    bts = al.get("bts") or {}
+    lp = dg.get("label_primary")
+    spy = al.get("spy_ret")
+    out: Dict[str, Any] = {"enabled": False}
+    if not (lp in bts and spy is not None and len(pd.Series(spy).dropna())):
+        out["error"] = "S★ 또는 SPY 수익 없음"
+        return out
+    spy = pd.to_numeric(pd.Series(spy), errors="coerce").fillna(0.0)
+    rets = {lp: bts[lp]["strategy_ret"]}
+    mret = al.get("spy_m_ret")
+    if mret is not None:
+        rets["M(SPY 국면전략)"] = mret
+    rets["SPY 단순보유(B&H)"] = spy
+    head = user_rel_portfolio(rets, spy, cfg)
+    fr_labels = [l for l in bts if l != lp and "대조" not in str(l)]
+    front = user_rel_portfolio({l: bts[l]["strategy_ret"] for l in fr_labels}, spy, cfg) if fr_labels else pd.DataFrame()
+    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
+    if len(front):
+        front["높음까지 거리(%p)"] = ((np.maximum(0.0, hi[0] - front["하락 회피율"]) + np.maximum(0.0, hi[1] - front["상승 참여율"])) * 100).round(1)
+        front = front.sort_values("높음까지 거리(%p)").reset_index(drop=True)
+    secs = sres.get("sectors") or {}
+    pos = pd.DataFrame({t: pd.Series(r.get("pos_exec")) for t, r in secs.items() if isinstance(r, dict) and r.get("pos_exec") is not None})
+    ret = pd.DataFrame({t: pd.Series(r.get("bh_ret")) for t, r in secs.items() if isinstance(r, dict) and r.get("bh_ret") is not None})
+    single, sagg = (user_rel_single(pos, ret, cfg) if len(pos.columns) and len(ret.columns) else (pd.DataFrame(), {}))
+    out.update({"enabled": True, "head": head, "front": front, "single": single, "single_agg": sagg, "label_primary": lp,
+                "n_front": int(len(front)), "n_high": int((front["등급"] == "높음").sum()) if len(front) else 0})
+    # [v0.69.0 R88] 회피형·참여형·양쪽형 비교표 — ★(양쪽형)와 [회피참여비교] 행을 같은 잣대로
+    rc = dg.get("relcmp") or {}
+    if rc.get("enabled"):
+        try:
+            rr = {"양쪽형 ★(라이브)": bts[lp]["strategy_ret"]}
+            for nm, lab in (rc.get("labels") or {}).items():
+                if lab in bts:
+                    rr[nm] = bts[lab]["strategy_ret"]
+            tab = user_rel_portfolio(rr, spy, cfg)
+            refm = tab["전략"].astype(str).str.startswith("현행")
+            if bool(refm.any()):
+                b = tab[refm].iloc[0]
+                tab["Δ회피(%p) vs 현행"] = ((tab["하락 회피율"] - b["하락 회피율"]) * 100).round(2)
+                tab["Δ참여(%p) vs 현행"] = ((tab["상승 참여율"] - b["상승 참여율"]) * 100).round(2)
+                tab["Δ배수 vs 현행"] = (tab["배수"] - b["배수"]).round(3)
+                tab["ΔMDD(%p) vs 현행"] = ((tab["MDD"] - b["MDD"]) * 100).round(2)
+            tab["높음까지 거리(%p)"] = ((np.maximum(0.0, hi[0] - tab["하락 회피율"]) + np.maximum(0.0, hi[1] - tab["상승 참여율"])) * 100).round(1)
+            out["relcmp"] = {"enabled": True, "table": tab, "long": rc.get("long") or {}, "repro": rc.get("repro_max_diff"),
+                             "haircut_days": rc.get("haircut_days"), "neutral_days": rc.get("neutral_days"),
+                             "leader_days": rc.get("leader_days"), "m_approx_ok": rc.get("m_approx_ok", True)}
+        except Exception as e:
+            out["relcmp"] = {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+    elif rc.get("error"):
+        out["relcmp"] = {"enabled": False, "error": rc["error"]}
+    out["msizing_ff"] = sres.get("msizing_ff") or (rc.get("msizing_ff") if isinstance(rc, dict) else None) or {}   # [v0.70.0 R89] 블록 G(I는 relcmp 경유)
+    return out
+
+
+def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[str, Any]] = None,
+                                 layer: str = "섹터") -> pd.DataFrame:
+    """[v0.68.0 R86] 00U_사용자신뢰도 — 사용자 정의 신뢰도(하락 회피·상승 참여) 판정 시트(맨 앞). layer="산업"이면 I가 같은 함수로 쓴다."""
+    pk = pack if pack is not None else user_reliability_pack(sres, cfg)
+    _star = "S★" if layer == "섹터" else "I★"
+    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90))); mid = tuple(getattr(cfg, "USER_REL_MID", (0.50, 0.70)))
+    pm = tuple(getattr(cfg, "USER_REL_SEG_PORT", (0.05, 3))); am = tuple(getattr(cfg, "USER_REL_SEG_ASSET", (0.07, 3)))
+    parts: List[pd.DataFrame] = []
+
+    def _t(blk: str, rows: List[Dict[str, Any]]) -> None:
+        parts.append(pd.DataFrame([{"블록": blk, **r} for r in rows]))
+    _t("A. 읽는 법", [
+        {"항목": "신뢰도(사용자 정의)", "값": "하락을 잘 피하고 상승을 잘 타는가 — 잘하면 노란색(라이브) 수익배수가 오른다. R82~R84의 IC·t̄ 등급은 "
+                                       "'선택 신호 통계'(00R · 참고)로 이름을 바꿨다."},
+        {"항목": "포트폴리오(노란색 행)", "값": f"SPY 단순보유 곡선 지그재그 구간({pm[0]:.0%} · {int(pm[1])}거래일). 하락 회피율 = 1 − Σ하락구간 전략수익 / "
+                                         "Σ하락구간 SPY수익 · 상승 참여율 = Σ상승구간 전략수익 / Σ상승구간 SPY수익(1.0 초과 = SPY보다 더 탐)."},
+        {"항목": f"단일 예측({layer}별)", "값": f"그 {layer} B&H 지그재그({am[0]:.0%} · {int(am[1])}거래일) · 라이브 단독 체결비중 w: 회피율 = 1 − Σ하락(w·r)/Σ하락(r) · "
+                                      f"참여율 = Σ상승(w·r)/Σ상승(r) · 전 {layer} 합산(I 00D와 같은 산식)."},
+        {"항목": "등급(R86 사전등록 · 바꾸지 않음)", "값": f"높음 = 회피 ≥ {hi[0]:.0%} & 참여 ≥ {hi[1]:.0%} · 중간 = 회피 ≥ {mid[0]:.0%} & 참여 ≥ {mid[1]:.0%} · "
+                                                   "낮음 = 그 밖(순효과 > 0) · 없음 = 순효과 ≤ 0. 앞(~2021)·뒤(2022~) 절반 등급이 같으면 '확정'."},
+        {"항목": "⚠", "값": "구간은 사후 분할이다 — 판정(진단)에만 쓰고 신호에는 쓰지 않는다. 연구·교육용이며 투자 자문이 아니다."}])
+    if not pk.get("enabled"):
+        _t("B. 등급", [{"항목": "상태", "값": f"산출 실패 — {pk.get('error', '-')}"}])
+        return pd.concat(parts, ignore_index=True, sort=False)
+    hd = pk["head"].copy(); hd.insert(0, "항목", hd.pop("전략"))
+    parts.append(hd.assign(블록=f"B. 등급 — 노란색({_star})·M·SPY"))
+    sa = pk.get("single_agg") or {}
+    if sa:
+        _t(f"B. 등급 — 노란색({_star})·M·SPY", [{"항목": f"{layer} 단일 예측 합산({sa.get('자산 수', 0)}개)",
+                                          "하락 회피율": round(sa["하락 회피율"], 4), "상승 참여율": round(sa["상승 참여율"], 4),
+                                          "순효과(%p)": round(sa["순효과(%p)"], 1), "등급": sa["등급"]}])
+    sg = pk.get("single")
+    if isinstance(sg, pd.DataFrame) and len(sg):
+        s2 = sg.copy(); s2.insert(0, "항목", s2.pop("자산"))
+        parts.append(s2.assign(블록=f"C. {layer}별 단일 예측"))
+    fr = pk.get("front")
+    if isinstance(fr, pd.DataFrame) and len(fr):
+        _t("D. 프런티어 — 지금 가진 손잡이로 어디까지 가나", [{"항목": "읽는 법", "값": (
+            f"13 시트의 모든 비교·격자 행({len(fr)}행 · 대조군 제외)을 같은 잣대로 잰 것. '높음' 도달 {pk.get('n_high', 0)}행. "
+            "위에서부터 '높음까지 거리'(회피·참여 부족분 합)가 가까운 순. 한쪽을 올리면 다른 쪽이 내려가면 **프런티어 위를 움직일 뿐**이다 — "
+            "둘 다 올리려면 M보다 나은 타이밍 정보(새 근거)가 필요하다.")}])
+        f2 = fr.copy(); f2.insert(0, "항목", f2.pop("전략"))
+        parts.append(f2.assign(블록="D. 프런티어 — 지금 가진 손잡이로 어디까지 가나"))
+    md = (((sres.get("alloc") or {}).get("diag") or {}).get("macro_evidence")) or {}
+    if md.get("enabled"):
+        _t("E. 섹터 거시 근거(R86 · 측정)", [{"항목": "동인", "값": " | ".join(f"{k}: {v}" for k, v in (md.get("drivers") or {}).items())},
+                                           {"항목": "기준(★)", "값": " · ".join(f"{k} {v}" for k, v in (md.get("base") or {}).items())}])
+        e1 = pd.DataFrame(md.get("rows") or [])
+        if len(e1):
+            e1.insert(0, "항목", e1.pop("변형"))
+            parts.append(e1.assign(블록="E. 섹터 거시 근거(R86 · 측정)"))
+        lg = md.get("long") or {}
+        if isinstance(lg.get("table"), pd.DataFrame) and len(lg["table"]):
+            e2 = lg["table"].copy(); e2.insert(0, "항목", e2["구간"].astype(str) + " · " + e2["변형"].astype(str))
+            parts.append(e2.drop(columns=["구간", "변형"]).assign(블록="E2. 섹터 거시 근거 장기 검증(엔진 1999~)"))
+        _t("E. 섹터 거시 근거(R86 · 측정)", [{"항목": "사전등록 승격(다음 라운드)", "값": " · ".join(
+            f"{g}: {'✓ 조건 충족 — 라이브 후보' if v else '미충족'}" for g, v in (md.get("promote") or {}).items())}])
+    elif md.get("error"):
+        _t("E. 섹터 거시 근거(R86 · 측정)", [{"항목": "상태", "값": f"산출 실패 — {md['error']}"}])
+    rcp = pk.get("relcmp") or {}
+    if rcp.get("enabled"):
+        _bf = f"F. 회피형·참여형·양쪽형 비교(R88 · 라이브 = 양쪽형 · {_star})"
+        _t(_bf, [{"항목": "읽는 법", "값": (
+            "사용자 지시 '회피, 참여 둘다해서 비교'. 같은 엔진·같은 날 비중으로 만든 행이다. 양쪽형(★ · 사용자 선택) = M 과열 헤어컷 E11(0.4/0.2)·"
+            "중립 0.6 + S 주력 상한 0.9 · 방어대피처 0 · 하락국면리더 0. 현행(R86 설정) = 되돌렸을 때의 값. M 쪽 차이는 E_t 재스케일 근사"
+            f"(헤어컷일 {rcp.get('haircut_days', '-')} · 중립일 {rcp.get('neutral_days', '-')} · 리더 판정일 {rcp.get('leader_days', '-')}) · "
+            f"★ 재현 오차 {rcp.get('repro', np.nan)}(0이어야 정상). 높음 = 회피 ≥ {hi[0]:.0%} & 참여 ≥ {hi[1]:.0%}(R86 사전등록).")}])
+        f1 = rcp["table"].copy(); f1.insert(0, "항목", f1.pop("전략"))
+        parts.append(f1.assign(블록=_bf))
+        lg = rcp.get("long") or {}
+        if isinstance(lg.get("table"), pd.DataFrame) and len(lg["table"]):
+            f2 = lg["table"].copy(); f2.insert(0, "항목", f2["구간"].astype(str) + " · " + f2["변형"].astype(str))
+            parts.append(f2.drop(columns=["구간", "변형"]).assign(블록="F2. 독립 구간 장기 검증(섹터 ETF 1999~ · M 대용 3상태 · 단순화 구조)"))
+            _t("F2. 독립 구간 장기 검증(섹터 ETF 1999~ · M 대용 3상태 · 단순화 구조)", [{"항목": "사전등록 판정(R88)", "값": (
+                "양쪽형 (회피+참여) ≥ 현행 & MDD 악화 ≤ " + f"{float(lg.get('tol_mdd', 0.03)) * 100:.0f}%p — 두 독립 반쪽 모두: "
+                + " · ".join(f"{k} Δ합 {v['d_sum']:+.2f}%p · ΔMDD {v['d_mdd']:+.2f}%p → {'통과' if v['pass'] else '미통과'}"
+                             for k, v in (lg.get("verdict") or {}).items())
+                + (" ⇒ **통과 — 양쪽형 유지**" if lg.get("all_pass") else " ⇒ **미통과 — 다음 라운드 되돌림 후보**"))}])
+        elif lg.get("error"):
+            _t("F2. 독립 구간 장기 검증", [{"항목": "상태", "값": f"산출 실패 — {lg['error']}"}])
+    elif rcp.get("error"):
+        _t("F. 회피형·참여형·양쪽형 비교(R88)", [{"항목": "상태", "값": f"산출 실패 — {rcp['error']}"}])
+    mz = pk.get("msizing_ff") or {}
+    if mz.get("enabled"):
+        _bg = "G. M 사이징 긴 이력 판정(R89 · Fama-French 일별 1926~ · 대용 M 3상태)"
+        _t(_bg, [{"항목": "읽는 법", "값": (
+            f"시장 = {mz.get('src', '-')}. 과열 헤어컷(200일선 이격 ≥10%/12%)·중립 비중을 **설계에 한 번도 안 쓴 70년**(1927~1998)에 같은 규칙으로 "
+            "적용해 사용자 신뢰도(회피+참여)를 잰다. 대용 M은 실제 M이 아니다 — 사이징 규칙 자체의 효과만 본다. "
+            "사전등록(R89): 라이브 M 사이징이 R86 사이징보다 (회피+참여) ≥ 0 — 1927~1949 · 1950~1998 **둘 다**면 지지, 아니면 반증.")}])
+        g1 = mz["table"].copy(); g1.insert(0, "항목", g1["구간"].astype(str) + " · " + g1["변형"].astype(str))
+        parts.append(g1.drop(columns=["구간", "변형"]).assign(블록=_bg))
+        _t(_bg, [{"항목": "사전등록 판정(R89)", "값": (" · ".join(f"{k} Δ(회피+참여) {v['d_sum']:+.2f}%p → {'지지' if v['pass'] else '반증'}"
+                                                         for k, v in (mz.get("verdict") or {}).items())
+                                              + (" ⇒ **지지 — 라이브 M 사이징 유지**" if mz.get("supported")
+                                                 else " ⇒ **반증 — 다음 라운드 E11(또는 헤어컷 자체) 되돌림을 사용자와 상의**"))}])
+    elif mz.get("error"):
+        _t("G. M 사이징 긴 이력 판정(R89)", [{"항목": "상태", "값": f"산출 실패 — {mz['error']}"}])
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    return df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+
+
+def user_reliability_lines(sres: Dict[str, Any], cfg, pack: Optional[Dict[str, Any]] = None, layer: str = "섹터"
+                           ) -> List[Tuple[str, str]]:
+    """[v0.68.0 R86] 00 맨 앞 줄 — 사용자 정의 신뢰도(하락 회피·상승 참여)."""
+    pk = pack if pack is not None else user_reliability_pack(sres, cfg)
+    out: List[Tuple[str, str]] = []
+    if not pk.get("enabled"):
+        out.append((f"⚠ 신뢰도(사용자 기준) — {layer}", f"산출 실패 — {pk.get('error', '-')}"))
+        return out
+    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
+    hd = pk["head"].set_index("전략")
+
+    def _f(lbl: str) -> str:
+        if lbl not in hd.index:
+            return "-"
+        r = hd.loc[lbl]
+        return (f"**{r['등급']}**(회피 {r['하락 회피율']:.1%} · 참여 {r['상승 참여율']:.1%} · 순효과 {r['순효과(%p)']:+.0f}%p · "
+                f"앞/뒤 절반 {r['절반 등급']})")
+    sa = pk.get("single_agg") or {}
+    fr = pk.get("front")
+    near = ""
+    if isinstance(fr, pd.DataFrame) and len(fr):
+        n0 = fr.iloc[0]
+        near = (f" · 가장 가까운 행: {str(n0['전략'])[:40]} (회피 {n0['하락 회피율']:.1%} · 참여 {n0['상승 참여율']:.1%} · "
+                f"거리 {n0['높음까지 거리(%p)']:.1f}%p)")
+    _star = "S★" if layer == "섹터" else "I★"
+    out.append((f"★★★ 신뢰도(사용자 기준 — 하락 회피·상승 참여) · {layer}",
+                f"노란색 {_star} {_f(pk['label_primary'])} | M {_f('M(SPY 국면전략)')} | "
+                + (f"{layer} 단일 예측 **{sa['등급']}**(회피 {sa['하락 회피율']:.1%} · 참여 {sa['상승 참여율']:.1%}) | " if sa else "")
+                + f"높음 = 회피 ≥ {hi[0]:.0%} & 참여 ≥ {hi[1]:.0%} — 격자 {pk.get('n_front', 0)}행 중 도달 {pk.get('n_high', 0)}행{near}. 세부 00U."))
+    md = (((sres.get("alloc") or {}).get("diag") or {}).get("macro_evidence")) or {}
+    if md.get("enabled"):
+        rr = md.get("rows") or []
+        seg = " | ".join(f"{str(r['변형']).split('·')[1].strip()[:22]} Δ회피 {r['Δ회피(%p)']:+.1f} · Δ참여 {r['Δ참여(%p)']:+.1f}"
+                         for r in rr if "·" in str(r["변형"]))
+        lv = ((md.get("long") or {}).get("verdict") or {})
+        out.append(("★★ 섹터 거시 근거(R86 · 유가·구리·금리·신용 — 측정 전용)",
+                    seg + " || 장기 검증(두 구간 모두 조건): " + " · ".join(f"{k} {'통과' if (v or {}).get('pass') else '미통과'}"
+                                                              for k, v in lv.items())
+                    + " → 승격: " + " · ".join(f"{g} {'✓' if v else '✗'}" for g, v in (md.get("promote") or {}).items())
+                    + " (사전등록 — 두 구간 모두 회피·참여를 함께 올리고 무작위를 이겨야 다음 라운드 라이브 후보)."))
+    elif md.get("error"):
+        out.append(("⚠ 섹터 거시 근거(R86)", f"산출 실패 — {md['error']}"))
+    out.extend(relcmp_lines(pk, cfg, layer))
+    return out
+
+
+def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[str, str]]:
+    """[v0.69.0 R88] 00 줄 — 노란색(양쪽형)이 왜 바뀌었나 · 회피형/참여형/양쪽형 비교 · 독립 구간 판정."""
+    out: List[Tuple[str, str]] = []
+    rcp = pk.get("relcmp") or {}
+    if not rcp.get("enabled"):
+        if rcp.get("error"):
+            out.append((f"⚠ R88 회피·참여 비교 — {layer}", f"산출 실패 — {rcp['error']}"))
+        return out
+    tb = rcp["table"].set_index("전략")
+    _star = "S★" if layer == "섹터" else "I★"
+    hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
+    st = tb.loc["양쪽형 ★(라이브)"] if "양쪽형 ★(라이브)" in tb.index else None
+    rf_ = next((tb.loc[i] for i in tb.index if str(i).startswith("현행")), None)
+    if st is not None and rf_ is not None:
+        out.append((f"★★★ 노란색({_star} 라이브) — R88: 양쪽형(사용자 선택 · 회피·참여 둘 다)",
+                    f"회피 {rf_['하락 회피율']:.1%} → **{st['하락 회피율']:.1%}** · 참여 {rf_['상승 참여율']:.1%} → **{st['상승 참여율']:.1%}** · "
+                    f"배수 {rf_['배수']:.3f} → **{st['배수']:.3f}** · MDD {rf_['MDD'] * 100:.2f}% → {st['MDD'] * 100:.2f}% · 칼마 {rf_['칼마']:.3f} → "
+                    f"{st['칼마']:.3f} · 등급 {rf_['등급']} → **{st['등급']}**(높음까지 {st['높음까지 거리(%p)']:.1f}%p). 왼쪽 = 현행(R86 설정) 비교 행. "
+                    "바꾼 것(⚠ 위험 파라미터 5개): M 과열 헤어컷 E7→E11 · M 중립 0.5→0.6 · S 주력 상한 0.8→0.9 · 방어대피처 0.5→0 · 하락국면리더 0.25→0. "
+                    "되돌리기: m_overrides={'EXTENSION_HAIRCUT_STEPS': ((0.10, 0.6), (0.12, 0.4)), 'POS_NEUTRAL': 0.5} · "
+                    "s_overrides={'ROTATION_PRIMARY_CAP': 0.8, 'ROTATION_SHELTER_DEFENSIVE': 0.5, 'ROTATION_DOWN_REGIME_POS': 0.25}."))
+    seg = []
+    for i, r in tb.iterrows():
+        seg.append(f"{str(i)[:18]} {r['하락 회피율']:.1%}/{r['상승 참여율']:.1%}({r['등급']}·거리 {r['높음까지 거리(%p)']:.1f})")
+    out.append((f"★★ R88 회피형·참여형·양쪽형 비교(회피/참여 · {layer})",
+                " | ".join(seg) + f" — 높음 = 회피 ≥ {hi[0]:.0%} & 참여 ≥ {hi[1]:.0%}. 세부 00U 블록 F."))
+    lg = rcp.get("long") or {}
+    if lg.get("verdict"):
+        out.append(("★★ R88 독립 구간 장기 검증(섹터 ETF 1999~ · 사전등록)",
+                    " · ".join(f"{k} Δ(회피+참여) {v['d_sum']:+.2f}%p · ΔMDD {v['d_mdd']:+.2f}%p {'통과' if v['pass'] else '미통과'}"
+                               for k, v in lg["verdict"].items())
+                    + (" ⇒ 양쪽형 유지" if lg.get("all_pass") else " ⇒ ⚠ 미통과 — 다음 라운드 되돌림 후보(현행 R86 설정 또는 회피형)")))
+    elif lg.get("error"):
+        out.append(("⚠ R88 독립 구간 장기 검증", f"산출 실패 — {lg['error']}"))
+    mz = pk.get("msizing_ff") or {}
+    if lg.get("cand_verdict") or mz.get("cand_verdict"):
+        _ok = bool(lg.get("cand_pass")) and bool(mz.get("cand_pass"))
+        out.append(("★ R89 '표본 안 높음 후보' 승격 조건(사전등록 — 둘 다 통과해야 다음 라운드 라이브 후보)",
+                    "섹터 ETF 독립 두 반쪽(vs 양쪽형): " + " · ".join(f"{k} Δ합 {v['d_sum']:+.2f}%p·ΔMDD {v['d_mdd']:+.2f}%p {'통과' if v['pass'] else '미통과'}"
+                                                           for k, v in (lg.get("cand_verdict") or {}).items())
+                    + " | FF 1927~1998(vs 라이브 M 사이징): " + " · ".join(f"{k} Δ합 {v['d_sum']:+.2f}%p {'통과' if v['pass'] else '미통과'}"
+                                                                   for k, v in (mz.get("cand_verdict") or {}).items())
+                    + (" ⇒ ✓ 승격 후보" if _ok else " ⇒ ✗ 승격 안 함(표본 안에서만 좋은 규칙)")))
+    if mz.get("verdict"):
+        out.append(("★★ R89 M 사이징 긴 이력 판정(1927~1998 · Fama-French · 사전등록)",
+                    " · ".join(f"{k} Δ(회피+참여) {v['d_sum']:+.2f}%p {'지지' if v['pass'] else '반증'}" for k, v in mz["verdict"].items())
+                    + (" ⇒ 라이브 M 사이징(헤어컷·중립) 유지" if mz.get("supported")
+                       else " ⇒ ⚠ 반증 — 과열 헤어컷 강화는 1999년 이후에만 통하는 규칙일 수 있다(다음 라운드 되돌림 상의)")
+                    + " · 세부 00U 블록 G."))
+    elif mz.get("error"):
+        out.append(("⚠ R89 M 사이징 긴 이력 판정", f"산출 실패 — {mz['error']}"))
     return out
 
 
@@ -9270,6 +10245,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     frac_primary_sector = None
     label_psec = None
     primary_cap_variants = {}   # [v0.22.0] 주력 상한 격자
+    _relcmp_fracs: Dict[Tuple[float, float], pd.DataFrame] = {}   # [v0.69.0 R88] (주력 상한, 방어대피처) → 분수
     _pri = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "")
     if getattr(scfg, "ROTATION_PRIMARY_MODE", False) and _pri in cols:
         _cap = float(getattr(scfg, "ROTATION_PRIMARY_CAP", 0.8) or 0.0)
@@ -9579,6 +10555,20 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             return fps_, n_pri_, n_alt_, n_eq_
         fps, _n_pri, _n_alt, _n_eq = _build_primary(_cap)
         frac_primary_sector = fps
+        # [v0.69.0 R88] [회피참여비교]용 분수(주력 상한 × 방어대피처) — 라이브 분수(fps)는 그대로 재사용한다.
+        if bool(getattr(scfg, "RELCMP_ENABLE", True)):
+            _sd_now = float(getattr(scfg, "ROTATION_SHELTER_DEFENSIVE", 0.0) or 0.0)
+            _rc_list = [(float(getattr(scfg, "RELCMP_REF_CAP", 0.8)), float(getattr(scfg, "RELCMP_REF_DEF", 0.5))),
+                        (float(getattr(scfg, "RELCMP_REF_CAP", 0.8)), 0.0), (_cap, _sd_now)]
+            if bool(getattr(scfg, "RELCMP_CAND_ENABLE", True)):      # [v0.70.0 R89] 표본 안 높음 후보(상태별 상한)
+                _rc_list += [(float(getattr(scfg, "RELCMP_CAND_CAP_FULL", 1.0)), float(getattr(scfg, "RELCMP_CAND_DEF", 0.0))),
+                             (float(getattr(scfg, "RELCMP_CAND_CAP_PART", 0.8)), float(getattr(scfg, "RELCMP_CAND_DEF", 0.0)))]
+            for _rc_cap, _rc_def in _rc_list:
+                _k_rc = (round(_rc_cap, 4), round(_rc_def, 4))
+                if _k_rc in _relcmp_fracs:
+                    continue
+                _relcmp_fracs[_k_rc] = (fps if (abs(_rc_cap - _cap) < 1e-9 and abs(_rc_def - _sd_now) < 1e-9)
+                                        else _build_primary(_rc_cap, None, None, _rc_def)[0])
         # 상한 격자(채택값 제외) — 13_섹터배분전략에 [비교] 행으로 실린다.
         primary_cap_variants = {}
         for _cv in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0):
@@ -9885,10 +10875,33 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     #   0.25/0.50/0.75/OFF로 격자에 실어 **실제 엔진이 재게** 한다. 중간 강도가 CAGR을 지키면서
     #   낙폭을 줄이는지가 다음 라운드의 결정 근거가 된다.
     _dl_variants = {}
+    # [v0.69.0 R88] 하락국면리더 판정일(라이브 비중과 무관 — 루프 전 스냅샷 기준) · 비중 덮어쓰기 도우미.
+    #   라이브가 0(R88 양쪽형)이어도 [하락리더격자]·[회피참여비교]의 '리더 유지' 행을 같은 날·같은 섹터로 만들기 위해 쓴다.
+    _dlm_all = (tier_cash0 & leader_s.notna() & leader_s.isin(cols))
+    if getattr(scfg, "ROTATION_DOWN_REGIME_REQUIRE_GATE", True):
+        _dlm_all = _dlm_all & gate_s.eq("통과")
+    _dlm_all = _dlm_all.reindex(eval_idx).fillna(False).astype(bool)
+
+    def _apply_leader(_tw0: pd.DataFrame, _pos: float) -> pd.DataFrame:
+        _tw1 = _tw0.copy()
+        if _pos <= 1e-12 or not bool(_dlm_all.any()):
+            return _tw1
+        _dd = _dlm_all[_dlm_all].index
+        _tw1.loc[_dd, :] = 0.0
+        _ls1 = leader_s.reindex(_dd)
+        for _c1 in pd.unique(_ls1.dropna()):
+            if _c1 in _tw1.columns:
+                _tw1.loc[_ls1.index[_ls1.eq(_c1)], _c1] = float(_pos)
+        return _tw1
     if getattr(scfg, "ROTATION_DOWN_REGIME_LEADER", False) and label_primary in target_ws:
         _dl_live = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 1.0) or 0.0)
         _dl_days = (tier == "하락국면리더")
-        if bool(_dl_days.any()):
+        if _dl_live <= 1e-12 and bool(_dlm_all.any()):
+            # [v0.69.0 R88] 라이브 0 — 격자 행을 리더 판정일에서 직접 만든다(0%는 ★ 자신이므로 뺀다)
+            _base = target_ws[label_primary]
+            for _lv in (0.25, 0.50):
+                _dl_variants[f"주력섹터 중심 · 하락국면리더 비중 {_lv:.0%} [하락리더격자]"] = _apply_leader(_base, _lv)
+        elif bool(_dl_days.any()):
             _base = target_ws[label_primary]
             for _lv in (0.0, 0.25, 0.50, 0.75):
                 if abs(_lv - _dl_live) < 1e-9:
@@ -9962,6 +10975,157 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                mid_days=int(_mid_days.sum()), hi_days=int(_hi_days.sum())), M=M)
     except Exception as _e:
         log("ROTATION", kv(event="m_haircut_grid_failed", err=str(_e)[:140]), M=M, level="warning")
+    # ---- [v0.69.0 R88 ★★★] [회피참여비교] — 사용자 지시 "회피, 참여 둘다해서 비교해보면 되잖아" ----
+    #   라이브 ★ = 양쪽형(사용자 선택 2026-09-22: M 헤어컷 E11·중립 0.6 + 주력 상한 0.9 + 방어대피처 0 + 하락국면리더 0).
+    #   비교 행(같은 엔진·같은 날 분수 × 모드별 E_t):
+    #     현행(R86 설정) · M 개선만 · 회피형 · 참여형 · 예전 지시 유지형 · 양쪽형(M 종전).
+    #   M 쪽 차이(헤어컷·중립)는 M을 다시 돌리지 않고 **E_t 재스케일**로 만든다 — M 신호의 헤어컷 발동일(extension_haircut·ext_cap)과
+    #   중립 국면일에서만 E_t를 종전 값 비율로 바꾼다(배분 '분수'는 E_t에 의존하지 않으므로 [M헤어컷격자]와 같은 근사 · 상태기계는 동일).
+    #   자기 검증: 라이브 설정으로 만든 행이 ★와 비트 동일해야 한다(repro_max_diff · 로그 RELCMP event=star_repro).
+    _relcmp_diag: Dict[str, Any] = {"enabled": False}
+    _relcmp_frames: Dict[str, pd.DataFrame] = {}
+    if bool(getattr(scfg, "RELCMP_ENABLE", True)) and label_primary in target_ws and _relcmp_fracs:
+        try:
+            _trc0 = time.time()
+            _rc_sig = res.get("sig")
+            _rc_cfgm = res.get("cfg") if res.get("cfg") is not None else M.CFG
+            _Evr = E.reindex(eval_idx).fillna(0.0).astype(float)
+            _live_steps_r = tuple(sorted(tuple(getattr(_rc_cfgm, "EXTENSION_HAIRCUT_STEPS", ()) or ())))
+            _ref_steps_r = tuple(sorted(tuple(getattr(scfg, "RELCMP_REF_M_STEPS", ()) or ())))
+            _live_n = float(getattr(_rc_cfgm, "POS_NEUTRAL", 0.5) or 0.0)
+            _ref_n = float(getattr(scfg, "RELCMP_REF_M_NEUTRAL", 0.5) or 0.0)
+            _n_hc_r = _n_neu_r = 0
+            _m_approx_ok = True
+            _eh_r = pd.Series(False, index=eval_idx); _ec_r = pd.Series(1.0, index=eval_idx); _mn = pd.Series(False, index=eval_idx)
+            if _rc_sig is not None:
+                if "extension_haircut" in _rc_sig.columns:
+                    _eh_r = _rc_sig["extension_haircut"].reindex(eval_idx).fillna(False).astype(bool)
+                if "ext_cap" in _rc_sig.columns:
+                    _ec_r = _rc_sig["ext_cap"].reindex(eval_idx).astype(float)
+                if "state" in _rc_sig.columns:
+                    _mn = _rc_sig["state"].reindex(eval_idx).astype(str).eq("NEUTRAL") & ~_eh_r & (_Evr > 1e-12)
+
+            def _E_for(steps_t, neutral_t):
+                """[v0.69.0 R88 → v0.70.0 R89 일반화] 라이브 M E_t → (헤어컷 사다리 steps_t · 중립 neutral_t)의 E_t.
+                   헤어컷 발동일은 (목표 상한 / 라이브 상한), 중립(비컷)일은 (목표 중립 / 라이브 중립) — 상태기계는 사이징과 무관(R88 합성 검증 차 0)."""
+                nonlocal _m_approx_ok
+                _rt = pd.Series(1.0, index=eval_idx)
+                _st_t = tuple(sorted(tuple(steps_t or ())))
+                if _rc_sig is None or len(_st_t) != len(_live_steps_r):
+                    _m_approx_ok = False
+                    return _Evr.copy()
+                for (_tl, _cl), (_tt, _ct) in zip(_live_steps_r, _st_t):
+                    _mh = _eh_r & pd.Series(np.isclose(_ec_r.values, float(_cl)), index=eval_idx)
+                    if float(_cl) > 0:
+                        _rt[_mh] = float(_ct) / float(_cl)
+                if _live_n > 0:
+                    _rt[_mn] = float(neutral_t) / _live_n
+                return (_Evr * _rt).clip(lower=0.0, upper=1.0)
+            for (_tl, _cl) in _live_steps_r:
+                _n_hc_r += int((_eh_r & pd.Series(np.isclose(_ec_r.values, float(_cl)), index=eval_idx)).sum())
+            _n_neu_r = int(_mn.sum())
+            _E_ref = _E_for(_ref_steps_r, _ref_n)
+            _cand_steps = tuple(sorted(tuple(getattr(scfg, "RELCMP_CAND_M_STEPS", ((0.10, 0.4), (0.12, 0.0))) or ())))
+            _cand_n = float(getattr(scfg, "RELCMP_CAND_M_NEUTRAL", 0.7))
+            _E_cand = _E_for(_cand_steps, _cand_n)
+            _full_r = _Evr >= 1.0 - 1e-12
+            _cap_now = float(getattr(scfg, "ROTATION_PRIMARY_CAP", 0.8) or 0.0)
+            _def_now = float(getattr(scfg, "ROTATION_SHELTER_DEFENSIVE", 0.0) or 0.0)
+            _ld_now = float(getattr(scfg, "ROTATION_DOWN_REGIME_POS", 0.0) or 0.0)
+            _rcap = float(getattr(scfg, "RELCMP_REF_CAP", 0.8)); _rdef = float(getattr(scfg, "RELCMP_REF_DEF", 0.5))
+            _rld = float(getattr(scfg, "RELCMP_REF_LEADER", 0.25))
+            _ad_pos_r = float(getattr(scfg, "ROTATION_ALLDOWN_SPY_POS", 0.0) or 0.0)
+
+            def _mdesc(cap_, def_, ld_, msrc_, capp_=None):
+                _mt = {"ref": "종전(헤어컷 E7·중립 0.5)", "live": "개선(헤어컷 E11·중립 0.6)",
+                       "cand": f"후보(헤어컷 {'/'.join(f'{c:.1f}' for _, c in _cand_steps)}·중립 {_cand_n:.1f})"}[msrc_]
+                _ct = (f"상한 {cap_:.0%}" if capp_ is None else f"상한 E=1일 {cap_:.0%}·그 밖 {capp_:.0%}")
+                return f"{_ct} · 방어대피처 {def_:.2f} · 하락국면리더 {ld_:.0%} · M {_mt}"
+            _ccf = float(getattr(scfg, "RELCMP_CAND_CAP_FULL", 1.0)); _ccp = float(getattr(scfg, "RELCMP_CAND_CAP_PART", 0.8))
+            _cdf = float(getattr(scfg, "RELCMP_CAND_DEF", 0.0))
+            _modes_r = [("현행(R86 설정 · 되돌리면 이것)", _rcap, _rdef, _rld, "ref", None),
+                        ("M 개선만(S는 R86 설정)", _rcap, _rdef, _rld, "live", None),
+                        ("회피형", _rcap, _rdef, 0.0, "live", None),
+                        ("참여형", _cap_now, _def_now, _rld, "live", None),
+                        ("예전 지시 유지형", _rcap, 0.0, _rld, "live", None),
+                        ("양쪽형 · M 종전(S 변경만)", _cap_now, _def_now, _ld_now, "ref", None),
+                        ("양쪽형 재현(= ★ 검증용)", _cap_now, _def_now, _ld_now, "live", None)]
+            if bool(getattr(scfg, "RELCMP_CAND_ENABLE", True)):
+                # [v0.70.0 R89 · 측정 전용] 표본 안(2018~) '높음' 경계 후보 — 1927~1998 월별 긴 이력에서는 과열 헤어컷이 오히려 손해였다
+                #   (r89/ffm89.py). 그래서 라이브가 아니라 비교 행이며, 엔진의 긴 이력 판정(00U 블록 F2 · G)을 둘 다 통과해야 후보가 된다.
+                _modes_r.append(("표본 안 높음 후보(R89 · 측정)", _ccf, _cdf, 0.0, "cand", _ccp))
+            _labels_r: Dict[str, str] = {}
+            _specs_r: List[Dict[str, Any]] = []
+            _repro = np.nan
+            for _nm, _cp, _df, _ldv, _ms, _cpp in _modes_r:
+                _fr_r = _relcmp_fracs.get((round(_cp, 4), round(_df, 4)))
+                _fr_p = _relcmp_fracs.get((round(_cpp, 4), round(_df, 4))) if _cpp is not None else _fr_r
+                if _fr_r is None or _fr_p is None:
+                    log("RELCMP", kv(event="mode_skipped", mode=_nm, cap=_cp, cap_part=_cpp, shelter_def=_df, reason="분수 없음"), M=M,
+                        level="warning")
+                    continue
+                if _cpp is not None:      # 상태별 상한: E_t=1(전부 보유)일은 _cp, 그 밖(부분 노출)은 _cpp
+                    _fa = _fr_r.reindex(index=eval_idx, columns=all_cols).fillna(0.0)
+                    _fb = _fr_p.reindex(index=eval_idx, columns=all_cols).fillna(0.0)
+                    _msk = pd.DataFrame(np.repeat(_full_r.values[:, None], len(all_cols), axis=1), index=eval_idx, columns=all_cols)
+                    _fr_r = _fa.where(_msk, _fb)
+                _Em = {"ref": _E_ref, "live": _Evr, "cand": _E_cand}[_ms]
+                _tw_r = _fr_r.reindex(index=eval_idx, columns=all_cols).fillna(0.0).mul(_Em, axis=0)
+                _tw_r = _apply_leader(_tw_r, _ldv)
+                if _ad_pos_r > 0 and "SPY" in _tw_r.columns:
+                    _idle_r = (_Em > 1e-12) & (_tw_r.sum(axis=1).abs() <= 1e-12)
+                    if bool(_idle_r.any()):
+                        _tw_r.loc[_idle_r[_idle_r].index, "SPY"] = (_ad_pos_r * _Em[_idle_r]).values
+                _bad_r = (_tw_r.abs() > 1e-12) & ~listed_all
+                if bool(_bad_r.values.any()):
+                    _tw_r = _tw_r.where(~_bad_r, 0.0)
+                if _nm.startswith("양쪽형 재현"):
+                    _repro = float((_tw_r - target_ws[label_primary].reindex(index=eval_idx, columns=all_cols).fillna(0.0)
+                                    ).abs().max().max())
+                    continue          # ★와 같아야 하므로 행으로 싣지 않는다(검증만)
+                _lab_r = f"R88 비교 · {_nm} — {_mdesc(_cp, _df, _ldv, _ms, _cpp)} [회피참여비교]"
+                _dl_variants[_lab_r] = _tw_r
+                _relcmp_frames[_nm] = _tw_r
+                _labels_r[_nm] = _lab_r
+                _specs_r.append({"name": _nm, "cap": _cp, "def": _df, "leader": _ldv, "msrc": _ms,
+                                 "cap_part": (_cpp if _cpp is not None else _cp),
+                                 "steps": {"ref": _ref_steps_r, "live": _live_steps_r, "cand": _cand_steps}[_ms],
+                                 "neutral": {"ref": _ref_n, "live": _live_n, "cand": _cand_n}[_ms], "ref": _nm.startswith("현행"),
+                                 "cand": _ms == "cand"})
+            _specs_r.append({"name": "양쪽형 ★(라이브)", "cap": _cap_now, "def": _def_now, "leader": _ld_now, "msrc": "live",
+                             "steps": _live_steps_r, "neutral": _live_n, "star": True})
+            log("RELCMP", kv(event="star_repro", max_abs_weight_diff=(round(_repro, 12) if _repro == _repro else "n/a"),
+                             verdict=("OK" if (_repro == _repro and _repro < 1e-9) else "MISMATCH")), M=M,
+                level=("info" if (_repro == _repro and _repro < 1e-9) else "warning"))
+            log("RELCMP", kv(event="modes_built", rows=len(_labels_r), haircut_days=_n_hc_r, neutral_days=_n_neu_r,
+                             m_live=f"steps={_live_steps_r} neutral={_live_n}", m_ref=f"steps={_ref_steps_r} neutral={_ref_n}",
+                             m_approx_ok=_m_approx_ok, leader_days=int(_dlm_all.sum()),
+                             avg_E_live=round(float(_Evr.mean()), 4), avg_E_ref=round(float(_E_ref.mean()), 4),
+                             sec=round(time.time() - _trc0, 2)), M=M)
+            _relcmp_diag = {"enabled": True, "labels": _labels_r, "specs": _specs_r, "star": label_primary,
+                            "repro_max_diff": _repro, "haircut_days": _n_hc_r, "neutral_days": _n_neu_r,
+                            "leader_days": int(_dlm_all.sum()), "m_approx_ok": _m_approx_ok}
+            if bool(getattr(scfg, "RELCMP_LONG_AUDIT", True)):
+                try:
+                    _secl_r = [c for c in cols if c in ret_cc_full.columns]
+                    _rcf_r = ret_cc_full[_secl_r]
+                    _lvl_r = (1.0 + _rcf_r.fillna(0.0)).cumprod().where(_rcf_r.notna())
+                    _pxa_r = res.get("px_adj") if isinstance(res, dict) else None
+                    _spl_r = (pd.Series(_pxa_r).astype(float).reindex(full_idx).ffill() if _pxa_r is not None
+                              else (1.0 + spy_cc_full.fillna(0.0)).cumprod())
+                    _spr_r = _spl_r.pct_change(fill_method=None)
+                    _relcmp_diag["long"] = relcmp_long_audit(_lvl_r, _spl_r, _spr_r, rf_daily, _specs_r, scfg,
+                                                             cost_bps=float(res["cfg"].COST_BPS), M=M)
+                except Exception as _e6:
+                    log("RELCMP", kv(event="long_audit_failed", err=type(_e6).__name__, msg=str(_e6)[:160],
+                                     trace=traceback.format_exc()[-300:].replace("\n", " | "), action="장기 검증만 생략"),
+                        M=M, level="warning")
+                    _relcmp_diag["long"] = {"enabled": False, "error": f"{type(_e6).__name__}: {str(_e6)[:160]}"}
+        except Exception as _e:
+            log("RELCMP", kv(event="relcmp_failed", err=type(_e).__name__, msg=str(_e)[:180],
+                             trace=traceback.format_exc()[-400:].replace("\n", " | "), action="비교 행만 생략 — ★ 무영향"),
+                M=M, level="warning")
+            _relcmp_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
     _dl_variants.update(_mh_variants)
 
     for _lab, _fr in _dl_variants.items():
@@ -10400,6 +11564,165 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                           action="섹터근거 블록 생략 — ★가 이미 교체됐다면 그대로, 아니면 v0.66.0 ★"), M=M, level="warning")
             _own_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
 
+    # ---- [v0.68.0 R86 ★★ 측정 전용] [섹터거시근거격자] — 섹터 고유 경제 동인(유가·구리·금리·신용)으로 '국면을 안 따라가는 섹터' ----
+    #   사용자 지시(2026-09-22): "섹터별로 시장 국면별로 안따라갈때도 있잖아 … 섹터별 상승, 하락 근거 따로 찾으라고",
+    #     "신뢰도는 내가 얘기했던 방법(하락 잘 피하고 상승 잘 타는 것)". 시작 v0.67.0 → 목표 v0.68.0.
+    #   R85 판정(엔진 s14): 섹터 **가격** 근거(자기 추세·상대 추세·국면기계)는 2000~2017 독립 구간에서 SPY·무작위보다 나빴다 →
+    #     R85 채움은 사전등록 (d)로 되돌렸다(OWN_EVIDENCE_FILL 0.25 → 0.0). 남은 '섹터별 근거'는 경제 동인이다 — 여기서 처음 잰다.
+    #   행(★ 기준 · 한 번에 한 가지만 바꾼다):
+    #     G1 하락국면리더(E_t=0) — 리더 섹터가 거시 **역풍/동인 없음**이면 들지 않는다(현금)
+    #     G2 E_t=0일 — 리더 대신 '거시 순풍 & 자기 추세 상승' 섹터 1위(63일 상대수익) × 0.25(없으면 현금)
+    #     G3 부분예산일(0<E_t<1) — 남는 현금 25%를 '거시 순풍 & 자기 추세 상승' 상위 2(주력 제외)로
+    #     G4 E_t>0일 — 주력 외 보유 섹터가 거시 역풍이면 '거시 순풍 & 자기 추세 상승' 1위(미보유)로 교체(노출 불변)
+    #   G2·G3는 같은 날·같은 몫 무작위 섹터 대조군(자기 추세 상승 섹터 중) 12개와 비교한다. 장기 검증(macro_long_audit)이 G2·G3의
+    #   독립 구간판(L2·L3)을 잰다. ⚠ 사전등록(R86 → 다음 리포트): G2 또는 G3를 라이브로 올리는 조건 —
+    #     (1) 장기 검증 **두 구간 모두** Δ회피 ≥ −1%p · Δ참여 ≥ −1%p · Δ회피+Δ참여 ≥ +2%p · 칼마 > 무작위 대조군 95%
+    #     (2) 평가창 ★ 변형: Δ회피+Δ참여 ≥ +2%p · MDD 악화 ≤ 0.5%p · 칼마 > 무작위 대조군 95%.
+    #     G1·G4는 독립 구간판이 없어 **진단**이다(승격 불가). 엔진은 스스로 라이브를 바꾸지 않는다.
+    #   룩어헤드 없음: 동인은 t일까지(FRED는 발표 지연만큼 더 늦춤) · 자기 추세는 t일 종가까지 · 비중은 t+1 시가 체결.
+    _macro_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(scfg, "MACRO_EVIDENCE_ENABLE", True)) and label_primary in target_ws:
+        try:
+            _tm0 = time.time()
+            _pri_m = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+            _base_m = target_ws[label_primary].copy()
+            _secm = [c for c in cols if c in _base_m.columns and c in ret_cc_full.columns]
+            _rcf_m = ret_cc_full[_secm]
+            _lvl_m = (1.0 + _rcf_m.fillna(0.0)).cumprod().where(_rcf_m.notna())
+            _tail_f, _head_f, _minfo = macro_driver_states(res, full_idx, _secm, scfg, M)
+            _frm_f = own_evidence_frames(_lvl_m, None, int(getattr(scfg, "OWN_EVIDENCE_N_LONG", 200)),
+                                         int(getattr(scfg, "OWN_EVIDENCE_N_SHORT", 50)), int(getattr(scfg, "OWN_EVIDENCE_N_REL", 50)),
+                                         int(getattr(scfg, "OWN_EVIDENCE_N_RS", 63)))
+            _tail = _tail_f.reindex(eval_idx).fillna(False).astype(bool)
+            _head = _head_f.reindex(eval_idx).fillna(False).astype(bool)
+            _own_up = _frm_f["own_up"].reindex(eval_idx).fillna(False).astype(bool)
+            _rs_m = _frm_f["rs"].reindex(eval_idx)
+            _candm = (_tail & _own_up)
+            _Evm = E.reindex(eval_idx).fillna(0.0).astype(float)
+            _offm = _Evm <= 1e-12
+            _partm = (_Evm > 1e-12) & (_Evm < 1.0 - 1e-12)
+            _onm = _Evm > 1e-12
+            log("MACRO", kv(event="drivers_ready", sectors=len(_secm), lookback=int(getattr(scfg, "MACRO_LOOKBACK", 63)),
+                            drivers=" | ".join(f"{k}:{v}" for k, v in _minfo.items())[:900],
+                            cand_per_day=round(float(_candm.sum(axis=1).mean()), 3)), M=M)
+            _gm: Dict[str, pd.DataFrame] = {}
+            # G1 — 하락국면리더를 거시 순풍일 때만
+            _dl = down_leader_days.reindex(eval_idx).fillna(False).astype(bool)
+            _ls = leader_s.reindex(eval_idx)
+            _okl = pd.Series([bool(_tail.at[d_, s_]) if isinstance(s_, str) and s_ in _tail.columns else False
+                              for d_, s_ in _ls.items()], index=eval_idx)
+            _w1 = _base_m.copy()
+            _drop1 = _dl & ~_okl
+            _w1.loc[_drop1.values, _secm] = 0.0
+            _gm["주력섹터 중심 · G1 하락국면리더는 거시 순풍일 때만 [섹터거시근거격자·진단]"] = _w1
+            # G2 — E_t=0일 거시 순풍 섹터 1위 × pos
+            _pos_m = float(getattr(scfg, "MACRO_OFF_POS", 0.25) or 0.25)
+            _sel1 = _own_top_by(_rs_m[_secm], _candm[_secm], 1)
+            _w2 = _base_m.copy()
+            _w2.loc[_offm.values, _secm] = 0.0
+            _w2[_secm] = _w2[_secm].add(_sel1.mul(_pos_m * _offm.astype(float), axis=0), fill_value=0.0)
+            _lab_g2 = f"주력섹터 중심 · G2 E_t=0일 거시 순풍 섹터 1위 {_pos_m:.0%}(리더 대체) [섹터거시근거격자]"
+            _gm[_lab_g2] = _w2
+            # G3 — 부분예산일 거시 순풍 채움
+            _f_m = float(getattr(scfg, "MACRO_FILL", 0.25) or 0.25)
+            _cm3 = _candm[_secm].copy()
+            if _pri_m in _cm3.columns:
+                _cm3[_pri_m] = False
+            _sel3 = _own_top_by(_rs_m[_secm], _cm3, int(getattr(scfg, "OWN_EVIDENCE_FILL_K", 2) or 2))
+            _w3, _add3 = own_evidence_fill(_base_m, {"cand": _cm3, "rs": _rs_m}, _secm, _pri_m, _partm, _f_m,
+                                           int(getattr(scfg, "OWN_EVIDENCE_FILL_K", 2) or 2), sel=_sel3)
+            _lab_g3 = f"주력섹터 중심 · G3 부분예산일 남는 현금 {_f_m:.0%} → 거시 순풍 상위2 [섹터거시근거격자]"
+            _gm[_lab_g3] = _w3
+            # G4 — 대피처 거시 역풍 교체(노출 불변)
+            _w4, _m4 = own_evidence_swap(_base_m, {"own_dn": _head[_secm], "cand": _candm[_secm], "rs": _rs_m[_secm]},
+                                         _secm, _pri_m, _onm)
+            _gm["주력섹터 중심 · G4 대피처 거시 역풍 → 순풍 섹터로 교체(노출 불변) [섹터거시근거격자·진단]"] = _w4
+            # 대조군(G2·G3 — 같은 날·같은 몫, 자기 추세 상승 섹터 중 무작위)
+            _nctl_m = int(getattr(scfg, "MACRO_CONTROLS", 12) or 0)
+            _seed_m = int(getattr(scfg, "MACRO_SEED", 20260924))
+            _pool2 = _own_up[_secm].copy()
+            _pool3 = _pool2.copy()
+            if _pri_m in _pool3.columns:
+                _pool3[_pri_m] = False
+            _c2, _c3 = [], []
+            _has1 = _sel1.sum(axis=1) > 0
+            for _j in range(_nctl_m):
+                _r1 = _own_rand_sel(_pool2, 1, _seed_m + _j).mul(_has1.astype(float), axis=0)
+                _wc = _base_m.copy(); _wc.loc[_offm.values, _secm] = 0.0
+                _wc[_secm] = _wc[_secm].add(_r1.mul(_pos_m * _offm.astype(float), axis=0), fill_value=0.0)
+                _l = f"주력섹터 중심 · 대조군{_j}: G2 같은 날 무작위 섹터 [섹터거시근거격자·대조]"
+                _gm[_l] = _wc; _c2.append(_l)
+                _rk = _own_rand_sel(_pool3, int(getattr(scfg, "OWN_EVIDENCE_FILL_K", 2) or 2), _seed_m + 500 + _j)
+                _rk = _rk.mul((_sel3.sum(axis=1) > 0).astype(float), axis=0)
+                _l = f"주력섹터 중심 · 대조군{_j}: G3 같은 날·같은 몫 무작위 2섹터 [섹터거시근거격자·대조]"
+                _gm[_l] = own_evidence_fill(_base_m, {"cand": _cm3, "rs": _rs_m}, _secm, _pri_m, _partm, _f_m, 2, sel=_rk)[0]
+                _c3.append(_l)
+            for _lab, _fw in _gm.items():
+                _fw = _fw.fillna(0.0).clip(lower=0.0)
+                target_ws[_lab] = _fw
+                bts[_lab] = portfolio_backtest(_fw, ret_co, ret_oc, **bt_kw)
+                variants[_lab] = _fw
+            _spy_e = ((1.0 + ret_co["SPY"].fillna(0.0)) * (1.0 + ret_oc["SPY"].fillna(0.0)) - 1.0).reindex(eval_idx).fillna(0.0)
+            _ur = user_rel_portfolio({l_: bts[l_]["strategy_ret"] for l_ in [label_primary] + list(_gm.keys())}, _spy_e, scfg)
+            _uri = _ur.set_index("전략")
+            _b = _uri.loc[label_primary]
+            _rows_m = []
+            _prereg_eval = {}
+            for _lab in _gm:
+                if "·대조]" in _lab:
+                    continue
+                _u = _uri.loc[_lab]
+                _da = (float(_u["하락 회피율"]) - float(_b["하락 회피율"])) * 100.0
+                _dp = (float(_u["상승 참여율"]) - float(_b["상승 참여율"])) * 100.0
+                _cl = _c2 if "G2" in _lab else (_c3 if "G3" in _lab else [])
+                _cc = np.asarray([float(_uri.loc[l_, "칼마"]) for l_ in _cl], dtype=float)
+                _cc = _cc[_cc == _cc]
+                _q95 = float(np.quantile(_cc, 0.95)) if len(_cc) else np.nan
+                _ok = bool((_da + _dp) >= 2.0 and float(_u["MDD"]) >= float(_b["MDD"]) - 0.005
+                           and len(_cc) and float(_u["칼마"]) > _q95)
+                if "G2" in _lab or "G3" in _lab:
+                    _prereg_eval["G2" if "G2" in _lab else "G3"] = _ok
+                _rows_m.append({"변형": _lab, "하락 회피율": _u["하락 회피율"], "상승 참여율": _u["상승 참여율"],
+                                "Δ회피(%p)": round(_da, 2), "Δ참여(%p)": round(_dp, 2), "등급": _u["등급"],
+                                "배수": _u["배수"], "MDD": _u["MDD"], "칼마": _u["칼마"],
+                                "대조군 칼마 95%": (round(_q95, 3) if _q95 == _q95 else np.nan),
+                                "평가창 사전등록(2) 통과": (_ok if ("G2" in _lab or "G3" in _lab) else "진단")})
+            _macro_diag = {"enabled": True, "drivers": _minfo, "rows": _rows_m, "base": {"하락 회피율": _b["하락 회피율"],
+                           "상승 참여율": _b["상승 참여율"], "배수": _b["배수"], "MDD": _b["MDD"], "칼마": _b["칼마"]},
+                           "prereg_eval": _prereg_eval, "controls": _nctl_m, "seed": _seed_m,
+                           "g1_days_dropped": int(_drop1.sum()), "g1_leader_days": int(_dl.sum()),
+                           "g2_days": int((_offm & _has1).sum()), "g3_days": int((_add3 > 0).sum()),
+                           "g4_days": int(_m4.any(axis=1).sum())}
+            for _r in _rows_m:
+                log("MACRO", kv(event="grid_row", variant=str(_r["변형"])[:48], avoid=_r["하락 회피율"], part=_r["상승 참여율"],
+                                d_avoid=_r["Δ회피(%p)"], d_part=_r["Δ참여(%p)"], mult=_r["배수"], mdd=_r["MDD"], calmar=_r["칼마"],
+                                ctl_q95=_r["대조군 칼마 95%"], prereg=_r["평가창 사전등록(2) 통과"]), M=M)
+            if bool(getattr(scfg, "MACRO_LONG_AUDIT", True)):
+                try:
+                    _pxa_m = res.get("px_adj") if isinstance(res, dict) else None
+                    _spy_lm = (pd.Series(_pxa_m).astype(float).pct_change(fill_method=None).reindex(full_idx)
+                               if _pxa_m is not None and len(pd.Series(_pxa_m).dropna()) > 300 else spy_cc_full)
+                    _macro_diag["long"] = macro_long_audit(_lvl_m, E_full, _spy_lm,
+                                                           (pd.Series(_pxa_m).reindex(full_idx) if _pxa_m is not None else None),
+                                                           _tail_f, rf_daily, scfg, cost_bps=float(res["cfg"].COST_BPS), M=M)
+                except Exception as _e5:
+                    log("MACRO", kv(event="long_audit_failed", err=type(_e5).__name__, msg=str(_e5)[:160],
+                                    trace=traceback.format_exc()[-300:].replace("\n", " | "), action="장기 검증만 생략"), M=M,
+                        level="warning")
+                    _macro_diag["long"] = {"enabled": False, "error": f"{type(_e5).__name__}: {str(_e5)[:160]}"}
+            _lv = (_macro_diag.get("long") or {}).get("verdict") or {}
+            _macro_diag["promote"] = {g: bool(_prereg_eval.get(g) and (_lv.get("L" + g[1:]) or {}).get("pass")) for g in ("G2", "G3")}
+            log("MACRO", kv(event="grid_done", rows=len(_rows_m), controls=_nctl_m, seed=_seed_m,
+                            g1_dropped=_macro_diag["g1_days_dropped"], g2_days=_macro_diag["g2_days"],
+                            g3_days=_macro_diag["g3_days"], g4_days=_macro_diag["g4_days"],
+                            promote=";".join(f"{k}={v}" for k, v in _macro_diag["promote"].items()),
+                            sec=round(time.time() - _tm0, 1), note="측정 전용 — ★(라이브) 무변경"), M=M)
+        except Exception as _e:
+            log("MACRO", kv(event="macro_grid_failed", err=type(_e).__name__, msg=str(_e)[:180],
+                            trace=traceback.format_exc()[-400:].replace("\n", " | "), action="격자만 생략 — ★ 무영향"),
+                M=M, level="warning")
+            _macro_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
+
     # ---- [v0.66.0 R84 ★★ 신규 · 측정 전용] [모멘텀연결격자] — '예측을 배분에 넣으면 노란색(★) 성과가 나아지나' ----
     #   사용자 질문(2026-09-22): "고치고 있는거 맞아? 왜 노란색 표시된 수익배수는 그대로야".
     #   답: R82·R83은 신뢰도 **측정**만 바꿨고 ★(실제 거래 규칙)은 R81 이후 그대로라 수익배수 12.368도 그대로다.
@@ -10615,6 +11938,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         "self_cut": _sc_diag,                                                        # [v0.62.0 R80]
         "alloc_link": _link_diag,                                                    # [v0.66.0 R84] [모멘텀연결격자]
         "own_evidence": _own_diag,                                                   # [v0.67.0 R85] 섹터 자기근거 채움
+        "macro_evidence": _macro_diag,                                               # [v0.68.0 R86] 섹터 거시 근거(측정)
+        "relcmp": _relcmp_diag,                                                      # [v0.69.0 R88] 회피형·참여형·양쪽형 비교
         "label_alt": (label_topk if mode == "leader3" else label_leader),
         "label_own": (label_own if label_own in bts else None), "spy_m": spy_m,          # [v0.7.0]
         "label_score": (label_score if label_score in bts else None),                   # [v0.8.0]
@@ -10643,7 +11968,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     }
     log("ROTATION", kv(event="allocation_built",
                        **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year", "spy_m",
-                                                                     "tier_by_year", "avoid_by_year", "alloc_link", "own_evidence")},
+                                                                     "tier_by_year", "avoid_by_year", "alloc_link", "own_evidence", "macro_evidence",
+                                                                     "relcmp")},
                        tiers=";".join(f"{k}:{v}" for k, v in sorted(diag["tier_by_year"].items())) or "-",
                        avoid_ok=";".join(f"{k}:{'+'.join(v) if v else '-'}" for k, v in sorted(diag["avoid_by_year"].items())) or "-",
                        spy_m_cagr=spy_m["CAGR"], spy_m_mdd=spy_m["MDD"],
@@ -10662,6 +11988,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             "vote_loss_flag": _live_r3.get("vote_loss_flag"),   # [v0.48.0 L5] 13c '득표 상실 중 보유' 열
             "rank_pos": rank_pos, "bts": bts, "target_ws": target_ws, "perf": perf, "curve": curve.reset_index(drop=True),
             "diag": diag, "signals": signals, "wf": wf, "ret_cc": ret_cc, "state": state, "cols": cols, "cand": cand,
+            "relcmp_frames": _relcmp_frames,       # [v0.69.0 R88] I가 같은 모드로 I 행을 만든다(부모 비중 비율)
             "spy_m_ret": spy_m_ret,                                                        # [v0.8.0] 13i 격차 분해용
             "spy_ret": spy_ret_cc, "spy_state_short": spy_state_short,                     # [v0.10.0 §1.C] vs SPY·SPY국면 분해용
             "down_leader_days": down_leader_days,                                          # [v0.15.0 §A] 하락국면 리더 발동일
@@ -15180,6 +16507,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     meta = [
         ("버전", f"sector_rotation.py {VERSION} ({VERSION_DATE}) — market_regime_trader.py 번들 "
                 f"{sres.get('m_bundle_meta', {}).get('bundle_version', '직접 res')}"),
+        ("계층 버전 점검(R89)", layer_version_note("sector_rotation", M=M)),
         # [v0.38.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
         # [v0.39.0] 섹터 개수를 하드코딩하지 않는다 — SECTOR_EXCLUDE에 따라 11↔9로 바뀌므로 문구가 거짓말을 하면 안 된다.
         ("⚠ 실매매 적용 여부", f"아니오 — 이 섹터 리포트는 진단·연구용이며 실매매 주문에 반영되지 않는다. 실매매 주문 근거는 "
@@ -15618,7 +16946,26 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                 meta.insert(1, (_k, _v))
     except Exception as _e:
         log("REPORT", kv(event="own_evidence_sheet_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00S_섹터자기근거", "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
+    # ---- [v0.68.0 R86 ★★★] 00U_사용자신뢰도 — 신뢰도 = 사용자 정의(하락 회피·상승 참여) · 00 맨 앞 줄(00S 줄보다 앞) ----
+    if bool(getattr(scfg, "USER_REL_ENABLE", True)):
+        try:
+            _upk = user_reliability_pack(sres, scfg)
+            if not _upk.get("enabled") and not (sres.get("alloc") or {}).get("bts"):
+                raise LookupError("배분(alloc) 없음 — 노란색 행이 없어 사용자 신뢰도를 잴 대상이 없다")
+            sheets["00U_사용자신뢰도"] = build_user_reliability_sheet(sres, scfg, _upk)
+            for _k, _v in reversed(user_reliability_lines(sres, scfg, _upk, "섹터")):
+                meta.insert(1, (_k, _v))
+            _h0 = _upk.get("head")
+            if isinstance(_h0, pd.DataFrame) and len(_h0):
+                for _, _r0 in _h0.iterrows():
+                    log("USER_REL", kv(event="grade", layer="섹터", strategy=str(_r0["전략"])[:40], avoid=_r0["하락 회피율"],
+                                       part=_r0["상승 참여율"], net=_r0["순효과(%p)"], grade=_r0["등급"], halves=_r0["절반 등급"]), M=M)
+            log("USER_REL", kv(event="frontier", rows=_upk.get("n_front"), high=_upk.get("n_high"),
+                               single=(_upk.get("single_agg") or {}).get("등급")), M=M)
+        except Exception as _e:
+            log("REPORT", kv(event="user_reliability_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                             trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
+    sheets = sheets_to_front(sheets, "00U_사용자신뢰도", "00S_섹터자기근거", "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
     _lm_s = None
     try:
@@ -16649,7 +17996,7 @@ def reliability_lines(aud: Dict[str, Any]) -> List[Tuple[str, str]]:
                                                      for x in g.get("signal_external"))) if g.get("signal_external") else None),
          ((f"검정력: 관측 효과가 진짜여도 연도 기준 통과 확률 ≈ {sel['years_pass_prob']:.0%}")
           if sel and sel.get("years_pass_prob") == sel.get("years_pass_prob") and sel.get("years_pass_prob") is not None else None)]
-    out.append((f"★ 신뢰도 판정({tag} · 00R 시트) — {lay}", " | ".join(x for x in s if x)
+    out.append((f"참고: 선택 신호 통계({tag} · 00R 시트 — 사용자 신뢰도 아님) — {lay}", " | ".join(x for x in s if x)
                 + " — 타이밍과 선택을 분리해 M과 같은 잣대로 쟀다(기준값은 R82 사전등록 그대로). 배분은 바꾸지 않았다."))
     fc = aud.get("forecast")
     if isinstance(fc, pd.DataFrame) and len(fc):
@@ -16682,7 +18029,7 @@ def s_yellow_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
             return float("nan")
     # [v0.67.0 R85] 섹터 자기근거 채움이 켜져 있으면 '왜 그대로인가'(R84) 대신 '이번에 왜 바뀌었나'를 싣는다.
     #   (R85 줄 자체는 00S 블록이 00 맨 앞 — 버전 바로 다음 — 에 넣는다: 여기서 넣으면 '다음 거래일' 블록 뒤로 밀린다.)
-    _own_live = bool((dg.get("own_evidence") or {}).get("enabled")) and float((dg.get("own_evidence") or {}).get("fill", 0) or 0) > 0
+    _own_live = bool((dg.get("own_evidence") or {}).get("enabled"))   # [v0.68.0] 켜짐·끔 모두 own_evidence_lines가 '노란색' 줄을 낸다
     mcol = "총수익배수" if "총수익배수" in pf.columns else None
     star = (f"총수익배수 {_g(lp, mcol):.3f} · " if mcol else "") + (
         f"CAGR {_g(lp, 'CAGR') * 100:.2f}% · MDD {_g(lp, '최대낙폭(MDD)') * 100:.2f}% · 칼마 {_g(lp, '칼마(CAGR/MDD)'):.3f}")
