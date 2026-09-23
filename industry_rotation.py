@@ -1,5 +1,11 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.43.0 - 2026-09-23 - [R90 표시: 00U 블록 H(중립일 저베타 채움 긴 이력) 전달 · 노란색 줄 — I 규칙·배분 무변경]
+#    라이브 변화는 S v0.71.0(중립 국면일 남는 현금 → 최저베타 섹터)에서 온다. I★는 그 섹터 비중 안에서 같은 규칙으로 담는다.
+#    시작 v0.42.0 → 목표 v0.43.0. (§1) run() user_rel_src에 s_lowbeta_ff·s_neutral_fill · _i_relcmp_diag에 lowbeta_ff ·
+#    00U 의사 sres에 neutral_fill 전달(블록 H·노란색 줄). (§2) [회피참여비교] 'R90 중립채움 없음' 행이 relcmp_frames로 자동 전달된다(I 비교 8행).
+#    엔진 i36 기준 I★ 67.5%·89.8% — S★의 중립채움이 들어가면 참여가 더 오른다(하네스: S★ 기준 +3.2%p).
+#    연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.42.0 - 2026-09-23 - [R89 표시: 계층 버전 점검 줄 · 00U 블록 G(S의 M 사이징 긴 이력 판정) 전달 — I 규칙·배분 무변경]
 #    리포트 i35는 I v0.39.0(R85 파일)이었다(M만 v1.58.0). 시작 v0.41.0 → 목표 v0.42.0.
 #    (§1) 00 '계층 버전 점검(R89)' 줄 — S.layer_version_note("industry_rotation"). S가 예전 파일이면 그 사실을 적는다.
@@ -1860,8 +1866,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.42.0"
-VERSION_DATE = "2026-09-22"
+VERSION = "v0.43.0"
+VERSION_DATE = "2026-09-23"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -6046,6 +6052,34 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
             M=M, level="warning")
         relcmp_labels = {}
 
+    # ---- [v0.43.0 R90 ★ 측정 전용] 중립채움 몫을 리더 산업이 아니라 **부모 ETF**로 담는 행 ----
+    #   S v0.71.0이 중립 국면일에 최저베타 섹터로 채운다. I★는 그 섹터 몫도 같은 규칙(리더 산업/부모)으로 나누는데, 그러면 그 몫의 베타가
+    #   부모보다 높아질 수 있다(참여↑·회피↓). 채움 몫만 부모 ETF에 두면 어느 쪽이 사용자 신뢰도에 나은지 다음 라운드가 판정한다.
+    label_nf_parent = None
+    try:
+        _nfw = s_alloc.get("neutral_fill_w")
+        if isinstance(_nfw, pd.DataFrame) and len(_nfw) and label_star in target_ws:
+            _nfw = _nfw.reindex(index=eval_idx, columns=s_all_cols).fillna(0.0).astype(float)
+            _tw_l = target_ws[label_star]; _tw_np = _tw_l.copy(); _moved = 0.0
+            for _p in active_parents:
+                _grp = [c for c in [t for t in cols if parent_of[t] == _p] + [_p] if c in _tw_l.columns]
+                _wp = w_s_all[_p]; _nfp = _nfw[_p]
+                _keep = (_wp - _nfp).clip(lower=0.0)
+                _ratio = (_keep / _wp.where(_wp > 1e-12)).fillna(0.0)
+                _tw_np[_grp] = _tw_l[_grp].mul(_ratio, axis=0)
+                if _p in _tw_np.columns:
+                    _tw_np[_p] = _tw_np[_p] + _nfp
+                    _moved += float(_nfp.sum())
+            label_nf_parent = "I · 중립채움 몫 → 부모 ETF(리더 산업 대신) [중립채움전달]"
+            target_ws[label_nf_parent] = _tw_np
+            _gap_np = float((_tw_np.sum(axis=1) - _tw_l.sum(axis=1)).abs().max())
+            log("RELCMP", kv(event="i_neutral_fill_parent_row", days=int((_nfw.sum(axis=1) > 0).sum()),
+                             moved_sum=round(_moved, 4), exposure_gap_max=round(_gap_np, 12),
+                             note="측정 전용 — I★(라이브) 무변경"), M=M, level=("info" if _gap_np < 1e-9 else "warning"))
+    except Exception as _e:
+        log("RELCMP", kv(event="i_neutral_fill_parent_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
+        label_nf_parent = None
+
     bts: Dict[str, pd.DataFrame] = {}
     star_label = next((c for c in s_alloc.get("bts", {}) if str(c).endswith("★")), None)
     for label, tw in target_ws.items():
@@ -6137,6 +6171,7 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "groups": groups, "label_star": label_star, "label_ctrl_a": label_ctrl_a, "label_ctrl_b": label_ctrl_b,
         "label_s_off": label_s_off,                                                    # [v0.39.0 R85] S★ 채움 OFF 기준 행
         "relcmp_labels": relcmp_labels,                                                # [v0.41.0 R88] 회피형·참여형·양쪽형 비교 행
+        "label_nf_parent": label_nf_parent,                                            # [v0.43.0 R90] 중립채움 몫 → 부모 ETF 측정 행
         "select_mode": select_mode, "groups_leader3": groups_leader3,                 # [v0.33.0 R79]
         "prob_pack": prob_pack,                                                        # [v0.33.0 R79] 드라이버 격자 재사용(참조)
         "prob_market_gate": bool(_mkt_gate_on and _mkt_full is not None),
@@ -12911,7 +12946,10 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                          # [v0.41.0 R88] S의 [회피참여비교] 진단(독립 구간 장기 검증 포함) — I 00U 블록 F2는 섹터층 값을 그대로 싣는다
                          "s_relcmp": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("relcmp")),
                          # [v0.42.0 R89] S의 M 사이징 긴 이력 판정(FF 1927~1998) — I 00U 블록 G도 같은 값
-                         "s_msizing_ff": (sres or {}).get("msizing_ff")},
+                         "s_msizing_ff": (sres or {}).get("msizing_ff"),
+                         # [v0.43.0 R90] 중립일 저베타 채움 — 긴 이력 판정(블록 H)과 이번 실행 발동 통계
+                         "s_lowbeta_ff": (sres or {}).get("lowbeta_ff"),
+                         "s_neutral_fill": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("neutral_fill"))},
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
         "reentry_audit": _reentry,                                # [v0.27.0 R73 §4-4] 25_재진입감사
@@ -13889,6 +13927,7 @@ def _i_relcmp_diag(alloc: Optional[dict], src: Optional[dict]) -> Dict[str, Any]
     sr = (src or {}).get("s_relcmp") or {}
     return {"enabled": True, "labels": labs, "long": sr.get("long") or {}, "repro_max_diff": sr.get("repro_max_diff"),
             "msizing_ff": (src or {}).get("s_msizing_ff") or {},
+            "lowbeta_ff": (src or {}).get("s_lowbeta_ff") or {},        # [v0.43.0 R90] 00U 블록 H(섹터층 값)
             "haircut_days": sr.get("haircut_days"), "neutral_days": sr.get("neutral_days"), "leader_days": sr.get("leader_days"),
             "m_approx_ok": sr.get("m_approx_ok", True)}
 
@@ -15017,7 +15056,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             try:
                 _src = ires.get("user_rel_src") or {}
                 _ps = {"alloc": {"bts": alloc.get("bts") or {}, "diag": {"label_primary": alloc.get("label_star"),
-                                                                           "relcmp": _i_relcmp_diag(alloc, _src)},
+                                                                           "relcmp": _i_relcmp_diag(alloc, _src),
+                                                                           "neutral_fill": (_src.get("s_neutral_fill") or {})},
                                  "spy_ret": _src.get("spy_ret"), "spy_m_ret": _src.get("spy_m_ret")},
                        "sectors": results}
                 _upk_i = S.user_reliability_pack(_ps, icfg)
@@ -15195,7 +15235,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         if S is not None and hasattr(S, "user_reliability_lines") and isinstance(locals().get("_upk_i"), dict):
             _src2 = ires.get("user_rel_src") or {}
             _ps2 = {"alloc": {"bts": (alloc or {}).get("bts") or {}, "diag": {"label_primary": (alloc or {}).get("label_star"),
-                                                                                "relcmp": _i_relcmp_diag(alloc, _src2)},
+                                                                                "relcmp": _i_relcmp_diag(alloc, _src2),
+                                                                                "neutral_fill": (_src2.get("s_neutral_fill") or {})},
                               "spy_ret": _src2.get("spy_ret"), "spy_m_ret": _src2.get("spy_m_ret")}, "sectors": results}
             for _k, _v in reversed(S.user_reliability_lines(_ps2, icfg, locals().get("_upk_i"), "산업")):
                 meta.insert(1, (_k, _v))

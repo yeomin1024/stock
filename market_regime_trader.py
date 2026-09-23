@@ -22,6 +22,20 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.58.2 - 2026-09-23 - [R90 동반 버전 표 갱신(표시·로그 전용) — 신호·비중·사이징 무변경]
+#    시작 v1.58.1 → 목표 v1.58.2. COMPANION_MIN_VERSIONS를 R90 묶음(S v0.71.0 · I v0.43.0 · K v0.8.0)으로 올렸다.
+#    이유: R90 라이브 변화는 S(중립 국면일 남는 현금 → 최저베타 섹터)에 있다. 표를 안 올리면 사용자가 S·I만 예전 파일로
+#      돌려도 M 리포트 00 '계층 버전 점검' 줄이 '정상'이라고 적는다 — R87(s15·i33)·R89(s17·i35)에 실제로 그렇게 섞여 돌았다.
+#    M의 사이징(EXTENSION_HAIRCUT_STEPS E11 · POS_NEUTRAL 0.6)은 v1.58.0 그대로다 — 이번 라운드에 위험 파라미터 변경 없음.
+#      되돌리기(R86 사이징)는 그대로: m_overrides={"EXTENSION_HAIRCUT_STEPS": ((0.10, 0.6), (0.12, 0.4)), "POS_NEUTRAL": 0.5}.
+#    캐시 키는 VALIDATION_SCHEMA("m1")를 쓰므로 번들 버전 상승이 검증표·워크포워드 캐시를 무효화하지 않는다(재계산 없음).
+#    연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v1.58.1 - 2026-09-23 - [R89 계층 버전 점검 줄(표시·로그 전용) — 신호·비중 무변경]
+#    리포트 m3·s17·i35: M은 v1.58.0(R88)인데 S v0.67.0 · I v0.39.0(R85 파일)이 함께 돌았다 → S·I 노란색은 R88 규칙이 아니었다.
+#    (a) COMPANION_MIN_VERSIONS(S ≥ v0.70.0 · I ≥ v0.42.0 · K ≥ v0.8.0) · companion_version_note() 신설.
+#    (b) 00_실행요약 '버전' 다음 줄 '계층 버전 점검(R89)' — 어긋나면 ⚠ 문구 + [CONFIG] event=companion_version_mismatch 경고 로그.
+#    시작 v1.58.0 → 목표 v1.58.1. 사이징(E11·중립 0.6)은 그대로다 — 긴 이력 판정은 S v0.70.0 00U 블록 G(FF 1927~1998)가 한다.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.58.0 - 2026-09-22 - [R88 ⚠⚠ 위험 파라미터 2개 변경 — 사용자 신뢰도(하락 회피·상승 참여)를 위해 M 사이징 조정]
 #    사용자 지시(2026-09-22): "M도 필요하면 개선해 … 회피, 참여 둘다해서 비교해보면 되잖아 다시 신뢰도 높도록 코드 수정해봐".
 #    사용자가 네 안(회피형·참여형·예전지시유지형·양쪽형) 중 **양쪽형**을 골랐다. M 몫은 아래 두 줄이다(S·I 몫은 각 파일 CHANGELOG).
@@ -11262,6 +11276,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   갱신되지 않아 리포트66 00시트가 번들 v1.53.0인데 "v1.51.0 (2026-09-12)"을 찍었다(REPORT49 §1).
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
+        ("계층 버전 점검(R89)", companion_version_note()),
         # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
         ("★ 노란색 표시", "각 리포트에서 **노란색 행 = 실제 거래에 쓰는 전략**이다(M 06_성과요약 '복합지표 전략' · "
                       "S 13_섹터배분전략 ★ · I 13_산업배분전략 ★ · K 13_주식배분전략 ★). 나머지 행은 같은 잣대로 비교하는 "
@@ -11574,8 +11589,42 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.58.0"
-BUNDLE_VERSION_DATE = "2026-09-22"
+BUNDLE_VERSION = "v1.58.2"
+BUNDLE_VERSION_DATE = "2026-09-23"
+# [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
+#   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
+# [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
+#   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.71.0", "industry_rotation": "v0.43.0", "stock_regime": "v0.8.0"}
+
+
+def companion_version_note() -> str:
+    """[v1.58.1 R89] 같은 프로세스에 올라온 S·I·K 모듈 버전을 COMPANION_MIN_VERSIONS와 비교한 한 줄(표시·로그 전용).
+    runner는 네 모듈을 시작 시 모두 import하므로 M 리포트를 쓸 때 sys.modules에 있다. 단독 실행이면 '점검 생략'."""
+    def _vt(v: str):
+        try:
+            return tuple(int(x) for x in str(v).lstrip("v").split(".")[:3])
+        except Exception:
+            return (0, 0, 0)
+    parts, bad = [], []
+    for mod, need in COMPANION_MIN_VERSIONS.items():
+        m_ = sys.modules.get(mod)
+        if m_ is None:
+            parts.append(f"{mod} 미적재")
+            continue
+        got = str(getattr(m_, "VERSION", "?"))
+        ok_ = _vt(got) >= _vt(need)
+        parts.append(f"{mod} {got}{'' if ok_ else f' ⚠ < {need}'}")
+        if not ok_:
+            bad.append(f"{mod} {got} < {need}")
+    if not any(sys.modules.get(m) is not None for m in COMPANION_MIN_VERSIONS):
+        return "점검 생략(M 단독 실행 — S·I·K 모듈 없음)"
+    if bad:
+        log("CONFIG", kv(event="companion_version_mismatch", m=BUNDLE_VERSION, bad=";".join(bad),
+                         action="S·I·K 파일을 이 M과 같은 라운드 파일로 교체하세요(결과는 섞인 버전으로 계산됨)"), level="warning")
+        return (f"⚠ 버전 불일치 — {' · '.join(parts)}. 이 M({BUNDLE_VERSION})과 한 묶음이 아닌 파일이 섞여 있다: "
+                "S·I 리포트의 노란색·비교 행은 예전 규칙으로 계산됐다. 같은 라운드 파일로 교체할 것.")
+    return "정상 — " + " · ".join(parts)
 # [v1.52.1] 검증/워크포워드 **스키마 상수** — sector_rotation.py(v0.43.0 R7)가 검증표 캐시 키에 BUNDLE_VERSION 대신 이 값을
 #   쓴다. 번들 버전은 리포트 문구만 바꿔도 오르지만, 검증표·가중치는 validate_indicators / build_walkforward_weights /
 #   decay_weights / composite 입력 스펙에만 의존한다. ⚠ 그 네 곳의 **산식**이 바뀔 때만 이 값을 올릴 것(안 올리면 오래된
