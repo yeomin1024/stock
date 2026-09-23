@@ -17,6 +17,26 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.73.0 - 2026-09-24 - [R92 ★★★ 라이브: 중립채움 1.0→0.5(⚠ 노출↓ · M v1.60.0 얕은 헤어컷 0.6→0.55와 한 묶음) · 사용자 선택 A안]
+#    사용자 지시(2026-09-24 · 리포트 m6·s20·i38): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정".
+#    시작 v0.72.0 → 목표 v0.73.0. I는 v0.44.0 그대로(비교 행은 relcmp_frames로 자동 전달).
+#    ── 이번 리포트 판정 ── S★ 69.2%·92.3% · I★ 68.9%·95.9%(둘 다 중간 · 높음까지 회피 0.8·1.1%p) · M 78.0%·64.8%.
+#      R91 사전등록 네 조건 전부 통과. 격자 78행 중 S 높음 도달 8행 · I 2행.
+#    ── 후보 판정(r92/) ── 두 층을 **모두** 높음으로 넘기는 길은 셋이었다:
+#      A 중립채움 50% + 얕은 0.55: S 70.5/90.4 · I 70.2/93.9 · 긴 이력(블록 G·H) 네 시대 모두 + ← **사용자 선택**
+#      B 모멘텀 순위 상한: S 72.2/91.4 · I 71.7/95.0 · 무작위 200개 대비 칼마 100·(회피+참여) 99백분위.
+#        그러나 FF12 월별 1950~2017 사전판정 **반증**(1980~98 −0.21%p) · 순이익이 5구간에 몰림 · R84 강건성(기준④) 미통과.
+#      C 얕은 헤어컷만 0.4: S 70.7/90.9 · I 70.5/94.1 · 긴 이력(블록 G) 네 시대 모두 −.
+#    ── ⚠ 새로 확인한 사실 ── 같은 코드를 다시 돌려도 M 복합점수가 633일에서 달라졌다(SPY 가격은 동일). R91 예상 68.3/90.5 →
+#      엔진 69.2/92.3의 차이 중 +0.6/+0.9는 M 쪽(단계 밖 23일 · 상태 15일), +0.2/+0.9는 섹터 쪽(대피처 48일)이었다.
+#      ⇒ **실행마다 회피·참여가 1~2%p 흔들린다.** A안의 여유(0.2%p)는 그보다 작다 — 사용자에게 알리고 골랐다.
+#    ── 변경 ── (§1 ⚠ 라이브) NEUTRAL_LOWBETA_FILL 1.0 → 0.5. 되돌리기: s_overrides={"NEUTRAL_LOWBETA_FILL": 1.0}.
+#      (§2) [회피참여비교]에 'R91 라이브(채움 100% · 헤어컷 0.6/0.0)' 행(되돌리면 이것) · 'R90 중립채움 없음' 행 이름 정정(= R89 라이브가 아니다).
+#      (§3) HAIRCUT_STEP_GRID 이웃 갱신(라이브 0.55/0.0 제외 · 직전 0.6/0.0 포함). 블록 G 변형에 R91(직전 라이브) 추가.
+#      (§4) 00 'R92 노란색' 줄 — R91 행 → ★ 전후를 엔진 숫자로. R91 줄의 하드코딩 판정(0.6/0.0이 아니면 ⚠)을 없앴다.
+#      (§5) [모멘텀연결격자] 대조군 12 → 40 · 사용자 지표(회피+참여) 백분위 열 · 00 줄에 긴 이력 판정(반증) 기록.
+#      _mdesc의 '개선(헤어컷 E11·중립 0.6)' 고정 문구를 라이브 값에서 읽게 고쳤다(R91부터 틀린 표기였다).
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.72.0 - 2026-09-23 - [R91 ★★★ 측정: 헤어컷 두 단계 격자 · 00U 블록 J(회피 부족분 버킷 분해) · 바닥 0 재현 정확화 — S 규칙 무변경]
 #    사용자 지시(2026-09-23 · 리포트 m11·s19·i37): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정".
 #    시작 v0.71.0 → 목표 v0.72.0. 라이브 변화는 **M v1.59.0**(과열 헤어컷 (0.6/0.0))에서 온다 — S의 위험 파라미터는 하나도 안 바꿨다.
@@ -2856,8 +2876,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.72.0"
-VERSION_DATE = "2026-09-23"
+VERSION = "v0.73.0"
+VERSION_DATE = "2026-09-24"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -3519,7 +3539,9 @@ class SectorConfig:
     ALLOC_LINK_SIGNAL: Tuple[str, ...] = ("FIP", "MOM_12_1")   # 외부 49업종에서 검증된 모멘텀 핵(블록 H·H2)
     ALLOC_LINK_SMOOTH: int = 21        # 점수 평활 일수(회전 억제 — 엔진 ROTATION_SMOOTH_DAYS와 같은 값)
     ALLOC_LINK_LAMBDAS: Tuple[float, ...] = (0.5, 1.0)       # 비중 기울임 강도
-    ALLOC_LINK_CONTROLS: int = 12      # 변형마다 같은 구조 무작위 대조군 수
+    # [v0.73.0 R92] 12 → 40. 12개로는 95백분위를 추정할 수 없다(사실상 최댓값·두 번째 값). R92 오프라인 200개(r92/momctl92.py)에서
+    #   '주력 상한 = 모멘텀 순위'는 칼마 100·(회피+참여) 99백분위였는데 엔진 12개에서는 92백분위로 '미통과'였다 — 검정력 부족.
+    ALLOC_LINK_CONTROLS: int = 40      # 변형마다 같은 구조 무작위 대조군 수(측정 전용 · 실행시간 +수 초)
     ALLOC_LINK_SEED: int = 20260922    # 대조군 씨앗(재현성)
     # ---- [v0.67.0 R85 ★★★ 신규 · 라이브] 섹터 자기 근거(상승·하락) — M(E_t)은 참고(예산), 섹터 편입은 섹터 자신의 근거로 ----
     #   근거·실측·한계·사전등록 되돌림 조건은 build_sector_allocation()의 [섹터근거] 블록 주석.
@@ -3583,12 +3605,18 @@ class SectorConfig:
     #   ⚠ 한계: 채움 자체는 1999년 이후에만 이득이었다(FF12 월별: 1950~79 −2.0%p · 1980~98 +0.1%p · 1999~2017 +4.7%p).
     #     엔진이 매 실행 [중립채움격자]와 00U 블록 H(FF49 1927~)로 다시 잰다.
     #   ⚠ 되돌리기 한 줄: s_overrides={"NEUTRAL_LOWBETA_FILL": 0.0} ⇒ v0.70.0과 비트 동일.
-    NEUTRAL_LOWBETA_FILL: float = 1.0          # ⚠ 중립 국면일(0<E_t<1 · 상태 NEUTRAL) 남는 현금 중 최저베타 섹터로 채울 비율
+    # ---- [v0.73.0 R92 ⚠ 위험 파라미터(노출↓)] 중립채움 1.0 → **0.5** — 사용자 선택 A안(2026-09-24) ----
+    #   블록 H가 두 라운드 연속 반증(FF49 일별: 1927~49 −0.80 · 1950~98 −3.03 · 1999~2017 −0.23 · 2018~ −2.02%p — 네 시대 모두 음수).
+    #   절반으로 줄이면 표본 안에서도 회피가 오르고(참여 여유는 남는다) 긴 이력과 **처음으로 같은 방향**이 된다.
+    #   M v1.60.0(얕은 헤어컷 0.6→0.55)과 한 묶음 — 하네스(엔진 s20 재현): S★ 69.18/92.33 → 70.47/90.41 · I★ 68.92/95.92 → 70.24/93.90.
+    #   ⚠ 되돌리기 한 줄: s_overrides={"NEUTRAL_LOWBETA_FILL": 1.0} ⇒ v0.72.0과 비트 동일(0.0이면 R89 채움 없음).
+    NEUTRAL_LOWBETA_FILL: float = 0.5          # ⚠ 중립 국면일(0<E_t<1 · 상태 NEUTRAL) 남는 현금 중 최저베타 섹터로 채울 비율
     NEUTRAL_FILL_GRID: Tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)   # [중립채움격자](라이브 값은 자동 제외)
     # [v0.72.0 R91 · 측정 전용] 과열 헤어컷 **두 단계를 따로** 움직이는 격자 — (≥10% 상한, ≥12% 상한).
     #   R91 진단: 얕은 단계는 '참여' 손잡이, 깊은 단계는 '회피' 손잡이다(노출 1단위당 하락/상승 비대칭 7.7배는 깊은 쪽에 몰려 있다).
     #   라이브 (0.6, 0.0)은 자동 제외된다. 13_섹터배분전략에 [헤어컷단계격자] 행으로 실린다.
-    HAIRCUT_STEP_GRID: Tuple[Tuple[float, float], ...] = ((0.6, 0.2), (0.6, 0.1), (0.5, 0.0), (0.4, 0.0), (0.8, 0.0), (0.7, 0.1))
+    #   [v0.73.0 R92] 라이브가 (0.55, 0.0)으로 바뀌어 직전 라이브 (0.6, 0.0)을 격자에 넣고 이웃을 다시 잡았다.
+    HAIRCUT_STEP_GRID: Tuple[Tuple[float, float], ...] = ((0.6, 0.0), (0.5, 0.0), (0.45, 0.0), (0.4, 0.0), (0.6, 0.2), (0.55, 0.1), (0.7, 0.0))
     LOWBETA_FF_AUDIT: bool = True              # 00U 블록 H — FF49 업종 일별(1926~)로 '중립일 저베타 채움' 긴 이력 판정
     RELCMP_CAND_ENABLE: bool = True
     RELCMP_CAND_CAP_FULL: float = 1.0          # E_t=1(전부 보유)일 주력 상한
@@ -7698,7 +7726,8 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
                     {"name": "헤어컷만 E11 · 중립 0.5", "steps": ((0.10, 0.4), (0.12, 0.2)), "neutral": 0.5},
                     {"name": "중립만 0.6 · 헤어컷 E7", "steps": ((0.10, 0.6), (0.12, 0.4)), "neutral": 0.6},
                     # [v0.72.0 R91] 직전 라이브(되돌리기 대상)와 새 축의 이웃 — 라이브가 어디에 서 있는지 긴 이력에서 본다.
-                    {"name": "R88(직전 라이브): 헤어컷 0.4/0.2 · 중립 0.6", "steps": ((0.10, 0.4), (0.12, 0.2)), "neutral": 0.6},
+                    {"name": "R88: 헤어컷 0.4/0.2 · 중립 0.6", "steps": ((0.10, 0.4), (0.12, 0.2)), "neutral": 0.6},
+                    {"name": "R91(직전 라이브): 헤어컷 0.6/0.0 · 중립 0.6", "steps": ((0.10, 0.6), (0.12, 0.0)), "neutral": 0.6},   # [v0.73.0 R92]
                     {"name": "R91 이웃: 헤어컷 0.6/0.2 · 중립 0.6", "steps": ((0.10, 0.6), (0.12, 0.2)), "neutral": 0.6},
                     {"name": "R91 이웃: 헤어컷 0.5/0.0 · 중립 0.6", "steps": ((0.10, 0.5), (0.12, 0.0)), "neutral": 0.6},
                     {"name": "R89 후보: 헤어컷 0.4/0.0 · 중립 0.7", "steps": tuple(getattr(scfg, "RELCMP_CAND_M_STEPS", ((0.10, 0.4), (0.12, 0.0)))),
@@ -8420,7 +8449,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.59.0", "sector_rotation": "v0.72.0", "industry_rotation": "v0.44.0"}
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.60.0", "sector_rotation": "v0.73.0", "industry_rotation": "v0.44.0"}
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -9963,17 +9992,31 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
                     + " · 세부 00U 블록 H."))
     elif lb.get("error"):
         out.append(("⚠ R90 중립채움 긴 이력 판정", f"산출 실패 — {lb['error']}"))
-    # ---- [v0.72.0 R91] 노란색 줄 + 버킷 분해 요약 ----
+    # ---- [v0.72.0 R91 → v0.73.0 R92] 노란색 줄: 직전 라이브(R91) 비교 행 → ★ 전후를 **엔진 숫자**로 ----
     _hs91 = tuple(sorted(tuple((rcp.get("live_steps") if isinstance(rcp, dict) else None)
                                or getattr(getattr(M, "CFG", None), "EXTENSION_HAIRCUT_STEPS", ()) or ())))
     if len(_hs91) == 2:
-        _isr91 = bool(abs(_hs91[0][1] - 0.6) < 1e-9 and abs(_hs91[1][1] - 0.0) < 1e-9)
-        out.append((f"★★★ 노란색({'S★' if layer == '섹터' else 'I★'} 라이브) — R91: 과열 헤어컷 단계 재조정(⚠ 위험 파라미터)",
-                    f"이격 ≥10% → {_hs91[0][1]:.1f} · ≥12% → {_hs91[1][1]:.1f}"
-                    + (" (= R91 라이브)" if _isr91 else " ⚠ R91 라이브(0.6/0.0)가 아니다 — m_overrides 확인")
-                    + ". 깊은 단계는 0으로(회피↑) · 얕은 단계는 R86 값 0.6으로 되돌림(참여↑). "
-                      "하네스 예상: 회피 66.9→68.3% · 참여 89.9→90.5% · 배수 17.25→18.09 · MDD 동일 · 평균 총노출 0.574→0.571(줄어든다). "
-                      "되돌리기: m_overrides={'EXTENSION_HAIRCUT_STEPS': ((0.10, 0.4), (0.12, 0.2))}. 세부 13 [헤어컷단계격자]."))
+        _isr92 = bool(abs(_hs91[0][1] - 0.55) < 1e-9 and abs(_hs91[1][1] - 0.0) < 1e-9)
+        _nfv92 = float(nfq.get("fill", np.nan)) if isinstance(nfq, dict) else np.nan
+        _tb92 = rcp.get("table") if isinstance(rcp.get("table"), pd.DataFrame) else None
+        _pre92 = _st92 = None
+        if _tb92 is not None:
+            _m92 = _tb92["전략"].astype(str).str.startswith("R91 라이브")
+            _pre92 = _tb92[_m92].iloc[0] if bool(_m92.any()) else None
+            _ms92 = _tb92["전략"].astype(str).str.startswith("양쪽형 ★")
+            _st92 = _tb92[_ms92].iloc[0] if bool(_ms92.any()) else None
+        _pp = ""
+        if _pre92 is not None and _st92 is not None:
+            _pp = (f"R91 라이브(채움 100%·헤어컷 0.6/0.0) 회피 {_pre92['하락 회피율']:.1%} · 참여 {_pre92['상승 참여율']:.1%} · "
+                   f"배수 {_pre92['배수']:.3f} · 칼마 {_pre92['칼마']:.3f} → **회피 {_st92['하락 회피율']:.1%} · 참여 {_st92['상승 참여율']:.1%} · "
+                   f"배수 {_st92['배수']:.3f} · 칼마 {_st92['칼마']:.3f}** (MDD {_pre92['MDD'] * 100:.2f}% → {_st92['MDD'] * 100:.2f}%). ")
+        out.append((f"★★★ 노란색({'S★' if layer == '섹터' else 'I★'} 라이브) — R92: 중립채움 1.0→0.5 · 얕은 헤어컷 0.6→0.55(⚠ 위험 파라미터 · 노출↓)",
+                    _pp + f"현재 이격 ≥10% → {_hs91[0][1]:g} · ≥12% → {_hs91[1][1]:g} · 중립채움 {_nfv92:.0%}"
+                    + (" (= R92 라이브)" if (_isr92 and abs(_nfv92 - 0.5) < 1e-9) else " ⚠ R92 라이브(0.55/0.0 · 채움 50%)가 아니다 — overrides 확인")
+                    + ". 사용자 선택 A안(긴 이력 방향): 블록 H(채움)·G(헤어컷)가 반증한 '1999년 이후 규칙'을 절반씩 되돌렸다. "
+                      "하네스 예상 S★ 70.5/90.4 · I★ 70.2/93.9(둘 다 높음 · 여유 0.2%p) · 노출 0.569→0.544. "
+                      "⚠ 실행마다 M 입력 자료가 바뀌어 회피·참여가 1~2%p 흔들린다(R92 확인) — 여유가 그보다 작다. "
+                      "되돌리기: m_overrides={'EXTENSION_HAIRCUT_STEPS': ((0.10, 0.6), (0.12, 0.0))} · s_overrides={'NEUTRAL_LOWBETA_FILL': 1.0}."))
     _mb91 = pk.get("mbucket")
     if isinstance(_mb91, pd.DataFrame) and len(_mb91) and "비대칭(|하락|/상승)" in _mb91.columns:
         _tp = _mb91.dropna(subset=["비대칭(|하락|/상승)"]).head(3)
@@ -11472,6 +11515,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _cand_steps = tuple(sorted(tuple(getattr(scfg, "RELCMP_CAND_M_STEPS", ((0.10, 0.4), (0.12, 0.0))) or ())))
             _cand_n = float(getattr(scfg, "RELCMP_CAND_M_NEUTRAL", 0.7))
             _E_cand = _E_for(_cand_steps, _cand_n)
+            # [v0.73.0 R92] 직전 라이브(R91) M 사이징 — 'R91 라이브' 비교 행용(되돌리기 대상). 중립은 현 M과 같다(0.6).
+            _r91_steps = tuple(sorted(tuple(getattr(scfg, "RELCMP_R91_M_STEPS", ((0.10, 0.6), (0.12, 0.0))) or ())))
+            _E_r91 = _E_for(_r91_steps, _live_n)
             _full_r = _Evr >= 1.0 - 1e-12
             _cap_now = float(getattr(scfg, "ROTATION_PRIMARY_CAP", 0.8) or 0.0)
             _def_now = float(getattr(scfg, "ROTATION_SHELTER_DEFENSIVE", 0.0) or 0.0)
@@ -11481,7 +11527,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _ad_pos_r = float(getattr(scfg, "ROTATION_ALLDOWN_SPY_POS", 0.0) or 0.0)
 
             def _mdesc(cap_, def_, ld_, msrc_, capp_=None):
-                _mt = {"ref": "종전(헤어컷 E7·중립 0.5)", "live": "개선(헤어컷 E11·중립 0.6)",
+                _mt = {"ref": "종전(헤어컷 E7·중립 0.5)",
+                       "live": f"현행(헤어컷 {'/'.join(f'{c:g}' for _, c in _live_steps_r)}·중립 {_live_n:g})",   # [v0.73.0] 라이브에서 읽는다
+                       "r91": f"R91(헤어컷 {'/'.join(f'{c:g}' for _, c in _r91_steps)}·중립 {_live_n:g})",
                        "cand": f"후보(헤어컷 {'/'.join(f'{c:.1f}' for _, c in _cand_steps)}·중립 {_cand_n:.1f})"}[msrc_]
                 _ct = (f"상한 {cap_:.0%}" if capp_ is None else f"상한 E=1일 {cap_:.0%}·그 밖 {capp_:.0%}")
                 return f"{_ct} · 방어대피처 {def_:.2f} · 하락국면리더 {ld_:.0%} · M {_mt}"
@@ -11493,7 +11541,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                         ("참여형", _cap_now, _def_now, _rld, "live", None, 0.0),
                         ("예전 지시 유지형", _rcap, 0.0, _rld, "live", None, 0.0),
                         ("양쪽형 · M 종전(S 변경만)", _cap_now, _def_now, _ld_now, "ref", None, 0.0),
-                        ("R90 중립채움 없음(= R89 라이브)", _cap_now, _def_now, _ld_now, "live", None, 0.0),
+                        ("R90 중립채움 없음(채움 0 · 현 M 사이징)", _cap_now, _def_now, _ld_now, "live", None, 0.0),
+                        # [v0.73.0 R92] 직전 라이브 — 00 'R92 노란색' 줄이 이 행 → ★ 를 전후로 보여 준다(되돌리면 이것).
+                        ("R91 라이브(채움 100% · 헤어컷 0.6/0.0)", _cap_now, _def_now, _ld_now, "r91", None, 1.0),
                         ("양쪽형 재현(= ★ 검증용)", _cap_now, _def_now, _ld_now, "live", None, _nf_live)]
             if bool(getattr(scfg, "RELCMP_CAND_ENABLE", True)):
                 # [v0.70.0 R89 · 측정 전용] 표본 안(2018~) '높음' 경계 후보 — 1927~1998 월별 긴 이력에서는 과열 헤어컷이 오히려 손해였다
@@ -11514,7 +11564,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     _fb = _fr_p.reindex(index=eval_idx, columns=all_cols).fillna(0.0)
                     _msk = pd.DataFrame(np.repeat(_full_r.values[:, None], len(all_cols), axis=1), index=eval_idx, columns=all_cols)
                     _fr_r = _fa.where(_msk, _fb)
-                _Em = {"ref": _E_ref, "live": _Evr, "cand": _E_cand}[_ms]
+                _Em = {"ref": _E_ref, "live": _Evr, "cand": _E_cand, "r91": _E_r91}[_ms]
                 _tw_r = _fr_r.reindex(index=eval_idx, columns=all_cols).fillna(0.0).mul(_Em, axis=0)
                 _tw_r = _apply_leader(_tw_r, _ldv)
                 if _ad_pos_r > 0 and "SPY" in _tw_r.columns:
@@ -11535,8 +11585,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _labels_r[_nm] = _lab_r
                 _specs_r.append({"name": _nm, "cap": _cp, "def": _df, "leader": _ldv, "msrc": _ms,
                                  "cap_part": (_cpp if _cpp is not None else _cp), "neutral_fill": float(_nfv),
-                                 "steps": {"ref": _ref_steps_r, "live": _live_steps_r, "cand": _cand_steps}[_ms],
-                                 "neutral": {"ref": _ref_n, "live": _live_n, "cand": _cand_n}[_ms], "ref": _nm.startswith("현행"),
+                                 "steps": {"ref": _ref_steps_r, "live": _live_steps_r, "cand": _cand_steps, "r91": _r91_steps}[_ms],
+                                 "neutral": {"ref": _ref_n, "live": _live_n, "cand": _cand_n, "r91": _live_n}[_ms], "ref": _nm.startswith("현행"),
                                  "cand": _ms == "cand"})
             _specs_r.append({"name": "양쪽형 ★(라이브)", "cap": _cap_now, "def": _def_now, "leader": _ld_now, "msrc": "live",
                              "steps": _live_steps_r, "neutral": _live_n, "star": True, "neutral_fill": _nf_live})
@@ -12274,9 +12324,24 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 variants[_lab] = _w
                 _cg, _md, _cm = _calmar(bts[_lab])
                 _ctl = []
+                _ctl_r: Dict[str, pd.Series] = {}          # [v0.73.0 R92] 사용자 지표용 대조군 일수익
                 for _k, _rs in enumerate(_rand_scores):
                     _wc = _mk(_rs).fillna(0.0).clip(lower=0.0)
-                    _ctl.append(_calmar(portfolio_backtest(_wc, ret_co, ret_oc, **bt_kw))[2])
+                    _btc = portfolio_backtest(_wc, ret_co, ret_oc, **bt_kw)
+                    _ctl.append(_calmar(_btc)[2])
+                    _ctl_r[f"c{_k}"] = _btc["strategy_ret"]
+                # [v0.73.0 R92] 사용자 정의 신뢰도(회피+참여) 백분위 — 칼마만으로는 사용자 목표를 재지 못한다.
+                _u_sum = _u_q95 = _u_pct = _u_av = _u_pa = np.nan
+                try:
+                    _spy_l = ((1.0 + ret_co["SPY"]) * (1.0 + ret_oc["SPY"]) - 1.0).reindex(eval_idx).fillna(0.0)
+                    _ut = user_rel_portfolio({"v": bts[_lab]["strategy_ret"], **_ctl_r}, _spy_l, scfg).set_index("전략")
+                    _us = (_ut["하락 회피율"] + _ut["상승 참여율"]).astype(float)
+                    _u_sum = float(_us.loc["v"]); _u_av = float(_ut.loc["v", "하락 회피율"]); _u_pa = float(_ut.loc["v", "상승 참여율"])
+                    _uc = _us.drop("v").dropna().values
+                    if len(_uc):
+                        _u_q95 = float(np.quantile(_uc, 0.95)); _u_pct = float((_uc < _u_sum).mean() * 100.0)
+                except Exception as _eu:
+                    log("ROTATION", kv(event="alloc_link_user_metric_failed", err=str(_eu)[:120]), M=M, level="warning")
                 _ctl = np.asarray([c_ for c_ in _ctl if c_ == c_], dtype=float)
                 _pctile = float((_ctl < _cm).mean() * 100.0) if len(_ctl) else np.nan
                 _q95 = float(np.quantile(_ctl, 0.95)) if len(_ctl) else np.nan
@@ -12286,7 +12351,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                 "★ 칼마": _cm0, "★ MDD": _md0, "대조군 수": int(len(_ctl)),
                                 "대조군 칼마 중앙": (float(np.median(_ctl)) if len(_ctl) else np.nan),
                                 "대조군 칼마 95%": _q95, "대조군 대비 백분위": _pctile,
-                                "사전등록 (i)(ii)(iv) 통과": _pass})
+                                "사전등록 (i)(ii)(iv) 통과": _pass,
+                                # [v0.73.0 R92] 사용자 지표
+                                "회피": _u_av, "참여": _u_pa, "회피+참여": _u_sum,
+                                "대조군 (회피+참여) 95%": _u_q95, "(회피+참여) 백분위": _u_pct})
                 log("ROTATION", kv(event="alloc_link_variant", variant=_nm, calmar=round(_cm, 3), calmar_star=round(_cm0, 3),
                                    cagr=round(_cg * 100, 2), mdd=round(_md * 100, 2), ctl_median=round(float(np.median(_ctl)), 3)
                                    if len(_ctl) else None, ctl_q95=round(_q95, 3) if _q95 == _q95 else None,
@@ -18501,15 +18569,20 @@ def s_yellow_lines(sres: Dict[str, Any]) -> List[Tuple[str, str]]:
     if ld.get("enabled") and ld.get("rows"):
         parts = []
         for r_ in ld["rows"]:
+            _us_ = r_.get("회피+참여", np.nan)
             parts.append(f"{r_['변형']} 칼마 {r_['칼마']:.3f}(대조군 95% {r_['대조군 칼마 95%']:.3f} · 백분위 "
-                         f"{r_['대조군 대비 백분위']:.0f}){' ✓' if r_['사전등록 (i)(ii)(iv) 통과'] else ''}")
+                         f"{r_['대조군 대비 백분위']:.0f}){' ✓' if r_['사전등록 (i)(ii)(iv) 통과'] else ''}"
+                         + (f" · 회피 {r_['회피']:.1%}/참여 {r_['참여']:.1%}(합 백분위 {r_['(회피+참여) 백분위']:.0f})"
+                            if _us_ == _us_ else ""))
         out.append(("★★ [모멘텀연결격자] — 예측(모멘텀 핵 FIP+MOM_12_1)을 ★ 비중에 넣으면?(R84 · 측정 전용)",
                     f"★ 칼마 {ld['star_calmar']:.3f} 기준 · 같은 구조 무작위 대조군 {ld['controls']}개/변형(씨앗 {ld['seed']}): "
                     + " | ".join(parts)
                     + (" → ✓ 표시 변형이 사전등록 (i)(ii)(iv)를 통과 — 13 강건성(기준④)까지 '통과'면 다음 라운드에 라이브 교체를 검토한다."
                        if ld.get("any_pass") else
                        " → 어느 변형도 사전등록(칼마 ≥ ★+0.05 · 대조군 95% 초과 · MDD 0.5%p 이내)을 통과하지 못했다 — "
-                       "이 예측을 비중에 넣어도 ★를 이기지 못한다. 그래서 ★를 바꾸지 않는다.")))
+                       "이 예측을 비중에 넣어도 ★를 이기지 못한다. 그래서 ★를 바꾸지 않는다.")
+                    + " [R92] 긴 이력(FF12 월별 1950~2017 · 12업종이 번갈아 주력): '주력 상한 = 모멘텀 순위'는 1950~79 +0.94%p(대조군 12/12 초과) · "
+                      "1980~98 −0.21%p → 사전판정 반증(좁게). 긴 이력에서는 참여를 올리고 회피는 못 올렸다(표본 안과 반대) — 라이브 후보 아님."))
     elif ld.get("error"):
         out.append(("⚠ [모멘텀연결격자](R84)", f"산출 실패 — {ld['error']}"))
     return out
