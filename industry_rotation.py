@@ -1,5 +1,12 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.44.0 - 2026-09-23 - [R91 표시: 00U 블록 J(회피 부족분 버킷 분해) · R91 노란색 줄 전달 — I 규칙·배분 무변경]
+#    라이브 변화는 M v1.59.0(과열 헤어컷 ≥10%→0.6 · ≥12%→0.0)에서 온다. I★는 S★ 섹터 비중 안에서 같은 규칙으로 담는다.
+#    시작 v0.43.0 → 목표 v0.44.0. (§1) run() user_rel_src에 s_mbucket·s_live_steps·s_live_neutral 추가.
+#    (§2) _i_star_exposure() 신설 — 블록 J의 '노출당 일당' 분모는 **I★ 자신의 총노출**이다(버킷 라벨만 S=M에서 받는다).
+#    (§3) 00U 의사 sres 두 곳(시트·00 줄)에 mbucket·mbucket_exposure 전달 → I도 블록 J와 R91 노란색 줄이 나온다.
+#    엔진 i37 기준 I★ 65.8%·93.0% — **참여는 이미 기준(90%)을 넘겼고 남은 부족분은 회피 4.2%p뿐이다**.
+#    연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.43.0 - 2026-09-23 - [R90 표시: 00U 블록 H(중립일 저베타 채움 긴 이력) 전달 · 노란색 줄 — I 규칙·배분 무변경]
 #    라이브 변화는 S v0.71.0(중립 국면일 남는 현금 → 최저베타 섹터)에서 온다. I★는 그 섹터 비중 안에서 같은 규칙으로 담는다.
 #    시작 v0.42.0 → 목표 v0.43.0. (§1) run() user_rel_src에 s_lowbeta_ff·s_neutral_fill · _i_relcmp_diag에 lowbeta_ff ·
@@ -1866,7 +1873,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.43.0"
+VERSION = "v0.44.0"
 VERSION_DATE = "2026-09-23"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -12949,7 +12956,11 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                          "s_msizing_ff": (sres or {}).get("msizing_ff"),
                          # [v0.43.0 R90] 중립일 저베타 채움 — 긴 이력 판정(블록 H)과 이번 실행 발동 통계
                          "s_lowbeta_ff": (sres or {}).get("lowbeta_ff"),
-                         "s_neutral_fill": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("neutral_fill"))},
+                         "s_neutral_fill": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("neutral_fill")),
+                         # [v0.44.0 R91] M 버킷 라벨·노출 — I★로 같은 분해(블록 J)를 다시 잰다. 라이브 사이징은 00 노란색 줄이 쓴다.
+                         "s_mbucket": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("mbucket")),
+                         "s_live_steps": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("relcmp") or {}).get("live_steps"),
+                         "s_live_neutral": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("relcmp") or {}).get("live_neutral")},
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
         "reentry_audit": _reentry,                                # [v0.27.0 R73 §4-4] 25_재진입감사
@@ -13919,6 +13930,15 @@ def single_live_verdict_line(sheets: Dict[str, pd.DataFrame]) -> str:
     return " | ".join(parts) if parts else "산출 불가(00A·19 A′ 없음)"
 
 
+def _i_star_exposure(alloc: Optional[dict]) -> Optional[pd.Series]:
+    """[v0.44.0 R91] I★의 일별 총노출(산업 + 부모 ETF) — 00U 블록 J의 '노출당 일당' 분모."""
+    try:
+        tw = (alloc or {}).get("target_w")
+        return tw.sum(axis=1) if isinstance(tw, pd.DataFrame) and len(tw) else None
+    except Exception:
+        return None
+
+
 def _i_relcmp_diag(alloc: Optional[dict], src: Optional[dict]) -> Dict[str, Any]:
     """[v0.41.0 R88] I 00U용 relcmp 진단 — 라벨은 I 행, 장기 검증은 S(섹터층) 값을 그대로(같은 규칙의 섹터층 검증)."""
     labs = (alloc or {}).get("relcmp_labels") or {}
@@ -13928,6 +13948,8 @@ def _i_relcmp_diag(alloc: Optional[dict], src: Optional[dict]) -> Dict[str, Any]
     return {"enabled": True, "labels": labs, "long": sr.get("long") or {}, "repro_max_diff": sr.get("repro_max_diff"),
             "msizing_ff": (src or {}).get("s_msizing_ff") or {},
             "lowbeta_ff": (src or {}).get("s_lowbeta_ff") or {},        # [v0.43.0 R90] 00U 블록 H(섹터층 값)
+            "live_steps": (src or {}).get("s_live_steps"),              # [v0.44.0 R91] 00 R91 노란색 줄
+            "live_neutral": (src or {}).get("s_live_neutral"),
             "haircut_days": sr.get("haircut_days"), "neutral_days": sr.get("neutral_days"), "leader_days": sr.get("leader_days"),
             "m_approx_ok": sr.get("m_approx_ok", True)}
 
@@ -15057,7 +15079,10 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _src = ires.get("user_rel_src") or {}
                 _ps = {"alloc": {"bts": alloc.get("bts") or {}, "diag": {"label_primary": alloc.get("label_star"),
                                                                            "relcmp": _i_relcmp_diag(alloc, _src),
-                                                                           "neutral_fill": (_src.get("s_neutral_fill") or {})},
+                                                                           "neutral_fill": (_src.get("s_neutral_fill") or {}),
+                                                                           # [v0.44.0 R91] 블록 J — 버킷 라벨은 S(=M 국면)에서, 노출은 I★ 자신의 것
+                                                                           "mbucket": _src.get("s_mbucket"),
+                                                                           "mbucket_exposure": _i_star_exposure(alloc)},
                                  "spy_ret": _src.get("spy_ret"), "spy_m_ret": _src.get("spy_m_ret")},
                        "sectors": results}
                 _upk_i = S.user_reliability_pack(_ps, icfg)
@@ -15236,7 +15261,9 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             _src2 = ires.get("user_rel_src") or {}
             _ps2 = {"alloc": {"bts": (alloc or {}).get("bts") or {}, "diag": {"label_primary": (alloc or {}).get("label_star"),
                                                                                 "relcmp": _i_relcmp_diag(alloc, _src2),
-                                                                                "neutral_fill": (_src2.get("s_neutral_fill") or {})},
+                                                                                "neutral_fill": (_src2.get("s_neutral_fill") or {}),
+                                                                                "mbucket": _src2.get("s_mbucket"),          # [v0.44.0 R91]
+                                                                                "mbucket_exposure": _i_star_exposure(alloc)},
                               "spy_ret": _src2.get("spy_ret"), "spy_m_ret": _src2.get("spy_m_ret")}, "sectors": results}
             for _k, _v in reversed(S.user_reliability_lines(_ps2, icfg, locals().get("_upk_i"), "산업")):
                 meta.insert(1, (_k, _v))

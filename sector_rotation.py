@@ -17,6 +17,23 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.72.0 - 2026-09-23 - [R91 ★★★ 측정: 헤어컷 두 단계 격자 · 00U 블록 J(회피 부족분 버킷 분해) · 바닥 0 재현 정확화 — S 규칙 무변경]
+#    사용자 지시(2026-09-23 · 리포트 m11·s19·i37): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정".
+#    시작 v0.71.0 → 목표 v0.72.0. 라이브 변화는 **M v1.59.0**(과열 헤어컷 (0.6/0.0))에서 온다 — S의 위험 파라미터는 하나도 안 바꿨다.
+#      중립채움(NEUTRAL_LOWBETA_FILL=1.0)은 블록 H 반증에도 **사용자가 유지**를 선택했다(2026-09-23). 되돌리기는 그대로 s_overrides.
+#    ── 이번 리포트 판정 ── S★ 66.9%·90.0%(중간 · 앞/뒤 중간/높음) · I★ 65.8%·93.0%(중간) · M 76.4%·63.9%(낮음).
+#      R90 중립채움은 예측대로 작동했다(하네스 66.9/90.2 → 엔진 66.9/90.0 · 배수 16.32→17.38 · MDD 동일).
+#      **두 계층 모두 참여 기준을 넘겼다** → 남은 부족분은 회피뿐(S 3.1%p · I 4.2%p). 블록 H는 반증(1927~49 −0.78 · 1950~98 −3.00%p).
+#    ── 진단(r91/) ── 회피 부족은 섹터 '선택'이 아니라 '노출' 문제다: 같은 노출·베타 1 대용은 회피를 +0.9%p만 올린다.
+#      노출 1단위당 하락/상승 비대칭 — 헤어컷일 **7.7배** ≫ E=1일 1.38배 ≈ 중립일 1.05배. 그 안에서도 이격 ≥12%일이 손실의 대부분.
+#    ── 신설 ── (§1) HAIRCUT_STEP_GRID + [헤어컷단계격자](두 단계를 따로 움직인다 — 얕은=참여 · 깊은=회피 손잡이).
+#      (§2) 00U **블록 J** mbucket_decomp() — 버킷별 기여·노출당 일당·비대칭 + '버킷 노출 0' 대조 행([버킷격자·진단]).
+#      (§3) 블록 G 변형에 R88(직전 라이브) · R91 이웃 2개 추가. (§4) 00 줄 2개(R91 노란색 · 버킷 분해).
+#    ── ⚠ 정확성 수정 ── 라이브 헤어컷 상한이 **0.0**이 되면서 종전의 "★ × (E'/E)" 비율법으로는 다른 상한을 되만들 수 없다(0으로 나눔).
+#      M v1.59.0이 주는 pos_pre_haircut으로 E' = min(헤어컷 전 목표, 상한)을 **정확히** 계산하고, 그날 비중은 라이브 분수 × E'로 다시 만든다
+#      ([M헤어컷격자]·[회피참여비교]·블록 F2 전부). 로그 [RELCMP] event=r91_pre_haircut available=True · [ROTATION] m_haircut_grid exact=True.
+#      M이 예전 파일이면 available=False로 찍히고 그 단계는 '근사 불가'로 표시된다 → 계층 버전 점검 줄을 먼저 볼 것.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.71.0 - 2026-09-23 - [R90 ★★★ 라이브: 중립 국면일 남는 현금 → 최저베타 섹터(⚠ 노출↑) · [중립채움격자] · 00U 블록 H(FF49 1927~)]
 #    사용자 지시(2026-09-23, 리포트 m4·s18·i36): "섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정" ·
 #      사전등록 판정(F2 미통과 · G 반증) 후 사용자가 **양쪽형 유지**를 선택했다. 시작 v0.70.0 → 목표 v0.71.0. M 무변경(v1.58.1 필요).
@@ -2839,7 +2856,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.71.0"
+VERSION = "v0.72.0"
 VERSION_DATE = "2026-09-23"
 
 # =============================================================================
@@ -3568,6 +3585,10 @@ class SectorConfig:
     #   ⚠ 되돌리기 한 줄: s_overrides={"NEUTRAL_LOWBETA_FILL": 0.0} ⇒ v0.70.0과 비트 동일.
     NEUTRAL_LOWBETA_FILL: float = 1.0          # ⚠ 중립 국면일(0<E_t<1 · 상태 NEUTRAL) 남는 현금 중 최저베타 섹터로 채울 비율
     NEUTRAL_FILL_GRID: Tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)   # [중립채움격자](라이브 값은 자동 제외)
+    # [v0.72.0 R91 · 측정 전용] 과열 헤어컷 **두 단계를 따로** 움직이는 격자 — (≥10% 상한, ≥12% 상한).
+    #   R91 진단: 얕은 단계는 '참여' 손잡이, 깊은 단계는 '회피' 손잡이다(노출 1단위당 하락/상승 비대칭 7.7배는 깊은 쪽에 몰려 있다).
+    #   라이브 (0.6, 0.0)은 자동 제외된다. 13_섹터배분전략에 [헤어컷단계격자] 행으로 실린다.
+    HAIRCUT_STEP_GRID: Tuple[Tuple[float, float], ...] = ((0.6, 0.2), (0.6, 0.1), (0.5, 0.0), (0.4, 0.0), (0.8, 0.0), (0.7, 0.1))
     LOWBETA_FF_AUDIT: bool = True              # 00U 블록 H — FF49 업종 일별(1926~)로 '중립일 저베타 채움' 긴 이력 판정
     RELCMP_CAND_ENABLE: bool = True
     RELCMP_CAND_CAP_FULL: float = 1.0          # E_t=1(전부 보유)일 주력 상한
@@ -7676,6 +7697,10 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
                      "steps": tuple(_mc.EXTENSION_HAIRCUT_STEPS or ()), "neutral": float(_mc.POS_NEUTRAL), "live": True},
                     {"name": "헤어컷만 E11 · 중립 0.5", "steps": ((0.10, 0.4), (0.12, 0.2)), "neutral": 0.5},
                     {"name": "중립만 0.6 · 헤어컷 E7", "steps": ((0.10, 0.6), (0.12, 0.4)), "neutral": 0.6},
+                    # [v0.72.0 R91] 직전 라이브(되돌리기 대상)와 새 축의 이웃 — 라이브가 어디에 서 있는지 긴 이력에서 본다.
+                    {"name": "R88(직전 라이브): 헤어컷 0.4/0.2 · 중립 0.6", "steps": ((0.10, 0.4), (0.12, 0.2)), "neutral": 0.6},
+                    {"name": "R91 이웃: 헤어컷 0.6/0.2 · 중립 0.6", "steps": ((0.10, 0.6), (0.12, 0.2)), "neutral": 0.6},
+                    {"name": "R91 이웃: 헤어컷 0.5/0.0 · 중립 0.6", "steps": ((0.10, 0.5), (0.12, 0.0)), "neutral": 0.6},
                     {"name": "R89 후보: 헤어컷 0.4/0.0 · 중립 0.7", "steps": tuple(getattr(scfg, "RELCMP_CAND_M_STEPS", ((0.10, 0.4), (0.12, 0.0)))),
                      "neutral": float(getattr(scfg, "RELCMP_CAND_M_NEUTRAL", 0.7)), "cand": True}]
             _f3 = fetch_ff_factors_daily(scfg, M=M)
@@ -8395,7 +8420,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.58.2", "sector_rotation": "v0.71.0", "industry_rotation": "v0.43.0"}
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.59.0", "sector_rotation": "v0.72.0", "industry_rotation": "v0.44.0"}
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -9241,6 +9266,53 @@ def user_rel_portfolio(rets: Dict[str, pd.Series], spy_ret: pd.Series, cfg,
     return pd.DataFrame(rows)
 
 
+def mbucket_decomp(star_ret: pd.Series, spy_ret: pd.Series, bucket: pd.Series,
+                   exposure: pd.Series, cfg) -> pd.DataFrame:
+    """[v0.72.0 R91 · 측정 전용] 00U 블록 J — 노란색(★)의 하락/상승 기여를 **M 버킷**으로 나눈다.
+
+    왜 이 표가 필요한가(R91 진단): 두 계층 모두 참여 기준은 넘겼고 남은 부족분은 회피뿐이다. 그런데 회피 부족은
+    섹터 '선택'이 아니라 '노출' 문제다 — 같은 노출에서 포트폴리오 베타를 정확히 1로 맞춘 대용도 회피를 +0.9%p밖에
+    못 올린다. 그래서 **어느 노출 버킷이 새는지**를 봐야 한다. 노출 1단위당 하락/상승 비대칭이 그 답을 준다.
+
+    산식(지그재그 구간 안의 일별 기여 · 단순합):
+      버킷 b · 구간유형 g의 기여 = Σ_{t∈b, t∈g} ★ 일수익 · 노출당 일당 = 기여 / 일수 / 평균 체결노출
+      비대칭 = |하락 노출당일당| / 상승 노출당일당  (클수록 '들고 있으면 손해인 날')
+    ⚠ 구간은 사후 분할이다 — 판정(진단)에만 쓰고 신호에는 쓰지 않는다. 단순합이라 구간 복리와는 다르다
+      (등급 숫자는 블록 B가 권위다 — 여기는 **어디가 새는지**만 본다).
+    """
+    mm, md = tuple(getattr(cfg, "USER_REL_SEG_PORT", (0.05, 3)))
+    sp = pd.to_numeric(pd.Series(spy_ret), errors="coerce").fillna(0.0)
+    lev = (1.0 + sp).cumprod()
+    segs = _zz_valid(lev, float(mm), int(md))
+    r = pd.to_numeric(pd.Series(star_ret), errors="coerce").reindex(sp.index).fillna(0.0)
+    bk = pd.Series(bucket).reindex(sp.index).shift(1)          # 체결 기준(전일 결정)
+    ex = pd.to_numeric(pd.Series(exposure), errors="coerce").reindex(sp.index).shift(1)
+    grp = pd.Series(np.nan, index=sp.index, dtype=object)
+    for kind, a, b in segs:
+        grp[(sp.index > a) & (sp.index <= b)] = kind
+    rows = []
+    for k in [x for x in pd.unique(bk.dropna()) if isinstance(x, str)]:
+        m0 = bk.eq(k)
+        rec = {"버킷": k, "일수": int(m0.sum()), "평균 체결노출": round(float(ex[m0].mean()), 4)}
+        for g, tag in (("하락", "하락"), ("상승", "상승")):
+            mg = m0 & grp.eq(g)
+            n = int(mg.sum()); tot = float(r[mg].sum()) * 100.0
+            exm = float(ex[mg].mean()) if n else np.nan
+            per = tot / n if n else np.nan
+            rec[f"{tag} 일수"] = n
+            rec[f"{tag} 기여(%p)"] = round(tot, 2)
+            rec[f"{tag} 일당(%p)"] = round(per, 4) if per == per else np.nan
+            rec[f"{tag} 노출당일당(%p)"] = round(per / exm, 4) if (per == per and exm and exm > 1e-9) else np.nan
+        dnu, upu = rec.get("하락 노출당일당(%p)"), rec.get("상승 노출당일당(%p)")
+        rec["비대칭(|하락|/상승)"] = (round(abs(dnu) / upu, 2)
+                                if (dnu == dnu and upu == upu and upu > 1e-9) else np.nan)
+        rows.append(rec)
+    out = pd.DataFrame(rows)
+    if len(out):
+        out = out.sort_values("비대칭(|하락|/상승)", ascending=False, na_position="last").reset_index(drop=True)
+    return out
+
+
 def user_rel_single(pos: pd.DataFrame, ret: pd.DataFrame, cfg) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """단일 예측(자산별 라이브 단독 노출 w, **체결** 기준)의 사용자 신뢰도 — 자산별 + 전 자산 합산(I 00D와 같은 산식)."""
     mm, md = tuple(getattr(cfg, "USER_REL_SEG_ASSET", (0.07, 3)))
@@ -9610,6 +9682,7 @@ def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
                 tab["ΔMDD(%p) vs 현행"] = ((tab["MDD"] - b["MDD"]) * 100).round(2)
             tab["높음까지 거리(%p)"] = ((np.maximum(0.0, hi[0] - tab["하락 회피율"]) + np.maximum(0.0, hi[1] - tab["상승 참여율"])) * 100).round(1)
             out["relcmp"] = {"enabled": True, "table": tab, "long": rc.get("long") or {}, "repro": rc.get("repro_max_diff"),
+                             "live_steps": rc.get("live_steps"), "live_neutral": rc.get("live_neutral"),
                              "haircut_days": rc.get("haircut_days"), "neutral_days": rc.get("neutral_days"),
                              "leader_days": rc.get("leader_days"), "m_approx_ok": rc.get("m_approx_ok", True)}
         except Exception as e:
@@ -9619,6 +9692,16 @@ def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
     out["msizing_ff"] = sres.get("msizing_ff") or (rc.get("msizing_ff") if isinstance(rc, dict) else None) or {}   # [v0.70.0 R89] 블록 G(I는 relcmp 경유)
     out["lowbeta_ff"] = sres.get("lowbeta_ff") or (rc.get("lowbeta_ff") if isinstance(rc, dict) else None) or {}   # [v0.71.0 R90] 블록 H
     out["neutral_fill"] = (dg.get("neutral_fill") or {})
+    # [v0.72.0 R91] 블록 J — 노란색(★)의 회피·참여 기여를 M 버킷으로 분해한다(어디서 새는지).
+    try:
+        _bk = dg.get("mbucket"); _ex = dg.get("mbucket_exposure")
+        if _bk is not None and _ex is not None and lp in bts:
+            out["mbucket"] = mbucket_decomp(bts[lp]["strategy_ret"], spy, _bk, _ex, cfg)
+            _offs = {l: bts[l]["strategy_ret"] for l in bts if "[버킷격자·진단]" in str(l)}
+            out["mbucket_off"] = (user_rel_portfolio({lp + " (라이브)": bts[lp]["strategy_ret"], **_offs}, spy, cfg)
+                                  if _offs else pd.DataFrame())
+    except Exception as e:
+        out["mbucket_err"] = f"{type(e).__name__}: {str(e)[:160]}"
     return out
 
 
@@ -9737,6 +9820,25 @@ def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[
                                                  else " ⇒ **반증 — 1999년 이후에만 통하는 규칙일 수 있다(되돌리기 NEUTRAL_LOWBETA_FILL=0)**"))}])
     elif lb.get("error"):
         _t("H. 중립일 저베타 채움 긴 이력 판정(R90)", [{"항목": "상태", "값": f"산출 실패 — {lb['error']}"}])
+    # ---- [v0.72.0 R91] 블록 J — 회피 부족분이 어느 M 버킷에서 나오는가 ----
+    _mb = pk.get("mbucket")
+    if isinstance(_mb, pd.DataFrame) and len(_mb):
+        _bj = "J. 회피 부족분 버킷 분해(R91 · 노출 1단위당 하락/상승 비대칭)"
+        _t(_bj, [{"항목": "읽는 법",
+                  "값": ("지그재그 구간 안의 일별 기여를 M 버킷으로 나눈 것이다(단순합 — 등급 숫자는 블록 B가 권위). "
+                        "**비대칭 = |하락 노출당일당| / 상승 노출당일당**: 클수록 '들고 있으면 손해인 날'이다. "
+                        "R91 진단은 이 표에서 나왔다 — 헤어컷 깊은 단계가 다른 버킷보다 자릿수로 나빴다. "
+                        "회피 부족은 섹터 '선택'이 아니라 '노출' 문제다(같은 노출에서 베타를 1로 맞춘 대용은 회피를 +0.9%p밖에 못 올린다). "
+                        "⚠ 구간은 사후 분할 — 판정에만 쓰고 신호에는 쓰지 않는다.")}])
+        parts.append(_mb.assign(블록=_bj)[["블록"] + [c for c in _mb.columns]])
+        _mo = pk.get("mbucket_off")
+        if isinstance(_mo, pd.DataFrame) and len(_mo):
+            parts.append(_mo.assign(블록=_bj + " · 버킷 노출 0 대조")[["블록"] + [c for c in _mo.columns]])
+        _t(_bj, [{"항목": "사전등록(R91)",
+                  "값": ("다음 라운드: 비대칭이 가장 큰 버킷이 바뀌면 그 버킷을 먼저 손본다. "
+                        "'버킷 노출 0' 대조 행은 그 버킷을 통째로 끈 상한이다 — 라이브는 그 사이 어딘가여야 한다.")}])
+    elif pk.get("mbucket_err"):
+        _t("J. 회피 부족분 버킷 분해(R91)", [{"항목": "상태", "값": f"산출 실패 — {pk['mbucket_err']}"}])
     df = pd.concat(parts, ignore_index=True, sort=False)
     lead = ["블록", "항목", "값"]
     return df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
@@ -9861,6 +9963,24 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
                     + " · 세부 00U 블록 H."))
     elif lb.get("error"):
         out.append(("⚠ R90 중립채움 긴 이력 판정", f"산출 실패 — {lb['error']}"))
+    # ---- [v0.72.0 R91] 노란색 줄 + 버킷 분해 요약 ----
+    _hs91 = tuple(sorted(tuple((rcp.get("live_steps") if isinstance(rcp, dict) else None)
+                               or getattr(getattr(M, "CFG", None), "EXTENSION_HAIRCUT_STEPS", ()) or ())))
+    if len(_hs91) == 2:
+        _isr91 = bool(abs(_hs91[0][1] - 0.6) < 1e-9 and abs(_hs91[1][1] - 0.0) < 1e-9)
+        out.append((f"★★★ 노란색({'S★' if layer == '섹터' else 'I★'} 라이브) — R91: 과열 헤어컷 단계 재조정(⚠ 위험 파라미터)",
+                    f"이격 ≥10% → {_hs91[0][1]:.1f} · ≥12% → {_hs91[1][1]:.1f}"
+                    + (" (= R91 라이브)" if _isr91 else " ⚠ R91 라이브(0.6/0.0)가 아니다 — m_overrides 확인")
+                    + ". 깊은 단계는 0으로(회피↑) · 얕은 단계는 R86 값 0.6으로 되돌림(참여↑). "
+                      "하네스 예상: 회피 66.9→68.3% · 참여 89.9→90.5% · 배수 17.25→18.09 · MDD 동일 · 평균 총노출 0.574→0.571(줄어든다). "
+                      "되돌리기: m_overrides={'EXTENSION_HAIRCUT_STEPS': ((0.10, 0.4), (0.12, 0.2))}. 세부 13 [헤어컷단계격자]."))
+    _mb91 = pk.get("mbucket")
+    if isinstance(_mb91, pd.DataFrame) and len(_mb91) and "비대칭(|하락|/상승)" in _mb91.columns:
+        _tp = _mb91.dropna(subset=["비대칭(|하락|/상승)"]).head(3)
+        out.append(("★★ R91 회피 부족분 버킷 분해(노출 1단위당 하락/상승 비대칭 · 사전등록)",
+                    " · ".join(f"{str(r['버킷'])} {r['비대칭(|하락|/상승)']:.2f}배({int(r['하락 일수'])}/{int(r['상승 일수'])}일)"
+                               for _, r in _tp.iterrows())
+                    + " ⇒ 비대칭 1위 버킷이 다음 라운드의 회피 손잡이다. 세부 00U 블록 J."))
     return out
 
 
@@ -10907,7 +11027,24 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     #   '상한 0.8이 최적'이라는 틀린 결론을 냈다"며 고친 바로 그 실수가 **다른 경로로 되살아나 있었다.**
     #   → 오버라이드 판정은 루프 전에 뜬 스냅샷(tier_cash0)으로만 하고, tier 라벨 변경은 ★에만 적용한다
     #     (반환되는 tier/13c 표시는 종전과 동일 = ★ 기준).
-    tier_cash0 = tier.eq("현금").copy()
+    # [v0.72.0 R91 ⚠ 정확성] '하락국면리더'는 **M이 하락이라 현금인 날**의 규칙이다(v0.15.0 사용자 지시:
+    #   "하락 예측 시에도 오를 섹터가 있으면 그걸로 거래"). R91에서 과열 헤어컷 바닥이 0이 되면서
+    #   **상승국면(RISK_ON)인데 과열로 E_t=0**인 날까지 tier가 '현금'이 됐다 — 그대로 두면 리더 규칙이
+    #   하락국면이 아닌 날에 발동한다(라이브 ★는 리더 0이라 무영향이지만 비교·격자 행이 틀어진다).
+    #   그래서 **과열 헤어컷 때문에 현금인 날은 뺀다**. 리더를 쓰지 않는 설정에서는 아무 변화가 없다.
+    _hc_cash0 = pd.Series(False, index=tier.index)
+    try:
+        _sg0 = res.get("sig") if isinstance(res, dict) else None
+        if _sg0 is not None and "extension_haircut" in _sg0.columns:
+            _hc_cash0 = (_sg0["extension_haircut"].reindex(tier.index).fillna(False).astype(bool)
+                         & (E.reindex(tier.index).fillna(0.0).astype(float) <= 1e-12))
+    except Exception as _e:
+        log("ROTATION", kv(event="leader_cash_mask_failed", err=str(_e)[:120]), M=M, level="warning")
+    tier_cash0 = (tier.eq("현금") & ~_hc_cash0).copy()
+    if bool(_hc_cash0.any()):
+        log("ROTATION", kv(event="r91_leader_cash_excl", haircut_cash_days=int(_hc_cash0.sum()),
+                           cash_days=int(tier.eq("현금").sum()), leader_cash_days=int(tier_cash0.sum()),
+                           note="과열 헤어컷으로 현금인 날은 하락국면리더 대상에서 제외"), M=M)
     # [v0.71.0 R90] 중립채움 준비 — 상태 NEUTRAL & 0 < E_t < 1 인 날(중립감축으로 E_t=0인 날은 제외: M의 위험 판단을 덮지 않는다)
     _nf_live = float(getattr(scfg, "NEUTRAL_LOWBETA_FILL", 0.0) or 0.0)
     _nf_pick_s = locals().get("_nf_pick")
@@ -11195,22 +11332,68 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _mid_live, _hi_live = float(_live_steps[0][1]), float(_live_steps[1][1])
             _mid_days = _eh & np.isclose(_ec, _mid_live)
             _hi_days = _eh & np.isclose(_ec, _hi_live)
+            _hc_days = _mid_days | _hi_days
             _E = E.reindex(eval_idx).astype(float)
             _base = target_ws[label_primary]
-            _LAD = ((1.0, 1.0, "off"), (0.9, 0.8, "E1"), (0.8, 0.6, "E3"), (0.7, 0.5, "E5"),
-                    (0.6, 0.4, "E7"), (0.5, 0.3, "E9"), (0.4, 0.2, "E11"))
+            # [v0.72.0 R91] 라이브 상한이 0.0까지 내려갈 수 있다(R91: ≥12%→0.0). 그날 ★ 비중은 0이라
+            #   "★ × (E'/E)" 비율법으로는 다른 상한을 **되만들 수 없다**(0으로 나눔). 두 가지로 고친다:
+            #     (a) M v1.59.0의 pos_pre_haircut으로 E' = min(헤어컷 전 목표, 상한)을 정확히 구하고,
+            #     (b) 그날 비중은 라이브 '분수'(_relcmp_fracs) × E'로 다시 만든다(헤어컷일만 · 나머지 날은 ★ 그대로 → 중립채움 보존).
+            _pre_g = _aft_g = None
+            if _sig is not None and {"pos_pre_haircut", "pos_post_haircut"} <= set(_sig.columns):
+                _pre_g = _sig["pos_pre_haircut"].reindex(eval_idx).astype(float)
+                _pst_g = _sig["pos_post_haircut"].reindex(eval_idx).astype(float)
+                _aft_g = (_E / _pst_g.where(_pst_g.abs() > 1e-12)).fillna(1.0)
+            _fr_live_g = _relcmp_fracs.get((round(float(getattr(scfg, "ROTATION_PRIMARY_CAP", 0.8) or 0.0), 4),
+                                            round(float(getattr(scfg, "ROTATION_SHELTER_DEFENSIVE", 0.0) or 0.0), 4)))
+            _exact_g = bool(_pre_g is not None and _fr_live_g is not None)
+            _LAD = [(1.0, 1.0, "off"), (0.9, 0.8, "E1"), (0.8, 0.6, "E3"), (0.7, 0.5, "E5"),
+                    (0.6, 0.4, "E7"), (0.5, 0.3, "E9"), (0.4, 0.2, "E11")]
+            # [v0.72.0 R91] 두 단계를 따로 움직이는 격자 — R91 진단의 핵심 축이다(얕은 단계는 참여, 깊은 단계는 회피).
+            _LAD += [(float(_a), float(_b), "R91격자") for _a, _b in tuple(getattr(scfg, "HAIRCUT_STEP_GRID", ()) or ())]
             for _m, _h, _nm in _LAD:
                 if abs(_m - _mid_live) < 1e-9 and abs(_h - _hi_live) < 1e-9:
                     continue                      # 라이브는 ★ 행이 이미 있다
                 _E2 = _E.copy()
-                _E2[_mid_days] = _m
-                _E2[_hi_days] = _h
-                _ratio = (_E2 / _E.replace(0.0, np.nan)).fillna(1.0)
-                _mh_variants[f"주력섹터 중심 · M헤어컷 {_nm}({_m:.1f}/{_h:.1f}) [M헤어컷격자·근사]"] = \
-                    _base.mul(_ratio, axis=0)
+                if _pre_g is not None:
+                    _E2[_mid_days] = np.minimum(_pre_g[_mid_days], _m) * _aft_g[_mid_days]
+                    _E2[_hi_days] = np.minimum(_pre_g[_hi_days], _h) * _aft_g[_hi_days]
+                else:
+                    _E2[_mid_days] = _m
+                    _E2[_hi_days] = _h
+                _tag = "[헤어컷단계격자]" if _nm == "R91격자" else "[M헤어컷격자·근사]"
+                _lbl = f"주력섹터 중심 · M헤어컷 {_nm}({_m:.1f}/{_h:.1f}) {_tag}"
+                if _exact_g:
+                    _row = _base.copy()
+                    _sub = _fr_live_g.reindex(index=eval_idx, columns=_base.columns).fillna(0.0)
+                    _row[_hc_days] = _sub[_hc_days].mul(_E2[_hc_days], axis=0)
+                    _mh_variants[_lbl] = _row
+                else:
+                    _ratio = (_E2 / _E.replace(0.0, np.nan)).fillna(1.0)
+                    _mh_variants[_lbl] = _base.mul(_ratio, axis=0)
             log("ROTATION", kv(event="m_haircut_grid", levels=len(_mh_variants),
-                               live=f"{_mid_live:.1f}/{_hi_live:.1f}",
+                               live=f"{_mid_live:.1f}/{_hi_live:.1f}", exact=_exact_g,
+                               zero_floor=bool(min(_mid_live, _hi_live) <= 1e-12),
                                mid_days=int(_mid_days.sum()), hi_days=int(_hi_days.sum())), M=M)
+            # [v0.72.0 R91 · 측정 전용] M 버킷 라벨 + 버킷별 '노출 0' 대조 행 — 00U 블록 J가 읽는다.
+            #   회피가 어디서 새는지는 버킷 단위로만 보인다(R91: 헤어컷 깊은 단계가 노출 1단위당 비대칭 7.7배).
+            _stt = (_sig["state"].reindex(eval_idx).astype(str) if (_sig is not None and "state" in _sig.columns)
+                    else pd.Series("?", index=eval_idx))
+            _bk = pd.Series("기타", index=eval_idx, dtype=object)
+            _bk[_E <= 1e-12] = "① M 끔(E=0)"
+            _bk[(_E > 1e-12) & (_E < 1.0 - 1e-12) & _stt.eq("NEUTRAL")] = "② 중립 부분"
+            _bk[_mid_days] = "③ 헤어컷 얕음(이격≥10%)"
+            _bk[_hi_days] = "④ 헤어컷 깊음(이격≥12%)"
+            _bk[_E >= 1.0 - 1e-12] = "⑤ M 켬(E=1)"
+            _mbucket = _bk
+            for _bn in ("② 중립 부분", "③ 헤어컷 얕음(이격≥10%)", "④ 헤어컷 깊음(이격≥12%)", "⑤ M 켬(E=1)"):
+                _msk = _bk.eq(_bn)
+                if not bool(_msk.any()):
+                    continue
+                _row0 = _base.copy(); _row0[_msk] = 0.0
+                _mh_variants[f"주력섹터 중심 · {_bn} 노출 0 [버킷격자·진단]"] = _row0
+            log("ROTATION", kv(event="m_bucket", **{f"n{i}": int(_bk.eq(v).sum()) for i, v in
+                                                    enumerate(sorted(set(_bk.dropna().tolist())))}), M=M)
     except Exception as _e:
         log("ROTATION", kv(event="m_haircut_grid_failed", err=str(_e)[:140]), M=M, level="warning")
     # ---- [v0.69.0 R88 ★★★] [회피참여비교] — 사용자 지시 "회피, 참여 둘다해서 비교해보면 되잖아" ----
@@ -11242,23 +11425,46 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     _ec_r = _rc_sig["ext_cap"].reindex(eval_idx).astype(float)
                 if "state" in _rc_sig.columns:
                     _mn = _rc_sig["state"].reindex(eval_idx).astype(str).eq("NEUTRAL") & ~_eh_r & (_Evr > 1e-12)
+            # [v0.72.0 R91] M v1.59.0이 주는 '헤어컷 전 목표비중'. 있으면 상한 0.0인 날도 정확히 되만든다.
+            _pre_r = _aft_r = None
+            _cols_sig = list(getattr(_rc_sig, "columns", []))
+            if _rc_sig is not None and "pos_pre_haircut" in _cols_sig and "pos_post_haircut" in _cols_sig:
+                _pre_r = _rc_sig["pos_pre_haircut"].reindex(eval_idx).astype(float)
+                _post_r = _rc_sig["pos_post_haircut"].reindex(eval_idx).astype(float)
+                # 헤어컷 **이후** 규칙들(레버리지·급락컷·재진입바닥·폭 조정)의 배수. 라이브에서 이 배수를 떼어 두면
+                #   다른 상한 c'의 E_t = min(헤어컷 전 목표, c') × 배수 로 정확히 되만들 수 있다(라이브 c'로 넣으면 항등).
+                _aft_r = (_Evr / _post_r.where(_post_r.abs() > 1e-12)).fillna(1.0)
+            log("RELCMP", kv(event="r91_pre_haircut", available=bool(_pre_r is not None),
+                             live_steps=";".join(f"{t:.2f}->{c:.2f}" for t, c in _live_steps_r),
+                             zero_floor=bool(any(float(c) <= 1e-12 for _, c in _live_steps_r))), M=M)
 
             def _E_for(steps_t, neutral_t):
-                """[v0.69.0 R88 → v0.70.0 R89 일반화] 라이브 M E_t → (헤어컷 사다리 steps_t · 중립 neutral_t)의 E_t.
-                   헤어컷 발동일은 (목표 상한 / 라이브 상한), 중립(비컷)일은 (목표 중립 / 라이브 중립) — 상태기계는 사이징과 무관(R88 합성 검증 차 0)."""
+                """[v0.69.0 R88 → v0.70.0 R89 일반화 → v0.72.0 R91 바닥 0 대응] 라이브 M E_t → (헤어컷 사다리 steps_t · 중립 neutral_t)의 E_t.
+                   중립(비컷)일은 (목표 중립 / 라이브 중립) 비율. 헤어컷 발동일은 둘 중 하나:
+                     (a) M이 pos_pre_haircut(v1.59.0 신설)을 주면 **E' = min(헤어컷 전 목표, 목표 상한)** — 정확(근사 아님).
+                     (b) 없으면 종전 비율법 (목표 상한 / 라이브 상한). ⚠ 라이브 상한이 0이면 비율을 만들 수 없어
+                         그 단계는 되만들 수 없다 → _m_approx_ok=False로 내려 리포트에 '근사 불가'를 적는다."""
                 nonlocal _m_approx_ok
                 _rt = pd.Series(1.0, index=eval_idx)
                 _st_t = tuple(sorted(tuple(steps_t or ())))
                 if _rc_sig is None or len(_st_t) != len(_live_steps_r):
                     _m_approx_ok = False
                     return _Evr.copy()
+                _E2 = _Evr.copy()
                 for (_tl, _cl), (_tt, _ct) in zip(_live_steps_r, _st_t):
                     _mh = _eh_r & pd.Series(np.isclose(_ec_r.values, float(_cl)), index=eval_idx)
-                    if float(_cl) > 0:
-                        _rt[_mh] = float(_ct) / float(_cl)
+                    if not bool(_mh.any()):
+                        continue
+                    if _pre_r is not None:
+                        _E2[_mh] = np.minimum(_pre_r[_mh].astype(float), float(_ct)) * _aft_r[_mh]
+                    elif float(_cl) > 0:
+                        _E2[_mh] = _Evr[_mh] * (float(_ct) / float(_cl))
+                    else:
+                        _m_approx_ok = False          # 라이브 상한 0 · M이 헤어컷 전 목표를 주지 않음
                 if _live_n > 0:
                     _rt[_mn] = float(neutral_t) / _live_n
-                return (_Evr * _rt).clip(lower=0.0, upper=1.0)
+                    _E2[_mn] = _Evr[_mn] * _rt[_mn]
+                return _E2.clip(lower=0.0, upper=1.0)
             for (_tl, _cl) in _live_steps_r:
                 _n_hc_r += int((_eh_r & pd.Series(np.isclose(_ec_r.values, float(_cl)), index=eval_idx)).sum())
             _n_neu_r = int(_mn.sum())
@@ -11343,6 +11549,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                              avg_E_live=round(float(_Evr.mean()), 4), avg_E_ref=round(float(_E_ref.mean()), 4),
                              sec=round(time.time() - _trc0, 2)), M=M)
             _relcmp_diag = {"enabled": True, "labels": _labels_r, "specs": _specs_r, "star": label_primary, "neutral_fill": _nf_live,
+                            "live_steps": _live_steps_r, "live_neutral": _live_n,   # [v0.72.0 R91] 00 노란색 줄이 읽는다
                             "repro_max_diff": _repro, "haircut_days": _n_hc_r, "neutral_days": _n_neu_r,
                             "leader_days": int(_dlm_all.sum()), "m_approx_ok": _m_approx_ok}
             if bool(getattr(scfg, "RELCMP_LONG_AUDIT", True)):
@@ -12181,6 +12388,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         "macro_evidence": _macro_diag,                                               # [v0.68.0 R86] 섹터 거시 근거(측정)
         "relcmp": _relcmp_diag,                                                      # [v0.69.0 R88] 회피형·참여형·양쪽형 비교
         "neutral_fill": _nf_diag,                                                    # [v0.71.0 R90] 중립 국면일 저베타 채움
+        "mbucket": (_mbucket if isinstance(locals().get("_mbucket"), pd.Series) else None),   # [v0.72.0 R91] 00U 블록 J
+        "mbucket_exposure": (target_ws[label_primary].sum(axis=1) if label_primary in target_ws else None),
         "label_alt": (label_topk if mode == "leader3" else label_leader),
         "label_own": (label_own if label_own in bts else None), "spy_m": spy_m,          # [v0.7.0]
         "label_score": (label_score if label_score in bts else None),                   # [v0.8.0]

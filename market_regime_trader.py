@@ -22,6 +22,19 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.59.0 - 2026-09-23 - [R91 ⚠⚠ 위험 파라미터: 과열 헤어컷 단계 재조정 ((0.10,0.6),(0.12,0.0)) — 회피 손잡이]
+#    사용자 지시(2026-09-23 · 리포트 m11·s19·i37): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정".
+#    시작 v1.58.2 → 목표 v1.59.0. S v0.72.0 · I v0.44.0과 한 묶음이다.
+#    ── 이번 리포트 판정 ── S★ 66.9%·90.0%(중간) · I★ 65.8%·93.0%(중간) · M 76.4%·63.9%(낮음).
+#      R90 중립채움이 예측대로 작동했다(하네스 66.9/90.2 → 엔진 66.9/90.0). **두 계층 모두 참여 기준을 넘겼고 남은 부족분은 회피뿐이다**
+#      (S 3.1%p · I 4.2%p). 사전등록 블록 H는 중립채움을 반증했으나(1927~49 −0.78 · 1950~98 −3.00%p) 사용자가 **유지**를 선택했다.
+#    ── 진단(r91/) ── 회피 부족은 **섹터 선택이 아니라 노출 문제**다: 같은 노출에서 베타를 정확히 1로 맞춘 대용은 회피를 +0.9%p밖에 못 올린다.
+#      노출 1단위당 하락/상승 비대칭: 헤어컷일 **7.7배** ≫ E=1일 1.38배 ≈ 중립일 1.05배. 헤어컷일 안에서도 이격 ≥12%일(262일)이 손실의 대부분.
+#    ── 이번 변경(⚠ 위험 파라미터 1개) ── EXTENSION_HAIRCUT_STEPS ((0.10,0.4),(0.12,0.2)) → ((0.10,0.6),(0.12,0.0)).
+#      깊은 단계는 0으로(회피↑), 얕은 단계는 R86 값 0.6으로 되돌림(참여↑). 하네스: 회피 +1.45 · 참여 +0.58 · 배수 +0.84 · MDD 동일 ·
+#      평균 총노출 0.5743 → 0.5712(**줄어든다**). ⚠ 되돌리기: m_overrides={"EXTENSION_HAIRCUT_STEPS": ((0.10, 0.4), (0.12, 0.2))}.
+#    ── 로그 ── [CONFIG] event=r91_sizing is_r91=True changed_vs_r88=True (시작 시 1회 · 전후 기준값 함께 표기).
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.58.2 - 2026-09-23 - [R90 동반 버전 표 갱신(표시·로그 전용) — 신호·비중·사이징 무변경]
 #    시작 v1.58.1 → 목표 v1.58.2. COMPANION_MIN_VERSIONS를 R90 묶음(S v0.71.0 · I v0.43.0 · K v0.8.0)으로 올렸다.
 #    이유: R90 라이브 변화는 S(중립 국면일 남는 현금 → 최저베타 섹터)에 있다. 표를 안 올리면 사용자가 S·I만 예전 파일로
@@ -3528,7 +3541,19 @@ class Config:
     # [v1.58.0 R88 ⚠⚠ 위험 파라미터] E7 ((0.10,0.6),(0.12,0.4)) → **E11 ((0.10,0.4),(0.12,0.2))** — 사용자 신뢰도 '회피' 손잡이.
     #   이격 ≥12% RISK_ON일(엔진 s16 262일)의 다음날 SPY는 상승구간 합 +17.4 < 하락구간 합 −24.5 → 더 줄이는 쪽이 회피·칼마 모두 낫다.
     #   S [M헤어컷격자] E11 행 엔진 실측: 회피 +4.0%p · 참여 −2.2%p · 배수 +5% · 칼마 +0.09 · MDD 동일. 되돌리기: m_overrides={"EXTENSION_HAIRCUT_STEPS": ((0.10, 0.6), (0.12, 0.4))}
-    EXTENSION_HAIRCUT_STEPS: Tuple[Tuple[float, float], ...] = ((0.10, 0.4), (0.12, 0.2))   # [v1.58.0 R88] E7→E11 · [v1.47.0] E3→E7
+    # [v1.59.0 R91 ⚠⚠ 위험 파라미터] E11 ((0.10,0.4),(0.12,0.2)) → **((0.10,0.6),(0.12,0.0))** — 두 단계를 반대로 조정한다.
+    #   진단(r91 · 엔진 s19 재현): M 버킷을 노출 1단위당 수익으로 나누면 **헤어컷일(상승국면·부분노출)만 비대칭이 7.7배**다
+    #     (하락구간 −0.815/일·노출 vs 상승구간 +0.106/일·노출). 중립일 1.05배 · E=1일 1.38배와 자릿수가 다르다.
+    #   그 안에서 다시 나누면 **깊은 헤어컷일(이격 ≥12% · 262일)이 손실의 대부분**이다 → 그 단계만 0으로 내린다.
+    #   얕은 단계(≥10%)는 반대로 0.4가 과했다 → R86 값 0.6으로 되돌린다(참여 회수).
+    #   엔진 s19 하네스(재현 확인 · 최대차 0.005): 회피 66.87→**68.32%** · 참여 89.93→**90.51%** · 배수 17.25→**18.09** · MDD −9.75%(동일).
+    #     세 지표가 모두 좋아지고 평균 총노출은 0.5743→0.5712로 오히려 **줄어든다**(노출 증가가 아니다).
+    #   ⚠ 긴 이력(FF 월별 1927~2018 · r91/ffm91.py) Δ(회피+참여) vs 라이브: 1927~49 −0.93 · 1950~98 +0.06 · 1999~2018 +0.41%p.
+    #     1950년 이후 두 구간은 중립~플러스지만 1927~49는 마이너스다. 엔진 00U 블록 G가 일별로 다시 판정한다.
+    #   ⚠ 사용자 결정(2026-09-23): 블록 G가 헤어컷 자체를 두 라운드 연속 반증했으나 **1999년 이후 기준으로 유지**를 선택했다.
+    #   ⚠ 되돌리기(한 줄): m_overrides={"EXTENSION_HAIRCUT_STEPS": ((0.10, 0.4), (0.12, 0.2))} ⇒ v1.58.2와 비트 동일.
+    #     R86까지 되돌리려면 ((0.10, 0.6), (0.12, 0.4)) + POS_NEUTRAL 0.5.
+    EXTENSION_HAIRCUT_STEPS: Tuple[Tuple[float, float], ...] = ((0.10, 0.6), (0.12, 0.0))   # [v1.59.0 R91] · [v1.58.0] E7→E11 · [v1.47.0] E3→E7
     EXTENSION_HAIRCUT_SMOOTH: int = 5       # 이격도 이동평균 창(거래일). 1이면 당일값
     # [v1.21.0 §C] 레버리지 사다리(규칙 ⑪) — **기본 비활성(⚠ 위험 파라미터, 사용자 명시 승인 후에만 켤 것)**.
     # 사용자 목표 "B&H 총수익의 2배 이상"의 달성 가능성 분석(IMPROVEMENT_PLAN_v1.21.md §C): 비중 상한 1.0의 롱온리
@@ -7703,7 +7728,15 @@ def generate_signals(score_pct: pd.Series, trend200: pd.Series, cfg: Config = CF
         for thr, cap in sorted(cfg.EXTENSION_HAIRCUT_STEPS, key=lambda x: x[0]):
             ext_cap[ext_s.notna() & (ext_s >= thr)] = float(cap)
     ext_hit = out["state"].eq("RISK_ON") & (ext_cap < out["target_pos"] - 1e-12)
+    # [v1.59.0 R91 · 측정 전용] 헤어컷 적용 **전** 목표비중을 남긴다. 상한이 0.0까지 내려갈 수 있게 되면서(R91)
+    #   섹터 층이 "라이브 E_t × 비율"로 다른 헤어컷 상한의 E_t를 되만들 수 없게 됐다(0으로는 나눌 수 없다).
+    #   이 열이 있으면 대안 상한 c'의 E_t = min(pos_pre_haircut, c')로 **정확히** 계산된다(근사 아님).
+    #   신호·비중 무영향 — out["target_pos"]는 아래에서 종전과 똑같이 정해진다.
+    out["pos_pre_haircut"] = out["target_pos"].astype(float)
     out.loc[ext_hit, "target_pos"] = ext_cap[ext_hit]
+    # 헤어컷 **직후** 값(규칙 ⑪ 레버리지·급락컷·재진입바닥·폭 조정 등 뒤 규칙이 붙기 전). 섹터 층은
+    #   이후 규칙의 배수 = target_pos(최종) / pos_post_haircut 를 이 두 열로 정확히 분리한다.
+    out["pos_post_haircut"] = out["target_pos"].astype(float)
     out["extension_haircut"] = ext_hit
     out["ext_cap"] = ext_cap
 
@@ -8623,6 +8656,8 @@ def threshold_sensitivity(score_pct: pd.Series, trend200: pd.Series, price: pd.D
                     (True, ((0.10, 0.4), (0.12, 0.2)), cfg.EXTENSION_HAIRCUT_SMOOTH, "E11: ≥10%→0.4, ≥12%→0.2"),  # [v1.45.0 §B] 채택값 너머
                     (True, ((0.10, 0.3), (0.12, 0.1)), cfg.EXTENSION_HAIRCUT_SMOOTH, "E13: ≥10%→0.3, ≥12%→0.1"),  # [v1.45.0 §B]
                     (True, ((0.10, 0.5), (0.12, 0.0)), cfg.EXTENSION_HAIRCUT_SMOOTH, "E9-바닥0: ≥10%→0.5, ≥12%→0.0"),  # [v1.45.0 §B] 극단 케이스 — 사다리가 0까지 가도 좋은가
+                    (True, ((0.10, 0.6), (0.12, 0.0)), cfg.EXTENSION_HAIRCUT_SMOOTH, "R91: ≥10%→0.6, ≥12%→0.0"),      # [v1.59.0 R91] 라이브
+                    (True, ((0.10, 0.6), (0.12, 0.2)), cfg.EXTENSION_HAIRCUT_SMOOTH, "R91 이웃: ≥10%→0.6, ≥12%→0.2"),  # [v1.59.0 R91] 깊은 단계만 되돌린 행
                     (True, ladder, cfg.EXTENSION_HAIRCUT_SMOOTH, "사다리: ≥10.5%부터 0.5%p당 -0.1(바닥 0.4)"),
                     (True, ((0.10, 0.8), (0.12, 0.6)), 1, "E3 평활 없음(당일값)")]
         for use, steps, sm, label in eh_cases:
@@ -9736,12 +9771,16 @@ def run(cfg: Config = CFG) -> dict:
                     signal_start=cfg.SIGNAL_START, exec_mode=cfg.EXEC_MODE,
                     cost_bps=cfg.COST_BPS, seed=cfg.RANDOM_SEED, self_test=cfg.SELF_TEST,
                     use_hazard_track=cfg.USE_HAZARD_TRACK))
-    # [v1.58.0 R88] 위험 파라미터(사이징) 현재값을 시작 시 1회 남긴다 — 되돌리기(m_overrides)가 실제로 적용됐는지 로그로 확인.
-    log("CONFIG", kv(event="r88_sizing", bundle=BUNDLE_VERSION, pos_neutral=cfg.POS_NEUTRAL,
-                     haircut=";".join(f"{t:.2f}->{c:.2f}" for t, c in (cfg.EXTENSION_HAIRCUT_STEPS or ())),
+    # [v1.58.0 R88 · v1.59.0 R91] 위험 파라미터(사이징) 현재값을 시작 시 1회 남긴다 — 되돌리기(m_overrides)가 실제로 적용됐는지 로그로 확인.
+    _hc_now = tuple((round(float(t), 4), round(float(c), 4)) for t, c in (cfg.EXTENSION_HAIRCUT_STEPS or ()))
+    log("CONFIG", kv(event="r91_sizing", bundle=BUNDLE_VERSION, pos_neutral=cfg.POS_NEUTRAL,
+                     haircut=";".join(f"{t:.2f}->{c:.2f}" for t, c in _hc_now),
+                     r91_ref="0.10->0.60;0.12->0.00", r88_ref="0.10->0.40;0.12->0.20",
                      r86_ref="pos_neutral=0.50 haircut=0.10->0.60;0.12->0.40",
-                     changed=bool(abs(float(cfg.POS_NEUTRAL) - 0.5) > 1e-12
-                                  or tuple(cfg.EXTENSION_HAIRCUT_STEPS or ()) != ((0.10, 0.6), (0.12, 0.4)))))
+                     is_r91=bool(_hc_now == ((0.10, 0.6), (0.12, 0.0))),
+                     changed_vs_r88=bool(_hc_now != ((0.10, 0.4), (0.12, 0.2))),
+                     changed_vs_r86=bool(abs(float(cfg.POS_NEUTRAL) - 0.5) > 1e-12
+                                         or _hc_now != ((0.10, 0.6), (0.12, 0.4)))))
     _ensure_cache_dir(cfg)
     quality: List[dict] = []
     fred_diag: List[dict] = []   # [v1.3.0 §2] 제외된 FRED 시리즈의 사유/시도경로 (10_데이터품질에 노출)
@@ -11589,13 +11628,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.58.2"
+BUNDLE_VERSION = "v1.59.0"
 BUNDLE_VERSION_DATE = "2026-09-23"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.71.0", "industry_rotation": "v0.43.0", "stock_regime": "v0.8.0"}
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.72.0", "industry_rotation": "v0.44.0", "stock_regime": "v0.8.0"}
 
 
 def companion_version_note() -> str:
