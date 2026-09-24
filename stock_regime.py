@@ -1,5 +1,13 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.9.1 - 2026-09-24 - [R95 비교 행: S 'R95 규칙 없음' 섹터 비중으로 같은 섹터연동 — K 배분·규칙 무변경]
+#    사용자 지시(2026-09-24): "4개 층 모두다 회피 더 많이 올려봐 그대신 참여는 떨어지면 절대 안돼". 시작 v0.9.0 → 목표 v0.9.1.
+#    K★의 변화는 M v1.63.0 사이징 오버레이 → S★ 섹터 비중에서 온다(K 코드는 배분 무변경).
+#    (§1) _resolve_industry_alloc이 I v0.47.0 통로의 sector_w_variants를 싣는다 → run()이 그 섹터 비중으로 sector_linked를 한 번 더 돌려
+#         13 격자 '비교: 섹터연동 × S …' 행 · 00U 비교 행으로 싣는다(측정 전용) — K 층에서도 '회피↑·참여 ≥0'을 같은 잣대로 본다.
+#    (§2) 00 '★★★ R95 라이브 — … K★' 줄: K★ vs 비교 행 Δ회피·Δ참여 · MDD · ✓/⚠(사용자 조건) · 되돌리기 · 로그 [REL] event=k_r95_compare.
+#    시험: t95/test_k091.py(항등 변형 = 라이브 비트 동일 · 0.8배 변형 노출 0.8배 · 변형 없으면 행 없음).
+#    오프라인 예상(r95/final95.py): K★ 71.3/88.1 → 75.1/90.4(높음). 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.9.0 - 2026-09-24 - [R94 ★★ 주식층 신뢰도 개선: 섹터연동 배분(sector_linked) · ★ 포트 체결 규칙 교정(t+1 시가) · 00U 사용자 신뢰도]
 #    사용자 지시(2026-09-24): "잠깐만 주식층도 같이 개선해"(앞 지시: 신뢰도 높음 · 묻지 말고 권장으로). 시작 v0.8.1 → 목표 v0.9.0.
 #    ── 진단(stock_regime_report_v0.8.1 · r94/hK94.py가 엔진 배수 8.6517을 정확히 재현) ──
@@ -423,7 +431,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.9.0"
+VERSION = "v0.9.1"
 VERSION_DATE = "2026-09-24"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -2148,7 +2156,8 @@ def _resolve_industry_alloc(cfg: StockConfig, parent_w: Optional[pd.DataFrame] =
     info["rf_daily"] = bool(isinstance(_rfd, pd.Series) and len(_rfd))
     return {"industry_w": iw, "parent_w": pw, "ind2sec": dict(H.get("parent_of") or {}),
             "coupling_score": _cs, "label": str(H.get("label", "-")),
-            "rf_daily": (_rfd if isinstance(_rfd, pd.Series) and len(_rfd) else None)}, info
+            "rf_daily": (_rfd if isinstance(_rfd, pd.Series) and len(_rfd) else None),
+            "sector_w_variants": dict(H.get("sector_w_variants") or {})}, info     # [v0.9.1 R95] S 비교 행 섹터 비중
 
 
 def _industry_tilt_weights(solo: pd.DataFrame, live: pd.DataFrame, idx: pd.DatetimeIndex,
@@ -3172,6 +3181,30 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _grid_rets[_lab_c] = alloc["port_ret_close"]
     except Exception as e:
         log("ALLOC", kv(event="alloc_close_fill_row_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+    # [v0.9.1 R95 · 측정 전용] S 비교 행의 섹터 비중(예: 'R95 규칙 없음(= R94 M)')으로 **같은 섹터연동**을 돌린 K 비교 행.
+    #   라이브와 다른 것은 섹터 비중(= M E_t 차이)뿐 — K 층에서도 '회피↑·참여 ≥0'을 같은 잣대로 본다(00U).
+    if ind_alloc and str(alloc.get("mode")) == "sector_linked":
+        for _vn, _vw in dict(ind_alloc.get("sector_w_variants") or {}).items():
+            try:
+                _vw = pd.DataFrame(_vw).apply(pd.to_numeric, errors="coerce").fillna(0.0)
+                _vw.index = pd.DatetimeIndex(_vw.index)
+                _secs = [c for c in _vw.columns if c in SECTOR_ETFS or c in set(dict(ind_alloc.get("ind2sec") or {}).values())]
+                _iav = {"industry_w": pd.DataFrame(index=_vw.index), "parent_w": _vw[_secs],
+                        "ind2sec": dict(ind_alloc.get("ind2sec") or {}), "rf_daily": ind_alloc.get("rf_daily"),
+                        "label": f"S 비교 행 {_vn}"}
+                _va = build_allocation(pos, panel, cfg, mode="sector_linked", parent_w=parent_w, parent_of=parent_of,
+                                       ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)))
+                _vl = f"비교: 섹터연동 × S '{_vn}' 섹터 비중(측정 전용)"
+                _vr = _alloc_row(_vl, _va, float(alloc.get("cap_used", 0.05)), None)
+                if _vr:
+                    _vr.update({"연동출처": f"S 비교 행 {_vn}"})
+                    alloc_rows.append(_vr)
+                    _grid_rets[_vl] = _va.get("port_ret")
+                log("ALLOC", kv(event="k_variant_row", variant=str(_vn)[:40], sectors=len(_secs),
+                                total_mean=round(float(_va["total_w"].mean()), 4), live_total_mean=round(float(alloc["total_w"].mean()), 4)))
+            except Exception as e:
+                log("ALLOC", kv(event="k_variant_row_failed", variant=str(_vn)[:40], err=type(e).__name__, msg=str(e)[:120]),
+                    level="warning")
     if ind_alloc:
         _has_cs = isinstance(ind_alloc.get("coupling_score"), pd.DataFrame) and len(ind_alloc.get("coupling_score"))
         if _has_cs:
@@ -3275,7 +3308,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _cmp_lbls = [str(x[0]) for x in tuple(getattr(cfg, "PROB_TILT_GRID", ()) or ())[:1]] + \
                             ["고정슬리브 1/N(v0.6.0 라이브)"] + \
                             [str(x[0]) for x in tuple(getattr(cfg, "SECTOR_LINK_GRID", ()) or ())] + \
-                            [k for k in _grid_rets if str(k).startswith("참고: 라이브 배분을 v0.8.1 체결")]
+                            [k for k in _grid_rets if str(k).startswith("참고: 라이브 배분을 v0.8.1 체결")] + \
+                            [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 × S")]
                 for _lb in _cmp_lbls:
                     _rr = _grid_rets.get(_lb)
                     if _rr is not None and _lb != _live_alloc_label:
@@ -3798,6 +3832,26 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                          "④ 섹터연동 상한5% 칼마 ≥ 상한0%(S★ ETF만) 칼마 − 0.3(종목 대체가 위험조정을 크게 해치지 않는다). "
                          "①~③ 미통과 → k_overrides={'STOCK_ALLOC_MODE': 'prob_tilt'} · ④만 미통과 → SECTOR_LINK_STOCK_CAP 0.0 검토. "
                          "오프라인 예상(정직한 기준선): K★ 69.2/91.9(중간) · 칼마 3.88 · MDD −10.4 vs 종전 82.3/67.6(낮음) · 칼마 3.26."))
+        # ---- [v0.9.1 R95 ★★★] K★ vs 'R95 규칙 없음' 비교 행(같은 섹터연동 · 섹터 비중만 R94 M) — 회피↑·참여 ≥0 확인 ----
+        if _ui.get("ok") and isinstance(_ur, pd.DataFrame) and len(_ur):
+            _vr95 = _ur[_ur["전략"].astype(str).str.startswith("비교: 섹터연동 × S 'R95 규칙 없음")]
+            if len(_vr95):
+                _t0 = _ur.iloc[0]; _v0 = _vr95.iloc[0]
+                _da = (float(_t0["하락 회피율"]) - float(_v0["하락 회피율"])) * 100.0
+                _dp = (float(_t0["상승 참여율"]) - float(_v0["상승 참여율"])) * 100.0
+                _okk = (_da >= -1e-9) and (_dp >= -1e-9)
+                _add.append(("★★★ R95 라이브 — M 사이징 오버레이 3개가 K★에 준 효과(같은 섹터연동 · 섹터 비중만 다름)",
+                             f"K★ 규칙 없음(= R94 M) {float(_v0['하락 회피율']):.1%}/{float(_v0['상승 참여율']):.1%}({_v0['등급']}) → "
+                             f"K★ {float(_t0['하락 회피율']):.1%}/{float(_t0['상승 참여율']):.1%}({_t0['등급']}) · "
+                             f"Δ회피 {_da:+.2f}%p · Δ참여 {_dp:+.2f}%p · MDD {float(_v0['MDD']) * 100:.2f}→{float(_t0['MDD']) * 100:.2f}% · "
+                             + ("✓ 사용자 조건(회피↑ · 참여 떨어지지 않음) 충족" if _okk else
+                                "⚠ 사용자 조건 미충족 — M 00·S 00 'R95' 줄과 함께 보고 되돌리기 검토")
+                             + " · 오프라인 예상 71.3/88.1 → 75.1/90.4. 되돌리기(M에서): m_overrides={'R95_STRESS_EXIT': False, "
+                             "'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. 연구·교육용, 투자 자문 아님."))
+                log("REL", kv(event="k_r95_compare", d_avoid=round(_da, 2), d_part=round(_dp, 2), ok=_okk))
+            else:
+                _add.append(("★★★ R95 라이브 — K★ 비교", "비교 행 없음 — I 통로에 S 'R95 규칙 없음' 섹터 비중이 없다"
+                             "(M < v1.63.0 · S < v0.76.0 · I < v0.47.0 이거나 R95 오버레이 꺼짐)"))
         if I is not None and hasattr(I, "single_live_verdict_line"):
             _add.append(("★ 단일 종목 라이브 예측 vs B&H(하락 회피·상승 참여)",
                          str(I.single_live_verdict_line(sheets)).replace("(산업 합)", "(종목 합)")))

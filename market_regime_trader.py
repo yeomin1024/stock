@@ -22,6 +22,38 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.63.0 - 2026-09-24 - [R95 ⚠⚠ 신호(사이징) 변경: 회피↑·참여 유지 오버레이 3개 — 스트레스 청산 · 반등 재진입 · 깊은 헤어컷 시한]
+#    사용자 지시(2026-09-24 · 리포트 m v1.62.1 · s v0.75.1 · i v0.46.0 · k v0.9.0): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 …",
+#      이어서 "계속 진행하고 4개 층 모두다 회피 더 많이 올려봐 그대신 참여는 떨어지면 절대 안돼". 시작 v1.62.1 → 목표 v1.63.0.
+#    ── 이번 리포트 판정(첫 정직 기준선 · R94 재추정 지표 제외 적용) ──
+#      M 78.4/60.1(낮음) · S★ 70.7/83.5(중간 · 높음까지 6.5%p) · I★ 70.9/87.5(중간 · 2.5%p) · K★ 71.4/88.1(중간 · 1.9%p · R94 사전등록 ①~④ 통과).
+#      R94 예상(S★ 69.2/87.8)보다 참여가 4%p 낮았다 — 워크포워드 재선택으로 M이 상승장에서 더 방어적이 됐다(R94 대비 M 상승구간 기여 −17%p:
+#      2018-04~09 · 2023 · 2024 구간). 중립감축(H>70% → 0)이 NFCI가 빠진 H에서 더 자주 켜진다.
+#    ── 진단(r95/seg95·bucket95.py · 하네스가 네 층 엔진 곡선을 재현: S 14.7071 = 엔진 · I 18.17 · K 17.17 · M 6.64) ──
+#      버킷별 SPY 기여(하락구간 / 상승구간): E=1 −54.2/+204.6 · 위험회피 E=0 −117.7/+86.9 · 중립감축 E=0 −53.5/+35.5 ·
+#      깊은 헤어컷 E=0 −24.2/+22.4 · 중립 0.6 −21.9/+29.5 · 얕은 헤어컷 0.55 −16.9/+19.3. 한 손잡이만 움직이면 프런티어 위 이동(균등 0.9배:
+#      회피 +2.4~2.9 · 참여 −5.9~−8.8%p). → **정보가 있는 날만** 움직이는 규칙 두 종류를 짝지었다(회피 규칙이 잃는 참여를 참여 규칙이 되찾는다).
+#    (§1 ⚠⚠) apply_r95_overlays() — generate_signals() 뒤 **SPY 라이브 신호에만**(S·I 섹터·산업 국면 모형은 무변경):
+#      (A) 부분 노출(0<E<1)일 & (급락트리거 백분위 > 0.875 | SPY 5/63일 변동성 비 > 1.75) → 0
+#      (P1) 위험회피 E=0일(깊은 헤어컷·중립감축 아님) & (20일 종가 신고가 | 10일 +5%) → 0.6
+#      (P2) 깊은 헤어컷(이격 ≥12% → 0)이 25일 넘게 이어지면 → 0.55
+#      pos_pre_r95 열(적용 전) · r95_* 발동 플래그 · 01 시트 '스트레스청산(R95-A)'·'반등재진입(R95-P1)'·'깊은헤어컷시한(R95-P2)'·'R95 전 목표비중'.
+#      로그 [SIGNAL] event=r95_overlays(발동 일수 · 평균 목표비중 전후). 실패하면 오버레이 없이 계속(00에 표시).
+#    (§2) 오프라인(r95/final95.py · 엔진 함수가 오프라인 결정을 차 0으로 재현 — r95/enginerepro95.py):
+#      M 78.4/60.1 → 80.1/61.1 · S★ 70.7/83.5 → 74.1/84.7 · I★ 71.0/87.6 → 74.2/89.5 · K★ 71.3/88.1 → 75.1/90.4
+#      = **네 층 모두 회피 +1.8~+3.8%p · 참여 +1.0~+2.3%p** · MDD 불변 · 배수·칼마 전부 ↑.
+#      강건성: 앞(~2021)/뒤(2022~) 반쪽 · 연도 잭나이프 9회 전부 네 층 회피 ≥0 · 참여 ≥0. 문턱 주변 162칸 중 강건 통과 17칸이
+#      FT 0.85~0.9 · 변동성비 1.75 · 시한 20~30 · 재진입 0.6~0.75의 한 고원 → 그 중앙(0.875 · 25일 · 0.6)을 골랐다.
+#    ⚠ 표본 안 규칙이다 → S v0.76.0 00U 블록 K '[R95 긴 이력]'(1993~2017 · M 자신의 신호 × SPY)이 사전등록 판정:
+#      전체 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 두 반쪽 Δ(회피+참여) ≥ −1%p — 미통과면 다음 라운드 되돌림. (FT는 2018~만 있어 그 전 (A)는 변동성 비로만.)
+#    ⚠ 되돌리기(한 줄): m_overrides={"R95_STRESS_EXIT": False, "R95_REBOUND_REENTRY": False, "R95_DEEP_HAIRCUT_MAX_DAYS": 0}.
+#    (§3) 새 Config 10필드는 CACHE_KEY_IGNORE_FIELDS(정본)·S 폴백 양쪽에(교훈 31) — 검증·워크포워드·섹터 모형과 무관한 사후 오버레이라
+#         캐시를 깨지 않는다. 06c 격자 행에는 오버레이가 없다(라이브 ★만 · 00 줄에 표시).
+#    (§4) 계층 버전 점검: sys.modules의 K가 예전 셀의 낡은 모듈일 수 있어(R95 리포트: K v0.9.0이 돌았는데 v0.8.1로 표시) **디스크 파일의 VERSION**을
+#         우선 읽는다(runner load_module은 파일에서 다시 적재하므로 파일이 권위). 파일 없는 모듈은 적재된 VERSION · 미적재 모듈은 M과 같은
+#         폴더의 파일('아직 미적재' 표시) · 동반 모듈이 하나도 없으면 '점검 생략' + 같은 폴더 파일 버전(R89 시험 1-2·1-3 유지).
+#         01 '과열헤어컷(E)' 표기 :g(0.55가 0.6으로 보였다).
+#    (§5) 동반 버전 표 S v0.76.0 · I v0.47.0 · K v0.9.1. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.62.1 - 2026-09-24 - [R94 추가 — 동반 버전 표만: S v0.75.1 · I v0.46.0(K 통로 rf) · K v0.9.0(섹터연동 · 포트 t+1 시가 체결) — 신호·비중 무변경]
 #    사용자 지시(2026-09-24): "잠깐만 주식층도 같이 개선해". 시작 v1.62.0 → 목표 v1.62.1. '계층 버전 점검' 줄이 K v0.9.0 미만을 잡는다.
 #    연구·교육용이며 투자 자문이 아니다.
@@ -2919,6 +2951,31 @@ class Config:
     #   덤: NFCI는 매주 과거 전체가 바뀌어 모든 경계 캐시 지문을 매주 깨뜨렸다 — 빼면 캐시가 주간 개정에 살아남는다.
     #   ⚠ 되돌리기(한 줄): m_overrides={"EXCLUDE_REVISED_HISTORY": False} ⇒ v1.61.0과 같은 신호.
     EXCLUDE_REVISED_HISTORY: bool = True
+    # [v1.63.0 R95 ⚠⚠ 신호(사이징) 변경 — 사용자 지시 "4개 층 모두 회피 더 많이 올려 · 참여는 절대 떨어지면 안 돼"]
+    #   generate_signals()가 끝난 **SPY 라이브 신호에만** 붙는 사이징 오버레이 3개(apply_r95_overlays).
+    #   S·I의 섹터·산업 국면 모형(cfg_i로 generate_signals를 부름)에는 붙지 않는다 → 그 캐시·신호는 무변경(무시 목록).
+    #   (A) 스트레스 청산: 부분 노출(0<E_t<1 · 중립 0.6 · 얕은 헤어컷 0.55)인 날 급락트리거 백분위 > 0.875 또는
+    #       SPY 5일/63일 변동성 비 > 1.75 → 0(현금). 이미 조심하는 날 단기 스트레스가 확인되면 비운다.
+    #   (P1) 반등 재진입: E_t=0(위험회피 · 헤어컷·중립감축 아님)인 날 SPY가 20일 종가 신고가이거나 10일 수익 > +5% → 0.6(중립).
+    #        거시 점수가 늦어 반등 초입을 놓치던 자리(R88: 놓친 상승 대부분이 E=0일)를 가격 확인으로 메운다.
+    #   (P2) 깊은 헤어컷 시한: 이격 ≥12%로 E_t=0인 날이 25일을 넘기면 0.55(얕은 헤어컷 값). 과열 직후의 급락 위험은 초기에 몰리고,
+    #        오래 버티는 과열은 강한 추세였다(2021 · 2024).
+    #   오프라인(r95/final95.py · 엔진 하네스 = 엔진 곡선 재현 · 정직한 기준선 R95 리포트):
+    #     M 78.4/60.1 → 80.1/61.1 · S★ 70.7/83.5 → 74.1/84.7 · I★ 71.0/87.6 → 74.2/89.5 · K★ 71.3/88.1 → 75.1/90.4(높음)
+    #     = 네 층 모두 회피 +1.8~+3.8%p · 참여 +1.0~+2.3%p · MDD 불변 · 칼마 전부 ↑. 앞/뒤 절반 · 연도 잭나이프(9회) 전부 회피 ≥0 · 참여 ≥0.
+    #     문턱 주변 18/22 변형이 같은 결론(FT 0.85~0.9 · 변동성비 1.75 · 시한 20~30일 고원 · 0.875는 고원 중앙).
+    #   ⚠ 표본 안(2018~) 규칙이다 → S 00U '[R95 긴 이력]' 블록(1993~2017 SPY · M 자체 신호)으로 사전등록 판정(미통과면 되돌림).
+    #   ⚠ 되돌리기(한 줄): m_overrides={"R95_STRESS_EXIT": False, "R95_REBOUND_REENTRY": False, "R95_DEEP_HAIRCUT_MAX_DAYS": 0}
+    R95_STRESS_EXIT: bool = True
+    R95_STRESS_FT_PCT: float = 0.875          # 급락트리거(VIX 기간구조) 자기이력 백분위 — 규칙 ⓪(0.97)의 부분노출일 판
+    R95_STRESS_VOL_RATIO: float = 1.75        # SPY 일수익 표준편차 5일/63일
+    R95_REBOUND_REENTRY: bool = True
+    R95_REBOUND_HIGH_N: int = 20              # 종가가 최근 N일 최고(당일 포함)
+    R95_REBOUND_RET_N: int = 10
+    R95_REBOUND_RET: float = 0.05             # 또는 N일 수익 > +5%
+    R95_REBOUND_POS: float = 0.6              # 재진입 비중 = 중립(POS_NEUTRAL)
+    R95_DEEP_HAIRCUT_MAX_DAYS: int = 25       # 0이면 끔
+    R95_DEEP_HAIRCUT_AFTER_POS: float = 0.55  # 시한 뒤 비중 = 얕은 헤어컷 상한
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -6872,6 +6929,9 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     # [v1.62.0 R94] 입력 선별 스위치 — 지표 **값**(NaN)으로 효과가 전해져 경계 지문(cols·접두 해시)이 알아서 바뀐다.
     #   설정 지문에까지 넣으면 S·I 전체키가 스위치 때문에 한 번 더 깨질 뿐 얻는 것이 없다 → 무시 목록.
     "EXCLUDE_REVISED_HISTORY",
+    # [v1.63.0 R95] 라이브 SPY 신호 뒤 사이징 오버레이 전용(검증·워크포워드·S·I 국면 모형 무관) — 캐시 무효화 금지(교훈 31).
+    "R95_STRESS_EXIT", "R95_STRESS_FT_PCT", "R95_STRESS_VOL_RATIO", "R95_REBOUND_REENTRY", "R95_REBOUND_HIGH_N",
+    "R95_REBOUND_RET_N", "R95_REBOUND_RET", "R95_REBOUND_POS", "R95_DEEP_HAIRCUT_MAX_DAYS", "R95_DEEP_HAIRCUT_AFTER_POS",
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -8062,6 +8122,73 @@ def action_labels(pos: pd.Series) -> pd.Series:
 #     t+1일 수익률 = 이전비중 × (시가/전일종가 - 1) + 신규비중 × (종가/시가 - 1)
 #     -> 룩어헤드가 구조적으로 불가능하며 실전 체결과 동일한 분해.
 # =============================================================================
+def apply_r95_overlays(sig: pd.DataFrame, px: pd.Series, fast_pct: Optional[pd.Series], cfg: Config = CFG
+                       ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.63.0 R95 ⚠ 사이징] SPY 라이브 신호에 붙이는 3개 오버레이 — 목표비중만 바꾸고 상태·플래그는 그대로 둔다.
+
+    입력은 generate_signals()의 **최종** target_pos(모든 규칙 적용 후). 버킷은 그 값으로 정한다(서로 겹치지 않는다):
+      부분 노출  : 0 < E < 1                                    → (A) 스트레스 청산
+      깊은 헤어컷 : E = 0 & 규칙 ⑩ 발동 & ext_cap = 0(이격 ≥12%)  → (P2) 연속 N일 초과 시 AFTER_POS
+      중립감축   : E = 0 & 깊은 헤어컷 아님 & neutral_risk_cut     → (변경 없음)
+      위험회피   : E = 0 & 위 둘 아님                              → (P1) 반등 확인 시 REBOUND_POS
+    인과: px는 t일 종가까지 · rolling은 과거 창 · fast_pct는 run()의 expanding 백분위 · 체결은 run_backtest가 t+1 시가.
+    pos_pre_r95 열(적용 전 목표)을 남긴다 — S가 'R95 규칙 없음' 비교 행과 긴 이력 판정을 이 열로 만든다."""
+    out = sig.copy()
+    idx = out.index
+    tp0 = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r95"] = tp0.copy()
+    tp = tp0.copy()
+    p = pd.Series(px).astype(float).reindex(idx)
+    r = p.pct_change()
+    zero = tp0 <= 1e-9
+    part = (tp0 > 1e-9) & (tp0 < 1.0 - 1e-9)
+    ecap = (pd.to_numeric(out["ext_cap"], errors="coerce").reindex(idx).fillna(1.0)
+            if "ext_cap" in out.columns else pd.Series(1.0, index=idx))
+    ehit = (out["extension_haircut"].reindex(idx).fillna(False).astype(bool)
+            if "extension_haircut" in out.columns else pd.Series(False, index=idx))
+    deep = zero & ehit & (ecap <= 1e-12)          # 규칙 ⑩이 실제로 0으로 깎은 날(상태 RISK_ON · 이격 ≥12%)
+    ncut = (out["neutral_risk_cut"].reindex(idx).fillna(False).astype(bool)
+            if "neutral_risk_cut" in out.columns else pd.Series(False, index=idx))
+    roff = zero & ~deep & ~ncut
+    mA = pd.Series(False, index=idx); mP = pd.Series(False, index=idx); mD = pd.Series(False, index=idx)
+    diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(cfg, "R95_STRESS_EXIT", False)):
+        _vr = (r.rolling(5, min_periods=4).std() / r.rolling(63, min_periods=40).std())
+        _ft = (pd.Series(fast_pct).reindex(idx) if fast_pct is not None else pd.Series(np.nan, index=idx))
+        _stress = ((_ft > float(cfg.R95_STRESS_FT_PCT)) | (_vr > float(cfg.R95_STRESS_VOL_RATIO))).fillna(False)
+        mA = part & _stress
+        tp[mA] = 0.0
+    if bool(getattr(cfg, "R95_REBOUND_REENTRY", False)):
+        _n = int(cfg.R95_REBOUND_HIGH_N); _k = int(cfg.R95_REBOUND_RET_N)
+        _hi = p >= p.rolling(_n, min_periods=_n).max()
+        _rk = p / p.shift(_k) - 1.0
+        _reb = (_hi | (_rk > float(cfg.R95_REBOUND_RET))).fillna(False)
+        mP = roff & _reb
+        tp[mP] = np.maximum(tp[mP], float(cfg.R95_REBOUND_POS))
+    _N = int(getattr(cfg, "R95_DEEP_HAIRCUT_MAX_DAYS", 0) or 0)
+    if _N > 0:
+        _g = (~deep).cumsum()
+        _run = deep.astype(int).groupby(_g).cumsum()
+        mD = deep & (_run > _N)
+        tp[mD] = np.maximum(tp[mD], float(cfg.R95_DEEP_HAIRCUT_AFTER_POS))
+    out["target_pos"] = tp.clip(lower=0.0)
+    out["r95_stress_exit"] = mA
+    out["r95_rebound_reentry"] = mP
+    out["r95_deep_timeout"] = mD
+    diag = {"enabled": bool(mA.any() or mP.any() or mD.any() or getattr(cfg, "R95_STRESS_EXIT", False)),
+            "stress_exit_days": int(mA.sum()), "rebound_days": int(mP.sum()), "deep_timeout_days": int(mD.sum()),
+            "changed_days": int(((tp - tp0).abs() > 1e-12).sum()),
+            "mean_pre": round(float(tp0.mean()), 4), "mean_post": round(float(tp.mean()), 4),
+            "buckets": {"부분": int(part.sum()), "깊은헤어컷0": int(deep.sum()), "중립감축0": int((zero & ~deep & ncut).sum()),
+                        "위험회피0": int(roff.sum())}}
+    log("SIGNAL", kv(event="r95_overlays", stress_exit=diag["stress_exit_days"], rebound=diag["rebound_days"],
+                     deep_timeout=diag["deep_timeout_days"], changed=diag["changed_days"],
+                     mean_before=diag["mean_pre"], mean_after=diag["mean_post"],
+                     ft_pct=getattr(cfg, "R95_STRESS_FT_PCT", None), vol_ratio=getattr(cfg, "R95_STRESS_VOL_RATIO", None),
+                     max_days=_N, note="⚠ 사이징 오버레이(R95) · 되돌리기 R95_STRESS_EXIT/R95_REBOUND_REENTRY=False · R95_DEEP_HAIRCUT_MAX_DAYS=0"))
+    return out, diag
+
+
 def run_backtest(price: pd.DataFrame, target_pos: pd.Series, cfg: Config = CFG,
                  rf_daily: Optional[pd.Series] = None) -> pd.DataFrame:
     t0 = time.time()
@@ -10178,6 +10305,14 @@ def run(cfg: Config = CFG) -> dict:
     trend200 = ind["TREND_200"]
     sig = generate_signals(score_pct, trend200, cfg, score=score, haz_pct=haz_pct,
                            fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
+    # [v1.63.0 R95 ⚠] SPY 라이브 신호에만 사이징 오버레이 3개 — 가격 특징은 총수익(Adj Close) 기준(S·섹터와 같은 잣대).
+    r95_diag: Dict[str, Any] = {"enabled": False}
+    try:
+        sig, r95_diag = apply_r95_overlays(sig, px_adj, fast_pct, cfg)
+    except Exception as _e95:
+        log("SIGNAL", kv(event="r95_overlays_failed", err=type(_e95).__name__, msg=str(_e95)[:160],
+                         action="오버레이 없이 계속(= v1.62.1 신호) — 00 줄에 표시"), level="error")
+        r95_diag = {"enabled": False, "error": f"{type(_e95).__name__}: {str(_e95)[:120]}"}
     reason = build_reason_text(contrib, sig["state"], score)
     t_sig_done = time.time()
     stage_timing["07_신호생성(H점수+국면신호)"] = round(t_sig_done - t_wf_done, 2)
@@ -10325,6 +10460,7 @@ def run(cfg: Config = CFG) -> dict:
             "ft_coverage": ft_coverage, "ft_degraded": ft_degraded, "signal_days": _n_sig,
             "sig_norev": sig_norev, "bt_norev": bt_norev, "revision_audit": rev_audit,   # [v1.61.0 R93] 측정 전용
             "revised_excluded": revised_excluded,                                          # [v1.62.0 R94] 라이브 제외 계열
+            "r95": r95_diag,                                                               # [v1.63.0 R95] 사이징 오버레이 발동 요약
             "stage_timing": stage_timing}
 
 
@@ -11174,7 +11310,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     if "extension_haircut" in sig.columns:
         _eh = sig["extension_haircut"].reindex(idx).fillna(False).astype(bool)
         _ec = sig["ext_cap"].reindex(idx)
-        daily["과열헤어컷(E)"] = np.where(_eh, "상한 " + _ec.round(1).astype(str), "")
+        daily["과열헤어컷(E)"] = np.where(_eh, "상한 " + _ec.map(lambda v: f"{float(v):g}" if pd.notna(v) else ""), "")   # [v1.63.0] :g(0.55가 0.6으로 보였다)
     else:
         daily["과열헤어컷(E)"] = ""
     # [v1.21.0 §C] 규칙 ⑪ 레버리지 발동일(기본 비활성이면 전부 공란).
@@ -11186,6 +11322,12 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.31.0 §A] 규칙 ⑭ 발동일 — 사용자가 "언제 바닥이 걸렸는지"를 리포트에서 직접 셀 수 있어야 한다.
     daily["깊은낙폭재진입(F)"] = sig["deep_reentry_floor"].reindex(idx).map({True: "발동", False: ""}) \
         if "deep_reentry_floor" in sig.columns else ""
+    # [v1.63.0 R95] 사이징 오버레이 발동일 — 리포트만으로 '왜 그날 비중이 바뀌었나'를 센다.
+    for _c95, _n95 in (("r95_stress_exit", "스트레스청산(R95-A)"), ("r95_rebound_reentry", "반등재진입(R95-P1)"),
+                       ("r95_deep_timeout", "깊은헤어컷시한(R95-P2)")):
+        daily[_n95] = (sig[_c95].reindex(idx).map({True: "발동", False: ""}) if _c95 in sig.columns else "")
+    if "pos_pre_r95" in sig.columns:
+        daily["R95 전 목표비중"] = pd.to_numeric(sig["pos_pre_r95"], errors="coerce").reindex(idx)
     daily["전략일간수익"] = (bt["strategy_ret"] * 100).round(3)
     daily["전략자산곡선"] = (bt["equity"] / bt["equity"].iloc[0]).round(4)
     daily["시장자산곡선"] = (bt["bh_equity"] / bt["bh_equity"].iloc[0]).round(4)
@@ -11480,6 +11622,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
+        ("★★★ R95 회피↑·참여 유지 — SPY 신호 사이징 오버레이 3개(⚠ 신호 변경)", _r95_note(res)),
         ("★★★ R94 룩어헤드 제거 — 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)", _revision_audit_note(res)),
         # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
         ("★ 노란색 표시", "각 리포트에서 **노란색 행 = 실제 거래에 쓰는 전략**이다(M 06_성과요약 '복합지표 전략' · "
@@ -11795,13 +11938,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.62.1"
+BUNDLE_VERSION = "v1.63.0"
 BUNDLE_VERSION_DATE = "2026-09-24"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.75.1", "industry_rotation": "v0.46.0", "stock_regime": "v0.9.0"}   # [v1.62.1 R94] K 섹터연동 · I rf 통로
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.76.0", "industry_rotation": "v0.47.0", "stock_regime": "v0.9.1"}   # [v1.63.0 R95]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
@@ -11830,6 +11973,31 @@ def revised_history_keys(cols, series: Tuple[str, ...] = ("NFCI", "ANFCI", "STLF
         if sid in ss or any(_re.search(rf"(?<![A-Za-z0-9]){_re.escape(x)}(?![A-Za-z0-9])", src) for x in ss):
             out.append(sp.key)
     return out
+
+
+def _r95_note(res: Dict[str, Any]) -> str:
+    """[v1.63.0 R95] 00 줄 — 사이징 오버레이 발동 요약 · 오프라인 예상 · 사전등록 · 되돌리기."""
+    d = (res or {}).get("r95") or {}
+    cfg = (res or {}).get("cfg", CFG)
+    if d.get("error"):
+        return f"⚠ 적용 실패 — {d['error']} (오버레이 없이 v1.62.1 신호로 계산됨)"
+    if not (getattr(cfg, "R95_STRESS_EXIT", False) or getattr(cfg, "R95_REBOUND_REENTRY", False)
+            or int(getattr(cfg, "R95_DEEP_HAIRCUT_MAX_DAYS", 0) or 0) > 0):
+        return "꺼짐(되돌림 상태 = v1.62.1 신호)"
+    b = d.get("buckets") or {}
+    return (f"(A) 스트레스 청산 {d.get('stress_exit_days', 0)}일(부분 노출 {b.get('부분', '-')}일 중 · 급락트리거 백분위 > "
+            f"{float(getattr(cfg, 'R95_STRESS_FT_PCT', 0)):g} 또는 5/63일 변동성 비 > {float(getattr(cfg, 'R95_STRESS_VOL_RATIO', 0)):g} → 0) · "
+            f"(P1) 반등 재진입 {d.get('rebound_days', 0)}일(위험회피 E=0 {b.get('위험회피0', '-')}일 중 · {int(getattr(cfg, 'R95_REBOUND_HIGH_N', 0))}일 신고가 "
+            f"또는 {int(getattr(cfg, 'R95_REBOUND_RET_N', 0))}일 +{float(getattr(cfg, 'R95_REBOUND_RET', 0)):.0%} → {float(getattr(cfg, 'R95_REBOUND_POS', 0)):g}) · "
+            f"(P2) 깊은 헤어컷 시한 {d.get('deep_timeout_days', 0)}일({int(getattr(cfg, 'R95_DEEP_HAIRCUT_MAX_DAYS', 0))}일 초과 → "
+            f"{float(getattr(cfg, 'R95_DEEP_HAIRCUT_AFTER_POS', 0)):g}) · 전체 평균 목표비중 {d.get('mean_pre', '-')} → {d.get('mean_post', '-')} "
+            f"(바뀐 날 {d.get('changed_days', 0)}, 전 이력). 오프라인 예상(R95 리포트 기준 · 엔진 재현 하네스): "
+            "M 78.4/60.1 → 80.1/61.1 · S★ 70.7/83.5 → 74.1/84.7 · I★ 71.0/87.6 → 74.2/89.5 · K★ 71.3/88.1 → 75.1/90.4 — "
+            "네 층 모두 회피↑ · 참여↑ · MDD 불변(앞/뒤 절반·연도 잭나이프 전부 같은 방향). "
+            "⚠ 표본 안 규칙 → S 00U '[R95 긴 이력]' 블록(1993~2017 SPY)이 사전등록 판정(Δ회피 ≥0 · Δ참여 ≥0, 미통과면 되돌림). "
+            "06c 격자 행에는 이 오버레이가 없다(라이브 ★ 행만). "
+            "되돌리기: m_overrides={'R95_STRESS_EXIT': False, 'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. "
+            "연구·교육용, 투자 자문 아님.")
 
 
 def _revision_audit_note(res: Dict[str, Any]) -> str:
@@ -11864,19 +12032,55 @@ def companion_version_note() -> str:
             return tuple(int(x) for x in str(v).lstrip("v").split(".")[:3])
         except Exception:
             return (0, 0, 0)
+    def _file_version(mod: str, m_) -> Optional[str]:
+        """[v1.63.0 R95] 디스크 파일의 VERSION — runner는 K를 M 리포트 **뒤에** 다시 적재한다. 그래서 sys.modules의 K가
+        예전 셀·세션의 낡은 모듈일 수 있다(R95 리포트: K v0.9.0이 돌았는데 이 줄은 v0.8.1이라 했다). 파일이 권위다."""
+        import re as _re
+        cands = []
+        _f = getattr(m_, "__file__", None) if m_ is not None else None
+        if m_ is not None and not _f:
+            return None            # 파일 없는 모듈(시험용 가짜 등) → 적재된 VERSION을 그대로 쓴다
+        if _f:
+            cands.append(_f)
+        try:
+            cands.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{mod}.py"))
+        except Exception:
+            pass
+        for _p in cands:
+            try:
+                if _p and os.path.exists(_p):
+                    with open(_p, encoding="utf-8") as _fh:
+                        _m = _re.search(r'^VERSION\s*=\s*"(v[0-9.]+)"', _fh.read(), flags=_re.M)
+                    if _m:
+                        return _m.group(1)
+            except Exception:
+                continue
+        return None
     parts, bad = [], []
+    found = 0          # 이 프로세스에 적재된 동반 모듈 수(0이면 M 단독 실행)
     for mod, need in COMPANION_MIN_VERSIONS.items():
         m_ = sys.modules.get(mod)
-        if m_ is None:
+        fv = _file_version(mod, m_)
+        mv = str(getattr(m_, "VERSION", "?")) if m_ is not None else None
+        if m_ is None and fv is None:
             parts.append(f"{mod} 미적재")
             continue
-        got = str(getattr(m_, "VERSION", "?"))
+        if m_ is not None:
+            found += 1
+        got = fv or mv
         ok_ = _vt(got) >= _vt(need)
-        parts.append(f"{mod} {got}{'' if ok_ else f' ⚠ < {need}'}")
+        if m_ is None:
+            _src = "(같은 폴더 파일 · 아직 미적재)"
+        elif fv is not None and mv is not None and fv != mv:
+            _src = f"(파일 · 적재된 모듈 {mv}는 예전 것 — 이 실행에서 다시 적재됨)"
+        else:
+            _src = ""
+        parts.append(f"{mod} {got}{_src}{'' if ok_ else f' ⚠ < {need}'}")
         if not ok_:
             bad.append(f"{mod} {got} < {need}")
-    if not any(sys.modules.get(m) is not None for m in COMPANION_MIN_VERSIONS):
-        return "점검 생략(M 단독 실행 — S·I·K 모듈 없음)"
+    if not found:
+        _files = [x for x in parts if "미적재" not in x or "같은 폴더 파일" in x]
+        return "점검 생략(M 단독 실행 — S·I·K 모듈 없음)" + (f" · 같은 폴더 파일: {' · '.join(_files)}" if _files else "")
     if bad:
         log("CONFIG", kv(event="companion_version_mismatch", m=BUNDLE_VERSION, bad=";".join(bad),
                          action="S·I·K 파일을 이 M과 같은 라운드 파일로 교체하세요(결과는 섞인 버전으로 계산됨)"), level="warning")
