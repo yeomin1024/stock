@@ -22,6 +22,33 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.62.1 - 2026-09-24 - [R94 추가 — 동반 버전 표만: S v0.75.1 · I v0.46.0(K 통로 rf) · K v0.9.0(섹터연동 · 포트 t+1 시가 체결) — 신호·비중 무변경]
+#    사용자 지시(2026-09-24): "잠깐만 주식층도 같이 개선해". 시작 v1.62.0 → 목표 v1.62.1. '계층 버전 점검' 줄이 K v0.9.0 미만을 잡는다.
+#    연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v1.62.0 - 2026-09-24 - [R94 ★ 룩어헤드 제거: 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4) 라이브 제외 — 입력 자료 변경 · 위험 파라미터 무변경]
+#    사용자 지시(2026-09-24 · 리포트 m·s·i·k 한 묶음): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 … 나한테 물어보지 말고 권장으로 해".
+#    시작 v1.61.0 → 목표 v1.62.0. S v0.75.0 · I v0.45.0(무변경) · K v0.8.1(무변경)과 한 묶음.
+#    ── 이번 리포트 판정 ── S★ 높음 70.5%/90.4% · I★ 중간 69.9%/93.9%(회피 0.1%p 부족) · M 낮음(회피·참여 ≈78/64).
+#    ── R93 점검 결과(측정) ── 세 계열을 빼면 S★ 70.5/90.4 → 69.2/87.8 · I★ 69.9/93.9 → 68.6/91.1(둘 다 중간) · M CAGR 26.71→25.06% ·
+#      칼마 3.779→3.545 · 상태 다른 날 103 · 목표비중 다른 날 76 · 위험점수(H) 가중 몫 17.2%. 즉 지금의 높음 일부는 '그때 몰랐던'
+#      개정 과거 값 덕이다(11_룩어헤드감사는 오늘 빈티지를 날짜로 자를 뿐이라 못 잡는다).
+#    ── 이번 변경(권장안 · 사용자 선호 4번 '룩어헤드 금지' · 정확성 > 성과) ──
+#    (§1) Config.EXCLUDE_REVISED_HISTORY=True: run()에서 발표지연 처리 직후 REVISED_HISTORY_SERIES를 fred에서 내린다 → 그 지표들이
+#         전 구간 NaN → 검증·워크포워드(W·W_haz)가 채택하지 않는다(가중 0). res['fred']·res['ind']를 쓰는 S·I 국면 모형에서도 함께 빠진다.
+#         수집·품질표·fred_raw 원본은 그대로(투명성) · 룩어헤드 감사는 제외 후 입력(fred_raw_eff)으로 돈다.
+#         ⚠ 되돌리기: m_overrides={"EXCLUDE_REVISED_HISTORY": False}  (R93 측정 전용 점검이 다시 켜진다).
+#    (§2) 제외가 켜지면 가중 0 변형(sig_norev·bt_norev)은 라이브와 같으므로 계산하지 않는다 — revision_audit={excluded_live, series, keys,
+#         r93_measured}로 00 줄 '★★★ R94 룩어헤드 제거'가 R93 측정 전후와 되돌리기를 보여 준다. S는 비교 행을 자동 생략.
+#    (§3) 캐시: 새 필드는 CACHE_KEY_IGNORE_FIELDS(정본)·S 폴백 사본 양쪽에 등재(교훈 31). 스위치를 바꾸면 지표 값이 바뀌어
+#         WF 경계 키(자료 접두 해시)·S 섹터 키(값 체크섬)가 자연히 달라진다 — 낡은 캐시를 쓰지 않는다. 이번 실행은 이미 캐시 적중 0
+#         (M WF 210초 · S 0/11)이라 추가 비용 없음 · 매주 NFCI 개정으로 캐시가 깨지던 원인도 사라진다.
+#    (§4) 00 '과열 헤어컷(규칙 ⑩)' 설명의 상한 표기 :.1f → :g(0.55가 '0.6'으로 보였다 — 숫자·동작은 맞음 · 교훈 34).
+#    (§5) 동반 버전 표 S v0.75.0 · I v0.45.0 · K v0.8.1. 파일명 market_regime_report_v1.62.0.xlsx.
+#    ── 예상(정직한 기준선) ── S★ ≈69.2/87.8 · I★ ≈68.6/91.1(둘 다 중간). 워크포워드가 빈자리를 다른 지표로 **다시 고르는** 효과는
+#      R93 근사(가중 0)에 없었으므로 실제 값은 다를 수 있다 — 다음 리포트가 첫 정직 측정이다.
+#      R94 오프라인 격자(S 중립채움 0~100% × 얕은 헤어컷 0.45~0.6)는 어디서도 높음에 닿지 않아 위험 파라미터는 그대로 둔다.
+#    로그: [DATA] event=revised_history_excluded series=NFCI;ANFCI;STLFSI4 revert=… · [AUDIT] 룩어헤드 감사 OK.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.61.0 - 2026-09-24 - [R93 파일명 끝에 코드 버전 · 전 이력 재추정 지표 룩어헤드 점검(측정 전용) — 신호·비중·사이징 무변경]
 #    사용자 지시(2026-09-24 · 리포트 m7·s21): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 … 그리고 엑셀 파일명 맨뒤에 코드 버전도 같이 붙여".
 #    시작 v1.60.0 → 목표 v1.61.0. S v0.74.0 · I v0.45.0 · K v0.8.1과 한 묶음(넷 다 파일명 규칙이 같다).
@@ -2884,6 +2911,14 @@ class Config:
     #   위험점수(H) 트랙 가중치의 평균 17%(최대 37%)가 이 계열이다(복합점수 트랙은 2%).
     REVISED_HISTORY_SERIES: Tuple[str, ...] = ("NFCI", "ANFCI", "STLFSI4")
     REVISION_AUDIT: bool = True        # 이 계열 가중치를 0으로 둔 M 변형을 함께 계산(라이브 무변경 · 00·S 비교 행)
+    # [v1.62.0 R94 ⚠⚠ 신호 변경 · 룩어헤드 제거] 이 계열을 **라이브에서 뺀다**. FRED 수집 뒤·지표 생성 전에 세 시리즈를 입력에서 내려
+    #   build_indicators()가 그 지표를 NaN 열로 만든다(원천 없음과 같은 경로) → 검증·워크포워드가 **다시 골라** 채택하지 않는다.
+    #   S·I는 M의 지표(res['ind'])를 그대로 쓰므로 섹터·산업 국면 모형에서도 함께 빠진다. 11_룩어헤드감사도 같은 입력으로 다시 잰다.
+    #   근거(R93 엔진 점검 s·i v0.74.0/v0.45.0): 빼면 S★ 70.5/90.4 → 69.2/87.8 · I★ 69.9/93.9 → 68.6/91.1 · M CAGR 26.7 → 25.1%.
+    #     그 차이는 '그때 몰랐던 개정값' 덕이었다 — 신뢰도 숫자를 정직하게 만든다(사용자 선호 §4 룩어헤드 방지 · 우선순위 ① 정확성).
+    #   덤: NFCI는 매주 과거 전체가 바뀌어 모든 경계 캐시 지문을 매주 깨뜨렸다 — 빼면 캐시가 주간 개정에 살아남는다.
+    #   ⚠ 되돌리기(한 줄): m_overrides={"EXCLUDE_REVISED_HISTORY": False} ⇒ v1.61.0과 같은 신호.
+    EXCLUDE_REVISED_HISTORY: bool = True
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -6834,6 +6869,9 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "TREND_OVERRIDE_SCORE_PCT", "TREND_OVERRIDE_NEED_MARKET",                                  # generate_signals 전용(S v0.40.0 §S3)
     "USE_WF_PERIOD_CACHE", "WF_PERIOD_CACHE_DIR",                                              # [v1.55.0 R72] 캐시 on/off·위치
     "OUT_XLSX_APPEND_VERSION", "REVISED_HISTORY_SERIES", "REVISION_AUDIT",                     # [v1.61.0 R93] 파일명·측정 전용
+    # [v1.62.0 R94] 입력 선별 스위치 — 지표 **값**(NaN)으로 효과가 전해져 경계 지문(cols·접두 해시)이 알아서 바뀐다.
+    #   설정 지문에까지 넣으면 S·I 전체키가 스위치 때문에 한 번 더 깨질 뿐 얻는 것이 없다 → 무시 목록.
+    "EXCLUDE_REVISED_HISTORY",
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -10000,6 +10038,19 @@ def run(cfg: Config = CFG) -> dict:
             col = "Adj Close" if "Adj Close" in d.columns else "Close"
             validate_series(f"YH_{t}", d[col].reindex(cal).ffill(), quality)
 
+    # [v1.62.0 R94 ⚠ 룩어헤드 제거] 전 이력 재추정 계열을 입력에서 내린다(수집·품질표는 그대로 — fred_raw 원본은 보존).
+    fred_raw_eff = fred_raw
+    revised_excluded: List[str] = []
+    if getattr(cfg, "EXCLUDE_REVISED_HISTORY", False):
+        _rs = tuple(str(x) for x in (getattr(cfg, "REVISED_HISTORY_SERIES", ()) or ()))
+        revised_excluded = [sid for sid in _rs if sid in fred or sid in fred_raw]
+        for sid in revised_excluded:
+            fred.pop(sid, None)
+        fred_raw_eff = {k: v for k, v in fred_raw.items() if k not in set(_rs)}
+        log("DATA", kv(event="revised_history_excluded", series=";".join(revised_excluded) or "-",
+                       reason="매주 과거 전체가 재추정되는 계열 — 백테스트 룩어헤드 제거(R94)",
+                       revert='m_overrides={"EXCLUDE_REVISED_HISTORY": False}'))
+
     # 현금 수익률(3개월 국채)
     rf_daily = None
     if "DGS3MO" in fred and fred["DGS3MO"].notna().sum() > 100:
@@ -10196,7 +10247,13 @@ def run(cfg: Config = CFG) -> dict:
     rev_audit: Dict[str, Any] = {"enabled": False}
     sig_norev = None
     bt_norev = None
-    if getattr(cfg, "REVISION_AUDIT", True):
+    if getattr(cfg, "EXCLUDE_REVISED_HISTORY", False):
+        # [v1.62.0 R94] 라이브에서 이미 뺐다 — 가중 0 변형은 라이브와 같으므로 계산하지 않는다(S 비교 행도 자동 생략).
+        rev_audit = {"enabled": False, "excluded_live": True, "series": list(revised_excluded),
+                     "keys": revised_history_keys(list(ind.columns), tuple(getattr(cfg, "REVISED_HISTORY_SERIES", ()) or ())),
+                     "r93_measured": {"S★": "70.5/90.4 → 69.2/87.8", "I★": "69.9/93.9 → 68.6/91.1",
+                                      "M CAGR": "26.71% → 25.06%", "M 칼마": "3.779 → 3.545", "M 상태 다른 날": 103}}
+    elif getattr(cfg, "REVISION_AUDIT", True):
         try:
             _t_ra = time.time()
             _rk = revised_history_keys(list(ind.columns), tuple(getattr(cfg, "REVISED_HISTORY_SERIES", ()) or ()))
@@ -10245,7 +10302,7 @@ def run(cfg: Config = CFG) -> dict:
     # ---------- 7) 감사 ----------
     audit = pd.DataFrame()
     if cfg.RUN_LOOKAHEAD_AUDIT:
-        audit = lookahead_audit(px_dict, fred_raw, cal, W, score, cfg, ind=ind, px_adj=px_adj,
+        audit = lookahead_audit(px_dict, fred_raw_eff, cal, W, score, cfg, ind=ind, px_adj=px_adj,
                                 W_haz=W_haz, haz_score_full=haz_score)
     t_audit_done = time.time()
     stage_timing["11_벤치마크+룩어헤드감사"] = round(t_audit_done - t_hlsens_done, 2)
@@ -10267,6 +10324,7 @@ def run(cfg: Config = CFG) -> dict:
             "data_freshness": data_freshness,   # [v1.56.0 R73 §1-3(e)] S·I·runner가 읽는다
             "ft_coverage": ft_coverage, "ft_degraded": ft_degraded, "signal_days": _n_sig,
             "sig_norev": sig_norev, "bt_norev": bt_norev, "revision_audit": rev_audit,   # [v1.61.0 R93] 측정 전용
+            "revised_excluded": revised_excluded,                                          # [v1.62.0 R94] 라이브 제외 계열
             "stage_timing": stage_timing}
 
 
@@ -11422,7 +11480,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
-        ("★★ R93 룩어헤드 점검 — 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)", _revision_audit_note(res)),
+        ("★★★ R94 룩어헤드 제거 — 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)", _revision_audit_note(res)),
         # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
         ("★ 노란색 표시", "각 리포트에서 **노란색 행 = 실제 거래에 쓰는 전략**이다(M 06_성과요약 '복합지표 전략' · "
                       "S 13_섹터배분전략 ★ · I 13_산업배분전략 ★ · K 13_주식배분전략 ★). 나머지 행은 같은 잣대로 비교하는 "
@@ -11588,7 +11646,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         ("과열 헤어컷(규칙 ⑩)", (
             f"USE_EXTENSION_HAIRCUT={cfg.USE_EXTENSION_HAIRCUT}. True일 때: 확정 상태가 위험선호(1.0)인 날 "
             f"200일선 이격도의 {cfg.EXTENSION_HAIRCUT_SMOOTH}일 평균이 "
-            + ", ".join(f"{t:+.0%} 이상이면 상한 {c:.1f}" for t, c in sorted(cfg.EXTENSION_HAIRCUT_STEPS))
+            + ", ".join(f"{t:+.0%} 이상이면 상한 {c:g}" for t, c in sorted(cfg.EXTENSION_HAIRCUT_STEPS))   # [v1.62.0 R94] :.1f → :g (0.55가 "0.6"으로 보였다)
             + " (0.1 단위 위험도 사이징; 상태기계·이력현상은 불변, 확정 후 사이징 오버레이, 인과: 그날 종가 이격도). "
             f"'상승 추세는 타되 큰 상승 뒤에는 위험 회피, 비중을 위험도에 따라 0.1 단위로' 지시의 구현 — 근거: 풀포지션 상태에서 "
             f"이격도 상위 20%(≥+12%)의 이후 10일 수익 -0.7%·20일 내 최대낙폭 -3.6% vs 하위 20% +2.3%/-0.9%. "
@@ -11737,13 +11795,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.61.0"
+BUNDLE_VERSION = "v1.62.1"
 BUNDLE_VERSION_DATE = "2026-09-24"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.74.0", "industry_rotation": "v0.45.0", "stock_regime": "v0.8.1"}
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.75.1", "industry_rotation": "v0.46.0", "stock_regime": "v0.9.0"}   # [v1.62.1 R94] K 섹터연동 · I rf 통로
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
@@ -11777,6 +11835,13 @@ def revised_history_keys(cols, series: Tuple[str, ...] = ("NFCI", "ANFCI", "STLF
 def _revision_audit_note(res: Dict[str, Any]) -> str:
     """[v1.61.0 R93] 00 줄 — 전 이력 재추정 지표를 빼면 M이 얼마나 달라지나(측정 전용)."""
     ra = (res or {}).get("revision_audit") or {}
+    if ra.get("excluded_live"):
+        _m = ra.get("r93_measured") or {}
+        return (f"**라이브에서 제외됨(R94)** — {', '.join(ra.get('series') or []) or '-'} 입력을 내려 지표 {len(ra.get('keys') or [])}개가 NaN "
+                "(검증·워크포워드가 다시 골라 채택 안 함 · S·I 국면 모형에서도 함께 빠짐). "
+                f"R93 엔진 점검(빼기 전 → 뺀 후, 가중 0 근사): S★ {_m.get('S★', '-')} · I★ {_m.get('I★', '-')} · M CAGR {_m.get('M CAGR', '-')} · "
+                f"칼마 {_m.get('M 칼마', '-')}. 이 차이는 매주 다시 추정되는 과거 값(그때 몰랐던 정보) 덕이었다 → 숫자를 정직하게 만든다. "
+                "되돌리기: m_overrides={'EXCLUDE_REVISED_HISTORY': False}. 연구·교육용, 투자 자문 아님.")
     if not ra.get("enabled"):
         return f"산출 안 됨 — {ra.get('error', 'REVISION_AUDIT=False')}"
     lv, nr = ra.get("live") or {}, ra.get("norev") or {}

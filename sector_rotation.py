@@ -17,6 +17,25 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.75.1 - 2026-09-24 - [R94 추가 — 계층 버전 표만(M v1.62.1 · I v0.46.0) — S 규칙·비중 무변경]
+#    사용자 지시(2026-09-24): "잠깐만 주식층도 같이 개선해". 시작 v0.75.0 → 목표 v0.75.1. K v0.9.0이 I v0.46.0 통로의 무위험 일수익을 쓴다.
+#    연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v0.75.0 - 2026-09-24 - [R94 M 재추정 지표 라이브 제외에 맞춘 표기 · 버전 표 — S 규칙·비중·위험 파라미터 무변경]
+#    사용자 지시(2026-09-24 · 리포트 s·m·i·k 한 묶음): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 … 나한테 물어보지 말고 권장으로 해".
+#    시작 v0.74.0 → 목표 v0.75.0. M v1.62.0 · I v0.45.0(무변경) · K v0.8.1(무변경)과 한 묶음.
+#    ── 이번 리포트 판정 ── S★ **높음 70.5%/90.4%** · I★ 중간 69.9%/93.9%(회피 0.1%p 부족) · M 낮음.
+#      그러나 R93 룩어헤드 점검: M에서 NFCI·ANFCI·STLFSI4를 빼면 S★ 69.2/87.8 · I★ 68.6/91.1(둘 다 중간) — 지금의 높음 일부가
+#      '매주 다시 추정되는 과거 값'(그때 몰랐던 정보)에 기대고 있었다. 권장안(정확성 우선 · 사용자 선호 4번)으로 M v1.62.0이 라이브 제외.
+#    (§1) 00에 'R94 라이브 — 재추정 지표 제외' 줄(res['revision_audit']['excluded_live']일 때 · 이번 ★ 숫자 · 높음까지 합계 부족분 ·
+#         R93 측정 전후 · 되돌리기). M이 제외하면 가중 0 변형(sig_norev)이 없으므로 'M 재추정지표 제외' 비교 행·R93 줄은 자동 생략.
+#    (§2) R94 오프라인 격자(정직한 기준선 재구성 — 엔진 변형 곡선 대비 최대차 0.08 · 회피/참여 ±0.02/0.15%p): 중립채움 0~100% ×
+#         얕은 헤어컷 0.45~0.6 20칸 어디서도 S★·I★ 높음 없음(S 합계 부족 최소 3.15%p · I 최소 0.86%p). 손잡이는 회피↔참여를 맞바꿀 뿐
+#         합은 거의 그대로 → **채움 0.5 · 헤어컷 0.55 유지**(위험 파라미터 무변경). 신호 개선이 필요하다(R95 사전등록).
+#    (§3) R92 줄 '하네스 예상' 문구에 '룩어헤드 제거 전 기준' 표기. 후보 행 이름 :.1f → :g(0.55가 0.6으로 보이던 표기 — 교훈 34).
+#    (§4) _CACHE_KEY_IGNORE_FIELDS 폴백 사본에 EXCLUDE_REVISED_HISTORY(정본은 M). 스위치를 바꾸면 지표 값 체크섬(결측 수)이 바뀌어
+#         S 섹터 키가 자연히 달라진다 — 무시 목록에 넣어도 낡은 캐시를 쓰지 않는다.
+#    (§5) LAYER_MIN_VERSIONS M v1.62.0 · S v0.75.0 · I v0.45.0. 파일명 sector_regime_report_v0.75.0.xlsx.
+#    로그: [DATA] event=revised_history_excluded(M) · 00 'R94 라이브' 줄. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.74.0 - 2026-09-24 - [R93 파일명 끝에 코드 버전 · M 재추정지표 제외 비교 행(룩어헤드 점검) — S 규칙·비중 무변경]
 #    사용자 지시(2026-09-24 · 리포트 m7·s21): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 … 그리고 엑셀 파일명 맨뒤에 코드 버전도 같이 붙여".
 #    시작 v0.73.0 → 목표 v0.74.0. M v1.61.0 · I v0.45.0 · K v0.8.1과 한 묶음.
@@ -2888,7 +2907,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.74.0"
+VERSION = "v0.75.1"
 VERSION_DATE = "2026-09-24"
 
 # =============================================================================
@@ -5521,6 +5540,8 @@ _CACHE_KEY_IGNORE_FIELDS = frozenset({
     "DROP_INCOMPLETE_TAIL",
     # [v0.74.0 R93] M v1.61.0 신설 3필드(파일명 · 재추정 지표 점검 — 측정 전용).
     "OUT_XLSX_APPEND_VERSION", "REVISED_HISTORY_SERIES", "REVISION_AUDIT",
+    # [v0.75.0 R94] M v1.62.0 신설 1필드(재추정 계열 라이브 제외 — 입력 자료가 바뀌므로 키는 자료 지문이 맡는다).
+    "EXCLUDE_REVISED_HISTORY",
 })
 # [v0.60.0 R72 §3-3 ★ 단일 정본] 위 목록은 이제 **구버전 M(v1.55.0 미만) 폴백 전용 사본**이다. 실제 키 계산은
 #   M.CACHE_KEY_IGNORE_FIELDS(M v1.55.0이 정본)를 읽는다 — M에 Config 필드를 더하는 라운드가 S를 따로 고치지 않아도
@@ -8476,7 +8497,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.61.0", "sector_rotation": "v0.74.0", "industry_rotation": "v0.45.0"}
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.62.1", "sector_rotation": "v0.75.1", "industry_rotation": "v0.46.0"}   # [v0.75.1 R94]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -10045,7 +10066,7 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
                     _pp + f"현재 이격 ≥10% → {_hs91[0][1]:g} · ≥12% → {_hs91[1][1]:g} · 중립채움 {_nfv92:.0%}"
                     + (" (= R92 라이브)" if (_isr92 and abs(_nfv92 - 0.5) < 1e-9) else " ⚠ R92 라이브(0.55/0.0 · 채움 50%)가 아니다 — overrides 확인")
                     + ". 사용자 선택 A안(긴 이력 방향): 블록 H(채움)·G(헤어컷)가 반증한 '1999년 이후 규칙'을 절반씩 되돌렸다. "
-                      "하네스 예상 S★ 70.5/90.4 · I★ 70.2/93.9(둘 다 높음 · 여유 0.2%p) · 노출 0.569→0.544. "
+                      "하네스 예상 S★ 70.5/90.4 · I★ 70.2/93.9(둘 다 높음 · 여유 0.2%p · ⚠ R94 룩어헤드 제거 **전** 기준) · 노출 0.569→0.544. "
                       "⚠ 실행마다 M 입력 자료가 바뀌어 회피·참여가 1~2%p 흔들린다(R92 확인) — 여유가 그보다 작다. "
                       "되돌리기: m_overrides={'EXTENSION_HAIRCUT_STEPS': ((0.10, 0.6), (0.12, 0.0))} · s_overrides={'NEUTRAL_LOWBETA_FILL': 1.0}."))
     # ---- [v0.74.0 R93] 룩어헤드 점검: M에서 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)를 빼면 ★·M 신뢰도가 어떻게 되나 ----
@@ -10074,6 +10095,25 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
                            if _stay else "⇒ 빼면 높음이 아니다 — 지금의 높음 일부가 개정된 과거 값에 기대고 있다는 뜻. 제외 여부를 상의한다.")))
     elif _ra93.get("error"):
         out.append(("⚠ R93 룩어헤드 점검", f"산출 실패 — {_ra93['error']}"))
+    # ---- [v0.75.0 R94] M v1.62.0이 전 이력 재추정 지표를 **라이브에서 뺐다** → 지금 ★ 숫자가 정직한 기준선이다 ----
+    if _ra93.get("excluded_live"):
+        _m94 = _ra93.get("r93_measured") or {}
+        _lab94 = "S★" if layer == "섹터" else "I★"
+        _now94 = ""
+        if _tb93 is not None:
+            _s94 = _tb93[_tb93["전략"].astype(str).str.startswith("양쪽형 ★")]
+            if len(_s94):
+                _a94 = _s94.iloc[0]
+                _hi94 = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
+                _gap94 = max(0.0, _hi94[0] - float(_a94["하락 회피율"])) + max(0.0, _hi94[1] - float(_a94["상승 참여율"]))
+                _now94 = (f"이번 실행 {_lab94} **{_a94['하락 회피율']:.1%}/{_a94['상승 참여율']:.1%}({_a94['등급']})** · 배수 {_a94['배수']:.3f} · "
+                          f"MDD {_a94['MDD'] * 100:.2f}%" + (f" · 높음까지 합계 {_gap94 * 100:.2f}%p" if _gap94 > 0 else " · 높음 기준 통과") + ". ")
+        out.append((f"★★★ R94 라이브 — M에서 전 이력 재추정 지표({', '.join(_ra93.get('series') or []) or 'NFCI·ANFCI·STLFSI4'}) 제외(룩어헤드 제거)",
+                    _now94 + f"R93 점검(뺀 전 → 뺀 후 · 가중 0 근사): S★ {_m94.get('S★', '-')} · I★ {_m94.get('I★', '-')} — 그 차이는 매주 다시 "
+                    "추정되는 과거 값(그때 몰랐던 정보) 덕이었다. 이제 M·S·I 숫자가 정직한 기준선이다(실행마다 흔들림도 줄어야 한다). "
+                    "R94 오프라인 격자: 정직한 기준선에서는 중립채움(0~100%)·얕은 헤어컷(0.45~0.6) 어느 조합도 S★·I★ 높음에 닿지 않는다"
+                    "(S 합계 부족 ≥3.1%p — 나누기 손잡이가 아니라 신호 자체를 개선해야 한다) → 두 값은 그대로 둔다. "
+                    "되돌리기: m_overrides={'EXCLUDE_REVISED_HISTORY': False}. 연구·교육용, 투자 자문 아님."))
     _mb91 = pk.get("mbucket")
     if isinstance(_mb91, pd.DataFrame) and len(_mb91) and "비대칭(|하락|/상승)" in _mb91.columns:
         _tp = _mb91.dropna(subset=["비대칭(|하락|/상승)"]).head(3)
@@ -11602,7 +11642,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                        "live": f"현행(헤어컷 {'/'.join(f'{c:g}' for _, c in _live_steps_r)}·중립 {_live_n:g})",   # [v0.73.0] 라이브에서 읽는다
                        "r91": f"R91(헤어컷 {'/'.join(f'{c:g}' for _, c in _r91_steps)}·중립 {_live_n:g})",
                        "norev": "현행에서 NFCI·ANFCI·STLFSI4 지표 가중 0(룩어헤드 점검)",
-                       "cand": f"후보(헤어컷 {'/'.join(f'{c:.1f}' for _, c in _cand_steps)}·중립 {_cand_n:.1f})"}[msrc_]
+                       "cand": f"후보(헤어컷 {'/'.join(f'{c:g}' for _, c in _cand_steps)}·중립 {_cand_n:g})"}[msrc_]
                 _ct = (f"상한 {cap_:.0%}" if capp_ is None else f"상한 E=1일 {cap_:.0%}·그 밖 {capp_:.0%}")
                 return f"{_ct} · 방어대피처 {def_:.2f} · 하락국면리더 {ld_:.0%} · M {_mt}"
             _ccf = float(getattr(scfg, "RELCMP_CAND_CAP_FULL", 1.0)); _ccp = float(getattr(scfg, "RELCMP_CAND_CAP_PART", 0.8))

@@ -1,5 +1,10 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.46.0 - 2026-09-24 - [R94 K 통로에 무위험 일수익(rf_daily) 추가 — I 규칙·배분·리포트 무변경]
+#    사용자 지시(2026-09-24): "잠깐만 주식층도 같이 개선해". 시작 v0.45.0 → 목표 v0.46.0.
+#    (§1) _set_alloc_handoff에 "rf_daily"(I alloc의 무위험 일수익 사본) — K v0.9.0이 포트 현금 이자를 S·I와 같은 값으로 계산한다
+#         (K는 무위험 자료가 없어 v0.8.1까지 현금 0% — 사용자 신뢰도의 하락 회피가 S·I와 다른 잣대였다 · 오프라인 차 약 1.4%p).
+#    연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.45.0 - 2026-09-24 - [R93 파일명 끝에 코드 버전 · M 재추정지표 제외 행 전달 — I 규칙·배분 무변경]
 #    사용자 지시(2026-09-24): "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여". 시작 v0.44.0 → 목표 v0.45.0.
 #    (§1) _versioned_path() · OUT_XLSX_APPEND_VERSION=True → industry_regime_report_v0.45.0.xlsx(설정 경로일 때만).
@@ -1879,7 +1884,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.45.0"
+VERSION = "v0.46.0"
 VERSION_DATE = "2026-09-24"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -10294,6 +10299,10 @@ def _set_alloc_handoff(alloc: Dict[str, Any], M=None, results: Optional[Dict[str
             "source": f"industry_rotation {VERSION} run() ← I★ 배분",
             "asof": str(pd.Timestamp(tw.index[-1]).date()),
             "set_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        # [v0.46.0 R94] K가 현금 이자를 S·I와 **같은 무위험 일수익**(M DGS3MO 기반)으로 계산하도록 사본을 남긴다.
+        _rf = (alloc or {}).get("rf_daily")
+        if isinstance(_rf, pd.Series) and len(_rf):
+            _ALLOC_HANDOFF["rf_daily"] = pd.to_numeric(_rf, errors="coerce").astype(float).copy()
         # [v0.35.0 R81 ★] 산업별 **결합점수 백분위**(날짜×산업) — K의 상승확률 기울임 점수.
         #   R81 실측(리포트 i26·k7): 29개 산업 횡단면에서 향후 21일 수익과의 IC **+0.059 · t 2.67 · 8/9년 양수**
         #   (같은 리포트의 복합점수는 −0.018 · 2/9년). 새 계산 없음 — build_coupling_state가 이미 낸 인과 값의 사본.
