@@ -22,6 +22,31 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.64.0 - 2026-09-24 - [R96 ⚠ 신호(사이징) 변경: 부분 노출일 변동성 관리 — 네 층 회피↑·참여↑ · R95 긴 이력 미통과 처리]
+#    사용자 지시(2026-09-24 · 리포트 m v1.63.0 · s v0.76.0 · i v0.47.0 · k v0.9.1): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 … 개선해 …
+#      참여율 절대로 낮추지 말고 회피를 더 높게 올리도록 개선해". 시작 v1.63.0 → 목표 v1.64.0.
+#    ── R95 판정(엔진) ── M 80.1/61.1(낮음) · S★ 74.0/84.8(중간) · I★ 74.1/90.1(**높음**) · K★ 75.0/90.6(**높음**) — 규칙 없음 대비
+#      네 층 모두 Δ회피 +1.8~+3.7 · Δ참여 +1.0~+2.4(오프라인 예상과 0.1~0.6%p 안). ⚠ 사전등록 긴 이력(1993~2017 · M 자신의 신호) **미통과**
+#      (전체 −0.90/−0.29 · 앞 −0.49/+0.07 · 뒤 −1.39/−0.80). 오프라인 대용(r96/long96.py · SPX 2000~2017 · M 대용 3상태)에서 원인은
+#      P1(약세장 반등 재진입: 2000~2008 −3.75/+1.26). 그러나 P1을 끄면 네 층 참여가 −1.1~−2.0%p(I★·K★ 높음 상실) → 사용자 지시(참여율
+#      절대 하락 금지)와 정면 충돌 → **유지**하고 규칙별 긴 이력 분해(S v0.77.0 블록 L)로 다음 판정을 좁힌다(되돌리기 한 줄은 그대로).
+#    ── 진단(r96/seg96·cand96·pair96·greedy96.py) ── 한 규칙은 전부 프런티어 위 교환(E1일 깎기: 참여 −0.5~−20%p · 영(E=0)일 올리기:
+#      회피 −0.1~−3%p). 가격·H·FT 특징의 회피×참여 짝 832개 중 반쪽(2018~21 / 2022~)까지 네 층 ≥0인 짝 0개. → **변동성**이 남은 정보였다.
+#    (§1 ⚠) apply_r96_vol_overlay() — R95 오버레이 뒤 SPY 라이브 신호에만(σ20 = SPY 총수익 20일 변동성 · 연율 · t일 종가까지):
+#      (N) 중립 부분일(NEUTRAL · 0<E<1): 올림만 E' = max(E, min(1, E·0.14/σ20)) — 조용한 중립장(σ20<14%)은 더 담는다.
+#      (H) 얕은 헤어컷일(규칙 ⑩ 0<cap<1): E' = clip(E·0.09/σ20, 0, 1) — 과열 + 저변동은 올리고, 과열 + 고변동(취약한 고점)은 내린다.
+#      중립일 내림은 뺐다(긴 이력 대용에서 고변동 중립일 = 반등 초입 → 참여 −2.4~−5.3%p).
+#      sig 열 pos_pre_r96 · r96_vol20 · r96_vol_neutral_up · r96_vol_haircut · 01 '변동성관리(R96)'·'SPY 20일 변동성(R96)'·'R96 전 목표비중' ·
+#      00 '★★★ R96' 줄 · 로그 [SIGNAL] event=r96_vol_overlay. 실패하면 R96 없이 계속(= v1.63.0 신호 · 00에 표시).
+#    (§2) 오프라인(r96/final96.py · 하네스 = R95 엔진 곡선 재현: S★ 16.748 vs 16.750 · I★ 21.289 vs 21.279 · K★ 사용자 지표 ±0.1%p):
+#      M 80.1/61.1 → 80.4/61.4 · S★ 74.0/84.8 → 74.4/86.0 · I★ 74.1/90.1 → 74.6/91.6 · K★ 75.0/90.5 → 75.3/91.8
+#      = 네 층 Δ회피 +0.28~+0.51 · Δ참여 +0.31~+1.55 · MDD 불변 · 칼마 전부 ↑ · 평균 E 0.530 → 0.536.
+#      강건성: 앞/뒤 절반 · 연도 잭나이프 9회 전부 네 층 ≥0 · 긴 이력 대용 +0.28/+0.36(00~04 +0.33/+0.64 · 05~08 −0.23/+0.45 ·
+#      09~13 +0.63/−0.12 · 14~17 +0.63/+0.72) · 문턱 고원 τN 0.12~0.16 × τH 0.085~0.11 → 중앙 0.14/0.09.
+#    ⚠ 사전등록(R96): S 00U 블록 L '[R96 긴 이력]' — R96 켬 vs 끔(1993~2017 · M 자신의 신호): 전체 Δ회피 ≥0 & Δ참여 ≥0 & 두 반쪽 Δ합 ≥ −1%p.
+#    ⚠ 되돌리기(한 줄): m_overrides={"R96_VOL_MANAGE": False} ⇒ v1.63.0과 비트 동일한 목표비중(시험 확인).
+#    (§3) 새 Config 5필드(R96_*)는 CACHE_KEY_IGNORE_FIELDS(정본)·S 폴백 양쪽에(교훈 29·31). 동반 버전 표 S v0.77.0 · I v0.48.0 · K v0.9.2.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.63.0 - 2026-09-24 - [R95 ⚠⚠ 신호(사이징) 변경: 회피↑·참여 유지 오버레이 3개 — 스트레스 청산 · 반등 재진입 · 깊은 헤어컷 시한]
 #    사용자 지시(2026-09-24 · 리포트 m v1.62.1 · s v0.75.1 · i v0.46.0 · k v0.9.0): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 …",
 #      이어서 "계속 진행하고 4개 층 모두다 회피 더 많이 올려봐 그대신 참여는 떨어지면 절대 안돼". 시작 v1.62.1 → 목표 v1.63.0.
@@ -2976,6 +3001,23 @@ class Config:
     R95_REBOUND_POS: float = 0.6              # 재진입 비중 = 중립(POS_NEUTRAL)
     R95_DEEP_HAIRCUT_MAX_DAYS: int = 25       # 0이면 끔
     R95_DEEP_HAIRCUT_AFTER_POS: float = 0.55  # 시한 뒤 비중 = 얕은 헤어컷 상한
+    # [v1.64.0 R96 ⚠ 신호(사이징) 변경 — 사용자 지시 "참여율 절대로 낮추지 말고 회피를 더 높게"]
+    #   부분 노출일 변동성 관리(apply_r96_vol_overlay · R95 오버레이 **뒤** · SPY 라이브 신호에만). σ20 = SPY 총수익 일수익 20일
+    #   표준편차(최소 15일) × √252 — t일 종가까지(인과) · 체결은 run_backtest가 t+1 시가.
+    #   (N) 중립 부분일(상태 NEUTRAL · 0<E<1 · R95 발동일 제외): **올림만** E' = max(E, min(1, E·0.14/σ20)) — σ20<14%에서 올리고
+    #       σ20 ≤ 8.4%면 1.0. 조용한 중립장은 들고 있어도 하락이 작다(저변동 → 높은 노출 · Moreira–Muir 2017 변동성 관리).
+    #   (H) 얕은 헤어컷일(규칙 ⑩ 상한 0<cap<1 · 0<E<1 · R95 발동일 제외): E' = clip(E·0.09/σ20, 0, 1) — σ20 9%에서 그대로,
+    #       더 조용하면 올리고(추세 지속) 요동치면 내린다(과열 + 변동성 = 취약한 고점).
+    #   중립일 **내림**은 넣지 않았다: 긴 이력 대용에서 고변동 중립일은 반등 초입이 많아 참여를 크게 잃었다(r96/vt96.py).
+    #   오프라인(r96/final96.py · 하네스가 R95 엔진 곡선을 재현 · 기준 = R95 라이브): M +0.28/+0.31 · S★ +0.37/+1.19 · I★ +0.51/+1.55 ·
+    #     K★ +0.39/+1.24(%p 회피/참여) · MDD 불변 · 앞/뒤 절반·연도 잭나이프 9회 전부 네 층 ≥0 · 긴 이력 대용(SPX 2000~2017 · M 대용 3상태)
+    #     +0.28/+0.36 · 네 시대(00~04·05~08·09~13·14~17) Δ합 전부 ≥ −0.23. 문턱 고원 τN 0.12~0.16 × τH 0.085~0.11 → 중앙 0.14/0.09.
+    #   ⚠ 되돌리기(한 줄): m_overrides={"R96_VOL_MANAGE": False}
+    R96_VOL_MANAGE: bool = True
+    R96_VOL_WINDOW: int = 20
+    R96_VOL_MIN_PERIODS: int = 15
+    R96_NEUTRAL_VOL_TARGET: float = 0.14      # 중립 부분일 올림 표적(연율) — 0이면 (N) 끔
+    R96_HAIRCUT_VOL_TARGET: float = 0.09      # 얕은 헤어컷일 표적(연율 · 양방향) — 0이면 (H) 끔
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -6932,6 +6974,8 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     # [v1.63.0 R95] 라이브 SPY 신호 뒤 사이징 오버레이 전용(검증·워크포워드·S·I 국면 모형 무관) — 캐시 무효화 금지(교훈 31).
     "R95_STRESS_EXIT", "R95_STRESS_FT_PCT", "R95_STRESS_VOL_RATIO", "R95_REBOUND_REENTRY", "R95_REBOUND_HIGH_N",
     "R95_REBOUND_RET_N", "R95_REBOUND_RET", "R95_REBOUND_POS", "R95_DEEP_HAIRCUT_MAX_DAYS", "R95_DEEP_HAIRCUT_AFTER_POS",
+    # [v1.64.0 R96] 라이브 SPY 신호 뒤 변동성 관리 오버레이 전용(검증·워크포워드·S·I 국면 모형 무관) — 캐시 무효화 금지(교훈 31).
+    "R96_VOL_MANAGE", "R96_VOL_WINDOW", "R96_VOL_MIN_PERIODS", "R96_NEUTRAL_VOL_TARGET", "R96_HAIRCUT_VOL_TARGET",
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -8186,6 +8230,66 @@ def apply_r95_overlays(sig: pd.DataFrame, px: pd.Series, fast_pct: Optional[pd.S
                      mean_before=diag["mean_pre"], mean_after=diag["mean_post"],
                      ft_pct=getattr(cfg, "R95_STRESS_FT_PCT", None), vol_ratio=getattr(cfg, "R95_STRESS_VOL_RATIO", None),
                      max_days=_N, note="⚠ 사이징 오버레이(R95) · 되돌리기 R95_STRESS_EXIT/R95_REBOUND_REENTRY=False · R95_DEEP_HAIRCUT_MAX_DAYS=0"))
+    return out, diag
+
+
+def apply_r96_vol_overlay(sig: pd.DataFrame, px: pd.Series, cfg: Config = CFG
+                          ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.64.0 R96 ⚠ 사이징] 부분 노출일 변동성 관리 — R95 오버레이 **뒤**의 target_pos만 바꾼다(상태·플래그·다른 규칙 불변).
+
+    σ20 = px(총수익 Adj Close) 일수익의 R96_VOL_WINDOW일 표준편차(최소 R96_VOL_MIN_PERIODS일) × √252 — t일 종가까지(인과).
+      (N) 중립 부분일 = state NEUTRAL & 0<E<1 → E' = max(E, min(1, E·τN/σ20))                              [올림만]
+      (H) 얕은 헤어컷일 = extension_haircut & 0<ext_cap<1 & 0<E<1 → E' = clip(E·τH/σ20, 0, 1)                [양방향]
+      (R95 (A) 청산일은 0 · (P2) 시한일은 ext_cap=0이라 저절로 빠진다. (P1) 재진입일은 상태가 NEUTRAL일 때만 (N) 대상.)
+    σ20이 없거나 0이면 그 날은 그대로. pos_pre_r96 열(적용 전 = R95 라이브)을 남긴다 — S 'R96 없음(= R95 M)' 비교 행·긴 이력 판정용.
+    끄기: R96_VOL_MANAGE=False(비트 동일) · τ=0이면 그 가지만 끔."""
+    out = sig.copy()
+    idx = out.index
+    tp0 = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r96"] = tp0.copy()
+    tp = tp0.copy()
+    mN = pd.Series(False, index=idx); mH = pd.Series(False, index=idx)
+    p = pd.Series(px).astype(float).reindex(idx)
+    r = p.pct_change()
+    vol = (r.rolling(int(getattr(cfg, "R96_VOL_WINDOW", 20)), min_periods=int(getattr(cfg, "R96_VOL_MIN_PERIODS", 15))).std()
+           * np.sqrt(252.0))
+    out["r96_vol20"] = vol
+    diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(cfg, "R96_VOL_MANAGE", False)):
+        part = (tp0 > 1e-9) & (tp0 < 1.0 - 1e-9)
+        # R95 발동일 처리: (A) 청산일은 0이라 부분이 아니고 (P2) 시한일은 ext_cap=0이라 (H)에서 빠진다.
+        # (P1)로 0.6이 된 날은 상태가 RISK_OFF면 빠지고, 상태가 NEUTRAL이면 (N) 대상이다(오프라인 판정 r96/final96.py와 같은 정의).
+        okv = vol.notna() & (vol > 1e-12)
+        st = out["state"].reindex(idx).astype(str) if "state" in out.columns else pd.Series("", index=idx)
+        ecap = (pd.to_numeric(out["ext_cap"], errors="coerce").reindex(idx).fillna(1.0)
+                if "ext_cap" in out.columns else pd.Series(1.0, index=idx))
+        ehit = (out["extension_haircut"].reindex(idx).fillna(False).astype(bool)
+                if "extension_haircut" in out.columns else pd.Series(False, index=idx))
+        tN = float(getattr(cfg, "R96_NEUTRAL_VOL_TARGET", 0.0) or 0.0)
+        tH = float(getattr(cfg, "R96_HAIRCUT_VOL_TARGET", 0.0) or 0.0)
+        neu = part & st.eq("NEUTRAL") & okv
+        hcs = part & ehit & (ecap > 1e-12) & (ecap < 1.0 - 1e-12) & ~st.eq("NEUTRAL") & okv
+        vs = vol.where(okv)
+        if tN > 0:
+            newN = np.maximum(tp0, (tp0 * tN / vs).clip(upper=1.0))
+            mN = neu & (newN > tp0 + 1e-12)
+            tp[mN] = newN[mN]
+        if tH > 0:
+            newH = (tp0 * tH / vs).clip(lower=0.0, upper=1.0)
+            mH = hcs & ((newH - tp0).abs() > 1e-12)
+            tp[mH] = newH[mH]
+        diag = {"enabled": True, "neutral_up_days": int(mN.sum()), "haircut_up_days": int((mH & (tp > tp0)).sum()),
+                "haircut_down_days": int((mH & (tp < tp0)).sum()), "changed_days": int(((tp - tp0).abs() > 1e-12).sum()),
+                "mean_pre": round(float(tp0.mean()), 4), "mean_post": round(float(tp.mean()), 4),
+                "neutral_days": int(neu.sum()), "haircut_days": int(hcs.sum()), "tau_n": tN, "tau_h": tH}
+    out["target_pos"] = tp.clip(lower=0.0, upper=1.0)
+    out["r96_vol_neutral_up"] = mN
+    out["r96_vol_haircut"] = mH
+    log("SIGNAL", kv(event="r96_vol_overlay", enabled=diag.get("enabled"), neutral_up=diag.get("neutral_up_days", 0),
+                     haircut_up=diag.get("haircut_up_days", 0), haircut_down=diag.get("haircut_down_days", 0),
+                     changed=diag.get("changed_days", 0), mean_before=diag.get("mean_pre"), mean_after=diag.get("mean_post"),
+                     tau_n=getattr(cfg, "R96_NEUTRAL_VOL_TARGET", None), tau_h=getattr(cfg, "R96_HAIRCUT_VOL_TARGET", None),
+                     note="⚠ 사이징 오버레이(R96) · 되돌리기 R96_VOL_MANAGE=False"))
     return out, diag
 
 
@@ -10313,6 +10417,14 @@ def run(cfg: Config = CFG) -> dict:
         log("SIGNAL", kv(event="r95_overlays_failed", err=type(_e95).__name__, msg=str(_e95)[:160],
                          action="오버레이 없이 계속(= v1.62.1 신호) — 00 줄에 표시"), level="error")
         r95_diag = {"enabled": False, "error": f"{type(_e95).__name__}: {str(_e95)[:120]}"}
+    # [v1.64.0 R96 ⚠] 부분 노출일 변동성 관리 — R95 뒤(같은 총수익 가격 · 인과). 실패하면 R96 없이 계속(= v1.63.0 신호).
+    r96_diag: Dict[str, Any] = {"enabled": False}
+    try:
+        sig, r96_diag = apply_r96_vol_overlay(sig, px_adj, cfg)
+    except Exception as _e96:
+        log("SIGNAL", kv(event="r96_vol_overlay_failed", err=type(_e96).__name__, msg=str(_e96)[:160],
+                         action="R96 없이 계속(= v1.63.0 신호) — 00 줄에 표시"), level="error")
+        r96_diag = {"enabled": False, "error": f"{type(_e96).__name__}: {str(_e96)[:120]}"}
     reason = build_reason_text(contrib, sig["state"], score)
     t_sig_done = time.time()
     stage_timing["07_신호생성(H점수+국면신호)"] = round(t_sig_done - t_wf_done, 2)
@@ -10461,6 +10573,7 @@ def run(cfg: Config = CFG) -> dict:
             "sig_norev": sig_norev, "bt_norev": bt_norev, "revision_audit": rev_audit,   # [v1.61.0 R93] 측정 전용
             "revised_excluded": revised_excluded,                                          # [v1.62.0 R94] 라이브 제외 계열
             "r95": r95_diag,                                                               # [v1.63.0 R95] 사이징 오버레이 발동 요약
+            "r96": r96_diag,                                                               # [v1.64.0 R96] 변동성 관리 발동 요약
             "stage_timing": stage_timing}
 
 
@@ -11328,6 +11441,17 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         daily[_n95] = (sig[_c95].reindex(idx).map({True: "발동", False: ""}) if _c95 in sig.columns else "")
     if "pos_pre_r95" in sig.columns:
         daily["R95 전 목표비중"] = pd.to_numeric(sig["pos_pre_r95"], errors="coerce").reindex(idx)
+    # [v1.64.0 R96] 변동성 관리 발동일 · σ20 · 적용 전 목표비중
+    if "r96_vol_neutral_up" in sig.columns or "r96_vol_haircut" in sig.columns:
+        _n96 = sig.get("r96_vol_neutral_up", pd.Series(False, index=sig.index)).reindex(idx).fillna(False).astype(bool)
+        _h96 = sig.get("r96_vol_haircut", pd.Series(False, index=sig.index)).reindex(idx).fillna(False).astype(bool)
+        _tp96 = pd.to_numeric(sig["target_pos"], errors="coerce").reindex(idx)
+        _pp96 = pd.to_numeric(sig.get("pos_pre_r96", sig["target_pos"]), errors="coerce").reindex(idx)
+        daily["변동성관리(R96)"] = np.where(_n96, "중립↑", np.where(_h96 & (_tp96 > _pp96), "헤어컷↑",
+                                         np.where(_h96 & (_tp96 < _pp96), "헤어컷↓", "")))
+        daily["SPY 20일 변동성(R96)"] = pd.to_numeric(sig.get("r96_vol20"), errors="coerce").reindex(idx).round(4) \
+            if "r96_vol20" in sig.columns else np.nan
+        daily["R96 전 목표비중"] = _pp96
     daily["전략일간수익"] = (bt["strategy_ret"] * 100).round(3)
     daily["전략자산곡선"] = (bt["equity"] / bt["equity"].iloc[0]).round(4)
     daily["시장자산곡선"] = (bt["bh_equity"] / bt["bh_equity"].iloc[0]).round(4)
@@ -11622,6 +11746,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
+        ("★★★ R96 회피↑·참여↑ — 부분 노출일 변동성 관리(⚠ 신호 변경)", _r96_note(res)),
         ("★★★ R95 회피↑·참여 유지 — SPY 신호 사이징 오버레이 3개(⚠ 신호 변경)", _r95_note(res)),
         ("★★★ R94 룩어헤드 제거 — 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)", _revision_audit_note(res)),
         # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
@@ -11938,13 +12063,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.63.0"
+BUNDLE_VERSION = "v1.64.0"
 BUNDLE_VERSION_DATE = "2026-09-24"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.76.0", "industry_rotation": "v0.47.0", "stock_regime": "v0.9.1"}   # [v1.63.0 R95]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.77.0", "industry_rotation": "v0.48.0", "stock_regime": "v0.9.2"}   # [v1.64.0 R96]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
@@ -11995,9 +12120,33 @@ def _r95_note(res: Dict[str, Any]) -> str:
             "M 78.4/60.1 → 80.1/61.1 · S★ 70.7/83.5 → 74.1/84.7 · I★ 71.0/87.6 → 74.2/89.5 · K★ 71.3/88.1 → 75.1/90.4 — "
             "네 층 모두 회피↑ · 참여↑ · MDD 불변(앞/뒤 절반·연도 잭나이프 전부 같은 방향). "
             "⚠ 표본 안 규칙 → S 00U '[R95 긴 이력]' 블록(1993~2017 SPY)이 사전등록 판정(Δ회피 ≥0 · Δ참여 ≥0, 미통과면 되돌림). "
+            "⚠⚠ R95 리포트 판정: 긴 이력 **미통과**(전체 −0.90/−0.29 · 뒤 2008~2017 −1.39/−0.80) — 되돌리면 네 층 참여가 1.0~2.6%p 떨어져 "
+            "사용자 지시(참여율 절대 하락 금지)와 충돌 → R96에서 **유지**하고 규칙별 긴 이력 분해(S 00U 블록 L)로 원인 규칙을 가린다"
+            "(오프라인 대용 SPX 2000~2008: P1 −3.75/+1.26 · A(vr) +0.27/−0.72 · P2 0/0 — 약한 고리는 P1). "
             "06c 격자 행에는 이 오버레이가 없다(라이브 ★ 행만). "
             "되돌리기: m_overrides={'R95_STRESS_EXIT': False, 'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. "
             "연구·교육용, 투자 자문 아님.")
+
+
+def _r96_note(res: Dict[str, Any]) -> str:
+    """[v1.64.0 R96] 00 줄 — 변동성 관리 발동 요약 · 오프라인 예상 · 사전등록 · 되돌리기."""
+    d = (res or {}).get("r96") or {}
+    cfg = (res or {}).get("cfg", CFG)
+    if d.get("error"):
+        return f"⚠ 적용 실패 — {d['error']} (R96 없이 v1.63.0 신호로 계산됨)"
+    if not bool(getattr(cfg, "R96_VOL_MANAGE", False)):
+        return "꺼짐(되돌림 상태 = v1.63.0 신호)"
+    return (f"(N) 중립 부분일 올림 {d.get('neutral_up_days', 0)}일(중립 부분일 {d.get('neutral_days', '-')}일 중 · "
+            f"E' = max(E, min(1, E·{float(getattr(cfg, 'R96_NEUTRAL_VOL_TARGET', 0)):g}/σ20)) — 조용한 중립장만 올린다) · "
+            f"(H) 얕은 헤어컷일 {d.get('haircut_up_days', 0)}일 올림 · {d.get('haircut_down_days', 0)}일 내림(헤어컷 부분일 {d.get('haircut_days', '-')}일 중 · "
+            f"E' = clip(E·{float(getattr(cfg, 'R96_HAIRCUT_VOL_TARGET', 0)):g}/σ20, 0, 1) — 과열이 요동치면 줄이고 조용하면 탄다) · "
+            f"σ20 = SPY 총수익 {int(getattr(cfg, 'R96_VOL_WINDOW', 20))}일 변동성(연율 · t일 종가까지) · 평균 목표비중 {d.get('mean_pre', '-')} → "
+            f"{d.get('mean_post', '-')}(바뀐 날 {d.get('changed_days', 0)}, 전 이력). "
+            "오프라인 예상(R95 리포트 기준 · 하네스가 엔진 곡선 재현 · 기준 = R95 라이브): M 80.1/61.1 → 80.4/61.4 · S★ 74.0/84.8 → 74.4/86.0 · "
+            "I★ 74.1/90.1 → 74.6/91.6 · K★ 75.0/90.5 → 75.3/91.8 — 네 층 모두 회피↑·참여↑ · MDD 불변 · 앞/뒤 절반·연도 잭나이프 9회 전부 같은 방향 · "
+            "긴 이력 대용(SPX 2000~2017) +0.28/+0.36. ⚠ 사전등록: S 00U 블록 L '[R96 긴 이력]'(1993~2017 · M 자신의 신호)에서 "
+            "R96 전체 Δ회피 ≥0 · Δ참여 ≥0 · 두 반쪽 Δ합 ≥ −1%p(미통과면 다음 라운드 되돌림 후보). "
+            "되돌리기: m_overrides={'R96_VOL_MANAGE': False}. 연구·교육용, 투자 자문 아님.")
 
 
 def _revision_audit_note(res: Dict[str, Any]) -> str:

@@ -17,6 +17,18 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.77.0 - 2026-09-24 - [R96 M 변동성 관리 비교 행 · R96 긴 이력 판정(사전등록) · R95 규칙별 몫 · 00 줄 — S 규칙·비중 무변경]
+#    사용자 지시(2026-09-24): "… 참여율 절대로 낮추지 말고 회피를 더 높게 올리도록 개선해". 시작 v0.76.0 → 목표 v0.77.0.
+#    S★ 변화는 M v1.64.0 부분 노출일 변동성 관리(E_t)에서 온다 — S 배분 규칙은 그대로다.
+#    (§1) [회피참여비교]에 'R96 변동성 관리 없음(= R95 M)' 행(pos_pre_r96 · 그 변형의 중립일로 같은 S 규칙) — I·K 비교 행도 이 행에서 나온다.
+#    (§2) alloc['spy_m_pre96_ret'] → 00U 블록 B 'M R96 변동성 관리 없음(= R95 M)' 행(_spy_m_pre95(col="pos_pre_r96")).
+#    (§3) r96_long_history() · 00U 블록 L — ① R96 켬/끔(사전등록) ② R95 전체 ③~⑤ R95 규칙별 몫(M.apply_r95_overlays를 pos_pre_r95에
+#         다시 적용해 한 규칙만 끈 목표와 비교 · 재적용 재현 차 기록). R95 블록 K 미통과(−0.90/−0.29)의 원인 규칙을 엔진 숫자로 가린다.
+#         r95_long_history는 이제 pos_pre_r96(= R95 라이브)을 '라이브'로 쓴다(R96 효과가 섞이지 않게).
+#    (§4) 00 '★★★ R96 라이브' 줄(R96 없음 → ★ · Δ · M 전후 · 긴 이력 · 규칙별 몫 · 되돌리기) · 'R95 라이브' 줄은 R95만의 효과
+#         (R95 없음 → R96 없음)로 바꿨고 미통과 문구에 '유지(사용자 지시) · 원인은 블록 L'을 적는다.
+#    (§5) _CACHE_KEY_IGNORE_FIELDS 폴백에 R96 5필드 · LAYER_MIN_VERSIONS M v1.64.0 · S v0.77.0 · I v0.48.0.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.76.0 - 2026-09-24 - [R95 M 사이징 오버레이 비교 행 · 긴 이력 판정(사전등록) · 00 줄 — S 규칙·비중 무변경(S★ 변화는 M E_t에서)]
 #    사용자 지시(2026-09-24): "4개 층 모두다 회피 더 많이 올려봐 그대신 참여는 떨어지면 절대 안돼". 시작 v0.75.1 → 목표 v0.76.0.
 #    (§1) [회피참여비교]에 'R95 규칙 없음(= R94 M)' 행 — M v1.63.0 sig의 pos_pre_r95(오버레이 이전 목표)와 **그 변형의** 중립일로 같은 S 규칙.
@@ -2917,7 +2929,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.76.0"
+VERSION = "v0.77.0"
 VERSION_DATE = "2026-09-24"
 
 # =============================================================================
@@ -5555,6 +5567,8 @@ _CACHE_KEY_IGNORE_FIELDS = frozenset({
     # [v0.76.0 R95] M v1.63.0 신설 10필드(SPY 라이브 신호 뒤 사이징 오버레이 — 섹터·산업 국면 모형·검증·가중치 무관).
     "R95_STRESS_EXIT", "R95_STRESS_FT_PCT", "R95_STRESS_VOL_RATIO", "R95_REBOUND_REENTRY", "R95_REBOUND_HIGH_N",
     "R95_REBOUND_RET_N", "R95_REBOUND_RET", "R95_REBOUND_POS", "R95_DEEP_HAIRCUT_MAX_DAYS", "R95_DEEP_HAIRCUT_AFTER_POS",
+    # [v0.77.0 R96] M v1.64.0 신설 5필드(SPY 라이브 신호 뒤 변동성 관리 — 검증·가중치·섹터 모형 무관).
+    "R96_VOL_MANAGE", "R96_VOL_WINDOW", "R96_VOL_MIN_PERIODS", "R96_NEUTRAL_VOL_TARGET", "R96_HAIRCUT_VOL_TARGET",
 })
 # [v0.60.0 R72 §3-3 ★ 단일 정본] 위 목록은 이제 **구버전 M(v1.55.0 미만) 폴백 전용 사본**이다. 실제 키 계산은
 #   M.CACHE_KEY_IGNORE_FIELDS(M v1.55.0이 정본)를 읽는다 — M에 Config 필드를 더하는 라운드가 S를 따로 고치지 않아도
@@ -8510,7 +8524,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.63.0", "sector_rotation": "v0.76.0", "industry_rotation": "v0.47.0"}   # [v0.76.0 R95]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.64.0", "sector_rotation": "v0.77.0", "industry_rotation": "v0.48.0"}   # [v0.77.0 R96]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -9356,14 +9370,15 @@ def user_rel_portfolio(rets: Dict[str, pd.Series], spy_ret: pd.Series, cfg,
     return pd.DataFrame(rows)
 
 
-def _spy_m_pre95(res, M, eval_idx, rf_daily=None) -> Optional[pd.Series]:
+def _spy_m_pre95(res, M, eval_idx, rf_daily=None, col: str = "pos_pre_r95") -> Optional[pd.Series]:
     """[v0.76.0 R95] M(SPY 국면전략)을 오버레이 **이전** 목표비중(pos_pre_r95)으로 다시 잰 일수익 — 00U 블록 B 'M R95 규칙 없음' 행.
-    M v1.63.0 미만이거나 두 값이 같으면 None(행 생략). M.run_backtest 그대로(t+1 시가 · 비용 · 현금 이자 — M ★와 같은 잣대)."""
+    [v0.77.0 R96] col="pos_pre_r96"이면 R96 변동성 관리 이전(= R95 M) — 00U 블록 B 'M R96 변동성 관리 없음' 행.
+    M 버전이 낮거나 두 값이 같으면 None(행 생략). M.run_backtest 그대로(t+1 시가 · 비용 · 현금 이자 — M ★와 같은 잣대)."""
     try:
         sg = res.get("sig") if isinstance(res, dict) else None
-        if sg is None or "pos_pre_r95" not in sg.columns:
+        if sg is None or col not in sg.columns:
             return None
-        pre = pd.to_numeric(sg["pos_pre_r95"], errors="coerce").fillna(0.0).astype(float)
+        pre = pd.to_numeric(sg[col], errors="coerce").fillna(0.0).astype(float)
         if float((pre - pd.to_numeric(sg["target_pos"], errors="coerce").fillna(0.0)).abs().max()) <= 1e-12:
             return None
         bt0 = M.run_backtest(res["price"], pre, res.get("cfg", M.CFG), rf_daily)
@@ -9389,7 +9404,9 @@ def r95_long_history(res, M, cfg, rf_daily=None) -> Dict[str, Any]:
             out["note"] = "M v1.63.0 미만(pos_pre_r95 없음) — 판정 생략"
             return out
         mcfg = res.get("cfg", M.CFG)
-        live = pd.to_numeric(sg["target_pos"], errors="coerce").fillna(0.0).astype(float)
+        # [v0.77.0 R96] M v1.64.0부터 target_pos에 R96 변동성 관리가 들어간다 → R95만의 판정은 pos_pre_r96(= R95 라이브)로 잰다.
+        live = pd.to_numeric(sg["pos_pre_r96"] if "pos_pre_r96" in sg.columns else sg["target_pos"],
+                             errors="coerce").fillna(0.0).astype(float)
         pre = pd.to_numeric(sg["pos_pre_r95"], errors="coerce").fillna(0.0).astype(float)
         bt1 = M.run_backtest(res["price"], live, mcfg, rf_daily)
         bt0 = M.run_backtest(res["price"], pre, mcfg, rf_daily)
@@ -9436,6 +9453,109 @@ def r95_long_history(res, M, cfg, rf_daily=None) -> Dict[str, Any]:
     except Exception as e:
         out = {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
         log("ROTATION", kv(event="r95_long_history_failed", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+    return out
+
+
+def r96_long_history(res, M, cfg, rf_daily=None) -> Dict[str, Any]:
+    """[v0.77.0 R96 · 사전등록 + 규칙별 분해] M 오버레이의 **긴 이력** — M 자신의 전 이력 신호(1993~2017) × SPY.
+
+    R95 긴 이력 판정(블록 K)은 세 규칙을 한꺼번에 봐서 **어느 규칙이** 약한지 몰랐다(R95 리포트: 전체 −0.90/−0.29 미통과).
+    여기서는 같은 잣대(M.run_backtest · user_rel_portfolio · 창 = 전체 · 1993~2007 · 2008~2017)로 다섯 비교를 한다:
+      ① R96 변동성 관리(켬 − 끔)       = target_pos vs pos_pre_r96                 ← R96 사전등록
+      ② R95 전체(3규칙 − 없음)          = pos_pre_r96 vs pos_pre_r95                 (블록 K와 같은 값)
+      ③~⑤ R95 규칙별 몫(빼 보기)        = pos_pre_r96 vs 'R95에서 그 규칙만 끈 목표'  ← M.apply_r95_overlays를 pos_pre_r95에 다시 적용
+    R96 사전등록 통과 = ① 전체 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 두 반쪽 Δ(회피+참여) ≥ −1%p. 규칙별 몫은 판정이 아니라 **다음 결정의 근거**다
+    (전체 Δ합이 음수인 규칙 = 약한 고리). ⚠ FT(급락트리거 백분위)는 2018~만 있어 2017 이전 (A)는 변동성 비로만 발동한다."""
+    out: Dict[str, Any] = {"enabled": False}
+    try:
+        sg = res.get("sig") if isinstance(res, dict) else None
+        if sg is None or not {"pos_pre_r95", "pos_pre_r96"} <= set(sg.columns) or res.get("price") is None:
+            out["note"] = "M v1.64.0 미만(pos_pre_r96 없음) — 판정 생략"
+            return out
+        mcfg = res.get("cfg", M.CFG)
+        pxa = res.get("px_adj")
+        if pxa is None:
+            _pr = res["price"]; pxa = _pr["Adj Close"] if "Adj Close" in _pr.columns else _pr["Close"]
+        pxa = pd.to_numeric(pd.Series(pxa), errors="coerce")
+        _num = lambda c: pd.to_numeric(sg[c], errors="coerce").fillna(0.0).astype(float)
+        ser: Dict[str, pd.Series] = {"live": _num("target_pos"), "r95": _num("pos_pre_r96"), "none": _num("pos_pre_r95")}
+        recon = np.nan
+        loo_note = ""
+        if hasattr(M, "apply_r95_overlays"):
+            import dataclasses as _dc
+            sg0 = sg.copy()
+            sg0["target_pos"] = ser["none"]
+            _fp = res.get("fast_pct")
+            _o, _ = M.apply_r95_overlays(sg0, pxa, _fp, mcfg)
+            recon = float((pd.to_numeric(_o["target_pos"], errors="coerce").fillna(0.0) - ser["r95"]).abs().max())
+            for _k, _ov in (("noA", {"R95_STRESS_EXIT": False}), ("noP1", {"R95_REBOUND_REENTRY": False}),
+                            ("noP2", {"R95_DEEP_HAIRCUT_MAX_DAYS": 0})):
+                _o2, _ = M.apply_r95_overlays(sg0, pxa, _fp, _dc.replace(mcfg, **_ov))
+                ser[_k] = pd.to_numeric(_o2["target_pos"], errors="coerce").fillna(0.0).astype(float)
+            if recon > 1e-9:
+                loo_note = f"⚠ R95 재적용 재현 차 {recon:.2e} — 규칙별 몫은 근사"
+        else:
+            loo_note = "M에 apply_r95_overlays 없음 — 규칙별 몫 생략"
+        rets = {k: M.run_backtest(res["price"], v, mcfg, rf_daily)["strategy_ret"] for k, v in ser.items()}
+        spy = pxa.pct_change()
+        end = pd.Timestamp(getattr(cfg, "R95_LONG_END", "2017-12-31"))
+        st0 = pd.Timestamp(max(pd.Timestamp(getattr(mcfg, "DATA_START", "1993-01-29")), ser["live"].index.min()))
+        wins = [("전체(1993~2017)", st0, end), ("앞(1993~2007)", st0, pd.Timestamp("2007-12-31")),
+                ("뒤(2008~2017)", pd.Timestamp("2008-01-01"), end)]
+        comps = [("① R96 변동성 관리(켬 − 끔)", "live", "r95", "R96"), ("② R95 전체(3규칙 − 없음)", "r95", "none", "R95"),
+                 ("③ R95 (A) 스트레스 청산 몫", "r95", "noA", "A"), ("④ R95 (P1) 반등 재진입 몫", "r95", "noP1", "P1"),
+                 ("⑤ R95 (P2) 깊은 헤어컷 시한 몫", "r95", "noP2", "P2")]
+        rows = []
+        for wn, a, b in wins:
+            ix = spy.index[(spy.index >= a) & (spy.index <= b)]
+            if len(ix) < 250:
+                continue
+            keys = [k for k in ser if k in rets]
+            tab = user_rel_portfolio({k: rets[k].reindex(ix).fillna(0.0) for k in keys}, spy.reindex(ix).fillna(0.0), cfg)
+            met = {k: tab.iloc[i] for i, k in enumerate(keys)}
+            for cn, ka, kb, tag in comps:
+                if ka not in met or kb not in met:
+                    continue
+                ta, tb = met[ka], met[kb]
+                da = (float(ta["하락 회피율"]) - float(tb["하락 회피율"])) * 100.0
+                dp = (float(ta["상승 참여율"]) - float(tb["상승 참여율"])) * 100.0
+                rows.append({"비교": cn, "규칙": tag, "창": wn, "시작": str(ix[0].date()), "끝": str(ix[-1].date()),
+                             "바뀐 날": int(((ser[ka] - ser[kb]).abs() > 1e-12).reindex(ix).fillna(False).sum()),
+                             "Δ회피(%p)": round(da, 2), "Δ참여(%p)": round(dp, 2), "Δ합(%p)": round(da + dp, 2),
+                             "회피(켬)": ta["하락 회피율"], "참여(켬)": ta["상승 참여율"], "회피(끔)": tb["하락 회피율"], "참여(끔)": tb["상승 참여율"],
+                             "배수(켬)": ta["배수"], "배수(끔)": tb["배수"], "MDD(켬)": ta["MDD"], "MDD(끔)": tb["MDD"]})
+        tabf = pd.DataFrame(rows)
+        if not len(tabf):
+            out["note"] = "긴 이력 창이 비었다(자료 부족)"
+            return out
+        r96 = tabf[tabf["규칙"] == "R96"]
+        f96 = r96[r96["창"].str.startswith("전체")]
+        h96 = r96[~r96["창"].str.startswith("전체")]
+        ok_full = bool(len(f96)) and float(f96["Δ회피(%p)"].iloc[0]) >= 0 and float(f96["Δ참여(%p)"].iloc[0]) >= 0
+        ok_half = bool(len(h96)) and bool((h96["Δ합(%p)"] >= -1.0).all())
+        rules = {}
+        for tag in ("A", "P1", "P2"):
+            _r = tabf[(tabf["규칙"] == tag)]
+            if len(_r):
+                _f = _r[_r["창"].str.startswith("전체")]
+                rules[tag] = {"full_sum": (float(_f["Δ합(%p)"].iloc[0]) if len(_f) else np.nan),
+                              "full": (f"{float(_f['Δ회피(%p)'].iloc[0]):+.2f}/{float(_f['Δ참여(%p)'].iloc[0]):+.2f}" if len(_f) else "-"),
+                              "halves": ";".join(f"{x['창']}:{x['Δ회피(%p)']:+.2f}/{x['Δ참여(%p)']:+.2f}"
+                                                 for _, x in _r[~_r["창"].str.startswith("전체")].iterrows())}
+        weak = [t for t, v in rules.items() if v.get("full_sum") == v.get("full_sum") and v["full_sum"] < 0]
+        weakest = (min(rules, key=lambda t: rules[t]["full_sum"]) if rules else None)
+        out.update({"enabled": True, "table": tabf, "pass": bool(ok_full and ok_half), "ok_full": ok_full, "ok_half": ok_half,
+                    "rules": rules, "weak_rules": weak, "weakest": weakest, "recon_diff": recon, "loo_note": loo_note,
+                    "ft_note": "FT(급락트리거 백분위)는 2018~만 있어 2017 이전 (A)는 변동성 비로만 발동"})
+        log("ROTATION", kv(event="r96_long_history", passed=out["pass"],
+                           r96_full=(f"{float(f96['Δ회피(%p)'].iloc[0]):+.2f}/{float(f96['Δ참여(%p)'].iloc[0]):+.2f}" if len(f96) else "-"),
+                           rules=";".join(f"{t}={v['full']}" for t, v in rules.items()), weak=",".join(weak) or "-",
+                           recon=(f"{recon:.1e}" if recon == recon else "n/a"),
+                           note="R96 사전등록: 전체 Δ회피≥0·Δ참여≥0 & 반쪽 Δ합≥−1%p · 규칙별 몫(빼 보기)은 다음 결정 근거"), M=M)
+    except Exception as e:
+        out = {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+        log("ROTATION", kv(event="r96_long_history_failed", err=type(e).__name__, msg=str(e)[:160],
+                           trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
     return out
 
 
@@ -9829,6 +9949,9 @@ def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
     _mp95 = al.get("spy_m_pre95_ret")         # [v0.76.0 R95] M 오버레이 이전(= R94 M)
     if _mp95 is not None:
         rets["M R95 규칙 없음(= R94 M)"] = _mp95
+    _mp96 = al.get("spy_m_pre96_ret")         # [v0.77.0 R96] M 변동성 관리 이전(= R95 M)
+    if _mp96 is not None:
+        rets["M R96 변동성 관리 없음(= R95 M)"] = _mp96
     rets["SPY 단순보유(B&H)"] = spy
     head = user_rel_portfolio(rets, spy, cfg)
     fr_labels = [l for l in bts if l != lp and "대조" not in str(l)]
@@ -9873,6 +9996,8 @@ def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
     out["revision_audit"] = (rc.get("revision_audit") if isinstance(rc, dict) else None) or {}                    # [v0.74.0 R93]
     out["r95"] = (rc.get("r95") if isinstance(rc, dict) else None) or {}                                          # [v0.76.0 R95]
     out["r95_long"] = (rc.get("r95_long") if isinstance(rc, dict) else None) or {}                                # [v0.76.0 R95]
+    out["r96"] = (rc.get("r96") if isinstance(rc, dict) else None) or {}                                          # [v0.77.0 R96]
+    out["r96_long"] = (rc.get("r96_long") if isinstance(rc, dict) else None) or {}                                # [v0.77.0 R96]
     out["neutral_fill"] = (dg.get("neutral_fill") or {})
     # [v0.72.0 R91] 블록 J — 노란색(★)의 회피·참여 기여를 M 버킷으로 분해한다(어디서 새는지).
     try:
@@ -10036,6 +10161,24 @@ def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[
                                           + f" (전체 {'O' if _lg.get('ok_full') else 'X'} · 반쪽 {'O' if _lg.get('ok_half') else 'X'})"}])
     elif _lg.get("error") or _lg.get("note"):
         _t(_bk95, [{"항목": "상태", "값": f"산출 안 됨 — {_lg.get('error') or _lg.get('note')}"}])
+    # ---- [v0.77.0 R96] L. R96 변동성 관리 긴 이력 판정(사전등록) + R95 규칙별 몫(빼 보기) ----
+    _lg6 = pk.get("r96_long") or {}
+    _bk96 = "L. [R96 긴 이력] 변동성 관리 판정 + R95 규칙별 몫(빼 보기) 1993~2017 SPY(사전등록)"
+    if _lg6.get("enabled") and isinstance(_lg6.get("table"), pd.DataFrame):
+        _t(_bk96, [{"항목": "읽는 법",
+                    "값": ("① R96 켬 vs 끔 = R96 사전등록(전체 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 두 반쪽 Δ(회피+참여) ≥ −1%p). "
+                          "② R95 세 규칙 전체(블록 K와 같은 값). ③~⑤ R95에서 그 규칙 하나만 껐을 때와의 차 = 그 규칙의 몫 — "
+                          "블록 K 미통과(R95 리포트 −0.90/−0.29)의 **원인 규칙**을 가린다(전체 Δ합이 음수인 규칙 = 약한 고리). "
+                          f"⚠ {_lg6.get('ft_note', '')}. {_lg6.get('loo_note', '')}")}])
+        parts.append(_lg6["table"].assign(블록=_bk96)[["블록"] + list(_lg6["table"].columns)])
+        _rl = _lg6.get("rules") or {}
+        _t(_bk96, [{"항목": "판정",
+                    "값": (("★ R96 통과 — 유지" if _lg6.get("pass") else "⚠ R96 미통과 — 다음 라운드 되돌림 후보(m_overrides={'R96_VOL_MANAGE': False})")
+                          + f" (전체 {'O' if _lg6.get('ok_full') else 'X'} · 반쪽 {'O' if _lg6.get('ok_half') else 'X'}) | R95 규칙별 몫(전체 창 Δ회피/Δ참여): "
+                          + " · ".join(f"{t} {v.get('full', '-')}" for t, v in _rl.items())
+                          + (f" ⇒ 약한 고리: {', '.join(_lg6.get('weak_rules') or [])}" if _lg6.get("weak_rules") else " ⇒ 음수 몫 없음"))}])
+    elif _lg6.get("error") or _lg6.get("note"):
+        _t(_bk96, [{"항목": "상태", "값": f"산출 안 됨 — {_lg6.get('error') or _lg6.get('note')}"}])
     df = pd.concat(parts, ignore_index=True, sort=False)
     lead = ["블록", "항목", "값"]
     return df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
@@ -10215,23 +10358,29 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
     _lg95 = pk.get("r95_long") or {}
     if _tb93 is not None:
         _p95 = _tb93[_tb93["전략"].astype(str).str.startswith("R95 규칙 없음")]
-        _s95 = _tb93[_tb93["전략"].astype(str).str.startswith("양쪽형 ★")]
+        _s95 = _tb93[_tb93["전략"].astype(str).str.startswith("R96 변동성 관리 없음")]     # [v0.77.0] R95만의 효과 = R95 없음 → R96 없음
+        if not len(_s95):
+            _s95 = _tb93[_tb93["전략"].astype(str).str.startswith("양쪽형 ★")]
         if len(_p95) and len(_s95):
             _a95, _b95 = _p95.iloc[0], _s95.iloc[0]
             _da = (float(_b95["하락 회피율"]) - float(_a95["하락 회피율"])) * 100
             _dp = (float(_b95["상승 참여율"]) - float(_a95["상승 참여율"])) * 100
             _m95 = ""
-            if _hd93 is not None and "M R95 규칙 없음(= R94 M)" in _hd93.index and "M(SPY 국면전략)" in _hd93.index:
-                _mm0, _mm1 = _hd93.loc["M R95 규칙 없음(= R94 M)"], _hd93.loc["M(SPY 국면전략)"]
+            _m95b = ("M R96 변동성 관리 없음(= R95 M)" if (_hd93 is not None and "M R96 변동성 관리 없음(= R95 M)" in _hd93.index)
+                     else "M(SPY 국면전략)")
+            if _hd93 is not None and "M R95 규칙 없음(= R94 M)" in _hd93.index and _m95b in _hd93.index:
+                _mm0, _mm1 = _hd93.loc["M R95 규칙 없음(= R94 M)"], _hd93.loc[_m95b]
                 _m95 = (f" | M {float(_mm0['하락 회피율']):.1%}/{float(_mm0['상승 참여율']):.1%} → **{float(_mm1['하락 회피율']):.1%}/"
                         f"{float(_mm1['상승 참여율']):.1%}**({_mm1['등급']})")
-            _lgs = ("긴 이력(1993~2017) 사전등록 " + ("★ 통과" if _lg95.get("pass") else "⚠ 미통과 — 다음 라운드 되돌림 후보")
+            _lgs = ("긴 이력(1993~2017) 사전등록 " + ("★ 통과" if _lg95.get("pass") else
+                                                       "⚠ 미통과 — 되돌리면 참여 하락(사용자 지시와 충돌) → 유지 · 원인 규칙은 00U 블록 L")
                     + ((" · " + " · ".join(f"{r['창']} {r['Δ회피(%p)']:+.2f}/{r['Δ참여(%p)']:+.2f}"
                                           for _, r in _lg95["table"].iterrows()))
                        if isinstance(_lg95.get("table"), pd.DataFrame) else "")
                     if _lg95.get("enabled") else f"긴 이력 판정 없음({_lg95.get('error') or _lg95.get('note') or '-'})")
             out.append((f"★★★ R95 라이브 — M 사이징 오버레이 3개(스트레스 청산 · 반등 재진입 · 깊은 헤어컷 시한 · ⚠ 신호 변경)",
-                        f"{'S★' if layer == '섹터' else 'I★'} 규칙 없음(= R94 M) {float(_a95['하락 회피율']):.1%}/{float(_a95['상승 참여율']):.1%}"
+                        ("(R95만의 효과 · ★는 R96 줄) " if str(_b95["전략"]).startswith("R96") else "")
+                        + f"{'S★' if layer == '섹터' else 'I★'} 규칙 없음(= R94 M) {float(_a95['하락 회피율']):.1%}/{float(_a95['상승 참여율']):.1%}"
                         f"({_a95['등급']}) → **{float(_b95['하락 회피율']):.1%}/{float(_b95['상승 참여율']):.1%}({_b95['등급']})** · "
                         f"Δ회피 {_da:+.2f}%p · Δ참여 {_dp:+.2f}%p"
                         + (" ✓ 회피↑·참여 유지" if (_da > 0 and _dp >= 0) else " ⚠ 사용자 조건(회피↑·참여 ≥0) 미충족")
@@ -10239,6 +10388,36 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
                         f"{float(_b95['MDD']) * 100:.2f}%" + _m95 + f" | {_lgs}. "
                         "되돌리기: m_overrides={'R95_STRESS_EXIT': False, 'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. "
                         "연구·교육용, 투자 자문 아님."))
+    # ---- [v0.77.0 R96] M v1.64.0 부분 노출일 변동성 관리 — 사용자 지시 "참여율 절대로 낮추지 말고 회피를 더 높게" ----
+    _lg96 = pk.get("r96_long") or {}
+    if _tb93 is not None:
+        _p96 = _tb93[_tb93["전략"].astype(str).str.startswith("R96 변동성 관리 없음")]
+        _s96 = _tb93[_tb93["전략"].astype(str).str.startswith("양쪽형 ★")]
+        if len(_p96) and len(_s96):
+            _a6, _b6 = _p96.iloc[0], _s96.iloc[0]
+            _da6 = (float(_b6["하락 회피율"]) - float(_a6["하락 회피율"])) * 100
+            _dp6 = (float(_b6["상승 참여율"]) - float(_a6["상승 참여율"])) * 100
+            _m96 = ""
+            if _hd93 is not None and "M R96 변동성 관리 없음(= R95 M)" in _hd93.index and "M(SPY 국면전략)" in _hd93.index:
+                _n0, _n1 = _hd93.loc["M R96 변동성 관리 없음(= R95 M)"], _hd93.loc["M(SPY 국면전략)"]
+                _m96 = (f" | M {float(_n0['하락 회피율']):.1%}/{float(_n0['상승 참여율']):.1%} → **{float(_n1['하락 회피율']):.1%}/"
+                        f"{float(_n1['상승 참여율']):.1%}**({_n1['등급']})")
+            _rl6 = _lg96.get("rules") or {}
+            _lgs6 = (("긴 이력(1993~2017) R96 사전등록 " + ("★ 통과" if _lg96.get("pass") else "⚠ 미통과 — 다음 라운드 되돌림 후보")
+                      + " · " + " · ".join(f"{r['창']} {r['Δ회피(%p)']:+.2f}/{r['Δ참여(%p)']:+.2f}"
+                                           for _, r in _lg96["table"][_lg96["table"]["규칙"] == "R96"].iterrows())
+                      + (" | R95 규칙별 몫(전체): " + " · ".join(f"{t} {v.get('full', '-')}" for t, v in _rl6.items())
+                         + (f" ⇒ 약한 고리 {', '.join(_lg96.get('weak_rules') or [])}" if _lg96.get("weak_rules") else "") if _rl6 else ""))
+                     if _lg96.get("enabled") else f"긴 이력 판정 없음({_lg96.get('error') or _lg96.get('note') or '-'})")
+            out.append((f"★★★ R96 라이브 — M 부분 노출일 변동성 관리(중립 조용하면 올림 · 과열 요동치면 내림 · ⚠ 신호 변경)",
+                        f"{'S★' if layer == '섹터' else 'I★'} R96 없음(= R95 M) {float(_a6['하락 회피율']):.1%}/{float(_a6['상승 참여율']):.1%}"
+                        f"({_a6['등급']}) → **{float(_b6['하락 회피율']):.1%}/{float(_b6['상승 참여율']):.1%}({_b6['등급']})** · "
+                        f"Δ회피 {_da6:+.2f}%p · Δ참여 {_dp6:+.2f}%p"
+                        + (" ✓ 회피↑·참여 유지" if (_da6 >= 0 and _dp6 >= 0) else " ⚠ 사용자 조건(회피↑·참여 ≥0) 미충족")
+                        + f" · 배수 {float(_a6['배수']):.3f} → {float(_b6['배수']):.3f} · MDD {float(_a6['MDD']) * 100:.2f}% → "
+                        f"{float(_b6['MDD']) * 100:.2f}%" + _m96 + f" | {_lgs6}. "
+                        "오프라인 예상(R95 리포트 하네스): S★ +0.37/+1.19 · I★ +0.51/+1.55 · M +0.28/+0.31. "
+                        "되돌리기: m_overrides={'R96_VOL_MANAGE': False}. 연구·교육용, 투자 자문 아님."))
     # ---- [v0.75.0 R94] M v1.62.0이 전 이력 재추정 지표를 **라이브에서 뺐다** → 지금 ★ 숫자가 정직한 기준선이다 ----
     if _ra93.get("excluded_live"):
         _m94 = _ra93.get("r93_measured") or {}
@@ -11786,6 +11965,18 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     log("RELCMP", kv(event="r95_pre_ready", e_diff_days=int(((_E_pre95 - _Evr).abs() > 1e-12).sum()),
                                      mean_pre=round(float(_E_pre95.mean()), 4), mean_live=round(float(_Evr.mean()), 4),
                                      neutral_days=int(_nfd_pre95.sum())), M=M)
+            # [v0.77.0 R96] M v1.64.0 변동성 관리 이전 목표비중(pos_pre_r96 = R95 라이브) — 'R96 변동성 관리 없음(= R95 M)' 비교 행.
+            _E_pre96 = _nfd_pre96 = None
+            if _rc_sig is not None and "pos_pre_r96" in list(getattr(_rc_sig, "columns", [])):
+                _E_pre96 = _rc_sig["pos_pre_r96"].reindex(eval_idx).fillna(0.0).astype(float).clip(lower=0.0, upper=1.0)
+                if float((_E_pre96 - _Evr).abs().max()) <= 1e-12:
+                    _E_pre96 = None
+                else:
+                    _nfd_pre96 = (_rc_sig["state"].reindex(eval_idx).astype(str).eq("NEUTRAL") & (_E_pre96 > 1e-12)
+                                  & (_E_pre96 < 1.0 - 1e-12))
+                    log("RELCMP", kv(event="r96_pre_ready", e_diff_days=int(((_E_pre96 - _Evr).abs() > 1e-12).sum()),
+                                     mean_pre=round(float(_E_pre96.mean()), 4), mean_live=round(float(_Evr.mean()), 4),
+                                     neutral_days=int(_nfd_pre96.sum())), M=M)
             _full_r = _Evr >= 1.0 - 1e-12
             _cap_now = float(getattr(scfg, "ROTATION_PRIMARY_CAP", 0.8) or 0.0)
             _def_now = float(getattr(scfg, "ROTATION_SHELTER_DEFENSIVE", 0.0) or 0.0)
@@ -11800,6 +11991,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                        "r91": f"R91(헤어컷 {'/'.join(f'{c:g}' for _, c in _r91_steps)}·중립 {_live_n:g})",
                        "norev": "현행에서 NFCI·ANFCI·STLFSI4 지표 가중 0(룩어헤드 점검)",
                        "pre95": "R95 사이징 오버레이 없음(= R94 M)",
+                       "pre96": "R96 변동성 관리 없음(= R95 M)",
                        "cand": f"후보(헤어컷 {'/'.join(f'{c:g}' for _, c in _cand_steps)}·중립 {_cand_n:g})"}[msrc_]
                 _ct = (f"상한 {cap_:.0%}" if capp_ is None else f"상한 E=1일 {cap_:.0%}·그 밖 {capp_:.0%}")
                 return f"{_ct} · 방어대피처 {def_:.2f} · 하락국면리더 {ld_:.0%} · M {_mt}"
@@ -11825,6 +12017,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             if _E_pre95 is not None:
                 # [v0.76.0 R95] 직전 라이브 M(오버레이 없음) — 00 'R95 라이브' 줄이 이 행 → ★ 를 전후로 보여 준다(되돌리면 이것).
                 _modes_r.append(("R95 규칙 없음(= R94 M)", _cap_now, _def_now, _ld_now, "pre95", None, _nf_live))
+            if _E_pre96 is not None:
+                # [v0.77.0 R96] 직전 라이브 M(R95까지 · 변동성 관리 없음) — 00 'R96 라이브' 줄이 이 행 → ★ (되돌리면 이것).
+                _modes_r.append(("R96 변동성 관리 없음(= R95 M)", _cap_now, _def_now, _ld_now, "pre96", None, _nf_live))
             _labels_r: Dict[str, str] = {}
             _specs_r: List[Dict[str, Any]] = []
             _repro = np.nan
@@ -11840,14 +12035,15 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     _fb = _fr_p.reindex(index=eval_idx, columns=all_cols).fillna(0.0)
                     _msk = pd.DataFrame(np.repeat(_full_r.values[:, None], len(all_cols), axis=1), index=eval_idx, columns=all_cols)
                     _fr_r = _fa.where(_msk, _fb)
-                _Em = {"ref": _E_ref, "live": _Evr, "cand": _E_cand, "r91": _E_r91, "norev": _E_norev, "pre95": _E_pre95}[_ms]
+                _Em = {"ref": _E_ref, "live": _Evr, "cand": _E_cand, "r91": _E_r91, "norev": _E_norev, "pre95": _E_pre95,
+                       "pre96": _E_pre96}[_ms]
                 _tw_r = _fr_r.reindex(index=eval_idx, columns=all_cols).fillna(0.0).mul(_Em, axis=0)
                 _tw_r = _apply_leader(_tw_r, _ldv)
                 if _ad_pos_r > 0 and "SPY" in _tw_r.columns:
                     _idle_r = (_Em > 1e-12) & (_tw_r.sum(axis=1).abs() <= 1e-12)
                     if bool(_idle_r.any()):
                         _tw_r.loc[_idle_r[_idle_r].index, "SPY"] = (_ad_pos_r * _Em[_idle_r]).values
-                _tw_r = _apply_nfill(_tw_r, float(_nfv), {"norev": _nfd_norev, "pre95": _nfd_pre95}.get(_ms))   # [v0.71.0 R90 · v0.74.0·v0.76.0 변형 중립일]
+                _tw_r = _apply_nfill(_tw_r, float(_nfv), {"norev": _nfd_norev, "pre95": _nfd_pre95, "pre96": _nfd_pre96}.get(_ms))   # [v0.71.0 R90 · v0.74.0·v0.76.0 변형 중립일]
                 _bad_r = (_tw_r.abs() > 1e-12) & ~listed_all
                 if bool(_bad_r.values.any()):
                     _tw_r = _tw_r.where(~_bad_r, 0.0)
@@ -11859,7 +12055,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _dl_variants[_lab_r] = _tw_r
                 _relcmp_frames[_nm] = _tw_r
                 _labels_r[_nm] = _lab_r
-                if _ms in ("norev", "pre95"):
+                if _ms in ("norev", "pre95", "pre96"):
                     continue          # [v0.74.0·v0.76.0] 장기 검증(M 대용 3상태)에는 지표·R95 오버레이 개념이 없어 라이브와 같은 행이 된다 — 싣지 않는다
                                       #   (R95 오버레이의 긴 이력 판정은 00U 블록 K가 M 자신의 전 이력 신호로 따로 한다)
                 _specs_r.append({"name": _nm, "cap": _cp, "def": _df, "leader": _ldv, "msrc": _ms,
@@ -11882,6 +12078,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                             "revision_audit": (res.get("revision_audit") if isinstance(res, dict) else None),   # [v0.74.0 R93]
                             "r95": (res.get("r95") if isinstance(res, dict) else None),                         # [v0.76.0 R95]
                             "r95_long": r95_long_history(res, M, scfg, rf_daily),                              # [v0.76.0 R95] 사전등록
+                            "r96": (res.get("r96") if isinstance(res, dict) else None),                         # [v0.77.0 R96]
+                            "r96_long": r96_long_history(res, M, scfg, rf_daily),                              # [v0.77.0 R96] 사전등록·규칙별
                             "repro_max_diff": _repro, "haircut_days": _n_hc_r, "neutral_days": _n_neu_r,
                             "leader_days": int(_dlm_all.sum()), "m_approx_ok": _m_approx_ok}
             if bool(getattr(scfg, "RELCMP_LONG_AUDIT", True)):
@@ -12794,6 +12992,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             "spy_m_norev_ret": (res["bt_norev"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
                                 if isinstance(res, dict) and res.get("bt_norev") is not None else None),   # [v0.74.0 R93]
             "spy_m_pre95_ret": _spy_m_pre95(res, M, eval_idx, rf_daily),                   # [v0.76.0 R95] M 오버레이 없음
+            "spy_m_pre96_ret": _spy_m_pre95(res, M, eval_idx, rf_daily, col="pos_pre_r96"),  # [v0.77.0 R96] M 변동성 관리 없음
             "spy_ret": spy_ret_cc, "spy_state_short": spy_state_short,                     # [v0.10.0 §1.C] vs SPY·SPY국면 분해용
             "down_leader_days": down_leader_days,                                          # [v0.15.0 §A] 하락국면 리더 발동일
             "all_cols": all_cols,

@@ -1,5 +1,11 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.9.2 - 2026-09-24 - [R96 비교 행: S 'R96 변동성 관리 없음' 섹터 비중으로 같은 섹터연동 · 00 R96 줄 — K 배분·규칙 무변경]
+#    사용자 지시(2026-09-24): "… 참여율 절대로 낮추지 말고 회피를 더 높게 올리도록 개선해". 시작 v0.9.1 → 목표 v0.9.2.
+#    K★의 변화는 M v1.64.0 변동성 관리 → S★ 섹터 비중에서 온다(K 코드는 배분 무변경). I v0.48.0 통로의 sector_w_variants에
+#    'R96 변동성 관리 없음(= R95 M)'이 더해져 13 격자·00U에 비교 행이 자동으로 생긴다(v0.9.1 루프 그대로).
+#    (§1) 00 '★★★ R96 라이브 — … K★' 줄(R96 없음 → 라이브) · 'R95 라이브' 줄은 R95만의 효과(R95 없음 → R96 없음)로 바꿨다.
+#         로그 [REL] event=k_r96_compare. 오프라인 예상 K★ 75.0/90.5 → 75.3/91.8. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.9.1 - 2026-09-24 - [R95 비교 행: S 'R95 규칙 없음' 섹터 비중으로 같은 섹터연동 — K 배분·규칙 무변경]
 #    사용자 지시(2026-09-24): "4개 층 모두다 회피 더 많이 올려봐 그대신 참여는 떨어지면 절대 안돼". 시작 v0.9.0 → 목표 v0.9.1.
 #    K★의 변화는 M v1.63.0 사이징 오버레이 → S★ 섹터 비중에서 온다(K 코드는 배분 무변경).
@@ -431,7 +437,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.9.1"
+VERSION = "v0.9.2"
 VERSION_DATE = "2026-09-24"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -3832,24 +3838,40 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                          "④ 섹터연동 상한5% 칼마 ≥ 상한0%(S★ ETF만) 칼마 − 0.3(종목 대체가 위험조정을 크게 해치지 않는다). "
                          "①~③ 미통과 → k_overrides={'STOCK_ALLOC_MODE': 'prob_tilt'} · ④만 미통과 → SECTOR_LINK_STOCK_CAP 0.0 검토. "
                          "오프라인 예상(정직한 기준선): K★ 69.2/91.9(중간) · 칼마 3.88 · MDD −10.4 vs 종전 82.3/67.6(낮음) · 칼마 3.26."))
-        # ---- [v0.9.1 R95 ★★★] K★ vs 'R95 규칙 없음' 비교 행(같은 섹터연동 · 섹터 비중만 R94 M) — 회피↑·참여 ≥0 확인 ----
+        # ---- [v0.9.1 R95 · v0.9.2 R96 ★★★] K★ 비교 행(같은 섹터연동 · 섹터 비중만 다름) — 회피↑·참여 ≥0 확인 ----
+        #   R96: 'R96 변동성 관리 없음(= R95 M)' → K★ = R96 효과 · 'R95 규칙 없음(= R94 M)' → 'R96 없음' = R95만의 효과(없으면 → K★).
         if _ui.get("ok") and isinstance(_ur, pd.DataFrame) and len(_ur):
-            _vr95 = _ur[_ur["전략"].astype(str).str.startswith("비교: 섹터연동 × S 'R95 규칙 없음")]
-            if len(_vr95):
-                _t0 = _ur.iloc[0]; _v0 = _vr95.iloc[0]
-                _da = (float(_t0["하락 회피율"]) - float(_v0["하락 회피율"])) * 100.0
-                _dp = (float(_t0["상승 참여율"]) - float(_v0["상승 참여율"])) * 100.0
+            _lbl = _ur["전략"].astype(str)
+            _vr95 = _ur[_lbl.str.startswith("비교: 섹터연동 × S 'R95 규칙 없음")]
+            _vr96 = _ur[_lbl.str.startswith("비교: 섹터연동 × S 'R96 변동성 관리 없음")]
+            _t0 = _ur.iloc[0]
+
+            def _cmp_line(_v0, _t1, _lab0, _lab1):
+                _da = (float(_t1["하락 회피율"]) - float(_v0["하락 회피율"])) * 100.0
+                _dp = (float(_t1["상승 참여율"]) - float(_v0["상승 참여율"])) * 100.0
                 _okk = (_da >= -1e-9) and (_dp >= -1e-9)
+                return _da, _dp, _okk, (
+                    f"K★ {_lab0} {float(_v0['하락 회피율']):.1%}/{float(_v0['상승 참여율']):.1%}({_v0['등급']}) → "
+                    f"K★ {_lab1} {float(_t1['하락 회피율']):.1%}/{float(_t1['상승 참여율']):.1%}({_t1['등급']}) · "
+                    f"Δ회피 {_da:+.2f}%p · Δ참여 {_dp:+.2f}%p · MDD {float(_v0['MDD']) * 100:.2f}→{float(_t1['MDD']) * 100:.2f}% · "
+                    + ("✓ 사용자 조건(회피↑ · 참여 떨어지지 않음) 충족" if _okk else
+                       "⚠ 사용자 조건 미충족 — M 00·S 00 줄과 함께 보고 되돌리기 검토"))
+            if len(_vr96):
+                _da6, _dp6, _ok6, _txt6 = _cmp_line(_vr96.iloc[0], _t0, "R96 없음(= R95 M)", "라이브")
+                _add.append(("★★★ R96 라이브 — M 부분 노출일 변동성 관리가 K★에 준 효과(같은 섹터연동 · 섹터 비중만 다름)",
+                             _txt6 + " · 오프라인 예상 75.0/90.5 → 75.3/91.8. 되돌리기(M에서): m_overrides={'R96_VOL_MANAGE': False}. "
+                             "연구·교육용, 투자 자문 아님."))
+                log("REL", kv(event="k_r96_compare", d_avoid=round(_da6, 2), d_part=round(_dp6, 2), ok=_ok6))
+            if len(_vr95):
+                _t95 = _vr96.iloc[0] if len(_vr96) else _t0
+                _da, _dp, _okk, _txt = _cmp_line(_vr95.iloc[0], _t95, "규칙 없음(= R94 M)",
+                                                 "R96 없음(= R95 M)" if len(_vr96) else "라이브")
                 _add.append(("★★★ R95 라이브 — M 사이징 오버레이 3개가 K★에 준 효과(같은 섹터연동 · 섹터 비중만 다름)",
-                             f"K★ 규칙 없음(= R94 M) {float(_v0['하락 회피율']):.1%}/{float(_v0['상승 참여율']):.1%}({_v0['등급']}) → "
-                             f"K★ {float(_t0['하락 회피율']):.1%}/{float(_t0['상승 참여율']):.1%}({_t0['등급']}) · "
-                             f"Δ회피 {_da:+.2f}%p · Δ참여 {_dp:+.2f}%p · MDD {float(_v0['MDD']) * 100:.2f}→{float(_t0['MDD']) * 100:.2f}% · "
-                             + ("✓ 사용자 조건(회피↑ · 참여 떨어지지 않음) 충족" if _okk else
-                                "⚠ 사용자 조건 미충족 — M 00·S 00 'R95' 줄과 함께 보고 되돌리기 검토")
-                             + " · 오프라인 예상 71.3/88.1 → 75.1/90.4. 되돌리기(M에서): m_overrides={'R95_STRESS_EXIT': False, "
+                             _txt + " · 오프라인 예상 71.3/88.1 → 75.1/90.4 · ⚠ R95 긴 이력 사전등록 미통과(S 00U 블록 K·L — 원인 규칙 분해) · "
+                             "되돌리기(M에서): m_overrides={'R95_STRESS_EXIT': False, "
                              "'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. 연구·교육용, 투자 자문 아님."))
                 log("REL", kv(event="k_r95_compare", d_avoid=round(_da, 2), d_part=round(_dp, 2), ok=_okk))
-            else:
+            if not len(_vr95) and not len(_vr96):
                 _add.append(("★★★ R95 라이브 — K★ 비교", "비교 행 없음 — I 통로에 S 'R95 규칙 없음' 섹터 비중이 없다"
                              "(M < v1.63.0 · S < v0.76.0 · I < v0.47.0 이거나 R95 오버레이 꺼짐)"))
         if I is not None and hasattr(I, "single_live_verdict_line"):

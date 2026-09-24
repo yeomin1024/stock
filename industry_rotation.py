@@ -1,5 +1,11 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.48.0 - 2026-09-24 - [R96 M 변동성 관리 비교 전달 — I 규칙·배분 무변경(I★ 변화는 M E_t에서 온다)]
+#    사용자 지시(2026-09-24): "… 참여율 절대로 낮추지 말고 회피를 더 높게 올리도록 개선해". 시작 v0.47.0 → 목표 v0.48.0.
+#    (§1) spy_m_pre96_ret(M 변동성 관리 이전 = R95 M) 전달(3곳) → I 00U 블록 B 'M R96 변동성 관리 없음(= R95 M)' 행.
+#    (§2) _i_relcmp_diag에 r96 · r96_long → I 00 'R96 라이브' 줄 · 00U 블록 L(R96 판정 + R95 규칙별 몫). I 비교 행은 S relcmp_frames로 자동.
+#    (§3) K 통로 sector_w_variants에 S 'R96 변동성 관리 없음(= R95 M)' 섹터 비중도 싣는다(K v0.9.2 비교 행).
+#    연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.47.0 - 2026-09-24 - [R95 M 사이징 오버레이 비교 전달 — I 규칙·배분 무변경(I★ 변화는 M E_t에서 온다)]
 #    사용자 지시(2026-09-24): "4개 층 모두다 회피 더 많이 올려봐 그대신 참여는 떨어지면 절대 안돼". 시작 v0.46.0 → 목표 v0.47.0.
 #    (§1) spy_m_pre95_ret(M 오버레이 이전) 전달 → I 00U 블록 B에 'M R95 규칙 없음(= R94 M)' 행.
@@ -1890,7 +1896,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.47.0"
+VERSION = "v0.48.0"
 VERSION_DATE = "2026-09-24"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -12611,7 +12617,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
             if alloc:
                 _set_alloc_handoff(alloc, M=M, results=results,        # [v0.34.0 R80 · v0.35.0 R81 결합점수 추가] K 통로
                                    s_variants={k: v for k, v in ((((sres or {}).get("alloc") or {}).get("relcmp_frames")) or {}).items()
-                                               if str(k).startswith("R95 규칙 없음")})       # [v0.47.0 R95] K 비교 행
+                                               if str(k).startswith(("R95 규칙 없음", "R96 변동성 관리 없음"))})   # [v0.47.0 R95 · v0.48.0 R96] K 비교 행
                 hier_df = build_hierarchy_check(alloc)                 # 14_계층정합 — 동결 여부와 무관(총노출 불변식)
                 leader_cols = build_industry_leader_columns(alloc)     # 13c의 부모별 판단·리더·게이트 열
                 _viol = int(hier_df["위반일수(>1e-9)"].sum()) if len(hier_df) else -1
@@ -12982,6 +12988,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                          "spy_m_ret": ((sres or {}).get("alloc") or {}).get("spy_m_ret"),
                          "spy_m_norev_ret": ((sres or {}).get("alloc") or {}).get("spy_m_norev_ret"),   # [v0.45.0 R93]
                          "spy_m_pre95_ret": ((sres or {}).get("alloc") or {}).get("spy_m_pre95_ret"),   # [v0.47.0 R95]
+                         "spy_m_pre96_ret": ((sres or {}).get("alloc") or {}).get("spy_m_pre96_ret"),   # [v0.48.0 R96]
                          # [v0.41.0 R88] S의 [회피참여비교] 진단(독립 구간 장기 검증 포함) — I 00U 블록 F2는 섹터층 값을 그대로 싣는다
                          "s_relcmp": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("relcmp")),
                          # [v0.42.0 R89] S의 M 사이징 긴 이력 판정(FF 1927~1998) — I 00U 블록 G도 같은 값
@@ -13983,6 +13990,7 @@ def _i_relcmp_diag(alloc: Optional[dict], src: Optional[dict]) -> Dict[str, Any]
             "live_steps": (src or {}).get("s_live_steps"),              # [v0.44.0 R91] 00 R91 노란색 줄
             "revision_audit": sr.get("revision_audit"),                 # [v0.45.0 R93] 00 룩어헤드 점검 줄(S와 같은 M 값)
             "r95": sr.get("r95"), "r95_long": sr.get("r95_long"),       # [v0.47.0 R95] 00 R95 줄 · 00U 블록 K(S와 같은 M 값)
+            "r96": sr.get("r96"), "r96_long": sr.get("r96_long"),       # [v0.48.0 R96] 00 R96 줄 · 00U 블록 L(S와 같은 M 값)
             "live_neutral": (src or {}).get("s_live_neutral"),
             "haircut_days": sr.get("haircut_days"), "neutral_days": sr.get("neutral_days"), "leader_days": sr.get("leader_days"),
             "m_approx_ok": sr.get("m_approx_ok", True)}
@@ -15133,7 +15141,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                                                                            "mbucket_exposure": _i_star_exposure(alloc)},
                                  "spy_ret": _src.get("spy_ret"), "spy_m_ret": _src.get("spy_m_ret"),
                                  "spy_m_norev_ret": _src.get("spy_m_norev_ret"),
-                                 "spy_m_pre95_ret": _src.get("spy_m_pre95_ret")},        # [v0.47.0 R95]
+                                 "spy_m_pre95_ret": _src.get("spy_m_pre95_ret"),         # [v0.47.0 R95]
+                                 "spy_m_pre96_ret": _src.get("spy_m_pre96_ret")},        # [v0.48.0 R96]
                        "sectors": results}
                 _upk_i = S.user_reliability_pack(_ps, icfg)
                 sheets["00U_사용자신뢰도"] = S.build_user_reliability_sheet(_ps, icfg, _upk_i, "산업")
@@ -15316,7 +15325,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                                                                                 "mbucket_exposure": _i_star_exposure(alloc)},
                               "spy_ret": _src2.get("spy_ret"), "spy_m_ret": _src2.get("spy_m_ret"),
                               "spy_m_norev_ret": _src2.get("spy_m_norev_ret"),
-                              "spy_m_pre95_ret": _src2.get("spy_m_pre95_ret")}, "sectors": results}   # [v0.47.0 R95]
+                              "spy_m_pre95_ret": _src2.get("spy_m_pre95_ret"),
+                              "spy_m_pre96_ret": _src2.get("spy_m_pre96_ret")}, "sectors": results}   # [v0.47.0 R95 · v0.48.0 R96]
             for _k, _v in reversed(S.user_reliability_lines(_ps2, icfg, locals().get("_upk_i"), "산업")):
                 meta.insert(1, (_k, _v))
     except Exception as _e:
