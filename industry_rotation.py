@@ -1,5 +1,11 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.45.0 - 2026-09-24 - [R93 파일명 끝에 코드 버전 · M 재추정지표 제외 행 전달 — I 규칙·배분 무변경]
+#    사용자 지시(2026-09-24): "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여". 시작 v0.44.0 → 목표 v0.45.0.
+#    (§1) _versioned_path() · OUT_XLSX_APPEND_VERSION=True → industry_regime_report_v0.45.0.xlsx(설정 경로일 때만).
+#    (§2) spy_m_norev_ret(M 변형 수익) · revision_audit 전달 → I 00U 블록 B에 'M 재추정지표 제외' 행 · 00 'R93 룩어헤드 점검' 줄.
+#         I 비교 행 'M 재추정지표 제외'는 S relcmp_frames로 자동 전달(부모 비율법).
+#    ⚠ 지난 실행(i38 뒤)에 I 리포트가 올라오지 않았다 — 이번엔 I 리포트도 함께 확인한다. 연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.44.0 - 2026-09-23 - [R91 표시: 00U 블록 J(회피 부족분 버킷 분해) · R91 노란색 줄 전달 — I 규칙·배분 무변경]
 #    라이브 변화는 M v1.59.0(과열 헤어컷 ≥10%→0.6 · ≥12%→0.0)에서 온다. I★는 S★ 섹터 비중 안에서 같은 규칙으로 담는다.
 #    시작 v0.43.0 → 목표 v0.44.0. (§1) run() user_rel_src에 s_mbucket·s_live_steps·s_live_neutral 추가.
@@ -1873,8 +1879,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.44.0"
-VERSION_DATE = "2026-09-23"
+VERSION = "v0.45.0"
+VERSION_DATE = "2026-09-24"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -2815,6 +2821,8 @@ class IndustryConfig:
 
     # ---- 출력 ----
     OUT_XLSX: str = "industry_regime_report.xlsx"
+    # [v0.45.0 R93] 사용자 지시 "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여" → industry_regime_report_v0.45.0.xlsx(러너 무변경).
+    OUT_XLSX_APPEND_VERSION: bool = True
     EXPORT_DAILY_CSV: bool = True
     DAILY_CSV_PATH: str = "industry_daily.csv"
     ALLOC_CSV_PATH: str = "industry_allocation_daily.csv"
@@ -12950,6 +12958,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         # [v0.40.0 R86] 사용자 신뢰도 입력 — S가 이미 계산한 같은 창의 SPY·M 일수익(재계산 없음)
         "user_rel_src": {"spy_ret": ((sres or {}).get("alloc") or {}).get("spy_ret"),
                          "spy_m_ret": ((sres or {}).get("alloc") or {}).get("spy_m_ret"),
+                         "spy_m_norev_ret": ((sres or {}).get("alloc") or {}).get("spy_m_norev_ret"),   # [v0.45.0 R93]
                          # [v0.41.0 R88] S의 [회피참여비교] 진단(독립 구간 장기 검증 포함) — I 00U 블록 F2는 섹터층 값을 그대로 싣는다
                          "s_relcmp": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("relcmp")),
                          # [v0.42.0 R89] S의 M 사이징 긴 이력 판정(FF 1927~1998) — I 00U 블록 G도 같은 값
@@ -13949,6 +13958,7 @@ def _i_relcmp_diag(alloc: Optional[dict], src: Optional[dict]) -> Dict[str, Any]
             "msizing_ff": (src or {}).get("s_msizing_ff") or {},
             "lowbeta_ff": (src or {}).get("s_lowbeta_ff") or {},        # [v0.43.0 R90] 00U 블록 H(섹터층 값)
             "live_steps": (src or {}).get("s_live_steps"),              # [v0.44.0 R91] 00 R91 노란색 줄
+            "revision_audit": sr.get("revision_audit"),                 # [v0.45.0 R93] 00 룩어헤드 점검 줄(S와 같은 M 값)
             "live_neutral": (src or {}).get("s_live_neutral"),
             "haircut_days": sr.get("haircut_days"), "neutral_days": sr.get("neutral_days"), "leader_days": sr.get("leader_days"),
             "m_approx_ok": sr.get("m_approx_ok", True)}
@@ -14003,9 +14013,23 @@ def i_yellow_lines(perf: Optional[pd.DataFrame], label_star: Optional[str], rel:
     return out
 
 
+def _versioned_path(path: str, S=None, enabled: bool = True) -> str:
+    """[v0.45.0 R93] 'x.xlsx' → 'x_v0.45.0.xlsx' — S.versioned_report_path가 있으면 그것, 없으면(예전 S) 같은 규칙을 여기서."""
+    if not enabled or not path:
+        return path
+    _f = getattr(S, "versioned_report_path", None) if S is not None else None
+    if callable(_f):
+        return _f(path, VERSION, True)
+    import re as _re
+    root, ext = os.path.splitext(str(path))
+    root = _re.sub(r"_v\d+\.\d+\.\d+$", "", root)
+    return f"{root}_{VERSION}{ext or '.xlsx'}"
+
+
 def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[str] = None) -> str:
     icfg = ires.get("icfg", CFG)
-    path = path or icfg.OUT_XLSX
+    # [v0.45.0 R93] 설정에서 온 경로에만 버전을 붙인다(돌려주는 경로가 실제 파일 — 러너가 그대로 쓴다).
+    path = path or _versioned_path(icfg.OUT_XLSX, S, bool(getattr(icfg, "OUT_XLSX_APPEND_VERSION", True)))
     if ires.get("aborted"):
         meta = [("버전", f"industry_rotation.py {VERSION} ({VERSION_DATE})"),
                ("판정", ires.get("note", "자기검사 실패 — 산업 계층 리포트를 낼 수 없습니다.")),
@@ -15083,7 +15107,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                                                                            # [v0.44.0 R91] 블록 J — 버킷 라벨은 S(=M 국면)에서, 노출은 I★ 자신의 것
                                                                            "mbucket": _src.get("s_mbucket"),
                                                                            "mbucket_exposure": _i_star_exposure(alloc)},
-                                 "spy_ret": _src.get("spy_ret"), "spy_m_ret": _src.get("spy_m_ret")},
+                                 "spy_ret": _src.get("spy_ret"), "spy_m_ret": _src.get("spy_m_ret"),
+                                 "spy_m_norev_ret": _src.get("spy_m_norev_ret")},
                        "sectors": results}
                 _upk_i = S.user_reliability_pack(_ps, icfg)
                 sheets["00U_사용자신뢰도"] = S.build_user_reliability_sheet(_ps, icfg, _upk_i, "산업")
@@ -15264,7 +15289,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                                                                                 "neutral_fill": (_src2.get("s_neutral_fill") or {}),
                                                                                 "mbucket": _src2.get("s_mbucket"),          # [v0.44.0 R91]
                                                                                 "mbucket_exposure": _i_star_exposure(alloc)},
-                              "spy_ret": _src2.get("spy_ret"), "spy_m_ret": _src2.get("spy_m_ret")}, "sectors": results}
+                              "spy_ret": _src2.get("spy_ret"), "spy_m_ret": _src2.get("spy_m_ret"),
+                              "spy_m_norev_ret": _src2.get("spy_m_norev_ret")}, "sectors": results}
             for _k, _v in reversed(S.user_reliability_lines(_ps2, icfg, locals().get("_upk_i"), "산업")):
                 meta.insert(1, (_k, _v))
     except Exception as _e:

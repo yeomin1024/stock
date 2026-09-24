@@ -1,5 +1,10 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.8.1 - 2026-09-24 - [R93 파일명 끝에 코드 버전 — 배분·규칙 무변경]
+#    사용자 지시(2026-09-24): "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여". 시작 v0.8.0 → 목표 v0.8.1.
+#    _versioned_path() · StockConfig.OUT_XLSX_APPEND_VERSION=True → stock_regime_report_v0.8.1.xlsx. 끄기: k_overrides로 False.
+#    ⚠ 사용자 실행(m6·m7)의 K는 v0.3.1이었다(M '계층 버전 점검' 줄) — 이 파일로 교체해야 R81 이후 배분이 적용된다.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.8.0 - 2026-09-21 - [R81 ★★ 배분 = 상승확률 기울임(prob_tilt) — 1/N 균등 폐기 · R80 산업연동은 격자 전용으로]
 #    사용자 지시(2026-09-21) "비중 0.035 이런 식으로 다 똑같이 주지 말라니까 — 섹터, 산업, 나머지 지표 참고해서
 #      가장 상승 확률 높은 거에 비중을 주라고", "예측 성능이 전보다 안좋아 진것 같은데 문제 찾아서 해결해". 시작 v0.7.0 → 목표 v0.8.0.
@@ -390,8 +395,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.8.0"
-VERSION_DATE = "2026-09-21"
+VERSION = "v0.8.1"
+VERSION_DATE = "2026-09-24"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -678,6 +683,8 @@ class StockConfig:
 
     # ---- 출력 ----
     OUT_XLSX: str = "stock_regime_report.xlsx"
+    # [v0.8.1 R93] 사용자 지시 "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여" → stock_regime_report_v0.8.1.xlsx(러너 무변경).
+    OUT_XLSX_APPEND_VERSION: bool = True
     LOG_LEVEL: str = "INFO"
 
 
@@ -3020,10 +3027,21 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                             else pd.DataFrame())}
 
 
+def _versioned_path(path: str, enabled: bool = True) -> str:
+    """[v0.8.1 R93] 'x.xlsx' → 'x_v0.8.1.xlsx'(M·S·I와 같은 규칙 · 예전 버전 꼬리는 떼고 붙인다)."""
+    if not enabled or not path:
+        return path
+    import re as _re
+    root, ext = os.path.splitext(str(path))
+    root = _re.sub(r"_v\d+\.\d+\.\d+$", "", root)
+    return f"{root}_{VERSION}{ext or '.xlsx'}"
+
+
 def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str:
     """[리포트] M·S·I와 같은 시트 어휘를 쓴다. I 모듈이 주어지면 19_상승하락구간을 그 함수로 만든다."""
     cfg: StockConfig = res.get("cfg", CFG)
-    path = path or cfg.OUT_XLSX
+    # [v0.8.1 R93] 설정에서 온 경로에만 버전을 붙인다(돌려주는 경로가 실제 파일 — 러너가 그대로 쓴다).
+    path = path or _versioned_path(cfg.OUT_XLSX, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
     sheets: Dict[str, pd.DataFrame] = {}
     if res.get("aborted"):
         sheets["00_실행요약"] = pd.DataFrame([{"항목": "판정", "값": res.get("note", "실행 실패")}])

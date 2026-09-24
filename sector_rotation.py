@@ -17,6 +17,18 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.74.0 - 2026-09-24 - [R93 파일명 끝에 코드 버전 · M 재추정지표 제외 비교 행(룩어헤드 점검) — S 규칙·비중 무변경]
+#    사용자 지시(2026-09-24 · 리포트 m7·s21): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 … 그리고 엑셀 파일명 맨뒤에 코드 버전도 같이 붙여".
+#    시작 v0.73.0 → 목표 v0.74.0. M v1.61.0 · I v0.45.0 · K v0.8.1과 한 묶음.
+#    ── 이번 리포트 판정 ── **S★ 높음 — 회피 70.5% · 참여 90.5%**(R92 하네스 예상 70.5/90.4 · 전후 방향 +1.3/−1.9 그대로).
+#      블록 H(채움 50%) −0.41/−1.54%p(예상대로 절반) · 블록 J 1위 여전히 얕은 헤어컷(4.45배) · 모멘텀 상한 (회피+참여) 백분위 90(40개).
+#    (§1) versioned_report_path() · OUT_XLSX_APPEND_VERSION=True → sector_regime_report_v0.74.0.xlsx(설정 경로일 때만 · 러너 무변경).
+#    (§2) ★★ [회피참여비교]에 'M 재추정지표 제외(룩어헤드 점검)' 행: M v1.61.0이 준 sig_norev의 E_t·중립일로 같은 S 규칙을 돌린다.
+#         _apply_nfill에 중립일 마스크 인자(변형은 **자기** 중립일). 장기 검증 사양에는 넣지 않는다(대용 M엔 지표 개념이 없다).
+#         00U 블록 B에 'M 재추정지표 제외' 행 · 00 'R93 룩어헤드 점검' 줄(★·M 전후 · 상태 다른 날 · H 가중 몫 · 높음 유지 여부).
+#    (§3) _CACHE_KEY_IGNORE_FIELDS 폴백 사본에 M v1.61.0 신설 3필드(정본은 M · 캐시 무효화 없음 — 교훈 31).
+#    (§4) 블록 G '라이브 M' 행 이름이 0.55를 소수 한 자리로 반올림해 '0.6/0.0'으로 보였다(숫자는 맞음) → :g 표기로 정정.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.73.0 - 2026-09-24 - [R92 ★★★ 라이브: 중립채움 1.0→0.5(⚠ 노출↓ · M v1.60.0 얕은 헤어컷 0.6→0.55와 한 묶음) · 사용자 선택 A안]
 #    사용자 지시(2026-09-24 · 리포트 m6·s20·i38): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정".
 #    시작 v0.72.0 → 목표 v0.73.0. I는 v0.44.0 그대로(비교 행은 relcmp_frames로 자동 전달).
@@ -2876,7 +2888,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.73.0"
+VERSION = "v0.74.0"
 VERSION_DATE = "2026-09-24"
 
 # =============================================================================
@@ -3892,6 +3904,8 @@ class SectorConfig:
     CACHE_DIR: str = "./cache_sector"
     # ---- 출력 -----------------------------------------------------------------
     OUT_XLSX: str = "sector_regime_report.xlsx"
+    # [v0.74.0 R93] 사용자 지시 "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여" → sector_regime_report_v0.74.0.xlsx(러너 무변경).
+    OUT_XLSX_APPEND_VERSION: bool = True
     EXPORT_DAILY_CSV: bool = True              # 01Z 매트릭스를 CSV로도 저장
     DAILY_CSV_PATH: str = "sector_regime_daily.csv"
     ALLOC_CSV_PATH: str = "sector_allocation_daily.csv"   # [v0.4.0] 13c 일별 배분비중 CSV(EXPORT_DAILY_CSV와 함께 저장)
@@ -5505,12 +5519,25 @@ _CACHE_KEY_IGNORE_FIELDS = frozenset({
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",
     # [v0.61.1 R74] M v1.56.1 신설 1필드(종가 미확정 봉 제거 — 수집 전용).
     "DROP_INCOMPLETE_TAIL",
+    # [v0.74.0 R93] M v1.61.0 신설 3필드(파일명 · 재추정 지표 점검 — 측정 전용).
+    "OUT_XLSX_APPEND_VERSION", "REVISED_HISTORY_SERIES", "REVISION_AUDIT",
 })
 # [v0.60.0 R72 §3-3 ★ 단일 정본] 위 목록은 이제 **구버전 M(v1.55.0 미만) 폴백 전용 사본**이다. 실제 키 계산은
 #   M.CACHE_KEY_IGNORE_FIELDS(M v1.55.0이 정본)를 읽는다 — M에 Config 필드를 더하는 라운드가 S를 따로 고치지 않아도
 #   S/I 전체키 캐시가 깨지지 않게(R71 사고: M에 3필드를 넣고 S 목록을 안 고쳐 ≈3.7시간 CPU 회귀). M은 S를 import할 수
 #   없으므로 목록이 M에 있어야 M 자신의 경계 캐시(build_walkforward_weights)도 같은 목록을 쓴다.
 #   (S는 모듈 로드 시 M을 import하지 않고 인자로 받으므로 '참조'는 호출 시점 함수로 한다.)
+
+
+def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
+    """[v0.74.0 R93] 'x.xlsx' → 'x_v0.74.0.xlsx'(이미 붙어 있으면 예전 꼬리를 떼고 새로 붙인다). M·I·K와 같은 규칙.
+    I는 이 함수를 S에서 빌려 쓴다(I가 S를 import하므로)."""
+    if not enabled or not path:
+        return path
+    import re as _re
+    root, ext = os.path.splitext(str(path))
+    root = _re.sub(r"_v\d+\.\d+\.\d+$", "", root)
+    return f"{root}_{version}{ext or '.xlsx'}"
 
 
 def _cache_ignore_fields(M) -> frozenset:
@@ -7721,7 +7748,7 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             _var = [{"name": "헤어컷 없음 · 중립 0.5", "steps": (), "neutral": 0.5},
                     {"name": "R86: 헤어컷 E7(0.6/0.4) · 중립 0.5", "steps": tuple(getattr(scfg, "RELCMP_REF_M_STEPS", ((0.10, 0.6), (0.12, 0.4)))),
                      "neutral": float(getattr(scfg, "RELCMP_REF_M_NEUTRAL", 0.5)), "ref": True},
-                    {"name": f"라이브 M: 헤어컷 {'/'.join(f'{c:.1f}' for _, c in sorted(tuple(_mc.EXTENSION_HAIRCUT_STEPS or ())))} · 중립 {float(_mc.POS_NEUTRAL):.1f}",
+                    {"name": f"라이브 M: 헤어컷 {'/'.join(f'{c:g}' for _, c in sorted(tuple(_mc.EXTENSION_HAIRCUT_STEPS or ())))} · 중립 {float(_mc.POS_NEUTRAL):g}",
                      "steps": tuple(_mc.EXTENSION_HAIRCUT_STEPS or ()), "neutral": float(_mc.POS_NEUTRAL), "live": True},
                     {"name": "헤어컷만 E11 · 중립 0.5", "steps": ((0.10, 0.4), (0.12, 0.2)), "neutral": 0.5},
                     {"name": "중립만 0.6 · 헤어컷 E7", "steps": ((0.10, 0.6), (0.12, 0.4)), "neutral": 0.6},
@@ -8449,7 +8476,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.60.0", "sector_rotation": "v0.73.0", "industry_rotation": "v0.44.0"}
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.61.0", "sector_rotation": "v0.74.0", "industry_rotation": "v0.45.0"}
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -9679,6 +9706,9 @@ def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
     mret = al.get("spy_m_ret")
     if mret is not None:
         rets["M(SPY 국면전략)"] = mret
+    _mnr = al.get("spy_m_norev_ret")          # [v0.74.0 R93] M 변형(재추정 지표 제외 · 측정 전용)
+    if _mnr is not None:
+        rets["M 재추정지표 제외(룩어헤드 점검)"] = _mnr
     rets["SPY 단순보유(B&H)"] = spy
     head = user_rel_portfolio(rets, spy, cfg)
     fr_labels = [l for l in bts if l != lp and "대조" not in str(l)]
@@ -9720,6 +9750,7 @@ def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
         out["relcmp"] = {"enabled": False, "error": rc["error"]}
     out["msizing_ff"] = sres.get("msizing_ff") or (rc.get("msizing_ff") if isinstance(rc, dict) else None) or {}   # [v0.70.0 R89] 블록 G(I는 relcmp 경유)
     out["lowbeta_ff"] = sres.get("lowbeta_ff") or (rc.get("lowbeta_ff") if isinstance(rc, dict) else None) or {}   # [v0.71.0 R90] 블록 H
+    out["revision_audit"] = (rc.get("revision_audit") if isinstance(rc, dict) else None) or {}                    # [v0.74.0 R93]
     out["neutral_fill"] = (dg.get("neutral_fill") or {})
     # [v0.72.0 R91] 블록 J — 노란색(★)의 회피·참여 기여를 M 버킷으로 분해한다(어디서 새는지).
     try:
@@ -10017,6 +10048,32 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
                       "하네스 예상 S★ 70.5/90.4 · I★ 70.2/93.9(둘 다 높음 · 여유 0.2%p) · 노출 0.569→0.544. "
                       "⚠ 실행마다 M 입력 자료가 바뀌어 회피·참여가 1~2%p 흔들린다(R92 확인) — 여유가 그보다 작다. "
                       "되돌리기: m_overrides={'EXTENSION_HAIRCUT_STEPS': ((0.10, 0.6), (0.12, 0.0))} · s_overrides={'NEUTRAL_LOWBETA_FILL': 1.0}."))
+    # ---- [v0.74.0 R93] 룩어헤드 점검: M에서 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)를 빼면 ★·M 신뢰도가 어떻게 되나 ----
+    _ra93 = pk.get("revision_audit") or {}
+    _tb93 = rcp.get("table") if isinstance(rcp.get("table"), pd.DataFrame) else None
+    _hd93 = pk.get("head").set_index("전략") if isinstance(pk.get("head"), pd.DataFrame) else None
+    if _ra93.get("enabled") and _tb93 is not None:
+        _r93 = _tb93[_tb93["전략"].astype(str).str.startswith("M 재추정지표 제외")]
+        _s93 = _tb93[_tb93["전략"].astype(str).str.startswith("양쪽형 ★")]
+        _mstr = ""
+        if _hd93 is not None and "M 재추정지표 제외(룩어헤드 점검)" in _hd93.index and "M(SPY 국면전략)" in _hd93.index:
+            _m0, _m1 = _hd93.loc["M(SPY 국면전략)"], _hd93.loc["M 재추정지표 제외(룩어헤드 점검)"]
+            _mstr = (f" | M {_m0['하락 회피율']:.1%}/{_m0['상승 참여율']:.1%} → {_m1['하락 회피율']:.1%}/{_m1['상승 참여율']:.1%}"
+                     f"({_m1['등급']})")
+        if len(_r93) and len(_s93):
+            _a, _b = _s93.iloc[0], _r93.iloc[0]
+            _hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
+            _stay = bool(_b["하락 회피율"] >= _hi[0] and _b["상승 참여율"] >= _hi[1])
+            out.append(("★★ R93 룩어헤드 점검 — M에서 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)를 빼면(측정 · 사전등록)",
+                        f"{'S★' if layer == '섹터' else 'I★'} {_a['하락 회피율']:.1%}/{_a['상승 참여율']:.1%}({_a['등급']}) → "
+                        f"**{_b['하락 회피율']:.1%}/{_b['상승 참여율']:.1%}({_b['등급']})** · 배수 {_a['배수']:.3f} → {_b['배수']:.3f} · "
+                        f"MDD {_a['MDD'] * 100:.2f}% → {_b['MDD'] * 100:.2f}%" + _mstr
+                        + f" · M 상태 다른 날 {_ra93.get('state_diff_days', '-')} · 위험점수(H) 가중 몫 {_ra93.get('share_H', 0):.1%}. "
+                        "이 계열은 매주 **과거 전체가 다시 추정**되어 백테스트가 그때 몰랐던 값을 쓴다(룩어헤드) · 실행마다 흔들림의 큰 원인. "
+                        + ("⇒ 빼도 높음 유지 — 다음 라운드에 라이브 제외를 기본안으로 상의한다."
+                           if _stay else "⇒ 빼면 높음이 아니다 — 지금의 높음 일부가 개정된 과거 값에 기대고 있다는 뜻. 제외 여부를 상의한다.")))
+    elif _ra93.get("error"):
+        out.append(("⚠ R93 룩어헤드 점검", f"산출 실패 — {_ra93['error']}"))
     _mb91 = pk.get("mbucket")
     if isinstance(_mb91, pd.DataFrame) and len(_mb91) and "비대칭(|하락|/상승)" in _mb91.columns:
         _tp = _mb91.dropna(subset=["비대칭(|하락|/상승)"]).head(3)
@@ -11273,15 +11330,17 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     #   있는 섹터가 있으면 그걸로 거래하도록 해", v0.15.0). 그래서 **끄지 않는다.** 대신 강도를
     #   0.25/0.50/0.75/OFF로 격자에 실어 **실제 엔진이 재게** 한다. 중간 강도가 CAGR을 지키면서
     #   낙폭을 줄이는지가 다음 라운드의 결정 근거가 된다.
-    def _apply_nfill(_tw0: pd.DataFrame, _f: float) -> pd.DataFrame:
-        """[v0.71.0 R90] 중립 국면일 남는 현금 × _f 를 그날 최저베타 섹터로(★·격자·비교 행 공통 · 총자산 ≤ 1.0)."""
-        if _f <= 0 or _nf_days is None or _nf_pick_s is None or not bool(_nf_days.any()):
+    def _apply_nfill(_tw0: pd.DataFrame, _f: float, _days: Optional[pd.Series] = None) -> pd.DataFrame:
+        """[v0.71.0 R90] 중립 국면일 남는 현금 × _f 를 그날 최저베타 섹터로(★·격자·비교 행 공통 · 총자산 ≤ 1.0).
+        [v0.74.0 R93] _days: 중립일 마스크(기본 = 라이브 M의 중립일). M 변형 비교 행은 **그 변형의** 중립일을 넘긴다."""
+        _nd = _nf_days if _days is None else _days
+        if _f <= 0 or _nd is None or _nf_pick_s is None or not bool(_nd.any()):
             return _tw0
         _t1 = _tw0.copy()
-        _add = ((1.0 - _t1.reindex(eval_idx).sum(axis=1)).clip(lower=0.0) * _f).where(_nf_days, 0.0)
+        _add = ((1.0 - _t1.reindex(eval_idx).sum(axis=1)).clip(lower=0.0) * _f).where(_nd, 0.0)
         for _c in pd.unique(_nf_pick_s.dropna()):
             if _c in _t1.columns:
-                _rr = _nf_pick_s.index[(_nf_pick_s == _c) & _nf_days & (_add > 0)]
+                _rr = _nf_pick_s.index[(_nf_pick_s == _c) & _nd & (_add > 0)]
                 if len(_rr):
                     _t1.loc[_rr, _c] = _t1.loc[_rr, _c] + _add.loc[_rr]
         return _t1
@@ -11518,6 +11577,18 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             # [v0.73.0 R92] 직전 라이브(R91) M 사이징 — 'R91 라이브' 비교 행용(되돌리기 대상). 중립은 현 M과 같다(0.6).
             _r91_steps = tuple(sorted(tuple(getattr(scfg, "RELCMP_R91_M_STEPS", ((0.10, 0.6), (0.12, 0.0))) or ())))
             _E_r91 = _E_for(_r91_steps, _live_n)
+            # [v0.74.0 R93 · 측정 전용] M 변형: 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4) 가중치 0 — M v1.61.0이 res['sig_norev']로 준다.
+            #   E_t와 중립일을 **그 변형의 신호에서** 읽는다(상태가 다른 날이 있으므로 라이브 E_t 재스케일로는 못 만든다).
+            _E_norev = _nfd_norev = None
+            _sgn = res.get("sig_norev") if isinstance(res, dict) else None
+            if _sgn is not None and "target_pos" in getattr(_sgn, "columns", []):
+                _E_norev = _sgn["target_pos"].reindex(eval_idx).fillna(0.0).astype(float).clip(lower=0.0, upper=1.0)
+                _nfd_norev = (_sgn["state"].reindex(eval_idx).astype(str).eq("NEUTRAL") & (_E_norev > 1e-12) & (_E_norev < 1.0 - 1e-12))
+                log("RELCMP", kv(event="r93_norev_ready", state_diff_days=int((_sgn["state"].reindex(eval_idx).astype(str)
+                                                                               != _rc_sig["state"].reindex(eval_idx).astype(str)).sum())
+                                 if _rc_sig is not None else -1,
+                                 e_diff_days=int(((_E_norev - _Evr).abs() > 1e-12).sum()),
+                                 neutral_days=int(_nfd_norev.sum())), M=M)
             _full_r = _Evr >= 1.0 - 1e-12
             _cap_now = float(getattr(scfg, "ROTATION_PRIMARY_CAP", 0.8) or 0.0)
             _def_now = float(getattr(scfg, "ROTATION_SHELTER_DEFENSIVE", 0.0) or 0.0)
@@ -11530,6 +11601,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _mt = {"ref": "종전(헤어컷 E7·중립 0.5)",
                        "live": f"현행(헤어컷 {'/'.join(f'{c:g}' for _, c in _live_steps_r)}·중립 {_live_n:g})",   # [v0.73.0] 라이브에서 읽는다
                        "r91": f"R91(헤어컷 {'/'.join(f'{c:g}' for _, c in _r91_steps)}·중립 {_live_n:g})",
+                       "norev": "현행에서 NFCI·ANFCI·STLFSI4 지표 가중 0(룩어헤드 점검)",
                        "cand": f"후보(헤어컷 {'/'.join(f'{c:.1f}' for _, c in _cand_steps)}·중립 {_cand_n:.1f})"}[msrc_]
                 _ct = (f"상한 {cap_:.0%}" if capp_ is None else f"상한 E=1일 {cap_:.0%}·그 밖 {capp_:.0%}")
                 return f"{_ct} · 방어대피처 {def_:.2f} · 하락국면리더 {ld_:.0%} · M {_mt}"
@@ -11549,6 +11621,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 # [v0.70.0 R89 · 측정 전용] 표본 안(2018~) '높음' 경계 후보 — 1927~1998 월별 긴 이력에서는 과열 헤어컷이 오히려 손해였다
                 #   (r89/ffm89.py). 그래서 라이브가 아니라 비교 행이며, 엔진의 긴 이력 판정(00U 블록 F2 · G)을 둘 다 통과해야 후보가 된다.
                 _modes_r.append(("표본 안 높음 후보(R89 · 측정)", _ccf, _cdf, 0.0, "cand", _ccp, 0.0))
+            if _E_norev is not None:
+                # [v0.74.0 R93] 라이브와 같은 S 규칙(상한·대피처·리더·채움) — M만 재추정 지표를 뺀 것.
+                _modes_r.append(("M 재추정지표 제외(룩어헤드 점검)", _cap_now, _def_now, _ld_now, "norev", None, _nf_live))
             _labels_r: Dict[str, str] = {}
             _specs_r: List[Dict[str, Any]] = []
             _repro = np.nan
@@ -11564,14 +11639,14 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     _fb = _fr_p.reindex(index=eval_idx, columns=all_cols).fillna(0.0)
                     _msk = pd.DataFrame(np.repeat(_full_r.values[:, None], len(all_cols), axis=1), index=eval_idx, columns=all_cols)
                     _fr_r = _fa.where(_msk, _fb)
-                _Em = {"ref": _E_ref, "live": _Evr, "cand": _E_cand, "r91": _E_r91}[_ms]
+                _Em = {"ref": _E_ref, "live": _Evr, "cand": _E_cand, "r91": _E_r91, "norev": _E_norev}[_ms]
                 _tw_r = _fr_r.reindex(index=eval_idx, columns=all_cols).fillna(0.0).mul(_Em, axis=0)
                 _tw_r = _apply_leader(_tw_r, _ldv)
                 if _ad_pos_r > 0 and "SPY" in _tw_r.columns:
                     _idle_r = (_Em > 1e-12) & (_tw_r.sum(axis=1).abs() <= 1e-12)
                     if bool(_idle_r.any()):
                         _tw_r.loc[_idle_r[_idle_r].index, "SPY"] = (_ad_pos_r * _Em[_idle_r]).values
-                _tw_r = _apply_nfill(_tw_r, float(_nfv))          # [v0.71.0 R90] 모드별 중립채움(라이브만 > 0)
+                _tw_r = _apply_nfill(_tw_r, float(_nfv), (_nfd_norev if _ms == "norev" else None))   # [v0.71.0 R90 · v0.74.0 변형 중립일]
                 _bad_r = (_tw_r.abs() > 1e-12) & ~listed_all
                 if bool(_bad_r.values.any()):
                     _tw_r = _tw_r.where(~_bad_r, 0.0)
@@ -11583,6 +11658,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _dl_variants[_lab_r] = _tw_r
                 _relcmp_frames[_nm] = _tw_r
                 _labels_r[_nm] = _lab_r
+                if _ms == "norev":
+                    continue          # [v0.74.0] 장기 검증(M 대용 3상태)에는 지표 개념이 없어 라이브와 같은 행이 된다 — 싣지 않는다
                 _specs_r.append({"name": _nm, "cap": _cp, "def": _df, "leader": _ldv, "msrc": _ms,
                                  "cap_part": (_cpp if _cpp is not None else _cp), "neutral_fill": float(_nfv),
                                  "steps": {"ref": _ref_steps_r, "live": _live_steps_r, "cand": _cand_steps, "r91": _r91_steps}[_ms],
@@ -11600,6 +11677,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                              sec=round(time.time() - _trc0, 2)), M=M)
             _relcmp_diag = {"enabled": True, "labels": _labels_r, "specs": _specs_r, "star": label_primary, "neutral_fill": _nf_live,
                             "live_steps": _live_steps_r, "live_neutral": _live_n,   # [v0.72.0 R91] 00 노란색 줄이 읽는다
+                            "revision_audit": (res.get("revision_audit") if isinstance(res, dict) else None),   # [v0.74.0 R93]
                             "repro_max_diff": _repro, "haircut_days": _n_hc_r, "neutral_days": _n_neu_r,
                             "leader_days": int(_dlm_all.sum()), "m_approx_ok": _m_approx_ok}
             if bool(getattr(scfg, "RELCMP_LONG_AUDIT", True)):
@@ -12509,6 +12587,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             "relcmp_frames": _relcmp_frames,       # [v0.69.0 R88] I가 같은 모드로 I 행을 만든다(부모 비중 비율)
             "neutral_fill_w": _nf_w,               # [v0.71.0 R90] 중립채움 몫(날짜×섹터) — I 측정 행(부모 ETF로 돌리기)용
             "spy_m_ret": spy_m_ret,                                                        # [v0.8.0] 13i 격차 분해용
+            "spy_m_norev_ret": (res["bt_norev"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
+                                if isinstance(res, dict) and res.get("bt_norev") is not None else None),   # [v0.74.0 R93]
             "spy_ret": spy_ret_cc, "spy_state_short": spy_state_short,                     # [v0.10.0 §1.C] vs SPY·SPY국면 분해용
             "down_leader_days": down_leader_days,                                          # [v0.15.0 §A] 하락국면 리더 발동일
             "all_cols": all_cols,
@@ -16402,7 +16482,8 @@ def build_up_down_segments(curve_df: pd.DataFrame, exec_w: pd.DataFrame, ret_df:
 def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None) -> str:
     t0 = time.time()
     scfg: SectorConfig = sres.get("scfg", CFG)
-    path = path or scfg.OUT_XLSX
+    # [v0.74.0 R93] 설정에서 온 경로에만 버전을 붙인다(호출자가 path를 직접 주면 그대로). 돌려주는 경로가 실제 파일이다.
+    path = path or versioned_report_path(scfg.OUT_XLSX, VERSION, bool(getattr(scfg, "OUT_XLSX_APPEND_VERSION", True)))
     if sres.get("aborted"):
         st = sres.get("selftest", {})
         meta = [("버전", f"{VERSION} ({VERSION_DATE})"),

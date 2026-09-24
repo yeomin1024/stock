@@ -22,6 +22,22 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.61.0 - 2026-09-24 - [R93 파일명 끝에 코드 버전 · 전 이력 재추정 지표 룩어헤드 점검(측정 전용) — 신호·비중·사이징 무변경]
+#    사용자 지시(2026-09-24 · 리포트 m7·s21): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 … 그리고 엑셀 파일명 맨뒤에 코드 버전도 같이 붙여".
+#    시작 v1.60.0 → 목표 v1.61.0. S v0.74.0 · I v0.45.0 · K v0.8.1과 한 묶음(넷 다 파일명 규칙이 같다).
+#    ── 이번 리포트 판정 ── **S★ 높음(회피 70.5% · 참여 90.5%)** — R92 하네스 예상 70.5/90.4와 일치. M 78.2%·64.5%(낮음).
+#      ⚠ I 리포트 없음(올리지 않음 또는 미완) · K는 여전히 v0.3.1(이 M의 '계층 버전 점검' 줄이 잡았다).
+#    (§1) versioned_report_path() · Config.OUT_XLSX_APPEND_VERSION=True: build_report가 market_regime_report_v1.61.0.xlsx로 쓰고 그 경로를
+#         돌려준다(러너 v1.28.0은 돌려받은 경로를 '생성 완료'·이력 폴더·zip에 그대로 쓴다 — 러너 무변경).
+#    (§2) ★★ 룩어헤드 점검(측정 전용): NFCI·ANFCI·STLFSI4는 **매주 과거 전체가 다시 추정**된다. 실행 m11→m6 사이 이 계열이
+#         2,077~2,124일 바뀌어 M 복합점수 633일·상태 15일이 달라졌다(R92에서 본 '실행마다 1~2%p 흔들림'의 큰 원인).
+#         위험점수(H) 트랙 가중치의 평균 17%(최대 37%)가 이 계열이다 — H는 위험회피 진입·중립감축·매수보류 규칙을 움직인다.
+#         11_룩어헤드감사는 **오늘 빈티지**를 날짜별로 자를 뿐이라 이 개정을 못 잡는다.
+#         → revised_history_keys()로 그 지표를 가려 두 트랙 가중치를 0으로 둔 변형(sig_norev·bt_norev)을 함께 계산해 00 줄과
+#           S 비교 행으로 낸다. 라이브는 그대로(사전등록: 다음 라운드에 라이브 제외를 기본안으로 상의).
+#    (§3) 동반 버전 표 S v0.74.0 · I v0.45.0 · K v0.8.1. 새 Config 필드 3개는 CACHE_KEY_IGNORE_FIELDS에 등재(캐시 무효화 없음).
+#    로그: [AUDIT] event=revision_audit keys=… share_H=… state_diff_days=… · [REPORT] report_ready file=…_v1.61.0.xlsx.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.60.0 - 2026-09-24 - [R92 ⚠⚠ 위험 파라미터: 얕은 헤어컷 0.6 → 0.55 (S 중립채움 1.0→0.5와 한 묶음 · 사용자 선택 A안)]
 #    사용자 지시(2026-09-24 · 리포트 m6·s20·i38): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 아니면 개선방법 찾아서 높음 되도록 수정".
 #    시작 v1.59.0 → 목표 v1.60.0. S v0.73.0 · I v0.44.0(무변경)과 한 묶음.
@@ -2857,6 +2873,17 @@ class Config:
     USE_WF_PERIOD_CACHE: bool = True
     WF_PERIOD_CACHE_DIR: Optional[str] = None
     OUT_XLSX: str = "market_regime_report.xlsx"
+    # [v1.61.0 R93] 사용자 지시(2026-09-24): "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여" → market_regime_report_v1.61.0.xlsx.
+    #   러너가 OUT_XLSX를 고정 이름으로 넘겨도 쓰는 순간 붙인다(러너 무변경). build_report가 실제 경로를 돌려주므로 러너의
+    #   '생성 완료' 줄·이력 폴더·zip도 새 이름을 쓴다. 끄기: m_overrides={"OUT_XLSX_APPEND_VERSION": False}.
+    OUT_XLSX_APPEND_VERSION: bool = True
+    # [v1.61.0 R93 · 측정 전용] 전 이력 재추정(revised-history) FRED 계열 — 매주 과거 전체 값이 다시 추정된다.
+    #   Chicago Fed NFCI·ANFCI(동적요인모형 · 매주 전 구간 개정) · St. Louis Fed STLFSI4(개정). 오늘 받은 과거 값은 그때 발표된
+    #   값이 아니다 → 백테스트가 '그때 몰랐던' 정보를 쓴다(룩어헤드). 11_룩어헤드감사는 **오늘 빈티지**를 날짜별로 자를 뿐이라 이걸 못 잡는다.
+    #   R93 실측: 실행 m11→m6 사이 NFCI 계열이 2,077~2,124일 바뀌었고 M 복합점수 633일 · 상태 15일이 달라졌다.
+    #   위험점수(H) 트랙 가중치의 평균 17%(최대 37%)가 이 계열이다(복합점수 트랙은 2%).
+    REVISED_HISTORY_SERIES: Tuple[str, ...] = ("NFCI", "ANFCI", "STLFSI4")
+    REVISION_AUDIT: bool = True        # 이 계열 가중치를 0으로 둔 M 변형을 함께 계산(라이브 무변경 · 00·S 비교 행)
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -6806,6 +6833,7 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "YAHOO_CRITICAL_FRED_FALLBACK", "FRED_FALLBACK_MIN_ROWS", "FRED_FALLBACK_MAX_DIFF_RATIO",   # v1.54.0 수집 전용(S v0.59.0 §P1)
     "TREND_OVERRIDE_SCORE_PCT", "TREND_OVERRIDE_NEED_MARKET",                                  # generate_signals 전용(S v0.40.0 §S3)
     "USE_WF_PERIOD_CACHE", "WF_PERIOD_CACHE_DIR",                                              # [v1.55.0 R72] 캐시 on/off·위치
+    "OUT_XLSX_APPEND_VERSION", "REVISED_HISTORY_SERIES", "REVISION_AUDIT",                     # [v1.61.0 R93] 파일명·측정 전용
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -10161,6 +10189,59 @@ def run(cfg: Config = CFG) -> dict:
     bt_ma = run_backtest(price, ma_pos, cfg, rf_daily)
     bt_ma = bt_ma.loc[bt_ma.index >= pd.Timestamp(cfg.SIGNAL_START)]
 
+    # ---------- 6b) [v1.61.0 R93 · 측정 전용] 전 이력 재추정 지표 룩어헤드 점검 ----------
+    #   NFCI·ANFCI·STLFSI4 계열 지표의 가중치를 복합점수(W)·위험점수(W_haz) 두 트랙에서 0으로 두고 같은 신호 함수를 다시 돌린다.
+    #   composite_score는 그날 쓸 수 있는 가중치 합으로 재정규화하므로 '그 지표가 없었다면'과 같다(근사: 워크포워드가 대신 다른 지표를
+    #   고르는 효과는 빠진다). 라이브 신호·비중·성과는 **무변경** — 결과는 00 줄 · res['sig_norev'](S 비교 행)로만 나간다.
+    rev_audit: Dict[str, Any] = {"enabled": False}
+    sig_norev = None
+    bt_norev = None
+    if getattr(cfg, "REVISION_AUDIT", True):
+        try:
+            _t_ra = time.time()
+            _rk = revised_history_keys(list(ind.columns), tuple(getattr(cfg, "REVISED_HISTORY_SERIES", ()) or ()))
+            _rkW = [k for k in _rk if k in W.columns]
+            _rkH = [k for k in _rk if k in W_haz.columns]
+            _W2 = W.copy(); _Wh2 = W_haz.copy()
+            if _rkW:
+                _W2[_rkW] = 0.0
+            if _rkH:
+                _Wh2[_rkH] = 0.0
+            _score2, _, _ = composite_score(ind, _W2, cfg)
+            _spct2 = score_percentile(_score2).where(pd.Series(sig_mask, index=cal))
+            _hs2, _, _ = composite_score(ind, _Wh2, cfg)
+            _hpct2 = score_percentile(_hs2).where(pd.Series(sig_mask, index=cal))
+            sig_norev = generate_signals(_spct2, trend200, cfg, score=_score2, haz_pct=_hpct2,
+                                         fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov,
+                                         struct_dd=struct_dd, px=price["Close"], breadth=breadth)
+            bt_norev = run_backtest(price, sig_norev["target_pos"], cfg, rf_daily)
+            bt_norev = bt_norev.loc[bt_norev.index >= pd.Timestamp(cfg.SIGNAL_START)]
+            _ev = sig.index >= pd.Timestamp(cfg.SIGNAL_START)
+            _n_st = int((sig_norev["state"].astype(str) != sig["state"].astype(str))[_ev].sum())
+            _n_pos = int(((sig_norev["target_pos"].astype(float) - sig["target_pos"].astype(float)).abs() > 1e-12)[_ev].sum())
+            _Wev = W.loc[W.index >= pd.Timestamp(cfg.SIGNAL_START)].abs()
+            _Hev = W_haz.loc[W_haz.index >= pd.Timestamp(cfg.SIGNAL_START)].abs()
+            _shW = float((_Wev[_rkW].sum(axis=1) / _Wev.sum(axis=1).replace(0.0, np.nan)).mean()) if _rkW else 0.0
+            _shH = float((_Hev[_rkH].sum(axis=1) / _Hev.sum(axis=1).replace(0.0, np.nan)).mean()) if _rkH else 0.0
+            _pm0 = perf_metrics(bt["strategy_ret"], "라이브"); _pm1 = perf_metrics(bt_norev["strategy_ret"], "재추정 제외")
+            rev_audit = {"enabled": True, "series": list(getattr(cfg, "REVISED_HISTORY_SERIES", ())), "keys": _rk,
+                         "n_keys_W": len(_rkW), "n_keys_H": len(_rkH), "share_W": _shW, "share_H": _shH,
+                         "state_diff_days": _n_st, "pos_diff_days": _n_pos, "eval_days": int(_ev.sum()),
+                         "live": {k: float(_pm0[k]) for k in ("CAGR", "최대낙폭(MDD)", "칼마(CAGR/MDD)") if k in _pm0},
+                         "norev": {k: float(_pm1[k]) for k in ("CAGR", "최대낙폭(MDD)", "칼마(CAGR/MDD)") if k in _pm1},
+                         "sec": round(time.time() - _t_ra, 2)}
+            log("AUDIT", kv(event="revision_audit", series=";".join(rev_audit["series"]), keys=len(_rk),
+                            keys_W=len(_rkW), keys_H=len(_rkH), share_W=round(_shW, 4), share_H=round(_shH, 4),
+                            state_diff_days=_n_st, pos_diff_days=_n_pos,
+                            cagr_live=round(rev_audit["live"].get("CAGR", np.nan), 4),
+                            cagr_norev=round(rev_audit["norev"].get("CAGR", np.nan), 4),
+                            sec=rev_audit["sec"], note="측정 전용 — 라이브 무변경"))
+        except Exception as _e:
+            log("AUDIT", kv(event="revision_audit_failed", err=type(_e).__name__, msg=str(_e)[:160],
+                            action="점검만 생략 — 라이브 무영향"), "warning")
+            rev_audit = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
+    stage_timing["10b_재추정지표점검"] = round(time.time() - t_hlsens_done, 2)
+
     # ---------- 7) 감사 ----------
     audit = pd.DataFrame()
     if cfg.RUN_LOOKAHEAD_AUDIT:
@@ -10185,6 +10266,7 @@ def run(cfg: Config = CFG) -> dict:
             "yahoo_degraded": yahoo_degraded, "yahoo_diag": yahoo_diag,
             "data_freshness": data_freshness,   # [v1.56.0 R73 §1-3(e)] S·I·runner가 읽는다
             "ft_coverage": ft_coverage, "ft_degraded": ft_degraded, "signal_days": _n_sig,
+            "sig_norev": sig_norev, "bt_norev": bt_norev, "revision_audit": rev_audit,   # [v1.61.0 R93] 측정 전용
             "stage_timing": stage_timing}
 
 
@@ -11340,6 +11422,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
+        ("★★ R93 룩어헤드 점검 — 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)", _revision_audit_note(res)),
         # [v1.50.0 사용자 지시 2026-09-12 "실제 매매에서 사용하는 전략이 뭔지 확실히 표시"] M·S·I 세 리포트 공통 문구.
         ("★ 노란색 표시", "각 리포트에서 **노란색 행 = 실제 거래에 쓰는 전략**이다(M 06_성과요약 '복합지표 전략' · "
                       "S 13_섹터배분전략 ★ · I 13_산업배분전략 ★ · K 13_주식배분전략 ★). 나머지 행은 같은 잣대로 비교하는 "
@@ -11593,12 +11676,14 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                          **{k: v for k, v in _stage_timing.items() if not k.startswith("12_")}))
 
     # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
-    write_excel(cfg.OUT_XLSX, sheets, bt, meta, cfg,
+    # [v1.61.0 R93] 파일명 끝에 코드 버전(사용자 지시) — 돌려주는 경로가 실제 파일이다(러너는 이 값을 그대로 쓴다).
+    _out = versioned_report_path(cfg.OUT_XLSX, BUNDLE_VERSION, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
+    write_excel(_out, sheets, bt, meta, cfg,
                 live_marks={"06_성과요약": ("전략", "복합지표 전략")})
-    log("REPORT", kv(event="report_ready", file=cfg.OUT_XLSX, rows_daily=len(daily),
+    log("REPORT", kv(event="report_ready", file=_out, rows_daily=len(daily),
                      trades=len(trades), adopted=len(adopted),
                      elapsed_s=round(time.time() - t0, 2)))
-    return cfg.OUT_XLSX
+    return _out
 
 
 # =============================================================================
@@ -11652,13 +11737,58 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.60.0"
+BUNDLE_VERSION = "v1.61.0"
 BUNDLE_VERSION_DATE = "2026-09-24"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.73.0", "industry_rotation": "v0.44.0", "stock_regime": "v0.8.0"}
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.74.0", "industry_rotation": "v0.45.0", "stock_regime": "v0.8.1"}
+
+
+def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
+    """[v1.61.0 R93] 사용자 지시 "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여" — 'x.xlsx' → 'x_v1.61.0.xlsx'.
+    이미 붙어 있으면(다시 부를 때) 예전 버전 꼬리를 떼고 새로 붙인다. S·I·K도 같은 규칙을 쓴다(각자 자기 VERSION)."""
+    if not enabled or not path:
+        return path
+    import re as _re
+    root, ext = os.path.splitext(str(path))
+    root = _re.sub(r"_v\d+\.\d+\.\d+$", "", root)
+    return f"{root}_{version}{ext or '.xlsx'}"
+
+
+def revised_history_keys(cols, series: Tuple[str, ...] = ("NFCI", "ANFCI", "STLFSI4")) -> List[str]:
+    """[v1.61.0 R93] 전 이력 재추정 FRED 계열에서 만든 지표 키. 자동생성 지표는 series_id, 커스텀 지표는 source('FRED NFCI')로 가린다.
+    'ANFCI'가 'NFCI'에 걸리지 않도록 단어 경계로 비교한다."""
+    import re as _re
+    ss = tuple(str(x) for x in (series or ()))
+    out = []
+    cs = set(cols)
+    for sp in INDICATOR_SPECS:
+        if sp.key not in cs:
+            continue
+        sid = str(getattr(sp, "series_id", "") or "")
+        src = str(getattr(sp, "source", "") or "")
+        if sid in ss or any(_re.search(rf"(?<![A-Za-z0-9]){_re.escape(x)}(?![A-Za-z0-9])", src) for x in ss):
+            out.append(sp.key)
+    return out
+
+
+def _revision_audit_note(res: Dict[str, Any]) -> str:
+    """[v1.61.0 R93] 00 줄 — 전 이력 재추정 지표를 빼면 M이 얼마나 달라지나(측정 전용)."""
+    ra = (res or {}).get("revision_audit") or {}
+    if not ra.get("enabled"):
+        return f"산출 안 됨 — {ra.get('error', 'REVISION_AUDIT=False')}"
+    lv, nr = ra.get("live") or {}, ra.get("norev") or {}
+    def _f(d, k, pct=True):
+        v = d.get(k, np.nan)
+        return (f"{v * 100:.2f}%" if pct else f"{v:.3f}") if v == v else "-"
+    return (f"지표 {len(ra.get('keys', []))}개(복합 {ra.get('n_keys_W', 0)} · 위험 {ra.get('n_keys_H', 0)}) · 가중 몫 평균 복합 {ra.get('share_W', 0):.1%} · "
+            f"위험(H) {ra.get('share_H', 0):.1%} → 빼면 상태 다른 날 {ra.get('state_diff_days', 0)} · 목표비중 다른 날 {ra.get('pos_diff_days', 0)}"
+            f" / 평가 {ra.get('eval_days', 0)}일 · CAGR {_f(lv, 'CAGR')} → {_f(nr, 'CAGR')} · MDD {_f(lv, '최대낙폭(MDD)')} → {_f(nr, '최대낙폭(MDD)')} · "
+            f"칼마 {_f(lv, '칼마(CAGR/MDD)', False)} → {_f(nr, '칼마(CAGR/MDD)', False)}. "
+            "이 계열은 매주 과거 전체가 다시 추정되어 백테스트가 그때 몰랐던 값을 쓴다(11_룩어헤드감사로는 못 잡는다). "
+            "라이브 무변경 — S·I 신뢰도 영향은 S 00 'R93 룩어헤드 점검' 줄. 연구·교육용, 투자 자문 아님.")
 
 
 def companion_version_note() -> str:
@@ -11946,6 +12076,7 @@ def self_test(cfg: Config = CFG) -> bool:
     # N_eff 부족시 직전가중치유지 로직 자체는 별도 단위테스트(_reestimation_boundaries,
     # N_eff carry-forward)로 이미 독립 검증되어 있다.
     c = Config(**{**cfg.__dict__, "SELF_TEST": True, "OUT_XLSX": "selftest_report.xlsx",
+                  "OUT_XLSX_APPEND_VERSION": False,   # [v1.61.0] 자기검사 파일명은 고정(main이 이 이름을 돌려준다)
                   "SIGNAL_START": "1997-01-01", "REWEIGHT_FREQ": "A", "LOG_LEVEL": cfg.LOG_LEVEL})
     res = run(c)
     v = res["val_full"].set_index("지표코드")
