@@ -1,5 +1,8 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.49.0 - 2026-09-25 - [R97 긴 이력 교정 판정 전달 — I 규칙·배분 무변경]
+#    시작 v0.48.0 → 목표 v0.49.0. (§1) _i_relcmp_diag에 m_proxy_long(S v0.78.0 m_proxy_long_history · M 대용 3상태) → I 00U 블록 M · 00 R96/R95 줄.
+#    연구·교육용 — 투자 자문이 아니다.
 #  VERSION: v0.48.0 - 2026-09-24 - [R96 M 변동성 관리 비교 전달 — I 규칙·배분 무변경(I★ 변화는 M E_t에서 온다)]
 #    사용자 지시(2026-09-24): "… 참여율 절대로 낮추지 말고 회피를 더 높게 올리도록 개선해". 시작 v0.47.0 → 목표 v0.48.0.
 #    (§1) spy_m_pre96_ret(M 변동성 관리 이전 = R95 M) 전달(3곳) → I 00U 블록 B 'M R96 변동성 관리 없음(= R95 M)' 행.
@@ -1896,8 +1899,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.48.0"
-VERSION_DATE = "2026-09-24"
+VERSION = "v0.49.0"
+VERSION_DATE = "2026-09-25"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -13991,6 +13994,7 @@ def _i_relcmp_diag(alloc: Optional[dict], src: Optional[dict]) -> Dict[str, Any]
             "revision_audit": sr.get("revision_audit"),                 # [v0.45.0 R93] 00 룩어헤드 점검 줄(S와 같은 M 값)
             "r95": sr.get("r95"), "r95_long": sr.get("r95_long"),       # [v0.47.0 R95] 00 R95 줄 · 00U 블록 K(S와 같은 M 값)
             "r96": sr.get("r96"), "r96_long": sr.get("r96_long"),       # [v0.48.0 R96] 00 R96 줄 · 00U 블록 L(S와 같은 M 값)
+            "m_proxy_long": sr.get("m_proxy_long"),                     # [v0.49.0 R97] 00U 블록 M · 00 줄(M 대용 3상태 긴 이력)
             "live_neutral": (src or {}).get("s_live_neutral"),
             "haircut_days": sr.get("haircut_days"), "neutral_days": sr.get("neutral_days"), "leader_days": sr.get("leader_days"),
             "m_approx_ok": sr.get("m_approx_ok", True)}

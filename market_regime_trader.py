@@ -22,6 +22,22 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.65.0 - 2026-09-25 - [R97 ⚠ 신호(좁은 범위): P1 반등 재진입의 20일 신고가 가지에 약세장 가드 — 표본 안(2018~) 변화 0]
+#    사용자 지시(2026-09-25 · 리포트 m v1.64.0 · s v0.77.0 · i v0.48.0 · k v0.9.2): R96 판정 후 "수정하고 인수인계 파일도 만들어".
+#      시작 v1.64.0 → 목표 v1.65.0. 앞 지시 유지: "참여율 절대로 낮추지 말고 회피를 더 높게" · "묻지 말고 권장으로".
+#    ── R96 엔진 판정 ── M 80.1/61.1 → 80.4/61.6 · S★ 74.0/84.8 → 74.4/86.1(중간) · I★ 74.1/90.1 → 74.6/91.8(높음) · K★ 75.0/90.4 → 75.4/91.9(높음)
+#      — 네 층 ✓(오프라인 예상과 0.1~0.2%p). 블록 L(M 자신의 신호 1993~2017): R96·(A)·(P2) 발동 0일(부분 노출일 없음 → 시험 안 됨) ·
+#      R95 손실 전부가 P1(110일 · −0.90/−0.29 · 뒤 −1.39/−0.80) = 엔진이 약한 고리를 확인.
+#    ── P1 대체 탐색(r97/p1r97.py · p1r97b.py · 표본 안 = 엔진 함수 재구성 · 긴 이력 = S m_proxy_long_history와 같은 함수 · SPX 2000~2017) ──
+#      필터 18종 × 비중 2종: 표본 안 네 층 참여를 떨어뜨리지 않는 것은 '가지별 가드'뿐. 20일 신고가 가지(hi20만 P1 몫 −2.92)가 10일 추력 가지
+#      (−0.70)보다 긴 이력에서 훨씬 해로웠다 → 20일 신고가 가지에만 **약세장 가드**(252일 고점 대비 −20% 이내 · 관례적 약세장 경계 · 사전 정의값).
+#      표본 안(2018~) 목표비중 **변화 0**(해당 날 없음 · 네 층 비트 동일) · 긴 이력 대용 전체 +0.22/+0.11 · 앞 +0.49/−0.01 · 뒤 +0.00/+0.20.
+#      −25%는 +0.00/+0.09(같은 방향 · 약함) · −15%는 표본 안 참여 −0.4~−0.8(불가). ⚠ P1은 가드 뒤에도 긴 이력 몫이 음수(대용 −2.63/+1.24) —
+#      끄면 표본 안 참여 −1.1~−2.0%p라 사용자 지시로 유지(교훈 44).
+#    (§1 ⚠) apply_r95_overlays: R97_REBOUND_HIGH_MAX_DD(0.20) · R97_REBOUND_DD_WINDOW(252 · 자료 120일 미만이면 가드 없음) · sig 열 r97_bear_guard ·
+#         01 '약세장가드(R97)' · 00 R95 줄 · 로그 [SIGNAL] event=r95_overlays bear_guard=… ⚠ 되돌리기: m_overrides={"R97_REBOUND_HIGH_MAX_DD": 0.0}.
+#    (§2) 새 2필드 캐시 무시 목록(정본 · S 폴백). 동반 버전 표 S v0.78.0 · I v0.49.0 · K v0.9.2(K 무변경).
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.64.0 - 2026-09-24 - [R96 ⚠ 신호(사이징) 변경: 부분 노출일 변동성 관리 — 네 층 회피↑·참여↑ · R95 긴 이력 미통과 처리]
 #    사용자 지시(2026-09-24 · 리포트 m v1.63.0 · s v0.76.0 · i v0.47.0 · k v0.9.1): "국면, 섹터랑 산업층 좀 신뢰도 높음이야 … 개선해 …
 #      참여율 절대로 낮추지 말고 회피를 더 높게 올리도록 개선해". 시작 v1.63.0 → 목표 v1.64.0.
@@ -3018,6 +3034,14 @@ class Config:
     R96_VOL_MIN_PERIODS: int = 15
     R96_NEUTRAL_VOL_TARGET: float = 0.14      # 중립 부분일 올림 표적(연율) — 0이면 (N) 끔
     R96_HAIRCUT_VOL_TARGET: float = 0.09      # 얕은 헤어컷일 표적(연율 · 양방향) — 0이면 (H) 끔
+    # [v1.65.0 R97 · P1 약세장 가드] R95 (P1) 반등 재진입의 **20일 신고가** 가지는 SPY가 252일 고점 대비 −20% 이내일 때만 쓴다
+    #   (−20% = 관례적 약세장 경계 · 사전 정의값). 10일 +5% 가지(추력)는 그대로 — 2020-03 V반등은 이 가지로 잡힌다.
+    #   근거(R96 리포트 · 엔진 블록 L): M 자신의 긴 이력에서 R95 손실의 전부가 P1(110일 · −0.90/−0.29)이었다. 오프라인(r97/p1r97b.py ·
+    #   엔진 m_proxy_long_history와 같은 함수 · SPX 2000~2017 M 대용): 약세장 20일 신고가는 되돌림 함정이 많았다(hi20만 P1 몫 −2.92 vs 10일 추력만 −0.70).
+    #   가드 효과: 표본 안(2018~) 네 층 **변화 0**(해당 날 없음) · 긴 이력 대용 전체 +0.22/+0.11 · 앞 +0.49/−0.01 · 뒤 +0.00/+0.20(%p 회피/참여).
+    #   ⚠ 되돌리기(한 줄): m_overrides={"R97_REBOUND_HIGH_MAX_DD": 0.0} ⇒ v1.64.0과 비트 동일.
+    R97_REBOUND_HIGH_MAX_DD: float = 0.20     # 0이면 가드 끔 · 20일 신고가 가지 허용 = 종가 ≥ 252일 최고 종가 × (1 − 이 값)
+    R97_REBOUND_DD_WINDOW: int = 252
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -6976,6 +7000,7 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "R95_REBOUND_RET_N", "R95_REBOUND_RET", "R95_REBOUND_POS", "R95_DEEP_HAIRCUT_MAX_DAYS", "R95_DEEP_HAIRCUT_AFTER_POS",
     # [v1.64.0 R96] 라이브 SPY 신호 뒤 변동성 관리 오버레이 전용(검증·워크포워드·S·I 국면 모형 무관) — 캐시 무효화 금지(교훈 31).
     "R96_VOL_MANAGE", "R96_VOL_WINDOW", "R96_VOL_MIN_PERIODS", "R96_NEUTRAL_VOL_TARGET", "R96_HAIRCUT_VOL_TARGET",
+    "R97_REBOUND_HIGH_MAX_DD", "R97_REBOUND_DD_WINDOW",                                         # [v1.65.0 R97] P1 약세장 가드(사후 오버레이)
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -8195,6 +8220,7 @@ def apply_r95_overlays(sig: pd.DataFrame, px: pd.Series, fast_pct: Optional[pd.S
             if "neutral_risk_cut" in out.columns else pd.Series(False, index=idx))
     roff = zero & ~deep & ~ncut
     mA = pd.Series(False, index=idx); mP = pd.Series(False, index=idx); mD = pd.Series(False, index=idx)
+    mG = pd.Series(False, index=idx)          # [v1.65.0 R97] 약세장 가드로 막은 P1 날(20일 신고가였지만 낙폭 > 20%)
     diag: Dict[str, Any] = {"enabled": False}
     if bool(getattr(cfg, "R95_STRESS_EXIT", False)):
         _vr = (r.rolling(5, min_periods=4).std() / r.rolling(63, min_periods=40).std())
@@ -8206,6 +8232,15 @@ def apply_r95_overlays(sig: pd.DataFrame, px: pd.Series, fast_pct: Optional[pd.S
         _n = int(cfg.R95_REBOUND_HIGH_N); _k = int(cfg.R95_REBOUND_RET_N)
         _hi = p >= p.rolling(_n, min_periods=_n).max()
         _rk = p / p.shift(_k) - 1.0
+        # [v1.65.0 R97] 약세장 가드 — 20일 신고가 가지는 252일 고점 대비 낙폭이 R97_REBOUND_HIGH_MAX_DD 이내일 때만(추력 가지는 그대로).
+        #   낙폭을 아직 잴 수 없는 날(자료 120일 미만)은 가드를 적용하지 않는다.
+        _gdd = float(getattr(cfg, "R97_REBOUND_HIGH_MAX_DD", 0.0) or 0.0)
+        if _gdd > 0:
+            _ddw = int(getattr(cfg, "R97_REBOUND_DD_WINDOW", 252) or 252)
+            _dd = p / p.rolling(_ddw, min_periods=min(120, _ddw)).max() - 1.0
+            _guard = (_dd > -_gdd) | _dd.isna()
+            mG = roff & _hi.fillna(False) & ~_guard.fillna(True) & ~(_rk > float(cfg.R95_REBOUND_RET)).fillna(False)
+            _hi = _hi & _guard
         _reb = (_hi | (_rk > float(cfg.R95_REBOUND_RET))).fillna(False)
         mP = roff & _reb
         tp[mP] = np.maximum(tp[mP], float(cfg.R95_REBOUND_POS))
@@ -8219,8 +8254,10 @@ def apply_r95_overlays(sig: pd.DataFrame, px: pd.Series, fast_pct: Optional[pd.S
     out["r95_stress_exit"] = mA
     out["r95_rebound_reentry"] = mP
     out["r95_deep_timeout"] = mD
+    out["r97_bear_guard"] = mG
     diag = {"enabled": bool(mA.any() or mP.any() or mD.any() or getattr(cfg, "R95_STRESS_EXIT", False)),
             "stress_exit_days": int(mA.sum()), "rebound_days": int(mP.sum()), "deep_timeout_days": int(mD.sum()),
+            "bear_guard_days": int(mG.sum()), "bear_guard_dd": float(getattr(cfg, "R97_REBOUND_HIGH_MAX_DD", 0.0) or 0.0),
             "changed_days": int(((tp - tp0).abs() > 1e-12).sum()),
             "mean_pre": round(float(tp0.mean()), 4), "mean_post": round(float(tp.mean()), 4),
             "buckets": {"부분": int(part.sum()), "깊은헤어컷0": int(deep.sum()), "중립감축0": int((zero & ~deep & ncut).sum()),
@@ -8229,7 +8266,8 @@ def apply_r95_overlays(sig: pd.DataFrame, px: pd.Series, fast_pct: Optional[pd.S
                      deep_timeout=diag["deep_timeout_days"], changed=diag["changed_days"],
                      mean_before=diag["mean_pre"], mean_after=diag["mean_post"],
                      ft_pct=getattr(cfg, "R95_STRESS_FT_PCT", None), vol_ratio=getattr(cfg, "R95_STRESS_VOL_RATIO", None),
-                     max_days=_N, note="⚠ 사이징 오버레이(R95) · 되돌리기 R95_STRESS_EXIT/R95_REBOUND_REENTRY=False · R95_DEEP_HAIRCUT_MAX_DAYS=0"))
+                     max_days=_N, bear_guard=int(mG.sum()), bear_guard_dd=getattr(cfg, "R97_REBOUND_HIGH_MAX_DD", None),
+                     note="⚠ 사이징 오버레이(R95) · 되돌리기 R95_STRESS_EXIT/R95_REBOUND_REENTRY=False · R95_DEEP_HAIRCUT_MAX_DAYS=0 · R97 가드 0.0"))
     return out, diag
 
 
@@ -11437,7 +11475,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         if "deep_reentry_floor" in sig.columns else ""
     # [v1.63.0 R95] 사이징 오버레이 발동일 — 리포트만으로 '왜 그날 비중이 바뀌었나'를 센다.
     for _c95, _n95 in (("r95_stress_exit", "스트레스청산(R95-A)"), ("r95_rebound_reentry", "반등재진입(R95-P1)"),
-                       ("r95_deep_timeout", "깊은헤어컷시한(R95-P2)")):
+                       ("r95_deep_timeout", "깊은헤어컷시한(R95-P2)"), ("r97_bear_guard", "약세장가드(R97)")):
         daily[_n95] = (sig[_c95].reindex(idx).map({True: "발동", False: ""}) if _c95 in sig.columns else "")
     if "pos_pre_r95" in sig.columns:
         daily["R95 전 목표비중"] = pd.to_numeric(sig["pos_pre_r95"], errors="coerce").reindex(idx)
@@ -12063,13 +12101,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.64.0"
-BUNDLE_VERSION_DATE = "2026-09-24"
+BUNDLE_VERSION = "v1.65.0"
+BUNDLE_VERSION_DATE = "2026-09-25"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.77.0", "industry_rotation": "v0.48.0", "stock_regime": "v0.9.2"}   # [v1.64.0 R96]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.78.0", "industry_rotation": "v0.49.0", "stock_regime": "v0.9.2"}   # [v1.65.0 R97]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
@@ -12123,6 +12161,9 @@ def _r95_note(res: Dict[str, Any]) -> str:
             "⚠⚠ R95 리포트 판정: 긴 이력 **미통과**(전체 −0.90/−0.29 · 뒤 2008~2017 −1.39/−0.80) — 되돌리면 네 층 참여가 1.0~2.6%p 떨어져 "
             "사용자 지시(참여율 절대 하락 금지)와 충돌 → R96에서 **유지**하고 규칙별 긴 이력 분해(S 00U 블록 L)로 원인 규칙을 가린다"
             "(오프라인 대용 SPX 2000~2008: P1 −3.75/+1.26 · A(vr) +0.27/−0.72 · P2 0/0 — 약한 고리는 P1). "
+            f"R96 리포트 블록 L이 엔진에서도 P1을 확인했다(R95 긴 이력 손실 전부 = P1 110일) → **R97 약세장 가드**: P1의 20일 신고가 가지는 "
+            f"252일 고점 대비 −{float(getattr(cfg, 'R97_REBOUND_HIGH_MAX_DD', 0) or 0):.0%} 이내일 때만(막은 날 {d.get('bear_guard_days', 0)}일 · 전 이력 · "
+            "표본 안 2018~ 변화 0 · 긴 이력 대용 +0.22/+0.11 · 되돌리기 m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.0}). "
             "06c 격자 행에는 이 오버레이가 없다(라이브 ★ 행만). "
             "되돌리기: m_overrides={'R95_STRESS_EXIT': False, 'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. "
             "연구·교육용, 투자 자문 아님.")
@@ -12144,7 +12185,8 @@ def _r96_note(res: Dict[str, Any]) -> str:
             f"{d.get('mean_post', '-')}(바뀐 날 {d.get('changed_days', 0)}, 전 이력). "
             "오프라인 예상(R95 리포트 기준 · 하네스가 엔진 곡선 재현 · 기준 = R95 라이브): M 80.1/61.1 → 80.4/61.4 · S★ 74.0/84.8 → 74.4/86.0 · "
             "I★ 74.1/90.1 → 74.6/91.6 · K★ 75.0/90.5 → 75.3/91.8 — 네 층 모두 회피↑·참여↑ · MDD 불변 · 앞/뒤 절반·연도 잭나이프 9회 전부 같은 방향 · "
-            "긴 이력 대용(SPX 2000~2017) +0.28/+0.36. ⚠ 사전등록: S 00U 블록 L '[R96 긴 이력]'(1993~2017 · M 자신의 신호)에서 "
+            "긴 이력 대용(SPX 2000~2017) +0.28/+0.36. ⚠ 사전등록(R97 교정): S 00U 블록 M(M 대용 3상태 1994~2017 · 블록 L의 M 자신의 신호에는 "
+            "부분 노출일이 없어 R96이 발동 0일 = 시험 안 됨)에서 "
             "R96 전체 Δ회피 ≥0 · Δ참여 ≥0 · 두 반쪽 Δ합 ≥ −1%p(미통과면 다음 라운드 되돌림 후보). "
             "되돌리기: m_overrides={'R96_VOL_MANAGE': False}. 연구·교육용, 투자 자문 아님.")
 
