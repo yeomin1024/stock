@@ -1,5 +1,26 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.10.0 - 2026-09-25 - [⚠ 유니버스 +30종목(사용자 지시 · 산업 매칭) · R98 측정 비교 행 · 'v0.9.2 유니버스' 비교 행]
+#    사용자 지시(2026-09-25): "stock_regime은 CRDO, AVGO, LLY, DDOG, GOOG, SHOP, BTSG, CRM, TSLA, DAVE, CROX, ROST, MNST, RL, KO, SNDK, GS, CDNS,
+#      NOW, SHIP, FTNT, MU, LRCX, WDC, PANW, MDB, CRWD, STX, MRVL, AMD, AAPL, MSFT, DASH, AMZN, INTC, NET 티커를 각 산업에 매칭해서 추가해".
+#      시작 v0.9.2 → 목표 v0.10.0(유니버스가 바뀌어 K★ 배분 결과가 바뀐다 → 부 버전).
+#    (§1 ⚠⚠ 배분에 영향) STOCK_UNIVERSE_ADD_R98(티커 → 산업 ETF · 사전등록 매핑) 30종목 · StockConfig.UNIVERSE_ADD · 역할 '사용자'.
+#      산업 매칭(부모 섹터는 I INDUSTRIES 표): SOXX(XLK) CRDO·AVGO·MU·LRCX·MRVL·AMD·INTC·SNDK · IGV(XLK) CRM·NOW·CDNS·SHOP ·
+#      SKYY(XLK) DDOG·MDB·NET · AAPL·WDC·STX(하드웨어 — Yahoo 업종표 관례 'computer hardware' → SKYY) · HACK(XLK) PANW·FTNT ·
+#      IHF(XLV) BTSG · XRT(XLY) ROST·CROX·RL·AMZN · PEJ(XLY) DASH · PBJ(XLP) KO·MNST · KBE(XLF) DAVE · IYT(XLI) SHIP.
+#      AMZN·DASH는 GICS 섹터가 XLY라 FDN(부모 XLC) 대신 XLY 산업에 넣었다(섹터연동은 부모 섹터가 비중을 정한다).
+#      이미 있는 5종목(LLY · TSLA · GS · CRWD · MSFT)은 중복이라 그대로. **GOOG는 넣지 않았다** — GOOGL(설계 종목)과 같은 발행사라
+#      XLC 안에서 알파벳 비중이 두 배가 된다. 둘 다 원하면 k_overrides={"EXTRA_TICKERS": ("GOOG",)}.
+#      ⚠ 홀드아웃과 겹치는 AMD · FTNT · ROST · KO · AMZN은 '사용자' 종목이 되어 홀드아웃에서 빠진다(29 → 24 · 기존 규칙 · 로그 dropped).
+#      ⚠ 위험 영향: XLK 종목 4 → 24개 → 슬롯 ≈ S★ XLK 비중/24(< 5% 상한) → XLK 몫 대부분이 섹터 ETF 대신 개별 종목(집중·베타↑ 가능) ·
+#        이력 짧은 종목(SNDK 2025~ · BTSG 2024~ · CRDO·DAVE 2022~ · DASH 2020~ 등)은 상장 전 날짜에서 자동 제외(관측 종목만 균등).
+#      ⚠⚠ 선택 편향: 2026년에 고른 종목(메모리·AI 승자 다수)이라 백테스트 K★ 숫자가 부풀려질 수 있다 — 'v0.9.2 유니버스' 비교 행과 함께 읽는다.
+#      되돌리기(한 줄): k_overrides={"UNIVERSE_ADD": {}} ⇒ v0.9.2 유니버스(29종목 · 배분 비트 동일).
+#    (§2) 13·00U 비교 행 '비교: 섹터연동 · v0.9.2 유니버스(R98 추가 전 · 측정 전용)' — 같은 S★ 섹터 비중 · 추가 종목만 뺀 섹터연동(유니버스 효과 분리).
+#    (§3) R98 측정 비교 행: I v0.50.0 통로의 S 'R98 V1 변동성 짝' · 'R98 VRP' · 'R98 상한100% × V1강' 섹터 비중 → 같은 섹터연동(v0.9.1 루프 그대로).
+#         00 '★★★ R98 측정 — K★' 줄(Δ회피·Δ참여 · ✓/✗) · '⚠ R98 유니버스 확장' 줄(K★ vs v0.9.2 유니버스) · 로그 [REL] event=k_r98_compare.
+#    ⚠ R98 사전등록 ②(노란 행 = R97)는 K에서 성립하지 않는다(유니버스 변경) — 규칙 효과는 'v0.9.2 유니버스' 행 기준으로 따로 본다.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.9.2 - 2026-09-24 - [R96 비교 행: S 'R96 변동성 관리 없음' 섹터 비중으로 같은 섹터연동 · 00 R96 줄 — K 배분·규칙 무변경]
 #    사용자 지시(2026-09-24): "… 참여율 절대로 낮추지 말고 회피를 더 높게 올리도록 개선해". 시작 v0.9.1 → 목표 v0.9.2.
 #    K★의 변화는 M v1.64.0 변동성 관리 → S★ 섹터 비중에서 온다(K 코드는 배분 무변경). I v0.48.0 통로의 sector_w_variants에
@@ -437,8 +458,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.9.2"
-VERSION_DATE = "2026-09-24"
+VERSION = "v0.10.0"
+VERSION_DATE = "2026-09-25"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -484,6 +505,44 @@ STOCK_NAME_KR: Dict[str, str] = {
 }
 
 
+# [v0.10.0 R98 ⚠ 사용자 지시] 추가 종목 — **티커 → 산업 ETF**(사전등록 매핑 · 자동 매핑보다 우선). 역할 '사용자'(설계 규칙에 안 쓴 종목).
+#   부모 섹터는 I의 INDUSTRIES 표(SOXX·IGV·SKYY·HACK → XLK · IHF → XLV · XRT·PEJ → XLY · PBJ → XLP · KBE → XLF · IYT → XLI).
+#   제외: LLY·TSLA·GS·CRWD·MSFT(이미 설계 종목) · GOOG(GOOGL과 같은 발행사 — 중복 비중 방지 · 원하면 EXTRA_TICKERS로).
+#   되돌리기: k_overrides={"UNIVERSE_ADD": {}}.
+STOCK_UNIVERSE_ADD_R98: Dict[str, str] = {
+    # 반도체(SOXX · XLK) — 메모리 NAND(SNDK) 포함
+    "CRDO": "SOXX", "AVGO": "SOXX", "MU": "SOXX", "LRCX": "SOXX", "MRVL": "SOXX", "AMD": "SOXX", "INTC": "SOXX", "SNDK": "SOXX",
+    # 소프트웨어(IGV · XLK)
+    "CRM": "IGV", "NOW": "IGV", "CDNS": "IGV", "SHOP": "IGV",
+    # 클라우드 인프라(SKYY · XLK) · 하드웨어·스토리지(Yahoo 'computer hardware' → SKYY 관례)
+    "DDOG": "SKYY", "MDB": "SKYY", "NET": "SKYY", "AAPL": "SKYY", "WDC": "SKYY", "STX": "SKYY",
+    # 사이버보안(HACK · XLK)
+    "PANW": "HACK", "FTNT": "HACK",
+    # 헬스케어 서비스(IHF · XLV)
+    "BTSG": "IHF",
+    # 소매·의류(XRT · XLY) — AMZN은 GICS 경기소비재(XLY)라 FDN(XLC) 대신 소매
+    "ROST": "XRT", "CROX": "XRT", "RL": "XRT", "AMZN": "XRT",
+    # 레저·외식·배달(PEJ · XLY)
+    "DASH": "PEJ",
+    # 식음료(PBJ · XLP)
+    "KO": "PBJ", "MNST": "PBJ",
+    # 은행·핀테크 은행(KBE · XLF)
+    "DAVE": "KBE",
+    # 운송·해운(IYT · XLI)
+    "SHIP": "IYT",
+}
+STOCK_R98_REQUESTED_NOT_ADDED: Dict[str, str] = {
+    "LLY": "이미 설계 종목(IHE)", "TSLA": "이미 설계 종목(CARZ)", "GS": "이미 설계 종목(KCE)", "CRWD": "이미 설계 종목(HACK)",
+    "MSFT": "이미 설계 종목(IGV)", "GOOG": "GOOGL(설계 종목)과 같은 발행사 — 중복 비중 방지(원하면 EXTRA_TICKERS)",
+}
+STOCK_NAME_KR.update({
+    "CRDO": "크레도", "AVGO": "브로드컴", "MU": "마이크론", "LRCX": "램리서치", "MRVL": "마벨", "AMD": "AMD", "INTC": "인텔",
+    "SNDK": "샌디스크", "CRM": "세일즈포스", "NOW": "서비스나우", "CDNS": "케이던스", "SHOP": "쇼피파이", "DDOG": "데이터독",
+    "MDB": "몽고DB", "NET": "클라우드플레어", "AAPL": "애플", "WDC": "웨스턴디지털", "STX": "씨게이트", "PANW": "팔로알토",
+    "FTNT": "포티넷", "BTSG": "브라이트스프링", "ROST": "로스스토어스", "CROX": "크록스", "RL": "랄프로렌", "AMZN": "아마존",
+    "DASH": "도어대시", "KO": "코카콜라", "MNST": "몬스터베버리지", "DAVE": "데이브", "SHIP": "시너지마리타임",
+})
+
 # [v0.6.0 R79] 사전등록 홀드아웃 티커(설계 대표와 다른 산업별 1종목) — 상세 표는 [일반화] 구역의 STOCK_HOLDOUT
 STOCK_HOLDOUT_DEFAULT: Tuple[str, ...] = ("AMD", "ADBE", "CSCO", "FTNT", "GILD", "EXEL", "MRK", "SYK", "CI", "ROST", "LEN",
                                           "MAR", "GM", "KO", "BAC", "RF", "TRV", "MS", "LMT", "CSX", "LUV", "T", "AMZN",
@@ -503,6 +562,8 @@ class StockConfig:
     #   (장중 미완성 봉)은 버린다. END를 지정한 실행에서는 검사하지 않는다.
     DATA_FRESHNESS_CHECK: bool = True
     UNIVERSE: Dict[str, str] = field(default_factory=lambda: dict(STOCK_UNIVERSE))
+    # [v0.10.0 R98 ⚠ 사용자 지시] 추가 종목(티커 → 산업 ETF · 역할 '사용자'). 되돌리기 k_overrides={"UNIVERSE_ADD": {}} ⇒ v0.9.2 유니버스.
+    UNIVERSE_ADD: Dict[str, str] = field(default_factory=lambda: dict(STOCK_UNIVERSE_ADD_R98))
 
     # ---- ★ 펀더멘탈 인과 처리(파일 헤더 참조) ----
     FUND_PUBLISH_LAG_DAYS: int = 60    # 발표일을 모를 때 기간말에 더하는 보수 지연(10-K 기한 60일)
@@ -1121,6 +1182,10 @@ def resolve_universe(cfg: "StockConfig") -> Dict[str, Any]:
     reg: Dict[str, str] = {}
     for etf, tk in dict(getattr(cfg, "UNIVERSE", STOCK_UNIVERSE) or {}).items():
         reg[normalize_ticker(tk)] = etf
+    # [v0.10.0 R98] 추가 종목의 산업 매핑(티커 → ETF) — 사전등록으로 등록(설계 매핑과 겹치면 설계 쪽을 남긴다).
+    add_map = {normalize_ticker(t): str(e) for t, e in dict(getattr(cfg, "UNIVERSE_ADD", {}) or {}).items() if normalize_ticker(t)}
+    for t, e in add_map.items():
+        reg.setdefault(t, e)
     hold_reg = {normalize_ticker(tk): etf for etf, tk in STOCK_HOLDOUT.items()}
     role: Dict[str, str] = {}
     dropped: List[Tuple[str, str]] = []
@@ -1136,8 +1201,14 @@ def resolve_universe(cfg: "StockConfig") -> Dict[str, Any]:
                 dropped.append((str(raw), "중복")); continue
             role[t] = "사용자"; main.append(t)
     else:
-        for t in sorted(reg):
+        _design = {normalize_ticker(tk) for tk in dict(getattr(cfg, "UNIVERSE", STOCK_UNIVERSE) or {}).values()}
+        for t in sorted(_design):
             role[t] = "설계"; main.append(t)
+        # [v0.10.0 R98] 추가 종목(역할 '사용자') — 설계 유니버스를 쓸 때만 더한다(TICKERS로 바꾼 실행에는 매핑만 쓴다).
+        for t in sorted(add_map):
+            if t in role:
+                dropped.append((t, f"중복(이미 {role[t]})")); continue
+            role[t] = "사용자"; main.append(t)
     for raw in extra_in:
         t = normalize_ticker(raw)
         if not t:
@@ -1156,6 +1227,7 @@ def resolve_universe(cfg: "StockConfig") -> Dict[str, Any]:
             role[t] = "홀드아웃"; holdout.append(t)
     registered = {**{t: e for t, e in hold_reg.items() if t in role}, **{t: e for t, e in reg.items() if t in role}}
     log("RUN", kv(event="universe_resolved", main=len(main), holdout=len(holdout),
+                  added_r98=sum(1 for t in add_map if role.get(t) == "사용자"),
                   design=sum(1 for v in role.values() if v == "설계"), user=sum(1 for v in role.values() if v == "사용자"),
                   dropped=(";".join(f"{a}:{b}" for a, b in dropped)[:200] or "-")))
     return {"main": main, "holdout": holdout, "role": role, "registered": registered, "dropped": dropped}
@@ -3211,6 +3283,28 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             except Exception as e:
                 log("ALLOC", kv(event="k_variant_row_failed", variant=str(_vn)[:40], err=type(e).__name__, msg=str(e)[:120]),
                     level="warning")
+    # [v0.10.0 R98 · 측정 전용] 유니버스 확장 효과 분리 — 같은 S★ 섹터 비중 · 같은 섹터연동에서 추가 종목(UNIVERSE_ADD)만 뺀 행.
+    _add98 = {normalize_ticker(t) for t in dict(getattr(cfg, "UNIVERSE_ADD", {}) or {})} & set(panel)
+    if ind_alloc and str(alloc.get("mode")) == "sector_linked" and _add98:
+        try:
+            _p98 = {t: v for t, v in panel.items() if t not in _add98}
+            _q98 = {t: v for t, v in pos.items() if t not in _add98}
+            if _p98:
+                _ua = build_allocation(_q98, _p98, cfg, mode="sector_linked", parent_w=parent_w, parent_of=parent_of,
+                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)))
+                _ul = "비교: 섹터연동 · v0.9.2 유니버스(R98 추가 전 · 측정 전용)"
+                _ur98 = _alloc_row(_ul, _ua, float(alloc.get("cap_used", 0.05)), None)
+                if _ur98:
+                    _ur98.update({"연동출처": f"S★ 섹터비중 · 추가 {len(_add98)}종목 제외"})
+                    alloc_rows.append(_ur98)
+                    _grid_rets[_ul] = _ua.get("port_ret")
+                log("ALLOC", kv(event="k_universe_r98_row", added=len(_add98), base_tickers=len(_p98),
+                                stock_share_live=round(float(alloc["target_w"].sum(axis=1).mean()), 4),
+                                stock_share_base=round(float(_ua["target_w"].sum(axis=1).mean()), 4),
+                                single_max_live=round(float(alloc["target_w"].max().max()), 4),
+                                note="⚠ 유니버스 확장(사용자 지시) — 이 행과 K★의 차 = 유니버스 효과 · 되돌리기 UNIVERSE_ADD={}"))
+        except Exception as e:
+            log("ALLOC", kv(event="k_universe_r98_row_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
     if ind_alloc:
         _has_cs = isinstance(ind_alloc.get("coupling_score"), pd.DataFrame) and len(ind_alloc.get("coupling_score"))
         if _has_cs:
@@ -3315,7 +3409,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                             ["고정슬리브 1/N(v0.6.0 라이브)"] + \
                             [str(x[0]) for x in tuple(getattr(cfg, "SECTOR_LINK_GRID", ()) or ())] + \
                             [k for k in _grid_rets if str(k).startswith("참고: 라이브 배분을 v0.8.1 체결")] + \
-                            [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 × S")]
+                            [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 × S")] + \
+                            [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 · v0.9.2 유니버스")]
                 for _lb in _cmp_lbls:
                     _rr = _grid_rets.get(_lb)
                     if _rr is not None and _lb != _live_alloc_label:
@@ -3871,6 +3966,37 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                              "되돌리기(M에서): m_overrides={'R95_STRESS_EXIT': False, "
                              "'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. 연구·교육용, 투자 자문 아님."))
                 log("REL", kv(event="k_r95_compare", d_avoid=round(_da, 2), d_part=round(_dp, 2), ok=_okk))
+            # ---- [v0.10.0 R98 · 측정 전용] V1 · VRP · M5 비교 행 → K★ Δ · 유니버스 확장 효과 ----
+            try:
+                _pp98k: List[str] = []
+                for _nmk, _pfx in (("V1", "비교: 섹터연동 × S 'R98 V1 변동성 짝"), ("VRP", "비교: 섹터연동 × S 'R98 VRP"),
+                                   ("M5 상한100%×V1강", "비교: 섹터연동 × S 'R98 상한100%")):
+                    _gk = _ur[_lbl.str.startswith(_pfx)]
+                    if not len(_gk):
+                        continue
+                    _dak, _dpk, _okk98, _ = _cmp_line(_t0, _gk.iloc[0], "라이브", _nmk)
+                    _okk98 = bool(_dak > 0 and _dpk >= 0)
+                    _pp98k.append(f"{_nmk} {float(_gk.iloc[0]['하락 회피율']):.1%}/{float(_gk.iloc[0]['상승 참여율']):.1%}"
+                                  f"({_gk.iloc[0]['등급']}) Δ{_dak:+.2f}/{_dpk:+.2f}%p · MDD {float(_gk.iloc[0]['MDD']) * 100:.2f}% "
+                                  + ("✓" if _okk98 else "✗"))
+                    log("REL", kv(event="k_r98_compare", variant=_nmk, d_avoid=round(_dak, 2), d_part=round(_dpk, 2), ok=_okk98))
+                if _pp98k:
+                    _add.append(("★★★ R98 측정 — V1 · VRP · M5가 K★에 줄 효과(같은 섹터연동 · 섹터 비중만 다름 · 라이브 무변경)",
+                                 f"K★ {float(_t0['하락 회피율']):.1%}/{float(_t0['상승 참여율']):.1%}({_t0['등급']}) 기준 → " + " · ".join(_pp98k)
+                                 + ". V1 R99 승격 조건: 네 층 Δ회피 > 0 & Δ참여 ≥ 0(M·S·I 00 'R98' 줄과 함께) · 오프라인 기대 K +1.37/+1.16 · "
+                                 "M5는 사용자 동의 없이 라이브 금지(기술 편중 지시). 연구·교육용, 투자 자문 아님."))
+                _gu = _ur[_lbl.str.startswith("비교: 섹터연동 · v0.9.2 유니버스")]
+                if len(_gu):
+                    _dau, _dpu, _, _ = _cmp_line(_gu.iloc[0], _t0, "v0.9.2 유니버스", "라이브")
+                    _add.append(("⚠ R98 유니버스 확장 — 사용자 지시로 30종목 추가(K★ 배분이 바뀐다)",
+                                 f"v0.9.2 유니버스 {float(_gu.iloc[0]['하락 회피율']):.1%}/{float(_gu.iloc[0]['상승 참여율']):.1%}({_gu.iloc[0]['등급']}) → "
+                                 f"K★ {float(_t0['하락 회피율']):.1%}/{float(_t0['상승 참여율']):.1%}({_t0['등급']}) · Δ회피 {_dau:+.2f}%p · Δ참여 {_dpu:+.2f}%p · "
+                                 f"MDD {float(_gu.iloc[0]['MDD']) * 100:.2f}% → {float(_t0['MDD']) * 100:.2f}%. ⚠⚠ 추가 종목은 2026년에 고른 이름(메모리·AI 승자 다수)이라 "
+                                 "선택 편향으로 백테스트가 부풀 수 있다 — 이 차이를 '예측력 개선'으로 읽지 않는다. 홀드아웃 AMD·FTNT·ROST·KO·AMZN은 사용자 종목이 되어 빠졌다. "
+                                 "GOOG는 GOOGL과 같은 발행사라 넣지 않았다. 되돌리기: k_overrides={'UNIVERSE_ADD': {}}. 연구·교육용, 투자 자문 아님."))
+                    log("REL", kv(event="k_r98_universe", d_avoid=round(_dau, 2), d_part=round(_dpu, 2)))
+            except Exception as _e98k:
+                _add.append(("⚠ R98 K 비교 줄", f"산출 실패 — {type(_e98k).__name__}: {str(_e98k)[:120]}"))
             if not len(_vr95) and not len(_vr96):
                 _add.append(("★★★ R95 라이브 — K★ 비교", "비교 행 없음 — I 통로에 S 'R95 규칙 없음' 섹터 비중이 없다"
                              "(M < v1.63.0 · S < v0.76.0 · I < v0.47.0 이거나 R95 오버레이 꺼짐)"))
@@ -4057,5 +4183,5 @@ def main(s_overrides: Optional[Dict[str, Any]] = None, I=None,
 
 if __name__ == "__main__":
     print(f"stock_regime.py {VERSION} ({VERSION_DATE}) — 개별 주식 계층(K). "
-          f"산업별 대표 티커 {len(STOCK_UNIVERSE)}종 · 펀더멘탈·어닝 포함. "
+          f"산업별 대표 티커 {len(STOCK_UNIVERSE)}종 + 추가 {len(STOCK_UNIVERSE_ADD_R98)}종(R98) · 펀더멘탈·어닝 포함. "
           f"실행: main() 또는 run_pipeline.py")

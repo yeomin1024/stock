@@ -1,5 +1,12 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.50.0 - 2026-09-25 - [R98 측정 행·블록 N 전달 — I 규칙·배분 무변경]
+#    사용자 지시(2026-09-25 · R98 방법서 구현). 시작 v0.49.0 → 목표 v0.50.0. I★(노란 행)는 R97과 같아야 한다(전부 측정 전용).
+#    (§1) S v0.79.0 [회피참여비교] R98 행(V1 · VRP · M5 · 이웃 4칸)은 relcmp_frames로 I 비교 행이 자동으로 생긴다(부모 비율법 — 코드 변경 없음).
+#    (§2) K 통로 sector_w_variants 필터에 'R98 V1 변동성 짝' · 'R98 VRP' · 'R98 상한100%' 추가(K v0.10.0 비교 행 · 이웃 4칸은 S·I만).
+#    (§3) user_rel_src · _i_relcmp_diag · 00U 의사 sres(2곳)에 s_m_proxy_long_ff(블록 N) · r98 · r98_changed · spy_m_r98v1_ret · spy_m_r98vrp_ret 전달
+#         → I 00 '★★★ R98 측정' 줄 · 00U 블록 N · 블록 B 'M R98 V1 변동성 짝(측정)'·'M R98 VRP(측정)' 행(S와 같은 M 값).
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.49.0 - 2026-09-25 - [R97 긴 이력 교정 판정 전달 — I 규칙·배분 무변경]
 #    시작 v0.48.0 → 목표 v0.49.0. (§1) _i_relcmp_diag에 m_proxy_long(S v0.78.0 m_proxy_long_history · M 대용 3상태) → I 00U 블록 M · 00 R96/R95 줄.
 #    연구·교육용 — 투자 자문이 아니다.
@@ -1899,7 +1906,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.49.0"
+VERSION = "v0.50.0"
 VERSION_DATE = "2026-09-25"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -12620,7 +12627,8 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
             if alloc:
                 _set_alloc_handoff(alloc, M=M, results=results,        # [v0.34.0 R80 · v0.35.0 R81 결합점수 추가] K 통로
                                    s_variants={k: v for k, v in ((((sres or {}).get("alloc") or {}).get("relcmp_frames")) or {}).items()
-                                               if str(k).startswith(("R95 규칙 없음", "R96 변동성 관리 없음"))})   # [v0.47.0 R95 · v0.48.0 R96] K 비교 행
+                                               if str(k).startswith(("R95 규칙 없음", "R96 변동성 관리 없음",
+                                                                                   "R98 V1 변동성 짝", "R98 VRP", "R98 상한100%"))})   # [v0.47.0 R95 · v0.48.0 R96 · v0.50.0 R98] K 비교 행
                 hier_df = build_hierarchy_check(alloc)                 # 14_계층정합 — 동결 여부와 무관(총노출 불변식)
                 leader_cols = build_industry_leader_columns(alloc)     # 13c의 부모별 판단·리더·게이트 열
                 _viol = int(hier_df["위반일수(>1e-9)"].sum()) if len(hier_df) else -1
@@ -12992,6 +13000,9 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                          "spy_m_norev_ret": ((sres or {}).get("alloc") or {}).get("spy_m_norev_ret"),   # [v0.45.0 R93]
                          "spy_m_pre95_ret": ((sres or {}).get("alloc") or {}).get("spy_m_pre95_ret"),   # [v0.47.0 R95]
                          "spy_m_pre96_ret": ((sres or {}).get("alloc") or {}).get("spy_m_pre96_ret"),   # [v0.48.0 R96]
+                         "spy_m_r98v1_ret": ((sres or {}).get("alloc") or {}).get("spy_m_r98v1_ret"),   # [v0.50.0 R98]
+                         "spy_m_r98vrp_ret": ((sres or {}).get("alloc") or {}).get("spy_m_r98vrp_ret"), # [v0.50.0 R98]
+                         "s_m_proxy_long_ff": (sres or {}).get("m_proxy_long_ff"),                     # [v0.50.0 R98] 블록 N
                          # [v0.41.0 R88] S의 [회피참여비교] 진단(독립 구간 장기 검증 포함) — I 00U 블록 F2는 섹터층 값을 그대로 싣는다
                          "s_relcmp": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("relcmp")),
                          # [v0.42.0 R89] S의 M 사이징 긴 이력 판정(FF 1927~1998) — I 00U 블록 G도 같은 값
@@ -13995,6 +14006,8 @@ def _i_relcmp_diag(alloc: Optional[dict], src: Optional[dict]) -> Dict[str, Any]
             "r95": sr.get("r95"), "r95_long": sr.get("r95_long"),       # [v0.47.0 R95] 00 R95 줄 · 00U 블록 K(S와 같은 M 값)
             "r96": sr.get("r96"), "r96_long": sr.get("r96_long"),       # [v0.48.0 R96] 00 R96 줄 · 00U 블록 L(S와 같은 M 값)
             "m_proxy_long": sr.get("m_proxy_long"),                     # [v0.49.0 R97] 00U 블록 M · 00 줄(M 대용 3상태 긴 이력)
+            "m_proxy_long_ff": (src or {}).get("s_m_proxy_long_ff") or {},   # [v0.50.0 R98] 00U 블록 N(FF 네 시대 · S와 같은 값)
+            "r98": sr.get("r98"), "r98_changed": sr.get("r98_changed"),       # [v0.50.0 R98] 00 R98 줄
             "live_neutral": (src or {}).get("s_live_neutral"),
             "haircut_days": sr.get("haircut_days"), "neutral_days": sr.get("neutral_days"), "leader_days": sr.get("leader_days"),
             "m_approx_ok": sr.get("m_approx_ok", True)}
@@ -15146,7 +15159,9 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                                  "spy_ret": _src.get("spy_ret"), "spy_m_ret": _src.get("spy_m_ret"),
                                  "spy_m_norev_ret": _src.get("spy_m_norev_ret"),
                                  "spy_m_pre95_ret": _src.get("spy_m_pre95_ret"),         # [v0.47.0 R95]
-                                 "spy_m_pre96_ret": _src.get("spy_m_pre96_ret")},        # [v0.48.0 R96]
+                                 "spy_m_pre96_ret": _src.get("spy_m_pre96_ret"),         # [v0.48.0 R96]
+                                 "spy_m_r98v1_ret": _src.get("spy_m_r98v1_ret"),         # [v0.50.0 R98]
+                                 "spy_m_r98vrp_ret": _src.get("spy_m_r98vrp_ret")},      # [v0.50.0 R98]
                        "sectors": results}
                 _upk_i = S.user_reliability_pack(_ps, icfg)
                 sheets["00U_사용자신뢰도"] = S.build_user_reliability_sheet(_ps, icfg, _upk_i, "산업")
@@ -15330,7 +15345,9 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                               "spy_ret": _src2.get("spy_ret"), "spy_m_ret": _src2.get("spy_m_ret"),
                               "spy_m_norev_ret": _src2.get("spy_m_norev_ret"),
                               "spy_m_pre95_ret": _src2.get("spy_m_pre95_ret"),
-                              "spy_m_pre96_ret": _src2.get("spy_m_pre96_ret")}, "sectors": results}   # [v0.47.0 R95 · v0.48.0 R96]
+                              "spy_m_pre96_ret": _src2.get("spy_m_pre96_ret"),
+                              "spy_m_r98v1_ret": _src2.get("spy_m_r98v1_ret"),                  # [v0.50.0 R98]
+                              "spy_m_r98vrp_ret": _src2.get("spy_m_r98vrp_ret")}, "sectors": results}   # [v0.47.0 R95 · v0.48.0 R96]
             for _k, _v in reversed(S.user_reliability_lines(_ps2, icfg, locals().get("_upk_i"), "산업")):
                 meta.insert(1, (_k, _v))
     except Exception as _e:

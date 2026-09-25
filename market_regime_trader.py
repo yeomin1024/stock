@@ -22,6 +22,24 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.66.0 - 2026-09-25 - [R98 측정 전용: V1 변동성 짝 · VRP · V1강(M5) · 이웃 문턱 4칸 목표비중 열 — 라이브 목표비중 비트 동일]
+#    사용자 지시(2026-09-25 · R98 방법서 구현): "문서들을 참고하여 코드를 수정 … 깃허브에 업로드해". 시작 v1.65.0 → 목표 v1.66.0.
+#    앞 지시 유지: "회피를 더 높이도록 · 참여는 절대로 떨어지면 안 돼" · "묻지 말고 권장으로". 방법서 §3 M1·M3·M4·M5는 **측정 전용**,
+#    M2(R97 가드 되돌림)는 이번 리포트의 S 00U 블록 M⑥·N⑥을 본 **다음** 라운드에 결정한다(표본 안 변화 0).
+#    (§1) apply_r98_measure() — R96 **뒤**의 라이브 목표비중(target_pos)을 기준으로 측정 열만 싣는다(R98_RANGE_VOL=False면 target_pos 무변경):
+#      · r98_v1_target(): (가) 전액(E=1)일 Parkinson 고저범위 변동성(R98_PK_WINDOW=10일 · √(mean(ln(H/L)²)/(4ln2))·√252) >
+#        R98_PK_RATIO(1.3)·σ20 → R98_PK_CUT_POS(0.0) · (나) 중립 부분일(NEUTRAL · 0<E<1 · 헤어컷 아님) σ20 < R98_NEUTRAL_CALM_SIGMA(15%)
+#        → R98_NEUTRAL_CALM_POS(1.0). σ20 = R96과 같은 총수익 20일 변동성(t일 종가까지 · 인과). 고가/저가 NaN인 창은 (가) 없음.
+#        열 pos_r98_v1 · r98_v1_cut · r98_v1_calm · r98_pk10 · r98_pk_ratio. V1강(1.25 · 17% · M5용) pos_r98_v1s.
+#        이웃 문턱 4칸(R98_V1_NEIGHBORS: PK 1.25/1.35 × σ 0.14/0.16 · R99 승격 조건용) pos_r98_v1n_<PK>_<σ>.
+#      · r98_vrp_target() (M4): VRP = VIX/100 − σ20. 회피원 E=1 & VRP<0 → 0.6 · 참여원 위험회피·중립감축 0일 & VRP 자기이력 백분위 > 0.90
+#        (expanding · 최소 252일) & σ20 < 5일 전 σ20 → 0.6. 열 pos_r98_vrp · r98_vrp · r98_vrp_cut · r98_vrp_up.
+#      00 'R98 측정' 줄 · 01 'R98 V1 목표(측정)'·'R98 고저범위/σ20(측정)'·'R98 V1 발동(측정)'·'R98 VRP 목표(측정)' · res['r98'] ·
+#      로그 [SIGNAL] event=r98_measure. 실패해도 라이브 무영향(측정 열만 없음 · 00에 표시).
+#    (§2) 새 Config 16필드(R98_*) 전부 CACHE_KEY_IGNORE_FIELDS(정본) · S 폴백 사본(교훈 29). 라이브 스위치 R98_RANGE_VOL 기본 **False**.
+#      ⚠ 켜면(측정 행이 R99 사전등록을 통과한 뒤에만) target_pos = pos_r98_v1 — 되돌리기 m_overrides={"R98_RANGE_VOL": False}(= v1.65.0 비트 동일).
+#    (§3) 동반 버전 표 S v0.79.0 · I v0.50.0 · K v0.10.0(K는 사용자 지시로 종목 30개 추가 — 배분 결과가 바뀐다).
+#    시험 t98/test_r98.py(끄면 비트 동일 · 손 계산 · NaN 고저가 · 켜면 = 측정 열 · 캐시 목록). 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.65.0 - 2026-09-25 - [R97 ⚠ 신호(좁은 범위): P1 반등 재진입의 20일 신고가 가지에 약세장 가드 — 표본 안(2018~) 변화 0]
 #    사용자 지시(2026-09-25 · 리포트 m v1.64.0 · s v0.77.0 · i v0.48.0 · k v0.9.2): R96 판정 후 "수정하고 인수인계 파일도 만들어".
 #      시작 v1.64.0 → 목표 v1.65.0. 앞 지시 유지: "참여율 절대로 낮추지 말고 회피를 더 높게" · "묻지 말고 권장으로".
@@ -3042,6 +3060,28 @@ class Config:
     #   ⚠ 되돌리기(한 줄): m_overrides={"R97_REBOUND_HIGH_MAX_DD": 0.0} ⇒ v1.64.0과 비트 동일.
     R97_REBOUND_HIGH_MAX_DD: float = 0.20     # 0이면 가드 끔 · 20일 신고가 가지 허용 = 종가 ≥ 252일 최고 종가 × (1 − 이 값)
     R97_REBOUND_DD_WINDOW: int = 252
+    # [v1.66.0 R98 · 측정 전용 — 방법서 M3·M4·M5] R96 **뒤** 라이브 목표비중에 대한 후보 오버레이를 '측정 열'로만 싣는다.
+    #   R98_RANGE_VOL=False(기본)면 target_pos는 v1.65.0과 비트 동일 · S·I·K가 비교 행으로 네 층 Δ회피·Δ참여를 잰다(R99 사전등록).
+    #   V1 (가) 회피원: E=1일 Parkinson PK10 > PK_RATIO·σ20 → PK_CUT_POS · (나) 참여원: 중립 부분일 σ20 < CALM_SIGMA → CALM_POS.
+    #   오프라인(r98/vpair98.py · 기준 현 라이브): M +0.76/+0.43 · S +1.39/+1.18 · I +1.41/+1.34 · K +1.37/+1.16 — ⚠ (가) 발동 표본 안 8일
+    #   (5일이 2022-01-31~02-04) · 격자 통과 3.9%(고원 없음) → 그래서 라이브가 아니라 측정이다.
+    #   ⚠ 라이브로 켜기(R99 사전등록 통과 + 사용자 확인 뒤에만): m_overrides={"R98_RANGE_VOL": True} · 되돌리기 False.
+    R98_MEASURE: bool = True                  # 측정 열 산출(라이브 무변경) — 끄면 R98 비교 행이 생기지 않는다
+    R98_RANGE_VOL: bool = False               # ⚠ 라이브 적용 스위치(기본 끔 = 측정 전용)
+    R98_PK_WINDOW: int = 10
+    R98_PK_RATIO: float = 1.3                 # 0이면 (가) 끔
+    R98_PK_CUT_POS: float = 0.0
+    R98_NEUTRAL_CALM_SIGMA: float = 0.15      # 0이면 (나) 끔
+    R98_NEUTRAL_CALM_POS: float = 1.0
+    R98_V1S_PK_RATIO: float = 1.25            # V1 강한 변형(방법서 M5 · 상한 100% 비교 행 전용)
+    R98_V1S_CALM_SIGMA: float = 0.17
+    R98_V1_NEIGHBORS: Tuple[Tuple[float, float], ...] = ((1.25, 0.14), (1.25, 0.16), (1.35, 0.14), (1.35, 0.16))
+    R98_VRP_MEASURE: bool = True              # 방법서 M4 — VIX 기반 변동성 위험 프리미엄 측정 열
+    R98_VRP_CUT_POS: float = 0.6              # 회피원: E=1 & VRP<0 → 이 값
+    R98_VRP_REENTRY_POS: float = 0.6          # 참여원: 위험회피·중립감축 0일 & VRP 상위 & σ20 하락 → 이 값
+    R98_VRP_TOP_PCT: float = 0.90
+    R98_VRP_VOL_FALL_N: int = 5
+    R98_VRP_MIN_OBS: int = 252
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -7001,6 +7041,10 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     # [v1.64.0 R96] 라이브 SPY 신호 뒤 변동성 관리 오버레이 전용(검증·워크포워드·S·I 국면 모형 무관) — 캐시 무효화 금지(교훈 31).
     "R96_VOL_MANAGE", "R96_VOL_WINDOW", "R96_VOL_MIN_PERIODS", "R96_NEUTRAL_VOL_TARGET", "R96_HAIRCUT_VOL_TARGET",
     "R97_REBOUND_HIGH_MAX_DD", "R97_REBOUND_DD_WINDOW",                                         # [v1.65.0 R97] P1 약세장 가드(사후 오버레이)
+    # [v1.66.0 R98] 라이브 SPY 신호 뒤 측정 열(V1 · V1강 · 이웃 · VRP) — 검증·워크포워드·S·I 국면 모형 무관(교훈 29).
+    "R98_MEASURE", "R98_RANGE_VOL", "R98_PK_WINDOW", "R98_PK_RATIO", "R98_PK_CUT_POS", "R98_NEUTRAL_CALM_SIGMA",
+    "R98_NEUTRAL_CALM_POS", "R98_V1S_PK_RATIO", "R98_V1S_CALM_SIGMA", "R98_V1_NEIGHBORS", "R98_VRP_MEASURE",
+    "R98_VRP_CUT_POS", "R98_VRP_REENTRY_POS", "R98_VRP_TOP_PCT", "R98_VRP_VOL_FALL_N", "R98_VRP_MIN_OBS",
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -8328,6 +8372,176 @@ def apply_r96_vol_overlay(sig: pd.DataFrame, px: pd.Series, cfg: Config = CFG
                      changed=diag.get("changed_days", 0), mean_before=diag.get("mean_pre"), mean_after=diag.get("mean_post"),
                      tau_n=getattr(cfg, "R96_NEUTRAL_VOL_TARGET", None), tau_h=getattr(cfg, "R96_HAIRCUT_VOL_TARGET", None),
                      note="⚠ 사이징 오버레이(R96) · 되돌리기 R96_VOL_MANAGE=False"))
+    return out, diag
+
+
+# =============================================================================
+# [v1.66.0 R98 · 측정 전용] 방법서 M3(V1 변동성 짝) · M4(VRP) · M5(V1강) — 라이브 목표비중은 R98_RANGE_VOL=True일 때만 바뀐다.
+# =============================================================================
+def r98_sigma20(px: pd.Series, idx: pd.Index, cfg: Config = CFG) -> pd.Series:
+    """R96과 같은 σ20 — 총수익 일수익의 R96_VOL_WINDOW일 표준편차(최소 R96_VOL_MIN_PERIODS일) × √252 · t일 종가까지(인과)."""
+    p = pd.to_numeric(pd.Series(px), errors="coerce").astype(float).reindex(idx)
+    r = p.pct_change(fill_method=None)
+    return (r.rolling(int(getattr(cfg, "R96_VOL_WINDOW", 20)), min_periods=int(getattr(cfg, "R96_VOL_MIN_PERIODS", 15))).std()
+            * np.sqrt(252.0))
+
+
+def r98_parkinson(price: Optional[pd.DataFrame], idx: pd.Index, window: int = 10) -> pd.Series:
+    """Parkinson 고저범위 변동성(연율) = √(mean_window(ln(H/L)²) / (4·ln2)) · √252 — t일 고가·저가까지(인과).
+    고가·저가 열이 없거나(FF 등) 창 안에 하나라도 NaN·비양수면 NaN(그 날 (가) 없음). ln(H/L)은 날마다 비율이라 원시 가격이어도 된다."""
+    if not isinstance(price, pd.DataFrame) or not {"High", "Low"} <= set(price.columns):
+        return pd.Series(np.nan, index=idx, dtype=float)
+    h = pd.to_numeric(price["High"], errors="coerce").reindex(idx).astype(float)
+    lo = pd.to_numeric(price["Low"], errors="coerce").reindex(idx).astype(float)
+    ok = (h > 0) & (lo > 0)
+    lr = np.log(h.where(ok) / lo.where(ok))
+    w = max(1, int(window))
+    m = (lr * lr).rolling(w, min_periods=w).mean()
+    return np.sqrt(m / (4.0 * np.log(2.0)) * 252.0)
+
+
+def r98_v1_target(sig: pd.DataFrame, px: pd.Series, price: Optional[pd.DataFrame], cfg: Config = CFG,
+                  pk_ratio: Optional[float] = None, calm_sigma: Optional[float] = None,
+                  cut_pos: Optional[float] = None, calm_pos: Optional[float] = None
+                  ) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
+    """[v1.66.0 R98 M3] V1 '변동성 정보 짝'의 목표비중(측정). 기준 = sig['target_pos'](R96 뒤 라이브). 반환 (목표, (가)마스크, (나)마스크, PK, σ20).
+      (가) 회피원: E=1 & PK(R98_PK_WINDOW) > pk_ratio·σ20 → cut_pos — 종가는 조용한데 장중 폭이 커지는 '숨은 요동'(분배·반전).
+      (나) 참여원: 상태 NEUTRAL & 0<E<1 & 과열 헤어컷 아님 & σ20 < calm_sigma → max(E, calm_pos) — R96 (N)(E·0.14/σ20)보다 강하다.
+    두 버킷은 E로 나뉘어 겹치지 않는다. pk_ratio ≤ 0이면 (가) 끔 · calm_sigma ≤ 0이면 (나) 끔. 인과: 모든 입력은 t일 종가까지 · 체결은 t+1 시가."""
+    idx = sig.index
+    pr = float(getattr(cfg, "R98_PK_RATIO", 1.3) if pk_ratio is None else pk_ratio)
+    cs = float(getattr(cfg, "R98_NEUTRAL_CALM_SIGMA", 0.15) if calm_sigma is None else calm_sigma)
+    cp = float(getattr(cfg, "R98_PK_CUT_POS", 0.0) if cut_pos is None else cut_pos)
+    kp = float(getattr(cfg, "R98_NEUTRAL_CALM_POS", 1.0) if calm_pos is None else calm_pos)
+    tp0 = pd.to_numeric(sig["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    sg = r98_sigma20(px, idx, cfg)
+    pk = r98_parkinson(price, idx, int(getattr(cfg, "R98_PK_WINDOW", 10)))
+    st = sig["state"].reindex(idx).astype(str) if "state" in sig.columns else pd.Series("", index=idx)
+    ehit = (sig["extension_haircut"].reindex(idx).fillna(False).astype(bool)
+            if "extension_haircut" in sig.columns else pd.Series(False, index=idx))
+    okv = sg.notna() & (sg > 1e-12)
+    full = tp0 >= 1.0 - 1e-9
+    part = (tp0 > 1e-9) & (tp0 < 1.0 - 1e-9)
+    mA = pd.Series(False, index=idx)
+    mB = pd.Series(False, index=idx)
+    if pr > 0:
+        mA = (full & okv & pk.notna() & (pk > pr * sg)).fillna(False).astype(bool)
+    if cs > 0:
+        mB = (part & st.eq("NEUTRAL") & ~ehit & okv & (sg < cs)).fillna(False).astype(bool)
+    tp = tp0.copy()
+    tp[mA] = cp
+    tp[mB] = np.maximum(tp0[mB], kp)
+    return tp.clip(lower=0.0, upper=1.0), mA, mB, pk, sg
+
+
+def r98_vrp_target(sig: pd.DataFrame, px: pd.Series, vix: Optional[pd.Series], cfg: Config = CFG
+                   ) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    """[v1.66.0 R98 M4 · 측정] VIX 기반 변동성 위험 프리미엄 VRP = VIX/100 − σ20(연율). 반환 (목표, 회피마스크, 참여마스크, VRP).
+      회피원: E=1 & VRP < 0(실현이 내재를 넘음 = 충격 진행 중) → R98_VRP_CUT_POS(0.6)
+      참여원: E=0 & 깊은 과열 헤어컷 아님(위험회피·중립감축 0일) & VRP 자기이력 백분위(expanding · 최소 R98_VRP_MIN_OBS) > R98_VRP_TOP_PCT
+              & σ20 < R98_VRP_VOL_FALL_N일 전 σ20(변동성 하락 중) → max(E, R98_VRP_REENTRY_POS)
+    근거 문헌: Bollerslev·Tauchen·Zhou(2009) · Bekaert·Hoerova(2014). VIX 없는 날은 그대로(인과: t일 종가까지)."""
+    idx = sig.index
+    tp0 = pd.to_numeric(sig["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    sg = r98_sigma20(px, idx, cfg)
+    if vix is None:
+        return tp0.copy(), pd.Series(False, index=idx), pd.Series(False, index=idx), pd.Series(np.nan, index=idx)
+    v = pd.to_numeric(pd.Series(vix), errors="coerce").astype(float)
+    v = v[~v.index.duplicated(keep="last")].sort_index()
+    v = v.reindex(idx.union(v.index)).sort_index().ffill(limit=3).reindex(idx)
+    vrp = v / 100.0 - sg
+    pct = vrp.expanding(min_periods=int(getattr(cfg, "R98_VRP_MIN_OBS", 252))).rank(pct=True)
+    ecap = (pd.to_numeric(sig["ext_cap"], errors="coerce").reindex(idx).fillna(1.0)
+            if "ext_cap" in sig.columns else pd.Series(1.0, index=idx))
+    ehit = (sig["extension_haircut"].reindex(idx).fillna(False).astype(bool)
+            if "extension_haircut" in sig.columns else pd.Series(False, index=idx))
+    full = tp0 >= 1.0 - 1e-9
+    zero = tp0 <= 1e-9
+    deep = zero & ehit & (ecap <= 1e-12)
+    fall_n = int(getattr(cfg, "R98_VRP_VOL_FALL_N", 5) or 5)
+    mC = (full & vrp.notna() & (vrp < 0)).fillna(False).astype(bool)
+    mU = (zero & ~deep & pct.notna() & (pct > float(getattr(cfg, "R98_VRP_TOP_PCT", 0.90)))
+          & sg.notna() & (sg < sg.shift(fall_n))).fillna(False).astype(bool)
+    tp = tp0.copy()
+    tp[mC] = float(getattr(cfg, "R98_VRP_CUT_POS", 0.6))
+    tp[mU] = np.maximum(tp0[mU], float(getattr(cfg, "R98_VRP_REENTRY_POS", 0.6)))
+    return tp.clip(lower=0.0, upper=1.0), mC, mU, vrp
+
+
+def r98_neighbor_col(pk_ratio: float, calm_sigma: float) -> str:
+    """이웃 문턱 열 이름 — 예: (1.25, 0.14) → 'pos_r98_v1n_1.25_0.14'(S가 res['r98']['neighbor_cols']로 읽는다)."""
+    return f"pos_r98_v1n_{float(pk_ratio):g}_{float(calm_sigma):g}"
+
+
+def apply_r98_measure(sig: pd.DataFrame, px: pd.Series, price: Optional[pd.DataFrame], vix: Optional[pd.Series],
+                      cfg: Config = CFG) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.66.0 R98] 측정 열을 싣는다 — pos_pre_r98(= 적용 전 라이브) · pos_r98_v1 · pos_r98_v1s · 이웃 4열 · pos_r98_vrp.
+    R98_RANGE_VOL=False(기본)면 target_pos는 **그대로**(v1.65.0 비트 동일). True면 target_pos = pos_r98_v1(⚠ 라이브 변경 · 로그 경고)."""
+    out = sig.copy()
+    idx = out.index
+    tp_live = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r98"] = tp_live.copy()
+    live = bool(getattr(cfg, "R98_RANGE_VOL", False))
+    diag: Dict[str, Any] = {"enabled": False, "live": live}
+    if not (bool(getattr(cfg, "R98_MEASURE", True)) or live):
+        log("SIGNAL", kv(event="r98_measure", enabled=False, note="R98_MEASURE=False — 측정 열 없음(라이브 무변경)"))
+        return out, diag
+    s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-01"))
+    in_s = pd.Series(idx >= s0, index=idx)
+
+    def _n(m):
+        m = pd.Series(m, index=idx).fillna(False).astype(bool)
+        return int(m.sum()), int((m & in_s).sum())
+
+    tv1, mA, mB, pk, sg = r98_v1_target(out, px, price, cfg)
+    out["pos_r98_v1"] = tv1
+    out["r98_v1_cut"] = mA
+    out["r98_v1_calm"] = mB
+    out["r98_pk10"] = pk
+    out["r98_pk_ratio"] = (pk / sg.where(sg > 1e-12))
+    tv1s, mAs, mBs, _, _ = r98_v1_target(out, px, price, cfg, pk_ratio=float(getattr(cfg, "R98_V1S_PK_RATIO", 1.25)),
+                                          calm_sigma=float(getattr(cfg, "R98_V1S_CALM_SIGMA", 0.17)))
+    out["pos_r98_v1s"] = tv1s
+    nb: Dict[str, List[float]] = {}
+    nb_cnt: Dict[str, Any] = {}
+    for _r, _s in tuple(getattr(cfg, "R98_V1_NEIGHBORS", ()) or ()):
+        _c = r98_neighbor_col(_r, _s)
+        _t, _ma, _mb, _, _ = r98_v1_target(out, px, price, cfg, pk_ratio=float(_r), calm_sigma=float(_s))
+        out[_c] = _t
+        nb[_c] = [float(_r), float(_s)]
+        nb_cnt[_c] = {"cut": _n(_ma), "calm": _n(_mb)}
+    vd: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(cfg, "R98_VRP_MEASURE", True)):
+        tvr, mC, mU, vrp = r98_vrp_target(out, px, vix, cfg)
+        out["pos_r98_vrp"] = tvr
+        out["r98_vrp"] = vrp
+        out["r98_vrp_cut"] = mC
+        out["r98_vrp_up"] = mU
+        vd = {"enabled": vix is not None, "cut": _n(mC), "up": _n(mU),
+              "vrp_cover": int(vrp.notna().sum()), "mean_post": round(float(tvr.mean()), 4)}
+    if live:
+        out["target_pos"] = tv1
+    has_hl = bool(isinstance(price, pd.DataFrame) and {"High", "Low"} <= set(price.columns))
+    diag = {"enabled": True, "live": live, "has_high_low": has_hl,
+            "v1_cut": _n(mA), "v1_calm": _n(mB), "v1s_cut": _n(mAs), "v1s_calm": _n(mBs),
+            "v1_changed": _n((tv1 - tp_live).abs() > 1e-12), "v1s_changed": _n((tv1s - tp_live).abs() > 1e-12),
+            "v1_cut_dates_in_sample": [str(d.date()) for d in idx[(mA & in_s).values]][:40],
+            "neighbor_cols": nb, "neighbor_counts": nb_cnt, "vrp": vd,
+            "mean_live": round(float(tp_live.mean()), 4), "mean_v1": round(float(tv1.mean()), 4),
+            "pk_cover": int(pk.notna().sum()),
+            "params": {"pk_window": int(getattr(cfg, "R98_PK_WINDOW", 10)), "pk_ratio": float(getattr(cfg, "R98_PK_RATIO", 1.3)),
+                       "cut_pos": float(getattr(cfg, "R98_PK_CUT_POS", 0.0)),
+                       "calm_sigma": float(getattr(cfg, "R98_NEUTRAL_CALM_SIGMA", 0.15)),
+                       "calm_pos": float(getattr(cfg, "R98_NEUTRAL_CALM_POS", 1.0))}}
+    log("SIGNAL", kv(event="r98_measure", live=live, has_high_low=has_hl,
+                     v1_cut=f"{diag['v1_cut'][0]}(2018~{diag['v1_cut'][1]})", v1_calm=f"{diag['v1_calm'][0]}(2018~{diag['v1_calm'][1]})",
+                     v1s_cut=diag["v1s_cut"][1], v1s_calm=diag["v1s_calm"][1],
+                     vrp_cut=(vd.get("cut") or ["-", "-"])[1] if vd.get("enabled") else "VIX없음",
+                     vrp_up=(vd.get("up") or ["-", "-"])[1] if vd.get("enabled") else "VIX없음",
+                     neighbors=len(nb), mean_live=diag["mean_live"], mean_v1=diag["mean_v1"],
+                     note=("⚠ 라이브 적용(R98_RANGE_VOL=True) — 되돌리기 R98_RANGE_VOL=False" if live
+                           else "측정 전용 — target_pos 무변경(비트 동일)")),
+        level=("warning" if live else "info"))
     return out, diag
 
 
@@ -10463,6 +10677,20 @@ def run(cfg: Config = CFG) -> dict:
         log("SIGNAL", kv(event="r96_vol_overlay_failed", err=type(_e96).__name__, msg=str(_e96)[:160],
                          action="R96 없이 계속(= v1.63.0 신호) — 00 줄에 표시"), level="error")
         r96_diag = {"enabled": False, "error": f"{type(_e96).__name__}: {str(_e96)[:120]}"}
+    # [v1.66.0 R98 · 측정 전용] V1 변동성 짝 · V1강 · 이웃 문턱 · VRP 목표비중 열 — R98_RANGE_VOL=False면 target_pos 무변경.
+    r98_diag: Dict[str, Any] = {"enabled": False}
+    try:
+        _vix98 = None
+        _vdf98 = px_dict.get("^VIX") if isinstance(px_dict, dict) else None
+        if isinstance(_vdf98, pd.DataFrame) and len(_vdf98):
+            _vc98 = "Close" if "Close" in _vdf98.columns else ("Adj Close" if "Adj Close" in _vdf98.columns else None)
+            if _vc98:
+                _vix98 = pd.to_numeric(_vdf98[_vc98], errors="coerce")
+        sig, r98_diag = apply_r98_measure(sig, px_adj, price, _vix98, cfg)
+    except Exception as _e98:
+        log("SIGNAL", kv(event="r98_measure_failed", err=type(_e98).__name__, msg=str(_e98)[:160],
+                         action="측정 열 없이 계속(라이브 무영향) — 00 줄에 표시"), level="error")
+        r98_diag = {"enabled": False, "error": f"{type(_e98).__name__}: {str(_e98)[:120]}"}
     reason = build_reason_text(contrib, sig["state"], score)
     t_sig_done = time.time()
     stage_timing["07_신호생성(H점수+국면신호)"] = round(t_sig_done - t_wf_done, 2)
@@ -10612,6 +10840,7 @@ def run(cfg: Config = CFG) -> dict:
             "revised_excluded": revised_excluded,                                          # [v1.62.0 R94] 라이브 제외 계열
             "r95": r95_diag,                                                               # [v1.63.0 R95] 사이징 오버레이 발동 요약
             "r96": r96_diag,                                                               # [v1.64.0 R96] 변동성 관리 발동 요약
+            "r98": r98_diag,                                                               # [v1.66.0 R98] 측정 열 요약(V1·V1강·이웃·VRP)
             "stage_timing": stage_timing}
 
 
@@ -11490,6 +11719,16 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         daily["SPY 20일 변동성(R96)"] = pd.to_numeric(sig.get("r96_vol20"), errors="coerce").reindex(idx).round(4) \
             if "r96_vol20" in sig.columns else np.nan
         daily["R96 전 목표비중"] = _pp96
+    # [v1.66.0 R98 · 측정 전용] V1 변동성 짝 · VRP 목표비중(라이브 아님) — 비교 행이 이 값으로 계산된다.
+    if "pos_r98_v1" in sig.columns:
+        _a98 = sig.get("r98_v1_cut", pd.Series(False, index=sig.index)).reindex(idx).fillna(False).astype(bool)
+        _b98 = sig.get("r98_v1_calm", pd.Series(False, index=sig.index)).reindex(idx).fillna(False).astype(bool)
+        daily["R98 V1 목표(측정)"] = pd.to_numeric(sig["pos_r98_v1"], errors="coerce").reindex(idx)
+        daily["R98 고저범위/σ20(측정)"] = (pd.to_numeric(sig["r98_pk_ratio"], errors="coerce").reindex(idx).round(3)
+                                        if "r98_pk_ratio" in sig.columns else np.nan)
+        daily["R98 V1 발동(측정)"] = np.where(_a98, "E1컷(가)", np.where(_b98, "중립↑(나)", ""))
+    if "pos_r98_vrp" in sig.columns:
+        daily["R98 VRP 목표(측정)"] = pd.to_numeric(sig["pos_r98_vrp"], errors="coerce").reindex(idx)
     daily["전략일간수익"] = (bt["strategy_ret"] * 100).round(3)
     daily["전략자산곡선"] = (bt["equity"] / bt["equity"].iloc[0]).round(4)
     daily["시장자산곡선"] = (bt["bh_equity"] / bt["bh_equity"].iloc[0]).round(4)
@@ -11784,6 +12023,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
+        ("★★★ R98 측정(라이브 무변경) — V1 변동성 짝 · VRP · V1강 · 이웃 문턱", _r98_note(res)),
         ("★★★ R96 회피↑·참여↑ — 부분 노출일 변동성 관리(⚠ 신호 변경)", _r96_note(res)),
         ("★★★ R95 회피↑·참여 유지 — SPY 신호 사이징 오버레이 3개(⚠ 신호 변경)", _r95_note(res)),
         ("★★★ R94 룩어헤드 제거 — 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)", _revision_audit_note(res)),
@@ -12101,13 +12341,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.65.0"
+BUNDLE_VERSION = "v1.66.0"
 BUNDLE_VERSION_DATE = "2026-09-25"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.78.0", "industry_rotation": "v0.49.0", "stock_regime": "v0.9.2"}   # [v1.65.0 R97]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.79.0", "industry_rotation": "v0.50.0", "stock_regime": "v0.10.0"}   # [v1.66.0 R98]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
@@ -12189,6 +12429,36 @@ def _r96_note(res: Dict[str, Any]) -> str:
             "부분 노출일이 없어 R96이 발동 0일 = 시험 안 됨)에서 "
             "R96 전체 Δ회피 ≥0 · Δ참여 ≥0 · 두 반쪽 Δ합 ≥ −1%p(미통과면 다음 라운드 되돌림 후보). "
             "되돌리기: m_overrides={'R96_VOL_MANAGE': False}. 연구·교육용, 투자 자문 아님.")
+
+
+def _r98_note(res: Dict[str, Any]) -> str:
+    """[v1.66.0 R98] 00 줄 — 측정 열 발동 요약 · 오프라인 기대 · R99 승격 조건."""
+    d = (res or {}).get("r98") or {}
+    cfg = (res or {}).get("cfg", CFG)
+    if d.get("error"):
+        return f"⚠ 측정 열 산출 실패 — {d['error']} (라이브 무영향 · S·I·K R98 비교 행 없음)"
+    if not d.get("enabled"):
+        return "꺼짐(R98_MEASURE=False) — 측정 열·비교 행 없음(라이브 무변경)"
+    p = d.get("params") or {}
+    v = d.get("vrp") or {}
+
+    def _c(k):
+        x = d.get(k) or [0, 0]
+        return f"{x[0]}일(2018~ {x[1]}일)"
+    return ((("⚠ 라이브 적용 중(R98_RANGE_VOL=True — 되돌리기 m_overrides={'R98_RANGE_VOL': False}) · " if d.get("live")
+              else "측정 전용 — 라이브 목표비중 무변경(v1.65.0 비트 동일 · R98_RANGE_VOL=False) · "))
+            + f"V1 (가) E=1일 Parkinson {p.get('pk_window', '-')}일 > {p.get('pk_ratio', 0):g}·σ20 → {p.get('cut_pos', 0):g}: {_c('v1_cut')} · "
+            f"(나) 중립 부분일 σ20 < {p.get('calm_sigma', 0):.0%} → {p.get('calm_pos', 0):g}: {_c('v1_calm')} · "
+            f"V1강(PK {float(getattr(cfg, 'R98_V1S_PK_RATIO', 1.25)):g} · σ {float(getattr(cfg, 'R98_V1S_CALM_SIGMA', 0.17)):.0%}) (가) {_c('v1s_cut')} · "
+            + (f"VRP(VIX/100 − σ20) 회피 {v.get('cut', ['-', '-'])[1]}일 · 참여 {v.get('up', ['-', '-'])[1]}일(2018~) · "
+               if v.get("enabled") else "VRP: VIX 없음 · ")
+            + f"이웃 문턱 {len(d.get('neighbor_cols') or {})}칸 · 평균 목표비중 라이브 {d.get('mean_live', '-')} vs V1 {d.get('mean_v1', '-')}. "
+            + (f"표본 안 (가) 발동일: {', '.join(d.get('v1_cut_dates_in_sample') or []) or '없음'}. " )
+            + ("" if d.get("has_high_low") else "⚠ 고가/저가 없음 → (가) 발동 불가. ")
+            + "오프라인 기대(R98 방법서 · 기준 현 라이브): M +0.76/+0.43 · S +1.39/+1.18 · I +1.41/+1.34 · K +1.37/+1.16(%p 회피/참여). "
+            "판정: S·I·K 00 'R98' 줄 · S 00U 블록 M⑦(SPY 1994~2017 OHLC)·N⑦(FF 1927~2017 · (나)만). "
+            "R99 승격 조건(사전등록): 네 층 Δ회피 > 0 & Δ참여 ≥ 0 · 블록 M⑦ 전체 ≥0/≥0 & 반쪽 Δ합 ≥ −1%p · 이웃 4칸 중 3칸 이상 같은 방향 — "
+            "하나라도 못 채우면 닫는다. 연구·교육용, 투자 자문 아님.")
 
 
 def _revision_audit_note(res: Dict[str, Any]) -> str:
