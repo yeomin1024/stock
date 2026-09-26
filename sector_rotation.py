@@ -17,6 +17,21 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.82.0 - 2026-09-26 - [R101 예측 정확도 근거: 13q 하락확률에 '워크포워드 기저율' 기준선 · 00 줄 — S★ 규칙·비중 무변경]
+#    사용자 지시(2026-09-26 · Kaggle R100 리포트): R100과 같은 지시 반복(단일 예측 시트 금지 · 회피·참여·예측 정확도·선별력 근거 개선 · 떨어지면 안 됨).
+#    ── R100 리포트 판정 ── S★ 74.1/86.3(중간) · I★ 74.4/91.8(높음) · K★ 71.0/121.5(높음) = R99와 같다(무변경 확인) · 시트 62 → 51.
+#    (§1 ★ 근거 신뢰도) build_down_probability(13q): 종전 'Brier(기저율만)'은 **평가 구간의 실현 기저율**(사후 값 — 그때는 몰랐던 값)이라 모형에
+#         불리한 기준이었다(R100: 모형 0.25686 vs 0.24321). 그 해 학습 표본의 (감쇠 가중) 하락 비율 = 그때 알 수 있던 기저율로 'Brier(기저율 · 워크포워드)'
+#         · 'Brier 개선(워크포워드 기저율 대비)' 열(섹터별 A · 전체 B) · 요약 brier_wf · brier_gain_wf · 00 '하락확률 보정' 줄에 두 기준 모두.
+#         종전 열은 그대로 둔다(비교 가능). 배분 미사용 — 측정 전용.
+#    (§2 R101 연구 · 코드 무변경 · 라이브 무변경) 새 방법: S&P 500 **종목 폭(breadth)** — 그 시점 구성 · 가격 있는 종목(평균 427/502) · t일 종가까지.
+#         하네스(r100/h101_*.py): Kaggle R100 S 13c · I 13c/13c2 · M 목표비중 → 네 층 재현(M 80.0/62.1 · S★ 74.2/86.2 · I★ 74.6/92.5 · K★ 70.9/121.4).
+#         후보(사전 목록) Δ회피/Δ참여(S★ 전체 · 대조군 = 신호 날짜 순환이동 30):
+#           C1 ZBT(10일 EMA 0.40→0.615) 재진입 0.6×21일  −10.70/+0.74(대조군 0)   C2 50일선 폭 20%→60% 재진입  −1.75/+0.49(90)
+#           C3 20일선 폭 20%→70% 재진입  −9.82/+2.82(20)   C4 고점 근처 좁은 폭(200일선 위 <50%) 상한 0.6  +0.00/−0.50(10)
+#           C5 52주 신저가 폭 >10% 상한 0.6  −0.20/−0.25(70)  → 네 층 무하락 통과 0 — 급등 재진입은 약세장 반등(2018-11 · 2022-05 · 2022-09)에서도 켜진다.
+#         ⇒ 라이브에 넣지 않는다(M·S·I·K 목표비중 비트 동일). LAYER_MIN_VERSIONS M v1.67.2 · S v0.82.0 · I v0.52.0.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.81.0 - 2026-09-26 - [R100 섹터별 01_일별_<섹터> 시트 끔(사용자 지시 · 계산·배분 무변경) — S★ 숫자 그대로]
 #    사용자 지시(2026-09-26 · Kaggle R99 리포트): "단일 섹터, 산업, 종목 예측 시트는 만들지마 … 회피, 참여, 예측 정확도, 주식 종목 선별력 등
 #      신뢰할 수 있는 근거들 더 높이도록 개선해 … 지금 상태에서 떨어지면 절대 안돼 … 500종목 기능 On". 시작 v0.80.0 → 목표 v0.81.0.
@@ -2988,7 +3003,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.81.0"
+VERSION = "v0.82.0"
 VERSION_DATE = "2026-09-26"
 
 # =============================================================================
@@ -8621,7 +8636,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.67.1", "sector_rotation": "v0.81.0", "industry_rotation": "v0.52.0"}   # [v0.81.0 R100]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.67.2", "sector_rotation": "v0.82.0", "industry_rotation": "v0.52.0"}   # [v0.82.0 R101]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -16104,6 +16119,7 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
     feat_names = ["복합점수백분위", "자기위험백분위(H)"] + (["M국면더미"] if m_dummy is not None else [])
     all_pred: List[pd.Series] = []
     all_real: List[pd.Series] = []
+    all_bwf: List[pd.Series] = []          # [v0.82.0 R101] 워크포워드 기저율(정직한 기준선)
     for t in results:
         r = results[t]
         px = r.get("px_close")
@@ -16121,6 +16137,9 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
         X_all = pd.concat(X_cols, axis=1)
         X_all.columns = feat_names
         p_out = pd.Series(np.nan, index=idx, dtype=float)
+        # [v0.82.0 R101] 정직한 기준선 — 그 해 학습 표본의 (감쇠 가중) 하락 비율 = 그 시점에 알 수 있던 기저율(워크포워드 기후값).
+        #   종전 'Brier(기저율만)'은 **평가 구간의 실현 기저율**(사후 값)이라 모형에 불리한 기준이었다 — 둘 다 싣는다.
+        b_out = pd.Series(np.nan, index=idx, dtype=float)
         yrs = sorted({int(d.year) for d in idx})
         n_fit = 0
         for yv in yrs:
@@ -16153,12 +16172,19 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
             okp = Xp.notna().all(axis=1)
             if bool(okp.any()):
                 p_out.loc[rows_y[okp.values]] = _predict_logistic(beta, Xp[okp].values)
+                try:
+                    _bw = (float(np.average(yc.values, weights=wts)) if (wts is not None and len(wts) == len(yc)
+                                                                       and float(np.sum(wts)) > 0) else float(yc.mean()))
+                except Exception:   # noqa
+                    _bw = float(yc.mean())
+                b_out.loc[rows_y[okp.values]] = _bw
                 n_fit += 1
         probs[t] = p_out
         pv = p_out.dropna()
         yv_ = y_all.reindex(pv.index)
         m = pv.notna() & yv_.notna()
         pv, yv_ = pv[m], yv_[m]
+        bw_ = b_out.reindex(pv.index)
         if len(pv) < 100:
             rows.append({"블록": f"A. 섹터별 보정(h={h}일)", "티커": t, "표본일수": int(len(pv)),
                          "판독": "표본 부족 — 학습창이 짧거나 특징 결측"})
@@ -16166,6 +16192,9 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
         base = float(yv_.mean())
         brier = float(np.mean((pv.values - yv_.values) ** 2))
         brier_base = float(np.mean((base - yv_.values) ** 2))
+        _okb = bw_.notna()
+        brier_wf = (float(np.mean((bw_[_okb].values - yv_[_okb].values) ** 2)) if bool(_okb.any()) else np.nan)
+        brier_m_wf = (float(np.mean((pv[_okb].values - yv_[_okb].values) ** 2)) if bool(_okb.any()) else np.nan)
         # 십분위 신뢰도
         try:
             q = pd.qcut(pv, n_bins, labels=False, duplicates="drop")
@@ -16182,6 +16211,8 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
                      "평균 예측확률": round(float(pv.mean()), 4),
                      "Brier": round(brier, 5), "Brier(기저율만)": round(brier_base, 5),
                      "Brier 개선": round(brier_base - brier, 5),
+                     "Brier(기저율 · 워크포워드)": (round(brier_wf, 5) if pd.notna(brier_wf) else np.nan),
+                     "Brier 개선(워크포워드 기저율 대비)": (round(brier_wf - brier_m_wf, 5) if pd.notna(brier_wf) else np.nan),
                      "신뢰도 기울기(상위십분위−하위십분위 실현)": (round(slope, 4) if pd.notna(slope) else np.nan),
                      "운용점 문턱": (round(thr, 4) if pd.notna(thr) else np.nan),
                      "운용점 정밀도": (round(mo["prec_down"], 4) if pd.notna(mo["prec_down"]) else np.nan),
@@ -16190,10 +16221,14 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
                      "운용점 MCC": (round(mo["mcc"], 4) if pd.notna(mo["mcc"]) else np.nan),
                      "판독": ("방향 정보 있음" if (pd.notna(slope) and slope >= 0.10) else
                              ("약함" if (pd.notna(slope) and slope > 0.0) else "정보 없음(곡선이 평평하거나 거꾸로)"))})
-        all_pred.append(pv); all_real.append(yv_)
+        all_pred.append(pv); all_real.append(yv_); all_bwf.append(bw_)
     # ---------- 블록 B: 전 섹터 pooled 신뢰도 곡선 ----------
     if all_pred:
         P = pd.concat(all_pred); Y = pd.concat(all_real)
+        BW = pd.concat(all_bwf) if all_bwf else pd.Series(np.nan, index=P.index)
+        _okb = BW.notna().values
+        brier_wf = (float(np.mean((BW.values[_okb] - Y.values[_okb]) ** 2)) if _okb.any() else np.nan)
+        brier_m_wf = (float(np.mean((P.values[_okb] - Y.values[_okb]) ** 2)) if _okb.any() else np.nan)
         base = float(Y.mean())
         try:
             q = pd.qcut(P, n_bins, labels=False, duplicates="drop")
@@ -16213,6 +16248,8 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
         mo = _binary_metrics(P >= thr, Y.astype(bool)) if pd.notna(thr) else {}
         summ = {"n": int(len(P)), "base": base, "brier": brier, "brier_base": brier_base,
                 "brier_gain": brier_base - brier, "slope": slope,
+                "brier_wf": brier_wf, "brier_model_wf": brier_m_wf,
+                "brier_gain_wf": (brier_wf - brier_m_wf) if pd.notna(brier_wf) else np.nan,
                 "op_prec": mo.get("prec_down", np.nan), "op_rec": mo.get("rec_down", np.nan),
                 "op_bal": mo.get("balanced", np.nan), "op_mcc": mo.get("mcc", np.nan),
                 "features": ",".join(feat_names)}
@@ -16220,6 +16257,8 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
                      "표본일수": int(len(P)), "기저 실현하락률": round(base, 4),
                      "Brier": round(brier, 5), "Brier(기저율만)": round(brier_base, 5),
                      "Brier 개선": round(brier_base - brier, 5),
+                     "Brier(기저율 · 워크포워드)": (round(brier_wf, 5) if pd.notna(brier_wf) else np.nan),
+                     "Brier 개선(워크포워드 기저율 대비)": (round(brier_wf - brier_m_wf, 5) if pd.notna(brier_wf) else np.nan),
                      "신뢰도 기울기(상위십분위−하위십분위 실현)": (round(slope, 4) if pd.notna(slope) else np.nan),
                      "운용점 문턱": (round(thr, 4) if pd.notna(thr) else np.nan),
                      "운용점 정밀도": (round(mo.get("prec_down", np.nan), 4) if pd.notna(mo.get("prec_down", np.nan)) else np.nan),
@@ -18119,7 +18158,10 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             if _qs0:
                 nd_rows.append(("하락확률 보정(13q, 정보·배분 미사용)",
                                 f"신뢰도 기울기 {_qs0.get('slope', np.nan):+.3f}(≥0.10이면 방향 정보) · Brier {_qs0.get('brier', np.nan):.5f} "
-                                f"vs 기저율만 {_qs0.get('brier_base', np.nan):.5f} · 기저율 문턱에서 정밀도 {_qs0.get('op_prec', np.nan):.3f}"
+                                f"vs 기저율만 {_qs0.get('brier_base', np.nan):.5f}(사후 실현 기저율 · 모형에 불리한 기준) · "
+                                f"[R101] 워크포워드 기저율(그때 알 수 있던 값) {_qs0.get('brier_wf', np.nan):.5f} → 모형 개선 "
+                                f"{_qs0.get('brier_gain_wf', np.nan):+.5f}(+면 모형이 그때의 기후값보다 낫다) · "
+                                f"기저율 문턱에서 정밀도 {_qs0.get('op_prec', np.nan):.3f}"
                                 f"·재현율 {_qs0.get('op_rec', np.nan):.3f}·MCC {_qs0.get('op_mcc', np.nan):+.3f} "
                                 f"(표본 {_qs0.get('n', 0)}일, 기저 {_qs0.get('base', np.nan):.3f}) — 13q_하락확률보정"))
             nd_rows.append(("집중배분 수용기준(§1.F.3, 사전 고정)", rot_val["verdict"]))

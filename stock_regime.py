@@ -1,5 +1,22 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.12.1 - 2026-09-26 - [R101 근거 신뢰도: 500종목 검정 '확보율 구간 판정'(B2 · 사전등록) · 결과 캐시 형식 · 00 표시 정정 — 라이브 배분 무변경]
+#    사용자 지시(2026-09-26 · Kaggle R100 리포트 s v0.81.0 · i v0.52.0 · k v0.12.0): R100과 같은 지시 반복(단일 예측 시트 금지 · 근거 개선 · 떨어지면 안 됨).
+#    ── R100 리포트 판정 ── K★ 71.0/121.5 높음 · MDD −12.68 · 칼마 4.770 · 배수 61.522(R99와 같다 — 무변경 확인) · 시트 74 → 16 ·
+#      500종목 검정: 티커 변경 28개 복구 → 확보율 ≥90% 달 28.5% → 40% · 통과 신호 0 · B2(2020-01~2026-07 · 79개월) PEAD60 t 2.48 · 서프라이즈 t 2.35 ·
+#      R100 잔차 모멘텀 행(엔진) +0.32/+0.24 · 칼마 4.849 · MDD −12.77 → 무하락 ✗(MDD · 앞 반쪽 · S&P 500 검정).
+#    (§1 ★ 사전등록 · 근거 신뢰도) selaudit_evaluate: B의 확보율 조건(90% 달 ≥ 80%)은 무료 자료로 2010~2019에서 구조적으로 못 채운다
+#         (Yahoo가 상장폐지 이력을 지운다) → 어떤 신호도 통과할 수 없는 문이었다. **B2 확보율 구간 판정** = 확보율 ≥90% 달만으로 같은 잣대
+#         (월수 ≥ SELAUDIT_COVER_VERDICT_MIN_MONTHS 60 · t ≥ 2.5 · 구간 앞·뒤 절반 IC > 0 · 연도 ≥ 60% · 같은 달 무작위 순위 대조군 95백분위).
+#         결과 passed_cov → 무하락 판정의 'S&P 500 검정' 조건은 B 또는 B2 통과. R100 값(PEAD60 t 2.48)으로는 이 기준도 미통과(기준은 결과를 보기 전 값 그대로).
+#         00 N6-a 줄에 B2 판정 · 가장 가까운 신호 t. 결과 캐시에 SELAUDIT_SCHEMA("r101") — 형식이 다르면 판정만 다시 계산(가격·어닝 캐시 재사용).
+#    (§2 표시 정정) 'R99 N3 확률 배분' 줄이 R99 조건 통과 행을 'R100 라이브 후보'로 적어 'R100 무하락 판정'(후보 없음)과 엇갈렸다 →
+#         'R99 조건 통과(참고 · 라이브 여부는 무하락 판정 줄)'. 00E F 블록 참·거짓 열이 0.0으로 보이던 것 → ✓/✗. 00S '신호 11개' → 실제 개수(12).
+#    (§3 예측 정확도 표시) 00 '종목 상승확률' 줄에 연도 안 AUC 평균 · 0.5 초과 연도 수(R100: 평균 0.522 · 7/10년) — 합친 AUC(0.482)는 해마다 다른
+#         기저율이 섞여 판별력을 과소평가한다. 새 계산 없음(00E C 블록 값).
+#    (§4 R101 연구 · 코드 무변경) S&P 500 종목 폭(breadth) 오버레이 5개(r100/h101_*.py · 네 층 하네스): 급등 재진입(ZBT·50일선·20일선)은 참여 +0.2~+4.7이지만
+#         회피 −1.4~−11.2(약세장 반등에서 켜진다) · 좁은 폭·신저가 상한은 참여 −0.2~−0.8 → 무하락 통과 0 — 라이브에 넣지 않는다(S v0.82.0 헤더에 표).
+#    새 필드: SELAUDIT_COVER_VERDICT_MIN_MONTHS. 시험 t101/test_r101.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.12.0 - 2026-09-26 - [R100 S&P 500 선택력 검정 기본 켬 · 티커 변경 복구 · 확보율 90% 달 교차표 · 종목별 01_일별 시트 끔 ·
 #                                   잔차 모멘텀 측정 행 + 무하락 판정 줄 — 라이브 배분 무변경(섹터 안 균등 · K★ 숫자 그대로)]
 #    사용자 지시(2026-09-26 · Kaggle R99 리포트 m v1.67.0 · s v0.80.0 · i v0.51.0 · k v0.11.0): "단일 섹터, 산업, 종목 예측 시트는 만들지마 그리고
@@ -526,7 +543,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.12.0"
+VERSION = "v0.12.1"
 VERSION_DATE = "2026-09-26"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1003,6 +1020,8 @@ class StockConfig:
     #   확보율이 낮아졌다(2010년 65% · 확보율 ≥90% 달 28.5%). 인수·상장폐지 종목(Yahoo 이력 삭제)은 여기서도 못 살린다 — 00S에 그대로 표시.
     SELAUDIT_RENAMES: Dict[str, str] = field(default_factory=lambda: dict(SELAUDIT_RENAMES_R100))
     SELAUDIT_CHUNK_RETRY: int = 1      # 일괄 다운로드 묶음이 예외로 통째 실패하면 몇 번 더 시도(5초 쉼)
+    # [v0.12.1 R101 사전등록] 확보율 구간 판정(00S B2) 최소 월수 — 확보율 ≥90% 달만으로 같은 잣대(t ≥ 2.5 · 앞·뒤 절반 > 0 · 연도 ≥ 60% · 대조군 95).
+    SELAUDIT_COVER_VERDICT_MIN_MONTHS: int = 60
 
     # ---- 출력 ----
     OUT_XLSX: str = "stock_regime_report.xlsx"
@@ -3813,6 +3832,8 @@ def _sector_prob_weights(idx: pd.DatetimeIndex, tickers: List[str], live: pd.Dat
 #   신호는 사전 목록(결과를 보고 더하지 않는다 · 교훈 16). 목표 = 다음 21거래일 수익의 **섹터 안** 순위(섹터 대비 초과수익의 순위와 같다 —
 #     섹터 수익은 그룹 안에서 공통이라 순위를 바꾸지 않는다). IC = 섹터마다 pct 순위 − 그룹 평균(교훈 63)을 모아 상관.
 #   무작위 대조군: 매달 같은 종목·같은 섹터에 무작위 순위 SELAUDIT_CONTROLS(200)개 → 평균 IC 귀무 분포(백분위) · 가짜 신호 t 분포 보정(교훈 14).
+# [v0.12.1 R101] 결과 캐시 형식 — 바뀌면 캐시된 결과를 쓰지 않고 판정만 다시 계산한다(가격·어닝 캐시는 재사용).
+SELAUDIT_SCHEMA = "r101"
 SELAUDIT_SIGNALS: Tuple[Tuple[str, str], ...] = (
     ("earn_surprise", "어닝 서프라이즈(최근 분기 %)"),
     ("earn_sur4", "어닝 서프라이즈 4분기 평균(%)"),
@@ -4202,6 +4223,14 @@ def selaudit_evaluate(sig: Dict[str, pd.DataFrame], fwd: pd.DataFrame, member: D
     if len(MI) and len(CV):
         good = set(pd.DatetimeIndex(CV.loc[CV["확보율"] >= cov_min, "월말"]))
         MG = MI[pd.DatetimeIndex(MI["월말"]).isin(good)]
+        # [v0.12.1 R101 사전등록] 확보율 구간 판정 — B의 확보율 조건(90% 달 ≥ 80%)은 무료 자료(Yahoo는 상장폐지 이력 삭제)로는 2010~2019에서
+        #   구조적으로 못 채운다(R100 실측 40%) → 어떤 신호도 통과할 수 없는 문이었다. 같은 잣대를 **확보율 ≥90% 달만**에 적용한다:
+        #   월수 ≥ SELAUDIT_COVER_VERDICT_MIN_MONTHS(60) & t ≥ SELAUDIT_T_PASS(2.5) & 구간 앞·뒤 절반 IC 모두 > 0 & 연도 ≥ 60% &
+        #   같은 달들의 무작위 순위 대조군 평균 IC 대비 95백분위. (R100 리포트 값: PEAD60 t 2.48 · 서프라이즈 t 2.35 → 이 기준으로도 미통과.)
+        gmask = np.array([pd.Timestamp(d) in good for d in months], dtype=bool)
+        ctl_mean_g = (np.nanmean(np.where(gmask[None, :], ctl_ic, np.nan), axis=1)
+                      if (nctl > 0 and gmask.any()) else np.array([]))
+        min_m = int(getattr(cfg, "SELAUDIT_COVER_VERDICT_MIN_MONTHS", 60))
         for key, desc in SELAUDIT_SIGNALS:
             w = pd.to_numeric(MG.loc[MG["신호"] == key, "섹터 안 IC"], errors="coerce").dropna() if len(MG) else pd.Series(dtype=float)
             if len(w) < 3:
@@ -4209,11 +4238,27 @@ def selaudit_evaluate(sig: Dict[str, pd.DataFrame], fwd: pd.DataFrame, member: D
             sdv = float(w.std(ddof=1))
             t2 = float(w.mean() / sdv * math.sqrt(len(w))) if sdv > 0 else float("nan")
             yy = pd.DatetimeIndex(MG.loc[w.index, "월말"])
+            order = np.argsort(yy.values)
+            wv = w.to_numpy()[order]
+            h1, h2 = wv[: len(wv) // 2], wv[len(wv) // 2:]
+            ym2 = pd.Series(w.to_numpy(), index=yy).groupby(yy.year).mean()
+            pct2 = float((ctl_mean_g < float(w.mean())).mean() * 100.0) if len(ctl_mean_g) else float("nan")
+            ok2 = (len(w) >= min_m and t2 == t2 and t2 >= float(getattr(cfg, "SELAUDIT_T_PASS", 2.5))
+                   and len(h1) and len(h2) and float(np.mean(h1)) > 0 and float(np.mean(h2)) > 0
+                   and float((ym2 > 0).mean()) >= float(getattr(cfg, "SELAUDIT_YEAR_SHARE", 0.60))
+                   and pct2 == pct2 and pct2 >= float(getattr(cfg, "SELAUDIT_CTRL_PCT", 95.0)))
             cov_rows2.append({"신호": key, "설명": desc, "월수": int(len(w)), "구간": f"{yy.min():%Y-%m}~{yy.max():%Y-%m}",
                               "평균 IC(섹터 안)": round(float(w.mean()), 4), "t(월수)": (round(t2, 2) if t2 == t2 else None),
-                              "IC>0 비율": round(float((w > 0).mean()), 3)})
+                              "IC>0 비율": round(float((w > 0).mean()), 3),
+                              "앞 절반 IC": (round(float(np.mean(h1)), 4) if len(h1) else None),
+                              "뒤 절반 IC": (round(float(np.mean(h2)), 4) if len(h2) else None),
+                              "연도 k/n": f"{int((ym2 > 0).sum())}/{len(ym2)}",
+                              "대조군 백분위": (round(pct2, 1) if pct2 == pct2 else None),
+                              "판정": ("★ 통과(확보율 구간 · R101 사전등록)" if ok2 else
+                                     ("월수 부족" if len(w) < min_m else "미통과"))})
     return {"summary": S_, "monthly": MI, "coverage": CV, "cov_share": cov_share, "ctl_t95": t95,
             "summary_cov": pd.DataFrame(cov_rows2),
+            "passed_cov": [r["신호"] for r in cov_rows2 if str(r.get("판정", "")).startswith("★")],
             "ctl_mean_p95": (float(np.nanpercentile(ctl_mean, 95)) if len(ctl_mean) else float("nan")),
             "n_months": int(len(CV)), "passed": [r["신호"] for r in summ if str(r.get("판정", "")).startswith("★")]}
 
@@ -4362,9 +4407,13 @@ def selection_audit(cfg: "StockConfig", universe: Optional[List[str]] = None, fo
     if not force and _cache_fresh(rp, int(getattr(cfg, "SELAUDIT_CACHE_DAYS", 30))):
         try:
             r = pd.read_pickle(rp)
-            r["cache"] = f"캐시 재사용({time.strftime('%Y-%m-%d', time.localtime(os.path.getmtime(rp)))})"
-            log("SELAUDIT", kv(event="cache_reuse", path=os.path.basename(rp)))
-            return r
+            # [v0.12.1 R101] 결과 형식이 바뀌면(B2 확보율 구간 판정 추가) 결과만 다시 계산한다 — 가격·어닝 캐시는 그대로 재사용(수집 없음).
+            if str(r.get("schema", "")) == SELAUDIT_SCHEMA:
+                r["cache"] = f"캐시 재사용({time.strftime('%Y-%m-%d', time.localtime(os.path.getmtime(rp)))})"
+                log("SELAUDIT", kv(event="cache_reuse", path=os.path.basename(rp)))
+                return r
+            log("SELAUDIT", kv(event="cache_schema_old", got=str(r.get("schema", "-")), want=SELAUDIT_SCHEMA,
+                               note="결과 형식 갱신 — 가격·어닝 캐시로 판정만 다시 계산"))
         except Exception:
             pass
     out: Dict[str, Any] = {"enabled": False}
@@ -4443,7 +4492,7 @@ def selection_audit(cfg: "StockConfig", universe: Optional[List[str]] = None, fo
         cur_set = set(cur["티커"])
         outside = sorted(t for t in (universe or []) if normalize_ticker(t) not in cur_set)
         out = {"enabled": True, "source": src, "summary": ev["summary"], "monthly": ev["monthly"], "coverage": ev["coverage"],
-               "summary_cov": ev.get("summary_cov"),
+               "summary_cov": ev.get("summary_cov"), "passed_cov": list(ev.get("passed_cov") or []), "schema": SELAUDIT_SCHEMA,
                "renamed": dict(sorted(dict(_pinfo.get("renamed") or {}).items())),
                "cov_share": ev["cov_share"], "ctl_t95": ev["ctl_t95"], "ctl_mean_p95": ev["ctl_mean_p95"], "passed": ev["passed"],
                "n_months": ev["n_months"], "n_tickers": len(allt), "n_priced": int(close.shape[1]),
@@ -4485,7 +4534,7 @@ def build_selection_sheet(sa: Optional[Dict[str, Any]], cfg: "StockConfig") -> T
     rows: List[Dict[str, Any]] = [
         {"블록": A, "항목": "질문", "값": "종목을 '가려내는 힘'이 있는가 — S&P 500 그 시점 구성(약 500종목) · 2010~ 월말 신호 → 다음 21거래일 수익의 "
                                        "**섹터 안** 순위 IC(그룹 평균 제거 · 교훈 63). 매매 유니버스(K 58종목)는 그대로 — 검정만 넓게(방법서 §7-5)."},
-        {"블록": A, "항목": "판정(사전등록 · 신호 11개 다중 비교)", "값": (
+        {"블록": A, "항목": f"판정(사전등록 · 신호 {len(SELAUDIT_SIGNALS)}개 다중 비교)", "값": (
             f"전체 t ≥ {float(getattr(cfg, 'SELAUDIT_T_PASS', 2.5)):g} & 두 반쪽(~{int(getattr(cfg, 'SELAUDIT_SPLIT_YEAR', 2018)) - 1} · "
             f"{int(getattr(cfg, 'SELAUDIT_SPLIT_YEAR', 2018))}~) IC 모두 > 0 & 연도 ≥ {float(getattr(cfg, 'SELAUDIT_YEAR_SHARE', 0.6)):.0%} & "
             f"무작위 순위 {int(getattr(cfg, 'SELAUDIT_CONTROLS', 200))}개 대비 {float(getattr(cfg, 'SELAUDIT_CTRL_PCT', 95)):g}백분위 & "
@@ -4531,7 +4580,8 @@ def build_selection_sheet(sa: Optional[Dict[str, Any]], cfg: "StockConfig") -> T
     if isinstance(sc2, pd.DataFrame) and len(sc2):
         s3 = sc2.copy()
         s3.insert(0, "항목", s3.pop("신호"))
-        parts.append(s3.assign(블록=f"B2. 확보율 ≥ {float(getattr(cfg, 'SELAUDIT_COVER_MIN', 0.9)):.0%}인 달만(생존 편향 작은 구간 · 참고 — 판정은 B)"))
+        parts.append(s3.assign(블록=f"B2. 확보율 ≥ {float(getattr(cfg, 'SELAUDIT_COVER_MIN', 0.9)):.0%}인 달만(생존 편향 작은 구간) — "
+                                  f"확보율 구간 판정(R101 사전등록: 월수 ≥ {int(getattr(cfg, 'SELAUDIT_COVER_VERDICT_MIN_MONTHS', 60))} · B와 같은 잣대)"))
     cv = sa.get("coverage")
     if isinstance(cv, pd.DataFrame) and len(cv):
         low = cv[cv["확보율"] < float(getattr(cfg, "SELAUDIT_COVER_MIN", 0.9))]
@@ -4549,7 +4599,14 @@ def build_selection_sheet(sa: Optional[Dict[str, Any]], cfg: "StockConfig") -> T
     lead = ["블록", "항목", "값"]
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
     ps = sa.get("passed") or []
+    pc = list(sa.get("passed_cov") or [])
+    # [v0.12.1 R101] 확보율 구간 판정(B2) 결과와 가장 가까운 신호(t 최대)를 함께 적는다 — '없음'만 보면 얼마나 모자란지 모른다.
+    near = ""
+    if isinstance(sc2, pd.DataFrame) and len(sc2) and "t(월수)" in sc2.columns:
+        _b = sc2.assign(_t=pd.to_numeric(sc2["t(월수)"], errors="coerce")).sort_values("_t", ascending=False).head(2)
+        near = " · 가장 가까운 신호(B2): " + ", ".join(f"{r['신호']} t {float(r['_t']):.2f}" for _, r in _b.iterrows() if r["_t"] == r["_t"])
     line = (f"{sa.get('n_months', 0)}개월 × {sa.get('n_tickers', 0)}티커 · 통과 신호: " + (", ".join(ps) if ps else "**없음** — 종목 선택력 없음(확정 후보)")
+            + f" · 확보율 구간 판정(B2 · R101): " + (", ".join(pc) if pc else "없음") + near
             + (f" · 확보율 ≥90% 달 {cs:.0%}" if cs == cs else "") + f" · {sa.get('cache', '-')} · 세부 00S")
     return df, line
 
@@ -4568,7 +4625,8 @@ def prob_variant_verdicts(res: Dict[str, Any]) -> List[Dict[str, Any]]:
     lh = dict((res.get("user_rel_info") or {}).get("halves") or {})
     # [v0.12.0 R100] 점수 → N6-a(S&P 500 긴 이력) 신호 이름 — 그 신호가 통과했는지(무하락 판정의 마지막 조건)
     sa = res.get("selection_audit") or {}
-    sa_pass = set(sa.get("passed") or []) if sa.get("enabled") else None
+    # [v0.12.1 R101] B(전체 · 사전등록) 또는 B2(확보율 구간 · R101 사전등록) 판정 통과
+    sa_pass = (set(sa.get("passed") or []) | set(sa.get("passed_cov") or [])) if sa.get("enabled") else None
     sa_map = {"resid": ("resid_mom",), "earn": ("earn_surprise", "earn_sur4")}   # 어닝 복합 = 두 신호의 순위 평균 → 둘 중 하나 통과
 
     def _f(x):
@@ -4694,13 +4752,23 @@ def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
     if vv:
         v2 = pd.DataFrame(vv)
         v2.insert(0, "항목", v2.pop("변형"))
+        # [v0.12.1 R101] 참·거짓 열은 ✓/✗ 글자로 — 다른 블록과 합칠 때 NaN 때문에 0.0/1.0으로 바뀌어 보였다(R100 리포트).
+        for _bc in ("통과(R100 라이브 후보)", "무하락 통과(R101 라이브 후보)"):
+            if _bc in v2.columns:
+                v2[_bc] = v2[_bc].map(lambda x: "✓" if bool(x) else "✗")
         parts.append(v2.assign(블록="F. 확률 배분 변형(측정 행) — 사전등록 판정(K★ 대비)"))
     df = pd.concat(parts, ignore_index=True, sort=False)
     lead = ["블록", "항목", "값"]
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
     auc = sp.get("auc_all", float("nan"))
+    # [v0.12.1 R101] 연도 안 AUC 평균 · 0.5 초과 연도 수 — 합친 AUC는 해마다 다른 기저율·절편이 섞여 판별력을 과소평가한다(R100: 합친 0.482 vs 연도 평균 0.522).
+    _ya = ""
+    if isinstance(yt, pd.DataFrame) and "AUC(표본 밖)" in yt.columns:
+        _av = pd.to_numeric(yt["AUC(표본 밖)"], errors="coerce").dropna()
+        if len(_av):
+            _ya = f"연도 안 AUC 평균 {float(_av.mean()):.3f} · 0.5 초과 {int((_av > 0.5).sum())}/{len(_av)}년 · "
     lines.append(("★★★ R99 N3 종목 상승확률 — 모형 신뢰도(표본 밖 · 선택 정보 따로)",
-                  f"합친 AUC {auc:.3f} · 연도별 {sp.get('auc_year_min', float('nan')):.3f}~{sp.get('auc_year_max', float('nan')):.3f}(시점 정보) · "
+                  f"합친 AUC {auc:.3f}(해마다 기저율이 섞인 값) · {_ya}연도별 {sp.get('auc_year_min', float('nan')):.3f}~{sp.get('auc_year_max', float('nan')):.3f}(시점 정보) · "
                   + (f"섹터 안 순위 IC {ic['mean']:+.4f}(t {ic['t']:.2f} · {ic['n']}개월 · IC>0 {ic['pos_share']:.0%}) → 선택 정보 "
                      + ("**없음**(|t| < 2)" if abs(float(ic['t'])) < 2 else "있음 후보(t ≥ 2 — 긴 이력 검정 N6-a로 확인)") if ic.get("n") else "섹터 안 IC 산출 불가")
                   + f" · 표본 밖 {sp.get('n_oos', 0):,}행 · 세부 00E. 확률은 표시·측정용 — 라이브 배분은 섹터 안 균등. 연구·교육용, 투자 자문 아님."))
@@ -4713,9 +4781,11 @@ def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
                        f"칼마 {v['칼마']:.3f}(대조군 백분위 {v['대조군 칼마 백분위'] if v['대조군 칼마 백분위'] is not None else '-'}) "
                        + ("✓" if v["통과(R100 라이브 후보)"] else "✗"))
         ok_names = [v["변형"] for v in vv if v["통과(R100 라이브 후보)"]]
-        lines.append(("★★★ R99 N3 확률 배분(측정 행 · 라이브 = 섹터 안 균등 유지) — 사전등록 K★ 대비 Δ회피 ≥0 & Δ참여 ≥0 & 대조군 칼마 백분위 ≥90",
-                      " | ".join(seg) + " ⇒ R100 라이브 후보: " + (", ".join(ok_names) if ok_names else "**없음**(오프라인 예상: 하위 1/5 제외 −1.10/+2.67 · "
-                                                                       "상위 1/3 +0.04/−21.8 — 회피 또는 참여 조건 ✗)")
+        # [v0.12.1 R101] 이 줄은 R99 조건(회피·참여·대조군)만 본다 — 라이브 여부는 아래 'R100 무하락 판정' 줄이 정한다(R100 리포트에서 두 줄이 엇갈려 보였다).
+        lines.append(("★★★ R99 N3 확률 배분(측정 행 · 라이브 = 섹터 안 균등 유지) — R99 조건 K★ 대비 Δ회피 ≥0 & Δ참여 ≥0 & 대조군 칼마 백분위 ≥90",
+                      " | ".join(seg) + " ⇒ R99 조건 통과(참고 · 라이브 여부는 'R100 무하락 판정' 줄): "
+                      + (", ".join(ok_names) if ok_names else "**없음**(오프라인 예상: 하위 1/5 제외 −1.10/+2.67 · "
+                                                              "상위 1/3 +0.04/−21.8 — 회피 또는 참여 조건 ✗)")
                       + ". 즉시 라이브를 원하면(⚠ K 회피 여유를 거의 소진): k_overrides={'STOCK_ALLOC_MODE': 'sector_prob', 'PROB_SELECT': 'exclude_bottom'} · "
                         "N6-b 어닝 복합 행은 약한 근거(설계 29 섹터 안 IC +0.040 · t 1.34) — 측정만. 연구·교육용, 투자 자문 아님."))
         # [v0.12.0 R100] 무하락 판정 줄 — 표시되는 지표(회피·참여·칼마·MDD·배수·앞/뒤 반쪽)가 하나도 떨어지지 않고 대조군·S&P 500 검정까지 통과해야 R101 라이브 후보
