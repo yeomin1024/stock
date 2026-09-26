@@ -17,6 +17,25 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.80.0 - 2026-09-25 - [R99 방법서 N1·N4·N5·N6-c — 블록 M⑥·N⑥ '가드 꺼짐' · ⑧ V1강 · F2 M5 행 · 00 'R99 판정'·'R99 높음 경로(M5)' · 대피처 N6-c 비교 행 — S 규칙·비중 무변경]
+#    사용자 지시(2026-09-25): "문서대로 코드들을 누락되는 내용 없이 수정하고 … 깃허브 yeomin1024/stock에 업로드해"(R99 방법서 구현).
+#      시작 v0.79.0 → 목표 v0.80.0. ★ 노란 행(S★)은 R98과 같아야 한다(M v1.67.0 가드 되돌림은 표본 안 막은 날 0일 · 나머지는 측정 전용).
+#    (§1 N1) m_proxy_long_history: 라이브 가드가 꺼졌으면(M R97_REBOUND_HIGH_MAX_DD=0.0) out['guard_live_off']=True · ⑥ = 참고 몫
+#         'R97 가드(R97_GUARD_REF_DD=0.20) 켬 − 라이브(꺼짐)'(부호 정의는 R98과 같다) · verdict['G97']['live_off'] → 블록 M⑥·N⑥ '가드 꺼짐(라이브 = 되돌림)'.
+#    (§2 N4) ⑧ V1강(M.r98_v1_target(pk_ratio=R98_V1S_PK_RATIO 1.25, calm_sigma=R98_V1S_CALM_SIGMA 0.17)) 켬 − 라이브 — 블록 M(SPY OHLC · (가)+(나))·
+#         N(FF · (나)만) · verdict['V1S'] · 창별 halves. relcmp_long_audit(m_price·m_cfg)에 모드 e_transform="r98_v1s"·m5=True:
+#         대용 E(중립·헤어컷 뒤)에 같은 V1강 함수를 적용한 E × 주력 상한 R98_M5_CAP → **F2 M5 행** · m5_verdict(★ 대비 두 독립 반쪽 Δ회피·Δ참여·Δ합·ΔMDD).
+#         00 '★★★ R99 S 높음 경로(M5)' 줄: 표본 안 M5 · 블록 M⑧·N⑧ · F2 · 사용자 동의(R99_M5_USER_CONSENT=False 기본) · R100 승격 조건 ✓/✗.
+#    (§3 N5) 00 'R98 측정' 줄 → '★★★ R99 판정' 줄(_r99_judgement_lines · S·I 공통): M2 완료 · V1 닫음(흔들림 확인용 Δ · 측정 R100까지) · VRP 닫음 ·
+#         R99 사전등록 ②(노란 행 = R98 기준 74.3/86.0 · I 74.5/91.7). V1 비교 행 이름 'R98 V1 변동성 짝(측정 · R99 닫음)'. _r98_measure_line은 호환 이름.
+#    (§4 N6-c · 측정 전용) 대피처 규칙 'risk_mom1'(_SHELTER_RULES): 대피처 후보 중 섹터 자체 위험점수(haz_pct_sector) 낮음 + 1개월(21일) 모멘텀 높음
+#         순위 평균 1위(_risk_mom_alt · 인과 t일 종가) → [회피참여비교] 'R99 대피처 위험점수↓·1개월 모멘텀↑(측정 · N6-c)' 1행(주력 상한 0.9 그대로 ·
+#         I 비교 행은 relcmp_frames로 자동) · 00 'R99 N6-c' 줄. 단순화 F2에는 개념이 없어 장기 검증 사양에서 뺀다.
+#         I 층 00에는 'R99 N6-d — 산업 층은 선택 개선을 시도하지 않는다' 줄(부모 안 선택 정보 0).
+#    (§5) 새 SectorConfig 5필드(R97_GUARD_REF_DD · R99_M5_F2 · R99_M5_USER_CONSENT · R99_SHELTER_RISKMOM · R99_SHELTER_MOM_WIN — S 필드는 캐시 키 무관) ·
+#         LAYER_MIN_VERSIONS M v1.67.0 · S v0.80.0 · I v0.51.0. M v1.67.0은 새 Config 필드가 없어 폴백 무시 목록 무변경.
+#    ⚠ M5는 R80·R88 사용자 지시(기술 편중)와 충돌 — 측정이 통과해도 사용자 명시 동의 없이 라이브 금지(00 줄에 동의 여부 표시).
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.79.0 - 2026-09-25 - [R98 방법서 M1·M3·M4·M5 — 긴 이력 블록 N(FF 1927~2017 네 시대) · ⑥ R97 가드 몫 · ⑦ V1 · 측정 비교 행 — S 규칙·비중 무변경]
 #    사용자 지시(2026-09-25): "문서들을 참고하여 코드를 수정 … 깃허브에 업로드해"(R98 방법서 구현). 시작 v0.78.0 → 목표 v0.79.0.
 #    ★ 노란 행(S★)은 R97과 같아야 한다 — 이번 변경은 전부 측정 전용(M v1.66.0 R98_RANGE_VOL=False).
@@ -2959,7 +2978,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.79.0"
+VERSION = "v0.80.0"
 VERSION_DATE = "2026-09-25"
 
 # =============================================================================
@@ -3715,6 +3734,18 @@ class SectorConfig:
     LONG_FF_BLOCK_N: bool = True
     # [v0.79.0 R98 M5 · 측정 전용] '상한 100% × V1강' 비교 행의 주력 상한. ⚠ 라이브는 0.9 그대로(R80·R88 사용자 지시 — 기술 편중).
     R98_M5_CAP: float = 1.0
+    # [v0.80.0 R99 · 측정 전용] 방법서 N1·N4·N6-c.
+    #   R97_GUARD_REF_DD: 라이브 가드가 꺼졌을 때(M v1.67.0 되돌림) 블록 M⑥·N⑥ 참고 몫을 잴 R97 문턱(가드 켬 − 꺼짐 · 0이면 참고 몫 없음).
+    #   R99_M5_F2: F2(섹터 ETF 2000~2017)에 M5(상한 100% × V1강) 행 — R100 승격 조건의 '두 반쪽 Δ합 ≥ 0'.
+    #   R99_M5_USER_CONSENT: ⚠ M5는 R80 '기술 편중 줄이기'·R88 상한 0.9 선택을 되돌리는 안 — **사용자 명시 동의**가 있을 때만 True로(기본 False).
+    #     True여도 라이브를 바꾸지 않는다(00 줄의 승격 조건 체크만) — 라이브 전환은 R100에서 s_overrides={"ROTATION_PRIMARY_CAP": 1.0} +
+    #     m_overrides={"R98_RANGE_VOL": True, "R98_PK_RATIO": 1.25, "R98_NEUTRAL_CALM_SIGMA": 0.17}(사전등록 통과 뒤).
+    #   R99_SHELTER_RISKMOM · R99_SHELTER_MOM_WIN: N6-c 대피처 '위험점수↓·1개월 모멘텀↑' 비교 행(주력 상한 0.9 그대로 · 측정 전용).
+    R97_GUARD_REF_DD: float = 0.20
+    R99_M5_F2: bool = True
+    R99_M5_USER_CONSENT: bool = False
+    R99_SHELTER_RISKMOM: bool = True
+    R99_SHELTER_MOM_WIN: int = 21
     SECTOR_SELF_CUT_Q: float = 1.0 / 3.0        # 하위 몇 분위를 깎는가(0.25/0.33/0.5를 격자가 함께 잰다)
     SECTOR_SELF_CUT_FRAC: float = 0.25          # ⚠ 깎는 폭(0.25/0.50/1.00을 격자가 함께 잰다)
     SECTOR_SELF_CUT_CONTROLS: int = 12          # 같은 개수 무작위 대조군 행 수(0이면 끔) — 13 시트에서 직접 판정
@@ -8032,6 +8063,8 @@ _SHELTER_RULES: Dict[str, str] = {
     "votes2": "득표≥2일 때만 1위",
     "votes2_nonup": "득표≥2 & M≠상승일 때만 1위",
     "leader_only": "확신 리더만",
+    # [v0.80.0 R99 N6-c · 측정 전용] 섹터 자체 위험점수(낮을수록) + 1개월 모멘텀(높을수록) 결합 순위 1위 — [회피참여비교] 비교 행 1개로만 쓴다.
+    "risk_mom1": "위험점수↓·1개월 모멘텀↑ 1위(R99 N6-c · 측정)",
 }
 
 
@@ -8576,7 +8609,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.66.0", "sector_rotation": "v0.79.0", "industry_rotation": "v0.50.0"}   # [v0.79.0 R98]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.67.0", "sector_rotation": "v0.80.0", "industry_rotation": "v0.51.0"}   # [v0.80.0 R99]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -9657,7 +9690,9 @@ def m_proxy_long_history(res, M, cfg, rf_daily=None, px: Optional[pd.Series] = N
     ⚠ FT(급락트리거 백분위)는 2018~만 있어 (A)는 변동성 비로만 발동한다. 판정: 각 비교 전체 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 반쪽 Δ합 ≥ −1%p.
     px·price 인자는 시험·오프라인(SPX 등)용 — 없으면 res['px_adj']·res['price'].
     [v0.79.0 R98] ⑥ R97 약세장 가드 몫(가드 − 가드 끔 · 방법서 M2 판정용) · ⑦ R98 V1(M.r98_v1_target · 고가/저가가 없으면 (나)만) ·
-    windows = [(이름, 시작, 끝), …](첫 창 이름은 '전체'로 시작) — 블록 N(FF 네 시대)이 쓴다. 판정 반쪽 조건은 '전체' 밖 모든 창에 적용."""
+    windows = [(이름, 시작, 끝), …](첫 창 이름은 '전체'로 시작) — 블록 N(FF 네 시대)이 쓴다. 판정 반쪽 조건은 '전체' 밖 모든 창에 적용.
+    [v0.80.0 R99] ⑥ 라이브 가드가 꺼졌으면(M v1.67.0 되돌림) '가드 꺼짐(라이브 = 되돌림)' — 참고 몫 = R97 가드(R97_GUARD_REF_DD) 켬 − 라이브 ·
+    ⑧ V1강(M.r98_v1_target(pk_ratio=R98_V1S_PK_RATIO, calm_sigma=R98_V1S_CALM_SIGMA)) 켬 − 라이브 = 방법서 N4(M5 승격 조건의 긴 이력 부분)."""
     out: Dict[str, Any] = {"enabled": False}
     try:
         if not hasattr(M, "apply_r95_overlays"):
@@ -9690,9 +9725,19 @@ def m_proxy_long_history(res, M, cfg, rf_daily=None, px: Optional[pd.Series] = N
         for _k, _ov in (("noA", {"R95_STRESS_EXIT": False}), ("noP1", {"R95_REBOUND_REENTRY": False}), ("noP2", {"R95_DEEP_HAIRCUT_MAX_DAYS": 0})):
             ser[_k] = _r95(_dc.replace(mcfg, **_ov))[0]["target_pos"].astype(float)
         # [v0.79.0 R98 ⑥] R97 약세장 가드 몫 — 가드를 끈 R95와의 차(방법서 M2: 참여 < 0이면 다음 라운드 되돌림 후보).
-        if hasattr(mcfg, "R97_REBOUND_HIGH_MAX_DD") and float(getattr(mcfg, "R97_REBOUND_HIGH_MAX_DD", 0.0) or 0.0) > 0:
+        # [v0.80.0 R99 N1] 라이브 가드가 꺼졌으면(M v1.67.0 R97_REBOUND_HIGH_MAX_DD=0.0 = 되돌림) '가드 꺼짐(라이브 = 되돌림)'으로 표시하고,
+        #   참고 몫은 R97 값(cfg.R97_GUARD_REF_DD=0.20)을 켠 R95 − 라이브(가드 꺼짐)로 잰다 — 부호 정의는 R98과 같다(가드 켬 − 가드 끔).
+        _g_live = float(getattr(mcfg, "R97_REBOUND_HIGH_MAX_DD", 0.0) or 0.0) if hasattr(mcfg, "R97_REBOUND_HIGH_MAX_DD") else None
+        out["guard_live_off"] = bool(_g_live is not None and _g_live <= 0)
+        if _g_live is not None and _g_live > 0:
             ser["noG"] = _r95(_dc.replace(mcfg, R97_REBOUND_HIGH_MAX_DD=0.0))[0]["target_pos"].astype(float)
             cnt["G97"] = int(d_full.get("bear_guard_days", 0))
+        elif _g_live is not None:
+            _gref = float(getattr(cfg, "R97_GUARD_REF_DD", 0.20) or 0.0)
+            if _gref > 0:
+                _og, _dg = _r95(_dc.replace(mcfg, R97_REBOUND_HIGH_MAX_DD=_gref))
+                ser["g97"] = _og["target_pos"].astype(float)
+                cnt["G97"] = int(_dg.get("bear_guard_days", 0))
         if _has96:
             o96, d96 = M.apply_r96_vol_overlay(o_full, pxv, mcfg)
             ser["live"] = o96["target_pos"].astype(float)
@@ -9703,6 +9748,14 @@ def m_proxy_long_history(res, M, cfg, rf_daily=None, px: Optional[pd.Series] = N
                 ser["v1"] = _t98.astype(float)
                 cnt["V1(가)"] = int(_ma98.sum())
                 cnt["V1(나)"] = int(_mb98.sum())
+                # [v0.80.0 R99 N4 ⑧] V1강(PK 1.25 · σ 17% — M5의 회피원) — 같은 M 함수 · 대용 라이브 위. M5 승격 조건의 긴 이력 부분.
+                _t98s, _ma98s, _mb98s, _, _ = M.r98_v1_target(
+                    o96, pxv, price.reindex(sg0.index), mcfg,
+                    pk_ratio=float(getattr(mcfg, "R98_V1S_PK_RATIO", 1.25)),
+                    calm_sigma=float(getattr(mcfg, "R98_V1S_CALM_SIGMA", 0.17)))
+                ser["v1s"] = _t98s.astype(float)
+                cnt["V1강(가)"] = int(_ma98s.sum())
+                cnt["V1강(나)"] = int(_mb98s.sum())
         rets = {k: M.run_backtest(price.reindex(sg0.index), v, mcfg, rf_daily)["strategy_ret"] for k, v in ser.items()}
         spy = pxv.pct_change()
         end = pd.Timestamp(getattr(cfg, "R95_LONG_END", "2017-12-31"))
@@ -9715,7 +9768,10 @@ def m_proxy_long_history(res, M, cfg, rf_daily=None, px: Optional[pd.Series] = N
                  ("③ R95 (A) 스트레스 청산 몫", "r95", "noA", "A"), ("④ R95 (P1) 반등 재진입 몫", "r95", "noP1", "P1"),
                  ("⑤ R95 (P2) 깊은 헤어컷 시한 몫", "r95", "noP2", "P2"),
                  ("⑥ R97 약세장 가드 몫(가드 − 가드 끔)", "r95", "noG", "G97"),
-                 ("⑦ R98 V1 변동성 짝(켬 − 라이브 · 측정)", "v1", "live", "V1")]
+                 # [v0.80.0 R99 N1] 라이브 가드 꺼짐(되돌림)이면 참고 몫 = R97 가드(0.20) 켬 − 라이브(꺼짐)
+                 ("⑥ R97 약세장 가드 몫(참고: R97 가드 0.20 켬 − 라이브 가드 꺼짐 · R99 되돌림)", "g97", "r95", "G97"),
+                 ("⑦ R98 V1 변동성 짝(켬 − 라이브 · 측정 · R99 닫음)", "v1", "live", "V1"),
+                 ("⑧ R98 V1강(PK 1.25·σ 17% · 켬 − 라이브 · M5 회피원 · R99 측정)", "v1s", "live", "V1S")]
         rows = []
         for wn, a, b in wins:
             ix = spy.index[(spy.index >= a) & (spy.index <= b)]
@@ -9740,7 +9796,7 @@ def m_proxy_long_history(res, M, cfg, rf_daily=None, px: Optional[pd.Series] = N
             out["note"] = "긴 이력 창이 비었다(자료 부족)"
             return out
         verdict = {}
-        for tag in ("R96", "R95", "A", "P1", "P2", "G97", "V1"):
+        for tag in ("R96", "R95", "A", "P1", "P2", "G97", "V1", "V1S"):
             _r = tabf[tabf["규칙"] == tag]
             if not len(_r):
                 continue
@@ -9753,7 +9809,10 @@ def m_proxy_long_history(res, M, cfg, rf_daily=None, px: Optional[pd.Series] = N
                             "full": (f"{float(_f['Δ회피(%p)'].iloc[0]):+.2f}/{float(_f['Δ참여(%p)'].iloc[0]):+.2f}" if len(_f) else "-"),
                             "full_sum": (float(_f["Δ합(%p)"].iloc[0]) if len(_f) else np.nan),
                             "d_avoid": (float(_f["Δ회피(%p)"].iloc[0]) if len(_f) else np.nan),     # [v0.79.0 R98] M2 판정(참여 부호)
-                            "d_part": (float(_f["Δ참여(%p)"].iloc[0]) if len(_f) else np.nan)}
+                            "d_part": (float(_f["Δ참여(%p)"].iloc[0]) if len(_f) else np.nan),
+                            "halves": (" · ".join(f"{r_['창']} {float(r_['Δ회피(%p)']):+.2f}/{float(r_['Δ참여(%p)']):+.2f}"
+                                                  for _, r_ in _h.iterrows()) if len(_h) else "-"),        # [v0.80.0 R99] 창별
+                            "live_off": bool(tag == "G97" and out.get("guard_live_off"))}                   # [v0.80.0 R99 N1]
         weak = [t for t in ("A", "P1", "P2") if t in verdict and verdict[t]["tested"] and verdict[t]["full_sum"] < 0]
         out.update({"enabled": True, "table": tabf, "verdict": verdict, "weak_rules": weak, "counts": cnt,
                     "proxy_note": ("M 대용 3상태(200일선 · 12개월 모멘텀 · 과열 헤어컷) — 부분 노출일이 있어 (A)·(P2)·R96도 발동한다. "
@@ -10064,7 +10123,8 @@ def macro_long_audit(level: pd.DataFrame, E: pd.Series, spy_ret: pd.Series, spy_
 
 
 def relcmp_long_audit(level: pd.DataFrame, spy_level: pd.Series, spy_ret: pd.Series, rf: Optional[pd.Series],
-                      modes: List[Dict[str, Any]], cfg, cost_bps: float = 5.0, M=None) -> Dict[str, Any]:
+                      modes: List[Dict[str, Any]], cfg, cost_bps: float = 5.0, M=None,
+                      m_price: Optional[pd.DataFrame] = None, m_cfg=None) -> Dict[str, Any]:
     """[v0.69.0 R88 · 측정 전용] 회피형·참여형·양쪽형 **독립 구간** 장기 검증(엔진 섹터 ETF 1999~ · M 대용 3상태).
     ★ 구조를 단순화해 같은 규칙을 1999~2017에 그대로 돌린다(2018 이전 M E_t는 0/1뿐이라 대용 예산을 쓴다 — R85 교훈 9):
       예산 E = SPY 3상태(200일선 위 & 12개월 > 0 → 1 · 둘 다 아니면 0 · 섞이면 '중립') → 중립은 모드의 M 중립 비중,
@@ -10073,7 +10133,11 @@ def relcmp_long_audit(level: pd.DataFrame, spy_level: pd.Series, spy_ret: pd.Ser
               상대수익 1위(적격 = 자기 200·50일선 위 · 주력 제외) · 적격이 없으면 현금 · E=0일 리더 비중 → 자기 추세 위 상대수익 1위.
       체결은 t 종가 결정 → t+2 종가 수익(보수적 근사 — R86 macro_long_audit과 같은 _run 규약) · 비용 cost_bps · 현금 무위험.
     사전등록(R88): 양쪽형(★)의 (회피율+참여율)이 현행(R86 설정) 이상 **그리고** MDD 악화 ≤ RELCMP_LONG_MDD_TOL — 두 독립 반쪽
-      (2000~2008 · 2009~2017) **모두**. 미통과면 다음 라운드에 라이브를 되돌릴 근거가 된다(엔진은 스스로 라이브를 바꾸지 않는다)."""
+      (2000~2008 · 2009~2017) **모두**. 미통과면 다음 라운드에 라이브를 되돌릴 근거가 된다(엔진은 스스로 라이브를 바꾸지 않는다).
+    [v0.80.0 R99 N4] 모드에 e_transform="r98_v1s"가 있으면 대용 E(중립·헤어컷 적용 뒤)에 **M.r98_v1_target(V1강)**을 그대로 적용한 E로
+      분수를 곱한다(M5 = 주력 상한 100% × V1강). m_price(SPY OHLC — Parkinson 고저범위)·m_cfg(M Config)가 필요하다 — 없으면 그 모드는
+      V1강 없이 돈다(로그 경고 · info['e_transform']에 사유). 모드에 m5=True면 ★ 대비 두 독립 반쪽 Δ합·ΔMDD를 m5_verdict로 낸다
+      (R100 승격 조건: 두 반쪽 Δ합 ≥ 0)."""
     t0 = time.time()
     L = level.sort_index().astype(float); idx = L.index; secs = list(L.columns)
     pri = str(getattr(cfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
@@ -10119,6 +10183,23 @@ def relcmp_long_audit(level: pd.DataFrame, spy_level: pd.Series, spy_ret: pd.Ser
         on = E0.ge(1.0)
         for thr, capv in sorted(tuple(md["steps"] or ())):
             Ev[on & (ext5 >= float(thr))] = float(capv)
+        _etf_note = "-"
+        if str(md.get("e_transform") or "") == "r98_v1s":        # [v0.80.0 R99 N4] M5 — 대용 E에 V1강을 같은 M 함수로
+            if M is not None and hasattr(M, "r98_v1_target") and m_cfg is not None:
+                _st5 = pd.Series(np.where(E0.ge(1.0), "RISK_ON", np.where(E0.le(0.0), "RISK_OFF", "NEUTRAL")), index=idx)
+                _hc5 = on & (Ev < 1.0 - 1e-12)
+                _sg5 = pd.DataFrame({"target_pos": Ev.astype(float), "state": _st5, "extension_haircut": _hc5,
+                                     "ext_cap": Ev.where(_hc5, 1.0)}, index=idx)
+                _mp5 = (m_price.reindex(idx) if isinstance(m_price, pd.DataFrame) else None)
+                _ev5, _ma5, _mb5, _, _ = M.r98_v1_target(_sg5, P, _mp5, m_cfg,
+                                                         pk_ratio=float(getattr(m_cfg, "R98_V1S_PK_RATIO", 1.25)),
+                                                         calm_sigma=float(getattr(m_cfg, "R98_V1S_CALM_SIGMA", 0.17)))
+                Ev = _ev5.reindex(idx).fillna(0.0).astype(float)
+                _etf_note = f"V1강 적용((가) {int(_ma5.sum())}일 · (나) {int(_mb5.sum())}일" + ("" if _mp5 is not None else " · ⚠ 고가/저가 없음 → (가) 없음") + ")"
+            else:
+                _etf_note = "⚠ V1강 미적용(M·m_cfg 없음) — 상한 100%만"
+                if M is not None:
+                    log("RELCMP", kv(event="long_m5_transform_missing", mode=nm, note=_etf_note), M=M, level="warning")
         cap = float(md["cap"]); dfs = float(md["def"]); ld = float(md["leader"]); nfill = float(md.get("neutral_fill", 0.0) or 0.0)
         capp = float(md.get("cap_part", cap))          # [v0.70.0 R89] 상태별 상한(E=1일 cap · 그 밖 cap_part)
         capv_s = pd.Series(np.where(Ev >= 1.0 - 1e-12, cap, capp), index=idx)
@@ -10136,7 +10217,7 @@ def relcmp_long_audit(level: pd.DataFrame, spy_level: pd.Series, spy_ret: pd.Ser
         runs[nm] = _run(W)
         info[nm] = {"avg_exposure": round(float(W.sum(axis=1).mean()), 4),
                     "haircut_days": int(sum(int((on & (ext5 >= float(t))).sum()) for t, _ in tuple(md["steps"] or ())[:1])),
-                    "neutral_days": int(E0.eq(0.5).sum())}
+                    "neutral_days": int(E0.eq(0.5).sum()), "e_transform": _etf_note}
     eras = (("2000~2008(독립)", pd.Timestamp("2000-01-01"), pd.Timestamp("2008-12-31")),
             ("2009~2017(독립)", pd.Timestamp("2009-01-01"), pd.Timestamp("2017-12-31")),
             ("2018~(참고 · 대용 M)", pd.Timestamp("2018-01-01"), idx[-1] if len(idx) else pd.Timestamp("2018-01-01")))
@@ -10146,6 +10227,8 @@ def relcmp_long_audit(level: pd.DataFrame, spy_level: pd.Series, spy_ret: pd.Ser
     ref = next((str(m["name"]) for m in modes if m.get("ref")), None)
     cand = next((str(m["name"]) for m in modes if m.get("cand")), None)
     cand_verdict: Dict[str, Any] = {}
+    m5 = next((str(m["name"]) for m in modes if m.get("m5")), None)          # [v0.80.0 R99 N4] M5 행
+    m5_verdict: Dict[str, Any] = {}
     tol = float(getattr(cfg, "RELCMP_LONG_MDD_TOL", 0.03) or 0.03)
     for en, s0, s1 in eras:
         m = (idx >= s0) & (idx <= s1)
@@ -10168,6 +10251,12 @@ def relcmp_long_audit(level: pd.DataFrame, spy_level: pd.Series, spy_ret: pd.Ser
                 dsc = float(c_["하락 회피율"] + c_["상승 참여율"] - a["하락 회피율"] - a["상승 참여율"])
                 dmc = float(c_["MDD"] - a["MDD"])
                 cand_verdict[en] = {"d_sum": round(dsc * 100, 2), "d_mdd": round(dmc * 100, 2), "pass": bool(dsc >= -1e-9 and dmc >= -tol - 1e-12)}
+            if m5 in urb.index:            # [v0.80.0 R99 N4] M5 vs 양쪽형(★) — R100 승격 조건: 두 독립 반쪽 Δ합 ≥ 0
+                m_ = urb.loc[m5]
+                dav = float(m_["하락 회피율"] - a["하락 회피율"]); dpv = float(m_["상승 참여율"] - a["상승 참여율"])
+                m5_verdict[en] = {"d_avoid": round(dav * 100, 2), "d_part": round(dpv * 100, 2),
+                                  "d_sum": round((dav + dpv) * 100, 2), "d_mdd": round(float(m_["MDD"] - a["MDD"]) * 100, 2),
+                                  "pass": bool(dav + dpv >= -1e-9)}
     allp = bool(verdict) and all(v["pass"] for v in verdict.values())
     tab = pd.DataFrame(rows)
     if M is not None:
@@ -10175,9 +10264,17 @@ def relcmp_long_audit(level: pd.DataFrame, spy_level: pd.Series, spy_ret: pd.Ser
             log("RELCMP", kv(event="long_verdict", era=en, d_sum_pp=v["d_sum"], d_mdd_pp=v["d_mdd"], passed=v["pass"]), M=M)
         log("RELCMP", kv(event="long_done", modes=len(modes), rows=len(tab), all_pass=allp, sec=round(time.time() - t0, 1),
                          note="측정 전용 — 사전등록(양쪽형 ≥ 현행 · MDD 악화 ≤ tol · 독립 두 반쪽 모두)"), M=M)
+    if M is not None and m5:
+        log("RELCMP", kv(event="long_m5_verdict", mode=m5[:40],
+                         eras=";".join(f"{k}:{v['d_avoid']:+.2f}/{v['d_part']:+.2f}(Δ합 {v['d_sum']:+.2f})" for k, v in m5_verdict.items()) or "-",
+                         passed=bool(m5_verdict) and all(v["pass"] for v in m5_verdict.values()),
+                         transform=(info.get(m5) or {}).get("e_transform", "-"),
+                         note="측정 전용 — R100 M5 승격 조건(F2 두 반쪽 Δ합 ≥ 0) · 사용자 동의 없이 라이브 금지"), M=M)
     return {"enabled": True, "table": tab, "verdict": verdict, "all_pass": allp, "info": info, "star": star, "ref": ref,
             "tol_mdd": tol, "cand": cand, "cand_verdict": cand_verdict,
-            "cand_pass": bool(cand_verdict) and all(v["pass"] for v in cand_verdict.values())}
+            "cand_pass": bool(cand_verdict) and all(v["pass"] for v in cand_verdict.values()),
+            "m5": m5, "m5_verdict": m5_verdict,                                                        # [v0.80.0 R99 N4]
+            "m5_pass": bool(m5_verdict) and all(v["pass"] for v in m5_verdict.values())}
 
 
 def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
@@ -10351,6 +10448,13 @@ def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[
                 + " · ".join(f"{k} Δ합 {v['d_sum']:+.2f}%p · ΔMDD {v['d_mdd']:+.2f}%p → {'통과' if v['pass'] else '미통과'}"
                              for k, v in (lg.get("verdict") or {}).items())
                 + (" ⇒ **통과 — 양쪽형 유지**" if lg.get("all_pass") else " ⇒ **미통과 — 다음 라운드 되돌림 후보**"))}])
+            if lg.get("m5_verdict"):          # [v0.80.0 R99 N4] M5(상한 100% × V1강) — R100 승격 조건의 F2 부분
+                _t("F2. 독립 구간 장기 검증(섹터 ETF 1999~ · M 대용 3상태 · 단순화 구조)", [{"항목": "R99 M5(상한 100% × V1강) vs 양쪽형 ★", "값": (
+                    " · ".join(f"{k} Δ회피 {v['d_avoid']:+.2f} · Δ참여 {v['d_part']:+.2f} · Δ합 {v['d_sum']:+.2f}%p · ΔMDD {v['d_mdd']:+.2f}%p → "
+                               f"{'✓' if v['pass'] else '✗'}" for k, v in lg["m5_verdict"].items())
+                    + (" ⇒ F2 조건(두 반쪽 Δ합 ≥ 0) **충족**" if lg.get("m5_pass") else " ⇒ F2 조건(두 반쪽 Δ합 ≥ 0) **미충족 — M5 라이브 금지**")
+                    + f" · 대용 E 변환: {((lg.get('info') or {}).get(lg.get('m5') or '', {}) or {}).get('e_transform', '-')}"
+                    + " · ⚠ 통과해도 사용자 명시 동의 없이 라이브 금지(R80·R88 기술 편중 지시).")}])
         elif lg.get("error"):
             _t("F2. 독립 구간 장기 검증", [{"항목": "상태", "값": f"산출 실패 — {lg['error']}"}])
     elif rcp.get("error"):
@@ -10461,7 +10565,7 @@ def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[
         _t(_bkm, [{"항목": "상태", "값": f"산출 안 됨 — {_pl.get('error') or _pl.get('note')}"}])
     if _pl.get("enabled"):
         _vdm = _pl.get("verdict") or {}
-        _t(_bkm, [{"항목": "R98 사전등록(⑥ R97 가드 · ⑦ V1)", "값": _r98_long_verdict_text(_vdm, "블록 M(SPY 1994~2017 OHLC)")}])
+        _t(_bkm, [{"항목": "R99 판정(⑥ R97 가드 · ⑦ V1 · ⑧ V1강)", "값": _r98_long_verdict_text(_vdm, "블록 M(SPY 1994~2017 OHLC)")}])
     # ---- [v0.79.0 R98 M1] N. 긴 이력 블록 N — FF 일별 시장 1927~2017 네 시대 ----
     _pn = pk.get("m_proxy_long_ff") or {}
     _bkn = "N. [긴 이력 · FF 일별 시장 1927~2017 네 시대] R95·R96·R97 가드·R98 V1(나) 규칙별 판정(R98 M1 · 측정 전용)"
@@ -10470,7 +10574,8 @@ def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[
                    "값": ("블록 M(SPY 1994~2017)보다 긴 네 시대(1927~49 · 1950~79 · 1980~99 · 2000~17)에서 같은 M 함수를 M 대용 3상태 위에 적용한다. "
                          f"자료: {_pn.get('src', '-')}. 판정(규칙마다) = 전체 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 네 시대 Δ합 각각 ≥ −1%p · 발동 0일 = 시험 안 됨. "
                          "오프라인 57년(S&P 1961~2017 가격 지수) 기대 부호: R96 −0.48/+0.76 · R95 −2.55/+2.64 · A +1.46/−0.71 · P1 −2.16/+1.54 · "
-                         "P2 −1.86/+1.80 · R97 가드 +0.09/−0.38 — 다르면 자료 차이(FF 총수익 vs S&P 가격 지수)부터 가른다. 발동 일수: "
+                         "P2 −1.86/+1.80 · R97 가드 +0.09/−0.38 — 다르면 자료 차이(FF 총수익 vs S&P 가격 지수)부터 가른다. "
+                         "[R99] ⑥은 라이브 가드가 꺼졌으면(되돌림) 참고 몫(가드 0.20 켬 − 꺼짐) · ⑧ V1강은 고가/저가가 없어 (나)만 발동. 발동 일수: "
                          + " · ".join(f"{k} {v}일" for k, v in (_pn.get("counts") or {}).items()))}])
         parts.append(_pn["table"].assign(블록=_bkn)[["블록"] + list(_pn["table"].columns)])
         _vdn = _pn.get("verdict") or {}
@@ -10478,7 +10583,7 @@ def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[
                    "값": (" · ".join(f"{t} {'★통과' if v.get('pass') else ('⚠미통과' if v.get('tested') else '◇시험 안 됨')}({v.get('full', '-')})"
                                      for t, v in _vdn.items())
                          + (f" ⇒ 약한 고리: {', '.join(_pn.get('weak_rules') or [])}" if _pn.get("weak_rules") else " ⇒ 음수 몫 없음"))},
-                  {"항목": "R98 사전등록(⑥ R97 가드 · ⑦ V1 (나))", "값": _r98_long_verdict_text(_vdn, "블록 N(FF 1927~2017)")}])
+                  {"항목": "R99 판정(⑥ R97 가드 · ⑦ V1 (나) · ⑧ V1강 (나))", "값": _r98_long_verdict_text(_vdn, "블록 N(FF 1927~2017)")}])
     elif _pn.get("error") or _pn.get("note"):
         _t(_bkn, [{"항목": "상태", "값": f"산출 안 됨 — {_pn.get('error') or _pn.get('note')} (판정 보류 — 통과로 읽지 않는다)"}])
     df = pd.concat(parts, ignore_index=True, sort=False)
@@ -10486,9 +10591,124 @@ def build_user_reliability_sheet(sres: Dict[str, Any], cfg, pack: Optional[Dict[
     return df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
 
 
+def _r99_row_delta(tb: Optional[pd.DataFrame], prefix: str, base: Any) -> Optional[Dict[str, Any]]:
+    """[v0.80.0 R99] 비교 표(전략 열)에서 prefix로 시작하는 첫 행의 ★ 대비 Δ(%p). 없으면 None."""
+    if tb is None or base is None:
+        return None
+    _m = tb["전략"].astype(str).str.startswith(prefix)
+    if not bool(_m.any()):
+        return None
+    r = tb[_m].iloc[0]
+    da = (float(r["하락 회피율"]) - float(base["하락 회피율"])) * 100.0
+    dp = (float(r["상승 참여율"]) - float(base["상승 참여율"])) * 100.0
+    return {"row": r, "da": da, "dp": dp, "ok": bool(da > 0 and dp >= 0),
+            "dmdd": (float(r["MDD"]) - float(base["MDD"])) * 100.0,
+            "txt": (f"{float(r['하락 회피율']):.1%}/{float(r['상승 참여율']):.1%}({r['등급']}) Δ{da:+.2f}/{dp:+.2f}%p · "
+                    f"MDD {float(r['MDD']) * 100:.2f}%(Δ{(float(r['MDD']) - float(base['MDD'])) * 100:+.2f})")}
+
+
+def _r99_judgement_lines(pk: Dict[str, Any], _tb93: Optional[pd.DataFrame], _hd93: Optional[pd.DataFrame], cfg,
+                         layer: str = "섹터") -> List[Tuple[str, str]]:
+    """[v0.80.0 R99 N4·N5·N6-c·N6-d] 00 줄(S·I 공통 — 'R98 측정' 줄을 대체):
+      ① '★★★ R99 판정' — M2(R97 가드 되돌림) 완료 여부 · 블록 M⑥·N⑥ 참고 몫 · V1 닫음(흔들림 확인용 Δ) · VRP 닫음 · M 층 V1
+      ② '★★★ R99 {S|I} 높음 경로(M5)' — 표본 안 M5 행 Δ · 블록 M⑧·N⑧ · F2 M5 · MDD · 사용자 동의 · R100 승격 조건 체크
+      ③ 'R99 N6-c 대피처 위험점수↓·1개월 모멘텀↑'(비교 행이 있으면) · ④ 산업 층이면 'R99 N6-d'(선택 개선 시도 안 함)."""
+    out: List[Tuple[str, str]] = []
+    _lay = "S★" if layer == "섹터" else "I★"
+    _s0 = None
+    if _tb93 is not None:
+        _sm = _tb93["전략"].astype(str).str.startswith("양쪽형 ★")
+        _s0 = _tb93[_sm].iloc[0] if bool(_sm.any()) else None
+    _lm = pk.get("m_proxy_long") or {}
+    _ln = pk.get("m_proxy_long_ff") or {}
+    _vm = _lm.get("verdict") or {}
+    _vn = _ln.get("verdict") or {}
+    # ---- ① R99 판정 ----
+    _g_off = bool(_lm.get("guard_live_off") or _ln.get("guard_live_off"))
+    _gm, _gn = (_vm.get("G97") or {}), (_vn.get("G97") or {})
+    if _g_off or (not _gm and not _gn):
+        _gtxt = ("★ M2 완료 — R97 약세장 가드 **꺼짐**(M v1.67.0 · 라이브 = 되돌림 · 표본 안 막은 날 0일 → 노란 행 불변) · 참고 몫(가드 켬 − 꺼짐): "
+                 f"블록 M⑥ {_gm.get('full', '-')} · 블록 N⑥ {_gn.get('full', '자료 없음')}"
+                 + (" — 참여 음수 재확인(되돌림 유지)" if any(float(_x.get("d_part", 0) or 0) < 0 and _x.get("tested") for _x in (_gm, _gn))
+                    else "") + " · 되돌리기(= R97 상태로) m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.20}")
+    else:
+        _gtxt = (f"⚠ R97 가드가 **켜져 있다**(M < v1.67.0 또는 overrides) — R99 판정은 되돌림(블록 M⑥ {_gm.get('full', '-')} · "
+                 f"N⑥ {_gn.get('full', '-')}) · 끄기 m_overrides={{'R97_REBOUND_HIGH_MAX_DD': 0.0}}")
+    _v1 = _r99_row_delta(_tb93, "R98 V1 변동성 짝", _s0)
+    _vr = _r99_row_delta(_tb93, "R98 VRP", _s0)
+    _nb = ""
+    if _tb93 is not None and _s0 is not None:
+        _nb98 = _tb93[_tb93["전략"].astype(str).str.startswith("R98 V1 이웃")]
+        if len(_nb98):
+            _same = sum(1 for _, _r in _nb98.iterrows()
+                        if (float(_r["하락 회피율"]) - float(_s0["하락 회피율"])) > 0 and (float(_r["상승 참여율"]) - float(_s0["상승 참여율"])) >= 0)
+            _nb = f" · 이웃 {_same}/{len(_nb98)}칸"
+    _mv1 = ""
+    if _hd93 is not None and "M R98 V1 변동성 짝(측정)" in _hd93.index and "M(SPY 국면전략)" in _hd93.index:
+        _m0, _m1 = _hd93.loc["M(SPY 국면전략)"], _hd93.loc["M R98 V1 변동성 짝(측정)"]
+        _mv1 = (f" · M 층 V1 Δ{(float(_m1['하락 회피율']) - float(_m0['하락 회피율'])) * 100:+.2f}/"
+                f"{(float(_m1['상승 참여율']) - float(_m0['상승 참여율'])) * 100:+.2f}%p")
+    _v1txt = ("V1(기본) **닫음**(R98 사전등록 미통과: 블록 M⑦ +1.49/−1.17 · 뒤 +2.16/−2.15) — 흔들림 확인용 측정: "
+              + (f"{_lay} 대비 {_v1['txt']}" if _v1 else "비교 행 없음") + _nb + _mv1
+              + f" · 긴 이력 ⑦ 블록 M {(_vm.get('V1') or {}).get('full', '-')} · N {(_vn.get('V1') or {}).get('full', '자료 없음')}(측정 R100까지)")
+    _vrtxt = ("VRP **닫음**" + (f"(측정 켬: {_vr['txt']})" if _vr else "(M R98_VRP_MEASURE=False — 비교 행 없음)"))
+    _base = ""
+    if _s0 is not None:
+        _ref99 = (0.743, 0.860) if layer == "섹터" else (0.745, 0.917)
+        _base = (f"노란 행 {_lay} {float(_s0['하락 회피율']):.1%}/{float(_s0['상승 참여율']):.1%}({_s0['등급']}) vs R98 기준 "
+                 f"{_ref99[0]:.1%}/{_ref99[1]:.1%}(Δ{(float(_s0['하락 회피율']) - _ref99[0]) * 100:+.2f}/{(float(_s0['상승 참여율']) - _ref99[1]) * 100:+.2f}%p · "
+                 "R99 사전등록 ②: 같아야 한다 ± 흔들림 1~2%p) | ")
+    out.append((f"★★★ R99 판정 — M2 R97 가드 되돌림 · V1 닫음 · VRP 닫음 vs {_lay}(방법서 N1·N5)",
+                _base + _gtxt + " | " + _v1txt + " | " + _vrtxt + ". 연구·교육용, 투자 자문 아님."))
+    # ---- ② R99 높음 경로(M5) ----
+    _m5 = _r99_row_delta(_tb93, "R98 상한100%", _s0)
+    _s8m, _s8n = (_vm.get("V1S") or {}), (_vn.get("V1S") or {})
+    _lg = ((pk.get("relcmp") or {}).get("long") or {})
+    _f2 = _lg.get("m5_verdict") or {}
+    _cons = bool(getattr(cfg, "R99_M5_USER_CONSENT", False))
+    _c1 = bool(_m5 and _m5["ok"])
+    _c2 = bool(_s8m.get("pass"))
+    _c3 = bool(_lg.get("m5_pass"))
+    _hi = tuple(getattr(cfg, "USER_REL_HIGH", (0.70, 0.90)))
+    _high = bool(_m5 and float(_m5["row"]["하락 회피율"]) >= _hi[0] and float(_m5["row"]["상승 참여율"]) >= _hi[1])
+    _m5txt = ((f"표본 안 {_lay} M5 {_m5['txt']}" + (" · **높음**" if _high else " · 높음 아님")) if _m5
+              else "표본 안 M5 행 없음(M V1강 측정 열 pos_r98_v1s 없음)")
+    out.append((f"★★★ R99 {'S' if layer == '섹터' else 'I'} 높음 경로(M5 = 주력 상한 100% × V1강) — R100 사전등록 · ⚠ 사용자 동의 필요",
+                _m5txt
+                + f" | 블록 M⑧(SPY 1994~2017) {_s8m.get('full', '-')}({'✓' if _c2 else '✗'} · 창별 {_s8m.get('halves', '-')})"
+                + f" · 블록 N⑧(FF · (나)만) {_s8n.get('full', '자료 없음')}"
+                + " | F2(섹터 ETF 독립): " + (" · ".join(f"{k} Δ합 {v['d_sum']:+.2f}·ΔMDD {v['d_mdd']:+.2f}" for k, v in _f2.items()) or "없음")
+                + f"({'✓' if _c3 else '✗'})"
+                + " | 사용자 동의 " + ("있음(R99_M5_USER_CONSENT=True)" if _cons else "**없음** — R80 '기술 편중 줄이기'·R88 상한 0.9 선택을 되돌리는 안")
+                + f" | R100 승격 조건: 네 층 Δ회피 > 0 & Δ참여 ≥ 0(이 층 {'✓' if _c1 else '✗'} · M·K는 각 00 줄) · 블록 M⑧ 전체 ≥0/≥0 & 반쪽 Δ합 ≥ −1"
+                  f"({'✓' if _c2 else '✗'}) · F2 두 반쪽 Δ합 ≥ 0({'✓' if _c3 else '✗'}) · K MDD 악화 ≤ 0.5%p(K 00 줄 · R98 −1.28 경보) · "
+                  f"사용자 명시 동의({'✓' if _cons else '✗'}) — 하나라도 없으면 라이브 금지(현재 "
+                + ("조건 충족 — 사용자 확인 후 R100 라이브 후보" if (_c1 and _c2 and _c3 and _cons) else "라이브 금지")
+                + "). 구조적 사실: S는 섹터 ETF 베타 한계 — 상한 손잡이는 10%p당 회피 −1.6 · 참여 +3.2 교환. 연구·교육용, 투자 자문 아님."))
+    # ---- ③ N6-c 대피처 ----
+    _rm = _r99_row_delta(_tb93, "R99 대피처", _s0)
+    if _rm:
+        out.append((f"★★ R99 N6-c 대피처 위험점수↓·1개월 모멘텀↑ vs {_lay}(측정 · 주력 상한 {float(getattr(cfg, 'ROTATION_PRIMARY_CAP', 0.9)):g} 그대로)",
+                    f"{_rm['txt']} · " + ("✓ 회피↑·참여 유지" if _rm["ok"] else "✗ 사용자 조건(회피↑·참여 ≥0) 미충족")
+                    + ". 근거(방법서 §7-1): 섹터 자체 위험점수 IC +0.065(t 2.13) · 1개월 모멘텀 +0.075(t 1.90) — 섹터 층 약한 증거라 측정만. "
+                      "승격은 네 층 조건 + 긴 이력(FF12) 확인 뒤. 연구·교육용, 투자 자문 아님."))
+    if layer != "섹터":
+        out.append(("R99 N6-d — 산업 층은 선택 개선을 시도하지 않는다",
+                    "부모 섹터 안 산업 선택 정보 0(모든 신호 |IC| ≤ 0.023 · |t| < 0.9 — R83·R85·R99 §7) → I★는 지금처럼 부모 ETF 주차 + "
+                    "리더 확신 게이트 유지. 산업 층의 높은 참여는 선택력이 아니라 XLK 편중·고베타에서 온다(§7-2)."))
+    return out
+
+
 def _r98_measure_line(pk: Dict[str, Any], _tb93: Optional[pd.DataFrame], _hd93: Optional[pd.DataFrame], cfg,
                       layer: str = "섹터") -> List[Tuple[str, str]]:
-    """[v0.79.0 R98 · 측정 전용] 00 '★★★ R98 측정' 줄(S·I 공통) — V1·VRP·M5 Δ회피/Δ참여 vs ★ · 이웃 k/4 · M 층 · 블록 M⑦·N⑦ · ⑥ 가드 참여 부호."""
+    """[v0.80.0 R99] 호환 이름 — 'R98 측정' 줄은 'R99 판정' 줄로 바뀌었다(_r99_judgement_lines). 옛 시험·호출자용."""
+    return _r99_judgement_lines(pk, _tb93, _hd93, cfg, layer)
+
+
+def _r98_measure_line_legacy(pk: Dict[str, Any], _tb93: Optional[pd.DataFrame], _hd93: Optional[pd.DataFrame], cfg,
+                             layer: str = "섹터") -> List[Tuple[str, str]]:
+    """[v0.79.0 R98 · 측정 전용] 00 '★★★ R98 측정' 줄(S·I 공통) — V1·VRP·M5 Δ회피/Δ참여 vs ★ · 이웃 k/4 · M 층 · 블록 M⑦·N⑦ · ⑥ 가드 참여 부호.
+    [v0.80.0] 00에는 더 싣지 않는다(R99 판정 줄로 대체) — 비교용으로 남긴다."""
     out: List[Tuple[str, str]] = []
     if _tb93 is not None:
         _str98 = _tb93["전략"].astype(str)
@@ -10552,19 +10772,34 @@ def _r98_long_verdict_text(vd: Dict[str, Any], where: str) -> str:
     """[v0.79.0 R98] 긴 이력 블록(M·N)의 ⑥ R97 가드 · ⑦ V1 판정 한 줄 — 방법서 M2(가드 참여 < 0 → 되돌림 후보) · M3 승격 조건."""
     g = vd.get("G97") or {}
     v = vd.get("V1") or {}
-    if g:
+    s = vd.get("V1S") or {}
+    if g and g.get("live_off"):
+        # [v0.80.0 R99 N1] 라이브 = 되돌림(가드 꺼짐) — 참고 몫(가드 0.20 켬 − 꺼짐)의 부호만 적는다(음수 참여 = 되돌림이 맞다는 확인)
+        _dp = g.get("d_part", np.nan)
+        _gt = (f"⑥ R97 가드 **꺼짐(라이브 = 되돌림 · R99 N1)** — 참고 몫(R97 가드 켬 − 꺼짐) {g.get('full', '-')}"
+               + ("(발동 0일)" if not g.get("tested") else "")
+               + (" ⇒ 참여 < 0 — 되돌림 유지가 맞다" if (g.get("tested") and _dp == _dp and _dp < 0)
+                  else (" ⇒ ⚠ 참여 ≥ 0 — 되돌림 재검토(교훈 52: 창마다 다를 수 있다)" if g.get("tested") else "")))
+    elif g:
         _dp = g.get("d_part", np.nan)
         _gt = (f"⑥ R97 가드 {g.get('full', '-')}" + ("(발동 0일 — 시험 안 됨)" if not g.get("tested") else "")
-               + (" ⇒ ⚠ 참여 < 0 — 방법서 M2: 다음 코드에서 m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.0} 되돌림 후보(표본 안 비용 0)"
+               + (" ⇒ ⚠ 참여 < 0 — 방법서 M2: m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.0} 되돌림(R99 기본값)"
                   if (g.get("tested") and _dp == _dp and _dp < 0) else (" ⇒ 참여 ≥ 0 — 유지" if g.get("tested") else "")))
     else:
-        _gt = "⑥ R97 가드: 가드가 꺼져 있거나 M < v1.65.0"
+        _gt = "⑥ R97 가드: 꺼짐(라이브 = 되돌림) · 참고 몫 없음(R97_GUARD_REF_DD=0 또는 M < v1.65.0)"
     if v:
         _vt = (f"⑦ V1 {v.get('full', '-')} → " + ("★ 통과(전체 ≥0/≥0 · 창 Δ합 ≥ −1)" if v.get("pass")
-                                              else ("◇ 시험 안 됨(발동 0일)" if not v.get("tested") else "✗ 미통과")))
+                                              else ("◇ 시험 안 됨(발동 0일)" if not v.get("tested") else "✗ 미통과"))
+               + " · R99 닫음(측정 R100까지)")
     else:
         _vt = "⑦ V1: M v1.66.0 미만(r98_v1_target 없음) — 시험 안 됨"
-    return f"{where}: {_gt} | {_vt}"
+    if s:
+        _st = (f"⑧ V1강 {s.get('full', '-')} → " + ("★ 통과(전체 ≥0/≥0 · 창 Δ합 ≥ −1 — M5 긴 이력 조건 충족)" if s.get("pass")
+                                                else ("◇ 시험 안 됨(발동 0일)" if not s.get("tested") else "✗ 미통과(M5 라이브 금지)"))
+               + (f" · 창별 {s.get('halves', '-')}" if s.get("halves") else ""))
+    else:
+        _st = "⑧ V1강: M v1.66.0 미만 또는 R96 없음 — 시험 안 됨"
+    return f"{where}: {_gt} | {_vt} | {_st}"
 
 
 def user_reliability_lines(sres: Dict[str, Any], cfg, pack: Optional[Dict[str, Any]] = None, layer: str = "섹터"
@@ -10820,11 +11055,11 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
                         f"{float(_b6['MDD']) * 100:.2f}%" + _m96 + f" | {_lgs6}. "
                         "오프라인 예상(R95 리포트 하네스): S★ +0.37/+1.19 · I★ +0.51/+1.55 · M +0.28/+0.31. "
                         "되돌리기: m_overrides={'R96_VOL_MANAGE': False}. 연구·교육용, 투자 자문 아님."))
-    # ---- [v0.79.0 R98 · 측정 전용] V1 변동성 짝 · VRP · M5(상한 100% × V1강) · 이웃 문턱 — R99 사전등록 ----
+    # ---- [v0.79.0 R98 → v0.80.0 R99] 'R98 측정' 줄 → 'R99 판정' · 'R99 높음 경로(M5)' · N6-c · N6-d 줄 ----
     try:
-        out.extend(_r98_measure_line(pk, _tb93, _hd93, cfg, layer))
+        out.extend(_r99_judgement_lines(pk, _tb93, _hd93, cfg, layer))
     except Exception as _e98l:
-        out.append(("⚠ R98 측정 줄", f"산출 실패 — {type(_e98l).__name__}: {str(_e98l)[:120]}"))
+        out.append(("⚠ R99 판정 줄", f"산출 실패 — {type(_e98l).__name__}: {str(_e98l)[:120]}"))
     # ---- [v0.75.0 R94] M v1.62.0이 전 이력 재추정 지표를 **라이브에서 뺐다** → 지금 ★ 숫자가 정직한 기준선이다 ----
     if _ra93.get("excluded_live"):
         _m94 = _ra93.get("r93_measured") or {}
@@ -11547,6 +11782,41 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _g = (_p >= float(pct_)) if bool(invert_) else (_p < float(pct_))
             return _g.fillna(False)
 
+        _rm_cache: Dict[str, pd.Series] = {}
+
+        def _risk_mom_alt(h_: pd.DataFrame, e_: pd.DataFrame, tag_: str) -> pd.Series:
+            """[v0.80.0 R99 N6-c · 측정 전용] 대피처 후보(주력 제외 · 그날 보유·적격) 중 **섹터 자체 위험점수(haz_pct_sector) 낮음**과
+            **1개월(R99_SHELTER_MOM_WIN일) 모멘텀 높음**의 횡단면 순위 평균 1위(둘 중 하나가 없으면 있는 쪽만).
+            근거(방법서 §7-1 · 2018~ 약 98개월 순위 IC): 섹터 자체 위험점수 +0.065(t 2.13 · 2022년 이후에 몰림) · 1개월 모멘텀 +0.075(t 1.90) —
+            섹터 층에서 '가려내는 힘'이 조금이라도 보인 둘뿐이다. 약한 증거라 비교 행(측정)으로만 쓴다(주력 상한 0.9 그대로 — 기술 편중 무관).
+            인과: 위험점수·21일 누적수익 모두 t일 종가까지 · 체결은 t+1 시가(다른 규칙과 같다)."""
+            if tag_ in _rm_cache:
+                return _rm_cache[tag_]
+            _cand = [c for c in cols if c != _pri and c in h_.columns and c in e_.columns]
+            out = pd.Series(index=eval_idx, dtype=object)
+            if not _cand:
+                _rm_cache[tag_] = out
+                return out
+            _hz = pd.DataFrame({c: (pd.to_numeric(pd.Series(results[c].get("haz_pct_sector")), errors="coerce").reindex(eval_idx)
+                                    if (results.get(c) is not None and results[c].get("haz_pct_sector") is not None)
+                                    else pd.Series(np.nan, index=eval_idx)) for c in _cand}, index=eval_idx)
+            _mw = max(2, int(getattr(scfg, "R99_SHELTER_MOM_WIN", 21) or 21))
+            _rcc = ret_cc[[c for c in _cand if c in ret_cc.columns]].reindex(columns=_cand)
+            _mom = np.expm1(np.log1p(_rcc.astype(float)).rolling(_mw, min_periods=_mw).sum()).reindex(eval_idx)
+            _ok = (h_[_cand].reindex(eval_idx).fillna(False).astype(bool) & e_[_cand].reindex(eval_idx).fillna(False).astype(bool))
+            _r1 = _cs_rank01((-_hz).where(_ok))
+            _r2 = _cs_rank01(_mom.where(_ok))
+            _sc = ((_r1.fillna(_r2) + _r2.fillna(_r1)) / 2.0).where(_ok)
+            _has = _sc.notna().any(axis=1)
+            if bool(_has.any()):
+                out.loc[_has] = _sc.loc[_has].idxmax(axis=1)
+            _rm_cache[tag_] = out
+            log("ROTATION", kv(event="r99_shelter_risk_mom", days=int(out.notna().sum()), candidates=len(_cand), mom_win=_mw,
+                               haz_cover=round(float(_hz.notna().mean().mean()), 3),
+                               top=";".join(f"{k}={v}" for k, v in out.value_counts().head(4).items()) or "-",
+                               note="측정 전용 — 대피처(주력 밖 몫)만 바뀐다 · 주력 상한 무변경"), M=M)
+            return out
+
         def _build_primary(cap_: float, bscale_: Optional[float] = None, bmode_: Optional[str] = None,
                            shelter_def_: Optional[float] = None, disp_pct_: Optional[float] = None,
                            disp_invert_: Optional[bool] = None, neutral_leader_: Optional[float] = None,
@@ -11598,6 +11868,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _min_votes = int(getattr(scfg, "ROTATION_SHELTER_MIN_VOTES", 2) or 2)
             _votes_arr = (votes_leader.reindex(eval_idx).fillna(0).astype(int).values
                           if _shr in ("votes2", "votes2_nonup") else np.zeros(len(eval_idx), dtype=int))
+            # [v0.80.0 R99 N6-c] 대피처 후보를 '위험점수↓·1개월 모멘텀↑ 1위'로 바꾼다(그 밖 경로 — 방어대피처·리더·균등 — 는 그대로).
+            _alt_use = (_risk_mom_alt(_h_eff, _e_eff, _rs) if _shr == "risk_mom1" else _alt)
             # [v0.60.0 R72 §3b(2) 성능 — 결과 비트 동일] 일별 루프의 `.loc[_d, c]` 스칼라 읽기/쓰기 13곳을 numpy 위치
             #   인덱싱으로 바꿨다(루프 구조·분기·부동소수 연산 순서는 한 줄도 바꾸지 않음 — 같은 float64 값에 같은 순서로
             #   같은 연산). 행은 eval_idx 순서로 맞춘 사본(.loc[eval_idx])에서, 열은 이름→위치 dict로 찾는다(없는 열은
@@ -11616,7 +11888,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             n_pri_ = n_alt_ = n_eq_ = n_def_ = n_dg_ = n_nl_ = n_nc_ = n_sh_ = 0
             for _i_d, _d in enumerate(eval_idx):
                 _pri_ok = bool(_H[_i_d, _ci_h[_pri]]) if _pri in _ci_h else False
-                _a = _alt.get(_d)
+                _a = _alt_use.get(_d)
                 _a_ok = (isinstance(_a, str) and _a in _ci_h and bool(_H[_i_d, _ci_h[_a]])
                          and bool(_E[_i_d, _ci_e[_a]]) if _a in _ci_e else False)
                 # [v0.42.0 S-K] 중립일 주력 상한 인하(그 외 국면은 cap_ 그대로).
@@ -11671,7 +11943,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     #     leader_only   : 확신 게이트를 통과해 실제로 보유 중인 리더(leader_s)만, 없으면 균등
                     #   ⚠ 신규 신호·재계산 없음 — votes_leader·leader_s·spy_regime_arr는 전부 t일에 이미
                     #     확정된 값이다(_run_leader3에서 산출). 체결은 다른 규칙과 같이 t+1 시가.
-                    if _shr != "composite" and _a_ok:
+                    if _shr not in ("composite", "risk_mom1") and _a_ok:
                         if _shr == "leader_only":
                             _ld_s = leader_s.get(_d)
                             _a_ok = (isinstance(_ld_s, str) and _ld_s == _a and _ld_s != _pri)
@@ -11735,6 +12007,14 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     continue
                 _relcmp_fracs[_k_rc] = (fps if (abs(_rc_cap - _cap) < 1e-9 and abs(_rc_def - _sd_now) < 1e-9)
                                         else _build_primary(_rc_cap, None, None, _rc_def)[0])
+            # [v0.80.0 R99 N6-c · 측정 전용] 대피처 '위험점수↓·1개월 모멘텀↑' — 주력 상한·방어대피처는 라이브 값 그대로(키 3번째 = 규칙).
+            if bool(getattr(scfg, "R99_SHELTER_RISKMOM", True)):
+                try:
+                    _relcmp_fracs[(round(_cap, 4), round(_sd_now, 4), "risk_mom1")] = _build_primary(
+                        _cap, None, None, _sd_now, None, None, None, None, None, "risk_mom1")[0]
+                except Exception as _erm:
+                    log("ROTATION", kv(event="r99_shelter_risk_mom_failed", err=type(_erm).__name__, msg=str(_erm)[:140],
+                                       action="N6-c 비교 행만 생략 — ★ 무영향"), M=M, level="warning")
         # 상한 격자(채택값 제외) — 13_섹터배분전략에 [비교] 행으로 실린다.
         primary_cap_variants = {}
         for _cv in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0):
@@ -12394,7 +12674,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             _chg98: Dict[str, int] = {}
             try:
                 _r98d = (res.get("r98") if isinstance(res, dict) else None) or {}
-                _c98 = [("r98v1", "pos_r98_v1", "R98 V1 변동성 짝(측정)", None),
+                _c98 = [("r98v1", "pos_r98_v1", "R98 V1 변동성 짝(측정 · R99 닫음)", None),
                         ("r98vrp", "pos_r98_vrp", "R98 VRP 변동성 위험 프리미엄(측정)", None),
                         ("r98m5", "pos_r98_v1s", "R98 상한100% × V1강(측정 · M5)", float(getattr(scfg, "R98_M5_CAP", 1.0)))]
                 for _j98, (_col98, _rs98) in enumerate(dict(_r98d.get("neighbor_cols") or {}).items()):
@@ -12461,11 +12741,20 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _modes_r.append(("R96 변동성 관리 없음(= R95 M)", _cap_now, _def_now, _ld_now, "pre96", None, _nf_live))
             for _k98 in _E98:                  # [v0.79.0 R98] 측정 행 — S 규칙은 라이브와 같다(M5만 주력 상한 R98_M5_CAP)
                 _modes_r.append((_nm98[_k98], _capk98.get(_k98, _cap_now), _def_now, _ld_now, _k98, None, _nf_live))
+            # [v0.80.0 R99 N6-c · 측정 전용] 대피처 '위험점수↓·1개월 모멘텀↑' — 같은 M(라이브 E) · 주력 상한·방어대피처·리더·채움 라이브 그대로.
+            #   분수는 _relcmp_fracs[(상한, 방어대피처, "risk_mom1")](3번째 키 = 대피처 규칙)에서 읽는다.
+            _fkey_r: Dict[str, Tuple[Any, ...]] = {}
+            _rm_key = (round(_cap_now, 4), round(_def_now, 4), "risk_mom1")
+            _nm_rm = "R99 대피처 위험점수↓·1개월 모멘텀↑(측정 · N6-c)"
+            if _rm_key in _relcmp_fracs:
+                _modes_r.append((_nm_rm, _cap_now, _def_now, _ld_now, "live", None, _nf_live))
+                _fkey_r[_nm_rm] = _rm_key
             _labels_r: Dict[str, str] = {}
             _specs_r: List[Dict[str, Any]] = []
             _repro = np.nan
             for _nm, _cp, _df, _ldv, _ms, _cpp, _nfv in _modes_r:
-                _fr_r = _relcmp_fracs.get((round(_cp, 4), round(_df, 4)))
+                _fr_r = (_relcmp_fracs.get(_fkey_r[_nm]) if _nm in _fkey_r
+                         else _relcmp_fracs.get((round(_cp, 4), round(_df, 4))))
                 _fr_p = _relcmp_fracs.get((round(_cpp, 4), round(_df, 4))) if _cpp is not None else _fr_r
                 if _fr_r is None or _fr_p is None:
                     log("RELCMP", kv(event="mode_skipped", mode=_nm, cap=_cp, cap_part=_cpp, shelter_def=_df, reason="분수 없음"), M=M,
@@ -12492,13 +12781,15 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     _repro = float((_tw_r - target_ws[label_primary].reindex(index=eval_idx, columns=all_cols).fillna(0.0)
                                     ).abs().max().max())
                     continue          # ★와 같아야 하므로 행으로 싣지 않는다(검증만)
-                _lab_r = f"R88 비교 · {_nm} — {_mdesc(_cp, _df, _ldv, _ms, _cpp)} [회피참여비교]"
+                _lab_r = (f"R88 비교 · {_nm} — {_mdesc(_cp, _df, _ldv, _ms, _cpp)}"
+                          + (" · 대피처 위험점수↓·1개월 모멘텀↑" if _nm in _fkey_r else "") + " [회피참여비교]")
                 _dl_variants[_lab_r] = _tw_r
                 _relcmp_frames[_nm] = _tw_r
                 _labels_r[_nm] = _lab_r
-                if _ms in ("norev", "pre95", "pre96") or _ms in _E98:     # [v0.79.0 R98] 측정 행도 장기 검증 사양에서 뺀다
+                if _ms in ("norev", "pre95", "pre96") or _ms in _E98 or _nm in _fkey_r:     # [v0.79.0 R98 · v0.80.0 R99] 측정 행도 장기 검증 사양에서 뺀다
                     continue          # [v0.74.0·v0.76.0] 장기 검증(M 대용 3상태)에는 지표·R95 오버레이 개념이 없어 라이브와 같은 행이 된다 — 싣지 않는다
                                       #   (R95 오버레이의 긴 이력 판정은 00U 블록 K가 M 자신의 전 이력 신호로 따로 한다)
+                                      #   [v0.80.0] N6-c 대피처 규칙은 단순화 구조(복합 1위 대피처)에 개념이 없어 같은 이유로 뺀다
                 _specs_r.append({"name": _nm, "cap": _cp, "def": _df, "leader": _ldv, "msrc": _ms,
                                  "cap_part": (_cpp if _cpp is not None else _cp), "neutral_fill": float(_nfv),
                                  "steps": {"ref": _ref_steps_r, "live": _live_steps_r, "cand": _cand_steps, "r91": _r91_steps}[_ms],
@@ -12506,6 +12797,13 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                  "cand": _ms == "cand"})
             _specs_r.append({"name": "양쪽형 ★(라이브)", "cap": _cap_now, "def": _def_now, "leader": _ld_now, "msrc": "live",
                              "steps": _live_steps_r, "neutral": _live_n, "star": True, "neutral_fill": _nf_live})
+            # [v0.80.0 R99 N4] F2(섹터 ETF 2000~2017 · M 대용 3상태)에 M5 행 — 대용 E에 V1강(M.r98_v1_target)을 적용한 E × 주력 상한 R98_M5_CAP.
+            #   13 측정 행(pos_r98_v1s)이 없어도 M에 r98_v1_target이 있으면 긴 이력은 잰다(측정 전용 · 사용자 동의 없이 라이브 금지).
+            if bool(getattr(scfg, "R99_M5_F2", True)) and hasattr(M, "r98_v1_target"):
+                _specs_r.append({"name": "R98 상한100% × V1강(측정 · M5)", "cap": float(getattr(scfg, "R98_M5_CAP", 1.0)),
+                                 "def": _def_now, "leader": _ld_now, "msrc": "r98m5", "cap_part": float(getattr(scfg, "R98_M5_CAP", 1.0)),
+                                 "neutral_fill": _nf_live, "steps": _live_steps_r, "neutral": _live_n,
+                                 "e_transform": "r98_v1s", "m5": True})
             log("RELCMP", kv(event="star_repro", max_abs_weight_diff=(round(_repro, 12) if _repro == _repro else "n/a"),
                              verdict=("OK" if (_repro == _repro and _repro < 1e-9) else "MISMATCH")), M=M,
                 level=("info" if (_repro == _repro and _repro < 1e-9) else "warning"))
@@ -12536,7 +12834,9 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                               else (1.0 + spy_cc_full.fillna(0.0)).cumprod())
                     _spr_r = _spl_r.pct_change(fill_method=None)
                     _relcmp_diag["long"] = relcmp_long_audit(_lvl_r, _spl_r, _spr_r, rf_daily, _specs_r, scfg,
-                                                             cost_bps=float(res["cfg"].COST_BPS), M=M)
+                                                             cost_bps=float(res["cfg"].COST_BPS), M=M,
+                                                             m_price=(res.get("price") if isinstance(res, dict) else None),   # [v0.80.0 R99 N4]
+                                                             m_cfg=_rc_cfgm)
                 except Exception as _e6:
                     log("RELCMP", kv(event="long_audit_failed", err=type(_e6).__name__, msg=str(_e6)[:160],
                                      trace=traceback.format_exc()[-300:].replace("\n", " | "), action="장기 검증만 생략"),

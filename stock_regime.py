@@ -1,5 +1,44 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.11.0 - 2026-09-25 - [R99 N2 표시(날짜만 · NYSE 다음 거래일 예측 행 · 신선도 · 증분 재수집) · N3 종목 상승확률(표시·측정) ·
+#                                   sector_prob 측정 행 + 대조군 · N6-a S&P 500 선택력 검정(월 1회) · N6-b 어닝 복합 행 — 라이브 배분 무변경(섹터 안 균등)]
+#    사용자 지시(2026-09-25 · R99 방법서 구현): "문서대로 코드들을 누락되는 내용 없이 수정하고 … 깃허브 yeomin1024/stock에 업로드해".
+#      앞 지시: "stock_regime은 일별 기록 날짜만(00:00:00 없이) · 25일 예측이 없는데 날짜 바뀌면 업데이트 · 각 주식별 상승 확률로 균등 말고
+#      확률 높은 것만 배분(어디까지는 적당히)" · "주식층도 신뢰도 파악하고 높게" · "회피를 더 높이도록 · 참여는 절대로 떨어지면 안 돼".
+#      시작 v0.10.0 → 목표 v0.11.0.
+#    ── K 표시 문제 원인(R99 방법서 §2-4) ── ① build_report의 ExcelWriter에 날짜 서식이 없어 datetime이 00:00:00까지 찍혔다 ② 13c·01_일별에는
+#      예측 행이 없었다(01Z 맨 끝에만) ③ 00 K 줄에 대상일이 없고 단독 신호(보유/1.00)만 적었다(실제 배분 13c와 다름) ④ ⚠ 숨은 버그: 예측일을
+#      USFederalHolidayCalendar로 셌다 — 콜럼버스의 날·재향군인의 날을 휴장으로, 성금요일을 개장으로(NYSE와 다름 · 2026-10-09 → 10-13으로 적었다).
+#    (§1 N2-1) _write: pd.ExcelWriter(datetime_format=date_format=REPORT_DATE_FORMAT 'yyyy-mm-dd') — 전 시트 날짜 칸이 날짜만. 01_일별_* 인덱스 열 'Date' → '날짜'.
+#    (§2 N2-2) next_trading_day_k(): sys.modules M.next_trading_day → pandas_market_calendars NYSE → 내장 NYSE 규칙표(nyse_holidays_k — 신정·MLK·
+#         대통령의 날·성금요일·메모리얼·준틴스·독립기념일·노동절·추수감사절·성탄절). 01Z 예측 행이 이 대상일을 쓴다(USFederalHolidayCalendar 제거).
+#    (§3 N2-3) 13c_일별배분비중 · 01_일별_<종목> 맨 끝에 구분='예측(다음 거래일 집행)' 행(날짜 = 대상일 · 비중 = 마지막 확정 목표 · 가격 열 빈칸 ·
+#         상승확률) · 13c·01_일별에 '구분' 열.
+#    (§4 N2-4) 00 줄(M·S·I와 같은 형식): '데이터 신선도'(기대 마지막 개장일 · K 마지막 · M 마지막) · '다음 거래일 예측 - 기준일(데이터)' ·
+#         '다음 거래일 예측 - 대상일' · '다음 거래일 배분(K★ · 13c 예측 행 = 실제 배분)'(0 아닌 종목·섹터 ETF·현금을 비중 순) · 단독 신호 줄은 '(참고)'로.
+#    (§5 N2-5) run(): K 가격 마지막일 < M 신호 마지막일(run(m_sig)·I 통로)이면 refresh_prices_incremental(종목·홀드아웃 · 겹친 날 조정이 바뀌면
+#         그 종목 전 이력 재수집 · 캐시 갱신) · 로그 [DATA] event=k_stale_refresh · 그래도 늦으면 00 '⚠ K 자료 지연 — K 자료가 M보다 N일 늦다'.
+#         예측 행은 매 실행 '자료 마지막 확정일 → 다음 NYSE 개장일'로 새로 만든다(고정 날짜 없음).
+#    (§6 N3 ★★★ 측정·표시) build_stock_prob(): P(향후 21일 수익 > 0) · 풀링 로지스틱(C=0.5) · 특성 = 가격 자기백분위 9 + 어닝 서프라이즈 백분위·
+#         발표 후 경과일 · 연 1회 워크포워드 · 학습 끝 = 연초 직전 개장일 − 22거래일(엠바고) · 첫 해 확률 없음(균등) · 절편 재보정(학습 마지막 1년
+#         기저율) · 시드 고정 · 로그 [PROB] event=k_prob_fit year= train_rows= auc_prev=. 표시: 01Z '<종목> 상승확률' · 01_일별 '상승확률(21일)' ·
+#         새 시트 00E_주식상승확률(오늘 순위 · 섹터 안 순위 · 연도별 AUC · 섹터 안 순위 IC(그룹 평균 제거) · 보정표 · 변형 판정) · 00 '상위 10'.
+#    (§7 N3) STOCK_ALLOC_MODE "sector_prob"(_sector_prob_weights): 섹터 비중은 S★ 그대로 · 섹터 안만 점수로 — PROB_SELECT exclude_bottom(하위 20%
+#         제외 · 나머지 균등 · 권장 후보) · top(상위 1/3 · 최대 8 — 사용자 요청 원형) · tilt(순위 기울임 λ0.5) · 상한 5% · 넘친 몫 부모 ETF · 점수 없는
+#         섹터·날 = 균등. 13·00U 측정 행 5개(PROB_VARIANTS: 하위 1/5 제외 · 상위 1/3 · 상위 1/2 · 순위 기울임 · N6-b 어닝 복합 하위 1/5 제외) +
+#         규칙마다 점수 순열 대조군 30개(시드 98) → 00 판정(K★ 대비 Δ회피 ≥0 & Δ참여 ≥0 & 대조군 칼마 백분위 ≥90 → R100 라이브 후보).
+#         ⚠ 라이브는 sector_linked(균등) 그대로 — 오프라인 예상 '하위 1/5 제외' −1.10/+2.67(회피 ✗) · '상위 1/3' +0.04/−21.8(참여 ✗).
+#         즉시 라이브(원할 때만 · 00 경고): k_overrides={"STOCK_ALLOC_MODE": "sector_prob", "PROB_SELECT": "exclude_bottom"} · 되돌리기 "sector_linked".
+#    (§8 N6-a 측정 전용) selection_audit(): S&P 500 그 시점 구성(로컬 CSV → 공개 저장소 CSV → 위키백과 현재+변경 역산 · 불일치 로그 [UNIV]
+#         event=sp500_hist_mismatch) · 2010~ 월말 신호 12종(어닝 2 · PEAD · 12-1 · 6-1 · 3개월 · 1개월 반전 · 52주 고점 · 저변동 · 200일 이격 ·
+#         하위산업 12-1 · 잔차 모멘텀) → 다음 21거래일 섹터 안 순위 IC · t · 연도 k/n · 앞/뒤 · 상위−하위 1/5 · 무작위 순위 200개 백분위 · 월별 가격
+#         확보율(생존 편향 감시) · 판정(t ≥ 2.5 & 두 반쪽 > 0 & 연도 ≥ 60% & 95백분위 & 확보율 ≥90% 달 ≥ 80%) → 시트 00S_종목선택력 · 로그 [SELAUDIT].
+#         SELECTION_AUDIT=False 기본(월 1회 켜기 · 30일 캐시 재사용 · 꺼져 있어도 이전 캐시가 있으면 00S에 싣는다). K 유니버스 중 S&P 500 밖 종목 표시.
+#    (§9 N6-b) build_earn_composite(): 어닝 복합 점수(직전 서프라이즈% 순위 + 4분기 평균 순위) → PROB_VARIANTS 5번째 측정 행(섹터 안 · 종목 몫 보존 · 하위 1/5 제외).
+#    (§10 N5) 00 'R98 측정' 줄 → '★★★ R99 판정 — K★' 줄(V1 닫음 · VRP 닫음 · M5 K 조건: Δ회피 > 0 & Δ참여 ≥ 0 · K MDD 악화 ≤ 0.5%p).
+#    새 StockConfig 필드: REPORT_DATE_FORMAT · K_STALE_REFRESH · K_STALE_REFETCH_DAYS · STOCK_PROB · PROB_* 16 · K_AVOID_MARGIN_R98 · SELECTION_AUDIT · SELAUDIT_* 18.
+#    시험 t99/test_r99.py(날짜 서식 · NYSE 3사례 · 예측 행 · 대상일 갱신 · M·K 불일치 경고 · 엠바고 · 인과(뒤 자르기 불변) · 섹터 합 = S★ ·
+#         제외 몫 재분배 합 보존 · 확률 없는 날 = 균등 · 합성 구성 이력 · 가짜 신호 IC ≈ 0 · 확보율 · 캐시 재사용). 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.10.0 - 2026-09-25 - [⚠ 유니버스 +30종목(사용자 지시 · 산업 매칭) · R98 측정 비교 행 · 'v0.9.2 유니버스' 비교 행]
 #    사용자 지시(2026-09-25): "stock_regime은 CRDO, AVGO, LLY, DDOG, GOOG, SHOP, BTSG, CRM, TSLA, DAVE, CROX, ROST, MNST, RL, KO, SNDK, GS, CDNS,
 #      NOW, SHIP, FTNT, MU, LRCX, WDC, PANW, MDB, CRWD, STX, MRVL, AMD, AAPL, MSFT, DASH, AMZN, INTC, NET 티커를 각 산업에 매칭해서 추가해".
@@ -458,7 +497,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.10.0"
+VERSION = "v0.11.0"
 VERSION_DATE = "2026-09-25"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -823,6 +862,85 @@ class StockConfig:
     # ---- 감사 ----
     AUDIT_DATES: int = 6               # 절단재계산 감사 표본 날짜 수(티커당)
     AUDIT_TICKERS: int = 6             # 감사할 티커 수(전수는 느리다)
+
+    # ---- [v0.11.0 R99 N2 ★★★] 표시 — 날짜만(00:00:00 없이) · 다음 NYSE 개장일 예측 · 날짜가 바뀌면 갱신 ----
+    #   사용자 지시(2026-09-25): "stock_regime은 일별 기록 날짜만(00:00:00 없이) · 25일 예측이 없는데 날짜 바뀌면 업데이트".
+    #   REPORT_DATE_FORMAT: 엑셀 날짜 칸 서식(pd.ExcelWriter datetime_format·date_format — 01Z·13c·01_일별_* 등 전 시트).
+    #   K_STALE_REFRESH: K 가격 마지막일 < M 신호 마지막일이면 종목·섹터 ETF 가격을 **증분 재수집**(로그 [DATA] event=k_stale_refresh) —
+    #     그래도 뒤처지면 00에 ⚠('K 자료가 M보다 N일 늦다 — 예측 대상일이 다르다'). K_STALE_REFETCH_DAYS = 증분 창 앞 여유(달력일).
+    REPORT_DATE_FORMAT: str = "yyyy-mm-dd"
+    K_STALE_REFRESH: bool = True
+    K_STALE_REFETCH_DAYS: int = 10
+    # ---- [v0.11.0 R99 N3 ★★★] 종목별 상승확률(측정 · 표시) · 확률 배분 모드 sector_prob(측정 행 — 라이브는 sector_linked 균등 유지) ----
+    #   사용자 지시: "각 주식별 상승 확률로 균등 말고 확률 높은 것만 배분(어디까지는 적당히)" · "주식층도 신뢰도 파악하고 높게".
+    #   ⚠ 충돌(방법서 §2-3): 오프라인에서 '확률 상위만'은 K 참여 −12.7~−21.8%p(상한 몫이 섹터 ETF로) — '참여 절대 하락 금지'와 충돌.
+    #     '하위 1/5 제외'만 참여 +2.67 · 회피 −1.10(K★ 회피 여유 1.2%p를 거의 소진). 종목 확률의 섹터 안 순위 IC +0.023(t 0.47) = 선택 정보 없음.
+    #   → 확률은 **만들어 보여 주고**(01Z·01_일별·00E·00), 배분 변형은 13·00U **측정 행** → 엔진 조건(K★ 대비 Δ회피 ≥0 & Δ참여 ≥0 &
+    #     같은 규칙 무작위 대조군 칼마 백분위 ≥90) 통과 변형만 다음 라운드(R100) 라이브.
+    #   모형(build_stock_prob): 목표 P(향후 PROB_HORIZON일 수익 > 0 · t+1 체결 관행) · 풀링 로지스틱(C=PROB_C) · 특성 PROB_FEATURES(가격 자기백분위 9 +
+    #     어닝 서프라이즈 백분위 · 발표 후 경과일) · 연 1회 워크포워드 재적합 · 학습 끝 = 연초 − PROB_EMBARGO(22) 거래일 · 첫 해 확률 없음(균등) ·
+    #     절편 재보정(학습 마지막 1년 기저율 — 합친 AUC 0.487 < 연도별 0.51~0.56의 원인 = 해마다 기저율 차) · 시드 PROB_SEED.
+    #   ⚠ 즉시 라이브(사용자가 원할 때만): k_overrides={"STOCK_ALLOC_MODE": "sector_prob", "PROB_SELECT": "exclude_bottom"}
+    #     (참여↑·회피↓ — 00에 'K 회피 여유 1.2%p를 거의 소진' 경고). 되돌리기: k_overrides={"STOCK_ALLOC_MODE": "sector_linked"}.
+    STOCK_PROB: bool = True
+    PROB_HORIZON: int = 21
+    PROB_C: float = 0.5
+    PROB_EMBARGO: int = 22
+    PROB_MIN_TRAIN_ROWS: int = 2000
+    PROB_SEED: int = 20260925
+    PROB_FEATURES: Tuple[str, ...] = ("ext200_pct", "mom21_pct", "mom63_pct", "mom126_pct", "vol21_pct", "dd63_pct", "park5_pct",
+                                      "거래대금21_pct", "ret5_pct", "어닝_서프라이즈%_pct", "어닝_경과일")
+    PROB_CALIBRATE: bool = True
+    #   sector_prob 모드(라이브로 켰을 때)의 섹터 안 선택 규칙 — 섹터 비중은 S★ 그대로(계층 정합 · 14 위반 0).
+    #     exclude_bottom: 섹터 적격 종목 ≥ PROB_MIN_SECTOR_N이면 확률 하위 PROB_EXCLUDE_FRAC(최소 1종목) 제외 → 나머지 균등(제외 몫 재분배 ·
+    #                     종목 몫 보존) · 상한 SECTOR_LINK_STOCK_CAP · 넘친 몫 부모 섹터 ETF   ← **권장 후보**
+    #     top           : 확률 상위 PROB_TOP_FRAC(최대 PROB_TOP_MAX) 균등(사용자 요청 원형 '높은 것만') · 상한 · 넘친 몫 ETF
+    #     tilt          : 섹터 안 순위 기울임 (1−λ)/m + λ·순위/Σ순위(종목 몫 보존) · 상한 · 넘친 몫 ETF
+    #   확률이 없는 종목이 섹터에 하나라도 있는 날(첫 해 등) = 그 섹터는 균등(sector_linked와 같다).
+    PROB_SELECT: str = "exclude_bottom"
+    PROB_EXCLUDE_FRAC: float = 0.20
+    PROB_TOP_FRAC: float = 1.0 / 3.0
+    PROB_TOP_MAX: int = 8
+    PROB_MIN_SECTOR_N: int = 3
+    PROB_TILT_RANK_LAMBDA: float = 0.5
+    #   측정 행(라벨, 선택 규칙, 매개변수, 점수) — 점수 "prob" = 상승확률 · "earn" = 어닝 복합(N6-b: 서프라이즈% + 4분기 평균의 횡단면 순위 평균).
+    PROB_VARIANTS: Tuple[Tuple[str, str, Tuple[Tuple[str, float], ...], str], ...] = (
+        ("R99 확률 배분 · 하위 1/5 제외(나머지 균등 · 상한 5% · 권장 후보)", "exclude_bottom", (("frac", 0.20),), "prob"),
+        ("R99 확률 배분 · 상위 1/3만(최대 8 · 상한 5% · 사용자 요청 원형)", "top", (("frac", 1.0 / 3.0), ("max", 8.0)), "prob"),
+        ("R99 확률 배분 · 상위 1/2만(최대 12 · 상한 5%)", "top", (("frac", 0.5), ("max", 12.0)), "prob"),
+        ("R99 확률 배분 · 순위 기울임 λ0.5(종목 몫 보존)", "tilt", (("lam", 0.5),), "prob"),
+        ("R99 N6-b 어닝 복합 순위 · 하위 1/5 제외(종목 몫 보존)", "exclude_bottom", (("frac", 0.20),), "earn"),
+    )
+    PROB_CONTROLS: int = 30          # 같은 규칙 · 같은 k · 무작위 점수 대조군(변형 규칙마다) — 0이면 끔
+    PROB_CONTROL_SEED: int = 98
+    PROB_LIVE_PASS_CTRL_PCT: float = 90.0
+    K_AVOID_MARGIN_R98: float = 1.2  # R98 판정 K★ 회피 여유(%p) — sector_prob 라이브 경고 문구용
+    # ---- [v0.11.0 R99 N6-a ★★ 측정 전용] 종목 선택력 긴 이력 검정 — S&P 500 그 시점 구성(약 500종목) · 2010~ ----
+    #   사용자 합의(2026-09-25): "500종목 · 4년(7년) 그럼 이렇게 하면 되겠네". 매월 말 신호 → 다음 21거래일 **섹터 안** 순위 IC(그룹 평균 제거 · 교훈 63).
+    #   매 실행이 아니라 월 1회: SELECTION_AUDIT=False(기본) — 켜면 SELAUDIT_CACHE_DAYS(30일) 안의 캐시를 재사용. 라이브 배분·평가창 무변경.
+    #   구성 이력 출처(우선순위): ① SELAUDIT_HIST_CSV(로컬 · Kaggle 입력 · 'date,tickers' 형식) ② 공개 저장소 fja05680/sp500의 'Historical Components'
+    #     CSV(GitHub API로 최신 파일) ③ 위키백과 'List of S&P 500 companies' 현재 목록 + 'Selected changes' 역산. 두 출처가 다르면 로그 [UNIV] event=sp500_hist_mismatch.
+    #   가격 확보율 < SELAUDIT_COVER_MIN(90%)인 달은 00S에 ⚠ '생존 편향 가능'(편출·인수 종목은 Yahoo 이력이 없는 경우가 많다).
+    #   판정(사전등록 · 신호 11개 다중 비교): 전체 t ≥ SELAUDIT_T_PASS(2.5) & 두 반쪽(2010~2017 · 2018~) IC 모두 > 0 & 연도 ≥ 60% &
+    #     무작위 순위 SELAUDIT_CONTROLS(200)개 대비 95백분위 & 확보율 ≥ 90%인 달이 80% 이상 → 통과 신호만 R100 K 비교 행 후보.
+    SELECTION_AUDIT: bool = False
+    SELAUDIT_START: str = "2010-01-01"
+    SELAUDIT_PRICE_START: str = "2008-06-01"
+    SELAUDIT_CACHE_DAYS: int = 30
+    SELAUDIT_HIST_CSV: str = ""
+    SELAUDIT_HIST_REPO_API: str = "https://api.github.com/repos/fja05680/sp500/contents"
+    SELAUDIT_WIKI_URL: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    SELAUDIT_EARNINGS: bool = True
+    SELAUDIT_EARN_LIMIT: int = 64
+    SELAUDIT_CONTROLS: int = 200
+    SELAUDIT_SEED: int = 20260925
+    SELAUDIT_T_PASS: float = 2.5
+    SELAUDIT_YEAR_SHARE: float = 0.60
+    SELAUDIT_CTRL_PCT: float = 95.0
+    SELAUDIT_COVER_MIN: float = 0.90
+    SELAUDIT_COVER_MONTH_SHARE: float = 0.80
+    SELAUDIT_SPLIT_YEAR: int = 2018
+    SELAUDIT_MAX_TICKERS: int = 0      # 0 = 전부(시험·축소 실행용 상한)
 
     # ---- 출력 ----
     OUT_XLSX: str = "stock_regime_report.xlsx"
@@ -2489,8 +2607,13 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                      tilt_perm: Optional[np.ndarray] = None,
                      prob_power: Optional[float] = None,
                      etf_panel: Optional[Dict[str, pd.DataFrame]] = None,
-                     link_cap: Optional[float] = None) -> Dict[str, Any]:
+                     link_cap: Optional[float] = None,
+                     prob_score: Optional[pd.DataFrame] = None, prob_select: Optional[str] = None,
+                     prob_params: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     """전체자산 **1.0**을 종목에 배분한다. 반환 target_w의 **행 합계는 절대 1.0을 넘지 않는다**.
+    [v0.11.0 R99 N3] "sector_prob" — 섹터 비중은 S★ 그대로(sector_linked와 같은 SW) · 섹터 안만 점수(prob_score · 상승확률 또는 어닝 복합)로
+      고른다(prob_select: exclude_bottom · top · tilt · prob_params: frac·max·lam). 점수가 없으면 sector_linked(균등)로 계산하고 tilt['note']에 적는다.
+      자세한 규칙은 _sector_prob_weights. ⚠ 라이브 기본은 sector_linked — sector_prob는 측정 행(13·00U)이고 overrides로만 라이브.
 
     체결 규칙은 M·S·I와 같다 — t일 확정, t+1일 집행(exec_w(t) = target_w(t−1)).
 
@@ -2554,7 +2677,7 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                 else pd.Series(np.nan, index=panel[t].index, dtype=float))
     _CO = pd.DataFrame({t: _pcol(t, "야간수익") for t in tickers}).reindex(idx)
     _OC = pd.DataFrame({t: _pcol(t, "장중수익") for t in tickers}).reindex(idx)
-    if mode == "sector_linked":
+    if mode in ("sector_linked", "sector_prob"):
         _ia = ind_alloc if ind_alloc is not None else _resolve_industry_alloc(cfg, parent_w)[0]
         if _rf is None and bool(getattr(cfg, "CASH_RF", False)) and isinstance(_ia, dict) and isinstance(_ia.get("rf_daily"), pd.Series):
             _rf = _ia["rf_daily"]
@@ -2568,8 +2691,24 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
         _lc = float(link_cap if link_cap is not None else getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05))
         cut = pd.DataFrame({t: (pd.to_numeric(pos[t]["감축신호"], errors="coerce").reindex(idx).fillna(0.0) > 0.5)
                             if "감축신호" in pos[t].columns else pd.Series(False, index=idx) for t in tickers})
-        Ws, We, _sd = _sector_linked_weights(idx, tickers, live, cut, _ia, dict(parent_of or {}), cap=_lc,
-                                             etf_avail=set((etf_panel or {}).keys()))
+        _prob_note = ""
+        if mode == "sector_prob" and isinstance(prob_score, pd.DataFrame) and prob_score.shape[1]:
+            _psel = str(prob_select if prob_select is not None else getattr(cfg, "PROB_SELECT", "exclude_bottom"))
+            _pprm = dict(prob_params) if prob_params is not None else {
+                "frac": float(getattr(cfg, "PROB_EXCLUDE_FRAC", 0.20) if _psel == "exclude_bottom" else getattr(cfg, "PROB_TOP_FRAC", 1.0 / 3.0)),
+                "max": float(getattr(cfg, "PROB_TOP_MAX", 8)), "lam": float(getattr(cfg, "PROB_TILT_RANK_LAMBDA", 0.5))}
+            Ws, We, _sd = _sector_prob_weights(idx, tickers, live, cut, _ia, dict(parent_of or {}), cap=_lc,
+                                               etf_avail=set((etf_panel or {}).keys()), score=prob_score, select=_psel,
+                                               params=_pprm, min_n=int(getattr(cfg, "PROB_MIN_SECTOR_N", 3)))
+            _sd.pop("sector_w", None)
+        else:
+            if mode == "sector_prob":
+                _prob_note = "⚠ 점수(상승확률) 없음 — 섹터 안 균등(sector_linked)으로 계산"
+                log("ALLOC", kv(event="sector_prob_no_score", fallback="sector_linked", note=_prob_note), level="warning")
+            Ws, We, _sd = _sector_linked_weights(idx, tickers, live, cut, _ia, dict(parent_of or {}), cap=_lc,
+                                                 etf_avail=set((etf_panel or {}).keys()))
+        if _prob_note:
+            _sd["note"] = _prob_note
         ret = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce").reindex(idx)
                             for t in tickers}).fillna(0.0)
         _ecols = list(We.columns)
@@ -2600,8 +2739,12 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                         cut_to_etf_mean=_sd.get("cut_to_etf_mean"), nostock_sectors=";".join(_sd.get("nostock_sectors") or []) or "-",
                         etf_missing_cash_mean=_sd.get("etf_missing_cash_mean"), fill=_fill, cost_bps=_cbps,
                         open_missing_cells=_xi.get("open_missing_cells"), cash_rf=_xi.get("cash_rf"),
-                        rf_mean_annual=_xi.get("rf_mean_annual"),
-                        note="★ S★ 섹터비중 → 섹터 안 종목 균등(상한) · 나머지 부모 섹터 ETF · 총노출 = S★ 총노출"))
+                        rf_mean_annual=_xi.get("rf_mean_annual"), mode=mode,
+                        select=(_sd.get("select") if mode == "sector_prob" else "equal"),
+                        select_sector_days=_sd.get("select_sector_days", "-"),
+                        note=("★ S★ 섹터비중 → 섹터 안 종목 균등(상한) · 나머지 부모 섹터 ETF · 총노출 = S★ 총노출" if mode == "sector_linked"
+                              else "R99 sector_prob — S★ 섹터비중 그대로 · 섹터 안 점수 선택(상한) · 나머지 부모 섹터 ETF")),
+            level=("debug" if prob_score is not None and mode == "sector_prob" and link_cap is not None else "info"))
         if float(tot.max()) > 1.0 + 1e-6:
             log("ALLOC", kv(event="weight_sum_over_one", w_sum_max=round(float(tot.max()), 4)), level="error")
         return {"target_w": Ws, "exec_w": exec_w, "total_w": tot, "port_ret": port_ret, "port_ret_close": port_close,
@@ -2939,6 +3082,1409 @@ def _updown_variants(panel: Dict[str, pd.DataFrame], pos: Dict[str, pd.DataFrame
             "market_exec": (mkt.shift(1) if mkt is not None else None)}
 
 
+# =============================================================================
+# [v0.11.0 R99 N2 ★★★] 달력(NYSE) · 데이터 신선도 · 증분 재수집 — 사용자 지시 "날짜만 · 25일 예측 · 날짜 바뀌면 업데이트"
+# =============================================================================
+#   (1) 다음 거래일 = **NYSE** 개장일. v0.3.0~v0.10.0은 USFederalHolidayCalendar였다 — 콜럼버스의 날·재향군인의 날을 휴장으로,
+#       성금요일을 개장으로 봤다(NYSE와 연 4일 다름 · 예: 2026-10-09(금) 자료면 10-13을 적었다 — 실제 10-12). 방법서 N2-2:
+#       sys.modules의 M next_trading_day → 없으면 pandas_market_calendars NYSE → 둘 다 없으면 아래 NYSE 규칙표(M nyse_holidays와 같은 규칙).
+#   (2) K 가격 마지막일 < M 신호 마지막일이면 증분 재수집(날짜가 바뀌었는데 K 캐시만 뒤처진 경우) · 그래도 뒤처지면 00 ⚠.
+#   연구·교육용이며 투자 자문이 아니다.
+import datetime as _dt
+import functools as _ft
+
+# 산업 ETF → 부모 섹터(I INDUSTRIES 표와 같다 — I 통로가 없을 때의 폴백)
+K_INDUSTRY_TO_SECTOR: Dict[str, str] = {
+    "SOXX": "XLK", "IGV": "XLK", "SKYY": "XLK", "HACK": "XLK",
+    "IBB": "XLV", "XBI": "XLV", "IHE": "XLV", "IHI": "XLV", "IHF": "XLV",
+    "XRT": "XLY", "XHB": "XLY", "PEJ": "XLY", "CARZ": "XLY",
+    "PBJ": "XLP", "KBE": "XLF", "KRE": "XLF", "KIE": "XLF", "KCE": "XLF",
+    "ITA": "XLI", "IYT": "XLI", "JETS": "XLI", "IYZ": "XLC", "FDN": "XLC", "SOCL": "XLC",
+    "REZ": "XLRE", "XOP": "XLE", "XES": "XLE", "XME": "XLB", "GDX": "XLB",
+    "BJK": "XLY", "SRVR": "XLRE", "INDS": "XLRE",
+}
+# GICS 섹터 이름 → SPDR 섹터 ETF(N6-a 선택력 검정 · 위키백과 'GICS Sector' 열)
+GICS_SECTOR_TO_ETF: Dict[str, str] = {
+    "information technology": "XLK", "health care": "XLV", "financials": "XLF", "consumer discretionary": "XLY",
+    "consumer staples": "XLP", "industrials": "XLI", "energy": "XLE", "materials": "XLB",
+    "communication services": "XLC", "real estate": "XLRE", "utilities": "XLU",
+}
+# 시험·오프라인 주입용(기본 None = yfinance) — callable(ticker, start, end) → (DataFrame|None, 사유)
+PX_FETCHER_OVERRIDE: Optional[Any] = None
+
+
+def _find_m_module(M=None):
+    """[v0.11.0 R99] M(market_regime_trader)을 찾는다 — 인자 → sys.modules['market_regime_trader'] → next_trading_day·nyse_holidays가 있는 모듈."""
+    if M is not None and callable(getattr(M, "next_trading_day", None)):
+        return M
+    _m = sys.modules.get("market_regime_trader")
+    if _m is not None and callable(getattr(_m, "next_trading_day", None)):
+        return _m
+    for _nm, _mod in list(sys.modules.items()):
+        try:
+            if callable(getattr(_mod, "next_trading_day", None)) and callable(getattr(_mod, "nyse_holidays", None)):
+                return _mod
+        except Exception:
+            continue
+    return None
+
+
+def _easter_k(year: int) -> _dt.date:
+    """부활절(그레고리력 · Meeus/Jones/Butcher) — 성금요일 = 부활절 − 2일."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    L = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * L) // 451
+    mo, day = divmod(h + L - 7 * m + 114, 31)
+    return _dt.date(year, mo, day + 1)
+
+
+def _nth_weekday_k(year: int, month: int, weekday: int, n: int) -> _dt.date:
+    if n > 0:
+        d = _dt.date(year, month, 1)
+        d += _dt.timedelta(days=(weekday - d.weekday()) % 7)
+        return d + _dt.timedelta(weeks=n - 1)
+    nxt = _dt.date(year + (month == 12), (month % 12) + 1, 1)
+    d = nxt - _dt.timedelta(days=1)
+    d -= _dt.timedelta(days=(d.weekday() - weekday) % 7)
+    return d - _dt.timedelta(weeks=(-n) - 1)
+
+
+@_ft.lru_cache(maxsize=64)
+def nyse_holidays_k(year: int) -> frozenset:
+    """[v0.11.0 R99] NYSE 정규 휴장일 규칙표(M nyse_holidays와 같은 규칙) — 신정·MLK·대통령의 날·성금요일·메모리얼·준틴스(2022~)·
+    독립기념일·노동절·추수감사절·성탄절. 토 → 직전 금 · 일 → 다음 월(신정이 토요일이면 전년 12/31은 쉬지 않는다).
+    ⚠ 콜럼버스의 날·재향군인의 날은 **개장** · 성금요일은 **휴장**(연방공휴일 달력과 다르다). 임시 휴장(국장 등)은 규칙으로 알 수 없다."""
+    out = set()
+
+    def _obs(d: _dt.date) -> _dt.date:
+        if d.weekday() == 5:
+            return d - _dt.timedelta(days=1)
+        if d.weekday() == 6:
+            return d + _dt.timedelta(days=1)
+        return d
+    for m, day in ((1, 1), (7, 4), (12, 25)):
+        o = _obs(_dt.date(year, m, day))
+        if o.year == year:
+            out.add(o)
+    if year >= 2022:
+        o = _obs(_dt.date(year, 6, 19))
+        if o.year == year:
+            out.add(o)
+    if year >= 1998:
+        out.add(_nth_weekday_k(year, 1, 0, 3))
+    out.add(_nth_weekday_k(year, 2, 0, 3))
+    out.add(_nth_weekday_k(year, 5, 0, -1))
+    out.add(_nth_weekday_k(year, 9, 0, 1))
+    out.add(_nth_weekday_k(year, 11, 3, 4))
+    out.add(_easter_k(year) - _dt.timedelta(days=2))
+    return frozenset(out)
+
+
+def _is_trading_day_k(d) -> bool:
+    ts = pd.Timestamp(d).normalize()
+    return ts.weekday() < 5 and ts.date() not in nyse_holidays_k(ts.year)
+
+
+def next_trading_day_k(last, M=None, source: str = "auto") -> Tuple[pd.Timestamp, str]:
+    """[v0.11.0 R99 N2-2] last(자료 마지막 확정일)의 다음 **NYSE** 개장일과 쓴 달력 출처.
+    source="auto": M.next_trading_day → pandas_market_calendars NYSE → NYSE 규칙표 순. "m"·"pmc"·"rules"는 그 경로만(시험용).
+    예: 2026-10-09(금) → 10-12(월 · 콜럼버스의 날 개장) · 2026-04-02(목) → 04-06(성금요일 04-03 휴장) · 2026-11-10 → 11-11(재향군인의 날 개장)."""
+    base = pd.Timestamp(last).normalize()
+    if source in ("auto", "m"):
+        _m = _find_m_module(M)
+        if _m is not None:
+            try:
+                return pd.Timestamp(_m.next_trading_day(base)).normalize(), f"M.next_trading_day({getattr(_m, 'BUNDLE_VERSION', '?')} · NYSE 규칙)"
+            except Exception as e:
+                log("REPORT", kv(event="next_day_m_failed", err=type(e).__name__, msg=str(e)[:100]), level="warning")
+        if source == "m":
+            raise RuntimeError("M 모듈 없음")
+    if source in ("auto", "pmc"):
+        try:
+            import pandas_market_calendars as _mcal
+            _cal = _mcal.get_calendar("NYSE")
+            _vd = _cal.valid_days(start_date=(base + pd.Timedelta(days=1)).date(), end_date=(base + pd.Timedelta(days=20)).date())
+            if len(_vd):
+                _d0 = pd.Timestamp(_vd[0])
+                _d0 = (_d0.tz_convert(None) if _d0.tzinfo is not None else _d0).normalize()
+                return _d0, "pandas_market_calendars NYSE"
+        except Exception as e:
+            if source == "pmc":
+                raise
+            log("REPORT", kv(event="next_day_pmc_unavailable", err=type(e).__name__, note="NYSE 규칙표로 계산"), level="debug")
+    ts = base + pd.Timedelta(days=1)
+    for _ in range(15):
+        if _is_trading_day_k(ts):
+            return ts, "NYSE 규칙표(K 내장 · M nyse_holidays와 같은 규칙)"
+        ts += pd.Timedelta(days=1)
+    return base + pd.offsets.BDay(1), "영업일(규칙표 실패 · 주말만 건너뜀)"
+
+
+def trading_days_between_k(a, b) -> int:
+    """a(제외)~b(포함) NYSE 개장일 수(M 있으면 M.trading_days_between)."""
+    _m = _find_m_module()
+    if _m is not None and callable(getattr(_m, "trading_days_between", None)):
+        try:
+            return int(_m.trading_days_between(a, b))
+        except Exception:
+            pass
+    ta, tb = pd.Timestamp(a).normalize(), pd.Timestamp(b).normalize()
+    if tb <= ta:
+        return 0
+    n, cur = 0, ta + pd.Timedelta(days=1)
+    while cur <= tb and n < 400:
+        n += int(_is_trading_day_k(cur))
+        cur += pd.Timedelta(days=1)
+    return n
+
+
+def _last_valid_close_k(df: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
+    if df is None or not len(df):
+        return None
+    col = "Close" if "Close" in df.columns else ("종가" if "종가" in df.columns else None)
+    if col is None:
+        return pd.Timestamp(pd.DatetimeIndex(df.index).max()).normalize()
+    ok = pd.to_numeric(df[col], errors="coerce").notna().values
+    if not ok.any():
+        return None
+    return pd.Timestamp(pd.DatetimeIndex(df.index)[ok].max()).normalize()
+
+
+def k_data_last(prices: Dict[str, pd.DataFrame]) -> Optional[pd.Timestamp]:
+    """K 가격 자료의 마지막 유효 종가일(종목 중 최신 — 한 종목 결측이 전체를 뒤처지게 하지 않게 max)."""
+    ds = [d for d in (_last_valid_close_k(v) for v in (prices or {}).values()) if d is not None]
+    return max(ds) if ds else None
+
+
+def _m_signal_last(m_sig: Any = None) -> Tuple[Optional[pd.Timestamp], str]:
+    """[v0.11.0 R99 N2-5] M 신호 마지막일 — run(m_sig=) → I 통로(market_budget_handoff) → 없음. (날짜, 출처)."""
+    try:
+        if isinstance(m_sig, pd.DataFrame) and len(m_sig):
+            return pd.Timestamp(m_sig.index[-1]).normalize(), "run(m_sig=…)"
+        if isinstance(m_sig, pd.Series) and len(m_sig):
+            return pd.Timestamp(m_sig.index[-1]).normalize(), "run(m_sig=…)"
+    except Exception:
+        pass
+    for _nm, _mod in list(sys.modules.items()):
+        try:
+            _fn = getattr(_mod, "market_budget_handoff", None)
+        except Exception:
+            continue
+        if callable(_fn):
+            try:
+                _h = _fn()
+            except Exception:
+                continue
+            if isinstance(_h, dict) and isinstance(_h.get("target_pos"), pd.Series) and len(_h["target_pos"]):
+                _s = _h["target_pos"].dropna()
+                if len(_s):
+                    return pd.Timestamp(pd.DatetimeIndex(_s.index).max()).normalize(), f"I 통로({_nm})"
+    return None, "없음"
+
+
+def _fetch_px_one(t: str, start: Any, end: Any) -> Tuple[Optional[pd.DataFrame], str]:
+    """[v0.11.0 R99] 한 종목 OHLCV(auto_adjust) — download_prices._one과 같은 정규화(날짜만 · 종가 결측 행 제거). 길이 검사 없음(증분용)."""
+    if PX_FETCHER_OVERRIDE is not None:
+        return PX_FETCHER_OVERRIDE(t, start, end)
+    try:
+        import yfinance as yf
+        df = yf.Ticker(t).history(start=(str(pd.Timestamp(start).date()) if start is not None else None),
+                                  end=(str(pd.Timestamp(end).date()) if end else None),
+                                  auto_adjust=True, actions=True, raise_errors=False)
+        if df is None or not len(df):
+            return None, "빈 응답"
+        df = df.rename(columns=str.title)
+        df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+        keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        return df[keep].dropna(subset=["Close"]), ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {str(e)[:80]}"
+
+
+def refresh_prices_incremental(prices: Dict[str, pd.DataFrame], tickers: List[str], cfg: "StockConfig",
+                               target: Optional[pd.Timestamp] = None, cache_name: Optional[str] = None
+                               ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
+    """[v0.11.0 R99 N2-5] K 캐시가 M보다 뒤처졌을 때 **증분 재수집** — 종목마다 (자기 마지막일 − K_STALE_REFETCH_DAYS)부터 받아 뒤에 붙인다.
+    겹치는 날 종가가 달라졌으면(배당·분할로 조정 계수가 바뀜) 그 종목은 전 이력(cfg.START~)을 다시 받는다(이음새 불연속 방지).
+    기대 개장일 이후 봉(장중 미완성)은 _prices_freshness가 버린다. 캐시 파일(가격 증분 캐시)도 갱신한다. 실패는 사유와 함께 info['failed']."""
+    info: Dict[str, Any] = {"tickers": 0, "appended": [], "full": [], "failed": {}, "before": k_data_last(prices), "after": None}
+    fetch_days = int(getattr(cfg, "K_STALE_REFETCH_DAYS", 10) or 10)
+    changed: Dict[str, pd.DataFrame] = {}
+    for t in tickers:
+        old = prices.get(t)
+        if old is None or not len(old):
+            continue
+        info["tickers"] += 1
+        o_last = _last_valid_close_k(old) or pd.Timestamp(old.index.max())
+        start = o_last - pd.Timedelta(days=fetch_days)
+        new, why = _fetch_px_one(t, start, cfg.END)
+        if new is None or not len(new):
+            info["failed"][t] = why or "빈 응답"
+            continue
+        ov = old.index.intersection(new.index)
+        if len(ov) and "Close" in old.columns and "Close" in new.columns:
+            a = pd.to_numeric(old.loc[ov, "Close"], errors="coerce")
+            b = pd.to_numeric(new.loc[ov, "Close"], errors="coerce")
+            rel = float(((a - b).abs() / b.abs().clip(lower=1e-12)).max()) if len(ov) else 0.0
+            if rel == rel and rel > 1e-6:
+                full, why2 = _fetch_px_one(t, cfg.START, cfg.END)
+                if full is not None and len(full):
+                    changed[t] = full
+                    info["full"].append(t)
+                    continue
+        add = new.loc[new.index > old.index.max()]
+        if len(add):
+            changed[t] = pd.concat([old, add[[c for c in old.columns if c in add.columns]]]).sort_index()
+            changed[t] = changed[t][~changed[t].index.duplicated(keep="last")]
+            info["appended"].append(t)
+    if changed:
+        changed, _st, _why = _prices_freshness(changed, cfg, where="k_stale_refresh")
+        prices.update(changed)
+        try:
+            cp = _cache_path(cfg, cache_name or f"px_{cfg.START}_{cfg.END or 'now'}.pkl")
+            cached = pd.read_pickle(cp) if os.path.exists(cp) else {}
+            cached.update(changed)
+            pd.to_pickle(cached, cp)
+        except Exception as e:
+            log("DATA", kv(event="k_stale_refresh_cache_write_failed", err=type(e).__name__, msg=str(e)[:100]), level="warning")
+    info["after"] = k_data_last(prices)
+    return prices, info
+
+
+# =============================================================================
+# [v0.11.0 R99 N3 ★★★] 종목별 상승확률 — 워크포워드 풀링 로지스틱(측정·표시) · 섹터 안 확률 배분(sector_prob · 측정 행)
+# =============================================================================
+def _auc_k(y: np.ndarray, p: np.ndarray) -> float:
+    """순위 기반 AUC(Mann–Whitney) — 동률은 평균 순위. 한 클래스뿐이면 NaN."""
+    y = np.asarray(y, dtype=float)
+    p = np.asarray(p, dtype=float)
+    m = np.isfinite(y) & np.isfinite(p)
+    y, p = y[m], p[m]
+    n1 = float((y > 0.5).sum())
+    n0 = float(len(y) - n1)
+    if n1 < 1 or n0 < 1:
+        return float("nan")
+    r = pd.Series(p).rank(method="average").to_numpy()
+    return float((r[y > 0.5].sum() - n1 * (n1 + 1) / 2.0) / (n1 * n0))
+
+
+def _solve_intercept(z: np.ndarray, base: float) -> float:
+    """[R99 N3 보정] mean(sigmoid(z + δ)) = base 가 되는 δ(이분법 · |δ| ≤ 8). base가 0·1이거나 z가 비면 0."""
+    z = np.asarray(z, dtype=float)
+    z = z[np.isfinite(z)]
+    if not len(z) or not (0.0 < base < 1.0):
+        return 0.0
+    lo, hi = -8.0, 8.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if float(np.mean(1.0 / (1.0 + np.exp(-(z + mid))))) < base:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _prob_design(feat: pd.DataFrame, cfg: "StockConfig") -> pd.DataFrame:
+    """확률 모형 입력 — 자기이력 백분위(0~1)는 그대로 · 어닝_경과일은 min(일, 126)/126. 없는 열은 NaN."""
+    X = pd.DataFrame(index=feat.index)
+    for c in tuple(getattr(cfg, "PROB_FEATURES", ()) or ()):
+        v = (pd.to_numeric(feat[c], errors="coerce") if c in feat.columns else pd.Series(np.nan, index=feat.index, dtype=float))
+        if c == "어닝_경과일":
+            v = v.clip(lower=0.0, upper=126.0) / 126.0
+        X[c] = v.astype(float)
+    return X
+
+
+def build_stock_prob(feats: Dict[str, pd.DataFrame], cfg: "StockConfig", sector_of: Optional[Dict[str, str]] = None
+                     ) -> Dict[str, Any]:
+    """[v0.11.0 R99 N3] 종목별 P(향후 PROB_HORIZON일 수익 > 0) — 워크포워드 풀링 로지스틱(연 1회 재적합 · 엠바고 · 절편 재보정).
+
+    feats: 티커 → 특성 표(전 이력 · build_price_features + 어닝 특성 · '종가' 포함). 목표 y = _fwd_ret(종가, H) > 0(t+1 체결 관행 — t+H+1일
+      종가에 확정). 해 Y의 모형은 **학습 끝 = Y 첫 거래일 직전 개장일 − PROB_EMBARGO 거래일** 이하의 행만 쓴다 → 그 행들의 목표는 해 Y가
+      시작하기 전에 모두 확정(룩어헤드 없음 · 시험이 지킨다). 첫 해(학습 부족)는 확률 NaN = 균등. 보정: 학습 마지막 1년 행의 평균 예측이
+      그 1년의 실제 기저율과 같아지도록 절편만 옮긴다(해마다 기저율이 달라 합친 AUC가 연도별보다 낮던 원인 — 방법서 §2-3).
+    반환: prob(날짜×티커) · yearly(연도별 학습·시험 · AUC) · auc_all(합친 표본 밖) · calib(10분위 보정표) · ic(섹터 안 순위 IC) · today(오늘 순위).
+    ⚠ 선택 정보는 없다(R81·R99: 섹터 안 순위 IC +0.023 · t 0.47) — 이 확률은 **표시·측정용**이고 라이브 배분은 sector_linked(균등)다."""
+    out: Dict[str, Any] = {"ok": False}
+    t0 = time.time()
+    try:
+        from sklearn.linear_model import LogisticRegression
+    except Exception as e:
+        out["note"] = f"sklearn 없음({type(e).__name__}) — 확률 미산출(균등 유지)"
+        log("PROB", kv(event="k_prob_unavailable", err=type(e).__name__), level="warning")
+        return out
+    H = int(getattr(cfg, "PROB_HORIZON", 21) or 21)
+    emb = int(getattr(cfg, "PROB_EMBARGO", 22) or 22)
+    fcols = list(tuple(getattr(cfg, "PROB_FEATURES", ()) or ()))
+    price_feats = [c for c in fcols if c not in ("어닝_서프라이즈%_pct", "어닝_경과일")]
+    parts: List[pd.DataFrame] = []
+    for t, f in (feats or {}).items():
+        if f is None or not len(f) or "종가" not in f.columns:
+            continue
+        X = _prob_design(f, cfg)
+        px = pd.to_numeric(f["종가"], errors="coerce")
+        fwd = _fwd_ret(px, H)
+        X["fwd"] = fwd
+        X["y"] = (fwd > 0).astype(float).where(fwd.notna())
+        X["asset"] = t
+        X["date"] = pd.DatetimeIndex(f.index)
+        parts.append(X.reset_index(drop=True))
+    if not parts:
+        out["note"] = "특성 없음"
+        return out
+    P = pd.concat(parts, ignore_index=True)
+    P = P[P[price_feats].isna().sum(axis=1) <= 2].copy() if price_feats else P
+    P[fcols] = P[fcols].fillna(0.5)
+    if not len(P):
+        out["note"] = "학습 가능한 행 없음"
+        return out
+    dates = np.sort(P["date"].unique())
+    years = sorted(set(pd.DatetimeIndex(dates).year))
+    prob = pd.Series(np.nan, index=P.index, dtype=float)
+    seed = int(getattr(cfg, "PROB_SEED", 20260925))
+    min_rows = int(getattr(cfg, "PROB_MIN_TRAIN_ROWS", 2000) or 0)
+    ytab: List[Dict[str, Any]] = []
+    prev_auc = float("nan")
+    for Y in years:
+        ts = pd.Timestamp(f"{Y}-01-01")
+        di = int(np.searchsorted(dates, np.datetime64(ts)))
+        te = (P["date"] >= ts) & (P["date"] <= pd.Timestamp(f"{Y}-12-31"))
+        if di - 1 - emb < 0:
+            ytab.append({"연도": int(Y), "상태": "학습 자료 없음(첫 해) — 확률 NaN = 균등", "시험 행": int(te.sum())})
+            continue
+        tr_end = pd.Timestamp(dates[di - 1 - emb])
+        tr = P[(P["date"] <= tr_end) & P["y"].notna()]
+        if len(tr) < min_rows or tr["y"].nunique() < 2:
+            ytab.append({"연도": int(Y), "상태": f"학습 부족({len(tr)}행 < {min_rows}) — 확률 NaN = 균등", "학습 끝": str(tr_end.date()),
+                         "학습 행": int(len(tr)), "시험 행": int(te.sum())})
+            continue
+        mdl = LogisticRegression(C=float(getattr(cfg, "PROB_C", 0.5)), max_iter=2000, random_state=seed)
+        mdl.fit(tr[fcols].to_numpy(dtype=float), tr["y"].to_numpy(dtype=float))
+        delta = 0.0
+        ly = tr[tr["date"] > tr_end - pd.Timedelta(days=365)]
+        base_ly = float(ly["y"].mean()) if len(ly) else float("nan")
+        if bool(getattr(cfg, "PROB_CALIBRATE", True)) and len(ly):
+            delta = _solve_intercept(mdl.decision_function(ly[fcols].to_numpy(dtype=float)), base_ly)
+        if bool(te.any()):
+            z = mdl.decision_function(P.loc[te, fcols].to_numpy(dtype=float))
+            prob.loc[te] = 1.0 / (1.0 + np.exp(-(z + delta)))
+        lab = te & P["y"].notna()
+        auc = _auc_k(P.loc[lab, "y"].to_numpy(), prob.loc[lab].to_numpy()) if bool(lab.any()) else float("nan")
+        ytab.append({"연도": int(Y), "상태": "표본 밖 시험", "학습 끝": str(tr_end.date()),
+                     "학습 끝 → 연초(거래일)": int(di - int(np.searchsorted(dates, np.datetime64(tr_end)))),
+                     "학습 행": int(len(tr)), "학습 기저율(최근 1년)": (round(base_ly, 4) if base_ly == base_ly else None),
+                     "절편 보정 δ": round(float(delta), 4), "시험 행": int(te.sum()), "시험 행(목표 확정)": int(lab.sum()),
+                     "시험 기저율": (round(float(P.loc[lab, "y"].mean()), 4) if bool(lab.any()) else None),
+                     "평균 확률": (round(float(prob.loc[te].mean()), 4) if bool(te.any()) else None),
+                     "AUC(표본 밖)": (round(auc, 4) if auc == auc else None)})
+        log("PROB", kv(event="k_prob_fit", year=int(Y), train_end=str(tr_end.date()), train_rows=int(len(tr)),
+                       base_last_year=(round(base_ly, 4) if base_ly == base_ly else None), delta=round(float(delta), 4),
+                       test_rows=int(te.sum()), auc=(round(auc, 4) if auc == auc else "n/a"),
+                       auc_prev=(round(prev_auc, 4) if prev_auc == prev_auc else "n/a"), seed=seed, C=getattr(cfg, "PROB_C", None)))
+        if auc == auc:
+            prev_auc = auc
+    P["prob"] = prob
+    PW = P.pivot_table(index="date", columns="asset", values="prob", aggfunc="last").sort_index()
+    FW = P.pivot_table(index="date", columns="asset", values="fwd", aggfunc="last").sort_index()
+    oos = P[P["prob"].notna() & P["y"].notna()]
+    auc_all = _auc_k(oos["y"].to_numpy(), oos["prob"].to_numpy()) if len(oos) else float("nan")
+    calib = pd.DataFrame()
+    if len(oos) >= 100:
+        try:
+            q = pd.qcut(oos["prob"], 10, labels=False, duplicates="drop")
+            calib = (oos.assign(_q=q).groupby("_q").agg(**{"평균 확률": ("prob", "mean"), "실현 상승률": ("y", "mean"),
+                                                           "행": ("y", "size")}).reset_index().rename(columns={"_q": "10분위(0=최저)"}))
+            calib["평균 확률"] = calib["평균 확률"].round(4)
+            calib["실현 상승률"] = calib["실현 상승률"].round(4)
+        except Exception as e:
+            log("PROB", kv(event="k_prob_calib_failed", err=type(e).__name__), level="warning")
+    sec = dict(sector_of or {})
+    ic = stock_prob_rank_ic(PW, FW, sec)
+    today = pd.DataFrame()
+    if len(PW):
+        _last = PW.index[-1]
+        _pv = PW.loc[_last].dropna()
+        if len(_pv):
+            today = pd.DataFrame({"티커": _pv.index, "상승확률": _pv.values})
+            today["섹터"] = [sec.get(t, "-") for t in today["티커"]]
+            today["전체 순위"] = today["상승확률"].rank(ascending=False, method="min").astype(int)
+            today["섹터 안 순위"] = [f"{int(r)}/{int(n)}" for r, n in zip(
+                today.groupby("섹터")["상승확률"].rank(ascending=False, method="min"),
+                today.groupby("섹터")["상승확률"].transform("size"))]
+            today = today.sort_values("상승확률", ascending=False).reset_index(drop=True)
+            today["상승확률"] = today["상승확률"].round(4)
+    yt = pd.DataFrame(ytab)
+    _ya = pd.to_numeric(yt.get("AUC(표본 밖)"), errors="coerce").dropna() if len(yt) else pd.Series(dtype=float)
+    out.update({"ok": True, "prob": PW, "fwd": FW, "yearly": yt, "auc_all": auc_all,
+                "auc_year_min": (float(_ya.min()) if len(_ya) else float("nan")),
+                "auc_year_max": (float(_ya.max()) if len(_ya) else float("nan")),
+                "calib": calib, "ic": ic, "today": today, "asof": (str(PW.index[-1].date()) if len(PW) else "-"),
+                "features": fcols, "n_rows": int(len(P)), "n_oos": int(len(oos)), "sector_of": sec,
+                "horizon": H, "embargo": emb, "sec": round(time.time() - t0, 1)})
+    log("PROB", kv(event="k_prob_ready", rows=int(len(P)), oos=int(len(oos)), auc_all=(round(auc_all, 4) if auc_all == auc_all else "n/a"),
+                   auc_years=(f"{out['auc_year_min']:.3f}~{out['auc_year_max']:.3f}" if len(_ya) else "-"),
+                   ic_within=(round(float(ic.get("mean", np.nan)), 4) if ic.get("n") else "n/a"),
+                   ic_t=(round(float(ic.get("t", np.nan)), 2) if ic.get("n") else "n/a"), asof=out["asof"], sec=out["sec"],
+                   note="측정·표시 전용 — 라이브 배분은 sector_linked 균등(선택 정보 없음 · R81·R99)"))
+    return out
+
+
+def _within_group_ic(x: np.ndarray, y: np.ndarray, g: np.ndarray, min_n: int = 3) -> float:
+    """[교훈 63] 그룹 안 순위 IC — 그룹마다 pct 순위를 매기고 **그룹 평균을 빼** 모아서 상관. 그룹 크기 착시 제거. 유효 그룹 없으면 NaN."""
+    df = pd.DataFrame({"x": x, "y": y, "g": g}).dropna()
+    if not len(df):
+        return float("nan")
+    n = df.groupby("g")["x"].transform("size")
+    df = df[n >= min_n]
+    if len(df) < min_n:
+        return float("nan")
+    rx = df.groupby("g")["x"].rank(pct=True)
+    ry = df.groupby("g")["y"].rank(pct=True)
+    rx = rx - rx.groupby(df["g"]).transform("mean")
+    ry = ry - ry.groupby(df["g"]).transform("mean")
+    sx, sy = float(rx.std()), float(ry.std())
+    if not (sx > 0 and sy > 0):
+        return float("nan")
+    return float(np.corrcoef(rx.to_numpy(), ry.to_numpy())[0, 1])
+
+
+def stock_prob_rank_ic(PW: pd.DataFrame, FW: pd.DataFrame, sector_of: Dict[str, str], split_year: int = 2022) -> Dict[str, Any]:
+    """[v0.11.0 R99 N3] 월말 확률 → 다음 H일 수익의 **섹터 안** 순위 IC(그룹 평균 제거) · 전체 IC(참고). 월별 IC 평균 · t · IC>0 비율 · 앞/뒤."""
+    res: Dict[str, Any] = {"n": 0}
+    if not (isinstance(PW, pd.DataFrame) and len(PW) and isinstance(FW, pd.DataFrame) and len(FW)):
+        return res
+    me = PW.dropna(how="all").groupby(pd.DatetimeIndex(PW.dropna(how="all").index).to_period("M")).tail(1).index
+    rows = []
+    for d in me:
+        if d not in FW.index:
+            continue
+        p = PW.loc[d]
+        f = FW.loc[d].reindex(p.index)
+        ok = p.notna() & f.notna()
+        if int(ok.sum()) < 6:
+            continue
+        g = np.array([sector_of.get(t, "?") for t in p.index[ok]], dtype=object)
+        icw = _within_group_ic(p[ok].to_numpy(), f[ok].to_numpy(), g)
+        ica = float(pd.Series(p[ok].to_numpy()).rank().corr(pd.Series(f[ok].to_numpy()).rank()))
+        rows.append({"월말": d, "섹터 안 IC": icw, "전체 IC": ica, "종목 수": int(ok.sum())})
+    M_ = pd.DataFrame(rows)
+    if not len(M_):
+        return res
+    w = pd.to_numeric(M_["섹터 안 IC"], errors="coerce").dropna()
+    a = pd.to_numeric(M_["전체 IC"], errors="coerce").dropna()
+
+    def _t(s):
+        return float(s.mean() / s.std(ddof=1) * math.sqrt(len(s))) if len(s) > 2 and float(s.std(ddof=1)) > 0 else float("nan")
+    yrs = pd.DatetimeIndex(M_["월말"]).year
+    fh = pd.to_numeric(M_.loc[yrs < split_year, "섹터 안 IC"], errors="coerce").dropna()
+    sh = pd.to_numeric(M_.loc[yrs >= split_year, "섹터 안 IC"], errors="coerce").dropna()
+    res.update({"n": int(len(w)), "mean": float(w.mean()) if len(w) else float("nan"), "t": _t(w),
+                "pos_share": float((w > 0).mean()) if len(w) else float("nan"),
+                "mean_all": float(a.mean()) if len(a) else float("nan"), "t_all": _t(a),
+                "first": float(fh.mean()) if len(fh) else float("nan"), "second": float(sh.mean()) if len(sh) else float("nan"),
+                "split_year": int(split_year), "monthly": M_})
+    return res
+
+
+def build_earn_composite(panel: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """[v0.11.0 R99 N6-b] 어닝 복합 점수(날짜×티커) = 그날 횡단면에서 (직전 서프라이즈% 순위 + 서프라이즈 4분기 평균 순위)/2(0~1).
+    한쪽만 있으면 그 순위. 둘 다 없으면 NaN(→ sector_prob가 그 종목을 섹터 중앙값으로 채운다). 인과: 둘 다 발표일 as-of 값."""
+    s1 = pd.DataFrame({t: pd.to_numeric(p.get("어닝_서프라이즈%"), errors="coerce") for t, p in panel.items()
+                       if isinstance(p, pd.DataFrame) and "어닝_서프라이즈%" in p.columns})
+    s2 = pd.DataFrame({t: pd.to_numeric(p.get("서프라이즈_4분기평균"), errors="coerce") for t, p in panel.items()
+                       if isinstance(p, pd.DataFrame) and "서프라이즈_4분기평균" in p.columns})
+    if not s1.shape[1] and not s2.shape[1]:
+        return pd.DataFrame()
+    idx = s1.index.union(s2.index)
+    cols = sorted(set(s1.columns) | set(s2.columns))
+    r1 = s1.reindex(index=idx, columns=cols).rank(axis=1, pct=True)
+    r2 = s2.reindex(index=idx, columns=cols).rank(axis=1, pct=True)
+    return (r1.fillna(r2) + r2.fillna(r1)) / 2.0
+
+
+def _sector_prob_weights(idx: pd.DatetimeIndex, tickers: List[str], live: pd.DataFrame, cut: pd.DataFrame,
+                         ia: Dict[str, Any], parent_of: Dict[str, str], cap: float, etf_avail: Optional[set],
+                         score: pd.DataFrame, select: str = "exclude_bottom", params: Optional[Dict[str, float]] = None,
+                         min_n: int = 3) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    """[v0.11.0 R99 N3 · sector_prob] 섹터 비중은 S★ 그대로(= _sector_linked_weights와 같은 SW) — **섹터 안 종목만** 점수로 고른다.
+
+    섹터 s·날 t: 적격 E = 관측 & ~감축(E3) · m = |E| · n = 관측 수 · 종목 몫 B = SW·m/n(균등일 때와 같은 합 — '종목 몫 보존').
+      점수가 섹터에 하나도 없으면(첫 해 등) 또는 m < min_n → **균등**(sector_linked와 같다).
+      일부만 없으면 그 종목 점수 = 그날 섹터 적격 점수의 중앙값(중립 — 제외·선택에 걸리지 않게).
+      exclude_bottom: 하위 max(1, round(m·frac)) 제외 → 나머지에 B 균등(제외 몫 재분배 · 합 보존)
+      top           : 상위 k = min(max, max(1, round(m·frac))) 에 B 균등
+      tilt          : w_i = B·[(1−λ)/m + λ·순위_i/Σ순위](순위 1 = 최저 점수)
+    그 뒤 종목 상한 cap → 넘친 몫·감축(E3) 몫·관측 0인 섹터 몫은 부모 섹터 ETF(없으면 현금) — _sector_linked_weights와 같은 규칙.
+    ⚠ 룩어헤드 없음: 점수는 t일까지의 값(확률 = 그 해 모형 · 어닝 = as-of) · 비중은 t일 확정 → t+1 시가 체결."""
+    prm = dict(params or {})
+    sel = str(select or "exclude_bottom").lower()
+
+    def _al(df):
+        if not isinstance(df, pd.DataFrame) or not df.shape[1]:
+            return pd.DataFrame(index=idx)
+        return df.reindex(idx.union(df.index)).sort_index().ffill().reindex(idx).fillna(0.0).clip(lower=0.0)
+    iw = _al(ia.get("industry_w"))
+    pw = _al(ia.get("parent_w"))
+    ind2sec = {str(k): str(v) for k, v in dict(ia.get("ind2sec") or {}).items()}
+    sectors = sorted(set(ind2sec.values()) | set(map(str, pw.columns)))
+    SW = pd.DataFrame(0.0, index=idx, columns=sectors)
+    for c in iw.columns:
+        if str(c) in ind2sec:
+            SW[ind2sec[str(c)]] += iw[c]
+    for c in pw.columns:
+        SW[str(c)] += pw[c]
+    t2s = {}
+    for t in tickers:                          # _sector_linked_weights와 **같은** 매핑(섹터 합·균등 폴백이 비트 단위로 같게)
+        p_ = str(parent_of.get(t, "") or "")
+        t2s[t] = p_ if (p_ in sectors or p_ in SECTOR_ETFS) else ind2sec.get(p_, "")
+    Ws = pd.DataFrame(0.0, index=idx, columns=tickers)
+    We = pd.DataFrame(0.0, index=idx, columns=sectors)
+    SC = (score.reindex(index=idx, columns=tickers).astype(float) if isinstance(score, pd.DataFrame)
+          else pd.DataFrame(np.nan, index=idx, columns=tickers))
+    frac = float(prm.get("frac", 0.20 if sel == "exclude_bottom" else 1.0 / 3.0))
+    kmax = int(prm.get("max", 8) or 8)
+    lam = float(prm.get("lam", 0.5))
+    n_sel_days = n_eq_days = 0
+    excl_total = 0
+    for s_ in sectors:
+        mem = [t for t in tickers if t2s.get(t) == s_]
+        if not mem:
+            We[s_] += SW[s_]
+            continue
+        LV = live[mem].reindex(idx).fillna(False).astype(bool).to_numpy()
+        OK = LV & ~cut[mem].reindex(idx).fillna(False).astype(bool).to_numpy()
+        S_ = SC[mem].to_numpy(dtype=float)
+        sw = SW[s_].to_numpy(dtype=float)
+        nl = LV.sum(axis=1)
+        W_ = np.zeros((len(idx), len(mem)), dtype=float)
+        cut_amt = np.zeros(len(idx), dtype=float)
+        for i in range(len(idx)):
+            if nl[i] <= 0:
+                continue
+            e = np.flatnonzero(OK[i])
+            m = len(e)
+            slot = sw[i] / nl[i]
+            cut_amt[i] = slot * (nl[i] - m)
+            if m == 0:
+                continue
+            sc = S_[i, e].copy()
+            if m < int(min_n) or not np.isfinite(sc).any():
+                W_[i, e] = slot
+                n_eq_days += 1
+                continue
+            if not np.isfinite(sc).all():
+                sc[~np.isfinite(sc)] = float(np.nanmedian(sc))
+            B = slot * m
+            order = e[np.argsort(sc, kind="mergesort")]           # 오름차순(1번째 = 최저 점수)
+            if sel == "exclude_bottom":
+                kx = min(m - 1, max(1, int(round(m * frac))))
+                keep = order[kx:]
+                W_[i, keep] = B / len(keep)
+                excl_total += kx
+            elif sel == "top":
+                k = min(kmax, max(1, int(round(m * frac))), m)
+                keep = order[-k:]
+                W_[i, keep] = B / k
+            elif sel == "tilt":
+                rk = np.empty(m, dtype=float)
+                rk[np.argsort(sc, kind="mergesort")] = np.arange(1, m + 1, dtype=float)
+                W_[i, e] = B * ((1.0 - lam) / m + lam * rk / rk.sum())
+            else:
+                W_[i, e] = slot
+            n_sel_days += 1
+        capped = np.minimum(W_, float(cap))
+        Ws[mem] = capped
+        We[s_] += (W_ - capped).sum(axis=1) + cut_amt + np.where(nl == 0, sw, 0.0)
+    miss = [s_ for s_ in We.columns if etf_avail is not None and s_ not in etf_avail]
+    miss_cash = We[miss].sum(axis=1) if miss else pd.Series(0.0, index=idx)
+    We = We[[c for c in We.columns if c not in miss]]
+    diag = {"cap": float(cap), "sectors": sectors, "select": sel, "params": prm, "etf_missing": miss,
+            "etf_missing_cash_mean": round(float(miss_cash.mean()), 5), "sector_total_mean": round(float(SW.sum(axis=1).mean()), 4),
+            "stock_share_mean": round(float(Ws.sum(axis=1).mean()), 4), "etf_share_mean": round(float(We.sum(axis=1).mean()), 4),
+            "select_sector_days": int(n_sel_days), "equal_sector_days": int(n_eq_days), "excluded_total": int(excl_total),
+            "nostock_sectors": [s_ for s_ in sectors if not any(t2s.get(t) == s_ for t in tickers)],
+            "label": str(ia.get("label", "-")), "sector_w": SW}
+    return Ws, We, diag
+
+
+# =============================================================================
+# [v0.11.0 R99 N6-a ★★ 측정 전용] 종목 선택력 긴 이력 검정 — S&P 500 **그 시점 구성**(약 500종목) · 2010~ · 월말 섹터 안 순위 IC
+# =============================================================================
+#   왜(방법서 §7-4·§7-5): 58종목 × 98개월로는 섹터 안 IC 0.02~0.03을 확인하는 데 20~80년이 필요하다(검정력). 폭이 길이보다 싸다 —
+#     N ≈ 500이면 IC 0.02를 4~7년에 잰다. S의 SPDR 섹터 ETF는 S&P 500을 GICS 섹터로 나눈 것이므로 'S&P 500 안 섹터 안 선택'이 곧
+#     'XLK를 살 때 XLK 안에서 무엇을 고를까'와 같은 질문이다. 매매 유니버스(K 58종목)는 그대로 — 검정만 넓은 종목군에서 한다.
+#   ⚠ 생존 편향: 오늘 구성으로 과거를 돌리면 살아남은 종목만 남아 모멘텀·저변동 IC가 부풀려진다 → 그 시점 구성(편입·편출)을 쓰고,
+#     편출·인수 종목의 Yahoo 이력 결손은 월별 **가격 확보율**로 감시한다(90% 미만 달 = ⚠ '생존 편향 가능').
+#   신호는 사전 목록(결과를 보고 더하지 않는다 · 교훈 16). 목표 = 다음 21거래일 수익의 **섹터 안** 순위(섹터 대비 초과수익의 순위와 같다 —
+#     섹터 수익은 그룹 안에서 공통이라 순위를 바꾸지 않는다). IC = 섹터마다 pct 순위 − 그룹 평균(교훈 63)을 모아 상관.
+#   무작위 대조군: 매달 같은 종목·같은 섹터에 무작위 순위 SELAUDIT_CONTROLS(200)개 → 평균 IC 귀무 분포(백분위) · 가짜 신호 t 분포 보정(교훈 14).
+SELAUDIT_SIGNALS: Tuple[Tuple[str, str], ...] = (
+    ("earn_surprise", "어닝 서프라이즈(최근 분기 %)"),
+    ("earn_sur4", "어닝 서프라이즈 4분기 평균(%)"),
+    ("pead60", "PEAD — 발표 60일 이내 서프라이즈(그 밖 제외)"),
+    ("mom12_1", "12-1개월 모멘텀"),
+    ("mom6_1", "6-1개월 모멘텀"),
+    ("mom3", "3개월 모멘텀"),
+    ("rev1", "1개월 반전(−1개월 수익)"),
+    ("high52", "52주 고점 근접(종가/252일 최고)"),
+    ("lowvol", "저변동(−63일 변동성)"),
+    ("ext200", "200일 이격"),
+    ("ind_mom", "소속 산업(GICS 하위산업) 12-1 모멘텀"),
+    ("resid_mom", "잔차 모멘텀(섹터 대비 · 36개월 β · 12-1)"),
+)
+
+
+def _http_get(url: str, timeout: float = 40.0) -> str:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (research; stock_regime R99 selection audit)",
+                                               "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def _flat_cols(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    if isinstance(d.columns, pd.MultiIndex):
+        d.columns = [" ".join(str(x) for x in c if str(x) and not str(x).startswith("Unnamed")).strip() for c in d.columns]
+    else:
+        d.columns = [str(c) for c in d.columns]
+    return d
+
+
+def sp500_wiki_tables(cfg: "StockConfig") -> Tuple[pd.DataFrame, pd.DataFrame, str]:
+    """위키백과 'List of S&P 500 companies' — (현재 구성: 티커·이름·섹터ETF·하위산업, 변경 이력: 날짜·편입·편출, 사유)."""
+    import io as _io
+    html = _http_get(str(getattr(cfg, "SELAUDIT_WIKI_URL", "")))
+    tabs = pd.read_html(_io.StringIO(html))
+    cur = _flat_cols(tabs[0])
+    sym = next(c for c in cur.columns if "symbol" in c.lower() or "ticker" in c.lower())
+    secc = next((c for c in cur.columns if "gics sector" in c.lower()), None)
+    subc = next((c for c in cur.columns if "sub-industry" in c.lower() or "sub industry" in c.lower()), None)
+    namec = next((c for c in cur.columns if "security" in c.lower()), None)
+    C = pd.DataFrame({"티커": cur[sym].map(normalize_ticker),
+                      "이름": (cur[namec].astype(str) if namec else ""),
+                      "섹터": (cur[secc].astype(str).str.lower().map(GICS_SECTOR_TO_ETF) if secc else None),
+                      "하위산업": (cur[subc].astype(str) if subc else None)})
+    ch = _flat_cols(tabs[1])
+    dcol = next(c for c in ch.columns if "date" in c.lower())
+    acol = next((c for c in ch.columns if "added" in c.lower() and ("ticker" in c.lower() or "symbol" in c.lower())), None)
+    rcol = next((c for c in ch.columns if "removed" in c.lower() and ("ticker" in c.lower() or "symbol" in c.lower())), None)
+    CH = pd.DataFrame({"날짜": pd.to_datetime(ch[dcol], errors="coerce"),
+                       "편입": (ch[acol].map(lambda x: normalize_ticker(x) if isinstance(x, str) else "") if acol else ""),
+                       "편출": (ch[rcol].map(lambda x: normalize_ticker(x) if isinstance(x, str) else "") if rcol else "")})
+    CH = CH.dropna(subset=["날짜"]).sort_values("날짜").reset_index(drop=True)
+    return C, CH, f"위키백과(현재 {len(C)}종목 · 변경 {len(CH)}건 · {CH['날짜'].min().date() if len(CH) else '-'}~)"
+
+
+def sp500_hist_csv(cfg: "StockConfig") -> Tuple[Optional[pd.DataFrame], str]:
+    """그 시점 구성 CSV('date,tickers' — 쉼표로 이은 티커 목록). ① SELAUDIT_HIST_CSV(로컬 · Kaggle 입력) ② 공개 저장소 최신 파일(GitHub API)."""
+    import io as _io
+    p = str(getattr(cfg, "SELAUDIT_HIST_CSV", "") or "")
+    txt, src = None, "-"
+    if p and os.path.exists(p):
+        with open(p, "r", encoding="utf-8", errors="replace") as fh:
+            txt = fh.read()
+        src = f"로컬 {os.path.basename(p)}"
+    if txt is None and str(getattr(cfg, "SELAUDIT_HIST_REPO_API", "") or ""):
+        try:
+            items = json.loads(_http_get(str(cfg.SELAUDIT_HIST_REPO_API)))
+            cands = [it for it in items if isinstance(it, dict) and str(it.get("name", "")).lower().endswith(".csv")
+                     and "historical components" in str(it.get("name", "")).lower()]
+
+            def _k(it):
+                import re as _re
+                m_ = _re.search(r"(\d{2})-(\d{2})-(\d{4})", str(it.get("name", "")))
+                return (m_.group(3), m_.group(1), m_.group(2)) if m_ else ("0", "0", "0")
+            if cands:
+                it = sorted(cands, key=_k)[-1]
+                txt = _http_get(str(it.get("download_url")))
+                src = f"공개 저장소 {it.get('name')}"
+        except Exception as e:
+            log("UNIV", kv(event="sp500_hist_repo_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+    if txt is None:
+        return None, "없음"
+    df = pd.read_csv(_io.StringIO(txt))
+    cols = {c.lower(): c for c in df.columns}
+    dc, tc = cols.get("date"), cols.get("tickers")
+    if dc is None or tc is None:
+        return None, f"{src} — 형식 불일치(date,tickers 열 없음)"
+    H = pd.DataFrame({"날짜": pd.to_datetime(df[dc], errors="coerce"),
+                      "구성": df[tc].astype(str).map(lambda s: frozenset(normalize_ticker(x) for x in s.split(",") if x.strip()))})
+    H = H.dropna(subset=["날짜"]).sort_values("날짜").reset_index(drop=True)
+    return H, f"{src}({len(H)}행 · {H['날짜'].min().date()}~{H['날짜'].max().date()})"
+
+
+def membership_from_changes(current: set, changes: pd.DataFrame, dates: List[pd.Timestamp]) -> Dict[pd.Timestamp, frozenset]:
+    """현재 구성에서 변경 이력을 **거꾸로** 되돌려 각 날짜(그날 장 마감 기준)의 구성을 만든다 — 날짜 d 뒤의 변경은 되돌린다(편입 빼고 편출 더함)."""
+    S = set(current)
+    ch = changes.sort_values("날짜", ascending=False).reset_index(drop=True) if len(changes) else changes
+    out: Dict[pd.Timestamp, frozenset] = {}
+    j = 0
+    for d in sorted(dates, reverse=True):
+        while j < len(ch) and pd.Timestamp(ch.loc[j, "날짜"]) > pd.Timestamp(d):
+            a, r = str(ch.loc[j, "편입"] or ""), str(ch.loc[j, "편출"] or "")
+            if a:
+                S.discard(a)
+            if r:
+                S.add(r)
+            j += 1
+        out[pd.Timestamp(d)] = frozenset(S)
+    return out
+
+
+def membership_from_hist(H: pd.DataFrame, dates: List[pd.Timestamp]) -> Dict[pd.Timestamp, frozenset]:
+    """그 시점 구성 표(날짜·구성) — 각 날짜 d에 대해 날짜 ≤ d인 마지막 행."""
+    out: Dict[pd.Timestamp, frozenset] = {}
+    hd = pd.DatetimeIndex(H["날짜"])
+    for d in dates:
+        k = int(hd.searchsorted(pd.Timestamp(d), side="right")) - 1
+        out[pd.Timestamp(d)] = (H["구성"].iloc[k] if k >= 0 else frozenset())
+    return out
+
+
+def _asof_rows(daily: pd.DataFrame, month_ends: pd.DatetimeIndex) -> pd.DataFrame:
+    """월말 m마다 m 이하 마지막 거래일의 행(인과)."""
+    di = pd.DatetimeIndex(daily.index)
+    pos = di.searchsorted(month_ends, side="right") - 1
+    ok = pos >= 0
+    out = pd.DataFrame(np.nan, index=month_ends, columns=daily.columns, dtype=float)
+    if ok.any():
+        out.loc[month_ends[ok]] = daily.to_numpy(dtype=float)[pos[ok]]
+    return out
+
+
+def selaudit_signals(close: pd.DataFrame, month_ends: pd.DatetimeIndex, earn: Optional[Dict[str, pd.DataFrame]],
+                     sector_of: Dict[str, str], subind_of: Dict[str, str],
+                     member: Dict[pd.Timestamp, frozenset]) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame]:
+    """[N6-a] 월말 신호(월×티커)와 목표(다음 21거래일 수익 · t+1 체결 관행). 전부 t일(월말 이하 마지막 거래일) 종가까지의 정보."""
+    C = close.sort_index().astype(float)
+    C = C.ffill(limit=5)
+    R = C.pct_change(fill_method=None)
+    sig: Dict[str, pd.DataFrame] = {}
+    sig["mom12_1"] = _asof_rows(C.shift(21) / C.shift(252) - 1.0, month_ends)
+    sig["mom6_1"] = _asof_rows(C.shift(21) / C.shift(126) - 1.0, month_ends)
+    sig["mom3"] = _asof_rows(C / C.shift(63) - 1.0, month_ends)
+    sig["rev1"] = _asof_rows(-(C / C.shift(21) - 1.0), month_ends)
+    sig["high52"] = _asof_rows(C / C.rolling(252, min_periods=200).max(), month_ends)
+    sig["lowvol"] = _asof_rows(-R.rolling(63, min_periods=50).std(), month_ends)
+    sig["ext200"] = _asof_rows(C / C.rolling(200, min_periods=150).mean() - 1.0, month_ends)
+    fwd = _asof_rows(C.shift(-22) / C.shift(-1) - 1.0, month_ends)
+    # 소속 산업(하위산업) 12-1 모멘텀 — 그 달 구성 종목 중 같은 하위산업의 평균(자기 포함)
+    im = pd.DataFrame(np.nan, index=month_ends, columns=C.columns, dtype=float)
+    m12 = sig["mom12_1"]
+    for d in month_ends:
+        mem = [t for t in member.get(pd.Timestamp(d), frozenset()) if t in C.columns and subind_of.get(t)]
+        if not mem:
+            continue
+        v = m12.loc[d, mem]
+        g = pd.Series({t: subind_of[t] for t in mem})
+        im.loc[d, mem] = v.groupby(g).transform("mean").reindex(mem).to_numpy()
+    sig["ind_mom"] = im
+    # 잔차 모멘텀 — 월 수익을 섹터(그 달 구성 종목 동일가중) 수익에 36개월 회귀 · 잔차 합(12-1) / 잔차 표준편차
+    Cm = _asof_rows(C, month_ends)
+    Rm = Cm.pct_change(fill_method=None)
+    rs = pd.DataFrame(np.nan, index=month_ends, columns=C.columns, dtype=float)
+    secs = sorted(set(v for v in sector_of.values() if v))
+    SR = pd.DataFrame(np.nan, index=month_ends, columns=secs, dtype=float)
+    for d in month_ends:
+        mem = [t for t in member.get(pd.Timestamp(d), frozenset()) if t in Rm.columns and sector_of.get(t)]
+        if not mem:
+            continue
+        r = Rm.loc[d, mem]
+        g = pd.Series({t: sector_of[t] for t in mem})
+        SR.loc[d, :] = r.groupby(g).mean().reindex(secs).to_numpy()
+    me = list(month_ends)
+    for k in range(36, len(me)):
+        d = me[k]
+        mem = [t for t in member.get(pd.Timestamp(d), frozenset()) if t in Rm.columns and sector_of.get(t)]
+        if not mem:
+            continue
+        win = me[k - 36:k]                                   # d 이전 36개월(d 제외)
+        Y = Rm.loc[win, mem]
+        for s_ in secs:
+            ms = [t for t in mem if sector_of.get(t) == s_]
+            if not ms:
+                continue
+            x = SR.loc[win, s_]
+            xv = x.to_numpy(dtype=float)
+            Yv = Y[ms].to_numpy(dtype=float)
+            okx = np.isfinite(xv)
+            if okx.sum() < 24:
+                continue
+            xm = np.nanmean(xv[okx])
+            vx = np.nanvar(xv[okx])
+            if not (vx > 0):
+                continue
+            Yc = np.where(np.isfinite(Yv) & okx[:, None], Yv, np.nan)
+            cnt = np.isfinite(Yc).sum(axis=0)
+            ym = np.nanmean(Yc, axis=0)
+            beta = np.nansum((Yc - ym) * (xv[:, None] - xm), axis=0) / np.maximum(cnt, 1) / vx
+            E = Yc - beta * xv[:, None]
+            sd = np.nanstd(E, axis=0)
+            mom = np.nansum(E[-11:], axis=0)                   # 12-1: d로 끝나는 달(최근 1개월)은 win에 없다 → 그 앞 11개월
+            val = np.where((cnt >= 24) & (sd > 0), mom / np.where(sd > 0, sd, np.nan), np.nan)
+            rs.loc[d, ms] = val
+    sig["resid_mom"] = rs
+    # 어닝 — 발표일 as-of(월말 이하 마지막 발표)
+    es = pd.DataFrame(np.nan, index=month_ends, columns=C.columns, dtype=float)
+    e4 = es.copy()
+    pe = es.copy()
+    base = pd.DataFrame({"날짜": month_ends}).sort_values("날짜")
+    for t, e in (earn or {}).items():
+        if t not in C.columns or not isinstance(e, pd.DataFrame) or not len(e):
+            continue
+        scol = next((c for c in e.columns if "surprise" in str(c).lower()), None)
+        if scol is None:
+            continue
+        L = pd.DataFrame({"날짜": pd.DatetimeIndex(e.index).normalize(), "sur": pd.to_numeric(e[scol], errors="coerce")})
+        L = L.dropna(subset=["sur"]).sort_values("날짜")
+        L = L[L["날짜"] <= pd.Timestamp(month_ends[-1])] if len(month_ends) else L
+        if not len(L):
+            continue
+        L["sur4"] = L["sur"].rolling(4, min_periods=2).mean()
+        L["_d"] = L["날짜"]
+        m_ = pd.merge_asof(base, L, on="날짜", direction="backward").set_index("날짜")
+        es[t] = m_["sur"].to_numpy()
+        e4[t] = m_["sur4"].to_numpy()
+        age = (pd.Series(month_ends, index=month_ends) - pd.to_datetime(m_["_d"].to_numpy())).dt.days.to_numpy()
+        pe[t] = np.where(age <= 60, m_["sur"].to_numpy(), np.nan)
+    sig["earn_surprise"] = es
+    sig["earn_sur4"] = e4
+    sig["pead60"] = pe
+    return sig, fwd
+
+
+def selaudit_evaluate(sig: Dict[str, pd.DataFrame], fwd: pd.DataFrame, member: Dict[pd.Timestamp, frozenset],
+                      sector_of: Dict[str, str], cfg: "StockConfig", has_price: Optional[pd.DataFrame] = None
+                      ) -> Dict[str, Any]:
+    """[N6-a] 월별 섹터 안 IC(그룹 평균 제거) · 전체 IC(참고) · 상위−하위 1/5 · 무작위 대조군 · 가격 확보율 · 판정(사전등록)."""
+    months = list(fwd.index)
+    split = int(getattr(cfg, "SELAUDIT_SPLIT_YEAR", 2018))
+    rng = np.random.default_rng(int(getattr(cfg, "SELAUDIT_SEED", 20260925)))
+    nctl = int(getattr(cfg, "SELAUDIT_CONTROLS", 200) or 0)
+    cov_rows = []
+    rows = []
+    ctl_ic = np.full((max(nctl, 0), len(months)), np.nan)
+    for mi, d in enumerate(months):
+        memb = sorted(member.get(pd.Timestamp(d), frozenset()))
+        if not memb:
+            continue
+
+        def _hp(t_):
+            if t_ not in fwd.columns:
+                return False
+            if has_price is not None:
+                return bool(has_price.loc[d, t_]) if t_ in has_price.columns else False
+            return True
+        have = [t for t in memb if _hp(t)]
+        cov = len(have) / max(1, len(memb))
+        cov_rows.append({"월말": d, "구성 종목": len(memb), "가격 확보": len(have), "확보율": round(cov, 4)})
+        y = fwd.loc[d, [t for t in have]]
+        g = pd.Series({t: sector_of.get(t) for t in have})
+        okb = y.notna() & g.notna()
+        yb, gb = y[okb], g[okb]
+        if nctl > 0 and len(yb) >= 10:
+            dfy = pd.DataFrame({"y": yb.to_numpy(), "g": gb.to_numpy()})
+            nn = dfy.groupby("g")["y"].transform("size")
+            dfy = dfy[nn >= 3].reset_index(drop=True)
+            if len(dfy) >= 10:
+                ry = dfy.groupby("g")["y"].rank(pct=True)
+                ry = (ry - ry.groupby(dfy["g"]).transform("mean")).to_numpy()
+                RX = np.zeros((nctl, len(dfy)))
+                for _, pos in dfy.groupby("g").indices.items():
+                    k = len(pos)
+                    rr = np.argsort(np.argsort(rng.random((nctl, k)), axis=1), axis=1).astype(float) + 1.0
+                    RX[:, pos] = rr / k - (k + 1.0) / (2.0 * k)
+                num = RX @ ry
+                den = np.sqrt((RX ** 2).sum(axis=1) * float((ry ** 2).sum()))
+                ctl_ic[:, mi] = np.where(den > 0, num / den, np.nan)
+        for key, _desc in SELAUDIT_SIGNALS:
+            S = sig.get(key)
+            if S is None or d not in S.index:
+                continue
+            x = S.loc[d, [t for t in have if t in S.columns]].reindex(yb.index)
+            ok = x.notna()
+            if int(ok.sum()) < 10:
+                continue
+            icw = _within_group_ic(x[ok].to_numpy(), yb[ok].to_numpy(), gb[ok].to_numpy())
+            ica = float(pd.Series(x[ok].to_numpy()).rank().corr(pd.Series(yb[ok].to_numpy()).rank()))
+            dq = pd.DataFrame({"x": x[ok].to_numpy(), "y": yb[ok].to_numpy(), "g": gb[ok].to_numpy()})
+            dq = dq[dq.groupby("g")["x"].transform("size") >= 5]
+            spread = float("nan")
+            if len(dq):
+                q = dq.groupby("g")["x"].rank(pct=True)
+                top = dq.loc[q > 0.8, "y"]
+                bot = dq.loc[q <= 0.2, "y"]
+                if len(top) and len(bot):
+                    spread = float(top.mean() - bot.mean())
+            rows.append({"월말": d, "신호": key, "섹터 안 IC": icw, "전체 IC": ica, "상위−하위 1/5": spread, "종목 수": int(ok.sum())})
+    MI = pd.DataFrame(rows)
+    CV = pd.DataFrame(cov_rows)
+    cov_min = float(getattr(cfg, "SELAUDIT_COVER_MIN", 0.90))
+    cov_share = float((CV["확보율"] >= cov_min).mean()) if len(CV) else float("nan")
+    ctl_mean = np.nanmean(ctl_ic, axis=1) if nctl > 0 else np.array([])
+    ctl_t = (np.nanmean(ctl_ic, axis=1) / np.nanstd(ctl_ic, axis=1, ddof=1) * np.sqrt(np.sum(np.isfinite(ctl_ic), axis=1))
+             if nctl > 0 else np.array([]))
+    summ = []
+    for key, desc in SELAUDIT_SIGNALS:
+        m_ = MI[MI["신호"] == key] if len(MI) else MI
+        w = pd.to_numeric(m_.get("섹터 안 IC"), errors="coerce").dropna() if len(m_) else pd.Series(dtype=float)
+        if len(w) < 3:
+            summ.append({"신호": key, "설명": desc, "월수": int(len(w)), "판정": "자료 부족"})
+            continue
+        t_ = float(w.mean() / w.std(ddof=1) * math.sqrt(len(w))) if float(w.std(ddof=1)) > 0 else float("nan")
+        yrs = pd.DatetimeIndex(m_.loc[w.index, "월말"]).year
+        ym = w.groupby(yrs).mean()
+        fh = w[yrs < split]
+        sh = w[yrs >= split]
+        pct = float((ctl_mean < float(w.mean())).mean() * 100.0) if len(ctl_mean) else float("nan")
+        a = pd.to_numeric(m_.get("전체 IC"), errors="coerce").dropna()
+        sp = pd.to_numeric(m_.get("상위−하위 1/5"), errors="coerce").dropna()
+        ok = (t_ == t_ and t_ >= float(getattr(cfg, "SELAUDIT_T_PASS", 2.5))
+              and len(fh) and len(sh) and float(fh.mean()) > 0 and float(sh.mean()) > 0
+              and float((ym > 0).mean()) >= float(getattr(cfg, "SELAUDIT_YEAR_SHARE", 0.60))
+              and pct == pct and pct >= float(getattr(cfg, "SELAUDIT_CTRL_PCT", 95.0))
+              and cov_share == cov_share and cov_share >= float(getattr(cfg, "SELAUDIT_COVER_MONTH_SHARE", 0.80)))
+        summ.append({"신호": key, "설명": desc, "월수": int(len(w)), "평균 IC(섹터 안)": round(float(w.mean()), 4),
+                     "t(월수)": round(t_, 2) if t_ == t_ else None, "IC>0 비율": round(float((w > 0).mean()), 3),
+                     "연도 k/n": f"{int((ym > 0).sum())}/{len(ym)}",
+                     f"앞(~{split - 1}) IC": (round(float(fh.mean()), 4) if len(fh) else None),
+                     f"뒤({split}~) IC": (round(float(sh.mean()), 4) if len(sh) else None),
+                     "상위−하위 1/5(월 %)": (round(float(sp.mean()) * 100.0, 3) if len(sp) else None),
+                     "대조군 백분위": (round(pct, 1) if pct == pct else None),
+                     "전체 IC(참고)": (round(float(a.mean()), 4) if len(a) else None),
+                     "판정": ("★ 통과(R100 K 비교 행 후보)" if ok else "미통과")})
+    S_ = pd.DataFrame(summ)
+    t95 = float(np.nanpercentile(np.abs(ctl_t), 95)) if len(ctl_t) and np.isfinite(ctl_t).any() else float("nan")
+    return {"summary": S_, "monthly": MI, "coverage": CV, "cov_share": cov_share, "ctl_t95": t95,
+            "ctl_mean_p95": (float(np.nanpercentile(ctl_mean, 95)) if len(ctl_mean) else float("nan")),
+            "n_months": int(len(CV)), "passed": [r["신호"] for r in summ if str(r.get("판정", "")).startswith("★")]}
+
+
+def _selaudit_prices(tickers: List[str], cfg: "StockConfig", cache_file: str) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """S&P 500(과거 구성 포함) 종가 — yfinance 일괄(배당 조정) · 캐시(SELAUDIT_CACHE_DAYS) · 없는 티커만 증분. 실패 사유 dict."""
+    fail: Dict[str, str] = {}
+    cp = _cache_path(cfg, cache_file)
+    close = pd.DataFrame()
+    if _cache_fresh(cp, int(getattr(cfg, "SELAUDIT_CACHE_DAYS", 30))):
+        try:
+            close = pd.read_pickle(cp)
+        except Exception:
+            close = pd.DataFrame()
+    need = [t for t in tickers if t not in close.columns]
+    if need:
+        import yfinance as yf
+        frames: List[pd.DataFrame] = [close] if len(close.columns) else []
+        for i in range(0, len(need), 100):
+            ch = need[i:i + 100]
+            try:
+                d = yf.download(ch, start=str(getattr(cfg, "SELAUDIT_PRICE_START", "2008-06-01")), auto_adjust=True,
+                                progress=False, threads=True, group_by="column")
+                cl = d["Close"] if isinstance(d.columns, pd.MultiIndex) else d[["Close"]].rename(columns={"Close": ch[0]})
+                cl = pd.DataFrame(cl).copy()
+                cl.index = pd.to_datetime(cl.index).tz_localize(None).normalize()
+                good = [t for t in ch if t in cl.columns and int(cl[t].notna().sum()) >= 60]
+                for t in ch:
+                    if t not in good:
+                        fail[t] = "가격 없음(편출·인수·티커 변경 가능)"
+                if good:
+                    frames.append(cl[good])
+            except Exception as e:
+                for t in ch:
+                    fail[t] = f"{type(e).__name__}: {str(e)[:60]}"
+            log("SELAUDIT", kv(event="prices_chunk", done=min(i + 100, len(need)), total=len(need), failed=len(fail)))
+        if frames:
+            close = pd.concat(frames, axis=1).sort_index()
+            close = close.loc[:, ~close.columns.duplicated(keep="last")]
+        try:
+            pd.to_pickle(close, cp)
+        except Exception as e:
+            log("SELAUDIT", kv(event="prices_cache_write_failed", err=type(e).__name__), level="warning")
+    return close, fail
+
+
+def _selaudit_earnings(tickers: List[str], cfg: "StockConfig", cache_file: str) -> Tuple[Dict[str, pd.DataFrame], Dict[str, str]]:
+    """어닝(발표일 · 서프라이즈%) — 티커마다 get_earnings_dates(느림 · 호출 제한) · 증분 캐시 · 실패 사유."""
+    cp = _cache_path(cfg, cache_file)
+    cache: Dict[str, pd.DataFrame] = {}
+    if os.path.exists(cp) and _cache_fresh(cp, int(getattr(cfg, "SELAUDIT_CACHE_DAYS", 30))):
+        try:
+            cache = pd.read_pickle(cp)
+        except Exception:
+            cache = {}
+    fail: Dict[str, str] = {}
+    need = [t for t in tickers if t not in cache]
+    if need:
+        import yfinance as yf
+        for i, t in enumerate(need):
+            try:
+                e = yf.Ticker(t).get_earnings_dates(limit=int(getattr(cfg, "SELAUDIT_EARN_LIMIT", 64)))
+                if isinstance(e, pd.DataFrame) and len(e):
+                    e = e.copy()
+                    e.index = pd.to_datetime(e.index, errors="coerce")
+                    try:
+                        e.index = e.index.tz_localize(None)
+                    except Exception:
+                        pass
+                    cache[t] = e[e.index.notna()].sort_index()
+                else:
+                    cache[t] = pd.DataFrame()
+                    fail[t] = "빈 응답"
+            except Exception as ex:
+                fail[t] = f"{type(ex).__name__}: {str(ex)[:60]}"
+                time.sleep(1.0)
+            if (i + 1) % 50 == 0:
+                log("SELAUDIT", kv(event="earnings_progress", done=i + 1, total=len(need), failed=len(fail)))
+                try:
+                    pd.to_pickle(cache, cp)
+                except Exception:
+                    pass
+        try:
+            pd.to_pickle(cache, cp)
+        except Exception as e:
+            log("SELAUDIT", kv(event="earnings_cache_write_failed", err=type(e).__name__), level="warning")
+    return cache, fail
+
+
+def selection_audit(cfg: "StockConfig", universe: Optional[List[str]] = None, force: bool = False) -> Dict[str, Any]:
+    """[v0.11.0 R99 N6-a] K.selection_audit — S&P 500 그 시점 구성(2010~) 월말 섹터 안 순위 IC 검정. 결과는 캐시(selaudit_result.pkl) —
+    SELAUDIT_CACHE_DAYS 안이면 재사용(월 1회). 라이브 배분·평가창 무변경. 실패는 사유와 함께 돌려준다(무음 금지)."""
+    t0 = time.time()
+    rp = _cache_path(cfg, "selaudit_result.pkl")
+    if not force and _cache_fresh(rp, int(getattr(cfg, "SELAUDIT_CACHE_DAYS", 30))):
+        try:
+            r = pd.read_pickle(rp)
+            r["cache"] = f"캐시 재사용({time.strftime('%Y-%m-%d', time.localtime(os.path.getmtime(rp)))})"
+            log("SELAUDIT", kv(event="cache_reuse", path=os.path.basename(rp)))
+            return r
+        except Exception:
+            pass
+    out: Dict[str, Any] = {"enabled": False}
+    try:
+        cur, chg, wsrc = sp500_wiki_tables(cfg)
+        H, hsrc = sp500_hist_csv(cfg)
+        try:
+            me = pd.date_range(pd.Timestamp(getattr(cfg, "SELAUDIT_START", "2010-01-01")), pd.Timestamp.now().normalize(), freq="ME")
+        except Exception:                                   # pandas < 2.2
+            me = pd.date_range(pd.Timestamp(getattr(cfg, "SELAUDIT_START", "2010-01-01")), pd.Timestamp.now().normalize(), freq="M")
+        mem_w = membership_from_changes(set(cur["티커"]), chg, list(me))
+        if H is not None and len(H):
+            member = membership_from_hist(H, list(me))
+            src = f"{hsrc} (교차확인: {wsrc})"
+            diffs = [len(member[d].symmetric_difference(mem_w[d])) for d in list(me)[::12]]
+            if diffs and max(diffs) > 25:
+                log("UNIV", kv(event="sp500_hist_mismatch", max_symdiff=max(diffs), mean_symdiff=round(float(np.mean(diffs)), 1),
+                               note="두 출처의 구성 차이가 크다 — 공개 CSV를 쓰고 00S에 표시"), level="warning")
+            out["mismatch"] = {"max": int(max(diffs)) if diffs else 0, "mean": (round(float(np.mean(diffs)), 1) if diffs else 0.0)}
+        else:
+            member = mem_w
+            src = f"{wsrc} — 현재 구성 + 변경 이력 역산(공개 CSV 없음: {hsrc})"
+        allt = sorted(set().union(*[set(v) for v in member.values()])) if member else []
+        mx = int(getattr(cfg, "SELAUDIT_MAX_TICKERS", 0) or 0)
+        if mx > 0:
+            allt = allt[:mx]
+            member = {d: frozenset(t for t in v if t in set(allt)) for d, v in member.items()}
+        sector_of = {r["티커"]: r["섹터"] for _, r in cur.iterrows() if isinstance(r["섹터"], str)}
+        subind_of = {r["티커"]: str(r["하위산업"]) for _, r in cur.iterrows() if isinstance(r.get("하위산업"), str)}
+        miss_sec = [t for t in allt if t not in sector_of]
+        info_fail = 0
+        if miss_sec:
+            icp = _cache_path(cfg, "selaudit_info.json")
+            icache = {}
+            try:
+                if os.path.exists(icp):
+                    with open(icp, "r", encoding="utf-8") as fh:
+                        icache = json.load(fh) or {}
+            except Exception:
+                icache = {}
+            for t in miss_sec:
+                inf = icache.get(t)
+                if inf is None:
+                    try:
+                        inf = _yahoo_info(t)
+                        icache[t] = inf
+                    except Exception:
+                        inf = {}
+                        info_fail += 1
+                sec = YAHOO_SECTOR_TO_ETF.get(str((inf or {}).get("sector") or "").strip().lower())
+                if sec:
+                    sector_of[t] = sec
+            try:
+                with open(icp, "w", encoding="utf-8") as fh:
+                    json.dump(icache, fh, ensure_ascii=False)
+            except Exception:
+                pass
+        close, pfail = _selaudit_prices(allt, cfg, "selaudit_px.pkl")
+        earn, efail = ({}, {})
+        if bool(getattr(cfg, "SELAUDIT_EARNINGS", True)):
+            earn, efail = _selaudit_earnings([t for t in allt if t in close.columns], cfg, "selaudit_earn.pkl")
+        has_px = _asof_rows(close.notna().astype(float), me).fillna(0.0) > 0.5
+        sig, fwd = selaudit_signals(close, me, earn, sector_of, subind_of, member)
+        ev = selaudit_evaluate(sig, fwd, member, sector_of, cfg, has_price=has_px)
+        cur_set = set(cur["티커"])
+        outside = sorted(t for t in (universe or []) if normalize_ticker(t) not in cur_set)
+        out = {"enabled": True, "source": src, "summary": ev["summary"], "monthly": ev["monthly"], "coverage": ev["coverage"],
+               "cov_share": ev["cov_share"], "ctl_t95": ev["ctl_t95"], "ctl_mean_p95": ev["ctl_mean_p95"], "passed": ev["passed"],
+               "n_months": ev["n_months"], "n_tickers": len(allt), "n_priced": int(close.shape[1]),
+               "price_fail": pfail, "earn_fail": efail, "info_fail": info_fail, "sector_unknown": [t for t in allt if t not in sector_of],
+               "outside_universe": outside, "mismatch": out.get("mismatch"), "asof": str(pd.Timestamp.now().date()),
+               "cache": "새로 계산", "sec": round(time.time() - t0, 1)}
+        try:
+            pd.to_pickle(out, rp)
+        except Exception as e:
+            log("SELAUDIT", kv(event="result_cache_write_failed", err=type(e).__name__), level="warning")
+        log("SELAUDIT", kv(event="done", months=out["n_months"], tickers=out["n_tickers"], priced=out["n_priced"],
+                           cover_share=(round(out["cov_share"], 3) if out["cov_share"] == out["cov_share"] else "n/a"),
+                           passed=";".join(out["passed"]) or "-", ctl_t95=(round(out["ctl_t95"], 2) if out["ctl_t95"] == out["ctl_t95"] else "n/a"),
+                           sec=out["sec"], note="측정 전용 — 라이브 무변경 · 통과 신호만 R100 K 비교 행 후보"))
+    except Exception as e:
+        out = {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+        log("SELAUDIT", kv(event="failed", err=type(e).__name__, msg=str(e)[:200],
+                           next_step="네트워크(위키백과·GitHub·Yahoo) 확인 · SELAUDIT_HIST_CSV로 로컬 구성 이력 지정 가능"), level="warning")
+    return out
+
+
+def load_selection_audit_cache(cfg: "StockConfig") -> Optional[Dict[str, Any]]:
+    """SELECTION_AUDIT=False여도 이전 결과 캐시가 있으면 00S에 싣는다(나이 표시) — 계산은 하지 않는다."""
+    rp = _cache_path(cfg, "selaudit_result.pkl")
+    if not os.path.exists(rp):
+        return None
+    try:
+        r = pd.read_pickle(rp)
+        r["cache"] = f"이전 결과 캐시({time.strftime('%Y-%m-%d', time.localtime(os.path.getmtime(rp)))} · 이번 실행은 계산 안 함)"
+        return r
+    except Exception:
+        return None
+
+
+def build_selection_sheet(sa: Optional[Dict[str, Any]], cfg: "StockConfig") -> Tuple[pd.DataFrame, str]:
+    """[N6-a] 00S_종목선택력 시트 · 00 한 줄."""
+    A = "A. 읽는 법 · 사전등록"
+    rows: List[Dict[str, Any]] = [
+        {"블록": A, "항목": "질문", "값": "종목을 '가려내는 힘'이 있는가 — S&P 500 그 시점 구성(약 500종목) · 2010~ 월말 신호 → 다음 21거래일 수익의 "
+                                       "**섹터 안** 순위 IC(그룹 평균 제거 · 교훈 63). 매매 유니버스(K 58종목)는 그대로 — 검정만 넓게(방법서 §7-5)."},
+        {"블록": A, "항목": "판정(사전등록 · 신호 11개 다중 비교)", "값": (
+            f"전체 t ≥ {float(getattr(cfg, 'SELAUDIT_T_PASS', 2.5)):g} & 두 반쪽(~{int(getattr(cfg, 'SELAUDIT_SPLIT_YEAR', 2018)) - 1} · "
+            f"{int(getattr(cfg, 'SELAUDIT_SPLIT_YEAR', 2018))}~) IC 모두 > 0 & 연도 ≥ {float(getattr(cfg, 'SELAUDIT_YEAR_SHARE', 0.6)):.0%} & "
+            f"무작위 순위 {int(getattr(cfg, 'SELAUDIT_CONTROLS', 200))}개 대비 {float(getattr(cfg, 'SELAUDIT_CTRL_PCT', 95)):g}백분위 & "
+            f"가격 확보율 ≥ {float(getattr(cfg, 'SELAUDIT_COVER_MIN', 0.9)):.0%}인 달이 {float(getattr(cfg, 'SELAUDIT_COVER_MONTH_SHARE', 0.8)):.0%} 이상 → "
+            "통과 신호만 R100에 K '섹터별 상위 k(섹터 종목 수의 1/5 · 최소 3 · 최대 10) · S★ 섹터 비중 그대로 · 상한 5%' 비교 행. "
+            "통과 신호가 없으면 '종목을 가려내는 힘은 없다'를 약 180개월 × 500종목으로 확정하고 K는 섹터 안 균등(또는 섹터 ETF).")},
+        {"블록": A, "항목": "⚠ 약해지는 신호", "값": "PEAD처럼 약해지는 신호는 기간을 늘려도 최근 효과를 보장하지 않는다 — 뒤 반쪽 IC를 반드시 따로 본다."},
+    ]
+    if not sa or not sa.get("enabled"):
+        why = (sa or {}).get("error") if sa else None
+        rows.append({"블록": "B. 신호별 요약", "항목": "상태",
+                     "값": (f"산출 실패 — {why}" if why else
+                           "꺼짐(SELECTION_AUDIT=False · 기본) — 월 1회 k_overrides={'SELECTION_AUDIT': True}로 켜면 계산하고 30일 캐시를 재사용한다 "
+                           "(첫 수집: 가격 약 600티커 × 16년 일괄 · 어닝 약 600회 호출 — 느림). 라이브 배분·평가창 무변경.")})
+        line = ("꺼짐(SELECTION_AUDIT=False) — 월 1회 켜서 S&P 500 그 시점 구성으로 종목 선택력을 검정(방법서 N6-a)" if not why
+                else f"산출 실패 — {why}")
+        return pd.DataFrame(rows), line
+    rows.append({"블록": A, "항목": "출처 · 캐시", "값": f"{sa.get('source', '-')} · {sa.get('cache', '-')} · 계산 {sa.get('asof', '-')} · "
+                                                    f"{sa.get('n_tickers', 0)}티커(가격 {sa.get('n_priced', 0)}) · {sa.get('n_months', 0)}개월"
+                                                    + (f" · 두 출처 구성 차이 최대 {sa['mismatch']['max']}·평균 {sa['mismatch']['mean']}" if sa.get("mismatch") else "")})
+    cs = sa.get("cov_share", float("nan"))
+    rows.append({"블록": A, "항목": "생존 편향 감시(가격 확보율)", "값": (
+        f"확보율 ≥ {float(getattr(cfg, 'SELAUDIT_COVER_MIN', 0.9)):.0%}인 달 {cs:.0%}" if cs == cs else "-")
+        + (" ⚠ 기준(80%) 미달 — 편출 종목 이력 결손으로 모멘텀·저변동 IC가 부풀었을 수 있다(생존 편향 상한)"
+           if (cs == cs and cs < float(getattr(cfg, "SELAUDIT_COVER_MONTH_SHARE", 0.8))) else "")})
+    rows.append({"블록": A, "항목": "대조군 보정(가짜 신호)", "값": f"무작위 순위의 |t| 95백분위 {sa.get('ctl_t95', float('nan')):.2f} · "
+                                                    f"평균 IC 95백분위 {sa.get('ctl_mean_p95', float('nan')):+.4f}(교훈 14 — 순수 귀무 분포)"})
+    sm = sa.get("summary")
+    if isinstance(sm, pd.DataFrame) and len(sm):
+        s2 = sm.copy()
+        s2.insert(0, "항목", s2.pop("신호"))
+        rows_df = pd.DataFrame(rows)
+        parts = [rows_df, s2.assign(블록="B. 신호별 요약(섹터 안 IC · 그룹 평균 제거)")]
+    else:
+        parts = [pd.DataFrame(rows)]
+    cv = sa.get("coverage")
+    if isinstance(cv, pd.DataFrame) and len(cv):
+        low = cv[cv["확보율"] < float(getattr(cfg, "SELAUDIT_COVER_MIN", 0.9))]
+        parts.append(pd.DataFrame([{"블록": "C. 가격 확보율", "항목": "요약",
+                                    "값": f"{len(cv)}개월 · 평균 {cv['확보율'].mean():.1%} · 최저 {cv['확보율'].min():.1%} · 90% 미만 {len(low)}개월"
+                                          + (f"(예: {', '.join(str(pd.Timestamp(d).date()) for d in low['월말'].head(6))})" if len(low) else "")}]))
+    parts.append(pd.DataFrame([{"블록": "D. K 유니버스 중 S&P 500 밖 종목(현재 구성 기준 · 검정 판정에서 뺀다)", "항목": "종목",
+                                "값": ", ".join(sa.get("outside_universe") or []) or "없음"}]))
+    pf = sa.get("price_fail") or {}
+    ef = sa.get("earn_fail") or {}
+    parts.append(pd.DataFrame([{"블록": "E. 수집 실패(사유)", "항목": "가격", "값": f"{len(pf)}티커 — " + ", ".join(list(pf)[:30])},
+                               {"블록": "E. 수집 실패(사유)", "항목": "어닝", "값": f"{len(ef)}티커 — " + ", ".join(list(ef)[:30])},
+                               {"블록": "E. 수집 실패(사유)", "항목": "섹터 모름(제외)", "값": ", ".join((sa.get("sector_unknown") or [])[:30]) or "없음"}]))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    ps = sa.get("passed") or []
+    line = (f"{sa.get('n_months', 0)}개월 × {sa.get('n_tickers', 0)}티커 · 통과 신호: " + (", ".join(ps) if ps else "**없음** — 종목 선택력 없음(확정 후보)")
+            + (f" · 확보율 ≥90% 달 {cs:.0%}" if cs == cs else "") + f" · {sa.get('cache', '-')} · 세부 00S")
+    return df, line
+
+
+def prob_variant_verdicts(res: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """[v0.11.0 R99 N3] 확률 배분 측정 행의 사전등록 판정 — K★ 대비 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 같은 규칙 무작위 대조군 칼마 백분위 ≥ 90."""
+    cfg = res.get("cfg", CFG)
+    ur = res.get("user_rel")
+    pv = res.get("prob_variants") or {}
+    out: List[Dict[str, Any]] = []
+    if not (isinstance(ur, pd.DataFrame) and len(ur)) or not pv:
+        return out
+    t0 = ur.iloc[0]
+    lbl = ur["전략"].astype(str)
+    need = float(getattr(cfg, "PROB_LIVE_PASS_CTRL_PCT", 90.0))
+    for name, d in pv.items():
+        m = ur[lbl == name]
+        if not len(m):
+            continue
+        r = m.iloc[0]
+        da = (float(r["하락 회피율"]) - float(t0["하락 회피율"])) * 100.0
+        dp = (float(r["상승 참여율"]) - float(t0["상승 참여율"])) * 100.0
+        pct = d.get("ctrl_pct")
+        ok = bool(da >= -1e-9 and dp >= -1e-9 and pct is not None and pct == pct and float(pct) >= need)
+        out.append({"변형": name, "회피": float(r["하락 회피율"]), "참여": float(r["상승 참여율"]), "등급": r.get("등급"),
+                    "Δ회피(%p)": round(da, 2), "Δ참여(%p)": round(dp, 2), "MDD": float(r["MDD"]), "칼마": float(r["칼마"]),
+                    "대조군 칼마 백분위": pct, "대조군 칼마 중앙": d.get("ctrl_med"), "대조군 칼마 95%": d.get("ctrl_p95"),
+                    "대조군 수": d.get("n_ctrl"), "선택 규칙": d.get("select"), "점수": d.get("score"),
+                    "통과(R100 라이브 후보)": ok})
+    return out
+
+
+def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v0.11.0 R99 N3] 00E_주식상승확률 시트 · 00 줄 — 오늘 순위 · 섹터 안 순위 · 연도별 AUC · 섹터 안 순위 IC · 보정표 · 배분 변형 판정."""
+    cfg = res.get("cfg", CFG)
+    sp = res.get("stock_prob") or {}
+    lines: List[Tuple[str, str]] = []
+    parts: List[pd.DataFrame] = []
+
+    def _t(blk, rows):
+        parts.append(pd.DataFrame([{"블록": blk, **r} for r in rows]))
+    A = "A. 읽는 법"
+    _t(A, [{"항목": "무엇", "값": (f"종목별 P(향후 {int(getattr(cfg, 'PROB_HORIZON', 21))}거래일 수익 > 0) — 풀링 로지스틱(C={float(getattr(cfg, 'PROB_C', 0.5)):g}) · "
+                                  f"특성 {', '.join(tuple(getattr(cfg, 'PROB_FEATURES', ())))} · 연 1회 워크포워드 재적합 · 학습 끝 = 연초 직전 개장일 − "
+                                  f"{int(getattr(cfg, 'PROB_EMBARGO', 22))}거래일(엠바고) · 첫 해 확률 없음(균등) · 절편 재보정(학습 마지막 1년 기저율) · "
+                                  f"시드 {int(getattr(cfg, 'PROB_SEED', 0))}.")},
+           {"항목": "⚠ 해석", "값": ("시점 정보(연도별 AUC 0.51~0.56)는 약간 있으나 **섹터 안 선택 정보는 없다**(R81·R99 §2-3·§7: 섹터 안 순위 IC +0.023 · t 0.47). "
+                                  "그래서 라이브 배분은 섹터 안 균등(sector_linked)이고, 확률 배분은 13·00U **측정 행**이다. 사전등록(R100 라이브 조건): "
+                                  "K★ 대비 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 같은 규칙 무작위 대조군 칼마 백분위 ≥ 90. 연구·교육용, 투자 자문 아님.")}])
+    if not sp.get("ok"):
+        _t("B. 오늘 순위", [{"항목": "상태", "값": f"산출 안 됨 — {sp.get('note', 'STOCK_PROB=False')}"}])
+        lines.append(("★★★ R99 N3 종목 상승확률", f"산출 안 됨 — {sp.get('note', 'STOCK_PROB=False')}"))
+        return pd.concat(parts, ignore_index=True, sort=False), lines
+    names = dict(res.get("names") or {})
+    tw = (res.get("alloc") or {}).get("target_w")
+    today = sp.get("today")
+    top10 = ""
+    if isinstance(today, pd.DataFrame) and len(today):
+        T = today.copy()
+        T.insert(1, "이름", [names.get(t, STOCK_NAME_KR.get(t, t)) for t in T["티커"]])
+        if isinstance(tw, pd.DataFrame) and len(tw):
+            _lw = tw.iloc[-1]
+            T["오늘 K★ 목표비중(다음 거래일 집행)"] = [round(float(_lw.get(t, 0.0)), 4) for t in T["티커"]]
+        T.insert(0, "항목", T.pop("티커"))
+        parts.append(T.assign(블록=f"B. 오늘 순위(기준일 {sp.get('asof', '-')} · 다음 거래일 집행)"))
+        top10 = " · ".join(f"{r['항목']}({names.get(r['항목'], '')}) {float(r['상승확률']):.2f}[{r['섹터']} {r['섹터 안 순위']}]"
+                           for _, r in T.head(10).iterrows())
+    yt = sp.get("yearly")
+    if isinstance(yt, pd.DataFrame) and len(yt):
+        y2 = yt.copy()
+        y2.insert(0, "항목", y2.pop("연도").astype(str))
+        parts.append(y2.assign(블록="C. 연도별 워크포워드(표본 밖 AUC · 엠바고 · 절편 보정)"))
+    ic = sp.get("ic") or {}
+    if ic.get("n"):
+        _t("D. 섹터 안 순위 IC(월말 · 그룹 평균 제거 — 교훈 63)", [{
+            "항목": "요약", "값": (f"{ic['n']}개월 · 섹터 안 IC 평균 {ic['mean']:+.4f} · t {ic['t']:.2f} · IC>0 {ic['pos_share']:.0%} · "
+                                f"앞(~{ic.get('split_year', 2022) - 1}) {ic.get('first', float('nan')):+.4f} · 뒤({ic.get('split_year', 2022)}~) "
+                                f"{ic.get('second', float('nan')):+.4f} | 전체 IC(섹터 차 포함 · 참고) {ic.get('mean_all', float('nan')):+.4f} "
+                                f"(t {ic.get('t_all', float('nan')):.2f}) — |t| < 2면 '이 길이로는 선택 정보가 있다고 말할 수 없다'(검정력 §7-4).")}])
+        mm = ic.get("monthly")
+        if isinstance(mm, pd.DataFrame) and len(mm):
+            m2 = mm.copy()
+            m2.insert(0, "항목", pd.DatetimeIndex(m2.pop("월말")).strftime("%Y-%m"))
+            parts.append(m2.assign(블록="D2. 월별 IC"))
+    cb = sp.get("calib")
+    if isinstance(cb, pd.DataFrame) and len(cb):
+        c2 = cb.copy()
+        c2.insert(0, "항목", c2.pop("10분위(0=최저)").astype(str))
+        parts.append(c2.assign(블록="E. 보정표(표본 밖 · 예측 10분위별 실현 상승률)"))
+    vv = prob_variant_verdicts(res)
+    if vv:
+        v2 = pd.DataFrame(vv)
+        v2.insert(0, "항목", v2.pop("변형"))
+        parts.append(v2.assign(블록="F. 확률 배분 변형(측정 행) — 사전등록 판정(K★ 대비)"))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    auc = sp.get("auc_all", float("nan"))
+    lines.append(("★★★ R99 N3 종목 상승확률 — 모형 신뢰도(표본 밖 · 선택 정보 따로)",
+                  f"합친 AUC {auc:.3f} · 연도별 {sp.get('auc_year_min', float('nan')):.3f}~{sp.get('auc_year_max', float('nan')):.3f}(시점 정보) · "
+                  + (f"섹터 안 순위 IC {ic['mean']:+.4f}(t {ic['t']:.2f} · {ic['n']}개월 · IC>0 {ic['pos_share']:.0%}) → 선택 정보 "
+                     + ("**없음**(|t| < 2)" if abs(float(ic['t'])) < 2 else "있음 후보(t ≥ 2 — 긴 이력 검정 N6-a로 확인)") if ic.get("n") else "섹터 안 IC 산출 불가")
+                  + f" · 표본 밖 {sp.get('n_oos', 0):,}행 · 세부 00E. 확률은 표시·측정용 — 라이브 배분은 섹터 안 균등. 연구·교육용, 투자 자문 아님."))
+    if top10:
+        lines.append((f"종목 상승확률 상위 10(기준일 {sp.get('asof', '-')} → 다음 거래일 · 21일 상승 확률 · [섹터 안 순위])", top10))
+    if vv:
+        seg = []
+        for v in vv:
+            seg.append(f"{str(v['변형']).replace('R99 확률 배분 · ', '').replace('R99 ', '')[:28]} Δ{v['Δ회피(%p)']:+.2f}/{v['Δ참여(%p)']:+.2f}%p · "
+                       f"칼마 {v['칼마']:.3f}(대조군 백분위 {v['대조군 칼마 백분위'] if v['대조군 칼마 백분위'] is not None else '-'}) "
+                       + ("✓" if v["통과(R100 라이브 후보)"] else "✗"))
+        ok_names = [v["변형"] for v in vv if v["통과(R100 라이브 후보)"]]
+        lines.append(("★★★ R99 N3 확률 배분(측정 행 · 라이브 = 섹터 안 균등 유지) — 사전등록 K★ 대비 Δ회피 ≥0 & Δ참여 ≥0 & 대조군 칼마 백분위 ≥90",
+                      " | ".join(seg) + " ⇒ R100 라이브 후보: " + (", ".join(ok_names) if ok_names else "**없음**(오프라인 예상: 하위 1/5 제외 −1.10/+2.67 · "
+                                                                       "상위 1/3 +0.04/−21.8 — 회피 또는 참여 조건 ✗)")
+                      + ". 즉시 라이브를 원하면(⚠ K 회피 여유를 거의 소진): k_overrides={'STOCK_ALLOC_MODE': 'sector_prob', 'PROB_SELECT': 'exclude_bottom'} · "
+                        "N6-b 어닝 복합 행은 약한 근거(설계 29 섹터 안 IC +0.040 · t 1.34) — 측정만. 연구·교육용, 투자 자문 아님."))
+    if str((res.get("alloc") or {}).get("mode")) == "sector_prob":
+        lines.append(("⚠⚠ K 라이브 = 확률 배분(sector_prob · 사용자 overrides) — 사전등록 통과 전 라이브",
+                      f"선택 규칙 {getattr(cfg, 'PROB_SELECT', '-')} · 오프라인 '하위 1/5 제외' −1.10/+2.67%p → K 회피 여유 "
+                      f"{float(getattr(cfg, 'K_AVOID_MARGIN_R98', 1.2)):g}%p를 거의 소진한다(흔들림 1~2%p면 높음 상실 가능). "
+                      "되돌리기: k_overrides={'STOCK_ALLOC_MODE': 'sector_linked'}. 연구·교육용, 투자 자문 아님."))
+    return df, lines
+
+
+def next_day_rows_k(res: Dict[str, Any], nd: pd.Timestamp, nd_src: str, base: pd.Timestamp) -> List[Tuple[str, str]]:
+    """[v0.11.0 R99 N2-4] 00 '데이터 신선도' · '다음 거래일 예측 - 기준일(데이터)' · '대상일' · '다음 거래일 배분(K★)' · K가 M보다 늦으면 ⚠(M·S·I와 같은 형식)."""
+    rows: List[Tuple[str, str]] = []
+    fr = dict(res.get("k_freshness") or {})
+    exp = fr.get("expected")
+    k_last = fr.get("k_last") or base
+    m_last = fr.get("m_last")
+    lag = fr.get("k_lag_vs_expected")
+    head = (f"기대 마지막 개장일 {pd.Timestamp(exp).date() if exp is not None else '-'} · K 자료 마지막 {pd.Timestamp(k_last).date()} · "
+            f"M 신호 마지막 {pd.Timestamp(m_last).date() if m_last is not None else '-'}({fr.get('m_src', '-')}) · "
+            + ("★ 최신" if (lag == 0) else (f"⚠ K {lag}개장일 뒤처짐" if isinstance(lag, int) and lag > 0 else "판정 생략")))
+    if fr.get("refresh"):
+        rf = fr["refresh"]
+        head += (f" · 증분 재수집 {rf.get('tickers', 0)}종목(붙임 {len(rf.get('appended', []))} · 전 이력 {len(rf.get('full', []))} · "
+                 f"실패 {len(rf.get('failed', {}))}) {pd.Timestamp(rf['before']).date() if rf.get('before') is not None else '-'} → "
+                 f"{pd.Timestamp(rf['after']).date() if rf.get('after') is not None else '-'}")
+    rows.append(("데이터 신선도", head))
+    if m_last is not None and pd.Timestamp(k_last) < pd.Timestamp(m_last):
+        n = trading_days_between_k(k_last, m_last)
+        rows.append(("⚠ K 자료 지연", f"K 자료가 M보다 {n}일 늦다 — 예측 대상일이 다르다(K {pd.Timestamp(k_last).date()} → {nd.date()} · "
+                                   f"M {pd.Timestamp(m_last).date()} → 다음 개장일). 재수집했는데도 늦으면 Yahoo가 아직 그 날 종가를 주지 않는 것 — 잠시 뒤 재실행."))
+    passed = bool(exp is not None and nd <= pd.Timestamp(exp))
+    rows.append(("다음 거래일 예측 - 기준일(데이터)", f"{pd.Timestamp(base).date()}"
+                 + (" ⚠ 기대 마지막 개장일보다 앞" if (exp is not None and pd.Timestamp(base) < pd.Timestamp(exp)) else "")))
+    rows.append(("다음 거래일 예측 - 대상일", f"{nd.date()} (NYSE 정규 휴장일 반영 — 임시 휴장은 미반영 · 달력: {nd_src})"
+                 + ("  ⚠ 실행 시점에 이미 지난 날" if passed else "")))
+    nr = res.get("_next_row_weights")
+    if isinstance(nr, pd.Series) and len(nr):
+        nz = nr[nr.abs() > 1e-6].sort_values(ascending=False)
+        cash = max(0.0, 1.0 - float(nr.sum()))
+        n_etf = sum(1 for c in nz.index if str(c).startswith("ETF_"))
+        rows.append(("다음 거래일 배분(K★ · 13c 예측 행 = 실제 배분)",
+                     " · ".join(f"{k} {v:.1%}" for k, v in nz.items()) + f" · 현금 {cash:.1%} (합계 {float(nr.sum()):.4f} · 종목 "
+                     f"{len(nz) - n_etf}개 · 섹터 ETF {n_etf}개)"))
+    return rows
+
+
 def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]] = None,
         parent_w: Optional[pd.DataFrame] = None, m_sig: Any = None) -> Dict[str, Any]:
     """[K 계층 본체] 데이터 → 특성 → 규칙 채점 → **배분(총합 1.0)** → 감사 → 리포트 dict.
@@ -2980,6 +4526,31 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     "sector": None, "industry": None, "name": STOCK_NAME_KR.get(t, t), "corr": None} for t in tickers + holdout}
     _nm = {t: (STOCK_NAME_KR.get(t) or (amap.get(t) or {}).get("name") or t) for t in tickers + holdout}
     # [v0.4.0 R77 ★★] 시장 예산(M E_t) — 출처를 먼저 정한다(없으면 경고 + 구 규칙 · 00시트에 표시)
+    # ---- [v0.11.0 R99 N2-5 ★★★] 날짜가 바뀌면 갱신 — K 가격 마지막일 < M 신호 마지막일이면 증분 재수집 · 신선도 기록(00 줄) ----
+    _k_fresh: Dict[str, Any] = {}
+    try:
+        _m_last, _m_src = _m_signal_last(m_sig)
+        _k_last = k_data_last(prices)
+        _k_fresh.update({"m_last": _m_last, "m_src": _m_src, "k_last": _k_last})
+        if (bool(getattr(cfg, "K_STALE_REFRESH", True)) and not cfg.END and _m_last is not None and _k_last is not None
+                and _k_last < _m_last):
+            prices_all, _rinfo = refresh_prices_incremental(prices_all, tickers + holdout, cfg, target=_m_last)
+            prices = {t: prices_all[t] for t in tickers if t in prices_all}
+            prices_h = {t: prices_all[t] for t in holdout if t in prices_all}
+            _k_last = k_data_last(prices)
+            _k_fresh.update({"refresh": _rinfo, "k_last": _k_last})
+            log("DATA", kv(event="k_stale_refresh", k_before=str(pd.Timestamp(_rinfo.get("before")).date()) if _rinfo.get("before") is not None else "-",
+                           k_after=str(pd.Timestamp(_k_last).date()) if _k_last is not None else "-", m_last=str(_m_last.date()),
+                           m_src=_m_src, tickers=_rinfo.get("tickers"), appended=len(_rinfo.get("appended", [])),
+                           full=len(_rinfo.get("full", [])), failed=len(_rinfo.get("failed", {})),
+                           note=("★ 따라잡음" if (_k_last is not None and _k_last >= _m_last) else "⚠ 여전히 M보다 늦다 — 00에 표시")),
+                level=("info" if (_k_last is not None and _k_last >= _m_last) else "warning"))
+        if bool(getattr(cfg, "DATA_FRESHNESS_CHECK", True)) and not cfg.END and _k_last is not None:
+            _exp = expected_last_trading_day()
+            _k_fresh["expected"] = _exp
+            _k_fresh["k_lag_vs_expected"] = (int(trading_days_between_k(_k_last, _exp)) if _k_last < _exp else 0)
+    except Exception as e:
+        log("DATA", kv(event="k_freshness_failed", err=type(e).__name__, msg=str(e)[:140], action="신선도 줄만 생략"), level="warning")
     try:
         _plast = max(pd.Timestamp(v.index[-1]) for v in prices.values() if v is not None and len(v))
     except Exception:
@@ -2994,6 +4565,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     parent_of = {t: ((amap.get(t) or {}).get("etf") or "") for t in tickers + holdout}
     panel_h: Dict[str, pd.DataFrame] = {}      # [v0.6.0 R79] 홀드아웃(검증 전용 — 배분·06 포트·00D 제외)
     pos_h: Dict[str, pd.DataFrame] = {}
+    feat_full_d: Dict[str, pd.DataFrame] = {}  # [v0.11.0 R99 N3] 상승확률 모형용 전 이력 특성(START~ · 평가창 앞 학습 · 홀드아웃 제외)
+    _pcols = tuple(getattr(cfg, "PROB_FEATURES", ()) or ()) + ("종가",)
 
     def _one_ticker(t: str, df: pd.DataFrame, role_: str) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
         """한 종목: 특성(가격·펀더멘탈·어닝) → 평가창 → 라이브 비중. 티커와 무관한 같은 산식(설계·사용자·홀드아웃 공통)."""
@@ -3002,6 +4575,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         ef, el = build_earnings_features(fund.get(t, {}), df.index, pf["종가"], cfg)
         gf = build_earnings_fundamentals(fund.get(t, {}), df.index, cfg)   # [v0.2.0 K1]
         feat = pd.concat([pf, ff, ef, gf], axis=1)
+        if role_ != "홀드아웃" and bool(getattr(cfg, "STOCK_PROB", True)):
+            feat_full_d[t] = feat[[c for c in _pcols if c in feat.columns]].copy()
         feat = feat.loc[feat.index >= pd.Timestamp(cfg.EVAL_START)]
         _base = {"티커": t, "역할": role_, "산업ETF": parent_of.get(t, ""), "매핑 방법": (amap.get(t) or {}).get("method", "-"),
                  "이름": _nm.get(t, "")}
@@ -3153,7 +4728,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     ind_alloc, ind_info = _resolve_industry_alloc(cfg, parent_w)
     # [v0.9.0 R94] 섹터연동(라이브)·00U 신뢰도에 필요한 **섹터 ETF·SPY 가격**(시가 포함) — 가격 캐시는 티커 증분이다.
     etf_panel: Dict[str, pd.DataFrame] = {}
-    _need_etf = (str(getattr(cfg, "STOCK_ALLOC_MODE", "")).lower() == "sector_linked"
+    _need_etf = (str(getattr(cfg, "STOCK_ALLOC_MODE", "")).lower() in ("sector_linked", "sector_prob")
                  or bool(tuple(getattr(cfg, "SECTOR_LINK_GRID", ()) or ())) or bool(getattr(cfg, "USER_REL_K", False)))
     if _need_etf:
         try:
@@ -3171,8 +4746,36 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             log("DATA", kv(event="etf_panel_failed", err=type(e).__name__, msg=str(e)[:160],
                            next_step="섹터 ETF 몫은 현금으로 계산된다(00 경고) — 네트워크·yfinance 확인 후 재실행"),
                 level="warning")
+    # ---- [v0.11.0 R99 N3 ★★★] 종목별 상승확률(워크포워드 · 측정·표시) · 어닝 복합 점수(N6-b) — 배분 전에 만든다(sector_prob 라이브 대비) ----
+    _i2s = {str(k): str(v) for k, v in dict((ind_alloc or {}).get("ind2sec") or {}).items()}
+    sector_of: Dict[str, str] = {}
+    for _r99t in sorted(panel):
+        _r99p = str(parent_of.get(_r99t, "") or "")
+        sector_of[_r99t] = _r99p if _r99p in SECTOR_ETFS else (_i2s.get(_r99p) or K_INDUSTRY_TO_SECTOR.get(_r99p, ""))
+    stock_prob: Dict[str, Any] = {"ok": False, "note": "끔(STOCK_PROB=False)"}
+    if bool(getattr(cfg, "STOCK_PROB", True)):
+        try:
+            stock_prob = build_stock_prob({t: feat_full_d[t] for t in sorted(panel) if t in feat_full_d}, cfg, sector_of)
+        except Exception as e:
+            stock_prob = {"ok": False, "note": f"산출 실패 {type(e).__name__}: {str(e)[:140]}"}
+            log("PROB", kv(event="k_prob_failed", err=type(e).__name__, msg=str(e)[:160], action="확률 없이 계속(균등 배분 무영향)"),
+                level="warning")
+    _prob_df = stock_prob.get("prob") if stock_prob.get("ok") else None
+    if isinstance(_prob_df, pd.DataFrame):
+        _prob_df = _prob_df.reindex(columns=sorted(panel))
+    try:
+        _earn_df = build_earn_composite(panel)
+    except Exception as e:
+        _earn_df = None
+        log("PROB", kv(event="earn_composite_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+    _live_mode0 = str(getattr(cfg, "STOCK_ALLOC_MODE", "")).lower()
+    _live_kw: Dict[str, Any] = ({"prob_score": _prob_df} if _live_mode0 == "sector_prob" else {})
+    if _live_mode0 == "sector_prob":
+        log("ALLOC", kv(event="sector_prob_live", select=getattr(cfg, "PROB_SELECT", "-"), has_prob=bool(_prob_df is not None),
+                        note=f"⚠ 사전등록 통과 전 라이브(사용자 overrides) — K 회피 여유 {float(getattr(cfg, 'K_AVOID_MARGIN_R98', 1.2)):g}%p 소진 위험 · "
+                             "되돌리기 STOCK_ALLOC_MODE='sector_linked'"), level="warning")
     alloc = build_allocation(pos, panel, cfg, parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc,
-                             etf_panel=etf_panel)
+                             etf_panel=etf_panel, **_live_kw)
     alloc_rows: List[dict] = []
     _grid_rets: Dict[str, pd.Series] = {}          # [v0.9.0] 00U 비교 행용 — 격자 행 라벨 → 포트 일간수익
 
@@ -3248,6 +4851,18 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             except Exception as e:
                 log("ALLOC", kv(event="alloc_sector_link_row_failed", row=str(_lbl), err=type(e).__name__, msg=str(e)[:120]),
                     level="warning")
+    # [v0.11.0 R99 N3] 라이브가 sector_prob(사용자 overrides)면 라이브 행을 따로 싣고 노란색으로 칠한다.
+    if _live_mode == "sector_prob" and str(alloc.get("mode")) == "sector_prob":
+        try:
+            _lbl_sp = f"★ 섹터 확률 배분(라이브 · overrides · {getattr(cfg, 'PROB_SELECT', '-')} · ⚠ 사전등록 통과 전)"
+            _spr = _alloc_row(_lbl_sp, alloc, float(alloc.get("cap_used", 0.05) or 0.05), None)
+            if _spr:
+                _spr.update({"연동출처": "S★ 섹터비중 · 섹터 안 상승확률 선택"})
+                alloc_rows.append(_spr)
+                _grid_rets[_lbl_sp] = alloc.get("port_ret")
+                _live_alloc_label = _lbl_sp
+        except Exception as e:
+            log("ALLOC", kv(event="alloc_sector_prob_live_row_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
     # [v0.9.0 R94] 체결 규칙 비교 — 라이브 배분을 v0.8.1 규칙(확정 종가 체결 · 비용 0)으로 다시 잰 참고 행
     try:
         if alloc.get("port_ret_close") is not None:
@@ -3261,7 +4876,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         log("ALLOC", kv(event="alloc_close_fill_row_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
     # [v0.9.1 R95 · 측정 전용] S 비교 행의 섹터 비중(예: 'R95 규칙 없음(= R94 M)')으로 **같은 섹터연동**을 돌린 K 비교 행.
     #   라이브와 다른 것은 섹터 비중(= M E_t 차이)뿐 — K 층에서도 '회피↑·참여 ≥0'을 같은 잣대로 본다(00U).
-    if ind_alloc and str(alloc.get("mode")) == "sector_linked":
+    _alloc_mode_live = str(alloc.get("mode"))
+    if ind_alloc and _alloc_mode_live in ("sector_linked", "sector_prob"):
         for _vn, _vw in dict(ind_alloc.get("sector_w_variants") or {}).items():
             try:
                 _vw = pd.DataFrame(_vw).apply(pd.to_numeric, errors="coerce").fillna(0.0)
@@ -3270,8 +4886,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _iav = {"industry_w": pd.DataFrame(index=_vw.index), "parent_w": _vw[_secs],
                         "ind2sec": dict(ind_alloc.get("ind2sec") or {}), "rf_daily": ind_alloc.get("rf_daily"),
                         "label": f"S 비교 행 {_vn}"}
-                _va = build_allocation(pos, panel, cfg, mode="sector_linked", parent_w=parent_w, parent_of=parent_of,
-                                       ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)))
+                _va = build_allocation(pos, panel, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
+                                       ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw)
                 _vl = f"비교: 섹터연동 × S '{_vn}' 섹터 비중(측정 전용)"
                 _vr = _alloc_row(_vl, _va, float(alloc.get("cap_used", 0.05)), None)
                 if _vr:
@@ -3285,13 +4901,13 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     level="warning")
     # [v0.10.0 R98 · 측정 전용] 유니버스 확장 효과 분리 — 같은 S★ 섹터 비중 · 같은 섹터연동에서 추가 종목(UNIVERSE_ADD)만 뺀 행.
     _add98 = {normalize_ticker(t) for t in dict(getattr(cfg, "UNIVERSE_ADD", {}) or {})} & set(panel)
-    if ind_alloc and str(alloc.get("mode")) == "sector_linked" and _add98:
+    if ind_alloc and _alloc_mode_live in ("sector_linked", "sector_prob") and _add98:
         try:
             _p98 = {t: v for t, v in panel.items() if t not in _add98}
             _q98 = {t: v for t, v in pos.items() if t not in _add98}
             if _p98:
-                _ua = build_allocation(_q98, _p98, cfg, mode="sector_linked", parent_w=parent_w, parent_of=parent_of,
-                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)))
+                _ua = build_allocation(_q98, _p98, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
+                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw)
                 _ul = "비교: 섹터연동 · v0.9.2 유니버스(R98 추가 전 · 측정 전용)"
                 _ur98 = _alloc_row(_ul, _ua, float(alloc.get("cap_used", 0.05)), None)
                 if _ur98:
@@ -3305,6 +4921,69 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                                 note="⚠ 유니버스 확장(사용자 지시) — 이 행과 K★의 차 = 유니버스 효과 · 되돌리기 UNIVERSE_ADD={}"))
         except Exception as e:
             log("ALLOC", kv(event="k_universe_r98_row_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+    # ---- [v0.11.0 R99 N3 · N6-b ★★★ 측정 전용] 섹터 안 확률(또는 어닝 복합) 배분 변형 + 같은 규칙 무작위 대조군 ----
+    #   섹터 비중은 S★ 그대로 · 체결·비용·현금 이자는 라이브와 같다(t+1 시가 · 5bp · rf). 대조군 = 점수 열을 종목에 무작위로 **순열**
+    #   (같은 k · 같은 시간 지속성 · 섹터 안 순위만 무작위 — R81 대조군과 같은 방식 · 시드 PROB_CONTROL_SEED=98). 규칙마다 PROB_CONTROLS회.
+    #   판정(사전등록 · 00 줄): K★ 대비 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 대조군 칼마 백분위 ≥ PROB_LIVE_PASS_CTRL_PCT(90) → R100 라이브 후보.
+    prob_variants: Dict[str, Dict[str, Any]] = {}
+    if ind_alloc and _alloc_mode_live in ("sector_linked", "sector_prob") and (_prob_df is not None or
+                                                                                 (isinstance(_earn_df, pd.DataFrame) and len(_earn_df))):
+        _pv_t0 = time.time()
+        _nctl = int(getattr(cfg, "PROB_CONTROLS", 0) or 0)
+        _rngp = np.random.default_rng(int(getattr(cfg, "PROB_CONTROL_SEED", 98)))
+        _pv_cap = float(alloc.get("cap_used", getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)) or 0.05)
+        _pv_cols = sorted(panel)
+        _pv_ctl: Dict[Tuple[Any, ...], List[float]] = {}
+        for _pv in tuple(getattr(cfg, "PROB_VARIANTS", ()) or ()):
+            _pvl, _pvsel, _pvprm, _pvsc = str(_pv[0]), str(_pv[1]), dict((k, float(v)) for k, v in tuple(_pv[2] or ())), str(_pv[3])
+            _pscore = (_prob_df if _pvsc == "prob" else _earn_df)
+            if not (isinstance(_pscore, pd.DataFrame) and len(_pscore)):
+                log("ALLOC", kv(event="k_prob_variant_skipped", variant=_pvl[:40], reason=f"점수({_pvsc}) 없음"), level="warning")
+                continue
+            _pscore = _pscore.reindex(columns=_pv_cols)
+            try:
+                _pa = build_allocation(pos, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
+                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=_pv_cap,
+                                       prob_score=_pscore, prob_select=_pvsel, prob_params=_pvprm)
+                _prow = _alloc_row(_pvl, _pa, _pv_cap, None)
+                if not _prow:
+                    continue
+                _ck = (_pvsel, tuple(sorted(_pvprm.items())), _pvsc)
+                if _nctl > 0 and _ck not in _pv_ctl:
+                    _cal: List[float] = []
+                    for _k in range(_nctl):
+                        _perm = _rngp.permutation(len(_pv_cols))
+                        _cs = _pscore.copy()
+                        _cs.columns = [_pv_cols[j] for j in _perm]
+                        _cs = _cs.reindex(columns=_pv_cols)
+                        _ca = build_allocation(pos, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
+                                               ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=_pv_cap,
+                                               prob_score=_cs, prob_select=_pvsel, prob_params=_pvprm)
+                        _cr = _alloc_row(f"대조군{_k}", _ca, _pv_cap, None)
+                        if _cr and _cr.get("칼마(CAGR/MDD)") is not None:
+                            _cal.append(float(_cr["칼마(CAGR/MDD)"]))
+                    _pv_ctl[_ck] = _cal
+                _cq = pd.Series(_pv_ctl.get(_ck, []), dtype=float).dropna()
+                _vc = _prow.get("칼마(CAGR/MDD)")
+                _pct = (round(float((_cq < float(_vc)).mean()) * 100.0, 1) if (len(_cq) and _vc is not None) else None)
+                _prow.update({"연동출처": f"S★ 섹터비중 · 섹터 안 {('상승확률' if _pvsc == 'prob' else '어닝 복합')} {_pvsel}",
+                              "대조군 칼마 백분위": _pct, "대조군 칼마 중앙": (round(float(_cq.median()), 3) if len(_cq) else None),
+                              "대조군 칼마 95%": (round(float(_cq.quantile(0.95)), 3) if len(_cq) else None), "대조군 수": int(len(_cq))})
+                alloc_rows.append(_prow)
+                _grid_rets[_pvl] = _pa.get("port_ret")
+                prob_variants[_pvl] = {"select": _pvsel, "params": _pvprm, "score": _pvsc, "ctrl_pct": _pct,
+                                       "ctrl_med": _prow.get("대조군 칼마 중앙"), "ctrl_p95": _prow.get("대조군 칼마 95%"), "n_ctrl": int(len(_cq)),
+                                       "calmar": _vc, "mdd": _prow.get("최대낙폭(MDD)"),
+                                       "select_sector_days": ((_pa.get("tilt") or {}).get("select_sector_days")),
+                                       "excluded_total": ((_pa.get("tilt") or {}).get("excluded_total"))}
+                log("ALLOC", kv(event="k_prob_variant", variant=_pvl[:48], select=_pvsel, score=_pvsc, calmar=_vc, ctrl_pct=_pct,
+                                ctrl_n=int(len(_cq)), seed=int(getattr(cfg, "PROB_CONTROL_SEED", 98)),
+                                stock_share=round(float(_pa["target_w"].sum(axis=1).mean()), 4),
+                                etf_share=round(float(pd.DataFrame(_pa.get("etf_w")).sum(axis=1).mean()), 4) if isinstance(_pa.get("etf_w"), pd.DataFrame) else None,
+                                note="측정 전용 — 라이브 무변경"))
+            except Exception as e:
+                log("ALLOC", kv(event="k_prob_variant_failed", variant=_pvl[:40], err=type(e).__name__, msg=str(e)[:140]), level="warning")
+        log("ALLOC", kv(event="k_prob_variants_done", rows=len(prob_variants), controls_per_rule=_nctl, sec=round(time.time() - _pv_t0, 1)))
     if ind_alloc:
         _has_cs = isinstance(ind_alloc.get("coupling_score"), pd.DataFrame) and len(ind_alloc.get("coupling_score"))
         if _has_cs:
@@ -3410,7 +5089,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                             [str(x[0]) for x in tuple(getattr(cfg, "SECTOR_LINK_GRID", ()) or ())] + \
                             [k for k in _grid_rets if str(k).startswith("참고: 라이브 배분을 v0.8.1 체결")] + \
                             [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 × S")] + \
-                            [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 · v0.9.2 유니버스")]
+                            [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 · v0.9.2 유니버스")] + \
+                            [k for k in _grid_rets if str(k).startswith(("R99 확률 배분", "R99 N6-b"))]      # [v0.11.0 R99 N3·N6-b]
                 for _lb in _cmp_lbls:
                     _rr = _grid_rets.get(_lb)
                     if _rr is not None and _lb != _live_alloc_label:
@@ -3520,7 +5200,19 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             _ud = _updown_variants(panel, pos, cfg, mkt)
         except Exception as e:
             log("PERF", kv(event="updown_variants_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
+    # ---- [v0.11.0 R99 N6-a] 종목 선택력 긴 이력 검정(S&P 500 그 시점 구성 · 2010~) — 월 1회(기본 끔 · 켜면 30일 캐시 재사용) ----
+    _sel_audit: Optional[Dict[str, Any]] = None
+    try:
+        if bool(getattr(cfg, "SELECTION_AUDIT", False)):
+            _sel_audit = selection_audit(cfg, universe=sorted(panel))
+        else:
+            _sel_audit = load_selection_audit_cache(cfg)
+    except Exception as e:
+        _sel_audit = {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+        log("SELAUDIT", kv(event="run_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
     return {"cfg": cfg, "panel": panel, "pos": pos, "prices": {**prices, **prices_h}, "fund": fund,
+            "stock_prob": stock_prob, "prob_variants": prob_variants, "sector_of": sector_of,      # [v0.11.0 R99 N3]
+            "k_freshness": _k_fresh, "selection_audit": _sel_audit,                                # [v0.11.0 R99 N2·N6-a]
             "panel_h": panel_h, "pos_h": pos_h, "roles": roles, "automap": amap,           # [v0.6.0 R79]
             "universe": U, "names": _nm, "failed_px": dict(_FAILED_PX),
             "market_budget": mkt_info, "market_w": mkt, "updown": _ud, "live_label": _live_lbl,
@@ -3583,6 +5275,10 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                       f"**1.0 초과일 {_ov}일** · 종목 최대비중 {float(_aw.max().max()):.4f}"
                       + (f" · 섹터 ETF 몫 평균 {float(_aew.sum(axis=1).mean()):.4f}" if _aew is not None else "") + " "
                       + ("→ ★ 전체자산 1.0 제약 준수" if _ov == 0 else "→ ⚠⚠ 제약 위반, 배분층 확인"))
+    # [v0.11.0 R99 N2·N3] 다음 거래일 = NYSE(M next_trading_day → pandas_market_calendars → 규칙표) · 종목 상승확률(표시)
+    _nd_k, _nd_src = (next_trading_day_k(idx[-1]) if len(idx) else (None, "-"))
+    _sp = res.get("stock_prob") or {}
+    _pw = _sp.get("prob") if (_sp.get("ok") and isinstance(_sp.get("prob"), pd.DataFrame)) else None
     Z = pd.DataFrame(index=idx)
     for t in sorted(panel):
         Z[f"{t} 확정국면"] = pos[t]["확정국면"].reindex(idx)
@@ -3590,6 +5286,8 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         Z[f"{t} 배분비중"] = (pd.to_numeric(_aw[t], errors="coerce").reindex(idx)
                            if isinstance(_aw, pd.DataFrame) and t in _aw.columns
                            else pd.Series(np.nan, index=idx))
+        Z[f"{t} 상승확률"] = (pd.to_numeric(_pw[t], errors="coerce").reindex(idx).round(4)            # [v0.11.0 R99 N3] 표시 전용
+                           if (_pw is not None and t in _pw.columns) else pd.Series(np.nan, index=idx))
     if _aew is not None:                                                # [v0.9.0 R94] 부모 섹터 ETF 다리도 01Z에 — 합계·현금이 맞도록
         for _e in _aew.columns:
             Z[f"ETF_{_e} 배분비중"] = pd.to_numeric(_aew[_e], errors="coerce").reindex(idx)
@@ -3605,27 +5303,19 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     #   그것을 날짜만 다음 영업일로 바꿔 한 행 더 쓴다(새 계산이 아니라 체결 규칙의 명시다).
     try:
         if len(idx):
-            # ★ 미국 공휴일을 건너뛴다 — 단순 bdate_range는 2026-01-01(신년)을 영업일로 본다
-            #   (테스트가 잡았다). 달력을 못 만들면 영업일로 되돌린다.
-            _nd = None
-            try:
-                from pandas.tseries.holiday import USFederalHolidayCalendar
-                from pandas.tseries.offsets import CustomBusinessDay
-                _cbd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
-                _nd = (idx[-1] + _cbd).normalize()
-            except Exception:
-                _nd = None
-            if _nd is None:
-                _nd = pd.bdate_range(idx[-1] + pd.Timedelta(days=1), periods=1)[0]
+            # [v0.11.0 R99 N2-2 ★] 대상일 = 다음 **NYSE** 개장일. v0.3.0~v0.10.0은 USFederalHolidayCalendar였다 — 콜럼버스의 날·재향군인의 날을
+            #   휴장으로, 성금요일을 개장으로 봤다(NYSE와 다름). 매 실행 '자료 마지막 확정일 → 다음 개장일'로 새로 만든다(고정 날짜 없음).
+            _nd = _nd_k
             _last = Z.iloc[[-1]].copy()
             _last.index = pd.DatetimeIndex([_nd])
             _last["구분"] = "예측(다음 거래일 집행)"
             Z = pd.concat([Z, _last])
             log("REPORT", kv(event="next_day_row_added", base=str(idx[-1].date()),
-                             target=str(_nd.date()), w_sum=round(float(_tot.iloc[-1]), 4),
-                             note="t일 확정 → t+1일 집행 규칙의 명시(새 계산 아님)"))
+                             target=str(_nd.date()), calendar=_nd_src, w_sum=round(float(_tot.iloc[-1]), 4),
+                             note="t일 확정 → t+1일 집행 규칙의 명시(새 계산 아님) · 01Z·13c·01_일별 공통 대상일"))
     except Exception as e:
         log("REPORT", kv(event="next_day_row_failed", err=str(e)[:150]), level="warning")
+    Z.index.name = "날짜"
     sheets["01Z_주식일별예측"] = Z.reset_index().rename(columns={"index": "날짜"})
     # ---- [v0.3.0 D2] 13_주식배분전략 · 13c_일별배분비중 ----
     _ag = res.get("alloc_grid")
@@ -3635,8 +5325,22 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _c13 = _aw.copy()
         if _aew is not None:                                            # [v0.9.0 R94] ETF 다리 열(ETF_XLK …)
             _c13 = pd.concat([_c13, _aew.reindex(_aw.index).fillna(0.0).add_prefix("ETF_")], axis=1)
+        # [v0.11.0 R99 N2-3] 맨 끝에 '예측(다음 거래일 집행)' 행 — 날짜 = 대상일(NYSE) · 비중 = 마지막 확정 목표(t일 확정 → t+1 시가 집행).
+        #   00 '다음 거래일 배분(K★)' 줄이 이 행을 읽는다(단독 신호가 아니라 **실제 배분**).
+        _kind13 = ["실적"] * len(_c13)
+        try:
+            if _nd_k is not None and len(_c13):
+                _nr = _c13.iloc[[-1]].copy()
+                res["_next_row_weights"] = _nr.iloc[0].astype(float)
+                _nr.index = pd.DatetimeIndex([_nd_k])
+                _c13 = pd.concat([_c13, _nr])
+                _kind13.append("예측(다음 거래일 집행)")
+        except Exception as e:
+            log("REPORT", kv(event="next_day_row_13c_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
         _c13.insert(0, "★ 합계", _c13.sum(axis=1).round(6))
         _c13.insert(1, "현금", (1.0 - _c13["★ 합계"]).round(6))
+        _c13.insert(0, "구분", _kind13)
+        _c13.index.name = "날짜"
         sheets["13c_일별배분비중"] = _c13.reset_index().rename(columns={"index": "날짜"})
 
     # ---- 00 실행요약 ----
@@ -3693,13 +5397,20 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     # 다음 거래일 예측
     if len(idx):
         last = idx[-1]
+        # [v0.11.0 R99 N2-4 ★★★] M·S·I와 같은 형식 — 데이터 신선도 · 기준일 · 대상일(NYSE) · 다음 거래일 **실제 배분**(13c 예측 행)
+        try:
+            meta.extend(next_day_rows_k(res, _nd_k, _nd_src, last))
+        except Exception as e:
+            meta.append(("⚠ 다음 거래일 예측 줄", f"산출 실패 — {type(e).__name__}: {str(e)[:120]}"))
+            log("REPORT", kv(event="next_day_rows_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
         nd = []
         for t in sorted(panel):
             p = pos[t]
             if last in p.index:
                 nd.append(f"{t}({_NM.get(t, STOCK_NAME_KR.get(t, t))}) {p['확정국면'].loc[last]}/"
                           f"{float(p['목표비중'].loc[last]):.2f}")    # [v0.4.0] E_t 부분 노출(0.4~0.6)을 반올림하지 않는다
-        meta.append((f"다음 거래일 예측({last.date()} 확정 → 익일 집행)", " · ".join(nd)))
+        meta.append((f"(참고) 종목 단독 신호({last.date()} 확정 → {_nd_k.date() if _nd_k is not None else '익일'} 집행) — 진단용 · 실제 배분은 위 줄",
+                     " · ".join(nd)))
     sheets["00_실행요약"] = pd.DataFrame(meta, columns=["항목", "값"])
     sheets["02_티커요약"] = res["quality"]
     sheets["03_예측규칙정확도"] = res["accuracy"]
@@ -3966,25 +5677,35 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                              "되돌리기(M에서): m_overrides={'R95_STRESS_EXIT': False, "
                              "'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. 연구·교육용, 투자 자문 아님."))
                 log("REL", kv(event="k_r95_compare", d_avoid=round(_da, 2), d_part=round(_dp, 2), ok=_okk))
-            # ---- [v0.10.0 R98 · 측정 전용] V1 · VRP · M5 비교 행 → K★ Δ · 유니버스 확장 효과 ----
+            # ---- [v0.10.0 R98 → v0.11.0 R99 N5] V1(닫음) · VRP(닫음) · M5 비교 행 → K★ Δ · 유니버스 확장 효과 ----
             try:
                 _pp98k: List[str] = []
-                for _nmk, _pfx in (("V1", "비교: 섹터연동 × S 'R98 V1 변동성 짝"), ("VRP", "비교: 섹터연동 × S 'R98 VRP"),
+                _m5k = None
+                for _nmk, _pfx in (("V1(닫음 · 흔들림 확인)", "비교: 섹터연동 × S 'R98 V1 변동성 짝"), ("VRP(닫음)", "비교: 섹터연동 × S 'R98 VRP"),
                                    ("M5 상한100%×V1강", "비교: 섹터연동 × S 'R98 상한100%")):
                     _gk = _ur[_lbl.str.startswith(_pfx)]
                     if not len(_gk):
                         continue
                     _dak, _dpk, _okk98, _ = _cmp_line(_t0, _gk.iloc[0], "라이브", _nmk)
                     _okk98 = bool(_dak > 0 and _dpk >= 0)
+                    _dmdd = (float(_gk.iloc[0]["MDD"]) - float(_t0["MDD"])) * 100.0
+                    if _nmk.startswith("M5"):
+                        _m5k = {"da": _dak, "dp": _dpk, "ok": _okk98, "dmdd": _dmdd}
                     _pp98k.append(f"{_nmk} {float(_gk.iloc[0]['하락 회피율']):.1%}/{float(_gk.iloc[0]['상승 참여율']):.1%}"
-                                  f"({_gk.iloc[0]['등급']}) Δ{_dak:+.2f}/{_dpk:+.2f}%p · MDD {float(_gk.iloc[0]['MDD']) * 100:.2f}% "
+                                  f"({_gk.iloc[0]['등급']}) Δ{_dak:+.2f}/{_dpk:+.2f}%p · MDD {float(_gk.iloc[0]['MDD']) * 100:.2f}%(Δ{_dmdd:+.2f}) "
                                   + ("✓" if _okk98 else "✗"))
-                    log("REL", kv(event="k_r98_compare", variant=_nmk, d_avoid=round(_dak, 2), d_part=round(_dpk, 2), ok=_okk98))
-                if _pp98k:
-                    _add.append(("★★★ R98 측정 — V1 · VRP · M5가 K★에 줄 효과(같은 섹터연동 · 섹터 비중만 다름 · 라이브 무변경)",
-                                 f"K★ {float(_t0['하락 회피율']):.1%}/{float(_t0['상승 참여율']):.1%}({_t0['등급']}) 기준 → " + " · ".join(_pp98k)
-                                 + ". V1 R99 승격 조건: 네 층 Δ회피 > 0 & Δ참여 ≥ 0(M·S·I 00 'R98' 줄과 함께) · 오프라인 기대 K +1.37/+1.16 · "
-                                 "M5는 사용자 동의 없이 라이브 금지(기술 편중 지시). 연구·교육용, 투자 자문 아님."))
+                    log("REL", kv(event="k_r98_compare", variant=_nmk, d_avoid=round(_dak, 2), d_part=round(_dpk, 2), ok=_okk98,
+                                  d_mdd=round(_dmdd, 2)))
+                if not any(s_.startswith("VRP") for s_ in _pp98k):
+                    _pp98k.append("VRP 닫음(M R98_VRP_MEASURE=False — 비교 행 없음)")
+                _add.append(("★★★ R99 판정 — K★(M2 가드 되돌림 · V1 닫음 · VRP 닫음 · M5 K 조건)",
+                             f"K★ {float(_t0['하락 회피율']):.1%}/{float(_t0['상승 참여율']):.1%}({_t0['등급']}) · MDD {float(_t0['MDD']) * 100:.2f}% "
+                             f"vs R98 기준 71.2/120.8(Δ{(float(_t0['하락 회피율']) - 0.712) * 100:+.2f}/{(float(_t0['상승 참여율']) - 1.208) * 100:+.2f}%p · "
+                             "R99 사전등록 ②: 라이브 균등이면 같아야 한다 ± 흔들림) → " + " · ".join(_pp98k)
+                             + (f" | M5 K 조건(R100): Δ회피 > 0 & Δ참여 ≥ 0 {'✓' if _m5k['ok'] else '✗'} · K MDD 악화 ≤ 0.5%p "
+                                f"{'✓' if _m5k['dmdd'] >= -0.5 else '✗'}(Δ{_m5k['dmdd']:+.2f} · R98 −1.28 경보) · 사용자 명시 동의 필요(S 00 'R99 S 높음 경로' 줄)"
+                                if _m5k else " | M5 비교 행 없음(M V1강 측정 열 또는 I 통로 없음)")
+                             + ". 연구·교육용, 투자 자문 아님."))
                 _gu = _ur[_lbl.str.startswith("비교: 섹터연동 · v0.9.2 유니버스")]
                 if len(_gu):
                     _dau, _dpu, _, _ = _cmp_line(_gu.iloc[0], _t0, "v0.9.2 유니버스", "라이브")
@@ -4000,6 +5721,23 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             if not len(_vr95) and not len(_vr96):
                 _add.append(("★★★ R95 라이브 — K★ 비교", "비교 행 없음 — I 통로에 S 'R95 규칙 없음' 섹터 비중이 없다"
                              "(M < v1.63.0 · S < v0.76.0 · I < v0.47.0 이거나 R95 오버레이 꺼짐)"))
+        # ---- [v0.11.0 R99 N3 · N6-a · N6-b] 종목 상승확률(모형 신뢰도 · 상위 10) · 확률 배분 측정 행 판정 · 종목 선택력 긴 이력 검정 ----
+        try:
+            _pdf_e, _plines = build_prob_sheet(res)
+            _add.extend(_plines)
+            if isinstance(_pdf_e, pd.DataFrame) and len(_pdf_e):
+                sheets["00E_주식상승확률"] = _pdf_e
+        except Exception as _epr:
+            _add.append(("⚠ R99 종목 상승확률 줄", f"산출 실패 — {type(_epr).__name__}: {str(_epr)[:120]}"))
+            log("REPORT", kv(event="prob_sheet_failed", err=type(_epr).__name__, msg=str(_epr)[:160]), level="warning")
+        try:
+            _sdf, _sline = build_selection_sheet(res.get("selection_audit"), cfg)
+            if isinstance(_sdf, pd.DataFrame) and len(_sdf):
+                sheets["00S_종목선택력"] = _sdf
+            _add.append(("★★ R99 N6-a 종목 선택력 긴 이력 검정(S&P 500 그 시점 구성 · 2010~ · 측정 전용 · 월 1회)", _sline))
+        except Exception as _esa:
+            _add.append(("⚠ R99 N6-a 선택력 검정 줄", f"산출 실패 — {type(_esa).__name__}: {str(_esa)[:120]}"))
+            log("REPORT", kv(event="selection_sheet_failed", err=type(_esa).__name__, msg=str(_esa)[:160]), level="warning")
         if I is not None and hasattr(I, "single_live_verdict_line"):
             _add.append(("★ 단일 종목 라이브 예측 vs B&H(하락 회피·상승 참여)",
                          str(I.single_live_verdict_line(sheets)).replace("(산업 합)", "(종목 합)")))
@@ -4024,6 +5762,12 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                       + ". ★ 섹터 선택은 S★(무작위를 이긴다)를 그대로 따르고, 섹터 안 종목은 균등(종목 자기 지표·결합점수 기울임은 "
                         "선택 정보가 없거나 대조군을 못 넘었다) · ⚠ 노출 ≈ S★(종전 1/N 규칙보다 +0.05) · 보유에 섹터 ETF 포함. "
                         "되돌리기: k_overrides={'STOCK_ALLOC_MODE': 'prob_tilt'}")
+        elif _md == "sector_prob":
+            _mline = (f"⚠ mode=sector_prob(R99 · 사용자 overrides — 사전등록 통과 전 라이브) · 선택 {_td.get('select', '-')} "
+                      f"{_td.get('params', {})} · 종목 상한 {float(_td.get('cap', 0) or 0):.1%} · 섹터 합(= S★) 평균 {_td.get('sector_total_mean')} = "
+                      f"종목 {_td.get('stock_share_mean')} + 부모 섹터 ETF {_td.get('etf_share_mean')} · 점수 선택한 섹터·날 {_td.get('select_sector_days', '-')} · "
+                      f"균등으로 둔 섹터·날 {_td.get('equal_sector_days', '-')}" + (f" · {_td.get('note')}" if _td.get("note") else "")
+                      + ". 되돌리기: k_overrides={'STOCK_ALLOC_MODE': 'sector_linked'}")
         elif _md == "prob_tilt" and _td.get("ok"):
             _mline = (f"mode=prob_tilt(상승확률 기울임) · λ={_td.get('lam')} · 점수제곱={_td.get('power')} · 종목상한 "
                       f"{float(_td.get('cap', cfg.STOCK_MAX_WEIGHT)):.0%} · 점수=산업 **결합점수 백분위**(섹터·산업·변동성 지표) · "
@@ -4036,7 +5780,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         else:
             _mline = f"mode={_md} — ⚠ {str(_td.get('note') or _ii.get('note') or '점수 출처 없음 — 1/N 고정슬리브')}"
         _add.append(("★ 배분 방식(v0.9.0 R94 · 사용자 지시 '주식층도 같이 개선' — 신뢰도 = 하락 회피·상승 참여)",
-                     _mline + ("" if _md == "sector_linked" else
+                     _mline + ("" if _md in ("sector_linked", "sector_prob") else
                                " ★ 총노출(=방어)은 v0.6.0 1/N 규칙과 날마다 동일하다 — 바뀐 것은 그 노출의 종목 간 분배뿐이다.")))
         if _md == "sector_linked":
             _add.append(("상승확률 기울임(prob_tilt · v0.8.0~0.8.1 라이브) — R94 처리",
@@ -4095,12 +5839,35 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 d["배분목표비중"] = pd.to_numeric(_tw0[t], errors="coerce").reindex(d.index)
                 d["배분집행비중"] = pd.to_numeric(res["alloc"]["exec_w"][t],
                                             errors="coerce").reindex(d.index)
-        sheets[f"01_일별_{t}"] = d.reset_index().rename(columns={"index": "날짜"})
+        # [v0.11.0 R99 N3] 상승확률(21일 · 표시 전용 — 라이브 배분 무관)
+        d["상승확률(21일)"] = (pd.to_numeric(_pw[t], errors="coerce").reindex(d.index).round(4)
+                           if (_pw is not None and t in _pw.columns) else np.nan)
+        d.insert(0, "구분", "실적")
+        # [v0.11.0 R99 N2-3 ★] 맨 끝 '예측(다음 거래일 집행)' 행 — 날짜 = 대상일(NYSE) · 비중 = 마지막 확정 목표(다음 날 집행) ·
+        #   가격·특성 열은 빈칸 · 확정국면·단독 목표·시장 예산·상승확률은 마지막 확정값(t일 확정 → t+1 집행 — 새 계산 아님).
+        try:
+            if _nd_k is not None and len(d):
+                _lr = d.iloc[-1]
+                _fr = pd.DataFrame([{c: np.nan for c in d.columns}], index=pd.DatetimeIndex([_nd_k]))
+                _fr["구분"] = "예측(다음 거래일 집행)"
+                for _c in ("확정국면", "목표비중", "시장예산(M E_t)", "상승확률(21일)", "배분목표비중"):
+                    if _c in d.columns:
+                        _fr[_c] = _lr.get(_c)
+                if "목표비중" in d.columns:
+                    _fr["집행비중"] = _lr.get("목표비중")
+                if "배분목표비중" in d.columns:
+                    _fr["배분집행비중"] = _lr.get("배분목표비중")
+                d = pd.concat([d, _fr[d.columns]])
+        except Exception as e:
+            log("REPORT", kv(event="next_day_row_daily_failed", ticker=t, err=type(e).__name__, msg=str(e)[:100]), level="warning")
+        d.index.name = "날짜"                                     # [v0.11.0 R99 N2-1] 'Date' → '날짜'(M·S·I와 같게)
+        sheets[f"01_일별_{t}"] = d.reset_index().rename(columns={"index": "날짜", "Date": "날짜"})
     # [v0.9.0 R94] 00U_사용자신뢰도 — S·I와 같은 함수(user_rel_portfolio)로 잰 K★·비교 행
     if isinstance(res.get("user_rel"), pd.DataFrame) and len(res["user_rel"]):
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "01Z_주식일별예측", "00_실행요약") if n in sheets]
+    _front = [n for n in ("00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
+                          "01Z_주식일별예측", "00_실행요약") if n in sheets]
     sheets = {**{n: sheets[n] for n in _front},
               **{k: v for k, v in sheets.items() if k not in _front and k not in _drop}}
     # [v0.7.0 R80] ★ 실제 거래에 쓰는 전략 행을 노란색으로 — 13(배분)·06(노출)·00A(수익비교) 세 곳
@@ -4121,7 +5888,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             _lm["00U_사용자신뢰도"] = ("전략", _ul)   # [v0.9.0 R94]
     except Exception as e:
         log("REPORT", kv(event="live_marks_build_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
-    _write(path, sheets, live_marks=(_lm or None))
+    _write(path, sheets, live_marks=(_lm or None), date_format=str(getattr(cfg, "REPORT_DATE_FORMAT", "yyyy-mm-dd") or "yyyy-mm-dd"))
     _mb = (os.path.getsize(path) / 1e6) if os.path.exists(path) else float("nan")
     log("REPORT", kv(event="written", path=path, sheets=len(sheets), size_mb=round(_mb, 2),
                      note="사용자 제약: 리포트 파일 전체 30MB 이하"))
@@ -4133,16 +5900,19 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
 
 
 def _write(path: str, sheets: Dict[str, pd.DataFrame],
-           live_marks: Optional[Dict[str, Any]] = None) -> None:
+           live_marks: Optional[Dict[str, Any]] = None, date_format: str = "yyyy-mm-dd") -> None:
     """[v0.7.0 R80] live_marks = {시트명: (열이름, 값) 또는 [(열이름, 값), …]} — 그 열 값이 일치하는 **행 전체를 노란색**으로 칠한다.
     사용자 지시(2026-09-21) "각 계층별로 어떤 전략이 실제 거래에 사용되는지 노란색으로 표시해" — M·S·I와 같은 약속이다.
-    M 모듈이 같은 프로세스에 있으면 M.apply_live_marks를 그대로 쓰고(서식 단일 출처), 없으면 여기서 같은 규칙으로 칠한다."""
+    M 모듈이 같은 프로세스에 있으면 M.apply_live_marks를 그대로 쓰고(서식 단일 출처), 없으면 여기서 같은 규칙으로 칠한다.
+    [v0.11.0 R99 N2-1 ★] 날짜 칸 서식 = date_format(기본 yyyy-mm-dd) — 사용자 지시 "일별 기록 날짜만(00:00:00 없이)".
+      v0.10.0까지는 ExcelWriter에 서식을 주지 않아 datetime이 시각(00:00:00)까지 찍혔다(01Z · 13c · 01_일별_* · 19 등 전 시트)."""
     _M = None
     for _nm, _mod in list(sys.modules.items()):
         if callable(getattr(_mod, "apply_live_marks", None)) and callable(getattr(_mod, "_live_row_format", None)):
             _M = _mod
             break
-    with pd.ExcelWriter(path, engine="xlsxwriter") as xw:
+    _df = str(date_format or "yyyy-mm-dd")
+    with pd.ExcelWriter(path, engine="xlsxwriter", datetime_format=_df, date_format=_df) as xw:
         wb = xw.book
         f_live = (_M._live_row_format(wb) if _M is not None
                   else wb.add_format({"bg_color": "#FFF200", "bold": True, "border": 1}))

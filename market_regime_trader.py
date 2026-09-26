@@ -22,6 +22,21 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.67.0 - 2026-09-25 - [R99 ⚠ 신호(좁은 범위): R97 약세장 가드 되돌림(방법서 N1=M2) · VRP 측정 끔(N5) · 00 'R99 판정' 줄 — 표본 안(2018~) 목표비중 비트 동일]
+#    사용자 지시(2026-09-25 · R99 방법서 구현): "문서대로 코드들을 누락되는 내용 없이 수정하고 … 깃허브 yeomin1024/stock에 업로드해".
+#      시작 v1.66.0 → 목표 v1.67.0. 앞 지시 유지: "회피를 더 높이도록 · 참여는 절대로 떨어지면 안 돼" · "묻지 말고 권장으로".
+#    ── R98 코드 리포트 판정(R99 · 자료 2026-09-24) ── M 80.4/61.6 낮음(구조적) · S★ 74.3/86.0 중간 · I★ 74.5/91.7 높음 · K★ 71.2/120.8 높음.
+#      R98 사전등록 ④: R97 가드 ⑥ 참여 음수 — 블록 M(SPY 1994~2017) +0.22/−0.43 · 블록 N(FF 1927~2017) +0.06/−0.40 → **M2 되돌림 확정**.
+#      ⑤ V1(기본) 블록 M⑦ ✗ +1.49/−1.17(뒤 2008~17 +2.16/−2.15) → 라이브 후보 닫음 · ⑥ VRP 네 층 크게 ✗ → 닫음.
+#    (§1 ⚠ N1) Config.R97_REBOUND_HIGH_MAX_DD 0.20 → **0.0**(= v1.64.0 비트 동일 P1). 근거: 긴 이력 두 블록 모두 참여 음수 ·
+#         표본 안(2018~) 막은 날 0일 → 네 층 노란 행 불변. apply_r95_overlays는 그대로(0이면 가드 끔 — 함수·열·로그 유지 · 막은 날 0).
+#         ⚠ 되돌리기(= R97 상태로): m_overrides={"R97_REBOUND_HIGH_MAX_DD": 0.20}. 00 R95 줄·로그 note에 '가드 꺼짐(R99 되돌림)'.
+#    (§2 N5) Config.R98_VRP_MEASURE True → **False**(VRP 측정 열 pos_r98_vrp 기본 끔 → S·I·K VRP 비교 행 자동 생략 — 네 층 −2.8~−4.3/−4.7~−9.9).
+#         V1(기본) 측정 열은 흔들림 확인용으로 한 라운드 더 두고 R100에 제거 · V1강(pos_r98_v1s)은 M5 검증(S 00U 블록 M⑧·N⑧·F2)에 계속 쓴다.
+#    (§3) 00 '★★★ R98 측정' 줄 → '★★★ R99 판정' 줄(_r99_note): M2 완료(가드 상태·막은 날) · V1 닫음 · VRP 닫음 · V1강/M5 상태 · R100 사전등록.
+#    (§4) 새 Config 필드 없음(값만 변경) → 캐시 키 무시 목록 무변경(교훈 13·29). 동반 버전 표 S v0.80.0 · I v0.51.0 · K v0.11.0.
+#    시험 t99/test_r99.py(가드 0 = v1.64.0 규칙 · 가드 0.20 대비 바뀐 날 = 막은 날 수 · VRP 끔이면 pos_r98_vrp 없음 · 00 R99 줄).
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.66.0 - 2026-09-25 - [R98 측정 전용: V1 변동성 짝 · VRP · V1강(M5) · 이웃 문턱 4칸 목표비중 열 — 라이브 목표비중 비트 동일]
 #    사용자 지시(2026-09-25 · R98 방법서 구현): "문서들을 참고하여 코드를 수정 … 깃허브에 업로드해". 시작 v1.65.0 → 목표 v1.66.0.
 #    앞 지시 유지: "회피를 더 높이도록 · 참여는 절대로 떨어지면 안 돼" · "묻지 말고 권장으로". 방법서 §3 M1·M3·M4·M5는 **측정 전용**,
@@ -3058,7 +3073,11 @@ class Config:
     #   엔진 m_proxy_long_history와 같은 함수 · SPX 2000~2017 M 대용): 약세장 20일 신고가는 되돌림 함정이 많았다(hi20만 P1 몫 −2.92 vs 10일 추력만 −0.70).
     #   가드 효과: 표본 안(2018~) 네 층 **변화 0**(해당 날 없음) · 긴 이력 대용 전체 +0.22/+0.11 · 앞 +0.49/−0.01 · 뒤 +0.00/+0.20(%p 회피/참여).
     #   ⚠ 되돌리기(한 줄): m_overrides={"R97_REBOUND_HIGH_MAX_DD": 0.0} ⇒ v1.64.0과 비트 동일.
-    R97_REBOUND_HIGH_MAX_DD: float = 0.20     # 0이면 가드 끔 · 20일 신고가 가지 허용 = 종가 ≥ 252일 최고 종가 × (1 − 이 값)
+    # [v1.67.0 R99 ⚠ N1(방법서 M2) — 가드 되돌림] 0.20 → **0.0**. R98 코드 리포트 엔진 판정: 블록 M⑥(SPY 1994~2017) +0.22/**−0.43** ·
+    #   블록 N⑥(FF 1927~2017) +0.06/**−0.40** — 긴 이력 두 블록 모두 참여를 잃는다(사용자 조건 '참여 절대 하락 금지' 위반) ·
+    #   표본 안(2018~) 막은 날 0일이라 네 층 노란 행은 변하지 않는다(비용 0). 함수·열(r97_bear_guard)·로그는 그대로 두고 값만 0(가드 끔).
+    #   ⚠ 되돌리기(= R97 상태로): m_overrides={"R97_REBOUND_HIGH_MAX_DD": 0.20}
+    R97_REBOUND_HIGH_MAX_DD: float = 0.0      # 0이면 가드 끔(R99 라이브) · 양수면 20일 신고가 가지 허용 = 종가 ≥ 252일 최고 종가 × (1 − 이 값)
     R97_REBOUND_DD_WINDOW: int = 252
     # [v1.66.0 R98 · 측정 전용 — 방법서 M3·M4·M5] R96 **뒤** 라이브 목표비중에 대한 후보 오버레이를 '측정 열'로만 싣는다.
     #   R98_RANGE_VOL=False(기본)면 target_pos는 v1.65.0과 비트 동일 · S·I·K가 비교 행으로 네 층 Δ회피·Δ참여를 잰다(R99 사전등록).
@@ -3076,7 +3095,9 @@ class Config:
     R98_V1S_PK_RATIO: float = 1.25            # V1 강한 변형(방법서 M5 · 상한 100% 비교 행 전용)
     R98_V1S_CALM_SIGMA: float = 0.17
     R98_V1_NEIGHBORS: Tuple[Tuple[float, float], ...] = ((1.25, 0.14), (1.25, 0.16), (1.35, 0.14), (1.35, 0.16))
-    R98_VRP_MEASURE: bool = True              # 방법서 M4 — VIX 기반 변동성 위험 프리미엄 측정 열
+    # [v1.67.0 R99 N5] VRP 닫음 — 엔진 네 층 모두 크게 음수(S −3.66/−6.60 · I −3.98/−7.57 · K −4.30/−9.94 · M −2.80/−4.65).
+    #   기본 끔 → pos_r98_vrp 열·S·I·K VRP 비교 행이 생기지 않는다. 다시 재려면 m_overrides={"R98_VRP_MEASURE": True}(측정 전용).
+    R98_VRP_MEASURE: bool = False             # 방법서 M4 — VIX 기반 변동성 위험 프리미엄 측정 열(R99 닫음 · 기본 끔)
     R98_VRP_CUT_POS: float = 0.6              # 회피원: E=1 & VRP<0 → 이 값
     R98_VRP_REENTRY_POS: float = 0.6          # 참여원: 위험회피·중립감축 0일 & VRP 상위 & σ20 하락 → 이 값
     R98_VRP_TOP_PCT: float = 0.90
@@ -8235,6 +8256,14 @@ def action_labels(pos: pd.Series) -> pd.Series:
 #     t+1일 수익률 = 이전비중 × (시가/전일종가 - 1) + 신규비중 × (종가/시가 - 1)
 #     -> 룩어헤드가 구조적으로 불가능하며 실전 체결과 동일한 분해.
 # =============================================================================
+def _gdd_on(cfg) -> float:
+    """[v1.67.0 R99] R97 약세장 가드 문턱(0이면 꺼짐 · R99 라이브) — 표시·로그 공용."""
+    try:
+        return float(getattr(cfg, "R97_REBOUND_HIGH_MAX_DD", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
 def apply_r95_overlays(sig: pd.DataFrame, px: pd.Series, fast_pct: Optional[pd.Series], cfg: Config = CFG
                        ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """[v1.63.0 R95 ⚠ 사이징] SPY 라이브 신호에 붙이는 3개 오버레이 — 목표비중만 바꾸고 상태·플래그는 그대로 둔다.
@@ -8311,7 +8340,9 @@ def apply_r95_overlays(sig: pd.DataFrame, px: pd.Series, fast_pct: Optional[pd.S
                      mean_before=diag["mean_pre"], mean_after=diag["mean_post"],
                      ft_pct=getattr(cfg, "R95_STRESS_FT_PCT", None), vol_ratio=getattr(cfg, "R95_STRESS_VOL_RATIO", None),
                      max_days=_N, bear_guard=int(mG.sum()), bear_guard_dd=getattr(cfg, "R97_REBOUND_HIGH_MAX_DD", None),
-                     note="⚠ 사이징 오버레이(R95) · 되돌리기 R95_STRESS_EXIT/R95_REBOUND_REENTRY=False · R95_DEEP_HAIRCUT_MAX_DAYS=0 · R97 가드 0.0"))
+                     bear_guard_state=("꺼짐(R99 되돌림)" if _gdd_on(cfg) <= 0 else "켬(R97)"),     # [v1.67.0 R99 N1]
+                     note="⚠ 사이징 오버레이(R95) · 되돌리기 R95_STRESS_EXIT/R95_REBOUND_REENTRY=False · R95_DEEP_HAIRCUT_MAX_DAYS=0 · "
+                          "R97 가드는 R99에 0.0(끔)으로 되돌림 — R97 상태로: R97_REBOUND_HIGH_MAX_DD=0.20"))
     return out, diag
 
 
@@ -8536,8 +8567,10 @@ def apply_r98_measure(sig: pd.DataFrame, px: pd.Series, price: Optional[pd.DataF
     log("SIGNAL", kv(event="r98_measure", live=live, has_high_low=has_hl,
                      v1_cut=f"{diag['v1_cut'][0]}(2018~{diag['v1_cut'][1]})", v1_calm=f"{diag['v1_calm'][0]}(2018~{diag['v1_calm'][1]})",
                      v1s_cut=diag["v1s_cut"][1], v1s_calm=diag["v1s_calm"][1],
-                     vrp_cut=(vd.get("cut") or ["-", "-"])[1] if vd.get("enabled") else "VIX없음",
-                     vrp_up=(vd.get("up") or ["-", "-"])[1] if vd.get("enabled") else "VIX없음",
+                     vrp_cut=((vd.get("cut") or ["-", "-"])[1] if vd.get("enabled")
+                              else ("VIX없음" if bool(getattr(cfg, "R98_VRP_MEASURE", False)) else "끔(R99 닫음)")),
+                     vrp_up=((vd.get("up") or ["-", "-"])[1] if vd.get("enabled")
+                             else ("VIX없음" if bool(getattr(cfg, "R98_VRP_MEASURE", False)) else "끔(R99 닫음)")),
                      neighbors=len(nb), mean_live=diag["mean_live"], mean_v1=diag["mean_v1"],
                      note=("⚠ 라이브 적용(R98_RANGE_VOL=True) — 되돌리기 R98_RANGE_VOL=False" if live
                            else "측정 전용 — target_pos 무변경(비트 동일)")),
@@ -12023,7 +12056,8 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
-        ("★★★ R98 측정(라이브 무변경) — V1 변동성 짝 · VRP · V1강 · 이웃 문턱", _r98_note(res)),
+        ("★★★ R99 판정 — R97 가드 되돌림(M2 · ⚠ 신호) · V1 닫음 · VRP 닫음 · M5(V1강) 검증", _r99_note(res)),   # [v1.67.0 R99]
+        ("R98 측정 열(라이브 무변경 · V1 흔들림 확인용 · R100 제거 예정) — V1 · V1강 · 이웃 문턱", _r98_note(res)),
         ("★★★ R96 회피↑·참여↑ — 부분 노출일 변동성 관리(⚠ 신호 변경)", _r96_note(res)),
         ("★★★ R95 회피↑·참여 유지 — SPY 신호 사이징 오버레이 3개(⚠ 신호 변경)", _r95_note(res)),
         ("★★★ R94 룩어헤드 제거 — 전 이력 재추정 지표(NFCI·ANFCI·STLFSI4)", _revision_audit_note(res)),
@@ -12341,13 +12375,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.66.0"
+BUNDLE_VERSION = "v1.67.0"
 BUNDLE_VERSION_DATE = "2026-09-25"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.79.0", "industry_rotation": "v0.50.0", "stock_regime": "v0.10.0"}   # [v1.66.0 R98]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.80.0", "industry_rotation": "v0.51.0", "stock_regime": "v0.11.0"}   # [v1.67.0 R99]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
@@ -12401,10 +12435,13 @@ def _r95_note(res: Dict[str, Any]) -> str:
             "⚠⚠ R95 리포트 판정: 긴 이력 **미통과**(전체 −0.90/−0.29 · 뒤 2008~2017 −1.39/−0.80) — 되돌리면 네 층 참여가 1.0~2.6%p 떨어져 "
             "사용자 지시(참여율 절대 하락 금지)와 충돌 → R96에서 **유지**하고 규칙별 긴 이력 분해(S 00U 블록 L)로 원인 규칙을 가린다"
             "(오프라인 대용 SPX 2000~2008: P1 −3.75/+1.26 · A(vr) +0.27/−0.72 · P2 0/0 — 약한 고리는 P1). "
-            f"R96 리포트 블록 L이 엔진에서도 P1을 확인했다(R95 긴 이력 손실 전부 = P1 110일) → **R97 약세장 가드**: P1의 20일 신고가 가지는 "
-            f"252일 고점 대비 −{float(getattr(cfg, 'R97_REBOUND_HIGH_MAX_DD', 0) or 0):.0%} 이내일 때만(막은 날 {d.get('bear_guard_days', 0)}일 · 전 이력 · "
-            "표본 안 2018~ 변화 0 · 긴 이력 대용 +0.22/+0.11 · 되돌리기 m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.0}). "
-            "06c 격자 행에는 이 오버레이가 없다(라이브 ★ 행만). "
+            + ((f"R96 리포트 블록 L이 엔진에서도 P1을 확인했다(R95 긴 이력 손실 전부 = P1 110일) → **R97 약세장 가드**: P1의 20일 신고가 가지는 "
+                f"252일 고점 대비 −{_gdd_on(cfg):.0%} 이내일 때만(막은 날 {d.get('bear_guard_days', 0)}일 · 전 이력 · "
+                "표본 안 2018~ 변화 0 · ⚠ R99 판정은 되돌림(긴 이력 참여 음수) — 끄기 m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.0}). ")
+               if _gdd_on(cfg) > 0 else
+               ("R97 약세장 가드 **꺼짐**(R99 N1 = 방법서 M2 되돌림 — 긴 이력 참여 음수: 블록 M⑥ +0.22/−0.43 · 블록 N⑥ +0.06/−0.40 · "
+                "표본 안 2018~ 막은 날 0일이라 노란 행 불변 · 되돌리기(= R97 상태로) m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.20}). "))
+            + "06c 격자 행에는 이 오버레이가 없다(라이브 ★ 행만). "
             "되돌리기: m_overrides={'R95_STRESS_EXIT': False, 'R95_REBOUND_REENTRY': False, 'R95_DEEP_HAIRCUT_MAX_DAYS': 0}. "
             "연구·교육용, 투자 자문 아님.")
 
@@ -12451,14 +12488,44 @@ def _r98_note(res: Dict[str, Any]) -> str:
             f"(나) 중립 부분일 σ20 < {p.get('calm_sigma', 0):.0%} → {p.get('calm_pos', 0):g}: {_c('v1_calm')} · "
             f"V1강(PK {float(getattr(cfg, 'R98_V1S_PK_RATIO', 1.25)):g} · σ {float(getattr(cfg, 'R98_V1S_CALM_SIGMA', 0.17)):.0%}) (가) {_c('v1s_cut')} · "
             + (f"VRP(VIX/100 − σ20) 회피 {v.get('cut', ['-', '-'])[1]}일 · 참여 {v.get('up', ['-', '-'])[1]}일(2018~) · "
-               if v.get("enabled") else "VRP: VIX 없음 · ")
+               if v.get("enabled") else
+               ("VRP: VIX 없음 · " if bool(getattr(cfg, "R98_VRP_MEASURE", False)) else "VRP: 닫음(R99 · 측정 끔) · "))
             + f"이웃 문턱 {len(d.get('neighbor_cols') or {})}칸 · 평균 목표비중 라이브 {d.get('mean_live', '-')} vs V1 {d.get('mean_v1', '-')}. "
             + (f"표본 안 (가) 발동일: {', '.join(d.get('v1_cut_dates_in_sample') or []) or '없음'}. " )
             + ("" if d.get("has_high_low") else "⚠ 고가/저가 없음 → (가) 발동 불가. ")
             + "오프라인 기대(R98 방법서 · 기준 현 라이브): M +0.76/+0.43 · S +1.39/+1.18 · I +1.41/+1.34 · K +1.37/+1.16(%p 회피/참여). "
-            "판정: S·I·K 00 'R98' 줄 · S 00U 블록 M⑦(SPY 1994~2017 OHLC)·N⑦(FF 1927~2017 · (나)만). "
-            "R99 승격 조건(사전등록): 네 층 Δ회피 > 0 & Δ참여 ≥ 0 · 블록 M⑦ 전체 ≥0/≥0 & 반쪽 Δ합 ≥ −1%p · 이웃 4칸 중 3칸 이상 같은 방향 — "
-            "하나라도 못 채우면 닫는다. 연구·교육용, 투자 자문 아님.")
+            "판정: S·I·K 00 'R99 판정' 줄 · S 00U 블록 M⑦·⑧(SPY 1994~2017 OHLC)·N⑦·⑧(FF 1927~2017 · (나)만). "
+            "[R99 판정] V1(기본)은 블록 M⑦ 참여 −1.17(뒤 −2.15)로 사전등록 미통과 → **라이브 후보에서 닫음**(측정 열은 흔들림 확인용으로 "
+            "R100까지 두고 제거) · V1강(1.25·17%)은 M5 검증(블록 M⑧·N⑧·F2)용으로 계속 잰다. 연구·교육용, 투자 자문 아님.")
+
+
+def _r99_note(res: Dict[str, Any]) -> str:
+    """[v1.67.0 R99 N1·N5] 00 'R99 판정' 줄 — M2(R97 가드 되돌림) 상태 · V1 닫음 · VRP 닫음 · M5(V1강) 검증 상태 · R100 사전등록."""
+    cfg = (res or {}).get("cfg", CFG)
+    d95 = (res or {}).get("r95") or {}
+    d98 = (res or {}).get("r98") or {}
+    g = _gdd_on(cfg)
+    if g > 0:
+        g_txt = (f"⚠ R97 약세장 가드 **켜짐**(문턱 −{g:.0%} · 막은 날 {d95.get('bear_guard_days', 0)}일 · 전 이력) — R99 판정(N1)은 되돌림이다 "
+                 "(overrides로 켠 상태). 끄기: m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.0}")
+    else:
+        g_txt = ("★ M2 완료 — R97 약세장 가드 **꺼짐**(R97_REBOUND_HIGH_MAX_DD=0.0 · v1.64.0 P1과 비트 동일 · 막은 날 "
+                 f"{d95.get('bear_guard_days', 0)}일). 근거: 긴 이력 참여 음수(블록 M⑥ +0.22/−0.43 · 블록 N⑥ +0.06/−0.40) · "
+                 "표본 안(2018~) 막은 날 0일 → 네 층 노란 행 불변(비용 0). ⚠ 되돌리기(= R97 상태로): m_overrides={'R97_REBOUND_HIGH_MAX_DD': 0.20}")
+    live98 = bool(getattr(cfg, "R98_RANGE_VOL", False))
+    v1_txt = ("⚠ V1 라이브 적용 중(R98_RANGE_VOL=True — R99 판정과 다름 · 되돌리기 m_overrides={'R98_RANGE_VOL': False})" if live98
+              else "V1(기본) **닫음**(블록 M⑦ +1.49/−1.17 · 뒤 +2.16/−2.15 — 사전등록 미통과) · 측정 열은 R100까지(흔들림 확인용)")
+    vrp_txt = ("VRP **닫음**(네 층 −2.8~−4.3/−4.7~−9.9 · R98_VRP_MEASURE=False)" if not bool(getattr(cfg, "R98_VRP_MEASURE", False))
+               else "⚠ VRP 측정 켜짐(R99 판정은 닫음 — 측정 전용)")
+    m5_txt = ("M5(주력 상한 100% × V1강 PK "
+              f"{float(getattr(cfg, 'R98_V1S_PK_RATIO', 1.25)):g}·σ {float(getattr(cfg, 'R98_V1S_CALM_SIGMA', 0.17)):.0%}) — 표본 안 S★ 75.8/90.7(높음 · 여유 0.7%p) · "
+              "K MDD −13.96(경보) · V1강 긴 이력 판정은 S 00U 블록 M⑧·N⑧ · 섹터 ETF 독립 구간은 F2 M5 행 · "
+              f"V1강 표본 안 (가) {((d98.get('v1s_cut') or [0, 0])[1])}일·(나) {((d98.get('v1s_calm') or [0, 0])[1])}일(2018~). "
+              "R100 승격 조건(사전등록): 네 층 Δ회피 > 0 & Δ참여 ≥ 0 · 블록 M⑧ 전체 ≥0/≥0 & 반쪽 Δ합 ≥ −1 · F2 두 반쪽 Δ합 ≥ 0 · "
+              "K MDD 악화 ≤ 0.5%p · **사용자 명시 동의**(R80·R88 기술 편중 지시를 되돌림) — 하나라도 없으면 라이브 금지")
+    return (f"{g_txt} | {v1_txt} | {vrp_txt} | {m5_txt}. "
+            "구조적 사실: M 높음은 불가(SPY 한 종목·노출 ≤1 → 회피 80%에서 참여 62% 안팎) — M은 예산 층이고 참여는 S·I·K의 베타가 만든다. "
+            "연구·교육용, 투자 자문 아님.")
 
 
 def _revision_audit_note(res: Dict[str, Any]) -> str:
