@@ -22,6 +22,9 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.67.3 - 2026-09-26 - [R102 동반 버전 표만: S v0.83.0 · I v0.52.0 · K v0.12.2 — 신호·목표비중 무변경(비트 동일)]
+#    사용자 지시(2026-09-26 · Kaggle R101 리포트): R100·R101과 같은 지시 반복. 시작 v1.67.2 → 목표 v1.67.3. COMPANION_MIN_VERSIONS만.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.67.2 - 2026-09-26 - [R101 동반 버전 표만: S v0.82.0 · I v0.52.0 · K v0.12.1 — 신호·목표비중 무변경(비트 동일)]
 #    사용자 지시(2026-09-26 · Kaggle R100 리포트): R100과 같은 지시 반복. 시작 v1.67.1 → 목표 v1.67.2. COMPANION_MIN_VERSIONS만 올렸다.
 #    R101 연구(S v0.82.0 헤더): S&P 500 종목 폭 오버레이 5개는 네 층 무하락 통과 0 → M 신호에 넣지 않았다. 연구·교육용이며 투자 자문이 아니다.
@@ -12382,13 +12385,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.67.2"
+BUNDLE_VERSION = "v1.67.3"
 BUNDLE_VERSION_DATE = "2026-09-26"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.82.0", "industry_rotation": "v0.52.0", "stock_regime": "v0.12.1"}   # [v1.67.2 R101]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.83.0", "industry_rotation": "v0.52.0", "stock_regime": "v0.12.2"}   # [v1.67.3 R102]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:

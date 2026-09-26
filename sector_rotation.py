@@ -17,6 +17,16 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.83.0 - 2026-09-26 - [R102 예측 정확도: 13q 하락확률 '워크포워드 축소 보정'(D 블록 · 00 줄) — S★ 규칙·비중 무변경]
+#    사용자 지시(2026-09-26 · Kaggle R101 리포트): R100·R101과 같은 지시 반복(회피·참여·예측 정확도·선별력 근거 개선 · 떨어지면 안 됨).
+#    ── R101 리포트 판정 ── S★ 74.1/86.3 · I★ 74.4/91.8 · K★ 71.0/121.5 · M 80.2/62.2(무변경 확인) · 13q: 원확률 Brier 0.25686 vs
+#      워크포워드 기저율 0.24747 → **모형이 그때의 기저율보다 나쁘다(−0.00939)**. 방향 정보가 약한데(기울기 +0.033) 확률을 그대로 믿은 탓.
+#    (§1 ★) wf_shrink_calibrate(): p_cal = b + k_Y·(p − b) — b = 워크포워드 기저율 · k_Y = 해 Y의 cutoff 전에 결과가 확정된(t + h ≤ cutoff)
+#         과거 표본 밖 예측(전 섹터 풀)으로 Σ(p−b)(y−b)/Σ(p−b)²를 [0,1]로 자른 값 · 과거 행 < DOWN_PROB_CAL_MIN_ROWS(250)면 0.
+#         방향 정보가 없으면 k → 0 = 기저율(표본 오차 밖에서는 나빠질 수 없다) · 있으면 그만큼 싣는다. build_down_probability: D 블록(연도별 k ·
+#         Brier 원확률/기저율/보정 · 전체) · 요약 brier_cal · brier_gain_cal · cal_k_last · 00 '하락확률 보정' 줄. 합성 시험: 무정보 → k 0 · 개선 0.0 ·
+#         정보 있음 → k 0.4~1.0 · 기저율 대비 +0.0073. 배분 미사용 — 측정 전용(원확률 열·운용점은 그대로).
+#    LAYER_MIN_VERSIONS M v1.67.3 · S v0.83.0 · I v0.52.0. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.82.0 - 2026-09-26 - [R101 예측 정확도 근거: 13q 하락확률에 '워크포워드 기저율' 기준선 · 00 줄 — S★ 규칙·비중 무변경]
 #    사용자 지시(2026-09-26 · Kaggle R100 리포트): R100과 같은 지시 반복(단일 예측 시트 금지 · 회피·참여·예측 정확도·선별력 근거 개선 · 떨어지면 안 됨).
 #    ── R100 리포트 판정 ── S★ 74.1/86.3(중간) · I★ 74.4/91.8(높음) · K★ 71.0/121.5(높음) = R99와 같다(무변경 확인) · 시트 62 → 51.
@@ -3003,7 +3013,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.82.0"
+VERSION = "v0.83.0"
 VERSION_DATE = "2026-09-26"
 
 # =============================================================================
@@ -8636,7 +8646,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.67.2", "sector_rotation": "v0.82.0", "industry_rotation": "v0.52.0"}   # [v0.82.0 R101]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.67.3", "sector_rotation": "v0.83.0", "industry_rotation": "v0.52.0"}   # [v0.83.0 R102]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -16085,6 +16095,62 @@ def _predict_logistic(beta: np.ndarray, X: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(A @ beta, -30.0, 30.0)))
 
 
+def wf_shrink_calibrate(probs: Dict[str, pd.Series], bases: Dict[str, pd.Series], labels: Dict[str, pd.Series],
+                        h: int = 21, min_rows: int = 250) -> Tuple[Dict[str, pd.Series], pd.DataFrame]:
+    """[v0.83.0 R102 ★ 예측 정확도] 하락확률의 **워크포워드 축소 보정** — p_cal = b + k_Y·(p − b).
+      b = 그 해의 워크포워드 기저율(학습 표본 하락 비율 · 그때 알 수 있던 값) · p = 로지스틱 원확률(그 해 표본 밖).
+      k_Y = 해 Y의 cutoff(1/1 − 35일) **이전에 결과가 확정된**(t + h ≤ cutoff) 과거 표본 밖 예측 전 자산 풀에서
+            Σ(p − b)(y − b) / Σ(p − b)² 을 [0, 1]로 자른 값(Brier 최소 축소) — 과거 표본 밖 행이 min_rows 미만이면 k = 0(기저율 그대로).
+      의미: 모형에 방향 정보가 없으면 k → 0이라 **기저율보다 나빠질 수 없고**(표본 오차만큼), 정보가 있으면 그만큼만 싣는다.
+      인과: k_Y는 해 Y의 결과를 보지 않는다(cutoff 전 확정 라벨만). 배분 미사용 — 측정 전용(13q)."""
+    cal: Dict[str, pd.Series] = {t: pd.Series(np.nan, index=p.index, dtype=float) for t, p in probs.items()}
+    rows: List[Dict[str, Any]] = []
+    yrs = sorted({int(d.year) for p in probs.values() for d in pd.Series(p).dropna().index})
+    for yv in yrs:
+        cutoff = pd.Timestamp(year=yv, month=1, day=1) - pd.Timedelta(days=35)
+        tp, tb, ty = [], [], []
+        for t, p in probs.items():
+            b_, y_ = bases.get(t), labels.get(t)
+            if b_ is None or y_ is None:
+                continue
+            idx = p.index
+            known = idx[idx < cutoff]
+            known = known[:-h] if len(known) > h else known[:0]
+            if not len(known):
+                continue
+            d_ = pd.DataFrame({"p": p.reindex(known), "b": b_.reindex(known), "y": y_.reindex(known)}).dropna()
+            if len(d_):
+                tp.append(d_["p"].values); tb.append(d_["b"].values); ty.append(d_["y"].values)
+        n_tr = int(sum(len(x) for x in tp))
+        k = 0.0
+        if n_tr >= int(min_rows):
+            P_, B_, Y_ = np.concatenate(tp), np.concatenate(tb), np.concatenate(ty)
+            den = float(np.sum((P_ - B_) ** 2))
+            k = float(np.clip(np.sum((P_ - B_) * (Y_ - B_)) / den, 0.0, 1.0)) if den > 1e-12 else 0.0
+        rp, rb, rc, ry = [], [], [], []
+        for t, p in probs.items():
+            b_ = bases.get(t)
+            if b_ is None:
+                continue
+            m_ = (p.index.year == yv) & p.notna().values & b_.reindex(p.index).notna().values
+            if not m_.any():
+                continue
+            pc = (b_.reindex(p.index)[m_] + k * (p[m_] - b_.reindex(p.index)[m_])).clip(0.001, 0.999)
+            cal[t].loc[pc.index] = pc.values
+            y_ = labels.get(t)
+            if y_ is not None:
+                yy = y_.reindex(pc.index)
+                ok = yy.notna().values
+                rp.append(p[m_].values[ok]); rb.append(b_.reindex(p.index)[m_].values[ok]); rc.append(pc.values[ok]); ry.append(yy.values[ok])
+        if rp and sum(len(x) for x in ry):
+            P2, B2, C2, Y2 = (np.concatenate(x) for x in (rp, rb, rc, ry))
+            rows.append({"연도": int(yv), "k(모형 신뢰 몫)": round(k, 4), "k 학습 행(과거 표본 밖)": n_tr, "시험 행": int(len(Y2)),
+                         "Brier(원확률)": round(float(np.mean((P2 - Y2) ** 2)), 5),
+                         "Brier(기저율 · 워크포워드)": round(float(np.mean((B2 - Y2) ** 2)), 5),
+                         "Brier(축소 보정)": round(float(np.mean((C2 - Y2) ** 2)), 5)})
+    return cal, pd.DataFrame(rows)
+
+
 def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[Dict[str, Any]], scfg: SectorConfig,
                            M, h: int = 21, asset_label: str = "섹터") -> Tuple[pd.DataFrame, Dict[str, pd.Series], Dict[str, Any]]:
     """[v0.44.0 F4 ★ 신규 측정 기능] 13q_하락확률보정 — **P(향후 h일 수익 < 0)** 을 섹터별·연도별
@@ -16120,6 +16186,8 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
     all_pred: List[pd.Series] = []
     all_real: List[pd.Series] = []
     all_bwf: List[pd.Series] = []          # [v0.82.0 R101] 워크포워드 기저율(정직한 기준선)
+    _b_by_t: Dict[str, pd.Series] = {}      # [v0.83.0 R102] 자산별 워크포워드 기저율 · 실현 라벨(축소 보정 학습용)
+    _y_by_t: Dict[str, pd.Series] = {}
     for t in results:
         r = results[t]
         px = r.get("px_close")
@@ -16180,6 +16248,7 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
                 b_out.loc[rows_y[okp.values]] = _bw
                 n_fit += 1
         probs[t] = p_out
+        _b_by_t[t], _y_by_t[t] = b_out, y_all          # [v0.83.0 R102] 워크포워드 축소 보정용
         pv = p_out.dropna()
         yv_ = y_all.reindex(pv.index)
         m = pv.notna() & yv_.notna()
@@ -16222,6 +16291,44 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
                      "판독": ("방향 정보 있음" if (pd.notna(slope) and slope >= 0.10) else
                              ("약함" if (pd.notna(slope) and slope > 0.0) else "정보 없음(곡선이 평평하거나 거꾸로)"))})
         all_pred.append(pv); all_real.append(yv_); all_bwf.append(bw_)
+    # ---------- [v0.83.0 R102] 워크포워드 축소 보정(p_cal = b + k·(p − b) · k는 과거 표본 밖 결과로만) ----------
+    cal_summ: Dict[str, Any] = {}
+    cal_tab = pd.DataFrame()
+    _d_rows: List[Dict[str, Any]] = []                                  # D 블록은 맨 뒤에 붙인다
+    try:
+        _cal, cal_tab = wf_shrink_calibrate(probs, _b_by_t, _y_by_t, h=h,
+                                            min_rows=int(getattr(scfg, "DOWN_PROB_CAL_MIN_ROWS", 250)))
+        _acc = {"raw": 0.0, "wf": 0.0, "cal": 0.0, "n": 0}
+        for t_, p_ in probs.items():
+            y_, b_, c_ = _y_by_t.get(t_), _b_by_t.get(t_), _cal.get(t_)
+            if y_ is None or b_ is None or c_ is None:
+                continue
+            d_ = pd.DataFrame({"p": p_, "b": b_, "c": c_, "y": y_}).dropna()
+            if not len(d_):
+                continue
+            _acc["raw"] += float(((d_["p"] - d_["y"]) ** 2).sum())
+            _acc["wf"] += float(((d_["b"] - d_["y"]) ** 2).sum())
+            _acc["cal"] += float(((d_["c"] - d_["y"]) ** 2).sum())
+            _acc["n"] += int(len(d_))
+        if _acc["n"]:
+            _n = float(_acc["n"])
+            cal_summ = {"n_cal": int(_acc["n"]), "brier_raw_cal_rows": _acc["raw"] / _n, "brier_wf_cal_rows": _acc["wf"] / _n,
+                        "brier_cal": _acc["cal"] / _n, "brier_gain_cal": (_acc["wf"] - _acc["cal"]) / _n,
+                        "cal_k_last": (float(cal_tab["k(모형 신뢰 몫)"].iloc[-1]) if len(cal_tab) else np.nan)}
+            for _, r_ in cal_tab.iterrows():
+                _d_rows.append({"블록": f"D. 워크포워드 축소 보정(h={h}일 · R102 · p = 기저율 + k·(원확률 − 기저율))", "티커": str(int(r_["연도"])),
+                             "표본일수": int(r_["시험 행"]), "k(모형 신뢰 몫)": r_["k(모형 신뢰 몫)"],
+                             "k 학습 행(과거 표본 밖)": int(r_["k 학습 행(과거 표본 밖)"]), "Brier": r_["Brier(원확률)"],
+                             "Brier(기저율 · 워크포워드)": r_["Brier(기저율 · 워크포워드)"], "Brier(축소 보정)": r_["Brier(축소 보정)"],
+                             "판독": "k = 그 해 전에 결과가 확정된 과거 표본 밖 예측으로 정한 모형 신뢰 몫(0 = 기저율만 · 1 = 원확률)"})
+            _d_rows.append({"블록": f"D. 워크포워드 축소 보정(h={h}일 · R102 · p = 기저율 + k·(원확률 − 기저율))", "티커": "── 전체 ──",
+                         "표본일수": int(_acc["n"]), "Brier": round(cal_summ["brier_raw_cal_rows"], 5),
+                         "Brier(기저율 · 워크포워드)": round(cal_summ["brier_wf_cal_rows"], 5), "Brier(축소 보정)": round(cal_summ["brier_cal"], 5),
+                         "Brier 개선(워크포워드 기저율 대비)": round(cal_summ["brier_gain_cal"], 5),
+                         "판독": ("보정 확률이 그때의 기저율보다 낫거나 같다(+ 또는 0)" if cal_summ["brier_gain_cal"] >= -1e-6 else
+                                "보정 확률도 기저율보다 약간 나쁘다(과거 k 추정 오차) — 방향 정보가 거의 없다")})
+    except Exception as e:   # noqa — 측정 전용: 실패해도 13q 나머지는 그대로
+        log("ROTATION", kv(event="down_prob_calibration_failed", err=type(e).__name__, msg=str(e)[:120]), M=M, level="warning")
     # ---------- 블록 B: 전 섹터 pooled 신뢰도 곡선 ----------
     if all_pred:
         P = pd.concat(all_pred); Y = pd.concat(all_real)
@@ -16250,6 +16357,7 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
                 "brier_gain": brier_base - brier, "slope": slope,
                 "brier_wf": brier_wf, "brier_model_wf": brier_m_wf,
                 "brier_gain_wf": (brier_wf - brier_m_wf) if pd.notna(brier_wf) else np.nan,
+                **cal_summ,                                                    # [v0.83.0 R102] 축소 보정
                 "op_prec": mo.get("prec_down", np.nan), "op_rec": mo.get("rec_down", np.nan),
                 "op_bal": mo.get("balanced", np.nan), "op_mcc": mo.get("mcc", np.nan),
                 "features": ",".join(feat_names)}
@@ -16285,6 +16393,7 @@ def build_down_probability(results: Dict[str, Dict[str, Any]], alloc: Optional[D
                          "운용점 재현율": (round(mo2.get("rec_down", np.nan), 4) if pd.notna(mo2.get("rec_down", np.nan)) else np.nan),
                          "운용점 MCC": (round(mo2.get("mcc", np.nan), 4) if pd.notna(mo2.get("mcc", np.nan)) else np.nan),
                          "판독": ""})
+    rows.extend(_d_rows)                                        # [v0.83.0 R102] D 블록(축소 보정)은 맨 뒤
     df = pd.DataFrame(rows)
     if len(df):
         lead = ["블록", "티커", "표본일수"]
@@ -18161,6 +18270,11 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                                 f"vs 기저율만 {_qs0.get('brier_base', np.nan):.5f}(사후 실현 기저율 · 모형에 불리한 기준) · "
                                 f"[R101] 워크포워드 기저율(그때 알 수 있던 값) {_qs0.get('brier_wf', np.nan):.5f} → 모형 개선 "
                                 f"{_qs0.get('brier_gain_wf', np.nan):+.5f}(+면 모형이 그때의 기후값보다 낫다) · "
+                                + (f"[R102] 워크포워드 축소 보정 Brier {_qs0.get('brier_cal', np.nan):.5f} vs 기저율 "
+                                   f"{_qs0.get('brier_wf_cal_rows', np.nan):.5f} → 개선 {_qs0.get('brier_gain_cal', np.nan):+.5f}"
+                                   f"(원확률 {_qs0.get('brier_raw_cal_rows', np.nan):.5f} · 마지막 k {_qs0.get('cal_k_last', np.nan):.2f}) · "
+                                   if _qs0.get("brier_cal") is not None else "") +
+                                f""
                                 f"기저율 문턱에서 정밀도 {_qs0.get('op_prec', np.nan):.3f}"
                                 f"·재현율 {_qs0.get('op_rec', np.nan):.3f}·MCC {_qs0.get('op_mcc', np.nan):+.3f} "
                                 f"(표본 {_qs0.get('n', 0)}일, 기저 {_qs0.get('base', np.nan):.3f}) — 13q_하락확률보정"))

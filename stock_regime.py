@@ -1,5 +1,18 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.12.2 - 2026-09-26 - [R102 예측 정확도 근거: 상승확률 Brier를 워크포워드 기저율과 비교 · 축소 보정(00E E2 · 00 줄) — 라이브 배분 무변경]
+#    사용자 지시(2026-09-26 · Kaggle R101 리포트 m v1.67.2 · s v0.82.0 · i v0.52.0 · k v0.12.1): R100·R101과 같은 지시 반복.
+#    ── R101 리포트 판정 ── K★ 71.0/121.5 높음 · MDD −12.68 · 칼마 4.770(무변경 확인) · 500종목 B2: 통과 0(가장 가까운 PEAD60 t 2.48 ·
+#      서프라이즈 t 2.35) · 상승확률 연도 안 AUC 평균 0.522 · 7/10년.
+#    (§1 ★ 근거 신뢰도) build_stock_prob: 해마다 워크포워드 기저율 b(그 해 학습 표본 상승 비율) · **축소 보정** p_cal = b + k_Y·(p − b)
+#         (k_Y = 그 해 학습 끝 이전에 결과가 확정된 과거 표본 밖 예측으로 Σ(p−b)(y−b)/Σ(p−b)² · 0~1 · 행 < PROB_CAL_MIN_ROWS면 0).
+#         out['brier'](원확률 · 기저율 · 보정 · 개선 · 마지막 k) · out['cal_year'] → 00E 'E2' 블록 · 00 '종목 상승확률' 줄.
+#         오프라인(Kaggle R99 재현 kres.pkl): 원확률 Brier 0.2539 vs 워크포워드 기저율 0.2469(원확률이 더 나쁘다) → 보정 0.2469 · k ≈ 0
+#         = 확률 차이는 아직 정보가 아니다(정직한 표시). 확률 순위·측정 행·라이브 배분 무영향(같은 해 같은 k·b = 단조 변환).
+#    (§2 R102 연구 · 코드 무변경) 어닝 발표 뒤 흐름 변형(r100/h102_pead.py · K★ 재현 하네스): 감축 창 42일 +0.26/−0.04 · 63일 +0.42/−2.44 ·
+#         10일 −0.26/+0.67 · 문턱 −2% −0.04/+0.23 · PEAD60 기울임 +0.12/+0.29(MDD −0.52) · PEAD60 하위 1/5 제외 −0.11/+3.29(MDD −0.53)
+#         → 무하락 통과 0 — 라이브 감축 규칙(E3 21일) 그대로.
+#    새 필드: PROB_CAL_MIN_ROWS. 시험 t102/test_r102.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.12.1 - 2026-09-26 - [R101 근거 신뢰도: 500종목 검정 '확보율 구간 판정'(B2 · 사전등록) · 결과 캐시 형식 · 00 표시 정정 — 라이브 배분 무변경]
 #    사용자 지시(2026-09-26 · Kaggle R100 리포트 s v0.81.0 · i v0.52.0 · k v0.12.0): R100과 같은 지시 반복(단일 예측 시트 금지 · 근거 개선 · 떨어지면 안 됨).
 #    ── R100 리포트 판정 ── K★ 71.0/121.5 높음 · MDD −12.68 · 칼마 4.770 · 배수 61.522(R99와 같다 — 무변경 확인) · 시트 74 → 16 ·
@@ -543,7 +556,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.12.1"
+VERSION = "v0.12.2"
 VERSION_DATE = "2026-09-26"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -949,6 +962,8 @@ class StockConfig:
     PROB_FEATURES: Tuple[str, ...] = ("ext200_pct", "mom21_pct", "mom63_pct", "mom126_pct", "vol21_pct", "dd63_pct", "park5_pct",
                                       "거래대금21_pct", "ret5_pct", "어닝_서프라이즈%_pct", "어닝_경과일")
     PROB_CALIBRATE: bool = True
+    # [v0.12.2 R102] 워크포워드 축소 보정(00E E2 · 00 줄)의 k 추정 최소 행(과거 표본 밖) — 모자라면 k = 0(기저율 그대로 · 측정 전용).
+    PROB_CAL_MIN_ROWS: int = 2000
     #   sector_prob 모드(라이브로 켰을 때)의 섹터 안 선택 규칙 — 섹터 비중은 S★ 그대로(계층 정합 · 14 위반 0).
     #     exclude_bottom: 섹터 적격 종목 ≥ PROB_MIN_SECTOR_N이면 확률 하위 PROB_EXCLUDE_FRAC(최소 1종목) 제외 → 나머지 균등(제외 몫 재분배 ·
     #                     종목 몫 보존) · 상한 SECTOR_LINK_STOCK_CAP · 넘친 몫 부모 섹터 ETF   ← **권장 후보**
@@ -3528,6 +3543,8 @@ def build_stock_prob(feats: Dict[str, pd.DataFrame], cfg: "StockConfig", sector_
     dates = np.sort(P["date"].unique())
     years = sorted(set(pd.DatetimeIndex(dates).year))
     prob = pd.Series(np.nan, index=P.index, dtype=float)
+    wfb = pd.Series(np.nan, index=P.index, dtype=float)      # [v0.12.2 R102] 워크포워드 기저율(그 해 학습 표본 상승 비율)
+    tr_ends: Dict[int, pd.Timestamp] = {}
     seed = int(getattr(cfg, "PROB_SEED", 20260925))
     min_rows = int(getattr(cfg, "PROB_MIN_TRAIN_ROWS", 2000) or 0)
     ytab: List[Dict[str, Any]] = []
@@ -3555,6 +3572,8 @@ def build_stock_prob(feats: Dict[str, pd.DataFrame], cfg: "StockConfig", sector_
         if bool(te.any()):
             z = mdl.decision_function(P.loc[te, fcols].to_numpy(dtype=float))
             prob.loc[te] = 1.0 / (1.0 + np.exp(-(z + delta)))
+            wfb.loc[te] = float(tr["y"].mean())
+            tr_ends[int(Y)] = tr_end
         lab = te & P["y"].notna()
         auc = _auc_k(P.loc[lab, "y"].to_numpy(), prob.loc[lab].to_numpy()) if bool(lab.any()) else float("nan")
         ytab.append({"연도": int(Y), "상태": "표본 밖 시험", "학습 끝": str(tr_end.date()),
@@ -3571,6 +3590,42 @@ def build_stock_prob(feats: Dict[str, pd.DataFrame], cfg: "StockConfig", sector_
         if auc == auc:
             prev_auc = auc
     P["prob"] = prob
+    # ---- [v0.12.2 R102 ★ 예측 정확도] 워크포워드 기저율 · 축소 보정 p_cal = b + k_Y·(p − b) ----
+    #   b = 그 해 학습 표본의 상승 비율(그때 알 수 있던 기저율) · k_Y = 그 해 학습 끝 이전에 결과가 확정된 **과거 표본 밖** 예측으로
+    #   Σ(p − b)(y − b)/Σ(p − b)²(0~1로 자름 · 행 < PROB_CAL_MIN_ROWS면 0). 방향 정보가 없으면 k → 0 = 기저율(나빠질 수 없다).
+    #   표시·측정 전용 — 확률 순위(같은 해 · 같은 k·b)는 바뀌지 않으므로 측정 행·라이브 배분 무영향.
+    P["wfb"] = wfb
+    pcal = pd.Series(np.nan, index=P.index, dtype=float)
+    cal_rows: List[Dict[str, Any]] = []
+    _cmin = int(getattr(cfg, "PROB_CAL_MIN_ROWS", 2000) or 0)
+    for Y, te_end in sorted(tr_ends.items()):
+        past = P[(P["date"] <= te_end) & P["prob"].notna() & P["wfb"].notna() & P["y"].notna()]
+        k = 0.0
+        if len(past) >= _cmin and len(past):
+            d_ = (past["prob"] - past["wfb"]).to_numpy(dtype=float)
+            den = float(np.sum(d_ ** 2))
+            if den > 1e-12:
+                k = float(np.clip(np.sum(d_ * (past["y"] - past["wfb"]).to_numpy(dtype=float)) / den, 0.0, 1.0))
+        te = (P["date"].dt.year == Y) & P["prob"].notna() & P["wfb"].notna()
+        pcal.loc[te] = (P.loc[te, "wfb"] + k * (P.loc[te, "prob"] - P.loc[te, "wfb"])).clip(0.001, 0.999)
+        lab = te & P["y"].notna()
+        if bool(lab.any()):
+            yy = P.loc[lab, "y"].to_numpy(dtype=float)
+            cal_rows.append({"연도": int(Y), "k(모형 신뢰 몫)": round(k, 4), "k 학습 행(과거 표본 밖)": int(len(past)), "시험 행": int(lab.sum()),
+                             "Brier(원확률)": round(float(np.mean((P.loc[lab, "prob"].to_numpy(dtype=float) - yy) ** 2)), 5),
+                             "Brier(기저율 · 워크포워드)": round(float(np.mean((P.loc[lab, "wfb"].to_numpy(dtype=float) - yy) ** 2)), 5),
+                             "Brier(축소 보정)": round(float(np.mean((pcal.loc[lab].to_numpy(dtype=float) - yy) ** 2)), 5)})
+    P["prob_cal"] = pcal
+    _ob = P[P["prob"].notna() & P["wfb"].notna() & P["prob_cal"].notna() & P["y"].notna()]
+    brier_k: Dict[str, Any] = {}
+    if len(_ob):
+        _y = _ob["y"].to_numpy(dtype=float)
+        brier_k = {"n": int(len(_ob)), "raw": float(np.mean((_ob["prob"].to_numpy(dtype=float) - _y) ** 2)),
+                   "wf": float(np.mean((_ob["wfb"].to_numpy(dtype=float) - _y) ** 2)),
+                   "cal": float(np.mean((_ob["prob_cal"].to_numpy(dtype=float) - _y) ** 2)),
+                   "k_last": (float(cal_rows[-1]["k(모형 신뢰 몫)"]) if cal_rows else float("nan"))}
+        brier_k["gain_raw"] = brier_k["wf"] - brier_k["raw"]
+        brier_k["gain_cal"] = brier_k["wf"] - brier_k["cal"]
     PW = P.pivot_table(index="date", columns="asset", values="prob", aggfunc="last").sort_index()
     FW = P.pivot_table(index="date", columns="asset", values="fwd", aggfunc="last").sort_index()
     oos = P[P["prob"].notna() & P["y"].notna()]
@@ -3607,6 +3662,7 @@ def build_stock_prob(feats: Dict[str, pd.DataFrame], cfg: "StockConfig", sector_
                 "auc_year_max": (float(_ya.max()) if len(_ya) else float("nan")),
                 "calib": calib, "ic": ic, "today": today, "asof": (str(PW.index[-1].date()) if len(PW) else "-"),
                 "features": fcols, "n_rows": int(len(P)), "n_oos": int(len(oos)), "sector_of": sec,
+                "brier": brier_k, "cal_year": pd.DataFrame(cal_rows),                        # [v0.12.2 R102]
                 "horizon": H, "embargo": emb, "sec": round(time.time() - t0, 1)})
     log("PROB", kv(event="k_prob_ready", rows=int(len(P)), oos=int(len(oos)), auc_all=(round(auc_all, 4) if auc_all == auc_all else "n/a"),
                    auc_years=(f"{out['auc_year_min']:.3f}~{out['auc_year_max']:.3f}" if len(_ya) else "-"),
@@ -4748,6 +4804,12 @@ def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
         c2 = cb.copy()
         c2.insert(0, "항목", c2.pop("10분위(0=최저)").astype(str))
         parts.append(c2.assign(블록="E. 보정표(표본 밖 · 예측 10분위별 실현 상승률)"))
+    # [v0.12.2 R102] E2. 워크포워드 기저율 대비 Brier · 축소 보정(연도별 k)
+    cy = sp.get("cal_year")
+    if isinstance(cy, pd.DataFrame) and len(cy):
+        c3 = cy.copy()
+        c3.insert(0, "항목", c3.pop("연도").astype(str))
+        parts.append(c3.assign(블록="E2. 워크포워드 축소 보정(R102 · p = 기저율 + k·(원확률 − 기저율) · k = 과거 표본 밖 결과로만)"))
     vv = prob_variant_verdicts(res)
     if vv:
         v2 = pd.DataFrame(vv)
@@ -4767,8 +4829,16 @@ def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
         _av = pd.to_numeric(yt["AUC(표본 밖)"], errors="coerce").dropna()
         if len(_av):
             _ya = f"연도 안 AUC 평균 {float(_av.mean()):.3f} · 0.5 초과 {int((_av > 0.5).sum())}/{len(_av)}년 · "
+    _bk = dict(sp.get("brier") or {})
+    _bl = ""
+    if _bk.get("n"):
+        # [v0.12.2 R102] 확률의 정확도(Brier)를 '그때 알 수 있던 기저율'과 비교 — k가 0이면 확률 차이는 아직 정보가 아니다
+        _bl = (f"Brier 원확률 {_bk['raw']:.4f} vs 워크포워드 기저율 {_bk['wf']:.4f}(개선 {_bk['gain_raw']:+.4f}) → 축소 보정 "
+               f"{_bk['cal']:.4f}(개선 {_bk['gain_cal']:+.4f} · 마지막 k {_bk.get('k_last', float('nan')):.2f}"
+               + (" = 확률 차이는 아직 정보가 아니다" if _bk.get("k_last", 1.0) == _bk.get("k_last", 1.0) and _bk.get("k_last", 1.0) < 0.05 else "")
+               + ") · ")
     lines.append(("★★★ R99 N3 종목 상승확률 — 모형 신뢰도(표본 밖 · 선택 정보 따로)",
-                  f"합친 AUC {auc:.3f}(해마다 기저율이 섞인 값) · {_ya}연도별 {sp.get('auc_year_min', float('nan')):.3f}~{sp.get('auc_year_max', float('nan')):.3f}(시점 정보) · "
+                  f"합친 AUC {auc:.3f}(해마다 기저율이 섞인 값) · {_ya}{_bl}연도별 {sp.get('auc_year_min', float('nan')):.3f}~{sp.get('auc_year_max', float('nan')):.3f}(시점 정보) · "
                   + (f"섹터 안 순위 IC {ic['mean']:+.4f}(t {ic['t']:.2f} · {ic['n']}개월 · IC>0 {ic['pos_share']:.0%}) → 선택 정보 "
                      + ("**없음**(|t| < 2)" if abs(float(ic['t'])) < 2 else "있음 후보(t ≥ 2 — 긴 이력 검정 N6-a로 확인)") if ic.get("n") else "섹터 안 IC 산출 불가")
                   + f" · 표본 밖 {sp.get('n_oos', 0):,}행 · 세부 00E. 확률은 표시·측정용 — 라이브 배분은 섹터 안 균등. 연구·교육용, 투자 자문 아님."))
