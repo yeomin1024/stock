@@ -17,6 +17,16 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.81.0 - 2026-09-26 - [R100 섹터별 01_일별_<섹터> 시트 끔(사용자 지시 · 계산·배분 무변경) — S★ 숫자 그대로]
+#    사용자 지시(2026-09-26 · Kaggle R99 리포트): "단일 섹터, 산업, 종목 예측 시트는 만들지마 … 회피, 참여, 예측 정확도, 주식 종목 선별력 등
+#      신뢰할 수 있는 근거들 더 높이도록 개선해 … 지금 상태에서 떨어지면 절대 안돼 … 500종목 기능 On". 시작 v0.80.0 → 목표 v0.81.0.
+#    (§1) SectorConfig.REPORT_ASSET_DAILY_SHEETS=False — build_sector_report가 01_일별_<섹터> 11장(리포트 XML 약 20MB)을 싣지 않는다.
+#         같은 예측은 01Z_섹터일별예측 한 장과 00 '다음 거래일 예측' 줄에 그대로 있다. 00 '시트 안내'·'다음 거래일 예측 - 안내' 문구를 상태에 맞춤.
+#         다시 싣기: s_overrides={"REPORT_ASSET_DAILY_SHEETS": True}. results[t]["sheets"]["daily"]는 그대로 만든다(I·시험이 쓴다).
+#    (§2 판단 · 라이브 무변경) S★ 74.1/86.3(중간)을 올리는 후보를 다시 봤다: M5(상한 100% × V1강)는 표본 안 높음이지만 긴 이력 ✗ · 사용자 동의 없음 ·
+#         K MDD −2.40%p(떨어짐) · V1은 네 층 표본 안 ↑이지만 긴 이력 참여 −1.17(R99 닫음 유지) · N6-c 대피처 −0.45/−1.88. 종목 층의 섹터 안 선택
+#         정보도 S&P 500 검정에서 0(K v0.12.0 00S) → '떨어지면 절대 안 된다'를 지키는 선택은 **무변경**. LAYER_MIN_VERSIONS S v0.81.0 · I v0.52.0.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.80.0 - 2026-09-25 - [R99 방법서 N1·N4·N5·N6-c — 블록 M⑥·N⑥ '가드 꺼짐' · ⑧ V1강 · F2 M5 행 · 00 'R99 판정'·'R99 높음 경로(M5)' · 대피처 N6-c 비교 행 — S 규칙·비중 무변경]
 #    사용자 지시(2026-09-25): "문서대로 코드들을 누락되는 내용 없이 수정하고 … 깃허브 yeomin1024/stock에 업로드해"(R99 방법서 구현).
 #      시작 v0.79.0 → 목표 v0.80.0. ★ 노란 행(S★)은 R98과 같아야 한다(M v1.67.0 가드 되돌림은 표본 안 막은 날 0일 · 나머지는 측정 전용).
@@ -2978,8 +2988,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.80.0"
-VERSION_DATE = "2026-09-25"
+VERSION = "v0.81.0"
+VERSION_DATE = "2026-09-26"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -4012,6 +4022,8 @@ class SectorConfig:
     OUT_XLSX: str = "sector_regime_report.xlsx"
     # [v0.74.0 R93] 사용자 지시 "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여" → sector_regime_report_v0.74.0.xlsx(러너 무변경).
     OUT_XLSX_APPEND_VERSION: bool = True
+    # [v0.81.0 R100 사용자 지시 "단일 섹터, 산업, 종목 예측 시트는 만들지마"] 섹터별 01_일별_<섹터> 시트 — 기본 끔(계산 무변경 · 표시만).
+    REPORT_ASSET_DAILY_SHEETS: bool = False
     EXPORT_DAILY_CSV: bool = True              # 01Z 매트릭스를 CSV로도 저장
     DAILY_CSV_PATH: str = "sector_regime_daily.csv"
     ALLOC_CSV_PATH: str = "sector_allocation_daily.csv"   # [v0.4.0] 13c 일별 배분비중 CSV(EXPORT_DAILY_CSV와 함께 저장)
@@ -8609,7 +8621,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.67.0", "sector_rotation": "v0.80.0", "industry_rotation": "v0.51.0"}   # [v0.80.0 R99]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.67.1", "sector_rotation": "v0.81.0", "industry_rotation": "v0.52.0"}   # [v0.81.0 R100]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -17771,8 +17783,12 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     # [v0.16.0] 사용자 지시("섹터별로 실제랑 예측 틀린게 많은데 … 정확도 시트좀 따로 만들고") —
     #   섹터별 자기 국면 예측을 실제 결과로 채점. 배분·신호 무변경.
     sheets["01Y_섹터예측정확도"] = build_sector_prediction_accuracy(results, alloc)
-    for t in ok_t:
-        sheets[f"01_일별_{t}"] = results[t]["sheets"]["daily"]
+    # [v0.81.0 R100 사용자 지시 "단일 섹터, 산업, 종목 예측 시트는 만들지마"] 섹터별 01_일별_<섹터> 11장을 기본으로 싣지 않는다
+    #   (리포트 XML의 대부분 · 같은 예측은 01Z_섹터일별예측 한 장과 00 '다음 거래일 예측' 줄에 있다). 계산·배분 무변경.
+    #   다시 싣기: s_overrides={"REPORT_ASSET_DAILY_SHEETS": True}
+    if bool(getattr(scfg, "REPORT_ASSET_DAILY_SHEETS", False)):
+        for t in ok_t:
+            sheets[f"01_일별_{t}"] = results[t]["sheets"]["daily"]
     # [v0.9.0] 종전 '02_거래내역' — 각 섹터를 '그 섹터 하나만 100% 운용'했을 때의 M식 거래(11벌의 독립 백테스트)라 날짜가 겹친다.
     #   실제 포트폴리오(한 계좌, 합계 ≤ E_t) 거래는 13j. 오해를 막기 위해 시트 이름에 '(진단)'을 명시.
     sheets["02_섹터별단독거래(진단)"] = _concat(results, "trades")
@@ -17993,8 +18009,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                                                      f"{nd_t['예상행동_kr']}"))
         nd_rows.append(("다음 거래일 예측 - 안내", "t일 종가로 확정된 target_pos를 t+1일 시가에 체결하는 기존 체결 "
                                                "규칙을 표시만 재구성한 것 — 새 계산이 아니며 06/07 등 백테스트 성과 "
-                                               "시트에는 영향 없음. 01Z_섹터일별예측 마지막 행(구분=예측)·01_일별_티커 "
-                                               "마지막 행에도 같은 값이 있음"))
+                                               "시트에는 영향 없음. 01Z_섹터일별예측 마지막 행(구분=예측)"
+                                               + ("·01_일별_티커 마지막 행" if bool(getattr(scfg, "REPORT_ASSET_DAILY_SHEETS", False)) else "")
+                                               + "에도 같은 값이 있음"))
     else:
         nd_rows.append(("다음 거래일 예측", "미제공(M 번들이 v1.24.0 미만이거나 계산 실패 — '최근 예측'/09b_규칙별기여 참고)"))
 
@@ -18320,11 +18337,14 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                    "(rank IC t·상위1 스프레드 t·하위1 스프레드 t·리더 판단 사용·회피 자격 병기)·13h Ken French 49업종 외부검증(전체 이력·동일시대 t 병기)·"
                    "13i SPY 대비 격차 분해(연도×판단×리더 섹터·리더 구간)·13j 배분거래내역(**실제 포트폴리오 거래** — 한 계좌, 자산별 포지션 구간, "
                    "시가 체결가·평균비중·구간수익·같은 구간 SPY/SPY M·진입 판단·청산 사유) / "
-                   "01_일별_티커(섹터별 M 01시트와 동일 컬럼 + 위험점수백분위(H,섹터자체) 진단열, 마지막 행이 다음 거래일 예측"
-                   + (" — 채택 지표별 [값]/[기여] 열 포함, DAILY_INDICATOR_DETAIL=True) / "
-                      if scfg.DAILY_INDICATOR_DETAIL else
-                      " — 채택 지표별 [값]/[기여] 원자료 열은 파일 용량 때문에 기본 제외, 근거는 '근거요약' 텍스트와 "
-                      "03/04/08 참고. 필요하면 DAILY_INDICATOR_DETAIL=True) / ") +
+                   + (("01_일별_티커(섹터별 M 01시트와 동일 컬럼 + 위험점수백분위(H,섹터자체) 진단열, 마지막 행이 다음 거래일 예측"
+                     + (" — 채택 지표별 [값]/[기여] 열 포함, DAILY_INDICATOR_DETAIL=True) / "
+                        if scfg.DAILY_INDICATOR_DETAIL else
+                        " — 채택 지표별 [값]/[기여] 원자료 열은 파일 용량 때문에 기본 제외, 근거는 '근거요약' 텍스트와 "
+                        "03/04/08 참고. 필요하면 DAILY_INDICATOR_DETAIL=True) / "))
+                    if bool(getattr(scfg, "REPORT_ASSET_DAILY_SHEETS", False)) else
+                    "01_일별_티커(섹터 단일 예측 시트) — [v0.81.0 R100 사용자 지시] 만들지 않음(같은 예측은 01Z 한 장 · 다시 싣기 "
+                    "s_overrides={'REPORT_ASSET_DAILY_SHEETS': True}) / ") +
                    "02 섹터별단독거래(진단: 각 섹터를 '그 섹터 하나만 100% 운용'했을 때의 M식 거래 — 11벌의 독립 백테스트라 날짜가 겹침, 실제 거래는 13j) / "
                    "03 지표검증 / 04 채택근거상세 / 05 이벤트스터디 / 05b 하락상승구간 / 06 성과·06b 운용통계·06c 임계값민감도 / "
                    "07 연도별(SPY평균비중 병기) / 08 워크포워드가중치 / 09 국면통계 / 09b 규칙별기여(규칙 발동일수·익일평균수익, 상승 미탑승/하락 "

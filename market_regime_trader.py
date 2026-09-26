@@ -22,6 +22,10 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.67.1 - 2026-09-26 - [R100 동반 버전 표만: S v0.81.0 · I v0.52.0 · K v0.12.0 — 신호·목표비중 무변경(비트 동일)]
+#    사용자 지시(2026-09-26 · Kaggle R99 리포트): "단일 섹터, 산업, 종목 예측 시트는 만들지마 … 지금 상태에서 떨어지면 절대 안돼 … 500종목 기능 On".
+#    시작 v1.67.0 → 목표 v1.67.1. COMPANION_MIN_VERSIONS만 올렸다('계층 버전 점검' 줄이 옛 S·I·K 파일을 잡는다). M 01 시트는 원래 한 장(SPY)이다.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.67.0 - 2026-09-25 - [R99 ⚠ 신호(좁은 범위): R97 약세장 가드 되돌림(방법서 N1=M2) · VRP 측정 끔(N5) · 00 'R99 판정' 줄 — 표본 안(2018~) 목표비중 비트 동일]
 #    사용자 지시(2026-09-25 · R99 방법서 구현): "문서대로 코드들을 누락되는 내용 없이 수정하고 … 깃허브 yeomin1024/stock에 업로드해".
 #      시작 v1.66.0 → 목표 v1.67.0. 앞 지시 유지: "회피를 더 높이도록 · 참여는 절대로 떨어지면 안 돼" · "묻지 말고 권장으로".
@@ -12375,13 +12379,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.67.0"
-BUNDLE_VERSION_DATE = "2026-09-25"
+BUNDLE_VERSION = "v1.67.1"
+BUNDLE_VERSION_DATE = "2026-09-26"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.80.0", "industry_rotation": "v0.51.0", "stock_regime": "v0.11.0"}   # [v1.67.0 R99]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.81.0", "industry_rotation": "v0.52.0", "stock_regime": "v0.12.0"}   # [v1.67.1 R100]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:

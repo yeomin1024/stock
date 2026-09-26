@@ -1,5 +1,13 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.52.0 - 2026-09-26 - [R100 산업별 01_일별_<산업> 시트 끔(사용자 지시 · 계산·배분 무변경) — I★ 숫자 그대로]
+#    사용자 지시(2026-09-26 · Kaggle R99 리포트): "단일 섹터, 산업, 종목 예측 시트는 만들지마 … 지금 상태에서 떨어지면 절대 안돼". 시작 v0.51.0 → 목표 v0.52.0.
+#    (§1) IndustryConfig.REPORT_ASSET_DAILY_SHEETS=False — build_industry_report가 01_일별_<산업> 29장(리포트 XML 약 73MB)을 싣지 않는다.
+#         같은 예측은 01Z_산업일별예측 한 장 · 13c 마지막 행 · 00 '다음 거래일 예측' 줄에 있다. 00 '다음 거래일 예측 - 안내' 문구를 상태에 맞춤.
+#         다시 싣기: i_overrides={"REPORT_ASSET_DAILY_SHEETS": True}. results[t]["sheets"]["daily"]는 그대로 만든다.
+#    (§2 판단 · 라이브 무변경) I★ 74.4/91.8(높음) — 부모 안 산업 선택 정보 0(R99 N6-d · 모든 신호 |t| < 0.9)이고 S★의 섹터 비중을 바꾸는
+#         후보(M5·V1)는 긴 이력 ✗ → 무변경이 '떨어지지 않음'을 보장한다. S v0.81.0과 한 묶음.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.51.0 - 2026-09-25 - [R99 전달 — 블록 M⑥·N⑥ '가드 꺼짐' · ⑧ V1강 · F2 M5 · N6-c 대피처 비교 행 · 00 'R99 판정'·'R99 I 높음 경로(M5)'·'N6-d' — I 규칙·배분 무변경]
 #    사용자 지시(2026-09-25 · R99 방법서 구현). 시작 v0.50.0 → 목표 v0.51.0. I★(노란 행)는 R98과 같아야 한다(M 가드 되돌림은 표본 안 0일 · 나머지 측정).
 #    (§1) S v0.80.0 [회피참여비교] 'R99 대피처 위험점수↓·1개월 모멘텀↑(측정 · N6-c)' 행은 relcmp_frames로 I 비교 행이 자동으로 생긴다(부모 비율법).
@@ -1914,8 +1922,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.51.0"
-VERSION_DATE = "2026-09-25"
+VERSION = "v0.52.0"
+VERSION_DATE = "2026-09-26"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -2858,6 +2866,8 @@ class IndustryConfig:
     OUT_XLSX: str = "industry_regime_report.xlsx"
     # [v0.45.0 R93] 사용자 지시 "엑셀 파일명 맨뒤에 코드 버전도 같이 붙여" → industry_regime_report_v0.45.0.xlsx(러너 무변경).
     OUT_XLSX_APPEND_VERSION: bool = True
+    # [v0.52.0 R100 사용자 지시 "단일 섹터, 산업, 종목 예측 시트는 만들지마"] 산업별 01_일별_<산업> 시트 — 기본 끔(계산 무변경 · 표시만).
+    REPORT_ASSET_DAILY_SHEETS: bool = False
     EXPORT_DAILY_CSV: bool = True
     DAILY_CSV_PATH: str = "industry_daily.csv"
     ALLOC_CSV_PATH: str = "industry_allocation_daily.csv"
@@ -14280,8 +14290,12 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
     pa = ires.get("prediction_accuracy", pd.DataFrame())
     if isinstance(pa, pd.DataFrame) and len(pa):
         sheets["01Y_산업예측정확도"] = pa                                # [v0.3.0 §C1]
-    for t, r in results.items():
-        sheets[f"01_일별_{t}"] = r["sheets"].get("daily", pd.DataFrame())
+    # [v0.52.0 R100 사용자 지시 "단일 섹터, 산업, 종목 예측 시트는 만들지마"] 산업별 01_일별_<산업> 29장(리포트 XML 72MB)을 기본으로 싣지 않는다
+    #   (같은 예측은 01Z_산업일별예측 한 장과 00 '다음 거래일 예측' 줄에 있다). 계산·배분 무변경.
+    #   다시 싣기: i_overrides={"REPORT_ASSET_DAILY_SHEETS": True}
+    if bool(getattr(icfg, "REPORT_ASSET_DAILY_SHEETS", False)):
+        for t, r in results.items():
+            sheets[f"01_일별_{t}"] = r["sheets"].get("daily", pd.DataFrame())
 
     # ---- [v0.6.0 I-D(C)] 계산은 이미 끝나 있는데 리포트가 쓰지 않던 11개 시트 ----
     #   run_industry는 S.build_sector_sheets로 조각을 전부 만들어 results[t]["sheets"]에 넣어 두는데,
@@ -14519,7 +14533,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         nd_rows.append(("다음 거래일 예측 - 안내",
                         "t일 종가로 확정된 target_pos를 t+1일 시가에 체결하는 기존 체결 규칙을 표시만 재구성한 것 — "
                         "새 계산이 아니며 13/15 등 성과 시트에는 영향 없음. 01Z_산업일별예측 마지막 행(구분=예측)·"
-                        "01_일별_<산업> 마지막 행·13c 마지막 행에도 같은 값이 있음"))
+                        + ("01_일별_<산업> 마지막 행·" if bool(getattr(icfg, "REPORT_ASSET_DAILY_SHEETS", False)) else "")
+                        + "13c 마지막 행에도 같은 값이 있음"))
     else:
         nd_rows.append(("다음 거래일 예측", "미제공(M 번들이 v1.24.0 미만이거나 계산 실패)"))
     # [§A2] '다음 거래일 배분(I★)' — 마지막 확정일의 산업 비중 = 다음 거래일 시가에 체결할 비중(새 계산 없음).
