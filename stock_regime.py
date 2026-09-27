@@ -1,5 +1,22 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.13.0 - 2026-09-26 - [R103 종목 선별 근거(00N · 측정·표시 전용): 연구 결과표 + 오늘 K 종목 근거 3지표·합성 순위 — 라이브 배분 무변경]
+#    사용자 지시(2026-09-26): "주식별로 가지고 있는 정보 모든 펀더멘탈(어닝, per, 빚 비율 등), 기술적 지표, 공매도, 옵션 등 도움될만한 지표 모두
+#      찾아서 무슨일이 있어도 근거를 찾아 내가 올린 코드(predictor_test1)에 지표많으니까 거기서도 다 가져와서 수정해 … 다른 층에도 도움될거 같으면 사용하고".
+#      이어서 결과 보고 뒤 사용자 선택: '가벼운 통합(권장)'. SEC·FINRA 요청 헤더 연락처 = 사용자 승인 이메일(DATA_USER_AGENT).
+#    ── R103 연구(오프라인 r103/ · 코드 밖) ── S&P 500 그 시점 구성 660종목 · 2010~2026 월말 · 신호 107개(SEC 재무 25 · 어닝 9 · 애널리스트 5 ·
+#      FINRA 공매도 2 · 기술·위험·상대강도 약 70 — 사용자 파일의 종목별 지표 포함) · 섹터 안 순위 IC · 대조군 200 · B2 · BH-FDR · LightGBM 워크포워드.
+#      결과: 선별 신뢰도 **중간** — LightGBM(시드 5 배깅) IC 0.0165 · t 2.40 · 10/13년 · 위약 −0.006 · 단일 최강 공매도 거래량 비율 t 3.03(FDR q 0.26) ·
+#      주주환원수익률 t 2.31 · 어닝 서프라이즈 평균 t 2.32 · 가치·질·부채·애널리스트·기술 ≈ 0 · 옵션·공매도 잔고는 무료 과거 이력 없음.
+#      ⚠ 발견·제거한 누수: 조정 가격 × 당시 주식 수 시가총액 → '앞으로 분할할 종목'이 싸 보임(가치 t 2.9 → 0.1 · LightGBM t 4.7 → 2.0).
+#      포트폴리오: K 58종목 LightGBM 기울임 −0.49/−2.98 · 3지표 기울임 −0.09/−1.28 · S&P 500 섹터 안 상위 1/5 vs 균등 효과 없음 · S·M 집계 |t| < 2
+#      → 무하락 판정 ✗ → **라이브 배분 무변경**.
+#    (§1 측정·표시) build_select_evidence(): 오늘 K 종목별 FINRA 공매도 거래량 비율(FNSQ+FNYX · 최근 SELECT_EVID_FINRA_DAYS 거래일) · SEC 주주환원수익률
+#         (배당+자사주 연간 / 시가총액 · 공시 filed ≤ 기준일 · 캐시 sec_facts_k.pkl 30일) · 어닝 서프라이즈 4분기 평균 → 섹터 안 순위 평균 = 합성 근거 점수 ·
+#         참고 재무(이익수익률·ROE·부채비율 — 근거 없음 표시). 실패해도 라이브 무영향(00N에 사유).
+#    (§2) 새 시트 00N_종목선별근거(A 결론 · B 연구 결과표 SELECT_EVIDENCE_R103 · B2 포트폴리오 판정 · C 오늘 점수 · D 수집 상태) · 00 줄 2개.
+#    새 필드: SELECT_EVIDENCE(True) · DATA_USER_AGENT · SELECT_EVID_FINRA_DAYS(5) · SELECT_EVID_CACHE_DAYS(30). 되돌리기 k_overrides={"SELECT_EVIDENCE": False}.
+#    시험 t103/test_r103.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.12.2 - 2026-09-26 - [R102 예측 정확도 근거: 상승확률 Brier를 워크포워드 기저율과 비교 · 축소 보정(00E E2 · 00 줄) — 라이브 배분 무변경]
 #    사용자 지시(2026-09-26 · Kaggle R101 리포트 m v1.67.2 · s v0.82.0 · i v0.52.0 · k v0.12.1): R100·R101과 같은 지시 반복.
 #    ── R101 리포트 판정 ── K★ 71.0/121.5 높음 · MDD −12.68 · 칼마 4.770(무변경 확인) · 500종목 B2: 통과 0(가장 가까운 PEAD60 t 2.48 ·
@@ -556,7 +573,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.12.2"
+VERSION = "v0.13.0"
 VERSION_DATE = "2026-09-26"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1037,6 +1054,16 @@ class StockConfig:
     SELAUDIT_CHUNK_RETRY: int = 1      # 일괄 다운로드 묶음이 예외로 통째 실패하면 몇 번 더 시도(5초 쉼)
     # [v0.12.1 R101 사전등록] 확보율 구간 판정(00S B2) 최소 월수 — 확보율 ≥90% 달만으로 같은 잣대(t ≥ 2.5 · 앞·뒤 절반 > 0 · 연도 ≥ 60% · 대조군 95).
     SELAUDIT_COVER_VERDICT_MIN_MONTHS: int = 60
+    # ---- [v0.13.0 R103 ★★ 측정·표시 전용] 종목 선별 근거(00N) — R103 연구(S&P 500 그 시점 구성 · 2010~ · 신호 107개)에서 근거가 남은 3지표 ----
+    #   사용자 지시(2026-09-26): "주식별로 가지고 있는 정보 모든 펀더멘탈(어닝, per, 빚 비율 등), 기술적 지표, 공매도, 옵션 등 … 무슨일이 있어도
+    #   근거를 찾아" → 결과(R103): 선별 신뢰도 **중간**(전 지표 LightGBM 워크포워드 IC 0.017 · t 2.40) · K 적용·S&P 500 포트폴리오 효과 없음
+    #   → 사용자 선택 '가벼운 통합': 오늘 K 종목별 근거 3지표 + 합성 순위 + 참고 재무(근거 없음 표시) · 라이브 배분 무변경.
+    #   자료: FINRA Reg SHO 일별 공매도 거래량(FNSQ+FNYX · 최근 SELECT_EVID_FINRA_DAYS 거래일) · SEC EDGAR companyfacts(공시 filed ≤ 오늘 ·
+    #   30일 캐시) · 어닝 서프라이즈 4분기 평균(K 패널). 두 기관은 요청 헤더에 연락처를 요구한다 — DATA_USER_AGENT(사용자 승인 2026-09-26).
+    SELECT_EVIDENCE: bool = True
+    DATA_USER_AGENT: str = "stock-regime-research yeomin1024@gmail.com"
+    SELECT_EVID_FINRA_DAYS: int = 5
+    SELECT_EVID_CACHE_DAYS: int = 30
 
     # ---- 출력 ----
     OUT_XLSX: str = "stock_regime_report.xlsx"
@@ -4667,6 +4694,292 @@ def build_selection_sheet(sa: Optional[Dict[str, Any]], cfg: "StockConfig") -> T
     return df, line
 
 
+# =============================================================================
+# [v0.13.0 R103 ★★ 측정·표시 전용] 종목 선별 근거 — R103 연구 결과표 · 오늘 K 종목별 근거 3지표 · 합성 순위(00N)
+# =============================================================================
+#   R103 연구(오프라인 r103/ · S&P 500 그 시점 구성 660종목 · 2010-01~2026-08 월말 · 다음 21거래일 섹터 안 순위 IC · 무작위 대조군 200 ·
+#   생존 편향 작은 구간 B2 · 다중 비교 BH-FDR). 자료: SEC EDGAR companyfacts(공시일 filed 기준) · Yahoo 어닝·애널리스트(2012~)·가격 ·
+#   FINRA 공매도 거래량 · 사용자 파일 predictor_test1의 종목별 기술 지표. ⚠ 발견한 누수: 조정 가격 × 당시 주식 수로 시가총액을 만들면
+#   '앞으로 분할할 종목'(대개 크게 오른 종목)이 과거에 싸 보인다 → 분할 이력으로 실제 거래 가격을 복원해 제거(가치 지표 t 2.9 → 0.1).
+SELECT_EVIDENCE_R103: Tuple[Dict[str, Any], ...] = (
+    {"근거": "공매도 거래량 비율(FINRA · 월말 5거래일 · 낮을수록 좋다)", "섹터 안 IC": 0.0145, "t": 3.03, "연도 +": "12/16",
+     "앞(~2017) IC": 0.0157, "뒤(2018~) IC": 0.0136, "2020~ t": 2.16, "FDR q(107개)": 0.26, "판정": "중간 — 단일 최강 · 다중 비교 보정 후 유의 아님"},
+    {"근거": "주주환원수익률((배당+자사주)/시가총액 · SEC · 분할 복원 가격)", "섹터 안 IC": 0.0150, "t": 2.31, "연도 +": "13/17",
+     "앞(~2017) IC": 0.0124, "뒤(2018~) IC": 0.0174, "2020~ t": 2.04, "FDR q(107개)": 0.46, "판정": "중간"},
+    {"근거": "어닝 서프라이즈 4분기 평균(Yahoo)", "섹터 안 IC": 0.0113, "t": 2.32, "연도 +": "11/17",
+     "앞(~2017) IC": 0.0177, "뒤(2018~) IC": 0.0053, "2020~ t": 0.99, "FDR q(107개)": 0.46, "판정": "중간 — 최근 약해짐"},
+    {"근거": "전 지표 LightGBM 워크포워드(107개 · 시드 5 배깅 · 과거로만 학습 · 해마다 재학습)", "섹터 안 IC": 0.0165, "t": 2.40, "연도 +": "10/13",
+     "앞(~2017) IC": 0.0068, "뒤(2018~) IC": 0.0210, "2020~ t": 2.16, "FDR q(107개)": None,
+     "판정": "중간 — 높음 기준(t ≥ 2.5) 미달 · 위약(목표 섞기) IC −0.006 · 상위 1/5 섹터 대비 월 +0.22% · 승률 51%"},
+    {"근거": "가치(PER·PBR·PSR·EV/EBIT·현금흐름·잉여현금흐름 수익률)", "섹터 안 IC": 0.0009, "t": 0.08, "연도 +": "9/17",
+     "앞(~2017) IC": -0.0030, "뒤(2018~) IC": 0.0046, "2020~ t": 0.99, "FDR q(107개)": None, "판정": "없음(분할 누수 제거 뒤)"},
+    {"근거": "질(ROE·ROA·매출총이익/자산·영업이익률·발생액·유동비율)", "섹터 안 IC": -0.0026, "t": -0.35, "연도 +": "9/17",
+     "앞(~2017) IC": -0.0034, "뒤(2018~) IC": -0.0018, "2020~ t": -0.21, "FDR q(107개)": None, "판정": "없음"},
+    {"근거": "부채비율(부채/자본 · 낮을수록 좋다고 가정)", "섹터 안 IC": -0.0172, "t": -2.30, "연도 +": "5/17",
+     "앞(~2017) IC": -0.0148, "뒤(2018~) IC": -0.0193, "2020~ t": -1.56, "FDR q(107개)": 0.46, "판정": "없음 — 오히려 반대 방향(보정 후 유의 아님)"},
+    {"근거": "애널리스트(등급 순상향 · 목표가 변경 · 목표가 괴리 · 관심도)", "섹터 안 IC": -0.0005, "t": -0.09, "연도 +": "8/15",
+     "앞(~2017) IC": 0.0012, "뒤(2018~) IC": -0.0017, "2020~ t": -0.13, "FDR q(107개)": None, "판정": "없음"},
+    {"근거": "기술 지표 약 70개(RSI·MACD·볼린저·스토캐스틱·ADX·MFI·OBV·Aroon·TRIX·CVaR·하방 베타·상대강도 등)", "섹터 안 IC": 0.0016, "t": 0.21,
+     "연도 +": "9/17", "앞(~2017) IC": 0.0093, "뒤(2018~) IC": -0.0055, "2020~ t": -0.71, "FDR q(107개)": None, "판정": "없음"},
+    {"근거": "옵션(내재변동성·스큐·풋콜) · 공매도 잔고 · 내부자 거래", "섹터 안 IC": None, "t": None, "연도 +": "-", "앞(~2017) IC": None,
+     "뒤(2018~) IC": None, "2020~ t": None, "FDR q(107개)": None, "판정": "검정 불가 — 무료 과거 이력 없음(현재 값만)"},
+)
+SELECT_EVIDENCE_R103_PORTFOLIO: Tuple[Tuple[str, str], ...] = (
+    ("K 58종목 · LightGBM 점수 순위 기울임 λ0.5", "Δ회피 −0.49 · Δ참여 −2.98 · 같은 규칙 대조군 칼마 백분위 5 ✗"),
+    ("K 58종목 · 근거 3지표 합성 순위 기울임 λ0.5", "Δ회피 −0.09 · Δ참여 −1.28 · 대조군 백분위 45 ✗"),
+    ("S&P 500 그 시점 구성 × S★ 섹터 비중 · 섹터 안 상위 1/5(LightGBM) vs 섹터 안 균등", "회피 65.3 vs 65.7 · 참여 79.4 vs 78.9 · MDD −18.2 vs −15.8 · "
+                                                                        "무작위 상위 1/5 대비 칼마 40백분위 ✗"),
+    ("섹터(S)·시장(M) 층 — 종목 신호 8개의 섹터 평균·시장 평균", "모두 |t| < 2 · 앞/뒤 부호가 바뀜 ✗"),
+)
+
+
+def _http_get_ua(url: str, ua: str, timeout: float = 40.0) -> bytes:
+    """[v0.13.0] 연락처를 밝힌 요청 헤더로 GET(SEC·FINRA가 요구) — gzip 응답을 푼다."""
+    import urllib.request
+    import gzip as _gz
+    req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept-Encoding": "gzip, deflate"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        b = r.read()
+        return _gz.decompress(b) if r.headers.get("Content-Encoding") == "gzip" else b
+
+
+def finra_short_volume_ratio(tickers: List[str], cand_days: List[pd.Timestamp], cfg: "StockConfig",
+                             need: int = 5) -> Tuple[pd.Series, Dict[str, Any]]:
+    """[v0.13.0 R103] FINRA Reg SHO 일별 공매도 거래량(FNSQ+FNYX — R103 연구와 같은 정의) — 최근 거래일부터 거꾸로 need일을 모아
+    Σ공매도 거래량 / Σ총 거래량. 그날 파일이 아직 없으면(미게시 · 휴장) 건너뛴다. 반환: 티커 → 비율 · 수집 정보."""
+    ua = str(getattr(cfg, "DATA_USER_AGENT", "") or "")
+    sym = {t: normalize_ticker(t).replace("-", ".") for t in tickers}
+    want = set(sym.values())
+    sv: Dict[str, float] = {}
+    tv: Dict[str, float] = {}
+    ok_days: List[str] = []
+    fail_days: List[str] = []
+    for d in sorted({pd.Timestamp(x).normalize() for x in cand_days}, reverse=True):
+        if len(ok_days) >= int(need):
+            break
+        got = False
+        for p in ("FNSQ", "FNYX"):
+            try:
+                txt = _http_get_ua(f"https://cdn.finra.org/equity/regsho/daily/{p}shvol{d:%Y%m%d}.txt", ua).decode(errors="replace")
+            except Exception:
+                continue
+            got = True
+            for ln in txt.splitlines()[1:]:
+                f = ln.split("|")
+                if len(f) < 5 or f[1] not in want:
+                    continue
+                try:
+                    s_, v_ = float(f[2]), float(f[4])
+                except ValueError:
+                    continue
+                sv[f[1]] = sv.get(f[1], 0.0) + s_
+                tv[f[1]] = tv.get(f[1], 0.0) + v_
+        (ok_days if got else fail_days).append(str(d.date()))
+    out = pd.Series({t: (sv[s] / tv[s] if tv.get(s, 0.0) > 0 and s in sv else np.nan) for t, s in sym.items()}, dtype=float)
+    return out, {"days_ok": ok_days, "days_fail": fail_days}
+
+
+_SEC_KEEP = ("us-gaap:NetIncomeLoss", "us-gaap:StockholdersEquity", "us-gaap:Liabilities", "us-gaap:PaymentsOfDividends",
+             "us-gaap:PaymentsForRepurchaseOfCommonStock", "dei:EntityCommonStockSharesOutstanding", "us-gaap:CommonStockSharesOutstanding")
+
+
+def sec_latest_facts(tickers: List[str], cfg: "StockConfig", asof: Optional[pd.Timestamp] = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.13.0 R103] SEC EDGAR companyfacts — 티커별 최신 값(공시 filed ≤ asof): 연간 흐름(기간 330~400일 · 기간말이 가장 최근 · 같은 기간말은
+    가장 늦은 공시) · 시점 값(기간말 최신). 캐시 sec_facts_k.pkl(티커별 수집 시각 · SELECT_EVID_CACHE_DAYS). CIK는 SEC company_tickers.json.
+    해외 발행사(20-F·40-F · us-gaap 없음)·CIK 없는 티커는 NaN(사유 기록)."""
+    ua = str(getattr(cfg, "DATA_USER_AGENT", "") or "")
+    asof = pd.Timestamp(asof or pd.Timestamp.now()).normalize()
+    info: Dict[str, Any] = {"fetched": 0, "cached": 0, "no_cik": [], "failed": {}}
+    cp = _cache_path(cfg, "sec_facts_k.pkl")
+    cache: Dict[str, Any] = {}
+    if os.path.exists(cp):
+        try:
+            cache = pd.read_pickle(cp) or {}
+        except Exception:
+            cache = {}
+    max_age = float(getattr(cfg, "SELECT_EVID_CACHE_DAYS", 30)) * 86400.0
+    need = [t for t in tickers if not (t in cache and time.time() - float(cache[t].get("t", 0)) < max_age)]
+    cik_of: Dict[str, int] = {}
+    if need:
+        ccp = _cache_path(cfg, "sec_cik.json")
+        try:
+            if _cache_fresh(ccp, int(getattr(cfg, "SELECT_EVID_CACHE_DAYS", 30))):
+                with open(ccp, "r", encoding="utf-8") as fh:
+                    cik_of = {k: int(v) for k, v in json.load(fh).items()}
+            else:
+                js = json.loads(_http_get_ua("https://www.sec.gov/files/company_tickers.json", ua))
+                cik_of = {str(v["ticker"]).upper().replace(".", "-"): int(v["cik_str"]) for v in js.values()}
+                with open(ccp, "w", encoding="utf-8") as fh:
+                    json.dump(cik_of, fh)
+        except Exception as e:
+            info["failed"]["company_tickers"] = f"{type(e).__name__}: {str(e)[:60]}"
+    for t in need:
+        c = cik_of.get(normalize_ticker(t).upper())
+        if c is None:
+            info["no_cik"].append(t)
+            continue
+        try:
+            j = json.loads(_http_get_ua(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{c:010d}.json", ua, timeout=60))
+            keep = {}
+            for key in _SEC_KEEP:
+                ns, cc = key.split(":")
+                g = (j.get("facts") or {}).get(ns) or {}
+                if cc in g:
+                    keep[key] = g[cc].get("units") or {}
+            cache[t] = {"t": time.time(), "cik": c, "facts": keep}
+            info["fetched"] += 1
+            time.sleep(0.12)                                    # SEC 공정 접근(초당 10회 미만)
+        except Exception as e:
+            info["failed"][t] = f"{type(e).__name__}: {str(e)[:60]}"
+    info["cached"] = len([t for t in tickers if t in cache]) - info["fetched"]
+    try:
+        pd.to_pickle(cache, cp)
+    except Exception:
+        pass
+
+    def _latest(units, kind):
+        best = None
+        for u, lst in (units or {}).items():
+            if kind == "flow" and u != "USD":
+                continue
+            for f in lst:
+                try:
+                    end = pd.Timestamp(f["end"]); filed = pd.Timestamp(f["filed"])
+                except Exception:
+                    continue
+                if filed > asof:
+                    continue
+                if kind == "flow":
+                    st = f.get("start")
+                    if not st:
+                        continue
+                    dur = (end - pd.Timestamp(st)).days
+                    if not (330 <= dur <= 400):
+                        continue
+                key = (end, filed)
+                if best is None or key > best[0]:
+                    best = (key, float(f["val"]))
+        if best is None:
+            return np.nan, None
+        return best[1], best[0][0]
+    rows = []
+    for t in tickers:
+        fc = (cache.get(t) or {}).get("facts") or {}
+        ni, e_ni = _latest(fc.get("us-gaap:NetIncomeLoss"), "flow")
+        dv, _ = _latest(fc.get("us-gaap:PaymentsOfDividends"), "flow")
+        bb, _ = _latest(fc.get("us-gaap:PaymentsForRepurchaseOfCommonStock"), "flow")
+        eq, _ = _latest(fc.get("us-gaap:StockholdersEquity"), "inst")
+        li, _ = _latest(fc.get("us-gaap:Liabilities"), "inst")
+        sh, e_sh = _latest(fc.get("dei:EntityCommonStockSharesOutstanding"), "inst")
+        if not (sh == sh):
+            sh, e_sh = _latest(fc.get("us-gaap:CommonStockSharesOutstanding"), "inst")
+        rows.append({"티커": t, "순이익(연)": ni, "배당(연)": dv, "자사주(연)": bb, "자본": eq, "부채": li, "주식수": sh,
+                     "연간 기간말": (e_ni.date() if e_ni is not None else None), "주식수 기준일": (e_sh.date() if e_sh is not None else None)})
+    return pd.DataFrame(rows).set_index("티커"), info
+
+
+def build_select_evidence(panel: Dict[str, pd.DataFrame], sector_of: Dict[str, str], cfg: "StockConfig",
+                          target_w: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """[v0.13.0 R103] 오늘 K 종목별 근거 3지표(공매도 거래량 비율 − · 주주환원수익률 + · 어닝 서프라이즈 4분기 평균 +) → 섹터 안 순위 평균
+    = 합성 근거 점수(0~1) · 섹터 안 순위 · 참고 재무(이익수익률·ROE·부채비율 — R103에서 선별 근거 없음). 측정·표시 전용(라이브 무영향)."""
+    t0 = time.time()
+    tick = sorted(panel)
+    idx = pd.DatetimeIndex(sorted(set().union(*[set(pd.DatetimeIndex(panel[t].index)) for t in tick]))) if tick else pd.DatetimeIndex([])
+    if not len(idx):
+        return {"ok": False, "note": "패널 없음"}
+    asof = idx[-1]
+    svr, finfo = finra_short_volume_ratio(tick, list(idx[-(int(getattr(cfg, "SELECT_EVID_FINRA_DAYS", 5)) + 6):]), cfg,
+                                          need=int(getattr(cfg, "SELECT_EVID_FINRA_DAYS", 5)))
+    sec, sinfo = sec_latest_facts(tick, cfg, asof=asof)
+    px = pd.Series({t: float(pd.to_numeric(panel[t]["종가"], errors="coerce").dropna().iloc[-1])
+                    if pd.to_numeric(panel[t]["종가"], errors="coerce").notna().any() else np.nan for t in tick})
+    sur4 = pd.Series({t: (float(pd.to_numeric(panel[t]["서프라이즈_4분기평균"], errors="coerce").dropna().iloc[-1])
+                          if "서프라이즈_4분기평균" in panel[t].columns and pd.to_numeric(panel[t]["서프라이즈_4분기평균"], errors="coerce").notna().any()
+                          else np.nan) for t in tick})
+    sec = sec.reindex(tick)
+    mcap = sec["주식수"] * px
+    mcap = mcap.where(mcap > 1e8)
+    shy = (sec["배당(연)"].fillna(0.0) + sec["자사주(연)"].fillna(0.0)) / mcap
+    shy = shy.where(sec[["배당(연)", "자사주(연)"]].notna().any(axis=1))
+    ep = sec["순이익(연)"] / mcap
+    roe = sec["순이익(연)"] / sec["자본"].where(sec["자본"] > 0)
+    de = sec["부채"] / sec["자본"].where(sec["자본"] > 0)
+    g = pd.Series({t: sector_of.get(t) or "-" for t in tick})
+    parts = pd.DataFrame({"svr": -svr, "shy": shy, "sur4": sur4})
+    rk = parts.groupby(g).rank(pct=True)
+    n_ok = rk.notna().sum(axis=1)
+    comp = rk.mean(axis=1).where(n_ok >= 2)
+    srank = comp.groupby(g).rank(ascending=False, method="min")
+    ssize = comp.groupby(g).transform("count")
+    lw = (target_w.iloc[-1] if isinstance(target_w, pd.DataFrame) and len(target_w) else pd.Series(dtype=float))
+    T = pd.DataFrame({"섹터": g, "공매도 거래량 비율(최근 5거래일)": svr.round(4), "주주환원수익률((배당+자사주)/시총)": shy.round(4),
+                      "어닝 서프라이즈 4분기 평균(%)": sur4.round(2), "합성 근거 점수(섹터 안 순위 평균 0~1)": comp.round(3),
+                      "섹터 안 순위(1=근거 최상)": [f"{int(r)}/{int(n)}" if r == r and n == n and n > 0 else "-" for r, n in zip(srank, ssize)],
+                      "오늘 K★ 목표비중": [round(float(lw.get(t, 0.0)), 4) for t in tick],
+                      "참고: 이익수익률(E/P)": ep.round(4), "참고: ROE": roe.round(3), "참고: 부채비율(부채/자본)": de.round(2),
+                      "SEC 연간 기간말": sec["연간 기간말"], "사용 지표 수": n_ok.astype(int)})
+    T = T.sort_values(["섹터", "합성 근거 점수(섹터 안 순위 평균 0~1)"], ascending=[True, False])
+    out = {"ok": True, "table": T, "asof": str(asof.date()), "finra": finfo, "sec": sinfo, "sec_n": int(sec["순이익(연)"].notna().sum()),
+           "svr_n": int(svr.notna().sum()), "sec_s": round(time.time() - t0, 1)}
+    log("SELECT", kv(event="select_evidence", asof=out["asof"], tickers=len(tick), finra_days=len(finfo["days_ok"]),
+                     finra_ok=out["svr_n"], sec_fetched=sinfo.get("fetched"), sec_ok=out["sec_n"], no_cik=len(sinfo.get("no_cik") or []),
+                     sec=out["sec_s"], note="R103 측정·표시 전용 — 라이브 배분 무영향"))
+    return out
+
+
+def build_select_evidence_sheet(se: Optional[Dict[str, Any]], names: Optional[Dict[str, str]] = None
+                                ) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v0.13.0 R103] 00N_종목선별근거 시트 · 00 줄 2개."""
+    names = dict(names or {})
+    parts: List[pd.DataFrame] = []
+    A = "A. 읽는 법 · 결론(R103)"
+    parts.append(pd.DataFrame([
+        {"블록": A, "항목": "질문", "값": "주식별로 쓸 수 있는 정보(재무·어닝·애널리스트·공매도·기술 지표·옵션)로 '더 오를 종목'을 가려낼 수 있는가"},
+        {"블록": A, "항목": "방법", "값": ("S&P 500 그 시점 구성 660종목 · 2010-01~2026-08 월말 신호 107개 → 다음 21거래일 섹터 안 순위 IC(그룹 평균 제거) · "
+                                        "무작위 순위 대조군 200 · 생존 편향 작은 구간(2020~) · 다중 비교 BH-FDR · 전 지표 LightGBM(과거로만 학습 · 해마다 재학습 · "
+                                        "시드 5 배깅) · 위약 시험(목표 섞기). 자료는 전부 그 달 말까지 공개된 값(SEC 공시일 · 어닝·애널리스트 다음 날부터).")},
+        {"블록": A, "항목": "결론", "값": ("선별 신뢰도 **중간** — 약하지만 실재하는 신호(LightGBM IC 0.017 · t 2.40 · 13년 중 10년 +)는 있으나 '높음'(t ≥ 2.5) 미달이고, "
+                                        "K 58종목·S&P 500 포트폴리오 어느 쪽에서도 회피·참여를 올리지 못했다 → **라이브 배분 무변경**(섹터 안 균등). "
+                                        "아래 C 블록 점수는 가장 나은 근거로 매긴 '참고 순위'이며 투자 권유가 아니다.")},
+        {"블록": A, "항목": "⚠ 발견한 누수", "값": ("조정 가격(분할·배당 반영) × 당시 공시 주식 수로 시가총액을 만들면 앞으로 분할할 종목(대개 크게 오른 종목)이 과거에 싸 보인다 — "
+                                              "PER·PBR 류가 t 2.9까지 좋아 보였다가 분할 이력으로 실제 거래 가격을 복원하자 사라졌다. 재무 백테스트는 반드시 실제 거래 가격으로.")},
+    ]))
+    B = pd.DataFrame(list(SELECT_EVIDENCE_R103))
+    B.insert(0, "항목", B.pop("근거"))
+    parts.append(B.assign(블록="B. R103 연구 결과(근거별 · 섹터 안 IC)"))
+    parts.append(pd.DataFrame([{"블록": "B2. 포트폴리오에 넣으면(무하락 판정)", "항목": a, "값": b} for a, b in SELECT_EVIDENCE_R103_PORTFOLIO]))
+    lines: List[Tuple[str, str]] = [(
+        "★★★ R103 종목 선별 근거(S&P 500 · 신호 107개 · 측정 전용)",
+        "선별 신뢰도 **중간** — 전 지표 LightGBM 섹터 안 IC 0.017(t 2.40 · 10/13년) · 단일 최강 공매도 거래량 비율(낮을수록 좋음) t 3.03 · "
+        "주주환원수익률 t 2.31 · 어닝 서프라이즈 평균 t 2.32 · 가치(PER·PBR)·질(ROE)·부채비율·애널리스트·기술 지표 약 70개는 근거 없음 · 옵션은 과거 이력이 없어 검정 불가 | "
+        "포트폴리오 효과 없음(K 58종목 −0.49/−2.98 · S&P 500 섹터 안 상위 1/5 vs 균등 회피 65.3/65.7 · 참여 79.4/78.9) → 라이브 배분 무변경. 세부 00N. "
+        "연구·교육용, 투자 자문 아님.")]
+    if not (se and se.get("ok")):
+        parts.append(pd.DataFrame([{"블록": "C. 오늘 K 종목 근거 점수", "항목": "상태", "값": f"산출 안 됨 — {(se or {}).get('note', 'SELECT_EVIDENCE=False')}"}]))
+        lines.append(("종목 선별 근거 점수(오늘)", f"산출 안 됨 — {(se or {}).get('note', 'SELECT_EVIDENCE=False')}"))
+    else:
+        T = se["table"].copy()
+        T.insert(0, "이름", [names.get(t, STOCK_NAME_KR.get(t, t)) for t in T.index])
+        T.insert(0, "항목", T.index)
+        parts.append(T.reset_index(drop=True).assign(블록=f"C. 오늘 K 종목 근거 점수(기준일 {se.get('asof')} · 측정 · 투자 권유 아님)"))
+        fi, si = se.get("finra") or {}, se.get("sec") or {}
+        parts.append(pd.DataFrame([
+            {"블록": "D. 수집 상태", "항목": "FINRA 공매도 거래량", "값": f"거래일 {', '.join(fi.get('days_ok') or []) or '없음'} · 값 있는 종목 {se.get('svr_n', 0)}"
+                                                                   + (f" · 실패일 {', '.join(fi.get('days_fail') or [])}" if fi.get("days_fail") else "")},
+            {"블록": "D. 수집 상태", "항목": "SEC EDGAR", "값": f"새로 받음 {si.get('fetched', 0)} · 캐시 {si.get('cached', 0)} · 순이익 있는 종목 {se.get('sec_n', 0)} · "
+                                                         f"CIK 없음 {', '.join(si.get('no_cik') or []) or '없음'} · 실패 {len(si.get('failed') or {})}"},
+        ]))
+        top = T.dropna(subset=["합성 근거 점수(섹터 안 순위 평균 0~1)"]).sort_values("합성 근거 점수(섹터 안 순위 평균 0~1)", ascending=False).head(10)
+        seg = " · ".join(f"{r['항목']}({r['이름']}) {float(r['합성 근거 점수(섹터 안 순위 평균 0~1)']):.2f}[{r['섹터']} {r['섹터 안 순위(1=근거 최상)']}]"
+                         for _, r in top.iterrows())
+        lines.append((f"종목 선별 근거 점수 상위 10(기준일 {se.get('asof')} · 공매도 거래량↓·주주환원↑·어닝 서프라이즈↑ 섹터 안 순위 평균 · 측정 · 투자 권유 아님)",
+                      (seg or "-") + " — 선별 신뢰도 중간 · 포트폴리오 효과 없음(라이브 배분은 섹터 안 균등)"))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    return df, lines
+
+
 def prob_variant_verdicts(res: Dict[str, Any]) -> List[Dict[str, Any]]:
     """[v0.11.0 R99 N3] 확률 배분 측정 행의 사전등록 판정 — K★ 대비 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 같은 규칙 무작위 대조군 칼마 백분위 ≥ 90."""
     cfg = res.get("cfg", CFG)
@@ -5673,9 +5986,19 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     except Exception as e:
         _sel_audit = {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
         log("SELAUDIT", kv(event="run_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
+    # ---- [v0.13.0 R103] 종목 선별 근거(오늘 K 종목 · FINRA 공매도 거래량 · SEC 주주환원 · 어닝) — 측정·표시 전용 ----
+    _sel_evid: Dict[str, Any] = {"ok": False, "note": "끔(SELECT_EVIDENCE=False)"}
+    if bool(getattr(cfg, "SELECT_EVIDENCE", True)):
+        try:
+            _sel_evid = build_select_evidence(panel, sector_of, cfg, target_w=alloc.get("target_w"))
+        except Exception as e:
+            _sel_evid = {"ok": False, "note": f"산출 실패 {type(e).__name__}: {str(e)[:140]}"}
+            log("SELECT", kv(event="select_evidence_failed", err=type(e).__name__, msg=str(e)[:160], action="없이 계속(라이브 무영향)"),
+                level="warning")
     return {"cfg": cfg, "panel": panel, "pos": pos, "prices": {**prices, **prices_h}, "fund": fund,
             "stock_prob": stock_prob, "prob_variants": prob_variants, "sector_of": sector_of,      # [v0.11.0 R99 N3]
             "k_freshness": _k_fresh, "selection_audit": _sel_audit,                                # [v0.11.0 R99 N2·N6-a]
+            "select_evidence": _sel_evid,                                                           # [v0.13.0 R103]
             "panel_h": panel_h, "pos_h": pos_h, "roles": roles, "automap": amap,           # [v0.6.0 R79]
             "universe": U, "names": _nm, "failed_px": dict(_FAILED_PX),
             "market_budget": mkt_info, "market_w": mkt, "updown": _ud, "live_label": _live_lbl,
@@ -6201,6 +6524,14 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         except Exception as _esa:
             _add.append(("⚠ R99 N6-a 선택력 검정 줄", f"산출 실패 — {type(_esa).__name__}: {str(_esa)[:120]}"))
             log("REPORT", kv(event="selection_sheet_failed", err=type(_esa).__name__, msg=str(_esa)[:160]), level="warning")
+        try:                                                     # [v0.13.0 R103] 종목 선별 근거
+            _ndf, _nlines = build_select_evidence_sheet(res.get("select_evidence"), res.get("names"))
+            if isinstance(_ndf, pd.DataFrame) and len(_ndf):
+                sheets["00N_종목선별근거"] = _ndf
+            _add.extend(_nlines)
+        except Exception as _ene:
+            _add.append(("⚠ R103 종목 선별 근거 줄", f"산출 실패 — {type(_ene).__name__}: {str(_ene)[:120]}"))
+            log("REPORT", kv(event="select_evidence_sheet_failed", err=type(_ene).__name__, msg=str(_ene)[:160]), level="warning")
         if I is not None and hasattr(I, "single_live_verdict_line"):
             _add.append(("★ 단일 종목 라이브 예측 vs B&H(하락 회피·상승 참여)",
                          str(I.single_live_verdict_line(sheets)).replace("(산업 합)", "(종목 합)")))
@@ -6333,7 +6664,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
     _front = [n for n in ("00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
-                          "01Z_주식일별예측", "00_실행요약") if n in sheets]
+                          "00N_종목선별근거", "01Z_주식일별예측", "00_실행요약") if n in sheets]
     sheets = {**{n: sheets[n] for n in _front},
               **{k: v for k, v in sheets.items() if k not in _front and k not in _drop}}
     # [v0.7.0 R80] ★ 실제 거래에 쓰는 전략 행을 노란색으로 — 13(배분)·06(노출)·00A(수익비교) 세 곳
