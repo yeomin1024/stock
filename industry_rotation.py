@@ -1,5 +1,17 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.55.0 - 2026-09-27 - [R106 00Q 산업별 주·월·분기 배수 · 00L I★ 손실 기간 분석 — I★ 무변경]
+#    사용자 지시(2026-09-27): "결과 폴더에 업로드했으니 참고하고 … 국면, 섹터, 산업, 주식별 현재 상태를 정확하게 파악하고 있는지 확인하고 예측도 제대로 하고 있는지 확인해 … 섹터,산업,주식별로 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단하도록하고 상승,하락 정도도 잘 예측하고 있는지도 확인하고 문제 있으면 개선해 그리고 모든 나눠진 수익배수는 최대한 수익을 내야하고 절대로 손해를 봐서는 안돼 손해를 본 부분은 왜그런지 분석해서 개선하도록 해".
+#    ── R105 Kaggle 리포트 점검(현금 이자 0 · 2018~) ── 손실 주/월/분기: M 122/23/5 · S★ 114/20/5 · I★ 115/24/5 · K★ 112/18/3(SPY 193/34/9 · 456/105/35 중).
+#      손실 달 합 = 시장 몫 + 선택 몫 + 비용: M −35.1 = −40.4 + 7.6 − 1.8 · S −45.6 = −37.3 − 5.6 − 1.8 · I −47.2 = −32.0 − 10.9 − 3.0 · K −53.8 = −30.6 − 20.6 − 1.8(%p).
+#      손실 달 주원인: 시장 하락에 노출 M 21/23 · S 16/20 · I 16/24 · K 11/18(2019-05 M 전액 노출 · SPY −6.4% · K −10.9%) · 선택 S 4 · I 7 · K 7(고변동 기술주).
+#    ── R106 연구(r106/ · 코드 밖 · 네 층 하네스 · 현금 이자 0) ── 손실 방지 규칙 13개(10일 고점 −3/−4/−5% 브레이크 · 0 컷 · 5일 −3% 브레이크 ·
+#      변동성 목표 14/16% · 확인 뒤 전환 U2/U3/B2 · K 역변동성 기울임 · 고변동 하락 종목 → ETF 2.5×/2.0×) — 손실 달이 줄지 않고(M 22 → 19~24)
+#      참여 −1.4~−22%p · 칼마 −0.09~−1.7 → 전부 ✗ → **라이브 무변경**. 변동폭: ±1σ 표본 밖 적중(2012~) 종목 68.2 · SPY 68.4 · 섹터 68.5 · 산업 68.8%
+#      (자산별 보정 67.8~68.2% — 이미 정확) · ±2σ 종목 93.3% → 자기 이력 보정 94.6%. 물타기 시점: 하락 뒤 1거래일 +0.67% → 16일 +0.19%.
+#    (§1) r105_extra_sheets_i에 00Q_자산별기간배수(29산업 · 단독 예측 · 단순보유 · 라이브 기여 = I★ 목표 × (1+야간)(1+장중)−1) ·
+#         00L_손실기간분석(I★) — S v0.86.0 함수. 00 줄 순서 꾸준함 → 손실 기간 → 자산별 → 상태판. 시험 t106/test_r106.py.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.54.0 - 2026-09-27 - [R105 현금 이자 0(사용자 선택) · 13r 야간 분해 · 00P 주·월·분기 배수 · 00T 산업 상태판 — I★ 무변경]
 #    사용자 지시(2026-09-27): "결과 폴더에 업로드했으니 참고하고 프로그램의 목표대로 국면, 섹터, 산업, 주식별 현재 상태를 정확하게 파악하고 있는지 확인하고 예측도 제대로 하고 있는지 확인해 … 모든층에서 전체 수익배수로 하지말고 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단하도록하고 그리고 왜 거래에서 가지고 있는게 없는데 수익이 +0.016 같이 계속 늘어나는거는 잘못된거 아니야? 수정하고 예측이 힘들면 분할매수, 분할매도 전략을 잘 세워봐 적어도 물타기 할 때와 하지말아야 할 때, 손절 빨리해야될 때는 파악할 수 있잖아 그리고 상승,하락 정도도 잘 예측하고 있는지도 확인하고 개선해".
 #    ── R104 Kaggle 리포트 점검(현금 이자 포함 · 2018~) ── M 80.1/62.2 · S★ 73.9/86.3 · I★ 74.1/91.8 · K★ 70.4/121.4. 보유 0인 날 +0.016% = 3개월 국채
@@ -1939,7 +1951,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.54.0"
+VERSION = "v0.55.0"
 VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -14154,6 +14166,33 @@ def r105_extra_sheets_i(S, alloc: Optional[Dict[str, Any]], results: Optional[Di
             lines.extend(tl)
         except Exception as e:
             log("REPORT", kv(event="state_board_failed", layer="I", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+    # ---- [v0.55.0 R106 사용자 지시] 00Q 산업별 주·월·분기 배수(단독 예측 · 단순보유 · 라이브 기여) · 00L I★ 손실 기간 분석 ----
+    if hasattr(S, "build_asset_period_sheet") and alloc:
+        C = Ex = None
+        try:
+            tw = alloc.get("target_w")
+            if isinstance(tw, pd.DataFrame) and len(tw):
+                co = pd.DataFrame(alloc.get("ret_co")).reindex(index=tw.index, columns=tw.columns)
+                oc = pd.DataFrame(alloc.get("ret_oc")).reindex(index=tw.index, columns=tw.columns)
+                C, Ex = S._alloc_contrib(tw, (1.0 + co) * (1.0 + oc) - 1.0)
+        except Exception as e:
+            log("REPORT", kv(event="alloc_contrib_failed", layer="I", err=type(e).__name__, msg=str(e)[:120]), M=M, level="warning")
+        try:
+            strat = {t: pd.Series(r["strategy_ret"]) for t, r in (results or {}).items() if isinstance(r, dict) and r.get("strategy_ret") is not None}
+            bh = {t: pd.Series(r["bh_ret"]) for t, r in (results or {}).items() if isinstance(r, dict) and r.get("bh_ret") is not None}
+            qdf, ql = S.build_asset_period_sheet(strat, bh, C, names=INDUSTRY_NAME_KR, layer="산업", strat_label="단독 예측")
+            out["00Q_자산별기간배수"] = qdf
+            lines[1:1] = ql
+        except Exception as e:
+            log("REPORT", kv(event="asset_period_failed", layer="I", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+        try:
+            bt = (alloc.get("bts") or {}).get(alloc.get("label_star"))
+            if isinstance(bt, pd.DataFrame) and src.get("spy_ret") is not None and Ex is not None:
+                ldf, ll = S.build_loss_period_sheet(bt["strategy_ret"], Ex, src["spy_ret"], C, "산업 I★")
+                out["00L_손실기간분석"] = ldf
+                lines[1:1] = ll
+        except Exception as e:
+            log("REPORT", kv(event="loss_period_failed", layer="I", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
     return out, lines
 
 
@@ -15283,7 +15322,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         # ---- [v0.54.0 R105 사용자 지시] 00P 기간별 수익배수(주·월·분기) · 00T 산업 상태판 — S v0.85.0 함수 · 줄은 00U 줄 바로 아래 ----
         _x105, _r105_lines = r105_extra_sheets_i(S, alloc, results, ires.get("user_rel_src") or {}, M)
         sheets.update(_x105)
-        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00T_산업상태판", "00R_신뢰도판정", "00B_수익곡선비교",
+        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Q_자산별기간배수", "00T_산업상태판",
+                                   "00R_신뢰도판정", "00B_수익곡선비교",
                                    "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교", "00E_산업상승확률")
 
     # [v0.23.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다.

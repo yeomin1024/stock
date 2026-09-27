@@ -17,6 +17,21 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.86.0 - 2026-09-27 - [R106 00Q 섹터별 주·월·분기 배수 · 00L 손실 기간 분석 · 00U 손실 비율 열 · 95% 범위 · 국면 한글 — S★ 무변경]
+#    사용자 지시(2026-09-27): "결과 폴더에 업로드했으니 참고하고 … 국면, 섹터, 산업, 주식별 현재 상태를 정확하게 파악하고 있는지 확인하고 예측도 제대로 하고 있는지 확인해 … 섹터,산업,주식별로 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단하도록하고 상승,하락 정도도 잘 예측하고 있는지도 확인하고 문제 있으면 개선해 그리고 모든 나눠진 수익배수는 최대한 수익을 내야하고 절대로 손해를 봐서는 안돼 손해를 본 부분은 왜그런지 분석해서 개선하도록 해".
+#    ── R105 Kaggle 리포트 점검(현금 이자 0 · 2018~) ── 손실 주/월/분기: M 122/23/5 · S★ 114/20/5 · I★ 115/24/5 · K★ 112/18/3(SPY 193/34/9 · 456/105/35 중).
+#      손실 달 합 = 시장 몫 + 선택 몫 + 비용: M −35.1 = −40.4 + 7.6 − 1.8 · S −45.6 = −37.3 − 5.6 − 1.8 · I −47.2 = −32.0 − 10.9 − 3.0 · K −53.8 = −30.6 − 20.6 − 1.8(%p).
+#      손실 달 주원인: 시장 하락에 노출 M 21/23 · S 16/20 · I 16/24 · K 11/18(2019-05 M 전액 노출 · SPY −6.4% · K −10.9%) · 선택 S 4 · I 7 · K 7(고변동 기술주).
+#    ── R106 연구(r106/ · 코드 밖 · 네 층 하네스 · 현금 이자 0) ── 손실 방지 규칙 13개(10일 고점 −3/−4/−5% 브레이크 · 0 컷 · 5일 −3% 브레이크 ·
+#      변동성 목표 14/16% · 확인 뒤 전환 U2/U3/B2 · K 역변동성 기울임 · 고변동 하락 종목 → ETF 2.5×/2.0×) — 손실 달이 줄지 않고(M 22 → 19~24)
+#      참여 −1.4~−22%p · 칼마 −0.09~−1.7 → 전부 ✗ → **라이브 무변경**. 변동폭: ±1σ 표본 밖 적중(2012~) 종목 68.2 · SPY 68.4 · 섹터 68.5 · 산업 68.8%
+#      (자산별 보정 67.8~68.2% — 이미 정확) · ±2σ 종목 93.3% → 자기 이력 보정 94.6%. 물타기 시점: 하락 뒤 1거래일 +0.67% → 16일 +0.19%.
+#    (§1 공통 원본) build_asset_period_sheet(자산마다 단독 예측 · 단순보유 · 라이브 기여의 주·월·분기 플러스/손실 비율 · 최악 · 꾸준함 ·
+#         손실 달 줄임) · build_loss_period_sheet(A 요약 · B 손실 달 · C 손실 분기 — 시장 몫 = 노출 × SPY · 선택 몫 · 비용·기타 · 주원인 ·
+#         많이 잃은 자산 · D 시험 규칙 LOSS_RESEARCH_R106) · _alloc_contrib · REGIME_CODE_KR · _map_regime(상태판 'RISK_ON' → '상승(위험선호)').
+#    (§2) r106_extra_sheets: 00Q_자산별기간배수(11섹터 + SPY) · 00L_손실기간분석(S★) · 00 줄(꾸준함 → 손실 기간 → 자산별 → 상태판).
+#    (§3) user_rel_portfolio에 '월 손실%' · '분기 손실%' 열(무하락 판정용). _range_stats 95% 범위(k2) · 상태판 A 블록 표본 밖 적중 문구.
+#    (§4) LAYER_MIN_VERSIONS M v1.70.0 · I v0.55.0. 시험 t106/test_r106.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.85.0 - 2026-09-27 - [R105 현금 이자 0(사용자 선택) · 13r 야간 분해 · 00P 주·월·분기 배수 · 00U 꾸준함 열 · 00T 섹터 상태판 — S★ 무변경]
 #    사용자 지시(2026-09-27): "결과 폴더에 업로드했으니 참고하고 프로그램의 목표대로 국면, 섹터, 산업, 주식별 현재 상태를 정확하게 파악하고 있는지 확인하고 예측도 제대로 하고 있는지 확인해 … 모든층에서 전체 수익배수로 하지말고 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단하도록하고 그리고 왜 거래에서 가지고 있는게 없는데 수익이 +0.016 같이 계속 늘어나는거는 잘못된거 아니야? 수정하고 예측이 힘들면 분할매수, 분할매도 전략을 잘 세워봐 적어도 물타기 할 때와 하지말아야 할 때, 손절 빨리해야될 때는 파악할 수 있잖아 그리고 상승,하락 정도도 잘 예측하고 있는지도 확인하고 개선해".
 #    ── R104 Kaggle 리포트 점검(현금 이자 포함 · 2018~) ── M 80.1/62.2 · S★ 73.9/86.3 · I★ 74.1/91.8 · K★ 70.4/121.4. 보유 0인 날 +0.016% = 3개월 국채
@@ -3039,7 +3054,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.85.0"
+VERSION = "v0.86.0"
 VERSION_DATE = "2026-09-27"
 
 # =============================================================================
@@ -8681,7 +8696,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.69.0", "sector_rotation": "v0.85.0", "industry_rotation": "v0.54.0"}   # [v0.85.0 R105]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.70.0", "sector_rotation": "v0.86.0", "industry_rotation": "v0.55.0"}   # [v0.86.0 R106]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -9530,6 +9545,9 @@ def user_rel_portfolio(rets: Dict[str, pd.Series], spy_ret: pd.Series, cfg,
                 pc = period_consistency(rr, sp)
                 for k_ in ("주 플러스%", "월 플러스%", "분기 플러스%", "월 최악 배수", "분기 최악 배수", "월 SPY 이긴%", "꾸준함 등급"):
                     row[k_] = pc.get(k_)
+                # [v0.86.0 R106 사용자 지시 "절대로 손해를 봐서는 안돼"] 손실 기간 비율(보합 = 현금 달은 손실 아님) — 무하락 판정에도 쓴다
+                row["월 손실%"] = pc.get("월 마이너스%")
+                row["분기 손실%"] = pc.get("분기 마이너스%")
             except Exception:                        # noqa — 표시 열만 비운다(신뢰도 판정 무영향)
                 pass
         rows.append(row)
@@ -18948,8 +18966,11 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     # ---- [v0.85.0 R105 사용자 지시] 00P 기간별 수익배수(주·월·분기) · 00T 섹터 상태판 — 줄은 00U 줄 바로 아래(00P → 00T 순) ----
     try:
         _x5, _l5 = r105_extra_sheets(sres, M)
+        _x6, _l6 = r106_extra_sheets(sres, M)                     # [v0.86.0 R106] 00Q 자산별 기간 배수 · 00L 손실 기간 분석
         sheets.update(_x5)
-        for _k, _v in reversed(_l5):
+        sheets.update(_x6)
+        _l56 = _l5[:1] + _l6 + _l5[1:]                            # 00 줄 순서: 꾸준함 → 손실 기간 · 자산별 → 상태판
+        for _k, _v in reversed(_l56):
             meta.insert(1, (_k, _v))
     except Exception as _e:
         log("REPORT", kv(event="r105_sheets_failed", layer="S", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
@@ -18972,7 +18993,8 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         except Exception as _e:
             log("REPORT", kv(event="user_reliability_failed", err=type(_e).__name__, msg=str(_e)[:160],
                              trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00T_섹터상태판", "00S_섹터자기근거", "00R_신뢰도판정",
+    sheets = sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Q_자산별기간배수", "00T_섹터상태판",
+                             "00S_섹터자기근거", "00R_신뢰도판정",
                              "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
     _lm_s = None
@@ -20411,6 +20433,10 @@ def _range_stats(close: pd.Series, h: int = 21) -> Dict[str, Any]:
         z3 = zc.iloc[-756:]
         out["hit1"] = float((z3.abs() <= 1.0).mean())
         out["hit2"] = float((z3.abs() <= 2.0).mean())
+        # [R106] 95% 범위 = 자기 이력(최근 3년 결과 확정분) |z|의 95.4% 분위 × σ√h — 꼬리가 두꺼운 종목은 2σ보다 넓다(S&P 500 표본 밖 적중 93.3% → 94.6%)
+        out["k2"] = float(z3.abs().quantile(0.954))
+        if s_now == s_now:
+            out["band95"] = out["k2"] * out["band"]
     sg = sig.dropna()
     if len(sg) > 60 and s_now == s_now:
         out["vol_pct"] = float((sg.iloc[-756:] < s_now).mean() * 100.0)
@@ -20463,7 +20489,7 @@ def build_asset_state_board(levels: Dict[str, pd.Series], names: Optional[Dict[s
         rs = _range_stats(c)
         rg = rs.get("range")
         s200 = c.rolling(200).mean()
-        rows.append({"티커": t, "이름": names.get(t, t), "모형 국면": regime.get(t, "-"),
+        rows.append({"티커": t, "이름": names.get(t, t), "모형 국면": _map_regime(regime.get(t, "-")),
                      "오늘 보유(t일)": (round(float(held[t]), 4) if t in held else None),
                      "다음 거래일 목표비중": (round(float(weight[t]), 4) if t in weight else None),
                      "모형 확률": (round(float(prob[t]), 3) if t in prob and prob[t] == prob[t] else None),
@@ -20477,6 +20503,7 @@ def build_asset_state_board(levels: Dict[str, pd.Series], names: Optional[Dict[s
                      "예상 범위 21일 10%~90%": (f"{rg[0] * 100:+.1f}% ~ {rg[2] * 100:+.1f}%" if rg else "-"),
                      "예상 중앙 21일(%)": (round(rg[1] * 100, 1) if rg else None),
                      "±1σ 과거 적중률(3년 · 목표 68%)": (round(rs["hit1"] * 100, 1) if "hit1" in rs else None),
+                     "큰 움직임 범위 21일(95% · 자기 이력 보정 ±%)": (round(rs["band95"] * 100, 1) if "band95" in rs else None),
                      "±2σ 과거 적중률(3년 · 목표 95%)": (round(rs["hit2"] * 100, 1) if "hit2" in rs else None),
                      "변동성 3년 백분위": (round(rs["vol_pct"], 0) if "vol_pct" in rs else None)})
     if not rows:
@@ -20492,7 +20519,7 @@ def build_asset_state_sheet(sb: Dict[str, Any], layer: str) -> Tuple[pd.DataFram
     parts = [pd.DataFrame([
         {"블록": A, "항목": "예상 변동폭·범위", "값": ("σ = ½·σ21 + ½·σ63(일) → 21거래일 ±1σ√21. 범위 10%~90% = 자기 이력(최근 5년 · 결과 확정분) z 분위 × σ√21. "
                                                  "R105 적중(±1σ 목표 68.3%): SPY 67.9% · 섹터 68.6% · 산업 68.8% · 종목 68.4% → 크기는 맞춘다 · "
-                                                 "±2σ는 93~95%(꼬리가 두꺼움) → 범위를 분위로 그린다.")},
+                                                 "±2σ는 93~95%(꼬리가 두꺼움) → 범위를 분위로 그린다. R106 표본 밖(2012~): 원 ±1σ 68.2~68.8%(이미 정확 · 자산별 보정해도 67.8~68.2%) · 자산 하나의 3년 적중률 61~74%는 표본 잡음(겹치는 21일 창 → 독립 표본 약 36개) · 95% 범위는 자기 이력 보정(종목 93.3% → 94.6%).")},
         {"블록": A, "항목": "시장 국면 × 변동폭", "값": ("M 현금(E=0)일 다음 21일 SPY −5% 이하 급락 13.2% · 실현 변동성 19.8% vs 전액(E=1) 5.4% · 13.4%(2018~ · R105) "
                                                     "— 국면은 '얼마나 크게 떨어질 위험'을 가린다.")},
         {"블록": A, "항목": "과매수/과매도", "값": "RSI14 ≥ 70 · %B ≥ 1 · 20일 가격 위치 ≥ 80 중 2개 = 과매수(반대 = 과매도 · 1개 = 경향) — 수익 예측 근거는 약하다(R104: 21일 IC ≈ 0) · 상태 설명용."},
@@ -20513,6 +20540,55 @@ def build_asset_state_sheet(sb: Dict[str, Any], layer: str) -> Tuple[pd.DataFram
     df = pd.concat(parts, ignore_index=True, sort=False)
     lead = ["블록", "항목", "값"]
     return df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]], lines
+
+
+def _alloc_contrib(tw: pd.DataFrame, ret: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    """[v0.86.0 R106] 라이브 배분의 자산별 일 기여(그날 보유 비중 = 전날 목표 × 그날 종가 대 종가 수익) · 그날 노출 합."""
+    held = pd.DataFrame(tw).astype(float).fillna(0.0).shift(1).fillna(0.0)
+    R = pd.DataFrame(ret).reindex(index=held.index, columns=held.columns).astype(float).fillna(0.0)
+    return held * R, held.sum(axis=1)
+
+
+def r106_extra_sheets(sres: Dict[str, Any], M=None) -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
+    """[v0.86.0 R106 사용자 지시] 00Q_자산별기간배수(섹터마다 단독 예측 · 단순보유 · 라이브 기여) · 00L_손실기간분석(S★ 손실 주·월·분기 원인)."""
+    out: Dict[str, pd.DataFrame] = {}
+    lines: List[Tuple[str, str]] = []
+    al = sres.get("alloc") or {}
+    lp = (al.get("diag") or {}).get("label_primary")
+    bts = al.get("bts") or {}
+    tw = al.get("target_w")
+    spy = al.get("spy_ret")
+    C = None
+    Ex = None
+    try:
+        if isinstance(tw, pd.DataFrame) and len(tw):
+            rc = pd.DataFrame(al.get("ret_cc")).reindex(index=tw.index)
+            if "SPY" in tw.columns and ("SPY" not in rc.columns or rc["SPY"].isna().all()) and spy is not None:
+                rc["SPY"] = pd.Series(spy).reindex(tw.index)
+            C, Ex = _alloc_contrib(tw, rc)
+    except Exception as e:
+        log("REPORT", kv(event="alloc_contrib_failed", layer="S", err=type(e).__name__, msg=str(e)[:120]), M=M, level="warning")
+    try:
+        strat, bh = {}, {}
+        for t, r in (sres.get("sectors") or {}).items():
+            if isinstance(r, dict) and r.get("strategy_ret") is not None and r.get("bh_ret") is not None:
+                strat[t], bh[t] = pd.Series(r["strategy_ret"]), pd.Series(r["bh_ret"])
+        if spy is not None and al.get("spy_m_ret") is not None:
+            strat["SPY"], bh["SPY"] = pd.Series(al["spy_m_ret"]), pd.Series(spy)
+        qdf, ql = build_asset_period_sheet(strat, bh, C, names={**SECTOR_NAME_KR, "SPY": "S&P500(M 국면전략)"}, layer="섹터",
+                                           strat_label="단독 예측")
+        out["00Q_자산별기간배수"] = qdf
+        lines.extend(ql)
+    except Exception as e:
+        log("REPORT", kv(event="asset_period_failed", layer="S", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+    try:
+        if lp in bts and spy is not None and Ex is not None:
+            ldf, ll = build_loss_period_sheet(bts[lp]["strategy_ret"], Ex, spy, C, "섹터 S★")
+            out["00L_손실기간분석"] = ldf
+            lines.extend(ll)
+    except Exception as e:
+        log("REPORT", kv(event="loss_period_failed", layer="S", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+    return out, lines
 
 
 def r105_extra_sheets(sres: Dict[str, Any], M=None) -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
@@ -20556,6 +20632,165 @@ def r105_extra_sheets(sres: Dict[str, Any], M=None) -> Tuple[Dict[str, pd.DataFr
     except Exception as e:
         log("REPORT", kv(event="state_board_failed", layer="S", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
     return out, lines
+
+
+# =============================================================================
+# [v0.86.0 R106 사용자 지시] 자산별(섹터·산업·주식별) 주·월·분기 수익배수 · 손실 기간 원인 분석
+# =============================================================================
+#   사용자 지시(2026-09-27): "섹터,산업,주식별로 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단 … 모든 나눠진
+#   수익배수는 최대한 수익을 내야하고 절대로 손해를 봐서는 안돼 손해를 본 부분은 왜그런지 분석해서 개선하도록 해".
+#   R106 분석(Kaggle R105 · 현금 이자 0 · 2018~): 손실 달 M 23 · S★ 20 · I★ 24 · K★ 18 / 105(SPY 34) — 손실 달의 약 70%가 '전액·부분 노출 중
+#   시장 급락'(2018-10 · 2019-05 · 2021-09 · 2022-01 · 2023-02 · 2024-04), K는 '선택'(고변동 기술주가 섹터 ETF보다 더 빠짐) 7달 −19%p.
+#   시험한 손실 방지 규칙(r106/overlay.py · 네 층): 10일 고점 −3/−4/−5% 브레이크 · 5일 −3% 브레이크 · 변동성 목표 14/16% — 손실 달이 줄지 않고
+#   (M 22 → 21~24) 참여 −3~−22%p · 칼마 −0.2~−1.4 → 모두 ✗(급락은 브레이크가 걸릴 때 이미 대부분 났고, 브레이크는 반등만 놓친다).
+REGIME_CODE_KR: Dict[str, str] = {"RISK_ON": "상승(위험선호)", "NEUTRAL": "중립", "RISK_OFF": "하락(위험회피)",
+                                  "TREND_ONLY_OUT": "추세 이탈(현금)", "NO_SIGNAL": "신호 없음"}
+LOSS_RESEARCH_R106: Tuple[Tuple[str, str, str], ...] = (
+    ("손실 달의 주원인(Kaggle R105 · 2018~ · 네 층)", "시장 하락에 노출: M 21/23달 · S★ 16/20 · I★ 16/24 · K★ 11/18 · 선택(자산이 SPY보다 더 빠짐): S 4 · I 7 · K 7(−19%p) · 비용·잦은 전환: 작음",
+     "손실은 대부분 '들고 있을 때 시장이 갑자기 빠진 달' — M이 먼저 빠지지 못한 급락(2019-05 전액 노출 · SPY −6.4%)"),
+    ("브레이크: SPY 10일 고점 −3%/−4%/−5% → 노출 절반(−4% → 0)", "M 손실 달 22 → 23/24/23(0이면 24) · 참여 −8.7/−4.7/−2.6%p · 칼마 −0.74/−0.71/−0.41 · K 참여 −14/−7/−4%p",
+     "✗ 손실 달이 줄지 않는다 — 급락은 대부분 브레이크 전에 나고 브레이크는 반등을 놓친다"),
+    ("브레이크: SPY 5일 −3% → 5일간 노출 절반", "M 손실 달 22 → 22 · 회피 +1.6 · 참여 −7.7%p · 칼마 −0.61 · K 참여 −14.8%p", "✗"),
+    ("변동성 목표(전액일만 · 연 14%/16%)", "M 손실 달 22 → 21 · 회피 +2.2/+1.5 · 참여 −12.1/−9.7%p · 칼마 −0.56/−0.41 · K 배수 55 → 27/32", "✗ 참여·배수가 크게 준다"),
+    ("긴 이력 대용(2008~2017 · SPY 200일선 대용)", "브레이크·목표 변동성 모두 손실 달 +0~+3 · 참여 −1~−6%p(목표 변동성만 칼마 +0.13~0.15)", "✗ 다른 구간에서도 손실 달을 줄이지 못한다"),
+    ("확인 뒤 전환(늘릴 때 2·3일 확인 · 양쪽 2일 확인)", "M 손실 달 22 → 21/19/20 · 대신 참여 −5.6/−9.6/−1.4%p · 칼마 −0.30/−0.46/−1.05 · S·I·K 손실 달 +0~+4 · K 참여 −13~−19%p", "✗ 잦은 전환 손실은 작고, 막으면 반등 참여를 더 잃는다"),
+    ("K 선택 손실 줄이기(역변동성 기울임 · 고변동 하락 종목 → 섹터 ETF)", "손실 달 18 → 17/19/20 · 참여 −8.1/−4.7/−7.8%p · 칼마 −0.33/−0.09/−0.35 · 배수 55 → 42/49/44", "✗ 고베타 종목이 빠질 때 덜 잃지만 오를 때 더 크게 못 번다"),
+)
+
+
+def _map_regime(v: Any) -> str:
+    s = str(v)
+    return REGIME_CODE_KR.get(s, s)
+
+
+def build_asset_period_sheet(strat: Dict[str, pd.Series], bh: Dict[str, pd.Series], contrib: Optional[pd.DataFrame] = None,
+                             names: Optional[Dict[str, str]] = None, layer: str = "",
+                             strat_label: str = "단독 예측") -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v0.86.0] 00Q_자산별기간배수 — 자산마다 ① 그 자산 단독 예측(국면대로 사고팔기) ② 단순보유(B&H) ③ 라이브 배분 기여(그날 보유 비중 × 수익)의
+    주·월·분기 플러스 비율 · 손실 기간 수 · 최악 배수 · 꾸준함 등급. 손실 달 줄임 = B&H 손실 달 − 단독 예측 손실 달."""
+    names = dict(names or {})
+    rows = []
+    for a in sorted(set(strat) | set(bh)):
+        b = pd.to_numeric(pd.Series(bh.get(a)), errors="coerce") if a in bh else None
+        s = pd.to_numeric(pd.Series(strat.get(a)), errors="coerce") if a in strat else None
+        if b is not None:
+            b = b.dropna()
+        if s is not None and b is not None:
+            s = s.reindex(b.index).fillna(0.0)
+        if (b is None or len(b) < 120) and (s is None or len(s) < 120):
+            continue
+        row: Dict[str, Any] = {"항목": a, "이름": names.get(a, a)}
+        ps = period_consistency(s, b) if s is not None and len(s) >= 120 else {}
+        pb = period_consistency(b) if b is not None and len(b) >= 120 else {}
+        for pre, d in ((strat_label, ps), ("단순보유", pb)):
+            for lab in ("주", "월", "분기"):
+                row[f"{pre} {lab} 플러스%"] = d.get(f"{lab} 플러스%")
+                row[f"{pre} {lab} 손실%"] = d.get(f"{lab} 마이너스%")
+            row[f"{pre} 월 최악 배수"] = d.get("월 최악 배수")
+            row[f"{pre} 분기 최악 배수"] = d.get("분기 최악 배수")
+            row[f"{pre} 꾸준함"] = d.get("꾸준함 등급", "-")
+        if ps and pb:
+            try:
+                nm_s = int(round(float(ps["월 마이너스%"]) * ps["월 기간수"] / 100.0))
+                nm_b = int(round(float(pb["월 마이너스%"]) * pb["월 기간수"] / 100.0))
+                row["손실 달 줄임(단순보유 − 단독)"] = nm_b - nm_s
+            except (KeyError, TypeError, ValueError):
+                pass
+        if isinstance(contrib, pd.DataFrame) and a in contrib.columns:
+            c = pd.to_numeric(contrib[a], errors="coerce").fillna(0.0)
+            cm = c.groupby(pd.DatetimeIndex(c.index).to_period("M")).sum()
+            held = cm[cm.abs() > 1e-12]
+            row["라이브 보유 달"] = int(len(held))
+            row["라이브 기여 손실 달"] = int((held < 0).sum())
+            row["라이브 손실 달 기여 합(%p)"] = round(float(held[held < 0].sum()) * 100.0, 2)
+            row["라이브 최악 기여 달(%p)"] = round(float(held.min()) * 100.0, 2) if len(held) else None
+            row["라이브 총 기여(%p · 단순합)"] = round(float(c.sum()) * 100.0, 1)
+        rows.append(row)
+    lines: List[Tuple[str, str]] = []
+    if not rows:
+        return pd.DataFrame([{"블록": "A", "항목": "상태", "값": "자료 없음"}]), [(f"★★ 자산별 기간 배수 · {layer}", "자료 없음")]
+    T = pd.DataFrame(rows)
+    T.insert(0, "블록", f"A. 자산별 주·월·분기 배수 — {strat_label} vs 단순보유 vs 라이브 기여(현금 이자 0 · 2018~)")
+    k_hi = int((T.get(f"{strat_label} 꾸준함") == "높음").sum()) if f"{strat_label} 꾸준함" in T.columns else 0
+    k_hib = int((T.get("단순보유 꾸준함") == "높음").sum()) if "단순보유 꾸준함" in T.columns else 0
+    red = pd.to_numeric(T.get("손실 달 줄임(단순보유 − 단독)"), errors="coerce") if "손실 달 줄임(단순보유 − 단독)" in T.columns else pd.Series(dtype=float)
+    lw = ""
+    if "라이브 손실 달 기여 합(%p)" in T.columns:
+        L = T.dropna(subset=["라이브 손실 달 기여 합(%p)"]).sort_values("라이브 손실 달 기여 합(%p)").head(5)
+        lw = " · ".join(f"{r['항목']} {r['라이브 손실 달 기여 합(%p)']:+.1f}%p({int(r['라이브 기여 손실 달'])}달)" for _, r in L.iterrows())
+    lines.append((f"★★★ 자산별 주·월·분기 배수(R106 · {layer} · 세부 00Q)",
+                  f"{len(T)}개 자산 — {strat_label} 꾸준함 높음 {k_hi}개 vs 단순보유 {k_hib}개 · 손실 달 줄임 중앙 {red.median():+.0f}달"
+                  f"(줄인 자산 {int((red > 0).sum())}/{int(red.notna().sum())}) | 라이브 배분에서 손실 달 기여가 큰 자산: {lw or '-'} — 연구·교육용, 투자 자문 아님"))
+    return T, lines
+
+
+def build_loss_period_sheet(port: pd.Series, exposure: pd.Series, spy: pd.Series, contrib: Optional[pd.DataFrame] = None,
+                            layer: str = "") -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v0.86.0] 00L_손실기간분석 — 라이브 포트의 손실 주·월·분기: 몇 번 · 얼마나 · 왜(시장 몫 = 그날 노출 × SPY · 선택 몫 = 투자 수익 − 시장 몫 ·
+    비용·기타 = 포트 − 투자 수익) · 많이 잃은 자산 · 시험한 손실 방지 규칙(R106)."""
+    pr = pd.to_numeric(pd.Series(port), errors="coerce").fillna(0.0)
+    pr.index = pd.DatetimeIndex(pr.index)
+    E = pd.to_numeric(pd.Series(exposure), errors="coerce").reindex(pr.index).fillna(0.0)
+    sp = pd.to_numeric(pd.Series(spy), errors="coerce").reindex(pr.index).fillna(0.0)
+    C = contrib.reindex(pr.index).fillna(0.0) if isinstance(contrib, pd.DataFrame) and contrib.shape[1] else None
+    inv = C.sum(axis=1) if C is not None else E * sp
+    d = pd.DataFrame({"port": pr, "mkt": E * sp, "sel": inv - E * sp, "cost": pr - inv, "E": E, "spy": sp, "dE": E.diff().abs().fillna(0.0)})
+    parts: List[pd.DataFrame] = []
+    summ = []
+    det_rows: Dict[str, List[Dict[str, Any]]] = {"월": [], "분기": []}
+    for lab, fq, n in (("주", "W-FRI", 5), ("월", "ME", 21), ("분기", "QE", 63)):
+        key = d.index.to_period(_PERIOD_CODE.get(fq, fq))
+        g = d.groupby(key)
+        cnt = g.size()
+        ok = cnt[cnt >= max(1, int(n * 0.6))].index
+        P = g["port"].apply(lambda x: float((1 + x).prod() - 1)).loc[ok]
+        Sx = g["spy"].apply(lambda x: float((1 + x).prod() - 1)).loc[ok]
+        MK, SL, CO, EE = g["mkt"].sum().loc[ok], g["sel"].sum().loc[ok], g["cost"].sum().loc[ok], g["E"].mean().loc[ok]
+        loss = P < -1e-12
+        summ.append({"블록": "A. 요약 — 손실 기간(현금 이자 0)", "항목": f"{lab} 단위", "기간수": int(len(P)), "손실 기간": int(loss.sum()),
+                     "손실 비율%": round(float(loss.mean()) * 100, 1), "SPY 손실 기간": int((Sx < 0).sum()),
+                     "손실 기간 평균%": round(float(P[loss].mean()) * 100, 2) if loss.any() else 0.0,
+                     "손실 합(%p)": round(float(P[loss].sum()) * 100, 1), "시장 몫 합(%p)": round(float(MK[loss].sum()) * 100, 1),
+                     "선택 몫 합(%p)": round(float(SL[loss].sum()) * 100, 1), "비용·기타 합(%p)": round(float(CO[loss].sum()) * 100, 1),
+                     "손실 기간 평균 노출": round(float(EE[loss].mean()), 2) if loss.any() else None,
+                     "SPY도 하락": int((loss & (Sx < 0)).sum()), "SPY 상승인데 손실": int((loss & (Sx >= 0)).sum())})
+        if lab in det_rows:
+            for pkey in P[loss].index:
+                x = d[key == pkey]
+                mk, sl, co = float(x["mkt"].sum()), float(x["sel"].sum()), float(x["cost"].sum())
+                nchg = int((x["dE"] > 0.05).sum())
+                pc = {"시장 하락에 노출": -mk if mk < 0 else 0.0, "선택(자산이 SPY보다 약함)": -sl if sl < 0 else 0.0, "매매 비용·야간 갭": -co if co < 0 else 0.0}
+                cause = max(pc, key=pc.get)
+                if nchg >= 4 and not cause.startswith("선택"):
+                    cause += f" · 잦은 전환 {nchg}회"
+                worst = ""
+                if C is not None:
+                    cm = C[key == pkey].sum().sort_values()
+                    worst = ", ".join(f"{a} {v * 100:+.2f}%p" for a, v in cm.head(3).items() if v < 0)
+                det_rows[lab].append({"블록": f"{'B' if lab == '월' else 'C'}. 손실 {lab} 상세(최근이 위)", "항목": str(pkey),
+                                      "전략%": round(float(P[pkey]) * 100, 2), "SPY%": round(float(Sx[pkey]) * 100, 2),
+                                      "시장 몫%p": round(mk * 100, 2), "선택 몫%p": round(sl * 100, 2), "비용·기타%p": round(co * 100, 2),
+                                      "평균 노출": round(float(x["E"].mean()), 2), "노출 전환": nchg, "주원인": cause, "많이 잃은 자산": worst})
+    parts.append(pd.DataFrame(summ))
+    for lab in ("월", "분기"):
+        if det_rows[lab]:
+            parts.append(pd.DataFrame(det_rows[lab]).iloc[::-1])
+    parts.append(pd.DataFrame([{"블록": "D. 손실 방지 규칙 시험(R106 · 네 층 하네스 · 현금 이자 0)", "항목": a, "값": b, "판정": c}
+                               for a, b, c in LOSS_RESEARCH_R106]))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    mrow = [r for r in summ if r["항목"] == "월 단위"][0]
+    qrow = [r for r in summ if r["항목"] == "분기 단위"][0]
+    wrow = [r for r in summ if r["항목"] == "주 단위"][0]
+    causes = pd.Series([r["주원인"].split(" · ")[0] for r in det_rows["월"]]).value_counts() if det_rows["월"] else pd.Series(dtype=int)
+    lines = [(f"★★★ 손실 기간 분석(R106 · {layer} · 세부 00L)",
+              f"손실 주 {wrow['손실 기간']}/{wrow['기간수']}(SPY {wrow['SPY 손실 기간']}) · 손실 달 {mrow['손실 기간']}/{mrow['기간수']}(SPY {mrow['SPY 손실 기간']} · "
+              f"평균 {mrow['손실 기간 평균%']:+.2f}%) · 손실 분기 {qrow['손실 기간']}/{qrow['기간수']}(SPY {qrow['SPY 손실 기간']}) | 손실 달 원인: "
+              + " · ".join(f"{k} {v}달" for k, v in causes.items())
+              + f" | 손실 달 합 {mrow['손실 합(%p)']:+.1f}%p = 시장 {mrow['시장 몫 합(%p)']:+.1f} + 선택 {mrow['선택 몫 합(%p)']:+.1f} + 비용 {mrow['비용·기타 합(%p)']:+.1f} — "
+              "⚠ 손실 0은 불가능하다(급락은 예고 없이 온다): 시험한 손실 방지 규칙 13개(브레이크 5 · 변동성 목표 2 · 확인 뒤 전환 3 · K 선택 3) 모두 손실 달을 줄이지 못하고 수익만 깎았다(블록 D). 연구·교육용, 투자 자문 아님.")]
+    return df, lines
 
 
 def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]], M=None,
