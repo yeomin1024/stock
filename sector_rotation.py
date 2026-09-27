@@ -17,6 +17,16 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.84.0 - 2026-09-27 - [R104 13r_일별배분수익 시트(S★ 날짜별 총수익 · 섹터별 '비중 (그날 수익률)' 색) — S★ 규칙·비중 무변경]
+#    사용자 지시(2026-09-27): "야 한계를 뛰어 넘어야돼 … 현재 상태를 정확하게 파악 … 각 층의 일별배분대로 거래시 각 날짜별 총 수익과 개별 수익(비중 옆에 괄호로, 글짜 색깔도 넣기)을 시트에 표시하고 수정해 깃허브에 올려".
+#    (§1 표시 전용 · 공통 원본) build_alloc_pnl_sheet(target_w, ret_day, port_ret, next_day, asset_order, label_map):
+#         행 = 그날 실제로 들고 있던 비중(= 전날 13c 목표 · 그날 시가 체결) · '포트 일수익(%)' = 13b의 라이브 행 strategy_ret 그대로 ·
+#         '누적 배수' · 보유 합계 · 현금 · 자산 칸 '비중 (그날 수익률)' · 맨 끝 행 = 다음 거래일 보유(13c 예측 행과 같다 · 수익 빈칸).
+#         개별 수익률은 종가 대 종가(표시용) — 시가 체결일의 야간 갭 차이는 포트 열에만 정확히 들어간다.
+#         render_pnl_rich(): xlsxwriter write_rich_string으로 괄호 속 수익률만 글자색(상승 빨강 · 하락 파랑 · 0 회색) · 포트 일수익 칸도 색.
+#         write_sector_excel이 df.attrs['pnl_rich']를 보고 칠한다 — I(industry_rotation)도 이 함수·작성기를 그대로 쓴다.
+#    (§2) build_sector_report: 13c 옆에 13r(SPY + 11섹터 · label_primary 행). LAYER_MIN_VERSIONS: M v1.68.0 · I v0.53.0.
+#    시험 t104/test_r104.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.83.0 - 2026-09-26 - [R102 예측 정확도: 13q 하락확률 '워크포워드 축소 보정'(D 블록 · 00 줄) — S★ 규칙·비중 무변경]
 #    사용자 지시(2026-09-26 · Kaggle R101 리포트): R100·R101과 같은 지시 반복(회피·참여·예측 정확도·선별력 근거 개선 · 떨어지면 안 됨).
 #    ── R101 리포트 판정 ── S★ 74.1/86.3 · I★ 74.4/91.8 · K★ 71.0/121.5 · M 80.2/62.2(무변경 확인) · 13q: 원확률 Brier 0.25686 vs
@@ -3013,8 +3023,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.83.0"
-VERSION_DATE = "2026-09-26"
+VERSION = "v0.84.0"
+VERSION_DATE = "2026-09-27"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -8646,7 +8656,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.67.3", "sector_rotation": "v0.83.0", "industry_rotation": "v0.52.0"}   # [v0.83.0 R102]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.68.0", "sector_rotation": "v0.84.0", "industry_rotation": "v0.53.0"}   # [v0.84.0 R104]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -17817,6 +17827,24 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
     sheets["13b_배분전략자산곡선"] = sres["portfolio_curve"]
     if alloc:   # [v0.4.0 §1.F]
         sheets["13c_일별배분비중"] = sres.get("alloc_sheet", pd.DataFrame())
+        # [v0.84.0 R104 사용자 지시] 13r_일별배분수익 — 날짜별 총수익 · 자산별 '비중 (그날 수익률)' · 색(상승 빨강 · 하락 파랑)
+        try:
+            _lp = (alloc.get("diag") or {}).get("label_primary")
+            _bt = (alloc.get("bts") or {}).get(_lp) if _lp else None
+            _tw = alloc.get("target_w")
+            if isinstance(_bt, pd.DataFrame) and isinstance(_tw, pd.DataFrame) and len(_tw):
+                _rc = pd.DataFrame(alloc.get("ret_cc")).reindex(index=_tw.index)
+                if "SPY" in _tw.columns and ("SPY" not in _rc.columns or _rc["SPY"].isna().all()) and alloc.get("spy_ret") is not None:
+                    _rc["SPY"] = pd.Series(alloc["spy_ret"]).reindex(_tw.index)
+                _as = sres.get("alloc_sheet", pd.DataFrame())
+                _nd = None
+                if isinstance(_as, pd.DataFrame) and len(_as) and "구분" in _as.columns and str(_as["구분"].iloc[-1]).startswith("예측"):
+                    _nd = _as["날짜"].iloc[-1]
+                _order = [c for c in (["SPY"] + list(SECTOR_NAME_KR) if "SECTOR_NAME_KR" in globals() else list(_tw.columns)) if c in _tw.columns]
+                _order += [c for c in _tw.columns if c not in _order]
+                sheets["13r_일별배분수익"] = build_alloc_pnl_sheet(_tw, _rc, _bt["strategy_ret"], next_day=_nd, asset_order=_order)
+        except Exception as _epn:   # noqa — 표시 전용
+            log("REPORT", kv(event="pnl_sheet_failed", layer="S", err=type(_epn).__name__, msg=str(_epn)[:160]), M=M, level="warning")
         sheets["13d_횡단면IC"] = rot_val.get("ic_table", pd.DataFrame())
         sheets["13e_순위스프레드"] = rot_val.get("spread_table", pd.DataFrame())
         # [v0.40.0 §S4] 13f에 정보 항목 ⑥ — 섹터 국면 판별력(MCC21>0인 섹터 수). 판정에는 관여하지
@@ -20005,6 +20033,92 @@ def sheets_to_front(sheets: Dict[str, pd.DataFrame], *names: str) -> Dict[str, p
     return {**{n: sheets[n] for n in front}, **{k: v for k, v in sheets.items() if k not in front}}
 
 
+# =============================================================================
+# [v0.84.0 R104 사용자 지시] 일별배분대로 거래할 때 날짜별 총수익 · 개별 수익 시트(13r) — "비중 옆에 괄호로, 글자 색깔도"
+# =============================================================================
+#   행 = 그날 실제로 들고 있던 비중(= 전날 13c 목표 · 그날 시가 체결) · 셀 = "비중 (그날 수익률)" · 괄호 속 수익률만 색:
+#   상승 빨강 · 하락 파랑(한국 증시 관례) · 0 회색. '포트 일수익(%)'은 체결 규칙(시가 체결 · 비용 · 현금 이자)을 그대로 쓴 ★ 포트 수익,
+#   개별 수익률은 그 자산의 종가 대 종가 수익(표시용 — 시가 체결일의 야간 갭 차이는 포트 열에만 정확히 반영).
+#   맨 끝 행 = 다음 거래일에 들고 있을 비중(수익 빈칸). 배분·성과 계산 무변경(표시 전용).
+PNL_UP_COLOR = "#D00000"
+PNL_DN_COLOR = "#0050D0"
+PNL_FLAT_COLOR = "#808080"
+
+
+def build_alloc_pnl_sheet(target_w: pd.DataFrame, ret_day: pd.DataFrame, port_ret: pd.Series,
+                          next_day: Optional[Any] = None, asset_order: Optional[List[str]] = None,
+                          label_map: Optional[Dict[str, str]] = None) -> pd.DataFrame:
+    """[v0.84.0 R104] 13r_일별배분수익 — 날짜 · 구분 · 포트 일수익(%) · 누적 배수 · 보유 합계 · 현금 · 자산별 '비중 (그날 수익률)'.
+    df.attrs['pnl_rich'](비중·수익 배열)가 있으면 write_sector_excel이 괄호 속 수익률에 색을 입힌다(없어도 글자로는 읽힌다)."""
+    tw = pd.DataFrame(target_w).copy()
+    tw.index = pd.DatetimeIndex(tw.index)
+    cols = [c for c in (asset_order or list(tw.columns)) if c in tw.columns]
+    idx = tw.index
+    held = tw[cols].shift(1).fillna(0.0).astype(float)
+    R = pd.DataFrame(ret_day).reindex(index=idx, columns=cols).astype(float)
+    pr = pd.Series(port_ret, dtype=float).reindex(idx)
+    eq = (1.0 + pr.fillna(0.0)).cumprod()
+    base = pd.DataFrame({"날짜": idx.date, "구분": "실적(그날 보유 · 그날 수익)", "포트 일수익(%)": (pr * 100.0).round(3).values,
+                         "누적 배수": eq.round(4).values, "보유 합계": held.sum(axis=1).round(4).values,
+                         "현금": (1.0 - held.sum(axis=1)).clip(lower=0.0).round(4).values})
+    W = held.to_numpy(dtype=float)
+    Rv = R.to_numpy(dtype=float)
+    if next_day is not None and len(idx):
+        lw = tw[cols].iloc[-1].fillna(0.0).astype(float)
+        base = pd.concat([base, pd.DataFrame([{"날짜": pd.Timestamp(next_day).date(), "구분": "예측(다음 거래일 보유)", "포트 일수익(%)": np.nan,
+                                               "누적 배수": np.nan, "보유 합계": round(float(lw.sum()), 4),
+                                               "현금": round(max(0.0, 1.0 - float(lw.sum())), 4)}])], ignore_index=True)
+        W = np.vstack([W, lw.to_numpy(dtype=float)])
+        Rv = np.vstack([Rv, np.full(len(cols), np.nan)])
+    txt: Dict[str, List[str]] = {}
+    for j, c in enumerate(cols):
+        colv: List[str] = []
+        for i in range(W.shape[0]):
+            w = W[i, j]
+            if not (w > 1e-9):
+                colv.append("")
+                continue
+            r = Rv[i, j]
+            colv.append(f"{w * 100:.2f}% ({r * 100:+.2f}%)" if r == r else f"{w * 100:.2f}%")
+        txt[(label_map or {}).get(c, c)] = colv
+    df = pd.concat([base.reset_index(drop=True), pd.DataFrame(txt)], axis=1)
+    df.attrs["pnl_rich"] = {"w": W, "r": Rv, "first_col": int(base.shape[1]), "ret_col": 2}
+    return df
+
+
+def render_pnl_rich(wb, ws, df: pd.DataFrame) -> int:
+    """[v0.84.0 R104] 13r 시트의 자산 칸을 '비중 (수익률)' 서식 문자열로 다시 쓴다 — 괄호 속 수익률만 색(상승 빨강 · 하락 파랑 · 0 회색).
+    포트 일수익(%) 칸도 부호에 따라 글자색. 반환: 서식 문자열 칸 수."""
+    spec = getattr(df, "attrs", {}).get("pnl_rich") if df is not None else None
+    if not spec:
+        return 0
+    W, Rv, c0, rc = spec["w"], spec["r"], int(spec["first_col"]), int(spec.get("ret_col", 2))
+    f_up = wb.add_format({"font_color": PNL_UP_COLOR, "bold": True})
+    f_dn = wb.add_format({"font_color": PNL_DN_COLOR, "bold": True})
+    f_fl = wb.add_format({"font_color": PNL_FLAT_COLOR})
+    f_up_c = wb.add_format({"font_color": PNL_UP_COLOR, "num_format": "+0.000;-0.000;0.000"})
+    f_dn_c = wb.add_format({"font_color": PNL_DN_COLOR, "num_format": "+0.000;-0.000;0.000"})
+    n = 0
+    for i in range(W.shape[0]):
+        pv = df.iat[i, rc]
+        try:
+            pvf = float(pv)
+        except (TypeError, ValueError):
+            pvf = float("nan")
+        if pvf == pvf:
+            ws.write_number(i + 1, rc, pvf, f_up_c if pvf > 0 else (f_dn_c if pvf < 0 else f_fl))
+        for j in range(W.shape[1]):
+            w = W[i, j]
+            if not (w > 1e-9):
+                continue
+            r = Rv[i, j]
+            if r == r:
+                fmt = f_up if r > 1e-12 else (f_dn if r < -1e-12 else f_fl)
+                ws.write_rich_string(i + 1, c0 + j, f"{w * 100:.2f}% (", fmt, f"{r * 100:+.2f}%", ")")
+                n += 1
+    return n
+
+
 def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tuple[str, str]], M=None,
                        name_map: Optional[Dict[str, str]] = None,
                        title: Optional[str] = None,
@@ -20080,6 +20194,15 @@ def write_sector_excel(path: str, sheets: Dict[str, pd.DataFrame], meta: List[Tu
                 else:
                     w.set_column(j, j, width)
             w.autofilter(0, 0, len(df), len(cols) - 1)
+            if getattr(df, "attrs", {}).get("pnl_rich"):          # [v0.84.0 R104] 13r — 괄호 속 수익률 색
+                try:
+                    _nr = render_pnl_rich(wb, w, df)
+                    for _j in range(int(df.attrs["pnl_rich"]["first_col"]), len(cols)):
+                        w.set_column(_j, _j, 17)
+                    log("REPORT", kv(event="pnl_sheet_rendered", sheet=name, rich_cells=_nr), M=M)
+                except Exception as _epr:   # noqa — 색만 실패해도 글자는 남는다
+                    log("REPORT", kv(event="pnl_sheet_render_failed", sheet=name, err=type(_epr).__name__, msg=str(_epr)[:120]),
+                        M=M, level="warning")
             if "판정" in cols:
                 cj = cols.index("판정")
                 w.conditional_format(1, cj, len(df), cj, {"type": "cell", "criteria": "==", "value": '"PASS"', "format": f_pass})

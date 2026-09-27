@@ -22,6 +22,14 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.68.0 - 2026-09-27 - [R104 13r_일별배분수익 시트(날짜별 총수익 · 'SPY 비중 (그날 수익률)' 색) · 동반 버전 표 — 신호·목표비중 무변경]
+#    사용자 지시(2026-09-27): "야 한계를 뛰어 넘어야돼 … 현재 상태를 정확하게 파악 … 각 층의 일별배분대로 거래시 각 날짜별 총 수익과 개별 수익(비중 옆에 괄호로, 글짜 색깔도 넣기)을 시트에 표시하고 수정해 깃허브에 올려".
+#    (§1 표시 전용) build_alloc_pnl_sheet(): 행 = 그날 실제로 들고 있던 비중(= 전날 pos_target · 그날 시가 체결 = pos_exec) ·
+#         '포트 일수익(%)' = 백테스트 strategy_ret 그대로(시가 체결 · 비용 · 현금 이자) · '누적 배수' · 보유 합계 · 현금 ·
+#         SPY 칸 = '비중 (그날 종가 대 종가 수익률)' · 맨 끝 행 = 다음 거래일 보유 비중(수익 빈칸).
+#         render_pnl_rich(): 괄호 속 수익률만 글자색(상승 빨강 #D00000 · 하락 파랑 #0050D0 · 0 회색 — 한국 증시 관례) · 포트 일수익 칸도 색.
+#         write_excel이 df.attrs['pnl_rich']를 보고 칠한다(색 실패해도 글자는 남는다). S·I·K도 같은 형식(S v0.84.0 원본 · K 사본).
+#    (§2) COMPANION_MIN_VERSIONS: S v0.84.0 · I v0.53.0 · K v0.14.0. 시험 t104/test_r104.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.67.4 - 2026-09-26 - [R103 동반 버전 표만: K v0.13.0(종목 선별 근거 00N) — 신호·목표비중 무변경(비트 동일)]
 #    사용자 지시(2026-09-26): 종목별 모든 정보로 선별 근거를 찾아라 → K v0.13.0. COMPANION_MIN_VERSIONS만. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.67.3 - 2026-09-26 - [R102 동반 버전 표만: S v0.83.0 · I v0.52.0 · K v0.12.2 — 신호·목표비중 무변경(비트 동일)]
@@ -10284,6 +10292,83 @@ def apply_live_marks(w, wb, df: pd.DataFrame, name: str, live_marks: Optional[Di
     return n
 
 
+# [v1.68.0 R104 사용자 지시] 일별배분대로 거래할 때 날짜별 총수익 · 개별 수익(13r) — S·I·K와 같은 형식(M은 S에 의존하지 않으므로 사본).
+PNL_UP_COLOR = "#D00000"     # 상승 빨강(한국 증시 관례)
+PNL_DN_COLOR = "#0050D0"     # 하락 파랑
+PNL_FLAT_COLOR = "#808080"
+
+
+def build_alloc_pnl_sheet(target_w: pd.DataFrame, ret_day: pd.DataFrame, port_ret: pd.Series,
+                          next_day: Optional[Any] = None, asset_order: Optional[List[str]] = None) -> pd.DataFrame:
+    """[v1.68.0 R104] 13r_일별배분수익 — 행 = 그날 실제로 들고 있던 비중(= 전날 목표 · 그날 시가 체결) · 셀 '비중 (그날 수익률)' ·
+    포트 일수익(%) = 체결 규칙 그대로의 전략 수익(시가 체결 · 비용 · 현금 이자) · 맨 끝 행 = 다음 거래일 보유 비중(수익 빈칸)."""
+    tw = pd.DataFrame(target_w).copy()
+    tw.index = pd.DatetimeIndex(tw.index)
+    cols = [c for c in (asset_order or list(tw.columns)) if c in tw.columns]
+    idx = tw.index
+    held = tw[cols].shift(1).fillna(0.0).astype(float)
+    R = pd.DataFrame(ret_day).reindex(index=idx, columns=cols).astype(float)
+    pr = pd.Series(port_ret, dtype=float).reindex(idx)
+    eq = (1.0 + pr.fillna(0.0)).cumprod()
+    base = pd.DataFrame({"날짜": idx.date, "구분": "실적(그날 보유 · 그날 수익)", "포트 일수익(%)": (pr * 100.0).round(3).values,
+                         "누적 배수": eq.round(4).values, "보유 합계": held.sum(axis=1).round(4).values,
+                         "현금": (1.0 - held.sum(axis=1)).clip(lower=0.0).round(4).values})
+    W = held.to_numpy(dtype=float)
+    Rv = R.to_numpy(dtype=float)
+    if next_day is not None and len(idx):
+        lw = tw[cols].iloc[-1].fillna(0.0).astype(float)
+        base = pd.concat([base, pd.DataFrame([{"날짜": pd.Timestamp(next_day).date(), "구분": "예측(다음 거래일 보유)", "포트 일수익(%)": np.nan,
+                                               "누적 배수": np.nan, "보유 합계": round(float(lw.sum()), 4),
+                                               "현금": round(max(0.0, 1.0 - float(lw.sum())), 4)}])], ignore_index=True)
+        W = np.vstack([W, lw.to_numpy(dtype=float)])
+        Rv = np.vstack([Rv, np.full(len(cols), np.nan)])
+    txt: Dict[str, List[str]] = {}
+    for j, c in enumerate(cols):
+        colv: List[str] = []
+        for i in range(W.shape[0]):
+            w = W[i, j]
+            if not (w > 1e-9):
+                colv.append("")
+                continue
+            r = Rv[i, j]
+            colv.append(f"{w * 100:.2f}% ({r * 100:+.2f}%)" if r == r else f"{w * 100:.2f}%")
+        txt[c] = colv
+    df = pd.concat([base.reset_index(drop=True), pd.DataFrame(txt)], axis=1)
+    df.attrs["pnl_rich"] = {"w": W, "r": Rv, "first_col": int(base.shape[1]), "ret_col": 2}
+    return df
+
+
+def render_pnl_rich(wb, ws, df: pd.DataFrame) -> int:
+    """[v1.68.0 R104] 13r 자산 칸 = '비중 (수익률)' 서식 문자열 — 괄호 속 수익률만 색(상승 빨강 · 하락 파랑 · 0 회색) · 포트 일수익 칸도 색."""
+    spec = getattr(df, "attrs", {}).get("pnl_rich") if df is not None else None
+    if not spec:
+        return 0
+    W, Rv, c0, rc = spec["w"], spec["r"], int(spec["first_col"]), int(spec.get("ret_col", 2))
+    f_up = wb.add_format({"font_color": PNL_UP_COLOR, "bold": True})
+    f_dn = wb.add_format({"font_color": PNL_DN_COLOR, "bold": True})
+    f_fl = wb.add_format({"font_color": PNL_FLAT_COLOR})
+    f_up_c = wb.add_format({"font_color": PNL_UP_COLOR, "num_format": "+0.000;-0.000;0.000"})
+    f_dn_c = wb.add_format({"font_color": PNL_DN_COLOR, "num_format": "+0.000;-0.000;0.000"})
+    n = 0
+    for i in range(W.shape[0]):
+        try:
+            pvf = float(df.iat[i, rc])
+        except (TypeError, ValueError):
+            pvf = float("nan")
+        if pvf == pvf:
+            ws.write_number(i + 1, rc, pvf, f_up_c if pvf > 0 else (f_dn_c if pvf < 0 else f_fl))
+        for j in range(W.shape[1]):
+            w = W[i, j]
+            if not (w > 1e-9):
+                continue
+            r = Rv[i, j]
+            if r == r:
+                fmt = f_up if r > 1e-12 else (f_dn if r < -1e-12 else f_fl)
+                ws.write_rich_string(i + 1, c0 + j, f"{w * 100:.2f}% (", fmt, f"{r * 100:+.2f}%", ")")
+                n += 1
+    return n
+
+
 def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
                 meta: List[Tuple[str, str]], cfg: Config = CFG,
                 live_marks: Optional[Dict[str, Any]] = None) -> None:
@@ -10353,6 +10438,13 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
                 w.conditional_format(1, cj, len(df), cj,
                     {"type": "data_bar", "bar_color": "#638EC6"})
             apply_live_marks(w, wb, df, name, live_marks, f_live)   # [v1.57.0 R80] 실매매 전략 행 노란색
+            if getattr(df, "attrs", {}).get("pnl_rich"):            # [v1.68.0 R104] 13r — 괄호 속 수익률 색
+                try:
+                    _nr = render_pnl_rich(wb, w, df)
+                    w.set_column(int(df.attrs["pnl_rich"]["first_col"]), len(df.columns) - 1, 17)
+                    log("REPORT", kv(event="pnl_sheet_rendered", sheet=name, rich_cells=_nr))
+                except Exception as _epr:   # noqa
+                    log("REPORT", kv(event="pnl_sheet_render_failed", sheet=name, err=type(_epr).__name__, msg=str(_epr)[:120]), "warning")
 
         # ---- 자산곡선 차트 ----
         if "01_일별기록" in sheets and len(sheets["01_일별기록"]) > 0:
@@ -11948,6 +12040,20 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         # [v1.32.0] 사용자 지시("정확도 시트좀 따로 만들고") — 국면 예측을 실제 결과로 채점. 신호 무변경.
         "12_예측정확도": build_prediction_accuracy(daily, cfg),
     }
+    # [v1.68.0 R104 사용자 지시] 13r_일별배분수익 — M(SPY) 일별배분대로 거래할 때 날짜별 총수익 · 'SPY 비중 (그날 수익률)' · 색
+    try:
+        _bt13 = res["bt"]
+        _tp13 = pd.to_numeric(_bt13["pos_target"], errors="coerce") if "pos_target" in _bt13.columns else \
+            pd.to_numeric(sig["target_pos"], errors="coerce").reindex(_bt13.index)
+        _nd13 = None
+        if isinstance(daily, pd.DataFrame) and len(daily) and "날짜" in daily.columns:
+            _last = pd.to_datetime(daily["날짜"].iloc[-1], errors="coerce")
+            if _last == _last and _last > pd.Timestamp(_bt13.index[-1]):
+                _nd13 = _last
+        sheets["13r_일별배분수익"] = build_alloc_pnl_sheet(pd.DataFrame({"SPY": _tp13}), pd.DataFrame({"SPY": _bt13["ret_cc"]}),
+                                                     _bt13["strategy_ret"], next_day=_nd13)
+    except Exception as _e13:   # noqa — 표시 전용
+        log("REPORT", kv(event="pnl_sheet_failed", layer="M", err=type(_e13).__name__, msg=str(_e13)[:160]), "warning")
     # [v1.53.0 F5 ★] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이
     #   있다")를 **M 자신에게도** 적용한다. 그동안 S 리포트에서 우회 계산으로만 보이던 값이다(REPORT47 §2.2:
     #   SPY h=21 현금 기준 MCC +0.160 · '상승 아님' +0.187 — M은 소수 클래스에 정보가 있고 섹터 재추정이
@@ -12387,13 +12493,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.67.4"
-BUNDLE_VERSION_DATE = "2026-09-26"
+BUNDLE_VERSION = "v1.68.0"
+BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.83.0", "industry_rotation": "v0.52.0", "stock_regime": "v0.13.0"}   # [v1.67.4 R103]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.84.0", "industry_rotation": "v0.53.0", "stock_regime": "v0.14.0"}   # [v1.68.0 R104]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:

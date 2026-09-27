@@ -1,5 +1,10 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.53.0 - 2026-09-27 - [R104 13r_일별배분수익 시트(I★ 한 계좌 날짜별 총수익 · 산업·잔여 다리별 '비중 (그날 수익률)' 색) — I★ 무변경]
+#    사용자 지시(2026-09-27): "야 한계를 뛰어 넘어야돼 … 현재 상태를 정확하게 파악 … 각 층의 일별배분대로 거래시 각 날짜별 총 수익과 개별 수익(비중 옆에 괄호로, 글짜 색깔도 넣기)을 시트에 표시하고 수정해 깃허브에 올려".
+#    (§1 표시 전용) build_industry_report: 13c2 옆에 13r — S.build_alloc_pnl_sheet(I★ target_w · 자산 수익 = (1+ret_co)(1+ret_oc)−1 ·
+#         포트 = label_star 행 strategy_ret) · 열 = 산업 + 잔여 섹터 다리 · 맨 끝 = 다음 거래일 보유. 색은 S.write_sector_excel이 칠한다.
+#    시험 t104/test_r104.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.52.0 - 2026-09-26 - [R100 산업별 01_일별_<산업> 시트 끔(사용자 지시 · 계산·배분 무변경) — I★ 숫자 그대로]
 #    사용자 지시(2026-09-26 · Kaggle R99 리포트): "단일 섹터, 산업, 종목 예측 시트는 만들지마 … 지금 상태에서 떨어지면 절대 안돼". 시작 v0.51.0 → 목표 v0.52.0.
 #    (§1) IndustryConfig.REPORT_ASSET_DAILY_SHEETS=False — build_industry_report가 01_일별_<산업> 29장(리포트 XML 약 73MB)을 싣지 않는다.
@@ -1922,8 +1927,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.52.0"
-VERSION_DATE = "2026-09-26"
+VERSION = "v0.53.0"
+VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -14145,6 +14150,20 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         tw_res.insert(3, "총노출(=S★)", alloc["target_w"].sum(axis=1).round(4).values)
         tw_res.insert(4, "S★ 총노출", alloc["w_s_all"].sum(axis=1).round(4).values)
         sheets["13c2_잔여다리"] = tw_res.reset_index(drop=True)
+        # [v0.53.0 R104 사용자 지시] 13r_일별배분수익 — I★ 한 계좌(산업 + 잔여 다리)의 날짜별 총수익 · '비중 (그날 수익률)' · 색
+        try:
+            if S is not None and hasattr(S, "build_alloc_pnl_sheet"):
+                _bt = (alloc.get("bts") or {}).get(alloc.get("label_star"))
+                _tw = alloc["target_w"]
+                _co = pd.DataFrame(alloc.get("ret_co")).reindex(index=_tw.index, columns=_tw.columns)
+                _oc = pd.DataFrame(alloc.get("ret_oc")).reindex(index=_tw.index, columns=_tw.columns)
+                _rc = (1.0 + _co) * (1.0 + _oc) - 1.0
+                _nd = (tw_ind["날짜"].iloc[-1] if len(tw_ind) and str(tw_ind["구분"].iloc[-1]).startswith("예측") else None)
+                if isinstance(_bt, pd.DataFrame):
+                    sheets["13r_일별배분수익"] = S.build_alloc_pnl_sheet(_tw, _rc, _bt["strategy_ret"], next_day=_nd,
+                                                                      asset_order=list(_ind_cols) + list(_res_cols))
+        except Exception as _epn:   # noqa — 표시 전용
+            log("REPORT", kv(event="pnl_sheet_failed", layer="I", err=type(_epn).__name__, msg=str(_epn)[:160]), M=M, level="warning")
         # [v0.13.0 N1] 13f·13l·15는 '판정·상세' 계열 — 동결이면 생략한다(run()이 만들지 않는다).
         #   13·13b·13c·13c2·14는 위/아래에서 **항상** 쓴다(사용자 지시: 이 시트를 없애지 않는다).
         if isinstance(accept_df, pd.DataFrame) and len(accept_df):
