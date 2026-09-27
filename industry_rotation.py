@@ -1,5 +1,17 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.54.0 - 2026-09-27 - [R105 현금 이자 0(사용자 선택) · 13r 야간 분해 · 00P 주·월·분기 배수 · 00T 산업 상태판 — I★ 무변경]
+#    사용자 지시(2026-09-27): "결과 폴더에 업로드했으니 참고하고 프로그램의 목표대로 국면, 섹터, 산업, 주식별 현재 상태를 정확하게 파악하고 있는지 확인하고 예측도 제대로 하고 있는지 확인해 … 모든층에서 전체 수익배수로 하지말고 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단하도록하고 그리고 왜 거래에서 가지고 있는게 없는데 수익이 +0.016 같이 계속 늘어나는거는 잘못된거 아니야? 수정하고 예측이 힘들면 분할매수, 분할매도 전략을 잘 세워봐 적어도 물타기 할 때와 하지말아야 할 때, 손절 빨리해야될 때는 파악할 수 있잖아 그리고 상승,하락 정도도 잘 예측하고 있는지도 확인하고 개선해".
+#    ── R104 Kaggle 리포트 점검(현금 이자 포함 · 2018~) ── M 80.1/62.2 · S★ 73.9/86.3 · I★ 74.1/91.8 · K★ 70.4/121.4. 보유 0인 날 +0.016% = 3개월 국채
+#      이자(연 ~4%/252) · 보유 0인데 +1.29%(2026-09-16) = 시가 매도일의 야간 수익(표시 결함). 사용자 선택(AskUserQuestion): '이자 없음으로 계산'.
+#      이자를 빼면(R105 periods.py): M 78.6/60.6 · S★ 72.4/84.7 · I★ 72.6/90.2(높음 유지) · K★ 68.9/119.7(높음→중간) · 주 플러스 71%→50%(현금 주가
+#      이자로 플러스처럼 보였다). 월/분기 플러스(이자 0): M 67.6/85.7 · S 70.5/85.7 · I 66.7/85.7 · K 72.4/91.4 vs SPY 67.6/74.3 · 월 최악 K 0.891 vs SPY 0.875.
+#    ── R105 연구(r105/ · 코드 밖) ── 변동폭: ±1σ(½σ21+½σ63) 21일 적중 SPY 67.9% · 섹터 68.6% · 산업 68.8% · S&P 500 종목 68.4%(목표 68.3%) ·
+#      ±2σ 93~95%(꼬리 두꺼움) · M 현금일 다음 21일 −5% 급락 13.2% vs 전액일 5.4% · 실현 변동성 19.8% vs 13.4%. 물타기·손절(S&P 500 · 2010~ · 하락 19,317건):
+#      200일선 위·어닝 무관 하락 +0.62%(t 3.0 · 15/18년) · 어닝 하락 −0.16%(6/18년) · 분할매수 − 일괄 −0.57% · 층 단위 분할매매 네 층 칼마 ↓ → 즉시 체결 유지.
+#    (§1) IndustryConfig.CASH_INTEREST=False → rf_daily = None(I★·K 통로 모두 현금 수익 0). (§2) 13r = S v0.85.0 build_alloc_pnl_sheet(ret_co · ret_oc).
+#    (§3) r105_extra_sheets_i: 00P_기간별수익배수(I★·M·SPY) · 00T_산업상태판(29산업) · 00 줄(00U 줄 바로 아래). 시험 t105/test_r105.py.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.53.0 - 2026-09-27 - [R104 13r_일별배분수익 시트(I★ 한 계좌 날짜별 총수익 · 산업·잔여 다리별 '비중 (그날 수익률)' 색) — I★ 무변경]
 #    사용자 지시(2026-09-27): "야 한계를 뛰어 넘어야돼 … 현재 상태를 정확하게 파악 … 각 층의 일별배분대로 거래시 각 날짜별 총 수익과 개별 수익(비중 옆에 괄호로, 글짜 색깔도 넣기)을 시트에 표시하고 수정해 깃허브에 올려".
 #    (§1 표시 전용) build_industry_report: 13c2 옆에 13r — S.build_alloc_pnl_sheet(I★ target_w · 자산 수익 = (1+ret_co)(1+ret_oc)−1 ·
@@ -1927,7 +1939,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.53.0"
+VERSION = "v0.54.0"
 VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2873,6 +2885,8 @@ class IndustryConfig:
     OUT_XLSX_APPEND_VERSION: bool = True
     # [v0.52.0 R100 사용자 지시 "단일 섹터, 산업, 종목 예측 시트는 만들지마"] 산업별 01_일별_<산업> 시트 — 기본 끔(계산 무변경 · 표시만).
     REPORT_ASSET_DAILY_SHEETS: bool = False
+    # [v0.54.0 R105 사용자 선택] 백테스트 현금 이자 — 기본 끔(현금 수익 0). S v0.85.0 CASH_INTEREST와 같은 뜻. 켜기: i_overrides={"CASH_INTEREST": True}.
+    CASH_INTEREST: bool = False
     EXPORT_DAILY_CSV: bool = True
     DAILY_CSV_PATH: str = "industry_daily.csv"
     ALLOC_CSV_PATH: str = "industry_allocation_daily.csv"
@@ -12514,6 +12528,8 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
 
     rf_series = res.get("fred", {}).get("DGS3MO")
     rf_daily = None
+    if not bool(getattr(icfg, "CASH_INTEREST", False)):          # [v0.54.0 R105 사용자 선택] 현금 수익 0
+        rf_series = None
     if rf_series is not None and rf_series.notna().sum() > 100:
         rf_daily = (rf_series / 100.0 / 252.0).reindex(cal).ffill()
 
@@ -14098,6 +14114,49 @@ def _versioned_path(path: str, S=None, enabled: bool = True) -> str:
     return f"{root}_{VERSION}{ext or '.xlsx'}"
 
 
+def r105_extra_sheets_i(S, alloc: Optional[Dict[str, Any]], results: Optional[Dict[str, Any]], src: Dict[str, Any],
+                        M=None) -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
+    """[v0.54.0 R105 사용자 지시] I 리포트의 00P_기간별수익배수(I★ · M · SPY) · 00T_산업상태판(29산업) 시트와 00 줄(00P → 00T 순).
+    S v0.85.0 함수(build_period_sheet · build_asset_state_board)를 쓴다 — 없으면(구버전 S) 빈 결과. 각 부분 실패는 로그만."""
+    out: Dict[str, pd.DataFrame] = {}
+    lines: List[Tuple[str, str]] = []
+    if S is None:
+        return out, lines
+    if hasattr(S, "build_period_sheet") and alloc:
+        try:
+            bt = (alloc.get("bts") or {}).get(alloc.get("label_star"))
+            if isinstance(bt, pd.DataFrame) and src.get("spy_ret") is not None:
+                r5 = {f"★ I★ 라이브({str(alloc.get('label_star'))[:28]})": bt["strategy_ret"]}
+                if src.get("spy_m_ret") is not None:
+                    r5["M(SPY 국면전략)"] = src["spy_m_ret"]
+                pdf, pl = S.build_period_sheet(r5, src["spy_ret"], "산업")
+                out["00P_기간별수익배수"] = pdf
+                lines.extend(pl)
+        except Exception as e:
+            log("REPORT", kv(event="period_sheet_failed", layer="I", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+    if hasattr(S, "build_asset_state_board"):
+        try:
+            lv: Dict[str, pd.Series] = {}
+            rg: Dict[str, Any] = {}
+            for t, r in (results or {}).items():
+                if not isinstance(r, dict):
+                    continue
+                if r.get("ret_cc_full") is not None:
+                    lv[t] = (1.0 + pd.to_numeric(pd.Series(r["ret_cc_full"]), errors="coerce").fillna(0.0)).cumprod()
+                if r.get("state") is not None and len(pd.Series(r["state"]).dropna()):
+                    rg[t] = str(pd.Series(r["state"]).dropna().iloc[-1])
+            tw = (alloc or {}).get("target_w")
+            wt = {c: float(tw[c].iloc[-1]) for c in tw.columns} if isinstance(tw, pd.DataFrame) and len(tw) >= 2 else {}
+            hd = {c: float(tw[c].iloc[-2]) for c in tw.columns} if isinstance(tw, pd.DataFrame) and len(tw) >= 2 else {}
+            sb = S.build_asset_state_board(lv, names=INDUSTRY_NAME_KR, regime=rg, weight=wt, held=hd)
+            tdf, tl = S.build_asset_state_sheet(sb, "산업")
+            out["00T_산업상태판"] = tdf
+            lines.extend(tl)
+        except Exception as e:
+            log("REPORT", kv(event="state_board_failed", layer="I", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+    return out, lines
+
+
 def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[str] = None) -> str:
     icfg = ires.get("icfg", CFG)
     # [v0.45.0 R93] 설정에서 온 경로에만 버전을 붙인다(돌려주는 경로가 실제 파일 — 러너가 그대로 쓴다).
@@ -14160,8 +14219,12 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _rc = (1.0 + _co) * (1.0 + _oc) - 1.0
                 _nd = (tw_ind["날짜"].iloc[-1] if len(tw_ind) and str(tw_ind["구분"].iloc[-1]).startswith("예측") else None)
                 if isinstance(_bt, pd.DataFrame):
+                    # [v0.54.0 R105] 야간·장중 분해(시가에 판 날의 야간 수익 · 투자/현금 이자/비용 열) — S v0.85.0 함수
+                    import inspect as _insp
+                    _kw13 = ({"ret_co": _co, "ret_oc": _oc, "rf": alloc.get("rf_daily")}
+                             if "ret_co" in _insp.signature(S.build_alloc_pnl_sheet).parameters else {})   # S v0.84.0이면 옛 형식
                     sheets["13r_일별배분수익"] = S.build_alloc_pnl_sheet(_tw, _rc, _bt["strategy_ret"], next_day=_nd,
-                                                                      asset_order=list(_ind_cols) + list(_res_cols))
+                                                                      asset_order=list(_ind_cols) + list(_res_cols), **_kw13)
         except Exception as _epn:   # noqa — 표시 전용
             log("REPORT", kv(event="pnl_sheet_failed", layer="I", err=type(_epn).__name__, msg=str(_epn)[:160]), M=M, level="warning")
         # [v0.13.0 N1] 13f·13l·15는 '판정·상세' 계열 — 동결이면 생략한다(run()이 만들지 않는다).
@@ -15217,8 +15280,11 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 log("REPORT", kv(event="user_reliability_failed", err=type(_e).__name__, msg=str(_e)[:160],
                                  trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
                 _upk_i = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:120]}"}
-        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00R_신뢰도판정", "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교",
-                                   "00D_하락상승개선비교", "00E_산업상승확률")
+        # ---- [v0.54.0 R105 사용자 지시] 00P 기간별 수익배수(주·월·분기) · 00T 산업 상태판 — S v0.85.0 함수 · 줄은 00U 줄 바로 아래 ----
+        _x105, _r105_lines = r105_extra_sheets_i(S, alloc, results, ires.get("user_rel_src") or {}, M)
+        sheets.update(_x105)
+        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00T_산업상태판", "00R_신뢰도판정", "00B_수익곡선비교",
+                                   "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교", "00E_산업상승확률")
 
     # [v0.23.0 E4] 00A 존재 여부와 비중 합계를 00 시트에도 싣는다.
     _a0 = sheets.get("00A_수익비교")
@@ -15390,6 +15456,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                               "spy_m_pre96_ret": _src2.get("spy_m_pre96_ret"),
                               "spy_m_r98v1_ret": _src2.get("spy_m_r98v1_ret"),                  # [v0.50.0 R98]
                               "spy_m_r98vrp_ret": _src2.get("spy_m_r98vrp_ret")}, "sectors": results}   # [v0.47.0 R95 · v0.48.0 R96]
+            for _k, _v in reversed(list(locals().get("_r105_lines") or [])):     # [v0.54.0 R105] 00P·00T 줄 — 00U 줄 바로 아래
+                meta.insert(1, (_k, _v))
             for _k, _v in reversed(S.user_reliability_lines(_ps2, icfg, locals().get("_upk_i"), "산업")):
                 meta.insert(1, (_k, _v))
     except Exception as _e:

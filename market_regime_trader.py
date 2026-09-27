@@ -22,6 +22,21 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.69.0 - 2026-09-27 - [R105 현금 이자 0(사용자 선택) · 13r 야간 분해 · 00P 주·월·분기 배수 · 00T 시장 상태판 — 신호·목표비중 무변경]
+#    사용자 지시(2026-09-27): "결과 폴더에 업로드했으니 참고하고 프로그램의 목표대로 국면, 섹터, 산업, 주식별 현재 상태를 정확하게 파악하고 있는지 확인하고 예측도 제대로 하고 있는지 확인해 … 모든층에서 전체 수익배수로 하지말고 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단하도록하고 그리고 왜 거래에서 가지고 있는게 없는데 수익이 +0.016 같이 계속 늘어나는거는 잘못된거 아니야? 수정하고 예측이 힘들면 분할매수, 분할매도 전략을 잘 세워봐 적어도 물타기 할 때와 하지말아야 할 때, 손절 빨리해야될 때는 파악할 수 있잖아 그리고 상승,하락 정도도 잘 예측하고 있는지도 확인하고 개선해".
+#    ── R104 Kaggle 리포트 점검(현금 이자 포함 · 2018~) ── M 80.1/62.2 · S★ 73.9/86.3 · I★ 74.1/91.8 · K★ 70.4/121.4. 보유 0인 날 +0.016% = 3개월 국채
+#      이자(연 ~4%/252) · 보유 0인데 +1.29%(2026-09-16) = 시가 매도일의 야간 수익(표시 결함). 사용자 선택(AskUserQuestion): '이자 없음으로 계산'.
+#      이자를 빼면(R105 periods.py): M 78.6/60.6 · S★ 72.4/84.7 · I★ 72.6/90.2(높음 유지) · K★ 68.9/119.7(높음→중간) · 주 플러스 71%→50%(현금 주가
+#      이자로 플러스처럼 보였다). 월/분기 플러스(이자 0): M 67.6/85.7 · S 70.5/85.7 · I 66.7/85.7 · K 72.4/91.4 vs SPY 67.6/74.3 · 월 최악 K 0.891 vs SPY 0.875.
+#    ── R105 연구(r105/ · 코드 밖) ── 변동폭: ±1σ(½σ21+½σ63) 21일 적중 SPY 67.9% · 섹터 68.6% · 산업 68.8% · S&P 500 종목 68.4%(목표 68.3%) ·
+#      ±2σ 93~95%(꼬리 두꺼움) · M 현금일 다음 21일 −5% 급락 13.2% vs 전액일 5.4% · 실현 변동성 19.8% vs 13.4%. 물타기·손절(S&P 500 · 2010~ · 하락 19,317건):
+#      200일선 위·어닝 무관 하락 +0.62%(t 3.0 · 15/18년) · 어닝 하락 −0.16%(6/18년) · 분할매수 − 일괄 −0.57% · 층 단위 분할매매 네 층 칼마 ↓ → 즉시 체결 유지.
+#    (§1 계산 기준 · 사용자 선택) CASH_INTEREST=False(새 필드 · 캐시 무시 목록): run()의 rf_daily = None → 백테스트 현금 수익 0. 신호·지표·목표비중 무관.
+#    (§2 정정) build_alloc_pnl_sheet v2: 투자 수익(직전 비중×야간 + 그날 비중×장중) · 현금 이자 · 비용·기타 열 · 시가에 판 칸 '매도(시가) ← 직전 비중(야간 %)' ·
+#         ▲/▼(그날 늘림/줄임). (§3) period_consistency · build_period_sheet → 00P_기간별수익배수 · 꾸준함 등급(R105 사전등록: 높음 = 월+ ≥65% & 분기+ ≥85% &
+#         월·분기 최악 ≥ ×0.90 · 중간 = 월+ ≥55% & 분기+ ≥70% & 월 최악 ≥ ×0.85). (§4) 00T_시장상태판: SPY 추세·과매수/과매도·예상 범위 10~90%·±1σ 적중률 +
+#         regime_magnitude_table(목표비중 단계별 다음 21일 SPY 평균·하락·급락·급등·실현 변동성 · 전 이력/라이브 창). 00 줄 3개(버전 점검 다음).
+#    (§5) COMPANION_MIN_VERSIONS S v0.85.0 · I v0.54.0 · K v0.15.0. 시험 t105/test_r105.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.68.0 - 2026-09-27 - [R104 13r_일별배분수익 시트(날짜별 총수익 · 'SPY 비중 (그날 수익률)' 색) · 동반 버전 표 — 신호·목표비중 무변경]
 #    사용자 지시(2026-09-27): "야 한계를 뛰어 넘어야돼 … 현재 상태를 정확하게 파악 … 각 층의 일별배분대로 거래시 각 날짜별 총 수익과 개별 수익(비중 옆에 괄호로, 글짜 색깔도 넣기)을 시트에 표시하고 수정해 깃허브에 올려".
 #    (§1 표시 전용) build_alloc_pnl_sheet(): 행 = 그날 실제로 들고 있던 비중(= 전날 pos_target · 그날 시가 체결 = pos_exec) ·
@@ -3045,6 +3060,11 @@ class Config:
     #   덤: NFCI는 매주 과거 전체가 바뀌어 모든 경계 캐시 지문을 매주 깨뜨렸다 — 빼면 캐시가 주간 개정에 살아남는다.
     #   ⚠ 되돌리기(한 줄): m_overrides={"EXCLUDE_REVISED_HISTORY": False} ⇒ v1.61.0과 같은 신호.
     EXCLUDE_REVISED_HISTORY: bool = True
+    # [v1.69.0 R105 사용자 선택 · 계산 기준 변경(신호 무변경)] 백테스트 현금 이자. 사용자: "거래에서 가지고 있는게 없는데 수익이 +0.016 같이
+    #   계속 늘어나는거는 잘못된거 아니야?" → 확인: 버그가 아니라 현금에 3개월 국채 금리(DGS3MO/252)를 붙인 값이었다. 사용자 답
+    #   "이자 없음으로 계산" → 기본 False = 현금 수익 0(달러 현금을 계좌에 그냥 둔다). 신호·목표비중·지표 검증은 무관(백테스트 수익만).
+    #   True = 종전(현금을 초단기 국채 ETF에 둔다고 가정). 캐시 키 무시 목록에 있다(신호 무관).
+    CASH_INTEREST: bool = False
     # [v1.63.0 R95 ⚠⚠ 신호(사이징) 변경 — 사용자 지시 "4개 층 모두 회피 더 많이 올려 · 참여는 절대 떨어지면 안 돼"]
     #   generate_signals()가 끝난 **SPY 라이브 신호에만** 붙는 사이징 오버레이 3개(apply_r95_overlays).
     #   S·I의 섹터·산업 국면 모형(cfg_i로 generate_signals를 부름)에는 붙지 않는다 → 그 캐시·신호는 무변경(무시 목록).
@@ -7086,6 +7106,7 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "R98_MEASURE", "R98_RANGE_VOL", "R98_PK_WINDOW", "R98_PK_RATIO", "R98_PK_CUT_POS", "R98_NEUTRAL_CALM_SIGMA",
     "R98_NEUTRAL_CALM_POS", "R98_V1S_PK_RATIO", "R98_V1S_CALM_SIGMA", "R98_V1_NEIGHBORS", "R98_VRP_MEASURE",
     "R98_VRP_CUT_POS", "R98_VRP_REENTRY_POS", "R98_VRP_TOP_PCT", "R98_VRP_VOL_FALL_N", "R98_VRP_MIN_OBS",
+    "CASH_INTEREST",                                                                           # [v1.69.0 R105] 백테스트 현금 이자(신호 무관)
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -10292,81 +10313,503 @@ def apply_live_marks(w, wb, df: pd.DataFrame, name: str, live_marks: Optional[Di
     return n
 
 
-# [v1.68.0 R104 사용자 지시] 일별배분대로 거래할 때 날짜별 총수익 · 개별 수익(13r) — S·I·K와 같은 형식(M은 S에 의존하지 않으므로 사본).
-PNL_UP_COLOR = "#D00000"     # 상승 빨강(한국 증시 관례)
-PNL_DN_COLOR = "#0050D0"     # 하락 파랑
+# =============================================================================
+# [v1.69.0 R104 · R105 정정] 일별배분 수익 시트(13r) — 날짜별 총수익 · 개별 수익("비중 (수익률)" · 글자색)
+# =============================================================================
+#   R105 사용자 지적: "거래에서 가지고 있는게 없는데 수익이 +0.016 같이 계속 늘어나는거는 잘못된거 아니야?" — 두 가지였다:
+#     ① 보유 0인 날 +0.016% = 현금에 붙인 3개월 국채 이자 → 사용자 선택("이자 없음으로 계산")으로 이제 0. '현금 이자(%)' 열로 따로 보인다.
+#     ② 보유 0인데 +1.29% 같은 날 = **그날 시가에 판 날** — 전날 종가→그날 시가(야간)까지는 아직 들고 있었으므로 그 몫이 포트 수익에 들어간다.
+#        R104 표는 시가 뒤 비중만 보여 '보유 0인데 수익'처럼 보였다 → 이제 '매도(시가) ← 직전 비중 (야간 수익)'으로 적는다.
+#   열: 포트 일수익(%) = 투자 수익(%) + 현금 이자(%) + 비용·기타(%) · 투자 수익 = Σ(직전 비중 × 야간 수익 + 그날 비중 × 장중 수익).
+#   자산 칸: "비중 (그날 수익률)" · ▲ = 그날 시가에 늘림 · ▼ = 줄임 · 괄호 속 수익률만 색(상승 빨강 · 하락 파랑 · 0 회색 — 한국 증시 관례).
+#   맨 끝 행 = 다음 거래일 보유(수익 빈칸). 배분·성과 계산 무변경(표시 전용).
+PNL_UP_COLOR = "#D00000"
+PNL_DN_COLOR = "#0050D0"
 PNL_FLAT_COLOR = "#808080"
 
 
+def _pnl_parts(w: float, p: float, r: float, co: float):
+    """칸 하나 → (앞 글자, 색칠할 수익률(소수) 또는 None, 뒤 글자) · 빈 칸이면 None. 표 글자와 색 글자가 같은 규칙을 쓴다."""
+    if w > 1e-9:
+        mk = "▲" if w > p + 1e-6 else ("▼" if w < p - 1e-6 else "")
+        if r == r:
+            return (f"{mk}{w * 100:.2f}% (", float(r), ")")
+        return (f"{mk}{w * 100:.2f}%", None, "")
+    if p > 1e-9:
+        if co == co:
+            return (f"매도(시가) ← {p * 100:.2f}% (야간 ", float(co), ")")
+        return (f"매도(시가) ← {p * 100:.2f}%", None, "")
+    return None
+
+
+def _pnl_text(parts) -> str:
+    if parts is None:
+        return ""
+    a, v, b = parts
+    return a + (f"{v * 100:+.2f}%" if v is not None else "") + b
+
+
 def build_alloc_pnl_sheet(target_w: pd.DataFrame, ret_day: pd.DataFrame, port_ret: pd.Series,
-                          next_day: Optional[Any] = None, asset_order: Optional[List[str]] = None) -> pd.DataFrame:
-    """[v1.68.0 R104] 13r_일별배분수익 — 행 = 그날 실제로 들고 있던 비중(= 전날 목표 · 그날 시가 체결) · 셀 '비중 (그날 수익률)' ·
-    포트 일수익(%) = 체결 규칙 그대로의 전략 수익(시가 체결 · 비용 · 현금 이자) · 맨 끝 행 = 다음 거래일 보유 비중(수익 빈칸)."""
+                          next_day: Optional[Any] = None, asset_order: Optional[List[str]] = None,
+                          label_map: Optional[Dict[str, str]] = None, ret_co: Optional[pd.DataFrame] = None,
+                          ret_oc: Optional[pd.DataFrame] = None, rf: Optional[pd.Series] = None) -> pd.DataFrame:
+    """[v1.69.0] 13r_일별배분수익 — 날짜 · 구분 · 포트 일수익(%) · 투자 수익(%) · 현금 이자(%) · 비용·기타(%) · 누적 배수 · 보유 합계 · 현금 ·
+    자산별 '비중 (그날 수익률)'. target_w = t일 종가 확정 목표(t+1 시가 체결). ret_co/ret_oc(야간·장중)가 있으면 투자 수익을 체결 규칙 그대로 나눈다.
+    df.attrs['pnl_rich']가 있으면 엑셀 작성기가 괄호 속 수익률에 색을 입힌다(없어도 글자로는 읽힌다)."""
     tw = pd.DataFrame(target_w).copy()
     tw.index = pd.DatetimeIndex(tw.index)
     cols = [c for c in (asset_order or list(tw.columns)) if c in tw.columns]
     idx = tw.index
-    held = tw[cols].shift(1).fillna(0.0).astype(float)
+    T = tw[cols].astype(float).fillna(0.0)
+    held = T.shift(1).fillna(0.0)                 # 그날 시가 뒤 비중(= 전날 목표)
+    prev = T.shift(2).fillna(0.0)                 # 전날 종가 → 그날 시가(야간) 동안의 비중
     R = pd.DataFrame(ret_day).reindex(index=idx, columns=cols).astype(float)
+    if ret_co is not None and ret_oc is not None:
+        CO = pd.DataFrame(ret_co).reindex(index=idx, columns=cols).astype(float)
+        OC = pd.DataFrame(ret_oc).reindex(index=idx, columns=cols).astype(float)
+        ok = CO.notna() & OC.notna()
+        contrib = (prev * CO.fillna(0.0) + held * OC.fillna(0.0)).where(ok, held * R.fillna(0.0))
+    else:
+        CO = pd.DataFrame(np.nan, index=idx, columns=cols)
+        contrib = held * R.fillna(0.0)
+    inv = contrib.sum(axis=1)
+    cash = (1.0 - held.sum(axis=1)).clip(lower=0.0)
+    rfs = pd.Series(rf, dtype=float).reindex(idx).fillna(0.0) if rf is not None else pd.Series(0.0, index=idx)
+    ci = cash * rfs
     pr = pd.Series(port_ret, dtype=float).reindex(idx)
+    other = pr - inv - ci
     eq = (1.0 + pr.fillna(0.0)).cumprod()
     base = pd.DataFrame({"날짜": idx.date, "구분": "실적(그날 보유 · 그날 수익)", "포트 일수익(%)": (pr * 100.0).round(3).values,
-                         "누적 배수": eq.round(4).values, "보유 합계": held.sum(axis=1).round(4).values,
-                         "현금": (1.0 - held.sum(axis=1)).clip(lower=0.0).round(4).values})
-    W = held.to_numpy(dtype=float)
-    Rv = R.to_numpy(dtype=float)
+                         "투자 수익(%)": (inv * 100.0).round(3).values, "현금 이자(%)": (ci * 100.0).round(4).values,
+                         "비용·기타(%)": (other * 100.0).round(3).values, "누적 배수": eq.round(4).values,
+                         "보유 합계": held.sum(axis=1).round(4).values, "현금": cash.round(4).values})
+    W, P, Rv, COv = held.to_numpy(float), prev.to_numpy(float), R.to_numpy(float), CO.to_numpy(float)
     if next_day is not None and len(idx):
-        lw = tw[cols].iloc[-1].fillna(0.0).astype(float)
+        lw, lp = T.iloc[-1], held.iloc[-1]
         base = pd.concat([base, pd.DataFrame([{"날짜": pd.Timestamp(next_day).date(), "구분": "예측(다음 거래일 보유)", "포트 일수익(%)": np.nan,
-                                               "누적 배수": np.nan, "보유 합계": round(float(lw.sum()), 4),
-                                               "현금": round(max(0.0, 1.0 - float(lw.sum())), 4)}])], ignore_index=True)
-        W = np.vstack([W, lw.to_numpy(dtype=float)])
+                                               "투자 수익(%)": np.nan, "현금 이자(%)": np.nan, "비용·기타(%)": np.nan, "누적 배수": np.nan,
+                                               "보유 합계": round(float(lw.sum()), 4), "현금": round(max(0.0, 1.0 - float(lw.sum())), 4)}])],
+                         ignore_index=True)
+        W = np.vstack([W, lw.to_numpy(float)])
+        P = np.vstack([P, lp.to_numpy(float)])
         Rv = np.vstack([Rv, np.full(len(cols), np.nan)])
+        COv = np.vstack([COv, np.full(len(cols), np.nan)])
     txt: Dict[str, List[str]] = {}
     for j, c in enumerate(cols):
-        colv: List[str] = []
-        for i in range(W.shape[0]):
-            w = W[i, j]
-            if not (w > 1e-9):
-                colv.append("")
-                continue
-            r = Rv[i, j]
-            colv.append(f"{w * 100:.2f}% ({r * 100:+.2f}%)" if r == r else f"{w * 100:.2f}%")
-        txt[c] = colv
+        txt[(label_map or {}).get(c, c)] = [_pnl_text(_pnl_parts(W[i, j], P[i, j], Rv[i, j], COv[i, j])) for i in range(W.shape[0])]
     df = pd.concat([base.reset_index(drop=True), pd.DataFrame(txt)], axis=1)
-    df.attrs["pnl_rich"] = {"w": W, "r": Rv, "first_col": int(base.shape[1]), "ret_col": 2}
+    df.attrs["pnl_rich"] = {"w": W, "p": P, "r": Rv, "co": COv, "first_col": int(base.shape[1]), "ret_cols": [2, 3, 4, 5]}
     return df
 
 
 def render_pnl_rich(wb, ws, df: pd.DataFrame) -> int:
-    """[v1.68.0 R104] 13r 자산 칸 = '비중 (수익률)' 서식 문자열 — 괄호 속 수익률만 색(상승 빨강 · 하락 파랑 · 0 회색) · 포트 일수익 칸도 색."""
+    """[v1.69.0] 13r 자산 칸을 서식 문자열로 다시 쓴다 — 괄호 속 수익률만 색(상승 빨강 · 하락 파랑 · 0 회색) · 수익 열 4개도 부호 색. 반환: 서식 칸 수."""
     spec = getattr(df, "attrs", {}).get("pnl_rich") if df is not None else None
     if not spec:
         return 0
-    W, Rv, c0, rc = spec["w"], spec["r"], int(spec["first_col"]), int(spec.get("ret_col", 2))
+    W, Rv = spec["w"], spec["r"]
+    P = spec.get("p") if spec.get("p") is not None else W
+    COv = spec.get("co") if spec.get("co") is not None else np.full(W.shape, np.nan)
+    c0 = int(spec["first_col"])
+    rcs = list(spec.get("ret_cols") or [int(spec.get("ret_col", 2))])
     f_up = wb.add_format({"font_color": PNL_UP_COLOR, "bold": True})
     f_dn = wb.add_format({"font_color": PNL_DN_COLOR, "bold": True})
     f_fl = wb.add_format({"font_color": PNL_FLAT_COLOR})
     f_up_c = wb.add_format({"font_color": PNL_UP_COLOR, "num_format": "+0.000;-0.000;0.000"})
     f_dn_c = wb.add_format({"font_color": PNL_DN_COLOR, "num_format": "+0.000;-0.000;0.000"})
+    f_fl_c = wb.add_format({"font_color": PNL_FLAT_COLOR, "num_format": "+0.000;-0.000;0.000"})
     n = 0
     for i in range(W.shape[0]):
-        try:
-            pvf = float(df.iat[i, rc])
-        except (TypeError, ValueError):
-            pvf = float("nan")
-        if pvf == pvf:
-            ws.write_number(i + 1, rc, pvf, f_up_c if pvf > 0 else (f_dn_c if pvf < 0 else f_fl))
+        for rc in rcs:
+            try:
+                pvf = float(df.iat[i, rc])
+            except (TypeError, ValueError):
+                pvf = float("nan")
+            if pvf == pvf:
+                ws.write_number(i + 1, rc, pvf, f_up_c if pvf > 0 else (f_dn_c if pvf < 0 else f_fl_c))
         for j in range(W.shape[1]):
-            w = W[i, j]
-            if not (w > 1e-9):
+            parts = _pnl_parts(W[i, j], P[i, j], Rv[i, j], COv[i, j])
+            if parts is None or parts[1] is None:
                 continue
-            r = Rv[i, j]
-            if r == r:
-                fmt = f_up if r > 1e-12 else (f_dn if r < -1e-12 else f_fl)
-                ws.write_rich_string(i + 1, c0 + j, f"{w * 100:.2f}% (", fmt, f"{r * 100:+.2f}%", ")")
-                n += 1
+            a, v, b = parts
+            fmt = f_up if v > 1e-12 else (f_dn if v < -1e-12 else f_fl)
+            ws.write_rich_string(i + 1, c0 + j, a, fmt, f"{v * 100:+.2f}%", b)
+            n += 1
     return n
+
+
+# =============================================================================
+# [v1.69.0 R105 사용자 지시] 기간별 수익배수(주·월·분기) — "전체 수익배수로 하지말고 분기별, 월별, 주별 수익배수를 각각 측정해서
+#   꾸준하게 좋은 수치가 나오는지로 판단하도록"
+# =============================================================================
+#   기간 배수 = 그 기간 일수익의 복리(1 + r) 곱 · 첫·끝 조각 기간(예상 거래일의 60% 미만)은 뺀다.
+#   플러스 = 배수 > 1 · 보합(현금) = 배수 = 1(그 기간 내내 현금 — 현금 이자 0이라 정확히 1) · 마이너스 = 배수 < 1.
+#   꾸준함 등급(R105 사전등록 · 현금 이자 0 기준 · 숫자를 둥근 값으로 먼저 정했다):
+#     높음 = 월 플러스 ≥ 65% & 분기 플러스 ≥ 85% & 월 최악 ≥ 0.90(−10%) & 분기 최악 ≥ 0.90
+#     중간 = 월 플러스 ≥ 55% & 분기 플러스 ≥ 70% & 월 최악 ≥ 0.85(−15%) · 그 밖 = 낮음.
+#   (참고 R104 리포트 · 이자 0: SPY 단순보유 월 67.6% · 분기 74.3% · 월 최악 0.875 · 분기 최악 0.806 → 중간)
+PERIOD_FREQS: Tuple[Tuple[str, str, int], ...] = (("주", "W-FRI", 5), ("월", "ME", 21), ("분기", "QE", 63))
+PERIOD_GRADE_HIGH: Tuple[float, float, float, float] = (0.65, 0.85, 0.90, 0.90)
+PERIOD_GRADE_MID: Tuple[float, float, float] = (0.55, 0.70, 0.85)
+
+
+def _freq_alias(f: str) -> str:
+    try:
+        pd.tseries.frequencies.to_offset(f)
+        return f
+    except Exception:                               # pandas < 2.2 — ME/QE 대신 M/Q
+        return {"ME": "M", "QE": "Q"}.get(f, f)
+
+
+_PERIOD_CODE = {"W-FRI": "W-FRI", "ME": "M", "QE": "Q", "M": "M", "Q": "Q"}
+
+
+def period_multiples(r: pd.Series, freq: str, exp_days: int, min_frac: float = 0.6) -> pd.Series:
+    """일수익 → 기간(주·월·분기) 복리 배수(색인 = 기간 마지막 날). 거래일이 예상의 min_frac 미만인 조각 기간은 뺀다.
+    빠른 판: exp(Σ log(1+r)) · bincount — 신뢰도 함수가 여러 번 불러도 느려지지 않게(호출당 수 ms)."""
+    s = pd.to_numeric(pd.Series(r), errors="coerce").fillna(0.0)
+    if not len(s):
+        return pd.Series(dtype=float)
+    ix = pd.DatetimeIndex(s.index)
+    codes, uniq = pd.factorize(ix.to_period(_PERIOD_CODE.get(freq, freq)), sort=True)
+    lg = np.log1p(np.clip(s.to_numpy(dtype=float), -0.999999, None))
+    sums = np.bincount(codes, weights=lg, minlength=len(uniq))
+    cnt = np.bincount(codes, minlength=len(uniq))
+    out = pd.Series(np.exp(sums), index=uniq.to_timestamp(how="end").normalize())
+    return out[cnt >= max(1, int(exp_days * min_frac))].astype(float)
+
+
+def consistency_grade(d: Dict[str, Any]) -> str:
+    try:
+        mp, qp = float(d["월 플러스%"]) / 100.0, float(d["분기 플러스%"]) / 100.0
+        mw, qw = float(d["월 최악 배수"]), float(d["분기 최악 배수"])
+    except (KeyError, TypeError, ValueError):
+        return "-"
+    if not all(x == x for x in (mp, qp, mw, qw)):
+        return "-"
+    h, m_ = PERIOD_GRADE_HIGH, PERIOD_GRADE_MID
+    if mp >= h[0] and qp >= h[1] and mw >= h[2] and qw >= h[3]:
+        return "높음"
+    if mp >= m_[0] and qp >= m_[1] and mw >= m_[2]:
+        return "중간"
+    return "낮음"
+
+
+def period_consistency(r: pd.Series, bench: Optional[pd.Series] = None) -> Dict[str, Any]:
+    """[v1.69.0] 주·월·분기 배수의 꾸준함 — 플러스/보합/마이너스 비율 · 중앙 · 최악 · 하위 10% · 최고 · 벤치(SPY) 이긴 비율 · 벤치 하락 기간 평균."""
+    out: Dict[str, Any] = {}
+    for lab, f, n in PERIOD_FREQS:
+        a = period_multiples(r, f, n)
+        out[f"{lab} 기간수"] = int(len(a))
+        if not len(a):
+            continue
+        out[f"{lab} 플러스%"] = round(float((a > 1.0 + 1e-9).mean() * 100.0), 1)
+        out[f"{lab} 보합(현금)%"] = round(float(((a - 1.0).abs() <= 1e-9).mean() * 100.0), 1)
+        out[f"{lab} 마이너스%"] = round(float((a < 1.0 - 1e-9).mean() * 100.0), 1)
+        out[f"{lab} 중앙 배수"] = round(float(a.median()), 4)
+        out[f"{lab} 최악 배수"] = round(float(a.min()), 4)
+        out[f"{lab} 하위10% 배수"] = round(float(a.quantile(0.10)), 4)
+        out[f"{lab} 최고 배수"] = round(float(a.max()), 4)
+        if bench is not None:
+            b = period_multiples(bench, f, n).reindex(a.index)
+            okb = b.notna()
+            out[f"{lab} SPY 이긴%"] = (round(float((a[okb] >= b[okb] - 1e-12).mean() * 100.0), 1) if bool(okb.any()) else np.nan)
+            dn = okb & (b < 1.0)
+            out[f"{lab} SPY 하락 기간 평균 배수(전략/SPY)"] = (f"{a[dn].mean():.4f}/{b[dn].mean():.4f}" if bool(dn.any()) else "-")
+    out["꾸준함 등급"] = consistency_grade(out)
+    return out
+
+
+def period_line(lab: str, d: Dict[str, Any]) -> str:
+    def g(k, fmt="{:.1f}"):
+        v = d.get(k)
+        try:
+            return fmt.format(float(v)) if v is not None and float(v) == float(v) else "-"
+        except (TypeError, ValueError):
+            return "-"
+    return (f"{lab}: 주 +{g('주 플러스%')}%(보합 {g('주 보합(현금)%')}%) · 월 +{g('월 플러스%')}% · 분기 +{g('분기 플러스%')}% · "
+            f"월 중앙 ×{g('월 중앙 배수', '{:.3f}')} · 월 최악 ×{g('월 최악 배수', '{:.3f}')} · 분기 최악 ×{g('분기 최악 배수', '{:.3f}')} · "
+            f"월 SPY 이긴 {g('월 SPY 이긴%')}% · 꾸준함 **{d.get('꾸준함 등급', '-')}**")
+
+
+def build_period_sheet(rets: Dict[str, pd.Series], spy: pd.Series, title: str = "") -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v1.69.0] 00P_기간별수익배수 — A 요약(행마다 주·월·분기) · B 분기별 · C 월별 · D 주별 · E 연도별(첫 행 = 라이브 vs SPY)."""
+    sp = pd.to_numeric(pd.Series(spy), errors="coerce").fillna(0.0)
+    sp.index = pd.DatetimeIndex(sp.index)
+    parts: List[pd.DataFrame] = []
+    A = "A. 요약 — 주·월·분기 수익배수의 꾸준함(현금 이자 0 · 조각 기간 제외)"
+    rows = []
+    items = list(rets.items()) + [("SPY 단순보유(참고)", sp)]
+    summ: Dict[str, Dict[str, Any]] = {}
+    for lab, r in items:
+        rr = pd.to_numeric(pd.Series(r), errors="coerce").reindex(sp.index).fillna(0.0)
+        d = period_consistency(rr, sp)
+        summ[lab] = d
+        rows.append({"블록": A, "항목": lab, **d})
+    parts.append(pd.DataFrame(rows))
+    parts.append(pd.DataFrame([{"블록": A, "항목": "등급 기준(R105 사전등록)",
+                                "값": (f"높음 = 월 플러스 ≥ {PERIOD_GRADE_HIGH[0]:.0%} & 분기 플러스 ≥ {PERIOD_GRADE_HIGH[1]:.0%} & 월 최악 ≥ "
+                                      f"×{PERIOD_GRADE_HIGH[2]:.2f} & 분기 최악 ≥ ×{PERIOD_GRADE_HIGH[3]:.2f} · 중간 = 월 ≥ {PERIOD_GRADE_MID[0]:.0%} & "
+                                      f"분기 ≥ {PERIOD_GRADE_MID[1]:.0%} & 월 최악 ≥ ×{PERIOD_GRADE_MID[2]:.2f} · 그 밖 낮음. 보합(현금) = 그 기간 내내 현금(배수 정확히 1).")}]))
+    live_lab, live_r = (items[0][0], pd.to_numeric(pd.Series(items[0][1]), errors="coerce").reindex(sp.index).fillna(0.0)) if items else ("-", sp)
+    for blk, f, n, fmt in (("B. 분기별 배수", "QE", 63, "Q"), ("C. 월별 배수", "ME", 21, "M"), ("D. 주별 배수(금요일 마감)", "W-FRI", 5, "W"),
+                           ("E. 연도별 배수", "YE", 180, "Y")):
+        if f == "YE":
+            a = (1.0 + live_r).groupby(live_r.index.year).prod()
+            b = (1.0 + sp).groupby(sp.index.year).prod().reindex(a.index)
+            lab_ix = [str(x) for x in a.index]
+        else:
+            a = period_multiples(live_r, f, n)
+            b = period_multiples(sp, f, n).reindex(a.index)
+            if fmt == "Q":
+                lab_ix = [f"{d.year}-Q{(d.month - 1) // 3 + 1}" for d in a.index]
+            elif fmt == "M":
+                lab_ix = [d.strftime("%Y-%m") for d in a.index]
+            else:
+                lab_ix = [f"{d.date()} 주" for d in a.index]
+        if not len(a):
+            continue
+        dfb = pd.DataFrame({"블록": f"{blk} — {live_lab[:40]} vs SPY", "항목": lab_ix, "전략 배수": a.round(4).values,
+                            "SPY 배수": b.round(4).values, "차이(%p)": ((a - b) * 100.0).round(2).values,
+                            "전략": np.where(a > 1 + 1e-9, "플러스", np.where(a < 1 - 1e-9, "마이너스", "보합(현금)")),
+                            "SPY 이김": np.where(a >= b - 1e-12, "✓", "✗")})
+        parts.append(dfb.iloc[::-1])                  # 최근이 위
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    df.attrs["mult_cols"] = [c for c in df.columns if ("배수" in str(c) and "평균" not in str(c))]
+    lines: List[Tuple[str, str]] = []
+    if items:
+        lines.append((f"★★★ 꾸준함 — 주·월·분기 수익배수(R105 사용자 지시 · 현금 이자 0 · 세부 00P){(' · ' + title) if title else ''}",
+                      period_line(items[0][0][:40], summ[items[0][0]]) + " || " + period_line("SPY 단순보유", summ["SPY 단순보유(참고)"])
+                      + " — 전체 배수 한 숫자가 아니라 기간마다 꾸준히 좋은지로 본다. 연구·교육용, 투자 자문 아님."))
+    return df, lines
+
+
+def apply_mult_colors(wb, ws, df: pd.DataFrame) -> int:
+    """[v1.69.0] 00P의 배수 열 — 1 초과 빨강 · 1 미만 파랑(조건부 서식 · 값 무변경). 반환: 칠한 열 수."""
+    cols = list(getattr(df, "attrs", {}).get("mult_cols") or [])
+    if not cols or not len(df):
+        return 0
+    f_up = wb.add_format({"font_color": PNL_UP_COLOR})
+    f_dn = wb.add_format({"font_color": PNL_DN_COLOR})
+    n = 0
+    cl = list(df.columns)
+    for c in cols:
+        if c not in cl:
+            continue
+        j = cl.index(c)
+        ws.conditional_format(1, j, len(df), j, {"type": "cell", "criteria": ">", "value": 1.0000001, "format": f_up})
+        ws.conditional_format(1, j, len(df), j, {"type": "cell", "criteria": "between", "minimum": 0.0000001, "maximum": 0.9999999, "format": f_dn})
+        n += 1
+    return n
+
+
+# =============================================================================
+# [v1.69.0 R105] 자산 상태판(섹터·산업·시장 ETF) — "현재 상태를 정확하게 파악" · "상승,하락 정도도 잘 예측하고 있는지 확인"
+# =============================================================================
+#   자산마다(t일 종가까지 · 인과): 추세 국면(200일선·50일선·기울기) · 과매수/과매도(RSI14 · 볼린저 %B · 20일 가격 위치) · 예상 변동폭 ±1σ(21일) ·
+#   예상 범위 10%~90%(자기 이력의 z 분위 × σ — 꼬리가 두꺼운 만큼 넓다) · ±1σ 과거 적중률(최근 3년 완료분 · 목표 68.3%) · 변동성 수준 · 52주 고점 대비.
+#   R105 연구(r105/volcal.py · 2010~2026): ±1σ 적중 SPY 67.9% · 섹터 68.6% · 산업 68.8% · S&P 500 종목 68.4%(목표 68.3%) — 크기는 잘 맞춘다.
+#     ±2σ는 93~95%(목표 95.4%)라 큰 움직임이 정규분포보다 잦다 → 범위는 자기 이력 분위로 그린다.
+STATE_SIGMA_W: Tuple[int, int] = (21, 63)
+
+
+def _range_stats(close: pd.Series, h: int = 21) -> Dict[str, Any]:
+    """종가 → σ(½σ21 + ½σ63) · h일 ±1σ% · 자기 이력 z 분위(10·50·90%) 범위 · 최근 3년 ±1σ 적중률 · 변동성 3년 백분위."""
+    c = pd.to_numeric(pd.Series(close), errors="coerce").dropna()
+    out: Dict[str, Any] = {}
+    if len(c) < 80:
+        return out
+    r = c.pct_change()
+    sig = 0.5 * r.rolling(STATE_SIGMA_W[0], min_periods=15).std() + 0.5 * r.rolling(STATE_SIGMA_W[1], min_periods=45).std()
+    s_now = float(sig.iloc[-1]) if sig.notna().iloc[-1] else np.nan
+    out["sigma_d"] = s_now
+    out["band"] = s_now * np.sqrt(h) if s_now == s_now else np.nan
+    z = (c.shift(-h) / c - 1.0) / (sig * np.sqrt(h))
+    zc = z.dropna()                                           # 결과가 확정된 과거만(마지막 h일은 NaN)
+    if len(zc) >= 250:
+        zz = zc.iloc[-1260:]
+        q10, q50, q90 = (float(zz.quantile(q)) for q in (0.10, 0.50, 0.90))
+        out["q"] = (q10, q50, q90)
+        if s_now == s_now:
+            out["range"] = (q10 * out["band"], q50 * out["band"], q90 * out["band"])
+        z3 = zc.iloc[-756:]
+        out["hit1"] = float((z3.abs() <= 1.0).mean())
+        out["hit2"] = float((z3.abs() <= 2.0).mean())
+    sg = sig.dropna()
+    if len(sg) > 60 and s_now == s_now:
+        out["vol_pct"] = float((sg.iloc[-756:] < s_now).mean() * 100.0)
+    return out
+
+
+def _trend_state(c: pd.Series) -> str:
+    c = pd.to_numeric(pd.Series(c), errors="coerce").dropna()
+    if len(c) < 210:
+        return "-"
+    s200, s50 = c.rolling(200).mean(), c.rolling(50).mean()
+    up = float(c.iloc[-1]) > float(s200.iloc[-1])
+    slope = float(s200.iloc[-1] / s200.iloc[-22] - 1.0) if s200.notna().iloc[-22] else 0.0
+    if up and float(s50.iloc[-1]) > float(s200.iloc[-1]) and slope > 0:
+        return "상승추세"
+    if (not up) and slope < 0:
+        return "하락추세"
+    return "전환·횡보(200일선 " + ("위" if up else "아래") + ")"
+
+
+def _obos(c: pd.Series) -> Dict[str, Any]:
+    c = pd.to_numeric(pd.Series(c), errors="coerce").dropna()
+    d = c.diff()
+    up = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    dn = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rsi = float((100 - 100 / (1 + up / dn.replace(0, np.nan))).iloc[-1])
+    ma20, sd20 = c.rolling(20).mean(), c.rolling(20).std()
+    pb = float(((c - (ma20 - 2 * sd20)) / (4 * sd20).replace(0, np.nan)).iloc[-1])
+    hh, ll = c.rolling(14).max(), c.rolling(14).min()
+    sk = float(((c - ll) / (hh - ll).replace(0, np.nan)).iloc[-1] * 100)
+    n_ob = int((rsi >= 70) + (pb >= 1.0) + (sk >= 80))
+    n_os = int((rsi <= 30) + (pb <= 0.0) + (sk <= 20))
+    lab = ("과매수" if n_ob >= 2 else ("과매도" if n_os >= 2 else ("과매수 경향" if n_ob == 1 else ("과매도 경향" if n_os == 1 else "중립"))))
+    return {"rsi": rsi, "pb": pb, "sk": sk, "lab": lab}
+
+
+def build_asset_state_board(levels: Dict[str, pd.Series], names: Optional[Dict[str, str]] = None,
+                            regime: Optional[Dict[str, Any]] = None, weight: Optional[Dict[str, float]] = None,
+                            prob: Optional[Dict[str, float]] = None, held: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+    """[v1.69.0] 자산(ETF) 상태판 — levels: {티커: 총수익 가격 수준(일별)}. 측정·표시 전용(라이브 무영향)."""
+    names, regime, weight, prob, held = (dict(x or {}) for x in (names, regime, weight, prob, held))
+    rows = []
+    asof = None
+    for t, lv in levels.items():
+        c = pd.to_numeric(pd.Series(lv), errors="coerce").dropna()
+        if len(c) < 80:
+            continue
+        asof = c.index[-1] if asof is None else max(asof, c.index[-1])
+        ob = _obos(c)
+        rs = _range_stats(c)
+        rg = rs.get("range")
+        s200 = c.rolling(200).mean()
+        rows.append({"티커": t, "이름": names.get(t, t), "모형 국면": regime.get(t, "-"),
+                     "오늘 보유(t일)": (round(float(held[t]), 4) if t in held else None),
+                     "다음 거래일 목표비중": (round(float(weight[t]), 4) if t in weight else None),
+                     "모형 확률": (round(float(prob[t]), 3) if t in prob and prob[t] == prob[t] else None),
+                     "추세 국면": _trend_state(c),
+                     "200일선 대비(%)": (round(float(c.iloc[-1] / s200.iloc[-1] - 1) * 100, 1) if s200.notna().iloc[-1] else None),
+                     "52주 고점 대비(%)": round(float(c.iloc[-1] / c.iloc[-252:].max() - 1) * 100, 1),
+                     "RSI14": round(ob["rsi"], 1) if ob["rsi"] == ob["rsi"] else None,
+                     "볼린저 %B": round(ob["pb"], 2) if ob["pb"] == ob["pb"] else None,
+                     "20일 가격 위치(%)": round(ob["sk"], 1) if ob["sk"] == ob["sk"] else None, "과매수/과매도": ob["lab"],
+                     "예상 변동폭 21일(±1σ %)": (round(rs["band"] * 100, 1) if rs.get("band") == rs.get("band") and rs.get("band") is not None else None),
+                     "예상 범위 21일 10%~90%": (f"{rg[0] * 100:+.1f}% ~ {rg[2] * 100:+.1f}%" if rg else "-"),
+                     "예상 중앙 21일(%)": (round(rg[1] * 100, 1) if rg else None),
+                     "±1σ 과거 적중률(3년 · 목표 68%)": (round(rs["hit1"] * 100, 1) if "hit1" in rs else None),
+                     "±2σ 과거 적중률(3년 · 목표 95%)": (round(rs["hit2"] * 100, 1) if "hit2" in rs else None),
+                     "변동성 3년 백분위": (round(rs["vol_pct"], 0) if "vol_pct" in rs else None)})
+    if not rows:
+        return {"ok": False, "note": "가격 없음"}
+    T = pd.DataFrame(rows).set_index("티커")
+    return {"ok": True, "table": T, "asof": (str(pd.Timestamp(asof).date()) if asof is not None else "-"),
+            "hit1_mean": float(pd.to_numeric(T["±1σ 과거 적중률(3년 · 목표 68%)"], errors="coerce").mean())}
+
+
+def build_asset_state_sheet(sb: Dict[str, Any], layer: str) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v1.69.0] 00T 시트(A 읽는 법 · B 오늘 상태) · 00 줄."""
+    A = "A. 읽는 법 · 예측력(R105 · 2010~2026)"
+    parts = [pd.DataFrame([
+        {"블록": A, "항목": "예상 변동폭·범위", "값": ("σ = ½·σ21 + ½·σ63(일) → 21거래일 ±1σ√21. 범위 10%~90% = 자기 이력(최근 5년 · 결과 확정분) z 분위 × σ√21. "
+                                                 "R105 적중(±1σ 목표 68.3%): SPY 67.9% · 섹터 68.6% · 산업 68.8% · 종목 68.4% → 크기는 맞춘다 · "
+                                                 "±2σ는 93~95%(꼬리가 두꺼움) → 범위를 분위로 그린다.")},
+        {"블록": A, "항목": "시장 국면 × 변동폭", "값": ("M 현금(E=0)일 다음 21일 SPY −5% 이하 급락 13.2% · 실현 변동성 19.8% vs 전액(E=1) 5.4% · 13.4%(2018~ · R105) "
+                                                    "— 국면은 '얼마나 크게 떨어질 위험'을 가린다.")},
+        {"블록": A, "항목": "과매수/과매도", "값": "RSI14 ≥ 70 · %B ≥ 1 · 20일 가격 위치 ≥ 80 중 2개 = 과매수(반대 = 과매도 · 1개 = 경향) — 수익 예측 근거는 약하다(R104: 21일 IC ≈ 0) · 상태 설명용."},
+        {"블록": A, "항목": "추세 국면", "값": "상승추세 = 200일선 위 & 50일선 > 200일선 & 200일선 상승 · 하락추세 = 200일선 아래 & 200일선 하락 · 그 밖 전환·횡보."}])]
+    lines: List[Tuple[str, str]] = []
+    if not sb.get("ok"):
+        parts.append(pd.DataFrame([{"블록": "B. 오늘 상태", "항목": "상태", "값": f"산출 안 됨 — {sb.get('note', '-')}"}]))
+        lines.append((f"★★ {layer} 상태판", f"산출 안 됨 — {sb.get('note', '-')}"))
+    else:
+        T = sb["table"].copy()
+        T.insert(0, "항목", T.index)
+        parts.append(T.reset_index(drop=True).assign(블록=f"B. 오늘 상태(기준일 {sb.get('asof')} · 측정 · 투자 권유 아님)"))
+        seg = []
+        for t, r in sb["table"].iterrows():
+            seg.append(f"{t} {r['추세 국면'][:4]}·{r['과매수/과매도']}·21일 {r['예상 범위 21일 10%~90%']}")
+        lines.append((f"★★ {layer} 상태판(기준일 {sb.get('asof')} · 추세·과매수/과매도·예상 범위 · 세부 00T)",
+                      " | ".join(seg[:14]) + f" — ±1σ 과거 적중률 평균 {sb.get('hit1_mean', float('nan')):.1f}%(목표 68.3%) · 투자 권유 아님"))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    return df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]], lines
+
+
+def regime_magnitude_table(target_pos: pd.Series, px: pd.Series, h: int = 21,
+                           sig_start: str = "2018-01-01") -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v1.69.0 R105 사용자 지시 "상승,하락 정도도 잘 예측하고 있는지도 확인"] M 목표비중 단계별 다음 h거래일 SPY(총수익) 분포 —
+    평균 · 중앙 · 하락 확률 · −5% 이하 급락 확률 · +5% 이상 급등 확률 · 실현 변동성(연율) · 최악. 전 이력 · 라이브 창(SIGNAL_START~) 따로.
+    t일 목표비중(t일 종가 확정)과 t 종가 → t+h 종가 수익을 짝지운다(목표비중은 과거만 쓴다 · 결과는 채점용)."""
+    tp = pd.to_numeric(pd.Series(target_pos), errors="coerce")
+    c = pd.to_numeric(pd.Series(px), errors="coerce").dropna()
+    fwd = c.shift(-h) / c - 1.0
+    rv = c.pct_change()[::-1].rolling(h, min_periods=max(5, h // 2)).std()[::-1].shift(-1) * np.sqrt(252.0)
+    D = pd.DataFrame({"E": tp.reindex(c.index), "f": fwd, "rv": rv}).dropna()
+    bins = [(-0.01, 0.01, "0(현금 · 위험회피/감축)"), (0.01, 0.5, "0~0.5(작게)"), (0.5, 0.99, "0.5~0.99(부분)"), (0.99, 9.0, "1 이상(전액)")]
+    rows = []
+    for win, a in (("전 이력", None), (f"라이브 창({str(sig_start)[:4]}~)", pd.Timestamp(sig_start))):
+        d0 = D if a is None else D[D.index >= a]
+        for lo, hi, lab in bins:
+            g = d0[(d0["E"] > lo) & (d0["E"] <= hi)]
+            if len(g) < 20:
+                continue
+            rows.append({"블록": f"C. 국면(목표비중) 단계별 다음 {h}거래일 SPY — {win}", "항목": lab, "일수": int(len(g)),
+                         f"평균 {h}일(%)": round(float(g["f"].mean()) * 100, 2), f"중앙 {h}일(%)": round(float(g["f"].median()) * 100, 2),
+                         "하락 확률(%)": round(float((g["f"] < 0).mean()) * 100, 1), "−5% 이하 급락(%)": round(float((g["f"] <= -0.05).mean()) * 100, 1),
+                         "+5% 이상 급등(%)": round(float((g["f"] >= 0.05).mean()) * 100, 1),
+                         "실현 변동성(연율 %)": round(float(g["rv"].mean()) * 100, 1), f"최악 {h}일(%)": round(float(g["f"].min()) * 100, 1)})
+    T = pd.DataFrame(rows)
+    lines: List[Tuple[str, str]] = []
+    if len(T):
+        L = T[T["블록"].str.contains("라이브 창")]
+        L = L if len(L) else T
+        z, one = L[L["항목"].str.startswith("0(")], L[L["항목"].str.startswith("1 이상")]
+        if len(z) and len(one):
+            z, one = z.iloc[0], one.iloc[0]
+            lines.append((f"★★ M 국면이 '얼마나 크게'도 가리나(다음 {h}일 SPY · 라이브 창 · 세부 00T C)",
+                          f"현금(E=0)일 {int(z['일수'])}일: 평균 {z[f'평균 {h}일(%)']:+.2f}% · 하락 확률 {z['하락 확률(%)']:.1f}% · −5% 이하 급락 "
+                          f"{z['−5% 이하 급락(%)']:.1f}% · 실현 변동성 {z['실현 변동성(연율 %)']:.1f}% || 전액(E≥1)일 {int(one['일수'])}일: 평균 "
+                          f"{one[f'평균 {h}일(%)']:+.2f}% · 하락 {one['하락 확률(%)']:.1f}% · 급락 {one['−5% 이하 급락(%)']:.1f}% · 변동성 "
+                          f"{one['실현 변동성(연율 %)']:.1f}% — 급락 확률·변동성 차이가 '하락 정도' 예측력이다(평균 수익 차이보다 크다). 연구·교육용, 투자 자문 아님."))
+    return T, lines
+
+
+def r105_extra_sheets_m(res: dict, sig: pd.DataFrame, cfg: Config = CFG) -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
+    """[v1.69.0 R105 사용자 지시] M 리포트의 00P_기간별수익배수(M · SPY) · 00T_시장상태판(SPY 상태 + 국면 단계별 다음 21일 크기) 시트와 00 줄.
+    각 부분 실패는 로그만(신호·성과 무영향)."""
+    out: Dict[str, pd.DataFrame] = {}
+    lines: List[Tuple[str, str]] = []
+    try:
+        bt5 = res["bt"]
+        pdf, pl = build_period_sheet({"★ M(SPY 국면전략) 라이브": bt5["strategy_ret"]}, bt5["bh_ret"], "시장")
+        out["00P_기간별수익배수"] = pdf
+        lines.extend(pl)
+    except Exception as e:   # noqa — 표시 전용
+        log("REPORT", kv(event="period_sheet_failed", layer="M", err=type(e).__name__, msg=str(e)[:160]), "warning")
+    try:
+        px5 = res.get("px_adj")
+        if px5 is None:
+            pr5 = res["price"]
+            px5 = pr5["Adj Close"] if "Adj Close" in pr5.columns else pr5["Close"]
+        tpf = pd.to_numeric(sig["target_pos"], errors="coerce")
+        st_last = sig["state"].dropna().iloc[-1] if "state" in sig.columns and len(sig["state"].dropna()) else "-"
+        sb = build_asset_state_board({"SPY": pd.Series(px5).dropna()}, names={"SPY": "S&P500"},
+                                     regime={"SPY": str(_NEXT_DAY_STATE_KR.get(str(st_last), st_last))},
+                                     weight={"SPY": float(tpf.dropna().iloc[-1])},
+                                     held={"SPY": float(pd.to_numeric(res["bt"]["pos_exec"], errors="coerce").iloc[-1])})
+        tdf, tl = build_asset_state_sheet(sb, "시장(SPY)")
+        mg, ml = regime_magnitude_table(tpf, pd.Series(px5), sig_start=getattr(cfg, "SIGNAL_START", "2018-01-01"))
+        out["00T_시장상태판"] = pd.concat([tdf, mg], ignore_index=True, sort=False)
+        lines.extend(tl + ml)
+    except Exception as e:   # noqa — 표시 전용
+        log("REPORT", kv(event="state_board_failed", layer="M", err=type(e).__name__, msg=str(e)[:160]), "warning")
+    return out, lines
 
 
 def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
@@ -10445,6 +10888,11 @@ def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
                     log("REPORT", kv(event="pnl_sheet_rendered", sheet=name, rich_cells=_nr))
                 except Exception as _epr:   # noqa
                     log("REPORT", kv(event="pnl_sheet_render_failed", sheet=name, err=type(_epr).__name__, msg=str(_epr)[:120]), "warning")
+            if getattr(df, "attrs", {}).get("mult_cols"):           # [v1.69.0 R105] 00P 배수 열 — 1 초과 빨강 · 1 미만 파랑
+                try:
+                    apply_mult_colors(wb, w, df)
+                except Exception as _emc:   # noqa — 색만
+                    log("REPORT", kv(event="mult_colors_failed", sheet=name, err=type(_emc).__name__), "warning")
 
         # ---- 자산곡선 차트 ----
         if "01_일별기록" in sheets and len(sheets["01_일별기록"]) > 0:
@@ -10673,7 +11121,9 @@ def run(cfg: Config = CFG) -> dict:
 
     # 현금 수익률(3개월 국채)
     rf_daily = None
-    if "DGS3MO" in fred and fred["DGS3MO"].notna().sum() > 100:
+    if not bool(getattr(cfg, "CASH_INTEREST", False)):          # [v1.69.0 R105 사용자 선택] 현금 수익 0
+        log("DATA", kv(event="cash_yield_off", note="현금 이자 0(사용자 선택 R105) — 켜기 m_overrides={'CASH_INTEREST': True}"))
+    elif "DGS3MO" in fred and fred["DGS3MO"].notna().sum() > 100:
         rf_daily = (fred["DGS3MO"] / 100.0 / 252.0).reindex(cal).ffill().fillna(0.0)
         log("DATA", kv(event="cash_yield_ready", avg_annual=float(fred['DGS3MO'].mean() / 100)))
     t_dataprep_done = time.time()
@@ -12050,10 +12500,17 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             _last = pd.to_datetime(daily["날짜"].iloc[-1], errors="coerce")
             if _last == _last and _last > pd.Timestamp(_bt13.index[-1]):
                 _nd13 = _last
-        sheets["13r_일별배분수익"] = build_alloc_pnl_sheet(pd.DataFrame({"SPY": _tp13}), pd.DataFrame({"SPY": _bt13["ret_cc"]}),
-                                                     _bt13["strategy_ret"], next_day=_nd13)
+        # [v1.69.0 R105] 야간·장중 분해(시가에 판 날의 야간 수익 · 투자/현금 이자/비용 열) — run_backtest 정의 그대로
+        sheets["13r_일별배분수익"] = build_alloc_pnl_sheet(
+            pd.DataFrame({"SPY": _tp13}), pd.DataFrame({"SPY": _bt13["ret_cc"]}), _bt13["strategy_ret"], next_day=_nd13,
+            ret_co=(pd.DataFrame({"SPY": _bt13["ret_co"]}) if "ret_co" in _bt13.columns else None),
+            ret_oc=(pd.DataFrame({"SPY": _bt13["ret_oc"]}) if "ret_oc" in _bt13.columns else None),
+            rf=(res.get("rf_daily") if bool(getattr(cfg, "CASH_INTEREST", False)) else None))
     except Exception as _e13:   # noqa — 표시 전용
         log("REPORT", kv(event="pnl_sheet_failed", layer="M", err=type(_e13).__name__, msg=str(_e13)[:160]), "warning")
+    # [v1.69.0 R105 사용자 지시] 00P 기간별 수익배수(주·월·분기) · 00T 시장 상태판(SPY 상태 + 국면 단계별 다음 21일 크기) — 00 줄은 버전 점검 다음
+    _x105, _r105_m_lines = r105_extra_sheets_m(res, sig, cfg)
+    sheets.update(_x105)
     # [v1.53.0 F5 ★] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이
     #   있다")를 **M 자신에게도** 적용한다. 그동안 S 리포트에서 우회 계산으로만 보이던 값이다(REPORT47 §2.2:
     #   SPY h=21 현금 기준 MCC +0.160 · '상승 아님' +0.187 — M은 소수 클래스에 정보가 있고 섹터 재추정이
@@ -12174,6 +12631,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         #   상수에서 읽어 다시는 어긋나지 않게 한다 — 신호·가중치·성과는 **비트 동일**(표시만 바뀐다).
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
+        *_r105_m_lines,                                                          # [v1.69.0 R105] 꾸준함(00P) · 시장 상태판(00T)
         ("★★★ R99 판정 — R97 가드 되돌림(M2 · ⚠ 신호) · V1 닫음 · VRP 닫음 · M5(V1강) 검증", _r99_note(res)),   # [v1.67.0 R99]
         ("R98 측정 열(라이브 무변경 · V1 흔들림 확인용 · R100 제거 예정) — V1 · V1강 · 이웃 문턱", _r98_note(res)),
         ("★★★ R96 회피↑·참여↑ — 부분 노출일 변동성 관리(⚠ 신호 변경)", _r96_note(res)),
@@ -12434,6 +12892,8 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
     # [v1.61.0 R93] 파일명 끝에 코드 버전(사용자 지시) — 돌려주는 경로가 실제 파일이다(러너는 이 값을 그대로 쓴다).
     _out = versioned_report_path(cfg.OUT_XLSX, BUNDLE_VERSION, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
+    _front5 = [n for n in ("00P_기간별수익배수", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105] 00 바로 뒤
+    sheets = {**{n: sheets[n] for n in _front5}, **{k: v for k, v in sheets.items() if k not in _front5}}
     write_excel(_out, sheets, bt, meta, cfg,
                 live_marks={"06_성과요약": ("전략", "복합지표 전략")})
     log("REPORT", kv(event="report_ready", file=_out, rows_daily=len(daily),
@@ -12493,13 +12953,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.68.0"
+BUNDLE_VERSION = "v1.69.0"
 BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.84.0", "industry_rotation": "v0.53.0", "stock_regime": "v0.14.0"}   # [v1.68.0 R104]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.85.0", "industry_rotation": "v0.54.0", "stock_regime": "v0.15.0"}   # [v1.69.0 R105]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
