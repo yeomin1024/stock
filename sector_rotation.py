@@ -17,6 +17,16 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.87.0 - 2026-09-27 - [R108 주력 섹터 동적 선택 측정 행 · 00L 블록 E(급락 조기 감지·동적 주력 시험 근거) — S★ 무변경]
+#    사용자 지시(2026-09-27): "그래 그렇게 수정해보고 시장 급락을 더 일찍 알아채는 M 개선도 진행해"(앞 질문 "국면이 중립에 가까우면 섹터 방향은 어떻게
+#      결정하는건데" → 주력을 XLK로 고정하지 않고 그때그때 가장 강한 섹터로 바꾸는 구조를 시험).
+#    ── R108 연구(r108/ · 코드 밖 · 이자 0) ── S v0.86.0 리포트(01Z 섹터 국면 · 13c ★ 비중·순위)로 ★를 재구성(L1 오차 0.014 · 잔차 = 중립채움 등 그대로)해
+#      주력 동적 6안 비교: 배수 16.1 → 3.9~13.8 · 참여 0.85 → 0.49~0.81 · 칼마 3.69 → 1.43~3.02 → 전부 무하락 ✗. 긴 역사(2000~2026 섹터 SPDR):
+#      닷컴 붕괴 구간만 동적 우위(1.12~1.26 vs 0.65배) · 2009~2017 · 2018~2026은 XLK 고정 우위 → **라이브 무변경(XLK 고정 유지)**.
+#    (§1 측정) _build_primary(pri_dyn_) — 그날 주력·대피처(복합순위 1위 · 그날 주력 제외)를 일별로(None이면 종전과 비트 동일) · SectorConfig
+#         R108_PRIMARY_DYNAMIC_GRID(True) · R108_PRIMARY_DYN_MIN_HOLD(63) → 13_섹터배분전략 [주력동적격자·측정] 1행(12-1개월 수익 1위). S 필드는 캐시 키 무관.
+#    (§2 공통 원본) LOSS_RESEARCH_R108(6행) · build_loss_period_sheet 블록 E · 00 줄 문구. M·K 사본 동일.
+#    (§3) LAYER_MIN_VERSIONS M v1.71.0 · S v0.87.0 · I v0.55.0(I 무변경). 시험 t108/test_r108.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.86.0 - 2026-09-27 - [R106 00Q 섹터별 주·월·분기 배수 · 00L 손실 기간 분석 · 00U 손실 비율 열 · 95% 범위 · 국면 한글 — S★ 무변경]
 #    사용자 지시(2026-09-27): "결과 폴더에 업로드했으니 참고하고 … 국면, 섹터, 산업, 주식별 현재 상태를 정확하게 파악하고 있는지 확인하고 예측도 제대로 하고 있는지 확인해 … 섹터,산업,주식별로 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단하도록하고 상승,하락 정도도 잘 예측하고 있는지도 확인하고 문제 있으면 개선해 그리고 모든 나눠진 수익배수는 최대한 수익을 내야하고 절대로 손해를 봐서는 안돼 손해를 본 부분은 왜그런지 분석해서 개선하도록 해".
 #    ── R105 Kaggle 리포트 점검(현금 이자 0 · 2018~) ── 손실 주/월/분기: M 122/23/5 · S★ 114/20/5 · I★ 115/24/5 · K★ 112/18/3(SPY 193/34/9 · 456/105/35 중).
@@ -3054,7 +3064,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.86.0"
+VERSION = "v0.87.0"
 VERSION_DATE = "2026-09-27"
 
 # =============================================================================
@@ -3822,6 +3832,12 @@ class SectorConfig:
     R99_M5_USER_CONSENT: bool = False
     R99_SHELTER_RISKMOM: bool = True
     R99_SHELTER_MOM_WIN: int = 21
+    # [v0.87.0 R108 · 측정 전용] 주력 섹터 동적 선택 — 사용자 요청 "주력을 XLK로 고정하지 말고 그때그때 가장 강한 섹터로".
+    #   주력 = 그날 보유 가능(자기 국면 하락 아님 · 적격) 섹터 중 12-1개월 수익(t−252 → t−21 종가) 1위 · 최소 R108_PRIMARY_DYN_MIN_HOLD일 보유
+    #   (현 주력이 보유 불가가 되면 즉시 교체) · 상한·대피처·나머지 경로는 ★와 같다. 13_섹터배분전략 [주력동적격자·측정] 1행.
+    #   R108 오프라인(2018~ 라이브 재구성): 배수 16.1 → 7.9 · 참여 0.85 → 0.62 · 회피 0.72 → 0.88 · 분기 손실 14.3 → 8.6% → 무하락 ✗(라이브 XLK 유지).
+    R108_PRIMARY_DYNAMIC_GRID: bool = True
+    R108_PRIMARY_DYN_MIN_HOLD: int = 63
     SECTOR_SELF_CUT_Q: float = 1.0 / 3.0        # 하위 몇 분위를 깎는가(0.25/0.33/0.5를 격자가 함께 잰다)
     SECTOR_SELF_CUT_FRAC: float = 0.25          # ⚠ 깎는 폭(0.25/0.50/1.00을 격자가 함께 잰다)
     SECTOR_SELF_CUT_CONTROLS: int = 12          # 같은 개수 무작위 대조군 행 수(0이면 끔) — 13 시트에서 직접 판정
@@ -8696,7 +8712,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.70.0", "sector_rotation": "v0.86.0", "industry_rotation": "v0.55.0"}   # [v0.86.0 R106]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.71.0", "sector_rotation": "v0.87.0", "industry_rotation": "v0.55.0"}   # [v0.87.0 R108]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -11928,7 +11944,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                            shelter_def_: Optional[float] = None, disp_pct_: Optional[float] = None,
                            disp_invert_: Optional[bool] = None, neutral_leader_: Optional[float] = None,
                            neutral_cap_: Optional[float] = None, regime_src_: Optional[str] = None,
-                           shelter_rule_: Optional[str] = None):
+                           shelter_rule_: Optional[str] = None, pri_dyn_: Optional[pd.Series] = None):
             _bm = _beta_mult(float(getattr(scfg, "ROTATION_BETA_SCALE", 0.0) or 0.0)
                              if bscale_ is None else float(bscale_))
             _mode = str(getattr(scfg, "ROTATION_BETA_MODE", "trim") if bmode_ is None else bmode_)
@@ -11977,6 +11993,22 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                           if _shr in ("votes2", "votes2_nonup") else np.zeros(len(eval_idx), dtype=int))
             # [v0.80.0 R99 N6-c] 대피처 후보를 '위험점수↓·1개월 모멘텀↑ 1위'로 바꾼다(그 밖 경로 — 방어대피처·리더·균등 — 는 그대로).
             _alt_use = (_risk_mom_alt(_h_eff, _e_eff, _rs) if _shr == "risk_mom1" else _alt)
+            # [v0.87.0 R108 · 측정 전용] 동적 주력 — 그날 주력(_p_d)과 대피처(복합순위 1위 · 그날 주력 제외)를 일별로 바꾼다.
+            #   pri_dyn_=None(라이브·다른 격자 전부)이면 _p_d == _pri라 종전과 비트 동일.
+            _pd_arr = None
+            if pri_dyn_ is not None:
+                _pd_arr = pd.Series(pri_dyn_).reindex(eval_idx).where(lambda s_: s_.isin(list(_h_eff.columns)), _pri).astype(object).to_numpy()
+                _rk_all = rank_pos.reindex(index=eval_idx, columns=[c for c in cols if c in rank_pos.columns]).astype(float)
+                _rk_v = _rk_all.to_numpy(copy=True)
+                _rk_c = list(_rk_all.columns)
+                for _i_p, _p_p in enumerate(_pd_arr):
+                    if _p_p in _rk_c:
+                        _rk_v[_i_p, _rk_c.index(_p_p)] = np.nan
+                _alt_use = pd.Series(index=eval_idx, dtype=object)
+                _has_rk = ~np.isnan(_rk_v).all(axis=1)
+                if bool(_has_rk.any()):
+                    _jmin = np.where(np.isnan(_rk_v), np.inf, _rk_v).argmin(axis=1)
+                    _alt_use.iloc[np.flatnonzero(_has_rk)] = np.array(_rk_c, dtype=object)[_jmin[_has_rk]]
             # [v0.60.0 R72 §3b(2) 성능 — 결과 비트 동일] 일별 루프의 `.loc[_d, c]` 스칼라 읽기/쓰기 13곳을 numpy 위치
             #   인덱싱으로 바꿨다(루프 구조·분기·부동소수 연산 순서는 한 줄도 바꾸지 않음 — 같은 float64 값에 같은 순서로
             #   같은 연산). 행은 eval_idx 순서로 맞춘 사본(.loc[eval_idx])에서, 열은 이름→위치 dict로 찾는다(없는 열은
@@ -11994,7 +12026,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             F = np.zeros((len(eval_idx), len(all_cols)), dtype=float)
             n_pri_ = n_alt_ = n_eq_ = n_def_ = n_dg_ = n_nl_ = n_nc_ = n_sh_ = 0
             for _i_d, _d in enumerate(eval_idx):
-                _pri_ok = bool(_H[_i_d, _ci_h[_pri]]) if _pri in _ci_h else False
+                _p_d = _pri if _pd_arr is None else str(_pd_arr[_i_d])      # [v0.87.0 R108] 그날 주력
+                _pri_ok = bool(_H[_i_d, _ci_h[_p_d]]) if _p_d in _ci_h else False
                 _a = _alt_use.get(_d)
                 _a_ok = (isinstance(_a, str) and _a in _ci_h and bool(_H[_i_d, _ci_h[_a]])
                          and bool(_E[_i_d, _ci_e[_a]]) if _a in _ci_e else False)
@@ -12007,8 +12040,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 _pri_w = 0.0
                 if _pri_ok:
                     # [v0.29.0] 베타 승수(≤1)만큼 덜 담는다 — 시장위험을 E_t에 맞춘다. scale=0이면 1.0.
-                    _pri_w = _share * float(_B[_i_d, _ci_b[_pri]])
-                    F[_i_d, _ci_f[_pri]] = _pri_w; n_pri_ += 1
+                    _pri_w = _share * float(_B[_i_d, _ci_b[_p_d]])
+                    F[_i_d, _ci_f[_p_d]] = _pri_w; n_pri_ += 1
                 # [v0.30.0] "redeploy"면 베타로 깎인 만큼(_share - _pri_w)을 대피처 몫에 얹는다 —
                 #   명목 노출은 E_t에 두고 포트폴리오 베타만 낮춘다. "trim"이면 종전대로 현금으로 남긴다.
                 _rest = (1.0 - _pri_w) if (_mode == "redeploy") else (1.0 - _share)
@@ -12017,6 +12050,8 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     #   전량 대피일(_pri_ok=False)에는 적용하지 않는다 — 그 날 슬리브는 분산이 아니라
                     #   유일한 수익원이므로 순위 규칙이 맞다. _sdef=0이면 아래 두 줄은 무효과다.
                     _dc = _dalt.get(_d) if (_sdef > 0 and _pri_ok) else None
+                    if _dc == _p_d:                                          # [v0.87.0 R108] 동적 주력과 겹치면 방어 대피처 생략
+                        _dc = None
                     _r_def = _rest * _sdef if isinstance(_dc, str) else 0.0
                     _rest = _rest - _r_def
                     if _r_def > 1e-12:
@@ -12024,7 +12059,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 # [v0.41.0 S-B] 중립 국면 리더 슬롯 — 방어 대피처 몫을 뗀 뒤, 순위 1위/균등 분기보다 먼저.
                 if _rest > 1e-12 and _nl > 0 and spy_regime_arr[_i_d] == _nl_reg:
                     _ld = leader_s.get(_d)
-                    if (isinstance(_ld, str) and _ld and _ld != _pri and _ld in _ci_h
+                    if (isinstance(_ld, str) and _ld and _ld != _p_d and _ld in _ci_h
                             and _ld in _ci_e and bool(_H[_i_d, _ci_h[_ld]])
                             and bool(_E[_i_d, _ci_e[_ld]])):
                         _r_ld = _rest * _nl
@@ -12053,7 +12088,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     if _shr not in ("composite", "risk_mom1") and _a_ok:
                         if _shr == "leader_only":
                             _ld_s = leader_s.get(_d)
-                            _a_ok = (isinstance(_ld_s, str) and _ld_s == _a and _ld_s != _pri)
+                            _a_ok = (isinstance(_ld_s, str) and _ld_s == _a and _ld_s != _p_d)
                         else:
                             _v_d = int(_votes_arr[_i_d])
                             _a_ok = _v_d >= _min_votes
@@ -12064,7 +12099,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                     if _a_ok:
                         F[_i_d, _ci_f[_a]] += _rest * float(_B[_i_d, _ci_b[_a]]); n_alt_ += 1
                     else:
-                        _ok = [c for c in cols if c != _pri and c in _ci_h and bool(_H[_i_d, _ci_h[c]])
+                        _ok = [c for c in cols if c != _p_d and c in _ci_h and bool(_H[_i_d, _ci_h[c]])
                                and bool(_E[_i_d, _ci_e[c]])]
                         if _ok:
                             for c in _ok:
@@ -12217,6 +12252,42 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                 continue
             primary_cap_variants[f"주력섹터 중심 · 대피처 {_SHELTER_RULES[_sv]} [대피처격자]"] = \
                 _build_primary(_cap, None, None, None, None, None, None, None, None, _sv)[0]
+        # [v0.87.0 R108 · 측정 전용] 주력 동적(12-1개월 수익 1위 · 최소 보유) — SectorConfig R108_PRIMARY_DYNAMIC_GRID 주석 참조.
+        #   수익은 섹터 전체 이력(results[t]["bh_ret"])으로 t−252 → t−21 종가 구간 로그합(최소 200일) — t일 종가까지만.
+        if bool(getattr(scfg, "R108_PRIMARY_DYNAMIC_GRID", False)):
+            try:
+                _mh = max(1, int(getattr(scfg, "R108_PRIMARY_DYN_MIN_HOLD", 63) or 63))
+                _cand_d = [c for c in cols if c in _hold.columns and c in eligible.columns
+                           and results.get(c) is not None and results[c].get("bh_ret") is not None]
+                _lr = pd.DataFrame({c: np.log1p(pd.to_numeric(pd.Series(results[c]["bh_ret"]), errors="coerce").astype(float))
+                                    for c in _cand_d})
+                _m121 = np.expm1(_lr.rolling(231, min_periods=200).sum().shift(21)).reindex(eval_idx)
+                _okd = (_hold[_cand_d].reindex(eval_idx).fillna(False).astype(bool)
+                        & eligible[_cand_d].reindex(eval_idx).fillna(False).astype(bool))
+                _scd = _m121.where(_okd)
+                _cur_d, _held_d, _out_d, _nsw_d = _pri, 10 ** 6, [], 0
+                for _i_q in range(len(eval_idx)):
+                    _row_q = _scd.iloc[_i_q]
+                    _okq = _row_q.notna()
+                    if bool(_okq.any()):
+                        _top_q = str(_row_q.idxmax())
+                        if (not bool(_okq.get(_cur_d, False))) or (_top_q != _cur_d and _held_d >= _mh):
+                            if _top_q != _cur_d:
+                                _cur_d, _held_d = _top_q, 0
+                                _nsw_d += 1
+                    _out_d.append(_cur_d)
+                    _held_d += 1
+                _pdyn = pd.Series(_out_d, index=eval_idx, dtype=object)
+                primary_cap_variants[f"주력섹터 동적 · 12-1개월 수익 1위 · 최소보유 {_mh}일 [주력동적격자·측정]"] = \
+                    _build_primary(_cap, pri_dyn_=_pdyn)[0]
+                _vc_d = _pdyn.value_counts(normalize=True)
+                log("ROTATION", kv(event="r108_primary_dynamic", min_hold=_mh, switches=_nsw_d,
+                                   share_fixed=round(float(_vc_d.get(_pri, 0.0)), 3), today=str(_pdyn.iloc[-1]) if len(_pdyn) else "-",
+                                   top=";".join(f"{k}={v:.2f}" for k, v in _vc_d.head(4).items()) or "-",
+                                   note="측정 전용 — 라이브 주력은 ROTATION_PRIMARY_SECTOR 그대로"), M=M)
+            except Exception as _epd:
+                log("ROTATION", kv(event="r108_primary_dynamic_failed", err=type(_epd).__name__, msg=str(_epd)[:160],
+                                   action="[주력동적격자] 행만 생략 — ★ 무영향"), M=M, level="warning")
         label_psec = f"주력섹터 중심({_pri} 상한 {_cap:.0%}·하락 시 대피·SPY 미사용)"
         log("ROTATION", kv(event="primary_sector_mode", sector=_pri, cap=_cap, exit_states=list(_exit),
                            days_primary=_n_pri, days_alt=_n_alt, days_equal=_n_eq, days=len(eval_idx)), M=M)
@@ -20656,6 +20727,32 @@ LOSS_RESEARCH_R106: Tuple[Tuple[str, str, str], ...] = (
     ("확인 뒤 전환(늘릴 때 2·3일 확인 · 양쪽 2일 확인)", "M 손실 달 22 → 21/19/20 · 대신 참여 −5.6/−9.6/−1.4%p · 칼마 −0.30/−0.46/−1.05 · S·I·K 손실 달 +0~+4 · K 참여 −13~−19%p", "✗ 잦은 전환 손실은 작고, 막으면 반등 참여를 더 잃는다"),
     ("K 선택 손실 줄이기(역변동성 기울임 · 고변동 하락 종목 → 섹터 ETF)", "손실 달 18 → 17/19/20 · 참여 −8.1/−4.7/−7.8%p · 칼마 −0.33/−0.09/−0.35 · 배수 55 → 42/49/44", "✗ 고베타 종목이 빠질 때 덜 잃지만 오를 때 더 크게 못 번다"),
 )
+# [R108 · 2026-09-27] 급락 조기 감지(M) · 주력 섹터 동적 선택(S★) 시험 — r108/ 연구(코드 밖 · 현금 이자 0) 결과. 공통 원본 S · M·K 사본 동일.
+LOSS_RESEARCH_R108: Tuple[Tuple[str, str, str], ...] = (
+    ("M 급락 조기 경보 후보 1,083개(predictor_test1 계열: 스타일·교차자산 비율 · 변동성 구조 VIX9D/VVIX/SKEW/MOVE · 신용 ETF · FRED · S&P 500 폭)",
+     "해마다 그 전 자료로 방향·문턱(상위 10%) → 표본 밖 2010~ · 표적 '21일 안 SPY −5%' · BH-FDR q0.10 통과 325 · 해 일관성 60% 90 · M 보유일에도 유효 69"
+     "(하이일드 HYG/JNK · 소프트웨어 IGV · 경기소비/필수소비 · 소형 성장 · NFCI)",
+     "손실 원인 — 급락 '확률'(변동성)은 맞히지만 방향은 못 맞힌다: M 보유일 신호 뒤 21일 SPY 평균이 69개 중 68개에서 +(반등이 더 크다)"),
+    ("이중 워크포워드 합성 경보(해마다 그 전 표본 밖 기록만으로 지표 재선정 · 켜진 비율) → M 노출 감축 6안(문턱 0.3/0.5 · 50/100% · 1/5일)",
+     "합성 표본 밖 t 1.03(유의하지 않음) · 경보일 21일 뒤 +2.68% vs 평소 +0.99% · 네 층 참여 −3~−18%p · 배수 M 6.6 → 5.0~6.1 · K 55 → 35~48 · "
+     "무작위 대조 칼마 백분위 0~75",
+     "✗ 무하락 미통과(6안 × 네 층 전부) — 라이브 M 무변경"),
+    ("누가 먼저 알았나(2018~ SPY 고점 대비 −10% 이상 급락 4번)",
+     "M 첫 감축(목표비중 < 0.5)이 합성 경보보다 먼저: 2018-02(12거래일) · 2020-02(20) · 2022-01(10) · 2025-02(33) / 합성이 먼저: 2018 4분기(25거래일)만",
+     "✗ 현행 M이 이미 대부분 더 빠르다"),
+    ("M 손실 달 23개(2018~) 직전 21일 경보",
+     "가장 큰 손실 달(2019-05 −6.4% · 2023-02 · 2019-08 · 2024-04)은 M 전액 보유 · 직전 합성 경보 0.02~0.12(사실상 없음) · "
+     "경보가 떴던 달(2018-10 · 2022-01 · 2020-03)은 M이 이미 감축 중",
+     "손실 원인 — 예고 없는 충격(관세 발표 등): 가격·신용·폭 지표로 미리 알 수 없었다"),
+    ("S★ 주력 섹터 동적 선택 6안(복합순위 1위 · 63/126일 수익 1위 · 12-1개월 수익 1위 63일 보유 · XLK 기본 + 126일 10%p 도전자 · XLK 약세 안전장치)",
+     "2018~ 라이브 재구성(★ 잔차 유지): 배수 16.1 → 3.9~13.8 · 참여 0.85 → 0.49~0.81 · 칼마 3.69 → 1.43~3.02 | 12-1개월 1위: 회피 0.72 → 0.88 · "
+     "분기 손실 14.3 → 8.6% · 월 최악 0.920 → 0.932 · 대신 배수 7.9",
+     "✗ 무하락 미통과 — XLK 고정 유지(12-1개월 1위는 S 13_섹터배분전략 [주력동적격자·측정] 행으로 매 실행 비교)"),
+    ("주력 섹터 긴 역사(2000~2026 · 섹터 SPDR · 200일선 대용 국면 · E = SPY 200일선)",
+     "2000~2008(닷컴 붕괴) 동적 1.12~1.26배 vs XLK 고정 0.65배 · 2009~2017 XLK 2.45 vs 1.28~1.70 · 2018~2026 XLK 3.82 vs 0.98~2.66 · "
+     "27년 XLK 6.10배(MDD −48%) vs 동적 1.57~4.93배(−33~−42%)",
+     "손실 원인 — XLK 고정의 위험은 기술주 장기 붕괴(2000년형): 그때는 자기 국면 하락 이탈로 일부만 방어, 나머지 두 구간은 XLK 고정이 우위"),
+)
 
 
 def _map_regime(v: Any) -> str:
@@ -20777,6 +20874,8 @@ def build_loss_period_sheet(port: pd.Series, exposure: pd.Series, spy: pd.Series
             parts.append(pd.DataFrame(det_rows[lab]).iloc[::-1])
     parts.append(pd.DataFrame([{"블록": "D. 손실 방지 규칙 시험(R106 · 네 층 하네스 · 현금 이자 0)", "항목": a, "값": b, "판정": c}
                                for a, b, c in LOSS_RESEARCH_R106]))
+    parts.append(pd.DataFrame([{"블록": "E. 급락 조기 감지 · 주력 섹터 동적 선택 시험(R108 · 워크포워드 · 네 층 하네스 · 현금 이자 0)", "항목": a, "값": b,
+                                "판정": c} for a, b, c in LOSS_RESEARCH_R108]))
     df = pd.concat(parts, ignore_index=True, sort=False)
     lead = ["블록", "항목", "값"]
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
@@ -20789,7 +20888,7 @@ def build_loss_period_sheet(port: pd.Series, exposure: pd.Series, spy: pd.Series
               f"평균 {mrow['손실 기간 평균%']:+.2f}%) · 손실 분기 {qrow['손실 기간']}/{qrow['기간수']}(SPY {qrow['SPY 손실 기간']}) | 손실 달 원인: "
               + " · ".join(f"{k} {v}달" for k, v in causes.items())
               + f" | 손실 달 합 {mrow['손실 합(%p)']:+.1f}%p = 시장 {mrow['시장 몫 합(%p)']:+.1f} + 선택 {mrow['선택 몫 합(%p)']:+.1f} + 비용 {mrow['비용·기타 합(%p)']:+.1f} — "
-              "⚠ 손실 0은 불가능하다(급락은 예고 없이 온다): 시험한 손실 방지 규칙 13개(브레이크 5 · 변동성 목표 2 · 확인 뒤 전환 3 · K 선택 3) 모두 손실 달을 줄이지 못하고 수익만 깎았다(블록 D). 연구·교육용, 투자 자문 아님.")]
+              "⚠ 손실 0은 불가능하다(급락은 예고 없이 온다): 시험한 손실 방지 규칙 13개(브레이크 5 · 변동성 목표 2 · 확인 뒤 전환 3 · K 선택 3) 모두 손실 달을 줄이지 못하고 수익만 깎았다(블록 D) · R108 급락 조기 경보 1,083개와 주력 섹터 동적 선택 6안도 무하락 ✗ — 2018~ 큰 급락 4번 중 3번은 현행 M이 먼저 줄였고 가장 큰 손실 달은 경보 없는 충격이었다(블록 E). 연구·교육용, 투자 자문 아님.")]
     return df, lines
 
 
