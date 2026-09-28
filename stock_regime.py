@@ -1,5 +1,23 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.20.0 - 2026-09-28 - [R111 사용자 규칙 배분(측정 행 · 전환 스위치 LIVE_R111_RULE) · 규칙 준수 지표 · 상태 확신도(공통)]
+#    사용자 지시(2026-09-28): "폴더에 결과 업로드 했는데 내가 말했던 것들이 잘지켜지고 있는지 확인하고 뭐가 문제인지 개선방법을 찾아 그리고 급락하는 경우, 장기적으로
+#      우하향하는 경우를 잘 피했는지, 그런 위험들이 가장 적은 쪽들을 매수했는지, 예측불가능한 급락을 자주 맞으면 그 종목은 과매도 상태가 아닌 이상 매수 대상에서
+#      제외했는지 … 수치로 측정해서 각각 목표치를 정하고 그 목표치가 나올 때까지 … 설계해서 테스트하고 끝나면 알려줘 …".
+#    ── 진단(Kaggle R110 = K 하네스 재현) ── 라이브는 규칙을 표시만 했다: 보유 비중 중 장기 우하향 13.8% · 급락 잦음 22.9%(옛 2회+ 정의) · 실제 21일 −10% 급락 노출
+#      ÷ 같은 섹터 평균 1.02 · 126일 −15% 0.99.
+#    ── R111 연구(r111/ · 12회 반복 · 현금 이자 0) ── 규칙 준수(보유 0%)는 쉽지만 K 표본(30/58종목 = 2026 추가 · 사후 선택)에서는 빼는 규칙이 모두 손해로 보인다
+#      (빠진 종목 이익의 71%가 추가 종목). → 편향 없는 K 닮은 유니버스 60개(2018-01 S&P 500 구성 · K와 같은 섹터 수 무작위 · 같은 틀)로 판정:
+#      ★ 장기 우하향 · 급락 잦음(예고 없던 고유 급락 1년 3회+ · 과매도 아님) 제외 → M 풀노출일만 저위험 종목(1/σ² · 상한 10%) · 그 밖 현금: 칼마 2.54 → 2.81
+#      (90% 개선) · 손실 달 21 → 18(85%) · 분기 손실 6.5 → 4(95%) · MDD −10.7 → −8.4%(100%) · 월 최악 ×0.902 → ×0.922(98%) · 급락 노출 0.87 · 참여 66 → 55.
+#      기각: 새 저위험 기울임 틀(참여 −15~−25 · 손실 달 ↑) · 섹터 안 고변동 1/3 제외(손실 달 +3) · SPY 상승추세 날만 채움 · 회복 재진입 · 국면 조건부 · 급락 2회+.
+#      K 표본: 회피 75.5 → 78.8 · MDD −9.73 → −9.46% · 월 최악 ↑ · 참여 93.5 → 79.1 · 배수 25.6 → 16.3 · 칼마 4.63 → 3.99 · 손실 달 17 → 19 → 무하락 ✗.
+#    (§1 측정 · ⚠ 전환 스위치) StockConfig LIVE_R111_RULE(False) · R111_RULE_ROWS · R111_SHOCK_MIN(3) · R111_FILL_CAP(0.10) · R111_FILL_GAMMA(2.0) ·
+#         build_allocation(r111=…) · _r111_sector_total · _r111_rule_weights · build_r111_masks — 13·00U 'R111 사용자 규칙(…)' 행(라이브 규칙·현금 완충 위).
+#         켜기: k_overrides={"LIVE_R111_RULE": True} → 라이브 · 'R110 라이브(규칙 없음)' 비교 행. 꺼져 있으면 v0.19.0 라이브와 비트 동일.
+#    (§2 표시) r111_compliance · 00 'R111 사용자 규칙 — 준수·위험·성과' 줄(장기 우하향·급락 잦음 보유% · 실제 급락·장기 하락 노출 ÷ 같은 섹터 평균 · 위험 목표 · 무하락) ·
+#         00V C 'R111 규칙: 매수 제외' · '예고 없던 고유 급락(1년)' 열 · G 시험 근거(K_R111_EVIDENCE).
+#    (§3 공통 사본 · S v0.89.0 원본) R111 상태 확신도. 시험 t111/test_r111.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.19.0 - 2026-09-28 - [R110 ★★ 라이브 현금 완충 ×0.8(사용자 선택) · 종목별 매수 뒤 급락 확률 · 날짜별 상태 판정(00V · 01V)]
 #    사용자 지시(2026-09-28): "일단 가장 중요한건 매수했는데 급락하는 경우, 장기적으로 우하향하는 경우는 무조건 피해야 해 그런 위험들을 예측가능하도록 해야하고
 #      위험이 가장 적은 종목들을 매수하도록 해 예측불가능한 급락을 자주 맞으면 그 종목은 과매도 상태가 아닌 이상 매수 대상에서 제외해야 해 …" → 첫 시험(위험 종목 →
@@ -667,7 +685,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.19.0"
+VERSION = "v0.20.0"
 VERSION_DATE = "2026-09-27"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1140,6 +1158,22 @@ class StockConfig:
     # [v0.19.0 R110 측정 전용] 사용자 규칙 '장기 우하향 · 매수 뒤 급락 위험 종목 → 현금' 행(13 · 00U) — 라이브와 같은 현금 완충을 적용한 뒤 비교.
     R110_CASH_RULE_ROWS: bool = True
     R110_CRASH_PROB_CUT: float = 25.0             # 매수 뒤 21일 −10% 급락 확률(%) 문턱(S&P 500 확률표)
+    # [v0.20.0 R111 사용자 지시 · ⚠ 전환 스위치 = 사용자 선택] 사용자 규칙 배분: "매수했는데 급락하는 경우, 장기적으로 우하향하는 경우는 무조건 피해야 해 …
+    #   위험이 가장 적은 종목들을 매수 … 예측불가능한 급락을 자주 맞으면 그 종목은 과매도 상태가 아닌 이상 매수 대상에서 제외".
+    #   규칙: 장기 우하향(종가 < 200일선 & 200일선 21일 기울기 < 0) · 급락 잦음(예고 없던 종목 고유 급락 — 전날 장기 상승 & z > −1 이었는데 SPY β63 제거 잔차
+    #     ≤ −3σ_잔차 — 1년 R111_SHOCK_MIN회+ & RSI14 ≥ 30) 종목은 사지 않는다 → 그 몫은 M 풀노출일(S★ 섹터 합 ≥ 0.999)만 위험 낮은 적격 종목(1/σ63^γ ·
+    #     종목 상한 R111_FILL_CAP)에 · 그 밖 날·남는 몫은 현금(섹터 ETF 아님). 현금 완충 ×LIVE_CASH_BUFFER는 그 뒤 그대로.
+    #   근거(r111/ · 현금 이자 0): 편향 없는 K 닮은 유니버스 60개(2018-01 S&P 500 구성에서 K와 같은 섹터 수 무작위 · 같은 틀) — 칼마 2.54 → 2.81(90% 개선) ·
+    #     손실 달 21 → 18(85%) · 분기 손실 6.5 → 4(95%) · MDD −10.7 → −8.4%(100%) · 월 최악 ×0.902 → ×0.922(98%) · 회피 +5.2 · 실제 21일 −10% 급락 노출
+    #     ÷ 같은 섹터 평균 0.87 · 126일 −15% 0.91 · 참여 66 → 55 · 배수 8.1 → 6.3.
+    #   ⚠ K 표본(58종목 중 30개 = 2026 추가 · 사후 선택 → 과거 우하향이 모두 회복)에서는 회피 75.5 → 78.8 · MDD −9.73 → −9.46% · 월 최악 ↑ 이지만
+    #     참여 93.5 → 79.1 · 배수 25.6 → 16.3 · 칼마 4.63 → 3.99 · 손실 달 17 → 19 → 무하락 원칙상 측정 행(13 · 00U) · 라이브 전환 = 사용자 선택.
+    #   켜기: k_overrides={"LIVE_R111_RULE": True}.
+    LIVE_R111_RULE: bool = False
+    R111_RULE_ROWS: bool = True
+    R111_SHOCK_MIN: int = 3
+    R111_FILL_CAP: float = 0.10
+    R111_FILL_GAMMA: float = 2.0
     # [v0.12.0 R100] 잔차 모멘텀 점수(build_resid_mom_score) — β 창 · 12-1 창(건너뛰는 최근 1개월 · 합산 길이).
     RESID_BETA_WIN: int = 252
     RESID_SKIP: int = 21
@@ -2868,7 +2902,8 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                      link_cap: Optional[float] = None,
                      prob_score: Optional[pd.DataFrame] = None, prob_select: Optional[str] = None,
                      prob_params: Optional[Dict[str, float]] = None,
-                     scale: Optional[float] = None, cash_mask: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+                     scale: Optional[float] = None, cash_mask: Optional[pd.DataFrame] = None,
+                     r111: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """전체자산 **1.0**을 종목에 배분한다. 반환 target_w의 **행 합계는 절대 1.0을 넘지 않는다**.
     [v0.11.0 R99 N3] "sector_prob" — 섹터 비중은 S★ 그대로(sector_linked와 같은 SW) · 섹터 안만 점수(prob_score · 상승확률 또는 어닝 복합)로
       고른다(prob_select: exclude_bottom · top · tilt · prob_params: frac·max·lam). 점수가 없으면 sector_linked(균등)로 계산하고 tilt['note']에 적는다.
@@ -2968,6 +3003,12 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                                                  etf_avail=set((etf_panel or {}).keys()))
         if _prob_note:
             _sd["note"] = _prob_note
+        # [v0.20.0 R111] 사용자 규칙(r111 = {"mask", "sig", "cap", "gamma"}) — 규칙 종목 몫 빼기 → M 풀노출일만 저위험 종목 · 그 밖 현금(_r111_rule_weights).
+        #   r111이 None이면 v0.19.0과 비트 동일. 현금 완충(scale)은 그 뒤.
+        if isinstance(r111, dict) and isinstance(r111.get("mask"), pd.DataFrame) and isinstance(r111.get("sig"), pd.DataFrame):
+            Ws, _d111 = _r111_rule_weights(Ws, r111["mask"], r111["sig"], live & ~cut, _r111_sector_total(idx, _ia),
+                                           cap=float(r111.get("cap", 0.10)), gamma=float(r111.get("gamma", 2.0)))
+            _sd.update(_d111)
         # [v0.19.0 R110] cash_mask(날짜 × 종목 · True = 그 종목 몫을 **현금**으로 · 측정 행) · scale(종목·ETF 몫 전체 × scale · 나머지 현금 = 현금 완충).
         #   둘 다 None이면 v0.18.0과 비트 동일. 체결 규칙(t 확정 → t+1 시가)은 그대로.
         if isinstance(cash_mask, pd.DataFrame) and cash_mask.shape[1]:
@@ -3943,6 +3984,47 @@ def build_resid_mom_score(panel: Dict[str, pd.DataFrame], etf_panel: Optional[Di
         den = res_.rolling(int(beta_win), min_periods=mp_b).std()
         out[t] = num / den.where(den > 0)
     return pd.DataFrame(out).reindex(columns=cols) if out else pd.DataFrame(columns=cols)
+
+
+def _r111_sector_total(idx: pd.DatetimeIndex, ia: Any) -> Optional[pd.Series]:
+    """[v0.20.0 R111] 그날 S★ 섹터 비중 합(산업 + 부모 다리 · _sector_prob_weights의 SW 합과 같다) — ≥ 0.999 = M 풀노출일."""
+    if not isinstance(ia, dict):
+        return None
+    tot = pd.Series(0.0, index=idx)
+    for k in ("industry_w", "parent_w"):
+        df = ia.get(k)
+        if isinstance(df, pd.DataFrame) and df.shape[1]:
+            a = df.reindex(idx.union(df.index)).sort_index().ffill().reindex(idx).fillna(0.0).clip(lower=0.0)
+            tot = tot + a.sum(axis=1)
+    return tot
+
+
+def _r111_rule_weights(Ws: pd.DataFrame, mask: pd.DataFrame, sig: pd.DataFrame, ok: pd.DataFrame, sector_total: Optional[pd.Series],
+                       cap: float = 0.10, gamma: float = 2.0) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.20.0 R111 사용자 규칙] 규칙 종목(mask · 장기 우하향 · 급락 잦음 & 과매도 아님) 몫을 뺀다 → M 풀노출일(섹터 합 ≥ 0.999)만 위험 낮은 적격 종목
+    (ok & ~mask · 1/σ^γ 비례 · 종목 상한 cap)에 채운다 · 그 밖 날과 남는 몫은 현금(섹터 ETF 아님). 인과: mask·σ는 t일 종가까지 · 비중은 t 확정 → t+1 시가."""
+    idx, cols = Ws.index, Ws.columns
+    mk = mask.reindex(index=idx, columns=cols).fillna(False).astype(bool)
+    W = Ws.where(~mk, 0.0)
+    freed = (Ws.sum(axis=1) - W.sum(axis=1)).clip(lower=0.0)
+    full = ((sector_total.reindex(idx).fillna(0.0) >= 0.999) if isinstance(sector_total, pd.Series)
+            else pd.Series(False, index=idx))
+    left = freed.where(full, 0.0)
+    okm = ok.reindex(index=idx, columns=cols).fillna(False).astype(bool) & ~mk
+    g = ((1.0 / sig.reindex(index=idx, columns=cols)) ** float(gamma)).replace([np.inf, -np.inf], np.nan).where(okm).fillna(0.0)
+    base = W.sum(axis=1)
+    for _ in range(6):
+        room = ((float(cap) - W).clip(lower=0.0)) * (g > 0)
+        a = g.where(room > 1e-12, 0.0)
+        a = np.minimum(a.div(a.sum(axis=1).replace(0, np.nan), axis=0).mul(left, axis=0).fillna(0.0), room)
+        W = W + a
+        left = (left - a.sum(axis=1)).clip(lower=0.0)
+        if float(left.sum()) < 1e-9:
+            break
+    filled = (W.sum(axis=1) - base).clip(lower=0.0)
+    return W, {"r111_freed_mean": round(float(freed.mean()), 5), "r111_filled_mean": round(float(filled.mean()), 5),
+               "r111_cash_mean": round(float((freed - filled).clip(lower=0.0).mean()), 5), "r111_full_days": int(full.sum()),
+               "r111_mask_cells": int(mk.values.sum())}
 
 
 def _sector_prob_weights(idx: pd.DatetimeIndex, tickers: List[str], live: pd.DataFrame, cut: pd.DataFrame,
@@ -5313,10 +5395,32 @@ def build_stock_risk_flags(panel: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
     return {"ok": True, "C": C, "D": D, "Sk": Sk, "OS": OS, "nshock": nshock, "volA": volA, "vb": vb, "rsi": rsi, "P": P, "P63": P63, "P126": P126}
 
 
-def stock_risk_today(rf: Dict[str, Any], names: Optional[Dict[str, str]] = None) -> pd.DataFrame:
-    """[v0.19.0 R110] 오늘 종목별 위험(00V C 블록에 붙는 열) — 측정·표시 · 투자 권유 아님."""
+def stock_risk_today(rf: Dict[str, Any], names: Optional[Dict[str, str]] = None,
+                     m111: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    """[v0.19.0 R110] 오늘 종목별 위험(00V C 블록에 붙는 열) — 측정·표시 · 투자 권유 아님.
+    [v0.20.0 R111] m111(build_r111_masks)이 있으면 '예고 없던 고유 급락(1년)' · 'R111 규칙: 매수 제외' 열을 붙인다."""
     if not rf.get("ok"):
         return pd.DataFrame()
+    T = _stock_risk_today_r110(rf, names)
+    if isinstance(m111, dict) and m111.get("ok") and len(T):
+        n2, dd_, sk_ = m111["N2"], m111["D"], m111["SK"]
+        a, b = [], []
+        for t in T["항목"]:
+            if t not in n2.columns or not len(n2[t].dropna()):
+                a.append(None)
+                b.append("-")
+                continue
+            dt = n2[t].dropna().index[-1]
+            a.append(int(n2[t].get(dt)))
+            d0, s0 = bool(dd_[t].get(dt, False)), bool(sk_[t].get(dt, False))
+            b.append("제외 — 장기 우하향" if d0 else (f"제외 — 급락 잦음({int(n2[t].get(dt))}회 · 과매도 아님)" if s0 else "매수 대상"))
+        T["예고 없던 고유 급락(1년 · R111)"] = a
+        T["R111 규칙: 매수 제외"] = b
+    return T
+
+
+def _stock_risk_today_r110(rf: Dict[str, Any], names: Optional[Dict[str, str]] = None) -> pd.DataFrame:
+    """[v0.19.0 R110] stock_risk_today 본체(열 구성 그대로)."""
     rows = []
     for t in rf["C"].columns:
         c = rf["C"][t].dropna()
@@ -5345,6 +5449,83 @@ def stock_risk_today(rf: Dict[str, Any], names: Optional[Dict[str, str]] = None)
                      "위험 등급": ("낮음" if p == p and p < 10 else ("보통" if p == p and p < 20 else ("높음" if p == p else "-"))),
                      "사용자 규칙 판정(R110 · 참고)": j})
     return pd.DataFrame(rows)
+
+
+# [v0.20.0 R111] 사용자 규칙 배분 시험 근거(r111/ · 현금 이자 0 · t 종가 → t+1 시가 · 5bp).
+K_R111_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
+    ("현재 라이브(R110)의 사용자 규칙 준수(K 하네스 = Kaggle R110 재현)", "보유 비중 중 장기 우하향 13.8% · 급락 잦음(2회+ · 과매도 아님) 22.9% · 실제 21일 −10% 급락 노출 ÷ "
+     "같은 섹터 평균 1.02 · 126일 −15% 0.99", "✗ 규칙이 배분에 들어가 있지 않았다(표시만)"),
+    ("'급락 잦음' 정의(S&P 500 2010~)", "예고 없던 종목 고유 급락(전날 장기 상승 & z > −1 · SPY β 제거 잔차 ≤ −3σ) — 고변동 종목에서 1년 0회 21일 +2.44% → 3회+ −0.76% "
+     "(수익이 음으로 바뀌는 지점 = 3회) · 시장 탓 하락까지 센 옛 정의는 종목 절반을 잡았다", "'자주' = 1년 3회 이상 · 과매도(RSI14 < 30)면 예외"),
+    ("편향 없는 K 닮은 유니버스 60개(2018-01 S&P 500 구성 · K와 같은 섹터 수 무작위 · 같은 틀)", "장기 우하향 → 현금: 손실 달 21 → 18(92% 개선) · MDD 100% 개선 · "
+     "급락 잦음만 → 현금: 실제 급락 노출 1.06(악화) · 둘 다 → 현금: 칼마 2.54 → 2.15 · 둘 다 → M 풀노출일 저위험 10% · 그 밖 현금(★): 칼마 2.81(90% 개선) · "
+     "손실 달 18(85%) · 분기 손실 4(95%) · MDD −8.4%(100%) · 급락 노출 0.87 · 126일 −15% 0.91 · 회피 +5.2 · 참여 66 → 55", "★ 설계 채택(규칙 준수 + 손실·낙폭·칼마 개선)"),
+    ("같은 60개 — 기각한 안", "섹터 안 고변동 1/3도 제외: 손실 달 20 → 23~24 ✗ · 저위험 기울임 γ2 새 틀: 참여 66 → 44~50 · 손실 달 ↑ ✗ · SPY 상승추세 날만 채우기: "
+     "손실 달 22.5 ✗ · 회복 확인 재진입 · 국면 조건부 저위험만: 손실 달 개선 없음 ✗", "M 풀노출일 조건이 가장 낫다(시장 급락 구간엔 현금)"),
+    ("K 표본(58종목 · 30개 = 2026 추가 · 사후 선택)", "R111 규칙: 회피 75.5 → 78.8 · MDD −9.73 → −9.46% · 월 최악 ×0.923 → ×0.935 · 분기 최악 ×0.925 → ×0.927 · "
+     "참여 93.5 → 79.1 · 배수 25.6 → 16.3 · 칼마 4.63 → 3.99 · 손실 달 17 → 19 · 규칙으로 빠진 종목 이익의 71%가 2026 추가 종목(이미 오른 것을 보고 고름)",
+     "무하락 ✗ → 측정 행 · 라이브 전환은 사용자 선택(LIVE_R111_RULE)"))
+
+
+def build_r111_masks(rf: Dict[str, Any], etf_panel: Optional[Dict[str, pd.DataFrame]], shock_min: int = 3) -> Dict[str, Any]:
+    """[v0.20.0 R111] 사용자 규칙 표지(인과 · t일 종가까지): D 장기 우하향 · N2 예고 없던 종목 고유 급락 1년 횟수(전날 장기 상승 & z > −1 이었는데
+    SPY β63 제거 잔차 ≤ −3σ_잔차(63일 · 전날까지)) · SK 급락 잦음(N2 ≥ shock_min & 과매도 아님) · sig σ63 · mask = D | SK(사지 않을 종목)."""
+    if not (isinstance(rf, dict) and rf.get("ok")):
+        return {"ok": False, "note": "위험 표지 없음"}
+    C = rf["C"]
+    spy = None
+    if isinstance(etf_panel, dict) and isinstance(etf_panel.get("SPY"), pd.DataFrame) and "일간수익" in etf_panel["SPY"].columns:
+        spy = pd.to_numeric(etf_panel["SPY"]["일간수익"], errors="coerce").reindex(C.index)
+    if spy is None or int(spy.notna().sum()) < 300:
+        return {"ok": False, "note": "SPY 일간수익 없음 — R111 규칙 표지 생략"}
+    R = C.pct_change(fill_method=None)
+    vs = spy.rolling(63, min_periods=45).var()
+    beta = pd.DataFrame({t: R[t].rolling(63, min_periods=45).cov(spy) for t in C.columns}).div(vs, axis=0).shift(1)
+    res = R - beta.mul(spy, axis=0)
+    sres = res.rolling(63, min_periods=45).std().shift(1)
+    s63 = R.rolling(63, min_periods=45).std()
+    ma200 = C.rolling(200, min_periods=150).mean()
+    z = (C / C.rolling(21, min_periods=15).max() - 1.0) / (s63 * np.sqrt(21.0))
+    calm = ((C > ma200) & (ma200 / ma200.shift(21) - 1.0 > 0) & (z > -1)).shift(1).fillna(False).astype(bool)
+    N2 = ((res <= -3.0 * sres) & calm).astype(float).where(R.notna()).rolling(252, min_periods=200).sum()
+    SK = ((N2 >= int(shock_min)) & ~rf["OS"].astype(bool)).fillna(False)
+    D = rf["D"].astype(bool)
+    return {"ok": True, "D": D, "SK": SK, "N2": N2, "sig": s63, "mask": (D | SK), "shock_min": int(shock_min), "px": C}
+
+
+def r111_compliance(target_w: pd.DataFrame, m111: Dict[str, Any], t2s: Dict[str, str]) -> Dict[str, float]:
+    """[v0.20.0 R111] 사용자 규칙 준수·위험 지표(보유 종목 비중 가중 · 목표 비중 기준):
+    장기 우하향 보유% · 급락 잦음 보유% · 실제 21일 안 −10% 급락 / 126일 뒤 −15% 이하 노출 ÷ 같은 날 같은 섹터 적격 종목 평균(1보다 작을수록 위험 낮은 쪽을 샀다)."""
+    if not (isinstance(m111, dict) and m111.get("ok")) or not isinstance(target_w, pd.DataFrame) or not len(target_w):
+        return {}
+    w = target_w.reindex(columns=m111["D"].columns).fillna(0.0)
+    idx = w.index
+    tot = float(w.values.sum())
+    if tot <= 0:
+        return {}
+    D, SK = m111["D"].reindex(index=idx, columns=w.columns).fillna(False), m111["SK"].reindex(index=idx, columns=w.columns).fillna(False)
+    out = {"장기 우하향 보유%": float((w * D).values.sum() / tot * 100.0), "급락 잦음 보유%": float((w * SK).values.sum() / tot * 100.0)}
+    px = m111.get("px")
+    if isinstance(px, pd.DataFrame):
+        P = px.reindex(columns=w.columns)
+        mn21 = P[::-1].rolling(21, min_periods=15).min()[::-1].shift(-1)
+        CR21 = ((mn21 / P - 1.0) <= -0.10).astype(float).where(P.shift(-21).notna()).reindex(idx)
+        DN126 = ((P.shift(-126) / P - 1.0) <= -0.15).astype(float).where(P.shift(-126).notna()).reindex(idx)
+        elig = P.reindex(idx).notna()
+        secs = sorted({s for s in t2s.values() if s})
+
+        def _rs(X):
+            num = (w * X).sum(axis=1)
+            den = pd.Series(0.0, index=idx)
+            for s_ in secs:
+                mem = [t for t in w.columns if t2s.get(t) == s_]
+                if mem:
+                    den = den + w[mem].sum(axis=1) * X[mem].where(elig[mem]).mean(axis=1).fillna(0.0)
+            m = (w.sum(axis=1) > 1e-9) & (den > 0) & X.notna().any(axis=1)
+            return float(num[m].sum() / den[m].sum()) if float(den[m].sum()) > 0 else float("nan")
+        out["실제 21일 −10% 급락 노출 ÷ 같은 섹터 평균"] = _rs(CR21)
+        out["실제 126일 뒤 −15% 이하 노출 ÷ 같은 섹터 평균"] = _rs(DN126)
+    return out
 
 
 def _earn_dip_cut(pos: Dict[str, pd.DataFrame], ds: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
@@ -5865,6 +6046,62 @@ def cash_buffer_verdict_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return ("★★★ R110 현금 완충 사후 판정(사전등록 · 사용자 선택 '종목 비중 ×0.8') — 회피를 크게 올리는 설계", body)
 
 
+def r111_rule_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """[v0.20.0 R111] 00 줄 — 사용자 규칙(장기 우하향·급락 잦음 제외 · 저위험 · 현금) 준수와 성과: 라이브 vs R111 규칙 행(측정) 또는
+    R111 라이브 vs '규칙 없는 R110 라이브'(비교). 목표: 장기 우하향·급락 잦음 보유 0% · 실제 급락·장기 하락 노출 < 같은 섹터 평균 · 회피 +3%p 이상 ·
+    MDD·월/분기 최악 ≥ · 손실 달·분기 ≤(무하락은 참여·배수·칼마까지)."""
+    ui = res.get("user_rel_info") or {}
+    ur = res.get("user_rel")
+    lbl = ui.get("r111_label") or res.get("r111_label")
+    c111 = res.get("r111_compliance") or {}
+    if not (isinstance(ur, pd.DataFrame) and len(ur) and lbl):
+        m = res.get("r111_masks") or {}
+        if not m.get("ok"):
+            return ("★★★ R111 사용자 규칙(장기 우하향·급락 잦음 제외)", f"⚠ 규칙 표지를 만들지 못했다 — {m.get('note', '-')}")
+        return None
+    mm = ur[ur["전략"].astype(str) == str(lbl)]
+    if not len(mm):
+        return None
+    live_is_rule = bool(res.get("r111_live"))
+    t0, r0 = ur.iloc[0], mm.iloc[0]
+    A, B = (t0, r0) if live_is_rule else (r0, t0)          # A = 규칙 적용 · B = 규칙 없음
+    cA, cB = (c111.get("live", {}), c111.get("row", {})) if live_is_rule else (c111.get("row", {}), c111.get("live", {}))
+
+    def _f(x):
+        try:
+            return float(x)
+        except Exception:
+            return float("nan")
+    d = {"회피": (_f(A["하락 회피율"]) - _f(B["하락 회피율"])) * 100.0, "참여": (_f(A["상승 참여율"]) - _f(B["상승 참여율"])) * 100.0,
+         "칼마": _f(A.get("칼마")) - _f(B.get("칼마")), "MDD": (_f(A.get("MDD")) - _f(B.get("MDD"))) * 100.0, "배수": _f(A.get("배수")) - _f(B.get("배수")),
+         "월 최악": (_f(A.get("월 최악 배수")) - _f(B.get("월 최악 배수"))) * 100.0, "분기 최악": (_f(A.get("분기 최악 배수")) - _f(B.get("분기 최악 배수"))) * 100.0,
+         "월 손실": _f(A.get("월 손실%")) - _f(B.get("월 손실%")), "분기 손실": _f(A.get("분기 손실%")) - _f(B.get("분기 손실%"))}
+    risk_ok = [k for k in ("MDD", "월 최악", "분기 최악") if d[k] == d[k] and d[k] < -1e-9]
+    if not (d["회피"] >= 3.0 - 1e-9):
+        risk_ok.append("회피 +3%p 미만")
+    drops = [k for k in ("참여", "칼마", "배수") if d[k] == d[k] and d[k] < -1e-9] + \
+            [k + " 증가" for k in ("월 손실", "분기 손실") if d[k] == d[k] and d[k] > 1e-9]
+
+    def _c(dct, k, f="{:.1f}"):
+        v = dct.get(k)
+        return f.format(v) if isinstance(v, (int, float)) and v == v else "-"
+    body = (f"규칙 준수(보유 비중 가중 · 규칙 적용 vs 없음): 장기 우하향 보유 {_c(cA, '장기 우하향 보유%')}% vs {_c(cB, '장기 우하향 보유%')}% · "
+            f"급락 잦음(과매도 아님) 보유 {_c(cA, '급락 잦음 보유%')}% vs {_c(cB, '급락 잦음 보유%')}% · 실제 21일 −10% 급락 노출 ÷ 같은 섹터 평균 "
+            f"{_c(cA, '실제 21일 −10% 급락 노출 ÷ 같은 섹터 평균', '{:.2f}')} vs {_c(cB, '실제 21일 −10% 급락 노출 ÷ 같은 섹터 평균', '{:.2f}')} · 126일 뒤 −15% 이하 "
+            f"{_c(cA, '실제 126일 뒤 −15% 이하 노출 ÷ 같은 섹터 평균', '{:.2f}')} vs {_c(cB, '실제 126일 뒤 −15% 이하 노출 ÷ 같은 섹터 평균', '{:.2f}')} | "
+            f"성과: 회피/참여 {_f(A['하락 회피율']):.1%}/{_f(A['상승 참여율']):.1%} vs {_f(B['하락 회피율']):.1%}/{_f(B['상승 참여율']):.1%} · "
+            f"MDD {_f(A.get('MDD')) * 100:.2f}% vs {_f(B.get('MDD')) * 100:.2f}% · 칼마 {_f(A.get('칼마')):.2f} vs {_f(B.get('칼마')):.2f} · "
+            f"배수 {_f(A.get('배수')):.2f} vs {_f(B.get('배수')):.2f} · Δ월 최악 {d['월 최악']:+.2f}%p · Δ분기 최악 {d['분기 최악']:+.2f}%p · "
+            f"Δ월 손실 {d['월 손실']:+.1f}%p · Δ분기 손실 {d['분기 손실']:+.1f}%p"
+            + (" → 위험 목표 ✓" if not risk_ok else f" → 위험 목표 ✗({', '.join(risk_ok)})")
+            + (" · 무하락 ✓" if not drops else f" · 무하락 ✗({', '.join(drops)})")
+            + (" · ★ 라이브(사용자 선택) — 되돌리기 k_overrides={'LIVE_R111_RULE': False}" if live_is_rule else
+               " · 측정 행 — 라이브 전환은 사용자 선택: k_overrides={'LIVE_R111_RULE': True}")
+            + " | 편향 없는 검증(S&P 500 무작위 K 닮은 60개): 칼마 90% 개선 · 손실 달 21 → 18 · 분기 손실 6.5 → 4 · MDD −10.7 → −8.4% · 참여 66 → 55. "
+              "K 표본은 2026 추가 30종목(사후 선택) 때문에 빼는 규칙이 불리하게 보인다. 연구·교육용, 투자 자문 아님.")
+    return ("★★★ R111 사용자 규칙(장기 우하향·예측 불가능한 급락 잦음 제외 → M 풀노출일 저위험 종목 · 그 밖 현금) — 준수·위험·성과", body)
+
+
 def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
     """[v0.11.0 R99 N3] 00E_주식상승확률 시트 · 00 줄 — 오늘 순위 · 섹터 안 순위 · 연도별 AUC · 섹터 안 순위 IC · 보정표 · 배분 변형 판정."""
     cfg = res.get("cfg", CFG)
@@ -6356,18 +6593,42 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     _cbuf = min(max(_cbuf, 0.0), 1.0)
     _sc_kw: Dict[str, Any] = ({"scale": _cbuf} if abs(_cbuf - 1.0) > 1e-12 else {})
     alloc_nobuf: Optional[Dict[str, Any]] = None           # [v0.19.0 R110] 'R109까지 라이브(현금 완충 없음)' — 사후 판정 기준
+    # [v0.20.0 R111] 사용자 규칙 표지(장기 우하향 · 급락 잦음 & 과매도 아님) — 측정 행 · 라이브(LIVE_R111_RULE) 공용 · 인과(t일 종가까지).
+    _rf111: Dict[str, Any] = {"ok": False}
+    _m111: Dict[str, Any] = {"ok": False}
+    try:
+        _rf111 = build_stock_risk_flags(panel)
+        _m111 = build_r111_masks(_rf111, etf_panel, int(getattr(cfg, "R111_SHOCK_MIN", 3)))
+        if _m111.get("ok"):
+            log("RISK", kv(event="r111_masks", tickers=int(_m111["mask"].shape[1]), down_cells=int(_m111["D"].values.sum()),
+                           shock_cells=int(_m111["SK"].values.sum()), shock_min=int(_m111["shock_min"])))
+    except Exception as e:
+        _m111 = {"ok": False, "note": f"{type(e).__name__}: {str(e)[:120]}"}
+        log("RISK", kv(event="r111_masks_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    _r111kw: Dict[str, Any] = ({"r111": {"mask": _m111["mask"], "sig": _m111["sig"], "cap": float(getattr(cfg, "R111_FILL_CAP", 0.10)),
+                                         "gamma": float(getattr(cfg, "R111_FILL_GAMMA", 2.0))}} if _m111.get("ok") else {})
+    _live111 = bool(getattr(cfg, "LIVE_R111_RULE", False)) and bool(_r111kw) and _live_dip
+    alloc_pre111: Optional[Dict[str, Any]] = None          # [v0.20.0 R111] 라이브가 R111이면 '규칙 없는 R110 라이브' 비교 행
     if _live_dip:
         _live_kw = {"prob_score": _dip_score, "prob_select": "tilt",
                     "prob_params": {"lam": float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5))}}
+        _kw111 = (_r111kw if _live111 else {})
         alloc = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
                                  ind_alloc=ind_alloc, etf_panel=etf_panel,
-                                 link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw)
+                                 link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw, **_kw111)
         alloc["live_rule"] = ("R109 섹터연동 + 물타기 기울임 + 어닝 하락 손절"
-                              + (f" + R110 현금 완충 ×{_cbuf:g}" if _sc_kw else ""))
+                              + (f" + R110 현금 완충 ×{_cbuf:g}" if _sc_kw else "")
+                              + (" + R111 사용자 규칙" if _live111 else ""))
+        if _live111:
+            alloc_pre111 = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
+                                            ind_alloc=ind_alloc, etf_panel=etf_panel,
+                                            link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw)
+            log("ALLOC", kv(event="r111_live_rule", **{k: v for k, v in (alloc.get("tilt") or {}).items() if str(k).startswith("r111_")},
+                            note="★ 라이브(사용자 선택 R111) — 되돌리기 k_overrides={'LIVE_R111_RULE': False}"))
         if _sc_kw:
             alloc_nobuf = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
                                            ind_alloc=ind_alloc, etf_panel=etf_panel,
-                                           link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw)
+                                           link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_kw111)
         log("ALLOC", kv(event="r109_live_dip", lam=float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5)),
                         earn_cut_cells=int(_dip["earn"].values.sum()), fav_cells=int(_dip["fav"].values.sum()),
                         stock_share=round(float(alloc["target_w"].sum(axis=1).mean()), 4),
@@ -6499,7 +6760,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     # [v0.19.0 R110 측정 전용] 종목 위험 표지 · 사용자 규칙 '위험 종목 → 현금' 행(라이브와 같은 규칙·현금 완충 위에 얹어 비교)
     _risk_flags: Dict[str, Any] = {"ok": False}
     try:
-        _risk_flags = build_stock_risk_flags(panel)
+        _risk_flags = _rf111 if _rf111.get("ok") else build_stock_risk_flags(panel)      # [v0.20.0 R111] 위에서 만든 것을 다시 쓴다
     except Exception as e:
         _risk_flags = {"ok": False, "note": f"{type(e).__name__}: {str(e)[:120]}"}
         log("RISK", kv(event="risk_flags_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
@@ -6519,6 +6780,28 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     _grid_rets[_rl] = _ra.get("port_ret")
             except Exception as e:
                 log("ALLOC", kv(event="r110_cash_rule_row_failed", row=_rl[:40], err=type(e).__name__, msg=str(e)[:120]), level="warning")
+    # [v0.20.0 R111] 사용자 규칙 행 — 라이브가 아니면 '규칙 적용' 측정 행 · 라이브면 '규칙 없는 R110 라이브' 비교 행(00 'R111 사용자 규칙' 줄의 비교 기준)
+    _r111_lbl: Optional[str] = None
+    _r111_alloc: Optional[Dict[str, Any]] = None
+    if _r111kw and bool(getattr(cfg, "R111_RULE_ROWS", True)) and ind_alloc and str(alloc.get("mode")) in ("sector_linked", "sector_prob"):
+        try:
+            _cap111 = float(alloc.get("cap_used", 0.05) or 0.05)
+            if _live111 and alloc_pre111 is not None:
+                _r111_lbl, _r111_alloc = "비교: R110 라이브(R111 사용자 규칙 없음)", alloc_pre111
+            else:
+                _r111_lbl = "R111 사용자 규칙(우하향·급락 잦음 제외 → M풀 저위험 · 그 밖 현금)"
+                _r111_alloc = build_allocation(_pos_live, panel, cfg, mode=str(alloc.get("mode")), parent_w=parent_w, parent_of=parent_of,
+                                               ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=_cap111, **_live_kw, **_sc_kw, **_r111kw)
+            _rr111 = _alloc_row(_r111_lbl, _r111_alloc, _cap111, None)
+            if _rr111:
+                _td = (alloc if _live111 else _r111_alloc).get("tilt") or {}
+                _rr111.update({"연동출처": (f"규칙 종목 몫 평균 {_td.get('r111_freed_mean')} → 저위험 종목 {_td.get('r111_filled_mean')} · "
+                                          f"현금 {_td.get('r111_cash_mean')} · M 풀노출일 {_td.get('r111_full_days')}")})
+                alloc_rows.append(_rr111)
+                _grid_rets[_r111_lbl] = _r111_alloc.get("port_ret")
+        except Exception as e:
+            _r111_lbl = None
+            log("ALLOC", kv(event="r111_rule_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
     # [v0.11.0 R99 N3] 라이브가 sector_prob(사용자 overrides)면 라이브 행을 따로 싣고 노란색으로 칠한다.
     if _live_mode == "sector_prob" and str(alloc.get("mode")) == "sector_prob":
         try:
@@ -6767,7 +7050,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _live_u = (f"★ K★ 라이브({alloc.get('live_rule')} · {(alloc.get('exec') or {}).get('fill', '-')})" if alloc.get("live_rule")
                            else f"★ K★ 라이브({alloc.get('mode', '-')} · {(alloc.get('exec') or {}).get('fill', '-')})")
                 _rets: Dict[str, pd.Series] = {_live_u: _pr0}
-                _cmp_lbls = ([_nobuf_lbl] if _nobuf_lbl else []) + ([_prev_live_lbl] if _prev_live_lbl else []) + \
+                _cmp_lbls = ([_r111_lbl] if _r111_lbl else []) + \
+                            ([_nobuf_lbl] if _nobuf_lbl else []) + ([_prev_live_lbl] if _prev_live_lbl else []) + \
                             [str(x[0]) for x in tuple(getattr(cfg, "PROB_TILT_GRID", ()) or ())[:1]] + \
                             ["고정슬리브 1/N(v0.6.0 라이브)"] + \
                             [str(x[0]) for x in tuple(getattr(cfg, "SECTOR_LINK_GRID", ()) or ())] + \
@@ -6810,6 +7094,9 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     if _nobuf_lbl and _grid_rets.get(_nobuf_lbl) is not None:          # [v0.19.0 R110] 현금 완충 사후 판정 기준 행
                         user_rel_info["nobuf_label"] = _nobuf_lbl
                         user_rel_info["halves_nobuf"] = _halves_u(_grid_rets[_nobuf_lbl])
+                    if _r111_lbl and _grid_rets.get(_r111_lbl) is not None:            # [v0.20.0 R111] 사용자 규칙 행(측정 또는 비교 기준)
+                        user_rel_info["r111_label"] = _r111_lbl
+                        user_rel_info["halves_r111"] = _halves_u(_grid_rets[_r111_lbl])
                     for _pvl2 in list(prob_variants):
                         _rr2 = _grid_rets.get(_pvl2)
                         if _rr2 is not None:
@@ -6939,7 +7226,20 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             _state_board = {"ok": False, "note": f"산출 실패 {type(e).__name__}: {str(e)[:140]}"}
             log("STATE", kv(event="state_board_failed", err=type(e).__name__, msg=str(e)[:160], action="없이 계속(라이브 무영향)"),
                 level="warning")
+    # ---- [v0.20.0 R111] 사용자 규칙 준수·위험 지표 — 라이브 vs R111 규칙 행(보유 비중 가중 · 같은 섹터 평균 대비) ----
+    _c111: Dict[str, Any] = {}
+    if _m111.get("ok"):
+        try:
+            _t2s = {t: str((sector_of or {}).get(t, "") or "") for t in sorted(panel)} if isinstance(sector_of, dict) else {}
+            _c111["live"] = r111_compliance(alloc.get("target_w"), _m111, _t2s)
+            if _r111_alloc is not None:
+                _c111["row"] = r111_compliance(_r111_alloc.get("target_w"), _m111, _t2s)
+            log("RISK", kv(event="r111_compliance", live=str({k[:8]: round(v, 3) for k, v in _c111.get("live", {}).items()}),
+                           row=str({k[:8]: round(v, 3) for k, v in _c111.get("row", {}).items()})))
+        except Exception as e:
+            log("RISK", kv(event="r111_compliance_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
     return {"cfg": cfg, "panel": panel, "pos": pos, "prices": {**prices, **prices_h}, "fund": fund,
+            "r111_masks": _m111, "r111_label": _r111_lbl, "r111_live": bool(_live111), "r111_compliance": _c111,   # [v0.20.0 R111]
             "state_board": _state_board,                                                            # [v0.14.0 R104]
             "dip_states": _dip,                                                                     # [v0.15.0 R105] 00W
             "live_dip": bool(_live_dip), "prev_live_label": _prev_live_lbl,                          # [v0.18.0 R109] 라이브 물타기·어닝 손절
@@ -7525,7 +7825,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         try:                                                     # [v0.19.0 R110] 날짜별 상태 판정 · 종목 위험(매수 뒤 급락 확률)
             _pnl = res.get("panel") or {}
             _lvk = {t: pd.to_numeric(_pnl[t].get("종가"), errors="coerce") for t in sorted(_pnl) if "종가" in _pnl[t].columns}
-            _rtk = stock_risk_today(res.get("risk_flags") or {}, res.get("names"))
+            _rtk = stock_risk_today(res.get("risk_flags") or {}, res.get("names"), m111=res.get("r111_masks"))
             _lut = pd.DataFrame([{"블록": "E. 매수 뒤 급락 확률표(S&P 500 그 시점 구성 2010~2026 · r110/risklut.py)",
                                   "항목": f"{'장기 우하향' if k[0] else '장기 우하향 아님'} · 변동성 {k[1]} · {'급락 잦음(1년 3회+)' if k[2] else '급락 잦음 아님'}",
                                   "값": f"21일 −10% {v[0]:.1f}% · 63일 −15% {v[1]:.1f}% · 126일 뒤 −15% 이하 {v[2]:.1f}% · 63일 섹터 대비 {v[3]:+.2f}%"}
@@ -7534,9 +7834,14 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             _nhi = int((_rtk.get("위험 등급") == "높음").sum()) if len(_rtk) else 0
             _ndn = int((_rtk.get("장기 우하향") == "예").sum()) if len(_rtk) else 0
             _avoid = ", ".join(_rtk[_rtk["사용자 규칙 판정(R110 · 참고)"].astype(str).str.startswith("피하기")]["항목"].tolist()[:10]) if len(_rtk) else ""
-            _xv, _lv10 = build_state_verify_sheets(_lvk, "주식", names=res.get("names"), extra_today=_rtk, extra_blocks=[_lut, _evk],
+            _ev111 = pd.DataFrame([{"블록": "G. R111 사용자 규칙 배분 시험(편향 없는 K 닮은 유니버스 60개 · K 표본)", "항목": a, "값": b, "판정": c}
+                                   for a, b, c in K_R111_EVIDENCE])
+            _x111 = (", ".join(_rtk[_rtk["R111 규칙: 매수 제외"].astype(str).str.startswith("제외")]["항목"].tolist()[:14])
+                     if len(_rtk) and "R111 규칙: 매수 제외" in _rtk.columns else "")
+            _xv, _lv10 = build_state_verify_sheets(_lvk, "주식", names=res.get("names"), extra_today=_rtk, extra_blocks=[_lut, _evk, _ev111],
                                                    extra_line=(f"매수 뒤 급락 위험 높음(21일 −10% ≥ 20%) {_nhi}종목 · 장기 우하향 {_ndn}종목"
                                                                + (f"(피하기 권고: {_avoid})" if _avoid else "")
+                                                               + (f" · R111 규칙 매수 제외: {_x111}" if _x111 else "")
                                                                + f" · 라이브 현금 완충 ×{res.get('cash_buffer', 1.0)}"))
             sheets.update(_xv)
             _add.extend(_lv10)
@@ -7667,6 +7972,12 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _add.append(("★ 배분 방식(v0.9.0 R94 · 사용자 지시 '주식층도 같이 개선' — 신뢰도 = 하락 회피·상승 참여)",
                      _mline + ("" if _md in ("sector_linked", "sector_prob") else
                                " ★ 총노출(=방어)은 v0.6.0 1/N 규칙과 날마다 동일하다 — 바뀐 것은 그 노출의 종목 간 분배뿐이다.")))
+        try:                                                                   # [v0.20.0 R111] 사용자 규칙 준수·위험·성과
+            _r111v = r111_rule_line(res)
+            if _r111v:
+                _add.append(_r111v)
+        except Exception as e:
+            log("REPORT", kv(event="r111_line_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
         try:                                                                   # [v0.19.0 R110] 현금 완충 사후 판정
             _cbv = cash_buffer_verdict_line(res)
             if _cbv:
@@ -8415,6 +8726,106 @@ def r110_validate(fr: Dict[str, pd.DataFrame], member: Optional[pd.DataFrame] = 
     return T
 
 
+# [R111 · 2026-09-28 사용자 지시] 상태 확신도(확실/불확실) — "종목 상태에 따라 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부
+#   등을 수치로 측정해서 각각 목표치를 정하고 그 목표치가 나올 때까지 … 설계해서 테스트 … predictor_test 코드에 있는 방법도 도움이 되는 부분이 있으면 참고해".
+#   방법(r111/stconf*.py · predictor_test 방식): 상태마다 '지속·성공' 라벨(상승 계열 → 63일 뒤 장기 상승 · 하락 계열 → 63일 뒤 장기 하락) · 자기 가격 지표 12개 ·
+#     지표별 백분위(10~90) 임계값 탐색(커버리지 ≥ 40%) · 상관 ≥ 0.85 중복 제거 · 상위 K 다수결 · 네 층 합동 학습(층마다 같은 수 표본 · M 지수 ETF 10개 ~2012 ·
+#     S ~2012 · I ~2016 · K S&P 500 그 시점 구성 ~2017 · 엠바고 63거래일) → 층별 검증(2013~/2013~/2017~/2018~ · 학습에 안 쓴 기간) · 설정 = 학습 향상폭 최대
+#     (확실 비율 ≥ 15%). 층마다 따로 맞춘 규칙(10~12/30)·부스팅(검증에서 더 나쁨)보다 합동 공통 규칙(14/25)이 기간 변화에 덜 흔들렸다.
+#   변수(σ = 자기 63일 일간 표준편차): d200 = (종가/200일선 − 1)/(σ√63) · s50 = 50일선 10일 변화/(σ√10) · h252 = 252일 고점 대비/(σ√63) ·
+#     m126 = 126일 수익/(σ√126) · g50 = (50일선/200일선 − 1)/(σ√63) · 상승/하락 추세 나이(연속 거래일 · 최대 500) · z(21일 고점 대비 σ).
+R111_CONF_RULES: Dict[str, Tuple[int, Tuple[Tuple[str, str, float], ...]]] = {
+    "상승추세 지속": (3, (("d200", ">=", 1.322), ("s50", ">=", 0.3953), ("h252", ">=", -0.221))),
+    "상승추세 중 기술적 조정": (3, (("d200", ">=", 0.6918), ("m126", ">=", 0.8844), ("h252", ">=", -0.781))),
+    "상승추세 중 큰 하락": (3, (("upage", "<=", 124.0), ("z", ">=", -2.205), ("h252", ">=", -1.302))),
+    "하락추세 중 기술적 반등": (3, (("d200", "<=", -0.4296), ("g50", "<=", -0.6272), ("m126", "<=", -0.5142))),
+    "하락추세 지속": (4, (("d200", "<=", -0.902), ("m126", "<=", -0.7845), ("g50", "<=", -0.512), ("s50", "<=", -0.4096), ("dnage", ">=", 45.0))),
+    "상승 전환 시도": (3, (("d200", ">=", 0.4548), ("h252", ">=", -0.7867), ("m126", ">=", 0.5662))),
+    "하락 전환 경고": (3, (("d200", "<=", -0.356), ("m126", "<=", -0.3841), ("h252", "<=", -1.201)))}
+R111_CONF_NAME: Dict[str, str] = {"d200": "200일선 거리(σ)", "s50": "50일선 기울기(σ)", "h252": "252일 고점 대비(σ)", "m126": "126일 모멘텀(σ)",
+                                  "g50": "50/200 간격(σ)", "upage": "상승 추세 나이(일)", "dnage": "하락 추세 나이(일)", "z": "21일 낙폭 z"}
+R111_CONF_TARGET: Dict[str, float] = {"상승추세 지속": 85.0, "상승추세 중 기술적 조정": 80.0, "상승추세 중 큰 하락": 60.0, "하락추세 중 기술적 반등": 60.0,
+                                      "하락추세 지속": 70.0, "상승 전환 시도": 75.0, "하락 전환 경고": 50.0}
+# (층, 상태, 기준 유지%, 확실 유지%, 불확실 유지%, 확실 비율%, 해 일관성, 판정) — 검증 기간(학습에 안 쓴 기간) · 목표: 확실 유지 ≥ 목표 · 비율 ≥ 15% · 해 일관성 ≥ 70%
+R111_CONF_EVIDENCE: Tuple[Tuple[str, str, float, float, float, float, str, str], ...] = (
+    ("M", "상승추세 지속", 83.5, 91.4, 81.2, 22.8, "10/13", "✓"), ("S", "상승추세 지속", 83.0, 91.2, 80.8, 20.7, "12/14", "✓"),
+    ("I", "상승추세 지속", 77.5, 90.1, 74.6, 18.6, "10/10", "✓"), ("K", "상승추세 지속", 73.7, 87.1, 70.7, 18.4, "9/9", "✓"),
+    ("M", "상승추세 중 기술적 조정", 76.8, 89.7, 73.5, 20.6, "9/9", "✓"), ("S", "상승추세 중 기술적 조정", 78.8, 87.1, 76.6, 21.3, "6/9", "미달(일관성)"),
+    ("I", "상승추세 중 기술적 조정", 71.2, 90.3, 66.7, 18.9, "9/9", "✓"), ("K", "상승추세 중 기술적 조정", 64.7, 78.4, 61.7, 18.3, "9/9", "미달(적중 78.4 < 80)"),
+    ("K", "상승추세 중 큰 하락", 60.0, 58.8, 60.4, 22.9, "4/9", "미달(적중·일관성) — 확신도 근거 없음"),
+    ("M", "하락추세 중 기술적 반등", 36.7, 59.2, 33.2, 13.6, "4/4", "미달(적중 59.2 · 비율)"), ("S", "하락추세 중 기술적 반등", 40.6, 69.6, 37.0, 11.1, "3/3", "미달(비율 11%)"),
+    ("I", "하락추세 중 기술적 반등", 47.9, 73.0, 40.1, 23.6, "7/8", "✓"), ("K", "하락추세 중 기술적 반등", 51.6, 68.6, 45.9, 25.2, "9/9", "✓"),
+    ("M", "하락추세 지속", 54.9, 66.9, 51.0, 24.6, "5/6", "미달(적중 66.9 < 70)"), ("S", "하락추세 지속", 51.1, 67.5, 48.0, 16.1, "4/7", "미달(적중·일관성)"),
+    ("I", "하락추세 지속", 59.4, 82.4, 51.4, 25.9, "9/9", "✓"), ("K", "하락추세 지속", 62.8, 79.8, 57.1, 25.1, "9/9", "✓"),
+    ("M", "상승 전환 시도", 70.2, 85.7, 67.2, 16.3, "3/4", "✓"), ("S", "상승 전환 시도", 69.6, 92.6, 64.9, 16.9, "4/4", "✓"),
+    ("I", "상승 전환 시도", 64.7, 74.2, 63.1, 14.0, "4/7", "미달(적중·비율·일관성)"), ("K", "상승 전환 시도", 60.9, 80.1, 57.6, 14.5, "9/9", "미달(비율 14.5%)"),
+    ("M", "하락 전환 경고", 40.4, 45.9, 39.2, 17.3, "5/8", "미달(적중·일관성)"), ("S", "하락 전환 경고", 33.2, 47.3, 31.0, 13.8, "7/9", "미달(적중·비율)"),
+    ("I", "하락 전환 경고", 39.2, 54.8, 35.8, 18.1, "10/10", "✓"), ("K", "하락 전환 경고", 44.4, 61.5, 39.8, 21.5, "9/9", "✓"))
+R111_CONF_NOTE: str = ("검증 14/25칸 목표 달성(층별 따로 10~12/30 · 부스팅은 검증에서 더 나쁨). 미달은 주로 지수·섹터의 하락추세 지속(67%)·하락 전환 경고(46~47%) — "
+                       "지수·섹터 하락은 V자 반등(2016·2018·2020·2023)이 잦아 가격 지표만으로는 지속을 확신하기 어렵다. 상승추세 지속(확실)은 네 층 모두 87~91%.")
+
+
+def _r111_run_len(flag: pd.DataFrame, cap: int = 500) -> pd.DataFrame:
+    """[R111] 연속 True 거래일 수(인과 · 최대 cap)."""
+    f = pd.DataFrame(flag).fillna(False).astype(bool)
+    out = {}
+    for c in f.columns:
+        a = f[c].to_numpy()
+        cs = np.cumsum(a)
+        reset = np.maximum.accumulate(np.where(~a, cs, 0))
+        out[c] = np.minimum(cs - reset, cap)
+    return pd.DataFrame(out, index=f.index)
+
+
+def r111_confidence(fr: Dict[str, pd.DataFrame]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """[R111] 상태 확신도 — (확실 여부 bool, 충족 조건 수) 날짜 × 자산. 규칙 = R111_CONF_RULES(자기 가격만 · 인과 · t일 종가까지)."""
+    C, s63, ma200, st = fr["C"], fr["s63"], fr["ma200"], fr["state"]
+    ma50 = C.rolling(50, min_periods=40).mean()
+    X = {"d200": (C / ma200 - 1.0) / (s63 * np.sqrt(63.0)),
+         "s50": (ma50 / ma50.shift(10) - 1.0) / (s63 * np.sqrt(10.0)),
+         "h252": (C / C.rolling(252, min_periods=200).max() - 1.0) / (s63 * np.sqrt(63.0)),
+         "m126": (C / C.shift(126) - 1.0) / (s63 * np.sqrt(126.0)),
+         "g50": (ma50 / ma200 - 1.0) / (s63 * np.sqrt(63.0)),
+         "upage": _r111_run_len(fr["up"]).astype(float), "dnage": _r111_run_len(fr["dn"]).astype(float), "z": fr["z"]}
+    conf = pd.DataFrame(False, index=C.index, columns=C.columns)
+    votes = pd.DataFrame(np.nan, index=C.index, columns=C.columns)
+    for nm, (need, rules) in R111_CONF_RULES.items():
+        m = (st == nm)
+        if not bool(m.values.any()):
+            continue
+        v = pd.DataFrame(0, index=C.index, columns=C.columns)
+        for k, op, thr in rules:
+            x = X[k]
+            v = v + (((x >= thr) if op == ">=" else (x <= thr)) & x.notna()).astype(int)
+        conf = conf | (m & (v >= min(int(need), len(rules))))
+        votes = votes.mask(m, v)
+    return conf, votes
+
+
+def r111_validate_conf(fr: Dict[str, pd.DataFrame], conf: pd.DataFrame, member: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """[R111] 이 층 자기 이력에서 상태별 확실/불확실 → 63일 뒤 같은 장기 추세 유지율(상승 계열 = 장기 상승 · 하락 계열 = 장기 하락)."""
+    S_ = fr["state"]
+    if member is not None:
+        S_ = S_.where(pd.DataFrame(member).reindex(index=S_.index, columns=S_.columns).fillna(False).astype(bool))
+    rows = []
+    for nm in R110_STATES:
+        lab = fr["up63"] if nm.startswith(("상승추세", "상승 전환")) else fr["dn63"]
+        m = (S_ == nm) & lab.notna()
+        n = int(m.values.sum())
+        if n < 30:
+            continue
+        c1 = m & conf.reindex(index=S_.index, columns=S_.columns).fillna(False).astype(bool)
+        b = float(np.nanmean(lab.where(m).values))
+        p1 = float(np.nanmean(lab.where(c1).values)) if bool(c1.values.any()) else float("nan")
+        p0 = float(np.nanmean(lab.where(m & ~c1).values)) if bool((m & ~c1).values.any()) else float("nan")
+        tg = R111_CONF_TARGET.get(nm, float("nan"))
+        rows.append({"상태": nm, "R111 확실 비율%": round(float(c1.values.sum()) / n * 100.0, 1), "R111 전체 → 63일 뒤 추세 유지%": round(b * 100.0, 1),
+                     "R111 확실 → 유지%": (round(p1 * 100.0, 1) if p1 == p1 else None), "R111 불확실 → 유지%": (round(p0 * 100.0, 1) if p0 == p0 else None),
+                     "R111 목표%": tg,
+                     "R111 이 층 이력 판정": ("✓" if (p1 == p1 and p1 * 100.0 >= tg and float(c1.values.sum()) / n >= 0.15) else "미달")})
+    return pd.DataFrame(rows)
+
+
 def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: Optional[Dict[str, str]] = None,
                               hist_since: str = "2018-01-01", member: Optional[pd.DataFrame] = None,
                               extra_today: Optional[pd.DataFrame] = None, extra_blocks: Optional[List[pd.DataFrame]] = None,
@@ -8429,6 +8840,16 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
     C = pd.DataFrame(lv).sort_index()
     fr = r110_state_frames(C)
     V = r110_validate(fr, member=member)
+    # [R111] 상태 확신도(확실/불확실) — B 표에 이 층 자기 이력 확실/불확실 → 63일 뒤 추세 유지 · C 오늘 확신도 · E 규칙·목표·검증 · 01V '(확실)'
+    try:
+        cf111, cv111 = r111_confidence(fr)
+        V111 = r111_validate_conf(fr, cf111, member=member)
+    except Exception:
+        cf111, cv111, V111 = None, None, pd.DataFrame()
+    if len(V) and len(V111):
+        _at = dict(V.attrs)
+        V = V.merge(V111, on="상태", how="left")
+        V.attrs.update(_at)
     parts = [pd.DataFrame([{"블록": "A. 상태 정의(R110 · 인과 · t일 종가까지)", "항목": a, "값": b} for a, b in R110_DEF])]
     if len(V):
         parts.append(V.rename(columns={"상태": "항목"}).assign(블록=f"B. 검증 — 이 층 자기 이력({str(C.index[0].date())}~ · 전체 21일 평균 "
@@ -8455,6 +8876,14 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
                         "63일 뒤 추세 유지%": (vr.get("63일 뒤 장기 상승%") if now.startswith(("상승추세", "상승 전환")) else
                                           (vr.get("63일 뒤 장기 하락%") if now.startswith(("하락추세", "하락 전환")) else None)),
                         "수익 판정(이 층 검증)": vr.get("수익 판정")})
+        if cf111 is not None and now in R111_CONF_RULES:                  # [R111] 오늘 확신도
+            _need, _rules = R111_CONF_RULES[now]
+            _vv = cv111[t].get(dt)
+            _sure = bool(cf111[t].get(dt, False))
+            rec["R111 확신도"] = "확실" if _sure else "불확실"
+            rec["확신 조건 충족"] = (f"{int(_vv)}/{len(_rules)}(필요 {min(int(_need), len(_rules))})" if _vv == _vv and _vv is not None else "-")
+            if vr is not None:
+                rec["이 층 이력: 이 확신도 → 63일 뒤 추세 유지%"] = vr.get("R111 확실 → 유지%" if _sure else "R111 불확실 → 유지%")
         rows.append(rec)
     Td = pd.DataFrame(rows)
     if isinstance(extra_today, pd.DataFrame) and len(extra_today) and len(Td):
@@ -8462,6 +8891,15 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
     if len(Td):
         parts.append(Td.assign(블록=f"C. 오늘 상태(기준일 {Td['기준일'].max()} · 그 상태의 과거 통계는 B · 측정 · 투자 권유 아님)"))
     parts.append(pd.DataFrame([{"블록": "D. 긴 역사 근거(R110 · 네 층)", "항목": a, "값": b, "판정": c} for a, b, c in R110_EVIDENCE]))
+    _e111 = [{"블록": "E. R111 상태 확신도 — 규칙(네 층 공통) · 목표", "항목": nm,
+              "값": f"{min(int(nd), len(rl))}/{len(rl)} 충족: " + " · ".join(f"{R111_CONF_NAME.get(k, k)} {op} {thr:g}" for k, op, thr in rl),
+              "판정": f"목표: 확실 → 63일 뒤 {'장기 상승' if nm.startswith(('상승추세', '상승 전환')) else '장기 하락'} 유지 ≥ {R111_CONF_TARGET.get(nm, float('nan')):g}% · "
+                      "확실 비율 ≥ 15% · 해 일관성 ≥ 70%"} for nm, (nd, rl) in R111_CONF_RULES.items()]
+    _e111 += [{"블록": "E. R111 상태 확신도 — 검증(학습에 안 쓴 기간 · 네 층 합동 학습)", "항목": f"{ly} · {nm}",
+               "값": f"기준 {b0:.1f}% → 확실 {b1:.1f}% · 불확실 {b2:.1f}% · 확실 비율 {sh:.1f}% · 해 일관성 {cs}", "판정": jd}
+              for ly, nm, b0, b1, b2, sh, cs, jd in R111_CONF_EVIDENCE]
+    _e111.append({"블록": "E. R111 상태 확신도 — 검증(학습에 안 쓴 기간 · 네 층 합동 학습)", "항목": "요약", "값": R111_CONF_NOTE, "판정": "14/25 ✓"})
+    parts.append(pd.DataFrame(_e111))
     for eb in (extra_blocks or []):
         if isinstance(eb, pd.DataFrame) and len(eb):
             parts.append(eb)
@@ -8470,6 +8908,9 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
     H = st[st.index >= pd.Timestamp(hist_since)].copy()
     H = H.apply(lambda col: col.map(lambda v: R110_SHORT.get(v, "-") if isinstance(v, str) else "-"))
+    if cf111 is not None:                                                  # [R111] 확실이면 '(확실)'
+        _cfh = cf111.reindex(index=H.index, columns=H.columns).fillna(False).astype(bool)
+        H = H.where(~_cfh, H.astype(str) + "(확실)")
     H.columns = [f"{c}({names.get(c, c)})" if names.get(c, c) != c else str(c) for c in H.columns]
     H.insert(0, "날짜", H.index)
     out = {"00V_상태판정검증": df, "01V_날짜별상태": H.reset_index(drop=True)}
@@ -8482,7 +8923,11 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
             + f" | 이 층 검증: 상승추세 지속 → 63일 뒤 상승 유지 {_v('상승추세 지속', '63일 뒤 장기 상승%')}% · 하락추세 지속 → 하락 유지 "
             f"{_v('하락추세 지속', '63일 뒤 장기 하락%')}% · 기술적 조정 뒤 21일 {_v('상승추세 중 기술적 조정', '21일 평균%')}%(상승 "
             f"{_v('상승추세 중 기술적 조정', '21일 상승 확률%')}%) · 하락 중 반등 {_v('하락추세 중 기술적 반등', '수익 판정')}"
-            + (f" | {extra_line}" if extra_line else "") + " — 세부 00V · 날짜별 01V. 연구·교육용, 투자 자문 아님.")
+            + (f" | R111 확신도(이 층 이력 · 63일 뒤 추세 유지): 상승지속 확실 {_v('상승추세 지속', 'R111 확실 → 유지%')}% vs 불확실 "
+               f"{_v('상승추세 지속', 'R111 불확실 → 유지%')}% · 하락지속 확실 {_v('하락추세 지속', 'R111 확실 → 유지%')}% vs 불확실 "
+               f"{_v('하락추세 지속', 'R111 불확실 → 유지%')}% · 오늘 확실 {int((Td.get('R111 확신도') == '확실').sum()) if len(Td) and 'R111 확신도' in Td else 0}/{len(Td)}"
+               if cf111 is not None else "")
+            + (f" | {extra_line}" if extra_line else "") + " — 세부 00V(E: 확신도 규칙·목표·검증) · 날짜별 01V. 연구·교육용, 투자 자문 아님.")
     if len(Td) and len(Td) <= 14:
         line = " · ".join(f"{r['항목']} {R110_SHORT.get(r['오늘 상태'], r['오늘 상태'])}" for _, r in Td.iterrows()) + " | " + line
     return out, [(f"★★★ 날짜별 상태 판정(R110 · {layer} · 우상향 중 큰 하락 · 기술적 조정/반등 · 추세 지속/전환)", line)]

@@ -17,6 +17,18 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.89.0 - 2026-09-28 - [R111 상태 확신도(확실/불확실 · 목표·검증) — S★ 무변경]
+#    사용자 지시(2026-09-28): "… 종목 상태에 따라 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부 등을 수치로 측정해서 각각
+#      목표치를 정하고 그 목표치가 나올 때까지 너가 가설이든, 규칙이든 로직을 계속 설계해서 테스트하고 끝나면 알려줘 그리고 predictor_test 코드에 있는 방법도 …".
+#    ── R111 연구(r111/stconf*.py) ── 목표(학습에 안 쓴 기간 · 확실 판정): 상승추세 지속 → 63일 뒤 장기 상승 ≥ 85% · 기술적 조정 ≥ 80% · 큰 하락 ≥ 60% ·
+#      하락 중 반등 → 하락 유지 ≥ 60% · 하락추세 지속 ≥ 70% · 상승 전환 ≥ 75% · 하락 전환 경고 ≥ 50% · 확실 비율 ≥ 15% · 해 일관성 ≥ 70%.
+#      반복 1~5: 층별 3지표 다수결(10/30) → 설정 격자(2/3·3/3·3/5·4/5) → 시장 맥락 지표 → 얕은 부스팅(검증에서 더 나쁨 · 기각) → 내부 워크포워드 선택(10/30) →
+#      ★ 네 층 합동 학습 공통 규칙 · 향상폭 최대 선택(14/25 ✓ · 상승추세 지속 확실 M 91.4 · S 91.2 · I 90.1 · K 87.1%).
+#      미달: 지수·섹터 하락추세 지속(67%) · 하락 전환 경고(46~47%) · K 기술적 조정(78.4%) · 큰 하락(근거 없음).
+#    (§1 공통 원본) R111_CONF_RULES · R111_CONF_NAME · R111_CONF_TARGET · R111_CONF_EVIDENCE · R111_CONF_NOTE · _r111_run_len · r111_confidence ·
+#         r111_validate_conf · build_state_verify_sheets(B 표에 이 층 확실/불확실 → 63일 뒤 추세 유지 · C 오늘 'R111 확신도'·'확신 조건 충족' · E 규칙·목표·검증 ·
+#         01V '(확실)' · 00 줄). M·K 사본 동일 · I는 S 함수를 부른다(I 코드 무변경).
+#    (§2) LAYER_MIN_VERSIONS M v1.73.0 · S v0.89.0 · I v0.56.0. 시험 t111/test_r111.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.88.0 - 2026-09-28 - [R110 날짜별 상태 판정·검증(00V · 01V) — S★ 무변경]
 #    사용자 지시(2026-09-28): "… 종목 상태에 따라 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부 등을 정확하게 파악할 수
 #      있어야 해 국면, 섹터, 산업, 주식 모두 지표 사용 및 검증 통해 가능하도록 개선해".
@@ -3074,7 +3086,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.88.0"
+VERSION = "v0.89.0"
 VERSION_DATE = "2026-09-27"
 
 # =============================================================================
@@ -8722,7 +8734,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.72.0", "sector_rotation": "v0.88.0", "industry_rotation": "v0.56.0"}   # [v0.88.0 R110]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.73.0", "sector_rotation": "v0.89.0", "industry_rotation": "v0.56.0"}   # [v0.89.0 R111]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -20752,6 +20764,106 @@ def r110_validate(fr: Dict[str, pd.DataFrame], member: Optional[pd.DataFrame] = 
     return T
 
 
+# [R111 · 2026-09-28 사용자 지시] 상태 확신도(확실/불확실) — "종목 상태에 따라 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부
+#   등을 수치로 측정해서 각각 목표치를 정하고 그 목표치가 나올 때까지 … 설계해서 테스트 … predictor_test 코드에 있는 방법도 도움이 되는 부분이 있으면 참고해".
+#   방법(r111/stconf*.py · predictor_test 방식): 상태마다 '지속·성공' 라벨(상승 계열 → 63일 뒤 장기 상승 · 하락 계열 → 63일 뒤 장기 하락) · 자기 가격 지표 12개 ·
+#     지표별 백분위(10~90) 임계값 탐색(커버리지 ≥ 40%) · 상관 ≥ 0.85 중복 제거 · 상위 K 다수결 · 네 층 합동 학습(층마다 같은 수 표본 · M 지수 ETF 10개 ~2012 ·
+#     S ~2012 · I ~2016 · K S&P 500 그 시점 구성 ~2017 · 엠바고 63거래일) → 층별 검증(2013~/2013~/2017~/2018~ · 학습에 안 쓴 기간) · 설정 = 학습 향상폭 최대
+#     (확실 비율 ≥ 15%). 층마다 따로 맞춘 규칙(10~12/30)·부스팅(검증에서 더 나쁨)보다 합동 공통 규칙(14/25)이 기간 변화에 덜 흔들렸다.
+#   변수(σ = 자기 63일 일간 표준편차): d200 = (종가/200일선 − 1)/(σ√63) · s50 = 50일선 10일 변화/(σ√10) · h252 = 252일 고점 대비/(σ√63) ·
+#     m126 = 126일 수익/(σ√126) · g50 = (50일선/200일선 − 1)/(σ√63) · 상승/하락 추세 나이(연속 거래일 · 최대 500) · z(21일 고점 대비 σ).
+R111_CONF_RULES: Dict[str, Tuple[int, Tuple[Tuple[str, str, float], ...]]] = {
+    "상승추세 지속": (3, (("d200", ">=", 1.322), ("s50", ">=", 0.3953), ("h252", ">=", -0.221))),
+    "상승추세 중 기술적 조정": (3, (("d200", ">=", 0.6918), ("m126", ">=", 0.8844), ("h252", ">=", -0.781))),
+    "상승추세 중 큰 하락": (3, (("upage", "<=", 124.0), ("z", ">=", -2.205), ("h252", ">=", -1.302))),
+    "하락추세 중 기술적 반등": (3, (("d200", "<=", -0.4296), ("g50", "<=", -0.6272), ("m126", "<=", -0.5142))),
+    "하락추세 지속": (4, (("d200", "<=", -0.902), ("m126", "<=", -0.7845), ("g50", "<=", -0.512), ("s50", "<=", -0.4096), ("dnage", ">=", 45.0))),
+    "상승 전환 시도": (3, (("d200", ">=", 0.4548), ("h252", ">=", -0.7867), ("m126", ">=", 0.5662))),
+    "하락 전환 경고": (3, (("d200", "<=", -0.356), ("m126", "<=", -0.3841), ("h252", "<=", -1.201)))}
+R111_CONF_NAME: Dict[str, str] = {"d200": "200일선 거리(σ)", "s50": "50일선 기울기(σ)", "h252": "252일 고점 대비(σ)", "m126": "126일 모멘텀(σ)",
+                                  "g50": "50/200 간격(σ)", "upage": "상승 추세 나이(일)", "dnage": "하락 추세 나이(일)", "z": "21일 낙폭 z"}
+R111_CONF_TARGET: Dict[str, float] = {"상승추세 지속": 85.0, "상승추세 중 기술적 조정": 80.0, "상승추세 중 큰 하락": 60.0, "하락추세 중 기술적 반등": 60.0,
+                                      "하락추세 지속": 70.0, "상승 전환 시도": 75.0, "하락 전환 경고": 50.0}
+# (층, 상태, 기준 유지%, 확실 유지%, 불확실 유지%, 확실 비율%, 해 일관성, 판정) — 검증 기간(학습에 안 쓴 기간) · 목표: 확실 유지 ≥ 목표 · 비율 ≥ 15% · 해 일관성 ≥ 70%
+R111_CONF_EVIDENCE: Tuple[Tuple[str, str, float, float, float, float, str, str], ...] = (
+    ("M", "상승추세 지속", 83.5, 91.4, 81.2, 22.8, "10/13", "✓"), ("S", "상승추세 지속", 83.0, 91.2, 80.8, 20.7, "12/14", "✓"),
+    ("I", "상승추세 지속", 77.5, 90.1, 74.6, 18.6, "10/10", "✓"), ("K", "상승추세 지속", 73.7, 87.1, 70.7, 18.4, "9/9", "✓"),
+    ("M", "상승추세 중 기술적 조정", 76.8, 89.7, 73.5, 20.6, "9/9", "✓"), ("S", "상승추세 중 기술적 조정", 78.8, 87.1, 76.6, 21.3, "6/9", "미달(일관성)"),
+    ("I", "상승추세 중 기술적 조정", 71.2, 90.3, 66.7, 18.9, "9/9", "✓"), ("K", "상승추세 중 기술적 조정", 64.7, 78.4, 61.7, 18.3, "9/9", "미달(적중 78.4 < 80)"),
+    ("K", "상승추세 중 큰 하락", 60.0, 58.8, 60.4, 22.9, "4/9", "미달(적중·일관성) — 확신도 근거 없음"),
+    ("M", "하락추세 중 기술적 반등", 36.7, 59.2, 33.2, 13.6, "4/4", "미달(적중 59.2 · 비율)"), ("S", "하락추세 중 기술적 반등", 40.6, 69.6, 37.0, 11.1, "3/3", "미달(비율 11%)"),
+    ("I", "하락추세 중 기술적 반등", 47.9, 73.0, 40.1, 23.6, "7/8", "✓"), ("K", "하락추세 중 기술적 반등", 51.6, 68.6, 45.9, 25.2, "9/9", "✓"),
+    ("M", "하락추세 지속", 54.9, 66.9, 51.0, 24.6, "5/6", "미달(적중 66.9 < 70)"), ("S", "하락추세 지속", 51.1, 67.5, 48.0, 16.1, "4/7", "미달(적중·일관성)"),
+    ("I", "하락추세 지속", 59.4, 82.4, 51.4, 25.9, "9/9", "✓"), ("K", "하락추세 지속", 62.8, 79.8, 57.1, 25.1, "9/9", "✓"),
+    ("M", "상승 전환 시도", 70.2, 85.7, 67.2, 16.3, "3/4", "✓"), ("S", "상승 전환 시도", 69.6, 92.6, 64.9, 16.9, "4/4", "✓"),
+    ("I", "상승 전환 시도", 64.7, 74.2, 63.1, 14.0, "4/7", "미달(적중·비율·일관성)"), ("K", "상승 전환 시도", 60.9, 80.1, 57.6, 14.5, "9/9", "미달(비율 14.5%)"),
+    ("M", "하락 전환 경고", 40.4, 45.9, 39.2, 17.3, "5/8", "미달(적중·일관성)"), ("S", "하락 전환 경고", 33.2, 47.3, 31.0, 13.8, "7/9", "미달(적중·비율)"),
+    ("I", "하락 전환 경고", 39.2, 54.8, 35.8, 18.1, "10/10", "✓"), ("K", "하락 전환 경고", 44.4, 61.5, 39.8, 21.5, "9/9", "✓"))
+R111_CONF_NOTE: str = ("검증 14/25칸 목표 달성(층별 따로 10~12/30 · 부스팅은 검증에서 더 나쁨). 미달은 주로 지수·섹터의 하락추세 지속(67%)·하락 전환 경고(46~47%) — "
+                       "지수·섹터 하락은 V자 반등(2016·2018·2020·2023)이 잦아 가격 지표만으로는 지속을 확신하기 어렵다. 상승추세 지속(확실)은 네 층 모두 87~91%.")
+
+
+def _r111_run_len(flag: pd.DataFrame, cap: int = 500) -> pd.DataFrame:
+    """[R111] 연속 True 거래일 수(인과 · 최대 cap)."""
+    f = pd.DataFrame(flag).fillna(False).astype(bool)
+    out = {}
+    for c in f.columns:
+        a = f[c].to_numpy()
+        cs = np.cumsum(a)
+        reset = np.maximum.accumulate(np.where(~a, cs, 0))
+        out[c] = np.minimum(cs - reset, cap)
+    return pd.DataFrame(out, index=f.index)
+
+
+def r111_confidence(fr: Dict[str, pd.DataFrame]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """[R111] 상태 확신도 — (확실 여부 bool, 충족 조건 수) 날짜 × 자산. 규칙 = R111_CONF_RULES(자기 가격만 · 인과 · t일 종가까지)."""
+    C, s63, ma200, st = fr["C"], fr["s63"], fr["ma200"], fr["state"]
+    ma50 = C.rolling(50, min_periods=40).mean()
+    X = {"d200": (C / ma200 - 1.0) / (s63 * np.sqrt(63.0)),
+         "s50": (ma50 / ma50.shift(10) - 1.0) / (s63 * np.sqrt(10.0)),
+         "h252": (C / C.rolling(252, min_periods=200).max() - 1.0) / (s63 * np.sqrt(63.0)),
+         "m126": (C / C.shift(126) - 1.0) / (s63 * np.sqrt(126.0)),
+         "g50": (ma50 / ma200 - 1.0) / (s63 * np.sqrt(63.0)),
+         "upage": _r111_run_len(fr["up"]).astype(float), "dnage": _r111_run_len(fr["dn"]).astype(float), "z": fr["z"]}
+    conf = pd.DataFrame(False, index=C.index, columns=C.columns)
+    votes = pd.DataFrame(np.nan, index=C.index, columns=C.columns)
+    for nm, (need, rules) in R111_CONF_RULES.items():
+        m = (st == nm)
+        if not bool(m.values.any()):
+            continue
+        v = pd.DataFrame(0, index=C.index, columns=C.columns)
+        for k, op, thr in rules:
+            x = X[k]
+            v = v + (((x >= thr) if op == ">=" else (x <= thr)) & x.notna()).astype(int)
+        conf = conf | (m & (v >= min(int(need), len(rules))))
+        votes = votes.mask(m, v)
+    return conf, votes
+
+
+def r111_validate_conf(fr: Dict[str, pd.DataFrame], conf: pd.DataFrame, member: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """[R111] 이 층 자기 이력에서 상태별 확실/불확실 → 63일 뒤 같은 장기 추세 유지율(상승 계열 = 장기 상승 · 하락 계열 = 장기 하락)."""
+    S_ = fr["state"]
+    if member is not None:
+        S_ = S_.where(pd.DataFrame(member).reindex(index=S_.index, columns=S_.columns).fillna(False).astype(bool))
+    rows = []
+    for nm in R110_STATES:
+        lab = fr["up63"] if nm.startswith(("상승추세", "상승 전환")) else fr["dn63"]
+        m = (S_ == nm) & lab.notna()
+        n = int(m.values.sum())
+        if n < 30:
+            continue
+        c1 = m & conf.reindex(index=S_.index, columns=S_.columns).fillna(False).astype(bool)
+        b = float(np.nanmean(lab.where(m).values))
+        p1 = float(np.nanmean(lab.where(c1).values)) if bool(c1.values.any()) else float("nan")
+        p0 = float(np.nanmean(lab.where(m & ~c1).values)) if bool((m & ~c1).values.any()) else float("nan")
+        tg = R111_CONF_TARGET.get(nm, float("nan"))
+        rows.append({"상태": nm, "R111 확실 비율%": round(float(c1.values.sum()) / n * 100.0, 1), "R111 전체 → 63일 뒤 추세 유지%": round(b * 100.0, 1),
+                     "R111 확실 → 유지%": (round(p1 * 100.0, 1) if p1 == p1 else None), "R111 불확실 → 유지%": (round(p0 * 100.0, 1) if p0 == p0 else None),
+                     "R111 목표%": tg,
+                     "R111 이 층 이력 판정": ("✓" if (p1 == p1 and p1 * 100.0 >= tg and float(c1.values.sum()) / n >= 0.15) else "미달")})
+    return pd.DataFrame(rows)
+
+
 def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: Optional[Dict[str, str]] = None,
                               hist_since: str = "2018-01-01", member: Optional[pd.DataFrame] = None,
                               extra_today: Optional[pd.DataFrame] = None, extra_blocks: Optional[List[pd.DataFrame]] = None,
@@ -20766,6 +20878,16 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
     C = pd.DataFrame(lv).sort_index()
     fr = r110_state_frames(C)
     V = r110_validate(fr, member=member)
+    # [R111] 상태 확신도(확실/불확실) — B 표에 이 층 자기 이력 확실/불확실 → 63일 뒤 추세 유지 · C 오늘 확신도 · E 규칙·목표·검증 · 01V '(확실)'
+    try:
+        cf111, cv111 = r111_confidence(fr)
+        V111 = r111_validate_conf(fr, cf111, member=member)
+    except Exception:
+        cf111, cv111, V111 = None, None, pd.DataFrame()
+    if len(V) and len(V111):
+        _at = dict(V.attrs)
+        V = V.merge(V111, on="상태", how="left")
+        V.attrs.update(_at)
     parts = [pd.DataFrame([{"블록": "A. 상태 정의(R110 · 인과 · t일 종가까지)", "항목": a, "값": b} for a, b in R110_DEF])]
     if len(V):
         parts.append(V.rename(columns={"상태": "항목"}).assign(블록=f"B. 검증 — 이 층 자기 이력({str(C.index[0].date())}~ · 전체 21일 평균 "
@@ -20792,6 +20914,14 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
                         "63일 뒤 추세 유지%": (vr.get("63일 뒤 장기 상승%") if now.startswith(("상승추세", "상승 전환")) else
                                           (vr.get("63일 뒤 장기 하락%") if now.startswith(("하락추세", "하락 전환")) else None)),
                         "수익 판정(이 층 검증)": vr.get("수익 판정")})
+        if cf111 is not None and now in R111_CONF_RULES:                  # [R111] 오늘 확신도
+            _need, _rules = R111_CONF_RULES[now]
+            _vv = cv111[t].get(dt)
+            _sure = bool(cf111[t].get(dt, False))
+            rec["R111 확신도"] = "확실" if _sure else "불확실"
+            rec["확신 조건 충족"] = (f"{int(_vv)}/{len(_rules)}(필요 {min(int(_need), len(_rules))})" if _vv == _vv and _vv is not None else "-")
+            if vr is not None:
+                rec["이 층 이력: 이 확신도 → 63일 뒤 추세 유지%"] = vr.get("R111 확실 → 유지%" if _sure else "R111 불확실 → 유지%")
         rows.append(rec)
     Td = pd.DataFrame(rows)
     if isinstance(extra_today, pd.DataFrame) and len(extra_today) and len(Td):
@@ -20799,6 +20929,15 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
     if len(Td):
         parts.append(Td.assign(블록=f"C. 오늘 상태(기준일 {Td['기준일'].max()} · 그 상태의 과거 통계는 B · 측정 · 투자 권유 아님)"))
     parts.append(pd.DataFrame([{"블록": "D. 긴 역사 근거(R110 · 네 층)", "항목": a, "값": b, "판정": c} for a, b, c in R110_EVIDENCE]))
+    _e111 = [{"블록": "E. R111 상태 확신도 — 규칙(네 층 공통) · 목표", "항목": nm,
+              "값": f"{min(int(nd), len(rl))}/{len(rl)} 충족: " + " · ".join(f"{R111_CONF_NAME.get(k, k)} {op} {thr:g}" for k, op, thr in rl),
+              "판정": f"목표: 확실 → 63일 뒤 {'장기 상승' if nm.startswith(('상승추세', '상승 전환')) else '장기 하락'} 유지 ≥ {R111_CONF_TARGET.get(nm, float('nan')):g}% · "
+                      "확실 비율 ≥ 15% · 해 일관성 ≥ 70%"} for nm, (nd, rl) in R111_CONF_RULES.items()]
+    _e111 += [{"블록": "E. R111 상태 확신도 — 검증(학습에 안 쓴 기간 · 네 층 합동 학습)", "항목": f"{ly} · {nm}",
+               "값": f"기준 {b0:.1f}% → 확실 {b1:.1f}% · 불확실 {b2:.1f}% · 확실 비율 {sh:.1f}% · 해 일관성 {cs}", "판정": jd}
+              for ly, nm, b0, b1, b2, sh, cs, jd in R111_CONF_EVIDENCE]
+    _e111.append({"블록": "E. R111 상태 확신도 — 검증(학습에 안 쓴 기간 · 네 층 합동 학습)", "항목": "요약", "값": R111_CONF_NOTE, "판정": "14/25 ✓"})
+    parts.append(pd.DataFrame(_e111))
     for eb in (extra_blocks or []):
         if isinstance(eb, pd.DataFrame) and len(eb):
             parts.append(eb)
@@ -20807,6 +20946,9 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
     H = st[st.index >= pd.Timestamp(hist_since)].copy()
     H = H.apply(lambda col: col.map(lambda v: R110_SHORT.get(v, "-") if isinstance(v, str) else "-"))
+    if cf111 is not None:                                                  # [R111] 확실이면 '(확실)'
+        _cfh = cf111.reindex(index=H.index, columns=H.columns).fillna(False).astype(bool)
+        H = H.where(~_cfh, H.astype(str) + "(확실)")
     H.columns = [f"{c}({names.get(c, c)})" if names.get(c, c) != c else str(c) for c in H.columns]
     H.insert(0, "날짜", H.index)
     out = {"00V_상태판정검증": df, "01V_날짜별상태": H.reset_index(drop=True)}
@@ -20819,7 +20961,11 @@ def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: O
             + f" | 이 층 검증: 상승추세 지속 → 63일 뒤 상승 유지 {_v('상승추세 지속', '63일 뒤 장기 상승%')}% · 하락추세 지속 → 하락 유지 "
             f"{_v('하락추세 지속', '63일 뒤 장기 하락%')}% · 기술적 조정 뒤 21일 {_v('상승추세 중 기술적 조정', '21일 평균%')}%(상승 "
             f"{_v('상승추세 중 기술적 조정', '21일 상승 확률%')}%) · 하락 중 반등 {_v('하락추세 중 기술적 반등', '수익 판정')}"
-            + (f" | {extra_line}" if extra_line else "") + " — 세부 00V · 날짜별 01V. 연구·교육용, 투자 자문 아님.")
+            + (f" | R111 확신도(이 층 이력 · 63일 뒤 추세 유지): 상승지속 확실 {_v('상승추세 지속', 'R111 확실 → 유지%')}% vs 불확실 "
+               f"{_v('상승추세 지속', 'R111 불확실 → 유지%')}% · 하락지속 확실 {_v('하락추세 지속', 'R111 확실 → 유지%')}% vs 불확실 "
+               f"{_v('하락추세 지속', 'R111 불확실 → 유지%')}% · 오늘 확실 {int((Td.get('R111 확신도') == '확실').sum()) if len(Td) and 'R111 확신도' in Td else 0}/{len(Td)}"
+               if cf111 is not None else "")
+            + (f" | {extra_line}" if extra_line else "") + " — 세부 00V(E: 확신도 규칙·목표·검증) · 날짜별 01V. 연구·교육용, 투자 자문 아님.")
     if len(Td) and len(Td) <= 14:
         line = " · ".join(f"{r['항목']} {R110_SHORT.get(r['오늘 상태'], r['오늘 상태'])}" for _, r in Td.iterrows()) + " | " + line
     return out, [(f"★★★ 날짜별 상태 판정(R110 · {layer} · 우상향 중 큰 하락 · 기술적 조정/반등 · 추세 지속/전환)", line)]
