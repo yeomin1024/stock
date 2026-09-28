@@ -1,5 +1,8 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.57.0 - 2026-09-28 - [R112 주·월·분기 목표 판정(00P F·G · 00 줄) — I★ 무변경]
+#    사용자 지시(2026-09-28): "… 국면, 섹터, 산업, 주식별 모두 분기별, 월별, 주별로 내가 말한 목표치를 측정할 수 있도록 해서 목표치 높게 설정해서 달성하도록 계속 테스트해 …".
+#    (§1) 00P가 S v0.90.0 build_period_sheet(rel=I★ 전체 기간 회피·참여·MDD)로 F 목표 판정 · G 설계 반복 근거 · 00 줄. 시험 t112/test_r112.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.56.0 - 2026-09-28 - [R110 날짜별 상태 판정·검증(00V · 01V · 29산업) — I★ 무변경]
 #    사용자 지시(2026-09-28): "… 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부 등을 정확하게 파악할 수 있어야 해 국면, 섹터,
 #      산업, 주식 모두 지표 사용 및 검증 통해 가능하도록 개선해".
@@ -1958,7 +1961,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.56.0"
+VERSION = "v0.57.0"
 VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -14148,7 +14151,16 @@ def r105_extra_sheets_i(S, alloc: Optional[Dict[str, Any]], results: Optional[Di
                 r5 = {f"★ I★ 라이브({str(alloc.get('label_star'))[:28]})": bt["strategy_ret"]}
                 if src.get("spy_m_ret") is not None:
                     r5["M(SPY 국면전략)"] = src["spy_m_ret"]
-                pdf, pl = S.build_period_sheet(r5, src["spy_ret"], "산업")
+                _rel112 = None                              # [v0.57.0 R112] 전체 기간 회피·참여·MDD → 목표 판정(S v0.90.0 build_period_sheet rel)
+                try:
+                    _u112 = S.user_rel_portfolio({"x": list(r5.values())[0]}, src["spy_ret"], S.CFG).iloc[0]
+                    _rel112 = {"회피": float(_u112["하락 회피율"]) * 100.0, "참여": float(_u112["상승 참여율"]) * 100.0, "MDD": float(_u112["MDD"]) * 100.0}
+                except Exception:
+                    _rel112 = None
+                try:
+                    pdf, pl = S.build_period_sheet(r5, src["spy_ret"], "산업", rel=_rel112)
+                except TypeError:                           # S v0.89.0 이하(rel 인자 없음)
+                    pdf, pl = S.build_period_sheet(r5, src["spy_ret"], "산업")
                 out["00P_기간별수익배수"] = pdf
                 lines.extend(pl)
         except Exception as e:

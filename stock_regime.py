@@ -1,5 +1,12 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.22.0 - 2026-09-28 - [R112 ★★ 현금 완충 ×0.8 → ×0.9(사용자 선택) · 주·월·분기 목표 판정(00P F·G · 00 줄)]
+#    사용자 지시(2026-09-28): "회피랑 상승 종합해서 더 높은쪽 방안으로 수정해 그리고 국면, 섹터, 산업, 주식별 모두 분기별, 월별, 주별로 내가 말한 목표치를
+#      측정할 수 있도록 해서 목표치 높게 설정해서 달성하도록 계속 테스트해 …".
+#    (§1 ★★ 라이브) LIVE_CASH_BUFFER 0.8 → 0.9: R111 규칙 위 K★ 회피/참여 78.75/79.14 → 76.10/90.14(등급 중간 → 높음 · 합 157.8 → 166.2) · 배수 16.3 → 22.9 ·
+#         칼마 3.99 → 4.08 · MDD −9.46 → −10.60% · 월 최악 ×0.935 → ×0.927 · 손실 달 19 그대로. 사전등록 회피 문턱(완충 없음 대비) 3.0 → 2.0.
+#         물타기 규칙(R109)은 유지(사용자 '더 높은 쪽' — 유지 시 참여 +1.31 · 회피 −0.10). R111 판정(×0.9 하네스): Δ회피 +3.65 · ΔMDD +0.30 · 월/분기 최악 ↑ → 유지.
+#    (§2 공통 사본 · S v0.90.0 원본) 00P F 목표 판정(rel = K★ 전체 기간 회피·참여·MDD) · G 설계 반복 근거 · 00 줄. 시험 t112/test_r112.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.21.0 - 2026-09-28 - [R111 ★★ 사용자 규칙 배분 라이브(사용자 선택 "켜서 올려" · 무하락 예외 승인)]
 #    (§1 ★★ 라이브) StockConfig LIVE_R111_RULE = True — 장기 우하향 · 예측 불가능한 급락 잦음(예고 없던 고유 급락 1년 3회+ · 과매도 아님) 종목은 사지 않고
 #         그 몫은 M 풀노출일만 저위험 종목(1/σ² · 상한 10%) · 그 밖 날 현금. 현금 완충 ×0.8 · 물타기 기울임 · 어닝 하락 손절은 그대로.
@@ -694,7 +701,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.21.0"
+VERSION = "v0.22.0"
 VERSION_DATE = "2026-09-27"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1162,8 +1169,11 @@ class StockConfig:
     #   현금 완충 ×0.8: 회피 69.4 → 75.5 · 참여 120.2 → 93.5(사용자 수용) · MDD −12.06 → −9.73% · 월 최악 ×0.904 → ×0.923 · 손실 달 17 그대로 · 배수 55.9 → 25.6.
     #   사전등록(다음 Kaggle · 00 'R110 현금 완충 사후 판정'): 라이브 vs '비교: R109까지 라이브(현금 완충 없음)' — Δ회피 ≥ +LIVE_CASH_BUFFER_MIN_AVOID(3.0)%p ·
     #     ΔMDD ≥ 0 · Δ월 최악 ≥ 0 · Δ월/분기 손실 ≤ 0(참여·배수 하락은 사용자 수용) → 미달이면 되돌림 권고. 되돌리기: k_overrides={"LIVE_CASH_BUFFER": 1.0}.
-    LIVE_CASH_BUFFER: float = 0.8
-    LIVE_CASH_BUFFER_MIN_AVOID: float = 3.0
+    #   [v0.22.0 R112 ★★ 사용자 선택(2026-09-28 "회피랑 상승 종합해서 더 높은쪽 방안으로 수정해")] ×0.8 → ×0.9: R111 규칙 위에서 회피+참여 합 157.8 → 166.2
+    #     (회피 78.75 → 76.10 · 참여 79.14 → 90.14 → 사용자 등급 높음 회복 · 배수 16.3 → 22.9 · MDD −9.46 → −10.60% · 손실 달 19 그대로).
+    #     사전등록 회피 문턱 3.0 → 2.0(×0.9는 완충 없음 대비 +2.65%p — 사용자가 고른 절충). 되돌리기 k_overrides={"LIVE_CASH_BUFFER": 0.8}.
+    LIVE_CASH_BUFFER: float = 0.9
+    LIVE_CASH_BUFFER_MIN_AVOID: float = 2.0
     # [v0.19.0 R110 측정 전용] 사용자 규칙 '장기 우하향 · 매수 뒤 급락 위험 종목 → 현금' 행(13 · 00U) — 라이브와 같은 현금 완충을 적용한 뒤 비교.
     R110_CASH_RULE_ROWS: bool = True
     R110_CRASH_PROB_CUT: float = 25.0             # 매수 뒤 21일 −10% 급락 확률(%) 문턱(S&P 500 확률표)
@@ -6054,7 +6064,7 @@ def cash_buffer_verdict_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
             f"Δ칼마 {d['칼마']:+.3f} · Δ배수 {d['배수']:+.2f}"
             + (" → ✓ 유지(사전등록 통과)" if v["keep"] else f" → ✗ 되돌림 권고({', '.join(v['fails'])}) — k_overrides={{'LIVE_CASH_BUFFER': 1.0}}")
             + ". 근거(R110): 위험 종목 골라 빼기·저위험 종목으로 옮기기·위험 예측 현금 조절은 모두 같은 노출의 현금 완충보다 나빴다. 연구·교육용, 투자 자문 아님.")
-    return ("★★★ R110 현금 완충 사후 판정(사전등록 · 사용자 선택 '종목 비중 ×0.8') — 회피를 크게 올리는 설계", body)
+    return ("★★★ R110 현금 완충 사후 판정(사전등록 · 사용자 선택 R110 ×0.8 → R112 ×0.9 '회피+참여 합 높은 쪽')", body)
 
 
 def r111_rule_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
@@ -7898,7 +7908,10 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 for _nm in [k for k in _pvk if str(k).startswith("R105 ")]:
                     if isinstance(_grs.get(_nm), pd.Series):
                         _r_k[_nm[:40]] = _grs[_nm]
-                _pdf, _pl = build_period_sheet(_r_k, _spy_k, "주식")
+                _ui112, _ur112 = (res.get("user_rel_info") or {}), res.get("user_rel")      # [v0.22.0 R112] 전체 기간 회피·참여·MDD → 목표 판정
+                _rel112 = ({"회피": float(_ui112["avoid"]) * 100.0, "참여": float(_ui112["part"]) * 100.0, "MDD": float(_ur112.iloc[0]["MDD"]) * 100.0}
+                           if _ui112.get("ok") and isinstance(_ur112, pd.DataFrame) and len(_ur112) else None)
+                _pdf, _pl = build_period_sheet(_r_k, _spy_k, "주식", rel=_rel112)
                 sheets["00P_기간별수익배수"] = _pdf
                 _add[0:0] = _pl                                   # 00 앞쪽(추가 줄 묶음의 맨 앞)
         except Exception as _epp:
@@ -8360,7 +8373,8 @@ def period_line(lab: str, d: Dict[str, Any]) -> str:
             f"월 SPY 이긴 {g('월 SPY 이긴%')}% · 꾸준함 **{d.get('꾸준함 등급', '-')}**")
 
 
-def build_period_sheet(rets: Dict[str, pd.Series], spy: pd.Series, title: str = "") -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+def build_period_sheet(rets: Dict[str, pd.Series], spy: pd.Series, title: str = "",
+                       rel: Optional[Dict[str, float]] = None) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
     """[v0.15.0] 00P_기간별수익배수 — A 요약(행마다 주·월·분기) · B 분기별 · C 월별 · D 주별 · E 연도별(첫 행 = 라이브 vs SPY)."""
     sp = pd.to_numeric(pd.Series(spy), errors="coerce").fillna(0.0)
     sp.index = pd.DatetimeIndex(sp.index)
@@ -8402,6 +8416,13 @@ def build_period_sheet(rets: Dict[str, pd.Series], spy: pd.Series, title: str = 
                             "전략": np.where(a > 1 + 1e-9, "플러스", np.where(a < 1 - 1e-9, "마이너스", "보합(현금)")),
                             "SPY 이김": np.where(a >= b - 1e-12, "✓", "✗")})
         parts.append(dfb.iloc[::-1])                  # 최근이 위
+    _tl112: List[Tuple[str, str]] = []
+    if items:                                   # [R112] F 주·월·분기 목표 판정 · G 설계 반복 근거(rel = 전체 기간 회피·참여·MDD %)
+        try:
+            _tdf112, _tl112 = build_period_target_block(live_r, sp, title, rel)
+            parts.append(_tdf112)
+        except Exception:
+            _tl112 = []
     df = pd.concat(parts, ignore_index=True, sort=False)
     lead = ["블록", "항목", "값"]
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
@@ -8411,7 +8432,111 @@ def build_period_sheet(rets: Dict[str, pd.Series], spy: pd.Series, title: str = 
         lines.append((f"★★★ 꾸준함 — 주·월·분기 수익배수(R105 사용자 지시 · 현금 이자 0 · 세부 00P){(' · ' + title) if title else ''}",
                       period_line(items[0][0][:40], summ[items[0][0]]) + " || " + period_line("SPY 단순보유", summ["SPY 단순보유(참고)"])
                       + " — 전체 배수 한 숫자가 아니라 기간마다 꾸준히 좋은지로 본다. 연구·교육용, 투자 자문 아님."))
+    lines.extend(_tl112)
     return df, lines
+
+# =============================================================================
+# [R112 · 2026-09-28 사용자 지시] 주·월·분기 목표 판정(네 층 공통 · 원본 S · M·K 사본 글자 그대로 · I는 S 호출)
+# =============================================================================
+#   사용자 지시: "국면, 섹터, 산업, 주식별 모두 분기별, 월별, 주별로 내가 말한 목표치를 측정할 수 있도록 해서 목표치 높게 설정해서 달성하도록 계속 테스트해".
+#   기간 지표(주 금요일 마감 · 월 · 분기 · 조각 기간 제외): 플러스% · 손실 기간 수·% · 최악 배수 ·
+#     하락 회피%(기간) = 1 − Σ전략 수익 / ΣSPY 수익(SPY가 빠진 기간만 · 100% = SPY 하락을 전부 피함 · 100% 초과 = 그 기간에 벌었음) ·
+#     상승 참여%(기간) = Σ전략 수익 / ΣSPY 수익(SPY가 오른 기간만) · 급락기 손실%(SPY 주 −3% · 월 −5% · 분기 −8% 이하인 기간 중 전략도 손실) · SPY 이긴%.
+#   목표는 높게(R112 사전등록) — M은 SPY 1배 한도라 상승 참여 목표만 낮춘다. 전체 기간 회피·참여(지그재그)는 호출 쪽이 넘기면 함께 판정.
+R112_PERIOD_TARGET: Dict[str, Tuple[str, float]] = {
+    "회피(지그재그)": (">=", 75.0), "참여(지그재그)": (">=", 90.0), "MDD%": (">=", -10.0),
+    "주 플러스%": (">=", 55.0), "주 손실%": ("<=", 22.0), "주 최악 배수": (">=", 0.96), "주 하락 회피%": (">=", 80.0), "주 상승 참여%": (">=", 85.0),
+    "월 플러스%": (">=", 75.0), "월 손실 수": ("<=", 15.0), "월 최악 배수": (">=", 0.95), "월 하락 회피%": (">=", 100.0), "월 상승 참여%": (">=", 100.0),
+    "월 급락기 손실%": ("<=", 30.0),
+    "분기 플러스%": (">=", 90.0), "분기 손실 수": ("<=", 2.0), "분기 최악 배수": (">=", 0.95), "분기 하락 회피%": (">=", 120.0), "분기 상승 참여%": (">=", 120.0)}
+R112_PERIOD_TARGET_M: Dict[str, Tuple[str, float]] = dict(R112_PERIOD_TARGET, **{"참여(지그재그)": (">=", 80.0), "주 상승 참여%": (">=", 75.0),
+                                                                                  "월 상승 참여%": (">=", 90.0), "분기 상승 참여%": (">=", 95.0)})
+R112_CRASH: Dict[str, float] = {"주": -0.03, "월": -0.05, "분기": -0.08}
+# R112 설계 반복(r112/sweep1~7 · 네 층 하네스 = Kaggle R111 재현 · 현금 이자 0) — 목표 달성 칸(네 층 합 · 76칸): 기준 16
+R112_PERIOD_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
+    ("기준(R111 라이브 · K 완충 ×0.9)", "M 2 · S 2 · I 4 · K 8 / 19 — 막는 칸: 주 손실%(현금 주가 25%라 플러스가 적다) · 월 손실 수(19~24) · 월·주 최악 · 분기 손실 수",
+     "출발점"),
+    ("기간 손익 관리(월·분기 이익 보전 · 월·분기·주 손절 · 30안)", "분기 이익 4% → 현금: 칸 27이지만 배수 16.8 → 3.3 · 손절류: 손실 달 줄지 않음",
+     "✗ 수익을 버려 칸을 채우는 것뿐 · 손절은 반등을 놓친다"),
+    ("과열 감축(SPY 상승추세 지속 · 확실 → E × 0.5~0.85)", "확실 날 다음 5일 SPY 1993~2017 −0.06% · 2018~ −0.01%(급락 12.5%) · 적용 시 손실 달 −4 · 칸 −1",
+     "✗ 회피·참여 합 감소"),
+    ("방어 슬리브(현금 몫 → 국채·금 · 45안)", "★ 현금 몫 → IEF(100일선 위일 때만): 칸 16 → 30 · 회피 +3.0 · 참여 +1.5 · 배수·칼마·MDD·분기 최악 개선 · 단 손실 달 +2~3/층",
+     "⚠ 손실 달 증가(현금 달이 국채 약세 달로) — 사용자 선택 대기"),
+    ("슬리브 활성 조건(부분 노출일만 · 이탈 뒤 5~42일 · SPY 하락 상태 · 60안)", "부분 노출일만: 회피·참여 모두 감소 · 어떤 조건도 손실 달 증가를 없애지 못함", "✗"),
+    ("K 조건부 현금 완충(풀노출일 × b · 그 밖 × b′ · 18안)", "회피+참여 합은 평균 노출에 비례 — 균일 ×0.9가 경계 위", "균일 ×0.9(사용자 선택)"),
+    ("S★·I★ 상태 게이트(장기 우하향 · 하락 상태 · 과열 → 재분배/현금 · 16안)", "장기 우하향 제외: 참여 −8~−30 · I 과열 → 재분배: 회피 +2.3 · 참여 −0.8 · 손실 달 −2 · 분기 손실 +1",
+     "✗(무하락 미달)"))
+
+
+def period_target_metrics(r: pd.Series, spy: pd.Series) -> Dict[str, float]:
+    """[R112] 주·월·분기 목표 지표(현금 이자 0 · 조각 기간 제외)."""
+    out: Dict[str, float] = {}
+    sp = pd.to_numeric(pd.Series(spy), errors="coerce").fillna(0.0)
+    rr = pd.to_numeric(pd.Series(r), errors="coerce").reindex(sp.index).fillna(0.0)
+    for lab, f, n in PERIOD_FREQS:
+        a = period_multiples(rr, f, n) - 1.0
+        b = (period_multiples(sp, f, n) - 1.0).reindex(a.index)
+        if not len(a):
+            continue
+        dn, up = b < 0, b > 0
+        out[f"{lab} 플러스%"] = float((a > 1e-9).mean() * 100.0)
+        out[f"{lab} 손실%"] = float((a < -1e-9).mean() * 100.0)
+        out[f"{lab} 손실 수"] = float((a < -1e-9).sum())
+        out[f"{lab} 최악 배수"] = float(1.0 + a.min())
+        out[f"{lab} 하락 회피%"] = float((1.0 - a[dn].sum() / b[dn].sum()) * 100.0) if bool(dn.any()) and float(b[dn].sum()) != 0 else float("nan")
+        out[f"{lab} 상승 참여%"] = float(a[up].sum() / b[up].sum() * 100.0) if bool(up.any()) and float(b[up].sum()) != 0 else float("nan")
+        cr = b <= R112_CRASH[lab]
+        out[f"{lab} 급락기 손실%"] = float((a[cr] < -1e-9).mean() * 100.0) if bool(cr.any()) else float("nan")
+        out[f"{lab} SPY 이긴%"] = float((a > b + 1e-12).mean() * 100.0)
+        out[f"{lab} 기간수"] = float(len(a))
+    return out
+
+
+def period_target_judge(m: Dict[str, float], market: bool = False) -> Tuple[List[Dict[str, Any]], int, int, List[str]]:
+    """[R112] 목표 판정 행 · 달성 수 · 판정 수 · 미달 항목(값 없는 목표는 판정에서 뺀다)."""
+    tg = R112_PERIOD_TARGET_M if market else R112_PERIOD_TARGET
+    rows, ok, n, miss = [], 0, 0, []
+    for k, (op, v) in tg.items():
+        x = m.get(k)
+        has = isinstance(x, (int, float)) and x == x
+        good = bool(has and ((x >= v - 1e-9) if op == ">=" else (x <= v + 1e-9)))
+        if has:
+            n += 1
+            ok += int(good)
+            if not good:
+                miss.append(k)
+        rows.append({"항목": k, "값": (round(float(x), 3) if has else None), "목표": f"{'≥' if op == '>=' else '≤'} {v:g}",
+                     "판정": ("✓" if good else ("✗" if has else "-(자료 없음)"))})
+    return rows, ok, n, miss
+
+
+def build_period_target_block(r: pd.Series, spy: pd.Series, title: str = "", rel: Optional[Dict[str, float]] = None
+                              ) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[R112] 00P F 블록(목표 판정) · G 블록(설계 반복 근거) · 00 줄. rel = {'회피': %, '참여': %, 'MDD': %}(있으면 함께 판정)."""
+    m = period_target_metrics(r, spy)
+    if isinstance(rel, dict):
+        for a_, b_ in (("회피", "회피(지그재그)"), ("참여", "참여(지그재그)"), ("MDD", "MDD%")):
+            if isinstance(rel.get(a_), (int, float)):
+                m[b_] = float(rel[a_])
+    market = str(title).startswith("시장")
+    rows, ok, n, miss = period_target_judge(m, market)
+    F = f"F. R112 주·월·분기 목표 판정(높은 목표 · 사전등록{' · M은 상승 참여 목표 SPY 1배 한도로' if market else ''})"
+    df = pd.DataFrame([{"블록": F, **x} for x in rows])
+    extra = [{"블록": F, "항목": f"{lab} 기간수 · SPY 이긴%", "값": f"{int(m.get(f'{lab} 기간수', 0))} · {m.get(f'{lab} SPY 이긴%', float('nan')):.1f}%"}
+             for lab, _, _ in PERIOD_FREQS]
+    G = "G. R112 설계 반복 근거(네 층 하네스 · 현금 이자 0)"
+    df = pd.concat([df, pd.DataFrame(extra), pd.DataFrame([{"블록": G, "항목": a, "값": b, "판정": c} for a, b, c in R112_PERIOD_EVIDENCE])],
+                   ignore_index=True, sort=False)
+
+    def g(k, fmt="{:.1f}"):
+        x = m.get(k)
+        return fmt.format(x) if isinstance(x, (int, float)) and x == x else "-"
+    line = (f"목표 달성 **{ok}/{n}** · 주: 플러스 {g('주 플러스%')}% · 손실 {g('주 손실%')}% · 최악 ×{g('주 최악 배수', '{:.3f}')} · 하락 회피 {g('주 하락 회피%')}% · "
+            f"상승 참여 {g('주 상승 참여%')}% | 월: 플러스 {g('월 플러스%')}% · 손실 {g('월 손실 수', '{:.0f}')}달 · 최악 ×{g('월 최악 배수', '{:.3f}')} · "
+            f"하락 회피 {g('월 하락 회피%')}% · 상승 참여 {g('월 상승 참여%')}% · 급락기 손실 {g('월 급락기 손실%')}% | 분기: 플러스 {g('분기 플러스%')}% · "
+            f"손실 {g('분기 손실 수', '{:.0f}')}분기 · 최악 ×{g('분기 최악 배수', '{:.3f}')} · 하락 회피 {g('분기 하락 회피%')}% · 상승 참여 {g('분기 상승 참여%')}%"
+            + (f" | 미달: {', '.join(miss)}" if miss else " | 전부 ✓") + " — 세부 00P F·G 블록. 연구·교육용, 투자 자문 아님.")
+    return df, [(f"★★★ R112 주·월·분기 목표 판정(사용자 지시 · 높은 목표){(' · ' + title) if title else ''}", line)]
 
 
 def apply_mult_colors(wb, ws, df: pd.DataFrame) -> int:
