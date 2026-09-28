@@ -17,7 +17,13 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
-#  VERSION: v0.91.0 - 2026-09-28 - [R113 수익률(%) 목표 판정 · 금리 급등 경보 측정 행(A · B) — S★ 무변경]
+#  VERSION: v0.92.0 - 2026-09-29 - [R115 M 금리 급등 경보 A 라이브 대응 — 경보 없음 비교 행 · S 규칙 무변경]
+#    사용자 지시(2026-09-29): "… 금리 급등 경보 On으로 해서 수정해봐 …". M v1.76.0이 R113 A를 라이브 target_pos로 쓰므로 S★·I★는 경보가 켜진 M 노출을 받는다.
+#    (§1) R98 측정 목록에 'pos_pre_r113' → [회피참여비교] 'R113 이전 라이브(금리 경보 없음 · 비교)' 행(경보가 라이브가 아니면 라이브와 같아 생략) ·
+#         M 층 행 'M R113 이전 라이브(금리 경보 없음)'(spy_m_r113pre_ret).
+#    (§2) _r113_rate_lines: 이전 라이브 행이 있으면 첫 항목 = 라이브(A) − 경보 없음(Δ + 무하락 판정) · A 행(= 라이브)은 건너뜀 · B는 라이브 대비.
+#    (§3) LAYER_MIN_VERSIONS M v1.76.0 · S v0.92.0 · I v0.58.0(I 무변경 — K 전달 필터 'R113 '이 새 행도 통과). 시험 t115/test_r115.py. 연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v0.91.0 - 2026-09-28 -[R113 수익률(%) 목표 판정 · 금리 급등 경보 측정 행(A · B) — S★ 무변경]
 #    사용자 지시(2026-09-28): "국채는 넣지말고 목표는 ~%수익 이상으로 높게 유지해" (앞 지시: "… 목표치 도달하도록 계속 테스트해 … 수정해").
 #    (§1 공통 원본) R113_PCT_TARGET(_M) · R113_PCT_TH · period_target_metrics · period_target_judge · build_period_target_block → 00P F 16칸:
 #         연 수익 ≥ 40% · 회피 ≥ 75 · 참여 ≥ 90 · MDD ≥ −10% · 주 평균 ≥ +0.75% · +0.5% 이상 주 ≥ 45% · 최악 주 ≥ −4% · 손실 주 ≤ 22% ·
@@ -3106,7 +3112,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.91.0"
+VERSION = "v0.92.0"
 VERSION_DATE = "2026-09-27"
 
 # =============================================================================
@@ -8754,7 +8760,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.75.0", "sector_rotation": "v0.91.0", "industry_rotation": "v0.58.0"}   # [v0.91.0 R113]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.76.0", "sector_rotation": "v0.92.0", "industry_rotation": "v0.58.0"}   # [v0.92.0 R115]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -10460,7 +10466,8 @@ def user_reliability_pack(sres: Dict[str, Any], cfg) -> Dict[str, Any]:
     if _mp96 is not None:
         rets["M R96 변동성 관리 없음(= R95 M)"] = _mp96
     for _k98, _n98 in (("spy_m_r98v1_ret", "M R98 V1 변동성 짝(측정)"), ("spy_m_r98vrp_ret", "M R98 VRP(측정)"),   # [v0.79.0 R98]
-                       ("spy_m_r113a_ret", "M R113 A 금리 경보+안정 올리기(측정)"), ("spy_m_r113b_ret", "M R113 B 금리 경보만(측정)")):   # [v0.91.0 R113]
+                       ("spy_m_r113a_ret", "M R113 A 금리 경보+안정 올리기(측정)"), ("spy_m_r113b_ret", "M R113 B 금리 경보만(측정)"),   # [v0.91.0 R113]
+                       ("spy_m_r113pre_ret", "M R113 이전 라이브(금리 경보 없음)")):   # [v0.92.0 R115]
         if al.get(_k98) is not None:
             rets[_n98] = al.get(_k98)
     rets["SPY 단순보유(B&H)"] = spy
@@ -10766,8 +10773,9 @@ def _r99_row_delta(tb: Optional[pd.DataFrame], prefix: str, base: Any) -> Option
 
 
 def _r113_rate_lines(_tb93: Optional[pd.DataFrame], _hd93: Optional[pd.DataFrame], layer: str = "섹터") -> List[Tuple[str, str]]:
-    """[v0.91.0 R113] 00 줄(S·I 공통) — M v1.75.0 금리 급등 경보 측정 행(A · B) vs 라이브(양쪽형 ★): 회피·참여·배수·MDD·칼마·
-    월/분기 손실 비율·최악 · M 층 행 · 무하락 여부. 행이 없으면(M 구버전 · IEF 없음) 빈 목록."""
+    """[v0.91.0 R113] 00 줄(S·I 공통) — M 금리 급등 경보 행 vs 라이브(양쪽형 ★): 회피·참여·배수·MDD·칼마·월/분기 손실 비율·최악 ·
+    M 층 행 · 무하락 여부. [v0.92.0 R115] M v1.76.0 A 라이브면 'R113 이전 라이브(금리 경보 없음)' 행이 생긴다 → 첫 항목 = 라이브(A) − 경보 없음,
+    A 행(= 라이브)은 건너뛰고 B는 라이브와 비교. 행이 없으면(M 구버전 · IEF 없음) 빈 목록."""
     if _tb93 is None or not len(_tb93):
         return []
     st = _tb93["전략"].astype(str)
@@ -10781,37 +10789,49 @@ def _r113_rate_lines(_tb93: Optional[pd.DataFrame], _hd93: Optional[pd.DataFrame
             return float(r.get(k)) * sc
         except (TypeError, ValueError):
             return float("nan")
-    parts, anyrow = [], False
-    for tag, pre in (("A(경보+안정 올리기)", "R113 A 금리 경보"), ("B(경보만)", "R113 B 금리 경보")):
-        m = _tb93[st.str.startswith(pre)]
-        if not len(m):
-            continue
-        anyrow = True
-        r = m.iloc[0]
-        d = {"회피": _f(r, "하락 회피율", 100) - _f(b, "하락 회피율", 100), "참여": _f(r, "상승 참여율", 100) - _f(b, "상승 참여율", 100),
-             "배수": _f(r, "배수") - _f(b, "배수"), "MDD": _f(r, "MDD", 100) - _f(b, "MDD", 100), "칼마": _f(r, "칼마") - _f(b, "칼마"),
-             "월 최악": _f(r, "월 최악 배수", 100) - _f(b, "월 최악 배수", 100), "분기 최악": _f(r, "분기 최악 배수", 100) - _f(b, "분기 최악 배수", 100),
-             "월 손실": _f(r, "월 손실%") - _f(b, "월 손실%"), "분기 손실": _f(r, "분기 손실%") - _f(b, "분기 손실%")}
+
+    def _cmp(tag, r, ref):
+        d = {"회피": _f(r, "하락 회피율", 100) - _f(ref, "하락 회피율", 100), "참여": _f(r, "상승 참여율", 100) - _f(ref, "상승 참여율", 100),
+             "배수": _f(r, "배수") - _f(ref, "배수"), "MDD": _f(r, "MDD", 100) - _f(ref, "MDD", 100), "칼마": _f(r, "칼마") - _f(ref, "칼마"),
+             "월 최악": _f(r, "월 최악 배수", 100) - _f(ref, "월 최악 배수", 100), "분기 최악": _f(r, "분기 최악 배수", 100) - _f(ref, "분기 최악 배수", 100),
+             "월 손실": _f(r, "월 손실%") - _f(ref, "월 손실%"), "분기 손실": _f(r, "분기 손실%") - _f(ref, "분기 손실%")}
         bad = [k for k in ("회피", "참여", "배수", "MDD", "칼마", "월 최악", "분기 최악") if d[k] == d[k] and d[k] < -1e-9] + \
               [k + " 증가" for k in ("월 손실", "분기 손실") if d[k] == d[k] and d[k] > 1e-9]
-        parts.append(f"{tag} {_f(r, '하락 회피율', 100):.1f}/{_f(r, '상승 참여율', 100):.1f}({r.get('등급', '-')}) Δ회피 {d['회피']:+.2f} · Δ참여 {d['참여']:+.2f} · "
-                     f"Δ배수 {d['배수']:+.2f} · ΔMDD {d['MDD']:+.2f}%p · Δ칼마 {d['칼마']:+.3f} · Δ월/분기 최악 {d['월 최악']:+.2f}/{d['분기 최악']:+.2f}%p · "
-                     f"Δ월/분기 손실 {d['월 손실']:+.1f}/{d['분기 손실']:+.1f}%p → " + ("무하락 ✓" if not bad else f"무하락 ✗({', '.join(bad)})"))
-    if not anyrow:
+        return (f"{tag} {_f(r, '하락 회피율', 100):.1f}/{_f(r, '상승 참여율', 100):.1f}({r.get('등급', '-')}) Δ회피 {d['회피']:+.2f} · Δ참여 {d['참여']:+.2f} · "
+                f"Δ배수 {d['배수']:+.2f} · ΔMDD {d['MDD']:+.2f}%p · Δ칼마 {d['칼마']:+.3f} · Δ월/분기 최악 {d['월 최악']:+.2f}/{d['분기 최악']:+.2f}%p · "
+                f"Δ월/분기 손실 {d['월 손실']:+.1f}/{d['분기 손실']:+.1f}%p → " + ("무하락 ✓" if not bad else f"무하락 ✗({', '.join(bad)})"))
+
+    parts = []
+    _pre = _tb93[st.str.startswith("R113 이전 라이브")]
+    _live_a = bool(len(_pre))
+    if _live_a:
+        parts.append(_cmp("라이브 A(경보 켬) vs 경보 없음", b, _pre.iloc[0]))
+    for tag, pre in (("A(경보+안정 올리기)", "R113 A 금리 경보"), ("B(경보만)", "R113 B 금리 경보")):
+        if _live_a and pre.startswith("R113 A"):
+            continue                                  # A = 라이브 → 위 첫 항목이 대신한다
+        m = _tb93[st.str.startswith(pre)]
+        if len(m):
+            parts.append(_cmp(tag, m.iloc[0], b))
+    if not parts:
         return []
     mstr = ""
     if _hd93 is not None and "M(SPY 국면전략)" in _hd93.index:
         m0 = _hd93.loc["M(SPY 국면전략)"]
-        for k, nm in (("A", "M R113 A 금리 경보+안정 올리기(측정)"), ("B", "M R113 B 금리 경보만(측정)")):
+        _mrows = ((("경보 없음", "M R113 이전 라이브(금리 경보 없음)"), ("B", "M R113 B 금리 경보만(측정)")) if _live_a
+                  else (("A", "M R113 A 금리 경보+안정 올리기(측정)"), ("B", "M R113 B 금리 경보만(측정)")))
+        for k, nm in _mrows:
             if nm in _hd93.index:
                 m1 = _hd93.loc[nm]
                 mstr += (f" | M {k} {float(m1['하락 회피율']):.1%}/{float(m1['상승 참여율']):.1%}"
-                         f"(Δ{(float(m1['하락 회피율']) - float(m0['하락 회피율'])) * 100:+.1f}/{(float(m1['상승 참여율']) - float(m0['상승 참여율'])) * 100:+.1f})")
+                         f"(라이브 대비 Δ{(float(m1['하락 회피율']) - float(m0['하락 회피율'])) * 100:+.1f}/{(float(m1['상승 참여율']) - float(m0['상승 참여율'])) * 100:+.1f})")
     lay = "S★" if layer == "섹터" else "I★"
-    return [(f"★★★ R113 금리 급등 경보(측정 · M v1.75.0 · IEF 신호로만) vs {lay} 라이브 — 사용자 지시 '목표치 도달하도록 계속 테스트'",
-             f"{lay} 라이브 {_f(b, '하락 회피율', 100):.1f}/{_f(b, '상승 참여율', 100):.1f}({b.get('등급', '-')}) | " + " | ".join(parts) + mstr
-             + " — A = IEF 20일 ≤ −2.5% → 0 · 부분 노출일 & IEF ≥ +1% → 1 · B = IEF ≤ −1.5% → 0. 오프라인(네 층 하네스) A: 회피 +2.3 · 참여 +0.5 · 손실 달 −5 · "
-               "B: 회피 +6.7 · 참여 −6.1 · 손실 달 −8. 라이브 전환은 사용자 선택(m_overrides={'R113_RATE_LIVE': 'A'|'B'}). 연구·교육용, 투자 자문 아님.")]
+    _hd = (f"★★★ R113 금리 급등 경보(M v1.76.0 A 라이브 · IEF 신호로만 · 채권 보유 없음) — {lay} 라이브 vs 경보 없음 · B" if _live_a
+           else f"★★★ R113 금리 급등 경보(측정 · M v1.75.0 · IEF 신호로만) vs {lay} 라이브 — 사용자 지시 '목표치 도달하도록 계속 테스트'")
+    _tail = (" — A = IEF 20일 ≤ −2.5% → 0 · 부분 노출일 & IEF ≥ +1% → 1(라이브 · 사용자 지시 '금리 급등 경보 On') · B = IEF ≤ −1.5% → 0(측정). "
+             "끄기: m_overrides={'R113_RATE_LIVE': ''}. 연구·교육용, 투자 자문 아님." if _live_a
+             else " — A = IEF 20일 ≤ −2.5% → 0 · 부분 노출일 & IEF ≥ +1% → 1 · B = IEF ≤ −1.5% → 0. 오프라인(네 층 하네스) A: 회피 +2.3 · 참여 +0.5 · 손실 달 −5 · "
+                  "B: 회피 +6.7 · 참여 −6.1 · 손실 달 −8. 라이브 전환은 사용자 선택(m_overrides={'R113_RATE_LIVE': 'A'|'B'}). 연구·교육용, 투자 자문 아님.")
+    return [(_hd, f"{lay} 라이브 {_f(b, '하락 회피율', 100):.1f}/{_f(b, '상승 참여율', 100):.1f}({b.get('등급', '-')}) | " + " | ".join(parts) + mstr + _tail)]
 
 
 def _r99_judgement_lines(pk: Dict[str, Any], _tb93: Optional[pd.DataFrame], _hd93: Optional[pd.DataFrame], cfg,
@@ -12953,13 +12973,17 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                         ("r98m5", "pos_r98_v1s", "R98 상한100% × V1강(측정 · M5)", float(getattr(scfg, "R98_M5_CAP", 1.0))),
                         # [v0.91.0 R113] M v1.75.0 금리 급등 경보 측정 열(S 규칙은 라이브 그대로 · M 목표비중만 다름)
                         ("r113a", "pos_r113_a", "R113 A 금리 경보+안정 올리기(측정)", None),
-                        ("r113b", "pos_r113_b", "R113 B 금리 경보만(측정)", None)]
+                        ("r113b", "pos_r113_b", "R113 B 금리 경보만(측정)", None),
+                        # [v0.92.0 R115] M v1.76.0이 A를 라이브로 → 경보 없는 이전 라이브(pos_pre_r113)를 비교 행으로(라이브와 같으면 자동 생략)
+                        ("r113pre", "pos_pre_r113", "R113 이전 라이브(금리 경보 없음 · 비교)", None)]
                 for _j98, (_col98, _rs98) in enumerate(dict(_r98d.get("neighbor_cols") or {}).items()):
                     _c98.append((f"r98n{_j98}", _col98, f"R98 V1 이웃(PK {float(_rs98[0]):g} · σ {float(_rs98[1]):g} · 측정)", None))
                 for _k98, _col98, _lab98, _cp98 in _c98:
                     if _rc_sig is None or _col98 not in list(getattr(_rc_sig, "columns", [])):
                         continue
                     _e98 = _rc_sig[_col98].reindex(eval_idx).fillna(0.0).astype(float).clip(lower=0.0, upper=1.0)
+                    if _k98 == "r113pre" and not bool(((_e98 - _Evr).abs() > 1e-12).any()):
+                        continue                    # [v0.92.0] 경보가 라이브가 아니면 이전 라이브 = 라이브 → 중복 행 생략
                     _E98[_k98] = _e98
                     _nfd98[_k98] = (_rc_sig["state"].reindex(eval_idx).astype(str).eq("NEUTRAL") & (_e98 > 1e-12) & (_e98 < 1.0 - 1e-12))
                     _nm98[_k98] = _lab98
@@ -14018,6 +14042,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
             "spy_m_r98vrp_ret": _spy_m_pre95(res, M, eval_idx, rf_daily, col="pos_r98_vrp"),  # [v0.79.0 R98] M 층 VRP(측정)
             "spy_m_r113a_ret": _spy_m_pre95(res, M, eval_idx, rf_daily, col="pos_r113_a"),   # [v0.91.0 R113] M 층 금리 경보 A(측정)
             "spy_m_r113b_ret": _spy_m_pre95(res, M, eval_idx, rf_daily, col="pos_r113_b"),   # [v0.91.0 R113] M 층 금리 경보 B(측정)
+            "spy_m_r113pre_ret": _spy_m_pre95(res, M, eval_idx, rf_daily, col="pos_pre_r113"),   # [v0.92.0 R115] M 경보 없음(A 라이브일 때)
             "spy_ret": spy_ret_cc, "spy_state_short": spy_state_short,                     # [v0.10.0 §1.C] vs SPY·SPY국면 분해용
             "down_leader_days": down_leader_days,                                          # [v0.15.0 §A] 하락국면 리더 발동일
             "all_cols": all_cols,

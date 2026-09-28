@@ -22,7 +22,15 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
-#  VERSION: v1.75.0 - 2026-09-28 - [R113 금리 급등 경보 측정 열(A · B) · 수익률(%) 목표 판정 — 라이브 목표비중 무변경]
+#  VERSION: v1.76.0 - 2026-09-29 - [R115 ★★ 금리 급등 경보 A 라이브(IEF 신호로만 · 채권 보유 없음)]
+#    사용자 지시(2026-09-29): "같은 산업의 종목 어닝 전에는 그 산업 종목은 매수하지 않도록 하고 금리 급등 경보 On으로 해서 수정해봐 …".
+#    (§1 ⚠ 라이브) Config R113_RATE_LIVE "" → "A": IEF 20일 ≤ −2.5% → 목표비중 0 · 부분 노출일 & IEF 20일 ≥ +1% → 1(apply_r113_rate_measure가 target_pos 교체 ·
+#         백테스트·S·I·K가 모두 이 목표비중을 쓴다). pos_pre_r113(경보 없는 v1.75.0 라이브)은 비교 열로 남긴다 → S v0.92.0 비교 행.
+#         Kaggle v1.75.0 측정(A 행): M 회피 +2.1 · 참여 +0.6 · 연 +0.7%p · 손실 달 −1 · I·K 무하락 ✓ · S 손실 분기 +1(무하락 ✗ 한 칸 — 사용자 선택으로 켬).
+#         되돌리기 m_overrides={'R113_RATE_LIVE': ''}. 2026-09-25 IEF 20일 −3.1% → 경보 켜짐(M 목표비중 0).
+#    (§2) 00 R113 줄: 라이브 A 표시 · 기준 이름 '경보 없음(R113 이전 라이브)'. COMPANION_MIN_VERSIONS S v0.92.0 · I v0.58.0 · K v0.25.0.
+#         시험 t115/test_r115.py. 연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v1.75.0 - 2026-09-28 -[R113 금리 급등 경보 측정 열(A · B) · 수익률(%) 목표 판정 — 라이브 목표비중 무변경]
 #    사용자 지시(2026-09-28): "국채는 넣지말고 목표는 ~%수익 이상으로 높게 유지해" (앞 지시: "… 새로운 가설이든 규칙이든 계속 시험해서 … 목표치 도달하도록 수정해").
 #    (§1 측정 · ⚠ 라이브는 사용자 선택) Config R113_RATE_MEASURE · R113_RATE_LIVE("" = 측정만) · R113_RATE_WINDOW(20) · R113_RATE_CUT_A(0.025) ·
 #         R113_RATE_BOOST_A(0.01) · R113_RATE_CUT_B(0.015)(캐시 무시 목록) · apply_r113_rate_measure: IEF(이미 받는 교차 자산 · 신호로만 · 사지 않음)
@@ -3202,8 +3210,10 @@ class Config:
     #   근거(r112/sweep8~12 · 현금 이자 0): 긴 이력 2003~2017 세 구간 모두 손실 달 감소(대용 M) · 2018~ 네 층 A: 회피+참여 +2.9 · 연 수익 +0.6%p ·
     #     손실 달 −5 · B: 회피 +6.7 · 참여 −6.1 · 손실 달 −8 · 손실 분기 −2 · 연 수익 −1.8%p. 둘 다 무하락 ✗(최악 주·일부 손실 주/분기) → 측정 행.
     #   R113_RATE_LIVE: "" = 측정만(기본 · 라이브 비트 동일) · "A"/"B" = 그 변형을 라이브 target_pos로(⚠ 사용자 선택).
+    #   [v1.76.0 R115 ★★ 라이브 · 사용자 지시(2026-09-29) "금리 급등 경보 On으로 해서 수정해봐"] R113_RATE_LIVE = "A".
+    #     Kaggle R113 측정: M 회피 +2.1 · 참여 +0.6 · 연 +0.7%p · 손실 달 −1 · I·K 무하락 ✓ · S 손실 분기 +1. 되돌리기 m_overrides={'R113_RATE_LIVE': ''}.
     R113_RATE_MEASURE: bool = True
-    R113_RATE_LIVE: str = ""
+    R113_RATE_LIVE: str = "A"
     R113_RATE_WINDOW: int = 20
     R113_RATE_CUT_A: float = 0.025
     R113_RATE_BOOST_A: float = 0.01
@@ -12066,6 +12076,7 @@ def run(cfg: Config = CFG) -> dict:
                          action="측정 열 없이 계속(라이브 무영향) — 00 줄에 표시"), level="error")
         r98_diag = {"enabled": False, "error": f"{type(_e98).__name__}: {str(_e98)[:120]}"}
     # [v1.75.0 R113 · 측정 전용] 금리 급등 경보 열(A · B) — R113_RATE_LIVE=""면 target_pos 무변경. 실패하면 열 없이 계속.
+    #   [v1.76.0 R115] 기본 R113_RATE_LIVE="A" → target_pos = pos_r113_a(백테스트·S·I·K 모두 이 목표비중) · 실패하면 R113 없이 계속(= v1.75.0 라이브).
     r113_diag: Dict[str, Any] = {"enabled": False}
     try:
         sig, r113_diag = apply_r113_rate_measure(sig, px_dict, cfg)
@@ -13431,7 +13442,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
         *_r105_m_lines,                                                          # [v1.69.0 R105] 꾸준함(00P) · 시장 상태판(00T)
-        ("★★★ R113 금리 급등 경보(측정 · IEF 신호로만 · 사지 않음) — A 경보+안정 올리기 · B 경보만 vs 라이브", _r113_note(res)),   # [v1.75.0 R113]
+        ("★★★ R113 금리 급등 경보(IEF 신호로만 · 사지 않음 · v1.76.0 라이브 A) — A 경보+안정 올리기 · B 경보만 · 경보 없음 비교", _r113_note(res)),   # [v1.75.0 R113]
         ("★★★ R99 판정 — R97 가드 되돌림(M2 · ⚠ 신호) · V1 닫음 · VRP 닫음 · M5(V1강) 검증", _r99_note(res)),   # [v1.67.0 R99]
         ("R98 측정 열(라이브 무변경 · V1 흔들림 확인용 · R100 제거 예정) — V1 · V1강 · 이웃 문턱", _r98_note(res)),
         ("★★★ R96 회피↑·참여↑ — 부분 노출일 변동성 관리(⚠ 신호 변경)", _r96_note(res)),
@@ -13753,13 +13764,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.75.0"
+BUNDLE_VERSION = "v1.76.0"
 BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.91.0", "industry_rotation": "v0.58.0", "stock_regime": "v0.23.0"}   # [v1.75.0 R113]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.92.0", "industry_rotation": "v0.58.0", "stock_regime": "v0.25.0"}   # [v1.76.0 R115]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
@@ -13896,6 +13907,7 @@ def _r113_note(res: Dict[str, Any]) -> str:
     try:
         s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-01"))
         rets = {}
+        _base_nm = "경보 없음(R113 이전 라이브)" if (d.get("live") or "") in ("A", "B") else "라이브"
         for nm, col in (("라이브", "pos_pre_r113"), ("A", "pos_r113_a"), ("B", "pos_r113_b")):
             if isinstance(sig, pd.DataFrame) and col in sig.columns:
                 b = run_backtest(price, sig[col], cfg, None)
@@ -13928,7 +13940,7 @@ def _r113_note(res: Dict[str, Any]) -> str:
                              + f"연 {a['연']:.1f}%(Δ{a['연'] - base['연']:+.1f}) · 손실 달 {a['월손실']}(Δ{a['월손실'] - base['월손실']:+d}) · "
                                f"손실 분기 {a['분기손실']}(Δ{a['분기손실'] - base['분기손실']:+d}) · 최악 달 {a['월최악']:+.1f}% · 최악 분기 {a['분기최악']:+.1f}%")
         if base:
-            parts.insert(0, f"라이브: " + (f"회피/참여 {base['회피']:.1f}/{base['참여']:.1f} · " if "회피" in base else "")
+            parts.insert(0, f"{_base_nm}: " + (f"회피/참여 {base['회피']:.1f}/{base['참여']:.1f} · " if "회피" in base else "")
                          + f"연 {base['연']:.1f}% · 손실 달 {base['월손실']} · 손실 분기 {base['분기손실']} · 최악 달 {base['월최악']:+.1f}% · 최악 분기 {base['분기최악']:+.1f}%")
     except Exception as e:
         parts.append(f"비교 계산 실패 {type(e).__name__}: {str(e)[:80]}")
@@ -13939,7 +13951,9 @@ def _r113_note(res: Dict[str, Any]) -> str:
             f"B = IEF ≤ −{p.get('cut_b', 0) * 100:g}% → 0 | 2018~ 발동: A 급등 {d.get('cut_a_days', '-')}일 · 안정 올리기 {d.get('boost_days', '-')}일 · "
             f"B {d.get('cut_b_days', '-')}일 · 오늘 IEF 20일 {d.get('ief20_now', '-')}% · 경보 A {'켜짐' if d.get('alarm_now_a') else '꺼짐'} · "
             f"B {'켜짐' if d.get('alarm_now_b') else '꺼짐'} | " + " | ".join(parts)
-            + " | " + R113_RATE_EVIDENCE + " 라이브 전환은 사용자 선택: m_overrides={'R113_RATE_LIVE': 'A'} 또는 'B'. 연구·교육용, 투자 자문 아님.")
+            + " | " + R113_RATE_EVIDENCE
+            + (" v1.76.0 사용자 지시로 A 라이브(IEF는 신호로만 · 채권 보유 없음). 끄기: m_overrides={'R113_RATE_LIVE': ''}." if live in ("A", "B")
+               else " 라이브 전환은 사용자 선택: m_overrides={'R113_RATE_LIVE': 'A'} 또는 'B'.") + " 연구·교육용, 투자 자문 아님.")
 
 
 def _r99_note(res: Dict[str, Any]) -> str:
