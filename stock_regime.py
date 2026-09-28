@@ -1,5 +1,24 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.18.0 - 2026-09-28 - [R109 ★★ 라이브 — 어닝 하락 종목 21일 섹터 ETF(위험 구간 회피) + 물타기 유리 종목 비중↑ · 사용자 선택]
+#    사용자 지시(2026-09-28): "… 주식 일별 배분 보니까 손해 많이 보는 위험한 구간이 많아보이는데 종목이 위험한 구간일때는 피하고 최대한 수익을 얻을 수
+#      있는 곳에 비중을 늘리라고 그걸 왜 예측을하고 판단을 못하는거야 그게 제일 중요해 수정해봐" → AskUserQuestion 답 'R2 라이브 적용 (권장)'.
+#    ── R109 연구(r109/ · 코드 밖 · Kaggle R108 K★를 소수 셋째 자리까지 재현한 하네스 · 현금 이자 0) ──
+#      ✗ 산업 연동(I★가 고른 산업의 K 종목에 비중): 58종목 배수 53.7 → 59.7~69.4 · 섹터 안 무작위 산업 배정 대조 20회 참여·칼마·배수 100백분위 —
+#        그러나 사전 설계 28종목만이면 MDD −10.3 → −12.8~−13.4% · 칼마 3.96 → 3.24 · 손실 분기 4 → 6~7(2026년에 고른 반도체 9종목 편향) → 라이브 불가.
+#      ✗ 리포트 격자 '산업비중 참고 λ1.0'(MDD −11.4%)의 위험 개선은 착시 — 1/N 총노출이 상장 전 종목만큼 낮았을 뿐(2018~2019 노출 −15%).
+#      ✗ M 전액 보유일만 산업 집중: 무작위 날짜 대조 칼마 백분위 20~65 · ✗ 시장 급락 때 종목 → 섹터 ETF(SPY 5일 −3% · 50일선 아래 ·
+#        종목 21일 −15% & 섹터보다 10%p 약함): 참여 −3~−9 · 칼마 −0.15~−0.64(반등을 놓친다).
+#      ★ R2 = 어닝 하락 손절 21일 + 물타기 유리 기울임 λ0.5: 회피 68.93→69.40 · 참여 119.69→120.22 · 칼마 4.574→4.868 · MDD −12.68→−12.06% ·
+#        배수 53.71→55.88 · 손실 달 18→17 · 월 최악 ×0.891→×0.904 · 월 플러스 72.4→73.3% · 어닝 손절만 무작위 대조 20회 100백분위 ·
+#        앞 반쪽 참여 97.45→96.60(−0.85%p — 무하락 예외, 사용자 승인) · 연도 5/9 우위.
+#    (§1 ★★ 라이브) StockConfig LIVE_DIP_RULE(True) · LIVE_DIP_LAMBDA(0.5) · LIVE_DIP_FRONT_PART_TOL(1.0): run()이 물타기 상태를 배분 전에 만들고
+#         _earn_dip_cut(어닝 하락 21일 감축 → 부모 섹터 ETF) + sector_prob tilt(점수 = 물타기 유리)로 라이브 배분. 섹터 총비중 = S★ 그대로.
+#         되돌리기: k_overrides={"LIVE_DIP_RULE": False} → v0.17.0 섹터 안 균등과 비트 동일.
+#    (§2) 13 '★ 섹터연동 + 물타기 기울임 … (R109 라이브)' 노란 행 · '비교: R108까지 라이브 — 섹터연동 …' 행 · 00U 비교 행 · live_dip_verdict(_line)
+#         → 00 'R109 라이브 사후 판정'(사전등록: 앞 반쪽 참여 −1.0%p까지만 허용 · 나머지 전 지표 ≥ 0 · 미달이면 되돌림 권고) ·
+#         00W A 블록 '★ K★ 라이브 반영' 행 · R99/R100 측정 행 판정은 라이브와 같은 규칙 행을 건너뛴다(is_live).
+#    M·S·I 무변경(M COMPANION_MIN_VERSIONS K v0.17.0 ≤ v0.18.0 · 정상). 시험 t109/test_r109.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.17.0 - 2026-09-27 - [R108 00L 블록 E(급락 조기 감지·동적 주력 시험 근거) — 라이브 무변경]
 #    사용자 지시(2026-09-27): "그래 그렇게 수정해보고 시장 급락을 더 일찍 알아채는 M 개선도 진행해".
 #    (§1) 공통 사본(S v0.87.0 원본): LOSS_RESEARCH_R108 · build_loss_period_sheet 블록 E. R108 결과(교차자산 급락 경보 1,083개 · 주력 섹터 동적 6안)가
@@ -629,7 +648,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.17.0"
+VERSION = "v0.18.0"
 VERSION_DATE = "2026-09-27"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1073,6 +1092,21 @@ class StockConfig:
     PROB_CONTROLS: int = 30          # 같은 규칙 · 같은 k · 무작위 점수 대조군(변형 규칙마다) — 0이면 끔
     PROB_CONTROL_SEED: int = 98
     PROB_LIVE_PASS_CTRL_PCT: float = 90.0
+    # [v0.18.0 R109 ★★ 라이브 · ⚠ 위험 파라미터 · 사용자 선택(2026-09-28 AskUserQuestion 'R2 라이브 적용 (권장)')]
+    #   사용자 지시: "종목이 위험한 구간일때는 피하고 최대한 수익을 얻을 수 있는 곳에 비중을 늘리라고 … 그게 제일 중요해 수정해봐".
+    #   라이브 = 섹터연동(S★ 섹터 비중 그대로) + ① 어닝 발표 4일 안 하락(21일 고점 −10% 첫 돌파) 종목 21거래일 → 부모 섹터 ETF(위험 구간 회피)
+    #     + ② 물타기 유리(200일선 위 · 어닝 무관 · RSI14 ≥ 30 하락) 종목 섹터 안 순위 기울임 λ(LIVE_DIP_LAMBDA · 종목 몫 보존 · 상한 5%).
+    #   근거: S&P 500 그 시점 구성 2010~ 하락 19,317건 — ② +0.62%/21일 섹터 대비(t 3.0 · 15/18년) · ① −0.16%(발표 뒤 흐름 지속).
+    #   R109 하네스(Kaggle R108 K★ 소수 셋째 자리까지 재현 · 현금 이자 0): 회피 68.93→69.40 · 참여 119.69→120.22 · 칼마 4.574→4.868 ·
+    #     MDD −12.68→−12.06% · 배수 53.71→55.88 · 손실 달 18→17 · 월 최악 ×0.891→×0.904 · 분기 최악 ×0.904→×0.907 · 월 플러스 72.4→73.3% ·
+    #     어닝 손절만의 무작위 대조(같은 날 같은 개수) 20회 모두 이김 · 기울임 점수 순열 대조 칼마 백분위 73.
+    #   ⚠ 무하락 예외(사용자 승인): 앞 반쪽(~2021) 상승 참여 97.45→96.60(−0.85%p) — 이것만 떨어진다.
+    #   사전등록(다음 Kaggle · 00 'R109 라이브 사후 판정' 줄): 라이브 vs '비교: R108까지 라이브(섹터 안 균등)' 행 — 회피·참여·칼마·MDD·배수·
+    #     뒤 반쪽·앞 반쪽 회피·월/분기 플러스·최악 ≥ 0 · 월/분기 손실 ≤ 0 · 앞 반쪽 참여 ≥ −LIVE_DIP_FRONT_PART_TOL(1.0%p). 미달이면 되돌린다.
+    #   되돌리기: k_overrides={"LIVE_DIP_RULE": False} (v0.17.0과 비트 동일한 섹터 안 균등).
+    LIVE_DIP_RULE: bool = True
+    LIVE_DIP_LAMBDA: float = 0.5
+    LIVE_DIP_FRONT_PART_TOL: float = 1.0
     # [v0.12.0 R100] 잔차 모멘텀 점수(build_resid_mom_score) — β 창 · 12-1 창(건너뛰는 최근 1개월 · 합산 길이).
     RESID_BETA_WIN: int = 252
     RESID_SKIP: int = 21
@@ -5169,6 +5203,22 @@ def build_dip_states(panel: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
             "fav_ev": fav_ev.fillna(False), "earn_ev": earn_ev.fillna(False), "miss_ev": miss_ev.fillna(False)}   # [v0.16.0 R106] 이벤트 날(경과일 계산)
 
 
+def _earn_dip_cut(pos: Dict[str, pd.DataFrame], ds: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+    """[v0.15.0 R105 측정 → v0.18.0 R109 라이브] 어닝 하락 상태(ds['earn'] · 이벤트 뒤 DIP_HOLD_DAYS 거래일) 날에 감축신호 = 1
+    (그 종목 몫 → 부모 섹터 ETF · E3 음의 서프라이즈 감축과 같은 경로). 단독 신호(목표비중)는 바꾸지 않는다. ds가 없으면 pos 그대로."""
+    if not (isinstance(ds, dict) and ds.get("ok")) or not isinstance(ds.get("earn"), pd.DataFrame):
+        return pos
+    _ex = ds["earn"]
+    out: Dict[str, pd.DataFrame] = {}
+    for t, q in pos.items():
+        q2 = q.copy()
+        c0 = (pd.to_numeric(q2["감축신호"], errors="coerce").fillna(0.0) > 0.5) if "감축신호" in q2.columns else pd.Series(False, index=q2.index)
+        c1 = _ex[t].reindex(q2.index).fillna(False).astype(bool) if t in _ex.columns else pd.Series(False, index=q2.index)
+        q2["감축신호"] = (c0 | c1).astype(float)
+        out[t] = q2
+    return out
+
+
 def dip_guidance_today(ds: Dict[str, Any], names: Optional[Dict[str, str]] = None,
                        held: Optional[pd.Series] = None, sector_of: Optional[Dict[str, str]] = None) -> pd.DataFrame:
     """[v0.15.0 R105] 오늘 종목별 물타기·손절 판단(규칙 = DIP_EVIDENCE_R105 · 측정 · 투자 권유 아님)."""
@@ -5237,8 +5287,10 @@ def dip_guidance_today(ds: Dict[str, Any], names: Optional[Dict[str, str]] = Non
     return T
 
 
-def build_dip_sheet(ds: Dict[str, Any], names=None, held=None, sector_of=None) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
-    """[v0.15.0 R105] 00W_물타기손절 — A 규칙(언제 물타기 · 금지 · 손절) · B 연구 근거 · C 오늘 종목별 판단."""
+def build_dip_sheet(ds: Dict[str, Any], names=None, held=None, sector_of=None,
+                    live: bool = False) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v0.15.0 R105] 00W_물타기손절 — A 규칙(언제 물타기 · 금지 · 손절) · B 연구 근거 · C 오늘 종목별 판단.
+    [v0.18.0 R109] live=True면 K★ 라이브가 이 규칙을 실제 배분에 쓴다(어닝 하락 → 21일 섹터 ETF · 물타기 유리 → 비중 기울임)."""
     A = "A. 규칙(R105 · S&P 500 그 시점 구성 2010~2026 · 하락 = 21일 고점 −10% 첫 돌파)"
     parts = [pd.DataFrame([
         {"블록": A, "항목": "물타기 해도 되는 때", "값": "200일선 위(장기 추세 유지) & 어닝 발표 직후가 아님 & 투매(RSI14 < 30)가 아님 → 21일 동안 섹터 대비 +0.6% 쪽. "
@@ -5248,6 +5300,12 @@ def build_dip_sheet(ds: Dict[str, Any], names=None, held=None, sector_of=None) -
         {"블록": A, "항목": "손절하면 안 되는 때", "값": "하락추세 종목의 −10% 하락을 기계적으로 자르는 것 — 평균회귀로 손해(K★ 하네스 참여 −5.55%p)."},
         {"블록": A, "항목": "분할매수·분할매도", "값": "종목: 하락 뒤 분할(3회)은 일괄보다 −0.57% · 층(M·S·I·K): 비중 변화를 나누면 칼마가 떨어진다 → 즉시 체결 유지. 분할은 '틀릴 때 덜 틀리는' 위험 분산용일 뿐 기대수익을 올리지 않는다."},
         {"블록": A, "항목": "⚠ 정확도", "값": "종목 하나의 다음 21일 방향 적중은 50%대 — 규칙은 '평균적으로 유리한 쪽'이다. 연구·교육용, 투자 자문 아님."}])]
+    if live:
+        parts.append(pd.DataFrame([
+            {"블록": A, "항목": "★ K★ 라이브 반영(v0.18.0 R109 · 사용자 선택)",
+             "값": "어닝 발표 4일 안 하락 종목 → 21거래일 동안 그 몫을 부모 섹터 ETF로(위험 구간 회피) · 물타기 유리 종목 → 섹터 안 비중 기울임 λ0.5"
+                   "(수익 날 곳에 비중↑ · 섹터 총비중은 S★ 그대로). R109 하네스: 회피 +0.47 · 참여 +0.53 · 칼마 +0.29 · MDD +0.62%p · 손실 달 18→17 · "
+                   "월 최악 +1.3%p · 앞 반쪽 참여 −0.85%p(사용자 승인 예외). 되돌리기 k_overrides={'LIVE_DIP_RULE': False}."}]))
     parts.append(pd.DataFrame([{"블록": "B. 연구 근거(r105/dip.py · dip2.py · staged.py · k105.py)", "항목": a, "값": b, "판정": c} for a, b, c in DIP_EVIDENCE_R105]))
     lines: List[Tuple[str, str]] = []
     T = dip_guidance_today(ds, names=names, held=held, sector_of=sector_of)
@@ -5258,7 +5316,9 @@ def build_dip_sheet(ds: Dict[str, Any], names=None, held=None, sector_of=None) -
         lines.append((f"★★★ 물타기·손절 가이드(R105 · 기준일 {asof} · 세부 00W)",
                       f"손절 우선: {pick('손절')} | 물타기 금지(어닝 하락): {pick('물타기 금지')} | 물타기 유리: {pick('물타기 유리')} | "
                       f"관망(하락추세): {pick('관망')} — 근거: 200일선 위·어닝 무관 하락 21일 섹터 대비 +0.62%(t 3.0 · 15/18년) · 어닝 하락 −0.16~−0.27% · "
-                      "분할매수 −0.57%(일괄보다 불리) · 층 단위 분할매매 ✗. 연구·교육용, 투자 자문 아님."))
+                      "분할매수 −0.57%(일괄보다 불리) · 층 단위 분할매매 ✗"
+                      + (" · ★ R109부터 K★ 라이브 배분이 이 규칙을 쓴다(어닝 하락 → 21일 섹터 ETF · 물타기 유리 → 비중↑)" if live else "")
+                      + ". 연구·교육용, 투자 자문 아님."))
     else:
         lines.append(("★★★ 물타기·손절 가이드(R105)", "오늘 판단 산출 안 됨(종가·200일선 자료 없음)"))
     df = pd.concat(parts, ignore_index=True, sort=False)
@@ -5455,6 +5515,8 @@ def prob_variant_verdicts(res: Dict[str, Any]) -> List[Dict[str, Any]]:
         except Exception:
             return float("nan")
     for name, d in pv.items():
+        if d.get("is_live"):
+            continue                    # [v0.18.0 R109] 라이브와 같은 규칙 — 자기 자신과 비교하지 않는다(대조군은 'R109 라이브 사후 판정' 줄)
         m = ur[lbl == name]
         if not len(m):
             continue
@@ -5530,6 +5592,80 @@ def prob_variant_verdicts(res: Dict[str, Any]) -> List[Dict[str, Any]]:
                                                    if "월 손실" in dper else None),                           # [v0.16.0 R106]
                     "무하락 통과(R101 라이브 후보)": (not fails), "무하락 미달 항목": (", ".join(fails) if fails else "-")})
     return out
+
+
+def live_dip_verdict(res: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """[v0.18.0 R109] 라이브(섹터연동 + 물타기 기울임 + 어닝 하락 손절) 사후 판정 — 사전등록(StockConfig LIVE_DIP_RULE 주석):
+    라이브 vs 'R108까지 라이브(섹터 안 균등)' 비교 행에서 회피·참여·칼마·MDD·배수·뒤 반쪽·앞 반쪽 회피·월/분기 플러스·최악 ≥ 0 ·
+    월/분기 손실 ≤ 0 · 앞 반쪽 참여 ≥ −LIVE_DIP_FRONT_PART_TOL(사용자가 승인한 예외). 미달이면 '되돌림 권고'."""
+    cfg = res.get("cfg", CFG)
+    ui = res.get("user_rel_info") or {}
+    ur = res.get("user_rel")
+    pl = ui.get("prev_live_label")
+    if not (isinstance(ur, pd.DataFrame) and len(ur) and pl):
+        return None
+    m = ur[ur["전략"].astype(str) == str(pl)]
+    if not len(m):
+        return None
+    t0, r0 = ur.iloc[0], m.iloc[0]
+
+    def _f(x):
+        try:
+            return float(x)
+        except Exception:
+            return float("nan")
+    d = {"회피": (_f(t0["하락 회피율"]) - _f(r0["하락 회피율"])) * 100.0, "참여": (_f(t0["상승 참여율"]) - _f(r0["상승 참여율"])) * 100.0,
+         "칼마": _f(t0.get("칼마")) - _f(r0.get("칼마")), "MDD": (_f(t0.get("MDD")) - _f(r0.get("MDD"))) * 100.0,
+         "배수": _f(t0.get("배수")) - _f(r0.get("배수"))}
+    for k, lab, sc in (("월 플러스%", "월 플러스", 1.0), ("분기 플러스%", "분기 플러스", 1.0), ("월 최악 배수", "월 최악", 100.0),
+                       ("분기 최악 배수", "분기 최악", 100.0), ("월 손실%", "월 손실", 1.0), ("분기 손실%", "분기 손실", 1.0)):
+        if k in t0.index and k in r0.index:
+            d[lab] = (_f(t0.get(k)) - _f(r0.get(k))) * sc
+    h1, h0 = dict(ui.get("halves") or {}), dict(ui.get("halves_prev") or {})
+    for hn in ("앞", "뒤"):
+        if hn in h1 and hn in h0:
+            d[f"{hn} 회피"] = (h1[hn][0] - h0[hn][0]) * 100.0
+            d[f"{hn} 참여"] = (h1[hn][1] - h0[hn][1]) * 100.0
+    tol = float(getattr(cfg, "LIVE_DIP_FRONT_PART_TOL", 1.0))
+    fails = []
+    for k, v in d.items():
+        if v != v:
+            continue
+        if k in ("월 손실", "분기 손실"):
+            if v > 1e-9:
+                fails.append(k + " 증가")
+        elif k == "앞 참여":
+            if v < -tol - 1e-9:
+                fails.append(f"앞 참여(허용 −{tol:g}%p 넘음)")
+        elif v < -1e-9:
+            fails.append(k)
+    if not any(k.startswith(("앞", "뒤")) for k in d):
+        fails.append("반쪽 자료 없음")
+    ctl = next((v.get("ctrl_pct") for v in (res.get("prob_variants") or {}).values() if v.get("is_live")), None)
+    return {"deltas": d, "fails": fails, "keep": not fails, "ctrl_pct": ctl, "prev_label": pl, "tol": tol,
+            "live": (_f(t0["하락 회피율"]), _f(t0["상승 참여율"]), _f(t0.get("칼마")), _f(t0.get("MDD")), _f(t0.get("배수"))),
+            "prev": (_f(r0["하락 회피율"]), _f(r0["상승 참여율"]), _f(r0.get("칼마")), _f(r0.get("MDD")), _f(r0.get("배수")))}
+
+
+def live_dip_verdict_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """[v0.18.0 R109] 00 줄 — 라이브 물타기·어닝 손절 규칙의 사후 판정."""
+    v = live_dip_verdict(res)
+    if not v:
+        return None
+    d = v["deltas"]
+    L_, P_ = v["live"], v["prev"]
+    def _g(k, f="{:+.2f}"):
+        return f.format(d[k]) if k in d and d[k] == d[k] else "-"
+    body = (f"라이브 {L_[0]:.1%}/{L_[1]:.1%} · 칼마 {L_[2]:.3f} · MDD {L_[3] * 100:.2f}% · 배수 {L_[4]:.2f} vs R108까지 라이브(섹터 안 균등) "
+            f"{P_[0]:.1%}/{P_[1]:.1%} · 칼마 {P_[2]:.3f} · MDD {P_[3] * 100:.2f}% · 배수 {P_[4]:.2f} | Δ회피 {_g('회피')} · Δ참여 {_g('참여')} · "
+            f"Δ칼마 {_g('칼마', '{:+.3f}')} · ΔMDD {_g('MDD')}%p · Δ배수 {_g('배수')} · 앞 반쪽 Δ회피/Δ참여 {_g('앞 회피')}/{_g('앞 참여')} · "
+            f"뒤 {_g('뒤 회피')}/{_g('뒤 참여')} · Δ월+/Δ분기+ {_g('월 플러스', '{:+.1f}')}/{_g('분기 플러스', '{:+.1f}')} · "
+            f"Δ월 최악/Δ분기 최악 {_g('월 최악')}/{_g('분기 최악')}%p · Δ월 손실/Δ분기 손실 {_g('월 손실', '{:+.1f}')}/{_g('분기 손실', '{:+.1f}')}%p"
+            + (f" · 기울임 점수 순열 대조 칼마 백분위 {v['ctrl_pct']:.0f}" if isinstance(v.get("ctrl_pct"), (int, float)) and v["ctrl_pct"] == v["ctrl_pct"] else "")
+            + (f" → ✓ 유지(사전등록 통과 · 앞 반쪽 참여 허용 −{v['tol']:g}%p 안)" if v["keep"] else
+               f" → ✗ 되돌림 권고({', '.join(v['fails'])}) — k_overrides={{'LIVE_DIP_RULE': False}}")
+            + ". 규칙: 어닝 발표 4일 안 하락 종목 21일 → 섹터 ETF(위험 구간 회피) · 200일선 위 어닝 무관 하락 종목 비중↑(λ0.5). 연구·교육용, 투자 자문 아님.")
+    return ("★★★ R109 라이브 사후 판정(사전등록 · 사용자 선택 'R2 라이브 적용') — 물타기 기울임 + 어닝 하락 손절", body)
 
 
 def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
@@ -6001,8 +6137,40 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         log("ALLOC", kv(event="sector_prob_live", select=getattr(cfg, "PROB_SELECT", "-"), has_prob=bool(_prob_df is not None),
                         note=f"⚠ 사전등록 통과 전 라이브(사용자 overrides) — K 회피 여유 {float(getattr(cfg, 'K_AVOID_MARGIN_R98', 1.2)):g}%p 소진 위험 · "
                              "되돌리기 STOCK_ALLOC_MODE='sector_linked'"), level="warning")
-    alloc = build_allocation(pos, panel, cfg, parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc,
-                             etf_panel=etf_panel, **_live_kw)
+    # [v0.15.0 R105 → v0.18.0 R109] 물타기·손절 상태(00W · 측정 행 점수 "dip" · 손절 "earn_dip") — 인과(t일 종가까지).
+    #   R109부터 라이브가 쓰므로 배분 전에 한 번만 만든다(측정 행도 같은 값을 쓴다).
+    _dip: Dict[str, Any] = {"ok": False}
+    try:
+        _dip = build_dip_states(panel)
+        if _dip.get("ok"):
+            log("DIP", kv(event="dip_states", tickers=int(_dip["fav"].shape[1]), fav_days=int(_dip["fav"].values.sum()),
+                          earn_days=int(_dip["earn"].values.sum()), miss_days=int(_dip["miss"].values.sum()),
+                          note=("R109 라이브(어닝 하락 → 섹터 ETF · 물타기 유리 기울임)" if bool(getattr(cfg, "LIVE_DIP_RULE", False)) else "측정·표시 전용")))
+    except Exception as e:
+        _dip = {"ok": False, "note": f"{type(e).__name__}: {str(e)[:120]}"}
+        log("DIP", kv(event="dip_states_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    _dip_score = (_dip["fav"].astype(float).reindex(columns=sorted(panel)) if _dip.get("ok") else None)
+    # [v0.18.0 R109 ★★ 라이브] 섹터연동 + 어닝 하락 손절(→ 섹터 ETF) + 물타기 유리 기울임 — StockConfig LIVE_DIP_RULE 주석 참조.
+    _live_dip = bool(getattr(cfg, "LIVE_DIP_RULE", False)) and _live_mode0 == "sector_linked" and bool(_dip.get("ok")) \
+        and bool(ind_alloc)
+    _pos_live = _earn_dip_cut(pos, _dip) if _live_dip else pos
+    if _live_dip:
+        _live_kw = {"prob_score": _dip_score, "prob_select": "tilt",
+                    "prob_params": {"lam": float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5))}}
+        alloc = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
+                                 ind_alloc=ind_alloc, etf_panel=etf_panel,
+                                 link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw)
+        alloc["live_rule"] = "R109 섹터연동 + 물타기 기울임 + 어닝 하락 손절"
+        log("ALLOC", kv(event="r109_live_dip", lam=float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5)),
+                        earn_cut_cells=int(_dip["earn"].values.sum()), fav_cells=int(_dip["fav"].values.sum()),
+                        stock_share=round(float(alloc["target_w"].sum(axis=1).mean()), 4),
+                        note="★ 라이브(사용자 선택 R109) — 되돌리기 k_overrides={'LIVE_DIP_RULE': False}"))
+    else:
+        if bool(getattr(cfg, "LIVE_DIP_RULE", False)) and _live_mode0 == "sector_linked":
+            log("ALLOC", kv(event="r109_live_dip_unavailable", dip_ok=bool(_dip.get("ok")), ind_alloc=bool(ind_alloc),
+                            action="섹터 안 균등(v0.17.0 라이브)으로 계속 — 00 줄에 표시"), level="warning")
+        alloc = build_allocation(pos, panel, cfg, parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc,
+                                 etf_panel=etf_panel, **_live_kw)
     alloc_rows: List[dict] = []
     _grid_rets: Dict[str, pd.Series] = {}          # [v0.9.0] 00U 비교 행용 — 격자 행 라벨 → 포트 일간수익
 
@@ -6058,7 +6226,9 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     _ctrl_rows: List[dict] = []
     _live_mode = str(getattr(cfg, "STOCK_ALLOC_MODE", "equal_fixed")).lower()
     _live_alloc_label: Optional[str] = None
+    _prev_live_lbl: Optional[str] = None            # [v0.18.0 R109] 'R108까지 라이브(섹터 안 균등)' 비교 행 라벨
     # ---- [v0.9.0 R94 ★★] 섹터연동 격자 — 첫 행이 라이브(sector_linked일 때) · 상한 0 = S★ 섹터 ETF만(종목 대체 대조) ----
+    #   [v0.18.0 R109] 라이브가 물타기·어닝 손절 규칙이면 첫 행은 'R108까지 라이브(섹터 안 균등)' 비교 행이 된다(사후 판정 기준).
     if ind_alloc:
         for _si, (_lbl, _cap) in enumerate(tuple(getattr(cfg, "SECTOR_LINK_GRID", ()) or ())):
             try:
@@ -6068,16 +6238,33 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 else:
                     _sa = build_allocation(pos, panel, cfg, mode="sector_linked", parent_w=parent_w, parent_of=parent_of,
                                            ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(_cap))
-                _sr = _alloc_row(str(_lbl), _sa, float(_cap), None)
+                _lbl_use = str(_lbl)
+                if _si == 0 and _live_dip:
+                    _lbl_use = "비교: R108까지 라이브 — " + str(_lbl).replace("★ ", "", 1).replace("(v0.9.0 라이브)", "(v0.9.0~v0.17.0 라이브)")
+                    _prev_live_lbl = _lbl_use
+                _sr = _alloc_row(_lbl_use, _sa, float(_cap), None)
                 if _sr:
                     _sr.update({"연동출처": "S★ 섹터비중(I 통로 산업+부모 다리)"})
                     alloc_rows.append(_sr)
-                    _grid_rets[str(_lbl)] = _sa.get("port_ret")
-                    if _si == 0 and _live_mode == "sector_linked":
+                    _grid_rets[_lbl_use] = _sa.get("port_ret")
+                    if _si == 0 and _live_mode == "sector_linked" and not _live_dip:
                         _live_alloc_label = str(_lbl)
             except Exception as e:
                 log("ALLOC", kv(event="alloc_sector_link_row_failed", row=str(_lbl), err=type(e).__name__, msg=str(e)[:120]),
                     level="warning")
+    # [v0.18.0 R109 ★★] 라이브 행 — 섹터연동 + 물타기 기울임 + 어닝 하락 손절(노란색)
+    if _live_dip and str(alloc.get("mode")) == "sector_prob":
+        try:
+            _lbl_dp = (f"★ 섹터연동 + 물타기 기울임 λ{float(getattr(cfg, 'LIVE_DIP_LAMBDA', 0.5)):g} + 어닝 하락 손절 21일"
+                       f"(v0.18.0 R109 라이브 · 사용자 선택)")
+            _dpr = _alloc_row(_lbl_dp, alloc, float(alloc.get("cap_used", 0.05) or 0.05), None)
+            if _dpr:
+                _dpr.update({"연동출처": "S★ 섹터비중 · 섹터 안 물타기 유리 기울임 · 어닝 하락 → 섹터 ETF"})
+                alloc_rows.append(_dpr)
+                _grid_rets[_lbl_dp] = alloc.get("port_ret")
+                _live_alloc_label = _lbl_dp
+        except Exception as e:
+            log("ALLOC", kv(event="alloc_live_dip_row_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
     # [v0.11.0 R99 N3] 라이브가 sector_prob(사용자 overrides)면 라이브 행을 따로 싣고 노란색으로 칠한다.
     if _live_mode == "sector_prob" and str(alloc.get("mode")) == "sector_prob":
         try:
@@ -6113,7 +6300,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _iav = {"industry_w": pd.DataFrame(index=_vw.index), "parent_w": _vw[_secs],
                         "ind2sec": dict(ind_alloc.get("ind2sec") or {}), "rf_daily": ind_alloc.get("rf_daily"),
                         "label": f"S 비교 행 {_vn}"}
-                _va = build_allocation(pos, panel, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
+                _va = build_allocation(_pos_live, panel, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
                                        ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw)
                 _vl = f"비교: 섹터연동 × S '{_vn}' 섹터 비중(측정 전용)"
                 _vr = _alloc_row(_vl, _va, float(alloc.get("cap_used", 0.05)), None)
@@ -6131,7 +6318,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     if ind_alloc and _alloc_mode_live in ("sector_linked", "sector_prob") and _add98:
         try:
             _p98 = {t: v for t, v in panel.items() if t not in _add98}
-            _q98 = {t: v for t, v in pos.items() if t not in _add98}
+            _q98 = {t: v for t, v in _pos_live.items() if t not in _add98}      # [v0.18.0 R109] 라이브와 같은 손절 규칙
             if _p98:
                 _ua = build_allocation(_q98, _p98, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
                                        ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw)
@@ -6153,31 +6340,13 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     #   (같은 k · 같은 시간 지속성 · 섹터 안 순위만 무작위 — R81 대조군과 같은 방식 · 시드 PROB_CONTROL_SEED=98). 규칙마다 PROB_CONTROLS회.
     #   판정(사전등록 · 00 줄): K★ 대비 Δ회피 ≥ 0 & Δ참여 ≥ 0 & 대조군 칼마 백분위 ≥ PROB_LIVE_PASS_CTRL_PCT(90) → R100 라이브 후보.
     prob_variants: Dict[str, Dict[str, Any]] = {}
-    # [v0.15.0 R105] 물타기·손절 상태(00W · 측정 행 점수 "dip" · 손절 "earn_dip") — 인과(t일 종가까지)
-    _dip: Dict[str, Any] = {"ok": False}
-    try:
-        _dip = build_dip_states(panel)
-        if _dip.get("ok"):
-            log("DIP", kv(event="dip_states", tickers=int(_dip["fav"].shape[1]), fav_days=int(_dip["fav"].values.sum()),
-                          earn_days=int(_dip["earn"].values.sum()), miss_days=int(_dip["miss"].values.sum()), note="측정·표시 전용"))
-    except Exception as e:
-        _dip = {"ok": False, "note": f"{type(e).__name__}: {str(e)[:120]}"}
-        log("DIP", kv(event="dip_states_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
-    _dip_score = (_dip["fav"].astype(float).reindex(columns=sorted(panel)) if _dip.get("ok") else None)
+    # [v0.15.0 R105 → v0.18.0 R109] 물타기·손절 상태(_dip)는 라이브 배분 전에 이미 만들었다(같은 값을 쓴다).
 
     def _pos_cut(kind: str) -> Dict[str, pd.DataFrame]:
         """[v0.15.0 R105] 측정 행 손절 — 해당 상태 날에 감축신호 = 1(그 종목 몫 → 부모 섹터 ETF · E3와 같은 경로)."""
         if kind != "earn_dip" or not _dip.get("ok"):
             return pos
-        _ex = _dip["earn"]
-        _p2: Dict[str, pd.DataFrame] = {}
-        for _t2, _q in pos.items():
-            _q2 = _q.copy()
-            _c0 = pd.to_numeric(_q2.get("감축신호"), errors="coerce").fillna(0.0) > 0.5 if "감축신호" in _q2.columns else pd.Series(False, index=_q2.index)
-            _c1 = _ex[_t2].reindex(_q2.index).fillna(False) if _t2 in _ex.columns else pd.Series(False, index=_q2.index)
-            _q2["감축신호"] = (_c0 | _c1).astype(float)
-            _p2[_t2] = _q2
-        return _p2
+        return _earn_dip_cut(pos, _dip)
     _pv_scores = {"prob": _prob_df, "earn": _earn_df, "resid": _resid_df, "dip": _dip_score}
     if ind_alloc and _alloc_mode_live in ("sector_linked", "sector_prob") and any(
             isinstance(_v, pd.DataFrame) and len(_v) for _v in _pv_scores.values()):
@@ -6227,7 +6396,10 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                               "대조군 칼마 95%": (round(float(_cq.quantile(0.95)), 3) if len(_cq) else None), "대조군 수": int(len(_cq))})
                 alloc_rows.append(_prow)
                 _grid_rets[_pvl] = _pa.get("port_ret")
-                prob_variants[_pvl] = {"select": _pvsel, "params": _pvprm, "score": _pvsc, "ctrl_pct": _pct, "cut": _pvcut,
+                _is_live_pv = bool(_live_dip and _pvsc == "dip" and _pvcut == "earn_dip" and _pvsel == "tilt"
+                                   and abs(float(_pvprm.get("lam", -1.0)) - float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5))) < 1e-12)
+                prob_variants[_pvl] = {"is_live": _is_live_pv,                                  # [v0.18.0 R109] 라이브와 같은 규칙(대조군 판정용)
+                                       "select": _pvsel, "params": _pvprm, "score": _pvsc, "ctrl_pct": _pct, "cut": _pvcut,
                                        "ctrl_med": _prow.get("대조군 칼마 중앙"), "ctrl_p95": _prow.get("대조군 칼마 95%"), "n_ctrl": int(len(_cq)),
                                        "calmar": _vc, "mdd": _prow.get("최대낙폭(MDD)"),
                                        "select_sector_days": ((_pa.get("tilt") or {}).get("select_sector_days")),
@@ -6338,9 +6510,11 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             else:
                 _pr0 = alloc["port_ret"]
                 _spy = pd.to_numeric(etf_panel["SPY"]["일간수익"], errors="coerce").reindex(_pr0.index)
-                _live_u = f"★ K★ 라이브({alloc.get('mode', '-')} · {(alloc.get('exec') or {}).get('fill', '-')})"
+                _live_u = (f"★ K★ 라이브({alloc.get('live_rule')} · {(alloc.get('exec') or {}).get('fill', '-')})" if alloc.get("live_rule")
+                           else f"★ K★ 라이브({alloc.get('mode', '-')} · {(alloc.get('exec') or {}).get('fill', '-')})")
                 _rets: Dict[str, pd.Series] = {_live_u: _pr0}
-                _cmp_lbls = [str(x[0]) for x in tuple(getattr(cfg, "PROB_TILT_GRID", ()) or ())[:1]] + \
+                _cmp_lbls = ([_prev_live_lbl] if _prev_live_lbl else []) + \
+                            [str(x[0]) for x in tuple(getattr(cfg, "PROB_TILT_GRID", ()) or ())[:1]] + \
                             ["고정슬리브 1/N(v0.6.0 라이브)"] + \
                             [str(x[0]) for x in tuple(getattr(cfg, "SECTOR_LINK_GRID", ()) or ())] + \
                             [k for k in _grid_rets if str(k).startswith("참고: 라이브 배분을 v0.8.1 체결")] + \
@@ -6376,6 +6550,9 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                             _o[_nmh] = (float(_th["하락 회피율"]), float(_th["상승 참여율"]))
                         return _o
                     user_rel_info["halves"] = _halves_u(_pr0)
+                    if _prev_live_lbl and _grid_rets.get(_prev_live_lbl) is not None:          # [v0.18.0 R109] 사후 판정 기준 행
+                        user_rel_info["prev_live_label"] = _prev_live_lbl
+                        user_rel_info["halves_prev"] = _halves_u(_grid_rets[_prev_live_lbl])
                     for _pvl2 in list(prob_variants):
                         _rr2 = _grid_rets.get(_pvl2)
                         if _rr2 is not None:
@@ -6508,6 +6685,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     return {"cfg": cfg, "panel": panel, "pos": pos, "prices": {**prices, **prices_h}, "fund": fund,
             "state_board": _state_board,                                                            # [v0.14.0 R104]
             "dip_states": _dip,                                                                     # [v0.15.0 R105] 00W
+            "live_dip": bool(_live_dip), "prev_live_label": _prev_live_lbl,                          # [v0.18.0 R109] 라이브 물타기·어닝 손절
             "alloc_grid_rets": {k: v for k, v in _grid_rets.items() if str(k).startswith("R105 ")},  # [v0.15.0 R105] 00P 비교 행
             "stock_prob": stock_prob, "prob_variants": prob_variants, "sector_of": sector_of,      # [v0.11.0 R99 N3]
             "k_freshness": _k_fresh, "selection_audit": _sel_audit,                                # [v0.11.0 R99 N2·N6-a]
@@ -7089,7 +7267,8 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _tw_k = (res.get("alloc") or {}).get("target_w")
         _held_k = (_tw_k.iloc[-2] if isinstance(_tw_k, pd.DataFrame) and len(_tw_k) >= 2 else None)
         try:                                                     # [v0.15.0 R105] 물타기·손절 가이드
-            _wdf, _wl = build_dip_sheet(res.get("dip_states") or {}, names=res.get("names"), held=_held_k, sector_of=res.get("sector_of"))
+            _wdf, _wl = build_dip_sheet(res.get("dip_states") or {}, names=res.get("names"), held=_held_k, sector_of=res.get("sector_of"),
+                                        live=bool((res.get("alloc") or {}).get("live_rule")))
             if isinstance(_wdf, pd.DataFrame) and len(_wdf):
                 sheets["00W_물타기손절"] = _wdf
             _add.extend(_wl)
@@ -7176,6 +7355,13 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                       + ". ★ 섹터 선택은 S★(무작위를 이긴다)를 그대로 따르고, 섹터 안 종목은 균등(종목 자기 지표·결합점수 기울임은 "
                         "선택 정보가 없거나 대조군을 못 넘었다) · ⚠ 노출 ≈ S★(종전 1/N 규칙보다 +0.05) · 보유에 섹터 ETF 포함. "
                         "되돌리기: k_overrides={'STOCK_ALLOC_MODE': 'prob_tilt'}")
+        elif _md == "sector_prob" and _al.get("live_rule"):
+            _mline = (f"★ mode=sector_prob — {_al.get('live_rule')}(v0.18.0 R109 · 사용자 선택) · 섹터 비중은 S★ 그대로 · 섹터 안: "
+                      f"어닝 발표 4일 안 하락 종목은 21거래일 부모 섹터 ETF(위험 구간 회피) · 200일선 위 어닝 무관 하락 종목은 순위 기울임 "
+                      f"λ{float(getattr(cfg, 'LIVE_DIP_LAMBDA', 0.5)):g}(종목 몫 보존) · 종목 상한 {float(_td.get('cap', 0) or 0):.1%} · 섹터 합(= S★) 평균 "
+                      f"{_td.get('sector_total_mean')} = 종목 {_td.get('stock_share_mean')} + 부모 섹터 ETF {_td.get('etf_share_mean')} · "
+                      f"감축(E3 + 어닝 하락) 몫 → ETF 평균 {_td.get('cut_to_etf_mean', '-')}"
+                      + ". 되돌리기: k_overrides={'LIVE_DIP_RULE': False}(v0.17.0 섹터 안 균등과 비트 동일)")
         elif _md == "sector_prob":
             _mline = (f"⚠ mode=sector_prob(R99 · 사용자 overrides — 사전등록 통과 전 라이브) · 선택 {_td.get('select', '-')} "
                       f"{_td.get('params', {})} · 종목 상한 {float(_td.get('cap', 0) or 0):.1%} · 섹터 합(= S★) 평균 {_td.get('sector_total_mean')} = "
@@ -7196,6 +7382,16 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _add.append(("★ 배분 방식(v0.9.0 R94 · 사용자 지시 '주식층도 같이 개선' — 신뢰도 = 하락 회피·상승 참여)",
                      _mline + ("" if _md in ("sector_linked", "sector_prob") else
                                " ★ 총노출(=방어)은 v0.6.0 1/N 규칙과 날마다 동일하다 — 바뀐 것은 그 노출의 종목 간 분배뿐이다.")))
+        try:                                                                   # [v0.18.0 R109] 라이브 사후 판정
+            _ldv = live_dip_verdict_line(res)
+            if _ldv:
+                _add.append(_ldv)
+            elif bool(getattr(cfg, "LIVE_DIP_RULE", False)) and not _al.get("live_rule"):
+                _add.append(("★★★ R109 라이브 사후 판정 — 물타기 기울임 + 어닝 하락 손절",
+                             "⚠ 이번 실행은 라이브 규칙을 쓰지 못했다(물타기 상태 또는 I 산업·부모 비중 통로 없음) → 섹터 안 균등(v0.17.0)으로 계산됨 — "
+                             "로그 r109_live_dip_unavailable 참조."))
+        except Exception as e:
+            log("REPORT", kv(event="r109_verdict_line_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
         if _md == "sector_linked":
             _add.append(("상승확률 기울임(prob_tilt · v0.8.0~0.8.1 라이브) — R94 처리",
                          "R81 사전등록(칼마 백분위 ≥ 90 그리고 칼마 ≥ 1/N)이 R94 판정 리포트(stock_regime_report_v0.8.1)에서 "
