@@ -1,5 +1,19 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.26.0 - 2026-09-29 - [R116 00Y 구간 원인 · 비교 행 결함 수정 — K★ 무변경]
+#    사용자 지시(2026-09-29): "결과 폴더에 올렸어 국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해 모두 개선될 때 까지
+#      계속 테스트, 개선 반복해서 알려줘 회피, 참여 둘다 상승시켜야 하는거야".
+#    ── R116 원인 분석(r116/seg116·why116·attrib116 · Kaggle v1.76.0 실적) ── 참여 결손 1위 = M 노출 부족: 2020-11~2021-09(SPY +40%) 평균 노출 0.27
+#      (상승 국면 193일 중 과열 헤어컷 상한 0이 171일) · 2023-06~07 중립 위험감축·시장 폭 · 2024-02~03 헤어컷 · 2020-03 V반등 진입 3일 지연 |
+#      회피 결손 1위 = 완전 노출 중 조정(2019-05 · 2019-07 · 2018-10 · 2021-09 · 2024-04) + S·I 90% XLK(SPY보다 더 빠짐).
+#    ── R116 개선 시험(≈300개 · 네 층 하네스 r116/h116 = Kaggle 재현 상관 ≥ 0.9993 · M 로컬 재시뮬레이션 r116/mrep116 = 라이브 비트 동일) ──
+#      M 규칙 하나씩 끄기 16 · 파라미터 83 · 조합 탐색 · 새 신호(VIX 공포 정점 재진입 36 · 폭 넓은 상승 헤어컷 해제 12 · 약세장 가드) · S 하락국면리더 ·
+#      K R115 묶음별·ETF 경로. 표본 안(2018~) 둘 다 ↑ 조합(반등 재진입 1.0 + 구조바닥 H 0.4 + R96 중립 0.12)은 긴 이력(1994~2017 M 대용)에서
+#      반등 1.0이 회피 −1.7 · MDD −6.8%p(2008 약세장 반등) → 기각. 표본 밖까지 회피·참여 둘 다 올리는 변경은 찾지 못함 → 라이브 무변경.
+#    (§1 결함 수정) 'S 비교 행 섹터 비중 × 섹터연동' K 비교 행(R95·R96·R98·R113 …)에 라이브 현금 표지(R114·R115 cash_mask)가 빠져 있었다 →
+#         v0.25.0 00 'R113' 줄이 '경보 없음' 행과 R115 없는 행을 비교해 Δ참여 −14.5로 보였다. 이제 라이브와 같은 규칙.
+#    (§2) 00Y_구간원인(K★ · S v0.93.0 공통 함수 · 00L 뒤) · 00 줄. R115 묶음별 시험(r116/k116b): 모든 산업 묶음이 회피↔참여 교환(SOXX 0.62 · SKYY 0.24 · IGV 0.04) ·
+#         ETF 경로는 참여 +9.2 · 회피 −4.8(교환) → R115 라이브 그대로(사용자 지시). 시험 t116/test_r116.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.25.0 - 2026-09-29 - [R115 ★★ 같은 산업 실적 회피 라이브 · 00X 큰 손실 구간 원인 · M 금리 급등 경보 A 라이브 대응]
 #    사용자 지시(2026-09-29): "같은 산업의 종목 어닝 전에는 그 산업 종목은 매수하지 않도록 하고 금리 급등 경보 On으로 해서 수정해봐 그리고 다른 종목도 내가 물어본것
 #      처럼 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해".
@@ -734,7 +748,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.25.0"
+VERSION = "v0.26.0"
 VERSION_DATE = "2026-09-29"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -7523,7 +7537,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                         "label": f"S 비교 행 {_vn}"}
                 _va = build_allocation(_pos_live, panel, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
                                        ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw, **_sc_kw,
-                                       **(_r111kw if _live111 else {}))
+                                       **(_r111kw if _live111 else {}), **_kw114)   # [v0.26.0 R116 결함 수정] 라이브 현금 표지(R114·R115)도 같게
                 _vl = f"비교: 섹터연동 × S '{_vn}' 섹터 비중(측정 전용)"
                 _vr = _alloc_row(_vl, _va, float(alloc.get("cap_used", 0.05)), None)
                 if _vr:
@@ -8618,6 +8632,15 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 _spy6 = pd.to_numeric(res["etf_panel"]["SPY"]["일간수익"], errors="coerce")
                 _ldf, _ll = build_loss_period_sheet(_al6["port_ret"], _E6, _spy6, _C6, "주식 K★")
                 sheets["00L_손실기간분석"] = _ldf
+                try:                                         # [v0.26.0 R116] 00Y 구간 원인(S v0.93.0 공통 함수 · SPY 지그재그)
+                    _S116 = _find_sector_module()
+                    if _S116 is not None and hasattr(_S116, "segment_cause_sheet"):
+                        _ydf, _yl = _S116.segment_cause_sheet(_al6["port_ret"], _spy6, _E6, "K★", _C6, rules=None)
+                        if len(_ydf):
+                            sheets["00Y_구간원인"] = _ydf
+                            _ll = list(_ll) + list(_yl)
+                except Exception as _ey:
+                    log("REPORT", kv(event="segment_cause_failed", layer="K", err=type(_ey).__name__, msg=str(_ey)[:160]), level="warning")
             _p6 = 1 if (_add and "꾸준함" in str(_add[0][0])) else 0           # 00 줄 순서: 꾸준함 → 손실 기간 → 종목별
             _add[_p6:_p6] = list(_ll) + list(_ql)
         except Exception as _elq:
@@ -8810,7 +8833,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
     _front = [n for n in ("00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
-                          "00P_기간별수익배수", "00L_손실기간분석", "00X_손실구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
+                          "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00X_손실구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
                           "00N_종목선별근거", "01Z_주식일별예측",
                           "00_실행요약") if n in sheets]
     sheets = {**{n: sheets[n] for n in _front},

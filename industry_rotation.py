@@ -1,5 +1,16 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.59.0 - 2026-09-29 - [R116 00Y 구간 원인(I★ · S v0.93.0 공통 함수) — I★ 무변경]
+#    사용자 지시(2026-09-29): "결과 폴더에 올렸어 국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해 모두 개선될 때 까지
+#      계속 테스트, 개선 반복해서 알려줘 회피, 참여 둘다 상승시켜야 하는거야".
+#    ── R116 원인 분석(r116/seg116·why116·attrib116 · Kaggle v1.76.0 실적) ── 참여 결손 1위 = M 노출 부족: 2020-11~2021-09(SPY +40%) 평균 노출 0.27
+#      (상승 국면 193일 중 과열 헤어컷 상한 0이 171일) · 2023-06~07 중립 위험감축·시장 폭 · 2024-02~03 헤어컷 · 2020-03 V반등 진입 3일 지연 |
+#      회피 결손 1위 = 완전 노출 중 조정(2019-05 · 2019-07 · 2018-10 · 2021-09 · 2024-04) + S·I 90% XLK(SPY보다 더 빠짐).
+#    ── R116 개선 시험(≈300개 · 네 층 하네스 r116/h116 = Kaggle 재현 상관 ≥ 0.9993 · M 로컬 재시뮬레이션 r116/mrep116 = 라이브 비트 동일) ──
+#      M 규칙 하나씩 끄기 16 · 파라미터 83 · 조합 탐색 · 새 신호(VIX 공포 정점 재진입 36 · 폭 넓은 상승 헤어컷 해제 12 · 약세장 가드) · S 하락국면리더 ·
+#      K R115 묶음별·ETF 경로. 표본 안(2018~) 둘 다 ↑ 조합(반등 재진입 1.0 + 구조바닥 H 0.4 + R96 중립 0.12)은 긴 이력(1994~2017 M 대용)에서
+#      반등 1.0이 회피 −1.7 · MDD −6.8%p(2008 약세장 반등) → 기각. 표본 밖까지 회피·참여 둘 다 올리는 변경은 찾지 못함 → 라이브 무변경.
+#    (§1) user_rel_src에 S m_sig · r105_extra_sheets_i → 00Y_구간원인(I★ · M 규칙 표시). 시험 t116/test_r116.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.58.0 - 2026-09-28 - [R113 금리 급등 경보 측정 행 · 수익률(%) 목표 판정 — I★ 무변경]
 #    사용자 지시(2026-09-28): "국채는 넣지말고 목표는 ~%수익 이상으로 높게 유지해".
 #    (§1) S v0.91.0 relcmp_frames의 'R113 A/B' 행 → I 측정 행(부모 비율법 · 자동) · 00 'R113 금리 급등 경보' 줄(S 공통 함수) ·
@@ -1965,7 +1976,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.58.0"
+VERSION = "v0.59.0"
 VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -13061,7 +13072,8 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
         "drivers": _drv, "driver_tests": _drv_tests, "driver_rot_grid": _drv_grid,   # [v0.29.0 R75] 27·26·00A·00
         "reliability": _rel_aud,                                  # [v0.36.0 R82] 00R_신뢰도판정
         # [v0.40.0 R86] 사용자 신뢰도 입력 — S가 이미 계산한 같은 창의 SPY·M 일수익(재계산 없음)
-        "user_rel_src": {"spy_ret": ((sres or {}).get("alloc") or {}).get("spy_ret"),
+        "user_rel_src": {"m_sig": (sres or {}).get("m_sig"),                                                   # [v0.59.0 R116] 00Y M 규칙
+                         "spy_ret": ((sres or {}).get("alloc") or {}).get("spy_ret"),
                          "spy_m_ret": ((sres or {}).get("alloc") or {}).get("spy_m_ret"),
                          "spy_m_norev_ret": ((sres or {}).get("alloc") or {}).get("spy_m_norev_ret"),   # [v0.45.0 R93]
                          "spy_m_pre95_ret": ((sres or {}).get("alloc") or {}).get("spy_m_pre95_ret"),   # [v0.47.0 R95]
@@ -14217,6 +14229,16 @@ def r105_extra_sheets_i(S, alloc: Optional[Dict[str, Any]], results: Optional[Di
                 lines[1:1] = ll
         except Exception as e:
             log("REPORT", kv(event="loss_period_failed", layer="I", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+        try:                                                 # [v0.59.0 R116] 00Y 구간 원인(S v0.93.0 segment_cause_sheet)
+            bt = (alloc.get("bts") or {}).get(alloc.get("label_star"))
+            if hasattr(S, "segment_cause_sheet") and isinstance(bt, pd.DataFrame) and src.get("spy_ret") is not None and Ex is not None:
+                ydf, yl = S.segment_cause_sheet(bt["strategy_ret"], src["spy_ret"], Ex, "I★", C, rules=S.m_rule_labels(src.get("m_sig")))
+                if len(ydf):
+                    out["00Y_구간원인"] = ydf
+                    _pl = next((i for i, (k_, _) in enumerate(lines) if "손실 기간" in str(k_)), 0)
+                    lines[_pl + 1:_pl + 1] = yl              # 손실 기간 줄 바로 뒤
+        except Exception as e:
+            log("REPORT", kv(event="segment_cause_failed", layer="I", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
     return out, lines
 
 
@@ -15356,7 +15378,7 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _r105_lines = list(_r105_lines) + list(_l110)
             except Exception as _e110:
                 log("REPORT", kv(event="state_verify_failed", layer="I", err=type(_e110).__name__, msg=str(_e110)[:160]), M=M, level="warning")
-        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Q_자산별기간배수", "00V_상태판정검증", "00T_산업상태판",
+        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_산업상태판",
                                    "00R_신뢰도판정", "00B_수익곡선비교",
                                    "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교", "00E_산업상승확률")
 

@@ -17,6 +17,20 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.93.0 - 2026-09-29 - [R116 00Y 구간 원인 공통 원본(segment_cause_sheet · m_rule_labels) — S★ 무변경]
+#    사용자 지시(2026-09-29): "결과 폴더에 올렸어 국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해 모두 개선될 때 까지
+#      계속 테스트, 개선 반복해서 알려줘 회피, 참여 둘다 상승시켜야 하는거야".
+#    ── R116 원인 분석(r116/seg116·why116·attrib116 · Kaggle v1.76.0 실적) ── 참여 결손 1위 = M 노출 부족: 2020-11~2021-09(SPY +40%) 평균 노출 0.27
+#      (상승 국면 193일 중 과열 헤어컷 상한 0이 171일) · 2023-06~07 중립 위험감축·시장 폭 · 2024-02~03 헤어컷 · 2020-03 V반등 진입 3일 지연 |
+#      회피 결손 1위 = 완전 노출 중 조정(2019-05 · 2019-07 · 2018-10 · 2021-09 · 2024-04) + S·I 90% XLK(SPY보다 더 빠짐).
+#    ── R116 개선 시험(≈300개 · 네 층 하네스 r116/h116 = Kaggle 재현 상관 ≥ 0.9993 · M 로컬 재시뮬레이션 r116/mrep116 = 라이브 비트 동일) ──
+#      M 규칙 하나씩 끄기 16 · 파라미터 83 · 조합 탐색 · 새 신호(VIX 공포 정점 재진입 36 · 폭 넓은 상승 헤어컷 해제 12 · 약세장 가드) · S 하락국면리더 ·
+#      K R115 묶음별·ETF 경로. 표본 안(2018~) 둘 다 ↑ 조합(반등 재진입 1.0 + 구조바닥 H 0.4 + R96 중립 0.12)은 긴 이력(1994~2017 M 대용)에서
+#      반등 1.0이 회피 −1.7 · MDD −6.8%p(2008 약세장 반등) → 기각. 표본 밖까지 회피·참여 둘 다 올리는 변경은 찾지 못함 → 라이브 무변경.
+#    (§1 공통 원본) segment_cause_sheet: 구간마다 층 수익 · 평균 노출 · 노출 몫 · 선택 몫 · 회피/참여 결손(%p) · 이탈/진입 지연 · 노출 부족 날 M 규칙 ·
+#         기여 큰 자산 → A 원인별 요약 · B 회피 결손 큰 하락 · C 참여 결손 큰 상승 · D 근거(R116_SEG_EVIDENCE) + 00 줄. m_rule_labels(M 목표 < 1인 날 주 원인).
+#    (§2) run 결과에 m_sig(M 신호 열) · r106_extra_sheets → 00Y_구간원인(S★). LAYER_MIN_VERSIONS M v1.77.0 · S v0.93.0 · I v0.59.0.
+#         시험 t116/test_r116.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.92.0 - 2026-09-29 - [R115 M 금리 급등 경보 A 라이브 대응 — 경보 없음 비교 행 · S 규칙 무변경]
 #    사용자 지시(2026-09-29): "… 금리 급등 경보 On으로 해서 수정해봐 …". M v1.76.0이 R113 A를 라이브 target_pos로 쓰므로 S★·I★는 경보가 켜진 M 노출을 받는다.
 #    (§1) R98 측정 목록에 'pos_pre_r113' → [회피참여비교] 'R113 이전 라이브(금리 경보 없음 · 비교)' 행(경보가 라이브가 아니면 라이브와 같아 생략) ·
@@ -3112,7 +3126,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.92.0"
+VERSION = "v0.93.0"
 VERSION_DATE = "2026-09-27"
 
 # =============================================================================
@@ -8082,6 +8096,10 @@ def run(res_or_path, M, scfg: Optional[SectorConfig] = None,
             "matrix": matrix, "portfolio_perf": portfolio_perf, "portfolio_curve": portfolio_curve,
             "summary": summary, "stage_timing": stage_timing, "scfg": scfg, "M_cfg": M_cfg,
             "spy_tr_full": spy_tr,                             # [v0.85.0 R105] 00T 섹터 상태판 SPY 행(총수익 종가 · 전 이력)
+            "m_sig": (res["sig"][[c for c in ("target_pos", "state", "pos_pre_r113", "r95_stress_exit", "fast_trigger", "extension_haircut",
+                                              "neutral_risk_cut", "breadth_neutral") if c in res["sig"].columns]].copy()
+                      if isinstance(res, dict) and isinstance(res.get("sig"), pd.DataFrame) else None),   # [v0.93.0 R116] 00Y M 규칙
+
             "signal_start": str(sig_start.date()), "cal_end": str(cal[-1].date()), "aborted": False,
             "m_bundle_meta": res.get("bundle_meta", {}), "nd_spy": nd_spy,
             "data_freshness": res.get("data_freshness"),     # [v0.61.0 R73] M 신선도 감사 결과(00시트 1행)
@@ -8760,7 +8778,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.76.0", "sector_rotation": "v0.92.0", "industry_rotation": "v0.58.0"}   # [v0.92.0 R115]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.77.0", "sector_rotation": "v0.93.0", "industry_rotation": "v0.59.0"}   # [v0.93.0 R116]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -19192,7 +19210,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         except Exception as _e:
             log("REPORT", kv(event="user_reliability_failed", err=type(_e).__name__, msg=str(_e)[:160],
                              trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Q_자산별기간배수", "00V_상태판정검증", "00T_섹터상태판",
+    sheets = sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_섹터상태판",
                              "00S_섹터자기근거", "00R_신뢰도판정",
                              "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
@@ -21197,6 +21215,181 @@ def _alloc_contrib(tw: pd.DataFrame, ret: pd.DataFrame) -> Tuple[pd.DataFrame, p
     return held * R, held.sum(axis=1)
 
 
+# =============================================================================
+# [v0.93.0 R116 사용자 지시 "국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해"]
+#   00Y_구간원인 — SPY 지그재그 구간(00U 회피·참여와 같은 5% · 3일)마다 그 층이 **회피를 얼마나 잃었나(하락 구간)** ·
+#   **참여를 얼마나 놓쳤나(상승 구간)**와 원인(노출 = 이탈/진입 지연 · M 규칙 · 선택 = 보유 자산이 SPY와 다르게 움직임)을 적는다.
+#   공통 원본(S) — M·I·K는 이 함수를 부른다(S가 없으면 시트 생략). 진단 전용 · 사후 구간 분할이라 신호에 쓰지 않는다.
+# =============================================================================
+R116_SEG_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
+    ("R116 원인 분석(Kaggle v1.76.0 · 네 층 · 2018~ SPY 하락 30 · 상승 28구간)",
+     "참여 결손 1위 = M 노출 부족: 2020-11~2021-09(SPY +40%) M 평균 노출 0.27 — 상승 국면 193일 중 과열 헤어컷 상한 0이 171일 · 2023-06~07 중립 위험감축·시장 폭 · "
+     "2024-02~03 헤어컷 | 회피 결손 1위 = 완전 노출 중 조정(2019-05 · 2019-07 · 2018-10 · 2021-09 · 2024-04) + S·I 90% XLK(SPY보다 더 빠짐)",
+     "노출 규칙이 원인의 대부분 — 선택(섹터·산업·종목)은 상승 때 더하고 하락 때 뺀다(대칭)"),
+    ("R116 M 규칙 하나씩 끄기(2018~ · 네 층)", "과열 헤어컷: 회피 +12.2 ↔ 참여 −6.2 · 중립 위험감축 +8.7 ↔ −3.5 · 급락 트리거 +5.9 ↔ −2.3 · 스트레스 청산 +4.2 ↔ −0.7 · "
+     "깊은 낙폭 회복: 참여 +13.2 ↔ 회피 −1.2 · 반등 재진입 +2.9 ↔ −1.1", "모든 규칙이 회피·참여 교환 — 둘 다 올리는 규칙 없음"),
+    ("R116 파라미터 83개 흔들기 · 조합 탐색 · 새 신호(VIX 공포 정점 · 폭 넓은 상승 헤어컷 해제 · 약세장 가드)",
+     "표본 안(2018~) 둘 다 ↑ 조합(반등 재진입 1.0 + 구조바닥 H 0.4 + R96 중립 0.12: 네 층 +0.4~0.8/+0.8~1.8)은 긴 이력(1994~2017 M 대용)에서 "
+     "반등 재진입 1.0이 회피 −1.7 · MDD −6.8%p(2008 약세장 반등) → 기각 | 헤어컷 해제(폭 넓음·차분) 2018~ −0.2/+2.0 · 2004~2017 −2.0/+2.5(교환)",
+     "표본 밖까지 둘 다 올리는 변경은 이번 라운드에서 찾지 못함 — 라이브 무변경"))
+
+
+def m_rule_labels(sig: Optional[pd.DataFrame]) -> Optional[pd.Series]:
+    """[v0.93.0 R116] M 목표비중 < 1인 날의 주 원인(우선순위: R113 금리 경보 > R95 스트레스 청산 > 급락 트리거 > 과열 헤어컷 >
+    중립 위험감축 > 시장 폭 중립 > 위험회피 국면 > 중립 국면 > 기타). M generate_signals·오버레이 열에서 읽는다(없는 열은 건너뜀)."""
+    if not isinstance(sig, pd.DataFrame) or "target_pos" not in sig.columns:
+        return None
+    idx = sig.index
+    tp = pd.to_numeric(sig["target_pos"], errors="coerce").fillna(0.0)
+
+    def col(c):
+        if c not in sig.columns:
+            return pd.Series(False, index=idx)
+        v = sig[c]
+        if v.dtype == object:
+            return v.astype(str).str.len().gt(0) & ~v.astype(str).isin(("False", "nan", "None", "0"))
+        return pd.to_numeric(v, errors="coerce").fillna(0.0).astype(float) > 0.5
+    st = sig["state"].astype(str) if "state" in sig.columns else pd.Series("", index=idx)
+    pre113 = pd.to_numeric(sig["pos_pre_r113"], errors="coerce") if "pos_pre_r113" in sig.columns else tp
+    conds = [("R113 금리 급등 경보", (pre113 > tp + 1e-9).fillna(False)), ("R95 스트레스 청산", col("r95_stress_exit")),
+             ("급락 트리거", col("fast_trigger")), ("과열 헤어컷", col("extension_haircut")), ("중립 위험감축", col("neutral_risk_cut")),
+             ("시장 폭 중립", col("breadth_neutral")), ("위험회피 국면", st.str.contains("RISK_OFF|TREND_ONLY_OUT")),
+             ("중립 국면", st.eq("NEUTRAL"))]
+    lab = pd.Series("", index=idx, dtype=object)
+    low = tp < 1.0 - 1e-9
+    for nm, c in reversed(conds):
+        lab[low & c.reindex(idx).fillna(False).astype(bool)] = nm
+    lab[low & lab.eq("")] = "기타(부분 노출)"
+    return lab
+
+
+def segment_cause_sheet(port: pd.Series, spy: pd.Series, exposure: pd.Series, layer: str = "",
+                        contrib: Optional[pd.DataFrame] = None, rules: Optional[pd.Series] = None, top: int = 10,
+                        mm: float = 0.05, md: int = 3) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v0.93.0 R116] 00Y_구간원인 — 구간마다: SPY% · 층% · 평균 노출 · 노출 몫(평균 노출 × SPY) · 선택 몫(나머지) ·
+    결손(하락: 층 수익 ÷ Σ하락 SPY × 100 = 회피를 몇 %p 잃었나 · 상승: (SPY − 층) ÷ Σ상승 SPY × 100 = 참여를 몇 %p 놓쳤나) ·
+    이탈 지연(하락 구간에서 노출 ≤ 0.25까지 일수) · 진입 지연(상승 구간에서 노출 ≥ 0.5까지 일수) · 노출 부족 날의 M 규칙 · 기여 큰 자산.
+    A 요약(원인별 결손 합) · B 회피 결손 큰 하락 구간 · C 참여 결손 큰 상승 구간 + 00 줄."""
+    pr = pd.to_numeric(pd.Series(port), errors="coerce").fillna(0.0)
+    pr.index = pd.DatetimeIndex(pr.index)
+    sp = pd.to_numeric(pd.Series(spy), errors="coerce").reindex(pr.index).fillna(0.0)
+    E = pd.to_numeric(pd.Series(exposure), errors="coerce").reindex(pr.index).fillna(0.0)
+    # 규칙은 결정일(t) 표지 → 노출(그날 보유 = 전날 결정)과 맞추려고 하루 민다
+    RL = rules.reindex(pr.index.union(rules.index)).shift(1).reindex(pr.index).fillna("") if isinstance(rules, pd.Series) else None
+    C = contrib.reindex(pr.index).fillna(0.0) if isinstance(contrib, pd.DataFrame) and contrib.shape[1] else None
+    lev = (1.0 + sp).cumprod()
+    segs = _zz_valid(lev, float(mm), int(md))
+    dn_tot = sum(float(lev.loc[b] / lev.loc[a] - 1.0) for k, a, b in segs if k == "하락")
+    up_tot = sum(float(lev.loc[b] / lev.loc[a] - 1.0) for k, a, b in segs if k == "상승")
+    rows = []
+    for kind, a, b in segs:
+        w = (pr.index > a) & (pr.index <= b)
+        if not w.any():
+            continue
+        sr = float((1.0 + sp[w]).prod() - 1.0)
+        lr = float((1.0 + pr[w]).prod() - 1.0)
+        ex = float(E[w].mean())
+        sel = lr - ex * sr
+        ev = E[w].values
+        if kind == "하락":
+            hit = np.where(ev <= 0.25)[0]
+            lag = int(hit[0]) if len(hit) else int(w.sum())
+            deficit = (lr / dn_tot * 100.0) if dn_tot < 0 else np.nan
+        else:
+            hit = np.where(ev >= 0.5)[0]
+            lag = int(hit[0]) if len(hit) else int(w.sum())
+            deficit = ((sr - lr) / up_tot * 100.0) if up_tot > 0 else np.nan
+        lag_ret = float((1.0 + sp[w].iloc[:lag]).prod() - 1.0) if lag else 0.0
+        causes = []
+        rule = ""
+        if RL is not None:
+            lowd = RL[w & (E < 0.5)]
+            lowd = lowd[lowd.ne("")]
+            if len(lowd):
+                vc = lowd.value_counts()
+                rule = f"{vc.index[0]} {int(vc.iloc[0])}일" + (f" · {vc.index[1]} {int(vc.iloc[1])}일" if len(vc) > 1 else "")
+        if kind == "하락":
+            if ex >= 0.6:
+                causes.append("이탈 못 함")
+            elif ex >= 0.25:
+                causes.append("늦은·부분 이탈")
+            else:
+                causes.append("대부분 피함")
+            if sel <= -0.01:
+                causes.append("선택 손실")
+        else:
+            if lag >= 3 and lag_ret >= 0.03:
+                causes.append("진입 지연")
+            if ex < 0.5:
+                causes.append("노출 부족")
+            if sel <= -0.01:
+                causes.append("선택 부진")
+            if not causes:
+                causes.append("대부분 탐")
+        tops = ""
+        if C is not None:
+            cs = C[w].sum()
+            cs = cs[cs.abs() > 1e-6]
+            pick = cs.sort_values().head(3) if kind == "하락" else cs.sort_values(ascending=False).head(3)
+            tops = ", ".join(f"{k} {v * 100:+.1f}%p" for k, v in pick.items())
+        rows.append({"구간": kind, "시작": str(a.date()), "끝": str(b.date()), "일수": int(w.sum()), "SPY%": round(sr * 100, 2), f"{layer}%": round(lr * 100, 2),
+                     "평균 노출": round(ex, 2), "노출 몫%": round(ex * sr * 100, 2), "선택 몫%": round(sel * 100, 2),
+                     ("회피 결손%p" if kind == "하락" else "참여 결손%p"): round(deficit, 2),
+                     ("이탈 지연(일)" if kind == "하락" else "진입 지연(일)"): lag, "지연 중 SPY%": round(lag_ret * 100, 2),
+                     "주 원인": " + ".join(causes), "노출 부족 날 M 규칙": rule, "기여 큰 자산": tops})
+    T = pd.DataFrame(rows)
+    if not len(T):
+        return pd.DataFrame(), []
+    dn = T[T["구간"] == "하락"].copy()
+    up = T[T["구간"] == "상승"].copy()
+    parts = []
+    summ = []
+    for lab_, df_, col_ in (("회피", dn, "회피 결손%p"), ("참여", up, "참여 결손%p")):
+        if not len(df_):
+            continue
+        tot = float(df_[col_].sum())
+        g = df_.groupby(df_["주 원인"].str.split(" \\+ ").str[0])[col_].agg(["sum", "size"]).sort_values("sum", ascending=False)
+        for c_, r_ in g.iterrows():
+            summ.append({"블록": "A 원인별 요약", "구간": ("하락" if lab_ == "회피" else "상승"), "주 원인": c_, "구간 수": int(r_["size"]),
+                         f"{lab_} 결손%p": round(float(r_["sum"]), 2), "비중%": round(float(r_["sum"]) / tot * 100, 1) if abs(tot) > 1e-9 else np.nan})
+        if lab_ == "참여" and RL is not None and "노출 부족 날 M 규칙" in df_.columns:
+            rr = df_[df_["노출 부족 날 M 규칙"].ne("")]
+            if len(rr):
+                g2 = rr.groupby(rr["노출 부족 날 M 규칙"].str.split(" · ").str[0].str.replace(r" \d+일$", "", regex=True))[col_].sum().sort_values(ascending=False)
+                for c_, v_ in g2.head(6).items():
+                    summ.append({"블록": "A 원인별 요약", "구간": "상승", "주 원인": f"노출 부족 날 M 규칙: {c_}", f"참여 결손%p": round(float(v_), 2)})
+    if summ:
+        parts.append(pd.DataFrame(summ))
+    if len(dn):
+        b_ = dn.sort_values("회피 결손%p", ascending=False).head(top).copy()
+        b_.insert(0, "블록", "B 회피 결손 큰 하락 구간")
+        parts.append(b_)
+    if len(up):
+        c_ = up.sort_values("참여 결손%p", ascending=False).head(top).copy()
+        c_.insert(0, "블록", "C 참여 결손 큰 상승 구간")
+        parts.append(c_)
+    parts.append(pd.DataFrame([{"블록": "D 근거(R116)", "주 원인": a_, "기여 큰 자산": b_, "노출 부족 날 M 규칙": c_} for a_, b_, c_ in R116_SEG_EVIDENCE]))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    dsum = float(dn["회피 결손%p"].sum()) if len(dn) else float("nan")
+    usum = float(up["참여 결손%p"].sum()) if len(up) else float("nan")
+
+    def _cls(df_, col_):
+        if not len(df_):
+            return "-"
+        g = df_.groupby(df_["주 원인"].str.split(" \\+ ").str[0])[col_].sum().sort_values(ascending=False)
+        return " · ".join(f"{k} {v:.1f}" for k, v in g.head(3).items())
+    w1 = dn.sort_values("회피 결손%p", ascending=False).head(2) if len(dn) else dn
+    w2 = up.sort_values("참여 결손%p", ascending=False).head(2) if len(up) else up
+    line = (f"회피 결손 {dsum:.1f}%p(= 100 − 회피) 중 {_cls(dn, '회피 결손%p')} | 참여 결손 {usum:.1f}%p(= 100 − 참여) 중 {_cls(up, '참여 결손%p')} | "
+            f"가장 큰 하락: " + "; ".join(f"{r['시작']}~{r['끝']} SPY {r['SPY%']:+.1f}% → {r[f'{layer}%']:+.1f}%(노출 {r['평균 노출']:.2f} · {r['주 원인']})"
+                                       for _, r in w1.iterrows())
+            + " | 가장 큰 놓침: " + "; ".join(f"{r['시작']}~{r['끝']} SPY {r['SPY%']:+.1f}% → {r[f'{layer}%']:+.1f}%(노출 {r['평균 노출']:.2f}"
+                                           + (f" · {r['노출 부족 날 M 규칙']}" if r.get("노출 부족 날 M 규칙") else "") + f" · {r['주 원인']})"
+                                           for _, r in w2.iterrows())
+            + " — 세부 00Y. 연구·교육용, 투자 자문 아님.")
+    return df, [(f"★★★ 00Y 구간 원인({layer} · SPY 5% 지그재그 · 회피·참여를 어디서 왜 잃었나) — 사용자 지시 '모두 찾아서 원인 분석'", line)]
+
+
 def r106_extra_sheets(sres: Dict[str, Any], M=None) -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
     """[v0.86.0 R106 사용자 지시] 00Q_자산별기간배수(섹터마다 단독 예측 · 단순보유 · 라이브 기여) · 00L_손실기간분석(S★ 손실 주·월·분기 원인)."""
     out: Dict[str, pd.DataFrame] = {}
@@ -21236,6 +21429,14 @@ def r106_extra_sheets(sres: Dict[str, Any], M=None) -> Tuple[Dict[str, pd.DataFr
             lines.extend(ll)
     except Exception as e:
         log("REPORT", kv(event="loss_period_failed", layer="S", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
+    try:                                                     # [v0.93.0 R116] 00Y 구간 원인(SPY 지그재그 · 회피·참여 결손)
+        if lp in bts and spy is not None and Ex is not None:
+            ydf, yl = segment_cause_sheet(bts[lp]["strategy_ret"], spy, Ex, "S★", C, rules=m_rule_labels(sres.get("m_sig")))
+            if len(ydf):
+                out["00Y_구간원인"] = ydf
+                lines.extend(yl)
+    except Exception as e:
+        log("REPORT", kv(event="segment_cause_failed", layer="S", err=type(e).__name__, msg=str(e)[:160]), M=M, level="warning")
     return out, lines
 
 

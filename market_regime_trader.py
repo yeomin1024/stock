@@ -22,6 +22,18 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.77.0 - 2026-09-29 - [R116 00Y 구간 원인(SPY 지그재그 · 회피·참여 결손) — 신호·목표비중 무변경]
+#    사용자 지시(2026-09-29): "결과 폴더에 올렸어 국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해 모두 개선될 때 까지
+#      계속 테스트, 개선 반복해서 알려줘 회피, 참여 둘다 상승시켜야 하는거야".
+#    ── R116 원인 분석(r116/seg116·why116·attrib116 · Kaggle v1.76.0 실적) ── 참여 결손 1위 = M 노출 부족: 2020-11~2021-09(SPY +40%) 평균 노출 0.27
+#      (상승 국면 193일 중 과열 헤어컷 상한 0이 171일) · 2023-06~07 중립 위험감축·시장 폭 · 2024-02~03 헤어컷 · 2020-03 V반등 진입 3일 지연 |
+#      회피 결손 1위 = 완전 노출 중 조정(2019-05 · 2019-07 · 2018-10 · 2021-09 · 2024-04) + S·I 90% XLK(SPY보다 더 빠짐).
+#    ── R116 개선 시험(≈300개 · 네 층 하네스 r116/h116 = Kaggle 재현 상관 ≥ 0.9993 · M 로컬 재시뮬레이션 r116/mrep116 = 라이브 비트 동일) ──
+#      M 규칙 하나씩 끄기 16 · 파라미터 83 · 조합 탐색 · 새 신호(VIX 공포 정점 재진입 36 · 폭 넓은 상승 헤어컷 해제 12 · 약세장 가드) · S 하락국면리더 ·
+#      K R115 묶음별·ETF 경로. 표본 안(2018~) 둘 다 ↑ 조합(반등 재진입 1.0 + 구조바닥 H 0.4 + R96 중립 0.12)은 긴 이력(1994~2017 M 대용)에서
+#      반등 1.0이 회피 −1.7 · MDD −6.8%p(2008 약세장 반등) → 기각. 표본 밖까지 회피·참여 둘 다 올리는 변경은 찾지 못함 → 라이브 무변경.
+#    (§1) r105_extra_sheets_m → 00Y_구간원인(S v0.93.0 segment_cause_sheet · m_rule_labels) · 00 줄. COMPANION_MIN_VERSIONS S v0.93.0 · I v0.59.0 ·
+#         K v0.26.0. 시험 t116/test_r116.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.76.0 - 2026-09-29 - [R115 ★★ 금리 급등 경보 A 라이브(IEF 신호로만 · 채권 보유 없음)]
 #    사용자 지시(2026-09-29): "같은 산업의 종목 어닝 전에는 그 산업 종목은 매수하지 않도록 하고 금리 급등 경보 On으로 해서 수정해봐 …".
 #    (§1 ⚠ 라이브) Config R113_RATE_LIVE "" → "A": IEF 20일 ≤ −2.5% → 목표비중 0 · 부분 노출일 & IEF 20일 ≥ +1% → 1(apply_r113_rate_measure가 target_pos 교체 ·
@@ -11592,6 +11604,20 @@ def r105_extra_sheets_m(res: dict, sig: pd.DataFrame, cfg: Config = CFG) -> Tupl
         lines[1:1] = ll
     except Exception as e:   # noqa — 표시 전용
         log("REPORT", kv(event="loss_period_failed", layer="M", err=type(e).__name__, msg=str(e)[:160]), "warning")
+    # [v1.77.0 R116 사용자 지시 "국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석"] 00Y_구간원인(S v0.93.0 공통 함수)
+    try:
+        import sector_rotation as _S116
+        if hasattr(_S116, "segment_cause_sheet"):
+            bt5 = res["bt"]
+            ex = pd.to_numeric(bt5["pos_exec"], errors="coerce").fillna(0.0)
+            ydf, yl = _S116.segment_cause_sheet(bt5["strategy_ret"], bt5["bh_ret"], ex, "M", None,
+                                                rules=_S116.m_rule_labels(sig if isinstance(sig, pd.DataFrame) else res.get("sig")))
+            if len(ydf):
+                out["00Y_구간원인"] = ydf
+                _pl = next((i for i, (k_, _) in enumerate(lines) if "손실 기간" in str(k_)), 0)
+                lines[_pl + 1:_pl + 1] = yl                  # 손실 기간 줄 바로 뒤
+    except Exception as e:   # noqa — 표시 전용(S 없으면 생략)
+        log("REPORT", kv(event="segment_cause_failed", layer="M", err=type(e).__name__, msg=str(e)[:160]), "warning")
     return out, lines
 
 
@@ -13703,7 +13729,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
     # [v1.61.0 R93] 파일명 끝에 코드 버전(사용자 지시) — 돌려주는 경로가 실제 파일이다(러너는 이 값을 그대로 쓴다).
     _out = versioned_report_path(cfg.OUT_XLSX, BUNDLE_VERSION, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
-    _front5 = [n for n in ("00P_기간별수익배수", "00L_손실기간분석", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106] 00 바로 뒤
+    _front5 = [n for n in ("00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106] 00 바로 뒤
     sheets = {**{n: sheets[n] for n in _front5}, **{k: v for k, v in sheets.items() if k not in _front5}}
     write_excel(_out, sheets, bt, meta, cfg,
                 live_marks={"06_성과요약": ("전략", "복합지표 전략")})
@@ -13764,13 +13790,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.76.0"
+BUNDLE_VERSION = "v1.77.0"
 BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.92.0", "industry_rotation": "v0.58.0", "stock_regime": "v0.25.0"}   # [v1.76.0 R115]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.93.0", "industry_rotation": "v0.59.0", "stock_regime": "v0.26.0"}   # [v1.77.0 R116]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
