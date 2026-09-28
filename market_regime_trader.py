@@ -22,6 +22,16 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.75.0 - 2026-09-28 - [R113 금리 급등 경보 측정 열(A · B) · 수익률(%) 목표 판정 — 라이브 목표비중 무변경]
+#    사용자 지시(2026-09-28): "국채는 넣지말고 목표는 ~%수익 이상으로 높게 유지해" (앞 지시: "… 새로운 가설이든 규칙이든 계속 시험해서 … 목표치 도달하도록 수정해").
+#    (§1 측정 · ⚠ 라이브는 사용자 선택) Config R113_RATE_MEASURE · R113_RATE_LIVE("" = 측정만) · R113_RATE_WINDOW(20) · R113_RATE_CUT_A(0.025) ·
+#         R113_RATE_BOOST_A(0.01) · R113_RATE_CUT_B(0.015)(캐시 무시 목록) · apply_r113_rate_measure: IEF(이미 받는 교차 자산 · 신호로만 · 사지 않음)
+#         20일 수익 → pos_r113_a(≤ −2.5% → 0 · 부분 노출일 & ≥ +1% → 1) · pos_r113_b(≤ −1.5% → 0) · r113_ief20 · res['r113'].
+#         00 '★★★ R113 금리 급등 경보' 줄(_r113_note): 라이브 vs A·B — 회피·참여(S 함수) · 연 수익 · 손실 달/분기 · 최악 달/분기 · 발동일 · 오늘 경보.
+#    ── R113 연구(r112/sweep8~12 · 네 층 하네스 · 현금 이자 0) ── 조기 경보 12종: 긴 이력(2003~2017 세 구간 · 대용 M)과 2018~ 모두 손실 달 감소는 금리 급등뿐 ·
+#         A: 네 층 회피 +2.3 · 참여 +0.5 · 연 수익 +0.6%p · 손실 달 −5 · 최악 주 −0.1~−0.6%p · B: 회피 +6.7 · 참여 −6.1 · 손실 달 −8 · 연 수익 −1.8%p.
+#    (§2 공통 사본 · S v0.91.0 원본) R113 수익률 목표 판정(M 목표: 연 25% · 참여 80 · 주 +0.5%/40% · 월 +2%/45% · 분기 +6.5%/50%).
+#    (§3) COMPANION_MIN_VERSIONS S v0.91.0 · I v0.58.0 · K v0.23.0. 시험 t113/test_r113.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.74.0 - 2026-09-28 - [R112 주·월·분기 목표 판정(00P F·G · 00 줄 · SPY) — 신호·목표비중 무변경]
 #    사용자 지시(2026-09-28): "… 국면, 섹터, 산업, 주식별 모두 분기별, 월별, 주별로 내가 말한 목표치를 측정할 수 있도록 해서 목표치 높게 설정해서 달성하도록 계속 테스트해 …".
 #    (§1) 공통 사본(S v0.90.0 원본): R112_PERIOD_* · period_target_metrics · period_target_judge · build_period_target_block · build_period_sheet(rel=…).
@@ -3186,6 +3196,18 @@ class Config:
     R98_VRP_TOP_PCT: float = 0.90
     R98_VRP_VOL_FALL_N: int = 5
     R98_VRP_MIN_OBS: int = 252
+    # [v1.75.0 R113 측정 전용 · ⚠ 라이브는 사용자 선택] 금리 급등 경보 — 7~10년 국채 ETF(IEF · 신호로만 · 사지 않음) 20일 수익으로 SPY 목표비중 조정.
+    #   A = 금리 급등(IEF 20일 ≤ −R113_RATE_CUT_A) → 0 + 금리 안정(IEF 20일 ≥ +R113_RATE_BOOST_A)인 부분 노출일(0<E<1) → 1
+    #   B = 금리 급등(IEF 20일 ≤ −R113_RATE_CUT_B) → 0 (손실 최소형)
+    #   근거(r112/sweep8~12 · 현금 이자 0): 긴 이력 2003~2017 세 구간 모두 손실 달 감소(대용 M) · 2018~ 네 층 A: 회피+참여 +2.9 · 연 수익 +0.6%p ·
+    #     손실 달 −5 · B: 회피 +6.7 · 참여 −6.1 · 손실 달 −8 · 손실 분기 −2 · 연 수익 −1.8%p. 둘 다 무하락 ✗(최악 주·일부 손실 주/분기) → 측정 행.
+    #   R113_RATE_LIVE: "" = 측정만(기본 · 라이브 비트 동일) · "A"/"B" = 그 변형을 라이브 target_pos로(⚠ 사용자 선택).
+    R113_RATE_MEASURE: bool = True
+    R113_RATE_LIVE: str = ""
+    R113_RATE_WINDOW: int = 20
+    R113_RATE_CUT_A: float = 0.025
+    R113_RATE_BOOST_A: float = 0.01
+    R113_RATE_CUT_B: float = 0.015
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -7150,6 +7172,8 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "R98_NEUTRAL_CALM_POS", "R98_V1S_PK_RATIO", "R98_V1S_CALM_SIGMA", "R98_V1_NEIGHBORS", "R98_VRP_MEASURE",
     "R98_VRP_CUT_POS", "R98_VRP_REENTRY_POS", "R98_VRP_TOP_PCT", "R98_VRP_VOL_FALL_N", "R98_VRP_MIN_OBS",
     "CASH_INTEREST",                                                                           # [v1.69.0 R105] 백테스트 현금 이자(신호 무관)
+    # [v1.75.0 R113] 라이브 SPY 신호 뒤 금리 급등 경보 측정 열(검증·워크포워드·S·I 국면 모형 무관 · 교훈 31)
+    "R113_RATE_MEASURE", "R113_RATE_LIVE", "R113_RATE_WINDOW", "R113_RATE_CUT_A", "R113_RATE_BOOST_A", "R113_RATE_CUT_B",
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -8581,6 +8605,54 @@ def r98_vrp_target(sig: pd.DataFrame, px: pd.Series, vix: Optional[pd.Series], c
     tp[mC] = float(getattr(cfg, "R98_VRP_CUT_POS", 0.6))
     tp[mU] = np.maximum(tp0[mU], float(getattr(cfg, "R98_VRP_REENTRY_POS", 0.6)))
     return tp.clip(lower=0.0, upper=1.0), mC, mU, vrp
+
+
+def apply_r113_rate_measure(sig: pd.DataFrame, px_dict: Optional[Dict[str, pd.DataFrame]], cfg: Config = CFG
+                            ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.75.0 R113 측정 전용] 금리 급등 경보 열 — pos_pre_r113(적용 전 라이브) · r113_ief20(IEF 20일 수익 · t 종가까지) ·
+    pos_r113_a(급등 → 0 · 금리 안정 부분일 → 1) · pos_r113_b(급등 → 0). R113_RATE_LIVE가 'A'/'B'면 target_pos를 그 열로(⚠ 라이브 · 로그 경고)."""
+    out = sig.copy()
+    idx = out.index
+    tp = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r113"] = tp.copy()
+    diag: Dict[str, Any] = {"enabled": False, "live": str(getattr(cfg, "R113_RATE_LIVE", "") or "").upper()}
+    if not bool(getattr(cfg, "R113_RATE_MEASURE", True)) and not diag["live"]:
+        return out, diag
+    d = (px_dict or {}).get("IEF") if isinstance(px_dict, dict) else None
+    if not isinstance(d, pd.DataFrame) or not len(d):
+        diag["error"] = "IEF 가격 없음 — 측정 열 생략(라이브 무영향)"
+        log("SIGNAL", kv(event="r113_rate_measure", enabled=False, note=diag["error"]), level="warning")
+        return out, diag
+    col = "Adj Close" if "Adj Close" in d.columns else "Close"
+    ief = pd.to_numeric(d[col], errors="coerce")
+    ief = ief[~ief.index.duplicated(keep="last")].sort_index()
+    ief = ief.reindex(idx.union(ief.index)).sort_index().ffill(limit=3).reindex(idx)
+    w = int(getattr(cfg, "R113_RATE_WINDOW", 20))
+    r = ief / ief.shift(w) - 1.0
+    cut_a = (r <= -float(getattr(cfg, "R113_RATE_CUT_A", 0.025))).fillna(False)
+    cut_b = (r <= -float(getattr(cfg, "R113_RATE_CUT_B", 0.015))).fillna(False)
+    part = (tp > 1e-9) & (tp < 1.0 - 1e-9)
+    boost = (part & (r >= float(getattr(cfg, "R113_RATE_BOOST_A", 0.01)))).fillna(False) & ~cut_a
+    pa = tp.where(~boost, 1.0).where(~cut_a, 0.0)
+    pb = tp.where(~cut_b, 0.0)
+    out["r113_ief20"] = r
+    out["pos_r113_a"] = pa.clip(lower=0.0, upper=1.0)
+    out["pos_r113_b"] = pb.clip(lower=0.0, upper=1.0)
+    if diag["live"] in ("A", "B"):
+        out["target_pos"] = out["pos_r113_a"] if diag["live"] == "A" else out["pos_r113_b"]
+    s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-01"))
+    ins = idx >= s0
+    diag.update({"enabled": True, "cover": int(r.notna().sum()), "cut_a_days": int((cut_a & ins).sum()), "cut_b_days": int((cut_b & ins).sum()),
+                 "boost_days": int((boost & ins).sum()), "changed_a": int(((pa - tp).abs() > 1e-12)[ins].sum()),
+                 "changed_b": int(((pb - tp).abs() > 1e-12)[ins].sum()), "ief20_now": (round(float(r.dropna().iloc[-1]) * 100, 2) if r.notna().any() else None),
+                 "alarm_now_a": bool(cut_a.iloc[-1]) if len(cut_a) else False, "alarm_now_b": bool(cut_b.iloc[-1]) if len(cut_b) else False,
+                 "params": {"window": w, "cut_a": float(getattr(cfg, "R113_RATE_CUT_A", 0.025)), "boost_a": float(getattr(cfg, "R113_RATE_BOOST_A", 0.01)),
+                            "cut_b": float(getattr(cfg, "R113_RATE_CUT_B", 0.015))}})
+    log("SIGNAL", kv(event="r113_rate_measure", live=diag["live"] or "측정", cut_a=diag["cut_a_days"], boost_a=diag["boost_days"],
+                     cut_b=diag["cut_b_days"], ief20_now=diag["ief20_now"],
+                     note=("⚠ 라이브 적용(R113_RATE_LIVE) — 되돌리기 m_overrides={'R113_RATE_LIVE': ''}" if diag["live"] in ("A", "B")
+                           else "측정 전용 — target_pos 무변경")), level=("warning" if diag["live"] in ("A", "B") else "info"))
+    return out, diag
 
 
 def r98_neighbor_col(pk_ratio: float, calm_sigma: float) -> str:
@@ -10638,53 +10710,54 @@ def build_period_sheet(rets: Dict[str, pd.Series], spy: pd.Series, title: str = 
     return df, lines
 
 # =============================================================================
-# [R112 · 2026-09-28 사용자 지시] 주·월·분기 목표 판정(네 층 공통 · 원본 S · M·K 사본 글자 그대로 · I는 S 호출)
+# [R112 → R113 · 2026-09-28 사용자 지시] 주·월·분기 목표 판정(네 층 공통 · 원본 S · M·K 사본 글자 그대로 · I는 S 호출)
 # =============================================================================
-#   사용자 지시: "국면, 섹터, 산업, 주식별 모두 분기별, 월별, 주별로 내가 말한 목표치를 측정할 수 있도록 해서 목표치 높게 설정해서 달성하도록 계속 테스트해".
-#   기간 지표(주 금요일 마감 · 월 · 분기 · 조각 기간 제외): 플러스% · 손실 기간 수·% · 최악 배수 ·
-#     하락 회피%(기간) = 1 − Σ전략 수익 / ΣSPY 수익(SPY가 빠진 기간만 · 100% = SPY 하락을 전부 피함 · 100% 초과 = 그 기간에 벌었음) ·
-#     상승 참여%(기간) = Σ전략 수익 / ΣSPY 수익(SPY가 오른 기간만) · 급락기 손실%(SPY 주 −3% · 월 −5% · 분기 −8% 이하인 기간 중 전략도 손실) · SPY 이긴%.
-#   목표는 높게(R112 사전등록) — M은 SPY 1배 한도라 상승 참여 목표만 낮춘다. 전체 기간 회피·참여(지그재그)는 호출 쪽이 넘기면 함께 판정.
-R112_PERIOD_TARGET: Dict[str, Tuple[str, float]] = {
-    "회피(지그재그)": (">=", 75.0), "참여(지그재그)": (">=", 90.0), "MDD%": (">=", -10.0),
-    "주 플러스%": (">=", 55.0), "주 손실%": ("<=", 22.0), "주 최악 배수": (">=", 0.96), "주 하락 회피%": (">=", 80.0), "주 상승 참여%": (">=", 85.0),
-    "월 플러스%": (">=", 75.0), "월 손실 수": ("<=", 15.0), "월 최악 배수": (">=", 0.95), "월 하락 회피%": (">=", 100.0), "월 상승 참여%": (">=", 100.0),
-    "월 급락기 손실%": ("<=", 30.0),
-    "분기 플러스%": (">=", 90.0), "분기 손실 수": ("<=", 2.0), "분기 최악 배수": (">=", 0.95), "분기 하락 회피%": (">=", 120.0), "분기 상승 참여%": (">=", 120.0)}
-R112_PERIOD_TARGET_M: Dict[str, Tuple[str, float]] = dict(R112_PERIOD_TARGET, **{"참여(지그재그)": (">=", 80.0), "주 상승 참여%": (">=", 75.0),
-                                                                                  "월 상승 참여%": (">=", 90.0), "분기 상승 참여%": (">=", 95.0)})
+#   사용자 지시: "국면, 섹터, 산업, 주식별 모두 분기별, 월별, 주별로 내가 말한 목표치를 측정할 수 있도록 해서 목표치 높게 설정해서 달성하도록 계속 테스트해"
+#     → R113: "국채는 넣지말고 목표는 ~%수익 이상으로 높게 유지해".
+#   목표(수익률 % · 높게 · 사전등록 — 현재 가장 좋은 층보다 위): 연 수익 · 전체 회피·참여(지그재그)·MDD · 주·월·분기마다 평균 수익 · '+x% 이상' 기간 비율 ·
+#     최악 기간 수익 · 손실 기간 비율. M은 SPY 1배 한도라 수익 수준·참여 목표만 낮춘다. 참고(판정 밖): 기간 하락 회피·상승 참여 · 급락기 손실 · SPY 이긴 비율.
+R113_PCT_TARGET: Dict[str, Tuple[str, float]] = {
+    "연 수익%": (">=", 40.0), "회피(지그재그)": (">=", 75.0), "참여(지그재그)": (">=", 90.0), "MDD%": (">=", -10.0),
+    "주 평균%": (">=", 0.75), "주 +0.5% 이상%": (">=", 45.0), "주 최악%": (">=", -4.0), "주 손실%": ("<=", 22.0),
+    "월 평균%": (">=", 3.0), "월 +2% 이상%": (">=", 60.0), "월 최악%": (">=", -5.0), "월 손실%": ("<=", 14.0),
+    "분기 평균%": (">=", 10.0), "분기 +5% 이상%": (">=", 65.0), "분기 최악%": (">=", -5.0), "분기 손실%": ("<=", 6.0)}
+R113_PCT_TARGET_M: Dict[str, Tuple[str, float]] = dict(R113_PCT_TARGET, **{
+    "연 수익%": (">=", 25.0), "참여(지그재그)": (">=", 80.0), "주 평균%": (">=", 0.5), "주 +0.5% 이상%": (">=", 40.0),
+    "월 평균%": (">=", 2.0), "월 +2% 이상%": (">=", 45.0), "분기 평균%": (">=", 6.5), "분기 +5% 이상%": (">=", 50.0)})
+R113_PCT_TH: Dict[str, float] = {"주": 0.005, "월": 0.02, "분기": 0.05}
 R112_CRASH: Dict[str, float] = {"주": -0.03, "월": -0.05, "분기": -0.08}
-# R112 설계 반복(r112/sweep1~7 · 네 층 하네스 = Kaggle R111 재현 · 현금 이자 0) — 목표 달성 칸(네 층 합 · 76칸): 기준 16
+# 설계 반복 근거(r112/sweep1~12 · 네 층 하네스 = Kaggle R111 재현 · 현금 이자 0 · 2018~ 네 층 수익률 목표 칸 합 기준 M 2 · S 0 · I 3 · K 4 / 16)
 R112_PERIOD_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
-    ("기준(R111 라이브 · K 완충 ×0.9)", "M 2 · S 2 · I 4 · K 8 / 19 — 막는 칸: 주 손실%(현금 주가 25%라 플러스가 적다) · 월 손실 수(19~24) · 월·주 최악 · 분기 손실 수",
-     "출발점"),
-    ("기간 손익 관리(월·분기 이익 보전 · 월·분기·주 손절 · 30안)", "분기 이익 4% → 현금: 칸 27이지만 배수 16.8 → 3.3 · 손절류: 손실 달 줄지 않음",
-     "✗ 수익을 버려 칸을 채우는 것뿐 · 손절은 반등을 놓친다"),
-    ("과열 감축(SPY 상승추세 지속 · 확실 → E × 0.5~0.85)", "확실 날 다음 5일 SPY 1993~2017 −0.06% · 2018~ −0.01%(급락 12.5%) · 적용 시 손실 달 −4 · 칸 −1",
-     "✗ 회피·참여 합 감소"),
-    ("방어 슬리브(현금 몫 → 국채·금 · 45안)", "★ 현금 몫 → IEF(100일선 위일 때만): 칸 16 → 30 · 회피 +3.0 · 참여 +1.5 · 배수·칼마·MDD·분기 최악 개선 · 단 손실 달 +2~3/층",
-     "⚠ 손실 달 증가(현금 달이 국채 약세 달로) — 사용자 선택 대기"),
-    ("슬리브 활성 조건(부분 노출일만 · 이탈 뒤 5~42일 · SPY 하락 상태 · 60안)", "부분 노출일만: 회피·참여 모두 감소 · 어떤 조건도 손실 달 증가를 없애지 못함", "✗"),
-    ("K 조건부 현금 완충(풀노출일 × b · 그 밖 × b′ · 18안)", "회피+참여 합은 평균 노출에 비례 — 균일 ×0.9가 경계 위", "균일 ×0.9(사용자 선택)"),
-    ("S★·I★ 상태 게이트(장기 우하향 · 하락 상태 · 과열 → 재분배/현금 · 16안)", "장기 우하향 제외: 참여 −8~−30 · I 과열 → 재분배: 회피 +2.3 · 참여 −0.8 · 손실 달 −2 · 분기 손실 +1",
-     "✗(무하락 미달)"))
+    ("기준(R112 라이브 · K 완충 ×0.9)", "연 수익 M 24% · S 38% · I 42% · K 43% · 월 평균 +1.9/+2.8/+3.1/+3.1% · 최악 달 −6.4/−8.0/−8.0/−7.3% · 손실 달 23/20/24/19 · "
+     "최악 분기는 모두 2018Q4 · 최악 달은 2019-05·2018-10 · 최악 주는 2024-08·2019-08", "출발점"),
+    ("기간 손익 관리(월·분기 이익 보전 · 손절 30안) · 과열 감축 · K 조건부 완충 · 섹터/산업 상태 게이트", "칸을 채우면 수익이 무너지거나(배수 16.8 → 3.3) 회피+참여 합이 줄었다",
+     "✗"),
+    ("방어 슬리브(현금 몫 → IEF · 45+60안)", "칸 16 → 30이지만 손실 달 +2~3/층", "✗ 사용자 결정 '국채는 넣지 마'"),
+    ("조기 경보 12종(신용 · 방어주 선도 · 고베타/저변동 · 변동성 급등 · 소형주 · 시장 폭 · 재진입)", "긴 이력(2003~2017 세 구간)과 2018~ 모두에서 손실 달을 줄인 것은 "
+     "금리 급등(IEF 20일 수익 · 신호로만)뿐 · 좁은 상승은 긴 이력에서 손실 달 +5 · 주식 약세 확인 조건을 붙이면 더 나쁨", "금리 급등만 후보"),
+    ("★ R113 금리 급등 경보(M v1.75.0 측정 행 A · B)", "A(IEF ≤ −2.5% → 0 · 부분일 & IEF ≥ +1% → 1): 네 층 회피 +2.3 · 참여 +0.5 · 연 수익 +0.6%p · 손실 달 −5 · "
+     "최악 주 −0.1~−0.6%p | B(IEF ≤ −1.5% → 0): 회피 +6.7 · 참여 −6.1 · 손실 달 −8 · 손실 분기 −2 · 연 수익 −1.8%p · 긴 이력 손실 달 −4~−13",
+     "측정 행 — 무하락 ✗(작게) · Kaggle 결과로 판정 뒤 사용자 선택"))
 
 
 def period_target_metrics(r: pd.Series, spy: pd.Series) -> Dict[str, float]:
-    """[R112] 주·월·분기 목표 지표(현금 이자 0 · 조각 기간 제외)."""
+    """[R113] 수익률(%) 목표 지표 + 참고 지표(현금 이자 0 · 조각 기간 제외)."""
     out: Dict[str, float] = {}
     sp = pd.to_numeric(pd.Series(spy), errors="coerce").fillna(0.0)
     rr = pd.to_numeric(pd.Series(r), errors="coerce").reindex(sp.index).fillna(0.0)
+    if len(rr):
+        out["연 수익%"] = float(((1.0 + rr).prod() ** (252.0 / max(len(rr), 1)) - 1.0) * 100.0)
     for lab, f, n in PERIOD_FREQS:
         a = period_multiples(rr, f, n) - 1.0
         b = (period_multiples(sp, f, n) - 1.0).reindex(a.index)
         if not len(a):
             continue
         dn, up = b < 0, b > 0
-        out[f"{lab} 플러스%"] = float((a > 1e-9).mean() * 100.0)
+        out[f"{lab} 평균%"] = float(a.mean() * 100.0)
+        out[f"{lab} +{R113_PCT_TH[lab] * 100:g}% 이상%"] = float((a >= R113_PCT_TH[lab] - 1e-12).mean() * 100.0)
+        out[f"{lab} 최악%"] = float(a.min() * 100.0)
         out[f"{lab} 손실%"] = float((a < -1e-9).mean() * 100.0)
         out[f"{lab} 손실 수"] = float((a < -1e-9).sum())
-        out[f"{lab} 최악 배수"] = float(1.0 + a.min())
         out[f"{lab} 하락 회피%"] = float((1.0 - a[dn].sum() / b[dn].sum()) * 100.0) if bool(dn.any()) and float(b[dn].sum()) != 0 else float("nan")
         out[f"{lab} 상승 참여%"] = float(a[up].sum() / b[up].sum() * 100.0) if bool(up.any()) and float(b[up].sum()) != 0 else float("nan")
         cr = b <= R112_CRASH[lab]
@@ -10695,8 +10768,8 @@ def period_target_metrics(r: pd.Series, spy: pd.Series) -> Dict[str, float]:
 
 
 def period_target_judge(m: Dict[str, float], market: bool = False) -> Tuple[List[Dict[str, Any]], int, int, List[str]]:
-    """[R112] 목표 판정 행 · 달성 수 · 판정 수 · 미달 항목(값 없는 목표는 판정에서 뺀다)."""
-    tg = R112_PERIOD_TARGET_M if market else R112_PERIOD_TARGET
+    """[R113] 목표 판정 행 · 달성 수 · 판정 수 · 미달 항목(값 없는 목표는 판정에서 뺀다)."""
+    tg = R113_PCT_TARGET_M if market else R113_PCT_TARGET
     rows, ok, n, miss = [], 0, 0, []
     for k, (op, v) in tg.items():
         x = m.get(k)
@@ -10714,7 +10787,7 @@ def period_target_judge(m: Dict[str, float], market: bool = False) -> Tuple[List
 
 def build_period_target_block(r: pd.Series, spy: pd.Series, title: str = "", rel: Optional[Dict[str, float]] = None
                               ) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
-    """[R112] 00P F 블록(목표 판정) · G 블록(설계 반복 근거) · 00 줄. rel = {'회피': %, '참여': %, 'MDD': %}(있으면 함께 판정)."""
+    """[R113] 00P F 블록(수익률 목표 판정 16칸 + 참고) · G 블록(설계 반복 근거) · 00 줄. rel = {'회피': %, '참여': %, 'MDD': %}(있으면 함께 판정)."""
     m = period_target_metrics(r, spy)
     if isinstance(rel, dict):
         for a_, b_ in (("회피", "회피(지그재그)"), ("참여", "참여(지그재그)"), ("MDD", "MDD%")):
@@ -10722,23 +10795,25 @@ def build_period_target_block(r: pd.Series, spy: pd.Series, title: str = "", rel
                 m[b_] = float(rel[a_])
     market = str(title).startswith("시장")
     rows, ok, n, miss = period_target_judge(m, market)
-    F = f"F. R112 주·월·분기 목표 판정(높은 목표 · 사전등록{' · M은 상승 참여 목표 SPY 1배 한도로' if market else ''})"
+    F = f"F. R113 수익률 목표 판정(주·월·분기 · 높은 목표 · 사전등록{' · M은 수익 수준·참여 목표를 SPY 1배 한도로' if market else ''})"
     df = pd.DataFrame([{"블록": F, **x} for x in rows])
-    extra = [{"블록": F, "항목": f"{lab} 기간수 · SPY 이긴%", "값": f"{int(m.get(f'{lab} 기간수', 0))} · {m.get(f'{lab} SPY 이긴%', float('nan')):.1f}%"}
-             for lab, _, _ in PERIOD_FREQS]
-    G = "G. R112 설계 반복 근거(네 층 하네스 · 현금 이자 0)"
+    extra = [{"블록": F, "항목": f"참고 · {lab} 하락 회피 · 상승 참여 · 급락기 손실 · SPY 이긴 · 손실 수 · 기간수",
+              "값": (f"{m.get(f'{lab} 하락 회피%', float('nan')):.1f}% · {m.get(f'{lab} 상승 참여%', float('nan')):.1f}% · "
+                    f"{m.get(f'{lab} 급락기 손실%', float('nan')):.1f}% · {m.get(f'{lab} SPY 이긴%', float('nan')):.1f}% · "
+                    f"{int(m.get(f'{lab} 손실 수', 0))} · {int(m.get(f'{lab} 기간수', 0))}")} for lab, _, _ in PERIOD_FREQS]
+    G = "G. R112~R113 설계 반복 근거(네 층 하네스 · 현금 이자 0)"
     df = pd.concat([df, pd.DataFrame(extra), pd.DataFrame([{"블록": G, "항목": a, "값": b, "판정": c} for a, b, c in R112_PERIOD_EVIDENCE])],
                    ignore_index=True, sort=False)
 
     def g(k, fmt="{:.1f}"):
         x = m.get(k)
         return fmt.format(x) if isinstance(x, (int, float)) and x == x else "-"
-    line = (f"목표 달성 **{ok}/{n}** · 주: 플러스 {g('주 플러스%')}% · 손실 {g('주 손실%')}% · 최악 ×{g('주 최악 배수', '{:.3f}')} · 하락 회피 {g('주 하락 회피%')}% · "
-            f"상승 참여 {g('주 상승 참여%')}% | 월: 플러스 {g('월 플러스%')}% · 손실 {g('월 손실 수', '{:.0f}')}달 · 최악 ×{g('월 최악 배수', '{:.3f}')} · "
-            f"하락 회피 {g('월 하락 회피%')}% · 상승 참여 {g('월 상승 참여%')}% · 급락기 손실 {g('월 급락기 손실%')}% | 분기: 플러스 {g('분기 플러스%')}% · "
-            f"손실 {g('분기 손실 수', '{:.0f}')}분기 · 최악 ×{g('분기 최악 배수', '{:.3f}')} · 하락 회피 {g('분기 하락 회피%')}% · 상승 참여 {g('분기 상승 참여%')}%"
+    line = (f"목표 달성 **{ok}/{n}** · 연 수익 {g('연 수익%')}% | 주: 평균 {g('주 평균%', '{:+.2f}')}% · +0.5% 이상 {g('주 +0.5% 이상%')}% · "
+            f"최악 {g('주 최악%', '{:+.1f}')}% · 손실 {g('주 손실%')}% | 월: 평균 {g('월 평균%', '{:+.2f}')}% · +2% 이상 {g('월 +2% 이상%')}% · "
+            f"최악 {g('월 최악%', '{:+.1f}')}% · 손실 {g('월 손실%')}%({g('월 손실 수', '{:.0f}')}달) | 분기: 평균 {g('분기 평균%', '{:+.1f}')}% · "
+            f"+5% 이상 {g('분기 +5% 이상%')}% · 최악 {g('분기 최악%', '{:+.1f}')}% · 손실 {g('분기 손실%')}%({g('분기 손실 수', '{:.0f}')}분기)"
             + (f" | 미달: {', '.join(miss)}" if miss else " | 전부 ✓") + " — 세부 00P F·G 블록. 연구·교육용, 투자 자문 아님.")
-    return df, [(f"★★★ R112 주·월·분기 목표 판정(사용자 지시 · 높은 목표){(' · ' + title) if title else ''}", line)]
+    return df, [(f"★★★ R113 주·월·분기 수익률 목표 판정(사용자 지시 · 높은 목표){(' · ' + title) if title else ''}", line)]
 
 
 def apply_mult_colors(wb, ws, df: pd.DataFrame) -> int:
@@ -11990,6 +12065,14 @@ def run(cfg: Config = CFG) -> dict:
         log("SIGNAL", kv(event="r98_measure_failed", err=type(_e98).__name__, msg=str(_e98)[:160],
                          action="측정 열 없이 계속(라이브 무영향) — 00 줄에 표시"), level="error")
         r98_diag = {"enabled": False, "error": f"{type(_e98).__name__}: {str(_e98)[:120]}"}
+    # [v1.75.0 R113 · 측정 전용] 금리 급등 경보 열(A · B) — R113_RATE_LIVE=""면 target_pos 무변경. 실패하면 열 없이 계속.
+    r113_diag: Dict[str, Any] = {"enabled": False}
+    try:
+        sig, r113_diag = apply_r113_rate_measure(sig, px_dict, cfg)
+    except Exception as _e113:
+        log("SIGNAL", kv(event="r113_rate_measure_failed", err=type(_e113).__name__, msg=str(_e113)[:160],
+                         action="측정 열 없이 계속(라이브 무영향) — 00 줄에 표시"), level="error")
+        r113_diag = {"enabled": False, "error": f"{type(_e113).__name__}: {str(_e113)[:120]}"}
     reason = build_reason_text(contrib, sig["state"], score)
     t_sig_done = time.time()
     stage_timing["07_신호생성(H점수+국면신호)"] = round(t_sig_done - t_wf_done, 2)
@@ -12140,6 +12223,7 @@ def run(cfg: Config = CFG) -> dict:
             "r95": r95_diag,                                                               # [v1.63.0 R95] 사이징 오버레이 발동 요약
             "r96": r96_diag,                                                               # [v1.64.0 R96] 변동성 관리 발동 요약
             "r98": r98_diag,                                                               # [v1.66.0 R98] 측정 열 요약(V1·V1강·이웃·VRP)
+            "r113": r113_diag,                                                             # [v1.75.0 R113] 금리 급등 경보 측정 열 요약
             "stage_timing": stage_timing}
 
 
@@ -13347,6 +13431,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         ("버전", f"{BUNDLE_VERSION} ({BUNDLE_VERSION_DATE})"),
         ("계층 버전 점검(R89)", companion_version_note()),
         *_r105_m_lines,                                                          # [v1.69.0 R105] 꾸준함(00P) · 시장 상태판(00T)
+        ("★★★ R113 금리 급등 경보(측정 · IEF 신호로만 · 사지 않음) — A 경보+안정 올리기 · B 경보만 vs 라이브", _r113_note(res)),   # [v1.75.0 R113]
         ("★★★ R99 판정 — R97 가드 되돌림(M2 · ⚠ 신호) · V1 닫음 · VRP 닫음 · M5(V1강) 검증", _r99_note(res)),   # [v1.67.0 R99]
         ("R98 측정 열(라이브 무변경 · V1 흔들림 확인용 · R100 제거 예정) — V1 · V1강 · 이웃 문턱", _r98_note(res)),
         ("★★★ R96 회피↑·참여↑ — 부분 노출일 변동성 관리(⚠ 신호 변경)", _r96_note(res)),
@@ -13668,13 +13753,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.74.0"
+BUNDLE_VERSION = "v1.75.0"
 BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.90.0", "industry_rotation": "v0.57.0", "stock_regime": "v0.22.0"}   # [v1.74.0 R112]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.91.0", "industry_rotation": "v0.58.0", "stock_regime": "v0.23.0"}   # [v1.75.0 R113]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
@@ -13790,6 +13875,71 @@ def _r98_note(res: Dict[str, Any]) -> str:
             "판정: S·I·K 00 'R99 판정' 줄 · S 00U 블록 M⑦·⑧(SPY 1994~2017 OHLC)·N⑦·⑧(FF 1927~2017 · (나)만). "
             "[R99 판정] V1(기본)은 블록 M⑦ 참여 −1.17(뒤 −2.15)로 사전등록 미통과 → **라이브 후보에서 닫음**(측정 열은 흔들림 확인용으로 "
             "R100까지 두고 제거) · V1강(1.25·17%)은 M5 검증(블록 M⑧·N⑧·F2)용으로 계속 잰다. 연구·교육용, 투자 자문 아님.")
+
+
+R113_RATE_EVIDENCE: str = ("근거(r112/sweep8~12 · 네 층 하네스 = Kaggle R111 재현 · 현금 이자 0): 조기 경보 12종(신용 · 방어주 선도 · 고베타/저변동 · "
+                           "변동성 급등 · 소형주 · 시장 폭 · 재진입) 중 긴 이력(2003~2017 세 구간)과 2018~ 모두에서 손실 달을 줄인 것은 금리 급등(IEF 20일)뿐. "
+                           "2018~ 네 층 평균: A 회피 +2.3 · 참여 +0.5 · 연 수익 +0.6%p · 손실 달 −5(합) · 최악 주 −0.1~−0.6%p | "
+                           "B 회피 +6.7 · 참여 −6.1 · 연 수익 −1.8%p · 손실 달 −8 · 손실 분기 −2. 주식 약세 확인 조건을 붙이면 더 나빴다.")
+
+
+def _r113_note(res: Dict[str, Any]) -> str:
+    """[v1.75.0 R113] 00 줄 — 금리 급등 경보 측정(A · B) vs 라이브: 전체 회피·참여(S 함수) · 연 수익 · 손실 달/분기 · 최악 달/분기 · 발동일 · 오늘 경보."""
+    d = (res or {}).get("r113") or {}
+    cfg = (res or {}).get("cfg", CFG)
+    if d.get("error"):
+        return f"⚠ 측정 열 산출 실패 — {d['error']} (라이브 무영향 · S·I·K R113 비교 행 없음)"
+    if not d.get("enabled"):
+        return "꺼짐(R113_RATE_MEASURE=False) — 측정 열·비교 행 없음"
+    sig, price = res.get("sig"), res.get("price")
+    parts = []
+    try:
+        s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-01"))
+        rets = {}
+        for nm, col in (("라이브", "pos_pre_r113"), ("A", "pos_r113_a"), ("B", "pos_r113_b")):
+            if isinstance(sig, pd.DataFrame) and col in sig.columns:
+                b = run_backtest(price, sig[col], cfg, None)
+                rets[nm] = b.loc[b.index >= s0, "strategy_ret"]
+        spy = None
+        _bt = res.get("bt")
+        if isinstance(_bt, pd.DataFrame) and "bh_ret" in _bt.columns:
+            spy = _bt["bh_ret"]
+        try:
+            import sector_rotation as _S113
+        except Exception:
+            _S113 = None
+
+        def _st(r):
+            m = (1.0 + r).groupby(r.index.to_period("M")).prod() - 1.0
+            q = (1.0 + r).groupby(r.index.to_period("Q")).prod() - 1.0
+            cagr = float((1.0 + r).prod() ** (252.0 / max(len(r), 1)) - 1.0) * 100.0
+            out = {"연": cagr, "월손실": int((m < -1e-9).sum()), "분기손실": int((q < -1e-9).sum()), "월최악": float(m.min()) * 100, "분기최악": float(q.min()) * 100}
+            if _S113 is not None and spy is not None:
+                u = _S113.user_rel_portfolio({"x": r}, spy.reindex(r.index).fillna(0.0), _S113.CFG).iloc[0]
+                out.update({"회피": float(u["하락 회피율"]) * 100, "참여": float(u["상승 참여율"]) * 100, "MDD": float(u["MDD"]) * 100})
+            return out
+        st = {k: _st(v) for k, v in rets.items()}
+        base = st.get("라이브")
+        for k in ("A", "B"):
+            if k in st and base:
+                a = st[k]
+                parts.append(f"{k}: " + (f"회피/참여 {a['회피']:.1f}/{a['참여']:.1f}(Δ{a['회피'] - base['회피']:+.1f}/{a['참여'] - base['참여']:+.1f}) · "
+                                         f"MDD {a['MDD']:.2f}% · " if "회피" in a and "회피" in base else "")
+                             + f"연 {a['연']:.1f}%(Δ{a['연'] - base['연']:+.1f}) · 손실 달 {a['월손실']}(Δ{a['월손실'] - base['월손실']:+d}) · "
+                               f"손실 분기 {a['분기손실']}(Δ{a['분기손실'] - base['분기손실']:+d}) · 최악 달 {a['월최악']:+.1f}% · 최악 분기 {a['분기최악']:+.1f}%")
+        if base:
+            parts.insert(0, f"라이브: " + (f"회피/참여 {base['회피']:.1f}/{base['참여']:.1f} · " if "회피" in base else "")
+                         + f"연 {base['연']:.1f}% · 손실 달 {base['월손실']} · 손실 분기 {base['분기손실']} · 최악 달 {base['월최악']:+.1f}% · 최악 분기 {base['분기최악']:+.1f}%")
+    except Exception as e:
+        parts.append(f"비교 계산 실패 {type(e).__name__}: {str(e)[:80]}")
+    p = d.get("params") or {}
+    live = d.get("live") or ""
+    return ((f"⚠ 라이브 {live} 적용 중(되돌리기 m_overrides={{'R113_RATE_LIVE': ''}}) · " if live in ("A", "B") else "측정 전용 — 라이브 목표비중 무변경 · ")
+            + f"A = IEF {p.get('window', 20)}일 ≤ −{p.get('cut_a', 0) * 100:g}% → 0 · 부분 노출일 & IEF ≥ +{p.get('boost_a', 0) * 100:g}% → 1 · "
+            f"B = IEF ≤ −{p.get('cut_b', 0) * 100:g}% → 0 | 2018~ 발동: A 급등 {d.get('cut_a_days', '-')}일 · 안정 올리기 {d.get('boost_days', '-')}일 · "
+            f"B {d.get('cut_b_days', '-')}일 · 오늘 IEF 20일 {d.get('ief20_now', '-')}% · 경보 A {'켜짐' if d.get('alarm_now_a') else '꺼짐'} · "
+            f"B {'켜짐' if d.get('alarm_now_b') else '꺼짐'} | " + " | ".join(parts)
+            + " | " + R113_RATE_EVIDENCE + " 라이브 전환은 사용자 선택: m_overrides={'R113_RATE_LIVE': 'A'} 또는 'B'. 연구·교육용, 투자 자문 아님.")
 
 
 def _r99_note(res: Dict[str, Any]) -> str:

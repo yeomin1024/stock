@@ -1,5 +1,9 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.58.0 - 2026-09-28 - [R113 금리 급등 경보 측정 행 · 수익률(%) 목표 판정 — I★ 무변경]
+#    사용자 지시(2026-09-28): "국채는 넣지말고 목표는 ~%수익 이상으로 높게 유지해".
+#    (§1) S v0.91.0 relcmp_frames의 'R113 A/B' 행 → I 측정 행(부모 비율법 · 자동) · 00 'R113 금리 급등 경보' 줄(S 공통 함수) ·
+#         K 통로 sector_w_variants 필터에 'R113 ' 추가(K v0.23.0 비교 행). 00P F = R113 수익률 목표(S 함수). 시험 t113/test_r113.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.57.0 - 2026-09-28 - [R112 주·월·분기 목표 판정(00P F·G · 00 줄) — I★ 무변경]
 #    사용자 지시(2026-09-28): "… 국면, 섹터, 산업, 주식별 모두 분기별, 월별, 주별로 내가 말한 목표치를 측정할 수 있도록 해서 목표치 높게 설정해서 달성하도록 계속 테스트해 …".
 #    (§1) 00P가 S v0.90.0 build_period_sheet(rel=I★ 전체 기간 회피·참여·MDD)로 F 목표 판정 · G 설계 반복 근거 · 00 줄. 시험 t112/test_r112.py. 연구·교육용이며 투자 자문이 아니다.
@@ -1961,7 +1965,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.57.0"
+VERSION = "v0.58.0"
 VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -12689,7 +12693,8 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                 _set_alloc_handoff(alloc, M=M, results=results,        # [v0.34.0 R80 · v0.35.0 R81 결합점수 추가] K 통로
                                    s_variants={k: v for k, v in ((((sres or {}).get("alloc") or {}).get("relcmp_frames")) or {}).items()
                                                if str(k).startswith(("R95 규칙 없음", "R96 변동성 관리 없음",
-                                                                                   "R98 V1 변동성 짝", "R98 VRP", "R98 상한100%"))})   # [v0.47.0 R95 · v0.48.0 R96 · v0.50.0 R98] K 비교 행
+                                                                                   "R98 V1 변동성 짝", "R98 VRP", "R98 상한100%",
+                                                                                   "R113 "))})   # [v0.47.0 R95 · v0.48.0 R96 · v0.50.0 R98 · v0.58.0 R113] K 비교 행
                 hier_df = build_hierarchy_check(alloc)                 # 14_계층정합 — 동결 여부와 무관(총노출 불변식)
                 leader_cols = build_industry_leader_columns(alloc)     # 13c의 부모별 판단·리더·게이트 열
                 _viol = int(hier_df["위반일수(>1e-9)"].sum()) if len(hier_df) else -1
