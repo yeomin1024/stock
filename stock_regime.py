@@ -1,5 +1,18 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.24.0 - 2026-09-29 - [R114 실적 발표 회피(측정 행 · 전환 스위치 LIVE_R114_EARN_AVOID) — 사용자 지적 CRDO]
+#    사용자 지적(2026-09-29): "CRDO 2026-08-28 2026-08-31 2026-09-01 2026-09-02 2026-09-03 날짜는 손실이 엄청커 이건 왜 못피한거야?"
+#    ── 원인(Kaggle R113 보고서) ── M 노출 0 → 1(8/25) → K 전 종목 매수 · CRDO 3.3% · 실적 발표 9/01(장후) — 당일 −8.7% · 다음 날 −20.0%(EPS 서프라이즈 +2.7% ·
+#      직전 +12~44%) · SPY는 −0.7~+0.4%(시장 탓 아님). R109 어닝 규칙은 하락 **뒤** 21일 빼는 사후 규칙 · R111은 예고 없던 급락 2회(3회 기준)라 통과 ·
+#      변동성 연 100% · 급락 확률 24%(위험 등급 높음)였지만 저위험 부분집합은 R111에서 기각(손실 달↑).
+#    ── R114 연구(r112/earn114·earn114b·mc114·mc114b) ── 전 종목 발표 회피: K 참여 −5.8 · 연 −2.9%p(사후 선택 종목의 발표 급등을 버림) · 편향 없는 60개
+#      손실 달 78% · 월 최악 90% 개선 · 배수 −3% | ★ 과거 8회 평균 반응 ≥ 8% 종목만: K 참여 −1.35 · 연 −0.44%p · 손실 주 −3 · 손실 달 −1 · CRDO 회피 ·
+#      편향 없는 60개 배수 +0.6%(75%) · 칼마 88% · 월 최악 83% · MDD 65% 개선.
+#    (§1 측정 · ⚠ 전환 스위치) StockConfig LIVE_R114_EARN_AVOID(False) · R114_EARN_ROWS · R114_EARN_N(8) · R114_EARN_REACT_MIN(8.0) · R114_EARN_PRE(0) ·
+#         _r114_react_table · build_r114_earn_mask(원장 = get_earnings_dates · 예정일 포함 · 결정일 [발표 − 1 − PRE, 발표] → 현금) → 13·00U 측정 행.
+#         켜기: k_overrides={"LIVE_R114_EARN_AVOID": True} → 라이브 · '비교: 라이브(R114 실적 발표 회피 없음)' 비교 행. 꺼져 있으면 v0.23.0과 비트 동일.
+#    (§2 표시) 00 '★★★ R114 실적 발표 회피' 줄(Δ · 무하락 · 오늘 회피 · 가까운 발표) · 00V C '다음 실적 발표(R114)' · '과거 발표 반응 평균%' · '실적 회피' 열 ·
+#         H 시험 근거(K_R114_EVIDENCE). 시험 t114/test_r114.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.23.0 - 2026-09-28 - [R113 금리 급등 경보 비교 행 · 수익률(%) 목표 판정 — K★ 무변경]
 #    사용자 지시(2026-09-28): "국채는 넣지말고 목표는 ~%수익 이상으로 높게 유지해".
 #    (§1) I v0.58.0 통로의 S 'R113 A/B' 섹터 비중 → '비교: 섹터연동 × S …'(라이브와 같은 R109·R110·R111 규칙) · 00 '★★★ R113 금리 급등 경보' 줄(r113_rate_line).
@@ -705,7 +718,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.23.0"
+VERSION = "v0.24.0"
 VERSION_DATE = "2026-09-27"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1196,6 +1209,18 @@ class StockConfig:
     #     ΔMDD ≥ 0 · Δ월/분기 최악 ≥ 0 → 하나라도 미달이면 되돌림 권고. 되돌리기: k_overrides={"LIVE_R111_RULE": False}(v0.19.0/v0.20.0 라이브와 비트 동일).
     LIVE_R111_RULE: bool = True
     R111_RULE_ROWS: bool = True
+    # [v0.24.0 R114 사용자 지적 "CRDO 2026-08-28~09-03 손실이 엄청커 이건 왜 못피한거야?" · ⚠ 라이브 전환 = 사용자 선택] 실적 발표 회피.
+    #   원인: CRDO 발표(2026-09-01 장후) 당일 −8.7% · 다음 날 −20.0% — R109 어닝 규칙은 **하락이 난 뒤** 21일 빼는 사후 규칙이라 발표 자체를 피하지 못했다.
+    #   규칙: 과거 R114_EARN_N회 발표 반응(max(|발표일 수익|, |다음 날 수익|))의 평균이 R114_EARN_REACT_MIN% 이상인 종목은 발표일 R114_EARN_PRE일 전 ~ 다음 날
+    #     보유하지 않는다(결정일 [발표 − 1 − PRE, 발표] → 장전·장후 발표 모두) · 그 몫은 현금. 발표일은 원장(get_earnings_dates · 예정일 포함)에서 —
+    #     백테스트는 실제 발표일을 하루 전에 알았다고 가정(보통 2~4주 전 공지).
+    #   근거(r112/earn114·mc114): 편향 없는 K 닮은 유니버스 60개 — 배수 7.82 → 7.87(75% 개선) · 칼마 88% 개선 · 월 최악 83% · MDD 65% · 손실 달 그대로 ·
+    #     K 표본(사후 선택): 참여 −1.35 · 연 수익 −0.44%p · 손실 주 −3 · 손실 달 −1 · CRDO 이번 손실 회피. 전 종목 회피는 K에서 참여 −5.8 · 연 −2.9%p.
+    LIVE_R114_EARN_AVOID: bool = False
+    R114_EARN_ROWS: bool = True
+    R114_EARN_N: int = 8
+    R114_EARN_REACT_MIN: float = 8.0
+    R114_EARN_PRE: int = 0
     R111_SHOCK_MIN: int = 3
     R111_FILL_CAP: float = 0.10
     R111_FILL_GAMMA: float = 2.0
@@ -5518,6 +5543,70 @@ def build_r111_masks(rf: Dict[str, Any], etf_panel: Optional[Dict[str, pd.DataFr
     return {"ok": True, "D": D, "SK": SK, "N2": N2, "sig": s63, "mask": (D | SK), "shock_min": int(shock_min), "px": C}
 
 
+K_R114_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
+    ("CRDO 2026-08-26 ~ 09-04(사용자 지적)", "M 노출 0 → 1(8/25) → K 전 종목 매수 · CRDO 3.3% · 8/28 −3.1% · 8/31 −2.8% · 9/01(발표일 · 장후) −8.7% · 9/02 −20.0% · "
+     "EPS 서프라이즈 +2.7%(직전 +12~44%) · SPY는 같은 기간 −0.7~+0.4%", "시장 탓 아님 — 예정된 실적 발표 위험 · R109 사후 규칙으로는 못 피함"),
+    ("CRDO 위험 표지(그때)", "변동성 연 100% · 매수 뒤 21일 −10% 급락 확률 24% · 위험 등급 높음 · 예고 없던 고유 급락 1년 2회(R111 기준 3회 미만 → 매수 대상)",
+     "R111 규칙이 한 번 차이로 못 막음"),
+    ("실적 발표 회피 — K 표본(58종목 · 사후 선택)", "전 종목 발표 전날~다음 날 → 현금: 참여 −5.8 · 연 수익 −2.9%p | 3일 전부터: 참여 −11.3 · 연 −6.1%p | "
+     "★ 과거 8회 평균 반응 ≥ 8% 종목만: 참여 −1.35 · 연 −0.44%p · 손실 주 −3 · 손실 달 −1", "K 종목은 발표 급등이 많아(사후 선택) 비용이 커 보인다"),
+    ("실적 발표 회피 — 편향 없는 K 닮은 유니버스 60개(S&P 500 발표 일시)", "전 종목 발표 전날~반응일 → 현금: 손실 달 18 → 16.5(78%) · 월 최악 90% · 칼마 80% · 배수 −3% | "
+     "★ 과거 8회 평균 반응 ≥ 8%: 배수 +0.6%(75%) · 칼마 88% · 월 최악 83% · MDD 65% · 손실 달 그대로", "반응 큰 종목만 피하면 비용 없이 위험↓"))
+
+
+def _r114_react_table(ledger: pd.DataFrame, n: int) -> pd.DataFrame:
+    """[v0.24.0 R114] 원장 → 티커·발표일·반응(max(|발표일 수익|, |다음 날 수익|)) · 그 발표 **이전** 최근 n회 평균(인과)."""
+    if not isinstance(ledger, pd.DataFrame) or not len(ledger) or "발표일" not in ledger.columns:
+        return pd.DataFrame(columns=["티커", "발표일", "반응", "이전평균"])
+    L = ledger[["티커", "발표일"] + [c for c in ("발표일 수익%", "발표후1일%") if c in ledger.columns]].copy()
+    dd = pd.to_datetime(L["발표일"], errors="coerce")
+    if getattr(dd.dt, "tz", None) is not None:
+        dd = dd.dt.tz_localize(None)
+    L["발표일"] = dd.dt.normalize()
+    a = pd.to_numeric(L.get("발표일 수익%"), errors="coerce").abs() if "발표일 수익%" in L else np.nan
+    b = pd.to_numeric(L.get("발표후1일%"), errors="coerce").abs() if "발표후1일%" in L else np.nan
+    L["반응"] = np.fmax(a, b)
+    L = L.dropna(subset=["발표일"]).drop_duplicates(["티커", "발표일"]).sort_values(["티커", "발표일"])
+    L["이전평균"] = L.groupby("티커")["반응"].transform(lambda s: s.shift(1).rolling(int(n), min_periods=2).mean())
+    return L.reset_index(drop=True)
+
+
+def build_r114_earn_mask(ledger: pd.DataFrame, dates: pd.DatetimeIndex, tickers: List[str], n: int = 8, react_min: float = 8.0,
+                         pre: int = 0) -> Dict[str, Any]:
+    """[v0.24.0 R114] 실적 발표 회피 표지(날짜 × 종목 · True = 그날 목표 비중 0 → 다음 날 시가부터 미보유).
+    과거 n회 평균 반응 ≥ react_min%인 발표마다 결정일 [p − 1 − pre, p](p = 발표일 이상 첫 거래일) — 장전(p일 반응)·장후(p+1일 반응) 모두 피한다.
+    예정 발표(마지막 날 뒤)는 영업일 수로 위치를 잡아 마지막 날들에 반영(오늘 결정 → 내일 시가 매도)."""
+    dates = pd.DatetimeIndex(dates)
+    M = np.zeros((len(dates), len(tickers)), dtype=bool)
+    T = _r114_react_table(ledger, n)
+    col = {t: j for j, t in enumerate(tickers)}
+    nxt: Dict[str, Any] = {}
+    if len(dates) and len(T):
+        last = dates[-1]
+        for _, r in T.iterrows():
+            t = r["티커"]
+            if t not in col:
+                continue
+            d = r["발표일"]
+            if d > last:
+                if t not in nxt:
+                    nxt[t] = {"다음 발표일": str(d.date()), "과거 평균 반응%": (round(float(r["이전평균"]), 1) if r["이전평균"] == r["이전평균"] else None)}
+            pm = r["이전평균"]
+            if not (pm == pm and float(pm) >= float(react_min)):
+                continue
+            if d <= last:
+                p = int(dates.searchsorted(d))
+            else:
+                p = len(dates) - 1 + int(np.busday_count((last + pd.Timedelta(days=1)).date(), d.date())) + 1
+            a, b = max(0, p - 1 - int(pre)), min(len(dates) - 1, p)
+            if a <= b:
+                M[a:b + 1, col[t]] = True
+    mask = pd.DataFrame(M, index=dates, columns=tickers)
+    today = [t for t in tickers if len(dates) and bool(mask[t].iloc[-1])]
+    return {"ok": bool(len(T)), "mask": mask, "table": T, "next": nxt, "today": today, "n": int(n), "react_min": float(react_min), "pre": int(pre),
+            "cells": int(M.sum())}
+
+
 def r111_compliance(target_w: pd.DataFrame, m111: Dict[str, Any], t2s: Dict[str, str]) -> Dict[str, float]:
     """[v0.20.0 R111] 사용자 규칙 준수·위험 지표(보유 종목 비중 가중 · 목표 비중 기준):
     장기 우하향 보유% · 급락 잦음 보유% · 실제 21일 안 −10% 급락 / 126일 뒤 −15% 이하 노출 ÷ 같은 날 같은 섹터 적격 종목 평균(1보다 작을수록 위험 낮은 쪽을 샀다)."""
@@ -6167,6 +6256,65 @@ def r113_rate_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
               "연구·교육용, 투자 자문 아님.")
 
 
+def r114_today_table(m114: Dict[str, Any]) -> pd.DataFrame:
+    """[v0.24.0 R114] 00V C 블록 열 — 종목별 다음 실적 발표일 · 과거 평균 반응% · 오늘 회피 대상(측정 · 투자 권유 아님)."""
+    if not (isinstance(m114, dict) and m114.get("ok")):
+        return pd.DataFrame()
+    T = m114.get("table")
+    rows = []
+    for t in list(m114["mask"].columns):
+        nx = (m114.get("next") or {}).get(t) or {}
+        last_avg = None
+        if isinstance(T, pd.DataFrame) and len(T):
+            s = T[T["티커"] == t]
+            if len(s):
+                r = pd.to_numeric(s["반응"], errors="coerce").dropna().tail(int(m114.get("n", 8)))
+                last_avg = round(float(r.mean()), 1) if len(r) >= 2 else None
+        rows.append({"항목": t, "다음 실적 발표(R114)": nx.get("다음 발표일", "-"), "과거 발표 반응 평균%(R114)": last_avg,
+                     "실적 회피(R114)": ("오늘 회피(내일 시가 미보유)" if t in (m114.get("today") or []) else
+                                      ("회피 대상(반응 큰 종목)" if (last_avg is not None and last_avg >= float(m114.get("react_min", 8.0))) else "-"))})
+    return pd.DataFrame(rows)
+
+
+def r114_earn_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """[v0.24.0 R114] 00 줄 — 실적 발표 회피 측정(또는 라이브) vs 비교 행 · 오늘 회피 종목 · 가까운 발표(반응 큰 종목)."""
+    m = res.get("r114") or {}
+    if not m.get("ok"):
+        return (("★★★ R114 실적 발표 회피", f"⚠ 표지를 만들지 못했다 — {m.get('note', '어닝 원장 없음')}") if m else None)
+    ur = res.get("user_rel")
+    lbl = res.get("r114_label")
+    live = bool(res.get("r114_live"))
+    comp = ""
+    if isinstance(ur, pd.DataFrame) and len(ur) and lbl:
+        mm = ur[ur["전략"].astype(str) == str(lbl)]
+        if len(mm):
+            t0, r0 = ur.iloc[0], mm.iloc[0]
+            A, B = (t0, r0) if live else (r0, t0)
+
+            def _f(r, k, sc=1.0):
+                try:
+                    return float(r.get(k)) * sc
+                except (TypeError, ValueError):
+                    return float("nan")
+            d = {"회피": _f(A, "하락 회피율", 100) - _f(B, "하락 회피율", 100), "참여": _f(A, "상승 참여율", 100) - _f(B, "상승 참여율", 100),
+                 "배수": _f(A, "배수") - _f(B, "배수"), "MDD": _f(A, "MDD", 100) - _f(B, "MDD", 100), "칼마": _f(A, "칼마") - _f(B, "칼마"),
+                 "월 최악": _f(A, "월 최악 배수", 100) - _f(B, "월 최악 배수", 100), "월 손실": _f(A, "월 손실%") - _f(B, "월 손실%"),
+                 "분기 손실": _f(A, "분기 손실%") - _f(B, "분기 손실%")}
+            bad = [k for k in ("회피", "참여", "배수", "MDD", "칼마", "월 최악") if d[k] == d[k] and d[k] < -1e-9] + \
+                  [k + " 증가" for k in ("월 손실", "분기 손실") if d[k] == d[k] and d[k] > 1e-9]
+            comp = (f"회피 적용 {_f(A, '하락 회피율', 100):.1f}/{_f(A, '상승 참여율', 100):.1f} vs 없음 {_f(B, '하락 회피율', 100):.1f}/{_f(B, '상승 참여율', 100):.1f} · "
+                    f"Δ배수 {d['배수']:+.2f} · ΔMDD {d['MDD']:+.2f}%p · Δ칼마 {d['칼마']:+.3f} · Δ월 최악 {d['월 최악']:+.2f}%p · Δ월/분기 손실 "
+                    f"{d['월 손실']:+.1f}/{d['분기 손실']:+.1f}%p → " + ("무하락 ✓" if not bad else f"무하락 ✗({', '.join(bad)})") + " | ")
+    nx = m.get("next") or {}
+    soon = sorted(((v.get("다음 발표일"), t, v.get("과거 평균 반응%")) for t, v in nx.items() if v.get("다음 발표일")), key=lambda x: x[0])[:8]
+    return ("★★★ R114 실적 발표 회피(과거 발표 반응 큰 종목 · 발표 전날~다음 날 → 현금) — 사용자 지적 CRDO 2026-09-01",
+            comp + f"규칙: 과거 {m.get('n')}회 평균 반응 ≥ {m.get('react_min'):g}% · 표지 {m.get('cells')}칸 · 오늘 회피: {', '.join(m.get('today') or []) or '없음'} · "
+            "가까운 발표: " + (", ".join(f"{t} {d_}(과거 {a if a is not None else '-'}%)" for d_, t, a in soon) or "-")
+            + (" · ★ 라이브(사용자 선택) — 되돌리기 k_overrides={'LIVE_R114_EARN_AVOID': False}" if live else
+               " · 측정 행 — 라이브 전환은 사용자 선택: k_overrides={'LIVE_R114_EARN_AVOID': True}")
+            + " | 근거: 편향 없는 유니버스 60개 배수 +0.6%(75%) · 칼마 88% · 월 최악 83% 개선 · K 표본 참여 −1.35 · 연 −0.44%p. 연구·교육용, 투자 자문 아님.")
+
+
 def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
     """[v0.11.0 R99 N3] 00E_주식상승확률 시트 · 00 줄 — 오늘 순위 · 섹터 안 순위 · 연도별 AUC · 섹터 안 순위 IC · 보정표 · 배분 변형 판정."""
     cfg = res.get("cfg", CFG)
@@ -6673,6 +6821,22 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     _r111kw: Dict[str, Any] = ({"r111": {"mask": _m111["mask"], "sig": _m111["sig"], "cap": float(getattr(cfg, "R111_FILL_CAP", 0.10)),
                                          "gamma": float(getattr(cfg, "R111_FILL_GAMMA", 2.0))}} if _m111.get("ok") else {})
     _live111 = bool(getattr(cfg, "LIVE_R111_RULE", False)) and bool(_r111kw) and _live_dip
+    # [v0.24.0 R114] 실적 발표 회피 표지(과거 반응 큰 종목 · 발표 전날~다음 날 → 현금) — 측정 행 · 라이브(LIVE_R114_EARN_AVOID) 공용.
+    _m114: Dict[str, Any] = {"ok": False}
+    try:
+        _eled = pd.concat(earn_ledgers, ignore_index=True) if earn_ledgers else pd.DataFrame()
+        _ix114 = pos[sorted(panel)[0]].index
+        for _t114 in sorted(panel):
+            _ix114 = _ix114.union(pos[_t114].index)
+        _m114 = build_r114_earn_mask(_eled, pd.DatetimeIndex(sorted(_ix114)), sorted(panel), int(getattr(cfg, "R114_EARN_N", 8)),
+                                     float(getattr(cfg, "R114_EARN_REACT_MIN", 8.0)), int(getattr(cfg, "R114_EARN_PRE", 0)))
+        log("RISK", kv(event="r114_earn_mask", ok=_m114.get("ok"), cells=_m114.get("cells"), today=",".join(_m114.get("today") or []) or "-"))
+    except Exception as e:
+        _m114 = {"ok": False, "note": f"{type(e).__name__}: {str(e)[:120]}"}
+        log("RISK", kv(event="r114_earn_mask_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    _live114 = bool(getattr(cfg, "LIVE_R114_EARN_AVOID", False)) and bool(_m114.get("ok")) and _live_dip
+    _kw114: Dict[str, Any] = ({"cash_mask": _m114["mask"]} if _live114 else {})
+    alloc_pre114: Optional[Dict[str, Any]] = None          # [v0.24.0 R114] 라이브가 R114면 '실적 회피 없는 라이브' 비교 행
     alloc_pre111: Optional[Dict[str, Any]] = None          # [v0.20.0 R111] 라이브가 R111이면 '규칙 없는 R110 라이브' 비교 행
     if _live_dip:
         _live_kw = {"prob_score": _dip_score, "prob_select": "tilt",
@@ -6680,20 +6844,25 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         _kw111 = (_r111kw if _live111 else {})
         alloc = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
                                  ind_alloc=ind_alloc, etf_panel=etf_panel,
-                                 link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw, **_kw111)
+                                 link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw, **_kw111, **_kw114)
         alloc["live_rule"] = ("R109 섹터연동 + 물타기 기울임 + 어닝 하락 손절"
                               + (f" + R110 현금 완충 ×{_cbuf:g}" if _sc_kw else "")
-                              + (" + R111 사용자 규칙" if _live111 else ""))
+                              + (" + R111 사용자 규칙" if _live111 else "")
+                              + (" + R114 실적 발표 회피" if _live114 else ""))
+        if _live114:
+            alloc_pre114 = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
+                                            ind_alloc=ind_alloc, etf_panel=etf_panel,
+                                            link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw, **_kw111)
         if _live111:
             alloc_pre111 = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
                                             ind_alloc=ind_alloc, etf_panel=etf_panel,
-                                            link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw)
+                                            link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw, **_kw114)
             log("ALLOC", kv(event="r111_live_rule", **{k: v for k, v in (alloc.get("tilt") or {}).items() if str(k).startswith("r111_")},
                             note="★ 라이브(사용자 선택 R111) — 되돌리기 k_overrides={'LIVE_R111_RULE': False}"))
         if _sc_kw:
             alloc_nobuf = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
                                            ind_alloc=ind_alloc, etf_panel=etf_panel,
-                                           link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_kw111)
+                                           link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_kw111, **_kw114)
         log("ALLOC", kv(event="r109_live_dip", lam=float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5)),
                         earn_cut_cells=int(_dip["earn"].values.sum()), fav_cells=int(_dip["fav"].values.sum()),
                         stock_share=round(float(alloc["target_w"].sum(axis=1).mean()), 4),
@@ -6875,6 +7044,28 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         except Exception as e:
             _r111_lbl = None
             log("ALLOC", kv(event="r111_rule_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    # [v0.24.0 R114] 실적 발표 회피 행 — 라이브가 아니면 측정 행 · 라이브면 '실적 회피 없는 라이브' 비교 행(00 'R114' 줄의 비교 기준)
+    _r114_lbl: Optional[str] = None
+    _r114_alloc: Optional[Dict[str, Any]] = None
+    if _m114.get("ok") and bool(getattr(cfg, "R114_EARN_ROWS", True)) and ind_alloc and str(alloc.get("mode")) in ("sector_linked", "sector_prob"):
+        try:
+            _cap114 = float(alloc.get("cap_used", 0.05) or 0.05)
+            if _live114 and alloc_pre114 is not None:
+                _r114_lbl, _r114_alloc = "비교: 라이브(R114 실적 발표 회피 없음)", alloc_pre114
+            else:
+                _r114_lbl = "R114 실적 발표 회피(반응 큰 종목 · 발표 전날~다음 날 → 현금)"
+                _r114_alloc = build_allocation(_pos_live, panel, cfg, mode=str(alloc.get("mode")), parent_w=parent_w, parent_of=parent_of,
+                                               ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=_cap114, **_live_kw, **_sc_kw,
+                                               **(_r111kw if _live111 else {}), cash_mask=_m114["mask"])
+            _rr114 = _alloc_row(_r114_lbl, _r114_alloc, _cap114, None)
+            if _rr114:
+                _td114 = (alloc if _live114 else _r114_alloc).get("tilt") or {}
+                _rr114.update({"연동출처": f"실적 발표 회피 몫 평균 {_td114.get('cash_mask_mean')} → 현금 · 표지 {_m114.get('cells')}칸"})
+                alloc_rows.append(_rr114)
+                _grid_rets[_r114_lbl] = _r114_alloc.get("port_ret")
+        except Exception as e:
+            _r114_lbl = None
+            log("ALLOC", kv(event="r114_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
     # [v0.11.0 R99 N3] 라이브가 sector_prob(사용자 overrides)면 라이브 행을 따로 싣고 노란색으로 칠한다.
     if _live_mode == "sector_prob" and str(alloc.get("mode")) == "sector_prob":
         try:
@@ -7125,7 +7316,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _live_u = (f"★ K★ 라이브({alloc.get('live_rule')} · {(alloc.get('exec') or {}).get('fill', '-')})" if alloc.get("live_rule")
                            else f"★ K★ 라이브({alloc.get('mode', '-')} · {(alloc.get('exec') or {}).get('fill', '-')})")
                 _rets: Dict[str, pd.Series] = {_live_u: _pr0}
-                _cmp_lbls = ([_r111_lbl] if _r111_lbl else []) + \
+                _cmp_lbls = ([_r114_lbl] if _r114_lbl else []) + ([_r111_lbl] if _r111_lbl else []) + \
                             ([_nobuf_lbl] if _nobuf_lbl else []) + ([_prev_live_lbl] if _prev_live_lbl else []) + \
                             [str(x[0]) for x in tuple(getattr(cfg, "PROB_TILT_GRID", ()) or ())[:1]] + \
                             ["고정슬리브 1/N(v0.6.0 라이브)"] + \
@@ -7315,6 +7506,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             log("RISK", kv(event="r111_compliance_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
     return {"cfg": cfg, "panel": panel, "pos": pos, "prices": {**prices, **prices_h}, "fund": fund,
             "r111_masks": _m111, "r111_label": _r111_lbl, "r111_live": bool(_live111), "r111_compliance": _c111,   # [v0.20.0 R111]
+            "r114": _m114, "r114_label": _r114_lbl, "r114_live": bool(_live114),                                 # [v0.24.0 R114]
             "state_board": _state_board,                                                            # [v0.14.0 R104]
             "dip_states": _dip,                                                                     # [v0.15.0 R105] 00W
             "live_dip": bool(_live_dip), "prev_live_label": _prev_live_lbl,                          # [v0.18.0 R109] 라이브 물타기·어닝 손절
@@ -7901,6 +8093,9 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             _pnl = res.get("panel") or {}
             _lvk = {t: pd.to_numeric(_pnl[t].get("종가"), errors="coerce") for t in sorted(_pnl) if "종가" in _pnl[t].columns}
             _rtk = stock_risk_today(res.get("risk_flags") or {}, res.get("names"), m111=res.get("r111_masks"))
+            _t114 = r114_today_table(res.get("r114") or {})                   # [v0.24.0 R114] 다음 실적 발표 · 과거 반응 · 회피
+            if len(_rtk) and len(_t114):
+                _rtk = _rtk.merge(_t114, on="항목", how="left")
             _lut = pd.DataFrame([{"블록": "E. 매수 뒤 급락 확률표(S&P 500 그 시점 구성 2010~2026 · r110/risklut.py)",
                                   "항목": f"{'장기 우하향' if k[0] else '장기 우하향 아님'} · 변동성 {k[1]} · {'급락 잦음(1년 3회+)' if k[2] else '급락 잦음 아님'}",
                                   "값": f"21일 −10% {v[0]:.1f}% · 63일 −15% {v[1]:.1f}% · 126일 뒤 −15% 이하 {v[2]:.1f}% · 63일 섹터 대비 {v[3]:+.2f}%"}
@@ -7910,7 +8105,9 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             _ndn = int((_rtk.get("장기 우하향") == "예").sum()) if len(_rtk) else 0
             _avoid = ", ".join(_rtk[_rtk["사용자 규칙 판정(R110 · 참고)"].astype(str).str.startswith("피하기")]["항목"].tolist()[:10]) if len(_rtk) else ""
             _ev111 = pd.DataFrame([{"블록": "G. R111 사용자 규칙 배분 시험(편향 없는 K 닮은 유니버스 60개 · K 표본)", "항목": a, "값": b, "판정": c}
-                                   for a, b, c in K_R111_EVIDENCE])
+                                   for a, b, c in K_R111_EVIDENCE]
+                                  + [{"블록": "H. R114 실적 발표 회피 시험(CRDO 사례 · K 표본 · 편향 없는 유니버스 60개)", "항목": a, "값": b, "판정": c}
+                                     for a, b, c in K_R114_EVIDENCE])
             _x111 = (", ".join(_rtk[_rtk["R111 규칙: 매수 제외"].astype(str).str.startswith("제외")]["항목"].tolist()[:14])
                      if len(_rtk) and "R111 규칙: 매수 제외" in _rtk.columns else "")
             _xv, _lv10 = build_state_verify_sheets(_lvk, "주식", names=res.get("names"), extra_today=_rtk, extra_blocks=[_lut, _evk, _ev111],
@@ -8050,6 +8247,12 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _add.append(("★ 배분 방식(v0.9.0 R94 · 사용자 지시 '주식층도 같이 개선' — 신뢰도 = 하락 회피·상승 참여)",
                      _mline + ("" if _md in ("sector_linked", "sector_prob") else
                                " ★ 총노출(=방어)은 v0.6.0 1/N 규칙과 날마다 동일하다 — 바뀐 것은 그 노출의 종목 간 분배뿐이다.")))
+        try:                                                                   # [v0.24.0 R114] 실적 발표 회피
+            _r114v = r114_earn_line(res)
+            if _r114v:
+                _add.append(_r114v)
+        except Exception as e:
+            log("REPORT", kv(event="r114_line_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
         try:                                                                   # [v0.23.0 R113] 금리 급등 경보 측정
             _r113v = r113_rate_line(res)
             if _r113v:
