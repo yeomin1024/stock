@@ -22,6 +22,14 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.72.0 - 2026-09-28 - [R110 날짜별 상태 판정·검증(00V · 01V · SPY) — 신호·목표비중 무변경]
+#    사용자 지시(2026-09-28): "… 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부 등을 정확하게 파악할 수 있어야 해 국면, 섹터,
+#      산업, 주식 모두 지표 사용 및 검증 통해 가능하도록 개선해".
+#    ── R110 연구(r110/stateval.py · SPY 1999~2026) ── 상승추세 지속 → 63일 뒤 장기 상승 86.8% · 상승추세 중 기술적 조정 → 21일 +1.94%(상승 74% · t 1.99 · 17/25년) ·
+#      하락추세 중 반등 → 21일 +0.04%(t −2.73) · 하락추세 지속 → 21일 −0.02%(상승 51% · 21일 급락 ×1.53) · 하락 전환 경고 → 21일 +2.29%(t 3.09 · 급락 ×1.57).
+#    (§1) 공통 사본(S v0.88.0 원본): R110_STATES · R110_SHORT · R110_DEF · R110_EVIDENCE · r110_state_frames · r110_validate · build_state_verify_sheets.
+#    (§2) r110_extra_sheets_m(SPY 전체 이력) → 00V_상태판정검증 · 01V_날짜별상태 · 00 줄. 새 Config 필드 없음(캐시 키 무관).
+#    (§3) COMPANION_MIN_VERSIONS S v0.88.0 · I v0.56.0 · K v0.19.0. 시험 t110/test_r110.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.71.0 - 2026-09-27 - [R108 급락 조기 감지 시험(교차자산·시장 폭 1,083개) — 00L 블록 E 근거 · 신호·목표비중 무변경]
 #    사용자 지시(2026-09-27): "그래 그렇게 수정해보고 시장 급락을 더 일찍 알아채는 M 개선도 진행해".
 #    ── R108 연구(r108/ · 코드 밖 · 이자 0) ── predictor_test1 계열 1,083개(스타일·교차자산 비율 · VIX9D/VVIX/SKEW/MOVE · 신용 ETF · FRED · S&P 500 폭)를
@@ -10818,6 +10826,206 @@ LOSS_RESEARCH_R108: Tuple[Tuple[str, str, str], ...] = (
 )
 
 
+# =============================================================================
+# [R110 · 2026-09-28 사용자 지시] 날짜별 상태 판정 + 검증 — 네 층 공통(원본 S · M·K 사본 글자 그대로 · I는 S 호출)
+# =============================================================================
+#   사용자 지시: "종목 상태에 따라 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부 등을 정확하게 파악할 수 있어야 해
+#     국면, 섹터, 산업, 주식 모두 지표 사용 및 검증 통해 가능하도록 개선해".
+#   판정(인과 · t일 종가까지): 장기 추세 = 200일선과 그 21일 기울기 · 단기 위치 = 21일 고점 대비 낙폭을 자기 변동성 단위로(z = dd21 / (σ63·√21)) · 10일 z · 50일선.
+#   검증(r110/stateval.py · 긴 역사): 추세 지속은 잘 맞는다(상승추세 지속 → 63일 뒤에도 장기 상승 77~87%) · 상승추세 중 기술적 조정 뒤 수익↑(SPY 21일 +1.94% ·
+#     t 1.99 · 섹터 +1.66% · t 2.26) · 하락추세 중 기술적 반등은 같은 날 다른 자산보다 약하다(종목 −0.48%p · t −2.30 · 섹터 −0.38%p · t −2.29) — 따라 사지 않는다.
+R110_STATES: Tuple[str, ...] = ("상승추세 지속", "상승추세 중 기술적 조정", "상승추세 중 큰 하락", "하락추세 중 기술적 반등", "하락추세 지속",
+                                "상승 전환 시도", "하락 전환 경고")
+R110_SHORT: Dict[str, str] = {"상승추세 지속": "상승지속", "상승추세 중 기술적 조정": "상승중조정", "상승추세 중 큰 하락": "상승중큰하락",
+                              "하락추세 중 기술적 반등": "하락중반등", "하락추세 지속": "하락지속", "상승 전환 시도": "상승전환시도",
+                              "하락 전환 경고": "하락전환경고"}
+R110_DEF: Tuple[Tuple[str, str], ...] = (
+    ("장기 추세", "상승 = 종가 > 200일선 & 200일선 21일 기울기 > 0 · 하락 = 종가 < 200일선 & 기울기 < 0 · 그 밖 = 전환"),
+    ("z(21일 고점 대비 · σ 단위)", "z = (종가 / 21일 최고 − 1) / (σ63 × √21) — 자산마다 흔들림 폭이 달라 σ로 맞춘다(SPY −4%와 종목 −12%가 같은 z일 수 있다)"),
+    ("상승추세 지속", "장기 상승 & z > −1"),
+    ("상승추세 중 기술적 조정", "장기 상승 & −2 < z ≤ −1 (흔한 눌림)"),
+    ("상승추세 중 큰 하락", "장기 상승 & z ≤ −2 (우상향 중 큰 하락)"),
+    ("하락추세 중 기술적 반등", "장기 하락 & (종가 ≥ 50일선 또는 10일 수익 ≥ +1σ√10) (데드캣 반등 후보)"),
+    ("하락추세 지속", "장기 하락 & 반등 아님"),
+    ("상승 전환 시도", "장기 전환 & 종가 > 200일선"),
+    ("하락 전환 경고", "장기 전환 & 종가 ≤ 200일선"))
+R110_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
+    ("M · SPY 1999~2026(r110/stateval.py)", "상승추세 지속 → 63일 뒤 장기 상승 86.8% · 기술적 조정 → 21일 +1.94%(상승 74% · t 1.99 · 17/25년) · "
+     "하락추세 중 반등 → 21일 +0.04%(t −2.73) · 하락추세 지속 → 21일 −0.02%(상승 51% · 급락 ×1.53) · 63일 뒤 장기 하락 유지 73.6%",
+     "추세 지속 근거 강함 · 조정 매수 근거 있음 · 하락 중 반등·하락 지속 = 불리"),
+    ("S · 섹터 SPDR 1999~2026", "상승추세 지속 → 63일 뒤 상승 81.2% · 기술적 조정 21일 +1.66%(t 2.26 · 16/27년) · 하락 중 반등 같은 날 대비 −0.38%p(t −2.29) · "
+     "하락추세 지속 → 하락 유지 60.9% · 급락 ×1.51", "추세 지속 근거 강함 · 하락 중 반등은 피한다"),
+    ("I · 산업 ETF 29개 2009~2026", "상승추세 지속 → 상승 80.0% · 하락 중 반등 같은 날 대비 −0.39%p(t −1.28) · 상승 전환 시도 −0.45%p(t −2.44 · 5/18년) · "
+     "상승추세 중 큰 하락 급락 ×2.31", "추세 지속 근거 강함 · 전환 시도는 아직 약하다"),
+    ("K · S&P 500 그 시점 구성 2010~2026", "상승추세 지속 → 상승 77.0% · 하락추세 지속 → 하락 유지 61.5% · 하락 중 반등 같은 날 대비 −0.48%p(t −2.30 · 14/17년 약함) · "
+     "상승추세 중 큰 하락 21일 급락 7.9%(×1.73) · 기술적 조정 급락 ×1.25", "추세 지속 근거 강함 · 하락 중 반등 매수 금지 근거 있음"))
+
+
+def r110_state_frames(C: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    """[R110] 가격 수준(날짜 × 자산) → 특성 · 상태 · 앞으로의 결과(검증용 · 결과는 과거 구간에서만 확정)."""
+    C = pd.DataFrame(C).astype(float).sort_index()
+    R = C.pct_change(fill_method=None)
+    ma50 = C.rolling(50, min_periods=40).mean()
+    ma200 = C.rolling(200, min_periods=150).mean()
+    slope = ma200 / ma200.shift(21) - 1.0
+    s63 = R.rolling(63, min_periods=45).std()
+    dd21 = C / C.rolling(21, min_periods=15).max() - 1.0
+    z = dd21 / (s63 * np.sqrt(21.0))
+    z10 = (C / C.shift(10) - 1.0) / (s63 * np.sqrt(10.0))
+    d = C.diff()
+    up_ = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    dn_ = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rsi = 100 - 100 / (1 + up_ / dn_.replace(0, np.nan))
+    up = (C > ma200) & (slope > 0)
+    dn = (C < ma200) & (slope < 0)
+    ok = C.notna() & ma200.notna() & slope.notna() & z.notna()
+    conds = [up & (z > -1), up & (z <= -1) & (z > -2), up & (z <= -2), dn & ((C >= ma50) | (z10 >= 1)), dn,
+             ~up & ~dn & (C > ma200), ~up & ~dn]
+    st = pd.DataFrame(np.full(C.shape, None, dtype=object), index=C.index, columns=C.columns)
+    done = pd.DataFrame(False, index=C.index, columns=C.columns)
+    for nm, cd in zip(R110_STATES, conds):
+        m = cd.fillna(False) & ok & ~done
+        st = st.mask(m, nm)
+        done |= m
+    mn21 = C[::-1].rolling(21, min_periods=15).min()[::-1].shift(-1)
+    live21 = C.shift(-21).notna()
+    live63 = C.shift(-63).notna()
+    return {"C": C, "state": st, "z": z, "z10": z10, "rsi": rsi, "ma200": ma200, "slope": slope, "s63": s63, "up": up, "dn": dn,
+            "f21": (C.shift(-21) / C - 1.0), "f63": (C.shift(-63) / C - 1.0),
+            "crash21": ((mn21 / C - 1.0) <= -(2.0 * s63 * np.sqrt(21.0))).astype(float).where(live21),
+            "up63": up.shift(-63).astype(float).where(live63), "dn63": dn.shift(-63).astype(float).where(live63)}
+
+
+def r110_validate(fr: Dict[str, pd.DataFrame], member: Optional[pd.DataFrame] = None, since: Optional[str] = None) -> pd.DataFrame:
+    """[R110] 상태별 결과 표(이 층 자기 이력) — 21일 평균·상승 확률 · 전체 평균 대비(월 단위 t · 해마다 부호) · 여러 자산이면 같은 날 대비 · 21일 급락(−2σ) ·
+    63일 뒤 장기 추세 유지."""
+    S_ = fr["state"]
+    if member is not None:
+        S_ = S_.where(pd.DataFrame(member).reindex(index=S_.index, columns=S_.columns).fillna(False).astype(bool))
+    if since is not None:
+        S_ = S_[S_.index >= pd.Timestamp(since)]
+    idx = S_.index
+    f21 = fr["f21"].reindex(idx)
+    val = S_.notna() & f21.notna()
+    if not bool(val.values.any()):
+        return pd.DataFrame()
+    base21 = float(np.nanmean(f21.where(val).values))
+    basec = float(np.nanmean(fr["crash21"].reindex(idx).where(val).values))
+    multi = S_.shape[1] > 1
+
+    def _t(s):
+        s = s.dropna()
+        return round(float(s.mean() / (s.std(ddof=1) / np.sqrt(len(s)))), 2) if len(s) > 5 and float(s.std(ddof=1)) > 0 else np.nan
+    rows = []
+    for nm in R110_STATES:
+        m = (S_ == nm) & val
+        n = int(m.values.sum())
+        if n < 30:
+            continue
+        x = f21.where(m)
+        rec = {"상태": nm, "표본(자산·일)": n, "비중%": round(n / float(val.values.sum()) * 100, 1),
+               "21일 평균%": round(float(np.nanmean(x.values)) * 100, 2),
+               "21일 상승 확률%": round(float(np.nanmean((x > 0).astype(float).where(x.notna()).values)) * 100, 1)}
+        dts = (x - base21).mean(axis=1).dropna()
+        rec["전체 평균 대비%p"] = round((rec["21일 평균%"] / 100 - base21) * 100, 2)
+        rec["t(월 · 전체 대비)"] = _t(dts.groupby(dts.index.to_period("M")).mean())
+        yy = dts.groupby(dts.index.year).mean()
+        rec["해 일관성(+)"] = f"{int((yy > 0).sum())}/{len(yy)}"
+        if multi:
+            dm = (x.mean(axis=1) - f21.where(val).mean(axis=1)).dropna()
+            rec["같은 날 대비%p"] = round(float(dm.mean()) * 100, 2)
+            rec["t(월 · 같은 날)"] = _t(dm.groupby(dm.index.to_period("M")).mean())
+        c = fr["crash21"].reindex(idx).where(m)
+        rec["21일 급락(−2σ) 확률%"] = round(float(np.nanmean(c.values)) * 100, 1)
+        rec["급락 배율(평균 대비)"] = round(float(np.nanmean(c.values)) / basec, 2) if basec else np.nan
+        rec["63일 평균%"] = round(float(np.nanmean(fr["f63"].reindex(idx).where(m).values)) * 100, 2)
+        rec["63일 뒤 장기 상승%"] = round(float(np.nanmean(fr["up63"].reindex(idx).where(m).values)) * 100, 1)
+        rec["63일 뒤 장기 하락%"] = round(float(np.nanmean(fr["dn63"].reindex(idx).where(m).values)) * 100, 1)
+        tt = rec.get("t(월 · 같은 날)") if multi else rec.get("t(월 · 전체 대비)")
+        tt = tt if tt == tt else rec.get("t(월 · 전체 대비)")
+        if tt == tt and tt is not None and abs(float(tt)) >= 2.0:
+            rec["수익 판정"] = "유리(근거 있음)" if float(tt) > 0 else "불리(근거 있음)"
+        else:
+            rec["수익 판정"] = "차이 근거 약함"
+        rows.append(rec)
+    T = pd.DataFrame(rows)
+    T.attrs.update({"base21": base21 * 100, "basec": basec * 100, "n": int(val.values.sum())})
+    return T
+
+
+def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: Optional[Dict[str, str]] = None,
+                              hist_since: str = "2018-01-01", member: Optional[pd.DataFrame] = None,
+                              extra_today: Optional[pd.DataFrame] = None, extra_blocks: Optional[List[pd.DataFrame]] = None,
+                              extra_line: str = "") -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
+    """[R110] 00V_상태판정검증(A 정의 · B 이 층 자기 이력 검증 · C 오늘 자산별 상태 + 그 상태의 과거 통계 · D 긴 역사 근거 · 추가 블록) · 01V_날짜별상태 · 00 줄.
+    측정·표시 전용(라이브 배분 무영향)."""
+    names = dict(names or {})
+    lv = {k: pd.to_numeric(pd.Series(v), errors="coerce") for k, v in (levels or {}).items() if v is not None}
+    lv = {k: v[~v.index.duplicated(keep="last")].sort_index() for k, v in lv.items() if v.notna().sum() >= 260}
+    if not lv:
+        return {}, [(f"★★★ 날짜별 상태 판정(R110 · {layer})", "산출 안 됨 — 가격 이력 부족")]
+    C = pd.DataFrame(lv).sort_index()
+    fr = r110_state_frames(C)
+    V = r110_validate(fr, member=member)
+    parts = [pd.DataFrame([{"블록": "A. 상태 정의(R110 · 인과 · t일 종가까지)", "항목": a, "값": b} for a, b in R110_DEF])]
+    if len(V):
+        parts.append(V.rename(columns={"상태": "항목"}).assign(블록=f"B. 검증 — 이 층 자기 이력({str(C.index[0].date())}~ · 전체 21일 평균 "
+                                                             f"{V.attrs.get('base21', float('nan')):.2f}% · 급락 {V.attrs.get('basec', float('nan')):.1f}%)"))
+    vmap = {r["상태"]: r for _, r in V.iterrows()} if len(V) else {}
+    st, z, rsi, ma200, slope = fr["state"], fr["z"], fr["rsi"], fr["ma200"], fr["slope"]
+    rows = []
+    for t in C.columns:
+        s_ = st[t].dropna()
+        if not len(s_):
+            continue
+        now = str(s_.iloc[-1])
+        dt = s_.index[-1]
+        run = int((s_[::-1] != now).values.argmax()) if bool((s_ != now).any()) else len(s_)
+        vr = vmap.get(now)
+        m2 = ma200[t].get(dt)
+        rec = {"항목": t, "이름": names.get(t, t), "기준일": str(pd.Timestamp(dt).date()), "오늘 상태": now, "상태 지속(거래일)": run,
+               "z(21일 고점 대비 σ)": round(float(z[t].get(dt, np.nan)), 2),
+               "200일선 대비%": (round(float(C[t].get(dt) / m2 - 1) * 100, 1) if m2 == m2 and m2 else None),
+               "200일선 기울기(21일)%": round(float(slope[t].get(dt, np.nan)) * 100, 2), "RSI14": round(float(rsi[t].get(dt, np.nan)), 1)}
+        if vr is not None:
+            rec.update({"이 상태 뒤 21일 상승 확률%": vr.get("21일 상승 확률%"), "이 상태 뒤 21일 평균%": vr.get("21일 평균%"),
+                        "21일 급락(−2σ) 확률%": vr.get("21일 급락(−2σ) 확률%"),
+                        "63일 뒤 추세 유지%": (vr.get("63일 뒤 장기 상승%") if now.startswith(("상승추세", "상승 전환")) else
+                                          (vr.get("63일 뒤 장기 하락%") if now.startswith(("하락추세", "하락 전환")) else None)),
+                        "수익 판정(이 층 검증)": vr.get("수익 판정")})
+        rows.append(rec)
+    Td = pd.DataFrame(rows)
+    if isinstance(extra_today, pd.DataFrame) and len(extra_today) and len(Td):
+        Td = Td.merge(extra_today, on="항목", how="left")
+    if len(Td):
+        parts.append(Td.assign(블록=f"C. 오늘 상태(기준일 {Td['기준일'].max()} · 그 상태의 과거 통계는 B · 측정 · 투자 권유 아님)"))
+    parts.append(pd.DataFrame([{"블록": "D. 긴 역사 근거(R110 · 네 층)", "항목": a, "값": b, "판정": c} for a, b, c in R110_EVIDENCE]))
+    for eb in (extra_blocks or []):
+        if isinstance(eb, pd.DataFrame) and len(eb):
+            parts.append(eb)
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    H = st[st.index >= pd.Timestamp(hist_since)].copy()
+    H = H.apply(lambda col: col.map(lambda v: R110_SHORT.get(v, "-") if isinstance(v, str) else "-"))
+    H.columns = [f"{c}({names.get(c, c)})" if names.get(c, c) != c else str(c) for c in H.columns]
+    H.insert(0, "날짜", H.index)
+    out = {"00V_상태판정검증": df, "01V_날짜별상태": H.reset_index(drop=True)}
+    cnt = Td["오늘 상태"].value_counts() if len(Td) else pd.Series(dtype=int)
+
+    def _v(nm, col):
+        r = vmap.get(nm)
+        return (f"{r.get(col)}" if r is not None and r.get(col) == r.get(col) else "-")
+    line = (f"오늘({Td['기준일'].max() if len(Td) else '-'}): " + " · ".join(f"{R110_SHORT.get(k, k)} {v}" for k, v in cnt.items())
+            + f" | 이 층 검증: 상승추세 지속 → 63일 뒤 상승 유지 {_v('상승추세 지속', '63일 뒤 장기 상승%')}% · 하락추세 지속 → 하락 유지 "
+            f"{_v('하락추세 지속', '63일 뒤 장기 하락%')}% · 기술적 조정 뒤 21일 {_v('상승추세 중 기술적 조정', '21일 평균%')}%(상승 "
+            f"{_v('상승추세 중 기술적 조정', '21일 상승 확률%')}%) · 하락 중 반등 {_v('하락추세 중 기술적 반등', '수익 판정')}"
+            + (f" | {extra_line}" if extra_line else "") + " — 세부 00V · 날짜별 01V. 연구·교육용, 투자 자문 아님.")
+    if len(Td) and len(Td) <= 14:
+        line = " · ".join(f"{r['항목']} {R110_SHORT.get(r['오늘 상태'], r['오늘 상태'])}" for _, r in Td.iterrows()) + " | " + line
+    return out, [(f"★★★ 날짜별 상태 판정(R110 · {layer} · 우상향 중 큰 하락 · 기술적 조정/반등 · 추세 지속/전환)", line)]
+
+
 def _map_regime(v: Any) -> str:
     s = str(v)
     return REGIME_CODE_KR.get(s, s)
@@ -11034,6 +11242,20 @@ def r105_extra_sheets_m(res: dict, sig: pd.DataFrame, cfg: Config = CFG) -> Tupl
     except Exception as e:   # noqa — 표시 전용
         log("REPORT", kv(event="loss_period_failed", layer="M", err=type(e).__name__, msg=str(e)[:160]), "warning")
     return out, lines
+
+
+def r110_extra_sheets_m(res: dict, cfg: Config = CFG) -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
+    """[v1.72.0 R110] 00V_상태판정검증 · 01V_날짜별상태(SPY 전체 이력 · 국면 판단과 별개의 가격 상태 · 자기 검증). 표시 전용."""
+    try:
+        px = res.get("px_adj")
+        if px is None:
+            pr = res["price"]
+            px = pr["Adj Close"] if "Adj Close" in pr.columns else pr["Close"]
+        return build_state_verify_sheets({"SPY": pd.Series(px).dropna()}, "시장(SPY)", names={"SPY": "S&P500"},
+                                         hist_since=str(getattr(cfg, "SIGNAL_START", "2018-01-01")))
+    except Exception as e:   # noqa — 표시 전용
+        log("REPORT", kv(event="state_verify_failed", layer="M", err=type(e).__name__, msg=str(e)[:160]), "warning")
+        return {}, []
 
 
 def write_excel(path: str, sheets: Dict[str, pd.DataFrame], bt: pd.DataFrame,
@@ -12735,6 +12957,9 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.69.0 R105 사용자 지시] 00P 기간별 수익배수(주·월·분기) · 00T 시장 상태판(SPY 상태 + 국면 단계별 다음 21일 크기) — 00 줄은 버전 점검 다음
     _x105, _r105_m_lines = r105_extra_sheets_m(res, sig, cfg)
     sheets.update(_x105)
+    _x110, _r110_m_lines = r110_extra_sheets_m(res, cfg)          # [v1.72.0 R110] 00V 상태 판정·검증 · 01V 날짜별 상태
+    sheets.update(_x110)
+    _r105_m_lines = list(_r105_m_lines) + list(_r110_m_lines)
     # [v1.53.0 F5 ★] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이
     #   있다")를 **M 자신에게도** 적용한다. 그동안 S 리포트에서 우회 계산으로만 보이던 값이다(REPORT47 §2.2:
     #   SPY h=21 현금 기준 MCC +0.160 · '상승 아님' +0.187 — M은 소수 클래스에 정보가 있고 섹터 재추정이
@@ -13116,7 +13341,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
     # [v1.61.0 R93] 파일명 끝에 코드 버전(사용자 지시) — 돌려주는 경로가 실제 파일이다(러너는 이 값을 그대로 쓴다).
     _out = versioned_report_path(cfg.OUT_XLSX, BUNDLE_VERSION, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
-    _front5 = [n for n in ("00P_기간별수익배수", "00L_손실기간분석", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106] 00 바로 뒤
+    _front5 = [n for n in ("00P_기간별수익배수", "00L_손실기간분석", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106] 00 바로 뒤
     sheets = {**{n: sheets[n] for n in _front5}, **{k: v for k, v in sheets.items() if k not in _front5}}
     write_excel(_out, sheets, bt, meta, cfg,
                 live_marks={"06_성과요약": ("전략", "복합지표 전략")})
@@ -13177,13 +13402,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.71.0"
+BUNDLE_VERSION = "v1.72.0"
 BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.87.0", "industry_rotation": "v0.55.0", "stock_regime": "v0.17.0"}   # [v1.71.0 R108]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.88.0", "industry_rotation": "v0.56.0", "stock_regime": "v0.19.0"}   # [v1.72.0 R110]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:

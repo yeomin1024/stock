@@ -1,5 +1,12 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.56.0 - 2026-09-28 - [R110 날짜별 상태 판정·검증(00V · 01V · 29산업) — I★ 무변경]
+#    사용자 지시(2026-09-28): "… 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부 등을 정확하게 파악할 수 있어야 해 국면, 섹터,
+#      산업, 주식 모두 지표 사용 및 검증 통해 가능하도록 개선해".
+#    ── R110 연구(r110/stateval.py · 산업 ETF 29개 2009~2026) ── 상승추세 지속 → 63일 뒤 장기 상승 80.0% · 하락추세 지속 → 하락 유지 58.3% · 하락 중 반등 같은 날
+#      대비 −0.39%p(t −1.28) · 상승 전환 시도 −0.45%p(t −2.44 · 5/18년) · 상승추세 중 큰 하락 21일 급락 ×2.31.
+#    (§1) build_industry_report가 S v0.88.0 build_state_verify_sheets(산업 ETF 전체 이력)로 00V_상태판정검증 · 01V_날짜별상태 · 00 줄(S 없으면 생략).
+#    시험 t110/test_r110.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.55.0 - 2026-09-27 - [R106 00Q 산업별 주·월·분기 배수 · 00L I★ 손실 기간 분석 — I★ 무변경]
 #    사용자 지시(2026-09-27): "결과 폴더에 업로드했으니 참고하고 … 국면, 섹터, 산업, 주식별 현재 상태를 정확하게 파악하고 있는지 확인하고 예측도 제대로 하고 있는지 확인해 … 섹터,산업,주식별로 분기별, 월별, 주별 수익배수를 각각 측정해서 꾸준하게 좋은 수치가 나오는지로 판단하도록하고 상승,하락 정도도 잘 예측하고 있는지도 확인하고 문제 있으면 개선해 그리고 모든 나눠진 수익배수는 최대한 수익을 내야하고 절대로 손해를 봐서는 안돼 손해를 본 부분은 왜그런지 분석해서 개선하도록 해".
 #    ── R105 Kaggle 리포트 점검(현금 이자 0 · 2018~) ── 손실 주/월/분기: M 122/23/5 · S★ 114/20/5 · I★ 115/24/5 · K★ 112/18/3(SPY 193/34/9 · 456/105/35 중).
@@ -1951,7 +1958,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.55.0"
+VERSION = "v0.56.0"
 VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -15322,7 +15329,17 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         # ---- [v0.54.0 R105 사용자 지시] 00P 기간별 수익배수(주·월·분기) · 00T 산업 상태판 — S v0.85.0 함수 · 줄은 00U 줄 바로 아래 ----
         _x105, _r105_lines = r105_extra_sheets_i(S, alloc, results, ires.get("user_rel_src") or {}, M)
         sheets.update(_x105)
-        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Q_자산별기간배수", "00T_산업상태판",
+        # ---- [v0.56.0 R110 사용자 지시] 00V 상태 판정·검증 · 01V 날짜별 상태(29산업 · S v0.88.0 build_state_verify_sheets) ----
+        if hasattr(S, "build_state_verify_sheets"):
+            try:
+                _lv110 = {t: (1.0 + pd.to_numeric(pd.Series(r["ret_cc_full"]), errors="coerce").dropna()).cumprod()
+                          for t, r in (results or {}).items() if isinstance(r, dict) and r.get("ret_cc_full") is not None}
+                _x110, _l110 = S.build_state_verify_sheets(_lv110, "산업", names=INDUSTRY_NAME_KR)
+                sheets.update(_x110)
+                _r105_lines = list(_r105_lines) + list(_l110)
+            except Exception as _e110:
+                log("REPORT", kv(event="state_verify_failed", layer="I", err=type(_e110).__name__, msg=str(_e110)[:160]), M=M, level="warning")
+        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Q_자산별기간배수", "00V_상태판정검증", "00T_산업상태판",
                                    "00R_신뢰도판정", "00B_수익곡선비교",
                                    "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교", "00E_산업상승확률")
 

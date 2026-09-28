@@ -1,5 +1,24 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.19.0 - 2026-09-28 - [R110 ★★ 라이브 현금 완충 ×0.8(사용자 선택) · 종목별 매수 뒤 급락 확률 · 날짜별 상태 판정(00V · 01V)]
+#    사용자 지시(2026-09-28): "일단 가장 중요한건 매수했는데 급락하는 경우, 장기적으로 우하향하는 경우는 무조건 피해야 해 그런 위험들을 예측가능하도록 해야하고
+#      위험이 가장 적은 종목들을 매수하도록 해 예측불가능한 급락을 자주 맞으면 그 종목은 과매도 상태가 아닌 이상 매수 대상에서 제외해야 해 …" → 첫 시험(위험 종목 →
+#      섹터 ETF)에 사용자: "참여는 줄어도 회피는 크게 늘어야지 섹터 etf에 넣지말고 현금이나 위험 가장낮은데 비중 늘려 그리고 전체적인 설계 다시해봐" →
+#      AskUserQuestion 답 '종목 비중 ×0.8 (권장)'.
+#    ── R110 연구(r110/ · S&P 500 그 시점 구성 2010~ · K★ 하네스 = Kaggle R109 재현 · 현금 이자 0) ──
+#      예측: 장기 우하향 → 21일 −10% 급락 19.6% vs 11.5%(t 13 · 16/17년) · 126일 뒤 −15% 이하 +4.5%p · 수익 차이 작음 | 급락 잦음(1년 3회+) → 변동성 말고 추가 정보 없음 |
+#        변동성 단계가 급락 위험의 가장 큰 결정 요인(7% → 27%) — 확률표 RISK_LUT_R110(12칸 · 두 반쪽 안정).
+#      배분: 위험 종목 → 섹터 ETF(A1~A6) 회피 +0.8~3.8 · 참여 −4~−27 · 손실 달 17 → 19~20 ✗ | → 현금(B1~B6) 회피 74~91 · 참여 29~93 · 손실 달 19~21 |
+#        → 저위험 종목·저위험 기울임·포트 급락 확률 목표 — **전부** 같은 평균 노출의 현금 완충보다 회피·참여·칼마·MDD·손실 달이 나빴다.
+#      ★ 현금 완충 ×0.8: 회피 69.4 → 75.5 · 참여 120.2 → 93.5 · MDD −12.06 → −9.73% · 월 최악 ×0.904 → ×0.923 · 손실 달 17 그대로 · 배수 55.9 → 25.6.
+#    (§1 ★★ 라이브) StockConfig LIVE_CASH_BUFFER(0.8) · build_allocation(scale · cash_mask) — 라이브·섹터연동 격자·비교·측정 행에 같은 완충. 되돌리기
+#         k_overrides={"LIVE_CASH_BUFFER": 1.0}(v0.18.0과 비트 동일). 13 '비교: R109까지 라이브(현금 완충 없음)' 행 · 00 'R110 현금 완충 사후 판정'(사전등록:
+#         Δ회피 ≥ +3%p · ΔMDD ≥ 0 · Δ월 최악 ≥ 0 · Δ월/분기 손실 ≤ 0). R109 사후 판정은 같은 완충 위에서 계속(물타기·어닝 손절 규칙만 비교).
+#    (§2 표시) build_stock_risk_flags · stock_risk_today → 00V C 블록에 종목별 변동성 단계 · 장기 우하향 · 1년 급락일 · 과매도 · 매수 뒤 21일 −10% 급락 확률 ·
+#         63일 −15% · 126일 뒤 −15% 이하 · 위험 등급 · 사용자 규칙 판정(참고) · E 확률표 · F 규칙 시험 근거(K_RISK_EVIDENCE_R110).
+#    (§3 측정) 13·00U 'R110 장기 우하향 → 현금' · 'R110 장기 우하향 또는 매수 뒤 급락 확률 ≥ 25% → 현금' 행(R110_CASH_RULE_ROWS · R110_CRASH_PROB_CUT).
+#    (§4 공통 사본 · S v0.88.0 원본) R110 상태 판정 블록 · 00V_상태판정검증 · 01V_날짜별상태. (§5 결함 수정) 00 꾸준함 줄 라이브 이름표('sector_linked' 고정) ·
+#         배분 방식 줄 '감축 몫 → ETF 평균 -'(sector_prob diag cut_to_etf_mean). 시험 t110/test_r110.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.18.0 - 2026-09-28 - [R109 ★★ 라이브 — 어닝 하락 종목 21일 섹터 ETF(위험 구간 회피) + 물타기 유리 종목 비중↑ · 사용자 선택]
 #    사용자 지시(2026-09-28): "… 주식 일별 배분 보니까 손해 많이 보는 위험한 구간이 많아보이는데 종목이 위험한 구간일때는 피하고 최대한 수익을 얻을 수
 #      있는 곳에 비중을 늘리라고 그걸 왜 예측을하고 판단을 못하는거야 그게 제일 중요해 수정해봐" → AskUserQuestion 답 'R2 라이브 적용 (권장)'.
@@ -648,7 +667,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.18.0"
+VERSION = "v0.19.0"
 VERSION_DATE = "2026-09-27"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1107,6 +1126,20 @@ class StockConfig:
     LIVE_DIP_RULE: bool = True
     LIVE_DIP_LAMBDA: float = 0.5
     LIVE_DIP_FRONT_PART_TOL: float = 1.0
+    # [v0.19.0 R110 ★★ 라이브 · ⚠ 위험 파라미터 · 사용자 선택(2026-09-28 AskUserQuestion '종목 비중 ×0.8 (권장)')] 현금 완충.
+    #   사용자 지시: "매수했는데 급락하는 경우, 장기적으로 우하향하는 경우는 무조건 피해야 해 … 참여는 줄어도 회피는 크게 늘어야지 섹터 etf에 넣지말고
+    #     현금이나 위험 가장낮은데 비중 늘려 그리고 전체적인 설계 다시해봐".
+    #   R110 재설계 시험(r110/k110b·c·d.py · R109 라이브 기준 · 현금 이자 0): 위험 종목(장기 우하향 · 급락 잦음 · 매수 뒤 급락 확률 ≥ 20~35%)을 현금 또는 같은
+    #     섹터 저위험 종목으로 옮기기 · 저위험 기울임 · 포트 급락 확률 목표로 현금 조절 — **전부** 같은 평균 노출로 전 종목을 똑같이 줄인 것(현금 완충)보다
+    #     회피·참여·칼마·MDD·손실 달이 나빴다(종목 위험 표지는 '어느 종목을 뺄지'를 무작위 이상으로 고르지 못한다 · 손실 달 17 → 19~26).
+    #   현금 완충 ×0.8: 회피 69.4 → 75.5 · 참여 120.2 → 93.5(사용자 수용) · MDD −12.06 → −9.73% · 월 최악 ×0.904 → ×0.923 · 손실 달 17 그대로 · 배수 55.9 → 25.6.
+    #   사전등록(다음 Kaggle · 00 'R110 현금 완충 사후 판정'): 라이브 vs '비교: R109까지 라이브(현금 완충 없음)' — Δ회피 ≥ +LIVE_CASH_BUFFER_MIN_AVOID(3.0)%p ·
+    #     ΔMDD ≥ 0 · Δ월 최악 ≥ 0 · Δ월/분기 손실 ≤ 0(참여·배수 하락은 사용자 수용) → 미달이면 되돌림 권고. 되돌리기: k_overrides={"LIVE_CASH_BUFFER": 1.0}.
+    LIVE_CASH_BUFFER: float = 0.8
+    LIVE_CASH_BUFFER_MIN_AVOID: float = 3.0
+    # [v0.19.0 R110 측정 전용] 사용자 규칙 '장기 우하향 · 매수 뒤 급락 위험 종목 → 현금' 행(13 · 00U) — 라이브와 같은 현금 완충을 적용한 뒤 비교.
+    R110_CASH_RULE_ROWS: bool = True
+    R110_CRASH_PROB_CUT: float = 25.0             # 매수 뒤 21일 −10% 급락 확률(%) 문턱(S&P 500 확률표)
     # [v0.12.0 R100] 잔차 모멘텀 점수(build_resid_mom_score) — β 창 · 12-1 창(건너뛰는 최근 1개월 · 합산 길이).
     RESID_BETA_WIN: int = 252
     RESID_SKIP: int = 21
@@ -2834,7 +2867,8 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                      etf_panel: Optional[Dict[str, pd.DataFrame]] = None,
                      link_cap: Optional[float] = None,
                      prob_score: Optional[pd.DataFrame] = None, prob_select: Optional[str] = None,
-                     prob_params: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+                     prob_params: Optional[Dict[str, float]] = None,
+                     scale: Optional[float] = None, cash_mask: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """전체자산 **1.0**을 종목에 배분한다. 반환 target_w의 **행 합계는 절대 1.0을 넘지 않는다**.
     [v0.11.0 R99 N3] "sector_prob" — 섹터 비중은 S★ 그대로(sector_linked와 같은 SW) · 섹터 안만 점수(prob_score · 상승확률 또는 어닝 복합)로
       고른다(prob_select: exclude_bottom · top · tilt · prob_params: frac·max·lam). 점수가 없으면 sector_linked(균등)로 계산하고 tilt['note']에 적는다.
@@ -2934,6 +2968,16 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                                                  etf_avail=set((etf_panel or {}).keys()))
         if _prob_note:
             _sd["note"] = _prob_note
+        # [v0.19.0 R110] cash_mask(날짜 × 종목 · True = 그 종목 몫을 **현금**으로 · 측정 행) · scale(종목·ETF 몫 전체 × scale · 나머지 현금 = 현금 완충).
+        #   둘 다 None이면 v0.18.0과 비트 동일. 체결 규칙(t 확정 → t+1 시가)은 그대로.
+        if isinstance(cash_mask, pd.DataFrame) and cash_mask.shape[1]:
+            _cm = cash_mask.reindex(index=idx, columns=tickers).fillna(False).astype(bool)
+            _sd["cash_mask_mean"] = round(float(Ws.where(_cm, 0.0).sum(axis=1).mean()), 5)
+            Ws = Ws.where(~_cm, 0.0)
+        if scale is not None and abs(float(scale) - 1.0) > 1e-12:
+            _scl = min(max(float(scale), 0.0), 1.0)
+            Ws, We = Ws * _scl, We * _scl
+            _sd["cash_buffer"] = _scl
         ret = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce").reindex(idx)
                             for t in tickers}).fillna(0.0)
         _ecols = list(We.columns)
@@ -3945,6 +3989,7 @@ def _sector_prob_weights(idx: pd.DatetimeIndex, tickers: List[str], live: pd.Dat
     lam = float(prm.get("lam", 0.5))
     n_sel_days = n_eq_days = 0
     excl_total = 0
+    cut_tot = np.zeros(len(idx), dtype=float)            # [v0.19.0 R110] 감축(E3 · 어닝 하락) 몫 → ETF 합(00 줄 표시 결함 수정)
     for s_ in sectors:
         mem = [t for t in tickers if t2s.get(t) == s_]
         if not mem:
@@ -3994,6 +4039,7 @@ def _sector_prob_weights(idx: pd.DatetimeIndex, tickers: List[str], live: pd.Dat
         capped = np.minimum(W_, float(cap))
         Ws[mem] = capped
         We[s_] += (W_ - capped).sum(axis=1) + cut_amt + np.where(nl == 0, sw, 0.0)
+        cut_tot += cut_amt
     miss = [s_ for s_ in We.columns if etf_avail is not None and s_ not in etf_avail]
     miss_cash = We[miss].sum(axis=1) if miss else pd.Series(0.0, index=idx)
     We = We[[c for c in We.columns if c not in miss]]
@@ -4001,6 +4047,7 @@ def _sector_prob_weights(idx: pd.DatetimeIndex, tickers: List[str], live: pd.Dat
             "etf_missing_cash_mean": round(float(miss_cash.mean()), 5), "sector_total_mean": round(float(SW.sum(axis=1).mean()), 4),
             "stock_share_mean": round(float(Ws.sum(axis=1).mean()), 4), "etf_share_mean": round(float(We.sum(axis=1).mean()), 4),
             "select_sector_days": int(n_sel_days), "equal_sector_days": int(n_eq_days), "excluded_total": int(excl_total),
+            "cut_to_etf_mean": round(float(cut_tot.mean()), 5),
             "nostock_sectors": [s_ for s_ in sectors if not any(t2s.get(t) == s_ for t in tickers)],
             "label": str(ia.get("label", "-")), "sector_w": SW}
     return Ws, We, diag
@@ -5203,6 +5250,103 @@ def build_dip_states(panel: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
             "fav_ev": fav_ev.fillna(False), "earn_ev": earn_ev.fillna(False), "miss_ev": miss_ev.fillna(False)}   # [v0.16.0 R106] 이벤트 날(경과일 계산)
 
 
+# [v0.19.0 R110] 매수 뒤 급락 확률표(S&P 500 그 시점 구성 · 2010~2026 · r110/risklut.py) — (장기 우하향, 변동성 단계, 1년 급락 3회+) →
+#   (21일 안 −10% 급락 %, 63일 안 −15% 급락 %, 126일 뒤 −15% 이하 %, 63일 섹터 대비 %). 앞(2010~17)/뒤(2018~) 반쪽 모두 같은 순서(안정).
+RISK_LUT_R110: Dict[Tuple[bool, str, bool], Tuple[float, float, float, float]] = {
+    (False, "저", False): (7.0, 10.6, 8.4, 0.13), (False, "저", True): (7.5, 10.5, 7.9, -0.20),
+    (False, "중", False): (15.7, 22.0, 16.3, -0.55), (False, "중", True): (14.4, 17.9, 12.5, -0.04),
+    (False, "고", False): (27.4, 32.4, 22.1, -0.47), (False, "고", True): (23.9, 24.9, 14.5, 2.33),
+    (True, "저", False): (10.2, 13.5, 10.2, -0.49), (True, "저", True): (11.4, 16.4, 12.1, -0.59),
+    (True, "중", False): (19.4, 24.7, 17.0, -0.20), (True, "중", True): (18.8, 24.2, 16.4, -0.58),
+    (True, "고", False): (29.8, 35.9, 25.5, -0.62), (True, "고", True): (27.6, 28.3, 14.1, 1.90)}
+K_RISK_EVIDENCE_R110: Tuple[Tuple[str, str, str], ...] = (
+    ("장기 우하향(200일선 아래 & 하락) — S&P 500 2010~", "21일 −10% 급락 19.6% vs 11.5%(같은 섹터·날 +4.0%p · t 13 · 16/17년) · 63일 −15% +5.4%p · "
+     "126일 뒤 −15% 이하 +4.5%p · 21/63일 섹터 대비 수익 −0.03/−0.32%p(유의하지 않음)", "급락·장기 하락 위험 예측 근거 강함 · 수익 차이는 작다"),
+    ("급락 잦음(1년 3회+ · 하루 −3σ 또는 갭 −5%) — S&P 500", "21일 급락 +1.5%p · 수익 차이 없음 · 같은 변동성 단계 안에서는 급락 확률 차이 없음(확률표)",
+     "변동성 말고 추가 정보 없음"),
+    ("변동성 단계(σ63 연율) — S&P 500", "21일 −10% 급락: 저(<25%) 7~11% · 중(25~40%) 14~19% · 고(40%+) 24~30% · 앞/뒤 반쪽 안정",
+     "급락 위험의 가장 큰 결정 요인"),
+    ("K★ 하네스 — 위험 종목 → 섹터 ETF(A1~A6)", "회피 +0.8~+3.8 · 참여 −3.7~−27 · 배수 55.9 → 22~50 · 손실 달 17 → 19~20",
+     "✗ 시장 급락은 ETF로 그대로 맞고 V자 반등(2019·2023)을 놓친다"),
+    ("K★ 하네스 — 위험 종목 → 현금(B1~B6)", "장기 우하향 → 현금: 회피 74.4 · 참여 92.6 · MDD −11.3% · 손실 달 19 | 장기 우하향 또는 급락 확률 ≥ 20% → 현금: "
+     "86.3/40.9 · MDD −8.4% · 손실 달 21 | 같은 수 무작위 종목 → 현금 대조: 회피 100 · 참여 0 · 칼마 25 백분위",
+     "회피는 오르지만 같은 노출의 현금 완충보다 모두 나쁘다"),
+    ("K★ 하네스 — 저위험 종목으로 옮기기 · 저위험 기울임 · 포트 급락 확률 목표", "옮기기 85.1/43.6 · 기울임 71.5/103.5 · 급락 확률 12% 목표 78.1/76.4 · 칼마 3.22"
+     "(같은 노출 현금 완충 4.53)", "✗ 같은 노출의 현금 완충보다 나쁘다"),
+    ("★ 현금 완충 ×0.8(R110 라이브 · 사용자 선택)", "회피 69.4 → 75.5 · 참여 120.2 → 93.5 · MDD −12.06 → −9.73% · 월 최악 ×0.904 → ×0.923 · 손실 달 17 그대로 · "
+     "배수 55.9 → 25.6 · 칼마 4.87 → 4.63", "회피를 크게 올리는 가장 효율적인 방법(종목 고르기보다 덜 들기)"))
+
+
+def build_stock_risk_flags(panel: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    """[v0.19.0 R110] 종목 위험 표지(인과 · t일 종가까지): 장기 우하향(D) · 1년 급락일 수 · 급락 잦음(Sk ≥ 3) · 과매도(RSI14 < 30) · 변동성 단계 ·
+    매수 뒤 21일 −10% 급락 확률(P · RISK_LUT_R110) · 63일 −15% · 126일 뒤 −15% 이하."""
+    tick = sorted(panel)
+    if not tick:
+        return {"ok": False}
+
+    def g(col):
+        return pd.DataFrame({t: pd.to_numeric(panel[t].get(col), errors="coerce") if col in panel[t].columns
+                             else pd.Series(np.nan, index=panel[t].index) for t in tick})
+    C = g("종가")
+    R = C.pct_change(fill_method=None)
+    s63 = R.rolling(63, min_periods=45).std()
+    ma200 = C.rolling(200, min_periods=150).mean()
+    slope = ma200 / ma200.shift(21) - 1.0
+    gap = g("야간수익")
+    shock = ((R <= -3 * s63.shift(1)) | (gap <= -0.05)).astype(float).where(R.notna())
+    nshock = shock.rolling(252, min_periods=200).sum()
+    d = C.diff()
+    up = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    dn = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rsi = 100 - 100 / (1 + up / dn.replace(0, np.nan))
+    volA = s63 * np.sqrt(252.0)
+    vb = pd.DataFrame(np.select([volA < 0.25, volA < 0.40], ["저", "중"], "고"), index=C.index, columns=tick).where(volA.notna())
+    D = ((C < ma200) & (slope < 0)).fillna(False)
+    Sk = (nshock >= 3).fillna(False)
+    OS = (rsi < 30).fillna(False)
+    P = pd.DataFrame(np.nan, index=C.index, columns=tick)
+    P63 = P.copy()
+    P126 = P.copy()
+    for (dd_, v_, s_), (p21, p63, p126, _ex) in RISK_LUT_R110.items():
+        m = (D == dd_) & (vb == v_) & (Sk == s_) & volA.notna() & nshock.notna()
+        P, P63, P126 = P.mask(m, p21), P63.mask(m, p63), P126.mask(m, p126)
+    return {"ok": True, "C": C, "D": D, "Sk": Sk, "OS": OS, "nshock": nshock, "volA": volA, "vb": vb, "rsi": rsi, "P": P, "P63": P63, "P126": P126}
+
+
+def stock_risk_today(rf: Dict[str, Any], names: Optional[Dict[str, str]] = None) -> pd.DataFrame:
+    """[v0.19.0 R110] 오늘 종목별 위험(00V C 블록에 붙는 열) — 측정·표시 · 투자 권유 아님."""
+    if not rf.get("ok"):
+        return pd.DataFrame()
+    rows = []
+    for t in rf["C"].columns:
+        c = rf["C"][t].dropna()
+        if not len(c):
+            continue
+        dt = c.index[-1]
+        p = rf["P"][t].get(dt, np.nan)
+        dn_, sk_, os_ = bool(rf["D"][t].get(dt, False)), bool(rf["Sk"][t].get(dt, False)), bool(rf["OS"][t].get(dt, False))
+        if dn_:
+            j = "피하기 권고 — 장기 우하향(급락·장기 하락 위험 높음)"
+        elif sk_ and not os_:
+            j = "주의 — 급락 잦음(과매도 아님)"
+        elif sk_ and os_:
+            j = "예외 — 급락 잦지만 과매도"
+        elif p == p and p >= 25:
+            j = "주의 — 매수 뒤 급락 확률 높음(고변동)"
+        else:
+            j = "통과"
+        rows.append({"항목": t, "변동성(연율%)": round(float(rf["volA"][t].get(dt, np.nan)) * 100, 1),
+                     "변동성 단계": rf["vb"][t].get(dt, "-"), "장기 우하향": "예" if dn_ else "아니오",
+                     "1년 급락일": (int(rf["nshock"][t].get(dt)) if rf["nshock"][t].get(dt) == rf["nshock"][t].get(dt) else None),
+                     "과매도(RSI<30)": "예" if os_ else "아니오",
+                     "매수 뒤 21일 −10% 급락 확률%(S&P 500 표)": (round(float(p), 1) if p == p else None),
+                     "63일 안 −15% 급락 확률%": (round(float(rf["P63"][t].get(dt)), 1) if rf["P63"][t].get(dt) == rf["P63"][t].get(dt) else None),
+                     "126일 뒤 −15% 이하%": (round(float(rf["P126"][t].get(dt)), 1) if rf["P126"][t].get(dt) == rf["P126"][t].get(dt) else None),
+                     "위험 등급": ("낮음" if p == p and p < 10 else ("보통" if p == p and p < 20 else ("높음" if p == p else "-"))),
+                     "사용자 규칙 판정(R110 · 참고)": j})
+    return pd.DataFrame(rows)
+
+
 def _earn_dip_cut(pos: Dict[str, pd.DataFrame], ds: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
     """[v0.15.0 R105 측정 → v0.18.0 R109 라이브] 어닝 하락 상태(ds['earn'] · 이벤트 뒤 DIP_HOLD_DAYS 거래일) 날에 감축신호 = 1
     (그 종목 몫 → 부모 섹터 ETF · E3 음의 서프라이즈 감축과 같은 경로). 단독 신호(목표비중)는 바꾸지 않는다. ds가 없으면 pos 그대로."""
@@ -5666,6 +5810,59 @@ def live_dip_verdict_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
                f" → ✗ 되돌림 권고({', '.join(v['fails'])}) — k_overrides={{'LIVE_DIP_RULE': False}}")
             + ". 규칙: 어닝 발표 4일 안 하락 종목 21일 → 섹터 ETF(위험 구간 회피) · 200일선 위 어닝 무관 하락 종목 비중↑(λ0.5). 연구·교육용, 투자 자문 아님.")
     return ("★★★ R109 라이브 사후 판정(사전등록 · 사용자 선택 'R2 라이브 적용') — 물타기 기울임 + 어닝 하락 손절", body)
+
+
+def cash_buffer_verdict(res: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """[v0.19.0 R110] 현금 완충 사후 판정 — 사전등록(StockConfig LIVE_CASH_BUFFER 주석): 라이브 vs '비교: R109까지 라이브(현금 완충 없음)'.
+    Δ회피 ≥ +LIVE_CASH_BUFFER_MIN_AVOID · ΔMDD ≥ 0 · Δ월 최악 ≥ 0 · Δ월/분기 손실 ≤ 0(참여·배수 하락은 사용자 수용)."""
+    cfg = res.get("cfg", CFG)
+    ui = res.get("user_rel_info") or {}
+    ur = res.get("user_rel")
+    nl = ui.get("nobuf_label") or res.get("nobuf_label")
+    if not (isinstance(ur, pd.DataFrame) and len(ur) and nl):
+        return None
+    m = ur[ur["전략"].astype(str) == str(nl)]
+    if not len(m):
+        return None
+    t0, r0 = ur.iloc[0], m.iloc[0]
+
+    def _f(x):
+        try:
+            return float(x)
+        except Exception:
+            return float("nan")
+    d = {"회피": (_f(t0["하락 회피율"]) - _f(r0["하락 회피율"])) * 100.0, "참여": (_f(t0["상승 참여율"]) - _f(r0["상승 참여율"])) * 100.0,
+         "칼마": _f(t0.get("칼마")) - _f(r0.get("칼마")), "MDD": (_f(t0.get("MDD")) - _f(r0.get("MDD"))) * 100.0, "배수": _f(t0.get("배수")) - _f(r0.get("배수")),
+         "월 최악": (_f(t0.get("월 최악 배수")) - _f(r0.get("월 최악 배수"))) * 100.0, "분기 최악": (_f(t0.get("분기 최악 배수")) - _f(r0.get("분기 최악 배수"))) * 100.0,
+         "월 손실": _f(t0.get("월 손실%")) - _f(r0.get("월 손실%")), "분기 손실": _f(t0.get("분기 손실%")) - _f(r0.get("분기 손실%"))}
+    need = float(getattr(cfg, "LIVE_CASH_BUFFER_MIN_AVOID", 3.0))
+    fails = []
+    if not (d["회피"] >= need - 1e-9):
+        fails.append(f"회피 +{need:g}%p 미만")
+    for k in ("MDD", "월 최악"):
+        if d[k] == d[k] and d[k] < -1e-9:
+            fails.append(k)
+    for k in ("월 손실", "분기 손실"):
+        if d[k] == d[k] and d[k] > 1e-9:
+            fails.append(k + " 증가")
+    return {"deltas": d, "fails": fails, "keep": not fails, "buffer": res.get("cash_buffer"), "label": nl,
+            "live": (_f(t0["하락 회피율"]), _f(t0["상승 참여율"]), _f(t0.get("MDD")), _f(t0.get("배수"))),
+            "prev": (_f(r0["하락 회피율"]), _f(r0["상승 참여율"]), _f(r0.get("MDD")), _f(r0.get("배수")))}
+
+
+def cash_buffer_verdict_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """[v0.19.0 R110] 00 줄 — 현금 완충 사후 판정."""
+    v = cash_buffer_verdict(res)
+    if not v:
+        return None
+    d, L_, P_ = v["deltas"], v["live"], v["prev"]
+    body = (f"라이브(현금 완충 ×{v.get('buffer')}) {L_[0]:.1%}/{L_[1]:.1%} · MDD {L_[2] * 100:.2f}% · 배수 {L_[3]:.2f} vs 완충 없음 {P_[0]:.1%}/{P_[1]:.1%} · "
+            f"MDD {P_[2] * 100:.2f}% · 배수 {P_[3]:.2f} | Δ회피 {d['회피']:+.2f}%p · Δ참여 {d['참여']:+.2f}%p(수용) · ΔMDD {d['MDD']:+.2f}%p · "
+            f"Δ월 최악 {d['월 최악']:+.2f}%p · Δ분기 최악 {d['분기 최악']:+.2f}%p · Δ월 손실 {d['월 손실']:+.1f}%p · Δ분기 손실 {d['분기 손실']:+.1f}%p · "
+            f"Δ칼마 {d['칼마']:+.3f} · Δ배수 {d['배수']:+.2f}"
+            + (" → ✓ 유지(사전등록 통과)" if v["keep"] else f" → ✗ 되돌림 권고({', '.join(v['fails'])}) — k_overrides={{'LIVE_CASH_BUFFER': 1.0}}")
+            + ". 근거(R110): 위험 종목 골라 빼기·저위험 종목으로 옮기기·위험 예측 현금 조절은 모두 같은 노출의 현금 완충보다 나빴다. 연구·교육용, 투자 자문 아님.")
+    return ("★★★ R110 현금 완충 사후 판정(사전등록 · 사용자 선택 '종목 비중 ×0.8') — 회피를 크게 올리는 설계", body)
 
 
 def build_prob_sheet(res: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
@@ -6154,13 +6351,23 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     _live_dip = bool(getattr(cfg, "LIVE_DIP_RULE", False)) and _live_mode0 == "sector_linked" and bool(_dip.get("ok")) \
         and bool(ind_alloc)
     _pos_live = _earn_dip_cut(pos, _dip) if _live_dip else pos
+    # [v0.19.0 R110 ★★] 현금 완충(종목·ETF 몫 × LIVE_CASH_BUFFER · 나머지 현금) — 섹터 모드(sector_linked/sector_prob) 라이브와 그 비교 행에 같게.
+    _cbuf = float(getattr(cfg, "LIVE_CASH_BUFFER", 1.0) or 1.0)
+    _cbuf = min(max(_cbuf, 0.0), 1.0)
+    _sc_kw: Dict[str, Any] = ({"scale": _cbuf} if abs(_cbuf - 1.0) > 1e-12 else {})
+    alloc_nobuf: Optional[Dict[str, Any]] = None           # [v0.19.0 R110] 'R109까지 라이브(현금 완충 없음)' — 사후 판정 기준
     if _live_dip:
         _live_kw = {"prob_score": _dip_score, "prob_select": "tilt",
                     "prob_params": {"lam": float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5))}}
         alloc = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
                                  ind_alloc=ind_alloc, etf_panel=etf_panel,
-                                 link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw)
-        alloc["live_rule"] = "R109 섹터연동 + 물타기 기울임 + 어닝 하락 손절"
+                                 link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw)
+        alloc["live_rule"] = ("R109 섹터연동 + 물타기 기울임 + 어닝 하락 손절"
+                              + (f" + R110 현금 완충 ×{_cbuf:g}" if _sc_kw else ""))
+        if _sc_kw:
+            alloc_nobuf = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
+                                           ind_alloc=ind_alloc, etf_panel=etf_panel,
+                                           link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw)
         log("ALLOC", kv(event="r109_live_dip", lam=float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5)),
                         earn_cut_cells=int(_dip["earn"].values.sum()), fav_cells=int(_dip["fav"].values.sum()),
                         stock_share=round(float(alloc["target_w"].sum(axis=1).mean()), 4),
@@ -6169,8 +6376,17 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         if bool(getattr(cfg, "LIVE_DIP_RULE", False)) and _live_mode0 == "sector_linked":
             log("ALLOC", kv(event="r109_live_dip_unavailable", dip_ok=bool(_dip.get("ok")), ind_alloc=bool(ind_alloc),
                             action="섹터 안 균등(v0.17.0 라이브)으로 계속 — 00 줄에 표시"), level="warning")
+        _sec_mode0 = _live_mode0 in ("sector_linked", "sector_prob")
         alloc = build_allocation(pos, panel, cfg, parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc,
-                                 etf_panel=etf_panel, **_live_kw)
+                                 etf_panel=etf_panel, **_live_kw, **(_sc_kw if _sec_mode0 else {}))
+        if _sc_kw and _sec_mode0 and str(alloc.get("mode")) in ("sector_linked", "sector_prob"):
+            alloc["live_rule"] = f"섹터연동 + R110 현금 완충 ×{_cbuf:g}"
+            alloc_nobuf = build_allocation(pos, panel, cfg, parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc,
+                                           etf_panel=etf_panel, **_live_kw)
+    if alloc_nobuf is not None:
+        log("ALLOC", kv(event="r110_cash_buffer", buffer=_cbuf, total_live=round(float(alloc["total_w"].mean()), 4),
+                        total_nobuf=round(float(alloc_nobuf["total_w"].mean()), 4),
+                        note="★ 라이브(사용자 선택 R110) — 되돌리기 k_overrides={'LIVE_CASH_BUFFER': 1.0}"))
     alloc_rows: List[dict] = []
     _grid_rets: Dict[str, pd.Series] = {}          # [v0.9.0] 00U 비교 행용 — 격자 행 라벨 → 포트 일간수익
 
@@ -6237,10 +6453,12 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     _sa = alloc                                   # 라이브와 같은 계산 — 다시 돌리지 않는다
                 else:
                     _sa = build_allocation(pos, panel, cfg, mode="sector_linked", parent_w=parent_w, parent_of=parent_of,
-                                           ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(_cap))
+                                           ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(_cap), **_sc_kw)
                 _lbl_use = str(_lbl)
                 if _si == 0 and _live_dip:
                     _lbl_use = "비교: R108까지 라이브 — " + str(_lbl).replace("★ ", "", 1).replace("(v0.9.0 라이브)", "(v0.9.0~v0.17.0 라이브)")
+                    if _sc_kw:
+                        _lbl_use += f" · 현금 완충 ×{_cbuf:g} 같게"
                     _prev_live_lbl = _lbl_use
                 _sr = _alloc_row(_lbl_use, _sa, float(_cap), None)
                 if _sr:
@@ -6256,15 +6474,51 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     if _live_dip and str(alloc.get("mode")) == "sector_prob":
         try:
             _lbl_dp = (f"★ 섹터연동 + 물타기 기울임 λ{float(getattr(cfg, 'LIVE_DIP_LAMBDA', 0.5)):g} + 어닝 하락 손절 21일"
-                       f"(v0.18.0 R109 라이브 · 사용자 선택)")
+                       + (f" + 현금 완충 ×{_cbuf:g}(v0.19.0 R110 라이브 · 사용자 선택)" if _sc_kw else "(v0.18.0 R109 라이브 · 사용자 선택)"))
             _dpr = _alloc_row(_lbl_dp, alloc, float(alloc.get("cap_used", 0.05) or 0.05), None)
             if _dpr:
-                _dpr.update({"연동출처": "S★ 섹터비중 · 섹터 안 물타기 유리 기울임 · 어닝 하락 → 섹터 ETF"})
+                _dpr.update({"연동출처": "S★ 섹터비중 · 섹터 안 물타기 유리 기울임 · 어닝 하락 → 섹터 ETF"
+                                         + (f" · 종목·ETF × {_cbuf:g}(나머지 현금)" if _sc_kw else "")})
                 alloc_rows.append(_dpr)
                 _grid_rets[_lbl_dp] = alloc.get("port_ret")
                 _live_alloc_label = _lbl_dp
         except Exception as e:
             log("ALLOC", kv(event="alloc_live_dip_row_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+    # [v0.19.0 R110] 사후 판정 기준 행 — 현금 완충 없는 라이브(R109까지)
+    _nobuf_lbl: Optional[str] = None
+    if alloc_nobuf is not None:
+        try:
+            _nobuf_lbl = f"비교: R109까지 라이브(현금 완충 없음 · {alloc_nobuf.get('mode', '-')})"
+            _nbr = _alloc_row(_nobuf_lbl, alloc_nobuf, float(alloc_nobuf.get("cap_used", 0.05) or 0.05), None)
+            if _nbr:
+                _nbr.update({"연동출처": "R109 라이브 규칙 그대로 · 현금 완충 없음"})
+                alloc_rows.append(_nbr)
+                _grid_rets[_nobuf_lbl] = alloc_nobuf.get("port_ret")
+        except Exception as e:
+            log("ALLOC", kv(event="alloc_nobuf_row_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+    # [v0.19.0 R110 측정 전용] 종목 위험 표지 · 사용자 규칙 '위험 종목 → 현금' 행(라이브와 같은 규칙·현금 완충 위에 얹어 비교)
+    _risk_flags: Dict[str, Any] = {"ok": False}
+    try:
+        _risk_flags = build_stock_risk_flags(panel)
+    except Exception as e:
+        _risk_flags = {"ok": False, "note": f"{type(e).__name__}: {str(e)[:120]}"}
+        log("RISK", kv(event="risk_flags_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    if bool(getattr(cfg, "R110_CASH_RULE_ROWS", True)) and _risk_flags.get("ok") and ind_alloc \
+            and str(alloc.get("mode")) in ("sector_linked", "sector_prob"):
+        _pc = float(getattr(cfg, "R110_CRASH_PROB_CUT", 25.0))
+        for _rl, _rm in ((f"R110 장기 우하향 → 현금(측정 · 라이브 규칙·현금 완충 위)", _risk_flags["D"]),
+                         (f"R110 장기 우하향 또는 매수 뒤 급락 확률 ≥ {_pc:g}% → 현금(측정)", _risk_flags["D"] | (_risk_flags["P"] >= _pc).fillna(False))):
+            try:
+                _ra = build_allocation(_pos_live, panel, cfg, mode=str(alloc.get("mode")), parent_w=parent_w, parent_of=parent_of,
+                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05) or 0.05),
+                                       cash_mask=_rm, **_live_kw, **_sc_kw)
+                _rr0 = _alloc_row(_rl, _ra, float(alloc.get("cap_used", 0.05) or 0.05), None)
+                if _rr0:
+                    _rr0.update({"연동출처": f"위험 종목 몫 → 현금 · 평균 {((_ra.get('tilt') or {}).get('cash_mask_mean'))}"})
+                    alloc_rows.append(_rr0)
+                    _grid_rets[_rl] = _ra.get("port_ret")
+            except Exception as e:
+                log("ALLOC", kv(event="r110_cash_rule_row_failed", row=_rl[:40], err=type(e).__name__, msg=str(e)[:120]), level="warning")
     # [v0.11.0 R99 N3] 라이브가 sector_prob(사용자 overrides)면 라이브 행을 따로 싣고 노란색으로 칠한다.
     if _live_mode == "sector_prob" and str(alloc.get("mode")) == "sector_prob":
         try:
@@ -6301,7 +6555,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                         "ind2sec": dict(ind_alloc.get("ind2sec") or {}), "rf_daily": ind_alloc.get("rf_daily"),
                         "label": f"S 비교 행 {_vn}"}
                 _va = build_allocation(_pos_live, panel, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
-                                       ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw)
+                                       ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw, **_sc_kw)
                 _vl = f"비교: 섹터연동 × S '{_vn}' 섹터 비중(측정 전용)"
                 _vr = _alloc_row(_vl, _va, float(alloc.get("cap_used", 0.05)), None)
                 if _vr:
@@ -6321,7 +6575,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             _q98 = {t: v for t, v in _pos_live.items() if t not in _add98}      # [v0.18.0 R109] 라이브와 같은 손절 규칙
             if _p98:
                 _ua = build_allocation(_q98, _p98, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
-                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw)
+                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw, **_sc_kw)
                 _ul = "비교: 섹터연동 · v0.9.2 유니버스(R98 추가 전 · 측정 전용)"
                 _ur98 = _alloc_row(_ul, _ua, float(alloc.get("cap_used", 0.05)), None)
                 if _ur98:
@@ -6368,7 +6622,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             try:
                 _pa = build_allocation(_pos_v, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
                                        ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=_pv_cap,
-                                       prob_score=_pscore, prob_select=_pvsel, prob_params=_pvprm)
+                                       prob_score=_pscore, prob_select=_pvsel, prob_params=_pvprm, **_sc_kw)
                 _prow = _alloc_row(_pvl, _pa, _pv_cap, None)
                 if not _prow:
                     continue
@@ -6382,7 +6636,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                         _cs = _cs.reindex(columns=_pv_cols)
                         _ca = build_allocation(_pos_v, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
                                                ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=_pv_cap,
-                                               prob_score=_cs, prob_select=_pvsel, prob_params=_pvprm)
+                                               prob_score=_cs, prob_select=_pvsel, prob_params=_pvprm, **_sc_kw)
                         _cr = _alloc_row(f"대조군{_k}", _ca, _pv_cap, None)
                         if _cr and _cr.get("칼마(CAGR/MDD)") is not None:
                             _cal.append(float(_cr["칼마(CAGR/MDD)"]))
@@ -6513,14 +6767,14 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _live_u = (f"★ K★ 라이브({alloc.get('live_rule')} · {(alloc.get('exec') or {}).get('fill', '-')})" if alloc.get("live_rule")
                            else f"★ K★ 라이브({alloc.get('mode', '-')} · {(alloc.get('exec') or {}).get('fill', '-')})")
                 _rets: Dict[str, pd.Series] = {_live_u: _pr0}
-                _cmp_lbls = ([_prev_live_lbl] if _prev_live_lbl else []) + \
+                _cmp_lbls = ([_nobuf_lbl] if _nobuf_lbl else []) + ([_prev_live_lbl] if _prev_live_lbl else []) + \
                             [str(x[0]) for x in tuple(getattr(cfg, "PROB_TILT_GRID", ()) or ())[:1]] + \
                             ["고정슬리브 1/N(v0.6.0 라이브)"] + \
                             [str(x[0]) for x in tuple(getattr(cfg, "SECTOR_LINK_GRID", ()) or ())] + \
                             [k for k in _grid_rets if str(k).startswith("참고: 라이브 배분을 v0.8.1 체결")] + \
                             [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 × S")] + \
                             [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 · v0.9.2 유니버스")] + \
-                            [k for k in _grid_rets if str(k).startswith(("R99 확률 배분", "R99 N6-b", "R100 ", "R105 "))]   # [v0.11.0 R99 N3·N6-b · v0.12.0 R100 · v0.15.0 R105]
+                            [k for k in _grid_rets if str(k).startswith(("R99 확률 배분", "R99 N6-b", "R100 ", "R105 ", "R110 "))]   # [v0.11.0 R99 N3·N6-b · v0.12.0 R100 · v0.15.0 R105 · v0.19.0 R110]
                 for _lb in _cmp_lbls:
                     _rr = _grid_rets.get(_lb)
                     if _rr is not None and _lb != _live_alloc_label:
@@ -6553,6 +6807,9 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                     if _prev_live_lbl and _grid_rets.get(_prev_live_lbl) is not None:          # [v0.18.0 R109] 사후 판정 기준 행
                         user_rel_info["prev_live_label"] = _prev_live_lbl
                         user_rel_info["halves_prev"] = _halves_u(_grid_rets[_prev_live_lbl])
+                    if _nobuf_lbl and _grid_rets.get(_nobuf_lbl) is not None:          # [v0.19.0 R110] 현금 완충 사후 판정 기준 행
+                        user_rel_info["nobuf_label"] = _nobuf_lbl
+                        user_rel_info["halves_nobuf"] = _halves_u(_grid_rets[_nobuf_lbl])
                     for _pvl2 in list(prob_variants):
                         _rr2 = _grid_rets.get(_pvl2)
                         if _rr2 is not None:
@@ -6686,6 +6943,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             "state_board": _state_board,                                                            # [v0.14.0 R104]
             "dip_states": _dip,                                                                     # [v0.15.0 R105] 00W
             "live_dip": bool(_live_dip), "prev_live_label": _prev_live_lbl,                          # [v0.18.0 R109] 라이브 물타기·어닝 손절
+            "cash_buffer": _cbuf if _sc_kw else 1.0, "nobuf_label": _nobuf_lbl, "risk_flags": _risk_flags,   # [v0.19.0 R110]
             "alloc_grid_rets": {k: v for k, v in _grid_rets.items() if str(k).startswith("R105 ")},  # [v0.15.0 R105] 00P 비교 행
             "stock_prob": stock_prob, "prob_variants": prob_variants, "sector_of": sector_of,      # [v0.11.0 R99 N3]
             "k_freshness": _k_fresh, "selection_audit": _sel_audit,                                # [v0.11.0 R99 N2·N6-a]
@@ -7264,6 +7522,27 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         except Exception as _ete:
             _add.append(("⚠ R104 종목 상태판 줄", f"산출 실패 — {type(_ete).__name__}: {str(_ete)[:120]}"))
             log("REPORT", kv(event="state_board_sheet_failed", err=type(_ete).__name__, msg=str(_ete)[:160]), level="warning")
+        try:                                                     # [v0.19.0 R110] 날짜별 상태 판정 · 종목 위험(매수 뒤 급락 확률)
+            _pnl = res.get("panel") or {}
+            _lvk = {t: pd.to_numeric(_pnl[t].get("종가"), errors="coerce") for t in sorted(_pnl) if "종가" in _pnl[t].columns}
+            _rtk = stock_risk_today(res.get("risk_flags") or {}, res.get("names"))
+            _lut = pd.DataFrame([{"블록": "E. 매수 뒤 급락 확률표(S&P 500 그 시점 구성 2010~2026 · r110/risklut.py)",
+                                  "항목": f"{'장기 우하향' if k[0] else '장기 우하향 아님'} · 변동성 {k[1]} · {'급락 잦음(1년 3회+)' if k[2] else '급락 잦음 아님'}",
+                                  "값": f"21일 −10% {v[0]:.1f}% · 63일 −15% {v[1]:.1f}% · 126일 뒤 −15% 이하 {v[2]:.1f}% · 63일 섹터 대비 {v[3]:+.2f}%"}
+                                 for k, v in RISK_LUT_R110.items()])
+            _evk = pd.DataFrame([{"블록": "F. 종목 위험 규칙 시험(R110 · S&P 500 · K★ 하네스)", "항목": a, "값": b, "판정": c} for a, b, c in K_RISK_EVIDENCE_R110])
+            _nhi = int((_rtk.get("위험 등급") == "높음").sum()) if len(_rtk) else 0
+            _ndn = int((_rtk.get("장기 우하향") == "예").sum()) if len(_rtk) else 0
+            _avoid = ", ".join(_rtk[_rtk["사용자 규칙 판정(R110 · 참고)"].astype(str).str.startswith("피하기")]["항목"].tolist()[:10]) if len(_rtk) else ""
+            _xv, _lv10 = build_state_verify_sheets(_lvk, "주식", names=res.get("names"), extra_today=_rtk, extra_blocks=[_lut, _evk],
+                                                   extra_line=(f"매수 뒤 급락 위험 높음(21일 −10% ≥ 20%) {_nhi}종목 · 장기 우하향 {_ndn}종목"
+                                                               + (f"(피하기 권고: {_avoid})" if _avoid else "")
+                                                               + f" · 라이브 현금 완충 ×{res.get('cash_buffer', 1.0)}"))
+            sheets.update(_xv)
+            _add.extend(_lv10)
+        except Exception as _e10:
+            _add.append(("⚠ R110 날짜별 상태 판정 줄", f"산출 실패 — {type(_e10).__name__}: {str(_e10)[:120]}"))
+            log("REPORT", kv(event="state_verify_failed", layer="K", err=type(_e10).__name__, msg=str(_e10)[:160]), level="warning")
         _tw_k = (res.get("alloc") or {}).get("target_w")
         _held_k = (_tw_k.iloc[-2] if isinstance(_tw_k, pd.DataFrame) and len(_tw_k) >= 2 else None)
         try:                                                     # [v0.15.0 R105] 물타기·손절 가이드
@@ -7280,7 +7559,10 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             _ep_k = res.get("etf_panel") or {}
             if isinstance(_pr_k, pd.Series) and "SPY" in _ep_k:
                 _spy_k = pd.to_numeric(_ep_k["SPY"]["일간수익"], errors="coerce").reindex(_pr_k.index).fillna(0.0)
-                _r_k = {"★ K★ 라이브(sector_linked)": _pr_k}
+                _lr_k = str((res.get("alloc") or {}).get("live_rule") or "")
+                _sh_k = (("물타기·어닝 손절" if "R109" in _lr_k else "")
+                         + (f" + 현금 완충 ×{res.get('cash_buffer')}" if float(res.get("cash_buffer", 1.0) or 1.0) < 1.0 else "")).strip(" +")
+                _r_k = {f"★ K★ 라이브({_sh_k or (res.get('alloc') or {}).get('mode', '-')})": _pr_k}
                 _pvk = res.get("prob_variants") or {}
                 _grs = (res.get("alloc_grid_rets") or {})
                 for _nm in [k for k in _pvk if str(k).startswith("R105 ")]:
@@ -7356,7 +7638,10 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                         "선택 정보가 없거나 대조군을 못 넘었다) · ⚠ 노출 ≈ S★(종전 1/N 규칙보다 +0.05) · 보유에 섹터 ETF 포함. "
                         "되돌리기: k_overrides={'STOCK_ALLOC_MODE': 'prob_tilt'}")
         elif _md == "sector_prob" and _al.get("live_rule"):
-            _mline = (f"★ mode=sector_prob — {_al.get('live_rule')}(v0.18.0 R109 · 사용자 선택) · 섹터 비중은 S★ 그대로 · 섹터 안: "
+            _cb_m = float(res.get("cash_buffer", 1.0) or 1.0)
+            _mline = (f"★ mode=sector_prob — {_al.get('live_rule')}(R109 물타기·어닝 손절 · "
+                      + (f"R110 현금 완충 ×{_cb_m:g}: 아래 섹터 합 × {_cb_m:g}만 담고 나머지 현금 · 되돌리기 k_overrides={{'LIVE_CASH_BUFFER': 1.0}} · " if _cb_m < 1.0 else "")
+                      + "사용자 선택) · 섹터 비중은 S★ 그대로 · 섹터 안: "
                       f"어닝 발표 4일 안 하락 종목은 21거래일 부모 섹터 ETF(위험 구간 회피) · 200일선 위 어닝 무관 하락 종목은 순위 기울임 "
                       f"λ{float(getattr(cfg, 'LIVE_DIP_LAMBDA', 0.5)):g}(종목 몫 보존) · 종목 상한 {float(_td.get('cap', 0) or 0):.1%} · 섹터 합(= S★) 평균 "
                       f"{_td.get('sector_total_mean')} = 종목 {_td.get('stock_share_mean')} + 부모 섹터 ETF {_td.get('etf_share_mean')} · "
@@ -7382,6 +7667,12 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _add.append(("★ 배분 방식(v0.9.0 R94 · 사용자 지시 '주식층도 같이 개선' — 신뢰도 = 하락 회피·상승 참여)",
                      _mline + ("" if _md in ("sector_linked", "sector_prob") else
                                " ★ 총노출(=방어)은 v0.6.0 1/N 규칙과 날마다 동일하다 — 바뀐 것은 그 노출의 종목 간 분배뿐이다.")))
+        try:                                                                   # [v0.19.0 R110] 현금 완충 사후 판정
+            _cbv = cash_buffer_verdict_line(res)
+            if _cbv:
+                _add.append(_cbv)
+        except Exception as e:
+            log("REPORT", kv(event="r110_verdict_line_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
         try:                                                                   # [v0.18.0 R109] 라이브 사후 판정
             _ldv = live_dip_verdict_line(res)
             if _ldv:
@@ -7480,7 +7771,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
     _front = [n for n in ("00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
-                          "00P_기간별수익배수", "00L_손실기간분석", "00Q_자산별기간배수", "00T_종목상태판", "00W_물타기손절",
+                          "00P_기간별수익배수", "00L_손실기간분석", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
                           "00N_종목선별근거", "01Z_주식일별예측",
                           "00_실행요약") if n in sheets]
     sheets = {**{n: sheets[n] for n in _front},
@@ -7995,6 +8286,206 @@ LOSS_RESEARCH_R108: Tuple[Tuple[str, str, str], ...] = (
      "27년 XLK 6.10배(MDD −48%) vs 동적 1.57~4.93배(−33~−42%)",
      "손실 원인 — XLK 고정의 위험은 기술주 장기 붕괴(2000년형): 그때는 자기 국면 하락 이탈로 일부만 방어, 나머지 두 구간은 XLK 고정이 우위"),
 )
+
+
+# =============================================================================
+# [R110 · 2026-09-28 사용자 지시] 날짜별 상태 판정 + 검증 — 네 층 공통(원본 S · M·K 사본 글자 그대로 · I는 S 호출)
+# =============================================================================
+#   사용자 지시: "종목 상태에 따라 날짜별로 우상향 중 큰 하락, 기술적 하락 및 상승, 상승 및 하락 추세 지속 가능 여부 등을 정확하게 파악할 수 있어야 해
+#     국면, 섹터, 산업, 주식 모두 지표 사용 및 검증 통해 가능하도록 개선해".
+#   판정(인과 · t일 종가까지): 장기 추세 = 200일선과 그 21일 기울기 · 단기 위치 = 21일 고점 대비 낙폭을 자기 변동성 단위로(z = dd21 / (σ63·√21)) · 10일 z · 50일선.
+#   검증(r110/stateval.py · 긴 역사): 추세 지속은 잘 맞는다(상승추세 지속 → 63일 뒤에도 장기 상승 77~87%) · 상승추세 중 기술적 조정 뒤 수익↑(SPY 21일 +1.94% ·
+#     t 1.99 · 섹터 +1.66% · t 2.26) · 하락추세 중 기술적 반등은 같은 날 다른 자산보다 약하다(종목 −0.48%p · t −2.30 · 섹터 −0.38%p · t −2.29) — 따라 사지 않는다.
+R110_STATES: Tuple[str, ...] = ("상승추세 지속", "상승추세 중 기술적 조정", "상승추세 중 큰 하락", "하락추세 중 기술적 반등", "하락추세 지속",
+                                "상승 전환 시도", "하락 전환 경고")
+R110_SHORT: Dict[str, str] = {"상승추세 지속": "상승지속", "상승추세 중 기술적 조정": "상승중조정", "상승추세 중 큰 하락": "상승중큰하락",
+                              "하락추세 중 기술적 반등": "하락중반등", "하락추세 지속": "하락지속", "상승 전환 시도": "상승전환시도",
+                              "하락 전환 경고": "하락전환경고"}
+R110_DEF: Tuple[Tuple[str, str], ...] = (
+    ("장기 추세", "상승 = 종가 > 200일선 & 200일선 21일 기울기 > 0 · 하락 = 종가 < 200일선 & 기울기 < 0 · 그 밖 = 전환"),
+    ("z(21일 고점 대비 · σ 단위)", "z = (종가 / 21일 최고 − 1) / (σ63 × √21) — 자산마다 흔들림 폭이 달라 σ로 맞춘다(SPY −4%와 종목 −12%가 같은 z일 수 있다)"),
+    ("상승추세 지속", "장기 상승 & z > −1"),
+    ("상승추세 중 기술적 조정", "장기 상승 & −2 < z ≤ −1 (흔한 눌림)"),
+    ("상승추세 중 큰 하락", "장기 상승 & z ≤ −2 (우상향 중 큰 하락)"),
+    ("하락추세 중 기술적 반등", "장기 하락 & (종가 ≥ 50일선 또는 10일 수익 ≥ +1σ√10) (데드캣 반등 후보)"),
+    ("하락추세 지속", "장기 하락 & 반등 아님"),
+    ("상승 전환 시도", "장기 전환 & 종가 > 200일선"),
+    ("하락 전환 경고", "장기 전환 & 종가 ≤ 200일선"))
+R110_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
+    ("M · SPY 1999~2026(r110/stateval.py)", "상승추세 지속 → 63일 뒤 장기 상승 86.8% · 기술적 조정 → 21일 +1.94%(상승 74% · t 1.99 · 17/25년) · "
+     "하락추세 중 반등 → 21일 +0.04%(t −2.73) · 하락추세 지속 → 21일 −0.02%(상승 51% · 급락 ×1.53) · 63일 뒤 장기 하락 유지 73.6%",
+     "추세 지속 근거 강함 · 조정 매수 근거 있음 · 하락 중 반등·하락 지속 = 불리"),
+    ("S · 섹터 SPDR 1999~2026", "상승추세 지속 → 63일 뒤 상승 81.2% · 기술적 조정 21일 +1.66%(t 2.26 · 16/27년) · 하락 중 반등 같은 날 대비 −0.38%p(t −2.29) · "
+     "하락추세 지속 → 하락 유지 60.9% · 급락 ×1.51", "추세 지속 근거 강함 · 하락 중 반등은 피한다"),
+    ("I · 산업 ETF 29개 2009~2026", "상승추세 지속 → 상승 80.0% · 하락 중 반등 같은 날 대비 −0.39%p(t −1.28) · 상승 전환 시도 −0.45%p(t −2.44 · 5/18년) · "
+     "상승추세 중 큰 하락 급락 ×2.31", "추세 지속 근거 강함 · 전환 시도는 아직 약하다"),
+    ("K · S&P 500 그 시점 구성 2010~2026", "상승추세 지속 → 상승 77.0% · 하락추세 지속 → 하락 유지 61.5% · 하락 중 반등 같은 날 대비 −0.48%p(t −2.30 · 14/17년 약함) · "
+     "상승추세 중 큰 하락 21일 급락 7.9%(×1.73) · 기술적 조정 급락 ×1.25", "추세 지속 근거 강함 · 하락 중 반등 매수 금지 근거 있음"))
+
+
+def r110_state_frames(C: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    """[R110] 가격 수준(날짜 × 자산) → 특성 · 상태 · 앞으로의 결과(검증용 · 결과는 과거 구간에서만 확정)."""
+    C = pd.DataFrame(C).astype(float).sort_index()
+    R = C.pct_change(fill_method=None)
+    ma50 = C.rolling(50, min_periods=40).mean()
+    ma200 = C.rolling(200, min_periods=150).mean()
+    slope = ma200 / ma200.shift(21) - 1.0
+    s63 = R.rolling(63, min_periods=45).std()
+    dd21 = C / C.rolling(21, min_periods=15).max() - 1.0
+    z = dd21 / (s63 * np.sqrt(21.0))
+    z10 = (C / C.shift(10) - 1.0) / (s63 * np.sqrt(10.0))
+    d = C.diff()
+    up_ = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    dn_ = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rsi = 100 - 100 / (1 + up_ / dn_.replace(0, np.nan))
+    up = (C > ma200) & (slope > 0)
+    dn = (C < ma200) & (slope < 0)
+    ok = C.notna() & ma200.notna() & slope.notna() & z.notna()
+    conds = [up & (z > -1), up & (z <= -1) & (z > -2), up & (z <= -2), dn & ((C >= ma50) | (z10 >= 1)), dn,
+             ~up & ~dn & (C > ma200), ~up & ~dn]
+    st = pd.DataFrame(np.full(C.shape, None, dtype=object), index=C.index, columns=C.columns)
+    done = pd.DataFrame(False, index=C.index, columns=C.columns)
+    for nm, cd in zip(R110_STATES, conds):
+        m = cd.fillna(False) & ok & ~done
+        st = st.mask(m, nm)
+        done |= m
+    mn21 = C[::-1].rolling(21, min_periods=15).min()[::-1].shift(-1)
+    live21 = C.shift(-21).notna()
+    live63 = C.shift(-63).notna()
+    return {"C": C, "state": st, "z": z, "z10": z10, "rsi": rsi, "ma200": ma200, "slope": slope, "s63": s63, "up": up, "dn": dn,
+            "f21": (C.shift(-21) / C - 1.0), "f63": (C.shift(-63) / C - 1.0),
+            "crash21": ((mn21 / C - 1.0) <= -(2.0 * s63 * np.sqrt(21.0))).astype(float).where(live21),
+            "up63": up.shift(-63).astype(float).where(live63), "dn63": dn.shift(-63).astype(float).where(live63)}
+
+
+def r110_validate(fr: Dict[str, pd.DataFrame], member: Optional[pd.DataFrame] = None, since: Optional[str] = None) -> pd.DataFrame:
+    """[R110] 상태별 결과 표(이 층 자기 이력) — 21일 평균·상승 확률 · 전체 평균 대비(월 단위 t · 해마다 부호) · 여러 자산이면 같은 날 대비 · 21일 급락(−2σ) ·
+    63일 뒤 장기 추세 유지."""
+    S_ = fr["state"]
+    if member is not None:
+        S_ = S_.where(pd.DataFrame(member).reindex(index=S_.index, columns=S_.columns).fillna(False).astype(bool))
+    if since is not None:
+        S_ = S_[S_.index >= pd.Timestamp(since)]
+    idx = S_.index
+    f21 = fr["f21"].reindex(idx)
+    val = S_.notna() & f21.notna()
+    if not bool(val.values.any()):
+        return pd.DataFrame()
+    base21 = float(np.nanmean(f21.where(val).values))
+    basec = float(np.nanmean(fr["crash21"].reindex(idx).where(val).values))
+    multi = S_.shape[1] > 1
+
+    def _t(s):
+        s = s.dropna()
+        return round(float(s.mean() / (s.std(ddof=1) / np.sqrt(len(s)))), 2) if len(s) > 5 and float(s.std(ddof=1)) > 0 else np.nan
+    rows = []
+    for nm in R110_STATES:
+        m = (S_ == nm) & val
+        n = int(m.values.sum())
+        if n < 30:
+            continue
+        x = f21.where(m)
+        rec = {"상태": nm, "표본(자산·일)": n, "비중%": round(n / float(val.values.sum()) * 100, 1),
+               "21일 평균%": round(float(np.nanmean(x.values)) * 100, 2),
+               "21일 상승 확률%": round(float(np.nanmean((x > 0).astype(float).where(x.notna()).values)) * 100, 1)}
+        dts = (x - base21).mean(axis=1).dropna()
+        rec["전체 평균 대비%p"] = round((rec["21일 평균%"] / 100 - base21) * 100, 2)
+        rec["t(월 · 전체 대비)"] = _t(dts.groupby(dts.index.to_period("M")).mean())
+        yy = dts.groupby(dts.index.year).mean()
+        rec["해 일관성(+)"] = f"{int((yy > 0).sum())}/{len(yy)}"
+        if multi:
+            dm = (x.mean(axis=1) - f21.where(val).mean(axis=1)).dropna()
+            rec["같은 날 대비%p"] = round(float(dm.mean()) * 100, 2)
+            rec["t(월 · 같은 날)"] = _t(dm.groupby(dm.index.to_period("M")).mean())
+        c = fr["crash21"].reindex(idx).where(m)
+        rec["21일 급락(−2σ) 확률%"] = round(float(np.nanmean(c.values)) * 100, 1)
+        rec["급락 배율(평균 대비)"] = round(float(np.nanmean(c.values)) / basec, 2) if basec else np.nan
+        rec["63일 평균%"] = round(float(np.nanmean(fr["f63"].reindex(idx).where(m).values)) * 100, 2)
+        rec["63일 뒤 장기 상승%"] = round(float(np.nanmean(fr["up63"].reindex(idx).where(m).values)) * 100, 1)
+        rec["63일 뒤 장기 하락%"] = round(float(np.nanmean(fr["dn63"].reindex(idx).where(m).values)) * 100, 1)
+        tt = rec.get("t(월 · 같은 날)") if multi else rec.get("t(월 · 전체 대비)")
+        tt = tt if tt == tt else rec.get("t(월 · 전체 대비)")
+        if tt == tt and tt is not None and abs(float(tt)) >= 2.0:
+            rec["수익 판정"] = "유리(근거 있음)" if float(tt) > 0 else "불리(근거 있음)"
+        else:
+            rec["수익 판정"] = "차이 근거 약함"
+        rows.append(rec)
+    T = pd.DataFrame(rows)
+    T.attrs.update({"base21": base21 * 100, "basec": basec * 100, "n": int(val.values.sum())})
+    return T
+
+
+def build_state_verify_sheets(levels: Dict[str, pd.Series], layer: str, names: Optional[Dict[str, str]] = None,
+                              hist_since: str = "2018-01-01", member: Optional[pd.DataFrame] = None,
+                              extra_today: Optional[pd.DataFrame] = None, extra_blocks: Optional[List[pd.DataFrame]] = None,
+                              extra_line: str = "") -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
+    """[R110] 00V_상태판정검증(A 정의 · B 이 층 자기 이력 검증 · C 오늘 자산별 상태 + 그 상태의 과거 통계 · D 긴 역사 근거 · 추가 블록) · 01V_날짜별상태 · 00 줄.
+    측정·표시 전용(라이브 배분 무영향)."""
+    names = dict(names or {})
+    lv = {k: pd.to_numeric(pd.Series(v), errors="coerce") for k, v in (levels or {}).items() if v is not None}
+    lv = {k: v[~v.index.duplicated(keep="last")].sort_index() for k, v in lv.items() if v.notna().sum() >= 260}
+    if not lv:
+        return {}, [(f"★★★ 날짜별 상태 판정(R110 · {layer})", "산출 안 됨 — 가격 이력 부족")]
+    C = pd.DataFrame(lv).sort_index()
+    fr = r110_state_frames(C)
+    V = r110_validate(fr, member=member)
+    parts = [pd.DataFrame([{"블록": "A. 상태 정의(R110 · 인과 · t일 종가까지)", "항목": a, "값": b} for a, b in R110_DEF])]
+    if len(V):
+        parts.append(V.rename(columns={"상태": "항목"}).assign(블록=f"B. 검증 — 이 층 자기 이력({str(C.index[0].date())}~ · 전체 21일 평균 "
+                                                             f"{V.attrs.get('base21', float('nan')):.2f}% · 급락 {V.attrs.get('basec', float('nan')):.1f}%)"))
+    vmap = {r["상태"]: r for _, r in V.iterrows()} if len(V) else {}
+    st, z, rsi, ma200, slope = fr["state"], fr["z"], fr["rsi"], fr["ma200"], fr["slope"]
+    rows = []
+    for t in C.columns:
+        s_ = st[t].dropna()
+        if not len(s_):
+            continue
+        now = str(s_.iloc[-1])
+        dt = s_.index[-1]
+        run = int((s_[::-1] != now).values.argmax()) if bool((s_ != now).any()) else len(s_)
+        vr = vmap.get(now)
+        m2 = ma200[t].get(dt)
+        rec = {"항목": t, "이름": names.get(t, t), "기준일": str(pd.Timestamp(dt).date()), "오늘 상태": now, "상태 지속(거래일)": run,
+               "z(21일 고점 대비 σ)": round(float(z[t].get(dt, np.nan)), 2),
+               "200일선 대비%": (round(float(C[t].get(dt) / m2 - 1) * 100, 1) if m2 == m2 and m2 else None),
+               "200일선 기울기(21일)%": round(float(slope[t].get(dt, np.nan)) * 100, 2), "RSI14": round(float(rsi[t].get(dt, np.nan)), 1)}
+        if vr is not None:
+            rec.update({"이 상태 뒤 21일 상승 확률%": vr.get("21일 상승 확률%"), "이 상태 뒤 21일 평균%": vr.get("21일 평균%"),
+                        "21일 급락(−2σ) 확률%": vr.get("21일 급락(−2σ) 확률%"),
+                        "63일 뒤 추세 유지%": (vr.get("63일 뒤 장기 상승%") if now.startswith(("상승추세", "상승 전환")) else
+                                          (vr.get("63일 뒤 장기 하락%") if now.startswith(("하락추세", "하락 전환")) else None)),
+                        "수익 판정(이 층 검증)": vr.get("수익 판정")})
+        rows.append(rec)
+    Td = pd.DataFrame(rows)
+    if isinstance(extra_today, pd.DataFrame) and len(extra_today) and len(Td):
+        Td = Td.merge(extra_today, on="항목", how="left")
+    if len(Td):
+        parts.append(Td.assign(블록=f"C. 오늘 상태(기준일 {Td['기준일'].max()} · 그 상태의 과거 통계는 B · 측정 · 투자 권유 아님)"))
+    parts.append(pd.DataFrame([{"블록": "D. 긴 역사 근거(R110 · 네 층)", "항목": a, "값": b, "판정": c} for a, b, c in R110_EVIDENCE]))
+    for eb in (extra_blocks or []):
+        if isinstance(eb, pd.DataFrame) and len(eb):
+            parts.append(eb)
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    lead = ["블록", "항목", "값"]
+    df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    H = st[st.index >= pd.Timestamp(hist_since)].copy()
+    H = H.apply(lambda col: col.map(lambda v: R110_SHORT.get(v, "-") if isinstance(v, str) else "-"))
+    H.columns = [f"{c}({names.get(c, c)})" if names.get(c, c) != c else str(c) for c in H.columns]
+    H.insert(0, "날짜", H.index)
+    out = {"00V_상태판정검증": df, "01V_날짜별상태": H.reset_index(drop=True)}
+    cnt = Td["오늘 상태"].value_counts() if len(Td) else pd.Series(dtype=int)
+
+    def _v(nm, col):
+        r = vmap.get(nm)
+        return (f"{r.get(col)}" if r is not None and r.get(col) == r.get(col) else "-")
+    line = (f"오늘({Td['기준일'].max() if len(Td) else '-'}): " + " · ".join(f"{R110_SHORT.get(k, k)} {v}" for k, v in cnt.items())
+            + f" | 이 층 검증: 상승추세 지속 → 63일 뒤 상승 유지 {_v('상승추세 지속', '63일 뒤 장기 상승%')}% · 하락추세 지속 → 하락 유지 "
+            f"{_v('하락추세 지속', '63일 뒤 장기 하락%')}% · 기술적 조정 뒤 21일 {_v('상승추세 중 기술적 조정', '21일 평균%')}%(상승 "
+            f"{_v('상승추세 중 기술적 조정', '21일 상승 확률%')}%) · 하락 중 반등 {_v('하락추세 중 기술적 반등', '수익 판정')}"
+            + (f" | {extra_line}" if extra_line else "") + " — 세부 00V · 날짜별 01V. 연구·교육용, 투자 자문 아님.")
+    if len(Td) and len(Td) <= 14:
+        line = " · ".join(f"{r['항목']} {R110_SHORT.get(r['오늘 상태'], r['오늘 상태'])}" for _, r in Td.iterrows()) + " | " + line
+    return out, [(f"★★★ 날짜별 상태 판정(R110 · {layer} · 우상향 중 큰 하락 · 기술적 조정/반등 · 추세 지속/전환)", line)]
 
 
 def _map_regime(v: Any) -> str:
