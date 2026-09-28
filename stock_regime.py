@@ -1,6 +1,15 @@
 # =============================================================================
 #  stock_regime.py
-#  VERSION: v0.20.0 - 2026-09-28 - [R111 사용자 규칙 배분(측정 행 · 전환 스위치 LIVE_R111_RULE) · 규칙 준수 지표 · 상태 확신도(공통)]
+#  VERSION: v0.21.0 - 2026-09-28 - [R111 ★★ 사용자 규칙 배분 라이브(사용자 선택 "켜서 올려" · 무하락 예외 승인)]
+#    (§1 ★★ 라이브) StockConfig LIVE_R111_RULE = True — 장기 우하향 · 예측 불가능한 급락 잦음(예고 없던 고유 급락 1년 3회+ · 과매도 아님) 종목은 사지 않고
+#         그 몫은 M 풀노출일만 저위험 종목(1/σ² · 상한 10%) · 그 밖 날 현금. 현금 완충 ×0.8 · 물타기 기울임 · 어닝 하락 손절은 그대로.
+#         K 표본(사후 선택 30종목 포함): 회피 75.5 → 78.8 · MDD −9.73 → −9.46% · 월 최악 ↑ · 참여 93.5 → 79.1 · 배수 25.6 → 16.3 · 손실 달 17 → 19(사용자 수용).
+#         편향 없는 K 닮은 유니버스 60개: 칼마 90% 개선 · 손실 달 21 → 18 · MDD −10.7 → −8.4%.
+#    (§2 사후 판정 · 사전등록) 00 'R111 사용자 규칙' 줄 — 라이브 vs '비교: R110 라이브(R111 사용자 규칙 없음)': 장기 우하향·급락 잦음 보유 0% · Δ회피 ≥ +3%p ·
+#         ΔMDD ≥ 0 · Δ월/분기 최악 ≥ 0 → 미달이면 되돌림 권고. 되돌리기 k_overrides={"LIVE_R111_RULE": False}(v0.20.0 라이브와 비트 동일).
+#    (§3 비교 행 정합) R109 사후 판정 기준 행('R108까지 라이브 … · R111 규칙 같게') · R110 완충 없음 행 · S 비교 섹터 비중 행 · v0.9.2 유니버스 행에도 R111 규칙
+#         (물타기·완충·섹터 비중·유니버스 효과만 따로 비교되게). 13 라이브 행 이름 · 연동출처에 R111 몫 표시. 시험 t111/test_r111.py. 연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v0.20.0 - 2026-09-28 -[R111 사용자 규칙 배분(측정 행 · 전환 스위치 LIVE_R111_RULE) · 규칙 준수 지표 · 상태 확신도(공통)]
 #    사용자 지시(2026-09-28): "폴더에 결과 업로드 했는데 내가 말했던 것들이 잘지켜지고 있는지 확인하고 뭐가 문제인지 개선방법을 찾아 그리고 급락하는 경우, 장기적으로
 #      우하향하는 경우를 잘 피했는지, 그런 위험들이 가장 적은 쪽들을 매수했는지, 예측불가능한 급락을 자주 맞으면 그 종목은 과매도 상태가 아닌 이상 매수 대상에서
 #      제외했는지 … 수치로 측정해서 각각 목표치를 정하고 그 목표치가 나올 때까지 … 설계해서 테스트하고 끝나면 알려줘 …".
@@ -685,7 +694,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.20.0"
+VERSION = "v0.21.0"
 VERSION_DATE = "2026-09-27"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1167,9 +1176,11 @@ class StockConfig:
     #     손실 달 21 → 18(85%) · 분기 손실 6.5 → 4(95%) · MDD −10.7 → −8.4%(100%) · 월 최악 ×0.902 → ×0.922(98%) · 회피 +5.2 · 실제 21일 −10% 급락 노출
     #     ÷ 같은 섹터 평균 0.87 · 126일 −15% 0.91 · 참여 66 → 55 · 배수 8.1 → 6.3.
     #   ⚠ K 표본(58종목 중 30개 = 2026 추가 · 사후 선택 → 과거 우하향이 모두 회복)에서는 회피 75.5 → 78.8 · MDD −9.73 → −9.46% · 월 최악 ↑ 이지만
-    #     참여 93.5 → 79.1 · 배수 25.6 → 16.3 · 칼마 4.63 → 3.99 · 손실 달 17 → 19 → 무하락 원칙상 측정 행(13 · 00U) · 라이브 전환 = 사용자 선택.
-    #   켜기: k_overrides={"LIVE_R111_RULE": True}.
-    LIVE_R111_RULE: bool = False
+    #     참여 93.5 → 79.1 · 배수 25.6 → 16.3 · 칼마 4.63 → 3.99 · 손실 달 17 → 19 → v0.20.0은 측정 행(무하락 ✗).
+    #   [v0.21.0 ★★ 라이브 · 사용자 선택(2026-09-28 "켜서 올려") · 무하락 예외 승인] 규칙 준수를 우선 — 참여·배수·칼마·손실 달 하락(K 표본)은 사용자 수용.
+    #   사전등록(다음 Kaggle · 00 'R111 사용자 규칙' 줄): 라이브 vs '비교: R110 라이브(R111 사용자 규칙 없음)' — 장기 우하향·급락 잦음 보유 0% · Δ회피 ≥ +3%p ·
+    #     ΔMDD ≥ 0 · Δ월/분기 최악 ≥ 0 → 하나라도 미달이면 되돌림 권고. 되돌리기: k_overrides={"LIVE_R111_RULE": False}(v0.19.0/v0.20.0 라이브와 비트 동일).
+    LIVE_R111_RULE: bool = True
     R111_RULE_ROWS: bool = True
     R111_SHOCK_MIN: int = 3
     R111_FILL_CAP: float = 0.10
@@ -5464,7 +5475,7 @@ K_R111_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
      "손실 달 22.5 ✗ · 회복 확인 재진입 · 국면 조건부 저위험만: 손실 달 개선 없음 ✗", "M 풀노출일 조건이 가장 낫다(시장 급락 구간엔 현금)"),
     ("K 표본(58종목 · 30개 = 2026 추가 · 사후 선택)", "R111 규칙: 회피 75.5 → 78.8 · MDD −9.73 → −9.46% · 월 최악 ×0.923 → ×0.935 · 분기 최악 ×0.925 → ×0.927 · "
      "참여 93.5 → 79.1 · 배수 25.6 → 16.3 · 칼마 4.63 → 3.99 · 손실 달 17 → 19 · 규칙으로 빠진 종목 이익의 71%가 2026 추가 종목(이미 오른 것을 보고 고름)",
-     "무하락 ✗ → 측정 행 · 라이브 전환은 사용자 선택(LIVE_R111_RULE)"))
+     "무하락 ✗ → v0.21.0 사용자 선택으로 라이브('켜서 올려' · 참여·배수 하락 수용) · 되돌리기 LIVE_R111_RULE=False"))
 
 
 def build_r111_masks(rf: Dict[str, Any], etf_panel: Optional[Dict[str, pd.DataFrame]], shock_min: int = 3) -> Dict[str, Any]:
@@ -6081,6 +6092,9 @@ def r111_rule_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         risk_ok.append("회피 +3%p 미만")
     drops = [k for k in ("참여", "칼마", "배수") if d[k] == d[k] and d[k] < -1e-9] + \
             [k + " 증가" for k in ("월 손실", "분기 손실") if d[k] == d[k] and d[k] > 1e-9]
+    # [v0.21.0] 라이브면 사전등록 판정 — 규칙 준수(보유 0%) + 위험 목표. 참여·배수·칼마·손실 달 하락은 사용자 수용(무하락 예외).
+    reg = list(risk_ok) + [f"{k} 보유 > 0" for k in ("장기 우하향 보유%", "급락 잦음 보유%")
+                           if isinstance(cA.get(k), (int, float)) and cA.get(k) == cA.get(k) and float(cA.get(k)) > 1e-9]
 
     def _c(dct, k, f="{:.1f}"):
         v = dct.get(k)
@@ -6095,7 +6109,8 @@ def r111_rule_line(res: Dict[str, Any]) -> Optional[Tuple[str, str]]:
             f"Δ월 손실 {d['월 손실']:+.1f}%p · Δ분기 손실 {d['분기 손실']:+.1f}%p"
             + (" → 위험 목표 ✓" if not risk_ok else f" → 위험 목표 ✗({', '.join(risk_ok)})")
             + (" · 무하락 ✓" if not drops else f" · 무하락 ✗({', '.join(drops)})")
-            + (" · ★ 라이브(사용자 선택) — 되돌리기 k_overrides={'LIVE_R111_RULE': False}" if live_is_rule else
+            + ((" · ★ 라이브(사용자 선택 · 무하락 예외 승인) — 사전등록 판정 " + ("✓ 유지" if not reg else f"✗ 되돌림 권고({', '.join(reg)})")
+                + " — 되돌리기 k_overrides={'LIVE_R111_RULE': False}") if live_is_rule else
                " · 측정 행 — 라이브 전환은 사용자 선택: k_overrides={'LIVE_R111_RULE': True}")
             + " | 편향 없는 검증(S&P 500 무작위 K 닮은 60개): 칼마 90% 개선 · 손실 달 21 → 18 · 분기 손실 6.5 → 4 · MDD −10.7 → −8.4% · 참여 66 → 55. "
               "K 표본은 2026 추가 30종목(사후 선택) 때문에 빼는 규칙이 불리하게 보인다. 연구·교육용, 투자 자문 아님.")
@@ -6713,13 +6728,17 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                         and str(alloc.get("mode")) == "sector_linked":
                     _sa = alloc                                   # 라이브와 같은 계산 — 다시 돌리지 않는다
                 else:
+                    # [v0.21.0 R111] R109 사후 판정 기준 행(첫 행)은 라이브와 같은 R111 규칙을 얹는다 — 물타기·어닝 손절 효과만 비교되게
                     _sa = build_allocation(pos, panel, cfg, mode="sector_linked", parent_w=parent_w, parent_of=parent_of,
-                                           ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(_cap), **_sc_kw)
+                                           ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(_cap), **_sc_kw,
+                                           **(_r111kw if (_si == 0 and _live_dip and _live111) else {}))
                 _lbl_use = str(_lbl)
                 if _si == 0 and _live_dip:
                     _lbl_use = "비교: R108까지 라이브 — " + str(_lbl).replace("★ ", "", 1).replace("(v0.9.0 라이브)", "(v0.9.0~v0.17.0 라이브)")
                     if _sc_kw:
                         _lbl_use += f" · 현금 완충 ×{_cbuf:g} 같게"
+                    if _live111:
+                        _lbl_use += " · R111 규칙 같게"
                     _prev_live_lbl = _lbl_use
                 _sr = _alloc_row(_lbl_use, _sa, float(_cap), None)
                 if _sr:
@@ -6735,10 +6754,14 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
     if _live_dip and str(alloc.get("mode")) == "sector_prob":
         try:
             _lbl_dp = (f"★ 섹터연동 + 물타기 기울임 λ{float(getattr(cfg, 'LIVE_DIP_LAMBDA', 0.5)):g} + 어닝 하락 손절 21일"
-                       + (f" + 현금 완충 ×{_cbuf:g}(v0.19.0 R110 라이브 · 사용자 선택)" if _sc_kw else "(v0.18.0 R109 라이브 · 사용자 선택)"))
+                       + ((f" + 현금 완충 ×{_cbuf:g} + R111 사용자 규칙(v0.21.0 R111 라이브 · 사용자 선택)" if _live111 else
+                           f" + 현금 완충 ×{_cbuf:g}(v0.19.0 R110 라이브 · 사용자 선택)") if _sc_kw else "(v0.18.0 R109 라이브 · 사용자 선택)"))
             _dpr = _alloc_row(_lbl_dp, alloc, float(alloc.get("cap_used", 0.05) or 0.05), None)
             if _dpr:
+                _td111 = alloc.get("tilt") or {}
                 _dpr.update({"연동출처": "S★ 섹터비중 · 섹터 안 물타기 유리 기울임 · 어닝 하락 → 섹터 ETF"
+                                         + (f" · 장기 우하향·급락 잦음 제외 몫 {_td111.get('r111_freed_mean')} → 저위험 종목 "
+                                            f"{_td111.get('r111_filled_mean')} · 현금 {_td111.get('r111_cash_mean')}" if _live111 else "")
                                          + (f" · 종목·ETF × {_cbuf:g}(나머지 현금)" if _sc_kw else "")})
                 alloc_rows.append(_dpr)
                 _grid_rets[_lbl_dp] = alloc.get("port_ret")
@@ -6838,7 +6861,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                         "ind2sec": dict(ind_alloc.get("ind2sec") or {}), "rf_daily": ind_alloc.get("rf_daily"),
                         "label": f"S 비교 행 {_vn}"}
                 _va = build_allocation(_pos_live, panel, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
-                                       ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw, **_sc_kw)
+                                       ind_alloc=_iav, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw, **_sc_kw,
+                                       **(_r111kw if _live111 else {}))
                 _vl = f"비교: 섹터연동 × S '{_vn}' 섹터 비중(측정 전용)"
                 _vr = _alloc_row(_vl, _va, float(alloc.get("cap_used", 0.05)), None)
                 if _vr:
@@ -6858,7 +6882,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             _q98 = {t: v for t, v in _pos_live.items() if t not in _add98}      # [v0.18.0 R109] 라이브와 같은 손절 규칙
             if _p98:
                 _ua = build_allocation(_q98, _p98, cfg, mode=_alloc_mode_live, parent_w=parent_w, parent_of=parent_of,
-                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw, **_sc_kw)
+                                       ind_alloc=ind_alloc, etf_panel=etf_panel, link_cap=float(alloc.get("cap_used", 0.05)), **_live_kw, **_sc_kw,
+                                       **(_r111kw if _live111 else {}))
                 _ul = "비교: 섹터연동 · v0.9.2 유니버스(R98 추가 전 · 측정 전용)"
                 _ur98 = _alloc_row(_ul, _ua, float(alloc.get("cap_used", 0.05)), None)
                 if _ur98:
