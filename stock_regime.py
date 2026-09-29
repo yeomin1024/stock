@@ -1,5 +1,17 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.27.0 - 2026-09-29 - [R117 ★ 다음날 하락확률 문턱 · 종합 1위 라이브(K★ 마지막 단계)]
+#    사용자 지시(2026-09-29): "… 지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서
+#      몇퍼센트 이하인 종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정하라고".
+#    (공통 · M 원본) r117_asset_features · r117_market_features · r117_prob_panel(층별 풀드 로지스틱 · 매년 과거만으로 재학습 · 다음 거래일 수익 < 0) ·
+#         r117_apply(문턱 이하만 보유 · A 현금 · B 재분배) · r117_rel(수익배수·회피·참여·MDD = 00U 정의) · r117_table(종합 점수 = 회피 + 참여 + 배수 변화% ·
+#         1위 = '★ 종합 1위(라이브)' · 동점이면 필터 없음) · r117_sheet(00H_하락확률문턱 · 00 줄). 문턱 50·49·…·40·38·35%.
+#    ⚠ 오프라인(r117/prob117·thr117 · 네 층 하네스): 다음날 하락확률 AUC M 0.515 · S 0.490 · I 0.501 · K 0.497(0.5 = 동전) → 네 층 모두 종합 1위 = 필터 없음
+#      (필터 행은 배수 −47~−53% · 참여 −9~−23). 매 실행 같은 규칙으로 다시 골라 필터가 1위가 되면 자동 라이브(R117_LIVE · 되돌리기 R117_LIVE=False).
+#    (§1 K) StockConfig R117_ENABLE · R117_LIVE · R117_THRESHOLDS · build_allocation(r117={P, th, how} — 현금 표지·완충 뒤 마지막 · None이면 비트 동일) ·
+#         run: 종목·섹터 ETF 다리 풀드 확률(시장 = SPY 지표) → 같은 라이브 호출(_live_call) + r117 → 종합 1위가 필터면 K★ 교체
+#         ('비교: 라이브(R117 하락확률 문턱 없음)' 행 · live_rule에 '+ R117') · res['r117'] · 00H_하락확률문턱(1위 노란색) · 00 줄 · _find_m_module.
+#         시험 t117/test_r117.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.26.0 - 2026-09-29 - [R116 00Y 구간 원인 · 비교 행 결함 수정 — K★ 무변경]
 #    사용자 지시(2026-09-29): "결과 폴더에 올렸어 국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해 모두 개선될 때 까지
 #      계속 테스트, 개선 반복해서 알려줘 회피, 참여 둘다 상승시켜야 하는거야".
@@ -748,7 +760,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.26.0"
+VERSION = "v0.27.0"
 VERSION_DATE = "2026-09-29"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1266,6 +1278,12 @@ class StockConfig:
     R115_PRE: int = 0
     R115_LOSS_SHEET: bool = True            # 00X_손실구간원인(큰 손실 구간 전수 · 원인 · R115로 줄어든 손실)
     R115_LOSS_R10: float = -15.0            # 큰 손실 구간 = 종목 10거래일 수익 ≤ 이 값(%)이고 그날 보유(체결 비중 ≥ 0.5%)
+    # [v0.27.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 비교(K★ 마지막 단계) — 종목·섹터 ETF 다리 하락확률(M.r117_prob_panel ·
+    #   종목끼리 · ETF끼리 풀드 워크포워드) → 문턱 50%→35% × 빠진 몫(A 현금 · B 재분배) → build_allocation(r117=…)로 같은 체결·비용 → 종합 1위가 필터면
+    #   R117_LIVE일 때 K★ 교체('비교: 라이브(R117 하락확률 문턱 없음)' 행). 되돌리기 k_overrides={'R117_LIVE': False} · {'R117_ENABLE': False}.
+    R117_ENABLE: bool = True
+    R117_LIVE: bool = True
+    R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
     R111_SHOCK_MIN: int = 3
     R111_FILL_CAP: float = 0.10
     R111_FILL_GAMMA: float = 2.0
@@ -2998,7 +3016,7 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
                      prob_score: Optional[pd.DataFrame] = None, prob_select: Optional[str] = None,
                      prob_params: Optional[Dict[str, float]] = None,
                      scale: Optional[float] = None, cash_mask: Optional[pd.DataFrame] = None,
-                     r111: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                     r111: Optional[Dict[str, Any]] = None, r117: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """전체자산 **1.0**을 종목에 배분한다. 반환 target_w의 **행 합계는 절대 1.0을 넘지 않는다**.
     [v0.11.0 R99 N3] "sector_prob" — 섹터 비중은 S★ 그대로(sector_linked와 같은 SW) · 섹터 안만 점수(prob_score · 상승확률 또는 어닝 복합)로
       고른다(prob_select: exclude_bottom · top · tilt · prob_params: frac·max·lam). 점수가 없으면 sector_linked(균등)로 계산하고 tilt['note']에 적는다.
@@ -3114,6 +3132,16 @@ def build_allocation(pos: Dict[str, pd.DataFrame], panel: Dict[str, pd.DataFrame
             _scl = min(max(float(scale), 0.0), 1.0)
             Ws, We = Ws * _scl, We * _scl
             _sd["cash_buffer"] = _scl
+        # [v0.27.0 R117] 다음날 하락확률 문턱(r117 = {"P": 날짜 × (종목 + 'ETF_'+ETF), "th": θ, "how": "A" 현금 | "B" 재분배}) — 현금 표지·완충 뒤 마지막.
+        #   r117이 None이면 v0.26.0과 비트 동일. 확률이 없는 칸은 남긴다(M.r117_apply).
+        if isinstance(r117, dict) and r117.get("th") is not None and isinstance(r117.get("P"), pd.DataFrame):
+            _M117 = _find_m_module()
+            if _M117 is not None:
+                _WA0 = pd.concat([Ws, We.add_prefix("ETF_")], axis=1)
+                _WA1, _kp117 = _M117.r117_apply(_WA0, r117["P"], float(r117["th"]), str(r117.get("how", "A")))
+                Ws = _WA1[list(Ws.columns)]
+                We = _WA1[[f"ETF_{e}" for e in We.columns]].rename(columns=lambda c: c[4:])
+                _sd["r117"] = {"th": float(r117["th"]), "how": str(r117.get("how", "A")), "kept": round(float(_kp117), 4)}
         ret = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce").reindex(idx)
                             for t in tickers}).fillna(0.0)
         _ecols = list(We.columns)
@@ -3365,6 +3393,21 @@ def _find_sector_module():
         except Exception:
             continue
     return None
+
+
+def _find_m_module():
+    """[v0.27.0 R117] M(market_regime_trader) — r117_* 공통 함수가 있는 모듈. sys.modules에 없으면 가져온다(실패하면 None)."""
+    for _nm, _mod in list(sys.modules.items()):
+        try:
+            if callable(getattr(_mod, "r117_prob_panel", None)) and callable(getattr(_mod, "r117_apply", None)):
+                return _mod
+        except Exception:
+            continue
+    try:
+        import market_regime_trader as _m          # type: ignore
+        return _m if callable(getattr(_m, "r117_prob_panel", None)) else None
+    except Exception:
+        return None
 
 
 def _resolve_market_budget(cfg: StockConfig, m_sig: Any = None,
@@ -7215,9 +7258,9 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         _live_kw = {"prob_score": _dip_score, "prob_select": "tilt",
                     "prob_params": {"lam": float(getattr(cfg, "LIVE_DIP_LAMBDA", 0.5))}}
         _kw111 = (_r111kw if _live111 else {})
-        alloc = build_allocation(_pos_live, panel, cfg, mode="sector_prob", parent_w=parent_w, parent_of=parent_of,
-                                 ind_alloc=ind_alloc, etf_panel=etf_panel,
-                                 link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw, **_kw111, **_kw114)
+        _live_call = (_pos_live, dict(mode="sector_prob", parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc, etf_panel=etf_panel,
+                                      link_cap=float(getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)), **_live_kw, **_sc_kw, **_kw111, **_kw114))
+        alloc = build_allocation(_live_call[0], panel, cfg, **_live_call[1])
         alloc["live_rule"] = ("R109 섹터연동 + 물타기 기울임 + 어닝 하락 손절"
                               + (f" + R110 현금 완충 ×{_cbuf:g}" if _sc_kw else "")
                               + (" + R111 사용자 규칙" if _live111 else "")
@@ -7253,8 +7296,9 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             log("ALLOC", kv(event="r109_live_dip_unavailable", dip_ok=bool(_dip.get("ok")), ind_alloc=bool(ind_alloc),
                             action="섹터 안 균등(v0.17.0 라이브)으로 계속 — 00 줄에 표시"), level="warning")
         _sec_mode0 = _live_mode0 in ("sector_linked", "sector_prob")
-        alloc = build_allocation(pos, panel, cfg, parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc,
-                                 etf_panel=etf_panel, **_live_kw, **(_sc_kw if _sec_mode0 else {}))
+        _live_call = (pos, dict(parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc, etf_panel=etf_panel,
+                                **_live_kw, **(_sc_kw if _sec_mode0 else {})))
+        alloc = build_allocation(_live_call[0], panel, cfg, **_live_call[1])
         if _sc_kw and _sec_mode0 and str(alloc.get("mode")) in ("sector_linked", "sector_prob"):
             alloc["live_rule"] = f"섹터연동 + R110 현금 완충 ×{_cbuf:g}"
             alloc_nobuf = build_allocation(pos, panel, cfg, parent_w=parent_w, parent_of=parent_of, ind_alloc=ind_alloc,
@@ -7263,6 +7307,55 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         log("ALLOC", kv(event="r110_cash_buffer", buffer=_cbuf, total_live=round(float(alloc["total_w"].mean()), 4),
                         total_nobuf=round(float(alloc_nobuf["total_w"].mean()), 4),
                         note="★ 라이브(사용자 선택 R110) — 되돌리기 k_overrides={'LIVE_CASH_BUFFER': 1.0}"))
+    # ---- [v0.27.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(K★ 마지막 단계) ----
+    #   종목(패널 일간수익) · 섹터 ETF 다리(etf_panel) 하락확률 = M.r117_prob_panel(각각 풀드 · 시장 = SPY 지표) → 문턱 50%→35% × A/B →
+    #   같은 라이브 호출 + build_allocation(r117=…) → 수익배수·회피·참여(M.r117_rel · SPY) → 종합 1위가 필터면 R117_LIVE일 때 K★ 교체.
+    _r117_diag: Dict[str, Any] = {"enabled": False}
+    alloc_pre117: Optional[Dict[str, Any]] = None
+    if bool(getattr(cfg, "R117_ENABLE", True)) and str(alloc.get("mode")) in ("sector_linked", "sector_prob") and "SPY" in (etf_panel or {}):
+        try:
+            _t117 = time.time()
+            _M117 = _find_m_module()
+            if _M117 is None:
+                raise ImportError("M(market_regime_trader) 없음 — r117 공통 함수가 필요")
+            _spy117 = pd.to_numeric(etf_panel["SPY"]["일간수익"], errors="coerce")
+            _mk117 = _M117.r117_market_features(_spy117)
+            _rs117 = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce") for t in sorted(panel)})
+            _Ps117, _q117 = _M117.r117_prob_panel(_rs117, _spy117, _mk117)
+            _ec117 = [e for e in list((alloc.get("etf_w") if isinstance(alloc.get("etf_w"), pd.DataFrame) else pd.DataFrame()).columns) if e in etf_panel]
+            _Pe117 = pd.DataFrame()
+            if _ec117:
+                _re117 = pd.DataFrame({e: pd.to_numeric(etf_panel[e]["일간수익"], errors="coerce") for e in _ec117})
+                _Pe117, _ = _M117.r117_prob_panel(_re117, _spy117, _mk117)
+            _P117 = pd.concat([_Ps117, _Pe117.add_prefix("ETF_")], axis=1) if len(_Pe117) else _Ps117
+            _sp117 = _spy117.reindex(alloc["port_ret"].index).fillna(0.0)
+            _rows117 = [{"문턱": "필터 없음", "빠진 몫": "-", **_M117.r117_rel(alloc["port_ret"], _sp117), "보유 유지율": 1.0}]
+            _var117: Dict[int, Tuple[float, str]] = {}
+            for _th in tuple(getattr(cfg, "R117_THRESHOLDS", getattr(_M117, "R117_THRESHOLDS_DEFAULT", ())) or ()):
+                for _hw, _hl in (("A", "A(현금)"), ("B", "B(재분배)")):
+                    _a = build_allocation(_live_call[0], panel, cfg, **_live_call[1], r117={"P": _P117, "th": float(_th), "how": _hw})
+                    _kp = float(((_a.get("tilt") or {}).get("r117") or {}).get("kept", 1.0))
+                    _rows117.append({"문턱": f"{float(_th):.0%}", "빠진 몫": _hl, **_M117.r117_rel(_a["port_ret"], _sp117), "보유 유지율": round(_kp, 4)})
+                    _var117[len(_rows117) - 1] = (float(_th), _hw)
+            _T117, _bi117 = _M117.r117_table(_rows117)
+            _live117 = bool(_bi117 != 0 and bool(getattr(cfg, "R117_LIVE", True)))
+            if _live117:
+                _thb, _hwb = _var117[_bi117]
+                alloc_pre117 = alloc
+                alloc = build_allocation(_live_call[0], panel, cfg, **_live_call[1], r117={"P": _P117, "th": _thb, "how": _hwb})
+                alloc["live_rule"] = str(alloc_pre117.get("live_rule") or alloc_pre117.get("mode") or "-") + f" + R117 하락확률 ≤{_thb:.0%}({_hwb})"
+            _r117_diag = {"enabled": True, "table": _T117, "quality": _q117, "best": str(_T117.iloc[_bi117]["문턱"]) + (
+                "" if _bi117 == 0 else "·" + str(_T117.iloc[_bi117]["빠진 몫"])), "best_idx": _bi117, "live_applied": _live117,
+                "p_today": (_Ps117.ffill().iloc[-1] if len(_Ps117) else None)}
+            log("ALLOC", kv(event="r117_down_prob", auc=round(float(_q117.get("auc", np.nan)), 4) if _q117.get("ok") else None,
+                            best=_r117_diag["best"], live_applied=_live117, rows=len(_T117), sec=round(time.time() - _t117, 1),
+                            note=("⚠ K★ 교체(R117 종합 1위) — 되돌리기 k_overrides={'R117_LIVE': False}" if _live117
+                                  else "종합 1위 = 필터 없음(K★ 무변경)" if _bi117 == 0 else "측정만(R117_LIVE 꺼짐)")),
+                level=("warning" if _live117 else "info"))
+        except Exception as _e117:
+            log("ALLOC", kv(event="r117_down_prob_failed", err=type(_e117).__name__, msg=str(_e117)[:160],
+                            action="R117 없이 계속 — K★ 무변경"), level="warning")
+            _r117_diag = {"enabled": False, "error": f"{type(_e117).__name__}: {str(_e117)[:160]}"}
     alloc_rows: List[dict] = []
     _grid_rets: Dict[str, pd.Series] = {}          # [v0.9.0] 00U 비교 행용 — 격자 행 라벨 → 포트 일간수익
 
@@ -7447,6 +7540,19 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         except Exception as e:
             _r114_lbl = None
             log("ALLOC", kv(event="r114_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    # [v0.27.0 R117] K★가 하락확률 문턱으로 바뀌었으면 교체 전 K★를 비교 행으로
+    _r117_lbl: Optional[str] = None
+    if alloc_pre117 is not None:
+        try:
+            _r117_lbl = "비교: 라이브(R117 하락확률 문턱 없음)"
+            _rr117 = _alloc_row(_r117_lbl, alloc_pre117, float(alloc_pre117.get("cap_used", 0.05) or 0.05), None)
+            if _rr117:
+                _rr117.update({"연동출처": "R117 적용 전 K★(같은 규칙 · 문턱 없음)"})
+                alloc_rows.append(_rr117)
+                _grid_rets[_r117_lbl] = alloc_pre117.get("port_ret")
+        except Exception as e:
+            _r117_lbl = None
+            log("ALLOC", kv(event="r117_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
     # [v0.25.0 R115] 같은 산업 실적 회피 행 — 라이브면 '회피 없는 라이브' 비교 행(00 'R115' 줄·00X 기준) · 아니면 측정 행 · 대안(반응 큰 발표만) 측정 행.
     _r115_lbl: Optional[str] = None
     _r115_alloc: Optional[Dict[str, Any]] = None
@@ -7750,7 +7856,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _live_u = (f"★ K★ 라이브({alloc.get('live_rule')} · {(alloc.get('exec') or {}).get('fill', '-')})" if alloc.get("live_rule")
                            else f"★ K★ 라이브({alloc.get('mode', '-')} · {(alloc.get('exec') or {}).get('fill', '-')})")
                 _rets: Dict[str, pd.Series] = {_live_u: _pr0}
-                _cmp_lbls = ([_r115_lbl] if _r115_lbl else []) + ([_r115b_lbl] if _r115b_lbl else []) + \
+                _cmp_lbls = ([_r117_lbl] if _r117_lbl else []) + \
+                            ([_r115_lbl] if _r115_lbl else []) + ([_r115b_lbl] if _r115b_lbl else []) + \
                             ([_r114_lbl] if _r114_lbl else []) + ([_r111_lbl] if _r111_lbl else []) + \
                             ([_nobuf_lbl] if _nobuf_lbl else []) + ([_prev_live_lbl] if _prev_live_lbl else []) + \
                             [str(x[0]) for x in tuple(getattr(cfg, "PROB_TILT_GRID", ()) or ())[:1]] + \
@@ -7944,6 +8051,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             "r114": _m114, "r114_label": _r114_lbl, "r114_live": bool(_live114),                                 # [v0.24.0 R114]
             "r115": _m115, "r115_label": _r115_lbl, "r115b_label": _r115b_lbl, "r115_live": bool(_live115),      # [v0.25.0 R115]
             "r115_loss": _loss115,
+            "r117": _r117_diag, "r117_label": _r117_lbl,                                                          # [v0.27.0 R117]
             "state_board": _state_board,                                                            # [v0.14.0 R104]
             "dip_states": _dip,                                                                     # [v0.15.0 R105] 00W
             "live_dip": bool(_live_dip), "prev_live_label": _prev_live_lbl,                          # [v0.18.0 R109] 라이브 물타기·어닝 손절
@@ -8700,6 +8808,18 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _add.append(("★ 배분 방식(v0.9.0 R94 · 사용자 지시 '주식층도 같이 개선' — 신뢰도 = 하락 회피·상승 참여)",
                      _mline + ("" if _md in ("sector_linked", "sector_prob") else
                                " ★ 총노출(=방어)은 v0.6.0 1/N 규칙과 날마다 동일하다 — 바뀐 것은 그 노출의 종목 간 분배뿐이다.")))
+        try:                                                                   # [v0.27.0 R117 ★] 다음날 하락확률 문턱 · 00H(종합 1위 노란색)
+            _d117 = res.get("r117") or {}
+            _M117r = _find_m_module()
+            if _d117.get("enabled") and _M117r is not None:
+                _h117, _l117 = _M117r.r117_sheet(_d117.get("table"), _d117.get("quality"), "K★ · 주식", bool(_d117.get("live_applied")),
+                                                 str(_d117.get("best")), today=_d117.get("p_today"))
+                sheets[_M117r.R117_SHEET] = _h117
+                _add[0:0] = list(_l117)
+            elif _d117.get("error"):
+                _add.insert(0, ("★★★ R117 다음날 하락확률 문턱(K★)", f"⚠ 산출 실패 — {_d117['error']} (K★ 무변경)"))
+        except Exception as e:
+            log("REPORT", kv(event="r117_sheet_failed", layer="K", err=type(e).__name__, msg=str(e)[:120]), level="warning")
         try:                                                                   # [v0.25.0 R115] 같은 산업 실적 회피 · 00X 손실 구간 원인
             _r115v = r115_ind_earn_line(res)
             if _r115v:
@@ -8832,7 +8952,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     if isinstance(res.get("user_rel"), pd.DataFrame) and len(res["user_rel"]):
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
+    _front = [n for n in ("00H_하락확률문턱", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
                           "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00X_손실구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
                           "00N_종목선별근거", "01Z_주식일별예측",
                           "00_실행요약") if n in sheets]
@@ -8854,6 +8974,8 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _ul = str((res.get("user_rel_info") or {}).get("live_label") or "")
         if _ul and "00U_사용자신뢰도" in sheets:
             _lm["00U_사용자신뢰도"] = ("전략", _ul)   # [v0.9.0 R94]
+        if "00H_하락확률문턱" in sheets:
+            _lm["00H_하락확률문턱"] = ("라이브", "★ 종합 1위(라이브)")   # [v0.27.0 R117]
     except Exception as e:
         log("REPORT", kv(event="live_marks_build_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
     _write(path, sheets, live_marks=(_lm or None), date_format=str(getattr(cfg, "REPORT_DATE_FORMAT", "yyyy-mm-dd") or "yyyy-mm-dd"))

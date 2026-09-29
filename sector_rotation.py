@@ -17,6 +17,18 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.94.0 - 2026-09-29 - [R117 ★ 다음날 하락확률 문턱 · 종합 1위 라이브(S★ 마지막 단계)]
+#    사용자 지시(2026-09-29): "… 지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서
+#      몇퍼센트 이하인 종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정하라고".
+#    (공통 · M 원본) r117_asset_features · r117_market_features · r117_prob_panel(층별 풀드 로지스틱 · 매년 과거만으로 재학습 · 다음 거래일 수익 < 0) ·
+#         r117_apply(문턱 이하만 보유 · A 현금 · B 재분배) · r117_rel(수익배수·회피·참여·MDD = 00U 정의) · r117_table(종합 점수 = 회피 + 참여 + 배수 변화% ·
+#         1위 = '★ 종합 1위(라이브)' · 동점이면 필터 없음) · r117_sheet(00H_하락확률문턱 · 00 줄). 문턱 50·49·…·40·38·35%.
+#    ⚠ 오프라인(r117/prob117·thr117 · 네 층 하네스): 다음날 하락확률 AUC M 0.515 · S 0.490 · I 0.501 · K 0.497(0.5 = 동전) → 네 층 모두 종합 1위 = 필터 없음
+#      (필터 행은 배수 −47~−53% · 참여 −9~−23). 매 실행 같은 규칙으로 다시 골라 필터가 1위가 되면 자동 라이브(R117_LIVE · 되돌리기 R117_LIVE=False).
+#    (§1 S) SectorConfig R117_ENABLE · R117_LIVE · R117_THRESHOLDS · r117_stage_s(배분 마지막 · 섹터+SPY 풀드 확률 · 전체 이력 총수익 ·
+#         portfolio_backtest) → 종합 1위가 필터면 ★ 교체('R117 이전 ★(하락확률 문턱 없음 · 비교)' 행 · ★ 라벨에 '· R117 하락확률 ≤θ') ·
+#         diag['r117'](표 · 품질 · 섹터 확률 P = I 부모·통과 다리용) · 00H_하락확률문턱(1위 노란색) · 00 줄.
+#    (§2) LAYER_MIN_VERSIONS M v1.78.0 · S v0.94.0 · I v0.60.0. 시험 t117/test_r117.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.93.0 - 2026-09-29 - [R116 00Y 구간 원인 공통 원본(segment_cause_sheet · m_rule_labels) — S★ 무변경]
 #    사용자 지시(2026-09-29): "결과 폴더에 올렸어 국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해 모두 개선될 때 까지
 #      계속 테스트, 개선 반복해서 알려줘 회피, 참여 둘다 상승시켜야 하는거야".
@@ -3126,7 +3138,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.93.0"
+VERSION = "v0.94.0"
 VERSION_DATE = "2026-09-27"
 
 # =============================================================================
@@ -3797,6 +3809,11 @@ class SectorConfig:
     #   근거·실측·한계·사전등록 되돌림 조건은 build_sector_allocation()의 [섹터근거] 블록 주석.
     #   ⚠ OWN_EVIDENCE_FILL은 **노출을 늘리는 위험 파라미터**다(부분예산일 남는 현금 중 채우는 비율).
     #     되돌리기: s_overrides={"OWN_EVIDENCE_FILL": 0.0} ⇒ v0.66.0 ★와 비트 동일. 블록 전체 끄기: {"OWN_EVIDENCE_ENABLE": False}.
+    # [v0.94.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 비교(★ 마지막 단계) — 종합 1위가 필터면 R117_LIVE일 때 ★ 교체.
+    #   되돌리기 s_overrides={'R117_LIVE': False}(측정만) · {'R117_ENABLE': False}(계산도 끔). 확률·표·선택은 M.r117_* 공통 함수.
+    R117_ENABLE: bool = True
+    R117_LIVE: bool = True
+    R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
     OWN_EVIDENCE_ENABLE: bool = True
     #   ⚠ [v0.68.0 R86 되돌림] 0.25 → **0.0** — R85 사전등록 (d) 해당(엔진 s14 장기 검증 2000~2017: ② 0.329 < ① 0.362 ·
     #     대조군 95% 0.366). 다시 켜기: s_overrides={"OWN_EVIDENCE_FILL": 0.25}.
@@ -8778,7 +8795,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.77.0", "sector_rotation": "v0.93.0", "industry_rotation": "v0.59.0"}   # [v0.93.0 R116]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.78.0", "sector_rotation": "v0.94.0", "industry_rotation": "v0.60.0"}   # [v0.94.0 R117]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -13915,6 +13932,10 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                action="격자만 생략 — ★(라이브)는 영향 없음"), M=M, level="warning")
             _link_diag = {"enabled": False, "error": f"{type(_e).__name__}: {str(_e)[:160]}"}
 
+    # ---- [v0.94.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(★ 마지막 단계 · r117_stage_s) ----
+    label_primary, _r117_diag = r117_stage_s(target_ws, variants, bts, label_primary, ret_cc_full, spy_cc_full, ret_co, ret_oc, bt_kw,
+                                             eval_idx, res, scfg, M)
+
     # [v0.7.0] 참조: SPY 국면전략(M) 성과(같은 평가창, M의 bt 그대로) — 수용기준 ⑤(목표: CAGR ≥ SPY M)에 사용
     spy_m_ret = res["bt"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
     spy_m_pm = M.perf_metrics(spy_m_ret, "SPY 국면전략(M)")
@@ -13998,6 +14019,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         "own_evidence": _own_diag,                                                   # [v0.67.0 R85] 섹터 자기근거 채움
         "macro_evidence": _macro_diag,                                               # [v0.68.0 R86] 섹터 거시 근거(측정)
         "relcmp": _relcmp_diag,                                                      # [v0.69.0 R88] 회피형·참여형·양쪽형 비교
+        "r117": _r117_diag,                                                          # [v0.94.0 R117] 다음날 하락확률 문턱(표 · 1위 · 섹터 확률 P)
         "neutral_fill": _nf_diag,                                                    # [v0.71.0 R90] 중립 국면일 저베타 채움
         "mbucket": (_mbucket if isinstance(locals().get("_mbucket"), pd.Series) else None),   # [v0.72.0 R91] 00U 블록 J
         "mbucket_exposure": (target_ws[label_primary].sum(axis=1) if label_primary in target_ws else None),
@@ -14030,7 +14052,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     log("ROTATION", kv(event="allocation_built",
                        **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year", "spy_m",
                                                                      "tier_by_year", "avoid_by_year", "alloc_link", "own_evidence", "macro_evidence",
-                                                                     "relcmp", "neutral_fill")},
+                                                                     "relcmp", "neutral_fill", "r117")},
                        tiers=";".join(f"{k}:{v}" for k, v in sorted(diag["tier_by_year"].items())) or "-",
                        avoid_ok=";".join(f"{k}:{'+'.join(v) if v else '-'}" for k, v in sorted(diag["avoid_by_year"].items())) or "-",
                        spy_m_cagr=spy_m["CAGR"], spy_m_mdd=spy_m["MDD"],
@@ -19210,8 +19232,27 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         except Exception as _e:
             log("REPORT", kv(event="user_reliability_failed", err=type(_e).__name__, msg=str(_e)[:160],
                              trace=traceback.format_exc()[-300:].replace("\n", " | ")), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_섹터상태판",
-                             "00S_섹터자기근거", "00R_신뢰도판정",
+    # [v0.94.0 R117 ★ 사용자 지시] 00H_하락확률문턱(종합 1위 노란색) · 00 줄(맨 앞 묶음)
+    _M117 = M
+    if _M117 is None or not hasattr(_M117, "r117_sheet"):
+        try:
+            import market_regime_trader as _M117          # type: ignore
+        except Exception:
+            _M117 = None
+    try:
+        _d117 = (((sres.get("alloc") or {}).get("diag") or {}).get("r117")) or {}
+        if _d117.get("enabled") and _M117 is not None and hasattr(_M117, "r117_sheet"):
+            _h117, _l117 = _M117.r117_sheet(_d117.get("table"), _d117.get("quality"), "S★ · 섹터", bool(_d117.get("live_applied")),
+                                            str(_d117.get("best")), today=_d117.get("p_today"))
+            sheets[_M117.R117_SHEET] = _h117
+            for _k, _v in reversed(_l117):
+                meta.insert(1, (_k, _v))
+        elif _d117.get("error"):
+            meta.insert(1, ("★★★ R117 다음날 하락확률 문턱(S★)", f"⚠ 산출 실패 — {_d117['error']} (★ 무변경)"))
+    except Exception as _e117:
+        log("REPORT", kv(event="r117_sheet_failed", layer="S", err=type(_e117).__name__, msg=str(_e117)[:160]), M=M, level="warning")
+    sheets = sheets_to_front(sheets, "00H_하락확률문턱", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
+                             "00V_상태판정검증", "00T_섹터상태판", "00S_섹터자기근거", "00R_신뢰도판정",
                              "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
     _lm_s = None
@@ -19219,6 +19260,9 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
         _lbl_live = ((sres.get("alloc") or {}).get("diag") or {}).get("label_primary")
         if _lbl_live:
             _lm_s = {"13_섹터배분전략": ("전략", str(_lbl_live))}
+        if "00H_하락확률문턱" in sheets:                   # [v0.94.0 R117] 종합 1위 행 노란색
+            _lm_s = dict(_lm_s or {})
+            _lm_s["00H_하락확률문턱"] = ("라이브", "★ 종합 1위(라이브)")
     except Exception:
         _lm_s = None
     write_sector_excel(path, sheets, meta, M=M, live_marks=_lm_s)
@@ -21232,6 +21276,72 @@ R116_SEG_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
      "표본 안(2018~) 둘 다 ↑ 조합(반등 재진입 1.0 + 구조바닥 H 0.4 + R96 중립 0.12: 네 층 +0.4~0.8/+0.8~1.8)은 긴 이력(1994~2017 M 대용)에서 "
      "반등 재진입 1.0이 회피 −1.7 · MDD −6.8%p(2008 약세장 반등) → 기각 | 헤어컷 해제(폭 넓음·차분) 2018~ −0.2/+2.0 · 2004~2017 −2.0/+2.5(교환)",
      "표본 밖까지 둘 다 올리는 변경은 이번 라운드에서 찾지 못함 — 라이브 무변경"))
+
+
+def r117_stage_s(target_ws: Dict[str, pd.DataFrame], variants: Dict[str, pd.DataFrame], bts: Dict[str, pd.DataFrame], label_primary: str,
+                  ret_cc_full: pd.DataFrame, spy_cc_full: pd.Series, ret_co: pd.DataFrame, ret_oc: pd.DataFrame, bt_kw: Dict[str, Any],
+                  eval_idx: pd.DatetimeIndex, res: Any, scfg, M) -> Tuple[str, Dict[str, Any]]:
+    """[v0.94.0 R117 ★ 사용자 지시(2026-09-29)] S★ 다음날 하락확률 문턱 단계 — build_sector_allocation 마지막(★ 교체 가능).
+    target_ws · variants · bts를 제자리에서 고친다(★ 교체 시 교체 전 ★ = 'R117 이전 ★(하락확률 문턱 없음 · 비교)' 행). 반환 (label_primary, 진단)."""
+    # ---- [v0.94.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(★ 마지막 단계) ----
+    #   섹터·SPY(★ 열) 다음날 하락확률(M.r117_prob_panel · 풀드 워크포워드 로지스틱 · 전체 이력 총수익) → 문턱 50%→35% × 빠진 몫(A 현금 · B 재분배)
+    #   → portfolio_backtest(같은 체결·비용) → 수익배수·회피·참여(M.r117_rel = 00U 정의) → 종합 1위가 필터면 R117_LIVE일 때 ★ 교체.
+    #   ★가 바뀌면 교체 전 ★를 'R117 이전 ★(하락확률 문턱 없음 · 비교)' 행으로 남긴다. 실패하면 ★ 무변경.
+    _r117_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(scfg, "R117_ENABLE", True)) and label_primary in target_ws and hasattr(M, "r117_prob_panel"):
+        try:
+            _t117 = time.time()
+            _w117 = target_ws[label_primary].copy().fillna(0.0).astype(float)
+            _ac117 = [c for c in _w117.columns if c in ret_cc_full.columns]
+            _spy117 = ret_cc_full["SPY"] if "SPY" in ret_cc_full.columns else spy_cc_full
+            _mk117 = M.r117_market_features(_spy117, M.r117_m_extra(res))
+            _P117, _q117 = M.r117_prob_panel(ret_cc_full[_ac117], _spy117, _mk117)
+            _Pe117 = _P117.reindex(eval_idx)
+            _sp117 = ((1.0 + ret_co["SPY"]) * (1.0 + ret_oc["SPY"]) - 1.0).reindex(eval_idx).fillna(0.0)
+            _rows117, _var117 = [], {}
+            _rows117.append({"문턱": "필터 없음", "빠진 몫": "-", **M.r117_rel(bts[label_primary]["strategy_ret"], _sp117), "보유 유지율": 1.0})
+            for _th in tuple(getattr(scfg, "R117_THRESHOLDS", getattr(M, "R117_THRESHOLDS_DEFAULT", ())) or ()):
+                for _hw, _hl in (("A", "A(현금)"), ("B", "B(재분배)")):
+                    _W, _kp = M.r117_apply(_w117, _Pe117, float(_th), _hw)
+                    _b = portfolio_backtest(_W, ret_co, ret_oc, **bt_kw)
+                    _rows117.append({"문턱": f"{float(_th):.0%}", "빠진 몫": _hl, **M.r117_rel(_b["strategy_ret"], _sp117), "보유 유지율": round(_kp, 4)})
+                    _var117[len(_rows117) - 1] = (_W, _b)
+            _T117, _bi117 = M.r117_table(_rows117)
+            _live117 = bool(_bi117 != 0 and bool(getattr(scfg, "R117_LIVE", True)))
+            if _live117:
+                _Wb, _bb = _var117[_bi117]
+                _lab_pre = "R117 이전 ★(하락확률 문턱 없음 · 비교)"
+                target_ws[_lab_pre] = _w117
+                variants[_lab_pre] = _w117
+                bts[_lab_pre] = bts[label_primary]
+                target_ws[label_primary] = _Wb
+                variants[label_primary] = _Wb
+                bts[label_primary] = _bb
+                _r0 = _T117.iloc[_bi117]
+                _lp117 = (label_primary[:-1].rstrip() if label_primary.endswith("★") else label_primary) \
+                    + f" · R117 하락확률 ≤{_r0['문턱']}·{str(_r0['빠진 몫'])[:1]} ★"
+
+                def _rename117(d: dict, old_k: str, new_k: str) -> None:
+                    items = [((new_k if k_ == old_k else k_), v_) for k_, v_ in d.items()]
+                    d.clear()
+                    d.update(items)
+                for _d_ in (target_ws, variants, bts):
+                    _rename117(_d_, label_primary, _lp117)
+                label_primary = _lp117
+            _r117_diag = {"enabled": True, "table": _T117, "quality": _q117, "best": str(_T117.iloc[_bi117]["문턱"]) + (
+                "" if _bi117 == 0 else "·" + str(_T117.iloc[_bi117]["빠진 몫"])), "best_idx": _bi117, "live_applied": _live117, "P": _P117,
+                "p_today": (_P117.reindex(columns=_ac117).ffill().iloc[-1] if len(_P117) else None)}
+            log("ROTATION", kv(event="r117_down_prob", auc=round(float(_q117.get("auc", np.nan)), 4) if _q117.get("ok") else None,
+                               best=_r117_diag["best"], live_applied=_live117, rows=len(_T117), sec=round(time.time() - _t117, 1),
+                               note=("⚠ ★ 교체(R117 종합 1위) — 되돌리기 s_overrides={'R117_LIVE': False}" if _live117
+                                     else "종합 1위 = 필터 없음(★ 무변경)" if _bi117 == 0 else "측정만(R117_LIVE 꺼짐)")),
+                M=M, level=("warning" if _live117 else "info"))
+        except Exception as _e117:
+            log("ROTATION", kv(event="r117_down_prob_failed", err=type(_e117).__name__, msg=str(_e117)[:180],
+                               trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R117 없이 계속 — ★ 무변경"), M=M, level="warning")
+            _r117_diag = {"enabled": False, "error": f"{type(_e117).__name__}: {str(_e117)[:160]}"}
+
+    return label_primary, _r117_diag
 
 
 def m_rule_labels(sig: Optional[pd.DataFrame]) -> Optional[pd.Series]:

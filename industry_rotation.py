@@ -1,5 +1,16 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.60.0 - 2026-09-29 - [R117 ★ 다음날 하락확률 문턱 · 종합 1위 라이브(I★ 마지막 단계)]
+#    사용자 지시(2026-09-29): "… 지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서
+#      몇퍼센트 이하인 종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정하라고".
+#    (공통 · M 원본) r117_asset_features · r117_market_features · r117_prob_panel(층별 풀드 로지스틱 · 매년 과거만으로 재학습 · 다음 거래일 수익 < 0) ·
+#         r117_apply(문턱 이하만 보유 · A 현금 · B 재분배) · r117_rel(수익배수·회피·참여·MDD = 00U 정의) · r117_table(종합 점수 = 회피 + 참여 + 배수 변화% ·
+#         1위 = '★ 종합 1위(라이브)' · 동점이면 필터 없음) · r117_sheet(00H_하락확률문턱 · 00 줄). 문턱 50·49·…·40·38·35%.
+#    ⚠ 오프라인(r117/prob117·thr117 · 네 층 하네스): 다음날 하락확률 AUC M 0.515 · S 0.490 · I 0.501 · K 0.497(0.5 = 동전) → 네 층 모두 종합 1위 = 필터 없음
+#      (필터 행은 배수 −47~−53% · 참여 −9~−23). 매 실행 같은 규칙으로 다시 골라 필터가 1위가 되면 자동 라이브(R117_LIVE · 되돌리기 R117_LIVE=False).
+#    (§1 I) IndustryConfig R117_ENABLE · R117_LIVE · R117_THRESHOLDS · r117_stage_i(bts 계산 직전 · 산업 풀드 확률 + 부모·통과 다리 = S 확률 · _bt) →
+#         종합 1위가 필터면 I★ 교체('R117 이전 I★(하락확률 문턱 없음 · 비교)' 행) · alloc['r117'] · 00H_하락확률문턱(1위 노란색) · 00 줄.
+#         K는 교체된 I★ 비중을 받는다. 시험 t117/test_r117.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.59.0 - 2026-09-29 - [R116 00Y 구간 원인(I★ · S v0.93.0 공통 함수) — I★ 무변경]
 #    사용자 지시(2026-09-29): "결과 폴더에 올렸어 국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해 모두 개선될 때 까지
 #      계속 테스트, 개선 반복해서 알려줘 회피, 참여 둘다 상승시켜야 하는거야".
@@ -1976,7 +1987,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.59.0"
+VERSION = "v0.60.0"
 VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2095,6 +2106,11 @@ class IndustryConfig:
     INDUSTRIES: Tuple[Tuple[str, str, str], ...] = INDUSTRIES
     USE_TIER_B: bool = False                    # ⚠ 등급B 산업(BJK·SRVR·INDS) 기본 꺼짐(§15#7)
     ADJ_CLOSE_STALE_DAYS: int = 5
+    # [v0.60.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 비교(I★ 마지막 단계) — 종합 1위가 필터면 R117_LIVE일 때 I★ 교체.
+    #   되돌리기 i_overrides={'R117_LIVE': False}(측정만) · {'R117_ENABLE': False}(계산도 끔).
+    R117_ENABLE: bool = True
+    R117_LIVE: bool = True
+    R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
 
     # ---- 후보지표 구성 스위치 ----
     USE_MARKET_CANDIDATES: bool = True
@@ -4881,6 +4897,66 @@ def _frozen_alloc_cfg(icfg: IndustryConfig, M=None) -> IndustryConfig:
     return out
 
 
+def r117_stage_i(target_ws: Dict[str, pd.DataFrame], label_star: str, results: Dict[str, Dict[str, Any]], cols: List[str], res: Any,
+                  s_alloc: Dict[str, Any], eval_idx: pd.DatetimeIndex, bt_fn, cost_map: Dict[str, float], icfg, M) -> Tuple[str, Dict[str, Any]]:
+    """[v0.60.0 R117 ★ 사용자 지시(2026-09-29)] I★ 다음날 하락확률 문턱 단계 — build_industry_allocation의 bts 계산 직전(I★ 교체 가능).
+    target_ws를 제자리에서 고친다(교체 시 'R117 이전 I★(하락확률 문턱 없음 · 비교)' 행). bt_fn(tw, cost_map) = 그 함수의 _bt. 반환 (label_star, 진단)."""
+    # ---- [v0.60.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(I★ 마지막 단계) ----
+    #   산업 = 산업끼리 풀드 워크포워드 로지스틱(M.r117_prob_panel) · 부모·통과 다리(섹터 ETF·SPY) = S v0.94.0 R117 확률 그대로.
+    #   문턱 50%→35% × 빠진 몫(A 현금 · B 재분배) → bt_fn(같은 체결·비용) → 수익배수·회피·참여 → 종합 1위가 필터면 R117_LIVE일 때 I★ 교체
+    #   (교체 전 I★ = 'R117 이전 I★(하락확률 문턱 없음 · 비교)' 행). K는 교체된 I★ 비중을 받는다. 실패하면 I★ 무변경.
+    _r117_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(icfg, "R117_ENABLE", True)) and label_star in target_ws and hasattr(M, "r117_prob_panel"):
+        try:
+            _t117 = time.time()
+            _w117 = target_ws[label_star].copy().fillna(0.0).astype(float)
+            _ri117 = pd.DataFrame({t: pd.to_numeric(results[t].get("ret_cc_full"), errors="coerce") for t in cols
+                                   if results[t].get("ret_cc_full") is not None})
+            _pxa117 = res.get("px_adj") if isinstance(res, dict) else None
+            _spy117 = (pd.to_numeric(_pxa117, errors="coerce").pct_change() if isinstance(_pxa117, pd.Series)
+                       else pd.Series(s_alloc.get("spy_ret"), dtype=float))
+            _mk117 = M.r117_market_features(_spy117, M.r117_m_extra(res))
+            _Pi117, _q117 = M.r117_prob_panel(_ri117, _spy117, _mk117)
+            _Ps117 = (((s_alloc.get("diag") or {}).get("r117")) or {}).get("P")
+            _P117 = _Pi117
+            if isinstance(_Ps117, pd.DataFrame) and len(_Ps117):
+                _P117 = pd.concat([_Pi117, _Ps117[[c for c in _Ps117.columns if c not in _Pi117.columns]]], axis=1)
+            _Pe117 = _P117.reindex(eval_idx)
+            _sp117 = pd.Series(s_alloc.get("spy_ret"), dtype=float).reindex(eval_idx).fillna(0.0)
+            _b0 = bt_fn(_w117, cost_map)
+            _rows117, _var117 = [{"문턱": "필터 없음", "빠진 몫": "-", **M.r117_rel(_b0["strategy_ret"], _sp117), "보유 유지율": 1.0}], {}
+            for _th in tuple(getattr(icfg, "R117_THRESHOLDS", getattr(M, "R117_THRESHOLDS_DEFAULT", ())) or ()):
+                for _hw, _hl in (("A", "A(현금)"), ("B", "B(재분배)")):
+                    _W, _kp = M.r117_apply(_w117, _Pe117, float(_th), _hw)
+                    _b = bt_fn(_W, cost_map)
+                    _rows117.append({"문턱": f"{float(_th):.0%}", "빠진 몫": _hl, **M.r117_rel(_b["strategy_ret"], _sp117), "보유 유지율": round(_kp, 4)})
+                    _var117[len(_rows117) - 1] = _W
+            _T117, _bi117 = M.r117_table(_rows117)
+            _live117 = bool(_bi117 != 0 and bool(getattr(icfg, "R117_LIVE", True)))
+            if _live117:
+                target_ws["R117 이전 I★(하락확률 문턱 없음 · 비교)"] = _w117
+                _r0 = _T117.iloc[_bi117]
+                _ls117 = (label_star[:-1].rstrip() if label_star.endswith("★") else label_star) \
+                    + f" · R117 하락확률 ≤{_r0['문턱']}·{str(_r0['빠진 몫'])[:1]} ★"
+                _items = [((_ls117 if k_ == label_star else k_), (_var117[_bi117] if k_ == label_star else v_)) for k_, v_ in target_ws.items()]
+                target_ws.clear()
+                target_ws.update(_items)
+                label_star = _ls117
+            _r117_diag = {"enabled": True, "table": _T117, "quality": _q117, "best": str(_T117.iloc[_bi117]["문턱"]) + (
+                "" if _bi117 == 0 else "·" + str(_T117.iloc[_bi117]["빠진 몫"])), "best_idx": _bi117, "live_applied": _live117,
+                "p_today": (_P117.reindex(columns=[c for c in _w117.columns if c in _P117.columns]).ffill().iloc[-1] if len(_P117) else None)}
+            log("ROTATION", kv(event="r117_down_prob", auc=round(float(_q117.get("auc", np.nan)), 4) if _q117.get("ok") else None,
+                               best=_r117_diag["best"], live_applied=_live117, rows=len(_T117), sec=round(time.time() - _t117, 1),
+                               note=("⚠ I★ 교체(R117 종합 1위) — 되돌리기 i_overrides={'R117_LIVE': False}" if _live117
+                                     else "종합 1위 = 필터 없음(I★ 무변경)" if _bi117 == 0 else "측정만(R117_LIVE 꺼짐)")),
+                M=M, level=("warning" if _live117 else "info"))
+        except Exception as _e117:
+            log("ROTATION", kv(event="r117_down_prob_failed", err=type(_e117).__name__, msg=str(_e117)[:180],
+                               trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R117 없이 계속 — I★ 무변경"), M=M, level="warning")
+            _r117_diag = {"enabled": False, "error": f"{type(_e117).__name__}: {str(_e117)[:160]}"}
+    return label_star, _r117_diag
+
+
 def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, res: dict,
                               eval_idx: pd.DatetimeIndex, icfg: IndustryConfig, M, S,
                               wf: Dict[str, Any], rf_daily: Optional[pd.Series] = None,
@@ -6196,6 +6272,9 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         log("RELCMP", kv(event="i_neutral_fill_parent_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
         label_nf_parent = None
 
+    # ---- [v0.60.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(I★ 마지막 단계 · r117_stage_i) ----
+    label_star, _r117_diag = r117_stage_i(target_ws, label_star, results, cols, res, s_alloc, eval_idx, _bt, cost_map, icfg, M)
+
     bts: Dict[str, pd.DataFrame] = {}
     star_label = next((c for c in s_alloc.get("bts", {}) if str(c).endswith("★")), None)
     for label, tw in target_ws.items():
@@ -6288,6 +6367,7 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "label_s_off": label_s_off,                                                    # [v0.39.0 R85] S★ 채움 OFF 기준 행
         "relcmp_labels": relcmp_labels,                                                # [v0.41.0 R88] 회피형·참여형·양쪽형 비교 행
         "label_nf_parent": label_nf_parent,                                            # [v0.43.0 R90] 중립채움 몫 → 부모 ETF 측정 행
+        "r117": _r117_diag,                                                            # [v0.60.0 R117] 다음날 하락확률 문턱(표 · 1위 · 라이브)
         "select_mode": select_mode, "groups_leader3": groups_leader3,                 # [v0.33.0 R79]
         "prob_pack": prob_pack,                                                        # [v0.33.0 R79] 드라이버 격자 재사용(참조)
         "prob_market_gate": bool(_mkt_gate_on and _mkt_full is not None),
@@ -15368,6 +15448,18 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         # ---- [v0.54.0 R105 사용자 지시] 00P 기간별 수익배수(주·월·분기) · 00T 산업 상태판 — S v0.85.0 함수 · 줄은 00U 줄 바로 아래 ----
         _x105, _r105_lines = r105_extra_sheets_i(S, alloc, results, ires.get("user_rel_src") or {}, M)
         sheets.update(_x105)
+        # ---- [v0.60.0 R117 ★ 사용자 지시] 00H_하락확률문턱(종합 1위 노란색) · 00 줄(묶음 맨 앞) ----
+        try:
+            _d117 = (alloc or {}).get("r117") or {}
+            if _d117.get("enabled") and hasattr(M, "r117_sheet"):
+                _h117, _l117 = M.r117_sheet(_d117.get("table"), _d117.get("quality"), "I★ · 산업", bool(_d117.get("live_applied")),
+                                            str(_d117.get("best")), today=_d117.get("p_today"))
+                sheets[M.R117_SHEET] = _h117
+                _r105_lines = list(_l117) + list(_r105_lines)
+            elif _d117.get("error"):
+                _r105_lines = [("★★★ R117 다음날 하락확률 문턱(I★)", f"⚠ 산출 실패 — {_d117['error']} (I★ 무변경)")] + list(_r105_lines)
+        except Exception as _e117:
+            log("REPORT", kv(event="r117_sheet_failed", layer="I", err=type(_e117).__name__, msg=str(_e117)[:160]), M=M, level="warning")
         # ---- [v0.56.0 R110 사용자 지시] 00V 상태 판정·검증 · 01V 날짜별 상태(29산업 · S v0.88.0 build_state_verify_sheets) ----
         if hasattr(S, "build_state_verify_sheets"):
             try:
@@ -15378,7 +15470,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _r105_lines = list(_r105_lines) + list(_l110)
             except Exception as _e110:
                 log("REPORT", kv(event="state_verify_failed", layer="I", err=type(_e110).__name__, msg=str(_e110)[:160]), M=M, level="warning")
-        sheets = S.sheets_to_front(sheets, "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_산업상태판",
+        sheets = S.sheets_to_front(sheets, "00H_하락확률문턱", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
+                                   "00V_상태판정검증", "00T_산업상태판",
                                    "00R_신뢰도판정", "00B_수익곡선비교",
                                    "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교", "00E_산업상승확률")
 
@@ -15566,6 +15659,9 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         _lm = None
         if alloc and alloc.get("label_star"):
             _lm = {"13_산업배분전략": ("전략", str(alloc["label_star"]))}
+        if "00H_하락확률문턱" in sheets:                      # [v0.60.0 R117] 종합 1위 행 노란색
+            _lm = dict(_lm or {})
+            _lm["00H_하락확률문턱"] = ("라이브", "★ 종합 1위(라이브)")
         if "title" in _wp and "name_map" in _wp:
             # [v0.26.0 L1] 00B_곡선그래프 차트 제목에 산업 한글명을 쓴다(S v0.58.0+).
             if "live_marks" in _wp:

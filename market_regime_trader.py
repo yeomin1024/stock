@@ -22,6 +22,18 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.78.0 - 2026-09-29 - [R117 ★ 다음날 하락확률 문턱 · 종합 1위 라이브(SPY) · 네 층 공통 함수]
+#    사용자 지시(2026-09-29): "… 지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서
+#      몇퍼센트 이하인 종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정하라고".
+#    (공통 · M 원본) r117_asset_features · r117_market_features · r117_prob_panel(층별 풀드 로지스틱 · 매년 과거만으로 재학습 · 다음 거래일 수익 < 0) ·
+#         r117_apply(문턱 이하만 보유 · A 현금 · B 재분배) · r117_rel(수익배수·회피·참여·MDD = 00U 정의) · r117_table(종합 점수 = 회피 + 참여 + 배수 변화% ·
+#         1위 = '★ 종합 1위(라이브)' · 동점이면 필터 없음) · r117_sheet(00H_하락확률문턱 · 00 줄). 문턱 50·49·…·40·38·35%.
+#    ⚠ 오프라인(r117/prob117·thr117 · 네 층 하네스): 다음날 하락확률 AUC M 0.515 · S 0.490 · I 0.501 · K 0.497(0.5 = 동전) → 네 층 모두 종합 1위 = 필터 없음
+#      (필터 행은 배수 −47~−53% · 참여 −9~−23). 매 실행 같은 규칙으로 다시 골라 필터가 1위가 되면 자동 라이브(R117_LIVE · 되돌리기 R117_LIVE=False).
+#    (§1 M) Config R117_ENABLE · R117_LIVE · R117_THRESHOLDS · R117_MIN_ROWS(캐시 무시 목록) · apply_r117_down_prob(R113 뒤 · 백테스트 전):
+#         SPY 하락확률(지표 + M 복합점수·위험·급락트리거) → 문턱별 run_backtest → 종합 1위가 필터면 target_pos 교체(pos_pre_r117 · r117_p_down 열) ·
+#         res['r117'] · 00H_하락확률문턱(1위 노란색 live_marks) · 00 줄 · 01 '다음날 하락확률(R117)'. COMPANION_MIN_VERSIONS S v0.94.0 · I v0.60.0 · K v0.27.0.
+#         시험 t117/test_r117.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.77.0 - 2026-09-29 - [R116 00Y 구간 원인(SPY 지그재그 · 회피·참여 결손) — 신호·목표비중 무변경]
 #    사용자 지시(2026-09-29): "결과 폴더에 올렸어 국면, 섹터, 산업, 주식층 모두 손실 큰 구간이 왜 그런지 모두 찾아서 원인 분석하고 개선해 모두 개선될 때 까지
 #      계속 테스트, 개선 반복해서 알려줘 회피, 참여 둘다 상승시켜야 하는거야".
@@ -3230,6 +3242,14 @@ class Config:
     R113_RATE_CUT_A: float = 0.025
     R113_RATE_BOOST_A: float = 0.01
     R113_RATE_CUT_B: float = 0.015
+    # [v1.78.0 R117 ★ 사용자 지시(2026-09-29) "… 다음날 하락확률 … 50%에서 단계적으로 낮추면서 … 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로"]
+    #   apply_r117_down_prob: SPY 다음날 하락확률(워크포워드 로지스틱) → 문턱(R117_THRESHOLDS) 이하 날만 보유 → 수익배수·회피·참여·종합 점수 →
+    #   종합 1위가 필터면 R117_LIVE일 때 target_pos에 적용(필터 없음이 1위면 무변경). 00H_하락확률문턱(1위 노란색) · 00 줄 · 01 '다음날 하락확률(R117)'.
+    #   되돌리기: m_overrides={'R117_LIVE': False}(측정만) · {'R117_ENABLE': False}(계산도 끔).
+    R117_ENABLE: bool = True
+    R117_LIVE: bool = True
+    R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
+    R117_MIN_ROWS: int = 250
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -7196,6 +7216,7 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "CASH_INTEREST",                                                                           # [v1.69.0 R105] 백테스트 현금 이자(신호 무관)
     # [v1.75.0 R113] 라이브 SPY 신호 뒤 금리 급등 경보 측정 열(검증·워크포워드·S·I 국면 모형 무관 · 교훈 31)
     "R113_RATE_MEASURE", "R113_RATE_LIVE", "R113_RATE_WINDOW", "R113_RATE_CUT_A", "R113_RATE_BOOST_A", "R113_RATE_CUT_B",
+    "R117_ENABLE", "R117_LIVE", "R117_THRESHOLDS", "R117_MIN_ROWS",                              # [v1.78.0 R117] 신호 뒤 하락확률 문턱(검증·가중치 무관)
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -8674,6 +8695,349 @@ def apply_r113_rate_measure(sig: pd.DataFrame, px_dict: Optional[Dict[str, pd.Da
                      cut_b=diag["cut_b_days"], ief20_now=diag["ief20_now"],
                      note=("⚠ 라이브 적용(R113_RATE_LIVE) — 되돌리기 m_overrides={'R113_RATE_LIVE': ''}" if diag["live"] in ("A", "B")
                            else "측정 전용 — target_pos 무변경")), level=("warning" if diag["live"] in ("A", "B") else "info"))
+    return out, diag
+
+
+# =============================================================================
+# [v1.78.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 — 네 층 공통 핵심(M 원본 · S·I·K가 이 함수들을 부른다)
+#   "지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서 몇퍼센트 이하인
+#    종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정".
+#   하락확률 = P(다음 거래일 종가 대 종가 수익 < 0) — 층별 풀드 로지스틱(L2 · 표준화) · 매년 1/1 − 5일까지 결과가 확정된 행만 학습(워크포워드 · 인과).
+#   지표: 자산 1·5·20·60일 수익 · 20/50/200일선 이격 · 20일 변동성 · 5/60 변동성비 · RSI14 · 20일 고점 대비 낙폭 · SPY 대비 20일 상대강도 |
+#         시장: SPY 1·5·20일 수익 · SPY 20일 변동성 + (있으면) M 복합점수·위험(H)·급락트리거 백분위.
+#   문턱 θ(50% → 35%) 이하 자산에만 비중: 빠진 몫 A = 현금 · B = 남은 보유 자산에 비례 재분배(없으면 현금). 확률이 없는 날 = 필터 없음.
+#   종합 점수 = 회피 + 참여 + 수익배수 변화%(필터 없음 대비) — 가장 큰 행 = ★ 종합 1위(노란색) → R117_LIVE면 그 규칙이 라이브(필터 없음이 1위면 무변경).
+#   ⚠ 1위 선택은 같은 표본(2018~)에서 고른 것이다(표본 안 선택) · 오프라인(r117): 다음날 하락확률 AUC M 0.515 · S 0.490 · I 0.501 · K 0.497.
+# =============================================================================
+R117_THRESHOLDS_DEFAULT: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
+R117_ASSET_FEATS: Tuple[str, ...] = ("r1", "r5", "r20", "r60", "ext20", "ext50", "ext200", "vol20", "vratio", "rsi14", "dd20", "rel20")
+R117_LIVE_TAG = "★ 종합 1위(라이브)"
+R117_SHEET = "00H_하락확률문턱"
+
+
+def r117_asset_features(ret: pd.Series, spy_ret: pd.Series) -> pd.DataFrame:
+    """[R117] 자산 하나의 일별 지표(t 종가까지 · 인과)."""
+    r = pd.to_numeric(pd.Series(ret), errors="coerce").astype(float)
+    c = (1.0 + r.fillna(0.0)).cumprod().where(r.notna())
+    f = pd.DataFrame(index=r.index)
+    f["r1"] = r
+    for n in (5, 20, 60):
+        f[f"r{n}"] = c / c.shift(n) - 1.0
+    for n in (20, 50, 200):
+        f[f"ext{n}"] = c / c.rolling(n, min_periods=int(n * 0.8)).mean() - 1.0
+    f["vol20"] = r.rolling(20, min_periods=15).std() * np.sqrt(252.0)
+    f["vratio"] = r.rolling(5, min_periods=4).std() / r.rolling(60, min_periods=40).std()
+    up = r.clip(lower=0.0).rolling(14, min_periods=10).mean()
+    dn = (-r.clip(upper=0.0)).rolling(14, min_periods=10).mean()
+    f["rsi14"] = 100.0 - 100.0 / (1.0 + up / dn.replace(0.0, np.nan))
+    f["dd20"] = c / c.rolling(20, min_periods=15).max() - 1.0
+    sc = (1.0 + pd.to_numeric(pd.Series(spy_ret), errors="coerce").reindex(r.index).fillna(0.0)).cumprod()
+    f["rel20"] = f["r20"] - (sc / sc.shift(20) - 1.0)
+    return f.replace([np.inf, -np.inf], np.nan)
+
+
+def r117_market_features(spy_ret: pd.Series, extra: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """[R117] 시장 지표 — SPY 1·5·20일 수익 · 20일 변동성 + extra(M 복합점수·위험·급락트리거 백분위 등)."""
+    s = pd.to_numeric(pd.Series(spy_ret), errors="coerce").astype(float)
+    sc = (1.0 + s.fillna(0.0)).cumprod()
+    m = pd.DataFrame({"spy_r1": s, "spy_r5": sc / sc.shift(5) - 1.0, "spy_r20": sc / sc.shift(20) - 1.0,
+                      "spy_vol20": s.rolling(20, min_periods=15).std() * np.sqrt(252.0)}, index=s.index)
+    if isinstance(extra, pd.DataFrame):
+        for c in extra.columns:
+            m[c] = pd.to_numeric(extra[c], errors="coerce").reindex(m.index)
+    return m.replace([np.inf, -np.inf], np.nan)
+
+
+def r117_m_extra(res: Optional[dict]) -> Optional[pd.DataFrame]:
+    """[R117] M 결과(res)에서 시장 extra 지표(복합점수·위험(H)·급락트리거 백분위). 없으면 None."""
+    if not isinstance(res, dict):
+        return None
+    cols = {}
+    for k, nm in (("score_pct", "m_score"), ("haz_pct", "m_haz"), ("fast_pct", "m_fast")):
+        v = res.get(k)
+        if isinstance(v, pd.Series) and v.notna().any():
+            cols[nm] = pd.to_numeric(v, errors="coerce")
+    return pd.DataFrame(cols) if cols else None
+
+
+def _r117_fit_logit(X: np.ndarray, y: np.ndarray, l2: float, iters: int = 60) -> np.ndarray:
+    Xb = np.c_[np.ones(len(X)), X]
+    b = np.zeros(Xb.shape[1])
+    R = np.eye(Xb.shape[1]) * float(l2)
+    R[0, 0] = 0.0
+    for _ in range(iters):
+        p = 1.0 / (1.0 + np.exp(-np.clip(Xb @ b, -30, 30)))
+        W = p * (1.0 - p)
+        g = Xb.T @ (y - p) - R @ b
+        Hm = (Xb * W[:, None]).T @ Xb + R + np.eye(Xb.shape[1]) * 1e-9
+        step = np.linalg.solve(Hm, g)
+        b = b + step
+        if float(np.max(np.abs(step))) < 1e-7:
+            break
+    return b
+
+
+def _r117_auc(p: np.ndarray, y: np.ndarray) -> float:
+    m = ~(np.isnan(p) | np.isnan(y))
+    p, y = p[m], y[m]
+    n1 = float(y.sum()); n0 = float(len(y) - n1)
+    if n1 < 1 or n0 < 1:
+        return float("nan")
+    r = pd.Series(p).rank().values
+    return float((r[y == 1].sum() - n1 * (n1 + 1) / 2.0) / (n1 * n0))
+
+
+def r117_prob_panel(rets: pd.DataFrame, spy_ret: pd.Series, mkt: Optional[pd.DataFrame] = None, min_rows: int = 250,
+                    l2_per_row: float = 1e-3, eval_start: str = "2018-01-01") -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[R117] 자산들(열) 일수익 → 날짜 × 자산 다음날 하락확률(워크포워드 · 해마다 재학습) · 품질(AUC · Brier vs 워크포워드 기저율 · 십분위)."""
+    rets = pd.DataFrame(rets).apply(pd.to_numeric, errors="coerce")
+    mk = mkt if isinstance(mkt, pd.DataFrame) else r117_market_features(spy_ret)
+    parts = []
+    for a in rets.columns:
+        f = r117_asset_features(rets[a], spy_ret)
+        nxt = rets[a].shift(-1)
+        f["y"] = (nxt < 0).astype(float).where(nxt.notna())
+        f["asset"] = a
+        parts.append(f)
+    if not parts:
+        return pd.DataFrame(), {"ok": False, "note": "자산 없음"}
+    X = pd.concat(parts)
+    X.index.name = "date"
+    X = X.reset_index()
+    dts = pd.DatetimeIndex(X["date"])
+    M_ = mk.reindex(dts).reset_index(drop=True)
+    for c in M_.columns:
+        X[c] = M_[c].values
+    feats = [c for c in list(R117_ASSET_FEATS) + list(M_.columns) if X[c].notna().mean() > 0.3]
+    ok_all = X[feats].notna().all(axis=1).values
+    X["p"] = np.nan
+    X["base"] = np.nan
+    yrs = sorted(set(dts.year))
+    n_fit = 0
+    for yv in yrs:
+        cutoff = pd.Timestamp(year=int(yv), month=1, day=1) - pd.Timedelta(days=5)
+        trm = (dts < cutoff - pd.Timedelta(days=3)) & ok_all & X["y"].notna().values
+        if int(trm.sum()) < int(min_rows):
+            continue
+        tr = X.loc[trm]
+        if tr["y"].nunique() < 2:
+            continue
+        mu, sd = tr[feats].mean(), tr[feats].std().replace(0.0, 1.0)
+        Z = ((tr[feats] - mu) / sd).clip(-5, 5).values
+        b = _r117_fit_logit(Z, tr["y"].values, l2=float(len(tr)) * float(l2_per_row))
+        te = (dts.year == yv) & ok_all
+        if te.any():
+            Zt = ((X.loc[te, feats] - mu) / sd).clip(-5, 5).values
+            X.loc[te, "p"] = 1.0 / (1.0 + np.exp(-np.clip(b[0] + Zt @ b[1:], -30, 30)))
+            X.loc[dts.year == yv, "base"] = float(tr["y"].mean())
+            n_fit += 1
+    P = X.pivot_table(index="date", columns="asset", values="p", aggfunc="last")
+    P = P.reindex(columns=list(rets.columns))
+    s = X[(dts >= pd.Timestamp(eval_start)) & X["p"].notna() & X["y"].notna()]
+    q: Dict[str, Any] = {"ok": bool(n_fit), "fits": n_fit, "rows": int(len(s)), "features": feats}
+    if len(s) > 50:
+        q["auc"] = _r117_auc(s["p"].values, s["y"].values)
+        q["brier"] = float(np.mean((s["p"] - s["y"]) ** 2))
+        q["brier_base"] = float(np.mean((s["base"] - s["y"]) ** 2))
+        q["down_rate"] = float(s["y"].mean())
+        q["p_q"] = [round(float(v), 3) for v in s["p"].quantile([0.05, 0.5, 0.95])]
+        q["auc_by_year"] = {int(k): round(_r117_auc(g["p"].values, g["y"].values), 3) for k, g in s.groupby(pd.DatetimeIndex(s["date"]).year)}
+        try:
+            qq = pd.qcut(s["p"], 10, labels=False, duplicates="drop")
+            q["deciles"] = s.groupby(qq).agg(p=("p", "mean"), y=("y", "mean"), n=("y", "size")).round(4).reset_index(drop=True)
+        except Exception:
+            q["deciles"] = None
+    return P, q
+
+
+def r117_apply(W: pd.DataFrame, P: Optional[pd.DataFrame], th: Optional[float], how: str = "A",
+               colmap: Optional[Dict[str, str]] = None) -> Tuple[pd.DataFrame, float]:
+    """[R117] 비중 W(날짜 × 자산)에서 하락확률 > th인 자산을 뺀다 · A = 현금 · B = 남은 보유 자산에 비례 재분배(없으면 현금).
+    colmap: W 열 → P 열(예: I의 부모 다리 'P_XLK' → 'XLK'). 확률이 없는 칸은 남긴다. 반환 (새 비중, 보유 유지율)."""
+    W = pd.DataFrame(W).astype(float).fillna(0.0)
+    if th is None or P is None or not len(P):
+        return W.copy(), 1.0
+    cm = colmap or {}
+    pm = pd.DataFrame({c: (P[cm.get(c, c)] if cm.get(c, c) in P.columns else pd.Series(np.nan, index=P.index)) for c in W.columns})
+    pm = pm.reindex(W.index)
+    keep = pm.isna() | (pm <= float(th))
+    W2 = W.where(keep, 0.0)
+    held = float(W.values.sum())
+    kept = float(W2.values.sum()) / held if held > 1e-12 else 1.0
+    if str(how).upper() == "B":
+        tot, tot2 = W.sum(axis=1), W2.sum(axis=1)
+        f = (tot / tot2.where(tot2 > 1e-12)).fillna(0.0)
+        W2 = W2.mul(f, axis=0)
+    return W2, kept
+
+
+def _r117_zigzag(curve: pd.Series, min_move: float = 0.05, min_days: int = 3) -> List[Tuple[str, pd.Timestamp, pd.Timestamp]]:
+    """[R117] SPY 지그재그 구간(S user_rel_portfolio와 같은 규칙 · 5% · 3일) — (종류, 시작일, 끝일)."""
+    s = pd.Series(curve).dropna().astype(float)
+    if len(s) < 3 or float(s.min()) <= 0:
+        return []
+    v = s.values
+    out = []
+    hi_i = lo_i = 0
+    dir_, piv, ext = 0, 0, 0
+    for i in range(1, len(v)):
+        if dir_ == 0:
+            if v[i] > v[hi_i]:
+                hi_i = i
+            if v[i] < v[lo_i]:
+                lo_i = i
+            if v[i] <= v[hi_i] * (1.0 - min_move):
+                dir_, piv, ext = -1, hi_i, i
+            elif v[i] >= v[lo_i] * (1.0 + min_move):
+                dir_, piv, ext = 1, lo_i, i
+        elif dir_ == 1:
+            if v[i] > v[ext]:
+                ext = i
+            elif v[i] <= v[ext] * (1.0 - min_move):
+                out.append(("상승", piv, ext))
+                piv, dir_, ext = ext, -1, i
+        else:
+            if v[i] < v[ext]:
+                ext = i
+            elif v[i] >= v[ext] * (1.0 + min_move):
+                out.append(("하락", piv, ext))
+                piv, dir_, ext = ext, 1, i
+    return [(k, s.index[a], s.index[b]) for k, a, b in out if b - a >= int(min_days)]
+
+
+def r117_rel(ret: pd.Series, spy: pd.Series) -> Dict[str, float]:
+    """[R117] 수익배수 · 하락 회피율 · 상승 참여율(SPY 5% 지그재그 · 00U와 같은 정의) · MDD — 전부 %(배수는 배)."""
+    r = pd.to_numeric(pd.Series(ret), errors="coerce").fillna(0.0)
+    sp = pd.to_numeric(pd.Series(spy), errors="coerce").reindex(r.index).fillna(0.0)
+    lev = (1.0 + sp).cumprod()
+    eq = (1.0 + r).cumprod()
+    dn_s = dn_b = up_s = up_b = 0.0
+    for kind, a, b in _r117_zigzag(lev):
+        bs = float(lev.loc[b] / lev.loc[a] - 1.0)
+        ss = float(eq.loc[b] / eq.loc[a] - 1.0)
+        if kind == "하락":
+            dn_s += ss; dn_b += bs
+        else:
+            up_s += ss; up_b += bs
+    return {"배수": float(eq.iloc[-1]) if len(eq) else float("nan"),
+            "회피": (1.0 - dn_s / dn_b) * 100.0 if dn_b < 0 else float("nan"),
+            "참여": (up_s / up_b) * 100.0 if up_b > 0 else float("nan"),
+            "MDD": float((eq / eq.cummax() - 1.0).min()) * 100.0 if len(eq) else float("nan")}
+
+
+def r117_table(rows: List[Dict[str, Any]]) -> Tuple[pd.DataFrame, int]:
+    """[R117] 행(문턱 · 빠진 몫 · 배수 · 회피 · 참여 · MDD · 보유 유지율) → 종합 점수(회피 + 참여 + 배수 변화%) · 1위(동점이면 먼저 = 필터 없음)."""
+    T = pd.DataFrame(rows).reset_index(drop=True)
+    b = T.iloc[0]
+    T["배수 변화%"] = (T["배수"] / float(b["배수"]) - 1.0) * 100.0
+    T["Δ회피"] = T["회피"] - float(b["회피"])
+    T["Δ참여"] = T["참여"] - float(b["참여"])
+    T["ΔMDD"] = T["MDD"] - float(b["MDD"])
+    T["종합 점수(회피+참여+배수 변화%)"] = T["회피"] + T["참여"] + T["배수 변화%"]
+    sc = T["종합 점수(회피+참여+배수 변화%)"].fillna(-1e9).values
+    bi = int(np.argmax(sc))
+    if sc[bi] <= sc[0] + 1e-9:
+        bi = 0
+    T["라이브"] = [R117_LIVE_TAG if i == bi else "" for i in range(len(T))]
+    return T, bi
+
+
+def r117_sheet(T: Optional[pd.DataFrame], q: Optional[Dict[str, Any]], layer: str, live_applied: bool, best_label: str,
+               today: Optional[pd.Series] = None, note: str = "") -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[R117] 00H_하락확률문턱 시트(A 문턱 표 · B 확률 모형 품질 · C 마지막 날 자산별 하락확률 · D 읽는 법) + 00 줄."""
+    parts = []
+    lines: List[Tuple[str, str]] = []
+    if isinstance(T, pd.DataFrame) and len(T):
+        a = T.copy()
+        a.insert(0, "블록", "A 문턱 비교(2018~ · 5bp · 현금 이자 0)")
+        parts.append(a.round(4))
+    q = q or {}
+    if q.get("ok"):
+        parts.append(pd.DataFrame([{"블록": "B 확률 모형 품질(표본 밖 · 2018~)", "문턱": "AUC(0.5 = 동전)", "빠진 몫": round(float(q.get("auc", np.nan)), 4)},
+                                   {"블록": "B 확률 모형 품질(표본 밖 · 2018~)", "문턱": "Brier(모형) / Brier(워크포워드 기저율)",
+                                    "빠진 몫": f"{q.get('brier', np.nan):.5f} / {q.get('brier_base', np.nan):.5f}"},
+                                   {"블록": "B 확률 모형 품질(표본 밖 · 2018~)", "문턱": "실제 하락 비율 · 확률 5/50/95%",
+                                    "빠진 몫": f"{q.get('down_rate', np.nan):.3f} · {q.get('p_q')}"},
+                                   {"블록": "B 확률 모형 품질(표본 밖 · 2018~)", "문턱": "연도별 AUC", "빠진 몫": str(q.get("auc_by_year"))}]))
+        dec = q.get("deciles")
+        if isinstance(dec, pd.DataFrame) and len(dec):
+            parts.append(pd.DataFrame([{"블록": "B 십분위(예측 → 실제 하락 비율)", "문턱": f"{i + 1}분위",
+                                        "빠진 몫": f"예측 {r_['p']:.3f} → 실제 {r_['y']:.3f} (n={int(r_['n'])})"} for i, r_ in dec.iterrows()]))
+    if isinstance(today, pd.Series) and len(today.dropna()):
+        td = today.dropna().sort_values()
+        parts.append(pd.DataFrame([{"블록": f"C 마지막 날 다음날 하락확률({layer})", "문턱": k, "빠진 몫": round(float(v), 4)} for k, v in td.items()]))
+    parts.append(pd.DataFrame([{"블록": "D 읽는 법", "문턱": a_, "빠진 몫": b_} for a_, b_ in (
+        ("하락확률", "P(다음 거래일 수익 < 0) · 지표: 자산 1·5·20·60일 수익 · 20/50/200일선 이격 · 20일 변동성 · 변동성비 · RSI14 · 20일 낙폭 · SPY 대비 상대강도 · "
+                    "시장(SPY 수익·변동성 · M 복합점수·위험·급락트리거) · 층별 풀드 로지스틱 · 매년 과거만으로 재학습"),
+        ("문턱 규칙", "하락확률 ≤ 문턱인 자산만 보유 · A = 빠진 몫 현금 · B = 남은 보유 자산에 비례 재분배 · 확률 없는 날은 필터 없음"),
+        ("종합 점수", "회피 + 참여 + 수익배수 변화%(필터 없음 대비) · 가장 큰 행 = ★ 종합 1위(노란색) = 라이브"),
+        ("⚠", "1위는 같은 표본(2018~)에서 고른 것 · 확률에 방향 정보가 없으면(AUC ≈ 0.5) 문턱은 매일 들락날락(비용) + 좋은 날도 빼서 배수·참여가 준다. "
+              "연구·교육용, 투자 자문 아님"))]))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    if isinstance(T, pd.DataFrame) and len(T):
+        b0 = T.iloc[0]
+        bi = int(np.flatnonzero(T["라이브"].eq(R117_LIVE_TAG))[0]) if T["라이브"].eq(R117_LIVE_TAG).any() else 0
+        bb = T.iloc[bi]
+        worst = T.iloc[1:].sort_values("종합 점수(회피+참여+배수 변화%)").head(1)
+        top = T.iloc[1:].sort_values("종합 점수(회피+참여+배수 변화%)", ascending=False).head(1)
+        lines.append((f"★★★ R117 다음날 하락확률 문턱({layer} · 50% → 35% · 종합 1위 = 라이브) — 사용자 지시 2026-09-29",
+                      f"종합 1위: {bb['문턱']}" + (f"·{bb['빠진 몫']}" if bb["빠진 몫"] != "-" else "")
+                      + f" → 배수 {bb['배수']:.2f} · 회피 {bb['회피']:.1f} · 참여 {bb['참여']:.1f} · MDD {bb['MDD']:.2f}%"
+                      + (" · ★ 라이브 적용" if live_applied else (" · 라이브 = 필터 없음(무변경)" if bi == 0 else " · 측정만(R117_LIVE 꺼짐)"))
+                      + f" | 필터 없음: 배수 {b0['배수']:.2f} · 회피 {b0['회피']:.1f} · 참여 {b0['참여']:.1f}"
+                      + (f" | 필터 중 최고 {top.iloc[0]['문턱']}·{top.iloc[0]['빠진 몫']}: 배수 {top.iloc[0]['배수 변화%']:+.0f}% · Δ회피 {top.iloc[0]['Δ회피']:+.1f} · "
+                         f"Δ참여 {top.iloc[0]['Δ참여']:+.1f}" if len(top) else "")
+                      + (f" | 확률 AUC {q.get('auc', float('nan')):.3f}(0.5 = 동전) · Brier {q.get('brier', float('nan')):.4f} vs 기저율 {q.get('brier_base', float('nan')):.4f}"
+                         if q.get("ok") and "auc" in q else "")
+                      + (f" · {note}" if note else "") + " — 세부 00H. 연구·교육용, 투자 자문 아님."))
+    elif note:
+        lines.append((f"★★★ R117 다음날 하락확률 문턱({layer})", f"⚠ {note}"))
+    return df, lines
+
+
+def apply_r117_down_prob(sig: pd.DataFrame, price: pd.DataFrame, px_adj: Optional[pd.Series], cfg: Config,
+                         rf_daily: Optional[pd.Series] = None, m_extra: Optional[pd.DataFrame] = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.78.0 R117] M(SPY) 다음날 하락확률 → 문턱 비교(run_backtest · 2018~) → 종합 1위가 필터면 R117_LIVE일 때 target_pos에 적용.
+    sig에 pos_pre_r117(적용 전) · r117_p_down 열을 남긴다. 실패하면 호출부가 R117 없이 계속."""
+    out = sig.copy()
+    diag: Dict[str, Any] = {"enabled": False, "live_applied": False}
+    tp = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r117"] = tp.copy()
+    px = px_adj if isinstance(px_adj, pd.Series) and px_adj.notna().any() else price["Close"]
+    spy_r = pd.to_numeric(px, errors="coerce").astype(float).pct_change()
+    mk = r117_market_features(spy_r, m_extra)
+    P, q = r117_prob_panel(pd.DataFrame({"SPY": spy_r}), spy_r, mk, min_rows=int(getattr(cfg, "R117_MIN_ROWS", 250)))
+    p = P["SPY"].reindex(out.index) if "SPY" in P.columns else pd.Series(np.nan, index=out.index)
+    out["r117_p_down"] = p
+    s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-02"))
+    rows = []
+    variants: Dict[str, pd.Series] = {}
+
+    def _ev(pos, lab, how, kept):
+        b = run_backtest(price, pos, cfg, rf_daily)
+        b = b.loc[b.index >= s0]
+        rows.append({"문턱": lab, "빠진 몫": how, **r117_rel(b["strategy_ret"], b["bh_ret"]), "보유 유지율": round(kept, 4)})
+    _ev(tp, "필터 없음", "-", 1.0)
+    variants["필터 없음"] = tp
+    live_days = tp > 1e-9
+    for th in tuple(getattr(cfg, "R117_THRESHOLDS", R117_THRESHOLDS_DEFAULT) or ()):
+        keep = p.isna() | (p <= float(th))
+        pos = tp.where(keep, 0.0)
+        kept = float(keep[live_days & (tp.index >= s0)].mean()) if bool((live_days & (tp.index >= s0)).any()) else 1.0
+        _ev(pos, f"{float(th):.0%}", "A(현금)", kept)
+        variants[f"{float(th):.0%}"] = pos
+    T, bi = r117_table(rows)
+    best = str(T.iloc[bi]["문턱"])
+    if bi != 0 and bool(getattr(cfg, "R117_LIVE", True)):
+        out["target_pos"] = variants[best]
+        diag["live_applied"] = True
+    diag.update({"enabled": True, "table": T, "quality": q, "best": best, "best_idx": bi, "p_today": (float(p.dropna().iloc[-1]) if p.notna().any() else None),
+                 "p_series": p})
+    log("SIGNAL", kv(event="r117_down_prob", auc=round(float(q.get("auc", np.nan)), 4) if q.get("ok") else None, best=best,
+                     live_applied=diag["live_applied"], p_today=diag["p_today"],
+                     note=("⚠ 라이브 적용(R117 종합 1위) — 되돌리기 m_overrides={'R117_LIVE': False}" if diag["live_applied"]
+                           else "종합 1위 = 필터 없음(라이브 무변경)" if bi == 0 else "측정만(R117_LIVE 꺼짐)")),
+        level=("warning" if diag["live_applied"] else "info"))
     return out, diag
 
 
@@ -12110,6 +12474,16 @@ def run(cfg: Config = CFG) -> dict:
         log("SIGNAL", kv(event="r113_rate_measure_failed", err=type(_e113).__name__, msg=str(_e113)[:160],
                          action="측정 열 없이 계속(라이브 무영향) — 00 줄에 표시"), level="error")
         r113_diag = {"enabled": False, "error": f"{type(_e113).__name__}: {str(_e113)[:120]}"}
+    # [v1.78.0 R117 ★ 사용자 지시] 다음날 하락확률 문턱 비교 → 종합 1위가 필터면 target_pos에 적용(R117_LIVE). 실패하면 R117 없이 계속.
+    r117_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(cfg, "R117_ENABLE", True)):
+        try:
+            sig, r117_diag = apply_r117_down_prob(sig, price, px_adj, cfg, rf_daily,
+                                                  m_extra=r117_m_extra({"score_pct": score_pct, "haz_pct": haz_pct, "fast_pct": fast_pct}))
+        except Exception as _e117:
+            log("SIGNAL", kv(event="r117_down_prob_failed", err=type(_e117).__name__, msg=str(_e117)[:160],
+                             action="R117 없이 계속(= v1.77.0 라이브) — 00 줄에 표시"), level="error")
+            r117_diag = {"enabled": False, "error": f"{type(_e117).__name__}: {str(_e117)[:120]}"}
     reason = build_reason_text(contrib, sig["state"], score)
     t_sig_done = time.time()
     stage_timing["07_신호생성(H점수+국면신호)"] = round(t_sig_done - t_wf_done, 2)
@@ -12261,6 +12635,7 @@ def run(cfg: Config = CFG) -> dict:
             "r96": r96_diag,                                                               # [v1.64.0 R96] 변동성 관리 발동 요약
             "r98": r98_diag,                                                               # [v1.66.0 R98] 측정 열 요약(V1·V1강·이웃·VRP)
             "r113": r113_diag,                                                             # [v1.75.0 R113] 금리 급등 경보 측정 열 요약
+            "r117": r117_diag,                                                             # [v1.78.0 R117] 다음날 하락확률 문턱(표 · 1위 · 라이브)
             "stage_timing": stage_timing}
 
 
@@ -13113,6 +13488,8 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
         daily["과열헤어컷(E)"] = np.where(_eh, "상한 " + _ec.map(lambda v: f"{float(v):g}" if pd.notna(v) else ""), "")   # [v1.63.0] :g(0.55가 0.6으로 보였다)
     else:
         daily["과열헤어컷(E)"] = ""
+    if "r117_p_down" in sig.columns:                  # [v1.78.0 R117] SPY 다음날 하락확률(워크포워드)
+        daily["다음날 하락확률(R117)"] = pd.to_numeric(sig["r117_p_down"], errors="coerce").reindex(idx).round(4)
     # [v1.21.0 §C] 규칙 ⑪ 레버리지 발동일(기본 비활성이면 전부 공란).
     daily["레버리지(L)"] = sig["leverage"].reindex(idx).map({True: "발동", False: ""}) \
         if "leverage" in sig.columns else ""
@@ -13347,6 +13724,18 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     _x110, _r110_m_lines = r110_extra_sheets_m(res, cfg)          # [v1.72.0 R110] 00V 상태 판정·검증 · 01V 날짜별 상태
     sheets.update(_x110)
     _r105_m_lines = list(_r105_m_lines) + list(_r110_m_lines)
+    # [v1.78.0 R117 ★] 00H_하락확률문턱(종합 1위 노란색) · 00 줄 — 맨 앞 줄 묶음
+    try:
+        _d117 = res.get("r117") or {}
+        if _d117.get("enabled"):
+            _h117, _l117 = r117_sheet(_d117.get("table"), _d117.get("quality"), "M · SPY", bool(_d117.get("live_applied")), str(_d117.get("best")),
+                                      today=(pd.Series({"SPY": _d117.get("p_today")}) if _d117.get("p_today") is not None else None))
+            sheets[R117_SHEET] = _h117
+            _r105_m_lines = list(_l117) + list(_r105_m_lines)
+        elif _d117.get("error"):
+            _r105_m_lines = [("★★★ R117 다음날 하락확률 문턱(M)", f"⚠ 산출 실패 — {_d117['error']} (라이브는 R117 없이 계속)")] + list(_r105_m_lines)
+    except Exception as _e117:   # noqa — 표시 전용
+        log("REPORT", kv(event="r117_sheet_failed", layer="M", err=type(_e117).__name__, msg=str(_e117)[:160]), "warning")
     # [v1.53.0 F5 ★] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이
     #   있다")를 **M 자신에게도** 적용한다. 그동안 S 리포트에서 우회 계산으로만 보이던 값이다(REPORT47 §2.2:
     #   SPY h=21 현금 기준 MCC +0.160 · '상승 아님' +0.187 — M은 소수 클래스에 정보가 있고 섹터 재추정이
@@ -13729,10 +14118,10 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
     # [v1.61.0 R93] 파일명 끝에 코드 버전(사용자 지시) — 돌려주는 경로가 실제 파일이다(러너는 이 값을 그대로 쓴다).
     _out = versioned_report_path(cfg.OUT_XLSX, BUNDLE_VERSION, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
-    _front5 = [n for n in ("00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106] 00 바로 뒤
+    _front5 = [n for n in (R117_SHEET, "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106 · v1.78.0 R117] 00 바로 뒤
     sheets = {**{n: sheets[n] for n in _front5}, **{k: v for k, v in sheets.items() if k not in _front5}}
     write_excel(_out, sheets, bt, meta, cfg,
-                live_marks={"06_성과요약": ("전략", "복합지표 전략")})
+                live_marks={"06_성과요약": ("전략", "복합지표 전략"), R117_SHEET: ("라이브", R117_LIVE_TAG)})
     log("REPORT", kv(event="report_ready", file=_out, rows_daily=len(daily),
                      trades=len(trades), adopted=len(adopted),
                      elapsed_s=round(time.time() - t0, 2)))
@@ -13790,13 +14179,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.77.0"
+BUNDLE_VERSION = "v1.78.0"
 BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.93.0", "industry_rotation": "v0.59.0", "stock_regime": "v0.26.0"}   # [v1.77.0 R116]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.94.0", "industry_rotation": "v0.60.0", "stock_regime": "v0.27.0"}   # [v1.78.0 R117]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
