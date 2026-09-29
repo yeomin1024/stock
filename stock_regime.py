@@ -1,5 +1,21 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.28.0 - 2026-09-29 - [R118 ★ 전 지표 · 의미 가족 하락확률(K★ 문턱 단계) · 00H2_지표의미]
+#    사용자 지시(2026-09-29): "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
+#      다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
+#    (공통 · M 원본) R117의 다음날 하락확률(자산 12 + 시장 7 지표)을 '전 지표 · 의미 가족' 확률로 바꿨다(문턱 표 · 종합 1위 · 라이브 규칙은 R117 그대로):
+#      지표 = M 후보 287(사전부호) + predictor 풀 약 4,800(새 파일 indicator_pool.py = 사용자 predictor_test1.py compute_features 추출 · 룩어헤드 5곳 패치)
+#           + M 계층(복합점수·위험·급락트리거) + 달력(월말·월초) + 층별 자산 지표(predictor 계열 약 120 · S 후보 · 섹터 매크로 · 부모 대비 · K 패널 25).
+#      의미: 지표 → 의미 가족 33개(신용·곡선·금리·물가·고용·경기·심리·유동성·달러·안전자산·원자재·해외·변동성·기간구조·꼬리·채권변동성·추세·낙폭·
+#            단기과열·거래량·캔들·분포·시장폭·회전·하위산업·초대형주·포지션·밸류에이션·하락경보합성·달력 …) · 사전부호 지표는 그 부호로, predictor 지표는
+#            가족 1주성분을 '의미가 분명한 앵커'(신용 = HYG/IEF ↓ · 변동성 = VIX ↑ · 추세 = 200일선 이격 ↓ …)와 같은 방향으로(표적을 보지 않음) →
+#            가족 점수 → 층별 풀드 로지스틱(가중 ≥ 0 = 의미와 같은 방향으로만) · 매년 과거만으로 재학습 · 표적 = 다음 체결일(t+1 시가 → t+2 시가).
+#      새 시트 00H2_지표의미(가족표 · 전 지표표: 출처 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC) · 00H 십분위에 다음 체결일 평균 수익.
+#    ⚠ 로컬 실측(r118 · 2018~ 표본 밖 AUC): M 0.500 → 0.522 · S 0.500 → 0.511 · I 0.500 → 0.518 · M 지표만 0.525 · predictor 지표 하나하나 평균 0.504.
+#      하락확률 상위 10% 날의 다음날 평균 수익이 오히려 가장 높다(변동성 큰 날 = 큰 반등) → 문턱 표 1위는 대개 '필터 없음'(라이브 무변경).
+#    (§1 K) R118_K_SPEC(K 패널 지표 25 · 사전부호 · 가족 K:TREND/REVERT/VOL/BREAK/FUND/EARN) · r118_prob_k(종목 시계열 z 가족 K:* + 날짜별 종목 간
+#         순위 가족 KX:* + 종가·시가 자산 지표 풀 + M 시장 가족(M.R118_LAST · 같은 프로세스) + 베타×시장) · r118_prob_etf(섹터 ETF 다리) ·
+#         StockConfig R118_ENABLE · 00H2_지표의미. 시험 t118. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.27.0 - 2026-09-29 - [R117 ★ 다음날 하락확률 문턱 · 종합 1위 라이브(K★ 마지막 단계)]
 #    사용자 지시(2026-09-29): "… 지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서
 #      몇퍼센트 이하인 종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정하라고".
@@ -760,7 +776,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.27.0"
+VERSION = "v0.28.0"
 VERSION_DATE = "2026-09-29"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -1284,6 +1300,8 @@ class StockConfig:
     R117_ENABLE: bool = True
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
+    # [v0.28.0 R118 ★ 사용자 지시(2026-09-29)] R117 확률을 전 지표 · 의미 가족 확률로 대체(같은 프로세스 M v1.79.0의 R118_LAST 필요 · 없으면 R117). 끄기 k_overrides={'R118_ENABLE': False}
+    R118_ENABLE: bool = True
     R111_SHOCK_MIN: int = 3
     R111_FILL_CAP: float = 0.10
     R111_FILL_GAMMA: float = 2.0
@@ -3393,6 +3411,76 @@ def _find_sector_module():
         except Exception:
             continue
     return None
+
+
+# [v0.28.0 R118 ★ 사용자 지시(2026-09-29)] K 패널 지표의 의미(사전부호: +1 = 값이 클수록 이후 수익 ↑)와 가족 — 하락확률에서는 '위험 방향'(−부호)으로 돌린다.
+R118_K_SPEC: Dict[str, Tuple[int, str, str]] = {
+    "ext200": (+1, "K:TREND", "200일선 이격(추세)"), "mom63": (+1, "K:TREND", "3개월 모멘텀"), "mom126": (+1, "K:TREND", "6개월 모멘텀"),
+    "dd63": (+1, "K:TREND", "63일 고점 대비 낙폭(얕을수록 추세 양호)"),
+    "mom21": (-1, "K:REVERT", "1개월 수익(단기 반전)"), "ret5": (-1, "K:REVERT", "5일 수익(1주 반전)"), "ma20_ext": (-1, "K:REVERT", "20일선 이격(단기 과열)"),
+    "vol21": (-1, "K:VOL", "21일 변동성"), "park5": (-1, "K:VOL", "5일 Parkinson 변동성(고저)"), "atr14": (-1, "K:VOL", "ATR14"),
+    "거래대금21_pct": (-1, "K:VOL", "거래대금 백분위(과열 관심)"),
+    "ma20_cross_dn": (-1, "K:BREAK", "20일선 하향 이탈"), "atr_trail_break": (-1, "K:BREAK", "ATR 추적손절 이탈"),
+    "매출_YoY": (+1, "K:FUND", "매출 전년비"), "EPS_YoY": (+1, "K:FUND", "EPS 전년비"), "영업이익률": (+1, "K:FUND", "영업이익률"),
+    "영업이익률_변화": (+1, "K:FUND", "영업이익률 변화"), "매출성장_가속": (+1, "K:FUND", "매출 성장 가속"),
+    "어닝_서프라이즈%": (+1, "K:EARN", "실적 서프라이즈(실적 후 표류)"), "어닝_갭%": (+1, "K:EARN", "실적 발표 갭"),
+    "EPS_YoY_E": (+1, "K:EARN", "EPS 전년비(추정)"), "EPS_가속_E": (+1, "K:EARN", "EPS 가속(추정)"), "EPS_TTM_YoY_E": (+1, "K:EARN", "TTM EPS 전년비"),
+    "서프라이즈_4분기평균": (+1, "K:EARN", "서프라이즈 4분기 평균"), "서프라이즈_연속음수": (-1, "K:EARN", "서프라이즈 연속 음수"),
+}
+
+
+def r118_prob_k(panel: Dict[str, pd.DataFrame], M, F: Optional[pd.DataFrame], spy_close: Optional[pd.Series],
+                first_year: int = 2018, eval_start: str = "2019-01-01") -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.28.0 R118 ★] K 종목 전 지표 하락확률 — M 시장 가족(F) + 자산 지표 풀(종가·시가 · M.r118_asset_pool) + K 패널 지표 25개
+    (종목 시계열 z 가족 K:* · 날짜별 종목 간 순위 가족 KX:* · 사전부호로 위험 방향) + 베타 × 시장 → M.r118_layer_prob. 표적 = 다음 체결일(장중 t+1 × 야간 t+2)."""
+    tk = sorted(t for t, d in (panel or {}).items() if isinstance(d, pd.DataFrame) and "종가" in d.columns)
+    g = lambda col: pd.DataFrame({t: pd.to_numeric(panel[t][col], errors="coerce") for t in tk if col in panel[t].columns})
+    C = g("종가")
+    idx = C.index
+    ov, oc = g("야간수익").reindex(idx), g("장중수익").reindex(idx)
+    O = C.shift(1) * (1.0 + ov)
+    fwd = (1.0 + oc.shift(-1)) * (1.0 + ov.shift(-2)) - 1.0
+    fams: Dict[str, pd.DataFrame] = {}
+    rows = []
+    ev = idx >= pd.Timestamp(eval_start)
+    yv = (fwd.loc[ev] < 0).astype(float).where(fwd.loc[ev].notna())
+    ts: Dict[str, List[pd.DataFrame]] = {}
+    xs: Dict[str, List[pd.DataFrame]] = {}
+    for k, (sg, fam, nk) in R118_K_SPEC.items():
+        X = g(k).reindex(index=idx, columns=tk) if any(k in panel[t].columns for t in tk) else None
+        if X is None or X.notna().sum().sum() < 500:
+            continue
+        Zt = M.r118_z(X) * (-float(sg))
+        Zx = (X.rank(axis=1, pct=True) - 0.5) * (-float(sg))
+        ts.setdefault(fam, []).append(Zt)
+        xs.setdefault("KX:" + fam[2:], []).append(Zx)
+        a1 = M._r117_auc(Zt.loc[ev].values.ravel(), yv.values.ravel())
+        a2 = M._r117_auc(Zx.loc[ev].values.ravel(), yv.values.ravel())
+        rows.append({"출처": "K 패널(사전부호)", "지표": k, "이름": nk, "가족": f"{fam} · KX:{fam[2:]}", "가족 뜻": nk,
+                     "방향(위험 쪽)": ("값 ↓ = 위험" if sg > 0 else "값 ↑ = 위험") + " (K 사전부호)", "가족 적재(최근)": 1.0,
+                     "표본 밖 AUC(2018~)": round(float(a1), 4) if np.isfinite(a1) else np.nan,
+                     "종목 간 순위 AUC": round(float(a2), 4) if np.isfinite(a2) else np.nan})
+    for fam, lst in list(ts.items()) + list(xs.items()):
+        fams[fam] = sum(z.fillna(0.0) for z in lst) / float(len(lst))
+    P, q = M.r118_layer_prob(tk, O, None, None, C, None, F, fwd, extra_fams=fams, first_year=first_year, min_rows=5000,
+                             spy_close=spy_close, eval_start=eval_start)
+    q["extra_tbl"] = pd.DataFrame(rows)
+    q["mkt_fam_tbl"] = (getattr(M, "R118_LAST", {}) or {}).get("fam_tbl")
+    return P, q
+
+
+def r118_prob_etf(etf_panel: Dict[str, pd.DataFrame], cols: List[str], M, F: Optional[pd.DataFrame],
+                  first_year: int = 2016, eval_start: str = "2019-01-01") -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.28.0 R118] K의 섹터 ETF 다리 하락확률(종가·시가 자산 지표 풀 + 시장 가족 + 베타 × 시장)."""
+    cols = [c for c in cols if c in (etf_panel or {})]
+    tk = list(dict.fromkeys(cols + (["SPY"] if "SPY" in (etf_panel or {}) else [])))
+    g = lambda col: pd.DataFrame({t: pd.to_numeric(etf_panel[t][col], errors="coerce") for t in tk})
+    C = g("종가")
+    ov, oc = g("야간수익"), g("장중수익")
+    O = C.shift(1) * (1.0 + ov)
+    fwd = (1.0 + oc.shift(-1)) * (1.0 + ov.shift(-2)) - 1.0
+    return M.r118_layer_prob(cols, O, None, None, C, None, F, fwd[cols], first_year=first_year, min_rows=2000,
+                             spy_close=C["SPY"] if "SPY" in C.columns else None, eval_start=eval_start)
 
 
 def _find_m_module():
@@ -7319,14 +7407,22 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             if _M117 is None:
                 raise ImportError("M(market_regime_trader) 없음 — r117 공통 함수가 필요")
             _spy117 = pd.to_numeric(etf_panel["SPY"]["일간수익"], errors="coerce")
-            _mk117 = _M117.r117_market_features(_spy117)
-            _rs117 = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce") for t in sorted(panel)})
-            _Ps117, _q117 = _M117.r117_prob_panel(_rs117, _spy117, _mk117)
             _ec117 = [e for e in list((alloc.get("etf_w") if isinstance(alloc.get("etf_w"), pd.DataFrame) else pd.DataFrame()).columns) if e in etf_panel]
             _Pe117 = pd.DataFrame()
-            if _ec117:
-                _re117 = pd.DataFrame({e: pd.to_numeric(etf_panel[e]["일간수익"], errors="coerce") for e in _ec117})
-                _Pe117, _ = _M117.r117_prob_panel(_re117, _spy117, _mk117)
+            _F118 = (getattr(_M117, "R118_LAST", {}) or {}).get("F")
+            if bool(getattr(cfg, "R118_ENABLE", True)) and isinstance(_F118, pd.DataFrame) and hasattr(_M117, "r118_layer_prob"):
+                # [v0.28.0 R118 ★] 전 지표 · 의미 가족(M 시장 가족 + 자산 지표 풀 + K 패널 25 시계열·종목 간 순위 + 베타×시장) 하락확률
+                _spc118 = pd.to_numeric(etf_panel["SPY"]["종가"], errors="coerce") if "종가" in etf_panel["SPY"].columns else None
+                _Ps117, _q117 = r118_prob_k(panel, _M117, _F118, _spc118)
+                if _ec117:
+                    _Pe117, _ = r118_prob_etf(etf_panel, _ec117, _M117, _F118)
+            else:
+                _mk117 = _M117.r117_market_features(_spy117)
+                _rs117 = pd.DataFrame({t: pd.to_numeric(panel[t]["일간수익"], errors="coerce") for t in sorted(panel)})
+                _Ps117, _q117 = _M117.r117_prob_panel(_rs117, _spy117, _mk117)
+                if _ec117:
+                    _re117 = pd.DataFrame({e: pd.to_numeric(etf_panel[e]["일간수익"], errors="coerce") for e in _ec117})
+                    _Pe117, _ = _M117.r117_prob_panel(_re117, _spy117, _mk117)
             _P117 = pd.concat([_Ps117, _Pe117.add_prefix("ETF_")], axis=1) if len(_Pe117) else _Ps117
             _sp117 = _spy117.reindex(alloc["port_ret"].index).fillna(0.0)
             _rows117 = [{"문턱": "필터 없음", "빠진 몫": "-", **_M117.r117_rel(alloc["port_ret"], _sp117), "보유 유지율": 1.0}]
@@ -8816,6 +8912,12 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                                                  str(_d117.get("best")), today=_d117.get("p_today"))
                 sheets[_M117r.R117_SHEET] = _h117
                 _add[0:0] = list(_l117)
+                _q118 = _d117.get("quality") or {}
+                if str(_q118.get("method", "")).startswith("R118") and hasattr(_M117r, "r118_sheet"):   # [v0.28.0 R118] 00H2_지표의미
+                    _h118, _l118 = _M117r.r118_sheet("K★ · 주식", _q118, {"fam_tbl": _q118.get("mkt_fam_tbl")}, extra_tbl=_q118.get("extra_tbl"),
+                                                     note="시장 지표(M 후보 · predictor 풀) 하나하나는 M 리포트 00H2 · 종목은 고가·저가·거래량 원자료가 패널에 없어 종가·시가 지표 + K 패널 지표")
+                    sheets[_M117r.R118_SHEET] = _h118
+                    _add[0:0] = list(_l118)
             elif _d117.get("error"):
                 _add.insert(0, ("★★★ R117 다음날 하락확률 문턱(K★)", f"⚠ 산출 실패 — {_d117['error']} (K★ 무변경)"))
         except Exception as e:
@@ -8952,7 +9054,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     if isinstance(res.get("user_rel"), pd.DataFrame) and len(res["user_rel"]):
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00H_하락확률문턱", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
+    _front = [n for n in ("00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
                           "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00X_손실구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
                           "00N_종목선별근거", "01Z_주식일별예측",
                           "00_실행요약") if n in sheets]

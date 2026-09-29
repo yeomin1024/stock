@@ -17,6 +17,23 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.95.0 - 2026-09-29 - [R118 ★ 전 지표 · 의미 가족 하락확률(S★ 문턱 단계) · 00H2_지표의미]
+#    사용자 지시(2026-09-29): "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
+#      다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
+#    (공통 · M 원본) R117의 다음날 하락확률(자산 12 + 시장 7 지표)을 '전 지표 · 의미 가족' 확률로 바꿨다(문턱 표 · 종합 1위 · 라이브 규칙은 R117 그대로):
+#      지표 = M 후보 287(사전부호) + predictor 풀 약 4,800(새 파일 indicator_pool.py = 사용자 predictor_test1.py compute_features 추출 · 룩어헤드 5곳 패치)
+#           + M 계층(복합점수·위험·급락트리거) + 달력(월말·월초) + 층별 자산 지표(predictor 계열 약 120 · S 후보 · 섹터 매크로 · 부모 대비 · K 패널 25).
+#      의미: 지표 → 의미 가족 33개(신용·곡선·금리·물가·고용·경기·심리·유동성·달러·안전자산·원자재·해외·변동성·기간구조·꼬리·채권변동성·추세·낙폭·
+#            단기과열·거래량·캔들·분포·시장폭·회전·하위산업·초대형주·포지션·밸류에이션·하락경보합성·달력 …) · 사전부호 지표는 그 부호로, predictor 지표는
+#            가족 1주성분을 '의미가 분명한 앵커'(신용 = HYG/IEF ↓ · 변동성 = VIX ↑ · 추세 = 200일선 이격 ↓ …)와 같은 방향으로(표적을 보지 않음) →
+#            가족 점수 → 층별 풀드 로지스틱(가중 ≥ 0 = 의미와 같은 방향으로만) · 매년 과거만으로 재학습 · 표적 = 다음 체결일(t+1 시가 → t+2 시가).
+#      새 시트 00H2_지표의미(가족표 · 전 지표표: 출처 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC) · 00H 십분위에 다음 체결일 평균 수익.
+#    ⚠ 로컬 실측(r118 · 2018~ 표본 밖 AUC): M 0.500 → 0.522 · S 0.500 → 0.511 · I 0.500 → 0.518 · M 지표만 0.525 · predictor 지표 하나하나 평균 0.504.
+#      하락확률 상위 10% 날의 다음날 평균 수익이 오히려 가장 높다(변동성 큰 날 = 큰 반등) → 문턱 표 1위는 대개 '필터 없음'(라이브 무변경).
+#    (§1 S) r118_spec_fams(섹터 기술 8 · SPY 대비 상대 11 · 부모 대비 상대 11 · 섹터 매크로 표 → 사전부호 위험 방향 가족) · r118_prob_layer(M 시장 가족 +
+#         M.r118_layer_prob · 가격 = M px_dict(없으면 M 캐시 수집)) → r117_stage_s가 R118 확률 사용(res['r118'] 없으면 R117) · SectorConfig R118_ENABLE ·
+#         00H2_지표의미(가족표 · S 후보 · 자산 지표표). 로컬 AUC 0.500 → 0.511. 시험 t118. 연구·교육용이며 투자 자문이 아니다.
+#    (§2) LAYER_MIN_VERSIONS M v1.79.0 · S v0.95.0 · I v0.61.0.
 #  VERSION: v0.94.0 - 2026-09-29 - [R117 ★ 다음날 하락확률 문턱 · 종합 1위 라이브(S★ 마지막 단계)]
 #    사용자 지시(2026-09-29): "… 지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서
 #      몇퍼센트 이하인 종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정하라고".
@@ -3138,7 +3155,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.94.0"
+VERSION = "v0.95.0"
 VERSION_DATE = "2026-09-27"
 
 # =============================================================================
@@ -3814,6 +3831,8 @@ class SectorConfig:
     R117_ENABLE: bool = True
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
+    # [v0.95.0 R118 ★ 사용자 지시(2026-09-29)] R117 확률을 전 지표 · 의미 가족 확률로 대체(M v1.79.0 res['r118'] 필요 · 없으면 R117 확률). 끄기 s_overrides={'R118_ENABLE': False}
+    R118_ENABLE: bool = True
     OWN_EVIDENCE_ENABLE: bool = True
     #   ⚠ [v0.68.0 R86 되돌림] 0.25 → **0.0** — R85 사전등록 (d) 해당(엔진 s14 장기 검증 2000~2017: ② 0.329 < ① 0.362 ·
     #     대조군 95% 0.366). 다시 켜기: s_overrides={"OWN_EVIDENCE_FILL": 0.25}.
@@ -8795,7 +8814,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.78.0", "sector_rotation": "v0.94.0", "industry_rotation": "v0.60.0"}   # [v0.94.0 R117]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.79.0", "sector_rotation": "v0.95.0", "industry_rotation": "v0.61.0"}   # [v0.95.0 R118]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -19247,11 +19266,18 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             sheets[_M117.R117_SHEET] = _h117
             for _k, _v in reversed(_l117):
                 meta.insert(1, (_k, _v))
+            _q118 = _d117.get("quality") or {}
+            if str(_q118.get("method", "")).startswith("R118") and hasattr(_M117, "r118_sheet"):      # [v0.95.0 R118] 00H2_지표의미
+                _h118, _l118 = _M117.r118_sheet("S★ · 섹터", _q118, {"fam_tbl": _q118.get("mkt_fam_tbl")}, extra_tbl=_q118.get("extra_tbl"),
+                                                note="시장 지표(M 후보 · predictor 풀) 하나하나는 M 리포트 00H2")
+                sheets[_M117.R118_SHEET] = _h118
+                for _k, _v in reversed(_l118):
+                    meta.insert(1, (_k, _v))
         elif _d117.get("error"):
             meta.insert(1, ("★★★ R117 다음날 하락확률 문턱(S★)", f"⚠ 산출 실패 — {_d117['error']} (★ 무변경)"))
     except Exception as _e117:
         log("REPORT", kv(event="r117_sheet_failed", layer="S", err=type(_e117).__name__, msg=str(_e117)[:160]), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00H_하락확률문턱", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
+    sheets = sheets_to_front(sheets, "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
                              "00V_상태판정검증", "00T_섹터상태판", "00S_섹터자기근거", "00R_신뢰도판정",
                              "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
@@ -21278,6 +21304,89 @@ R116_SEG_EVIDENCE: Tuple[Tuple[str, str, str], ...] = (
      "표본 밖까지 둘 다 올리는 변경은 이번 라운드에서 찾지 못함 — 라이브 무변경"))
 
 
+def r118_spec_fams(C: pd.DataFrame, assets: List[str], spy_c: pd.Series, M, parent_of: Optional[Dict[str, str]] = None,
+                   res: Optional[dict] = None, fwd: Optional[pd.DataFrame] = None, eval_start: str = "2018-01-01"
+                   ) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame]:
+    """[v0.95.0 R118 ★ 사용자 지시(2026-09-29)] S 후보 지표(섹터 기술 8 · SPY 대비 상대 11 · (I) 부모 대비 상대 11 · (S) 섹터 매크로 표)를
+    각자의 사전부호로 '위험 방향' z(M.r118_z · 인과)로 돌려 가족 평균(날짜 × 자산)을 만든다. 반환 ({가족: 점수}, 지표표(지표 · 가족 · 방향 · 표본 밖 AUC))."""
+    tsg = {r.suffix: (r.prior_sign, r.name_kr, r.lead_mechanism) for r in sector_technical_specs()}
+    rsg = {r.suffix: (r.prior_sign, r.name_kr, r.lead_mechanism) for r in relative_strength_specs()}
+    fams: Dict[str, Dict[str, pd.Series]] = {"S:TECH": {}, "S:REL": {}, "S:PREL": {}, "S:MACRO": {}}
+    store: Dict[Tuple[str, str], Dict[str, pd.Series]] = {}
+    meta: Dict[Tuple[str, str], Tuple[int, str, str]] = {}
+    spy_series = None
+    if isinstance(res, dict):
+        try:
+            spy_series = spy_layer_series(res, M)
+        except Exception:
+            spy_series = None
+
+    def _orient(df: pd.DataFrame, sg: Dict[str, Tuple[int, str, str]], fam: str, a: str, pre: str = "") -> None:
+        cols = [c for c in df.columns if c in sg and (sg[c][0] or 0) != 0]
+        if not cols:
+            return
+        Z = M.r118_z(df[cols]).mul(pd.Series({c: -float(sg[c][0]) for c in cols}), axis=1)
+        fams[fam][a] = Z.mean(axis=1)
+        for c in cols:
+            store.setdefault((fam, pre + c), {})[a] = Z[c]
+            meta[(fam, pre + c)] = sg[c]
+    for a in assets:
+        if a not in C.columns:
+            continue
+        c = pd.to_numeric(C[a], errors="coerce").astype(float)
+        _orient(sector_technical_values(c), tsg, "S:TECH", a)
+        _orient(relative_strength_values(c, spy_c, c, spy_c, M), rsg, "S:REL", a, "SPY대비 ")
+        p = (parent_of or {}).get(a)
+        if p and p in C.columns and p != a:
+            pc = pd.to_numeric(C[p], errors="coerce").astype(float)
+            _orient(relative_strength_values(c, pc, c, pc, M), rsg, "S:PREL", a, "부모대비 ")
+        if isinstance(res, dict) and spy_series is not None and SECTOR_MACRO_TABLE.get(a):
+            try:
+                mv = sector_macro_values(a, res, M, C.index, spy_series)
+                msg = {row[0]: (row[6], row[1], row[8]) for row in SECTOR_MACRO_TABLE.get(a, [])}
+                _orient(mv, msg, "S:MACRO", a, f"[{a}] ")
+            except Exception:
+                pass
+    out = {k: pd.DataFrame(v) for k, v in fams.items() if v}
+    rows = []
+    if isinstance(fwd, pd.DataFrame) and len(store):
+        ev = fwd.index >= pd.Timestamp(eval_start)
+        for (fam, nm), dct in store.items():
+            Zd = pd.DataFrame(dct).reindex(index=fwd.index[ev])
+            yv = (fwd.reindex(index=fwd.index[ev], columns=Zd.columns) < 0).astype(float).where(fwd.reindex(index=fwd.index[ev], columns=Zd.columns).notna())
+            au = M._r117_auc(Zd.values.ravel(), yv.values.ravel())
+            sg, nk, mech = meta[(fam, nm)]
+            rows.append({"출처": "S 후보(사전부호)", "지표": nm, "이름": nk, "가족": fam, "가족 뜻": mech,
+                         "방향(위험 쪽)": ("값 ↓ = 위험" if sg > 0 else "값 ↑ = 위험") + " (S 사전부호)", "가족 적재(최근)": 1.0,
+                         "표본 밖 AUC(2018~)": round(float(au), 4) if np.isfinite(au) else np.nan})
+    return out, pd.DataFrame(rows)
+
+
+def r118_prob_layer(assets: List[str], res: dict, M, parent_of: Optional[Dict[str, str]] = None, with_macro: bool = True,
+                    first_year: int = 2008) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.95.0 R118 ★] 섹터·산업 층의 전 지표 하락확률 — M 시장 가족(res['r118']['F']) + 자산 지표 풀(M.r118_asset_pool · 가족 1주성분 · 앵커)
+    + S 후보 가족(r118_spec_fams) + 베타 × 시장 위험 → M.r118_prob_panel. 가격 = M px_dict(없는 티커는 M 캐시 수집) · 표적 = 다음 체결일(시가→시가)."""
+    m118 = res.get("r118") or {}
+    idx = pd.DatetimeIndex(res.get("cal") if res.get("cal") is not None else res["px_adj"].index)
+    px = dict(res.get("px_dict") or {})
+    tick = list(dict.fromkeys(list(assets) + ["SPY"] + sorted(set(v for v in (parent_of or {}).values() if v))))
+    need = [t for t in tick if not isinstance(px.get(t), pd.DataFrame)]
+    if need:
+        try:
+            ex = M.fetch_all_yahoo(need, res.get("cfg", M.CFG))
+            px.update({k: v for k, v in (ex or {}).items() if v is not None and len(v)})
+        except Exception:
+            pass
+    O, H, L, C, V = M.r118_ohlcv(px, tick, idx)
+    assets = [a for a in assets if a in C.columns and C[a].notna().sum() > 300]
+    fwd = O[assets].shift(-2) / O[assets].shift(-1) - 1.0
+    extra, xtbl = r118_spec_fams(C, assets, C["SPY"], M, parent_of=parent_of, res=(res if with_macro else None), fwd=fwd)
+    P, q = M.r118_layer_prob(assets, O, H, L, C, V, m118.get("F"), fwd, extra_fams=extra, first_year=first_year, spy_close=C["SPY"])
+    q["extra_tbl"] = xtbl
+    q["mkt_fam_tbl"] = m118.get("fam_tbl")
+    return P, q
+
+
 def r117_stage_s(target_ws: Dict[str, pd.DataFrame], variants: Dict[str, pd.DataFrame], bts: Dict[str, pd.DataFrame], label_primary: str,
                   ret_cc_full: pd.DataFrame, spy_cc_full: pd.Series, ret_co: pd.DataFrame, ret_oc: pd.DataFrame, bt_kw: Dict[str, Any],
                   eval_idx: pd.DatetimeIndex, res: Any, scfg, M) -> Tuple[str, Dict[str, Any]]:
@@ -21294,8 +21403,13 @@ def r117_stage_s(target_ws: Dict[str, pd.DataFrame], variants: Dict[str, pd.Data
             _w117 = target_ws[label_primary].copy().fillna(0.0).astype(float)
             _ac117 = [c for c in _w117.columns if c in ret_cc_full.columns]
             _spy117 = ret_cc_full["SPY"] if "SPY" in ret_cc_full.columns else spy_cc_full
-            _mk117 = M.r117_market_features(_spy117, M.r117_m_extra(res))
-            _P117, _q117 = M.r117_prob_panel(ret_cc_full[_ac117], _spy117, _mk117)
+            if (bool(getattr(scfg, "R118_ENABLE", True)) and isinstance(res, dict) and (res.get("r118") or {}).get("enabled")
+                    and hasattr(M, "r118_layer_prob")):
+                # [v0.95.0 R118 ★] 전 지표 · 의미 가족(M 시장 가족 + 자산 지표 풀 + S 후보 + 섹터 매크로 + 베타×시장) 하락확률
+                _P117, _q117 = r118_prob_layer(_ac117, res, M, with_macro=True)
+            else:
+                _mk117 = M.r117_market_features(_spy117, M.r117_m_extra(res))
+                _P117, _q117 = M.r117_prob_panel(ret_cc_full[_ac117], _spy117, _mk117)
             _Pe117 = _P117.reindex(eval_idx)
             _sp117 = ((1.0 + ret_co["SPY"]) * (1.0 + ret_oc["SPY"]) - 1.0).reindex(eval_idx).fillna(0.0)
             _rows117, _var117 = [], {}

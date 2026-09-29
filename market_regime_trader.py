@@ -22,6 +22,26 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.79.0 - 2026-09-29 - [R118 ★ 전 지표(약 5,100) · 의미 가족 하락확률 · predictor 풀 · 00H2_지표의미]
+#    사용자 지시(2026-09-29): "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
+#      다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
+#    (공통 · M 원본) R117의 다음날 하락확률(자산 12 + 시장 7 지표)을 '전 지표 · 의미 가족' 확률로 바꿨다(문턱 표 · 종합 1위 · 라이브 규칙은 R117 그대로):
+#      지표 = M 후보 287(사전부호) + predictor 풀 약 4,800(새 파일 indicator_pool.py = 사용자 predictor_test1.py compute_features 추출 · 룩어헤드 5곳 패치)
+#           + M 계층(복합점수·위험·급락트리거) + 달력(월말·월초) + 층별 자산 지표(predictor 계열 약 120 · S 후보 · 섹터 매크로 · 부모 대비 · K 패널 25).
+#      의미: 지표 → 의미 가족 33개(신용·곡선·금리·물가·고용·경기·심리·유동성·달러·안전자산·원자재·해외·변동성·기간구조·꼬리·채권변동성·추세·낙폭·
+#            단기과열·거래량·캔들·분포·시장폭·회전·하위산업·초대형주·포지션·밸류에이션·하락경보합성·달력 …) · 사전부호 지표는 그 부호로, predictor 지표는
+#            가족 1주성분을 '의미가 분명한 앵커'(신용 = HYG/IEF ↓ · 변동성 = VIX ↑ · 추세 = 200일선 이격 ↓ …)와 같은 방향으로(표적을 보지 않음) →
+#            가족 점수 → 층별 풀드 로지스틱(가중 ≥ 0 = 의미와 같은 방향으로만) · 매년 과거만으로 재학습 · 표적 = 다음 체결일(t+1 시가 → t+2 시가).
+#      새 시트 00H2_지표의미(가족표 · 전 지표표: 출처 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC) · 00H 십분위에 다음 체결일 평균 수익.
+#    ⚠ 로컬 실측(r118 · 2018~ 표본 밖 AUC): M 0.500 → 0.522 · S 0.500 → 0.511 · I 0.500 → 0.518 · M 지표만 0.525 · predictor 지표 하나하나 평균 0.504.
+#      하락확률 상위 10% 날의 다음날 평균 수익이 오히려 가장 높다(변동성 큰 날 = 큰 반등) → 문턱 표 1위는 대개 '필터 없음'(라이브 무변경).
+#    (§1 M) 공통 함수 r118_family_of · r118_z · r118_load_pool(같은 폴더 → 없으면 GitHub raw에서 받음) · r118_predictor_pool(M 수집 함수로 추가 티커
+#         약 100 · FRED 6 · 발표지연 반영) · r118_market_block(M 후보 + predictor 가족 1주성분·앵커 + 계층 + 달력 · 지표표) · r118_asset_pool ·
+#         r118_asset_families · r118_prob_panel(부호제약 로지스틱 · 십분위 평균 수익) · r118_layer_prob · r118_ohlcv · r118_sheet.
+#         run: R113 뒤 시장 가족 → apply_r117_down_prob(r118=…) · res['r118'] · R118_LAST(같은 프로세스 K용) · 01 '다음날 하락확률(R118 전 지표)'.
+#         Config R118_ENABLE · R118_PREDICTOR_POOL · R118_FETCH_EXTRA · R118_POOL_URL · R118_POOL_START · R118_FIRST_FIT_YEAR · R118_TRAIN_START(캐시 무시).
+#         되돌리기 m_overrides={'R118_ENABLE': False}(R117 확률) · {'R118_PREDICTOR_POOL': False}(풀 없이). COMPANION_MIN_VERSIONS S v0.95.0 · I v0.61.0 · K v0.28.0.
+#         시험 t118/test_r118.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.78.0 - 2026-09-29 - [R117 ★ 다음날 하락확률 문턱 · 종합 1위 라이브(SPY) · 네 층 공통 함수]
 #    사용자 지시(2026-09-29): "… 지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서
 #      몇퍼센트 이하인 종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정하라고".
@@ -3250,6 +3270,15 @@ class Config:
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
     R117_MIN_ROWS: int = 250
+    # [v1.79.0 R118 ★ 사용자 지시(2026-09-29) "모든 지표들을 사용 … 의미를 파악해서 의미가 있도록 설계"] R117 확률을 '전 지표 · 의미 가족' 확률로 대체.
+    #   R118_ENABLE=False면 R117(자산 지표 12 + 시장 7) 확률로 돌아간다 · R118_PREDICTOR_POOL=False면 predictor 풀 없이 M 후보 + 계층 + 달력만.
+    R118_ENABLE: bool = True
+    R118_PREDICTOR_POOL: bool = True
+    R118_FETCH_EXTRA: bool = True           # predictor 풀 추가 티커(약 100)·FRED 6개를 M 수집 함수로 받는다(캐시)
+    R118_POOL_URL: str = "https://raw.githubusercontent.com/yeomin1024/stock/main/indicator_pool.py"
+    R118_POOL_START: str = "1998-06-01"
+    R118_FIRST_FIT_YEAR: int = 2003
+    R118_TRAIN_START: str = "1999-01-01"
     LOG_LEVEL: str = "INFO"            # DEBUG로 바꾸면 지표별 상세 로그
     # [v1.9.0 §B] 05b_하락상승구간 시트(사후 진단 전용, 신호 로직에 미사용)의 구간 분할 임계값.
     # 사용자 요청 "최고점 대비 -2% 이상 하락한 기간 / 하락 후 -2% 이상 재하락하지 않고 상승한
@@ -7216,7 +7245,8 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "CASH_INTEREST",                                                                           # [v1.69.0 R105] 백테스트 현금 이자(신호 무관)
     # [v1.75.0 R113] 라이브 SPY 신호 뒤 금리 급등 경보 측정 열(검증·워크포워드·S·I 국면 모형 무관 · 교훈 31)
     "R113_RATE_MEASURE", "R113_RATE_LIVE", "R113_RATE_WINDOW", "R113_RATE_CUT_A", "R113_RATE_BOOST_A", "R113_RATE_CUT_B",
-    "R117_ENABLE", "R117_LIVE", "R117_THRESHOLDS", "R117_MIN_ROWS",                              # [v1.78.0 R117] 신호 뒤 하락확률 문턱(검증·가중치 무관)
+    "R117_ENABLE", "R117_LIVE", "R117_THRESHOLDS", "R117_MIN_ROWS",
+    "R118_ENABLE", "R118_PREDICTOR_POOL", "R118_FETCH_EXTRA", "R118_POOL_URL", "R118_POOL_START", "R118_FIRST_FIT_YEAR", "R118_TRAIN_START",   # [v1.79.0 R118]                              # [v1.78.0 R117] 신호 뒤 하락확률 문턱(검증·가중치 무관)
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
     "DROP_PARTIAL_LAST_BAR", "FRED_REFRESH_ET_HOUR",                                           #   (수집 전용 — 검증·가중치 무관)
@@ -8962,13 +8992,18 @@ def r117_sheet(T: Optional[pd.DataFrame], q: Optional[Dict[str, Any]], layer: st
         dec = q.get("deciles")
         if isinstance(dec, pd.DataFrame) and len(dec):
             parts.append(pd.DataFrame([{"블록": "B 십분위(예측 → 실제 하락 비율)", "문턱": f"{i + 1}분위",
-                                        "빠진 몫": f"예측 {r_['p']:.3f} → 실제 {r_['y']:.3f} (n={int(r_['n'])})"} for i, r_ in dec.iterrows()]))
+                                        "빠진 몫": f"예측 {r_['p']:.3f} → 실제 {r_['y']:.3f} (n={int(r_['n'])})"
+                                                  + (f" · 다음 체결일 평균 수익 {float(r_['r']) * 1e4:+.1f}bp" if "r" in dec.columns and pd.notna(r_.get("r")) else "")}
+                                       for i, r_ in dec.iterrows()]))
     if isinstance(today, pd.Series) and len(today.dropna()):
         td = today.dropna().sort_values()
         parts.append(pd.DataFrame([{"블록": f"C 마지막 날 다음날 하락확률({layer})", "문턱": k, "빠진 몫": round(float(v), 4)} for k, v in td.items()]))
     parts.append(pd.DataFrame([{"블록": "D 읽는 법", "문턱": a_, "빠진 몫": b_} for a_, b_ in (
-        ("하락확률", "P(다음 거래일 수익 < 0) · 지표: 자산 1·5·20·60일 수익 · 20/50/200일선 이격 · 20일 변동성 · 변동성비 · RSI14 · 20일 낙폭 · SPY 대비 상대강도 · "
-                    "시장(SPY 수익·변동성 · M 복합점수·위험·급락트리거) · 층별 풀드 로지스틱 · 매년 과거만으로 재학습"),
+        ("하락확률", ("[R118 전 지표] P(다음 체결일(t+1 시가 → t+2 시가) 수익 < 0) · M 후보 + predictor 풀 약 4,800 + 층별 자산 지표 → 의미 가족 → "
+                     "부호제약 풀드 로지스틱(매년 과거만으로 재학습) — 지표·가족 세부 00H2"
+                     if str((q or {}).get("method", "")).startswith("R118") else
+                     "P(다음 거래일 수익 < 0) · 지표: 자산 1·5·20·60일 수익 · 20/50/200일선 이격 · 20일 변동성 · 변동성비 · RSI14 · 20일 낙폭 · SPY 대비 상대강도 · "
+                     "시장(SPY 수익·변동성 · M 복합점수·위험·급락트리거) · 층별 풀드 로지스틱 · 매년 과거만으로 재학습")),
         ("문턱 규칙", "하락확률 ≤ 문턱인 자산만 보유 · A = 빠진 몫 현금 · B = 남은 보유 자산에 비례 재분배 · 확률 없는 날은 필터 없음"),
         ("종합 점수", "회피 + 참여 + 수익배수 변화%(필터 없음 대비) · 가장 큰 행 = ★ 종합 1위(노란색) = 라이브"),
         ("⚠", "1위는 같은 표본(2018~)에서 고른 것 · 확률에 방향 정보가 없으면(AUC ≈ 0.5) 문턱은 매일 들락날락(비용) + 좋은 날도 빼서 배수·참여가 준다. "
@@ -8996,7 +9031,8 @@ def r117_sheet(T: Optional[pd.DataFrame], q: Optional[Dict[str, Any]], layer: st
 
 
 def apply_r117_down_prob(sig: pd.DataFrame, price: pd.DataFrame, px_adj: Optional[pd.Series], cfg: Config,
-                         rf_daily: Optional[pd.Series] = None, m_extra: Optional[pd.DataFrame] = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+                         rf_daily: Optional[pd.Series] = None, m_extra: Optional[pd.DataFrame] = None,
+                         r118: Optional[Dict[str, Any]] = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """[v1.78.0 R117] M(SPY) 다음날 하락확률 → 문턱 비교(run_backtest · 2018~) → 종합 1위가 필터면 R117_LIVE일 때 target_pos에 적용.
     sig에 pos_pre_r117(적용 전) · r117_p_down 열을 남긴다. 실패하면 호출부가 R117 없이 계속."""
     out = sig.copy()
@@ -9005,8 +9041,13 @@ def apply_r117_down_prob(sig: pd.DataFrame, price: pd.DataFrame, px_adj: Optiona
     out["pos_pre_r117"] = tp.copy()
     px = px_adj if isinstance(px_adj, pd.Series) and px_adj.notna().any() else price["Close"]
     spy_r = pd.to_numeric(px, errors="coerce").astype(float).pct_change()
-    mk = r117_market_features(spy_r, m_extra)
-    P, q = r117_prob_panel(pd.DataFrame({"SPY": spy_r}), spy_r, mk, min_rows=int(getattr(cfg, "R117_MIN_ROWS", 250)))
+    if isinstance(r118, dict) and r118.get("enabled") and isinstance(r118.get("F"), pd.DataFrame) and bool(getattr(cfg, "R118_ENABLE", True)):
+        # [v1.79.0 R118] 전 지표 · 의미 가족(시장 가족 = M 후보 + predictor 풀 + M 계층 + 달력) → 부호제약 로지스틱 · 표적 = 다음 체결일(t+1 시가 → t+2 시가)
+        P, q = r118_prob_panel({}, r118["F"], pd.DataFrame({"SPY": r118["fwd"]}), first_year=2008, min_rows=1000)
+        diag["r118"] = True
+    else:
+        mk = r117_market_features(spy_r, m_extra)
+        P, q = r117_prob_panel(pd.DataFrame({"SPY": spy_r}), spy_r, mk, min_rows=int(getattr(cfg, "R117_MIN_ROWS", 250)))
     p = P["SPY"].reindex(out.index) if "SPY" in P.columns else pd.Series(np.nan, index=out.index)
     out["r117_p_down"] = p
     s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-02"))
@@ -9039,6 +9080,823 @@ def apply_r117_down_prob(sig: pd.DataFrame, price: pd.DataFrame, px_adj: Optiona
                            else "종합 1위 = 필터 없음(라이브 무변경)" if bi == 0 else "측정만(R117_LIVE 꺼짐)")),
         level=("warning" if diag["live_applied"] else "info"))
     return out, diag
+
+
+# =============================================================================
+# [v1.79.0 R118 ★ 사용자 지시(2026-09-29)] 전 지표 · 의미 설계 다음날 하락확률 — R117 확률을 대체한다(문턱 표 · 종합 1위 · 라이브 규칙은 R117 그대로)
+#   "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
+#    다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
+#   입력(전 지표): ① M 후보 287(IndicatorSpec 사전부호·범주) ② predictor 지표 풀 약 4,800(indicator_pool.compute_features · SPY 대상 · 룩어헤드 패치)
+#     ③ M 계층 출력(복합점수 · 위험(H) · 급락트리거 백분위) ④ 달력(월말·월초) ⑤ 층별 자산 지표(predictor 계열 자산 지표 약 110 · S/I 후보 · K 패널)
+#   의미 설계:
+#     · 모든 지표를 '의미 가족'(신용 · 곡선 · 금리 · 물가 · 고용 · 경기 · 심리 · 유동성 · 달러 · 안전자산 · 원자재 · 해외 · 변동성 · 기간구조 · 꼬리 ·
+#       채권변동성 · 추세 · 낙폭 · 단기과열 · 거래량 · 캔들 · 분포 · 시장폭 · 회전 · 하위산업 · 초대형주 · 포지션 · 밸류에이션 · 하락경보합성 · 달력)로 나눈다.
+#     · 사전부호가 있는 지표(M · S · K 후보)는 그 부호대로 '위험 방향'(값이 클수록 하락 쪽)으로 돌린다(504일 롤링 z · 인과 · ±4).
+#     · predictor 지표(원본은 방향을 데이터로 고른다)는 가족마다 학습 구간 공통 축(1주성분)을 만들고, 그 축의 방향을 '의미가 분명한 앵커'
+#       (예: 신용 = HYG/IEF 모멘텀 ↓ · 변동성 = VIX ↑ · 추세 = 200일선 이격 ↓ · 단기과열 = RSI(5) ↑)와 같은 쪽으로 맞춘다 — 다음날 수익을 보지 않고
+#       방향을 정한다(데이터 마이닝 방지). 지표의 가족 적재 = 그 지표가 가족 뜻을 얼마나 담는지.
+#     · 가족 점수 → 층별 풀드 로지스틱(가중 ≥ 0 = 의미와 같은 방향으로만 쓸 수 있고, 반대면 0) · 매년 과거만으로 재학습(워크포워드).
+#   ⚠ 로컬 실측(r118): SPY 다음 체결일 하락 AUC — M 지표만 0.525 · predictor 가족만 0.491(로지스틱)/0.518(동일가중) · 전체 0.522 ·
+#     predictor 지표 하나하나 평균 0.504. 하락확률 상위 10% 날의 다음날 평균 수익이 오히려 가장 높다(변동성 큰 날 = 큰 반등도 옴).
+#   출력: 날짜 × 자산 하락확률 → R117 문턱 표 · 00H2_지표의미(지표마다 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC). 연구·교육용, 투자 자문 아님.
+# =============================================================================
+R118_SHEET = "00H2_지표의미"
+R118_POOL_URL = "https://raw.githubusercontent.com/yeomin1024/stock/main/indicator_pool.py"
+R118_POOL_START = "1998-06-01"
+R118_EXTRA_FRED: Dict[str, int] = {"CFNAI": 60, "NEWORDER": 65, "MANEMP": 40, "PPIACO": 45, "TCU": 50, "PSAVERT": 60}   # 보수적 발표지연(일)
+R118_FRED_ALIAS: Dict[str, str] = {"EFFR": "DFF", "CSUSHPINSA": "CSUSHPISA"}
+R118_LAST: Dict[str, Any] = {}          # 마지막 M 실행의 시장 가족(같은 프로세스의 K가 읽는다)
+# predictor 지표 이름 → 의미 가족(정규식 · 위에서부터 첫 일치 · 소문자)
+R118_P_RULES: Tuple[Tuple[str, str], ...] = (
+    ("X_INTRADAY", r"^(id_|idx_|idm_)"),
+    ("X_EARN", r"^earn_|earnings_season|canslim_earnings|pre_earnings"),
+    ("CAL", r"^cal_|month_of_year|day_of_month|trading_day_of_month|is_monday|is_friday|is_tuesday|days_to_fomc|opex|cy_month_end|friday_overbought"),
+    ("VOLTS", r"vix_term|vts_|backwardation|contango|vix9d|vixy_vix|vxx_vix|uvxy_svxy|volderiv|svxy|uvxy|vix_curve|term_premium"),
+    ("TAIL", r"(^|_)skew_(?!returns)|^skw_|skew_vix|iv_skew|put_explosion|gamma_squeeze|tail_risk"),
+    ("RATEVOL", r"move_|bvol_|rate_vol|rate_daily_vol"),
+    ("VOL", r"(^|_)vix|vvix|vxx|vixy|(^|_)iv_|vrp|vol_risk_premium|fear_greed"),
+    ("CREDIT", r"hy_oas|ig_oas|hy_ig|hyg|lqd|jnk|bkln|credit|crd_|oas|burry_credit|gfc_bank_credit"),
+    ("CURVE", r"t10y3m|t10y2y|t\d+y\d+m|t\d+y\d+y|yc_|yield_curve|term_spread|term_\d+y|invert|uninvert|steepen|flatten|curvature|disinversion"),
+    ("RATES", r"tnx|irx|tyx|fvx|yield|rate_shock|real_rate|tight_real|effr|fed_pivot|fed_model|druckenmiller_rate|nominal_rate|rate_rise|overtightening|fed_easing|fed_panic|duration|bond_|ief_|tlt_|mortgage|reitx_m|stock_bond|bond_equity"),
+    ("INFL", r"bei|cpi|ppi|pce|inflation|stagflation|rinf|tip_|commodity_inflation|energy_inflation|umcsi_infl"),
+    ("LABOR", r"icsa|ccsa|unrate|fred_u\d|payems|manemp|sahm|claims"),
+    ("GROWTH", r"cfnai|indpro|neworder|orders|tcu|retail_yoy|retail_zscore|fred_retail|houst|permit|recession|saving|csush|fred_composite"),
+    ("SENTI", r"umcsi|umcsent"),
+    ("LIQ", r"fred_m\d|m2_|fed_bs|walcl|liquidity|repo|funding|druckenmiller_liq|fci_|cash_preference"),
+    ("FX", r"dxy|uup|fxy|yen|dollar|(^|_)fx_|cmcurr|currency"),
+    ("SAFE", r"gld|gold|gdx|safe_haven|safehaven|(^|_)bil_|price_up_safehaven"),
+    ("COMMOD", r"copper|cper|oil|uso|dbc|pdbc|commodity|xme"),
+    ("GLOBAL", r"eem|fxi|mchi|ewg|efa|global_|europe_|em_dollar|tariff"),
+    ("MEGA", r"nvda|msft|aapl|avgo|googl|meta_|tsla|mag\d|big\d|bigtech|mega|cap_concentration|xlk_only"),
+    ("POSITION", r"sqqq|(^|_)sh_|tqqq|^inv_|retail_|canslim|livermore|insider|dalio|burry|guru|complacency|panic|crowd|^(reta|crw|trp|pnc|smt|rp)_|smart_money|institutional|(^|_)inst_|templeton|marks_|tudor|leverag|hidden_inst|block_trade|risk_parity"),
+    ("VALUATION", r"graham|tobin|shiller|cape|buffett|kelly|soros|valuation|ann_ret_cagr|return_accel_\d+y"),
+    ("SUBIND", r"^(fin|hlth|cycl|def|reit|reitx|sw|semi2|semi\d|semi|cyber|cloud|fintech|robo|inet|hw|sec4|tsub|bio|bank|energy|smcap|capsize|defense|growth|dow\d|med|midcap|real|real_estate|industry|subsector|health|tech|div_qual|gold|def_dual|def_triple|def_x)_"),
+    ("ROTATION", r"defensive|xlu_|xlp_|xly|xlv_|rotation|(^|_)rot_|splv|sphb|low_vol_high_beta|nobl|(^|_)qual(_|$)|(^|_)vig(_|$)|mtum|factor_|style_|iwm|iwo|iwn|ijh|dow_theory|iyt|kre|kbe|xhb|xrt|pcar|lmt|^(led|srd|sru|ssp|scm|osec|rer|rsx|dsp|bta|crk|chn|qrt|mcr|lag|coh|rsk|sdv|idr|cvx|ddc|tnr|dpr|tqa|cvg|gpr|esd|seca|rotb|rotc)_|(^|_)(rel|beta|corr|rs)_|spread_etf|^xlk_"),
+    ("BREADTH", r"sector|breadth|brd_|rsp|hbg_|hindenburg|titanic|mcclellan|advance_decline|dispersion|narrow|herfindahl|hhi|bifurcation|cascade|leadership"),
+    ("DROPCOMP", r"drop_|dp9|dp10|dp11|pre1_|pre2_|^ce_|^cp_|^zz_|^lc_|^cr_|crash_risk|imminent|alert|climax|precursor|bear_market_rally|real_rally|covid_|dotcom_|gfc_|scn_|snw_|snx_|sny_|pmix|psc_|msc_|w1_|w2_|w3_"),
+    ("FLOW", r"(^|_)vol_ratio|vol_trend|vol_zscore|vol_up_dn|obv|cmf|mfi|force|ease_mov|ad_line|vwap|nvi|pvi|amihud|volume|distribution|dist_day|accumulat|^(acc|ord|liq|lq|flt|whl|cvd|vo|vp|ds|sq|ms|dv|vd)_|kyle|vpin|roll_spread|up_vol|vwmo|vrsi|impact|new_high_low_vol|stall_day"),
+    ("CANDLE", r"body|shadow|doji|hammer|engulf|harami|star|gap|pivot|cdl_|^cx_|^ha_|clv|wick|candle|inside_day|outside_day|narrow_range|streak|pattern|cam_|fib|ohlc|close_loc|close_vs|close_in|open_vs|pressure|intraday|overnight|daytime|push|hh_|lh_|lower_low|higher_high|bars_since|fractal_swing|rb_|^dn_|^exh_|^dpc_|^brk_|^gp_|^dq_|bull_day|range_norm|signed_eff|hi_lo_break|tp_mom|wclose|medprice|rs_vol"),
+    ("RVOL", r"atr|hist_vol|hvol|garman|gk_vol|parkinson|bb_width|keltner_width|donchian_width|ulcer|range|(^|_)var_|cvar|jump|vreg|hva_|lva_|vrt_|vbk_|skn_|vol_dn|vol_clustering|compression|expansion|squeeze|chaikin_vol|downside_dev|^st_|^tl_|^dt_|vol_of_vol|log_vol|rv_atr"),
+    ("OSC", r"rsi|stoch|williams|cci|bb_pct|keltner_pct|donchian_pct|price_zscore|close_pctrank|(^|_)ret_[1-9]d$|ret_10d|ret_zscore|ret_pctrank|roc_[1-9]$|roc_10$|cmo|dpo|^wk_|^rv_|^px_|^rk_|^qt_|overbought|oversold|sigmoid|harmonic|bear_div|divergence|^ac_"),
+    ("TREND", r"sma|ema|dema|tema|hma|vwma|ichimoku|ich_|supertrend|psar|adx|di_|aroon|vortex|macd|trix|ppo|linreg|slope|mtf_|tcyc|trend|channel|dist_\d+w|pos_\d+w|mom|(^|_)ret_\d+d|roc_|cum_ret|log_|multi_period|elder|gmma|alli|stc|kst|copp|^tr_|^bd_|death_cross|golden_cross|cross|sharpe|sortino|omega|info_ratio|ir_|win_rate|gain|efficiency|atr_adj|six_month|price_accel|accel|velocity|impulse|jerk|kaufman|^rg_|^en_|^cy_"),
+    ("DAMAGE", r"(^|_)dd_|drawdown|max_dd|days_since|dd_from|max_single_loss|support_break|new_low|lower_high|weak_close|double_top|head_shoulders|rising_wedge|bear_flag|failed|breakdown"),
+    ("STAT", r"acf|autocorr|entropy|hurst|fractal|lyapunov|kurt|skew|ou_|dir_consistency|dir_change|smoothness|recurrence|phase_space|fourier|kolmogorov|spectral|^sp_|^fr_|^it_|^sg_|jarque|detrend|residual|regime|complexity|non_normal|mean_median"),
+    ("DROPCOMP", r"risk_off_composite|macro_etf_stress|market_underpricing|^xast_|^fnd_"),
+    ("BREADTH", r"^brt_|^flw_|^vlr_|rally_followthrough|rally_"),
+    ("POSITION", r"^sent_"),
+    ("MEGA", r"^mcc_|^mga_"),
+    ("RVOL", r"large_neg_ret|lambda_ratio|down_up_size|^hill_|^ddev_|^ulcx_|^chv_|^glr_|vratio|intra_inter_vol|^runsz_|^nr\d+_"),
+    ("OSC", r"bb_upper_touch|bb_lower_touch|^bbx_|^fshr_|^uo_|^rvg_|^td_|^tstat_|^cusum_|^sqz_|^wyk_|^rev_|^bpc_|^rmi_|^psy_|^jvr_|^tdc_|^ao\d+_|^awac_|^eimp_|^hax_|msbulge"),
+    ("CANDLE", r"open_low_close|co_hl_ratio|close_\d+nd_diff|^ew_|^ptop_"),
+    ("DAMAGE", r"^ts_|breakout_failure|^chdl_|^tlb\d+_|^avwp_|^tuw_|^sfp_|^bosd_|^fvgx_|^avwl_|^dtri_|^btop_|^drvs_"),
+    ("TREND", r"vol_wt_ret|mass_idx|keltner_break|^ewmac_|^lreg_|^donch_|^kelt_|^sptr_|^vtx_|^arnx_|^mcg_|^eray_|^chop_"),
+    ("LIQ", r"druckenmiller"),
+    ("FLOW", r"^vpt_|^vzo_|^vhl_|^bacc_"),
+)
+# 가족 → (이름, 뜻(위험 = 값이 클수록 하락 쪽), 앵커((\"M\", M 지표 키) = M 사전부호 · (\"P\", predictor 열 정규식, 위험부호)))
+R118_FAMILY: Dict[str, Tuple[str, str, Tuple[Tuple, ...]]] = {
+    "VOL": ("내재·공포 변동성", "VIX·VVIX·VXX 등 공포 지표가 높고 오르는 중 → 하락일이 잦아진다", (("M", "VIX_LEVEL"), ("M", "VIX_CHG20"))),
+    "VOLTS": ("변동성 기간구조", "단기 내재변동성이 장기보다 높다(역전) → 옵션 헤지 수요가 현물 매도보다 먼저", (("M", "VIX_TERM"),)),
+    "TAIL": ("꼬리위험 가격(SKEW)", "SKEW·풋 수요 상승 → 급락 대비 헤지 증가", (("P", r"^skew_level$", +1),)),
+    "RATEVOL": ("채권 변동성(MOVE)", "금리 변동성 급등 → 할인율 불안 · 위험자산 압박", (("P", r"^move_level$", +1),)),
+    "CREDIT": ("신용", "하이일드·레버리지론 약세 · 스프레드 확대 → 차환 위험이 주가보다 먼저", (("M", "HYG_IEF_MOM"),)),
+    "CURVE": ("수익률곡선", "곡선 역전·역전 해소 → 경기침체 선행", (("M", "YC_10Y3M"),)),
+    "RATES": ("금리(신호 전용 · 채권 보유 없음)", "금리·실질금리 급등 → 할인율 상승 → 밸류에이션 압박", (("M", "DGS10_CHG60"), ("M", "REAL_RATE_CHG"))),
+    "INFL": ("물가·기대인플레이션", "물가 상승 가속 → 긴축 위험", (("M", "T5YIE_CHG20"), ("M", "CPIAUCSL_CHG120"))),
+    "LABOR": ("고용", "실업수당 청구·실업률 상승 → 경기 둔화", (("M", "CLAIMS_MOM"),)),
+    "GROWTH": ("경기·생산·주택", "생산·주문·가동률·주택 둔화 → 이익 하향", (("M", "INDPRO_CHG120"),)),
+    "SENTI": ("소비자 심리", "소비자 심리 악화", (("M", "UMCSENT_Z"),)),
+    "LIQ": ("유동성·금융여건", "연준 자산·M2 감소 · 자금시장 긴장 → 위험자산 자금 감소", (("M", "WALCL_CHG20"), ("M", "M2SL_CHG60"))),
+    "FX": ("달러·엔", "달러·엔 강세 → 글로벌 유동성 위축 · 캐리 청산", (("M", "DXY_MOM"),)),
+    "SAFE": ("안전자산 선호", "금·금광·단기채로 자금 이동 → 위험회피", (("M", "GC_MOM20"),)),
+    "COMMOD": ("원자재·성장 기대", "구리/금↓ · 원자재 약세 → 성장 기대 약화", (("M", "COPPER_GOLD_MOM"),)),
+    "GLOBAL": ("해외 주식", "신흥국·유럽·중국 주식 약세 → 글로벌 위험회피", (("M", "EEM_MOM60"),)),
+    "MEGA": ("초대형주(주도주)", "초대형 주도주 약세·집중 → 지수 취약", (("P", r"^mag\d+_weakness_count$", +1),)),
+    "POSITION": ("투자자 포지션·심리 대용", "인버스·레버리지 거래 급증 · 과열/공포 대용 지표 → 되돌림 위험", (("P", r"^retail_fomo_score$", +1),)),
+    "VALUATION": ("밸류에이션 대용", "가격 기반 CAPE·버핏·토빈 대용치 과열 → 하락 위험", (("P", r"^shiller_cape_zscore_\d+$", +1),)),
+    "SUBIND": ("하위 산업 건강도", "금융·경기소비·반도체·리츠 등 하위 산업의 약세 전이(캐스케이드)", (("P", r"^industry_cascade_score$", +1),)),
+    "ROTATION": ("스타일·섹터 회전", "방어주·저변동·배당 우위 · 소형·경기민감 열위 → 위험회피 회전", (("P", r"^rot_def_minus_agg_\d+d$", +1),)),
+    "BREADTH": ("시장폭·내부", "상승 섹터 감소 · 소수 주도 · 분산 확대 → 지수 취약", (("M", "RSP_SPY_MOM"),)),
+    "DROPCOMP": ("하락 경보 합성(원본 작성자 합성점수)", "원본 작성자가 하락 전조로 만든 합성 점수·플래그", (("P", r"^drop_pressure_score$", +1),)),
+    "FLOW": ("거래량·자금흐름", "하락일 거래량 우위 · OBV/CMF 약세 · 유동성 악화 → 매도 압력", (("P", r"^cmf_20$", -1),)),
+    "CANDLE": ("캔들·가격 형태", "윗꼬리 · 약한 마감 · 하락 갭 → 매도 압력", (("P", r"^clv_mean_\d+d$", -1),)),
+    "RVOL": ("실현 변동성·범위", "실현 변동성·일중 범위 확대 → 하락일 증가", (("M", "RVOL_RATIO"),)),
+    "OSC": ("단기 과열(오실레이터)", "RSI·스토캐스틱·%B 과매수 → 단기 되돌림", (("P", r"^rsi_5$", +1), ("P", r"^stoch_k_14$", +1))),
+    "TREND": ("추세·모멘텀", "이동평균 아래 · 모멘텀 음(−) → 하락 추세 구간", (("M", "TREND_200"), ("M", "MOM_12_1"), ("M", "MACD_HIST"))),
+    "DAMAGE": ("낙폭·추세 훼손", "고점 대비 낙폭 확대 · 지지선 이탈", (("M", "DD_FROM_252H"),)),
+    "STAT": ("수익률 분포·복잡도", "왼꼬리 두꺼움(음의 왜도) 등 분포 이상", (("P", r"^ret_skew_\d+$", -1),)),
+    "CAL": ("달력", "월말·월초(역사적 상승일)가 아니면 상대적으로 하락 쪽", (("P", r"^cal_month_end$", -1), ("P", r"^cal_month_start$", -1))),
+    "X_INTRADAY": ("인트라데이(제외)", "과거 60일뿐 → 학습 불가(원본에서도 이력 없음)", ()),
+    "X_EARN": ("실적(제외 · SPY)", "지수엔 실적 발표 없음", ()),
+}
+# 자산 지표 가족(predictor 계열 자산 지표 · 풀드 1주성분 · 앵커 = (지표명, 위험부호))
+R118_A_FAMILY: Dict[str, Tuple[str, str, Tuple[str, int]]] = {
+    "A:OSC": ("자산 단기 과열", "RSI·스토캐스틱·%B·단기 수익 과열 → 단기 되돌림", ("rsi_5", +1)),
+    "A:TREND": ("자산 추세", "이동평균 아래 · 모멘텀 음(−) → 하락 추세", ("sma_200_dist", -1)),
+    "A:DAMAGE": ("자산 낙폭", "고점 대비 낙폭 확대", ("dd_from_60d_high", -1)),
+    "A:RVOL": ("자산 변동성", "실현 변동성·범위 확대 → 하락일 증가", ("hist_vol_20", +1)),
+    "A:FLOW": ("자산 거래량·자금흐름", "하락일 거래량 우위 · CMF/OBV 약세", ("cmf_20", -1)),
+    "A:CANDLE": ("자산 캔들", "약한 마감 · 윗꼬리 · 하락 갭", ("clv_mean_10", -1)),
+    "A:STAT": ("자산 수익률 분포", "왼꼬리(음의 왜도) · 급락 빈도", ("ret_skew_60", -1)),
+}
+_R118_RX: List[Tuple[str, Any]] = []
+# M 후보 범주 · 계층 · 달력 가족의 이름과 뜻(위험 쪽)
+R118_M_FAMILY_KR: Dict[str, Tuple[str, str]] = {
+    "A.변동성": ("M 변동성(VIX·기간구조·실현변동성)", "VIX 상승·기간구조 역전·변동성 확장 → 하락 쪽"),
+    "B.신용": ("M 신용(HY·IG 스프레드 · HYG/IEF)", "스프레드 확대 · 하이일드 약세 → 하락 쪽"),
+    "C.매크로": ("M 매크로(곡선·실업수당·금융여건·실질금리)", "곡선 역전·청구 증가·긴축 → 하락 쪽"),
+    "D.크로스에셋": ("M 교차자산(구리/금 · 달러)", "구리/금↓ · 달러↑ → 하락 쪽"),
+    "E.추세": ("M 추세(200일선·12-1·RSI·MACD·시장폭)", "추세 훼손 → 하락 쪽"),
+    "RATE": ("M 금리(FRED 확장)", "금리 급등 → 하락 쪽"), "CREDIT": ("M 신용(FRED 확장)", "스프레드 확대 → 하락 쪽"),
+    "LIQ": ("M 유동성(FRED 확장)", "연준 자산·M2 감소 · TGA/역레포 흡수 → 하락 쪽"), "INFL": ("M 물가(FRED 확장)", "물가 가속 → 하락 쪽"),
+    "LABOR": ("M 고용(FRED 확장)", "고용 둔화 → 하락 쪽"), "GROWTH": ("M 경기(FRED 확장)", "생산·주문·소매 둔화 → 하락 쪽"),
+    "HOUSING": ("M 주택(FRED 확장)", "주택 둔화 → 하락 쪽"), "SENTI": ("M 심리(FRED 확장)", "심리 악화 → 하락 쪽"),
+    "FINCOND": ("M 금융여건(FRED 확장)", "금융 스트레스 → 하락 쪽"), "FX": ("M 달러(FRED 확장)", "달러 강세 → 하락 쪽"),
+    "변동성": ("M 변동성 확장(VIX9D·VVIX)", "단기 변동성 상승 → 하락 쪽"), "신용": ("M 신용 ETF(LQD 등)", "신용 ETF 약세 → 하락 쪽"),
+    "원자재": ("M 원자재(원유·금)", "원유 약세·금 강세 → 하락 쪽"), "글로벌주식": ("M 해외 주식(EFA·EEM)", "해외 주식 약세 → 하락 쪽"),
+    "환율": ("M 달러 다중지평", "달러 강세 → 하락 쪽"),
+    "LAYER": ("M 계층 판정(복합점수 · 위험(H) · 급락트리거)", "복합점수↓ · 위험↑ · 급락트리거↑ → 하락 쪽"),
+    "TOM": ("달력(월말 1일 · 월초 3일)", "월말·월초(역사적 상승일)가 아니면 상대적으로 하락 쪽"),
+}
+
+
+def r118_family_of(name: str) -> str:
+    """[R118] predictor 지표 이름 → 의미 가족(R118_P_RULES 첫 일치 · 없으면 'OTHER')."""
+    import re as _re
+    if not _R118_RX:
+        _R118_RX.extend((k, _re.compile(v)) for k, v in R118_P_RULES)
+    n = str(name).lower()
+    for k, rx in _R118_RX:
+        if rx.search(n):
+            return k
+    return "OTHER"
+
+
+def r118_z(df: pd.DataFrame, w: int = 504) -> pd.DataFrame:
+    """[R118] 롤링 z(과거 w일 · 인과 · ±4 절단)."""
+    df = pd.DataFrame(df).astype(float)
+    mp = max(60, w // 4)
+    return ((df - df.rolling(w, min_periods=mp).mean()) / df.rolling(w, min_periods=mp).std().replace(0.0, np.nan)).clip(-4.0, 4.0)
+
+
+def r118_load_pool(cfg: Config = CFG) -> Tuple[Any, str]:
+    """[R118] indicator_pool 모듈 — 같은 폴더에서 import, 없으면 GitHub raw(R118_POOL_URL)에서 받아 현재 폴더에 두고 import(노트북 wget 목록에 없을 때)."""
+    try:
+        import indicator_pool as _ip          # noqa
+        return _ip, "import(같은 폴더)"
+    except Exception:
+        pass
+    url = str(getattr(cfg, "R118_POOL_URL", R118_POOL_URL) or "")
+    if not url:
+        return None, "없음(R118_POOL_URL 비어 있음)"
+    try:
+        import urllib.request
+        import importlib
+        with urllib.request.urlopen(url, timeout=60) as _r:
+            data = _r.read()
+        if b"def compute_features" not in data or b"POOL_VERSION" not in data:
+            raise ValueError("받은 파일이 indicator_pool.py가 아님")
+        p = os.path.join(os.getcwd(), "indicator_pool.py")
+        with open(p, "wb") as fh:
+            fh.write(data)
+        if os.getcwd() not in sys.path:
+            sys.path.insert(0, os.getcwd())
+        importlib.invalidate_caches()
+        import indicator_pool as _ip          # noqa
+        return _ip, "GitHub raw에서 받음(노트북 wget 목록에 indicator_pool.py를 넣으면 이 단계 생략)"
+    except Exception as e:
+        return None, f"불러오기 실패({type(e).__name__}: {str(e)[:100]})"
+
+
+def r118_predictor_pool(px_dict: Dict[str, pd.DataFrame], fred: Dict[str, pd.Series], cal: pd.DatetimeIndex,
+                        cfg: Config = CFG) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
+    """[R118] predictor 지표 풀(SPY 대상) — M 가격 캐시 + 추가 티커(M fetch_all_yahoo) · FRED(M 발표지연 반영 + 추가 시리즈 보수적 지연) →
+    indicator_pool.compute_features(진행 출력 억제). 반환 (지표 DataFrame float32 · 정보)."""
+    import contextlib
+    t0 = time.time()
+    info: Dict[str, Any] = {"ok": False}
+    ip, how = r118_load_pool(cfg)
+    info["load"] = how
+    if ip is None:
+        return None, info
+    info["pool_version"] = getattr(ip, "POOL_VERSION", "?")
+    px = dict(px_dict or {})
+    peers: List[str] = []
+    for t in list(getattr(ip, "PEERS", []) or []):
+        if t not in peers:
+            peers.append(t)
+    need = [t for t in peers if px.get(t) is None]
+    got: List[str] = []
+    if need and bool(getattr(cfg, "R118_FETCH_EXTRA", True)):
+        try:
+            ex = fetch_all_yahoo(need, cfg)
+            for k, v in (ex or {}).items():
+                if v is not None and len(v):
+                    px[k] = v
+                    got.append(k)
+        except Exception as e:
+            info["extra_error"] = f"{type(e).__name__}: {str(e)[:100]}"
+    info.update({"peers": len(peers), "extra_need": len(need), "extra_ok": len(got), "extra_fail": [t for t in need if t not in got][:40]})
+    fr = {k: v for k, v in (fred or {}).items() if v is not None}
+    try:
+        fx = fetch_all_fred(list(R118_EXTRA_FRED), cfg) if bool(getattr(cfg, "R118_FETCH_EXTRA", True)) else {}
+        for sid, lag in R118_EXTRA_FRED.items():
+            s = (fx or {}).get(sid)
+            if s is not None and len(s):
+                fr[sid] = apply_publication_lag(s, lag, cal)
+    except Exception as e:
+        info["fred_error"] = f"{type(e).__name__}: {str(e)[:100]}"
+    for a, b in R118_FRED_ALIAS.items():
+        if a not in fr and b in fr:
+            fr[a] = fr[b]
+    cal2 = pd.DatetimeIndex(cal)
+    cal2 = cal2[cal2 >= pd.Timestamp(getattr(cfg, "R118_POOL_START", R118_POOL_START))]
+    fred_df = pd.DataFrame({k: pd.to_numeric(v, errors="coerce").reindex(cal2) for k, v in fr.items()}, index=cal2)
+
+    def _adj(df: pd.DataFrame) -> pd.DataFrame:
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        c = pd.to_numeric(df["Close"], errors="coerce")
+        ac = pd.to_numeric(df["Adj Close"], errors="coerce") if "Adj Close" in df.columns else c
+        f = (ac / c.replace(0, np.nan)).fillna(1.0)
+        o = pd.DataFrame(index=df.index)
+        for k in ("Open", "High", "Low"):
+            o[k] = pd.to_numeric(df[k], errors="coerce") * f if k in df.columns else ac
+        o["Close"] = ac
+        o["Volume"] = pd.to_numeric(df["Volume"], errors="coerce") if "Volume" in df.columns else 0.0
+        return o
+    ohlcv: Dict[str, pd.DataFrame] = {}
+    for t, d in px.items():
+        if isinstance(d, pd.DataFrame) and len(d) and "Close" in d.columns:
+            o = _adj(d).reindex(cal2)
+            ohlcv[t] = o if t == "SPY" else o.ffill(limit=3)
+    if "SPY" not in ohlcv:
+        info["note"] = "SPY 없음"
+        return None, info
+    closes = pd.DataFrame({t: v["Close"] for t, v in ohlcv.items()}, index=cal2)
+    ip.TICKER = "SPY"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        feat = ip.compute_features(ohlcv, closes, fred_df, log_availability=False, log_health=False)
+    feat = feat.replace([np.inf, -np.inf], np.nan).astype("float32")
+    info.update({"ok": True, "n": int(feat.shape[1]), "rows": int(feat.shape[0]), "sec": round(time.time() - t0, 1),
+                 "fred_cols": int(fred_df.shape[1])})
+    return feat, info
+
+
+def _r118_pc1(X: np.ndarray) -> np.ndarray:
+    if X.shape[1] == 1:
+        return np.array([1.0])
+    C = X.T @ X / max(len(X), 1)
+    return np.linalg.eigh(C)[1][:, -1]
+
+
+def r118_fast_auc(Zo: pd.DataFrame, y: pd.Series) -> pd.Series:
+    """[R118] 열마다 AUC(값이 클수록 y=1 쪽 · NaN 제외) — 한 번의 순위 계산."""
+    y = pd.Series(y).reindex(Zo.index)
+    ok = y.notna()
+    Zo = Zo.loc[ok]
+    yy = y[ok].values.astype(bool)
+    R = Zo.rank(axis=0)
+    has = Zo.notna()
+    n1 = (has.values & yy[:, None]).sum(axis=0).astype(float)
+    n0 = (has.values & ~yy[:, None]).sum(axis=0).astype(float)
+    s1 = np.nansum(np.where(yy[:, None], R.values, np.nan), axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        a = (s1 - n1 * (n1 + 1) / 2.0) / (n1 * n0)
+    a[(n1 < 20) | (n0 < 20)] = np.nan
+    return pd.Series(a, index=Zo.columns)
+
+
+def r118_market_block(ind: pd.DataFrame, px_dict: Dict[str, pd.DataFrame], fred: Dict[str, pd.Series], cal: pd.DatetimeIndex,
+                      price: pd.DataFrame, score: Optional[pd.Series], haz_score: Optional[pd.Series], cfg: Config = CFG) -> Dict[str, Any]:
+    """[R118] 시장 가족(날짜 × 가족): M 후보(사전부호 평균) + predictor 풀(가족 1주성분 · 앵커 방향 · 워크포워드) + M 계층 + 달력.
+    지표표(지표마다 출처 · 가족 · 뜻 · 방향 · 최근 적재 · 표본 밖 AUC(SPY 다음 체결일 하락 · 2018~))도 만든다."""
+    import re as _re
+    t0 = time.time()
+    cal = pd.DatetimeIndex(cal)
+    years = list(range(int(getattr(cfg, "R118_FIRST_FIT_YEAR", 2003)), int(cal.max().year) + 1))
+    tr0 = pd.Timestamp(getattr(cfg, "R118_TRAIN_START", "1999-01-01"))
+    o = pd.to_numeric(price["Open"], errors="coerce").reindex(cal) if "Open" in price.columns else pd.to_numeric(price["Close"], errors="coerce").reindex(cal)
+    fwd = o.shift(-2) / o.shift(-1) - 1.0
+    y = (fwd < 0).astype(float).where(fwd.notna())
+    ev = cal >= pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-01"))
+    rows: List[Dict[str, Any]] = []
+    # ---- ① M 후보(사전부호 → 위험 방향) ----
+    msign = {k: s.prior_sign for k, s in SPEC_BY_KEY.items() if k in ind.columns and (s.prior_sign or 0) != 0}
+    ZM = r118_z(ind[list(msign)].reindex(cal))
+    ZM = ZM.mul(pd.Series({k: -float(v) for k, v in msign.items()}), axis=1)
+    mcat = {k: SPEC_BY_KEY[k].category.split("-")[-1] for k in msign}
+    FM = ZM.T.groupby(pd.Series(mcat)).mean().T
+    FM = FM.loc[:, FM.notna().mean() > 0.2].add_prefix("M:")
+    au_m = r118_fast_auc(ZM.loc[ev], y[ev])
+    for k in msign:
+        s = SPEC_BY_KEY[k]
+        rows.append({"출처": "M 후보", "지표": k, "이름": s.name_kr, "가족": "M:" + mcat[k], "가족 뜻": s.lead_mechanism,
+                     "방향(위험 쪽)": ("값 ↓ = 위험" if msign[k] > 0 else "값 ↑ = 위험") + " (M 사전부호)", "가족 적재(최근)": 1.0,
+                     "표본 밖 AUC(2018~)": round(float(au_m.get(k, np.nan)), 4)})
+    # ---- ② predictor 풀 ----
+    info: Dict[str, Any] = {}
+    FP = pd.DataFrame(index=cal)
+    if bool(getattr(cfg, "R118_PREDICTOR_POOL", True)):
+        feat, pinfo = r118_predictor_pool(px_dict, fred, cal, cfg)
+        info["pool"] = pinfo
+        if feat is not None and feat.shape[1]:
+            feat = feat.reindex(cal)
+            fam = {c: r118_family_of(c) for c in feat.columns}
+            cols = [c for c in feat.columns if not fam[c].startswith("X_") and fam[c] != "OTHER"]
+            Zp = r118_z(feat[cols])
+            info["pool_excluded"] = {k: int(sum(1 for c in feat.columns if fam[c] == k)) for k in ("X_INTRADAY", "X_EARN", "OTHER")}
+
+            def _anchor(fk: str) -> Optional[pd.Series]:
+                parts = []
+                for a in R118_FAMILY.get(fk, ("", "", ()))[2]:
+                    if a[0] == "M" and a[1] in ZM.columns:
+                        parts.append(ZM[a[1]])
+                    elif a[0] == "P":
+                        rx = _re.compile(a[1])
+                        hit = [c for c in cols if rx.search(c)]
+                        if hit:
+                            parts.append(Zp[hit[0]] * float(a[2]))
+                return pd.concat(parts, axis=1).mean(axis=1) if parts else None
+            fams = sorted(set(fam[c] for c in cols))
+            SGN = pd.DataFrame(np.nan, index=years, columns=cols)
+            LOADL: Dict[str, float] = {}
+            for fk in fams:
+                mem_all = [c for c in cols if fam[c] == fk]
+                anc = _anchor(fk)
+                if anc is None:
+                    continue
+                sc = pd.Series(np.nan, index=cal)
+                for yr in years:
+                    trm = (cal < pd.Timestamp(f"{yr}-01-01") - pd.Timedelta(days=8)) & (cal >= tr0)
+                    tem = cal.year == yr
+                    if int(trm.sum()) < 250 or not tem.any():
+                        continue
+                    Xt = Zp.loc[trm, mem_all]
+                    cov = Xt.notna().mean()
+                    mem = list(cov[cov > 0.5].index)
+                    if not mem:
+                        continue
+                    Xv = Xt[mem].fillna(0.0).values
+                    v = _r118_pc1(Xv)
+                    a = anc[trm].values
+                    m_ = ~np.isnan(a)
+                    if m_.sum() < 100:
+                        continue
+                    rho = np.corrcoef((Xv @ v)[m_], a[m_])[0, 1]
+                    if not np.isfinite(rho) or abs(rho) < 1e-9:
+                        continue
+                    v = v * np.sign(rho)
+                    sd = float(np.std(Xv @ v)) or 1.0
+                    sc[tem] = Zp.loc[tem, mem].fillna(0.0).values @ v / sd
+                    SGN.loc[yr, mem] = np.sign(v)
+                    if yr == years[-1] or yr == int(cal.max().year):
+                        for c_, w_ in zip(mem, v):
+                            LOADL[c_] = float(w_)
+                FP["P:" + fk] = sc
+            # 지표별 표본 밖 AUC(해마다의 방향)
+            sg_d = SGN.reindex(cal.year).set_index(cal)
+            au_p = r118_fast_auc((Zp * sg_d).loc[ev], y[ev])
+            for c in feat.columns:
+                fk = fam[c]
+                fz = R118_FAMILY.get(fk, (fk, "", ()))
+                rows.append({"출처": "predictor", "지표": c, "이름": "", "가족": "P:" + fk, "가족 뜻": fz[1],
+                             "방향(위험 쪽)": ("제외 — " + fz[1]) if fk.startswith("X_") else "가족 1주성분 · 앵커와 같은 쪽",
+                             "가족 적재(최근)": round(LOADL.get(c, np.nan), 4),
+                             "표본 밖 AUC(2018~)": round(float(au_p.get(c, np.nan)), 4)})
+    # ---- ③ M 계층 · ④ 달력 ----
+    FL = pd.DataFrame(index=cal)
+    try:
+        parts = []
+        if score is not None:
+            parts.append(-(score_percentile(score).reindex(cal) - 0.5))
+        if haz_score is not None:
+            parts.append(score_percentile(haz_score).reindex(cal) - 0.5)
+        _ft = str(getattr(cfg, "FAST_TRIGGER_INDICATOR", "VIX_TERM"))
+        if _ft in ind.columns and _ft in SPEC_BY_KEY:
+            parts.append(score_percentile(ind[_ft] * (-SPEC_BY_KEY[_ft].prior_sign)).reindex(cal) - 0.5)
+        if parts:
+            FL["M:LAYER"] = pd.concat(parts, axis=1).mean(axis=1)
+    except Exception:
+        pass
+    ym = pd.Series(cal.year * 12 + cal.month, index=cal)
+    last = ym.ne(ym.shift(-1))
+    first3 = ym.groupby(ym).cumcount() < 3
+    FL["CAL:TOM"] = -((last | first3).astype(float) - 0.25)      # 월말·월초 = 위험 ↓
+    F = pd.concat([FP, FM, FL], axis=1)
+    F = F.loc[:, F.notna().mean() > 0.05]
+    tbl = pd.DataFrame(rows)
+    fam_auc = r118_fast_auc(F.loc[ev], y[ev])
+    ftab = []
+    for c in F.columns:
+        src, fk = (c.split(":", 1) + [""])[:2]
+        nm = R118_FAMILY.get(fk, (fk, "", ()))[:2] if src == "P" else R118_M_FAMILY_KR.get(fk, (fk, "M 후보 범주(사전부호 평균)"))
+        n_mem = int((tbl["가족"] == c).sum()) if len(tbl) else 0
+        anc = "" if src != "P" else " · ".join(a[1] for a in R118_FAMILY.get(fk, ("", "", ()))[2])
+        ftab.append({"가족": c, "이름": nm[0], "뜻(위험 쪽)": nm[1], "지표 수": n_mem, "앵커": anc,
+                     "단변량 AUC(2018~)": round(float(fam_auc.get(c, np.nan)), 4)})
+    info.update({"n_m": int(len(msign)), "n_p": int(sum(1 for r in rows if r["출처"] == "predictor")),
+                 "n_fam": int(F.shape[1]), "sec": round(time.time() - t0, 1)})
+    return {"F": F, "tbl": tbl, "fam_tbl": pd.DataFrame(ftab), "info": info, "y": y, "fwd": fwd}
+
+
+def r118_asset_pool(O: Optional[pd.DataFrame], H: Optional[pd.DataFrame], L: Optional[pd.DataFrame], C: pd.DataFrame,
+                    V: Optional[pd.DataFrame] = None) -> Dict[str, Tuple[str, pd.DataFrame]]:
+    """[R118] 자산별 predictor 계열 지표(날짜 × 자산) — compute_features 01~04·07·09·14절과 같은 정의·격자. 반환 {이름: (가족, 값)}."""
+    C = pd.DataFrame(C).astype(float)
+    O = None if O is None else pd.DataFrame(O).astype(float)
+    H = None if H is None else pd.DataFrame(H).astype(float)
+    L = None if L is None else pd.DataFrame(L).astype(float)
+    V = None if V is None else pd.DataFrame(V).astype(float)
+    out: Dict[str, Tuple[str, pd.DataFrame]] = {}
+
+    def add(n, fam, x):
+        out[n] = (fam, x.replace([np.inf, -np.inf], np.nan))
+
+    def rsi(c, n):
+        d = c.diff()
+        g = d.clip(lower=0).ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+        l_ = (-d.clip(upper=0)).ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+        return 100 - 100 / (1 + g / l_.replace(0, np.nan))
+    r = C.pct_change(fill_method=None)
+    lr = np.log(C.where(C > 0)).diff()
+    for n in (1, 2, 3, 5, 10):
+        add(f"ret_{n}d", "A:OSC", C.pct_change(n, fill_method=None))
+    for n in (20, 40, 60, 120):
+        add(f"ret_{n}d", "A:TREND", C.pct_change(n, fill_method=None))
+    for n in (2, 3, 5, 7, 9, 14, 21, 28):
+        add(f"rsi_{n}", "A:OSC", rsi(C, n))
+    for n in (10, 20, 50):
+        ma, sd = C.rolling(n).mean(), C.rolling(n).std()
+        add(f"bb_pct_{n}_2", "A:OSC", (C - (ma - 2 * sd)) / (4 * sd).replace(0, np.nan))
+        add(f"price_zscore_{n}", "A:OSC", (C - ma) / sd.replace(0, np.nan))
+        add(f"bb_width_{n}_2", "A:RVOL", 4 * sd / ma.replace(0, np.nan))
+    for n in (10, 20, 60):
+        add(f"close_pctrank_{n}", "A:OSC", C.rolling(n).rank(pct=True))
+    for n in (14, 20):
+        up = r.clip(lower=0).rolling(n).sum()
+        dn = (-r.clip(upper=0)).rolling(n).sum()
+        add(f"cmo_{n}", "A:OSC", (up - dn) / (up + dn).replace(0, np.nan) * 100)
+    for n in (5, 10, 20, 30, 50, 100, 150, 200):
+        add(f"sma_{n}_dist", "A:TREND", C / C.rolling(n, min_periods=int(n * 0.8)).mean() - 1)
+    for n in (8, 12, 26, 50, 100, 200):
+        add(f"ema_{n}_dist", "A:TREND", C / C.ewm(span=n, adjust=False, min_periods=n).mean() - 1)
+    for a, b in ((5, 20), (10, 50), (20, 50), (50, 200)):
+        add(f"sma_{a}_{b}_gap", "A:TREND", C.rolling(a).mean() / C.rolling(b, min_periods=int(b * 0.8)).mean() - 1)
+    for f_, s_, g_ in ((12, 26, 9), (5, 35, 5)):
+        mc = C.ewm(span=f_, adjust=False).mean() - C.ewm(span=s_, adjust=False).mean()
+        add(f"macd_{f_}_{s_}_hist", "A:TREND", (mc - mc.ewm(span=g_, adjust=False).mean()) / C)
+        add(f"macd_{f_}_{s_}_norm", "A:TREND", mc / C)
+    lc = np.log(C.where(C > 0))
+    for n in (10, 20, 60):
+        x = np.arange(n) - (n - 1) / 2.0
+        # 이동 선형회귀 기울기 = Σ x·log C / Σ x² (창 안 가중합 — rolling.apply 없이)
+        num = sum(lc.shift(n - 1 - i) * x[i] for i in range(n))
+        add(f"linreg_slope_{n}", "A:TREND", num / float(np.dot(x, x)))
+    add("mom_12_1", "A:TREND", C.shift(21) / C.shift(252) - 1)
+    for n in (20, 60):
+        add(f"sharpe_like_{n}", "A:TREND", r.rolling(n).mean() / r.rolling(n).std().replace(0, np.nan))
+    for n in (10, 20, 60, 120, 252):
+        add(f"dd_from_{n}d_high", "A:DAMAGE", C / C.rolling(n, min_periods=int(n * 0.6)).max() - 1)
+    for n in (20, 60):
+        eq = C / C.rolling(n).max()
+        add(f"max_dd_{n}d", "A:DAMAGE", eq.rolling(n).min() - 1)
+    for n in (5, 10, 20, 60):
+        add(f"hist_vol_{n}", "A:RVOL", lr.rolling(n).std() * np.sqrt(252))
+    for a, b in ((5, 20), (10, 60), (20, 100)):
+        add(f"hvol_ratio_{a}_{b}", "A:RVOL", lr.rolling(a).std() / lr.rolling(b).std().replace(0, np.nan))
+    add("ulcer_14", "A:RVOL", np.sqrt(((C / C.rolling(14).max() - 1) ** 2).rolling(14).mean()))
+    for n in (20, 60):
+        add(f"ret_skew_{n}", "A:STAT", r.rolling(n).skew())
+        add(f"ret_kurt_{n}", "A:STAT", r.rolling(n).kurt())
+        add(f"win_rate_{n}d", "A:STAT", (r > 0).astype(float).where(r.notna()).rolling(n).mean())
+        add(f"var_5pct_{n}d", "A:STAT", r.rolling(n).quantile(0.05))
+    add("ret_acf1_20d", "A:STAT", r.rolling(20).corr(r.shift(1)))
+    if H is not None and L is not None:
+        for n in (5, 9, 14, 21):
+            hh, ll = H.rolling(n).max(), L.rolling(n).min()
+            k = (C - ll) / (hh - ll).replace(0, np.nan) * 100
+            add(f"stoch_k_{n}", "A:OSC", k)
+            add(f"stoch_d_{n}", "A:OSC", k.rolling(3).mean())
+        for n in (7, 14, 21, 28):
+            hh, ll = H.rolling(n).max(), L.rolling(n).min()
+            add(f"williams_{n}", "A:OSC", (C - hh) / (hh - ll).replace(0, np.nan) * 100)
+        tp = (H + L + C) / 3
+        for n in (10, 14, 20, 30, 40):
+            ma = tp.rolling(n).mean()
+            md = (tp - ma).abs().rolling(n).mean()
+            add(f"cci_{n}", "A:OSC", (tp - ma) / (0.015 * md.replace(0, np.nan)))
+        pc = C.shift(1)
+        trg = np.maximum(np.maximum(H - L, (H - pc).abs()), (L - pc).abs())
+        for n in (7, 14, 21):
+            add(f"atr_{n}_norm", "A:RVOL", trg.rolling(n).mean() / C)
+        hl = np.log((H / L.replace(0, np.nan)).where(lambda z: z > 0))
+        for n in (10, 20):
+            add(f"parkinson_{n}", "A:RVOL", np.sqrt((hl ** 2).rolling(n).mean() / (4 * np.log(2))) * np.sqrt(252))
+        if O is not None:
+            co = np.log((C / O.replace(0, np.nan)).where(lambda z: z > 0))
+            gk = 0.5 * hl ** 2 - (2 * np.log(2) - 1) * co ** 2
+            for n in (10, 20):
+                add(f"garman_{n}", "A:RVOL", np.sqrt(gk.rolling(n).mean().clip(lower=0)) * np.sqrt(252))
+            rng = (H - L).replace(0, np.nan)
+            clv = ((C - L) - (H - C)) / rng
+            add("clv", "A:CANDLE", clv)
+            for n in (5, 10, 20):
+                add(f"clv_mean_{n}", "A:CANDLE", clv.rolling(n).mean())
+            up_w = (H - np.maximum(O, C)) / rng
+            lo_w = (np.minimum(O, C) - L) / rng
+            for n in (5, 10):
+                add(f"wick_net_{n}", "A:CANDLE", (lo_w - up_w).rolling(n).mean())
+                add(f"body_dir_{n}", "A:CANDLE", ((C - O) / rng).rolling(n).mean())
+        if V is not None:
+            Vv = V.where(V > 0)
+            if Vv.notna().any().any():
+                for n in (5, 20):
+                    add(f"vol_ratio_{n}", "A:FLOW", Vv / Vv.rolling(n).mean())
+                mfm = ((C - L) - (H - C)) / (H - L).replace(0, np.nan)
+                for n in (10, 20):
+                    add(f"cmf_{n}", "A:FLOW", (mfm * Vv).rolling(n).sum() / Vv.rolling(n).sum())
+                obv = (np.sign(r).fillna(0) * Vv.fillna(0)).cumsum()
+                for n in (10, 20):
+                    add(f"obv_slope_{n}", "A:FLOW", (obv - obv.shift(n)) / Vv.rolling(n).mean().replace(0, np.nan) / n)
+                mf = tp * Vv
+                pos = mf.where(tp > tp.shift(1), 0.0).rolling(14).sum()
+                neg = mf.where(tp < tp.shift(1), 0.0).rolling(14).sum()
+                add("mfi_14", "A:FLOW", 100 - 100 / (1 + pos / neg.replace(0, np.nan)))
+                add("down_vol_share_20", "A:FLOW", (Vv * (r < 0)).rolling(20).sum() / Vv.rolling(20).sum())
+    if O is not None:
+        gap = O / C.shift(1) - 1
+        for n in (1, 5, 10):
+            add(f"gap_net_{n}d", "A:CANDLE", gap.rolling(n).sum())
+    return out
+
+
+def r118_asset_families(pool: Dict[str, Tuple[str, pd.DataFrame]], assets: List[str], dates: pd.DatetimeIndex, years: List[int],
+                        stride: int = 5) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
+    """[R118] 자산 가족 점수(날짜 × 자산): 가족마다 풀드(자산 쌓기) 1주성분 · 앵커(R118_A_FAMILY) 방향 · 해마다 과거만으로.
+    반환 ({가족: 점수}, {지표: 최근 적재})."""
+    dates = pd.DatetimeIndex(dates)
+    Z = {n: r118_z(x.reindex(index=dates, columns=assets)) for n, (f, x) in pool.items()}
+    fams = sorted(set(f for f, _ in pool.values()))
+    out: Dict[str, pd.DataFrame] = {}
+    loads: Dict[str, float] = {}
+    for fk in fams:
+        mem = [n for n, (f, _) in pool.items() if f == fk]
+        an, asg = R118_A_FAMILY.get(fk, ("", "", ("", 0)))[2]
+        if an not in Z:
+            continue
+        S_ = pd.DataFrame(np.nan, index=dates, columns=assets)
+        for yr in years:
+            trm = dates < pd.Timestamp(f"{yr}-01-01") - pd.Timedelta(days=8)
+            tem = dates.year == yr
+            if int(trm.sum()) < 240 or not tem.any():
+                continue
+            trd = dates[trm][::max(1, int(stride))]
+            X = np.column_stack([Z[n].reindex(trd).values.ravel() for n in mem])
+            okr = ~np.isnan(X).all(axis=1)
+            X = X[okr]
+            if len(X) < 200:
+                continue
+            keep = (~np.isnan(X)).mean(axis=0) > 0.5
+            if not keep.any():
+                continue
+            mk = [m for m, k_ in zip(mem, keep) if k_]
+            Xk = np.nan_to_num(X[:, keep])
+            v = _r118_pc1(Xk)
+            a = Z[an].reindex(trd).values.ravel()[okr] * float(asg)
+            m_ = ~np.isnan(a)
+            if m_.sum() < 100:
+                continue
+            rho = np.corrcoef((Xk @ v)[m_], a[m_])[0, 1]
+            if not np.isfinite(rho) or abs(rho) < 1e-9:
+                continue
+            v = v * np.sign(rho)
+            sd = float(np.std(Xk @ v)) or 1.0
+            ted = dates[tem]
+            acc = np.zeros((len(ted), len(assets)))
+            for n, w_ in zip(mk, v):
+                acc += np.nan_to_num(Z[n].reindex(ted).values) * w_
+            S_.loc[ted] = acc / sd
+            for n, w_ in zip(mk, v):
+                loads[n] = float(w_)
+        out[fk] = S_
+    return out, loads
+
+
+def r118_prob_panel(fams: Dict[str, pd.DataFrame], mkt: Optional[pd.DataFrame], fwd: pd.DataFrame, first_year: int = 2008,
+                    min_rows: int = 1000, l2_per_row: float = 1e-2, eval_start: str = "2018-01-01") -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[R118] 가족 점수(자산 가족 {이름: 날짜 × 자산} + 시장 가족 날짜 × 가족) → 풀드 로지스틱(가중 ≥ 0 · 해마다 과거만) → 날짜 × 자산 하락확률.
+    표적 = fwd(날짜 × 자산 · 다음 체결일 수익) < 0. 품질: AUC · Brier · 십분위(예측 → 실제 하락 비율 · 다음날 평균 수익) · 가족 가중 · 가족별 AUC."""
+    fwd = pd.DataFrame(fwd).astype(float)
+    assets = list(fwd.columns)
+    idx = fwd.index
+    parts = []
+    for a in assets:
+        f = pd.DataFrame(index=idx)
+        for k, v in (fams or {}).items():
+            if a in v.columns:
+                f[k] = v[a].reindex(idx)
+        if isinstance(mkt, pd.DataFrame):
+            for c in mkt.columns:
+                f[c] = mkt[c].reindex(idx)
+        f["fwd"] = fwd[a]
+        f["y"] = (fwd[a] < 0).astype(float).where(fwd[a].notna())
+        f["asset"] = a
+        parts.append(f)
+    X = pd.concat(parts)
+    X.index.name = "date"
+    X = X.reset_index()
+    feats = [c for c in X.columns if c not in ("date", "fwd", "y", "asset") and X[c].notna().mean() > 0.05]
+    d = pd.DatetimeIndex(X["date"])
+    Fm = X[feats].astype(float).fillna(0.0)
+    X["p"] = np.nan
+    X["base"] = np.nan
+    W: Dict[int, pd.Series] = {}
+    for yr in sorted(set(d.year)):
+        if yr < int(first_year):
+            continue
+        trm = (d < pd.Timestamp(f"{yr}-01-01") - pd.Timedelta(days=8)) & X["y"].notna().values
+        if int(trm.sum()) < int(min_rows):
+            continue
+        Ft = Fm[trm]
+        mu, sd = Ft.mean(), Ft.std().replace(0.0, 1.0).fillna(1.0)
+        yt = X.loc[trm, "y"].values
+        if len(np.unique(yt)) < 2:
+            continue
+        Xb = np.c_[np.ones(int(trm.sum())), ((Ft - mu) / sd).values]
+        k = Xb.shape[1]
+        b = np.zeros(k)
+        Rg = np.eye(k) * float(trm.sum()) * float(l2_per_row)
+        Rg[0, 0] = 0.0
+        act = np.ones(k, bool)
+        for _ in range(100):
+            pp = 1.0 / (1.0 + np.exp(-np.clip(Xb @ b, -30, 30)))
+            g = Xb.T @ (yt - pp) - Rg @ b
+            Hm = (Xb * (pp * (1 - pp))[:, None]).T @ Xb + Rg + np.eye(k) * 1e-9
+            ii = np.flatnonzero(act)
+            st = np.zeros(k)
+            st[ii] = np.linalg.solve(Hm[np.ix_(ii, ii)], g[ii])
+            b = b + st
+            neg = b < 0
+            neg[0] = False
+            if neg.any():
+                b[neg] = 0.0
+                act[neg] = False
+            if float(np.abs(st).max()) < 1e-7:
+                break
+        tem = d.year == yr
+        X.loc[tem, "p"] = 1.0 / (1.0 + np.exp(-np.clip(b[0] + ((Fm[tem] - mu) / sd).values @ b[1:], -30, 30)))
+        X.loc[tem, "base"] = float(yt.mean())
+        W[int(yr)] = pd.Series(b[1:], index=feats)
+    P = X.pivot_table(index="date", columns="asset", values="p", aggfunc="last").reindex(columns=assets)
+    s = X[(d >= pd.Timestamp(eval_start)) & X["p"].notna() & X["y"].notna()]
+    q: Dict[str, Any] = {"ok": bool(W), "fits": len(W), "rows": int(len(s)), "features": feats, "method": "R118 전 지표 · 의미 가족 · 부호제약 로지스틱"}
+    if len(s) > 50:
+        q["auc"] = _r117_auc(s["p"].values, s["y"].values)
+        q["brier"] = float(np.mean((s["p"] - s["y"]) ** 2))
+        q["brier_base"] = float(np.mean((s["base"] - s["y"]) ** 2))
+        q["down_rate"] = float(s["y"].mean())
+        q["p_q"] = [round(float(v), 3) for v in s["p"].quantile([0.05, 0.5, 0.95])]
+        q["auc_by_year"] = {int(k): round(_r117_auc(g["p"].values, g["y"].values), 3) for k, g in s.groupby(pd.DatetimeIndex(s["date"]).year)}
+        try:
+            qq = pd.qcut(s["p"], 10, labels=False, duplicates="drop")
+            q["deciles"] = s.groupby(qq).agg(p=("p", "mean"), y=("y", "mean"), n=("y", "size"), r=("fwd", "mean")).round(6).reset_index(drop=True)
+        except Exception:
+            q["deciles"] = None
+        se = X.loc[s.index]
+        q["fam_auc"] = {c: round(_r117_auc(se[c].astype(float).values, se["y"].values), 4) for c in feats}
+        eq = se[feats].astype(float).fillna(0.0).mean(axis=1)
+        q["eq_auc"] = _r117_auc(eq.values, se["y"].values)
+    if W:
+        q["weights_last"] = W[max(W)].round(4).to_dict()
+        q["weights_year"] = int(max(W))
+    return P, q
+
+
+def r118_ohlcv(px_dict: Dict[str, pd.DataFrame], tickers: List[str], idx: pd.DatetimeIndex) -> Tuple[pd.DataFrame, ...]:
+    """[R118] px_dict → 조정(Adj Close/Close 비율) 시가·고가·저가·종가·거래량(날짜 × 티커)."""
+    O, H, L, C, V = {}, {}, {}, {}, {}
+    for t in tickers:
+        d = (px_dict or {}).get(t)
+        if not isinstance(d, pd.DataFrame) or not len(d) or "Close" not in d.columns:
+            continue
+        d = d[~d.index.duplicated(keep="last")].sort_index()
+        c = pd.to_numeric(d["Close"], errors="coerce")
+        ac = pd.to_numeric(d["Adj Close"], errors="coerce") if "Adj Close" in d.columns else c
+        f = (ac / c.replace(0, np.nan)).fillna(1.0)
+        C[t] = ac
+        O[t] = pd.to_numeric(d["Open"], errors="coerce") * f if "Open" in d.columns else ac
+        H[t] = pd.to_numeric(d["High"], errors="coerce") * f if "High" in d.columns else ac
+        L[t] = pd.to_numeric(d["Low"], errors="coerce") * f if "Low" in d.columns else ac
+        V[t] = pd.to_numeric(d["Volume"], errors="coerce") if "Volume" in d.columns else pd.Series(np.nan, index=d.index)
+    mk = lambda z: pd.DataFrame(z).reindex(idx)
+    return mk(O), mk(H), mk(L), mk(C), mk(V)
+
+
+def r118_layer_prob(assets: List[str], O: pd.DataFrame, H: Optional[pd.DataFrame], L: Optional[pd.DataFrame], C: pd.DataFrame,
+                    V: Optional[pd.DataFrame], mkt: Optional[pd.DataFrame], fwd: pd.DataFrame, extra_fams: Optional[Dict[str, pd.DataFrame]] = None,
+                    first_year: int = 2008, min_rows: int = 3000, spy_close: Optional[pd.Series] = None,
+                    eval_start: str = "2018-01-01") -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[R118] 한 층(S · I · K)의 하락확률: 자산 지표 풀(r118_asset_pool) → 자산 가족(풀드 1주성분 · 앵커) + extra_fams(층 고유 사전부호 가족)
+    + 베타 × 시장 위험 + 시장 가족(M) → r118_prob_panel. q에 자산 지표표(지표 · 가족 · 적재 · 표본 밖 AUC)를 싣는다."""
+    t0 = time.time()
+    idx = pd.DatetimeIndex(fwd.index)
+    assets = [a for a in assets if a in C.columns]
+    years = list(range(int(first_year), int(idx.max().year) + 1))
+    pool = r118_asset_pool(O[assets] if O is not None else None, H[assets] if H is not None else None,
+                           L[assets] if L is not None else None, C[assets], V[assets] if V is not None else None)
+    AF, loads = r118_asset_families(pool, assets, idx, years)
+    fams = dict(AF)
+    for k, v in (extra_fams or {}).items():
+        fams[k] = v
+    if isinstance(mkt, pd.DataFrame) and mkt.shape[1] and spy_close is not None:
+        mall = mkt.mean(axis=1).reindex(idx)
+        sc = pd.to_numeric(spy_close, errors="coerce").reindex(idx)
+        ls = np.log(sc.where(sc > 0)).diff()
+        B = {}
+        for a in assets:
+            la = np.log(C[a].where(C[a] > 0)).diff()
+            cov = la.rolling(252, min_periods=126).cov(ls)
+            var = ls.rolling(252, min_periods=126).var()
+            B[a] = ((cov / var.replace(0, np.nan)).shift(1) - 1.0).clip(-1.5, 1.5) * mall
+        fams["A:BETAxMKT"] = pd.DataFrame(B)
+    P, q = r118_prob_panel(fams, mkt, fwd[assets], first_year=first_year + 1, min_rows=min_rows, eval_start=eval_start)
+    # 자산 지표표(풀드 · 표본 밖 · 위험 방향 = 최근 적재 부호)
+    try:
+        ev = idx >= pd.Timestamp(eval_start)
+        yv = (fwd[assets].loc[ev] < 0).astype(float).where(fwd[assets].loc[ev].notna()).values.ravel()
+        rows = []
+        for n, (fk, x) in pool.items():
+            sgn = np.sign(loads.get(n, np.nan))
+            z = r118_z(x.reindex(index=idx, columns=assets)).loc[ev].values.ravel()
+            au = _r117_auc(z * sgn, yv) if np.isfinite(sgn) else np.nan
+            fz = R118_A_FAMILY.get(fk, (fk, "", ("", 0)))
+            rows.append({"출처": "자산 지표(predictor 계열)", "지표": n, "이름": "", "가족": fk, "가족 뜻": fz[1],
+                         "방향(위험 쪽)": "가족 1주성분 · 앵커(" + str(fz[2][0]) + ")와 같은 쪽", "가족 적재(최근)": round(loads.get(n, np.nan), 4),
+                         "표본 밖 AUC(2018~)": round(float(au), 4) if np.isfinite(au) else np.nan})
+        q["asset_tbl"] = pd.DataFrame(rows)
+    except Exception as e:
+        q["asset_tbl_error"] = f"{type(e).__name__}: {str(e)[:100]}"
+    q["n_asset_ind"] = len(pool)
+    q["sec"] = round(time.time() - t0, 1)
+    return P, q
+
+
+def r118_sheet(layer: str, q: Dict[str, Any], mkt_block: Optional[Dict[str, Any]] = None, extra_tbl: Optional[pd.DataFrame] = None,
+               note: str = "") -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[R118] 00H2_지표의미 — A 가족표(이름 · 뜻 · 지표 수 · 앵커 · 단변량 AUC · 최근 가중) · B 지표표(전 지표: 출처 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC)
+    · C 읽는 법. 00 줄 1개."""
+    q = q or {}
+    parts = []
+    wl = q.get("weights_last") or {}
+    fa = q.get("fam_auc") or {}
+    ft = (mkt_block or {}).get("fam_tbl")
+    frows = []
+    names = {}
+    if isinstance(ft, pd.DataFrame) and len(ft):
+        for _, r in ft.iterrows():
+            names[r["가족"]] = (r["이름"], r["뜻(위험 쪽)"], r["지표 수"], r["앵커"])
+    for k, v in R118_A_FAMILY.items():
+        names.setdefault(k, (v[0], v[1], np.nan, v[2][0]))
+    for c in (q.get("features") or []):
+        nm = names.get(c, (c, "", np.nan, ""))
+        frows.append({"블록": "A 의미 가족(층 모형 입력)", "가족": c, "이름": nm[0], "뜻(위험 쪽)": nm[1], "지표 수": nm[2], "앵커": nm[3],
+                      "단변량 AUC(2018~ · 이 층)": fa.get(c, np.nan), f"로지스틱 가중({q.get('weights_year', '')})": wl.get(c, np.nan)})
+    if frows:
+        parts.append(pd.DataFrame(frows))
+    tb = []
+    mt = (mkt_block or {}).get("tbl")
+    if isinstance(mt, pd.DataFrame) and len(mt):
+        tb.append(mt)
+    at = q.get("asset_tbl")
+    if isinstance(at, pd.DataFrame) and len(at):
+        tb.append(at)
+    if isinstance(extra_tbl, pd.DataFrame) and len(extra_tbl):
+        tb.append(extra_tbl)
+    if tb:
+        T = pd.concat(tb, ignore_index=True, sort=False)
+        T.insert(0, "블록", "B 지표표(전 지표)")
+        parts.append(T)
+    parts.append(pd.DataFrame([{"블록": "C 읽는 법", "가족": a_, "이름": b_} for a_, b_ in (
+        ("설계", "모든 지표 → 의미 가족 · 사전부호가 있는 지표(M·S·K)는 그 부호로, predictor 지표는 가족 1주성분을 앵커와 같은 방향으로 → 가족 점수 → "
+                "층별 풀드 로지스틱(가중 ≥ 0 · 매년 과거만으로 재학습) → 다음 체결일 하락확률"),
+        ("표본 밖 AUC", "0.5 = 동전 · 위험 방향으로 돌린 값이 클수록 다음 체결일(t+1 시가 → t+2 시가) 하락이 잦으면 > 0.5 · 2018~ · 해마다 그 해 이전 자료로만 방향을 정함"),
+        ("가족 적재", "그 지표가 가족 공통 축에 싣는 무게(부호 = 위험 방향) · 0에 가까우면 가족 뜻과 따로 움직이는 지표"),
+        ("제외", "인트라데이(과거 60일뿐) · SPY 실적 — 표에는 남기고 모형에는 넣지 않음"),
+        ("다중 검정", "지표가 수천 개라 우연만으로도 몇몇은 0.55~0.60이 나온다(적재가 0에 가까운데 AUC가 높은 지표 = 방향이 사실상 우연) — 가족·합성 AUC를 본다"),
+        ("⚠", "지표를 늘려도 다음날 방향 정보는 작다(로컬: M 지표 0.525 · 전체 0.522 · predictor 지표 평균 0.504). 연구·교육용, 투자 자문 아님"))]))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    n_m = int((mt["출처"] == "M 후보").sum()) if isinstance(mt, pd.DataFrame) and len(mt) else 0
+    n_p = int((mt["출처"] == "predictor").sum()) if isinstance(mt, pd.DataFrame) and len(mt) else 0
+    n_a = int(len(at)) if isinstance(at, pd.DataFrame) else 0
+    n_x = int(len(extra_tbl)) if isinstance(extra_tbl, pd.DataFrame) else 0
+    top = sorted(((k, v) for k, v in wl.items() if v and v > 1e-6), key=lambda t: -t[1])[:6]
+    line = (f"★★★ R118 전 지표 · 의미 설계 하락확률({layer}) — 사용자 지시 2026-09-29",
+            f"지표 {n_m + n_p + n_a + n_x:,}개(M 후보 {n_m} · predictor {n_p:,} · 자산 {n_a} · 층 고유 {n_x}) → 의미 가족 {len(q.get('features') or [])}개 → "
+            f"부호제약 로지스틱 · 표본 밖 AUC {q.get('auc', float('nan')):.3f}(동일가중 가족 평균 {q.get('eq_auc', float('nan')):.3f} · 0.5 = 동전)"
+            + (f" · 가중 상위: " + ", ".join(f"{k} {v:.3f}" for k, v in top) if top else "")
+            + (f" · {note}" if note else "") + " — 세부 00H2. 연구·교육용, 투자 자문 아님.")
+    return df, [line]
 
 
 def r98_neighbor_col(pk_ratio: float, calm_sigma: float) -> str:
@@ -12474,12 +13332,30 @@ def run(cfg: Config = CFG) -> dict:
         log("SIGNAL", kv(event="r113_rate_measure_failed", err=type(_e113).__name__, msg=str(_e113)[:160],
                          action="측정 열 없이 계속(라이브 무영향) — 00 줄에 표시"), level="error")
         r113_diag = {"enabled": False, "error": f"{type(_e113).__name__}: {str(_e113)[:120]}"}
+    # [v1.79.0 R118 ★ 사용자 지시] 전 지표 · 의미 설계 — 시장 가족(M 후보 + predictor 풀 약 4,800 + M 계층 + 달력). 실패하면 R117 확률로 계속.
+    r118_mkt: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(cfg, "R118_ENABLE", True)) and bool(getattr(cfg, "R117_ENABLE", True)):
+        try:
+            r118_mkt = r118_market_block(ind, px_dict, fred, cal, price, score, haz_score, cfg)
+            r118_mkt["enabled"] = True
+            R118_LAST.clear()
+            R118_LAST.update({"F": r118_mkt["F"], "fam_tbl": r118_mkt["fam_tbl"], "info": r118_mkt["info"]})
+            _pi118 = (r118_mkt.get("info") or {}).get("pool") or {}
+            log("SIGNAL", kv(event="r118_market_block", families=r118_mkt["info"].get("n_fam"), m_ind=r118_mkt["info"].get("n_m"),
+                             pool_ind=r118_mkt["info"].get("n_p"), pool_ok=_pi118.get("ok"), pool_load=_pi118.get("load"),
+                             extra_yahoo=f"{_pi118.get('extra_ok')}/{_pi118.get('extra_need')}", pool_sec=_pi118.get("sec"),
+                             sec=r118_mkt["info"].get("sec"), note="R118 전 지표 · 의미 가족 → 하락확률(R117 문턱 표 입력)"))
+        except Exception as _e118:
+            log("SIGNAL", kv(event="r118_market_block_failed", err=type(_e118).__name__, msg=str(_e118)[:160],
+                             action="R117 확률(자산 12 + 시장 7 지표)로 계속 — 00 줄에 표시"), level="error")
+            r118_mkt = {"enabled": False, "error": f"{type(_e118).__name__}: {str(_e118)[:120]}"}
     # [v1.78.0 R117 ★ 사용자 지시] 다음날 하락확률 문턱 비교 → 종합 1위가 필터면 target_pos에 적용(R117_LIVE). 실패하면 R117 없이 계속.
     r117_diag: Dict[str, Any] = {"enabled": False}
     if bool(getattr(cfg, "R117_ENABLE", True)):
         try:
             sig, r117_diag = apply_r117_down_prob(sig, price, px_adj, cfg, rf_daily,
-                                                  m_extra=r117_m_extra({"score_pct": score_pct, "haz_pct": haz_pct, "fast_pct": fast_pct}))
+                                                  m_extra=r117_m_extra({"score_pct": score_pct, "haz_pct": haz_pct, "fast_pct": fast_pct}),
+                                                  r118=r118_mkt)
         except Exception as _e117:
             log("SIGNAL", kv(event="r117_down_prob_failed", err=type(_e117).__name__, msg=str(_e117)[:160],
                              action="R117 없이 계속(= v1.77.0 라이브) — 00 줄에 표시"), level="error")
@@ -12635,7 +13511,8 @@ def run(cfg: Config = CFG) -> dict:
             "r96": r96_diag,                                                               # [v1.64.0 R96] 변동성 관리 발동 요약
             "r98": r98_diag,                                                               # [v1.66.0 R98] 측정 열 요약(V1·V1강·이웃·VRP)
             "r113": r113_diag,                                                             # [v1.75.0 R113] 금리 급등 경보 측정 열 요약
-            "r117": r117_diag,                                                             # [v1.78.0 R117] 다음날 하락확률 문턱(표 · 1위 · 라이브)
+            "r117": r117_diag,
+            "r118": r118_mkt,                                                              # [v1.79.0 R118] 시장 가족 · 지표표 · 가족표(S·I가 읽는다)                                                             # [v1.78.0 R117] 다음날 하락확률 문턱(표 · 1위 · 라이브)
             "stage_timing": stage_timing}
 
 
@@ -13489,7 +14366,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     else:
         daily["과열헤어컷(E)"] = ""
     if "r117_p_down" in sig.columns:                  # [v1.78.0 R117] SPY 다음날 하락확률(워크포워드)
-        daily["다음날 하락확률(R117)"] = pd.to_numeric(sig["r117_p_down"], errors="coerce").reindex(idx).round(4)
+        daily["다음날 하락확률(R118 전 지표)"] = pd.to_numeric(sig["r117_p_down"], errors="coerce").reindex(idx).round(4)
     # [v1.21.0 §C] 규칙 ⑪ 레버리지 발동일(기본 비활성이면 전부 공란).
     daily["레버리지(L)"] = sig["leverage"].reindex(idx).map({True: "발동", False: ""}) \
         if "leverage" in sig.columns else ""
@@ -13736,6 +14613,22 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             _r105_m_lines = [("★★★ R117 다음날 하락확률 문턱(M)", f"⚠ 산출 실패 — {_d117['error']} (라이브는 R117 없이 계속)")] + list(_r105_m_lines)
     except Exception as _e117:   # noqa — 표시 전용
         log("REPORT", kv(event="r117_sheet_failed", layer="M", err=type(_e117).__name__, msg=str(_e117)[:160]), "warning")
+    # [v1.79.0 R118 ★] 00H2_지표의미(전 지표 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC) · 00 줄
+    try:
+        _m118 = res.get("r118") or {}
+        if _m118.get("enabled"):
+            _q118 = (res.get("r117") or {}).get("quality") or {}
+            _pi118 = (_m118.get("info") or {}).get("pool") or {}
+            _nt118 = (f"predictor 풀 {_pi118.get('n', 0):,}개(원본 {_pi118.get('pool_version', '?')} · {_pi118.get('load', '-')} · 추가 티커 "
+                      f"{_pi118.get('extra_ok', 0)}/{_pi118.get('extra_need', 0)} · {_pi118.get('sec', '-')}초)" if _pi118.get("ok")
+                      else f"⚠ predictor 풀 없음({_pi118.get('load', '-')}) — M 후보 + 계층 + 달력만")
+            _h118, _l118 = r118_sheet("M · SPY", _q118, _m118, note=_nt118)
+            sheets[R118_SHEET] = _h118
+            _r105_m_lines = list(_l118) + list(_r105_m_lines)
+        elif _m118.get("error"):
+            _r105_m_lines = [("★★★ R118 전 지표 · 의미 설계 하락확률(M)", f"⚠ 산출 실패 — {_m118['error']} (R117 확률로 계속)")] + list(_r105_m_lines)
+    except Exception as _e118:   # noqa — 표시 전용
+        log("REPORT", kv(event="r118_sheet_failed", layer="M", err=type(_e118).__name__, msg=str(_e118)[:160]), "warning")
     # [v1.53.0 F5 ★] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이
     #   있다")를 **M 자신에게도** 적용한다. 그동안 S 리포트에서 우회 계산으로만 보이던 값이다(REPORT47 §2.2:
     #   SPY h=21 현금 기준 MCC +0.160 · '상승 아님' +0.187 — M은 소수 클래스에 정보가 있고 섹터 재추정이
@@ -14118,7 +15011,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
     # [v1.61.0 R93] 파일명 끝에 코드 버전(사용자 지시) — 돌려주는 경로가 실제 파일이다(러너는 이 값을 그대로 쓴다).
     _out = versioned_report_path(cfg.OUT_XLSX, BUNDLE_VERSION, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
-    _front5 = [n for n in (R117_SHEET, "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106 · v1.78.0 R117] 00 바로 뒤
+    _front5 = [n for n in (R117_SHEET, R118_SHEET, "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106 · v1.78.0 R117] 00 바로 뒤
     sheets = {**{n: sheets[n] for n in _front5}, **{k: v for k, v in sheets.items() if k not in _front5}}
     write_excel(_out, sheets, bt, meta, cfg,
                 live_marks={"06_성과요약": ("전략", "복합지표 전략"), R117_SHEET: ("라이브", R117_LIVE_TAG)})
@@ -14179,13 +15072,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.78.0"
+BUNDLE_VERSION = "v1.79.0"
 BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.94.0", "industry_rotation": "v0.60.0", "stock_regime": "v0.27.0"}   # [v1.78.0 R117]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.95.0", "industry_rotation": "v0.61.0", "stock_regime": "v0.28.0"}   # [v1.79.0 R118]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:

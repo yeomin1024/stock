@@ -1,5 +1,20 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.61.0 - 2026-09-29 - [R118 ★ 전 지표 · 의미 가족 하락확률(I★ 문턱 단계) · 00H2_지표의미]
+#    사용자 지시(2026-09-29): "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
+#      다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
+#    (공통 · M 원본) R117의 다음날 하락확률(자산 12 + 시장 7 지표)을 '전 지표 · 의미 가족' 확률로 바꿨다(문턱 표 · 종합 1위 · 라이브 규칙은 R117 그대로):
+#      지표 = M 후보 287(사전부호) + predictor 풀 약 4,800(새 파일 indicator_pool.py = 사용자 predictor_test1.py compute_features 추출 · 룩어헤드 5곳 패치)
+#           + M 계층(복합점수·위험·급락트리거) + 달력(월말·월초) + 층별 자산 지표(predictor 계열 약 120 · S 후보 · 섹터 매크로 · 부모 대비 · K 패널 25).
+#      의미: 지표 → 의미 가족 33개(신용·곡선·금리·물가·고용·경기·심리·유동성·달러·안전자산·원자재·해외·변동성·기간구조·꼬리·채권변동성·추세·낙폭·
+#            단기과열·거래량·캔들·분포·시장폭·회전·하위산업·초대형주·포지션·밸류에이션·하락경보합성·달력 …) · 사전부호 지표는 그 부호로, predictor 지표는
+#            가족 1주성분을 '의미가 분명한 앵커'(신용 = HYG/IEF ↓ · 변동성 = VIX ↑ · 추세 = 200일선 이격 ↓ …)와 같은 방향으로(표적을 보지 않음) →
+#            가족 점수 → 층별 풀드 로지스틱(가중 ≥ 0 = 의미와 같은 방향으로만) · 매년 과거만으로 재학습 · 표적 = 다음 체결일(t+1 시가 → t+2 시가).
+#      새 시트 00H2_지표의미(가족표 · 전 지표표: 출처 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC) · 00H 십분위에 다음 체결일 평균 수익.
+#    ⚠ 로컬 실측(r118 · 2018~ 표본 밖 AUC): M 0.500 → 0.522 · S 0.500 → 0.511 · I 0.500 → 0.518 · M 지표만 0.525 · predictor 지표 하나하나 평균 0.504.
+#      하락확률 상위 10% 날의 다음날 평균 수익이 오히려 가장 높다(변동성 큰 날 = 큰 반등) → 문턱 표 1위는 대개 '필터 없음'(라이브 무변경).
+#    (§1 I) r117_stage_i(…, S=S) → S.r118_prob_layer(산업 29 · 부모 대비 상대 가족 S:PREL) · 부모·통과 다리 = S★ R118 확률 · IndustryConfig R118_ENABLE ·
+#         00H2_지표의미. 로컬 AUC 0.500 → 0.518. 시험 t118. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.60.0 - 2026-09-29 - [R117 ★ 다음날 하락확률 문턱 · 종합 1위 라이브(I★ 마지막 단계)]
 #    사용자 지시(2026-09-29): "… 지금까지의 지표를 사용해서 각 국면, 섹터, 산업, 주식별로 날짜별 다음날 하락확률 계산하고 50%에서 단계적으로 낮추면서
 #      몇퍼센트 이하인 종목들만 비중 분배할 때 수익배수, 회피, 참여 각각 구하고 종합하여 가장 좋은 걸 색깔 칠하고 그걸 라이브로 해봐" · "내가 말한 내용 반영되도록 코드 수정하라고".
@@ -1987,7 +2002,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.60.0"
+VERSION = "v0.61.0"
 VERSION_DATE = "2026-09-27"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2111,6 +2126,8 @@ class IndustryConfig:
     R117_ENABLE: bool = True
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
+    # [v0.61.0 R118 ★ 사용자 지시(2026-09-29)] R117 확률을 전 지표 · 의미 가족 확률로 대체(M v1.79.0 · S v0.95.0 필요 · 없으면 R117). 끄기 i_overrides={'R118_ENABLE': False}
+    R118_ENABLE: bool = True
 
     # ---- 후보지표 구성 스위치 ----
     USE_MARKET_CANDIDATES: bool = True
@@ -4898,7 +4915,7 @@ def _frozen_alloc_cfg(icfg: IndustryConfig, M=None) -> IndustryConfig:
 
 
 def r117_stage_i(target_ws: Dict[str, pd.DataFrame], label_star: str, results: Dict[str, Dict[str, Any]], cols: List[str], res: Any,
-                  s_alloc: Dict[str, Any], eval_idx: pd.DatetimeIndex, bt_fn, cost_map: Dict[str, float], icfg, M) -> Tuple[str, Dict[str, Any]]:
+                  s_alloc: Dict[str, Any], eval_idx: pd.DatetimeIndex, bt_fn, cost_map: Dict[str, float], icfg, M, S=None) -> Tuple[str, Dict[str, Any]]:
     """[v0.60.0 R117 ★ 사용자 지시(2026-09-29)] I★ 다음날 하락확률 문턱 단계 — build_industry_allocation의 bts 계산 직전(I★ 교체 가능).
     target_ws를 제자리에서 고친다(교체 시 'R117 이전 I★(하락확률 문턱 없음 · 비교)' 행). bt_fn(tw, cost_map) = 그 함수의 _bt. 반환 (label_star, 진단)."""
     # ---- [v0.60.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(I★ 마지막 단계) ----
@@ -4915,8 +4932,14 @@ def r117_stage_i(target_ws: Dict[str, pd.DataFrame], label_star: str, results: D
             _pxa117 = res.get("px_adj") if isinstance(res, dict) else None
             _spy117 = (pd.to_numeric(_pxa117, errors="coerce").pct_change() if isinstance(_pxa117, pd.Series)
                        else pd.Series(s_alloc.get("spy_ret"), dtype=float))
-            _mk117 = M.r117_market_features(_spy117, M.r117_m_extra(res))
-            _Pi117, _q117 = M.r117_prob_panel(_ri117, _spy117, _mk117)
+            if (bool(getattr(icfg, "R118_ENABLE", True)) and isinstance(res, dict) and (res.get("r118") or {}).get("enabled")
+                    and S is not None and hasattr(S, "r118_prob_layer")):
+                # [v0.61.0 R118 ★] 전 지표 · 의미 가족(M 시장 가족 + 자산 지표 풀 + S 후보 + 부모 대비 상대 + 베타×시장) 하락확률
+                _par118 = {t: p_ for t, p_, *_ in list(INDUSTRIES) + list(getattr(sys.modules[__name__], "INDUSTRIES_OPTIONAL", ()) or ())}
+                _Pi117, _q117 = S.r118_prob_layer([c for c in cols], res, M, parent_of=_par118, with_macro=False)
+            else:
+                _mk117 = M.r117_market_features(_spy117, M.r117_m_extra(res))
+                _Pi117, _q117 = M.r117_prob_panel(_ri117, _spy117, _mk117)
             _Ps117 = (((s_alloc.get("diag") or {}).get("r117")) or {}).get("P")
             _P117 = _Pi117
             if isinstance(_Ps117, pd.DataFrame) and len(_Ps117):
@@ -6273,7 +6296,7 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         label_nf_parent = None
 
     # ---- [v0.60.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(I★ 마지막 단계 · r117_stage_i) ----
-    label_star, _r117_diag = r117_stage_i(target_ws, label_star, results, cols, res, s_alloc, eval_idx, _bt, cost_map, icfg, M)
+    label_star, _r117_diag = r117_stage_i(target_ws, label_star, results, cols, res, s_alloc, eval_idx, _bt, cost_map, icfg, M, S=S)
 
     bts: Dict[str, pd.DataFrame] = {}
     star_label = next((c for c in s_alloc.get("bts", {}) if str(c).endswith("★")), None)
@@ -15456,6 +15479,12 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                                             str(_d117.get("best")), today=_d117.get("p_today"))
                 sheets[M.R117_SHEET] = _h117
                 _r105_lines = list(_l117) + list(_r105_lines)
+                _q118 = _d117.get("quality") or {}
+                if str(_q118.get("method", "")).startswith("R118") and hasattr(M, "r118_sheet"):      # [v0.61.0 R118] 00H2_지표의미
+                    _h118, _l118 = M.r118_sheet("I★ · 산업", _q118, {"fam_tbl": _q118.get("mkt_fam_tbl")}, extra_tbl=_q118.get("extra_tbl"),
+                                                note="시장 지표(M 후보 · predictor 풀) 하나하나는 M 리포트 00H2 · 부모·통과 다리 확률 = S★ R118")
+                    sheets[M.R118_SHEET] = _h118
+                    _r105_lines = list(_l118) + list(_r105_lines)
             elif _d117.get("error"):
                 _r105_lines = [("★★★ R117 다음날 하락확률 문턱(I★)", f"⚠ 산출 실패 — {_d117['error']} (I★ 무변경)")] + list(_r105_lines)
         except Exception as _e117:
@@ -15470,7 +15499,7 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _r105_lines = list(_r105_lines) + list(_l110)
             except Exception as _e110:
                 log("REPORT", kv(event="state_verify_failed", layer="I", err=type(_e110).__name__, msg=str(_e110)[:160]), M=M, level="warning")
-        sheets = S.sheets_to_front(sheets, "00H_하락확률문턱", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
+        sheets = S.sheets_to_front(sheets, "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
                                    "00V_상태판정검증", "00T_산업상태판",
                                    "00R_신뢰도판정", "00B_수익곡선비교",
                                    "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교", "00E_산업상승확률")
