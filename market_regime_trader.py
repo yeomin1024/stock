@@ -22,6 +22,40 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.81.0 - 2026-09-30 - [R122 ★ 건강 확인 완화(NEUTRAL · 과열 헤어컷을 새 정보가 건강하다 할 때만 1.0으로) 라이브 · 자료 자동 수신]
+#    사용자 지시(2026-09-30): "레버리지는 쓰지 말고 목표치 넘을 때까지 계속 의미 있을 만한 정보 찾아야지 …" → 네 차례 탐색 보고 뒤 사용자 선택 '1번'
+#      (8.33배 후보 반영 · "코드 실행하면 자동으로 받아지지?" → 자료는 실행 때 자동 수신 · 못 받은 조각만 꺼짐).
+#    ── R122 연구(r122/ · 코드 밖 · mrep116 재생 · 현금 이자 0 · 5bp · 레버리지 없음 · 긴 이력 = 대용 1999~2017) ──
+#      목표 10배 분해: 상승 구간 시작 5일 뒤 진입 + 꼭지에서 정확히 청산하는 신탁 = 12.25배 · 청산이 5일만 늦어도 6.42배 → M의 청산을 그대로 두고
+#        M이 몇 달씩 0.25~0.5에 머문 조용한 상승장(2021 · 2023~24)을 채워야 한다 — 누르는 것은 과열 헤어컷(이격 ≥ +12% → 0)과 NEUTRAL 상한.
+#      새 정보 시험(전부 공표 지연 반영): 전 정보 워크포워드 모형 · 달력(FOMC·휴장·옵션만기·핼러윈) · 뉴스 심리 · EPU · EBP · CFTC · 연준 대차대조표 ·
+#        BAA 스프레드 · S&P 500 그 시점 구성 폭 · 이익 성장 폭 · MOVE · SKEW · VIX 기간구조 · GEX · CBOE 풋콜 · SEC 내부자 매수 · FINRA 신용융자 ·
+#        자사주 공백 · 분기말 재조정 · 재진입 + 손절 · 조각 전수 조합 약 2,900 → 거의 전부 '참여 ↔ 회피' 교환(긴 이력 회피 ↓).
+#      통과(현재 M 대비 2018~ 전 지표 ≥ · 반쪽 ≥ · 긴 세 창 회피·참여 ≥ −0.6 · 배수비 ≥ 0.985)한 최선 = A + HC_A + REC(아래) :
+#        2018~ 배수 7.05 → 8.33 · CAGR 25.1 → 27.6% · 회피 80.82 → 80.91 · 참여 61.38 → 65.82 · MDD −7.36 그대로 · 손실 주 119 → 117 · 손실 달 21 ·
+#        손실 분기 5 → 3 · 앞/뒤 배수 2.40/2.94 → 2.54/3.28 · 2010~17 대용 회피 +0.90 · 참여 +1.94 · 배수 2.28 → 2.41.
+#        ⚠ 흠: 2004~09 대용 회피 −0.54 · 1999~2003 배수 1.171 → 1.167 · 2026 연초 뒤 14.8% → 14.6%. 목표 10배는 미달(레버리지 없이 검증 통과 최대).
+#      ⚠ 구현 점검에서 고친 것: 연구의 '순유동성'은 역레포(RRPONTSYD · 십억 달러)가 단위 차이로 사실상 빠진 '연준 총자산 − TGA'였다 —
+#        단위를 맞춘 진짜 순유동성은 회피 79.5로 미통과 → 통과한 정의(총자산 − TGA)를 그 이름으로 구현. 구성 폭은 ETF(RSP · 섹터)로 대체하면 미통과
+#        → 구성종목 종가를 직접 받는다(구성 이력을 못 받아 '현재 구성 고정'으로 계산해도 통과 · 조건이 다른 날 14일).
+#    (§1) Config R122_ENABLE · R122_FETCH · R122_BREADTH · R122_VOL_MAX(0.15) · R122_REC_MONTHS(21) · R122_REC_DD(0.20) · R122_PC_Z_MIN(−0.5) ·
+#         R122_TNX_JUMP(0.25) · R122_BREADTH_START · R122_BREADTH_MIN_MEMBERS · R122_WIKI_URL(전부 캐시 무시).
+#         r122_fetch_putcall(CBOE CSV + 일별 JSON · 스레드 8 · 캐시) · r122_sp500_hist(공개 저장소 → 위키백과) · r122_breadth_from · r122_breadth(yfinance 일괄) ·
+#         r122_conditions(조건 표) · r122_inputs(자동 수신) · apply_r122_release(generate_signals 뒤 · R95 앞 · pos_pre_r122 열) · res['r122'] · R122_LAST · 00 줄.
+#         S·I·K 무변경(M 목표비중을 그대로 받는다). 되돌리기 m_overrides={'R122_ENABLE': False}. 시험 t122/test_r122.py. 연구·교육용이며 투자 자문이 아니다.
+#  VERSION: v1.80.0 - 2026-09-30 - [R121 ★ 매매 띠(작은 비중 조정 무시 δ 0.10) 라이브 · R120 목표 10배 탐색 결과 기록]
+#    사용자 지시(2026-09-30): "market 코드를 집중적으로 다시 개선 … 목표는 수익배수 10 … 회피, 참여 둘 다 … 뉴스 지표도 국면에 맞게 추가 … 목표 도달할 때까지 …"
+#      → R120 결과 보고 뒤 사용자 선택 '3번'(목표를 무하락 · 꾸준함 · 긴 이력 통과로 바꿈).
+#    ── R120 연구(r120/ · 코드 밖 · mrep116 재생 = 라이브 재현 차 0 · 현금 이자 0 · 5bp · 레버리지 조달 = 3개월 국채 + 1%) ──
+#      규칙별 손익: 모든 M 규칙이 막은 손실 ≥ 놓친 수익(효율 1.0~1.6) → 하나를 빼면 회피가 참여보다 더 떨어진다(교환 경계).
+#      단일 덧씌우기 214개 중 앞/뒤 반쪽 회피·참여 둘 다 ↑ 0개 · 조합 7,128개 중 10배 이상 1개(10.28배 = 조용·폭넓은 장 2배 레버리지 + V자 재진입 +
+#      헤어컷·중립감축 완화 + 거래량 급락 감축 · 격자 모서리) → 2004~2017 대용에서 회피 −27.7 · 2004~09 배수 1.08 → 0.96 ✗(올리지 않음).
+#      뉴스 지표(가격 기반 갭 충격·거래량·섹터 동시 갭·VIX 급등 · S&P 500 실적 서프라이즈 폭 3.6만 건): 지수 수준 정보 없음(2018 전후 부호 뒤집힘).
+#      레버리지 + 브레이크 96가지 · 월말·월초 기울임 · 재진입 확인: 전부 교환(긴 이력 회피 ↓).
+#    ── R121(r121/) ── 매매 띠 δ 0.10: 2018~ 배수 6.99 → 7.05 · 회피 80.70 → 80.83 · 참여 61.25 → 61.38 · 앞/뒤 반쪽 ↑ · MDD 그대로 · 손실 달 22 → 21 ·
+#      매매일 412 → 266 · S·I·K 회피 +0.24~+0.29 · 참여 +0.14~+0.23 · 2004~2017 대용 회피 +0.05 · 참여 +0.12(2004~09 회피 −0.04 = 잡음).
+#    (§1) Config R121_TRADE_BAND(0.10 · 캐시 무시) · r121_trade_band · apply_r121_trade_band(R113 뒤 · R117 앞 · pos_pre_r121 열) · res['r121'] · 00 줄.
+#         S·I·K 무변경(M 목표비중을 그대로 받는다). 시험 t121/test_r121.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.79.0 - 2026-09-29 - [R118 ★ 전 지표(약 5,100) · 의미 가족 하락확률 · predictor 풀 · 00H2_지표의미]
 #    사용자 지시(2026-09-29): "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
 #      다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
@@ -3270,6 +3304,23 @@ class Config:
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
     R117_MIN_ROWS: int = 250
+    # [v1.80.0 R121 사용자 선택(2026-09-30 '3번' = 무하락 · 꾸준함 · 긴 이력 통과만) · 라이브] 매매 띠: 보유 중 |Δ목표비중| < δ면 바꾸지 않는다
+    #   (전량 청산·0에서 진입은 항상 즉시 · 1.0으로 올리는 변화는 δ/2 이상이면 따름). 0이면 끔(= v1.79.0). apply_r121_trade_band · 00 줄.
+    R121_TRADE_BAND: float = 0.10
+    # [v1.81.0 R122 사용자 선택(2026-09-30 '1번') · 라이브] 건강 확인 완화(generate_signals 뒤 · R95 앞) — NEUTRAL 날(조건 A) · 과열 헤어컷 날(HC_A · REC)을 1.0으로.
+    #   자료는 실행 때 자동 수신(FRED BAA10Y · WALCL · WTREGEN · CBOE 주식 풋콜 · ^TNX · S&P 500 구성종목 종가) — 못 받은 조각만 꺼진다.
+    #   R122_ENABLE=False면 v1.80.0 신호. R122_FETCH=False면 수신 없이(이미 받은 ^TNX만) — 사실상 전부 꺼짐. R122_BREADTH=False면 HC_A만 끔(종목 시세 수신 생략).
+    R122_ENABLE: bool = True
+    R122_FETCH: bool = True
+    R122_BREADTH: bool = True
+    R122_VOL_MAX: float = 0.15              # σ20(연율) 상한 — 세 조각 공통
+    R122_REC_MONTHS: int = 21               # 회복기 창(달 × 21거래일)
+    R122_REC_DD: float = 0.20               # 회복기 = 창 안 252일 고점 대비 낙폭 ≤ −20%
+    R122_PC_Z_MIN: float = -0.5             # 주식 풋콜 10일 평균 z(756일) 하한 — 아래면 콜 과열(REC 해제 안 함)
+    R122_TNX_JUMP: float = 0.25             # 10년물 20거래일 상승(%p) 상한 — 넘으면 REC 해제 안 함
+    R122_BREADTH_START: str = "2016-06-01"  # 구성종목 종가 수신 시작(50일선 워밍업 포함 · 신호는 2018~)
+    R122_BREADTH_MIN_MEMBERS: int = 300     # 가격 있는 구성종목이 이보다 적은 날은 폭 결측(HC_A 끔)
+    R122_WIKI_URL: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     # [v1.79.0 R118 ★ 사용자 지시(2026-09-29) "모든 지표들을 사용 … 의미를 파악해서 의미가 있도록 설계"] R117 확률을 '전 지표 · 의미 가족' 확률로 대체.
     #   R118_ENABLE=False면 R117(자산 지표 12 + 시장 7) 확률로 돌아간다 · R118_PREDICTOR_POOL=False면 predictor 풀 없이 M 후보 + 계층 + 달력만.
     R118_ENABLE: bool = True
@@ -5368,12 +5419,14 @@ def fetch_all_yahoo(tickers: List[str], cfg: Config = CFG,
                               timeout=cfg.FETCH_TIMEOUT_READ)
             for t in to_fetch:
                 try:
-                    if len(to_fetch) == 1:
-                        sub = raw
-                    else:
+                    # [v1.81.0 R122 결함 수정] 새 yfinance는 티커 1개 묶음도 (티커, 값) 두 겹 열로 돌려준다 — 예전 분기(len == 1 → raw 그대로)는
+                    #   두 겹 머리말을 캐시에 써서 다음 읽기가 'Price' 날짜 파싱 오류로 죽었다(R122가 ^TNX 하나만 받으며 드러남). 열 모양으로 가른다.
+                    if isinstance(raw.columns, pd.MultiIndex):
                         if t not in raw.columns.get_level_values(0):
                             continue
                         sub = raw[t]
+                    else:
+                        sub = raw
                     sub = sub.dropna(how="all")
                     if len(sub) == 0:
                         continue
@@ -7246,6 +7299,10 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     # [v1.75.0 R113] 라이브 SPY 신호 뒤 금리 급등 경보 측정 열(검증·워크포워드·S·I 국면 모형 무관 · 교훈 31)
     "R113_RATE_MEASURE", "R113_RATE_LIVE", "R113_RATE_WINDOW", "R113_RATE_CUT_A", "R113_RATE_BOOST_A", "R113_RATE_CUT_B",
     "R117_ENABLE", "R117_LIVE", "R117_THRESHOLDS", "R117_MIN_ROWS",
+    "R121_TRADE_BAND",                                                                            # [v1.80.0 R121] 신호 뒤 매매 띠(검증·가중치 무관)
+    # [v1.81.0 R122] 라이브 SPY 신호 뒤 건강 확인 완화 전용(검증·워크포워드·S·I 국면 모형 무관 · 교훈 31)
+    "R122_ENABLE", "R122_FETCH", "R122_BREADTH", "R122_VOL_MAX", "R122_REC_MONTHS", "R122_REC_DD", "R122_PC_Z_MIN", "R122_TNX_JUMP",
+    "R122_BREADTH_START", "R122_BREADTH_MIN_MEMBERS", "R122_WIKI_URL",
     "R118_ENABLE", "R118_PREDICTOR_POOL", "R118_FETCH_EXTRA", "R118_POOL_URL", "R118_POOL_START", "R118_FIRST_FIT_YEAR", "R118_TRAIN_START",   # [v1.79.0 R118]                              # [v1.78.0 R117] 신호 뒤 하락확률 문턱(검증·가중치 무관)
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
@@ -8678,6 +8735,485 @@ def r98_vrp_target(sig: pd.DataFrame, px: pd.Series, vix: Optional[pd.Series], c
     tp[mC] = float(getattr(cfg, "R98_VRP_CUT_POS", 0.6))
     tp[mU] = np.maximum(tp0[mU], float(getattr(cfg, "R98_VRP_REENTRY_POS", 0.6)))
     return tp.clip(lower=0.0, upper=1.0), mC, mU, vrp
+
+
+def r121_trade_band(tp: pd.Series, delta: float) -> pd.Series:
+    """[v1.80.0 R121] 매매 띠 — t일 목표비중을 날짜 순서대로 걸러 새 목표비중(과거·현재 신호만 · 인과).
+    ① 목표 0(전량 청산) → 즉시 0 ② 0에서 들어감 → 즉시 그 비중 ③ 보유 중 비중 변화 |Δ| < δ → 그대로(작은 조정 무시)
+    ④ 1.0으로 올리는 변화는 δ/2 이상이면 따른다. δ ≤ 0이면 입력 그대로."""
+    v = pd.to_numeric(pd.Series(tp), errors="coerce").astype(float).fillna(0.0)
+    if float(delta) <= 0:
+        return v.copy()
+    arr = v.values
+    out = np.zeros_like(arr)
+    cur = 0.0
+    d = float(delta)
+    for i, x in enumerate(arr):
+        if x <= 1e-9:
+            cur = 0.0
+        elif cur <= 1e-9:
+            cur = x
+        elif abs(x - cur) >= d - 1e-12 or (x >= 0.999 and cur < 0.999 and abs(x - cur) >= d / 2.0):
+            cur = x
+        out[i] = cur
+    return pd.Series(out, index=v.index)
+
+
+def apply_r121_trade_band(sig: pd.DataFrame, cfg: Config = CFG) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.80.0 R121 사용자 선택(2026-09-30 '3번') · 라이브] 작은 비중 조정 무시(R121_TRADE_BAND=δ). sig에 pos_pre_r121 열을 남긴다.
+    R120~R121 연구(r121/churn121 · band121): δ 0.10 → 2018~ 배수 6.99 → 7.05 · 회피 80.70 → 80.83 · 참여 61.25 → 61.38 · 앞/뒤 반쪽 모두 ↑ ·
+    MDD 그대로 · 손실 달 22 → 21 · 손실 주 120 → 119 · 매매일 412 → 266 · S·I·K 회피 +0.24~+0.29 · 참여 +0.14~+0.23 ·
+    2004~2017 대용 회피 +0.05 · 참여 +0.12(2004~09 회피 −0.04 = 잡음 수준). 되돌리기 m_overrides={'R121_TRADE_BAND': 0.0}."""
+    out = sig.copy()
+    d = float(getattr(cfg, "R121_TRADE_BAND", 0.0) or 0.0)
+    tp = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r121"] = tp.copy()
+    diag: Dict[str, Any] = {"enabled": d > 0, "delta": d}
+    if d <= 0:
+        return out, diag
+    new = r121_trade_band(tp, d)
+    out["target_pos"] = new
+    s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-02"))
+    m = tp.index >= s0
+    diag.update({"trades_before": int((tp[m].diff().abs() > 1e-9).sum()), "trades_after": int((new[m].diff().abs() > 1e-9).sum()),
+                 "days_changed": int(((new - tp).abs() > 1e-9)[m].sum()), "max_gap": round(float((new - tp).abs()[m].max()), 4)})
+    log("SIGNAL", kv(event="r121_trade_band", delta=d, trades_before=diag["trades_before"], trades_after=diag["trades_after"],
+                     days_changed=diag["days_changed"], max_gap=diag["max_gap"],
+                     note="★ 라이브(사용자 선택 R121) — 되돌리기 m_overrides={'R121_TRADE_BAND': 0.0}"))
+    return out, diag
+
+
+# =============================================================================
+# [v1.81.0 R122 ★ 사용자 선택(2026-09-30 '1번') · 라이브] 건강 확인 완화 — generate_signals 바로 뒤 · R95(스트레스 청산) 앞.
+#   M이 조용한 상승장을 과열 헤어컷(이격 ≥ +12% → 0) · NEUTRAL 상한으로 몇 달씩 0.25~0.5에 두는 것을, 새 정보가 '건강'이라 할 때만 1.0으로 푼다.
+#   뒤 위험 규칙(R95 스트레스 청산 · R96 변동성 · R113 금리 경보 · R121 띠)은 푼 비중 위에서 그대로 작동한다.
+#     A   (NEUTRAL 날)  : σ20 < 15% & BAA−10년 스프레드 20일 비확대 & (연준 총자산 − 재무부 일반계정 TGA) 4주(20거래일) 증가
+#     HC_A(과열 헤어컷 날): σ20 < 15% & S&P 500 구성종목 폭 비괴리(50일선 위 비율 20일 변화 − SPY 20일 수익 × 5 ≥ 0) & (총자산 − TGA) 13주(65거래일) 증가
+#     REC (과열 헤어컷 날): 회복기(최근 21달 안에 252일 고점 대비 −20% 이하) & σ20 < 15% & CBOE 주식 풋콜 10일 평균 z(756일) ≥ −0.5(콜 과열 아님)
+#                        & 10년물 금리 20거래일 +0.25%p 급등 아님
+#   자료(실행 때 자동 수신 · 전부 공표 지연 반영): FRED BAA10Y(+1일) · WALCL · WTREGEN(수요일 값 · 목요일 장 뒤 공표 → +2일) · CBOE 풋콜(장 뒤 → 1거래일 늦춤) ·
+#     ^TNX 종가 · S&P 500 그 시점 구성(공개 저장소 fja05680/sp500 → 실패 시 위키백과 현재 구성) + 구성종목 종가(yfinance).
+#   자료를 못 받으면 그 조각만 꺼진다(전부 못 받으면 = v1.80.0 신호). 되돌리기 m_overrides={'R122_ENABLE': False}.
+R122_FRED_LAG: Dict[str, int] = {"BAA10Y": 1, "WALCL": 2, "WTREGEN": 2}
+R122_PC_CSV_URL = "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv"
+R122_PC_JSON_URL = "https://cdn.cboe.com/data/us/options/market_statistics/daily/{d}_daily_options"
+R122_PC_CSV_END = "2019-10-04"          # 과거 CSV 마지막 날 — 그 뒤는 일별 JSON
+R122_HIST_REPO_API = "https://api.github.com/repos/fja05680/sp500/contents"
+R122_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+# 같은 법인의 기호 변경(옛 기호 → 지금 Yahoo 기호 · K SELAUDIT_RENAMES_R100과 같은 표) — 인수·합병으로 사라진 종목은 넣지 않는다.
+R122_RENAMES: Dict[str, str] = {
+    "BK": "BNY", "MMC": "MRSH", "FI": "FISV", "ABC": "COR", "ANTM": "ELV", "BLL": "BALL", "PKI": "RVTY", "RE": "EG",
+    "FLT": "CPAY", "WLTW": "WTW", "GPS": "GAP", "HFC": "DINO", "JEC": "J", "HRS": "LHX", "UTX": "RTX", "CTL": "LUMN",
+    "SYMC": "GEN", "NLOK": "GEN", "KORS": "CPRI", "HCP": "DOC", "PEAK": "DOC", "DISCA": "WBD", "DWDP": "DD", "ADS": "BFH",
+    "FBHS": "FBIN", "ARNC": "HWM", "WYND": "TNL", "BHGE": "BKR", "BBT": "TFC", "FB": "META",
+}
+R122_LAST: Dict[str, Any] = {}
+
+
+def _r122_ticker(t: Any) -> str:
+    return str(t or "").strip().upper().replace("$", "").replace(" ", "").replace(".", "-")
+
+
+def _r122_timeout(cfg: Config = CFG) -> Tuple[float, float]:
+    return (float(getattr(cfg, "FETCH_TIMEOUT_CONNECT", 10.0) or 10.0), float(getattr(cfg, "FETCH_TIMEOUT_READ", 30.0) or 30.0))
+
+
+def _r122_pc_parse_csv(txt: str) -> pd.Series:
+    """CBOE 과거 풋콜 CSV(머리말 몇 줄 뒤 'DATE,CALL,PUT,TOTAL,P/C Ratio') → 일별 비율."""
+    lines = str(txt).splitlines()
+    hi = next(i for i, l in enumerate(lines) if l.strip().upper().startswith("DATE"))
+    d = pd.read_csv(io.StringIO("\n".join(lines[hi:])))
+    d.columns = [str(c).strip().upper() for c in d.columns]
+    col = next(c for c in d.columns if "P/C" in c or "RATIO" in c)
+    s = pd.Series(pd.to_numeric(d[col], errors="coerce").values, index=pd.to_datetime(d["DATE"], errors="coerce"))
+    s = s[s.index.notna()].dropna().sort_index()
+    return s[~s.index.duplicated(keep="last")]
+
+
+def r122_fetch_putcall(cfg: Config = CFG) -> Tuple[Optional[pd.Series], Dict[str, Any]]:
+    """[R122] CBOE 주식 풋콜 비율(일별) — 과거 CSV(2006-11 ~ 2019-10-04) + 그 뒤 일별 JSON(빠진 개장일만 · 스레드 8). 캐시 R122_PC_EQUITY.
+    반환 (관측일 색인 Series · 정보). 늦춤(1거래일)은 r122_conditions에서 한다."""
+    import concurrent.futures as cf
+    import requests
+    from requests.adapters import HTTPAdapter
+    t0 = time.time()
+    info: Dict[str, Any] = {"ok": False}
+    n_workers = 16
+    sess = requests.Session()                      # 일별 JSON 약 1,800건 전용(연결 풀 16) — 공용 세션(풀 8)을 막지 않는다
+    sess.mount("https://", HTTPAdapter(pool_connections=n_workers, pool_maxsize=n_workers))
+    sess.headers.update({"User-Agent": "market_regime_trader R122 (research script)"})
+    to = _r122_timeout(cfg)
+    s: Optional[pd.Series] = None
+    cached = _read_cache("R122_PC_EQUITY", max_age_hours=None, cfg=cfg)
+    if cached is not None and len(cached) > 1000 and "equity" in cached.columns:
+        s = pd.to_numeric(cached["equity"], errors="coerce").dropna()
+        s.index = pd.to_datetime(s.index)
+        info["cache_rows"] = int(len(s))
+    if s is None:
+        r = sess.get(R122_PC_CSV_URL, timeout=to)
+        r.raise_for_status()
+        s = _r122_pc_parse_csv(r.text)
+        info["csv_rows"] = int(len(s))
+    end = pd.Timestamp(now_et().date())
+    have = set(pd.DatetimeIndex(s.index))
+    days = [d for d in pd.bdate_range(pd.Timestamp(R122_PC_CSV_END) + pd.Timedelta(days=1), end) if d not in have and is_trading_day(d)]
+
+    def _one(d: pd.Timestamp) -> Tuple[pd.Timestamp, Optional[float]]:
+        try:
+            r_ = sess.get(R122_PC_JSON_URL.format(d=d.strftime("%Y-%m-%d")), timeout=to)
+            if r_.status_code != 200:
+                return d, None
+            for x in (r_.json() or {}).get("ratios", []):
+                if str(x.get("name", "")).strip().upper().startswith("EQUITY PUT/CALL"):
+                    return d, float(x.get("value"))
+        except Exception:
+            return d, None
+        return d, None
+
+    got: Dict[pd.Timestamp, float] = {}
+    if days:
+        with cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
+            for d, v in ex.map(_one, days):
+                if v is not None and v == v and v > 0:
+                    got[d] = v
+        miss = [d for d in days if d not in got]
+        if miss and len(miss) <= max(60, len(days) // 5):          # 일시 실패만 한 번 더(휴장 등 없는 날은 그대로 빠진다)
+            for d in miss:
+                _, v = _one(d)
+                if v is not None and v == v and v > 0:
+                    got[d] = v
+    try:
+        sess.close()
+    except Exception:
+        pass
+    if got:
+        s = pd.concat([s, pd.Series(got, dtype=float)]).sort_index()
+        s = s[~s.index.duplicated(keep="last")]
+    if got or cached is None:
+        _write_cache("R122_PC_EQUITY", s.to_frame("equity"), cfg)
+    info.update({"ok": True, "rows": int(len(s)), "first": str(s.index.min())[:10], "last": str(s.index.max())[:10],
+                 "json_need": int(len(days)), "json_ok": int(len(got)), "sec": round(time.time() - t0, 1)})
+    return s, info
+
+
+def r122_sp500_hist(cfg: Config = CFG) -> Tuple[Optional[pd.DataFrame], str]:
+    """[R122] S&P 500 그 시점 구성(날짜 · 구성 frozenset) — ① 공개 저장소(GitHub API 목록 → 마지막 날짜가 가장 늦은 'Historical Components' CSV
+    + 'changes_since' 앞으로 적용) ② 실패 시 위키백과 현재 구성 한 행(고정 구성 · 연구 점검: 조건이 다른 날 14일 · 판정 통과). 둘 다 실패 → (None, 사유)."""
+    sess = _http_session(cfg)
+    to = _r122_timeout(cfg)
+
+    def _parse(txt_: str) -> Optional[pd.DataFrame]:
+        df_ = pd.read_csv(io.StringIO(txt_))
+        cols_ = {str(c).lower(): c for c in df_.columns}
+        dc_, tc_ = cols_.get("date"), cols_.get("tickers")
+        if dc_ is None or tc_ is None:
+            return None
+        H_ = pd.DataFrame({"date": pd.to_datetime(df_[dc_], errors="coerce"),
+                           "members": df_[tc_].astype(str).map(lambda s_: frozenset(_r122_ticker(x) for x in s_.split(",") if x.strip()))})
+        return H_.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+    why = ""
+    try:
+        r = sess.get(R122_HIST_REPO_API, timeout=to)
+        r.raise_for_status()
+        items = r.json()
+        cands = [it for it in items if isinstance(it, dict) and str(it.get("name", "")).lower().endswith(".csv")
+                 and "historical components" in str(it.get("name", "")).lower()]
+        best = None
+        for it in cands[:4]:
+            try:
+                r2 = sess.get(str(it.get("download_url")), timeout=to)
+                r2.raise_for_status()
+                H_ = _parse(r2.text)
+            except Exception:
+                continue
+            if H_ is not None and len(H_) and (best is None or H_["date"].max() > best[0]["date"].max()):
+                best = (H_, str(it.get("name")))
+        if best is not None:
+            H, src = best[0], f"공개 저장소 {best[1]}"
+            try:
+                chg = next((it for it in items if isinstance(it, dict) and "changes_since" in str(it.get("name", "")).lower()), None)
+                if chg is not None:
+                    r3 = sess.get(str(chg.get("download_url")), timeout=to)
+                    r3.raise_for_status()
+                    C_ = pd.read_csv(io.StringIO(r3.text))
+                    C_["date"] = pd.to_datetime(C_["date"], errors="coerce")
+                    C_ = C_[C_["date"] > H["date"].max()].sort_values("date")
+                    cur = set(H["members"].iloc[-1])
+                    rows_ = []
+                    for _, r_ in C_.iterrows():
+                        for a_ in str(r_.get("add") or "").split(","):
+                            if _r122_ticker(a_) and str(a_).lower() != "nan":
+                                cur.add(_r122_ticker(a_))
+                        for d_ in str(r_.get("remove") or "").split(","):
+                            if _r122_ticker(d_) and str(d_).lower() != "nan":
+                                cur.discard(_r122_ticker(d_))
+                        rows_.append({"date": r_["date"], "members": frozenset(cur)})
+                    if rows_:
+                        H = pd.concat([H, pd.DataFrame(rows_)], ignore_index=True)
+                        src += f" + 이후 변경 {len(rows_)}건"
+            except Exception as e:
+                log("DATA", kv(event="r122_changes_forward_failed", err=type(e).__name__, msg=str(e)[:100]), "warning")
+            return H, f"{src}({len(H)}행 · ~{H['date'].max().date()})"
+        why = "저장소 목록에 구성 CSV 없음"
+    except Exception as e:
+        why = f"{type(e).__name__}: {str(e)[:80]}"
+    try:
+        r = sess.get(str(getattr(cfg, "R122_WIKI_URL", R122_WIKI_URL)), timeout=to)
+        r.raise_for_status()
+        tab = pd.read_html(io.StringIO(r.text))[0]
+        tab.columns = [" ".join(str(x) for x in c) if isinstance(c, tuple) else str(c) for c in tab.columns]
+        sym = next(c for c in tab.columns if "symbol" in c.lower() or "ticker" in c.lower())
+        mem = frozenset(_r122_ticker(x) for x in tab[sym].astype(str) if _r122_ticker(x))
+        if len(mem) < 400:
+            raise ValueError(f"현재 구성 {len(mem)}종목")
+        H = pd.DataFrame({"date": [pd.Timestamp("1990-01-01")], "members": [mem]})
+        return H, f"위키백과 현재 구성 {len(mem)}종목(고정 · 저장소 실패: {why})"
+    except Exception as e:
+        return None, f"구성 자료 없음(저장소: {why} · 위키백과: {type(e).__name__}: {str(e)[:60]})"
+
+
+def r122_breadth_from(close: pd.DataFrame, H: pd.DataFrame, min_members: int = 300) -> pd.Series:
+    """[R122] 구성종목 종가(열 = 기호) + 그 시점 구성 → 50일선 위 비율(그날 구성 · 가격 있는 종목 기준 · 인과).
+    구성이 아닌 날의 종가는 가린 뒤 50일 평균(min 40)을 낸다(연구 r122/newfeat122와 같은 식)."""
+    close = close.sort_index()
+    days = pd.DatetimeIndex(close.index)
+    hd = pd.DatetimeIndex(H["date"])
+    k = hd.searchsorted(days, side="right") - 1
+    cols = {c: j for j, c in enumerate(close.columns)}
+    arr = np.zeros((len(days), len(close.columns)), dtype=bool)
+    for kk in np.unique(k):
+        if kk < 0:
+            continue
+        js = [cols[t] for t in H["members"].iloc[int(kk)] if t in cols]
+        if js:
+            arr[np.ix_(np.where(k == kk)[0], js)] = True
+    cl = close.where(arr)
+    m50 = cl.rolling(50, min_periods=40).mean()
+    n = cl.notna().sum(axis=1).replace(0, np.nan)
+    pct = (cl > m50).sum(axis=1) / n
+    return pct.where(n >= int(min_members))
+
+
+def r122_breadth(cal: pd.DatetimeIndex, cfg: Config = CFG) -> Tuple[Optional[pd.Series], Dict[str, Any]]:
+    """[R122] S&P 500 구성종목 50일선 위 비율 — 구성 이력(r122_sp500_hist) + yfinance 일괄 종가(배당 조정 · 100개 묶음 · 옛 기호는 R122_RENAMES로 복구).
+    캐시 R122_SPX_CLOSE(마지막 날이 달력 마지막 날 이상이면 재사용)."""
+    t0 = time.time()
+    info: Dict[str, Any] = {"ok": False}
+    H, src = r122_sp500_hist(cfg)
+    info["members_src"] = src
+    if H is None or not len(H):
+        return None, info
+    start = pd.Timestamp(str(getattr(cfg, "R122_BREADTH_START", "2016-06-01")))
+    k0 = max(0, int(pd.DatetimeIndex(H["date"]).searchsorted(start, side="right")) - 1)
+    tick = sorted(set().union(*[set(v) for v in H["members"].iloc[k0:]]))
+    last_cal = pd.Timestamp(pd.DatetimeIndex(cal).max())
+    close = None
+    cached = _read_cache("R122_SPX_CLOSE", max_age_hours=None, cfg=cfg)
+    if cached is not None and len(cached) and pd.Timestamp(cached.index.max()) >= last_cal and len(cached.columns) >= 0.8 * len(tick):
+        close = cached
+        info["cache"] = True
+    if close is None:
+        import yfinance as yf
+
+        def _dl(syms: List[str]) -> pd.DataFrame:
+            d = yf.download(syms, start=str(start.date()), auto_adjust=True, progress=False, threads=True, group_by="column",
+                            timeout=float(getattr(cfg, "FETCH_TIMEOUT_READ", 30.0) or 30.0))
+            c_ = d["Close"] if isinstance(d.columns, pd.MultiIndex) else d[["Close"]].rename(columns={"Close": syms[0]})
+            c_ = pd.DataFrame(c_).copy()
+            c_.index = pd.to_datetime(c_.index).tz_localize(None).normalize()
+            return c_
+
+        frames: List[pd.DataFrame] = []
+        fail: List[str] = []
+
+        def _chunks(names: List[str], size: int) -> List[str]:
+            bad: List[str] = []
+            for i in range(0, len(names), size):
+                ch = names[i:i + size]
+                try:
+                    c_ = _dl(ch)
+                    good = [t for t in ch if t in c_.columns and int(c_[t].notna().sum()) >= 60]
+                    bad += [t for t in ch if t not in good]
+                    if good:
+                        frames.append(c_[good])
+                except Exception as e:
+                    bad += ch
+                    log("DATA", kv(event="r122_breadth_chunk_failed", n=len(ch), err=type(e).__name__, msg=str(e)[:80]), "warning")
+            return bad
+
+        fail = _chunks(tick, 100)
+        cur_mem = set(H["members"].iloc[-1])
+        again = [t for t in fail if t in cur_mem]  # 지금 구성인데 빠진 종목 = 시간 초과(실측: MSFT 등) → 작은 묶음으로 한 번 더(상장폐지 종목은 다시 받지 않는다)
+        if again:
+            info["retry"] = int(len(again))
+            still = _chunks(again, 40)
+            fail = [t for t in fail if t not in again] + still
+        ren = {o: n_ for o, n_ in R122_RENAMES.items() if o in fail}
+        if ren:
+            try:
+                c_ = _dl(sorted(set(ren.values())))
+                add = {o: c_[n_] for o, n_ in ren.items() if n_ in c_.columns and int(c_[n_].notna().sum()) >= 60}
+                if add:
+                    frames.append(pd.DataFrame(add))
+                    fail = [t for t in fail if t not in add]
+            except Exception as e:
+                log("DATA", kv(event="r122_breadth_rename_failed", err=type(e).__name__, msg=str(e)[:80]), "warning")
+        if not frames:
+            info["error"] = "구성종목 종가 0개"
+            return None, info
+        close = pd.concat(frames, axis=1)
+        close = close.loc[:, ~close.columns.duplicated(keep="last")].sort_index()
+        close = close[~close.index.duplicated(keep="last")]
+        _write_cache("R122_SPX_CLOSE", close, cfg)
+        info["price_fail"] = int(len(fail))
+    pct = r122_breadth_from(close, H, int(getattr(cfg, "R122_BREADTH_MIN_MEMBERS", 300)))
+    info.update({"ok": bool(pct.notna().any()), "tickers": int(len(tick)), "priced": int(close.shape[1]),
+                 "first": str(pct.first_valid_index())[:10], "last": str(pct.last_valid_index())[:10], "sec": round(time.time() - t0, 1)})
+    return pct, info
+
+
+def r122_conditions(px_adj: pd.Series, cal: pd.DatetimeIndex, baa: Optional[pd.Series], walcl: Optional[pd.Series], tga: Optional[pd.Series],
+                    putcall: Optional[pd.Series], tnx: Optional[pd.Series], pct50: Optional[pd.Series], cfg: Config = CFG) -> pd.DataFrame:
+    """[R122] 조건 표(달력 색인 · 전부 t일 종가에 알 수 있는 값). 입력은 관측일 색인 원자료(FRED · 풋콜) 또는 달력 위 시세(px_adj · tnx · pct50).
+    열: calm · baa_ok · liq4 · liq13 · br_ok · recovery · pc_z · pc_ok · tnx_ok · neu_a · hc_a · rec. 자료가 없는 조각은 False."""
+    cal = pd.DatetimeIndex(cal)
+    c = pd.to_numeric(pd.Series(px_adj), errors="coerce").reindex(cal).astype(float)
+    out = pd.DataFrame(index=cal)
+    vol20 = np.log(c).diff().rolling(20).std() * math.sqrt(252.0)
+    out["calm"] = (vol20 < float(getattr(cfg, "R122_VOL_MAX", 0.15))).fillna(False)
+
+    def _lag(s: Optional[pd.Series], n: int) -> pd.Series:
+        if s is None or len(s) == 0:
+            return pd.Series(np.nan, index=cal)
+        s = pd.to_numeric(pd.Series(s), errors="coerce").dropna()
+        s.index = pd.to_datetime(s.index)
+        return apply_publication_lag(s, n, cal)
+
+    b = _lag(baa, R122_FRED_LAG["BAA10Y"])
+    out["baa_ok"] = ((b - b.shift(20)) <= 0).fillna(False)
+    w, g = _lag(walcl, R122_FRED_LAG["WALCL"]), _lag(tga, R122_FRED_LAG["WTREGEN"])
+    liq = w - g.fillna(0.0)                                  # 연준 총자산 − 재무부 일반계정(백만 달러)
+    out["liq4"] = ((liq - liq.shift(20)) > 0).fillna(False)
+    out["liq13"] = ((liq - liq.shift(65)) > 0).fillna(False)
+    if pct50 is not None and len(pct50):
+        p = pd.to_numeric(pd.Series(pct50), errors="coerce").reindex(cal)
+        out["br_ok"] = ((p.diff(20) - c.pct_change(20) * 5.0) >= 0).fillna(False)
+    else:
+        out["br_ok"] = False
+    dd = c / c.rolling(252, min_periods=120).max() - 1.0
+    win = int(getattr(cfg, "R122_REC_MONTHS", 21)) * 21
+    out["recovery"] = (dd.rolling(win, min_periods=60).min() <= -float(getattr(cfg, "R122_REC_DD", 0.20))).fillna(False)
+    if putcall is not None and len(putcall):
+        pc = pd.to_numeric(pd.Series(putcall), errors="coerce").dropna()
+        pc.index = pd.to_datetime(pc.index)
+        pc = pc[~pc.index.duplicated(keep="last")].sort_index()
+        pc = pc.reindex(cal.union(pc.index)).sort_index().ffill(limit=5).reindex(cal).shift(1)     # 장 뒤 공표 → 다음 거래일부터
+        m10 = pc.rolling(10, min_periods=7).mean()
+        z = (m10 - m10.rolling(756, min_periods=250).mean()) / m10.rolling(756, min_periods=250).std()
+    else:
+        z = pd.Series(np.nan, index=cal)
+    out["pc_z"] = z
+    out["pc_ok"] = (z >= float(getattr(cfg, "R122_PC_Z_MIN", -0.5))).fillna(False)
+    if tnx is not None and len(tnx):
+        t = pd.to_numeric(pd.Series(tnx), errors="coerce").reindex(cal).ffill(limit=5)
+        out["tnx_ok"] = ((t - t.shift(20)) <= float(getattr(cfg, "R122_TNX_JUMP", 0.25))).fillna(False)
+    else:
+        out["tnx_ok"] = False
+    out["neu_a"] = out["calm"] & out["baa_ok"] & out["liq4"]
+    out["hc_a"] = out["calm"] & out["br_ok"] & out["liq13"]
+    out["rec"] = out["recovery"] & out["calm"] & out["pc_ok"] & out["tnx_ok"]
+    return out
+
+
+def r122_inputs(px_adj: pd.Series, px_dict: Optional[Dict[str, pd.DataFrame]], cal: pd.DatetimeIndex, cfg: Config = CFG
+                ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[R122] 자료 자동 수신(FRED 3 · CBOE 풋콜 · ^TNX · S&P 500 구성종목 폭) → r122_conditions. 조각별 실패는 info에 남기고 그 조각만 끈다."""
+    t0 = time.time()
+    info: Dict[str, Any] = {}
+    fetch = bool(getattr(cfg, "R122_FETCH", True))
+    fx: Dict[str, Optional[pd.Series]] = {}
+    if fetch:
+        try:
+            fx = fetch_all_fred(list(R122_FRED_LAG), cfg) or {}
+        except Exception as e:
+            info["fred_error"] = f"{type(e).__name__}: {str(e)[:100]}"
+    info["fred_ok"] = [k for k in R122_FRED_LAG if fx.get(k) is not None and len(fx.get(k))]
+    pc, pc_info = None, {"ok": False}
+    if fetch:
+        try:
+            pc, pc_info = r122_fetch_putcall(cfg)
+        except Exception as e:
+            pc_info = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:100]}"}
+    info["putcall"] = pc_info
+    tnx = None
+    try:
+        df = (px_dict or {}).get("^TNX")
+        if (df is None or not len(df)) and fetch:
+            df = (fetch_all_yahoo(["^TNX"], cfg) or {}).get("^TNX")
+        if df is not None and len(df):
+            if isinstance(df.columns, pd.MultiIndex):          # (티커, 값) 두 겹 열이면 값 층만
+                df = df.copy()
+                df.columns = [c[-1] for c in df.columns]
+            col = "Close" if "Close" in df.columns else ("Adj Close" if "Adj Close" in df.columns else None)
+            if col:
+                tnx = pd.to_numeric(df[col], errors="coerce")
+                tnx.index = pd.to_datetime(tnx.index)
+    except Exception as e:
+        info["tnx_error"] = f"{type(e).__name__}: {str(e)[:100]}"
+    info["tnx_ok"] = bool(tnx is not None and len(tnx))
+    pct50, br_info = None, {"ok": False}
+    if fetch and bool(getattr(cfg, "R122_BREADTH", True)):
+        try:
+            pct50, br_info = r122_breadth(cal, cfg)
+        except Exception as e:
+            br_info = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:100]}"}
+    info["breadth"] = br_info
+    cond = r122_conditions(px_adj, cal, fx.get("BAA10Y"), fx.get("WALCL"), fx.get("WTREGEN"), pc, tnx, pct50, cfg)
+    info["sec"] = round(time.time() - t0, 1)
+    return cond, info
+
+
+def apply_r122_release(sig: pd.DataFrame, cond: pd.DataFrame, cfg: Config = CFG) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.81.0 R122 사용자 선택(2026-09-30 '1번') · 라이브] generate_signals 뒤 · R95 앞에서 목표비중 < 1.0인
+    NEUTRAL 날(조건 A) · 과열 헤어컷 날(조건 HC_A 또는 REC)을 1.0으로 푼다. sig에 pos_pre_r122 · r122_neutral_release · r122_haircut_release 열.
+    연구(r122/cand122 · mrep116 재생 · R121 포함): 2018~ 배수 7.05 → 8.33 · 회피 80.82 → 80.91 · 참여 61.38 → 65.82 · MDD −7.36 그대로 ·
+    손실 주 119 → 117 · 손실 달 21 · 손실 분기 5 → 3 · 앞/뒤 반쪽 회피·참여 모두 ≥ · 긴 이력 대용 2010~17 회피 +0.90 · 참여 +1.94 ·
+    ⚠ 2004~09 회피 −0.54 · 1999~2003 배수 1.171 → 1.167 · 2026 연초 뒤 14.8% → 14.6%. 되돌리기 m_overrides={'R122_ENABLE': False}."""
+    out = sig.copy()
+    tp = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r122"] = tp.copy()
+    diag: Dict[str, Any] = {"enabled": bool(getattr(cfg, "R122_ENABLE", True))}
+    idx = out.index
+    fal = pd.Series(False, index=idx)
+    if not diag["enabled"] or cond is None or not len(cond):
+        out["r122_neutral_release"], out["r122_haircut_release"] = fal, fal
+        return out, diag
+    cn = cond.reindex(idx)
+
+    def _b(k: str) -> pd.Series:
+        return cn[k].fillna(False).astype(bool) if k in cn.columns else fal
+
+    neu = out["state"].astype(str).eq("NEUTRAL") & _b("neu_a")
+    hc_flag = out["extension_haircut"].fillna(False).astype(bool) if "extension_haircut" in out.columns else fal
+    hc_a = hc_flag & _b("hc_a")
+    rec = hc_flag & _b("rec")
+    low = tp < 1.0 - 1e-12
+    m_neu, m_hc = neu & low, (hc_a | rec) & low
+    out.loc[m_neu | m_hc, "target_pos"] = 1.0
+    out["r122_neutral_release"], out["r122_haircut_release"] = m_neu, m_hc
+    s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-02"))
+    w = idx >= s0
+    by_year = (m_neu | m_hc)[w].groupby(idx[w].year).sum()
+    diag.update({"neutral_days": int(m_neu[w].sum()), "haircut_days": int(m_hc[w].sum()), "hc_a_days": int((hc_a & low)[w].sum()),
+                 "rec_days": int((rec & low)[w].sum()), "by_year": {int(k): int(v) for k, v in by_year.items() if int(v) > 0},
+                 "today": {k: (bool(cn[k].iloc[-1]) if k in cn.columns and pd.notna(cn[k].iloc[-1]) else None)
+                           for k in ("calm", "baa_ok", "liq4", "liq13", "br_ok", "recovery", "pc_ok", "tnx_ok", "neu_a", "hc_a", "rec")},
+                 "pc_z_today": (round(float(cn["pc_z"].iloc[-1]), 2) if "pc_z" in cn.columns and pd.notna(cn["pc_z"].iloc[-1]) else None)})
+    log("SIGNAL", kv(event="r122_release", neutral_days=diag["neutral_days"], haircut_days=diag["haircut_days"], hc_a_days=diag["hc_a_days"],
+                     rec_days=diag["rec_days"], by_year=str(diag["by_year"]).replace(" ", ""),
+                     note="★ 라이브(사용자 선택 R122) — 되돌리기 m_overrides={'R122_ENABLE': False}"))
+    return out, diag
 
 
 def apply_r113_rate_measure(sig: pd.DataFrame, px_dict: Optional[Dict[str, pd.DataFrame]], cfg: Config = CFG
@@ -13293,6 +13829,24 @@ def run(cfg: Config = CFG) -> dict:
     trend200 = ind["TREND_200"]
     sig = generate_signals(score_pct, trend200, cfg, score=score, haz_pct=haz_pct,
                            fast_pct=fast_pct, recov_conf=recov_conf, deep_recov=deep_recov, struct_dd=struct_dd, px=price["Close"], breadth=breadth)
+    # [v1.81.0 R122 ★ 사용자 선택 · 라이브] 건강 확인 완화 — generate_signals 바로 뒤 · R95 앞(뒤 위험 규칙은 푼 비중 위에서 그대로 작동).
+    #   자료 자동 수신(FRED · CBOE 풋콜 · ^TNX · S&P 500 구성종목) · 실패하면 R122 없이 계속(= v1.80.0 신호).
+    r122_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(cfg, "R122_ENABLE", True)):
+        try:
+            _c122, _i122 = r122_inputs(px_adj, px_dict, cal, cfg)
+            sig, r122_diag = apply_r122_release(sig, _c122, cfg)
+            r122_diag["inputs"] = _i122
+            R122_LAST.clear()
+            R122_LAST.update({"cond": _c122, "info": _i122})
+            log("SIGNAL", kv(event="r122_inputs", fred_ok=",".join(_i122.get("fred_ok") or []) or "-",
+                             putcall_ok=(_i122.get("putcall") or {}).get("ok"), putcall_last=(_i122.get("putcall") or {}).get("last"),
+                             tnx_ok=_i122.get("tnx_ok"), breadth_ok=(_i122.get("breadth") or {}).get("ok"),
+                             breadth_src=str((_i122.get("breadth") or {}).get("members_src"))[:80], sec=_i122.get("sec")))
+        except Exception as _e122:
+            log("SIGNAL", kv(event="r122_release_failed", err=type(_e122).__name__, msg=str(_e122)[:160],
+                             action="R122 없이 계속(= v1.80.0 신호) — 00 줄에 표시"), level="error")
+            r122_diag = {"enabled": False, "error": f"{type(_e122).__name__}: {str(_e122)[:120]}"}
     # [v1.63.0 R95 ⚠] SPY 라이브 신호에만 사이징 오버레이 3개 — 가격 특징은 총수익(Adj Close) 기준(S·섹터와 같은 잣대).
     r95_diag: Dict[str, Any] = {"enabled": False}
     try:
@@ -13332,6 +13886,14 @@ def run(cfg: Config = CFG) -> dict:
         log("SIGNAL", kv(event="r113_rate_measure_failed", err=type(_e113).__name__, msg=str(_e113)[:160],
                          action="측정 열 없이 계속(라이브 무영향) — 00 줄에 표시"), level="error")
         r113_diag = {"enabled": False, "error": f"{type(_e113).__name__}: {str(_e113)[:120]}"}
+    # [v1.80.0 R121 ★ 사용자 선택 · 라이브] 매매 띠(작은 비중 조정 무시 δ = R121_TRADE_BAND) — R113 뒤 · R117 앞. 실패하면 R121 없이 계속(= v1.79.0 라이브).
+    r121_diag: Dict[str, Any] = {"enabled": False}
+    try:
+        sig, r121_diag = apply_r121_trade_band(sig, cfg)
+    except Exception as _e121:
+        log("SIGNAL", kv(event="r121_trade_band_failed", err=type(_e121).__name__, msg=str(_e121)[:160],
+                         action="R121 없이 계속(= v1.79.0 라이브) — 00 줄에 표시"), level="error")
+        r121_diag = {"enabled": False, "error": f"{type(_e121).__name__}: {str(_e121)[:120]}"}
     # [v1.79.0 R118 ★ 사용자 지시] 전 지표 · 의미 설계 — 시장 가족(M 후보 + predictor 풀 약 4,800 + M 계층 + 달력). 실패하면 R117 확률로 계속.
     r118_mkt: Dict[str, Any] = {"enabled": False}
     if bool(getattr(cfg, "R118_ENABLE", True)) and bool(getattr(cfg, "R117_ENABLE", True)):
@@ -13510,7 +14072,9 @@ def run(cfg: Config = CFG) -> dict:
             "r95": r95_diag,                                                               # [v1.63.0 R95] 사이징 오버레이 발동 요약
             "r96": r96_diag,                                                               # [v1.64.0 R96] 변동성 관리 발동 요약
             "r98": r98_diag,                                                               # [v1.66.0 R98] 측정 열 요약(V1·V1강·이웃·VRP)
-            "r113": r113_diag,                                                             # [v1.75.0 R113] 금리 급등 경보 측정 열 요약
+            "r113": r113_diag,
+            "r122": r122_diag,                                                             # [v1.81.0 R122] 건강 확인 완화(라이브)
+            "r121": r121_diag,                                                             # [v1.80.0 R121] 매매 띠(라이브)                                                             # [v1.75.0 R113] 금리 급등 경보 측정 열 요약
             "r117": r117_diag,
             "r118": r118_mkt,                                                              # [v1.79.0 R118] 시장 가족 · 지표표 · 가족표(S·I가 읽는다)                                                             # [v1.78.0 R117] 다음날 하락확률 문턱(표 · 1위 · 라이브)
             "stage_timing": stage_timing}
@@ -14613,6 +15177,45 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             _r105_m_lines = [("★★★ R117 다음날 하락확률 문턱(M)", f"⚠ 산출 실패 — {_d117['error']} (라이브는 R117 없이 계속)")] + list(_r105_m_lines)
     except Exception as _e117:   # noqa — 표시 전용
         log("REPORT", kv(event="r117_sheet_failed", layer="M", err=type(_e117).__name__, msg=str(_e117)[:160]), "warning")
+    # [v1.80.0 R121] 매매 띠 00 줄
+    try:
+        _d121 = res.get("r121") or {}
+        if _d121.get("enabled"):
+            _r105_m_lines = [("★★ R121 매매 띠(라이브 · 사용자 선택 2026-09-30)",
+                              f"보유 중 목표비중 변화 < {_d121.get('delta', 0):.2f}면 바꾸지 않음(전량 청산·진입은 즉시) · 2018~ 매매일 "
+                              f"{_d121.get('trades_before', '-')} → {_d121.get('trades_after', '-')} · 바뀐 날 {_d121.get('days_changed', '-')} · 최대 차 {_d121.get('max_gap', '-')} · "
+                              "연구(r121): 배수 6.99 → 7.05 · 회피 +0.12 · 참여 +0.12 · 손실 달 22 → 21 · S·I·K 회피·참여 ↑ · 2004~2017 대용 회피 +0.05 · 참여 +0.12 · "
+                              "되돌리기 m_overrides={'R121_TRADE_BAND': 0.0}. 연구·교육용, 투자 자문 아님.")] + list(_r105_m_lines)
+        elif _d121.get("error"):
+            _r105_m_lines = [("★★ R121 매매 띠(M)", f"⚠ 적용 실패 — {_d121['error']} (R121 없이 계속)")] + list(_r105_m_lines)
+    except Exception:
+        pass
+    # [v1.81.0 R122] 건강 확인 완화 00 줄(자료 수신 상태 · 발동 일수 · 오늘 조건)
+    try:
+        _d122 = res.get("r122") or {}
+        if _d122.get("enabled"):
+            _i122 = _d122.get("inputs") or {}
+            _pc122, _br122 = _i122.get("putcall") or {}, _i122.get("breadth") or {}
+            _fr122 = _i122.get("fred_ok") or []
+            _miss122 = ([f"FRED {k}" for k in R122_FRED_LAG if k not in _fr122] + ([] if _pc122.get("ok") else ["CBOE 풋콜"])
+                        + ([] if _i122.get("tnx_ok") else ["^TNX"]) + ([] if _br122.get("ok") else ["S&P 500 구성종목 폭"]))
+            _t122 = _d122.get("today") or {}
+            _ox = lambda k: ("○" if _t122.get(k) else ("×" if _t122.get(k) is not None else "-"))   # noqa: E731
+            _r105_m_lines = [("★★ R122 건강 확인 완화(라이브 · 사용자 선택 2026-09-30)",
+                              f"목표비중 < 1.0인 NEUTRAL 날(A) · 과열 헤어컷 날(HC_A · REC)을 1.0으로 — R95 앞(뒤 위험 규칙 그대로) · 2018~ 발동: NEUTRAL "
+                              f"{_d122.get('neutral_days', '-')}일 · 헤어컷 {_d122.get('haircut_days', '-')}일(HC_A {_d122.get('hc_a_days', '-')} · REC {_d122.get('rec_days', '-')}) · "
+                              f"연도별 {_d122.get('by_year', {})} · 오늘 조건: 조용 {_ox('calm')} · BAA {_ox('baa_ok')} · 유동성 4주 {_ox('liq4')} · 13주 {_ox('liq13')} · "
+                              f"폭 {_ox('br_ok')} · 회복기 {_ox('recovery')} · 풋콜 {_ox('pc_ok')}(z {_d122.get('pc_z_today', '-')}) · 10년물 {_ox('tnx_ok')} → "
+                              f"A {_ox('neu_a')} · HC_A {_ox('hc_a')} · REC {_ox('rec')} · 자료: "
+                              + ("전부 수신" if not _miss122 else "⚠ 못 받음 = " + " · ".join(_miss122) + "(그 조각만 꺼짐)")
+                              + f" · 풋콜 마지막 {_pc122.get('last', '-')} · 구성 {str(_br122.get('members_src', '-'))[:70]} · 수신 {_i122.get('sec', '-')}초 · "
+                              "연구(r122): 배수 7.05 → 8.33 · 회피 +0.09 · 참여 +4.44 · MDD 그대로 · 손실 분기 5 → 3 · 2010~17 대용 회피 +0.90 · 참여 +1.94 · "
+                              "⚠ 2004~09 회피 −0.54 · 1999~2003 배수 1.171 → 1.167 · "
+                              "되돌리기 m_overrides={'R122_ENABLE': False}. 연구·교육용, 투자 자문 아님.")] + list(_r105_m_lines)
+        elif _d122.get("error"):
+            _r105_m_lines = [("★★ R122 건강 확인 완화(M)", f"⚠ 적용 실패 — {_d122['error']} (R122 없이 계속 = v1.80.0 신호)")] + list(_r105_m_lines)
+    except Exception:
+        pass
     # [v1.79.0 R118 ★] 00H2_지표의미(전 지표 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC) · 00 줄
     try:
         _m118 = res.get("r118") or {}
@@ -15072,7 +15675,7 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.79.0"
+BUNDLE_VERSION = "v1.81.0"
 BUNDLE_VERSION_DATE = "2026-09-27"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
