@@ -22,6 +22,21 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.81.1 - 2026-09-30 - [R123 결함 수정: FRED 캐시 신선도를 '받은 시각 도장'으로(묵은 복사 캐시 방지) · 목표 '회피 유지 · 참여 80%' 탐색 결과 기록]
+#    사용자 지시(2026-09-30): "결과 폴더에 올렸는데 이 결과 믿을만한 건지 그리고 문제 있으면 수정하고 회피는 그대로, 참여는 80% 이상 … 목표 넘으면 코드 업데이트".
+#    ── Kaggle v1.81.0 리포트 점검 ── R122 자료 전부 수신 · 발동 NEUTRAL 57 · 헤어컷 106(로컬 58 · 106) · 배수 8.09 · 회피 80.9 · 참여 65.1 · MDD −7.36%
+#      (로컬 같은 날 8.12 · 80.9 · 65.1) · 룩어헤드 감사 전부 OK. ⚠ Kaggle과 로컬의 목표비중이 10일 달랐다(전부 2026-05 · 08) — 원인은 R122가 아니라
+#      **Kaggle이 3~5일 묵은 FRED 캐시를 쓴 것**: FRED 수집 0.2초(전부 캐시) · ICE 스프레드 시작일 2023-09-27(로컬 10-02) · 9/28~29 국채금리 없음(앞 값 채움) ·
+#      소매판매 이력이 다른 판 → 복합점수 백분위 378일 · 국면 28일이 달라졌다. 캐시 신선도를 파일 수정시각으로만 봐서, 폴더를 복사·복원하면 묵은 내용이 통과했다.
+#    (§1 결함 수정) FRED 캐시 옆에 받은 시각 도장(.fetched · UTC)을 쓰고 신선도는 도장으로 본다(_fred_stamp_path · _write_fred_stamp · _read_fred_stamp ·
+#         _fred_cache_fresh · fetch_fred). 도장이 없거나 가장 최근 ET 08:30 전이면 다시 받는다(실패하면 종전대로 지연캐시) · DATA_END 고정·합성 실행은 종전대로.
+#         00 '데이터 신선도' 줄에 'FRED 묵은 캐시 다시 받음 N건 · 도장 없는 캐시 N건'(FRED_STAMP_STATS). S·I·K는 M 수집 함수를 쓰므로 함께 고쳐진다.
+#         BUNDLE_VERSION_DATE 갱신 · 00 R122 줄의 구성 출처 글자 수 70 → 110. 신호 규칙 · 설정 기본값 무변경. 시험 t123/test_r123.py.
+#    ── 목표 '회피 유지(80.91) · 참여 ≥ 80%' 탐색(r123/ · 코드 밖) ── 신탁 상한: 모든 상승 구간의 바닥을 3거래일 안에 알아채고 **꼭지를 하루 전에** 알아야
+#      목표에 닿는다(바닥 뒤 3일 · 꼭지 1일 전 = 참여 80.2 · 회피 80.9). 바닥 확인이 5일 걸리면 꼭지를 완벽히 알아도 참여 75~78(상승 구간 수익의 26%가
+#      바닥 뒤 첫 3일 · 31%가 첫 5일). 구성종목 폭 급반전 9종(90% 상승일 · 츠바이크 · 20일 신고가 비율 · 투매 뒤 반전 …) 108안 · 가격·거래량 바닥 확인 6종
+#      (팔로스루 데이 · 핵심 반전일 · VIX 급등 반전 · 갭 상승 …) 72안: 회피를 유지한 안 0개(참여 75~82까지 오르지만 회피 −13~−32 · MDD −17~−29%).
+#      → 목표 미달 · 규칙 추가 없음. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.81.0 - 2026-09-30 - [R122 ★ 건강 확인 완화(NEUTRAL · 과열 헤어컷을 새 정보가 건강하다 할 때만 1.0으로) 라이브 · 자료 자동 수신]
 #    사용자 지시(2026-09-30): "레버리지는 쓰지 말고 목표치 넘을 때까지 계속 의미 있을 만한 정보 찾아야지 …" → 네 차례 탐색 보고 뒤 사용자 선택 '1번'
 #      (8.33배 후보 반영 · "코드 실행하면 자동으로 받아지지?" → 자료는 실행 때 자동 수신 · 못 받은 조각만 꺼짐).
@@ -4772,6 +4787,52 @@ def _write_cache(name: str, df: pd.DataFrame, cfg: Config = CFG) -> None:
     except Exception as e:
         log("DATA", kv(event="cache_write_fail", series=name, err=type(e).__name__), "warning")
 
+# [v1.81.1 R123 결함 수정] FRED 캐시 '받은 시각 도장' — 파일 수정시각이 아니라 캐시 옆 도장 파일(.fetched · UTC)로 신선도를 본다.
+#   Kaggle v1.81.0 리포트 실측: FRED 수집 0.2초(전부 캐시) · ICE 스프레드 시작일 2023-09-27(로컬 같은 날 실행은 10-02) · 9/28~29 국채금리 없음(앞 값 채움)
+#   → 3~5일 묵은 FRED 캐시가 '오늘 받은 것'으로 통과했다(캐시 폴더를 복사·복원하면 수정시각이 복사한 때로 새로 찍힌다). 가격(Yahoo)은 내용으로
+#   판정(R73)해 최신이었지만 FRED는 수정시각만 봤다. 도장은 내용과 함께 복사되므로 복사해도 받은 때가 남는다. 도장이 없는 캐시(옛 캐시)는 묵은 것으로 본다.
+FRED_STAMP_STATS: Dict[str, List[str]] = {"refetched": [], "no_stamp": []}
+
+
+def _fred_stamp_path(series_id: str, cfg: Config = CFG) -> str:
+    return _cache_path(f"FRED_{series_id}", cfg) + ".fetched"
+
+
+def _write_fred_stamp(series_id: str, cfg: Config = CFG) -> None:
+    try:
+        with open(_fred_stamp_path(series_id, cfg), "w", encoding="utf-8") as fh:
+            fh.write(pd.Timestamp.now(tz="UTC").isoformat())
+    except Exception as e:
+        log("DATA", kv(event="fred_stamp_write_fail", series=series_id, err=type(e).__name__), "warning")
+
+
+def _read_fred_stamp(series_id: str, cfg: Config = CFG) -> Optional[pd.Timestamp]:
+    p = _fred_stamp_path(series_id, cfg)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            ts = pd.Timestamp(fh.read().strip())
+        return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    except Exception:
+        return None
+
+
+def _fred_cache_fresh(series_id: str, cfg: Config = CFG, now=None) -> Tuple[bool, str]:
+    """[v1.81.1 R123] FRED 캐시가 '가장 최근 ET FRED_REFRESH_ET_HOUR(08:30) 이후에 실제로 받은 것'인가 — 도장 기준(수정시각 무시).
+    반환 (신선한가, 사유). 도장 없음 = 묵은 것(한 번 다시 받으면 도장이 생긴다)."""
+    ts = _read_fred_stamp(series_id, cfg)
+    if ts is None:
+        return False, "도장 없음"
+    _now = now_et(now)
+    cut = _now.normalize() + pd.Timedelta(hours=float(getattr(cfg, "FRED_REFRESH_ET_HOUR", 8.5)))
+    if _now < cut:
+        cut -= pd.Timedelta(days=1)
+    if ts.tz_convert(_now.tz) < cut:
+        return False, f"받은 때 {str(ts)[:16]}Z < 기준 {str(cut)[:16]}"
+    return True, ""
+
+
 def _cache_age_hours(name: str, cfg: Config = CFG) -> Optional[float]:
     """[v1.15.1 §A] 캐시 파일 나이(시간). 없으면 None. 지연캐시 대체 시 경고/리포트에 노출용."""
     p = _cache_path(name, cfg)
@@ -5192,7 +5253,15 @@ def fetch_fred(series_id: str, cfg: Config = CFG, retries: Optional[int] = None,
     cached = _read_cache(f"FRED_{series_id}", cfg=cfg,
                          et_cutoff_hour=(cfg.FRED_REFRESH_ET_HOUR if _freshness_active(cfg) else None))   # [v1.56.0 R73]
     if cached is not None and len(cached) > 0:
-        return cached.iloc[:, 0]
+        # [v1.81.1 R123] 수정시각으로는 신선해 보여도 받은 시각 도장이 묵었거나 없으면 다시 받는다(복사된 캐시 방지 · 신선도 판정을 하는 실행만).
+        if not _freshness_active(cfg):
+            return cached.iloc[:, 0]
+        _ok_st, _why_st = _fred_cache_fresh(series_id, cfg)
+        if _ok_st:
+            return cached.iloc[:, 0]
+        FRED_STAMP_STATS["no_stamp" if _why_st == "도장 없음" else "refetched"].append(series_id)
+        log("DATA", kv(event="fred_cache_stale_by_stamp", series=series_id, reason=_why_st,
+                       action="다시 받는다(실패하면 지연캐시)"), "debug" if _why_st == "도장 없음" else "warning")
     # [v1.4.0 §1(C)] 네거티브 캐시 — 최근 제외 확정된 시리즈는 재시도하지 않는다.
     if not _integrity_retry:
         cached_fail = _read_fred_failure_cache(series_id, cfg)
@@ -5364,6 +5433,7 @@ def fetch_fred(series_id: str, cfg: Config = CFG, retries: Optional[int] = None,
                        start=str(s.dropna().index.min().date()), end=str(s.dropna().index.max().date()),
                        elapsed_s=elapsed))
     _write_cache(f"FRED_{series_id}", s.to_frame(), cfg)
+    _write_fred_stamp(series_id, cfg)               # [v1.81.1 R123] 받은 시각 도장(신선도는 이 도장으로 본다)
     return s
 
 
@@ -14463,6 +14533,10 @@ def freshness_summary_line(res: dict) -> str:
         tail += f" · 여전히 뒤처짐: {', '.join(fi['still_stale'][:6])}"
     if fi.get("fred_lag"):
         tail += f" · FRED대체(하루 늦음·정상): {', '.join(fi['fred_lag'])}"
+    # [v1.81.1 R123] FRED 받은 시각 도장 — 묵은(또는 도장 없는) 캐시를 다시 받은 건수(수정시각만 새것인 복사 캐시 방지)
+    _n_old, _n_none = len(set(FRED_STAMP_STATS.get("refetched", []))), len(set(FRED_STAMP_STATS.get("no_stamp", [])))
+    if _n_old or _n_none:
+        tail += f" · FRED 묵은 캐시 다시 받음 {_n_old}건 · 도장 없는 캐시 {_n_none}건(다시 받음)"
     tail += last_close_missing_note(res)
     return head + tail
 
@@ -15208,7 +15282,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
                               f"폭 {_ox('br_ok')} · 회복기 {_ox('recovery')} · 풋콜 {_ox('pc_ok')}(z {_d122.get('pc_z_today', '-')}) · 10년물 {_ox('tnx_ok')} → "
                               f"A {_ox('neu_a')} · HC_A {_ox('hc_a')} · REC {_ox('rec')} · 자료: "
                               + ("전부 수신" if not _miss122 else "⚠ 못 받음 = " + " · ".join(_miss122) + "(그 조각만 꺼짐)")
-                              + f" · 풋콜 마지막 {_pc122.get('last', '-')} · 구성 {str(_br122.get('members_src', '-'))[:70]} · 수신 {_i122.get('sec', '-')}초 · "
+                              + f" · 풋콜 마지막 {_pc122.get('last', '-')} · 구성 {str(_br122.get('members_src', '-'))[:110]} · 수신 {_i122.get('sec', '-')}초 · "
                               "연구(r122): 배수 7.05 → 8.33 · 회피 +0.09 · 참여 +4.44 · MDD 그대로 · 손실 분기 5 → 3 · 2010~17 대용 회피 +0.90 · 참여 +1.94 · "
                               "⚠ 2004~09 회피 −0.54 · 1999~2003 배수 1.171 → 1.167 · "
                               "되돌리기 m_overrides={'R122_ENABLE': False}. 연구·교육용, 투자 자문 아님.")] + list(_r105_m_lines)
@@ -15675,8 +15749,8 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.81.0"
-BUNDLE_VERSION_DATE = "2026-09-27"
+BUNDLE_VERSION = "v1.81.1"
+BUNDLE_VERSION_DATE = "2026-09-30"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
