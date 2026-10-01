@@ -22,6 +22,19 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.82.0 - 2026-10-01 - [R133 ★ 조각 19개 겹침 라이브(사용자 지시 "가장 결과 좋은 버전으로 업데이트") · 자료 자동 수신]
+#    사용자 지시(2026-10-01): "그럼 가장 결과 좋은 버전으로 업데이트하고 그 다음 섹터 코드를 수정해 …".
+#    ── R124~R133 연구(r124/ ~ r133/ · 코드 밖 · mrep116 재생 · 현금 이자 0 · 5bp · 레버리지 없음 · 긴 이력 = 대용 1999~2017) ──
+#      정보 원천 40여 종(재무부 세수·입찰 · CBOE 내재 상관 · OFR 스트레스 · ADS · WEI · CFTC · 모멘텀 · 섹터 국면 …)에서 하나씩은 모든 판정을 통과한 작은 조각
+#      (+0.1~+0.9)을 모아 앞으로 고르기로 겹침 → 실시간으로 똑같이 만들 수 없는 자료(SEC 내부자 · 종목별 이익 발표 · 구성종목 폭)를 뺀 최종 19조각:
+#      2018~ 배수 8.33 → 12.36 · 회피 80.91 → 81.57 · 참여 65.82 → 76.11(목표 75 넘음) · MDD −7.36 그대로 · 손실 주 117 → 116 · 달 21 → 18 · 분기 3 → 2 ·
+#      앞/뒤 반쪽 회피·참여 모두 ≥ · 긴 대용 세 창 회피 −0.25 · −0.39 · −0.40 · 참여 +1.23 · +0.87 · +0.22(느슨 판정 통과 · 대부분 그때 작동하지 않음).
+#      ⚠ 표본 밖 검사(반쪽 기간만 보고 고른 뒤 안 본 반쪽): 회피 −3.2~−3.5 · 참여 +0.7~+5.0 — 고르는 과정이 과적합일 위험. 사용자 선택으로 반영.
+#    (§1) Config R133_ENABLE · R133_FETCH · R133_CACHE_HOURS(6) · R133_VOL_MAX(0.15) · R133_REENTRY_N(10) · R133_REENTRY_STOP(0.03)(전부 캐시 무시).
+#         R133_PIECES(19조각 표) · _r133_get(원자료 · 캐시) · _r133_auctions(재무부 API) · _r133_parse · r133_conditions(조건 표 · 확장 분위 문턱 · 공표 지연) ·
+#         r133_inputs(자동 수신) · apply_r133_release(R122 뒤 · R95 앞 · pos_pre_r133 열) · r133_reentry_overlay · apply_r133_reentry(R121 띠 뒤 → 띠 한 번 더 ·
+#         pos_pre_r133re 열) · res['r133'] · R133_LAST · 00 줄. 자료를 못 받은 조각만 꺼진다(나머지는 작동). S·I·K 무변경(M 목표비중을 그대로 받는다).
+#         되돌리기 m_overrides={'R133_ENABLE': False}. 시험 t133/test_r133.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.81.1 - 2026-09-30 - [R123 결함 수정: FRED 캐시 신선도를 '받은 시각 도장'으로(묵은 복사 캐시 방지) · 목표 '회피 유지 · 참여 80%' 탐색 결과 기록]
 #    사용자 지시(2026-09-30): "결과 폴더에 올렸는데 이 결과 믿을만한 건지 그리고 문제 있으면 수정하고 회피는 그대로, 참여는 80% 이상 … 목표 넘으면 코드 업데이트".
 #    ── Kaggle v1.81.0 리포트 점검 ── R122 자료 전부 수신 · 발동 NEUTRAL 57 · 헤어컷 106(로컬 58 · 106) · 배수 8.09 · 회피 80.9 · 참여 65.1 · MDD −7.36%
@@ -3336,6 +3349,13 @@ class Config:
     R122_BREADTH_START: str = "2016-06-01"  # 구성종목 종가 수신 시작(50일선 워밍업 포함 · 신호는 2018~)
     R122_BREADTH_MIN_MEMBERS: int = 300     # 가격 있는 구성종목이 이보다 적은 날은 폭 결측(HC_A 끔)
     R122_WIKI_URL: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    # [v1.82.0 R133 ★ 사용자 지시(2026-10-01) "가장 결과 좋은 버전으로 업데이트"] 조각 19개 겹침(R122 위 · 라이브). 되돌리기 m_overrides={'R133_ENABLE': False}.
+    R133_ENABLE: bool = True
+    R133_FETCH: bool = True                 # 원자료 자동 수신(끄면 캐시만)
+    R133_CACHE_HOURS: float = 6.0           # 원자료 캐시가 이보다 젊으면 다시 받지 않음
+    R133_VOL_MAX: float = 0.15              # '조용' = SPY 20일 실현변동성 < 15%
+    R133_REENTRY_N: int = 10                # V자 재진입 유지 거래일
+    R133_REENTRY_STOP: float = 0.03         # V자 재진입 손절(트리거 날 종가 대비)
     # [v1.79.0 R118 ★ 사용자 지시(2026-09-29) "모든 지표들을 사용 … 의미를 파악해서 의미가 있도록 설계"] R117 확률을 '전 지표 · 의미 가족' 확률로 대체.
     #   R118_ENABLE=False면 R117(자산 지표 12 + 시장 7) 확률로 돌아간다 · R118_PREDICTOR_POOL=False면 predictor 풀 없이 M 후보 + 계층 + 달력만.
     R118_ENABLE: bool = True
@@ -7373,6 +7393,7 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     # [v1.81.0 R122] 라이브 SPY 신호 뒤 건강 확인 완화 전용(검증·워크포워드·S·I 국면 모형 무관 · 교훈 31)
     "R122_ENABLE", "R122_FETCH", "R122_BREADTH", "R122_VOL_MAX", "R122_REC_MONTHS", "R122_REC_DD", "R122_PC_Z_MIN", "R122_TNX_JUMP",
     "R122_BREADTH_START", "R122_BREADTH_MIN_MEMBERS", "R122_WIKI_URL",
+    "R133_ENABLE", "R133_FETCH", "R133_CACHE_HOURS", "R133_VOL_MAX", "R133_REENTRY_N", "R133_REENTRY_STOP",   # [v1.82.0 R133] 신호 뒤 조각 겹침
     "R118_ENABLE", "R118_PREDICTOR_POOL", "R118_FETCH_EXTRA", "R118_POOL_URL", "R118_POOL_START", "R118_FIRST_FIT_YEAR", "R118_TRAIN_START",   # [v1.79.0 R118]                              # [v1.78.0 R117] 신호 뒤 하락확률 문턱(검증·가중치 무관)
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
@@ -9283,6 +9304,492 @@ def apply_r122_release(sig: pd.DataFrame, cond: pd.DataFrame, cfg: Config = CFG)
     log("SIGNAL", kv(event="r122_release", neutral_days=diag["neutral_days"], haircut_days=diag["haircut_days"], hc_a_days=diag["hc_a_days"],
                      rec_days=diag["rec_days"], by_year=str(diag["by_year"]).replace(" ", ""),
                      note="★ 라이브(사용자 선택 R122) — 되돌리기 m_overrides={'R122_ENABLE': False}"))
+    return out, diag
+
+
+# =============================================================================
+# [v1.82.0 R133 ★ 사용자 지시(2026-10-01) "가장 결과 좋은 버전으로 업데이트"] 조각 19개 겹침 — R122 위 · 라이브.
+#   NEUTRAL 해제(neu) · 과열 헤어컷 해제(hc)는 R122와 같은 자리(generate_signals 뒤 · R95 앞) · V자 재진입(re)은 R121 매매 띠 뒤(덧씌운 뒤 띠 한 번 더).
+#   자료 19조각(전부 공표 지연 반영 · 연구 r133/ref133과 같은 식): FRED 7(EPUMONETARY · WEI · DGS2 · THREEFYTP10 · RVXCLS · VIXCLS · UNRATE) ·
+#   OFR 금융 스트레스 CSV · CBOE COR1M CSV · 재무부 국채 입찰 API · 필라델피아 연준 ADS(xlsx) · SF 연준 뉴스 심리(xlsx) · CFTC 레거시(E-mini) ·
+#   Yahoo(SPY OHLCV · 섹터 11 · HYG/IEF · ^VIX · 국가 ETF 20). 문턱 = 그날까지의 확장 분위(최소 500일 · 하루 늦춤).
+#   ⚠ 표본 안 결과: 2018~에서 고른 조각이라 표본 밖(반쪽 나눠 고르기)에서는 효과가 작거나 회피가 떨어졌다(r133/greedy133b) — 사용자 선택으로 반영.
+# =============================================================================
+R133_FRED_IDS: Tuple[str, ...] = ("EPUMONETARY", "WEI", "DGS2", "THREEFYTP10", "RVXCLS", "VIXCLS", "UNRATE")
+R133_OFR_URL = "https://www.financialresearch.gov/financial-stress-index/data/fsi.csv"
+R133_COR1M_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_History.csv"
+R133_AUCTION_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
+R133_ADS_URL = "https://www.philadelphiafed.org/-/media/frbp/assets/surveys-and-data/ads/ads_index_most_current_vintage.xlsx"
+R133_NEWS_URLS: Tuple[str, ...] = ("https://www.frbsf.org/wp-content/uploads/news_sentiment_data.xlsx",
+                                   "https://www.frbsf.org/wp-content/uploads/sites/4/news_sentiment_data.xlsx")
+R133_CFTC_URL = "https://publicreporting.cftc.gov/resource/6dca-aqww.json"
+R133_COUNTRY_ETFS: Tuple[str, ...] = ("EWJ", "EWG", "EWU", "EWC", "EWA", "EWH", "EWS", "EWT", "EWY", "EWZ", "EWW", "EWQ", "EWL", "EWP", "EWI",
+                                      "EWN", "EWD", "EWK", "EWO", "EWM")
+R133_AUCTION_TERMS: Tuple[str, ...] = ("2-Year", "3-Year", "5-Year", "7-Year", "10-Year", "20-Year", "30-Year")
+# (열 이름, 쓰임, 설명) — 쓰임: neu = NEUTRAL 해제 · hc = 과열 헤어컷 해제 · re = V자 재진입 확인(1.0 · 10일 · 손절 3%)
+R133_PIECES: Tuple[Tuple[str, str, str], ...] = (
+    ("secoff", "neu", "섹터 11개 중 절반 이상 위험회피(지수 대용 3상태)"),
+    ("epumon", "neu", "통화정책 불확실성 z 하위 20% & 조용"),
+    ("intr60", "hc", "SPY 장중 누적 60일 하위 30% & 조용"),
+    ("wei", "re", "주간 경제 지수(WEI) 하위 20%"),
+    ("ofrus", "hc", "OFR 금융 스트레스(미국) 20일 변화 상위 20% & 조용"),
+    ("y2fall", "neu", "2년물 60일 −0.3%p 넘게 하락 & 조용"),
+    ("cor1m", "hc", "S&P 500 1달 내재 상관 20일 변화 상위 10% & 조용"),
+    ("auction", "neu", "국채 입찰 응찰률 30일 z 하위 20% & 조용"),
+    ("tpz", "hc", "10년 기간 프리미엄 2년 z < −1.5"),
+    ("ads", "hc", "ADS 경기 지수 20일 변화 상위 20% & 조용"),
+    ("y2rise", "re", "2년물 60일 변화 상위 20%"),
+    ("rvx", "neu", "러셀/VIX 내재변동성 비 z 상위 20% & 조용"),
+    ("sahm", "neu", "삼 규칙 값 하위 20% & 조용"),
+    ("news", "hc", "SF 연준 뉴스 심리 상위 20% & 조용"),
+    ("newsz", "hc", "SF 연준 뉴스 심리 z 하위 20% & 조용"),
+    ("cred", "hc", "HYG/IEF 20일 하위 20% & 조용"),
+    ("dist", "hc", "SPY 분산일(25일) 상위 20% & 조용"),
+    ("glbr", "hc", "국가 ETF 20개 60일 상승 비율 하위 20% & 조용"),
+    ("comm", "hc", "CFTC E-mini 상업 순포지션 4주 변화 상위 20% & 조용"),
+)
+R133_LAST: Dict[str, Any] = {}
+
+
+def _r133_file(name: str, ext: str, cfg: Config = CFG) -> str:
+    return _cache_path(f"R133_{name}", cfg)[:-4] + "." + ext
+
+
+def _r133_get(name: str, ext: str, urls: Tuple[str, ...], cfg: Config = CFG, params: Optional[Dict[str, Any]] = None,
+              min_bytes: int = 500) -> Tuple[Optional[bytes], str]:
+    """[R133] 원자료 받기 — 캐시가 R133_CACHE_HOURS보다 젊으면 그대로 · 아니면 받기(실패하면 묵은 캐시) · 둘 다 없으면 None."""
+    p = _r133_file(name, ext, cfg)
+    fresh_h = float(getattr(cfg, "R133_CACHE_HOURS", 6.0) or 0.0)
+    if os.path.exists(p) and (time.time() - os.path.getmtime(p)) / 3600.0 < fresh_h:
+        return open(p, "rb").read(), "캐시"
+    err = "받기 꺼짐"
+    if bool(getattr(cfg, "R133_FETCH", True)):
+        import requests
+        for u in urls:
+            try:
+                r = requests.get(u, params=params, timeout=_r122_timeout(cfg), headers={"User-Agent": "market_regime_trader R133 (research script)"})
+                if r.status_code == 200 and len(r.content) >= int(min_bytes):
+                    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+                    with open(p, "wb") as f:
+                        f.write(r.content)
+                    return r.content, "수신"
+                err = f"HTTP {r.status_code}"
+            except Exception as e:
+                err = f"{type(e).__name__}: {str(e)[:60]}"
+    if os.path.exists(p):
+        return open(p, "rb").read(), f"묵은 캐시({err})"
+    return None, f"실패({err})"
+
+
+def _r133_auctions(cfg: Config = CFG) -> Tuple[Optional[pd.DataFrame], str]:
+    """[R133] 재무부 국채 입찰 결과(1979~ · 쪽 나눠 받기) → 입찰일 · 종류 · 만기 · 응찰률. 캐시 CSV."""
+    p = _r133_file("AUCTIONS", "csv", cfg)
+    fresh_h = float(getattr(cfg, "R133_CACHE_HOURS", 6.0) or 0.0)
+    if os.path.exists(p) and (time.time() - os.path.getmtime(p)) / 3600.0 < fresh_h:
+        return pd.read_csv(p), "캐시"
+    err = "받기 꺼짐"
+    if bool(getattr(cfg, "R133_FETCH", True)):
+        import requests
+        try:
+            rows: List[Dict[str, Any]] = []
+            page = 1
+            while True:
+                r = requests.get(R133_AUCTION_URL, timeout=_r122_timeout(cfg), headers={"User-Agent": "market_regime_trader R133 (research script)"},
+                                 params={"fields": "auction_date,security_type,security_term,bid_to_cover_ratio", "page[number]": page, "page[size]": 10000})
+                r.raise_for_status()
+                j = r.json()
+                rows.extend(j.get("data") or [])
+                if page >= int((j.get("meta") or {}).get("total-pages", 1) or 1):
+                    break
+                page += 1
+            d = pd.DataFrame(rows)
+            if len(d) > 1000:
+                os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+                d.to_csv(p, index=False)
+                return d, "수신"
+            err = f"행 {len(d)}"
+        except Exception as e:
+            err = f"{type(e).__name__}: {str(e)[:60]}"
+    if os.path.exists(p):
+        return pd.read_csv(p), f"묵은 캐시({err})"
+    return None, f"실패({err})"
+
+
+def _r133_parse(src: Dict[str, Any]) -> Dict[str, Optional[pd.Series]]:
+    """[R133] 원자료(bytes · DataFrame) → 관측일 색인 Series. 실패한 것은 None."""
+    out: Dict[str, Optional[pd.Series]] = {}
+
+    def _safe(k: str, fn: Callable[[], pd.Series]) -> None:
+        try:
+            s = fn()
+            out[k] = s if s is not None and len(s) else None
+        except Exception as e:
+            out[k] = None
+            log("DATA", kv(event="r133_parse_failed", item=k, err=type(e).__name__, msg=str(e)[:100]), "warning")
+
+    def _ofr() -> pd.Series:
+        d = pd.read_csv(io.BytesIO(src["ofr"]))
+        dc = d.columns[0]
+        d[dc] = pd.to_datetime(d[dc], errors="coerce")
+        d = d.dropna(subset=[dc]).set_index(dc).sort_index()
+        return pd.to_numeric(d["United States"], errors="coerce")
+
+    def _cor() -> pd.Series:
+        d = pd.read_csv(io.BytesIO(src["cor1m"]))
+        col = "CLOSE" if "CLOSE" in d.columns else d.columns[-1]
+        s = pd.Series(pd.to_numeric(d[col], errors="coerce").values, index=pd.to_datetime(d["DATE"], format="%m/%d/%Y", errors="coerce")).dropna()
+        s = s[s > 0]
+        return s[~s.index.duplicated(keep="last")]
+
+    def _ads() -> pd.Series:
+        d = pd.read_excel(io.BytesIO(src["ads"]))
+        return pd.Series(pd.to_numeric(d["ADS_Index"], errors="coerce").values,
+                         index=pd.to_datetime(d["Date"].astype(str), format="%Y:%m:%d", errors="coerce")).dropna()
+
+    def _news() -> pd.Series:
+        d = pd.read_excel(io.BytesIO(src["news"]), sheet_name="Data")
+        return d.set_index(pd.to_datetime(d["date"]))["News Sentiment"].astype(float)
+
+    def _cftc() -> pd.Series:
+        c = pd.DataFrame(json.loads(src["cftc"].decode("utf-8")))
+        c = c[c["market_and_exchange_names"].str.contains("E-MINI S&P 500") & ~c["market_and_exchange_names"].str.contains("MICRO")].copy()
+        for k in ("open_interest_all", "comm_positions_long_all", "comm_positions_short_all"):
+            c[k] = pd.to_numeric(c[k], errors="coerce")
+        c["d"] = pd.to_datetime(c["report_date_as_yyyy_mm_dd"])
+        g = c.groupby("d")[["open_interest_all", "comm_positions_long_all", "comm_positions_short_all"]].sum()
+        return (g["comm_positions_long_all"] - g["comm_positions_short_all"]) / g["open_interest_all"]
+
+    if src.get("ofr") is not None:
+        _safe("ofr_us", _ofr)
+    if src.get("cor1m") is not None:
+        _safe("cor1m", _cor)
+    if src.get("ads") is not None:
+        _safe("ads", _ads)
+    if src.get("news") is not None:
+        _safe("news", _news)
+    if src.get("cftc") is not None:
+        _safe("comm_net", _cftc)
+    return out
+
+
+def _r133_hi(x: pd.Series, q: float) -> pd.Series:
+    return (x > x.expanding(min_periods=500).quantile(q).shift(1)).fillna(False)
+
+
+def _r133_lo(x: pd.Series, q: float) -> pd.Series:
+    return (x < x.expanding(min_periods=500).quantile(q).shift(1)).fillna(False)
+
+
+def _r133_al(s: Optional[pd.Series], lag_days: int, cal: pd.DatetimeIndex) -> pd.Series:
+    """관측일 + lag_days(달력일) 뒤부터 안다 → 거래일 달력에 앞 값 채움(연구 al과 같은 식)."""
+    if s is None or not len(s):
+        return pd.Series(np.nan, index=cal)
+    s = pd.to_numeric(pd.Series(s), errors="coerce").dropna().copy()
+    s.index = pd.to_datetime(s.index) + pd.Timedelta(days=int(lag_days))
+    s = s[~s.index.duplicated(keep="last")]
+    return s.reindex(cal.union(s.index)).sort_index().ffill().reindex(cal)
+
+
+def _r133_z(v: pd.Series, n: int) -> pd.Series:
+    return (v - v.rolling(n, min_periods=250).mean()) / v.rolling(n, min_periods=250).std()
+
+
+def r133_conditions(price: pd.DataFrame, px_dict: Optional[Dict[str, pd.DataFrame]], cal: pd.DatetimeIndex, fx: Dict[str, Optional[pd.Series]],
+                    ser: Dict[str, Optional[pd.Series]], auctions: Optional[pd.DataFrame], cfg: Config = CFG) -> pd.DataFrame:
+    """[R133] 조각 19개 조건 표(달력 색인 · 전부 t일 종가에 알 수 있는 값) + calm · vtrig · neu · hc · re 열.
+    price = SPY(Open · Close · Adj Close · Volume) · px_dict = Yahoo(섹터 11 · HYG · IEF · ^VIX · 국가 ETF 20) · fx = FRED 원자료 ·
+    ser = _r133_parse 결과 · auctions = 국채 입찰 표. 자료가 없는 조각은 False."""
+    cal = pd.DatetimeIndex(cal)
+    pr = price.reindex(cal)
+    C = pd.to_numeric(pr["Adj Close"], errors="coerce").astype(float)
+    fa = (C / pd.to_numeric(pr["Close"], errors="coerce")).fillna(1.0)
+    O = pd.to_numeric(pr["Open"], errors="coerce") * fa
+    V = pd.to_numeric(pr["Volume"], errors="coerce").astype(float)
+    out = pd.DataFrame(index=cal)
+    vol20 = np.log(C).diff().rolling(20).std() * math.sqrt(252.0)
+    calm = (vol20 < float(getattr(cfg, "R133_VOL_MAX", 0.15))).fillna(False)
+    out["calm"] = calm
+
+    def _px(t: str, col: str = "Adj Close") -> pd.Series:
+        df = (px_dict or {}).get(t)
+        if df is None or not len(df):
+            return pd.Series(np.nan, index=cal)
+        if isinstance(df.columns, pd.MultiIndex):
+            df = df.copy()
+            df.columns = [c[-1] for c in df.columns]
+        c_ = col if col in df.columns else ("Close" if "Close" in df.columns else None)
+        if c_ is None:
+            return pd.Series(np.nan, index=cal)
+        s = pd.to_numeric(df[c_], errors="coerce")
+        s.index = pd.to_datetime(s.index)
+        s = s[~s.index.duplicated(keep="last")].sort_index()
+        return s
+
+    # V자 트리거(연구 reent122): 252일 고점 대비 −8% 아래 · VIX가 10일 고점 대비 −25% · 3일 +3%
+    vix = _px("^VIX", "Close").reindex(cal).ffill()
+    dd252 = C / C.rolling(252, min_periods=120).max() - 1.0
+    out["vtrig"] = ((dd252 < -0.08) & (vix / vix.rolling(10).max() - 1.0 < -0.25) & (C.pct_change(3) > 0.03)).fillna(False)
+    # ① 섹터 위험회피 비율(지수 대용 3상태 · 가격 < 200일선 & 252일 수익 < 0)
+    st, okd = {}, {}
+    for t in BREADTH_TICKERS:
+        s = _px(t).reindex(cal).ffill().dropna()
+        if len(s) < 600:
+            continue
+        sma = s.rolling(200, min_periods=200).mean()
+        mom = s / s.shift(252) - 1.0
+        ok = sma.notna() & mom.notna()
+        st[t] = pd.Series(ok & (s < sma) & (mom < 0), index=s.index).reindex(cal).fillna(False)
+        okd[t] = ok.reindex(cal).fillna(False)
+    if st:
+        n = pd.DataFrame(okd).sum(axis=1).replace(0, np.nan)            # 200일선 · 252일 수익이 있는 섹터 수(연구 secreg와 같은 분모)
+        off = (pd.DataFrame(st).sum(axis=1) / n).where(n >= 7)
+        out["secoff"] = (off >= 0.5).fillna(False)
+    else:
+        out["secoff"] = False
+    # ② 통화정책 불확실성(월 · 월말 + 5일 · log · 3년 z)
+    e = fx.get("EPUMONETARY")
+    if e is not None and len(e):
+        e = pd.to_numeric(pd.Series(e), errors="coerce").dropna().copy()
+        e.index = pd.to_datetime(e.index) + pd.offsets.MonthEnd(0)
+        v = _r133_al(np.log(e.clip(lower=0.01)), 5, cal)
+        out["epumon"] = _r133_lo(_r133_z(v, 756), 0.2) & calm
+    else:
+        out["epumon"] = False
+    # ③ SPY 장중 누적 60일
+    out["intr60"] = _r133_lo((C / O - 1.0).rolling(60).sum(), 0.3) & calm
+    # ④ WEI(+6일)
+    out["wei"] = _r133_lo(_r133_al(fx.get("WEI"), 6, cal), 0.2) if fx.get("WEI") is not None else False
+    # ⑤ OFR 미국(+2일) 20일 변화
+    if ser.get("ofr_us") is not None:
+        v = _r133_al(ser["ofr_us"], 2, cal)
+        out["ofrus"] = _r133_hi(v - v.shift(20), 0.8) & calm
+    else:
+        out["ofrus"] = False
+    # ⑥ 2년물(+1일) 60일 변화
+    if fx.get("DGS2") is not None:
+        y2 = _r133_al(fx["DGS2"], 1, cal)
+        y2c = y2 - y2.shift(60)
+        out["y2fall"] = (y2c < -0.3).fillna(False) & calm
+        out["y2rise"] = _r133_hi(y2c, 0.8)
+    else:
+        out["y2fall"], out["y2rise"] = False, False
+    # ⑦ COR1M(+1일 · 앞 값 채움 5일까지) 20일 변화
+    if ser.get("cor1m") is not None:
+        s = ser["cor1m"].copy()
+        s.index = s.index + pd.Timedelta(days=1)
+        c1 = s.reindex(cal.union(s.index)).sort_index().ffill(limit=5).reindex(cal)
+        out["cor1m"] = _r133_hi(c1 - c1.shift(20), 0.9) & calm
+    else:
+        out["cor1m"] = False
+    # ⑧ 국채 입찰 응찰률(만기별 직전 2년 대비 z → 입찰일 + 1일 · 30일 평균)
+    out["auction"] = False
+    if auctions is not None and len(auctions):
+        A_ = auctions.copy()
+        A_["d"] = pd.to_datetime(A_["auction_date"], errors="coerce")
+        A_ = A_[A_["security_type"].isin(["Note", "Bond"]) & A_["security_term"].isin(list(R133_AUCTION_TERMS))].dropna(subset=["d"])
+        A_["btc"] = pd.to_numeric(A_["bid_to_cover_ratio"], errors="coerce")
+        zs = []
+        for _, g in A_.sort_values("d").groupby("security_term"):
+            v = g.set_index("d")["btc"]
+            base = v.rolling("730D", min_periods=6)
+            zs.append((v - base.mean().shift(1)) / base.std().shift(1))
+        if zs:
+            ez = pd.concat(zs).dropna()
+            ez = ez.groupby(level=0).mean()
+            ez.index = ez.index + pd.Timedelta(days=1)
+            ev = ez.reindex(cal.union(ez.index)).sort_index()
+            cnt = ev.notna().astype(float)
+            s30 = ev.fillna(0).rolling("30D").sum() / cnt.rolling("30D").sum().replace(0, np.nan)
+            out["auction"] = _r133_lo(s30.reindex(cal).ffill(), 0.2) & calm
+    # ⑨ 10년 기간 프리미엄(+7일) 2년 z
+    if fx.get("THREEFYTP10") is not None:
+        tp = _r133_al(fx["THREEFYTP10"], 7, cal)
+        out["tpz"] = ((tp - tp.rolling(504, min_periods=250).mean()) / tp.rolling(504, min_periods=250).std() < -1.5).fillna(False)
+    else:
+        out["tpz"] = False
+    # ⑩ ADS(+7일) 20일 변화
+    if ser.get("ads") is not None:
+        a = _r133_al(ser["ads"], 7, cal)
+        out["ads"] = _r133_hi(a - a.shift(20), 0.8) & calm
+    else:
+        out["ads"] = False
+    # ⑪ 러셀/VIX 내재변동성 비(+1일 · log · 3년 z)
+    if fx.get("RVXCLS") is not None and fx.get("VIXCLS") is not None:
+        rel = np.log(_r133_al(fx["RVXCLS"], 1, cal) / _r133_al(fx["VIXCLS"], 1, cal))
+        out["rvx"] = _r133_hi(_r133_z(rel, 756).replace([np.inf, -np.inf], np.nan), 0.8) & calm
+    else:
+        out["rvx"] = False
+    # ⑫ 삼 규칙(월 · 기준월 말 + 10일)
+    u = fx.get("UNRATE")
+    if u is not None and len(u):
+        u = pd.to_numeric(pd.Series(u), errors="coerce").dropna()
+        u.index = pd.to_datetime(u.index)
+        u3 = u.rolling(3).mean()
+        # 소수 6자리 반올림: 값이 0.1%p 단위라 문턱과 같은 날이 많다 → 자료 시작일에 따른 부동소수 잡음이 비교를 뒤집지 않게(연구 r133/sahm133 · 2018~ 무변경)
+        sahm = (u3 - u3.rolling(12).min().shift(1)).round(6)
+        sahm.index = sahm.index + pd.offsets.MonthEnd(0) + pd.Timedelta(days=10)
+        out["sahm"] = _r133_lo(sahm.reindex(cal.union(sahm.index)).sort_index().ffill().reindex(cal), 0.2) & calm
+    else:
+        out["sahm"] = False
+    # ⑬⑭ SF 연준 뉴스 심리(3거래일 늦춤)
+    if ser.get("news") is not None:
+        ns = ser["news"]
+        ns = ns.reindex(cal.union(ns.index)).sort_index().ffill().reindex(cal).shift(3)
+        out["news"] = _r133_hi(ns, 0.8) & calm
+        out["newsz"] = _r133_lo(_r133_z(ns, 756), 0.2) & calm
+    else:
+        out["news"], out["newsz"] = False, False
+    # ⑮ HYG/IEF 20일
+    hyg, ief = _px("HYG").reindex(cal).ffill(), _px("IEF").reindex(cal).ffill()
+    out["cred"] = _r133_lo((hyg / ief).pct_change(20), 0.2) & calm
+    # ⑯ 분산일 25일(하락 −0.2% 넘게 & 거래량 증가)
+    r1 = C.pct_change()
+    out["dist"] = _r133_hi(((r1 < -0.002) & (V > V.shift(1))).rolling(25).sum(), 0.8) & calm
+    # ⑰ 국가 ETF 20개 60일 상승 비율(10개 이상 있을 때)
+    P_ = pd.DataFrame({t: _r133_al(_px(t), 0, cal) for t in R133_COUNTRY_ETFS})
+    r60 = P_.pct_change(60)
+    up = (r60 > 0).where(r60.notna())
+    gl = up.mean(axis=1).where(up.notna().sum(axis=1) >= 10)
+    out["glbr"] = _r133_lo(gl, 0.2) & calm
+    # ⑱ CFTC 상업 순포지션(화요일 기준 · 금요일 공표 → +4일) 4주 변화
+    if ser.get("comm_net") is not None:
+        cw = _r133_al(ser["comm_net"], 4, cal)
+        out["comm"] = _r133_hi(cw - cw.shift(20), 0.8) & calm
+    else:
+        out["comm"] = False
+    for k, _, _ in R133_PIECES:
+        out[k] = pd.Series(out[k], index=cal).fillna(False).astype(bool) if not isinstance(out[k], pd.Series) else out[k].fillna(False).astype(bool)
+    kinds = {k: u_ for k, u_, _ in R133_PIECES}
+    out["neu"] = out[[k for k in kinds if kinds[k] == "neu"]].any(axis=1)
+    out["hc"] = out[[k for k in kinds if kinds[k] == "hc"]].any(axis=1)
+    out["re"] = out[[k for k in kinds if kinds[k] == "re"]].any(axis=1)
+    return out
+
+
+def r133_inputs(price: pd.DataFrame, px_dict: Optional[Dict[str, pd.DataFrame]], cal: pd.DatetimeIndex, cfg: Config = CFG
+                ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[R133] 자료 자동 수신(FRED 7 · OFR · CBOE COR1M · 국채 입찰 · ADS · SF 연준 뉴스 · CFTC · Yahoo 국가 ETF 20) → r133_conditions.
+    조각별 실패는 info에 남기고 그 조각만 끈다."""
+    t0 = time.time()
+    info: Dict[str, Any] = {}
+    fetch = bool(getattr(cfg, "R133_FETCH", True))
+    fx: Dict[str, Optional[pd.Series]] = {}
+    if fetch:
+        try:
+            fx = fetch_all_fred(list(R133_FRED_IDS), cfg) or {}
+        except Exception as e:
+            info["fred_error"] = f"{type(e).__name__}: {str(e)[:100]}"
+    info["fred_ok"] = [k for k in R133_FRED_IDS if fx.get(k) is not None and len(fx.get(k))]
+    src: Dict[str, Any] = {}
+    stat: Dict[str, str] = {}
+    for k, ext, urls, prm in (("ofr", "csv", (R133_OFR_URL,), None), ("cor1m", "csv", (R133_COR1M_URL,), None), ("ads", "xlsx", (R133_ADS_URL,), None),
+                              ("news", "xlsx", R133_NEWS_URLS, None),
+                              ("cftc", "json", (R133_CFTC_URL,), {"$limit": 50000, "$where": "market_and_exchange_names like '%E-MINI S&P 500%'"})):
+        try:
+            src[k], stat[k] = _r133_get(k.upper(), ext, urls, cfg, prm)
+        except Exception as e:
+            src[k], stat[k] = None, f"실패({type(e).__name__})"
+    try:
+        auctions, stat["auction"] = _r133_auctions(cfg)
+    except Exception as e:
+        auctions, stat["auction"] = None, f"실패({type(e).__name__})"
+    ser = _r133_parse(src)
+    pxd = dict(px_dict or {})
+    need = [t for t in R133_COUNTRY_ETFS if pxd.get(t) is None or not len(pxd.get(t))]
+    if need and fetch:
+        try:
+            got = fetch_all_yahoo(need, cfg) or {}
+            pxd.update({t: d for t, d in got.items() if d is not None and len(d)})
+        except Exception as e:
+            info["yahoo_error"] = f"{type(e).__name__}: {str(e)[:100]}"
+    info["country_ok"] = int(sum(1 for t in R133_COUNTRY_ETFS if pxd.get(t) is not None and len(pxd.get(t))))
+    info["src"] = stat
+    info["parsed"] = {k: bool(v is not None) for k, v in ser.items()}
+    cond = r133_conditions(price, pxd, cal, fx, ser, auctions, cfg)
+    miss = ([f"FRED {k}" for k in R133_FRED_IDS if k not in info["fred_ok"]]
+            + [nm for k, nm in (("ofr_us", "OFR"), ("cor1m", "CBOE COR1M"), ("ads", "ADS"), ("news", "SF 연준 뉴스"), ("comm_net", "CFTC")) if ser.get(k) is None]
+            + ([] if auctions is not None and len(auctions) else ["국채 입찰"]) + ([] if info["country_ok"] >= 10 else [f"국가 ETF {info['country_ok']}/20"]))
+    info["missing"] = miss
+    info["sec"] = round(time.time() - t0, 1)
+    return cond, info
+
+
+def apply_r133_release(sig: pd.DataFrame, cond: pd.DataFrame, cfg: Config = CFG) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.82.0 R133 · 라이브] R122 뒤 · R95 앞: 목표비중 < 1.0인 NEUTRAL 날(neu 조각 중 하나라도) · 과열 헤어컷 날(hc 조각 중 하나라도)을 1.0으로.
+    sig에 pos_pre_r133 · r133_neutral_release · r133_haircut_release 열. 되돌리기 m_overrides={'R133_ENABLE': False}."""
+    out = sig.copy()
+    tp = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r133"] = tp.copy()
+    idx = out.index
+    fal = pd.Series(False, index=idx)
+    diag: Dict[str, Any] = {"enabled": bool(getattr(cfg, "R133_ENABLE", True))}
+    if not diag["enabled"] or cond is None or not len(cond):
+        out["r133_neutral_release"], out["r133_haircut_release"] = fal, fal
+        return out, diag
+    cn = cond.reindex(idx)
+    b = lambda k: cn[k].fillna(False).astype(bool) if k in cn.columns else fal   # noqa: E731
+    low = tp < 1.0 - 1e-12
+    m_neu = out["state"].astype(str).eq("NEUTRAL") & b("neu") & low
+    hc_flag = out["extension_haircut"].fillna(False).astype(bool) if "extension_haircut" in out.columns else fal
+    m_hc = hc_flag & b("hc") & low
+    out.loc[m_neu | m_hc, "target_pos"] = 1.0
+    out["r133_neutral_release"], out["r133_haircut_release"] = m_neu, m_hc
+    s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-02"))
+    w = idx >= s0
+    by_year = (m_neu | m_hc)[w].groupby(idx[w].year).sum()
+    diag.update({"neutral_days": int(m_neu[w].sum()), "haircut_days": int(m_hc[w].sum()),
+                 "by_year": {int(k): int(v) for k, v in by_year.items() if int(v) > 0},
+                 "piece_days": {k: int((b(k) & ((u_ == "neu") & out["state"].astype(str).eq("NEUTRAL") | (u_ == "hc") & hc_flag) & low)[w].sum())
+                                for k, u_, _ in R133_PIECES if u_ in ("neu", "hc")},
+                 "today": {k: (bool(cond[k].iloc[-1]) if k in cond.columns and len(cond) else None) for k, _, _ in R133_PIECES}})
+    diag["today"].update({k: (bool(cond[k].iloc[-1]) if k in cond.columns and len(cond) else None) for k in ("calm", "vtrig", "neu", "hc", "re")})
+    log("SIGNAL", kv(event="r133_release", neutral_days=diag["neutral_days"], haircut_days=diag["haircut_days"], by_year=str(diag["by_year"]).replace(" ", ""),
+                     note="★ 라이브(사용자 지시 R133) — 되돌리기 m_overrides={'R133_ENABLE': False}"))
+    return out, diag
+
+
+def r133_reentry_overlay(tp: pd.Series, trig: pd.Series, close: pd.Series, y: float, n: int, stop: float) -> pd.Series:
+    """[R133] V자 재진입 확인(연구 reent122.overlay와 같은 식) — 트리거 날부터 n거래일 목표비중을 y 이상으로. 그 사이 종가가 트리거 날 종가 대비
+    −stop 아래로 내려가면 그날부터 멈춘다. 끝난 다음 날부터 새 트리거를 본다."""
+    tp = pd.to_numeric(pd.Series(tp), errors="coerce").astype(float)
+    idx = tp.index
+    tg = pd.Series(trig).reindex(idx).fillna(False).astype(bool).values
+    cl = pd.to_numeric(pd.Series(close), errors="coerce").reindex(idx).ffill().values
+    out = tp.values.copy()
+    i, nn = 0, len(idx)
+    while i < nn:
+        if tg[i]:
+            ref = cl[i]
+            j = i
+            while j < nn and j < i + int(n):
+                if j > i and cl[j] < ref * (1.0 - float(stop)):
+                    break
+                out[j] = max(out[j], float(y))
+                j += 1
+            i = j + 1 if j > i else i + 1
+        else:
+            i += 1
+    return pd.Series(out, index=idx)
+
+
+def apply_r133_reentry(sig: pd.DataFrame, cond: pd.DataFrame, close: pd.Series, cfg: Config = CFG) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.82.0 R133 · 라이브] R121 매매 띠 뒤: V자(vtrig) & re 조각(WEI 하위 20% 또는 2년물 60일 변화 상위 20%) → 10거래일 목표비중 ≥ 1.0(손절 3%) →
+    매매 띠(R121_TRADE_BAND)를 한 번 더(연구와 같은 순서). sig에 pos_pre_r133re 열."""
+    out = sig.copy()
+    tp = pd.to_numeric(out["target_pos"], errors="coerce").fillna(0.0).astype(float)
+    out["pos_pre_r133re"] = tp.copy()
+    diag: Dict[str, Any] = {"enabled": True}
+    cn = cond.reindex(out.index)
+    trig = (cn["vtrig"].fillna(False).astype(bool) & cn["re"].fillna(False).astype(bool)) if ("vtrig" in cn and "re" in cn) else pd.Series(False, index=out.index)
+    new = r133_reentry_overlay(tp, trig, close, 1.0, int(getattr(cfg, "R133_REENTRY_N", 10)), float(getattr(cfg, "R133_REENTRY_STOP", 0.03)))
+    d = float(getattr(cfg, "R121_TRADE_BAND", 0.0) or 0.0)
+    new = r121_trade_band(new, d)
+    out["target_pos"] = new
+    s0 = pd.Timestamp(getattr(cfg, "SIGNAL_START", "2018-01-02"))
+    w = out.index >= s0
+    diag.update({"trigger_days": int(trig[w].sum()), "days_changed": int(((new - tp).abs() > 1e-9)[w].sum()),
+                 "trigger_dates": [str(x)[:10] for x in out.index[w & trig.values]][-8:]})
+    log("SIGNAL", kv(event="r133_reentry", trigger_days=diag["trigger_days"], days_changed=diag["days_changed"]))
     return out, diag
 
 
@@ -13917,6 +14424,23 @@ def run(cfg: Config = CFG) -> dict:
             log("SIGNAL", kv(event="r122_release_failed", err=type(_e122).__name__, msg=str(_e122)[:160],
                              action="R122 없이 계속(= v1.80.0 신호) — 00 줄에 표시"), level="error")
             r122_diag = {"enabled": False, "error": f"{type(_e122).__name__}: {str(_e122)[:120]}"}
+    # [v1.82.0 R133 ★ 사용자 지시 · 라이브] 조각 19개 겹침 — R122 뒤 · R95 앞(NEUTRAL · 헤어컷 해제) + R121 뒤(V자 재진입). 실패하면 R133 없이 계속(= v1.81.1).
+    r133_diag: Dict[str, Any] = {"enabled": False}
+    _c133: Optional[pd.DataFrame] = None
+    if bool(getattr(cfg, "R133_ENABLE", True)):
+        try:
+            _c133, _i133 = r133_inputs(price, px_dict, cal, cfg)
+            sig, r133_diag = apply_r133_release(sig, _c133, cfg)
+            r133_diag["inputs"] = _i133
+            R133_LAST.clear()
+            R133_LAST.update({"cond": _c133, "info": _i133})
+            log("SIGNAL", kv(event="r133_inputs", fred_ok=",".join(_i133.get("fred_ok") or []) or "-", src=str(_i133.get("src")).replace(" ", "")[:200],
+                             country_ok=_i133.get("country_ok"), missing=",".join(_i133.get("missing") or []) or "-", sec=_i133.get("sec")))
+        except Exception as _e133:
+            log("SIGNAL", kv(event="r133_release_failed", err=type(_e133).__name__, msg=str(_e133)[:160],
+                             action="R133 없이 계속(= v1.81.1 신호) — 00 줄에 표시"), level="error")
+            r133_diag = {"enabled": False, "error": f"{type(_e133).__name__}: {str(_e133)[:120]}"}
+            _c133 = None
     # [v1.63.0 R95 ⚠] SPY 라이브 신호에만 사이징 오버레이 3개 — 가격 특징은 총수익(Adj Close) 기준(S·섹터와 같은 잣대).
     r95_diag: Dict[str, Any] = {"enabled": False}
     try:
@@ -13964,6 +14488,13 @@ def run(cfg: Config = CFG) -> dict:
         log("SIGNAL", kv(event="r121_trade_band_failed", err=type(_e121).__name__, msg=str(_e121)[:160],
                          action="R121 없이 계속(= v1.79.0 라이브) — 00 줄에 표시"), level="error")
         r121_diag = {"enabled": False, "error": f"{type(_e121).__name__}: {str(_e121)[:120]}"}
+    # [v1.82.0 R133] V자 재진입 확인(R121 띠 뒤 · 덧씌운 뒤 띠 한 번 더 — 연구 순서와 같음)
+    if _c133 is not None and r133_diag.get("enabled"):
+        try:
+            sig, r133_diag["reentry"] = apply_r133_reentry(sig, _c133, px_adj, cfg)
+        except Exception as _e133r:
+            log("SIGNAL", kv(event="r133_reentry_failed", err=type(_e133r).__name__, msg=str(_e133r)[:160], action="재진입 없이 계속"), level="error")
+            r133_diag["reentry"] = {"enabled": False, "error": f"{type(_e133r).__name__}: {str(_e133r)[:120]}"}
     # [v1.79.0 R118 ★ 사용자 지시] 전 지표 · 의미 설계 — 시장 가족(M 후보 + predictor 풀 약 4,800 + M 계층 + 달력). 실패하면 R117 확률로 계속.
     r118_mkt: Dict[str, Any] = {"enabled": False}
     if bool(getattr(cfg, "R118_ENABLE", True)) and bool(getattr(cfg, "R117_ENABLE", True)):
@@ -14144,6 +14675,7 @@ def run(cfg: Config = CFG) -> dict:
             "r98": r98_diag,                                                               # [v1.66.0 R98] 측정 열 요약(V1·V1강·이웃·VRP)
             "r113": r113_diag,
             "r122": r122_diag,                                                             # [v1.81.0 R122] 건강 확인 완화(라이브)
+            "r133": r133_diag,                                                             # [v1.82.0 R133] 조각 19개 겹침(라이브)
             "r121": r121_diag,                                                             # [v1.80.0 R121] 매매 띠(라이브)                                                             # [v1.75.0 R113] 금리 급등 경보 측정 열 요약
             "r117": r117_diag,
             "r118": r118_mkt,                                                              # [v1.79.0 R118] 시장 가족 · 지표표 · 가족표(S·I가 읽는다)                                                             # [v1.78.0 R117] 다음날 하락확률 문턱(표 · 1위 · 라이브)
@@ -15290,6 +15822,29 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             _r105_m_lines = [("★★ R122 건강 확인 완화(M)", f"⚠ 적용 실패 — {_d122['error']} (R122 없이 계속 = v1.80.0 신호)")] + list(_r105_m_lines)
     except Exception:
         pass
+    # [v1.82.0 R133] 조각 19개 겹침 00 줄(자료 수신 · 발동 일수 · 오늘 켜진 조각)
+    try:
+        _d133 = res.get("r133") or {}
+        if _d133.get("enabled"):
+            _i133 = _d133.get("inputs") or {}
+            _miss133 = _i133.get("missing") or []
+            _t133 = _d133.get("today") or {}
+            _on133 = [k for k, _, _ in R133_PIECES if _t133.get(k)]
+            _re133 = _d133.get("reentry") or {}
+            _r105_m_lines = [("★★ R133 조각 19개 겹침(라이브 · 사용자 지시 2026-10-01)",
+                              f"R122 위에 NEUTRAL 해제 6조각 · 과열 헤어컷 해제 11조각(R95 앞) + V자 재진입 2조각(R121 띠 뒤 · 1.0 · 10일 · 손절 3%) · 2018~ 발동: NEUTRAL "
+                              f"{_d133.get('neutral_days', '-')}일 · 헤어컷 {_d133.get('haircut_days', '-')}일 · 재진입 트리거 {_re133.get('trigger_days', '-')}일(바뀐 날 "
+                              f"{_re133.get('days_changed', '-')}) · 연도별 {_d133.get('by_year', {})} · 오늘: 조용 {'○' if _t133.get('calm') else '×'} · V자 {'○' if _t133.get('vtrig') else '×'} · "
+                              f"켜진 조각 {', '.join(_on133) if _on133 else '없음'} · 자료: "
+                              + ("전부 수신" if not _miss133 else "⚠ 못 받음 = " + " · ".join(_miss133) + "(그 조각만 꺼짐)")
+                              + f" · 수신 {_i133.get('sec', '-')}초 · 연구(r133/ref133 · 2018~ 표본 안): 배수 8.33 → 12.36 · 회피 80.91 → 81.57 · 참여 65.82 → 76.11 · "
+                              "MDD 그대로 · 손실 주 117 → 116 · 달 21 → 18 · 분기 3 → 2 · 긴 이력 대용 세 창 회피 −0.25~−0.40 · 참여 +0.2~+1.2 · "
+                              "⚠ 표본 밖(반쪽으로 고른 뒤 안 본 반쪽) 검사에서는 회피 −3.2~−3.5 · 참여 +0.7~+5.0(과적합 위험 · 사용자 선택으로 반영) · "
+                              "되돌리기 m_overrides={'R133_ENABLE': False}. 연구·교육용, 투자 자문 아님.")] + list(_r105_m_lines)
+        elif _d133.get("error"):
+            _r105_m_lines = [("★★ R133 조각 19개 겹침(M)", f"⚠ 적용 실패 — {_d133['error']} (R133 없이 계속 = v1.81.1 신호)")] + list(_r105_m_lines)
+    except Exception:
+        pass
     # [v1.79.0 R118 ★] 00H2_지표의미(전 지표 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC) · 00 줄
     try:
         _m118 = res.get("r118") or {}
@@ -15749,8 +16304,8 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.81.1"
-BUNDLE_VERSION_DATE = "2026-09-30"
+BUNDLE_VERSION = "v1.82.0"
+BUNDLE_VERSION_DATE = "2026-10-01"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
