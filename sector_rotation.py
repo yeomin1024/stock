@@ -17,6 +17,20 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.96.0 - 2026-10-01 - [R134 ★ M 바구니별 처리 + XLK 채움(★ 마지막 단계 · 라이브) — 섹터 목표(회피 ≥ M 수준 · 참여 유지) 통과]
+#    사용자 지시(2026-10-01): "그럼 가장 결과 좋은 버전으로 업데이트하고 그 다음 섹터 코드를 수정해 국면 판단 수정했던거처럼 섹터도 목표치 정해서 계속 탐색하고 테스트해".
+#    목표(내가 정함 · M v1.82.0 위): 회피 ≥ 81.57(M 회피) · 참여 ≥ 103.67(그대로) · 2018~ 전 지표 무하락 · 긴 이력 대용 세 창 느슨(−0.6).
+#    ── R134 연구(r134/ · 코드 밖 · S v0.95.0 로컬 실행 ★ 정확 재현 · 이자 0) ── 기준 ★ 34.60배 · 회피 76.25 · 참여 103.67 · MDD −10.18%.
+#      XLK 감축·방어 교체 2,500안: 회피 1을 얻는 데 참여 6~9를 잃음 · 엔진 격자 '중립 부분 노출 0' 회피 +3.5 · 참여 −0.9.
+#      M NEUTRAL 부분 노출일(2018~ 81일)에 XLK → 방어(XLP·XLU·XLV) = 회피 +1.4 · 참여 +1.0(둘 다 ↑) → 겹침 · 세밀 격자로 목표 통과 영역 확인.
+#    (§1) r134_sector_overlay(★ 마지막 · R117 뒤): ① M NEUTRAL & 0<E_t<1 → 주력 → 방어 균등 후 × 1/3 ② M 과열 헤어컷 & 0<E_t<1 → 주력 → 방어
+#         ③ r134_fill_conditions 5개(EPU 20일 변화 · XLK/SPY 120일 · XLK 20일 · VVIX · SPY 밤사이 20일 — 전부 확장 분위 하위 20%) 중 하나라도 참 → 합 1.0까지 XLK.
+#         결과(2018~): 42.91배 · 회피 81.72 · 참여 105.70 · MDD −9.67% · 칼마 5.57 · 손실 주 112 → 102 · 달 14 → 11 · 분기 3 → 1 · 앞/뒤 반쪽 모두 ↑ ·
+#         긴 대용 회피 +1.60 · +1.38 · −0.23 · 참여 −0.24 · +0.66 · +4.47 · 이웃(유지 1/4~0.37 · 헤어컷 교체 50~100%) 모두 목표 통과 · 연도 잭나이프 회피 +4.8~+5.8.
+#         ⚠ 채움 조건은 2018~ 자료로 고른 것(표본 안) — 과적합 위험. 13 성과표에 'R134 바구니·채움 OFF(v0.95.0 ★)' 비교 행 · diag['r134'] · 00 줄.
+#    (§2) SectorConfig R134_ENABLE · R134_NEUTRAL_KEEP(1/3) · R134_HAIRCUT_SWAP(1.0) · R134_DEFENSIVE · R134_FILL. EPU는 M.fetch_fred('USEPUINDXD').
+#         I는 S★ 비중을 그대로 받는다. 되돌리기 s_overrides={'R134_ENABLE': False}. LAYER_MIN_VERSIONS M v1.82.0 · S v0.96.0 · I v0.61.0.
+#         시험 t134/test_r134.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.95.0 - 2026-09-29 - [R118 ★ 전 지표 · 의미 가족 하락확률(S★ 문턱 단계) · 00H2_지표의미]
 #    사용자 지시(2026-09-29): "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
 #      다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
@@ -3155,8 +3169,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.95.0"
-VERSION_DATE = "2026-09-27"
+VERSION = "v0.96.0"
+VERSION_DATE = "2026-10-01"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -3833,6 +3847,12 @@ class SectorConfig:
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
     # [v0.95.0 R118 ★ 사용자 지시(2026-09-29)] R117 확률을 전 지표 · 의미 가족 확률로 대체(M v1.79.0 res['r118'] 필요 · 없으면 R117 확률). 끄기 s_overrides={'R118_ENABLE': False}
     R118_ENABLE: bool = True
+    # [v0.96.0 R134 ★ 사용자 지시(2026-10-01)] M 바구니별 처리 + XLK 채움(★ 마지막 단계 · 라이브). 되돌리기 s_overrides={'R134_ENABLE': False}.
+    R134_ENABLE: bool = True
+    R134_NEUTRAL_KEEP: float = 1.0 / 3.0                     # M NEUTRAL 부분 노출일: 주력→방어 교체 뒤 그날 비중 × 이 값
+    R134_HAIRCUT_SWAP: float = 1.0                           # M 과열 헤어컷 부분 노출일: 주력 몫 중 방어로 옮길 비율
+    R134_DEFENSIVE: Tuple[str, ...] = ("XLP", "XLU", "XLV")   # 방어 섹터(균등)
+    R134_FILL: bool = True                                   # XLK 채움(조건 5개 중 하나라도 참 · 합 1.0까지)
     OWN_EVIDENCE_ENABLE: bool = True
     #   ⚠ [v0.68.0 R86 되돌림] 0.25 → **0.0** — R85 사전등록 (d) 해당(엔진 s14 장기 검증 2000~2017: ② 0.329 < ① 0.362 ·
     #     대조군 95% 0.366). 다시 켜기: s_overrides={"OWN_EVIDENCE_FILL": 0.25}.
@@ -8814,7 +8834,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.79.0", "sector_rotation": "v0.95.0", "industry_rotation": "v0.61.0"}   # [v0.95.0 R118]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.82.0", "sector_rotation": "v0.96.0", "industry_rotation": "v0.61.0"}   # [v0.96.0 R134]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -11380,6 +11400,133 @@ def relcmp_lines(pk: Dict[str, Any], cfg, layer: str = "섹터") -> List[Tuple[s
                                for _, r in _tp.iterrows())
                     + " ⇒ 비대칭 1위 버킷이 다음 라운드의 회피 손잡이다. 세부 00U 블록 J."))
     return out
+
+
+def _r134_lo(x: pd.Series, q: float = 0.2) -> pd.Series:
+    """그날까지의 확장 분위(최소 500일 · 하루 늦춤) 아래 — 연구 r134와 같은 문턱."""
+    return (x < x.expanding(min_periods=500).quantile(q).shift(1)).fillna(False)
+
+
+def r134_fill_conditions(res: dict, results: Dict[str, Dict[str, Any]], scfg, M) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.96.0 R134] XLK 채움 조건 5개(달력 res['cal'] 위 · 전부 t일 종가에 알 수 있는 값 · 문턱 = 확장 분위 하위 20%):
+    epu  = 일별 경제정책 불확실성(FRED USEPUINDXD) 20일 평균 log의 20일 변화(2거래일 늦춤) — 불확실성이 빠르게 줄 때
+    rs120 = XLK / SPY 120일 상대 수익 — XLK가 시장보다 눌렸을 때 · r20 = XLK 20일 수익 — XLK가 최근 빠졌을 때
+    vvix = VVIX 수준 — 변동성의 변동성이 낮을 때 · ovn20 = SPY 밤사이(전날 종가 → 시가) 수익 20일 합 — 밤사이가 약했을 때."""
+    info: Dict[str, Any] = {}
+    cal = pd.DatetimeIndex(res["cal"])
+    spy = pd.to_numeric(pd.Series(res["px_adj"]), errors="coerce").reindex(cal).ffill()
+    out = pd.DataFrame(index=cal)
+    pri = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+    rc = (results.get(pri) or {}).get("ret_cc_full")
+    if rc is not None and len(rc):
+        rc = pd.to_numeric(pd.Series(rc), errors="coerce")
+        x = (1.0 + rc.fillna(0.0)).cumprod().reindex(cal).ffill()        # 총수익 지수(상장일 = 1 · 그 전은 결측)
+        out["rs120"] = _r134_lo((x / x.shift(120)) / (spy / spy.shift(120)) - 1.0)
+        out["r20"] = _r134_lo(x.pct_change(20, fill_method=None))
+    else:
+        out["rs120"] = out["r20"] = False
+        info["xlk_missing"] = True
+    vv = (res.get("px_dict") or {}).get("^VVIX")
+    if isinstance(vv, pd.DataFrame) and len(vv) and ("Close" in vv.columns):
+        v = pd.to_numeric(vv["Close"], errors="coerce")
+        v.index = pd.to_datetime(v.index)
+        out["vvix"] = _r134_lo(v[~v.index.duplicated(keep="last")].reindex(cal).ffill())
+    else:
+        out["vvix"] = False
+        info["vvix_missing"] = True
+    pr = res.get("price")
+    if not isinstance(pr, pd.DataFrame) or not len(pr):
+        pr = (res.get("px_dict") or {}).get("SPY")
+    if isinstance(pr, pd.DataFrame) and len(pr) and {"Open", "Close", "Adj Close"} <= set(pr.columns):
+        p_ = pr[~pr.index.duplicated(keep="last")].reindex(cal)
+        c_ = pd.to_numeric(p_["Adj Close"], errors="coerce")
+        o_ = pd.to_numeric(p_["Open"], errors="coerce") * (c_ / pd.to_numeric(p_["Close"], errors="coerce")).fillna(1.0)
+        out["ovn20"] = _r134_lo((o_ / c_.shift(1) - 1.0).rolling(20).sum())
+    else:
+        out["ovn20"] = False
+        info["spy_open_missing"] = True
+    e = None
+    try:
+        mcfg = res.get("cfg", getattr(M, "CFG", None))
+        e = M.fetch_fred("USEPUINDXD", mcfg) if hasattr(M, "fetch_fred") else None
+    except Exception as ex:
+        info["epu_error"] = f"{type(ex).__name__}: {str(ex)[:80]}"
+    if e is not None and len(e):
+        e = pd.to_numeric(pd.Series(e), errors="coerce")
+        e.index = pd.to_datetime(e.index)
+        e = e[~e.index.duplicated(keep="last")].sort_index()
+        le = np.log(e.rolling(20, min_periods=10).mean())
+        le = le.reindex(cal.union(le.index)).sort_index().ffill().reindex(cal).shift(2)
+        out["epu"] = _r134_lo(le - le.shift(20))
+        info["epu_last"] = str(e.index.max())[:10]
+    else:
+        out["epu"] = False
+        info["epu_missing"] = True
+    out = out.fillna(False).astype(bool)
+    out["any"] = out[["epu", "rs120", "r20", "vvix", "ovn20"]].any(axis=1)
+    return out, info
+
+
+def r134_sector_overlay(target_w: pd.DataFrame, res: dict, results: Dict[str, Dict[str, Any]], eval_idx: pd.DatetimeIndex,
+                        scfg, M) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.96.0 R134 ★ 사용자 지시(2026-10-01) "섹터 코드를 수정해 국면 판단 수정했던 거처럼 섹터도 목표치 정해서 계속 탐색하고 테스트해"]
+    ★ 마지막 단계(R117 뒤). M(SPY) 국면 바구니별로 섹터 비중을 바꾸고, XLK가 눌린 날 등에는 M이 남긴 예산을 XLK로 채운다.
+      ① M NEUTRAL & 0 < E_t < 1(부분 노출) 날: 주력(XLK) 몫을 방어 섹터(XLP · XLU · XLV) 균등으로 옮긴 뒤 그날 비중 전체 × R134_NEUTRAL_KEEP(1/3)
+      ② M 과열 헤어컷 & 0 < E_t < 1 날: 주력 몫의 R134_HAIRCUT_SWAP(100%)를 방어 섹터로
+      ③ 채움: 조건 5개(r134_fill_conditions) 중 하나라도 참이고 그날 비중 합 > 0이면 합이 1.0이 되도록 남는 몫을 XLK에 더한다(레버리지 없음).
+    연구(r134/ · S v0.95.0 로컬 ★ 정확 재현 · M v1.82.0 위 · 2018~): ★ 34.60배 · 회피 76.25 · 참여 103.67 · MDD −10.18% →
+      42.91배 · 회피 81.72(목표 81.57 = M 회피) · 참여 105.70 · MDD −9.67% · 손실 주 112 → 102 · 달 14 → 11 · 분기 3 → 1 · 앞/뒤 반쪽 회피·참여 모두 ↑ ·
+      긴 이력 대용(1999~2017 세 창) 회피 +1.60 · +1.38 · −0.23 · 참여 −0.24 · +0.66 · +4.47(느슨 판정 통과) · 이웃(1/4~0.37 · 헤어컷 50~100%) 모두 목표 통과 ·
+      연도 잭나이프 회피 +4.8~+5.8 · 참여 +1.3~+3.6. ⚠ 채움 조건은 2018~ 자료로 고른 것(표본 안) — 과적합 위험.
+    되돌리기 s_overrides={'R134_ENABLE': False}. 연구·교육용이며 투자 자문이 아니다."""
+    diag: Dict[str, Any] = {"enabled": bool(getattr(scfg, "R134_ENABLE", True))}
+    if not diag["enabled"]:
+        return target_w, diag
+    tw = target_w.copy().astype(float).fillna(0.0)
+    sig = res["sig"]
+    E_ = pd.to_numeric(sig["target_pos"], errors="coerce").reindex(eval_idx).fillna(0.0)
+    st_ = sig["state"].astype(str).reindex(eval_idx) if "state" in sig.columns else pd.Series("", index=eval_idx)
+    hc_ = (sig["extension_haircut"].fillna(False).astype(bool).reindex(eval_idx).fillna(False)
+           if "extension_haircut" in sig.columns else pd.Series(False, index=eval_idx))
+    part = (E_ > 1e-9) & (E_ < 1.0 - 1e-9)
+    neu_d = (st_.eq("NEUTRAL") & part).fillna(False).astype(bool)
+    hc_d = (hc_ & part).fillna(False).astype(bool)
+    pri = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+    dfn = [c for c in tuple(getattr(scfg, "R134_DEFENSIVE", ("XLP", "XLU", "XLV"))) if c in tw.columns and c != pri]
+    keep = float(getattr(scfg, "R134_NEUTRAL_KEEP", 1.0 / 3.0))
+    swap_h = float(getattr(scfg, "R134_HAIRCUT_SWAP", 1.0))
+    if pri not in tw.columns or not dfn:
+        diag.update({"enabled": False, "error": f"주력 {pri} 또는 방어 섹터 없음"})
+        return target_w, diag
+
+    def _swap(d: pd.Series, frac: float) -> None:
+        d = d.reindex(tw.index).fillna(False).astype(bool)
+        if not bool(d.any()) or frac <= 0:
+            return
+        mv = tw.loc[d, pri] * float(frac)
+        for c in dfn:
+            tw.loc[d, c] = tw.loc[d, c] + mv / len(dfn)
+        tw.loc[d, pri] = tw.loc[d, pri] - mv
+
+    _swap(neu_d, 1.0)
+    nd = neu_d.reindex(tw.index).fillna(False).astype(bool)
+    tw.loc[nd] = tw.loc[nd] * keep
+    _swap(hc_d, swap_h)
+    fill_days = 0
+    if bool(getattr(scfg, "R134_FILL", True)):
+        fc, finfo = r134_fill_conditions(res, results, scfg, M)
+        diag["fill_info"] = finfo
+        c_any = fc["any"].reindex(tw.index).fillna(False).astype(bool)
+        tot = tw.sum(axis=1)
+        add = (1.0 - tot).clip(lower=0.0).where(c_any & (tot > 1e-9), 0.0)
+        tw[pri] = tw[pri] + add
+        fill_days = int((add > 1e-12).sum())
+        diag["fill_today"] = {k: bool(fc[k].iloc[-1]) for k in ("epu", "rs120", "r20", "vvix", "ovn20")} if len(fc) else {}
+        diag["fill_cond_days"] = {k: int(fc[k].reindex(eval_idx).fillna(False).sum()) for k in ("epu", "rs120", "r20", "vvix", "ovn20")}
+    diag.update({"neutral_days": int(nd.sum()), "haircut_days": int(hc_d.sum()), "fill_days": fill_days, "keep": keep, "haircut_swap": swap_h,
+                 "defensive": dfn, "today_bucket": ("NEUTRAL 부분" if bool(nd.iloc[-1]) else ("헤어컷 부분" if bool(hc_d.iloc[-1]) else "해당 없음")) if len(nd) else "-",
+                 "changed_days": int(((tw - target_w.reindex(index=tw.index, columns=tw.columns).fillna(0.0)).abs().sum(axis=1) > 1e-9).sum())})
+    return tw, diag
 
 
 def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_idx: pd.DatetimeIndex,
@@ -13955,6 +14102,48 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     label_primary, _r117_diag = r117_stage_s(target_ws, variants, bts, label_primary, ret_cc_full, spy_cc_full, ret_co, ret_oc, bt_kw,
                                              eval_idx, res, scfg, M)
 
+    # ---- [v0.96.0 R134 ★ 사용자 지시(2026-10-01)] M 바구니별 처리 + XLK 채움(★ 진짜 마지막 단계 · 라이브) ----
+    _r134_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(scfg, "R134_ENABLE", True)) and label_primary in target_ws:
+        try:
+            _w134, _r134_diag = r134_sector_overlay(target_ws[label_primary], res, results, eval_idx, scfg, M)
+            if _r134_diag.get("enabled"):
+                _lab_off134 = "주력섹터 중심 · R134 바구니·채움 OFF(v0.95.0 ★) [R134]"
+                target_ws[_lab_off134] = target_ws[label_primary]
+                bts[_lab_off134] = bts[label_primary]
+                variants[_lab_off134] = target_ws[label_primary]
+                _w134 = _w134.fillna(0.0).clip(lower=0.0)
+                target_ws[label_primary] = _w134
+                variants[label_primary] = _w134
+                bts[label_primary] = portfolio_backtest(_w134, ret_co, ret_oc, **bt_kw)
+                _lp134 = (label_primary[:-1].rstrip() if label_primary.endswith("★") else label_primary) + " · R134 바구니·채움 ★"
+                for _d134 in (target_ws, variants, bts):
+                    _it134 = [((_lp134 if k_ == label_primary else k_), v_) for k_, v_ in _d134.items()]
+                    _d134.clear()
+                    _d134.update(_it134)
+                label_primary = _lp134
+                try:
+                    if isinstance(frac_primary, pd.DataFrame) and len(frac_primary):
+                        _Ev134 = E.reindex(eval_idx).fillna(0.0).astype(float)
+                        frac_primary = _w134.div(_Ev134.where(_Ev134 > 1e-12), axis=0).reindex(columns=frac_primary.columns).fillna(0.0)
+                except Exception:
+                    pass
+                _r0_134 = pd.to_numeric(bts[_lab_off134]["strategy_ret"], errors="coerce").fillna(0.0)
+                _r1_134 = pd.to_numeric(bts[label_primary]["strategy_ret"], errors="coerce").fillna(0.0)
+                _sp134 = ((1.0 + ret_co["SPY"]) * (1.0 + ret_oc["SPY"]) - 1.0).reindex(eval_idx).fillna(0.0)
+                _u134 = user_rel_portfolio({"off": _r0_134, "on": _r1_134}, _sp134, scfg).set_index("전략")
+                _r134_diag.update({"label_off": _lab_off134,
+                                   "off": {k_: float(_u134.loc["off", k_]) for k_ in ("배수", "하락 회피율", "상승 참여율", "MDD")},
+                                   "on": {k_: float(_u134.loc["on", k_]) for k_ in ("배수", "하락 회피율", "상승 참여율", "MDD")}})
+                log("ROTATION", kv(event="r134_applied", neutral_days=_r134_diag.get("neutral_days"), haircut_days=_r134_diag.get("haircut_days"),
+                                   fill_days=_r134_diag.get("fill_days"), avoid=f"{_r134_diag['off']['하락 회피율']:.4f}→{_r134_diag['on']['하락 회피율']:.4f}",
+                                   part=f"{_r134_diag['off']['상승 참여율']:.4f}→{_r134_diag['on']['상승 참여율']:.4f}",
+                                   note="★ 라이브(사용자 지시 R134) — 되돌리기 s_overrides={'R134_ENABLE': False}"), M=M)
+        except Exception as _e134:
+            log("ROTATION", kv(event="r134_failed", err=type(_e134).__name__, msg=str(_e134)[:180],
+                               trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R134 없이 계속(= v0.95.0 ★)"), M=M, level="warning")
+            _r134_diag = {"enabled": False, "error": f"{type(_e134).__name__}: {str(_e134)[:160]}"}
+
     # [v0.7.0] 참조: SPY 국면전략(M) 성과(같은 평가창, M의 bt 그대로) — 수용기준 ⑤(목표: CAGR ≥ SPY M)에 사용
     spy_m_ret = res["bt"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
     spy_m_pm = M.perf_metrics(spy_m_ret, "SPY 국면전략(M)")
@@ -14039,6 +14228,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         "macro_evidence": _macro_diag,                                               # [v0.68.0 R86] 섹터 거시 근거(측정)
         "relcmp": _relcmp_diag,                                                      # [v0.69.0 R88] 회피형·참여형·양쪽형 비교
         "r117": _r117_diag,                                                          # [v0.94.0 R117] 다음날 하락확률 문턱(표 · 1위 · 섹터 확률 P)
+        "r134": _r134_diag,                                                          # [v0.96.0 R134] M 바구니별 처리 + XLK 채움(라이브)
         "neutral_fill": _nf_diag,                                                    # [v0.71.0 R90] 중립 국면일 저베타 채움
         "mbucket": (_mbucket if isinstance(locals().get("_mbucket"), pd.Series) else None),   # [v0.72.0 R91] 00U 블록 J
         "mbucket_exposure": (target_ws[label_primary].sum(axis=1) if label_primary in target_ws else None),
@@ -14071,7 +14261,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     log("ROTATION", kv(event="allocation_built",
                        **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year", "spy_m",
                                                                      "tier_by_year", "avoid_by_year", "alloc_link", "own_evidence", "macro_evidence",
-                                                                     "relcmp", "neutral_fill", "r117")},
+                                                                     "relcmp", "neutral_fill", "r117", "r134")},
                        tiers=";".join(f"{k}:{v}" for k, v in sorted(diag["tier_by_year"].items())) or "-",
                        avoid_ok=";".join(f"{k}:{'+'.join(v) if v else '-'}" for k, v in sorted(diag["avoid_by_year"].items())) or "-",
                        spy_m_cagr=spy_m["CAGR"], spy_m_mdd=spy_m["MDD"],
@@ -19277,6 +19467,28 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             meta.insert(1, ("★★★ R117 다음날 하락확률 문턱(S★)", f"⚠ 산출 실패 — {_d117['error']} (★ 무변경)"))
     except Exception as _e117:
         log("REPORT", kv(event="r117_sheet_failed", layer="S", err=type(_e117).__name__, msg=str(_e117)[:160]), M=M, level="warning")
+    # [v0.96.0 R134] M 바구니별 처리 + XLK 채움 00 줄(맨 앞)
+    try:
+        _d134 = (((sres.get("alloc") or {}).get("diag") or {}).get("r134")) or {}
+        if _d134.get("enabled") and _d134.get("on"):
+            _o0, _o1 = _d134.get("off") or {}, _d134.get("on") or {}
+            _fi = _d134.get("fill_info") or {}
+            _miss134 = [nm for k_, nm in (("epu_missing", "EPU"), ("vvix_missing", "VVIX"), ("xlk_missing", "XLK"), ("spy_open_missing", "SPY 시가")) if _fi.get(k_)]
+            _ft = _d134.get("fill_today") or {}
+            meta.insert(1, ("★★ R134 M 바구니별 처리 + XLK 채움(S★ 라이브 · 사용자 지시 2026-10-01)",
+                            f"M NEUTRAL 부분 노출일: XLK → 방어(XLP·XLU·XLV) 후 × {float(_d134.get('keep', 1/3)):.2f} · 과열 헤어컷 부분 노출일: XLK {float(_d134.get('haircut_swap', 1)):.0%} → 방어 · "
+                            f"채움(EPU 20일↓ · XLK/SPY 120일 · XLK 20일 · VVIX · SPY 밤사이 20일 중 하나라도 하위 20%) → 합 1.0까지 XLK · 2018~ 발동: NEUTRAL "
+                            f"{_d134.get('neutral_days', '-')}일 · 헤어컷 {_d134.get('haircut_days', '-')}일 · 채움 {_d134.get('fill_days', '-')}일 · 오늘 바구니 {_d134.get('today_bucket', '-')} · "
+                            f"오늘 채움 조건 {', '.join(k_ for k_, v_ in _ft.items() if v_) or '없음'} · 이번 실행 ★: 배수 {_o0.get('배수', float('nan')):.2f} → {_o1.get('배수', float('nan')):.2f} · "
+                            f"회피 {_o0.get('하락 회피율', float('nan')) * 100:.1f} → {_o1.get('하락 회피율', float('nan')) * 100:.1f} · 참여 {_o0.get('상승 참여율', float('nan')) * 100:.1f} → "
+                            f"{_o1.get('상승 참여율', float('nan')) * 100:.1f} · MDD {_o0.get('MDD', float('nan')) * 100:.2f}% → {_o1.get('MDD', float('nan')) * 100:.2f}% · 자료: "
+                            + ("전부 수신" if not _miss134 else "⚠ 못 받음 = " + " · ".join(_miss134) + "(그 조건만 꺼짐)")
+                            + " · 연구(r134 · 2018~ 표본 안): 회피 76.25 → 81.72 · 참여 103.67 → 105.70 · 긴 대용 느슨 통과 · ⚠ 채움 조건은 표본 안 선택(과적합 위험) · "
+                            "되돌리기 s_overrides={'R134_ENABLE': False}. 연구·교육용, 투자 자문 아님."))
+        elif _d134.get("error"):
+            meta.insert(1, ("★★ R134 M 바구니별 처리 + XLK 채움(S★)", f"⚠ 적용 실패 — {_d134['error']} (R134 없이 계속 = v0.95.0 ★)"))
+    except Exception as _e134:
+        log("REPORT", kv(event="r134_line_failed", layer="S", err=type(_e134).__name__, msg=str(_e134)[:160]), M=M, level="warning")
     sheets = sheets_to_front(sheets, "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
                              "00V_상태판정검증", "00T_섹터상태판", "00S_섹터자기근거", "00R_신뢰도판정",
                              "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
