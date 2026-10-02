@@ -1,5 +1,23 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.62.0 - 2026-10-02 - [R135 ★ 산업 리더 = 부모 상관 ≥ 0.8 · 순위 평활 42일 — I★ 라이브 변경(사용자 승인 · 무하락 예외)]
+#    사용자 지시(2026-10-01): "… 그 다음 산업 코드를 수정해 국면, 섹터 판단 수정했던거처럼 산업도 목표치 정해서 계속 탐색하고 테스트해" ·
+#      (2026-10-02) "계속 찾아봐" → 후보 보고 → "올리고 계속해".
+#    ── R135 기준(로컬 · M v1.82.0 · S v0.96.0 · I v0.61.0 · 2018~) ── I★ 58.21× · 회피 81.98 · 참여 112.81 · MDD −9.67 · 손실 주/달/분기 110/15/2
+#      (S★ 102/11/1) — 확신 래더가 XLK 몫 90%를 한 산업(대개 SOXX)에 통째로 넣는 날이 손실 달을 늘렸다(2020-01 · 2025-08 · 2026-08).
+#    ── 목표 ── 손실 달 ≤ 11 · 분기 ≤ 1(S★ 수준) · 회피 · 참여 무하락.
+#    ── 탐색(r135/ · 코드 밖) ── 덧씌우기 3,036 · 겹치기 · 엔진 격자 117행 · 구조 81 · 리더 규칙 손잡이 약 200(build_industry_allocation 재호출 ·
+#      저장된 산업 결과 · 비트 동일 재현). 리더 2~3개 분산 · 브레이크 · 확률 선택은 악화. 'XLK 리더 → XLK' 조각은 앞 반쪽에서 고른 상위가
+#      뒤 반쪽에서 평균보다 나빠(잡음) 기각 · 'XLK → SOXX' 조각은 2007~2017 긴 대용에서 회피 −10~−19로 기각.
+#    ── 채택 ── INDUSTRY_LEADER_MIN_CORR None → 0.8(§B5 추종필터 · 252일 · 1일 지연) + ROTATION_SMOOTH_DAYS 21 → 42:
+#      58.21 → 57.52× · 회피 81.98 → 82.11 · 참여 112.81 → 115.47 · MDD 그대로 · 손실 주/달/분기 110/15/2 → 104/11/1 · 월/분기 플러스 79.0/94.3 → 82.9/97.1%.
+#      이웃 24칸(상관 0.78~0.85 × 평활 30~50) 전부 11/1 · 연도 잭나이프 9/9 참여↑ · 손실 달↓ · 리더일을 같은 수만큼 무작위로 줄인 대조 50개보다
+#      참여·배수 모두 높음(손실 달 감소의 대부분은 '집중일 감소', 참여 유지는 '좋은 날 고르기').
+#      ⚠ 무하락 예외(사용자 승인 · R109 선례): 배수 −1.2% · 칼마 −0.023 · 주 최악 −0.04%p · 앞 반쪽 회피 −1.2(2020-10-29·30 이틀 SOXX vs XLK).
+#    (§1) 설정 두 값만 바꿨다(새 신호 없음). (§2) build_industry_allocation: 'R135 이전 I★(리더 상관 필터 없음 · 순위 평활 21일 = v0.61.0) [R135]'
+#         비교 행(_run_groups(R135_OFF_*) · 같은 캡 래더 · 같은 엔진) · alloc['r135'] · 로그 r135_leader_rule. (§3) 00 줄 '★★ R135 …'(r135_line · 이번 실행 켬/끔).
+#    K 라이브는 산업 비중을 쓰지 않는다(산업 연동은 격자 전용) — K★ 무변경 예상. 되돌리기 i_overrides={"INDUSTRY_LEADER_MIN_CORR": None, "ROTATION_SMOOTH_DAYS": 21}.
+#    시험 t135/test_r135.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.61.0 - 2026-09-29 - [R118 ★ 전 지표 · 의미 가족 하락확률(I★ 문턱 단계) · 00H2_지표의미]
 #    사용자 지시(2026-09-29): "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
 #      다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
@@ -2002,8 +2020,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.61.0"
-VERSION_DATE = "2026-09-27"
+VERSION = "v0.62.0"
+VERSION_DATE = "2026-10-02"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -2210,7 +2228,9 @@ class IndustryConfig:
     ROTATION_SELECT_MODE: str = "best_available"
     ROTATION_BEST_N: int = 2
     ROTATION_SELECT_T_MIN: float = 1.0
-    ROTATION_SMOOTH_DAYS: int = 21
+    # ⚠ [v0.62.0 R135 ★ 라이브 기본값 21 → 42(사용자 승인 2026-10-02)] 리더 복합순위 평활 — INDUSTRY_LEADER_MIN_CORR 0.8과 한 묶음.
+    #   근거·되돌리기: 파일 머리 v0.62.0 · i_overrides={"ROTATION_SMOOTH_DAYS": 21, "INDUSTRY_LEADER_MIN_CORR": None}
+    ROTATION_SMOOTH_DAYS: int = 42
     ROTATION_MIN_AGREE: int = 2
     # ---- [v0.14.0 P1 ★★ 기본값 변경] 순서기반 채택 — 리더 0일(C1)의 정면 해소 ----
     #   왜: 보고서 12 13l이 "총 0회 — 리더가 한 번도 나오지 않았다"였고, 13g 연도별 채택/리더판단사용이
@@ -2912,8 +2932,13 @@ class IndustryConfig:
     INDUSTRY_LEADER_REGIMES: Optional[Tuple[str, ...]] = None
     # ⚠ [v0.3.0 §B5] 리더 후보를 '부모를 잘 따라가는 산업'으로 제한(롤링 252일 상관 기준). None이면 제약 없음.
     #   근거(리포트41 §3.2): 리더 상관≥0.8 17회 승률 0.53 vs <0.8 22회 0.36. 기본 꺼짐 — [추종필터격자]가 판정.
-    INDUSTRY_LEADER_MIN_CORR: Optional[float] = None
+    # ⚠ [v0.62.0 R135 ★ 라이브 None → 0.8(사용자 승인 2026-10-02)] ROTATION_SMOOTH_DAYS 42와 한 묶음 — 손실 주/달/분기 110/15/2 → 104/11/1(로컬).
+    INDUSTRY_LEADER_MIN_CORR: Optional[float] = 0.8
     INDUSTRY_FOLLOW_CORR_WINDOW: int = 252
+    # [v0.62.0 R135] 이전 규칙 비교 행('R135 이전 I★ … [R135]') — 이 두 값으로 리더를 다시 골라 같은 엔진으로 잰다(측정 전용).
+    R135_COMPARE: bool = True
+    R135_OFF_MIN_CORR: Optional[float] = None
+    R135_OFF_SMOOTH_DAYS: int = 21
     # ⚠ [v0.3.0 §A3 사용자 지시 "산업만 배분하라"] 부모 비중 중 산업으로 배분되지 않은 '잔여'를 어디에 두는가.
     #   "parent"(기본) = 부모 ETF — 잔여가 정확히 S★로 환원되므로 I★−S★가 순수하게 산업 판단의 기여가 된다(§7.3).
     #   "industries" = 잔여도 그 부모의 적격 산업 균등으로(= 사실상 cap·fb 1.0, 산업만 보유. ⚠ 리포트41 실측
@@ -4914,6 +4939,39 @@ def _frozen_alloc_cfg(icfg: IndustryConfig, M=None) -> IndustryConfig:
     return out
 
 
+def r135_line(alloc: Optional[Dict[str, Any]], spy_ret: Optional[pd.Series], S) -> Optional[Tuple[str, str]]:
+    """[v0.62.0 R135] 00 줄 — I★(리더 상관 ≥ 0.8 · 평활 42) vs 'R135 이전 I★' 같은 창 · 회피·참여·배수·MDD·손실 주/달/분기."""
+    d = (alloc or {}).get("r135") or {}
+    lab = "★★ R135 산업 리더 = 부모 상관 ≥ 0.8 · 순위 평활 42일(I★ 라이브 · 사용자 승인 2026-10-02)"
+    if not d.get("enabled"):
+        return (lab, f"⚠ 비교 행 없음 — {d.get('error') or '설정이 이전 규칙과 같거나 꺼짐'} · 되돌리기 i_overrides={{'INDUSTRY_LEADER_MIN_CORR': None, 'ROTATION_SMOOTH_DAYS': 21}}. "
+                     "연구·교육용, 투자 자문 아님.")
+    bts = alloc.get("bts") or {}
+    ls, lo = alloc.get("label_star"), d.get("label_off")
+    mt = ""
+    if ls in bts and lo in bts and spy_ret is not None:
+        rr = {"on": pd.to_numeric(bts[ls]["strategy_ret"], errors="coerce").fillna(0.0),
+              "off": pd.to_numeric(bts[lo]["strategy_ret"], errors="coerce").fillna(0.0)}
+        sp = pd.to_numeric(pd.Series(spy_ret), errors="coerce").reindex(rr["on"].index).fillna(0.0)
+        u = S.user_rel_portfolio(rr, sp, S.CFG).set_index("전략")
+
+        def _n(r, code):
+            p = (1.0 + r).groupby(r.index.to_period(code)).prod() - 1.0
+            return int((p < -1e-9).sum())
+        f = {k: (float(u.loc[k, "배수"]), float(u.loc[k, "하락 회피율"]) * 100, float(u.loc[k, "상승 참여율"]) * 100, float(u.loc[k, "MDD"]) * 100,
+                 _n(rr[k], "W-FRI"), _n(rr[k], "M"), _n(rr[k], "Q")) for k in ("off", "on")}
+        a, b = f["off"], f["on"]
+        mt = (f"이번 실행 I★: 배수 {a[0]:.2f} → {b[0]:.2f} · 회피 {a[1]:.1f} → {b[1]:.1f} · 참여 {a[2]:.1f} → {b[2]:.1f} · MDD {a[3]:.2f}% → {b[3]:.2f}% · "
+              f"손실 주/달/분기 {a[4]}/{a[5]}/{a[6]} → {b[4]}/{b[5]}/{b[6]} · ")
+    lt = d.get("leader_today") or {}
+    return (lab, f"리더 후보 = 최근 {d.get('corr_window', 252)}일 부모 상관 ≥ {d.get('min_corr')} 산업만 · 복합순위 평활 {d.get('smooth')}일(이전 없음 · 21일) · "
+                 f"산업 보유일 {d.get('ind_days_off')} → {d.get('ind_days_on')} · 비중 바뀐 날 {d.get('changed_days')} · "
+                 f"오늘 리더 {', '.join(f'{p}:{v}' for p, v in lt.items() if v and v != '부모ETF') or '없음(전부 부모 ETF)'} · " + mt +
+                 "연구(r135 · 2018~ 로컬): 배수 58.21 → 57.52 · 회피 81.98 → 82.11 · 참여 112.81 → 115.47 · MDD 그대로 · 손실 주/달/분기 110/15/2 → 104/11/1 · "
+                 "이웃 24칸(상관 0.78~0.85 × 평활 30~50) 전부 11/1 · 무작위 대조 50개보다 참여·배수 높음 · ⚠ 무하락 예외(사용자 승인): 배수 −1.2% · 앞 반쪽 회피 −1.2(2020-10-29·30 이틀) · "
+                 "되돌리기 i_overrides={'INDUSTRY_LEADER_MIN_CORR': None, 'ROTATION_SMOOTH_DAYS': 21}. 연구·교육용, 투자 자문 아님.")
+
+
 def r117_stage_i(target_ws: Dict[str, pd.DataFrame], label_star: str, results: Dict[str, Dict[str, Any]], cols: List[str], res: Any,
                   s_alloc: Dict[str, Any], eval_idx: pd.DatetimeIndex, bt_fn, cost_map: Dict[str, float], icfg, M, S=None) -> Tuple[str, Dict[str, Any]]:
     """[v0.60.0 R117 ★ 사용자 지시(2026-09-29)] I★ 다음날 하락확률 문턱 단계 — build_industry_allocation의 bts 계산 직전(I★ 교체 가능).
@@ -6295,6 +6353,44 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         log("RELCMP", kv(event="i_neutral_fill_parent_failed", err=type(_e).__name__, msg=str(_e)[:160]), M=M, level="warning")
         label_nf_parent = None
 
+    # ---- [v0.62.0 R135 ★ 사용자 승인(2026-10-02)] 리더 = 부모 상관 ≥ INDUSTRY_LEADER_MIN_CORR · 순위 평활 ROTATION_SMOOTH_DAYS(라이브) ----
+    #   이전 규칙(R135_OFF_MIN_CORR · R135_OFF_SMOOTH_DAYS = v0.61.0)으로 리더만 다시 골라 같은 캡 래더·엔진으로 잰 비교 행 — 측정 전용.
+    label_r135_off = None
+    _r135_diag: Dict[str, Any] = {"enabled": False}
+    try:
+        _off135 = {"INDUSTRY_LEADER_MIN_CORR": getattr(icfg, "R135_OFF_MIN_CORR", None),
+                   "ROTATION_SMOOTH_DAYS": int(getattr(icfg, "R135_OFF_SMOOTH_DAYS", 21) or 1)}
+        _same135 = (_off135["INDUSTRY_LEADER_MIN_CORR"] == getattr(icfg, "INDUSTRY_LEADER_MIN_CORR", None)
+                    and _off135["ROTATION_SMOOTH_DAYS"] == int(icfg.ROTATION_SMOOTH_DAYS or 1))
+        if bool(getattr(icfg, "R135_COMPARE", True)) and label_star in target_ws and select_mode == "composite" and not _same135:
+            _g135 = _run_groups(_off135)
+            _cm135 = (_cap_mat(live_cap, _cap_conv, _cap_hold, warn=_WARN_LIVE, strong=_STRONG_LIVE, groups_src=_g135) if _conv_on else None)
+            label_r135_off = "R135 이전 I★(리더 상관 필터 없음 · 순위 평활 21일 = v0.61.0) [R135]"
+            target_ws[label_r135_off] = _mk_target_w(live_cap, live_fb, brake=(_BRAKE_LIVE if _brake_live else None),
+                                                     groups_over=_g135, cap_mat=_cm135)
+
+            def _lead_days(G):
+                return {p_: int((G[p_]["tier"].astype(str) == "리더").sum()) for p_ in active_parents if p_ in G}
+            _on_d, _off_d = _lead_days(groups), _lead_days(_g135)
+            _tw_on, _tw_off = target_ws[label_star][cols].sum(axis=1), target_ws[label_r135_off][cols].sum(axis=1)
+            _r135_diag = {"enabled": True, "label_off": label_r135_off,
+                          "min_corr": getattr(icfg, "INDUSTRY_LEADER_MIN_CORR", None), "smooth": int(icfg.ROTATION_SMOOTH_DAYS or 1),
+                          "corr_window": int(getattr(icfg, "INDUSTRY_FOLLOW_CORR_WINDOW", 252)),
+                          "leader_days_on": _on_d, "leader_days_off": _off_d,
+                          "ind_days_on": int((_tw_on > 1e-9).sum()), "ind_days_off": int((_tw_off > 1e-9).sum()),
+                          "changed_days": int((target_ws[label_star] - target_ws[label_r135_off]).abs().sum(axis=1).gt(1e-9).sum()),
+                          "leader_today": {p_: (str(groups[p_]["leader"].iloc[-1]) or "부모ETF") for p_ in active_parents
+                                           if p_ in groups and len(groups[p_]["leader"])}}
+            log("ROTATION", kv(event="r135_leader_rule", min_corr=_r135_diag["min_corr"], smooth=_r135_diag["smooth"],
+                               industry_days_on=_r135_diag["ind_days_on"], industry_days_off=_r135_diag["ind_days_off"],
+                               changed_days=_r135_diag["changed_days"],
+                               note="★ 라이브(사용자 승인 R135) — 되돌리기 i_overrides={'INDUSTRY_LEADER_MIN_CORR': None, 'ROTATION_SMOOTH_DAYS': 21}"), M=M)
+    except Exception as _e135:
+        log("ROTATION", kv(event="r135_compare_failed", err=type(_e135).__name__, msg=str(_e135)[:160],
+                           trace=traceback.format_exc()[-300:].replace("\n", " | "), action="비교 행만 생략 — I★ 무영향"), M=M, level="warning")
+        label_r135_off = None
+        _r135_diag = {"enabled": False, "error": f"{type(_e135).__name__}: {str(_e135)[:120]}"}
+
     # ---- [v0.60.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(I★ 마지막 단계 · r117_stage_i) ----
     label_star, _r117_diag = r117_stage_i(target_ws, label_star, results, cols, res, s_alloc, eval_idx, _bt, cost_map, icfg, M, S=S)
 
@@ -6391,6 +6487,7 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "relcmp_labels": relcmp_labels,                                                # [v0.41.0 R88] 회피형·참여형·양쪽형 비교 행
         "label_nf_parent": label_nf_parent,                                            # [v0.43.0 R90] 중립채움 몫 → 부모 ETF 측정 행
         "r117": _r117_diag,                                                            # [v0.60.0 R117] 다음날 하락확률 문턱(표 · 1위 · 라이브)
+        "r135": _r135_diag, "label_r135_off": label_r135_off,                          # [v0.62.0 R135] 리더 상관 필터 · 평활 42 비교 행
         "select_mode": select_mode, "groups_leader3": groups_leader3,                 # [v0.33.0 R79]
         "prob_pack": prob_pack,                                                        # [v0.33.0 R79] 드라이버 격자 재사용(참조)
         "prob_market_gate": bool(_mkt_gate_on and _mkt_full is not None),
@@ -15489,6 +15586,13 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _r105_lines = [("★★★ R117 다음날 하락확률 문턱(I★)", f"⚠ 산출 실패 — {_d117['error']} (I★ 무변경)")] + list(_r105_lines)
         except Exception as _e117:
             log("REPORT", kv(event="r117_sheet_failed", layer="I", err=type(_e117).__name__, msg=str(_e117)[:160]), M=M, level="warning")
+        # ---- [v0.62.0 R135 ★ 사용자 승인] 리더 상관 필터 · 평활 42 — 00 줄(묶음 맨 앞) ----
+        try:
+            _l135 = r135_line(alloc, (ires.get("user_rel_src") or {}).get("spy_ret"), S)
+            if _l135:
+                _r105_lines = [_l135] + list(_r105_lines)
+        except Exception as _e135:
+            log("REPORT", kv(event="r135_line_failed", err=type(_e135).__name__, msg=str(_e135)[:160]), M=M, level="warning")
         # ---- [v0.56.0 R110 사용자 지시] 00V 상태 판정·검증 · 01V 날짜별 상태(29산업 · S v0.88.0 build_state_verify_sheets) ----
         if hasattr(S, "build_state_verify_sheets"):
             try:
