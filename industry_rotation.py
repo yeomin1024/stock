@@ -1,5 +1,10 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.62.1 - 2026-10-03 - [R139 표시 수정 — 00 '전체자산 1.0 확인' 줄에 I★ 전체(산업 + 부모 ETF + 통과 다리) 일별 합 병기 · I★ 무변경]
+#    사용자 지시(2026-10-03): "결과 폴더에 올렸는데 확인해봐 문제 있으면 수정하고 레버지리 사용한거 아니지?".
+#    Kaggle(S v0.97.0 · I v0.62.0) 00 줄이 '일별 비중 합계: 평균 0.0743'이라 노출이 작아 보였다 — 00A 감사가 **산업 ETF 칸만의 합**(설계 · 부모 ETF
+#      다리 제외)이기 때문이다. I★ 전체 합(13r '보유 합계')은 최대 1.0 · 1.0 초과일 0 = 레버리지 없음. 같은 줄에 전체 합을 함께 적고 '[00A 감사 = 산업 ETF 칸만의 합]'을 붙였다.
+#    계산 · 배분 무변경. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.62.0 - 2026-10-02 - [R135 ★ 산업 리더 = 부모 상관 ≥ 0.8 · 순위 평활 42일 — I★ 라이브 변경(사용자 승인 · 무하락 예외)]
 #    사용자 지시(2026-10-01): "… 그 다음 산업 코드를 수정해 국면, 섹터 판단 수정했던거처럼 산업도 목표치 정해서 계속 탐색하고 테스트해" ·
 #      (2026-10-02) "계속 찾아봐" → 후보 보고 → "올리고 계속해".
@@ -2020,8 +2025,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.62.0"
-VERSION_DATE = "2026-10-02"
+VERSION = "v0.62.1"
+VERSION_DATE = "2026-10-03"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -15617,7 +15622,19 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                         + (" · ⚠ 산출 실패(해당 시트의 '판정' 열 참조)"
                            if (_a0["자산"].astype(str) == "⚠ 산출 실패").any() else "")))
         if len(_au0):
-            meta.insert(2, ("★★ 전체자산 1.0 확인", str(_au0["판정"].iloc[0])[:400]))
+            # [v0.62.1 R139] 00A 감사는 **산업 ETF 칸만의 합**(부모 ETF 다리 제외 — 설계)이라 평균이 작게 보인다(사용자 혼동).
+            #   같은 줄에 I★ 전체(산업 + 부모 ETF + 통과 다리) 일별 합을 함께 적는다 — 레버리지 여부는 이 값으로 본다.
+            _tot_txt = ""
+            try:
+                _twa = (alloc or {}).get("target_w")
+                if isinstance(_twa, pd.DataFrame) and len(_twa):
+                    _ts = _twa.fillna(0.0).astype(float).sum(axis=1)
+                    _tot_txt = (f" ‖ ★ I★ 전체(산업 + 부모 ETF + 통과 다리) 일별 합: 평균 {float(_ts.mean()):.4f} · 최대 {float(_ts.max()):.6f} · "
+                                f"1.0 초과일 {int((_ts > 1.0 + 1e-6).sum())}일 · 음수 칸 {int((_twa < -1e-9).sum().sum())}개 → "
+                                + ("레버리지 없음." if float(_ts.max()) <= 1.0 + 1e-6 else "⚠ 1.0 초과 — 확인 필요."))
+            except Exception:
+                _tot_txt = ""
+            meta.insert(2, ("★★ 전체자산 1.0 확인", "[00A 감사 = 산업 ETF 칸만의 합 · 부모 ETF 다리 제외] " + str(_au0["판정"].iloc[0])[:400] + _tot_txt))
     else:
         meta.insert(1, ("⚠ 00A_수익비교 시트", "생성되지 않았다 — 로그에서 asset_return_compare_failed 확인"))
     # ---- [v0.27.0 R73 §4-1 ★] 단일 산업 **라이브** 예측 vs B&H 1행 — 00A 블록 A(②·①)와 19 블록 A′ 합계에서 읽는다 ----
