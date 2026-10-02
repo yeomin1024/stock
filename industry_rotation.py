@@ -1,5 +1,9 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.62.2 - 2026-10-03 - [R139 K 통로 확장 — market_budget_handoff에 M 지표 프레임 · SPY · XLK 총수익 추가 · I★ 무변경]
+#    K v0.29.0 R139 조각(M 지표 UMCSENT_Z · CPIAUCSL_CHG120 · XLK 63일 낙폭 · XLK/SPY 120일) 조건을 K가 같은 프로세스에서 읽게 한다.
+#    _set_market_handoff(res, M, sres): 'ind'(res['ind'] 사본) · 'cal' · 'spy_adj'(res['px_adj']) · 'xlk_tr'(S sectors['XLK'] ret_cc_full 누적 · 없으면 M px_dict XLK).
+#    계산 · 배분 무변경. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.62.1 - 2026-10-03 - [R139 표시 수정 — 00 '전체자산 1.0 확인' 줄에 I★ 전체(산업 + 부모 ETF + 통과 다리) 일별 합 병기 · I★ 무변경]
 #    사용자 지시(2026-10-03): "결과 폴더에 올렸는데 확인해봐 문제 있으면 수정하고 레버지리 사용한거 아니지?".
 #    Kaggle(S v0.97.0 · I v0.62.0) 00 줄이 '일별 비중 합계: 평균 0.0743'이라 노출이 작아 보였다 — 00A 감사가 **산업 ETF 칸만의 합**(설계 · 부모 ETF
@@ -2025,7 +2029,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.62.1"
+VERSION = "v0.62.2"
 VERSION_DATE = "2026-10-03"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -10558,7 +10562,7 @@ def single_mid_rule_audit(ind_ticker: str, target_before: pd.Series, target_afte
 _MARKET_HANDOFF: Dict[str, Any] = {}
 
 
-def _set_market_handoff(res: Any, M=None) -> None:
+def _set_market_handoff(res: Any, M=None, sres: Optional[dict] = None) -> None:
     try:
         _sig = res.get("sig") if isinstance(res, dict) else None
         if isinstance(_sig, pd.DataFrame) and "target_pos" in _sig.columns and len(_sig):
@@ -10569,6 +10573,24 @@ def _set_market_handoff(res: Any, M=None) -> None:
                 "source": f"industry_rotation {VERSION} run() ← M res['sig']",
                 "asof": str(pd.Timestamp(_sig.index[-1]).date()),
                 "set_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+            # [v0.62.2 R139] K R139 조각 조건용 — M 지표 프레임(res['ind'] · 발표 지연 반영 · 인과) · SPY 총수익(px_adj) · XLK 총수익 지수
+            #   (S의 XLK ret_cc_full = 연구 r139와 같은 값 · 없으면 M px_dict XLK Adj Close). 새 계산 없음(사본).
+            _ind = res.get("ind") if isinstance(res, dict) else None
+            if isinstance(_ind, pd.DataFrame) and len(_ind):
+                _MARKET_HANDOFF["ind"] = _ind.copy()
+                _MARKET_HANDOFF["cal"] = pd.DatetimeIndex(res.get("cal") if res.get("cal") is not None else _ind.index)
+            _pa = res.get("px_adj") if isinstance(res, dict) else None
+            if isinstance(_pa, pd.Series) and len(_pa):
+                _MARKET_HANDOFF["spy_adj"] = pd.to_numeric(_pa, errors="coerce").copy()
+            _xr = (((sres or {}).get("sectors") or {}).get("XLK") or {}).get("ret_cc_full")
+            if isinstance(_xr, pd.Series) and len(_xr):
+                _MARKET_HANDOFF["xlk_tr"] = (1.0 + pd.to_numeric(_xr, errors="coerce").fillna(0.0)).cumprod()
+                _MARKET_HANDOFF["xlk_src"] = "S sectors['XLK'] ret_cc_full"
+            else:
+                _xd = ((res.get("px_dict") or {}) if isinstance(res, dict) else {}).get("XLK")
+                if isinstance(_xd, pd.DataFrame) and "Adj Close" in _xd.columns:
+                    _MARKET_HANDOFF["xlk_tr"] = pd.to_numeric(_xd["Adj Close"], errors="coerce")
+                    _MARKET_HANDOFF["xlk_src"] = "M px_dict['XLK'] Adj Close"
             log("START", kv(event="market_handoff_set", asof=_MARKET_HANDOFF["asof"], rows=int(len(_sig)),
                             note="K(주식)가 M 시장 예산 E_t를 이 통로로 받는다"), M=M)
     except Exception as _e:
@@ -12732,7 +12754,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
        parent_px_override: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
     t0 = time.time()
     icfg = icfg or CFG
-    _set_market_handoff(res, M)          # [v0.31.0 R77] K(주식)가 M 시장 예산 E_t를 받는 통로(S 실패와 무관하게 먼저)
+    _set_market_handoff(res, M, sres)    # [v0.31.0 R77] K(주식)가 M 시장 예산 E_t를 받는 통로(S 실패와 무관하게 먼저) · [v0.62.2 R139] + M 지표 · SPY · XLK
 
     if sres.get("aborted"):
         log("START", kv(event="s_aborted"), M=M, level="error")

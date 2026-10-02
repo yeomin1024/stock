@@ -1,5 +1,21 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.29.0 - 2026-10-03 - [R139 ★ K★ 조각 4개(R117 뒤 마지막 단계 · 라이브) — 주식 목표(회피 ≥ 97 · 참여 ≥ 110) 달성 · ⚠ 표본 안 선택]
+#    사용자 지시(2026-10-03): "결과 폴더에 올렸는데 확인해봐 문제 있으면 수정하고 레버지리 사용한거 아니지? 그리고 주식층도 섹터, 산업과 똑같이 목표치 정해서 계속 테스트해".
+#    ── 기준(로컬 · M v1.82.0 · S v0.97.0 섹터 비중(I 통로) · K v0.28.0 · 2018~) ── K★(sector_prob · R109 · R110 완충 ×0.9 · R111 · R115 · R117 없음)
+#      45.88배 · 회피 95.98 · 참여 97.66 · MDD −7.66% · 손실 주/달/분기 97/9/0. 하네스 r139/libk139(K 엔진 비트 동일). 약점 = 참여(완충 · R115 · R111이 노출을 깎는다).
+#    ── 탐색(r139 · 코드 밖) ── 조건 473 × 쓰임 5(4,730) · 구조 변형(완충 0.95/1.0 · 기술주 기울임 · XLK 채움 — 전부 맞바꿈) · 겹치기(구현 가능 M 지표 · XLK 2,280) ·
+#      반쪽 교차: 2018~2021로 고르면 2022~ 참여 +3~+18(넘어감) · 회피 0~−2.5 / 2022~로 고르면 첫 조각 = 아래 1과 같고 2018~2021 회피 +0.9 · 참여 +1.0.
+#    ── 채택(목표 + 2018~ 무하락) ── R139_PIECES: 1 XLK 63일 낙폭 아래 20% → 비기술주 몫 → 기술주 · 2 UMCSENT_Z 아래 20% → 완충 풀기 ·
+#      3 XLK/SPY 120일 아래 20% → 합 1까지 XLK ETF · 4 CPIAUCSL_CHG120 위 20% → 완충 풀기.
+#      45.88 → 85.74배 · 회피 95.98 → 97.01 · 참여 97.66 → 114.38 · MDD −7.66 그대로 · 손실 95/9/0 · 칼마 7.19 → 8.70 · 연도 잭나이프 9/9 회피 +0.4~+1.6 · 참여 +12.9~+19.8 ·
+#      이웃(조각별 문턱 15/25%) 참여 +11~+18 · 회피 96.4~97.2(⚠ 97은 경계선) · 레버리지 없음(합 최대 1.0).
+#    ⚠ 표본 안 선택 — 미래 성과는 더 작을 수 있다. 긴 이력 대용 없음(K 가격은 2015~).
+#    (§1) _r139_market_extra(I v0.62.2+ market_budget_handoff: M 지표 · 달력 · SPY · XLK) · r139_conditions · r139_k_overlay · R117 뒤 적용 ·
+#         '비교: 라이브(R139 조각 없음 = v0.28.0 K★)' 행 · res['r139'] · 00 줄 r139_line · StockConfig R139_ENABLE · R139_PIECES · import traceback.
+#         통로가 없으면(I 구버전 · 단독 실행) 경고 후 v0.28.0 K★ 그대로. 시험 t139/test_r139.py. 되돌리기 k_overrides={'R139_ENABLE': False}.
+#    (§2 데이터 메모) 야후가 AVB(설계) · EQR(홀드아웃) 가격 이력을 2026-08 중순 1~2일치로 깨뜨려 두 종목은 '관측 부족'으로 빠진다(코드 문제 아님 · 기존 경고 그대로).
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.28.0 - 2026-09-29 - [R118 ★ 전 지표 · 의미 가족 하락확률(K★ 문턱 단계) · 00H2_지표의미]
 #    사용자 지시(2026-09-29): "왜 하락확률 구하는데 모든 지표들을 사용 안 하는 거야 그리고 predictor 코드에도 지표가 4700개나 있는데 별로 사용 안 하는 거 같아
 #      다시 모든 지표들을 사용하라고 모든 지표들의 의미를 파악해서 의미가 있도록 설계를 해".
@@ -767,6 +783,7 @@ import math
 import os
 import sys
 import time
+import traceback
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -776,8 +793,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.28.0"
-VERSION_DATE = "2026-09-29"
+VERSION = "v0.29.0"
+VERSION_DATE = "2026-10-03"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -1297,6 +1314,11 @@ class StockConfig:
     # [v0.27.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 비교(K★ 마지막 단계) — 종목·섹터 ETF 다리 하락확률(M.r117_prob_panel ·
     #   종목끼리 · ETF끼리 풀드 워크포워드) → 문턱 50%→35% × 빠진 몫(A 현금 · B 재분배) → build_allocation(r117=…)로 같은 체결·비용 → 종합 1위가 필터면
     #   R117_LIVE일 때 K★ 교체('비교: 라이브(R117 하락확률 문턱 없음)' 행). 되돌리기 k_overrides={'R117_LIVE': False} · {'R117_ENABLE': False}.
+    # ⚠⚠ [v0.29.0 R139 사용자 지시 2026-10-03 "주식층도 섹터, 산업과 똑같이 목표치 정해서"] K★ 조각 4개(R117 뒤 마지막) — (특징 · hi/lo 20% · 쓰임) 순서대로.
+    #   특징 'MD:<열>' = M 지표 · 'XLK:dd63' · 'XLK:rs120' = XLK 총수익(I v0.62.2+ market_budget_handoff 통로). 쓰임 = r139_k_overlay. 표본 안 선택 — 과적합 위험.
+    R139_ENABLE: bool = True
+    R139_PIECES: Tuple[Tuple[str, str, str], ...] = (
+        ("XLK:dd63", "lo", "tilt"), ("MD:UMCSENT_Z", "lo", "buf"), ("XLK:rs120", "lo", "fillx"), ("MD:CPIAUCSL_CHG120", "hi", "buf"))
     R117_ENABLE: bool = True
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
@@ -6951,6 +6973,153 @@ def next_day_rows_k(res: Dict[str, Any], nd: pd.Timestamp, nd_src: str, base: pd
     return rows
 
 
+# =============================================================================
+# [v0.29.0 R139 ★ 사용자 지시(2026-10-03) "주식층도 섹터, 산업과 똑같이 목표치 정해서 계속 테스트해"] K★ 조각 4개(라이브 마지막 단계)
+#   목표 회피 ≥ 97 · 참여 ≥ 110(K★ 로컬 95.98 / 97.66) · 2018~ 전 지표 무하락 — 연구 r139(K 하네스 = K 엔진 비트 동일 · 조건 2,280 · 겹치기 · 반쪽 교차).
+# =============================================================================
+R139_USE_KR = {"tilt": "비기술주 종목 몫 → 기술주", "buf": "현금 완충 풀기(× 1/완충)", "fillx": "합 1까지 XLK ETF", "def": "기술주 → 방어주", "cut5": "기술주 절반 현금"}
+
+
+def _r139_market_extra() -> Dict[str, Any]:
+    """I 모듈 통로(market_budget_handoff)의 M 지표 프레임 · 달력 · SPY 총수익 · XLK 총수익 지수(I v0.62.2+). 없으면 {}."""
+    for _nm, _mod in list(sys.modules.items()):
+        try:
+            _fn = getattr(_mod, "market_budget_handoff", None)
+        except Exception:
+            continue
+        if callable(_fn):
+            try:
+                _h = _fn()
+            except Exception:
+                continue
+            if isinstance(_h, dict) and isinstance(_h.get("ind"), pd.DataFrame):
+                return _h
+    return {}
+
+
+def r139_conditions(extra: Dict[str, Any], idx: pd.DatetimeIndex, cfg) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.29.0 R139] 조각 조건(R139_PIECES) — M 달력 위에서 확장 분위(최소 500일 · 하루 늦춤) 위/아래 20% → K 날짜로.
+    'MD:<열>' = M 지표 res['ind'][열] · 'XLK:dd63' = XLK 총수익 / 63일 최고 − 1 · 'XLK:rs120' = XLK 120일 수익 / SPY 120일 수익 − 1."""
+    ind = extra.get("ind")
+    cal = pd.DatetimeIndex(extra.get("cal") if extra.get("cal") is not None else (ind.index if isinstance(ind, pd.DataFrame) else []))
+    spy = pd.to_numeric(pd.Series(extra.get("spy_adj")), errors="coerce").reindex(cal).ffill() if extra.get("spy_adj") is not None else None
+    xl = pd.to_numeric(pd.Series(extra.get("xlk_tr")), errors="coerce").reindex(cal).ffill() if extra.get("xlk_tr") is not None else None
+    out = pd.DataFrame(index=idx)
+    info: Dict[str, Any] = {"missing": [], "xlk_src": extra.get("xlk_src", "-")}
+    for i, (f, side, use) in enumerate(tuple(getattr(cfg, "R139_PIECES", ()) or ())):
+        key = f"{i + 1}:{f}:{side}:{use}"
+        x = None
+        if f.startswith("MD:") and isinstance(ind, pd.DataFrame) and f[3:] in ind.columns:
+            x = pd.to_numeric(ind[f[3:]], errors="coerce").reindex(cal)
+        elif f == "XLK:dd63" and xl is not None:
+            x = xl / xl.rolling(63).max() - 1.0
+        elif f == "XLK:rs120" and xl is not None and spy is not None:
+            x = (xl / xl.shift(120)) / (spy / spy.shift(120)) - 1.0
+        if x is None:
+            out[key] = False
+            info["missing"].append(f)
+            continue
+        q = x.expanding(min_periods=500).quantile(0.8 if side == "hi" else 0.2).shift(1)
+        c = ((x > q) if side == "hi" else (x < q)).fillna(False)
+        out[key] = c.reindex(idx).fillna(False).astype(bool)
+    return out.fillna(False).astype(bool), info
+
+
+def r139_k_overlay(alloc: Dict[str, Any], cond: pd.DataFrame, sector_of: Dict[str, str], panel: Dict[str, pd.DataFrame],
+                   etf_panel: Optional[Dict[str, pd.DataFrame]], cfg) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """[v0.29.0 R139 ★] K★ 비중(종목 + 섹터 ETF 다리)에 조각을 순서대로 → 같은 체결(_exec_port_returns · t 확정 → t+1 시가 · ALLOC_COST_BPS · 현금 0).
+      tilt = 그 조건인 날 비기술주 종목 몫 → 기술주(XLK 소속 · 기존 비중 비례 · 없으면 균등)
+      buf  = 그 조건인 날 전체 × 1/LIVE_CASH_BUFFER(현금 완충 풀기) → 합이 1을 넘으면 1로
+      fillx = 그 조건 & 합 > 0이면 합 1까지 XLK ETF(레버리지 없음) · def = 기술주 → 방어주(XLP·XLU·XLV 소속) · cut5 = 기술주 몫 절반 현금.
+    연구(r139 · 2018~ · K★ v0.28.0 로컬 = S v0.97.0 섹터 비중): 45.88배 · 회피 95.98 · 참여 97.66 · MDD −7.66% · 손실 주/달/분기 97/9/0 →
+      85.74배 · 회피 97.01 · 참여 114.38 · MDD −7.66% · 95/9/0(목표 97/110 달성 · 2018~ 전 지표 무하락) · 연도 잭나이프 9/9 둘 다 ↑.
+    ⚠ 표본 안 선택 — 2018~2021로만 고르면 2022~ 표본 밖 참여 +3~+18 · 회피 0~−2.5(참여 계열은 넘어가고 회피는 약하다) · 회피 97은 경계선(이웃 96.4~97.2).
+    되돌리기 k_overrides={'R139_ENABLE': False}. 연구·교육용이며 투자 자문이 아니다."""
+    Ws = alloc["target_w"].astype(float).fillna(0.0)
+    We = alloc.get("etf_w")
+    We = We.astype(float).fillna(0.0) if isinstance(We, pd.DataFrame) else pd.DataFrame(index=Ws.index)
+    WA = pd.concat([Ws, We.add_prefix("ETF_")], axis=1)
+    idx = WA.index
+    tick = list(Ws.columns)
+    tech = [t for t in tick if sector_of.get(t) == "XLK"]
+    defs = [t for t in tick if sector_of.get(t) in ("XLP", "XLU", "XLV")]
+    has_xlk = "XLK" in (etf_panel or {})
+    if has_xlk and "ETF_XLK" not in WA.columns:
+        WA["ETF_XLK"] = 0.0
+    _b = float(getattr(cfg, "LIVE_CASH_BUFFER", 1.0) or 1.0)
+    bufk = (1.0 / _b) if 0.0 < _b < 1.0 else 1.0
+    days: Dict[str, int] = {}
+    for key in cond.columns:
+        use = key.split(":")[-1]
+        c = cond[key].reindex(idx).fillna(False).astype(bool)
+        before = WA.copy()
+        if use == "buf":
+            WA = WA.mul(pd.Series(bufk, index=idx).where(c, 1.0), axis=0)
+            WA = WA.div(WA.sum(axis=1).clip(lower=1.0), axis=0)
+        elif use == "fillx" and has_xlk:
+            tot = WA.sum(axis=1)
+            WA["ETF_XLK"] = WA["ETF_XLK"] + (1.0 - tot).clip(lower=0.0).where(c & (tot > 1e-9), 0.0)
+        elif use == "tilt" and tech:
+            oth = [t for t in tick if t not in tech]
+            mv = WA[oth].sum(axis=1).where(c, 0.0)
+            tw = WA[tech]
+            ts = tw.sum(axis=1)
+            share = tw.div(ts.where(ts > 1e-12), axis=0).where(ts > 1e-12, 1.0 / len(tech)).fillna(0.0)
+            WA.loc[c, oth] = 0.0
+            WA[tech] = WA[tech] + share.mul(mv, axis=0)
+        elif use == "def" and tech and defs:
+            mv = WA[tech].sum(axis=1).where(c, 0.0)
+            WA.loc[c, tech] = 0.0
+            for d_ in defs:
+                WA[d_] = WA[d_] + mv / len(defs)
+        elif use == "cut5" and tech:
+            WA.loc[c, tech] = WA.loc[c, tech] * 0.5
+        days[key] = int(((WA - before).abs().sum(axis=1) > 1e-12).sum())
+    ecols = [c for c in WA.columns if c.startswith("ETF_")]
+
+    def _pc(src, t, c):
+        v = src[t].get(c) if (t in (src or {}) and hasattr(src[t], "get")) else None
+        return pd.to_numeric(v, errors="coerce").reindex(idx) if isinstance(v, pd.Series) else pd.Series(np.nan, index=idx)
+    RA = pd.concat([pd.DataFrame({t: _pc(panel, t, "일간수익") for t in tick}).fillna(0.0),
+                    pd.DataFrame({c[4:]: _pc(etf_panel, c[4:], "일간수익") for c in ecols}).add_prefix("ETF_")], axis=1)
+    COA = pd.concat([pd.DataFrame({t: _pc(panel, t, "야간수익") for t in tick}),
+                     pd.DataFrame({c[4:]: _pc(etf_panel, c[4:], "야간수익") for c in ecols}).add_prefix("ETF_")], axis=1)
+    OCA = pd.concat([pd.DataFrame({t: _pc(panel, t, "장중수익") for t in tick}),
+                     pd.DataFrame({c[4:]: _pc(etf_panel, c[4:], "장중수익") for c in ecols}).add_prefix("ETF_")], axis=1)
+    _fill = str(getattr(cfg, "EXEC_FILL", "close")).lower()
+    _cbps = float(getattr(cfg, "ALLOC_COST_BPS", 0.0) or 0.0)
+    pr, _xi = _exec_port_returns(WA, RA, COA, OCA, fill=_fill, cost_bps=_cbps, rf=None)
+    pc, _ = _exec_port_returns(WA, RA, None, None, fill="close", cost_bps=0.0)
+    out = dict(alloc)
+    Ws2 = WA[tick]
+    We2 = WA[ecols].rename(columns=lambda c: c[4:])
+    tot = WA.sum(axis=1)
+    out.update({"target_w": Ws2, "exec_w": Ws2.shift(1).fillna(0.0), "etf_w": We2, "etf_exec_w": We2.shift(1).fillna(0.0), "total_w": tot,
+                "port_ret": pr, "port_ret_close": pc, "exec": _xi,
+                "live_rule": str(alloc.get("live_rule") or alloc.get("mode") or "-") + " + R139 조각 4"})
+    diag = {"enabled": True, "days": days, "tech": len(tech), "defs": len(defs), "sum_max": float(tot.max()) if len(tot) else 0.0,
+            "on_today": {k: bool(cond[k].iloc[-1]) for k in cond.columns} if len(cond) else {}}
+    return out, diag
+
+
+def r139_line(d: Optional[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
+    """[v0.29.0 R139] 00 줄."""
+    d = d or {}
+    lab = "★★ R139 K★ 조각 4개(라이브 마지막 단계 · 사용자 지시 2026-10-03 '주식층도 목표치 정해서')"
+    if not d.get("enabled"):
+        return (lab, f"⚠ 적용 안 됨 — {d.get('error') or '꺼짐'} (= v0.28.0 K★) · 되돌리기 k_overrides={{'R139_ENABLE': False}}") if d else None
+    o0, o1 = d.get("off") or {}, d.get("on") or {}
+    pcs = " · ".join(f"{i + 1}) {p[0]} {'위' if p[1] == 'hi' else '아래'} 20% → {R139_USE_KR.get(p[2], p[2])}" for i, p in enumerate(d.get("pieces") or []))
+    on = [k.split(":")[1] for k, v in (d.get("on_today") or {}).items() if v]
+    info = d.get("info") or {}
+    return (lab, f"{pcs} · 합 최대 {float(d.get('sum_max', 0)):.3f} · 오늘 켜진 조각 {', '.join(on) or '없음'} · 이번 실행 K★: 배수 {o0.get('배수', float('nan')):.2f} → "
+                 f"{o1.get('배수', float('nan')):.2f} · 회피 {o0.get('회피', float('nan')):.1f} → {o1.get('회피', float('nan')):.1f} · 참여 {o0.get('참여', float('nan')):.1f} → "
+                 f"{o1.get('참여', float('nan')):.1f} · MDD {o0.get('MDD', float('nan')):.2f}% → {o1.get('MDD', float('nan')):.2f}% · 자료: "
+                 + ("전부 있음(XLK = " + str(info.get("xlk_src", "-")) + ")" if not info.get("missing") else "⚠ 없음 = " + ", ".join(info["missing"]) + "(그 조각만 꺼짐 · I v0.62.2+ 통로 필요)")
+                 + " · 연구(r139 · 2018~ 표본 안): 45.88 → 85.74배 · 회피 95.98 → 97.01 · 참여 97.66 → 114.38 · MDD 그대로 · 연도 잭나이프 9/9 둘 다 ↑ · "
+                 "⚠ 표본 안 선택(2018~2021로 고르면 2022~ 참여 +3~+18 · 회피 0~−2.5) · 회피 97은 경계선 · 되돌리기 k_overrides={'R139_ENABLE': False}. 연구·교육용, 투자 자문 아님.")
+
+
 def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]] = None,
         parent_w: Optional[pd.DataFrame] = None, m_sig: Any = None) -> Dict[str, Any]:
     """[K 계층 본체] 데이터 → 특성 → 규칙 채점 → **배분(총합 1.0)** → 감사 → 리포트 dict.
@@ -7452,6 +7621,42 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             log("ALLOC", kv(event="r117_down_prob_failed", err=type(_e117).__name__, msg=str(_e117)[:160],
                             action="R117 없이 계속 — K★ 무변경"), level="warning")
             _r117_diag = {"enabled": False, "error": f"{type(_e117).__name__}: {str(_e117)[:160]}"}
+    # ---- [v0.29.0 R139 ★ 사용자 지시(2026-10-03)] 조각 4개(M 지표 · XLK 조건 · 진짜 마지막 단계 · 라이브) — I v0.62.2+ 통로의 M 지표 · XLK · SPY ----
+    _r139_diag: Dict[str, Any] = {"enabled": False}
+    alloc_pre139: Optional[Dict[str, Any]] = None
+    if bool(getattr(cfg, "R139_ENABLE", True)) and isinstance(alloc.get("target_w"), pd.DataFrame) and len(alloc["target_w"]):
+        try:
+            _ex139 = _r139_market_extra()
+            _c139, _i139 = r139_conditions(_ex139, alloc["target_w"].index, cfg)
+            if _ex139 and _c139.shape[1] and len(_i139["missing"]) < _c139.shape[1]:
+                alloc_pre139 = alloc
+                alloc, _r139_diag = r139_k_overlay(alloc, _c139, sector_of, panel, etf_panel, cfg)
+                _r139_diag.update({"info": _i139, "pieces": [list(p) for p in tuple(getattr(cfg, "R139_PIECES", ()) or ())]})
+                _M139 = _find_m_module()
+                if _M139 is not None and hasattr(_M139, "r117_rel") and "SPY" in (etf_panel or {}):
+                    _ev139 = pd.Timestamp(str(getattr(cfg, "EVAL_START", "2018-01-01")))
+                    _sp139 = pd.to_numeric(etf_panel["SPY"]["일간수익"], errors="coerce")
+                    _r0139 = alloc_pre139["port_ret"].loc[_ev139:]
+                    _r1139 = alloc["port_ret"].loc[_ev139:]
+                    _r139_diag["off"] = _M139.r117_rel(_r0139, _sp139.reindex(_r0139.index).fillna(0.0))
+                    _r139_diag["on"] = _M139.r117_rel(_r1139, _sp139.reindex(_r1139.index).fillna(0.0))
+                log("ALLOC", kv(event="r139_applied", days=";".join(f"{k.split(':')[1]}={v}" for k, v in _r139_diag.get("days", {}).items()),
+                                sum_max=round(_r139_diag.get("sum_max", 0.0), 6), missing=",".join(_i139["missing"]) or "-",
+                                avoid=(f"{_r139_diag['off']['회피']:.2f}→{_r139_diag['on']['회피']:.2f}" if _r139_diag.get("on") else "-"),
+                                part=(f"{_r139_diag['off']['참여']:.2f}→{_r139_diag['on']['참여']:.2f}" if _r139_diag.get("on") else "-"),
+                                note="★ 라이브(사용자 지시 R139 · 표본 안 선택) — 되돌리기 k_overrides={'R139_ENABLE': False}"), level="warning")
+            else:
+                _r139_diag = {"enabled": False, "error": "I v0.62.2+ 통로(M 지표 · XLK · SPY)가 없다 — run_pipeline으로 M·S·I와 함께 돌릴 것",
+                              "info": _i139}
+                log("ALLOC", kv(event="r139_unavailable", missing=",".join(_i139.get("missing", [])) or "통로 없음",
+                                action="R139 없이 계속(= v0.28.0 K★)"), level="warning")
+        except Exception as _e139:
+            log("ALLOC", kv(event="r139_failed", err=type(_e139).__name__, msg=str(_e139)[:160],
+                            trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R139 없이 계속(= v0.28.0 K★)"), level="warning")
+            _r139_diag = {"enabled": False, "error": f"{type(_e139).__name__}: {str(_e139)[:160]}"}
+            if alloc_pre139 is not None:
+                alloc = alloc_pre139
+                alloc_pre139 = None
     alloc_rows: List[dict] = []
     _grid_rets: Dict[str, pd.Series] = {}          # [v0.9.0] 00U 비교 행용 — 격자 행 라벨 → 포트 일간수익
 
@@ -7649,6 +7854,19 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         except Exception as e:
             _r117_lbl = None
             log("ALLOC", kv(event="r117_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    # [v0.29.0 R139] 조각 적용 전 K★(= v0.28.0 K★) 비교 행
+    _r139_lbl: Optional[str] = None
+    if alloc_pre139 is not None:
+        try:
+            _r139_lbl = "비교: 라이브(R139 조각 없음 = v0.28.0 K★)"
+            _rr139 = _alloc_row(_r139_lbl, alloc_pre139, float(alloc_pre139.get("cap_used", 0.05) or 0.05), None)
+            if _rr139:
+                _rr139.update({"연동출처": "R139 적용 전 K★(같은 규칙 · 조각 없음)"})
+                alloc_rows.append(_rr139)
+                _grid_rets[_r139_lbl] = alloc_pre139.get("port_ret")
+        except Exception as e:
+            _r139_lbl = None
+            log("ALLOC", kv(event="r139_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
     # [v0.25.0 R115] 같은 산업 실적 회피 행 — 라이브면 '회피 없는 라이브' 비교 행(00 'R115' 줄·00X 기준) · 아니면 측정 행 · 대안(반응 큰 발표만) 측정 행.
     _r115_lbl: Optional[str] = None
     _r115_alloc: Optional[Dict[str, Any]] = None
@@ -8148,6 +8366,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             "r115": _m115, "r115_label": _r115_lbl, "r115b_label": _r115b_lbl, "r115_live": bool(_live115),      # [v0.25.0 R115]
             "r115_loss": _loss115,
             "r117": _r117_diag, "r117_label": _r117_lbl,                                                          # [v0.27.0 R117]
+            "r139": _r139_diag, "r139_label": _r139_lbl,                                                          # [v0.29.0 R139]
             "state_board": _state_board,                                                            # [v0.14.0 R104]
             "dip_states": _dip,                                                                     # [v0.15.0 R105] 00W
             "live_dip": bool(_live_dip), "prev_live_label": _prev_live_lbl,                          # [v0.18.0 R109] 라이브 물타기·어닝 손절
@@ -8922,6 +9141,12 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 _add.insert(0, ("★★★ R117 다음날 하락확률 문턱(K★)", f"⚠ 산출 실패 — {_d117['error']} (K★ 무변경)"))
         except Exception as e:
             log("REPORT", kv(event="r117_sheet_failed", layer="K", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+        try:                                                                   # [v0.29.0 R139] 조각 4개 00 줄(맨 앞)
+            _l139 = r139_line(res.get("r139"))
+            if _l139:
+                _add.insert(0, _l139)
+        except Exception as e:
+            log("REPORT", kv(event="r139_line_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
         try:                                                                   # [v0.25.0 R115] 같은 산업 실적 회피 · 00X 손실 구간 원인
             _r115v = r115_ind_earn_line(res)
             if _r115v:
