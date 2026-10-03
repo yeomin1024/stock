@@ -1,12 +1,13 @@
 # =============================================================================
 #  run_pipeline.py
-#  VERSION: v1.29.0 - 2026-10-03 - [R141 ★ 엑셀 결과를 GitHub 저장소 results/<기준일>/ 폴더에 자동 저장]
+#  VERSION: v1.29.0 - 2026-10-03 - [R141 ★ 엑셀 결과를 GitHub 저장소 results/reports/<기준일>/ 폴더에 자동 저장]
 #    사용자 지시(2026-10-03): "엑셀 결과는 깃허브 저장소에 폴더 하나 만들어서 거기에 저장하도록 해".
-#    · 신설 push_reports_github(paths, stamp) — 실행이 끝나면 생성된 xlsx(M · S · I · K)를 yeomin1024/stock의 results/<기준일>/에
+#    · 신설 push_reports_github(paths, stamp) — 실행이 끝나면 생성된 xlsx(M · S · I · K)를 yeomin1024/stock의 results/reports/<기준일>/에
 #      커밋 1개로 올린다(Git Data API: blob → tree → commit → ref · 그사이 다른 커밋이 들어오면 3번까지 다시). 파일당 95MB 넘으면 건너뜀.
 #    · 토큰: Kaggle 노트북 Add-ons → Secrets에 이름 GITHUB_TOKEN(Fine-grained token · 저장소 yeomin1024/stock · Contents: Read and write)을
 #      추가하고 노트북에 연결(또는 환경변수 GITHUB_TOKEN). 코드에 토큰을 넣지 않으며 출력하지 않는다. 없으면 건너뛰고 안내 1줄.
-#    · main(push_github=True, github_repo="yeomin1024/stock", github_folder="results") · 반환 dict에 "github".
+#    · main(push_github=True, github_repo="yeomin1024/stock", github_folder="results/reports") · 반환 dict에 "github".
+#      (results/kaggle/은 가상계좌 실행기 kaggle_runner_onecell.py의 자리 — 섞이지 않게 reports 하위 폴더를 쓴다 · 같은 Secret GITHUB_TOKEN)
 #    · 끄기: RP.main(push_github=False). ⚠ 실행마다 약 30MB가 저장소 이력에 쌓인다(오래된 날짜 폴더는 지워도 이력에는 남음).
 #    ※ 리포트 생성 · 신호 · 위험 파라미터 무변경. 연구·교육용, 투자 자문 아님.
 #  VERSION: v1.28.0 - 2026-09-20 - [R76 — M v1.56.1 · S v0.61.2 · I v0.30.0 · K v0.3.3] 최소버전 상향.
@@ -1313,7 +1314,7 @@ def _github_token() -> Tuple[Optional[str], str]:
 
 
 def push_reports_github(paths: List[str], stamp: str, repo: str = "yeomin1024/stock", branch: str = "main",
-                        folder: str = "results", max_mb: float = 95.0) -> Dict[str, Any]:
+                        folder: str = "results/reports", max_mb: float = 95.0) -> Dict[str, Any]:
     """[v1.29.0 R141 ★ 사용자 지시 2026-10-03 "엑셀 결과는 깃허브 저장소에 폴더 하나 만들어서 거기에 저장하도록 해"]
     리포트(xlsx)를 저장소 <folder>/<stamp>/ 에 **커밋 1개**로 올린다(Git Data API: blob → tree → commit → ref).
     토큰(Contents 쓰기 권한)은 Kaggle Secrets/환경변수 GITHUB_TOKEN에서만 읽고 출력하지 않는다. 실패해도 파이프라인은 계속(리포트는 /kaggle/working에 그대로)."""
@@ -1403,7 +1404,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
          i_overrides: Optional[Dict[str, Any]] = None,
          k_overrides: Optional[Dict[str, Any]] = None, base_dir: Optional[str] = None,
          _hooks: Optional[Dict[str, Any]] = None, push_github: bool = True, github_repo: str = "yeomin1024/stock",
-         github_folder: str = "results") -> Dict[str, Any]:
+         github_folder: str = "results/reports") -> Dict[str, Any]:
     """M → S → I 실행 + 리포트 + (Colab) 다운로드 / (Kaggle) 영구 보존 + 실매매 배너.
     sector_exclude: None이면 sector_rotation.py의 기본 그대로 — v0.39.0부터 기본은 ()(11섹터 전부 예측).
         ⚠ 9섹터로 되돌리려면 sector_exclude=("XLB","XLE"). 제외는 신호·배분·성과를 바꾸는 설정이다.
@@ -1673,7 +1674,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
                 shutil.copy2(extra, os.path.join(hist_dir, os.path.basename(extra)))
         print(f"[runner] 이력 보관: {hist_dir}")
 
-    # ---- [v1.29.0 R141 ★ 사용자 지시] 엑셀 결과를 GitHub 저장소 results/<기준일>/ 폴더에 저장(커밋 1개) ----
+    # ---- [v1.29.0 R141 ★ 사용자 지시] 엑셀 결과를 GitHub 저장소 results/reports/<기준일>/ 폴더에 저장(커밋 1개) ----
     gh = None
     if push_github:
         _stamp = str(res["cal"][-1].date()) if isinstance(res, dict) and "cal" in res else dt.date.today().isoformat()
