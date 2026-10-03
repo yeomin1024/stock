@@ -4,17 +4,20 @@
 #        KIWOOM_APPKEY, KIWOOM_SECRETKEY (키움 분봉 수집·키움 시세 쓸 때)
 #        GITHUB_TOKEN (결과를 GitHub에 올릴 때 — 이 저장소 Contents 읽기·쓰기 권한)
 # ============================================================================================
-# ===== 여기만 고치세요 =====
-REPO, BRANCH = "https://github.com/yeomin1024/stock", "main"
-STRATEGY     = "N2"         # 'N2' = 1000% 목표(모멘텀 로테이션+저점매수) / 'A' = 저점매수 개선 / 'C0' = 이전 기본값 (모두 레버리지 없음)
-RUN_COLLECT  = False        # 키움 5분봉 기록 모으기(한 번) → GitHub data/kiwoom_minute/
-KIWOOM_MOCK  = True         # 연결한 키움 키가 모의투자 키면 True, 실전 키면 False(조회만 함)
-RUN_SIM      = True         # 과거 실시간 시뮬레이션 → GitHub results/kaggle/sim/<날짜>_<전략>/
-RUN_PAPER    = False        # 실시간 가상거래(미국 장중, 밤에 Save & Run All) → GitHub results/kaggle/paper/<전략>/
-QUOTE_SOURCE = "yfinance"   # 가상거래 시세: 'yfinance'(앱키·IP 불필요) / 'kiwoom'(틱 실시간, IP 등록 필요)
-PAPER_CASH   = 10000
-PUSH_RESULTS = True         # 결과 파일을 GitHub에 올림(GITHUB_TOKEN 필요, 없으면 건너뜀)
-RESULT_DIR   = "results/kaggle"
+# ===== 설정 — wget으로 받아 실행하는 셀에서 같은 이름으로 먼저 정하면 그 값이 우선합니다 =====
+for _k, _v in dict(
+    REPO="https://github.com/yeomin1024/stock", BRANCH="main",
+    STRATEGY="N2",            # 'N2' = 1000% 목표(모멘텀 로테이션+저점매수) / 'A' = 저점매수 개선 / 'C0' = 이전 기본값 (모두 레버리지 없음)
+    RUN_COLLECT=False,        # 키움 5분봉 기록 모으기(한 번) → GitHub data/kiwoom_minute/
+    KIWOOM_MOCK=True,         # 연결한 키움 키가 모의투자 키면 True, 실전 키면 False(조회만 함)
+    RUN_SIM=True,             # 과거 실시간 시뮬레이션 → GitHub results/kaggle/sim/<날짜>_<전략>/
+    RUN_PAPER=False,          # 실시간 가상거래(미국 장중, 밤에 Save & Run All) → GitHub results/kaggle/paper/<전략>/
+    QUOTE_SOURCE="yfinance",  # 가상거래 시세: 'yfinance'(앱키·IP 불필요) / 'kiwoom'(틱 실시간, IP 등록 필요)
+    PAPER_CASH=10000,
+    PUSH_RESULTS=True,        # 결과 파일을 GitHub에 올림(GITHUB_TOKEN 필요, 없으면 건너뜀)
+    RESULT_DIR="results/kaggle",
+).items():
+    globals().setdefault(_k, _v)
 # ===========================
 import subprocess, sys
 subprocess.run([sys.executable, "-m", "pip", "-q", "install", "websockets", "yfinance"], check=False)
