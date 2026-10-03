@@ -7,7 +7,7 @@
 # ===== 설정 — wget으로 받아 실행하는 셀에서 같은 이름으로 먼저 정하면 그 값이 우선합니다 =====
 for _k, _v in dict(
     REPO="https://github.com/yeomin1024/stock", BRANCH="main",
-    STRATEGY="N2",            # 'N2' = 1000% 목표(모멘텀 로테이션+저점매수) / 'A' = 저점매수 개선 / 'C0' = 이전 기본값 (모두 레버리지 없음)
+    STRATEGY="R1",            # 'R1' = 5000% 목표(1종목 모멘텀) / 'N2' = 5종목 로테이션+저점매수 / 'A' 저점매수 / 'C0' (모두 레버리지 없음)
     RUN_COLLECT=False,        # 키움 5분봉 기록 모으기(한 번) → GitHub data/kiwoom_minute/
     KIWOOM_MOCK=True,         # 연결한 키움 키가 모의투자 키면 True, 실전 키면 False(조회만 함)
     RUN_SIM=True,             # 과거 실시간 시뮬레이션 → GitHub results/kaggle/sim/<날짜>_<전략>/

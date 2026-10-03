@@ -178,6 +178,11 @@ class Config:
     rot_every: int = 5
     rot_pct: float = 20.0             # 로테이션 1종목 비중(가상자산 %)
     rot_stop_pct: float = 0.0         # >0이면 보유 중 고점 대비 이만큼 빠지면 팔고 다음 리밸런싱까지 제외
+    rot_keep: int = 0                 # >rot_top이면 들고 있는 종목은 순위가 이 안에 있는 동안 계속 보유(잦은 교체 방지)
+    rot_score: str = "ret"            # 'ret' = N일 수익률 / 'sharpe' = N일 로그수익률 ÷ 변동성(꾸준히 오른 종목 우선)
+    rot_skip: int = 0                 # 모멘텀 계산에서 최근 k일을 뺌(단기 되돌림 회피)
+    rot_regime_exit: bool = True      # True = 국면 0이면 로테이션 종목 전부 매도 / False = 새로 사지만 않고 보유는 유지
+    rot_at_open: bool = False         # True = 로테이션 매수도 장 시작 첫 가격(09:30)에 — 매수 시간대(entry_start) 제한 없음
     # --- 변동성 맞춤 폭: >0이면 종목의 최근 20일 일간 변동성 ÷ 이 값(%)만큼 손절·익절·트레일·반등 폭을 늘이고 줄임(0.5~3배) ---
     vol_ref_pct: float = 0.0
     hold_overnight: bool = True       # True면 장마감에 팔지 않고 최대 max_hold_days 거래일 보유(스윙)
@@ -216,12 +221,17 @@ PRESETS = {
     "N2": {"entry_mode": "rot+dip", "rot_top": 5, "rot_pct": 20.0, "rot_days": 126, "rot_every": 5,   # 1000% 목표
            "max_positions": 8, "max_trades_per_symbol": 2, "daily_loss_pct": 100.0, "regime_scale": False,
            "trend_ma_days": 0, "sector_filter": False},
+    "R1": {"entry_mode": "rot", "rot_top": 1, "rot_pct": 100.0, "max_positions": 1, "rot_keep": 2,       # 5000% 목표
+           "rot_days": 126, "rot_skip": 21, "rot_every": 5, "rot_at_open": True, "daily_loss_pct": 100.0,
+           "regime_scale": False, "max_trades_per_symbol": 2, "trend_ma_days": 0, "sector_filter": False},
 }
 PRESET_NOTES = {
-    "C0": "시간봉 저점매수 · M 비중·S 필터 — 과거 +260% (MDD −7%)",
-    "A": "C0 + 종목당 2회 · 일일 손실한도 끔 — 과거 +364% (MDD −7%)",
+    "C0": "시간봉 저점매수 · M 비중·S 필터 — 과거 +274% (MDD −7%)",
+    "A": "C0 + 종목당 2회 · 일일 손실한도 끔 — 과거 +369% (MDD −7%)",
     "N2": "126일 모멘텀 상위 5종 로테이션(5거래일마다) + 남는 현금 시간봉 저점매수, M 국면 켜기·끄기 — "
-          "과거 +1,806% (MDD −20%), 2023년 S&P100에선 +180%",
+          "과거 +1,724% (MDD −21%), 2023년 S&P100에선 +159%",
+    "R1": "6-1 모멘텀(126일 수익률, 최근 21일 제외) 1위 1종목에 전액 · 2위 안이면 계속 보유 · 장 시작 가격에 교체, "
+          "M 국면 0이면 현금 — 과거 +8,661% (MDD −35%, 이익의 75%가 SNDK), 2023년 S&P100에선 +737%",
 }
 
 
@@ -415,6 +425,8 @@ class SymState:
     last_price: float = 0.0
     last_ts: dt.datetime = None
     bad_ticks: int = 0
+    gap_px: float = 0.0          # ±30% 밖 가격이 같은 수준(±3%)으로 3번 연속 오면 진짜 갭으로 받아들임
+    gap_n: int = 0
 
 
 class LowHighStrategy:
@@ -554,9 +566,9 @@ class Book:
         for s in self.st.values():
             s.buys_today, s.cooldown_until, s.armed, s.low, s.stopped_today = 0, None, False, math.inf, False
 
-    def can_enter(self, code, now, eligible=None) -> tuple:
+    def can_enter(self, code, now, eligible=None, any_time=False) -> tuple:
         c, s = self.cfg, self.get(code)
-        if not (c.entry_start <= hhmm(now) < c.entry_end):
+        if not any_time and not (c.entry_start <= hhmm(now) < c.entry_end):
             return False, "매수 시간대 아님"
         if self.halted:
             return False, "일일 손실한도"
@@ -860,6 +872,8 @@ class Engine:
     def rotation_update(self, day):
         """리밸런싱 날(날짜로 정해 실시간·시뮬레이션이 같음)이거나, 국면이 다시 켜졌는데 목표가 비어 있으면 다시 고른다."""
         b = self.book
+        if self.today.exposure <= 0 and not self.cfg.rot_regime_exit:
+            return                                  # 국면 0 동안 목표를 그대로 둠(보유 유지, 새 매수 없음)
         due = np.busday_count(dt.date(2000, 1, 3), day) % max(self.cfg.rot_every, 1) == 0
         if due or (self.today.exposure > 0 and not b.rot_target):
             b.rot_target, b.rot_out = self.rotation_pick(), set()
@@ -868,18 +882,29 @@ class Engine:
         """전일 종가까지의 일봉 rot_days일 수익률 상위(양수만, 추세 필터 통과 종목만)."""
         if self.today.exposure <= 0:
             return set()
-        n = self.cfg.rot_days
+        n, k0 = self.cfg.rot_days, self.cfg.rot_skip
         sc = {}
         for code in (self.codes if self.base_eligible is None else self.base_eligible):
             s = self.book.st.get(code)
             if s is None:
                 continue
             d = s.daily
-            if len(d) > n and d[-1 - n] > 0 and (not self.cfg.trend_ma_days or s.trend_ok):
-                r = d[-1] / d[-1 - n] - 1
+            if len(d) > n + k0 and d[-1 - n - k0] > 0 and (not self.cfg.trend_ma_days or s.trend_ok):
+                r = d[-1 - k0] / d[-1 - n - k0] - 1
                 if r > 0:
-                    sc[code] = r
-        top = sorted(sc, key=lambda k: -sc[k])[:self.cfg.rot_top]
+                    if self.cfg.rot_score == "sharpe":
+                        lr = np.diff(np.log(np.asarray([d[-k - k0] for k in range(n + 1, 0, -1)], float)))
+                        sd = float(lr.std())
+                        sc[code] = float(lr.sum()) / (sd * math.sqrt(n)) if sd > 0 else 0.0
+                    else:
+                        sc[code] = r
+        ranked = sorted(sc, key=lambda k: -sc[k])
+        top = ranked[:self.cfg.rot_top]
+        if self.cfg.rot_keep > self.cfg.rot_top:                # 버퍼: 순위 rot_keep 안의 보유 종목은 유지
+            inner = set(ranked[:self.cfg.rot_keep])
+            keep = [c for c in ranked if c in inner and self.book.st[c].qty > 0 and self.book.st[c].mode == "rot"]
+            keep = keep[:self.cfg.rot_top]
+            top = keep + [c for c in ranked if c not in keep][:self.cfg.rot_top - len(keep)]
         self.today.note += f" · 로테이션 {','.join(top) or '없음'}"
         return set(top)
 
@@ -914,12 +939,20 @@ class Engine:
             self.end_day()
             self.start_day(ts.date())
         s = self.book.get(code)
-        ref = s.closes[-1] if s.closes else s.last_price
+        ref = s.last_price or (s.closes[-1] if s.closes else 0)          # 마지막으로 받아들인 가격 기준
         if ref and not (ref / 1.3 < px < ref * 1.3):
-            s.bad_ticks += 1
-            if self.verbose and s.bad_ticks in (1, 100):
-                log(f"⚠️ {code} 이상 틱 무시: {px} (기준 {ref:.2f})")
-            return
+            if s.gap_px and abs(px / s.gap_px - 1) < 0.03:
+                s.gap_n += 1
+            else:
+                s.gap_px, s.gap_n = px, 1
+            if s.gap_n < 3:                                              # 한두 번 튄 값은 잘못된 틱으로 무시
+                s.bad_ticks += 1
+                if self.verbose and s.bad_ticks in (1, 100):
+                    log(f"⚠️ {code} 이상 틱 무시: {px} (기준 {ref:.2f})")
+                return
+            if self.verbose:
+                log(f"↕️ {code} {px / ref - 1:+.1%} 갭이 이어져 새 가격 수준으로 받아들임 ({ref:.2f} → {px:.2f})")
+        s.gap_px, s.gap_n = 0.0, 0
         s.last_price, s.last_ts = px, ts
         closed = self.strat.update_bar(s, ts, px)
         if self.cfg.entry_mode.startswith("rot") and self._rotation(code, s, px, ts):
@@ -949,7 +982,10 @@ class Engine:
     def _rotation(self, code, s, px, ts) -> bool:
         """모멘텀 로테이션 처리. True면 이 틱은 끝(저점매수 판단 안 함)."""
         b = self.book
-        tgt = b.rot_target if self.today.exposure > 0 else set()
+        if self.today.exposure > 0:
+            tgt = b.rot_target
+        else:                                       # 국면 0: 전부 팔거나(기본) 들고 있는 것만 유지(새로 안 삼)
+            tgt = set() if self.cfg.rot_regime_exit else {c for c in b.rot_target if b.st.get(c) and b.st[c].qty > 0}
         if s.qty > 0 and s.mode == "rot":
             if code not in tgt:
                 self._fill(code, "SELL", px, ts, "로테이션 제외(모멘텀 순위 밖 또는 국면 0)")
@@ -958,7 +994,8 @@ class Engine:
             if action == "SELL":
                 self._fill(code, "SELL", px, ts, reason)
             return True
-        if s.qty == 0 and code in tgt and code not in b.rot_out and b.can_enter(code, ts, None)[0]:
+        if (s.qty == 0 and code in tgt and code not in b.rot_out
+                and b.can_enter(code, ts, None, any_time=self.cfg.rot_at_open)[0]):
             self._fill(code, "BUY", px, ts, f"로테이션 매수: {self.cfg.rot_days}일 모멘텀 상위 {self.cfg.rot_top}")
             return True
         return self.cfg.entry_mode == "rot"
