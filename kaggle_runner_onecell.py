@@ -6,10 +6,11 @@
 # ============================================================================================
 # ===== 여기만 고치세요 =====
 REPO, BRANCH = "https://github.com/yeomin1024/stock", "main"
+STRATEGY     = "N2"         # 'N2' = 1000% 목표(모멘텀 로테이션+저점매수) / 'A' = 저점매수 개선 / 'C0' = 이전 기본값 (모두 레버리지 없음)
 RUN_COLLECT  = False        # 키움 5분봉 기록 모으기(한 번) → GitHub data/kiwoom_minute/
 KIWOOM_MOCK  = True         # 연결한 키움 키가 모의투자 키면 True, 실전 키면 False(조회만 함)
-RUN_SIM      = True         # 과거 실시간 시뮬레이션 → GitHub results/kaggle/sim/<날짜>/
-RUN_PAPER    = False        # 실시간 가상거래(미국 장중, 밤에 Save & Run All) → GitHub results/kaggle/paper/
+RUN_SIM      = True         # 과거 실시간 시뮬레이션 → GitHub results/kaggle/sim/<날짜>_<전략>/
+RUN_PAPER    = False        # 실시간 가상거래(미국 장중, 밤에 Save & Run All) → GitHub results/kaggle/paper/<전략>/
 QUOTE_SOURCE = "yfinance"   # 가상거래 시세: 'yfinance'(앱키·IP 불필요) / 'kiwoom'(틱 실시간, IP 등록 필요)
 PAPER_CASH   = 10000
 PUSH_RESULTS = True         # 결과 파일을 GitHub에 올림(GITHUB_TOKEN 필요, 없으면 건너뜀)
@@ -104,15 +105,19 @@ for n in ("market_regime_daily.csv", "sector_allocation_daily.csv", "industry_al
     if p:
         shutil.copy(p, os.path.join(SIG, n))
     print(f"신호 {n:30s} ← {p or '없음(SPY 규칙으로 대체)'}")
+PAPER_DIR = f"{RESULT_DIR}/paper/{STRATEGY}"                             # 전략마다 따로 쓰는 가상계좌
 for n in ("paper_account.json", "paper_trades.csv", "paper_equity.csv"):    # 가상계좌 이어 쓰기(GitHub에 올라간 것)
-    p = os.path.join(SRC, RESULT_DIR, "paper", n)
+    p = os.path.join(SRC, PAPER_DIR, n)
     if os.path.exists(p) and not os.path.exists(os.path.join(OUT, n)):
         shutil.copy(p, os.path.join(OUT, n)); print("이어 쓰기:", n)
 
-cfg = Config(paper_cash=PAPER_CASH, quote_source=QUOTE_SOURCE, signals_dir=SIG, mock=KIWOOM_MOCK,
+cfg = Config(**PRESETS[STRATEGY], paper_cash=PAPER_CASH, quote_source=QUOTE_SOURCE, signals_dir=SIG, mock=KIWOOM_MOCK,
              paper_state=f"{OUT}/paper_account.json", trade_log=f"{OUT}/paper_trades.csv", equity_log=f"{OUT}/paper_equity.csv")
+assert cfg.leverage == 1.0 and not (set(cfg.symbols) & LEVERAGED_ETFS), "레버리지(신용·레버리지 ETF) 사용 금지"
 TODAY = now_et().strftime("%Y-%m-%d")
-print(f"오늘 미국 정규장 {et_session_in_kst()} | 대상 {len(cfg.symbols)}종 | 수수료 {cfg.fee_pct}% | 국면 {cfg.regime} | 섹터필터 {cfg.sector_filter}")
+print(f"전략 {STRATEGY}: {PRESET_NOTES[STRATEGY]}")
+print(f"오늘 미국 정규장 {et_session_in_kst()} | 대상 {len(cfg.symbols)}종 | 수수료 {cfg.fee_pct}% | 레버리지 없음 | "
+      f"국면 {cfg.regime} | 섹터필터 {cfg.sector_filter}")
 
 
 def kiwoom_api_with_ip_wait(minutes_wait=30):
@@ -147,20 +152,8 @@ if RUN_SIM:
     import yfinance as yf, matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    codes = list(cfg.symbols)
-    raw = yf.download(codes, period="730d", interval="1h", prepost=False, group_by="ticker", auto_adjust=False, progress=False)
-    bars = {}
-    for c in codes:
-        try:
-            d = raw[c].dropna(subset=["Close"])
-        except KeyError:
-            continue
-        idx = d.index.tz_convert(ET).tz_localize(None)
-        df = pd.DataFrame({"ts": idx, "open": d["Open"].values, "high": d["High"].values, "low": d["Low"].values,
-                           "close": d["Close"].values})
-        t = df["ts"].dt.time
-        bars[c] = df[(t >= dt.time(9, 30)) & (t < dt.time(16, 0))].reset_index(drop=True)
-    print(len(bars), "종목 시간봉")
+    bars = download_hourly_yf(cfg.symbols)        # 상장 730일 미만 종목(BTSG 등)은 날짜 범위로 다시 받음
+    print(len(bars), "/", len(cfg.symbols), "종목 시간봉")
     sig = DailySignals(cfg, strict=False)
     for w in sig.warn:
         print("⚠️", w)
@@ -173,9 +166,10 @@ if RUN_SIM:
     save_sim(res, sim_dir, "sim", met, cfg)
     eq = res["equity"].assign(날짜=lambda d: pd.to_datetime(d["날짜"])).set_index("날짜")["자산($)"]
     s2 = spy_c.reindex(eq.index).ffill(); s2 = s2 / s2.iloc[0] * cfg.paper_cash
-    ax = eq.plot(label="paper (C1)", figsize=(11, 4)); s2.plot(ax=ax, label="SPY buy&hold"); ax.legend(); ax.grid(alpha=.3)
+    ax = eq.plot(label=f"paper ({STRATEGY})", figsize=(11, 4), logy=True); s2.plot(ax=ax, label="SPY buy&hold")
+    ax.set_xlabel(""); ax.legend(); ax.grid(alpha=.3); ax.set_title(f"{STRATEGY}: {met.get('수익률(%)')}%, MDD {met.get('MDD(%)')}% (log scale)")
     plt.savefig(f"{sim_dir}/sim_equity.png", dpi=110); plt.close("all")
-    push_results({f"{RESULT_DIR}/sim/{TODAY}": sim_dir}, f"과거 시뮬레이션 {TODAY}")
+    push_results({f"{RESULT_DIR}/sim/{TODAY}_{STRATEGY}": sim_dir}, f"과거 시뮬레이션 {TODAY} {STRATEGY}")
 
 # 4) 실시간 가상거래 (밤새: Save & Run All)
 if RUN_PAPER:
@@ -189,7 +183,7 @@ if RUN_PAPER:
     else:
         api = kiwoom_api_with_ip_wait() if QUOTE_SOURCE == "kiwoom" else None
         runner = LiveRunner(cfg, api)
-        paper_files = {f"{RESULT_DIR}/paper/{n}": f"{OUT}/{n}" for n in ("paper_account.json", "paper_trades.csv", "paper_equity.csv")}
+        paper_files = {f"{PAPER_DIR}/{n}": f"{OUT}/{n}" for n in ("paper_account.json", "paper_trades.csv", "paper_equity.csv")}
 
         async def _hourly_push():                    # 세션이 끊겨도 잃지 않게 1시간마다 중간 저장
             while True:
@@ -202,7 +196,7 @@ if RUN_PAPER:
             await runner.run()
         finally:
             _t.cancel()
-            push_results(paper_files, f"가상거래 {TODAY} 마감 — 자산 {usd(runner.book.equity())}")
+            push_results(paper_files, f"가상거래 {TODAY} {STRATEGY} 마감 — 자산 {usd(runner.book.equity())}")
 
 # 5) 기록 보기
 for f in (cfg.trade_log, cfg.equity_log):

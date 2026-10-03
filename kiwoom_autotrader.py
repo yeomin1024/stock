@@ -119,6 +119,9 @@ PRIOR_STOCK_EXCHANGE = {
 
 
 DEFAULT_UNIVERSE = {k: v for k, v in PRIOR_STOCK_EXCHANGE.items() if k != "AVB"}   # AVB: 야후 데이터 없음
+# 레버리지 상품(사용 금지 — 실행기에서 이 종목이 들어오거나 leverage ≠ 1이면 멈춤)
+LEVERAGED_ETFS = {"TQQQ", "QLD", "UPRO", "SSO", "SPXL", "TNA", "SOXL", "USD", "TECL", "ROM", "LABU", "FAS", "NVDL",
+                  "TSLL", "CONL", "SQQQ", "SOXS", "SPXU", "SDS", "TZA", "FNGU", "MSTU", "MSTX", "NVDU", "TSLT"}
 
 
 @dataclass
@@ -141,6 +144,9 @@ class Config:
     max_trades_per_symbol: int = 1
     daily_loss_pct: float = 2.0       # 당일 실현손실이 시작자산의 2%면 신규 매수 중단
     stop_loss_pct: float = 4.0
+    leverage: float = 1.0             # 연구용 가상 신용(매수 가능 금액 = 현금 + 자산×(L−1)). 사용 금지 → 1 고정(현금 안에서만)
+    margin_rate_pct: float = 7.0      # 빌린 금액(음수 현금)에 붙는 연 이자율 — 거래일마다 1/252씩
+    sym_scale: dict = field(default_factory=dict)   # {티커: k} 레버리지 ETF 등: 손절·익절·트레일·반등 폭을 k배
     # --- 저점 매수 ---
     bar_minutes: int = 60             # 지표를 계산하는 봉(분). 시세는 1분·틱으로 받아도 이 길이로 묶음
     rsi_period: int = 14
@@ -157,6 +163,23 @@ class Config:
     rsi_sell: float = 70.0
     # --- 추세·보유기간 ---
     trend_ma_days: int = 50           # >0이면 전일 종가가 일봉 N일 평균 위인 종목만 매수(상승 추세의 눌림목만)
+    mom_top: int = 0                  # >0이면 그날 매수 대상 중 일봉 mom_days일 수익률 상위 N종만(강한 종목의 눌림목만)
+    mom_days: int = 60
+    # --- 돌파 매수(추세 추종) ---
+    entry_mode: str = "dip"           # 'dip' = 저점매수 / 'brk' = 일봉 brk_days일 최고 종가 돌파 매수 / 'both' = 둘 다
+                                      # 'rot' = 모멘텀 로테이션 / 'rot+dip' = 로테이션 + 남는 자리에 저점매수
+    brk_days: int = 20
+    brk_stop_pct: float = 8.0         # 돌파 매수 손절(매수가 대비)
+    brk_trail_pct: float = 10.0       # 돌파 매수 추적 청산(보유 중 고점 대비)
+    brk_hold_days: int = 40           # 돌파 매수 최대 보유 거래일
+    # --- 모멘텀 로테이션: rot_every거래일마다 일봉 rot_days일 수익률 상위 rot_top종을 같은 비중으로 보유 ---
+    rot_top: int = 5
+    rot_days: int = 63
+    rot_every: int = 5
+    rot_pct: float = 20.0             # 로테이션 1종목 비중(가상자산 %)
+    rot_stop_pct: float = 0.0         # >0이면 보유 중 고점 대비 이만큼 빠지면 팔고 다음 리밸런싱까지 제외
+    # --- 변동성 맞춤 폭: >0이면 종목의 최근 20일 일간 변동성 ÷ 이 값(%)만큼 손절·익절·트레일·반등 폭을 늘이고 줄임(0.5~3배) ---
+    vol_ref_pct: float = 0.0
     hold_overnight: bool = True       # True면 장마감에 팔지 않고 최대 max_hold_days 거래일 보유(스윙)
     max_hold_days: int = 5            # 수수료 0.07% 재검증(R10)에서 IS 샤프 최고
     # --- 시간 (ET) ---
@@ -173,6 +196,7 @@ class Config:
     # --- 일일 필터 (이전 예측 코드) ---
     signals_dir: str = "signals"      # 이전 예측 결과 폴더(market_regime_daily.csv · sector_allocation_daily.csv …)
     regime: str = "M"                 # 'M' = 시장 국면 모델 목표비중(없으면 SPY로 대체) / 'spy' = SPY 200일선·60일 모멘텀 / 'off'
+    regime_scale: bool = True         # True = 목표비중만큼 매수 금액을 줄임 / False = 목표비중 > 0이면 전액(켜기·끄기로만 씀)
     sector_filter: bool = True        # S: 섹터 배분 0인 섹터의 종목은 신규 매수 금지
     industry_filter: bool = False     # I: 산업 배분 0인 산업의 종목은 신규 매수 금지(그날 산업 배분이 전부 0이면 적용 안 함)
     rank_col: str = ""                # I 점수로 종목 순위: 'P(상승,ML)' / 'P(부모초과)' / '목표비중' / '' = 안 씀
@@ -182,6 +206,23 @@ class Config:
     status_every_min: int = 10
     trade_log: str = "paper_trades.csv"
     equity_log: str = "paper_equity.csv"
+
+
+# 미리 정한 전략 묶음(모두 레버리지 없음: 현금 안에서 · 주식만) — Config(**PRESETS["N1"], ...) 처럼 씀
+# 숫자는 과거 실시간 시뮬레이션(시간봉 2023-11 ~ 2026-10, 수수료 0.07%, 58종)
+PRESETS = {
+    "C0": {},                                                          # 이전 기본값: 시간봉 저점매수
+    "A": {"max_trades_per_symbol": 2, "daily_loss_pct": 100.0},        # 저점매수 개선: 종목당 하루 2회 · 일일 손실한도 끔
+    "N2": {"entry_mode": "rot+dip", "rot_top": 5, "rot_pct": 20.0, "rot_days": 126, "rot_every": 5,   # 1000% 목표
+           "max_positions": 8, "max_trades_per_symbol": 2, "daily_loss_pct": 100.0, "regime_scale": False,
+           "trend_ma_days": 0, "sector_filter": False},
+}
+PRESET_NOTES = {
+    "C0": "시간봉 저점매수 · M 비중·S 필터 — 과거 +260% (MDD −7%)",
+    "A": "C0 + 종목당 2회 · 일일 손실한도 끔 — 과거 +364% (MDD −7%)",
+    "N2": "126일 모멘텀 상위 5종 로테이션(5거래일마다) + 남는 현금 시간봉 저점매수, M 국면 켜기·끄기 — "
+          "과거 +1,806% (MDD −20%), 2023년 S&P100에선 +180%",
+}
 
 
 # %% [markdown]
@@ -355,6 +396,10 @@ class SymState:
     bar_c: float = 0.0
     daily: deque = field(default_factory=lambda: deque(maxlen=300))   # 일봉 종가(추세 필터)
     trend_ok: bool = True
+    brk_level: float = math.inf  # 돌파 기준가(전일까지 일봉 N일 최고 종가)
+    vk: float = 1.0              # 변동성 맞춤 배율(vol_ref_pct 사용 시) — 매일 갱신
+    vk_hold: float = 1.0         # 보유 중 포지션은 매수할 때의 배율로 고정
+    mode: str = ""               # 보유 중인 포지션의 진입 방식 'dip' / 'brk' / 'rot'
     ag: float = math.nan         # RSI(와일더) 평균 상승폭 — 봉마다 갱신
     al: float = math.nan
     armed: bool = False
@@ -415,19 +460,39 @@ class LowHighStrategy:
 
     def decide(self, st: SymState, px: float, now: dt.datetime):
         c = self.cfg
+        k = (c.sym_scale.get(st.code, 1.0) if c.sym_scale else 1.0) * (st.vk_hold if st.qty > 0 else st.vk)
+        if st.qty > 0 and st.mode == "rot":
+            st.peak = max(st.peak, px)
+            if c.rot_stop_pct and px <= st.peak * (1 - c.rot_stop_pct * k / 100):
+                return "SELL", f"로테이션 손절: 고점 {usd(st.peak)} 대비 -{c.rot_stop_pct * k:.1f}% ({(px / st.entry - 1) * 100:+.2f}%)"
+            return None, ""
+        if st.qty > 0 and st.mode == "brk":
+            st.peak = max(st.peak, px)
+            gain = px / st.entry - 1
+            if px <= st.entry * (1 - c.brk_stop_pct * k / 100):
+                return "SELL", f"돌파 손절 {gain * 100:+.2f}%"
+            if px <= st.peak * (1 - c.brk_trail_pct * k / 100):
+                return "SELL", f"돌파 추적청산: 고점 {usd(st.peak)} 대비 -{c.brk_trail_pct * k:.1f}% ({gain * 100:+.2f}%)"
+            if hhmm(now) >= c.force_exit and np.busday_count(st.entry_time.date(), now.date()) >= c.brk_hold_days - 1:
+                return "SELL", f"돌파 보유기한 청산 {gain * 100:+.2f}%"
+            return None, ""
+        if st.qty == 0 and c.entry_mode in ("brk", "both") and px > st.brk_level:
+            return "BUY", f"돌파매수: 일봉 {c.brk_days}일 최고 종가 {usd(st.brk_level)} 돌파"
+        if st.qty == 0 and c.entry_mode == "brk":
+            return None, ""
         if st.qty > 0:
             st.peak = max(st.peak, px)
             gain = px / st.entry - 1
-            if px <= st.entry * (1 - c.stop_loss_pct / 100):
+            if px <= st.entry * (1 - c.stop_loss_pct * k / 100):
                 return "SELL", f"손절 {gain * 100:+.2f}%"
             if hhmm(now) >= c.force_exit:
                 if not c.hold_overnight:
                     return "SELL", f"장마감 청산 {gain * 100:+.2f}%"
                 if np.busday_count(st.entry_time.date(), now.date()) >= c.max_hold_days - 1:
                     return "SELL", f"보유기한 청산 {gain * 100:+.2f}%"
-            if (st.peak / st.entry - 1) * 100 >= c.min_profit_pct:
+            if (st.peak / st.entry - 1) * 100 >= c.min_profit_pct * k:
                 hot = st.rsi >= c.rsi_sell or (not math.isnan(st.upper) and st.peak >= st.upper)
-                trail = c.trail_pct * (0.5 if hot else 1.0)
+                trail = c.trail_pct * k * (0.5 if hot else 1.0)
                 if px <= st.peak * (1 - trail / 100):
                     return "SELL", f"고점 {usd(st.peak)} 대비 -{trail:.2f}% → 익절 {gain * 100:+.2f}%"
             return None, ""
@@ -439,11 +504,11 @@ class LowHighStrategy:
                 return None, f"저점 구간 진입 (RSI {st.rsi:.0f}, 하단 {usd(st.lower)})"
             return None, ""
         st.low = min(st.low, px)
-        if (px >= st.mid or px >= st.low * (1 + c.max_chase_pct / 100)
+        if (px >= st.mid or px >= st.low * (1 + c.max_chase_pct * k / 100)
                 or (now - st.armed_at).total_seconds() > c.arm_timeout_min * 60):
             st.armed, st.low = False, math.inf
             return None, "저점 감시 해제"
-        if px >= st.low * (1 + c.rebound_pct / 100):
+        if px >= st.low * (1 + c.rebound_pct * k / 100):
             return "BUY", f"저점 {usd(st.low)} 대비 +{(px / st.low - 1) * 100:.2f}% 반등 (RSI {st.rsi:.0f})"
         return None, ""
 
@@ -459,10 +524,11 @@ class Book:
         self.cfg, self.trade_log, self.verbose = cfg, trade_log, verbose
         self.st: dict[str, SymState] = {}
         self.start_cash = self.cash = float(cfg.paper_cash)
-        self.realized = self.realized_today = self.fees = 0.0
+        self.realized = self.realized_today = self.fees = self.interest = 0.0
         self.day_start_equity = self.cash
         self.halted = False
         self.exposure = 1.0
+        self.rot_target, self.rot_out = set(), set()     # 모멘텀 로테이션: 지금 들고 있어야 할 종목 / 손절돼 쉬는 종목
         self.trades, self.equity_rows = [], []
         self.day = None
 
@@ -478,6 +544,10 @@ class Book:
         return sum(1 for s in self.st.values() if s.qty > 0)
 
     def new_day(self, day):
+        if self.cash < 0:                 # 가상 신용 이자(빌린 금액 × 연이율/252) — 실시간은 매일 새로 켜도 하루 한 번
+            i = -self.cash * self.cfg.margin_rate_pct / 100 / 252
+            self.cash -= i
+            self.interest += i
         self.day = day
         self.realized_today, self.halted = 0.0, False
         self.day_start_equity = self.equity()
@@ -508,11 +578,13 @@ class Book:
             return False, "동시 보유 한도"
         return True, ""
 
-    def order_qty(self, px) -> int:
+    def order_qty(self, px, pct=None) -> int:
         if px <= 0:
             return 0
-        budget = self.equity() * self.cfg.position_pct / 100 * self.exposure
-        budget = min(budget, self.cash / (1 + self.cfg.fee_pct / 100))
+        eq = self.equity()
+        budget = eq * (self.cfg.position_pct if pct is None else pct) / 100 * self.exposure
+        power = self.cash + eq * max(self.cfg.leverage - 1, 0.0)      # 레버리지 1이면 현금만
+        budget = min(budget, power / (1 + self.cfg.fee_pct / 100))
         return int(budget // px)
 
     def sim_price(self, side, px) -> float:
@@ -542,7 +614,7 @@ class Book:
             self.realized += pnl
             self.realized_today += pnl
             s.qty -= qty
-            if reason.startswith("손절"):
+            if reason.startswith(("손절", "돌파 손절", "로테이션 손절")):
                 s.stopped_today = True
             if s.qty == 0:
                 s.cooldown_until = now + dt.timedelta(seconds=c.cooldown_sec)
@@ -553,7 +625,7 @@ class Book:
                "수익률(%)": None if pnl is None else round(pnl / (qty * s.entry) * 100 if s.entry else 0, 3),
                "가상현금($)": round(self.cash, 2), "사유": reason}
         if side == "SELL" and s.qty == 0:
-            s.entry = 0.0
+            s.entry, s.mode = 0.0, ""
         self.trades.append(rec)
         if self.verbose:
             extra = "" if pnl is None else f" 손익 {usd(pnl, True)} (당일 {usd(self.realized_today, True)})"
@@ -570,7 +642,7 @@ class Book:
     def snapshot(self, day=None):
         row = {"날짜": str(day or self.day), "자산($)": round(self.equity(), 2), "현금($)": round(self.cash, 2),
                "당일실현($)": round(self.realized_today, 2), "누적실현($)": round(self.realized, 2),
-               "누적수수료($)": round(self.fees, 2), "국면노출": round(self.exposure, 2),
+               "누적수수료($)": round(self.fees, 2), "누적이자($)": round(self.interest, 2), "국면노출": round(self.exposure, 2),
                "보유종목": ",".join(f"{k}:{s.qty}" for k, s in self.st.items() if s.qty)}
         self.equity_rows.append(row)
         return row
@@ -578,7 +650,9 @@ class Book:
     # ---- 저장/불러오기 (실시간 가상계좌) ----
     def save_state(self, path):
         state = {"cash": self.cash, "start_cash": self.start_cash, "realized": self.realized, "fees": self.fees,
-                 "positions": {k: {"qty": s.qty, "entry": s.entry, "peak": s.peak, "last": s.last_price,
+                 "interest": self.interest, "rot_target": sorted(self.rot_target), "rot_out": sorted(self.rot_out),
+                 "positions": {k: {"qty": s.qty, "entry": s.entry, "peak": s.peak, "last": s.last_price, "mode": s.mode,
+                                   "vk": s.vk_hold,
                                    "entry_time": s.entry_time.isoformat() if s.entry_time else None}
                                for k, s in self.st.items() if s.qty},
                  "saved_at": dt.datetime.now(KST).isoformat()}
@@ -592,9 +666,12 @@ class Book:
             st = json.load(f)
         self.cash, self.start_cash = float(st["cash"]), float(st.get("start_cash", st["cash"]))
         self.realized, self.fees = float(st.get("realized", 0)), float(st.get("fees", 0))
+        self.interest = float(st.get("interest", 0))
+        self.rot_target, self.rot_out = set(st.get("rot_target", [])), set(st.get("rot_out", []))
         for k, p in (st.get("positions") or {}).items():
             s = self.get(k)
             s.qty, s.entry, s.peak, s.last_price = int(p["qty"]), float(p["entry"]), float(p["peak"]), float(p["last"])
+            s.mode, s.vk_hold = p.get("mode", "dip"), float(p.get("vk", 1.0))
             et = p.get("entry_time")
             s.entry_time = dt.datetime.fromisoformat(et) if et else now_et()
         return True
@@ -708,14 +785,14 @@ class DailySignals:
         if self.s is not None:
             r = self._asof(self.s, day)
             if r is not None:
-                keep = {k for k in elig if ind[k] and
+                keep = {k for k in elig if ind[k] == "MARKET" or ind[k] and         # MARKET = 지수 ETF(섹터 필터 없음)
                         to_num(r.get(f"{PRIOR_INDUSTRY_TO_SECTOR.get(ind[k])} 배분비중"), 0) > 0}
                 notes.append(f"S {len(keep)}/{len(elig)}")
                 elig = keep
         if self.i is not None:
             r = self._asof(self.i, day)
             if r is not None and to_num(r.get("산업배분 합계"), 0) > 0:
-                keep = {k for k in elig if ind[k] and to_num(r.get(ind[k]), 0) > 0}
+                keep = {k for k in elig if ind[k] == "MARKET" or ind[k] and to_num(r.get(ind[k]), 0) > 0}
                 notes.append(f"I {len(keep)}/{len(elig)}")
                 elig = keep
             else:
@@ -727,6 +804,8 @@ class DailySignals:
                 top = sorted(score, key=lambda k: -score[k])[:c.watchlist_size]
                 notes.append(f"순위 상위{len(top)}")
                 elig = set(top)
+        if not c.regime_scale:
+            exp = 1.0 if exp > 0 else 0.0
         return DaySignal(exp, elig, " · ".join(notes))
 
 
@@ -745,6 +824,7 @@ class Engine:
         self.verbose = verbose
         self.day = None
         self.today = DaySignal()
+        self.base_eligible = None     # 모멘텀 상위로 줄이기 전의 그날 매수 대상
         self.entry_filter = None      # (code, ts, SymState) -> bool : 지표 모델로 매수 신호 거르기(없으면 전부 통과)
         self.entry_signal = None      # (code, ts, SymState) -> float|None : 지표 예측 모델 점수. 있으면 규칙 대신 이걸로 매수
         self.entry_thr = 0.0
@@ -754,18 +834,70 @@ class Engine:
         self.book.new_day(day)
         self.today = self.signals.for_day(day) if self.signals else DaySignal()
         self.book.exposure = self.today.exposure
+        self.base_eligible = self.today.eligible
         self.refresh_trend()
+        if self.cfg.mom_top > 0:
+            self.today.eligible = self.momentum_top(self.base_eligible)
+        if self.cfg.entry_mode.startswith("rot"):
+            self.rotation_update(day)
         if self.verbose:
             n = len(self.codes) if self.today.eligible is None else len(self.today.eligible)
             log(f"📅 {day} | 국면 노출 {self.today.exposure:.0%} | 매수 대상 {n}/{len(self.codes)}종 | "
                 f"가상자산 {usd(self.book.equity())} | {self.today.note}")
 
+    def momentum_top(self, eligible):
+        """매수 대상 중 일봉 N일 수익률 상위 종목(전일 종가까지 — 그날 정보 없음)."""
+        n, base = self.cfg.mom_days, set(self.codes) if eligible is None else set(eligible)
+        sc = {}
+        for code in base:
+            d = self.book.get(code).daily
+            if len(d) > n and d[-1 - n] > 0:
+                sc[code] = d[-1] / d[-1 - n] - 1
+        top = set(sorted(sc, key=lambda k: -sc[k])[:self.cfg.mom_top])
+        self.today.note += f" · 모멘텀 상위{len(top)}"
+        return top
+
+    def rotation_update(self, day):
+        """리밸런싱 날(날짜로 정해 실시간·시뮬레이션이 같음)이거나, 국면이 다시 켜졌는데 목표가 비어 있으면 다시 고른다."""
+        b = self.book
+        due = np.busday_count(dt.date(2000, 1, 3), day) % max(self.cfg.rot_every, 1) == 0
+        if due or (self.today.exposure > 0 and not b.rot_target):
+            b.rot_target, b.rot_out = self.rotation_pick(), set()
+
+    def rotation_pick(self):
+        """전일 종가까지의 일봉 rot_days일 수익률 상위(양수만, 추세 필터 통과 종목만)."""
+        if self.today.exposure <= 0:
+            return set()
+        n = self.cfg.rot_days
+        sc = {}
+        for code in (self.codes if self.base_eligible is None else self.base_eligible):
+            s = self.book.st.get(code)
+            if s is None:
+                continue
+            d = s.daily
+            if len(d) > n and d[-1 - n] > 0 and (not self.cfg.trend_ma_days or s.trend_ok):
+                r = d[-1] / d[-1 - n] - 1
+                if r > 0:
+                    sc[code] = r
+        top = sorted(sc, key=lambda k: -sc[k])[:self.cfg.rot_top]
+        self.today.note += f" · 로테이션 {','.join(top) or '없음'}"
+        return set(top)
+
     def refresh_trend(self):
-        n = self.cfg.trend_ma_days
-        if n:
-            for s in self.book.st.values():
-                d = s.daily
+        n, nb, vr = self.cfg.trend_ma_days, self.cfg.brk_days, self.cfg.vol_ref_pct
+        brk = self.cfg.entry_mode in ("brk", "both")
+        for s in self.book.st.values():
+            d = s.daily
+            if n:
                 s.trend_ok = len(d) >= n and d[-1] > sum(d[-k] for k in range(1, n + 1)) / n
+            if brk:
+                s.brk_level = max(d[-k] for k in range(1, nb + 1)) if len(d) >= nb else math.inf
+            if vr > 0:
+                if len(d) >= 21:
+                    sd = float(np.std([d[-i] / d[-i - 1] - 1 for i in range(1, 21)])) * 100
+                    s.vk = min(max(sd / vr, 0.5), 3.0)
+                else:
+                    s.vk = 1.0
 
     def end_day(self):
         if self.day is not None:
@@ -790,6 +922,8 @@ class Engine:
             return
         s.last_price, s.last_ts = px, ts
         closed = self.strat.update_bar(s, ts, px)
+        if self.cfg.entry_mode.startswith("rot") and self._rotation(code, s, px, ts):
+            return
         if self.entry_signal is not None:                  # 모델 매수 모드: 봉이 닫힐 때 한 번 판단, 매도는 규칙(손절·익절·기한)
             if s.qty > 0:
                 action, reason = self.strat.decide(s, px, ts)
@@ -812,6 +946,23 @@ class Engine:
         elif action == "SELL" and s.qty > 0:
             self._fill(code, "SELL", px, ts, reason)
 
+    def _rotation(self, code, s, px, ts) -> bool:
+        """모멘텀 로테이션 처리. True면 이 틱은 끝(저점매수 판단 안 함)."""
+        b = self.book
+        tgt = b.rot_target if self.today.exposure > 0 else set()
+        if s.qty > 0 and s.mode == "rot":
+            if code not in tgt:
+                self._fill(code, "SELL", px, ts, "로테이션 제외(모멘텀 순위 밖 또는 국면 0)")
+                return True
+            action, reason = self.strat.decide(s, px, ts)
+            if action == "SELL":
+                self._fill(code, "SELL", px, ts, reason)
+            return True
+        if s.qty == 0 and code in tgt and code not in b.rot_out and b.can_enter(code, ts, None)[0]:
+            self._fill(code, "BUY", px, ts, f"로테이션 매수: {self.cfg.rot_days}일 모멘텀 상위 {self.cfg.rot_top}")
+            return True
+        return self.cfg.entry_mode == "rot"
+
     def on_clock(self, ts):
         """틱이 뜸해도 손절·장마감 청산이 되게 주기적으로 호출."""
         for code, s in self.book.st.items():
@@ -823,14 +974,19 @@ class Engine:
     def _fill(self, code, side, px, ts, reason):
         s, b = self.book.get(code), self.book
         if side == "BUY":
+            rot = reason.startswith("로테이션")
             fill = b.sim_price("BUY", px)
-            qty = b.order_qty(fill)
+            qty = b.order_qty(fill, self.cfg.rot_pct if rot else None)
             s.armed, s.low = False, math.inf
             if qty < 1:
                 return
             s.buys_today += 1
+            s.mode = "rot" if rot else "brk" if reason.startswith("돌파매수") else "dip"
+            s.vk_hold = s.vk
             b.apply_fill(code, "BUY", qty, fill, ts, reason)
         else:
+            if reason.startswith("로테이션 손절"):
+                b.rot_out.add(code)
             b.apply_fill(code, "SELL", s.qty, b.sim_price("SELL", px), ts, reason)
 
     def status_df(self) -> pd.DataFrame:
@@ -944,12 +1100,17 @@ class LiveRunner:
             if len(s.closes) and not s.last_price:
                 s.last_price = s.closes[-1]
             log(f"{code} 워밍업 {len(s.closes)}봉[{src}] RSI {s.rsi:.1f}")
-        if self.cfg.trend_ma_days:
+        if self.cfg.trend_ma_days or self.cfg.mom_top or self.cfg.entry_mode != "dip":
             try:
                 daily = await asyncio.to_thread(_daily_closes_yf, list(self.exch), self.clock().date())
                 for code, closes in daily.items():
                     self.book.get(code).daily.extend(closes[-300:])
                 self.engine.refresh_trend()
+                if self.cfg.mom_top:
+                    self.engine.today.eligible = self.engine.momentum_top(self.engine.base_eligible)
+                if self.cfg.entry_mode.startswith("rot"):
+                    self.engine.rotation_update(self.clock().date())
+                    log(f"모멘텀 로테이션 목표: {sorted(self.book.rot_target)}")
                 ok = [k for k in self.exch if self.book.get(k).trend_ok]
                 log(f"일봉 {self.cfg.trend_ma_days}일선 위(매수 가능): {ok}")
             except Exception as e:
@@ -1079,6 +1240,50 @@ def load_bars_yf(code, minutes=1, period="7d", start=None, end=None) -> pd.DataF
                         "close": df["Close"].values, "volume": df["Volume"].values})
     t = out["ts"].dt.time
     return out[(t >= dt.time(9, 30)) & (t < dt.time(16, 0))].dropna().reset_index(drop=True)
+
+
+def download_hourly_yf(codes, period="730d") -> dict:
+    """야후 시간봉(정규장) {티커: DataFrame(ts, open, high, low, close, volume)}.
+    상장한 지 730일이 안 된 종목(예: BTSG)은 야후가 기간 요청을 '상장일부터'로 바꿔
+    'must be within the last 730 days' 오류로 거부하므로, 빠진 종목만 최근 729일 날짜 범위로 다시 받는다."""
+    import logging, yfinance as yf
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)      # 위 거부 메시지는 아래에서 다시 받으므로 숨김
+
+    def clean(d):
+        if isinstance(d.columns, pd.MultiIndex):
+            d = d.copy()
+            d.columns = d.columns.get_level_values(0)
+        d = d.dropna(subset=["Close"])
+        idx = d.index.tz_convert(ET).tz_localize(None) if d.index.tz is not None else d.index
+        df = pd.DataFrame({"ts": idx, "open": d["Open"].values, "high": d["High"].values, "low": d["Low"].values,
+                           "close": d["Close"].values, "volume": d["Volume"].values})
+        t = df["ts"].dt.time
+        return df[(t >= dt.time(9, 30)) & (t < dt.time(16, 0))].drop_duplicates("ts").reset_index(drop=True)
+
+    codes = list(codes)
+    raw = yf.download(codes, period=period, interval="1h", prepost=False, group_by="ticker", auto_adjust=False,
+                      progress=False, threads=True)
+    out = {}
+    for c in codes:
+        try:
+            d = clean(raw[c] if isinstance(raw.columns, pd.MultiIndex) else raw)
+        except KeyError:
+            continue
+        if len(d):
+            out[c] = d
+    start = (dt.date.today() - dt.timedelta(days=729)).isoformat()
+    for c in [c for c in codes if c not in out]:
+        try:
+            d = clean(yf.download(c, start=start, interval="1h", prepost=False, auto_adjust=False, progress=False))
+        except Exception as e:
+            log(f"{c}: 시간봉 받기 실패 — 시뮬레이션에서 제외 ({str(e)[:120]})")
+            continue
+        if len(d):
+            out[c] = d
+            log(f"{c}: 상장 기간이 짧아 최근 729일로 다시 받음 — {d['ts'].min():%Y-%m-%d}부터 {len(d)}봉")
+        else:
+            log(f"{c}: 시간봉 없음 — 시뮬레이션에서 제외")
+    return out
 
 
 def _daily_closes_yf(codes, before: dt.date) -> dict:
