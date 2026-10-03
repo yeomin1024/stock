@@ -123,8 +123,8 @@ DEFAULT_UNIVERSE = {k: v for k, v in PRIOR_STOCK_EXCHANGE.items() if k != "AVB"}
 
 @dataclass
 class Config:
-    """기본값 = 과거 실시간 시뮬레이션 R05~R08에서 채택한 C1(시간봉 · 일봉 50일 추세 · 최대 10일 스윙 ·
-    5종목×20% · M 국면 목표비중 · S 섹터 배분 필터)."""
+    """기본값 = 과거 실시간 시뮬레이션에서 채택한 C1(시간봉 · 일봉 50일 추세 · 5종목×20% · M 국면 목표비중 ·
+    S 섹터 배분 필터) + 실제 수수료 0.07%로 다시 고른 최대 보유 5거래일(R10)."""
     # --- 계정 / 시세 ---
     appkey: str = ""
     secretkey: str = ""
@@ -158,7 +158,7 @@ class Config:
     # --- 추세·보유기간 ---
     trend_ma_days: int = 50           # >0이면 전일 종가가 일봉 N일 평균 위인 종목만 매수(상승 추세의 눌림목만)
     hold_overnight: bool = True       # True면 장마감에 팔지 않고 최대 max_hold_days 거래일 보유(스윙)
-    max_hold_days: int = 10
+    max_hold_days: int = 5            # 수수료 0.07% 재검증(R10)에서 IS 샤프 최고
     # --- 시간 (ET) ---
     entry_start: str = "09:35"
     entry_end: str = "15:30"
@@ -167,7 +167,7 @@ class Config:
     cooldown_sec: int = 300
     market_hours_check: bool = True
     # --- 비용 (%) ---
-    fee_pct: float = 0.25
+    fee_pct: float = 0.07             # 사용자 계좌 미국주식 수수료(매수·매도 각각)
     sell_fee_pct: float = 0.003
     slippage_pct: float = 0.05
     # --- 일일 필터 (이전 예측 코드) ---
@@ -290,6 +290,23 @@ class KiwoomUSAPI:
         closes = [to_price(r.get("cur_prc")) for r in rows]
         closes = closes[::-1] if newest_first else closes
         return [c for c in closes if c > 0]
+
+    def minute_history(self, code, exch, minutes=5, strt_dt=None, max_pages=300, log_first=False):
+        """분봉 원자료를 쪽(page)마다 이어 받아 그대로 돌려준다. (rows, 쪽수)"""
+        body = {"stex_tp": exch, "stk_cd": code, "strt_dt": strt_dt or now_et().strftime("%Y%m%d"),
+                "tic_scope": str(minutes), "upd_stkpc_tp": "1", "exrt_appl_tp": "0"}
+        rows, pages, cont, key = [], 0, "N", ""
+        while pages < max_pages:
+            j, h = self.request("/api/us/chart", "usa06011", body, cont, key)
+            page = j.get("result_list") or []
+            if log_first and pages == 0 and page:
+                log(f"  {code} 첫 쪽 {len(page)}봉 | 첫 행 {page[0]} | 마지막 행 {page[-1]}")
+            rows += page
+            pages += 1
+            if h.get("cont-yn") != "Y" or not page:
+                break
+            cont, key = "Y", h.get("next-key", "")
+        return rows, pages
 
     def order(self, side, code, exch, qty) -> dict:
         if not ALLOW_ORDERS:
@@ -1199,6 +1216,102 @@ def save_sim(res, out_dir, name, metrics: dict = None, cfg: Config = None):
         json.dump({"metrics": metrics or {}, "config": {k: v for k, v in asdict(cfg).items()
                                                          if k not in ("appkey", "secretkey", "alloc_map")} if cfg else {}},
                   f, ensure_ascii=False, indent=1, default=str)
+
+
+# %% [markdown]
+# ## 10. 분봉 기록 모으기 (분봉 예측 모델 학습용)
+# 야후는 5분봉 60일·1분봉 30일까지만 줍니다. 분봉 모델을 제대로 학습하려면 몇 달 이상이 필요합니다.
+# - `collect_kiwoom_minutes`: 키움 `usa06011`로 받을 수 있는 만큼 받아 종목별 CSV로 저장.
+#   과거를 몇 쪽까지 주는지, 시간 표기가 뉴욕/한국 중 무엇인지 자동 판별하고, 야후 5분봉과 겹치는 구간을 대조해 보고합니다.
+# - `archive_yf_minutes`: 야후 1분봉(최근 7일)을 받아 기존 보관 파일에 이어 붙임 — 매주 한 번 돌리면 기록이 계속 쌓입니다.
+
+# %%
+def kiwoom_rows_to_bars(rows):
+    """키움 분봉 원자료 → (DataFrame[ts, open, high, low, close, volume] 뉴욕 시간, '시간표기')"""
+    df = pd.DataFrame(rows)
+    if df.empty or "cntr_tm" not in df:
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"]), "?"
+    tm = df["cntr_tm"].astype(str).str.strip()
+    bd = (df["bus_dt"] if "bus_dt" in df else pd.Series([""] * len(df))).astype(str).str.strip()
+    full = tm.str.len() >= 14
+    raw = np.where(full, tm.str[:14], bd.str[:8] + tm.str[-6:].str.zfill(6))
+    ts = pd.Series(pd.to_datetime(raw, format="%Y%m%d%H%M%S", errors="coerce"))
+    hrs = ts.dt.hour
+    kst = bool(((hrs >= 21) | (hrs <= 7)).mean() > 0.5)       # 미국 정규장이 한국 시간으로 찍힌 경우
+    if kst:
+        if not full.all():                                       # 영업일자 + 한국 시각: 자정 넘은 봉은 다음 날
+            ts = ts + pd.to_timedelta(np.where(hrs <= 12, 1, 0), unit="D")
+        ts = ts.dt.tz_localize(KST).dt.tz_convert(ET).dt.tz_localize(None)
+    out = pd.DataFrame({"ts": ts, "open": df["open_pric"].map(to_price), "high": df["high_pric"].map(to_price),
+                        "low": df["low_pric"].map(to_price), "close": df["cur_prc"].map(to_price),
+                        "volume": df["trde_qty"].map(lambda v: abs(to_num(v)))}).dropna(subset=["ts"])
+    t = out["ts"].dt.time
+    out = out[(t >= dt.time(9, 30)) & (t < dt.time(16, 0)) & (out["close"] > 0)]
+    return out.drop_duplicates("ts").sort_values("ts").reset_index(drop=True), ("한국시간" if kst else "뉴욕시간")
+
+
+def collect_kiwoom_minutes(api: KiwoomUSAPI, symbols: dict, minutes=5, out_dir="kiwoom_minute", days_back=400,
+                           max_pages=300, compare_yf=3):
+    """종목별로 받을 수 있는 만큼 분봉을 받아 out_dir/<종목>_<분>m.csv.gz 로 저장하고 범위표를 돌려준다."""
+    os.makedirs(out_dir, exist_ok=True)
+    rows_out = []
+    early = (now_et() - dt.timedelta(days=days_back)).strftime("%Y%m%d")
+    for i, (code, exch) in enumerate(symbols.items()):
+        t0 = time.time()
+        try:
+            best = None
+            for sd in (None, early):          # 시작일자를 '오늘'·'먼 과거' 두 가지로 받아 더 긴 쪽을 씀(의미가 문서에 없어서)
+                rows, pages = api.minute_history(code, exch, minutes, sd, max_pages, log_first=(i == 0))
+                bars, tz = kiwoom_rows_to_bars(rows)
+                n_days = bars["ts"].dt.date.nunique() if len(bars) else 0
+                if best is None or n_days > best[3]:
+                    best = (bars, tz, pages, n_days, sd or "오늘")
+                if n_days >= 60:
+                    break
+            bars, tz, pages, n_days, sd = best
+            bars.to_csv(os.path.join(out_dir, f"{code}_{minutes}m.csv.gz"), index=False)
+            rec = {"종목": code, "봉": len(bars), "거래일": n_days, "처음": bars["ts"].min() if len(bars) else None,
+                   "마지막": bars["ts"].max() if len(bars) else None, "쪽수": pages, "시간표기": tz, "시작일자": sd,
+                   "초": round(time.time() - t0, 1)}
+        except Exception as e:
+            rec = {"종목": code, "오류": str(e)[:200]}
+        if i < compare_yf and rec.get("봉"):
+            try:                                  # 야후 5분봉과 겹치는 구간 종가 대조
+                y = load_bars_yf(code, minutes, "60d").set_index("ts")["close"]
+                k = bars.set_index("ts")["close"]
+                both = pd.concat([k, y], axis=1, join="inner").dropna()
+                rec["야후대조_겹친봉"] = len(both)
+                rec["야후대조_일치율(%)"] = round(((both.iloc[:, 0] / both.iloc[:, 1] - 1).abs() < 0.002).mean() * 100, 1) if len(both) else None
+            except Exception as e:
+                rec["야후대조_일치율(%)"] = f"실패 {e}"
+        rows_out.append(rec)
+        log(f"[{i + 1}/{len(symbols)}] {rec}")
+    cov = pd.DataFrame(rows_out)
+    cov.to_csv(os.path.join(out_dir, "_coverage.csv"), index=False, encoding="utf-8-sig")
+    return cov
+
+
+def archive_yf_minutes(codes, out_dir="yf_minute_archive"):
+    """야후 1분봉 최근 7일을 받아 종목별 보관 파일에 이어 붙임(중복 제거). 매주 실행하면 기록이 쌓인다."""
+    import yfinance as yf
+    os.makedirs(out_dir, exist_ok=True)
+    raw = yf.download(list(codes), period="7d", interval="1m", prepost=False, group_by="ticker", auto_adjust=False,
+                      progress=False, threads=True)
+    rep = {}
+    for c in codes:
+        try:
+            d = raw[c].dropna(subset=["Close"])
+        except KeyError:
+            continue
+        idx = d.index.tz_convert(ET).tz_localize(None)
+        new = pd.DataFrame({"ts": idx, "open": d["Open"].values, "high": d["High"].values, "low": d["Low"].values,
+                            "close": d["Close"].values, "volume": d["Volume"].values})
+        p = os.path.join(out_dir, f"{c}_1m.csv.gz")
+        old = pd.read_csv(p, parse_dates=["ts"]) if os.path.exists(p) else new.iloc[:0]
+        allb = pd.concat([old, new]).drop_duplicates("ts").sort_values("ts")
+        allb.to_csv(p, index=False)
+        rep[c] = (len(allb), str(allb["ts"].min())[:10], str(allb["ts"].max())[:10])
+    return rep
 
 
 # %% [local-only]

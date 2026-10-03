@@ -1,0 +1,210 @@
+# ============================================================================================
+#  미국주식 가상계좌 자동매매 — Kaggle 한 셀 실행기 (실제 주문 없음: 가상계좌 $10,000, 주문 잠금)
+#  준비: Settings → Internet 켜기 / Add-ons → Secrets 연결
+#        KIWOOM_APPKEY, KIWOOM_SECRETKEY (키움 분봉 수집·키움 시세 쓸 때)
+#        GITHUB_TOKEN (결과를 GitHub에 올릴 때 — 이 저장소 Contents 읽기·쓰기 권한)
+# ============================================================================================
+# ===== 여기만 고치세요 =====
+REPO, BRANCH = "https://github.com/yeomin1024/stock", "main"
+RUN_COLLECT  = False        # 키움 5분봉 기록 모으기(한 번) → GitHub data/kiwoom_minute/
+KIWOOM_MOCK  = True         # 연결한 키움 키가 모의투자 키면 True, 실전 키면 False(조회만 함)
+RUN_SIM      = True         # 과거 실시간 시뮬레이션 → GitHub results/kaggle/sim/<날짜>/
+RUN_PAPER    = False        # 실시간 가상거래(미국 장중, 밤에 Save & Run All) → GitHub results/kaggle/paper/
+QUOTE_SOURCE = "yfinance"   # 가상거래 시세: 'yfinance'(앱키·IP 불필요) / 'kiwoom'(틱 실시간, IP 등록 필요)
+PAPER_CASH   = 10000
+PUSH_RESULTS = True         # 결과 파일을 GitHub에 올림(GITHUB_TOKEN 필요, 없으면 건너뜀)
+RESULT_DIR   = "results/kaggle"
+# ===========================
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "-q", "install", "websockets", "yfinance"], check=False)
+import os, glob, json, shutil, time, asyncio, datetime as dt
+
+SRC, PUSH_DIR, OUT = "/tmp/kiwoom_src", "/tmp/kiwoom_push", "/kaggle/working"
+
+
+def _secret(name):
+    try:
+        from kaggle_secrets import UserSecretsClient
+        return UserSecretsClient().get_secret(name) or ""
+    except Exception:
+        return os.environ.get(name, "")
+
+
+TOKEN = _secret("GITHUB_TOKEN")
+
+
+def _git(args, cwd=None):
+    url = REPO.rstrip("/").removesuffix(".git") + ".git"
+    args = [a.replace("@@REPO@@", url.replace("https://", f"https://x-access-token:{TOKEN}@", 1) if TOKEN else url)
+            for a in args]
+    r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+    msg = (r.stdout or "") + (r.stderr or "")
+    return r.returncode, (msg.replace(TOKEN, "***") if TOKEN else msg)
+
+
+def _clone(dst):
+    shutil.rmtree(dst, ignore_errors=True)
+    return _git(["clone", "--depth", "1", "-b", BRANCH, "@@REPO@@", dst])
+
+
+def push_results(files: dict, message: str):
+    """files = {저장소 안 경로: Kaggle 파일/폴더}. 새로 받아 복사 → commit → push (충돌 나면 다시 받아 3번까지)."""
+    if not PUSH_RESULTS:
+        return
+    if not TOKEN:
+        print("⚠️ GITHUB_TOKEN이 없어 결과를 GitHub에 올리지 않습니다(Kaggle Output 탭에는 남아 있음)")
+        return
+    for attempt in range(3):
+        c, m = _clone(PUSH_DIR)
+        if c:
+            print("❌ 올리기용 clone 실패:", m[-300:]); return
+        _git(["config", "user.name", "kaggle-runner"], PUSH_DIR)
+        _git(["config", "user.email", "kaggle-runner@users.noreply.github.com"], PUSH_DIR)
+        n = 0
+        for rel, src in files.items():
+            dst = os.path.join(PUSH_DIR, rel)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True); n += 1
+            elif os.path.exists(src):
+                os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); n += 1
+        if n == 0:
+            print("올릴 파일 없음"); return
+        _git(["add", "-A"], PUSH_DIR)
+        c, m = _git(["commit", "-m", message], PUSH_DIR)
+        if c and "nothing to commit" in m:
+            print("바뀐 내용 없음 — 올리지 않음"); return
+        c, m = _git(["push", "origin", BRANCH], PUSH_DIR)
+        if c == 0:
+            print(f"✅ GitHub에 올림: {message}", flush=True); return
+        print("push 실패, 다시 시도:", m[-200:], flush=True); time.sleep(5)
+    print("❌ GitHub push 3번 실패 — Kaggle Output 탭의 파일은 남아 있습니다")
+
+
+# 1) 코드·신호·이전 가상계좌 받기
+c, m = _clone(SRC)
+if c:
+    raise RuntimeError("git clone 실패 — REPO 주소·Internet 설정을 확인하세요\n" + m)
+py = glob.glob(f"{SRC}/**/kiwoom_autotrader.py", recursive=True)
+if not py:
+    raise FileNotFoundError(f"저장소에 kiwoom_autotrader.py가 없습니다 → {REPO}/upload/{BRANCH}")
+sys.modules.pop("kiwoom_autotrader", None)
+sys.path.insert(0, os.path.dirname(py[0]))
+from kiwoom_autotrader import *
+assert not ALLOW_ORDERS, "주문 잠금이 풀려 있습니다"
+
+
+def newest(name):
+    hits = sorted(glob.glob(f"/kaggle/input/**/{name}", recursive=True), key=os.path.getmtime, reverse=True)
+    return hits[0] if hits else (glob.glob(f"{SRC}/signals/{name}") or [None])[0]
+
+
+SIG = os.path.join(OUT, "signals"); os.makedirs(SIG, exist_ok=True)
+for n in ("market_regime_daily.csv", "sector_allocation_daily.csv", "industry_allocation_daily.csv", "industry_daily.csv"):
+    p = newest(n)
+    if p:
+        shutil.copy(p, os.path.join(SIG, n))
+    print(f"신호 {n:30s} ← {p or '없음(SPY 규칙으로 대체)'}")
+for n in ("paper_account.json", "paper_trades.csv", "paper_equity.csv"):    # 가상계좌 이어 쓰기(GitHub에 올라간 것)
+    p = os.path.join(SRC, RESULT_DIR, "paper", n)
+    if os.path.exists(p) and not os.path.exists(os.path.join(OUT, n)):
+        shutil.copy(p, os.path.join(OUT, n)); print("이어 쓰기:", n)
+
+cfg = Config(paper_cash=PAPER_CASH, quote_source=QUOTE_SOURCE, signals_dir=SIG, mock=KIWOOM_MOCK,
+             paper_state=f"{OUT}/paper_account.json", trade_log=f"{OUT}/paper_trades.csv", equity_log=f"{OUT}/paper_equity.csv")
+TODAY = now_et().strftime("%Y-%m-%d")
+print(f"오늘 미국 정규장 {et_session_in_kst()} | 대상 {len(cfg.symbols)}종 | 수수료 {cfg.fee_pct}% | 국면 {cfg.regime} | 섹터필터 {cfg.sector_filter}")
+
+
+def kiwoom_api_with_ip_wait(minutes_wait=30):
+    import requests
+    ip = requests.get("https://api.ipify.org", timeout=10).text
+    print(f"이 세션의 공인 IP: {ip} → openapi.kiwoom.com {'모의투자 ' if KIWOOM_MOCK else ''}App Key 관리의 허용 IP에 등록", flush=True)
+    api = KiwoomUSAPI(_secret("KIWOOM_APPKEY"), _secret("KIWOOM_SECRETKEY"), KIWOOM_MOCK)
+    for _ in range(minutes_wait * 2):
+        try:
+            api.get_token(); print("✅ 키움 토큰 OK", flush=True); return api
+        except Exception as e:
+            print("⏳ 토큰 실패 — IP 등록을 기다립니다:", str(e).splitlines()[0], flush=True); time.sleep(30)
+    raise RuntimeError("토큰을 받지 못했습니다 — IP 등록·모의/실전 키(KIWOOM_MOCK)를 확인하세요")
+
+
+# 2) 키움 분봉 기록 모으기
+if RUN_COLLECT:
+    api = kiwoom_api_with_ip_wait()
+    syms = dict(cfg.symbols); syms.update({"QQQ": "ND", "SPY": "NA"})
+    cov = collect_kiwoom_minutes(api, syms, 5, f"{OUT}/kiwoom_minute")
+    spy = cov[cov["종목"] == "SPY"].to_dict("records")
+    if not spy or not (spy[0].get("봉") or 0) > 0:                        # SPY 거래소 코드가 'NA'가 아니면 'NY'로
+        print("SPY 재시도(NY):", collect_kiwoom_minutes(api, {"SPY": "NY"}, 5, f"{OUT}/kiwoom_minute_spy", compare_yf=0).to_dict("records"))
+        if os.path.exists(f"{OUT}/kiwoom_minute_spy/SPY_5m.csv.gz"):
+            shutil.copy(f"{OUT}/kiwoom_minute_spy/SPY_5m.csv.gz", f"{OUT}/kiwoom_minute/SPY_5m.csv.gz")
+    display(cov)
+    print("받은 거래일 중앙값:", cov.get("거래일", pd.Series(dtype=float)).median())
+    push_results({"data/kiwoom_minute": f"{OUT}/kiwoom_minute"}, f"키움 5분봉 기록 {TODAY}")
+
+# 3) 과거 실시간 시뮬레이션
+if RUN_SIM:
+    import yfinance as yf, matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    codes = list(cfg.symbols)
+    raw = yf.download(codes, period="730d", interval="1h", prepost=False, group_by="ticker", auto_adjust=False, progress=False)
+    bars = {}
+    for c in codes:
+        try:
+            d = raw[c].dropna(subset=["Close"])
+        except KeyError:
+            continue
+        idx = d.index.tz_convert(ET).tz_localize(None)
+        df = pd.DataFrame({"ts": idx, "open": d["Open"].values, "high": d["High"].values, "low": d["Low"].values,
+                           "close": d["Close"].values})
+        t = df["ts"].dt.time
+        bars[c] = df[(t >= dt.time(9, 30)) & (t < dt.time(16, 0))].reset_index(drop=True)
+    print(len(bars), "종목 시간봉")
+    sig = DailySignals(cfg, strict=False)
+    for w in sig.warn:
+        print("⚠️", w)
+    res = simulate(cfg, bars, sig)
+    spy_c = yf.Ticker("SPY").history(period="5y", interval="1d", auto_adjust=True)["Close"]
+    spy_c.index = spy_c.index.tz_localize(None).normalize()
+    met = sim_metrics(res, spy_close=spy_c)
+    print(json.dumps(met, ensure_ascii=False, indent=1))
+    sim_dir = f"{OUT}/sim"
+    save_sim(res, sim_dir, "sim", met, cfg)
+    eq = res["equity"].assign(날짜=lambda d: pd.to_datetime(d["날짜"])).set_index("날짜")["자산($)"]
+    s2 = spy_c.reindex(eq.index).ffill(); s2 = s2 / s2.iloc[0] * cfg.paper_cash
+    ax = eq.plot(label="paper (C1)", figsize=(11, 4)); s2.plot(ax=ax, label="SPY buy&hold"); ax.legend(); ax.grid(alpha=.3)
+    plt.savefig(f"{sim_dir}/sim_equity.png", dpi=110); plt.close("all")
+    push_results({f"{RESULT_DIR}/sim/{TODAY}": sim_dir}, f"과거 시뮬레이션 {TODAY}")
+
+# 4) 실시간 가상거래 (밤새: Save & Run All)
+if RUN_PAPER:
+    nw = now_et()
+    close = nw.replace(hour=16, minute=0, second=0, microsecond=0)
+    hrs = None if (nw >= close or nw.weekday() >= 5) else (close - nw).total_seconds() / 3600
+    if hrs is None:
+        print(f"오늘(ET) 미국 장이 끝났거나 주말입니다. 다음 정규장({et_session_in_kst()}) 전에 다시 실행하세요.")
+    elif hrs > 11:
+        raise RuntimeError(f"장 마감까지 {hrs:.1f}시간 — Kaggle 세션(최대 12시간)이 장중에 끊길 수 있어 시작하지 않습니다.")
+    else:
+        api = kiwoom_api_with_ip_wait() if QUOTE_SOURCE == "kiwoom" else None
+        runner = LiveRunner(cfg, api)
+        paper_files = {f"{RESULT_DIR}/paper/{n}": f"{OUT}/{n}" for n in ("paper_account.json", "paper_trades.csv", "paper_equity.csv")}
+
+        async def _hourly_push():                    # 세션이 끊겨도 잃지 않게 1시간마다 중간 저장
+            while True:
+                await asyncio.sleep(3600)
+                runner.book.save_state(cfg.paper_state)
+                await asyncio.to_thread(push_results, paper_files, f"가상거래 중간 저장 {now_et():%Y-%m-%d %H:%M} ET")
+
+        _t = asyncio.create_task(_hourly_push())
+        try:
+            await runner.run()
+        finally:
+            _t.cancel()
+            push_results(paper_files, f"가상거래 {TODAY} 마감 — 자산 {usd(runner.book.equity())}")
+
+# 5) 기록 보기
+for f in (cfg.trade_log, cfg.equity_log):
+    if os.path.exists(f):
+        display(pd.read_csv(f, encoding="utf-8-sig").tail(20))
