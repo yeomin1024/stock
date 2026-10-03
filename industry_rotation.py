@@ -1,5 +1,9 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.63.0 - 2026-10-03 - [R141 ★ 다음날 하락확률 날짜별 표시(13r) · 00R_하락확률신뢰도 — I★ 규칙·비중 무변경]
+#    사용자 지시(2026-10-03): "… 일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어 …".
+#    alloc['r117']에 날짜 × 자산 확률 P(산업 + 부모 섹터 · SPY) 보관 → S.s_r141_block(표적 3개) → 00R · 00 줄 · 13r에 보유 가중 · SPY 확률 · 다음날 결과 열.
+#    연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.62.2 - 2026-10-03 - [R139 K 통로 확장 — market_budget_handoff에 M 지표 프레임 · SPY · XLK 총수익 추가 · I★ 무변경]
 #    K v0.29.0 R139 조각(M 지표 UMCSENT_Z · CPIAUCSL_CHG120 · XLK 63일 낙폭 · XLK/SPY 120일) 조건을 K가 같은 프로세스에서 읽게 한다.
 #    _set_market_handoff(res, M, sres): 'ind'(res['ind'] 사본) · 'cal' · 'spy_adj'(res['px_adj']) · 'xlk_tr'(S sectors['XLK'] ret_cc_full 누적 · 없으면 M px_dict XLK).
@@ -2029,7 +2033,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.62.2"
+VERSION = "v0.63.0"
 VERSION_DATE = "2026-10-03"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -5034,7 +5038,8 @@ def r117_stage_i(target_ws: Dict[str, pd.DataFrame], label_star: str, results: D
                 label_star = _ls117
             _r117_diag = {"enabled": True, "table": _T117, "quality": _q117, "best": str(_T117.iloc[_bi117]["문턱"]) + (
                 "" if _bi117 == 0 else "·" + str(_T117.iloc[_bi117]["빠진 몫"])), "best_idx": _bi117, "live_applied": _live117,
-                "p_today": (_P117.reindex(columns=[c for c in _w117.columns if c in _P117.columns]).ffill().iloc[-1] if len(_P117) else None)}
+                "p_today": (_P117.reindex(columns=[c for c in _w117.columns if c in _P117.columns]).ffill().iloc[-1] if len(_P117) else None),
+                "P": _P117}                                                                   # [v0.63.0 R141] 날짜 × 자산 확률(13r 열 · 00R 평가)
             log("ROTATION", kv(event="r117_down_prob", auc=round(float(_q117.get("auc", np.nan)), 4) if _q117.get("ok") else None,
                                best=_r117_diag["best"], live_applied=_live117, rows=len(_T117), sec=round(time.time() - _t117, 1),
                                note=("⚠ I★ 교체(R117 종합 1위) — 되돌리기 i_overrides={'R117_LIVE': False}" if _live117
@@ -15613,6 +15618,27 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _r105_lines = [("★★★ R117 다음날 하락확률 문턱(I★)", f"⚠ 산출 실패 — {_d117['error']} (I★ 무변경)")] + list(_r105_lines)
         except Exception as _e117:
             log("REPORT", kv(event="r117_sheet_failed", layer="I", err=type(_e117).__name__, msg=str(_e117)[:160]), M=M, level="warning")
+        # ---- [v0.63.0 R141 ★ 사용자 지시 2026-10-03] 13r에 날짜별 다음날 하락확률(보유 가중 · SPY) · 00R_하락확률신뢰도 · 00 줄 ----
+        try:
+            _P141 = ((alloc or {}).get("r117") or {}).get("P")
+            if isinstance(_P141, pd.DataFrame) and len(_P141) and hasattr(M, "r141_eval") and hasattr(S, "s_r141_block"):
+                _bt141 = (alloc.get("bts") or {}).get(alloc.get("label_star"))
+                _tw141 = alloc["target_w"]
+                _co141 = pd.DataFrame(alloc.get("ret_co")).reindex(index=_tw141.index)
+                _oc141 = pd.DataFrame(alloc.get("ret_oc")).reindex(index=_tw141.index)
+                _sh141, _l141 = S.s_r141_block(alloc, _P141, M, "I★ · 산업", port_ret=(_bt141["strategy_ret"] if isinstance(_bt141, pd.DataFrame) else None),
+                                               tw=_tw141, ret_co=_co141, ret_oc=_oc141, ret_cc=(1.0 + _co141) * (1.0 + _oc141) - 1.0)
+                sheets[M.R141_SHEET] = _sh141
+                _r105_lines = list(_l141) + list(_r105_lines)
+                if isinstance(sheets.get("13r_일별배분수익"), pd.DataFrame):
+                    _c141 = {"다음날 하락확률 보유가중(%) · 이날 종가 기준": M.r141_weighted(_P141, _tw141)}
+                    if "SPY" in _P141.columns:
+                        _c141["다음날 하락확률 SPY(%) · 이날 종가 기준"] = _P141["SPY"]
+                    _sp141 = (ires.get("user_rel_src") or {}).get("spy_ret")
+                    sheets["13r_일별배분수익"] = M.r141_pnl_cols(sheets["13r_일별배분수익"], _c141,
+                                                             outcomes=({"다음날 SPY 결과": pd.Series(_sp141, dtype=float)} if _sp141 is not None else None))
+        except Exception as _e141:
+            log("REPORT", kv(event="r141_failed", layer="I", err=type(_e141).__name__, msg=str(_e141)[:160]), M=M, level="warning")
         # ---- [v0.62.0 R135 ★ 사용자 승인] 리더 상관 필터 · 평활 42 — 00 줄(묶음 맨 앞) ----
         try:
             _l135 = r135_line(alloc, (ires.get("user_rel_src") or {}).get("spy_ret"), S)
@@ -15630,7 +15656,7 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _r105_lines = list(_r105_lines) + list(_l110)
             except Exception as _e110:
                 log("REPORT", kv(event="state_verify_failed", layer="I", err=type(_e110).__name__, msg=str(_e110)[:160]), M=M, level="warning")
-        sheets = S.sheets_to_front(sheets, "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
+        sheets = S.sheets_to_front(sheets, "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
                                    "00V_상태판정검증", "00T_산업상태판",
                                    "00R_신뢰도판정", "00B_수익곡선비교",
                                    "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교", "00E_산업상승확률")

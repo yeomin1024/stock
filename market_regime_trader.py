@@ -22,6 +22,14 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.83.0 - 2026-10-03 - [R141 ★ 다음날 하락확률 날짜별 표시(13r) · 00R_하락확률신뢰도(네 층 공통 함수) — 신호·목표비중 무변경]
+#    사용자 지시(2026-10-03): "… 일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어 …".
+#    (공통 · M 원본) r141_eval(확률 · 실제 하락 · 수익 → AUC · 월 단위 부트스트랩 95% 구간 · Brier · 기저 Brier(결정일 전날까지 하락 비율) · 기술점수 BSS ·
+#      로그손실 · 보정 기울기 · 상위/하위 20% · 연도별 · 십분위 · 롤링 252일 AUC → 판정 R141_RULE: 신뢰 가능(쓸 만함 · AUC ≥ 0.55) / 통계적으로 있음 · 너무 약함 / 약함 / 신뢰 불가) ·
+#      r141_target · r141_stack(날짜 × 자산 풀드) · r141_weighted(보유 가중 확률) · r141_sheet(00R · 00 줄) · r141_pnl_cols(13r에 '다음날 하락확률' · '다음날 결과' 열).
+#    (M) 13r_일별배분수익에 '다음날 하락확률 SPY(%) · 이날 종가 기준' · '다음날 SPY 결과' · '다음날 포트 결과' · 00R 표적 3개(SPY 다음 체결일 · SPY 다음날 종가 ·
+#      M 포트 다음날(보유일만)) · 00 맨 앞 묶음에 R141 줄. 로컬(ms135): SPY 확률 '약함(참고만)' — AUC 0.530 [0.505~0.553] · BSS +0.0045 · 연도 5/9 · 기울기 0.75 ·
+#      M 포트(보유일) '신뢰 불가' AUC 0.500. COMPANION_MIN_VERSIONS S v0.98.0 · I v0.63.0 · K v0.31.0. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.82.0 - 2026-10-01 - [R133 ★ 조각 19개 겹침 라이브(사용자 지시 "가장 결과 좋은 버전으로 업데이트") · 자료 자동 수신]
 #    사용자 지시(2026-10-01): "그럼 가장 결과 좋은 버전으로 업데이트하고 그 다음 섹터 코드를 수정해 …".
 #    ── R124~R133 연구(r124/ ~ r133/ · 코드 밖 · mrep116 재생 · 현금 이자 0 · 5bp · 레버리지 없음 · 긴 이력 = 대용 1999~2017) ──
@@ -11012,6 +11020,245 @@ def r118_sheet(layer: str, q: Dict[str, Any], mkt_block: Optional[Dict[str, Any]
     return df, [line]
 
 
+# =============================================================================
+# [v1.83.0 R141 ★ 사용자 지시(2026-10-03) "일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어"]
+#   네 층 공통 — r141_eval(확률 · 실제 하락 · 수익) → 신뢰도 지표 · 사전 고정 판정 / r141_sheet → 00R_하락확률신뢰도 · 00 줄 /
+#   r141_pnl_cols → 13r_일별배분수익에 '다음날 하락확률' 열 · '다음날 결과' 열(표시 전용 · 라이브 무변경).
+# =============================================================================
+R141_SHEET = "00R_하락확률신뢰도"
+R141_RULE = ("판정(2026-10-03 · 둥근 값): 통계 조건 = AUC 95% 구간 하한 > 0.50 그리고 Brier 기술점수 > 0 그리고 연도별 AUC > 0.5인 해 ≥ 70% "
+             "그리고 보정 기울기 0.5~2.0(1보다 크면 확률이 소심 · 작으면 과신) · ① 신뢰 가능(쓸 만함) = 통계 조건 + AUC ≥ 0.55(매매 판단에 쓸 만한 크기) · ② 통계적으로 있음 · 너무 약함(참고만) = "
+             "통계 조건만(AUC < 0.55) · ③ 약함(참고만) = AUC > 0.52이고 (구간 하한 > 0.50 또는 연도 ≥ 60%) · ④ 신뢰 불가(동전 수준) = 그 밖")
+
+
+def _r141_dates(ix) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex(ix.get_level_values(0) if isinstance(ix, pd.MultiIndex) else ix)
+
+
+def r141_eval(p: pd.Series, y: pd.Series, r: Optional[pd.Series] = None, eval_start: str = "2018-01-01", n_boot: int = 400,
+              seed: int = 141) -> Dict[str, Any]:
+    """[v1.83.0 R141] 다음날 하락확률 신뢰도 — p(결정일 t의 확률) · y(그 다음 기간 실제 하락 1/0) · r(그 기간 수익 · 선택)는 같은 인덱스
+    (날짜 또는 (날짜, 자산) MultiIndex). 기저율 = 결정일 전날까지 실제 하락 비율(확장 · 인과 · 2018 이전 이력 포함).
+    지표: AUC · 월 단위 부트스트랩 95% 구간 · Brier · 기저 Brier · 기술점수(BSS = 1 − Brier/기저) · 로그손실 · 보정 기울기(실제 ~ 확률 OLS) ·
+    상위 20% vs 하위 20%(실제 하락 비율 · 평균 수익) · 연도별 · 십분위 · 롤링 252일 AUC(월말) → R141_RULE 판정."""
+    df = pd.DataFrame({"p": pd.to_numeric(p, errors="coerce"), "y": pd.to_numeric(y, errors="coerce")})
+    df["r"] = pd.to_numeric(r, errors="coerce").reindex(df.index) if r is not None else np.nan
+    df = df[df["y"].notna()]
+    d_all = _r141_dates(df.index)
+    dm = df["y"].groupby(d_all).agg(["sum", "count"])
+    base_d = (dm["sum"].cumsum() / dm["count"].cumsum()).shift(1)
+    df["base"] = base_d.reindex(d_all).values
+    df = df[df["p"].notna() & df["base"].notna()]
+    d = _r141_dates(df.index)
+    df = df[d >= pd.Timestamp(eval_start)]
+    d = _r141_dates(df.index)
+    out: Dict[str, Any] = {"n": int(len(df))}
+    if len(df) < 100 or df["y"].nunique() < 2:
+        out["verdict"] = "판정 불가(표본 부족)"
+        out["why"] = f"표본 {len(df)}"
+        return out
+    pv, yv, bv, rv = df["p"].to_numpy(float), df["y"].to_numpy(float), df["base"].to_numpy(float), df["r"].to_numpy(float)
+
+    def _bss(pp, yy, bb):
+        b0 = float(np.mean((bb - yy) ** 2))
+        return 1.0 - float(np.mean((pp - yy) ** 2)) / b0 if b0 > 0 else np.nan
+    auc = _r117_auc(pv, yv)
+    ep = np.clip(pv, 1e-6, 1 - 1e-6); eb = np.clip(bv, 1e-6, 1 - 1e-6)
+    vp = float(np.var(pv))
+    slope = float(np.cov(pv, yv, bias=True)[0, 1] / vp) if vp > 1e-12 else np.nan
+    q20, q80 = np.quantile(pv, [0.2, 0.8])
+    top, bot = pv >= q80, pv <= q20
+    out.update({"down_rate": float(yv.mean()), "p_mean": float(pv.mean()), "p_lo": float(np.quantile(pv, 0.05)), "p_hi": float(np.quantile(pv, 0.95)),
+                "auc": auc, "brier": float(np.mean((pv - yv) ** 2)), "brier_base": float(np.mean((bv - yv) ** 2)), "bss": _bss(pv, yv, bv),
+                "logloss": float(-np.mean(yv * np.log(ep) + (1 - yv) * np.log(1 - ep))),
+                "logloss_base": float(-np.mean(yv * np.log(eb) + (1 - yv) * np.log(1 - eb))),
+                "slope": slope, "intercept": float(yv.mean() - (slope if slope == slope else 0.0) * pv.mean()),
+                "top_down": float(yv[top].mean()), "bot_down": float(yv[bot].mean()),
+                "top_r": float(np.nanmean(rv[top])) if np.isfinite(rv[top]).any() else np.nan,
+                "bot_r": float(np.nanmean(rv[bot])) if np.isfinite(rv[bot]).any() else np.nan})
+    # 월 단위 부트스트랩(같은 달 안 상관 보존)
+    mon = d.to_period("M")
+    groups = pd.Series(np.arange(len(df))).groupby(np.asarray(mon.astype(str))).apply(lambda s: s.to_numpy()).tolist()
+    rng = np.random.default_rng(int(seed))
+    au_b, bs_b = [], []
+    for _ in range(int(n_boot)):
+        ii = np.concatenate([groups[k] for k in rng.integers(0, len(groups), len(groups))])
+        au_b.append(_r117_auc(pv[ii], yv[ii]))
+        bs_b.append(_bss(pv[ii], yv[ii], bv[ii]))
+    au_b, bs_b = np.asarray(au_b, float), np.asarray(bs_b, float)
+    out["auc_ci"] = (float(np.nanquantile(au_b, 0.025)), float(np.nanquantile(au_b, 0.975)))
+    out["bss_ci"] = (float(np.nanquantile(bs_b, 0.025)), float(np.nanquantile(bs_b, 0.975)))
+    out["p_auc_le_05"] = float(np.nanmean(au_b <= 0.5))
+    # 연도별
+    yrs = []
+    for yr, ix in pd.Series(np.arange(len(df))).groupby(d.year):
+        ii = ix.to_numpy()
+        yrs.append({"해": int(yr), "표본": int(len(ii)), "실제 하락 비율": round(float(yv[ii].mean()), 4), "평균 확률": round(float(pv[ii].mean()), 4),
+                    "AUC": round(_r117_auc(pv[ii], yv[ii]), 4), "기술점수(BSS)": round(_bss(pv[ii], yv[ii], bv[ii]), 4)})
+    Y = pd.DataFrame(yrs)
+    out["years"] = Y
+    out["year_share"] = float((Y["AUC"] > 0.5).mean()) if len(Y) else np.nan
+    # 십분위 보정
+    try:
+        qq = pd.qcut(pd.Series(pv), 10, labels=False, duplicates="drop")
+        Dq = pd.DataFrame({"q": qq, "p": pv, "y": yv, "r": rv}).groupby("q").agg(p=("p", "mean"), y=("y", "mean"), n=("y", "size"), r=("r", "mean"))
+        out["deciles"] = Dq.reset_index(drop=True)
+    except Exception:
+        out["deciles"] = None
+    # 롤링 252일(날짜 기준) AUC · 월말
+    try:
+        ud = pd.DatetimeIndex(sorted(set(d)))
+        me = pd.Series(ud, index=ud).groupby(ud.to_period("M")).max()
+        roll = {}
+        for t in me.values:
+            lo = ud[max(0, ud.get_loc(t) - 251)]
+            m_ = (d >= lo) & (d <= t)
+            if int(m_.sum()) >= 150:
+                roll[pd.Timestamp(t)] = _r117_auc(pv[m_], yv[m_])
+        R = pd.Series(roll, dtype=float)
+        out["roll"] = {"월": int(R.notna().sum()), "0.5 넘은 비율": float((R > 0.5).mean()) if len(R) else np.nan,
+                       "최소": float(R.min()) if len(R) else np.nan, "최대": float(R.max()) if len(R) else np.nan,
+                       "마지막": float(R.dropna().iloc[-1]) if R.notna().any() else np.nan}
+    except Exception:
+        out["roll"] = {}
+    lo_, hi_ = out["auc_ci"]
+    trust = (lo_ > 0.5 and out["bss"] > 0 and out["year_share"] >= 0.7 and (0.5 <= slope <= 2.0))
+    weak = (auc > 0.52 and (lo_ > 0.5 or out["year_share"] >= 0.6))
+    out["verdict"] = ("신뢰 가능(쓸 만함)" if (trust and auc >= 0.55) else ("통계적으로 있음 · 너무 약함(참고만)" if trust else
+                      ("약함(참고만)" if weak else "신뢰 불가(동전 수준)")))
+    why = []
+    why.append(f"AUC {auc:.3f} [{lo_:.3f}~{hi_:.3f}]" + (" ✓" if lo_ > 0.5 else " ✗ 구간이 0.5를 포함"))
+    why.append(f"BSS {out['bss']:+.4f}" + (" ✓" if out["bss"] > 0 else " ✗ 기저율(과거 하락 비율)보다 못함"))
+    why.append(f"연도 AUC>0.5 {int((Y['AUC'] > 0.5).sum())}/{len(Y)}" + (" ✓" if out["year_share"] >= 0.7 else " ✗"))
+    why.append(f"보정 기울기 {slope:.2f}" + (" ✓" if 0.5 <= slope <= 2.0 else " ✗(확률 크기가 실제 빈도와 안 맞음)"))
+    why.append(f"크기 AUC ≥ 0.55" + (" ✓" if auc >= 0.55 else " ✗(매매 판단에 쓰기엔 작음)"))
+    out["why"] = " · ".join(why)
+    return out
+
+
+def r141_target(p: pd.Series, fwd: pd.Series, mask: Optional[pd.Series] = None) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """날짜 Series p · 결정일 기준 다음 기간 수익 fwd(같은 날짜 인덱스) → (p, y = fwd < 0, r = fwd) — mask가 있으면 그 날만."""
+    p = pd.to_numeric(pd.Series(p), errors="coerce")
+    f = pd.to_numeric(pd.Series(fwd), errors="coerce").reindex(p.index)
+    m = f.notna() & p.notna()
+    if mask is not None:
+        m &= pd.Series(mask).reindex(p.index).fillna(False).astype(bool)
+    return p[m], (f[m] < 0).astype(float), f[m]
+
+
+def r141_stack(P: pd.DataFrame, F: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """날짜 × 자산 확률 P · 다음 기간 수익 F → (날짜, 자산) 풀드 (p, y, r)."""
+    cols = [c for c in P.columns if c in F.columns]
+    p = P[cols].stack()
+    f = F[cols].reindex(P.index).stack()
+    j = p.index.intersection(f.index)
+    p, f = p.reindex(j), f.reindex(j)
+    m = p.notna() & f.notna()
+    return p[m], (f[m] < 0).astype(float), f[m]
+
+
+def r141_weighted(P: pd.DataFrame, W: pd.DataFrame) -> pd.Series:
+    """보유 가중 하락확률(결정일 목표비중 W × 자산 확률 P · 비중 합으로 나눔 · 보유 없는 날 NaN)."""
+    cols = [c for c in W.columns if c in P.columns]
+    w = W[cols].astype(float).clip(lower=0.0).reindex(P.index).fillna(0.0)
+    pp = P[cols].reindex(w.index)
+    num = (w * pp).sum(axis=1, min_count=1)
+    den = w.where(pp.notna(), 0.0).sum(axis=1)
+    return (num / den.where(den > 1e-9)).astype(float)
+
+
+def r141_sheet(layer: str, evals: List[Tuple[str, str, Dict[str, Any]]]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v1.83.0 R141] 00R_하락확률신뢰도 — A 요약(표적별 지표 · 판정) · B 연도별 · C 십분위 보정 · D 판정 기준 · 읽는 법. 00 줄 1개."""
+    rows, yr, dc = [], [], []
+    for nm, tgt, e in evals:
+        e = e or {}
+        ci, bci, ro = e.get("auc_ci") or (np.nan, np.nan), e.get("bss_ci") or (np.nan, np.nan), e.get("roll") or {}
+        rows.append({"블록": "A 요약", "대상": nm, "표적(무엇을 맞히나)": tgt, "판정": e.get("verdict", "-"), "판정 이유": e.get("why", ""),
+                     "표본": e.get("n"), "실제 하락 비율": e.get("down_rate"), "평균 확률": e.get("p_mean"),
+                     "확률 범위(5~95%)": (f"{e['p_lo']:.3f}~{e['p_hi']:.3f}" if "p_lo" in e else ""), "AUC": e.get("auc"),
+                     "AUC 95% 구간": (f"{ci[0]:.3f}~{ci[1]:.3f}" if ci[0] == ci[0] else ""), "AUC ≤ 0.5 확률(부트스트랩)": e.get("p_auc_le_05"),
+                     "Brier": e.get("brier"), "기저 Brier(과거 하락 비율)": e.get("brier_base"), "기술점수 BSS": e.get("bss"),
+                     "BSS 95% 구간": (f"{bci[0]:+.4f}~{bci[1]:+.4f}" if bci[0] == bci[0] else ""), "로그손실": e.get("logloss"), "기저 로그손실": e.get("logloss_base"),
+                     "보정 기울기(1 = 완벽)": e.get("slope"), "상위 20% 실제 하락": e.get("top_down"), "하위 20% 실제 하락": e.get("bot_down"),
+                     "상위 20% 평균 다음 수익(%)": (e["top_r"] * 100 if e.get("top_r") == e.get("top_r") and e.get("top_r") is not None else np.nan),
+                     "하위 20% 평균 다음 수익(%)": (e["bot_r"] * 100 if e.get("bot_r") == e.get("bot_r") and e.get("bot_r") is not None else np.nan),
+                     "연도 AUC>0.5 비율": e.get("year_share"), "롤링 252일 AUC 0.5 넘은 달 비율": ro.get("0.5 넘은 비율"),
+                     "롤링 AUC 최소~최대 · 마지막": (f"{ro['최소']:.3f}~{ro['최대']:.3f} · {ro['마지막']:.3f}" if ro.get("월") else "")})
+        Y = e.get("years")
+        if isinstance(Y, pd.DataFrame) and len(Y):
+            yr.append(Y.assign(블록="B 연도별", 대상=nm))
+        Dq = e.get("deciles")
+        if isinstance(Dq, pd.DataFrame) and len(Dq):
+            dc.append(pd.DataFrame({"블록": "C 십분위 보정(확률 낮은 → 높은)", "대상": nm, "십분위": np.arange(1, len(Dq) + 1), "평균 확률": Dq["p"].round(4).values,
+                                    "실제 하락 비율": Dq["y"].round(4).values, "표본": Dq["n"].values,
+                                    "평균 다음 수익(%)": (Dq["r"] * 100).round(4).values}))
+    parts = [pd.DataFrame(rows)] + yr + dc
+    parts.append(pd.DataFrame([{"블록": "D 판정 기준 · 읽는 법", "대상": a_, "표적(무엇을 맞히나)": b_} for a_, b_ in (
+        ("판정 기준", R141_RULE),
+        ("AUC", "확률이 높은 날이 실제로 더 자주 떨어졌나(순서) — 0.5 = 동전 · 0.55면 약한 신호 · 95% 구간은 같은 달 안 상관을 보존한 월 단위 부트스트랩"),
+        ("기술점수 BSS", "1 − Brier/기저 Brier — 기저 = 결정일 전날까지 실제 하락 비율(항상 같은 확률을 말하는 단순 예보). 0 이하 = 그 단순 예보보다 못함"),
+        ("보정", "확률 크기가 맞나 — 십분위에서 '평균 확률'과 '실제 하락 비율'이 비슷해야 한다(기울기 1). 기울기 0이면 확률이 높다고 실제로 더 떨어지지 않음"),
+        ("상위·하위 20%", "확률 상위 20% 날과 하위 20% 날의 실제 하락 비율 · 다음 수익 차이 — 매매에 쓸 만한 차이인지"),
+        ("롤링 AUC", "최근 1년(252일) 창을 달마다 굴린 AUC — 시기에 따라 뒤집히면 믿기 어렵다"),
+        ("표적", "모형의 표적은 다음 체결일(t+1 시가 → t+2 시가). 포트 행은 그날 보유가 있는 날만(현금일은 하락할 수 없음)"),
+        ("13r 열", "13r_일별배분수익의 '다음날 하락확률' = 그날 종가에 계산한 다음 체결일 확률 · '다음날 결과' = 다음 실적 행의 실제 부호"),
+        ("⚠", "표본 밖(해마다 그 해 이전 자료로만 학습) 확률이다. 판정이 '신뢰 불가'면 이 확률로 매매를 바꾸지 말 것. 연구·교육용, 투자 자문 아님"))]))
+    df = pd.concat(parts, ignore_index=True, sort=False)
+    good = [nm for nm, _, e in evals if str((e or {}).get("verdict", "")).startswith("신뢰 가능")]
+    weak = [nm for nm, _, e in evals if "참고만" in str((e or {}).get("verdict", ""))]
+    concl = (("일부 신뢰 가능(" + ", ".join(good) + ")") if good else
+             (("약함 — 참고만(" + ", ".join(weak) + ") · 매매 판단에 쓸 만한 크기(AUC ≥ 0.55)는 없음") if weak else "신뢰 불가 — 동전 수준(이 확률로 매매를 바꾸지 말 것)"))
+    line = (f"★★★ R141 다음날 하락확률 신뢰도({layer}) — 사용자 지시 2026-10-03",
+            f"결론: {concl} | " + " | ".join(
+                f"{nm}: {(e or {}).get('verdict', '-')}(AUC {(e or {}).get('auc', float('nan')):.3f}"
+                + (f" [{e['auc_ci'][0]:.3f}~{e['auc_ci'][1]:.3f}]" if (e or {}).get("auc_ci") else "")
+                + f" · BSS {(e or {}).get('bss', float('nan')):+.4f} · 연도 {(e or {}).get('year_share', float('nan')):.0%} · 보정 기울기 {(e or {}).get('slope', float('nan')):.2f})"
+                for nm, _, e in evals) + " — 세부 00R · 13r에 날짜별 확률 열. 연구·교육용, 투자 자문 아님.")
+    return df, [line]
+
+
+def r141_pnl_cols(df: pd.DataFrame, cols: Dict[str, pd.Series], outcomes: Optional[Dict[str, pd.Series]] = None, after: str = "현금",
+                  port_col: Optional[str] = "포트 일수익(%)") -> pd.DataFrame:
+    """[v1.83.0 R141] 13r_일별배분수익에 '다음날 하락확률' 열(%) · '다음날 결과' 열을 '현금' 뒤(자산 칸 앞)에 끼우고 pnl_rich 첫 자산 칸을 민다.
+    cols = {열 이름: 날짜 Series(0~1 · 그날 종가에 계산한 다음 체결일 확률)} · outcomes = {열 이름: 날짜 Series(일수익)} → 다음 거래일의 부호 ·
+    port_col이 있으면 '다음날 포트 결과' = 다음 실적 행 포트 일수익의 부호."""
+    if not isinstance(df, pd.DataFrame) or "날짜" not in df.columns or after not in df.columns:
+        return df
+    attrs = dict(getattr(df, "attrs", {}) or {})
+    out = df.copy()
+    dts = pd.to_datetime(out["날짜"], errors="coerce").dt.normalize()
+    pos = list(out.columns).index(after) + 1
+    k = 0
+
+    def _lab(v):
+        return "" if v != v else ("하락" if v < -1e-12 else ("상승" if v > 1e-12 else "보합"))
+    for nm, s in (cols or {}).items():
+        s = pd.to_numeric(pd.Series(s), errors="coerce")
+        s.index = pd.DatetimeIndex(s.index).normalize()
+        s = s[~s.index.duplicated(keep="last")]
+        out.insert(pos + k, nm, (s.reindex(dts.values).to_numpy(float) * 100.0).round(2))
+        k += 1
+    for nm, s in (outcomes or {}).items():
+        s = pd.to_numeric(pd.Series(s), errors="coerce")
+        s.index = pd.DatetimeIndex(s.index).normalize()
+        s = s[~s.index.duplicated(keep="last")].dropna()
+        nxt = s.shift(-1)
+        out.insert(pos + k, nm, [_lab(v) for v in nxt.reindex(dts.values).to_numpy(float)])
+        k += 1
+    if port_col and port_col in out.columns and "구분" in out.columns:
+        act = out["구분"].astype(str).str.startswith("실적")
+        pr = pd.to_numeric(out[port_col], errors="coerce").where(act)
+        out.insert(pos + k, "다음날 포트 결과", [_lab(v) for v in pr.shift(-1).to_numpy(float)])
+        k += 1
+    spec = attrs.get("pnl_rich")
+    if isinstance(spec, dict):
+        spec = dict(spec)
+        spec["first_col"] = int(spec.get("first_col", pos)) + k
+        attrs["pnl_rich"] = spec
+    out.attrs = attrs
+    return out
+
+
 def r98_neighbor_col(pk_ratio: float, calm_sigma: float) -> str:
     """이웃 문턱 열 이름 — 예: (1.25, 0.14) → 'pos_r98_v1n_1.25_0.14'(S가 res['r98']['neighbor_cols']로 읽는다)."""
     return f"pos_r98_v1n_{float(pk_ratio):g}_{float(calm_sigma):g}"
@@ -15861,6 +16108,32 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             _r105_m_lines = [("★★★ R118 전 지표 · 의미 설계 하락확률(M)", f"⚠ 산출 실패 — {_m118['error']} (R117 확률로 계속)")] + list(_r105_m_lines)
     except Exception as _e118:   # noqa — 표시 전용
         log("REPORT", kv(event="r118_sheet_failed", layer="M", err=type(_e118).__name__, msg=str(_e118)[:160]), "warning")
+    # [v1.83.0 R141 ★ 사용자 지시 2026-10-03] 13r에 날짜별 다음날 하락확률 · 00R_하락확률신뢰도 · 00 줄(맨 앞 묶음)
+    try:
+        _p141 = pd.to_numeric(sig["r117_p_down"], errors="coerce") if "r117_p_down" in sig.columns else None
+        if _p141 is not None and _p141.notna().any():
+            _bt141 = res["bt"]
+            _cc141 = pd.to_numeric(_bt141["ret_cc"], errors="coerce")
+            if "ret_co" in _bt141.columns and "ret_oc" in _bt141.columns:
+                _nx141 = (1 + pd.to_numeric(_bt141["ret_oc"], errors="coerce").shift(-1)) * (1 + pd.to_numeric(_bt141["ret_co"], errors="coerce").shift(-2)) - 1
+            else:
+                _nx141 = _cc141.shift(-1)
+            _tp141 = pd.to_numeric(_bt141["pos_target"], errors="coerce") if "pos_target" in _bt141.columns else \
+                pd.to_numeric(sig["target_pos"], errors="coerce").reindex(_bt141.index)
+            _sr141 = pd.to_numeric(_bt141["strategy_ret"], errors="coerce")
+            _ev141 = [("SPY · 다음 체결일", "SPY t+1 시가 → t+2 시가 수익 < 0(모형 표적)", r141_eval(*r141_target(_p141, _nx141))),
+                      ("SPY · 다음날 종가", "SPY t 종가 → t+1 종가 < 0", r141_eval(*r141_target(_p141, _cc141.shift(-1)))),
+                      ("M 포트 · 다음날(보유일만)", "M 전략 다음날 수익 < 0 · 그날 목표비중 > 0인 날만",
+                       r141_eval(*r141_target(_p141, _sr141.shift(-1), _tp141 > 1e-9)))]
+            _h141, _l141 = r141_sheet("M · SPY", _ev141)
+            sheets[R141_SHEET] = _h141
+            _r105_m_lines = list(_l141) + list(_r105_m_lines)
+            if isinstance(sheets.get("13r_일별배분수익"), pd.DataFrame):
+                sheets["13r_일별배분수익"] = r141_pnl_cols(sheets["13r_일별배분수익"], {"다음날 하락확률 SPY(%) · 이날 종가 기준": _p141},
+                                                       outcomes={"다음날 SPY 결과": _cc141})
+            log("REPORT", kv(event="r141_prob_reliability", layer="M", verdicts=" / ".join(f"{a}={(c or {}).get('verdict')}" for a, _, c in _ev141)))
+    except Exception as _e141:   # noqa — 표시 전용
+        log("REPORT", kv(event="r141_failed", layer="M", err=type(_e141).__name__, msg=str(_e141)[:160]), "warning")
     # [v1.53.0 F5 ★] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이
     #   있다")를 **M 자신에게도** 적용한다. 그동안 S 리포트에서 우회 계산으로만 보이던 값이다(REPORT47 §2.2:
     #   SPY h=21 현금 기준 MCC +0.160 · '상승 아님' +0.187 — M은 소수 클래스에 정보가 있고 섹터 재추정이
@@ -16243,7 +16516,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
     # [v1.61.0 R93] 파일명 끝에 코드 버전(사용자 지시) — 돌려주는 경로가 실제 파일이다(러너는 이 값을 그대로 쓴다).
     _out = versioned_report_path(cfg.OUT_XLSX, BUNDLE_VERSION, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
-    _front5 = [n for n in (R117_SHEET, R118_SHEET, "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106 · v1.78.0 R117] 00 바로 뒤
+    _front5 = [n for n in (R141_SHEET, R117_SHEET, R118_SHEET, "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106 · v1.78.0 R117] 00 바로 뒤
     sheets = {**{n: sheets[n] for n in _front5}, **{k: v for k, v in sheets.items() if k not in _front5}}
     write_excel(_out, sheets, bt, meta, cfg,
                 live_marks={"06_성과요약": ("전략", "복합지표 전략"), R117_SHEET: ("라이브", R117_LIVE_TAG)})
@@ -16304,13 +16577,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.82.0"
-BUNDLE_VERSION_DATE = "2026-10-01"
+BUNDLE_VERSION = "v1.83.0"
+BUNDLE_VERSION_DATE = "2026-10-03"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.95.0", "industry_rotation": "v0.61.0", "stock_regime": "v0.28.0"}   # [v1.79.0 R118]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.98.0", "industry_rotation": "v0.63.0", "stock_regime": "v0.31.0"}   # [v1.83.0 R141]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:

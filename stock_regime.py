@@ -1,5 +1,9 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.31.0 - 2026-10-03 - [R141 ★ 다음날 하락확률 날짜별 표시(13r) · 00R_하락확률신뢰도 — K★ 규칙·비중 무변경]
+#    사용자 지시(2026-10-03): "… 일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어 …".
+#    res['r117']에 날짜 × (종목 · ETF_다리) 확률 P 보관 → 표적 3개(자산별 다음 체결일 · 자산별 다음날 종가 · K★ 보유 가중 → 다음날 포트(보유일만)) →
+#    M.r141_eval · r141_sheet → 00R · 00 줄 · 13r에 보유 가중 · SPY 확률 · 다음날 SPY/포트 결과 열. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.30.0 - 2026-10-03 - [R140 ★ K★ 조각 교체(완충 풀기 2조각 → 모멘텀 쏠림 2조각) · tilt 대체 수정 — 목표(배수 ≥ 150 · 회피 ≥ 98.5 · 참여 ≥ 130) 달성]
 #    사용자 지시(2026-10-03): "결과 폴더에 올렸는데 참고하고 결과가 제대로 나왔는지 확인하고 문제 있으면 수정해 그리고 참여, 회피, 수익배수 모두 다 훨씬 더
 #      목표치를 높게 잡고 그 목표에 도달하도록 다시 계속 방법 탐색해".
@@ -814,7 +818,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.30.0"
+VERSION = "v0.31.0"
 VERSION_DATE = "2026-10-03"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -7702,7 +7706,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 alloc["live_rule"] = str(alloc_pre117.get("live_rule") or alloc_pre117.get("mode") or "-") + f" + R117 하락확률 ≤{_thb:.0%}({_hwb})"
             _r117_diag = {"enabled": True, "table": _T117, "quality": _q117, "best": str(_T117.iloc[_bi117]["문턱"]) + (
                 "" if _bi117 == 0 else "·" + str(_T117.iloc[_bi117]["빠진 몫"])), "best_idx": _bi117, "live_applied": _live117,
-                "p_today": (_Ps117.ffill().iloc[-1] if len(_Ps117) else None)}
+                "p_today": (_Ps117.ffill().iloc[-1] if len(_Ps117) else None),
+                "P": _P117}                                                                   # [v0.31.0 R141] 날짜 × (종목 · ETF_다리) 확률(13r 열 · 00R 평가)
             log("ALLOC", kv(event="r117_down_prob", auc=round(float(_q117.get("auc", np.nan)), 4) if _q117.get("ok") else None,
                             best=_r117_diag["best"], live_applied=_live117, rows=len(_T117), sec=round(time.time() - _t117, 1),
                             note=("⚠ K★ 교체(R117 종합 1위) — 되돌리기 k_overrides={'R117_LIVE': False}" if _live117
@@ -8534,6 +8539,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     panel: Dict[str, pd.DataFrame] = res["panel"]
     pos: Dict[str, pd.DataFrame] = res["pos"]
     parent_of = res["parent_of"]
+    _r141_lines_k: List[Tuple[str, str]] = []                 # [v0.31.0 R141] 00R 00 줄(13r 블록에서 채움)
     _NM: Dict[str, str] = dict(res.get("names") or {})            # [v0.6.0 R79] 임의 티커 이름(Yahoo shortName · 없으면 티커)
     _roles: Dict[str, str] = dict(res.get("roles") or {})
 
@@ -8649,6 +8655,32 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 sheets["13r_일별배분수익"] = build_alloc_pnl_sheet(_tw13, _rt13, _pr13, next_day=_nd_k, asset_order=_held_any,
                                                              ret_co=(_co13 if _co13.shape[1] else None),
                                                              ret_oc=(_oc13 if _oc13.shape[1] else None))
+                # [v0.31.0 R141 ★ 사용자 지시 2026-10-03] 13r 날짜별 다음날 하락확률(보유 가중 · SPY) · 00R_하락확률신뢰도
+                try:
+                    _P141 = (res.get("r117") or {}).get("P")
+                    _M141 = _find_m_module()
+                    if isinstance(_P141, pd.DataFrame) and len(_P141) and _M141 is not None and hasattr(_M141, "r141_eval"):
+                        _ev141 = []
+                        if _co13.shape[1] and _oc13.shape[1]:
+                            _F141 = (1 + _oc13.shift(-1)) * (1 + _co13.shift(-2)) - 1
+                            _ev141.append(("자산별(풀드) · 다음 체결일", "각 종목·ETF 다리 t+1 시가 → t+2 시가 수익 < 0(모형 표적)",
+                                           _M141.r141_eval(*_M141.r141_stack(_P141, _F141))))
+                        _ev141.append(("자산별(풀드) · 다음날 종가", "각 종목·ETF 다리 t 종가 → t+1 종가 < 0",
+                                       _M141.r141_eval(*_M141.r141_stack(_P141, _rt13.shift(-1)))))
+                        _pw141 = _M141.r141_weighted(_P141, _tw13)
+                        _ev141.append(("★ 포트 · 다음날(보유일만)", "보유 가중 확률 → 다음날 K★ 수익 < 0 · 목표비중 합 > 0인 날만",
+                                       _M141.r141_eval(*_M141.r141_target(_pw141, pd.Series(_pr13, dtype=float).shift(-1),
+                                                                          _tw13.reindex(_pw141.index).fillna(0.0).sum(axis=1) > 1e-9))))
+                        sheets[_M141.R141_SHEET], _r141_lines_k = _M141.r141_sheet("K★ · 주식", _ev141)
+                        _c141 = {"다음날 하락확률 보유가중(%) · 이날 종가 기준": _pw141}
+                        _spe = (res.get("etf_panel") or {}).get("SPY")
+                        _sp141 = pd.to_numeric(_spe.get("일간수익"), errors="coerce") if hasattr(_spe, "get") and isinstance(_spe.get("일간수익"), pd.Series) else None
+                        if "ETF_SPY" in _P141.columns:
+                            _c141["다음날 하락확률 SPY(%) · 이날 종가 기준"] = _P141["ETF_SPY"]
+                        sheets["13r_일별배분수익"] = _M141.r141_pnl_cols(sheets["13r_일별배분수익"], _c141,
+                                                                     outcomes=({"다음날 SPY 결과": _sp141} if _sp141 is not None else None))
+                except Exception as _e141:
+                    log("REPORT", kv(event="r141_failed", layer="K", err=type(_e141).__name__, msg=str(_e141)[:160]), level="warning")
         except Exception as e:
             log("REPORT", kv(event="pnl_sheet_failed", layer="K", err=type(e).__name__, msg=str(e)[:160]), level="warning")
 
@@ -9260,6 +9292,8 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 _add.insert(0, ("★★★ R117 다음날 하락확률 문턱(K★)", f"⚠ 산출 실패 — {_d117['error']} (K★ 무변경)"))
         except Exception as e:
             log("REPORT", kv(event="r117_sheet_failed", layer="K", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+        if _r141_lines_k:                                                      # [v0.31.0 R141] 하락확률 신뢰도 00 줄
+            _add[0:0] = list(_r141_lines_k)
         try:                                                                   # [v0.29.0 R139] 조각 4개 00 줄(맨 앞)
             _l139 = r139_line(res.get("r139"))
             if _l139:
@@ -9398,7 +9432,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     if isinstance(res.get("user_rel"), pd.DataFrame) and len(res["user_rel"]):
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
+    _front = [n for n in ("00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
                           "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00X_손실구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
                           "00N_종목선별근거", "01Z_주식일별예측",
                           "00_실행요약") if n in sheets]

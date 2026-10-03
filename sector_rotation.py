@@ -17,6 +17,11 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.98.0 - 2026-10-03 - [R141 ★ 다음날 하락확률 날짜별 표시(13r) · 00R_하락확률신뢰도 — S★ 규칙·비중 무변경]
+#    사용자 지시(2026-10-03): "… 일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어 …".
+#    s_r141_block(S · I 공통): 표적 3개 ① 자산별(섹터·SPY 풀드) 다음 체결일(t+1 시가 → t+2 시가 · 모형 표적) ② 자산별 다음날 종가 ③ S★ 포트:
+#      보유 가중 확률 → 다음날 포트 수익(보유일만) → M.r141_eval · M.r141_sheet(00R · 00 줄). 13r에 '다음날 하락확률 보유가중(%)' · 'SPY(%)' · 다음날 SPY/포트 결과.
+#    LAYER_MIN_VERSIONS M v1.83.0 · S v0.98.0 · I v0.63.0. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.97.0 - 2026-10-02 - [R138 ★ 조각 8개(M 지표 조건 · ★ R134 뒤 마지막 단계 · 라이브) — 사용자 지시 '종합하여 가장 좋은 버전' · ⚠ 표본 안 선택]
 #    사용자 지시(2026-10-02): "… 섹터, 산업 층을 참여, 회피, 모두 다 현재결과에서 더 상승 시키도록 해봐 각 목표치는 훨씬 더 높게 잡아서 똑같이 진행해" →
 #      "계속 찾아봐" → "그럼 종합하여 가장 좋은 버전을 깃허브에 올려".
@@ -3187,8 +3192,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.97.0"
-VERSION_DATE = "2026-10-02"
+VERSION = "v0.98.0"
+VERSION_DATE = "2026-10-03"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -8858,7 +8863,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.82.0", "sector_rotation": "v0.97.0", "industry_rotation": "v0.62.0"}   # [v0.97.0 R138]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.83.0", "sector_rotation": "v0.98.0", "industry_rotation": "v0.63.0"}   # [v0.98.0 R141]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -19650,6 +19655,25 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             meta.insert(1, ("★★★ R117 다음날 하락확률 문턱(S★)", f"⚠ 산출 실패 — {_d117['error']} (★ 무변경)"))
     except Exception as _e117:
         log("REPORT", kv(event="r117_sheet_failed", layer="S", err=type(_e117).__name__, msg=str(_e117)[:160]), M=M, level="warning")
+    # [v0.98.0 R141 ★ 사용자 지시 2026-10-03] 13r에 날짜별 다음날 하락확률(보유 가중 · SPY) · 00R_하락확률신뢰도 · 00 줄
+    try:
+        _a141 = sres.get("alloc") or {}
+        _P141 = ((_a141.get("diag") or {}).get("r117") or {}).get("P")
+        if isinstance(_P141, pd.DataFrame) and len(_P141) and _M117 is not None and hasattr(_M117, "r141_eval"):
+            _sh141, _l141 = s_r141_block(_a141, _P141, _M117, "S★ · 섹터")
+            sheets[_M117.R141_SHEET] = _sh141
+            for _k, _v in reversed(_l141):
+                meta.insert(1, (_k, _v))
+            if isinstance(sheets.get("13r_일별배분수익"), pd.DataFrame):
+                _tw141 = _a141.get("target_w")
+                _cols141 = {"다음날 하락확률 보유가중(%) · 이날 종가 기준": _M117.r141_weighted(_P141, _tw141)}
+                if "SPY" in _P141.columns:
+                    _cols141["다음날 하락확률 SPY(%) · 이날 종가 기준"] = _P141["SPY"]
+                _sp141 = pd.Series(_a141.get("spy_ret"), dtype=float) if _a141.get("spy_ret") is not None else None
+                sheets["13r_일별배분수익"] = _M117.r141_pnl_cols(sheets["13r_일별배분수익"], _cols141,
+                                                             outcomes=({"다음날 SPY 결과": _sp141} if _sp141 is not None else None))
+    except Exception as _e141:
+        log("REPORT", kv(event="r141_failed", layer="S", err=type(_e141).__name__, msg=str(_e141)[:160]), M=M, level="warning")
     # [v0.96.0 R134] M 바구니별 처리 + XLK 채움 00 줄(맨 앞)
     try:
         _d134 = (((sres.get("alloc") or {}).get("diag") or {}).get("r134")) or {}
@@ -19679,7 +19703,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             meta.insert(1, _l138)
     except Exception as _e138:
         log("REPORT", kv(event="r138_line_failed", layer="S", err=type(_e138).__name__, msg=str(_e138)[:160]), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
+    sheets = sheets_to_front(sheets, "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
                              "00V_상태판정검증", "00T_섹터상태판", "00S_섹터자기근거", "00R_신뢰도판정",
                              "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
@@ -20885,6 +20909,35 @@ def build_alloc_pnl_sheet(target_w: pd.DataFrame, ret_day: pd.DataFrame, port_re
     df = pd.concat([base.reset_index(drop=True), pd.DataFrame(txt)], axis=1)
     df.attrs["pnl_rich"] = {"w": W, "p": P, "r": Rv, "co": COv, "first_col": int(base.shape[1]), "ret_cols": [2, 3, 4, 5]}
     return df
+
+
+def s_r141_block(alloc: Dict[str, Any], P: pd.DataFrame, M, layer: str, port_ret: Optional[pd.Series] = None,
+                 tw: Optional[pd.DataFrame] = None, ret_co: Optional[pd.DataFrame] = None, ret_oc: Optional[pd.DataFrame] = None,
+                 ret_cc: Optional[pd.DataFrame] = None) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[v0.98.0 R141 ★ 사용자 지시 2026-10-03] 다음날 하락확률 신뢰도(S · I 공통) — 표적 3개를 M.r141_eval로 채점 → M.r141_sheet(00R · 00 줄).
+      ① 자산별(풀드) · 다음 체결일(t+1 시가 → t+2 시가 · 모형 표적) ② 자산별 · 다음날 종가 ③ ★ 포트: 보유 가중 확률 → 다음날 포트 수익(보유일만)."""
+    tw = pd.DataFrame(tw if tw is not None else alloc.get("target_w")).astype(float)
+    co = ret_co if ret_co is not None else alloc.get("ret_co")
+    oc = ret_oc if ret_oc is not None else alloc.get("ret_oc")
+    cc = ret_cc if ret_cc is not None else alloc.get("ret_cc")
+    if port_ret is None:
+        _lp = (alloc.get("diag") or {}).get("label_primary")
+        _bt = (alloc.get("bts") or {}).get(_lp) if _lp else None
+        port_ret = _bt["strategy_ret"] if isinstance(_bt, pd.DataFrame) else None
+    evals = []
+    if co is not None and oc is not None:
+        CO, OC = pd.DataFrame(co).astype(float), pd.DataFrame(oc).astype(float)
+        F = (1 + OC.shift(-1)) * (1 + CO.shift(-2)) - 1
+        evals.append(("자산별(풀드) · 다음 체결일", "각 자산 t+1 시가 → t+2 시가 수익 < 0(모형 표적)", M.r141_eval(*M.r141_stack(P, F))))
+    if cc is not None:
+        CC = pd.DataFrame(cc).astype(float)
+        evals.append(("자산별(풀드) · 다음날 종가", "각 자산 t 종가 → t+1 종가 < 0", M.r141_eval(*M.r141_stack(P, CC.shift(-1)))))
+    if port_ret is not None and len(tw):
+        pw = M.r141_weighted(P, tw)
+        held = tw.reindex(pw.index).fillna(0.0).sum(axis=1) > 1e-9
+        evals.append(("★ 포트 · 다음날(보유일만)", "보유 가중 확률 → 다음날 포트 수익 < 0 · 목표비중 합 > 0인 날만",
+                      M.r141_eval(*M.r141_target(pw, pd.Series(port_ret, dtype=float).shift(-1), held))))
+    return M.r141_sheet(layer, evals)
 
 
 def render_pnl_rich(wb, ws, df: pd.DataFrame) -> int:

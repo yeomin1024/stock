@@ -1,5 +1,14 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.29.0 - 2026-10-03 - [R141 ★ 엑셀 결과를 GitHub 저장소 results/<기준일>/ 폴더에 자동 저장]
+#    사용자 지시(2026-10-03): "엑셀 결과는 깃허브 저장소에 폴더 하나 만들어서 거기에 저장하도록 해".
+#    · 신설 push_reports_github(paths, stamp) — 실행이 끝나면 생성된 xlsx(M · S · I · K)를 yeomin1024/stock의 results/<기준일>/에
+#      커밋 1개로 올린다(Git Data API: blob → tree → commit → ref · 그사이 다른 커밋이 들어오면 3번까지 다시). 파일당 95MB 넘으면 건너뜀.
+#    · 토큰: Kaggle 노트북 Add-ons → Secrets에 이름 GITHUB_TOKEN(Fine-grained token · 저장소 yeomin1024/stock · Contents: Read and write)을
+#      추가하고 노트북에 연결(또는 환경변수 GITHUB_TOKEN). 코드에 토큰을 넣지 않으며 출력하지 않는다. 없으면 건너뛰고 안내 1줄.
+#    · main(push_github=True, github_repo="yeomin1024/stock", github_folder="results") · 반환 dict에 "github".
+#    · 끄기: RP.main(push_github=False). ⚠ 실행마다 약 30MB가 저장소 이력에 쌓인다(오래된 날짜 폴더는 지워도 이력에는 남음).
+#    ※ 리포트 생성 · 신호 · 위험 파라미터 무변경. 연구·교육용, 투자 자문 아님.
 #  VERSION: v1.28.0 - 2026-09-20 - [R76 — M v1.56.1 · S v0.61.2 · I v0.30.0 · K v0.3.3] 최소버전 상향.
 #    사용자 지시(2026-09-20) "의도대로 산업별 흐름을 예측했는지 확인하고 문제 찾아서 개선해" — I v0.30.0(신용 요인 대체 · 적응 부호 B4 ·
 #    요인 지속성 B3 · 전향 추적 F · 격자·26 적응 기본).
@@ -1199,8 +1208,8 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v1.28.0"
-VERSION_DATE = "2026-09-20"
+VERSION = "v1.29.0"
+VERSION_DATE = "2026-10-03"
 
 MODULE_FILES = {
     "market_regime_trader": "market_regime_trader.py",
@@ -1288,6 +1297,88 @@ def _driver_banner(I, ires: Optional[dict]) -> None:
         print(f"[runner] I 산업 고유 요인 배너 실패({type(e).__name__}) — 리포트 27 시트를 확인하세요")
 
 
+def _github_token() -> Tuple[Optional[str], str]:
+    """[v1.29.0 R141] GitHub 토큰 — 환경변수 GITHUB_TOKEN → Kaggle Secrets 'GITHUB_TOKEN' 순. 값은 절대 출력하지 않는다."""
+    tok = os.environ.get("GITHUB_TOKEN")
+    if tok:
+        return tok.strip(), "환경변수"
+    try:
+        from kaggle_secrets import UserSecretsClient  # type: ignore
+        tok = UserSecretsClient().get_secret("GITHUB_TOKEN")
+        if tok:
+            return str(tok).strip(), "Kaggle Secrets"
+    except Exception:
+        pass
+    return None, "-"
+
+
+def push_reports_github(paths: List[str], stamp: str, repo: str = "yeomin1024/stock", branch: str = "main",
+                        folder: str = "results", max_mb: float = 95.0) -> Dict[str, Any]:
+    """[v1.29.0 R141 ★ 사용자 지시 2026-10-03 "엑셀 결과는 깃허브 저장소에 폴더 하나 만들어서 거기에 저장하도록 해"]
+    리포트(xlsx)를 저장소 <folder>/<stamp>/ 에 **커밋 1개**로 올린다(Git Data API: blob → tree → commit → ref).
+    토큰(Contents 쓰기 권한)은 Kaggle Secrets/환경변수 GITHUB_TOKEN에서만 읽고 출력하지 않는다. 실패해도 파이프라인은 계속(리포트는 /kaggle/working에 그대로)."""
+    out: Dict[str, Any] = {"ok": False, "files": []}
+    tok, src = _github_token()
+    if not tok:
+        out["note"] = ("GITHUB_TOKEN 없음 — 건너뜀. 설정: GitHub → Settings → Developer settings → Fine-grained token(저장소 yeomin1024/stock · "
+                       "Contents: Read and write) → Kaggle 노트북 Add-ons → Secrets에 이름 GITHUB_TOKEN으로 추가하고 이 노트북에 연결")
+        return out
+    try:
+        import base64
+        import requests
+    except Exception as e:
+        out["note"] = f"requests 없음({type(e).__name__}) — 건너뜀"
+        return out
+    api = f"https://api.github.com/repos/{repo}"
+    hd = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "yeomin1024-stock-runner"}
+    files = [p for p in paths if p and os.path.exists(p) and p.lower().endswith(".xlsx")]
+    if not files:
+        out["note"] = "올릴 xlsx 없음"
+        return out
+    try:
+        items = []
+        for p in files:
+            mb = os.path.getsize(p) / 1e6
+            if mb > max_mb:
+                out["files"].append((os.path.basename(p), f"⚠ {mb:.1f}MB > {max_mb:.0f}MB — 건너뜀(GitHub 파일 한도)"))
+                continue
+            with open(p, "rb") as fh:
+                b64 = base64.b64encode(fh.read()).decode("ascii")
+            r = requests.post(f"{api}/git/blobs", headers=hd, json={"content": b64, "encoding": "base64"}, timeout=300)
+            r.raise_for_status()
+            items.append({"path": f"{folder}/{stamp}/{os.path.basename(p)}", "mode": "100644", "type": "blob", "sha": r.json()["sha"]})
+            out["files"].append((os.path.basename(p), f"{mb:.1f}MB"))
+        if not items:
+            out["note"] = "한도 안 파일 없음"
+            return out
+        for attempt in range(3):                     # 그사이 다른 커밋이 들어오면(빨리감기 실패) 처음부터 다시
+            ref = requests.get(f"{api}/git/ref/heads/{branch}", headers=hd, timeout=60)
+            ref.raise_for_status()
+            head = ref.json()["object"]["sha"]
+            cm = requests.get(f"{api}/git/commits/{head}", headers=hd, timeout=60)
+            cm.raise_for_status()
+            tr = requests.post(f"{api}/git/trees", headers=hd, json={"base_tree": cm.json()["tree"]["sha"], "tree": items}, timeout=120)
+            tr.raise_for_status()
+            nc = requests.post(f"{api}/git/commits", headers=hd, timeout=60,
+                               json={"message": f"results {stamp}: 리포트 {len(items)}개(자동 · run_pipeline {VERSION})", "tree": tr.json()["sha"], "parents": [head]})
+            nc.raise_for_status()
+            up = requests.patch(f"{api}/git/refs/heads/{branch}", headers=hd, json={"sha": nc.json()["sha"]}, timeout=60)
+            if up.status_code == 422 and attempt < 2:
+                time.sleep(2.0)
+                continue
+            up.raise_for_status()
+            out.update({"ok": True, "commit": nc.json()["sha"], "folder": f"{folder}/{stamp}", "src": src,
+                        "url": f"https://github.com/{repo}/tree/{branch}/{folder}/{stamp}"})
+            break
+    except Exception as e:
+        msg = str(e)
+        if tok and tok in msg:
+            msg = msg.replace(tok, "***")
+        out["note"] = f"업로드 실패 — {type(e).__name__}: {msg[:200]} (리포트는 로컬/Kaggle 작업 폴더에 그대로)"
+    return out
+
+
 def _last_close_banner(label: str, r: Optional[dict]) -> None:
     """[v1.26.0 R74 §1-4] S·I가 반환한 last_close_missing(M 달력 마지막일에 유효 종가가 없는 티커)을 크게 알린다."""
     _lm = list((r or {}).get("last_close_missing") or [])
@@ -1311,7 +1402,8 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
          m_overrides: Optional[Dict[str, Any]] = None, s_overrides: Optional[Dict[str, Any]] = None,
          i_overrides: Optional[Dict[str, Any]] = None,
          k_overrides: Optional[Dict[str, Any]] = None, base_dir: Optional[str] = None,
-         _hooks: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+         _hooks: Optional[Dict[str, Any]] = None, push_github: bool = True, github_repo: str = "yeomin1024/stock",
+         github_folder: str = "results") -> Dict[str, Any]:
     """M → S → I 실행 + 리포트 + (Colab) 다운로드 / (Kaggle) 영구 보존 + 실매매 배너.
     sector_exclude: None이면 sector_rotation.py의 기본 그대로 — v0.39.0부터 기본은 ()(11섹터 전부 예측).
         ⚠ 9섹터로 되돌리려면 sector_exclude=("XLB","XLE"). 제외는 신호·배분·성과를 바꾸는 설정이다.
@@ -1581,6 +1673,17 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
                 shutil.copy2(extra, os.path.join(hist_dir, os.path.basename(extra)))
         print(f"[runner] 이력 보관: {hist_dir}")
 
+    # ---- [v1.29.0 R141 ★ 사용자 지시] 엑셀 결과를 GitHub 저장소 results/<기준일>/ 폴더에 저장(커밋 1개) ----
+    gh = None
+    if push_github:
+        _stamp = str(res["cal"][-1].date()) if isinstance(res, dict) and "cal" in res else dt.date.today().isoformat()
+        gh = push_reports_github(paths, _stamp, repo=github_repo, folder=github_folder)
+        if gh.get("ok"):
+            print(f"[runner] ★ GitHub 저장: {gh['url']} · 커밋 {str(gh.get('commit'))[:7]} · 파일 "
+                  + ", ".join(f"{n}({s})" for n, s in gh.get("files", [])) + f" · 토큰 출처 {gh.get('src')}")
+        else:
+            print(f"[runner] GitHub 저장 안 함 — {gh.get('note', '-')}")
+
     # ---- 실매매 적용 전략 배너 ----
     try:
         nd = M.build_next_day_prediction(res, mcfg)
@@ -1606,7 +1709,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
               "Persistence(Files) 설정이면 다음 세션에도 캐시·리포트가 그대로 남음. 커밋(Save & Run All)하면 버전별 Output으로 저장.")
     print(f"[runner] 총 소요 {time.time() - t_all:.0f}초")
     return {"env": env, "base": base, "paths": paths, "history_dir": hist_dir, "res": res, "sres": sres, "ires": ires,
-            "kres": kres, "mcfg": mcfg, "scfg": scfg, "icfg": icfg}
+            "kres": kres, "mcfg": mcfg, "scfg": scfg, "icfg": icfg, "github": gh}
 
 
 if __name__ == "__main__":
