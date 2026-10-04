@@ -1,5 +1,24 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.32.0 - 2026-10-04 - [R144 ★★ S&P 500 전 종목 풀 · 실행 캐시(갱신만) · 월별·종목별 목표 · 종목-월 성과(00M) — K★ 조각 2개(풀 · 라이브 마지막 단계)]
+#    사용자 지시(2026-10-04): "주식 층 현재 종목에 없는 s&p500 종목 모두 추가해 그리고 실행 초기에만 대규모 데이터 캐시를 만들어놓고 날짜가 지나면 갱신만 하도록 해서
+#      최대한 실행시간 단축하고 월별로 합산, 주식별 참여 및 회피 및 수익배수 목표치를 정해서 도달하도록 똑같이 계속 탐색하고 테스트 해 당연히 그러면 종목 선별력이
+#      높아야 겠지? 그리고 주식별로 월별 수익배수는 1배수 밑으로는 가지 않도록 최소한 손해는 보지 않도록 해 그냥 매수 안하면 되잖아".
+#    ── (§1 풀) 현재 S&P 500 503(위키백과 · 7일 캐시 · 없으면 내장 스냅숏) 중 K 핵심 59에 없는 전 종목(가격 확보 450) = 풀. 그 시점 구성(공개 저장소 · 30일 캐시)으로
+#      편입 전 날은 후보가 아니다(생존 편향 줄임). R115 규칙을 풀에도: 같은 GICS 하위산업(풀 + 핵심 회원) 실적 발표 창이면 후보 제외(발표일 = Yahoo · 종목마다 '받을 때만').
+#      쓰임 'F:L:skip:k' = 조건인 날 섹터 ETF 다리 몫 → 그 섹터 후보 L일 모멘텀 상위 k(종목 상한 R144_CAP 10% · 사용자 규칙으로 뺀 핵심 종목은 다시 안 삼 · 섹터 노출은 S★ 그대로).
+#      채택(r144 탐욕 · 00U·00P·월 지표 전 열 무하락 + 종목-월 손실 쪽 무하락 + 긴 이력 관문): 1) XLK:dd63 아래 20% → 252일 1위 · 2) MD:CSUSHPISA_CHG5 아래 20% → 189일 1위.
+#      191.42 → 205.40배 · 회피 102.88 → 103.43 · 참여 137.96 → 139.03 · MDD 그대로 · 손실 달 7 → 6 · 월회피 160.2 → 162.2 · 월참여 172.8 → 174.5 · 선별력 대조군(섹터 안 무작위
+#      순위 30) 배수 96.7 · 회피 100 백분위 · 긴 이력(2009-07~2017) 세 창 통과. ⚠ 표본 안 선택 · 조건 없는 채움은 긴 이력에서 탈락 · 종목 참여(새 지표) 48.31 → 47.98.
+#    ── (§2 종목-월) stock_month_stats — 종목마다 '보유한 날만' 곱한 그달 배수(체결 규칙 그대로) · 1배 미만 비율 · 최악 · 하위10% · 중앙 · 종목 참여 · 회피 → 00M_종목월성과 ·
+#      00 'R144 월별 합산 · 종목별 목표' 줄(목표 월 176/190/×1.050 · 종목 33%/55/85/×1.020 · 사용자 이상 1배 미만 0%). ⚠ '그달 손해 볼 종목을 안 사기'는 미래를 알아야 한다:
+#      월중 손절(그달 보유 배수 < 1이면 그달 매수 중지)은 연구에서 종목-월 손실 비율 35.8% → 61.0% · K★ 191 → 67배(작은 손실 확정 · 반등 놓침) · 그달 손실을 미리 안 오라클도 25.9%.
+#    ── (§3 실행시간) 가격 = yf.download 일괄(묶음 100 · 434종목 69초) · 날짜가 지나면 뒤 며칠만 붙이고 조정(배당·분할)이 바뀐 종목만 전 이력 · 캐시 하루 지나면 전 종목을
+#      종목마다 다시 받던 것 폐지 · 어닝은 종목마다 오래됐거나 예정 발표일이 지났을 때만 · 측정 행 대조군(≈220~290초)은 7일 캐시(13 '대조군 기준일') · 00 '실행 캐시' 줄.
+#      캐시 폴더 보관은 run_pipeline v1.30.0(GitHub 릴리스 pipeline-cache).
+#    (§4) 00K_S&P500풀(풀 전 종목 · 오늘 모멘텀 · 섹터 안 순위 · 실적 회피 · 목표 비중 · 담은 날) · 13 비교 행 '비교: 라이브(R144 S&P 500 풀 없음 = v0.31.0 K★)' ·
+#         13r에 풀 종목 열 · StockConfig R144_* · K_BATCH_CHUNK · K_PX_FULL_REFRESH_DAYS · K_ADJ_TOL · FUND_MAX_AGE_DAYS · PROB_CONTROL_CACHE_DAYS. 시험 t144/test_r144.py.
+#    되돌리기 k_overrides={'R144_ENABLE': False}(= v0.31.0 K★) · {'R144_BLACKOUT': False} · {'PROB_CONTROL_CACHE_DAYS': 0}. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.31.0 - 2026-10-03 - [R141 ★ 다음날 하락확률 날짜별 표시(13r) · 00R_하락확률신뢰도 — K★ 규칙·비중 무변경]
 #    사용자 지시(2026-10-03): "… 일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어 …".
 #    res['r117']에 날짜 × (종목 · ETF_다리) 확률 P 보관 → 표적 3개(자산별 다음 체결일 · 자산별 다음날 종가 · K★ 보유 가중 → 다음날 포트(보유일만)) →
@@ -818,8 +837,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.31.0"
-VERSION_DATE = "2026-10-03"
+VERSION = "v0.32.0"
+VERSION_DATE = "2026-10-04"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -927,6 +946,11 @@ class StockConfig:
     END: Optional[str] = None          # None이면 최신
     CACHE_DIR: str = "./_stock_cache"
     CACHE_DAYS: int = 1                # 캐시 유효기간(일) — 같은 날 재실행은 재다운로드하지 않는다
+    # [v0.32.0 R144 ★ 사용자 지시 '실행 초기에만 대규모 캐시 · 날짜가 지나면 갱신만'] 가격은 일괄(yf.download 묶음) · 뒤 며칠만 붙이기 · 조정 바뀐 종목만 전 이력.
+    K_BATCH_CHUNK: int = 100           # 일괄 다운로드 묶음 크기
+    K_PX_FULL_REFRESH_DAYS: int = 30   # 가격 캐시 파일이 이보다 오래되면 전부 새로(안전판 · 매일 실행이면 일어나지 않음)
+    K_ADJ_TOL: float = 2e-5            # 겹친 날 종가 상대차가 이보다 크면 조정(배당·분할) 바뀜 → 그 종목 전 이력
+    FUND_MAX_AGE_DAYS: int = 30        # 어닝·재무 캐시 — 종목마다 이보다 오래됐거나 예정 발표일이 지났을 때만 다시 받는다
     # [v0.3.2 R73 §1-4] 캐시 유효성을 '나이'가 아니라 '기대 마지막 개장일까지 내용이 있는가'로도 판정한다
     #   (M v1.56.0과 같은 규칙 — M이 로드돼 있으면 M.expected_last_trading_day로 위임). 기대일보다 미래의 봉
     #   (장중 미완성 봉)은 버린다. END를 지정한 실행에서는 검사하지 않는다.
@@ -1260,6 +1284,7 @@ class StockConfig:
         ("R105 물타기 기울임 λ0.5 + 어닝 하락 손절 21일(측정)", "tilt", (("lam", 0.5),), "dip", "earn_dip"),
     )
     PROB_CONTROLS: int = 30          # 같은 규칙 · 같은 k · 무작위 점수 대조군(변형 규칙마다) — 0이면 끔
+    PROB_CONTROL_CACHE_DAYS: int = 7  # [v0.32.0 R144 실행시간] 대조군 칼마 분포 재사용 기간(측정 행 전용 · 0 = 매번 새로)
     PROB_CONTROL_SEED: int = 98
     PROB_LIVE_PASS_CTRL_PCT: float = 90.0
     # [v0.18.0 R109 ★★ 라이브 · ⚠ 위험 파라미터 · 사용자 선택(2026-09-28 AskUserQuestion 'R2 라이브 적용 (권장)')]
@@ -1353,6 +1378,18 @@ class StockConfig:
     # [v0.30.0 R140] 비교 행 'v0.29.0 K★' 재현용(옛 4조각 · 균등 대체) — 00 줄 · 00U에 같은 실행의 이전 라이브를 함께 보인다
     R140_V029_PIECES: Tuple[Tuple[str, str, str], ...] = (
         ("XLK:dd63", "lo", "tilt"), ("MD:UMCSENT_Z", "lo", "buf"), ("XLK:rs120", "lo", "fillx"), ("MD:CPIAUCSL_CHG120", "hi", "buf"))
+    # [v0.32.0 R144 ★★ 사용자 지시 2026-10-04 "s&p500 종목 모두 추가 … 종목 선별력 … 주식별 월별 수익배수"] S&P 500 풀(현재 구성 중 K 핵심에 없는 전 종목) ·
+    #   조각 (특징 · hi/lo/nhi/nlo/'ALL' · 'F:L:skip:k') — 그날 섹터 ETF 다리 몫 → 그 섹터 후보 모멘텀 상위 k(그 시점 구성 · 풀 실적 회피 · 상한 R144_CAP).
+    #   되돌리기 k_overrides={'R144_ENABLE': False}(= v0.31.0 K★).
+    R144_ENABLE: bool = True
+    #   연구(r144 탐욕 + 긴 이력 관문): 1) XLK 63일 낙폭 아래 20% → ETF 다리 → 섹터 안 252일 모멘텀 1위 · 2) 케이스-실러 주택가격 5일 변화 아래 20% → 189일 모멘텀 1위.
+    R144_PIECES: Tuple[Tuple[str, str, str], ...] = (("XLK:dd63", "lo", "F:252:0:1"), ("MD:CSUSHPISA_CHG5", "lo", "F:189:0:1"))
+    R144_CAP: float = 0.10
+    R144_BLACKOUT: bool = True         # R115 규칙(같은 산업 실적 발표 전 매수 금지)을 풀에도 — 같은 GICS 하위산업
+    R144_UNIV_CACHE_DAYS: int = 7      # 현재 구성(위키백과) 캐시
+    R144_HIST_CACHE_DAYS: int = 30     # 그 시점 구성 표(공개 저장소) 캐시
+    R144_EARN_LIMIT: int = 40          # get_earnings_dates(limit) — 2018~ 평가창을 덮는 분기 수
+    R144_EARN_THREADS: int = 4
     R117_ENABLE: bool = True
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
@@ -1535,88 +1572,219 @@ def _prices_freshness(out: Dict[str, pd.DataFrame], cfg: StockConfig, where: str
     return out, False, ""
 
 
+def _norm_px(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """OHLCV 정규화 — 열 이름 Title · 날짜만(시간대 제거) · 종가 결측 행 제거(download_prices._one과 같은 규칙)."""
+    if df is None or not len(df):
+        return None
+    d = df.copy()
+    d.columns = [str(c).title() for c in d.columns]
+    ix = pd.to_datetime(d.index)
+    if getattr(ix, "tz", None) is not None:
+        ix = ix.tz_localize(None)
+    d.index = ix.normalize()
+    keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in d.columns]
+    if "Close" not in keep:
+        return None
+    d = d[keep].dropna(subset=["Close"])
+    d = d[~d.index.duplicated(keep="last")]
+    return d if len(d) else None
+
+
+def _batch_history(tickers: List[str], start: Any, end: Any, cfg: "StockConfig") -> Tuple[Dict[str, pd.DataFrame], Dict[str, str]]:
+    """[v0.32.0 R144 ★ 실행시간] yf.download 일괄(묶음 K_BATCH_CHUNK · 스레드 · auto_adjust) — 종목마다 Ticker.history를 차례로 부르던 것을
+    묶음으로(실측 2026-10-04: 434종목 2015~ 68.6초 · Ticker.history와 상대차 ≤ 1e-6). 묶음에서 빠진 종목은 _fetch_px_one으로 한 번 더(사유 남김).
+    PX_FETCHER_OVERRIDE(시험)가 있으면 종목마다 그것을 쓴다."""
+    out: Dict[str, pd.DataFrame] = {}
+    fail: Dict[str, str] = {}
+    tickers = list(dict.fromkeys(t for t in tickers if t))
+    if not tickers:
+        return out, fail
+    if PX_FETCHER_OVERRIDE is not None:
+        for t in tickers:
+            d, why = PX_FETCHER_OVERRIDE(t, start, end)
+            d = _norm_px(d)
+            if d is None:
+                fail[t] = why or "빈 응답"
+            else:
+                out[t] = d
+        return out, fail
+    try:
+        import yfinance as yf
+    except Exception as e:
+        log("DATA", kv(event="yfinance_import_failed", err=str(e)[:160], suggest="pip install yfinance"), level="error")
+        raise
+    ch = max(1, int(getattr(cfg, "K_BATCH_CHUNK", 100) or 100))
+    s_ = str(pd.Timestamp(start).date()) if start is not None else None
+    e_ = str(pd.Timestamp(end).date()) if end else None
+    for i in range(0, len(tickers), ch):
+        grp = tickers[i:i + ch]
+        df = None
+        try:
+            df = yf.download(grp, start=s_, end=e_, auto_adjust=True, actions=False, group_by="ticker", threads=True, progress=False)
+        except Exception as e:
+            log("DATA", kv(event="batch_download_failed", n=len(grp), err=type(e).__name__, msg=str(e)[:120], action="종목별로 다시"),
+                level="warning")
+        for t in grp:
+            d = None
+            try:
+                if isinstance(df, pd.DataFrame) and len(df):
+                    if isinstance(df.columns, pd.MultiIndex):
+                        if t in set(df.columns.get_level_values(0)):
+                            d = _norm_px(df[t])
+                    elif len(grp) == 1:
+                        d = _norm_px(df)
+            except Exception:
+                d = None
+            if d is None:
+                d2, why = _fetch_px_one(t, start, end)
+                d = _norm_px(d2)
+                if d is None:
+                    fail[t] = why or "빈 응답(티커 오타·상장폐지·지역 제한 확인)"
+                    continue
+            out[t] = d
+    return out, fail
+
+
+def _incremental_update(prices: Dict[str, pd.DataFrame], tickers: List[str], cfg: "StockConfig") -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
+    """[v0.32.0 R144 ★ 실행시간] 날짜가 지나면 '갱신만' — 종목들의 가장 이른 마지막일 − K_STALE_REFETCH_DAYS부터 일괄로 받아 뒤에 붙인다.
+    겹친 날 종가가 달라졌으면(배당·분할로 조정 계수가 바뀜) 그 종목만 전 이력(cfg.START~)을 다시 받는다(이음새 불연속 방지).
+    반환 (갱신된 prices, info{tickers, appended, full, failed, changed})."""
+    info: Dict[str, Any] = {"tickers": 0, "appended": [], "full": [], "failed": {}, "changed": {}}
+    tk = [t for t in tickers if prices.get(t) is not None and len(prices[t])]
+    if not tk:
+        return prices, info
+    info["tickers"] = len(tk)
+    lasts = [(_last_valid_close_k(prices[t]) or pd.Timestamp(prices[t].index.max())) for t in tk]
+    start = min(lasts) - pd.Timedelta(days=int(getattr(cfg, "K_STALE_REFETCH_DAYS", 10) or 10))
+    new, fail = _batch_history(tk, start, cfg.END, cfg)
+    tol = float(getattr(cfg, "K_ADJ_TOL", 2e-5) or 2e-5)
+    need_full: List[str] = []
+    changed: Dict[str, pd.DataFrame] = {}
+    for t in tk:
+        old, nw = prices[t], new.get(t)
+        if nw is None:
+            info["failed"][t] = fail.get(t, "빈 응답")
+            continue
+        ov = old.index.intersection(nw.index)
+        if len(ov) and "Close" in old.columns and "Close" in nw.columns:
+            a = pd.to_numeric(old.loc[ov, "Close"], errors="coerce")
+            b = pd.to_numeric(nw.loc[ov, "Close"], errors="coerce")
+            rel = float(((a - b).abs() / b.abs().clip(lower=1e-12)).max())
+            if rel == rel and rel > tol:
+                need_full.append(t)
+                continue
+        add = nw.loc[nw.index > old.index.max()]
+        if len(add):
+            c = pd.concat([old, add[[c for c in old.columns if c in add.columns]]]).sort_index()
+            changed[t] = c[~c.index.duplicated(keep="last")]
+            info["appended"].append(t)
+    if need_full:
+        full, f2 = _batch_history(need_full, cfg.START, cfg.END, cfg)
+        for t in need_full:
+            if t in full:
+                changed[t] = full[t]
+                info["full"].append(t)
+            else:
+                info["failed"][t] = f2.get(t, "전 이력 재수집 실패")
+    if changed:
+        changed, _st, _why = _prices_freshness(changed, cfg, where="incremental")
+        prices.update(changed)
+    info["changed"] = changed
+    return prices, info
+
+
 def download_prices(tickers: List[str], cfg: StockConfig) -> Dict[str, pd.DataFrame]:
     """OHLCV + 배당·분할 반영 종가. 실패한 티커는 건너뛰고 **이유를 남긴다**(조용히 빠지지 않게).
     [v0.3.2 R73] 캐시는 나이(CACHE_DAYS) **그리고** 내용(기대 개장일까지 있는가)으로 판정 · 미래 봉 제거.
     [v0.6.0 R79 ⚠ 결함 수정] 캐시가 티커 목록과 무관한 한 파일이라 **새 티커를 넣어도 옛 캐시가 그대로 돌아와** 새 티커가
-      '가격 다운로드 실패'로 조용히 빠졌다. 이제 캐시에 **없는 티커만** 받아 합친다(증분) · 실패 티커는 1회 재시도."""
+      '가격 다운로드 실패'로 조용히 빠졌다. 이제 캐시에 **없는 티커만** 받아 합친다(증분) · 실패 티커는 1회 재시도.
+    [v0.32.0 R144 ★ 사용자 지시 2026-10-04 '실행 초기에만 대규모 데이터 캐시 · 날짜가 지나면 갱신만'] 캐시가 하루 지나면 전 종목을 처음부터
+      종목마다 다시 받던 것을 → 캐시는 그대로 두고 (1) 내용이 기대 개장일보다 뒤처지면 그 뒤 며칠만 일괄로 받아 붙이고(조정 계수가 바뀐 종목만 전 이력)
+      (2) 캐시에 없는 종목만 일괄로 처음부터 받는다. 캐시 파일이 K_PX_FULL_REFRESH_DAYS(30일)보다 오래되면 전부 새로(안전판)."""
+    _t_dp = time.time()
     failed: Dict[str, str] = {}
     want = list(dict.fromkeys(normalize_ticker(t) for t in tickers if normalize_ticker(t)))
     cp = _cache_path(cfg, f"px_{cfg.START}_{cfg.END or 'now'}.pkl")
     cached: Dict[str, pd.DataFrame] = {}
-    if _cache_fresh(cp, cfg.CACHE_DAYS):
+    full_refresh = False
+    if os.path.exists(cp):
         try:
             cached = pd.read_pickle(cp)
-            cached, _stale, _why = _prices_freshness(cached, cfg, where="cache")
-            if _stale:
-                log("DATA", kv(event="prices_cache_stale_refetch", reason=_why,
-                               note="캐시 나이는 유효하지만 내용이 뒤처짐 — 재다운로드(사용자 지적: 19일인데 17일 예측)"),
-                    level="warning")
-                cached = {}
+            _age = (time.time() - os.path.getmtime(cp)) / 86400.0
+            _fd = float(getattr(cfg, "K_PX_FULL_REFRESH_DAYS", 30) or 0)
+            if _fd > 0 and _age > _fd:
+                full_refresh = True
+                log("DATA", kv(event="prices_cache_full_refresh", age_days=round(_age, 1), limit=_fd,
+                               note="캐시가 오래됨 — 전부 새로 받는다(안전판)"), level="warning")
         except Exception as e:
             log("DATA", kv(event="cache_read_failed", err=str(e)[:120], action="재다운로드"), level="warning")
             cached = {}
-    out: Dict[str, pd.DataFrame] = {t: cached[t] for t in want if t in cached}
+    out: Dict[str, pd.DataFrame] = {} if full_refresh else {t: cached[t] for t in want if t in cached}
+    changed: Dict[str, pd.DataFrame] = {}
+    if out and cfg.DATA_FRESHNESS_CHECK and not cfg.END:
+        out, _stale, _why = _prices_freshness(out, cfg, where="cache")
+        try:
+            _exp = expected_last_trading_day()
+            _lag = [t for t in out if (_last_valid_close_k(out[t]) or pd.Timestamp(out[t].index.max())) < _exp]
+        except Exception:
+            _lag = list(out) if _stale else []
+        if _lag:                                   # 종목마다 마지막일을 본다(한동안 요청 안 된 종목도 따라잡게)
+            _why = _why or f"{len(_lag)}종목 마지막일 < 기대 개장일"
+            _t0 = time.time()
+            out, _inf = _incremental_update(out, _lag, cfg)
+            changed.update(_inf.get("changed") or {})
+            log("DATA", kv(event="prices_cache_incremental", reason=_why, tickers=_inf.get("tickers"), appended=len(_inf.get("appended", [])),
+                           full=len(_inf.get("full", [])), failed=len(_inf.get("failed", {})), sec=round(time.time() - _t0, 1),
+                           note="★ 날짜가 지나 뒤 며칠만 일괄 갱신(R144) · 조정 계수가 바뀐 종목만 전 이력"),
+                level=("warning" if _inf.get("failed") else "info"))
     missing = [t for t in want if t not in out]
-    if not missing:
+    if not missing and not changed:
         log("DATA", kv(event="prices_from_cache", tickers=len(out), path=os.path.basename(cp)))
+        _DATA_STATS["요청"] = _DATA_STATS.get("요청", 0) + len(want)
+        _DATA_STATS["초"] = _DATA_STATS.get("초", 0.0) + round(time.time() - _t_dp, 1)
         return out
-    if out:
-        log("DATA", kv(event="prices_cache_partial", cached=len(out), missing=len(missing),
-                       tickers=",".join(missing[:12]), note="캐시에 없는 티커만 받는다(v0.6.0 증분)"))
-    try:
-        import yfinance as yf
-    except Exception as e:
-        log("DATA", kv(event="yfinance_import_failed", err=str(e)[:160],
-                       suggest="pip install yfinance"), level="error")
-        raise
-    new: Dict[str, pd.DataFrame] = {}
-
-    def _one(t: str) -> Tuple[Optional[pd.DataFrame], str]:
+    if missing:
+        if out:
+            log("DATA", kv(event="prices_cache_partial", cached=len(out), missing=len(missing),
+                           tickers=",".join(missing[:12]), note="캐시에 없는 티커만 받는다(v0.6.0 증분 · R144 일괄)"))
+        _t0 = time.time()
+        got, fail = _batch_history(missing, cfg.START, cfg.END, cfg)
+        new: Dict[str, pd.DataFrame] = {}
+        for t in missing:
+            d = got.get(t)
+            if d is None:
+                failed[t] = fail.get(t, "빈 응답(티커 오타·상장폐지·지역 제한 확인)")
+            elif len(d) < 300:
+                failed[t] = f"관측 부족({len(d)} < 300 — 상장 1년 남짓 미만)"
+            else:
+                new[t] = d
+        new, _stale, _why = _prices_freshness(new, cfg, where="download")    # [v0.3.2 R73] 미래 봉 제거 + 뒤처짐 경고
+        if _stale:
+            log("DATA", kv(event="prices_still_stale", reason=_why, note="제공자가 아직 그 날 종가를 주지 않는다 — 진행"),
+                level="warning")
+        out.update(new)
+        changed.update(new)
+        log("DATA", kv(event="prices_downloaded", ok=len(new), failed=len(failed), from_cache=len(out) - len(new),
+                       detail=(";".join(f"{k}={v}" for k, v in failed.items())[:400] or "-"), sec=round(time.time() - _t0, 1),
+                       start=cfg.START, end=(cfg.END or "now")), level=("warning" if failed else "info"))
+        _FAILED_PX.update(failed)
+    if changed:
         try:
-            df = yf.Ticker(t).history(start=cfg.START, end=cfg.END, auto_adjust=True,
-                                      actions=True, raise_errors=False)
-            if df is None or not len(df):
-                return None, "빈 응답(티커 오타·상장폐지·지역 제한 확인)"
-            df = df.rename(columns=str.title)
-            df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-            keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-            df = df[keep].dropna(subset=["Close"])
-            if len(df) < 300:
-                return None, f"관측 부족({len(df)} < 300 — 상장 1년 남짓 미만)"
-            return df, ""
-        except Exception as e:
-            return None, f"{type(e).__name__}: {str(e)[:80]}"
-    for t in missing:
-        df, why = _one(t)
-        if df is None and not why.startswith("관측 부족"):
-            time.sleep(1.0)
-            df, why2 = _one(t)                                  # 1회 재시도(일시 오류 · 속도 제한)
-            if df is None:
-                why = why2 or why
-        if df is None:
-            failed[t] = why
-        else:
-            new[t] = df
-    new, _stale, _why = _prices_freshness(new, cfg, where="download")    # [v0.3.2 R73] 미래 봉 제거 + 뒤처짐 경고
-    if _stale:
-        log("DATA", kv(event="prices_still_stale", reason=_why, note="제공자가 아직 그 날 종가를 주지 않는다 — 진행"),
-            level="warning")
-    out.update(new)
-    log("DATA", kv(event="prices_downloaded", ok=len(new), failed=len(failed), from_cache=len(out) - len(new),
-                   detail=(";".join(f"{k}={v}" for k, v in failed.items()) or "-"),
-                   start=cfg.START, end=(cfg.END or "now")), level=("warning" if failed else "info"))
-    _FAILED_PX.update(failed)
-    if new:
-        try:
-            pd.to_pickle({**cached, **new}, cp)
+            pd.to_pickle({**cached, **changed}, cp)
         except Exception as e:
             log("DATA", kv(event="cache_write_failed", err=str(e)[:100]), level="warning")
+    _DATA_STATS["요청"] = _DATA_STATS.get("요청", 0) + len(want)
+    _DATA_STATS["새로 받음"] = _DATA_STATS.get("새로 받음", 0) + len([t for t in missing if t in out])
+    _DATA_STATS["뒤에 붙임"] = _DATA_STATS.get("뒤에 붙임", 0) + len([t for t in changed if t not in missing])
+    _DATA_STATS["실패"] = _DATA_STATS.get("실패", 0) + len(failed)
+    _DATA_STATS["초"] = _DATA_STATS.get("초", 0.0) + round(time.time() - _t_dp, 1)
     return out
 
 
 # [v0.6.0 R79] 마지막 다운로드 실패 사유(02·20 시트가 읽는다 — '왜 빠졌나'를 리포트에서 바로 본다)
 _FAILED_PX: Dict[str, str] = {}
+# [v0.32.0 R144] 이번 실행의 가격 자료 통계(캐시 · 갱신 · 새로 받음 · 초) — 00 '실행 캐시' 줄
+_DATA_STATS: Dict[str, float] = {}
 
 
 def download_fundamentals(tickers: List[str], cfg: StockConfig) -> Dict[str, Dict[str, Any]]:
@@ -1626,15 +1794,44 @@ def download_fundamentals(tickers: List[str], cfg: StockConfig) -> Dict[str, Dic
     out: Dict[str, Dict[str, Any]] = {}
     cp = _cache_path(cfg, "fund.pkl")
     cached: Dict[str, Dict[str, Any]] = {}
-    if _cache_fresh(cp, max(cfg.CACHE_DAYS, 7)):     # 재무제표는 분기마다 바뀌므로 1주 캐시
+    _fmt = None
+    if os.path.exists(cp):
         try:
             cached = pd.read_pickle(cp)
+            _fmt = os.path.getmtime(cp)
         except Exception as e:
             log("DATA", kv(event="fund_cache_read_failed", err=str(e)[:120]), level="warning")
             cached = {}
     # [v0.6.0 R79 ⚠ 결함 수정] 증분 — 캐시에 없는 티커만 받는다(새 티커가 어닝 없이 E3 컷 없이 조용히 돌던 결함)
-    out = {t: cached[t] for t in tickers if t in cached}
+    # [v0.32.0 R144 ★ 실행시간] 1주마다 전 종목을 다시 받던 것을 → 종목마다 '받은 시각'(_fetched · 옛 캐시는 파일 시각)을 보고
+    #   (a) FUND_MAX_AGE_DAYS(30일)보다 오래됐거나 (b) 받은 뒤 예정 발표일(발표 EPS 빈 행)이 지났거나 (c) 7일 넘게 지났는데 예정일을 모를 때만 다시 받는다.
+    _now = pd.Timestamp.now().normalize()
+    _maxage = float(getattr(cfg, "FUND_MAX_AGE_DAYS", 30) or 30)
+
+    def _due(rec: Dict[str, Any]) -> bool:
+        ft = rec.get("_fetched") if isinstance(rec, dict) else None
+        ft = pd.Timestamp(ft) if ft is not None else (pd.Timestamp(_fmt, unit="s") if _fmt else None)
+        if ft is None:
+            return True
+        age = (_now - ft.normalize()).days
+        if age > _maxage:
+            return True
+        e = rec.get("earn") if isinstance(rec, dict) else None
+        if isinstance(e, pd.DataFrame) and len(e) and age >= 1:
+            rep = pd.to_numeric(e.get("Reported EPS"), errors="coerce") if "Reported EPS" in e.columns else pd.Series(np.nan, index=e.index)
+            sched = pd.DatetimeIndex(e.index[rep.isna().to_numpy()])
+            if bool(((sched >= ft.normalize()) & (sched < _now)).any()):
+                return True
+            if age > 7 and not bool((sched >= ft.normalize()).any()):
+                return True
+        elif age > 7:
+            return True
+        return False
+    out = {t: cached[t] for t in tickers if t in cached and not _due(cached[t])}
     todo = [t for t in tickers if t not in out]
+    if any(t in cached for t in todo):
+        log("DATA", kv(event="fundamentals_refresh_due", n=sum(1 for t in todo if t in cached), tickers=",".join([t for t in todo if t in cached][:12]),
+                       note="★ R144: 오래됐거나 예정 발표일이 지난 종목만 다시 받는다"))
     if not todo:
         log("DATA", kv(event="fundamentals_from_cache", tickers=len(out)))
         return out
@@ -1682,6 +1879,12 @@ def download_fundamentals(tickers: List[str], cfg: StockConfig) -> Dict[str, Dic
                     n_e += 1
             except Exception as ex:
                 problems[t] = problems.get(t, "") + f" earn:{type(ex).__name__}"
+        # [v0.32.0 R144] 받은 시각 · 다시 받기가 비면(일시 오류) 옛 기록을 그대로 쓴다(다음 실행에 다시 시도)
+        _old = cached.get(t)
+        if isinstance(_old, dict) and not len(rec.get("earn", pd.DataFrame())) and len(_old.get("earn", pd.DataFrame())):
+            rec = _old
+        else:
+            rec["_fetched"] = str(pd.Timestamp.now())
         out[t] = rec
     log("DATA", kv(event="fundamentals_downloaded", tickers=len(out), with_quarterly=n_q,
                    with_earnings_dates=n_e,
@@ -3906,38 +4109,11 @@ def refresh_prices_incremental(prices: Dict[str, pd.DataFrame], tickers: List[st
     겹치는 날 종가가 달라졌으면(배당·분할로 조정 계수가 바뀜) 그 종목은 전 이력(cfg.START~)을 다시 받는다(이음새 불연속 방지).
     기대 개장일 이후 봉(장중 미완성)은 _prices_freshness가 버린다. 캐시 파일(가격 증분 캐시)도 갱신한다. 실패는 사유와 함께 info['failed']."""
     info: Dict[str, Any] = {"tickers": 0, "appended": [], "full": [], "failed": {}, "before": k_data_last(prices), "after": None}
-    fetch_days = int(getattr(cfg, "K_STALE_REFETCH_DAYS", 10) or 10)
-    changed: Dict[str, pd.DataFrame] = {}
-    for t in tickers:
-        old = prices.get(t)
-        if old is None or not len(old):
-            continue
-        info["tickers"] += 1
-        o_last = _last_valid_close_k(old) or pd.Timestamp(old.index.max())
-        start = o_last - pd.Timedelta(days=fetch_days)
-        new, why = _fetch_px_one(t, start, cfg.END)
-        if new is None or not len(new):
-            info["failed"][t] = why or "빈 응답"
-            continue
-        ov = old.index.intersection(new.index)
-        if len(ov) and "Close" in old.columns and "Close" in new.columns:
-            a = pd.to_numeric(old.loc[ov, "Close"], errors="coerce")
-            b = pd.to_numeric(new.loc[ov, "Close"], errors="coerce")
-            rel = float(((a - b).abs() / b.abs().clip(lower=1e-12)).max()) if len(ov) else 0.0
-            if rel == rel and rel > 1e-6:
-                full, why2 = _fetch_px_one(t, cfg.START, cfg.END)
-                if full is not None and len(full):
-                    changed[t] = full
-                    info["full"].append(t)
-                    continue
-        add = new.loc[new.index > old.index.max()]
-        if len(add):
-            changed[t] = pd.concat([old, add[[c for c in old.columns if c in add.columns]]]).sort_index()
-            changed[t] = changed[t][~changed[t].index.duplicated(keep="last")]
-            info["appended"].append(t)
+    # [v0.32.0 R144] 종목마다 차례로 받던 것을 일괄(_incremental_update · yf.download 묶음)로 — 같은 규칙(겹친 날 조정 바뀌면 전 이력)
+    prices, _inf = _incremental_update(prices, list(tickers), cfg)
+    changed: Dict[str, pd.DataFrame] = dict(_inf.get("changed") or {})
+    info.update({k: _inf[k] for k in ("tickers", "appended", "full", "failed")})
     if changed:
-        changed, _st, _why = _prices_freshness(changed, cfg, where="k_stale_refresh")
-        prices.update(changed)
         try:
             cp = _cache_path(cfg, cache_name or f"px_{cfg.START}_{cfg.END or 'now'}.pkl")
             cached = pd.read_pickle(cp) if os.path.exists(cp) else {}
@@ -4955,17 +5131,47 @@ def _selaudit_earnings(tickers: List[str], cfg: "StockConfig", cache_file: str,
     sym_map = dict(sym_map or {})
     cp = _cache_path(cfg, cache_file)
     cache: Dict[str, pd.DataFrame] = {}
-    if os.path.exists(cp) and _cache_fresh(cp, int(getattr(cfg, "SELAUDIT_CACHE_DAYS", 30))):
+    # [v0.32.0 R144 ★ 실행시간] 캐시가 30일 지나면 846종목을 통째로 다시 받던 것(종목마다 차례로 ≈20분)을 →
+    #   캐시는 나이와 상관없이 읽고, 종목마다 받은 시각(cache_file + '.fetched.json')이 SELAUDIT_CACHE_DAYS를 넘은 것만 다시(스레드 R144_EARN_THREADS).
+    #   풀 실적일 캐시(r144_earn.pkl)에 있는 종목은 그것을 씨앗으로 쓴다(같은 Yahoo 표 · 같은 날 두 번 받지 않게).
+    fp = cp + ".fetched.json"
+    fetched: Dict[str, str] = {}
+    if os.path.exists(cp):
         try:
             cache = pd.read_pickle(cp)
         except Exception:
             cache = {}
+        try:
+            with open(fp, "r", encoding="utf-8") as fh:
+                fetched = json.load(fh) or {}
+        except Exception:
+            _ft0 = str(pd.Timestamp(os.path.getmtime(cp), unit="s"))
+            fetched = {t: _ft0 for t in cache}
+    _rp = _cache_path(cfg, "r144_earn.pkl")
+    if os.path.exists(_rp):
+        try:
+            _rs = pd.read_pickle(_rp)
+            for t in tickers:
+                if t not in cache and t not in sym_map and isinstance((_rs.get("earn") or {}).get(t), pd.DataFrame):
+                    cache[t], fetched[t] = _rs["earn"][t], str((_rs.get("fetched") or {}).get(t) or pd.Timestamp.now())
+        except Exception:
+            pass
+    _days = int(getattr(cfg, "SELAUDIT_CACHE_DAYS", 30) or 30)
+    _now = pd.Timestamp.now()
+
+    def _old(t: str) -> bool:
+        try:
+            return (_now - pd.Timestamp(fetched.get(t))).days > _days
+        except Exception:
+            return True
     fail: Dict[str, str] = {}
-    need = [t for t in tickers if t not in cache
+    need = [t for t in tickers if t not in cache or _old(t)
             or (t in sym_map and not (isinstance(cache.get(t), pd.DataFrame) and len(cache.get(t))))]   # 옛 기호로 비었던 것은 새 기호로 다시
     if need:
         import yfinance as yf
-        for i, t in enumerate(need):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _one(t: str):
             try:
                 e = yf.Ticker(sym_map.get(t, t)).get_earnings_dates(limit=int(getattr(cfg, "SELAUDIT_EARN_LIMIT", 64)))
                 if isinstance(e, pd.DataFrame) and len(e):
@@ -4975,21 +5181,25 @@ def _selaudit_earnings(tickers: List[str], cfg: "StockConfig", cache_file: str,
                         e.index = e.index.tz_localize(None)
                     except Exception:
                         pass
-                    cache[t] = e[e.index.notna()].sort_index()
-                else:
-                    cache[t] = pd.DataFrame()
-                    fail[t] = "빈 응답"
+                    return t, e[e.index.notna()].sort_index(), ""
+                return t, pd.DataFrame(), "빈 응답"
             except Exception as ex:
-                fail[t] = f"{type(ex).__name__}: {str(ex)[:60]}"
-                time.sleep(1.0)
-            if (i + 1) % 50 == 0:
-                log("SELAUDIT", kv(event="earnings_progress", done=i + 1, total=len(need), failed=len(fail)))
-                try:
-                    pd.to_pickle(cache, cp)
-                except Exception:
-                    pass
+                return t, None, f"{type(ex).__name__}: {str(ex)[:60]}"
+        done = 0
+        with ThreadPoolExecutor(max_workers=max(1, int(getattr(cfg, "R144_EARN_THREADS", 4) or 4))) as _ex:
+            for t, e, why in _ex.map(_one, need):
+                done += 1
+                if e is not None and (len(e) or t not in cache):
+                    cache[t] = e
+                    fetched[t] = str(_now)
+                if why:
+                    fail[t] = why
+                if done % 100 == 0:
+                    log("SELAUDIT", kv(event="earnings_progress", done=done, total=len(need), failed=len(fail)))
         try:
             pd.to_pickle(cache, cp)
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump(fetched, fh)
         except Exception as e:
             log("SELAUDIT", kv(event="earnings_cache_write_failed", err=type(e).__name__), level="warning")
     return cache, fail
@@ -7215,6 +7425,689 @@ def r139_line(d: Optional[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
                  "되돌리기 k_overrides={'R139_PIECES': K.CFG.R140_V029_PIECES, 'R139_TILT_FALLBACK': 'equal'}(= v0.29.0) · {'R139_ENABLE': False}(= v0.28.0). 연구·교육용, 투자 자문 아님.")
 
 
+# =============================================================================
+# [v0.32.0 R144 ★★ 사용자 지시 2026-10-04] S&P 500 전 종목 풀 · 월별·종목별 목표 · 종목-월 성과
+# =============================================================================
+#   "주식 층 현재 종목에 없는 s&p500 종목 모두 추가해 … 월별로 합산, 주식별 참여 및 회피 및 수익배수 목표치를 정해서 도달하도록 … 종목 선별력이 높아야 …
+#    주식별로 월별 수익배수는 1배수 밑으로는 가지 않도록 최소한 손해는 보지 않도록 해 그냥 매수 안하면 되잖아".
+#   풀 = 현재 S&P 500 구성(위키백과 · 캐시 7일 · 없으면 내장 스냅숏) 중 K 핵심(설계 29 + 사용자 30)에 없는 종목 전부. 가격은 K 가격 캐시(일괄 · 갱신만).
+#   선별 = 섹터 안 모멘텀(L일 · skip일 건너뜀) 상위 k — 그 시점 S&P 500 구성(편입 전 날은 후보 아님 · 생존 편향 줄임) · R115 규칙을 풀에도
+#   (같은 GICS 하위산업 종목 실적 발표 창이면 후보 제외) · 사용자 규칙으로 뺀 핵심 종목은 다시 사지 않음(그날 비중 > 0인 핵심만 후보).
+#   쓰임 'F:L:skip:k' = 조건인 날 섹터 ETF 다리 몫 → 그 섹터 후보 상위 k 균등(종목 총비중 상한 R144_CAP · 넘치면 ETF에 남김) — 섹터 노출(S★ 결정)은 그대로.
+#   ⚠ '종목-월 배수 ≥ 1'은 미래를 알아야만 된다: 월중 손절(그달 보유 배수 < 1이면 그달 매수 중지)은 연구(r144)에서 종목-월 손실 비율을 35.8% → 61.0%로
+#     오히려 올렸다(작은 손실을 확정하고 반등을 놓침) · K★ 191 → 67배. 그달 손실 종목을 미리 안 오라클조차(부분 보유 때문에) 25.9%. → 측정·목표로 싣는다.
+# 내장 스냅숏(2026-10-04 위키백과 'List of S&P 500 companies' · 503종목) — 위키백과·캐시가 모두 없을 때만 쓴다.
+SP500_R144_SUBIND: Tuple[str, ...] = (
+    'Advertising', 'Aerospace & Defense', 'Agricultural & Farm Machinery', 'Agricultural Products & Services', 'Air Freight & Logistics',
+    'Apparel Retail', 'Apparel, Accessories & Luxury Goods', 'Application Software', 'Asset Management & Custody Banks', 'Automobile Manufacturers',
+    'Automotive Parts & Equipment', 'Automotive Retail', 'Biotechnology', 'Broadcasting', 'Broadline Retail', 'Building Products',
+    'Cable & Satellite', 'Cargo Ground Transportation', 'Casinos & Gaming', 'Commodity Chemicals', 'Communications Equipment',
+    'Computer & Electronics Retail', 'Construction & Engineering', 'Construction Machinery & Heavy Transportation Equipment',
+    'Construction Materials', 'Consumer Electronics', 'Consumer Finance', 'Consumer Staples Merchandise Retail', 'Copper', 'Data Center REITs',
+    'Data Processing & Outsourced Services', 'Distillers & Vintners', 'Distributors', 'Diversified Banks', 'Diversified Support Services',
+    'Electric Utilities', 'Electrical Components & Equipment', 'Electronic Components', 'Electronic Equipment & Instruments',
+    'Electronic Manufacturing Services', 'Environmental & Facilities Services', 'Fertilizers & Agricultural Chemicals', 'Financial Exchanges & Data',
+    'Food Distributors', 'Food Retail', 'Footwear', 'Gas Utilities', 'Gold', 'Health Care Distributors', 'Health Care Equipment',
+    'Health Care Facilities', 'Health Care REITs', 'Health Care Services', 'Health Care Supplies', 'Health Care Technology',
+    'Heavy Electrical Equipment', 'Home Improvement Retail', 'Homebuilding', 'Homefurnishing Retail', 'Hotel & Resort REITs',
+    'Hotels, Resorts & Cruise Lines', 'Household Products', 'Human Resource & Employment Services', 'IT Consulting & Other Services',
+    'Independent Power Producers & Energy Traders', 'Industrial Conglomerates', 'Industrial Gases', 'Industrial Machinery & Supplies & Components',
+    'Industrial REITs', 'Insurance Brokers', 'Integrated Oil & Gas', 'Integrated Telecommunication Services', 'Interactive Home Entertainment',
+    'Interactive Media & Services', 'Internet Services & Infrastructure', 'Investment Banking & Brokerage', 'Leisure Products',
+    'Life & Health Insurance', 'Life Sciences Tools & Services', 'Managed Health Care', 'Metal, Glass & Plastic Containers',
+    'Movies & Entertainment', 'Multi-Family Residential REITs', 'Multi-Sector Holdings', 'Multi-Utilities', 'Multi-line Insurance', 'Office REITs',
+    'Oil & Gas Equipment & Services', 'Oil & Gas Exploration & Production', 'Oil & Gas Refining & Marketing', 'Oil & Gas Storage & Transportation',
+    'Other Specialized REITs', 'Other Specialty Retail', 'Packaged Foods & Meats', 'Paper & Plastic Packaging Products & Materials',
+    'Passenger Airlines', 'Passenger Ground Transportation', 'Personal Care Products', 'Pharmaceuticals', 'Property & Casualty Insurance',
+    'Publishing', 'Rail Transportation', 'Real Estate Services', 'Regional Banks', 'Reinsurance', 'Research & Consulting Services', 'Restaurants',
+    'Retail REITs', 'Self-Storage REITs', 'Semiconductor Materials & Equipment', 'Semiconductors', 'Single-Family Residential REITs',
+    'Soft Drinks & Non-alcoholic Beverages', 'Specialized Consumer Services', 'Specialty Chemicals', 'Steel', 'Systems Software',
+    'Technology Distributors', 'Technology Hardware, Storage & Peripherals', 'Telecom Tower REITs', 'Timber REITs', 'Tobacco',
+    'Trading Companies & Distributors', 'Transaction & Payment Processing Services', 'Water Utilities', 'Wireless Telecommunication Services',
+)
+SP500_R144_SNAPSHOT: Tuple[Tuple[str, str, int], ...] = (
+    ('MMM', 'XLI', 65), ('AOS', 'XLI', 15), ('ABT', 'XLV', 49), ('ABBV', 'XLV', 12), ('ACN', 'XLK', 63), ('ADBE', 'XLK', 7), ('AMD', 'XLK', 110),
+    ('AES', 'XLU', 64), ('AFL', 'XLF', 77), ('A', 'XLV', 78), ('APD', 'XLB', 66), ('ABNB', 'XLY', 60), ('AKAM', 'XLK', 74), ('ALB', 'XLB', 114),
+    ('ARE', 'XLRE', 86), ('ALGN', 'XLV', 53), ('ALLE', 'XLI', 15), ('LNT', 'XLU', 35), ('ALL', 'XLF', 99), ('GOOGL', 'XLC', 73), ('GOOG', 'XLC', 73),
+    ('MO', 'XLP', 121), ('AMZN', 'XLY', 14), ('AMCR', 'XLB', 94), ('AEE', 'XLU', 84), ('AEP', 'XLU', 35), ('AXP', 'XLF', 26), ('AIG', 'XLF', 85),
+    ('AMT', 'XLRE', 119), ('AWK', 'XLU', 124), ('AMP', 'XLF', 8), ('AME', 'XLI', 36), ('AMGN', 'XLV', 12), ('APH', 'XLK', 37), ('ADI', 'XLK', 110),
+    ('AON', 'XLF', 69), ('APA', 'XLE', 88), ('APO', 'XLF', 8), ('AAPL', 'XLK', 118), ('AMAT', 'XLK', 109), ('APP', 'XLC', 0), ('APTV', 'XLY', 10),
+    ('ACGL', 'XLF', 99), ('ADM', 'XLP', 3), ('ARES', 'XLF', 8), ('ANET', 'XLK', 20), ('AJG', 'XLF', 69), ('AIZ', 'XLF', 85), ('T', 'XLC', 71),
+    ('ATO', 'XLU', 46), ('ADSK', 'XLK', 7), ('ADP', 'XLI', 62), ('AZO', 'XLY', 11), ('AVY', 'XLB', 94), ('AXON', 'XLI', 1), ('BKR', 'XLE', 87),
+    ('BALL', 'XLB', 80), ('BAC', 'XLF', 33), ('BAX', 'XLV', 49), ('BDX', 'XLV', 49), ('BRK-B', 'XLF', 83), ('BBY', 'XLY', 21), ('TECH', 'XLV', 78),
+    ('BIIB', 'XLV', 12), ('BLK', 'XLF', 8), ('BX', 'XLF', 8), ('XYZ', 'XLF', 123), ('BE', 'XLI', 36), ('BNY', 'XLF', 8), ('BA', 'XLI', 1),
+    ('BKNG', 'XLY', 60), ('BSX', 'XLV', 49), ('BMY', 'XLV', 98), ('AVGO', 'XLK', 110), ('BR', 'XLI', 30), ('BRO', 'XLF', 69), ('BF-B', 'XLP', 31),
+    ('BG', 'XLP', 3), ('BXP', 'XLRE', 86), ('CHRW', 'XLI', 4), ('CDNS', 'XLK', 7), ('CPT', 'XLRE', 82), ('COF', 'XLF', 26), ('CAH', 'XLV', 48),
+    ('CCL', 'XLY', 60), ('CARR', 'XLI', 15), ('CVNA', 'XLY', 11), ('CASY', 'XLP', 44), ('CAT', 'XLI', 23), ('CBOE', 'XLF', 42),
+    ('CBRE', 'XLRE', 102), ('CDW', 'XLK', 117), ('COR', 'XLV', 48), ('CNC', 'XLV', 79), ('CNP', 'XLU', 84), ('CF', 'XLB', 41), ('CRL', 'XLV', 78),
+    ('SCHW', 'XLF', 75), ('CHTR', 'XLC', 16), ('CVX', 'XLE', 70), ('CMG', 'XLY', 106), ('CB', 'XLF', 99), ('CHD', 'XLP', 61), ('CIEN', 'XLK', 20),
+    ('CI', 'XLV', 52), ('CINF', 'XLF', 99), ('CTAS', 'XLI', 34), ('CSCO', 'XLK', 20), ('C', 'XLF', 33), ('CFG', 'XLF', 103), ('CLX', 'XLP', 61),
+    ('CME', 'XLF', 42), ('CMS', 'XLU', 84), ('KO', 'XLP', 112), ('CTSH', 'XLK', 63), ('COHR', 'XLK', 37), ('COIN', 'XLF', 42), ('CL', 'XLP', 61),
+    ('CMCSA', 'XLC', 16), ('FIX', 'XLI', 22), ('COP', 'XLE', 88), ('ED', 'XLU', 84), ('STZ', 'XLP', 31), ('CEG', 'XLU', 35), ('COO', 'XLV', 53),
+    ('CPRT', 'XLI', 34), ('GLW', 'XLK', 37), ('CPAY', 'XLF', 123), ('CTVA', 'XLB', 41), ('CSGP', 'XLRE', 102), ('COST', 'XLP', 27),
+    ('CRH', 'XLB', 24), ('CRWD', 'XLK', 116), ('CCI', 'XLRE', 119), ('CSX', 'XLI', 101), ('CMI', 'XLI', 23), ('CVS', 'XLV', 52), ('DHR', 'XLV', 78),
+    ('DRI', 'XLY', 106), ('DDOG', 'XLK', 7), ('DVA', 'XLV', 52), ('DECK', 'XLY', 45), ('DE', 'XLI', 2), ('DELL', 'XLK', 118), ('DAL', 'XLI', 95),
+    ('DVN', 'XLE', 88), ('DXCM', 'XLV', 49), ('FANG', 'XLE', 88), ('DLR', 'XLRE', 29), ('DG', 'XLP', 27), ('DLTR', 'XLP', 27), ('D', 'XLU', 84),
+    ('DPZ', 'XLY', 106), ('DASH', 'XLY', 113), ('DOV', 'XLI', 67), ('DOW', 'XLB', 19), ('DHI', 'XLY', 57), ('DTE', 'XLU', 84), ('DUK', 'XLU', 35),
+    ('DD', 'XLI', 65), ('ETN', 'XLI', 36), ('EBAY', 'XLY', 14), ('ECHO', 'XLC', 125), ('ECL', 'XLB', 114), ('EIX', 'XLU', 35), ('EW', 'XLV', 49),
+    ('ELV', 'XLV', 79), ('EME', 'XLI', 22), ('EMR', 'XLI', 36), ('ETR', 'XLU', 35), ('EOG', 'XLE', 88), ('EQT', 'XLE', 88), ('EFX', 'XLI', 105),
+    ('EQIX', 'XLRE', 29), ('ERIE', 'XLF', 69), ('ESS', 'XLRE', 82), ('EL', 'XLP', 97), ('EG', 'XLF', 104), ('EVRG', 'XLU', 35), ('P', 'XLK', 118),
+    ('ES', 'XLU', 35), ('EXC', 'XLU', 35), ('EXE', 'XLE', 88), ('EXPE', 'XLY', 60), ('EXPD', 'XLI', 4), ('EXR', 'XLRE', 108), ('XOM', 'XLE', 70),
+    ('FFIV', 'XLK', 20), ('FDS', 'XLF', 42), ('FICO', 'XLK', 7), ('FAST', 'XLI', 122), ('FRT', 'XLRE', 107), ('FDX', 'XLI', 4), ('FDXF', 'XLI', 17),
+    ('FERG', 'XLI', 122), ('FIS', 'XLF', 123), ('FITB', 'XLF', 103), ('FSLR', 'XLK', 110), ('FE', 'XLU', 35), ('FISV', 'XLF', 123),
+    ('FLEX', 'XLK', 39), ('F', 'XLY', 9), ('FTNT', 'XLK', 116), ('FTV', 'XLI', 67), ('FOXA', 'XLC', 13), ('FOX', 'XLC', 13), ('BEN', 'XLF', 8),
+    ('FCX', 'XLB', 28), ('GRMN', 'XLY', 25), ('IT', 'XLK', 63), ('GE', 'XLI', 1), ('GEHC', 'XLV', 49), ('GEV', 'XLI', 55), ('GEN', 'XLK', 116),
+    ('GNRC', 'XLI', 55), ('GD', 'XLI', 1), ('GIS', 'XLP', 93), ('GM', 'XLY', 9), ('GPC', 'XLY', 32), ('GILD', 'XLV', 12), ('GPN', 'XLF', 123),
+    ('GL', 'XLF', 77), ('GDDY', 'XLK', 74), ('GS', 'XLF', 75), ('HAL', 'XLE', 87), ('HIG', 'XLF', 99), ('HAS', 'XLY', 76), ('HCA', 'XLV', 50),
+    ('DOC', 'XLRE', 51), ('HSIC', 'XLV', 48), ('HSY', 'XLP', 93), ('HPE', 'XLK', 118), ('HLT', 'XLY', 60), ('HD', 'XLY', 56), ('HONA', 'XLI', 1),
+    ('HON', 'XLI', 65), ('HRL', 'XLP', 93), ('HST', 'XLRE', 59), ('HWM', 'XLI', 1), ('HPQ', 'XLK', 118), ('HUBB', 'XLI', 67), ('HUM', 'XLV', 79),
+    ('HBAN', 'XLF', 103), ('HII', 'XLI', 1), ('IBM', 'XLK', 63), ('IEX', 'XLI', 67), ('IDXX', 'XLV', 49), ('ITW', 'XLI', 67), ('ILMN', 'XLV', 78),
+    ('INCY', 'XLV', 12), ('IR', 'XLI', 67), ('PODD', 'XLV', 49), ('INTC', 'XLK', 110), ('IBKR', 'XLF', 75), ('ICE', 'XLF', 42), ('IFF', 'XLB', 114),
+    ('IP', 'XLB', 94), ('INTU', 'XLK', 7), ('ISRG', 'XLV', 49), ('IVZ', 'XLF', 8), ('INVH', 'XLRE', 111), ('IQV', 'XLV', 78), ('IRM', 'XLRE', 91),
+    ('JBHT', 'XLI', 17), ('JBL', 'XLK', 39), ('JKHY', 'XLF', 123), ('J', 'XLI', 22), ('JNJ', 'XLV', 98), ('JCI', 'XLI', 15), ('JPM', 'XLF', 33),
+    ('KVUE', 'XLP', 97), ('KDP', 'XLP', 112), ('KEY', 'XLF', 103), ('KEYS', 'XLK', 38), ('KMB', 'XLP', 61), ('KIM', 'XLRE', 107), ('KMI', 'XLE', 90),
+    ('KKR', 'XLF', 8), ('KLAC', 'XLK', 109), ('KHC', 'XLP', 93), ('KR', 'XLP', 44), ('LHX', 'XLI', 1), ('LH', 'XLV', 52), ('LRCX', 'XLK', 109),
+    ('LVS', 'XLY', 18), ('LDOS', 'XLI', 34), ('LEN', 'XLY', 57), ('LII', 'XLI', 15), ('LLY', 'XLV', 98), ('LIN', 'XLB', 66), ('LYV', 'XLC', 81),
+    ('LMT', 'XLI', 1), ('L', 'XLF', 85), ('LOW', 'XLY', 56), ('LULU', 'XLY', 6), ('LITE', 'XLK', 20), ('LYB', 'XLB', 114), ('MTB', 'XLF', 103),
+    ('MPC', 'XLE', 89), ('MAR', 'XLY', 60), ('MRSH', 'XLF', 69), ('MLM', 'XLB', 24), ('MRVL', 'XLK', 110), ('MAS', 'XLI', 15), ('MA', 'XLF', 123),
+    ('MKC', 'XLP', 93), ('MCD', 'XLY', 106), ('MCK', 'XLV', 48), ('MDT', 'XLV', 49), ('MRK', 'XLV', 98), ('META', 'XLC', 73), ('MET', 'XLF', 77),
+    ('MTD', 'XLV', 78), ('MGM', 'XLY', 18), ('MCHP', 'XLK', 110), ('MU', 'XLK', 110), ('MSFT', 'XLK', 116), ('MAA', 'XLRE', 82), ('MRNA', 'XLV', 12),
+    ('MDLZ', 'XLP', 93), ('MPWR', 'XLK', 110), ('MNST', 'XLP', 112), ('MCO', 'XLF', 42), ('MS', 'XLF', 75), ('MOS', 'XLB', 41), ('MSI', 'XLK', 20),
+    ('MSCI', 'XLF', 42), ('NDAQ', 'XLF', 42), ('NTAP', 'XLK', 118), ('NFLX', 'XLC', 81), ('NEM', 'XLB', 47), ('NWSA', 'XLC', 100),
+    ('NWS', 'XLC', 100), ('NEE', 'XLU', 84), ('NKE', 'XLY', 6), ('NI', 'XLU', 84), ('NDSN', 'XLI', 67), ('NSC', 'XLI', 101), ('NTRS', 'XLF', 8),
+    ('NOC', 'XLI', 1), ('NCLH', 'XLY', 60), ('NRG', 'XLU', 64), ('NUE', 'XLB', 115), ('NVDA', 'XLK', 110), ('NVR', 'XLY', 57), ('NXPI', 'XLK', 110),
+    ('ORLY', 'XLY', 11), ('OXY', 'XLE', 88), ('ODFL', 'XLI', 17), ('OMC', 'XLC', 0), ('ON', 'XLK', 110), ('OKE', 'XLE', 90), ('ORCL', 'XLK', 7),
+    ('OTIS', 'XLI', 67), ('PCAR', 'XLI', 23), ('PKG', 'XLB', 94), ('PLTR', 'XLK', 7), ('PANW', 'XLK', 116), ('PSKY', 'XLC', 81), ('PH', 'XLI', 67),
+    ('PAYX', 'XLI', 62), ('PYPL', 'XLF', 123), ('PNR', 'XLI', 67), ('PEP', 'XLP', 112), ('PFE', 'XLV', 98), ('PCG', 'XLU', 84), ('PM', 'XLP', 121),
+    ('PSX', 'XLE', 89), ('PNW', 'XLU', 84), ('PNC', 'XLF', 33), ('PPG', 'XLB', 114), ('PPL', 'XLU', 35), ('PFG', 'XLF', 77), ('PG', 'XLP', 97),
+    ('PGR', 'XLF', 99), ('PLD', 'XLRE', 68), ('PRU', 'XLF', 77), ('PEG', 'XLU', 35), ('PTC', 'XLK', 7), ('PSA', 'XLRE', 108), ('PHM', 'XLY', 57),
+    ('PWR', 'XLI', 22), ('QCOM', 'XLK', 110), ('DGX', 'XLV', 52), ('Q', 'XLK', 109), ('RL', 'XLY', 6), ('RJF', 'XLF', 75), ('RDDT', 'XLC', 73),
+    ('RTX', 'XLI', 1), ('O', 'XLRE', 107), ('REG', 'XLRE', 107), ('REGN', 'XLV', 12), ('RF', 'XLF', 103), ('RSG', 'XLI', 40), ('RMD', 'XLV', 49),
+    ('RVTY', 'XLV', 49), ('HOOD', 'XLF', 75), ('ROK', 'XLI', 36), ('ROL', 'XLI', 40), ('ROP', 'XLK', 38), ('ROST', 'XLY', 5), ('RCL', 'XLY', 60),
+    ('SPGI', 'XLF', 42), ('CRM', 'XLK', 7), ('SNDK', 'XLK', 118), ('SBAC', 'XLRE', 119), ('SLB', 'XLE', 87), ('STX', 'XLK', 118), ('SRE', 'XLU', 84),
+    ('NOW', 'XLK', 116), ('SHW', 'XLB', 114), ('SPG', 'XLRE', 107), ('SWKS', 'XLK', 110), ('SJM', 'XLP', 93), ('SW', 'XLB', 94), ('SNA', 'XLI', 67),
+    ('SOLV', 'XLV', 54), ('SO', 'XLU', 35), ('LUV', 'XLI', 95), ('SWK', 'XLI', 67), ('SBUX', 'XLY', 106), ('STT', 'XLF', 8), ('STLD', 'XLB', 115),
+    ('STE', 'XLV', 49), ('SYK', 'XLV', 49), ('SMCI', 'XLK', 118), ('SYF', 'XLF', 26), ('SNPS', 'XLK', 7), ('SYY', 'XLP', 43), ('TMUS', 'XLC', 125),
+    ('TROW', 'XLF', 8), ('TTWO', 'XLC', 72), ('TPR', 'XLY', 6), ('TRGP', 'XLE', 90), ('TGT', 'XLP', 27), ('TEL', 'XLK', 39), ('TDY', 'XLK', 38),
+    ('TER', 'XLK', 109), ('TSLA', 'XLY', 9), ('TXN', 'XLK', 110), ('TPL', 'XLE', 88), ('TXT', 'XLI', 1), ('TMO', 'XLV', 78), ('TJX', 'XLY', 5),
+    ('TKO', 'XLC', 81), ('TSCO', 'XLY', 92), ('TT', 'XLI', 15), ('TDG', 'XLI', 1), ('TRV', 'XLF', 99), ('TRMB', 'XLK', 7), ('TFC', 'XLF', 33),
+    ('TYL', 'XLK', 7), ('TSN', 'XLP', 93), ('USB', 'XLF', 33), ('UBER', 'XLI', 96), ('UDR', 'XLRE', 82), ('ULTA', 'XLY', 92), ('UNP', 'XLI', 101),
+    ('UAL', 'XLI', 95), ('UPS', 'XLI', 4), ('URI', 'XLI', 122), ('UNH', 'XLV', 79), ('UHS', 'XLV', 50), ('VLO', 'XLE', 89), ('VEEV', 'XLV', 54),
+    ('VTR', 'XLRE', 51), ('VLTO', 'XLI', 40), ('VRSN', 'XLK', 74), ('VRSK', 'XLI', 105), ('VZ', 'XLC', 71), ('VRTX', 'XLV', 12), ('VRT', 'XLI', 36),
+    ('VTRS', 'XLV', 98), ('VICI', 'XLRE', 59), ('V', 'XLF', 123), ('VST', 'XLU', 35), ('VMRK', 'XLRE', 82), ('VMC', 'XLB', 24), ('WRB', 'XLF', 99),
+    ('GWW', 'XLI', 67), ('WAB', 'XLI', 23), ('WMT', 'XLP', 27), ('DIS', 'XLC', 81), ('WBD', 'XLC', 13), ('WM', 'XLI', 40), ('WAT', 'XLV', 78),
+    ('WEC', 'XLU', 35), ('WFC', 'XLF', 33), ('WELL', 'XLRE', 51), ('WST', 'XLV', 53), ('WDC', 'XLK', 118), ('WY', 'XLRE', 120), ('WSM', 'XLY', 58),
+    ('WMB', 'XLE', 90), ('WTW', 'XLF', 69), ('WDAY', 'XLK', 7), ('WYNN', 'XLY', 18), ('XEL', 'XLU', 84), ('XYL', 'XLI', 67), ('YUM', 'XLY', 106),
+    ('ZBRA', 'XLK', 38), ('ZBH', 'XLV', 49), ('ZTS', 'XLV', 98),
+)
+
+
+def _r144_ts_hour(ts: pd.Timestamp) -> str:
+    h = ts.hour + ts.minute / 60.0
+    return "AMC" if h >= 16 else ("BMO" if 0 < h < 9.5 else "?")
+
+
+class _R144Skip(Exception):
+    """[R144] 조각 없음 · 통로 없음 — 풀 자료를 받지 않고 v0.31.0 K★ 그대로(시험·단독 실행은 네트워크 없이)."""
+
+
+def r144_sp500_current(cfg) -> Tuple[pd.DataFrame, str]:
+    """[R144] 현재 S&P 500 구성(티커 · 이름 · 섹터 ETF · GICS 하위산업). 캐시 r144_sp500.json(R144_UNIV_CACHE_DAYS) → 위키백과 → 캐시(나이 무관) → 내장 스냅숏."""
+    cp = _cache_path(cfg, "r144_sp500.json")
+    cached = None
+    if os.path.exists(cp):
+        try:
+            with open(cp, "r", encoding="utf-8") as fh:
+                cached = json.load(fh)
+        except Exception:
+            cached = None
+
+    def _df(rows):
+        return pd.DataFrame(rows, columns=["티커", "이름", "섹터", "하위산업"])
+    if cached and _cache_fresh(cp, int(getattr(cfg, "R144_UNIV_CACHE_DAYS", 7) or 7)):
+        return _df(cached["rows"]), f"캐시({cached.get('asof', '-')} · {cached.get('src', '-')} · {len(cached['rows'])}종목)"
+    try:
+        cur, _ch, _src = sp500_wiki_tables(cfg)
+        cur = cur[cur["티커"].astype(str).str.len() > 0]
+        if len(cur) >= 400:
+            rows = [[str(r["티커"]), str(r["이름"]), (str(r["섹터"]) if isinstance(r["섹터"], str) else None), str(r["하위산업"])]
+                    for _, r in cur.iterrows()]
+            try:
+                with open(cp, "w", encoding="utf-8") as fh:
+                    json.dump({"asof": str(pd.Timestamp.now().date()), "src": "위키백과", "rows": rows}, fh, ensure_ascii=False)
+            except Exception:
+                pass
+            return _df(rows), f"위키백과({len(rows)}종목 · {pd.Timestamp.now().date()})"
+    except Exception as e:
+        log("R144", kv(event="sp500_wiki_failed", err=type(e).__name__, msg=str(e)[:120], action="캐시 또는 내장 스냅숏"), level="warning")
+    if cached:
+        return _df(cached["rows"]), f"캐시(오래됨 · {cached.get('asof', '-')} · {len(cached['rows'])}종목)"
+    rows = [[t, t, s, SP500_R144_SUBIND[i]] for t, s, i in SP500_R144_SNAPSHOT]
+    return _df(rows), f"내장 스냅숏(2026-10-04 위키백과 · {len(rows)}종목)"
+
+
+def r144_membership(cfg, tickers: List[str], idx: pd.DatetimeIndex) -> Tuple[pd.DataFrame, str]:
+    """[R144] 그 시점 S&P 500 구성(편입 전 날 False) — sp500_hist_csv(공개 저장소 · 캐시 r144_sp500_hist.pkl · R144_HIST_CACHE_DAYS) + 기호 변경 역매핑.
+    표 마지막 날 뒤는 현재 구성 = True. 출처가 없으면 전부 True(⚠ 생존 편향 · 00 줄에 표시)."""
+    cp = _cache_path(cfg, "r144_sp500_hist.pkl")
+    H, src = None, "-"
+    if os.path.exists(cp) and _cache_fresh(cp, int(getattr(cfg, "R144_HIST_CACHE_DAYS", 30) or 30)):
+        try:
+            _d = pd.read_pickle(cp)
+            H, src = _d["H"], str(_d.get("src", "-")) + " · 캐시"
+        except Exception:
+            H = None
+    if H is None:
+        try:
+            H, src = sp500_hist_csv(cfg)
+            if H is not None and len(H):
+                pd.to_pickle({"H": H, "src": src}, cp)
+        except Exception as e:
+            log("R144", kv(event="sp500_hist_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+            H = None
+        if (H is None or not len(H)) and os.path.exists(cp):
+            try:
+                _d = pd.read_pickle(cp)
+                H, src = _d["H"], str(_d.get("src", "-")) + " · 캐시(오래됨)"
+            except Exception:
+                H = None
+    idx = pd.DatetimeIndex(idx)
+    if H is None or not len(H):
+        return (pd.DataFrame(True, index=idx, columns=list(tickers)),
+                "⚠ 그 시점 구성 없음 — 전부 회원으로 봄(생존 편향 · 과거 성과가 부풀 수 있다)")
+    inv: Dict[str, List[str]] = {}
+    for o, n in dict(getattr(cfg, "SELAUDIT_RENAMES", {}) or {}).items():
+        inv.setdefault(normalize_ticker(n), []).append(normalize_ticker(o))
+    hd = pd.DatetimeIndex(H["날짜"])
+    k = hd.searchsorted(idx, side="right") - 1
+    rowmat: Dict[int, np.ndarray] = {}
+    for r in np.unique(k[k >= 0]):
+        s = H["구성"].iloc[int(r)]
+        rowmat[int(r)] = np.array([(t in s) or any(o in s for o in inv.get(t, ())) for t in tickers], dtype=bool)
+    M = np.zeros((len(idx), len(tickers)), dtype=bool)
+    for i, r in enumerate(k):
+        if r >= 0:
+            M[i] = rowmat[int(r)]
+    M[np.asarray(idx > hd.max())] = True
+    return pd.DataFrame(M, index=idx, columns=list(tickers)), src
+
+
+def r144_earnings(tickers: List[str], cfg) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
+    """[R144] 발표일(시각 포함 · Yahoo get_earnings_dates) — 캐시 r144_earn.pkl {'fetched': {t: 시각}, 'earn': {t: 표}}.
+    종목마다 '받을 때'만: 처음 · 30일 넘음 · 받은 뒤 예정 발표일(발표 EPS 빈 행)이 지남 · 7일 넘었는데 앞으로의 예정일을 모름.
+    첫 실행은 선택력 감사 캐시(selaudit_earn.pkl)를 씨앗으로 쓴다(그 파일 시각 = 받은 시각). 스레드 R144_EARN_THREADS."""
+    cp = _cache_path(cfg, "r144_earn.pkl")
+    store: Dict[str, Any] = {"fetched": {}, "earn": {}}
+    if os.path.exists(cp):
+        try:
+            store = pd.read_pickle(cp)
+        except Exception:
+            store = {"fetched": {}, "earn": {}}
+    seeded = 0
+    sp = _cache_path(cfg, "selaudit_earn.pkl")
+    if os.path.exists(sp) and any(t not in store["earn"] for t in tickers):
+        try:
+            _se = pd.read_pickle(sp)
+            _ft = str(pd.Timestamp(os.path.getmtime(sp), unit="s"))
+            for t in tickers:
+                if t not in store["earn"] and isinstance(_se.get(t), pd.DataFrame) and len(_se[t]):
+                    store["earn"][t], store["fetched"][t] = _se[t], _ft
+                    seeded += 1
+        except Exception:
+            pass
+    now = pd.Timestamp.now()
+
+    def _due(t: str) -> bool:
+        e, ft = store["earn"].get(t), store["fetched"].get(t)
+        if e is None or ft is None:
+            return True
+        ft = pd.Timestamp(ft)
+        age = (now - ft).total_seconds() / 86400.0
+        if age > 30:
+            return True
+        if age < 1 or not isinstance(e, pd.DataFrame):
+            return False
+        ix = pd.DatetimeIndex(e.index).normalize()
+        rep = pd.to_numeric(e["Reported EPS"], errors="coerce") if "Reported EPS" in e.columns else pd.Series(np.nan, index=e.index)
+        sched = ix[rep.isna().to_numpy()]
+        if bool(((sched >= ft.normalize()) & (sched < now.normalize())).any()):
+            return True
+        return bool(age > 7 and not (ix > ft.normalize()).any())
+    todo = [t for t in tickers if _due(t)]
+    fail: Dict[str, str] = {}
+    if todo:
+        try:
+            import yfinance as yf
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _one(t):
+                try:
+                    e = yf.Ticker(t).get_earnings_dates(limit=int(getattr(cfg, "R144_EARN_LIMIT", 40) or 40))
+                    if isinstance(e, pd.DataFrame) and len(e):
+                        e = e.copy()
+                        e.index = pd.to_datetime(e.index, errors="coerce")
+                        if getattr(e.index, "tz", None) is not None:
+                            e.index = e.index.tz_convert("America/New_York").tz_localize(None)
+                        return t, e[e.index.notna()].sort_index(), ""
+                    return t, None, "빈 응답"
+                except Exception as ex:
+                    return t, None, f"{type(ex).__name__}: {str(ex)[:60]}"
+            with ThreadPoolExecutor(max_workers=max(1, int(getattr(cfg, "R144_EARN_THREADS", 4) or 4))) as ex_:
+                for t, e, why in ex_.map(_one, todo):
+                    if e is not None:
+                        old = store["earn"].get(t)
+                        if isinstance(old, pd.DataFrame) and len(old):     # 옛 이력(받은 표보다 앞)은 남긴다
+                            e = pd.concat([old.loc[old.index < e.index.min()], e]).sort_index()
+                        store["earn"][t], store["fetched"][t] = e, str(now)
+                    else:
+                        fail[t] = why
+        except Exception as e:
+            log("R144", kv(event="earnings_fetch_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+        try:
+            pd.to_pickle(store, cp)
+        except Exception:
+            pass
+    elif seeded:
+        try:
+            pd.to_pickle(store, cp)
+        except Exception:
+            pass
+    return {t: store["earn"][t] for t in tickers if isinstance(store["earn"].get(t), pd.DataFrame)}, \
+        {"fetched": len(todo) - len(fail), "failed": len(fail), "seeded": seeded, "cached": len(tickers) - len(todo)}
+
+
+def r144_blackout(earn: Dict[str, pd.DataFrame], sub_of: Dict[str, str], pool: List[str], dates: pd.DatetimeIndex) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[R144] R115 규칙을 풀에도 — 같은 GICS 하위산업(풀 + 핵심 중 S&P 회원 · 자기 포함) 어느 종목이든 발표 p → 그 하위산업 풀 종목 결정일 창 후보 제외.
+    창(R115와 같음 · 시각은 Yahoo 발표 시각): 장전 [p−2, p−1] · 장후 [p−1, p] · 모름 [p−2, p]. 앞날 발표는 영업일로 위치를 잡는다(오늘 결정에 쓰임)."""
+    dates = pd.DatetimeIndex(dates)
+    T = len(dates)
+    col = {t: j for j, t in enumerate(pool)}
+    grp: Dict[str, List[int]] = {}
+    for t in pool:
+        grp.setdefault(sub_of.get(t), []).append(col[t])
+    M = np.zeros((T, len(pool)), dtype=bool)
+    n_ev = 0
+    today: Dict[str, List[str]] = {}
+    last = dates[-1] if T else None
+    for u, e in earn.items():
+        g = grp.get(sub_of.get(u))
+        if not g or not isinstance(e, pd.DataFrame) or not len(e) or not T:
+            continue
+        for ts in pd.DatetimeIndex(e.index):
+            d = ts.normalize()
+            if d < dates[0] or d > last + pd.Timedelta(days=21):
+                continue
+            tm = _r144_ts_hour(ts)
+            p = int(dates.searchsorted(d)) if d <= last else T - 1 + int(np.busday_count((last + pd.Timedelta(days=1)).date(), d.date())) + 1
+            a, b = ((p - 2, p - 1) if tm == "BMO" else (p - 1, p) if tm == "AMC" else (p - 2, p))
+            a, b = max(0, a), min(T - 1, b)
+            if a <= b:
+                M[a:b + 1, g] = True
+                n_ev += 1
+                if a <= T - 1 <= b:
+                    for j in g:
+                        today.setdefault(pool[j], []).append(f"{u} {d.date()}")
+    return pd.DataFrame(M, index=dates, columns=pool), {"events": n_ev, "today": today, "share": float(M.mean()) if M.size else 0.0}
+
+
+def r144_conditions(extra: Dict[str, Any], idx: pd.DatetimeIndex, pieces) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[R144] 조각 조건 — r139_conditions와 같은 특징·분위(M 달력 · 확장 · 최소 500일 · 하루 늦춤) + 'ALL'(항상) · 'nhi'/'nlo'(위·아래 20%인 날만 끔)."""
+    ind = extra.get("ind")
+    cal = pd.DatetimeIndex(extra.get("cal") if extra.get("cal") is not None else (ind.index if isinstance(ind, pd.DataFrame) else []))
+    spy = pd.to_numeric(pd.Series(extra.get("spy_adj")), errors="coerce").reindex(cal).ffill() if extra.get("spy_adj") is not None else None
+    xl = pd.to_numeric(pd.Series(extra.get("xlk_tr")), errors="coerce").reindex(cal).ffill() if extra.get("xlk_tr") is not None else None
+    out = pd.DataFrame(index=idx)
+    info: Dict[str, Any] = {"missing": []}
+    for i, (f, side, use) in enumerate(tuple(pieces or ())):
+        key = f"{i + 1}|{f}|{side}|{use}"
+        if f == "ALL":
+            out[key] = True
+            continue
+        x = None
+        if f.startswith("MD:") and isinstance(ind, pd.DataFrame) and f[3:] in ind.columns:
+            x = pd.to_numeric(ind[f[3:]], errors="coerce").reindex(cal)
+        elif f == "XLK:dd63" and xl is not None:
+            x = xl / xl.rolling(63).max() - 1.0
+        elif f == "XLK:rs120" and xl is not None and spy is not None:
+            x = (xl / xl.shift(120)) / (spy / spy.shift(120)) - 1.0
+        if x is None:
+            out[key] = False
+            info["missing"].append(f)
+            continue
+        q = x.expanding(min_periods=500).quantile(0.8 if side in ("hi", "nhi") else 0.2).shift(1)
+        if side == "hi":
+            c = (x > q).fillna(False)
+        elif side == "lo":
+            c = (x < q).fillna(False)
+        elif side == "nhi":
+            c = (x <= q).where(q.notna(), True).fillna(True)
+        else:
+            c = (x >= q).where(q.notna(), True).fillna(True)
+        out[key] = c.astype(bool).reindex(idx).fillna(side in ("nhi", "nlo")).astype(bool)
+    return out.astype(bool), info
+
+
+def r144_fill(W: np.ndarray, cols: List[str], sect: Dict[str, str], pool_set: set, M: np.ndarray, cv: np.ndarray,
+              k: int, cap: float, B: Optional[np.ndarray] = None) -> np.ndarray:
+    """[R144] 쓰임 F — 그날(cv) 섹터 ETF 다리 몫 → 그 섹터 후보 모멘텀 상위 k 균등 · 종목 총비중 cap. 후보 = 풀(모멘텀 유한 · B 아님) + 핵심(그날 비중 > 0).
+    연구 하네스(r144/fast144.overlay_np)와 같은 산식."""
+    W = W.copy()
+    for e in [c for c in cols if c.startswith("ETF_")]:
+        s = e[4:]
+        im = np.array([j for j, c in enumerate(cols) if not c.startswith("ETF_") and sect.get(c) == s], dtype=int)
+        if not len(im):
+            continue
+        ie = cols.index(e)
+        w_e = W[:, ie] * cv
+        if not (w_e > 1e-12).any():
+            continue
+        isp = np.array([cols[j] in pool_set for j in im], dtype=bool)
+        m = M[:, im].copy()
+        cand = np.isfinite(m) & (isp[None, :] | (W[:, im] > 1e-12))
+        if B is not None:
+            cand &= ~B[:, im]
+        m[~cand] = -np.inf
+        kk = min(int(k), m.shape[1])
+        top = (np.argpartition(-m, kk - 1, axis=1)[:, :kk] if m.shape[1] > kk else np.tile(np.arange(m.shape[1]), (m.shape[0], 1)))
+        rows = np.arange(m.shape[0])[:, None]
+        valid = np.isfinite(m[rows, top])
+        nt = valid.sum(axis=1)
+        on = (w_e > 1e-12) & (nt > 0)
+        if not on.any():
+            continue
+        share = np.where(on, w_e / np.maximum(nt, 1), 0.0)
+        cc = im[top]
+        give = np.where(valid & on[:, None], np.minimum(share[:, None], np.maximum(0.0, float(cap) - W[rows, cc])), 0.0)
+        np.add.at(W, (np.repeat(np.arange(W.shape[0]), kk), cc.ravel()), give.ravel())
+        W[:, ie] -= give.sum(axis=1)
+    return W
+
+
+def r144_pool_overlay(alloc: Dict[str, Any], CLF: pd.DataFrame, mem: pd.DataFrame, B: Optional[pd.DataFrame], cond: pd.DataFrame,
+                      sector_of: Dict[str, str], panel: Dict[str, pd.DataFrame], etf_panel: Optional[Dict[str, pd.DataFrame]],
+                      ppx: Dict[str, pd.DataFrame], sec_of: Dict[str, str], cfg, tag: str = " + R144 S&P 500 풀"
+                      ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, pd.DataFrame]]:
+    """[v0.32.0 R144 ★★] K★ 비중(핵심 종목 + 섹터 ETF 다리)에 풀 조각을 순서대로(r144_fill) → 같은 체결(_exec_port_returns · t 확정 → t+1 시가 · 비용 · 현금 0).
+    CLF = 종가 전 이력(핵심 + 풀 · 모멘텀용) · mem = 그 시점 S&P 500 구성(CLF 달력) · B = 풀 실적 회피(날짜 × 풀 · 선택).
+    반환 (새 alloc(target_w = 핵심 + 한 번이라도 담은 풀 종목) · diag · 풀 패널(종가·일간·야간·장중 — 리포트 13r·00M용))."""
+    Ws = alloc["target_w"].astype(float).fillna(0.0)
+    We = alloc.get("etf_w")
+    We = We.astype(float).fillna(0.0) if isinstance(We, pd.DataFrame) else pd.DataFrame(index=Ws.index)
+    idx = Ws.index
+    tick = list(Ws.columns)
+    pool = [t for t in CLF.columns if t not in tick and t in ppx and sec_of.get(t)]
+    ecols = ["ETF_" + str(e) for e in We.columns]
+    cols = tick + ecols + pool
+    W = np.zeros((len(idx), len(cols)), dtype=float)
+    W[:, :len(tick)] = Ws.to_numpy()
+    W[:, len(tick):len(tick) + len(ecols)] = We.reindex(idx).fillna(0.0).to_numpy()
+    sect = {**{t: sector_of.get(t) for t in tick}, **{c: c[4:] for c in ecols}, **{p: sec_of.get(p) for p in pool}}
+    Bv = None
+    if B is not None and pool:
+        Bv = np.zeros((len(idx), len(cols)), dtype=bool)
+        Bv[:, len(tick) + len(ecols):] = pd.DataFrame(B).reindex(index=idx, columns=pool).fillna(False).to_numpy(dtype=bool)
+    ok = CLF.notna()
+    if pool:
+        ok[pool] = ok[pool].to_numpy() & pd.DataFrame(mem).reindex(index=CLF.index, columns=pool).fillna(False).to_numpy(dtype=bool)
+    days: Dict[str, int] = {}
+    _mc: Dict[Tuple[int, int], np.ndarray] = {}
+    for key in cond.columns:
+        a = key.split("|")[-1].split(":")
+        if a[0] != "F":
+            continue
+        L_, s_, k_ = int(a[1]), int(a[2]), int(a[3])
+        if (L_, s_) not in _mc:
+            m = (CLF.shift(s_) / CLF.shift(s_ + L_) - 1.0).where(ok)
+            _mc[(L_, s_)] = m.reindex(index=idx, columns=cols).to_numpy(dtype=float)
+        cv = cond[key].reindex(idx).fillna(False).to_numpy(dtype=bool)
+        before = W.copy()
+        W = r144_fill(W, cols, sect, set(pool), _mc[(L_, s_)], cv, k_, float(a[4]) if len(a) > 4 else float(getattr(cfg, "R144_CAP", 0.10) or 0.10), Bv)
+        days[key] = int((np.abs(W - before).sum(axis=1) > 1e-12).sum())
+    WA = pd.DataFrame(W, index=idx, columns=cols)
+    held_pool = [p for p in pool if float(WA[p].max()) > 1e-12]
+
+    def _pc(src, t, c):
+        v = src[t].get(c) if (t in (src or {}) and hasattr(src[t], "get")) else None
+        return pd.to_numeric(v, errors="coerce").reindex(idx) if isinstance(v, pd.Series) else pd.Series(np.nan, index=idx)
+    ppan: Dict[str, pd.DataFrame] = {}
+    for p in held_pool:
+        d = ppx[p]
+        c = pd.to_numeric(d["Close"], errors="coerce")
+        co_, oc_ = _split_overnight(d)
+        ppan[p] = pd.DataFrame({"종가": c, "일간수익": c.pct_change(fill_method=None), "야간수익": co_, "장중수익": oc_}).reindex(idx)
+    keep = tick + ecols + held_pool
+    RA = pd.concat([pd.DataFrame({t: _pc(panel, t, "일간수익") for t in tick}).fillna(0.0),
+                    pd.DataFrame({c: _pc(etf_panel, c[4:], "일간수익") for c in ecols}),
+                    pd.DataFrame({p: ppan[p]["일간수익"] for p in held_pool}, index=idx)], axis=1).reindex(columns=keep).fillna(0.0)
+    COA = pd.concat([pd.DataFrame({t: _pc(panel, t, "야간수익") for t in tick}), pd.DataFrame({c: _pc(etf_panel, c[4:], "야간수익") for c in ecols}),
+                     pd.DataFrame({p: ppan[p]["야간수익"] for p in held_pool}, index=idx)], axis=1).reindex(columns=keep)
+    OCA = pd.concat([pd.DataFrame({t: _pc(panel, t, "장중수익") for t in tick}), pd.DataFrame({c: _pc(etf_panel, c[4:], "장중수익") for c in ecols}),
+                     pd.DataFrame({p: ppan[p]["장중수익"] for p in held_pool}, index=idx)], axis=1).reindex(columns=keep)
+    WK = WA[keep]
+    _fill = str(getattr(cfg, "EXEC_FILL", "close")).lower()
+    _cbps = float(getattr(cfg, "ALLOC_COST_BPS", 0.0) or 0.0)
+    pr, _xi = _exec_port_returns(WK, RA, COA, OCA, fill=_fill, cost_bps=_cbps, rf=None)
+    pc, _ = _exec_port_returns(WK, RA, None, None, fill="close", cost_bps=0.0)
+    Ws2 = WK[tick + held_pool]
+    We2 = WK[ecols].rename(columns=lambda c: c[4:])
+    tot = WK.sum(axis=1)
+    _r0 = pd.DataFrame(alloc.get("ret")).reindex(index=idx, columns=tick) if alloc.get("ret") is not None else RA[tick]
+    out = dict(alloc)
+    out.update({"target_w": Ws2, "exec_w": Ws2.shift(1).fillna(0.0), "etf_w": We2, "etf_exec_w": We2.shift(1).fillna(0.0), "total_w": tot,
+                "port_ret": pr, "port_ret_close": pc, "exec": _xi, "ret": pd.concat([_r0, RA[held_pool]], axis=1),
+                "pool_cols": held_pool, "live_rule": str(alloc.get("live_rule") or alloc.get("mode") or "-") + tag})
+    lastw = Ws2.iloc[-1] if len(Ws2) else pd.Series(dtype=float)
+    diag = {"enabled": True, "days": days, "pool_n": len(pool), "held_pool_n": len(held_pool), "sum_max": float(tot.max()) if len(tot) else 0.0,
+            "neg_min": float(WK.min().min()) if WK.size else 0.0, "stock_max": float(Ws2.max().max()) if Ws2.size else 0.0,
+            "pool_share_mean": float(WK[held_pool].sum(axis=1).mean()) if held_pool else 0.0,
+            "today_pool": {p: round(float(lastw[p]), 4) for p in held_pool if float(lastw.get(p, 0.0)) > 1e-9},
+            "on_today": {k: bool(cond[k].iloc[-1]) for k in cond.columns} if len(cond) else {}}
+    return out, diag, ppan
+
+
+R144_TARGETS: Dict[str, float] = {"월회피": 176.0, "월참여": 190.0, "월중앙": 1.050, "종목월손실%": 33.0, "종목참여": 55.0, "종목회피": 85.0, "종목월중앙": 1.020}
+R144_RESEARCH: str = ("연구(r144 · 2018~ · 같은 체결 · 실적 회피 포함): 191.42 → 205.40배 · 회피 102.88 → 103.43 · 참여 137.96 → 139.03 · MDD −7.66 그대로 · 손실 달 7 → 6 · "
+                      "월회피 160.2 → 162.2 · 월참여 172.8 → 174.5 · 00U·00P 전 열 무하락 · 종목-월 1배 미만 35.78% → 35.59% · 최악·하위10% 무하락 · "
+                      "종목 회피 79.68 → 80.36 · ⚠ 종목 참여 48.31 → 47.98(새 지표 — 풀 종목을 일부 날만 담아 낮게 잰다) · "
+                      "선별력 대조군(섹터 안 무작위 순위 30번 · 같은 조건): 배수 96.7 · 회피 100 · 참여 93.3 · 월회피 100 · 월참여 96.7 백분위(대조군 중앙 189.2배 < 풀 없음 191.4배) · "
+                      "긴 이력 관문(2009-07~2017 · S★ 장기 비중 · ETF 몫 20% → 그 시점 S&P 500 모멘텀 1위): 세 창 회피 −0.33/+0.78/0 · 참여 +0.16/+0.16/0 · "
+                      "배수비 1.001/1.004/1.000 · MDD +0.34/+0.16/0 통과 · ⚠ 조건 없는 모멘텀 채움은 긴 이력에서 회피 −1~−3 · MDD −1~−6(종목은 ETF보다 출렁임이 크다)으로 탈락 · "
+                      "⚠ 표본 안 선택 · 목표(월 176/190/×1.050 · 종목 33%/55/85/×1.020) 못 미침")
+
+
+def r144_monthly(r: pd.Series, spy: pd.Series) -> Dict[str, float]:
+    """[R144] 월별 합산 지표(R141·R142와 같은 정의) — 월회피 = 1 − Σ전략(SPY 하락 달)/ΣSPY(하락 달) · 월참여 = Σ전략(상승 달)/ΣSPY(상승 달) · 월중앙 · 월최악 · 월플러스."""
+    r = pd.Series(r, dtype=float).fillna(0.0)
+    spy = pd.Series(spy, dtype=float).reindex(r.index).fillna(0.0)
+    mr = (1 + r).groupby(r.index.to_period("M")).prod() - 1
+    ms = (1 + spy).groupby(spy.index.to_period("M")).prod() - 1
+    dn, up = ms < 0, ms > 0
+    return {"월회피": float(1 - mr[dn].sum() / ms[dn].sum()) * 100 if bool(dn.any()) else float("nan"),
+            "월참여": float(mr[up].sum() / ms[up].sum()) * 100 if bool(up.any()) else float("nan"),
+            "월중앙": float((1 + mr).median()), "월최악": float((1 + mr).min()), "월플러스": float((mr > 1e-9).mean() * 100)}
+
+
+def r144_sheets(res: Dict[str, Any]) -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
+    """[v0.32.0 R144] 00M_종목월성과(요약 · 목표 · 종목별) · 00K_S&P500풀(오늘 풀 전 종목) · 00 줄 2개(풀 · 월별·종목별 목표)."""
+    d = res.get("r144") or {}
+    sheets: Dict[str, pd.DataFrame] = {}
+    lines: List[Tuple[str, str]] = []
+    nm = res.get("names") or {}
+    al = res.get("alloc") or {}
+    tw = al.get("target_w")
+    nan = float("nan")
+    ep = res.get("etf_panel") or {}
+    spy = pd.to_numeric(ep["SPY"]["일간수익"], errors="coerce") if "SPY" in ep else None
+    ev0 = pd.Timestamp(str(getattr(res.get("cfg"), "EVAL_START", "2018-01-01")))
+    mon_on = mon_off = None
+    if spy is not None and isinstance(al.get("port_ret"), pd.Series):
+        _r = al["port_ret"].loc[ev0:]
+        mon_on = r144_monthly(_r, spy.reindex(_r.index))
+    _pre = d.get("off") or {}
+    tg = R144_TARGETS
+    sm_on, sm_off = d.get("sm_on") or {}, d.get("sm_off") or {}
+    mon_off = d.get("mon_off")
+    if not sm_on and isinstance(tw, pd.DataFrame) and len(tw):            # R144가 꺼졌거나 건너뛰었어도 K★ 종목-월 성과는 싣는다
+        try:
+            _pn = {**(res.get("panel") or {}), **(res.get("panel_pool") or {})}
+            _c = [t for t in tw.columns if t in _pn]
+            _f = lambda col: pd.DataFrame({t: pd.to_numeric(_pn[t].get(col), errors="coerce") for t in _c})   # noqa: E731
+            sm_on, _tab0 = stock_month_stats(tw[_c], _f("일간수익"), _f("야간수익"), _f("장중수익"), since=ev0)
+            d = {**d, "sm_on_table": _tab0}
+        except Exception as _e:
+            log("REPORT", kv(event="r144_stock_month_failed", err=type(_e).__name__, msg=str(_e)[:120]), level="warning")
+    # ---- 00M 요약 ----
+    rows = []
+
+    def _row(lab, mo, sm):
+        rr = {"블록": "A. 요약 — 월별 합산(포트) · 종목-월(보유한 달 · 체결 규칙 그대로 · 2018~)", "항목": lab}
+        for k in ("월회피", "월참여", "월중앙", "월최악", "월플러스"):
+            rr[k] = (round(float(mo[k]), 4) if mo and k in mo else None)
+        for k in ("종목월수", "종목월손실%", "종목월최악", "종목월하위10%", "종목월중앙", "종목참여", "종목회피", "보유종목수"):
+            rr[k] = (round(float(sm[k]), 4) if sm and k in sm else None)
+        return rr
+    rows.append(_row("★ K★ 라이브" + ("(R144 S&P 500 풀 포함)" if d.get("enabled") else f"(R144 적용 안 됨 — {str(d.get('error') or '꺼짐')[:40]})"), mon_on, sm_on or None))
+    if d.get("enabled"):
+        rows.append(_row("비교: R144 이전 K★(풀 없음 = v0.31.0)", mon_off, sm_off or None))
+    rows.append({"블록": rows[0]["블록"], "항목": "목표(R144 · 사용자 지시 '월별 합산 · 주식별 참여·회피·수익배수')",
+                 **{k: tg.get(k) for k in ("월회피", "월참여", "월중앙")}, "종목월손실%": tg.get("종목월손실%"), "종목월중앙": tg.get("종목월중앙"),
+                 "종목참여": tg.get("종목참여"), "종목회피": tg.get("종목회피")})
+    rows.append({"블록": rows[0]["블록"], "항목": "사용자 이상(종목-월 1배 미만 0%) — 미래를 알아야만 가능",
+                 "종목월손실%": 0.0, "종목월최악": 1.0})
+    A = pd.DataFrame(rows)
+    tab = d.get("sm_on_table")
+    B = pd.DataFrame()
+    if isinstance(tab, pd.DataFrame) and len(tab):
+        B = tab.copy()
+        pc = set(al.get("pool_cols") or [])
+        B.insert(1, "이름", [nm.get(t, t) for t in B["종목"]])
+        B.insert(2, "역할", ["S&P 500 풀" if t in pc else "핵심" for t in B["종목"]])
+        B = B.sort_values(["1배 미만 비율(%)", "보유 달"], ascending=[True, False])
+        B.insert(0, "블록", "B. 종목별 — 보유한 달의 '보유 중 수익 배수'(1 미만 = 그 종목에서 그달 손해)")
+    C = pd.DataFrame([
+        {"블록": "C. 읽는 법 · 근거", "항목": "종목-월 배수", "값": "그 종목을 보유한 날만 곱한 그달 수익 배수(야간 = 전날 비중 · 장중 = 새 비중 — 포트와 같은 체결 규칙). 1 미만 = 그달 그 종목에서 손해."},
+        {"블록": "C. 읽는 법 · 근거", "항목": "종목 참여 · 회피", "값": "보유한 달 중 종목이 오른 달: 잡은 상승 ÷ 종목 상승 · 내린 달: 1 − 맞은 하락 ÷ 종목 하락. 일부 날만 보유하면 참여는 낮고 회피는 높게 재진다."},
+        {"블록": "C. 읽는 법 · 근거", "항목": "왜 '1배 미만 0%'가 안 되나",
+         "값": "산 날 그달 손해일지 미리 알 수 없다. 연구(r144 · 2018~ · 같은 체결): 월중 손절(그달 보유 배수 < 1이면 그달 매수 중지) → 종목-월 손실 비율 35.8% → 61.0% "
+                "(작은 손실을 확정하고 반등을 놓침) · K★ 191 → 67배 · 손절 5% → 38.6% · 이익 잠금 변형 38~40% · 그달 손실 종목을 미리 안 오라클(미래 정보)도 25.9%(부분 보유)."},
+        {"블록": "C. 읽는 법 · 근거", "항목": "월별 합산", "값": "포트 월 수익을 SPY가 내린 달 · 오른 달로 나눠 합한 회피 · 참여 + 월 중앙 · 월 최악 · 월 플러스(R141·R142와 같은 정의)."},
+    ])
+    sheets["00M_종목월성과"] = pd.concat([A, B, C], ignore_index=True, sort=False)
+    # ---- 00K 풀 ----
+    tt = d.get("today_table")
+    if isinstance(tt, pd.DataFrame) and len(tt):
+        K_ = tt.copy()
+        if isinstance(tw, pd.DataFrame) and len(tw):
+            lw = tw.iloc[-1]
+            K_["다음 거래일 목표 비중"] = [round(float(lw.get(t, 0.0)), 4) for t in K_["티커"]]
+            K_["담은 날(평가창)"] = [int((tw[t] > 1e-9).sum()) if t in tw.columns else 0 for t in K_["티커"]]
+        if isinstance(tab, pd.DataFrame) and len(tab):
+            _tb = tab.set_index("종목")
+            for c in ("보유 달", "1배 미만 달", "월 최악 배수", "단순합 기여(%p)"):
+                K_[c] = [(_tb.at[t, c] if t in _tb.index else None) for t in K_["티커"]]
+        K_ = K_.sort_values(["다음 거래일 목표 비중", "섹터 ETF"] if "다음 거래일 목표 비중" in K_.columns else ["섹터 ETF"], ascending=[False, True][:2 if "다음 거래일 목표 비중" in K_.columns else 1])
+        sheets["00K_S&P500풀"] = K_
+    # ---- 00 줄 ----
+    if d:
+        if not d.get("enabled"):
+            lines.append(("★★ R144 S&P 500 풀(사용자 지시 2026-10-04)", f"⚠ 적용 안 됨 — {d.get('error') or '꺼짐'} (= v0.31.0 K★) · 풀 {d.get('pool_priced', 0)}종목 자료"))
+        else:
+            o0, o1 = d.get("off") or {}, d.get("on") or {}
+
+            def _m(o):
+                return f"배수 {o.get('배수', nan):.2f} · 회피 {o.get('회피', nan):.1f} · 참여 {o.get('참여', nan):.1f} · MDD {o.get('MDD', nan):.2f}%"
+            pcs = " · ".join(f"{i + 1}) {('항상' if p[0] == 'ALL' else p[0] + ' ' + {'hi': '위 20%', 'lo': '아래 20%', 'nhi': '위 20% 아닌 날', 'nlo': '아래 20% 아닌 날'}.get(p[1], p[1]))}"
+                             f" → ETF 다리 → 섹터 안 {p[2].split(':')[1]}일 모멘텀" + (f"(최근 {p[2].split(':')[2]}일 뺌)" if p[2].split(':')[2] != '0' else '')
+                             + f" 상위 {p[2].split(':')[3]}" for i, p in enumerate(d.get("pieces") or []))
+            on = [k.split("|")[1] for k, v in (d.get("on_today") or {}).items() if v]
+            tp = ", ".join(f"{t}({nm.get(t, t)}) {w:.3f}" for t, w in sorted((d.get("today_pool") or {}).items(), key=lambda x: -x[1])[:8]) or "없음"
+            bo = d.get("blackout") or {}
+            lines.append(("★★ R144 S&P 500 풀(사용자 지시 2026-10-04 '현재 종목에 없는 S&P 500 모두 추가 · 종목 선별력')",
+                          f"풀 {d.get('pool_priced', 0)}종목(현재 구성 {d.get('univ_src', '-')} · 그 시점 구성 {d.get('mem_src', '-')} · 오늘 회원 {d.get('mem_today', 0)}) · "
+                          f"조각: {pcs} · 오늘 켜진 조각 {', '.join(on) or '없음'} · 다음 거래일 풀 매수 {tp} · "
+                          f"풀 실적 회피(R115 규칙 · 같은 GICS 하위산업) 칸 비율 {float(bo.get('share', 0)) * 100:.1f}% · 오늘 회피 {len(d.get('blackout_today') or {})}종목 · "
+                          f"이번 실행 K★: 풀 없음 {_m(o0)} → ★ {_m(o1)} · 풀 몫 평균 {float(d.get('pool_share_mean', 0)):.3f} · 담은 풀 종목 {d.get('held_pool_n', 0)} · "
+                          f"합 최대 {float(d.get('sum_max', 0)):.3f}(레버리지 없음) · 자료 {d.get('sec', '-')}초(실적일 받음 {(d.get('earn') or {}).get('fetched', 0)} · "
+                          f"캐시 {(d.get('earn') or {}).get('cached', 0)}) · {R144_RESEARCH} · 되돌리기 k_overrides={{'R144_ENABLE': False}}. 연구·교육용, 투자 자문 아님."))
+
+        def _v(x, k, f="{:.1f}"):
+            return f.format(float(x[k])) if x and k in x and x[k] == x[k] else "-"
+        mo = mon_on or {}
+        mf = mon_off or {}
+        lines.append(("★★ R144 월별 합산 · 종목별 목표(사용자 지시 2026-10-04)",
+                      f"월회피 {_v(mf, '월회피')} → {_v(mo, '월회피')}(목표 {tg['월회피']:.0f}) · 월참여 {_v(mf, '월참여')} → {_v(mo, '월참여')}(목표 {tg['월참여']:.0f}) · "
+                      f"월중앙 ×{_v(mf, '월중앙', '{:.4f}')} → ×{_v(mo, '월중앙', '{:.4f}')}(목표 ×{tg['월중앙']:.3f}) | 종목-월(보유한 달): 1배 미만 "
+                      f"{_v(sm_off, '종목월손실%')}% → {_v(sm_on, '종목월손실%')}%(목표 ≤ {tg['종목월손실%']:.0f}% · 사용자 이상 0%) · 최악 ×{_v(sm_off, '종목월최악', '{:.3f}')} → "
+                      f"×{_v(sm_on, '종목월최악', '{:.3f}')} · 중앙 ×{_v(sm_off, '종목월중앙', '{:.4f}')} → ×{_v(sm_on, '종목월중앙', '{:.4f}')}(목표 ×{tg['종목월중앙']:.3f}) · "
+                      f"종목 참여 {_v(sm_off, '종목참여')} → {_v(sm_on, '종목참여')}(목표 {tg['종목참여']:.0f}) · 종목 회피 {_v(sm_off, '종목회피')} → {_v(sm_on, '종목회피')}"
+                      f"(목표 {tg['종목회피']:.0f}) · ⚠ '종목-월 1배 미만 0%'는 미래를 알아야만 된다(월중 손절은 35.8% → 61.0%로 악화 · 오라클도 25.9%) — 세부 00M. "
+                      "연구·교육용, 투자 자문 아님."))
+    ds = res.get("data_stats") or {}
+    if ds:
+        lines.append(("★ R144 실행 캐시(사용자 지시 '처음에만 대규모 캐시 · 날짜가 지나면 갱신만')",
+                      f"K 가격: 요청 {int(ds.get('요청', 0))}종목 · 새로 받음 {int(ds.get('새로 받음', 0))} · 뒤 며칠만 붙임 {int(ds.get('뒤에 붙임', 0))} · "
+                      f"실패 {int(ds.get('실패', 0))} · {float(ds.get('초', 0)):.1f}초 · 실적일(풀 실적 회피) 받음 {(d.get('earn') or {}).get('fetched', 0)} · "
+                      f"캐시 {(d.get('earn') or {}).get('cached', 0)} · K.run {res.get('run_sec', '-')}초 — 가격은 yf.download 일괄(묶음 100) · 조정 계수가 바뀐 종목만 전 이력 · "
+                      "측정 행 대조군은 7일 캐시 · 캐시 폴더는 run_pipeline v1.30.0이 GitHub 릴리스(pipeline-cache)에 보관했다가 다음 실행에 내려받는다."))
+    return sheets, lines
+
+
+def stock_month_stats(Wt: pd.DataFrame, R: pd.DataFrame, CO: Optional[pd.DataFrame], OC: Optional[pd.DataFrame],
+                      since: Optional[pd.Timestamp] = None) -> Tuple[Dict[str, Any], pd.DataFrame]:
+    """[R144 ★ 사용자 지시 '주식별 월별 수익배수'] 종목-월 성과 — 종목마다 그달 '보유한 만큼의' 수익 배수 h(체결 규칙 그대로: 야간은 전날 비중 · 장중은 새 비중 ·
+    보유 안 한 날 1) · 그 종목의 그달 전체 배수 m. 보유한 달만 센다. 요약: 종목-월 수 · 1배 미만 비율(%) · 최악 · 하위10% · 중앙 · 종목 참여(Σ(h−1)/Σ(m−1) · m>1 달) ·
+    종목 회피(1 − Σ(h−1)/Σ(m−1) · m<1 달) · 보유 종목 수. 종목별 표: 보유 달 · 1배 미만 달 · 비율 · 최악 · 중앙 · 참여 · 회피 · 단순합 기여(%p)."""
+    W = Wt.astype(float).fillna(0.0)
+    cols = list(W.columns)
+    idx = W.index
+    Rr = pd.DataFrame(R).reindex(index=idx, columns=cols).astype(float)
+    ex = W.shift(1).fillna(0.0)
+    pv = ex.shift(1).fillna(0.0)
+    if CO is not None and OC is not None:
+        co = pd.DataFrame(CO).reindex(index=idx, columns=cols).astype(float)
+        oc = pd.DataFrame(OC).reindex(index=idx, columns=cols).astype(float)
+        miss = (co.isna() | oc.isna()) & Rr.notna()
+        co = co.where(~miss, 0.0).fillna(0.0)
+        oc = oc.where(~miss, Rr).fillna(0.0)
+        f = (1 + co.where(pv > 1e-9, 0.0)) * (1 + oc.where(ex > 1e-9, 0.0))
+        contrib = pv * co + ex * oc
+    else:
+        f = 1 + Rr.fillna(0.0).where(ex > 1e-9, 0.0)
+        contrib = ex * Rr.fillna(0.0)
+    held = (ex > 1e-9) | (pv > 1e-9)
+    if since is not None:
+        keep = idx >= pd.Timestamp(since)
+        f, held, Rr, contrib = f.loc[keep], held.loc[keep], Rr.loc[keep], contrib.loc[keep]
+    per = f.index.to_period("M")
+    h = np.exp(np.log(f.clip(lower=1e-9)).groupby(per).sum())
+    m = np.exp(np.log1p(Rr.fillna(0.0).clip(lower=-0.999)).groupby(per).sum())
+    hm = held.groupby(per).any()
+    hv, mv = h.where(hm).stack(), m.where(hm).stack()
+    up, dn = mv > 1, mv < 1
+    n = len(hv)
+    summ = {"종목월수": int(n), "종목월손실%": (float((hv < 1 - 1e-9).mean() * 100) if n else 0.0),
+            "종목월최악": (float(hv.min()) if n else 1.0), "종목월하위10%": (float(hv.quantile(0.1)) if n else 1.0),
+            "종목월중앙": (float(hv.median()) if n else 1.0),
+            "종목참여": float((hv[up] - 1).sum() / max(1e-12, float((mv[up] - 1).sum())) * 100) if bool(up.any()) else 0.0,
+            "종목회피": float((1 - (hv[dn] - 1).sum() / min(-1e-12, float((mv[dn] - 1).sum()))) * 100) if bool(dn.any()) else 0.0,
+            "보유종목수": int(hm.any().sum())}
+    rows = []
+    csum = contrib.sum()
+    for c in cols:
+        if not bool(hm[c].any()):
+            continue
+        hc, mc = h[c][hm[c]], m[c][hm[c]]
+        uc, dc = mc > 1, mc < 1
+        rows.append({"종목": c, "보유 달": int(len(hc)), "1배 미만 달": int((hc < 1 - 1e-9).sum()),
+                     "1배 미만 비율(%)": round(float((hc < 1 - 1e-9).mean() * 100), 1), "월 최악 배수": round(float(hc.min()), 4),
+                     "월 중앙 배수": round(float(hc.median()), 4),
+                     # 종목 하나의 참여·회피는 그 종목의 오른(내린) 달 합이 5% 이상일 때만(작으면 비율이 수천 %로 튄다)
+                     "종목 참여(%)": (round(float((hc[uc] - 1).sum() / (mc[uc] - 1).sum() * 100), 1) if float((mc[uc] - 1).sum()) >= 0.05 else None),
+                     "종목 회피(%)": (round(float((1 - (hc[dc] - 1).sum() / (mc[dc] - 1).sum()) * 100), 1) if float((mc[dc] - 1).sum()) <= -0.05 else None),
+                     "단순합 기여(%p)": round(float(csum[c]) * 100, 2)})
+    return summ, pd.DataFrame(rows)
+
+
 def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]] = None,
         parent_w: Optional[pd.DataFrame] = None, m_sig: Any = None) -> Dict[str, Any]:
     """[K 계층 본체] 데이터 → 특성 → 규칙 채점 → **배분(총합 1.0)** → 감사 → 리포트 dict.
@@ -7234,6 +8127,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                   eval_start=cfg.EVAL_START, live_rule=cfg.LIVE_RULE,
                   fund_lag_days=cfg.FUND_PUBLISH_LAG_DAYS))
     _FAILED_PX.clear()
+    _DATA_STATS.clear()
+    _t_run0 = time.time()
     prices_all = download_prices(tickers + holdout, cfg)
     prices = {t: prices_all[t] for t in tickers if t in prices_all}
     prices_h = {t: prices_all[t] for t in holdout if t in prices_all}
@@ -7768,6 +8663,100 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             if alloc_pre139 is not None:
                 alloc = alloc_pre139
                 alloc_pre139 = None
+    # ---- [v0.32.0 R144 ★★ 사용자 지시 2026-10-04] S&P 500 풀 — 섹터 ETF 다리 → 섹터 안 모멘텀 상위(그 시점 구성 · 풀 실적 회피) · 진짜 마지막 단계 ----
+    _r144_diag: Dict[str, Any] = {"enabled": False}
+    alloc_pre144: Optional[Dict[str, Any]] = None
+    panel_pool: Dict[str, pd.DataFrame] = {}
+    if bool(getattr(cfg, "R144_ENABLE", True)) and isinstance(alloc.get("target_w"), pd.DataFrame) and len(alloc["target_w"]):
+        try:
+            _t144 = time.time()
+            _p144 = tuple(getattr(cfg, "R144_PIECES", ()) or ())
+            _ex144 = _r139_market_extra()
+            _c144, _i144 = r144_conditions(_ex144, alloc["target_w"].index, _p144)
+            if not _p144 or not _ex144 or not _c144.shape[1] or len(_i144["missing"]) >= _c144.shape[1]:
+                raise _R144Skip("조각 없음(R144_PIECES 비어 있음)" if not _p144 else
+                                "I v0.62.2+ 통로(M 지표 · XLK · SPY)가 없다 — run_pipeline으로 M·S·I와 함께 돌릴 것(풀 자료도 받지 않음)")
+            _cur144, _usrc144 = r144_sp500_current(cfg)
+            _cur144 = _cur144.assign(티커=_cur144["티커"].map(normalize_ticker))
+            _sec144 = {r["티커"]: r["섹터"] for _, r in _cur144.iterrows() if isinstance(r["섹터"], str)}
+            _sub144 = {r["티커"]: r["하위산업"] for _, r in _cur144.iterrows()}
+            _nm144 = {r["티커"]: r["이름"] for _, r in _cur144.iterrows()}
+            _tk144 = list(alloc["target_w"].columns)
+            _want144 = [t for t in _cur144["티커"] if t and t not in set(tickers) and t not in set(_tk144)]
+            _ppx144 = download_prices(_want144, cfg)
+            _pool144 = [t for t in _want144 if t in _ppx144 and _sec144.get(t) in SECTOR_ETFS]
+            _idx144 = alloc["target_w"].index
+            _cl144 = {t: pd.to_numeric(prices[t]["Close"], errors="coerce") for t in _tk144 if t in prices}
+            _cl144.update({t: pd.to_numeric(_ppx144[t]["Close"], errors="coerce") for t in _pool144})
+            _CLF = pd.DataFrame(_cl144).sort_index()
+            _mem144, _msrc144 = r144_membership(cfg, _pool144, _CLF.index)
+            _B144, _binfo144, _einfo144 = None, {}, {}
+            if bool(getattr(cfg, "R144_BLACKOUT", True)):
+                _trig144 = [t for t in _cur144["티커"] if t and _sub144.get(t)]
+                _earn144, _einfo144 = r144_earnings(_trig144, cfg)
+                _B144, _binfo144 = r144_blackout(_earn144, _sub144, _pool144, _idx144)
+            alloc_pre144 = alloc
+            alloc, _r144_diag, panel_pool = r144_pool_overlay(alloc, _CLF, _mem144, _B144, _c144, sector_of, panel, etf_panel,
+                                                              _ppx144, _sec144, cfg)
+            _r144_diag.update({"pieces": [list(p) for p in _p144], "info": _i144, "univ_src": _usrc144, "mem_src": _msrc144,
+                               "pool_listed": len(_want144), "pool_priced": len(_pool144), "earn": _einfo144,
+                               "blackout": {k: v for k, v in _binfo144.items() if k != "today"},
+                               "blackout_today": dict(list((_binfo144.get("today") or {}).items())[:20]),
+                               "mem_today": int(_mem144.iloc[-1].sum()) if len(_mem144) else 0, "sec": round(time.time() - _t144, 1),
+                               "names": {t: _nm144.get(t, t) for t in _pool144}, "sector": {t: _sec144.get(t) for t in _pool144},
+                               "sub": {t: _sub144.get(t) for t in _pool144}})
+            try:                                                           # 00K 오늘 표(풀 전 종목)
+                _cl_t = _CLF.loc[:_idx144[-1]]
+                _lk144 = sorted({(int(str(p[2]).split(":")[1]), int(str(p[2]).split(":")[2])) for p in _p144 if str(p[2]).startswith("F:")}) or [(252, 0)]
+                _tt = pd.DataFrame({"티커": _pool144, "이름": [_nm144.get(t, t) for t in _pool144], "섹터 ETF": [_sec144.get(t) for t in _pool144],
+                                    "GICS 하위산업": [_sub144.get(t) for t in _pool144],
+                                    "그 시점 S&P 500(오늘)": [bool(_mem144[t].iloc[-1]) if t in _mem144.columns and len(_mem144) else None for t in _pool144]})
+                for _L, _s in _lk144:
+                    _mv = (_cl_t.shift(_s) / _cl_t.shift(_s + _L) - 1.0).iloc[-1] if len(_cl_t) > _L + _s else pd.Series(dtype=float)
+                    _cn = f"모멘텀 {_L}일" + (f"(최근 {_s}일 뺌)" if _s else "") + "(%)"
+                    _tt[_cn] = [round(float(_mv.get(t, np.nan)) * 100, 2) if t in _mv.index and pd.notna(_mv.get(t)) else None for t in _pool144]
+                    _tt[_cn.replace("(%)", " 섹터 안 순위")] = _tt.groupby("섹터 ETF")[_cn].rank(ascending=False, method="min")
+                _bt = _B144.iloc[-1] if isinstance(_B144, pd.DataFrame) and len(_B144) else None
+                _tt["오늘 실적 회피(R115 풀)"] = [("예 — " + "; ".join((_binfo144.get("today") or {}).get(t, [])[:3])) if (_bt is not None and bool(_bt.get(t, False))) else "-"
+                                             for t in _pool144]
+                _r144_diag["today_table"] = _tt
+            except Exception as _et:
+                log("R144", kv(event="today_table_failed", err=type(_et).__name__, msg=str(_et)[:120]), level="warning")
+            if alloc_pre144 is not None:
+                _M144 = _find_m_module()
+                _ev144 = pd.Timestamp(str(getattr(cfg, "EVAL_START", "2018-01-01")))
+                if _M144 is not None and hasattr(_M144, "r117_rel") and "SPY" in (etf_panel or {}):
+                    _sp144 = pd.to_numeric(etf_panel["SPY"]["일간수익"], errors="coerce")
+                    for _k, _a in (("off", alloc_pre144), ("on", alloc)):
+                        _r = _a["port_ret"].loc[_ev144:]
+                        _r144_diag[_k] = _M144.r117_rel(_r, _sp144.reindex(_r.index).fillna(0.0))
+                        _r144_diag["mon_" + _k] = r144_monthly(_r, _sp144.reindex(_r.index))
+                # 종목-월 성과(전/후) — 체결 규칙 그대로
+                _pn144 = {**(panel or {}), **panel_pool}
+                for _k, _a in (("sm_off", alloc_pre144), ("sm_on", alloc)):
+                    _tw = _a["target_w"]
+                    _co = pd.DataFrame({t: pd.to_numeric(_pn144[t].get("야간수익"), errors="coerce") for t in _tw.columns if t in _pn144})
+                    _oc = pd.DataFrame({t: pd.to_numeric(_pn144[t].get("장중수익"), errors="coerce") for t in _tw.columns if t in _pn144})
+                    _rr = pd.DataFrame({t: pd.to_numeric(_pn144[t].get("일간수익"), errors="coerce") for t in _tw.columns if t in _pn144})
+                    _r144_diag[_k], _tab = stock_month_stats(_tw, _rr, _co, _oc, since=_ev144)
+                    _r144_diag[_k + "_table"] = _tab
+            log("R144", kv(event="r144_applied" if alloc_pre144 is not None else "r144_skipped", pool=len(_pool144), held=_r144_diag.get("held_pool_n"),
+                           days=";".join(f"{k.split('|')[1]}={v}" for k, v in (_r144_diag.get("days") or {}).items()),
+                           mult=(f"{_r144_diag['off']['배수']:.2f}→{_r144_diag['on']['배수']:.2f}" if _r144_diag.get("on") else "-"),
+                           sm=(f"{_r144_diag['sm_off']['종목월손실%']:.1f}→{_r144_diag['sm_on']['종목월손실%']:.1f}" if _r144_diag.get("sm_on") else "-"),
+                           sec=_r144_diag.get("sec"), src=_usrc144, mem=_msrc144[:60],
+                           note="★ 라이브(사용자 지시 R144 · 표본 안 선택) — 되돌리기 k_overrides={'R144_ENABLE': False}"), level="warning")
+        except _R144Skip as _s144:
+            _r144_diag = {"enabled": False, "error": str(_s144), "pieces": [list(p) for p in tuple(getattr(cfg, "R144_PIECES", ()) or ())]}
+            log("R144", kv(event="r144_skipped", reason=str(_s144)[:120], action="R144 없이 계속(= v0.31.0 K★)"), level="warning")
+        except Exception as _e144:
+            log("R144", kv(event="r144_failed", err=type(_e144).__name__, msg=str(_e144)[:160],
+                           trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R144 없이 계속(= v0.31.0 K★)"), level="warning")
+            _r144_diag = {"enabled": False, "error": f"{type(_e144).__name__}: {str(_e144)[:160]}"}
+            panel_pool = {}
+            if alloc_pre144 is not None:
+                alloc = alloc_pre144
+                alloc_pre144 = None
     alloc_rows: List[dict] = []
     _grid_rets: Dict[str, pd.Series] = {}          # [v0.9.0] 00U 비교 행용 — 격자 행 라벨 → 포트 일간수익
 
@@ -7991,6 +8980,19 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         except Exception as e:
             _r140_lbl = None
             log("ALLOC", kv(event="r140_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    # [v0.32.0 R144] S&P 500 풀 적용 전 K★(= v0.31.0 K★) 비교 행
+    _r144_lbl: Optional[str] = None
+    if alloc_pre144 is not None:
+        try:
+            _r144_lbl = "비교: 라이브(R144 S&P 500 풀 없음 = v0.31.0 K★)"
+            _rr144 = _alloc_row(_r144_lbl, alloc_pre144, float(alloc_pre144.get("cap_used", 0.05) or 0.05), None)
+            if _rr144:
+                _rr144.update({"연동출처": "R144 적용 전 K★(같은 규칙 · 풀 없음)"})
+                alloc_rows.append(_rr144)
+                _grid_rets[_r144_lbl] = alloc_pre144.get("port_ret")
+        except Exception as e:
+            _r144_lbl = None
+            log("ALLOC", kv(event="r144_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
     # [v0.25.0 R115] 같은 산업 실적 회피 행 — 라이브면 '회피 없는 라이브' 비교 행(00 'R115' 줄·00X 기준) · 아니면 측정 행 · 대안(반응 큰 발표만) 측정 행.
     _r115_lbl: Optional[str] = None
     _r115_alloc: Optional[Dict[str, Any]] = None
@@ -8137,6 +9139,18 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         _pv_cap = float(alloc.get("cap_used", getattr(cfg, "SECTOR_LINK_STOCK_CAP", 0.05)) or 0.05)
         _pv_cols = sorted(panel)
         _pv_ctl: Dict[Tuple[Any, ...], List[float]] = {}
+        # [v0.32.0 R144 ★ 실행시간] 대조군(규칙마다 PROB_CONTROLS회 배분 · 실측 ≈ 220초 = K 실행의 절반)은 측정 행 전용 — PROB_CONTROL_CACHE_DAYS(7일) 안이면
+        #   같은 버전·같은 회수로 만든 칼마 분포를 다시 쓴다(13 시트 '대조군 기준일' 열). 0이면 매번 새로.
+        _pv_cp = _cache_path(cfg, "r144_pv_ctl.pkl")
+        _pv_cache: Dict[Any, Any] = {}
+        _pv_cdays = int(getattr(cfg, "PROB_CONTROL_CACHE_DAYS", 7) or 0)
+        if _pv_cdays > 0 and os.path.exists(_pv_cp):
+            try:
+                _pv_cache = pd.read_pickle(_pv_cp)
+            except Exception:
+                _pv_cache = {}
+        _pv_asof: Dict[Tuple[Any, ...], str] = {}
+        _pv_new = 0
         for _pv in tuple(getattr(cfg, "PROB_VARIANTS", ()) or ()):
             _pvl, _pvsel, _pvprm, _pvsc = str(_pv[0]), str(_pv[1]), dict((k, float(v)) for k, v in tuple(_pv[2] or ())), str(_pv[3])
             _pscore = _pv_scores.get(_pvsc)
@@ -8154,6 +9168,11 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 if not _prow:
                     continue
                 _ck = (_pvsel, tuple(sorted(_pvprm.items())), _pvsc, _pvcut)
+                _cc = _pv_cache.get((VERSION, _nctl) + _ck) if _pv_cdays > 0 else None
+                if _nctl > 0 and _ck not in _pv_ctl and isinstance(_cc, dict) and \
+                        (pd.Timestamp.now() - pd.Timestamp(_cc.get("at"))).days < _pv_cdays and len(_cc.get("cal") or []) >= max(1, _nctl // 2):
+                    _pv_ctl[_ck] = list(_cc["cal"])
+                    _pv_asof[_ck] = str(_cc.get("asof", "-"))
                 if _nctl > 0 and _ck not in _pv_ctl:
                     _cal: List[float] = []
                     for _k in range(_nctl):
@@ -8168,13 +9187,17 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                         if _cr and _cr.get("칼마(CAGR/MDD)") is not None:
                             _cal.append(float(_cr["칼마(CAGR/MDD)"]))
                     _pv_ctl[_ck] = _cal
+                    _pv_asof[_ck] = str(pd.Timestamp(_pa["port_ret"].index[-1]).date()) if len(_pa.get("port_ret", [])) else "-"
+                    _pv_cache[(VERSION, _nctl) + _ck] = {"at": str(pd.Timestamp.now()), "asof": _pv_asof[_ck], "cal": _cal}
+                    _pv_new += 1
                 _cq = pd.Series(_pv_ctl.get(_ck, []), dtype=float).dropna()
                 _vc = _prow.get("칼마(CAGR/MDD)")
                 _pct = (round(float((_cq < float(_vc)).mean()) * 100.0, 1) if (len(_cq) and _vc is not None) else None)
                 _prow.update({"연동출처": f"S★ 섹터비중 · 섹터 안 {({'prob': '상승확률', 'earn': '어닝 복합', 'resid': '잔차 모멘텀', 'dip': '물타기 상태'}).get(_pvsc, _pvsc)} {_pvsel}"
                                           + (" · 어닝 하락 손절 21일" if _pvcut == "earn_dip" else ""),
                               "대조군 칼마 백분위": _pct, "대조군 칼마 중앙": (round(float(_cq.median()), 3) if len(_cq) else None),
-                              "대조군 칼마 95%": (round(float(_cq.quantile(0.95)), 3) if len(_cq) else None), "대조군 수": int(len(_cq))})
+                              "대조군 칼마 95%": (round(float(_cq.quantile(0.95)), 3) if len(_cq) else None), "대조군 수": int(len(_cq)),
+                              "대조군 기준일": _pv_asof.get(_ck, "-")})
                 alloc_rows.append(_prow)
                 _grid_rets[_pvl] = _pa.get("port_ret")
                 _is_live_pv = bool(_live_dip and _pvsc == "dip" and _pvcut == "earn_dip" and _pvsel == "tilt"
@@ -8192,7 +9215,13 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                                 note="측정 전용 — 라이브 무변경"))
             except Exception as e:
                 log("ALLOC", kv(event="k_prob_variant_failed", variant=_pvl[:40], err=type(e).__name__, msg=str(e)[:140]), level="warning")
-        log("ALLOC", kv(event="k_prob_variants_done", rows=len(prob_variants), controls_per_rule=_nctl, sec=round(time.time() - _pv_t0, 1)))
+        if _pv_new and _pv_cdays > 0:
+            try:
+                pd.to_pickle(_pv_cache, _pv_cp)
+            except Exception:
+                pass
+        log("ALLOC", kv(event="k_prob_variants_done", rows=len(prob_variants), controls_per_rule=_nctl, sec=round(time.time() - _pv_t0, 1),
+                        controls_new=_pv_new, controls_cached=len(_pv_ctl) - _pv_new, note="★ R144: 대조군 7일 캐시(측정 행 전용)"))
     if ind_alloc:
         _has_cs = isinstance(ind_alloc.get("coupling_score"), pd.DataFrame) and len(ind_alloc.get("coupling_score"))
         if _has_cs:
@@ -8294,7 +9323,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                 _live_u = (f"★ K★ 라이브({alloc.get('live_rule')} · {(alloc.get('exec') or {}).get('fill', '-')})" if alloc.get("live_rule")
                            else f"★ K★ 라이브({alloc.get('mode', '-')} · {(alloc.get('exec') or {}).get('fill', '-')})")
                 _rets: Dict[str, pd.Series] = {_live_u: _pr0}
-                _cmp_lbls = ([_r117_lbl] if _r117_lbl else []) + \
+                _cmp_lbls = ([_r144_lbl] if _r144_lbl else []) + ([_r117_lbl] if _r117_lbl else []) + \
                             ([_r115_lbl] if _r115_lbl else []) + ([_r115b_lbl] if _r115b_lbl else []) + \
                             ([_r114_lbl] if _r114_lbl else []) + ([_r111_lbl] if _r111_lbl else []) + \
                             ([_nobuf_lbl] if _nobuf_lbl else []) + ([_prev_live_lbl] if _prev_live_lbl else []) + \
@@ -8491,6 +9520,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             "r115_loss": _loss115,
             "r117": _r117_diag, "r117_label": _r117_lbl,                                                          # [v0.27.0 R117]
             "r139": _r139_diag, "r139_label": _r139_lbl, "r140_label": _r140_lbl,                                 # [v0.29.0 R139 · v0.30.0 R140]
+            "r144": _r144_diag, "r144_label": _r144_lbl, "panel_pool": panel_pool,                                # [v0.32.0 R144]
+            "r144_off_ret": (alloc_pre144.get("port_ret") if isinstance(alloc_pre144, dict) else None),
             "state_board": _state_board,                                                            # [v0.14.0 R104]
             "dip_states": _dip,                                                                     # [v0.15.0 R105] 00W
             "live_dip": bool(_live_dip), "prev_live_label": _prev_live_lbl,                          # [v0.18.0 R109] 라이브 물타기·어닝 손절
@@ -8500,7 +9531,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             "k_freshness": _k_fresh, "selection_audit": _sel_audit,                                # [v0.11.0 R99 N2·N6-a]
             "select_evidence": _sel_evid,                                                           # [v0.13.0 R103]
             "panel_h": panel_h, "pos_h": pos_h, "roles": roles, "automap": amap,           # [v0.6.0 R79]
-            "universe": U, "names": _nm, "failed_px": dict(_FAILED_PX),
+            "universe": U, "names": {**dict((_r144_diag or {}).get("names") or {}), **_nm}, "failed_px": dict(_FAILED_PX),
+            "data_stats": dict(_DATA_STATS), "run_sec": round(time.time() - _t_run0, 1),                     # [v0.32.0 R144] 실행 캐시 줄
             "market_budget": mkt_info, "market_w": mkt, "updown": _ud, "live_label": _live_lbl,
             "live_trade_label": _live_trade_lbl,                                        # [v0.7.0 R80]
             "parent_of": parent_of, "accuracy": acc, "audit": audit,
@@ -8642,7 +9674,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             if isinstance(_pr13, pd.Series):
                 _held_any = [c for c in _tw13.columns if float(_tw13[c].abs().sum()) > 0]     # 한 번도 안 담은 열은 뺀다
                 # [v0.15.0 R105] 야간·장중 분해(시가에 판 날의 야간 수익 · 투자/현금 이자/비용 열) — _exec_port_returns 정의 그대로
-                _pn, _ep = res.get("panel") or {}, res.get("etf_panel") or {}
+                _pn, _ep = {**(res.get("panel") or {}), **(res.get("panel_pool") or {})}, res.get("etf_panel") or {}   # [v0.32.0 R144] 풀 종목 야간·장중
 
                 def _col13(src, keys, col, pre=""):
                     return pd.DataFrame({f"{pre}{k}": pd.to_numeric(src[k].get(col), errors="coerce")
@@ -9163,6 +10195,8 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 for _nm in [k for k in _pvk if str(k).startswith("R105 ")]:
                     if isinstance(_grs.get(_nm), pd.Series):
                         _r_k[_nm[:40]] = _grs[_nm]
+                if isinstance(res.get("r144_off_ret"), pd.Series):          # [v0.32.0 R144] 풀 없는 K★(= v0.31.0) — 주·월·분기 무하락 확인용
+                    _r_k["비교: R144 풀 없음(v0.31.0 K★)"] = res["r144_off_ret"]
                 _ui112, _ur112 = (res.get("user_rel_info") or {}), res.get("user_rel")      # [v0.22.0 R112] 전체 기간 회피·참여·MDD → 목표 판정
                 _rel112 = ({"회피": float(_ui112["avoid"]) * 100.0, "참여": float(_ui112["part"]) * 100.0, "MDD": float(_ur112.iloc[0]["MDD"]) * 100.0}
                            if _ui112.get("ok") and isinstance(_ur112, pd.DataFrame) and len(_ur112) else None)
@@ -9300,6 +10334,14 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 _add.insert(0, _l139)
         except Exception as e:
             log("REPORT", kv(event="r139_line_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+        try:                                                                   # [v0.32.0 R144] S&P 500 풀 · 종목-월 성과 · 월/종목 목표(맨 앞)
+            _s144, _l144 = r144_sheets(res)
+            sheets.update(_s144)
+            _add[0:0] = list(_l144)
+        except Exception as e:
+            _add.insert(0, ("⚠ R144 S&P 500 풀 · 종목-월 성과 줄", f"산출 실패 — {type(e).__name__}: {str(e)[:120]}"))
+            log("REPORT", kv(event="r144_sheets_failed", err=type(e).__name__, msg=str(e)[:160],
+                             trace=traceback.format_exc()[-300:].replace("\n", " | ")), level="warning")
         try:                                                                   # [v0.25.0 R115] 같은 산업 실적 회피 · 00X 손실 구간 원인
             _r115v = r115_ind_earn_line(res)
             if _r115v:
@@ -9432,7 +10474,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     if isinstance(res.get("user_rel"), pd.DataFrame) and len(res["user_rel"]):
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
+    _front = [n for n in ("00M_종목월성과", "00K_S&P500풀", "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
                           "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00X_손실구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
                           "00N_종목선별근거", "01Z_주식일별예측",
                           "00_실행요약") if n in sheets]

@@ -1,5 +1,15 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.30.0 - 2026-10-04 - [R144 ★ 실행 사이 캐시 보관(GitHub 릴리스 pipeline-cache) — 처음에만 대규모 캐시 · 다음부터 갱신만]
+#    사용자 지시(2026-10-04): "실행 초기에만 대규모 데이터 캐시를 만들어놓고 날짜가 지나면 갱신만 하도록 해서 최대한 실행시간 단축".
+#    · 원인(2026-10-02 리포트): Kaggle 실행마다 /kaggle/working이 비어 S 경계 캐시 0/1,258(836초) · I 0/3,298(2,151초) · M 워크포워드 · K 가격·어닝을
+#      전부 처음부터 다시 만들었다(I 00 '이전 세션 캐시 없음').
+#    · 신설 restore_cache_github(base, folders) — 실행 시작에 캐시 폴더(cache_market_data · cache_sector · cache_industry · _stock_cache) 중 **비어 있는 것만**
+#      저장소 릴리스(태그 pipeline-cache)의 첨부 pipeline_cache.tar.gz에서 푼다(폴더가 이미 차 있으면 = Persistence 켬 → 내려받지 않음 · 경로 탈출 막음).
+#    · 신설 save_cache_github(base, folders) — 실행 끝에 같은 폴더를 tar.gz 하나로 묶어 첨부를 교체(새 이름으로 올림 → 옛것 지움 → 이름 바꿈 ·
+#      중간에 끊겨도 옛 캐시가 남는다 · 릴리스가 없으면 사전 릴리스로 만든다). git 이력에는 쌓이지 않는다. 토큰 = 같은 Secret GITHUB_TOKEN(출력 안 함).
+#    · K 캐시 폴더도 기준 폴더 아래(_stock_cache)로 넘긴다(k_overrides가 우선). main(cache_github=True) · 반환 dict에 cache_restore · cache_save · elapsed_sec.
+#    · 끄기: RP.main(cache_github=False). ※ 신호 · 배분 · 위험 파라미터 무변경. 연구·교육용, 투자 자문 아님.
 #  VERSION: v1.29.0 - 2026-10-03 - [R141 ★ 엑셀 결과를 GitHub 저장소 results/reports/<기준일>/ 폴더에 자동 저장]
 #    사용자 지시(2026-10-03): "엑셀 결과는 깃허브 저장소에 폴더 하나 만들어서 거기에 저장하도록 해".
 #    · 신설 push_reports_github(paths, stamp) — 실행이 끝나면 생성된 xlsx(M · S · I · K)를 yeomin1024/stock의 results/reports/<기준일>/에
@@ -1209,8 +1219,8 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v1.29.0"
-VERSION_DATE = "2026-10-03"
+VERSION = "v1.30.0"
+VERSION_DATE = "2026-10-04"
 
 MODULE_FILES = {
     "market_regime_trader": "market_regime_trader.py",
@@ -1380,6 +1390,167 @@ def push_reports_github(paths: List[str], stamp: str, repo: str = "yeomin1024/st
     return out
 
 
+# ---- [v1.30.0 R144 ★ 사용자 지시 2026-10-04 "실행 초기에만 대규모 데이터 캐시를 만들어놓고 날짜가 지나면 갱신만 하도록 해서 최대한 실행시간 단축"] ----
+#   Kaggle 실행(특히 Save & Run All)은 /kaggle/working이 매번 비어서 M·S·I·K 캐시가 0에서 다시 만들어졌다(2026-10-02 리포트:
+#   S 경계 캐시 0/1,258 · 836초 · I 0/3,298 · 2,151초). 캐시 폴더 4개를 tar.gz 하나로 묶어 저장소의 릴리스(태그 pipeline-cache) 첨부 파일로
+#   보관하고(git 이력에는 쌓이지 않는다) 다음 실행 시작 때 내려받아 푼다. 폴더가 이미 차 있으면(Persistence 켬) 내려받지 않는다.
+#   토큰은 GITHUB_TOKEN(같은 Secret · Contents 쓰기)에서만 읽고 출력하지 않는다. 캐시 내용 = 공개 시세(Yahoo · FRED · SEC · FINRA)와 계산 중간값.
+CACHE_RELEASE_TAG = "pipeline-cache"
+CACHE_ASSET_NAME = "pipeline_cache.tar.gz"
+CACHE_SKIP_SUFFIXES = (".xlsx", ".pyc", ".tmp", ".part")
+
+
+def _gh_headers(tok: Optional[str]) -> Dict[str, str]:
+    hd = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "yeomin1024-stock-runner"}
+    if tok:
+        hd["Authorization"] = f"Bearer {tok}"
+    return hd
+
+
+def _dir_has_files(d: str) -> bool:
+    if not d or not os.path.isdir(d):
+        return False
+    for _root, _dirs, _files in os.walk(d):
+        if _files:
+            return True
+    return False
+
+
+def restore_cache_github(base: str, folders: List[str], repo: str = "yeomin1024/stock",
+                         tag: str = CACHE_RELEASE_TAG, asset: str = CACHE_ASSET_NAME) -> Dict[str, Any]:
+    """[v1.30.0 R144] 캐시 내려받기 — 폴더(base 기준 상대 이름) 중 비어 있는 것만 릴리스 첨부 파일에서 푼다.
+    전부 차 있으면 건너뜀(Persistence). 릴리스·첨부가 없으면 첫 실행(대규모 캐시를 이번에 만든다). 실패해도 파이프라인은 계속."""
+    out: Dict[str, Any] = {"ok": False, "restored": [], "sec": 0.0}
+    t0 = time.time()
+    empty = [f for f in folders if not _dir_has_files(os.path.join(base, f))]
+    if not empty:
+        out.update({"ok": True, "note": "캐시 폴더 전부 있음(이전 세션 · Persistence) — 내려받지 않음"})
+        return out
+    try:
+        import requests
+        import tarfile
+    except Exception as e:
+        out["note"] = f"requests/tarfile 없음({type(e).__name__}) — 건너뜀"
+        return out
+    tok, _src = _github_token()
+    hd = _gh_headers(tok)
+    tmp = os.path.join(base, "_cache_download.tar.gz")
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/releases/tags/{tag}", headers=hd, timeout=60)
+        if r.status_code == 404:
+            out["note"] = "캐시 릴리스 없음 — 첫 실행: 이번 실행이 대규모 캐시를 만들고 끝에 올린다"
+            return out
+        r.raise_for_status()
+        a = next((x for x in r.json().get("assets", []) if x.get("name") == asset), None)
+        if a is None:
+            out["note"] = f"릴리스에 {asset} 없음 — 이번 실행이 만들어 올린다"
+            return out
+        with requests.get(a["url"], headers={**hd, "Accept": "application/octet-stream"}, stream=True, timeout=900) as dl:
+            dl.raise_for_status()
+            with open(tmp, "wb") as fh:
+                for chunk in dl.iter_content(chunk_size=1 << 20):
+                    fh.write(chunk)
+        base_abs = os.path.abspath(base)
+        n = 0
+        with tarfile.open(tmp, "r:gz") as tf:
+            for m in tf.getmembers():
+                top = m.name.replace("\\", "/").split("/")[0]
+                dest = os.path.abspath(os.path.join(base_abs, m.name))
+                if (top not in empty or m.issym() or m.islnk() or os.path.isabs(m.name)
+                        or not dest.startswith(base_abs + os.sep)):
+                    continue
+                tf.extract(m, base_abs)
+                n += 1
+        out.update({"ok": True, "restored": empty, "files": n, "mb": round(os.path.getsize(tmp) / 1e6, 1),
+                    "saved_at": a.get("updated_at"), "sec": round(time.time() - t0, 1)})
+    except Exception as e:
+        msg = str(e)
+        if tok and tok in msg:
+            msg = msg.replace(tok, "***")
+        out["note"] = f"캐시 내려받기 실패 — {type(e).__name__}: {msg[:160]} (전면 재수집으로 계속)"
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+    return out
+
+
+def save_cache_github(base: str, folders: List[str], repo: str = "yeomin1024/stock", tag: str = CACHE_RELEASE_TAG,
+                      asset: str = CACHE_ASSET_NAME, max_mb: float = 1900.0) -> Dict[str, Any]:
+    """[v1.30.0 R144] 캐시 올리기 — 폴더들을 tar.gz 하나로 묶어 릴리스 첨부로 교체(새 이름으로 올린 뒤 옛것 지우고 이름 바꿈 · 중간에 끊겨도 옛것이 남는다).
+    릴리스가 없으면 만든다(사전 릴리스 · 태그 pipeline-cache). 토큰이 없으면 건너뜀."""
+    out: Dict[str, Any] = {"ok": False, "sec": 0.0}
+    t0 = time.time()
+    tok, src = _github_token()
+    if not tok:
+        out["note"] = "GITHUB_TOKEN 없음 — 캐시 보관 건너뜀(다음 실행도 전면 재수집)"
+        return out
+    try:
+        import requests
+        import tarfile
+    except Exception as e:
+        out["note"] = f"requests/tarfile 없음({type(e).__name__}) — 건너뜀"
+        return out
+    hd = _gh_headers(tok)
+    api = f"https://api.github.com/repos/{repo}"
+    tmp = os.path.join(base, "_cache_upload.tar.gz")
+    try:
+        n = 0
+        with tarfile.open(tmp, "w:gz", compresslevel=6) as tf:
+            for f in folders:
+                d = os.path.join(base, f)
+                if not os.path.isdir(d):
+                    continue
+                for root, dirs, files in os.walk(d):
+                    dirs[:] = [x for x in dirs if x != "__pycache__"]
+                    for fn in files:
+                        if fn.endswith(CACHE_SKIP_SUFFIXES):
+                            continue
+                        p = os.path.join(root, fn)
+                        tf.add(p, arcname=os.path.relpath(p, base).replace("\\", "/"))
+                        n += 1
+        mb = os.path.getsize(tmp) / 1e6
+        if mb > max_mb:
+            out["note"] = f"캐시 {mb:.0f}MB > {max_mb:.0f}MB — 건너뜀(첨부 한도)"
+            return out
+        r = requests.get(f"{api}/releases/tags/{tag}", headers=hd, timeout=60)
+        if r.status_code == 404:
+            r = requests.post(f"{api}/releases", headers=hd, timeout=60,
+                              json={"tag_name": tag, "target_commitish": "main", "name": "파이프라인 캐시(자동 · run_pipeline)",
+                                    "body": "M·S·I·K 캐시 폴더 묶음(공개 시세·계산 중간값). run_pipeline이 실행 시작에 내려받고 끝에 교체한다.",
+                                    "prerelease": True})
+        r.raise_for_status()
+        rel = r.json()
+        tmpname = asset.replace(".tar.gz", "_new.tar.gz")
+        for x in rel.get("assets", []):
+            if x.get("name") == tmpname:
+                requests.delete(x["url"], headers=hd, timeout=60)
+        up_url = str(rel["upload_url"]).split("{")[0]
+        with open(tmp, "rb") as fh:
+            u = requests.post(f"{up_url}?name={tmpname}", headers={**hd, "Content-Type": "application/gzip"}, data=fh, timeout=1800)
+        u.raise_for_status()
+        new_id = u.json()["id"]
+        for x in rel.get("assets", []):
+            if x.get("name") == asset:
+                requests.delete(x["url"], headers=hd, timeout=60).raise_for_status()
+        requests.patch(f"{api}/releases/assets/{new_id}", headers=hd, json={"name": asset}, timeout=60).raise_for_status()
+        out.update({"ok": True, "files": n, "mb": round(mb, 1), "src": src, "sec": round(time.time() - t0, 1)})
+    except Exception as e:
+        msg = str(e)
+        if tok and tok in msg:
+            msg = msg.replace(tok, "***")
+        out["note"] = f"캐시 올리기 실패 — {type(e).__name__}: {msg[:160]}"
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+    return out
+
+
 def _last_close_banner(label: str, r: Optional[dict]) -> None:
     """[v1.26.0 R74 §1-4] S·I가 반환한 last_close_missing(M 달력 마지막일에 유효 종가가 없는 티커)을 크게 알린다."""
     _lm = list((r or {}).get("last_close_missing") or [])
@@ -1404,7 +1575,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
          i_overrides: Optional[Dict[str, Any]] = None,
          k_overrides: Optional[Dict[str, Any]] = None, base_dir: Optional[str] = None,
          _hooks: Optional[Dict[str, Any]] = None, push_github: bool = True, github_repo: str = "yeomin1024/stock",
-         github_folder: str = "results/reports") -> Dict[str, Any]:
+         github_folder: str = "results/reports", cache_github: bool = True) -> Dict[str, Any]:
     """M → S → I 실행 + 리포트 + (Colab) 다운로드 / (Kaggle) 영구 보존 + 실매매 배너.
     sector_exclude: None이면 sector_rotation.py의 기본 그대로 — v0.39.0부터 기본은 ()(11섹터 전부 예측).
         ⚠ 9섹터로 되돌리려면 sector_exclude=("XLB","XLE"). 제외는 신호·배분·성과를 바꾸는 설정이다.
@@ -1586,6 +1757,18 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
         i_kw.update(i_overrides or {})
         icfg = dataclasses.replace(I.CFG, **i_kw)
     print(f"[runner] 섹터 제외(SECTOR_EXCLUDE) = {tuple(getattr(scfg, 'SECTOR_EXCLUDE', ()) or ()) or '없음'}")
+    # ---- [v1.30.0 R144 ★] 캐시 보관(GitHub 릴리스 첨부) — 비어 있는 캐시 폴더만 내려받는다(실행 사이 '갱신만') ----
+    _kcache = os.path.join(base, "_stock_cache")
+    _cache_dirs = [os.path.relpath(d, base) for d in (mcfg.CACHE_DIR, scfg.CACHE_DIR, (icfg.CACHE_DIR if icfg is not None else None), _kcache)
+                   if d and os.path.abspath(d).startswith(os.path.abspath(base) + os.sep)]
+    _cache_rs: Dict[str, Any] = {}
+    if cache_github and not _hooks:
+        _cache_rs = restore_cache_github(base, _cache_dirs, repo=github_repo)
+        if _cache_rs.get("restored"):
+            print(f"[runner] ★ 캐시 복원: {', '.join(_cache_rs['restored'])} · {_cache_rs.get('mb')}MB · 파일 {_cache_rs.get('files')} · "
+                  f"{_cache_rs.get('sec')}초 · 저장 시각 {_cache_rs.get('saved_at')}")
+        else:
+            print(f"[runner] 캐시 복원 없음 — {_cache_rs.get('note', '-')}")
     # ---- [v1.26.0 R74 §4-5] 캐시 폴더 상태 — 이전 세션 캐시가 남아 있나(없으면 이번 실행은 경계 전면 재계산) ----
     #   리포트24: 산업 13개가 산업당 ≈300초(경계 캐시 미적중). 시트만으로는 '세션 초기화'인지 알 수 없었다.
     _cache_folder_report([("M 가격·FRED", mcfg.CACHE_DIR), ("S 검증", scfg.CACHE_DIR)]
@@ -1646,7 +1829,8 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
                           " (I 동결·배분 실패 시 정상)")
             except Exception as _e:
                 print(f"[runner]   ⚠ I 산업비중 추출 실패({type(_e).__name__}) — K는 그 행만 빼고 진행합니다")
-            kres = K.run(K.CFG, k_overrides, parent_w=_pw)
+            # [v1.30.0 R144] K 캐시도 기준 폴더 아래(_stock_cache) — 캐시 보관 묶음에 들어가게(사용자 k_overrides가 우선)
+            kres = K.run(K.CFG, {"CACHE_DIR": _kcache, **(k_overrides or {})}, parent_w=_pw)
             path4 = K.build_report(kres, I=I)          # I를 넘기면 19·00A 시트가 함께 나온다
         except Exception as e:
             print(f"[runner] ⚠ 주식 계층(K) 실패 — M·S·I 리포트는 정상입니다: {type(e).__name__}: {e}")
@@ -1684,6 +1868,14 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
                   + ", ".join(f"{n}({s})" for n, s in gh.get("files", [])) + f" · 토큰 출처 {gh.get('src')}")
         else:
             print(f"[runner] GitHub 저장 안 함 — {gh.get('note', '-')}")
+    # ---- [v1.30.0 R144 ★] 캐시 올리기(다음 실행은 내려받아 갱신만) ----
+    _cache_up: Dict[str, Any] = {}
+    if cache_github and not _hooks:
+        _cache_up = save_cache_github(base, _cache_dirs, repo=github_repo)
+        if _cache_up.get("ok"):
+            print(f"[runner] ★ 캐시 보관: 릴리스 {CACHE_RELEASE_TAG} · {_cache_up.get('mb')}MB · 파일 {_cache_up.get('files')} · {_cache_up.get('sec')}초")
+        else:
+            print(f"[runner] 캐시 보관 안 함 — {_cache_up.get('note', '-')}")
 
     # ---- 실매매 적용 전략 배너 ----
     try:
@@ -1710,7 +1902,8 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
               "Persistence(Files) 설정이면 다음 세션에도 캐시·리포트가 그대로 남음. 커밋(Save & Run All)하면 버전별 Output으로 저장.")
     print(f"[runner] 총 소요 {time.time() - t_all:.0f}초")
     return {"env": env, "base": base, "paths": paths, "history_dir": hist_dir, "res": res, "sres": sres, "ires": ires,
-            "kres": kres, "mcfg": mcfg, "scfg": scfg, "icfg": icfg, "github": gh}
+            "kres": kres, "mcfg": mcfg, "scfg": scfg, "icfg": icfg, "github": gh,
+            "cache_restore": _cache_rs, "cache_save": _cache_up, "elapsed_sec": round(time.time() - t_all, 1)}
 
 
 if __name__ == "__main__":
