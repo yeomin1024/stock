@@ -205,6 +205,10 @@ class Config:
     rot_at_open: bool = False         # True = 로테이션 매수도 장 시작 첫 가격(09:30)에 — 매수 시간대(entry_start) 제한 없음
     rot_vol_target: float = 0.0       # >0: 로테이션 1종목 비중 × min(1, 목표 연변동성% ÷ 그 종목 최근 20일 연변동성%)
     k_rot_scale: float = 1.0          # entry_mode 'k+rot': K 따라가기 몫 배율(로테이션은 rot_pct)
+    k_min_weight: float = 0.0         # K 몫 새 매수는 K 비중이 이 값(0~1) 이상일 때만(작은 비중 잦은 매매 줄이기)
+    k_exit_days: int = 1              # K 비중이 이 거래일 연속 0이어야 K 몫을 팖(1 = 0 되는 날 바로)
+    k_top: int = 0                    # >0: 그날 K 비중 상위 N종만 따라감
+    k_mom_days: int = 0               # >0: K 몫 새 매수는 그 종목 일봉 N일 수익률이 양수일 때만(전일 종가까지)
     # --- 변동성 맞춤 폭: >0이면 종목의 최근 20일 일간 변동성 ÷ 이 값(%)만큼 손절·익절·트레일·반등 폭을 늘이고 줄임(0.5~3배) ---
     vol_ref_pct: float = 0.0
     hold_overnight: bool = True       # True면 장마감에 팔지 않고 최대 max_hold_days 거래일 보유(스윙)
@@ -268,8 +272,13 @@ PRESETS = {
            "rot_skip": 21, "rot_every": 5, "rot_at_open": True, "max_positions": 30, "earn_avoid": True,
            "regime_scale": False, "sector_filter": False, "trend_ma_days": 0, "daily_loss_pct": 100.0,
            "max_trades_per_symbol": 2},
+    # P4(추천, 2026-10-04 3차): P3에서 K 몫 잦은 매매 줄임(비중 2% 미만은 안 삼 · 비중 0이 3거래일 이어져야 팖) → 승률·수익 ↑
+    "P4": {"entry_mode": "k+rot", "k_rot_scale": 0.9, "k_min_weight": 0.02, "k_exit_days": 3,
+           "rot_top": 2, "rot_keep": 4, "rot_pct": 15.0, "rot_days": 126, "rot_skip": 21, "rot_every": 5,
+           "rot_at_open": True, "max_positions": 30, "earn_avoid": True, "regime_scale": False, "sector_filter": False,
+           "trend_ma_days": 0, "daily_loss_pct": 100.0, "max_trades_per_symbol": 2},
 }
-PRESET_ALIAS = {"R1": "P3"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
+PRESET_ALIAS = {"R1": "P4"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
 PRESET_NOTES = {
     "C0": "시간봉 저점매수 · M 비중·S 필터 — 과거 +274% (MDD −7%)",
     "A": "C0 + 종목당 2회 · 일일 손실한도 끔 — 과거 +369% (MDD −7%)",
@@ -281,6 +290,8 @@ PRESET_NOTES = {
           "투자 상한 55%·낙폭 3%부터 매수 축소·손절 3일 쉬기 — 과거 +274% (MDD −4.9%, 86% 날 거래, 5분봉과 결과 같음)",
     "P3": "K 주식층(v0.31) 비중 × 1.2 따라가기 + 6-1 모멘텀 상위 2종 각 18%, 실적 발표 회피, 장 시작 체결 — "
           "과거 +1,828% (MDD −9.9%, 샤프 3.71). M 국면 의존 큼(SPY 규칙이면 MDD −24%)",
+    "P4": "P3 개선: K 비중 × 0.9 따라가기(비중 2% 미만 안 삼 · 비중 0이 3거래일 이어지면 팖) + 6-1 모멘텀 상위 2종 각 15%, "
+          "실적 발표 회피, 장 시작 체결 — 과거 +2,043% (MDD −9.65%, 승률 64.9%, 샤프 3.35)",
 }
 
 
@@ -482,6 +493,7 @@ class SymState:
     intraday: bool = False       # 국면 0인 날 산 당일 거래 → 장마감 청산
     rebal_day: dt.date = None    # K 비중 맞추기를 한 날(하루 한 번)
     stop_until: dt.date = None   # 손절 뒤 다시 사지 않는 마지막 날(stop_cool_days)
+    k_zero: int = 0              # K 몫 보유 중 K 비중이 연속 0인 거래일 수
 
 
 class LowHighStrategy:
@@ -712,7 +724,7 @@ class Book:
                     s.stop_until = (pd.Timestamp(self.day) + pd.offsets.BDay(c.stop_cool_days)).date()
             if s.qty == 0:
                 s.cooldown_until = now + dt.timedelta(seconds=c.cooldown_sec)
-                s.peak, s.adds, s.first_entry, s.init_qty, s.intraday = 0.0, 0, 0.0, 0, False
+                s.peak, s.adds, s.first_entry, s.init_qty, s.intraday, s.k_zero = 0.0, 0, 0.0, 0, False, 0
         rec = {"시각(ET)": now.strftime("%Y-%m-%d %H:%M:%S"), "종목": code, "구분": "매수" if side == "BUY" else "매도",
                "수량": qty, "가격($)": round(px, 4),
                "손익($)": None if pnl is None else round(pnl, 2),
@@ -748,7 +760,7 @@ class Book:
                  "peak_eq": self.peak_eq, "pause_until": self.pause_until.isoformat() if self.pause_until else None,
                  "positions": {k: {"qty": s.qty, "entry": s.entry, "peak": s.peak, "last": s.last_price, "mode": s.mode,
                                    "vk": s.vk_hold, "adds": s.adds, "first_entry": s.first_entry, "init_qty": s.init_qty,
-                                   "intraday": s.intraday,
+                                   "intraday": s.intraday, "k_zero": s.k_zero,
                                    "entry_time": s.entry_time.isoformat() if s.entry_time else None}
                                for k, s in self.st.items() if s.qty},
                  "saved_at": dt.datetime.now(KST).isoformat()}
@@ -772,6 +784,7 @@ class Book:
             s.mode, s.vk_hold = p.get("mode", "dip"), float(p.get("vk", 1.0))
             s.adds, s.first_entry = int(p.get("adds", 0)), float(p.get("first_entry", p["entry"]))
             s.init_qty, s.intraday = int(p.get("init_qty", p["qty"])), bool(p.get("intraday", False))
+            s.k_zero = int(p.get("k_zero", 0))
             et = p.get("entry_time")
             s.entry_time = dt.datetime.fromisoformat(et) if et else now_et()
         return True
@@ -1024,7 +1037,13 @@ class Engine:
             self.today.eligible = self.momentum_top(self.base_eligible)
         if self.cfg.entry_mode == "k+rot":                               # K 따라가기 + 모멘텀 로테이션 두 몫
             self.rotation_update(day)
-            b.k_weights = dict(self.today.kw or {}) if self.today.exposure > 0 else {}
+            kw = dict(self.today.kw or {}) if self.today.exposure > 0 else {}
+            if self.cfg.k_top > 0:
+                kw = dict(sorted(kw.items(), key=lambda x: -x[1])[:self.cfg.k_top])
+            b.k_weights = kw
+            for code, s in b.st.items():                                 # K 비중 연속 0일 수(팔지 판단용)
+                if s.qty > 0 and s.mode == "kf":
+                    s.k_zero = 0 if code in kw else s.k_zero + 1
         elif self.cfg.entry_mode.startswith("rot"):
             self.rotation_update(day)
         elif self.cfg.entry_mode.startswith("k"):                        # K 주식층 비중 따라가기(매일)
@@ -1185,12 +1204,16 @@ class Engine:
         if s.qty > 0:
             if s.mode == "rot" and code not in rt:
                 self._fill(code, "SELL", px, ts, "로테이션 제외(모멘텀 순위 밖 또는 국면 0)")
-            elif s.mode == "kf" and code not in kw:
+            elif s.mode == "kf" and code not in kw and (s.k_zero >= c.k_exit_days or self.today.exposure <= 0):
                 self._fill(code, "SELL", px, ts, "K몫 제외(주식층 비중 0)")
             return True
         if code in b.rot_out or code in self.today.blackout or (self.mkt_halt and c.halt_all):
             return True
-        if (code in rt or code in kw) and b.can_enter(code, ts, None, any_time=c.rot_at_open)[0]:
+        k_ok = code in kw and kw[code] >= c.k_min_weight
+        if k_ok and c.k_mom_days:                                       # 상승 추세인 K 종목만
+            d, n = s.daily, c.k_mom_days
+            k_ok = len(d) > n and d[-1 - n] > 0 and d[-1] > d[-1 - n]
+        if (code in rt or k_ok) and b.can_enter(code, ts, None, any_time=c.rot_at_open)[0]:
             if code in rt:
                 self._fill(code, "BUY", px, ts, f"로테이션 매수: {c.rot_days}일 모멘텀 상위 {c.rot_top}")
             else:
