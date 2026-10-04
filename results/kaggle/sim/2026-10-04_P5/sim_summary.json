@@ -142,6 +142,7 @@
   "k_min_weight": 0.02,
   "k_exit_days": 3,
   "k_top": 0,
+  "k_equal_pct": 0.0,
   "k_mom_days": 0,
   "hold_loser_days": 20,
   "hold_loser_riskoff": true,
