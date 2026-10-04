@@ -22,6 +22,20 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.84.0 - 2026-10-04 - [R143 ★ R133 해제 묶음 추가 조각 1개(라이브) — 사용자 지시 '목표치에 가장 가까운 방법' · ⚠ 표본 안 선택]
+#    사용자 지시(2026-10-04): "… 월별 목표치 훨씬 더 높게 설정해서 다시 계속 탐색하면서 테스트해서 올려" → "그럼 목표치에 가장 가까운 방법을 탐색해서 올려".
+#    ── 월 목표(R142 · M) ── 월 회피 ≥ 99 · 월 참여 ≥ 99.5 · 월 중앙 +1.0%p — M은 SPY 아니면 현금이라 월 단위 오라클 상한이 100 / 100.
+#    ── 탐색(r143/mgreedy143 · 코드 밖) ── R141/R142 후보(feat133 · 깃발)에 M 자기 지표 프레임(ind = MD:) · M 내부 점수 · XLK 가격을 더해 쓰임 7(neu · hc · 재진입 ·
+#      감축 · 바닥) × 위/아래 20%. 관문 = 2018~ 기존 + 월 무하락 · 긴 이력 대용(R3.RL.long_ev 세 창 느슨). '가장 가까운' 회차라 긴 이력 실제 작동 요구는 뺐다.
+#    ── 채택 1조각(R143_M_PIECES · '& 조용' · R133 hc 묶음에 OR) ── 미시간 소비자심리 5일 변화 상위 20% → 과열 헤어컷 해제.
+#      탐색 6조각 중 5개는 뺐다: 내구재 주문(2023-08~09 하락 직전 해제 → K 손실 달 +1) · 비농업 고용(00P 주 하위10% 배수 0.9908 → 0.9907) ·
+#      실현변동성 비율 · OFR 주식 가치 · XLK 변동성(S★ 비중을 거쳐 K 하락 회피율 1.0288 → 1.0270) — M · S · I · K 전 열 무하락 지킴.
+#    ── 결과(로컬 하네스 · 2018~) ── 배수 12.36 → 12.73 · 회피 81.57 그대로 · 참여 76.11 → 76.99 · MDD 그대로 −7.36% · 손실 달/분기 그대로 ·
+#      월 회피 94.9 그대로 · 월 참여 98.0 → 99.1 · 월 중앙 ×1.0216 → ×1.0231 — 2018~ 전 열(00U · 00P 포함) 무하락 · 목표(99 / 99.5)엔 못 미침.
+#      K(종목 · R143 이전 S★ 통로) 180.3 → 191.4배 · 전 열 무하락. 실코드 조건 = 연구 조건(다른 날 0).
+#    ⚠⚠ 긴 이력(1999~2017)에서는 거의 작동하지 않는다(비중 바뀐 날 0~0.8%) = 긴 이력으로 검증되지 않은 조각들 · 2010~17 회피 −0.56(허용 −0.6 안).
+#    (§1) r143_m_conditions · r133_inputs(ind=) · _r133_parse 'ofr_eqv' · apply_r133_release diag['r143'] · 00 줄 r143_m_line · Config R143_ENABLE(캐시 무시).
+#    COMPANION_MIN_VERSIONS S v0.99.0. 되돌리기 m_overrides={'R143_ENABLE': False}. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.83.0 - 2026-10-03 - [R141 ★ 다음날 하락확률 날짜별 표시(13r) · 00R_하락확률신뢰도(네 층 공통 함수) — 신호·목표비중 무변경]
 #    사용자 지시(2026-10-03): "… 일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어 …".
 #    (공통 · M 원본) r141_eval(확률 · 실제 하락 · 수익 → AUC · 월 단위 부트스트랩 95% 구간 · Brier · 기저 Brier(결정일 전날까지 하락 비율) · 기술점수 BSS ·
@@ -3364,6 +3378,9 @@ class Config:
     R133_VOL_MAX: float = 0.15              # '조용' = SPY 20일 실현변동성 < 15%
     R133_REENTRY_N: int = 10                # V자 재진입 유지 거래일
     R133_REENTRY_STOP: float = 0.03         # V자 재진입 손절(트리거 날 종가 대비)
+    # ⚠⚠ [v1.84.0 R143 사용자 지시(2026-10-04) "목표치에 가장 가까운 방법을 탐색해서 올려"] R133 해제 묶음에 조각 6개 추가(R143_M_PIECES · M 지표 프레임 ·
+    #   OFR 주식 가치 항목 · XLK 변동성 · 확장 분위 위/아래 20% & 조용). 표본 안 선택 — 과적합 위험. 되돌리기 m_overrides={'R143_ENABLE': False}.
+    R143_ENABLE: bool = True
     # [v1.79.0 R118 ★ 사용자 지시(2026-09-29) "모든 지표들을 사용 … 의미를 파악해서 의미가 있도록 설계"] R117 확률을 '전 지표 · 의미 가족' 확률로 대체.
     #   R118_ENABLE=False면 R117(자산 지표 12 + 시장 7) 확률로 돌아간다 · R118_PREDICTOR_POOL=False면 predictor 풀 없이 M 후보 + 계층 + 달력만.
     R118_ENABLE: bool = True
@@ -7402,6 +7419,7 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "R122_ENABLE", "R122_FETCH", "R122_BREADTH", "R122_VOL_MAX", "R122_REC_MONTHS", "R122_REC_DD", "R122_PC_Z_MIN", "R122_TNX_JUMP",
     "R122_BREADTH_START", "R122_BREADTH_MIN_MEMBERS", "R122_WIKI_URL",
     "R133_ENABLE", "R133_FETCH", "R133_CACHE_HOURS", "R133_VOL_MAX", "R133_REENTRY_N", "R133_REENTRY_STOP",   # [v1.82.0 R133] 신호 뒤 조각 겹침
+    "R143_ENABLE",                                                                                # [v1.84.0 R143] R133 해제 묶음 추가 조각(신호 뒤)
     "R118_ENABLE", "R118_PREDICTOR_POOL", "R118_FETCH_EXTRA", "R118_POOL_URL", "R118_POOL_START", "R118_FIRST_FIT_YEAR", "R118_TRAIN_START",   # [v1.79.0 R118]                              # [v1.78.0 R117] 신호 뒤 하락확률 문턱(검증·가중치 무관)
     "RUN_THRESHOLD_SENSITIVITY",                                                               # [v1.55.0 R72 §5] 06c 진단 스위치
     "DATA_FRESHNESS_CHECK", "DATA_SETTLE_MINUTES", "DATA_STALE_MAX_TRADING_DAYS",              # [v1.56.0 R73 §1] 수집 신선도
@@ -9356,6 +9374,14 @@ R133_PIECES: Tuple[Tuple[str, str, str], ...] = (
     ("glbr", "hc", "국가 ETF 20개 60일 상승 비율 하위 20% & 조용"),
     ("comm", "hc", "CFTC E-mini 상업 순포지션 4주 변화 상위 20% & 조용"),
 )
+# [v1.84.0 R143] R133 해제 묶음에 더하는 조각 — (특징, 쪽, 쓰임, 설명). 특징 MD:=M 지표 프레임 ind 열 · OFR:=OFR 금융 스트레스 지수 항목(+2일) ·
+#   XLK:vol20 = XLK 총수익 20일 실현변동성. 쪽 hi = 위 20% · lo = 아래 20%(확장 분위 · 하루 늦춤) — 전부 '& 조용'. 연구 r143/mgreedy143(표본 안).
+R143_M_PIECES: Tuple[Tuple[str, str, str, str], ...] = (
+    ("MD:UMCSENT_CHG5", "hi", "hc", "미시간 소비자심리 5일 변화 상위 20% & 조용"),
+)
+# 탐색에서 찾았지만 뺀 조각(되살리려면 위 표에 더함 · 조건 함수는 그대로 지원): ("MD:RVOL_RATIO", "hi", "neu") · ("OFR:Equity valuation", "hi", "hc") ·
+#   ("XLK:vol20", "hi", "hc") — S★ 비중을 거쳐 K 하락 회피율을 1.0288 → 1.0270으로 떨어뜨림 · ("MD:DGORDER_CHG20", "lo", "neu") — K 손실 달 +1 ·
+#   ("MD:PAYEMS_CHG5", "lo", "hc") — 00P 주 하위10% 배수 미세 하락.
 R133_LAST: Dict[str, Any] = {}
 
 
@@ -9467,8 +9493,16 @@ def _r133_parse(src: Dict[str, Any]) -> Dict[str, Optional[pd.Series]]:
         g = c.groupby("d")[["open_interest_all", "comm_positions_long_all", "comm_positions_short_all"]].sum()
         return (g["comm_positions_long_all"] - g["comm_positions_short_all"]) / g["open_interest_all"]
 
+    def _ofr_eqv() -> pd.Series:
+        d = pd.read_csv(io.BytesIO(src["ofr"]))
+        dc = d.columns[0]
+        d[dc] = pd.to_datetime(d[dc], errors="coerce")
+        d = d.dropna(subset=[dc]).set_index(dc).sort_index()
+        return pd.to_numeric(d["Equity valuation"], errors="coerce")
+
     if src.get("ofr") is not None:
         _safe("ofr_us", _ofr)
+        _safe("ofr_eqv", _ofr_eqv)                      # [v1.84.0 R143] 주식 가치 항목
     if src.get("cor1m") is not None:
         _safe("cor1m", _cor)
     if src.get("ads") is not None:
@@ -9674,10 +9708,50 @@ def r133_conditions(price: pd.DataFrame, px_dict: Optional[Dict[str, pd.DataFram
     return out
 
 
-def r133_inputs(price: pd.DataFrame, px_dict: Optional[Dict[str, pd.DataFrame]], cal: pd.DatetimeIndex, cfg: Config = CFG
-                ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+def r143_m_conditions(ind: Optional[pd.DataFrame], px_dict: Optional[Dict[str, pd.DataFrame]], cal: pd.DatetimeIndex,
+                      ser: Dict[str, Optional[pd.Series]], calm: pd.Series) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v1.84.0 R143] R133 해제 묶음 추가 조각(R143_M_PIECES) 조건 — 열 'r143:특징' · 전부 '& 조용'(R133 calm과 같은 것) · t일 종가에 알 수 있는 값.
+    MD: = M 지표 프레임 ind(발표 지연 반영) · OFR: = OFR FSI 항목(관측일 + 2일 · R133 ofrus와 같은 늦춤) · XLK:vol20 = XLK 총수익 log 20일 표준편차 × √252.
+    자료가 없으면 그 조각만 False · info['missing']."""
+    cal = pd.DatetimeIndex(cal)
+    calm = pd.Series(calm, index=cal).reindex(cal).fillna(False).astype(bool)
+    out = pd.DataFrame(index=cal)
+    info: Dict[str, Any] = {"missing": [], "stale": []}
+    for col, side, _use, _ in R143_M_PIECES:
+        x = None
+        if col.startswith("MD:") and isinstance(ind, pd.DataFrame) and col[3:] in ind.columns:
+            x = pd.to_numeric(ind[col[3:]], errors="coerce").reindex(cal)
+            xs = x.dropna()
+            chg = xs[xs.diff().fillna(0.0) != 0]
+            if len(chg) and (cal[-1] - chg.index[-1]).days > 120:
+                info["stale"].append(f"{col}(마지막 변화 {str(chg.index[-1])[:10]})")
+        elif col == "OFR:Equity valuation" and ser.get("ofr_eqv") is not None:
+            x = _r133_al(ser["ofr_eqv"], 2, cal)
+        elif col == "XLK:vol20":
+            df = (px_dict or {}).get("XLK")
+            if isinstance(df, pd.DataFrame) and len(df):
+                if isinstance(df.columns, pd.MultiIndex):
+                    df = df.copy()
+                    df.columns = [c[-1] for c in df.columns]
+                c_ = "Adj Close" if "Adj Close" in df.columns else ("Close" if "Close" in df.columns else None)
+                if c_ is not None:
+                    s = pd.to_numeric(df[c_], errors="coerce")
+                    s.index = pd.to_datetime(s.index)
+                    s = s[~s.index.duplicated(keep="last")].sort_index().reindex(cal).ffill()
+                    x = np.log(s).diff().rolling(20).std() * math.sqrt(252.0)
+        key = f"r143:{col}"
+        if x is None:
+            out[key] = False
+            info["missing"].append(col)
+            continue
+        out[key] = (_r133_hi(x, 0.8) if side == "hi" else _r133_lo(x, 0.2)) & calm
+    return out.fillna(False).astype(bool), info
+
+
+def r133_inputs(price: pd.DataFrame, px_dict: Optional[Dict[str, pd.DataFrame]], cal: pd.DatetimeIndex, cfg: Config = CFG,
+                ind: Optional[pd.DataFrame] = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """[R133] 자료 자동 수신(FRED 7 · OFR · CBOE COR1M · 국채 입찰 · ADS · SF 연준 뉴스 · CFTC · Yahoo 국가 ETF 20) → r133_conditions.
-    조각별 실패는 info에 남기고 그 조각만 끈다."""
+    조각별 실패는 info에 남기고 그 조각만 끈다. [v1.84.0 R143] ind를 주면 R143_M_PIECES 조건을 더해 neu · hc 묶음에 OR(R143_ENABLE)."""
     t0 = time.time()
     info: Dict[str, Any] = {}
     fetch = bool(getattr(cfg, "R133_FETCH", True))
@@ -9718,6 +9792,22 @@ def r133_inputs(price: pd.DataFrame, px_dict: Optional[Dict[str, pd.DataFrame]],
             + [nm for k, nm in (("ofr_us", "OFR"), ("cor1m", "CBOE COR1M"), ("ads", "ADS"), ("news", "SF 연준 뉴스"), ("comm_net", "CFTC")) if ser.get(k) is None]
             + ([] if auctions is not None and len(auctions) else ["국채 입찰"]) + ([] if info["country_ok"] >= 10 else [f"국가 ETF {info['country_ok']}/20"]))
     info["missing"] = miss
+    # [v1.84.0 R143] 추가 조각 → neu · hc 묶음에 OR(R133 해제 규칙 그대로 · 같은 자리)
+    info["r143"] = {"enabled": False}
+    if bool(getattr(cfg, "R143_ENABLE", True)) and ind is not None:
+        try:
+            c143, i143 = r143_m_conditions(ind, pxd, cal, ser, cond["calm"])
+            for k in c143.columns:
+                cond[k] = c143[k]
+            for u_ in ("neu", "hc"):
+                ks = [f"r143:{c_}" for c_, _, uu, _ in R143_M_PIECES if uu == u_]
+                if ks:
+                    cond[f"r143_{u_}"] = c143[ks].any(axis=1)
+                    cond[u_] = cond[u_] | cond[f"r143_{u_}"]
+            info["r143"] = {"enabled": True, **i143}
+        except Exception as e:
+            info["r143"] = {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+            log("SIGNAL", kv(event="r143_m_conditions_failed", err=type(e).__name__, msg=str(e)[:160], action="R143 조각 없이 계속(= v1.83.0 신호)"), level="error")
     info["sec"] = round(time.time() - t0, 1)
     return cond, info
 
@@ -9751,9 +9841,43 @@ def apply_r133_release(sig: pd.DataFrame, cond: pd.DataFrame, cfg: Config = CFG)
                                 for k, u_, _ in R133_PIECES if u_ in ("neu", "hc")},
                  "today": {k: (bool(cond[k].iloc[-1]) if k in cond.columns and len(cond) else None) for k, _, _ in R133_PIECES}})
     diag["today"].update({k: (bool(cond[k].iloc[-1]) if k in cond.columns and len(cond) else None) for k in ("calm", "vtrig", "neu", "hc", "re")})
+    if "r143_neu" in cn.columns or "r143_hc" in cn.columns:
+        # [v1.84.0 R143] 추가 조각이 켜진 해제일(다른 조각과 겹친 날 포함) · R143 조각만으로 풀린 날 · 오늘 켜진 조각
+        _isneu = out["state"].astype(str).eq("NEUTRAL")
+        _old_neu = cn[[k for k, u_, _ in R133_PIECES if u_ == "neu" and k in cn.columns]].fillna(False).astype(bool).any(axis=1)
+        _old_hc = cn[[k for k, u_, _ in R133_PIECES if u_ == "hc" and k in cn.columns]].fillna(False).astype(bool).any(axis=1)
+        _n143 = _isneu & b("r143_neu") & low
+        _h143 = hc_flag & b("r143_hc") & low
+        _only = (_n143 | _h143) & ~((_isneu & _old_neu | hc_flag & _old_hc) & low)
+        diag["r143"] = {"neutral_days": int(_n143[w].sum()), "haircut_days": int(_h143[w].sum()), "only_days": int(_only[w].sum()),
+                        "today": {k: bool(cond[k].iloc[-1]) for k in cond.columns if str(k).startswith("r143:")} if len(cond) else {}}
     log("SIGNAL", kv(event="r133_release", neutral_days=diag["neutral_days"], haircut_days=diag["haircut_days"], by_year=str(diag["by_year"]).replace(" ", ""),
                      note="★ 라이브(사용자 지시 R133) — 되돌리기 m_overrides={'R133_ENABLE': False}"))
     return out, diag
+
+
+R143_M_RESEARCH = ("연구(r143 · 2018~ 표본 안 · 1조각): 배수 12.36 → 12.73 · 회피 81.57 그대로 · 참여 76.11 → 76.99 · MDD 그대로 · "
+                   "월 회피 94.9 그대로 · 월 참여 98.0 → 99.1 · 월 중앙 ×1.0216 → ×1.0231 · 2018~ 전 열 무하락(00U · 00P 포함) · "
+                   "긴 이력 대용 세 창 느슨 통과(2010~17 회피 −0.56) · ⚠ 긴 이력에서 거의 작동하지 않음 = 긴 이력으로 검증 안 됨 · 월 목표(99 / 99.5)에는 못 미침 · "
+                   "탐색 6조각 중 5개는 K(종목 층 · S★ 비중을 거침)나 00P 지표를 떨어뜨려 뺐다")
+
+
+def r143_m_line(d133: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """[v1.84.0 R143] 00 줄 — 추가 조각 목록 · 2018~ 발동 일수 · 오늘 켜진 조각 · 자료 · 연구 수치 · 되돌리기."""
+    i143 = ((d133 or {}).get("inputs") or {}).get("r143") or {}
+    lab = f"★★ R143 R133 해제 묶음 추가 조각 {len(R143_M_PIECES)}개(M · 사용자 지시 2026-10-04 '목표치에 가장 가까운 방법')"
+    if not i143:
+        return None
+    if not i143.get("enabled"):
+        return (lab, f"⚠ 적용 안 됨 — {i143.get('error') or '꺼짐'} (= v1.83.0 신호) · 되돌리기 m_overrides={{'R143_ENABLE': False}}")
+    x = (d133 or {}).get("r143") or {}
+    on = [k.split(":", 1)[1] for k, v in (x.get("today") or {}).items() if v]
+    pcs = " · ".join(f"{i + 1}) {desc} → {'NEUTRAL 해제' if u_ == 'neu' else '헤어컷 해제'}" for i, (_c, _s, u_, desc) in enumerate(R143_M_PIECES))
+    data = ("전부 있음" if not i143.get("missing") else "⚠ 없음 = " + ", ".join(i143["missing"]) + "(그 조각만 꺼짐)") + \
+           (" · ⚠ 갱신 멈춤 의심 = " + ", ".join(i143["stale"]) if i143.get("stale") else "")
+    return (lab, f"{pcs} · 2018~ 해당일: NEUTRAL {x.get('neutral_days', '-')} · 헤어컷 {x.get('haircut_days', '-')} · 이 조각들로만 풀린 날 {x.get('only_days', '-')} · "
+                 f"오늘 켜진 조각 {', '.join(on) if on else '없음'} · 자료: {data} · {R143_M_RESEARCH} · "
+                 "되돌리기 m_overrides={'R143_ENABLE': False}. 연구·교육용, 투자 자문 아님.")
 
 
 def r133_reentry_overlay(tp: pd.Series, trig: pd.Series, close: pd.Series, y: float, n: int, stop: float) -> pd.Series:
@@ -14676,7 +14800,7 @@ def run(cfg: Config = CFG) -> dict:
     _c133: Optional[pd.DataFrame] = None
     if bool(getattr(cfg, "R133_ENABLE", True)):
         try:
-            _c133, _i133 = r133_inputs(price, px_dict, cal, cfg)
+            _c133, _i133 = r133_inputs(price, px_dict, cal, cfg, ind=ind)
             sig, r133_diag = apply_r133_release(sig, _c133, cfg)
             r133_diag["inputs"] = _i133
             R133_LAST.clear()
@@ -16092,6 +16216,13 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             _r105_m_lines = [("★★ R133 조각 19개 겹침(M)", f"⚠ 적용 실패 — {_d133['error']} (R133 없이 계속 = v1.81.1 신호)")] + list(_r105_m_lines)
     except Exception:
         pass
+    # [v1.84.0 R143] R133 해제 묶음 추가 조각 6개 00 줄(맨 앞)
+    try:
+        _l143 = r143_m_line(res.get("r133") or {})
+        if _l143:
+            _r105_m_lines = [_l143] + list(_r105_m_lines)
+    except Exception:
+        pass
     # [v1.79.0 R118 ★] 00H2_지표의미(전 지표 · 가족 · 뜻 · 방향 · 적재 · 표본 밖 AUC) · 00 줄
     try:
         _m118 = res.get("r118") or {}
@@ -16577,13 +16708,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.83.0"
-BUNDLE_VERSION_DATE = "2026-10-03"
+BUNDLE_VERSION = "v1.84.0"
+BUNDLE_VERSION_DATE = "2026-10-04"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.98.0", "industry_rotation": "v0.63.0", "stock_regime": "v0.31.0"}   # [v1.83.0 R141]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.99.0", "industry_rotation": "v0.64.0", "stock_regime": "v0.31.0"}   # [v1.84.0 R143]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:

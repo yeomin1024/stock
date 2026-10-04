@@ -1,5 +1,25 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.64.0 - 2026-10-04 - [R143 ★ I★ 월 목표 근접 조각 6개(R117 단계 뒤 마지막 · 라이브) + K 통로 유지 — 사용자 지시 '목표치에 가장 가까운 방법' · ⚠ 표본 안 선택]
+#    사용자 지시(2026-10-04): "… 월별 목표치 훨씬 더 높게 설정해서 다시 계속 탐색하면서 테스트해서 올려" → "그럼 목표치에 가장 가까운 방법을 탐색해서 올려".
+#    ── 월 목표(R142 · I) ── 월 회피 ≥ 147.6 · 월 참여 ≥ 183.2 · 월 중앙 +1.0%p(×1.050) — 구성 오라클 216 / 294.
+#    ── 탐색(r143/igreedy143 · 코드 밖) ── 출발 = M v1.84(근사) · S v0.99 위 I★. 후보 = M 지표(MD 신선) · MI · XLK · 산업(IND: SOXX/IGV 대 XLK) · 깃발 ×
+#      위/아래/보완 20% × 쓰임 6(lp · pl · fill · cut5 · def · nx). 관문 = 2018~ 무하락(라이브 v0.63 I★ 대비 · 기존 + 월 + 00U 사용자 신뢰도 전 열 + 00P 기간 꾸준함 전 열) ·
+#      + 달별 부호 보존 · 긴 대용 2007~2017 세 창(새 S 장기 비중 위 · I 조각 자체만 · 느슨). 8번째 조각(개선 0.001 · 긴 대용 MDD 한계)은 뺐다.
+#      S v0.99 조각은 I★까지 함께 보며 골랐다(I 배분 = S 부모 비중 × I 산업 몫 · 선형) — S만 보고 고른 판은 I '분기 중앙 배수'를 떨어뜨려 버렸다.
+#    ── 채택 6조각(R143_PIECES · 전부 같은 부모 안에서만 옮김 = 계층정합 유지) ── 산업생산 20일 변화↑ → XLK 가족 산업 → XLK · 내구재 주문 5일 변화↓ → 산업 → XLK ·
+#      주택 착공 20일 변화↑ → XLK 밖 산업 → 부모 · 3개월물 5일 변화↑ → 산업 → XLK · 근원 PCE 5일 변화↓ → XLK → SOXX · 소매판매 5일 변화↓ → 산업 → XLK.
+#      (탐색 7번째 '12월 → 합 1까지 채움'은 I 총노출을 S★보다 키워 14_계층정합 위반 3일이 생겨 뺐다.)
+#    ── 결과(로컬 · 2018~ · M v1.84 1조각 근사 위) ── 라이브 I★ 84.31배 · 회피 86.51 · 참여 122.57 · 월 133.2 / 153.6 / ×1.0399 →
+#      (M v1.84 · S v0.99만) 104.6 · 92.0 · 124.5 · 월 143.9 / 156.4 / ×1.0443 → (조각 6) 113.0배 · 회피 92.2 · 참여 127.1 · MDD −9.35% · 손실 주/달/분기 95/9/0 ·
+#      월 146.7 / 158.0 / ×1.0444 · 월 SPY 이긴% 80.0 → 83.8 — 라이브 대비 전 열 무하락 · 플러스 → 마이너스 달 0 · 계층정합 위반 0 · 실코드 = 연구 비중(차 0).
+#      목표(147.6 / 183.2 / ×1.050)는 셋 다 미달(월 회피 0.9 모자람).
+#    ── K 통로(R143_K_KEEP · r143_k_alloc) ── S 비중 변화가 K(종목)의 참여율 · 배수 · 주 플러스%를 떨어뜨려(K 178.0배 · 참여 1.332 · 기준 180.3 · 1.361)
+#      K에는 'R143 이전 S★'(v0.98 규칙) 위 v0.63 규칙 I★를 넘긴다 — K 191.4배 · 표시 지표 하락 0(M v1.84 1조각 근사 위 실측). K는 이번 라운드 범위 밖.
+#    ⚠⚠ 표본 안 선택 · 산업 단위 쓰임(lp · nx · pl)은 긴 이력 대용(부모 ETF만)에서 작동하지 않아 시험되지 않았다 — 과적합 위험.
+#    (§1) r143_ind_feats · r143_i_conditions · r143_i_overlay · r143_stage_i(R117 뒤) · 'R143 이전 I★(월목표 조각 없음 · 비교) [R143]' 행 · alloc['r143'] · 00 줄 r143_i_line ·
+#         r143_k_alloc(run()의 K 통로 · alloc['r143_k_handoff']) · IndustryConfig R143_ENABLE · R143_K_KEEP · R143_PIECES.
+#    되돌리기 i_overrides={'R143_ENABLE': False} · K에 새 I★를 넘기려면 {'R143_K_KEEP': False}. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.63.0 - 2026-10-03 - [R141 ★ 다음날 하락확률 날짜별 표시(13r) · 00R_하락확률신뢰도 — I★ 규칙·비중 무변경]
 #    사용자 지시(2026-10-03): "… 일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어 …".
 #    alloc['r117']에 날짜 × 자산 확률 P(산업 + 부모 섹터 · SPY) 보관 → S.s_r141_block(표적 3개) → 00R · 00 줄 · 13r에 보유 가중 · SPY 확률 · 다음날 결과 열.
@@ -2033,7 +2053,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.63.0"
+VERSION = "v0.64.0"
 VERSION_DATE = "2026-10-03"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
@@ -2952,6 +2972,15 @@ class IndustryConfig:
     R135_COMPARE: bool = True
     R135_OFF_MIN_CORR: Optional[float] = None
     R135_OFF_SMOOTH_DAYS: int = 21
+    # ⚠⚠ [v0.64.0 R143 사용자 지시 2026-10-04 "목표치에 가장 가까운 방법을 탐색해서 올려"] I★ 월 목표 근접 조각(R117 단계 뒤 마지막) —
+    #   (특징, 쪽, 쓰임, q) 순서대로. 특징 MD:=M 지표 · XLK:=주력 가격 · IND:=SOXX/IGV 대 XLK · CAL:/TR:=달력/추세 깃발.
+    #   쓰임 lp = XLK 가족 산업 → XLK · nx = XLK 밖 산업 → 부모 ETF · pl = XLK(부모 몫) → SOXX · fill = 합 1까지 XLK 가족 비율대로.
+    #   표본 안 선택 — 과적합 위험(파일 머리 v0.64.0). 되돌리기 i_overrides={'R143_ENABLE': False}.
+    R143_ENABLE: bool = True
+    R143_K_KEEP: bool = True        # K 통로는 R143 이전 S★ · I★(K 결과 유지 — K는 이번 범위 밖) · False면 새 I★를 K에
+    R143_PIECES: Tuple[Tuple[str, str, str, float], ...] = (
+        ("MD:INDPRO_CHG20", "hi", "lp", 0.2), ("MD:DGORDER_CHG5", "lo", "lp", 0.2), ("MD:HOUST_CHG20", "hi", "nx", 0.2),
+        ("MD:DGS3MO_CHG5", "hi", "lp", 0.2), ("MD:PCEPILFE_CHG5", "lo", "pl", 0.2), ("MD:RSAFS_CHG5", "lo", "lp", 0.2))
     # ⚠ [v0.3.0 §A3 사용자 지시 "산업만 배분하라"] 부모 비중 중 산업으로 배분되지 않은 '잔여'를 어디에 두는가.
     #   "parent"(기본) = 부모 ETF — 잔여가 정확히 S★로 환원되므로 I★−S★가 순수하게 산업 판단의 기여가 된다(§7.3).
     #   "industries" = 잔여도 그 부모의 적격 산업 균등으로(= 사실상 cap·fb 1.0, 산업만 보유. ⚠ 리포트41 실측
@@ -5052,6 +5081,267 @@ def r117_stage_i(target_ws: Dict[str, pd.DataFrame], label_star: str, results: D
     return label_star, _r117_diag
 
 
+R143_XFAM: Tuple[str, ...] = ("XLK", "SOXX", "IGV", "SKYY", "HACK")     # XLK 가족(부모 + 기술 산업)
+R143_DEF: Tuple[str, ...] = ("XLP", "XLU", "XLV")
+R143_USE_KR = {"lp": "XLK 가족 산업 → XLK(부모)", "nx": "XLK 밖 산업 → 부모 ETF", "pl": "XLK(부모 몫) → SOXX", "fill": "합 1까지 XLK 가족 비율대로",
+               "cut5": "XLK 가족 절반 현금", "def": "XLK 가족 → 방어(XLP·XLU·XLV)"}
+R143_RESEARCH = ("연구(r143 · 2018~ 표본 안 · M v1.84 근사 · S v0.99 위): 라이브 I★(v0.63) 84.31배 · 회피 86.51 · 참여 122.57 · 월 133.2 / 153.6 / ×1.0399 → "
+                 "M · S만 바뀐 I★ 104.6배 · 92.0 · 124.5 · 월 143.9 / 156.4 / ×1.0443 → 조각 6개 113.0배 · 92.2 · 127.1 · MDD −9.35% · 손실 95/9/0 · "
+                 "월 146.7 / 158.0 / ×1.0444(목표 147.6 / 183.2 / ×1.050 — 셋 다 미달 · 월 회피는 0.9 모자람) · 월 SPY 이긴% 80.0 → 83.8 · 라이브 대비 00U · 00P 전 열 무하락 · "
+                 "계층정합 유지(같은 부모 안에서만 옮김) · "
+                 "플러스 → 마이너스 달 0 · "
+                 "⚠⚠ 표본 안 선택 · 산업 단위 쓰임(lp · nx · pl)은 긴 이력 대용으로 시험 불가(과적합 위험)")
+
+
+def _r143_tr_index(rc: Any, cal: pd.DatetimeIndex) -> Optional[pd.Series]:
+    """총수익 지수 = ret_cc_full 누적(상장일 = 1 · 그 전은 결측) → 달력 위 앞 값 채움(S R134/R143과 같은 원천)."""
+    if rc is None or not len(rc):
+        return None
+    rc = pd.to_numeric(pd.Series(rc), errors="coerce")
+    return (1.0 + rc.fillna(0.0)).cumprod().reindex(cal).ffill()
+
+
+def r143_ind_feats(res: dict, results: Dict[str, Dict[str, Any]], sres: dict) -> pd.DataFrame:
+    """[v0.64.0 R143] 산업 특징(연구 r135/scan135.ind_feats와 같은 식) — SOXX · IGV 대 XLK 상대 수익 · SOXX 변동성 · 낙폭 · 이격 · 수익 · 상관.
+    SOXX · IGV = 산업 결과 ret_cc_full 누적 · XLK = S 섹터 결과 ret_cc_full 누적(없으면 M px_dict XLK Adj Close)."""
+    cal = pd.DatetimeIndex(res["cal"])
+    F = pd.DataFrame(index=cal)
+    s = _r143_tr_index((results.get("SOXX") or {}).get("ret_cc_full"), cal)
+    g = _r143_tr_index((results.get("IGV") or {}).get("ret_cc_full"), cal)
+    x = _r143_tr_index((((sres or {}).get("sectors") or {}).get("XLK") or {}).get("ret_cc_full"), cal)
+    if x is None:
+        df = ((res or {}).get("px_dict") or {}).get("XLK")
+        if isinstance(df, pd.DataFrame) and "Adj Close" in df.columns:
+            v = pd.to_numeric(df["Adj Close"], errors="coerce")
+            v.index = pd.to_datetime(v.index)
+            x = v[~v.index.duplicated(keep="last")].reindex(cal).ffill()
+    if s is None or g is None or x is None:
+        return F
+    for n in (5, 20, 60, 120):
+        F[f"IND:soxx_rel{n}"] = (s / s.shift(n)) / (x / x.shift(n)) - 1
+        F[f"IND:igv_rel{n}"] = (g / g.shift(n)) / (x / x.shift(n)) - 1
+    ls, lx = np.log(s).diff(), np.log(x).diff()
+    F["IND:soxx_volr"] = ls.rolling(20).std() / lx.rolling(20).std()
+    F["IND:soxx_vol20"] = ls.rolling(20).std() * np.sqrt(252)
+    F["IND:soxx_dd63"] = s / s.rolling(63).max() - 1
+    F["IND:soxx_ext200"] = s / s.rolling(200).mean() - 1
+    F["IND:soxx_r5"] = s.pct_change(5, fill_method=None)
+    F["IND:soxx_r20"] = s.pct_change(20, fill_method=None)
+    F["IND:soxx_corr60"] = ls.rolling(60).corr(lx)
+    return F
+
+
+def r143_i_conditions(res: dict, results: Dict[str, Dict[str, Any]], sres: dict, icfg, S) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.64.0 R143] I 조각 조건(R143_PIECES) — 달력 res['cal'] 위 · 전부 t일 종가에 알 수 있는 값. MD/MI/XLK/CAL/TR은 S v0.99 R143 함수 그대로 ·
+    IND는 r143_ind_feats. 없으면 그 조각만 꺼짐(info['missing'])."""
+    cal = pd.DatetimeIndex(res["cal"])
+    ind = res.get("ind")
+    out = pd.DataFrame(index=cal)
+    info: Dict[str, Any] = {"missing": [], "stale": []}
+    FL = XK = XI = None
+    for i, p in enumerate(tuple(getattr(icfg, "R143_PIECES", ()) or ())):
+        col, side, use = p[0], p[1], p[2]
+        q = float(p[3]) if len(p) > 3 else 0.2
+        key = f"{i + 1}|{col}|{side}|{use}|{q:g}"
+        x = None
+        try:
+            if col.startswith(("CAL:", "TR:")):
+                FL = S.r143_flags(res) if FL is None else FL
+                if col in FL.columns:
+                    f = FL[col].reindex(cal)
+                    out[key] = (f > 0.5) if side == "on" else ((f < 0.5) & f.notna())
+                    continue
+            elif col.startswith("MD:"):
+                if isinstance(ind, pd.DataFrame) and col[3:] in ind.columns:
+                    x = pd.to_numeric(ind[col[3:]], errors="coerce").reindex(cal)
+            elif col.startswith("MI:"):
+                v = res.get(col[3:])
+                if v is not None:
+                    x = pd.to_numeric(pd.Series(v), errors="coerce").reindex(cal)
+            elif col.startswith("XLK:"):
+                XK = S.r143_xlk_feats(res, (sres or {}).get("sectors") or {}, S.CFG) if XK is None else XK
+                if col in XK.columns:
+                    x = XK[col]
+            elif col.startswith("IND:"):
+                XI = r143_ind_feats(res, results, sres) if XI is None else XI
+                if col in XI.columns:
+                    x = XI[col]
+        except Exception as e:
+            info.setdefault("errors", []).append(f"{col}: {type(e).__name__}")
+            x = None
+        if x is None:
+            out[key] = False
+            info["missing"].append(col)
+            continue
+        out[key] = S._r143_q(x, side, q)
+        if col.startswith("MD:"):
+            xs = x.dropna()
+            ch = xs[xs.diff().fillna(0.0) != 0]
+            if len(ch) and (cal[-1] - ch.index[-1]).days > 120:
+                info["stale"].append(f"{col}(마지막 변화 {str(ch.index[-1])[:10]})")
+    return out.fillna(False).astype(bool), info
+
+
+def r143_i_overlay(tw: pd.DataFrame, cond: pd.DataFrame, cols: List[str], parent_of: Dict[str, str]) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """[v0.64.0 R143] 조각을 순서대로(연구 r135/scan135.overlay와 같은 식 · 합 ≤ 1 · 레버리지 없음). 반환 (비중, 조각별 바뀐 날)."""
+    tw = tw.copy().astype(float).fillna(0.0)
+    for c_ in R143_XFAM + R143_DEF:
+        if c_ not in tw.columns:
+            tw[c_] = 0.0
+    fam = [k for k in R143_XFAM if k in tw.columns]
+    days: Dict[str, int] = {}
+    for key in cond.columns:
+        use = key.split("|")[3]
+        c = cond[key].reindex(tw.index).fillna(False).astype(bool)
+        before = tw.copy()
+        if use == "lp":
+            for t in fam[1:]:
+                mv = tw[t].where(c, 0.0)
+                tw[t] -= mv
+                tw["XLK"] += mv
+        elif use == "nx":
+            for t in cols:
+                p_ = parent_of.get(t)
+                if p_ == "XLK" or t not in tw.columns or p_ not in tw.columns:
+                    continue
+                mv = tw[t].where(c, 0.0)
+                tw[t] -= mv
+                tw[p_] += mv
+        elif use == "pl":
+            mv = tw["XLK"].where(c, 0.0)
+            tw["XLK"] -= mv
+            tw["SOXX"] += mv
+        elif use == "cut5":
+            for t in fam:
+                tw.loc[c, t] = tw.loc[c, t] * 0.5
+        elif use == "def":
+            mv = tw[fam].sum(axis=1).where(c, 0.0)
+            for t in fam:
+                tw.loc[c, t] = 0.0
+            for d_ in R143_DEF:
+                tw[d_] += mv / len(R143_DEF)
+        elif use == "fill":
+            tot = tw.sum(axis=1)
+            add = (1.0 - tot).clip(lower=0.0).where(c & (tot > 1e-9), 0.0)
+            fs = tw[fam].sum(axis=1)
+            share = tw[fam].div(fs.where(fs > 1e-12), axis=0).fillna(0.0)
+            share.loc[fs <= 1e-12, "XLK"] = 1.0
+            for t in fam:
+                tw[t] += add * share[t]
+        days[key] = int(((tw - before).abs().sum(axis=1) > 1e-12).sum())
+    return tw.clip(lower=0.0), days
+
+
+def r143_stage_i(target_ws: Dict[str, pd.DataFrame], label_star: str, results: Dict[str, Dict[str, Any]], cols: List[str],
+                 parent_of: Dict[str, str], res: dict, sres: dict, s_alloc: Dict[str, Any], eval_idx: pd.DatetimeIndex, bt_fn, cost_map: Dict[str, float],
+                 icfg, M, S) -> Tuple[str, Dict[str, Any]]:
+    """[v0.64.0 R143 ★ 사용자 지시(2026-10-04) "그럼 목표치에 가장 가까운 방법을 탐색해서 올려"] I★ 마지막 단계(R117 뒤) — 조각을 순서대로.
+    교체 전 I★ = 'R143 이전 I★(월목표 조각 없음 · 비교) [R143]' 행. K는 바뀐 I★ 비중을 받는다. 실패하면 I★ 무변경.
+    ⚠⚠ 표본 안 선택(과적합 위험) · 산업 단위 쓰임(lp · nx · pl)은 긴 이력 대용(부모 ETF만)으로 시험되지 않는다. 연구·교육용이며 투자 자문이 아니다."""
+    diag: Dict[str, Any] = {"enabled": bool(getattr(icfg, "R143_ENABLE", True))}
+    pieces = tuple(getattr(icfg, "R143_PIECES", ()) or ())
+    if not diag["enabled"] or not pieces or label_star not in target_ws:
+        diag["enabled"] = False
+        return label_star, diag
+    try:
+        w0 = target_ws[label_star].copy().fillna(0.0).astype(float)
+        cond, info = r143_i_conditions(res, results, sres, icfg, S)
+        w1, days = r143_i_overlay(w0, cond, cols, parent_of)
+        w1 = w1.reindex(columns=w0.columns).fillna(0.0)
+        lab_off = "R143 이전 I★(월목표 조각 없음 · 비교) [R143]"
+        lab_new = (label_star[:-1].rstrip() if label_star.endswith("★") else label_star) + " · R143 월목표 조각 ★"
+        items = [((lab_new if k_ == label_star else k_), (w1 if k_ == label_star else v_)) for k_, v_ in target_ws.items()]
+        target_ws.clear()
+        target_ws.update(items)
+        target_ws[lab_off] = w0
+        sp = pd.Series(s_alloc.get("spy_ret"), dtype=float).reindex(eval_idx).fillna(0.0)
+        r0 = pd.to_numeric(bt_fn(w0, cost_map)["strategy_ret"], errors="coerce").reindex(eval_idx).fillna(0.0)
+        r1 = pd.to_numeric(bt_fn(w1, cost_map)["strategy_ret"], errors="coerce").reindex(eval_idx).fillna(0.0)
+        u = S.user_rel_portfolio({"off": r0, "on": r1}, sp, S.CFG).set_index("전략")
+
+        def _nl(r_, code_):
+            p_ = (1.0 + r_).groupby(r_.index.to_period(code_)).prod() - 1.0
+            return int((p_ < -1e-9).sum())
+        diag.update({"label_off": lab_off, "pieces": [list(p) for p in pieces], "days": days, "info": info,
+                     **{k_: {m_: float(u.loc[k_, m_]) for m_ in ("배수", "하락 회피율", "상승 참여율", "MDD")} for k_ in ("off", "on")},
+                     "loss_off": [_nl(r0, c_) for c_ in ("W-FRI", "M", "Q")], "loss_on": [_nl(r1, c_) for c_ in ("W-FRI", "M", "Q")],
+                     "mon_off": S.r143_monthly(r0, sp), "mon_on": S.r143_monthly(r1, sp),
+                     "on_today": {k: bool(cond[k].iloc[-1]) for k in cond.columns} if len(cond) else {},
+                     "changed_days": int(((w1 - w0).abs().sum(axis=1) > 1e-9).sum()), "sum_max": float(w1.sum(axis=1).max()) if len(w1) else 0.0})
+        log("ROTATION", kv(event="r143_i_applied", changed_days=diag["changed_days"], sum_max=round(diag["sum_max"], 6),
+                           avoid=f"{diag['off']['하락 회피율']:.4f}→{diag['on']['하락 회피율']:.4f}", part=f"{diag['off']['상승 참여율']:.4f}→{diag['on']['상승 참여율']:.4f}",
+                           m_avoid=f"{diag['mon_off']['월회피']:.2f}→{diag['mon_on']['월회피']:.2f}", m_part=f"{diag['mon_off']['월참여']:.2f}→{diag['mon_on']['월참여']:.2f}",
+                           missing=",".join(info.get("missing") or []) or "-", note="★ 라이브(사용자 지시 R143 · 표본 안 선택) — 되돌리기 i_overrides={'R143_ENABLE': False}"), M=M)
+        return lab_new, diag
+    except Exception as e:
+        log("ROTATION", kv(event="r143_i_failed", err=type(e).__name__, msg=str(e)[:180], trace=traceback.format_exc()[-300:].replace("\n", " | "),
+                           action="R143 없이 계속 — I★ 무변경(= v0.63.0)"), M=M, level="warning")
+        return label_star, {"enabled": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
+def r143_k_alloc(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]], sres: dict, res: dict, eval_idx: pd.DatetimeIndex, icfg, M, S,
+                 wf: Dict[str, Any], rf_daily: Optional[pd.Series], prob_pack: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """[v0.64.0 R143] K 통로용 배분 — R143 S 조각이나 I 조각이 켜져 있으면 'R143 이전 S★'(S diag['r143']['label_off'] 비중)로 I 배분을 한 번 더 만들어
+    (R143 I 조각 끔 · 격자 끔 · 나머지 규칙 그대로 = v0.63 I★) K 통로에 넘긴다. 왜: R143 S 비중 변화가 K(종목)의 참여율 · 배수 · 주 플러스% 등을 떨어뜨렸다
+    (r143 krun143 · S 21조각: 참여 1.361 → 1.332 · 배수 180.3 → 178.0) — K는 이번 범위(M · S · I) 밖이라 K 결과를 그대로 지킨다. M v1.84 조각은 K에 영향 없음(실측 비트 동일).
+    R143_K_KEEP=False면 새 I★를 그대로 넘긴다. 실패하면 새 I★를 넘기고 로그."""
+    try:
+        if not bool(getattr(icfg, "R143_K_KEEP", True)):
+            return alloc
+        s_alloc = (sres or {}).get("alloc") or {}
+        d143 = ((s_alloc.get("diag") or {}).get("r143")) or {}
+        i143 = (alloc or {}).get("r143") or {}
+        if not d143.get("enabled") and not i143.get("enabled"):
+            return alloc
+        s_off = (s_alloc.get("target_ws") or {}).get(d143.get("label_off")) if d143.get("enabled") else s_alloc.get("target_w")
+        if not isinstance(s_off, pd.DataFrame) or not len(s_off):
+            log("ROTATION", kv(event="r143_k_alloc_skipped", reason="R143 이전 S★ 비중 없음", action="새 I★를 K 통로에"), M=M, level="warning")
+            return alloc
+        sres_k = dict(sres)
+        sa = dict(s_alloc)
+        sa["target_w"] = s_off
+        sres_k["alloc"] = sa
+        cfg_k = dataclasses.replace(_frozen_alloc_cfg(icfg), R143_ENABLE=False, R135_COMPARE=False)
+        alloc_k = build_industry_allocation(results, sres_k, res, eval_idx, cfg_k, M, S, wf, rf_daily=rf_daily, prob_pack=prob_pack)
+        if not alloc_k:
+            return alloc
+        alloc["r143_k_handoff"] = {"label": str(alloc_k.get("label_star", "")), "s_label": str(d143.get("label_off") or "-"),
+                                   "max_diff_vs_live": float((alloc_k["target_w"] - alloc["target_w"].reindex_like(alloc_k["target_w"]).fillna(0.0)).abs().sum(axis=1).max())}
+        log("ROTATION", kv(event="r143_k_handoff", label=alloc["r143_k_handoff"]["label"], diff_days=int(((alloc_k["target_w"] - alloc["target_w"].reindex_like(
+            alloc_k["target_w"]).fillna(0.0)).abs().sum(axis=1) > 1e-9).sum()), note="K 통로 = R143 이전 S★ · I★(K 결과 유지) — 되돌리기 i_overrides={'R143_K_KEEP': False}"), M=M)
+        return alloc_k
+    except Exception as e:
+        log("ROTATION", kv(event="r143_k_alloc_failed", err=type(e).__name__, msg=str(e)[:160], action="새 I★를 K 통로에"), M=M, level="warning")
+        return alloc
+
+
+def r143_i_line(d: Optional[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
+    """[v0.64.0 R143] 00 줄 — 조각 · 오늘 켜진 조각 · 이번 실행 켬/끔(기존 · 월) · 연구 수치 · 과적합 경고 · 되돌리기."""
+    d = d or {}
+    lab = "★★ R143 I★ 월 목표 근접 조각(라이브 · 사용자 지시 2026-10-04 '목표치에 가장 가까운 방법')"
+    if not d.get("enabled"):
+        return (lab, f"⚠ 적용 안 됨 — {d.get('error') or '꺼짐'} (= v0.63.0 I★) · 되돌리기 i_overrides={{'R143_ENABLE': False}}") if d else None
+    sk = {"hi": "위", "lo": "아래", "nhi": "위 아님", "nlo": "아래 아님", "on": "켜짐", "off": "꺼짐"}
+    o0, o1, m0, m1 = d.get("off") or {}, d.get("on") or {}, d.get("mon_off") or {}, d.get("mon_on") or {}
+    l0, l1 = d.get("loss_off") or ["-"] * 3, d.get("loss_on") or ["-"] * 3
+    pcs = " · ".join(f"{i + 1}) {p[0]} {sk.get(p[1], p[1])}" + (f" {float(p[3]) * 100:.0f}%" if p[1] in ("hi", "lo", "nhi", "nlo") else "")
+                     + f" → {R143_USE_KR.get(p[2], p[2])}" for i, p in enumerate(d.get("pieces") or []))
+    on = [k.split("|")[1] for k, v in (d.get("on_today") or {}).items() if v]
+    info = d.get("info") or {}
+    data = ("전부 있음" if not info.get("missing") else "⚠ 없음 = " + ", ".join(info["missing"]) + "(그 조각만 꺼짐)") + \
+           (" · ⚠ 갱신 멈춤 의심 = " + ", ".join(info["stale"]) if info.get("stale") else "")
+    nan = float("nan")
+    kh = d.get("k_handoff") or {}
+    ktxt = (f"K 통로 = R143 이전 S★ · I★({kh.get('s_label', '-')} 위 v0.63 규칙 · K 결과 유지 · 되돌리기 i_overrides={{'R143_K_KEEP': False}})" if kh
+            else "K 통로 = 새 I★")
+    return (lab, f"{pcs} · 비중 바뀐 날 {d.get('changed_days', '-')} · 합 최대 {float(d.get('sum_max', 0)):.3f} · 오늘 켜진 조각 {', '.join(on) or '없음'} · {ktxt} · "
+                 f"이번 실행 I★: 배수 {o0.get('배수', nan):.2f} → {o1.get('배수', nan):.2f} · 회피 {o0.get('하락 회피율', nan) * 100:.1f} → {o1.get('하락 회피율', nan) * 100:.1f} · "
+                 f"참여 {o0.get('상승 참여율', nan) * 100:.1f} → {o1.get('상승 참여율', nan) * 100:.1f} · MDD {o0.get('MDD', nan) * 100:.2f}% → {o1.get('MDD', nan) * 100:.2f}% · "
+                 f"손실 주/달/분기 {'/'.join(map(str, l0))} → {'/'.join(map(str, l1))} · 월 회피 {m0.get('월회피', nan):.1f} → {m1.get('월회피', nan):.1f} · "
+                 f"월 참여 {m0.get('월참여', nan):.1f} → {m1.get('월참여', nan):.1f} · 월 중앙 ×{m0.get('월중앙', nan):.4f} → ×{m1.get('월중앙', nan):.4f} · 자료: {data} · "
+                 f"{R143_RESEARCH} · 되돌리기 i_overrides={{'R143_ENABLE': False}}. 연구·교육용, 투자 자문 아님.")
+
+
 def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, res: dict,
                               eval_idx: pd.DatetimeIndex, icfg: IndustryConfig, M, S,
                               wf: Dict[str, Any], rf_daily: Optional[pd.Series] = None,
@@ -6407,6 +6697,8 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
 
     # ---- [v0.60.0 R117 ★ 사용자 지시(2026-09-29)] 다음날 하락확률 문턱 → 종합 1위 라이브(I★ 마지막 단계 · r117_stage_i) ----
     label_star, _r117_diag = r117_stage_i(target_ws, label_star, results, cols, res, s_alloc, eval_idx, _bt, cost_map, icfg, M, S=S)
+    # ---- [v0.64.0 R143 ★ 사용자 지시(2026-10-04) "목표치에 가장 가까운 방법"] 월 목표 근접 조각(I★ 진짜 마지막 단계 · 라이브) ----
+    label_star, _r143i_diag = r143_stage_i(target_ws, label_star, results, cols, parent_of, res, sres, s_alloc, eval_idx, _bt, cost_map, icfg, M, S)
 
     bts: Dict[str, pd.DataFrame] = {}
     star_label = next((c for c in s_alloc.get("bts", {}) if str(c).endswith("★")), None)
@@ -6501,6 +6793,7 @@ def build_industry_allocation(results: Dict[str, Dict[str, Any]], sres: dict, re
         "relcmp_labels": relcmp_labels,                                                # [v0.41.0 R88] 회피형·참여형·양쪽형 비교 행
         "label_nf_parent": label_nf_parent,                                            # [v0.43.0 R90] 중립채움 몫 → 부모 ETF 측정 행
         "r117": _r117_diag,                                                            # [v0.60.0 R117] 다음날 하락확률 문턱(표 · 1위 · 라이브)
+        "r143": _r143i_diag,                                                           # [v0.64.0 R143] 월 목표 근접 조각(라이브)
         "r135": _r135_diag, "label_r135_off": label_r135_off,                          # [v0.62.0 R135] 리더 상관 필터 · 평활 42 비교 행
         "select_mode": select_mode, "groups_leader3": groups_leader3,                 # [v0.33.0 R79]
         "prob_pack": prob_pack,                                                        # [v0.33.0 R79] 드라이버 격자 재사용(참조)
@@ -12933,7 +13226,9 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                                               (_frozen_alloc_cfg(icfg, M=M) if frozen else icfg),
                                               M, S, wf, rf_daily=rf_daily, prob_pack=_prob_pack)
             if alloc:
-                _set_alloc_handoff(alloc, M=M, results=results,        # [v0.34.0 R80 · v0.35.0 R81 결합점수 추가] K 통로
+                # [v0.64.0 R143] K 통로는 R143 이전 S★ · I★(K 결과를 그대로 지킴 — K는 이번 라운드 범위 밖). I★ · 리포트는 새 I★ 그대로.
+                _alloc_k = r143_k_alloc(alloc, results, sres, res, eval_idx, icfg, M, S, wf, rf_daily, _prob_pack)
+                _set_alloc_handoff(_alloc_k, M=M, results=results,     # [v0.34.0 R80 · v0.35.0 R81 결합점수 추가] K 통로
                                    s_variants={k: v for k, v in ((((sres or {}).get("alloc") or {}).get("relcmp_frames")) or {}).items()
                                                if str(k).startswith(("R95 규칙 없음", "R96 변동성 관리 없음",
                                                                                    "R98 V1 변동성 짝", "R98 VRP", "R98 상한100%",
@@ -15644,6 +15939,9 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
             _l135 = r135_line(alloc, (ires.get("user_rel_src") or {}).get("spy_ret"), S)
             if _l135:
                 _r105_lines = [_l135] + list(_r105_lines)
+            _l143 = r143_i_line(dict((alloc or {}).get("r143") or {}, k_handoff=(alloc or {}).get("r143_k_handoff")))   # [v0.64.0 R143] 월 목표 근접 조각(맨 앞)
+            if _l143:
+                _r105_lines = [_l143] + list(_r105_lines)
         except Exception as _e135:
             log("REPORT", kv(event="r135_line_failed", err=type(_e135).__name__, msg=str(_e135)[:160]), M=M, level="warning")
         # ---- [v0.56.0 R110 사용자 지시] 00V 상태 판정·검증 · 01V 날짜별 상태(29산업 · S v0.88.0 build_state_verify_sheets) ----

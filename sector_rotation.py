@@ -17,6 +17,30 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v0.99.0 - 2026-10-04 - [R143 ★ 월 목표 근접 조각 21개(★ R138 뒤 마지막 단계 · 라이브) — 사용자 지시 '목표치에 가장 가까운 방법' · ⚠ 표본 안 선택]
+#    사용자 지시(2026-10-04): "결과 깃허브에 있으니 참고해서 월별 목표치 훨씬 더 높게 설정해서 다시 계속 탐색하면서 테스트해서 올려" →
+#      (R142: 목표 미달 · 반쪽 교차에서 표본 밖 역전 → 안 올림) → "그럼 목표치에 가장 가까운 방법을 탐색해서 올려".
+#    ── 월 목표(R142 · S) ── 월 회피 ≥ 140 · 월 참여 ≥ 165 · 월 중앙 +1.0%p(×1.046) — 구성 오라클(그달 최선 섹터) 146 / 173.
+#    ── 탐색(r142/r143 · 코드 밖) ── 후보 = M 지표(MD · 신선) · M 내부 점수(MI) · XLK 가격 · 달력/추세 깃발(CAL · CAL@n · TR) × 위/아래/보완 × 분위 0.1/0.2/0.3 ×
+#      쓰임(대피↔XLK · 방어 · 채움 · 보유 섹터 모멘텀 쏠림 'M:k:frac'). 관문 = 2018~ 무하락(v0.98 ★ 대비 · 기존 지표 + 월 지표 + 00U 사용자 신뢰도 전 열
+#      (월 SPY 이긴% · 주/월/분기 플러스% · 칼마 · 순효과 · 등급 · 반쪽) + 00P 기간 꾸준함 전 열(주/월/분기 플러스·마이너스% · 중앙 · 최악 · 하위10% · 최고 · SPY 이긴%)) ·
+#      + 달별 부호 보존(v0.98 ★가 플러스였던 달은 플러스 유지 — K 손실 달 보호) + **I★도 함께**(I 배분 = S 부모 비중 × I 산업 몫 · 선형 · 실제 재배분과 비트 동일 →
+#      후보마다 I★ 전 열 무하락 · 달 부호 · I 월 목표 거리를 같이 봄) · 긴 이력 대용 1999~2017 세 창(회피·참여 ≥ −0.6 · 배수비 ≥ 0.985 · MDD ≥ −1.0) ·
+#      긴 이력에서 실제로 비중이 바뀐 날 ≥ 1%. 욕심쟁이 겹치기 21단계(더 나아지는 장기 통과 후보 없음에서 멈춤).
+#      (앞선 36 · 22 · 17조각 판은 '월 SPY 이긴%' 점검을 빠뜨렸거나 · 2018-06을 마이너스로 바꿔 K 손실 달을 늘렸거나 · I '분기 중앙 배수'를 떨어뜨려 버렸다.)
+#    ── 결과(로컬 · M v1.83 · S v0.98 ★ 정확 재현 · 2018~) ── S★ 60.14 → 74.90배 · 회피 86.04 → 91.41 · 참여 110.96 → 112.92 · MDD −9.64 → −9.35% ·
+#      손실 주/달/분기 101/10/0 → 97/9/0 · 월 회피 125.7 → 136.7 · 월 참여 144.1 → 146.8 · 월 중앙 ×1.0360 → ×1.0434 · 월 플러스 83.8 → 84.8% ·
+#      월 SPY 이긴% 79.0 → 82.9 · 플러스 → 마이너스로 바뀐 달 0 · 2018~ 전 열 무하락 · 긴 대용 세 창 통과(99~03 +0.3 · 04~09 +0.6 · 10~17 +2.3 회피).
+#      다섯 창: 2004~06 회피 +11.7 · 참여 +6.4 · 2007~09 회피 −1.5 · 2014~17 참여 −0.9 · 배수 ×0.977(대체로 고름).
+#      I★(I 규칙 그대로 · S만 바뀜) 84.31 → 103.4배 · 회피 86.51 → 91.98 · 참여 122.57 → 124.08 · 월 133.2 / 153.6 → 143.9 / 155.9 — I도 전 열 무하락.
+#      목표 대비: 월 회피 136.7/140 · 월 참여 146.8/165 · 월 중앙 ×1.0434/×1.046 — 셋 다 미달(S만 보면 140을 넘는 판이 있었으나 I '분기 중앙 배수'가 떨어져 버림).
+#      M v1.84(R143 M 1조각) 위(근사): 75.89배 · 회피 91.41 · 참여 113.37 · 월 136.7 / 147.3 — 역시 전 열 무하락.
+#      K(종목)는 S 비중 변화에 참여율 · 배수가 떨어져(조각 21: 참여 1.361 → 1.332) I v0.64 R143_K_KEEP로 K 통로에 'R143 이전 S★'를 넘긴다(K 결과 유지).
+#    ⚠⚠ 과적합 위험: R142 반쪽 교차(앞 반쪽으로 고른 조각을 뒤 반쪽에서 · 반대도)에서 표본 밖 월 회피 −4.5 ~ −7.1 · 월 참여 −4.5 ~ −7.3 · 배수 ×0.87 ~ ×0.91로
+#      오히려 나빠졌고 분위 이웃(15% · 25%)에서도 깨졌다. 표본 안 수치는 미래 성과가 아니다 — 사용자 지시로 '가장 가까운 것'을 반영.
+#    (§1) r143_flags(달력 · 추세 깃발 · 미래 거래일 = NYSE 휴장 규칙) · r143_xlk_feats · r143_conditions · r143_sector_overlay(★ R138 뒤) ·
+#         'R143 조각 OFF(v0.98.0 ★) [R143]' 비교 행 · diag['r143'](월 지표 켬/끔) · 00 줄 r143_line · SectorConfig R143_ENABLE · R143_PIECES.
+#    LAYER_MIN_VERSIONS M v1.84.0 · S v0.99.0 · I v0.64.0. 되돌리기 s_overrides={'R143_ENABLE': False}. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.98.0 - 2026-10-03 - [R141 ★ 다음날 하락확률 날짜별 표시(13r) · 00R_하락확률신뢰도 — S★ 규칙·비중 무변경]
 #    사용자 지시(2026-10-03): "… 일별 수익에 날짜별 다음날 하락 확률도 같이 표시하고 그 확률이 정말 신뢰해도 되는지도 평가 시트 하나 만들어 …".
 #    s_r141_block(S · I 공통): 표적 3개 ① 자산별(섹터·SPY 풀드) 다음 체결일(t+1 시가 → t+2 시가 · 모형 표적) ② 자산별 다음날 종가 ③ S★ 포트:
@@ -3192,7 +3216,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.98.0"
+VERSION = "v0.99.0"
 VERSION_DATE = "2026-10-03"
 
 # =============================================================================
@@ -3882,6 +3906,17 @@ class SectorConfig:
     R138_PIECES: Tuple[Tuple[str, str, str], ...] = (
         ("DFF_CHG5", "hi", "deff"), ("JTSJOL_CHG20", "hi", "x10"), ("HOUST_CHG20", "lo", "x10"), ("DXYNYB_MOM120", "hi", "deff"),
         ("VIX_LEVEL", "hi", "x10"), ("DGS3MO_CHG20", "hi", "x10"), ("T5YIE_CHG5", "lo", "fill"), ("U6RATE_CHG5", "lo", "x10"))
+    # ⚠⚠ [v0.99.0 R143 사용자 지시 2026-10-04 "목표치에 가장 가까운 방법을 탐색해서 올려"] 월 목표 근접 조각(★ R138 뒤 마지막) —
+    #   (특징, 쪽, 쓰임, q) 순서대로. 특징 MD:=M 지표 · MI:=M 내부 점수 · XLK:=주력 가격 · CAL:/TR:=달력/추세 깃발. 표본 안 선택 — 과적합 위험(파일 머리 v0.99.0).
+    R143_ENABLE: bool = True
+    R143_PIECES: Tuple[Tuple[str, str, str, float], ...] = (
+        ("MD:UMCSENT_Z", "hi", "M:3:0.5", 0.2), ("MD:JTSJOL_CHG20", "lo", "x10", 0.1), ("MD:MORTGAGE30US_CHG120", "hi", "M:3:0.5", 0.1),
+        ("MD:T5YIFR_CHG5", "hi", "x10", 0.1), ("MD:UNRATE_CHG120", "hi", "M:2:0.5", 0.2), ("XLK:dd63", "hi", "fill", 0.3),
+        ("MD:DGS2_CHG60", "hi", "M:1:0.5", 0.2), ("MI:haz_score", "hi", "M:2:0.5", 0.2), ("TR:dd10", "off", "M:2:0.5", 0.2),
+        ("MD:EFA_MOM60", "lo", "x10", 0.2), ("CAL:ymend@n", "on", "M:2:0.5", 0.2), ("XLK:rs60", "lo", "M:2:1.0", 0.2),
+        ("MD:DFF_CHG20", "lo", "M:2:0.5", 0.2), ("MD:UNRATE_CHG120", "hi", "M:2:0.5", 0.1), ("MD:LQD_MOM20", "lo", "M:2:0.5", 0.1),
+        ("MD:WALCL_CHG120", "hi", "M:3:0.5", 0.1), ("MD:CL_MOM60", "lo", "M:2:1.0", 0.2), ("MD:UNRATE_CHG120", "hi", "M:3:1.0", 0.2),
+        ("MI:haz_score", "hi", "M:1:0.5", 0.2), ("XLK:rs60", "lo", "M:1:0.5", 0.2), ("MD:UNRATE_CHG120", "hi", "M:2:1.0", 0.2))
     OWN_EVIDENCE_ENABLE: bool = True
     #   ⚠ [v0.68.0 R86 되돌림] 0.25 → **0.0** — R85 사전등록 (d) 해당(엔진 s14 장기 검증 2000~2017: ② 0.329 < ① 0.362 ·
     #     대조군 95% 0.366). 다시 켜기: s_overrides={"OWN_EVIDENCE_FILL": 0.25}.
@@ -8863,7 +8898,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.83.0", "sector_rotation": "v0.98.0", "industry_rotation": "v0.63.0"}   # [v0.98.0 R141]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.84.0", "sector_rotation": "v0.99.0", "industry_rotation": "v0.64.0"}   # [v0.99.0 R143]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -11668,6 +11703,295 @@ def r138_line(d: Optional[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
                  "되돌리기 s_overrides={'R138_ENABLE': False}. 연구·교육용, 투자 자문 아님.")
 
 
+R143_USE_KR = {"x10": "대피 몫 → XLK", "deff": "전액 노출일 XLK → 방어", "defa": "XLK → 방어", "def5": "XLK 절반 → 방어", "fill": "합 1까지 XLK",
+               "cut5": "XLK 절반 현금"}
+R143_SIDE_KR = {"hi": "위", "lo": "아래", "nhi": "위 아님", "nlo": "아래 아님", "on": "켜짐", "off": "꺼짐"}
+
+
+def _r143_use_kr(use: str) -> str:
+    if use.startswith("M:"):
+        a = use.split(":")
+        return f"보유 섹터 중 {a[3] if len(a) > 3 else 126}일 수익 상위 {a[1]}개로 몫 {float(a[2]) * 100:.0f}% 쏠림"
+    return R143_USE_KR.get(use, use)
+
+
+def _r143_future_days(last: pd.Timestamp, n: int = 70) -> pd.DatetimeIndex:
+    """[v0.99.0 R143] 마지막 날 뒤 NYSE 거래일 n개(주말 · 정규 휴장일 규칙) — 달력 깃발(그 달 몇 번째 거래일 · 다음 거래일)을 오늘 알기 위해.
+    과거 구간은 실제 SPY 거래일을 쓰고, 이것은 아직 오지 않은 날에만 쓴다(휴장 규칙은 미리 공표됨 = 미래 정보 아님)."""
+    from pandas.tseries.holiday import (AbstractHolidayCalendar, Holiday, nearest_workday, sunday_to_monday, USMartinLutherKingJr,
+                                        USPresidentsDay, GoodFriday, USMemorialDay, USLaborDay, USThanksgivingDay)
+
+    class _NYSE(AbstractHolidayCalendar):
+        rules = [Holiday("NewYear", month=1, day=1, observance=sunday_to_monday), USMartinLutherKingJr, USPresidentsDay, GoodFriday,
+                 USMemorialDay, Holiday("Juneteenth", month=6, day=19, start_date="2022-01-01", observance=nearest_workday),
+                 Holiday("July4", month=7, day=4, observance=nearest_workday), USLaborDay, USThanksgivingDay,
+                 Holiday("Christmas", month=12, day=25, observance=nearest_workday)]
+    last = pd.Timestamp(last).normalize()
+    end = last + pd.Timedelta(days=int(n * 1.6) + 14)
+    hol = _NYSE().holidays(last, end)
+    d = pd.bdate_range(last + pd.Timedelta(days=1), end, freq="C", holidays=list(hol))
+    return pd.DatetimeIndex(d[:n])
+
+
+def r143_flags(res: dict) -> pd.DataFrame:
+    """[v0.99.0 R143] 켜짐/꺼짐 깃발(연구 r142/feat142와 같은 정의 · t일 종가까지 = 인과) — SPY 총수익 지수 res['px_adj'] 거래일 위.
+    CAL: tom4 · pre2 · first5 · mid · novapr · sep · dec · prehol · opex · qend · ymend(12월 마지막 5 + 1월 첫 5 거래일) · 'CAL:x@n' = 다음 거래일의 달력.
+    TR: sma10m · mom12_1 · m1 · m3 · m6 · dd5 · dd10(52주 고점 대비 > −10%) · vollo · above50 · golden."""
+    C = pd.to_numeric(pd.Series(res["px_adj"]), errors="coerce").dropna()
+    C.index = pd.to_datetime(C.index)
+    C = C[~C.index.duplicated(keep="last")].sort_index()
+    idx = C.index
+    ext = idx.append(_r143_future_days(idx[-1])) if len(idx) else idx
+    F = pd.DataFrame(index=ext)
+    ym = ext.to_period("M")
+    pos = pd.Series(np.arange(len(ext)), index=ext)
+    first = pos.groupby(ym).transform("min")
+    last = pos.groupby(ym).transform("max")
+    k = (pos - first + 1).values
+    kr = (last - pos).values
+    mo = ext.month
+    F["CAL:tom4"] = ((kr == 0) | (k <= 3)).astype(float)
+    F["CAL:pre2"] = (kr <= 1).astype(float)
+    F["CAL:first5"] = (k <= 5).astype(float)
+    F["CAL:mid"] = ((k >= 8) & (k <= 15)).astype(float)
+    F["CAL:novapr"] = np.isin(mo, [11, 12, 1, 2, 3, 4]).astype(float)
+    F["CAL:sep"] = (mo == 9).astype(float)
+    F["CAL:dec"] = (mo == 12).astype(float)
+    nxt = pd.Series(ext, index=ext).shift(-1)
+    F["CAL:prehol"] = (np.asarray([np.busday_count(a.date(), b.date()) if pd.notna(b) else 1 for a, b in zip(ext, nxt)]) > 1).astype(float)
+    tf = {}
+    for p in sorted(set(ym)):
+        d = pd.date_range(p.start_time, p.end_time, freq="W-FRI")
+        tf[p] = d[2] if len(d) >= 3 else d[-1]
+    tfs = pd.Series([tf[p] for p in ym], index=ext)
+    F["CAL:opex"] = ((ext >= tfs - pd.Timedelta(days=4)) & (ext <= tfs)).astype(float)
+    yq = ext.to_period("Q")
+    lq = pos.groupby(yq).transform("max")
+    F["CAL:qend"] = ((lq - pos).values <= 4).astype(float)
+    F["CAL:ymend"] = (((mo == 12) & (kr <= 4)) | ((mo == 1) & (k <= 5))).astype(float)
+    for c in [c for c in F.columns if c.startswith("CAL:")]:
+        F[c + "@n"] = F[c].shift(-1)
+    F = F.reindex(idx)
+    F["TR:sma10m"] = (C > C.rolling(210).mean()).astype(float).where(C.rolling(210).mean().notna())
+    F["TR:mom12_1"] = (C.shift(21) / C.shift(252) - 1 > 0).astype(float).where(C.shift(252).notna())
+    for n_, nm in ((21, "m1"), (63, "m3"), (126, "m6")):
+        F[f"TR:{nm}"] = (C / C.shift(n_) - 1 > 0).astype(float).where(C.shift(n_).notna())
+    dd = C / C.rolling(252, min_periods=126).max() - 1
+    F["TR:dd5"] = (dd > -0.05).astype(float).where(dd.notna())
+    F["TR:dd10"] = (dd > -0.10).astype(float).where(dd.notna())
+    v = np.log(C).diff().rolling(21).std()
+    F["TR:vollo"] = (v < v.expanding(min_periods=500).median().shift(1)).astype(float).where(v.notna())
+    m50, m200 = C.rolling(50).mean(), C.rolling(200).mean()
+    F["TR:above50"] = (C > m50).astype(float).where(m50.notna())
+    F["TR:golden"] = (m50 > m200).astype(float).where(m200.notna())
+    return F
+
+
+def r143_xlk_feats(res: dict, results: Dict[str, Dict[str, Any]], scfg) -> pd.DataFrame:
+    """[v0.99.0 R143] 주력(XLK) 가격 특징(연구 r136/scans136과 같은 식) — 총수익 지수 = 섹터 결과 ret_cc_full 누적(R134와 같은 원천) · SPY = res['px_adj']."""
+    cal = pd.DatetimeIndex(res["cal"])
+    pri = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+    dfn_cols = [c for c in tuple(getattr(scfg, "R134_DEFENSIVE", ("XLP", "XLU", "XLV"))) if c != pri]
+
+    def _ix(t):
+        rc = (results.get(t) or {}).get("ret_cc_full")
+        if rc is None or not len(rc):
+            return None
+        rc = pd.to_numeric(pd.Series(rc), errors="coerce")
+        return (1.0 + rc.fillna(0.0)).cumprod().reindex(cal).ffill()          # 총수익 지수(상장일 = 1 · 그 전은 결측 · R134와 같은 원천)
+
+    X = pd.DataFrame(index=cal)
+    x = _ix(pri)
+    if x is None:
+        return X
+    spy = pd.to_numeric(pd.Series(res["px_adj"]), errors="coerce").reindex(cal).ffill()
+    for n_ in (20, 60, 120):
+        X[f"XLK:rs{n_}"] = (x / x.shift(n_)) / (spy / spy.shift(n_)) - 1
+    X["XLK:dd63"] = x / x.rolling(63).max() - 1
+    X["XLK:vol20"] = np.log(x).diff().rolling(20).std() * np.sqrt(252)
+    X["XLK:ext200"] = x / x.rolling(200).mean() - 1
+    ds = [d for d in (_ix(t) for t in dfn_cols) if d is not None]
+    if ds:
+        dfn = pd.concat([d.pct_change(fill_method=None) for d in ds], axis=1).mean(axis=1)
+        X["XLK:def20"] = x.pct_change(20, fill_method=None) - ((1 + dfn).rolling(20).apply(np.prod, raw=True) - 1)
+        X["XLK:def60"] = x.pct_change(60, fill_method=None) - ((1 + dfn).rolling(60).apply(np.prod, raw=True) - 1)
+    X["XLK:r5"] = x.pct_change(5, fill_method=None)
+    X["XLK:r20"] = x.pct_change(20, fill_method=None)
+    return X
+
+
+def _r143_q(x: pd.Series, side: str, q: float) -> pd.Series:
+    """확장 분위(최소 500일 · 하루 늦춤) — hi = 위 q · lo = 아래 q · nhi/nlo = 그 보완(문턱이 아직 없으면 참)."""
+    if side in ("nhi", "nlo"):
+        qq = x.expanding(min_periods=500).quantile(1 - q if side == "nhi" else q).shift(1)
+        c = (x <= qq) if side == "nhi" else (x >= qq)
+        return c.where(qq.notna(), True).astype(bool)
+    qq = x.expanding(min_periods=500).quantile(1 - q if side == "hi" else q).shift(1)
+    return ((x > qq) if side == "hi" else (x < qq)).fillna(False).astype(bool)
+
+
+def r143_conditions(res: dict, results: Dict[str, Dict[str, Any]], scfg) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.99.0 R143] 조각 조건(R143_PIECES = (특징, 쪽, 쓰임, q)) — 달력 res['cal'] 위 · 전부 t일 종가에 알 수 있는 값.
+    특징 = 'MD:열'(M 지표 프레임 res['ind']) · 'MI:키'(M 내부 점수 res[키]) · 'XLK:특징' · 'CAL:깃발[@n]' · 'TR:깃발'. 없으면 그 조각만 꺼짐."""
+    cal = pd.DatetimeIndex(res["cal"])
+    ind = res.get("ind")
+    out = pd.DataFrame(index=cal)
+    info: Dict[str, Any] = {"missing": [], "stale": []}
+    FL = XK = None
+    for i, p in enumerate(tuple(getattr(scfg, "R143_PIECES", ()) or ())):
+        col, side, use = p[0], p[1], p[2]
+        q = float(p[3]) if len(p) > 3 else 0.2
+        key = f"{i + 1}|{col}|{side}|{use}|{q:g}"
+        x = None
+        try:
+            if col.startswith(("CAL:", "TR:")):
+                FL = r143_flags(res) if FL is None else FL
+                if col in FL.columns:
+                    f = FL[col].reindex(cal)
+                    out[key] = (f > 0.5) if side == "on" else ((f < 0.5) & f.notna())
+                    continue
+            elif col.startswith("MD:"):
+                if isinstance(ind, pd.DataFrame) and col[3:] in ind.columns:
+                    x = pd.to_numeric(ind[col[3:]], errors="coerce").reindex(cal)
+            elif col.startswith("MI:"):
+                v = res.get(col[3:])
+                if v is not None:
+                    x = pd.to_numeric(pd.Series(v), errors="coerce").reindex(cal)
+            elif col.startswith("XLK:"):
+                XK = r143_xlk_feats(res, results, scfg) if XK is None else XK
+                if col in XK.columns:
+                    x = XK[col]
+        except Exception as e:
+            info.setdefault("errors", []).append(f"{col}: {type(e).__name__}")
+            x = None
+        if x is None:
+            out[key] = False
+            info["missing"].append(col)
+            continue
+        out[key] = _r143_q(x, side, q)
+        if col.startswith("MD:"):
+            xs = x.dropna()
+            ch = xs[xs.diff().fillna(0.0) != 0]
+            if len(ch) and (cal[-1] - ch.index[-1]).days > 120:
+                info["stale"].append(f"{col}(마지막 변화 {str(ch.index[-1])[:10]})")
+    return out.fillna(False).astype(bool), info
+
+
+def r143_sector_overlay(target_w: pd.DataFrame, res: dict, results: Dict[str, Dict[str, Any]], eval_idx: pd.DatetimeIndex, scfg,
+                        ret_co: pd.DataFrame, ret_oc: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[v0.99.0 R143 ★ 사용자 지시(2026-10-04) "그럼 목표치에 가장 가까운 방법을 탐색해서 올려"] ★ 마지막 단계(R138 뒤) — 조각을 순서대로:
+      'M:k:frac[:L]' = 그 조건인 날 보유 섹터(SPY 제외 · 비중 > 0) 안에서 L일(기본 126) 수익 상위 k개로 보유 몫의 frac를 균등 쏠림(합 그대로)
+        — 수익 = 평가창 시가/종가 수익(ret_co · ret_oc)으로 만든 지수(연구 r140/libs140.mom_s와 같은 식)
+      x10 · deff · defa · def5 · fill · cut5 = R138 · r136 쓰임과 같다(레버리지 없음 · 합 ≤ 1).
+    연구(r142/r143 · 2018~ 표본 안)는 파일 머리 v0.99.0. ⚠⚠ 표본 안 선택 — 반쪽 교차에서 표본 밖 월 지표가 오히려 나빠졌다(과적합 위험).
+    되돌리기 s_overrides={'R143_ENABLE': False}. 연구·교육용이며 투자 자문이 아니다."""
+    diag: Dict[str, Any] = {"enabled": bool(getattr(scfg, "R143_ENABLE", True))}
+    pieces = tuple(getattr(scfg, "R143_PIECES", ()) or ())
+    if not diag["enabled"] or not pieces:
+        diag["enabled"] = False
+        return target_w, diag
+    pri = str(getattr(scfg, "ROTATION_PRIMARY_SECTOR", "XLK") or "XLK")
+    dfn = [c for c in tuple(getattr(scfg, "R134_DEFENSIVE", ("XLP", "XLU", "XLV"))) if c != pri]
+    tw = target_w.copy().astype(float).fillna(0.0)
+    for c in [pri] + dfn:
+        if c not in tw.columns:
+            tw[c] = 0.0
+    E_ = pd.to_numeric(res["sig"]["target_pos"], errors="coerce").reindex(tw.index).fillna(0.0)
+    full = E_ >= 1.0 - 1e-9
+    cc = ((1.0 + ret_co) * (1.0 + ret_oc) - 1.0).fillna(0.0)
+    PX = (1.0 + cc).cumprod()
+    mom_cache: Dict[int, pd.DataFrame] = {}
+    cond, info = r143_conditions(res, results, scfg)
+    diag["info"] = info
+    days: Dict[str, int] = {}
+    for key in cond.columns:
+        use = key.split("|")[3]
+        c = cond[key].reindex(tw.index).fillna(False).astype(bool)
+        before = tw.copy()
+        if use.startswith("M:"):
+            a = use.split(":")
+            k_, frac = int(a[1]), float(a[2])
+            L_ = int(a[3]) if len(a) > 3 else 126
+            if L_ not in mom_cache:
+                mom_cache[L_] = PX / PX.shift(L_) - 1
+            cols = [s for s in tw.columns if s != "SPY" and s in PX.columns]
+            m = mom_cache[L_][cols].reindex(tw.index).where(tw[cols] > 1e-9)
+            top = (m.rank(axis=1, ascending=False) <= k_).astype(float)
+            nt = top.sum(axis=1)
+            on = c & (nt > 0)
+            mv = tw[cols].sum(axis=1).where(on, 0.0) * frac
+            tw[cols] = tw[cols].mul(1 - frac * on.astype(float), axis=0)
+            tw[cols] = tw[cols] + top.div(nt.where(nt > 0), axis=0).fillna(0.0).mul(mv, axis=0)
+        elif use in ("deff", "defa", "def5"):
+            cu = (c & full) if use == "deff" else c
+            mv = (tw[pri] * (0.5 if use == "def5" else 1.0)).where(cu, 0.0)
+            tw[pri] = tw[pri] - mv
+            for d_ in dfn:
+                tw[d_] = tw[d_] + mv / len(dfn)
+        elif use == "x10":
+            oth = [k for k in tw.columns if k != pri]
+            mv = tw[oth].sum(axis=1).where(c, 0.0)
+            tw.loc[c, oth] = 0.0
+            tw[pri] = tw[pri] + mv
+        elif use == "fill":
+            tot = tw.sum(axis=1)
+            tw[pri] = tw[pri] + (1.0 - tot).clip(lower=0.0).where(c & (tot > 1e-9), 0.0)
+        elif use == "cut5":
+            tw.loc[c, pri] = tw.loc[c, pri] * 0.5
+        days[key] = int(((tw - before).abs().sum(axis=1) > 1e-12).sum())
+    tw = tw.reindex(columns=target_w.columns).fillna(0.0).clip(lower=0.0)
+    diag.update({"pieces": [list(p) for p in pieces], "days": days,
+                 "on_today": {k: bool(cond[k].iloc[-1]) for k in cond.columns} if len(cond) else {},
+                 "cond_days": {k: int(cond[k].reindex(eval_idx).fillna(False).sum()) for k in cond.columns},
+                 "changed_days": int(((tw - target_w.reindex(index=tw.index, columns=tw.columns).fillna(0.0)).abs().sum(axis=1) > 1e-9).sum()),
+                 "sum_max": float(tw.sum(axis=1).max()) if len(tw) else 0.0})
+    return tw, diag
+
+
+R143_RESEARCH = ("연구(r143 · 2018~ 표본 안 · 조각 21개 · S와 I★ 함께 고름): 배수 60.14 → 74.90 · 회피 86.04 → 91.41 · 참여 110.96 → 112.92 · MDD −9.64 → −9.35% · "
+                 "손실 101/10/0 → 97/9/0 · 월 회피 125.7 → 136.7 · 월 참여 144.1 → 146.8 · 월 중앙 ×1.0360 → ×1.0434(목표 140 / 165 / ×1.046) · "
+                 "00U · 00P 전 열 무하락(월 SPY 이긴% 79.0 → 82.9 · 플러스 → 마이너스 달 0 · I★도 전 열 무하락) · 긴 대용 세 창 통과(다섯 창: 2007~09 회피 −1.5 · 2014~17 배수 ×0.977) · "
+                 "⚠⚠ 표본 안 선택 — 반쪽 교차(R142)에서 표본 밖 월 회피·참여가 오히려 −4.5 ~ −7.3 나빠짐(과적합 위험 · 사용자 지시 '가장 가까운 방법'으로 반영)")
+
+
+def r143_line(d: Optional[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
+    """[v0.99.0 R143] 00 줄 — 조각 목록 · 오늘 켜진 조각 · 이번 실행 켬/끔(기존 · 월 지표) · 연구 수치 · 과적합 경고 · 되돌리기."""
+    d = d or {}
+    lab = "★★ R143 월 목표 근접 조각(S★ 라이브 · 사용자 지시 2026-10-04 '목표치에 가장 가까운 방법')"
+    if not d.get("enabled"):
+        return (lab, f"⚠ 적용 안 됨 — {d.get('error') or '꺼짐'} (= v0.98.0 ★) · 되돌리기 s_overrides={{'R143_ENABLE': False}}") if d else None
+    o0, o1 = d.get("off") or {}, d.get("on") or {}
+    l0, l1 = d.get("loss_off") or ["-"] * 3, d.get("loss_on") or ["-"] * 3
+    m0, m1 = d.get("mon_off") or {}, d.get("mon_on") or {}
+    pcs = " · ".join(f"{i + 1}) {p[0]} {R143_SIDE_KR.get(p[1], p[1])}" + (f" {float(p[3]) * 100:.0f}%" if p[1] in ("hi", "lo", "nhi", "nlo") else "")
+                     + f" → {_r143_use_kr(p[2])}" for i, p in enumerate(d.get("pieces") or []))
+    on = [k.split("|")[1] for k, v in (d.get("on_today") or {}).items() if v]
+    info = d.get("info") or {}
+    data = ("전부 있음" if not info.get("missing") else "⚠ 없음 = " + ", ".join(info["missing"]) + "(그 조각만 꺼짐)") + \
+           (" · ⚠ 갱신 멈춤 의심 = " + ", ".join(info["stale"]) if info.get("stale") else "")
+    nan = float("nan")
+    return (lab, f"{pcs} · 비중 바뀐 날 {d.get('changed_days', '-')} · 합 최대 {float(d.get('sum_max', 0)):.3f} · 오늘 켜진 조각 {', '.join(on) or '없음'} · "
+                 f"이번 실행 ★: 배수 {o0.get('배수', nan):.2f} → {o1.get('배수', nan):.2f} · 회피 {o0.get('하락 회피율', nan) * 100:.1f} → "
+                 f"{o1.get('하락 회피율', nan) * 100:.1f} · 참여 {o0.get('상승 참여율', nan) * 100:.1f} → {o1.get('상승 참여율', nan) * 100:.1f} · "
+                 f"MDD {o0.get('MDD', nan) * 100:.2f}% → {o1.get('MDD', nan) * 100:.2f}% · 손실 주/달/분기 {'/'.join(map(str, l0))} → {'/'.join(map(str, l1))} · "
+                 f"월 회피 {m0.get('월회피', nan):.1f} → {m1.get('월회피', nan):.1f} · 월 참여 {m0.get('월참여', nan):.1f} → {m1.get('월참여', nan):.1f} · "
+                 f"월 중앙 ×{m0.get('월중앙', nan):.4f} → ×{m1.get('월중앙', nan):.4f} · 자료: {data} · {R143_RESEARCH} · "
+                 "되돌리기 s_overrides={'R143_ENABLE': False}. 연구·교육용, 투자 자문 아님.")
+
+
+def r143_monthly(r: pd.Series, spy: pd.Series) -> Dict[str, float]:
+    """[v0.99.0 R143] 월 지표(연구 r142/mlib142.monthly와 같은 식) — 월회피 = 1 − Σ(SPY 하락 달 포트 월수익)/Σ(그 달 SPY) ·
+    월참여 = Σ(SPY 상승 달 포트)/Σ(그 달 SPY) · 월중앙 = (1 + 월수익) 중앙값 · 월최악 · 월플러스(%)."""
+    r = pd.to_numeric(pd.Series(r), errors="coerce").fillna(0.0)
+    spy = pd.to_numeric(pd.Series(spy), errors="coerce").reindex(r.index).fillna(0.0)
+    mr = (1 + r).groupby(r.index.to_period("M")).prod() - 1
+    ms = (1 + spy).groupby(spy.index.to_period("M")).prod() - 1
+    dn, up = ms < 0, ms > 0
+    return {"월회피": float(1 - mr[dn].sum() / ms[dn].sum()) * 100 if dn.any() else float("nan"),
+            "월참여": float(mr[up].sum() / ms[up].sum()) * 100 if up.any() else float("nan"),
+            "월중앙": float((1 + mr).median()), "월최악": float((1 + mr).min()), "월플러스": float((mr > 1e-9).mean() * 100)}
+
+
 def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_idx: pd.DatetimeIndex,
                             scfg: SectorConfig, M, rf_daily: Optional[pd.Series] = None,
                             spy_series: Optional[Dict[str, pd.Series]] = None) -> Dict[str, Any]:
@@ -14331,6 +14655,57 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
                                trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R138 없이 계속(= v0.96.0 ★)"), M=M, level="warning")
             _r138_diag = {"enabled": False, "error": f"{type(_e138).__name__}: {str(_e138)[:160]}"}
 
+    # ---- [v0.99.0 R143 ★ 사용자 지시(2026-10-04) "목표치에 가장 가까운 방법을 탐색해서 올려"] 월 목표 근접 조각(R138 뒤 · 진짜 마지막 단계 · 라이브) ----
+    _r143_diag: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(scfg, "R143_ENABLE", True)) and label_primary in target_ws:
+        try:
+            _w143, _r143_diag = r143_sector_overlay(target_ws[label_primary], res, results, eval_idx, scfg, ret_co, ret_oc)
+            if _r143_diag.get("enabled"):
+                _lab_off143 = "주력섹터 중심 · R143 조각 OFF(v0.98.0 ★) [R143]"
+                target_ws[_lab_off143] = target_ws[label_primary]
+                bts[_lab_off143] = bts[label_primary]
+                variants[_lab_off143] = target_ws[label_primary]
+                target_ws[label_primary] = _w143
+                variants[label_primary] = _w143
+                bts[label_primary] = portfolio_backtest(_w143, ret_co, ret_oc, **bt_kw)
+                _lp143 = (label_primary[:-1].rstrip() if label_primary.endswith("★") else label_primary) + " · R143 월목표 조각 ★"
+                for _d143 in (target_ws, variants, bts):
+                    _it143 = [((_lp143 if k_ == label_primary else k_), v_) for k_, v_ in _d143.items()]
+                    _d143.clear()
+                    _d143.update(_it143)
+                label_primary = _lp143
+                try:
+                    if isinstance(frac_primary, pd.DataFrame) and len(frac_primary):
+                        _Ev143 = E.reindex(eval_idx).fillna(0.0).astype(float)
+                        frac_primary = _w143.div(_Ev143.where(_Ev143 > 1e-12), axis=0).reindex(columns=frac_primary.columns).fillna(0.0)
+                except Exception:
+                    pass
+                _r0_143 = pd.to_numeric(bts[_lab_off143]["strategy_ret"], errors="coerce").fillna(0.0)
+                _r1_143 = pd.to_numeric(bts[label_primary]["strategy_ret"], errors="coerce").fillna(0.0)
+                _sp143 = ((1.0 + ret_co["SPY"]) * (1.0 + ret_oc["SPY"]) - 1.0).reindex(eval_idx).fillna(0.0)
+                _u143 = user_rel_portfolio({"off": _r0_143, "on": _r1_143}, _sp143, scfg).set_index("전략")
+
+                def _nloss143(r_, code_):
+                    p_ = (1.0 + r_).groupby(r_.index.to_period(code_)).prod() - 1.0
+                    return int((p_ < -1e-9).sum())
+                _r143_diag.update({"label_off": _lab_off143,
+                                   **{k_: {m_: float(_u143.loc[k_, m_]) for m_ in ("배수", "하락 회피율", "상승 참여율", "MDD")} for k_ in ("off", "on")},
+                                   "loss_off": [_nloss143(_r0_143, c_) for c_ in ("W-FRI", "M", "Q")],
+                                   "loss_on": [_nloss143(_r1_143, c_) for c_ in ("W-FRI", "M", "Q")],
+                                   "mon_off": r143_monthly(_r0_143, _sp143), "mon_on": r143_monthly(_r1_143, _sp143)})
+                log("ROTATION", kv(event="r143_applied", changed_days=_r143_diag.get("changed_days"), sum_max=round(_r143_diag.get("sum_max", 0.0), 6),
+                                   avoid=f"{_r143_diag['off']['하락 회피율']:.4f}→{_r143_diag['on']['하락 회피율']:.4f}",
+                                   part=f"{_r143_diag['off']['상승 참여율']:.4f}→{_r143_diag['on']['상승 참여율']:.4f}",
+                                   m_avoid=f"{_r143_diag['mon_off']['월회피']:.2f}→{_r143_diag['mon_on']['월회피']:.2f}",
+                                   m_part=f"{_r143_diag['mon_off']['월참여']:.2f}→{_r143_diag['mon_on']['월참여']:.2f}",
+                                   missing=",".join(_r143_diag.get("info", {}).get("missing", [])) or "-",
+                                   stale=",".join(_r143_diag.get("info", {}).get("stale", [])) or "-",
+                                   note="★ 라이브(사용자 지시 R143 · 표본 안 선택) — 되돌리기 s_overrides={'R143_ENABLE': False}"), M=M)
+        except Exception as _e143:
+            log("ROTATION", kv(event="r143_failed", err=type(_e143).__name__, msg=str(_e143)[:180],
+                               trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R143 없이 계속(= v0.98.0 ★)"), M=M, level="warning")
+            _r143_diag = {"enabled": False, "error": f"{type(_e143).__name__}: {str(_e143)[:160]}"}
+
     # [v0.7.0] 참조: SPY 국면전략(M) 성과(같은 평가창, M의 bt 그대로) — 수용기준 ⑤(목표: CAGR ≥ SPY M)에 사용
     spy_m_ret = res["bt"]["strategy_ret"].reindex(eval_idx).fillna(0.0)
     spy_m_pm = M.perf_metrics(spy_m_ret, "SPY 국면전략(M)")
@@ -14417,6 +14792,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
         "r117": _r117_diag,                                                          # [v0.94.0 R117] 다음날 하락확률 문턱(표 · 1위 · 섹터 확률 P)
         "r134": _r134_diag,                                                          # [v0.96.0 R134] M 바구니별 처리 + XLK 채움(라이브)
         "r138": _r138_diag,                                                          # [v0.97.0 R138] 조각 8개(M 지표 조건 · 라이브)
+        "r143": _r143_diag,                                                          # [v0.99.0 R143] 월 목표 근접 조각(라이브)
         "neutral_fill": _nf_diag,                                                    # [v0.71.0 R90] 중립 국면일 저베타 채움
         "mbucket": (_mbucket if isinstance(locals().get("_mbucket"), pd.Series) else None),   # [v0.72.0 R91] 00U 블록 J
         "mbucket_exposure": (target_ws[label_primary].sum(axis=1) if label_primary in target_ws else None),
@@ -14449,7 +14825,7 @@ def build_sector_allocation(results: Dict[str, Dict[str, Any]], res: dict, eval_
     log("ROTATION", kv(event="allocation_built",
                        **{k: v for k, v in diag.items() if k not in ("top_holding_freq", "leader_freq", "selected_by_year", "spy_m",
                                                                      "tier_by_year", "avoid_by_year", "alloc_link", "own_evidence", "macro_evidence",
-                                                                     "relcmp", "neutral_fill", "r117", "r134", "r138")},
+                                                                     "relcmp", "neutral_fill", "r117", "r134", "r138", "r143")},
                        tiers=";".join(f"{k}:{v}" for k, v in sorted(diag["tier_by_year"].items())) or "-",
                        avoid_ok=";".join(f"{k}:{'+'.join(v) if v else '-'}" for k, v in sorted(diag["avoid_by_year"].items())) or "-",
                        spy_m_cagr=spy_m["CAGR"], spy_m_mdd=spy_m["MDD"],
@@ -19703,6 +20079,13 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             meta.insert(1, _l138)
     except Exception as _e138:
         log("REPORT", kv(event="r138_line_failed", layer="S", err=type(_e138).__name__, msg=str(_e138)[:160]), M=M, level="warning")
+    # [v0.99.0 R143] 월 목표 근접 조각 00 줄(맨 앞)
+    try:
+        _l143 = r143_line(((sres.get("alloc") or {}).get("diag") or {}).get("r143"))
+        if _l143:
+            meta.insert(1, _l143)
+    except Exception as _e143:
+        log("REPORT", kv(event="r143_line_failed", layer="S", err=type(_e143).__name__, msg=str(_e143)[:160]), M=M, level="warning")
     sheets = sheets_to_front(sheets, "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
                              "00V_상태판정검증", "00T_섹터상태판", "00S_섹터자기근거", "00R_신뢰도판정",
                              "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
