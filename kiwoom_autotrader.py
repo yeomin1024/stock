@@ -208,6 +208,7 @@ class Config:
     k_min_weight: float = 0.0         # K 몫 새 매수는 K 비중이 이 값(0~1) 이상일 때만(작은 비중 잦은 매매 줄이기)
     k_exit_days: int = 1              # K 비중이 이 거래일 연속 0이어야 K 몫을 팖(1 = 0 되는 날 바로)
     k_top: int = 0                    # >0: 그날 K 비중 상위 N종만 따라감
+    k_equal_pct: float = 0.0          # >0: K 몫 종목마다 K 비중과 상관없이 자산의 이 %만큼(k_top과 함께 — K 상위 N종 동일비중)
     k_mom_days: int = 0               # >0: K 몫 새 매수는 그 종목 일봉 N일 수익률이 양수일 때만(전일 종가까지)
     hold_loser_days: int = 0          # >0: K·로테이션 매도 신호 때 손실 중이면 본전(수수료 포함) 회복을 최대 N거래일 기다림
                                       #     (국면 0·실적 발표 회피 매도는 바로)
@@ -296,6 +297,11 @@ PRESETS = {
            "rot_at_open": True, "max_positions": 30, "earn_avoid": True, "regime_scale": False, "sector_filter": False,
            "trend_ma_days": 0, "daily_loss_pct": 100.0, "max_trades_per_symbol": 2,
            "hold_loser_days": 20, "hold_loser_riskoff": True, "hold_loser_stop_pct": 7.0, "earn_hold_loser": True},
+    # P6(수익 우선, 2026-10-04 5차): P4의 모멘텀 몫을 '168일(1달 건너뜀) 모멘텀 1위 1종목 20%'로 — MDD −10% 안 최고 수익
+    "P6": {"entry_mode": "k+rot", "k_rot_scale": 0.9, "k_min_weight": 0.02, "k_exit_days": 3,
+           "rot_top": 1, "rot_keep": 2, "rot_pct": 20.0, "rot_days": 168, "rot_skip": 21, "rot_every": 5,
+           "rot_at_open": True, "max_positions": 30, "earn_avoid": True, "regime_scale": False, "sector_filter": False,
+           "trend_ma_days": 0, "daily_loss_pct": 100.0, "max_trades_per_symbol": 2},
 }
 PRESET_ALIAS = {"R1": "P5"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
 PRESET_NOTES = {
@@ -314,6 +320,8 @@ PRESET_NOTES = {
     "P4H": "P4 + 손실 중 매도 신호면 본전까지 최대 20거래일 대기(국면 1일 때만) — 과거 +2,044% (MDD −9.63%, 승률 70.2%)",
     "P5": "P4 + 손실 중 매도 신호면 본전까지 최대 20거래일 대기(국면 0·실적 발표 때도, 손실 7% 넘으면 바로 매도), "
           "K 배율 0.7 · 모멘텀 각 12% — 과거 +1,134% (MDD −9.91%, 승률 81.5%, 샤프 3.28)",
+    "P6": "K 주식층 비중 × 0.9 따라가기 + 168일(1달 건너뜀) 모멘텀 1위 1종목 20%, 실적 발표 회피, 장 시작 체결 — "
+          "과거 +2,240% (MDD −9.87%, 승률 65.2%, 샤프 3.40). 모멘텀 기간에 민감(189일이면 MDD −11.2%)",
 }
 
 
@@ -1381,7 +1389,7 @@ class Engine:
             if reason.startswith("K 따라"):
                 pct = b.k_weights.get(code, 0) * 100 * c.k_scale
             elif reason.startswith("K몫"):
-                pct = b.k_weights.get(code, 0) * 100 * c.k_rot_scale
+                pct = c.k_equal_pct or b.k_weights.get(code, 0) * 100 * c.k_rot_scale
             elif rot:
                 pct = c.rot_pct
                 d = s.daily
