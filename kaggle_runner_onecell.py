@@ -7,7 +7,7 @@
 # ===== 설정 — wget으로 받아 실행하는 셀에서 같은 이름으로 먼저 정하면 그 값이 우선합니다 =====
 for _k, _v in dict(
     REPO="https://github.com/yeomin1024/stock", BRANCH="main",
-    STRATEGY="R1",            # 'R1' = 5000% 목표(1종목 모멘텀) / 'N2' = 5종목 로테이션+저점매수 / 'A' 저점매수 / 'C0' (모두 레버리지 없음)
+    STRATEGY="P2",            # 'P2'(='R1') MDD −5%·매일거래 / 'R1_5000' 1종목 모멘텀 / 'N2' / 'A' / 'C0' (모두 레버리지 없음)
     RUN_COLLECT=False,        # 키움 5분봉 기록 모으기(한 번) → GitHub data/kiwoom_minute/
     KIWOOM_MOCK=True,         # 연결한 키움 키가 모의투자 키면 True, 실전 키면 False(조회만 함)
     RUN_SIM=True,             # 과거 실시간 시뮬레이션 → GitHub results/kaggle/sim/<날짜>_<전략>/
@@ -95,19 +95,25 @@ sys.modules.pop("kiwoom_autotrader", None)
 sys.path.insert(0, os.path.dirname(py[0]))
 from kiwoom_autotrader import *
 assert not ALLOW_ORDERS, "주문 잠금이 풀려 있습니다"
-
-
-def newest(name):
-    hits = sorted(glob.glob(f"/kaggle/input/**/{name}", recursive=True), key=os.path.getmtime, reverse=True)
-    return hits[0] if hits else (glob.glob(f"{SRC}/signals/{name}") or [None])[0]
+if STRATEGY in PRESET_ALIAS:                    # 실행 셀을 바꾸지 않아도 최신 추천 전략으로
+    print(f"STRATEGY '{STRATEGY}' → 최신 추천 '{PRESET_ALIAS[STRATEGY]}' 로 실행")
+    STRATEGY = PRESET_ALIAS[STRATEGY]
 
 
 SIG = os.path.join(OUT, "signals"); os.makedirs(SIG, exist_ok=True)
-for n in ("market_regime_daily.csv", "sector_allocation_daily.csv", "industry_allocation_daily.csv", "industry_daily.csv"):
-    p = newest(n)
-    if p:
-        shutil.copy(p, os.path.join(SIG, n))
-    print(f"신호 {n:30s} ← {p or '없음(SPY 규칙으로 대체)'}")
+REP = latest_report_dir(SRC)          # 저장소 results/reports/<날짜>/ = 국면·섹터·산업·주식층 최신 버전 리포트
+built = signals_from_reports(REP, SIG) if REP else {}
+for n in REPORT_SHEETS:               # 우선순위: Kaggle 입력 데이터셋 > 최신 리포트 > 저장소 signals/
+    hits = sorted(glob.glob(f"/kaggle/input/**/{n}", recursive=True), key=os.path.getmtime, reverse=True)
+    if hits:
+        shutil.copy(hits[0], os.path.join(SIG, n)); src = hits[0]
+    elif n in built:
+        src = f"{os.path.relpath(REP, SRC)}/{built[n]}"
+    elif os.path.exists(f"{SRC}/signals/{n}"):
+        shutil.copy(f"{SRC}/signals/{n}", os.path.join(SIG, n)); src = "저장소 signals/ (이전 버전)"
+    else:
+        src = "없음"
+    print(f"신호 {n:30s} ← {src}")
 PAPER_DIR = f"{RESULT_DIR}/paper/{STRATEGY}"                             # 전략마다 따로 쓰는 가상계좌
 for n in ("paper_account.json", "paper_trades.csv", "paper_equity.csv"):    # 가상계좌 이어 쓰기(GitHub에 올라간 것)
     p = os.path.join(SRC, PAPER_DIR, n)
@@ -155,7 +161,8 @@ if RUN_SIM:
     import yfinance as yf, matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    bars = download_hourly_yf(cfg.symbols)        # 상장 730일 미만 종목(BTSG 등)은 날짜 범위로 다시 받음
+    want = list(cfg.symbols) + ([cfg.mkt_symbol] if cfg.mkt_stop_pct or cfg.mkt_flat_pct else [])   # + 시장 급락 판단용 SPY
+    bars = download_hourly_yf(want)               # 상장 730일 미만 종목(BTSG 등)은 날짜 범위로 다시 받음
     print(len(bars), "/", len(cfg.symbols), "종목 시간봉")
     sig = DailySignals(cfg, strict=False)
     for w in sig.warn:
