@@ -302,8 +302,15 @@ PRESETS = {
            "rot_top": 1, "rot_keep": 2, "rot_pct": 20.0, "rot_days": 168, "rot_skip": 21, "rot_every": 5,
            "rot_at_open": True, "max_positions": 30, "earn_avoid": True, "regime_scale": False, "sector_filter": False,
            "trend_ma_days": 0, "daily_loss_pct": 100.0, "max_trades_per_symbol": 2},
+    # P7(추천, 2026-10-04 6차, MDD −15%까지 허용 · 승률 80% 유지 · 수익 최대): K 비중 × 1.5 + 168일 모멘텀 1위 50%
+    #     + 손실 중 매도 신호면 본전까지 최대 20거래일 대기(국면 0·실적 발표 때도, 손실 8% 넘으면 바로 매도)
+    "P7": {"entry_mode": "k+rot", "k_rot_scale": 1.5, "k_min_weight": 0.02, "k_exit_days": 3,
+           "rot_top": 1, "rot_keep": 2, "rot_pct": 50.0, "rot_days": 168, "rot_skip": 21, "rot_every": 5,
+           "rot_at_open": True, "max_positions": 30, "earn_avoid": True, "regime_scale": False, "sector_filter": False,
+           "trend_ma_days": 0, "daily_loss_pct": 100.0, "max_trades_per_symbol": 2,
+           "hold_loser_days": 20, "hold_loser_riskoff": True, "hold_loser_stop_pct": 8.0, "earn_hold_loser": True},
 }
-PRESET_ALIAS = {"R1": "P5"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
+PRESET_ALIAS = {"R1": "P7"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
 PRESET_NOTES = {
     "C0": "시간봉 저점매수 · M 비중·S 필터 — 과거 +274% (MDD −7%)",
     "A": "C0 + 종목당 2회 · 일일 손실한도 끔 — 과거 +369% (MDD −7%)",
@@ -322,6 +329,9 @@ PRESET_NOTES = {
           "K 배율 0.7 · 모멘텀 각 12% — 과거 +1,134% (MDD −9.91%, 승률 81.5%, 샤프 3.28)",
     "P6": "K 주식층 비중 × 0.9 따라가기 + 168일(1달 건너뜀) 모멘텀 1위 1종목 20%, 실적 발표 회피, 장 시작 체결 — "
           "과거 +2,240% (MDD −9.87%, 승률 65.2%, 샤프 3.40). 모멘텀 기간에 민감(189일이면 MDD −11.2%)",
+    "P7": "K 주식층 비중 × 1.5 + 168일(1달 건너뜀) 모멘텀 1위 1종목 50%, 손실 중 매도 신호면 본전까지 최대 20거래일 대기"
+          "(국면 0·실적 발표 때도, 손실 8% 넘으면 바로 매도) — 과거 +6,667% (MDD −13.92%, 승률 82.7%, 샤프 3.20). "
+          "모멘텀 기간에 민감(189일이면 MDD −20%)",
 }
 
 
