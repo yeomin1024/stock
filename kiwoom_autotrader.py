@@ -203,6 +203,8 @@ class Config:
     rot_skip: int = 0                 # 모멘텀 계산에서 최근 k일을 뺌(단기 되돌림 회피)
     rot_regime_exit: bool = True      # True = 국면 0이면 로테이션 종목 전부 매도 / False = 새로 사지만 않고 보유는 유지
     rot_at_open: bool = False         # True = 로테이션 매수도 장 시작 첫 가격(09:30)에 — 매수 시간대(entry_start) 제한 없음
+    rot_vol_target: float = 0.0       # >0: 로테이션 1종목 비중 × min(1, 목표 연변동성% ÷ 그 종목 최근 20일 연변동성%)
+    k_rot_scale: float = 1.0          # entry_mode 'k+rot': K 따라가기 몫 배율(로테이션은 rot_pct)
     # --- 변동성 맞춤 폭: >0이면 종목의 최근 20일 일간 변동성 ÷ 이 값(%)만큼 손절·익절·트레일·반등 폭을 늘이고 줄임(0.5~3배) ---
     vol_ref_pct: float = 0.0
     hold_overnight: bool = True       # True면 장마감에 팔지 않고 최대 max_hold_days 거래일 보유(스윙)
@@ -227,6 +229,8 @@ class Config:
     stock_filter: bool = False        # K: 주식층 배분비중이 0인 종목은 신규 매수 금지(그날 K 배분이 전부 0이면 적용 안 함)
     k_scale: float = 1.0              # entry_mode 'k'·'k+dip': K 배분비중 × k_scale 만큼 그 종목을 보유
     k_rebalance_pct: float = 0.0      # >0: 보유 중인 K 종목이 그날 목표 금액과 이만큼(%) 넘게 차이 나면 장 시작에 맞춰 사고팖
+    k_strict: bool = False            # True: K 배분이 전부 0(현금)인 날은 매수 대상 없음(stock_filter와 함께)
+    rot_daily_filter: bool = False    # True: 로테이션 보유 종목이 그날 매수 대상(S·I·K 필터)에서 빠지면 다음 리밸런싱을 기다리지 않고 팖
     rank_col: str = ""                # I 점수로 종목 순위: 'P(상승,ML)' / 'P(부모초과)' / '목표비중' / '' = 안 씀
     watchlist_size: int = 0           # 순위 상위 N종만 그날 매수 대상(0 = 전부)
     alloc_map: dict = field(default_factory=lambda: dict(PRIOR_STOCK_TO_INDUSTRY))
@@ -259,8 +263,13 @@ PRESETS = {
            "regime_scale": False, "sector_filter": False, "trend_ma_days": 0, "daily_loss_pct": 100.0,
            "mkt_flat_pct": 1.5, "mkt_stop_pct": 1.0, "max_invest_pct": 55.0, "dd_soft_pct": 3.0,
            "stop_cool_days": 3, "max_stops_day": 3},
+    # P3(추천, 2026-10-04 2차): MDD −10% 이내에서 수익 최대 — K 따라가기 몫 + 6-1 모멘텀 상위 2종 몫, 전부 장 시작 체결
+    "P3": {"entry_mode": "k+rot", "k_rot_scale": 1.2, "rot_top": 2, "rot_keep": 4, "rot_pct": 18.0, "rot_days": 126,
+           "rot_skip": 21, "rot_every": 5, "rot_at_open": True, "max_positions": 30, "earn_avoid": True,
+           "regime_scale": False, "sector_filter": False, "trend_ma_days": 0, "daily_loss_pct": 100.0,
+           "max_trades_per_symbol": 2},
 }
-PRESET_ALIAS = {"R1": "P2"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
+PRESET_ALIAS = {"R1": "P3"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
 PRESET_NOTES = {
     "C0": "시간봉 저점매수 · M 비중·S 필터 — 과거 +274% (MDD −7%)",
     "A": "C0 + 종목당 2회 · 일일 손실한도 끔 — 과거 +369% (MDD −7%)",
@@ -270,6 +279,8 @@ PRESET_NOTES = {
     "P1": "K 주식층 따라가기 + 봉 안 저점매수 — 시간봉 과거 +943%(MDD −4.2%)지만 5분봉 점검에서 수익 대부분 사라짐(참고용)",
     "P2": "K 주식층(v0.31) 비중 × 0.7 매일 맞춤 + 봉 시가·종가 저점매수(4%) + 국면 0인 날 당일거래, 시장 급락 스위치·"
           "투자 상한 55%·낙폭 3%부터 매수 축소·손절 3일 쉬기 — 과거 +274% (MDD −4.9%, 86% 날 거래, 5분봉과 결과 같음)",
+    "P3": "K 주식층(v0.31) 비중 × 1.2 따라가기 + 6-1 모멘텀 상위 2종 각 18%, 실적 발표 회피, 장 시작 체결 — "
+          "과거 +1,828% (MDD −9.9%, 샤프 3.71). M 국면 의존 큼(SPY 규칙이면 MDD −24%)",
 }
 
 
@@ -517,7 +528,7 @@ class LowHighStrategy:
     def decide(self, st: SymState, px: float, now: dt.datetime):
         c = self.cfg
         k = (c.sym_scale.get(st.code, 1.0) if c.sym_scale else 1.0) * (st.vk_hold if st.qty > 0 else st.vk)
-        if st.qty > 0 and st.mode == "rot":
+        if st.qty > 0 and st.mode in ("rot", "kf"):
             st.peak = max(st.peak, px)
             if c.rot_stop_pct and px <= st.peak * (1 - c.rot_stop_pct * k / 100):
                 return "SELL", f"로테이션 손절: 고점 {usd(st.peak)} 대비 -{c.rot_stop_pct * k:.1f}% ({(px / st.entry - 1) * 100:+.2f}%)"
@@ -957,7 +968,7 @@ class DailySignals:
             r = self._asof(self.k, day)
             kw = {} if r is None else {t: to_num(r.get(t), 0) for t in self.codes if to_num(r.get(t), 0) > 0}
             notes.append(f"K {len(kw)}종 {sum(kw.values()):.0%}")
-            if c.stock_filter and kw:
+            if c.stock_filter and (kw or c.k_strict):
                 elig = {t for t in elig if t in kw}
         if not c.regime_scale:
             exp = 1.0 if exp > 0 else 0.0
@@ -1011,7 +1022,10 @@ class Engine:
         self.refresh_trend()
         if self.cfg.mom_top > 0:
             self.today.eligible = self.momentum_top(self.base_eligible)
-        if self.cfg.entry_mode.startswith("rot"):
+        if self.cfg.entry_mode == "k+rot":                               # K 따라가기 + 모멘텀 로테이션 두 몫
+            self.rotation_update(day)
+            b.k_weights = dict(self.today.kw or {}) if self.today.exposure > 0 else {}
+        elif self.cfg.entry_mode.startswith("rot"):
             self.rotation_update(day)
         elif self.cfg.entry_mode.startswith("k"):                        # K 주식층 비중 따라가기(매일)
             b.k_weights = dict(self.today.kw or {}) if self.today.exposure > 0 else {}
@@ -1059,7 +1073,9 @@ class Engine:
             if len(d) > n + k0 and d[-1 - n - k0] > 0 and (not self.cfg.trend_ma_days or s.trend_ok):
                 r = d[-1 - k0] / d[-1 - n - k0] - 1
                 if r > 0:
-                    if self.cfg.rot_score == "sharpe":
+                    if self.cfg.rot_score == "k":                     # K 주식층 비중이 큰 순서
+                        sc[code] = (self.today.kw or {}).get(code, 0.0)
+                    elif self.cfg.rot_score == "sharpe":
                         lr = np.diff(np.log(np.asarray([d[-k - k0] for k in range(n + 1, 0, -1)], float)))
                         sd = float(lr.std())
                         sc[code] = float(lr.sum()) / (sd * math.sqrt(n)) if sd > 0 else 0.0
@@ -1161,8 +1177,30 @@ class Engine:
         elif action == "ADD" and s.qty > 0:
             self._fill(code, "ADD", px, ts, reason)
 
+    def _krot(self, code, s, px, ts) -> bool:
+        """'k+rot': 모멘텀 로테이션 몫(rot_pct) + K 주식층 따라가기 몫(K 비중 × k_rot_scale). 둘 다 장 시작에 체결."""
+        b, c = self.book, self.cfg
+        rt = b.rot_target if self.today.exposure > 0 else set()
+        kw = b.k_weights
+        if s.qty > 0:
+            if s.mode == "rot" and code not in rt:
+                self._fill(code, "SELL", px, ts, "로테이션 제외(모멘텀 순위 밖 또는 국면 0)")
+            elif s.mode == "kf" and code not in kw:
+                self._fill(code, "SELL", px, ts, "K몫 제외(주식층 비중 0)")
+            return True
+        if code in b.rot_out or code in self.today.blackout or (self.mkt_halt and c.halt_all):
+            return True
+        if (code in rt or code in kw) and b.can_enter(code, ts, None, any_time=c.rot_at_open)[0]:
+            if code in rt:
+                self._fill(code, "BUY", px, ts, f"로테이션 매수: {c.rot_days}일 모멘텀 상위 {c.rot_top}")
+            else:
+                self._fill(code, "BUY", px, ts, f"K몫 매수: 주식층 비중 {kw[code]:.1%}")
+        return True
+
     def _rotation(self, code, s, px, ts) -> bool:
         """모멘텀 로테이션 처리. True면 이 틱은 끝(저점매수 판단 안 함)."""
+        if self.cfg.entry_mode == "k+rot":
+            return self._krot(code, s, px, ts)
         b = self.book
         if self.today.exposure > 0:
             tgt = b.rot_target
@@ -1171,6 +1209,10 @@ class Engine:
         if s.qty > 0 and s.mode == "rot":
             if code not in tgt:
                 self._fill(code, "SELL", px, ts, "로테이션 제외(모멘텀 순위 밖 또는 국면 0)")
+                return True
+            if self.cfg.rot_daily_filter and self.base_eligible is not None and code not in self.base_eligible:
+                self._fill(code, "SELL", px, ts, "로테이션 제외(오늘 S·I·K 필터 밖)")
+                b.rot_out.add(code)
                 return True
             c = self.cfg
             if c.k_rebalance_pct > 0 and c.entry_mode.startswith("k") and s.rebal_day != ts.date():
@@ -1194,6 +1236,7 @@ class Engine:
             return True
         if (s.qty == 0 and code in tgt and code not in b.rot_out and code not in self.today.blackout
                 and not (self.mkt_halt and self.cfg.halt_all)
+                and not (self.cfg.rot_daily_filter and self.base_eligible is not None and code not in self.base_eligible)
                 and b.can_enter(code, ts, None, any_time=self.cfg.rot_at_open)[0]):
             if self.cfg.entry_mode.startswith("k"):
                 why = f"K 따라 매수: 주식층 비중 {b.k_weights.get(code, 0):.1%}"
@@ -1224,7 +1267,7 @@ class Engine:
             if hit:
                 self.mkt_halt = True
                 for code, s in list(b.st.items()):
-                    if s.qty > 0 and (s.mode != "rot" or c.halt_all) and s.last_price > 0:
+                    if s.qty > 0 and (s.mode not in ("rot", "kf") or c.halt_all) and s.last_price > 0:
                         self._fill(code, "SELL", s.last_price, ts, f"{hit} → 청산")
                 if self.verbose:
                     log(f"⛔ {hit} → 저점매수 보유분 청산, 오늘 저점매수 중단")
@@ -1253,12 +1296,19 @@ class Engine:
                 s.adds = c.add_max                                      # 살 돈이 없으면 이번 보유에서는 그만
             return
         if side == "BUY":
-            rot = reason.startswith(("로테이션", "K 따라"))
+            rot = reason.startswith(("로테이션", "K 따라", "K몫"))
             fill = b.sim_price("BUY", px)
             if reason.startswith("K 따라"):
                 pct = b.k_weights.get(code, 0) * 100 * c.k_scale
+            elif reason.startswith("K몫"):
+                pct = b.k_weights.get(code, 0) * 100 * c.k_rot_scale
             elif rot:
                 pct = c.rot_pct
+                d = s.daily
+                if c.rot_vol_target and len(d) >= 21:                   # 변동성 맞춤: 출렁임이 큰 종목은 비중 축소
+                    vol = float(np.std([d[-i] / d[-i - 1] - 1 for i in range(1, 21)])) * math.sqrt(252) * 100
+                    if vol > 0:
+                        pct *= min(1.0, c.rot_vol_target / vol)
             else:
                 pct = c.position_pct
                 if c.risk_pct:                                         # 손절 시 자산 손실 = risk_pct%
@@ -1269,7 +1319,7 @@ class Engine:
             if qty < 1:
                 return
             s.buys_today += 1
-            s.mode = "rot" if rot else "brk" if reason.startswith("돌파매수") else "dip"
+            s.mode = "kf" if reason.startswith("K몫") else "rot" if rot else "brk" if reason.startswith("돌파매수") else "dip"
             s.vk_hold = s.vk
             s.intraday = (not rot) and b.exposure <= 0                 # 국면 0인 날 산 저점매수 = 당일 거래
             b.apply_fill(code, "BUY", qty, fill, ts, reason)
@@ -1403,7 +1453,7 @@ class LiveRunner:
                 self.engine.refresh_trend()
                 if self.cfg.mom_top:
                     self.engine.today.eligible = self.engine.momentum_top(self.engine.base_eligible)
-                if self.cfg.entry_mode.startswith("rot"):
+                if "rot" in self.cfg.entry_mode:
                     self.engine.rotation_update(self.clock().date())
                     log(f"모멘텀 로테이션 목표: {sorted(self.book.rot_target)}")
                 ok = [k for k in self.exch if self.book.get(k).trend_ok]
