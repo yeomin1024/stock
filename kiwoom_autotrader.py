@@ -15,6 +15,7 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -119,6 +120,14 @@ PRIOR_STOCK_EXCHANGE = {
 
 
 DEFAULT_UNIVERSE = {k: v for k, v in PRIOR_STOCK_EXCHANGE.items() if k != "AVB"}   # AVB: 야후 데이터 없음
+# K v0.33+는 S&P 500 전 종목에서 고름 → 58종 밖 종목도 배분. 2026-10 야후 거래소 정보로 만든 표(없는 종목은 실행 중 조회)
+PRIOR_STOCK_EXCHANGE.update({
+    "ABBV": "NY", "APH": "NY", "ANET": "NY", "CLX": "NY", "COST": "ND", "DVN": "NY", "EXC": "ND", "FSLR": "ND",
+    "IT": "NY", "GDDY": "NY", "IBM": "NY", "JBL": "NY", "KEYS": "NY", "KLAC": "ND", "KR": "NY", "LITE": "ND",
+    "MCK": "NY", "MPWR": "ND", "NFLX": "ND", "NWS": "ND", "NEE": "NY", "ON": "ND", "PLTR": "ND", "PM": "NY",
+    "SWKS": "ND", "TER": "ND", "VRSN": "ND", "VST": "NY",
+    **{e: "NA" for e in ("XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY")},   # NYSE Arca(SPY와 같게)
+})
 # 레버리지 상품(사용 금지 — 실행기에서 이 종목이 들어오거나 leverage ≠ 1이면 멈춤)
 LEVERAGED_ETFS = {"TQQQ", "QLD", "UPRO", "SSO", "SPXL", "TNA", "SOXL", "USD", "TECL", "ROM", "LABU", "FAS", "NVDL",
                   "TSLL", "CONL", "SQQQ", "SOXS", "SPXU", "SDS", "TZA", "FNGU", "MSTU", "MSTX", "NVDU", "TSLT"}
@@ -209,6 +218,11 @@ class Config:
     k_exit_days: int = 1              # K 비중이 이 거래일 연속 0이어야 K 몫을 팖(1 = 0 되는 날 바로)
     k_top: int = 0                    # >0: 그날 K 비중 상위 N종만 따라감
     k_equal_pct: float = 0.0          # >0: K 몫 종목마다 K 비중과 상관없이 자산의 이 %만큼(k_top과 함께 — K 상위 N종 동일비중)
+    k_drop1_max: float = 0.0          # >0: K '다음날 하락확률(%)'이 이 값 이상인 종목은 K 몫으로 새로 사지 않음(K v0.33+)
+    rot_base_only: bool = False       # True: 모멘텀 로테이션 후보는 기본 58종만(K가 더한 S&P 500 종목은 K 몫으로만)
+    k_fit: bool = False               # True: K 몫 배율을 min(k_rot_scale, (1 − 모멘텀 몫) ÷ 그날 K 비중 합)으로 — 현금 넘침 없이
+    batch_buys: bool = False          # True: 같은 순간 들어온 시세는 매도 먼저, 매수는 모아서 모멘텀 → K 비중 큰 순(체결 순서 영향 제거)
+    k_universe: bool = False          # True: 실행기가 K 배분 종목(58종 밖 S&P 500·섹터 ETF 포함, k_symbols)을 거래 대상에 더함
     k_mom_days: int = 0               # >0: K 몫 새 매수는 그 종목 일봉 N일 수익률이 양수일 때만(전일 종가까지)
     hold_loser_days: int = 0          # >0: K·로테이션 매도 신호 때 손실 중이면 본전(수수료 포함) 회복을 최대 N거래일 기다림
                                       #     (국면 0·실적 발표 회피 매도는 바로)
@@ -309,8 +323,16 @@ PRESETS = {
            "rot_at_open": True, "max_positions": 30, "earn_avoid": True, "regime_scale": False, "sector_filter": False,
            "trend_ma_days": 0, "daily_loss_pct": 100.0, "max_trades_per_symbol": 2,
            "hold_loser_days": 20, "hold_loser_riskoff": True, "hold_loser_stop_pct": 8.0, "earn_hold_loser": True},
+    # P8(추천, 2026-10-05, M v1.85 · S v1.00 · I v0.65 · K v0.33+ 대응): K가 S&P 500에서 고른 종목·섹터 ETF까지 따라감
+    #     (모멘텀 후보는 58종) + 같은 순간 매도 먼저·매수는 정해진 순서(체결 순서 영향 제거) + K×1.5 + 168일 모멘텀 1위 35%
+    "P8": {"entry_mode": "k+rot", "k_rot_scale": 1.5, "k_min_weight": 0.02, "k_exit_days": 3,
+           "rot_top": 1, "rot_keep": 2, "rot_pct": 35.0, "rot_days": 168, "rot_skip": 21, "rot_every": 5,
+           "rot_at_open": True, "max_positions": 30, "earn_avoid": True, "regime_scale": False, "sector_filter": False,
+           "trend_ma_days": 0, "daily_loss_pct": 100.0, "max_trades_per_symbol": 2,
+           "hold_loser_days": 20, "hold_loser_riskoff": True, "hold_loser_stop_pct": 8.0, "earn_hold_loser": True,
+           "k_universe": True, "rot_base_only": True, "batch_buys": True},
 }
-PRESET_ALIAS = {"R1": "P7"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
+PRESET_ALIAS = {"R1": "P8"}           # Kaggle 실행 셀(STRATEGY="R1")을 바꾸지 않아도 최신 추천 전략으로 실행
 PRESET_NOTES = {
     "C0": "시간봉 저점매수 · M 비중·S 필터 — 과거 +274% (MDD −7%)",
     "A": "C0 + 종목당 2회 · 일일 손실한도 끔 — 과거 +369% (MDD −7%)",
@@ -331,7 +353,11 @@ PRESET_NOTES = {
           "과거 +2,240% (MDD −9.87%, 승률 65.2%, 샤프 3.40). 모멘텀 기간에 민감(189일이면 MDD −11.2%)",
     "P7": "K 주식층 비중 × 1.5 + 168일(1달 건너뜀) 모멘텀 1위 1종목 50%, 손실 중 매도 신호면 본전까지 최대 20거래일 대기"
           "(국면 0·실적 발표 때도, 손실 8% 넘으면 바로 매도) — 과거 +6,667% (MDD −13.92%, 승률 82.7%, 샤프 3.20). "
-          "모멘텀 기간에 민감(189일이면 MDD −20%)",
+          "모멘텀 기간에 민감(189일이면 MDD −20%). ⚠️ 현금이 모자랄 때 티커 알파벳 순서로 먼저 사는 덕을 봄 — "
+          "순서 영향을 없애면(batch_buys) MDD −20.7%",
+    "P8": "M v1.85 · S v1.00 · I v0.65 · K v0.33+ 대응: K가 S&P 500에서 고른 종목·섹터 ETF까지 K 비중 × 1.5로 따라감 + "
+          "168일 모멘텀 1위(58종 중) 35%, 손실 중 매도 신호면 본전까지 최대 20거래일 대기(손실 8% 넘으면 매도), "
+          "같은 순간 매도 먼저·매수는 모멘텀 → K 비중 큰 순 — 과거 +5,419% (MDD −14.79%, 승률 83.5%, 샤프 3.25)",
 }
 
 
@@ -655,6 +681,7 @@ class Book:
         self.exposure = 1.0
         self.rot_target, self.rot_out = set(), set()     # 모멘텀 로테이션: 지금 들고 있어야 할 종목 / 손절돼 쉬는 종목
         self.k_weights = {}                              # K 주식층 따라가기: 오늘 목표 비중 {티커: 0~1}
+        self.k_scale_eff = None                          # k_fit: 오늘 K 몫 실제 배율(모멘텀 몫을 뺀 나머지에 맞춤)
         self.peak_eq = self.cash                         # 낙폭 제어용 자산 고점
         self.stops_today = 0                             # 오늘 손절 횟수(max_stops_day)
         self.pause_until = None                          # 낙폭 한도로 쉬는 마지막 날
@@ -869,6 +896,7 @@ class DaySignal:
     note: str = ""
     kw: dict = None             # K 주식층 배분비중 {티커: 0~1} (stock_allocation_daily.csv를 쓸 때)
     blackout: set = field(default_factory=set)   # 오늘·다음 거래일에 실적 발표가 있는 종목(earn_avoid)
+    kp1: dict = None            # K v0.33+ 종목별 '다음날 하락확률(%)' {티커: %} (열이 있는 종목만)
 
 
 # 파이프라인 리포트(results/reports/<날짜>/*.xlsx) → 일일 필터 CSV. 열 이름은 이전 CSV와 같음
@@ -913,6 +941,41 @@ def signals_from_reports(report_dir, out_dir) -> dict:
         last = pd.to_datetime(df[dcol], errors="coerce").max()
         done[name] = os.path.basename(files[-1]) + (f" · ~{last:%Y-%m-%d}" if pd.notna(last) else "")
     return done
+
+
+def _k_col(c):
+    c = str(c)
+    return c[4:] if c.startswith("ETF_") else c
+
+
+def k_symbols(signals_dir, base=None, since="2023-11-01", min_weight=0.0) -> dict:
+    """K 배분표에서 since 이후 비중이 한 번이라도 min_weight 이상인 종목을 base(기본 58종)에 더함 → {티커: 거래소}.
+    K v0.33+는 S&P 500 전 종목에서 고르므로 58종 밖 종목·섹터 ETF도 따라가려면 거래 대상에 넣어야 함."""
+    out = dict(DEFAULT_UNIVERSE if base is None else base)
+    p = os.path.join(signals_dir or "", "stock_allocation_daily.csv")
+    if not os.path.exists(p):
+        return out
+    k = _dated_csv(p)
+    k = k[k.index >= pd.Timestamp(since)] if since else k
+    k.columns = [_k_col(c) for c in k.columns]
+    skip = {"날짜", "구분", "★ 합계", "현금"}
+    for t in k.columns:
+        if t in skip or "확률" in t or not re.fullmatch(r"[A-Z][A-Z.\-]{0,6}", t):
+            continue
+        w = pd.to_numeric(k[t], errors="coerce")
+        if (w >= max(min_weight, 1e-9)).any() and t not in out and t not in LEVERAGED_ETFS:
+            out[t] = PRIOR_STOCK_EXCHANGE.get(t) or _yf_exchange(t)
+    return out
+
+
+def _yf_exchange(t) -> str:
+    """야후 거래소 코드 → 키움 stex_tp(NMS·NGM·NCM→ND, NYQ→NY, PCX→NA). 조회 실패면 'NY'(시세 출처가 yfinance면 쓰이지 않음)."""
+    try:
+        import yfinance as yf
+        e = str(yf.Ticker(t).fast_info.get("exchange") or "")
+    except Exception:
+        e = ""
+    return {"NMS": "ND", "NGM": "ND", "NCM": "ND", "NYQ": "NY", "PCX": "NA", "ASE": "AM"}.get(e, "NY")
 
 
 def _dated_csv(path) -> pd.DataFrame:
@@ -965,6 +1028,8 @@ class DailySignals:
         self.i = need("industry_allocation_daily.csv") if cfg.industry_filter else None
         self.ip = need("industry_daily.csv") if cfg.rank_col else None
         self.k = need("stock_allocation_daily.csv") if (cfg.stock_filter or cfg.entry_mode.startswith("k")) else None
+        if self.k is not None:                                   # K v0.33+: 섹터 ETF 열 'ETF_XLK' → 티커 'XLK'
+            self.k.columns = [_k_col(c) for c in self.k.columns]
         self.earn = {}
         if cfg.earn_avoid:
             p = os.path.join(d, "earnings_dates.csv") if d else ""
@@ -1028,10 +1093,12 @@ class DailySignals:
                 top = sorted(score, key=lambda k: -score[k])[:c.watchlist_size]
                 notes.append(f"순위 상위{len(top)}")
                 elig = set(top)
-        kw = None
+        kw, kp1 = None, None
         if self.k is not None:
             r = self._asof(self.k, day)
             kw = {} if r is None else {t: to_num(r.get(t), 0) for t in self.codes if to_num(r.get(t), 0) > 0}
+            kp1 = {} if r is None else {t: to_num(r.get(f"{t} 다음날 하락확률(%)"), np.nan) for t in self.codes
+                                        if f"{t} 다음날 하락확률(%)" in r.index}
             notes.append(f"K {len(kw)}종 {sum(kw.values()):.0%}")
             if c.stock_filter and (kw or c.k_strict):
                 elig = {t for t in elig if t in kw}
@@ -1044,7 +1111,7 @@ class DailySignals:
             black = {t for t in self.codes if self.earn.get(t, set()) & {d0, d1}}
             if black:
                 notes.append(f"실적발표 회피 {','.join(sorted(black))}")
-        return DaySignal(exp, elig, " · ".join(notes), kw, black)
+        return DaySignal(exp, elig, " · ".join(notes), kw, black, kp1)
 
 
 # %% [markdown]
@@ -1068,6 +1135,7 @@ class Engine:
         self.entry_filter = None      # (code, ts, SymState) -> bool : 지표 모델로 매수 신호 거르기(없으면 전부 통과)
         self.entry_signal = None      # (code, ts, SymState) -> float|None : 지표 예측 모델 점수. 있으면 규칙 대신 이걸로 매수
         self.entry_thr = 0.0
+        self.pending = []             # batch_buys: 아직 체결 안 한 매수 [(우선순위, 티커, 가격, 시각, 사유)]
 
     def mkt_change(self) -> float:
         return self.mkt_px / self.mkt_prev - 1 if self.mkt_px and self.mkt_prev else 0.0
@@ -1093,6 +1161,10 @@ class Engine:
             if self.cfg.k_top > 0:
                 kw = dict(sorted(kw.items(), key=lambda x: -x[1])[:self.cfg.k_top])
             b.k_weights = kw
+            if self.cfg.k_fit:                       # K 몫 + 모멘텀 몫이 100%를 넘지 않게 K 배율을 줄임(체결 순서와 무관)
+                room = max(0.0, 1.0 - self.cfg.rot_pct / 100 * self.cfg.rot_top)
+                tot = sum(w for w in kw.values() if w >= self.cfg.k_min_weight)
+                b.k_scale_eff = min(self.cfg.k_rot_scale, room / tot) if tot > 0 else self.cfg.k_rot_scale
             for code, s in b.st.items():                                 # K 비중 연속 0일 수(팔지 판단용)
                 if s.qty > 0 and s.mode == "kf":
                     s.k_zero = 0 if code in kw else s.k_zero + 1
@@ -1138,7 +1210,7 @@ class Engine:
         sc = {}
         for code in (self.codes if self.base_eligible is None else self.base_eligible):
             s = self.book.st.get(code)
-            if s is None:
+            if s is None or (self.cfg.rot_base_only and code not in DEFAULT_UNIVERSE):
                 continue
             d = s.daily
             if len(d) > n + k0 and d[-1 - n - k0] > 0 and (not self.cfg.trend_ma_days or s.trend_ok):
@@ -1283,15 +1355,33 @@ class Engine:
         if code in b.rot_out or code in self.today.blackout or (self.mkt_halt and c.halt_all):
             return True
         k_ok = code in kw and kw[code] >= c.k_min_weight and not (s.tp_until and ts.date() <= s.tp_until)
+        if k_ok and c.k_drop1_max:                                      # K가 내일 하락 가능성을 높게 본 종목은 안 삼
+            p1 = (self.today.kp1 or {}).get(code)
+            k_ok = not (p1 is not None and p1 == p1 and p1 >= c.k_drop1_max)
         if k_ok and c.k_mom_days:                                       # 상승 추세인 K 종목만
             d, n = s.daily, c.k_mom_days
             k_ok = len(d) > n and d[-1 - n] > 0 and d[-1] > d[-1 - n]
         if (code in rt or k_ok) and b.can_enter(code, ts, None, any_time=c.rot_at_open)[0]:
             if code in rt:
-                self._fill(code, "BUY", px, ts, f"로테이션 매수: {c.rot_days}일 모멘텀 상위 {c.rot_top}")
+                why, prio = f"로테이션 매수: {c.rot_days}일 모멘텀 상위 {c.rot_top}", (0, 0.0)
             else:
-                self._fill(code, "BUY", px, ts, f"K몫 매수: 주식층 비중 {kw[code]:.1%}")
+                why, prio = f"K몫 매수: 주식층 비중 {kw[code]:.1%}", (1, -kw[code])
+            if c.batch_buys:                       # 같은 순간의 매도를 먼저 다 처리한 뒤 정해진 순서로 삼(flush_pending)
+                if all(p[1] != code for p in self.pending):
+                    self.pending.append((prio, code, px, ts, why))
+            else:
+                self._fill(code, "BUY", px, ts, why)
         return True
+
+    def flush_pending(self):
+        """batch_buys: 모아 둔 매수를 모멘텀 몫 → K 비중 큰 순서로 체결(시세가 들어온 순서·알파벳 순서와 무관)."""
+        if not self.pending:
+            return
+        todo, self.pending = sorted(self.pending, key=lambda p: (p[0], p[1])), []
+        for _, code, px, ts, why in todo:
+            s = self.book.get(code)
+            if s.qty == 0 and self.book.can_enter(code, ts, None, any_time=self.cfg.rot_at_open)[0]:
+                self._fill(code, "BUY", px, ts, why)
 
     def _rotation(self, code, s, px, ts) -> bool:
         """모멘텀 로테이션 처리. True면 이 틱은 끝(저점매수 판단 안 함)."""
@@ -1399,7 +1489,8 @@ class Engine:
             if reason.startswith("K 따라"):
                 pct = b.k_weights.get(code, 0) * 100 * c.k_scale
             elif reason.startswith("K몫"):
-                pct = c.k_equal_pct or b.k_weights.get(code, 0) * 100 * c.k_rot_scale
+                scale = b.k_scale_eff if (c.k_fit and b.k_scale_eff is not None) else c.k_rot_scale
+                pct = c.k_equal_pct or b.k_weights.get(code, 0) * 100 * scale
             elif rot:
                 pct = c.rot_pct
                 d = s.daily
@@ -1592,6 +1683,7 @@ class LiveRunner:
                                     px = to_price((d.get("values") or {}).get("10"))
                                     if code and px > 0:
                                         self.engine.on_price(code, px, self.clock())
+                            self.engine.flush_pending()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1643,6 +1735,7 @@ class LiveRunner:
                         path = _bar_path(r.Open, r.High, r.Low, r.Close)
                         for k, px in enumerate(path):
                             self.engine.on_price(code, float(px), t + dt.timedelta(seconds=60 * k / len(path)))
+                self.engine.flush_pending()                       # 이번에 받은 모든 종목 시세를 본 뒤 매수(매도 먼저)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1654,6 +1747,7 @@ class LiveRunner:
         while not self._stop:
             await asyncio.sleep(2)
             now = self.clock()
+            self.engine.flush_pending()
             self.engine.on_clock(now)
             if time.monotonic() - last_status > self.cfg.status_every_min * 60:
                 last_status = time.monotonic()
@@ -1758,7 +1852,7 @@ def _bar_path(o, h, l, c, steps=3, max_step=0.002, order="auto", rng=None):
 
 
 def simulate(cfg: Config, bars: dict, signals: DailySignals = None, verbose=False, steps=3, seed: dict = None,
-             path_order="auto", path_seed=0, entry_filter=None, entry_signal=None, entry_thr=0.0):
+             path_order="auto", path_seed=0, entry_filter=None, entry_signal=None, entry_thr=0.0, tick_order="alpha"):
     """bars: {티커: DataFrame(ts, open, high, low, close)} — 봉 간격은 cfg.bar_minutes 이하여야 함.
     seed: {티커: {"closes": [전략 봉 종가…], "daily": [일봉 종가…]}} — 시작 전 지표 워밍업(실시간 워밍업과 같은 역할)."""
     frames = []
@@ -1800,9 +1894,19 @@ def simulate(cfg: Config, bars: dict, signals: DailySignals = None, verbose=Fals
             sc = {cd: (entry_signal(cd, t0, None) or -1e9) for cd in {p[1] for p in pts}}
             pts.sort(key=lambda x: (x[0], -sc[x[1]]))
         else:
+            if tick_order == "reverse":                    # 같은 순간 시세의 처리 순서 점검용(기본은 티커 알파벳 순)
+                pts.reverse()
+            elif tick_order == "random":
+                order = rng.permutation(len(pts))
+                pts = [pts[i] for i in order]
             pts.sort(key=lambda x: x[0])                   # 여러 종목의 경로를 시간 순서로 섞음
+        cur = None
         for frac, code, v in pts:
+            if cur is not None and frac != cur:
+                eng.flush_pending()                        # 같은 순간의 시세를 다 본 뒤 모아 둔 매수 체결(batch_buys)
+            cur = frac
             eng.on_price(code, float(v), t0 + dt.timedelta(minutes=dur * frac))
+        eng.flush_pending()
         eng.on_clock(t0 + dt.timedelta(minutes=dur) - dt.timedelta(seconds=1))
     eng.end_day()
     return {"trades": pd.DataFrame(eng.book.trades), "equity": pd.DataFrame(eng.book.equity_rows),

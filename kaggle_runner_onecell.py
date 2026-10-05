@@ -7,7 +7,7 @@
 # ===== 설정 — wget으로 받아 실행하는 셀에서 같은 이름으로 먼저 정하면 그 값이 우선합니다 =====
 for _k, _v in dict(
     REPO="https://github.com/yeomin1024/stock", BRANCH="main",
-    STRATEGY="P7",            # 'P7'(='R1') MDD −15%·승률 80% / 'P5' MDD −10%·승률 80% / 'P6' MDD −10% 수익 우선 / 'P4' / 'P2' MDD −5%
+    STRATEGY="P8",            # 'P8'(='R1') K S&P 500 대응·MDD −15%·승률 80% / 'P5' MDD −10%·승률 80% / 'P6' MDD −10% / 'P2' MDD −5%
     RUN_COLLECT=False,        # 키움 5분봉 기록 모으기(한 번) → GitHub data/kiwoom_minute/
     KIWOOM_MOCK=True,         # 연결한 키움 키가 모의투자 키면 True, 실전 키면 False(조회만 함)
     RUN_SIM=True,             # 과거 실시간 시뮬레이션 → GitHub results/kaggle/sim/<날짜>_<전략>/
@@ -120,7 +120,11 @@ for n in ("paper_account.json", "paper_trades.csv", "paper_equity.csv"):    # �
     if os.path.exists(p) and not os.path.exists(os.path.join(OUT, n)):
         shutil.copy(p, os.path.join(OUT, n)); print("이어 쓰기:", n)
 
-cfg = Config(**PRESETS[STRATEGY], paper_cash=PAPER_CASH, quote_source=QUOTE_SOURCE, signals_dir=SIG, mock=KIWOOM_MOCK,
+_P = PRESETS[STRATEGY]
+UNI = (k_symbols(SIG, min_weight=_P.get("k_min_weight", 0.0)) if _P.get("k_universe") else dict(DEFAULT_UNIVERSE))
+if len(UNI) > len(DEFAULT_UNIVERSE):            # K v0.33+: S&P 500 전 종목에서 고름 → K가 배분한 종목·섹터 ETF도 거래 대상
+    print(f"K 배분 종목 추가 {len(UNI) - len(DEFAULT_UNIVERSE)}종: {', '.join(sorted(set(UNI) - set(DEFAULT_UNIVERSE)))}")
+cfg = Config(**_P, symbols=UNI, paper_cash=PAPER_CASH, quote_source=QUOTE_SOURCE, signals_dir=SIG, mock=KIWOOM_MOCK,
              paper_state=f"{OUT}/paper_account.json", trade_log=f"{OUT}/paper_trades.csv", equity_log=f"{OUT}/paper_equity.csv")
 assert cfg.leverage == 1.0 and not (set(cfg.symbols) & LEVERAGED_ETFS), "레버리지(신용·레버리지 ETF) 사용 금지"
 TODAY = now_et().strftime("%Y-%m-%d")
