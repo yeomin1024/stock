@@ -1,5 +1,24 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.33.0 - 2026-10-05 - [R145 ★★ 전 종목(핵심 + S&P 500 풀) 예측 — 큰 하락 · 오름 · 반등 확률 · 사용자 설계 장치 4개 측정 행 · 13c 비중 옆 확률 · 00F_종목예측]
+#    사용자 지시(2026-10-05): "추가한 종목 전부 다 왜 예측해서 비중 배분 안해? … 종목별로 큰 하락 확률이 낮은 거 위주로 매수 … 반등하는 구간 근처에서 매수 … 하락 확률이
+#      높아진 종목은 수익 실현하고 그 돈으로 물타기 … 쓰레기여서 반등할 확률도 낮은 건 아예 손대지도 말고 … 일별배분비중에 하락확률 같이 표시".
+#    ── (§1 모형) r145_stock_probs — 핵심 + 풀 전 종목 · 특징 15(가격만) · 풀드 로지스틱 · 해마다 그 해 이전 자료로만 학습(표본 밖 · 모형 캐시 r145_models.pkl).
+#      연구(r145 · S&P 500 그 시점 구성 2010~): 큰 하락(21일 안 −10%) AUC 0.55~0.74 · 낮은 10% 실제 큰 하락 7.2% vs 높은 10% 33.7%(2018~) — 위험은 맞히지만
+#      위험 낮은 종목은 평균 수익도 낮다(21일 0.6% vs 1.6%) · '오를 확률'은 수익 예측력 약함.
+#    ── (§2 사용자 설계 장치 · 측정 행) 쓰레기 제외(위험 상위 30% · 200일선 아래 · 1년 손실) · 수익 실현 → 물타기(+10% & 위험 상위 20% → 실현 · −5% & 위험 하위 50% &
+#      200일선 위 → +50%) · 반등 구간 매수(풀 · 21일 고점 −8%↓ · 200일선 위 · 5일 반등 · 위험 하위 30%) · 큰 하락 확률 낮은 종목 위주(풀 후보 = 위험 하위 50%).
+#      연구(2018~ · K★ = R144 라이브 205.4배): 수익 실현 141~173배(참여 −6~−13) · 쓰레기 제외 186~206배 · 반등 매수 194~205배 · 물타기 거의 안 켜짐 —
+#      그대로 켜면 무하락을 넘는 장치 없음 → 측정 행(13 · 00U · 00P · 00F · R145_LIVE로 켤 수 있음).
+#    ── (§2b ★ 라이브) 조건부 쓰레기 제외 2조각(R145_PIECES · r145 탐욕 885 조건 × 장치 5 · K 무하락 + 긴 이력 관문 + 조건이 2010~2017에 2% 이상 켜짐):
+#      1) MD:FEDFUNDS_CHG120 위 20% → 위험 상위 20% · 200일선 아래 · 1년 손실 종목 제외 · 2) MD:EFA_MOM20 위 20% → 위험 상위 30% 같은 조건 제외(몫 → 같은 섹터 ETF).
+#      205.4 → 208.8배 · 회피 103.43 → 103.60 · 참여 139.03 → 139.37 · MDD 그대로 · 월회피 162.2 → 162.5 · 월참여 174.5 → 175.0 · 00U·00P 전 열 무하락 · 종목-월 손실
+#      35.59 → 35.54% · 종목 회피 80.36 → 80.83 · ⚠ 종목 참여 47.98 → 47.95(새 지표 · 목표) · 긴 이력(무작위 K 닮은 종목군 10): 2010~13 회피 +0.02 · 참여 +0.26 · 배수 ×1.004 /
+#      2014~17 +0.46 · +0.56 · ×1.009 · 무작위 제외 대조군(30) 배수·참여·월참여 100 · 회피·월회피 90 백분위. ⚠ 표본 안 선택. 되돌리기 k_overrides={'R145_PIECES': ()}.
+#      공정 시험(사후에 고른 핵심 없이 그 시점 S&P 500만): 섹터 ETF 12.0배 > 모멘텀 10 7.9배 > 저위험 10 4.4배(2018~) · 2010~2017도 ETF 최고.
+#    ── (§3 표시) 13c_일별배분비중 — 종목·ETF 비중 열마다 바로 뒤 '다음날 하락확률(%)'(R141 P) · 종목은 '큰 하락확률 21일(%)'도(M.r145_weight_prob_cols) ·
+#      00F_종목예측(A 오늘 전 종목 예측 · B 측정 행 · C 신뢰도 · D 십분위 · E 결론) · 00 'R145' 줄.
+#    StockConfig R145_ENABLE · R145_LIVE · R145_GARBAGE_Q · R145_MANAGE. 시험 t145/test_r145.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.32.0 - 2026-10-04 - [R144 ★★ S&P 500 전 종목 풀 · 실행 캐시(갱신만) · 월별·종목별 목표 · 종목-월 성과(00M) — K★ 조각 2개(풀 · 라이브 마지막 단계)]
 #    사용자 지시(2026-10-04): "주식 층 현재 종목에 없는 s&p500 종목 모두 추가해 그리고 실행 초기에만 대규모 데이터 캐시를 만들어놓고 날짜가 지나면 갱신만 하도록 해서
 #      최대한 실행시간 단축하고 월별로 합산, 주식별 참여 및 회피 및 수익배수 목표치를 정해서 도달하도록 똑같이 계속 탐색하고 테스트 해 당연히 그러면 종목 선별력이
@@ -837,8 +856,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.32.0"
-VERSION_DATE = "2026-10-04"
+VERSION = "v0.33.0"
+VERSION_DATE = "2026-10-05"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -1390,6 +1409,17 @@ class StockConfig:
     R144_HIST_CACHE_DAYS: int = 30     # 그 시점 구성 표(공개 저장소) 캐시
     R144_EARN_LIMIT: int = 40          # get_earnings_dates(limit) — 2018~ 평가창을 덮는 분기 수
     R144_EARN_THREADS: int = 4
+    # [v0.33.0 R145 ★★ 사용자 지시 2026-10-05] 전 종목 예측(큰 하락 · 오름 · 반등) · 사용자 설계 장치 측정 행 · 비중 옆 확률.
+    #   R145_LIVE = '' (측정만 · 기본) | '쓰레기 제외' | '수익 실현 → 물타기' | '반등 구간 매수' | '큰 하락 확률 낮은 종목 위주(풀 후보 = 위험 하위 50%)'
+    R145_ENABLE: bool = True
+    # [v0.33.0 R145 ★ 라이브] 조건부 쓰레기 제외 조각(특징 · hi/lo/nhi/nlo · 'GB:q') — 그 조건인 날 큰 하락 백분위 ≥ q · 200일선 아래 · 1년 손실 종목 → 0(몫 → 같은 섹터 ETF).
+    #   r145 탐욕(885 조건 × 쓰레기 제외·수익 실현·반등 매수) + K 무하락(00U·00P·월 + 종목-월 손실 쪽) + 긴 이력 관문(2010~2017 무작위 K 닮은 종목군 10 · 두 창) 통과 2조각.
+    #   되돌리기 k_overrides={'R145_PIECES': ()}(= v0.32.0 K★).
+    R145_PIECES: Tuple[Tuple[str, str, str], ...] = (("MD:FEDFUNDS_CHG120", "hi", "GB:0.8"), ("MD:EFA_MOM20", "hi", "GB:0.7"))
+    R145_LIVE: str = ""
+    R145_GARBAGE_Q: float = 0.7
+    R145_MANAGE: Dict[str, float] = field(default_factory=lambda: {"tp_gain": 0.10, "tp_q": 0.8, "ad_drop": 0.05, "ad_q": 0.5, "ad_frac": 0.5,
+                                                                   "mult_max": 2.0, "re_q": 0.5})
     R117_ENABLE: bool = True
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
@@ -7898,6 +7928,7 @@ def r144_pool_overlay(alloc: Dict[str, Any], CLF: pd.DataFrame, mem: pd.DataFram
                 "pool_cols": held_pool, "live_rule": str(alloc.get("live_rule") or alloc.get("mode") or "-") + tag})
     lastw = Ws2.iloc[-1] if len(Ws2) else pd.Series(dtype=float)
     diag = {"enabled": True, "days": days, "pool_n": len(pool), "held_pool_n": len(held_pool), "sum_max": float(tot.max()) if len(tot) else 0.0,
+            "_WA_full": WA, "_sect": sect, "_pool": pool,                                   # [v0.33.0 R145] 측정 행이 풀 전 종목에 쓰려고
             "neg_min": float(WK.min().min()) if WK.size else 0.0, "stock_max": float(Ws2.max().max()) if Ws2.size else 0.0,
             "pool_share_mean": float(WK[held_pool].sum(axis=1).mean()) if held_pool else 0.0,
             "today_pool": {p: round(float(lastw[p]), 4) for p in held_pool if float(lastw.get(p, 0.0)) > 1e-9},
@@ -8106,6 +8137,324 @@ def stock_month_stats(Wt: pd.DataFrame, R: pd.DataFrame, CO: Optional[pd.DataFra
                      "종목 회피(%)": (round(float((1 - (hc[dc] - 1).sum() / (mc[dc] - 1).sum()) * 100), 1) if float((mc[dc] - 1).sum()) <= -0.05 else None),
                      "단순합 기여(%p)": round(float(csum[c]) * 100, 2)})
     return summ, pd.DataFrame(rows)
+
+
+# =============================================================================
+# [v0.33.0 R145 ★★ 사용자 지시 2026-10-05] 전 종목 예측(큰 하락 · 오름 · 반등 확률) · 사용자 설계 장치(쓰레기 제외 · 반등 구간 매수 ·
+#   위험 오르면 수익 실현 → 그 몫으로 물타기 · 큰 하락 확률 낮은 종목 위주) 측정 · 일별 비중 옆 확률
+# =============================================================================
+#   "추가한 종목 전부 다 왜 예측해서 비중 배분 안해? … 종목별로 큰 하락 확률이 낮은 거 위주로 매수 … 반등하는 구간 근처에서 매수 … 하락 확률이 높아진 종목은
+#    수익 실현하고 그 돈으로 물타기 … 쓰레기여서 반등할 확률도 낮은 건 아예 손대지도 말고 … 일별배분비중에 하락확률 같이 표시".
+#   모형(종목 공통 · 풀드 로지스틱 · 해마다 그해 1월 1일 35일 전까지 표적이 다 찬 자료로만 학습 → 그해 예측 = 표본 밖):
+#     특징(t 종가까지 · 가격만) = 모멘텀 21/63/126/252 · 변동성 21/63 · 낙폭 63/252 · 50/200일선 이격 · RSI14 · 1년 −7% 급락 횟수 · 시장 대비 63일 · SPY 변동성·낙폭.
+#     표적(t+1 시가 기준) = 큰 하락(다음 21거래일 종가 최저 ≤ −10%) · 오름(21일 뒤 종가 > 시가) · 반등(21일 뒤 +5% 이상).
+#   ⚠ 연구(r145 · S&P 500 그 시점 구성 2010~ · 표본 밖): 큰 하락 확률은 잘 맞는다(낮은 10% 실제 큰 하락 2.9~7.2% vs 높은 10% 25~34% · 손실 확률 36~44% vs 44~47%)
+#     — 하지만 위험 낮은 종목은 평균 수익도 낮다(2018~ 21일 0.6% vs 1.6%). '오름' 확률은 수익을 못 맞힌다(변동성의 반대). 그 시점 S&P 500만으로 섹터 비중을 나눌 때
+#     저위험 10종목 4.4배 · 모멘텀 10 7.9배 · 섹터 ETF 그대로 12.0배(2018~) — 무료 가격 자료의 종목 예측은 섹터 ETF를 이기지 못했다.
+R145_FEATS: Tuple[str, ...] = ("m21", "m63", "m126", "m252", "v21", "v63", "dd63", "dd252", "g50", "g200", "rsi", "shk", "rel63", "mk_v", "mk_dd")
+R145_TARGETS: Tuple[str, ...] = ("big", "up", "reb")
+R145_MODEL_SCHEMA: int = 2      # 모형 캐시 키(자료 구성이 바뀌면 올린다)
+R145_TARGET_KR: Dict[str, str] = {"big": "큰 하락 확률(21일 안 −10%)", "up": "오를 확률(21일)", "reb": "반등 확률(21일 +5%)"}
+
+
+def r145_features(C: pd.DataFrame, member: pd.DataFrame, spy: pd.Series) -> Tuple[np.ndarray, List[str]]:
+    """[R145] 특징 배열(날짜 × 종목 × R145_FEATS) — t 종가까지(룩어헤드 없음). 연구 r145/feat145.py와 같은 산식."""
+    C = C.astype(float)
+    R = C.pct_change(fill_method=None)
+    F: Dict[str, pd.DataFrame] = {}
+    for L_ in (21, 63, 126, 252):
+        F[f"m{L_}"] = C / C.shift(L_) - 1
+    F["v21"] = R.rolling(21, min_periods=15).std()
+    F["v63"] = R.rolling(63, min_periods=40).std()
+    F["dd63"] = C / C.rolling(63, min_periods=40).max() - 1
+    F["dd252"] = C / C.rolling(252, min_periods=150).max() - 1
+    F["g50"] = C / C.rolling(50, min_periods=35).mean() - 1
+    F["g200"] = C / C.rolling(200, min_periods=150).mean() - 1
+    up_ = R.clip(lower=0).rolling(14, min_periods=10).mean()
+    dn_ = (-R.clip(upper=0)).rolling(14, min_periods=10).mean()
+    F["rsi"] = 100 - 100 / (1 + up_ / dn_.replace(0, np.nan))
+    F["shk"] = (R <= -0.07).astype(float).rolling(252, min_periods=100).sum()
+    F["rel63"] = F["m63"].sub(F["m63"].where(member.reindex(index=C.index, columns=C.columns).fillna(False)).median(axis=1), axis=0)
+    sp = pd.to_numeric(spy, errors="coerce").reindex(C.index).ffill()
+    mk_v = sp.pct_change().rolling(21).std()
+    mk_dd = sp / sp.rolling(63).max() - 1
+    n = C.shape[1]
+    X = np.stack([F[k].to_numpy(dtype="float32") for k in R145_FEATS[:-2]] +
+                 [np.repeat(mk_v.to_numpy("float32")[:, None], n, 1), np.repeat(mk_dd.to_numpy("float32")[:, None], n, 1)], axis=-1)
+    return X, list(R145_FEATS)
+
+
+def r145_labels(C: pd.DataFrame, O: pd.DataFrame) -> Dict[str, np.ndarray]:
+    o1 = O.astype(float).shift(-1)
+    cmin = C.astype(float)[::-1].rolling(21, min_periods=15).min()[::-1].shift(-1)
+    c21 = C.astype(float).shift(-21)
+    return {"big": (cmin / o1 - 1 <= -0.10).astype(float).where(cmin.notna() & o1.notna()).to_numpy(),
+            "up": (c21 / o1 - 1 > 0).astype(float).where(c21.notna() & o1.notna()).to_numpy(),
+            "reb": (c21 / o1 - 1 >= 0.05).astype(float).where(c21.notna() & o1.notna()).to_numpy()}
+
+
+def r145_stock_probs(C: pd.DataFrame, O: pd.DataFrame, member: pd.DataFrame, spy: pd.Series, cfg) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
+    """[R145] 전 종목(핵심 + 풀) 확률 — 해마다 그 해 이전 자료로만 학습한 풀드 로지스틱(표준화 · C=0.5) → 그 해 예측(표본 밖).
+    학습한 모형(평균 · 표준편차 · 계수)은 캐시 r145_models.pkl(버전·연도·표적 키)에 남겨 다음 실행은 예측만 한다. 반환 ({표적: 날짜 × 종목}, info)."""
+    from sklearn.linear_model import LogisticRegression
+    cal = pd.DatetimeIndex(C.index)
+    X, fn = r145_features(C, member, spy)
+    Y = r145_labels(C, O)
+    E = member.reindex(index=cal, columns=C.columns).fillna(False).to_numpy() & C.notna().to_numpy()
+    ok = E & np.isfinite(X).all(axis=-1)
+    cp = _cache_path(cfg, "r145_models.pkl")
+    store: Dict[Any, Any] = {}
+    if os.path.exists(cp):
+        try:
+            store = pd.read_pickle(cp)
+        except Exception:
+            store = {}
+    yrs = np.array(cal.year)
+    out = {k: np.full(ok.shape, np.nan, dtype="float32") for k in R145_TARGETS}
+    fitted = 0
+    auc_rows: List[Dict[str, Any]] = []
+    for Yr in range(int(cal.year.min()) + 1, int(cal.year.max()) + 1):
+        cut = pd.Timestamp(f"{Yr}-01-01") - pd.Timedelta(days=35)
+        tr = np.flatnonzero(cal <= cut)[::3]
+        te = np.flatnonzero(yrs == Yr)
+        if len(tr) < 20 or not len(te):
+            continue
+        for nm in R145_TARGETS:
+            key = (VERSION, R145_MODEL_SCHEMA, Yr, nm, len(fn), str(cal[0].date()))
+            mdl = store.get(key)
+            if mdl is None:
+                yv = Y[nm]
+                m = ok[tr] & np.isfinite(yv[tr])
+                if int(m.sum()) < 5000 or len(np.unique(yv[tr][m])) < 2:
+                    continue
+                Xtr = X[tr][m].astype(float)
+                mu, sd = Xtr.mean(0), Xtr.std(0) + 1e-9
+                clf = LogisticRegression(C=0.5, max_iter=300)
+                clf.fit((Xtr - mu) / sd, yv[tr][m])
+                mdl = {"mu": mu, "sd": sd, "coef": clf.coef_[0].copy(), "b": float(clf.intercept_[0]), "n": int(m.sum())}
+                store[key] = mdl
+                fitted += 1
+            Xte = X[te]
+            mte = ok[te]
+            z = ((Xte[mte].astype(float) - mdl["mu"]) / mdl["sd"]) @ mdl["coef"] + mdl["b"]
+            p = np.full(mte.shape, np.nan, dtype="float32")
+            p[mte] = 1.0 / (1.0 + np.exp(-z))
+            out[nm][te] = p
+            yte = Y[nm][te]
+            mm = mte & np.isfinite(yte)
+            if int(mm.sum()) > 200 and len(np.unique(yte[mm])) > 1:
+                auc_rows.append({"연도": Yr, "표적": R145_TARGET_KR[nm], "AUC(표본 밖)": round(float(_auc_k(yte[mm], p[mm])), 4),
+                                 "실제 비율": round(float(np.nanmean(yte[mm])), 4), "표본": int(mm.sum())})
+    if fitted:
+        try:
+            pd.to_pickle(store, cp)
+        except Exception:
+            pass
+    probs = {k: pd.DataFrame(v, index=cal, columns=list(C.columns)) for k, v in out.items()}
+    # 횡단면 십분위(2018~ · 5일 간격): 확률 낮은 → 높은 · 다음 21일 평균 수익 · 손실 확률 · 큰 하락 비율
+    dec_rows: List[Dict[str, Any]] = []
+    try:
+        o1 = O.astype(float).shift(-1).to_numpy()
+        f21 = C.astype(float).shift(-21).to_numpy() / o1 - 1
+        cmn = C.astype(float)[::-1].rolling(21, min_periods=15).min()[::-1].shift(-1).to_numpy() / o1 - 1
+        di = np.flatnonzero(cal >= pd.Timestamp(str(getattr(cfg, "EVAL_START", "2018-01-01"))))[::5]
+        for nm in ("big",):
+            acc = {q: [] for q in range(10)}
+            for i in di:
+                p = out[nm][i]
+                m = E[i] & np.isfinite(p) & np.isfinite(f21[i]) & np.isfinite(cmn[i])
+                if m.sum() < 50:
+                    continue
+                q = pd.qcut(pd.Series(p[m]).rank(method="first"), 10, labels=False).to_numpy()
+                for k_ in range(10):
+                    s_ = q == k_
+                    acc[k_].append((f21[i][m][s_].mean(), (f21[i][m][s_] < 0).mean(), (cmn[i][m][s_] <= -0.10).mean()))
+            for k_ in range(10):
+                a_ = np.array(acc[k_]) if acc[k_] else np.full((1, 3), np.nan)
+                dec_rows.append({"확률": R145_TARGET_KR[nm], "십분위(1 = 가장 낮음)": k_ + 1, "다음 21일 평균 수익(%)": round(float(np.nanmean(a_[:, 0])) * 100, 3),
+                                 "손실 확률(%)": round(float(np.nanmean(a_[:, 1])) * 100, 1), "실제 큰 하락(−10%) 비율(%)": round(float(np.nanmean(a_[:, 2])) * 100, 1)})
+    except Exception as e:
+        log("R145", kv(event="decile_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+    return probs, {"auc": pd.DataFrame(auc_rows), "deciles": pd.DataFrame(dec_rows), "fitted": fitted, "cached": len(store)}
+
+
+def r145_pct_rank(P: pd.DataFrame, member: pd.DataFrame) -> pd.DataFrame:
+    """그날 적격 종목 안 백분위(0~1 · 1 = 가장 높음)."""
+    return P.where(member.reindex(index=P.index, columns=P.columns).fillna(False)).rank(axis=1, pct=True)
+
+
+def r145_garbage(W: np.ndarray, sc_idx: np.ndarray, etf_of: np.ndarray, RB: np.ndarray, G200: np.ndarray, M252: np.ndarray, q: float = 0.7) -> np.ndarray:
+    """[R145 측정] 쓰레기 제외 — 큰 하락 백분위 ≥ q · 200일선 아래 · 1년 손실 종목 → 비중 0 · 몫 → 같은 섹터 ETF 다리(섹터 노출 그대로)."""
+    W = W.copy()
+    m = np.zeros(W.shape, dtype=bool)
+    m[:, sc_idx] = (RB[:, sc_idx] >= q) & (G200[:, sc_idx] < 0) & (M252[:, sc_idx] < 0)
+    cut = np.where(m, W, 0.0)
+    W -= cut
+    for j in np.flatnonzero(cut.sum(axis=0) > 0):
+        if etf_of[j] >= 0:
+            W[:, etf_of[j]] += cut[:, j]
+        else:
+            W[:, j] += cut[:, j]
+    return W
+
+
+def r145_manage(W: np.ndarray, sc_idx: np.ndarray, etf_of: np.ndarray, PX: np.ndarray, RB: np.ndarray, G200: np.ndarray,
+                tp_gain: float = 0.10, tp_q: float = 0.8, ad_drop: float = 0.05, ad_q: float = 0.5, ad_frac: float = 0.5,
+                mult_max: float = 2.0, re_q: float = 0.5, cap: float = 0.10) -> Tuple[np.ndarray, Dict[str, int]]:
+    """[R145 측정 · 사용자 설계] 보유 관리 — 새로 사면 진입가 = 그날 종가 · 수익률 ≥ tp_gain & 큰 하락 백분위 ≥ tp_q → 전부 수익 실현(몫 → 같은 섹터 ETF 다리 = 물타기 재원) ·
+    수익률 ≤ −ad_drop & 백분위 ≤ ad_q & 200일선 위 → +ad_frac(최대 mult_max · 같은 섹터 ETF 다리에서 · 상한 cap · 진입가 가중 평균) · 줄인 종목 백분위 ≤ re_q → 다시 1배.
+    연구 r145/ov145.pm과 같은 산식."""
+    W = W.copy()
+    T, N = W.shape
+    mult = np.ones(N)
+    cost = np.full(N, np.nan)
+    held = np.zeros(N, dtype=bool)
+    n_tp = n_ad = 0
+    for t in range(T):
+        base = W[t].copy()
+        px, rb, g2 = PX[t], RB[t], G200[t]
+        on = np.zeros(N, dtype=bool)
+        on[sc_idx] = base[sc_idx] > 1e-12
+        new = on & ~held
+        cost[new] = px[new]
+        mult[new] = 1.0
+        mult[~on] = 1.0
+        cost[~on] = np.nan
+        held = on
+        with np.errstate(invalid="ignore", divide="ignore"):
+            gain = px / cost - 1.0
+        ok = on & np.isfinite(gain) & np.isfinite(rb)
+        tp = ok & (gain >= tp_gain) & (rb >= tp_q) & (mult > 0)
+        mult[tp] = 0.0
+        n_tp += int(tp.sum())
+        rec = ok & (mult < 1.0) & (rb <= re_q)
+        mult[rec] = 1.0
+        cost[rec] = px[rec]
+        ad = ok & (gain <= -ad_drop) & (rb <= ad_q) & (g2 > 0) & (mult < mult_max)
+        if ad.any():
+            old = mult[ad]
+            mult[ad] = np.minimum(mult_max, old + ad_frac)
+            cost[ad] = (old * cost[ad] + (mult[ad] - old) * px[ad]) / mult[ad]
+            n_ad += int(ad.sum())
+        tgt = base.copy()
+        tgt[sc_idx] = np.minimum(base[sc_idx] * mult[sc_idx], np.maximum(cap, base[sc_idx]))
+        d = tgt - base
+        for j in np.flatnonzero(np.abs(d) > 1e-12):
+            e = etf_of[j]
+            if e < 0:
+                tgt[j] = base[j]
+                continue
+            if d[j] < 0:
+                tgt[e] += -d[j]
+            else:
+                take = min(d[j], tgt[e])
+                tgt[j] = base[j] + take
+                tgt[e] -= take
+        W[t] = tgt
+    return W, {"수익 실현": n_tp, "물타기": n_ad}
+
+
+def r145_fill(W: np.ndarray, cols: List[str], sect: Dict[str, str], pool_set: set, score: np.ndarray, mask: np.ndarray, k: int = 1,
+              cap: float = 0.10) -> np.ndarray:
+    """[R145 측정] 섹터 ETF 다리 몫 → 같은 섹터 후보(mask · 풀 또는 비중 > 0 핵심) 중 score 상위 k 균등(상한 cap). r144_fill과 같은 틀."""
+    S_ = np.where(mask, score, np.nan).astype(float)
+    return r144_fill(W, cols, sect, pool_set, S_, np.ones(W.shape[0], dtype=bool), k, cap, None)
+
+
+R145_RESEARCH: str = ("연구(r145 · 표본 밖): 큰 하락 확률 AUC 0.55~0.74(해마다) · 낮은 10% 실제 큰 하락 7.2% vs 높은 10% 33.7%(2018~) — 위험은 잘 맞히지만 낮은 위험 종목은 수익도 낮다"
+                      "(21일 0.6% vs 1.6%) · 그 시점 S&P 500만으로 섹터 비중 나누기: 섹터 ETF 12.0배 > 모멘텀 상위 10 7.9배 > 저위험 10 4.4배(2018~) · 2010~2017도 ETF 2.24배가 최고 · "
+                      "K★ 위 측정(2018~ · R144 라이브 205.4배): 위험 오르면 수익 실현 141~173배(참여 −6~−13) · 쓰레기 제외 186~206배(회피·MDD 소폭 하락) · 물타기 거의 안 켜짐 · "
+                      "반등 구간 매수 194~205배 — 그대로 켜면 무하락(00U·00P 전 열)을 넘는 장치 없음(측정 행). 조건부 885 훑기 → 쓰레기 제외 2조각만 무하락 + 긴 이력 통과 → 라이브.")
+R145_CSCAN_NOTE: str = ("조건 885 × 장치(쓰레기 제외 q0.7/0.8 · 수익 실현 +20%·위험 상위 10% · 반등 매수 −8/−12% · 물타기) 5,310개 중 K 무하락 939(대부분 효과 거의 없음) · "
+                        "탐욕 겹치기 + 긴 이력 관문(조건이 2010~2017에 2% 이상 켜짐 · 무작위 K 닮은 종목군 10 · 두 창) → 쓰레기 제외 2조각 채택 · 수익 실현 · 반등 매수는 관문 탈락.")
+
+
+def r145_sheets(res: Dict[str, Any]) -> Tuple[Dict[str, pd.DataFrame], List[Tuple[str, str]]]:
+    """[v0.33.0 R145] 00F_종목예측(A 오늘 전 종목 예측 · B 사용자 설계 장치 측정 · C 신뢰도 · D 십분위 · E 읽는 법) · 00 줄."""
+    d = res.get("r145") or {}
+    if not d:
+        return {}, []
+    if not d.get("enabled"):
+        return {}, [("★★ R145 전 종목 예측 · 사용자 설계 장치(측정)", f"⚠ 산출 안 됨 — {d.get('error', '-')} (R144 풀이 있어야 한다)")]
+    nm = res.get("names") or {}
+    pr = d.get("probs") or {}
+    rb = d.get("rank_big")
+    pool = set(d.get("pool") or [])
+    al = res.get("alloc") or {}
+    tw = al.get("target_w")
+    td = d.get("today") or {}
+    last = pr["big"].index[-1] if isinstance(pr.get("big"), pd.DataFrame) and len(pr["big"]) else None
+    rows = []
+    sec = {**(res.get("sector_of") or {}), **(((res.get("r144") or {}).get("sector")) or {})}
+    q = float(d.get("garbage_q", 0.7))
+    if last is not None:
+        for t in list(d.get("core") or []) + list(d.get("pool") or []):
+            pb = pr["big"].at[last, t] if t in pr["big"].columns else np.nan
+            if not (pb == pb):
+                continue
+            r_ = float(rb.at[last, t]) if (isinstance(rb, pd.DataFrame) and t in rb.columns and rb.at[last, t] == rb.at[last, t]) else np.nan
+            g2 = float(td.get("G200", pd.Series(dtype=float)).get(t, np.nan))
+            m2 = float(td.get("M252", pd.Series(dtype=float)).get(t, np.nan))
+            d21 = float(td.get("DD21", pd.Series(dtype=float)).get(t, np.nan))
+            r5 = float(td.get("R5", pd.Series(dtype=float)).get(t, np.nan))
+            rows.append({"블록": "A. 오늘 전 종목 예측(다음 21거래일 · 표본 밖 모형)", "티커": t, "이름": nm.get(t, t), "역할": ("S&P 500 풀" if t in pool else "핵심"),
+                         "섹터": sec.get(t, "-"), "큰 하락 확률(%)": round(float(pb) * 100, 1), "위험 백분위(0 = 가장 안전)": (round(r_ * 100, 1) if r_ == r_ else None),
+                         "오를 확률(%)": round(float(pr["up"].at[last, t]) * 100, 1) if t in pr["up"].columns and pr["up"].at[last, t] == pr["up"].at[last, t] else None,
+                         "반등(+5%) 확률(%)": round(float(pr["reb"].at[last, t]) * 100, 1) if t in pr["reb"].columns and pr["reb"].at[last, t] == pr["reb"].at[last, t] else None,
+                         "쓰레기(위험 상위 · 200일선 아래 · 1년 손실)": ("예" if (r_ == r_ and r_ >= q and g2 < 0 and m2 < 0) else "-"),
+                         "반등 구간(21일 고점 −8%↓ · 200일선 위 · 5일 반등 · 위험 하위 30%)": ("예" if (d21 <= -0.08 and g2 > 0 and r5 > 0 and r_ == r_ and r_ <= 0.3) else "-"),
+                         "다음 거래일 목표 비중": (round(float(tw[t].iloc[-1]), 4) if isinstance(tw, pd.DataFrame) and t in tw.columns else 0.0)})
+    A = pd.DataFrame(rows)
+    if len(A):
+        A = A.sort_values("큰 하락 확률(%)").reset_index(drop=True)
+    B = d.get("rows")
+    B = B.assign(블록="B. 사용자 설계 장치 측정(2018~ · 같은 체결 · K★ = R144 라이브 위)") if isinstance(B, pd.DataFrame) and len(B) else pd.DataFrame()
+    Cc = d.get("auc")
+    Cc = Cc.assign(블록="C. 확률 신뢰도(해마다 그 해 이전 자료로만 학습 · 표본 밖)") if isinstance(Cc, pd.DataFrame) and len(Cc) else pd.DataFrame()
+    Dd = d.get("deciles")
+    Dd = Dd.assign(블록="D. 큰 하락 확률 십분위(2018~ · 5일 간격 · 날마다 적격 종목 안)") if isinstance(Dd, pd.DataFrame) and len(Dd) else pd.DataFrame()
+    E = pd.DataFrame([
+        {"블록": "E. 읽는 법 · 결론", "항목": "모형", "값": "종목 공통 풀드 로지스틱 · 특징 15개(모멘텀 · 변동성 · 낙폭 · 이격 · RSI · 급락 횟수 · 시장 대비 · SPY 변동성·낙폭) · 해마다 그 해 1월 1일 35일 전까지 자료로만 학습."},
+        {"블록": "E. 읽는 법 · 결론", "항목": "큰 하락 확률", "값": "다음 21거래일 안 종가 최저가 다음 날 시가보다 10% 이상 낮을 확률 — 위험(변동성)을 잘 맞힌다. 낮은 종목은 큰 하락·손실이 적지만 평균 수익도 낮다."},
+        {"블록": "E. 읽는 법 · 결론", "항목": "오를 확률", "값": "21일 뒤 오를 확률 — 수익 예측력은 약하다(변동성의 반대 지표에 가깝다). 매매 판단에 쓰지 말 것."},
+        {"블록": "E. 읽는 법 · 결론", "항목": "연구 · 라이브 판정", "값": R145_RESEARCH},
+        {"블록": "E. 읽는 법 · 결론", "항목": "조건부 훑기", "값": R145_CSCAN_NOTE or "-"},
+        {"블록": "E. 읽는 법 · 결론", "항목": "켜는 법", "값": "k_overrides={'R145_LIVE': '쓰레기 제외' | '수익 실현 → 물타기' | '반등 구간 매수' | '큰 하락 확률 낮은 종목 위주(풀 후보 = 위험 하위 50%)'} — "
+                                                     "B 블록 수치만큼 바뀐다(무하락 아님 · 사용자 판단). 연구·교육용, 투자 자문 아님."},
+    ])
+    sheets = {"00F_종목예측": pd.concat([A, B, Cc, Dd, E], ignore_index=True, sort=False)}
+    lines: List[Tuple[str, str]] = []
+    try:
+        bb = d.get("rows")
+        base = bb.iloc[0] if isinstance(bb, pd.DataFrame) and len(bb) else None
+        parts = []
+        if base is not None:
+            for _, r in bb.iloc[1:].iterrows():
+                parts.append(f"{r['방식']}: 배수 {r.get('배수', np.nan):.1f}(K★ {base.get('배수', np.nan):.1f}) · 회피 {r.get('회피', np.nan) - base.get('회피', np.nan):+.2f} · "
+                             f"참여 {r.get('참여', np.nan) - base.get('참여', np.nan):+.2f} · 종목-월 손실 {r.get('종목월손실%', np.nan):.1f}%({base.get('종목월손실%', np.nan):.1f}%)")
+        ng = int((A["쓰레기(위험 상위 · 200일선 아래 · 1년 손실)"] == "예").sum()) if len(A) else 0
+        nr = int((A.iloc[:, -2] == "예").sum()) if len(A) else 0
+        safe = ", ".join(f"{r['티커']}({r['큰 하락 확률(%)']:.0f}%)" for _, r in A.head(8).iterrows()) if len(A) else "-"
+        lp = d.get("live_pieces") or {}
+        lv = ""
+        if lp.get("pieces"):
+            o0, o1 = lp.get("off") or {}, lp.get("on") or {}
+            pcs = " · ".join(f"{i + 1}) {p[0]} {'위' if p[1] == 'hi' else '아래'} 20%인 날 → 큰 하락 위험 상위 {(1 - float(p[2].split(':')[1])) * 100:.0f}% · 200일선 아래 · 1년 손실 종목 제외"
+                             for i, p in enumerate(lp["pieces"]))
+            on_t = [k.split("|")[1] for k, v in (lp.get("on_today") or {}).items() if v]
+            lv = (f"★ 라이브 조건부 쓰레기 제외 {len(lp['pieces'])}조각: {pcs} · 오늘 켜진 조각 {', '.join(on_t) or '없음'} · 오늘 뺀 종목 {', '.join(lp.get('excluded_today') or []) or '없음'} · "
+                  f"이번 실행 K★ 배수 {o0.get('배수', np.nan):.1f} → {o1.get('배수', np.nan):.1f} · 회피 {o0.get('회피', np.nan):.2f} → {o1.get('회피', np.nan):.2f} · "
+                  f"참여 {o0.get('참여', np.nan):.2f} → {o1.get('참여', np.nan):.2f} · 월회피 {o0.get('월회피', np.nan):.1f} → {o1.get('월회피', np.nan):.1f} · "
+                  f"종목-월 손실 {o0.get('종목월손실%', np.nan):.2f}% → {o1.get('종목월손실%', np.nan):.2f}% · "
+                  "연구(r145): 205.4 → 208.8배 · 00U·00P·월 전 열 무하락 · 긴 이력(2010~2017 무작위 K 닮은 종목군 10) 두 창 통과 · 무작위 제외 대조군(30) 배수·참여 100 · 회피 90 백분위 · "
+                  "⚠ 표본 안 선택 · 되돌리기 k_overrides={'R145_PIECES': ()} | ")
+        lines.append(("★★ R145 전 종목 예측 · 사용자 설계 장치(사용자 지시 2026-10-05)",
+                      lv + f"예측 {len(A)}종목(핵심 {len(d.get('core') or [])} + S&P 500 풀 {len(pool)}) · 오늘 큰 하락 확률 낮은 순 {safe} · 쓰레기 {ng}종목 · 반등 구간 {nr}종목 · "
+                      f"그 밖 장치 측정(2018~ · R144 라이브 위): {' | '.join(parts[1:] if lp.get('pieces') else parts)} · 측정 장치 라이브 {('★ ' + d['live'] + ' 적용') if d.get('live_applied') else '아님(무하락 실패 — R145_LIVE로 켤 수 있음)'} · "
+                      f"모형 학습 {d.get('fitted', 0)} · 캐시 {d.get('cached', 0)} · {d.get('sec', '-')}초 — 세부 00F · 13c에 비중 옆 확률 열. 연구·교육용, 투자 자문 아님."))
+    except Exception as e:
+        lines.append(("⚠ R145 00 줄", f"산출 실패 — {type(e).__name__}: {str(e)[:120]}"))
+    return sheets, lines
 
 
 def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]] = None,
@@ -8757,6 +9106,160 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             if alloc_pre144 is not None:
                 alloc = alloc_pre144
                 alloc_pre144 = None
+    # ---- [v0.33.0 R145 ★★ 사용자 지시 2026-10-05] 전 종목 예측(큰 하락 · 오름 · 반등) · 사용자 설계 장치 측정 행 · (선택) 라이브 ----
+    _r145: Dict[str, Any] = {"enabled": False}
+    _r145_allocs: Dict[str, Dict[str, Any]] = {}
+    if bool(getattr(cfg, "R145_ENABLE", True)) and _r144_diag.get("enabled") and isinstance(_r144_diag.get("_WA_full"), pd.DataFrame):
+        try:
+            _t145 = time.time()
+            _WAf = _r144_diag["_WA_full"]
+            _cols145 = list(_WAf.columns)
+            _sect145 = dict(_r144_diag.get("_sect") or {})
+            _pool145 = list(_r144_diag.get("_pool") or [])
+            _core145 = [c for c in _cols145 if not c.startswith("ETF_") and c not in set(_pool145)]
+            _stk145 = _core145 + _pool145
+            _C145 = _CLF.reindex(columns=_stk145)
+            _O145 = pd.DataFrame({t: pd.to_numeric((prices.get(t) if t in prices else _ppx144.get(t))["Open"], errors="coerce")
+                                  for t in _stk145 if (t in prices or t in _ppx144)}).reindex(index=_C145.index, columns=_stk145)
+            _mem145 = pd.concat([_C145[_core145].notna(), _mem144.reindex(index=_C145.index, columns=_pool145).fillna(False)], axis=1)[_stk145]
+            _spx145 = download_prices(["SPY"], cfg).get("SPY")                 # 전 이력(etf_panel은 평가창부터라 2018 이전 모형이 비었다)
+            _spy145 = (pd.to_numeric(_spx145["Close"], errors="coerce") if isinstance(_spx145, pd.DataFrame)
+                       else (pd.to_numeric(etf_panel["SPY"]["종가"], errors="coerce") if "SPY" in (etf_panel or {}) else pd.Series(dtype=float)))
+            _probs145, _pinfo145 = r145_stock_probs(_C145, _O145, _mem145, _spy145, cfg)
+            _idx145 = _WAf.index
+            _RBdf = r145_pct_rank(_probs145["big"], _mem145)
+            _al145 = lambda D_: D_.reindex(index=_idx145, columns=_cols145).to_numpy(dtype=float)   # noqa: E731
+            _rb145 = _al145(_RBdf)
+            _g200145 = _al145(_C145 / _C145.rolling(200, min_periods=150).mean() - 1)
+            _m252145 = _al145(_C145 / _C145.shift(252) - 1)
+            _dd21145 = _al145(_C145 / _C145.rolling(21, min_periods=15).max() - 1)
+            _r5145 = _al145(_C145 / _C145.shift(5) - 1)
+            _px145 = _al145(_C145)
+            _sc145 = np.array([j for j, c in enumerate(_cols145) if not c.startswith("ETF_")])
+            _etfof145 = np.array([_cols145.index("ETF_" + str(_sect145.get(c))) if ("ETF_" + str(_sect145.get(c))) in _cols145 else -1 for c in _cols145])
+            _bv145 = np.zeros((len(_idx145), len(_cols145)), dtype=bool)
+            if isinstance(_B144, pd.DataFrame):
+                _bv145[:, [_cols145.index(p) for p in _pool145]] = _B144.reindex(index=_idx145, columns=_pool145).fillna(False).to_numpy(dtype=bool)
+            _w0145 = _WAf.to_numpy(dtype=float)
+            _qg145 = float(getattr(cfg, "R145_GARBAGE_Q", 0.7))
+            _variants145 = {
+                "쓰레기 제외": r145_garbage(_w0145, _sc145, _etfof145, _rb145, _g200145, _m252145, q=_qg145),
+                "수익 실현 → 물타기": r145_manage(_w0145, _sc145, _etfof145, _px145, _rb145, _g200145, **dict(getattr(cfg, "R145_MANAGE", {}) or {}))[0],
+                "반등 구간 매수": r145_fill(_w0145, _cols145, _sect145, set(_pool145), -_rb145,
+                                         (_dd21145 <= -0.08) & (_g200145 > 0) & (_r5145 > 0) & (_rb145 <= 0.3) & ~_bv145, k=1),
+            }
+            _b2145 = None
+            if isinstance(_B144, pd.DataFrame):
+                _b2145 = _B144.reindex(index=_idx145, columns=_pool145).fillna(False) | (_RBdf.reindex(index=_idx145, columns=_pool145) > 0.5).fillna(False)
+            _alow145, _dlow145, _ = r144_pool_overlay(alloc_pre144, _CLF, _mem144, _b2145, _c144, sector_of, panel, etf_panel, _ppx144, _sec144, cfg,
+                                                   tag=" + R144 풀(저위험 후보만)")
+            _variants145["큰 하락 확률 낮은 종목 위주(풀 후보 = 위험 하위 50%)"] = _dlow145["_WA_full"].reindex(columns=_cols145).fillna(0.0).to_numpy(dtype=float)
+            _M145 = _find_m_module()
+            _ev145 = pd.Timestamp(str(getattr(cfg, "EVAL_START", "2018-01-01")))
+            _sp145 = pd.to_numeric(etf_panel["SPY"]["일간수익"], errors="coerce") if "SPY" in (etf_panel or {}) else None
+
+            def _ret145(Wv: np.ndarray) -> Tuple[pd.Series, pd.Series, pd.DataFrame, Dict[str, pd.DataFrame]]:
+                WD = pd.DataFrame(Wv, index=_idx145, columns=_cols145)
+                used = [c for c in _cols145 if float(WD[c].abs().max()) > 1e-12]
+                WD = WD[used]
+                RA_, CO_, OC_ = {}, {}, {}
+                for c in used:
+                    if c.startswith("ETF_"):
+                        d_ = (etf_panel or {}).get(c[4:])
+                        RA_[c] = pd.to_numeric(d_["일간수익"], errors="coerce") if d_ is not None else pd.Series(np.nan, index=_idx145)
+                        CO_[c] = pd.to_numeric(d_["야간수익"], errors="coerce") if d_ is not None else pd.Series(np.nan, index=_idx145)
+                        OC_[c] = pd.to_numeric(d_["장중수익"], errors="coerce") if d_ is not None else pd.Series(np.nan, index=_idx145)
+                    elif c in panel:
+                        RA_[c] = pd.to_numeric(panel[c]["일간수익"], errors="coerce")
+                        CO_[c] = pd.to_numeric(panel[c]["야간수익"], errors="coerce")
+                        OC_[c] = pd.to_numeric(panel[c]["장중수익"], errors="coerce")
+                    else:
+                        d_ = _ppx144[c]
+                        _cc145 = pd.to_numeric(d_["Close"], errors="coerce")
+                        _co145, _oc145 = _split_overnight(d_)
+                        RA_[c], CO_[c], OC_[c] = _cc145.pct_change(fill_method=None), _co145, _oc145
+                RA_ = pd.DataFrame(RA_).reindex(_idx145).fillna(0.0)
+                CO_ = pd.DataFrame(CO_).reindex(_idx145)
+                OC_ = pd.DataFrame(OC_).reindex(_idx145)
+                pr_, _ = _exec_port_returns(WD, RA_, CO_, OC_, fill=str(getattr(cfg, "EXEC_FILL", "close")).lower(),
+                                            cost_bps=float(getattr(cfg, "ALLOC_COST_BPS", 0.0) or 0.0), rf=None)
+                pc_, _ = _exec_port_returns(WD, RA_, None, None, fill="close", cost_bps=0.0)
+                return pr_, pc_, WD, {"RA": RA_, "CO": CO_, "OC": OC_}
+            _rows145: List[Dict[str, Any]] = []
+            for _vn145, _wv145 in [("★ K★ 라이브(R144)", _w0145)] + list(_variants145.items()):
+                _pr145, _pc145, _wd145, _pn145 = _ret145(_wv145)
+                _stc145 = [c for c in _wd145.columns if not c.startswith("ETF_")]
+                _sm145, _ = stock_month_stats(_wd145[_stc145], _pn145["RA"][_stc145], _pn145["CO"][_stc145], _pn145["OC"][_stc145], since=_ev145)
+                _rel145 = (_M145.r117_rel(_pr145.loc[_ev145:], _sp145.reindex(_pr145.loc[_ev145:].index).fillna(0.0))
+                        if (_M145 is not None and hasattr(_M145, "r117_rel") and _sp145 is not None) else {})
+                _mon145 = r144_monthly(_pr145.loc[_ev145:], _sp145.reindex(_pr145.loc[_ev145:].index)) if _sp145 is not None else {}
+                _rows145.append({"방식": _vn145, **{k: (round(float(v), 4) if isinstance(v, (int, float)) else v) for k, v in (_rel145 or {}).items()},
+                                 **{k: round(float(v), 4) for k, v in _mon145.items()}, **{k: round(float(v), 4) for k, v in _sm145.items()}})
+                if _vn145 != "★ K★ 라이브(R144)":
+                    _ws145 = _wd145[_stc145]
+                    _we145 = _wd145[[c for c in _wd145.columns if c.startswith("ETF_")]].rename(columns=lambda c: c[4:])
+                    _r145_allocs[_vn145] = {**alloc, "target_w": _ws145, "exec_w": _ws145.shift(1).fillna(0.0), "etf_w": _we145, "etf_exec_w": _we145.shift(1).fillna(0.0),
+                                         "total_w": _wd145.sum(axis=1), "port_ret": _pr145, "port_ret_close": _pc145, "ret": _pn145["RA"][_stc145],
+                                         "live_rule": str(alloc.get("live_rule") or "-") + f" + R145 {_vn145}"}
+            # [v0.33.0 R145 ★ 라이브] 조건부 쓰레기 제외 조각 — R144 라이브 위에 순서대로(연구 r145/greedy145 · cscan145.apply와 같은 산식)
+            _p145 = tuple(getattr(cfg, "R145_PIECES", ()) or ())
+            if _p145:
+                _c145, _i145 = r144_conditions(_ex144, _idx145, _p145)
+                _wl145 = _w0145.copy()
+                _days145: Dict[str, int] = {}
+                for _key145 in _c145.columns:
+                    _use145 = _key145.split("|")[-1]
+                    if not _use145.startswith("GB:"):
+                        continue
+                    _cv145 = _c145[_key145].reindex(_idx145).fillna(False).to_numpy(dtype=bool)
+                    _wg145 = r145_garbage(_wl145, _sc145, _etfof145, _rb145, _g200145, _m252145, q=float(_use145.split(":")[1]))
+                    _new145 = np.where(_cv145[:, None], _wg145, _wl145)
+                    _days145[_key145] = int((np.abs(_new145 - _wl145).sum(axis=1) > 1e-12).sum())
+                    _wl145 = _new145
+                _prl, _pcl, _wdl, _pnl = _ret145(_wl145)
+                _stcl = [c for c in _wdl.columns if not c.startswith("ETF_")]
+                _sml, _ = stock_month_stats(_wdl[_stcl], _pnl["RA"][_stcl], _pnl["CO"][_stcl], _pnl["OC"][_stcl], since=_ev145)
+                _rell = (_M145.r117_rel(_prl.loc[_ev145:], _sp145.reindex(_prl.loc[_ev145:].index).fillna(0.0))
+                         if (_M145 is not None and hasattr(_M145, "r117_rel") and _sp145 is not None) else {})
+                _monl = r144_monthly(_prl.loc[_ev145:], _sp145.reindex(_prl.loc[_ev145:].index)) if _sp145 is not None else {}
+                _rows145.insert(1, {"방식": "★ K★ 라이브(R145 쓰레기 제외 조각 · 새 라이브)", **{k: (round(float(v), 4) if isinstance(v, (int, float)) else v) for k, v in (_rell or {}).items()},
+                                    **{k: round(float(v), 4) for k, v in _monl.items()}, **{k: round(float(v), 4) for k, v in _sml.items()}})
+                _wsl = _wdl[_stcl]
+                _wel = _wdl[[c for c in _wdl.columns if c.startswith("ETF_")]].rename(columns=lambda c: c[4:])
+                alloc_pre145 = alloc
+                alloc = {**alloc, "target_w": _wsl, "exec_w": _wsl.shift(1).fillna(0.0), "etf_w": _wel, "etf_exec_w": _wel.shift(1).fillna(0.0),
+                         "total_w": _wdl.sum(axis=1), "port_ret": _prl, "port_ret_close": _pcl, "ret": _pnl["RA"][_stcl],
+                         "pool_cols": [c for c in _stcl if c in set(_pool145)],
+                         "live_rule": str(alloc.get("live_rule") or "-") + " + R145 쓰레기 제외 조각"}
+                _r145_allocs["비교: 라이브(R145 쓰레기 제외 조각 없음 = v0.32.0 K★)"] = alloc_pre145
+                _r145_live_info = {"pieces": [list(p) for p in _p145], "days": _days145, "missing": _i145.get("missing"),
+                                   "on_today": {k: bool(_c145[k].iloc[-1]) for k in _c145.columns} if len(_c145) else {},
+                                   "off": _rows145[0], "on": _rows145[1],
+                                   "excluded_today": [c for c in _stcl if float(_w0145[-1, _cols145.index(c)]) > 1e-9 and float(_wl145[-1, _cols145.index(c)]) <= 1e-12]}
+            else:
+                _r145_live_info = {}
+            _live145 = str(getattr(cfg, "R145_LIVE", "") or "")
+            _r145 = {"enabled": True, "rows": pd.DataFrame(_rows145), "auc": _pinfo145.get("auc"), "deciles": _pinfo145.get("deciles"),
+                     "fitted": _pinfo145.get("fitted"), "cached": _pinfo145.get("cached"), "sec": round(time.time() - _t145, 1),
+                     "probs": {k: v.reindex(index=_idx145) for k, v in _probs145.items()}, "rank_big": _RBdf.reindex(index=_idx145),
+                     "today": {"G200": pd.Series(_g200145[-1], index=_cols145), "M252": pd.Series(_m252145[-1], index=_cols145),
+                               "DD21": pd.Series(_dd21145[-1], index=_cols145), "R5": pd.Series(_r5145[-1], index=_cols145)},
+                     "pool": _pool145, "core": _core145, "garbage_q": _qg145, "live": _live145, "live_pieces": _r145_live_info}
+            if _live145 and _live145 in _r145_allocs:
+                alloc_pre145 = alloc
+                alloc = _r145_allocs[_live145]
+                _r145["live_applied"] = True
+                _r145_allocs["비교: R145 적용 전(= v0.32.0 K★)"] = alloc_pre145
+            log("R145", kv(event="r145_measured", rows=len(_rows145), fitted=_r145["fitted"], live=_live145 or "-", sec=_r145["sec"],
+                           pieces=len(_p145), on_today=sum(bool(v) for v in (_r145_live_info.get("on_today") or {}).values()),
+                           excluded_today=len(_r145_live_info.get("excluded_today") or []),
+                           note=("★ 라이브 교체" if _live145 else ("★ 라이브 쓰레기 제외 조각 · 그 밖 장치는 측정 행 · 되돌리기 k_overrides={'R145_PIECES': ()}" if _p145
+                                                                 else "측정 행(라이브 무변경 · R145_LIVE로 켤 수 있음)"))), level="warning")
+        except Exception as _e145:
+            log("R145", kv(event="r145_failed", err=type(_e145).__name__, msg=str(_e145)[:160],
+                           trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R145 없이 계속"), level="warning")
+            _r145 = {"enabled": False, "error": f"{type(_e145).__name__}: {str(_e145)[:160]}"}
+            _r145_allocs = {}
     alloc_rows: List[dict] = []
     _grid_rets: Dict[str, pd.Series] = {}          # [v0.9.0] 00U 비교 행용 — 격자 행 라벨 → 포트 일간수익
 
@@ -8993,6 +9496,17 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
         except Exception as e:
             _r144_lbl = None
             log("ALLOC", kv(event="r144_row_failed", err=type(e).__name__, msg=str(e)[:140]), level="warning")
+    # [v0.33.0 R145] 사용자 설계 장치 측정 행(라이브 무변경 · R145_LIVE로 교체 가능)
+    for _nm145, _a145 in (_r145_allocs or {}).items():
+        try:
+            _lb145 = _nm145 if _nm145.startswith("비교:") else f"R145 측정: {_nm145}"
+            _rr145 = _alloc_row(_lb145, _a145, float(_a145.get("cap_used", 0.05) or 0.05), None)
+            if _rr145:
+                _rr145.update({"연동출처": "R145 사용자 설계(전 종목 예측 · 큰 하락 확률)"})
+                alloc_rows.append(_rr145)
+                _grid_rets[_lb145] = _a145.get("port_ret")
+        except Exception as e:
+            log("ALLOC", kv(event="r145_row_failed", row=_nm145[:30], err=type(e).__name__, msg=str(e)[:140]), level="warning")
     # [v0.25.0 R115] 같은 산업 실적 회피 행 — 라이브면 '회피 없는 라이브' 비교 행(00 'R115' 줄·00X 기준) · 아니면 측정 행 · 대안(반응 큰 발표만) 측정 행.
     _r115_lbl: Optional[str] = None
     _r115_alloc: Optional[Dict[str, Any]] = None
@@ -9333,7 +9847,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                             [k for k in _grid_rets if str(k).startswith("참고: 라이브 배분을 v0.8.1 체결")] + \
                             [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 × S")] + \
                             [k for k in _grid_rets if str(k).startswith("비교: 섹터연동 · v0.9.2 유니버스")] + \
-                            [k for k in _grid_rets if str(k).startswith(("R99 확률 배분", "R99 N6-b", "R100 ", "R105 ", "R110 "))]   # [v0.11.0 R99 N3·N6-b · v0.12.0 R100 · v0.15.0 R105 · v0.19.0 R110]
+                            [k for k in _grid_rets if str(k).startswith(("R99 확률 배분", "R99 N6-b", "R100 ", "R105 ", "R110 ", "R145 ", "비교: R145"))]   # [v0.11.0 R99 N3·N6-b · v0.12.0 R100 · v0.15.0 R105 · v0.19.0 R110]
                 for _lb in _cmp_lbls:
                     _rr = _grid_rets.get(_lb)
                     if _rr is not None and _lb != _live_alloc_label:
@@ -9526,7 +10040,8 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             "dip_states": _dip,                                                                     # [v0.15.0 R105] 00W
             "live_dip": bool(_live_dip), "prev_live_label": _prev_live_lbl,                          # [v0.18.0 R109] 라이브 물타기·어닝 손절
             "cash_buffer": _cbuf if _sc_kw else 1.0, "nobuf_label": _nobuf_lbl, "risk_flags": _risk_flags,   # [v0.19.0 R110]
-            "alloc_grid_rets": {k: v for k, v in _grid_rets.items() if str(k).startswith("R105 ")},  # [v0.15.0 R105] 00P 비교 행
+            "alloc_grid_rets": {k: v for k, v in _grid_rets.items() if str(k).startswith(("R105 ", "R145 "))},  # [v0.15.0 R105 · v0.33.0 R145] 00P 비교 행
+            "r145": _r145,                                                                          # [v0.33.0 R145]
             "stock_prob": stock_prob, "prob_variants": prob_variants, "sector_of": sector_of,      # [v0.11.0 R99 N3]
             "k_freshness": _k_fresh, "selection_audit": _sel_audit,                                # [v0.11.0 R99 N2·N6-a]
             "select_evidence": _sel_evid,                                                           # [v0.13.0 R103]
@@ -9661,6 +10176,16 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
         _c13.insert(0, "구분", _kind13)
         _c13.index.name = "날짜"
         sheets["13c_일별배분비중"] = _c13.reset_index().rename(columns={"index": "날짜"})
+        try:                                                                   # [v0.33.0 R145 ★ 사용자 지시] 비중 옆 하락확률(다음날 · 21일 큰 하락)
+            _M13 = _find_m_module()
+            _P13 = (res.get("r117") or {}).get("P")
+            _pb13 = (((res.get("r145") or {}).get("probs")) or {}).get("big")
+            if _M13 is not None and hasattr(_M13, "r145_weight_prob_cols"):
+                sheets["13c_일별배분비중"] = _M13.r145_weight_prob_cols(
+                    sheets["13c_일별배분비중"], _P13 if isinstance(_P13, pd.DataFrame) else None, suffix=" 다음날 하락확률(%)",
+                    extra=({" 큰 하락확률 21일(%)": (_pb13, "다음 21거래일 −10%")} if isinstance(_pb13, pd.DataFrame) else None))
+        except Exception as e:
+            log("REPORT", kv(event="r145_13c_prob_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
         # [v0.14.0 R104 사용자 지시] 13r_일별배분수익 — K★ 한 계좌(종목 + 섹터 ETF 다리)의 날짜별 총수익 · '비중 (그날 수익률)' · 색
         try:
             _al = res.get("alloc") or {}
@@ -10195,6 +10720,9 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 for _nm in [k for k in _pvk if str(k).startswith("R105 ")]:
                     if isinstance(_grs.get(_nm), pd.Series):
                         _r_k[_nm[:40]] = _grs[_nm]
+                for _nm in [k for k in _grs if str(k).startswith("R145 ")]:   # [v0.33.0 R145] 사용자 설계 장치 측정 행
+                    if isinstance(_grs.get(_nm), pd.Series):
+                        _r_k[_nm[:45]] = _grs[_nm]
                 if isinstance(res.get("r144_off_ret"), pd.Series):          # [v0.32.0 R144] 풀 없는 K★(= v0.31.0) — 주·월·분기 무하락 확인용
                     _r_k["비교: R144 풀 없음(v0.31.0 K★)"] = res["r144_off_ret"]
                 _ui112, _ur112 = (res.get("user_rel_info") or {}), res.get("user_rel")      # [v0.22.0 R112] 전체 기간 회피·참여·MDD → 목표 판정
@@ -10334,6 +10862,13 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
                 _add.insert(0, _l139)
         except Exception as e:
             log("REPORT", kv(event="r139_line_failed", err=type(e).__name__, msg=str(e)[:120]), level="warning")
+        try:                                                                   # [v0.33.0 R145] 전 종목 예측 · 사용자 설계 장치(맨 앞)
+            _s145, _l145 = r145_sheets(res)
+            sheets.update(_s145)
+            _add[0:0] = list(_l145)
+        except Exception as e:
+            _add.insert(0, ("⚠ R145 전 종목 예측 줄", f"산출 실패 — {type(e).__name__}: {str(e)[:120]}"))
+            log("REPORT", kv(event="r145_sheets_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
         try:                                                                   # [v0.32.0 R144] S&P 500 풀 · 종목-월 성과 · 월/종목 목표(맨 앞)
             _s144, _l144 = r144_sheets(res)
             sheets.update(_s144)
@@ -10474,7 +11009,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     if isinstance(res.get("user_rel"), pd.DataFrame) and len(res["user_rel"]):
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00M_종목월성과", "00K_S&P500풀", "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
+    _front = [n for n in ("00F_종목예측", "00M_종목월성과", "00K_S&P500풀", "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
                           "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00X_손실구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
                           "00N_종목선별근거", "01Z_주식일별예측",
                           "00_실행요약") if n in sheets]

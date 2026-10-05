@@ -1,5 +1,9 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.65.0 - 2026-10-05 - [R145 13c_일별배분비중 비중 옆 '다음날 하락확률(%)' 열 — I★ 규칙·비중 무변경]
+#    사용자 지시(2026-10-05): "왜 일별배분비중에 하락확률 같이 표시안해? 비중옆에 쓰면 되잖아 이건 국면, 섹터, 산업도 똑같이 해".
+#    · 13c 산업 열마다 바로 뒤 '<산업> 다음날 하락확률(%)'(M.r145_weight_prob_cols · R141의 P). industry_allocation_daily.csv는 비중만(이전과 같은 형식).
+#    ⚠ 확률은 00R 판정상 동전 수준(참고용). 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.64.0 - 2026-10-04 - [R143 ★ I★ 월 목표 근접 조각 6개(R117 단계 뒤 마지막 · 라이브) + K 통로 유지 — 사용자 지시 '목표치에 가장 가까운 방법' · ⚠ 표본 안 선택]
 #    사용자 지시(2026-10-04): "… 월별 목표치 훨씬 더 높게 설정해서 다시 계속 탐색하면서 테스트해서 올려" → "그럼 목표치에 가장 가까운 방법을 탐색해서 올려".
 #    ── 월 목표(R142 · I) ── 월 회피 ≥ 147.6 · 월 참여 ≥ 183.2 · 월 중앙 +1.0%p(×1.050) — 구성 오라클 216 / 294.
@@ -2053,8 +2057,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.64.0"
-VERSION_DATE = "2026-10-03"
+VERSION = "v0.65.0"
+VERSION_DATE = "2026-10-05"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -15932,6 +15936,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                     _sp141 = (ires.get("user_rel_src") or {}).get("spy_ret")
                     sheets["13r_일별배분수익"] = M.r141_pnl_cols(sheets["13r_일별배분수익"], _c141,
                                                              outcomes=({"다음날 SPY 결과": pd.Series(_sp141, dtype=float)} if _sp141 is not None else None))
+                if isinstance(sheets.get("13c_일별배분비중"), pd.DataFrame) and hasattr(M, "r145_weight_prob_cols"):   # [v0.65.0 R145] 비중 옆 하락확률
+                    sheets["13c_일별배분비중"] = M.r145_weight_prob_cols(sheets["13c_일별배분비중"], _P141, suffix=" 다음날 하락확률(%)")
         except Exception as _e141:
             log("REPORT", kv(event="r141_failed", layer="I", err=type(_e141).__name__, msg=str(_e141)[:160]), M=M, level="warning")
         # ---- [v0.62.0 R135 ★ 사용자 승인] 리더 상관 필터 · 평활 42 — 00 줄(묶음 맨 앞) ----
@@ -16176,7 +16182,8 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
         try:
             ires["matrix"].to_csv(icfg.DAILY_CSV_PATH, index=False, encoding="utf-8-sig")
             if alloc:
-                sheets["13c_일별배분비중"].to_csv(icfg.ALLOC_CSV_PATH, index=False, encoding="utf-8-sig")
+                _c13csv = sheets["13c_일별배분비중"]                       # [v0.65.0 R145] CSV는 비중만(하락확률 표시 열 제외 — 이전과 같은 형식)
+                _c13csv[[c for c in _c13csv.columns if not str(c).endswith("하락확률(%)")]].to_csv(icfg.ALLOC_CSV_PATH, index=False, encoding="utf-8-sig")
         except Exception as e:
             log("REPORT", kv(event="csv_export_failed", err=str(e)[:150]), M=M, level="warning")
     return path

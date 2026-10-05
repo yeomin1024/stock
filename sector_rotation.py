@@ -17,6 +17,10 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v1.00.0 - 2026-10-05 - [R145 13c_일별배분비중 비중 옆 '다음날 하락확률(%)' 열 — S★ 규칙·비중 무변경]
+#    사용자 지시(2026-10-05): "왜 일별배분비중에 하락확률 같이 표시안해? 비중옆에 쓰면 되잖아 이건 국면, 섹터, 산업도 똑같이 해".
+#    · 13c의 'X 배분비중' 열마다 바로 뒤 'X 다음날 하락확률(%)'(M.r145_weight_prob_cols · R141의 P와 같은 확률). CSV(sector_allocation_daily.csv)는 그대로.
+#    · LAYER_MIN_VERSIONS M v1.85.0 · S v1.00.0 · I v0.65.0. ⚠ 확률은 00R 판정상 동전 수준(참고용). 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.99.0 - 2026-10-04 - [R143 ★ 월 목표 근접 조각 21개(★ R138 뒤 마지막 단계 · 라이브) — 사용자 지시 '목표치에 가장 가까운 방법' · ⚠ 표본 안 선택]
 #    사용자 지시(2026-10-04): "결과 깃허브에 있으니 참고해서 월별 목표치 훨씬 더 높게 설정해서 다시 계속 탐색하면서 테스트해서 올려" →
 #      (R142: 목표 미달 · 반쪽 교차에서 표본 밖 역전 → 안 올림) → "그럼 목표치에 가장 가까운 방법을 탐색해서 올려".
@@ -3216,8 +3220,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v0.99.0"
-VERSION_DATE = "2026-10-03"
+VERSION = "v1.00.0"
+VERSION_DATE = "2026-10-05"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -8898,7 +8902,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.84.0", "sector_rotation": "v0.99.0", "industry_rotation": "v0.64.0"}   # [v0.99.0 R143]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.85.0", "sector_rotation": "v1.00.0", "industry_rotation": "v0.65.0"}   # [v1.00.0 R145]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -20048,6 +20052,8 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                 _sp141 = pd.Series(_a141.get("spy_ret"), dtype=float) if _a141.get("spy_ret") is not None else None
                 sheets["13r_일별배분수익"] = _M117.r141_pnl_cols(sheets["13r_일별배분수익"], _cols141,
                                                              outcomes=({"다음날 SPY 결과": _sp141} if _sp141 is not None else None))
+            if isinstance(sheets.get("13c_일별배분비중"), pd.DataFrame) and hasattr(_M117, "r145_weight_prob_cols"):   # [v1.00.0 R145] 비중 옆 하락확률
+                sheets["13c_일별배분비중"] = _M117.r145_weight_prob_cols(sheets["13c_일별배분비중"], _P141, suffix=" 다음날 하락확률(%)")
     except Exception as _e141:
         log("REPORT", kv(event="r141_failed", layer="S", err=type(_e141).__name__, msg=str(_e141)[:160]), M=M, level="warning")
     # [v0.96.0 R134] M 바구니별 처리 + XLK 채움 00 줄(맨 앞)

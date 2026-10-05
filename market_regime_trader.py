@@ -22,6 +22,11 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.85.0 - 2026-10-05 - [R145 일별 비중 옆 하락확률 표시(01_일별기록 · 공통 도우미 r145_weight_prob_cols) — 신호·비중 무변경]
+#    사용자 지시(2026-10-05): "왜 일별배분비중에 하락확률 같이 표시안해? 비중옆에 쓰면 되잖아 이건 국면, 섹터, 산업도 똑같이 해".
+#    · 신설 r145_weight_prob_cols(df, P, colmap, suffix, extra) — 일별 비중 표의 자산 비중 열 바로 뒤에 그 자산의 하락확률(%) 열(그날 종가에 계산한 다음 체결일 확률 =
+#      R118/R141의 P · 예측 행은 직전 실적일 확률). S·I·K가 같은 함수를 쓴다. M: 01_일별기록 '목표비중' 뒤 'SPY 다음날 하락확률(%)'.
+#    · COMPANION_MIN_VERSIONS S v1.00.0 · I v0.65.0 · K v0.33.0. ⚠ 이 확률은 00R 판정상 동전 수준(참고용) — 매매를 바꾸지 말 것. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.84.0 - 2026-10-04 - [R143 ★ R133 해제 묶음 추가 조각 1개(라이브) — 사용자 지시 '목표치에 가장 가까운 방법' · ⚠ 표본 안 선택]
 #    사용자 지시(2026-10-04): "… 월별 목표치 훨씬 더 높게 설정해서 다시 계속 탐색하면서 테스트해서 올려" → "그럼 목표치에 가장 가까운 방법을 탐색해서 올려".
 #    ── 월 목표(R142 · M) ── 월 회피 ≥ 99 · 월 참여 ≥ 99.5 · 월 중앙 +1.0%p — M은 SPY 아니면 현금이라 월 단위 오라클 상한이 100 / 100.
@@ -11341,6 +11346,59 @@ def r141_sheet(layer: str, evals: List[Tuple[str, str, Dict[str, Any]]]) -> Tupl
     return df, [line]
 
 
+def r145_weight_prob_cols(df: pd.DataFrame, P: Optional[pd.DataFrame], colmap: Optional[Dict[str, str]] = None, date_col: str = "날짜",
+                          suffix: str = " 하락확률(%)", extra: Optional[Dict[str, Tuple[pd.DataFrame, str]]] = None) -> pd.DataFrame:
+    """[v1.85.0 R145 ★ 사용자 지시 2026-10-05 "왜 일별배분비중에 하락확률 같이 표시안해? 비중옆에 쓰면 되잖아 이건 국면, 섹터, 산업도 똑같이 해"]
+    일별 비중 표(13c · 01_일별기록)의 자산 비중 열 **바로 뒤에** 그 자산의 하락확률(%) 열을 끼운다(표시 전용 · 라이브 무변경).
+    P = 날짜 × 자산 확률(0~1 · 그날 종가에 계산한 다음 체결일 확률 = R118/R141의 P) · colmap = {비중 열: P 열}(기본 = 같은 이름 · 'X 배분비중' → 'X').
+    extra = {접미사: (날짜 × 자산 표, 설명)} — 같은 자리에 다른 확률(예: K '큰 하락 21일')을 더 끼운다.
+    '예측(다음 거래일 집행)' 행(날짜 = 다음 개장일)은 직전 실적 행 날짜의 확률(그 비중을 정한 종가)을 쓴다."""
+    if not isinstance(df, pd.DataFrame) or date_col not in df.columns or (P is None and not extra):
+        return df
+    attrs = dict(getattr(df, "attrs", {}) or {})
+    out = df.copy()
+    dts = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
+    if "구분" in out.columns:
+        fc = ~out["구분"].astype(str).str.startswith("실적")
+        dts = dts.where(~fc, dts.shift(1)).ffill()
+    tabs: List[Tuple[str, pd.DataFrame]] = []
+    if isinstance(P, pd.DataFrame) and P.shape[1]:
+        tabs.append((suffix, P))
+    for sx, (T_, _d) in (extra or {}).items():
+        if isinstance(T_, pd.DataFrame) and T_.shape[1]:
+            tabs.append((sx, T_))
+    if not tabs:
+        return df
+    prep = []
+    ix = pd.DatetimeIndex(dts.values)
+    ok = ~ix.isna()
+    for sx, T_ in tabs:
+        T2 = T_.copy()
+        T2.index = pd.DatetimeIndex(T2.index).normalize()
+        T2 = T2[~T2.index.duplicated(keep="last")].sort_index()
+        R2 = pd.DataFrame(np.nan, index=range(len(ix)), columns=T2.columns)
+        if ok.any():
+            R2.loc[np.flatnonzero(ok)] = T2.reindex(ix[ok], method="ffill", tolerance=pd.Timedelta(days=7)).to_numpy()   # 그날 확률(없으면 7일 안 직전 — 예측 행)
+        prep.append((sx, R2))
+    cm = dict(colmap or {})
+    new_cols: List[str] = []
+    data: Dict[str, Any] = {}
+    for c in list(out.columns):
+        new_cols.append(c)
+        data[c] = out[c].to_numpy()
+        key = cm.get(c, str(c)[:-len(" 배분비중")] if str(c).endswith(" 배분비중") else str(c))
+        for sx, T2 in prep:
+            if key in T2.columns:
+                nc = f"{key}{sx}"
+                if nc in data:
+                    continue
+                new_cols.append(nc)
+                data[nc] = (pd.to_numeric(T2[key], errors="coerce").to_numpy(float) * 100.0).round(1)
+    res = pd.DataFrame({c: data[c] for c in new_cols}, columns=new_cols)
+    res.attrs = attrs
+    return res
+
+
 def r141_pnl_cols(df: pd.DataFrame, cols: Dict[str, pd.Series], outcomes: Optional[Dict[str, pd.Series]] = None, after: str = "현금",
                   port_col: Optional[str] = "포트 일수익(%)") -> pd.DataFrame:
     """[v1.83.0 R141] 13r_일별배분수익에 '다음날 하락확률' 열(%) · '다음날 결과' 열을 '현금' 뒤(자산 칸 앞)에 끼우고 pnl_rich 첫 자산 칸을 민다.
@@ -16262,6 +16320,9 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             if isinstance(sheets.get("13r_일별배분수익"), pd.DataFrame):
                 sheets["13r_일별배분수익"] = r141_pnl_cols(sheets["13r_일별배분수익"], {"다음날 하락확률 SPY(%) · 이날 종가 기준": _p141},
                                                        outcomes={"다음날 SPY 결과": _cc141})
+            if isinstance(sheets.get("01_일별기록"), pd.DataFrame) and "목표비중" in sheets["01_일별기록"].columns:   # [v1.85.0 R145] 비중 옆 하락확률
+                sheets["01_일별기록"] = r145_weight_prob_cols(sheets["01_일별기록"], pd.DataFrame({"SPY": _p141}), colmap={"목표비중": "SPY"},
+                                                          suffix=" 다음날 하락확률(%)")
             log("REPORT", kv(event="r141_prob_reliability", layer="M", verdicts=" / ".join(f"{a}={(c or {}).get('verdict')}" for a, _, c in _ev141)))
     except Exception as _e141:   # noqa — 표시 전용
         log("REPORT", kv(event="r141_failed", layer="M", err=type(_e141).__name__, msg=str(_e141)[:160]), "warning")
@@ -16708,13 +16769,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.84.0"
-BUNDLE_VERSION_DATE = "2026-10-04"
+BUNDLE_VERSION = "v1.85.0"
+BUNDLE_VERSION_DATE = "2026-10-05"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v0.99.0", "industry_rotation": "v0.64.0", "stock_regime": "v0.31.0"}   # [v1.84.0 R143]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v1.00.0", "industry_rotation": "v0.65.0", "stock_regime": "v0.33.0"}   # [v1.85.0 R145]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:
