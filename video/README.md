@@ -30,6 +30,7 @@ npm run dev               # Remotion Studio 미리보기 (Scenes/ 폴더에 장�
 npm run stills            # 검수용 still: 장면마다 2장 → out/stills/
 npm run render:preview    # out/preview_1080p.mp4
 npm run render:4k         # out/final_4k.mp4 (--scale=2 --codec=h264 --crf=16)
+npm run render:4k:resumable  # 같은 설정을 4구간으로 나눠 렌더 → 스트림 복사로 무손실 연결 (재시작 시 끝난 구간 건너뜀)
 ```
 
 `npm run stills -- S05 S12 --extra=977,2695` 처럼 장면/프레임을 골라 렌더할 수도 있습니다.
@@ -67,4 +68,5 @@ src/Video.tsx              메인 타임라인
 ## 렌더 환경 메모
 
 헤드리스 Chrome이 Google Fonts를 받을 때 이 클라우드 환경의 TLS 검사 프록시 CA를 신뢰해야 합니다.
-CA는 `certutil`로 `~/.pki/nssdb`에 추가했습니다 (TLS 검증을 끄지 않음). 일반 PC에서는 필요 없습니다.
+CA는 `certutil`로 `~/.local/share/pki/nssdb`에 추가하고 `~/.pki/nssdb`를 그쪽으로 연결했습니다 (TLS 검증을 끄지 않음).
+컨테이너가 재시작되면 이 연결이 지워지므로 `ln -sfn ~/.local/share/pki/nssdb ~/.pki/nssdb`로 다시 만듭니다. 일반 PC에서는 필요 없습니다.
