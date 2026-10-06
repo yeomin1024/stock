@@ -1,10 +1,11 @@
-// VERSION: v1.0.0 — 2026-10-05 — 코드로 그린 벡터 도형 (이미지/이모지/로고 사용 안 함)
+// VERSION: v2.0.0 — 2026-10-06 — 코드로 그린 벡터 도형 (이미지/이모지/로고/인물 그림 없음)
+// v2: 사람 실루엣 제거(인물 그림 금지). 지갑·폰·달·경고·X 추가 — 모두 해당 자막의 말에서 나오는 물건만.
 import React from 'react';
 import {C} from '../design/colors';
 import {DrawPath} from './Draw';
-import {handLine, smoothPath, Pt} from './hand';
+import {handLine, roundRect, smoothPath, Pt} from './hand';
 
-/** 번개 도형 (노랑 + 잉크 외곽선). (x, y) = 위쪽 끝, h = 높이. reveal 0→1 위에서 아래로 내리친다 */
+/** 번개 도형 = "악재". 잉크 채움 — 노랑은 한 화면 한 곳의 핵심 강조에만 쓰므로(색 의미 고정) 쓰지 않는다. reveal 0→1 위에서 아래로 */
 export const Lightning: React.FC<{
 	readonly x: number;
 	readonly y: number;
@@ -13,8 +14,9 @@ export const Lightning: React.FC<{
 	readonly fill?: string;
 	readonly stroke?: string;
 	readonly rotate?: number;
-}> = ({x, y, h, reveal = 1, fill = C.yellow, stroke = C.ink, rotate = 8}) => {
-	if (reveal <= 0) return null;
+	readonly opacity?: number;
+}> = ({x, y, h, reveal = 1, fill = C.ink, stroke = C.ink, rotate = 8, opacity = 1}) => {
+	if (reveal <= 0 || opacity <= 0) return null;
 	const w = h * 0.62;
 	const pts: Pt[] = [
 		[0.62, 0],
@@ -28,6 +30,7 @@ export const Lightning: React.FC<{
 	const d = pts.map(([a, b], i) => `${i ? 'L' : 'M'} ${a.toFixed(1)} ${b.toFixed(1)}`).join(' ') + ' Z';
 	return (
 		<g
+			opacity={opacity}
 			style={{
 				clipPath: `inset(0 0 ${(1 - Math.min(1, reveal)) * 100}% 0)`,
 				transformBox: 'fill-box',
@@ -40,28 +43,7 @@ export const Lightning: React.FC<{
 	);
 };
 
-/** 방패 외곽선 path (상단 가운데 cx, 위 y, 폭 w, 높이 h) */
-export const shieldPath = (cx: number, y: number, w: number, h: number): string => {
-	const L = cx - w / 2;
-	const R = cx + w / 2;
-	return [
-		`M ${L} ${y + 0.1 * h}`,
-		`C ${cx - w / 4} ${y + 0.1 * h}, ${cx - 0.08 * w} ${y + 0.04 * h}, ${cx} ${y}`,
-		`C ${cx + 0.08 * w} ${y + 0.04 * h}, ${cx + w / 4} ${y + 0.1 * h}, ${R} ${y + 0.1 * h}`,
-		`L ${R} ${y + 0.52 * h}`,
-		`C ${R} ${y + 0.8 * h}, ${cx + 0.22 * w} ${y + 0.93 * h}, ${cx} ${y + h}`,
-		`C ${cx - 0.22 * w} ${y + 0.93 * h}, ${L} ${y + 0.8 * h}, ${L} ${y + 0.52 * h}`,
-		'Z',
-	].join(' ');
-};
-
-/** 머리+어깨 사람 실루엣 (선) */
-export const personPath = (cx: number, cy: number, r: number): {head: string; body: string} => ({
-	head: `M ${cx + r} ${cy} A ${r} ${r} 0 1 1 ${cx - r} ${cy} A ${r} ${r} 0 1 1 ${cx + r} ${cy}`,
-	body: `M ${cx - 1.9 * r} ${cy + 3.1 * r} C ${cx - 1.9 * r} ${cy + 1.7 * r}, ${cx - 1 * r} ${cy + 1.3 * r}, ${cx} ${cy + 1.3 * r} C ${cx + 1 * r} ${cy + 1.3 * r}, ${cx + 1.9 * r} ${cy + 1.7 * r}, ${cx + 1.9 * r} ${cy + 3.1 * r}`,
-});
-
-/** 물음표 (획) — 위 y, 크기 s. 점은 별도 */
+/** 물음표 (획) — 위 y, 크기 s */
 export const questionPath = (cx: number, y: number, s: number): {hook: string; dot: Pt} => ({
 	hook: `M ${cx - 0.3 * s} ${y + 0.26 * s} C ${cx - 0.3 * s} ${y - 0.02 * s}, ${cx + 0.34 * s} ${y - 0.04 * s}, ${cx + 0.32 * s} ${y + 0.28 * s} C ${cx + 0.3 * s} ${y + 0.5 * s}, ${cx} ${y + 0.5 * s}, ${cx} ${y + 0.74 * s}`,
 	dot: [cx, y + 0.94 * s],
@@ -108,18 +90,53 @@ export const Magnifier: React.FC<{readonly cx: number; readonly cy: number; read
 	</>
 );
 
-/** 단순화한 지폐 블록 */
-export const Bill: React.FC<{readonly x: number; readonly y: number; readonly w?: number; readonly h?: number; readonly opacity?: number; readonly rotate?: number}> = ({
-	x,
-	y,
-	w = 150,
-	h = 76,
-	opacity = 1,
-	rotate = 0,
-}) => (
-	<g opacity={opacity} style={{transformBox: 'fill-box', transformOrigin: 'center', rotate: `${rotate}deg`}}>
-		<rect x={x} y={y} width={w} height={h} rx={8} fill={C.paper} stroke={C.ink} strokeWidth={3.5} />
-		<rect x={x + 9} y={y + 9} width={w - 18} height={h - 18} rx={4} fill="none" stroke={C.gray} strokeWidth={2} />
-		<circle cx={x + w / 2} cy={y + h / 2} r={h * 0.22} fill="none" stroke={C.ink} strokeWidth={3} />
-	</g>
-);
+/**
+ * 선으로 그린 지갑 (S08, S28 재사용 — 같은 모양). (x, y) 왼쪽 위, w×h.
+ * open 0→1: 앞 덮개가 아래 경첩을 축으로 젖혀져 빈 안쪽이 보인다. draw 0→1: 선 그리기.
+ */
+export const Wallet: React.FC<{
+	readonly x: number;
+	readonly y: number;
+	readonly w: number;
+	readonly h: number;
+	readonly open: number;
+	readonly draw?: number;
+	readonly line: string;
+	readonly bg: string;
+	readonly sw?: number;
+}> = ({x, y, w, h, open, draw = 1, line, bg, sw = 6}) => {
+	const r = h * 0.09;
+	const hinge = y + h;
+	const flap = 1 - open * 1.62;
+	return (
+		<g>
+			<DrawPath d={roundRect(x, y, w, h, r)} p={draw} stroke={line} width={sw} />
+			<g opacity={open}>
+				<path d={`M ${x + w * 0.065} ${y + h * 0.36} Q ${x + w / 2} ${y + h * 0.45} ${x + w * 0.935} ${y + h * 0.36}`} stroke={line} strokeWidth={sw * 0.66} fill="none" />
+				<path d={`M ${x + w * 0.065} ${y + h * 0.6} Q ${x + w / 2} ${y + h * 0.69} ${x + w * 0.935} ${y + h * 0.6}`} stroke={line} strokeWidth={sw * 0.66} fill="none" />
+			</g>
+			<g transform={`translate(0 ${hinge}) scale(1 ${flap}) translate(0 ${-hinge})`}>
+				<path d={roundRect(x, y, w, h, r)} fill={bg} stroke="none" opacity={draw > 0.95 ? 1 : 0} />
+				<DrawPath d={roundRect(x, y, w, h, r)} p={draw} stroke={line} width={sw} />
+				<rect x={x + w - w * 0.21} y={y + h / 2 - h * 0.12} width={w * 0.25} height={h * 0.24} rx={h * 0.06} fill={bg} stroke={line} strokeWidth={sw * 0.83} opacity={draw > 0.95 ? 1 : 0} />
+			</g>
+		</g>
+	);
+};
+
+/** 스마트폰 외곽 (S01, S22, S30 재사용 — 같은 모양) */
+export const phoneFrame = (x: number, y: number, w: number, h: number): {body: string; notch: [number, number, number, number]} => ({
+	body: roundRect(x, y, w, h, Math.min(w, h) * 0.12),
+	notch: [x + w / 2 - w * 0.11, y + h * 0.035, w * 0.22, Math.max(10, h * 0.02)],
+});
+
+/** 초승달 (S22 "밤에도") */
+export const moonPath = (cx: number, cy: number, r: number): string =>
+	`M ${cx + r * 0.3} ${cy - r} A ${r} ${r} 0 1 0 ${cx + r * 0.3} ${cy + r} A ${r * 0.78} ${r * 0.78} 0 1 1 ${cx + r * 0.3} ${cy - r} Z`;
+
+/** 경고 삼각형 (S29 "몰빵에 가까워짐") — 중심, 크기 */
+export const warnPaths = (cx: number, cy: number, s: number): {tri: string; bar: string; dot: Pt} => ({
+	tri: `M ${cx} ${cy - s * 0.5} L ${cx + s * 0.55} ${cy + s * 0.45} L ${cx - s * 0.55} ${cy + s * 0.45} Z`,
+	bar: `M ${cx} ${cy - s * 0.18} L ${cx} ${cy + s * 0.14}`,
+	dot: [cx, cy + s * 0.29],
+});

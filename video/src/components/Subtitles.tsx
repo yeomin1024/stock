@@ -1,6 +1,6 @@
-// VERSION: v1.0.0 — 2026-10-05 — 자막 트랙 (가이드 3-4)
-// - 화면 하단 중앙, 아래 여백 80px, 최대 폭 1500px, Noto Sans KR 700 46px
-// - 크림 장면: 잉크 글자 + 크림 띠(90%), 네이비 장면: 흰 글자 + 네이비 띠(80%), 모서리 12px
+// VERSION: v2.0.0 — 2026-10-06 — 자막 트랙 (가이드 v2 3-3)
+// - 화면 하단 중앙, 아래 여백 72px, 최대 폭 1500px, Noto Sans KR 700 46px
+// - 크림 장면: 잉크 글자 + 크림 띠(92%), 네이비 장면: 밝은 글자(#F7F3EA) + 네이비 띠(85%), 모서리 12px
 // - SRT 줄바꿈 그대로, 등장/퇴장 4프레임 페이드
 // - 이어지는 자막 사이에는 띠를 유지한 채 폭/높이만 부드럽게 바꿔 빈 화면이 생기지 않게 한다
 import React, {useEffect, useState} from 'react';
@@ -17,7 +17,7 @@ const PAD_X = 34;
 const PAD_Y = 14;
 const LINE_H = Math.round(TYPE.subtitle * 1.42);
 const MAX_W = 1500;
-const BOTTOM = 80;
+const BOTTOM = 72;
 
 type Box = {w: number; h: number};
 
@@ -76,8 +76,8 @@ export const Subtitles: React.FC = () => {
 	const h = lerp(from.h, cur.h, k);
 
 	const navy = navyAmount(frame);
-	const bandColor = alpha(mix(C.cream, C.navy, navy), lerp(0.9, 0.8, navy));
-	const textColor = mix(C.ink, C.white, navy);
+	const bandColor = alpha(mix(C.cream, C.navy, navy), lerp(0.92, 0.85, navy));
+	const textColor = mix(C.ink, C.light, navy);
 
 	return (
 		<AbsoluteFill style={{pointerEvents: 'none'}}>

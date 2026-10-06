@@ -1,4 +1,5 @@
-// VERSION: v1.0.0 — 2026-10-05 — S01 (자막 1–2) 스마트폰 검색 → MDB 결과 카드 → 체크 3개
+// VERSION: v2.0.0 — 2026-10-06 — S01 (자막 1–2) 스마트폰 검색 "AI 관련주" → 결과 카드 "몽고디비 MDB" → 자막 2: 체크 3개
+// 연결 근거: 종목을 알게 된 경위(자막 1), 고른 이유 3가지(자막 2)
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
 import {FACTS} from '../data/facts';
@@ -8,124 +9,76 @@ import {SANS} from '../design/fonts';
 import {enterP, prog} from '../design/motion';
 import {T} from '../design/type';
 import {DrawPath, Svg} from '../components/Draw';
-import {checkPath, Magnifier} from '../components/Icons';
+import {checkPath, Magnifier, phoneFrame} from '../components/Icons';
 import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
 import {roundRect} from '../components/hand';
 
 const t = sceneTimes('S01');
 const QUERY = Array.from('AI 관련주');
-
-// 폰 프레임
-const PX = 730;
-const PY = 70;
-const PW = 460;
-const PH = 720;
-const TYPE_AT = 24;
+const S1 = t.sub(1);
+const TYPE_AT = S1 + 12;
 const TYPE_STEP = 3;
-const CARD_AT = t.word(1, '몽고디비');
-const CHECKS = [
-	{label: '전망', at: t.word(2, '전망')},
-	{label: '실적', at: t.word(2, '실적')},
-	{label: '상승세', at: t.word(2, '상승세')},
-];
+const CARD_AT = TYPE_AT + QUERY.length * TYPE_STEP + 12;
+const CHECKS = ['전망', '실적', '상승세'].map((label, i) => ({label, at: t.sub(2) + i * 6}));
+
+export const PHONE = {x: 720, y: 130, w: 480, h: 670} as const;
 
 export const S01: React.FC = () => {
 	const f = useSceneFrame();
-	const phoneP = prog(f, 0, 20);
-	const fillP = prog(f, 12, 24);
+	const {x: PX, y: PY, w: PW, h: PH} = PHONE;
+	const frame = phoneFrame(PX, PY, PW, PH);
+	const phoneP = prog(f, S1, S1 + 18);
+	const fillP = prog(f, S1 + 8, S1 + 20);
 	const typed = Math.max(0, Math.min(QUERY.length, Math.floor((f - TYPE_AT) / TYPE_STEP) + 1));
-	const cursorOn = f < CARD_AT && Math.floor(f / 8) % 2 === 0 && f >= TYPE_AT - 6;
+	const cursorOn = f >= TYPE_AT - 4 && f < CARD_AT && Math.floor(f / 8) % 2 === 0;
 	const card = enterP(f, CARD_AT, 16);
-
 	return (
 		<AbsoluteFill>
 			<SceneBg tone="cream" />
-			<Layer depth="mid">
+			<Layer>
 				<Svg>
-					{/* 폰 화면 바탕 */}
-					<rect x={PX} y={PY} width={PW} height={PH} rx={58} fill={C.paper} opacity={fillP} />
-					<DrawPath d={roundRect(PX, PY, PW, PH, 58)} p={phoneP} width={7} />
-					<rect x={PX + PW / 2 - 50} y={PY + 22} width={100} height={14} rx={7} fill={C.ink} opacity={fillP} />
-					{/* 검색창 */}
-					<rect x={PX + 34} y={PY + 70} width={PW - 68} height={78} rx={39} fill={C.white} opacity={fillP} />
-					<DrawPath d={roundRect(PX + 34, PY + 70, PW - 68, 78, 39)} p={prog(f, 10, 26)} width={4} />
-					<Magnifier cx={PX + 78} cy={PY + 104} r={14} p={prog(f, 16, 28)} />
+					<path d={frame.body} fill={C.paper} opacity={fillP} />
+					<DrawPath d={frame.body} p={phoneP} width={7} />
+					<rect x={frame.notch[0]} y={frame.notch[1]} width={frame.notch[2]} height={frame.notch[3]} rx={7} fill={C.ink} opacity={fillP} />
+					<rect x={PX + 34} y={PY + 64} width={PW - 68} height={80} rx={40} fill={C.white} opacity={fillP} />
+					<DrawPath d={roundRect(PX + 34, PY + 64, PW - 68, 80, 40)} p={prog(f, S1 + 6, S1 + 20)} width={4} />
+					<Magnifier cx={PX + 80} cy={PY + 100} r={15} p={prog(f, S1 + 10, S1 + 22)} />
 				</Svg>
-				{/* 타이핑 */}
-				<div
-					style={{
-						position: 'absolute',
-						left: PX + 116,
-						top: PY + 84,
-						...T.label,
-						fontSize: 40,
-						lineHeight: '50px',
-						display: 'flex',
-						alignItems: 'center',
-					}}
-				>
+				<div style={{position: 'absolute', left: PX + 120, top: PY + 76, ...T.label, fontSize: 40, lineHeight: '56px', display: 'flex', alignItems: 'center'}}>
 					{QUERY.slice(0, typed).join('')}
-					<span style={{display: 'inline-block', width: 4, height: 42, marginLeft: 4, background: C.ink, opacity: cursorOn ? 1 : 0}} />
+					<span style={{display: 'inline-block', width: 4, height: 44, marginLeft: 4, background: C.ink, opacity: cursorOn ? 1 : 0}} />
 				</div>
-				{/* 결과 카드 */}
 				{card > 0.001 ? (
 					<div
 						style={{
 							position: 'absolute',
 							left: PX + 34,
-							top: PY + 180,
+							top: PY + 176,
 							width: PW - 68,
-							height: 190,
+							height: 176,
 							background: C.white,
 							border: `4px solid ${C.ink}`,
 							borderRadius: 22,
-							boxShadow: '8px 8px 0 rgba(30,30,30,0.13)',
 							opacity: card,
 							translate: `0px ${(1 - card) * 50}px`,
 							padding: '26px 30px',
 							boxSizing: 'border-box',
 						}}
 					>
-						<div style={{fontFamily: SANS, fontWeight: 900, fontSize: 78, lineHeight: 1, color: C.ink}}>
-							{FACTS.mdb.ticker}
-						</div>
-						<div style={{...T.label, marginTop: 16, fontSize: 40}}>{FACTS.mdb.nameKo}</div>
+						<div style={{fontFamily: SANS, fontWeight: 900, fontSize: 56, lineHeight: 1.1, color: C.ink}}>{FACTS.story.nameKo}</div>
+						<div style={{...T.label, color: C.gray, marginTop: 8}}>{FACTS.story.ticker}</div>
 					</div>
 				) : null}
-				{/* 체크 3개 */}
 				{CHECKS.map((c, i) => {
-					const y = PY + 420 + i * 92;
-					const boxP = enterP(f, c.at - 4, 12);
+					const y = PY + 392 + i * 88;
+					const boxP = enterP(f, c.at, 12);
 					return (
 						<React.Fragment key={c.label}>
 							<Svg>
-								<rect
-									x={PX + 46}
-									y={y}
-									width={56}
-									height={56}
-									rx={10}
-									fill={C.white}
-									stroke={C.ink}
-									strokeWidth={4}
-									opacity={boxP}
-								/>
-								<DrawPath d={checkPath(PX + 52, y + 4, 50)} p={prog(f, c.at, c.at + 10)} stroke={C.ink} width={8} />
+								<rect x={PX + 50} y={y} width={58} height={58} rx={10} fill={C.white} stroke={C.ink} strokeWidth={4} opacity={boxP} />
+								<DrawPath d={checkPath(PX + 56, y + 4, 52)} p={prog(f, c.at + 2, c.at + 12)} width={8} />
 							</Svg>
-							<div
-								style={{
-									position: 'absolute',
-									left: PX + 128,
-									top: y + 2,
-									...T.label,
-									fontSize: 42,
-									lineHeight: '52px',
-									opacity: boxP,
-									translate: `${(1 - boxP) * -16}px 0px`,
-								}}
-							>
-								{c.label}
-							</div>
+							<div style={{position: 'absolute', left: PX + 132, top: y + 2, ...T.label, fontSize: 42, lineHeight: '54px', opacity: boxP}}>{c.label}</div>
 						</React.Fragment>
 					);
 				})}

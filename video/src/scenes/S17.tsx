@@ -1,101 +1,97 @@
-// VERSION: v1.0.0 — 2026-10-05 — S17 (자막 27–29) "02 확률 자체가 낮다" → 1926→2016 타임라인 + 약 2만 6천 개 → 와플 58칸 파랑
+// VERSION: v2.0.0 — 2026-10-06 — S17 (자막 34–38) "02" + "버텨도 회복이 어렵다"
+// 자막 36: 사연자의 계좌 막대 7,000만 → 5,000만 (잃은 부분 파랑 점선) + 원래 높이로 올라가는 화살표 "+40% 필요"
+// 자막 37: 막대 3개(사연 -29%, 반토막 -50%, -70%)와 필요한 상승(+40%, 2배, 3.3배). 자막 38: 막대 전체 테두리 "계좌 전체"
+// 연결 근거: 손실의 비대칭. 막대 높이는 실제 비율(71% / 50% / 30%).
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
-import {FACTS, SRC, formatPct, formatThousandStocks} from '../data/facts';
+import {FACTS, formatPct} from '../data/facts';
 import {sceneTimes} from '../data/timeline';
-import {C, alpha} from '../design/colors';
-import {SANS} from '../design/fonts';
-import {enterP, lin, prog} from '../design/motion';
+import {C} from '../design/colors';
+import {easeInOut, enterP, prog} from '../design/motion';
 import {T} from '../design/type';
-import {SourceCaption} from '../components/Bits';
-import {Counter} from '../components/Counter';
+import {NumberTitle} from '../components/Bits';
+import {StackBar} from '../components/Account';
 import {DrawPath, Svg} from '../components/Draw';
 import {Highlight} from '../components/Highlight';
 import {Reveal} from '../components/Reveal';
 import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
-import {Waffle} from '../components/Waffle';
-import {handLine} from '../components/hand';
+import {arrowHead, roundRect} from '../components/hand';
 
 const t = sceneTimes('S17');
-const B = FACTS.bessembinder;
-const TL_AT = t.sub(28);
-const WAFFLE_AT = t.sub(29);
-export const WAFFLE = {x: 200, y: 140, cell: 50, gap: 6} as const;
-export const FILL_AT_S17 = WAFFLE_AT + 10;
-export const EMPTY_CELL = alpha(C.ink, 0.09);
+const S34 = t.sub(34);
+const S36 = t.sub(36);
+const S37 = t.sub(37);
+const S38 = t.sub(38);
 
-export const WafflePct: React.FC<{readonly fillAt: number; readonly appearAt: number}> = ({fillAt, appearAt}) => {
+const BOTTOM = 742;
+const FULL = 440;
+const W = 170;
+const CXS = [640, 1060, 1480];
+const R = FACTS.recovery;
+
+const Column: React.FC<{readonly i: number; readonly at: number; readonly dropAt: number; readonly showCaption: boolean}> = ({i, at, dropAt, showCaption}) => {
 	const f = useSceneFrame();
+	const r = R[i];
+	const appear = enterP(f, at, 14);
+	if (appear <= 0.001) return null;
+	const drop = easeInOut(prog(f, dropAt, dropAt + 22, (x) => x));
+	const lost = (FULL * Math.abs(r.dropPct) * drop) / 100;
+	const remainTop = BOTTOM - FULL + lost;
+	const arrowP = prog(f, dropAt + 24, dropAt + 40);
+	const cx = CXS[i];
 	return (
-		<Waffle
-			{...WAFFLE}
-			cellStyle={(i) => {
-				const appear = enterP(f, appearAt + Math.floor(i / 10) * 1.5, 10);
-				const blue = i < B.belowTbillPct ? lin(f, fillAt + i * 0.5, fillAt + i * 0.5 + 4) : 0;
-				return {fill: blue > 0 ? C.blue : EMPTY_CELL, opacity: appear * (blue > 0 ? 0.3 + 0.7 * blue : 1), scale: 0.86 + 0.14 * appear};
-			}}
-		/>
+		<>
+			<Svg>
+				<g opacity={appear}>
+					<StackBar x={cx - W / 2} bottom={BOTTOM} w={W} segs={[{h: FULL, kind: 'mdb', lost}]} />
+					{lost > 4 ? (
+						<>
+							<DrawPath d={`M ${cx + W / 2 + 34} ${remainTop - 6} L ${cx + W / 2 + 34} ${BOTTOM - FULL + 24}`} p={arrowP} dash="10 8" width={6} stroke={C.red} linecap="butt" />
+							<DrawPath d={arrowHead([cx + W / 2 + 34, BOTTOM - FULL + 14], -Math.PI / 2, 22)} p={prog(f, dropAt + 38, dropAt + 44)} width={6} stroke={C.red} />
+						</>
+					) : null}
+				</g>
+			</Svg>
+			<Reveal at={dropAt + 26} from="up" dist={16} style={{left: cx - 230, width: 460, top: 118, textAlign: 'center'}}>
+				<div style={{...T.number, fontSize: 160, color: C.red}}>{r.needLabel}</div>
+			</Reveal>
+			{showCaption ? (
+				<Reveal at={at + 4} from="none" style={{left: cx - 200, width: 400, top: BOTTOM + 8, textAlign: 'center'}}>
+					<div style={{...T.label, fontSize: 36}}>
+						{r.caption ? `${r.caption} ` : ''}
+						<span style={{color: C.blue, fontVariantNumeric: 'tabular-nums'}}>{formatPct(r.dropPct)}</span>
+					</div>
+				</Reveal>
+			) : null}
+		</>
 	);
 };
 
 export const S17: React.FC = () => {
 	const f = useSceneFrame();
-	const lineP = prog(f, TL_AT + 4, TL_AT + 28);
+	const border = prog(f, S38, S38 + 20);
 	return (
 		<AbsoluteFill>
 			<SceneBg tone="cream" />
-			<Layer depth="mid">
-				{/* 자막 27: 섹션 번호 + 헤드라인 */}
-				<Reveal at={0} exitAt={TL_AT - 4} from="up" style={{left: 150, top: 96}}>
-					<div style={{...T.number, fontSize: 230, color: C.ink, letterSpacing: '-0.04em'}}>02</div>
+			<Layer>
+				<NumberTitle num="02" title="버텨도 회복이 어렵다" mark="회복이 어렵다" at={S34} markAt={S34 + 24} exitAt={S36 - 2} />
+				{/* 자막 36: 사연자의 계좌 막대 (자막 37 부터 아래 라벨 "사연 -29%") */}
+				<Column i={0} at={S36} dropAt={S36 + 12} showCaption={f >= S37} />
+				<Reveal at={S36 + 40} exitAt={S37} from="none" style={{left: CXS[0] + 236, top: 196}}>
+					<div style={{...T.label, color: C.red}}>필요</div>
 				</Reveal>
-				<Reveal at={6} exitAt={TL_AT - 4} from="left" style={{left: 160, top: 340}}>
-					<div style={{...T.headline, fontSize: 92}}>
-						<Highlight at={t.word(27, '확률')}>확률 자체가 낮다</Highlight>
-					</div>
-				</Reveal>
-
-				{/* 자막 28: 1926 → 2016 타임라인, 약 2만 6천 개 */}
-				{f >= TL_AT && f < WAFFLE_AT + 12 ? (
-					<>
-						<Svg>
-							<g opacity={1 - prog(f, WAFFLE_AT - 4, WAFFLE_AT + 5)}>
-								<DrawPath d={handLine(320, 330, 1600, 330, 's17tl', 1.5)} p={lineP} width={7} />
-								<DrawPath d="M 320 306 L 320 354" p={prog(f, TL_AT, TL_AT + 6)} width={7} />
-								<DrawPath d="M 1600 306 L 1600 354" p={prog(f, TL_AT + 26, TL_AT + 32)} width={7} />
-							</g>
-						</Svg>
-					</>
-				) : null}
-				<Reveal at={TL_AT} exitAt={WAFFLE_AT - 4} from="up" dist={20} style={{left: 320 - 110, top: 200, width: 220, textAlign: 'center'}}>
-					<div style={{...T.number, fontSize: 64, color: C.ink}}>{B.fromYear}</div>
-				</Reveal>
-				<Reveal at={TL_AT + 26} exitAt={WAFFLE_AT - 4} from="up" dist={20} style={{left: 1600 - 110, top: 200, width: 220, textAlign: 'center'}}>
-					<div style={{...T.number, fontSize: 64, color: C.ink}}>{B.toYear}</div>
-				</Reveal>
-				<Reveal at={TL_AT + 14} exitAt={WAFFLE_AT - 4} from="up" dist={20} style={{left: 960 - 120, top: 214, width: 240, textAlign: 'center'}}>
+				<Column i={1} at={S37} dropAt={S37 + 6} showCaption />
+				<Column i={2} at={S37 + 6} dropAt={S37 + 12} showCaption />
+				{/* 자막 38: 막대 전체를 감싸는 테두리 + "계좌 전체" */}
+				<Svg>
+					<DrawPath d={roundRect(CXS[0] - W / 2 - 60, BOTTOM - FULL - 14, CXS[2] - CXS[0] + W + 170, 800 - (BOTTOM - FULL - 14), 24)} p={border} width={6} stroke={C.ink} />
+				</Svg>
+				<Reveal at={S38 + 12} from="right" style={{left: 150, top: 470}}>
 					<div style={{...T.label, fontSize: 44}}>
-						<Highlight at={TL_AT + 22}>{B.years}년</Highlight>
-					</div>
-				</Reveal>
-				<Reveal at={t.word(28, '미국 주식') - 6} exitAt={WAFFLE_AT - 4} from="up" style={{left: 0, right: 0, top: 420, textAlign: 'center'}}>
-					<Counter from={0} to={B.stocksThousand} at={t.word(28, '미국 주식')} format={formatThousandStocks} color={C.ink} style={{fontSize: 168}} />
-					<div style={{...T.label, color: C.gray, marginTop: 22}}>분석 종목 수</div>
-				</Reveal>
-
-				{/* 자막 29: 와플 58칸 */}
-				{f >= WAFFLE_AT ? <WafflePct fillAt={FILL_AT_S17} appearAt={WAFFLE_AT} /> : null}
-				<Reveal at={WAFFLE_AT + 10} from="right" style={{left: 900, top: 150}}>
-					<Counter from={0} to={B.belowTbillPct} at={FILL_AT_S17} dur={29} format={(v) => formatPct(v, 0, false)} color={C.blue} style={{fontSize: 240}} />
-				</Reveal>
-				<Reveal at={WAFFLE_AT + 18} from="right" style={{left: 912, top: 430}}>
-					<div style={{display: 'flex', alignItems: 'center', gap: 18}}>
-						<div style={{width: 36, height: 36, borderRadius: 6, background: C.blue}} />
-						<div style={{fontFamily: SANS, fontWeight: 700, fontSize: 44, color: C.ink, whiteSpace: 'nowrap'}}>국채보다 못함</div>
+						<Highlight at={S38 + 20}>계좌 전체</Highlight>
 					</div>
 				</Reveal>
 			</Layer>
-			<SourceCaption text={SRC.bessembinder} at={TL_AT + 6} />
 		</AbsoluteFill>
 	);
 };

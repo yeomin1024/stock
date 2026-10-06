@@ -1,113 +1,71 @@
-// VERSION: v1.0.0 — 2026-10-05 — S24 (자막 40–43) 핵심 키워드 카드 3개 → "대처가 가능한 투자" 하이라이트 → 채널명 엔딩 → 페이드아웃
+// VERSION: v2.0.0 — 2026-10-06 — S24 (자막 60–62) 화면이 밝아지며 "올바른 방법"
+// 61: 큰 블록 하나가 여러 작은 블록으로 나뉨 "욕심 대신 나눠 담기" → 62: 1~5번 빈 목록 "5가지". 연결 근거: 해결책 도입
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
-import {useChannelName} from '../data/channel';
 import {sceneTimes} from '../data/timeline';
 import {C} from '../design/colors';
-import {SANS} from '../design/fonts';
-import {easeInOut, enterP, exitP, lerp, lin, prog} from '../design/motion';
+import {SANS, SERIF} from '../design/fonts';
+import {easeInOut, enterP, exitP, lerp, prog} from '../design/motion';
 import {T} from '../design/type';
-import {cardStyle} from '../components/Bits';
-import {BandMessage} from '../components/ChannelBand';
-import {Svg} from '../components/Draw';
-import {Highlight} from '../components/Highlight';
-import {Lightning} from '../components/Icons';
+import {DrawPath, Svg} from '../components/Draw';
 import {Reveal} from '../components/Reveal';
 import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
+import {handLine} from '../components/hand';
 
 const t = sceneTimes('S24');
-const SUM_AT = t.sub(41);
-const END_AT = t.sub(42);
-const FADE_AT = t.subEnd(43);
-
-const CW = 500;
-const CH = 320;
-const CY = 180;
-
-const IconRisk: React.FC<{readonly cx: number}> = ({cx}) => (
-	<Svg>
-		<rect x={cx - 60} y={CY + 140} width={120} height={64} rx={10} fill={C.paper} stroke={C.ink} strokeWidth={4} />
-		<Lightning x={cx + 6} y={CY + 22} h={120} rotate={6} />
-	</Svg>
-);
-const IconSpread: React.FC<{readonly cx: number}> = ({cx}) => (
-	<Svg>
-		{[0, 1, 2, 3, 4].map((i) => (
-			<rect key={i} x={cx - 150 + i * 62} y={CY + 110} width={50} height={50} rx={8} fill={C.paper} stroke={C.ink} strokeWidth={4} />
-		))}
-	</Svg>
-);
-const IconWeight: React.FC<{readonly cx: number}> = ({cx}) => (
-	<Svg>
-		{[0, 1, 2, 3, 4].map((i) => (
-			<rect key={i} x={cx - 140 + i * 58} y={CY + 130} width={42} height={74} rx={6} fill={C.paper} stroke={C.ink} strokeWidth={4} />
-		))}
-		<line x1={cx - 170} y1={CY + 108} x2={cx + 170} y2={CY + 108} stroke={C.ink} strokeWidth={4} strokeDasharray="12 9" />
-	</Svg>
-);
-
-const CARDS = [
-	{label: '몰빵의 위험', cx: 380, at: t.sub(40) + 2, Icon: IconRisk},
-	{label: '분산', cx: 960, at: t.word(40, '분산'), Icon: IconSpread},
-	{label: '비중 조절', cx: 1540, at: t.word(40, '분산') + 16, Icon: IconWeight},
-];
+const [S60, S61, S62] = [60, 61, 62].map((n) => t.sub(n));
+const BIG = {x: 610, y: 300, w: 700, h: 170};
+const PIECES = 6;
+const PW = 180;
+const PGAP = 40;
+const PX0 = (1920 - (PIECES * PW + (PIECES - 1) * PGAP)) / 2;
 
 export const S24: React.FC = () => {
 	const f = useSceneFrame();
-	const name = useChannelName();
-	const lift = easeInOut(prog(f, SUM_AT, SUM_AT + 18, (x) => x));
-	const out = exitP(f, END_AT, 9);
-	const fade = lin(f, FADE_AT, FADE_AT + 28);
+	const bigIn = enterP(f, S61, 14);
+	const split = easeInOut(prog(f, S61 + 16, S61 + 40, (x) => x));
+	const out61 = exitP(f, S62 - 2, 9);
 	return (
 		<AbsoluteFill>
-			<SceneBg tone="cream" />
-			<Layer depth="mid">
-				{out > 0.001 ? (
-					<AbsoluteFill style={{opacity: out}}>
-						{CARDS.map((c) => {
-							const p = enterP(f, c.at, 15);
-							if (p <= 0.001) return null;
-							return (
-								<AbsoluteFill
-									key={c.label}
-									style={{
-										opacity: p,
-										translate: `0px ${(1 - p) * 40 + lerp(0, -76, lift)}px`,
-										scale: String(lerp(1, 0.76, lift)),
-										transformOrigin: `${c.cx}px ${CY}px`,
-									}}
-								>
-									<div style={{...cardStyle(), left: c.cx - CW / 2, top: CY, width: CW, height: CH}} />
-									<c.Icon cx={c.cx} />
-									<div
-										style={{
-											position: 'absolute',
-											left: c.cx - CW / 2,
-											width: CW,
-											top: CY + 236,
-											textAlign: 'center',
-											fontFamily: SANS,
-											fontWeight: 900,
-											fontSize: 44,
-											color: C.ink,
-										}}
-									>
-										{c.label}
-									</div>
-								</AbsoluteFill>
-							);
+			<SceneBg tone="bright" from="cream" at={S60} dur={24} />
+			<Layer>
+				<Reveal at={S60 + 6} from="up" style={{left: 0, right: 0, top: 128, textAlign: 'center'}}>
+					<div style={{fontFamily: SERIF, fontWeight: 900, fontSize: 88, color: C.ink, lineHeight: 1.2}}>올바른 방법</div>
+				</Reveal>
+				<Svg>
+					<DrawPath d={handLine(770, 250, 1150, 246, 's24ul', 2)} p={prog(f, S60 + 16, S60 + 28)} width={8} />
+					{/* 61: 큰 블록 → 작은 블록 6개 */}
+					<g opacity={Math.min(bigIn, out61)}>
+						{Array.from({length: PIECES}, (_, i) => {
+							const x = lerp(BIG.x + (i * BIG.w) / PIECES, PX0 + i * (PW + PGAP), split);
+							const w = lerp(BIG.w / PIECES, PW, split);
+							const h = lerp(BIG.h, 130, split);
+							const y = lerp(BIG.y, 330, split);
+							return <rect key={i} x={x} y={y} width={w} height={h} rx={lerp(0, 14, split)} fill={C.paper} stroke={C.ink} strokeWidth={4} />;
 						})}
-						<Reveal at={SUM_AT + 10} from="up" style={{left: 0, right: 0, top: 470, textAlign: 'center'}}>
-							<div style={{...T.headline, fontSize: 96}}>
-								<Highlight at={t.word(41, '대처가')}>대처가 가능한 투자</Highlight>
+						{split < 0.02 ? <rect x={BIG.x} y={BIG.y} width={BIG.w} height={BIG.h} rx={16} fill={C.paper} stroke={C.ink} strokeWidth={5} /> : null}
+					</g>
+				</Svg>
+				<Reveal at={S61 + 34} exitAt={S62 - 2} from="up" style={{left: 0, right: 0, top: 520, textAlign: 'center'}}>
+					<div style={{...T.label, fontSize: 44}}>욕심 대신 나눠 담기</div>
+				</Reveal>
+				{/* 62: 1~5 빈 목록 + 5가지 */}
+				{[1, 2, 3, 4, 5].map((n, i) => {
+					const p = enterP(f, S62 + 4 + i * 4, 12);
+					const y = 300 + i * 92;
+					return p > 0.001 ? (
+						<div key={n} style={{position: 'absolute', left: 820, top: y, opacity: p, display: 'flex', alignItems: 'center', gap: 26}}>
+							<div style={{width: 64, height: 64, borderRadius: 32, border: `4px solid ${C.ink}`, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: SANS, fontWeight: 900, fontSize: 36, color: C.ink}}>
+								{n}
 							</div>
-						</Reveal>
-					</AbsoluteFill>
-				) : null}
-				<BandMessage at={END_AT + 4} text={name} seed="S24-band" fontSize={96} />
+							<div style={{width: 520, height: 0, borderBottom: `4px dashed ${C.gray}`}} />
+						</div>
+					) : null;
+				})}
+				<Reveal at={S62 + 6} from="left" style={{left: 380, top: 470}}>
+					<div style={{...T.headline, fontSize: 84}}>5가지</div>
+				</Reveal>
 			</Layer>
-			{/* 엔딩 페이드아웃 */}
-			<AbsoluteFill style={{backgroundColor: C.ink, opacity: fade}} />
 		</AbsoluteFill>
 	);
 };

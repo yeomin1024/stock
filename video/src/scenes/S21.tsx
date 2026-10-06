@@ -1,110 +1,72 @@
-// VERSION: v1.0.0 — 2026-10-05 — S21 (자막 34–35) "올바른 방법": 1억 원 블록이 10개로 쪼개져 10칸에 배치(분산) → 비중 막대가 같은 높이로(비중 조절)
+// VERSION: v2.0.0 — 2026-10-06 — S21 (자막 49–51) "04" + "판단력까지 무너진다"
+// 자막 51: 천칭 저울 — 왼쪽(나쁜 쪽) "잃을 때 고통 ×2" 가 오른쪽 "얻을 때 기쁨" 보다 무겁게 기운다. 연결 근거: 손실 회피
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
-import {FACTS, formatManwon} from '../data/facts';
+import {FACTS, SRC} from '../data/facts';
 import {sceneTimes} from '../data/timeline';
 import {C} from '../design/colors';
-import {SANS} from '../design/fonts';
-import {easeInOut, enterP, lerp, prog} from '../design/motion';
+import {easeInOut, enterP, prog} from '../design/motion';
 import {T} from '../design/type';
-import {ConceptTag} from '../components/Bits';
+import {NumberTitle, SourceCaption} from '../components/Bits';
 import {DrawPath, Svg} from '../components/Draw';
-import {Highlight} from '../components/Highlight';
 import {Reveal} from '../components/Reveal';
 import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
-import {handLine, roundRect} from '../components/hand';
 
 const t = sceneTimes('S21');
-const N = FACTS.diversify.stocks;
-const SPLIT_AT = t.word(34, '현금을');
-const DIV_AT = t.word(34, '분산');
-const EQ_AT = t.sub(35);
+const S49 = t.sub(49);
+const S51 = t.sub(51);
+const TILT_AT = S51 + 34;
 
-const BIG = {x: 580, y: 270, w: 760, h: 180};
-const BASE_Y = 700;
-const SLOT_X0 = 166;
-const SLOT_W = 148;
-const SLOT_GAP = 12;
-const H_UNIT = 130;
-// 쪼갠 직후의 들쭉날쭉한 비중 (개념도 — 숫자 표시 없음)
-const UNEVEN = [1.9, 0.6, 1.4, 0.5, 1.0, 0.8, 1.6, 0.7, 0.9, 0.5];
+const PX = 1160; // 받침점
+const PY = 380;
+const HALF = 400;
+const HANG = 150;
+const POST_BOTTOM = 770;
 
 export const S21: React.FC = () => {
 	const f = useSceneFrame();
-	const bigIn = enterP(f, 8, 15);
-	const bigOut = 1 - prog(f, SPLIT_AT, SPLIT_AT + 6);
-	const eq = easeInOut(prog(f, EQ_AT + 6, EQ_AT + 28, (x) => x));
+	const appear = enterP(f, S51, 16);
+	const tilt = easeInOut(prog(f, TILT_AT, TILT_AT + 24, (x) => x)) * 11; // 왼쪽이 내려감
+	const rad = (tilt * Math.PI) / 180;
+	const L = {x: PX - HALF * Math.cos(rad), y: PY + HALF * Math.sin(rad)};
+	const R = {x: PX + HALF * Math.cos(rad), y: PY - HALF * Math.sin(rad)};
+	const blocksIn = (k: number) => enterP(f, S51 + 14 + k * 5, 12);
+	const pan = (x: number, y: number) => `M ${x - 130} ${y + HANG} Q ${x} ${y + HANG + 60} ${x + 130} ${y + HANG}`;
 	return (
 		<AbsoluteFill>
 			<SceneBg tone="cream" />
-			<Layer depth="bg">
-				<Reveal at={0} from="left" style={{left: 160, top: 96}}>
-					<div style={{...T.headline, fontSize: 84}}>올바른 방법</div>
-				</Reveal>
-				<Svg>
-					<DrawPath d={handLine(164, 214, 640, 208, 's21ul', 3)} p={prog(f, 8, 22)} width={8} />
-				</Svg>
-			</Layer>
-			<Layer depth="mid">
-				<Svg>
-					{/* 1억 원 블록 */}
-					{bigOut > 0.001 ? (
-						<g opacity={Math.min(bigIn, bigOut)}>
-							<rect x={BIG.x} y={BIG.y} width={BIG.w} height={BIG.h} rx={18} fill={C.paper} stroke={C.ink} strokeWidth={5} />
+			<Layer>
+				<NumberTitle num="04" title="판단력까지 무너진다" mark="무너진다" at={S49} markAt={S49 + 24} />
+				{appear > 0.001 ? (
+					<Svg>
+						<g opacity={appear}>
+							<DrawPath d={`M ${PX} ${PY} L ${PX} ${POST_BOTTOM}`} p={1} width={8} />
+							<DrawPath d={`M ${PX - 110} ${POST_BOTTOM} L ${PX + 110} ${POST_BOTTOM}`} p={1} width={8} />
+							<line x1={L.x} y1={L.y} x2={R.x} y2={R.y} stroke={C.ink} strokeWidth={9} strokeLinecap="round" />
+							<circle cx={PX} cy={PY} r={14} fill={C.ink} />
+							{[L, R].map((e, i) => (
+								<g key={i}>
+									<line x1={e.x} y1={e.y} x2={e.x - 120} y2={e.y + HANG} stroke={C.ink} strokeWidth={3} />
+									<line x1={e.x} y1={e.y} x2={e.x + 120} y2={e.y + HANG} stroke={C.ink} strokeWidth={3} />
+									<path d={pan(e.x, e.y)} fill={C.paper} stroke={C.ink} strokeWidth={6} />
+								</g>
+							))}
+							{/* 왼쪽: 고통 블록 2개(파랑) / 오른쪽: 기쁨 블록 1개(빨강) — "두 배" */}
+							{[0, 1].map((k) => (
+								<rect key={k} x={L.x - 92 + k * 96} y={L.y + HANG - 70} width={86} height={70} rx={8} fill={C.blue} stroke={C.ink} strokeWidth={3} opacity={blocksIn(k)} />
+							))}
+							<rect x={R.x - 43} y={R.y + HANG - 70} width={86} height={70} rx={8} fill={C.red} stroke={C.ink} strokeWidth={3} opacity={blocksIn(2)} />
 						</g>
-					) : null}
-					{/* 쪼개진 10개 블록 */}
-					{f >= SPLIT_AT
-						? Array.from({length: N}, (_, i) => {
-								const mv = easeInOut(prog(f, SPLIT_AT + 4 + i * 2, SPLIT_AT + 26 + i * 2, (x) => x));
-								const h1 = lerp(UNEVEN[i] * H_UNIT, H_UNIT, eq);
-								const x = lerp(BIG.x + (i * BIG.w) / N, SLOT_X0 + i * (SLOT_W + SLOT_GAP), mv);
-								const w = lerp(BIG.w / N, SLOT_W, mv);
-								const h = lerp(BIG.h, h1, mv);
-								const y = lerp(BIG.y, BASE_Y - h1, mv);
-								return <path key={i} d={roundRect(x, y, w, h, Math.min(12, w / 4))} fill={C.paper} stroke={C.ink} strokeWidth={4} />;
-							})
-						: null}
-					{/* 같은 높이 기준선 */}
-					<DrawPath d={`M ${SLOT_X0 - 20} ${BASE_Y - H_UNIT} L ${SLOT_X0 + N * (SLOT_W + SLOT_GAP) + 8} ${BASE_Y - H_UNIT}`} p={prog(f, EQ_AT + 24, EQ_AT + 40)} dash="14 12" width={4} stroke={C.ink} linecap="butt" />
-					<DrawPath d={handLine(SLOT_X0 - 20, BASE_Y + 3, SLOT_X0 + N * (SLOT_W + SLOT_GAP) + 8, BASE_Y + 3, 's21base', 1)} p={prog(f, SPLIT_AT + 4, SPLIT_AT + 20)} width={4} />
-				</Svg>
-				{bigOut > 0.001 ? (
-					<div
-						style={{
-							position: 'absolute',
-							left: BIG.x,
-							top: BIG.y,
-							width: BIG.w,
-							height: BIG.h,
-							display: 'flex',
-							alignItems: 'center',
-							justifyContent: 'center',
-							fontFamily: SANS,
-							fontWeight: 900,
-							fontSize: 160,
-							color: C.ink,
-							opacity: Math.min(bigIn, bigOut),
-						}}
-					>
-						{formatManwon(FACTS.story.principalManwon)}
-					</div>
+					</Svg>
 				) : null}
-				<ConceptTag at={SPLIT_AT + 20} x={1650} y={BASE_Y + 16} />
-			</Layer>
-			<Layer depth="fg">
-				<Reveal at={DIV_AT - 4} from="up" style={{left: 160, top: 300}}>
-					<div style={{...T.headline, fontSize: 96}}>
-						<Highlight at={DIV_AT + 4}>분산</Highlight>
-					</div>
+				<Reveal at={S51 + 18} from="up" dist={16} style={{left: L.x - 210, width: 420, top: L.y + HANG + 50, textAlign: 'center'}}>
+					<div style={{...T.label, fontSize: 44, color: C.blue}}>잃을 때 고통 ×{FACTS.lossAversion}</div>
 				</Reveal>
-				<Reveal at={EQ_AT} from="up" style={{left: 470, top: 300}}>
-					<div style={{...T.headline, fontSize: 96}}>
-						<span style={{color: C.gray, marginRight: 40}}>+</span>
-						<Highlight at={EQ_AT + 10}>비중 조절</Highlight>
-					</div>
+				<Reveal at={S51 + 24} from="up" dist={16} style={{left: R.x - 210, width: 420, top: R.y + HANG + 50, textAlign: 'center'}}>
+					<div style={{...T.label, fontSize: 44, color: C.red}}>얻을 때 기쁨</div>
 				</Reveal>
 			</Layer>
+			<SourceCaption text={SRC.behavioral} at={S51 + 18} />
 		</AbsoluteFill>
 	);
 };

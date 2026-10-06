@@ -1,6 +1,6 @@
-// VERSION: v1.0.0 — 2026-10-05 — 가이드 3-5 모션 원칙 상수/헬퍼
+// VERSION: v2.0.0 — 2026-10-06 — 가이드 v2 3-4 모션 상수/헬퍼 (v2: 카메라 1.00→1.03)
 // 등장 12–18f (spring ease-out, 바운스 없음), 퇴장 8–10f, 순차 간격 4–6f,
-// 형광펜 10f, 카운터 20–30f, 카메라 1.00→1.04.
+// 형광펜 10f, 카운터 20–30f, 카메라 1.00→1.03.
 import {Easing, interpolate, spring} from 'remotion';
 import {FPS} from '../data/timeline';
 
@@ -11,7 +11,7 @@ export const M = {
 	highlight: 10,
 	counter: 26,
 	draw: 18,
-	cameraZoom: 0.04,
+	cameraZoom: 0.03,
 } as const;
 
 const clampOpts = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;

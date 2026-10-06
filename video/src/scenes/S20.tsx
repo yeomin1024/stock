@@ -1,74 +1,61 @@
-// VERSION: v1.0.0 — 2026-10-05 — S20 (자막 33) 100칸 위를 커서가 빠르게 헤매며 숨은 4칸을 하나씩 찾는다 → "4%를 맞혀야 하는 게임"
+// VERSION: v2.0.0 — 2026-10-06 — S20 (자막 48) 점 수십 개 중 몇 개만 노랑으로 빛나며 위로 떠오르고(성공담),
+// 나머지 회색 점은 소리 없이 아래로 흐려져 사라진다. 연결 근거: 생존자 편향
 import React from 'react';
 import {AbsoluteFill, random} from 'remotion';
-import {FACTS} from '../data/facts';
-import {C, alpha} from '../design/colors';
-import {easeOut, lin, prog} from '../design/motion';
+import {sceneTimes} from '../data/timeline';
+import {C, mix} from '../design/colors';
+import {easeInOut, enterP, lerp, prog} from '../design/motion';
 import {T} from '../design/type';
 import {Svg} from '../components/Draw';
-import {Highlight} from '../components/Highlight';
 import {Reveal} from '../components/Reveal';
 import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
-import {Waffle, waffleCellXY} from '../components/Waffle';
 
-const G = {x: 180, y: 110, cell: 56, gap: 6};
-const TARGETS = [17, 42, 68, 93]; // 4칸 = 4%
-const HOP_START = 6;
-const HOP = 3;
-const HITS = [12, 24, 35, 46]; // 몇 번째 이동에서 찾는지
-const HOPS = HITS[HITS.length - 1] + 1;
-
-// 결정적 커서 경로: 지정된 이동 번호에서만 목표 칸, 나머지는 목표가 아닌 칸
-const PATH: number[] = Array.from({length: HOPS}, (_, k) => {
-	const hit = HITS.indexOf(k);
-	if (hit >= 0) return TARGETS[hit];
-	let c = Math.floor(random(`s20c${k}`) * 100);
-	while (TARGETS.includes(c)) c = (c + 7) % 100;
-	return c;
-});
-const foundAt = (ti: number) => HOP_START + HITS[ti] * HOP;
+const t = sceneTimes('S20');
+const S48 = t.sub(48);
+const SPLIT_AT = S48 + 30;
+const N = 54;
+const WINNERS = [7, 19, 30, 41, 48];
+const DOTS = Array.from({length: N}, (_, i) => ({
+	x: 560 + random(`s20x${i}`) * 800,
+	y: 330 + random(`s20y${i}`) * 260,
+	r: 11 + random(`s20r${i}`) * 5,
+	d: random(`s20d${i}`) * 20,
+}));
 
 export const S20: React.FC = () => {
 	const f = useSceneFrame();
-	const appear = prog(f, 0, 10);
-	const k = Math.min(HOPS - 1, Math.max(0, Math.floor((f - HOP_START) / HOP)));
-	const sub = (f - HOP_START - k * HOP) / HOP;
-	const cur = waffleCellXY(PATH[k], G.x, G.y, G.cell, G.gap);
-	const prev = waffleCellXY(PATH[Math.max(0, k - 1)], G.x, G.y, G.cell, G.gap);
-	const tw = easeOut(Math.min(1, Math.max(0, sub * 1.6)));
-	const cx = prev[0] + (cur[0] - prev[0]) * tw;
-	const cy = prev[1] + (cur[1] - prev[1]) * tw;
-	const cursorOn = f >= HOP_START && f < foundAt(TARGETS.length - 1) + 10;
 	return (
 		<AbsoluteFill>
 			<SceneBg tone="cream" />
-			<Layer depth="mid">
-				<Waffle
-					{...G}
-					cellStyle={(i) => {
-						const ti = TARGETS.indexOf(i);
-						if (ti >= 0 && f >= foundAt(ti)) {
-							const g = lin(f, foundAt(ti), foundAt(ti) + 6);
-							return {fill: C.yellow, glow: g, stroke: C.ink, strokeWidth: 3, scale: 1 + 0.12 * (1 - lin(f, foundAt(ti) + 4, foundAt(ti) + 12))};
+			<Layer>
+				<Reveal at={S48} from="left" style={{left: 104, top: 128}}>
+					<div style={{...T.headline, fontSize: 80}}>성공담만 들리는 이유</div>
+				</Reveal>
+				<Svg>
+					{DOTS.map((d, i) => {
+						const appear = enterP(f, S48 + Math.floor(i / 6), 12);
+						const win = WINNERS.indexOf(i);
+						if (win >= 0) {
+							const up = easeInOut(prog(f, SPLIT_AT + win * 4, SPLIT_AT + 40 + win * 4, (x) => x));
+							const gold = prog(f, SPLIT_AT + win * 4, SPLIT_AT + 10 + win * 4);
+							return (
+								<circle
+									key={i}
+									cx={lerp(d.x, 820 + win * 70, up)}
+									cy={lerp(d.y, 268, up)}
+									r={d.r * appear * (1 + 0.5 * gold)}
+									fill={mix(C.gray, C.yellow, gold)}
+									stroke={gold > 0.5 ? C.ink : 'none'}
+									strokeWidth={3}
+								/>
+							);
 						}
-						// 지나간 칸은 잠깐 회색으로 깜빡임 (빗나감)
-						const visits = PATH.map((c, h) => (c === i ? HOP_START + h * HOP : -1)).filter((x) => x >= 0 && x <= f);
-						const last = visits.length ? visits[visits.length - 1] : -100;
-						const miss = 1 - lin(f, last + 1, last + 9);
-						return {fill: miss > 0.01 ? alpha(C.gray, 0.25 + 0.5 * miss) : alpha(C.ink, 0.09), opacity: appear};
-					}}
-				/>
-				{cursorOn ? (
-					<Svg>
-						<rect x={cx - 7} y={cy - 7} width={G.cell + 14} height={G.cell + 14} rx={10} fill="none" stroke={C.ink} strokeWidth={6} />
-					</Svg>
-				) : null}
-				<Reveal at={0} from="right" style={{left: 900, top: 230}}>
-					<div style={{...T.headline, fontSize: 96, lineHeight: 1.3}}>
-						<Highlight at={10}>{FACTS.bessembinder.topPct}%</Highlight>를 맞혀야
-						<br />
-						하는 게임
-					</div>
+						const fall = prog(f, SPLIT_AT + 12 + d.d, SPLIT_AT + 90 + d.d);
+						return <circle key={i} cx={d.x} cy={d.y + 150 * fall} r={d.r * appear} fill={C.gray} opacity={1 - fall} />;
+					})}
+				</Svg>
+				<Reveal at={SPLIT_AT + 40} from="none" style={{left: 0, right: 0, top: 690, textAlign: 'center'}}>
+					<div style={{...T.label, color: C.gray, fontSize: 44}}>크게 잃은 사람은 조용히 떠난다</div>
 				</Reveal>
 			</Layer>
 		</AbsoluteFill>

@@ -1,114 +1,72 @@
-// VERSION: v1.0.0 — 2026-10-05 — S10 (자막 13–15) 생각 말풍선 3개가 각 자막 시작에 맞춰 하나씩 등장
+// VERSION: v2.0.0 — 2026-10-06 — S10 (자막 16–18) 작은 계좌 카드 12개가 깔리고 모두 한 종목으로 꽉 찬 비중 막대
+// 자막 17: 가운데 큰 물음표 + "큰 수익?". 자막 18: "무엇이 문제일까?" 타이틀. 연결 근거: 이런 사람이 많다, 과연 수익을 낼까
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
 import {sceneTimes} from '../data/timeline';
-import {C} from '../design/colors';
-import {SANS} from '../design/fonts';
-import {enterP, prog} from '../design/motion';
+import {C, alpha} from '../design/colors';
+import {SERIF} from '../design/fonts';
+import {enterP, exitP, prog} from '../design/motion';
+import {T} from '../design/type';
 import {DrawPath, Svg} from '../components/Draw';
-import {cloudPath, personPath} from '../components/Icons';
+import {Highlight} from '../components/Highlight';
+import {questionPath} from '../components/Icons';
+import {Reveal} from '../components/Reveal';
 import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
+import {handLine, roundRect} from '../components/hand';
 
 const t = sceneTimes('S10');
+const S16 = t.sub(16);
+const S17 = t.sub(17);
+const S18 = t.sub(18);
 
-export type BubbleDef = {
-	readonly cx: number;
-	readonly cy: number;
-	readonly rx: number;
-	readonly ry: number;
-	readonly text: string;
-	readonly seed: number;
-	readonly at: number;
-	/** 머리 쪽으로 이어지는 작은 원 [x, y, r] */
-	readonly dots: readonly (readonly [number, number, number])[];
-};
+const CW = 230;
+const CH = 150;
+const GX = 40;
+const GY = 44;
+const X0 = (1920 - (6 * CW + 5 * GX)) / 2;
+const Y0 = 270;
 
-export const PERSON = {cx: 960, cy: 652, r: 46};
-
-export const BUBBLES: readonly BubbleDef[] = [
-	{cx: 470, cy: 420, rx: 320, ry: 112, text: '몰빵하면 많이 오르겠지?', seed: 1, at: t.sub(13), dots: [[870, 600, 11], [790, 566, 17]]},
-	{cx: 960, cy: 210, rx: 290, ry: 100, text: '나누면 수익이 줄어', seed: 2, at: t.sub(14), dots: [[960, 560, 11], [960, 500, 17]]},
-	{cx: 1450, cy: 420, rx: 320, ry: 112, text: '떨어져도 금방 회복', seed: 3, at: t.sub(15), dots: [[1050, 600, 11], [1130, 566, 17]]},
-];
-
-/** 말풍선 하나. p = 등장(0→1), scale/translate/textOpacity 는 S11 합치기에서 사용 */
-export const ThoughtBubble: React.FC<{
-	readonly b: BubbleDef;
-	readonly p: number;
-	readonly dotsP: number;
-	readonly scale?: number;
-	readonly dx?: number;
-	readonly dy?: number;
-	readonly textOpacity?: number;
-	readonly opacity?: number;
-}> = ({b, p, dotsP, scale = 1, dx = 0, dy = 0, textOpacity = 1, opacity = 1}) => {
-	if (p <= 0.001 && dotsP <= 0.001) return null;
-	const k = (0.7 + 0.3 * p) * scale;
-	return (
-		<>
-			<Svg>
-				<g opacity={opacity}>
-					{b.dots.map(([x, y, r], i) => (
-						<circle key={i} cx={x} cy={y} r={r * Math.min(1, Math.max(0, dotsP * 2 - i))} fill={C.white} stroke={C.ink} strokeWidth={4} />
-					))}
-					<g
-						opacity={p}
-						style={{transformBox: 'view-box', transformOrigin: `${b.cx}px ${b.cy}px`, scale: String(k), translate: `${dx}px ${dy}px`}}
-					>
-						<path d={cloudPath(b.cx, b.cy, b.rx, b.ry, 11, b.seed)} fill={C.white} stroke={C.ink} strokeWidth={5} strokeLinejoin="round" />
-					</g>
-				</g>
-			</Svg>
-			<div
-				style={{
-					position: 'absolute',
-					left: b.cx - b.rx,
-					top: b.cy - 40,
-					width: b.rx * 2,
-					height: 80,
-					display: 'flex',
-					alignItems: 'center',
-					justifyContent: 'center',
-					fontFamily: SANS,
-					fontWeight: 700,
-					fontSize: 44,
-					color: C.ink,
-					whiteSpace: 'nowrap',
-					opacity: p * textOpacity * opacity,
-					scale: String(k),
-					translate: `${dx}px ${dy}px`,
-				}}
-			>
-				{b.text}
-			</div>
-		</>
-	);
-};
-
-export const Person: React.FC<{readonly p: number; readonly opacity?: number}> = ({p, opacity = 1}) => {
-	const {head, body} = personPath(PERSON.cx, PERSON.cy, PERSON.r);
-	return (
-		<Svg>
-			<g opacity={opacity}>
-				<DrawPath d={head} p={p} width={6} />
-				<DrawPath d={body} p={p} width={6} />
-			</g>
-		</Svg>
-	);
-};
+/** 계좌 카드(S02)의 축소판: 잉크 테두리 + 크림 채움 + 오른쪽 비중 막대(한 종목 100% = 잉크) */
+const MiniAccount: React.FC<{readonly x: number; readonly y: number; readonly p: number}> = ({x, y, p}) => (
+	<g opacity={p} transform={`translate(0 ${(1 - p) * 24})`}>
+		<path d={roundRect(x, y, CW, CH, 16)} fill={C.paper} stroke={C.ink} strokeWidth={4} />
+		<rect x={x + 22} y={y + 30} width={92} height={12} rx={6} fill={alpha(C.ink, 0.22)} />
+		<rect x={x + 22} y={y + 62} width={120} height={26} rx={8} fill={alpha(C.ink, 0.35)} />
+		<rect x={x + CW - 66} y={y + 20} width={44} height={CH - 40} rx={6} fill={C.ink} stroke={C.ink} strokeWidth={3} />
+	</g>
+);
 
 export const S10: React.FC = () => {
 	const f = useSceneFrame();
+	const dim = 1 - 0.75 * prog(f, S17, S17 + 12);
+	const out = exitP(f, S18, 9);
+	const q = questionPath(960, 170, 330);
 	return (
 		<AbsoluteFill>
 			<SceneBg tone="cream" />
-			<Layer depth="bg">
-				<Person p={prog(f, 0, 18)} />
-			</Layer>
-			<Layer depth="mid">
-				{BUBBLES.map((b) => (
-					<ThoughtBubble key={b.seed} b={b} dotsP={prog(f, b.at, b.at + 8)} p={enterP(f, b.at + 4, 15)} />
-				))}
+			<Layer>
+				<Svg>
+					<g opacity={dim * out}>
+						{Array.from({length: 12}, (_, i) => (
+							<MiniAccount key={i} x={X0 + (i % 6) * (CW + GX)} y={Y0 + Math.floor(i / 6) * (CH + GY)} p={enterP(f, S16 + i * 3, 14)} />
+						))}
+					</g>
+					<g opacity={out}>
+						<DrawPath d={q.hook} p={prog(f, S17 + 4, S17 + 22)} width={28} />
+						<circle cx={q.dot[0]} cy={q.dot[1]} r={21 * enterP(f, S17 + 20, 8)} fill={C.ink} />
+					</g>
+				</Svg>
+				<Reveal at={S17 + 10} exitAt={S18} from="up" style={{left: 0, right: 0, top: 560, textAlign: 'center'}}>
+					<div style={{...T.headline, fontSize: 88}}>
+						<Highlight at={S17 + 18}>큰 수익</Highlight>?
+					</div>
+				</Reveal>
+				<Reveal at={S18 + 8} from="up" style={{left: 0, right: 0, top: 330, textAlign: 'center'}}>
+					<div style={{fontFamily: SERIF, fontWeight: 900, fontSize: 88, color: C.ink, lineHeight: 1.2}}>무엇이 문제일까?</div>
+				</Reveal>
+				<Svg>
+					<DrawPath d={handLine(700, 460, 1220, 454, 's10ul', 3)} p={prog(f, S18 + 18, S18 + 30)} width={9} />
+				</Svg>
 			</Layer>
 		</AbsoluteFill>
 	);

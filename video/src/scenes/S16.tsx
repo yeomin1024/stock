@@ -1,133 +1,118 @@
-// VERSION: v1.0.0 — 2026-10-05 — S16 (자막 24–26) CDNS·META·GOOGL 카드 + 파랑 하락 막대 카운트다운. 자막 26: 업종 칩 6개가 차례로 파랑으로 깜빡임
+// VERSION: v2.0.0 — 2026-10-06 — S16 (자막 30–33) 선택지 카드 3장(물타기, 손절, 손절 라인)
+// 자막 31: 물타기 ✕ "현금 0원", 손절 "= 손실 확정". 자막 32–33: 세 번째 카드가 커지며 미니 차트 —
+// 손절 라인 점선 위에 있던 주가선이 하루를 건너뛰고 점선보다 훨씬 아래에서 다시 시작 (개념도). 연결 근거: 몰빵 상태에서는 선택지가 없음
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
-import {FACTS, SRC, formatPct} from '../data/facts';
 import {sceneTimes} from '../data/timeline';
-import {C, alpha, mix} from '../design/colors';
-import {SANS} from '../design/fonts';
-import {enterP, exitP, lin} from '../design/motion';
-import {SourceCaption, cardStyle} from '../components/Bits';
-import {useCount} from '../components/Counter';
+import {C} from '../design/colors';
+import {SERIF} from '../design/fonts';
+import {easeInOut, enterP, exitP, lerp, prog} from '../design/motion';
+import {T} from '../design/type';
+import {ConceptTag, cardStyle} from '../components/Bits';
+import {DrawPath, Svg} from '../components/Draw';
+import {Lightning} from '../components/Icons';
 import {Reveal} from '../components/Reveal';
 import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
+import {handLine, smoothPath, Pt} from '../components/hand';
 
 const t = sceneTimes('S16');
-const SECTOR_AT = t.sub(26);
-const SECTORS = ['기술', '헬스케어', '금융', '소비재', '에너지', '산업재'];
+const S30 = t.sub(30);
+const S31 = t.sub(31);
+const S32 = t.sub(32);
+const S33 = t.sub(33);
 
-const CARD_W = 480;
-const CARD_Y = 110;
-const CARD_H = 160;
-const BASE_Y = CARD_Y + CARD_H + 14;
-const PX_PER_PCT = 13; // 26% → 338px: 숫자(160px)까지 y<800 안에 들어오게
+const CARD = {w: 470, h: 300, y: 240};
+const CX = [400, 960, 1520];
+const BIG = {x: 300, y: 140, w: 1320, h: 640};
+// 자막 31의 ✕: "물타기" 제목 위만 덮는다 (아래 "현금 0원"은 가리지 않음)
+const XM = {x: CX[0], y: CARD.y + 98, w: 250, h: 120};
 
-// 카드 등장: 자막 24 시작에 순차(5f 간격) / 막대: 자막 25에서 이름이 읽힐 때
-const COLS = [
-	{fact: FACTS.drops[0], cx: 400, show: t.sub(24), drop: t.word(25, 'CDNS')},
-	{fact: FACTS.drops[1], cx: 960, show: t.sub(24) + 5, drop: t.word(25, '메타')},
-	{fact: FACTS.drops[2], cx: 1520, show: t.sub(24) + 10, drop: t.word(25, '구글')},
-];
+// 미니 차트 (큰 카드 안, 개념도)
+const STOP_Y = 470;
+const DAY1: Pt[] = [[380, 330], [470, 352], [560, 340], [650, 380], [740, 372], [830, 410], [900, 424]];
+const DAY2: Pt[] = [[1040, 660], [1140, 676], [1240, 652], [1340, 690], [1460, 672], [1550, 694]];
 
-const DropColumn: React.FC<{readonly c: (typeof COLS)[number]; readonly out: number}> = ({c, out}) => {
+const Option: React.FC<{readonly i: number; readonly title: string; readonly children?: React.ReactNode; readonly out: number}> = ({i, title, children, out}) => {
 	const f = useSceneFrame();
-	const card = enterP(f, c.show, 15);
-	const v = useCount(0, c.fact.pct, c.drop, 26);
-	const h = Math.abs(v) * PX_PER_PCT;
-	const decimals = Number.isInteger(c.fact.pct) ? 0 : 1;
-	if (card <= 0.001) return null;
+	const p = enterP(f, S30 + i * 6, 15);
+	if (p <= 0.001 || out <= 0.001) return null;
 	return (
-		<div style={{opacity: Math.min(card, out)}}>
-			<div
-				style={{
-					...cardStyle(),
-					left: c.cx - CARD_W / 2,
-					top: CARD_Y,
-					width: CARD_W,
-					height: CARD_H,
-					translate: `0px ${(1 - card) * -40}px`,
-					display: 'flex',
-					flexDirection: 'column',
-					alignItems: 'center',
-					justifyContent: 'center',
-				}}
-			>
-				<div style={{fontFamily: SANS, fontWeight: 900, fontSize: 74, lineHeight: 1, color: C.ink}}>{c.fact.ticker}</div>
-				<div style={{fontFamily: SANS, fontWeight: 500, fontSize: 26, color: C.gray, marginTop: 10}}>
-					{c.fact.when}
-				</div>
-			</div>
-			{/* 하락 막대: 카드 아래에서 아래로 자란다 */}
-			<div style={{position: 'absolute', left: c.cx - 80, top: BASE_Y, width: 160, height: h, background: C.blue, borderRadius: '0 0 10px 10px'}} />
-			{f >= c.drop ? (
-				<div
-					style={{
-						position: 'absolute',
-						left: c.cx - 280,
-						width: 560,
-						top: BASE_Y + h + 8,
-						textAlign: 'center',
-						fontFamily: SANS,
-						fontWeight: 900,
-						fontSize: 160,
-						lineHeight: 1,
-						color: C.blue,
-						fontVariantNumeric: 'tabular-nums',
-						whiteSpace: 'nowrap',
-					}}
-				>
-					{formatPct(v, decimals)}
-					{c.fact.note === '장중' ? <span style={{fontSize: 44, fontWeight: 700, marginLeft: 8}}>(장중)</span> : null}
-				</div>
-			) : null}
+		<div style={{...cardStyle(), left: CX[i] - CARD.w / 2, top: CARD.y, width: CARD.w, height: CARD.h, opacity: Math.min(p, out), translate: `0px ${(1 - p) * 30}px`}}>
+			<div style={{position: 'absolute', left: 0, right: 0, top: 54, textAlign: 'center', fontFamily: SERIF, fontWeight: 900, fontSize: 72, color: C.ink}}>{title}</div>
+			{children}
 		</div>
 	);
 };
 
 export const S16: React.FC = () => {
 	const f = useSceneFrame();
-	const out = exitP(f, SECTOR_AT - 2, 9);
+	const out12 = exitP(f, S32, 9);
+	const grow = easeInOut(prog(f, S32 + 2, S32 + 22, (x) => x));
+	const c3 = enterP(f, S30 + 12, 15);
+	const x = lerp(CX[2] - CARD.w / 2, BIG.x, grow);
+	const y = lerp(CARD.y, BIG.y, grow);
+	const w = lerp(CARD.w, BIG.w, grow);
+	const h = lerp(CARD.h, BIG.h, grow);
+	const xa = handLine(XM.x - XM.w / 2, XM.y - XM.h / 2, XM.x + XM.w / 2, XM.y + XM.h / 2, 's16xa', 2);
+	const xb = handLine(XM.x + XM.w / 2, XM.y - XM.h / 2, XM.x - XM.w / 2, XM.y + XM.h / 2, 's16xb', 2);
 	return (
 		<AbsoluteFill>
 			<SceneBg tone="cream" />
-			<Layer depth="mid">
-				{COLS.map((c) => (
-					<DropColumn key={c.fact.ticker} c={c} out={out} />
-				))}
-				{/* 자막 26: 업종 칩 그리드 */}
-				{SECTORS.map((s, i) => {
-					const col = i % 3;
-					const row = Math.floor(i / 3);
-					const at = SECTOR_AT + 8 + i * 5;
-					const blinkAt = SECTOR_AT + 40 + i * 10;
-					const blink = lin(f, blinkAt, blinkAt + 3) * (1 - lin(f, blinkAt + 7, blinkAt + 11));
-					const after = lin(f, blinkAt + 7, blinkAt + 11);
-					return (
-						<Reveal key={s} at={at} from="up" dist={30} style={{left: 290 + col * 460, top: 230 + row * 190}}>
-							<div
-								style={{
-									width: 420,
-									height: 130,
-									borderRadius: 65,
-									boxSizing: 'border-box',
-									border: `5px solid ${mix(C.ink, C.blue, Math.max(blink, after))}`,
-									background: mix(C.paper, C.blue, blink),
-									display: 'flex',
-									alignItems: 'center',
-									justifyContent: 'center',
-									fontFamily: SANS,
-									fontWeight: 700,
-									fontSize: 44,
-									color: mix(mix(C.ink, C.blue, after), C.white, blink),
-									boxShadow: `8px 8px 0 ${alpha(C.ink, 0.1)}`,
-								}}
-							>
-								{s}
-							</div>
+			<Layer>
+				<Option i={0} title="물타기" out={out12}>
+					<Reveal at={S31 + 8} from="none" style={{left: 0, right: 0, top: 190, textAlign: 'center'}}>
+						<div style={{...T.label}}>현금 0원</div>
+					</Reveal>
+				</Option>
+				<Option i={1} title="손절" out={out12}>
+					<Reveal at={S31 + 14} from="none" style={{left: 0, right: 0, top: 190, textAlign: 'center'}}>
+						<div style={{...T.label, color: C.blue}}>= 손실 확정</div>
+					</Reveal>
+				</Option>
+				<Svg>
+					<g opacity={out12}>
+						<DrawPath d={xa} p={prog(f, S31, S31 + 8)} width={12} />
+						<DrawPath d={xb} p={prog(f, S31 + 4, S31 + 12)} width={12} />
+					</g>
+				</Svg>
+				{/* 세 번째 카드: 손절 라인 → 커지며 미니 차트 */}
+				{c3 > 0.001 ? (
+					<div style={{...cardStyle(), left: x, top: y, width: w, height: h, opacity: c3, translate: `0px ${(1 - c3) * 30}px`}}>
+						<div
+							style={{
+								position: 'absolute',
+								left: lerp(0, 36, grow),
+								width: lerp(CARD.w - 8, 420, grow),
+								top: lerp(54, 26, grow),
+								textAlign: lerp(0, 1, grow) > 0.5 ? 'left' : 'center',
+								fontFamily: SERIF,
+								fontWeight: 900,
+								fontSize: lerp(72, 64, grow),
+								color: C.ink,
+								whiteSpace: 'nowrap',
+							}}
+						>
+							손절 라인
+						</div>
+					</div>
+				) : null}
+				{grow > 0.98 ? (
+					<>
+						<Svg>
+							<DrawPath d={`M 360 ${STOP_Y} L 1560 ${STOP_Y}`} p={prog(f, S32 + 22, S32 + 40)} dash="18 12" width={5} stroke={C.ink} linecap="butt" />
+							<DrawPath d={smoothPath(DAY1)} p={prog(f, S32 + 30, S32 + 60)} width={7} stroke={C.ink} />
+							<line x1={960} y1={250} x2={960} y2={740} stroke={C.gray} strokeWidth={3} strokeDasharray="6 10" opacity={prog(f, S32 + 56, S32 + 66)} />
+							<Lightning x={965} y={290} h={150} reveal={prog(f, S33, S33 + 5, (x) => x)} />
+							<DrawPath d={`M ${DAY1[DAY1.length - 1][0]} ${DAY1[DAY1.length - 1][1]} L ${DAY2[0][0]} ${DAY2[0][1]}`} p={prog(f, S33 + 8, S33 + 18)} dash="8 10" width={4} stroke={C.blue} linecap="butt" />
+							<DrawPath d={smoothPath(DAY2)} p={prog(f, S33 + 14, S33 + 40)} width={7} stroke={C.blue} />
+						</Svg>
+						<Reveal at={S33 + 8} from="left" dist={20} style={{left: 1040, top: 300}}>
+							<div style={{...T.label}}>장 시작 전 악재</div>
 						</Reveal>
-					);
-				})}
+						<ConceptTag at={S32 + 24} x={1470} y={720} />
+					</>
+				) : null}
 			</Layer>
-			<SourceCaption text={SRC.market} at={COLS[1].drop} exitAt={SECTOR_AT - 2} />
 		</AbsoluteFill>
 	);
 };
