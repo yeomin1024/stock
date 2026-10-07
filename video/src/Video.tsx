@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — 메인 타임라인: S01–S30 + 자막 + 종이 질감 (가이드 v2)
+// VERSION: v2.1.0 — 2026-10-07 — 메인 타임라인: S01–S30 중 S23(엔론) 제외 29장면 + 자막 + 종이 질감
 // 모든 장면의 시작/끝은 data/timeline.ts 에서 SRT 자막 번호로 계산된다 (초 하드코딩 없음).
 // 와이프로 들어오는 장면은 WIPE.pre 프레임 먼저 시작해 찢어진 종이로 이전 장면을 덮고(새 장면 요소는 자막 시작 뒤에 나옴),
 // 그 다음 장면이 와이프면 현재 장면은 와이프가 끝날 때까지 남아 있는다.
@@ -32,7 +32,6 @@ import {S19} from './scenes/S19';
 import {S20} from './scenes/S20';
 import {S21} from './scenes/S21';
 import {S22} from './scenes/S22';
-import {S23} from './scenes/S23';
 import {S24} from './scenes/S24';
 import {S25} from './scenes/S25';
 import {S26} from './scenes/S26';
@@ -93,7 +92,6 @@ export const Video: React.FC = () => (
 		<SceneSlot id="S20"><S20 /></SceneSlot>
 		<SceneSlot id="S21"><S21 /></SceneSlot>
 		<SceneSlot id="S22"><S22 /></SceneSlot>
-		<SceneSlot id="S23"><S23 /></SceneSlot>
 		<SceneSlot id="S24"><S24 /></SceneSlot>
 		<SceneSlot id="S25"><S25 /></SceneSlot>
 		<SceneSlot id="S26"><S26 /></SceneSlot>

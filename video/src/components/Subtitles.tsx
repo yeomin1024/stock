@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — 자막 트랙 (가이드 v2 3-3)
+// VERSION: v2.1.0 — 2026-10-07 — 자막 트랙 (가이드 v2 3-3). v2.1.0: 잘라 낸 자막(엔론 55–59)은 건너뜀
 // - 화면 하단 중앙, 아래 여백 72px, 최대 폭 1500px, Noto Sans KR 700 46px
 // - 크림 장면: 잉크 글자 + 크림 띠(92%), 네이비 장면: 밝은 글자(#F7F3EA) + 네이비 띠(85%), 모서리 12px
 // - SRT 줄바꿈 그대로, 등장/퇴장 4프레임 페이드
@@ -6,8 +6,7 @@
 import React, {useEffect, useState} from 'react';
 import {AbsoluteFill, useCurrentFrame, useDelayRender} from 'remotion';
 import {measureText} from '@remotion/layout-utils';
-import {SUBTITLES} from '../data/subtitles';
-import {navyAmount, subEnd, subStart} from '../data/timeline';
+import {ACTIVE_SUBTITLES, navyAmount, subEnd, subStart} from '../data/timeline';
 import {C, alpha, mix} from '../design/colors';
 import {SANS, TYPE, fontsReady} from '../design/fonts';
 import {lerp, lin, prog} from '../design/motion';
@@ -21,7 +20,7 @@ const BOTTOM = 72;
 
 type Box = {w: number; h: number};
 
-const SUBS = SUBTITLES.map((s) => ({id: s.id, text: s.text, start: subStart(s.id), end: subEnd(s.id)}));
+const SUBS = ACTIVE_SUBTITLES.map((s) => ({id: s.id, text: s.text, start: subStart(s.id), end: subEnd(s.id)}));
 
 export const Subtitles: React.FC = () => {
 	const frame = useCurrentFrame();

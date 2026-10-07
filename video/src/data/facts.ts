@@ -1,4 +1,5 @@
-// VERSION: v2.0.0 — 2026-10-06 — 가이드 v2 4번 데이터 시트. 화면 숫자는 여기 값만 사용한다.
+// VERSION: v2.1.0 — 2026-10-07 — 가이드 v2 4번 데이터 시트. 화면 숫자는 여기 값만 사용한다.
+// v2.1.0: 엔론 사례(S23)를 영상에서 빼서 엔론 데이터·출처(미 의회조사국·CNN, CNN, Wharton)를 삭제.
 // value = 계산·카운터용, label = 화면 표시용. 새 숫자를 만들지 않는다.
 
 export const SRC = {
@@ -8,9 +9,6 @@ export const SRC = {
 	bessembinder: '출처: Bessembinder (2018)',
 	jpm: '출처: J.P. Morgan',
 	behavioral: '출처: 행동경제학 연구',
-	enronCrs: '출처: 미 의회조사국·CNN',
-	cnn: '출처: CNN',
-	wharton: '출처: Wharton',
 	reuters: '출처: Reuters',
 	berkshire: '출처: 버크셔 해서웨이',
 } as const;
@@ -51,7 +49,6 @@ export const FACTS = {
 	bessembinder: {stocksThousand: 26, years: 90, belowTbillPct: 58, sixOfTen: '열 중 여섯', topPct: 4},
 	jpm: {sinceYear: 1980, noRecoverPct: 40, drawdownPct: -70, worseThanMarket: '3번 중 2번'},
 	lossAversion: 2, // 손실 고통 ≈ 이익 기쁨의 2배
-	enron: {year: 2001, desc: '미국 에너지 기업', ownStockPct: 62, prices: ['80달러', '70달러'], lossLabel: '10억 달러+'},
 	cap: {pct: 15, maxManwon: 1050},
 	diversify: {stocks: 10, perStockManwon: 700, lossManwon: -200, lossPctOfAccount: -3},
 	theme: {

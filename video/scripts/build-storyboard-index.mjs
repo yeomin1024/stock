@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — 스토리보드 검수 페이지 생성 (가이드 v2 6-5)
+// VERSION: v2.1.0 — 2026-10-07 — 스토리보드 검수 페이지 생성 (가이드 v2 6-5). v2.1.0: 엔론 사례 제외 반영(장면 29, 자막 91)
 // 사용:
 //   node scripts/build-storyboard-index.mjs                 → out/storyboard/index.html (같은 폴더의 PNG 를 바로 참조)
 //   node scripts/build-storyboard-index.mjs --artifact DIR  → DIR/index.html (문서 껍데기 없는 조각) + DIR/img/*.jpg (1280px 미리보기)
@@ -51,7 +51,8 @@ const DECISIONS = [
 	['S13', '"장기 상승" 라벨은 자막 22에서 빠집니다. 한 화면 텍스트 덩어리를 3개 이하로 맞췄습니다.'],
 	['S18', '자막 44의 커서는 노랑 4칸을 다 찾으면 사라지고, 찾은 칸에는 테두리가 남습니다.'],
 	['S30', '자막 95–96 동안 그래픽이 천천히 사라지고, 마지막 1초는 잉크색으로 페이드됩니다.'],
-	['', '가이드 목록 외에 S10·S22·S23·S24·S30의 자막별 still과 S04 와이프 중간 still을 더 넣었습니다.'],
+	['', '가이드 목록 외에 S10·S22·S24·S30의 자막별 still과 S04 와이프 중간 still을 더 넣었습니다.'],
+	['S24', 'S23(엔론)이 빠져 S22와 S24가 모두 찢어진 종이 와이프로 들어옵니다(와이프 연속 1곳). S24는 문제에서 해결책으로 넘어가는 파트 경계라 와이프를 유지했습니다.'],
 	['', '입력에 내레이션·BGM 파일이 없어 영상은 무음입니다.'],
 ];
 
@@ -265,16 +266,16 @@ const SCRIPT = `
 
 const CONTENT = `<main class="wrap">
 <header class="top">
-<p class="eyebrow">영상 가이드 v2 · 작업 순서 5단계 스토리보드 · 승인 대기</p>
+<p class="eyebrow">영상 가이드 v2 · 스토리보드 · v2.1.0 엔론 사례 제외</p>
 <h1>몰빵 영상 스토리보드</h1>
 <dl class="facts">
 <div><dt>장면</dt><dd>${tl.SCENES.length}</dd></div>
 <div><dt>still</dt><dd>${manifest.length} (장면 대표 ${mainCount})</dd></div>
 <div><dt>길이</dt><dd>${tc(total)} · ${total.toLocaleString('en-US')}f · ${tl.FPS}fps</dd></div>
 <div><dt>화면</dt><dd>${tl.WIDTH}×${tl.HEIGHT}</dd></div>
-<div><dt>자막</dt><dd>${tl.EXPECTED_SUBTITLES}개 + 고지 카드 ${tl.DISCLAIMER_SEC}초</dd></div>
+<div><dt>자막</dt><dd>${tl.ACTIVE_SUBTITLES.length}개 (엔론 ${tl.CUT_SUBS.to - tl.CUT_SUBS.from + 1}개 제외) + 고지 카드 ${tl.DISCLAIMER_SEC}초</dd></div>
 </dl>
-<p class="status"><span class="badge main">렌더 전</span>전체 영상은 아직 렌더하지 않았습니다. 이 시트를 승인하면 1080p 본편을 렌더합니다.</p>
+<p class="status"><span class="badge main">v2.1.0</span>엔론 사례(자막 ${tl.CUT_SUBS.from}–${tl.CUT_SUBS.to}, 장면 S23)를 빼고 자막 ${tl.CUT_SUBS.to + 1}번부터 ${tl.CUT_SEC.toFixed(3)}초 앞당겼습니다. S22 다음이 바로 S24입니다.</p>
 </header>
 <div class="notes">
 <section class="note"><h2>자체 검수에서 고친 것</h2><ul>${listItems(FIXES)}</ul></section>

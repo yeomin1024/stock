@@ -1,4 +1,5 @@
-// VERSION: v2.0.0 — 2026-10-06 — 가이드 v2: 자막 96개, 고지 카드 6초(자막 18 뒤), 장면 30개
+// VERSION: v2.1.0 — 2026-10-07 — 엔론 사례(자막 55–59, S23) 제외: 자막 60번부터 28.154초 앞당김, 장면 29개
+// v2.0.0 — 2026-10-06 — 가이드 v2: 자막 96개, 고지 카드 6초(자막 18 뒤), 장면 30개
 // 규칙: 프레임 = 초 × 30 (반올림). 장면 코드에 초를 하드코딩하지 않는다.
 // 가이드 v2 "각 요소는 그 내용을 말하는 자막이 시작될 때 등장" → 요소 시점은 sub(n) (+ 4–6f 순차) 만 쓴다.
 // (Node 스크립트에서도 그대로 import 하므로 .ts 확장자 import 와 순수 TS 문법만 쓴다.)
@@ -15,8 +16,6 @@ export const EXPECTED_SUBTITLES = 96;
 
 export const secToFrame = (sec: number): number => Math.round(sec * FPS);
 
-const shiftSec = (id: number): number => (id > DISCLAIMER_AFTER_ID ? DISCLAIMER_SEC : 0);
-
 const subtitle = (id: number) => {
 	const s = SUBTITLES[id - 1];
 	if (!s || s.id !== id) {
@@ -25,18 +24,39 @@ const subtitle = (id: number) => {
 	return s;
 };
 
-export const subText = (id: number): string => subtitle(id).text;
-/** 최종 타임라인(고지 카드 반영) 기준 자막 시작 프레임 */
-export const subStart = (id: number): number => secToFrame(subtitle(id).startMs / 1000 + shiftSec(id));
-/** 최종 타임라인(고지 카드 반영) 기준 자막 끝 프레임 */
-export const subEnd = (id: number): number => secToFrame(subtitle(id).endMs / 1000 + shiftSec(id));
+// v2.1.0: 사용자 요청으로 엔론 사례(대본 70–74행 = 자막 55–59)를 영상에서 뺀다.
+// 입력 SRT/TXT 는 그대로 두고(자막 번호가 가이드 장면표와 계속 맞도록) 여기서만 잘라 낸다.
+// 잘라 내는 구간 = 자막 55 시작 ~ 자막 60 시작 (SRT 05:06.365 ~ 05:34.519 = 28.154초). 자막 60번부터 그만큼 앞당긴다.
+// → 자막 54 끝과 자막 60 시작이 같은 프레임이 되어(원래 54→55 처럼) 빈 구간 없이 이어진다.
+export const CUT_SUBS = {from: 55, to: 59} as const;
+export const isCutSub = (id: number): boolean => id >= CUT_SUBS.from && id <= CUT_SUBS.to;
+export const CUT_SEC = (subtitle(CUT_SUBS.to + 1).startMs - subtitle(CUT_SUBS.from).startMs) / 1000;
+
+const shiftSec = (id: number): number => (id > DISCLAIMER_AFTER_ID ? DISCLAIMER_SEC : 0) - (id > CUT_SUBS.to ? CUT_SEC : 0);
+
+/** 영상에 실제로 나오는 자막 (잘라 낸 자막 제외) */
+export const ACTIVE_SUBTITLES = SUBTITLES.filter((s) => !isCutSub(s.id));
+
+const activeSubtitle = (id: number) => {
+	if (isCutSub(id)) throw new Error(`[TIMELINE] 자막 ${id}번은 잘라 낸 구간(${CUT_SUBS.from}–${CUT_SUBS.to})이라 쓸 수 없음`);
+	return subtitle(id);
+};
+
+export const subText = (id: number): string => activeSubtitle(id).text;
+/** 최종 타임라인(고지 카드 + 자른 구간 반영) 기준 자막 시작 프레임 */
+export const subStart = (id: number): number => secToFrame(activeSubtitle(id).startMs / 1000 + shiftSec(id));
+/** 최종 타임라인(고지 카드 + 자른 구간 반영) 기준 자막 끝 프레임 */
+export const subEnd = (id: number): number => secToFrame(activeSubtitle(id).endMs / 1000 + shiftSec(id));
 
 export const DISCLAIMER_START = subEnd(DISCLAIMER_AFTER_ID);
 export const DISCLAIMER_FRAMES = secToFrame(DISCLAIMER_SEC);
-export const TOTAL_FRAMES = secToFrame(SUBTITLES[SUBTITLES.length - 1].endMs / 1000 + DISCLAIMER_SEC + TAIL_SEC);
+const LAST = SUBTITLES[SUBTITLES.length - 1];
+export const TOTAL_FRAMES = secToFrame(LAST.endMs / 1000 + shiftSec(LAST.id) + TAIL_SEC);
 
 // ---------------------------------------------------------------------------
 // 장면 표 (가이드 v2 5번). enter = 들어올 때 전환 (찢어진 종이 와이프 / 컷 번갈아).
+// v2.1.0: S23(엔론, 자막 55–59) 삭제. 장면 번호는 가이드 표와 맞추려고 바꾸지 않는다(S22 다음이 S24).
+// S22·S24 가 모두 와이프로 들어와 와이프가 두 번 이어진다 — S24 는 '문제 → 해결책' 파트 경계라 와이프를 유지.
 // 앞 장면 그림을 이어 쓰는 곳(S03 계좌 카드, S04 색 빠짐, S09 사연 축소)은 컷.
 // why = 가이드 "연결 근거" (스토리보드 index.html 에 그대로 표시)
 // perSub = 한 장면 안에서 그림이 크게 바뀌어 자막 단위 still 을 더 만드는 장면 (가이드 6-5)
@@ -78,7 +98,6 @@ export const SCENES: readonly SceneDef[] = [
 	{id: 'S20', subs: [48], enter: 'wipe', tone: 'cream', why: '생존자 편향'},
 	{id: 'S21', subs: [49, 50, 51], enter: 'cut', tone: 'cream', why: '손실 회피'},
 	{id: 'S22', subs: [52, 53, 54], enter: 'wipe', tone: 'cream', why: '고통이 매일 찾아와 판단이 흐려짐', perSub: true},
-	{id: 'S23', subs: [55, 56, 57, 58, 59], enter: 'cut', tone: 'cream', why: '확신 때문에 팔지 못한 사례', perSub: true},
 	{id: 'S24', subs: [60, 61, 62], enter: 'wipe', tone: 'bright', why: '해결책 도입', perSub: true},
 	{id: 'S25', subs: [63, 64, 65, 66, 67, 68], enter: 'cut', tone: 'cream', why: '비중 상한과 분산 계산', perSub: true},
 	{id: 'S26', subs: [69, 70, 71, 72, 73, 74], enter: 'wipe', tone: 'cream', why: '같은 테마는 함께 무너짐', perSub: true},
@@ -156,7 +175,7 @@ export const navyAmount = (frame: number): number => {
 // 다음 장면이 와이프로 들어오면 와이프가 덮기 전 프레임으로 당긴다.
 // perSub 장면은 마지막 자막을 뺀 자막마다 "그 자막 끝 10프레임 전" still 을 더 만든다 (S25-66.png).
 // ---------------------------------------------------------------------------
-// 가이드 목록(S14, S16~S19, S25~S29) 외에 S10, S22~S24, S30 도 자막마다 그림이 바뀌어 자막 단위 still 을 더 만든다.
+// 가이드 목록(S14, S16~S19, S25~S29) 외에 S10, S22, S24, S30 도 자막마다 그림이 바뀌어 자막 단위 still 을 더 만든다.
 // S04 는 전환 장면이라 장면 끝이 빈 네이비 → 색이 빠진 카드와 찢어지는 종이가 함께 보이는 S04-wipe.png 를 더 만든다.
 export type StoryShot = {readonly file: string; readonly scene: string; readonly frame: number; readonly subs: readonly number[]};
 
