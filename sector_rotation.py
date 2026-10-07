@@ -17,6 +17,9 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v1.02.0 - 2026-10-07 - [R148 표시 고침 — 00 '다음 거래일 배분 - 섹터' 순위 분모(순위 12/11처럼 분모가 작던 것 → 순위 매긴 후보 수 · SPY 포함) · S★ 무변경]
+#    R148 연구(r148/sgreedy148 · 사용자 기준 월 평균 3개 · R143 조각 후보 2,315 · 긴 이력 3창 + 날짜 대조군): 통과 조각 2개(WALCL 5일 변화 하위 10% → 모멘텀 쏠림)는
+#      2018~ 5일만 켜지고 월회피 +0.2 · 월배수 +0.00004뿐이라 넣지 않았다. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.01.0 - 2026-10-07 - [R147 00O_월평균판단 · 오라클 80% 목표 · 섹터 가상 숏 측정 행 — S★ 규칙·비중 무변경]
 #    사용자 지시(2026-10-07): 하락 예측이 정말 확실할 때 숏 · 애매하면 현금 · 숏 티커 없으면 가상 숏 · 월별 수익배수·참여·회피 평균으로 판단 · 목표 = 오라클 롱·숏의 80%.
 #    ── s_r147_block(→ M.r147_sheet): 라이브 S★ · 측정 R147_S_MEASURE 'SPY 63일 상위 20% & S★ 현금 몫 → 63일 수익 가장 약한 섹터 1개 가상 숏 100%'
@@ -3225,7 +3228,7 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v1.01.0"
+VERSION = "v1.02.0"
 VERSION_DATE = "2026-10-07"
 
 # =============================================================================
@@ -19349,7 +19352,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             st_txt = STATE_SHORT.get(st_t, st_t) if isinstance(st_t, str) else "미상장"
             rp = alloc["rank_pos"][t].iloc[-1]
             comp_t = alloc["composite"][t].iloc[-1]
-            rp_txt = (f"순위 {int(rp)}/{int(alloc['n_eligible'].iloc[-1])}, 복합순위점수 {comp_t:.2f}" if pd.notna(rp)
+            rp_txt = (f"순위 {int(rp)}/{int(alloc['rank_pos'].iloc[-1].notna().sum())}, 복합순위점수 {comp_t:.2f}" if pd.notna(rp)   # [v1.02.0] 분모 = 순위 매긴 후보 수(SPY 포함 — 'n/11'이 12를 넘던 표시 오류)
                       else ("순위 없음(제외 국면/신호 없음)" if sel_last else "순위 없음(올해 채택 신호 없음)"))
             nd_rows.append((f"다음 거래일 배분 - {t}", f"{w:.1%}  ({st_txt}, {rp_txt})"))
         nd_rows.append(("다음 거래일 배분 - 합계/현금", f"섹터+SPY 합계 {total:.1%} / 현금 {max(0.0, 1 - total):.1%} (E_t={e_last:.2f})"))
