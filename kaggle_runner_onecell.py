@@ -121,9 +121,12 @@ for n in ("paper_account.json", "paper_trades.csv", "paper_equity.csv"):    # �
         shutil.copy(p, os.path.join(OUT, n)); print("이어 쓰기:", n)
 
 _P = PRESETS[STRATEGY]
-UNI = (k_symbols(SIG, min_weight=_P.get("k_min_weight", 0.0)) if _P.get("k_universe") else dict(DEFAULT_UNIVERSE))
+UNI = (k_symbols(SIG, min_weight=_P.get("k_min_weight", 0.0), small_to_etf=_P.get("k_small_to_etf", False))
+       if _P.get("k_universe") else dict(DEFAULT_UNIVERSE))
 if len(UNI) > len(DEFAULT_UNIVERSE):            # K v0.33+: S&P 500 전 종목에서 고름 → K가 배분한 종목·섹터 ETF도 거래 대상
     print(f"K 배분 종목 추가 {len(UNI) - len(DEFAULT_UNIVERSE)}종: {', '.join(sorted(set(UNI) - set(DEFAULT_UNIVERSE)))}")
+_inv = sorted(set(UNI) & set(INVERSE_1X_ETFS))   # K v0.36+ 숏 = 실제 −1배 ETF 매수(공매도·레버리지 아님)
+print(f"K 숏(−1배 ETF) {len(_inv)}종: {', '.join(f'{e}←{INVERSE_1X_ETFS[e]}' for e in _inv) or '없음'}")
 cfg = Config(**_P, symbols=UNI, paper_cash=PAPER_CASH, quote_source=QUOTE_SOURCE, signals_dir=SIG, mock=KIWOOM_MOCK,
              paper_state=f"{OUT}/paper_account.json", trade_log=f"{OUT}/paper_trades.csv", equity_log=f"{OUT}/paper_equity.csv")
 assert cfg.leverage == 1.0 and not (set(cfg.symbols) & LEVERAGED_ETFS), "레버리지(신용·레버리지 ETF) 사용 금지"

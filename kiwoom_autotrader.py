@@ -1,3 +1,16 @@
+# VERSION: v1.1.0 — 2026-10-07 — K v0.36 숏(실제 −1배 ETF) 따라가기 · AVB→MAA · 2% 미만 K 비중 섹터 ETF로(선택) · M v1.86·S v1.02·I v0.66
+# CHANGELOG
+#  v1.1.0 (2026-10-07) 리포트 M v1.86 · S v1.02 · I v0.66 · K v0.36 대응
+#    - _k_col: K 13c '숏:NVDD' 열 → 티커 'NVDD'(−1배 ETF를 사서 보유 = 숏 노출, 공매도·신용 없음). 이전에는 정규식에 안 맞아 조용히 버려졌음
+#    - INVERSE_1X_ETFS(K v0.36 R148 목록, 기초 종목 매핑) · 거래소 표 추가 · −1.5~−2배 ETF(TSLQ·NVDS·CONI·SMCZ·TSLZ 등)는 LEVERAGED_ETFS에
+#    - DailySignals.for_day: earn_avoid면 −1배 ETF도 '기초 종목' 실적 발표일에 회피 · 노트에 'K 숏 …' 표시
+#    - Config.k_small_to_etf(기본 False): K 비중 < k_min_weight인 종목 몫을 그 섹터 ETF로 모음(00K 풀 섹터표 · 핵심은 산업→섹터)
+#      k_small_pool_only=True면 핵심 58종 밖 풀 종목 몫만 옮김(K v0.34 R146 바구니를 원래 ETF 다리로 되돌리는 것과 같음)
+#    - REPORT_SHEETS += stock_pool_sector.csv(00K_S&P500풀 티커→섹터 ETF)
+#    - PRIOR_STOCK_TO_INDUSTRY/EXCHANGE += MAA(REZ 대표 · K v0.36이 AVB 대신 씀), ESS·AES·AWK·ATO 거래소
+#  v1.0.0 (2026-10-05) P8(R1→P8) — M v1.85 · S v1.00 · I v0.65 · K v0.33+ 대응(이 파일에 버전 표기를 붙이기 전 마지막 상태)
+# 연구·교육용 가상거래 도구이며 투자 자문이 아닙니다. 실제 주문은 잠겨 있습니다(ALLOW_ORDERS=False).
+
 # %% [markdown]
 # ## 1. 공통 유틸
 # 미국 장 시간은 **뉴욕 시간(ET)** 으로 계산합니다(서머타임 자동 반영). 로그에는 한국 시간과 뉴욕 시간을 함께 찍습니다.
@@ -91,7 +104,7 @@ PRIOR_STOCK_TO_INDUSTRY = {
     "NVDA": "SOXX", "MSFT": "IGV", "ORCL": "SKYY", "CRWD": "HACK", "AMGN": "IBB", "INCY": "XBI", "LLY": "IHE",
     "ISRG": "IHI", "UNH": "IHF", "TGT": "XRT", "DHI": "XHB", "BKNG": "PEJ", "TSLA": "CARZ", "PEP": "PBJ",
     "JPM": "KBE", "USB": "KRE", "PGR": "KIE", "GS": "KCE", "RTX": "ITA", "UNP": "IYT", "DAL": "JETS",
-    "VZ": "IYZ", "GOOGL": "FDN", "META": "SOCL", "AVB": "REZ", "EOG": "XOP", "SLB": "XES", "FCX": "XME",
+    "VZ": "IYZ", "GOOGL": "FDN", "META": "SOCL", "AVB": "REZ", "MAA": "REZ", "EOG": "XOP", "SLB": "XES", "FCX": "XME",
     "NEM": "GDX",
     "CRDO": "SOXX", "AVGO": "SOXX", "MU": "SOXX", "LRCX": "SOXX", "MRVL": "SOXX", "AMD": "SOXX", "INTC": "SOXX",
     "SNDK": "SOXX", "CRM": "IGV", "NOW": "IGV", "CDNS": "IGV", "SHOP": "IGV", "DDOG": "SKYY", "MDB": "SKYY",
@@ -115,7 +128,7 @@ PRIOR_STOCK_EXCHANGE = {
     "MNST": "ND", "MRVL": "ND", "MSFT": "ND", "MU": "ND", "NEM": "NY", "NET": "NY", "NOW": "NY", "NVDA": "ND",
     "ORCL": "NY", "PANW": "ND", "PEP": "ND", "PGR": "NY", "RL": "NY", "ROST": "ND", "RTX": "NY", "SHIP": "ND",
     "SHOP": "ND", "SLB": "NY", "SNDK": "ND", "STX": "ND", "TGT": "NY", "TSLA": "ND", "UNH": "NY", "UNP": "NY",
-    "USB": "NY", "VZ": "NY", "WDC": "ND",
+    "USB": "NY", "VZ": "NY", "WDC": "ND", "MAA": "NY",   # MAA: K v0.36부터 AVB 대신 주거 리츠(REZ) 대표
 }
 
 
@@ -125,12 +138,19 @@ PRIOR_STOCK_EXCHANGE.update({
     "ABBV": "NY", "APH": "NY", "ANET": "NY", "CLX": "NY", "COST": "ND", "DVN": "NY", "EXC": "ND", "FSLR": "ND",
     "IT": "NY", "GDDY": "NY", "IBM": "NY", "JBL": "NY", "KEYS": "NY", "KLAC": "ND", "KR": "NY", "LITE": "ND",
     "MCK": "NY", "MPWR": "ND", "NFLX": "ND", "NWS": "ND", "NEE": "NY", "ON": "ND", "PLTR": "ND", "PM": "NY",
-    "SWKS": "ND", "TER": "ND", "VRSN": "ND", "VST": "NY",
+    "SWKS": "ND", "TER": "ND", "VRSN": "ND", "VST": "NY", "ESS": "NY", "AES": "NY", "AWK": "NY", "ATO": "NY",
     **{e: "NA" for e in ("XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY")},   # NYSE Arca(SPY와 같게)
 })
+# K v0.36(R148) 숏 = 실제 −1배 ETF를 사서 보유(공매도·신용 아님). {ETF: 기초 종목} — 실적 발표 회피는 기초 종목 날짜로
+INVERSE_1X_ETFS = {"AAPD": "AAPL", "AMZD": "AMZN", "GGLS": "GOOGL", "MSFD": "MSFT", "NVDD": "NVDA", "TSLS": "TSLA",
+                   "METD": "META", "AMDD": "AMD", "PLTD": "PLTR", "MUD": "MU", "NFXS": "NFLX", "ORCS": "ORCL", "SEF": "XLF"}
+PRIOR_STOCK_EXCHANGE.update({e: "ND" for e in INVERSE_1X_ETFS if e != "SEF"})   # 2026-10 야후: NGM(나스닥)
+PRIOR_STOCK_EXCHANGE["SEF"] = "NA"                                               # PCX(NYSE Arca)
+SECTOR_ETFS = ("XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY")
 # 레버리지 상품(사용 금지 — 실행기에서 이 종목이 들어오거나 leverage ≠ 1이면 멈춤)
 LEVERAGED_ETFS = {"TQQQ", "QLD", "UPRO", "SSO", "SPXL", "TNA", "SOXL", "USD", "TECL", "ROM", "LABU", "FAS", "NVDL",
-                  "TSLL", "CONL", "SQQQ", "SOXS", "SPXU", "SDS", "TZA", "FNGU", "MSTU", "MSTX", "NVDU", "TSLT"}
+                  "TSLL", "CONL", "SQQQ", "SOXS", "SPXU", "SDS", "TZA", "FNGU", "MSTU", "MSTX", "NVDU", "TSLT",
+                  "TSLQ", "NVDS", "CONI", "SMCZ", "TSLZ", "TSDD", "NVD", "QID", "PSQ2"}   # −1.4배 이상 인버스(K v0.35가 제외한 것)도 금지
 
 
 @dataclass
@@ -218,6 +238,8 @@ class Config:
     k_exit_days: int = 1              # K 비중이 이 거래일 연속 0이어야 K 몫을 팖(1 = 0 되는 날 바로)
     k_top: int = 0                    # >0: 그날 K 비중 상위 N종만 따라감
     k_equal_pct: float = 0.0          # >0: K 몫 종목마다 K 비중과 상관없이 자산의 이 %만큼(k_top과 함께 — K 상위 N종 동일비중)
+    k_small_to_etf: bool = False      # True: K 비중 < k_min_weight인 종목 몫을 그 섹터 ETF로 모음(K v0.34+ 작은 바구니 → 섹터 노출 유지)
+    k_small_pool_only: bool = False   # True: 위 옮기기를 58종(핵심) 밖 S&P 500 풀 종목에만(핵심 종목 작은 몫은 그대로 = 안 삼)
     k_drop1_max: float = 0.0          # >0: K '다음날 하락확률(%)'이 이 값 이상인 종목은 K 몫으로 새로 사지 않음(K v0.33+)
     rot_base_only: bool = False       # True: 모멘텀 로테이션 후보는 기본 58종만(K가 더한 S&P 500 종목은 K 몫으로만)
     k_fit: bool = False               # True: K 몫 배율을 min(k_rot_scale, (1 − 모멘텀 몫) ÷ 그날 K 비중 합)으로 — 현금 넘침 없이
@@ -323,7 +345,8 @@ PRESETS = {
            "rot_at_open": True, "max_positions": 30, "earn_avoid": True, "regime_scale": False, "sector_filter": False,
            "trend_ma_days": 0, "daily_loss_pct": 100.0, "max_trades_per_symbol": 2,
            "hold_loser_days": 20, "hold_loser_riskoff": True, "hold_loser_stop_pct": 8.0, "earn_hold_loser": True},
-    # P8(추천, 2026-10-05, M v1.85 · S v1.00 · I v0.65 · K v0.33+ 대응): K가 S&P 500에서 고른 종목·섹터 ETF까지 따라감
+    # P8(추천, 2026-10-05, M v1.85 · S v1.00 · I v0.65 · K v0.33+ 대응 · 2026-10-07 v1.1.0: K v0.36 숏 −1배 ETF도 같은 규칙으로 — 값 그대로가 v4에서도 최고)
+    #     : K가 S&P 500에서 고른 종목·섹터 ETF까지 따라감
     #     (모멘텀 후보는 58종) + 같은 순간 매도 먼저·매수는 정해진 순서(체결 순서 영향 제거) + K×1.5 + 168일 모멘텀 1위 35%
     "P8": {"entry_mode": "k+rot", "k_rot_scale": 1.5, "k_min_weight": 0.02, "k_exit_days": 3,
            "rot_top": 1, "rot_keep": 2, "rot_pct": 35.0, "rot_days": 168, "rot_skip": 21, "rot_every": 5,
@@ -355,9 +378,10 @@ PRESET_NOTES = {
           "(국면 0·실적 발표 때도, 손실 8% 넘으면 바로 매도) — 과거 +6,667% (MDD −13.92%, 승률 82.7%, 샤프 3.20). "
           "모멘텀 기간에 민감(189일이면 MDD −20%). ⚠️ 현금이 모자랄 때 티커 알파벳 순서로 먼저 사는 덕을 봄 — "
           "순서 영향을 없애면(batch_buys) MDD −20.7%",
-    "P8": "M v1.85 · S v1.00 · I v0.65 · K v0.33+ 대응: K가 S&P 500에서 고른 종목·섹터 ETF까지 K 비중 × 1.5로 따라감 + "
-          "168일 모멘텀 1위(58종 중) 35%, 손실 중 매도 신호면 본전까지 최대 20거래일 대기(손실 8% 넘으면 매도), "
-          "같은 순간 매도 먼저·매수는 모멘텀 → K 비중 큰 순 — 과거 +5,419% (MDD −14.79%, 승률 83.5%, 샤프 3.25)",
+    "P8": "M v1.86 · S v1.02 · I v0.66 · K v0.36 대응: K가 S&P 500에서 고른 종목·섹터 ETF·숏(실제 −1배 ETF)까지 K 비중 × 1.5로 따라감 + "
+          "168일 모멘텀 1위(59종 중) 35%, 손실 중 매도 신호면 본전까지 최대 20거래일 대기(손실 8% 넘으면 매도), "
+          "같은 순간 매도 먼저·매수는 모멘텀 → K 비중 큰 순 — 과거 +4,732% (MDD −14.61%, 승률 83.6%, 샤프 3.18) · "
+          "K v0.33 신호로는 +5,419%(감소분은 K v0.34 예측 바구니 — 2% 미만 몫은 안 삼)",
 }
 
 
@@ -908,6 +932,7 @@ REPORT_SHEETS = {
     "stock_allocation_daily.csv": ("stock_regime_report_v*.xlsx", "13c_일별배분비중"),
     "stock_daily.csv": ("stock_regime_report_v*.xlsx", "01Z_주식일별예측"),
     "earnings_dates.csv": ("stock_regime_report_v*.xlsx", "05_어닝이벤트"),   # 종목별 실적 발표일(앞으로 예정된 날 포함)
+    "stock_pool_sector.csv": ("stock_regime_report_v*.xlsx", "00K_S&P500풀"),   # K v0.33+ 풀 종목 → 섹터 ETF(k_small_to_etf)
 }
 
 
@@ -938,17 +963,43 @@ def signals_from_reports(report_dir, out_dir) -> dict:
             df = pd.read_excel(files[-1], sheet_name=sheet)
         df.to_csv(os.path.join(out_dir, name), index=False, encoding="utf-8-sig")
         dcol = "발표일" if "발표일" in df.columns else df.columns[0]          # 실적 발표일 표는 첫 열이 티커
-        last = pd.to_datetime(df[dcol], errors="coerce").max()
+        last = pd.to_datetime(df[dcol], errors="coerce", format="mixed").max() if dcol != "티커" else pd.NaT
         done[name] = os.path.basename(files[-1]) + (f" · ~{last:%Y-%m-%d}" if pd.notna(last) else "")
     return done
 
 
 def _k_col(c):
+    """K 13c 열 이름 → 티커. 'ETF_XLK' → 'XLK' (v0.33+), '숏:NVDD' → 'NVDD' (v0.36+ 실제 −1배 ETF, 확률 열도 같은 규칙)."""
     c = str(c)
+    if c.startswith("숏:"):
+        c = c[2:]
     return c[4:] if c.startswith("ETF_") else c
 
 
-def k_symbols(signals_dir, base=None, since="2023-11-01", min_weight=0.0) -> dict:
+def _pool_sector(signals_dir) -> dict:
+    """{티커: 섹터 ETF} — K 00K 풀 표(있으면) + 핵심 종목(산업 → 섹터)."""
+    out = {t: PRIOR_INDUSTRY_TO_SECTOR.get(i) for t, i in PRIOR_STOCK_TO_INDUSTRY.items() if PRIOR_INDUSTRY_TO_SECTOR.get(i)}
+    p = os.path.join(signals_dir or "", "stock_pool_sector.csv")
+    if os.path.exists(p):
+        df = pd.read_csv(p, encoding="utf-8-sig")
+        if {"티커", "섹터 ETF"} <= set(df.columns):
+            out.update({str(t).upper(): str(e) for t, e in zip(df["티커"], df["섹터 ETF"]) if str(e) in SECTOR_ETFS})
+    return out
+
+
+def k_small_to_etf(w: dict, min_weight: float, sector: dict, keep=()) -> tuple:
+    """K 비중 dict에서 min_weight 미만 '종목' 몫을 그 섹터 ETF로 옮김(ETF·−1배 ETF·섹터 모르는 종목은 그대로). → (새 dict, 옮긴 합)"""
+    out, moved = dict(w), 0.0
+    for t, v in w.items():
+        e = sector.get(t)
+        if 0 < v < min_weight and e and t not in SECTOR_ETFS and t not in INVERSE_1X_ETFS and t not in keep:
+            out[e] = out.get(e, 0.0) + v
+            out.pop(t)
+            moved += v
+    return out, moved
+
+
+def k_symbols(signals_dir, base=None, since="2023-11-01", min_weight=0.0, small_to_etf=False) -> dict:
     """K 배분표에서 since 이후 비중이 한 번이라도 min_weight 이상인 종목을 base(기본 58종)에 더함 → {티커: 거래소}.
     K v0.33+는 S&P 500 전 종목에서 고르므로 58종 밖 종목·섹터 ETF도 따라가려면 거래 대상에 넣어야 함."""
     out = dict(DEFAULT_UNIVERSE if base is None else base)
@@ -959,6 +1010,8 @@ def k_symbols(signals_dir, base=None, since="2023-11-01", min_weight=0.0) -> dic
     k = k[k.index >= pd.Timestamp(since)] if since else k
     k.columns = [_k_col(c) for c in k.columns]
     skip = {"날짜", "구분", "★ 합계", "현금"}
+    if small_to_etf:                                  # 작은 몫을 섹터 ETF로 모으면 그 ETF들도 거래 대상
+        out.update({e: PRIOR_STOCK_EXCHANGE.get(e, "NA") for e in SECTOR_ETFS})
     for t in k.columns:
         if t in skip or "확률" in t or not re.fullmatch(r"[A-Z][A-Z.\-]{0,6}", t):
             continue
@@ -1028,8 +1081,13 @@ class DailySignals:
         self.i = need("industry_allocation_daily.csv") if cfg.industry_filter else None
         self.ip = need("industry_daily.csv") if cfg.rank_col else None
         self.k = need("stock_allocation_daily.csv") if (cfg.stock_filter or cfg.entry_mode.startswith("k")) else None
-        if self.k is not None:                                   # K v0.33+: 섹터 ETF 열 'ETF_XLK' → 티커 'XLK'
+        self.sector = {}
+        if self.k is not None:                                   # K v0.33+: 'ETF_XLK' → 'XLK' · v0.36+: '숏:NVDD' → 'NVDD'
             self.k.columns = [_k_col(c) for c in self.k.columns]
+            self.k = self.k.loc[:, ~self.k.columns.duplicated()]
+            if cfg.k_small_to_etf:
+                self.sector = _pool_sector(d)
+                self._kcols = [t for t in self.k.columns if t not in ("날짜", "구분", "★ 합계", "현금") and "확률" not in t]
         self.earn = {}
         if cfg.earn_avoid:
             p = os.path.join(d, "earnings_dates.csv") if d else ""
@@ -1096,7 +1154,17 @@ class DailySignals:
         kw, kp1 = None, None
         if self.k is not None:
             r = self._asof(self.k, day)
-            kw = {} if r is None else {t: to_num(r.get(t), 0) for t in self.codes if to_num(r.get(t), 0) > 0}
+            if r is not None and c.k_small_to_etf and c.k_min_weight > 0:    # 작은 몫 → 섹터 ETF(전체 열에서 먼저 모음)
+                full = {t: to_num(r.get(t), 0) for t in self._kcols}
+                full, moved = k_small_to_etf({t: v for t, v in full.items() if v > 0}, c.k_min_weight, self.sector,
+                                             keep=DEFAULT_UNIVERSE if c.k_small_pool_only else ())
+                kw = {t: v for t, v in full.items() if t in self.codes}
+                notes.append(f"K 작은몫→ETF {moved:.1%}")
+            else:
+                kw = {} if r is None else {t: to_num(r.get(t), 0) for t in self.codes if to_num(r.get(t), 0) > 0}
+            shorts = {t: v for t, v in kw.items() if t in INVERSE_1X_ETFS}
+            if shorts:
+                notes.append("K 숏 " + ",".join(f"{t}({INVERSE_1X_ETFS[t]}) {v:.1%}" for t, v in shorts.items()))
             kp1 = {} if r is None else {t: to_num(r.get(f"{t} 다음날 하락확률(%)"), np.nan) for t in self.codes
                                         if f"{t} 다음날 하락확률(%)" in r.index}
             notes.append(f"K {len(kw)}종 {sum(kw.values()):.0%}")
@@ -1108,7 +1176,7 @@ class DailySignals:
         if self.earn:
             d0 = pd.Timestamp(day).date()
             d1 = (pd.Timestamp(day) + pd.offsets.BDay(1)).date()
-            black = {t for t in self.codes if self.earn.get(t, set()) & {d0, d1}}
+            black = {t for t in self.codes if self.earn.get(INVERSE_1X_ETFS.get(t, t), set()) & {d0, d1}}   # −1배 ETF = 기초 종목 날짜
             if black:
                 notes.append(f"실적발표 회피 {','.join(sorted(black))}")
         return DaySignal(exp, elig, " · ".join(notes), kw, black, kp1)
