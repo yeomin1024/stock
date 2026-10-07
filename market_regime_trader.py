@@ -22,6 +22,16 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.87.0 - 2026-10-07 - [R149 ★ 월 평균 수익 50% 목표(00O 블록 E + 00 줄) — 네 층 공용 · 신호·비중 무변경]
+#    사용자 지시(2026-10-07): "월 평균 수익이 50%이상이 되도록 목표치를 잡아서 계속 탐색해서 테스트해봐".
+#    ── r147_sheet에 블록 E(행마다 월 평균 수익 · 목표 50% · 달성률 · 50% 넘은 달 · 최고·중앙 달) + 그 층 자산 묶음 상한(정답을 미리 앎 · 종가→종가 · 비용 없음:
+#      매일 1자산 롱 · 롱+가상 −1배 숏 · 달마다 1자산) + 00 줄 'R149'. R149_TARGET_MON = 0.50 · R149_RESEARCH(공통 연구 결론 + 층별).
+#    ── 연구(r149 · 그 시점 S&P 500 회원 660종목 · 2008-07~2026-09): 그달 최고 1종목을 매달 미리 알아도 월 평균 41.1%(2018~) · 39.7%(2010~17) ·
+#      주 단위 상위 10종목을 다 맞혀야 61.5% · 층별 상한(매일 정답 1자산 · 2018~): M 롱 9.4 · 롱+숏 18.7 | S 36.4 · 60.6 | I 79.2 · 126.5 | K 635.5%.
+#      정직한 신호(모멘텀 12-1·6-1·3·1 · 반전 · 52주 고점 · 변동성 · 상승확률 · 저위험 · LightGBM 12특징 · 주간·월간 · 상위 1~20 · SPY 추세 필터) —
+#      2010~17에서 고른 최상(주간 1달 반전 상위1 9.2%)은 2018~ −0.1%(MDD −97%) · 두 구간 모두 버틴 건 월간 모멘텀 12-1 상위1(4.6% · 5.7% · MDD −81% · −73%)뿐 ·
+#      LightGBM 순위 IC 0.01 · 무작위 1종목 최고 3.2%. K 라이브(R148 · 월 5.44% · 월 MDD −5.6%)에 집중 몫을 섞어도 최대 6.06%(MDD −34% · 손실 달 6 → 29) → 라이브 변경 없음.
+#    시험 t149/test_r149.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.86.0 - 2026-10-07 - [R147 ★ 월별 평균 판단(00O) · 오라클 80% 목표 · 숏 측정 행 — 네 층 공용 도우미 · 신호·비중 무변경]
 #    사용자 지시(2026-10-07): "국면·섹터·산업 층 티커별로 하락 예측이 정말 확실할 때 숏 비중을 늘릴 수 있도록 · 애매할 때는 현금 · 숏 티커가 없으면 가상의 숏 티커 ·
 #      주식 층은 실제로 존재하는 숏 티커만 · 성과 요약을 월별 수익배수 평균·월별 참여 평균·월별 회피 평균으로 판단 · 목표 = 월별로 모든 정답을 맞췄을 때
@@ -11437,6 +11447,43 @@ R147_RESEARCH = {
 }
 
 
+# [v1.87.0 R149 ★ 사용자 지시 2026-10-07] "월 평균 수익이 50%이상이 되도록 목표치를 잡아서 계속 탐색해서 테스트해봐" — 00O 블록 E · 00 줄.
+R149_TARGET_MON = 0.50
+R149_RESEARCH = {
+    "공통": ("연구(r149 · 그 시점 S&P 500 회원 660종목 · 2008~2026): 그달 가장 많이 오를 1종목을 매달 미리 알아도 월 평균 41.1%(2018~) · 39.7%(2010~17) — "
+             "50%는 주마다 상위 10종목을 다 맞혀야(61.5%) 닿는다. 정직한 신호(모멘텀 12-1·6-1·3·1 · 반전 · 52주 고점 · 변동성 · 상승확률 · 저위험 · LightGBM 12특징 · "
+             "주간·월간 · 상위 1~20 · SPY 추세 필터 · 약 200설정): 2010~17에서 고른 최상(주간 반전 상위1 9.2%)은 2018~ −0.1%(MDD −97%) · 두 구간 모두 버틴 건 "
+             "모멘텀 12-1 상위1(4.6% · 5.7% · MDD −81% · −73%)뿐 · LightGBM 순위 IC 0.01 · 무작위 1종목 최고 3.2%. "
+             "K 라이브(월 5.44%)에 집중 몫을 섞어도 최대 6.06%(MDD −34% · 손실 달 6 → 29) → 라이브 변경 없음. 레버리지 금지 · 숏은 현금 몫 안에서만."),
+    "M": "M 자산(SPY · SH)으로는 매일 정답을 다 맞혀도 월 18.7%(롱만 9.4%) → 레버리지 없이 50%는 원리상 불가.",
+    "S": "섹터 11 + SPY: 매일 정답 1개 롱 36.4% · 롱+가상 숏 60.6% · 달마다 정답 1개 7.6% → 50%는 매일 정답을 거의 다 맞혀야.",
+    "I": "산업 ETF 29: 매일 정답 1개 롱 79.2% · 오른 산업 균등 25.2% → 50%는 매일 상위 산업을 맞혀야.",
+    "K": "주식: 매일 정답 1종목 636% · 주마다 상위 10종목 61% · 달마다 1종목 41% → 50%는 주 단위 이상으로 정답을 맞혀야(예측력 동전 수준).",
+}
+
+
+def r149_ceilings(R_univ: Optional[pd.DataFrame], idx: pd.Index) -> Dict[str, float]:
+    """[R149] 그 층 자산 묶음으로 낼 수 있는 월 평균 수익 상한(%) — 정답을 미리 앎 · 종가→종가 · 비용 없음 · 하루 ±60% 넘는 값은 자료 오류로 뺌.
+    매일 1자산 롱(그날 가장 많이 오른 자산 · 다 내리면 현금) · 롱 + 가상 −1배 숏(그날 가장 크게 움직인 쪽) · 달마다 1자산(그달 가장 많이 오른 자산)."""
+    if not isinstance(R_univ, pd.DataFrame) or not R_univ.shape[1] or not len(idx):
+        return {}
+    R = R_univ.apply(pd.to_numeric, errors="coerce").reindex(idx)
+    R = R.where(R.abs() <= 0.6)
+    A = R.to_numpy(dtype=float)
+    fin = np.isfinite(A)
+    lo = np.where(fin, A, -np.inf).max(axis=1)
+    lo = np.where(np.isfinite(lo) & (lo > 0), lo, 0.0)
+    sh = np.where(fin, -A - R147_SHORT_FEE / 252.0, -np.inf).max(axis=1)
+    sh = np.where(np.isfinite(sh) & (sh > 0), sh, 0.0)
+    per = R.index.to_period("M")
+    Rm = (1 + R.fillna(0.0)).groupby(per).prod() - 1
+    has = R.notna().groupby(per).sum() > 0
+    bm = Rm.where(has).max(axis=1).clip(lower=0.0).fillna(0.0)
+    return {"매일 정답 1자산(롱)": float(_r147_mon(pd.Series(lo, index=idx)).mean() * 100),
+            "매일 정답 1자산(롱 + 가상 −1배 숏)": float(_r147_mon(pd.Series(np.maximum(lo, sh), index=idx)).mean() * 100),
+            "달마다 정답 1자산(롱 · 그달 최고)": float(bm.mean() * 100), "자산 수": int(R.shape[1])}
+
+
 def r147_cond(x: pd.Series, side: str, q: float, min_periods: int = 500) -> pd.Series:
     """[R147] 확장 분위(최소 500일 · 하루 늦춤) 위/아래 — 연구 r147(mscan147.cond)과 같은 산식."""
     x = pd.to_numeric(pd.Series(x), errors="coerce")
@@ -11540,6 +11587,35 @@ def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series],
         orl, ors = _r147_mon(orc["_rl"]), _r147_mon(orc["_rs"])
     else:
         orl = ors = None
+    # [v1.87.0 R149] E. 월 평균 수익 50% 목표 — 행마다 달성률 · 그 층 상한(정답을 미리 앎)
+    E_blk = "E. 월 평균 수익 50% 목표(R149 · 사용자 지시 2026-10-07)"
+    E, e0 = [], None
+    for nm, (r_, t_, l_, s_) in keep.items():
+        mo = _r147_mon(r_)
+        v = (t_["월배수평균"] - 1) * 100
+        d = {"블록": E_blk, "방식": nm, "월평균수익(%)": round(v, 2), "목표(%)": R149_TARGET_MON * 100, "달성률(%)": round(v / (R149_TARGET_MON * 100) * 100, 1),
+             "50% 넘은 달": int((mo >= R149_TARGET_MON).sum()), "달": int(len(mo)), "최고 달(%)": round(float(mo.max()) * 100, 2) if len(mo) else None,
+             "중앙 달(%)": round(float(mo.median()) * 100, 2) if len(mo) else None}
+        E.append(d)
+        if e0 is None:
+            e0 = d
+    ceil = r149_ceilings(R_univ, r0.index)
+    for k_, v_ in ceil.items():
+        if k_ == "자산 수":
+            continue
+        E.append({"블록": E_blk, "방식": f"상한: {k_} · {ceil['자산 수']}자산", "월평균수익(%)": round(v_, 2), "목표(%)": R149_TARGET_MON * 100,
+                  "달성률(%)": round(v_ / (R149_TARGET_MON * 100) * 100, 1),
+                  "50% 도달": "미래를 알아야만 가능" if v_ >= R149_TARGET_MON * 100 else "정답을 다 알아도 불가(레버리지 금지)"})
+    lk = (layer.strip()[:1] or "").upper()
+    res149 = R149_RESEARCH.get(lk, "")
+    mo0 = _r147_mon(r0)
+    mon_line = (f"★★★ R149 월 평균 수익 50% 목표(사용자 지시 2026-10-07) · {layer}",
+                f"라이브 월 평균 수익 {e0['월평균수익(%)']:.2f}% → 목표 50% 달성률 {e0['달성률(%)']:.1f}% · 50% 넘은 달 {e0['50% 넘은 달']}/{e0['달']} · "
+                f"최고 달 {e0['최고 달(%)']}% · 중앙 달 {e0['중앙 달(%)']}%"
+                + ((" | 이 층 상한(정답을 미리 앎 · 비용 없음): " + " · ".join(f"{k_} {v_:.1f}%" for k_, v_ in ceil.items() if k_ != "자산 수")
+                    + (" → 정답을 다 알아도 50% 불가(레버리지 금지)" if max(v_ for k_, v_ in ceil.items() if k_ != "자산 수") < R149_TARGET_MON * 100
+                       else " → 미래를 알아야만 50% 가능")) if ceil else "")
+                + f" | {res149} {R149_RESEARCH['공통']} — 세부 00O 블록 E. 연구·교육용, 투자 자문 아님.") if len(mo0) else None
     mr0, ms0 = _r147_mon(r0), _r147_mon(sp.reindex(r0.index).fillna(0.0))
     other = [(nm, _r147_mon(v[0])) for nm, v in keep.items() if nm != live_nm]
     C = []
@@ -11559,10 +11635,12 @@ def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series],
                                                              "같은 월별 평균 → 그 80%가 목표(배수는 이익 부분의 80%). ⚠ 다음날 방향 예측력은 동전 수준(R117·R141·R147 AUC ≈ 0.5)이라 오라클 80%는 미래를 알아야만 닿는다."},
          {"블록": "D. 정의 · 연구 결론", "방식": "숏 규칙", "값": "확실할 때만 숏 · 애매하면 현금 · 숏은 그 층 현금 몫 안에서만(총노출 ≤ 1 · 레버리지 없음) · 실제 −1배 ETF가 있으면 그것("
                                                          + ", ".join(f"{k}→{v}" for k, v in list(R147_REAL_INVERSE.items())[:8]) + " …) · 없으면 가상 숏(−1배 · 보수 0.9%/년) · 주식 층은 실제 ETF만."},
-         {"블록": "D. 정의 · 연구 결론", "방식": "연구 결론", "값": research or "-"}]
+         {"블록": "D. 정의 · 연구 결론", "방식": "연구 결론", "값": research or "-"},
+         {"블록": "D. 정의 · 연구 결론", "방식": "R149 월 평균 수익 50% 목표", "값": "월 평균 수익 = 달마다 Π(1 + 일수익) − 1의 평균(= 월배수 평균 − 1) · 목표 50%(월배수 평균 ×1.50) · "
+                                                                      "상한 = 그 층 자산 묶음에서 정답을 미리 알 때(종가→종가 · 비용 없음). " + (res149 + " " if res149 else "") + R149_RESEARCH["공통"]}]
     if note:
         D.append({"블록": "D. 정의 · 연구 결론", "방식": "참고", "값": note})
-    df = pd.concat([pd.DataFrame(A), pd.DataFrame(B), pd.DataFrame(C), pd.DataFrame(D)], ignore_index=True, sort=False)
+    df = pd.concat([pd.DataFrame(A), pd.DataFrame(B), pd.DataFrame(E), pd.DataFrame(C), pd.DataFrame(D)], ignore_index=True, sort=False)
     lead = ["블록", "방식", "월배수평균", "월참여평균", "월회피평균"]
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
     sh_txt = ""
@@ -11577,7 +11655,7 @@ def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series],
     line = (f"★★★ R147 월별 평균 판단 · 오라클 80% 목표 · 숏(사용자 지시 2026-10-07) · {layer}",
             f"라이브 월배수 평균 ×{t0_['월배수평균']:.4f} · 월참여 평균 {t0_['월참여평균']:.1f} · 월회피 평균 {t0_['월회피평균']:.1f}({t0_['달']}달 · 오른 {t0_['오른달']} · 내린 {t0_['내린달']})"
             + tg_txt + sh_txt + f" | {research} — 세부 00O. 연구·교육용, 투자 자문 아님.")
-    return df, [line]
+    return df, [line] + ([mon_line] if mon_line else [])
 
 
 R147_M_MEASURE: Tuple[Tuple[str, str, float, float], ...] = (("g200", "hi", 0.9, 1.0),)   # (특징, 쪽, 분위, 숏 크기) — 측정 행만(검증 탈락)
@@ -16995,7 +17073,7 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.86.0"
+BUNDLE_VERSION = "v1.87.0"
 BUNDLE_VERSION_DATE = "2026-10-07"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
