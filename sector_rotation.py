@@ -17,6 +17,11 @@ import pandas as pd
 
 # =============================================================================
 #  sector_rotation.py
+#  VERSION: v1.01.0 - 2026-10-07 - [R147 00O_월평균판단 · 오라클 80% 목표 · 섹터 가상 숏 측정 행 — S★ 규칙·비중 무변경]
+#    사용자 지시(2026-10-07): 하락 예측이 정말 확실할 때 숏 · 애매하면 현금 · 숏 티커 없으면 가상 숏 · 월별 수익배수·참여·회피 평균으로 판단 · 목표 = 오라클 롱·숏의 80%.
+#    ── s_r147_block(→ M.r147_sheet): 라이브 S★ · 측정 R147_S_MEASURE 'SPY 63일 상위 20% & S★ 현금 몫 → 63일 수익 가장 약한 섹터 1개 가상 숏 100%'
+#      (XLF는 실제 SEF가 있으나 계산은 가상 근사) · 오라클 = 섹터 11개. 로컬(Kaggle 13c 재현 73.9배 · 2018~): 1.0428 / 158.8 / 139.0 · 목표 롱 ×1.1374 / 401 / 506
+#      (달성률 31 / 40 / 27%). 연구(r147 · 후보 832): 2018~ 판정 216 · 긴 이력 1999~2017 세 창까지 0 → 라이브 숏 없음(측정 행). 시험 t147. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.00.0 - 2026-10-05 - [R145 13c_일별배분비중 비중 옆 '다음날 하락확률(%)' 열 — S★ 규칙·비중 무변경]
 #    사용자 지시(2026-10-05): "왜 일별배분비중에 하락확률 같이 표시안해? 비중옆에 쓰면 되잖아 이건 국면, 섹터, 산업도 똑같이 해".
 #    · 13c의 'X 배분비중' 열마다 바로 뒤 'X 다음날 하락확률(%)'(M.r145_weight_prob_cols · R141의 P와 같은 확률). CSV(sector_allocation_daily.csv)는 그대로.
@@ -3220,8 +3225,8 @@ import pandas as pd
 #  ※ 본 코드는 연구/교육용 도구이며 투자 자문이 아니다. (Not financial advice)
 # =============================================================================
 
-VERSION = "v1.00.0"
-VERSION_DATE = "2026-10-05"
+VERSION = "v1.01.0"
+VERSION_DATE = "2026-10-07"
 
 # =============================================================================
 # [0] 섹터 유니버스
@@ -8902,7 +8907,7 @@ def parse_ff49_daily_csv(text: str) -> pd.DataFrame:
     return df.sort_index()
 
 
-LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.85.0", "sector_rotation": "v1.00.0", "industry_rotation": "v0.65.0"}   # [v1.00.0 R145]
+LAYER_MIN_VERSIONS = {"market_regime_trader": "v1.86.0", "sector_rotation": "v1.01.0", "industry_rotation": "v0.66.0"}   # [v1.01.0 R147]
 
 
 def layer_version_note(skip: str = "", M=None) -> str:
@@ -20056,6 +20061,16 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
                 sheets["13c_일별배분비중"] = _M117.r145_weight_prob_cols(sheets["13c_일별배분비중"], _P141, suffix=" 다음날 하락확률(%)")
     except Exception as _e141:
         log("REPORT", kv(event="r141_failed", layer="S", err=type(_e141).__name__, msg=str(_e141)[:160]), M=M, level="warning")
+    # [v1.01.0 R147 ★ 사용자 지시 2026-10-07] 00O_월평균판단 · 00 줄(맨 앞) — 월별 평균 판단 · 오라클 80% 목표 · 숏 측정 행
+    try:
+        if _M117 is not None and hasattr(_M117, "r147_sheet"):
+            _b147 = s_r147_block(sres, _M117)
+            if isinstance(_b147.get("sheet"), pd.DataFrame) and len(_b147["sheet"]):
+                sheets[_M117.R147_SHEET] = _b147["sheet"]
+                for _k, _v in reversed(_b147["lines"]):
+                    meta.insert(1, (_k, _v))
+    except Exception as _e147:
+        log("REPORT", kv(event="r147_failed", layer="S", err=type(_e147).__name__, msg=str(_e147)[:160]), M=M, level="warning")
     # [v0.96.0 R134] M 바구니별 처리 + XLK 채움 00 줄(맨 앞)
     try:
         _d134 = (((sres.get("alloc") or {}).get("diag") or {}).get("r134")) or {}
@@ -20092,7 +20107,7 @@ def build_sector_report(sres: Dict[str, Any], M=None, path: Optional[str] = None
             meta.insert(1, _l143)
     except Exception as _e143:
         log("REPORT", kv(event="r143_line_failed", layer="S", err=type(_e143).__name__, msg=str(_e143)[:160]), M=M, level="warning")
-    sheets = sheets_to_front(sheets, "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
+    sheets = sheets_to_front(sheets, "00O_월평균판단", "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
                              "00V_상태판정검증", "00T_섹터상태판", "00S_섹터자기근거", "00R_신뢰도판정",
                              "00B_수익곡선비교", "00C_곡선데이터", "00A_수익비교")
     # [v0.62.0 R80] 실제 거래에 쓰는 전략 행 노란색 — 13_섹터배분전략 ★ · 06_성과요약은 섹터별 단독(진단)이라 표시하지 않는다.
@@ -21420,6 +21435,74 @@ def consistency_grade(d: Dict[str, Any]) -> str:
     if mp >= m_[0] and qp >= m_[1] and mw >= m_[2]:
         return "중간"
     return "낮음"
+
+
+R147_S_MEASURE: Tuple[str, str, float, int, float] = ("mom63", "hi", 0.8, 1, 1.0)   # (SPY 특징, 쪽, 분위, 섹터 k, 숏 크기) — 측정 행만(검증 탈락)
+
+
+def s_r147_block(sres: Dict[str, Any], M, layer: str = "S★ · 섹터") -> Dict[str, Any]:
+    """[v1.01.0 R147 ★ 사용자 지시 2026-10-07] 00O_월평균판단 — 라이브 S★(롱 · 현금) · 측정: 'SPY 63일 수익 상위 20%(과열) & S★ 현금 몫' →
+    63일 수익 가장 약한 섹터 k개 가상 숏(−1배 · 보수 0.9%/년 · XLF는 실제 SEF가 있으나 계산은 가상 근사) · 같은 체결(portfolio_backtest).
+    오라클 = 섹터 11개(그날 오른 섹터만 균등 롱 · 내린 섹터만 균등 숏)."""
+    a = sres.get("alloc") or {}
+    lab = (a.get("diag") or {}).get("label_primary")
+    bts = a.get("bts") or {}
+    _b = bts.get(lab)
+    r = pd.to_numeric(_b["strategy_ret"], errors="coerce") if (isinstance(_b, pd.DataFrame) and "strategy_ret" in _b.columns) else None
+    tw = a.get("target_w")
+    if r is None or not isinstance(tw, pd.DataFrame):
+        return {}
+    r = r.fillna(0.0)
+    tw = tw.fillna(0.0)
+    idx = tw.index
+    spy = pd.to_numeric(pd.Series(a.get("spy_ret")), errors="coerce").reindex(r.index).fillna(0.0)
+    co, oc = a["ret_co"].reindex(index=idx), a["ret_oc"].reindex(index=idx)
+    secs = [c for c in tw.columns if c != "SPY"]
+    rows = [(f"★ S★ 라이브({lab})", r, r, None)]
+    info: Dict[str, Any] = {}
+    try:
+        f_, side_, q_, k_, s_ = R147_S_MEASURE
+        spy_full = sres.get("spy_tr_full")
+        cond = M.r147_cond(M.r147_spy_feats(spy_full)[f_], side_, q_).reindex(idx).fillna(False).to_numpy(dtype=bool)
+        px = pd.DataFrame({t: (1 + pd.to_numeric((sres.get("sectors") or {}).get(t, {}).get("ret_cc_full"), errors="coerce").fillna(0.0)).cumprod()
+                           for t in secs if isinstance((sres.get("sectors") or {}).get(t, {}).get("ret_cc_full"), pd.Series)})
+        m63 = (px / px.shift(63) - 1).reindex(index=idx, columns=secs).to_numpy(dtype=float)
+        cash = np.clip(1.0 - tw.sum(axis=1).to_numpy(), 0.0, 1.0)
+        sc = np.where(np.isfinite(m63), m63, np.inf)
+        kk = min(int(k_), len(secs))
+        top = np.argsort(sc, axis=1)[:, :kk]
+        rows_ = np.arange(len(idx))[:, None]
+        valid = np.isfinite(sc[rows_, top])
+        nt = valid.sum(axis=1)
+        on = cond & (cash > 1e-9) & (nt > 0)
+        w = np.where(on, cash * float(s_) / np.maximum(nt, 1), 0.0)
+        add = np.zeros((len(idx), len(secs)))
+        np.put_along_axis(add, top, np.where(valid, w[:, None], 0.0), axis=1)
+        scol = ["숏:" + c for c in secs]
+        sw = pd.DataFrame(add, index=idx, columns=scol)
+        sco, soc = M.r147_vshort(co[secs], oc[secs])
+        co_x = pd.concat([co, sco.set_axis(scol, axis=1)], axis=1)
+        oc_x = pd.concat([oc, soc.set_axis(scol, axis=1)], axis=1)
+        kw = dict(rf_daily=a.get("rf_daily"), cost_bps=float(a.get("cost_bps", 5.0) or 5.0), init_exec=a.get("init_exec"), init_prev=a.get("init_prev"))
+
+        def _bt(w_):
+            return pd.to_numeric(portfolio_backtest(w_, co_x, oc_x, **kw)["strategy_ret"], errors="coerce").reindex(r.index).fillna(0.0)
+        tw_x = pd.concat([tw, sw], axis=1)
+        tw_l, tw_s = tw_x.copy(), tw_x.copy()
+        tw_l[scol] = 0.0
+        tw_s[[c for c in tw_x.columns if c not in scol]] = 0.0
+        rt, rl, rs = _bt(tw_x), _bt(tw_l), _bt(tw_s)
+        nm = f"R147 측정: SPY {f_} {'위' if side_ == 'hi' else '아래'} {abs(q_ - (1 if side_ == 'hi' else 0)) * 100:.0f}% & 현금 → 약한 섹터 {kk}개 가상 숏 {float(s_):.0%}"
+        rows.append((nm, rt, rl, rs))
+        info = {"name": nm, "short_days": int(on.sum()), "today": bool(on[-1]) if len(on) else False,
+                "today_names": [secs[j] for j in top[-1][valid[-1]]] if len(on) and on[-1] else []}
+    except Exception as e:
+        info = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+    rows.append(("SPY 단순보유", spy, spy, None))
+    R_u = pd.DataFrame(a.get("ret_cc")).reindex(index=r.index)[[c for c in secs if c in pd.DataFrame(a.get("ret_cc")).columns]]
+    sh, ln = M.r147_sheet(layer, rows, spy, R_u, M.R147_RESEARCH["S"],
+                          note="숏 측정 행은 라이브가 아니다(긴 이력 1999~2017 검증 탈락). 섹터 실제 −1배: XLF→SEF만 있음 · 나머지 가상.")
+    return {"sheet": sh, "lines": ln, "info": info}
 
 
 def period_consistency(r: pd.Series, bench: Optional[pd.Series] = None) -> Dict[str, Any]:

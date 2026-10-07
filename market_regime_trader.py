@@ -22,6 +22,17 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.86.0 - 2026-10-07 - [R147 ★ 월별 평균 판단(00O) · 오라클 80% 목표 · 숏 측정 행 — 네 층 공용 도우미 · 신호·비중 무변경]
+#    사용자 지시(2026-10-07): "국면·섹터·산업 층 티커별로 하락 예측이 정말 확실할 때 숏 비중을 늘릴 수 있도록 · 애매할 때는 현금 · 숏 티커가 없으면 가상의 숏 티커 ·
+#      주식 층은 실제로 존재하는 숏 티커만 · 성과 요약을 월별 수익배수 평균·월별 참여 평균·월별 회피 평균으로 판단 · 목표 = 월별로 모든 정답을 맞췄을 때
+#      롱·숏 각각 수치의 80% 이상 · 계속 탐색·시험".
+#    ── (§1 공용) R147_SHEET(00O_월평균판단) · r147_long_side · r147_short_side · r147_oracle · r147_targets · r147_gap · r147_sheet · r147_cond · r147_spy_feats ·
+#      r147_vshort(가상 −1배 · 보수 0.9%/년) · R147_REAL_INVERSE(실제 −1배 ETF 20: SH PSQ DOG RWM SEF EFZ EUM YXI + 개별주 12 · 회귀 베타 −0.91~−1.01 확인 ·
+#      −1.4배 이상 레버리지 제외) · R147_RESEARCH(층별 연구 결론).
+#    ── (§2 M) r147_m_block: 라이브(롱 · 현금) 1.0247 / 105.7 / 95.2(ms135 · 2018~) — 목표 롱 ×1.0753 / 211 / 300(달성률 33 / 50 / 32%) · 숏 ×1.0650 / 305 / 205 ·
+#      측정 행 R147_M_MEASURE '국면 현금 & SPY 200일선 위 10% → SH 100%'(SPY −1배 근사): 1.0262 / 109.4 / 115.4 — 무작위 현금일 대조군 72/86 백분위 → 라이브 아님.
+#      연구(r147): 국면 현금일 다음날 SPY 2018~ −0.146%(하락 54.7%) vs 2009~2017 +0.162% — 2018~ 현금일 숏은 M을 맞춘 덕(선택력 아님) · 확률 모형 AUC 0.515.
+#    시험 t147/test_r147.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.85.0 - 2026-10-05 - [R145 일별 비중 옆 하락확률 표시(01_일별기록 · 공통 도우미 r145_weight_prob_cols) — 신호·비중 무변경]
 #    사용자 지시(2026-10-05): "왜 일별배분비중에 하락확률 같이 표시안해? 비중옆에 쓰면 되잖아 이건 국면, 섹터, 산업도 똑같이 해".
 #    · 신설 r145_weight_prob_cols(df, P, colmap, suffix, extra) — 일별 비중 표의 자산 비중 열 바로 뒤에 그 자산의 하락확률(%) 열(그날 종가에 계산한 다음 체결일 확률 =
@@ -11399,6 +11410,213 @@ def r145_weight_prob_cols(df: pd.DataFrame, P: Optional[pd.DataFrame], colmap: O
     return res
 
 
+# =============================================================================
+# [v1.86.0 R147 ★ 사용자 지시 2026-10-07] "하락 예측이 정말 확실할 때 숏 비중을 늘릴 수 있도록 · 애매할 때는 현금 · 숏 티커가 없으면 가상의 숏 티커 ·
+#   주식 층은 실제로 존재하는 숏 티커만 · 성과 요약을 월별 수익배수 평균 · 월별 참여 평균 · 월별 회피 평균으로 내서 판단 ·
+#   목표치 = 월별로 모든 정답을 맞췄을 때(오라클) 롱 · 숏 각각 수치의 80% 이상" — 네 층(M · S · I · K) 공용.
+# =============================================================================
+R147_SHEET = "00O_월평균판단"
+R147_MIN_MOVE = 0.01          # |SPY 월수익| < 1%인 달은 비율이 터지므로 참여·회피 평균에서 뺀다(배수 평균에는 넣음)
+R147_TARGET_FRAC = 0.8
+R147_SHORT_FEE = 0.009        # 가상 숏 보수(연) — 실제 −1배 ETF(SH 등) 보수 근사
+# 실제 −1배 ETF(2026-10 회귀 확인: 일간 베타 −0.91 ~ −1.01 · 상관 ≤ −0.97). 레버리지(−1.5 · −2 · −3배)는 제외(사용자 '레버리지 금지').
+R147_REAL_INVERSE = {"SPY": "SH", "QQQ": "PSQ", "DIA": "DOG", "IWM": "RWM", "XLF": "SEF", "EFA": "EFZ", "EEM": "EUM", "FXI": "YXI",
+                     "AAPL": "AAPD", "AMZN": "AMZD", "GOOGL": "GGLS", "MSFT": "MSFD", "NVDA": "NVDD", "TSLA": "TSLS", "META": "METD",
+                     "AMD": "AMDD", "PLTR": "PLTD", "MU": "MUD", "NFLX": "NFXS", "ORCL": "ORCS"}
+R147_RESEARCH = {
+    "M": ("연구(r147 · 1994~): 국면 현금일 다음날 SPY 평균 2018~ −0.146%(하락 54.7%)인데 2009~2017 +0.162%(41.2%) — 2018~은 M을 맞춘 기간이라 현금일 숏이 거저 번다. "
+          "SPY 특징 13 × hi/lo × 분위 × 방식 × 크기 468개 중 2018~ 판정 186 · 긴 이력 6창(1994~2017)까지 14 → 무작위 현금일 대조군 90 백분위를 넘는 것 0 "
+          "(최상 'SPY 200일선 위 10%' 72/86) · 확률 모형(다음날 · 5일 하락 · 해마다 표본 밖) AUC 0.515 · 상위 10% 날 적중 52% → 라이브 숏 없음(측정 행)."),
+    "S": ("연구(r147 · 섹터 가상 숏 · 2018~ + 긴 이력 1999~2017 세 창): 후보 832 중 2018~ 판정 216 · 긴 이력까지 0(최상 'SPY 63일 상위 20% → 가장 약한 섹터 숏'은 "
+          "2018~ 월배수 평균 +0.0034 · 긴 이력 최악 창 −0.0031) → 라이브 숏 없음(측정 행)."),
+    "I": ("연구(r147 · 산업 가상 숏 · 2018~ + 긴 이력 2007~2017 세 창): 후보 832 중 2018~ 판정 292 · 긴 이력까지 0(2018~ 최상 +0.0101은 긴 이력 −0.029 · 회피 −44) → "
+          "라이브 숏 없음(측정 행)."),
+    "K": ("연구(r147 · 실제 −1배 ETF 12 + SEF · 2022-08~ 값 있음): 2018~ 판정 195 · 최상 'SPY 63일 상위 20% → K가 안 든 종목 중 큰 하락 위험 1위 숏' 월배수 평균 +0.0095 · "
+          "종목 무작위 대조군 100 · 날짜 무작위 회피 83 백분위 · 2010~2017 같은 기초 12종목 가상 숏 검증 탈락(2010~13 월참여 −33 · MDD −2.5%p) · "
+          "종목 하락추세 필터 12변형 모두 탈락(2014~17 MDD 최대 −27%p) → 라이브 숏 없음(측정 행)."),
+}
+
+
+def r147_cond(x: pd.Series, side: str, q: float, min_periods: int = 500) -> pd.Series:
+    """[R147] 확장 분위(최소 500일 · 하루 늦춤) 위/아래 — 연구 r147(mscan147.cond)과 같은 산식."""
+    x = pd.to_numeric(pd.Series(x), errors="coerce")
+    th = x.expanding(min_periods=min_periods).quantile(q).shift(1)
+    return ((x > th) if side == "hi" else (x < th)).fillna(False)
+
+
+def r147_spy_feats(close: pd.Series) -> pd.DataFrame:
+    """[R147] 숏 조건 특징(SPY 총수익 종가 · 전 이력) — g200 · mom63(연구 lib147m.feats와 같은 정의)."""
+    c = pd.to_numeric(pd.Series(close), errors="coerce").dropna()
+    return pd.DataFrame({"g200": c / c.rolling(200).mean() - 1, "mom63": c / c.shift(63) - 1}, index=c.index)
+
+
+def r147_vshort(co: pd.DataFrame, oc: pd.DataFrame, fee: float = R147_SHORT_FEE) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """[R147] 가상 숏(−1배 · 매일 재설정) 야간·장중 수익: 야간 −co · 장중 (1 − cc)/(1 − co) − 1 − 보수/252(cc = 종가→종가). 실제 −1배 ETF가 없을 때 쓴다."""
+    cc = (1 + co) * (1 + oc) - 1
+    return -co, ((1 - cc) / (1 - co) - 1 - fee / 252.0).where(co.notna() & oc.notna())
+
+
+def _r147_mon(r: pd.Series) -> pd.Series:
+    r = pd.to_numeric(pd.Series(r), errors="coerce").fillna(0.0)
+    return (1 + r).groupby(r.index.to_period("M")).prod() - 1
+
+
+def r147_long_side(r: pd.Series, sp: pd.Series) -> Dict[str, float]:
+    """[R147] 월별 평균 — 월배수 평균(모든 달) · 월참여 평균(SPY ≥ +1% 달: 전략/SPY) · 월회피 평균(SPY ≤ −1% 달: 1 − 전략/SPY)."""
+    mr = _r147_mon(r)
+    ms = _r147_mon(pd.to_numeric(pd.Series(sp), errors="coerce").reindex(pd.Series(r).index).fillna(0.0))
+    up, dn = ms >= R147_MIN_MOVE, ms <= -R147_MIN_MOVE
+    return {"월배수평균": float((1 + mr).mean()) if len(mr) else np.nan, "월참여평균": float((mr[up] / ms[up]).mean() * 100) if up.any() else np.nan,
+            "월회피평균": float((1 - mr[dn] / ms[dn]).mean() * 100) if dn.any() else np.nan, "달": int(len(mr)), "오른달": int(up.sum()), "내린달": int(dn.sum())}
+
+
+def r147_short_side(r: pd.Series, sp: pd.Series) -> Dict[str, float]:
+    """[R147] 숏 쪽 — 숏 참여(SPY ≤ −1% 달: 숏 월수익 / |SPY|) · 숏 회피(SPY ≥ +1% 달: 1 + 숏 월수익 / SPY · 100 = 오른 달 손실 없음)."""
+    mr = _r147_mon(r)
+    ms = _r147_mon(pd.to_numeric(pd.Series(sp), errors="coerce").reindex(pd.Series(r).index).fillna(0.0))
+    up, dn = ms >= R147_MIN_MOVE, ms <= -R147_MIN_MOVE
+    return {"월배수평균": float((1 + mr).mean()) if len(mr) else np.nan, "월참여평균": float((mr[dn] / -ms[dn]).mean() * 100) if dn.any() else np.nan,
+            "월회피평균": float((1 + mr[up] / ms[up]).mean() * 100) if up.any() else np.nan, "달": int(len(mr)), "오른달": int(up.sum()), "내린달": int(dn.sum())}
+
+
+def r147_oracle(R: pd.DataFrame, sp: pd.Series) -> Dict[str, Any]:
+    """[R147] 오라클(다음날 방향을 모두 맞춤 · 같은 자산 묶음 · 종가→종가): 롱 = 그날 오른 자산만 균등(없으면 현금) · 숏 = 그날 내린 자산만 균등 숏."""
+    R = pd.DataFrame(R).apply(pd.to_numeric, errors="coerce")
+    rl = R.where(R > 0).mean(axis=1).fillna(0.0)
+    rs = (-R.where(R < 0)).mean(axis=1).fillna(0.0)
+    return {"롱": r147_long_side(rl, sp), "숏": r147_short_side(rs, sp), "_rl": rl, "_rs": rs}
+
+
+def r147_targets(orc: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+    """[R147] 목표 = 오라클의 80% — 배수는 이익 부분(배수 − 1)의 80% · 참여·회피는 % 값의 80%."""
+    f = R147_TARGET_FRAC
+    return {s_: {"월배수평균": 1 + f * (orc[s_]["월배수평균"] - 1), "월참여평균": f * orc[s_]["월참여평균"], "월회피평균": f * orc[s_]["월회피평균"]} for s_ in ("롱", "숏")}
+
+
+def r147_gap(side_vals: Dict[str, float], tg: Dict[str, float]) -> Dict[str, float]:
+    return {"월배수": (side_vals["월배수평균"] - 1) / max(1e-12, tg["월배수평균"] - 1) * 100,
+            "월참여": side_vals["월참여평균"] / max(1e-12, tg["월참여평균"]) * 100, "월회피": side_vals["월회피평균"] / max(1e-12, tg["월회피평균"]) * 100}
+
+
+def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series], Optional[pd.Series]]], spy: pd.Series, R_univ: Optional[pd.DataFrame],
+               research: str = "", note: str = "") -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+    """[R147] 00O_월평균판단 + 00 줄. rows = [(이름, 합계 일수익, 롱 쪽 or None, 숏 쪽 or None)] — 첫 행 = 라이브.
+    A 월별 평균(합계 · 롱 · 숏) · B 오라클 · 80% 목표 · 라이브 달성률 · C 달별(최근이 위) · D 정의 · 연구 결론."""
+    sp = pd.to_numeric(pd.Series(spy), errors="coerce")
+    A, keep = [], {}
+    for nm, r, rl, rs in rows:
+        if not isinstance(r, pd.Series) or not len(r.dropna()):
+            continue
+        r = pd.to_numeric(r, errors="coerce").fillna(0.0)
+        rl_ = r if rl is None else pd.to_numeric(rl, errors="coerce").reindex(r.index).fillna(0.0)
+        rs_ = pd.Series(0.0, index=r.index) if rs is None else pd.to_numeric(rs, errors="coerce").reindex(r.index).fillna(0.0)
+        t_, l_, s_ = r147_long_side(r, sp), r147_long_side(rl_, sp), r147_short_side(rs_, sp)
+        keep[nm] = (r, t_, l_, s_)
+        A.append({"블록": "A. 월별 평균 판단(사용자 기준 · |SPY 월수익| < 1% 달은 참여·회피 평균에서 뺌)", "방식": nm,
+                  "월배수평균": round(t_["월배수평균"], 4), "월참여평균": round(t_["월참여평균"], 1), "월회피평균": round(t_["월회피평균"], 1),
+                  "롱 월배수평균": round(l_["월배수평균"], 4), "롱 월참여평균": round(l_["월참여평균"], 1), "롱 월회피평균": round(l_["월회피평균"], 1),
+                  "숏 월배수평균": round(s_["월배수평균"], 4), "숏 월참여평균": round(s_["월참여평균"], 1), "숏 월회피평균": round(s_["월회피평균"], 1),
+                  "숏 비중 있던 날": int((rs_.abs() > 1e-12).sum()), "전체 배수": round(float((1 + r).prod()), 3), "달": t_["달"], "오른 달(≥+1%)": t_["오른달"],
+                  "내린 달(≤−1%)": t_["내린달"]})
+    if not keep:
+        return pd.DataFrame(), []
+    live_nm = next(iter(keep))
+    r0, t0_, l0_, s0_ = keep[live_nm]
+    B, gap_l, gap_s, tg = [], {}, {}, None
+    if isinstance(R_univ, pd.DataFrame) and R_univ.shape[1]:
+        Ru = R_univ.reindex(r0.index)
+        orc = r147_oracle(Ru, sp)
+        tg = r147_targets(orc)
+        gap_l, gap_s = r147_gap(l0_, tg["롱"]), r147_gap(s0_, tg["숏"])
+        for side_ in ("롱", "숏"):
+            o = orc[side_]
+            B.append({"블록": "B. 오라클(다음날 방향을 모두 맞춤) · 목표 80% · 라이브 달성률", "방식": f"오라클 {side_}({R_univ.shape[1]}자산 · 맞춘 쪽만 균등)",
+                      "월배수평균": round(o["월배수평균"], 4), "월참여평균": round(o["월참여평균"], 1), "월회피평균": round(o["월회피평균"], 1)})
+            B.append({"블록": "B. 오라클(다음날 방향을 모두 맞춤) · 목표 80% · 라이브 달성률", "방식": f"목표 {side_}(오라클의 80% · 배수는 이익 부분)",
+                      "월배수평균": round(tg[side_]["월배수평균"], 4), "월참여평균": round(tg[side_]["월참여평균"], 1), "월회피평균": round(tg[side_]["월회피평균"], 1)})
+            g_ = gap_l if side_ == "롱" else gap_s
+            B.append({"블록": "B. 오라클(다음날 방향을 모두 맞춤) · 목표 80% · 라이브 달성률", "방식": f"라이브 {side_} 쪽 달성률(%)",
+                      "월배수평균": round(g_["월배수"], 1), "월참여평균": round(g_["월참여"], 1), "월회피평균": round(g_["월회피"], 1)})
+        orl, ors = _r147_mon(orc["_rl"]), _r147_mon(orc["_rs"])
+    else:
+        orl = ors = None
+    mr0, ms0 = _r147_mon(r0), _r147_mon(sp.reindex(r0.index).fillna(0.0))
+    other = [(nm, _r147_mon(v[0])) for nm, v in keep.items() if nm != live_nm]
+    C = []
+    for per in reversed(list(mr0.index)):
+        m_, s_m = float(mr0[per]), float(ms0.get(per, np.nan))
+        d = {"블록": "C. 달별(최근이 위 · %)", "방식": str(per), "SPY 월수익(%)": round(s_m * 100, 2), "라이브 월수익(%)": round(m_ * 100, 2),
+             "그달 참여(%)": (round(m_ / s_m * 100, 1) if s_m >= R147_MIN_MOVE else None), "그달 회피(%)": (round((1 - m_ / s_m) * 100, 1) if s_m <= -R147_MIN_MOVE else None)}
+        for nm, mo in other:
+            d[f"{nm[:28]} 월수익(%)"] = round(float(mo.get(per, np.nan)) * 100, 2)
+        if orl is not None:
+            d["오라클 롱 월수익(%)"] = round(float(orl.get(per, np.nan)) * 100, 2)
+            d["오라클 숏 월수익(%)"] = round(float(ors.get(per, np.nan)) * 100, 2)
+        C.append(d)
+    D = [{"블록": "D. 정의 · 연구 결론", "방식": "월별 평균", "값": "달마다 월배수 = Π(1 + 일수익) · 월참여 = 전략 월수익 / SPY 월수익(SPY ≥ +1% 달) · 월회피 = 1 − 전략 월수익 / SPY 월수익"
+                                                          "(SPY ≤ −1% 달) → 모든 달 · 오른 달 · 내린 달 평균. 숏 쪽: 숏 참여 = 숏 월수익 / |SPY|(내린 달) · 숏 회피 = 1 + 숏 월수익 / SPY(오른 달 · 100 = 손실 없음)."},
+         {"블록": "D. 정의 · 연구 결론", "방식": "오라클 · 목표", "값": "다음날 방향을 모두 맞춘다고 할 때(같은 자산 묶음 · 종가→종가 · 비용 없음) 롱 = 오른 자산만 균등 · 숏 = 내린 자산만 균등 숏 → "
+                                                             "같은 월별 평균 → 그 80%가 목표(배수는 이익 부분의 80%). ⚠ 다음날 방향 예측력은 동전 수준(R117·R141·R147 AUC ≈ 0.5)이라 오라클 80%는 미래를 알아야만 닿는다."},
+         {"블록": "D. 정의 · 연구 결론", "방식": "숏 규칙", "값": "확실할 때만 숏 · 애매하면 현금 · 숏은 그 층 현금 몫 안에서만(총노출 ≤ 1 · 레버리지 없음) · 실제 −1배 ETF가 있으면 그것("
+                                                         + ", ".join(f"{k}→{v}" for k, v in list(R147_REAL_INVERSE.items())[:8]) + " …) · 없으면 가상 숏(−1배 · 보수 0.9%/년) · 주식 층은 실제 ETF만."},
+         {"블록": "D. 정의 · 연구 결론", "방식": "연구 결론", "값": research or "-"}]
+    if note:
+        D.append({"블록": "D. 정의 · 연구 결론", "방식": "참고", "값": note})
+    df = pd.concat([pd.DataFrame(A), pd.DataFrame(B), pd.DataFrame(C), pd.DataFrame(D)], ignore_index=True, sort=False)
+    lead = ["블록", "방식", "월배수평균", "월참여평균", "월회피평균"]
+    df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
+    sh_txt = ""
+    for nm, (r_, t_, l_, s_) in keep.items():
+        if nm == live_nm:
+            continue
+        sh_txt += (f" | {nm}: 월배수 ×{t_['월배수평균']:.4f}({t_['월배수평균'] - t0_['월배수평균']:+.4f}) · 월참여 {t_['월참여평균']:.1f}({t_['월참여평균'] - t0_['월참여평균']:+.1f}) · "
+                   f"월회피 {t_['월회피평균']:.1f}({t_['월회피평균'] - t0_['월회피평균']:+.1f})")
+    tg_txt = (f" | 목표(다음날 방향을 모두 맞춘 오라클의 80%) 롱 ×{tg['롱']['월배수평균']:.4f} / {tg['롱']['월참여평균']:.0f} / {tg['롱']['월회피평균']:.0f} → 라이브 달성률 "
+              f"{gap_l['월배수']:.0f} / {gap_l['월참여']:.0f} / {gap_l['월회피']:.0f}% · 숏 ×{tg['숏']['월배수평균']:.4f} / {tg['숏']['월참여평균']:.0f} / {tg['숏']['월회피평균']:.0f} → "
+              f"{gap_s['월배수']:.0f} / {gap_s['월참여']:.0f} / {gap_s['월회피']:.0f}%") if tg else ""
+    line = (f"★★★ R147 월별 평균 판단 · 오라클 80% 목표 · 숏(사용자 지시 2026-10-07) · {layer}",
+            f"라이브 월배수 평균 ×{t0_['월배수평균']:.4f} · 월참여 평균 {t0_['월참여평균']:.1f} · 월회피 평균 {t0_['월회피평균']:.1f}({t0_['달']}달 · 오른 {t0_['오른달']} · 내린 {t0_['내린달']})"
+            + tg_txt + sh_txt + f" | {research} — 세부 00O. 연구·교육용, 투자 자문 아님.")
+    return df, [line]
+
+
+R147_M_MEASURE: Tuple[Tuple[str, str, float, float], ...] = (("g200", "hi", 0.9, 1.0),)   # (특징, 쪽, 분위, 숏 크기) — 측정 행만(검증 탈락)
+
+
+def r147_m_block(res: dict, cfg: "Config") -> Dict[str, Any]:
+    """[R147] M 00O — 라이브(목표비중 0~1) · 측정: '국면 현금일 & SPY 200일선 위 10%(과열)' → SH(SPY −1배) 100%
+    (계산은 SPY −1배 − 보수 0.9%/년 · 같은 체결 run_backtest) · 오라클 = SPY 하나(오른 날만 롱 · 내린 날만 숏)."""
+    import contextlib
+    bt, sig, price = res["bt"], res["sig"], res.get("price")
+    r = pd.to_numeric(bt["strategy_ret"], errors="coerce").fillna(0.0)
+    spy = pd.to_numeric(bt["bh_ret"], errors="coerce").fillna(0.0)
+    rows: List[Tuple[str, pd.Series, Optional[pd.Series], Optional[pd.Series]]] = [("★ M 라이브(롱 · 현금)", r, r, None)]
+    info: Dict[str, Any] = {}
+    if isinstance(price, pd.DataFrame) and "target_pos" in sig.columns:
+        tp = pd.to_numeric(sig["target_pos"], errors="coerce").reindex(price.index).ffill().fillna(0.0)
+        adj = pd.to_numeric(price["Adj Close"] if "Adj Close" in price.columns else price["Close"], errors="coerce")
+        F = r147_spy_feats(adj)
+        rf = res.get("rf_daily")
+        for f_, side_, q_, s_ in R147_M_MEASURE:
+            c_ = r147_cond(F[f_], side_, q_).reindex(tp.index).fillna(False)
+            pos = tp.where(~(c_ & (tp <= 1e-9)), -float(s_))
+
+            def _run(p_):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    b_ = run_backtest(price, p_, cfg, rf)
+                b_ = b_.loc[b_.index >= pd.Timestamp(cfg.SIGNAL_START)]
+                return (pd.to_numeric(b_["strategy_ret"], errors="coerce").fillna(0.0)
+                        - np.maximum(-pd.to_numeric(b_["pos_exec"], errors="coerce").fillna(0.0), 0.0) * R147_SHORT_FEE / 252.0)
+            rt, rl, rs = _run(pos), _run(pos.clip(lower=0.0)), _run(pos.clip(upper=0.0))
+            nm = f"R147 측정: 국면 현금 & SPY {f_} {'위' if side_ == 'hi' else '아래'} {abs(q_ - (1 if side_ == 'hi' else 0)) * 100:.0f}% → SH {s_:.0%}"
+            rows.append((nm, rt.reindex(r.index).fillna(0.0), rl.reindex(r.index).fillna(0.0), rs.reindex(r.index).fillna(0.0)))
+            info[nm] = {"short_days": int(((pos < -1e-9) & (pos.index >= pd.Timestamp(cfg.SIGNAL_START))).sum()), "today": bool(pos.iloc[-1] < -1e-9)}
+    rows.append(("SPY 단순보유", spy, spy, None))
+    sh, ln = r147_sheet("M · SPY", rows, spy, pd.DataFrame({"SPY": pd.to_numeric(bt["ret_cc"], errors="coerce")}), R147_RESEARCH["M"],
+                        note="숏 측정 행은 라이브가 아니다(긴 이력 · 무작위 대조군 검증 탈락). 켜려면 사용자 승인 뒤 연결.")
+    return {"sheet": sh, "lines": ln, "info": info}
+
+
 def r141_pnl_cols(df: pd.DataFrame, cols: Dict[str, pd.Series], outcomes: Optional[Dict[str, pd.Series]] = None, after: str = "현금",
                   port_col: Optional[str] = "포트 일수익(%)") -> pd.DataFrame:
     """[v1.83.0 R141] 13r_일별배분수익에 '다음날 하락확률' 열(%) · '다음날 결과' 열을 '현금' 뒤(자산 칸 앞)에 끼우고 pnl_rich 첫 자산 칸을 민다.
@@ -16326,6 +16544,14 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
             log("REPORT", kv(event="r141_prob_reliability", layer="M", verdicts=" / ".join(f"{a}={(c or {}).get('verdict')}" for a, _, c in _ev141)))
     except Exception as _e141:   # noqa — 표시 전용
         log("REPORT", kv(event="r141_failed", layer="M", err=type(_e141).__name__, msg=str(_e141)[:160]), "warning")
+    # [v1.86.0 R147 ★ 사용자 지시 2026-10-07] 00O_월평균판단 — 월별 평균 판단 · 오라클 80% 목표 · 숏 측정 행(라이브 무변경 · 검증 탈락)
+    try:
+        _r147_m = r147_m_block(res, cfg)
+        if _r147_m.get("sheet") is not None:
+            sheets[R147_SHEET] = _r147_m["sheet"]
+            _r105_m_lines = list(_r147_m["lines"]) + list(_r105_m_lines)
+    except Exception as _e147:   # noqa — 표시 전용
+        log("REPORT", kv(event="r147_failed", layer="M", err=type(_e147).__name__, msg=str(_e147)[:160]), "warning")
     # [v1.53.0 F5 ★] 13p_소수클래스정확도 — 사용자 잣대("실제 상승/하락이 적은 쪽의 정확도가 높아야 예측력이
     #   있다")를 **M 자신에게도** 적용한다. 그동안 S 리포트에서 우회 계산으로만 보이던 값이다(REPORT47 §2.2:
     #   SPY h=21 현금 기준 MCC +0.160 · '상승 아님' +0.187 — M은 소수 클래스에 정보가 있고 섹터 재추정이
@@ -16708,7 +16934,7 @@ def build_report(res: dict, cfg: Config = CFG) -> str:
     # [v1.57.0 R80] 실매매에 쓰는 전략 행을 노란색으로(사용자 지시) — 06_성과요약의 '복합지표 전략' = ★ SPY 국면전략
     # [v1.61.0 R93] 파일명 끝에 코드 버전(사용자 지시) — 돌려주는 경로가 실제 파일이다(러너는 이 값을 그대로 쓴다).
     _out = versioned_report_path(cfg.OUT_XLSX, BUNDLE_VERSION, bool(getattr(cfg, "OUT_XLSX_APPEND_VERSION", True)))
-    _front5 = [n for n in (R141_SHEET, R117_SHEET, R118_SHEET, "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106 · v1.78.0 R117] 00 바로 뒤
+    _front5 = [n for n in (R147_SHEET, R141_SHEET, R117_SHEET, R118_SHEET, "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00V_상태판정검증", "00T_시장상태판") if n in sheets]      # [v1.69.0 R105 · v1.70.0 R106 · v1.78.0 R117] 00 바로 뒤
     sheets = {**{n: sheets[n] for n in _front5}, **{k: v for k, v in sheets.items() if k not in _front5}}
     write_excel(_out, sheets, bt, meta, cfg,
                 live_marks={"06_성과요약": ("전략", "복합지표 전략"), R117_SHEET: ("라이브", R117_LIVE_TAG)})
@@ -16769,13 +16995,13 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.85.0"
-BUNDLE_VERSION_DATE = "2026-10-05"
+BUNDLE_VERSION = "v1.86.0"
+BUNDLE_VERSION_DATE = "2026-10-07"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
 #   '정상'으로 표시한다(R87·R89에 실제로 섞여 돌았다). 표시·로그 전용 — 신호·비중·캐시 키 무영향(캐시는 VALIDATION_SCHEMA).
-COMPANION_MIN_VERSIONS = {"sector_rotation": "v1.00.0", "industry_rotation": "v0.65.0", "stock_regime": "v0.33.0"}   # [v1.85.0 R145]
+COMPANION_MIN_VERSIONS = {"sector_rotation": "v1.01.0", "industry_rotation": "v0.66.0", "stock_regime": "v0.35.0"}   # [v1.86.0 R147]
 
 
 def versioned_report_path(path: str, version: str, enabled: bool = True) -> str:

@@ -1,5 +1,10 @@
 # =============================================================================
 #  industry_rotation.py
+#  VERSION: v0.66.0 - 2026-10-07 - [R147 00O_월평균판단 · 오라클 80% 목표 · 산업 가상 숏 측정 행 — I★ 규칙·비중 무변경]
+#    사용자 지시(2026-10-07): 하락 예측이 정말 확실할 때 숏 · 애매하면 현금 · 숏 티커 없으면 가상 숏(산업 ETF는 실제 −1배 없음) · 월별 평균으로 판단 · 목표 = 오라클의 80%.
+#    ── i_r147_block(→ M.r147_sheet): 라이브 I★ · 측정 R147_I_MEASURE 'SPY 63일 상위 20% & I★ 현금 몫 → 63일 수익 가장 약한 산업 1개 가상 숏 100%' · 오라클 = 산업 ETF 29.
+#      run 결과에 spy_tr_full(S에서) 추가. 로컬(Kaggle 13c + 부모 잔여 재현 110.1배 · 2018~): 1.0469 / 170.6 / 172.0 · 목표 롱 ×1.2014 / 575 / 740(달성률 23 / 30 / 23%).
+#      연구(r147 · 후보 832): 2018~ 판정 292 · 긴 이력 2007~2017 세 창까지 0 → 라이브 숏 없음(측정 행). 시험 t147. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.65.0 - 2026-10-05 - [R145 13c_일별배분비중 비중 옆 '다음날 하락확률(%)' 열 — I★ 규칙·비중 무변경]
 #    사용자 지시(2026-10-05): "왜 일별배분비중에 하락확률 같이 표시안해? 비중옆에 쓰면 되잖아 이건 국면, 섹터, 산업도 똑같이 해".
 #    · 13c 산업 열마다 바로 뒤 '<산업> 다음날 하락확률(%)'(M.r145_weight_prob_cols · R141의 P). industry_allocation_daily.csv는 비중만(이전과 같은 형식).
@@ -2057,8 +2062,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-VERSION = "v0.65.0"
-VERSION_DATE = "2026-10-05"
+VERSION = "v0.66.0"
+VERSION_DATE = "2026-10-07"
 # [v0.13.0 N3] 기술 산업 6종 — 13p 블록 A2·17 블록 B의 '기술 6종 평균' 행이 쓰는 목록.
 #   [v0.14.0 P3] 정의를 모듈 상수 구역으로 올렸다(build_parent_follow_conditions가 더 앞에서 쓴다).
 TECH_INDUSTRIES: Tuple[str, ...] = ("SOXX", "IGV", "SKYY", "HACK", "FDN", "SOCL")
@@ -5317,6 +5322,80 @@ def r143_k_alloc(alloc: Dict[str, Any], results: Dict[str, Dict[str, Any]], sres
     except Exception as e:
         log("ROTATION", kv(event="r143_k_alloc_failed", err=type(e).__name__, msg=str(e)[:160], action="새 I★를 K 통로에"), M=M, level="warning")
         return alloc
+
+
+R147_I_MEASURE: Tuple[str, str, float, int, float] = ("mom63", "hi", 0.8, 1, 1.0)   # (SPY 특징, 쪽, 분위, 산업 k, 숏 크기) — 측정 행만(검증 탈락)
+
+
+def i_r147_block(ires: Dict[str, Any], M, S, layer: str = "I★ · 산업") -> Dict[str, Any]:
+    """[v0.66.0 R147 ★ 사용자 지시 2026-10-07] 00O_월평균판단 — 라이브 I★(롱 · 현금) · 측정: 'SPY 63일 수익 상위 20%(과열) & I★ 현금 몫' →
+    63일 수익 가장 약한 산업 k개 가상 숏(산업 ETF 실제 −1배 없음 · −1배 · 보수 0.9%/년 · 비용 = 산업 비용) · 같은 체결(_industry_portfolio_backtest).
+    오라클 = 산업 ETF(그날 오른 산업만 균등 롱 · 내린 산업만 균등 숏)."""
+    al = ires.get("alloc") or {}
+    lab = al.get("label_star")
+    _b = (al.get("bts") or {}).get(lab)
+    tw = al.get("target_w")
+    if not (isinstance(_b, pd.DataFrame) and "strategy_ret" in _b.columns and isinstance(tw, pd.DataFrame)):
+        return {}
+    r = pd.to_numeric(_b["strategy_ret"], errors="coerce").fillna(0.0)
+    tw = tw.fillna(0.0)
+    idx = tw.index
+    spy = pd.to_numeric(pd.Series((ires.get("user_rel_src") or {}).get("spy_ret")), errors="coerce").reindex(r.index).fillna(0.0)
+    co, oc = pd.DataFrame(al.get("ret_co")).reindex(index=idx), pd.DataFrame(al.get("ret_oc")).reindex(index=idx)
+    par = dict(al.get("parent_of") or {})
+    inds = [c for c in tw.columns if c in par]
+    rows = [("★ I★ 라이브", r, r, None)]
+    info: Dict[str, Any] = {}
+    try:
+        f_, side_, q_, k_, s_ = R147_I_MEASURE
+        spy_full = ires.get("spy_tr_full")
+        if not isinstance(spy_full, pd.Series) or not len(spy_full):
+            spy_full = (1 + spy).cumprod()
+            info["spy_src"] = "2018~ SPY만(전 이력 없음 · 조건이 늦게 켜짐)"
+        cond = M.r147_cond(M.r147_spy_feats(spy_full)[f_], side_, q_).reindex(idx).fillna(False).to_numpy(dtype=bool)
+        res_i = ires.get("industries") or {}
+        px = pd.DataFrame({t: (1 + pd.to_numeric(res_i[t]["ret_cc_full"], errors="coerce").fillna(0.0)).cumprod()
+                           for t in inds if isinstance(res_i.get(t), dict) and isinstance(res_i[t].get("ret_cc_full"), pd.Series)})
+        m63 = (px / px.shift(63) - 1).reindex(index=idx, columns=inds).to_numpy(dtype=float)
+        cash = np.clip(1.0 - tw.sum(axis=1).to_numpy(), 0.0, 1.0)
+        sc = np.where(np.isfinite(m63), m63, np.inf)
+        kk = min(int(k_), len(inds))
+        top = np.argsort(sc, axis=1)[:, :kk]
+        rr = np.arange(len(idx))[:, None]
+        valid = np.isfinite(sc[rr, top])
+        nt = valid.sum(axis=1)
+        on = cond & (cash > 1e-9) & (nt > 0)
+        w = np.where(on, cash * float(s_) / np.maximum(nt, 1), 0.0)
+        add = np.zeros((len(idx), len(inds)))
+        np.put_along_axis(add, top, np.where(valid, w[:, None], 0.0), axis=1)
+        scol = ["숏:" + c for c in inds]
+        sco, soc = M.r147_vshort(co[inds], oc[inds])
+        co_x = pd.concat([co, sco.set_axis(scol, axis=1)], axis=1)
+        oc_x = pd.concat([oc, soc.set_axis(scol, axis=1)], axis=1)
+        cm = dict(al.get("cost_map") or {})
+        cm.update({"숏:" + c: float(cm.get(c, al.get("cost_bps_industry", 10.0) or 10.0)) for c in inds})
+        tw_x = pd.concat([tw, pd.DataFrame(add, index=idx, columns=scol)], axis=1)
+        ie = al.get("init_exec")
+        ip = al.get("init_prev")
+
+        def _bt(w_):
+            b_ = _industry_portfolio_backtest(S, w_, co_x, oc_x, al.get("rf_daily"), cm, init_exec=ie, init_prev=ip)
+            return pd.to_numeric(b_["strategy_ret"], errors="coerce").reindex(r.index).fillna(0.0)
+        tw_l, tw_s = tw_x.copy(), tw_x.copy()
+        tw_l[scol] = 0.0
+        tw_s[[c for c in tw_x.columns if c not in scol]] = 0.0
+        rt, rl, rs = _bt(tw_x), _bt(tw_l), _bt(tw_s)
+        nm = f"R147 측정: SPY {f_} {'위' if side_ == 'hi' else '아래'} {abs(q_ - (1 if side_ == 'hi' else 0)) * 100:.0f}% & 현금 → 약한 산업 {kk}개 가상 숏 {float(s_):.0%}"
+        rows.append((nm, rt, rl, rs))
+        info.update({"name": nm, "short_days": int(on.sum()), "today": bool(on[-1]) if len(on) else False,
+                     "today_names": [inds[j] for j in top[-1][valid[-1]]] if len(on) and on[-1] else []})
+    except Exception as e:
+        info["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+    rows.append(("SPY 단순보유", spy, spy, None))
+    R_u = ((1 + co[inds]) * (1 + oc[inds]) - 1).reindex(r.index)
+    sh, ln = M.r147_sheet(layer, rows, spy, R_u, M.R147_RESEARCH["I"],
+                          note="숏 측정 행은 라이브가 아니다(긴 이력 2007~2017 검증 탈락). 산업 ETF는 실제 −1배가 없어 모두 가상." + (f" ⚠ {info['spy_src']}" if info.get("spy_src") else ""))
+    return {"sheet": sh, "lines": ln, "info": info}
 
 
 def r143_i_line(d: Optional[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
@@ -13625,6 +13704,7 @@ def run(sres: dict, res: dict, M, S, icfg: Optional[IndustryConfig] = None,
                          "s_live_neutral": ((((sres or {}).get("alloc") or {}).get("diag") or {}).get("relcmp") or {}).get("live_neutral")},
         "industries": results, "failed": failed, "selftest": st, "universe": universe,
         "parent_pos": _parent_pos, "market_pos": _market_pos,   # [v0.26.0 L1] 00B ③ · 23 블록 Z 입력
+        "spy_tr_full": (sres or {}).get("spy_tr_full"),        # [v0.66.0 R147] 00O 숏 측정 조건(SPY 63일 · 전 이력)
         "reentry_audit": _reentry,                                # [v0.27.0 R73 §4-4] 25_재진입감사
         "data_freshness": (res.get("data_freshness") if isinstance(res, dict) else None),   # [v0.27.0 R73 §1]
         "m_cfg": (res.get("cfg") if isinstance(res, dict) else None),
@@ -15940,6 +16020,15 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                     sheets["13c_일별배분비중"] = M.r145_weight_prob_cols(sheets["13c_일별배분비중"], _P141, suffix=" 다음날 하락확률(%)")
         except Exception as _e141:
             log("REPORT", kv(event="r141_failed", layer="I", err=type(_e141).__name__, msg=str(_e141)[:160]), M=M, level="warning")
+        # ---- [v0.66.0 R147 ★ 사용자 지시 2026-10-07] 00O_월평균판단 · 00 줄 — 월별 평균 판단 · 오라클 80% 목표 · 숏 측정 행 ----
+        try:
+            if hasattr(M, "r147_sheet"):
+                _b147 = i_r147_block(ires, M, S)
+                if isinstance(_b147.get("sheet"), pd.DataFrame) and len(_b147["sheet"]):
+                    sheets[M.R147_SHEET] = _b147["sheet"]
+                    _r105_lines = list(_b147["lines"]) + list(_r105_lines)
+        except Exception as _e147:
+            log("REPORT", kv(event="r147_failed", layer="I", err=type(_e147).__name__, msg=str(_e147)[:160]), M=M, level="warning")
         # ---- [v0.62.0 R135 ★ 사용자 승인] 리더 상관 필터 · 평활 42 — 00 줄(묶음 맨 앞) ----
         try:
             _l135 = r135_line(alloc, (ires.get("user_rel_src") or {}).get("spy_ret"), S)
@@ -15960,7 +16049,7 @@ def build_industry_report(ires: Dict[str, Any], M=None, S=None, path: Optional[s
                 _r105_lines = list(_r105_lines) + list(_l110)
             except Exception as _e110:
                 log("REPORT", kv(event="state_verify_failed", layer="I", err=type(_e110).__name__, msg=str(_e110)[:160]), M=M, level="warning")
-        sheets = S.sheets_to_front(sheets, "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
+        sheets = S.sheets_to_front(sheets, "00O_월평균판단", "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00Q_자산별기간배수",
                                    "00V_상태판정검증", "00T_산업상태판",
                                    "00R_신뢰도판정", "00B_수익곡선비교",
                                    "00C_곡선데이터", "00A_수익비교", "00D_하락상승개선비교", "00E_산업상승확률")

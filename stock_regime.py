@@ -1,5 +1,16 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.35.0 - 2026-10-07 - [R147 ★ 월별 평균 판단(00O) · 오라클 80% 목표 · 숏 측정 행(실제 −1배 ETF만)]
+#    사용자 지시(2026-10-07): "하락 예측이 정말 확실할 때 숏 비중 · 애매하면 현금 · 주식 층은 예측하는 티커 중 반대되는 실제 숏 티커만 · 성과 요약을 월별 수익배수·참여·회피
+#      평균으로 판단 · 목표 = 월별로 모든 정답을 맞췄을 때(오라클) 롱·숏 각각의 80%".
+#    ── (§1 판단) 00O_월평균판단(M.r147_sheet): 월배수 평균 · 월참여 평균(SPY ≥ +1% 달) · 월회피 평균(SPY ≤ −1% 달) — 합계 · 롱 쪽 · 숏 쪽 · 오라클(다음날 방향을 다 맞춤 ·
+#      핵심 + 풀 종목 · 오른 종목만 균등 롱 / 내린 종목만 균등 숏) · 80% 목표 · 달성률 · 달별 표 · 00 'R147' 줄(맨 앞).
+#      로컬(2018~ · K★ 209.2배): 1.0536 / 226.0 / 165.0 — 목표 롱 ×1.2555 / 737 / 920 → 달성률 21 / 31 / 18% · 숏 0(숏 없음).
+#    ── (§2 숏 · 측정 행) 실제 −1배 ETF 12(AAPD AMZD GGLS MSFD NVDD TSLS METD AMDD PLTD MUD NFXS ORCS · 회귀 베타 −1.00 · 2022-08~) + SEF(XLF) — 
+#      TSLQ·NVDS·CONI(−1.4~−1.6배) · SMCZ·TSLZ(−2배) 등은 레버리지라 제외. R147_K_MEASURE: SPY 63일 상위 20% & K★ 현금 몫 → K가 롱으로 안 든 기초 종목 중
+#      R145 큰 하락 위험 1위의 −1배 ETF 100%. 연구(r147): 2018~ 월배수 평균 +0.0095 · 숏 쪽 연도별 전부 + · 종목 무작위 대조군 100 백분위 — 그러나 날짜 무작위 회피 83 ·
+#      2010~2017 같은 기초 12종목 가상 숏 검증 탈락(2010~13 월참여 −33 · MDD −2.5%p) · 종목 하락추세 필터 12변형 모두 탈락(2014~17 MDD 최대 −27%p) → 라이브 아님.
+#    StockConfig R147_ENABLE · R147_K_MEASURE. 시험 t147/test_r147.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.34.0 - 2026-10-05 - [R146 ★ 예측 바구니 — 추가한 S&P 500 종목이 날마다 일별 배분에 들어간다(사용자 선택 '작게 넣기')]
 #    사용자 지시(2026-10-05): "왜 일별 배분에 추가한 종목들이 없어? 다시 확인해봐" — v0.33.0까지 풀 종목은 조건 맞는 날만(2,201일 중 74일 · 28종목 · 평균 0.3%) 담겼다.
 #    ── (§1 라이브 · R146_BASKET) R145 조각 뒤에: 그날 섹터 ETF 다리 몫의 frac(5%) → 그 섹터 S&P 500 종목 바구니(풀 = 그 시점 구성 · 가격 있음 · 같은 하위산업 실적 회피 아님 ·
@@ -868,8 +879,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.34.0"
-VERSION_DATE = "2026-10-05"
+VERSION = "v0.35.0"
+VERSION_DATE = "2026-10-07"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
 #   왼쪽이 I 계층의 산업 ETF, 오른쪽이 이 파일이 예측하는 개별 주식이다.
@@ -1435,6 +1446,10 @@ class StockConfig:
     # [v0.34.0 R146 ★ 라이브 · 사용자 선택 2026-10-05 '작게 넣기'] 예측 바구니 — 섹터 ETF 다리 몫 frac → 그 섹터 S&P 500 종목(쓰레기·실적 회피 제외) 거래대금 상위 n ·
     #   가중 거래대금^a × (1 − 큰 하락 위험)^g · 종목 상한 cap · core=True면 그날 비중 > 0 핵심도 후보. 되돌리기 k_overrides={'R146_BASKET': {}}.
     R146_BASKET: Dict[str, Any] = field(default_factory=lambda: {"frac": 0.05, "n": 20, "a": 0.5, "g": 0.0, "cap": 0.05, "core": True})
+    # [v0.35.0 R147 ★ 사용자 지시 2026-10-07] 숏 측정 행(실제 −1배 ETF만 · 라이브 아님 — 2010~2017 가상 검증 탈락) · 00O 월별 평균 판단.
+    #   (SPY 특징, 쪽, 분위, k, 숏 크기, 점수) — 그 조건인 날 K★ 현금 몫 × 크기 → K가 롱으로 안 든 기초 종목 중 점수(rb = R145 큰 하락 위험 백분위) 높은 k개의 −1배 ETF.
+    R147_ENABLE: bool = True
+    R147_K_MEASURE: Tuple[str, str, float, int, float, str] = ("mom63", "hi", 0.8, 1, 1.0, "rb")
     R117_ENABLE: bool = True
     R117_LIVE: bool = True
     R117_THRESHOLDS: Tuple[float, ...] = (0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.40, 0.38, 0.35)
@@ -9378,6 +9393,84 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                            trace=traceback.format_exc()[-300:].replace("\n", " | "), action="R145 없이 계속"), level="warning")
             _r145 = {"enabled": False, "error": f"{type(_e145).__name__}: {str(_e145)[:160]}"}
             _r145_allocs = {}
+    # ---- [v0.35.0 R147 ★ 사용자 지시 2026-10-07] 숏 측정 행(실제 −1배 ETF만 · 라이브 무변경) · 00O 월별 평균 판단 입력 ----
+    _r147: Dict[str, Any] = {"enabled": False}
+    if bool(getattr(cfg, "R147_ENABLE", True)):
+        try:
+            _t147 = time.time()
+            _M147 = _find_m_module()
+            if _M147 is None or not hasattr(_M147, "r147_sheet"):
+                raise RuntimeError("M v1.86.0 이상(r147_sheet) 없음")
+            _mkt147 = {"SPY", "QQQ", "DIA", "IWM", "EFA", "EEM", "FXI"}
+            _inv147 = {u: v for u, v in dict(getattr(_M147, "R147_REAL_INVERSE", {}) or {}).items() if u not in _mkt147}
+            _tw147 = alloc["target_w"].fillna(0.0)
+            _idx147 = _tw147.index
+            _ew147 = alloc.get("etf_w")
+            _ew147 = _ew147.reindex(_idx147).fillna(0.0) if isinstance(_ew147, pd.DataFrame) else pd.DataFrame(index=_idx147)
+            _px147 = download_prices(sorted(set(_inv147.values()) | {"SPY"}), cfg)
+            _spy147 = pd.to_numeric(_px147["SPY"]["Close"], errors="coerce") if "SPY" in _px147 else None
+            _f147, _sd147, _q147, _k147, _s147, _sc147 = tuple(getattr(cfg, "R147_K_MEASURE", ("mom63", "hi", 0.8, 1, 1.0, "rb")))
+            _cond147 = (_M147.r147_cond(_M147.r147_spy_feats(_spy147)[_f147], _sd147, _q147).reindex(_idx147).fillna(False).to_numpy(dtype=bool)
+                        if _spy147 is not None else np.zeros(len(_idx147), dtype=bool))
+            _rb147 = (_r145 or {}).get("rank_big")
+            _pairs147 = [(u, v) for u, v in _inv147.items() if v in _px147]
+            _C147 = pd.DataFrame({v: pd.to_numeric(_px147[v]["Close"], errors="coerce") for _, v in _pairs147}).reindex(_idx147)
+            _O147 = pd.DataFrame({v: pd.to_numeric(_px147[v]["Open"], errors="coerce") for _, v in _pairs147}).reindex(_idx147)
+            _av147 = (_C147.notna() & _C147.shift(1).notna()).to_numpy()
+            _T147 = len(_idx147)
+            _sc_arr = np.full((_T147, len(_pairs147)), -np.inf)
+            for _j147, (_u147, _v147) in enumerate(_pairs147):
+                _held = (_tw147[_u147] if _u147 in _tw147.columns else (_ew147[_u147] if _u147 in _ew147.columns else pd.Series(0.0, index=_idx147))).to_numpy(dtype=float)
+                if _sc147 == "rb" and isinstance(_rb147, pd.DataFrame) and _u147 in _rb147.columns:
+                    _v = pd.to_numeric(_rb147[_u147], errors="coerce").reindex(_idx147).to_numpy(dtype=float)
+                else:
+                    continue
+                _sc_arr[:, _j147] = np.where(_av147[:, _j147] & np.isfinite(_v) & (_held <= 1e-12), _v, -np.inf)
+            _tot147 = (pd.to_numeric(alloc.get("total_w"), errors="coerce").reindex(_idx147) if alloc.get("total_w") is not None
+                       else (_tw147.sum(axis=1) + (_ew147.sum(axis=1) if _ew147.shape[1] else 0.0)))
+            _cash147 = np.clip(1.0 - _tot147.fillna(0.0).to_numpy(), 0.0, 1.0)
+            _kk147 = max(1, min(int(_k147), max(1, len(_pairs147))))
+            _top147 = np.argsort(-_sc_arr, axis=1)[:, :_kk147]
+            _rr147 = np.arange(_T147)[:, None]
+            _valid147 = np.isfinite(_sc_arr[_rr147, _top147])
+            _nt147 = _valid147.sum(axis=1)
+            _on147 = _cond147 & (_cash147 > 1e-9) & (_nt147 > 0)
+            _w147 = np.where(_on147, _cash147 * float(_s147) / np.maximum(_nt147, 1), 0.0)
+            _WI147 = np.zeros((_T147, len(_pairs147)))
+            if len(_pairs147):
+                np.put_along_axis(_WI147, _top147, np.where(_valid147, _w147[:, None], 0.0), axis=1)
+            _wdf147 = pd.DataFrame(_WI147, index=_idx147, columns=[v for _, v in _pairs147])
+            _ra147 = _C147.pct_change(fill_method=None)
+            _co147 = _O147 / _C147.shift(1) - 1
+            _oc147 = _C147 / _O147 - 1
+            _rs147, _ = _exec_port_returns(_wdf147, _ra147.fillna(0.0), _co147, _oc147, fill=str(getattr(cfg, "EXEC_FILL", "close")).lower(),
+                                           cost_bps=float(getattr(cfg, "ALLOC_COST_BPS", 0.0) or 0.0), rf=None)
+            _pr147 = pd.to_numeric(alloc.get("port_ret"), errors="coerce").fillna(0.0)
+            _rs147 = pd.to_numeric(_rs147, errors="coerce").reindex(_pr147.index).fillna(0.0)
+            _ev147 = pd.Timestamp(str(getattr(cfg, "EVAL_START", "2018-01-01")))
+            _spr147 = pd.to_numeric(etf_panel["SPY"]["일간수익"], errors="coerce") if "SPY" in (etf_panel or {}) else None
+            _m147 = _pr147.index >= _ev147
+            _nm147 = (f"R147 측정: SPY {_f147} {'위' if _sd147 == 'hi' else '아래'} {abs(_q147 - (1 if _sd147 == 'hi' else 0)) * 100:.0f}% & 현금 → "
+                      f"K가 안 든 종목 중 큰 하락 위험 {_kk147}위까지 실제 −1배 ETF {float(_s147):.0%}")
+            _Ru147 = None
+            try:
+                _Ru147 = _CLF.reindex(columns=[c for c in _tw147.columns if c in _CLF.columns]).pct_change(fill_method=None).reindex(_pr147.index[_m147])
+                _pl147 = [c for c in _Ru147.columns if c in set(_mem144.columns)]
+                if _pl147:
+                    _Ru147[_pl147] = _Ru147[_pl147].where(_mem144.reindex(index=_Ru147.index, columns=_pl147).fillna(False).astype(bool))
+            except Exception:
+                _Ru147 = None
+            _last147 = [(_pairs147[j][1], _pairs147[j][0]) for j in _top147[-1][_valid147[-1]]] if _T147 and _on147[-1] else []
+            _r147 = {"enabled": True, "spy": (_spr147.reindex(_pr147.index[_m147]).fillna(0.0) if _spr147 is not None else None),
+                     "rows": [("★ K★ 라이브(롱 · 현금)", _pr147[_m147], _pr147[_m147], None),
+                              (_nm147, (_pr147 + _rs147)[_m147], _pr147[_m147], _rs147[_m147])],
+                     "R_univ": _Ru147, "pairs": [f"{u}→{v}" for u, v in _pairs147], "short_days": int(_on147[_idx147 >= _ev147].sum()) if _T147 else 0,
+                     "today": _last147, "sec": round(time.time() - _t147, 1)}
+            log("R147", kv(event="r147_measured", pairs=len(_pairs147), short_days=_r147["short_days"], today=",".join(v for v, _ in _last147) or "-",
+                           sec=_r147["sec"], note="측정 행(라이브 무변경 · 2010~2017 가상 검증 탈락)"))
+        except Exception as _e147:
+            log("R147", kv(event="r147_failed", err=type(_e147).__name__, msg=str(_e147)[:160], action="R147 없이 계속"), level="warning")
+            _r147 = {"enabled": False, "error": f"{type(_e147).__name__}: {str(_e147)[:160]}"}
     alloc_rows: List[dict] = []
     _grid_rets: Dict[str, pd.Series] = {}          # [v0.9.0] 00U 비교 행용 — 격자 행 라벨 → 포트 일간수익
 
@@ -10160,6 +10253,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             "cash_buffer": _cbuf if _sc_kw else 1.0, "nobuf_label": _nobuf_lbl, "risk_flags": _risk_flags,   # [v0.19.0 R110]
             "alloc_grid_rets": {k: v for k, v in _grid_rets.items() if str(k).startswith(("R105 ", "R145 ", "비교: 라이브(R145", "비교: 라이브(R146"))},  # [v0.15.0 R105 · v0.33.0 R145] 00P 비교 행
             "r145": _r145,                                                                          # [v0.33.0 R145]
+            "r147": _r147,                                                                          # [v0.35.0 R147]
             "stock_prob": stock_prob, "prob_variants": prob_variants, "sector_of": sector_of,      # [v0.11.0 R99 N3]
             "k_freshness": _k_fresh, "selection_audit": _sel_audit,                                # [v0.11.0 R99 N2·N6-a]
             "select_evidence": _sel_evid,                                                           # [v0.13.0 R103]
@@ -10996,6 +11090,22 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
             _add[0:0] = list(_l144)
         except Exception as e:
             _add.insert(0, ("⚠ R144 S&P 500 풀 · 종목-월 성과 줄", f"산출 실패 — {type(e).__name__}: {str(e)[:120]}"))
+        try:                                                                   # [v0.35.0 R147] 00O 월별 평균 판단 · 오라클 80% · 숏 측정(맨 앞)
+            _d147 = res.get("r147") or {}
+            _M147r = _find_m_module()
+            if _d147.get("enabled") and _M147r is not None and hasattr(_M147r, "r147_sheet"):
+                _rw147 = list(_d147["rows"]) + ([("SPY 단순보유", _d147["spy"], _d147["spy"], None)] if isinstance(_d147.get("spy"), pd.Series) else [])
+                _td147 = ", ".join(f"{v}({u})" for v, u in (_d147.get("today") or [])) or "없음"
+                _sh147, _l147 = _M147r.r147_sheet("K★ · 주식", _rw147, _d147["spy"], _d147.get("R_univ"), _M147r.R147_RESEARCH["K"],
+                                                  note=f"숏 측정 행은 라이브가 아니다. 실제 −1배 ETF {len(_d147.get('pairs') or [])}개: {', '.join(_d147.get('pairs') or [])} · "
+                                                       f"2018~ 숏 날 {_d147.get('short_days', 0)} · 다음 거래일 측정 숏 {_td147}.")
+                sheets[_M147r.R147_SHEET] = _sh147
+                _add[0:0] = list(_l147)
+            elif _d147.get("error"):
+                _add.insert(0, ("⚠ R147 월별 평균 판단 · 숏 측정(K★)", f"산출 실패 — {_d147['error']}"))
+        except Exception as e:
+            _add.insert(0, ("⚠ R147 월별 평균 판단 줄", f"산출 실패 — {type(e).__name__}: {str(e)[:120]}"))
+            log("REPORT", kv(event="r147_sheet_failed", err=type(e).__name__, msg=str(e)[:160]), level="warning")
             log("REPORT", kv(event="r144_sheets_failed", err=type(e).__name__, msg=str(e)[:160],
                              trace=traceback.format_exc()[-300:].replace("\n", " | ")), level="warning")
         try:                                                                   # [v0.25.0 R115] 같은 산업 실적 회피 · 00X 손실 구간 원인
@@ -11130,7 +11240,7 @@ def build_report(res: Dict[str, Any], path: Optional[str] = None, I=None) -> str
     if isinstance(res.get("user_rel"), pd.DataFrame) and len(res["user_rel"]):
         sheets["00U_사용자신뢰도"] = res["user_rel"]
     # 맨 앞으로: 00U → 00A → 01Z → 00 → 나머지
-    _front = [n for n in ("00F_종목예측", "00M_종목월성과", "00K_S&P500풀", "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
+    _front = [n for n in ("00O_월평균판단", "00F_종목예측", "00M_종목월성과", "00K_S&P500풀", "00R_하락확률신뢰도", "00H_하락확률문턱", "00H2_지표의미", "00U_사용자신뢰도", "00A_수익비교", "00D_하락상승개선비교", "00G_일반화검증", "00E_주식상승확률", "00S_종목선택력",
                           "00P_기간별수익배수", "00L_손실기간분석", "00Y_구간원인", "00X_손실구간원인", "00Q_자산별기간배수", "00V_상태판정검증", "00T_종목상태판", "00W_물타기손절",
                           "00N_종목선별근거", "01Z_주식일별예측",
                           "00_실행요약") if n in sheets]
