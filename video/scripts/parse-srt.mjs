@@ -1,5 +1,5 @@
-// VERSION: v2.4.0 — 2026-10-08 — SRT(한 줄 자막, 영상 시간) → src/data/subtitles.ts, 대본 TXT 문장 단위로 묶기 + 검증/출력
-// v2.4.0: SRT 시간 = 영상 시간. 고지 카드 공백(문장 18 끝 ~ 19 시작)이 timeline.DISCLAIMER_SEC 와 같은지 검사
+// VERSION: v2.5.0 — 2026-10-08 — SRT(한 줄 자막, 영상 시간) → src/data/subtitles.ts, 대본 TXT 문장 단위로 묶기 + 검증/출력
+// v2.5.0: 고지 공백은 최소값 검사(내레이션에 맞춘 SRT). v2.4.0: SRT 시간 = 영상 시간. 고지 카드 공백(문장 18 끝 ~ 19 시작)이 timeline.DISCLAIMER_SEC 와 같은지 검사
 // v2.3.0: 자막을 한 줄씩 나누면서 SRT 번호와 장면 코드가 따로 놀지 않게, SRT 조각을 대본 TXT 의 문장(줄)에 묶는다.
 //         장면 코드의 sub(n) 은 "대본 문장 n" (TXT 문장 줄 순서, 제목·파트 머리·[장면] 고지 블록 제외) 기준.
 // v2.2.0: 대본에서 엔론 5문장을 지워 기대 개수 91, 잘라 내기 출력 삭제
@@ -174,7 +174,7 @@ console.log(`\n대본 문장: ${groups.length}개 (기대 ${EXPECTED_SENTENCES}�
 const g18 = groups[tl.DISCLAIMER_AFTER_ID - 1];
 const g19 = groups[tl.DISCLAIMER_AFTER_ID];
 const gapMs = captions[g19.first - 1].startMs - captions[g18.last - 1].endMs;
-const gapOk = Math.abs(gapMs - tl.DISCLAIMER_SEC * 1000) <= 1;
+const gapOk = gapMs >= tl.DISCLAIMER_SEC * 1000 - 1; // v2.5.0: 최소값 검사 (내레이션 무음에 맞춘 공백은 더 길 수 있음)
 (gapOk ? log.info : log.warn)('VALIDATE', {check: 'notice_gap', afterSentence: tl.DISCLAIMER_AFTER_ID, srtEntries: `${g18.last}->${g19.first}`, gapMs, expectedMs: tl.DISCLAIMER_SEC * 1000, frames: tl.DISCLAIMER_FRAMES, ok: gapOk});
-console.log(`고지 카드: SRT ${g18.last}번 끝 ${(captions[g18.last - 1].endMs / 1000).toFixed(3)} s ~ ${g19.first}번 시작 ${(captions[g19.first - 1].startMs / 1000).toFixed(3)} s 공백 ${(gapMs / 1000).toFixed(3)} s (기대 ${tl.DISCLAIMER_SEC} s) → ${gapOk ? 'OK' : '불일치'}`);
-console.log(`전체 길이: ${tl.TOTAL_FRAMES} frames = ${sec(tl.TOTAL_FRAMES)} s = ${mmss} (SRT 마지막 자막 끝 ${(captions.at(-1).endMs / 1000).toFixed(3)} s + 여유 ${tl.TAIL_SEC} s, SRT 시간 = 영상 시간)`);
+console.log(`고지 카드: SRT ${g18.last}번 끝 ${(captions[g18.last - 1].endMs / 1000).toFixed(3)} s ~ ${g19.first}번 시작 ${(captions[g19.first - 1].startMs / 1000).toFixed(3)} s 공백 ${(gapMs / 1000).toFixed(3)} s (최소 ${tl.DISCLAIMER_SEC} s) → ${gapOk ? 'OK' : '짧음'}`);
+console.log(`전체 길이: ${tl.TOTAL_FRAMES} frames = ${sec(tl.TOTAL_FRAMES)} s = ${mmss} (SRT 마지막 자막 끝 ${(captions.at(-1).endMs / 1000).toFixed(3)} s + 여유 ${tl.TAIL_SEC} s 와 내레이션 길이 중 긴 쪽, SRT 시간 = 영상 시간)`);

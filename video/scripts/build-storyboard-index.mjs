@@ -1,4 +1,4 @@
-// VERSION: v2.4.0 — 2026-10-08 — 스토리보드 검수 페이지 생성 (가이드 v2 6-5). v2.4.0: 고지 카드 3.5초 반영
+// VERSION: v2.5.0 — 2026-10-08 — 스토리보드 검수 페이지 생성 (가이드 v2 6-5). v2.5.0: 내레이션 기준 시간 안내
 // 사용:
 //   node scripts/build-storyboard-index.mjs                 → out/storyboard/index.html (같은 폴더의 PNG 를 바로 참조)
 //   node scripts/build-storyboard-index.mjs --artifact DIR  → DIR/index.html (문서 껍데기 없는 조각) + DIR/img/*.jpg (1280px 미리보기)
@@ -46,7 +46,7 @@ const FIXES = [
 const DECISIONS = [
 	['', '자막 한 줄 기준: 두 줄을 이어 붙여 자막 띠 최대 폭(1432px, Noto Sans KR 700 46px로 실측) 안에 들어가면 한 줄로 합치고, 넘으면 원래 줄바꿈 위치에서 두 자막으로 나눴습니다(시간은 글자 수 비율). 합침 53, 나눔 26, 혼잣말 3개는 그대로.'],
 	['', '읽기 속도는 1.1배(10% 빠르게)로 했습니다. 끝 여유 1초는 그대로입니다.'],
-	['S11', '고지 카드는 가이드의 6초 대신 3.5초입니다(사용자 요청). 문구 3줄이 1초 안에 다 나오도록 등장을 앞당겼고, SRT에도 같은 3.5초 공백이 있어 SRT 시간 = 영상 시간입니다.'],
+	['S11', '고지 카드는 가이드의 6초 대신 최소 3.5초입니다(사용자 요청). 내레이션 녹음의 무음에 맞춰 지금은 약 4.4초이고, 문구 3줄은 1초 안에 다 나옵니다. SRT 시간 = 영상 시간 = 오디오 시간입니다.'],
 	['', '두 자막으로 나뉜 문장 26개는 뒷줄 내용에 해당하는 그림(예: S07 "최대 -26%", S28 화살표 2개)을 뒷줄 자막이 뜰 때 나오게 옮겼습니다.'],
 	['', '출처 캡션은 가이드 예시의 24px 대신 28px입니다. 최소 글자 크기 28px 규칙을 우선했습니다.'],
 	['S03', '이후 계좌 카드 머리글은 "내 계좌"만 씁니다. 잔고(예: 8,000만 원)는 데이터 시트에 없는 값이라 넣지 않았습니다.'],
@@ -281,9 +281,9 @@ const CONTENT = `<main class="wrap">
 <div><dt>still</dt><dd>${manifest.length} (장면 대표 ${mainCount})</dd></div>
 <div><dt>길이</dt><dd>${tc(total)} · ${total.toLocaleString('en-US')}f · ${tl.FPS}fps</dd></div>
 <div><dt>화면</dt><dd>${tl.WIDTH}×${tl.HEIGHT}</dd></div>
-<div><dt>자막</dt><dd>대본 문장 ${tl.EXPECTED_SENTENCES}개 = 한 줄 자막 ${tl.SUBTITLE_COUNT}개 + 고지 카드 ${tl.DISCLAIMER_SEC}초</dd></div>
+<div><dt>자막</dt><dd>대본 문장 ${tl.EXPECTED_SENTENCES}개 = 한 줄 자막 ${tl.SUBTITLE_COUNT}개 + 고지 카드 ${(tl.DISCLAIMER_FRAMES / tl.FPS).toFixed(2)}초</dd></div>
 </dl>
-<p class="status"><span class="badge main">v2.4.0</span>고지 카드 3.5초, SRT 시간 = 영상 시간. 자막을 한 줄씩(혼잣말 3개만 두 줄) 나누고 읽기 속도를 1.1배로 했습니다. 카드의 번호는 대본 문장 번호(TXT 줄 순서)이고, SRT 자막 번호를 함께 적었습니다. 엔론 사례는 없습니다(장면 S23 없음).</p>
+<p class="status"><span class="badge main">v2.5.0</span>내레이션 포함 — 자막·장면 시간을 내레이션 말소리에 맞췄습니다(고지 카드는 녹음의 무음에 맞춰 약 4.4초). 자막을 한 줄씩(혼잣말 3개만 두 줄) 나누고 읽기 속도를 1.1배로 했습니다. 카드의 번호는 대본 문장 번호(TXT 줄 순서)이고, SRT 자막 번호를 함께 적었습니다. 엔론 사례는 없습니다(장면 S23 없음).</p>
 </header>
 <div class="notes">
 <section class="note"><h2>자체 검수에서 고친 것</h2><ul>${listItems(FIXES)}</ul></section>

@@ -1,9 +1,11 @@
-// VERSION: v2.1.0 — 2026-10-07 — 메인 타임라인: S01–S30 중 S23(엔론) 제외 29장면 + 자막 + 종이 질감
+// VERSION: v2.5.0 — 2026-10-08 — 메인 타임라인: S01–S30 중 S23(엔론) 제외 29장면 + 자막 + 종이 질감 + 내레이션(있으면)·BGM(있으면 -18dB)
 // 모든 장면의 시작/끝은 data/timeline.ts 에서 SRT 자막 번호로 계산된다 (초 하드코딩 없음).
 // 와이프로 들어오는 장면은 WIPE.pre 프레임 먼저 시작해 찢어진 종이로 이전 장면을 덮고(새 장면 요소는 자막 시작 뒤에 나옴),
 // 그 다음 장면이 와이프면 현재 장면은 와이프가 끝날 때까지 남아 있는다.
 import React from 'react';
-import {AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig} from 'remotion';
+import {AbsoluteFill, Sequence, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
+import {Audio} from '@remotion/media';
+import {BGM, NARRATION} from './data/audio';
 import {SCENES, WIPE, sceneRange, shotRange} from './data/timeline';
 import {C} from './design/colors';
 import {PaperTexture} from './components/PaperTexture';
@@ -101,5 +103,7 @@ export const Video: React.FC = () => (
 		<SceneSlot id="S30"><S30 /></SceneSlot>
 		<PaperTexture />
 		<Subtitles />
+		{NARRATION ? <Audio src={staticFile(NARRATION.file)} /> : null}
+		{BGM ? <Audio src={staticFile(BGM.file)} volume={10 ** (BGM.volumeDb / 20)} loop /> : null}
 	</AbsoluteFill>
 );

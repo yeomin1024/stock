@@ -8,3 +8,7 @@ out
 
 # Remotion Agent Skills 사본 (skills-lock.json 으로 복원: npx skills experimental_install)
 .claude/skills/
+
+# 오디오 사본 (원본은 input/, scripts/prepare-audio.mjs 가 복사)
+public/narration.*
+public/bgm.*

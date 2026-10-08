@@ -11,30 +11,34 @@ SRT는 번호를 다시 매기고(원본 60 → 55 … 96 → 91) 그 뒤 시간
 **자막은 한 줄씩, 읽기 속도 1.1배입니다 (v2.3.0).** 두 줄 자막은 이어 붙여 자막 띠 최대 폭(1432px)에 들어가면 한 줄로 합치고,
 넘으면 원래 줄바꿈 위치에서 두 자막으로 나눴습니다(`scripts/restructure-srt.mjs`). "앞의 사연과 같이" 다음 혼잣말 3개만 두 줄 그대로입니다.
 장면 코드의 `sub(n)`은 "대본 문장 n"(TXT 문장 줄 순서)이고, 한 문장이 두 자막으로 나뉘면 뒷줄 내용 그림은 `line(n, 2)`에 맞춥니다.
+**내레이션 포함, 오디오가 기준 시계입니다 (v2.5.0).** `input/narration.mp3`(사용자 제공)는 고치지 않고, SRT·장면 시간을 실제 말소리에 맞췄습니다
+(`scripts/align-srt-to-audio.mjs`, 자막은 말보다 0.1초 먼저). 지시서 반영 사항 정리는 `docs/지시서_반영사항.md`.
 이미지·이모지·로고·사람 그림 없이, 모든 그래픽은 코드로 그린 벡터와 텍스트입니다.
 
 | 항목 | 값 |
 |---|---|
-| 컴포지션 | `Molbbang` — 1920×1080, 30fps, 14132프레임 (7분 51.07초) |
-| 길이 계산 | SRT 마지막 자막 끝 470.059초 + 여유 1초. SRT 시간 = 영상 시간(문장 18 뒤 고지 카드 3.5초 공백이 SRT 안에 있음) |
+| 컴포지션 | `Molbbang` — 1920×1080, 30fps, 14594프레임 (8분 6.47초) |
+| 길이 계산 | max(SRT 마지막 자막 끝 484.934초 + 여유 1초, 내레이션 486.456초). SRT 시간 = 영상 시간 = 오디오 시간 (고지 카드 공백 4.37초 = 녹음의 무음) |
 | 장면 | 29개 (S01–S30 중 S23 제외, 고지 카드 S11 포함). 장면 번호는 가이드 표와 맞추려고 그대로 둠 |
-| 자막 | 대본 문장 91개 = SRT 자막 117개 (한 줄 114 + 혼잣말 두 줄 3), 읽기 속도 1.1배 |
+| 자막 | 대본 문장 91개 = SRT 자막 117개 (한 줄 114 + 혼잣말 두 줄 3), 시간은 내레이션 말소리 기준 |
 | 스토리보드 | `out/storyboard/index.html` — still 80장 (장면 대표 29 + 자막별 51) |
-| 최종 출력 | `out/final_1080p.mp4` (h264, CRF 18, 72.5 MB, 렌더 16분 31초) — v2.4.0 고지 카드 3.5초·한 줄 자막·1.1배. 이전 영상: `out/final_1080p_v2.3_notice6s.mp4`(고지 6초), `out/final_1080p_v2.2_two_line.mp4`(두 줄 자막), `out/final_1080p_v2.0.1_with_enron.mp4`(엔론 포함) |
-| 오디오 | 내레이션/BGM 파일이 없어 무음 |
+| 최종 출력 | `out/final_1080p.mp4` (h264 CRF 18 + AAC) — v2.5.0 내레이션 포함. 이전 영상: `out/final_1080p_v2.4_silent.mp4`(무음, 고지 3.5초), `out/final_1080p_v2.3_notice6s.mp4`(고지 6초), `out/final_1080p_v2.2_two_line.mp4`(두 줄 자막), `out/final_1080p_v2.0.1_with_enron.mp4`(엔론 포함) |
+| 오디오 | 내레이션 `input/narration.mp3` (486.46초, 48kHz 스테레오, -17.4 LUFS, 고치지 않음). BGM 없음 |
 
 ## 입력 파일 (`input/`)
 
-- `대본_완성본.srt` — 화면 자막과 타이밍의 기준 (117개, 한 줄 자막, 읽기 속도 1.1배, 엔론 제외)
+- `대본_완성본.srt` — 화면 자막과 타이밍의 기준 (117개, 한 줄 자막, 엔론 제외, 내레이션 말소리에 맞춘 영상 시간)
+- `narration.mp3` — 내레이션 (사용자 제공). `npm run prepare-data` 가 `public/` 으로 복사하고 길이를 `src/data/audio.ts` 에 기록
 - `대본_완성본.txt` — 파트 구조와 `[장면]` 고지 문구
 - `video_guide.md` — 제작 지시서 v2.0
-- `archive/` — 이전 대본 (참고용, 코드는 읽지 않음): 엔론 포함 원본 SRT 96개·TXT, 두 줄 자막 SRT 91개(v2.2, `restructure-srt.mjs` 입력)
+- `archive/` — 이전 대본 (참고용, 코드는 읽지 않음): 엔론 포함 원본 SRT 96개·TXT, 두 줄 자막 SRT 91개(v2.2, `restructure-srt.mjs` 입력), 영상 시간 SRT(v2.4, 내레이션을 만든 SRT = `align-audio` 입력)
 
 ## 명령어
 
 ```console
 npm i                       # 의존성 설치
-npm run prepare-data        # SRT·TXT → src/data/subtitles.ts (SRT 자막을 대본 문장 91개에 묶어 검증, 한 줄 규칙 검사), 길이/장면표 출력, 폰트 청크 갱신
+npm run align-audio         # (내레이션이 바뀌면) v2.4 SRT 를 내레이션 말소리에 맞춰 input/대본_완성본.srt 다시 만들기 + out/audio-align.json
+npm run prepare-data        # 오디오 준비(public/ 복사, audio.ts) + SRT·TXT → src/data/subtitles.ts (SRT 자막을 대본 문장 91개에 묶어 검증, 한 줄 규칙 검사), 길이/장면표 출력, 폰트 청크 갱신
 node scripts/restructure-srt.mjs  # (한 번만) 두 줄 SRT → 한 줄 SRT + 속도 1.1배. 폭 측정에 Playwright 필요
 npm run dev                 # Remotion Studio 미리보기 (Scenes/ 폴더에 장면별 컴포지션)
 npm run storyboard          # 장면별 still 80장 + manifest.json → out/storyboard/, 이어서 index.html 생성
@@ -53,12 +57,14 @@ npm run render:4k           # 4K 는 요청이 있을 때만 (--scale=2)
 - `S04-wipe.png`: S04는 끝 화면이 네이비 한 색이라 와이프 중간 1장을 더 둡니다.
 - 카드 문구: 장면 연결 근거는 `src/data/timeline.ts`의 `SCENES[].why`, 문장별 근거는 `src/data/storyboard.ts`.
 
-## 내레이션 / BGM을 넣을 때
+## 내레이션 / BGM
 
-가이드 2번은 내레이션을 자막 18번 뒤에서 나눠 고지 카드만큼 뒤로 밀라고 합니다. v2.4.0부터 SRT 자체에 고지 카드 3.5초 공백이 들어 있으므로,
-SRT 시간대로 녹음·배치하면 따로 밀 필요가 없습니다(01:24.815–01:28.315 무음). BGM은 내레이션보다 -18dB 정도 낮게 깝니다. 현재 버전은 오디오 파일이 없어 오디오 트랙 코드를 넣지 않았습니다.
-SRT 시간은 읽기 속도 1.1배 기준입니다. 내레이션을 녹음해 넣으려면 SRT 시간에 맞게 녹음하거나(약 1.1배 빠르기),
-보통 속도로 녹음한 뒤 `restructure-srt.mjs --speed 1` 로 SRT를 다시 만들어 그래픽 타이밍을 맞춥니다.
+- 내레이션(`input/narration.mp3`)이 있으면 **오디오가 기준 시계**입니다. 오디오는 고치지 않고 `npm run align-audio` 로 SRT 를 실제 말소리에 맞춥니다.
+  - 말소리 구간(ffmpeg silencedetect -38dB, 0.08초)에 자막 117줄을 순서대로 배정(글자 수 비례 길이 + 밀림이 줄지 않는다는 조건)하고,
+    "넘친 줄만큼 뒤를 민다" 모델로 따로 검증합니다(이번 오디오: 평균 오차 0.03초).
+  - 자막은 말 시작 0.1초 전에 뜨고 다음 줄 시작까지 이어지며, 고지 카드 앞 줄만 말 끝 0.3초 뒤에 내려갑니다.
+- `npm run prepare-data` 가 `input/narration.*`, `input/bgm.*` 를 `public/` 으로 복사하고 `src/data/audio.ts` 를 만듭니다. 영상은 `@remotion/media` `<Audio>` 로 넣고, BGM 은 -18dB.
+- 다음 녹음은 내레이션을 먼저 만들고 SRT 를 맞추는 순서를 권장합니다(이번 녹음은 SRT 칸보다 길게 읽혀 끝에서 15.4초 늦었음).
 
 ## 구조
 
@@ -66,7 +72,9 @@ SRT 시간은 읽기 속도 1.1배 기준입니다. 내레이션을 녹음해 �
 input/                      입력 파일 (SRT, TXT, 지시서)
 scripts/                    parse-srt / build-glyphs / render-storyboard / build-storyboard-index (구조화 로그)
 src/data/subtitles.ts       SRT 자막(SUBTITLES)과 대본 문장 → 자막 범위(SENTENCES) (자동 생성)
-src/data/timeline.ts        모든 타이밍: 대본 문장 번호 → 프레임(sub, subEnd, line), 장면표(29), 고지 카드 = SRT 공백, still 시점
+src/data/timeline.ts        모든 타이밍: 대본 문장 번호 → 프레임(sub, subEnd, line), 장면표(29), 고지 카드 = SRT 공백, 영상 길이 ≥ 내레이션, still 시점
+src/data/audio.ts           내레이션·BGM 파일과 길이 (자동 생성)
+docs/지시서_반영사항.md      지금까지 피드백을 지시서 절별로 정리
 src/data/facts.ts           가이드 4번 데이터 시트 + 고지 문구 (화면 숫자는 여기 값만 사용)
 src/data/storyboard.ts      스토리보드 카드의 자막별 연결 근거
 src/design/                 색(빨강=수익, 파랑=손실, 노랑=강조 하나, 회색=보조), 폰트, 타이포, 모션 상수

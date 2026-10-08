@@ -1,4 +1,5 @@
-// VERSION: v2.4.0 — 2026-10-08 — SRT 시간 = 영상 시간: 고지 카드 공백(3.5초, 사용자 요청으로 6초에서 줄임)이 SRT 안에 있으므로 코드에서 더 밀지 않는다
+// VERSION: v2.5.0 — 2026-10-08 — 내레이션 오디오가 기준 시계: SRT 는 오디오에 맞춰 정렬됨(align-srt-to-audio). 영상 길이 ≥ 오디오 길이
+// v2.4.0 — 2026-10-08 — SRT 시간 = 영상 시간: 고지 카드 공백(3.5초, 사용자 요청으로 6초에서 줄임)이 SRT 안에 있으므로 코드에서 더 밀지 않는다
 // v2.3.0 — 2026-10-08 — 자막 한 줄화: 장면 타이밍은 '대본 문장 n'(SENTENCES) 기준, 화면 자막은 SRT 조각(SUBTITLES) 기준. lineStart 추가
 // v2.2.0 — 2026-10-08 — 대본(SRT/TXT)에서 엔론 5문장을 지워 자막 91개 → 잘라 내기 설정(CUT_SUBS) 삭제, 장면표 자막 번호 −5
 // v2.1.0 — 2026-10-07 — 엔론 사례(자막 55–59, S23) 제외: 자막 60번부터 28.154초 앞당김, 장면 29개
@@ -8,13 +9,15 @@
 // (Node 스크립트에서도 그대로 import 하므로 .ts 확장자 import 와 순수 TS 문법만 쓴다.)
 import {SENTENCES, SUBTITLES} from './subtitles.ts';
 import type {Subtitle} from './subtitles.ts';
+import {NARRATION} from './audio.ts';
 
 export const FPS = 30;
 export const WIDTH = 1920;
 export const HEIGHT = 1080;
 
 export const DISCLAIMER_AFTER_ID = 18;
-export const DISCLAIMER_SEC = 3.5; // 기대값: SRT 의 문장 18 끝 ~ 문장 19 시작 공백 (parse-srt 가 검사). v2.4.0 사용자 요청 6 → 3.5
+export const DISCLAIMER_SEC = 3.5; // 최소값: SRT 의 문장 18 끝 ~ 문장 19 시작 공백 (parse-srt 가 검사). v2.4.0 사용자 요청 6 → 3.5.
+// v2.5.0: 내레이션에 맞춘 SRT 에서는 공백 = 녹음의 무음 길이(약 4.4초)라 3.5초 이상이면 통과
 export const TAIL_SEC = 1;
 export const EXPECTED_SENTENCES = 91; // 대본 문장 수 = 원본 자막 96개 − 엔론 5개 (원본은 input/archive/)
 
@@ -62,7 +65,8 @@ export const DISCLAIMER_FRAMES = subStart(DISCLAIMER_AFTER_ID + 1) - DISCLAIMER_
 /** 화면 자막(SRT) 개수 */
 export const SUBTITLE_COUNT = SUBTITLES.length;
 const LAST = SUBTITLES[SUBTITLES.length - 1];
-export const TOTAL_FRAMES = secToFrame(LAST.endMs / 1000 + TAIL_SEC);
+/** 영상 길이 = 마지막 자막 끝 + 여유 1초, 내레이션이 더 길면 내레이션 끝까지 (오디오를 자르지 않음) */
+export const TOTAL_FRAMES = Math.max(secToFrame(LAST.endMs / 1000 + TAIL_SEC), NARRATION ? Math.ceil(NARRATION.durationSec * FPS) : 0);
 
 // ---------------------------------------------------------------------------
 // 장면 표 (가이드 v2 5번). enter = 들어올 때 전환 (찢어진 종이 와이프 / 컷 번갈아).

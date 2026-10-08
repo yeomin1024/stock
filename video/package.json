@@ -1,6 +1,6 @@
 {
   "name": "video",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "몰빵 영상 모션그래픽 (Remotion)",
   "repository": {},
   "license": "UNLICENSED",
@@ -11,6 +11,7 @@
     "@remotion/cli": "4.0.533",
     "@remotion/google-fonts": "4.0.533",
     "@remotion/layout-utils": "4.0.533",
+    "@remotion/media": "4.0.533",
     "@remotion/renderer": "4.0.533",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -29,12 +30,13 @@
     "build": "remotion bundle",
     "upgrade": "remotion upgrade",
     "lint": "eslint src && tsc",
-    "prepare-data": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/parse-srt.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/build-glyphs.mjs",
+    "prepare-data": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/prepare-audio.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/parse-srt.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/build-glyphs.mjs",
     "storyboard": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/render-storyboard.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/build-storyboard-index.mjs",
     "storyboard:index": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/build-storyboard-index.mjs",
     "stills": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/render-stills.mjs",
     "render": "remotion render Molbbang out/final_1080p.mp4 --codec=h264 --crf=18",
     "render:4k": "remotion render Molbbang out/final_4k.mp4 --scale=2 --codec=h264 --crf=16 --concurrency=4",
-    "render:4k:resumable": "bash scripts/render-4k.sh"
+    "render:4k:resumable": "bash scripts/render-4k.sh",
+    "align-audio": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/align-srt-to-audio.mjs"
   }
 }
