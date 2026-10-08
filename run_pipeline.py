@@ -1,5 +1,15 @@
 # =============================================================================
 #  run_pipeline.py
+#  VERSION: v1.31.0 - 2026-10-08 - [R150 ★ 실전 기록 장부(forward ledger) — 매 실행 '다음 거래일 체결 비중'을 쌓고 다음 시가로 채점]
+#    사용자 지시(2026-10-08): "각 층별로 결과를 신뢰해도 되는거야? 아니면 문제가 뭔지 파악하고 강하게 신뢰 가능하도록 방법 계속 탐색하고 테스트해봐".
+#    · 왜: 백테스트 숫자(2018~)는 규칙을 그 기간을 보며 골라 표본 안이고, 규칙·자료가 바뀔 때마다 과거가 다시 쓰인다(R150: 같은 S 버전을 이틀 연달아
+#      돌렸는데 2019년 120일 비중이 바뀜). 사후에 고칠 수 없는 기록은 '그날 리포트가 실제로 낸 추천'뿐이다.
+#    · 신설 forward_ledger_step · ledger_now_weights · ledger_today · ledger_load · ledger_merge · ledger_score:
+#      M(SPY 목표비중) · S★ · I★(산업 + 부모 잔여 다리) · K★(종목 + ETF 다리 + R148 숏 ETF)의 기준일 비중을 results/ledger/forward_ledger.csv에 더하고
+#      (같은 기준일 · 층은 마지막 실행이 이김 · 첫 기록 = 루트 forward_ledger_seed.csv), 지난 기록은 대상일 시가 → 다음 거래일 시가로 채점(yfinance · 비용 없음).
+#      같은 기준일에 대해 지금 백테스트 비중과의 차이 Σ|Δ비중| = 사후 수정. 결과 forward_record_<기준일>.xlsx(00_읽는법 · 01_요약 · 02_일별 · 03_장부)를
+#      리포트와 같은 커밋으로 results/reports/<기준일>/에 올리고 장부 csv는 results/ledger/에 덮어쓴다(push_reports_github extra).
+#    · main(ledger=True) · 반환 dict에 "ledger". 끄기: RP.main(ledger=False). ※ 신호 · 배분 · 위험 파라미터 무변경. 연구·교육용, 투자 자문 아님.
 #  VERSION: v1.30.0 - 2026-10-04 - [R144 ★ 실행 사이 캐시 보관(GitHub 릴리스 pipeline-cache) — 처음에만 대규모 캐시 · 다음부터 갱신만]
 #    사용자 지시(2026-10-04): "실행 초기에만 대규모 데이터 캐시를 만들어놓고 날짜가 지나면 갱신만 하도록 해서 최대한 실행시간 단축".
 #    · 원인(2026-10-02 리포트): Kaggle 실행마다 /kaggle/working이 비어 S 경계 캐시 0/1,258(836초) · I 0/3,298(2,151초) · M 워크포워드 · K 가격·어닝을
@@ -1219,8 +1229,8 @@ import datetime as dt
 import importlib.util
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v1.30.0"
-VERSION_DATE = "2026-10-04"
+VERSION = "v1.31.0"
+VERSION_DATE = "2026-10-08"
 
 MODULE_FILES = {
     "market_regime_trader": "market_regime_trader.py",
@@ -1324,10 +1334,12 @@ def _github_token() -> Tuple[Optional[str], str]:
 
 
 def push_reports_github(paths: List[str], stamp: str, repo: str = "yeomin1024/stock", branch: str = "main",
-                        folder: str = "results/reports", max_mb: float = 95.0) -> Dict[str, Any]:
+                        folder: str = "results/reports", max_mb: float = 95.0,
+                        extra: Optional[List[Tuple[str, str]]] = None) -> Dict[str, Any]:
     """[v1.29.0 R141 ★ 사용자 지시 2026-10-03 "엑셀 결과는 깃허브 저장소에 폴더 하나 만들어서 거기에 저장하도록 해"]
     리포트(xlsx)를 저장소 <folder>/<stamp>/ 에 **커밋 1개**로 올린다(Git Data API: blob → tree → commit → ref).
-    토큰(Contents 쓰기 권한)은 Kaggle Secrets/환경변수 GITHUB_TOKEN에서만 읽고 출력하지 않는다. 실패해도 파이프라인은 계속(리포트는 /kaggle/working에 그대로)."""
+    토큰(Contents 쓰기 권한)은 Kaggle Secrets/환경변수 GITHUB_TOKEN에서만 읽고 출력하지 않는다. 실패해도 파이프라인은 계속(리포트는 /kaggle/working에 그대로).
+    [v1.31.0 R150] extra = [(로컬 경로, 저장소 경로)] — 실전 기록 장부(csv) 등을 같은 커밋에 싣는다(저장소 경로 그대로 · 덮어씀)."""
     out: Dict[str, Any] = {"ok": False, "files": []}
     tok, src = _github_token()
     if not tok:
@@ -1343,13 +1355,14 @@ def push_reports_github(paths: List[str], stamp: str, repo: str = "yeomin1024/st
     api = f"https://api.github.com/repos/{repo}"
     hd = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
           "User-Agent": "yeomin1024-stock-runner"}
-    files = [p for p in paths if p and os.path.exists(p) and p.lower().endswith(".xlsx")]
+    files = [(p, f"{folder}/{stamp}/{os.path.basename(p)}") for p in paths if p and os.path.exists(p) and p.lower().endswith(".xlsx")]
+    files += [(p, rp) for p, rp in (extra or []) if p and rp and os.path.exists(p)]
     if not files:
         out["note"] = "올릴 xlsx 없음"
         return out
     try:
         items = []
-        for p in files:
+        for p, rp in files:
             mb = os.path.getsize(p) / 1e6
             if mb > max_mb:
                 out["files"].append((os.path.basename(p), f"⚠ {mb:.1f}MB > {max_mb:.0f}MB — 건너뜀(GitHub 파일 한도)"))
@@ -1358,7 +1371,7 @@ def push_reports_github(paths: List[str], stamp: str, repo: str = "yeomin1024/st
                 b64 = base64.b64encode(fh.read()).decode("ascii")
             r = requests.post(f"{api}/git/blobs", headers=hd, json={"content": b64, "encoding": "base64"}, timeout=300)
             r.raise_for_status()
-            items.append({"path": f"{folder}/{stamp}/{os.path.basename(p)}", "mode": "100644", "type": "blob", "sha": r.json()["sha"]})
+            items.append({"path": rp, "mode": "100644", "type": "blob", "sha": r.json()["sha"]})
             out["files"].append((os.path.basename(p), f"{mb:.1f}MB"))
         if not items:
             out["note"] = "한도 안 파일 없음"
@@ -1387,6 +1400,215 @@ def push_reports_github(paths: List[str], stamp: str, repo: str = "yeomin1024/st
         if tok and tok in msg:
             msg = msg.replace(tok, "***")
         out["note"] = f"업로드 실패 — {type(e).__name__}: {msg[:200]} (리포트는 로컬/Kaggle 작업 폴더에 그대로)"
+    return out
+
+
+# ---- [v1.31.0 R150 ★ 사용자 지시 2026-10-08 "각 층별로 결과를 신뢰해도 되는거야? … 강하게 신뢰 가능하도록 방법 계속 탐색"] ----
+#   실전 기록 장부(forward ledger): 실행마다 네 층의 '다음 거래일 체결 비중'을 저장소 results/ledger/forward_ledger.csv에 쌓고,
+#   지난 기록은 실제 시가 → 다음 거래일 시가 수익으로 채점한다(사후에 고칠 수 없는 표본 밖 기록 — 백테스트는 규칙을 바꿀 때마다 과거가 다시 쓰인다).
+#   같은 기준일에 대해 '지금 백테스트가 말하는 비중'과의 차이(Σ|Δ비중|) = 사후 수정 정도(0이면 그날 이후 규칙·자료가 그날 판단을 바꾸지 않음).
+#   첫 기록 = 저장소 루트 forward_ledger_seed.csv(2026-10-02~10-07 리포트의 다음 거래일 비중) · 결과 = results/reports/<기준일>/forward_record_<기준일>.xlsx.
+LEDGER_REPO_PATH = "results/ledger/forward_ledger.csv"
+LEDGER_SEED_PATH = "forward_ledger_seed.csv"
+LEDGER_COLS = ["기준일", "대상일", "층", "버전", "자산", "비중"]
+
+
+def _norm_asset(c) -> str:
+    s = str(c)
+    for p in ("ETF_", "P:", "숏:"):
+        if s.startswith(p):
+            s = s[len(p):]
+    return s
+
+
+def _weights_frame(*dfs):
+    """여러 비중 표(날짜 × 자산)를 자산 이름(ETF_ · P: · 숏: 떼기) 기준으로 더한다."""
+    import pandas as pd
+    parts = []
+    for d in dfs:
+        if isinstance(d, pd.DataFrame) and len(d):
+            x = d.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+            x.index = pd.DatetimeIndex(x.index).normalize()
+            parts.append(x.T.groupby([_norm_asset(c) for c in x.columns]).sum().T)
+    if not parts:
+        return None
+    out = parts[0]
+    for p in parts[1:]:
+        out = out.add(p, fill_value=0.0)
+    return out.fillna(0.0)
+
+
+def ledger_now_weights(res, sres, ires, kres) -> Dict[str, Any]:
+    """지금 백테스트의 층별 날짜별 체결 예정 비중(t일 행 = t+1 시가 체결)."""
+    import pandas as pd
+    out: Dict[str, Any] = {}
+    try:
+        tp = pd.to_numeric(res["sig"]["target_pos"], errors="coerce")
+        out["M"] = pd.DataFrame({"SPY": tp.values}, index=pd.DatetimeIndex(tp.index).normalize())
+    except Exception:
+        pass
+    out["S"] = _weights_frame(((sres or {}).get("alloc") or {}).get("target_w"))
+    out["I"] = _weights_frame(((ires or {}).get("alloc") or {}).get("target_w"))
+    ka = (kres or {}).get("alloc") or {}
+    out["K"] = _weights_frame(ka.get("target_w"), ka.get("etf_w"), ka.get("short_w"))
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def ledger_today(now_w: Dict[str, Any], d0, d1, versions: Dict[str, str]):
+    """오늘 기록 행 — 기준일 d0의 비중(= 대상일 d1 시가 체결). 0인 자산은 빼고 · 전부 현금이면 '현금' 1행."""
+    import pandas as pd
+    rows = []
+    for layer, W in now_w.items():
+        if d0 not in W.index:
+            continue
+        w = W.loc[d0]
+        w = w[w.abs() > 1e-6]
+        if not len(w):
+            rows.append({"기준일": str(d0.date()), "대상일": str(d1.date()), "층": layer, "버전": versions.get(layer, "?"), "자산": "현금", "비중": 1.0})
+        for a, v in w.items():
+            rows.append({"기준일": str(d0.date()), "대상일": str(d1.date()), "층": layer, "버전": versions.get(layer, "?"), "자산": str(a), "비중": round(float(v), 6)})
+    return pd.DataFrame(rows, columns=LEDGER_COLS)
+
+
+def ledger_load(repo: str, branch: str, local: Optional[str]):
+    """이전 기록 — 저장소 장부(없으면 루트 시드) + 로컬 사본(Kaggle Persistence) 합치기. 같은 (기준일, 층)은 나중 것."""
+    import io as _io
+    import pandas as pd
+    frames = []
+    try:
+        import requests
+        for path in (LEDGER_REPO_PATH, LEDGER_SEED_PATH):
+            r = requests.get(f"https://raw.githubusercontent.com/{repo}/{branch}/{path}", timeout=30,
+                             headers={"User-Agent": "yeomin1024-stock-runner"})
+            if r.status_code == 200 and r.content:
+                frames.append(pd.read_csv(_io.StringIO(r.content.decode("utf-8-sig")), dtype={"기준일": str, "대상일": str}))
+                break
+    except Exception:
+        pass
+    if local and os.path.exists(local):
+        try:
+            frames.append(pd.read_csv(local, dtype={"기준일": str, "대상일": str}, encoding="utf-8-sig"))
+        except Exception:
+            pass
+    if not frames:
+        return pd.DataFrame(columns=LEDGER_COLS)
+    return ledger_merge(frames)
+
+
+def ledger_merge(frames):
+    """같은 (기준일, 층)은 뒤 프레임(나중 기록)이 이긴다 — 같은 날 다시 돌리면 마지막 실행의 추천으로 바뀐다."""
+    import pandas as pd
+    parts = []
+    for i, f in enumerate(frames):
+        if f is None or not len(f):
+            continue
+        x = f[[c for c in LEDGER_COLS if c in f.columns]].copy()
+        x["_f"] = i
+        parts.append(x)
+    if not parts:
+        return pd.DataFrame(columns=LEDGER_COLS)
+    df = pd.concat(parts, ignore_index=True)
+    df["기준일"], df["층"] = df["기준일"].astype(str), df["층"].astype(str)
+    df = df[df["_f"] == df.groupby(["기준일", "층"])["_f"].transform("max")]
+    return df.drop(columns="_f").sort_values(["기준일", "층", "자산"]).reset_index(drop=True)
+
+
+def ledger_score(led, now_w: Dict[str, Any], px_open=None):
+    """기록 채점 — 대상일 시가 → 그다음 거래일 시가(시가 수익 · 비용 빼지 않음). px_open = 날짜 × 티커 시가(없으면 yfinance)."""
+    import pandas as pd
+    import numpy as np
+    if led is None or not len(led):
+        return pd.DataFrame(), pd.DataFrame()
+    led = led.copy()
+    led["대상일_ts"] = pd.to_datetime(led["대상일"])
+    tick = sorted(set(led["자산"].astype(str)) - {"현금"} | {"SPY"})
+    if px_open is None:
+        import yfinance as yf
+        import contextlib
+        import io as _io
+        with contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(_io.StringIO()):
+            d = yf.download(tick, start=(led["대상일_ts"].min() - pd.Timedelta(days=7)).date().isoformat(), auto_adjust=True, progress=False)
+        px_open = d["Open"] if isinstance(d.columns, pd.MultiIndex) else d[["Open"]].rename(columns={"Open": tick[0]})
+    px_open = px_open.copy()
+    px_open.index = pd.DatetimeIndex(px_open.index).normalize()
+    cal = px_open["SPY"].dropna().index if "SPY" in px_open.columns else px_open.dropna(how="all").index
+    daily = []
+    for (d0, layer), g in led.groupby(["기준일", "층"], sort=True):
+        d1 = g["대상일_ts"].iloc[0]
+        i = cal.searchsorted(d1)
+        row = {"기준일": d0, "층": layer, "버전": str(g["버전"].iloc[0]), "대상일": str(d1.date()),
+               "노출": float(g.loc[g["자산"] != "현금", "비중"].sum())}
+        w_led = {str(a): float(v) for a, v in zip(g["자산"], g["비중"]) if a != "현금"}
+        Wn = now_w.get(layer)
+        d0t = pd.Timestamp(d0)
+        if Wn is not None and d0t in Wn.index:
+            wn = Wn.loc[d0t]
+            wn = {str(a): float(v) for a, v in wn.items() if abs(float(v)) > 1e-6}
+            keys = set(w_led) | set(wn)
+            row["사후 수정(Σ|Δ비중|)"] = round(sum(abs(w_led.get(k, 0.0) - wn.get(k, 0.0)) for k in keys), 4)
+        else:
+            row["사후 수정(Σ|Δ비중|)"] = np.nan
+        if i >= len(cal) - 1 or cal[min(i, len(cal) - 1)] != d1:
+            row.update({"상태": "채점 대기(다음 시가 없음)" if i >= len(cal) - 1 else "대상일 시세 없음"})
+            daily.append(row)
+            continue
+        e = cal[i + 1]
+        r, miss = 0.0, 0.0
+        for a, v in w_led.items():
+            o1 = px_open[a].get(d1) if a in px_open.columns else np.nan
+            o2 = px_open[a].get(e) if a in px_open.columns else np.nan
+            if o1 is None or o2 is None or not np.isfinite(o1) or not np.isfinite(o2) or o1 <= 0:
+                miss += abs(v)
+                continue
+            r += v * (o2 / o1 - 1.0)
+        sp = float(px_open["SPY"].get(e) / px_open["SPY"].get(d1) - 1.0)
+        row.update({"청산일": str(e.date()), "실전 수익(%)": round(r * 100, 4), "SPY(%)": round(sp * 100, 4), "시세 없는 비중": round(miss, 4), "상태": "채점"})
+        daily.append(row)
+    daily = pd.DataFrame(daily)
+    summ = []
+    for layer, g in daily.groupby("층", sort=False):
+        sc = g[g["상태"] == "채점"]
+        rr = sc["실전 수익(%)"].astype(float) / 100 if len(sc) else pd.Series(dtype=float)
+        ss = sc["SPY(%)"].astype(float) / 100 if len(sc) else pd.Series(dtype=float)
+        summ.append({"층": layer, "기록 수": int(len(g)), "채점 수": int(len(sc)), "처음 기준일": str(g["기준일"].min()), "마지막 기준일": str(g["기준일"].max()),
+                     "실전 누적(%)": round(float((1 + rr).prod() - 1) * 100, 3) if len(rr) else None,
+                     "같은 날 SPY 누적(%)": round(float((1 + ss).prod() - 1) * 100, 3) if len(ss) else None,
+                     "수익 > 0 비율(%)": round(float((rr > 0).mean() * 100), 1) if len(rr) else None,
+                     "평균 노출": round(float(g["노출"].mean()), 3),
+                     "평균 사후 수정": round(float(g["사후 수정(Σ|Δ비중|)"].mean()), 4) if g["사후 수정(Σ|Δ비중|)"].notna().any() else None,
+                     "최대 사후 수정": round(float(g["사후 수정(Σ|Δ비중|)"].max()), 4) if g["사후 수정(Σ|Δ비중|)"].notna().any() else None,
+                     "버전 수": int(g["버전"].nunique())})
+    return pd.DataFrame(summ), daily
+
+
+def forward_ledger_step(res, sres, ires, kres, M, S, I, K, mcfg, base: str, stamp: str, repo: str, branch: str = "main") -> Dict[str, Any]:
+    """[v1.31.0 R150] 장부 읽기 → 오늘 행 더하기 → 채점 → 로컬 저장(csv · xlsx). 저장소 반영은 push_reports_github(extra)."""
+    import pandas as pd
+    out: Dict[str, Any] = {"ok": False}
+    nd = M.build_next_day_prediction(res, mcfg)
+    d0, d1 = pd.Timestamp(nd["기준일"]).normalize(), pd.Timestamp(nd["다음거래일"]).normalize()
+    vers = {"M": str(getattr(M, "BUNDLE_VERSION", "?")), "S": str(getattr(S, "VERSION", "?")),
+            "I": str(getattr(I, "VERSION", "?")) if I is not None else "-", "K": str(getattr(K, "VERSION", "?")) if K is not None else "-"}
+    now_w = ledger_now_weights(res, sres, ires, kres)
+    local = os.path.join(base, "forward_ledger.csv")
+    prev = ledger_load(repo, branch, local)
+    today = ledger_today(now_w, d0, d1, vers)
+    led = ledger_merge([prev, today]) if len(prev) else today
+    led.to_csv(local, index=False, encoding="utf-8-sig")
+    summ, daily = ledger_score(led, now_w)
+    xp = os.path.join(base, f"forward_record_{stamp}.xlsx")
+    with pd.ExcelWriter(xp) as xw:
+        readme = pd.DataFrame({"항목": ["무엇", "채점", "사후 수정", "주의"],
+                               "설명": ["실행마다 기록한 '다음 거래일 체결 비중'(그날 리포트가 실제로 낸 추천)을 나중에 실제 시세로 채점한 표본 밖 기록.",
+                                        "대상일 시가에 사서 다음 거래일 시가까지(비용 빼지 않음 · 현금 0%). SPY = 같은 날 SPY 시가 수익.",
+                                        "같은 기준일에 대해 지금 백테스트가 말하는 비중과의 차이 Σ|Δ비중| — 0이 아니면 그 뒤 규칙·자료 변경이 과거 판단을 바꾼 것(백테스트 숫자가 사후에 다시 쓰였다는 뜻).",
+                                        "기록이 몇 주·몇 달 쌓여야 의미가 있다. 연구·교육용, 투자 자문 아님."]})
+        readme.to_excel(xw, sheet_name="00_읽는법", index=False)
+        summ.to_excel(xw, sheet_name="01_요약", index=False)
+        daily.to_excel(xw, sheet_name="02_일별", index=False)
+        led.to_excel(xw, sheet_name="03_장부", index=False)
+    out.update({"ok": True, "csv": local, "xlsx": xp, "rows_today": int(len(today)), "rows": int(len(led)), "summary": summ,
+                "d0": str(d0.date()), "d1": str(d1.date())})
     return out
 
 
@@ -1575,7 +1797,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
          i_overrides: Optional[Dict[str, Any]] = None,
          k_overrides: Optional[Dict[str, Any]] = None, base_dir: Optional[str] = None,
          _hooks: Optional[Dict[str, Any]] = None, push_github: bool = True, github_repo: str = "yeomin1024/stock",
-         github_folder: str = "results/reports", cache_github: bool = True) -> Dict[str, Any]:
+         github_folder: str = "results/reports", cache_github: bool = True, ledger: bool = True) -> Dict[str, Any]:
     """M → S → I 실행 + 리포트 + (Colab) 다운로드 / (Kaggle) 영구 보존 + 실매매 배너.
     sector_exclude: None이면 sector_rotation.py의 기본 그대로 — v0.39.0부터 기본은 ()(11섹터 전부 예측).
         ⚠ 9섹터로 되돌리려면 sector_exclude=("XLB","XLE"). 제외는 신호·배분·성과를 바꾸는 설정이다.
@@ -1858,11 +2080,28 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
                 shutil.copy2(extra, os.path.join(hist_dir, os.path.basename(extra)))
         print(f"[runner] 이력 보관: {hist_dir}")
 
+    # ---- [v1.31.0 R150 ★] 실전 기록 장부 — 오늘 추천 비중 기록 + 지난 기록 채점(사후에 고칠 수 없는 표본 밖 기록) ----
+    _stamp = str(res["cal"][-1].date()) if isinstance(res, dict) and "cal" in res else dt.date.today().isoformat()
+    led: Dict[str, Any] = {}
+    if ledger and not _hooks:
+        try:
+            led = forward_ledger_step(res, sres, ires, kres, M, S, I, K, mcfg, base, _stamp, github_repo)
+            if led.get("ok"):
+                print(f"[runner] ★ 실전 기록 장부: 오늘 {led['d0']} → {led['d1']} 체결 비중 {led['rows_today']}행 기록 · 장부 {led['rows']}행 · "
+                      f"{os.path.basename(led['xlsx'])}")
+                _sm = led.get("summary")
+                if _sm is not None and len(_sm):
+                    for _, _r in _sm.iterrows():
+                        print(f"[runner]   {_r['층']}: 채점 {_r['채점 수']}/{_r['기록 수']}일 · 실전 누적 {_r['실전 누적(%)']}% vs 같은 날 SPY {_r['같은 날 SPY 누적(%)']}% · "
+                              f"평균 노출 {_r['평균 노출']} · 평균 사후 수정 {_r['평균 사후 수정']}")
+                paths = paths + [led["xlsx"]]
+        except Exception as e:
+            print(f"[runner] 실전 기록 장부 건너뜀(리포트는 정상) — {type(e).__name__}: {str(e)[:160]}")
     # ---- [v1.29.0 R141 ★ 사용자 지시] 엑셀 결과를 GitHub 저장소 results/reports/<기준일>/ 폴더에 저장(커밋 1개) ----
     gh = None
     if push_github:
-        _stamp = str(res["cal"][-1].date()) if isinstance(res, dict) and "cal" in res else dt.date.today().isoformat()
-        gh = push_reports_github(paths, _stamp, repo=github_repo, folder=github_folder)
+        gh = push_reports_github(paths, _stamp, repo=github_repo, folder=github_folder,
+                                 extra=[(led["csv"], LEDGER_REPO_PATH)] if led.get("ok") else None)
         if gh.get("ok"):
             print(f"[runner] ★ GitHub 저장: {gh['url']} · 커밋 {str(gh.get('commit'))[:7]} · 파일 "
                   + ", ".join(f"{n}({s})" for n, s in gh.get("files", [])) + f" · 토큰 출처 {gh.get('src')}")
@@ -1902,7 +2141,7 @@ def main(sector_exclude: Optional[Tuple[str, ...]] = None, run_industry_layer: b
               "Persistence(Files) 설정이면 다음 세션에도 캐시·리포트가 그대로 남음. 커밋(Save & Run All)하면 버전별 Output으로 저장.")
     print(f"[runner] 총 소요 {time.time() - t_all:.0f}초")
     return {"env": env, "base": base, "paths": paths, "history_dir": hist_dir, "res": res, "sres": sres, "ires": ires,
-            "kres": kres, "mcfg": mcfg, "scfg": scfg, "icfg": icfg, "github": gh,
+            "kres": kres, "mcfg": mcfg, "scfg": scfg, "icfg": icfg, "github": gh, "ledger": {k: v for k, v in led.items() if k != "summary"},
             "cache_restore": _cache_rs, "cache_save": _cache_up, "elapsed_sec": round(time.time() - t_all, 1)}
 
 

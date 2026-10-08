@@ -22,6 +22,20 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.88.0 - 2026-10-08 - [R150 ★ 신뢰도 판정(00O 블록 F + 00 줄) · FRED 과거값 고정 · 월 평균 수익 목표 30% — 네 층 공용 · 신호·비중 무변경]
+#    사용자 지시(2026-10-08): "오늘 결과 실행했는데 각 층별로 결과를 신뢰해도 되는거야? 아니면 문제가 뭔지 파악하고 강하게 신뢰 가능하도록 방법 계속 탐색하고
+#      테스트해봐" · "월 평균 수익 30%에 도달하도록 방법도 계속 탐색하고 하던거 계속 진행해".
+#    ── (§1 신뢰도) R150_TRUST · r150_trust_rows · r150_trust_line — r147_sheet가 층 이름 첫 글자(M·S·I·K)로 블록 F(항목 · 2018~ 수치 · 표본 밖 근거 · 등급 ·
+#      정직한 기대치)와 00 줄 'R150'을 붙인다(S·I·K 코드 변경 없음). 근거(로컬 r150 · 2026-10-07 Kaggle 리포트):
+#      M 1994~2017 같은 규칙 연 9.4%(SPY 9.6%) · 샤프 0.82 · MDD −30.7%(SPY −55.2%) · 무작위 시점 대비 6창 모두 중앙 위 · 조각 효과 수축 샤프 5~38% ·
+#      후보 5,236개 기간 간 순위 상관 0.05~0.21 | S 1999~2017 섹터 선택 무작위 대비 22·13·94 백분위 · 초과 샤프 0.26 | I 독립 긴 이력 없음 |
+#      K 종목 몫 98%가 2026년에 고른 58종목 — 섹터 ETF 24× · 무작위 회원 14× · 규칙 선택 21× vs 라이브 209×.
+#    ── (§2 재현성) FRED_VINTAGE_LOCK=True · fred_vintage_merge · FRED_VINTAGE_STATS — 다시 받은 FRED 시리즈에서 캐시에 있던 날짜는 캐시 값 유지(새 날짜만 붙임).
+#      근거: 같은 S v1.02.0을 10-06·10-07에 돌렸더니 2019년 신호 채택(거시 점수 신호 t 1.02 → 1.00)이 뒤집혀 120일 비중이 바뀌었다(배수 73.9 → 75.7) ·
+#      S·I 경계 캐시 0% 적중 원인 '데이터 값 변경(과거 값 수정)'. 00 '데이터 신선도' 줄에 무시한 수정 건수. 되돌리기 m_overrides={'FRED_VINTAGE_LOCK': False}.
+#    ── (§3 목표) R149_TARGET_MON 0.50 → 0.30 · 블록 E · 00 줄 문구가 목표를 따라감. 연구(r150 일간 교체 80설정 추가): 30%는 '매달 상위 4종목' 또는
+#      '매일 상위 150종목'을 미리 알아야 닿는다 · 일간 최상(2010~17 장중 반전 2.3%)은 2018~ −2.6%.
+#    시험 t150/test_r150.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.87.0 - 2026-10-07 - [R149 ★ 월 평균 수익 50% 목표(00O 블록 E + 00 줄) — 네 층 공용 · 신호·비중 무변경]
 #    사용자 지시(2026-10-07): "월 평균 수익이 50%이상이 되도록 목표치를 잡아서 계속 탐색해서 테스트해봐".
 #    ── r147_sheet에 블록 E(행마다 월 평균 수익 · 목표 50% · 달성률 · 50% 넘은 달 · 최고·중앙 달) + 그 층 자산 묶음 상한(정답을 미리 앎 · 종가→종가 · 비용 없음:
@@ -3475,6 +3489,10 @@ class Config:
     #  동안 "실패 확정"으로 고정해 복구 후 재실행까지 망치는 2차 피해(report16 직후 재실행
     #  시 실제로 발생했을 경로)를 막는다. 무결성 실패(서버 구조 문제)만 종전대로 기록한다.
     FRED_STALE_CACHE_MAX_DAYS: float = 30.0   # 전송 실패 시 이 일수 이내의 만료 캐시를 지연캐시로 대체 사용(0이면 비활성)
+    # [v1.88.0 R150] FRED 과거값 고정 — 다시 받은 시리즈에서 이미 캐시에 있던 날짜는 캐시 값을 유지하고 새 날짜만 붙인다(사후 수정 무시).
+    #   왜: 같은 코드를 이틀 연달아 돌렸는데 2019년 S 신호 채택이 뒤집혀 120일 비중이 바뀌었다(R150) — 과거 값이 매일 다시 써지면 백테스트 과거가
+    #   실행마다 흔들리고(재현 불가) 그때는 몰랐던 수정치를 쓰게 된다. 되돌리기: m_overrides={'FRED_VINTAGE_LOCK': False}.
+    FRED_VINTAGE_LOCK: bool = True
     FRED_MIN_COLLECT_RATIO: float = 0.80      # 실데이터 실행의 FRED 수집률 하한(배치 재시도 트리거 겸 중단 게이트)
     FRED_BATCH_RETRY_WAIT_S: float = 15.0     # 배치 재시도 전 대기(초). 음수면 배치 재시도 비활성
     ALLOW_DEGRADED_RUN: bool = False          # True면 수집률 미달이어도 경고+"성능저하 실행" 표기로 진행(기본 중단)
@@ -4863,6 +4881,25 @@ def _write_cache(name: str, df: pd.DataFrame, cfg: Config = CFG) -> None:
 #   → 3~5일 묵은 FRED 캐시가 '오늘 받은 것'으로 통과했다(캐시 폴더를 복사·복원하면 수정시각이 복사한 때로 새로 찍힌다). 가격(Yahoo)은 내용으로
 #   판정(R73)해 최신이었지만 FRED는 수정시각만 봤다. 도장은 내용과 함께 복사되므로 복사해도 받은 때가 남는다. 도장이 없는 캐시(옛 캐시)는 묵은 것으로 본다.
 FRED_STAMP_STATS: Dict[str, List[str]] = {"refetched": [], "no_stamp": []}
+FRED_VINTAGE_STATS: Dict[str, int] = {}     # [v1.88.0 R150] 시리즈 → 이번 실행에서 무시한 과거 값 수정 건수
+
+
+def fred_vintage_merge(old: Optional[pd.Series], new: pd.Series, tol: float = 1e-9) -> Tuple[pd.Series, int]:
+    """[v1.88.0 R150] 과거값 고정 병합 — old에 값이 있는 날짜는 old 유지 · 새 날짜(또는 old가 비어 있던 날짜)만 new에서 채운다.
+    반환 (병합 시리즈, 무시한 수정 건수 = 겹친 날짜 중 값이 tol 넘게 다른 수)."""
+    new = pd.to_numeric(pd.Series(new), errors="coerce")
+    if old is None or not len(old):
+        return new, 0
+    old = pd.to_numeric(pd.Series(old), errors="coerce")
+    old = old[~old.index.duplicated(keep="last")]
+    new = new[~new.index.duplicated(keep="last")]
+    both = old.dropna().index.intersection(new.dropna().index)
+    n_rev = int(((old.reindex(both) - new.reindex(both)).abs() > tol * np.maximum(1.0, old.reindex(both).abs())).sum())
+    idx = old.index.union(new.index)
+    out = old.reindex(idx)
+    out = out.where(out.notna(), new.reindex(idx))
+    out.name = new.name if new.name is not None else old.name
+    return out, n_rev
 
 
 def _fred_stamp_path(series_id: str, cfg: Config = CFG) -> str:
@@ -5503,6 +5540,19 @@ def fetch_fred(series_id: str, cfg: Config = CFG, retries: Optional[int] = None,
         log("DATA", kv(event="fred_ok", series=series_id, via=chosen, rows=int(s.notna().sum()),
                        start=str(s.dropna().index.min().date()), end=str(s.dropna().index.max().date()),
                        elapsed_s=elapsed))
+    if getattr(cfg, "FRED_VINTAGE_LOCK", False):    # [v1.88.0 R150] 과거값 고정 — 캐시에 있던 날짜는 그 값 유지 · 새 날짜만 붙임
+        try:
+            _old = _read_cache(f"FRED_{series_id}", max_age_hours=None, cfg=cfg)
+            if _old is not None and len(_old):
+                _name = s.name
+                s, _nrev = fred_vintage_merge(_old.iloc[:, 0], s)
+                s.name = _name
+                if _nrev:
+                    FRED_VINTAGE_STATS[series_id] = FRED_VINTAGE_STATS.get(series_id, 0) + _nrev
+                    log("DATA", kv(event="fred_vintage_lock", series=series_id, revisions_ignored=_nrev,
+                                   note="과거 값 수정은 무시하고 캐시 값 유지(재현성) — 끄기 FRED_VINTAGE_LOCK=False"), "debug")
+        except Exception as _e:
+            log("DATA", kv(event="fred_vintage_lock_failed", series=series_id, err=type(_e).__name__), "warning")
     _write_cache(f"FRED_{series_id}", s.to_frame(), cfg)
     _write_fred_stamp(series_id, cfg)               # [v1.81.1 R123] 받은 시각 도장(신선도는 이 도장으로 본다)
     return s
@@ -7418,7 +7468,7 @@ CACHE_KEY_IGNORE_FIELDS = frozenset({
     "AUDIT_SAMPLE", "RUN_LOOKAHEAD_AUDIT", "RUN_HALF_LIFE_SENSITIVITY", "HL_SENS_REWEIGHT_FREQ", "ENSEMBLE_HALF_LIVES",
     "OUT_XLSX", "LOG_LEVEL", "EXPORT_RESULT_BUNDLE", "RESULT_BUNDLE_PATH", "EXPORT_DAILY_CSV", "DAILY_CSV_PATH",
     "RANDOM_SEED", "CACHE_DIR", "FRED_API_KEY", "FETCH_TIMEOUT_CONNECT", "FETCH_TIMEOUT_READ", "FETCH_RETRIES",
-    "FETCH_MAX_WORKERS", "DRAWDOWN_EPISODE_THRESHOLD",
+    "FETCH_MAX_WORKERS", "DRAWDOWN_EPISODE_THRESHOLD", "FRED_VINTAGE_LOCK",                    # v1.88.0 R150 수집 전용(값 변화는 데이터 지문이 잡는다)
     "YAHOO_CRITICAL_FRED_FALLBACK", "FRED_FALLBACK_MIN_ROWS", "FRED_FALLBACK_MAX_DIFF_RATIO",   # v1.54.0 수집 전용(S v0.59.0 §P1)
     "TREND_OVERRIDE_SCORE_PCT", "TREND_OVERRIDE_NEED_MARKET",                                  # generate_signals 전용(S v0.40.0 §S3)
     "USE_WF_PERIOD_CACHE", "WF_PERIOD_CACHE_DIR",                                              # [v1.55.0 R72] 캐시 on/off·위치
@@ -11448,18 +11498,63 @@ R147_RESEARCH = {
 
 
 # [v1.87.0 R149 ★ 사용자 지시 2026-10-07] "월 평균 수익이 50%이상이 되도록 목표치를 잡아서 계속 탐색해서 테스트해봐" — 00O 블록 E · 00 줄.
-R149_TARGET_MON = 0.50
+# [v1.88.0 R150 ★ 사용자 지시 2026-10-08] "월 평균 수익 30%에 도달하도록 방법도 계속 탐색" — 목표 50% → 30%.
+R149_TARGET_MON = 0.30
 R149_RESEARCH = {
-    "공통": ("연구(r149 · 그 시점 S&P 500 회원 660종목 · 2008~2026): 그달 가장 많이 오를 1종목을 매달 미리 알아도 월 평균 41.1%(2018~) · 39.7%(2010~17) — "
-             "50%는 주마다 상위 10종목을 다 맞혀야(61.5%) 닿는다. 정직한 신호(모멘텀 12-1·6-1·3·1 · 반전 · 52주 고점 · 변동성 · 상승확률 · 저위험 · LightGBM 12특징 · "
-             "주간·월간 · 상위 1~20 · SPY 추세 필터 · 약 200설정): 2010~17에서 고른 최상(주간 반전 상위1 9.2%)은 2018~ −0.1%(MDD −97%) · 두 구간 모두 버틴 건 "
-             "모멘텀 12-1 상위1(4.6% · 5.7% · MDD −81% · −73%)뿐 · LightGBM 순위 IC 0.01 · 무작위 1종목 최고 3.2%. "
-             "K 라이브(월 5.44%)에 집중 몫을 섞어도 최대 6.06%(MDD −34% · 손실 달 6 → 29) → 라이브 변경 없음. 레버리지 금지 · 숏은 현금 몫 안에서만."),
-    "M": "M 자산(SPY · SH)으로는 매일 정답을 다 맞혀도 월 18.7%(롱만 9.4%) → 레버리지 없이 50%는 원리상 불가.",
-    "S": "섹터 11 + SPY: 매일 정답 1개 롱 36.4% · 롱+가상 숏 60.6% · 달마다 정답 1개 7.6% → 50%는 매일 정답을 거의 다 맞혀야.",
-    "I": "산업 ETF 29: 매일 정답 1개 롱 79.2% · 오른 산업 균등 25.2% → 50%는 매일 상위 산업을 맞혀야.",
-    "K": "주식: 매일 정답 1종목 636% · 주마다 상위 10종목 61% · 달마다 1종목 41% → 50%는 주 단위 이상으로 정답을 맞혀야(예측력 동전 수준).",
+    "공통": ("연구(r149·r150 · 그 시점 S&P 500 회원 660종목 · 2008~2026): 미래를 알 때 월 평균 — 달마다 최고 1종목 41.1% · 3종목 32.6% · 5종목 29.1%(2018~) · "
+             "주마다 상위 50종목 33.6% · 매일 상위 100종목(시가→시가) 58% → 30%는 '매달 상위 4종목' 또는 '매일 상위 150종목'을 미리 알아야 닿는다. "
+             "정직한 신호(월·주: 모멘텀 · 반전 · 52주 고점 · 변동성 · 상승확률 · LightGBM / 일간: 1·5일 반전 · 갭 · 장중 · 거래량 급증 · RSI2 · LightGBM · 약 280설정 · "
+             "2010~17에서 고르고 2018~에 그대로): 일간 최상(장중 반전 상위1 2.3%)은 2018~ −2.6%(MDD −99.9%) · 두 구간 모두 버틴 건 월간 모멘텀 12-1 상위1(4.6% · 5.7% · MDD −81% · −73%)뿐 · "
+             "LightGBM 순위 IC 0.01. 레버리지 금지 · 숏은 현금 몫 안에서만 → 라이브 변경 없음."),
+    "M": "M 자산(SPY · SH)으로는 매일 정답을 다 맞혀도 월 18.7%(롱만 9.4%) → 레버리지 없이 30%는 원리상 불가.",
+    "S": "섹터 11 + SPY: 매일 정답 1개 롱 36.4% · 롱+가상 숏 60.6% · 달마다 정답 1개 7.6% → 30%는 매일 정답을 거의 다 맞혀야.",
+    "I": "산업 ETF 29: 매일 정답 1개 롱 79.2% · 오른 산업 균등 25.2% · 달마다 정답 1개 13.7% → 30%는 매일 상위 산업을 맞혀야.",
+    "K": "주식: 매일 정답 1종목 636% · 주마다 상위 50종목 34% · 달마다 상위 4종목 ≈30% → 30%는 미래를 알아야(예측력 동전 수준 · 정직한 최상 월 3~6%).",
 }
+# [v1.88.0 R150 ★ 사용자 지시 2026-10-08 "각 층별로 결과를 신뢰해도 되는거야? 아니면 문제가 뭔지 파악하고 강하게 신뢰 가능하도록 방법 계속 탐색하고 테스트"]
+#   00O 블록 F(신뢰도 판정 표) + 00 줄 'R150'. 수치 = 로컬 연구 r150(2026-10-07 Kaggle 리포트 · 같은 체결 · 같은 비용).
+#   등급: 강 = 표본 밖(2018년 이전 · 무작위 대조군 · 사후선택 없는 우주)에서도 확인 · 중 = 일부 확인 · 약 = 2018~ 안에서만 · 없음 = 반대 증거.
+R150_TRUST: Dict[str, List[Tuple[str, str, str, str, str]]] = {
+    "M": [("시점 선택(현금↔SPY)", "2018~ 샤프 2.64 · 연 33.9% · MDD −7.4%", "1994~2017 같은 규칙: 연 9.4%(SPY 9.6%) · 샤프 0.82(SPY 0.58) · MDD −30.7%(SPY −55.2%) · "
+                                                                         "무작위 시점(같은 노출 분포) 대비 6창 모두 중앙 위(64~99 백분위) · 단순 200일선 대비 샤프 +0.06~0.21",
+           "중(하락 방어) · 약(수익)", "연 8~11% · 샤프 0.7~0.9 · MDD −25~−30%(긴 이력 기준)"),
+          ("조각 쌓기(R132·R133·R143)", "2018~ 배수 8.3 → 12.7 · 샤프 +0.33", "긴 이력(1994~2017) 조각 효과 샤프 0.46 → 수축 샤프 5~38%(시도 100~10,000) · "
+                                                                           "후보 5,236개: 한 기간 상위 10%가 다른 기간에서 개선한 비율 3~44% · 기간 간 순위 상관 0.05~0.21",
+           "없음", "효과 0으로 본다(2018~에 맞춘 것)"),
+          ("다음날 하락확률", "13r·00R 표시", "AUC ≈ 0.50(R117·R118·R141)", "없음", "참고만"),
+          ("21일 변동 범위(상태판)", "±1σ 적중 67%", "목표 68.3%에 가까움(보정됨)", "강", "그대로 써도 됨")],
+    "S": [("섹터 선택(같은 노출 SPY 대비 초과)", "2018~ 75.7× vs 14.1× · 초과 샤프 2.6 · 무작위 섹터 대비 100 백분위",
+           "1999~2017 대용: 무작위 섹터 대비 22·13·94 백분위 · 초과 샤프 0.26(수축 샤프 4%) · 연 6.5% vs 같은 노출 SPY 7.2% · MDD −38% vs −22%",
+           "없음(2018~ 밖에서 확인 안 됨)", "≈ M 타이밍만(같은 노출 SPY) — 2018~ 월 2.6% · 긴 이력 월 0.6%"),
+          ("실행마다 과거 흔들림", "같은 v1.02.0을 10-06·10-07에 실행", "2019년 신호 채택이 t 1.02 → 1.00으로 뒤집혀 120일 비중 변경 · 배수 73.9 → 75.7 · "
+                                                                        "경계 캐시 0/1,258 적중(과거 데이터 값이 매번 다시 써짐)", "약", "±3% 흔들림을 오차로 본다")],
+    "I": [("산업 선택(같은 노출 SPY 대비 초과)", "2018~ 111.8× vs 13.9× · 무작위 산업 대비 100 백분위",
+           "산업 ETF 독립 긴 이력 대용 없음(긴 대용 = S와 같은 섹터 비중) → 2018~ 밖 검증 불가 · S의 흔들림을 이어받음", "없음(검증 불가)",
+           "≈ M 타이밍만 — 2018~ 월 2.6% · 긴 이력 월 0.6%")],
+    "K": [("종목 선택", "2018~ 209× · 월 5.4% · 무작위 회원 대비 100 백분위", "종목 몫의 98%가 2026년에 고른 핵심 58종목(NVDA·AMD·MU·SNDK·WDC 등 승자 다수) · "
+                                                                    "같은 섹터 비중을 섹터 ETF로 24× · 그 시점 S&P 500 무작위 회원 14×(95% 17×) · 규칙으로 고름(12-1 모멘텀 상위) 21×(월 3.0%)",
+           "없음(사후 선택)", "규칙 기반 21× 수준 · 월 3.0% — 그마저 2018~ M·S 타이밍 포함"),
+          ("비용 민감도", "편도 5bp", "10bp 163× · 20bp 100×(연 회전 57배)", "중", "실제 체결 비용 확인 필요")],
+    "공통": [("실전 기록(표본 밖)", "-", "run_pipeline v1.31.0부터 매 실행 '다음 거래일 체결 비중'을 results/ledger/forward_ledger.csv에 쌓고 다음 시가로 채점 · "
+                                    "2026-10-02~10-07 기록 4일: 네 층 모두 현금(M 목표 0) · 채점 2일 실전 0% vs SPY +0.79%", "쌓는 중", "몇 달 쌓여야 판단 가능")],
+}
+
+
+def r150_trust_rows(layer_key: str) -> List[Dict[str, str]]:
+    """[R150] 00O 블록 F — 층별 신뢰도 판정 표(항목 · 2018~ 수치 · 표본 밖 근거 · 등급 · 정직한 기대치)."""
+    out = []
+    for item in list(R150_TRUST.get(layer_key, [])) + list(R150_TRUST["공통"]):
+        a, b, c, g, e = item
+        out.append({"블록": "F. 신뢰도 판정(R150 · 사용자 지시 2026-10-08)", "방식": a, "2018~ 수치": b, "표본 밖 근거": c, "신뢰 등급": g, "정직한 기대치": e})
+    return out
+
+
+def r150_trust_line(layer: str, layer_key: str) -> Tuple[str, str]:
+    rows = list(R150_TRUST.get(layer_key, []))
+    body = " | ".join(f"{a}: {g} — {e}" for a, _b, _c, g, e in rows)
+    return (f"★★★ R150 신뢰도 판정(사용자 지시 2026-10-08) · {layer}",
+            f"{body} | 공통: 2018~ 숫자는 규칙·조각을 그 기간을 보며 고른 표본 안 성적이다 — 2018년 이전 같은 규칙 · 무작위 대조군 · 사후선택 없는 종목에서 크게 줄어든다. "
+            f"다음날 하락확률은 동전 수준 · 21일 변동 범위만 보정됨. 실전 기록 장부(results/ledger)가 쌓이는 표본 밖 성적이다 — 세부 00O 블록 F. 연구·교육용, 투자 자문 아님.")
 
 
 def r149_ceilings(R_univ: Optional[pd.DataFrame], idx: pd.Index) -> Dict[str, float]:
@@ -11587,14 +11682,15 @@ def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series],
         orl, ors = _r147_mon(orc["_rl"]), _r147_mon(orc["_rs"])
     else:
         orl = ors = None
-    # [v1.87.0 R149] E. 월 평균 수익 50% 목표 — 행마다 달성률 · 그 층 상한(정답을 미리 앎)
-    E_blk = "E. 월 평균 수익 50% 목표(R149 · 사용자 지시 2026-10-07)"
+    # [v1.87.0 R149] E. 월 평균 수익 목표 — 행마다 달성률 · 그 층 상한(정답을 미리 앎) · [v1.88.0 R150] 목표 50% → 30%(R149_TARGET_MON)
+    tgp = f"{R149_TARGET_MON * 100:.0f}%"
+    E_blk = f"E. 월 평균 수익 {tgp} 목표(R149 · R150 사용자 지시 2026-10-08)"
     E, e0 = [], None
     for nm, (r_, t_, l_, s_) in keep.items():
         mo = _r147_mon(r_)
         v = (t_["월배수평균"] - 1) * 100
         d = {"블록": E_blk, "방식": nm, "월평균수익(%)": round(v, 2), "목표(%)": R149_TARGET_MON * 100, "달성률(%)": round(v / (R149_TARGET_MON * 100) * 100, 1),
-             "50% 넘은 달": int((mo >= R149_TARGET_MON).sum()), "달": int(len(mo)), "최고 달(%)": round(float(mo.max()) * 100, 2) if len(mo) else None,
+             "목표 넘은 달": int((mo >= R149_TARGET_MON).sum()), "달": int(len(mo)), "최고 달(%)": round(float(mo.max()) * 100, 2) if len(mo) else None,
              "중앙 달(%)": round(float(mo.median()) * 100, 2) if len(mo) else None}
         E.append(d)
         if e0 is None:
@@ -11605,17 +11701,20 @@ def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series],
             continue
         E.append({"블록": E_blk, "방식": f"상한: {k_} · {ceil['자산 수']}자산", "월평균수익(%)": round(v_, 2), "목표(%)": R149_TARGET_MON * 100,
                   "달성률(%)": round(v_ / (R149_TARGET_MON * 100) * 100, 1),
-                  "50% 도달": "미래를 알아야만 가능" if v_ >= R149_TARGET_MON * 100 else "정답을 다 알아도 불가(레버리지 금지)"})
+                  "목표 도달": "미래를 알아야만 가능" if v_ >= R149_TARGET_MON * 100 else "정답을 다 알아도 불가(레버리지 금지)"})
     lk = (layer.strip()[:1] or "").upper()
     res149 = R149_RESEARCH.get(lk, "")
     mo0 = _r147_mon(r0)
-    mon_line = (f"★★★ R149 월 평균 수익 50% 목표(사용자 지시 2026-10-07) · {layer}",
-                f"라이브 월 평균 수익 {e0['월평균수익(%)']:.2f}% → 목표 50% 달성률 {e0['달성률(%)']:.1f}% · 50% 넘은 달 {e0['50% 넘은 달']}/{e0['달']} · "
+    mon_line = (f"★★★ R149 월 평균 수익 {tgp} 목표(사용자 지시 2026-10-08) · {layer}",
+                f"라이브 월 평균 수익 {e0['월평균수익(%)']:.2f}% → 목표 {tgp} 달성률 {e0['달성률(%)']:.1f}% · 목표 넘은 달 {e0['목표 넘은 달']}/{e0['달']} · "
                 f"최고 달 {e0['최고 달(%)']}% · 중앙 달 {e0['중앙 달(%)']}%"
                 + ((" | 이 층 상한(정답을 미리 앎 · 비용 없음): " + " · ".join(f"{k_} {v_:.1f}%" for k_, v_ in ceil.items() if k_ != "자산 수")
-                    + (" → 정답을 다 알아도 50% 불가(레버리지 금지)" if max(v_ for k_, v_ in ceil.items() if k_ != "자산 수") < R149_TARGET_MON * 100
-                       else " → 미래를 알아야만 50% 가능")) if ceil else "")
+                    + (f" → 정답을 다 알아도 {tgp} 불가(레버리지 금지)" if max(v_ for k_, v_ in ceil.items() if k_ != "자산 수") < R149_TARGET_MON * 100
+                       else f" → 미래를 알아야만 {tgp} 가능")) if ceil else "")
                 + f" | {res149} {R149_RESEARCH['공통']} — 세부 00O 블록 E. 연구·교육용, 투자 자문 아님.") if len(mo0) else None
+    # [v1.88.0 R150] F. 신뢰도 판정 표 · 00 줄
+    F_rows = r150_trust_rows(lk) if lk in R150_TRUST else []
+    trust_line = r150_trust_line(layer, lk) if lk in R150_TRUST else None
     mr0, ms0 = _r147_mon(r0), _r147_mon(sp.reindex(r0.index).fillna(0.0))
     other = [(nm, _r147_mon(v[0])) for nm, v in keep.items() if nm != live_nm]
     C = []
@@ -11636,11 +11735,12 @@ def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series],
          {"블록": "D. 정의 · 연구 결론", "방식": "숏 규칙", "값": "확실할 때만 숏 · 애매하면 현금 · 숏은 그 층 현금 몫 안에서만(총노출 ≤ 1 · 레버리지 없음) · 실제 −1배 ETF가 있으면 그것("
                                                          + ", ".join(f"{k}→{v}" for k, v in list(R147_REAL_INVERSE.items())[:8]) + " …) · 없으면 가상 숏(−1배 · 보수 0.9%/년) · 주식 층은 실제 ETF만."},
          {"블록": "D. 정의 · 연구 결론", "방식": "연구 결론", "값": research or "-"},
-         {"블록": "D. 정의 · 연구 결론", "방식": "R149 월 평균 수익 50% 목표", "값": "월 평균 수익 = 달마다 Π(1 + 일수익) − 1의 평균(= 월배수 평균 − 1) · 목표 50%(월배수 평균 ×1.50) · "
-                                                                      "상한 = 그 층 자산 묶음에서 정답을 미리 알 때(종가→종가 · 비용 없음). " + (res149 + " " if res149 else "") + R149_RESEARCH["공통"]}]
+         {"블록": "D. 정의 · 연구 결론", "방식": f"R149 월 평균 수익 {tgp} 목표", "값": f"월 평균 수익 = 달마다 Π(1 + 일수익) − 1의 평균(= 월배수 평균 − 1) · 목표 {tgp}"
+                                                                         f"(월배수 평균 ×{1 + R149_TARGET_MON:.2f}) · 상한 = 그 층 자산 묶음에서 정답을 미리 알 때(종가→종가 · 비용 없음). "
+                                                                         + (res149 + " " if res149 else "") + R149_RESEARCH["공통"]}]
     if note:
         D.append({"블록": "D. 정의 · 연구 결론", "방식": "참고", "값": note})
-    df = pd.concat([pd.DataFrame(A), pd.DataFrame(B), pd.DataFrame(E), pd.DataFrame(C), pd.DataFrame(D)], ignore_index=True, sort=False)
+    df = pd.concat([pd.DataFrame(A), pd.DataFrame(B), pd.DataFrame(F_rows), pd.DataFrame(E), pd.DataFrame(C), pd.DataFrame(D)], ignore_index=True, sort=False)
     lead = ["블록", "방식", "월배수평균", "월참여평균", "월회피평균"]
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
     sh_txt = ""
@@ -11655,7 +11755,7 @@ def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series],
     line = (f"★★★ R147 월별 평균 판단 · 오라클 80% 목표 · 숏(사용자 지시 2026-10-07) · {layer}",
             f"라이브 월배수 평균 ×{t0_['월배수평균']:.4f} · 월참여 평균 {t0_['월참여평균']:.1f} · 월회피 평균 {t0_['월회피평균']:.1f}({t0_['달']}달 · 오른 {t0_['오른달']} · 내린 {t0_['내린달']})"
             + tg_txt + sh_txt + f" | {research} — 세부 00O. 연구·교육용, 투자 자문 아님.")
-    return df, [line] + ([mon_line] if mon_line else [])
+    return df, [line] + ([mon_line] if mon_line else []) + ([trust_line] if trust_line else [])
 
 
 R147_M_MEASURE: Tuple[Tuple[str, str, float, float], ...] = (("g200", "hi", 0.9, 1.0),)   # (특징, 쪽, 분위, 숏 크기) — 측정 행만(검증 탈락)
@@ -15794,6 +15894,10 @@ def freshness_summary_line(res: dict) -> str:
     _n_old, _n_none = len(set(FRED_STAMP_STATS.get("refetched", []))), len(set(FRED_STAMP_STATS.get("no_stamp", [])))
     if _n_old or _n_none:
         tail += f" · FRED 묵은 캐시 다시 받음 {_n_old}건 · 도장 없는 캐시 {_n_none}건(다시 받음)"
+    if FRED_VINTAGE_STATS:                             # [v1.88.0 R150] 과거값 고정 — 무시한 과거 값 수정
+        _top = sorted(FRED_VINTAGE_STATS.items(), key=lambda kv_: -kv_[1])[:5]
+        tail += (f" · FRED 과거값 고정: 수정 {sum(FRED_VINTAGE_STATS.values())}건 무시(시리즈 {len(FRED_VINTAGE_STATS)} — "
+                 + ", ".join(f"{k_} {v_}" for k_, v_ in _top) + ")")
     tail += last_close_missing_note(res)
     return head + tail
 
@@ -17073,8 +17177,8 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.87.0"
-BUNDLE_VERSION_DATE = "2026-10-07"
+BUNDLE_VERSION = "v1.88.0"
+BUNDLE_VERSION_DATE = "2026-10-08"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
 # [v1.58.2 R90] R90 묶음으로 갱신 — S v0.71.0(중립일 저베타 채움) · I v0.43.0. 이 값을 안 올리면 M 리포트가 R89 파일을
