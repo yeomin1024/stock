@@ -20,7 +20,7 @@ SRT는 번호를 다시 매기고(원본 60 → 55 … 96 → 91) 그 뒤 시간
 | 장면 | 29개 (S01–S30 중 S23 제외, 고지 카드 S11 포함). 장면 번호는 가이드 표와 맞추려고 그대로 둠 |
 | 자막 | 대본 문장 91개 = SRT 자막 117개 (한 줄 114 + 혼잣말 두 줄 3), 읽기 속도 1.1배 |
 | 스토리보드 | `out/storyboard/index.html` — still 80장 (장면 대표 29 + 자막별 51) |
-| 최종 출력 | `out/final_1080p.mp4` (h264, CRF 18) — v2.4.0 고지 카드 3.5초·한 줄 자막·1.1배. 이전 영상: `out/final_1080p_v2.3_notice6s.mp4`(고지 6초), `out/final_1080p_v2.2_two_line.mp4`(두 줄 자막), `out/final_1080p_v2.0.1_with_enron.mp4`(엔론 포함) |
+| 최종 출력 | `out/final_1080p.mp4` (h264, CRF 18, 72.5 MB, 렌더 16분 31초) — v2.4.0 고지 카드 3.5초·한 줄 자막·1.1배. 이전 영상: `out/final_1080p_v2.3_notice6s.mp4`(고지 6초), `out/final_1080p_v2.2_two_line.mp4`(두 줄 자막), `out/final_1080p_v2.0.1_with_enron.mp4`(엔론 포함) |
 | 오디오 | 내레이션/BGM 파일이 없어 무음 |
 
 ## 입력 파일 (`input/`)
