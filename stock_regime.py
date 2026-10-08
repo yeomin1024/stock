@@ -1,5 +1,13 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.38.0 - 2026-10-08 - [R152 기능별 목표 상향 · 실적 합성 선택 점수 측정 행 · 연구 문구 — 라이브 무변경]
+#    사용자 지시(2026-10-08): "각 목표치를 더 올리고 계속 탐색해". R151_TARGETS: 선택 IC 0.04 · t 3 · 물타기 +1.5% · 58% · 손절 −1.5% · 58% ·
+#    비중 0 정밀도 50 · 재현율 70 · 전액일 큰 하락 ≤ 4%(00J 판정이 이 값을 쓴다).
+#    ── 측정(00J C · D): r152_earn_surprise(실적 발표 시각 → 이벤트일 · 최근 서프라이즈 · 1년 평균) · r152_sec_rank · r152_combo →
+#      '실적 합성(서프라이즈 1년 + 최근 서프라이즈 + 12-1) + 거래대금' 점수의 IC와 그 점수로 합친 우주를 고른 비교 행(라이브 R151 대비 Δ).
+#      연구 r152/kmerge152: 2018~ 58× → 51× · MDD −10.5 → −8.0% · 샤프 2.92 → 3.02 · 2010~17 샤프 ETF −0.015 → 무하락 미달 → 측정 행.
+#    ── 연구(r152 · 종목 단위 · 실적 자료 619종목): 물타기 실적·위험·추세 필터 27변형 최선 +0.85/+0.72% · 손절 실적 신호 8개 2018~ 효과 없음 ·
+#      선택 13특징 LightGBM IC −0.009/0.012 · 합성 0.018/0.010 — 올린 목표 전부 미달. 시험 t152. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.37.0 - 2026-10-08 - [R151 ★ 합친 우주 라이브(핵심 58 + S&P 500 회원) · 00J 기능별 성적표(비중 0 · 위험도 비중 · 물타기 · 손절 · 종목 선택) · 물타기·손절 측정 행]
 #    사용자 지시(2026-10-08): "정말로 큰 하락이 예측될때만 비중 0 · 그 외에는 위험점수에 따라 비중 조절 · 물렸으면 현금이나 수익 종목 매도해서 일정 비중 물타기 ·
 #      손절 · 종목 선택(단기 눌림이어도 장기 우상향) — 각각 그게 잘되는지 수치화해서 목표치를 정해 도달할 수 있는 방법을 계속 탐색 · 주식층 종목은 500개 종목이랑 58종목 합치라고".
@@ -901,7 +909,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.37.0"
+VERSION = "v0.38.0"
 VERSION_DATE = "2026-10-07"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -8612,15 +8620,23 @@ def r151_stop_loss(W: np.ndarray, cols: List[str], sect: Dict[str, str], brk: np
 
 
 R151_SAME_ISSUER = {"GOOG": "GOOGL", "FOX": "FOXA", "NWS": "NWSA"}   # 같은 발행사 다른 주식 — 짝이 있으면 합친 우주 후보에서 뺀다
-R151_TARGETS = {"선택 IC": 0.03, "선택 t": 2.5, "물타기 63일 초과%": 1.0, "물타기 이김%": 55.0, "손절 63일 초과%": -1.0, "손절 맞음%": 55.0}
+# [v0.38.0 R152 ★ 사용자 지시 2026-10-08 "각 목표치를 더 올리고 계속 탐색해"] 목표 상향(R151 → R152): 선택 IC 0.03 → 0.04 · t 2.5 → 3 · 물타기 +1 → +1.5% · 55 → 58% ·
+#   손절 −1 → −1.5% · 55 → 58% · 비중 0 정밀도 40 → 50 · 재현율 60 → 70 · 전액일 큰 하락 ≤ 5 → ≤ 4%.
+R151_TARGETS = {"선택 IC": 0.04, "선택 t": 3.0, "물타기 63일 초과%": 1.5, "물타기 이김%": 58.0, "손절 63일 초과%": -1.5, "손절 맞음%": 58.0,
+                "비중0 정밀도%": 50.0, "비중0 재현율%": 70.0, "전액일 큰 하락%": 4.0}
 R151_RESEARCH_K = {
     "합친 우주": "2018~ 58×(라이브 209× — 핵심 58 = 2026년에 고른 승자 몫이 빠짐) · 같은 섹터 비중 섹터 ETF 24× · 2010~2017 긴 대용 연 11.0%(ETF 9.5%) · 샤프 ETF −0.01 · "
                 "20변형(점수 5 × 개수 2 × 비중 2) 중 긴 이력 샤프가 ETF보다 높은 것 없음",
     "선택": "그 시점 S&P 500 630종목 · 월말 신호 → 21일 섹터 안 IC: 12-1 0.017(2010~17) · 0.003(2018~) · '장기 상승 중 1달 눌림' 6변형 2018~ IC −0.02~0.00",
     "물타기": "장기 상승 중 21일 고점 −12% 바로: 63일 섹터 대비 +0.33%(2010~17) · +0.60%(2018~ · t 2.4) · 이김 50% · 반등 신호(RSI2 · 3일 하락 뒤 상승 · 장중 반전) 기다리면 더 나쁨 · "
               "포트폴리오: 현금 재원 = 수익↑(긴 이력 연 +0.3%p)이나 샤프 그대로 · MDD 나빠짐(노출을 늘린 효과) · 수익 종목 재원 = 효과 0",
-    "손절": "6신호 모두 판 뒤 63일 섹터 대비 −0.3~+1.9%(손실을 피하지 못함 · 짧은 반전) · 포트폴리오 18변형 대부분 같거나 나쁨",
+    "손절": "6신호 모두 판 뒤 63일 섹터 대비 −0.3~+1.9%(손실을 피하지 못함 · 짧은 반전) · 포트폴리오 18변형 대부분 같거나 나쁨 · "
+            "R152 실적 신호 8개(실망 + 발표 반응 ≤ −5% · 반응 ≤ −10% · 두 분기 연속 실망 · 큰 하락 위험 상위 10% …): 2010~17 '반응 ≤ −10%' 21일 −1.5%(맞음 62%)뿐 · 2018~ 효과 없음",
+    "선택 R152": "R152(실적 자료 619종목 · 2010~26): 발표 반응 · 서프라이즈 · 저위험 · LightGBM 13특징 IC −0.009~0.017 · 합성(서프라이즈 1년 + 최근 + 12-1) 21일 IC 0.018 · 0.010 · "
+                 "63일 0.028 · 0.009(두 기간 모두 양수 · 목표 0.04 미달) · 합친 우주 점수로 쓰면 2018~ 58× → 37~51× · MDD −10.5 → −7.6~−8.0% · 2010~17 샤프 = ETF → 측정 행",
 }
+R151_RESEARCH_K["물타기"] += (" · R152 실적·위험·추세 필터 27변형: 최선 '−12% · 실적 무관 · 섹터 200일선 위' 63일 +0.85% · +0.72%(이김 49~50%) · "
+                             "'큰 하락 위험 낮은 종목만'은 2018~ −2~−3%로 반대 → 목표 +1.5% · 58% 미달")
 
 
 def r151_card_sheet(r145: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
@@ -8648,14 +8664,14 @@ def r151_card_sheet(r145: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
                          "; ".join(f"{k} {', '.join(v[:6])}" for k, v in (mg.get("today") or {}).items())})
     st = card.get("size") or {}
     for lab, s in st.items():
-        ok0 = s["정밀도%"] >= 40 and s["재현율%"] >= 60
+        ok0 = s["정밀도%"] >= T["비중0 정밀도%"] and s["재현율%"] >= T["비중0 재현율%"]
         rows.append({"블록": "B. 비중(M 국면 · 네 층 공통)", "기능": f"비중 0 = 큰 하락 회피({lab})", "지표": "비중 0인 날 → 다음 21거래일 SPY −7% 이상 하락 정밀도 · 큰 하락 중 미리 0이었던 재현율",
                      "값": f"정밀도 {s['정밀도%']:.1f}% · 재현율 {s['재현율%']:.1f}% · 기저율 {s['기저율%']:.1f}% · 0일 {s['0일']}",
-                     "목표": "정밀도 ≥ 40% · 재현율 ≥ 60%", "달성": "달성" if ok0 else "미달"})
-        ok1 = bool(s.get("단조")) and s["전액일 큰 하락%"] <= 5
+                     "목표": f"정밀도 ≥ {T['비중0 정밀도%']:.0f}% · 재현율 ≥ {T['비중0 재현율%']:.0f}%", "달성": "달성" if ok0 else "미달"})
+        ok1 = bool(s.get("단조")) and s["전액일 큰 하락%"] <= T["전액일 큰 하락%"]
         rows.append({"블록": "B. 비중(M 국면 · 네 층 공통)", "기능": f"위험도 비중 조절({lab})", "지표": "비중 구간(0 · ~0.5 · ~1 · 1)별 큰 하락 비율 — 비중이 클수록 낮아야",
                      "값": f"전액일 큰 하락 {s['전액일 큰 하락%']:.1f}% · 단조 {'예' if s.get('단조') else '아니오'}",
-                     "목표": "단조 · 전액일 큰 하락 ≤ 5%", "달성": "달성" if ok1 else "미달"})
+                     "목표": f"단조 · 전액일 큰 하락 ≤ {T['전액일 큰 하락%']:.0f}%", "달성": "달성" if ok1 else "미달"})
     ev = card.get("event") or {}
     se, ad, sl = ev.get("선택") or {}, ev.get("물타기") or {}, ev.get("손절") or {}
     if se:
@@ -8663,6 +8679,13 @@ def r151_card_sheet(r145: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
         rows.append({"블록": "C. 종목 단위(합친 우주 · 섹터 중립 · 다음 날 시가)", "기능": "종목 선택(라이브 점수 '12-1 + 거래대금' · 2018~)", "지표": "월말 점수의 섹터 안 순위 IC(다음 21거래일) · 상위−하위 20%",
                      "값": f"IC {se.get('IC', float('nan')):+.4f} · t {se.get('t', float('nan')):+.2f} · 상위−하위 월 {se.get('상위−하위 월%', float('nan')):+.2f}% · {se.get('달')}달",
                      "목표": f"IC ≥ {T['선택 IC']} · t ≥ {T['선택 t']}", "달성": "달성" if ok else "미달", "긴 이력 연구(r151)": R151_RESEARCH_K["선택"]})
+    se2 = ev.get("선택(실적 합성)") or {}
+    if se2:
+        ok = (se2.get("IC", -1) >= T["선택 IC"]) and (se2.get("t", -1) >= T["선택 t"])
+        rows.append({"블록": "C. 종목 단위(합친 우주 · 섹터 중립 · 다음 날 시가)", "기능": "종목 선택 — 측정 점수 '실적 합성(서프라이즈 1년 + 최근 서프라이즈 + 12-1) + 거래대금' · 2018~",
+                     "지표": "월말 점수의 섹터 안 순위 IC(다음 21거래일) · 상위−하위 20%",
+                     "값": f"IC {se2.get('IC', float('nan')):+.4f} · t {se2.get('t', float('nan')):+.2f} · 상위−하위 월 {se2.get('상위−하위 월%', float('nan')):+.2f}% · {se2.get('달')}달",
+                     "목표": f"IC ≥ {T['선택 IC']} · t ≥ {T['선택 t']}", "달성": "달성" if ok else "미달", "긴 이력 연구(r151)": R151_RESEARCH_K["선택 R152"]})
     if ad.get("사건"):
         ok = (ad.get("63일 초과%", -9) >= T["물타기 63일 초과%"]) and (ad.get("이김%", 0) >= T["물타기 이김%"])
         rows.append({"블록": "C. 종목 단위(합친 우주 · 섹터 중립 · 다음 날 시가)", "기능": "물타기(장기 상승 중 21일 고점 −12% 첫날 산다 · 2018~)", "지표": "산 뒤 63일 섹터 대비 초과 · 이긴 비율",
@@ -8690,14 +8713,52 @@ def r151_card_sheet(r145: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
     df = pd.DataFrame(rows)
     lead = ["블록", "기능", "지표", "값", "목표", "달성", "비교", "긴 이력 연구(r151)", "참고"]
     df = df[[c for c in lead if c in df.columns] + [c for c in df.columns if c not in lead]]
-    n_ok = int((df.get("달성", pd.Series(dtype=str)) == "달성").sum())
-    n_all = int(df.get("달성", pd.Series(dtype=str)).isin(["달성", "미달"]).sum())
+    _core = [r for r in rows if r.get("달성") in ("달성", "미달") and not str(r.get("블록", "")).startswith("E.")]   # E = B의 세부(중복 세지 않음)
+    n_ok, n_all = sum(1 for r in _core if r["달성"] == "달성"), len(_core)
     line = ("★★★ R151 합친 우주(라이브) · 기능별 성적표(사용자 지시 2026-10-08 '물타기 · 손절 · 비중 조절 · 종목 선택 각각 수치화 · 목표 · 500 + 58 합치기')",
             f"합친 우주: {_f(on.get('배수'), 1)}배 · 월 {_f(on.get('월평균수익%'))}% · MDD {_f(on.get('MDD'))}%(합치기 전 {_f(off.get('배수'), 1)}배 · 월 {_f(off.get('월평균수익%'))}% — "
             f"차이는 2026년에 고른 핵심 58 승자 몫) | 기능 목표 {n_ok}/{n_all} 달성 — "
-            + " · ".join(f"{r['기능']}: {r['달성']}" for r in rows if r.get("달성") in ("달성", "미달"))
+            + " · ".join(f"{r['기능']}: {r['달성']}" for r in _core)
             + " | 물타기·손절은 측정 행(라이브 아님) · 되돌리기(합친 우주) k_overrides={'R151_MERGE': {}} — 세부 00J. 연구·교육용, 투자 자문 아님.")
     return df, [line]
+
+
+def r152_earn_surprise(cal: pd.DatetimeIndex, cols: List[str], earn: Dict[str, Any]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """[v0.38.0 R152] 실적 서프라이즈(%) — 발표 시각으로 이벤트일(장 마감 뒤·시각 미상 = 다음 거래일) → (최근 서프라이즈 63일 앞으로 채움, 최근 1년 이벤트 평균).
+    연구 r152/kmerge152.earn_frames와 같은 산식."""
+    cal = pd.DatetimeIndex(cal)
+    S = np.full((len(cal), len(cols)), np.nan)
+    for j, c in enumerate(cols):
+        d = (earn or {}).get(c)
+        if not isinstance(d, pd.DataFrame) or not len(d) or "Surprise(%)" not in d.columns:
+            continue
+        vals = pd.to_numeric(d["Surprise(%)"], errors="coerce").to_numpy(dtype=float)
+        for ts, v in zip(d.index, vals):
+            if not np.isfinite(v):
+                continue
+            ts = pd.Timestamp(ts)
+            if ts.tzinfo is not None:
+                ts = ts.tz_convert("America/New_York").tz_localize(None)
+            after = ts.hour >= 12 or (ts.hour == 0 and ts.minute == 0)
+            i = cal.searchsorted(ts.normalize() + (pd.Timedelta(days=1) if after else pd.Timedelta(0)))
+            if 0 < i < len(cal):
+                S[i, j] = v
+    D = pd.DataFrame(S, index=cal, columns=cols)
+    return D.ffill(limit=63), D.ffill(limit=70).rolling(252, min_periods=60).mean()
+
+
+def r152_sec_rank(A: np.ndarray, secA: np.ndarray) -> np.ndarray:
+    """섹터 안 순위 백분위(날마다)."""
+    out = np.full(np.asarray(A).shape, np.nan)
+    for s in np.unique(secA):
+        js = np.flatnonzero(secA == s)
+        out[:, js] = pd.DataFrame(np.asarray(A, dtype=float)[:, js]).rank(axis=1, pct=True).to_numpy()
+    return out
+
+
+def r152_combo(parts: List[np.ndarray]) -> np.ndarray:
+    """섹터 안 순위들의 평균(없는 칸 = 0.5 중립)."""
+    return np.mean(np.stack([np.where(np.isfinite(p), p, 0.5) for p in parts], axis=0), axis=0)
 
 
 def r151_mon_avg(r: pd.Series) -> float:
@@ -9480,6 +9541,7 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
             _CLF = pd.DataFrame(_cl144).sort_index()
             _mem144, _msrc144 = r144_membership(cfg, _pool144, _CLF.index)
             _B144, _binfo144, _einfo144 = None, {}, {}
+            _earn144: Dict[str, Any] = {}
             if bool(getattr(cfg, "R144_BLACKOUT", True)):
                 _trig144 = [t for t in _cur144["티커"] if t and _sub144.get(t)]
                 _earn144, _einfo144 = r144_earnings(_trig144, cfg)
@@ -9740,6 +9802,22 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                             for _k151, _a151 in (("on", _al_on145), ("off", _al_pre151)):
                                 _r151_info[_k151]["월평균수익%"] = r151_mon_avg(_a151["port_ret"].loc[_ev145:])
                             _ec151 = r151_event_card(_C145, _O145, _mem145, _sect145, pd.DataFrame(_sc151, index=_idx145, columns=_cols145), _ev145)
+                            # [v0.38.0 R152 측정] 선택 점수 교체 — 실적 합성(서프라이즈 1년 평균 + 최근 서프라이즈 + 12-1) + 거래대금(섹터 안 순위 평균)
+                            if isinstance(_earn144, dict) and _earn144:
+                                _sr152, _s4152 = r152_earn_surprise(_C145.index, _stk145, _earn144)
+                                _secA152 = np.array([str(_sect145.get(c)) for c in _cols145])
+                                with np.errstate(divide="ignore", invalid="ignore"):
+                                    _ldv152 = np.log(np.where(_dv151 > 0, _dv151, np.nan))
+                                _sc152 = r152_combo([r152_sec_rank(_al145(_s4152), _secA152), r152_sec_rank(_al145(_sr152), _secA152),
+                                                     r152_sec_rank(_m121151, _secA152), r152_sec_rank(_ldv152, _secA152)])
+                                _sc152 = np.where(_el151 | ~np.isnan(_sc151), _sc152, np.nan)
+                                _w152, _ = r151_merged_universe(_wpre151, _cols145, _sect145, _sc152, _el151,
+                                                                **{k: v for k, v in _mg151.items() if k in ("frac", "nmin", "nmax", "block", "cap")})
+                                _rw152, _a152 = _mk145(_w152, " + R152 측정 선택 점수 교체(실적 합성)")
+                                _mrows151.append({"방식": "선택 점수 교체: 실적 합성(서프라이즈 1년 + 최근 서프라이즈 + 12-1) + 거래대금", "사건": 0, **_rw152,
+                                                  "월평균수익%": r151_mon_avg(_a152["port_ret"].loc[_ev145:])})
+                                _ec152 = r151_event_card(_C145, _O145, _mem145, _sect145, pd.DataFrame(_sc152, index=_idx145, columns=_cols145), _ev145)
+                                _ec151["선택(실적 합성)"] = _ec152.get("선택") or {}
                             _sz151, _szs151, _szn151 = None, {}, ""
                             _M151 = _find_m_module()
                             if _M151 is None or not hasattr(_M151, "r151_size_card"):
