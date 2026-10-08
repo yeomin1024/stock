@@ -1,5 +1,12 @@
 # =============================================================================
 #  stock_regime.py
+#  VERSION: v0.39.0 - 2026-10-08 - [R153 성적표: 물타기·손절 현금 기준 · 측정 위험도 비중 조절 비중 성적 · 비중 성적 SPY 전 이력 — 라이브 무변경]
+#    사용자 지시(2026-10-08): "계속 탐색해서 목표에 도달하는 방법 찾아".
+#    ── r151_event_card: '물타기(현금)'(장기 상승 중 −15% 첫날 → 63일 절대 수익 · 오른 비율 · 같은 종목군 아무 날 산 기준선) · '손절(현금)'(200일선 첫 이탈 → 63일 절대).
+#      00J C 행 2개 — 현금으로 물타기·손절하면 비교 대상은 현금(절대) + 기준선. 연구(r153/dip153 · base153): −15% 63일 +6.4 · +6.6% · 오른 65 · 62% ·
+#      기준선 대비 +2.7 · +4.0%p(두 기간 목표 달성) · 손절은 현금 기준도 실패(판 뒤 +3.9~+8.4%).
+#    ── 00J B: 비중 성적을 M 통로 SPY 전 이력(spy_adj · 1993~)으로 · 측정 R153 위험도 비중 조절(M.r153_vol_sizing)의 비중 성적 행.
+#    시험 t153. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v0.38.0 - 2026-10-08 - [R152 기능별 목표 상향 · 실적 합성 선택 점수 측정 행 · 연구 문구 — 라이브 무변경]
 #    사용자 지시(2026-10-08): "각 목표치를 더 올리고 계속 탐색해". R151_TARGETS: 선택 IC 0.04 · t 3 · 물타기 +1.5% · 58% · 손절 −1.5% · 58% ·
 #    비중 0 정밀도 50 · 재현율 70 · 전액일 큰 하락 ≤ 4%(00J 판정이 이 값을 쓴다).
@@ -909,7 +916,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-VERSION = "v0.38.0"
+VERSION = "v0.39.0"
 VERSION_DATE = "2026-10-07"
 
 # ---- 산업 ETF → 대표 티커(사용자 지시 "각 산업별 대표 티커 하나씩") ----
@@ -8635,8 +8642,20 @@ R151_RESEARCH_K = {
     "선택 R152": "R152(실적 자료 619종목 · 2010~26): 발표 반응 · 서프라이즈 · 저위험 · LightGBM 13특징 IC −0.009~0.017 · 합성(서프라이즈 1년 + 최근 + 12-1) 21일 IC 0.018 · 0.010 · "
                  "63일 0.028 · 0.009(두 기간 모두 양수 · 목표 0.04 미달) · 합친 우주 점수로 쓰면 2018~ 58× → 37~51× · MDD −10.5 → −7.6~−8.0% · 2010~17 샤프 = ETF → 측정 행",
 }
+R151_RESEARCH_K["물타기 R153"] = ("R153(그 시점 S&P 500 · 현금 대비): 장기 상승 중 −15% 바로 63일 +6.4%(2010~17) · +6.6%(2018~) · 오른 65 · 62% · 기준선(같은 종목군 아무 날) "
+                                  "+3.7 · +2.6% / 65 · 57% → 기준선 대비 +2.7 · +4.0%p · SPY −5% 눌림 +4.7~6.2% · 69~80%(세 기간) · 섹터 ETF −5% +3.5~5.0% · 67~78% · "
+                                  "포트폴리오(현금 재원 · 시장·섹터 위): 월 +0.03~+0.21%p · MDD −0.3~−1.0%p · M 단위 SPY 눌림 하한은 2020년에 MDD −10~−27%p로 기각")
+R151_RESEARCH_K["손절 R153"] = ("R153(현금 대비): 200일선 첫 이탈 · 시장 동반 이탈 · 섹터·시장 이탈 & 63일 −15% 모두 판 뒤 63일 +3.9~+8.4%(맞음 27~41%) · SPY·섹터 ETF 추세 이탈도 "
+                                "2010~ 맞음 11~28% — 2000~09 하락장에서만 일부 맞음 · 시장 단위 손절은 M 국면이 이미 담당")
+R151_RESEARCH_K["선택 R152"] += (" · R153 SEC 재무(636종목 · 공시일 기준): 매출총이익/자산 · ROA · ROE · 영업현금 · 발생액 · 자산증가율 · 매출 성장 IC −0.015~0.023 · "
+                                "품질 합성 0.004~0.009 · 품질 + 실적 합성 21일 0.015/0.008 · 63일 0.020/0.012 → 목표 0.04 미달")
 R151_RESEARCH_K["물타기"] += (" · R152 실적·위험·추세 필터 27변형: 최선 '−12% · 실적 무관 · 섹터 200일선 위' 63일 +0.85% · +0.72%(이김 49~50%) · "
                              "'큰 하락 위험 낮은 종목만'은 2018~ −2~−3%로 반대 → 목표 +1.5% · 58% 미달")
+
+
+def _pre_note(lab: str) -> str:
+    """2018 이전 구간 = M 신호의 앞쪽 이력(연구의 긴 대용 재생 경로 pl과 다름) — 판정은 참고."""
+    return " · ⚠ M 신호 앞쪽 이력(연구 긴 대용과 다른 경로 — 참고)" if "이전" in str(lab) else ""
 
 
 def r151_card_sheet(r145: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
@@ -8666,11 +8685,11 @@ def r151_card_sheet(r145: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
     for lab, s in st.items():
         ok0 = s["정밀도%"] >= T["비중0 정밀도%"] and s["재현율%"] >= T["비중0 재현율%"]
         rows.append({"블록": "B. 비중(M 국면 · 네 층 공통)", "기능": f"비중 0 = 큰 하락 회피({lab})", "지표": "비중 0인 날 → 다음 21거래일 SPY −7% 이상 하락 정밀도 · 큰 하락 중 미리 0이었던 재현율",
-                     "값": f"정밀도 {s['정밀도%']:.1f}% · 재현율 {s['재현율%']:.1f}% · 기저율 {s['기저율%']:.1f}% · 0일 {s['0일']}",
+                     "값": f"정밀도 {s['정밀도%']:.1f}% · 재현율 {s['재현율%']:.1f}% · 기저율 {s['기저율%']:.1f}% · 0일 {s['0일']}" + _pre_note(lab),
                      "목표": f"정밀도 ≥ {T['비중0 정밀도%']:.0f}% · 재현율 ≥ {T['비중0 재현율%']:.0f}%", "달성": "달성" if ok0 else "미달"})
         ok1 = bool(s.get("단조")) and s["전액일 큰 하락%"] <= T["전액일 큰 하락%"]
         rows.append({"블록": "B. 비중(M 국면 · 네 층 공통)", "기능": f"위험도 비중 조절({lab})", "지표": "비중 구간(0 · ~0.5 · ~1 · 1)별 큰 하락 비율 — 비중이 클수록 낮아야",
-                     "값": f"전액일 큰 하락 {s['전액일 큰 하락%']:.1f}% · 단조 {'예' if s.get('단조') else '아니오'}",
+                     "값": f"전액일 큰 하락 {s['전액일 큰 하락%']:.1f}% · 단조 {'예' if s.get('단조') else '아니오'}" + _pre_note(lab),
                      "목표": f"단조 · 전액일 큰 하락 ≤ {T['전액일 큰 하락%']:.0f}%", "달성": "달성" if ok1 else "미달"})
     ev = card.get("event") or {}
     se, ad, sl = ev.get("선택") or {}, ev.get("물타기") or {}, ev.get("손절") or {}
@@ -8696,6 +8715,29 @@ def r151_card_sheet(r145: Dict[str, Any]) -> Tuple[pd.DataFrame, List[Tuple[str,
         rows.append({"블록": "C. 종목 단위(합친 우주 · 섹터 중립 · 다음 날 시가)", "기능": "손절(200일선 첫 이탈 때 판다 · 2018~)", "지표": "판 뒤 63일 섹터 대비 초과(음수 = 판 게 맞음) · 맞은 비율",
                      "값": f"{sl['사건']}건 · 초과 {sl.get('63일 초과%', float('nan')):+.2f}% · 맞음 {sl.get('맞음%', float('nan')):.1f}% · t {sl.get('t', float('nan')):+.2f}",
                      "목표": f"초과 ≤ {T['손절 63일 초과%']}% · 맞음 ≥ {T['손절 맞음%']:.0f}%", "달성": "달성" if ok else "미달", "긴 이력 연구(r151)": R151_RESEARCH_K["손절"]})
+    adc, slc = ev.get("물타기(현금)") or {}, ev.get("손절(현금)") or {}
+    if adc.get("사건"):                                       # [v0.39.0 R153] 현금 재원 기준
+        bl = adc.get("기준선%", float("nan"))
+        ok = (adc.get("63일 초과%", -9) >= T["물타기 63일 초과%"]) and (adc.get("이김%", 0) >= T["물타기 이김%"]) and (adc.get("63일 초과%", -9) > bl)
+        rows.append({"블록": "C. 종목 단위(합친 우주 · 섹터 중립 · 다음 날 시가)", "기능": "물타기 — 현금 재원 기준(장기 상승 중 21일 고점 −15% 첫날 · 2018~)",
+                     "지표": "산 뒤 63일 절대 수익(현금 대비) · 오른 비율 · 같은 종목군을 아무 날 산 기준선보다 높은가",
+                     "값": f"{adc['사건']}건 · 63일 {adc.get('63일 초과%', float('nan')):+.2f}% · 오른 {adc.get('이김%', float('nan')):.1f}% · "
+                           f"기준선 {bl:+.2f}% / {adc.get('기준선 오른%', float('nan')):.1f}% → 기준선 대비 {adc.get('63일 초과%', float('nan')) - bl:+.2f}%p",
+                     "목표": f"현금 대비 ≥ +{T['물타기 63일 초과%']}% · 오른 ≥ {T['물타기 이김%']:.0f}% · 기준선보다 높음", "달성": "달성" if ok else "미달",
+                     "긴 이력 연구(r151)": R151_RESEARCH_K["물타기 R153"]})
+    if slc.get("사건"):
+        ok = (slc.get("63일 초과%", 9) <= T["손절 63일 초과%"]) and (slc.get("맞음%", 0) >= T["손절 맞음%"])
+        rows.append({"블록": "C. 종목 단위(합친 우주 · 섹터 중립 · 다음 날 시가)", "기능": "손절 — 현금 기준(200일선 첫 이탈 때 팔아 현금 · 2018~)",
+                     "지표": "판 뒤 63일 절대 수익(음수 = 판 게 맞음) · 맞은 비율",
+                     "값": f"{slc['사건']}건 · 63일 {slc.get('63일 초과%', float('nan')):+.2f}% · 맞음 {slc.get('맞음%', float('nan')):.1f}%",
+                     "목표": f"≤ {T['손절 63일 초과%']}% · 맞음 ≥ {T['손절 맞음%']:.0f}%", "달성": "달성" if ok else "미달", "긴 이력 연구(r151)": R151_RESEARCH_K["손절 R153"]})
+    st3 = card.get("size_r153") or {}
+    for lab, s in st3.items():                                  # [v0.39.0 R153] 측정 위험도 비중 조절(M 변동성 상위 40%)의 비중 성적
+        ok1 = bool(s.get("단조")) and s["전액일 큰 하락%"] <= T["전액일 큰 하락%"]
+        rows.append({"블록": "B. 비중(M 국면 · 네 층 공통)", "기능": f"측정 R153 위험도 비중 조절(20일 변동성 상위 40% → 전액 0.9 · 부분 ≤ 0.5 · {lab})",
+                     "지표": "비중 구간별 큰 하락 비율 — 비중이 클수록 낮아야", "값": f"전액일 큰 하락 {s['전액일 큰 하락%']:.1f}% · 단조 {'예' if s.get('단조') else '아니오'}" + _pre_note(lab),
+                     "목표": f"단조 · 전액일 큰 하락 ≤ {T['전액일 큰 하락%']:.0f}%", "달성": "달성" if ok1 else "미달",
+                     "긴 이력 연구(r151)": "r153/msize153b: 96설정 중 9개 목표 + 샤프·MDD 무하락 · 연 수익 −0.4~−1.8%p 대가 → 측정(라이브 아님)"})
     for r_ in card.get("rows") or []:
         d = {k: r_.get(k, float("nan")) - on.get(k, float("nan")) for k in ("배수", "월평균수익%", "회피", "참여", "MDD", "월회피", "월참여")}
         rows.append({"블록": "D. 포트폴리오 측정 행(합친 우주 라이브 위 · 라이브 아님)", "기능": r_["방식"] + " · 2018~", "지표": "라이브 대비 Δ",
@@ -8831,6 +8873,20 @@ def r151_event_card(C: pd.DataFrame, O: pd.DataFrame, MEM: pd.DataFrame, sect: D
         brk = (g200 < 0) & (g200.shift(1).rolling(60).min() > 0)
     out["물타기"] = ev(ad, 21, e63)
     out["손절"] = ev(brk, 63, e63, neg=True)
+    # [v0.39.0 R153] 현금 재원 기준 — 현금으로 물타기 · 현금으로 손절이면 비교 대상은 현금(절대 63일 수익) + 같은 종목군을 아무 날 산 기준선
+    a63 = (O.shift(-64) / O.shift(-1) - 1).where(live)
+    a63 = a63.where(a63.abs() <= 3.0)
+    with np.errstate(invalid="ignore"):
+        upm = (m121 > 0) & (g200.shift(21) > 0)
+        ad15 = upm & (dd21 <= -0.15)
+        ad15 = ad15 & ~ad15.shift(1).fillna(False).astype(bool)
+    out["물타기(현금)"] = ev(ad15, 21, a63)
+    bm = upm.fillna(False).to_numpy(dtype=bool) & live.to_numpy() & (C.index >= st)[:, None]
+    bv = a63.to_numpy(dtype=float)[bm]
+    bv = bv[np.isfinite(bv)]
+    if len(bv) and out["물타기(현금)"].get("사건"):
+        out["물타기(현금)"].update({"기준선%": float(bv.mean() * 100), "기준선 오른%": float((bv > 0).mean() * 100)})
+    out["손절(현금)"] = ev(brk, 63, a63, neg=True)
     return out
 
 
@@ -9834,11 +9890,17 @@ def run(cfg: Optional[StockConfig] = None, s_overrides: Optional[Dict[str, Any]]
                             elif not len(_spy145):
                                 _szn151 = "SPY 종가 없음"
                             else:
-                                _sz151, _szs151 = _M151.r151_size_card(_mk151, _spy145)
+                                _spc151 = (pd.to_numeric(pd.Series(_ex144.get("spy_adj")), errors="coerce").dropna()
+                                           if isinstance(_ex144, dict) and _ex144.get("spy_adj") is not None else _spy145)   # M 통로 전 이력(1993~) 우선
+                                _sz151, _szs151 = _M151.r151_size_card(_mk151, _spc151)
                                 if not _szs151:
-                                    _szn151 = f"겹친 날 부족(M {_mk151.index.min()}~{_mk151.index.max()} · SPY {_spy145.index.min()}~{_spy145.index.max()})"
+                                    _szn151 = f"겹친 날 부족(M {_mk151.index.min()}~{_mk151.index.max()} · SPY {_spc151.index.min()}~{_spc151.index.max()})"
+                                if hasattr(_M151, "r153_vol_sizing"):                 # [v0.39.0 R153] 측정 위험도 비중 조절의 비중 성적
+                                    _pv153, _ = _M151.r153_vol_sizing(_mk151, _spc151, **dict(getattr(_M151, "R153_VOL_SIZING", {}) or {}))
+                                    _, _szs153 = _M151.r151_size_card(_pv153, _spc151)
+                                    _r151_info["size_r153"] = _szs153
                             _r151_info["card"] = {"rows": _mrows151, "event": _ec151, "size_tab": _sz151, "size": _szs151, "size_note": _szn151,
-                                                  "sec": round(time.time() - _t151, 1)}
+                                                  "size_r153": _r151_info.get("size_r153") or {}, "sec": round(time.time() - _t151, 1)}
                         except Exception as _ec:
                             _r151_info["card"] = {"error": f"{type(_ec).__name__}: {str(_ec)[:160]}"}
                             log("R151", kv(event="r151_card_failed", err=type(_ec).__name__, msg=str(_ec)[:160],
