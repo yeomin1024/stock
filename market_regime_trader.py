@@ -22,6 +22,15 @@ import pandas as pd
 
 # =============================================================================
 #  market_regime_trader.py
+#  VERSION: v1.89.0 - 2026-10-08 - [R151 ★ 비중 성적표(00O 블록 G · 00 줄) · 사용자 설계 측정 행 '큰 하락 경보일만 0 · 그 외 최소 0.5' — 신호·비중 무변경]
+#    사용자 지시(2026-10-08): "중립이면 비중 0.5로 하듯이 정말로 큰 하락이 예측될때만 비중 0으로 하면 되는거 아니야? 그 외에는 위험점수에 따라 비중 조절 …
+#      각각 그게 잘되는지 수치화해서 목표치를 정해 도달할 수 있는 방법을 계속 탐색하고 테스트해".
+#    ── r151_big_drop(다음 21거래일 SPY 최저 종가 −7% 이하) · r151_size_card(비중 0 정밀도·재현율·기저율 배수 · 비중 구간별 다음 21일 수익·큰 하락·변동성 ·
+#      목표 R151_M_TARGETS 정밀도 40 · 재현율 60 · 전액일 큰 하락 ≤ 5% · 단조) · r151_user_design(경보 = 급락트리거 백분위 ≥ 0.97 또는 H ≥ 0.95일만 0 ·
+#      그 외 max(라이브, 0.5)) → r147_m_block 측정 행 + 블록 G + 00 줄(r151_card_line). K 00J도 같은 r151_size_card를 쓴다.
+#    ── 연구(r151/msize151 · 32변형): 라이브 0일 정밀도 2018~ 20.7% · 1994~2017 26.0%(기저율 10%의 2.1~2.7배) · 재현율 66 · 54% — 경보만으로 0을 두면
+#      재현율 8~31%라 큰 하락을 0.5~1로 맞아 2018~ 연 33.9% → 16~25% · MDD −7.4% → −11~−30% · 1994~2017 연 9.4 → 9.8% · 샤프 0.82 → 0.78 → 라이브 유지.
+#    시험 t151/test_r151.py. 연구·교육용이며 투자 자문이 아니다.
 #  VERSION: v1.88.0 - 2026-10-08 - [R150 ★ 신뢰도 판정(00O 블록 F + 00 줄) · FRED 과거값 고정 · 월 평균 수익 목표 30% — 네 층 공용 · 신호·비중 무변경]
 #    사용자 지시(2026-10-08): "오늘 결과 실행했는데 각 층별로 결과를 신뢰해도 되는거야? 아니면 문제가 뭔지 파악하고 강하게 신뢰 가능하도록 방법 계속 탐색하고
 #      테스트해봐" · "월 평균 수익 30%에 도달하도록 방법도 계속 탐색하고 하던거 계속 진행해".
@@ -11760,6 +11769,86 @@ def r147_sheet(layer: str, rows: List[Tuple[str, pd.Series, Optional[pd.Series],
 
 R147_M_MEASURE: Tuple[Tuple[str, str, float, float], ...] = (("g200", "hi", 0.9, 1.0),)   # (특징, 쪽, 분위, 숏 크기) — 측정 행만(검증 탈락)
 
+# [v1.89.0 R151 ★ 사용자 지시 2026-10-08] "중립이면 비중 0.5로 하듯이 정말로 큰 하락이 예측될 때만 비중 0 · 그 외에는 위험점수에 따라 비중 조절 …
+#   각각 그게 잘되는지 수치화해서 목표치를 정해 도달할 수 있는 방법을 계속 탐색하고 테스트해" — 비중 성적표(00O 블록 G · K 00J) · 사용자 설계 측정 행.
+R151_BIG_DROP = 0.07                 # 큰 하락 = 다음 21거래일 안 SPY 종가 최저가가 오늘 종가보다 −7% 이하
+R151_M_TARGETS = {"정밀도%": 40.0, "재현율%": 60.0, "전액일 큰 하락%": 5.0}
+R151_USER_ALERT = (0.97, 0.95)       # 사용자 설계(측정): 0 = 급락트리거 백분위 ≥ 0.97 또는 위험점수 H 백분위 ≥ 0.95 · 그 외 max(라이브, 0.5)
+R151_RESEARCH_M = ("연구(r151 · 같은 체결): 라이브가 0인 날의 큰 하락 정밀도 2018~ 20.7% · 1994~2017 26.0%(기저율 10%의 2.1~2.7배) · 재현율 66% · 54%. "
+                   "'큰 하락 경보일만 0 · 그 외 0.5 이상' 32변형 — 경보(H ≥ 0.9·0.95 · 급락트리거 · 점수 하위 10% & 200일선 아래 …)의 재현율 8~31%라 큰 하락 대부분을 0.5~1로 맞음: "
+                   "2018~ 연 33.9% → 16~25% · MDD −7.4% → −11~−30% · 1994~2017(점수 경보) 연 9.4% → 9.8% · 샤프 0.82 → 0.78 · MDD −30.7% → −31.8% → 라이브 유지(측정 행).")
+
+
+def r151_big_drop(close: pd.Series, horizon: int = 21, thr: float = R151_BIG_DROP) -> pd.Series:
+    """[R151] 큰 하락 표지 — 다음 horizon거래일 종가 최저가 / 오늘 종가 − 1 ≤ −thr(마지막 horizon일은 NaN)."""
+    c = pd.to_numeric(pd.Series(close), errors="coerce").ffill()
+    fmin = c[::-1].rolling(horizon, min_periods=horizon).min()[::-1].shift(-1)
+    out = (fmin / c - 1 <= -thr).astype(float)
+    return out.where(fmin.notna())
+
+
+def r151_size_card(tp: pd.Series, close: pd.Series, split: str = "2018-01-01") -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """[R151] 비중 성적표 — (1) 비중 0인 날의 큰 하락 정밀도 · 재현율 · 기저율 배수 (2) 비중 구간(0 · 0~0.5 · 0.5~1 · 1)별 다음 21거래일 평균 수익 · 큰 하락 비율 · 변동성.
+    tp = 목표비중(t일 종가 확정 → t+1 체결) · close = SPY 종가. 구간 = split 이후 / 이전(자료가 있으면). 목표 R151_M_TARGETS."""
+    def _ni(s):
+        s = pd.to_numeric(pd.Series(s), errors="coerce")
+        ix = pd.DatetimeIndex(s.index)
+        if ix.tz is not None:
+            ix = ix.tz_localize(None)
+        s.index = ix.normalize()
+        return s[~s.index.duplicated(keep="last")].sort_index()
+    tp = _ni(tp)
+    c = _ni(close).reindex(tp.index).ffill()
+    big = r151_big_drop(c)
+    f21 = c.shift(-22) / c.shift(-1) - 1
+    r1 = c.pct_change()
+    rows, summ = [], {}
+    sp = pd.Timestamp(split)
+    for lab, m in ((f"{sp.year}~", tp.index >= sp), (f"{sp.year} 이전", tp.index < sp)):
+        m = m & tp.notna().to_numpy() & big.notna().to_numpy()
+        if m.sum() < 250:
+            continue
+        e, b = tp[m], big[m].astype(bool)
+        z = e <= 1e-9
+        prec = float(b[z].mean() * 100) if z.any() else np.nan
+        rec = float(z[b].mean() * 100) if b.any() else np.nan
+        base = float(b.mean() * 100)
+        full_big = float(b[e >= 1 - 1e-9].mean() * 100) if (e >= 1 - 1e-9).any() else np.nan
+        summ[lab] = {"0일": int(z.sum()), "정밀도%": prec, "재현율%": rec, "기저율%": base, "전액일 큰 하락%": full_big}
+        rows.append({"블록": "G. 비중 성적표(R151 · 사용자 지시 2026-10-08)", "방식": f"비중 0 판단({lab})", "날": int(m.sum()), "비중 0인 날": int(z.sum()),
+                     "큰 하락 정밀도(%)": round(prec, 1), "큰 하락 재현율(%)": round(rec, 1), "기저율(%)": round(base, 1),
+                     "배수(정밀/기저)": round(prec / base, 2) if base > 0 else None,
+                     "목표": f"정밀도 ≥ {R151_M_TARGETS['정밀도%']:.0f}% · 재현율 ≥ {R151_M_TARGETS['재현율%']:.0f}%",
+                     "달성": "달성" if (prec >= R151_M_TARGETS["정밀도%"] and rec >= R151_M_TARGETS["재현율%"]) else "미달"})
+        prev = None
+        mono = True
+        for bl, bm in (("비중 0", e <= 1e-9), ("0 < 비중 ≤ 0.5", (e > 1e-9) & (e <= 0.5 + 1e-9)), ("0.5 < 비중 < 1", (e > 0.5 + 1e-9) & (e < 1 - 1e-9)),
+                       ("비중 1(전액)", e >= 1 - 1e-9)):
+            if not bm.any():
+                continue
+            bb = float(b[bm].mean() * 100)
+            if prev is not None and bb > prev + 1e-9:
+                mono = False
+            prev = bb
+            rows.append({"블록": "G. 비중 성적표(R151 · 사용자 지시 2026-10-08)", "방식": f"  위험도 비중 구간 {bl}({lab})", "날": int(bm.sum()),
+                         "다음 21일 평균 수익(%)": round(float(f21[m][bm].mean() * 100), 2), "큰 하락 비율(%)": round(bb, 1),
+                         "연 변동성(%)": round(float(r1.shift(-1)[m][bm].std() * np.sqrt(252) * 100), 1)})
+        summ[lab]["단조"] = mono
+        rows.append({"블록": "G. 비중 성적표(R151 · 사용자 지시 2026-10-08)", "방식": f"  위험도 비중 조절 판정({lab})",
+                     "목표": f"비중이 클수록 큰 하락 비율 ↓(단조) · 전액일 큰 하락 ≤ {R151_M_TARGETS['전액일 큰 하락%']:.0f}%",
+                     "큰 하락 비율(%)": round(full_big, 1) if full_big == full_big else None,
+                     "달성": "달성" if (mono and full_big == full_big and full_big <= R151_M_TARGETS["전액일 큰 하락%"]) else "미달"})
+    return pd.DataFrame(rows), summ
+
+
+def r151_user_design(tp: pd.Series, haz_pct: Optional[pd.Series], fast_pct: Optional[pd.Series]) -> Tuple[pd.Series, pd.Series]:
+    """[R151 측정] 사용자 설계 — 경보(급락트리거 백분위 ≥ 0.97 또는 H ≥ 0.95)인 날만 0 · 그 외 max(라이브, 0.5). 반환 (비중, 경보)."""
+    tp = pd.to_numeric(pd.Series(tp), errors="coerce").fillna(0.0)
+    fp = pd.to_numeric(pd.Series(fast_pct), errors="coerce").reindex(tp.index) if fast_pct is not None else pd.Series(np.nan, index=tp.index)
+    hp = pd.to_numeric(pd.Series(haz_pct), errors="coerce").reindex(tp.index) if haz_pct is not None else pd.Series(np.nan, index=tp.index)
+    al = ((fp >= R151_USER_ALERT[0]) | (hp >= R151_USER_ALERT[1])).fillna(False)
+    return np.maximum(tp, 0.5).where(~al, 0.0), al
+
 
 def r147_m_block(res: dict, cfg: "Config") -> Dict[str, Any]:
     """[R147] M 00O — 라이브(목표비중 0~1) · 측정: '국면 현금일 & SPY 200일선 위 10%(과열)' → SH(SPY −1배) 100%
@@ -11789,10 +11878,45 @@ def r147_m_block(res: dict, cfg: "Config") -> Dict[str, Any]:
             nm = f"R147 측정: 국면 현금 & SPY {f_} {'위' if side_ == 'hi' else '아래'} {abs(q_ - (1 if side_ == 'hi' else 0)) * 100:.0f}% → SH {s_:.0%}"
             rows.append((nm, rt.reindex(r.index).fillna(0.0), rl.reindex(r.index).fillna(0.0), rs.reindex(r.index).fillna(0.0)))
             info[nm] = {"short_days": int(((pos < -1e-9) & (pos.index >= pd.Timestamp(cfg.SIGNAL_START))).sum()), "today": bool(pos.iloc[-1] < -1e-9)}
+        # [v1.89.0 R151 측정] 사용자 설계 — 큰 하락 경보일만 0 · 그 외 max(라이브, 0.5)
+        try:
+            pu, alu = r151_user_design(tp, res.get("haz_pct"), res.get("fast_pct"))
+            with contextlib.redirect_stdout(io.StringIO()):
+                bu = run_backtest(price, pu, cfg, res.get("rf_daily"))
+            bu = bu.loc[bu.index >= pd.Timestamp(cfg.SIGNAL_START)]
+            ru = pd.to_numeric(bu["strategy_ret"], errors="coerce").fillna(0.0).reindex(r.index).fillna(0.0)
+            nmu = f"R151 측정: 사용자 설계 — 큰 하락 경보(급락트리거 ≥ {R151_USER_ALERT[0]:.2f} 또는 H ≥ {R151_USER_ALERT[1]:.2f})일만 0 · 그 외 최소 0.5"
+            rows.append((nmu, ru, ru, None))
+            info[nmu] = {"alert_days": int(alu.loc[pd.Timestamp(cfg.SIGNAL_START):].sum()), "today": float(pu.iloc[-1]), "alert_today": bool(alu.iloc[-1])}
+        except Exception as e:
+            info["R151 사용자 설계"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     rows.append(("SPY 단순보유", spy, spy, None))
     sh, ln = r147_sheet("M · SPY", rows, spy, pd.DataFrame({"SPY": pd.to_numeric(bt["ret_cc"], errors="coerce")}), R147_RESEARCH["M"],
                         note="숏 측정 행은 라이브가 아니다(긴 이력 · 무작위 대조군 검증 탈락). 켜려면 사용자 승인 뒤 연결.")
+    # [v1.89.0 R151] 블록 G — 비중 성적표(비중 0 판단 · 위험도 비중 구간) · 00 줄
+    try:
+        if isinstance(price, pd.DataFrame) and "target_pos" in sig.columns:
+            _c = pd.to_numeric(price["Adj Close"] if "Adj Close" in price.columns else price["Close"], errors="coerce")
+            G, gs = r151_size_card(pd.to_numeric(sig["target_pos"], errors="coerce"), _c)
+            sh = pd.concat([sh, G], ignore_index=True, sort=False)
+            info["R151_card"] = gs
+            ln = list(ln) + [r151_card_line("M · SPY", gs, info)]
+    except Exception as e:
+        info["R151_card_error"] = f"{type(e).__name__}: {str(e)[:120]}"
     return {"sheet": sh, "lines": ln, "info": info}
+
+
+def r151_card_line(layer: str, gs: Dict[str, Any], info: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+    """[R151] 00 줄 — 비중 0 판단 · 위험도 비중 조절 성적과 목표 · 사용자 설계 측정 요약."""
+    parts = []
+    for lab, s in (gs or {}).items():
+        parts.append(f"{lab}: 비중 0인 날 {s['0일']}일 · 큰 하락 정밀도 {s['정밀도%']:.1f}%(목표 {R151_M_TARGETS['정밀도%']:.0f}) · 재현율 {s['재현율%']:.1f}%(목표 {R151_M_TARGETS['재현율%']:.0f}) · "
+                     f"기저율 {s['기저율%']:.1f}% · 전액일 큰 하락 {s['전액일 큰 하락%']:.1f}%(목표 ≤ {R151_M_TARGETS['전액일 큰 하락%']:.0f}) · 비중↑→큰 하락↓ {'예' if s.get('단조') else '아니오'}")
+    ud = next((v for k, v in (info or {}).items() if str(k).startswith("R151 측정")), None)
+    udt = (f" | 사용자 설계(경보일만 0 · 그 외 최소 0.5) 2018~ 경보 {ud['alert_days']}일 · 다음 거래일 비중 {ud['today']:.2f} — 월 평균은 00O 블록 A 측정 행"
+           if isinstance(ud, dict) and "alert_days" in ud else "")
+    return (f"★★★ R151 비중 성적표(사용자 지시 2026-10-08 '큰 하락 예측 때만 0 · 그 외 위험도로 비중') · {layer}",
+            " | ".join(parts) + udt + f" | {R151_RESEARCH_M} — 세부 00O 블록 G. 연구·교육용, 투자 자문 아님.")
 
 
 def r141_pnl_cols(df: pd.DataFrame, cols: Dict[str, pd.Series], outcomes: Optional[Dict[str, pd.Series]] = None, after: str = "현금",
@@ -17177,7 +17301,7 @@ def _grid_convergence_line(res: dict) -> str:
         return f"계산실패({str(e)[:60]})"
 
 
-BUNDLE_VERSION = "v1.88.0"
+BUNDLE_VERSION = "v1.89.0"
 BUNDLE_VERSION_DATE = "2026-10-08"
 # [v1.58.1 R89] 이 M과 한 묶음으로 설계된 S·I·K 최소 버전 — 사용자가 M만 새 파일로 바꾸고 S·I는 예전 파일로 돌린 일이 있었다(리포트 s17·i35:
 #   M v1.58.0 + S v0.67.0 + I v0.39.0). M 리포트 00에 '계층 버전 점검' 줄을 싣고 어긋나면 경고 로그를 남긴다(신호·비중 무영향).
