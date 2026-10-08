@@ -1,4 +1,4 @@
-// VERSION: v2.1.0 — 2026-10-07 — 스토리보드 검수 페이지 생성 (가이드 v2 6-5). v2.1.0: 엔론 사례 제외 반영(장면 29, 자막 91)
+// VERSION: v2.2.0 — 2026-10-08 — 스토리보드 검수 페이지 생성 (가이드 v2 6-5). v2.2.0: 엔론을 지운 대본(자막 91) 기준 번호
 // 사용:
 //   node scripts/build-storyboard-index.mjs                 → out/storyboard/index.html (같은 폴더의 PNG 를 바로 참조)
 //   node scripts/build-storyboard-index.mjs --artifact DIR  → DIR/index.html (문서 껍데기 없는 조각) + DIR/img/*.jpg (1280px 미리보기)
@@ -38,8 +38,8 @@ const FIXES = [
 	['S16', '자막 31의 ✕가 "현금 0원"을 가려서 ✕를 "물타기" 제목 위로만 줄였습니다.'],
 	['S17', '자막 36의 "필요"가 "+40%"에 붙어 있어 18px 띄웠습니다.'],
 	['S19', '자막 47의 칸 3개가 JP모건 카드 아래 테두리와 겹쳐서 40px 내렸습니다.'],
-	['S25', '자막 66–68의 "-2,000만 원"이 왼쪽 여백 96px를 넘어 60px에서 시작해서, 왼쪽 열 중심을 옮겼습니다.'],
-	['S26', '카드 3장의 제목 높이를 맞추고, 자막 74 번개가 사라지지 않게 했습니다(가이드: 번개가 한 칩에 떨어짐). 번개 윗끝은 y 124입니다.'],
+	['S25', '자막 61–63의 "-2,000만 원"이 왼쪽 여백 96px를 넘어 60px에서 시작해서, 왼쪽 열 중심을 옮겼습니다.'],
+	['S26', '카드 3장의 제목 높이를 맞추고, 자막 69 번개가 사라지지 않게 했습니다(가이드: 번개가 한 칩에 떨어짐). 번개 윗끝은 y 124입니다.'],
 	['S27', '점 500개 그리드가 제목에 붙어 아래로 내리고, 도넛 안쪽을 넓혀 "90%"가 고리에 닿지 않게 했습니다.'],
 	['S29', '작게 다시 나온 계좌 카드의 "MDB 100%"가 25px여서 카드 배율을 0.7에서 0.8로 올렸습니다(29px, 최소 28px 규칙).'],
 ];
@@ -50,7 +50,7 @@ const DECISIONS = [
 	['S04', '색 빠짐은 CSS 필터 대신 색 보간으로 처리했습니다(무거운 효과 금지).'],
 	['S13', '"장기 상승" 라벨은 자막 22에서 빠집니다. 한 화면 텍스트 덩어리를 3개 이하로 맞췄습니다.'],
 	['S18', '자막 44의 커서는 노랑 4칸을 다 찾으면 사라지고, 찾은 칸에는 테두리가 남습니다.'],
-	['S30', '자막 95–96 동안 그래픽이 천천히 사라지고, 마지막 1초는 잉크색으로 페이드됩니다.'],
+	['S30', '자막 90–91 동안 그래픽이 천천히 사라지고, 마지막 1초는 잉크색으로 페이드됩니다.'],
 	['', '가이드 목록 외에 S10·S22·S24·S30의 자막별 still과 S04 와이프 중간 still을 더 넣었습니다.'],
 	['S24', 'S23(엔론)이 빠져 S22와 S24가 모두 찢어진 종이 와이프로 들어옵니다(와이프 연속 1곳). S24는 문제에서 해결책으로 넘어가는 파트 경계라 와이프를 유지했습니다.'],
 	['', '입력에 내레이션·BGM 파일이 없어 영상은 무음입니다.'],
@@ -266,16 +266,16 @@ const SCRIPT = `
 
 const CONTENT = `<main class="wrap">
 <header class="top">
-<p class="eyebrow">영상 가이드 v2 · 스토리보드 · v2.1.0 엔론 사례 제외</p>
+<p class="eyebrow">영상 가이드 v2 · 스토리보드 · 엔론 사례 제외 대본</p>
 <h1>몰빵 영상 스토리보드</h1>
 <dl class="facts">
 <div><dt>장면</dt><dd>${tl.SCENES.length}</dd></div>
 <div><dt>still</dt><dd>${manifest.length} (장면 대표 ${mainCount})</dd></div>
 <div><dt>길이</dt><dd>${tc(total)} · ${total.toLocaleString('en-US')}f · ${tl.FPS}fps</dd></div>
 <div><dt>화면</dt><dd>${tl.WIDTH}×${tl.HEIGHT}</dd></div>
-<div><dt>자막</dt><dd>${tl.ACTIVE_SUBTITLES.length}개 (엔론 ${tl.CUT_SUBS.to - tl.CUT_SUBS.from + 1}개 제외) + 고지 카드 ${tl.DISCLAIMER_SEC}초</dd></div>
+<div><dt>자막</dt><dd>${tl.EXPECTED_SUBTITLES}개 + 고지 카드 ${tl.DISCLAIMER_SEC}초</dd></div>
 </dl>
-<p class="status"><span class="badge main">v2.1.0</span>엔론 사례(자막 ${tl.CUT_SUBS.from}–${tl.CUT_SUBS.to}, 장면 S23)를 빼고 자막 ${tl.CUT_SUBS.to + 1}번부터 ${tl.CUT_SEC.toFixed(3)}초 앞당겼습니다. S22 다음이 바로 S24입니다.</p>
+<p class="status"><span class="badge main">v2.2.0</span>대본에서 엔론 사례 5문장을 지웠습니다(장면 S23 없음). 자막 번호는 수정한 대본 기준이라 S24부터 가이드 표보다 5 작습니다.</p>
 </header>
 <div class="notes">
 <section class="note"><h2>자체 검수에서 고친 것</h2><ul>${listItems(FIXES)}</ul></section>

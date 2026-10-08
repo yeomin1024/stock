@@ -1,5 +1,5 @@
-// VERSION: v2.1.0 — 2026-10-07 — SRT → src/data/subtitles.ts 생성 + 타임라인 검증/출력
-// v2.1.0: 엔론 사례(자막 55–59)를 잘라 낸 구간과 실제 사용 자막 수 출력
+// VERSION: v2.2.0 — 2026-10-08 — SRT → src/data/subtitles.ts 생성 + 타임라인 검증/출력
+// v2.2.0: 대본에서 엔론 5문장을 지워 기대 개수 91, 잘라 내기 출력 삭제 (v2.1.0 의 잘라 내기 설정은 없어짐)
 // v2.0.0: 가이드 v2 — 자막 96개 / 고지 6초 / 약 9분 8초 확인 출력
 // 사용: node scripts/parse-srt.mjs
 // 1) input/대본_완성본.srt 를 @remotion/captions parseSrt 로 파싱
@@ -14,7 +14,7 @@ import {log} from './log.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRT = path.join(root, 'input', '대본_완성본.srt');
 const OUT = path.join(root, 'src', 'data', 'subtitles.ts');
-const EXPECTED_COUNT = 96; // 가이드 v2 0번 표
+const EXPECTED_COUNT = 91; // 가이드 v2 0번 표의 96개 − 엔론 5개 (v2.2.0 대본 수정)
 
 let raw;
 try {
@@ -97,9 +97,6 @@ log.info('TIMELINE', {
 	lastSubtitleEndFrame: tl.subEnd(captions.length),
 	disclaimerStart: tl.DISCLAIMER_START,
 	disclaimerFrames: tl.DISCLAIMER_FRAMES,
-	cutSubs: `${tl.CUT_SUBS.from}-${tl.CUT_SUBS.to}`,
-	cutSec: tl.CUT_SEC,
-	activeSubtitles: tl.ACTIVE_SUBTITLES.length,
 	totalFrames: tl.TOTAL_FRAMES,
 	totalSec: sec(tl.TOTAL_FRAMES),
 	totalHuman: `${Math.floor(tl.TOTAL_FRAMES / tl.FPS / 60)}분 ${(tl.TOTAL_FRAMES / tl.FPS % 60).toFixed(2)}초`,
@@ -112,5 +109,4 @@ const totalSec = tl.TOTAL_FRAMES / tl.FPS;
 const mmss = `${Math.floor(totalSec / 60)}분 ${(totalSec % 60).toFixed(2)}초`;
 console.log(`\n자막 개수: ${captions.length}개 (기대 ${EXPECTED_COUNT}개) → ${captions.length === EXPECTED_COUNT ? 'OK' : '불일치'}`);
 console.log(`고지 카드: 자막 ${tl.DISCLAIMER_AFTER_ID}번 끝 ${sec(tl.DISCLAIMER_START)} s 에 ${tl.DISCLAIMER_SEC} s 삽입, 자막 ${tl.DISCLAIMER_AFTER_ID + 1}번부터 ${tl.DISCLAIMER_SEC} s 뒤로`);
-console.log(`전체 길이: ${tl.TOTAL_FRAMES} frames = ${sec(tl.TOTAL_FRAMES)} s = ${mmss} (SRT 마지막 자막 끝 ${(captions.at(-1).endMs / 1000).toFixed(3)} s + 고지 ${tl.DISCLAIMER_SEC} s + 여유 ${tl.TAIL_SEC} s − 엔론 구간 ${tl.CUT_SEC} s) — 가이드 원본 약 9분 8초에서 엔론 제외`);
-console.log(`잘라 낸 자막: ${tl.CUT_SUBS.from}–${tl.CUT_SUBS.to}번 (엔론, ${tl.CUT_SEC} s) → 영상 자막 ${tl.ACTIVE_SUBTITLES.length}개`);
+console.log(`전체 길이: ${tl.TOTAL_FRAMES} frames = ${sec(tl.TOTAL_FRAMES)} s = ${mmss} (SRT 마지막 자막 끝 ${(captions.at(-1).endMs / 1000).toFixed(3)} s + 고지 ${tl.DISCLAIMER_SEC} s + 여유 ${tl.TAIL_SEC} s) — 엔론 5문장을 지운 대본 기준 (원본 약 9분 8초 − 28.154초)`);
