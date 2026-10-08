@@ -1,4 +1,5 @@
-// VERSION: v2.0.0 — 2026-10-06 — S11 (고지 카드 6초, 자막 18 직후) 노랑 띠 카드에 대본 [장면] 고지 문구 3문장이 순서대로
+// VERSION: v2.4.0 — 2026-10-08 — 고지 카드 3.5초(사용자 요청)에 맞춰 등장을 앞당김: 띠 0–12f, 문구 8/12/16f 시작·12f → 28f 에 모두 보임
+// v2.0.0 — 2026-10-06 — S11 (고지 카드, 문장 18 직후) 노랑 띠 카드에 대본 [장면] 고지 문구 3문장이 순서대로
 // 연결 근거: 투자 유의 사항
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
@@ -15,7 +16,7 @@ export const S11: React.FC = () => {
 		<AbsoluteFill>
 			<SceneBg tone="cream" />
 			<Layer>
-				<TornBand p={lin(f, 0, 16)} y={220} h={540} seed="S11-notice" rotate={-0.6} />
+				<TornBand p={lin(f, 0, 12)} y={220} h={540} seed="S11-notice" rotate={-0.6} />
 				<div
 					style={{
 						position: 'absolute',
@@ -31,7 +32,7 @@ export const S11: React.FC = () => {
 					}}
 				>
 					{NOTICE.map((line, i) => {
-						const p = enterP(f, 12 + i * 6, 15);
+						const p = enterP(f, 8 + i * 4, 12);
 						return (
 							<div
 								key={i}

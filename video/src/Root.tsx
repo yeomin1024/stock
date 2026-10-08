@@ -1,5 +1,5 @@
-// VERSION: v2.0.0 — 2026-10-06 — 컴포지션 등록
-// Molbbang: 본편 (1920×1080, 30fps, 길이 = SRT 마지막 자막 끝 + 고지 6초 + 여유 1초)
+// VERSION: v2.4.0 — 2026-10-08 — 컴포지션 등록 (주석만 갱신: 길이 계산)
+// Molbbang: 본편 (1920×1080, 30fps, 길이 = SRT 마지막 자막 끝 + 여유 1초 — v2.4.0 부터 SRT 에 고지 카드 3.5초 공백 포함)
 // Scenes/ 폴더: 장면별 미리보기 (본편 타임라인을 해당 장면 시작으로 당겨서 그대로 보여줌)
 import React from 'react';
 import {Composition, Folder, Sequence} from 'remotion';

@@ -1,4 +1,5 @@
-// VERSION: v2.3.0 — 2026-10-08 — 자막 한 줄화: 장면 타이밍은 '대본 문장 n'(SENTENCES) 기준, 화면 자막은 SRT 조각(SUBTITLES) 기준. lineStart 추가
+// VERSION: v2.4.0 — 2026-10-08 — SRT 시간 = 영상 시간: 고지 카드 공백(3.5초, 사용자 요청으로 6초에서 줄임)이 SRT 안에 있으므로 코드에서 더 밀지 않는다
+// v2.3.0 — 2026-10-08 — 자막 한 줄화: 장면 타이밍은 '대본 문장 n'(SENTENCES) 기준, 화면 자막은 SRT 조각(SUBTITLES) 기준. lineStart 추가
 // v2.2.0 — 2026-10-08 — 대본(SRT/TXT)에서 엔론 5문장을 지워 자막 91개 → 잘라 내기 설정(CUT_SUBS) 삭제, 장면표 자막 번호 −5
 // v2.1.0 — 2026-10-07 — 엔론 사례(자막 55–59, S23) 제외: 자막 60번부터 28.154초 앞당김, 장면 29개
 // v2.0.0 — 2026-10-06 — 가이드 v2: 자막 96개, 고지 카드 6초(자막 18 뒤), 장면 30개
@@ -13,7 +14,7 @@ export const WIDTH = 1920;
 export const HEIGHT = 1080;
 
 export const DISCLAIMER_AFTER_ID = 18;
-export const DISCLAIMER_SEC = 6;
+export const DISCLAIMER_SEC = 3.5; // 기대값: SRT 의 문장 18 끝 ~ 문장 19 시작 공백 (parse-srt 가 검사). v2.4.0 사용자 요청 6 → 3.5
 export const TAIL_SEC = 1;
 export const EXPECTED_SENTENCES = 91; // 대본 문장 수 = 원본 자막 96개 − 엔론 5개 (원본은 input/archive/)
 
@@ -35,12 +36,9 @@ const entry = (id: number): Subtitle => {
 	return e;
 };
 
-/** 고지 카드 6초: 문장 18 뒤의 모든 자막을 뒤로 민다 */
-const shiftSec = (n: number): number => (n > DISCLAIMER_AFTER_ID ? DISCLAIMER_SEC : 0);
-
-/** 화면 자막(SRT 조각) 시작·끝 프레임 — Subtitles.tsx 용 */
-export const entryStart = (e: Subtitle): number => secToFrame(e.startMs / 1000 + shiftSec(e.sentence));
-export const entryEnd = (e: Subtitle): number => secToFrame(e.endMs / 1000 + shiftSec(e.sentence));
+/** 화면 자막(SRT 조각) 시작·끝 프레임 — Subtitles.tsx 용. v2.4.0: SRT 시간이 곧 영상 시간 (고지 카드 공백 포함) */
+export const entryStart = (e: Subtitle): number => secToFrame(e.startMs / 1000);
+export const entryEnd = (e: Subtitle): number => secToFrame(e.endMs / 1000);
 
 export const subText = (n: number): string => sentence(n).text;
 /** 최종 타임라인(고지 카드 반영) 기준 문장 n 시작 프레임 (첫 화면 자막 시작) */
@@ -59,11 +57,12 @@ export const lineStart = (n: number, k: number): number => {
 export const srtRange = (n: number): {first: number; last: number} => ({first: sentence(n).first, last: sentence(n).last});
 
 export const DISCLAIMER_START = subEnd(DISCLAIMER_AFTER_ID);
-export const DISCLAIMER_FRAMES = secToFrame(DISCLAIMER_SEC);
+/** 고지 카드 길이 = SRT 에서 문장 18 끝과 문장 19 시작 사이 공백 */
+export const DISCLAIMER_FRAMES = subStart(DISCLAIMER_AFTER_ID + 1) - DISCLAIMER_START;
 /** 화면 자막(SRT) 개수 */
 export const SUBTITLE_COUNT = SUBTITLES.length;
 const LAST = SUBTITLES[SUBTITLES.length - 1];
-export const TOTAL_FRAMES = secToFrame(LAST.endMs / 1000 + shiftSec(LAST.sentence) + TAIL_SEC);
+export const TOTAL_FRAMES = secToFrame(LAST.endMs / 1000 + TAIL_SEC);
 
 // ---------------------------------------------------------------------------
 // 장면 표 (가이드 v2 5번). enter = 들어올 때 전환 (찢어진 종이 와이프 / 컷 번갈아).

@@ -1,4 +1,4 @@
-// VERSION: v2.3.0 — 2026-10-08 — 스토리보드 still 렌더 (가이드 v2 6-5) + manifest.json. v2.3.0: 문장별 SRT 자막 번호(srt)·화면 줄 수 기록
+// VERSION: v2.4.0 — 2026-10-08 — 스토리보드 still 렌더 (가이드 v2 6-5) + manifest.json. v2.4.0: 고지 카드 길이 표시는 timeline 값
 // 사용: node scripts/render-storyboard.mjs [S05 S12 ...]
 // - 장면마다 "모든 요소가 다 나온 시점(장면 끝 10프레임 전)" → out/storyboard/S01.png ~ S30.png
 // - S14, S16~S19, S25~S29 는 자막 단위로 1장씩 더 → S25-66.png 처럼
@@ -53,7 +53,7 @@ const manifest = tl.storyboardShots().map((s) => {
 		scene: s.scene,
 		frame: s.frame,
 		time: `${Math.floor(s.frame / tl.FPS / 60)}:${String(Math.floor((s.frame / tl.FPS) % 60)).padStart(2, '0')}`,
-		sceneSubs: def.subs.length ? `${def.subs[0]}–${def.subs[def.subs.length - 1]}` : '고지 카드 6초',
+		sceneSubs: def.subs.length ? `${def.subs[0]}–${def.subs[def.subs.length - 1]}` : `고지 카드 ${tl.DISCLAIMER_SEC}초`,
 		subs: s.subs.map((n) => ({n, text: tl.subText(n), srt: tl.srtRange(n)})),
 		why: def.perSub ? SUB_WHY[s.subs[0]] ?? def.why : def.why,
 		sceneWhy: def.why,
