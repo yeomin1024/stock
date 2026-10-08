@@ -1,10 +1,12 @@
-// VERSION: v2.2.0 — 2026-10-08 — 대본(SRT/TXT)에서 엔론 5문장을 지워 자막 91개 → 잘라 내기 설정(CUT_SUBS) 삭제, 장면표 자막 번호 −5
+// VERSION: v2.3.0 — 2026-10-08 — 자막 한 줄화: 장면 타이밍은 '대본 문장 n'(SENTENCES) 기준, 화면 자막은 SRT 조각(SUBTITLES) 기준. lineStart 추가
+// v2.2.0 — 2026-10-08 — 대본(SRT/TXT)에서 엔론 5문장을 지워 자막 91개 → 잘라 내기 설정(CUT_SUBS) 삭제, 장면표 자막 번호 −5
 // v2.1.0 — 2026-10-07 — 엔론 사례(자막 55–59, S23) 제외: 자막 60번부터 28.154초 앞당김, 장면 29개
 // v2.0.0 — 2026-10-06 — 가이드 v2: 자막 96개, 고지 카드 6초(자막 18 뒤), 장면 30개
 // 규칙: 프레임 = 초 × 30 (반올림). 장면 코드에 초를 하드코딩하지 않는다.
 // 가이드 v2 "각 요소는 그 내용을 말하는 자막이 시작될 때 등장" → 요소 시점은 sub(n) (+ 4–6f 순차) 만 쓴다.
 // (Node 스크립트에서도 그대로 import 하므로 .ts 확장자 import 와 순수 TS 문법만 쓴다.)
-import {SUBTITLES} from './subtitles.ts';
+import {SENTENCES, SUBTITLES} from './subtitles.ts';
+import type {Subtitle} from './subtitles.ts';
 
 export const FPS = 30;
 export const WIDTH = 1920;
@@ -13,30 +15,55 @@ export const HEIGHT = 1080;
 export const DISCLAIMER_AFTER_ID = 18;
 export const DISCLAIMER_SEC = 6;
 export const TAIL_SEC = 1;
-export const EXPECTED_SUBTITLES = 91; // v2.2.0: 원본 96개 − 엔론 5개 (원본은 input/archive/)
+export const EXPECTED_SENTENCES = 91; // 대본 문장 수 = 원본 자막 96개 − 엔론 5개 (원본은 input/archive/)
 
 export const secToFrame = (sec: number): number => Math.round(sec * FPS);
 
-const subtitle = (id: number) => {
-	const s = SUBTITLES[id - 1];
-	if (!s || s.id !== id) {
-		throw new Error(`[TIMELINE] 자막 ${id}번을 찾을 수 없음 (총 ${SUBTITLES.length}개)`);
+// v2.3.0: 자막을 한 줄씩 나누면서 SRT 번호(화면 자막 조각)와 대본 문장 번호가 달라졌다.
+// 장면 코드의 sub(n)/subEnd(n)/subText(n) 의 n 은 "대본 문장 n" (input/대본_완성본.txt 의 문장 줄 순서, 고지 블록 제외).
+// 문장 하나가 화면 자막 여러 개로 나뉘면 sub(n) = 첫 조각 시작, subEnd(n) = 마지막 조각 끝, lineStart(n, k) = k 번째 조각 시작.
+const sentence = (n: number) => {
+	const s = SENTENCES[n - 1];
+	if (!s || s.n !== n) {
+		throw new Error(`[TIMELINE] 대본 문장 ${n}번을 찾을 수 없음 (총 ${SENTENCES.length}개)`);
 	}
 	return s;
 };
+const entry = (id: number): Subtitle => {
+	const e = SUBTITLES[id - 1];
+	if (!e || e.id !== id) throw new Error(`[TIMELINE] SRT 자막 ${id}번을 찾을 수 없음 (총 ${SUBTITLES.length}개)`);
+	return e;
+};
 
-const shiftSec = (id: number): number => (id > DISCLAIMER_AFTER_ID ? DISCLAIMER_SEC : 0);
+/** 고지 카드 6초: 문장 18 뒤의 모든 자막을 뒤로 민다 */
+const shiftSec = (n: number): number => (n > DISCLAIMER_AFTER_ID ? DISCLAIMER_SEC : 0);
 
-export const subText = (id: number): string => subtitle(id).text;
-/** 최종 타임라인(고지 카드 반영) 기준 자막 시작 프레임 */
-export const subStart = (id: number): number => secToFrame(subtitle(id).startMs / 1000 + shiftSec(id));
-/** 최종 타임라인(고지 카드 반영) 기준 자막 끝 프레임 */
-export const subEnd = (id: number): number => secToFrame(subtitle(id).endMs / 1000 + shiftSec(id));
+/** 화면 자막(SRT 조각) 시작·끝 프레임 — Subtitles.tsx 용 */
+export const entryStart = (e: Subtitle): number => secToFrame(e.startMs / 1000 + shiftSec(e.sentence));
+export const entryEnd = (e: Subtitle): number => secToFrame(e.endMs / 1000 + shiftSec(e.sentence));
+
+export const subText = (n: number): string => sentence(n).text;
+/** 최종 타임라인(고지 카드 반영) 기준 문장 n 시작 프레임 (첫 화면 자막 시작) */
+export const subStart = (n: number): number => entryStart(entry(sentence(n).first));
+/** 최종 타임라인(고지 카드 반영) 기준 문장 n 끝 프레임 (마지막 화면 자막 끝) */
+export const subEnd = (n: number): number => entryEnd(entry(sentence(n).last));
+/** 문장 n 을 이루는 화면 자막 수 (나뉘지 않았으면 1) */
+export const lineCount = (n: number): number => sentence(n).last - sentence(n).first + 1;
+/** 문장 n 의 k 번째(1부터) 화면 자막 시작 프레임 — 뒷줄 내용에 맞춘 요소용 */
+export const lineStart = (n: number, k: number): number => {
+	const s = sentence(n);
+	if (k < 1 || s.first + k - 1 > s.last) throw new Error(`[TIMELINE] 문장 ${n}은 화면 자막 ${lineCount(n)}개 — ${k}번째 없음`);
+	return entryStart(entry(s.first + k - 1));
+};
+/** 문장 n 의 SRT 자막 번호 범위 (스토리보드 표시용) */
+export const srtRange = (n: number): {first: number; last: number} => ({first: sentence(n).first, last: sentence(n).last});
 
 export const DISCLAIMER_START = subEnd(DISCLAIMER_AFTER_ID);
 export const DISCLAIMER_FRAMES = secToFrame(DISCLAIMER_SEC);
+/** 화면 자막(SRT) 개수 */
+export const SUBTITLE_COUNT = SUBTITLES.length;
 const LAST = SUBTITLES[SUBTITLES.length - 1];
-export const TOTAL_FRAMES = secToFrame(LAST.endMs / 1000 + shiftSec(LAST.id) + TAIL_SEC);
+export const TOTAL_FRAMES = secToFrame(LAST.endMs / 1000 + shiftSec(LAST.sentence) + TAIL_SEC);
 
 // ---------------------------------------------------------------------------
 // 장면 표 (가이드 v2 5번). enter = 들어올 때 전환 (찢어진 종이 와이프 / 컷 번갈아).
@@ -139,6 +166,8 @@ export const sceneTimes = (id: string) => {
 		sub: (n: number) => subStart(n) - start,
 		/** 자막 n 끝 (로컬 프레임) */
 		subEnd: (n: number) => subEnd(n) - start,
+		/** 문장 n 의 k 번째 화면 자막 시작 (로컬 프레임) — 한 줄씩 나뉜 문장의 뒷줄 내용용 */
+		line: (n: number, k: number) => lineStart(n, k) - start,
 	};
 };
 

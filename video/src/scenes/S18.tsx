@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — S18 (자막 39–44) "03 확률 자체가 낮다" → 40: 90년 타임라인 + 약 2만 6천 개
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · S18 (자막 39–44) "03 확률 자체가 낮다" → 40: 90년 타임라인 + 약 2만 6천 개
 // 41: 10×10 와플(100칸 = 전체 종목) 중 58칸 파랑 + "58% 국채보다 못함" → 42: 한 줄 10칸 중 6칸 강조 "열 중 여섯"
 // 43: 4칸만 노랑, 나머지 흐림 "상위 4%" → 44: 커서가 칸 위를 헤매다 노랑 4칸을 찾음 "4%를 맞혀야 하는 게임"
 // 연결 근거: 베셈바인더 연구. 파랑 58칸은 줄마다 6칸(마지막 두 줄은 5칸) → 어느 줄을 봐도 "열 중 여섯".
@@ -22,6 +22,8 @@ const t = sceneTimes('S18');
 const B = FACTS.bessembinder;
 const S = [39, 40, 41, 42, 43, 44].map((n) => t.sub(n));
 const [S39, S40, S41, S42, S43, S44] = S;
+const S40L2 = t.line(40, 2); // 뒷줄 "약 2만 6천 개의 90년치 기록을…"
+const S43L2 = t.line(43, 2); // 뒷줄 "전부 상위 4% 종목에서 나왔습니다."
 
 const G = {x: 220, y: 150, cell: 54, gap: 6};
 const blueCols = (row: number) => (row < 8 ? 6 : 5); // 8×6 + 2×5 = 58
@@ -46,7 +48,7 @@ export const S18: React.FC = () => {
 	const f = useSceneFrame();
 	const fillAt = S41 + 8;
 	const rowFocus = prog(f, S42, S42 + 10) * (1 - prog(f, S43, S43 + 8));
-	const dimAll = prog(f, S43, S43 + 10);
+	const dimAll = prog(f, S43L2, S43L2 + 10);
 	const k = Math.min(PATH.length - 1, Math.max(0, Math.floor((f - S44 - 6) / HOP)));
 	const sub = (f - S44 - 6 - k * HOP) / HOP;
 	const cur = waffleCellXY(PATH[k], G.x, G.y, G.cell, G.gap);
@@ -63,16 +65,16 @@ export const S18: React.FC = () => {
 				{/* 자막 40: 90년 타임라인 + 약 2만 6천 개 */}
 				<Svg>
 					<g opacity={1 - prog(f, S41 - 6, S41 + 2)}>
-						<DrawPath d={handLine(460, 330, 1460, 330, 's18tl', 1.5)} p={prog(f, S40 + 4, S40 + 26)} width={7} />
-						<DrawPath d="M 460 304 L 460 356" p={prog(f, S40, S40 + 6)} width={7} />
-						<DrawPath d="M 1460 304 L 1460 356" p={prog(f, S40 + 24, S40 + 30)} width={7} />
+						<DrawPath d={handLine(460, 330, 1460, 330, 's18tl', 1.5)} p={prog(f, S40L2 + 4, S40L2 + 26)} width={7} />
+						<DrawPath d="M 460 304 L 460 356" p={prog(f, S40L2, S40L2 + 6)} width={7} />
+						<DrawPath d="M 1460 304 L 1460 356" p={prog(f, S40L2 + 24, S40L2 + 30)} width={7} />
 					</g>
 				</Svg>
-				<Reveal at={S40 + 10} exitAt={S41 - 6} from="up" dist={16} style={{left: 760, width: 400, top: 236, textAlign: 'center'}}>
+				<Reveal at={S40L2 + 10} exitAt={S41 - 6} from="up" dist={16} style={{left: 760, width: 400, top: 236, textAlign: 'center'}}>
 					<div style={{...T.label, fontSize: 44}}>{B.years}년</div>
 				</Reveal>
-				<Reveal at={S40 + 6} exitAt={S41 - 6} from="up" style={{left: 0, right: 0, top: 410, textAlign: 'center'}}>
-					<Counter from={0} to={B.stocksThousand} at={S40 + 6} format={formatThousandStocks} color={C.ink} style={{fontSize: 160}} />
+				<Reveal at={S40L2 + 6} exitAt={S41 - 6} from="up" style={{left: 0, right: 0, top: 410, textAlign: 'center'}}>
+					<Counter from={0} to={B.stocksThousand} at={S40L2 + 6} format={formatThousandStocks} color={C.ink} style={{fontSize: 160}} />
 				</Reveal>
 
 				{/* 자막 41–44: 와플 */}
@@ -85,7 +87,7 @@ export const S18: React.FC = () => {
 								const blueIdx = BLUE_ORDER.indexOf(i);
 								const blue = blueIdx >= 0 ? lin(f, fillAt + blueIdx * 0.5, fillAt + blueIdx * 0.5 + 4) : 0;
 								const ti = TARGETS.indexOf(i);
-								const gold = ti >= 0 ? lin(f, S43 + 6 + ti * 4, S43 + 14 + ti * 4) : 0;
+								const gold = ti >= 0 ? lin(f, S43L2 + 6 + ti * 4, S43L2 + 14 + ti * 4) : 0;
 								const rowDim = row === 0 ? 1 : 1 - 0.7 * rowFocus;
 								if (gold > 0) {
 									const found = f >= foundAt(ti) ? 1 : 0;
@@ -115,7 +117,7 @@ export const S18: React.FC = () => {
 				<Reveal at={S42 + 4} exitAt={S43 - 2} from="right" style={{left: 920, top: 140}}>
 					<div style={{fontFamily: SERIF, fontWeight: 900, fontSize: 88, color: C.ink, lineHeight: 1.2}}>{B.sixOfTen}</div>
 				</Reveal>
-				<Reveal at={S43 + 10} exitAt={S44 - 2} from="right" style={{left: 920, top: 230}}>
+				<Reveal at={S43L2 + 10} exitAt={S44 - 2} from="right" style={{left: 920, top: 230}}>
 					<div style={{display: 'flex', alignItems: 'baseline', gap: 24}}>
 						<div style={{...T.headline, fontSize: 80}}>상위</div>
 						<div style={{...T.number, fontSize: 200, color: C.ink}}>{formatPct(B.topPct, 0, false)}</div>

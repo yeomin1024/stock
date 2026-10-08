@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — 출처 캡션, "개념도", 카드 스타일, 번호 타이틀, 장면 타이틀
+// VERSION: v2.3.0 — 2026-10-08 — NumberTitle titleAt 추가 · 출처 캡션, "개념도", 카드 스타일, 번호 타이틀, 장면 타이틀
 import React from 'react';
 import {C} from '../design/colors';
 import {LAYOUT, SERIF, TYPE} from '../design/fonts';
@@ -62,21 +62,23 @@ export const NumberTitle: React.FC<{
 	/** 형광펜을 그을 부분 (title 안의 부분 문자열) */
 	readonly mark?: string;
 	readonly at: number;
+	/** 제목이 번호보다 늦게(뒷줄 자막에) 나올 때 — 없으면 at + 5 */
+	readonly titleAt?: number;
 	readonly markAt?: number;
 	readonly exitAt?: number;
-}> = ({num, title, mark, at, markAt, exitAt}) => {
+}> = ({num, title, mark, at, titleAt, markAt, exitAt}) => {
 	const i = mark ? title.indexOf(mark) : -1;
 	return (
 		<>
 			<Reveal at={at} exitAt={exitAt} from="up" style={{left: LAYOUT.margin + 8, top: LAYOUT.top + 8}}>
 				<div style={{...T.headline, fontSize: 88, color: C.ink, lineHeight: 1}}>{num}</div>
 			</Reveal>
-			<Reveal at={at + 5} exitAt={exitAt} from="left" style={{left: LAYOUT.margin + 8, top: LAYOUT.top + 118}}>
+			<Reveal at={titleAt ?? at + 5} exitAt={exitAt} from="left" style={{left: LAYOUT.margin + 8, top: LAYOUT.top + 118}}>
 				<div style={{...T.headline, fontSize: 80}}>
 					{i >= 0 && mark ? (
 						<>
 							{title.slice(0, i)}
-							<Highlight at={markAt ?? at + 20}>{mark}</Highlight>
+							<Highlight at={markAt ?? (titleAt ?? at) + 20}>{mark}</Highlight>
 							{title.slice(i + mark.length)}
 						</>
 					) : (

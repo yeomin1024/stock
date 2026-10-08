@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — S07 (자막 9) "고점"에서 완만히 내려오던 선이 마지막에 거의 수직으로 떨어짐(개념도) → 떨어진 지점에 최대 -26%(파랑)
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · S07 (자막 9) "고점"에서 완만히 내려오던 선이 마지막에 거의 수직으로 떨어짐(개념도) → 떨어진 지점에 최대 -26%(파랑)
 // 연결 근거: 고점에서 내려오던 주가가 소식에 폭락
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
@@ -16,7 +16,7 @@ import {smoothPath, Pt} from '../components/hand';
 
 const t = sceneTimes('S07');
 const S9 = t.sub(9);
-const DROP_AT = S9 + 40;
+const DROP_AT = t.line(9, 2); // 뒷줄 "최대 -26%까지 폭락했다는 거예요."
 const PEAK: Pt = [250, 250];
 const SLOPE: Pt[] = [PEAK, [420, 282], [560, 300], [700, 330], [840, 352], [980, 388]];
 const DROP: Pt[] = [[980, 388], [1010, 470], [1030, 640], [1046, 712]];

@@ -1,4 +1,4 @@
-// VERSION: v2.2.0 — 2026-10-08 — 자막 번호 −5(대본에서 엔론 5문장 삭제) · S27 (자막 70–74) "셋째 · 지수 ETF"
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · 자막 번호 −5(대본에서 엔론 5문장 삭제) · S27 (자막 70–74) "셋째 · 지수 ETF"
 // 71: 상자가 열리며 작은 점 500개 그리드가 퍼짐 "S&P 500 = 대표 기업 500곳" → 72: 그중 몇 개의 큰 점이 빛남 "승자 기업도 함께"
 // 73: 도넛 90% "S&P 500 지수 펀드"(나머지 10% 회색 "단기 국채") "버핏 90%" → 74: 사연자의 계좌 막대가 절반 ETF + 절반 개별 종목 칸
 // 연결 근거: 지수 ETF로 쉽게 분산
@@ -19,6 +19,8 @@ import {roundRect} from '../components/hand';
 
 const t = sceneTimes('S27');
 const [S70, S71, S72, S73, S74] = [70, 71, 72, 73, 74].map((n) => t.sub(n));
+const S71L2 = t.line(71, 2); // 뒷줄 "미국 대표 기업 500곳에 한 번에 나눠 투자하는 셈이죠."
+const S73L2 = t.line(73, 2); // 뒷줄 "S&P 500 지수 펀드에 넣으라고 했습니다."
 const E = FACTS.etf;
 
 const COLS = 25;
@@ -40,7 +42,7 @@ export const S27: React.FC = () => {
 	const out73 = exitP(f, S74 - 2, 9);
 	const circ = 2 * Math.PI * DONUT.r;
 	const inkArc = prog(f, S73 + 8, S73 + 36) * (E.buffettPct / 100);
-	const grayArc = prog(f, S73 + 36, S73 + 46) * ((100 - E.buffettPct) / 100);
+	const grayArc = prog(f, S73L2 + 8, S73L2 + 18) * ((100 - E.buffettPct) / 100);
 	return (
 		<AbsoluteFill>
 			<SceneBg tone="cream" />
@@ -50,7 +52,7 @@ export const S27: React.FC = () => {
 				{f >= S71 && out72 > 0.001 ? (
 					<Svg>
 						<g opacity={out72}>
-							<g opacity={1 - prog(f, S71 + 40, S71 + 56)}>
+							<g opacity={1 - prog(f, S71L2 + 24, S71L2 + 40)}>
 								<rect x={BOX.x} y={BOX.y} width={BOX.w} height={BOX.h} rx={8} fill={C.paper} stroke={C.ink} strokeWidth={5} opacity={enterP(f, S71, 10)} />
 								<g style={{transformBox: 'view-box', transformOrigin: `${BOX.x - 6}px ${BOX.y}px`, rotate: `${-115 * lid}deg`}} opacity={enterP(f, S71, 10)}>
 									<rect x={BOX.x - 10} y={BOX.y - 28} width={BOX.w + 20} height={28} rx={6} fill={C.paper} stroke={C.ink} strokeWidth={5} />
@@ -60,7 +62,7 @@ export const S27: React.FC = () => {
 								const tx = GX + (i % COLS) * SP;
 								const ty = GY + Math.floor(i / COLS) * SP;
 								const dist = Math.hypot(tx - ORIGIN.x, ty - ORIGIN.y) / 700;
-								const p = easeInOut(prog(f, S71 + 16 + dist * 24, S71 + 40 + dist * 24, (x) => x));
+								const p = easeInOut(prog(f, S71L2 + dist * 24, S71L2 + 24 + dist * 24, (x) => x));
 								if (p <= 0) return null;
 								const win = WINNERS.has(i) ? lin(f, S72 + 4, S72 + 14) : 0;
 								return (
@@ -78,9 +80,11 @@ export const S27: React.FC = () => {
 						</g>
 					</Svg>
 				) : null}
-				<Reveal at={S71 + 30} exitAt={S72 - 2} from="left" style={{left: 104, top: 380}}>
+				<Reveal at={S71 + 12} exitAt={S72 - 2} from="left" style={{left: 104, top: 380}}>
 					<div style={{fontFamily: SERIF, fontWeight: 900, fontSize: 72, color: C.ink}}>S&amp;P 500</div>
-					<div style={{...T.label, marginTop: 8}}>= 대표 기업 {E.companies}곳</div>
+				</Reveal>
+				<Reveal at={S71L2 + 20} exitAt={S72 - 2} from="left" style={{left: 104, top: 476}}>
+					<div style={{...T.label}}>= 대표 기업 {E.companies}곳</div>
 				</Reveal>
 				<Reveal at={S72 + 8} exitAt={S73 - 2} from="left" style={{left: 104, top: 420}}>
 					<div style={{...T.label, fontSize: 44}}>승자 기업도 함께</div>
@@ -109,7 +113,7 @@ export const S27: React.FC = () => {
 							<div style={{...T.label}}>버핏</div>
 							<div style={{...T.number, fontSize: 160, color: C.ink, marginTop: 4}}>{E.buffettPct}%</div>
 						</Reveal>
-						<Reveal at={S73 + 30} exitAt={S74 - 2} from="right" style={{left: 1160, top: 410}}>
+						<Reveal at={S73L2 + 4} exitAt={S74 - 2} from="right" style={{left: 1160, top: 410}}>
 							<div style={{...T.label, fontSize: 44, display: 'flex', alignItems: 'center', gap: 16}}>
 								<span style={{display: 'inline-block', width: 34, height: 34, borderRadius: 6, background: C.ink}} />
 								S&amp;P 500 지수 펀드

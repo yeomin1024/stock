@@ -1,4 +1,4 @@
-// VERSION: v2.2.0 — 2026-10-08 — 자막 번호 −5(대본에서 엔론 5문장 삭제) · S28 (자막 75–79) "넷째 · 나눠 사고 현금 남기기"
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · 자막 번호 −5(대본에서 엔론 5문장 삭제) · S28 (자막 75–79) "넷째 · 나눠 사고 현금 남기기"
 // 76: 700만 원 블록이 3조각 "700만 원 → 3번" → 77: 첫 조각만 매수된 뒤 번개, 남은 2조각(현금)에서 "더 싸게 사기"·"기다리기" 화살표
 // 78: S08의 빈 지갑이 작게 다시 나와 "현금 0원" → 79: 현금 2조각에 "현금 = 위기 때 쓸 선택지"
 // 연결 근거: 분할 매수와 현금의 역할
@@ -20,6 +20,7 @@ import {handArrow} from '../components/hand';
 
 const t = sceneTimes('S28');
 const [S75, S76, S77, S78, S79] = [75, 76, 77, 78, 79].map((n) => t.sub(n));
+const S77L2 = t.line(77, 2); // 뒷줄 "남은 돈으로 더 싸게 살지 기다릴지 고를 수 있습니다."
 const SP = FACTS.split;
 
 const BLOCK = {x: 610, y: 380, w: 700, h: 140};
@@ -61,17 +62,17 @@ export const S28: React.FC = () => {
 						})}
 					</g>
 					<Lightning x={PIECE_X[0] + PW / 2 + 8} y={BLOCK.y - 150} h={140} reveal={strike} opacity={1 - prog(f, S78 - 10, S78)} />
-					<DrawPath d={ARROW_CHEAP.shaft} p={prog(f, S77 + 40, S77 + 54)} width={6} />
-					<DrawPath d={ARROW_CHEAP.head} p={prog(f, S77 + 52, S77 + 58)} width={6} />
-					<DrawPath d={ARROW_WAIT.shaft} p={prog(f, S77 + 46, S77 + 60)} width={6} />
-					<DrawPath d={ARROW_WAIT.head} p={prog(f, S77 + 58, S77 + 64)} width={6} />
+					<DrawPath d={ARROW_CHEAP.shaft} p={prog(f, S77L2 + 4, S77L2 + 18)} width={6} />
+					<DrawPath d={ARROW_CHEAP.head} p={prog(f, S77L2 + 16, S77L2 + 22)} width={6} />
+					<DrawPath d={ARROW_WAIT.shaft} p={prog(f, S77L2 + 10, S77L2 + 24)} width={6} />
+					<DrawPath d={ARROW_WAIT.head} p={prog(f, S77L2 + 22, S77L2 + 28)} width={6} />
 				</Svg>
 				{/* 블록 위 글자: 81 "700만 원" (나뉘기 전) / 82 이후 현금 조각 "현금" */}
 				<div style={{position: 'absolute', left: BLOCK.x, top: BLOCK.y, width: BLOCK.w, height: BLOCK.h, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: SANS, fontWeight: 900, fontSize: 60, color: C.ink, opacity: blockIn * (1 - split)}}>
 					{formatManwon(SP.perStockManwon)}
 				</div>
 				{[1, 2].map((i) => (
-					<div key={i} style={{position: 'absolute', left: PIECE_X[i], top: BLOCK.y, width: PW, height: BLOCK.h, display: 'flex', alignItems: 'center', justifyContent: 'center', ...T.label, opacity: lin(f, S77 + 10, S77 + 20)}}>
+					<div key={i} style={{position: 'absolute', left: PIECE_X[i], top: BLOCK.y, width: PW, height: BLOCK.h, display: 'flex', alignItems: 'center', justifyContent: 'center', ...T.label, opacity: lin(f, S77L2, S77L2 + 10)}}>
 						현금
 					</div>
 				))}
@@ -80,10 +81,10 @@ export const S28: React.FC = () => {
 						{formatManwon(SP.perStockManwon)} → {SP.times}번
 					</div>
 				</Reveal>
-				<Reveal at={S77 + 54} from="up" dist={14} style={{left: PIECE_X[1] + PW / 2 - 330, width: 300, top: BLOCK.y + BLOCK.h + 120, textAlign: 'right'}}>
+				<Reveal at={S77L2 + 18} from="up" dist={14} style={{left: PIECE_X[1] + PW / 2 - 330, width: 300, top: BLOCK.y + BLOCK.h + 120, textAlign: 'right'}}>
 					<div style={{...T.label}}>더 싸게 사기</div>
 				</Reveal>
-				<Reveal at={S77 + 60} from="up" dist={14} style={{left: PIECE_X[2] + PW / 2 + 100, top: BLOCK.y + BLOCK.h + 120}}>
+				<Reveal at={S77L2 + 24} from="up" dist={14} style={{left: PIECE_X[2] + PW / 2 + 100, top: BLOCK.y + BLOCK.h + 120}}>
 					<div style={{...T.label}}>기다리기</div>
 				</Reveal>
 				{/* 83: S08 의 빈 지갑 (같은 모양·같은 색: 네이비 위 밝은 선) */}

@@ -1,4 +1,4 @@
-// VERSION: v2.2.0 — 2026-10-08 — 자막 번호 −5(대본에서 엔론 5문장 삭제) · S25 (자막 58–63) "첫째 · 비중 상한"
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · 자막 번호 −5(대본에서 엔론 5문장 삭제) · S25 (자막 58–63) "첫째 · 비중 상한"
 // 58: 사연자의 계좌 막대(MDB 100%, 잉크) → 59: 15% 상한 점선, MDB 칸이 15%까지로 줄고 "15% = 1,050만 원"
 // 60: 막대가 10칸(700만 원씩)으로 나뉨 "10종목 × 700만 원"
 // 61: 반분할 — 왼쪽(몰빵) 계좌 전체 -2,000만 원 / 오른쪽(분산) MDB 칸 하나만 줄어 -200만 원(-3%), 동시에 카운트다운
@@ -22,6 +22,7 @@ import {handLine} from '../components/hand';
 
 const t = sceneTimes('S25');
 const [S58, S59, S60, S61, S62, S63] = [58, 59, 60, 61, 62, 63].map((n) => t.sub(n));
+const S59L2 = t.line(59, 2); // 뒷줄 "한 종목에 1,050만 원까지만 넣는 거죠."
 const D = FACTS.diversify;
 const CAP = FACTS.cap;
 const LOSS = Math.abs(FACTS.story.lossPct) / 100; // 같은 폭락 -29%
@@ -36,7 +37,7 @@ const MARKET_DIP = 0.25; // 자막 62: 시장 전체가 빠질 때 칸마다 줄
 
 export const S25: React.FC = () => {
 	const f = useSceneFrame();
-	const a59 = easeInOut(prog(f, S59 + 6, S59 + 30, (x) => x));
+	const a59 = easeInOut(prog(f, S59L2 + 2, S59L2 + 26, (x) => x));
 	const a60 = easeInOut(prog(f, S60 + 4, S60 + 24, (x) => x));
 	const move = easeInOut(prog(f, S61, S61 + 20, (x) => x));
 	const loss = easeInOut(prog(f, S61 + 14, S61 + 40, (x) => x));
@@ -79,7 +80,7 @@ export const S25: React.FC = () => {
 					<StackBar x={LCX - W / 2} bottom={BOTTOM} w={W} segs={[{h: FULL, kind: 'mdb', lost: FULL * LOSS * loss}]} opacity={leftIn} />
 					<DrawPath d={handLine(960, 140, 960, 790, 's25div', 2)} p={prog(f, S61 + 4, S61 + 20)} width={3} stroke={C.gray} />
 				</Svg>
-				<Reveal at={S59 + 14} exitAt={S61 - 2} from="left" dist={20} style={{left: 1150, top: BOTTOM - CAP_H - 30}}>
+				<Reveal at={S59L2 + 4} exitAt={S61 - 2} from="left" dist={20} style={{left: 1150, top: BOTTOM - CAP_H - 30}}>
 					<div style={{...T.label}}>
 						{CAP.pct}% = {formatManwon(CAP.maxManwon)}
 					</div>

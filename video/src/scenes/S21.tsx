@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — S21 (자막 49–51) "04" + "판단력까지 무너진다"
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · S21 (자막 49–51) "04" + "판단력까지 무너진다"
 // 자막 51: 천칭 저울 — 왼쪽(나쁜 쪽) "잃을 때 고통 ×2" 가 오른쪽 "얻을 때 기쁨" 보다 무겁게 기운다. 연결 근거: 손실 회피
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
@@ -15,7 +15,9 @@ import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
 const t = sceneTimes('S21');
 const S49 = t.sub(49);
 const S51 = t.sub(51);
-const TILT_AT = S51 + 34;
+const S51L2 = t.line(51, 2); // 뒷줄 "같은 금액을 얻을 때의 기쁨보다 두 배 정도 큽니다."
+const TILT_AT = S51L2 + 16;
+const BLOCK_AT = [S51 + 14, S51L2 + 10, S51L2 + 4]; // 파랑 1(고통) / 파랑 2(두 배) / 빨강(기쁨)
 
 const PX = 1160; // 받침점
 const PY = 380;
@@ -30,7 +32,7 @@ export const S21: React.FC = () => {
 	const rad = (tilt * Math.PI) / 180;
 	const L = {x: PX - HALF * Math.cos(rad), y: PY + HALF * Math.sin(rad)};
 	const R = {x: PX + HALF * Math.cos(rad), y: PY - HALF * Math.sin(rad)};
-	const blocksIn = (k: number) => enterP(f, S51 + 14 + k * 5, 12);
+	const blocksIn = (k: number) => enterP(f, BLOCK_AT[k], 12);
 	const pan = (x: number, y: number) => `M ${x - 130} ${y + HANG} Q ${x} ${y + HANG + 60} ${x + 130} ${y + HANG}`;
 	return (
 		<AbsoluteFill>
@@ -60,9 +62,11 @@ export const S21: React.FC = () => {
 					</Svg>
 				) : null}
 				<Reveal at={S51 + 18} from="up" dist={16} style={{left: L.x - 210, width: 420, top: L.y + HANG + 50, textAlign: 'center'}}>
-					<div style={{...T.label, fontSize: 44, color: C.blue}}>잃을 때 고통 ×{FACTS.lossAversion}</div>
+					<div style={{...T.label, fontSize: 44, color: C.blue}}>
+						잃을 때 고통 <span style={{opacity: prog(f, S51L2 + 14, S51L2 + 20)}}>×{FACTS.lossAversion}</span>
+					</div>
 				</Reveal>
-				<Reveal at={S51 + 24} from="up" dist={16} style={{left: R.x - 210, width: 420, top: R.y + HANG + 50, textAlign: 'center'}}>
+				<Reveal at={S51L2 + 6} from="up" dist={16} style={{left: R.x - 210, width: 420, top: R.y + HANG + 50, textAlign: 'center'}}>
 					<div style={{...T.label, fontSize: 44, color: C.red}}>얻을 때 기쁨</div>
 				</Reveal>
 			</Layer>

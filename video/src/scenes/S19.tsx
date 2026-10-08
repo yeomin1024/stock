@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — S19 (자막 45–47) "JP모건 · 1980년 이후" 카드
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · S19 (자막 45–47) "JP모건 · 1980년 이후" 카드
 // 46: 10칸 중 4칸이 파랑 + 각 칸에 고점에서 -70% 떨어진 뒤 회복 못 하는 미니 선 → "40% 이상 / 고점 대비 -70% · 회복 못 함"
 // 47: 칸 3개 중 2개에 "시장보다 못함" → "3번 중 2번". 연결 근거: JP모건 분석
 import React from 'react';
@@ -22,6 +22,8 @@ const J = FACTS.jpm;
 const S45 = t.sub(45);
 const S46 = t.sub(46);
 const S47 = t.sub(47);
+const S46L2 = t.line(46, 2); // 뒷줄 "떨어진 뒤 끝내 회복하지 못했습니다."
+const S47L2 = t.line(47, 2); // 뒷줄 "시장 전체에 투자한 것보다 못했습니다."
 
 const N = 10;
 const X0 = 166;
@@ -85,7 +87,7 @@ export const S19: React.FC = () => {
 						<span style={{fontFamily: SANS, fontWeight: 900, fontSize: 56, color: C.blue}}>이상</span>
 					</div>
 				</Reveal>
-				<Reveal at={S46 + 30} exitAt={S47 - 2} from="right" style={{left: 900, top: 620}}>
+				<Reveal at={S46L2 + 4} exitAt={S47 - 2} from="right" style={{left: 900, top: 620}}>
 					<div style={{...T.label, fontSize: 44}}>
 						고점 대비 <span style={{color: C.blue, fontWeight: 900}}>{formatPct(J.drawdownPct)}</span> · 회복 못 함
 					</div>
@@ -96,7 +98,7 @@ export const S19: React.FC = () => {
 				{[0, 1, 2].map((i) => {
 					const p = enterP(f, S47 + 6 + i * 5, 14);
 					const bad = i < 2;
-					const mark = bad ? lin(f, S47 + 22 + i * 6, S47 + 30 + i * 6) : 0;
+					const mark = bad ? lin(f, S47L2 + 4 + i * 6, S47L2 + 12 + i * 6) : 0;
 					const cx = 520 + i * 440;
 					return p > 0.001 ? (
 						<div
@@ -119,9 +121,9 @@ export const S19: React.FC = () => {
 						</div>
 					) : null;
 				})}
-				<Reveal at={S47 + 34} from="up" style={{left: 0, right: 0, top: 580, textAlign: 'center'}}>
+				<Reveal at={S47 + 22} from="up" style={{left: 0, right: 0, top: 580, textAlign: 'center'}}>
 					<div style={{...T.number, fontSize: 160, color: C.ink}}>
-						<Highlight at={S47 + 42} top={0.5}>
+						<Highlight at={S47 + 30} top={0.5}>
 							{J.worseThanMarket}
 						</Highlight>
 					</div>

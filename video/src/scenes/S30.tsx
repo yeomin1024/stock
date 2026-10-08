@@ -1,4 +1,4 @@
-// VERSION: v2.2.0 — 2026-10-08 — 자막 번호 −5(대본에서 엔론 5문장 삭제) · S30 (자막 86–91)
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · 자막 번호 −5(대본에서 엔론 5문장 삭제) · S30 (자막 86–91)
 // 86: 왼쪽 "위험 4가지", 오른쪽 "방법 5가지" 두 열 → 87: "늦지 않았습니다"
 // 88: 스마트폰 화면 "내 계좌 최대 비중 종목 __%" 칸이 깜빡임 → 89: "큰 수익보다 대처할 수 있는 투자" 노랑 형광펜
 // 90–91: 천천히 페이드아웃 (그래픽 → 크림, 마지막 1초 여유 동안 잉크로). 연결 근거: 마무리 당부
@@ -19,16 +19,17 @@ import {PHONE} from './S01';
 const t = sceneTimes('S30');
 const [S86, S87, S88, S89, S90] = [86, 87, 88, 89, 90].map((n) => t.sub(n));
 const END91 = t.subEnd(91);
+const S86L2 = t.line(86, 2); // 뒷줄 "분산 투자의 중요성을 알아보았습니다." → 오른쪽 열
 const RISKS = ['대처 불가', '회복 어려움', '낮은 확률', '판단력 붕괴'];
 const WAYS = ['비중 상한', '업종 분산', '지수 ETF', '나눠 사기·현금', '비중 확인'];
 
 const Column: React.FC<{readonly x: number; readonly title: string; readonly items: readonly string[]; readonly bullet: string}> = ({x, title, items, bullet}) => (
 	<>
-		<Reveal at={S86 + (x > 900 ? 6 : 0)} exitAt={S87 - 2} from="up" style={{left: x, top: 140}}>
+		<Reveal at={x > 900 ? S86L2 : S86} exitAt={S87 - 2} from="up" style={{left: x, top: 140}}>
 			<div style={{fontFamily: SERIF, fontWeight: 900, fontSize: 72, color: C.ink}}>{title}</div>
 		</Reveal>
 		{items.map((it, i) => (
-			<Reveal key={it} at={S86 + 12 + (x > 900 ? 6 : 0) + i * 4} exitAt={S87 - 2} from="left" dist={20} style={{left: x + 6, top: 270 + i * 88}}>
+			<Reveal key={it} at={(x > 900 ? S86L2 : S86) + 12 + i * 4} exitAt={S87 - 2} from="left" dist={20} style={{left: x + 6, top: 270 + i * 88}}>
 				<div style={{...T.label, fontSize: 44, display: 'flex', alignItems: 'center', gap: 20}}>
 					<span style={{display: 'inline-block', width: 18, height: 18, borderRadius: 4, background: bullet}} />
 					{it}

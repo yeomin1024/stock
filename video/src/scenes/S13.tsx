@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — S13 (자막 21–22) 장기 상승 점선 추세선 위로 주가선 → 번개와 함께 급락 (개념도)
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · S13 (자막 21–22) 장기 상승 점선 추세선 위로 주가선 → 번개와 함께 급락 (개념도)
 // 자막 22: "최근 매수"·"기존 수익" 표시가 둘 다 손실 구간으로 떨어진다. 텍스트 덩어리 3개 이하를 위해 이때 "장기 상승" 라벨은 퇴장.
 // 연결 근거: 장기 상승해도 단기 악재가 온다, 누구나 손해
 import React from 'react';
@@ -18,8 +18,8 @@ import {handLine, smoothPath, Pt} from '../components/hand';
 const t = sceneTimes('S13');
 const S21 = t.sub(21);
 const S22 = t.sub(22);
-const BOLT_AT = S21 + 70;
-const FALL_AT = S22 + 30;
+const BOLT_AT = t.line(21, 2); // 뒷줄 "단기적으로 갑자기 큰 악재가…"
+const FALL_AT = t.line(22, 2); // 뒷줄 "투자자들도 큰 손해를…"
 
 const X0 = 220;
 const X1 = 1700;

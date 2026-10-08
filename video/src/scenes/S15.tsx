@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — S15 (자막 28–29) 헤드라인 "전문가도 미리 알기 어렵다" → 자막 29: 큰 숫자 "2명" 카운트업 + 라벨
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · S15 (자막 28–29) 헤드라인 "전문가도 미리 알기 어렵다" → 자막 29: 큰 숫자 "2명" 카운트업 + 라벨
 // 연결 근거: 전문가도 예측 못 함의 근거
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
@@ -14,7 +14,7 @@ import {Layer, SceneBg} from '../components/Scene';
 
 const t = sceneTimes('S15');
 const S28 = t.sub(28);
-const S29 = t.sub(29);
+const S29 = t.line(29, 2); // 뒷줄 "팔라는 의견을 낸 애널리스트는 단 2명뿐…" (2명 묶음 전체)
 
 export const S15: React.FC = () => (
 	<AbsoluteFill>

@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — S20 (자막 48) 점 수십 개 중 몇 개만 노랑으로 빛나며 위로 떠오르고(성공담),
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · S20 (자막 48) 점 수십 개 중 몇 개만 노랑으로 빛나며 위로 떠오르고(성공담),
 // 나머지 회색 점은 소리 없이 아래로 흐려져 사라진다. 연결 근거: 생존자 편향
 import React from 'react';
 import {AbsoluteFill, random} from 'remotion';
@@ -13,6 +13,7 @@ import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
 const t = sceneTimes('S20');
 const S48 = t.sub(48);
 const SPLIT_AT = S48 + 30;
+const LEAVE_AT = t.line(48, 2); // 뒷줄 "크게 잃은 사람들은 조용히 떠나기 때문이죠."
 const N = 54;
 const WINNERS = [7, 19, 30, 41, 48];
 const DOTS = Array.from({length: N}, (_, i) => ({
@@ -50,11 +51,11 @@ export const S20: React.FC = () => {
 								/>
 							);
 						}
-						const fall = prog(f, SPLIT_AT + 12 + d.d, SPLIT_AT + 90 + d.d);
+						const fall = prog(f, LEAVE_AT + d.d, LEAVE_AT + 78 + d.d);
 						return <circle key={i} cx={d.x} cy={d.y + 150 * fall} r={d.r * appear} fill={C.gray} opacity={1 - fall} />;
 					})}
 				</Svg>
-				<Reveal at={SPLIT_AT + 40} from="none" style={{left: 0, right: 0, top: 690, textAlign: 'center'}}>
+				<Reveal at={LEAVE_AT + 10} from="none" style={{left: 0, right: 0, top: 690, textAlign: 'center'}}>
 					<div style={{...T.label, color: C.gray, fontSize: 44}}>크게 잃은 사람은 조용히 떠난다</div>
 				</Reveal>
 			</Layer>

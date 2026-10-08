@@ -1,4 +1,4 @@
-// VERSION: v2.0.0 — 2026-10-06 — S01 (자막 1–2) 스마트폰 검색 "AI 관련주" → 결과 카드 "몽고디비 MDB" → 자막 2: 체크 3개
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · S01 (자막 1–2) 스마트폰 검색 "AI 관련주" → 결과 카드 "몽고디비 MDB" → 자막 2: 체크 3개
 // 연결 근거: 종목을 알게 된 경위(자막 1), 고른 이유 3가지(자막 2)
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
@@ -18,7 +18,7 @@ const QUERY = Array.from('AI 관련주');
 const S1 = t.sub(1);
 const TYPE_AT = S1 + 12;
 const TYPE_STEP = 3;
-const CARD_AT = TYPE_AT + QUERY.length * TYPE_STEP + 12;
+const CARD_AT = Math.max(TYPE_AT + QUERY.length * TYPE_STEP + 12, t.line(1, 2)); // 뒷줄 "몽고디비라는 종목을…"
 const CHECKS = ['전망', '실적', '상승세'].map((label, i) => ({label, at: t.sub(2) + i * 6}));
 
 export const PHONE = {x: 720, y: 130, w: 480, h: 670} as const;

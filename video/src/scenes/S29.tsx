@@ -1,4 +1,4 @@
-// VERSION: v2.2.0 — 2026-10-08 — 자막 번호 −5(대본에서 엔론 5문장 삭제) · S29 (자막 80–85) "다섯째 · 수익 나면 비중 확인"
+// VERSION: v2.3.0 — 2026-10-08 — 한 줄 자막: 뒷줄 내용 요소는 t.line(n, 2) · 자막 번호 −5(대본에서 엔론 5문장 삭제) · S29 (자막 80–85) "다섯째 · 수익 나면 비중 확인"
 // 81: S03의 +1,000만 원 계좌 카드가 작게 다시 + 생각 말풍선 "더 오를 것 같은데…"
 // 82: 10칸 중 한 칸이 2배로 커지며 비중 10% → 18% → 83: 그 칸에 경고 "몰빵에 가까워짐"
 // 84: 15% 상한 점선 위로 튀어나온 부분만 잘려 다른 칸들로 나뉘어 들어감 "15% 넘는 만큼만 덜기"
@@ -22,6 +22,7 @@ import {Layer, SceneBg, useSceneFrame} from '../components/Scene';
 
 const t = sceneTimes('S29');
 const [S80, S81, S82, S83, S84, S85] = [80, 81, 82, 83, 84, 85].map((n) => t.sub(n));
+const S82L2 = t.line(82, 2); // 뒷줄 "그 비중은 10%에서 18% 정도로 커집니다."
 const RB = FACTS.rebalance;
 const N = 10;
 const BW = 100;
@@ -98,13 +99,13 @@ export const S29: React.FC = () => {
 						<Lightning x={X0 + STRUCK * (BW + GAP) + BW / 2 + 6} y={BOTTOM - hOther - 170} h={150} reveal={strike} />
 					</Svg>
 				) : null}
-				<Reveal at={S82 + 6} exitAt={S85 - 2} from="right" style={{left: 1180, top: 136}}>
+				<Reveal at={S82L2} exitAt={S85 - 2} from="right" style={{left: 1180, top: 136}}>
 					<div style={{display: 'flex', alignItems: 'baseline', gap: 18}}>
 						<span style={{...T.label}}>비중</span>
 						<Counter
 							from={RB.fromPct}
 							to={RB.toPct}
-							at={S82 + 10}
+							at={S82L2 + 4}
 							dur={24}
 							steps={1}
 							format={(v) => `${Math.round(v)}%`}
