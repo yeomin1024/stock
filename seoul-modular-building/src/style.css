@@ -1,0 +1,196 @@
+/* VERSION: v1.0.0 — 2026-11-02 — Initial implementation */
+:root {
+  --bg: #e3e4e6;
+  --panel-bg: rgba(255, 255, 255, 0.86);
+  --panel-border: rgba(30, 36, 44, 0.12);
+  --text: #1e242c;
+  --muted: #5d6670;
+  --accent: #2f5d8a;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', 'Noto Sans KR', sans-serif;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+#app canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.panel {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  width: min(290px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 18px rgba(20, 30, 40, 0.08);
+}
+
+.panel details {
+  padding: 10px 12px 12px;
+}
+
+.panel summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  list-style: none;
+}
+
+.panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel .ver {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.panel h2 {
+  margin: 12px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.panel .summary {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.panel .row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.panel button {
+  font: inherit;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.panel button:hover {
+  border-color: var(--accent);
+}
+
+.panel button.primary {
+  margin-top: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.panel .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.panel kbd {
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.caption {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(20, 28, 38, 0.78);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.title-block {
+  position: fixed;
+  top: 22px;
+  left: 28px;
+}
+
+.title-block h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.title-block p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.error {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: #8a1c1c;
+  font-size: 15px;
+}
+
+@media (max-width: 640px) {
+  .caption {
+    font-size: 12px;
+    bottom: 12px;
+    white-space: normal;
+  }
+}
